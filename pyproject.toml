@@ -1,0 +1,61 @@
+[project]
+name = "anime-video-agent"
+version = "0.1.0"
+description = "一条把选题变成动漫二创成片的 agent 流水线：字幕语义索引 → 排片 → 本地 TTS → 渲染 → 自动质检"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+# 版本按 2026-07-29 实际跑通的那一组钉住。
+# 这条流水线依赖若干库的**具体行为**而不只是 API：
+#   - mlx-audio 0.4.6 的 IndexTTS 解码有两处 bug，我们绕开它自己解码（见 ADR-0002），
+#     上游修好之后这段要重测再删
+#   - libass 的中文折行行为决定了 render.wrap 必须自己算宽度
+# 所以升级任何一项之后都要重跑一遍端到端，不要只看能不能 import。
+dependencies = [
+    "numpy>=2.0",
+    "pysubs2>=1.8",          # ASS/SRT 解析
+    "sentence-transformers>=5.0",  # bge-base-zh-v1.5 向量检索
+    "pillow>=11.0",          # 封面候选的清晰度/去重计算
+]
+
+[project.optional-dependencies]
+# **Apple Silicon 专用。** TTS 与 ASR 建在 mlx 上，Intel Mac / Linux / Windows 装不上。
+# 不装这一组的话，第 05 步配音和 ASR 兜底不可用，其余步骤（索引、排片、渲染、质检、
+# 封面）都能正常跑——它们只依赖 ffmpeg 和上面那几个包。
+apple = [
+    "mlx>=0.32",
+    "mlx-audio>=0.4.6",
+    "mlx-whisper>=0.4.3",
+    "mlx-lm>=0.31",
+]
+# 测试只覆盖纯函数，**不需要片源、模型、外置盘**——clone 下来装完就能跑。
+# 涉及媒体的部分靠 pipeline 自己的守卫（截取守卫、质检门禁）在真跑时兜。
+dev = ["pytest>=8"]
+
+[project.scripts]
+# 每个阶段都能独立跑，产物落盘，中断可从中间接上（CLAUDE.md「每阶段产物落盘」）
+ava-ingest = "pipeline.ingest:main"
+ava-index = "pipeline.subindex:main"
+ava-check-script = "pipeline.check_script:main"
+ava-clips = "pipeline.clips:main"
+ava-review = "pipeline.review:main"
+ava-tts = "pipeline.tts:main"
+ava-render = "pipeline.render:main"
+ava-qc = "pipeline.qc:main"
+ava-cover = "pipeline.cover:main"
+ava-bgm = "pipeline.bgm:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 没有它，仓库根下裸跑 `pytest` 会 8 个 collection error（`No module named 'pipeline'`），
+# 因为 pytest 的入口脚本不像 `python -m pytest` 那样把当前目录塞进 sys.path。
+# 「先 pip install -e . 再测」也能绕过去，但那让「clone 下来就能跑测试」这句话变成假的。
+pythonpath = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pipeline"]
