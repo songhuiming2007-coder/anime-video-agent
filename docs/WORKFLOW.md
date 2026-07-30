@@ -44,7 +44,7 @@ data/episodes/YYYY-MM-DD-<番>-<主题>/
 判据是三条数字必须相等：
 
 ```bash
-python -m pipeline.ingest intact data/library/raw/<番>/*.mkv   # 完整片源 = N
+python -m pipeline.ingest intact data/library/raw/<番>/*/*.mkv   # 完整片源 = N
 ls data/library/index/<番>_*.npy | wc -l                      # 索引集数 = N
 # 番剧笔记的分集速查表行数                                      = N
 ```
@@ -64,10 +64,10 @@ ls data/library/index/<番>_*.npy | wc -l                      # 索引集数 = 
 
 ```bash
 # 1. 先验片源完整（下载器显示 100% 不等于文件完整）
-python -m pipeline.ingest intact data/library/raw/<番>/*.mkv
+python -m pipeline.ingest intact data/library/raw/<番>/*/*.mkv
 
 # 2. 整季入库：逐集对轴校验 → 过了才建索引 → 登记片源路径
-python -m pipeline.ingest phase0 data/library/raw/<番>/S1/*.mkv --anime <番> --season 1
+python -m pipeline.ingest phase0 data/library/raw/<番>/<该季目录>/*.mkv --anime <番> --season 1
 ```
 
 **片源残缺时对轴校验会拿零填充的音频去比，结果无意义。** 所以完整性必须先验。
