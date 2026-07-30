@@ -104,8 +104,8 @@ python -m pipeline.cover   $EP              # 封面候选 + 标题原料
 ### Phase 0（一部番做一次）
 
 ```bash
-python -m pipeline.ingest intact data/library/raw/<番>/*.mkv                       # 片源完整性
-python -m pipeline.ingest phase0 data/library/raw/<番>/S1/*.mkv --anime <番> --season 1
+python -m pipeline.ingest intact data/library/raw/<番>/*/*.mkv                       # 片源完整性
+python -m pipeline.ingest phase0 data/library/raw/<番>/<该季目录>/*.mkv --anime <番> --season 1
 python -m pipeline.bgm    scan   <CD 目录>                                         # 解 cue 找 instrumental
 ```
 
