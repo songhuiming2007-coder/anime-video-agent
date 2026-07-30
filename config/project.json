@@ -1,0 +1,54 @@
+{
+  "_note": "跨模块共用的可调参数。代码里不再写死这些值——写死的后果是换一部番、换一台机器就要改代码。改这里不用动 pipeline/。",
+
+  "anime": {
+    "_note": "当前在做的番。clips / cover / ingest 的 --anime 默认值取这里，命令行仍可覆盖。",
+    "default": "春物",
+    "anchor_words": [
+      "文化祭", "体育祭", "修学旅行", "社团", "侍奉部", "奉仕部",
+      "毕业", "开学", "生日", "告白", "决赛", "最终话"
+    ],
+    "_anchor_note": "check_script 判「可指认的剧情锚点」用的具名场合词。换番必须换这张表——原先写死在 check_script.py 的正则里，全是春物专有名词，别的番一个都命中不了，锚点检查会永远判 0 处。季/集/话这类通用写法由正则另行匹配，不列在这里。"
+  },
+
+  "video": {
+    "_note": "成片规格。改动前先确认平台兼容——10bit 与非标准帧率在抖音/B站转码链上都出过问题。",
+    "width": 1920,
+    "height": 1080,
+    "fps": "24000/1001",
+    "crf": "18",
+    "preset": "medium",
+    "duration_band": [120.0, 240.0],
+    "_duration_note": "成片时长带，秒。2–4 分钟，依据见 CLAUDE.md「内容参数」：两平台数据一致地呈现时长与播放量负相关。"
+  },
+
+  "subtitle": {
+    "_note": "字幕样式。font 必须是本机 fontconfig 认得的名字，否则 libass 会静默退到默认字体——中文会变成方块。装了别的字体就改这里。",
+    "font": "Hiragino Sans GB",
+    "font_fallback": ["PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"],
+    "size": 54,
+    "margin_v": 90,
+    "margin_lr": 120
+  },
+
+  "audio": {
+    "_note": "响度目标，EBU R128。质检门禁按这三个数判。",
+    "lufs": -16.0,
+    "lufs_tolerance": 1.5,
+    "true_peak_max": -1.0
+  },
+
+  "script": {
+    "_note": "口播稿机检的阈值。cpm 随音色和文风变，换音色要重测——实测同一音色在不同文风下差过 24%。",
+    "cpm": 380,
+    "min_chars": 870,
+    "max_chars": 1300,
+    "max_sentence": 40,
+    "min_anchors": 3
+  },
+
+  "storage": {
+    "_note": "data/ 是指向外置盘的符号链接。volume_hint 只用在报错信息里，告诉人该插哪块盘；改成你自己的卷名。",
+    "volume_hint": "外置 SSD"
+  }
+}

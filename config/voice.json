@@ -1,0 +1,8 @@
+{
+  "_note": "配音参数。Phase 0 一次性定死，之后每期不改。换引擎/换音色只动这个文件。",
+  "_chosen": "2026-07-29 八条参考音试听后选定 audio_03：同句 6.52s，语速居中偏慢，念长句不发飘。",
+  "engine": "indextts",
+  "model": "data/models/local/IndexTTS-1.5",
+  "ref_audio": "data/voice/reference/audio_03.wav",
+  "ref_text": null
+}

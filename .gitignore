@@ -1,0 +1,25 @@
+# 大件全在 data/ 下（片源、字幕、索引、模型、每期产物）。符号链接本身也不进库。
+/data
+
+# 「本机 / 本人」的具体情况一律不进 git：盘符、系统盘余量、账号播放数据、
+# 从个人文稿提炼的声音样本。工程约定在 CLAUDE.md（进 git），
+# 模板留 `*.local.md.example`（进 git，不被下面这条命中）。
+*.local.md
+
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 兜底：任何媒体文件都不该出现在本仓库
+*.mkv
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ass
+*.srt
+*.npy

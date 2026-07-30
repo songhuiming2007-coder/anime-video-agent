@@ -1,0 +1,41 @@
+{
+  "_note": "一部番固定 3–5 首（CLAUDE.md「BGM 约定」）。按番分组，路径一律相对仓库根。",
+  "_slots": "正文 = 全片打底，用劇伴（无旋律钩子，不抢口播）；结尾 = 最后一段换 OP/ED 伴奏，前奏一响就有情绪。默认一期一首，结尾留空即全程一首。",
+  "_lufs": "每首的实测响度，render.py 据此把 BGM 归一到统一目标再闪避。别删——少了它换曲就得重调闪避参数。量法：python -m pipeline.bgm measure <文件>",
+  "_onset": "入声点，秒。从头到第一次超过 -30 dBFS 的时刻，即「观众要等多久才听到东西」。结尾曲这个值要小。",
+
+  "春物": {
+    "use": {
+      "正文": "繋ぎとめた世界",
+      "结尾": "春擬き"
+    },
+    "tracks": {
+      "繋ぎとめた世界": {
+        "path": "data/library/bgm/春物/11. 繋ぎとめた世界.flac",
+        "slot": "正文", "from": "S2 原声碟 SPCD01 tr.11",
+        "dur": 160.3, "lufs": -16.9, "onset": 2.0, "vocal": false
+      },
+      "不合理な感情": {
+        "path": "data/library/bgm/春物/17. 不合理な感情.flac",
+        "slot": "正文", "from": "S2 原声碟 SPCD01 tr.17",
+        "dur": 158.5, "lufs": -14.4, "onset": 2.0, "vocal": false
+      },
+      "本音、言えなくて": {
+        "path": "data/library/bgm/春物/11. 本音、言えなくて.flac",
+        "slot": "正文", "from": "S1 原声碟 SPCD01 tr.11",
+        "dur": 100.4, "lufs": -17.8, "onset": 1.7, "vocal": false
+      },
+      "春擬き": {
+        "path": "data/library/bgm/春物/春擬き -instrumental-.flac",
+        "slot": "结尾", "from": "S2 OP 单曲 GNCA-0380 tr.03（instrumental）",
+        "dur": 269.7, "lufs": -8.7, "onset": 1.1, "vocal": false
+      },
+      "ユキトキ": {
+        "path": "data/library/bgm/春物/ユキトキ Instrumental.flac",
+        "slot": "结尾", "from": "S1 OP 单曲 GNCA-0269 tr.04（Instrumental）",
+        "dur": 269.3, "lufs": -7.8, "onset": 1.1, "vocal": false
+      }
+    },
+    "_chosen": "2026-07-29。正文取劇伴，结尾取 S2 OP 伴奏（本期锚点全在 S2）。想换 S1 味道就把结尾改成 ユキトキ。曲库里另有 12 首 OP/ED 伴奏已分轨在同目录，要扩表直接从那里挑，不用回 CD 镜像。"
+  }
+}
