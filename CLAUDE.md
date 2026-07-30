@@ -547,7 +547,18 @@ python -m pipeline.bgm extract <CD 目录> --anime <番>     # 切成独立 flac
 
 ## 环境
 
-系统 Python 是 3.14，部分 ML 包（torch / WhisperX）可能尚无对应 wheel。**每个 pipeline 组件用 uv 单独 pin 版本**，不要依赖系统解释器。
+Python 3.12 / 3.13 / 3.14 都可以，用 uv 建虚拟环境，不要依赖系统解释器。
+
+> **原先这里写的是「部分 ML 包（torch / WhisperX）可能尚无对应 wheel」，那句话是错的**，
+> 而且 WhisperX 早就不是依赖了（换成 mlx-whisper）。2026-07-30 实测三个版本各跑 165 条
+> 测试全过。真正的约束是 `numpy<2.5`——依赖链 `mlx-whisper → numba → llvmlite`，
+> numba 0.66 要求 numpy<2.5，numpy 一上 2.5 就会把 numba 回退到 0.53.1，
+> 那个版本的 llvmlite 只支持 Python <3.10，转去源码构建并失败。
+>
+> **教训是「可能」这个词。** 那句话带着「可能」，说明写的时候没验，而它一旦落进
+> `requires-python` 就变成了硬约束，还顶掉了对真正约束的排查——上界写错了地方，
+> 结果是照 README 在 3.12 上全新装也装不上，而已有的 venv 一切正常，所以没人发现。
+> **凡是要写进配置的判断，都不许带「可能」。** 验不了就先不写。
 
 合成阶段全程 ffmpeg，无 NLE 依赖。ffmpeg 8.0.1 已确认带 libass / libfreetype / libfontconfig，
 端到端探针已通过（见 ADR-0001）。中文字幕字体用 `/System/Library/Fonts/Hiragino Sans GB.ttc`。
