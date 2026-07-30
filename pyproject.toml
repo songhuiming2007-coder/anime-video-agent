@@ -3,17 +3,29 @@ name = "anime-video-agent"
 version = "0.1.0"
 description = "一条把选题变成动漫二创成片的 agent 流水线：字幕语义索引 → 排片 → 本地 TTS → 渲染 → 自动质检"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+# 2026-07-30 实测：3.12 / 3.13 / 3.14 三个版本都跑通（各 165 条测试 + mlx 真算 + numba 真 JIT）。
+# 3.15 还在 beta，没验，所以卡在 <3.15。
+#
+# 原先这里写的是 `<3.13`，理由是「部分 ML 包尚无对应 wheel」——**那句话当初没验，而且是错的**。
+# 全部直接依赖都声明 >=3.10，没有一个有上界；真正的约束在下面 numpy 那一行。
+requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }
 
-# 版本按 2026-07-29 实际跑通的那一组钉住。
 # 这条流水线依赖若干库的**具体行为**而不只是 API：
 #   - mlx-audio 0.4.6 的 IndexTTS 解码有两处 bug，我们绕开它自己解码（见 ADR-0002），
 #     上游修好之后这段要重测再删
 #   - libass 的中文折行行为决定了 render.wrap 必须自己算宽度
 # 所以升级任何一项之后都要重跑一遍端到端，不要只看能不能 import。
 dependencies = [
-    "numpy>=2.0",
+    # **上界不能删。** 依赖链是 mlx-whisper → numba → llvmlite，而 numba 0.66 要求
+    # numpy<2.5。numpy 2.5 一出来（requires-python >=3.12，所以 3.12 也拿得到），
+    # 解析器就把 numba 0.66 排除，一路回退到 numba 0.53.1，它的 llvmlite 0.36
+    # 只支持 <3.10，于是转去源码构建并失败。
+    #
+    # 2026-07-30 实测：不写这条上界，**在 3.12 上全新 clone 也装不上**。
+    # 这个坑的坏处在于它只咬新环境——已有的 venv 是 numpy 2.5 发布前建的，一切正常，
+    # 所以「我这儿能跑」完全不构成证据。numba 支持 numpy 2.5 之后再放开。
+    "numpy>=2.0,<2.5",
     "pysubs2>=1.8",          # ASS/SRT 解析
     "sentence-transformers>=5.0",  # bge-base-zh-v1.5 向量检索
     "pillow>=11.0",          # 封面候选的清晰度/去重计算
