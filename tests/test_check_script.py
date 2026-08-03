@@ -96,9 +96,16 @@ class TestLongSentence:
         assert get(cs.run(f), "无超").ok
 
     def test_单句超限要报出来(self, tmp_path):
-        f = script(tmp_path, ["啊" * 45 + "。"] + [BODY] * 7)
+        f = script(tmp_path, ["啊" * 95 + "。"] + [BODY] * 7)
         c = get(cs.run(f), "无超")
-        assert not c.ok and "45字" in c.detail
+        assert not c.ok and "95字" in c.detail
+
+    def test_上限只防失控不防长句(self, tmp_path):
+        # 60 字的整句在人类样本里是常态（占比中位约 27%），不该拦。
+        # 旧上限 40 会把它判死，而那正是「三期零长句」的直接成因。
+        seg = "他不是不会说话，是算准了说什么最快能让人讨厌他，而被讨厌这件事只要是他自己选的，就不再算作一次失败了。"
+        assert len(seg) > 45
+        assert get(cs.run(script(tmp_path, [seg] * 8)), "无超").ok
 
 
 class TestQuotes:
@@ -209,3 +216,146 @@ class TestAnchorWords:
         # 空列表会让 join 出来是空串，正则里留下一个 `|)` 就废了——所以代码里有分支
         mod = with_words([])
         assert mod.ANCHOR.findall("第二季 文化祭") == ["第二季"]
+
+
+class TestRhythm:
+    """节奏：**换气卡上限，机器味卡起伏。**
+
+    2026-08-04 推翻了 08-03 的判据。08-03 卡的是「气口段均长 ≥11 字」，
+    重测 11 篇人类样本时被打脸：赞数最高的两篇（30400、18399）气口均长只有
+    7.1 和 7.5，都会被那道门禁判死。**它惩罚的是短句多的文风，不是机器味。**
+
+    分得开的是起伏：三期 AI 稿句长 CV 0.34/0.46/0.48，人类样本 0.45–0.81。
+    完整对照见 skills/write-script/BASELINE.md。
+    """
+
+    def test_单个气口段超长要拦(self, tmp_path):
+        # 换气发生在逗号之间。这一段 34 字中间没有任何停顿点，念到一半就得吸气。
+        winded = "他站起来把那句所有人都想说但谁也不肯先开口的话原原本本讲完了然后坐下。"
+        c = get(cs.run(script(tmp_path, [winded] * 8)), "气口段 ≤")
+        assert not c.ok and "34字" in c.detail
+
+    def test_整句长但逗号密照样放行(self, tmp_path):
+        # 整句 50 字，气口段最长 17 字——念得完。这正是旧规则搞反的地方。
+        flowing = ("他不是不会说话，是算准了说什么最快能让人讨厌他，"
+                   "而被讨厌这件事只要是他自己选的就不再算失败。")
+        assert get(cs.run(script(tmp_path, [flowing] * 8)), "气口段 ≤").ok
+
+    def test_长短齐一的稿子拦下(self, tmp_path):
+        # 每段同一个句式、同一个长度：机检全绿但人一听就是同一个模子。
+        even = "他站起来说了那句话，全场安静了三秒钟。她低头看着桌子，没有接他的话。"
+        c = get(cs.run(script(tmp_path, [even] * 8)), "句长起伏")
+        assert not c.ok and "抛光" in c.detail
+
+    def test_有长有短的稿子放行(self, tmp_path):
+        # 一句长的铺开，一句短的砸下来——这是参照样本的形状
+        varied = ("他不是不会说话，是算准了说什么最快能让人讨厌他，"
+                  "而被讨厌这件事只要是他自己选的，就不再算作一次失败。他清楚。")
+        assert get(cs.run(script(tmp_path, [varied, "第二季第二集，全场安静了三秒。"] * 4)),
+                   "句长起伏").ok
+
+    def test_一句长句都没有要拦(self, tmp_path):
+        # 三期实测这一项全是 0%，而人类样本是 0–43%。
+        # 短句配额管得住「太碎」，管不住「全篇一律中等长度」。
+        c = get(cs.run(script(tmp_path, [BODY] * 8)), "超 45 字长句")
+        assert not c.ok and "0 句" in c.detail
+
+    def test_两句长句就够(self, tmp_path):
+        long_one = ("他不是不会说话，是算准了说什么最快能让人讨厌他，"
+                    "而被讨厌这件事只要是他自己选的，就不再算作一次失败。")
+        assert len(long_one) > 45
+        assert get(cs.run(script(tmp_path, [long_one] * 2 + [BODY] * 6)), "超 45 字长句").ok
+
+    def test_短句超配额要报出来(self, tmp_path):
+        # 一段 3 句 × 8 段 = 24 处，远超配额 5
+        f = script(tmp_path, ["那不是牺牲。是止损。他自己清楚。"] * 8)
+        c = get(cs.run(f), "≤8字短句")
+        assert not c.ok and "「那不是牺牲」" in c.detail
+
+    def test_少量短句放行(self, tmp_path):
+        # 全篇 1 处短句正是参照样本的密度，不该拦
+        f = script(tmp_path, ["这就很奇怪。" + BODY] + [BODY] * 7)
+        c = get(cs.run(f), "≤8字短句")
+        assert c.ok and "1 处" in c.detail
+
+
+class TestStockPhrase:
+    """跨期套话：**跟话题无关的句子，就是每期长得一样的原因。**
+
+    这几条实测在三期里复用过（「说句公道话」3/3 期）。它们一条内容都不携带，
+    作用只是宣告「下面这句重要」或「我要让步了」。
+    """
+
+    def test_实测复用过的套话要抓住(self):
+        for s in ["当然要说句公道话，他确实护住了几个人。",
+                  "当然要说句实话，她不好相处。",
+                  "我知道你要说什么，太冷了太完美了。",
+                  "这就是我的答案。", "所以别误会，我不是这个意思。",
+                  "你先别急，我先给你三条理由。"]:
+            assert cs.STOCK.findall(s), s
+
+    def test_注意你看要带逗号才算(self):
+        # 「你看他那个表情」是正常叙事，判死它就是误报。
+        # 检查项误报一次，人就会开始怀疑其余十条。
+        for s in ["你看他那个表情就知道了。", "注意力全在她身上。",
+                  "他让我注意安全。", "你看过第三季吗。"]:
+            assert not cs.STOCK.findall(s), s
+        assert cs.STOCK.findall("他走了。注意，她没有追上去。")
+        assert cs.STOCK.findall("你看，这件事他一次都没提过。")
+
+    def test_正常内容放行(self, tmp_path):
+        assert get(cs.run(script(tmp_path, [BODY] * 8)), "无跨期套话").ok
+
+    def test_套话要走到检查结果里(self, tmp_path):
+        # 变异检验补的：原先只测了正则，把 add() 改成恒真也不红。
+        # 正则对不代表门禁接上了。
+        f = script(tmp_path, [BODY] * 7 + ["当然要说句公道话，" + BODY])
+        c = get(cs.run(f), "无跨期套话")
+        assert not c.ok and "说句公道话" in c.detail
+
+    def test_报菜名要走到检查结果里(self, tmp_path):
+        f = script(tmp_path, ["第一条，她说规矩。第二条，她不灌鸡汤。" + BODY] + [BODY] * 7)
+        c = get(cs.run(f), "论据不报菜名")
+        assert not c.ok and "挑一个挖到底" in c.detail
+
+    def test_单个序号不拦(self, tmp_path):
+        # 一条论据用「第一条」开头是正常写法，只有并列平铺才是病
+        f = script(tmp_path, ["第一条，她永远把规矩说在前头。" + BODY] + [BODY] * 7)
+        assert get(cs.run(f), "论据不报菜名").ok
+
+    def test_报菜名要凑够两个才算(self):
+        # 单独一个「第一条」是正常写法；三个并排就是在念清单
+        assert len(set(cs.ENUM.findall("第一条，她把规矩说在前头。"))) < 2
+        assert len(set(cs.ENUM.findall(
+            "第一条，她说规矩。第二条，她不灌鸡汤。第三条，她不让人闲着。"))) >= 2
+
+    def test_季集写法不误伤(self):
+        # 「第三季第十一集」既不在句首带条点，也不是并列——不该命中
+        assert not cs.ENUM.findall("这套办法的账，到第三季第十一集才结清。")
+
+
+class TestNoArabicDigits:
+    """阿拉伯数字。**2026-08-03 真的进了成片。**
+
+    「平时只做2件事」被 IndexTTS 念成「平时只做匪件事」。那个「匪」字和引号那次
+    （「谁更该“赢”」→「谁更该非赢匪」）是同一个——模型遇到念不出来的字符就拿
+    垃圾音节去凑。回读质检抓不住：59 字的段落错 1 个字 CER 1.7%、绝对错数 1，
+    而 `MIN_EDITS` 那道闸本来就是为了不让单字替换冤枉短段落。
+    **这类缺陷要在合成前挡掉，不该指望回读。**
+    """
+
+    def _one(self, tmp_path, body: str):
+        return get(cs.run(script(tmp_path, [body])), "无阿拉伯数字")
+
+    def test_半角数字判失败(self, tmp_path):
+        assert not self._one(tmp_path, "平时只做2件事，看番和写代码。").ok
+
+    def test_全角数字判失败(self, tmp_path):
+        assert not self._one(tmp_path, "平时只做２件事，看番和写代码。").ok
+
+    def test_中文数字放行(self, tmp_path):
+        assert self._one(tmp_path, "平时只做两件事，看番和写代码。").ok
+
+    def test_拉丁字母不管(self, tmp_path):
+        # 同一期的 yy 与 coding 都念得正常。没有证据就不立规矩。
+        assert self._one(tmp_path, "今天开始yy，顺便写点coding。").ok
