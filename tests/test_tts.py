@@ -63,9 +63,61 @@ class TestHomophoneFalseFailure:
         assert edits >= t.MIN_EDITS
 
 
+class TestProperNoun:
+    """专有名词同音字导致的假失败。**2026-08-03 真的卡停过一期配音。**
+
+    第 11 段那句「户冢彩加这一位你早就在等了吧。」重试三次全一样：
+    回读听成「户种采家…」，14 个字里 3 个错，CER 21% + 绝对错数 3，
+    两条阈值一起越线，整期退出——**而合成出来的音频完全正确。**
+
+    这不是个例。同一次实测里每一个日文专名都被听错，长段落只是靠字数
+    把错误率稀释到门槛下侥幸过关。按字形比 CER，量到的是
+    「ASR 认不认识这个人名」，不是「TTS 念没念对」。
+    """
+
+    def test_户冢彩加听成户种采家不算错(self):
+        assert t.cer("户冢彩加这一位你早就在等了吧。", "户种采家这一位你早就在等了吧") == (0, 0.0)
+
+    def test_川崎沙希听成穿其沙西不算错(self):
+        assert t.cer("川崎沙希", "穿其沙西") == (0, 0.0)
+
+    def test_雪之下雪乃听成雪之下雪奶不算错(self):
+        assert t.cer("雪之下雪乃", "雪之下雪奶") == (0, 0.0)
+
+    def test_声调不同仍然算错(self):
+        # 户中（zhōng）与 户冢（zhǒng）声调不同，是真的不同音，不该被折掉。
+        # 它单独一处不会判失败——MIN_EDITS 那道闸放行——但必须被数出来。
+        edits, _ = t.cer("户冢彩加", "户中采家")
+        assert edits == 1
+
+    def test_短句里的专名不再顶穿阈值(self):
+        # 这一条就是卡停那一段。修之前 edits=3、CER=21%，两条同时越线。
+        edits, rate = t.cer("户冢彩加这一位你早就在等了吧。", "户种采家这一位你早就在等了吧")
+        assert not (edits >= t.MIN_EDITS and rate > t.MAX_CER)
+
+
+class TestSyllables:
+    def test_汉字转带声调拼音(self):
+        assert t.syllables("八幡") == ["ba1", "fan1"]
+
+    def test_声调保留所以得和地不会被误折(self):
+        # `_FOLD` 当初不敢碰「的/得/地」，怕掩盖真的念错。带声调拼音自动把它们分开。
+        assert t.syllables("得") != t.syllables("地")
+
+    def test_非汉字逐字保留(self):
+        # 稿子里出现过 yy、coding、2件事。它们必须原样留下且不打乱对齐，
+        # 否则参考文本与回读文本的音节数会错位，CER 凭空变大。
+        assert t.syllables("y2") == ["y", "2"]
+
+
 class TestCer:
     def test_一个错字(self):
-        assert t.cer("八幡自爆", "八番自爆") == (1, 0.25)
+        # 「幡」与「番」都是 fan1，按声音比这两个没有差别——**这正是本次修改的目的**。
+        # 要构造一个真的错字，得挑一个读音也不同的。
+        assert t.cer("八幡自爆", "八幡自保") == (1, 0.25)
+
+    def test_同音字不再算错(self):
+        assert t.cer("八幡自爆", "八番自爆") == (0, 0.0)
 
     def test_只差标点算完全一致(self):
         # 这正是要先 normalize 的原因：ASR 不还原标点，不去掉的话每段都判不合格

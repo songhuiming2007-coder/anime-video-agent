@@ -27,14 +27,16 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from pypinyin import Style, pinyin
+
 from . import paths  # 必须在任何 HF 库之前，把模型缓存钉到 SSD
 
 CONFIG = paths.CONFIG / "voice.json"
 
 CPM = 280           # 中文口播字/分钟，与 check_script 同源
 DUR_BAND = (0.5, 2.0)   # 实际时长 / 估算时长 的允许区间，超出说明念飞了
-MAX_CER = 0.20      # 回读字符错误率上限。ASR 自身的同音字错误约 5%，留了余量
-MIN_EDITS = 3       # 与上一条同时越线才判失败，避免短段落被 ASR 的一两个同音字冤枉
+MAX_CER = 0.20      # 回读音节错误率上限。ASR 自身的听岔约 5%，留了余量
+MIN_EDITS = 3       # 与上一条同时越线才判失败，避免短段落被 ASR 的一两处听岔冤枉
 ATTEMPTS = 3
 
 # 归一化时丢掉的东西：标点、空白、以及口播里不发音的符号
@@ -52,6 +54,8 @@ _DROP = re.compile(r"[\s，。、；：？！…—－·\-—\"'“”‘’《�
 #
 # **只折叠读音完全一致的。** 的/得/地 看着像同一档，但「得」有 dé（获得）、
 # 「地」有 dì（土地），折了会掩盖真的念错，所以不碰。
+# 2026-08-03 起 `syllables()` 按拼音比对，这张表在回读那条路上已被包含（都是 ta1）。
+# 留着是因为 `normalize` 还供字数统计用，且它长度不变、零成本；删了反而多一处行为变更。
 _FOLD = str.maketrans({"她": "他", "它": "他", "牠": "他", "妳": "你"})
 
 
@@ -109,13 +113,40 @@ def normalize(s: str) -> str:
     return _DROP.sub("", s).lower().translate(_FOLD)
 
 
-def cer(ref: str, hyp: str) -> tuple[int, float]:
-    """回读比对，返回（编辑距离, 字符错误率）。段落都在百字以内，朴素 DP 足够。
+def syllables(s: str) -> list[str]:
+    """归一化后的文本 → 音节序列。汉字取**带声调**拼音，其余字符按原样逐个保留。
 
-    要两个数字是因为短段落上比率极不稳：十个字的段落错一个同音字就是 10%，
-    而那只是 ASR 自己听岔了。判定时比率与绝对错字数要同时越线。
+    **回读质检要抓的是「有没有念对声音」，所以比对必须发生在声音的维度上。**
+    上面 `_FOLD` 里手写的 他/她/它 就是这条规则的残缺版——它只列了三个字，
+    而同一个毛病在专有名词上是系统性的，且列表永远追不上：
+
+        户冢彩加 → 户种采家（3 处）    比企谷小町 → 比奇古小丁（4 处）
+        川崎沙希 → 穿其沙西（3 处）    雪之下雪乃 → 雪之下雪奶（1 处）
+
+    2026-08-03 实测这一整张表，**每一个日文专名都被 Whisper 听成同音或近音字**。
+    合成出来的音频全是对的。长段落靠字数稀释侥幸过关（段 7 CER 20% 擦线），
+    14 个字的短句 3 个错字直接 21%，重试三次全一样，整期退出。
+    按字形比 CER，量到的是「ASR 认不认识这个人名」，不是「TTS 念没念对」。
+
+    列名单那条路走不通：这次听成「户种」，下次是「户中」，穷举不完。
+    转拼音是把两边都投影到 ASR 真正能提供信息的那个维度上。
+
+    **它不会把真缺陷一起归一掉。** 漏读、重复、跑飞改变的是音节数量与顺序，
+    拼音照样抓得住；引号被当字念出来（谁更该赢 → 谁更该非赢匪）多出两个音节，
+    也躲不过。声调保留是关键：得 dé 与 地 dì 不同音，`_FOLD` 当初不敢碰的
+    「的/得/地」在这里自动分开，不会被误折。
     """
-    a, b = normalize(ref), normalize(hyp)
+    return [x[0] for x in pinyin(s, style=Style.TONE3,
+                                 errors=lambda t: list(t), heteronym=False)]
+
+
+def cer(ref: str, hyp: str) -> tuple[int, float]:
+    """回读比对，返回（编辑距离, 音节错误率）。段落都在百字以内，朴素 DP 足够。
+
+    要两个数字是因为短段落上比率极不稳：十个音节的段落错一个就是 10%，
+    而那只是 ASR 自己听岔了。判定时比率与绝对错数要同时越线。
+    """
+    a, b = syllables(normalize(ref)), syllables(normalize(hyp))
     if not a:
         return (len(b), 1.0 if b else 0.0)
     prev = list(range(len(b) + 1))
@@ -576,7 +607,7 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         if not ok_dur:
             why.append(f"时长 {dur:.1f}s / 估算 {want:.1f}s = {ratio:.2f}×")
         if not ok_cer:
-            why.append(f"回读差 {edits} 字（CER {err:.0%}）「{heard[:40]}」")
+            why.append(f"回读差 {edits} 音节（CER {err:.0%}）「{heard[:40]}」")
         last = "；".join(why)
         print(f"  第 {attempt} 次不过：{last}", file=sys.stderr)
 
@@ -664,7 +695,7 @@ def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None) -> Non
     heard = transcribe(dest)
     edits, err = cer(text, heard)
     print(f"{dest}  {dur:.2f}s  {dur / (time.perf_counter() - t0):.2f}× 实时")
-    print(f"  回读差 {edits} 字（CER {err:.0%}）：{heard}")
+    print(f"  回读差 {edits} 音节（CER {err:.0%}）：{heard}")
 
 
 def main() -> int:
