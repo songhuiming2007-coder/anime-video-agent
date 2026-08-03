@@ -121,9 +121,19 @@ def build(episode: Path) -> Path:
         body.append(f'<div class="say"><span class="no">段 {s["index"]}</span>'
                     f'{html.escape(s["text"])}</div>')
         note = "" if s["status"] == "ok" else f'　<span class="flag">{s["status"]}</span>'
+        # **通道要标出来。** 画面通道的分数和台词通道的不是一个量，
+        # 人扫这一页时若不知道某段走的是哪条，会拿一列数横着比。
+        # 角色过滤退回也要标：它说明那一段的过滤没起作用，画面里未必有那个人。
+        chan = ""
+        if s.get("channel") == "scene":
+            chan = '　<span class="flag">画面通道</span>'
+        elif s.get("person"):
+            chan = f'　人物 <b>{html.escape(s["person"])}</b>'
+            if s.get("filter_fell_back"):
+                chan += '<span class="flag">过滤为空→退回，画面里未必有他</span>'
         body.append(f'<div class="q"><span class="no"></span>查询 <b>'
                     f'{html.escape(s.get("used_query") or "—")}</b>'
-                    f'　{s["duration"]:.1f}s{note}</div>')
+                    f'　{s["duration"]:.1f}s{note}{chan}</div>')
         if not s["clips"]:
             body.append('<div class="clip"><div class="side flag">'
                         '无匹配，渲染会退到降级方案</div></div>')

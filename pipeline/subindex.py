@@ -13,6 +13,7 @@ import argparse
 import json
 import re
 from dataclasses import dataclass, asdict
+from datetime import date
 from pathlib import Path
 
 from . import paths  # 必须在 sentence_transformers 之前：把模型缓存钉到 SSD
@@ -184,6 +185,27 @@ def embed(texts: list[str], is_query: bool = False) -> np.ndarray:
     ).astype(np.float32)
 
 
+def meta(dim: int) -> dict:
+    """索引的自描述元信息。**换模型必须能被发现。**
+
+    2026-08-03 补（ADR-0003 要求「两个索引一起补」）。在此之前这个文件里只有台词和
+    时间码，没有模型身份，靠「只有一个人、只有一台机器、没改过模型」侥幸没出事。
+
+    **理由是这类不一致不会自己暴露。** 维度不同会崩（`np.vstack` 或 `vecs @ q` 抛异常），
+    那算运气好；**同维度换模型不会崩**——余弦照样算得出来，分数照样落在看起来正常的
+    区间，照样过阈值、照样返回 Top-K、照样渲染出片。
+    """
+    return {
+        "kind": "subtitle",
+        "model_id": MODEL_NAME,
+        "revision": paths.model_revision(MODEL_NAME),
+        "dim": dim,
+        "window": WINDOW,
+        "query_prefix": QUERY_PREFIX,
+        "built_at": date.today().isoformat(),
+    }
+
+
 def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) -> int:
     units = parse(sub_path, anime, season, episode)
     if not units:
@@ -194,7 +216,9 @@ def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) 
     stem = f"{anime}_S{season:02d}E{episode:02d}"
     np.save(out_dir / f"{stem}.npy", vecs)
     (out_dir / f"{stem}.json").write_text(
-        json.dumps([asdict(u) for u in units], ensure_ascii=False), encoding="utf-8"
+        json.dumps({"meta": meta(int(vecs.shape[1])),
+                    "units": [asdict(u) for u in units]}, ensure_ascii=False),
+        encoding="utf-8",
     )
     return len(units)
 
@@ -215,15 +239,41 @@ def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, lis
         vec_path = meta_path.with_suffix(".npy")
         if not vec_path.exists():
             continue
-        rows = json.loads(meta_path.read_text(encoding="utf-8"))
+        d = json.loads(meta_path.read_text(encoding="utf-8"))
+        rows = _check(d, meta_path)
         if anime is not None and (not rows or rows[0]["anime"] != anime):
             continue
         vecs.append(np.load(vec_path))
-        units.extend(Unit(**d) for d in rows)
+        units.extend(Unit(**r) for r in rows)
     if not vecs:
         where = f"{index_dir} 下" + (f"没有《{anime}》的" if anime else "没有")
         raise SystemExit(f"FAIL {where}索引，先跑 build")
     return np.vstack(vecs), units
+
+
+def _check(d, path: Path) -> list[dict]:
+    """校验元信息并取出台词单元。**对不上直接失败，不许继续。**
+
+    旧格式（裸列表，没有模型身份）也在这里拦下：它建的时候用的什么模型无从得知，
+    而拿 bge-base 的查询去打一份 bge-small 建的索引不会报错，只会静默地变差。
+    """
+    if isinstance(d, list):
+        raise SystemExit(
+            f"FAIL {path.name} 是旧格式索引（没有模型身份）。\n"
+            f"     2026-08-03 起索引必须自描述模型身份，否则同维度换模型不会崩、只会静默出错。\n"
+            f"     重建（已登记的集免跑 verify，只重算向量）：\n"
+            f"     python -m pipeline.ingest phase0 <该季所有 mkv> --anime <番> --season <N> --reindex")
+    m = d.get("meta", {})
+    if m.get("model_id") != MODEL_NAME:
+        raise SystemExit(
+            f"FAIL {path.name} 建索引时用的是 {m.get('model_id')}，当前是 {MODEL_NAME}。\n"
+            f"     两个模型的向量空间不可比，重建索引再用")
+    rev = paths.model_revision(MODEL_NAME)
+    if rev and m.get("revision") and m["revision"] != rev:
+        raise SystemExit(
+            f"FAIL {path.name} 的模型版本是 {m['revision'][:12]}，本机缓存的是 {rev[:12]}。\n"
+            f"     换 backbone 常常不改维度，分数照样算得出来，所以这里必须硬失败。重建索引")
+    return d["units"]
 
 
 def search(

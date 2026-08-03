@@ -43,8 +43,31 @@
     "cpm": 380,
     "min_chars": 870,
     "max_chars": 1300,
-    "max_sentence": 40,
-    "min_anchors": 3
+    "max_sentence": 90,
+    "max_breath": 30,
+    "min_burstiness": 0.55,
+    "min_long_sentences": 2,
+    "min_anchors": 3,
+    "_rhythm_note": "2026-08-04 改。max_sentence 从 40 提到 90：40 是「三期零长句」的直接成因，而『念着断气』这件事发生在逗号之间，由 max_breath 管。min_burstiness 是整句字数的变异系数（burstiness），三期 AI 稿 0.34/0.46/0.48，11 篇人类样本 0.45–0.81。同时删掉了 08-03 加的 min_breath（气口段均长下限）——赞数最高的两篇人类样本气口均长只有 7.1 和 7.5，那道门禁会把它们判死。完整对照与量法见 skills/write-script/BASELINE.md。"
+  },
+
+  "visual": {
+    "_note": "视觉索引（ADR-0003）。检索单元是镜头不是帧。这里的数全部实测得来，不许抄默认值。",
+
+    "scene_threshold": 10.0,
+    "_scene_threshold_note": "ffmpeg scdet 阈值，2026-08-03 在 S01E01 整集上标定。三条证据：(1) 密度表 8–15 区间镜头数只差 5%（382/372/364），曲线平；(2) 切点抽检 24 个里 20 个是真切点，3–4 个是镜头内误切（表情变化、运动模糊）；(3) 漏切抽检 8 个最长镜头，4 个漏切全部在 OP/ED/制作卡/次回预告（溶解与滚动字幕，scdet 检不出硬切），正片里的 4 个长镜头全是真长镜头。过切无害（拆出的两个镜头内容几乎相同，各自都会被正确打标），漏切有害（角色集合变成两场戏的并集，「检测到 X 可信」这条地基就塌了），所以拿不准往低取。重标定：python -m pipeline.shots calibrate <视频>",
+
+    "min_shot": 0.5,
+    "_min_shot_note": "短于此秒数的镜头并进前一个。取小值，因为合并会把一段时间划给邻居的角色集合。半秒以下基本不是叙事镜头，是切换过程里被判成一刀的中间帧。",
+
+    "frames_per_shot": 1,
+    "_frames_note": "每镜头抽几张代表帧送模型。1 = 只抽中点。调大能提高长镜头里的角色召回，代价是推理量线性增长。",
+
+    "presence_producer": "ccip",
+    "_presence_producer_note": "通道 1（画面里有谁）由谁产出。ccip = 人脸检测 + CCIP 角色嵌入 + 聚类 + 人工贴名（pipeline/faces.py），词表不受限，覆盖全部角色；tagger = booru 标签（pipeline/vindex.py），便宜但受预训练词表限制。2026-08-03 在春物上实测三个 tagger 全部不够用（见下条），所以默认 ccip。**两者的分数量纲不同，索引不可混用**，加载时会硬失败。",
+
+    "tagger": "camie",
+    "_tagger_note": "通道 1（画面里有谁）用哪个 booru tagger，候选见 pipeline/vindex.py 的 TAGGERS。2026-08-03 实测春物 12 个角色的词表覆盖：camie(27021 个角色标签) 11/12、pixai-v0.9 4/12、wd-swinv2-v3 3/12。**WD 连主角八幡都不在词表里，选它等于没做角色过滤**，它留在表里只是为了 camie 拿不到时能把代码路径跑通。换真人影视素材时整块摘掉（ADR-0003：booru tagger 不许成为架构里拔不掉的一环）。"
   },
 
   "storage": {

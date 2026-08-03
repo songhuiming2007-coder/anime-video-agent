@@ -67,6 +67,25 @@ def conf(dotted: str, default=None):
     return cur
 
 
+def model_revision(repo_id: str) -> str | None:
+    """本地缓存里这个模型的 commit sha。取不到返回 None。
+
+    **索引必须自描述模型身份**（ADR-0003）。理由是这类不一致不会自己暴露：
+    维度不同会崩，那算运气好；**同维度换 backbone 不会崩**——余弦照样算得出来，
+    分数照样落在看起来正常的区间，照样过阈值、照样返回 Top-K、照样渲染出片。
+    视觉模型这个风险比文本大得多：CLIP ViT-B/32 与 B/16 都是 512 维。
+
+    从本地缓存目录名读，不走网络：建索引时可能没网，而没网不该导致元信息缺一块。
+    """
+    root = Path(os.environ.get("HF_HUB_CACHE", str(MODELS / "hub")))
+    d = root / f"models--{repo_id.replace('/', '--')}"
+    ref = d / "refs" / "main"
+    if ref.exists():
+        return ref.read_text(encoding="utf-8").strip()
+    snaps = sorted((d / "snapshots").glob("*")) if (d / "snapshots").is_dir() else []
+    return snaps[-1].name if snaps else None
+
+
 def require_data() -> Path:
     """`data/` 不可达就立刻退出，**绝不自动创建**（CLAUDE.md「存储约定」）。
 
