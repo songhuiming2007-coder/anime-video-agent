@@ -12,6 +12,8 @@
   判据依赖的信息在判据执行之前就没了。
 """
 
+from pathlib import Path
+
 import pytest
 
 from pipeline import subindex
@@ -186,3 +188,38 @@ class TestWindow:
                 line(5, 8, "讴歌青春之辈往往欺人欺己"))
         u = subindex.parse(f, "春物", 2, 4)[0]
         assert (u.anime, u.season, u.episode) == ("春物", 2, 4)
+
+
+class TestMeta:
+    """索引必须自描述模型身份（ADR-0003）。
+
+    **理由是这类不一致不会自己暴露。** 维度不同会崩（`np.vstack` 或 `vecs @ q` 抛异常），
+    那算运气好；**同维度换模型不会崩**——余弦照样算得出来，分数照样落在看起来正常的
+    区间，照样过阈值、照样返回 Top-K、照样渲染出片。
+
+    2026-08-03 之前这个文件里只有台词和时间码，靠「只有一个人、只有一台机器、
+    没改过模型」侥幸没出事。
+    """
+
+    def test_旧格式当场失败并给出重建命令(self):
+        # 旧格式是裸列表。它建的时候用的什么模型无从得知，
+        # 而拿 bge-base 的查询去打一份 bge-small 建的索引不会报错，只会静默变差。
+        with pytest.raises(SystemExit, match="reindex"):
+            subindex._check([{"anime": "春物"}], Path("春物_S01E01.json"))
+
+    def test_换了模型就失败(self):
+        d = {"meta": {"model_id": "BAAI/bge-small-zh-v1.5"}, "units": []}
+        with pytest.raises(SystemExit, match="不可比"):
+            subindex._check(d, Path("x.json"))
+
+    def test_模型一致就放行(self):
+        d = {"meta": {"model_id": subindex.MODEL_NAME, "revision": None},
+             "units": [{"anime": "春物"}]}
+        assert subindex._check(d, Path("x.json")) == [{"anime": "春物"}]
+
+    def test_元信息带上检索约定(self):
+        # 窗口和查询前缀变了，向量空间的含义就变了，但维度不变、不会崩
+        m = subindex.meta(768)
+        assert m["window"] == subindex.WINDOW
+        assert m["query_prefix"] == subindex.QUERY_PREFIX
+        assert m["dim"] == 768

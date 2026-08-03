@@ -9,9 +9,14 @@
 机器给 9 张候选，人在第 09 步点一张。把审美判断包装成机器判据，
 等于把一个说不清的标准写死在代码里，比不做更糟。
 
-**没有人脸检测。** 标准人脸模型对二次元无效，要专门的 anime cascade（需要 opencv
-外加一个外部 xml）。装它只为了排除空镜——而人在看 9 张图，空镜一眼就跳过，
-边际价值太低（CLAUDE.md「禁止无限打磨」）。所以空镜可能混进候选，人自己排除。
+**候选池可以先按「含本期主角」过滤**（`--character` 或 `01-topic.md` 的 `封面人物`）。
+判据来自视觉索引（ADR-0003 第 1 层），不是这里自己算的。不写就是现状：不过滤。
+
+这一处用**硬过滤**，与排片那边的软过滤不同：从几千帧里挑 9 张，高精度低召回正合适，
+误杀无所谓。而排片一段只有几个候选，误杀就没片可用了。
+
+**这不违反「机器不假装能判哪张有张力」**：在不在场是有明确判据的准入门槛，
+和清晰度、黑场同类；它不给候选排名，9 张候选依然不排序，依然由人在第 09 步点一张。
 """
 
 from __future__ import annotations
@@ -125,6 +130,50 @@ def _notes_points(anime: str, topic: Path) -> list[tuple[str, float, str]]:
         print(f"  注意  锚点 {sorted(anchors)} 在笔记里没找到带时间码的名场面表，"
               f"本次只用片段抽帧")
     return pts
+
+
+def _topic_character(topic: Path) -> str | None:
+    """`01-topic.md` 的 `封面人物` 字段。不写就返回 None（不过滤，即现状）。
+
+    与 `冠军` / `出场` 分开是因为它们答的是不同问题：`出场` 是这一期讲了谁，
+    `封面人物` 是**封面上要有谁**。一期讲七个人，封面只能放一个。
+    """
+    if not topic.exists():
+        return None
+    for line in topic.read_text(encoding="utf-8").splitlines():
+        if m := re.match(r"^封面人物\s*[:：]\s*(\S+)", line.strip()):
+            return m.group(1)
+    return None
+
+
+def _by_character(cands: list[dict], anime: str, name: str) -> list[dict]:
+    """候选池只留含该角色的帧。**硬过滤，为空则失败。**
+
+    为空不退回：这里是「你明确要求了封面上有谁」，悄悄给一池子没有他的帧，
+    等于把要求吞了——而人看到 9 张候选时并不知道过滤没生效。
+    """
+    from . import vindex
+
+    pres = vindex.load_presence(anime)
+    by_path = {rec["path"]: key for key, rec in load_sources(anime).items()}
+    missing = {c["src"] for c in cands if c["src"] not in by_path}
+    if missing:
+        raise SystemExit(f"FAIL 片源登记表里找不到 {sorted(missing)[0]}，无法定位集号")
+
+    kept = []
+    for c in cands:
+        key = by_path[c["src"]]
+        season, episode = int(key[1:3]), int(key[4:6])
+        if key not in pres.episodes():
+            continue                   # 该集没建视觉索引，宁可不要也不蒙
+        if pres.present(season, episode, c["t"], c["t"] + 0.001, name):
+            kept.append(c)
+    if not kept:
+        raise SystemExit(
+            f"FAIL 候选池里没有一帧检测到「{name}」（共 {len(cands)} 帧）。\n"
+            f"     要么锚点集/封面集里他确实没出现，要么这几集还没建视觉索引：\n"
+            f"     python -m pipeline.vindex status --anime {anime}")
+    return kept
 
 
 def _topic_episodes(topic: Path) -> list[str]:
@@ -308,7 +357,8 @@ figcaption b { color:#e6e8eb; font-weight:600; }
 
 
 def build(episode: Path, anime: str | None = None,
-          pick: list[int] | None = None) -> tuple[Path, int, int]:
+          pick: list[int] | None = None,
+          character: str | None = None) -> tuple[Path, int, int]:
     anime = anime or paths.conf("anime.default")
     if not anime:
         raise SystemExit("FAIL 没指定番名：给 --anime，或在 config/project.json 里设 anime.default")
@@ -342,6 +392,16 @@ def build(episode: Path, anime: str | None = None,
         cands.append({**m, "file": f, "src": src, "t": t, "tag": tag})
 
     total = len(pts)
+
+    # **角色过滤排在去重之前。** 去重每个镜头只留最清晰的一张，若先去重，
+    # 一个「主角在场但不是最清晰那张」的镜头会先被它的邻居顶掉，再被角色过滤放行——
+    # 结果是这个镜头整个消失。先过滤再去重，去重是在已经含主角的帧里挑最清晰的。
+    character = character or _topic_character(episode / "01-topic.md")
+    if character:
+        before = len(cands)
+        cands = _by_character(cands, anime, character)
+        print(f"  角色过滤  含「{character}」{len(cands)} / {before} 帧")
+
     deduped = _dedup(cands)
     deduped.sort(key=lambda c: (c["tag"], c["t"]))
     for n, c in enumerate(deduped, 1):
@@ -394,7 +454,12 @@ def build(episode: Path, anime: str | None = None,
         f"机器只做三件事：<b>剔掉黑场/过曝/转场糊帧、去掉重复镜头、按位置铺开取样</b>。"
         f"<br>候选之间<b>没有排名</b>——序号只是编号。哪张有张力是你判，"
         f"机器没有这个判据，也不该假装有。<br>"
-        f"没有人脸检测（标准模型对二次元无效），空镜可能混在里面，你直接跳过。</div>"
+        + (f"已按「<b>{html.escape(character)}</b>」过滤：只留检测到他/她的帧。"
+           f"检测会漏侧脸和背影，所以有些能用的镜头没进来；反过来，进来的基本都真的有他。"
+           if character else
+           "本次<b>没有</b>按角色过滤（`01-topic.md` 里写 `封面人物: 某某` 或加 "
+           "`--character` 可以开启），空镜和没有主角的帧可能混在里面，你直接跳过。")
+        + "</div>"
         f'<div class="grid">{body}</div>',
         encoding="utf-8")
     return page, total, len(kept)
@@ -452,11 +517,12 @@ def main() -> int:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--anime", default=paths.conf("anime.default", "春物"))
     ap.add_argument("--pick", help="用池子里的编号定 9 张，逗号分隔（agent 看完联系表后用）")
+    ap.add_argument("--character", help="只留含这个角色的帧；不给则读 01-topic.md 的 `封面人物`")
     a = ap.parse_args()
     paths.require_data()
 
     pick = [int(x) for x in a.pick.split(",")] if a.pick else None
-    page, total, kept = build(a.episode, a.anime, pick)
+    page, total, kept = build(a.episode, a.anime, pick, a.character)
     t = titles(a.episode)
     print(f"抽 {total} 帧 → 候选 {kept} 张\n  open '{page}'\n  标题原料 → {t}")
     return 0

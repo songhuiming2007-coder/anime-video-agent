@@ -52,7 +52,7 @@ if [ "${1:-}" = "--init" ]; then
     mkdir -p "$DATA" || exit 1
   fi
   # 骨架与 CLAUDE.md「目录结构」一致。models/hub 由 HF_HOME 自己建，不预建。
-  mkdir -p "$DATA"/library/{raw,subs,index,notes,bgm} \
+  mkdir -p "$DATA"/library/{raw,subs,index,notes,bgm,shots,vindex} \
            "$DATA"/models/local \
            "$DATA"/voice/{reference,probe} \
            "$DATA"/episodes || exit 1

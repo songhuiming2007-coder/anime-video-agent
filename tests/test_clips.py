@@ -213,3 +213,124 @@ class TestCandidate:
     def test_截取守卫_超出片尾就放弃而不是截断(self):
         # ffmpeg 在片段超出源片末尾时静默截断且不报错，踩到就整条音画错位。
         assert c.candidate(0.9, self.U(start=1399.0, end=1400.0), self.SRC) is None
+
+
+class TestParseShots:
+    """分镜标注的两个新字段：`人物` 走台词通道加角色过滤，`场景` 走画面通道。
+
+    **ADR-0003 原文写的是 `画面`，实现改成了 `场景`**——稿件里 `画面：` 已经是
+    包着 `查询/备选` 的块名，同名会让人和正则都分不清哪个是哪个。
+    """
+
+    HEAD = "# 02 全稿\n\n"
+
+    def write(self, tmp_path, body):
+        p = tmp_path / "02-script.md"
+        p.write_text(self.HEAD + body, encoding="utf-8")
+        return p
+
+    def test_都不写就是现状(self, tmp_path):
+        f = self.write(tmp_path, "## 段落 1\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n")
+        s = c.parse_shots(f)[0]
+        assert s["person"] is None and s["scene"] is None
+        assert s["query"] == "找这个"
+
+    def test_人物字段(self, tmp_path):
+        f = self.write(tmp_path,
+                       "## 段落 1\n\n配音：随便一句\n\n画面：\n  人物: 雪乃\n  查询: 找这个\n")
+        s = c.parse_shots(f)[0]
+        assert s["person"] == "雪乃" and s["scene"] is None
+
+    def test_场景字段(self, tmp_path):
+        f = self.write(tmp_path, "## 段落 1\n\n配音：随便一句\n\n画面：\n  场景: 夜晚的天台\n")
+        s = c.parse_shots(f)[0]
+        assert s["scene"] == "夜晚的天台" and s["person"] is None
+
+    def test_两个都写当场报错(self, tmp_path):
+        # **一段只走一个通道。** 台词分数和画面分数不是同一个量，
+        # 并跑之后没有任何办法把它们放在一起排序——所以在入口就拦住。
+        f = self.write(tmp_path,
+                       "## 段落 1\n\n配音：随便一句\n\n画面：\n  人物: 雪乃\n  场景: 天台\n")
+        with pytest.raises(SystemExit):
+            c.parse_shots(f)
+
+    def test_全角冒号与缩进都认(self, tmp_path):
+        f = self.write(tmp_path, "## 段落 1\n\n配音：随便一句\n\n画面：\n    人物：雪乃\n")
+        assert c.parse_shots(f)[0]["person"] == "雪乃"
+
+
+class TestByCharacter:
+    """角色在场过滤：**软过滤，为空则退回**（ADR-0003「检测的不对称」）。
+
+    「检测到 X」可信，「没检测到 X」不等于 X 不在场——侧脸、背影、遮挡都会漏。
+    所以过滤后为空时退回不过滤的结果，一次漏检不该卡住整期。
+    """
+
+    class U:
+        def __init__(self, ep, start):
+            self.anime, self.season, self.episode = "春物", 1, ep
+            self.start, self.end, self.text = start, start + 3.0, "台词"
+
+    class P:
+        """只有 S01E01 的 0–10 秒有雪乃。"""
+
+        def present(self, season, episode, start, end, name):
+            return episode == 1 and start < 10.0 and name == "雪乃"
+
+    def test_只留含该角色的镜头(self):
+        hits = [(0.8, self.U(1, 2.0)), (0.7, self.U(1, 50.0))]
+        kept, fell_back = c._by_character(hits, self.P(), "雪乃")
+        assert [h[0] for h in kept] == [0.8]
+        assert fell_back is False
+
+    def test_过滤后为空就退回全部(self):
+        hits = [(0.8, self.U(2, 2.0)), (0.7, self.U(3, 5.0))]
+        kept, fell_back = c._by_character(hits, self.P(), "雪乃")
+        assert kept == hits and fell_back is True
+
+    def test_留下的都不及格也退回(self):
+        # 过滤后只剩不及格的命中，等于没找到——退回去看不过滤的结果里有没有能用的。
+        # 不退回的话，一次漏检会让这一段直接判死。
+        hits = [(0.8, self.U(2, 2.0)), (0.30, self.U(1, 2.0))]
+        kept, fell_back = c._by_character(hits, self.P(), "雪乃")
+        assert kept == hits and fell_back is True
+
+    def test_退回不改变原有顺序(self):
+        # 退回的是原样，不是重排过的——排序依据仍然只有台词分数
+        hits = [(0.8, self.U(2, 2.0)), (0.7, self.U(3, 5.0))]
+        kept, _ = c._by_character(hits, self.P(), "雪乃")
+        assert kept is hits
+
+
+class TestSceneNoMatch:
+    """画面通道的门槛：**按番存，缺了就当场失败。**
+
+    这个数不是模型常数——它拿该番的反例查询在该番的镜头上量出来。
+    原先放在 `config/project.json` 的全局 `visual` 块里，换一部番会静默沿用，
+    而沿用不会报错，只会让整条画面通道用一个错门槛跑起来（standard.md R2）。
+    """
+
+    import json as _json
+
+    def conf(self, tmp_path, monkeypatch, obj):
+        p = tmp_path / "scenes.json"
+        p.write_text(self._json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr("pipeline.vindex.SCENES", p)
+
+    def test_读该番自己的门槛(self, tmp_path, monkeypatch):
+        self.conf(tmp_path, monkeypatch,
+                  {"春物": {"queries": ["a"], "negative": ["b"], "no_match": 0.31}})
+        assert c.scene_no_match("春物") == 0.31
+
+    def test_没量过就失败而不是拿默认值(self, tmp_path, monkeypatch):
+        # **故意不给默认值。** 抄一个数过来不会报错，只会静默用错门槛
+        self.conf(tmp_path, monkeypatch, {"春物": {"queries": ["a"], "negative": ["b"]}})
+        with pytest.raises(SystemExit, match="no_match"):
+            c.scene_no_match("春物")
+
+    def test_换番时不会沿用上一部番的数(self, tmp_path, monkeypatch):
+        # 这是把它从全局块挪成按番存要堵的那个洞
+        self.conf(tmp_path, monkeypatch,
+                  {"春物": {"queries": ["a"], "negative": ["b"], "no_match": 0.31}})
+        with pytest.raises(SystemExit):
+            c.scene_no_match("紫罗兰")
