@@ -29,6 +29,11 @@ dependencies = [
     "pysubs2>=1.8",          # ASS/SRT 解析
     "sentence-transformers>=5.0",  # bge-base-zh-v1.5 向量检索
     "pillow>=11.0",          # 封面候选的清晰度/去重计算
+    "pypinyin>=0.55.0",
+    # 视觉索引的两个模型都是 ONNX：动漫人脸检测（YOLOv8）与 CCIP 角色嵌入。
+    # **只用 CPUExecutionProvider**——2026-08-03 实测 CoreML 那条路在这些图上跑不通
+    # （onnxruntime 把节点切成几百个 CoreML 分区，其中一个运行时直接报错）。
+    "onnxruntime>=1.28.0",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +54,10 @@ dev = ["pytest>=8"]
 # 每个阶段都能独立跑，产物落盘，中断可从中间接上（CLAUDE.md「每阶段产物落盘」）
 ava-ingest = "pipeline.ingest:main"
 ava-index = "pipeline.subindex:main"
+ava-shots = "pipeline.shots:main"
+ava-faces = "pipeline.faces:main"
+ava-vindex = "pipeline.vindex:main"
+ava-vprobe = "pipeline.vprobe:main"
 ava-check-script = "pipeline.check_script:main"
 ava-clips = "pipeline.clips:main"
 ava-review = "pipeline.review:main"

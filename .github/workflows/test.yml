@@ -1,0 +1,54 @@
+# 三平台跑纯函数测试。
+#
+# 存在的理由：这个项目至今只在一台 Apple Silicon 上完整跑过，而现在有两个开发者、
+# 两个平台。「功能对齐」不能靠约定，要靠一条会变红的测试。仓库是公开的，
+# GitHub Actions 对公开仓库免费，所以谁都不用为了验证另一个平台去买第二台电脑。
+#
+# **覆盖边界要说清楚**（见 CONTRIBUTING.md「跨平台对齐」）：
+#   覆盖  —— A 层：165 条纯函数测试、平台假设（路径、编码、换行符）、依赖能否全新装上
+#   不覆盖 —— 模型推理（runner 无 CUDA / 无 MPS）、端到端出片、片源与索引
+#
+# 「依赖能否全新装上」这条是有来历的：`numpy<2.5` 那个上界，症状只在**新环境**出现
+# （已有的 venv 是 numpy 2.5 发布前建的，一切正常），所以「我这儿能跑」不构成证据。
+# CI 每次都是全新环境，正好堵这个洞。
+
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # 一个平台红了，其余照跑完——跨平台对齐要看全貌，不是看谁先崩。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12"]
+        include:
+          # 上界也要有人跑。pyproject 声明 >=3.12,<3.15，
+          # 三平台跑下界、单平台跑上界，够用且省时间。
+          - os: ubuntu-latest
+            python: "3.14"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 装依赖
+        # 不带 --extra apple：mlx 只在 Apple Silicon 上装得上，
+        # 而测试用不到它——所有 mlx 的 import 都在函数内部，模块导入不触发。
+        # 也不装 ffmpeg：测试是纯函数，不碰媒体（涉及媒体的正确性交给
+        # 截取守卫和质检门禁在真跑时兜，见 CLAUDE.md）。
+        run: uv sync --extra dev --python ${{ matrix.python }}
+
+      - name: 跑测试
+        run: uv run pytest -q
