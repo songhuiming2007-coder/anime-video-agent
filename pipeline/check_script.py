@@ -59,6 +59,55 @@ def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
     m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
     return (float(m.group(1)), float(m.group(2))) if m else None
 
+# 五种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
+# （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在五种里就返回空串。
+GENRES = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣")
+TOPIC_FIELDS = re.compile(r"^\s*(类型|模式)\s*[:：]\s*(.+)", re.M)
+
+
+def episode_genre(script_path: Path) -> tuple[str, str]:
+    """这一期的（类型，模式），从 `01-topic.md` 读。
+
+    类型只对杂谈有区分意义（驳论/立论/吐槽各自判据不同），其余题材不区分模式。
+    读不到文件或字段，返回 ("", "")——软失败，不报错，调用方退回通用提示。
+    2026-08-09 改：主观项提示原先焊死「张力、公道话」，人物志/剧情回顾/共鸣
+    根本没有这两个字段，提示每期都念错题——机检在证伪，提示却在逼人去查
+    本期不存在的东西。
+    """
+    topic = script_path.parent / "01-topic.md"
+    if not topic.exists():
+        return "", ""
+    genre = mode = ""
+    for key, value in TOPIC_FIELDS.findall(topic.read_text(encoding="utf-8")):
+        value = value.strip()
+        if key == "类型":
+            genre = next((g for g in GENRES if g in value), "")
+        elif key == "模式":
+            mode = value
+    return genre, mode
+
+
+def subjective_hint(genre: str, mode: str) -> str:
+    """机检末尾的主观项提示。判据按题材来，见 write-script 第 4、9 节——机检只证伪，
+    主观项立不立得住留给人看，所以提示必须对得上这一期的题材，否则就成了逼人去查
+    本期不存在的东西。"""
+    common = "骨架是否与上一期不同"
+    if genre == "杂谈":
+        if mode == "吐槽":
+            return f"吐槽不吃张力/公道话判据；{common}。"
+        if mode == "立论":
+            return f"疑点真说不通、每段有具体剧情+原台词当证据、标了推测和真缺点；{common}。"
+        return f"靶子是真听过的说法、论据回答不这样会怎样/为什么不是别的原因、公道话像不像反方；{common}。"
+    if genre == "人物志":
+        return f"有没有给角色安论点（刻意找张力=哗众取宠）、点评是否贴着当下这一幕；{common}。"
+    if genre == "剧情回顾":
+        return f"因果链讲没讲清、是不是时间线流水账、结尾是否回环/一句判断/悬念；{common}。"
+    if genre == "盘点":
+        return f"标准立没立住、每段落点是不是观众、篇幅是否不平均；{common}。"
+    if genre == "共鸣":
+        return f"有没有归纳道理、情感是否靠形容词堆、结尾落没落具体东西；{common}。"
+    return f"{common}、篇幅有没有平均分配。"
+
 # 单句上限。**2026-08-04 从 40 提到 90，因为 40 是「三期零长句」的直接成因。**
 #
 # 旧值的注释写的是「超过念着断气」，而这份文档自己的核心发现是**断气发生在逗号之间，
@@ -219,6 +268,30 @@ def parse(text: str) -> tuple[list[str], list[str], list[str]]:
     return vo, q, alt
 
 
+def parse_episodes(text: str) -> list[tuple[str, str]]:
+    """段落块内的 `集:` 字段 → [(段落号, 原文)]（ADR-0004）。
+
+    **必须按块切。** 引用核对区里写「S01E01 21:21」是逐字引语的自查记录，
+    不是检索约束，全文抓会把「21:21」之类整行当集号。切块口径与
+    `clips.parse_shots` 一致：`## 段落 N` 到下一个标题之间。
+    """
+    out = []
+    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)",
+                         text, re.M | re.S):
+        ep = re.search(r"^\s*集[：:]\s*(.+)$", m.group(2), re.M)
+        if ep:
+            out.append((m.group(1), ep.group(1).strip()))
+    return out
+
+
+def _norm_ep(raw: str) -> str | None:
+    """集号归一化为 `SxxEyy` 规范形。认不出返回 None（调用方判格式 FAIL）。"""
+    m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
+    if not m:
+        return None
+    return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+
+
 def run(path: Path) -> list[Check]:
     text = path.read_text(encoding="utf-8")
     vo, queries, alts = parse(text)
@@ -251,6 +324,59 @@ def run(path: Path) -> list[Check]:
     # 查询按含片尾的总段数比，因为每一段都要出画面
     add("每段都有查询", len(queries) == len(vo) + bool(outro),
         f"查询 {len(queries)} / 段落 {len(vo) + bool(outro)}")
+
+    # 集号（ADR-0004，2026-08-09 加）：格式校验不依赖外部文件、永远可跑；
+    # 存在性校验要番名 + 素材库，读不到就显式 FAIL「跳过不可判定」——
+    # S9「跳过不是通过」。**无集字段不判失败**：人物志这类选题有已知落空的
+    # 段落，强制每段写 = 逼人编集号。覆盖率只作信息报在 detail 里。
+    eps = parse_episodes(text)
+    covered = f"{len(eps)}/{len(vo)} 段写了集号，没写的段全空间检索"
+    bad_ep = [(p, r) for p, r in eps if not _norm_ep(r)]
+    if bad_ep:
+        add("集号格式", False,
+            "、".join(f"段{p}「{r}」" for p, r in bad_ep[:3])
+            + "　写规范形 S01E07（季两位、集两位都补齐），别写中文「第一季第七集」"
+              "——集号是检索约束，写错 = 排片检索范围错了。"
+            + covered)
+    else:
+        add("集号格式", True, covered)
+
+    if eps:
+        anime = bgm.anime_of(path.parent)
+        if not anime:
+            add("集号在素材库", False,
+                "跳过不可判定：01-topic.md 没写「番:」字段，读不到番名（S9 跳过不是通过）")
+        else:
+            try:
+                from . import ingest  # 延迟 import：只在写了集号时才需要素材库
+                sources = ingest.load_sources(anime)
+            except SystemExit as e:
+                add("集号在素材库", False,
+                    f"跳过不可判定：{e}（S9 跳过不是通过）")
+            else:
+                missing = [(p, r) for p, r in eps
+                           if _norm_ep(r) and _norm_ep(r) not in sources]
+                if missing:
+                    msgs = []
+                    for p, r in missing:
+                        norm = _norm_ep(r)
+                        season = norm[1:3]
+                        same = sorted(k for k in sources
+                                      if k.startswith(f"S{season}"))
+                        if same:
+                            msgs.append(
+                                f"段{p}「{r}」：《{anime}》S{season} 季有 "
+                                f"{len(same)} 集入库（如 {same[0]}），唯独没有 {norm}"
+                                f"——多半是集号写错；确定没写错就是这集没入库，"
+                                f"补 `python -m pipeline.ingest phase0`")
+                        else:
+                            msgs.append(
+                                f"段{p}「{r}」：S{season} 季在素材库里一集都没有"
+                                f"——不是集号写错，是整季没入库，"
+                                f"先跑 `python -m pipeline.ingest phase0`")
+                    add("集号在素材库", False, "；".join(msgs[:3]))
+                else:
+                    add("集号在素材库", True, f"{len(eps)} 段集号都在素材库里")
 
     sents = [s.strip() for v in vo for s in re.split(r"[。？！]", v) if s.strip()]
 
@@ -383,8 +509,8 @@ def main() -> int:
         print(f"{mark}  {c.name:<{width}}{c.detail}")
 
     print("-" * 60)
-    subjective = ("主观项仍需人看：张力立不立得住、公道话像不像反方、"
-                  "骨架是否与上一期不同、篇幅有没有平均分配。")
+    genre, mode = episode_genre(a.script[0])
+    subjective = f"主观项仍需人看：{subjective_hint(genre, mode)}"
     print(f"{failed} 项未过。{subjective}" if failed else f"机检全过。{subjective}")
     return 1 if failed else 0
 

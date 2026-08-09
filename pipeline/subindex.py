@@ -277,9 +277,27 @@ def _check(d, path: Path) -> list[dict]:
 
 
 def search(
-    query: str, vecs: np.ndarray, units: list[Unit], k: int = 5
+    query: str, vecs: np.ndarray, units: list[Unit], k: int = 5,
+    season: int | None = None, episode: int | None = None,
 ) -> list[tuple[float, Unit]]:
+    """检索台词单元。`season`/`episode` 给任一就**只在该集内打分**（ADR-0004）。
+
+    集号是剧情知识（「先根据剧情锁定季和集」），比语义分更强——跨季/跨集的高分
+    会顶掉正确画面（2026-08-09 实证：段 19 正确的 S01E08 0.653 输给跨季 S04E05
+    0.506）。所以集约束必须进打分这一步，不是检索之后过滤。
+
+    season/episode 必须成对给（S2E07 和 S1E07 同时存在，只给一个没有意义）。
+    返回的是 (分, unit) 对，掩码下标不泄露，天然安全。
+    """
+    if (season is None) != (episode is None):
+        raise SystemExit("FAIL search 的 season/episode 必须成对给（或都不给）")
     q = embed([query], is_query=True)[0]
+    if season is not None:
+        mask = [u.season == season and u.episode == episode for u in units]
+        vecs = vecs[mask]
+        units = [u for u, m in zip(units, mask) if m]
+        if not units:
+            return []                     # 该集一个单元都没有，空结果走降级链
     scores = vecs @ q  # 已归一化，点积即余弦
     top = np.argsort(-scores)[:k]
     return [(float(scores[i]), units[i]) for i in top]

@@ -14,6 +14,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from pipeline import subindex
@@ -223,3 +224,59 @@ class TestMeta:
         assert m["window"] == subindex.WINDOW
         assert m["query_prefix"] == subindex.QUERY_PREFIX
         assert m["dim"] == 768
+
+
+class TestSearchEpisode:
+    """ADR-0004 集掩码：给了集号就**只在该集内打分**。
+
+    集号是剧情知识，比语义分更强——跨季/跨集的高分顶掉正确画面是本期
+    （2026-08-09）踩的真 bug（段 19 正确的 S01E08 0.653 输给跨季 S04E05 0.506）。
+    所以过滤进打分这一步，不是检索之后过滤；打分本身和掩码前完全一样。
+    """
+
+    def _units(self):
+        return [
+            subindex.Unit("东京喰种", 1, 7, 100.0, 103.0, "甲"),
+            subindex.Unit("东京喰种", 1, 7, 200.0, 203.0, "乙"),
+            subindex.Unit("东京喰种", 1, 8, 300.0, 303.0, "丙"),
+            subindex.Unit("东京喰种", 2, 7, 400.0, 403.0, "丁"),
+        ]
+
+    def _embed(self, units):
+        """把文本映射到二维向量，让点积可算：查询 = e0，各单元分数可指定。"""
+        v = {"甲": [0.9, 0.1], "乙": [0.8, 0.2],
+             "丙": [0.7, 0.3], "丁": [0.6, 0.4]}
+
+        def embed(texts, is_query=False):
+            rows = [[1.0, 0.0]] if is_query else [v[t] for t in texts]
+            return np.array(rows, dtype=np.float32)
+        return embed
+
+    def test_不给集号_全量打分_与掩码前行为一致(self, monkeypatch):
+        units = self._units()
+        monkeypatch.setattr(subindex, "embed", self._embed(units))
+        hits = subindex.search("q", np.array([[.9, .1], [.8, .2], [.7, .3], [.6, .4]]),
+                               units, k=4)
+        assert [(round(sc, 3), (u.season, u.episode, u.text)) for sc, u in hits] == [
+            (0.9, (1, 7, "甲")), (0.8, (1, 7, "乙")),
+            (0.7, (1, 8, "丙")), (0.6, (2, 7, "丁"))]
+
+    def test_给集号_只在该集内打分(self, monkeypatch):
+        units = self._units()
+        monkeypatch.setattr(subindex, "embed", self._embed(units))
+        hits = subindex.search("q", np.array([[.9, .1], [.8, .2], [.7, .3], [.6, .4]]),
+                               units, k=4, season=1, episode=7)
+        assert [(u.season, u.episode) for _, u in hits] == [(1, 7), (1, 7)]
+
+    def test_该集在索引里没有单元_返回空(self, monkeypatch):
+        units = self._units()
+        monkeypatch.setattr(subindex, "embed", self._embed(units))
+        hits = subindex.search("q", np.array([[.9, .1], [.8, .2], [.7, .3], [.6, .4]]),
+                               units, season=3, episode=1)
+        assert hits == []                # 空结果走降级链，不是硬失败
+
+    def test_集号只给一个_当场报错(self, monkeypatch):
+        units = self._units()
+        monkeypatch.setattr(subindex, "embed", self._embed(units))
+        with pytest.raises(SystemExit):
+            subindex.search("q", np.array([[.9, .1]]), units, season=1)

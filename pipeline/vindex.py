@@ -11,15 +11,18 @@
 
 | 通道 | 答什么 | 产出 | 排序 |
 |---|---|---|---|
-| 1 角色在场 | 这个镜头里有没有 X | **布尔** | 不参与，它没有分数可排 |
-| 2 画面语义 | 这个镜头像不像「夜晚的天台」 | 余弦分数 | 只在本通道内排 |
+| 1 角色在场 | 这个镜头里有没有 X | 布尔 + 在场分 | **只在台词通道内、同一段落带内做 tie-break**（ADR-0004） |
+| 2 画面语义 | 这个镜头像不像「夜晚的天台」 | 余弦分数 | 只在本通道内排（当前不可用） |
 
-**通道 1 永远不产出分数**，因此从结构上就不可能被误用来排序——
-CLAUDE.md 那句「一个量能用来卡门槛，不代表它能用来排序」已经踩出来三次了。
+**通道 1 的分数只在一个地方被使用：台词通道内、同一段落、台词分差 ≤
+`PRESENCE_BAND` 的候选之间决胜负**——那是次级排序，台词分差超过带子就
+绝对优先。它绝不跨通道、绝不跨段落比较，也就从结构上不可能顶掉清晰的
+台词命中（CLAUDE.md 判据 10 的唯一例外，理由与边界见 ADR-0004）。
 
-> 索引文件里确实存了每个标签的分数，但**检索路径上拿不到**：对外只有
-> `Presence.present()` 这个布尔接口。存分数是为了改判定阈值时不必重跑几小时推理
-> （与 `shots.py` 存候选切点同源），读它的只有探针 `vprobe.py`。
+> 索引文件里存了每个标签的分数，对外是 `Presence.presence_score()`。
+> 存分数有两个用途：改判定阈值时不必重跑几小时推理（与 `shots.py` 存候选
+> 切点同源），以及给排片做带内次级排序。用它的地方只有 `clips._by_character`
+> 和探针 `vprobe.py`——任何新的使用点都先回 ADR-0004 对一遍边界。
 """
 
 from __future__ import annotations
@@ -370,10 +373,17 @@ def _shots_fingerprint(m: dict) -> dict:
 
 @dataclass
 class Presence:
-    """一部番的角色在场索引。**对外只有布尔，没有分数。**"""
+    """一部番的角色在场索引。
+
+    **对外是布尔（`present`）**，外加一个次级排序用的 `presence_score`——
+    后者只在台词通道内、同一段落内做候选 tie-break 用，绝不跨通道、绝不跨段落
+    比较（ADR-0004）。分数本身按 producer 分两种量纲（ccip 的 1−距离 0.95–0.99、
+    tagger 的概率 0.5–1.0），**禁跨 producer 比绝对值**——producer 是谁由
+    `load_presence` 时从文件元信息定死，整个 Presence 实例里只有一个 producer。
+    """
 
     anime: str
-    by_ep: dict[str, list[dict]]          # SxxEyy -> [{i, start, end, tags:set}]
+    by_ep: dict[str, list[dict]]          # SxxEyy -> [{i, start, end, tags:set, scores:dict}]
     alias: dict[str, str]
     threshold: float
 
@@ -399,18 +409,30 @@ class Presence:
         """
         return {t for rows in self.by_ep.values() for s in rows for t in s["tags"]}
 
+    def presence_score(self, season: int, episode: int, start: float, end: float,
+                       name: str) -> float:
+        """[start, end) 相交镜头里该角色的最大在场分；没检出 0.0。
+
+        `present` 的实现全在这里（`>= threshold`），交集逻辑只留一份，
+        两条路不可能再出现不一致。
+        """
+        eps = self.by_ep.get(f"S{season:02d}E{episode:02d}")
+        if not eps:
+            return 0.0
+        t = self.tag_of(name)
+        best = 0.0
+        for s in eps:
+            if s["start"] < end and start < s["end"]:
+                best = max(best, s["scores"].get(t, 0.0))
+        return best
+
     def present(self, season: int, episode: int, start: float, end: float,
                 name: str) -> bool:
         """[start, end) 与之相交的镜头里，有没有哪个含这个角色。
 
         跨镜头是常态（一句台词能横跨两三个镜头），所以任一镜头命中即算命中。
         """
-        eps = self.by_ep.get(f"S{season:02d}E{episode:02d}")
-        if not eps:
-            return False
-        t = self.tag_of(name)
-        return any(t in s["tags"] for s in eps
-                   if s["start"] < end and start < s["end"])
+        return self.presence_score(season, episode, start, end, name) >= self.threshold
 
 
 def presence_producer() -> str:
@@ -448,9 +470,13 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
         thr_used = thr
         key = m["episode"]
         sh = shots.load(anime, key)["shots"]
+        # scores 与 tags 走同一条阈值线（>= thr 才进），所以「能排序」和
+        # 「算在场」是同一批标签，语义零变化（ADR-0004）。scores 里的分是
+        # 1−距离 / 概率，只用于同一段落内的 tie-break，不跨段落比较。
         by_ep[key] = [
             {"i": r["i"], "start": sh[r["i"]]["start"], "end": sh[r["i"]]["end"],
-             "tags": {t for t, sc in r["char"].items() if sc >= thr}}
+             "tags": {t for t, sc in r["char"].items() if sc >= thr},
+             "scores": {t: sc for t, sc in r["char"].items() if sc >= thr}}
             for r in d["shots"]]
     if not by_ep:
         raise SystemExit(
@@ -661,8 +687,19 @@ def _parse_key(key: str) -> tuple[int, int]:
 
 
 def search_scene(query: str, vecs: np.ndarray, units: list[Shot],
-                 k: int = 24) -> list[tuple[float, Shot]]:
+                 k: int = 24, season: int | None = None,
+                 episode: int | None = None) -> list[tuple[float, Shot]]:
+    """与 `subindex.search` 同构的集掩码（ADR-0004）；画面通道当前不可用，
+    参数先摆好，启用时与台词通道一套降级链（`clips._ladder_scene`）。"""
+    if (season is None) != (episode is None):
+        raise SystemExit("FAIL search_scene 的 season/episode 必须成对给（或都不给）")
     q = encode_query(query)
+    if season is not None:
+        mask = [u.season == season and u.episode == episode for u in units]
+        vecs = vecs[mask]
+        units = [u for u, m in zip(units, mask) if m]
+        if not units:
+            return []
     scores = vecs @ q                      # 已归一化，点积即余弦
     top = np.argsort(-scores)[:k]
     return [(float(scores[i]), units[i]) for i in top]
