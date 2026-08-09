@@ -59,18 +59,50 @@ class TestAliasMap:
 
 
 def presence(**kw):
-    """两个镜头：0–10 秒有雪乃，10–20 秒有结衣。"""
+    """两个镜头：0–10 秒有雪乃（0.95），10–20 秒有结衣（0.90）。"""
     return vindex.Presence(
         anime="春物",
         by_ep={"S01E01": [
-            {"i": 0, "start": 0.0, "end": 10.0, "tags": {"yukinoshita_yukino"}},
-            {"i": 1, "start": 10.0, "end": 20.0, "tags": {"yuigahama_yui"}},
+            {"i": 0, "start": 0.0, "end": 10.0, "tags": {"yukinoshita_yukino"},
+             "scores": {"yukinoshita_yukino": 0.95}},
+            {"i": 1, "start": 10.0, "end": 20.0, "tags": {"yuigahama_yui"},
+             "scores": {"yuigahama_yui": 0.90}},
         ]},
         alias={"雪乃": "yukinoshita_yukino", "结衣": "yuigahama_yui",
                "yukinoshita_yukino": "yukinoshita_yukino",
                "yuigahama_yui": "yuigahama_yui"},
         threshold=kw.get("threshold", 0.5),
     )
+
+
+class TestPresenceScore:
+    """在场分：present 的布尔实现全在这里，`present` 只是 `>= threshold` 包装。
+
+    分数只用于**同一段落内、同一 producer 内**的候选 tie-break（ADR-0004），
+    绝不跨段落、绝不跨 producer 比绝对值。没检出必须返回 0.0 而不是报错——
+    排片侧的软过滤要拿这个数给漏检镜头垫底，不能让它炸。
+    """
+
+    def test_相交镜头取最大分(self):
+        # 跨镜头时任一命中即算命中——分数同理，取相交镜头里的最大分
+        assert presence().presence_score(1, 1, 8.0, 12.0, "结衣") == 0.90
+
+    def test_没检出返回_0(self):
+        assert presence().presence_score(1, 1, 2.0, 5.0, "结衣") == 0.0
+
+    def test_没索引的集返回_0_而不是报错(self):
+        assert presence().presence_score(2, 5, 0.0, 10.0, "雪乃") == 0.0
+
+    def test_present_与分数同一条线(self):
+        # 包装关系必须逐点成立：present 真 ⇔ 分数 >= threshold
+        p = presence()
+        for name in ("雪乃", "结衣"):
+            got = p.presence_score(1, 1, 2.0, 5.0, name)
+            assert p.present(1, 1, 2.0, 5.0, name) == (got >= p.threshold)
+
+    def test_名表里没有的角色当场报错(self):
+        with pytest.raises(SystemExit):
+            presence().presence_score(1, 1, 0.0, 5.0, "三浦")
 
 
 class TestPresent:

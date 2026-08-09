@@ -17,18 +17,19 @@ from pipeline import check_script as cs
 from pipeline import paths
 
 
-def build(vos, queries=None):
-    """按稿件格式拼一篇。queries 不给就每段配一条。"""
+def build(vos, queries=None, eps=None):
+    """按稿件格式拼一篇。queries 不给就每段配一条；eps 按段给集号（None 段不写）。"""
     parts = []
     for i, v in enumerate(vos, 1):
         q = queries[i - 1] if queries else "某句台词"
-        parts.append(f"## 段落 {i}\n\n配音：{v}\n\n画面：\n  查询: {q}\n")
+        ep = f"\n  集: {eps[i - 1]}" if eps and eps[i - 1] else ""
+        parts.append(f"## 段落 {i}\n\n配音：{v}\n\n画面：\n  查询: {q}{ep}\n")
     return "\n".join(parts)
 
 
-def script(tmp_path, vos, queries=None):
+def script(tmp_path, vos, queries=None, eps=None):
     f = tmp_path / "02-script.md"
-    f.write_text(build(vos, queries), encoding="utf-8")
+    f.write_text(build(vos, queries, eps), encoding="utf-8")
     return f
 
 
@@ -384,3 +385,144 @@ class TestNoArabicDigits:
     def test_拉丁字母不管(self, tmp_path):
         # 同一期的 yy 与 coding 都念得正常。没有证据就不立规矩。
         assert self._one(tmp_path, "今天开始yy，顺便写点coding。").ok
+
+
+class TestSubjectiveHint:
+    """机检末尾的主观项提示要按题材来，不能焊死杂谈的判据。
+
+    人物志/剧情回顾/共鸣没有张力、公道话这两个字段——提示如果每期都逼人去查
+    「张力立不立得住、公道话像不像反方」，等于要求人核验本期不存在的东西。
+    """
+
+    def _topic(self, tmp_path, genre_line):
+        f = tmp_path / "01-topic.md"
+        f.write_text(f"番:   东京喰种\n{genre_line}\n锚点: S01E07\n", encoding="utf-8")
+        return tmp_path / "02-script.md"
+
+    def test_读不到题材退回通用提示(self, tmp_path):
+        s = self._topic(tmp_path, "类型: 不知道是啥")
+        hint = cs.subjective_hint(*cs.episode_genre(s))
+        assert "公道话" not in hint and "张力立不立得住" not in hint
+
+    def test_人物志不逼查张力公道话判据(self, tmp_path):
+        s = self._topic(tmp_path, "类型: 人物志（经历+点评，编年体）")
+        genre, mode = cs.episode_genre(s)
+        hint = cs.subjective_hint(genre, mode)
+        assert "安论点" in hint
+        assert "公道话" not in hint and "立不立得住" not in hint
+
+    def test_杂谈带括号备注也能识别(self, tmp_path):
+        s = self._topic(tmp_path, "类型: 杂谈思辨向\n模式: 驳论")
+        genre, mode = cs.episode_genre(s)
+        assert genre == "杂谈" and mode == "驳论"
+        assert "公道话像不像反方" in cs.subjective_hint(genre, mode)
+
+    def test_杂谈吐槽不吃张力公道话判据(self, tmp_path):
+        hint = cs.subjective_hint("杂谈", "吐槽")
+        assert "不吃张力/公道话判据" in hint
+
+    def test_剧情回顾提醒因果链(self, tmp_path):
+        genre, mode = "剧情回顾", ""
+        assert "因果链" in cs.subjective_hint(genre, mode)
+
+    def test_无类型文件不报错(self, tmp_path):
+        assert cs.episode_genre(tmp_path / "02-script.md") == ("", "")
+
+
+class TestParseEpisodes:
+    """`集:` 字段（ADR-0004）：**必须按块切**，引用核对区不误抓。"""
+
+    def test_按块抓集号(self):
+        text = ("## 段落 1\n\n配音：a\n\n画面：\n  集: S01E07\n"
+                "## 段落 2\n\n配音：b\n\n画面：\n  集: S1E8\n")
+        assert cs.parse_episodes(text) == [("1", "S01E07"), ("2", "S1E8")]
+
+    def test_引用核对区不误抓(self):
+        # 「S01E01 21:21」是逐字引语的自查记录，不是检索约束；它在引用核对区，
+        # 不在任何段落块内。全文正则一抓就把「21:21」整行当集号了。
+        text = ("## 引用核对\n\n- S01E01 21:21 董香的原话\n\n"
+                "## 段落 1\n\n配音：a\n\n画面：\n  集: S01E07\n")
+        assert cs.parse_episodes(text) == [("1", "S01E07")]
+
+    def test_没写集号返回空(self):
+        assert cs.parse_episodes("## 段落 1\n\n配音：a\n\n画面：\n  查询: q\n") == []
+
+
+class TestEpisodeChecks:
+    """机检两道新检查：集号格式（永远可跑）+ 集号在素材库（要番名+登记表）。
+
+    无集字段不判失败（人物志有已知落空段落，强制每段写 = 逼人编集号），
+    覆盖率只作信息报在 detail 里。读不到番名/登记表时显式 FAIL「跳过」——
+    S9「跳过不是通过」。
+    """
+
+    def _sources(self, monkeypatch, sources):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda anime: sources)
+
+    def _fail_sources(self, monkeypatch):
+        from pipeline import ingest
+        def boom(anime):
+            raise SystemExit("FAIL 没有片源登记表，先跑 `ingest sources`")
+        monkeypatch.setattr(ingest, "load_sources", boom)
+
+    def test_规范形过_覆盖率报在detail(self, tmp_path):
+        f = script(tmp_path, [BODY] * 2, eps=["S01E07", None])
+        c = get(cs.run(f), "集号格式")
+        assert c.ok and "1/2 段" in c.detail
+
+    def test_S1E7归一化_放行(self, tmp_path):
+        f = script(tmp_path, [BODY], eps=["S1E7"])
+        assert get(cs.run(f), "集号格式").ok
+
+    def test_中文写法FAIL_带段落号(self, tmp_path):
+        f = script(tmp_path, [BODY], eps=["第一季第七集"])
+        c = get(cs.run(f), "集号格式")
+        assert not c.ok and "段1" in c.detail and "S01E07" in c.detail
+
+    def test_集号都在素材库_PASS(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], eps=["S01E07"])
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S01E07": {"path": "/x/e07.mkv"}})
+        assert get(cs.run(f), "集号在素材库").ok
+
+    def test_不在素材库_同季有别的集_提示多半写错(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], eps=["S01E08"])
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S01E07": {"path": "/x/e07.mkv"}})
+        c = get(cs.run(f), "集号在素材库")
+        assert not c.ok and "多半是集号写错" in c.detail
+
+    def test_不在素材库_整季都没有_提示先入库(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], eps=["S01E08"])
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S02E01": {"path": "/x/e01.mkv"}})
+        c = get(cs.run(f), "集号在素材库")
+        assert not c.ok and "整季没入库" in c.detail and "ingest" in c.detail
+
+    def test_读不到番名_跳过不是通过(self, tmp_path):
+        # 没有 01-topic.md → 读不到番名 → 显式 FAIL，不许静默跳过
+        f = script(tmp_path, [BODY], eps=["S01E07"])
+        c = get(cs.run(f), "集号在素材库")
+        assert not c.ok and "跳过不可判定" in c.detail
+
+    def test_缺素材库_跳过不是通过(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], eps=["S01E07"])
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        self._fail_sources(monkeypatch)
+        c = get(cs.run(f), "集号在素材库")
+        assert not c.ok and "跳过不可判定" in c.detail
+
+    def test_没写集号_素材库检查不跑(self, tmp_path):
+        # 零集号 = 零约束，不存在可校验的对象；不建 01-topic.md 也不该报
+        f = script(tmp_path, [BODY])
+        assert "集号在素材库" not in [c.name for c in cs.run(f)]
+
+    def test_格式不合规的集号_素材库检查不再重复判(self, tmp_path, monkeypatch):
+        # 格式错已由「集号格式」FAIL 报过；存在性检查只测格式合规的集号，
+        # 否则同一个「第一季第七集」要被两道检查各报一遍。
+        f = script(tmp_path, [BODY], eps=["第一季第七集"])
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        self._sources(monkeypatch, {})
+        c = get(cs.run(f), "集号在素材库")
+        assert c.ok

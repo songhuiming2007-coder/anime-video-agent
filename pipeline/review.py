@@ -34,6 +34,34 @@ THUMB_Q = "4"          # ffmpeg -q:v，2 最好 31 最差
 EDGE = 0.4             # 首末帧往里缩一点，避开转场黑帧
 
 
+def _ep_label(s: dict) -> str:
+    """段头一行里集号 + 降级标记（ADR-0004）。
+
+    降级链（集→季→全空间）要显示出来：集级没命中掉到季内/全空间，
+    说明集号或查询写得不稳，是回去改稿的信号；没写集字段的段不显示。
+    """
+    if not s.get("episode"):
+        return ""
+    ep = f'　集 <b>{html.escape(s["episode"])}</b>'
+    if s.get("ep_fell_back"):
+        ep += ('<span class="flag">→季内检索</span>' if s.get("ep_scope") == 1
+               else '<span class="flag">→全空间检索</span>')
+    return ep
+
+
+def _presence_txt(pr: float | None) -> str:
+    """片段一行里的在场分（ADR-0004）。
+
+    None = 该段没走角色通道（场景段），不显示；0.0 = 未检出，这段画面里
+    未必有那个人，垫底是排片时故意放的；>0 = 显示两格小数，只跟同段内
+    别的候选比，别拿它跟别的段横比（判据 10）。
+    """
+    if pr is None:
+        return ""
+    return ('<span class="flag">在场 0</span>' if pr == 0.0
+            else f" · 在场 {pr:.2f}")
+
+
 def _frames(clip: dict, dest_dir: Path, tag: str) -> list[Path]:
     """抽三帧：进点、中间、出点。
 
@@ -131,9 +159,11 @@ def build(episode: Path) -> Path:
             chan = f'　人物 <b>{html.escape(s["person"])}</b>'
             if s.get("filter_fell_back"):
                 chan += '<span class="flag">过滤为空→退回，画面里未必有他</span>'
+        # 集号与降级链要显示出来：集级没命中掉到季内/全空间 = 集号或查询
+        # 写得不稳，是回去改稿的信号（ADR-0004）；没写集字段的段不显示。
         body.append(f'<div class="q"><span class="no"></span>查询 <b>'
                     f'{html.escape(s.get("used_query") or "—")}</b>'
-                    f'　{s["duration"]:.1f}s{note}{chan}</div>')
+                    f'　{s["duration"]:.1f}s{note}{chan}{_ep_label(s)}</div>')
         if not s["clips"]:
             body.append('<div class="clip"><div class="side flag">'
                         '无匹配，渲染会退到降级方案</div></div>')
@@ -141,12 +171,15 @@ def build(episode: Path) -> Path:
             imgs = "".join(
                 f'<img src="04-thumbs/{p.name}" loading="lazy">'
                 for p in fmap.get((s["index"], n), []))
+            # 在场分显示出来（ADR-0004）：0.000 = 未检出，这段画面里未必有那个人，
+            # 垫底是排片时故意放的；它只在同段落内跟别的候选比过，别拿它跟别的段横比。
             body.append(
                 f'<div class="clip"><div class="shots">{imgs}</div>'
                 f'<div class="side"><div class="line">'
                 f'{html.escape(c.get("line") or "（无台词）")}</div>'
                 f'<div class="n">S{c["season"]:02d}E{c["episode"]:02d} '
-                f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {c["score"]:.3f}</div>'
+                f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {c["score"]:.3f}'
+                f'{_presence_txt(c.get("presence"))}</div>'
                 f'</div></div>')
         body.append("</div>")
 

@@ -50,9 +50,18 @@ TOPK = 24
 # 也圈掉了，段 11 因此无片可用。这两句是同一场对话的连续两句，本来就该各用各的镜头。
 OVERLAP_GAP = 0.5
 
+# presence 参与排序的带（ADR-0004）：相邻候选台词分差 ≤ 这条带子才视为
+# 「同一档」，用在场分 tie-break；差超过带子，台词分绝对优先。量纲 = bge 余弦
+# 在「同一语义、不同措辞」的查询下的分数波动，2026-08-09 实测回填：本期
+# 20 段查询 × 2 个同义改写变体，对同一 top-1 候选打分，40 对分差
+# min 0.000 / median 0.060 / P75 0.109 / max 0.243。取中位数：台词分差
+# 不超过噪声中位数 = 排序本来就不可区分，presence 才发言；超过 = 台词分是
+# 可靠信号，presence 无权翻盘。0.03 是拍脑袋初值，被实测推翻（噪声是它两倍）。
+PRESENCE_BAND = 0.06
+
 
 def parse_shots(path: Path) -> list[dict]:
-    """稿件 → 每段的 配音 / 查询 / 备选 / 人物 / 场景。
+    """稿件 → 每段的 配音 / 查询 / 备选 / 人物 / 场景 / 集。
 
     `tts.parse_script` 只取配音，这里要连分镜一起拿，所以按段落块重新切。
     正则口径与 tts / check_script 保持一致：`## 段落 N` + `配音：`。
@@ -69,6 +78,10 @@ def parse_shots(path: Path) -> list[dict]:
 
     **ADR 原文写的字段名是 `画面`，实现改成了 `场景`**：稿件里 `画面：` 已经是
     包着 `查询/备选` 的块名，同名会让人和正则都分不清哪个是哪个。
+
+    `集` 是 ADR-0004 加的检索约束（2026-08-09）：锁死本段检索的季/集，
+    防止跨季/跨集语义高分顶掉正确画面。格式 `S01E07` / `S1E7`（归一化为
+    `S01E07`），中文写法当场报错——集号是机器接口，写错 = 检索范围错了。
     """
     text = path.read_text(encoding="utf-8")
     blocks = re.split(r"^##\s*段落\s*\S+\s*$", text, flags=re.M)[1:]
@@ -79,6 +92,7 @@ def parse_shots(path: Path) -> list[dict]:
         alt = re.search(r"^\s*备选[：:]\s*(.+)$", b, re.M)
         who = re.search(r"^\s*人物[：:]\s*(.+)$", b, re.M)
         scene = re.search(r"^\s*场景[：:]\s*(.+)$", b, re.M)
+        ep = re.search(r"^\s*集[：:]\s*(.+)$", b, re.M)
         if not vo:
             continue
         if who and scene:
@@ -86,6 +100,16 @@ def parse_shots(path: Path) -> list[dict]:
                 f"FAIL 段落 {i} 同时写了 `人物` 和 `场景`。**一段只走一个通道**"
                 f"（ADR-0003）：台词分数和画面分数不是同一个量，并跑之后没有任何办法"
                 f"把它们放在一起排序")
+        ep_norm = None
+        if ep:
+            raw = ep.group(1).strip()
+            m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
+            if not m:
+                raise SystemExit(
+                    f"FAIL 段落 {i} 的 `集` 写的是「{raw}」，机器认不了。\n"
+                    f"     写规范形 `S01E07`（季两位、集两位，都补齐），别写中文「第一季第七集」"
+                    f"——集号是检索约束，写错 = 检索范围错了")
+            ep_norm = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
         out.append({
             "index": i,
             "text": vo.group(1).strip(),
@@ -93,6 +117,7 @@ def parse_shots(path: Path) -> list[dict]:
             "alt": alt.group(1).strip() if alt else None,
             "person": who.group(1).strip() if who else None,
             "scene": scene.group(1).strip() if scene else None,
+            "episode": ep_norm,
         })
     if not out:
         raise SystemExit(f"FAIL 没从 {path} 解析出任何段落")
@@ -112,7 +137,7 @@ def _overlaps(cand, chosen) -> bool:
 
 
 def candidate(score: float, u, sources: dict, anime: str | None = None,
-              floor: float = NO_MATCH) -> dict | None:
+              floor: float = NO_MATCH, presence: float | None = None) -> dict | None:
     """一个检索命中 → 一个可切的片段。不可用返回 None。
 
     **每个片段都要过 NO_MATCH，不只是每段的第一个。** 初版只卡 `hits[0]`，
@@ -122,6 +147,9 @@ def candidate(score: float, u, sources: dict, anime: str | None = None,
     番名再校验一次。`load_all` 已经按番过滤过，这里是第二道——代价是一次字符串比较，
     而漏掉的后果是**切出别的番的画面且全程不报错**。这类错今天踩了一整天，
     多一道显式判断换掉一次静默错，值。
+
+    `presence` 是在场分（0.0 = 未检出）：只落盘给人看，**不参与任何排序**
+    （ADR-0004 带内次级排序发生在 `_by_character`，这里已是定序后的结果）。
     """
     if anime is not None and u.anime != anime:
         return None
@@ -143,6 +171,7 @@ def candidate(score: float, u, sources: dict, anime: str | None = None,
         # 台词自身的跨度，只用于判断「是不是同一处画面」，不参与排版
         "span": round(u.end - start, 3), "limit": src["duration"],
         "score": round(float(score), 4), "line": u.text[:60],
+        "presence": round(float(presence), 3) if presence is not None else None,
     }
 
 
@@ -213,10 +242,64 @@ def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
     return chosen, "ok"
 
 
-def _ladder(shot: dict, vecs, units) -> tuple[list, str, int]:
+def _allocate(live, by_index, sources, anime, quota):
+    """全局贪心分配，段内按带内序尝试。返回已占用的片段列表。
+
+    每段一个指针，按 `hits` 的**段内序**（`_by_character` 已做带内修正：
+    presence 只在台词分差 ≤ `PRESENCE_BAND` 的同一档内决胜负，漏检垫底）
+    逐个尝试；每轮从未满段的当前候选中选 (通道, 台词分) 最高的试一次。
+    跨段仍按台词分贪心（S10：presence 绝不进跨段比较），段内尝试顺序
+    被完整保留。失败的候选（切不了 / 与已占重叠）推进指针，下轮试下一个。
+
+    **不能摊平成全局池**：池排序键 (通道, 台词分) 会把段内带内序抹掉——
+    稳定排序只保留严格同分序，presence 端到端只剩「同分优先」，等于没实现。
+    2026-08-09 实测确认：段内差 0.023 的两个候选，在场 0.973 的没能排在
+    0.969 前面（ADR-0004 的带内语义在 pool 层失效）。这就是重写成指针轮转
+    的原因。
+    """
+    used: list[dict] = []
+    got = {p["index"]: 0.0 for p in live}
+    pointer = {p["index"]: 0 for p in live}
+    while True:
+        best_key, best = None, None
+        for p in live:
+            i = p["index"]
+            if got[i] >= quota[i] or pointer[i] >= len(p["hits"]):
+                continue
+            sc, u, *rest = p["hits"][pointer[i]]
+            key = (0 if p["channel"] == "line" else 1, -float(sc))
+            if best_key is None or key < best_key:
+                best_key, best = key, (p, sc, u, rest[0] if rest else None)
+        if best is None:
+            return used
+        p, sc, u, pr = best
+        pointer[p["index"]] += 1
+        cand = candidate(sc, u, sources, anime, floor=p["threshold"], presence=pr)
+        if cand is None or _overlaps(cand, used):
+            continue
+        p["clips"].append(cand)
+        got[p["index"]] += cand["dur"]
+        used.append(cand)
+
+
+def _parse_ep_scope(episode: str | None) -> tuple[list, int]:
+    """段落 `集` 字段 → 作用域链 + 初始 scope。
+
+    写了集 → `[(S,E), (S,None), (None,None)]`（集→季→全空间），初始 scope=0；
+    没写 → `[(None,None)]`（全空间，与今天逐字节一致），初始 scope=2。
+    scope 是降级级别的记录：0=集级命中、1=季级、2=全空间。
+    """
+    if not episode:
+        return [(None, None)], 2
+    m = re.fullmatch(r"S(\d+)E(\d+)", episode)
+    s, e = int(m.group(1)), int(m.group(2))
+    return [(s, e), (s, None), (None, None)], 0
+
+
+def _ladder(shot: dict, vecs, units) -> tuple[list, str, int, int]:
     """查询阶梯：`查询` → `备选` → `配音` 原文，逐级重试直到 top-1 够格。
 
-    返回（命中列表, 实际用的查询, 用到第几级）。
+    返回（命中列表, 实际用的查询, 用到第几级, 最终 scope）。
 
     **只救不比。** 上一级够格就立刻返回，绝不因为下一级分数更高而换掉。
     这一条是硬的，2026-07-30 实测过反面：配音原文在 21 段里有 11 段分数最高，
@@ -231,19 +314,28 @@ def _ladder(shot: dict, vecs, units) -> tuple[list, str, int]:
     同一条教训第三次出现（前两次是拉普拉斯方差给封面排序、回读 CER 判轴）。
 
     门槛 `NO_MATCH` 不随级数放松：加大的是找的力度，不是放低的标准。
+
+    **ADR-0004：作用域链（集→季→全空间）。** 集号是剧情知识，比语义分更强；
+    「只救不比」同构延伸到检索空间——集级出及格命中就立刻返回，**即使季级/全空间
+    级会有更高的分也不许换**。降级只发生在「集级没及格」时，且每次降级都记 scope
+    落进 04-clips.json 给 05 看。末端全空间 = 没写集字段的今天的行为。
     """
     best: tuple[list, str, int] = ([], shot["query"], 1)
-    for rung, q in enumerate((shot["query"], shot["alt"], shot["text"]), 1):
-        if not q:
-            continue
-        hits = search(q, vecs, units, TOPK)
-        if hits and hits[0][0] >= NO_MATCH:
-            return hits, q, rung
-        # 全级都不够格时报最高分那次：它最能说明「差多少」，
-        # 而报最后一次只是碰巧的顺序。
-        if hits and (not best[0] or hits[0][0] > best[0][0][0]):
-            best = hits, q, rung
-    return best
+    best_scope = 2
+    scopes, first_scope = _parse_ep_scope(shot.get("episode"))
+    for scope, (s, e) in enumerate(scopes, start=first_scope):
+        for rung, q in enumerate((shot["query"], shot["alt"], shot["text"]), 1):
+            if not q:
+                continue
+            hits = search(q, vecs, units, TOPK, season=s, episode=e)
+            if hits and hits[0][0] >= NO_MATCH:
+                return hits, q, rung, scope
+            # 全级都不够格时报最高分那次：它最能说明「差多少」，
+            # 而报最后一次只是碰巧的顺序。
+            if hits and (not best[0] or hits[0][0] > best[0][0][0]):
+                best = hits, q, rung
+                best_scope = scope
+    return best[0], best[1], best[2], best_scope
 
 
 def scene_no_match(anime: str) -> float:
@@ -272,45 +364,79 @@ def scene_no_match(anime: str) -> float:
     return float(t)
 
 
-def _ladder_scene(shot: dict, svecs, sunits, thr: float) -> tuple[list, str, int]:
+def _ladder_scene(shot: dict, svecs, sunits, thr: float) -> tuple[list, str, int, int]:
     """画面通道的查询阶梯：`场景` → `备选`。**只有两级。**
 
     台词通道的第 3 级是「配音原文」，画面通道没有对应物——拿一整句口播去查 CLIP
     的图像空间，问的是「哪个镜头看起来像这句话」，那不是一个有意义的问题。
     **阶梯只在通道内部升级**：不许因为画面通道两级都不及格就改走台词通道，
     那等于用换通道来降标准（ADR-0003）。
+
+    作用域链（集→季→全空间）与台词通道的 `_ladder` 同构（ADR-0004）；
+    画面通道当前虽不可用（探针没过，写 `场景` 当场报错），机制先摆好，
+    免得将来启用时又要补。
     """
     best: tuple[list, str, int] = ([], shot["scene"], 1)
-    for rung, q in enumerate((shot["scene"], shot["alt"]), 1):
-        if not q:
-            continue
-        hits = vindex.search_scene(q, svecs, sunits, TOPK)
-        if hits and hits[0][0] >= thr:
-            return hits, q, rung
-        if hits and (not best[0] or hits[0][0] > best[0][0][0]):
-            best = hits, q, rung
-    return best
+    best_scope = 2
+    scopes, first_scope = _parse_ep_scope(shot.get("episode"))
+    for scope, (s, e) in enumerate(scopes, start=first_scope):
+        for rung, q in enumerate((shot["scene"], shot["alt"]), 1):
+            if not q:
+                continue
+            hits = vindex.search_scene(q, svecs, sunits, TOPK, season=s, episode=e)
+            if hits and hits[0][0] >= thr:
+                return hits, q, rung, scope
+            if hits and (not best[0] or hits[0][0] > best[0][0][0]):
+                best = hits, q, rung
+                best_scope = scope
+    return best[0], best[1], best[2], best_scope
 
 
 def _by_character(hits: list, pres, name: str) -> tuple[list, bool]:
-    """台词命中里只留含该角色的镜头。返回 (命中, 是否退回了不过滤的结果)。
+    """角色在场参与排序：**带内次级排序**（ADR-0004）。
 
-    **这是软过滤，为空就退回**（ADR-0003「检测的不对称」）：
+    旧实现是布尔硬过滤：「没检出 X」就把镜头整段枪毙。可侧脸、背影、遮挡都会
+    漏——2026-08-09 段 19 的 S01E08 正确画面（0.653）就是这么被滤掉的，
+    排片退回跨季 S04E05。检测的不对称（ADR-0003）决定了「没检出」不能当
+    「不在场」用，所以：
 
-    - 「检测到 X」可信 → 用来**筛入**候选是安全的
-    - 「没检测到 X」不等于 X 不在场 → 侧脸、背影、遮挡都会漏
-      （实测：391 张脸里 18 张因为像不止一个人被主动丢掉，更多的脸压根没被检出）
+    1. **不再删镜头**。每个命中都带在场分（没检出 = 0.0），排在检出者后面
+       而不是枪毙——漏检的代价从「正确画面整段消失」降为「垫底」。
+    2. **带内次级排序**：presence 只在台词分同桶内（差 ≤ PRESENCE_BAND）
+       做 tie-break；台词分差超过带子，台词分绝对优先。结构性不可能顶掉
+       清晰的台词命中，不踩 S2 判据（没有复合分，同一轴细粒度化）。
+    3. **软过滤退回保留**：一个都没检出（kept 空）或第一命中低于门槛时，
+       退回原 hits 原顺序（fell_back=True），一字不改。
 
-    所以过滤后为空时退回原结果，而不是硬失败。一次漏检不该卡住整期；
-    硬失败留给三级查询阶梯都不及格的情况。
+    返回的命中是 (台词分, unit, 在场分) 三元组；退回时三元组照带，顺序不变。
 
     **这一条不写下来，三个月后一定会有人把它改成硬过滤。**
     """
-    kept = [(sc, u) for sc, u in hits
-            if pres.present(u.season, u.episode, u.start, u.end, name)]
-    if kept and kept[0][0] >= NO_MATCH:
-        return kept, False
-    return hits, True
+    tagged = [(sc, u, pres.presence_score(u.season, u.episode, u.start, u.end, name))
+              for sc, u in hits]
+    present_hits = [h for h in tagged if h[2] > 0.0]
+    absent = [h for h in tagged if h[2] == 0.0]     # 漏检者垫底，保留不枪毙
+    # 全漏检，或检出者里的最高台词分仍不及格 → 退回原顺序（软过滤底线，ADR-0003）。
+    # 顺序判定用检出者而非 tagged 全体：漏检的 0.8 不该替它本家 0.30 的及格背书。
+    if not present_hits or present_hits[0][0] < NO_MATCH:
+        return tagged, True
+    present_hits.sort(key=lambda h: h[0], reverse=True)   # 检出者内台词分降序
+    # **相邻对修正**：相邻两个检出候选台词分差 ≤ PRESENCE_BAND 且后者在场分
+    # 更高 → 交换。逐对扫描到无交换为止。候选数 ≤ TOPK=24，冒泡开销可忽略。
+    #
+    # 为什么不用桶化（floor(score/BAND)）？0.50 和 0.52 差 0.02 < BAND，
+    # 但 0.51 是桶边界，floor 会把它们分进两个桶，presence 白带——桶化的
+    # 「同桶」和「差 ≤ BAND」不是一回事。相邻对修正没有边界，语义精确：
+    # presence 只对**分差小到可以算同一档的相邻候选**生效。
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(present_hits) - 1):
+            a, b = present_hits[i], present_hits[i + 1]
+            if a[0] - b[0] <= PRESENCE_BAND and b[2] > a[2]:
+                present_hits[i], present_hits[i + 1] = b, a
+                changed = True
+    return present_hits + absent, False
 
 
 def run(episode: Path, index_dir: Path = INDEX_DIR,
@@ -361,15 +487,19 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         fell_back = False
         if shot["scene"]:                       # 画面语义通道
             floor = scene_no_match(anime)
-            hits, used_query, rung = _ladder_scene(shot, svecs, sunits, floor)
+            hits, used_query, rung, scope = _ladder_scene(shot, svecs, sunits, floor)
             channel = "scene"
         else:                                   # 台词通道（现状）
-            hits, used_query, rung = _ladder(shot, vecs, units)
+            hits, used_query, rung, scope = _ladder(shot, vecs, units)
             channel, floor = "line", NO_MATCH
             if shot["person"]:
                 hits, fell_back = _by_character(hits, pres, shot["person"])
         prep.append({**shot, "duration": a["duration"], "hits": hits,
                      "used_query": used_query, "fallback": rung > 1, "rung": rung,
+                     "ep_scope": scope,
+                     # 没写集字段的段落 scope=2 只是「本来就没锁」，不是降级；
+                     # 降级只对写了集号却未在集级及格的情况成立（ADR-0004）
+                     "ep_fell_back": bool(shot["episode"]) and scope > 0,
                      "channel": channel, "threshold": floor,
                      "filter_fell_back": fell_back,
                      "top_score": round(float(hits[0][0]), 4) if hits else 0.0})
@@ -394,11 +524,10 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     # 冲突仍然要解（两段可能都想要同一处画面），解法是**显式的通道优先级**而不是
     # 比分数：台词段先挑。理由是它们要的是「那句话发生的那一刻」，具体且不可替换；
     # 画面段要的是氛围，可替换的余地大得多。
-    pool = sorted(
-        ((0 if p["channel"] == "line" else 1, float(sc), p["index"], u)
-         for p in prep for sc, u in p["hits"]),
-        key=lambda t: (t[0], -t[1]),
-    )
+    # 命中形状：写了 `人物` 的台词段经 _by_character 后是 (台词分, unit, 在场分)
+    # 三元组；画面段与未写人物的台词段仍是 (分, unit) 二元组。*rest 兼容两种，
+    # 在场分取不出来就是 None。**presence 绝不进跨段比较**（S10 的落实点）：
+    # _allocate 每轮跨段只比当前候选的台词分，presence 只决定段内候选的尝试顺序。
     by_index = {p["index"]: p for p in prep}
     live = [p for p in prep if p["hits"] and p["top_score"] >= p["threshold"]]
 
@@ -409,18 +538,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     for _ in range(3):
         for p in prep:
             p["clips"] = []
-        used: list[dict] = []
-        got = {p["index"]: 0.0 for p in live}
-        for _chan, sc, idx, u in pool:
-            p = by_index.get(idx)
-            if p is None or idx not in got or got[idx] >= quota[idx]:
-                continue
-            cand = candidate(sc, u, sources, anime, floor=p["threshold"])
-            if cand is None or _overlaps(cand, used):
-                continue
-            p["clips"].append(cand)
-            got[idx] += cand["dur"]
-            used.append(cand)
+        used = _allocate(live, by_index, sources, anime, quota)
 
         # 拉伸上限收到「同一集里下一个已分配片段的起点」，不能只收到片尾。
         # 2026-07-29 实测：段 11 的 15:18 被拉到 5.8s 之后撞进了段 12 的 15:24。
@@ -488,9 +606,14 @@ def main() -> int:
         who = f"·{s['person']}" if s.get("person") else ""
         if s.get("filter_fell_back"):
             who += "(过滤为空→退回)"
+        # 集号与降级要显示出来：集级没命中掉到季内/全空间，说明集号或查询
+        # 写得不稳，是回去改稿的信号（ADR-0004）；没写集字段的段不显示。
+        ep = f"·{s['episode']}" if s.get("episode") else ""
+        if s.get("ep_fell_back"):
+            ep += " (→季内)" if s.get("ep_scope") == 1 else " (→全空间)"
         print(f"{mark}段{s['index']:2d}  {s['duration']:5.1f}s  "
               f"{len(s['clips'])} 片段  {chan}{who} {s.get('top_score', 0):.3f}  "
-              f"{'/'.join(eps) or '—'}  {s['status']}{rung}")
+              f"{'/'.join(eps) or '—'}  {s['status']}{rung}{ep}")
 
     n_clips = sum(len(s["clips"]) for s in segs)
     print("-" * 66)

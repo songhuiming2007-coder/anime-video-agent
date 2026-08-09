@@ -81,64 +81,110 @@ class TestLadder:
     可那个镜头拍的是**说出她名字的人**）。
     """
 
-    def _shot(self, query="查询语", alt="备选语", text="配音正文。"):
-        return {"index": 1, "query": query, "alt": alt, "text": text}
+    def _shot(self, query="查询语", alt="备选语", text="配音正文。", episode=None):
+        return {"index": 1, "query": query, "alt": alt, "text": text,
+                "episode": episode}
 
     def _fake(self, scores):
-        """按查询文本返回预设分数。scores: {查询文本: top1 分数}"""
+        """按查询文本返回预设分数。scores: {查询文本: top1 分数}。
+
+        键可以是纯文本（不区分作用域）或 (文本, season, episode)。
+        """
         calls = []
 
-        def search(q, vecs, units, k):
-            calls.append(q)
-            sc = scores.get(q)
+        def search(q, vecs, units, k, season=None, episode=None):
+            calls.append((q, season, episode))
+            sc = scores.get((q, season, episode), scores.get(q))
             return [(sc, object())] if sc is not None else []
         return search, calls
 
     def _run(self, shot, scores, monkeypatch):
         search, calls = self._fake(scores)
         monkeypatch.setattr(c, "search", search)
-        hits, used, rung = c._ladder(shot, None, None)
-        return used, rung, calls
+        hits, used, rung, scope = c._ladder(shot, None, None)
+        return used, rung, scope, calls
 
     def test_第一级够格就不往下试(self, monkeypatch):
         # 关键：**根本不去查后面两级**。查了再比就已经错了。
-        used, rung, calls = self._run(
+        used, rung, _, calls = self._run(
             self._shot(), {"查询语": 0.50, "备选语": 0.99, "配音正文。": 0.99}, monkeypatch)
         assert (used, rung) == ("查询语", 1)
-        assert calls == ["查询语"]
+        assert calls == [("查询语", None, None)]
 
     def test_第一级不够才用备选(self, monkeypatch):
-        used, rung, _ = self._run(
+        used, rung, _, _ = self._run(
             self._shot(), {"查询语": 0.30, "备选语": 0.50}, monkeypatch)
         assert (used, rung) == ("备选语", 2)
 
     def test_前两级都不够才用配音原文(self, monkeypatch):
-        used, rung, calls = self._run(
+        used, rung, _, calls = self._run(
             self._shot(), {"查询语": 0.30, "备选语": 0.20, "配音正文。": 0.60}, monkeypatch)
         assert (used, rung) == ("配音正文。", 3)
-        assert calls == ["查询语", "备选语", "配音正文。"]
+        assert calls == [("查询语", None, None), ("备选语", None, None),
+                         ("配音正文。", None, None)]
 
     def test_备选留空就跳到配音(self, monkeypatch):
-        used, rung, calls = self._run(
+        used, rung, _, calls = self._run(
             self._shot(alt=None), {"查询语": 0.30, "配音正文。": 0.60}, monkeypatch)
         assert (used, rung) == ("配音正文。", 3)
-        assert "备选语" not in calls
+        assert ("备选语", None, None) not in calls
 
     def test_门槛不随级数放松(self, monkeypatch):
         # 加大的是找的力度，不是放低的标准。三级全在门槛下 → 一级都不算成功。
-        used, rung, _ = self._run(
+        used, rung, _, _ = self._run(
             self._shot(), {"查询语": 0.30, "备选语": 0.35, "配音正文。": 0.44}, monkeypatch)
         assert rung == 3 and used == "配音正文。"   # 报最高分那次
 
     def test_全不够格时报最高分那次而不是最后一次(self, monkeypatch):
         # 报最后一次只是碰巧的顺序；报最高分才说明「差多少」。
-        used, _, _ = self._run(
+        used, _, _, _ = self._run(
             self._shot(), {"查询语": 0.44, "备选语": 0.10, "配音正文。": 0.20}, monkeypatch)
         assert used == "查询语"
 
     def test_一条都没命中不报错(self, monkeypatch):
-        hits_used, rung, _ = self._run(self._shot(), {}, monkeypatch)
-        assert rung == 1
+        used, rung, scope, _ = self._run(self._shot(), {}, monkeypatch)
+        assert rung == 1 and scope == 2
+
+    # ---- ADR-0004：作用域链（集→季→全空间），「只救不比」同构延伸 ----
+
+    def test_写了集_集级及格就不查季级和全空间(self, monkeypatch):
+        # 关键：季级/全空间即使分数更高也不许查——集号是剧情知识，比语义分更强。
+        used, rung, scope, calls = self._run(
+            self._shot(episode="S01E07"),
+            {("查询语", 1, 7): 0.50, ("查询语", 1, None): 0.99}, monkeypatch)
+        assert (used, rung, scope) == ("查询语", 1, 0)
+        assert calls == [("查询语", 1, 7)]
+
+    def test_集级不及格_季级及格_降级到季(self, monkeypatch):
+        # 集级三级阶梯全跑完仍不及格，才放宽到季；季级及格就停。
+        used, rung, scope, calls = self._run(
+            self._shot(episode="S01E07"),
+            {("查询语", 1, 7): 0.30, ("备选语", 1, 7): 0.20, ("配音正文。", 1, 7): 0.10,
+             ("查询语", 1, None): 0.55}, monkeypatch)
+        assert (used, rung, scope) == ("查询语", 1, 1)
+        assert calls[-1] == ("查询语", 1, None)
+
+    def test_集和季都不及格_才到全空间(self, monkeypatch):
+        used, rung, scope, _ = self._run(
+            self._shot(episode="S01E07"),
+            {("查询语", 1, 7): 0.30, ("备选语", 1, None): 0.20,
+             ("配音正文。", None, None): 0.60}, monkeypatch)
+        assert scope == 2 and used == "配音正文。"
+
+    def test_没写集_只查一次全空间(self, monkeypatch):
+        # 逐字节兼容今天：没有集字段时行为完全不变。
+        used, rung, scope, calls = self._run(
+            self._shot(episode=None), {"查询语": 0.50}, monkeypatch)
+        assert (used, rung, scope) == ("查询语", 1, 2)
+        assert calls == [("查询语", None, None)]
+
+    def test_集级该集无单元_空结果走降级链(self, monkeypatch):
+        # 集号写对了但该集一个字幕单元都没有（如整集没人说话）→ search 返回 []，
+        # 空结果不是「命中失败」，继续降级到季级、全空间，不硬失败。
+        used, rung, scope, _ = self._run(
+            self._shot(episode="S99E99"),
+            {("查询语", 99, None): 0.30, ("配音正文。", None, None): 0.60}, monkeypatch)
+        assert (used, rung, scope) == ("配音正文。", 3, 2)
 
 
 class TestOverlaps:
@@ -258,12 +304,47 @@ class TestParseShots:
         f = self.write(tmp_path, "## 段落 1\n\n配音：随便一句\n\n画面：\n    人物：雪乃\n")
         assert c.parse_shots(f)[0]["person"] == "雪乃"
 
+    def test_集字段_规范形与归一化(self, tmp_path):
+        f = self.write(
+            tmp_path,
+            "## 段落 1\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n  集: S01E07\n")
+        s = c.parse_shots(f)[0]
+        assert s["episode"] == "S01E07"
+        f = self.write(
+            tmp_path,
+            "## 段落 2\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n  集: S1E7\n")
+        s = c.parse_shots(f)[0]
+        assert s["episode"] == "S01E07"          # 归一化为全库唯一规范形
+
+    def test_集字段_不写就是现状(self, tmp_path):
+        f = self.write(tmp_path, "## 段落 1\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n")
+        assert c.parse_shots(f)[0]["episode"] is None
+
+    def test_集字段_中文写法当场报错(self, tmp_path):
+        f = self.write(
+            tmp_path,
+            "## 段落 1\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n  集: 第一季第七集\n")
+        with pytest.raises(SystemExit, match="段落 1"):
+            c.parse_shots(f)
+
+    def test_集字段_引用核对区不误抓(self, tmp_path):
+        # 引用核对区里写「S01E01 21:21」是逐字引语的自查记录，不是检索约束。
+        # 按块切分后它不在任何段落块内，不能被当成该段的集号。
+        f = self.write(
+            tmp_path,
+            "## 段落 1\n\n配音：随便一句\n\n画面：\n  查询: 找这个\n\n"
+            "---\n\n引用核对：S01E01 21:21 台词逐字\n")
+        assert c.parse_shots(f)[0]["episode"] is None
+
 
 class TestByCharacter:
-    """角色在场过滤：**软过滤，为空则退回**（ADR-0003「检测的不对称」）。
+    """角色在场参与排序：**带内次级排序**（ADR-0004）。
 
-    「检测到 X」可信，「没检测到 X」不等于 X 不在场——侧脸、背影、遮挡都会漏。
-    所以过滤后为空时退回不过滤的结果，一次漏检不该卡住整期。
+    旧实现是布尔硬过滤，「没检出」就把镜头整段枪毙——2026-08-09 段 19 的
+    S01E08 正确画面就是这么被滤掉、退回跨季的。检测的不对称（ADR-0003）
+    决定了「没检出」不能当「不在场」用，所以现在：不删镜头、检出者排前、
+    漏检者（在场 0）垫底；presence 只在台词分同桶内（差 ≤ PRESENCE_BAND）
+    做 tie-break，差超过带子台词分绝对优先；全漏检或全不及格仍退回原顺序。
     """
 
     class U:
@@ -272,34 +353,56 @@ class TestByCharacter:
             self.start, self.end, self.text = start, start + 3.0, "台词"
 
     class P:
-        """只有 S01E01 的 0–10 秒有雪乃。"""
+        """S01E01 的 0–10 秒有雪乃（0.98），10–30 秒有雪乃（0.90）。"""
 
-        def present(self, season, episode, start, end, name):
-            return episode == 1 and start < 10.0 and name == "雪乃"
+        def presence_score(self, season, episode, start, end, name):
+            if episode != 1 or name != "雪乃":
+                return 0.0
+            if start < 10.0:
+                return 0.98
+            if start < 30.0:
+                return 0.90
+            return 0.0
 
-    def test_只留含该角色的镜头(self):
+    def test_检出者排前_漏检者垫底但不删(self):
+        # 漏检镜头（在场 0.0）不再被枪毙——它可能是侧脸/背身，画面对题照样能用，
+        # 只是排到检出者后面。这正是段 19 那种「正确画面被滤掉」的修法。
         hits = [(0.8, self.U(1, 2.0)), (0.7, self.U(1, 50.0))]
         kept, fell_back = c._by_character(hits, self.P(), "雪乃")
-        assert [h[0] for h in kept] == [0.8]
+        assert [h[0] for h in kept] == [0.8, 0.7]   # 两个都在，顺序台词分降序
+        assert [h[2] for h in kept] == [0.98, 0.0]  # 各带在场分
         assert fell_back is False
 
-    def test_过滤后为空就退回全部(self):
+    def test_带内_在场分高者排前(self):
+        # 台词分差 0.02 ≤ PRESENCE_BAND → 同一档，0.90 在场那段排到 0.98 前面
+        hits = [(0.52, self.U(1, 12.0)), (0.50, self.U(1, 2.0))]
+        kept, _ = c._by_character(hits, self.P(), "雪乃")
+        assert [h[0] for h in kept] == [0.50, 0.52]
+
+    def test_带外_台词分绝对优先_presence无效(self):
+        # 台词分差 0.10 > PRESENCE_BAND → 分高的在前，在场分再低也拦不住。
+        # presence 结构性不可能顶掉清晰的台词命中（S2：一个量能卡门槛不代表能排序）。
+        hits = [(0.60, self.U(1, 12.0)), (0.50, self.U(1, 2.0))]
+        kept, _ = c._by_character(hits, self.P(), "雪乃")
+        assert [h[0] for h in kept] == [0.60, 0.50]
+
+    def test_全漏检就退回全部_顺序不变(self):
         hits = [(0.8, self.U(2, 2.0)), (0.7, self.U(3, 5.0))]
         kept, fell_back = c._by_character(hits, self.P(), "雪乃")
-        assert kept == hits and fell_back is True
+        assert fell_back is True
+        assert [h[0] for h in kept] == [0.8, 0.7]   # 原顺序，一字不改
+        assert [h[2] for h in kept] == [0.0, 0.0]
 
     def test_留下的都不及格也退回(self):
         # 过滤后只剩不及格的命中，等于没找到——退回去看不过滤的结果里有没有能用的。
         # 不退回的话，一次漏检会让这一段直接判死。
         hits = [(0.8, self.U(2, 2.0)), (0.30, self.U(1, 2.0))]
         kept, fell_back = c._by_character(hits, self.P(), "雪乃")
-        assert kept == hits and fell_back is True
+        assert [h[0] for h in kept] == [0.8, 0.30] and fell_back is True
 
-    def test_退回不改变原有顺序(self):
-        # 退回的是原样，不是重排过的——排序依据仍然只有台词分数
-        hits = [(0.8, self.U(2, 2.0)), (0.7, self.U(3, 5.0))]
-        kept, _ = c._by_character(hits, self.P(), "雪乃")
-        assert kept is hits
+    def test_空命中不报错(self):
+        kept, fell_back = c._by_character([], self.P(), "雪乃")
+        assert kept == [] and fell_back is True
 
 
 class TestSceneNoMatch:
@@ -334,3 +437,82 @@ class TestSceneNoMatch:
                   {"春物": {"queries": ["a"], "negative": ["b"], "no_match": 0.31}})
         with pytest.raises(SystemExit):
             c.scene_no_match("紫罗兰")
+
+
+class TestAllocate:
+    """分配主循环：段内按带内序尝试，跨段仍按台词分贪心。
+
+    **为什么单独测这一层**：带内排序的测试在 `TestByCharacter`（函数级），
+    但 2026-08-09 实测发现 pool 摊平后按台词分重新全局排序，把段内带内序
+    抹掉了——端到端只有「漏检不剔除」生效，「带内决胜负」和「漏检垫底」
+    都落空（稳定排序只保留严格同分序）。`_allocate` 是指针轮转，段内尝试
+    顺序 = `hits` 序（已带内修正），跨段每轮只比当前候选的台词分。
+    """
+
+    class U:
+        def __init__(self, start=100.0, end=104.0):
+            self.anime = "春物"
+            self.season, self.episode = 1, 1
+            self.start, self.end, self.text = start, end, "某句台词"
+
+    SRC = {"S01E01": {"path": "/x/e01.mkv", "duration": 1400.0}}
+
+    def prep(self, index, hits, duration=12.0, *, channel="line"):
+        return {"index": index, "hits": hits, "duration": duration,
+                "channel": channel, "threshold": 0.45, "clips": []}
+
+    def alloc(self, *preps):
+        live = list(preps)
+        return c._allocate(live, {p["index"]: p for p in live}, self.SRC, "春物",
+                           {p["index"]: p["duration"] for p in live})
+
+    def test_带内_presence_高者优先(self):
+        # 差 0.02 ≤ PRESENCE_BAND：presence 0.98 的候选在 hits 里排前（带内修正后）。
+        # 两个候选时间重叠，先试的占位、后试的被拒——所以「谁被选中」=「谁先被尝试」。
+        u_hi = self.U(101.0, 103.5)          # presence 0.98
+        u_lo = self.U(100.0, 102.5)          # 台词分高 0.02 但 presence 只有 0.10
+        # hits 序 = 带内修正后的序：u_hi 在前（presence 决胜负），即使它台词分低 0.02
+        p1 = self.prep(1, [(0.50, u_hi, 0.98), (0.52, u_lo, 0.10)], duration=6.0)
+        self.alloc(p1)
+        # u_hi 先被尝试 → 它占位 → u_lo 因重叠被拒
+        assert len(p1["clips"]) == 1
+        assert p1["clips"][0]["start"] == 100.75   # u_hi 的候选起点 (101.0 - PAD)
+
+    def test_带外_台词分绝对优先(self):
+        # 差 0.10 > PRESENCE_BAND：presence 不发言，hits 序 = 台词分序。
+        u_hi = self.U(101.0, 103.5)          # presence 0.98 但分低
+        u_lo = self.U(100.0, 102.5)          # 台词分高，presence 0.10
+        p1 = self.prep(1, [(0.60, u_lo, 0.10), (0.50, u_hi, 0.98)], duration=6.0)
+        self.alloc(p1)
+        assert p1["clips"][0]["start"] == 99.75     # u_lo 的候选起点 (100.0 - PAD)
+
+    def test_漏检候选不剔除_只是排在后面试(self):
+        # 漏检（presence 0.0）不枪毙：quota 够时它也进成片，只是尝试顺序靠后。
+        u1 = self.U(100.0, 102.5)
+        u2 = self.U(300.0, 302.5)            # 与 u1 不重叠
+        p1 = self.prep(1, [(0.52, u1, 0.98), (0.50, u2, 0.0)], duration=12.0)
+        self.alloc(p1)
+        assert len(p1["clips"]) == 2
+        assert p1["clips"][1]["start"] == 299.75   # u2 也被分配，只是排在后面
+
+    def test_跨段仍按台词分_presence_不进跨段比较(self):
+        # 段 2 台词分 0.52 > 段 1 的 0.50，即使段 1 的 presence 高得多。
+        # 两个候选同集时间重叠，互相竞争。
+        uA = self.U(100.0, 104.0)
+        uB = self.U(100.0, 104.0)
+        p1 = self.prep(1, [(0.50, uA, 0.98)], duration=6.0)
+        p2 = self.prep(2, [(0.52, uB, 0.10)], duration=6.0)
+        self.alloc(p1, p2)
+        assert p2["clips"] and not p1["clips"]   # 段 2 先得画面，段 1 空
+
+    def test_尝试失败推进指针_试下一个带内候选(self):
+        # u1 被别的段占了 → 指针推进，试 u2（不重叠，成功）。
+        uB = self.U(100.0, 104.0)
+        u1 = self.U(101.0, 103.0)
+        u2 = self.U(300.0, 302.5)
+        p1 = self.prep(1, [(0.50, u1, 0.98), (0.48, u2, 0.0)], duration=12.0)
+        p2 = self.prep(2, [(0.55, uB, 0.10)], duration=6.0)
+        self.alloc(p1, p2)
+        assert p2["clips"]                       # 段 2 先得（分高）
+        assert len(p1["clips"]) == 1
+        assert p1["clips"][0]["start"] == 299.75 # 段 1 拿到的是 u2 不是 u1
