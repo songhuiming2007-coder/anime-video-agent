@@ -165,6 +165,18 @@ class TestSpeakable:
         raw = "你永远不用猜她那句“好啊”后面藏着什么。"
         assert t.speakable(raw) != raw and "“" in raw
 
+    def test_读音表替换只发生在合成侧(self, monkeypatch):
+        # IndexTTS 念错多音字/生僻字只能换同音字（喰种→餐种、绚都→绚督），
+        # 替换进合成文本；字幕用原文，「喰种」照常显示。
+        monkeypatch.setattr(t, "_readings",
+                            lambda: {"喰种": "餐种", "绚都": "绚督"})
+        assert t.speakable("东京喰种里陪着绚都") == "东京餐种里陪着绚督"
+
+    def test_读音表是词级替换_单字不全局替换(self, monkeypatch):
+        # 键必须是词。若全局替换「都」，会把念 dōu 对的句子改错
+        monkeypatch.setattr(t, "_readings", lambda: {"绚都": "绚督"})
+        assert t.speakable("我们都能去") == "我们都能去"
+
 
 class TestExpectedDuration:
     def test_按去标点后的字数算(self):
