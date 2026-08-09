@@ -25,7 +25,22 @@ TRUE_PEAK_MAX = paths.conf("audio.true_peak_max", -1.0)   # dBTP
 AV_DRIFT_MAX = 0.5                     # 音画时长差，秒
 BLACK_MAX = 0.5                        # 单段纯黑上限，秒
 SILENCE_MAX = 2.0                      # 单段静音上限，秒
-DUR_BAND = tuple(paths.conf("video.duration_band", [120.0, 240.0]))   # 成片 2–4 分钟
+DUR_BAND = tuple(paths.conf("video.duration_band", [120.0, 240.0]))   # 成片默认带，2–4 分钟
+
+# 同 check_script.py 的同名机制：`01-topic.md` 的 `时长目标` 字段（分钟）覆盖这条默认带。
+# 两个模块各自维护一份两行的正则，没有抽共用模块——目前只有这两处用得到，
+# 抽出来的复用收益小于多一层间接。
+#     不锚 `$`，理由同 check_script.py 的同名正则：字段允许行尾带 `# 备注`。
+DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
+
+
+def episode_duration_band(episode: Path) -> tuple[float, float] | None:
+    """从这一期 `01-topic.md` 读 `时长目标`（分钟），换算成秒。没有就返回 None。"""
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return None
+    m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
+    return (float(m.group(1)) * 60, float(m.group(2)) * 60) if m else None
 
 
 @dataclass
@@ -71,12 +86,13 @@ def _duration(video: Path, stream: str) -> float:
 def check(video: Path, plan: dict | None = None,
           audio: list[dict] | None = None) -> list[Check]:
     out: list[Check] = []
+    dur_band = episode_duration_band(video.parent) or DUR_BAND
 
     vdur = _duration(video, "v:0")
     adur = _duration(video, "a:0")
 
-    out.append(Check("成片时长 2–4 分钟",
-                     DUR_BAND[0] <= vdur <= DUR_BAND[1],
+    out.append(Check(f"成片时长 {dur_band[0] / 60:g}–{dur_band[1] / 60:g} 分钟",
+                     dur_band[0] <= vdur <= dur_band[1],
                      f"{vdur:.2f}s = {vdur / 60:.2f} 分钟"))
     out.append(Check("音画时长对齐",
                      abs(vdur - adur) < AV_DRIFT_MAX,

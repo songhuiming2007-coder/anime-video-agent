@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
+from . import bgm, paths
 
 # 中文口播字/分钟，只用来粗筛。**真实时长一律以 03-audio/manifest.json 为准。**
 #
@@ -30,9 +30,34 @@ from . import paths
 CPM = paths.conf("script.cpm", 380)
 # 按 331–434 这个区间反推，870–1300 字对应 2.0–3.9 分钟，两端都落在 2–4 分钟目标内。
 # 换音色或文风大变时重测上面三个数，确认这条带子还罩得住。同步在 skills/write-script/SKILL.md
+#
+# 这是**默认带**，对短打驳论类选题成立（CLAUDE.md「内容参数」的账号实测依据）。
+# 不是所有选题都该套这条——人物志/传记类天然需要更多篇幅，把默认值改宽松等于
+# 拿驳论类的数据给不同体裁的内容背书。所以留默认不动，另开一条 per-episode 的路：
+# 见 episode_duration_override()。
 MIN_CHARS = paths.conf("script.min_chars", 870)
 MAX_CHARS = paths.conf("script.max_chars", 1300)
 MIN_ANCHOR = paths.conf("script.min_anchors", 3)   # 剧情锚点下限
+
+# `01-topic.md` 里 `时长目标: 7-8分钟` 这样的字段，覆盖本期的字数/时长带。
+# 不填就是上面 MIN_CHARS–MAX_CHARS 这条默认带，行为不变。
+#     不锚 `$`：01-topic.md 允许行尾挂 `# 备注`（BGM 字段已经这么用），
+#     锚了 `$` 会把注释一起吃进数字组，2026-08-09 实测直接踩到——
+#     字段写了但正则不匹配，静默退回默认档，没有任何报错。
+DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
+
+
+def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
+    """从这一期 `01-topic.md` 的 `时长目标` 字段读目标时长（分钟）。
+
+    没有这个文件、或没写这个字段，返回 None，调用方退回默认带——这是刻意的
+    软失败：字段是可选项，不是「文件必须存在」的前置检查。
+    """
+    topic = script_path.parent / "01-topic.md"
+    if not topic.exists():
+        return None
+    m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
+    return (float(m.group(1)), float(m.group(2))) if m else None
 
 # 单句上限。**2026-08-04 从 40 提到 90，因为 40 是「三期零长句」的直接成因。**
 #
@@ -149,15 +174,35 @@ OUTRO = re.compile(r"(下期再见|下期见|就到这里|我们下期|感谢观
 #
 # 具名场合原先写死在这条正则里，全是春物的专有名词（文化祭、修学旅行、侍奉部……）。
 # 换一部番这一半就一个都命中不了，而锚点检查会因此永远判「0 处，全篇抽象」——
-# 检查项长期误报等于没有检查。2026-07-29 审计时挪进 config/project.json。
-_SCENES = paths.conf("anime.anchor_words", [
-    "文化祭", "体育祭", "修学旅行", "社团", "侍奉部", "奉仕部",
-    "毕业", "开学", "生日", "告白", "决赛", "最终话",
-])
-ANCHOR = re.compile(
-    r"(第[一二三四五六七八九十百\d]+[季集话]|S\d+E?\d*"
-    + ("|" + "|".join(re.escape(w) for w in _SCENES) if _SCENES else "")
-    + r")")
+# 检查项长期误报等于没有检查。2026-07-29 审计时挪进 config/project.json，
+# 但当时只挪成了一个扁平列表，隐含「同一时刻只服务一部番」——这个项目现在
+# `data/episodes/` 下春物、东京喰种的episode 同时存在，扁平列表逼人在检查前
+# 手改全局配置，改错、忘改都是静默的「拿错番的词硬套」。2026-08-09 改成按番
+# 分桶（config 里 `anime.anchor_words` 变成 `{"番名": [...]}`），从这一期自己
+# 的 01-topic.md 读番名（复用 bgm.anime_of，两处解析同一个字段不能各写一套
+# 正则），查不到就退回空列表——不是退回某个默认番的词表，那样等于换了个
+# 地方继续硬套。
+def _anchor_pattern(words: list[str]) -> re.Pattern:
+    """季/集/话通用写法 + 给定的具名场合词。空列表也要能编译（见下方空桶测试）。"""
+    return re.compile(
+        r"(第[一二三四五六七八九十百\d]+[季集话]|S\d+E?\d*"
+        + ("|" + "|".join(re.escape(w) for w in words) if words else "")
+        + r")")
+
+
+def episode_anchor_words(script_path: Path) -> list[str]:
+    """该期所属番的具名场合词表：01-topic.md 的「番:」→ config 里对应的桶。
+
+    读不到番名（没有 01-topic.md、或没写「番:」字段）、或该番还没建词表，
+    一律返回空列表——**不退回 `anime.default` 或任意别的番**，那等于把
+    这次改动想解决的问题换个地方重演一遍。
+    """
+    anime = bgm.anime_of(script_path.parent)
+    table = paths.conf("anime.anchor_words", {})
+    if not anime or not isinstance(table, dict):
+        return []
+    words = table.get(anime, [])
+    return words if isinstance(words, list) else []
 
 
 @dataclass
@@ -178,6 +223,14 @@ def run(path: Path) -> list[Check]:
     text = path.read_text(encoding="utf-8")
     vo, queries, alts = parse(text)
 
+    override = episode_duration_override(path)
+    if override:
+        dur_lo, dur_hi = override
+        min_chars, max_chars = round(dur_lo * CPM), round(dur_hi * CPM)
+    else:
+        dur_lo, dur_hi = MIN_CHARS / CPM, MAX_CHARS / CPM
+        min_chars, max_chars = MIN_CHARS, MAX_CHARS
+
     # 末段若是片尾套话，从正文统计里摘出去（仍然会被配音，只是不参与内容判定）
     outro = vo[-1] if vo and len(vo[-1]) <= 25 and OUTRO.search(vo[-1]) else None
     if outro:
@@ -192,8 +245,9 @@ def run(path: Path) -> list[Check]:
 
     tail = "（另有片尾 1 段，不计入）" if outro else ""
     add("段落数 8–20", 8 <= len(vo) <= 20, f"{len(vo)} 段{tail}")
-    add(f"字数 {MIN_CHARS}–{MAX_CHARS}", MIN_CHARS <= chars <= MAX_CHARS, f"{chars} 字{tail}")
-    add("时长 2–4 分钟", 2 <= chars / CPM <= 4, f"{chars / CPM:.1f} 分钟")
+    add(f"字数 {min_chars}–{max_chars}", min_chars <= chars <= max_chars, f"{chars} 字{tail}"
+        + ("　（01-topic.md 时长目标覆盖）" if override else ""))
+    add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", dur_lo <= chars / CPM <= dur_hi, f"{chars / CPM:.1f} 分钟")
     # 查询按含片尾的总段数比，因为每一段都要出画面
     add("每段都有查询", len(queries) == len(vo) + bool(outro),
         f"查询 {len(queries)} / 段落 {len(vo) + bool(outro)}")
@@ -260,7 +314,7 @@ def run(path: Path) -> list[Check]:
         "、".join(f"「{e}」" for e in sorted(set(enum))) + "　并列平铺，挑一个挖到底"
         if len(set(enum)) >= 2 else "无")
 
-    anchors = ANCHOR.findall(body)
+    anchors = _anchor_pattern(episode_anchor_words(path)).findall(body)
     add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchors) >= MIN_ANCHOR,
         f"{len(anchors)} 处：{'、'.join(sorted(set(anchors))[:5])}" if anchors else "0 处，全篇抽象")
 
@@ -330,7 +384,7 @@ def main() -> int:
 
     print("-" * 60)
     subjective = ("主观项仍需人看：张力立不立得住、公道话像不像反方、"
-                  "形状是否与上一期不同、篇幅有没有平均分配。")
+                  "骨架是否与上一期不同、篇幅有没有平均分配。")
     print(f"{failed} 项未过。{subjective}" if failed else f"机检全过。{subjective}")
     return 1 if failed else 0
 

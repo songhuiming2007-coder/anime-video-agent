@@ -17,5 +17,58 @@
     "kawasaki_saki": ["川崎", "川崎沙希", "沙希"],
     "hayama_hayato": ["叶山", "叶山隼人"],
     "miura_yumiko": ["三浦", "三浦优美子"]
+  },
+
+  "东京喰种": {
+    "_note": "presence_producer 用的是 ccip（config/project.json「visual」一节），不是 tagger——这里的键不是真实 booru 标签，只是给聚类结果起的稳定标识符，写法沿用罗马音习惯方便辨认。2026-08-07 建，只贴了聚类图里认得准的几个，人贴名逐步补。",
+
+    "kamishiro_rize": ["利世", "神代利世"],
+    "nishio_nishiki": ["西尾", "西尾锦"],
+    "kirishima_touka": ["董香", "雾嶋董香"],
+    "kaneki_ken": ["金木", "金木研", "佐佐木琲世", "佐佐木", "琲世", "Haise"],
+    "nagachika_hideyoshi": ["永近", "永近英良", "Hide"],
+    "tsukiyama_shuu": ["月山", "月山习"],
+
+    "yoshimura": ["芳村", "芳村功善"],
+    "fueguchi_hinami": ["雏实", "笛口雏实"],
+    "fueguchi_ryoko": ["凉子", "笛口凉子"],
+    "yomo_renji": ["四方", "四方莲示"],
+    "irimi_kaya": ["佳耶", "入见佳耶"],
+    "koma_enji": ["古间", "古间圆儿"],
+    "nishino_kimi": ["贵未", "西野贵未"],
+
+    "amon_kotarou": ["亚门", "亚门钢太朗"],
+    "mado_kureo": ["真户", "真户吴绪"],
+    "marude_itsuki": ["丸手", "丸手斋"],
+    "kusaba_ippei": ["草场", "草场一平"],
+    "kosaka_yoriko": ["依子", "小坂依子"],
+
+    "yamori": ["壁虎", "大守八云"],
+    "uta": ["诗", "呗"],
+    "itori": ["系璃"],
+    "naki": ["尼克"],
+
+    "_note_re": "2026-08-08 追加 re 篇（S03+S04）新角色，用户提供外貌描述辅助人工贴名。",
+    "urie_kuki": ["瓜江", "瓜江久生"],
+    "shirazu_ginshi": ["不知", "不知吟士"],
+    "mutsuki_tooru": ["六月", "六月透"],
+    "yonebayashi_saiko": ["米林", "米林才子"],
+    "arima_kishou": ["有马", "有马贵将"],
+    "mado_akira": ["真户晓", "晓"],
+    "suzuya_juuzou": ["铃屋", "铃屋什造"],
+    "furuta_nimura": ["旧多", "旧多二福"],
+    "takizawa_seidou": ["泷泽", "泷泽政道"],
+    "kirishima_ayato": ["绚都", "雾岛绚都"],
+    "eto": ["艾特", "高槻泉"],
+    "anju_kurona": ["黑奈", "安久黑奈"],
+    "donato_porpora": ["唐纳托", "唐纳托·波尔波拉", "亚门养父"],
+    "_note_sqrtA_ova": "2026-08-09 追加 √A(S02)+OVA(S00)新角色，用户人贴名辅助识别。",
+    "tatara": ["多多良"],
+    "kuroiwa": ["黑磐", "黑磐搜查官"],
+    "sannami_rika": ["三波丽花"],
+    "shinohara": ["篠原"],
+    "washuu_yoshitoki": ["和修吉时", "吉时"],
+    "ukina": ["忧那"],
+    "anju_nashiro": ["奈白", "安久奈白"]
   }
 }

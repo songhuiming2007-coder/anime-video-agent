@@ -369,10 +369,10 @@ def _bgm_bed(episode: Path, total: float, starts: list[float], work: Path) -> Pa
     anime = bgm.anime_of(episode)
     if not anime:
         return None
-    body = bgm.resolve(anime, "正文")
+    body = bgm.resolve(anime, "正文", bgm.episode_choice(episode, "正文"))
     if not body:
         return None
-    outro = bgm.resolve(anime, "结尾")
+    outro = bgm.resolve(anime, "结尾", bgm.episode_choice(episode, "结尾"))
     cut = _outro_start(starts, total) if outro else None
 
     def gain(rec: dict) -> str:

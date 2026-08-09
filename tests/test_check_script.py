@@ -9,7 +9,6 @@
   换一部番这一半一个都命中不了，「剧情锚点 ≥3」会永远判 0 处。
 """
 
-import importlib
 import json
 
 import pytest
@@ -183,39 +182,65 @@ class TestQueryHygiene:
         assert get(cs.run(f), "查询无构图词").ok
 
 
-class TestAnchorWords:
-    """锚点词必须能换番——这是这个模块唯一的通用性缺口，补的就是它。"""
-
-    @pytest.fixture
-    def with_words(self, tmp_path, monkeypatch):
-        """用别的番的场合词重建 ANCHOR，跑完还原，免得污染其他用例。"""
-        def apply(words):
-            (tmp_path / "project.json").write_text(
-                json.dumps({"anime": {"anchor_words": words}}), encoding="utf-8")
-            monkeypatch.setattr(paths, "CONFIG", tmp_path)
-            monkeypatch.setattr(paths, "_CONF", None)
-            return importlib.reload(cs)
-        yield apply
-        monkeypatch.undo()
-        importlib.reload(cs)
+class TestAnchorPattern:
+    """具名场合词的正则拼装：纯函数，给什么词表就拼什么正则，不碰配置/文件。"""
 
     def test_季集写法与番无关永远命中(self):
-        assert cs.ANCHOR.findall("第二季第三集 S02E02 第十话") == [
+        assert cs._anchor_pattern([]).findall("第二季第三集 S02E02 第十话") == [
             "第二季", "第三集", "S02E02", "第十话"]
 
-    def test_换番之后新场合词命中(self, with_words):
-        mod = with_words(["海边", "天台", "转学"])
-        assert mod.ANCHOR.findall("那天在天台上，后来他转学了") == ["天台", "转学"]
+    def test_具名场合词命中(self):
+        assert cs._anchor_pattern(["天台", "转学"]).findall(
+            "那天在天台上，后来他转学了") == ["天台", "转学"]
 
-    def test_换番之后旧番的词不再命中(self, with_words):
-        # 反向也要测。只测「新词能中」的话，把配置读错成「追加」也会通过。
-        mod = with_words(["海边", "天台"])
-        assert mod.ANCHOR.findall("文化祭") == []
+    def test_不在词表里的词不命中(self):
+        assert cs._anchor_pattern(["天台"]).findall("文化祭") == []
 
-    def test_配置为空时只剩季集写法且正则不崩(self, with_words):
+    def test_空词表只剩季集写法且正则不崩(self):
         # 空列表会让 join 出来是空串，正则里留下一个 `|)` 就废了——所以代码里有分支
-        mod = with_words([])
-        assert mod.ANCHOR.findall("第二季 文化祭") == ["第二季"]
+        assert cs._anchor_pattern([]).findall("第二季 文化祭") == ["第二季"]
+
+
+class TestEpisodeAnchorWords:
+    """锚点词必须能换番——2026-08-09 从「全局单例，换番要手改配置」改成
+    「每期按自己 01-topic.md 的番名，从 config 里按番分桶取词表」，因为
+    `data/episodes/` 下不同番的期数是同时存在的，不是切换着做。"""
+
+    def _config(self, tmp_path, monkeypatch, table):
+        (tmp_path / "project.json").write_text(
+            json.dumps({"anime": {"anchor_words": table}}), encoding="utf-8")
+        monkeypatch.setattr(paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(paths, "_CONF", None)
+
+    def _episode(self, tmp_path, name: str, anime: str | None):
+        ep = tmp_path / name
+        ep.mkdir()
+        if anime is not None:
+            (ep / "01-topic.md").write_text(f"番: {anime}\n", encoding="utf-8")
+        return ep / "02-script.md"  # episode_anchor_words 只看目录，不要求文件真存在
+
+    def test_按番名挑对应的桶(self, tmp_path, monkeypatch):
+        self._config(tmp_path, monkeypatch,
+                     {"春物": ["文化祭"], "东京喰种": ["库因克", "赫子"]})
+        script = self._episode(tmp_path, "ep", "东京喰种")
+        assert cs.episode_anchor_words(script) == ["库因克", "赫子"]
+
+    def test_不拿别番的词表垫背(self, tmp_path, monkeypatch):
+        # 只测「选对」不够，选错了也可能刚好非空——反向也要测
+        self._config(tmp_path, monkeypatch,
+                     {"春物": ["文化祭"], "东京喰种": ["库因克"]})
+        script = self._episode(tmp_path, "ep", "东京喰种")
+        assert "文化祭" not in cs.episode_anchor_words(script)
+
+    def test_该番还没建词表就退回空列表(self, tmp_path, monkeypatch):
+        self._config(tmp_path, monkeypatch, {"春物": ["文化祭"]})
+        script = self._episode(tmp_path, "ep", "夏日重现")
+        assert cs.episode_anchor_words(script) == []
+
+    def test_没有01_topic就退回空列表不崩(self, tmp_path, monkeypatch):
+        self._config(tmp_path, monkeypatch, {"春物": ["文化祭"]})
+        script = self._episode(tmp_path, "ep", None)
+        assert cs.episode_anchor_words(script) == []
 
 
 class TestRhythm:

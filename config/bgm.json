@@ -37,5 +37,63 @@
       }
     },
     "_chosen": "2026-07-29。正文取劇伴，结尾取 S2 OP 伴奏（本期锚点全在 S2）。想换 S1 味道就把结尾改成 ユキトキ。曲库里另有 12 首 OP/ED 伴奏已分轨在同目录，要扩表直接从那里挑，不用回 CD 镜像。"
+  },
+
+  "东京喰种": {
+    "_note": "2026-08-08 起选曲不锁死（CLAUDE.md「十、BGM 约定」），这里不设 use，纯粹是已测量曲子的候选池。哪期用哪首记在该期 01-topic.md 的 BGM正文/BGM结尾 字段。素材来自《东京喰种》OST原声集（2015，山田豊）与《东京喰种:re》OST原声集（2018），只挑了没有 feat. 歌手标注、ID3 只署作曲家的纯配乐/纯乐器轨——一部分是人耳指认的（Grau/Sorrow/Ajito/Taube/Wanderers/Schöpfer/Glassy Sky 出自 S01 碟，Symphonic Suite 组曲与两首 Piano Version 出自 re 碟）。unravel（S1 OP）、asphyxia（re OP）这类正式 OP/ED 单曲的伴奏版不在这批素材里，要用的话得另外找伴奏单曲碟。",
+    "tracks": {
+      "Grau": {
+        "path": "data/library/bgm/东京喰种/12. Grau.mp3",
+        "from": "S01 原声集 Disc1 tr.12", "dur": 130.2, "lufs": -15.5, "onset": 10.0, "vocal": false
+      },
+      "Sorrow": {
+        "path": "data/library/bgm/东京喰种/03. Sorrow.mp3",
+        "from": "S01 原声集 Disc2 tr.03", "dur": 199.8, "lufs": -13.4, "onset": 73.6, "vocal": false
+      },
+      "Ajito": {
+        "path": "data/library/bgm/东京喰种/04. Ajito.mp3",
+        "from": "S01 原声集 Disc2 tr.04", "dur": 131.7, "lufs": -10.3, "onset": 7.2, "vocal": false
+      },
+      "Taube": {
+        "path": "data/library/bgm/东京喰种/06. Taube.mp3",
+        "from": "S01 原声集 Disc1 tr.06", "dur": 154.8, "lufs": -10.2, "onset": 7.5, "vocal": false
+      },
+      "Wanderers": {
+        "path": "data/library/bgm/东京喰种/10. Wanderers.mp3",
+        "from": "S01 原声集 Disc2 tr.10", "dur": 226.5, "lufs": -13.2, "onset": 11.7, "vocal": false
+      },
+      "Schöpfer": {
+        "path": "data/library/bgm/东京喰种/17. Schöpfer.mp3",
+        "from": "S01 原声集 Disc1 tr.17", "dur": 218.2, "lufs": -10.7, "onset": 7.8, "vocal": false
+      },
+      "Glassy Sky": {
+        "path": "data/library/bgm/东京喰种/01. Glassy Sky.mp3",
+        "from": "S01 原声集 Disc2 tr.01", "dur": 294.9, "lufs": -14.1, "onset": 110.3, "vocal": false
+      },
+      "Schmetterling": {
+        "path": "data/library/bgm/东京喰种/05.Mvt. 5 'Schmetterling' (Symphonic Suites from Tokyo Ghoul).mp3",
+        "from": "re 原声集 Disc2 tr.05，Symphonic Suite 第5乐章", "dur": 231.3, "lufs": -13.2, "onset": 10.0, "vocal": false
+      },
+      "Horizon": {
+        "path": "data/library/bgm/东京喰种/07.Mvt. 7 'Horizon' (Symphonic Suites from Tokyo Ghoul).mp3",
+        "from": "re 原声集 Disc2 tr.07，Symphonic Suite 第7乐章", "dur": 173.9, "lufs": -14.5, "onset": 46.8, "vocal": false
+      },
+      "City Jungle": {
+        "path": "data/library/bgm/东京喰种/13.City Jungle.mp3",
+        "from": "re 原声集 Disc1 tr.13", "dur": 309.3, "lufs": -10.6, "onset": 6.1, "vocal": false
+      },
+      "Deep Dive": {
+        "path": "data/library/bgm/东京喰种/14.Deep Dive.mp3",
+        "from": "re 原声集 Disc1 tr.14", "dur": 292.5, "lufs": -11.7, "onset": 6.7, "vocal": false
+      },
+      "Memories (Piano)": {
+        "path": "data/library/bgm/东京喰种/16.Memories (Piano Version).mp3",
+        "from": "re 原声集 Disc2 tr.16，钢琴改编", "dur": 215.5, "lufs": -21.6, "onset": 28.4, "vocal": false
+      },
+      "Reflections (Piano)": {
+        "path": "data/library/bgm/东京喰种/17.Reflections (Piano Version).mp3",
+        "from": "re 原声集 Disc2 tr.17，钢琴改编", "dur": 220.2, "lufs": -26.8, "onset": 30.1, "vocal": false
+      }
+    }
   }
 }
