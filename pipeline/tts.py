@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 from pathlib import Path
 
 from pypinyin import Style, pinyin
@@ -397,9 +398,25 @@ TRIM_DB = 1e-3
 _MUTE = re.compile(r"[“”‘’\"'「」『』《》〈〉（）()\[\]【】]")
 
 
+@lru_cache(maxsize=1)
+def _readings() -> dict[str, str]:
+    """`config/voice.json` 的读音替换表（键 = 原文词，值 = 合成侧同音替换词）。
+
+    **IndexTTS 念错多音字/生僻字没有参数能修**——读音由模型内部判断。
+    只能在合成文本上换成模型不会念错的同音字（2026-08-09 实测：
+    喰种→餐种、绚都→绚督 有效）。字幕用稿子原文，替换只发生在合成侧。
+    每次合成句都调 speakable，表必须只读一次，不能每句读文件。
+    """
+    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+    return cfg.get("readings", {})
+
+
 def speakable(s: str) -> str:
     """念得出来的那份文本。字幕用原文，合成用这个。"""
-    return _MUTE.sub("", s)
+    s = _MUTE.sub("", s)
+    for src, rep in _readings().items():
+        s = s.replace(src, rep)
+    return s
 
 
 def split_sentences(text: str) -> list[str]:

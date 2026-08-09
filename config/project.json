@@ -3,7 +3,7 @@
 
   "anime": {
     "_note": "当前在做的番。clips / cover / ingest 的 --anime 默认值取这里，命令行仍可覆盖。",
-    "default": "春物",
+    "default": "东京喰种",
     "anchor_words": {
       "春物": [
         "文化祭", "体育祭", "修学旅行", "社团", "侍奉部", "奉仕部",

@@ -24,7 +24,20 @@ LUFS_TOL = paths.conf("audio.lufs_tolerance", 1.5)
 TRUE_PEAK_MAX = paths.conf("audio.true_peak_max", -1.0)   # dBTP
 AV_DRIFT_MAX = 0.5                     # 音画时长差，秒
 BLACK_MAX = 0.5                        # 单段纯黑上限，秒
+BLACK_MATCH_MIN = 0.35                 # 成片黑帧与源片黑段的重叠 ≥ 此值才算「源片自带」
+                                        # 为什么不是 BLACK_MAX：切片 seek 有帧级误差
+                                        # （0.04–0.08s），成片黑帧 0.5s 映射回源片最多
+                                        # 偏出这么点，0.35 = 0.5 − 0.15 的容差。
+                                        # 再低会把「源片有黑但没盖住成片黑」误认成内容。
+FRAME_BOUND = 0.05                     # 单片段帧舍入误差上界，秒。编码器输出帧数 =
+                                        # round(dur×fps) ±1 帧；常见帧率（23.976/24/29.97/
+                                        # 30）一帧 ≤ 0.0417s，取 0.05 有余量。累积漂移是
+                                        # 随机游走，最坏 = 每片同向舍入 → 到第 n 片累计
+                                        # ≤ n×0.05。实测：42 片成片中间位置漂移 0.5s。
 SILENCE_MAX = 2.0                      # 单段静音上限，秒
+BLACK_SRC_BUF = 0.3                    # 对照源片时前后各放宽的秒数
+                                        # ffmpeg 快速 seek 会落在关键帧上，实际解码起点
+                                        # 可能早于请求位置；不放宽会漏检紧贴边界的黑段。
 DUR_BAND = tuple(paths.conf("video.duration_band", [120.0, 240.0]))   # 成片默认带，2–4 分钟
 
 # 同 check_script.py 的同名机制：`01-topic.md` 的 `时长目标` 字段（分钟）覆盖这条默认带。
@@ -83,6 +96,62 @@ def _duration(video: Path, stream: str) -> float:
     return float(raw)
 
 
+def _map_black_to_sources(blacks: list[tuple[float, float]],
+                          plan: dict) -> list[tuple[str, float, float, float, float, int]]:
+    """成片黑帧区间 → 它覆盖的源片段引用。
+
+    成片 = 各段 clips 按顺序拼接（与 render.py 同一份 plan、同一套顺序，
+    时间轴才会对得上）。返回
+    [(源路径, 源区间起点, 源区间终点, 成片区间起点, 成片区间终点, 累计片段序号)]；
+    黑帧跨片段边界时一个黑帧映射出多条。片段序号从 1 起——它决定累积漂移
+    窗口的大小（见 `_mapped_covered`）。
+    """
+    out: list[tuple[str, float, float, float, float, int]] = []
+    t = 0.0
+    idx = 0
+    for seg in plan["segments"]:
+        for clip in seg["clips"]:
+            idx += 1
+            lo, hi = t, t + clip["dur"]
+            for b0, b1 in blacks:
+                if b1 > lo and b0 < hi:                 # 有交集
+                    out.append((
+                        clip["source"],
+                        clip["start"] + max(0.0, b0 - lo),
+                        clip["start"] + min(clip["dur"], b1 - lo),
+                        max(b0, lo), min(b1, hi),
+                        idx,
+                    ))
+            t = hi
+    return out
+
+
+def _source_black_covers(src_blacks: list[tuple[float, float]],
+                         src_lo: float, src_hi: float) -> bool:
+    """源片黑段与映射区间的重叠 ≥ 门槛，认定成片黑帧是源片自带。
+
+    源片同样的黑场转场是内容——情绪停顿、转场黑场，成片原样带进来，
+    不该算渲染缺陷。
+    """
+    return any(min(s, src_hi) - max(s0, src_lo) >= BLACK_MATCH_MIN
+               for s0, s in src_blacks)
+
+
+def _mapped_covered(span: tuple[str, float, float, float, float, int],
+                    src_blacks: list[tuple[float, float]]) -> bool:
+    """一条映射是否被源片黑段覆盖，含累积漂移窗口。
+
+    成片时间轴相对排片轴有**累积帧舍入误差**：每个切片编码器输出帧数 =
+    round(dur×fps) ±1 帧，拼接后漂移是随机游走，最坏 = 每片同向舍入，
+    到第 n 片累计 ≤ n 帧（实测 42 片成片中间位置漂移 0.5s，终点 68ms——
+    终点小只因误差互相抵消，中间照样大）。所以黑帧映射回源的位置允许
+    偏出 idx×FRAME_BOUND——这是推导上界，不是调出来的数。
+    """
+    _, slo, shi, _, _, idx = span
+    w = idx * FRAME_BOUND
+    return _source_black_covers(src_blacks, slo - w, shi + w)
+
+
 def check(video: Path, plan: dict | None = None,
           audio: list[dict] | None = None) -> list[Check]:
     out: list[Check] = []
@@ -121,13 +190,52 @@ def check(video: Path, plan: dict | None = None,
     else:
         out.append(Check("响度测量", False, "loudnorm 没吐出 JSON，检查 ffmpeg 构建"))
 
-    # 黑帧。d= 设成上限值，只报超限的那些
+    # 黑帧。**判据：成片黑帧必须能对照回源片段。**
+    # 动画的黑场转场是内容不是故障——源片转场原样带进成片，会被 blackdetect
+    # 误报成缺陷（2026-08-09 实证：S01E07 两句台词间的情绪停顿黑场 0.54s、
+    # S03E12 台词开口处的转场黑场 0.71s，源片同样黑）。
+    # 所以成片黑帧映射回源区间，源片同样黑 = 内容，通过；成片独有黑 = 渲染
+    # 缺陷，拦截。没 plan 时退回旧行为：无源可对照，宁严勿松。
     err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-vf",
                 f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an", "-f", "null", "-"])
     blacks = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err)
-    out.append(Check(f"无 >{BLACK_MAX}s 纯黑", not blacks,
-                     "、".join(f"{float(a):.1f}-{float(b):.1f}s" for a, b in blacks[:3])
-                     or "无"))
+    defects: list[tuple[str, float, float, float, float]] = []
+    if blacks:
+        if plan:
+            mapped = _map_black_to_sources(
+                [(float(a), float(b)) for a, b in blacks], plan)
+            # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
+            # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
+            # 可能早于请求位置（BLACK_SRC_BUF 的职责在这里，常量已删，见下）。
+            by_src: dict[str, list[tuple[str, float, float, float, float, int]]] = {}
+            for span in mapped:
+                src, slo, shi, flo, fhi, idx = span
+                by_src.setdefault(src, []).append(span)
+            for src, spans in by_src.items():
+                # 检测范围也要吃下漂移窗口（idx×FRAME_BOUND），否则源黑段在
+                # 窗口内、检测起点外会整段漏检，判成「源片无黑」（实测踩过：
+                # 黑段起点在映射区间 0.26s 前，d=0.5 检测不到）。
+                lo = min(s - i * FRAME_BOUND for _, s, _, _, _, i in spans) - BLACK_SRC_BUF
+                hi = max(e + i * FRAME_BOUND for _, _, e, _, _, i in spans) + BLACK_SRC_BUF
+                err2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
+                             "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
+                             f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
+                             "-an", "-f", "null", "-"])
+                # blackdetect 输出相对 -ss 起点，换算回源绝对时间
+                src_blacks = [(lo + float(a), lo + float(b))
+                              for a, b in re.findall(
+                                  r"black_start:([\d.]+) black_end:([\d.]+)", err2)]
+                defects += [(src, flo, fhi, slo, shi)
+                            for src, slo, shi, flo, fhi, idx in spans
+                            if not _mapped_covered(
+                                (src, slo, shi, flo, fhi, idx), src_blacks)]
+        else:
+            defects = [(str(video), float(a), float(b), float(a), float(b))
+                       for a, b in blacks]
+    detail = "无" if not defects else "、".join(
+        f"{Path(s).name} 成片 {f0:.1f}-{f1:.1f}s（源 {s0:.1f}-{s1:.1f}s 无黑）"
+        for s, f0, f1, s0, s1 in defects[:3])
+    out.append(Check(f"无 >{BLACK_MAX}s 纯黑（源片转场除外）", not defects, detail))
 
     # 静音
     err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
