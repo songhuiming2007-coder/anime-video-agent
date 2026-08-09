@@ -132,12 +132,21 @@ VERIFY_CEILING = 0.80   # 绝对上限，兜住整段听不出东西的情况
 VERIFY_BABBLE = 2.0
 
 
+INTACT_DURATION_TOLERANCE = 2.0
+# 真残缺是硬断：零填充的空洞打穿 EBML/MPEG 结构，处理到的时长会明显短于
+# ffprobe 报的时长，不是差一两秒的量级。2 秒够吸收容器时间戳取整、
+# 尾包边界这类正常噪声，同时远小于任何一次真正的截断缺口。
+
+
 def intact(video: Path) -> tuple[bool, str]:
-    """片源完整性：ffmpeg 只解复用地走一遍全片，任何报错即判残缺。
+    """片源完整性：ffmpeg 只解复用地走一遍全片，判据是**处理到的时长够不够**，
+    不是「有没有报错」。
 
     **不要用「ffprobe 能不能打开」来判完整。** 没下完的文件是稀疏文件——中间是零填充的
     空洞，文件头往往还在，ffprobe 照样读出时长，只有解到空洞处才报错。
     2026-07-29 就这么误判过：38 集里有 16 集"通过"了文件头检查，实际全都残缺。
+    下面仍然会解复用全片，ffprobe 只用来拿一个「应该处理到多少秒」的参照值，
+    不是拿它「能打开」这件事本身当判据。
 
     **也不要用「实占块 ÷ 逻辑大小」。** 那是本函数最初的实现，2026-07-29 推翻——
     拿 qBittorrent 的 piece 级校验当真值比对 89 个 mkv，块判据漏放 14/72 个残缺文件，
@@ -146,6 +155,14 @@ def intact(video: Path) -> tuple[bool, str]:
 
     块比例只当**前置快筛**：少块一定是残缺（不会凭空少块），够块不代表完整。
     快筛能免掉大部分文件的全片扫描，实测过判据的文件平均 0.88s。
+
+    **判据也不是「stderr 是否为空」。** 2026-08-07 实测东京喰种 12/12 集在
+    `-v error` 下都吐一行 `Error parsing Opus packet header`，集中在片尾最后
+    ~90s 内，退出码 0，`-progress` 显示处理到的时长与 ffprobe 报的时长差
+    <0.1s——是该压制组 Opus 编码器收尾时写出的一个畸形包，libavcodec 的包头
+    解析器报错但没打断解复用，属于良性噪声，不是本函数要防的「文件没下完」。
+    旧版把这两件事混为一谈：凡是 stderr 非空一律判残缺，等于把「有没有产生
+    任何警告」当成了「文件是否完整」的代理，而这条检查真正该测的是后者。
     """
     # 批量校验时一个路径写错不该打断整批：报 FAIL，让其余文件照常跑完
     try:
@@ -158,19 +175,36 @@ def intact(video: Path) -> tuple[bool, str]:
     if pct < 0.99:  # 单向快筛：只在判「残缺」时可信
         return False, f"实占块仅 {pct:.0%}，未下完"
 
+    try:
+        expected = _video_duration(video)
+    except (subprocess.CalledProcessError, ValueError):
+        return False, "ffprobe 读不出时长，容器已损坏"
+
     # -c copy 不解码，只走容器：零填充的空洞会直接打断 EBML/MPEG 结构，
     # 足以抓出所有残缺，比全解码快一个量级。实测 89 个文件零漏放零误杀。
+    # -progress 把实际处理到的时长吐到 stdout，用来跟 expected 比。
     proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(video),
-         "-c", "copy", "-f", "null", "-"],
+        ["ffmpeg", "-nostdin", "-v", "error", "-progress", "pipe:1",
+         "-i", str(video), "-c", "copy", "-f", "null", "-"],
         capture_output=True, text=True,
     )
+    processed = 0.0
+    for ln in proc.stdout.splitlines():
+        # ffmpeg 的 -progress 有个多年未修的命名 bug：out_time_ms 实际是微秒
+        # （与 out_time_us 数值相同），按名字当毫秒用会把时长算小一千倍。
+        if ln.startswith("out_time_us="):
+            v = ln.split("=", 1)[1].strip()
+            if v.lstrip("-").isdigit():
+                processed = int(v) / 1_000_000
+
     err = proc.stderr.strip()
-    if err:
+    if proc.returncode != 0 or expected - processed > INTACT_DURATION_TOLERANCE:
         # 剥掉 ffmpeg 的模块前缀「[matroska,webm @ 0x7d4c38000] 」，它占掉半行又不含信息
-        first = re.sub(r"^\[[^\]]+@\s*0x[0-9a-f]+\]\s*", "", err.splitlines()[0])
-        return False, f"解复用报错：{first[:36]}"
-    return True, f"{st.st_size / 2**20:.0f}M 全片解复用通过"
+        first = (re.sub(r"^\[[^\]]+@\s*0x[0-9a-f]+\]\s*", "", err.splitlines()[0])
+                  if err else f"退出码 {proc.returncode}")
+        return False, f"只处理到 {processed:.0f}/{expected:.0f}s：{first[:36]}"
+    note = "（有非致命解码警告，未截断处理）" if err else ""
+    return True, f"{st.st_size / 2**20:.0f}M 全片解复用通过{note}"
 
 
 def _video_duration(video: Path) -> float:

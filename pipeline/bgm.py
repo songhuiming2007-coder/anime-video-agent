@@ -1,6 +1,10 @@
 """BGM 曲目：从 CD 镜像里分轨，量指标，供 render.py 取用。
 
-这是 Phase 0 工具，一部番只跑一次，不进每期循环（CLAUDE.md「BGM 约定」）。
+分轨/测量（`scan`/`extract`/`measure`）仍是攒曲库用的工具，不进每期循环。
+但**选哪首**从 2026-08-08 起改成每期人耳现选（CLAUDE.md「十、BGM 约定」）——
+AI 的音乐审美、对经典歌曲的判断不如人，Phase 0 一次性锁死 3–5 首违背这个事实。
+选曲结果记在每期 `01-topic.md` 的 `BGM正文`/`BGM结尾` 字段，`resolve()` 读它，
+没填才退回 `config/bgm.json` 的 `use`（多数番这个字段会是空的）。
 
 **为什么需要它：** 原声碟是拆好轨的（一首一个 flac），但 OP/ED 单曲碟是
 **整轨镜像 + cue**——一张碟只有一个 `GNCA-0380.flac`，四首歌全在里面。
@@ -170,10 +174,15 @@ def measure(audio: Path) -> dict:
     # 入声点：astats 逐窗给 RMS，找第一个超 -30 dBFS 的窗。
     # 窗长要按真实采样率算——astats 的 reset=N 是「每 N 个音频帧复位」，
     # 一帧 1024 样本，44.1k 的碟一窗 0.279s，写死 0.25s 会有 11% 误差。
-    sr = int(subprocess.run(
+    sr_out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(audio)],
-        capture_output=True, text=True, check=True).stdout.strip() or 44100)
+        capture_output=True, text=True, check=True).stdout.strip()
+    # 带内嵌封面图（attached_pic）的 mp3，csv=p=0 在唯一字段后仍会拖一个逗号——
+    # 不是第二个流混进来了（-select_streams a:0 已经排除了封面那条 video 流），
+    # 是 ffprobe 自己在探测到文件里还有别的流时，CSV 逗号分隔符照样打出来。
+    # 只取逗号前的第一段，其余按原逻辑退回默认采样率。
+    sr = int(sr_out.split(",")[0] or 44100)
     reset = 12
     win = reset * 1024 / sr
     p = subprocess.run(
@@ -219,8 +228,14 @@ def anime_of(episode: Path) -> str | None:
     return None
 
 
-def resolve(anime: str, slot: str) -> dict | None:
+def resolve(anime: str, slot: str, override: str | None = None) -> dict | None:
     """取某个用途（`正文` / `结尾`）该用哪首，返回带绝对路径和实测响度的条目。
+
+    2026-08-08 起选曲改成每期人耳现选（CLAUDE.md「十、BGM 约定」）——AI 的音乐审美、
+    对经典歌曲的判断不如人，Phase 0 时一次性锁死 3–5 首违背这个事实。`override` 是
+    `01-topic.md` 里 `BGM正文`/`BGM结尾` 字段填的曲名，人听完当期配音再挑，
+    有值就用它，不必是 `use` 锁定的那首——`use` 现在只是没人手动指定时的退路，
+    不是权威来源，多数番不会再配这个字段。
 
     两件事必须由这里给出，不能让调用方自己猜：
 
@@ -232,13 +247,13 @@ def resolve(anime: str, slot: str) -> dict | None:
        所以静态增益是错的控制量，得按每首的实测值归一到统一目标。
     """
     tbl = load(anime)
-    name = (tbl.get("use") or {}).get(slot)
+    name = override or (tbl.get("use") or {}).get(slot)
     if not name:
         return None
     rec = tbl.get("tracks", {}).get(name)
     if rec is None:
-        raise SystemExit(
-            f"FAIL 曲目表里没有「{name}」，检查 config/bgm.json 的 {anime}.use.{slot}")
+        src = f"01-topic.md 的 BGM{slot} 字段" if override else f"config/bgm.json 的 {anime}.use.{slot}"
+        raise SystemExit(f"FAIL 曲目表里没有「{name}」，检查{src}")
     p = paths.ROOT / rec["path"]
     if not p.exists():
         raise SystemExit(
@@ -248,6 +263,22 @@ def resolve(anime: str, slot: str) -> dict | None:
             f"FAIL 「{name}」没有实测响度，闪避参数会失准。\n"
             f"     跑 `python -m pipeline.bgm measure {rec['path']}` 补进 config/bgm.json")
     return {"name": name, "path": p, **rec}
+
+
+def episode_choice(episode: Path, slot: str) -> str | None:
+    """从 `01-topic.md` 取 `BGM正文` / `BGM结尾` 字段——每期人耳现选的曲名。
+
+    这两个字段允许后补：`01-topic.md` 在选题阶段（01）就建了，但 BGM 要等
+    03 配音出来、人听过才能选，字段填晚于文件创建没关系，渲染时读到就用，
+    没填就交给 `resolve()` 退回 `use` 字段（多数情况下那也是空的，直接不铺 BGM）。
+    """
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return None
+    for line in topic.read_text(encoding="utf-8").splitlines():
+        if m := re.match(rf"^\s*BGM{re.escape(slot)}\s*[:：]\s*(.+?)\s*$", line):
+            return m.group(1).strip()
+    return None
 
 
 def main() -> None:

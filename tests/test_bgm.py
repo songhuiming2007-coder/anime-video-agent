@@ -100,6 +100,73 @@ class TestInstrumental:
             assert not bgm.Track(1, title, 0.0).instrumental
 
 
+class TestEpisodeChoice:
+    def test_读到字段(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text(
+            "番: 东京喰种\nBGM正文: Grau\nBGM结尾: Schöpfer\n", encoding="utf-8")
+        assert bgm.episode_choice(tmp_path, "正文") == "Grau"
+        assert bgm.episode_choice(tmp_path, "结尾") == "Schöpfer"
+
+    def test_字段没填返回None(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("番: 东京喰种\n", encoding="utf-8")
+        assert bgm.episode_choice(tmp_path, "正文") is None
+
+    def test_文件不存在返回None(self, tmp_path):
+        assert bgm.episode_choice(tmp_path, "正文") is None
+
+    def test_允许后补不要求首次写入就有(self, tmp_path):
+        # 01-topic.md 选题阶段就建了，BGM 要等听完配音才填——
+        # 这里模拟"先建文件不带BGM字段，后来才追加"这个真实时序。
+        p = tmp_path / "01-topic.md"
+        p.write_text("番: 东京喰种\n", encoding="utf-8")
+        assert bgm.episode_choice(tmp_path, "正文") is None
+        p.write_text(p.read_text(encoding="utf-8") + "BGM正文: Grau\n", encoding="utf-8")
+        assert bgm.episode_choice(tmp_path, "正文") == "Grau"
+
+
+class TestResolveOverride:
+    """override 优先于 use；没给 override 才退回 use（2026-08-08 每期现选改动）。"""
+
+    FAKE_TABLE = {
+        "use": {"正文": "曲A"},
+        "tracks": {
+            "曲A": {"path": "data/library/bgm/x/曲A.flac", "lufs": -15.0},
+            "曲B": {"path": "data/library/bgm/x/曲B.flac", "lufs": -12.0},
+        },
+    }
+
+    def test_没给override退回use(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bgm, "load", lambda anime: self.FAKE_TABLE)
+        monkeypatch.setattr(bgm.paths, "ROOT", tmp_path)
+        (tmp_path / "data/library/bgm/x").mkdir(parents=True)
+        (tmp_path / "data/library/bgm/x/曲A.flac").write_bytes(b"x")
+        got = bgm.resolve("x", "正文")
+        assert got["name"] == "曲A"
+
+    def test_给了override就不看use(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bgm, "load", lambda anime: self.FAKE_TABLE)
+        monkeypatch.setattr(bgm.paths, "ROOT", tmp_path)
+        (tmp_path / "data/library/bgm/x").mkdir(parents=True)
+        (tmp_path / "data/library/bgm/x/曲B.flac").write_bytes(b"x")
+        got = bgm.resolve("x", "正文", override="曲B")
+        assert got["name"] == "曲B"
+
+    def test_override指到曲库里没有的名字要报错(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bgm, "load", lambda anime: self.FAKE_TABLE)
+        with pytest.raises(SystemExit, match="01-topic.md 的 BGM正文 字段"):
+            bgm.resolve("x", "正文", override="不存在的曲")
+
+    def test_use指到曲库里没有的名字报错信息不同(self, monkeypatch, tmp_path):
+        bad_table = {"use": {"正文": "不存在的曲"}, "tracks": {}}
+        monkeypatch.setattr(bgm, "load", lambda anime: bad_table)
+        with pytest.raises(SystemExit, match="config/bgm.json 的 x.use.正文"):
+            bgm.resolve("x", "正文")
+
+    def test_两者都没给返回None(self, monkeypatch):
+        monkeypatch.setattr(bgm, "load", lambda anime: {"use": {}, "tracks": {}})
+        assert bgm.resolve("x", "正文") is None
+
+
 class TestSafeName:
     def test_保留日文假名汉字(self):
         # 不做罗马字转写——文件名要能跟曲目表和笔记里的名字对上，
