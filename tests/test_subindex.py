@@ -113,6 +113,43 @@ class TestStyleFilter:
         assert not subindex.NON_DIALOGUE_STYLE.match("Inner")
         assert subindex.NON_DIALOGUE_STYLE.match("In-CN")
 
+    def test_裸JP样式被滤掉_但SubJP不受牵连(self):
+        # 2026-08-09 罪恶王冠（诸神字幕组）：日文轨样式就叫裸 "JP"，不落进任何前缀规则，
+        # 全靠 KANA 兜底——但纯汉字的日文词/人名零假名，会被当中文台词漏进索引
+        # （实测漏了 183 条：「桜満集」「了解」「作戦開始」…）。精确匹配，不是前缀匹配，
+        # 就是为了不牵连 Sub-JP 这类已有样式。
+        assert subindex.NON_DIALOGUE_STYLE.match("JP")
+        assert subindex.NON_DIALOGUE_STYLE.match("jp")
+        assert not subindex.NON_DIALOGUE_STYLE.match("Sub-JP")
+        assert not subindex.NON_DIALOGUE_STYLE.match("JPSC")
+
+    def test_纯汉字日文人名不会当中文台词进索引(self, tmp_path):
+        # test_裸JP样式被滤掉 保证的是「style 判据挡住了它」；这条守的是端到端结果——
+        # 光有 style 判据、`parse()` 没接上就是白测。角色本名「桜満集」零假名，
+        # 光靠 KANA 判据会放行，必须靠 style="JP" 才能挡住。
+        f = ass(tmp_path,
+                line(1, 4, "青春是谎言 亦是罪恶"),
+                line(5, 8, "桜満集", style="JP"),
+                line(9, 12, "盲目地肯定周遭的所有事物"))
+        assert all("桜満集" not in u.text for u in subindex.parse(f, "X", 1, 1))
+
+    def test_反序命名的插曲歌词样式也被滤掉(self):
+        # 2026-08-09 罪恶王冠：插曲歌词样式叫 CN_song/JP_song/Eng.song——跟已有的
+        # song_CN_ed 是同一个陷阱（语义贴题、画面是别的），只是复合顺序反了，
+        # 前缀规则抓不到，实测漏了 16+22 条，用后缀匹配补上。
+        for s in ("CN_song", "JP_song", "Eng.song", "cn_song"):
+            assert subindex.NON_DIALOGUE_STYLE.match(s), s
+        # 不能因为加了后缀匹配就误伤真台词样式——它们都不以 song 结尾
+        for s in self.KEEP:
+            assert "song" not in s.lower()
+
+    def test_NOTE样式被滤掉(self):
+        # 2026-08-09 罪恶王冠：NOTE 混标译注（多数，如「Daath：希伯来语…」）与极少数
+        # 唯一承载某个画面文字的真台词。两难之下选「宁可漏，不可错」，整个 style 滤掉——
+        # 详细取舍见 subindex.py 里 NON_DIALOGUE_STYLE 上方的注释。
+        assert subindex.NON_DIALOGUE_STYLE.match("NOTE")
+        assert subindex.NON_DIALOGUE_STYLE.match("note")
+
     def test_ED_歌词不进索引(self, tmp_path):
         f = ass(tmp_path,
                 line(1, 4, "青春是谎言 亦是罪恶"),
@@ -280,3 +317,37 @@ class TestSearchEpisode:
         monkeypatch.setattr(subindex, "embed", self._embed(units))
         with pytest.raises(SystemExit):
             subindex.search("q", np.array([[.9, .1]]), units, season=1)
+
+
+class TestEncoding:
+    """字幕编码探测（2026-08-09，罪恶王冠 ep09-22 外挂字幕触发）。
+
+    ASS 没有强制编码，`pysubs2.load` 不传 `encoding` 时按 UTF-8 硬解。
+    之前所有番的外挂字幕恰好都是 UTF-8，这条分支从没被走到过；罪恶王冠的
+    `.GB.ass`/`.BIG5.ass` 是 Windows 工具存出来的 UTF-16 LE 带 BOM，
+    不探测直接送进 pysubs2.load 会当场 UnicodeDecodeError，phase0 在 ep09 就地崩溃。
+    """
+
+    def test_utf16le_bom_识别为utf16(self, tmp_path):
+        f = tmp_path / "t.ass"
+        f.write_bytes(b"\xff\xfe")
+        assert subindex.sniff_encoding(f) == "utf-16"
+
+    def test_utf16be_bom_识别为utf16(self, tmp_path):
+        f = tmp_path / "t.ass"
+        f.write_bytes(b"\xfe\xff")
+        assert subindex.sniff_encoding(f) == "utf-16"
+
+    def test_无bom时退回utf8sig(self, tmp_path):
+        # utf-8-sig 对没有 BOM 的普通 UTF-8 同样安全：找不到 BOM 就按普通 UTF-8 解，
+        # 不会影响任何现有素材（其余全部番的外挂字幕都是这种情况）。
+        f = tmp_path / "t.ass"
+        f.write_text("普通 UTF-8 文件", encoding="utf-8")
+        assert subindex.sniff_encoding(f) == "utf-8-sig"
+
+    def test_utf16文件能被parse正确解析(self, tmp_path):
+        # 这条就是 2026-08-09 那个 bug 的复现：不传 encoding 时这里会 UnicodeDecodeError
+        f = tmp_path / "t.ass"
+        f.write_text(HEAD + line(1, 4, "青春是谎言 亦是罪恶") + "\n", encoding="utf-16")
+        out = subindex.parse(f, "X", 1, 1)
+        assert out and out[0].text == "青春是谎言 亦是罪恶"

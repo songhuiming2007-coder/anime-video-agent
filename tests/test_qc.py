@@ -32,12 +32,13 @@ class TestMapBlackToSources:
         plan = _plan([2, 2])          # 段1 0-20s，段2 20-40s
         out = qc._map_black_to_sources([(25.0, 26.0)], plan)
         assert len(out) == 1
-        src, slo, shi, flo, fhi, idx = out[0]
+        src, slo, shi, flo, fhi, idx, bi = out[0]
         assert src == "src2-0.mkv"    # 段2 第一个 clip
         assert (flo, fhi) == (25.0, 26.0)
         assert abs(slo - 5.0) < 1e-6  # 成片 25s = 源 clip start 0 + (25-20)
         assert abs(shi - 6.0) < 1e-6
         assert idx == 3               # 第 3 个片段（段1 两个 + 段2 第一个）
+        assert bi == 0                # 第一条黑
 
     def test_黑帧跨片段边界_映射两条(self):
         plan = _plan([2])             # 0-20s，每 clip 10s
@@ -106,3 +107,37 @@ class TestMappedCovered:
         # 第 2 片的窗口只有 0.1s，0.47s 的漂移罩不住；第 26 片（上面）能罩住
         span2 = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 2)
         assert not qc._mapped_covered(span2, [(1255.13, 1255.84)])
+
+
+def _span(src, slo, shi, flo, fhi, idx, bi):
+    return (src, slo, shi, flo, fhi, idx, bi)
+
+
+class TestBlackDefects:
+    """一条黑跨多片段：按「未覆盖部分 ≥ BLACK_MAX」整体判，不逐片段。
+
+    黑帧跨切片边界时边界上一两帧暗场可能落进相邻片段，而源片只在主片段有
+    转场黑——逐片段判会把整段源转场误报成缺陷（2026-08-10 实测踩坑）。
+    """
+
+    def test_全覆盖_无缺陷(self):
+        m = [_span("a.mkv", 631.0, 632.5, 82.0, 83.5, 1, 0)]
+        assert qc._black_defects(m, set(m)) == []
+
+    def test_未覆盖只有边角料_小于门槛_放行(self):
+        # 主片段源片淡出黑 1.45s + 邻片段首帧 0.13s 暗场（2026-08-10 楪祈实况）
+        m1 = _span("a.mkv", 631.0, 632.5, 82.0, 83.5, 1, 0)    # 被源黑盖住
+        m2 = _span("b.mkv", 314.0, 314.13, 83.5, 83.63, 2, 0)  # 没盖住，0.13s
+        assert qc._black_defects([m1, m2], {m1}) == []
+
+    def test_未覆盖超过门槛_判缺陷(self):
+        m1 = _span("a.mkv", 631.0, 632.5, 82.0, 83.5, 1, 0)
+        m2 = _span("b.mkv", 314.0, 314.6, 83.5, 84.1, 2, 0)    # 没盖住，0.6s
+        assert qc._black_defects([m1, m2], {m1}) == [
+            ("b.mkv", 83.5, 84.1, 314.0, 314.6)]
+
+    def test_两条黑互不干扰(self):
+        m1 = _span("a.mkv", 631.0, 632.5, 82.0, 83.5, 1, 0)     # bi=0 全覆盖
+        m2 = _span("c.mkv", 500.0, 500.6, 300.0, 300.6, 2, 1)   # bi=1 未覆盖 0.6s
+        assert qc._black_defects([m1, m2], {m1}) == [
+            ("c.mkv", 300.0, 300.6, 500.0, 500.6)]

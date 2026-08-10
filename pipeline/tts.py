@@ -524,7 +524,10 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     sents = split_sentences(seg.text)
     if len(sents) <= 1:
         take = _render_one(engine, seg, dest)
-        take.sentences = [{"text": seg.text, "start": 0.0, "duration": take.duration}]
+        speak = take.duration
+        _pad_tail(dest, _para_gap())
+        take.duration = round(probe_duration(dest), 3)
+        take.sentences = [{"text": seg.text, "start": 0.0, "duration": round(speak, 3)}]
         return take
 
     tmp_dir = dest.parent / f".{dest.stem}-sents"
@@ -542,6 +545,7 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
             worst_cer = max(worst_cer, take.cer)
             tries = max(tries, take.attempts)
         _concat_with_gap(parts, dest, SENT_GAP)
+        _pad_tail(dest, _para_gap())
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta)
     finally:
@@ -593,6 +597,33 @@ def _concat_with_gap(parts: list[Path], dest: Path, gap: float) -> None:
     with wave.open(str(dest), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes(struct.pack(f"<{len(out)}h", *out))
+
+
+def _para_gap() -> float:
+    """段与段之间的停顿秒数（段落呼吸），`config/project.json` 的 `script.para_gap`。
+
+    2026-08-10 用户定 0.4s：段间原本背靠背硬拼接、毫无停顿，听感急促；而且 12ms
+    的淡入淡出只磨掉波形阶跃的一小段，段边界咔嗒声仍在。0.4s 纯静音一次解决两个：
+    说话人换气的常规量级 + 「静音→静音」没有幅度跳变，不可能咔嗒。
+    """
+    return float(paths.conf("script.para_gap", 0.4))
+
+
+def _pad_tail(path: Path, secs: float) -> None:
+    """段尾追加 `secs` 秒纯静音。必须在 `_trim_silence` / `_concat_with_gap` 之后调用，
+    否则会被裁掉。纯数字零不会产生包络阶跃（见 SENT_FADE 注释）。
+    """
+    if secs <= 0:
+        return
+    import wave
+    import struct
+    with wave.open(str(path)) as w:
+        sr = w.getframerate()
+        data = w.readframes(w.getnframes())
+    extra = int(round(sr * secs))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(data + struct.pack(f"<{extra}h", *([0] * extra)))
 
 
 def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:

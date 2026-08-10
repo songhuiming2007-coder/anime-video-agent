@@ -78,9 +78,27 @@ CJK = re.compile(r"[一-鿿]")
 # 命名逐组不同（OP-CN / EDCN / EDCN-yui / In-CN…），所以按前缀匹配。
 # 「留」的一侧是 Sub-CN / Text-cn 这类，前缀不沾，不会误杀。
 # 遇到新发布时看 `build` 打印的 style 分布，有没漏的一眼能看出来。
+#
+# 2026-08-09 罪恶王冠（诸神字幕组）实测出三个前两部番没见过的命名，逐个核实后加：
+#
+# 1. **裸 `JP`**：日文轨被单独命名成不带任何前缀/分隔符的纯 "JP"，不落进上面任何一条
+#    前缀规则。之前全靠下面 `KANA` 兜底过滤日文行，但纯汉字的日文词/人名（如角色本名
+#    「桜満集」、短台词「了解」「作戦開始」「敵襲」）一个假名都没有，会连同中文台词
+#    一起被判定为「含汉字的正常台词」漏进索引——实测漏了 183 条。加成精确匹配（`^jp$`），
+#    不做前缀匹配，是为了不牵连 `Sub-JP` 这类已经在下面 `KEEP` 测试里验证过要保留的样式。
+# 2. **`CN_song` / `JP_song` / `Eng.song`**：插曲歌词，跟 `song_CN_ed` 是同一个陷阱
+#    （语义贴题、画面是别的），但复合顺序反了（`song` 在后不在前），現有前缀规则抓不到，
+#    实测漏了 16+22 条。用后缀匹配补上，不影响任何已有前缀命中。
+# 3. **`NOTE`**：译注与真台词混标在同一个 style 里——绝大多数是「专有名词：解释」形式的
+#    现实知识注解（希腊神话、希伯来语、军事缩写），但极少数（ep10 两条）是唯一承载某个
+#    画面文字/台词的行、没有其他 style 重复。两难之下按「宁可漏，不可错」处理：滤掉整个
+#    style——留着的坏处是把译注当台词检索、送进只认中文的 embedding 模型且不报错，
+#    滤掉的坏处只是那几条查不到、退回下一个候选，后者的代价明显更小。
 NON_DIALOGUE_STYLE = re.compile(
     r"^(?:op|ed|in)(?:[-_ ]|cn|jp|\d|$)"
-    r"|^(?:title|staff|bgm|gamen|logo|sign|song|lyric|kara)", re.I)
+    r"|^(?:title|staff|bgm|gamen|logo|sign|song|lyric|kara)"
+    r"|^(?:jp|note)$"
+    r"|^.*[-_.]song$", re.I)
 
 
 @dataclass
@@ -107,6 +125,21 @@ def _clean(raw: str) -> str:
     return s.strip()
 
 
+def sniff_encoding(path: Path) -> str:
+    """按 BOM 探测字幕文件编码。
+
+    ASS 没有强制编码；`pysubs2.load` 不传 `encoding` 时按 UTF-8 硬解，撞上
+    Windows 工具（Aegisub 等）常存的 UTF-16 LE/BE 文件直接 `UnicodeDecodeError`
+    ——2026-08-09 罪恶王冠 ep09-22 的外挂 `.GB.ass`/`.BIG5.ass` 就是 UTF-16 LE
+    带 BOM，之前所有番的外挂字幕都恰好是 UTF-8，这条分支从没被走到过。
+    `utf-8-sig` 对没有 BOM 的普通 UTF-8 文件同样安全（找不到 BOM 就按普通
+    UTF-8 解），不会影响任何现有素材。
+    """
+    with path.open("rb") as f:
+        head = f.read(2)
+    return "utf-16" if head in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+
+
 def styles(path: Path) -> dict[str, int]:
     """各 style 有多少行进得了索引，以及被 style 判据滤掉多少。
 
@@ -114,7 +147,7 @@ def styles(path: Path) -> dict[str, int]:
     所以要让它可审计——换个发布时看一眼分布，有没漏掉的歌词 style 一目了然。
     """
     kept: dict[str, int] = {}
-    for ev in pysubs2.load(str(path)):
+    for ev in pysubs2.load(str(path), encoding=sniff_encoding(path)):
         if ev.is_comment or DRAW.search(ev.text):
             continue
         t = _clean(ev.text)
@@ -127,7 +160,7 @@ def styles(path: Path) -> dict[str, int]:
 
 def parse(path: Path, anime: str, season: int, episode: int) -> list[Unit]:
     """字幕文件 → 检索单元列表（滑窗合并，步长 1，窗口间重叠）。"""
-    subs = pysubs2.load(str(path))
+    subs = pysubs2.load(str(path), encoding=sniff_encoding(path))
 
     lines: list[tuple[float, float, str]] = []
     for ev in subs:
