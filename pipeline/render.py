@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -357,56 +358,232 @@ def _outro_start(starts: list[float], total: float) -> float | None:
     return max(ok) if ok else None
 
 
-def _bgm_bed(episode: Path, total: float, starts: list[float], work: Path) -> Path | None:
-    """铺 BGM 垫底轨：正文一首，结尾可换一首，全长 `total` 秒。
+BODY_ENTRY = re.compile(r"^\s*BGM正文切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
 
-    没配曲目表就返回 None，渲染出无 BGM 版——这是允许的状态，不报错。
 
-    两首之间用 acrossfade 交叉，长度算得刚好凑满 total：
-    正文段取 `切入点 + 交叉时长`，结尾段取 `total - 切入点`，
-    acrossfade 的输出长度是 `两段之和 - 交叉时长`，正好等于 total。
+def _body_entry_delay(episode: Path) -> float:
+    """`01-topic.md` 的 `BGM正文切入点: N秒` → 正文 BGM 从第 N 秒才开始（前面留静音，给片头曲/开场让位）。
+
+    没写就是 0（BGM 从片头就铺）。写了但格式不对直接报错——静默退回 0 是
+    「写错了却不报」，等于让人以为配了实际没配。
+    """
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return 0.0
+    text = topic.read_text(encoding="utf-8")
+    m = BODY_ENTRY.search(text)
+    if m:
+        return float(m.group(1))
+    if "BGM正文切入点" in text:
+        raise SystemExit("FAIL `BGM正文切入点` 格式不对，应为 `BGM正文切入点: 36秒`")
+    return 0.0
+
+
+BGM_LIST_HEAD = re.compile(r"^\s*BGM\s*[:：]\s*$")
+BGM_ITEM = re.compile(r"^-\s*(.+?)\s*$")
+BGM_ITEM_AT = re.compile(r"^(.+?)\s*@\s*([\d.]+)\s*秒$")
+BGM_MID_ENTRY = re.compile(r"^\s*BGM中段切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
+BGM_OUTRO_ENTRY = re.compile(r"^\s*BGM结尾切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
+
+
+def _bgm_list(episode: Path) -> list[tuple[str, float | None]] | None:
+    """读 `01-topic.md` 的 `BGM:` 列表——通用 N 首拼接格式。
+
+    ```
+    BGM:
+      - Departures ～あなたにおくるアイの歌～ @36秒
+      - 想いを巡らす100の事象
+      - Planetes @470秒
+    ```
+    每行一首；`@N秒` = 绝对起点，不写 = 自动接上一首自然结尾（第一首自动 = 0）。
+    行里带了 `@` 但格式不对直接报错——静默当自动接等于写错了却不报。
+    没 `BGM:` 块返回 None，退回命名槽位（`BGM正文`/`BGM中段`/`BGM结尾`，老格式）。
+    """
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return None
+    lines = topic.read_text(encoding="utf-8").splitlines()
+    for idx, line in enumerate(lines):
+        if not BGM_LIST_HEAD.match(line):
+            continue
+        seq: list[tuple[str, float | None]] = []
+        for ln in lines[idx + 1:]:
+            s = ln.strip()
+            if not s:
+                continue
+            m = BGM_ITEM.match(s)
+            if not m:
+                break  # 非 `- ` 行 = 块结束
+            item = m.group(1).strip()
+            if mm := BGM_ITEM_AT.match(item):
+                seq.append((mm.group(1).strip(), float(mm.group(2))))
+            elif "@" in item:
+                raise SystemExit(
+                    f"FAIL `BGM:` 列表行 @ 起点格式不对：{item}\n"
+                    f"     应为 `- 曲名 @N秒`")
+            else:
+                seq.append((item, None))
+        return seq
+    return None
+
+
+def _seg_entry(episode: Path, slot: str, pattern: re.Pattern) -> float | None:
+    """读 `BGM{slot}切入点: N秒`。写了但格式不对直接报错，不静默退回。"""
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return None
+    text = topic.read_text(encoding="utf-8")
+    m = pattern.search(text)
+    if m:
+        return float(m.group(1))
+    if f"BGM{slot}切入点" in text:
+        raise SystemExit(f"FAIL `BGM{slot}切入点` 格式不对，应为 `BGM{slot}切入点: N秒`")
+    return None
+
+
+def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[dict, float]] | None:
+    """拼 BGM 段序列 [(曲目记录, 绝对起点)]。起点显式或自动接上一首结尾。
+
+    没配曲目表返回 None（渲染无 BGM 版，允许状态）。`BGM:` 列表优先，
+    没有就退回命名槽位。
     """
     anime = bgm.anime_of(episode)
     if not anime:
         return None
+
+    seq = _bgm_list(episode)
+    if seq is not None:
+        plan: list[tuple[dict, float]] = []
+        for name, at in seq:
+            rec = bgm.resolve(anime, "列表", name)
+            if at is None:
+                at = plan[-1][1] + plan[-1][0]["dur"] if plan else 0.0
+            plan.append((rec, at))
+        return plan
+
     body = bgm.resolve(anime, "正文", bgm.episode_choice(episode, "正文"))
     if not body:
         return None
-    outro = bgm.resolve(anime, "结尾", bgm.episode_choice(episode, "结尾"))
-    cut = _outro_start(starts, total) if outro else None
+    plan = [(body, _body_entry_delay(episode))]
+    mid = bgm.episode_choice(episode, "中段")
+    if mid:
+        c1 = _seg_entry(episode, "中段", BGM_MID_ENTRY)
+        if c1 is None:
+            raise SystemExit("FAIL 有 `BGM中段` 就必须写 `BGM中段切入点: N秒`")
+        plan.append((bgm.resolve(anime, "中段", mid), c1))
+    outro = bgm.episode_choice(episode, "结尾")
+    if outro:
+        c2 = _seg_entry(episode, "结尾", BGM_OUTRO_ENTRY)
+        if c2 is None:
+            c2 = _outro_start(starts, total)
+        if c2 is not None:
+            plan.append((bgm.resolve(anime, "结尾", outro), c2))
+    return plan
+
+
+def _bgm_layout(plan: list[tuple[dict, float]], total: float) -> tuple[list[float], list[int]]:
+    """每段的循环输入长度 + 各 run 的首段下标。纯函数，好测。
+
+    - 非末段、后一段起点 ≤ 本段自然结尾 → 交叉，长度 = 距后一段 + XFADE。
+    - 非末段、后一段起点 > 本段自然结尾 → 停顿，长度 = 曲长（放一遍即止）。
+    - 末段 → 铺到片尾，长度 = total - 起点。
+    run = 连续可交叉的一段链；run 与 run 之间有停顿，靠 adelay 各自定位、amix 合并。
+    """
+    n = len(plan)
+    lens: list[float] = []
+    run_starts: list[int] = []
+    for i, (rec, s) in enumerate(plan):
+        if i == n - 1:
+            lens.append(total - s)
+        elif plan[i + 1][1] <= s + rec["dur"]:
+            lens.append(plan[i + 1][1] - s + BGM_XFADE)
+        else:
+            lens.append(rec["dur"])
+        if i == 0 or plan[i][1] > plan[i - 1][1] + plan[i - 1][0]["dur"]:
+            run_starts.append(i)
+    return lens, run_starts
+
+
+def _bgm_bed(episode: Path, total: float, starts: list[float], work: Path) -> Path | None:
+    """铺 BGM 垫底轨：`01-topic.md` 的 BGM 序列逐首拼接，全长 `total` 秒。
+
+    支持任意首数（`BGM:` 列表，或命名槽位）。每首从自己的起点播放：
+    - 后一首起点 ≤ 前一首自然结尾 → acrossfade 交叉（qsin，功率恒定），
+      前一首多播 XFADE 秒供重叠。
+    - 后一首起点 > 前一首自然结尾 → 停顿（前一首放完即止，间隙留白）。
+    最后一首循环/裁剪铺到片尾。
+
+    没配曲目表就返回 None，渲染出无 BGM 版——这是允许的状态，不报错。
+    """
+    plan = _bgm_plan(episode, total, starts)
+    if not plan:
+        return None
+
+    for i, (rec, s) in enumerate(plan):
+        if s < 0 or s >= total - BGM_FADE:
+            raise SystemExit(
+                f"FAIL 第 {i + 1} 首 BGM 起点 {s:g}s 越界，须在 "
+                f"[0, {total - BGM_FADE:.0f})（太晚会盖掉片尾淡出）")
+        if i and s <= plan[i - 1][1]:
+            raise SystemExit(
+                f"FAIL BGM 起点必须严格递增：第 {i + 1} 首 {s:g}s 不晚于"
+                f" 第 {i} 首 {plan[i - 1][1]:g}s")
 
     def gain(rec: dict) -> str:
         return f"{BGM_TARGET_LUFS - rec['lufs']:.2f}dB"
 
+    lens, run_starts = _bgm_layout(plan, total)
+    start_run = set(run_starts)
     bed = work / "bgm.wav"
-    fades = (f"afade=t=in:st=0:d={BGM_FADE},"
+    fades = (f"afade=t=in:st={plan[0][1]:.3f}:d={BGM_FADE},"
              f"afade=t=out:st={max(0.0, total - BGM_FADE):.3f}:d={BGM_FADE}")
 
-    if cut is None:
-        # 单曲。原声碟曲子普遍 1:40–2:40，盖不满三分钟的片子，循环到够长再裁齐。
-        cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-               "-stream_loop", "-1", "-t", f"{total:.3f}", "-i", str(body["path"]),
-               "-af", f"volume={gain(body)},{fades}"]
-        print(f"  BGM  {body['name']}（全程）")
-    else:
-        d1, d2 = cut + BGM_XFADE, total - cut
-        cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-               "-stream_loop", "-1", "-t", f"{d1:.3f}", "-i", str(body["path"]),
-               "-stream_loop", "-1", "-t", f"{d2:.3f}", "-i", str(outro["path"]),
-               "-filter_complex",
-               f"[0:a]volume={gain(body)}[a];"
-               f"[1:a]volume={gain(outro)}[b];"
-               # 曲线用 qsin（四分之一正弦）不用默认的 tri。两首不同的曲子互不相关，
-               # 功率相加而不是幅度相加：线性交叉走到中点时两边各剩半幅，
-               # 合成功率只有 √(0.5²+0.5²)=0.707，听感上是个坑。实测 tri 掉 4–5dB。
-               # qsin 满足 sin²+cos²=1，不相关信号的功率全程恒定。
-               f"[a][b]acrossfade=d={BGM_XFADE}:c1=qsin:c2=qsin[x];"
-               f"[x]{fades}[out]",
-               "-map", "[out]"]
-        print(f"  BGM  {body['name']} → {outro['name']}（{cut:.1f}s 起，交叉 {BGM_XFADE:g}s）")
+    inputs, fg = [], []
+    for i, (rec, s) in enumerate(plan):
+        inputs += ["-stream_loop", "-1", "-t", f"{lens[i]:.3f}", "-i", str(rec["path"])]
+        v = f"volume={gain(rec)}"
+        if i in start_run and s > 0:
+            v += f",adelay={int(round(s * 1000))}:all=1"
+        fg.append(f"[{i}:a]{v}[s{i}];")
 
-    cmd += ["-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(bed)]
+    # 每个 run 内部 acrossfade 串成一条链；run 与 run 之间不重叠（有停顿），amix 合并。
+    labels, i = [], 0
+    while i < len(plan):
+        j = i
+        while (j + 1 < len(plan)
+               and plan[j + 1][1] <= plan[j][1] + plan[j][0]["dur"]):
+            j += 1
+        if j == i:
+            labels.append(f"[s{i}]")
+        else:
+            cur = f"[s{i}]"
+            for k in range(i, j):
+                out = f"[x{k}]"
+                # 曲线用 qsin（四分之一正弦）不用默认的 tri。两首不同的曲子互不相关，
+                # 功率相加而不是幅度相加：线性交叉走到中点时两边各剩半幅，
+                # 合成功率只有 √(0.5²+0.5²)=0.707，听感上是个坑。实测 tri 掉 4–5dB。
+                # qsin 满足 sin²+cos²=1，不相关信号的功率全程恒定。
+                fg.append(f"{cur}[s{k + 1}]acrossfade=d={BGM_XFADE}:"
+                          f"c1=qsin:c2=qsin{out};")
+                cur = out
+            labels.append(cur)
+        i = j + 1
+
+    if len(labels) == 1:
+        fg.append(f"{labels[0]}{fades}[out]")
+    else:
+        fg.append("".join(labels)
+                  + f"amix=inputs={len(labels)}:duration=longest:normalize=0,"
+                  + f"{fades}[out]")
+
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+           *inputs, "-filter_complex", "".join(fg),
+           "-map", "[out]", "-ac", "1", "-ar", "48000",
+           "-c:a", "pcm_s16le", str(bed)]
     subprocess.run(cmd, check=True, capture_output=True)
+
+    print("  BGM  " + " → ".join(
+        f"{rec['name']}（{s:.0f}s 起）" for rec, s in plan))
     return bed
 
 

@@ -34,7 +34,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .subindex import INDEX_DIR, build, _clean
+from .subindex import INDEX_DIR, build, _clean, sniff_encoding
 
 # 字幕轨优先级：简体 > 未标注中文 > 繁体。日文与"注释/staff"轨永不选中。
 LANG_ZH = {"chi", "zho", "zh", "chs", "cht", "zh-cn", "zh-hans", "zh-hant"}
@@ -228,7 +228,7 @@ def _subs_in_window(sub_path: Path, start: float, end: float) -> str:
     import pysubs2
 
     out = []
-    for ev in pysubs2.load(str(sub_path)):
+    for ev in pysubs2.load(str(sub_path), encoding=sniff_encoding(sub_path)):
         if ev.is_comment:
             continue
         t0 = ev.start / 1000.0

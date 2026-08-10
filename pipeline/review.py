@@ -62,6 +62,22 @@ def _presence_txt(pr: float | None) -> str:
             else f" · 在场 {pr:.2f}")
 
 
+def _thumb_path(dest_dir: Path, tag: str, start: float, dur: float, n: int) -> Path:
+    """三帧其中一帧该落盘的路径。
+
+    **文件名里编进 start/dur，不是纯序号。** 换排片时 (段号, clip 序号) 不变，
+    只有 start/dur 变——不管是人工改 `04-clips.json`，还是重跑 `clips.py`
+    换了检索结果。纯序号命名（`s04c1-0.jpg`）会让 `_frames()` 的
+    `if not p.exists()` 把旧图当成「已经是最新的」直接复用，审图页看到的
+    还是上一版画面（2026-08-10 踩过：手改 start 换镜头，重跑 review 后
+    三帧原地不动，是上一条台词的画面，而且不报错）。带上 start/dur 后
+    内容一变文件名跟着变，旧文件成为孤儿——不需要额外的失效逻辑，
+    孤儿本来就是可重生成的中间缓存（`04-thumbs/`），清理约定见 CLAUDE.md，
+    这里不自动删。
+    """
+    return dest_dir / f"{tag}-{start:.2f}-{dur:.2f}-{n}.jpg"
+
+
 def _frames(clip: dict, dest_dir: Path, tag: str) -> list[Path]:
     """抽三帧：进点、中间、出点。
 
@@ -72,7 +88,7 @@ def _frames(clip: dict, dest_dir: Path, tag: str) -> list[Path]:
     ts = [start + EDGE, start + dur / 2, start + max(EDGE, dur - EDGE)]
     out = []
     for n, t in enumerate(ts):
-        p = dest_dir / f"{tag}-{n}.jpg"
+        p = _thumb_path(dest_dir, tag, start, dur, n)
         if not p.exists():
             subprocess.run(
                 # -ss 放在 -i 前面走关键帧快速定位；审图不需要帧级精确

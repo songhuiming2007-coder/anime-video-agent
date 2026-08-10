@@ -70,5 +70,31 @@
     "washuu_yoshitoki": ["和修吉时", "吉时"],
     "ukina": ["忧那"],
     "anju_nashiro": ["奈白", "安久奈白"]
+  },
+
+  "罪恶王冠": {
+    "_note": "presence_producer 是 ccip（config/project.json「visual」一节，全项目当前统一用这个），不是 tagger——键不是靠 tagger 推理出来的，但这次特意查了 danbooru 真实标签（而不是像东京喰种那样自造罗马音标识符），因为查得到、更标准。18 个角色 2026-08-09 建，danbooru.donmai.us 逐个核实过 wiki_pages 存在（返回 404 的写进 _missing，不是漏查）；显示名/别名逐个在本地 GB 简体字幕正文里 grep 核实过确切简体写法（而不是照抄维基百科的繁体/日文转写）——诸神字幕组这批字幕 ep01-08 是繁体单文件、ep09-22 才有 GB 简体可选，两者汉字形态不同，抄错一个就会让检索/引用两套字混用。核对方法与命中记录见 data/library/notes/罪恶王冠.md「角色名来源」节。",
+    "_missing": "莖道修一郎(Keido)、梟(Owl，葬仪社最年幼成员)——danbooru 试过多种罗马音拼法（keido_shuuichirou/keido_shuichiro 等）均 404，guilty_crown wiki 页面的角色列表本身也没收录 Keido，判定为该角色没有专属 danbooru 标签，不是我没找到；faces 聚类如果真聚出这几个人的簇，贴名时用罗马音自造标识符（沿用东京喰种的例外做法）。大雲(Oogumo) 2026-08-09 faces 聚类（簇 12）时用户认出并补上，见下面 oogumo 条——键名沿用东京喰种例外做法自造，不是真 danbooru 角色标签：danbooru 上 \"oogumo\" 是个不相关的画师标签，\"oogumo_(guilty_crown)\" 404，这个角色没有专属标签。",
+
+    "ouma_shuu": ["樱满集", "集"],
+    "yuzuriha_inori": ["楪祈", "祈"],
+    "tsutsugami_gai": ["恙神涯", "涯"],
+    "ouma_mana": ["樱满真名", "真名"],
+    "shinomiya_ayase": ["筱宫绫濑", "绫濑"],
+    "tsugumi_(guilty_crown)": ["鸫"],
+    "kuhouin_arisa": ["供奉院亚里沙", "亚里沙"],
+    "samukawa_yahiro": ["寒川谷寻", "谷寻"],
+    "menjou_hare": ["校条祭", "祭"],
+    "tamadate_souta": ["魂馆飒太", "飒太"],
+    "kusama_kanon": ["草间花音", "花音"],
+    "daryl_yan": ["达利尔·杨", "达利尔"],
+    "segai_waltz_makoto": ["嘘界", "嘘界·巴鲁兹·诚"],
+    "ouma_haruka": ["樱满春夏", "春夏"],
+    "kido_kenji": ["城户研二", "研二"],
+    "tsukishima_arugo": ["月岛阿尔戈", "阿尔戈"],
+    "shibungi": ["四分仪"],
+    "oogumo": ["大云"],
+    "_note_yuu": "「佑」译名只查到中文维基交叉确认，本地 GB 字幕正文没能 grep 到确凿的具名台词（搜「佑」只命中「天佑」这类无关词）——faces 贴名前建议先用 subindex search 核对这个角色实际出场时台词里怎么称呼他，再确认这个显示名。",
+    "yuu_(guilty_crown)": ["佑"]
   }
 }

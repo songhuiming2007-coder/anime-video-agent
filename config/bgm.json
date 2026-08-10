@@ -1,99 +1,390 @@
 {
-  "_note": "一部番固定 3–5 首（CLAUDE.md「BGM 约定」）。按番分组，路径一律相对仓库根。",
-  "_slots": "正文 = 全片打底，用劇伴（无旋律钩子，不抢口播）；结尾 = 最后一段换 OP/ED 伴奏，前奏一响就有情绪。默认一期一首，结尾留空即全程一首。",
-  "_lufs": "每首的实测响度，render.py 据此把 BGM 归一到统一目标再闪避。别删——少了它换曲就得重调闪避参数。量法：python -m pipeline.bgm measure <文件>",
-  "_onset": "入声点，秒。从头到第一次超过 -30 dBFS 的时刻，即「观众要等多久才听到东西」。结尾曲这个值要小。",
-
-  "春物": {
-    "use": {
-      "正文": "繋ぎとめた世界",
-      "结尾": "春擬き"
-    },
-    "tracks": {
-      "繋ぎとめた世界": {
-        "path": "data/library/bgm/春物/11. 繋ぎとめた世界.flac",
-        "slot": "正文", "from": "S2 原声碟 SPCD01 tr.11",
-        "dur": 160.3, "lufs": -16.9, "onset": 2.0, "vocal": false
-      },
-      "不合理な感情": {
-        "path": "data/library/bgm/春物/17. 不合理な感情.flac",
-        "slot": "正文", "from": "S2 原声碟 SPCD01 tr.17",
-        "dur": 158.5, "lufs": -14.4, "onset": 2.0, "vocal": false
-      },
-      "本音、言えなくて": {
-        "path": "data/library/bgm/春物/11. 本音、言えなくて.flac",
-        "slot": "正文", "from": "S1 原声碟 SPCD01 tr.11",
-        "dur": 100.4, "lufs": -17.8, "onset": 1.7, "vocal": false
-      },
-      "春擬き": {
-        "path": "data/library/bgm/春物/春擬き -instrumental-.flac",
-        "slot": "结尾", "from": "S2 OP 单曲 GNCA-0380 tr.03（instrumental）",
-        "dur": 269.7, "lufs": -8.7, "onset": 1.1, "vocal": false
-      },
-      "ユキトキ": {
-        "path": "data/library/bgm/春物/ユキトキ Instrumental.flac",
-        "slot": "结尾", "from": "S1 OP 单曲 GNCA-0269 tr.04（Instrumental）",
-        "dur": 269.3, "lufs": -7.8, "onset": 1.1, "vocal": false
-      }
-    },
-    "_chosen": "2026-07-29。正文取劇伴，结尾取 S2 OP 伴奏（本期锚点全在 S2）。想换 S1 味道就把结尾改成 ユキトキ。曲库里另有 12 首 OP/ED 伴奏已分轨在同目录，要扩表直接从那里挑，不用回 CD 镜像。"
+ "_note": "一部番固定 3–5 首（CLAUDE.md「BGM 约定」）。按番分组，路径一律相对仓库根。",
+ "_slots": "正文 = 全片打底，用劇伴（无旋律钩子，不抢口播）；结尾 = 最后一段换 OP/ED 伴奏，前奏一响就有情绪。默认一期一首，结尾留空即全程一首。",
+ "_lufs": "每首的实测响度，render.py 据此把 BGM 归一到统一目标再闪避。别删——少了它换曲就得重调闪避参数。量法：python -m pipeline.bgm measure <文件>",
+ "_onset": "入声点，秒。从头到第一次超过 -30 dBFS 的时刻，即「观众要等多久才听到东西」。结尾曲这个值要小。",
+ "春物": {
+  "use": {
+   "正文": "繋ぎとめた世界",
+   "结尾": "春擬き"
   },
-
-  "东京喰种": {
-    "_note": "2026-08-08 起选曲不锁死（CLAUDE.md「十、BGM 约定」），这里不设 use，纯粹是已测量曲子的候选池。哪期用哪首记在该期 01-topic.md 的 BGM正文/BGM结尾 字段。素材来自《东京喰种》OST原声集（2015，山田豊）与《东京喰种:re》OST原声集（2018），只挑了没有 feat. 歌手标注、ID3 只署作曲家的纯配乐/纯乐器轨——一部分是人耳指认的（Grau/Sorrow/Ajito/Taube/Wanderers/Schöpfer/Glassy Sky 出自 S01 碟，Symphonic Suite 组曲与两首 Piano Version 出自 re 碟）。unravel（S1 OP）、asphyxia（re OP）这类正式 OP/ED 单曲的伴奏版不在这批素材里，要用的话得另外找伴奏单曲碟。",
-    "tracks": {
-      "Grau": {
-        "path": "data/library/bgm/东京喰种/12. Grau.mp3",
-        "from": "S01 原声集 Disc1 tr.12", "dur": 130.2, "lufs": -15.5, "onset": 10.0, "vocal": false
-      },
-      "Sorrow": {
-        "path": "data/library/bgm/东京喰种/03. Sorrow.mp3",
-        "from": "S01 原声集 Disc2 tr.03", "dur": 199.8, "lufs": -13.4, "onset": 73.6, "vocal": false
-      },
-      "Ajito": {
-        "path": "data/library/bgm/东京喰种/04. Ajito.mp3",
-        "from": "S01 原声集 Disc2 tr.04", "dur": 131.7, "lufs": -10.3, "onset": 7.2, "vocal": false
-      },
-      "Taube": {
-        "path": "data/library/bgm/东京喰种/06. Taube.mp3",
-        "from": "S01 原声集 Disc1 tr.06", "dur": 154.8, "lufs": -10.2, "onset": 7.5, "vocal": false
-      },
-      "Wanderers": {
-        "path": "data/library/bgm/东京喰种/10. Wanderers.mp3",
-        "from": "S01 原声集 Disc2 tr.10", "dur": 226.5, "lufs": -13.2, "onset": 11.7, "vocal": false
-      },
-      "Schöpfer": {
-        "path": "data/library/bgm/东京喰种/17. Schöpfer.mp3",
-        "from": "S01 原声集 Disc1 tr.17", "dur": 218.2, "lufs": -10.7, "onset": 7.8, "vocal": false
-      },
-      "Glassy Sky": {
-        "path": "data/library/bgm/东京喰种/01. Glassy Sky.mp3",
-        "from": "S01 原声集 Disc2 tr.01", "dur": 294.9, "lufs": -14.1, "onset": 110.3, "vocal": false
-      },
-      "Schmetterling": {
-        "path": "data/library/bgm/东京喰种/05.Mvt. 5 'Schmetterling' (Symphonic Suites from Tokyo Ghoul).mp3",
-        "from": "re 原声集 Disc2 tr.05，Symphonic Suite 第5乐章", "dur": 231.3, "lufs": -13.2, "onset": 10.0, "vocal": false
-      },
-      "Horizon": {
-        "path": "data/library/bgm/东京喰种/07.Mvt. 7 'Horizon' (Symphonic Suites from Tokyo Ghoul).mp3",
-        "from": "re 原声集 Disc2 tr.07，Symphonic Suite 第7乐章", "dur": 173.9, "lufs": -14.5, "onset": 46.8, "vocal": false
-      },
-      "City Jungle": {
-        "path": "data/library/bgm/东京喰种/13.City Jungle.mp3",
-        "from": "re 原声集 Disc1 tr.13", "dur": 309.3, "lufs": -10.6, "onset": 6.1, "vocal": false
-      },
-      "Deep Dive": {
-        "path": "data/library/bgm/东京喰种/14.Deep Dive.mp3",
-        "from": "re 原声集 Disc1 tr.14", "dur": 292.5, "lufs": -11.7, "onset": 6.7, "vocal": false
-      },
-      "Memories (Piano)": {
-        "path": "data/library/bgm/东京喰种/16.Memories (Piano Version).mp3",
-        "from": "re 原声集 Disc2 tr.16，钢琴改编", "dur": 215.5, "lufs": -21.6, "onset": 28.4, "vocal": false
-      },
-      "Reflections (Piano)": {
-        "path": "data/library/bgm/东京喰种/17.Reflections (Piano Version).mp3",
-        "from": "re 原声集 Disc2 tr.17，钢琴改编", "dur": 220.2, "lufs": -26.8, "onset": 30.1, "vocal": false
-      }
-    }
+  "tracks": {
+   "繋ぎとめた世界": {
+    "path": "data/library/bgm/春物/11. 繋ぎとめた世界.flac",
+    "slot": "正文",
+    "from": "S2 原声碟 SPCD01 tr.11",
+    "dur": 160.3,
+    "lufs": -16.9,
+    "onset": 2.0,
+    "vocal": false
+   },
+   "不合理な感情": {
+    "path": "data/library/bgm/春物/17. 不合理な感情.flac",
+    "slot": "正文",
+    "from": "S2 原声碟 SPCD01 tr.17",
+    "dur": 158.5,
+    "lufs": -14.4,
+    "onset": 2.0,
+    "vocal": false
+   },
+   "本音、言えなくて": {
+    "path": "data/library/bgm/春物/11. 本音、言えなくて.flac",
+    "slot": "正文",
+    "from": "S1 原声碟 SPCD01 tr.11",
+    "dur": 100.4,
+    "lufs": -17.8,
+    "onset": 1.7,
+    "vocal": false
+   },
+   "春擬き": {
+    "path": "data/library/bgm/春物/春擬き -instrumental-.flac",
+    "slot": "结尾",
+    "from": "S2 OP 单曲 GNCA-0380 tr.03（instrumental）",
+    "dur": 269.7,
+    "lufs": -8.7,
+    "onset": 1.1,
+    "vocal": false
+   },
+   "ユキトキ": {
+    "path": "data/library/bgm/春物/ユキトキ Instrumental.flac",
+    "slot": "结尾",
+    "from": "S1 OP 单曲 GNCA-0269 tr.04（Instrumental）",
+    "dur": 269.3,
+    "lufs": -7.8,
+    "onset": 1.1,
+    "vocal": false
+   }
+  },
+  "_chosen": "2026-07-29。正文取劇伴，结尾取 S2 OP 伴奏（本期锚点全在 S2）。想换 S1 味道就把结尾改成 ユキトキ。曲库里另有 12 首 OP/ED 伴奏已分轨在同目录，要扩表直接从那里挑，不用回 CD 镜像。"
+ },
+ "东京喰种": {
+  "_note": "2026-08-08 起选曲不锁死（CLAUDE.md「十、BGM 约定」），这里不设 use，纯粹是已测量曲子的候选池。哪期用哪首记在该期 01-topic.md 的 BGM正文/BGM结尾 字段。素材来自《东京喰种》OST原声集（2015，山田豊）与《东京喰种:re》OST原声集（2018），只挑了没有 feat. 歌手标注、ID3 只署作曲家的纯配乐/纯乐器轨——一部分是人耳指认的（Grau/Sorrow/Ajito/Taube/Wanderers/Schöpfer/Glassy Sky 出自 S01 碟，Symphonic Suite 组曲与两首 Piano Version 出自 re 碟）。unravel（S1 OP）、asphyxia（re OP）这类正式 OP/ED 单曲的伴奏版不在这批素材里，要用的话得另外找伴奏单曲碟。",
+  "tracks": {
+   "Grau": {
+    "path": "data/library/bgm/东京喰种/12. Grau.mp3",
+    "from": "S01 原声集 Disc1 tr.12",
+    "dur": 130.2,
+    "lufs": -15.5,
+    "onset": 10.0,
+    "vocal": false
+   },
+   "Sorrow": {
+    "path": "data/library/bgm/东京喰种/03. Sorrow.mp3",
+    "from": "S01 原声集 Disc2 tr.03",
+    "dur": 199.8,
+    "lufs": -13.4,
+    "onset": 73.6,
+    "vocal": false
+   },
+   "Ajito": {
+    "path": "data/library/bgm/东京喰种/04. Ajito.mp3",
+    "from": "S01 原声集 Disc2 tr.04",
+    "dur": 131.7,
+    "lufs": -10.3,
+    "onset": 7.2,
+    "vocal": false
+   },
+   "Taube": {
+    "path": "data/library/bgm/东京喰种/06. Taube.mp3",
+    "from": "S01 原声集 Disc1 tr.06",
+    "dur": 154.8,
+    "lufs": -10.2,
+    "onset": 7.5,
+    "vocal": false
+   },
+   "Wanderers": {
+    "path": "data/library/bgm/东京喰种/10. Wanderers.mp3",
+    "from": "S01 原声集 Disc2 tr.10",
+    "dur": 226.5,
+    "lufs": -13.2,
+    "onset": 11.7,
+    "vocal": false
+   },
+   "Schöpfer": {
+    "path": "data/library/bgm/东京喰种/17. Schöpfer.mp3",
+    "from": "S01 原声集 Disc1 tr.17",
+    "dur": 218.2,
+    "lufs": -10.7,
+    "onset": 7.8,
+    "vocal": false
+   },
+   "Glassy Sky": {
+    "path": "data/library/bgm/东京喰种/01. Glassy Sky.mp3",
+    "from": "S01 原声集 Disc2 tr.01",
+    "dur": 294.9,
+    "lufs": -14.1,
+    "onset": 110.3,
+    "vocal": false
+   },
+   "Schmetterling": {
+    "path": "data/library/bgm/东京喰种/05.Mvt. 5 'Schmetterling' (Symphonic Suites from Tokyo Ghoul).mp3",
+    "from": "re 原声集 Disc2 tr.05，Symphonic Suite 第5乐章",
+    "dur": 231.3,
+    "lufs": -13.2,
+    "onset": 10.0,
+    "vocal": false
+   },
+   "Horizon": {
+    "path": "data/library/bgm/东京喰种/07.Mvt. 7 'Horizon' (Symphonic Suites from Tokyo Ghoul).mp3",
+    "from": "re 原声集 Disc2 tr.07，Symphonic Suite 第7乐章",
+    "dur": 173.9,
+    "lufs": -14.5,
+    "onset": 46.8,
+    "vocal": false
+   },
+   "City Jungle": {
+    "path": "data/library/bgm/东京喰种/13.City Jungle.mp3",
+    "from": "re 原声集 Disc1 tr.13",
+    "dur": 309.3,
+    "lufs": -10.6,
+    "onset": 6.1,
+    "vocal": false
+   },
+   "Deep Dive": {
+    "path": "data/library/bgm/东京喰种/14.Deep Dive.mp3",
+    "from": "re 原声集 Disc1 tr.14",
+    "dur": 292.5,
+    "lufs": -11.7,
+    "onset": 6.7,
+    "vocal": false
+   },
+   "Memories (Piano)": {
+    "path": "data/library/bgm/东京喰种/16.Memories (Piano Version).mp3",
+    "from": "re 原声集 Disc2 tr.16，钢琴改编",
+    "dur": 215.5,
+    "lufs": -21.6,
+    "onset": 28.4,
+    "vocal": false
+   },
+   "Reflections (Piano)": {
+    "path": "data/library/bgm/东京喰种/17.Reflections (Piano Version).mp3",
+    "from": "re 原声集 Disc2 tr.17，钢琴改编",
+    "dur": 220.2,
+    "lufs": -26.8,
+    "onset": 30.1,
+    "vocal": false
+   }
   }
+ },
+ "罪恶王冠": {
+  "_note": "2026-08-09 建，跟东京喰种同规则：不设 use，纯候选池，哪期用哪首记在该期 01-topic.md。素材来自 BD 附赠的《Special CD2/4/9 - OST Another Side 1/2/3》三张碟（24 轨全收，无 cue，是已经分好轨的独立 flac，不需要走 `bgm scan/extract` 的解 cue流程，直接 `bgm measure` 测量）。曲名是原盘就有的风格化乱码字符（罪恶王冠 OST 的一贯设计，跟剧中「Void/病毒侵蚀」的主题呼应，不是转码/编码问题）。同一批附赠的另外 6 张碟本次**没有**收进候选池：《Special CD1 - Theme Song Collection》是 OP/ED 人声单曲集（含 ryo(supercell) 的《Departures》等，未见 instrumental/off vocal 标注，且'04.Rё.L feat. Cyua'明确标了 feat. 歌手，按东京喰种立下的规矩人声轨不收）；《CD3/7/8 - WEB RADIO CD》是声优对谈广播，不是音乐；《CD5 - SPECIAL DRAMA CD》是广播剧；《CD10 - à la Carte》是声优小剧场段子（篇名'パラレルサイド「XXX危机一发!」'一看就是短剧不是歌）。如果以后想用 OP/ED 伴奏版（unravel 等正式单曲的 instrumental 轨），CD1 这批人声单曲不带伴奏轨，得另外找对应的 OP/ED 单曲碟（跟东京喰种那条'unravel/asphyxia 不在这批素材里'的坑是同一类）。",
+  "tracks": {
+   "kEっ1000": {
+    "path": "data/library/bgm/罪恶王冠/01. kEっ1000.flac",
+    "from": "OST Another Side 1 tr.01",
+    "dur": 232.6,
+    "lufs": -9.8,
+    "onset": 3.3,
+    "vocal": false
+   },
+   "Miss手リAs": {
+    "path": "data/library/bgm/罪恶王冠/02. Miss手リAs.flac",
+    "from": "OST Another Side 1 tr.02",
+    "dur": 288.4,
+    "lufs": -16.1,
+    "onset": 5.9,
+    "vocal": false
+   },
+   "刺U": {
+    "path": "data/library/bgm/罪恶王冠/03. 刺U.flac",
+    "from": "OST Another Side 1 tr.03",
+    "dur": 212.6,
+    "lufs": -10.6,
+    "onset": 1.1,
+    "vocal": false
+   },
+   "血Con-儀": {
+    "path": "data/library/bgm/罪恶王冠/04. 血Con-儀.flac",
+    "from": "OST Another Side 1 tr.04",
+    "dur": 167.4,
+    "lufs": -13.6,
+    "onset": 6.7,
+    "vocal": false
+   },
+   "鎖スPen$": {
+    "path": "data/library/bgm/罪恶王冠/05. 鎖スPen$.flac",
+    "from": "OST Another Side 1 tr.05",
+    "dur": 455.3,
+    "lufs": -14.5,
+    "onset": 0.6,
+    "vocal": false
+   },
+   "Oノ存ξ": {
+    "path": "data/library/bgm/罪恶王冠/06. Oノ存ξ.flac",
+    "from": "OST Another Side 1 tr.06",
+    "dur": 287.8,
+    "lufs": -11.9,
+    "onset": 3.3,
+    "vocal": false
+   },
+   "Gエ19": {
+    "path": "data/library/bgm/罪恶王冠/07. Gエ19.flac",
+    "from": "OST Another Side 1 tr.07",
+    "dur": 251.6,
+    "lufs": -12.4,
+    "onset": 1.7,
+    "vocal": false
+   },
+   "Vぉ1℃→Ki母∪": {
+    "path": "data/library/bgm/罪恶王冠/08. Vぉ1℃→Ki母∪.flac",
+    "from": "OST Another Side 1 tr.08",
+    "dur": 271.0,
+    "lufs": -11.9,
+    "onset": 2.2,
+    "vocal": false
+   },
+   "美♂-K+$タすpAd": {
+    "path": "data/library/bgm/罪恶王冠/09. 美♂-K+$タすpAd.flac",
+    "from": "OST Another Side 1 tr.09",
+    "dur": 154.1,
+    "lufs": -14.6,
+    "onset": 4.2,
+    "vocal": false
+   },
+   "pF-AdLibT": {
+    "path": "data/library/bgm/罪恶王冠/01. pF-AdLibT.flac",
+    "from": "OST Another Side 2 tr.01",
+    "dur": 112.9,
+    "lufs": -14.9,
+    "onset": 1.7,
+    "vocal": false
+   },
+   "gT→pF": {
+    "path": "data/library/bgm/罪恶王冠/02. gT→pF.flac",
+    "from": "OST Another Side 2 tr.02",
+    "dur": 262.2,
+    "lufs": -14.9,
+    "onset": 10.6,
+    "vocal": false
+   },
+   "pF-AdLibU": {
+    "path": "data/library/bgm/罪恶王冠/03. pF-AdLibU.flac",
+    "from": "OST Another Side 2 tr.03",
+    "dur": 230.7,
+    "lufs": -18.4,
+    "onset": 6.7,
+    "vocal": false
+   },
+   "fUE+p@D+hArP→pF": {
+    "path": "data/library/bgm/罪恶王冠/04. fUE+p@D+hArP→pF.flac",
+    "from": "OST Another Side 2 tr.04",
+    "dur": 337.5,
+    "lufs": -14.8,
+    "onset": 3.3,
+    "vocal": false
+   },
+   "sT+hRN+tRB+tUba": {
+    "path": "data/library/bgm/罪恶王冠/05. sT+hRN+tRB+tUba.flac",
+    "from": "OST Another Side 2 tr.05",
+    "dur": 373.0,
+    "lufs": -11.7,
+    "onset": 4.7,
+    "vocal": false
+   },
+   "pF-AdLibV": {
+    "path": "data/library/bgm/罪恶王冠/06. pF-AdLibV.flac",
+    "from": "OST Another Side 2 tr.06",
+    "dur": 167.5,
+    "lufs": -20.8,
+    "onset": 1.4,
+    "vocal": false
+   },
+   "1616": {
+    "path": "data/library/bgm/罪恶王冠/07. 1616.flac",
+    "from": "OST Another Side 2 tr.07",
+    "dur": 202.5,
+    "lufs": -14.9,
+    "onset": 5.3,
+    "vocal": false
+   },
+   "gT→sYnTH": {
+    "path": "data/library/bgm/罪恶王冠/08. gT→sYnTH.flac",
+    "from": "OST Another Side 2 tr.08",
+    "dur": 298.9,
+    "lufs": -14.8,
+    "onset": 7.0,
+    "vocal": false
+   },
+   "pF-AdLibW": {
+    "path": "data/library/bgm/罪恶王冠/09. pF-AdLibW.flac",
+    "from": "OST Another Side 2 tr.09",
+    "dur": 123.3,
+    "lufs": -19.0,
+    "onset": 7.0,
+    "vocal": false
+   },
+   "Egg": {
+    "path": "data/library/bgm/罪恶王冠/01. Egg.flac",
+    "from": "OST Another Side 3 tr.01",
+    "dur": 200.1,
+    "lufs": -20.1,
+    "onset": 7.2,
+    "vocal": false
+   },
+   "Garlic": {
+    "path": "data/library/bgm/罪恶王冠/02. Garlic.flac",
+    "from": "OST Another Side 3 tr.02",
+    "dur": 178.2,
+    "lufs": -17.5,
+    "onset": 1.4,
+    "vocal": false
+   },
+   "Olibe Oil": {
+    "path": "data/library/bgm/罪恶王冠/03. Olibe Oil.flac",
+    "from": "OST Another Side 3 tr.03",
+    "dur": 107.8,
+    "lufs": -15.8,
+    "onset": 1.1,
+    "vocal": false
+   },
+   "Idaho Potato": {
+    "path": "data/library/bgm/罪恶王冠/04. Idaho Potato.flac",
+    "from": "OST Another Side 3 tr.04",
+    "dur": 302.8,
+    "lufs": -17.0,
+    "onset": 3.3,
+    "vocal": false
+   },
+   "Salt": {
+    "path": "data/library/bgm/罪恶王冠/05. Salt.flac",
+    "from": "OST Another Side 3 tr.05",
+    "dur": 138.8,
+    "lufs": -13.5,
+    "onset": 1.4,
+    "vocal": false
+   },
+   "Tamanegi": {
+    "path": "data/library/bgm/罪恶王冠/06. Tamanegi.flac",
+    "from": "OST Another Side 3 tr.06",
+    "dur": 318.1,
+    "lufs": -14.9,
+    "onset": 1.1,
+    "vocal": false
+   },
+   "Departures ～あなたにおくるアイの歌～": {
+    "path": "data/library/bgm/罪恶王冠/Departures ～あなたにおくるアイの歌～.flac",
+    "from": "SVWC-7796 单曲 tr.01（完整版，2026-08-10 替换 Special CD1 的 156s 截段）",
+    "dur": 255.6,
+    "lufs": -8.96,
+    "onset": 3.622312925170068,
+    "vocal": true
+   },
+   "想いを巡らす100の事象": {
+    "path": "data/library/bgm/罪恶王冠/想いを巡らす100の事象.flac",
+    "from": "SRCL-8091 首专 tr.09（2026-08-10 用户选作本期中段）",
+    "dur": 173.7,
+    "lufs": -12.94,
+    "onset": 1.4,
+    "vocal": true
+   },
+   "Planetes": {
+    "path": "data/library/bgm/罪恶王冠/Planetes.flac",
+    "from": "SRCL-8091 首专 tr.11（2026-08-10 用户选作本期结尾，仅用前奏 30s，人声 30.0s 起）",
+    "dur": 363.9,
+    "lufs": -9.37,
+    "onset": 3.6,
+    "vocal": true
+   }
+  }
+ }
 }

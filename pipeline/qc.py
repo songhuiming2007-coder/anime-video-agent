@@ -97,30 +97,31 @@ def _duration(video: Path, stream: str) -> float:
 
 
 def _map_black_to_sources(blacks: list[tuple[float, float]],
-                          plan: dict) -> list[tuple[str, float, float, float, float, int]]:
+                          plan: dict) -> list[tuple[str, float, float, float, float, int, int]]:
     """成片黑帧区间 → 它覆盖的源片段引用。
 
     成片 = 各段 clips 按顺序拼接（与 render.py 同一份 plan、同一套顺序，
     时间轴才会对得上）。返回
-    [(源路径, 源区间起点, 源区间终点, 成片区间起点, 成片区间终点, 累计片段序号)]；
+    [(源路径, 源区间起点, 源区间终点, 成片区间起点, 成片区间终点, 累计片段序号, 黑帧序号)]；
     黑帧跨片段边界时一个黑帧映射出多条。片段序号从 1 起——它决定累积漂移
-    窗口的大小（见 `_mapped_covered`）。
+    窗口的大小（见 `_mapped_covered`）；黑帧序号用于把同一条黑在多个片段上的
+    映射归拢起来判整体（见 `_black_defects`）。
     """
-    out: list[tuple[str, float, float, float, float, int]] = []
+    out: list[tuple[str, float, float, float, float, int, int]] = []
     t = 0.0
     idx = 0
     for seg in plan["segments"]:
         for clip in seg["clips"]:
             idx += 1
             lo, hi = t, t + clip["dur"]
-            for b0, b1 in blacks:
+            for bi, (b0, b1) in enumerate(blacks):
                 if b1 > lo and b0 < hi:                 # 有交集
                     out.append((
                         clip["source"],
                         clip["start"] + max(0.0, b0 - lo),
                         clip["start"] + min(clip["dur"], b1 - lo),
                         max(b0, lo), min(b1, hi),
-                        idx,
+                        idx, bi,
                     ))
             t = hi
     return out
@@ -150,6 +151,27 @@ def _mapped_covered(span: tuple[str, float, float, float, float, int],
     _, slo, shi, _, _, idx = span
     w = idx * FRAME_BOUND
     return _source_black_covers(src_blacks, slo - w, shi + w)
+
+
+def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]],
+                   covered: set[tuple]) -> list[tuple[str, float, float, float, float]]:
+    """按「一条黑」聚合，返回未覆盖时长 ≥ BLACK_MAX 的黑场（的未覆盖映射）。
+
+    判据要的是**一段连续黑的未覆盖部分 ≥ 门槛**，不是逐片段看。黑帧跨切片
+    边界时，边界上一两帧的暗场可能落进相邻片段，而源片只在主片段里有转场黑：
+    逐片段查会把整段源转场误判成缺陷（2026-08-10 实测：源片淡出黑 1.45s
+    接邻片段首帧 0.13s 暗场，被判「源无黑」）。
+    """
+    by_black: dict[int, list] = {}
+    for span in mapped:
+        by_black.setdefault(span[6], []).append(span)
+    defects: list[tuple[str, float, float, float, float]] = []
+    for spans in by_black.values():
+        un = [s for s in spans if s not in covered]
+        if sum(f1 - f0 for _, _, _, f0, f1, _, _ in un) >= BLACK_MAX:
+            defects.extend((src, flo, fhi, slo, shi)
+                           for src, slo, shi, flo, fhi, _, _ in un)
+    return defects
 
 
 def check(video: Path, plan: dict | None = None,
@@ -207,16 +229,17 @@ def check(video: Path, plan: dict | None = None,
             # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
             # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
             # 可能早于请求位置（BLACK_SRC_BUF 的职责在这里，常量已删，见下）。
-            by_src: dict[str, list[tuple[str, float, float, float, float, int]]] = {}
+            by_src: dict[str, list[tuple[str, float, float, float, float, int, int]]] = {}
             for span in mapped:
-                src, slo, shi, flo, fhi, idx = span
+                src, slo, shi, flo, fhi, idx, bi = span
                 by_src.setdefault(src, []).append(span)
+            covered: set[tuple] = set()
             for src, spans in by_src.items():
                 # 检测范围也要吃下漂移窗口（idx×FRAME_BOUND），否则源黑段在
                 # 窗口内、检测起点外会整段漏检，判成「源片无黑」（实测踩过：
                 # 黑段起点在映射区间 0.26s 前，d=0.5 检测不到）。
-                lo = min(s - i * FRAME_BOUND for _, s, _, _, _, i in spans) - BLACK_SRC_BUF
-                hi = max(e + i * FRAME_BOUND for _, _, e, _, _, i in spans) + BLACK_SRC_BUF
+                lo = min(s - i * FRAME_BOUND for _, s, _, _, _, i, _ in spans) - BLACK_SRC_BUF
+                hi = max(e + i * FRAME_BOUND for _, _, e, _, _, i, _ in spans) + BLACK_SRC_BUF
                 err2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
                              "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
                              f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
@@ -225,10 +248,9 @@ def check(video: Path, plan: dict | None = None,
                 src_blacks = [(lo + float(a), lo + float(b))
                               for a, b in re.findall(
                                   r"black_start:([\d.]+) black_end:([\d.]+)", err2)]
-                defects += [(src, flo, fhi, slo, shi)
-                            for src, slo, shi, flo, fhi, idx in spans
-                            if not _mapped_covered(
-                                (src, slo, shi, flo, fhi, idx), src_blacks)]
+                covered |= {span for span in spans
+                            if _mapped_covered(span[:6], src_blacks)}
+            defects = _black_defects(mapped, covered)
         else:
             defects = [(str(video), float(a), float(b), float(a), float(b))
                        for a, b in blacks]
