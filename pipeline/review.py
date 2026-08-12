@@ -189,12 +189,14 @@ def build(episode: Path) -> Path:
                 for p in fmap.get((s["index"], n), []))
             # 在场分显示出来（ADR-0004）：0.000 = 未检出，这段画面里未必有那个人，
             # 垫底是排片时故意放的；它只在同段落内跟别的候选比过，别拿它跟别的段横比。
+            # score 为 None = 人手工指定/覆盖的片段（05 人审改画面），标「手工」，不做分数横比。
+            score_txt = f"{c['score']:.3f}" if c.get("score") is not None else "手工"
             body.append(
                 f'<div class="clip"><div class="shots">{imgs}</div>'
                 f'<div class="side"><div class="line">'
                 f'{html.escape(c.get("line") or "（无台词）")}</div>'
                 f'<div class="n">S{c["season"]:02d}E{c["episode"]:02d} '
-                f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {c["score"]:.3f}'
+                f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {score_txt}'
                 f'{_presence_txt(c.get("presence"))}</div>'
                 f'</div></div>')
         body.append("</div>")

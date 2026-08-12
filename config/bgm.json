@@ -384,6 +384,14 @@
     "lufs": -9.37,
     "onset": 3.6,
     "vocal": true
+   },
+   "Last Song -Instrumental-": {
+    "path": "data/library/bgm/罪恶王冠/Last Song -Instrumental-.flac",
+    "from": "EGOIST(chelly)/Bravely Second 单曲碟 SRCL-8810 tr.04（非罪恶王冠曲目，见番剧笔记 2026-08-12 例外）",
+    "dur": 327.5,
+    "lufs": -10.4,
+    "onset": 1.4,
+    "vocal": false
    }
   }
  }
