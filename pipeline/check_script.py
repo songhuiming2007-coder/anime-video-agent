@@ -37,7 +37,7 @@ CPM = paths.conf("script.cpm", 380)
 # 见 episode_duration_override()。
 MIN_CHARS = paths.conf("script.min_chars", 870)
 MAX_CHARS = paths.conf("script.max_chars", 1300)
-MIN_ANCHOR = paths.conf("script.min_anchors", 3)   # 剧情锚点下限
+MIN_ANCHOR = paths.conf("script.min_anchors", 3)   # 剧情锚点下限：带画面集号字段的段落数
 
 # `01-topic.md` 里 `时长目标: 7-8分钟` 这样的字段，覆盖本期的字数/时长带。
 # 不填就是上面 MIN_CHARS–MAX_CHARS 这条默认带，行为不变。
@@ -219,41 +219,6 @@ VAGUE = re.compile(r"(那几次事情|那些人|某些|有些人|某个角色|�
 # 片尾套话。它是固定收尾、不承担内容，不占正文段数也不进字数——
 # 否则每期都会把段数门槛顶穿一格，检查项一旦长期误报就没人看了。
 OUTRO = re.compile(r"(下期再见|下期见|就到这里|我们下期|感谢观看|拜拜)")
-# 可指认的剧情锚点：季/集/话（通用写法），或具名场合（**逐番不同，来自配置**）。
-#
-# 具名场合原先写死在这条正则里，全是春物的专有名词（文化祭、修学旅行、侍奉部……）。
-# 换一部番这一半就一个都命中不了，而锚点检查会因此永远判「0 处，全篇抽象」——
-# 检查项长期误报等于没有检查。2026-07-29 审计时挪进 config/project.json，
-# 但当时只挪成了一个扁平列表，隐含「同一时刻只服务一部番」——这个项目现在
-# `data/episodes/` 下春物、东京喰种的episode 同时存在，扁平列表逼人在检查前
-# 手改全局配置，改错、忘改都是静默的「拿错番的词硬套」。2026-08-09 改成按番
-# 分桶（config 里 `anime.anchor_words` 变成 `{"番名": [...]}`），从这一期自己
-# 的 01-topic.md 读番名（复用 bgm.anime_of，两处解析同一个字段不能各写一套
-# 正则），查不到就退回空列表——不是退回某个默认番的词表，那样等于换了个
-# 地方继续硬套。
-def _anchor_pattern(words: list[str]) -> re.Pattern:
-    """季/集/话通用写法 + 给定的具名场合词。空列表也要能编译（见下方空桶测试）。"""
-    return re.compile(
-        r"(第[一二三四五六七八九十百\d]+[季集话]|S\d+E?\d*"
-        + ("|" + "|".join(re.escape(w) for w in words) if words else "")
-        + r")")
-
-
-def episode_anchor_words(script_path: Path) -> list[str]:
-    """该期所属番的具名场合词表：01-topic.md 的「番:」→ config 里对应的桶。
-
-    读不到番名（没有 01-topic.md、或没写「番:」字段）、或该番还没建词表，
-    一律返回空列表——**不退回 `anime.default` 或任意别的番**，那等于把
-    这次改动想解决的问题换个地方重演一遍。
-    """
-    anime = bgm.anime_of(script_path.parent)
-    table = paths.conf("anime.anchor_words", {})
-    if not anime or not isinstance(table, dict):
-        return []
-    words = table.get(anime, [])
-    return words if isinstance(words, list) else []
-
-
 @dataclass
 class Check:
     name: str
@@ -440,9 +405,13 @@ def run(path: Path) -> list[Check]:
         "、".join(f"「{e}」" for e in sorted(set(enum))) + "　并列平铺，挑一个挖到底"
         if len(set(enum)) >= 2 else "无")
 
-    anchors = _anchor_pattern(episode_anchor_words(path)).findall(body)
+    # 剧情锚点：以每段画面块的 `集:` 字段为准（ADR-0004 的解析结果，集号格式
+    # 已由上方「集号格式/集号在素材库」两项把关）。**不再从正文找「第X集」字样**
+    # ——正文要不要点明集数、剧情对不对、文字像不像人，是 02.5 人审的活，
+    # 机检逼正文写集数 = 让机器决定内容，方向反了（2026-08-12 改）。
+    anchors = [r for _, r in parse_episodes(text) if _norm_ep(r)]
     add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchors) >= MIN_ANCHOR,
-        f"{len(anchors)} 处：{'、'.join(sorted(set(anchors))[:5])}" if anchors else "0 处，全篇抽象")
+        f"{len(anchors)}/{len(vo)} 段画面块带集号" if anchors else "0 段，全篇没有画面集号锚点")
 
     visual = VISUAL.findall(" ".join(queries))
     add("查询无构图词", not visual, "、".join(sorted(set(visual))) or "无")
