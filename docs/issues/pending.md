@@ -125,17 +125,6 @@
   STANDARD「实现与文档分叉时改文档」要处理的静默错误。
 - 推进：tts.py 改成读 `paths.conf("script.cpm", ...)`，或对齐 config 值；改完跑 pytest。
 
-### [D15] BGM 例外（Last Song 非本番曲目）绕过硬约束但规则文档未同步
-- 状态：待决策
-- 位置：config/bgm.json:390；CLAUDE.md「十一、版权」；docs/STANDARD.md:349
-- 描述：`from` 字段明写「EGOIST(chelly)/Bravely Second 单曲碟 SRCL-8810 tr.04（非罪恶王冠曲目）」
-  ——违反 CLAUDE.md「BGM 用该番自己的音乐」硬约束。例外只记在番剧笔记（data/，不进 git），
-  规则原文一字未改，违反「先改规则、再改实践」。
-- 线索：该改动与缩进重排混在一个未提交的 bgm.json diff 里（真实改动仅 8 行，其余 770 行
-  是格式噪音）。
-- 推进：① 决定例外是否成立；② 成立就在 CLAUDE.md 记一句规则修订；③ 提交时 `git diff -w`
-  确认只提交真实改动。
-
 ### [D16] 「人类只出现在两/三处」文档四处互相矛盾，02.5 加了但没同步
 - 状态：待决策
 - 位置：README.md:5 与 1.2 表；docs/WORKFLOW.md:5；docs/STANDARD.md:83；pipeline/review.py:6
