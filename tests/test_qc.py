@@ -141,3 +141,21 @@ class TestBlackDefects:
         m2 = _span("c.mkv", 500.0, 500.6, 300.0, 300.6, 2, 1)   # bi=1 未覆盖 0.6s
         assert qc._black_defects([m1, m2], {m1}) == [
             ("c.mkv", 300.0, 300.6, 500.0, 500.6)]
+
+
+class TestEpisodeDurationBand:
+    """成片总时长带的按期覆盖（N15）：tts.py 现在也读这个函数判 WARN 阈值，
+    不再自己抄一份 120/240 硬编码——两个调用点（qc 渲染后质检、tts 配音后
+    WARN）必须走同一份「没写就用默认带，写了就按该期覆盖」的逻辑。
+    """
+
+    def test_没有_01_topic_md_返回None(self, tmp_path):
+        assert qc.episode_duration_band(tmp_path) is None
+
+    def test_没写时长目标字段也返回None(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("# 标题\n类型: 人物志\n", encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) is None
+
+    def test_写了时长目标按分钟换算成秒(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟\n", encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) == (420.0, 480.0)

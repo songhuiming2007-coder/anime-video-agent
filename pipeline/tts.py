@@ -31,11 +31,18 @@ from pathlib import Path
 from pypinyin import Style, pinyin
 
 from . import paths  # 必须在任何 HF 库之前，把模型缓存钉到 SSD
+from .qc import episode_duration_band
 
 CONFIG = paths.CONFIG / "voice.json"
 
-CPM = 280           # 中文口播字/分钟，与 check_script 同源
+CPM = paths.conf("script.cpm", 380)   # 与 check_script 同源同 fallback；真值在
+                                      # config/project.json（2026-08-10 校准 315），
+                                      # 注释不再声称「同源」却各写各的数
 DUR_BAND = (0.5, 2.0)   # 实际时长 / 估算时长 的允许区间，超出说明念飞了
+# 成片总时长带是另一条：run() 末尾从 config/project.json 的 video.duration_band
+# 取默认带，有 01-topic.md `时长目标` 就按该期覆盖（复用 qc.episode_duration_band，
+# 不再抄第三份正则——tts/check_script/qc 曾经各写一份）。跟上面这条 DUR_BAND
+# 是两个不同的量，名字像不代表是同一件事。
 MAX_CER = 0.20      # 回读音节错误率上限。ASR 自身的听岔约 5%，留了余量
 MIN_EDITS = 3       # 与上一条同时越线才判失败，避免短段落被 ASR 的一两处听岔冤枉
 ATTEMPTS = 3
@@ -723,8 +730,9 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     print("-" * 60)
     print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
           f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")
-    if not 120 <= total <= 240:
-        print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出 2–4 分钟区间", file=sys.stderr)
+    band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
+    if not band[0] <= total <= band[1]:
+        print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
     return manifest_path
 
 

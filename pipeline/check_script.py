@@ -39,6 +39,14 @@ MIN_CHARS = paths.conf("script.min_chars", 870)
 MAX_CHARS = paths.conf("script.max_chars", 1300)
 MIN_ANCHOR = paths.conf("script.min_anchors", 3)   # 剧情锚点下限：带画面集号字段的段落数
 
+# `01-topic.md` 的 `缩段不注水: 是`：字数下限 × shrink_factor。
+# 依据 ADR-0005 补记三：字数下限逼 agent 注水，被骂的机器味句子相当部分是
+# 凑字数补出来的。这是「允许承认这段没料、缩短」，不是放宽默认带。
+#     不锚 `$`，理由同下面 DURATION_FIELD 的同款教训：01-topic.md 允许行尾挂
+#     `# 备注`，锚了会静默退回默认档且零报错——2026-08-14 审计实测踩到。
+SHRINK_FACTOR = paths.conf("script.shrink_factor", 0.8)
+SHRINK_FIELD = re.compile(r"^\s*缩段不注水\s*[:：]\s*是\b", re.M)
+
 # `01-topic.md` 里 `时长目标: 7-8分钟` 这样的字段，覆盖本期的字数/时长带。
 # 不填就是上面 MIN_CHARS–MAX_CHARS 这条默认带，行为不变。
 #     不锚 `$`：01-topic.md 允许行尾挂 `# 备注`（BGM 字段已经这么用），
@@ -58,6 +66,18 @@ def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
         return None
     m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
     return (float(m.group(1)), float(m.group(2))) if m else None
+
+
+def shrink_no_padding(script_path: Path) -> bool:
+    """从这一期 `01-topic.md` 读 `缩段不注水: 是`。
+
+    没有这个文件、或没写这个字段，返回 False——默认下限不变。这是显式声明
+    「这段没料、宁可缩短」，不是默认放宽（ADR-0005 补记三：字数下限逼注水）。
+    """
+    topic = script_path.parent / "01-topic.md"
+    if not topic.exists():
+        return False
+    return bool(SHRINK_FIELD.search(topic.read_text(encoding="utf-8")))
 
 # 五种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
 # （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在五种里就返回空串。
@@ -268,6 +288,8 @@ def run(path: Path) -> list[Check]:
     else:
         dur_lo, dur_hi = MIN_CHARS / CPM, MAX_CHARS / CPM
         min_chars, max_chars = MIN_CHARS, MAX_CHARS
+    if shrink_no_padding(path):
+        min_chars = round(min_chars * SHRINK_FACTOR)   # 只降下限，上界不动
 
     # 末段若是片尾套话，从正文统计里摘出去（仍然会被配音，只是不参与内容判定）
     outro = vo[-1] if vo and len(vo[-1]) <= 25 and OUTRO.search(vo[-1]) else None
