@@ -87,6 +87,49 @@ class TestOutro:
         assert "另有片尾" not in get(cs.run(f), "段落数").detail
 
 
+class TestShrinkNoPadding:
+    """`01-topic.md` 的 `缩段不注水: 是`：字数下限 × SHRINK_FACTOR，上界不动（E1）。
+
+    默认 MIN_CHARS=870、MAX_CHARS=1300、SHRINK_FACTOR=0.8 → shrunk 下限
+    round(870*0.8)=696。这三个数直接来自 pipeline/check_script.py 的默认配置，
+    先在实现上确认过再写进下面的断言。800 字卡在 696 与 870 之间，用来验证
+    这条字段不只是换个数字显示，是真的能把 FAIL 翻成 PASS。
+    """
+
+    def _episode(self, tmp_path, per_seg_chars, n=8, shrink=False):
+        if shrink:
+            (tmp_path / "01-topic.md").write_text("缩段不注水: 是\n", encoding="utf-8")
+        return script(tmp_path, ["文" * per_seg_chars] * n)
+
+    def test_无字段行为不变(self, tmp_path):
+        f = self._episode(tmp_path, 50, shrink=False)
+        assert get(cs.run(f), "字数").name == "字数 870–1300"
+
+    def test_行尾备注不静默失效(self, tmp_path):
+        # 2026-08-14 审计实测踩到：原正则锚 \s*$，而 01-topic.md 允许行尾挂
+        # `# 备注`（BGM 字段既有惯例）——带备注时字段不匹配、静默退回默认
+        # 下限、零报错。同文件 DURATION_FIELD 注释记录过同款坑。
+        # 修法：\b 词边界替代 $（同 DURATION_FIELD 的处理）。
+        (tmp_path / "01-topic.md").write_text(
+            "缩段不注水: 是 # 人物志，料不够\n", encoding="utf-8")
+        f = script(tmp_path, ["文" * 50] * 8)
+        assert get(cs.run(f), "字数").name == "字数 696–1300"
+
+    def test_有字段下限乘shrink_factor且上界不动(self, tmp_path):
+        f = self._episode(tmp_path, 50, shrink=True)
+        assert get(cs.run(f), "字数").name == "字数 696–1300"
+
+    def test_不带字段_800字判不合格(self, tmp_path):
+        f = self._episode(tmp_path, 100, shrink=False)   # 8×100=800 < 870
+        c = get(cs.run(f), "字数")
+        assert c.ok is False and "800" in c.detail
+
+    def test_带字段_同样800字判合格(self, tmp_path):
+        f = self._episode(tmp_path, 100, shrink=True)     # 800 ≥ 696
+        c = get(cs.run(f), "字数")
+        assert c.ok is True
+
+
 class TestLongSentence:
     def test_按单句判而不是按整段判(self, tmp_path):
         # 一段里三句短句加起来 60 字完全正常，念着不断气。

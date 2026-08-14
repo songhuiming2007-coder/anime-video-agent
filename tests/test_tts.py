@@ -186,6 +186,13 @@ class TestExpectedDuration:
     def test_与_CPM_一致(self):
         assert t.expected_duration("八幡自爆了") == pytest.approx(5 / t.CPM * 60)
 
+    def test_CPM_与_config_同源(self):
+        # D14：tts.py 曾经把 CPM 写死成字面量 280，和 check_script.py 读同一个
+        # config 键各写各的数——两处「同源」的注释成了谎言。这条断言测的正是
+        # 分叉本身：CPM 必须来自 config，不能是任何硬编码字面量。
+        from pipeline import paths as pl
+        assert t.CPM == pl.conf("script.cpm", 380)
+
 
 class TestSplitSentences:
     def test_按句末标点切且保留标点(self):
