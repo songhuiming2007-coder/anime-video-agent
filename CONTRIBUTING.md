@@ -39,7 +39,7 @@
 
 | 层 | 内容 | macOS | Windows / Linux |
 |---|---|---|---|
-| A | `pytest`，165 条，约 2.5 秒 | ✅ | **应该可以**——mlx 的 import 全在函数内部（`tts.py:158`、`asr.py:53`、`ingest.py:256`），测试里没有 POSIX 假设 |
+| A | `pytest`，纯函数测试，约 2.5 秒 | ✅ | **应该可以**——mlx 的 import 全在函数内部（`tts.py:158`、`asr.py:53`、`ingest.py:256`），测试里没有 POSIX 假设 |
 | B | 索引、排片、渲染、质检、封面 | ✅ | 需要 ffmpeg；字体改 `config/project.json` 的 `subtitle.font` |
 | C | TTS 配音、ASR 回读 | ✅ | ❌ mlx 装不上。解绑是阶段 1 的正事，见 ROADMAP |
 | — | `preflight.sh` | ✅ | bash 脚本，用 WSL / Git Bash 或跳过 |
@@ -153,7 +153,7 @@ feat/<英文>   fix/<英文>   docs/<英文>
 
 **1. 三平台 CI —— 已建，见 `.github/workflows/test.yml`**
 
-每次 push 与 PR，在 ubuntu / macos / windows 上跑那 165 条测试（下界 3.12 跑三平台，
+每次 push 与 PR，在 ubuntu / macos / windows 上跑那批纯函数测试（下界 3.12 跑三平台，
 上界 3.14 跑 ubuntu）。仓库公开，Actions 免费，**谁都不用为了验另一个平台买第二台电脑。**
 
 覆盖边界写在 workflow 的注释里，简单说：A 层全覆盖（含「依赖能否全新装上」，
