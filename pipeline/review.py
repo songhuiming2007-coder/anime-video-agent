@@ -3,8 +3,8 @@
     python -m pipeline.review data/episodes/<本期>            # 出 04-review.html
     python -m pipeline.review data/episodes/<本期> --approve  # 存成 approved 版
 
-**这是整条流水线唯一的人工关卡**（CLAUDE.md「人类只在 05 和 09 出现」），
-而它此前从没建过——2026-07-29 检查发现本期的 `04-clips.approved.json` 与
+**这是画面轨唯一的人工关卡**（CLAUDE.md：人类在 02.5 / 05 / 09 出现，
+05 是画面轨唯一人工关卡），而它此前从没建过——2026-07-29 检查发现本期的 `04-clips.approved.json` 与
 `04-clips.json` 字节完全相同，也就是说画面是检索直出、没过人眼就渲了。
 
 **要人看的是什么：** 语义检索最典型的错误是「台词对了但画面不对」——
@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import paths
+from .align import SEG_TOL, verify_alignment   # 叶子模块：approve 纯 JSON 校验，不背 clips 的 ML 依赖
 
 THUMB_W = 400          # 够看清是谁在画面上，又不至于让一页几百张图卡住
 THUMB_Q = "4"          # ffmpeg -q:v，2 最好 31 最差
@@ -60,6 +61,24 @@ def _presence_txt(pr: float | None) -> str:
         return ""
     return ('<span class="flag">在场 0</span>' if pr == 0.0
             else f" · 在场 {pr:.2f}")
+
+
+def _align_txt(seg: dict, audio_seg: dict | None, manifest_present: bool) -> str:
+    """段头一行的「画面合计 / 配音」比对（B4 段级不变量的审图页落点）。
+
+    manifest 缺失或该段配音记录对不上，都必须显式说明「未比对」——
+    静默跳过等于让人以为这里天然比对过（判据 9：跳过不是通过）。
+    """
+    if not manifest_present:
+        return '　<span class="flag">（缺 manifest，未比对）</span>'
+    if audio_seg is None:
+        return '　<span class="flag">（配音段缺失，未比对）</span>'
+    got = sum(c["dur"] for c in seg.get("clips") or [])
+    need = audio_seg["duration"]
+    txt = f"画面合计 {got:.1f}s / 配音 {need:.1f}s"
+    if abs(got - need) > SEG_TOL:
+        return f'　<span class="flag">{txt} 差 {got - need:+.1f}s</span>'
+    return f"　{txt}"
 
 
 def _thumb_path(dest_dir: Path, tag: str, start: float, dur: float, n: int) -> Path:
@@ -140,6 +159,13 @@ def build(episode: Path) -> Path:
     data = json.loads(src.read_text(encoding="utf-8"))
     segs = data["segments"]
 
+    manifest_path = episode / "03-audio" / "manifest.json"
+    manifest_present = manifest_path.exists()
+    audio_by_index = {}
+    if manifest_present:
+        audio = json.loads(manifest_path.read_text(encoding="utf-8"))["segments"]
+        audio_by_index = {a["index"]: a for a in audio}
+
     shots_dir = episode / "04-thumbs"
     shots_dir.mkdir(exist_ok=True)
 
@@ -177,9 +203,10 @@ def build(episode: Path) -> Path:
                 chan += '<span class="flag">过滤为空→退回，画面里未必有他</span>'
         # 集号与降级链要显示出来：集级没命中掉到季内/全空间 = 集号或查询
         # 写得不稳，是回去改稿的信号（ADR-0004）；没写集字段的段不显示。
+        align_txt = _align_txt(s, audio_by_index.get(s["index"]), manifest_present)
         body.append(f'<div class="q"><span class="no"></span>查询 <b>'
                     f'{html.escape(s.get("used_query") or "—")}</b>'
-                    f'　{s["duration"]:.1f}s{note}{chan}{_ep_label(s)}</div>')
+                    f'　{s["duration"]:.1f}s{note}{chan}{_ep_label(s)}{align_txt}</div>')
         if not s["clips"]:
             body.append('<div class="clip"><div class="side flag">'
                         '无匹配，渲染会退到降级方案</div></div>')
@@ -215,10 +242,25 @@ def approve(episode: Path) -> Path:
 
     **必须是显式动作。** 让 clips.py 自动写 approved 是最省事的做法，
     也正是这一关形同虚设的原因——本期就是这么跳过去的。
+
+    **也是段级不变量的第一道闸（B4）。** 人审在这一步之前可能直接改过
+    `04-clips.json` 的 start/dur，机器生成时保证的「Σclip.dur == 配音时长」
+    不会自动重新成立——这里补验，不通过就不许拷成 approved 版。
     """
     src, dest = episode / "04-clips.json", episode / "04-clips.approved.json"
     if not src.exists():
         raise SystemExit(f"FAIL 缺 {src}")
+    manifest_path = episode / "03-audio" / "manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"FAIL 缺 {manifest_path}，approve 前必须能校验段级时长不变量")
+    data = json.loads(src.read_text(encoding="utf-8"))
+    audio = json.loads(manifest_path.read_text(encoding="utf-8"))["segments"]
+    violations = verify_alignment(data["segments"], audio)
+    if violations:
+        raise SystemExit(
+            "FAIL 段级时长不对齐，不许 approve：\n  " + "\n  ".join(violations) +
+            f"\n     人审改过画面（start/source）？先跑 "
+            f"python -m pipeline.clips {episode} --refit 重排版再 approve")
     shutil.copy2(src, dest)
     return dest
 

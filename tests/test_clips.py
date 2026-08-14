@@ -69,6 +69,85 @@ class TestSize:
             assert k not in out[0]
 
 
+class TestVerifyAlignment:
+    """段级不变量校验面（B4）：Σclip.dur == manifest 段时长（±SEG_TOL）。"""
+
+    def test_对齐通过(self):
+        segs = [{"index": 1, "status": "ok", "clips": [{"dur": 3.0}, {"dur": 3.0}]}]
+        audio = [{"duration": 6.0}]
+        assert c.verify_alignment(segs, audio) == []
+
+    def test_漂移超容差报段号和差值(self):
+        # 6.0 画面 vs 6.3 配音，差 0.3s > SEG_TOL=0.05
+        segs = [{"index": 5, "status": "ok", "clips": [{"dur": 3.0}, {"dur": 3.0}]}]
+        audio = [{"duration": 6.3}]
+        assert c.verify_alignment(segs, audio) == [
+            "段5: 画面 6.00s / 配音 6.30s 差 -0.30s"]
+
+    def test_no_match段跳过不比对(self):
+        # status != ok 的段没有 clips（render 本就拒收），不该被判违例
+        segs = [{"index": 2, "status": "no_match", "clips": []}]
+        audio = [{"duration": 5.0}]
+        assert c.verify_alignment(segs, audio) == []
+
+    def test_ok但clips为空算违例(self):
+        segs = [{"index": 3, "status": "ok", "clips": []}]
+        audio = [{"duration": 5.0}]
+        assert c.verify_alignment(segs, audio) == ["段3: status=ok 但 clips 为空"]
+
+    def test_段数不齐报而不是静默用zip截断(self):
+        # zip 会静默吞掉多出来的段——判据 9：跳过不是通过，错位更不是
+        segs = [{"index": 1, "status": "ok", "clips": [{"dur": 3.0}]}]
+        audio = []
+        assert c.verify_alignment(segs, audio) == [
+            "段数不齐：04-clips.json 1 段 / manifest 0 段"]
+
+
+class TestRefit:
+    """人审改过 start/source 之后，把末片 dur 重排到满足段级不变量。"""
+
+    SRC = {"S02E02": {"path": "/x/e02.mkv", "duration": 1400.0}}
+
+    def test_已对齐输入是幂等no_op(self):
+        segs = [{"index": 1, "status": "ok", "clips": [
+            {"season": 2, "episode": 2, "start": 10.0, "dur": 6.0}]}]
+        audio = [{"duration": 6.0}]
+        out, report = c.refit(segs, audio, self.SRC)
+        assert report == []
+        assert out[0]["clips"][0]["dur"] == 6.0
+
+    def test_差0_4s由末片吸收且总和等于need(self):
+        segs = [{"index": 7, "status": "ok", "clips": [
+            {"season": 2, "episode": 2, "start": 10.0, "dur": 3.0},
+            {"season": 2, "episode": 2, "start": 20.0, "dur": 3.0}]}]  # Σ=6.0
+        audio = [{"duration": 6.4}]                                    # 差 +0.4
+        out, report = c.refit(segs, audio, self.SRC)
+        last = out[0]["clips"][-1]
+        assert last["dur"] == 3.4                       # 3.0 + 0.4，headroom 充足
+        assert sum(cl["dur"] for cl in out[0]["clips"]) == pytest.approx(6.4)
+        assert report == ["段7: 末片 3.00s → 3.40s（漂移 +0.40s 由末片吸收）"]
+
+    def test_末片headroom不够就SystemExit(self):
+        # 末片起点 1397，源时长 1400 → 向后只有 3.0s 余量；
+        # 需要吸收的漂移 2.5s 会把 dur 顶到 5.0，clamp 到 3.0 仍不够 need
+        segs = [{"index": 9, "status": "ok", "clips": [
+            {"season": 2, "episode": 2, "start": 10.0, "dur": 3.0},
+            {"season": 2, "episode": 2, "start": 1397.0, "dur": 2.5}]}]  # Σ=5.5
+        audio = [{"duration": 8.0}]                                      # 差 +2.5
+        with pytest.raises(SystemExit, match="headroom 夹不住"):
+            c.refit(segs, audio, self.SRC)
+
+    def test_absorb后低于MIN_CLIP就SystemExit(self):
+        # need 比 Σdur 少 4.0s，末片 5.0 − 4.0 = 1.0 < MIN_CLIP=2.5，
+        # clamp 夹到 2.5 仍比 need 多，夹不住
+        segs = [{"index": 11, "status": "ok", "clips": [
+            {"season": 2, "episode": 2, "start": 10.0, "dur": 3.0},
+            {"season": 2, "episode": 2, "start": 20.0, "dur": 5.0}]}]  # Σ=8.0
+        audio = [{"duration": 4.0}]                                    # 差 -4.0
+        with pytest.raises(SystemExit, match="headroom 夹不住"):
+            c.refit(segs, audio, self.SRC)
+
+
 class TestLadder:
     """查询阶梯：`查询` → `备选` → `配音`，**只救不比**。
 
