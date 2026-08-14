@@ -73,7 +73,7 @@
 「几乎」是分叉的入口。两个机制：
 
 1. **三平台 CI —— 已建**（`.github/workflows/test.yml`）。每次 push 与 PR 在
-   ubuntu / macos / windows 上跑 165 条测试。**每次 push 就有一台 Windows，不用买。**
+   ubuntu / macos / windows 上跑纯函数测试。**每次 push 就有一台 Windows，不用买。**
    边界：runner 没有 CUDA / MPS，模型推理与端到端出片验不了；A 层全覆盖，
    含「依赖能否全新装上」——`numpy<2.5` 那个坑正是这个形状
 2. **共享 fixture —— 待建**。片源不外传，计划用可合法共享的公开素材做对齐基准
