@@ -242,6 +242,13 @@ def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
     return chosen, "ok"
 
 
+# 段级不变量（SEG_TOL / verify_alignment / refit）在 `pipeline/align.py`：
+# 单独叶子模块，review/render 的纯文件校验不因 import 本模块（连带
+# sentence_transformers）而背上 ML 依赖。本模块的 `--refit` 与 size() 语义
+# 从那里 import。
+from .align import SEG_TOL, refit, verify_alignment  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` 不改名）
+
+
 def _allocate(live, by_index, sources, anime, quota):
     """全局贪心分配，段内按带内序尝试。返回已占用的片段列表。
 
@@ -585,7 +592,28 @@ def main() -> int:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--anime", default=paths.conf("anime.default", "春物"))
     ap.add_argument("--index-dir", type=Path, default=INDEX_DIR)
+    ap.add_argument("--refit", action="store_true",
+                     help="人审改过 start/source 之后，把每段 dur 重排到满足段级不变量。"
+                          "只读写 04-clips.json，不碰检索——别跟不带 --refit 的正常调用搞混，"
+                          "后者会重新检索并覆盖人改结果")
     a = ap.parse_args()
+
+    if a.refit:
+        src = a.episode / "04-clips.json"
+        if not src.exists():
+            raise SystemExit(f"FAIL 缺 {src}")
+        manifest_path = a.episode / "03-audio" / "manifest.json"
+        if not manifest_path.exists():
+            raise SystemExit(f"FAIL 缺 {manifest_path}")
+        data = json.loads(src.read_text(encoding="utf-8"))
+        audio = json.loads(manifest_path.read_text(encoding="utf-8"))["segments"]
+        sources = load_sources(data["anime"])
+        segments, report = refit(data["segments"], audio, sources)
+        data["segments"] = segments
+        src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("\n".join(report) if report else "已对齐，无需调整")
+        print(f"→ {src}")
+        return 0
 
     dest = run(a.episode, a.index_dir, a.anime)
     data = json.loads(dest.read_text(encoding="utf-8"))

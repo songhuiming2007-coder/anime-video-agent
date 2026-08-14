@@ -9,9 +9,12 @@
 复用，人审看到的是上一版画面且没有任何报错。
 """
 
+import json
 from pathlib import Path
 
-from pipeline.review import _ep_label, _presence_txt, _thumb_path
+import pytest
+
+from pipeline.review import _ep_label, _presence_txt, _thumb_path, approve
 
 
 class TestEpLabel:
@@ -54,6 +57,37 @@ class TestPresenceTxt:
         # 0.99499…，格式化只会给 0.99，是浮点表示问题不是展示问题
         assert _presence_txt(0.973) == " · 在场 0.97"
         assert _presence_txt(0.976) == " · 在场 0.98"
+
+
+class TestApprove:
+    """approve() 是段级不变量的第一道闸（B4）：违例不许拷成 approved 版。"""
+
+    def _write(self, episode: Path, *, seg_dur: float, clip_durs: list[float]):
+        clips = {"segments": [{
+            "index": 1, "status": "ok",
+            "clips": [{"dur": d} for d in clip_durs],
+        }]}
+        (episode / "04-clips.json").write_text(
+            json.dumps(clips, ensure_ascii=False), encoding="utf-8")
+        audio_dir = episode / "03-audio"
+        audio_dir.mkdir()
+        manifest = {"segments": [{"index": 1, "duration": seg_dur}]}
+        (audio_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def test_对齐则拷贝成功(self, tmp_path):
+        self._write(tmp_path, seg_dur=6.0, clip_durs=[3.0, 3.0])
+        dest = approve(tmp_path)
+        assert dest == tmp_path / "04-clips.approved.json"
+        assert json.loads(dest.read_text(encoding="utf-8")) == \
+            json.loads((tmp_path / "04-clips.json").read_text(encoding="utf-8"))
+
+    def test_违例则拒绝且不拷贝(self, tmp_path):
+        # 6.0 画面 vs 6.4 配音，差 0.4s > SEG_TOL——不许先拷再报
+        self._write(tmp_path, seg_dur=6.4, clip_durs=[3.0, 3.0])
+        with pytest.raises(SystemExit, match="段级时长不对齐"):
+            approve(tmp_path)
+        assert not (tmp_path / "04-clips.approved.json").exists()
 
 
 class TestThumbPath:

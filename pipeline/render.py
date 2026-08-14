@@ -4,7 +4,7 @@
 
 吃 `04-clips.approved.json` + `03-audio/`，吐 `05-final.mp4`。
 **只吃 approved 版**——`04-clips.json` 是机器排的，没过人眼不许进渲染，
-见 CLAUDE.md「人类只在 05 和 09 出现」。
+见 CLAUDE.md「人类在 02.5 / 05 / 09 出现」。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from . import bgm, paths
+from .align import verify_alignment   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
 # 输出规格。片源是 1920x1080 / 23.976fps / yuv420p10le，成片降到 8bit：
 # 抖音和 B 站的转码链对 10bit 支持不稳，而我们又不做调色，10bit 没有收益。
@@ -602,6 +603,11 @@ def run(episode: Path, keep: bool = False) -> Path:
     bad = [s["index"] for s in segments if s["status"] != "ok"]
     if bad:
         raise SystemExit(f"FAIL 这些段落状态不是 ok，不许渲染：{bad}")
+
+    # 段级不变量第二道闸（approve 是第一道）：防绕过 approve 直接改 approved 文件。
+    violations = verify_alignment(segments, manifest["segments"])
+    if violations:
+        raise SystemExit("FAIL 段级时长不对齐（人审改过画面没 refit？）：\n  " + "\n  ".join(violations))
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
