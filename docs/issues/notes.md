@@ -1,6 +1,6 @@
 # 低优先级备忘（Notes）
 
-已接受/已知妥协/触发式，短期不动。当前 13 条。
+已接受/已知妥协/触发式，短期不动。当前 20 条。
 
 ---
 
@@ -105,13 +105,6 @@
 - 描述：「1.6 是起点，抽检（`vprobe presence`）发现认混了就回来调，调完要重跑嵌入。」
 - 推进：换番 / 抽检出认混时触发。
 
-### [N15] tts.py 的 2–4 分钟成片时长检查硬编码，不走 config 时长目标
-- 状态：备忘
-- 位置：pipeline/tts.py:726-727
-- 描述：`if not 120 <= total <= 240` 硬编码，不读 `01-topic.md` 的 `时长目标` 覆盖——人物志类
-  7–8 分钟选题会在此误报 WARN，而 qc.py 已支持 per-episode 覆盖。
-- 推进：对齐 qc.py 的做法读 per-episode 时长目标。
-
 ### [N16] 春物角色样本少可靠性存疑 + _note 口径与实现不符
 - 状态：备忘
 - 位置：config/characters.json:6 vs config/project.json:61 + vindex/*.presence.json meta
@@ -126,13 +119,6 @@
 - 描述：春物 24/64 已贴名、40 簇未贴；东京喰种 114/287、173 簇未贴；罪恶王冠 45/71、26 簇未贴。
   合计 239 个簇没有名字，角色过滤覆盖不到它们。D11 只说「逐步补」，这里量化了规模。
 - 推进：与 D11 一起，贴名完成度要有个「何时算做完」的判定。
-
-### [N18] ADR-0003「过切与漏切代价不对称要写进判据」未落地
-- 状态：备忘
-- 位置：docs/adr/0003:334 vs 仓库根 CLAUDE.md（判据文档全文无 scdet/往低取内容）
-- 描述：ADR 明写「过切与漏切的代价不对称，这条要写进判据……拿不准往低取」，但 CLAUDE.md
-  判据十条里没有任何对应条目——违反项目「判据要么被执行，要么被删除」纪律。
-- 推进：写进 CLAUDE.md 判据，或从 ADR 里删掉这句声明。
 
 ### [N19] cpm 换音色/换题材要重测（触发式）
 - 状态：备忘
@@ -150,12 +136,10 @@
 
 ### [N21] 文档维护琐碎项集合
 - 状态：备忘
-- 位置：scenes.json:4 / bgm.json:2 / SHOTLIST.md:3 / BASELINE.md:46-48 / voice.json:7 / VOICE.local.md
-- 描述：① scenes.json 引用已删除的 `_anchor_note` 键（commit 56361a1 后悬空）；② bgm.json 头部
-  `_note` 仍写「一部番固定 3–5 首」，与 CLAUDE.md 2026-08-10「任意首数拼接」冲突；③ SHOTLIST 写
-  「第 10 步」但 SKILL 是第 8 节标分镜（编号断裂）；④ BASELINE 知乎 3 篇样本「超 45 字占比」列
-  缺测；⑤ voice.json `ref_text: null` 无 why 注释；⑥ VOICE.local 移植表缺「平台专属梗」行、
-  两条特征缺原话锚。
+- 位置：BASELINE.md:46-48 / voice.json:7 / VOICE.local.md
+- 描述：④ BASELINE 知乎 3 篇样本「超 45 字占比」列缺测；⑤ voice.json `ref_text: null` 无 why
+  注释；⑥ VOICE.local 移植表缺「平台专属梗」行、两条特征缺原话锚。
+  （①②③——scenes.json 悬空引用/bgm.json 首数陈旧/SHOTLIST 步数断裂——已于 2026-08-14 修掉。）
 - 推进：下次动对应文件时顺手修，不值得单独立项。
 
 ### [N22] 回读质检盲区：TTS 念错但 Whisper 回读恰好也认成同一个错字
