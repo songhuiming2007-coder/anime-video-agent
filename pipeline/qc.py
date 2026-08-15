@@ -97,7 +97,9 @@ def _duration(video: Path, stream: str) -> float:
 
 
 def _map_black_to_sources(blacks: list[tuple[float, float]],
-                          plan: dict) -> list[tuple[str, float, float, float, float, int, int]]:
+                          plan: dict,
+                          seg_starts: dict[int, float] | None = None
+                          ) -> list[tuple[str, float, float, float, float, int, int]]:
     """成片黑帧区间 → 它覆盖的源片段引用。
 
     成片 = 各段 clips 按顺序拼接（与 render.py 同一份 plan、同一套顺序，
@@ -106,11 +108,19 @@ def _map_black_to_sources(blacks: list[tuple[float, float]],
     黑帧跨片段边界时一个黑帧映射出多条。片段序号从 1 起——它决定累积漂移
     窗口的大小（见 `_mapped_covered`）；黑帧序号用于把同一条黑在多个片段上的
     映射归拢起来判整体（见 `_black_defects`）。
+
+    试听型的段落起点带音乐段偏移（`seg_starts`：段落号 → 成片起点），
+    否则段落连续假设会把黑帧映射到错误的源位置（2026-08-16 实测：
+    段落 1 的转场黑被映射到 467s 报「源无黑」）。
     """
     out: list[tuple[str, float, float, float, float, int, int]] = []
-    t = 0.0
     idx = 0
+    t = 0.0
     for seg in plan["segments"]:
+        # 试听型：段落起点从音乐时间轴来（含音乐段偏移）；
+        # 连续模式（seg_starts=None）：t 自然累计，行为与旧版一致。
+        if seg_starts is not None:
+            t = seg_starts.get(seg["index"], t)
         for clip in seg["clips"]:
             idx += 1
             lo, hi = t, t + clip["dur"]
@@ -174,6 +184,28 @@ def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]
     return defects
 
 
+def _music_plan(episode: Path) -> dict | None:
+    """试听型（稿子有 `音乐段` 块）的音乐时间轴；普通期返回 None。
+
+    三审 S2'：qc 的「与排片一致」基准是 04-clips 的段落排片（222.6s），
+    试听型成片按音乐时间轴铺（796s），拿旧基准卡必 FAIL——基准要跟着
+    时间轴走。黑帧映射的段落起点、静音豁免的歌尾位置也在这里拿。
+    解析失败/缺前置直接报错，不静默回退（跳过不是通过）。
+    """
+    from . import bgm, music
+    script = episode / "02-script.md"
+    if not script.exists() or not music.parse_script_music(script):
+        return None
+    mf = episode / "03-audio" / "manifest.json"
+    if not mf.exists():
+        raise SystemExit(f"FAIL 试听型质检需要 {mf}")
+    manifest = json.loads(mf.read_text(encoding="utf-8"))
+    anime = bgm.anime_of(episode)
+    if anime is None:
+        raise SystemExit(f"FAIL 试听型质检需要 01-topic.md 的 `番: `字段")
+    return music.build_timeline(episode, manifest, bgm.load(anime))
+
+
 def check(video: Path, plan: dict | None = None,
           audio: list[dict] | None = None) -> list[Check]:
     out: list[Check] = []
@@ -190,7 +222,8 @@ def check(video: Path, plan: dict | None = None,
                      f"画面 {vdur:.3f}s / 音频 {adur:.3f}s 差 {abs(vdur - adur) * 1000:.0f}ms"))
 
     if plan:
-        want = plan["total_duration"]
+        mplan = _music_plan(video.parent)
+        want = mplan["total_duration"] if mplan else plan["total_duration"]
         out.append(Check("与排片一致",
                          abs(vdur - want) < AV_DRIFT_MAX,
                          f"排片 {want:.3f}s 成片 {vdur:.3f}s 差 {abs(vdur - want) * 1000:.0f}ms"))
@@ -224,8 +257,11 @@ def check(video: Path, plan: dict | None = None,
     defects: list[tuple[str, float, float, float, float]] = []
     if blacks:
         if plan:
+            mplan = _music_plan(video.parent)
+            seg_starts = ({s["index"]: s["start"]
+                           for s in mplan["segments"]} if mplan else None)
             mapped = _map_black_to_sources(
-                [(float(a), float(b)) for a, b in blacks], plan)
+                [(float(a), float(b)) for a, b in blacks], plan, seg_starts)
             # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
             # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
             # 可能早于请求位置（BLACK_SRC_BUF 的职责在这里，常量已删，见下）。
