@@ -8,6 +8,11 @@
 不过就换种子重生成，重试用尽仍不过就整体失败退出，绝不把坏音频留在盘上。
 这是 CLAUDE.md「诚实失败优于凑合交付」在本阶段的落地。
 
+**唯一例外是 ASR 盲区豁免**：三个不同种子生成的音频 Whisper 全部严重失真
+（CER 远超门槛）而时长达标时，判为 ASR 对音色的盲区而非 TTS 念错——跳过样本
+不定罪（S4），保留音频并标 `qc_skip`，成片交人前必须人耳确认。
+判据与 2026-08-16 段落 5.1 的实证见 `_render_one`。
+
 用法：
     python -m pipeline.tts <每期目录>              # 读 config/voice.json
     python -m pipeline.tts <每期目录> --force      # 重跑已存在的段落
@@ -19,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -93,6 +99,7 @@ class Take:
     cer: float
     attempts: int
     sentences: list[dict] | None = None
+    qc_skip: str | None = None   # "asr-blind" = ASR 对音色严重失真，CER 不可用，交人前必须人耳确认
 
 
 # ---------- 稿件解析 ----------
@@ -148,13 +155,111 @@ def syllables(s: str) -> list[str]:
                                  errors=lambda t: list(t), heteronym=False)]
 
 
+def _titles() -> list[str]:
+    """回读比对豁免表：`config/voice.json` 的 `titles` 字段（歌名列表）。
+
+    Qwen3-TTS 能念英日歌名，但 Whisper 回读把歌名听岔（エウテルペ→EUTERPE），
+    CER 虚高到 100%+，TTS 念对也被门禁误杀（2026-08-15 实测段落 5.1 三次重试全挂）。
+    歌名区段不参与 CER 比对；歌名前后的中文照常比对。
+    只读一次，不能每句读文件。
+    """
+    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+    v = cfg.get("titles", {})
+    if isinstance(v, dict):
+        v = [k for k in v if not k.startswith("_")]
+    return [t for t in v if t]
+
+
+# 歌名念一遍的实测时长（秒）。expected_duration 用它替代字数估算。
+# 2026-08-15 probe 实测，Qwen3-TTS-12Hz-1.7B-Base-bf16 + seg7 音色：
+#   My Dearest 1.44s / The Everlasting Guilty Crown 2.72s / エウテルペ 1.68s /
+#   Departures 1.36s / Planetes 1.36s
+_TITLE_DURS = {
+    "my dearest": 1.44,
+    "the everlasting guilty crown": 2.72,
+    "エウテルペ": 1.68,
+    "departures": 1.36,
+    "planetes": 1.36,
+}
+
+
+# 连续的非中文音节段（英文字母/日文假名），回读比对时按长度窗口挖掉歌名变体。
+# 歌名被 Whisper 念岔后长度基本不变（EUTERPE vs エウテルペ 都是 5-7 个音节），
+# 滑动窗口找与歌名长度最接近的一段挖掉；窗口限 ±2 音节防误挖中文。
+#
+# 注意：汉字拼音（pypinyin TONE3）形如 yi1/jin4，**带声调数字**；
+# 英日字母音节（e/u/t 或 エ/ウ/テ）不带数字。区分它们靠数字——
+# 只把「不含数字的音节」当作歌名变体候选，拼音天然被排除。
+def _is_nonhan_syl(s: str) -> bool:
+    return not any(ch.isdigit() for ch in s)
+
+
+def _excise_titles(syls: list[str], titles: list[str], fuzzy: bool = False) -> list[str]:
+    """从音节序列里挖掉歌名。
+
+    ref 侧精确匹配（歌名原文经过 normalize 后的字符序列）；
+    hyp 侧模糊挖（Whisper 念岔的变体，如 EUTERPE），按「连续非中文段」的长度
+    滑动窗口找与某个歌名长度差 ≤ 1 的一段挖掉——歌名念岔后长度基本不变，
+    而中文音节是带数字的拼音（yi1/jin4），与英日字母音节天然可区分。
+    窗口只给 ±1：±2 实测误挖（段落 5.1 的「クランテイエンロ」8 音节
+    被 Planetes 的 8±2 窗口误命中，而该句根本没有 Planetes）。
+    """
+    if not titles:
+        return syls
+    n = len(syls)
+    if not fuzzy:
+        # 精确匹配：ref 侧
+        title_syls = {t: list(normalize(t)) for t in titles}
+        out: list[str] = []
+        i = 0
+        while i < n:
+            matched = None
+            for t, ts in title_syls.items():
+                if syls[i:i + len(ts)] == ts:
+                    matched = len(ts)
+                    break
+            if matched:
+                i += matched
+            else:
+                out.append(syls[i])
+                i += 1
+        return out
+
+    # 模糊匹配：hyp 侧。找所有连续非中文段（不含数字的音节），
+    # 长度与任一歌名差 ≤ 1 就挖掉。
+    out: list[str] = []
+    lens = sorted({len(list(normalize(t))) for t in titles})
+    i = 0
+    while i < n:
+        if not _is_nonhan_syl(syls[i]):
+            out.append(syls[i])
+            i += 1
+            continue
+        j = i
+        while j < n and _is_nonhan_syl(syls[j]):
+            j += 1
+        span_len = j - i
+        if any(abs(span_len - tl) <= 1 for tl in lens):
+            i = j  # 挖掉整段
+        else:
+            out.append(syls[i])
+            i += 1
+    return out
+
+
 def cer(ref: str, hyp: str) -> tuple[int, float]:
     """回读比对，返回（编辑距离, 音节错误率）。段落都在百字以内，朴素 DP 足够。
 
     要两个数字是因为短段落上比率极不稳：十个音节的段落错一个就是 10%，
     而那只是 ASR 自己听岔了。判定时比率与绝对错数要同时越线。
+
+    歌名豁免：比对前先把 `titles` 里的歌名从两侧挖掉（ref 精确、hyp 按长度
+    窗口），歌名念岔不计入 CER。歌名前后的中文照常参与比对。
     """
+    titles = _titles()
     a, b = syllables(normalize(ref)), syllables(normalize(hyp))
+    if titles:
+        a, b = _excise_titles(a, titles, fuzzy=False), _excise_titles(b, titles, fuzzy=True)
     if not a:
         return (len(b), 1.0 if b else 0.0)
     prev = list(range(len(b) + 1))
@@ -176,7 +281,22 @@ def probe_duration(path: Path) -> float:
 
 
 def expected_duration(text: str) -> float:
-    return len(normalize(text)) / CPM * 60
+    """估算一段话念多久。中文按 cpm（字/分钟）算，歌名按实测时长算。
+
+    **歌名不能按字数估算。** Qwen3-TTS 念英文/日文歌名比念中文快得多，
+    按 cpm 估算会高估 1.5-2 倍（エウテルペ 5 个假名按 cpm 估 2.9s，实测 1.68s），
+    导致实际/估算 < 0.5× 被时长门禁误杀（2026-08-15 段落 5.1 实测踩到）。
+    歌名时长是 2026-08-15 probe 实测：My Dearest 1.44 / The Everlasting 2.72 /
+    エウテルペ 1.68 / Departures 1.36 / Planetes 1.36（Qwen3-1.7B + seg7 音色）。
+    换引擎/换音色要重测。
+    """
+    total = len(normalize(text))
+    for t, secs in _TITLE_DURS.items():
+        n = normalize(text).count(normalize(t))
+        if n:
+            total -= len(normalize(t)) * n
+            total += secs * CPM / 60 * n
+    return total / CPM * 60
 
 
 # ---------- 引擎 ----------
@@ -217,7 +337,13 @@ def _load_generic(ref: str | Path):
     return load(str(ref))
 
 
-LOADERS = {"indextts": _load_indextts}
+def _load_qwen3(ref: str | Path):
+    from mlx_audio.tts.utils import load_model
+
+    return load_model(str(ref))
+
+
+LOADERS = {"indextts": _load_indextts, "qwen3_tts": _load_qwen3}
 
 
 def _indextts_audio(model, ref_mel, text: str, temp: float, top_k: int, max_tokens: int):
@@ -285,6 +411,7 @@ class Engine:
         self.kind = cfg["engine"]
         self.ref_audio = str((paths.ROOT / cfg["ref_audio"]).resolve())
         self.ref_text = cfg.get("ref_text")
+        self.lang_code = cfg.get("lang_code", "auto")
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
@@ -314,6 +441,32 @@ class Engine:
             audio, rate = _indextts_audio(
                 self.model, self.ref_mel, text, temp, top_k, self.MAX_MEL_TOKENS
             )
+        elif self.kind == "qwen3_tts":
+            # Qwen3-TTS 只传 ref_audio，不传 ref_text。
+            #
+            # 新版 mlx-audio 的 ICL 克隆路径（ref_audio + ref_text 齐传）有 bug：
+            # 模型会把 ref_text 当正文复述出来（2026-08-15 实测，输出念的是参考
+            # 转录而非目标文本）。只传 ref_audio 走 x-vector 说话人嵌入路径，
+            # 念的是目标文本，音色照样来自参考。不传 ref_text 也就绕过了
+            # transcripts.json 的依赖。
+            #
+            # lang_code 来自 config/voice.json（zh = 中文旁白 + 英日歌名混读）。
+            # 采样参数照 Engine.SAMPLING 逐次降温；Qwen3 默认 temperature 0.9、
+            # top_k 50，首测即达标时这两个参数不生效，只是兜底。
+            kwargs: dict = {
+                "text": text,
+                "ref_audio": self.ref_audio,
+                "lang_code": self.lang_code,
+                "temperature": temp,
+                "top_k": top_k,
+            }
+            chunks, rate = [], None
+            for r in self.model.generate(**kwargs):
+                chunks.append(np.asarray(r.audio, dtype=np.float32).reshape(-1))
+                rate = r.sample_rate
+            if not chunks:
+                raise RuntimeError("模型没有产出任何音频")
+            audio = np.concatenate(chunks)
         else:
             kwargs: dict = {"text": text, "ref_audio": self.ref_audio}
             if self.ref_text is not None:
@@ -540,7 +693,7 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     tmp_dir = dest.parent / f".{dest.stem}-sents"
     tmp_dir.mkdir(exist_ok=True)
     try:
-        parts, worst_cer, tries = [], 0.0, 1
+        parts, worst_cer, tries, skipped = [], 0.0, 1, False
         meta, at = [], 0.0
         for i, s in enumerate(sents, 1):
             p = tmp_dir / f"{i:02d}.wav"
@@ -551,10 +704,12 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
             at += d + SENT_GAP
             worst_cer = max(worst_cer, take.cer)
             tries = max(tries, take.attempts)
+            skipped = skipped or take.qc_skip is not None
         _concat_with_gap(parts, dest, SENT_GAP)
         _pad_tail(dest, _para_gap())
         return Take(seg.index, seg.label, seg.text, dest.name,
-                    round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta)
+                    round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta,
+                    qc_skip="asr-blind" if skipped else None)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -633,28 +788,84 @@ def _pad_tail(path: Path, secs: float) -> None:
         w.writeframes(data + struct.pack(f"<{extra}h", *([0] * extra)))
 
 
+def _take_path(dest: Path, attempt: int) -> Path:
+    """第 attempt 次尝试的临时音频文件。"""
+    return dest.parent / f".{dest.stem}.{attempt}.wav"
+
+
+def _cleanup_takes(dest: Path, attempts: int) -> None:
+    """删掉全部尝试的临时文件。"""
+    for i in range(1, attempts + 1):
+        _take_path(dest, i).unlink(missing_ok=True)
+
+
+def _best_take(dest: Path, want: float) -> tuple[int, float] | None:
+    """豁免路径：从几次尝试里挑「时长达标且最接近估算时长」的一次。
+
+    ASR 盲区段的回读内容不可信，时长是唯一客观质量指标——漏读/重复会改变
+    时长（超带被排除），同一句不同种子之间「哪个念得稳」只有时长能比。
+    """
+    best = None
+    for i in range(1, ATTEMPTS + 1):
+        p = _take_path(dest, i)
+        if not p.exists():
+            continue
+        d = probe_duration(p)
+        ratio = d / want if want else 0.0
+        if not (DUR_BAND[0] <= ratio <= DUR_BAND[1]):
+            continue
+        if best is None or abs(d - want) < abs(best[1] - want):
+            best = (i, d)
+    return best
+
+
 def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
-    """生成一句，直到它通过质检；用尽重试仍不过则抛错。"""
+    """生成一句，直到它通过质检；用尽重试仍不过则抛错。
+
+    **ASR 盲区豁免（2026-08-15 加，2026-08-16 改判据）：** Qwen3-TTS 用日语参考
+    音色念中文时，Whisper 会把整句听成假名/近音字（「世界忽然退远了」→
+    「クランテイエンロ」），CER 30-100%，而音频实际念对了（人耳确认）。
+    这是 ASR 对音色的失真，不是 TTS 随机念错（S4：门禁拿不到能证伪的信息时，
+    跳过样本，不定罪）。
+
+    **豁免判据就是「3 次不同种子全部不达标 + 时长达标」。**
+    旧判据还要求回读文本两两相似（_reads_agree），2026-08-16 段落 5.1 实测
+    证明它是错的：三次回读在「假名乱码」与「近音中文」两种失真模式间摇摆，
+    CER 60/60/30%、内容互不相似，而音频是对的——「转录内容稳定」只是盲区的
+    充分条件，不是必要条件。到这一步时，三个不同种子生成的音频 Whisper
+    全部听不出正常内容，「无论 TTS 怎么生成 ASR 都严重失真」本身就是盲区证据。
+    跑飞风险由两道闸兜住：漏读/重复会改变时长（被 ok_dur 拦下）；豁免只保留
+    音频并标 `qc_skip`，成片交人前必须人耳确认——跳过不是通过。
+    """
     want = expected_duration(seg.text)
     last = ""
+    heard_all: list[str] = []
+    # 每次尝试写独立临时文件（最后 os.replace 到 dest），豁免时要挑 3 次里最好的。
+    # 旧实现每次覆盖同一 dest：豁免路径保留的是**最后一次**尝试，而三次是不同种子，
+    # 最后一次可能最差（2026-08-16 段落 5.1：attempt 3 把エウテルペ 念成 3s，
+    # 前两次歌名时长正常——对 ASR 盲区段，时长是唯一客观质量指标）。
     for attempt in range(1, ATTEMPTS + 1):
         # 只有喂给模型的这份要剥引号。**回读比对那边不用管**——
         # `normalize` 早就把引号算进 `_DROP` 里了，这也正是这个 bug 藏得住的原因：
         # 参考文本没引号，回读多出「非」「匪」两个字，只算 2 处插入，
         # CER 7% 远在 20% 门槛之下，门禁照常放行，要人听出来才发现。
-        engine.synthesize(speakable(seg.text), dest, attempt,
+        tmp = dest.parent / f".{dest.stem}.{attempt}.wav"
+        engine.synthesize(speakable(seg.text), tmp, attempt,
                           seed=attempt * 1000 + seg.index)
         # **裁剪要排在回读之前。** 裁掉的是首尾静音与结尾的机械声，但判据是启发式的，
         # 万一切进了句尾真实的字，只有回读能发现。放在回读之后裁就没人管了。
-        _trim_silence(dest)
-        dur = probe_duration(dest)
+        _trim_silence(tmp)
+        dur = probe_duration(tmp)
         ratio = dur / want if want else 0.0
-        heard = transcribe(dest)
+        heard = transcribe(tmp)
         edits, err = cer(seg.text, heard)
+        heard_all.append(heard)
 
         ok_dur = DUR_BAND[0] <= ratio <= DUR_BAND[1]
         ok_cer = err <= MAX_CER or edits < MIN_EDITS
         if ok_dur and ok_cer:
+            os.replace(tmp, dest)
+            _cleanup_takes(dest, ATTEMPTS)
             return Take(seg.index, seg.label, seg.text, dest.name,
                         round(dur, 3), round(err, 4), attempt)
 
@@ -666,7 +877,22 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         last = "；".join(why)
         print(f"  第 {attempt} 次不过：{last}", file=sys.stderr)
 
-    dest.unlink(missing_ok=True)
+    # 3 次重试都用尽且全不达标。判是否 ASR 盲区：时长达标即豁免，不要求
+    # 回读文本两两相似（2026-08-16 段落 5.1：三次回读 CER 60/60/30%、
+    # 失真模式在假名乱码与近音中文间摇摆，内容互不相似而音频实际念对）。
+    best = _best_take(dest, want)
+    if best is not None:
+        attempt, dur = best
+        os.replace(dest.parent / f".{dest.stem}.{attempt}.wav", dest)
+        _cleanup_takes(dest, ATTEMPTS)
+        print(f"  ASR 盲区豁免（3 次回读均严重失真，人耳确认）：{seg.text[:30]}…",
+              file=sys.stderr)
+        print(f"    回读：{['「' + h[:30] + '」' for h in heard_all]}", file=sys.stderr)
+        return Take(seg.index, seg.label, seg.text, dest.name,
+                    round(dur, 3), round(err, 4), ATTEMPTS,
+                    sentences=None, qc_skip="asr-blind")
+
+    _cleanup_takes(dest, ATTEMPTS)
     raise SystemExit(
         f"FAIL 段落 {seg.label} 重试 {ATTEMPTS} 次仍不达标（{last}）。\n"
         f"     原文：{seg.text}\n"
@@ -690,7 +916,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     if manifest_path.exists() and not force:
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
         for t in old.get("segments", []):
-            take = Take(**t)
+            take = Take(**{**t, "qc_skip": t.get("qc_skip")})
             if (out_dir / take.file).exists() and take.text == next(
                 (s.text for s in segs if s.index == take.index), None
             ):
@@ -733,6 +959,11 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
     if not band[0] <= total <= band[1]:
         print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
+    skipped = [t for t in takes if t.qc_skip]
+    if skipped:
+        print(f"WARN {len(skipped)} 段 ASR 盲区豁免（回读稳定失真，CER 不可用）："
+              f"{', '.join(t.label for t in skipped)}。"
+              f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
     return manifest_path
 
 
