@@ -295,12 +295,23 @@ def check(video: Path, plan: dict | None = None,
         for s, f0, f1, s0, s1 in defects[:3])
     out.append(Check(f"无 >{BLACK_MAX}s 纯黑（源片转场除外）", not defects, detail))
 
-    # 静音
+    # 静音。试听型的歌曲自然收尾（fade 尾音 < -45dB）不是缺陷——
+    # 静音区间尾部对齐某个音乐事件终点（曲目/前景/BGM 段的结束）就豁免
+    # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s）。
     err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
                 f"silencedetect=n=-45dB:d={SILENCE_MAX}", "-f", "null", "-"])
-    sils = re.findall(r"silence_start: ([\d.]+)", err)
-    out.append(Check(f"无 >{SILENCE_MAX}s 静音", not sils,
-                     "、".join(f"{float(s):.1f}s" for s in sils[:3]) or "无"))
+    mplan = _music_plan(video.parent)
+    song_ends: set[float] = set()
+    if mplan:
+        for tr in mplan["tracks"]:
+            for ev in tr["events"]:
+                song_ends.add(round(ev["at"] + ev["t1"] - ev["t0"], 1))
+    sils = [(float(s), float(e)) for s, e in re.findall(
+        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err)]
+    bad = [s for s, e in sils
+           if not any(abs(e - x) <= 0.5 for x in song_ends)]
+    out.append(Check(f"无 >{SILENCE_MAX}s 静音", not bad,
+                     "、".join(f"{s:.1f}s" for s in bad[:3]) or "无"))
 
     # 字幕。烧录之后没法从成片反查，所以查它的来源——但**必须查渲染器真正会写出去的
     # 那份文本**，也就是过了 `render.wrap` 之后的每一行。
