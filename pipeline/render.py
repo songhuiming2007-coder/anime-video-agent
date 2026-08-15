@@ -14,10 +14,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from . import bgm, paths
+from .music import FOREGROUND_LUFS  # 试听型前景响度，music.py 单源
 from .align import verify_alignment   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
 # 输出规格。片源是 1920x1080 / 23.976fps / yuv420p10le，成片降到 8bit：
@@ -316,8 +318,12 @@ def cards(take: dict, seg_dur: float) -> list[tuple[str, float, float]]:
     return out
 
 
-def build_ass(segments: list[dict], audio: list[dict], dest: Path) -> Path:
+def build_ass(segments: list[dict], audio: list[dict], dest: Path,
+              starts: dict[int, float] | None = None) -> Path:
     """口播原文按句上屏。时间轴取自配音每句的真实时长，天然严丝合缝。
+
+    试听型的段落起点带音乐段偏移（`starts`：段落号 → 成片起点）；
+    `starts` 为 None 时段落连续累计（普通期，行为不变）。
 
     用 ASS 而不是 SRT：SRT 没有样式，字号边距要在滤镜里另外传，
     而 `force_style` 对中文字体名的转义在不同 ffmpeg 构建上表现不一致。
@@ -338,6 +344,8 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     lines, t = [], 0.0
     for s, a in zip(segments, audio):
+        if starts is not None:
+            t = starts.get(s["index"], t)
         for card, start, dur in cards(a, s["duration"]):
             body = r"\N".join(wrap(card, per_line()))
             lines.append(
@@ -347,6 +355,38 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         t += s["duration"]
     dest.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
     return dest
+
+
+def _extract_loudnorm_json(stderr: str) -> dict:
+    """从 `loudnorm=...:print_format=json` 的 stderr 提取测量 JSON。
+
+    纯函数，好测。ffmpeg 把 JSON 打到 stderr（info 级别），前后混着
+    `[Parsed_loudnorm_0 @ ...]` 前缀和普通日志——取第一个 `{` 到最后一个 `}`。
+    """
+    start, end = stderr.find("{"), stderr.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise SystemExit("FAIL loudnorm 测量输出里没有 JSON")
+    return json.loads(stderr[start:end + 1])
+
+
+def _measure_loudnorm(path: Path) -> dict:
+    """两遍归一的第一遍：量整条音频的 input_i/input_tp/input_lra/thresh/offset。
+
+    为什么两遍（2026-08-16 改，试听型实测踩的坑）：loudnorm 单次调用是
+    **动态模式**（逐帧增益），音乐响的时段把增益压低后，紧随其后的旁白段被
+    连带压掉——实测段落 8 人声 -13.3 dBFS vs 段落 1 -8.2，差 5dB，而两段
+    TTS 原始电平几乎相同。普通期音乐全程平铺没触发；试听型前景/natural
+    大音量音乐 + 旁白交替必踩。第二遍用测到的值做**线性增益**重放
+    （linear=true），段落间相对响度与混音时完全一致。
+    """
+    cmd = ["ffmpeg", "-nostdin", "-loglevel", "info",
+           "-i", str(path),
+           "-af", f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}:print_format=json",
+           "-f", "null", "-"]
+    r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    m = _extract_loudnorm_json(r.stderr)
+    return {k: m[k] for k in ("input_i", "input_tp", "input_lra",
+                              "input_thresh", "target_offset")}
 
 
 def _outro_start(starts: list[float], total: float) -> float | None:
@@ -588,6 +628,219 @@ def _bgm_bed(episode: Path, total: float, starts: list[float], work: Path) -> Pa
     return bed
 
 
+# 前景↔BGM 音量切换的斜坡秒数。阶跃切换会「登」；0.5s 对听感平滑且
+# 短到不影响任何语义边界（段落/音乐段边界都远大于 0.5s）。
+VOL_RAMP = 0.5
+
+
+def _runs(events: list[dict]) -> list[list[dict]]:
+    """把「曲目内位置连续」的事件合并成一个 run。
+
+    连续 = 前一事件 t1 与后一事件 t0 相同（同一音轨继续播放，只是音量状态
+    变化）。run 内用音量表达式做斜坡过渡（审查 F2：各事件独立成段再做
+    淡入淡出会在交界处剪出 V 形断口，违反「不重新切一份音频」）。
+    """
+    runs: list[list[dict]] = []
+    for ev in events:
+        if runs and abs(runs[-1][-1]["t1"] - ev["t0"]) < 1e-6:
+            runs[-1].append(ev)
+        else:
+            runs.append([ev])
+    return runs
+
+
+def _vol_expr(events: list[dict], lufs: float) -> str:
+    """run 内音量表达式：每事件一个目标增益，切换处 VOL_RAMP 秒线性斜坡。
+
+    **表达式必须用线性域，不能用 dB 值。** volume 滤镜的 dB 后缀只对字面量
+    有效（volume=-4.00dB 是 -4dB），放进表达式（volume='if(...)dB'）直接解析
+    报错，而裸数字（volume='-4.00'）被当成**线性倍率**——-4.00 是 4 倍放大、
+    相位反转，-15.90 比 -4.00 响得多，前景/BGM 关系完全反转（2026-08-16
+    二轮审查实测：BGM 平台比前景响 8dB、整床响 20-36dB）。
+    所以这里把每个平台的 dB 增益预算为线性常量 pow(10, dB/20)，斜坡在
+    线性值之间插值（对音量来说线性插值就是对数域的 dB 斜坡，听感平滑）。
+    """
+    targets = [(ev["t1"] - ev["t0"],
+                10 ** ((BGM_TARGET_LUFS - lufs if ev["vol"] == "bgm"
+                        else FOREGROUND_LUFS - lufs) / 20))
+               for ev in events]
+    if len(targets) == 1:
+        return f"{targets[0][1]:.4f}"
+    parts, t, closes = [], 0.0, 0
+    for i in range(len(targets) - 1):
+        dur, g = targets[i]
+        ng = targets[i + 1][1]
+        switch = t + dur
+        parts.append(f"if(lt(t,{switch:.3f}),{g:.4f},"
+                     f"if(lt(t,{switch + VOL_RAMP:.3f}),"
+                     f"{g:.4f}+({ng:.4f}-{g:.4f})*(t-{switch:.3f})/{VOL_RAMP:.2f},")
+        t = switch + VOL_RAMP
+        closes += 2
+    return "".join(parts) + f"{targets[-1][1]:.4f}" + ")" * closes
+
+
+def _music_bed(plan: dict, work: Path) -> Path | None:
+    """试听型音乐床：按 `music.build_timeline` 的事件序列生成整条音乐轨。
+
+    每个 run（曲目内位置连续的事件链）切成一个输入段，音量用表达式自动化
+    （前景 -14 / BGM -26，切换处 0.5s 斜坡）；淡入淡出只加在真正跳点的两端
+    （run 开头淡入、run 末尾淡出）。natural（自然收尾）不淡出——
+    cue 原则「让歌曲自然结束」。事件按成片起点 adelay 后 amix 合并。
+    侧链闪避在混音阶段统一做（前景段无口播触发，自然不被压）。
+    """
+    inputs, fg, labels = [], [], []
+    n = 0
+    runs_by_track = {tr["name"]: _runs(tr["events"]) for tr in plan["tracks"]}
+    for tr in plan["tracks"]:
+        for run in runs_by_track[tr["name"]]:
+            t0, t1 = run[0]["t0"], run[-1]["t1"]
+            dur, at = t1 - t0, run[0]["at"]
+            inputs += ["-ss", f"{t0:.3f}", "-t", f"{dur:.3f}",
+                       "-i", str(tr["path"])]
+            out_s = f"s{n}"
+            chain = (f"volume='{_vol_expr(run, tr['lufs'])}':eval=frame,"
+                     f"aresample=48000,afade=t=in:st=0:d={VOL_RAMP:.2f}")
+            if run[-1]["vol"] != "natural":
+                chain += (f",afade=t=out:st={max(0.0, dur - VOL_RAMP):.3f}"
+                          f":d={VOL_RAMP:.2f}")
+            fg.append(f"[{n}:a]{chain},"
+                      f"adelay={int(round(at * 1000))}:all=1[{out_s}];")
+            labels.append(f"[{out_s}]")
+            n += 1
+    if not labels:
+        return None
+    fg.append("".join(labels)
+              + f"amix=inputs={n}:duration=longest:normalize=0[out]")
+    bed = work / "music-bed.wav"
+    print(f"  音乐床 {n} 个 run…", file=sys.stderr)
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+           *inputs, "-filter_complex", "".join(fg),
+           "-map", "[out]", "-ac", "1", "-ar", "48000",
+           "-c:a", "pcm_s16le", str(bed)]
+    subprocess.run(cmd, check=True, capture_output=True)
+    print("  音乐床 " + " + ".join(
+        f"{name}({len(runs)}段)" for name, runs in runs_by_track.items()))
+    return bed
+
+
+def _maybe_music_plan(episode: Path, manifest: dict) -> dict | None:
+    """试听型判定：稿子有 `音乐段` 块就构建音乐时间轴，否则返回 None（普通 BGM 路径）。
+
+    换期通用：只依赖稿子的标准格式（`音乐段`/`音乐:`/`过渡:`）与 bgm.json 的
+    曲库结构，不绑任何一部番。普通期的行为与旧版完全一致。
+    """
+    from . import music as music_mod
+    script = episode / "02-script.md"
+    if not script.exists() or not music_mod.parse_script_music(script):
+        return None
+    anime = bgm.anime_of(episode)
+    if anime is None:
+        raise SystemExit(f"FAIL 试听型稿子需要 01-topic.md 的 `番: `字段")
+    block = bgm.load(anime)
+    if not block or "tracks" not in block:
+        raise SystemExit(
+            f"FAIL 试听型稿子需要「{anime}」的曲库（config/bgm.json 的 tracks）")
+    return music_mod.build_timeline(episode, manifest, block)
+
+
+def _still_frames(episode: Path, plan: dict,
+                  parts_by_seg: dict[int, list[Path]], work: Path
+                  ) -> list[tuple[Path, float, float]]:
+    """音乐段画面。
+
+    前景音乐段（blocks）与结尾自然收尾段（natural 事件）都要画面——
+    声明了 `画面:` 的段从源片切实画面（OP/ED/插曲/回忆场景，2026-08-16
+    用户拍板：不允许静止画面）；没声明的回退为上一段最后一帧定格。
+    natural 段继承同曲目最后前景块的画面源并连续接续。
+    返回 [(视频段, 时长, 成片起点)]。
+    """
+    seg_starts = sorted((s["index"], s["start"]) for s in plan["segments"])
+    # 画面占位段 = 前景块 + natural 事件（at 在最后一个段落之后）。
+    # natural 段继承同曲目最后一个前景块的画面源并**连续接续**（起点 += 前景时长），
+    # 保证同一曲目的画面与音乐一样不重切。
+    visual: list[tuple[float, float, str | None]] = []
+    for b in plan["blocks"]:
+        visual.append((b["start"], b["dur"], b.get("visual")))
+    last_seg_end = max(s["start"] + s["dur"] for s in plan["segments"])
+    for tr in plan["tracks"]:
+        for ev in tr["events"]:
+            if ev["vol"] == "natural" and ev["at"] >= last_seg_end - 1e-6:
+                vis = None
+                fgs = [b for b in plan["blocks"] if b["title"] == tr["name"]]
+                if fgs and fgs[-1].get("visual"):
+                    ep_tag, start_s = fgs[-1]["visual"].rsplit(" ", 1)
+                    # 统一走 _hhmmss_to_sec（审查 B3'：float() 只认纯秒数，
+                    # 换期写 `1:33.75` 冒号格式会 ValueError 崩溃）
+                    vis = f"{ep_tag} {_hhmmss_to_sec(start_s) + fgs[-1]['dur']:.2f}"
+                visual.append((ev["at"], ev["t1"] - ev["t0"], vis))
+    visual.sort(key=lambda v: v[0])
+
+    out = []
+    for k, (start, dur, vis) in enumerate(visual):
+        # 声明了 `画面:` 的段从源片切；否则上一段最后一帧定格。
+        if vis:
+            ep_tag, start_s = vis.rsplit(" ", 1)
+            src = _source_path(episode, ep_tag)
+            clip = {"source": str(src), "start": _hhmmss_to_sec(start_s),
+                    "dur": dur}
+            seg_path = work / f"visual-{k:02d}.mp4"
+            cut(clip, seg_path)
+            out.append((seg_path, dur, start))
+            continue
+        prev = [idx for idx, st in seg_starts if st <= start + 1e-6]
+        if not prev:
+            # 片头音乐段（成片第 0 秒）前面没有段落——取第一段的第一帧预告画面
+            first = min(seg_starts, key=lambda x: x[1])[0]
+            src, sseof = parts_by_seg[first][0], False
+        else:
+            src, sseof = parts_by_seg[prev[-1]][-1], True
+        frame = work / f"still-{k:02d}.png"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+             *(["-sseof", "-0.05"] if sseof else []),
+             "-i", str(src), "-frames:v", "1", str(frame)],
+            check=True, capture_output=True,
+        )
+        still = work / f"still-{k:02d}.mp4"
+        # 抽帧存 PNG 而非 JPEG（审查 B1：JPEG 是 yuvj420p 全范围，
+        # -pix_fmt 只打标签不做范围转换，concat 后整轨按限幅解释，
+        # 黑场压扁白场溢出）；PNG 的 RGB→限幅 YUV 转换定义良好，
+        # 再加 -vf format=yuv420p 显式走滤镜转换双保险。
+        # 定格段用 faster 而非 PRESET(medium)：单帧循环帧间冗余极大，
+        # medium 编码 285s 定格要几分钟而 faster 只要几十秒，观感无差别。
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+             "-loop", "1", "-framerate", FPS, "-i", str(frame),
+             "-t", f"{dur:.3f}",
+             "-vf", "format=yuv420p",
+             "-c:v", "libx264", "-preset", "faster", "-crf", CRF,
+             "-pix_fmt", "yuv420p", "-r", FPS, str(still)],
+            check=True, capture_output=True,
+        )
+        print(f"  定格段 {k + 1}/{len(visual)}（{dur:.0f}s）", file=sys.stderr)
+        out.append((still, dur, start))
+    return out
+
+
+def _source_path(episode: Path, ep_tag: str) -> Path:
+    """`S01E01` → 该集片源路径（data/library/sources.json）。"""
+    sources = json.loads((paths.ROOT / "data" / "library" / "sources.json")
+                         .read_text(encoding="utf-8"))
+    anime = bgm.anime_of(episode)
+    if anime is None:
+        raise SystemExit(f"FAIL 音乐段画面需要 01-topic.md 的 `番: `字段")
+    rec = sources.get(anime, {}).get(ep_tag)
+    if not rec:
+        raise SystemExit(f"FAIL sources.json 里没有 {anime}/{ep_tag} 的片源")
+    return paths.ROOT / rec["path"]
+
+
+def _hhmmss_to_sec(s: str) -> float:
+    """`0:00` / `1:33.75` / `93.75` → 秒。"""
+    parts = [float(x) for x in s.split(":")]
+    return sum(p * (60 ** (len(parts) - 1 - i)) for i, p in enumerate(parts))
+
+
 def run(episode: Path, keep: bool = False) -> Path:
     plan_path = episode / "04-clips.approved.json"
     if not plan_path.exists():
@@ -621,10 +874,35 @@ def run(episode: Path, keep: bool = False) -> Path:
             print(f"\r  切片 {i}/{n}", end="", flush=True)
         print()
 
-        # 2. 拼画面轨
-        lst = work / "concat.txt"
-        lst.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
+        # 2. 拼画面轨。
+        #
+        # 段落切片、定格段、OP 画面段全部用同一组编码参数
+        # （cut 的 -vf/-r 与定格段的 -framerate/-r 都来自同一常量），
+        # 所以统一走 concat demuxer + `-c copy`，秒级完成，不做全量重编码。
+        music_plan = _maybe_music_plan(episode, manifest)
         video = work / "video.mp4"
+        if music_plan is not None:
+            parts_by_seg: dict[int, list[Path]] = {}
+            i = 0
+            for s in segments:
+                parts_by_seg[s["index"]] = parts[i:i + len(s["clips"])]
+                i += len(s["clips"])
+            stills = _still_frames(episode, music_plan, parts_by_seg, work)
+            # 按成片时间交错：段落切片序列与定格段按起点排序后依次 concat。
+            seg_start = {s["index"]: s["start"] for s in music_plan["segments"]}
+            elems: list[tuple[float, list[Path]]] = [
+                (seg_start[s["index"]], parts_by_seg[s["index"]])
+                for s in segments]
+            for still, _dur, start in stills:
+                elems.append((start, [still]))
+            elems.sort(key=lambda e: e[0])
+            concat_parts = [f for _at, files in elems for f in files]
+        else:
+            concat_parts = parts
+        lst = work / "concat.txt"
+        lst.write_text("".join(f"file '{p.name}'\n" for p in concat_parts),
+                       encoding="utf-8")
+        print(f"  拼画面轨（{len(concat_parts)} 段）…", file=sys.stderr)
         subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
              "-safe", "0", "-i", str(lst), "-c", "copy", str(video)],
@@ -650,30 +928,69 @@ def run(episode: Path, keep: bool = False) -> Path:
             )
             faded.append(dst)
 
-        alst = work / "audio.txt"
-        alst.write_text("".join(f"file '{p.name}'\n" for p in faded), encoding="utf-8")
-        voice = work / "voice.wav"
-        subprocess.run(
-            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
-             "-safe", "0", "-i", str(alst), "-c", "copy", str(voice)],
-            check=True, capture_output=True, cwd=work,
-        )
+        # 3.5 拼人声轨。
+        # 普通期：段落 concat 连续拼接（旧行为）。
+        # 试听型：段落按 music_plan 的成片起点 adelay 到时间轴上再 amix——
+        # 音乐段（前景/BGM）占的成片时间必须留空，旁白只在段落位置出声
+        # （审查 F1：人声不接时间轴 = 旁白全挤在 0-222s，前景音乐被持续侧链压制）。
+        if music_plan is not None:
+            seg_start = {s["index"]: s["start"] for s in music_plan["segments"]}
+            vfg, vin = [], []
+            for i, s in enumerate(manifest["segments"]):
+                vin.append(["-i", str(faded[i])])
+                vfg.append(f"[{i}:a]adelay={int(round(seg_start[s['index']] * 1000))}"
+                           f":all=1[v{i}];")
+            vfg.append("".join(f"[v{i}]" for i in range(len(vin)))
+                       + f"amix=inputs={len(vin)}:duration=longest:normalize=0"
+                       + "[outv]")
+            voice = work / "voice.wav"
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                 *[x for pair in vin for x in pair],
+                 "-filter_complex", "".join(vfg),
+                 "-map", "[outv]", "-ac", "1", "-ar", "48000",
+                 "-c:a", "pcm_s16le", str(voice)],
+                check=True, capture_output=True, cwd=work,
+            )
+        else:
+            alst = work / "audio.txt"
+            alst.write_text("".join(f"file '{p.name}'\n" for p in faded),
+                            encoding="utf-8")
+            voice = work / "voice.wav"
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
+                 "-safe", "0", "-i", str(alst), "-c", "copy", str(voice)],
+                check=True, capture_output=True, cwd=work,
+            )
 
-        # 4. BGM（可选）
+        # 4. 音乐（可选）。试听型走音乐床（前景/BGM/自然播放事件序列）；
+        # 普通期走全片 BGM 铺底（旧路径，行为不变）。
         total = duration(voice)
         starts, acc = [], 0.0
         for s in manifest["segments"]:
             starts.append(acc)
             acc += s["duration"]
-        bed = _bgm_bed(episode, total, starts, work)
+        if music_plan is not None:
+            bed = _music_bed(music_plan, work)
+        else:
+            bed = _bgm_bed(episode, total, starts, work)
+        voice_raw = voice  # 4.5 要查混音前的人声轨（B1'：混音总长测不出人声位置错）
         if bed:
+            # sidechaincompress 的输出时长 = **先 EOF 的输入**（ffmpeg 8 实测，
+            # 不是主输入时长）——试听型音乐床 796s、人声 510s，侧链先 EOF 会把
+            # 音乐床尾部整段截掉（三审 S1'：natural 收尾 510-796s 静音消失）。
+            # 侧链分支先 pad 到全轴：普通期 bed==voice 恒等长不踩，统一 pad 无害；
+            # pad 出来的静音不触发压缩，旁白结束后的音乐段自然不被压。
+            want = (music_plan["total_duration"] if music_plan is not None
+                    else total)
             mixed = work / "mixed.wav"
-            # sidechaincompress：以人声为触发，口播一出声就把 BGM 压下去
+            # sidechaincompress：以人声为触发，口播一出声就把 BGM 压下去。
+            # 前景段旁白停、无触发信号，自然不被压——同一床两个状态，机制复用。
             subprocess.run(
                 ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
                  "-i", str(bed), "-i", str(voice),
                  "-filter_complex",
-                 f"[1:a]asplit=2[sc][vo];"
+                 f"[1:a]apad=whole_dur={want:.3f},asplit=2[sc][vo];"
                  f"[0:a][sc]sidechaincompress=threshold={BGM_THRESHOLD}:ratio={BGM_RATIO}:"
                  f"attack={BGM_ATTACK}:release={BGM_RELEASE}:makeup=1[duck];"
                  f"[duck][vo]amix=inputs=2:duration=longest:normalize=0[out]",
@@ -683,15 +1000,54 @@ def run(episode: Path, keep: bool = False) -> Path:
             )
             voice = mixed
 
+        # 4.5 试听型不变量：三条音视频轨分别校验时长，防「有轨没接时间轴」。
+        # 分开查（二轮审查 B1'）：混音后总长 = amix longest = max(bed, voice)，
+        # 人声位置错（挤在 0-222s）不改总长，查混音结果是测不出 F1 类回归的。
+        # 普通期不适用（没有时间轴）。
+        if music_plan is not None:
+            want = music_plan["total_duration"]
+            # 人声轨（混音前）必须铺到最后一段落结束；音乐床必须铺满全轴；
+            # 视频轨按帧量化上界容差（每段时长向上取整到帧，最多多 1 帧/段）。
+            voice_end = max(s["start"] + s["dur"]
+                            for s in music_plan["segments"])
+            video_tol = len(concat_parts) * frame_time(video) + 0.05
+            checks = [("人声轨", voice_raw, voice_end, 0.05)]
+            if bed:
+                checks.append(("音乐床", bed, want, 0.05))
+            checks.append(("混音轨", voice, want, 0.05))
+            checks.append(("视频轨", video, want, video_tol))
+            for name, p, want_len, tol in checks:
+                got = duration(p)
+                if abs(got - want_len) > tol:
+                    raise SystemExit(
+                        f"FAIL {name}时长 {got:.1f}s != 应达 {want_len:.1f}s"
+                        f"（容差 {tol:.2f}s）——有轨没接时间轴")
+
         # 5. 字幕 + 合成 + 响度归一
-        ass = build_ass(segments, manifest["segments"], work / "vo.ass")
+        # 试听型的段落起点带音乐段偏移（starts），普通期 None = 段落连续（旧行为）。
+        seg_starts = None
+        if music_plan is not None:
+            seg_starts = {s["index"]: s["start"]
+                          for s in music_plan["segments"]}
+        ass = build_ass(segments, manifest["segments"], work / "vo.ass",
+                        starts=seg_starts)
+        print(f"  最终合成（13 分钟重编码，约 5-10 分钟）…", file=sys.stderr)
+        # 响度归一两遍（2026-08-16 改）：先量整条音频，再线性增益重放——
+        # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
+        # linear=true + measured_* 保证段落间相对响度与混音时一致。
+        loud = _measure_loudnorm(voice)
         out = episode / "05-final.mp4"
         subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
              "-i", str(video), "-i", str(voice),
              # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
              "-vf", f"ass={ass.name}",
-             "-af", f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}",
+             "-af", (f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}:linear=true"
+                     f":measured_I={loud['input_i']}"
+                     f":measured_TP={loud['input_tp']}"
+                     f":measured_LRA={loud['input_lra']}"
+                     f":measured_thresh={loud['input_thresh']}"
+                     f":offset={loud['target_offset']}"),
              "-c:v", "libx264", "-preset", PRESET, "-crf", CRF, "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
              "-map", "0:v:0", "-map", "1:a:0", "-shortest",
@@ -715,8 +1071,12 @@ def main() -> int:
     out = run(a.episode, a.keep)
     v = duration(out)
     plan = json.loads((a.episode / "04-clips.approved.json").read_text(encoding="utf-8"))
-    print(f"OK  {out}  {v:.3f}s  （排片 {plan['total_duration']:.3f}s，"
-          f"差 {abs(v - plan['total_duration']) * 1000:.0f}ms）")
+    # 审查 B7：试听型的成片基准是音乐时间轴，不是 04-clips 的段落排片
+    music_plan = _maybe_music_plan(a.episode, json.loads(
+        (a.episode / "03-audio" / "manifest.json").read_text(encoding="utf-8")))
+    base = music_plan["total_duration"] if music_plan else plan["total_duration"]
+    print(f"OK  {out}  {v:.3f}s  （时间轴 {base:.3f}s，"
+          f"差 {abs(v - base) * 1000:.0f}ms）")
     return 0
 
 
