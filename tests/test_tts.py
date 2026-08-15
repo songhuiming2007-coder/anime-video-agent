@@ -10,6 +10,10 @@
 - `normalize` 决定了上面两件事的「字数」口径：标点不算字。
 """
 
+import re
+import struct
+import wave
+
 import pytest
 
 from pipeline import tts as t
@@ -261,3 +265,86 @@ class TestParseScript:
         f = self._write(tmp_path, "# 只有标题\n")
         with pytest.raises(SystemExit):
             t.parse_script(f)
+
+
+class TestQcSkipExemption:
+    """ASR 盲区豁免：3 次不同种子全不达标 + 时长达标 → 保留音频标 qc_skip。
+
+    2026-08-16 段落 5.1 实测卡停：Qwen3-TTS 日语参考音色念中文，Whisper
+    稳定误听，三次回读 CER 60/60/30% 且内容互不相似，而音频实际念对
+    （人耳确认）。旧判据要求回读文本两两相似（_reads_agree），失真模式
+    在「假名乱码」与「近音中文」间摇摆时判 False → 整期退出。
+    新判据：3 次全不达标 + 时长达标即豁免（S4：跳过样本不定罪），
+    qc_skip 标注后由成片前的人耳确认兜底。
+    """
+
+    # 段落 5.1 的三次真实回读（2026-08-16 实测，CER 60/60/30%）。
+    _REAL_HEARD = ["EUTERPE一陣来 世界クランテイエンロ",
+                   "EUTERPE一陣来世界クランテイエンラ",
+                   "A.U.T.R.P.一進來世界不難太遠了"]
+
+    def _fake_engine(self):
+        """synthesize 写一个 0.17s 的有声 wav（_trim_silence 要读它）。"""
+        class E:
+            def synthesize(self, text, dest, attempt, seed=0):
+                with wave.open(str(dest), "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+                    w.writeframes(struct.pack("<4000h", *([3000] * 4000)))
+        return E()
+
+    def _render(self, monkeypatch, tmp_path, heard_seq, dur_ratio=1.0, text=None):
+        """mock 掉转录与时长探测，只让回读内容与时长比可变。"""
+        text = text or "エウテルペ 一进来，世界忽然退远了。"
+        heard = iter(heard_seq)
+        monkeypatch.setattr(t, "transcribe", lambda _p: next(heard))
+        want = t.expected_duration(text)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: want * dur_ratio)
+        dest = tmp_path / "seg.wav"
+        take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
+        return take, dest
+
+    def test_三次全不达标时长达标_豁免保留音频(self, monkeypatch, tmp_path):
+        take, dest = self._render(monkeypatch, tmp_path, self._REAL_HEARD)
+        assert take.qc_skip == "asr-blind"
+        assert take.attempts == t.ATTEMPTS
+        assert dest.exists(), "豁免必须保留音频，人耳确认要用"
+
+    def test_三次全不达标时长超带_硬失败不留坏音频(self, monkeypatch, tmp_path):
+        # 时长是跑飞与盲区的分界：漏读/重复会改变时长，超带不豁免
+        with pytest.raises(SystemExit):
+            self._render(monkeypatch, tmp_path, self._REAL_HEARD, dur_ratio=3.0)
+        assert not (tmp_path / "seg.wav").exists(), "硬失败必须删掉坏音频"
+
+    def test_某次回读达标_正常返回不豁免(self, monkeypatch, tmp_path):
+        good = "エウテルペ 一进来，世界忽然退远了。"
+        take, dest = self._render(monkeypatch, tmp_path,
+                                  [self._REAL_HEARD[0], good, self._REAL_HEARD[1]])
+        assert take.qc_skip is None
+        assert take.attempts == 2
+
+    def test_译文全对_第一次就通过(self, monkeypatch, tmp_path):
+        text = "エウテルペ 一进来，世界忽然退远了。"
+        take, _ = self._render(monkeypatch, tmp_path, [text])
+        assert take.qc_skip is None
+        assert take.attempts == 1
+
+    def test_豁免选时长最接近估算的尝试(self, monkeypatch, tmp_path):
+        # 三次尝试时长不同：attempt1 超带排除、attempt2 最接近 want（选中）、
+        # attempt3 在带内但偏离。豁免应保留 attempt2，而不是最后一次。
+        # 2026-08-16 段落 5.1 实测：三次尝试种子不同，最后一次把歌名念得特别长，
+        # 旧实现保留最后一次，时长是盲区段唯一客观质量指标。
+        text = "エウテルペ 一进来，世界忽然退远了。"
+        want = t.expected_duration(text)
+        ratios = {1: 2.5, 2: 0.95, 3: 1.2}   # 按 attempt 区分时长
+        heard = iter(["A" * 10, "B" * 10, "C" * 10])
+        monkeypatch.setattr(t, "transcribe", lambda _p: next(heard))
+        monkeypatch.setattr(
+            t, "probe_duration",
+            lambda p: want * ratios[int(re.search(r"\.(\d+)\.wav$", str(p)).group(1))])
+        dest = tmp_path / "seg.wav"
+        take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
+        assert take.qc_skip == "asr-blind"
+        assert take.duration == pytest.approx(want * 0.95, abs=0.001)
+        assert dest.exists()
+        # 临时尝试文件必须清干净
+        assert list(tmp_path.glob(".seg.*.wav")) == []
