@@ -50,7 +50,7 @@
 **做什么**
 
 - 把 ASR 从 mlx 上解绑成可替换后端（`asr.py` 只有两个对外函数，三个调用点）
-- TTS 同理。IndexTTS-1.5 上游本来就是 PyTorch，`mlx-audio` 只是移植
+- TTS 同理。IndexTTS-1.5 与 Qwen3-TTS 上游都是 PyTorch，`mlx-audio` 只是移植（换引擎只动 `config/voice.json`，见 ADR-0006）
 - 修掉冒出来的平台假设（字体已经是配置项，`preflight.sh` 是 bash）
 - 三平台 CI + 共享 fixture，见下
 
