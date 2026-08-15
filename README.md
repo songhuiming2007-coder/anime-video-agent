@@ -79,7 +79,7 @@ mp4、封面图和标题候选。中间的写稿、配音、找素材、剪辑�
 | 包管理 | `uv` | 也可以用别的，但依赖版本是按 uv 那一组钉住的 |
 
 语音部分只跑 Apple Silicon 是硬限制。`config/voice.json` 留了 `engine` 字段作为接缝，
-但目前只有 mlx 一种实现。
+目前有两种 mlx 实现：IndexTTS-1.5（纯中文）与 Qwen3-TTS 1.7B（多语种，2026-08-15 起为默认）。
 
 ## 2.2 coding agent 是前置要求，不是可选项
 
@@ -105,7 +105,7 @@ mp4、封面图和标题候选。中间的写稿、配音、找素材、剪辑�
 |---|---|---|---|
 | `BAAI/bge-base-zh-v1.5` | 字幕语义索引与检索 | 约 400M | 首次运行自动下载 |
 | `mlx-community/whisper-large-v3-turbo` | 回读质检、字幕对轴校验、无字幕时兜底转录 | 约 1.5G | 首次运行自动下载 |
-| IndexTTS-1.5（mlx 转换版） | 配音 | 约 1.3G | 手动放 `data/models/local/IndexTTS-1.5/`，或改 `config/voice.json` 自动下载 |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | 配音（多语种，中文旁白 + 英日歌名混读） | 约 4.3G | 改 `config/voice.json` 自动下载 |
 | `deepghs/anime_face_detection` | 视觉索引：人脸检测 | 约 42M | 首次运行自动下载 |
 | `deepghs/ccip_onnx` | 视觉索引：角色身份嵌入 | 约 143M | 首次运行自动下载 |
 
@@ -177,7 +177,7 @@ cp CLAUDE.local.md.example CLAUDE.local.md    # 填本机情况，不进 git
 |---|---|---|
 | 语义检索 | `sentence-transformers` + bge-base-zh-v1.5 | bge-small 实测命中率只有 75%，base 是 100% |
 | 索引单元 | ASS 字幕滑窗 2 行，一集一个 `.npy` | 单行太碎，一句话常跨两行轴 |
-| 配音 | IndexTTS-1.5 跑在 `mlx-audio` 上 | 云 API 把联网+账号+配额塞进主循环，还要外传参考干声 |
+| 配音 | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` 跑在 `mlx-audio` 上（多语种，中文旁白夹英日歌名混读） | 云 API 把联网+账号+配额塞进主循环，还要外传参考干声 |
 | ASR | `mlx-whisper` large-v3-turbo | 回读质检、对轴校验、兜底转录三处都用 |
 | 视频与音频 | 全程 ffmpeg，无 NLE | 见 1.4 |
 | 字幕烧录 | `ass` 滤镜（libass），折行自己算 | libass 靠空格找断点，中文整句没有空格就不折 |

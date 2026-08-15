@@ -55,7 +55,11 @@
 - 描述：`data/models/hub/models--mlx-community--IndexTTS-2-fp16` 4.4G 当前无法使用
   （mlx-audio 0.4.6 不支持 IndexTTS-2），等上游支持或腾空间时删。绕开上游 `model.generate()`
   两处 bug 的自写解码循环，上游修好后可删（删前先跑 `tts probe` 对比 CER）。
-- 推进：上游支持 / 上游修复时触发。
+  **2026-08-15 更新**：配音引擎已换 Qwen3-TTS（ADR-0006），IndexTTS-2 4.4G 与
+  `data/models/local/IndexTTS-1.5`、`VoxCPM1.5` 一起可删。`_indextts_audio` 自写解码循环
+  与 `_tail_artifact` 因 IndexTTS 可能回归复用暂留代码，删除条件改为「Qwen3 引擎稳定运行
+  数期后清理」。
+- 推进：腾空间时触发。
 
 ### [N8] 簇纯度阈值待定 + Phase 0 人工时长待回填
 - 状态：备忘
@@ -81,8 +85,10 @@
 ### [N11] Python 3.15 未验 + 语音 engine 只有 mlx 一种实现
 - 状态：备忘
 - 位置：README.md:76, 80-81, 161；pyproject.toml:7
-- 描述：3.15 还在 beta「没验过」；config/voice.json 留了 engine 字段作接缝「但目前只有 mlx
-  一种实现」。Windows 侧（D9）的已知缺口。
+- 描述：3.15 还在 beta「没验过」；config/voice.json 留了 engine 字段作接缝。
+  **2026-08-15 更新**：接缝已被实际使用——引擎从 IndexTTS-1.5 换成 Qwen3-TTS 1.7B
+  （ADR-0006），配置改一行即完成替换，流水线代码没动。目前仍是 mlx 上的两种实现，
+  Windows 侧（D9）缺口不变。
 - 推进：环境升级或 Windows 化时触发。
 
 ### [N12] BGM 素材缺口 + voice readings 换番要清
@@ -90,6 +96,8 @@
 - 位置：config/bgm.json:61, 170；config/voice.json:9
 - 描述：东京喰种 unravel/asphyxia、罪恶王冠 CD1 人声单曲的正式 OP/ED instrumental 轨都不在
   素材里，「要用的话得另外找伴奏单曲碟」。voice.json readings 表每番积累，换番要清掉上部词。
+  **2026-08-15 更新**：readings 是 IndexTTS 念错生僻字的补偿机制；Qwen3-TTS 多语种多音字
+  处理更强，换引擎后逐条实测再决定去留（ADR-0006 遗留项）。
 - 推进：选曲时 / 换番时触发。
 
 ### [N13] review.py「手工」标记改动未提交
@@ -125,7 +133,9 @@
 - 位置：config/project.json:49；docs/WORKFLOW.md:218-219
 - 描述：`cpm=315` 是「校准到该账号实际语速」，实测同一音色不同文风可差 24%；换音色/换题材
   要重测。cpm 错 → 字数带错 → 时长目标错 → 质检误判，且静默。
-- 推进：换音色/换题材时触发。
+  **2026-08-15 更新**：换引擎（IndexTTS→Qwen3-TTS 1.7B）语速特性改变（IndexTTS 语速与文本
+  长度正相关 r=+0.613，Qwen3 待实测），`script.cpm` 必须按新引擎重测。
+- 推进：换音色/换题材/换引擎时触发。
 
 ### [N20] 触发式推翻条件未单独立档（结构性取舍）
 - 状态：备忘
@@ -137,9 +147,9 @@
 ### [N21] 文档维护琐碎项集合
 - 状态：备忘
 - 位置：BASELINE.md:46-48 / voice.json:7 / VOICE.local.md
-- 描述：④ BASELINE 知乎 3 篇样本「超 45 字占比」列缺测；⑤ voice.json `ref_text: null` 无 why
-  注释；⑥ VOICE.local 移植表缺「平台专属梗」行、两条特征缺原话锚。
-  （①②③——scenes.json 悬空引用/bgm.json 首数陈旧/SHOTLIST 步数断裂——已于 2026-08-14 修掉。）
+- 描述：④ BASELINE 知乎 3 篇样本「超 45 字占比」列缺测；⑥ VOICE.local 移植表缺「平台专属梗」行、两条特征缺原话锚。
+  （①②③——scenes.json 悬空引用/bgm.json 首数陈旧/SHOTLIST 步数断裂——已于 2026-08-14 修掉；
+  ⑤ voice.json `ref_text: null` 无 why 注释——已于 2026-08-15 随换引擎注记解决，见 ADR-0006。）
 - 推进：下次动对应文件时顺手修，不值得单独立项。
 
 ### [N22] 回读质检盲区：TTS 念错但 Whisper 回读恰好也认成同一个错字
@@ -147,6 +157,9 @@
 - 位置：config/voice.json:9（readings 机制前提）+ CLAUDE.md「配音回读质检」
 - 描述：能发现念错靠的是回读 CER 不认；若回读也认成同一个错字，此机制静默失效（无第二道防线）。
   推测性盲区，尚未实测踩到。
+  **2026-08-15 更新**：换 Qwen3 引擎后多一层同类盲区——英日歌名在 `tts.syllables()` 拼音比对里
+  按字符逐字保留，Whisper 回读可能听岔（エウテルペ→Eutelope），CER 虚高误伤。
+  处理方向：歌名区段单独豁免，不给整段放松阈值（ADR-0006 遗留项）。
 - 推进：踩到时再处理，不提前立防线。
 
 ---
