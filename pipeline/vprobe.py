@@ -30,7 +30,8 @@ PROBE_DIR = paths.DATA / "library" / "vindex" / "probe"
 #
 # **不在这里写死**：编码、检索、算噪声地板这套机制对任何番都一样，属于代码；
 # 「空无一人的教室」「太空中的宇宙飞船」是春物的内容，属于配置。
-# 写死在这里就是 anchor_words 那个错误的重演（见 config/project.json 的 _anchor_note）。
+# 写死在这里就是 anchor_words 那个错误的重演（该机制 2026-08-12 已整体删除，
+# 记录见 ADR-0005 与 WORKFLOW「锚点看画面集号」节）。
 
 
 def _rel(target: Path, base: Path) -> str:

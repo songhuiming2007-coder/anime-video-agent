@@ -73,7 +73,9 @@ CCIP_AUTHOR_THRESHOLD = 0.17847511429108218
 #
 # 所以门槛取 0.05。代价是召回率从 77% 掉到 31%，**这是要的方向**：
 # 整条角色过滤链建在「检测到 X 可信」上，宁可少认，不可认错（ADR-0003「检测的不对称」）。
-CCIP_SAME = 0.05
+# 2026-08-16 从硬编码迁进 config（project.json 的 visual.ccip_same）——它是逐番
+# 标定值，换番要改代码违反 R2；这里的 default 保留春物标定值，行为不变。
+CCIP_SAME = paths.conf("visual.ccip_same", 0.05)
 
 # 归队时要求最近的角色比第二近的角色近这么多。
 #
@@ -95,7 +97,8 @@ CCIP_SAME = 0.05
 # **这是在代表脸上标定的，而代表脸是各簇里最典型的那些**，所以真实素材上的领先量
 # 只会更小——那些会被判成「没认出来」，这正是安全的方向（ADR-0003「检测的不对称」）。
 # 逐角色抽检见 `python -m pipeline.vprobe presence`。
-CCIP_MARGIN = 0.02
+# 2026-08-16 迁进 config（project.json 的 visual.ccip_margin），default 保留春物标定值。
+CCIP_MARGIN = paths.conf("visual.ccip_margin", 0.02)
 
 # 聚类用 OPTICS，参数取 imgutils 的库默认（`ccip_clustering` 的 method='optics'）。
 #
@@ -119,7 +122,8 @@ CCIP_MIN_SAMPLES = 5
 # 人脸框往外扩多少倍再送 CCIP。**动漫角色的身份信息大半在头发上**，
 # 而检测框只框脸，直接裁会把最有辨识度的部分切掉。1.6 是起点，
 # 抽检（`vprobe presence`）发现认混了就回来调，调完要重跑嵌入。
-FACE_EXPAND = 1.6
+# 2026-08-16 迁进 config（project.json 的 visual.face_expand）。
+FACE_EXPAND = paths.conf("visual.face_expand", 1.6)
 
 # 聚类用的采样上限。全季一万八千张脸，两两距离矩阵是 O(n²)——
 # 18000² 的 float32 是 1.3G。这一步的目的只是**让人看见有哪些簇**，采样足够；
@@ -161,8 +165,10 @@ def _face_session():
     s = _session(FACE_REPO, f"{FACE_MODEL}/model.onnx")
     meta = s.get_modelmeta().custom_metadata_map
     imgsz = json.loads(meta["imgsz"]) if "imgsz" in meta else [640, 640]
-    names = eval(meta["names"], {"__builtins__": {}})   # 形如 {0: 'face'}
-    return s, tuple(imgsz), [names[i] for i in range(len(names))]
+    # 模型元数据里的 names（{0: 'face'} 标签表）在 detect 里从未被用到，
+    # 原先拿 eval 去解它纯属给下载来的字符串开任意代码面——2026-08-16
+    # 审计 2-33 连解析带返回值一起删了，这里只取 imgsz
+    return s, tuple(imgsz)
 
 
 # ---------------------------------------------------------------- 检测
@@ -204,7 +210,7 @@ def detect(img) -> list[tuple[tuple[int, int, int, int], float]]:
     坐标按缩放比还原回原图。不是我偷懒——letterbox 与直缩的坐标还原方式不同，
     混用会让框整体偏移，而偏移了的框裁出来仍然是一张「像脸」的图，不报错。
     """
-    sess, imgsz, labels = _face_session()
+    sess, imgsz = _face_session()
     ow, oh = img.size
     im = img.resize(imgsz)
     x = (np.asarray(im, dtype=np.float32) / 255.0).transpose(2, 0, 1)[None]
@@ -287,8 +293,8 @@ def build_faces(anime: str, key: str, progress=None) -> int:
 
     vec = np.vstack(feats) if feats else np.zeros((0, 768), dtype=np.float32)
     vindex.VINDEX_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(vindex.VINDEX_DIR / f"{anime}_{key}.faces.npy", vec)
-    faces_path(anime, key).write_text(json.dumps({
+    vindex._atomic_save(vindex.VINDEX_DIR / f"{anime}_{key}.faces.npy", vec)
+    vindex._atomic_write(faces_path(anime, key), json.dumps({
         "meta": {
             "kind": "faces", "anime": anime, "episode": key,
             "detector": FACE_REPO + "/" + FACE_MODEL,
@@ -301,7 +307,7 @@ def build_faces(anime: str, key: str, progress=None) -> int:
             "built_at": date.today().isoformat(),
         },
         "faces": recs,
-    }, ensure_ascii=False), encoding="utf-8")
+    }, ensure_ascii=False))
     return len(recs)
 
 
@@ -330,6 +336,23 @@ def cluster(anime: str, sample: int = CLUSTER_SAMPLE, seed: int = 0) -> dict:
     全季两万张脸的距离矩阵是 1.6G，而采样四千张只要 64M。
     """
     from sklearn.cluster import OPTICS
+
+    # 已贴名的簇表不许静默覆盖（2026-08-16 审计 2-5）：name/named_at 是
+    # 全项目唯一需要人类劳动的 Phase 0 资产，自然的「补几集 detect → 重新
+    # cluster」流程会把它无声清零。要重建就把旧文件挪开保住贴名、聚完再对
+    # 照代表脸把名字搬回去——这一步目前没有自动化，不许拿「顺手覆盖」冒充。
+    p = clusters_path(anime)
+    if p.exists():
+        db = json.loads(p.read_text(encoding="utf-8"))
+        named = [cid for cid, c in db.get("clusters", {}).items() if c.get("name")]
+        if named:
+            raise SystemExit(
+                f"FAIL {p.name} 里已有 {len(named)} 个贴了名的簇，重跑 cluster 会把"
+                f"人工贴名全部抹掉，拒绝覆盖。\n"
+                f"     要重建：先把旧文件挪走保住贴名（mv {p} {p}.bak），重跑 cluster，"
+                f"再对照新旧簇的代表脸（sheet 联系表）把名字补回去。\n"
+                f"     只补几集检测/在场时不必重跑 cluster：detect 只会新增各集的"
+                f" faces 索引，presence 归队用的是已贴名簇的代表脸。")
 
     keys = episodes(anime)
     if not keys:
@@ -391,6 +414,9 @@ def load_clusters(anime: str) -> dict:
 
 
 def proto_vectors(anime: str, cid: str, db: dict | None = None) -> np.ndarray:
+    # 已知可优化（2026-08-16 审计 2-34，未动）：cache 是函数局部的，build_presence
+    # 逐簇调用会重复加载各集 npy（10 簇 × 41 集数百次）。只在有性能实测问题时
+    # 再提为模块级缓存——凭感觉改性能不属于本仓库的改动纪律。
     db = db or load_clusters(anime)
     cache: dict[str, np.ndarray] = {}
     out = []
@@ -572,10 +598,19 @@ def main() -> int:
     paths.require_data()
 
     if a.cmd == "detect":
+        # 最贵的一步（一集几分钟），逐集报 FAIL 不打断整批（E10）
+        bad = 0
         for key in a.episode:
-            n_ = build_faces(a.anime, key)
+            try:
+                n_ = build_faces(a.anime, key)
+            except SystemExit as e:
+                bad += 1
+                print(f"FAIL {key}  {e}", flush=True)
+                continue
             print(f"OK {key} {n_} 张脸 → {faces_path(a.anime, key).name}", flush=True)
-        return 0
+        if bad:
+            print(f"{bad} 集失败")
+        return 1 if bad else 0
 
     if a.cmd == "cluster":
         out = cluster(a.anime, a.sample)

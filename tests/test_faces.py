@@ -7,6 +7,8 @@
 不测模型本身（那要下 1.9 亿参数的权重），只测夹在模型两头的这些纯函数。
 """
 
+import json
+
 import numpy as np
 import pytest
 
@@ -110,3 +112,73 @@ class TestConstants:
         # 而阈值是按作者那套标定的，漂了就全不准
         assert faces.CCIP_MEAN[0] == pytest.approx(0.48145466)
         assert faces.CCIP_STD[0] == pytest.approx(0.26862954)
+
+
+class TestClusterGuard:
+    """重跑 cluster 不许静默覆盖人工贴名（2026-08-16 审计 2-5）。
+
+    name/named_at 是全项目唯一需要人类劳动的 Phase 0 资产；自然的
+    「补几集 detect → 重新 cluster」流程此前会把它无声清零，且 detect/
+    cluster 的 npy 产物不失效、没有任何警告。
+    """
+
+    def _named(self, tmp_path):
+        import json as _json
+        p = tmp_path / "春物.clusters.json"
+        p.write_text(_json.dumps({"meta": {}, "clusters": {
+            "3": {"name": "yukinoshita_yukino", "n": 10, "protos": []},
+            "7": {"name": None, "n": 4, "protos": []}}}, ensure_ascii=False),
+            encoding="utf-8")
+        return p
+
+    def test_有贴名就拒绝覆盖(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(faces, "clusters_path", lambda anime: self._named(tmp_path))
+        with pytest.raises(SystemExit, match="贴了名"):
+            faces.cluster("春物")
+
+    def test_全没贴名不拦(self, tmp_path, monkeypatch):
+        # 反向护栏：拦的是「会抹掉人工劳动的覆盖」，不是 cluster 本身——
+        # 没贴名的旧文件照常重建（走到「没有 faces 数据」的下一步报错）
+        import json as _json
+        p = tmp_path / "春物.clusters.json"
+        p.write_text(_json.dumps({"meta": {}, "clusters": {}}, ensure_ascii=False),
+                     encoding="utf-8")
+        monkeypatch.setattr(faces, "clusters_path", lambda anime: p)
+        monkeypatch.setattr(faces, "episodes", lambda anime: [])
+        with pytest.raises(SystemExit, match="人脸数据"):
+            faces.cluster("春物")
+
+
+class TestCcipFromConfig:
+    """CCIP 三值与 config 同源（2026-08-16 审计 2-16 迁移，值原样不改）。
+
+    迁移前是 faces.py 硬编码——逐番标定值钉死在代码里，换番只能改代码
+    （违反 R2「机制进代码、内容进配置」）。default 保留春物标定值作留档。
+    """
+
+    def test_三个标定值从config读(self):
+        from pipeline import paths
+        assert faces.CCIP_SAME == paths.conf("visual.ccip_same", 0.05)
+        assert faces.CCIP_MARGIN == paths.conf("visual.ccip_margin", 0.02)
+        assert faces.FACE_EXPAND == paths.conf("visual.face_expand", 1.6)
+
+    def test_config真的声明了这三个键(self):
+        cfg = json.loads((faces.paths.CONFIG / "project.json").read_text(encoding="utf-8"))
+        for k, v in (("ccip_same", 0.05), ("ccip_margin", 0.02), ("face_expand", 1.6)):
+            assert cfg["visual"][k] == v, k
+
+
+class TestEvalRemoved:
+    """faces 的元数据解析不再用 eval、也没有死导入（二次审计 §6-2）。
+
+    旧代码 `eval(meta["names"])` 的产物从未被使用，修复时连调用一起删了，
+    却留下了未用的 `import ast` 和一条描述「literal_eval 而不是 eval」的
+    注释——注释说的是不存在的代码。
+    """
+
+    def test_没有eval调用也没有死导入(self):
+        import re as _re
+        from pathlib import Path as _Path
+        src = _Path(faces.__file__).read_text(encoding="utf-8")
+        assert not _re.search(r"(?<![_\w])eval\(", src)   # 不对下载来的元数据求值
+        assert "import ast" not in src                      # 死导入不回流

@@ -421,6 +421,18 @@ def build(episode: Path, anime: str | None = None,
     else:
         kept = _spread(deduped)
 
+    if not kept:
+        # 池子筛空 = 流程断了，不是「这期没有封面」的正常状态（2026-08-16
+        # 审计 2-14）。旧实现静默写空 index.html、退出码 0——角色硬过滤
+        # 为空早已显式失败（_by_character），无过滤的空池是同类「跳过不是
+        # 通过」却放行。报出漏斗各层数字，让人看见是在哪一层筛空的。
+        raise SystemExit(
+            f"FAIL 候选池筛空：抽 {total} 帧 → 过筛 {len(cands)} → 去重 "
+            f"{len(deduped)} → 取 0 张。\n"
+            f"     全部帧被亮度/清晰度筛掉（整集过暗或糊？）或取样源全失效"
+            f"（_grab 失败）。看 07-cover/raw/ 有没有图、pool.json 的取样数，"
+            f"再查 04-clips.approved.json / 封面集 配置")
+
     # **只报告，不动手。** 中间产物（841 张原始帧 + 12 张联系表 ≈ 28M）确实该清，
     # 但清理时机是**人拍板最终版之后**，而且**每次要主动问过人**（CLAUDE.md「清理约定」）。
     # 初版写成 `--pick` 时自动删——那是把「什么时候算定稿」这个判断替人做了：
@@ -515,7 +527,7 @@ def titles(episode: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description="第 08 步：封面候选 + 标题原料")
     ap.add_argument("episode", type=Path)
-    ap.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    ap.add_argument("--anime", default=paths.conf("anime.default"))
     ap.add_argument("--pick", help="用池子里的编号定 9 张，逗号分隔（agent 看完联系表后用）")
     ap.add_argument("--character", help="只留含这个角色的帧；不给则读 01-topic.md 的 `封面人物`")
     a = ap.parse_args()

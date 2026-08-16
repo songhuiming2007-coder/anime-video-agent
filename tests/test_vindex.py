@@ -246,3 +246,94 @@ class TestIndexed:
         p = presence()
         p.by_ep = {}
         assert p.indexed() == set()
+
+
+class TestSubtitleIndexCount:
+    """成对计数（2026-08-16 审计 2-1）：口径必须与 load_all 一致。
+
+    load_all 按 .json glob、要求 .npy 在盘；旧计数按 *.npy glob，孤儿 npy
+    （写一半崩溃的残骸）被数进六条数字——对账全绿而检索池实际少一集。
+    """
+
+    def test_孤儿npy不计数(self, tmp_path):
+        (tmp_path / "春物_S01E01.npy").write_bytes(b"")
+        (tmp_path / "春物_S01E02.npy").write_bytes(b"")
+        (tmp_path / "春物_S01E02.json").write_text("{}", encoding="utf-8")
+        assert vindex.subtitle_index_count("春物", tmp_path) == 1
+
+    def test_只有json也不计数(self, tmp_path):
+        (tmp_path / "春物_S01E03.json").write_text("{}", encoding="utf-8")
+        assert vindex.subtitle_index_count("春物", tmp_path) == 0
+
+    def test_成对全计数(self, tmp_path):
+        for ep in (1, 2, 3):
+            (tmp_path / f"春物_S01E{ep:02d}.npy").write_bytes(b"")
+            (tmp_path / f"春物_S01E{ep:02d}.json").write_text("{}", encoding="utf-8")
+        assert vindex.subtitle_index_count("春物", tmp_path) == 3
+
+
+class TestPresenceLoadHardCheck:
+    """presence 加载的 model_id 与判定阈值一致性（2026-08-16 审计 2-2）。
+
+    producer 检查拦不住 camie→wd 这种换 tagger（producer 字段都还是
+    "tagger"），两种量纲的概率分会静默混用——同维度换模型不会崩，
+    只会静默变差（ADR-0003 索引自描述标准的加载侧缺口）。
+    """
+
+    FP = {"detector": "x", "scene_threshold": 1.0, "min_shot": 1.0, "duration": 100.0}
+
+    def _env(self, monkeypatch):
+        monkeypatch.setattr(vindex, "presence_producer", lambda: "ccip")
+        monkeypatch.setattr(vindex.shots, "load",
+                            lambda anime, key: {"meta": self.FP,
+                                                "shots": [{"i": 0, "start": 0.0, "end": 5.0}]})
+        monkeypatch.setattr(vindex, "alias_map",
+                            lambda anime: {"雪乃": "x", "x": "x"})
+
+    def _write(self, tmp_path, name, ep, model_id, thr):
+        d = {"meta": {"kind": "presence", "producer": "ccip", "anime": "春物",
+                      "episode": ep, "shots": self.FP, "model_id": model_id,
+                      "revision": None, "decision_threshold": thr},
+             "shots": [{"i": 0, "char": {"x": 0.97}, "gen": {}}]}
+        p = tmp_path / name
+        p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def _ccip_id(self):
+        from pipeline.faces import CCIP_MODEL, CCIP_REPO
+        return CCIP_REPO + "/" + CCIP_MODEL
+
+    def test_换了模型就失败(self, tmp_path, monkeypatch):
+        self._env(monkeypatch)
+        self._write(tmp_path, "春物_S01E01.presence.json", "S01E01",
+                    "别的模型/别的权", 0.95)
+        with pytest.raises(SystemExit, match="不可比"):
+            vindex.load_presence("春物", tmp_path)
+
+    def test_各集判定阈值不一致就失败(self, tmp_path, monkeypatch):
+        self._env(monkeypatch)
+        self._write(tmp_path, "春物_S01E01.presence.json", "S01E01",
+                    self._ccip_id(), 0.95)
+        self._write(tmp_path, "春物_S01E02.presence.json", "S01E02",
+                    self._ccip_id(), 0.15)
+        with pytest.raises(SystemExit, match="不一致"):
+            vindex.load_presence("春物", tmp_path)
+
+    def test_一致就加载(self, tmp_path, monkeypatch):
+        self._env(monkeypatch)
+        self._write(tmp_path, "春物_S01E01.presence.json", "S01E01",
+                    self._ccip_id(), 0.95)
+        self._write(tmp_path, "春物_S01E02.presence.json", "S01E02",
+                    self._ccip_id(), 0.95)
+        pres = vindex.load_presence("春物", tmp_path)
+        assert pres.threshold == 0.95 and set(pres.by_ep) == {"S01E01", "S01E02"}
+
+
+class TestAnimeFallback:
+    """config 删掉 anime.default → status 显式报错，不静默落到「春物」（审计 2-16）。"""
+
+    def test_无番名配置显式报错(self, monkeypatch):
+        monkeypatch.setattr(vindex.paths, "conf", lambda d, default=None: default)
+        monkeypatch.setattr("sys.argv", ["vindex", "status"])
+        with pytest.raises(SystemExit, match="番名"):
+            vindex.main()

@@ -45,14 +45,31 @@ DUR_BAND = tuple(paths.conf("video.duration_band", [120.0, 240.0]))   # 成片�
 # 抽出来的复用收益小于多一层间接。
 #     不锚 `$`，理由同 check_script.py 的同名正则：字段允许行尾带 `# 备注`。
 DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
+# 「写了字段」的判据是**行首**出现字段名（冒号可漏）——不是全文子串。
+# 策划备注里讨论「时长目标」这四个字（真实稿件就有）不等于设了字段，
+# 子串判据会把这种期硬错（二次审计 §6-1）。
+DURATION_FIELD_HINT = re.compile(r"^\s*时长目标\s*[:：]?", re.M)
 
 
 def episode_duration_band(episode: Path) -> tuple[float, float] | None:
-    """从这一期 `01-topic.md` 读 `时长目标`（分钟），换算成秒。没有就返回 None。"""
+    """从这一期 `01-topic.md` 读 `时长目标`（分钟），换算成秒。没有就返回 None。
+
+    **行首**写了字段但格式认不出 → 直接报错，不静默回退默认带（2026-08-16
+    审计 2-10）：全角破折号「13—15分钟」或单值「13分钟」都不匹配正则，回退
+    2–4 分钟带会把 13 分钟的人物志误判 FAIL，且报告里看不出是字段没读上。
+    正文/备注里**提到**字段名不算写了字段，不拦（二次审计 §6-1 收窄）。
+    check_script.py 的同名函数同款行为，两处口径必须一致。
+    """
     topic = episode / "01-topic.md"
     if not topic.exists():
         return None
-    m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
+    text = topic.read_text(encoding="utf-8")
+    m = DURATION_FIELD.search(text)
+    if m is None and DURATION_FIELD_HINT.search(text):
+        raise SystemExit(
+            "FAIL 01-topic.md 的 `时长目标` 格式认不出，应为 `时长目标: 7-8分钟`"
+            "（半角连字符 - / – / ~，范围写法）。\n"
+            "     静默回退默认 2–4 分钟带会把这篇稿子按错标准判——先改对格式再跑")
     return (float(m.group(1)) * 60, float(m.group(2)) * 60) if m else None
 
 
@@ -64,10 +81,21 @@ class Check:
     skipped: bool = False   # 缺前置文件跑不了。**不算通过**，见下方 main
 
 
-def _run(cmd: list[str]) -> str:
-    """跑 ffmpeg 并回收 stderr——检测类滤镜的输出都在 stderr 上。"""
+def _run(cmd: list[str]) -> tuple[str, int]:
+    """跑 ffmpeg 并回收 (stderr, 退出码)——检测类滤镜的输出都在 stderr 上。
+
+    退出码必须跟回来：blackdetect/silencedetect 失败时 stderr 里没有结果行，
+    只看输出会把「检测器跑不动」当成「没检出」判 PASS——文件坏到门禁最该
+    报警的时候反而全绿（2026-08-16 审计 2-4）。
+    """
     p = subprocess.run(cmd, capture_output=True, text=True)
-    return p.stderr
+    return p.stderr, p.returncode
+
+
+def _tail(err: str) -> str:
+    """stderr 的最后一行（截断）——失败详情给一条就够定位，不给半屏日志。"""
+    lines = [ln for ln in err.strip().splitlines() if ln.strip()]
+    return lines[-1][:120] if lines else ""
 
 
 def _probe(video: Path, entries: str, stream: str) -> str:
@@ -112,6 +140,10 @@ def _map_black_to_sources(blacks: list[tuple[float, float]],
     试听型的段落起点带音乐段偏移（`seg_starts`：段落号 → 成片起点），
     否则段落连续假设会把黑帧映射到错误的源位置（2026-08-16 实测：
     段落 1 的转场黑被映射到 467s 报「源无黑」）。
+
+    已知边界（2026-08-16 审计 2-36，核实后有意不修）：音乐段（段落间隙）
+    的黑帧不映射不判定——OP/ED 画面自带黑场是内容；要判需把 render 的
+    画面段源（_still_frames 的 visual/定格信息）接进 qc，影响面大于收益。
     """
     out: list[tuple[str, float, float, float, float, int, int]] = []
     idx = 0
@@ -232,10 +264,13 @@ def check(video: Path, plan: dict | None = None,
                          "跳过：没有 04-clips.approved.json", skipped=True))
 
     # 响度与削波：用第二遍 loudnorm 的测量结果，不改文件
-    err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
-                "loudnorm=print_format=json", "-f", "null", "-"])
+    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
+                    "loudnorm=print_format=json", "-f", "null", "-"])
     m = re.search(r"\{[^{}]*input_i[^{}]*\}", err, re.S)
-    if m:
+    if rc != 0:
+        out.append(Check("响度测量", False,
+                         f"ffmpeg 退出码 {rc}：{_tail(err)}"))
+    elif m:
         d = json.loads(m.group(0))
         i, tp = float(d["input_i"]), float(d["input_tp"])
         out.append(Check(f"响度 {LUFS_TARGET}±{LUFS_TOL} LUFS",
@@ -251,10 +286,12 @@ def check(video: Path, plan: dict | None = None,
     # S03E12 台词开口处的转场黑场 0.71s，源片同样黑）。
     # 所以成片黑帧映射回源区间，源片同样黑 = 内容，通过；成片独有黑 = 渲染
     # 缺陷，拦截。没 plan 时退回旧行为：无源可对照，宁严勿松。
-    err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-vf",
-                f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an", "-f", "null", "-"])
-    blacks = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err)
+    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-vf",
+                    f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an", "-f", "null", "-"])
+    blacks = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err) if rc == 0 else []
+    probe_err = None if rc == 0 else f"ffmpeg 退出码 {rc}：{_tail(err)}"
     defects: list[tuple[str, float, float, float, float]] = []
+    src_errs: list[str] = []
     if blacks:
         if plan:
             mplan = _music_plan(video.parent)
@@ -276,10 +313,14 @@ def check(video: Path, plan: dict | None = None,
                 # 黑段起点在映射区间 0.26s 前，d=0.5 检测不到）。
                 lo = min(s - i * FRAME_BOUND for _, s, _, _, _, i, _ in spans) - BLACK_SRC_BUF
                 hi = max(e + i * FRAME_BOUND for _, _, e, _, _, i, _ in spans) + BLACK_SRC_BUF
-                err2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
-                             "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
-                             f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
-                             "-an", "-f", "null", "-"])
+                err2, rc2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
+                                  "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
+                                  f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
+                                  "-an", "-f", "null", "-"])
+                if rc2 != 0:
+                    # 源片对照跑不动 = 无法证明「源片自带」，宁严勿松记进 FAIL
+                    src_errs.append(f"{Path(src).name}：ffmpeg 退出码 {rc2}（{_tail(err2)}）")
+                    continue
                 # blackdetect 输出相对 -ss 起点，换算回源绝对时间
                 src_blacks = [(lo + float(a), lo + float(b))
                               for a, b in re.findall(
@@ -290,16 +331,22 @@ def check(video: Path, plan: dict | None = None,
         else:
             defects = [(str(video), float(a), float(b), float(a), float(b))
                        for a, b in blacks]
-    detail = "无" if not defects else "、".join(
+    detail = "无" if not (defects or src_errs) else "、".join(
         f"{Path(s).name} 成片 {f0:.1f}-{f1:.1f}s（源 {s0:.1f}-{s1:.1f}s 无黑）"
         for s, f0, f1, s0, s1 in defects[:3])
-    out.append(Check(f"无 >{BLACK_MAX}s 纯黑（源片转场除外）", not defects, detail))
+    if probe_err:
+        detail = f"{probe_err}（黑帧检测没跑成，不判无黑）"
+    if src_errs:
+        detail = (detail + "；" if detail != "无" else "") + \
+            f"源片对照失败 {len(src_errs)} 处（{'；'.join(src_errs[:2])}）"
+    out.append(Check(f"无 >{BLACK_MAX}s 纯黑（源片转场除外）",
+                     not defects and not probe_err and not src_errs, detail))
 
     # 静音。试听型的歌曲自然收尾（fade 尾音 < -45dB）不是缺陷——
     # 静音区间尾部对齐某个音乐事件终点（曲目/前景/BGM 段的结束）就豁免
     # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s）。
-    err = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
-                f"silencedetect=n=-45dB:d={SILENCE_MAX}", "-f", "null", "-"])
+    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
+                    f"silencedetect=n=-45dB:d={SILENCE_MAX}", "-f", "null", "-"])
     mplan = _music_plan(video.parent)
     song_ends: set[float] = set()
     if mplan:
@@ -307,11 +354,13 @@ def check(video: Path, plan: dict | None = None,
             for ev in tr["events"]:
                 song_ends.add(round(ev["at"] + ev["t1"] - ev["t0"], 1))
     sils = [(float(s), float(e)) for s, e in re.findall(
-        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err)]
+        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err)] if rc == 0 else []
     bad = [s for s, e in sils
            if not any(abs(e - x) <= 0.5 for x in song_ends)]
-    out.append(Check(f"无 >{SILENCE_MAX}s 静音", not bad,
-                     "、".join(f"{s:.1f}s" for s in bad[:3]) or "无"))
+    out.append(Check(f"无 >{SILENCE_MAX}s 静音", rc == 0 and not bad,
+                     (f"ffmpeg 退出码 {rc}：{_tail(err)}（静音检测没跑成，不判无静音）"
+                      if rc != 0 else
+                      "、".join(f"{s:.1f}s" for s in bad[:3]) or "无")))
 
     # 字幕。烧录之后没法从成片反查，所以查它的来源——但**必须查渲染器真正会写出去的
     # 那份文本**，也就是过了 `render.wrap` 之后的每一行。

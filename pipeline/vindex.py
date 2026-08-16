@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -42,6 +43,20 @@ import numpy as np
 VINDEX_DIR = paths.DATA / "library" / "vindex"
 CHARACTERS = paths.CONFIG / "characters.json"
 SCENES = paths.CONFIG / "scenes.json"
+
+
+def _atomic_write(dest: Path, data: str) -> None:
+    """写临时文件再 os.replace（孪生实现与理由见 subindex._atomic_write）。"""
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, dest)
+
+
+def _atomic_save(dest: Path, vecs: np.ndarray) -> None:
+    tmp = dest.with_name(dest.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.save(f, vecs)
+    os.replace(tmp, dest)
 
 # ---------------------------------------------------------------- 通道 1
 
@@ -449,18 +464,44 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
     判定阈值默认取文件里记的那个（`decision_threshold`），因为**分数的量纲随
     producer 而不同**：tagger 存的是标签概率，ccip 存的是 1 − 角色距离。
     拿一种量纲的阈值去卡另一种，得到的仍然是一个能用的布尔值——只是它不对应任何东西。
+
+    model_id/revision 必须与当前配置一致（ADR-0003「加载时硬校验」）。
+    2026-08-16 审计 2-2 之前这里漏了：producer 检查拦不住 camie→wd 这种换
+    tagger（producer 字段都还是 "tagger"），两种量纲的概率分静默混用。
     """
     want = presence_producer()
+    if want == "ccip":
+        from .faces import CCIP_MODEL, CCIP_REPO    # 延迟 import，faces 又依赖本模块
+        want_model = CCIP_REPO + "/" + CCIP_MODEL
+        # ccip 写侧记的是仓库级 revision（faces.build_presence），model_id 却是
+        # 仓库名/模型名的组合——按组合名查本地缓存查不到，得显式给
+        want_rev = paths.model_revision(CCIP_REPO)
+    else:
+        prof = profile()
+        want_model = prof["repo"]
+        want_rev = paths.model_revision(prof["repo"])
     by_ep: dict[str, list[dict]] = {}
     thr_used: float | None = None
+    rec_thr: float | None = None     # 各集文件自带的判定阈值，跨文件必须一致
     for p in sorted(out_dir.glob(f"{anime}_*.presence.json")):
         d = json.loads(p.read_text(encoding="utf-8"))
-        m = _check_meta(d["meta"], p, kind="presence")
+        m = _check_meta(d["meta"], p, kind="presence", model_id=want_model,
+                        revision=want_rev)
         if m.get("producer") != want:
             raise SystemExit(
                 f"FAIL {p.name} 是 {m.get('producer')} 建的，当前配置要 {want}。\n"
                 f"     两者的分数量纲不同，不可混用。改 visual.presence_producer，"
                 f"或用当前 producer 重建索引")
+        if rec_thr is None:
+            rec_thr = m["decision_threshold"]
+        elif m["decision_threshold"] != rec_thr:
+            # 阈值是量纲的一部分：一半文件按 0.5 折布尔、一半按 0.85 折，
+            # 同一个 Presence 里「在场」的含义就随集漂移，且不报错
+            raise SystemExit(
+                f"FAIL {p.name} 的判定阈值 {m['decision_threshold']} 与其他集的"
+                f" {rec_thr} 不一致。\n"
+                f"     同一部番的索引必须用同一套参数建，混用的部分重建：\n"
+                f"     python -m pipeline.faces presence {anime}")
         thr = m["decision_threshold"] if threshold is None else threshold
         if m.get("keep_threshold", thr) > thr:
             raise SystemExit(
@@ -487,12 +528,16 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
     return Presence(anime, by_ep, alias_map(anime), thr_used or 0.0)
 
 
-def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None) -> dict:
+def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None,
+                revision: str | None = None) -> dict:
     """索引元信息硬校验。对不上直接失败，不许继续（ADR-0003）。
 
     **理由是这类不一致不会自己暴露。** 维度不同会崩，那算运气好；
     同维度换模型不会崩——余弦照样算得出来，分数照样落在看起来正常的区间，
     照样过阈值、照样返回 Top-K、照样渲染出片。
+
+    `revision` 显式给时用它比（写侧记的可能是仓库级 revision，而 model_id 是
+    组合名，自动查缓存查不到）；不给时按 model_id 查本地缓存。
     """
     if m.get("kind") != kind:
         raise SystemExit(f"FAIL {path.name} 不是 {kind} 索引（kind={m.get('kind')}）")
@@ -501,7 +546,7 @@ def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None) -> 
             raise SystemExit(
                 f"FAIL {path.name} 建索引时用的是 {m.get('model_id')}，当前配置是 {model_id}。\n"
                 f"     两个模型的输出不可比，重建索引再用")
-        rev = paths.model_revision(model_id)
+        rev = revision if revision is not None else paths.model_revision(model_id)
         if rev and m.get("revision") and m["revision"] != rev:
             raise SystemExit(
                 f"FAIL {path.name} 建索引时的模型版本是 {m['revision'][:12]}，"
@@ -598,12 +643,12 @@ def build_scene(anime: str, key: str, out_dir: Path = VINDEX_DIR) -> int:
 
     vecs = encode_images(files)
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / f"{anime}_{key}.scene.npy", vecs)
+    _atomic_save(out_dir / f"{anime}_{key}.scene.npy", vecs)
 
     # 人看的标签，**只用于显示**：`04-clips.json` 里画面通道的命中总得让人看懂是什么镜头。
     # 它不参与任何判断，也不参与排序。
     labels = _labels(anime, key, len(d["shots"]), out_dir)
-    scene_path(anime, key, out_dir).write_text(json.dumps({
+    _atomic_write(scene_path(anime, key, out_dir), json.dumps({
         "meta": {
             "kind": "scene",
             "anime": anime, "episode": key,
@@ -615,7 +660,7 @@ def build_scene(anime: str, key: str, out_dir: Path = VINDEX_DIR) -> int:
         "shots": [{"i": s["i"], "start": s["start"], "end": s["end"],
                    "label": labels.get(s["i"], "")}
                   for s in d["shots"]],
-    }, ensure_ascii=False), encoding="utf-8")
+    }, ensure_ascii=False))
     return len(vecs)
 
 
@@ -742,6 +787,18 @@ def scene_enabled(anime: str, path: Path = SCENES) -> bool:
         return False
 
 
+def subtitle_index_count(anime: str, index_dir: Path) -> int:
+    """成对计数：.json 与 .npy 都在才算一集。
+
+    计数口径必须与 `subindex.load_all` 的加载口径一致（按 .json glob、
+    要求 .npy 在盘）。孤儿 .npy（写一半崩溃的残骸）原先也被 `*.npy` glob
+    数进来，六条数字照样相等而检索池实际少一集——这正是「六条数字」要防的
+    假绿（2026-08-16 审计 2-1）。
+    """
+    return len([p for p in index_dir.glob(f"{anime}_*.json")
+                if p.with_suffix(".npy").exists()])
+
+
 def status(anime: str) -> dict[str, int]:
     """六条数字（ADR-0003 把 CLAUDE.md 的「三条数字相等」扩成六条）。
 
@@ -757,7 +814,7 @@ def status(anime: str) -> dict[str, int]:
     n_notes = len(note_episodes(notes))
     out = {
         "片源": len(load_sources(anime)),
-        "字幕索引": len(list(INDEX_DIR.glob(f"{anime}_*.npy"))),
+        "字幕索引": subtitle_index_count(anime, INDEX_DIR),
         "笔记": n_notes,
         "镜头表": len(list(shots.SHOTS_DIR.glob(f"{anime}_*.json"))),
         "角色在场": len(list(VINDEX_DIR.glob(f"{anime}_*.presence.json"))),
@@ -789,7 +846,7 @@ def main() -> int:
 
     q = sub.add_parser("search", help="画面语义检索")
     q.add_argument("query")
-    q.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    q.add_argument("--anime", default=paths.conf("anime.default"))
     q.add_argument("-k", type=int, default=8)
 
     w = sub.add_parser("who", help="某段时间里有谁（查角色索引）")
@@ -798,10 +855,12 @@ def main() -> int:
     w.add_argument("--start", type=float, default=0.0)
     w.add_argument("--end", type=float, default=1e9)
 
-    st = sub.add_parser("status", help="四条数字对不对得上")
-    st.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    st = sub.add_parser("status", help="六条数字对不对得上")
+    st.add_argument("--anime", default=paths.conf("anime.default"))
 
     a = ap.parse_args()
+    if a.cmd in ("search", "status") and not a.anime:
+        raise SystemExit("FAIL 没指定番名：给 --anime，或在 config/project.json 里设 anime.default")
     paths.require_data()
 
     if a.cmd == "presence":
@@ -814,16 +873,34 @@ def main() -> int:
                 f"FAIL 当前 visual.presence_producer = {presence_producer()}，"
                 f"这条命令建的是 tagger 的索引。\n"
                 f"     ccip 那条路走：python -m pipeline.faces --help")
+        bad = 0
         for key in a.episode:
-            n = build_presence(a.anime, key, batch=a.batch)
+            # 多集批命令逐集报 FAIL，不打断整批（E10）：detect/presence 是
+            # 几小时级的活，一集缺代表帧停下等于逼人重跑前面已完成的
+            try:
+                n = build_presence(a.anime, key, batch=a.batch)
+            except SystemExit as e:
+                bad += 1
+                print(f"FAIL {key}  {e}", flush=True)
+                continue
             print(f"OK {key} {n} 个镜头 → {presence_path(a.anime, key).name}", flush=True)
-        return 0
+        if bad:
+            print(f"{bad} 集失败")
+        return 1 if bad else 0
 
     if a.cmd == "scene":
+        bad = 0
         for key in a.episode:
-            n = build_scene(a.anime, key)
+            try:
+                n = build_scene(a.anime, key)
+            except SystemExit as e:
+                bad += 1
+                print(f"FAIL {key}  {e}", flush=True)
+                continue
             print(f"OK {key} {n} 个镜头 → {scene_path(a.anime, key).name}", flush=True)
-        return 0
+        if bad:
+            print(f"{bad} 集失败")
+        return 1 if bad else 0
 
     if a.cmd == "search":
         vecs, units = load_scene(a.anime)

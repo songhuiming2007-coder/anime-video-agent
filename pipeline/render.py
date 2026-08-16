@@ -114,10 +114,20 @@ def cut(clip: dict, dest: Path) -> None:
     """切一个片段，切前切后都校验（CLAUDE.md「截取守卫」，缺一不可）。
 
     ffmpeg 在请求时长超出源片剩余长度时**静默截断且不报错**，踩到就整条音画错位
-    而没有任何提示。所以两头都要卡。
+    而没有任何提示。所以两头都要卡。负起点是同一类静默错：ffmpeg 的 `-ss`
+    对负值按片尾倒数解释，切出完全不相干的画面，而时长复核照样通过
+    （2026-08-16 审计 2-12，人工写 `画面:` 时间码的试听型路径会踩到）。
     """
     src = Path(clip["source"])
     want = clip["dur"]
+
+    # 守卫 0：负起点（在守卫 1 之前，连 ffprobe 都不必跑就能拦下）
+    if clip["start"] < 0:
+        raise SystemExit(
+            f"FAIL 截取起点为负：{src.name} start={clip['start']:.3f}s。\n"
+            f"     ffmpeg 的 -ss 对负值按片尾倒数解释，会切出错误画面且不报错。"
+            f"检查 `画面:` 行的时间码"
+        )
 
     # 守卫 1：切之前
     src_dur = duration(src)
@@ -318,6 +328,18 @@ def cards(take: dict, seg_dur: float) -> list[tuple[str, float, float]]:
     return out
 
 
+def _ass_escape(text: str) -> str:
+    r"""ASS 正文转义（2026-08-16 审计 2-24；二次审计 §6-3 补反斜杠）：
+    `{...}` 是 override 标签块的语法，稿件文本带着花括号会被 libass 当标签
+    整段吃掉——字幕内容凭空消失且不报错；换行会拆坏 Dialogue 行结构；
+    `\N`/`\h` 在花括号**外**同样是标签（折行/硬空格），字面反斜杠进稿件
+    会被吃成折行或丢字。花括号与反斜杠都换成全角同形字符，换行压成空格——
+    全角替换在中文语境里视觉几乎无差，且和花括号同一条取舍。"""
+    return (text.replace("\\", "＼")
+                .replace("{", "｛").replace("}", "｝")
+                .replace("\r", " ").replace("\n", " "))
+
+
 def build_ass(segments: list[dict], audio: list[dict], dest: Path,
               starts: dict[int, float] | None = None) -> Path:
     """口播原文按句上屏。时间轴取自配音每句的真实时长，天然严丝合缝。
@@ -347,7 +369,12 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         if starts is not None:
             t = starts.get(s["index"], t)
         for card, start, dur in cards(a, s["duration"]):
-            body = r"\N".join(wrap(card, per_line()))
+            if not card.strip():
+                raise SystemExit(
+                    f"FAIL 段落 {s['index']} 有一张空字幕卡——空内容报错，"
+                    f"不静默渲一张空卡（qc 的「字幕无空段」查的是段落文本，"
+                    f"这里的守卫兜分卡后的空片）")
+            body = r"\N".join(wrap(_ass_escape(card.strip()), per_line()))
             lines.append(
                 f"Dialogue: 0,{_ass_time(t + start)},{_ass_time(t + start + dur)},"
                 f"VO,,0,0,0,,{body}"
@@ -487,9 +514,18 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
 
     没配曲目表返回 None（渲染无 BGM 版，允许状态）。`BGM:` 列表优先，
     没有就退回命名槽位。
+
+    配了 BGM 却读不到 `番:` 字段 → 报错，不静默渲无 BGM 版（2026-08-16
+    审计 2-11）。「没配曲库不拦渲染」指的是允许不配 BGM；配了却被静默丢弃
+    是「写错了却不报」，与试听型路径（`_maybe_music_plan`）同一口径。
     """
+    seq = _bgm_list(episode)
     anime = bgm.anime_of(episode)
     if not anime:
+        if seq or bgm.episode_choice(episode, "正文"):
+            raise SystemExit(
+                "FAIL 01-topic.md 配了 BGM（`BGM:` 列表或 `BGM正文`）但读不到"
+                " `番: ` 字段，渲染会静默丢掉全部 BGM。补 `番: <番名>` 再跑")
         return None
 
     seq = _bgm_list(episode)
@@ -836,9 +872,13 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
 
 
 def _hhmmss_to_sec(s: str) -> float:
-    """`0:00` / `1:33.75` / `93.75` → 秒。"""
+    """`0:00` / `1:33.75` / `93.75` → 秒。负数当场报错——它会绕过截取守卫的
+    上界检查（`-2 > src_dur` 为假），切出片尾倒数的错误画面（2026-08-16 审计 2-12）。"""
     parts = [float(x) for x in s.split(":")]
-    return sum(p * (60 ** (len(parts) - 1 - i)) for i, p in enumerate(parts))
+    sec = sum(p * (60 ** (len(parts) - 1 - i)) for i, p in enumerate(parts))
+    if sec < 0:
+        raise SystemExit(f"FAIL 画面时间码是负数：{s}。检查 `画面:` 行写对了没有")
+    return sec
 
 
 def run(episode: Path, keep: bool = False) -> Path:

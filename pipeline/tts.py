@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -105,12 +106,19 @@ class Take:
 # ---------- 稿件解析 ----------
 
 def parse_script(path: Path) -> list[Segment]:
+    """稿件 → 口播段。**按段落块切，`配音：` 可在块内任意位置**（2026-08-16
+    审计 2-19 改）：旧正则要求「配音：」紧跟段落标题，标题与配音之间夹一个
+    `画面：` 块的段会被静默跳过、后续段序号全部前移，只能靠 clips 的段数
+    对账兜住且报错指错方向。与 clips.parse_shots / check_script.parse 同口径。
+    """
     text = path.read_text(encoding="utf-8")
+    parts = re.split(r"^##\s*段落\s*(\S+)\s*$", text, flags=re.M)
     segs: list[Segment] = []
-    for m in re.finditer(
-        r"^##\s*段落\s*(\S+)\s*$\s*^配音[：:]\s*(.+)$", text, re.M
-    ):
-        segs.append(Segment(len(segs) + 1, m.group(1), m.group(2).strip()))
+    for label, block in zip(parts[1::2], parts[2::2]):
+        vo = re.search(r"^配音[：:]\s*(.+)$", block, re.M)
+        if not vo:
+            continue
+        segs.append(Segment(len(segs) + 1, label, vo.group(1).strip()))
     if not segs:
         raise SystemExit(f"FAIL 没从 {path} 解析出任何「## 段落 N + 配音：」，检查稿件格式")
     return segs
@@ -170,17 +178,27 @@ def _titles() -> list[str]:
     return [t for t in v if t]
 
 
-# 歌名念一遍的实测时长（秒）。expected_duration 用它替代字数估算。
-# 2026-08-15 probe 实测，Qwen3-TTS-12Hz-1.7B-Base-bf16 + seg7 音色：
-#   My Dearest 1.44s / The Everlasting Guilty Crown 2.72s / エウテルペ 1.68s /
-#   Departures 1.36s / Planetes 1.36s
-_TITLE_DURS = {
-    "my dearest": 1.44,
-    "the everlasting guilty crown": 2.72,
-    "エウテルペ": 1.68,
-    "departures": 1.36,
-    "planetes": 1.36,
-}
+def _title_durs() -> dict[str, float]:
+    """歌名 → 实测念白时长（秒）：`config/voice.json` 的 `titles` 值。
+
+    这张表 2026-08-16 之前硬编码在 tts.py（`_TITLE_DURS`，五首罪恶王冠
+    歌名 + seg7 实测值）——换番要改代码、换音色后数字过期，都违反
+    「机制进代码、内容进配置」。值为 null 表示未实测：该歌名按 cpm 估算，
+    `run()` 会 WARN（cpm 估英日歌名会高估 1.5-2 倍，见 `expected_duration`）。
+    """
+    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+    v = cfg.get("titles", {})
+    if isinstance(v, list):        # 老格式：裸列表 = 全部未实测
+        return {}
+    return {t: float(secs) for t, secs in v.items()
+            if not t.startswith("_") and isinstance(secs, (int, float))}
+
+
+def _unmeasured_titles(texts: list[str]) -> list[str]:
+    """文本里出现、但 titles 没记实测时长的歌名——按 cpm 估会高估的那批。"""
+    measured = {normalize(t) for t in _title_durs()}
+    return sorted({t for t in _titles() for tx in texts
+                   if normalize(t) in normalize(tx) and normalize(t) not in measured})
 
 
 # 连续的非中文音节段（英文字母/日文假名），回读比对时按长度窗口挖掉歌名变体。
@@ -259,7 +277,13 @@ def cer(ref: str, hyp: str) -> tuple[int, float]:
     titles = _titles()
     a, b = syllables(normalize(ref)), syllables(normalize(hyp))
     if titles:
-        a, b = _excise_titles(a, titles, fuzzy=False), _excise_titles(b, titles, fuzzy=True)
+        # 只豁免**这句话里真的出现**的歌名（2026-08-16 审计 2-18）：hyp 侧的
+        # 模糊挖除按长度窗口找变体，窗口若对准全部歌名，正文里无关的英文/
+        # 日文词（如 "coding" 长 6，落在 エウテルペ(5)±1 窗内）会被误挖——
+        # ref 侧保留、hyp 侧被挖，CER 凭空虚高，误杀重试。收窄到 ref 侧
+        # 出现的歌名，与歌名无关的句子不再有窗口。
+        present = [ti for ti in titles if normalize(ti) in normalize(ref)]
+        a, b = _excise_titles(a, present, fuzzy=False), _excise_titles(b, present, fuzzy=True)
     if not a:
         return (len(b), 1.0 if b else 0.0)
     prev = list(range(len(b) + 1))
@@ -286,12 +310,11 @@ def expected_duration(text: str) -> float:
     **歌名不能按字数估算。** Qwen3-TTS 念英文/日文歌名比念中文快得多，
     按 cpm 估算会高估 1.5-2 倍（エウテルペ 5 个假名按 cpm 估 2.9s，实测 1.68s），
     导致实际/估算 < 0.5× 被时长门禁误杀（2026-08-15 段落 5.1 实测踩到）。
-    歌名时长是 2026-08-15 probe 实测：My Dearest 1.44 / The Everlasting 2.72 /
-    エウテルペ 1.68 / Departures 1.36 / Planetes 1.36（Qwen3-1.7B + seg7 音色）。
-    换引擎/换音色要重测。
+    歌名实测时长在 `config/voice.json` 的 `titles` 值里（换引擎/换音色要重测；
+    没实测的按 cpm 估，`run()` 对出现在稿件里的这类歌名打 WARN）。
     """
     total = len(normalize(text))
-    for t, secs in _TITLE_DURS.items():
+    for t, secs in _title_durs().items():
         n = normalize(text).count(normalize(t))
         if n:
             total -= len(normalize(t)) * n
@@ -900,6 +923,44 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
     )
 
 
+def _voice_fingerprint(cfg: dict) -> dict:
+    """增量重跑的音色指纹：决定旧 wav 能不能复用。
+
+    manifest 顶层从第一天就存了 engine/model/ref_audio，却从没参与比对——
+    换音色后忘带 `--force` 会静默复用旧 wav，出一期混两种音色的成片且零警告
+    （2026-08-16 审计 2-6；当天恰好发生 seg7→seg6 换音色）。readings 影响
+    合成文本，一并入指纹（换读音表现在自动重做受影响的段）。
+    """
+    return {
+        "engine": cfg["engine"],
+        "model": cfg["model"],
+        "ref_audio": cfg["ref_audio"],
+        "readings": hashlib.sha256(json.dumps(
+            cfg.get("readings", {}), sort_keys=True, ensure_ascii=False
+        ).encode("utf-8")).hexdigest()[:16],
+    }
+
+
+def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[int, Take]:
+    """从旧 manifest 里挑可复用的段：文本没变 + 音色指纹没变 + wav 在盘。"""
+    fp = _voice_fingerprint(cfg)
+    texts = {s.index: s.text for s in segs}
+    if any(old.get(k) != v for k, v in fp.items()):
+        why = [k for k, v in fp.items() if old.get(k) != v]
+        print(f"     音色配置变了（{ '、'.join(why) }），旧配音全部重做")
+    done: dict[int, Take] = {}
+    for t in old.get("segments", []):
+        take = Take(**{**t, "qc_skip": t.get("qc_skip")})
+        if texts.get(take.index) != take.text:
+            continue
+        if any(old.get(k) != v for k, v in fp.items()):
+            continue
+        if not (out_dir / take.file).exists():
+            continue
+        done[take.index] = take
+    return done
+
+
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     paths.require_data()
     script = episode / "02-script.md"
@@ -915,12 +976,14 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     done: dict[int, Take] = {}
     if manifest_path.exists() and not force:
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for t in old.get("segments", []):
-            take = Take(**{**t, "qc_skip": t.get("qc_skip")})
-            if (out_dir / take.file).exists() and take.text == next(
-                (s.text for s in segs if s.index == take.index), None
-            ):
-                done[take.index] = take
+        done = _reusable(old, segs, out_dir, cfg)
+
+    miss = _unmeasured_titles([s.text for s in segs])
+    if miss:
+        print(f"WARN 歌名 {'、'.join(miss)} 在 voice.json 的 titles 里没有实测时长"
+              f"（值为 null），按 cpm 估算——cpm 估英日歌名会高估 1.5-2 倍，"
+              f"可能触发时长门禁误杀。试音补测："
+              f"python -m pipeline.tts probe \"{' '.join(miss)}\"", file=sys.stderr)
 
     engine: Engine | None = None
     takes: list[Take] = []
@@ -940,12 +1003,13 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
               f"{take.attempts} 次  {seg.text[:20]}…")
 
     total = sum(t.duration for t in takes)
-    manifest_path.write_text(
+    # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
+    # json.loads 上裸抛，比「没有 manifest」更难办
+    tmp = manifest_path.with_name(manifest_path.name + ".tmp")
+    tmp.write_text(
         json.dumps(
             {
-                "engine": cfg["engine"],
-                "model": cfg["model"],
-                "ref_audio": cfg["ref_audio"],
+                **_voice_fingerprint(cfg),
                 "total_duration": round(total, 3),
                 "segments": [asdict(t) for t in takes],
             },
@@ -953,6 +1017,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
         ),
         encoding="utf-8",
     )
+    os.replace(tmp, manifest_path)
     print("-" * 60)
     print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
           f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")

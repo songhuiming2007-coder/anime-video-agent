@@ -56,8 +56,9 @@
 
 ## 判断 2：追问「notes 和人脸检测都有了，为什么还会错」
 
-带着这个问题去读 `pipeline/clips.py` 实际代码（`_ladder` L299、`scene_no_match` L341、
-`_ladder_scene` L367、`_by_character` L395），结论是两者都没有在做直觉上以为它们在做的事：
+带着这个问题去读 `pipeline/clips.py` 实际代码（`_ladder` L306、`scene_no_match` L348、
+`_ladder_scene` L374、`_by_character` L402；行号随代码演进会漂移，以函数名为准），结论是
+两者都没有在做直觉上以为它们在做的事：
 
 - **分集剧情笔记（`data/library/*/笔记`）在 `clips.py` 里被引用次数为 0**
   （`grep -n "note\|笔记\|library" pipeline/clips.py` 无匹配）。笔记是 02 写稿阶段

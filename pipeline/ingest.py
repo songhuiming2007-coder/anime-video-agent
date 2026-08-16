@@ -34,7 +34,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .subindex import INDEX_DIR, build, _clean, sniff_encoding
+from .subindex import INDEX_DIR, build, _clean, has_index, sniff_encoding
 
 # 字幕轨优先级：简体 > 未标注中文 > 繁体。日文与"注释/staff"轨永不选中。
 LANG_ZH = {"chi", "zho", "zh", "chs", "cht", "zh-cn", "zh-hans", "zh-hant"}
@@ -285,14 +285,22 @@ def verify(video: Path, sub_path: Path, seed: int = 0) -> tuple[bool, list[str]]
     一次跟对齐窗，一次跟偏移 VERIFY_SHIFT 秒的对照窗。轴对 → 对齐窗明显更低；
     轴错 → 两边一样烂，差值消失。
     """
+    dur = _video_duration(video)
+    # 避开片头片尾：只在中段取样
+    lo, hi = dur * 0.2, dur * 0.8 - VERIFY_WINDOW
+    if hi <= lo:
+        # 短于 ~100s 的视频采不出不重叠的对齐/对照窗（2026-08-16 审计 2-31：
+        # hi<lo 时 rng.uniform 会给出负起点，ffmpeg -ss 负值报错，离病根很远）。
+        # 护栏放在 ASR 依赖 import 之前，短片的失败不需要等模型加载
+        raise SystemExit(
+            f"FAIL {video.name} 全长 {dur:.0f}s，verify 采不出不重叠的对齐/对照窗"
+            f"（需要 > {VERIFY_WINDOW / 0.6:.0f}s）。OVA/短特典改走 ASR 兜底转录：\n"
+            f"     python -m pipeline.ingest subs {video.name} -o <输出.ass>")
     from .asr import REPO
     from .tts import cer, normalize
     import mlx_whisper
 
-    dur = _video_duration(video)
     rng = random.Random(seed)
-    # 避开片头片尾：只在中段取样
-    lo, hi = dur * 0.2, dur * 0.8 - VERIFY_WINDOW
     starts = sorted(rng.uniform(lo, hi) for _ in range(VERIFY_SAMPLES))
 
     # 走系统临时目录，不写进片源旁边：片源在外置盘上，而且同一个视频并发跑两次
@@ -447,7 +455,7 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
         ep = int(raw) if raw.isdigit() else 0
         tag = f"S{season:02d}E{ep:02d}"
 
-        if not (force or reindex) and (index_dir / f"{anime}_{tag}.npy").exists():
+        if not (force or reindex) and has_index(index_dir, anime, season, ep):
             say("SKIP", tag, "已索引，--force 可重建")
             continue
 
@@ -477,8 +485,17 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
                 bad += 1
                 continue
 
-        n = build(sub_path, anime, season, ep, index_dir)
-        register(video, anime, season, ep)
+        # build/register 的失败也要逐集报 FAIL、不打断整批（E10）：verify 分支
+        # 早就是这样的，这两条曾是裸奔——一集字幕解析不出台词（build 直接
+        # SystemExit）或 intact 不过（register SystemExit），后面二十几集全停。
+        # 批量命令里单点失败停下整批，等于逼人一次次重跑前端。
+        try:
+            n = build(sub_path, anime, season, ep, index_dir)
+            register(video, anime, season, ep)
+        except (SystemExit, subprocess.CalledProcessError) as e:
+            say("FAIL", tag, str(e).strip() or e.__class__.__name__)
+            bad += 1
+            continue
         say("OK", tag, f"{n} 个检索单元" + ("（重建，未重跑 verify）" if registered else ""))
 
     print("-" * 60)
@@ -531,6 +548,7 @@ def main() -> None:
                    help="重建索引但不重跑 verify，仅对已登记的集生效（解析器改了之后用）")
 
     a = ap.parse_args()
+    paths.require_data()      # 绝不自动创建 data/：register/build 都会往里写（审计 2-17）
 
     if a.cmd == "phase0":
         bad = phase0(a.videos, a.anime, a.season, a.pattern, a.sub_glob,

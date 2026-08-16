@@ -238,6 +238,17 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             # natural 段的曲目内终点 = 曲目结束
             if e["vol"] == "natural":
                 e["t1"] = dur_all
+            # BGM 延续事件的终点 = 曲目内起点 + 成片 BGM 段时长，**可能超出
+            # 曲目全长**（2026-08-16 审计 2-13）：渲染端 `-ss t0 -t dur` 对超界
+            # 静默截短，中段音乐空缺，而 render 的时长校验只查音乐床总长
+            # （amix longest 不变），测不出中段空洞。前景块自带越界校验
+            # （上方 B5），这条延续路径漏了同类检查。
+            if e["t1"] > dur_all + 1e-6:
+                raise SystemExit(
+                    f"FAIL 《{title}》的 BGM 延续段要播到曲目内 {e['t1']:.1f}s，"
+                    f"但曲目全长只有 {dur_all:.1f}s。\n"
+                    f"     超界部分会被 ffmpeg 静默截短，中段音乐空缺。"
+                    f"把这一段的 `过渡: 降为 BGM` 改成 `淡出`，或缩短前景区间")
             evs.append(e)
         tracks.append({"name": title, "path": rec["path"],
                        "lufs": rec["lufs"], "events": evs})
