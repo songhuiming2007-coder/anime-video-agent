@@ -11,6 +11,9 @@
 
 import numpy as np
 
+import json
+import pytest
+
 from pipeline import cover
 
 
@@ -140,3 +143,56 @@ class TestTopicEpisodes:
         f = self._topic(tmp_path,
                         "张力: S3E12 那一集他终于说了\n锚点: S1E01\n")
         assert cover._topic_episodes(f) == ["S01E01"]
+
+
+class TestEmptyPool:
+    """候选池筛空 → 失败，不静默出 0 张候选、退出码 0（2026-08-16 审计 2-14）。
+
+    角色硬过滤为空早已显式失败（_by_character）；无过滤的空池是同类
+    「跳过不是通过」却放行——整集过暗/糊或取样源全失效都表现成这个形态。
+    """
+
+    def _ep(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir(parents=True, exist_ok=True)
+        (ep / "04-clips.approved.json").write_text(
+            json.dumps({"segments": [], "total_duration": 0.0}), encoding="utf-8")
+        (ep / "01-topic.md").write_text("类型: 杂谈\n", encoding="utf-8")
+        return ep
+
+    def test_全部抽帧失败_候选池筛空报错(self, tmp_path, monkeypatch):
+        ep = self._ep(tmp_path)
+        monkeypatch.setattr(cover.paths, "conf",
+                            lambda d, default=None: "春物" if d == "anime.default" else default)
+        monkeypatch.setattr(cover, "_sample_points", lambda data: [("/x.mkv", 5.0, "S01E01")])
+        monkeypatch.setattr(cover, "_notes_points", lambda anime, topic: [])
+        monkeypatch.setattr(cover, "_episode_points", lambda anime, topic: [])
+        monkeypatch.setattr(cover, "_grab", lambda src, t, dest: None)   # 抽帧全失败
+        with pytest.raises(SystemExit, match="筛空"):
+            cover.build(ep)
+
+    def test_全部过筛失败_同样报错(self, tmp_path, monkeypatch):
+        # 抽帧成功但全被亮度/清晰度筛掉 → cands 空 → 同一守卫
+        import PIL.Image
+
+        def fake_grab(src, t, dest):
+            PIL.Image.new("RGB", (64, 64)).save(dest, quality=50)
+            return dest
+        ep = self._ep(tmp_path)
+        monkeypatch.setattr(cover.paths, "conf",
+                            lambda d, default=None: "春物" if d == "anime.default" else default)
+        monkeypatch.setattr(cover, "_sample_points", lambda data: [("/x.mkv", 5.0, "S01E01")])
+        monkeypatch.setattr(cover, "_notes_points", lambda anime, topic: [])
+        monkeypatch.setattr(cover, "_episode_points", lambda anime, topic: [])
+        monkeypatch.setattr(cover, "_grab", fake_grab)
+        monkeypatch.setattr(cover, "_metrics",
+                            lambda f: {"bright": 1.0, "sharp": 0.0})    # 黑且糊
+        with pytest.raises(SystemExit, match="筛空"):
+            cover.build(ep)
+
+    def test_没有番名配置时显式报错(self, tmp_path, monkeypatch):
+        # 番名检查在所有文件检查之前——config 删掉 anime.default 不许
+        # 静默跳回「春物」（2026-08-16 审计 2-16）
+        monkeypatch.setattr(cover.paths, "conf", lambda d, default=None: default)
+        with pytest.raises(SystemExit, match="番名"):
+            cover.build(tmp_path / "ep")

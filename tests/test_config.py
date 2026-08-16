@@ -88,3 +88,15 @@ class TestCache:
         (tmp_path / "project.json").write_text('{"video":{"crf":"30"}}', encoding="utf-8")
         # 没清 _CONF，仍然读到旧值——这是有意的：一次运行里配置不该中途变
         assert paths.conf("video.crf", "18") == "20"
+
+
+class TestDeadKeysRemoved:
+    """声而不用的键已删（2026-08-16 审计 2-37/2-38）：font_fallback 全库零读取；
+    frames_per_shot 的 _frames_note 承诺了 shots.frames 不存在的调参能力。"""
+
+    def test_死键没有回来(self):
+        cfg = json.loads((paths.CONFIG / "project.json").read_text(encoding="utf-8"))
+        assert "font_fallback" not in cfg["subtitle"]
+        assert "frames_per_shot" not in cfg["visual"]
+        assert all(not k.startswith("_") or k != "_frames_note"
+                   for k in cfg["visual"])

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from dataclasses import dataclass, asdict
 from datetime import date
@@ -77,7 +78,9 @@ CJK = re.compile(r"[一-鿿]")
 #
 # 命名逐组不同（OP-CN / EDCN / EDCN-yui / In-CN…），所以按前缀匹配。
 # 「留」的一侧是 Sub-CN / Text-cn 这类，前缀不沾，不会误杀。
-# 遇到新发布时看 `build` 打印的 style 分布，有没漏的一眼能看出来。
+# 遇到新发布时若怀疑有歌词 style 漏滤：拿 `parse()` 的单元数对字幕行数，
+# 或临时打印各 style 的行数分布核对（旧的 styles() 帮手 2026-08-16 已删，
+# 它与 parse() 双份维护且从未被调用）。
 #
 # 2026-08-09 罪恶王冠（诸神字幕组）实测出三个前两部番没见过的命名，逐个核实后加：
 #
@@ -138,24 +141,6 @@ def sniff_encoding(path: Path) -> str:
     with path.open("rb") as f:
         head = f.read(2)
     return "utf-16" if head in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
-
-
-def styles(path: Path) -> dict[str, int]:
-    """各 style 有多少行进得了索引，以及被 style 判据滤掉多少。
-
-    给 `build` 打印用。**这个判据是按字幕组的命名前缀匹配的，逐组不同**，
-    所以要让它可审计——换个发布时看一眼分布，有没漏掉的歌词 style 一目了然。
-    """
-    kept: dict[str, int] = {}
-    for ev in pysubs2.load(str(path), encoding=sniff_encoding(path)):
-        if ev.is_comment or DRAW.search(ev.text):
-            continue
-        t = _clean(ev.text)
-        if not t or NOISE.search(t) or not CJK.search(t) or KANA.search(t) or len(t) < 2:
-            continue
-        key = ev.style + ("  ←滤" if NON_DIALOGUE_STYLE.match(ev.style) else "")
-        kept[key] = kept.get(key, 0) + 1
-    return kept
 
 
 def parse(path: Path, anime: str, season: int, episode: int) -> list[Unit]:
@@ -239,6 +224,37 @@ def meta(dim: int) -> dict:
     }
 
 
+def _atomic_write(dest: Path, data: str) -> None:
+    """写临时文件再 os.replace。索引是 .npy + .json 两段写，没有事务——
+    崩在中间会留半份。原子替换把窗口压到一次 rename；配合 `has_index` 的
+    成对判据，半份索引只会显式变红（phase0 重建、status 不计数），
+    不会冒充完整。vindex.py 有一对同实现的孪生（subindex 不能被 faces
+    反向依赖，两处各留一份）。"""
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, dest)
+
+
+def _atomic_save(dest: Path, vecs: np.ndarray) -> None:
+    # np.save 对不以 .npy 结尾的路径会自作主张补 .npy，给它文件句柄才老实
+    tmp = dest.with_name(dest.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.save(f, vecs)
+    os.replace(tmp, dest)
+
+
+def has_index(index_dir: Path, anime: str, season: int, episode: int) -> bool:
+    """一集的索引是否**完整在盘**：.json 与 .npy 成对存在才算。
+
+    崩溃可能把两段写拆开（npy 在、json 缺）。只看 npy 会把半份索引当
+    「已索引」跳过重建，而加载层按 .json glob 会静默少这一集——六条数字
+    照样全绿、检索池缩水，全程不报错（2026-08-16 审计 2-1）。
+    phase0 的跳过判据必须走这里，不许直连 `.npy` 存在性。
+    """
+    stem = f"{anime}_S{season:02d}E{episode:02d}"
+    return (index_dir / f"{stem}.json").exists() and (index_dir / f"{stem}.npy").exists()
+
+
 def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) -> int:
     units = parse(sub_path, anime, season, episode)
     if not units:
@@ -247,12 +263,10 @@ def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) 
     vecs = embed([u.text for u in units])
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{anime}_S{season:02d}E{episode:02d}"
-    np.save(out_dir / f"{stem}.npy", vecs)
-    (out_dir / f"{stem}.json").write_text(
-        json.dumps({"meta": meta(int(vecs.shape[1])),
-                    "units": [asdict(u) for u in units]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    _atomic_save(out_dir / f"{stem}.npy", vecs)
+    _atomic_write(out_dir / f"{stem}.json",
+                  json.dumps({"meta": meta(int(vecs.shape[1])),
+                              "units": [asdict(u) for u in units]}, ensure_ascii=False))
     return len(units)
 
 
@@ -266,6 +280,11 @@ def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, lis
 
     过滤放在加载这一层，不放在检索之后：同一个 `.npy` 里的单元同属一部番，
     整个文件跳过比逐条筛便宜，也不会让 `vecs` 和 `units` 的下标错位。
+
+    **先按番过滤、再做元信息校验**（2026-08-16 审计 2-8）：`_check` 对旧格式/
+    换模型的文件直接 SystemExit，而索引目录是全局的——别的番有一个坏文件，
+    当前番的检索就被拦死，报错还指向别人的文件。番归属从文件名前缀和
+    units[0] 都能看出来，不值得为它跑整套校验。
     """
     vecs, units = [], []
     for meta_path in sorted(index_dir.glob("*.json")):
@@ -273,9 +292,10 @@ def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, lis
         if not vec_path.exists():
             continue
         d = json.loads(meta_path.read_text(encoding="utf-8"))
-        rows = _check(d, meta_path)
-        if anime is not None and (not rows or rows[0]["anime"] != anime):
+        rows_peek = d if isinstance(d, list) else d.get("units", [])
+        if anime is not None and (not rows_peek or rows_peek[0].get("anime") != anime):
             continue
+        rows = _check(d, meta_path)
         vecs.append(np.load(vec_path))
         units.extend(Unit(**r) for r in rows)
     if not vecs:
@@ -359,6 +379,7 @@ def main() -> None:
     s.add_argument("--index-dir", type=Path, default=INDEX_DIR)
 
     a = ap.parse_args()
+    paths.require_data()      # build 会 mkdir 索引目录，缺 data/ 必须当场报错（审计 2-17）
     if a.cmd == "build":
         n = build(a.subtitle, a.anime, a.season, a.episode, a.index_dir)
         print(f"OK 索引 {n} 个单元 → {a.index_dir}")

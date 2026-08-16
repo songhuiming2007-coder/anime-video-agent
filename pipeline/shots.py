@@ -419,12 +419,12 @@ def main() -> int:
 
     b = sub.add_parser("build", help="切分一集")
     b.add_argument("video", type=Path)
-    b.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    b.add_argument("--anime", default=paths.conf("anime.default"))
     b.add_argument("--season", type=int, required=True)
     b.add_argument("--episode", type=int, required=True)
 
     r = sub.add_parser("rebuild", help="阈值改了，在已存切点上重算，不重新解码")
-    r.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    r.add_argument("--anime", default=paths.conf("anime.default"))
     r.add_argument("--episode", required=True, help="SxxEyy")
 
     f = sub.add_parser("frames", help="抽代表帧，每镜头一张")
@@ -432,6 +432,8 @@ def main() -> int:
     f.add_argument("episode", help="SxxEyy")
 
     a = ap.parse_args()
+    if a.cmd in ("build", "rebuild") and not a.anime:
+        raise SystemExit("FAIL 没指定番名：给 --anime，或在 config/project.json 里设 anime.default")
     paths.require_data()
 
     if a.cmd == "calibrate":

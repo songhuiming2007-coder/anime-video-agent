@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -509,7 +510,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
                      "ep_fell_back": bool(shot["episode"]) and scope > 0,
                      "channel": channel, "threshold": floor,
                      "filter_fell_back": fell_back,
-                     "top_score": round(float(hits[0][0]), 4) if hits else 0.0})
+                     # 段级门槛用**重排前**的最高分（hits 进来时按台词分降序，
+                     # max 即首位）。取重排后的 hits[0] 会被带内交换拖下水：
+                     # 0.46 与 0.42 差 ≤ PRESENCE_BAND 且后者在场分高时交换，
+                     # 首位变 0.42 < 0.45 → 段被误判 no_match，而及格的 0.46
+                     # 明明还在候选里（2026-08-16 审计 2-3）。带内重排只该
+                     # 改变分配的尝试顺序，不许改「这段有没有找到」的答案。
+                     "top_score": round(float(max(h[0] for h in hits)), 4) if hits else 0.0})
 
     # **按片段分配，不按段落分配。** 同一处画面整期只能用一次，所以这是个分派问题，
     # 而分派的单位是「某段对某个画面的诉求」，不是段落本身。
@@ -520,8 +527,10 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     # 于是它连带把 0.547 的填充画面也优先占了，而段 11 对同一画面的诉求是 0.556，
     # 更强却排在后面，最后无片可用。
     #
-    # 正解是把所有 (段, 画面, 分数) 三元组摊平，全局按分数降序贪心。
-    # 分配顺序与播放顺序无关，最后按 index 还原。
+    # **现行实现是指针轮转（见 `_allocate` docstring）**，不是早期版本的
+    # 「三元组摊平全局贪心」——摊平池的排序键会抹掉段内带内序，ADR-0004 的
+    # presence 语义在池层失效，2026-08-09 实测后重写。跨段仍按台词分贪心
+    # （S10：presence 绝不进跨段比较），分配顺序与播放顺序无关。
     #
     # **两个通道分两轮，绝不把两种分数放在一起排序。** 这是 ADR-0003 最硬的一条：
     # 台词的 0.7 和画面的 0.7 不是同一个量，长得像纯属巧合。全局按分数贪心时若把
@@ -579,18 +588,20 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
            for p in sorted(prep, key=lambda x: x["index"])]
 
     dest = episode / "04-clips.json"
-    dest.write_text(json.dumps({
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(json.dumps({
         "anime": anime,
         "total_duration": sum(s["duration"] for s in out),
         "segments": out,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, dest)        # 原子落盘（审计 2-27）：产物即状态，不许半份
     return dest
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("episode", type=Path)
-    ap.add_argument("--anime", default=paths.conf("anime.default", "春物"))
+    ap.add_argument("--anime", default=paths.conf("anime.default"))
     ap.add_argument("--index-dir", type=Path, default=INDEX_DIR)
     ap.add_argument("--refit", action="store_true",
                      help="人审改过 start/source 之后，把每段 dur 重排到满足段级不变量。"
@@ -610,7 +621,13 @@ def main() -> int:
         sources = load_sources(data["anime"])
         segments, report = refit(data["segments"], audio, sources)
         data["segments"] = segments
-        src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # refit 改的是人审（--approve）之后的产物，先备份再原子重写（审计 2-27）：
+        # 写一半崩溃连「人改过什么样」都恢复不了
+        (src.with_name(src.name + ".prerefit.bak")
+         ).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        tmp = src.with_name(src.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, src)
         print("\n".join(report) if report else "已对齐，无需调整")
         print(f"→ {src}")
         return 0

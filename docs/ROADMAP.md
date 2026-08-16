@@ -165,7 +165,7 @@
 
 ### 阶段 5：`ava run` 单命令编排
 
-**这件事比看起来小。** `pyproject.toml` 的 `[project.scripts]` 已经有十个入口
+**这件事比看起来小。** `pyproject.toml` 的 `[project.scripts]` 已经有 14 个入口
 （`ava-ingest` … `ava-bgm`），缺的只是把九步串起来。而因为状态模型是
 「产物即状态，看目录里有哪些文件就知道跑到哪一步」，串联就是一个跳过已完成步骤的循环。
 

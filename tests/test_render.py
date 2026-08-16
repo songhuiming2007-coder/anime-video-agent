@@ -184,3 +184,107 @@ class TestLoudnormTwoPass:
     def test_无JSON报错(self):
         with pytest.raises(SystemExit):
             _extract_loudnorm_json("ffmpeg 日志，没有 JSON")
+
+
+class TestBgmPlanGuards:
+    """配了 BGM 却读不到 `番:` → 报错，不静默渲无 BGM 版（2026-08-16 审计 2-11）。
+
+    「没配曲库不拦渲染」指允许不配；配了（`BGM:` 列表或 `BGM正文` 槽位）
+    却被静默丢弃是「写错了却不报」，与试听型路径同一口径。
+    """
+
+    def test_BGM列表无番字段_报错(self, tmp_path: Path):
+        from pipeline.render import _bgm_plan
+        ep = _topic(tmp_path, "BGM:\n  - 某曲\n")
+        with pytest.raises(SystemExit, match="番"):
+            _bgm_plan(ep, 100.0, [0.0])
+
+    def test_命名槽位无番字段_同样报错(self, tmp_path: Path):
+        from pipeline.render import _bgm_plan
+        ep = _topic(tmp_path, "BGM正文: 某曲\n")
+        with pytest.raises(SystemExit, match="番"):
+            _bgm_plan(ep, 100.0, [0.0])
+
+    def test_什么都没配_无番也不拦(self, tmp_path: Path):
+        from pipeline.render import _bgm_plan
+        ep = _topic(tmp_path, "类型: 杂谈\n")
+        assert _bgm_plan(ep, 100.0, [0.0]) is None
+
+
+class TestCutGuards:
+    """负起点守卫（2026-08-16 审计 2-12）：ffmpeg 的 -ss 对负值按片尾倒数
+    解释，切出错误画面且守卫 2（时长复核）照样通过。"""
+
+    def test_负起点在碰ffmpeg之前就被拦(self, tmp_path: Path):
+        from pipeline.render import cut
+        with pytest.raises(SystemExit, match="负"):
+            cut({"source": "/不存在的片源.mkv", "start": -5.0, "dur": 3.0},
+                tmp_path / "x.mp4")
+
+    def test_hhmmss负数报错(self):
+        from pipeline.render import _hhmmss_to_sec
+        with pytest.raises(SystemExit, match="负数"):
+            _hhmmss_to_sec("-5")
+        with pytest.raises(SystemExit):
+            _hhmmss_to_sec("-1:30")
+
+    def test_hhmmss正常写法不受影响(self):
+        from pipeline.render import _hhmmss_to_sec
+        assert _hhmmss_to_sec("1:33.75") == pytest.approx(93.75)
+        assert _hhmmss_to_sec("0:00") == 0.0
+
+
+class TestAssEscape:
+    """ASS 正文转义（2026-08-16 审计 2-24）：花括号是 override 标签块语法，
+    稿件文本带着它会被 libass 当标签整段吃掉——字幕内容凭空消失且不报错。"""
+
+    def test_花括号换成全角(self):
+        from pipeline.render import _ass_escape
+        # 串里的字面反斜杠随反斜杠规则一并转全角（二次审计 §6-3 起）
+        assert _ass_escape("他说{\\an8}了什么") == "他说｛＼an8｝了什么"
+
+    def test_换行压成空格(self):
+        from pipeline.render import _ass_escape
+        assert "\n" not in _ass_escape("第一行\n第二行\r\n第三行")
+
+    def test_普通文本原样(self):
+        from pipeline.render import _ass_escape
+        s = "注意，她没说啥客套话。就在这儿——你永远不用猜。"
+        assert _ass_escape(s) == s
+
+    def test_空字幕卡报错不静默渲空卡(self, tmp_path: Path):
+        from pipeline.render import build_ass
+        segments = [{"index": 1, "duration": 5.0}]
+        audio = [{"text": " ", "sentences": None}]     # 整段空白 → 卡内容为空
+        with pytest.raises(SystemExit, match="空字幕卡"):
+            build_ass(segments, audio, tmp_path / "vo.ass")
+
+    def test_成片ASS里花括号真的被转义(self, tmp_path: Path):
+        # 端到端：不转义的话 {an8} 是 override 标签块，libass 把它吃掉，
+        # 字幕内容凭空消失且不报错——这正是要防的静默失败
+        from pipeline.render import build_ass
+        segments = [{"index": 1, "duration": 5.0}]
+        audio = [{"text": "他说{an8}了什么", "sentences": None}]
+        dest = build_ass(segments, audio, tmp_path / "vo.ass")
+        text = dest.read_text(encoding="utf-8")
+        assert "｛an8｝" in text and "{an8}" not in text
+
+
+class TestAssEscapeBackslash:
+    """ASS 转义补反斜杠（二次审计 §6-3）：`\\N`/`\\h` 在花括号外同样是
+    标签语法（libass/VSFilter 均识别），字面反斜杠进稿件会折行/丢字。"""
+
+    def test_反斜杠转全角(self):
+        from pipeline.render import _ass_escape
+        assert _ass_escape("C:\\Games") == "C:＼Games"
+        assert _ass_escape("a\\Nb") == "a＼Nb"
+
+    def test_成片ASS不含原始反斜杠(self, tmp_path: Path):
+        # 单行卡：文件里唯一可能的反斜杠来源就是稿件文本（折行标记 \N
+        # 只在多行卡出现），端到端断言转义真的发生了
+        from pipeline.render import build_ass
+        segments = [{"index": 1, "duration": 5.0}]
+        audio = [{"text": "目录C:\\Games里的\\N不是换行", "sentences": None}]
+        dest = build_ass(segments, audio, tmp_path / "vo.ass")
+        text = dest.read_text(encoding="utf-8")
+        assert "\\" not in text and "＼" in text

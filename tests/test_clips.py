@@ -595,3 +595,120 @@ class TestAllocate:
         assert p2["clips"]                       # 段 2 先得（分高）
         assert len(p1["clips"]) == 1
         assert p1["clips"][0]["start"] == 299.75 # 段 1 拿到的是 u2 不是 u1
+
+
+class TestSegmentGate:
+    """段级门槛用**重排前**的检出者最高分（2026-08-16 审计 2-3）。
+
+    带内交换可以把台词分低于 NO_MATCH 的候选换到首位（0.46 与 0.42 差
+    ≤ PRESENCE_BAND 且后者在场分高时交换）。旧实现 top_score 取重排后的
+    hits[0]，段被误判 no_match——而及格的 0.46 明明还在候选里，分配时
+    本可以用它。带内重排只许改变尝试顺序，不许改「这段找到没有」的答案。
+    """
+
+    class U:
+        def __init__(self, start):
+            self.anime, self.season, self.episode = "春物", 1, 1
+            self.start, self.end, self.text = start, start + 3.0, "台词"
+
+    class P:
+        def indexed(self):
+            return {"yukinoshita_yukino"}
+
+        def tag_of(self, name):
+            return {"雪乃": "yukinoshita_yukino"}[name]
+
+        def presence_score(self, season, episode, start, end, name):
+            # 两个候选都检出（都 >0），低分的那个在场分更高——这才是带内交换
+            # 的触发条件；若高分者漏检（0.0），走的会是「检出者最高分不过线
+            # → 整体退回」分支，考不到段级门槛
+            return 0.9 if start > 10.0 else 0.6
+
+    def _episode(self, tmp_path):
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：正文。\n\n画面：\n  查询: 查询语\n  人物: 雪乃\n",
+            encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(
+            '{"segments": [{"duration": 6.0}]}', encoding="utf-8")
+        return ep
+
+    def test_带内交换不改变段级及格判定(self, tmp_path, monkeypatch):
+        import json as _json
+        ep = self._episode(tmp_path)
+        monkeypatch.setattr(c, "load_sources",
+                            lambda a: {"S01E01": {"path": "/x.mkv", "duration": 600.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c.vindex, "load_presence", lambda a: self.P())
+        monkeypatch.setattr(c, "search",
+                            lambda q, vecs, units, k, season=None, episode=None: [
+                                (0.46, self.U(2.0)),      # 台词分过线，在场 0.6
+                                (0.42, self.U(12.0))])    # 分差 0.04 ≤ BAND、在场 0.9 → 换到首位
+        dest = c.run(ep, tmp_path, "春物")
+        seg = _json.loads(dest.read_text(encoding="utf-8"))["segments"][0]
+        assert seg["top_score"] == 0.46       # 重排前最高分，不是交换后的 0.42
+        assert seg["status"] == "ok"          # 及格候选在，不许判 no_match
+
+    def test_检出者最高分不过线仍是no_match(self, tmp_path, monkeypatch):
+        # 反向护栏：门槛用检出者最高分≠放松门槛——没人过线照样 no_match
+        import json as _json
+        ep = self._episode(tmp_path)
+        monkeypatch.setattr(c, "load_sources",
+                            lambda a: {"S01E01": {"path": "/x.mkv", "duration": 600.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c.vindex, "load_presence", lambda a: self.P())
+        monkeypatch.setattr(c, "search",
+                            lambda q, vecs, units, k, season=None, episode=None: [
+                                (0.44, self.U(2.0)), (0.40, self.U(12.0))])
+        dest = c.run(ep, tmp_path, "春物")
+        seg = _json.loads(dest.read_text(encoding="utf-8"))["segments"][0]
+        assert seg["status"] == "no_match"
+
+
+class TestAnimeFallback:
+    """config 删掉 anime.default → 显式报错，不静默跳回另一部番（审计 2-16）。"""
+
+    def test_主入口无番名配置显式报错(self, tmp_path, monkeypatch):
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(
+            '{"segments": [{"duration": 5.0}]}', encoding="utf-8")
+        monkeypatch.setattr(c.paths, "conf", lambda d, default=None: default)
+        monkeypatch.setattr("sys.argv", ["clips", str(ep)])
+        with pytest.raises(SystemExit, match="番名"):
+            c.main()
+
+
+class TestRefitAtomic:
+    """`--refit` 先备份人审产物再原子重写（2026-08-16 审计 2-27）。
+
+    refit 改的是 --approve 之后的文件，写一半崩溃连「人改过什么样」
+    都恢复不了；备份落在 .prerefit.bak，中间态 .tmp 不许残留。
+    """
+
+    def test_refit备份且不留tmp(self, tmp_path, monkeypatch):
+        import json as _json
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        (ep / "04-clips.json").write_text(_json.dumps({
+            "anime": "春物", "total_duration": 6.0,
+            "segments": [{"index": 1, "text": "x", "duration": 6.0, "status": "ok",
+                          "clips": [{"season": 1, "episode": 1, "source": "/x.mkv",
+                                     "start": 10.0, "dur": 6.0, "span": 3.0,
+                                     "limit": 600.0}]}]}, ensure_ascii=False),
+            encoding="utf-8")
+        (ep / "03-audio").mkdir()
+        (ep / "03-audio" / "manifest.json").write_text(
+            '{"segments": [{"duration": 6.0}]}', encoding="utf-8")
+        monkeypatch.setattr(c, "load_sources",
+                            lambda a: {"S01E01": {"path": "/x.mkv", "duration": 600.0}})
+        monkeypatch.setattr("sys.argv", ["clips", str(ep), "--refit"])
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            c.main()
+        assert (ep / "04-clips.json.prerefit.bak").exists()
+        assert not (ep / "04-clips.json.tmp").exists()
+        data = _json.loads((ep / "04-clips.json").read_text(encoding="utf-8"))
+        assert data["segments"][0]["clips"]   # 重写后的文件仍是合法 plan

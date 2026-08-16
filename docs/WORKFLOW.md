@@ -37,7 +37,7 @@ data/episodes/YYYY-MM-DD-<番>-<主题>/
 | 语义索引 | ✅ | `subindex build` —— bge-base-zh，滑窗 2 行 |
 | ASR 兜底 | ✅ | 无外挂字幕时用 `mlx-whisper` 转录该文件本身 |
 | 镜头切分 | ✅ | `shots calibrate` 定阈值 → `shots build` → `shots frames`，约 2.2 分钟/集 |
-| 角色在场 | ✅ | `faces detect` → `cluster` → **人贴名** → `presence`，约 1.3 分钟/集 |
+| 角色在场 | ✅ | `faces detect` → `cluster` → **人贴名** → `presence`，约 1.3 分钟/集。**已贴名的 clusters.json 不许重跑 `cluster` 覆盖**（会无声抹掉人工贴名，命令会拒绝并给指引）；要重建：`mv <番>.clusters.json <番>.clusters.json.bak` 保住贴名 → 重跑 `cluster` → `sheet` 对照新旧簇的代表脸把名字补回去。只补几集 detect 不必重跑 cluster |
 | 画面语义 | ✗ 探针没过，不建 | `vprobe scene` 跑完的结论：门槛立不住（ADR-0003 待实测 #4）。氛围段落留给人在第 05 步 |
 | 音色 | ✅ | 试音选定后写进 `config/voice.json` |
 | BGM 曲库 | ✅（只攒库，不定选曲） | `bgm scan` / `bgm extract` / `bgm measure`——攒的是候选池，具体哪期用哪首见每期 01（CLAUDE.md「十、BGM 约定」，2026-08-08 起改成每期人耳现选） |
@@ -480,11 +480,19 @@ python -m pipeline.tts data/episodes/<本期>
 > 摇摆，三次回读内容互不相似（CER 60/60/30%）而音频实际念对，旧判据卡死整期。
 > 跑飞由时长闸拦（漏读/重复会改变时长）+ 人耳确认兜底。
 
+> **voice.json 的 `titles` 时长值随换番/换音色重测。** 值是该歌名单独念一遍的
+> 实测秒数（`python -m pipeline.tts probe "歌名"`），供时长估算替代 cpm——
+> 不重测就沿用旧值，误差由 DUR_BAND 0.5–2.0 的带宽兜底；值为 `null` 表示
+> 未实测，跑期时会 WARN 提示可能触发时长门禁。
+>
 > **含英日歌名的段落，回读 CER 可能虚高。** Qwen3 的拼音比对里英日假名按字符逐字保留，
 > Whisper 回读会听岔（エウテルペ→Eutelope），CER 可能超 20% 门槛而音频完全正确。
 > 歌名区段要做豁免，不要给整段放松阈值（ADR-0006 遗留项，踩到时处理）。
 
 中断可直接重跑，已过的段落跳过；改了稿再跑只重做改动的段落，`--force` 强制全做。
+**换音色也一样**（2026-08-16 起）：manifest 记录 engine/model/ref_audio 与读音表指纹，
+config 变了旧 wav 不复用、自动重做对应段——此前只比对稿件文本，换音色后忘带
+`--force` 会出一期混两种音色的成片且零警告。
 
 > **回读比对前会先归一化，而归一化可能把缺陷一起抹掉。**
 > 有一次 TTS 把中文引号念成了字（「谁更该"赢"」→「谁更该非赢匪」），
@@ -591,7 +599,9 @@ python -m pipeline.clips <本期> --refit
 把每段 dur 重排到满足不变量，漂移由该段最后一个片段吸收。**警告：人改过之后
 重跑 `python -m pipeline.clips <本期>`（不带 `--refit`）会重新检索，覆盖掉人工
 修改的排片结果**——`--refit` 只读写 `04-clips.json`，不碰检索，这是它和不带
-参数直接重跑的本质区别。
+参数直接重跑的本质区别。`--refit` 改的是人审（`--approve`）之后的产物，
+重写前先把原文件备份成 `04-clips.json.prerefit.bak`（单份覆写，不累积）——
+写一半崩溃时「人改过什么样」还能从备份找回；确认新版没问题后备份可删。
 
 ### 06 渲染 · Agent 约 1.5 分钟（40 片段 / 3 分钟成片实测 77s）
 

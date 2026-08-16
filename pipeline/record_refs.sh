@@ -45,7 +45,9 @@ for i in $(seq 1 "$N"); do
     fi
     vol=$(ffmpeg -hide_banner -i "$out" -af volumedetect -f null - 2>&1 \
           | sed -n 's/.*max_volume: \([0-9.-]*\) dB.*/\1/p')
-    if awk -v v="$vol" 'BEGIN { exit !(v < -20) }'; then
+    if [ -z "$vol" ]; then
+        echo "  ? 已存 ${out}，但峰值解析失败（volumedetect 没吐出 max_volume）——按未存处理，建议重录本段" >&2
+    elif awk -v v="$vol" 'BEGIN { exit !(v < -20) }'; then
         echo "  ✗ 已存 ${out}，峰值 ${vol} dBFS——太轻，要求 ≥ -20 dBFS，建议重录本段" >&2
     else
         echo "  ✓ 已存 ${out}（峰值 ${vol} dBFS）"

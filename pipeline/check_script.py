@@ -53,6 +53,8 @@ SHRINK_FIELD = re.compile(r"^\s*缩段不注水\s*[:：]\s*是\b", re.M)
 #     锚了 `$` 会把注释一起吃进数字组，2026-08-09 实测直接踩到——
 #     字段写了但正则不匹配，静默退回默认档，没有任何报错。
 DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
+# 「写了字段」按行首判（冒号可漏），正文提及不算——与 qc.py 同款，见那边注释
+DURATION_FIELD_HINT = re.compile(r"^\s*时长目标\s*[:：]?", re.M)
 
 
 def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
@@ -60,11 +62,22 @@ def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
 
     没有这个文件、或没写这个字段，返回 None，调用方退回默认带——这是刻意的
     软失败：字段是可选项，不是「文件必须存在」的前置检查。
+
+    **行首**写了字段但格式认不出 → 直接报错，不静默回退（2026-08-16 审计
+    2-10）：稿子按错字数带写、机检按默认带判，两边对不上且报告里看不出来。
+    正文/备注里**提到**字段名不算写了字段，不拦（二次审计 §6-1 收窄）。
+    qc.py 的同名函数同款行为，两处口径必须一致。
     """
     topic = script_path.parent / "01-topic.md"
     if not topic.exists():
         return None
-    m = DURATION_FIELD.search(topic.read_text(encoding="utf-8"))
+    text = topic.read_text(encoding="utf-8")
+    m = DURATION_FIELD.search(text)
+    if m is None and DURATION_FIELD_HINT.search(text):
+        raise SystemExit(
+            "FAIL 01-topic.md 的 `时长目标` 格式认不出，应为 `时长目标: 7-8分钟`"
+            "（半角连字符 - / – / ~，范围写法）。\n"
+            "     静默回退默认字数带会把这篇稿子按错标准判——先改对格式再跑")
     return (float(m.group(1)), float(m.group(2))) if m else None
 
 
@@ -302,6 +315,17 @@ def run(path: Path) -> list[Check]:
 
     def add(name: str, ok: bool, detail: str = "") -> None:
         checks.append(Check(name, ok, detail))
+
+    if not vo:
+        # 空稿/没解析出任何「配音：」段落：句长统计没有分母（mean([]) 会裸抛
+        # StatisticsError，2026-08-16 审计 2-15）。段落数这条把原因说清，
+        # 其余检查全部依赖段落、无从谈起——非零退出，干净失败（E10）。
+        add("段落数 8–20", False,
+            "0 段——稿件里没有任何「配音：」段落。检查是不是选错文件、"
+            "写空了，或段落标题不是 `## 段落 N` 格式")
+        return checks
+
+
 
     tail = "（另有片尾 1 段，不计入）" if outro else ""
     add("段落数 8–20", 8 <= len(vo) <= 20, f"{len(vo)} 段{tail}")

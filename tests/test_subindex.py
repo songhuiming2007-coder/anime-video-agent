@@ -12,6 +12,7 @@
   判据依赖的信息在判据执行之前就没了。
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -351,3 +352,67 @@ class TestEncoding:
         f.write_text(HEAD + line(1, 4, "青春是谎言 亦是罪恶") + "\n", encoding="utf-16")
         out = subindex.parse(f, "X", 1, 1)
         assert out and out[0].text == "青春是谎言 亦是罪恶"
+
+
+class TestPairCriterion:
+    """索引成对判据（2026-08-16 审计 2-1）：.json 与 .npy 都在才算「已索引」。
+
+    索引是两段写、没有事务。崩溃残骸（npy 在、json 缺）此前被 phase0 的
+    跳过判据当成「已索引」、被 status 的 *.npy glob 数进六条数字——检索池
+    实际少一集而对账全绿，正是「六条数字」要防的那种假绿。
+    """
+
+    def test_只有npy不算已索引(self, tmp_path):
+        (tmp_path / "春物_S01E01.npy").write_bytes(b"")
+        assert subindex.has_index(tmp_path, "春物", 1, 1) is False
+
+    def test_只有json不算已索引(self, tmp_path):
+        (tmp_path / "春物_S01E01.json").write_text("{}", encoding="utf-8")
+        assert subindex.has_index(tmp_path, "春物", 1, 1) is False
+
+    def test_成对才算已索引(self, tmp_path):
+        (tmp_path / "春物_S01E01.npy").write_bytes(b"")
+        (tmp_path / "春物_S01E01.json").write_text("{}", encoding="utf-8")
+        assert subindex.has_index(tmp_path, "春物", 1, 1) is True
+
+    def test_别的集不算(self, tmp_path):
+        (tmp_path / "春物_S01E02.npy").write_bytes(b"")
+        (tmp_path / "春物_S01E02.json").write_text("{}", encoding="utf-8")
+        assert subindex.has_index(tmp_path, "春物", 1, 1) is False
+
+
+class TestLoadAllFilterBeforeCheck:
+    """load_all 先按番过滤、再做元信息校验（2026-08-16 审计 2-8）。
+
+    _check 对旧格式/换模型的文件直接 SystemExit，而索引目录是全局的——
+    别的番有一个坏文件，当前番的检索就被拦死，报错还指向别人的文件。
+    """
+
+    def _ep_file(self, tmp_path, name, ep, anime):
+        import numpy as np
+        d = {"meta": {"model_id": subindex.MODEL_NAME, "revision": None},
+             "units": [{"anime": anime, "season": 1, "episode": ep,
+                        "start": 0.0, "end": 2.0, "text": "台词"}]}
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        np.save(tmp_path / f"{name}.npy", np.zeros((1, 4), dtype=np.float32))
+
+    def test_他番的旧格式索引不拦当前番(self, tmp_path):
+        import numpy as np
+        # 他番：旧格式（裸列表）——_check 会当场 SystemExit 要求重建
+        (tmp_path / "他番_S01E01.json").write_text(
+            json.dumps([{"anime": "他番"}]), encoding="utf-8")
+        np.save(tmp_path / "他番_S01E01.npy", np.zeros((1, 4), dtype=np.float32))
+        # 当前番：正常索引
+        self._ep_file(tmp_path, "春物_S01E02", 2, "春物")
+        vecs, units = subindex.load_all(tmp_path, "春物")
+        assert len(units) == 1 and units[0].anime == "春物"
+
+    def test_当前番自己的坏索引仍然拦(self, tmp_path):
+        # 反向护栏：先过滤≠不校验——当前番的旧格式文件照样当场失败
+        (tmp_path / "春物_S01E01.json").write_text(
+            json.dumps([{"anime": "春物"}]), encoding="utf-8")
+        import numpy as np
+        np.save(tmp_path / "春物_S01E01.npy", np.zeros((1, 4), dtype=np.float32))
+        with pytest.raises(SystemExit, match="reindex"):
+            subindex.load_all(tmp_path, "春物")

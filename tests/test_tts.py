@@ -10,6 +10,7 @@
 - `normalize` 决定了上面两件事的「字数」口径：标点不算字。
 """
 
+import json
 import re
 import struct
 import wave
@@ -348,3 +349,147 @@ class TestQcSkipExemption:
         assert dest.exists()
         # 临时尝试文件必须清干净
         assert list(tmp_path.glob(".seg.*.wav")) == []
+
+
+class TestVoiceFingerprint:
+    """增量重跑的音色指纹（2026-08-16 审计 2-6）。
+
+    manifest 顶层从第一天就存着 engine/model/ref_audio，却从没参与比对——
+    换音色后忘带 --force 会静默复用旧 wav，出一期混两种音色的成片且零警告
+    （当天恰好发生 seg7→seg6 换音色）。readings 影响合成文本，一并入指纹。
+    """
+
+    CFG = {"engine": "qwen3_tts", "model": "mlx-community/M",
+           "ref_audio": "data/voice/reference/seg6.wav", "readings": {"祈": "其"}}
+
+    ROW = {"index": 1, "label": "1", "text": "正文", "file": "seg-01.wav",
+           "duration": 5.0, "cer": 0.0, "attempts": 1}
+
+    def _segs(self):
+        return [t.Segment(1, "1", "正文")]
+
+    def _old(self, cfg):
+        return {**t._voice_fingerprint(cfg), "segments": [self.ROW]}
+
+    def test_指纹一致文本一致wav在盘_可复用(self, tmp_path):
+        (tmp_path / "seg-01.wav").write_bytes(b"x")
+        done = t._reusable(self._old(self.CFG), self._segs(), tmp_path, self.CFG)
+        assert 1 in done and done[1].file == "seg-01.wav"
+
+    def test_换ref_audio后不可复用(self, tmp_path):
+        (tmp_path / "seg-01.wav").write_bytes(b"x")
+        cfg = {**self.CFG, "ref_audio": "data/voice/reference/seg7.wav"}
+        assert t._reusable(self._old(self.CFG), self._segs(), tmp_path, cfg) == {}
+
+    def test_换读音表后不可复用(self, tmp_path):
+        # 2026-08-16 之前的 voice.json 注释明说「换 readings 增量重跑不会自动
+        # 生效」——指纹补上之后这句不再成立，改字必须重念受影响的段
+        (tmp_path / "seg-01.wav").write_bytes(b"x")
+        cfg = {**self.CFG, "readings": {"祈": "其", "世界": "世介"}}
+        assert t._reusable(self._old(self.CFG), self._segs(), tmp_path, cfg) == {}
+
+    def test_换引擎或模型后不可复用(self, tmp_path):
+        (tmp_path / "seg-01.wav").write_bytes(b"x")
+        for k, v in (("engine", "indextts"), ("model", "mlx-community/M2")):
+            cfg = {**self.CFG, k: v}
+            assert t._reusable(self._old(self.CFG), self._segs(), tmp_path, cfg) == {}
+
+    def test_文本变了不可复用(self, tmp_path):
+        (tmp_path / "seg-01.wav").write_bytes(b"x")
+        segs = [t.Segment(1, "1", "改过的正文")]
+        assert t._reusable(self._old(self.CFG), segs, tmp_path, self.CFG) == {}
+
+    def test_wav不在盘不可复用(self, tmp_path):
+        assert t._reusable(self._old(self.CFG), self._segs(), tmp_path, self.CFG) == {}
+
+
+class TestTitleDurationsFromConfig:
+    """歌名实测时长进配置（2026-08-16 审计 2-7）。
+
+    tts.py 曾把五首罪恶王冠歌名 + seg7 实测值硬编码成 _TITLE_DURS——
+    换番要改代码、换音色数字过期，都违反「机制进代码、内容进配置」。
+    现在值在 voice.json 的 titles 里：数字 = 实测秒数，null = 未实测。
+    """
+
+    def _cfg(self, tmp_path, monkeypatch, titles):
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps({"titles": titles}, ensure_ascii=False),
+                     encoding="utf-8")
+        monkeypatch.setattr(t, "CONFIG", p)
+
+    def test_只取数字值_null和注释不算(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch,
+                  {"_note": "说明", "歌名甲": 1.5, "歌名乙": None})
+        assert t._title_durs() == {"歌名甲": 1.5}
+
+    def test_实测时长替代字数估算(self, tmp_path, monkeypatch):
+        # 8 字句含 3 字歌名：总时长 = (8-3) 字按 cpm + 歌名实测 1.5s
+        self._cfg(tmp_path, monkeypatch, {"歌名乙": 1.5})
+        want = (8 - 3 + 1.5 * t.CPM / 60) / t.CPM * 60
+        assert t.expected_duration("先听歌名乙再说话") == pytest.approx(want)
+
+    def test_未实测按cpm估(self, tmp_path, monkeypatch):
+        # null = 未实测 → 该歌名按普通字数走 cpm（会高估英日歌名，run() 会 WARN）
+        self._cfg(tmp_path, monkeypatch, {"歌名乙": None})
+        assert t.expected_duration("先听歌名乙再说话") == pytest.approx(8 / t.CPM * 60)
+
+    def test_未实测歌名能被挑出来提醒(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch,
+                  {"_note": "说明", "歌名甲": 1.5, "歌名乙": None})
+        assert t._unmeasured_titles(["先听歌名乙再说话", "没有歌名"]) == ["歌名乙"]
+
+    def test_实测过的不再提醒(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch, {"歌名甲": 1.5})
+        assert t._unmeasured_titles(["先听歌名甲再说话"]) == []
+
+
+class TestParseScriptBlocks:
+    """parse_script 按块切、`配音：` 可在块内任意位置（2026-08-16 审计 2-19）。
+
+    旧正则要求「配音：」紧跟段落标题——中间夹一个 `画面：` 块的段被静默跳过、
+    后续段序号整体前移，只能靠 clips 的段数对账兜住，且报错文案
+    （「稿件改过就要重跑 pipeline.tts」）指错方向。现在与 clips/check_script 同口径。
+    """
+
+    def test_画面块夹在标题与配音之间也能解析(self, tmp_path):
+        # 旧实现在这份稿上只解析出 1 段（第二段），第一段被静默吞掉
+        f = tmp_path / "02-script.md"
+        f.write_text(
+            "## 段落 1\n\n画面：\n  查询: 某台词\n  集: S01E01\n\n配音：第一段。\n\n"
+            "## 段落 2\n\n配音：第二段。\n", encoding="utf-8")
+        segs = t.parse_script(f)
+        assert [s.index for s in segs] == [1, 2]
+        assert [s.text for s in segs] == ["第一段。", "第二段。"]
+
+    def test_块内没有配音行仍然跳过(self, tmp_path):
+        # 纯画面说明块（无配音）不是口播段——与 clips.parse_shots 同语义
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：第一段。\n\n## 附录\n\n画面：\n  查询: x\n",
+                     encoding="utf-8")
+        assert [s.text for s in t.parse_script(f)] == ["第一段。"]
+
+
+class TestExciseOnlyRefTitles:
+    """歌名豁免只挖 ref 侧出现的歌名（2026-08-16 审计 2-18）。
+
+    hyp 侧按长度窗口挖变体，窗口若对准全部歌名，正文里无关的英文词
+    （"coding" 长 6，落在 エウテルペ(5)±1 窗内）会被误挖——ref 保留、
+    hyp 被挖，CER 凭空虚高，误杀重试。方向是误杀不是漏放。
+    """
+
+    def test_没有歌名的句子_英文词不再被误挖(self, monkeypatch):
+        monkeypatch.setattr(t, "_titles", lambda: ["エウテルペ", "My Dearest"])
+        ref = "他用 coding 写了脚本"
+        _, err = t.cer(ref, ref)
+        assert err == 0.0            # 旧实现：hyp 侧 coding 被挖、ref 保留 → 虚高
+
+    def test_同句出现的歌名变体仍被豁免(self, monkeypatch):
+        monkeypatch.setattr(t, "_titles", lambda: ["エウテルペ"])
+        ref = "第一首是エウテルペ，旋律还在"
+        _, err = t.cer(ref, "第一首是エウテルペ，旋律还在")
+        assert err == 0.0
+
+    def test_挖除窗口收窄后中文照常比对(self, monkeypatch):
+        monkeypatch.setattr(t, "_titles", lambda: ["My Dearest"])
+        edits, err = t.cer("八幡自爆", "八幡自保")   # 无歌名句，行为与从前一致
+        assert (edits, err) == (1, 0.25)

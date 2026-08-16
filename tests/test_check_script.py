@@ -548,3 +548,55 @@ class TestEpisodeChecks:
         self._sources(monkeypatch, {})
         c = get(cs.run(f), "集号在素材库")
         assert c.ok
+
+
+class TestDurationOverrideStrict:
+    """`时长目标` 坏格式显式报错（2026-08-16 审计 2-10），与 qc 同款。"""
+
+    def test_坏格式报错不静默回退(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="时长目标"):
+            cs.episode_duration_override(f)
+
+    def test_好格式照常解析(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟\n", encoding="utf-8")
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+        assert cs.episode_duration_override(f) == (7.0, 8.0)
+
+
+class TestEmptyScript:
+    """空稿/无「配音：」段落：干净 FAIL，不裸抛 StatisticsError（审计 2-15）。"""
+
+    def test_空稿返回FAIL报告不崩溃(self, tmp_path):
+        f = tmp_path / "02-script.md"
+        f.write_text("# 只有个大标题，没有任何段落\n", encoding="utf-8")
+        checks = cs.run(f)
+        assert checks and checks[0].ok is False
+        assert "配音" in checks[0].detail
+
+    def test_完全空文件同样干净失败(self, tmp_path):
+        f = tmp_path / "02-script.md"
+        f.write_text("", encoding="utf-8")
+        checks = cs.run(f)
+        assert checks[0].ok is False
+
+
+class TestDurationOverrideProseTolerance:
+    """与 qc.TestDurationFieldProseTolerance 同款：正文提及字段名不拦（二次审计 §6-1）。"""
+
+    def test_正文提及字段名而无字段行_不拦(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text(
+            "类型: 杂谈\n\n备注：先按 `时长目标` 立带，写完再倒填。\n", encoding="utf-8")
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+        assert cs.episode_duration_override(f) is None
+
+    def test_字段行坏格式_仍硬错(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="时长目标"):
+            cs.episode_duration_override(f)

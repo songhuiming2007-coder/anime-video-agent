@@ -147,3 +147,35 @@ class TestBuildTimeline:
         assert plan["blocks"] == []
         assert plan["tracks"] == []
         assert plan["total_duration"] == pytest.approx(20.0)
+
+
+class TestBgmContinuationBounds:
+    """BGM 延续事件的曲目内终点不许超曲目全长（2026-08-16 审计 2-13）。
+
+    渲染端 `-ss t0 -t dur` 对超界静默截短，中段音乐空缺；render 的时长校验
+    只查音乐床总长（amix longest 不变），测不出中段空洞。
+    """
+
+    def test_延续事件超全长当场失败(self, tmp_path: Path):
+        # 前景 90-95s（5s），after=bgm 要再铺 30s（段落 1）→ 曲目内需播到
+        # 125s，超过全长 100s
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 M1\n\n音乐: `短曲` 完整版 01:30-01:35\n"
+            "状态: 前景试听，旁白停止\n过渡: 试听结束后降为 BGM\n\n"
+            "## 段落 1\n\n配音：第一段。\n", encoding="utf-8")
+        bgm = {"tracks": {"短曲": {"path": "s.flac", "dur": 100.0, "lufs": -9.0}}}
+        manifest = {"segments": [{"index": 1, "duration": 30.0}]}
+        with pytest.raises(SystemExit, match="曲目全长"):
+            m.build_timeline(tmp_path, manifest, bgm)
+
+    def test_延续事件在全长之内照常构建(self, tmp_path: Path):
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 M1\n\n音乐: `短曲` 完整版 01:30-01:35\n"
+            "状态: 前景试听，旁白停止\n过渡: 试听结束后降为 BGM\n\n"
+            "## 段落 1\n\n配音：第一段。\n", encoding="utf-8")
+        bgm = {"tracks": {"短曲": {"path": "s.flac", "dur": 200.0, "lufs": -9.0}}}
+        manifest = {"segments": [{"index": 1, "duration": 30.0}]}
+        plan = m.build_timeline(tmp_path, manifest, bgm)
+        evs = plan["tracks"][0]["events"]
+        assert [(e["vol"], e["t0"], e["t1"]) for e in evs] == [
+            ("foreground", 90.0, 95.0), ("bgm", 95.0, 125.0)]

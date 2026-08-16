@@ -8,6 +8,8 @@ ffmpeg 调用本身不测（要真实片源，按项目约定不进测试）。
 成片黑帧必须能对照回源片段，源片同样黑 = 内容，通过。
 """
 
+import pytest
+
 from pipeline import qc
 
 
@@ -159,3 +161,97 @@ class TestEpisodeDurationBand:
     def test_写了时长目标按分钟换算成秒(self, tmp_path):
         (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟\n", encoding="utf-8")
         assert qc.episode_duration_band(tmp_path) == (420.0, 480.0)
+
+
+class TestDetectorFailure:
+    """检测器自己失败时，黑帧/静音两项不许判 PASS（2026-08-16 审计 2-4）。
+
+    blackdetect/silencedetect 的结果行都在 stderr 上；ffmpeg 非零退出时
+    stderr 里没有结果行，旧实现把「检测器跑不动」当成「没检出」——文件坏到
+    门禁最该报警的时候反而全绿。ffmpeg 本身按约定不进测试：这里在
+    subprocess 边界注入「ffprobe 正常、ffmpeg 失败」的观测值，测的是门禁
+    对退出码的裁决（边界注入的先例见 test_tts 的回读豁免）。
+    """
+
+    def _fake(self, monkeypatch):
+        import subprocess as sp
+
+        def run(cmd, **kw):
+            if cmd[0] == "ffmpeg":
+                return sp.CompletedProcess(cmd, 1, stdout="",
+                                           stderr="  [Parsed_blackdetect] 检测失败细节")
+            return sp.CompletedProcess(cmd, 0, stdout="60.0\n", stderr="")
+
+        monkeypatch.setattr(qc.subprocess, "run", run)
+
+    def test_ffmpeg失败_黑帧静音判FAIL不假绿(self, monkeypatch, tmp_path):
+        video = tmp_path / "05-final.mp4"
+        video.write_text("not a real video", encoding="utf-8")
+        self._fake(monkeypatch)
+        checks = qc.check(video)             # plan=None、audio=None → 字幕四项走 SKIP 分支
+        black = next(c for c in checks if "纯黑" in c.name)
+        silence = next(c for c in checks if "静音" in c.name)
+        loud = next(c for c in checks if "响度" in c.name)
+        # 旧实现在这里三样里黑帧/静音是 ok=True（stderr 空列表 → 无缺陷）
+        assert black.ok is False and "退出码 1" in black.detail
+        assert silence.ok is False and "退出码 1" in silence.detail
+        assert loud.ok is False              # 响度测量也失败，不许漏报
+        assert black.skipped is False and silence.skipped is False
+
+
+class TestDurationFieldStrict:
+    """`时长目标` 写了但格式认不出 → 报错，不静默回退默认 2–4 分钟带。
+
+    2026-08-16 审计 2-10：全角破折号「13—15分钟」或单值「13分钟」都不匹配
+    正则，旧实现静默用 [120,240] 判——13 分钟人物志必 FAIL，且报告里看不出
+    是字段没读上。check_script.py 的同名机制有同款测试。
+    """
+
+    def test_全角破折号报错(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="时长目标"):
+            qc.episode_duration_band(tmp_path)
+
+    def test_单值写法报错(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 13分钟\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="时长目标"):
+            qc.episode_duration_band(tmp_path)
+
+    def test_没写字段仍返回None(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("类型: 杂谈\n", encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) is None
+
+    def test_格式正确照常解析(self, tmp_path):
+        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟  # 备注\n", encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) == (420.0, 480.0)
+
+
+class TestDurationFieldProseTolerance:
+    """时长目标触发条件收窄为行首判据（二次审计 §6-1）。
+
+    旧条件是全文子串——正文/备注里**提到**「时长目标」四个字（真实稿件
+    就有这种行）而没写字段的期会被硬错。判据改成 `^\\s*时长目标` 行首
+    匹配：字段行坏格式仍报错，正文提及不拦。
+    """
+
+    def test_正文提及字段名而无字段行_不拦(self, tmp_path):
+        # 真实稿件形态：策划备注里讨论这个字段，但本期没设它
+        (tmp_path / "01-topic.md").write_text(
+            "类型: 杂谈\n\n备注：不预设目标，写完看实际字数再倒填 `时长目标` 字段。\n",
+            encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) is None
+
+    def test_行首提及但缺冒号_仍按坏格式报错(self, tmp_path):
+        # 行首出现字段名却不是合法字段行（漏冒号）——这是「想写没写对」，
+        # 报错而不是静默退回默认带
+        (tmp_path / "01-topic.md").write_text("时长目标 7-8分钟\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="时长目标"):
+            qc.episode_duration_band(tmp_path)
+
+    @pytest.mark.parametrize("lo,hi", [("5", "6"), ("7.5", "8.5"),
+                                       ("1.5", "3"), ("12", "20"), ("7", "8")])
+    def test_真实五期写法全部通过(self, tmp_path, lo, hi):
+        # data/episodes 里实际用过的五种写法，收窄判据后一个都不能误杀
+        (tmp_path / "01-topic.md").write_text(
+            f"时长目标: {lo}-{hi}分钟\n", encoding="utf-8")
+        assert qc.episode_duration_band(tmp_path) == (float(lo) * 60, float(hi) * 60)
