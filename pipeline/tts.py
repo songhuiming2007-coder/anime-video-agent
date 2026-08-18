@@ -38,6 +38,7 @@ from pathlib import Path
 from pypinyin import Style, pinyin
 
 from . import paths  # 必须在任何 HF 库之前，把模型缓存钉到 SSD
+from .align import verify_alignment   # 叶子模块，无环
 from .qc import episode_duration_band
 
 CONFIG = paths.CONFIG / "voice.json"
@@ -538,7 +539,20 @@ def load_config(path: Path = CONFIG) -> dict:
             f"FAIL 缺少 {path}。先跑 `python -m pipeline.tts probe` 选定音色，"
             f"再把结论写进这个文件。"
         )
-    return json.loads(path.read_text(encoding="utf-8"))
+    # 前置校验（2026-08-18 复盘②）：坏 JSON / 缺必要键在加载处当场报——
+    # 不拦的话，流到 Engine 构造或 _voice_fingerprint 才是裸 KeyError，
+    # 报错离病根隔了好几层
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"FAIL {path} 不是合法 JSON：{e}")
+    missing = [k for k in ("engine", "model", "ref_audio") if not cfg.get(k)]
+    if missing:
+        raise SystemExit(
+            f"FAIL {path} 缺必要字段：{'、'.join(missing)}。"
+            f"engine/model/ref_audio 缺一不可，对照 config/voice.json 的 _note 补齐"
+        )
+    return cfg
 
 
 # 按句合成，不按段合成。
@@ -961,6 +975,29 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
     return done
 
 
+def _stale_downstream(episode: Path, audio: list[dict]) -> list[str]:
+    """级联校验（2026-08-18 复盘①）：本次重跑改了段时长后，下游 04-clips*.json
+    里哪些段级时长已经不对齐。
+
+    局部重跑只重写 manifest，`04-clips.json` / `04-clips.approved.json` 存的还是
+    旧时长——approve 与 render 的闸当然会拦，但那是几小时后要渲染时才发现，
+    排查还得倒推「哪一步改了什么」。脏数据在产生的这一刻就指出来。
+    返回告警行列表，空 = 下游干净或还不存在（还没排片，正常）。
+    """
+    out: list[str] = []
+    for name in ("04-clips.json", "04-clips.approved.json"):
+        p = episode / name
+        if not p.exists():
+            continue
+        segs = json.loads(p.read_text(encoding="utf-8"))["segments"]
+        violations = verify_alignment(segs, audio)
+        if violations:
+            out.append(f"{name} 与新配音不对齐（{len(violations)} 段）："
+                       + "；".join(violations[:3])
+                       + ("…" if len(violations) > 3 else ""))
+    return out
+
+
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     paths.require_data()
     script = episode / "02-script.md"
@@ -1021,6 +1058,14 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     print("-" * 60)
     print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
           f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")
+    stale = _stale_downstream(episode, [asdict(t) for t in takes])
+    if stale:
+        print("WARN 本次配音改了段时长，下游排片已脏：\n"
+              + "".join(f"     {s}\n" for s in stale)
+              + f"     渲染前必须清算：跑 `python -m pipeline.clips {episode} --refit`"
+                f" 把差额吸进末片（人改过的 start/source 不动）；差额过大 refit 会拒绝，"
+                f"那就整条重跑 `python -m pipeline.clips {episode}` 并重走 05。",
+              file=sys.stderr)
     band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
     if not band[0] <= total <= band[1]:
         print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
