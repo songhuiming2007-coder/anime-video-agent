@@ -164,7 +164,8 @@ class TestEmptyPool:
         ep = self._ep(tmp_path)
         monkeypatch.setattr(cover.paths, "conf",
                             lambda d, default=None: "春物" if d == "anime.default" else default)
-        monkeypatch.setattr(cover, "_sample_points", lambda data: [("/x.mkv", 5.0, "S01E01")])
+        monkeypatch.setattr(cover, "_sample_points",
+                            lambda data, by_path=None: [("/x.mkv", 5.0, "S01E01")])
         monkeypatch.setattr(cover, "_notes_points", lambda anime, topic: [])
         monkeypatch.setattr(cover, "_episode_points", lambda anime, topic: [])
         monkeypatch.setattr(cover, "_grab", lambda src, t, dest: None)   # 抽帧全失败
@@ -181,7 +182,8 @@ class TestEmptyPool:
         ep = self._ep(tmp_path)
         monkeypatch.setattr(cover.paths, "conf",
                             lambda d, default=None: "春物" if d == "anime.default" else default)
-        monkeypatch.setattr(cover, "_sample_points", lambda data: [("/x.mkv", 5.0, "S01E01")])
+        monkeypatch.setattr(cover, "_sample_points",
+                            lambda data, by_path=None: [("/x.mkv", 5.0, "S01E01")])
         monkeypatch.setattr(cover, "_notes_points", lambda anime, topic: [])
         monkeypatch.setattr(cover, "_episode_points", lambda anime, topic: [])
         monkeypatch.setattr(cover, "_grab", fake_grab)
@@ -196,3 +198,27 @@ class TestEmptyPool:
         monkeypatch.setattr(cover.paths, "conf", lambda d, default=None: default)
         with pytest.raises(SystemExit, match="番名"):
             cover.build(tmp_path / "ep")
+
+
+class TestSamplePointsSchema:
+    """片段 schema 兜底（2026-08-18 复盘③）：人审手工补进 04-clips 的片段
+    可能只有 source/start/dur，旧实现裸取 c['season'] 直接 KeyError，
+    整页候选崩掉。"""
+
+    PLAN = {"segments": [{"index": 3, "clips": [
+        {"season": 2, "episode": 5, "source": "/a.mkv", "start": 10.0, "dur": 0.3},
+        {"source": "data/library/raw/某番/[07].mkv", "start": 0.0, "dur": 0.3},
+    ]}]}
+
+    def test_机器产物照常带集号(self):
+        pts = cover._sample_points(self.PLAN)
+        assert pts[0][2].startswith("段3 S02E05")
+
+    def test_手写片段从片源登记表反查(self):
+        by_path = {"data/library/raw/某番/[07].mkv": "S01E07"}
+        pts = cover._sample_points(self.PLAN, by_path)
+        assert pts[1][2].startswith("段3 S01E07")
+
+    def test_反查不到退文件名不KeyError(self):
+        pts = cover._sample_points(self.PLAN)   # 不给 by_path
+        assert "[07].mkv" in pts[1][2]
