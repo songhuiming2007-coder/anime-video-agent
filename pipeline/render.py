@@ -581,18 +581,18 @@ def _bgm_layout(plan: list[tuple[dict, float]], total: float) -> tuple[list[floa
     return lens, run_starts
 
 
-def _bgm_bed(episode: Path, total: float, starts: list[float], work: Path) -> Path | None:
+def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) -> Path | None:
     """铺 BGM 垫底轨：`01-topic.md` 的 BGM 序列逐首拼接，全长 `total` 秒。
 
-    支持任意首数（`BGM:` 列表，或命名槽位）。每首从自己的起点播放：
+    `plan` 由 run() 入口的 `_bgm_plan` 解析（配置前置校验，切片前就把曲名/
+    文件/响度的错报掉）；这里只执行。每首从自己的起点播放：
     - 后一首起点 ≤ 前一首自然结尾 → acrossfade 交叉（qsin，功率恒定），
       前一首多播 XFADE 秒供重叠。
     - 后一首起点 > 前一首自然结尾 → 停顿（前一首放完即止，间隙留白）。
     最后一首循环/裁剪铺到片尾。
 
-    没配曲目表就返回 None，渲染出无 BGM 版——这是允许的状态，不报错。
+    没配曲目表（plan 为 None）就返回 None，渲染出无 BGM 版——这是允许的状态，不报错。
     """
-    plan = _bgm_plan(episode, total, starts)
     if not plan:
         return None
 
@@ -902,6 +902,17 @@ def run(episode: Path, keep: bool = False) -> Path:
     if violations:
         raise SystemExit("FAIL 段级时长不对齐（人审改过画面没 refit？）：\n  " + "\n  ".join(violations))
 
+    # 配置前置校验（fail-fast，2026-08-18 复盘②）：曲名打错、曲目文件不存在、
+    # 缺 lufs、音乐段越界——这些只读 JSON 就能判，而切片要几分钟。先判再切，
+    # 不许切完半片才炸。acc 与后面 voice 的实测等长（concat 不改时长），
+    # 供 _bgm_plan 的结尾切入点自动定位用。
+    starts, acc = [], 0.0
+    for s in manifest["segments"]:
+        starts.append(acc)
+        acc += s["duration"]
+    music_plan = _maybe_music_plan(episode, manifest)
+    bgm_plan = None if music_plan is not None else _bgm_plan(episode, acc, starts)
+
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
         # 1. 逐个切片（两道守卫在 cut 里）
@@ -919,7 +930,7 @@ def run(episode: Path, keep: bool = False) -> Path:
         # 段落切片、定格段、OP 画面段全部用同一组编码参数
         # （cut 的 -vf/-r 与定格段的 -framerate/-r 都来自同一常量），
         # 所以统一走 concat demuxer + `-c copy`，秒级完成，不做全量重编码。
-        music_plan = _maybe_music_plan(episode, manifest)
+        # music_plan 已在 run() 入口解析（配置前置校验）。
         video = work / "video.mp4"
         if music_plan is not None:
             parts_by_seg: dict[int, list[Path]] = {}
@@ -1006,14 +1017,10 @@ def run(episode: Path, keep: bool = False) -> Path:
         # 4. 音乐（可选）。试听型走音乐床（前景/BGM/自然播放事件序列）；
         # 普通期走全片 BGM 铺底（旧路径，行为不变）。
         total = duration(voice)
-        starts, acc = [], 0.0
-        for s in manifest["segments"]:
-            starts.append(acc)
-            acc += s["duration"]
         if music_plan is not None:
             bed = _music_bed(music_plan, work)
         else:
-            bed = _bgm_bed(episode, total, starts, work)
+            bed = _bgm_bed(bgm_plan, total, work)
         voice_raw = voice  # 4.5 要查混音前的人声轨（B1'：混音总长测不出人声位置错）
         if bed:
             # sidechaincompress 的输出时长 = **先 EOF 的输入**（ffmpeg 8 实测，

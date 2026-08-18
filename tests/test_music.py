@@ -65,6 +65,18 @@ def _bgm() -> dict:
     }}
 
 
+@pytest.fixture(autouse=True)
+def _real_track_files(tmp_path: Path, monkeypatch):
+    """`_track_for` 的配置前置校验（2026-08-18 复盘②）要求曲目文件真实存在。
+
+    测试不碰 ffmpeg/真音频，空文件只是「存在」这个事实的载体；
+    paths.ROOT 指到 tmp，路径解析与线上一致。
+    """
+    for name in ("x.flac", "y.flac", "s.flac"):
+        (tmp_path / name).write_bytes(b"")
+    monkeypatch.setattr(m.paths, "ROOT", tmp_path)
+
+
 @pytest.fixture
 def episode(tmp_path: Path) -> Path:
     (tmp_path / "02-script.md").write_text(SCRIPT, encoding="utf-8")
@@ -179,3 +191,24 @@ class TestBgmContinuationBounds:
         evs = plan["tracks"][0]["events"]
         assert [(e["vol"], e["t0"], e["t1"]) for e in evs] == [
             ("foreground", 90.0, 95.0), ("bgm", 95.0, 125.0)]
+
+
+class TestTrackForValidation:
+    """曲目记录前置校验（2026-08-18 复盘②）：缺字段 / 文件不存在在解析
+    时间轴时当场报——不拦的话错会流到渲染中段的 ffmpeg（文件不存在）
+    或音量算术（lufs 为 None 时 TypeError），报错离病根隔好几层。
+    """
+
+    def test_缺lufs报错(self):
+        bgm = {"tracks": {"曲": {"path": "x.flac", "dur": 100.0}}}
+        with pytest.raises(SystemExit, match="lufs"):
+            m._track_for("曲", bgm)
+
+    def test_文件不存在报错(self):
+        bgm = {"tracks": {"曲": {"path": "不存在.flac", "dur": 100.0, "lufs": -9.0}}}
+        with pytest.raises(SystemExit, match="不存在"):
+            m._track_for("曲", bgm)
+
+    def test_记录齐全照常返回(self):
+        rec = {"path": "x.flac", "dur": 100.0, "lufs": -9.0}
+        assert m._track_for("曲", {"tracks": {"曲": rec}}) is rec

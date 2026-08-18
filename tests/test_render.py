@@ -288,3 +288,12 @@ class TestAssEscapeBackslash:
         dest = build_ass(segments, audio, tmp_path / "vo.ass")
         text = dest.read_text(encoding="utf-8")
         assert "\\" not in text and "＼" in text
+
+
+class TestBgmBedEntry:
+    """`_bgm_bed` 的 plan 改由 run() 入口解析（配置前置校验，2026-08-18 复盘②）。
+    没配 BGM（plan 为 None）直接返回 None，不碰 ffmpeg、不读 episode 目录。"""
+
+    def test_无plan返回None(self, tmp_path: Path):
+        from pipeline.render import _bgm_bed
+        assert _bgm_bed(None, 100.0, tmp_path) is None

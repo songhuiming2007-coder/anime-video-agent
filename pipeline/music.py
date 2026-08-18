@@ -23,6 +23,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import paths
+
 # 前景目标响度。2026-08-16 两版成片实测：-14 时前景音乐窗口电平（-10~-15
 # dBFS）与说话中的人声（-13~-16）几乎同响，解说被音乐「顶平」——音乐间隙
 # 与旁白段落只有 1-2dB 差，听感上解说明显小于普通期（普通期 BGM 低人声
@@ -116,7 +118,20 @@ def _track_for(title: str, bgm: dict) -> dict:
     if len(hits) != 1:
         raise SystemExit(
             f"FAIL 曲库匹配「{title}」得到 {len(hits)} 个（必须恰好 1 个）")
-    return hits[0]
+    rec = hits[0]
+    # 配置前置校验（2026-08-18 复盘②）：记录缺字段、文件不存在，在解析
+    # 时间轴时当场报——本函数是所有曲目记录的唯一入口，不拦的话错会流到
+    # 渲染中段的 ffmpeg（文件不存在）或音量算术（lufs 为 None 时 TypeError）
+    for k in ("path", "dur", "lufs"):
+        if rec.get(k) is None:
+            raise SystemExit(
+                f"FAIL 「{title}」在 config/bgm.json 的记录缺 `{k}`。"
+                f"量法：python -m pipeline.bgm measure <文件>，结果补进曲目表")
+    if not (paths.ROOT / rec["path"]).exists():
+        raise SystemExit(
+            f"FAIL BGM 文件不存在：{paths.ROOT / rec['path']}（「{title}」）\n"
+            f"     检查 config/bgm.json 的 path，或重跑 `python -m pipeline.bgm extract` 分轨")
+    return rec
 
 
 def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:

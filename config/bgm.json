@@ -53,6 +53,24 @@
         "lufs": -7.8,
         "onset": 1.1,
         "vocal": false
+      },
+      "ユキハルアメ-inst": {
+        "path": "data/library/bgm/春物/ユキハルアメ [Instrumental].flac",
+        "slot": "正文",
+        "from": "S3 OP 单曲 GNCA-0660 tr.05（Instrumental）",
+        "dur": 270.0,
+        "lufs": -8.3,
+        "onset": 2.8,
+        "vocal": false
+      },
+      "ユキハルアメ": {
+        "path": "data/library/bgm/春物/ユキハルアメ.flac",
+        "slot": "结尾",
+        "from": "S3 OP 单曲 GNCA-0660 tr.01（人声版）",
+        "dur": 270.0,
+        "lufs": -7.0,
+        "onset": 2.8,
+        "vocal": true
       }
     },
     "_chosen": "2026-07-29。正文取劇伴，结尾取 S2 OP 伴奏（本期锚点全在 S2）。想换 S1 味道就把结尾改成 ユキトキ。曲库里另有 12 首 OP/ED 伴奏已分轨在同目录，要扩表直接从那里挑，不用回 CD 镜像。"
