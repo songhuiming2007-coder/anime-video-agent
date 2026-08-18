@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.review import _ep_label, _presence_txt, _thumb_path, approve
+from pipeline.review import _clip_ep, _ep_label, _presence_txt, _thumb_path, approve
 
 
 class TestEpLabel:
@@ -110,3 +110,17 @@ class TestThumbPath:
         a = _thumb_path(Path("/x"), "s04c1", 525.61, 7.479, 1)
         b = _thumb_path(Path("/x"), "s04c1", 525.61, 5.0, 1)
         assert a != b
+
+
+class TestClipEp:
+    """抽检页片段的集号标签兜底（2026-08-18 复盘③）：手工补的片段只有
+    source/start/dur，裸取 season/episode 会让整页 KeyError。"""
+
+    def test_机器产物照常(self):
+        assert _clip_ep({"season": 1, "episode": 8}) == "S01E08"
+
+    def test_缺键退文件名(self):
+        assert _clip_ep({"source": "data/library/raw/某番/[08].mkv"}) == "[08].mkv"
+
+    def test_连source都没有不崩(self):
+        assert _clip_ep({}) == "?"

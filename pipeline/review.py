@@ -125,6 +125,16 @@ def _hhmmss(t: float) -> str:
     return f"{int(t) // 60:02d}:{int(t) % 60:02d}"
 
 
+def _clip_ep(c: dict) -> str:
+    """片段的集号标签。人审手工补的片段可能只有 source/start/dur
+    （2026-08-18 复盘③：cover.py 裸取 c['season'] 崩过一次），缺键时用
+    文件名兑底——这一页是给人看的，标签降级总比整页 KeyError 强。
+    """
+    if isinstance(c.get("season"), int) and isinstance(c.get("episode"), int):
+        return f"S{c['season']:02d}E{c['episode']:02d}"
+    return Path(str(c.get("source", ""))).name or "?"
+
+
 CSS = """
 :root { color-scheme: dark light; }
 body { margin:0; padding:24px; background:#14161a; color:#e6e8eb;
@@ -222,7 +232,7 @@ def build(episode: Path) -> Path:
                 f'<div class="clip"><div class="shots">{imgs}</div>'
                 f'<div class="side"><div class="line">'
                 f'{html.escape(c.get("line") or "（无台词）")}</div>'
-                f'<div class="n">S{c["season"]:02d}E{c["episode"]:02d} '
+                f'<div class="n">{_clip_ep(c)} '
                 f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {score_txt}'
                 f'{_presence_txt(c.get("presence"))}</div>'
                 f'</div></div>')

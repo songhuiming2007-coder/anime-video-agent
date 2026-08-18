@@ -81,7 +81,26 @@ def _episode_points(anime: str, topic: Path) -> list[tuple[str, float, str]]:
     return pts
 
 
-def _sample_points(plan: dict) -> list[tuple[str, float, str]]:
+def _clip_ep(c: dict, by_path: dict[str, str] | None = None) -> str:
+    """片段的集号标签（SxxEyy）。
+
+    机器产物必有整型 season/episode（clips.candidate 注入）；但人审手工
+    补进 04-clips 的片段可以只有 source/start/dur——2026-08-18 复盘③：
+    旧实现裸取 `c['season']`，撞上手写片段直接 KeyError，整页候选崩掉。
+    缺键时按 source 路径在片源登记表里反查（与 `_by_character` 同一张表）；
+    还查不到就用文件名做标签——标签只用于展示与铺开分档，拿不到集号
+    不该让封面步骤整个失败。
+    """
+    if isinstance(c.get("season"), int) and isinstance(c.get("episode"), int):
+        return f"S{c['season']:02d}E{c['episode']:02d}"
+    src = str(c.get("source", ""))
+    if by_path and src in by_path:
+        return by_path[src]
+    return Path(src).name or "?"
+
+
+def _sample_points(plan: dict, by_path: dict[str, str] | None = None
+                   ) -> list[tuple[str, float, str]]:
     """候选帧的取样点：(源文件, 秒, 说明)。取本期实际用上的片段。"""
     pts = []
     for seg in plan["segments"]:
@@ -89,7 +108,7 @@ def _sample_points(plan: dict) -> list[tuple[str, float, str]]:
             t, end = c["start"], c["start"] + c["dur"]
             while t < end:
                 pts.append((c["source"], round(t, 2),
-                            f'段{seg["index"]} S{c["season"]:02d}E{c["episode"]:02d}'))
+                            f'段{seg["index"]} {_clip_ep(c, by_path)}'))
                 t += STEP
     return pts
 
@@ -370,7 +389,14 @@ def build(episode: Path, anime: str | None = None,
     raw = out_dir / "raw"
     raw.mkdir(parents=True, exist_ok=True)
 
-    clip_pts = _sample_points(data)
+    # 片源路径 → 集号的反查表，只在有片段缺 season/episode 时才需要
+    # （人审手工补的片段）；全是机器产物时不碰 sources.json，行为与从前一致
+    needs_lookup = any(
+        not isinstance(c.get("season"), int) or not isinstance(c.get("episode"), int)
+        for seg in data["segments"] for c in seg["clips"])
+    by_path = ({rec["path"]: key for key, rec in load_sources(anime).items()}
+               if needs_lookup else None)
+    clip_pts = _sample_points(data, by_path)
     notes_pts = _notes_points(anime, episode / "01-topic.md")
     ep_pts = _episode_points(anime, episode / "01-topic.md")
     pts = clip_pts + notes_pts + ep_pts
