@@ -493,3 +493,69 @@ class TestExciseOnlyRefTitles:
         monkeypatch.setattr(t, "_titles", lambda: ["My Dearest"])
         edits, err = t.cer("八幡自爆", "八幡自保")   # 无歌名句，行为与从前一致
         assert (edits, err) == (1, 0.25)
+
+
+class TestLoadConfig:
+    """voice.json 前置校验（2026-08-18 复盘②）：坏 JSON / 缺必要键在加载处
+    当场报，不许流到 Engine 构造或 _voice_fingerprint 才裸 KeyError。"""
+
+    GOOD = {"engine": "qwen3_tts", "model": "mlx-community/M",
+            "ref_audio": "data/voice/reference/seg6.wav"}
+
+    def test_合法配置原样返回(self, tmp_path):
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps(self.GOOD), encoding="utf-8")
+        assert t.load_config(p)["engine"] == "qwen3_tts"
+
+    def test_缺文件(self, tmp_path):
+        with pytest.raises(SystemExit, match="缺少"):
+            t.load_config(tmp_path / "voice.json")
+
+    def test_坏JSON不裸抛(self, tmp_path):
+        p = tmp_path / "voice.json"
+        p.write_text("{ 不是 json", encoding="utf-8")
+        with pytest.raises(SystemExit, match="合法 JSON"):
+            t.load_config(p)
+
+    def test_缺必要键逐个报出(self, tmp_path):
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps({"engine": "qwen3_tts"}), encoding="utf-8")
+        with pytest.raises(SystemExit, match="model"):
+            t.load_config(p)
+
+    def test_空串值也算缺(self, tmp_path):
+        # 写成 "" 不是「填了」——Engine 会拿空串去拼路径，报错离病根更远
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps({**self.GOOD, "ref_audio": ""}), encoding="utf-8")
+        with pytest.raises(SystemExit, match="ref_audio"):
+            t.load_config(p)
+
+
+class TestStaleDownstream:
+    """级联校验（2026-08-18 复盘①）：局部重跑改了段时长，下游 04-clips*.json
+    要在产生的这一刻被指出来，不许攒到渲染时才炸。"""
+
+    AUDIO = [{"index": 1, "duration": 6.0}]
+
+    def _clips(self, episode, name, clip_durs):
+        (episode / name).write_text(json.dumps({"segments": [
+            {"index": 1, "status": "ok",
+             "clips": [{"dur": d} for d in clip_durs]}]}), encoding="utf-8")
+
+    def test_下游不存在时安静(self, tmp_path):
+        assert t._stale_downstream(tmp_path, self.AUDIO) == []
+
+    def test_下游仍对齐时安静(self, tmp_path):
+        self._clips(tmp_path, "04-clips.json", [3.0, 3.0])
+        assert t._stale_downstream(tmp_path, self.AUDIO) == []
+
+    def test_下游漂移被点名(self, tmp_path):
+        self._clips(tmp_path, "04-clips.json", [3.0, 2.0])   # Σ5.0 vs 配音 6.0
+        out = t._stale_downstream(tmp_path, self.AUDIO)
+        assert len(out) == 1 and "04-clips.json" in out[0] and "段1" in out[0]
+
+    def test_approved同样查(self, tmp_path):
+        # approved 是渲染真正吃的那份，它脏比 04-clips.json 脏更危险
+        self._clips(tmp_path, "04-clips.approved.json", [8.0])
+        out = t._stale_downstream(tmp_path, self.AUDIO)
+        assert len(out) == 1 and "approved" in out[0]
