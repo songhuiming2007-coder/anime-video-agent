@@ -46,11 +46,11 @@
   集号/人物字段自觉性缺口、说话人确认死角……）。D15 已解决删除（BGM 例外规则同步）；
   D14/D16/D17 2026-08-14 由施工图 P3 解决删除（tts CPM 单源化、人类介入点口径统一、
   测试数清算）；D3 2026-08-14 由施工图 P4 解决删除（缩段不注水拍板落地）
-- 备忘：N1–N22，现存 20 条（占位死代码、CoreML 未走、ASR 同音字、IndexTTS-2 遗留、BGM 缺口、
+- 备忘：N1–N22，现存 18 条（占位死代码、CoreML 未走、ASR 同音字、IndexTTS-2 遗留、BGM 缺口、
   FACE_EXPAND 待标定、贴名规模量化、cpm 重测、推翻条件、文档琐碎集合、回读质检盲区……）。
-  N15/N18 2026-08-14 由施工图 P3 解决删除（tts 时长带改读 config、切分标定判据补进
-  CLAUDE.md）；N21 同批修掉①②③（scenes.json 悬空引用/bgm.json 首数陈旧/SHOTLIST 步数断裂），
-  留④⑤⑥
+  N3/N13/N15/N18 已解决删除（shots calibrate 多参数支持、人审手工片段标记、tts 时长带改读 config、
+  切分标定判据补进 CLAUDE.md）；N21 同批修掉①②③⑤（scenes.json 悬空引用/bgm.json 首数陈旧/
+  SHOTLIST 步数断裂/voice.json ref_text why 注释），留④⑥
 
 > 2026-08-12 二轮摸底：分四个探索代理穷尽 pipeline/（18 py）、docs/（13 md）、config/+
 > skills/、仓库顶层+git 状态，交叉核对后新增 D14–D19、N14–N22（此前漏掉的代码级 bug、
