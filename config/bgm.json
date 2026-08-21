@@ -436,5 +436,226 @@
         "vocal": true
       }
     }
+  },
+  "夏隧": {
+    "_note": "剧场版原声带（2022，富贵晴香 担当配乐），纯候选池，每期选曲人耳现选并记录在 01-topic.md 或 02-script.md 音乐段",
+    "tracks": {
+      "Summer Days": {
+        "path": "data/library/bgm/夏隧/01. Summer Days.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.01",
+        "dur": 82.7,
+        "lufs": -21.53,
+        "onset": 6.4,
+        "vocal": false
+      },
+      "Invincible Girl": {
+        "path": "data/library/bgm/夏隧/02. Invincible Girl.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.02",
+        "dur": 34.6,
+        "lufs": -11.11,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Escapism": {
+        "path": "data/library/bgm/夏隧/03. Escapism.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.03",
+        "dur": 95.3,
+        "lufs": -10.23,
+        "onset": 6.912,
+        "vocal": false
+      },
+      "Mysterious World": {
+        "path": "data/library/bgm/夏隧/04. Mysterious World.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.04",
+        "dur": 62.7,
+        "lufs": -21.39,
+        "onset": 18.432000000000002,
+        "vocal": false
+      },
+      "Urashima Tunnel": {
+        "path": "data/library/bgm/夏隧/05. Urashima Tunnel.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.05",
+        "dur": 70.3,
+        "lufs": -19.08,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Where Are We": {
+        "path": "data/library/bgm/夏隧/06. Where Are We.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.06",
+        "dur": 66.3,
+        "lufs": -22.97,
+        "onset": 18.688,
+        "vocal": false
+      },
+      "Secret Alliance": {
+        "path": "data/library/bgm/夏隧/07. Secret Alliance.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.07",
+        "dur": 41.8,
+        "lufs": -11.95,
+        "onset": 7.424,
+        "vocal": false
+      },
+      "United Front": {
+        "path": "data/library/bgm/夏隧/08. United Front.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.08",
+        "dur": 91.4,
+        "lufs": -13.21,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Aquarium": {
+        "path": "data/library/bgm/夏隧/09. Aquarium.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.09",
+        "dur": 126.4,
+        "lufs": -21.56,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Hope": {
+        "path": "data/library/bgm/夏隧/10. Hope.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.10",
+        "dur": 48.7,
+        "lufs": -18.2,
+        "onset": 7.168,
+        "vocal": false
+      },
+      "108 Seconds": {
+        "path": "data/library/bgm/夏隧/11. 108 Seconds.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.11",
+        "dur": 66.8,
+        "lufs": -13.67,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Extraordinary": {
+        "path": "data/library/bgm/夏隧/12. Extraordinary.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.12",
+        "dur": 184.2,
+        "lufs": -20.92,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "The Last Date": {
+        "path": "data/library/bgm/夏隧/13. The Last Date.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.13",
+        "dur": 39.7,
+        "lufs": -18.09,
+        "onset": 6.912,
+        "vocal": false
+      },
+      "Lost": {
+        "path": "data/library/bgm/夏隧/14. Lost.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.14",
+        "dur": 43.4,
+        "lufs": -15.08,
+        "onset": 9.216000000000001,
+        "vocal": false
+      },
+      "Omelette Rice": {
+        "path": "data/library/bgm/夏隧/15. Omelette Rice.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.15",
+        "dur": 241.6,
+        "lufs": -12.79,
+        "onset": 6.912,
+        "vocal": false
+      },
+      "Sunflower Field": {
+        "path": "data/library/bgm/夏隧/16. Sunflower Field.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.16",
+        "dur": 41.5,
+        "lufs": -18.96,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Don't Leave Me": {
+        "path": "data/library/bgm/夏隧/17. Don't Leave Me.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.17",
+        "dur": 65.8,
+        "lufs": -11.21,
+        "onset": 9.216000000000001,
+        "vocal": false
+      },
+      "Truth": {
+        "path": "data/library/bgm/夏隧/18. Truth.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.18",
+        "dur": 99.9,
+        "lufs": -18.79,
+        "onset": 6.656000000000001,
+        "vocal": false
+      },
+      "Conflict": {
+        "path": "data/library/bgm/夏隧/19. Conflict.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.19",
+        "dur": 59.8,
+        "lufs": -19.4,
+        "onset": 6.4,
+        "vocal": false
+      },
+      "I Miss You": {
+        "path": "data/library/bgm/夏隧/20. I Miss You.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.20",
+        "dur": 56.9,
+        "lufs": -12.04,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Katappo - Acoustic Version (Instrumental)": {
+        "path": "data/library/bgm/夏隧/21. Katappo - Acoustic Version (Instrumental).mp3",
+        "slot": "结尾",
+        "from": "剧场版原声带 tr.21",
+        "dur": 272.2,
+        "lufs": -12.15,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "Lovers": {
+        "path": "data/library/bgm/夏隧/22. Lovers.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.22",
+        "dur": 71.4,
+        "lufs": -15.64,
+        "onset": 7.168,
+        "vocal": false
+      },
+      "Follow Your Heart": {
+        "path": "data/library/bgm/夏隧/23. Follow Your Heart.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.23",
+        "dur": 68.7,
+        "lufs": -11.92,
+        "onset": 6.144,
+        "vocal": false
+      },
+      "The Tunnel to Summer, the Exit of Goodbyes": {
+        "path": "data/library/bgm/夏隧/24. The Tunnel to Summer, the Exit of Goodbyes.mp3",
+        "slot": "正文",
+        "from": "剧场版原声带 tr.24",
+        "dur": 129.7,
+        "lufs": -12.55,
+        "onset": 33.792,
+        "vocal": false
+      }
+    }
   }
 }
