@@ -272,6 +272,7 @@ presence 布尔过滤硬性剔除（漏检误杀，ADR-0004 背景）。
 | 文件 | 记什么 | 进 git |
 |---|---|---|
 | `CLAUDE.md` | 工程约定，任何人拿这个仓库都适用 | 是 |
+| `AGENTS.md` | **`CLAUDE.md` 的跨 agent 镜像**（除首行标题外逐字一致）：不同 agent harness 找不同文件名，Claude Code 读 `CLAUDE.md`、其余读 `AGENTS.md`。**改一份必须同步另一份**——曾漂移落后（2026-08-21 审计发现 03.5 关卡等 4 处没同步）。不用 symlink：Windows 未开 `core.symlinks` 会把软链检出成纯文本 | 是 |
 | `CLAUDE.local.md` | 只对本机 / 本账号成立的事实（盘符、播放数据、优先级） | 否 |
 | `docs/STANDARD.md` | **规范定义（本文件）**：标准、理由、违反程序 | 是 |
 | `docs/WORKFLOW.md` | 每期九步与 Phase 0 的操作细节 | 是 |
