@@ -415,6 +415,9 @@ def check(video: Path, plan: dict | None = None,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("target", type=Path, help="本期目录，或直接给 mp4")
+    ap.add_argument("--json", action="store_true",
+                    help="结构化输出给 agent 消费。key 稳定（name/ok/detail/skipped），"
+                         "别把 detail 里的中文当接口。退出码与人类模式一致。")
     a = ap.parse_args()
 
     if a.target.is_dir():
@@ -430,12 +433,13 @@ def main() -> int:
     mf = episode / "03-audio" / "manifest.json"
     audio = json.loads(mf.read_text(encoding="utf-8"))["segments"] if mf.exists() else None
     checks = check(video, plan, audio)
-    width = max(len(c.name) for c in checks) + 2
-    lines = [f"{'SKIP' if c.skipped else 'PASS' if c.ok else 'FAIL'}  "
-             f"{c.name:<{width}}{c.detail}" for c in checks]
     passed = sum(c.ok for c in checks)
     skipped = sum(c.skipped for c in checks)
     failed = len(checks) - passed - skipped
+
+    width = max(len(c.name) for c in checks) + 2
+    lines = [f"{'SKIP' if c.skipped else 'PASS' if c.ok else 'FAIL'}  "
+             f"{c.name:<{width}}{c.detail}" for c in checks]
     lines.append("-" * 62)
     tail = f"{passed}/{len(checks)} 通过"
     if skipped:
@@ -446,10 +450,19 @@ def main() -> int:
         tail += "。主观项仍需人看：节奏、画文是否贴合。"
     lines.append(tail)
 
+    # 06-check.log 始终写：它是这一步落盘的耐久产物，--json 只改 stdout 给机器读。
     log = episode / "06-check.log"
     log.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines))
-    print(f"→ {log}")
+
+    if a.json:
+        print(json.dumps({
+            "passed": passed, "failed": failed, "skipped": skipped,
+            "ok": not (failed or skipped),
+            "checks": [c.__dict__ for c in checks],
+        }, ensure_ascii=False))
+    else:
+        print("\n".join(lines))
+        print(f"→ {log}")
     # 跳过也算不合格：门禁的意义是「全过才放行」，少跑一项就不知道那一项行不行。
     return 1 if (failed or skipped) else 0
 
