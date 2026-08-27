@@ -1,3 +1,9 @@
+---
+related-issues: D21, N7, N11, N12, N19, N22
+related-plans: —
+status: accepted
+---
+
 # ADR-0006：配音引擎换成 Qwen3-TTS 1.7B Base（多语种）
 
 日期：2026-08-15

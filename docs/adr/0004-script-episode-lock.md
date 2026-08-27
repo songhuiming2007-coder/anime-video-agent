@@ -1,3 +1,9 @@
+---
+related-issues: B1, D1, D6, D18, N9
+related-plans: —
+status: accepted
+---
+
 # ADR-0004：排片先锁定集号再打分，presence 只做带内次级排序
 
 日期：2026-08-09

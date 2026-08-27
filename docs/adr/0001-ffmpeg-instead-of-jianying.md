@@ -1,3 +1,9 @@
+---
+related-issues: —
+related-plans: —
+status: accepted
+---
+
 # ADR-0001：放弃剪映草稿生成，直接用 ffmpeg 渲染成片
 
 日期：2026-07-28
