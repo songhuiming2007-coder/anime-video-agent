@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -915,14 +917,21 @@ def run(episode: Path, keep: bool = False) -> Path:
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
-        # 1. 逐个切片（两道守卫在 cut 里）
-        parts = []
-        n = sum(len(s["clips"]) for s in segments)
-        for i, clip in enumerate((c for s in segments for c in s["clips"]), 1):
-            dest = work / f"c{i:03d}.mp4"
-            cut(clip, dest)
-            parts.append(dest)
-            print(f"\r  切片 {i}/{n}", end="", flush=True)
+        # 1. 逐个切片（两道守卫在 cut 里，多线程并行加速）
+        clips_flat = [c for s in segments for c in s["clips"]]
+        n = len(clips_flat)
+        jobs = [(c, work / f"c{i:03d}.mp4", i) for i, c in enumerate(clips_flat, 1)]
+        workers = min(6, os.cpu_count() or 1)
+        done_cnt = 0
+        def _do_cut(j):
+            nonlocal done_cnt
+            cut(j[0], j[1])
+            done_cnt += 1
+            print(f"\r  切片 {done_cnt}/{n}", end="", flush=True)
+            return j[1]
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            parts = list(pool.map(_do_cut, jobs))
         print()
 
         # 2. 拼画面轨。
