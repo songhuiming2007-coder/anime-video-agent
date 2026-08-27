@@ -712,3 +712,90 @@ class TestRefitAtomic:
         assert not (ep / "04-clips.json.tmp").exists()
         data = _json.loads((ep / "04-clips.json").read_text(encoding="utf-8"))
         assert data["segments"][0]["clips"]   # 重写后的文件仍是合法 plan
+
+
+class TestAnchorParse:
+    """`锚点:` 字段解析（ADR-0008）。锚点是排片的确定性输入，
+    写错 = 画面直接指到错误的时间码，所以格式错误一律当场报错。"""
+
+    def test_点时间码(self):
+        a = c._parse_anchor("S01E01 17:50", 1)
+        assert (a["season"], a["episode"], a["t0"], a["t1"]) == (1, 1, 1070.0, None)
+
+    def test_区间时间码(self):
+        a = c._parse_anchor("S01E01 17:50-18:20", 1)
+        assert (a["t0"], a["t1"]) == (1070.0, 1100.0)
+
+    def test_剧场版三位分钟(self):
+        assert c._parse_anchor("S01E01 96:08", 1)["t0"] == 5768.0
+
+    def test_无返回None(self):
+        assert c._parse_anchor("无（纯氛围过场）", 1) is None
+        assert c._parse_anchor("无", 1) is None     # 理由缺失由 check_script 拦
+
+    def test_格式坏掉当场报错(self):
+        with pytest.raises(SystemExit):
+            c._parse_anchor("第一集 17:50", 3)
+
+    def test_区间终点不在起点之后报错(self):
+        with pytest.raises(SystemExit):
+            c._parse_anchor("S01E01 18:20-17:50", 1)
+
+    def test_parse_shots_锚点自带集号(self, tmp_path):
+        f = tmp_path / "s.md"
+        f.write_text("## 段落 1\n\n配音：x。\n\n画面：\n  锚点: S01E01 17:50\n",
+                     encoding="utf-8")
+        out = c.parse_shots(f)
+        assert out[0]["episode"] == "S01E01" and out[0]["anchor"]["t0"] == 1070.0
+
+    def test_parse_shots_集与锚点写叉报错(self, tmp_path):
+        f = tmp_path / "s.md"
+        f.write_text("## 段落 1\n\n配音：x。\n\n画面：\n  集: S01E02\n  锚点: S01E01 17:50\n",
+                     encoding="utf-8")
+        with pytest.raises(SystemExit):
+            c.parse_shots(f)
+
+    def test_parse_shots_锚点与人物冲突报错(self, tmp_path):
+        # 锚点段不检索，人物过滤器用不上——写了只会被静默忽略，宁可当场报错
+        f = tmp_path / "s.md"
+        f.write_text("## 段落 1\n\n配音：x。\n\n画面：\n  人物: 阳菜\n  锚点: S01E01 17:50\n",
+                     encoding="utf-8")
+        with pytest.raises(SystemExit):
+            c.parse_shots(f)
+
+
+class TestAnchorCandidate:
+    """锚点 → 片段：起点吸附镜头切点，时长交给 size() 水填。"""
+
+    TBL = {"shots": [{"i": 0, "start": 0.0, "end": 10.0, "rep": 5.0},
+                     {"i": 1, "start": 10.0, "end": 25.0, "rep": 17.5},
+                     {"i": 2, "start": 25.0, "end": 40.0, "rep": 32.5}]}
+    SRC = {"S01E01": {"path": "/x/e01.mkv", "duration": 100.0}}
+
+    def _run(self, raw, monkeypatch, sources=None):
+        from pipeline import shots
+        monkeypatch.setattr(shots, "load", lambda a, k: self.TBL)
+        return c._anchor_candidate(c._parse_anchor(raw, 1),
+                                   sources or self.SRC, "番")
+
+    def test_起点吸附到含锚点的镜头切点(self, monkeypatch):
+        # 00:12 落在镜头 [10,25)，起点取 10.0——不切半镜
+        cand = self._run("S01E01 00:12", monkeypatch)
+        assert cand["start"] == 10.0 and cand["span"] == 15.0
+
+    def test_区间跨镜头取到终点镜头的尾切点(self, monkeypatch):
+        cand = self._run("S01E01 00:05-00:30", monkeypatch)
+        assert cand["start"] == 0.0 and cand["span"] == 40.0
+
+    def test_该集没登记返回None(self, monkeypatch):
+        assert self._run("S01E09 00:12", monkeypatch) is None
+
+    def test_锚点超出片长返回None(self, monkeypatch):
+        assert self._run("S01E01 99:00", monkeypatch) is None
+
+    def test_字段形状与_candidate_一致(self, monkeypatch):
+        # 下游 _overlaps/size/render 依赖同一组字段，缺一个就是静默错
+        cand = self._run("S01E01 00:12", monkeypatch)
+        for k in ("season", "episode", "source", "start", "dur", "span",
+                  "limit", "score", "line", "presence"):
+            assert k in cand

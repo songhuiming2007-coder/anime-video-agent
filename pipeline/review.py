@@ -205,7 +205,9 @@ def build(episode: Path) -> Path:
         # 人扫这一页时若不知道某段走的是哪条，会拿一列数横着比。
         # 角色过滤退回也要标：它说明那一段的过滤没起作用，画面里未必有那个人。
         chan = ""
-        if s.get("channel") == "scene":
+        if s.get("channel") == "anchor":
+            chan = f'　<span class="flag">锚点 {html.escape((s.get("anchor") or {}).get("raw", ""))}</span>'
+        elif s.get("channel") == "scene":
             chan = '　<span class="flag">画面通道</span>'
         elif s.get("person"):
             chan = f'　人物 <b>{html.escape(s["person"])}</b>'
