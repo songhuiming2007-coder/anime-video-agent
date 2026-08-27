@@ -290,6 +290,36 @@ def _norm_ep(raw: str) -> str | None:
     return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
 
 
+# 锚点时间码（ADR-0008，2026-08-27 加）。与 clips._ANCHOR 同口径：
+# `S01E01 17:50` 或区间 `S01E01 17:50-18:20`，分钟允许三位（剧场版 96:08），
+# 秒两位、允许小数秒。两处各自维护（与 配音/查询 字段的三处同口径先例一致），
+# 改一处必须同步另一处。
+_TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
+ANCHOR_TC = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~]\s*{_TC})?$", re.I)
+
+
+def _has_visual_source(block: str) -> bool:
+    """段落块有没有画面来源：`查询`（检索通道）或可解析的时间码 `锚点`（ADR-0008）。"""
+    if re.search(r"^\s*查询[：:]\s*(.+)$", block, re.M):
+        return True
+    anc = re.search(r"^\s*锚点[：:]\s*(.+)$", block, re.M)
+    return bool(anc and ANCHOR_TC.fullmatch(anc.group(1).strip()))
+
+
+def parse_anchors(text: str) -> list[tuple[str, str | None]]:
+    """每个段落块的 `锚点:` 字段 → [(段落号, 原文或 None)]。None = 没写这个字段。
+
+    切块口径与 parse_episodes 一致。锚点是排片的确定性输入（ADR-0008），
+    缺失本身就是要拦的事，所以这里连「没写」也一并报出来。
+    """
+    out = []
+    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)",
+                         text, re.M | re.S):
+        anc = re.search(r"^\s*锚点[：:]\s*(.+)$", m.group(2), re.M)
+        out.append((m.group(1), anc.group(1).strip() if anc else None))
+    return out
+
+
 def run(path: Path) -> list[Check]:
     text = path.read_text(encoding="utf-8")
     vo, queries, alts = parse(text)
@@ -332,9 +362,14 @@ def run(path: Path) -> list[Check]:
     add(f"字数 {min_chars}–{max_chars}", min_chars <= chars <= max_chars, f"{chars} 字{tail}"
         + ("　（01-topic.md 时长目标覆盖）" if override else ""))
     add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", dur_lo <= chars / CPM <= dur_hi, f"{chars / CPM:.1f} 分钟")
-    # 查询按含片尾的总段数比，因为每一段都要出画面
-    add("每段都有查询", len(queries) == len(vo) + bool(outro),
-        f"查询 {len(queries)} / 段落 {len(vo) + bool(outro)}")
+    # 每段都要有画面来源：`查询`（检索通道）或时间码 `锚点`（ADR-0008 直通通道）。
+    # 锚点段不检索，不强求查询；其余段照旧每段一条。
+    block_list = [(m.group(1), m.group(2)) for m in re.finditer(
+        r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S)]
+    no_visual = [label for label, b in block_list if not _has_visual_source(b)]
+    add("每段都有查询或锚点", not no_visual,
+        f"{len(block_list) - len(no_visual)}/{len(block_list)} 段有画面来源"
+        + ("，缺：" + "、".join(f"段{l}" for l in no_visual[:5]) if no_visual else ""))
 
     # 集号（ADR-0004，2026-08-09 加）：格式校验不依赖外部文件、永远可跑；
     # 存在性校验要番名 + 素材库，读不到就显式 FAIL「跳过不可判定」——
@@ -388,6 +423,67 @@ def run(path: Path) -> list[Check]:
                     add("集号在素材库", False, "；".join(msgs[:3]))
                 else:
                     add("集号在素材库", True, f"{len(eps)} 段集号都在素材库里")
+
+    # 锚点（ADR-0008，2026-08-27 加）：排片主通道的剧情时间码，三段递进——
+    # 字段在不在 → 格式对不对 → 指向的集与时间码真不真（素材库）。
+    anc_fields = parse_anchors(text)
+    missing_anc = [label for label, raw in anc_fields if raw is None]
+    add("每段都有锚点字段", not missing_anc,
+        ("缺：" + "、".join(f"段{l}" for l in missing_anc[:6])
+         + "　没有锚点的段写 `锚点: 无（理由）`，不许留空——锚点是排片的确定性输入"
+         if missing_anc else f"{len(anc_fields)}/{len(anc_fields)} 段已声明"))
+
+    ep_by_label = dict(parse_episodes(text))
+    bad_fmt, no_reason, anchors_tc = [], [], []
+    for label, raw in anc_fields:
+        if raw is None:
+            continue
+        if raw.startswith("无"):
+            if not raw[1:].strip(" 　（）()"):
+                no_reason.append(label)     # ADR-0008：「无」必须附理由，不许留空蒙混
+            continue
+        m = ANCHOR_TC.fullmatch(raw)
+        if not m:
+            bad_fmt.append((label, raw))
+            continue
+        t0 = int(m.group(3)) * 60 + float(m.group(4))
+        t1 = (int(m.group(5)) * 60 + float(m.group(6))) if m.group(5) else None
+        if t1 is not None and t1 <= t0:
+            bad_fmt.append((label, f"{raw}（终点不在起点之后）"))
+            continue
+        akey = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+        ep_raw = ep_by_label.get(label)
+        if ep_raw and _norm_ep(ep_raw) not in (None, akey):
+            bad_fmt.append((label, f"{raw}（与集号 {ep_raw} 不是同一集）"))
+            continue
+        anchors_tc.append((label, akey, t0, t1))
+    problems = [f"段{l}「{r}」" for l, r in bad_fmt] + \
+               [f"段{l} 写「无」没说理由" for l in no_reason]
+    add("锚点格式", not problems,
+        "；".join(problems[:4]) if problems
+        else f"{len(anchors_tc)} 段时间码锚点，格式全对")
+
+    if anchors_tc:
+        anime = bgm.anime_of(path.parent)
+        if not anime:
+            add("锚点指向素材", False,
+                "跳过不可判定：01-topic.md 没写「番:」字段，读不到番名（S9 跳过不是通过）")
+        else:
+            try:
+                from . import ingest  # 延迟 import：与上方「集号在素材库」同规矩
+                sources = ingest.load_sources(anime)
+            except SystemExit as e:
+                add("锚点指向素材", False, f"跳过不可判定：{e}（S9 跳过不是通过）")
+            else:
+                bad_src = [f"段{l}「{k}」集未入库" for l, k, t0, t1 in anchors_tc
+                           if k not in sources]
+                bad_src += [f"段{l}「{k} {int(t0 // 60)}:{int(t0 % 60):02d}」超出片长"
+                            f"（{sources[k]['duration']:.0f}s）"
+                            for l, k, t0, t1 in anchors_tc
+                            if k in sources and t0 >= sources[k]["duration"]]
+                add("锚点指向素材", not bad_src,
+                    "；".join(bad_src[:4]) if bad_src
+                    else f"{len(anchors_tc)} 段锚点都落在已入库集的片长内")
 
     sents = [s.strip() for v in vo for s in re.split(r"[。？！]", v) if s.strip()]
 

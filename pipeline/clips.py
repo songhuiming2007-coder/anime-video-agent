@@ -60,9 +60,44 @@ OVERLAP_GAP = 0.5
 # 可靠信号，presence 无权翻盘。0.03 是拍脑袋初值，被实测推翻（噪声是它两倍）。
 PRESENCE_BAND = 0.06
 
+# 锚点时间码（ADR-0008）：`锚点: S01E01 17:50` 或区间 `S01E01 17:50-18:20`。
+# 分钟允许三位（剧场版 96:08 之类），秒固定两位、允许小数秒。
+_TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
+_ANCHOR = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~]\s*{_TC})?$", re.I)
+
+
+def _parse_anchor(raw: str, seg_no: int) -> dict | None:
+    """`锚点` 字段原文 → {season, episode, t0, t1, raw}；`锚点: 无 …` 返回 None。
+
+    ADR-0008：锚点是番剧笔记里的分钟级剧情时间码，排片的一等公民——
+    双塔检索只证「用词相近」，锚点是写稿阶段就锁定的 Ground Truth。
+    `锚点: 无` 必须带理由（机检查），这里只认字。
+    """
+    if raw.startswith("无"):
+        return None
+    m = _ANCHOR.fullmatch(raw)
+    if not m:
+        raise SystemExit(
+            f"FAIL 段落 {seg_no} 的 `锚点` 写的是「{raw}」，机器认不了。\n"
+            f"     写规范形 `S01E01 17:50` 或区间 `S01E01 17:50-18:20`；"
+            f"确实无剧情锚点可写 `锚点: 无（理由）`——锚点是排片的确定性输入，\n"
+            f"     写错 = 画面直接指到错误的时间码，比检索错配更糟")
+
+    def _sec(mm: str, ss: str) -> float:
+        return int(mm) * 60 + float(ss)
+
+    t0 = _sec(m.group(3), m.group(4))
+    t1 = _sec(m.group(5), m.group(6)) if m.group(5) else None
+    if t1 is not None and t1 <= t0:
+        raise SystemExit(
+            f"FAIL 段落 {seg_no} 的 `锚点` 区间「{raw}」终点不在起点之后。\n"
+            f"     区间写 `起点-终点`，如 `S01E01 17:50-18:20`")
+    return {"season": int(m.group(1)), "episode": int(m.group(2)),
+            "t0": t0, "t1": t1, "raw": raw}
+
 
 def parse_shots(path: Path) -> list[dict]:
-    """稿件 → 每段的 配音 / 查询 / 备选 / 人物 / 场景 / 集。
+    """稿件 → 每段的 配音 / 查询 / 备选 / 人物 / 场景 / 集 / 锚点。
 
     `tts.parse_script` 只取配音，这里要连分镜一起拿，所以按段落块重新切。
     正则口径与 tts / check_script 保持一致：`## 段落 N` + `配音：`。
@@ -80,6 +115,11 @@ def parse_shots(path: Path) -> list[dict]:
     **ADR 原文写的字段名是 `画面`，实现改成了 `场景`**：稿件里 `画面：` 已经是
     包着 `查询/备选` 的块名，同名会让人和正则都分不清哪个是哪个。
 
+    `锚点` 是 ADR-0008 加的排片主通道（2026-08-27）：番剧笔记的分钟级剧情
+    时间码直通分镜——写了锚点的段不走检索（起点吸附到含锚点的镜头切点）；
+    `锚点: 无（理由）` 是显式声明无锚点可用，退回台词检索作氛围补位。
+    锚点自带集号，写了锚点 `集` 字段可省；两个都写且不一致当场报错。
+
     `集` 是 ADR-0004 加的检索约束（2026-08-09）：锁死本段检索的季/集，
     防止跨季/跨集语义高分顶掉正确画面。格式 `S01E07` / `S1E7`（归一化为
     `S01E07`），中文写法当场报错——集号是机器接口，写错 = 检索范围错了。
@@ -94,6 +134,7 @@ def parse_shots(path: Path) -> list[dict]:
         who = re.search(r"^\s*人物[：:]\s*(.+)$", b, re.M)
         scene = re.search(r"^\s*场景[：:]\s*(.+)$", b, re.M)
         ep = re.search(r"^\s*集[：:]\s*(.+)$", b, re.M)
+        anc = re.search(r"^\s*锚点[：:]\s*(.+)$", b, re.M)
         if not vo:
             continue
         if who and scene:
@@ -111,6 +152,23 @@ def parse_shots(path: Path) -> list[dict]:
                     f"     写规范形 `S01E07`（季两位、集两位，都补齐），别写中文「第一季第七集」"
                     f"——集号是检索约束，写错 = 检索范围错了")
             ep_norm = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+        anchor = None
+        anchor_none = False
+        if anc:
+            anchor = _parse_anchor(anc.group(1).strip(), i)
+            anchor_none = anchor is None
+            if anchor is not None:
+                if who or scene:
+                    raise SystemExit(
+                        f"FAIL 段落 {i} 同时写了 `锚点` 和 `{'人物' if who else '场景'}`。"
+                        f"锚点段不检索（ADR-0008），人物/场景过滤器用不上，"
+                        f"写了只会被静默忽略——删掉其中一个")
+                akey = f"S{anchor['season']:02d}E{anchor['episode']:02d}"
+                if ep_norm and ep_norm != akey:
+                    raise SystemExit(
+                        f"FAIL 段落 {i} 的 `集`（{ep_norm}）与 `锚点`（{akey}）不是同一集。\n"
+                        f"     两个字段指同一处剧情，写叉了排片必错——以引用核对为准改成一个")
+                ep_norm = ep_norm or akey       # 锚点自带集号，`集` 字段可省
         out.append({
             "index": i,
             "text": vo.group(1).strip(),
@@ -119,6 +177,8 @@ def parse_shots(path: Path) -> list[dict]:
             "person": who.group(1).strip() if who else None,
             "scene": scene.group(1).strip() if scene else None,
             "episode": ep_norm,
+            "anchor": anchor,
+            "anchor_none": anchor_none,
         })
     if not out:
         raise SystemExit(f"FAIL 没从 {path} 解析出任何段落")
@@ -174,6 +234,47 @@ def candidate(score: float, u, sources: dict, anime: str | None = None,
         "score": round(float(score), 4), "line": u.text[:60],
         "presence": round(float(presence), 3) if presence is not None else None,
     }
+
+
+def _anchor_candidate(anchor: dict, sources: dict, anime: str) -> dict | None:
+    """锚点 → 单个片段，起点吸附到镜头切点（ADR-0008）。不可用返回 None。
+
+    **吸附的是起点，不是时长。** 锚点指向「那一刻」，而切进一个镜头的中间
+    会让观众先看半秒上个镜头的尾巴；所以起点取「含锚点的镜头」的切点。
+    时长交给 `size()` 水填——往后多放几秒是同一场戏的延续，天然成立。
+    区间锚点（t1）的自然跨度 = 含起点镜头切点 → 含终点镜头的尾切点。
+
+    与 `candidate()` 同形（season/episode/source/start/dur/span/limit/score/line/
+    presence），下游 `_overlaps` / `size` / render 零改动。score 置 None——
+    锚点没有检索分，review 页按既有约定显示「手工」档（非检索产物）。
+    """
+    from . import shots as _shots      # 函数内 import：run() 里有同名局部变量
+    key = f"S{anchor['season']:02d}E{anchor['episode']:02d}"
+    src = sources.get(key)
+    if src is None:                     # 该集没登记——与 candidate() 同一条规矩
+        return None
+    table = _shots.load(anime, key)["shots"]    # load 自带切分参数一致性校验
+    s0 = _shots.at(table, anchor["t0"])
+    if s0 is None:                      # 锚点超出片长
+        return None
+    start = s0["start"]
+    if anchor["t1"] is not None:
+        s1 = _shots.at(table, anchor["t1"])
+        end = (s1 or table[-1])["end"]
+    else:
+        end = s0["end"]
+    span = max(end - start, 0.0)
+    dur = max(span, MIN_CLIP)
+    # 截取守卫与 candidate() 同源：超出片尾就放弃，不靠 ffmpeg 静默截断
+    if start + dur > src["duration"]:
+        dur = src["duration"] - start
+        if dur < MIN_CLIP:
+            return None
+    return {"season": anchor["season"], "episode": anchor["episode"],
+            "source": src["path"], "start": round(start, 3),
+            "dur": round(dur, 3), "span": round(span, 3),
+            "limit": src["duration"], "score": None,
+            "line": f"锚点 {anchor['raw']}", "presence": None}
 
 
 def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
@@ -250,8 +351,11 @@ def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
 from .align import SEG_TOL, refit, verify_alignment  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` 不改名）
 
 
-def _allocate(live, by_index, sources, anime, quota):
+def _allocate(live, by_index, sources, anime, quota, pre=()):
     """全局贪心分配，段内按带内序尝试。返回已占用的片段列表。
+
+    `pre`：锚点段（ADR-0008）已定死的片段——它们是一等公民，先占位，
+    检索段的 `_overlaps` 判定自然绕着它们走，不会抢走锚点指向的画面。
 
     每段一个指针，按 `hits` 的**段内序**（`_by_character` 已做带内修正：
     presence 只在台词分差 ≤ `PRESENCE_BAND` 的同一档内决胜负，漏检垫底）
@@ -265,7 +369,7 @@ def _allocate(live, by_index, sources, anime, quota):
     0.969 前面（ADR-0004 的带内语义在 pool 层失效）。这就是重写成指针轮转
     的原因。
     """
-    used: list[dict] = []
+    used: list[dict] = list(pre)
     got = {p["index"]: 0.0 for p in live}
     pointer = {p["index"]: 0 for p in live}
     while True:
@@ -493,6 +597,15 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     prep = []
     for shot, a in zip(shots, audio):
         fell_back = False
+        if shot["anchor"] is not None:          # 锚点通道（ADR-0008）：不检索，直通镜头表
+            prep.append({**shot, "duration": a["duration"], "hits": [],
+                         "used_query": None, "fallback": False, "rung": 1,
+                         "ep_scope": 0, "ep_fell_back": False,
+                         "channel": "anchor", "threshold": NO_MATCH,
+                         "filter_fell_back": False, "top_score": None,
+                         "anchor_cand": _anchor_candidate(shot["anchor"], sources, anime),
+                         "anchor_conflict": False})
+            continue
         if shot["scene"]:                       # 画面语义通道
             floor = scene_no_match(anime)
             hits, used_query, rung, scope = _ladder_scene(shot, svecs, sunits, floor)
@@ -544,6 +657,20 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     # 三元组；画面段与未写人物的台词段仍是 (分, unit) 二元组。*rest 兼容两种，
     # 在场分取不出来就是 None。**presence 绝不进跨段比较**（S10 的落实点）：
     # _allocate 每轮跨段只比当前候选的台词分，presence 只决定段内候选的尝试顺序。
+    # 锚点段先定死（一等公民，ADR-0008）：检索段的分配绕着它们走。
+    # 锚段之间撞车不自动挪——两段锚同一处多半是写稿问题，标出来交 05 处理，
+    # 不静默移花接木。
+    placed: list[dict] = []
+    for p in prep:
+        cand = p.get("anchor_cand")
+        if cand is None:
+            continue
+        if _overlaps(cand, placed):
+            p["anchor_cand"] = None
+            p["anchor_conflict"] = True
+        else:
+            placed.append(cand)
+
     by_index = {p["index"]: p for p in prep}
     live = [p for p in prep if p["hits"] and p["top_score"] >= p["threshold"]]
 
@@ -554,7 +681,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     for _ in range(3):
         for p in prep:
             p["clips"] = []
-        used = _allocate(live, by_index, sources, anime, quota)
+        used = _allocate(live, by_index, sources, anime, quota, pre=placed)
 
         # 拉伸上限收到「同一集里下一个已分配片段的起点」，不能只收到片尾。
         # 2026-07-29 实测：段 11 的 15:18 被拉到 5.8s 之后撞进了段 12 的 15:24。
@@ -579,12 +706,22 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             quota[idx] += MIN_CLIP
 
     for p in prep:
+        if p.get("channel") == "anchor":
+            if p["anchor_conflict"]:
+                p["status"], p["clips"] = "anchor_overlap", []
+            elif p["anchor_cand"] is None:
+                # 该集没登记或锚点超出片长——与检索落空同一个终态，交 05 人工指定
+                p["status"], p["clips"] = "no_match", []
+            else:
+                p["clips"], p["status"] = size([p["anchor_cand"]], p["duration"])
+            continue
         if not p["hits"] or p["top_score"] < p["threshold"]:
             p["status"], p["clips"] = "no_match", []
             continue
         p["clips"], p["status"] = size(p["clips"], p["duration"])
 
-    out = [{k: v for k, v in p.items() if k not in ("hits", "got")}
+    out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cand",
+                                                    "anchor_conflict")}
            for p in sorted(prep, key=lambda x: x["index"])]
 
     dest = episode / "04-clips.json"
@@ -647,7 +784,8 @@ def main() -> int:
         rung = {2: "  [第2级·备选]", 3: "  [第3级·配音原文]"}.get(s.get("rung", 1), "")
         # 通道与过滤要显示出来：**画面分数和台词分数不可比**，不标出来看的人会拿
         # 一列数横着比。退回也要显示——它说明那一段的角色过滤没起作用。
-        chan = "画面" if s.get("channel") == "scene" else "台词"
+        chan = ("锚点" if s.get("channel") == "anchor"
+                else "画面" if s.get("channel") == "scene" else "台词")
         who = f"·{s['person']}" if s.get("person") else ""
         if s.get("filter_fell_back"):
             who += "(过滤为空→退回)"
@@ -656,8 +794,12 @@ def main() -> int:
         ep = f"·{s['episode']}" if s.get("episode") else ""
         if s.get("ep_fell_back"):
             ep += " (→季内)" if s.get("ep_scope") == 1 else " (→全空间)"
+        # 锚点段没有检索分（ADR-0008）：分数位显示锚点原文，别让人拿
+        # 一个不存在的分数横着比。
+        score = (f"{s['top_score']:.3f}" if s.get("top_score") is not None
+                 else (s.get("anchor") or {}).get("raw", "—"))
         print(f"{mark}段{s['index']:2d}  {s['duration']:5.1f}s  "
-              f"{len(s['clips'])} 片段  {chan}{who} {s.get('top_score', 0):.3f}  "
+              f"{len(s['clips'])} 片段  {chan}{who} {score}  "
               f"{'/'.join(eps) or '—'}  {s['status']}{rung}{ep}")
 
     n_clips = sum(len(s["clips"]) for s in segs)

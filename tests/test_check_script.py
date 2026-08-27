@@ -17,19 +17,20 @@ from pipeline import check_script as cs
 from pipeline import paths
 
 
-def build(vos, queries=None, eps=None):
-    """按稿件格式拼一篇。queries 不给就每段配一条；eps 按段给集号（None 段不写）。"""
+def build(vos, queries=None, eps=None, anchors=None):
+    """按稿件格式拼一篇。queries 不给就每段配一条；eps/anchors 按段给（None 段不写）。"""
     parts = []
     for i, v in enumerate(vos, 1):
         q = queries[i - 1] if queries else "某句台词"
         ep = f"\n  集: {eps[i - 1]}" if eps and eps[i - 1] else ""
-        parts.append(f"## 段落 {i}\n\n配音：{v}\n\n画面：\n  查询: {q}{ep}\n")
+        anc = f"\n  锚点: {anchors[i - 1]}" if anchors and anchors[i - 1] else ""
+        parts.append(f"## 段落 {i}\n\n配音：{v}\n\n画面：\n  查询: {q}{ep}{anc}\n")
     return "\n".join(parts)
 
 
-def script(tmp_path, vos, queries=None, eps=None):
+def script(tmp_path, vos, queries=None, eps=None, anchors=None):
     f = tmp_path / "02-script.md"
-    f.write_text(build(vos, queries, eps), encoding="utf-8")
+    f.write_text(build(vos, queries, eps, anchors), encoding="utf-8")
     return f
 
 
@@ -600,3 +601,80 @@ class TestDurationOverrideProseTolerance:
         f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
         with pytest.raises(SystemExit, match="时长目标"):
             cs.episode_duration_override(f)
+
+
+class TestAnchorChecks:
+    """锚点三段递进机检（ADR-0008）：字段在不在 → 格式对不对 → 指向真不真。
+
+    锚点是排片的确定性输入，错锚点比检索错配更糟（画面直接指到错误时间码），
+    所以字段缺失、格式错误、「无」无理由，全部 FAIL 不蒙混。
+    """
+
+    def _sources(self, monkeypatch, sources):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda anime: sources)
+
+    def test_缺锚点字段_FAIL(self, tmp_path):
+        f = script(tmp_path, [BODY] * 2, anchors=["S01E01 17:50", None])
+        chk = get(cs.run(f), "每段都有锚点字段")
+        assert not chk.ok and "段2" in chk.detail
+
+    def test_锚点字段全覆盖_PASS(self, tmp_path):
+        f = script(tmp_path, [BODY] * 2, anchors=["S01E01 17:50", "无（氛围过场）"])
+        assert get(cs.run(f), "每段都有锚点字段").ok
+
+    def test_无没说理由_FAIL(self, tmp_path):
+        f = script(tmp_path, [BODY], anchors=["无"])
+        chk = get(cs.run(f), "锚点格式")
+        assert not chk.ok and "没说理由" in chk.detail
+
+    def test_格式坏掉_FAIL(self, tmp_path):
+        f = script(tmp_path, [BODY], anchors=["第一集 17:50"])
+        assert not get(cs.run(f), "锚点格式").ok
+
+    def test_区间终点在起点前_FAIL(self, tmp_path):
+        f = script(tmp_path, [BODY], anchors=["S01E01 18:20-17:50"])
+        assert not get(cs.run(f), "锚点格式").ok
+
+    def test_集号与锚点写叉_FAIL(self, tmp_path):
+        f = script(tmp_path, [BODY], eps=["S01E02"], anchors=["S01E01 17:50"])
+        chk = get(cs.run(f), "锚点格式")
+        assert not chk.ok and "不是同一集" in chk.detail
+
+    def test_锚点段可省查询(self, tmp_path):
+        # 锚点段不检索，不强求查询（ADR-0008）；别的段照旧每段一条
+        f = tmp_path / "02-script.md"
+        f.write_text(
+            "## 段落 1\n\n配音：x。\n\n画面：\n  锚点: S01E01 17:50\n\n"
+            "## 段落 2\n\n配音：y。\n\n画面：\n  查询: 某句台词\n  锚点: 无（氛围）\n",
+            encoding="utf-8")
+        assert get(cs.run(f), "每段都有查询或锚点").ok
+
+    def test_既没查询也没锚点_FAIL(self, tmp_path):
+        f = tmp_path / "02-script.md"
+        f.write_text("## 段落 1\n\n配音：x。\n\n画面：\n  人物: 阳菜\n", encoding="utf-8")
+        assert not get(cs.run(f), "每段都有查询或锚点").ok
+
+    def test_锚点指向已入库集_PASS(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], anchors=["S01E01 17:50"])
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S01E01": {"path": "/x/e01.mkv", "duration": 6733.0}})
+        assert get(cs.run(f), "锚点指向素材").ok
+
+    def test_锚点集未入库_FAIL(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], anchors=["S01E09 17:50"])
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S01E01": {"path": "/x/e01.mkv", "duration": 6733.0}})
+        assert not get(cs.run(f), "锚点指向素材").ok
+
+    def test_锚点超出片长_FAIL(self, tmp_path, monkeypatch):
+        f = script(tmp_path, [BODY], anchors=["S01E01 199:00"])
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        self._sources(monkeypatch, {"S01E01": {"path": "/x/e01.mkv", "duration": 6733.0}})
+        chk = get(cs.run(f), "锚点指向素材")
+        assert not chk.ok and "超出片长" in chk.detail
+
+    def test_读不到番名_跳过不是通过(self, tmp_path):
+        f = script(tmp_path, [BODY], anchors=["S01E01 17:50"])
+        chk = get(cs.run(f), "锚点指向素材")
+        assert not chk.ok and "跳过不可判定" in chk.detail
