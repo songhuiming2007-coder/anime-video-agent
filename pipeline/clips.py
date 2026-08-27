@@ -63,7 +63,7 @@ PRESENCE_BAND = 0.06
 # 锚点时间码（ADR-0008）：`锚点: S01E01 17:50` 或区间 `S01E01 17:50-18:20`。
 # 分钟允许三位（剧场版 96:08 之类），秒固定两位、允许小数秒。
 _TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
-_ANCHOR = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~]\s*{_TC})?$", re.I)
+_ANCHOR = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
 
 
 def _parse_anchor(raw: str, seg_no: int) -> dict | None:
@@ -681,6 +681,12 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     for _ in range(3):
         for p in prep:
             p["clips"] = []
+        # 锚点 dict 是这里唯一跨轮存活的对象（检索候选每轮新建）：by_ep 每轮把
+        # limit 收紧（只紧不松）、floor 由当轮配对写入——轮间不恢复的话，上一轮的
+        # 约束会残留到下一轮。恢复全量余量，让当轮 by_ep 重新约束。
+        for cand in placed:
+            cand["limit"] = sources[f"S{cand['season']:02d}E{cand['episode']:02d}"]["duration"]
+            cand.pop("floor", None)
         used = _allocate(live, by_index, sources, anime, quota, pre=placed)
 
         # 拉伸上限收到「同一集里下一个已分配片段的起点」，不能只收到片尾。

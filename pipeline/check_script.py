@@ -295,7 +295,7 @@ def _norm_ep(raw: str) -> str | None:
 # 秒两位、允许小数秒。两处各自维护（与 配音/查询 字段的三处同口径先例一致），
 # 改一处必须同步另一处。
 _TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
-ANCHOR_TC = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~]\s*{_TC})?$", re.I)
+ANCHOR_TC = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
 
 
 def _has_visual_source(block: str) -> bool:
@@ -547,13 +547,17 @@ def run(path: Path) -> list[Check]:
         "、".join(f"「{e}」" for e in sorted(set(enum))) + "　并列平铺，挑一个挖到底"
         if len(set(enum)) >= 2 else "无")
 
-    # 剧情锚点：以每段画面块的 `集:` 字段为准（ADR-0004 的解析结果，集号格式
-    # 已由上方「集号格式/集号在素材库」两项把关）。**不再从正文找「第X集」字样**
-    # ——正文要不要点明集数、剧情对不对、文字像不像人，是 02.5 人审的活，
-    # 机检逼正文写集数 = 让机器决定内容，方向反了（2026-08-12 改）。
-    anchors = [r for _, r in parse_episodes(text) if _norm_ep(r)]
-    add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchors) >= MIN_ANCHOR,
-        f"{len(anchors)}/{len(vo)} 段画面块带集号" if anchors else "0 段，全篇没有画面集号锚点")
+    # 剧情锚点：带 `集:` 字段或时间码 `锚点:` 的段落数（集号格式由上方
+    # 「集号格式/集号在素材库」把关，锚点格式由「锚点格式」把关）。ADR-0008 后
+    # 锚点自带集号、`集` 字段可省——只数集号会逼写稿人加冗余字段，
+    # 检查项长期误报 = 没有检查（S3）。
+    # **不再从正文找「第X集」字样**——正文要不要点明集数、剧情对不对、
+    # 文字像不像人，是 02.5 人审的活，机检逼正文写集数 = 让机器决定内容（2026-08-12 改）。
+    anchor_segs = ({l for l, r in parse_episodes(text) if _norm_ep(r)}
+                   | {l for l, _, _, _ in anchors_tc})
+    add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchor_segs) >= MIN_ANCHOR,
+        f"{len(anchor_segs)}/{len(vo)} 段带集号或时间码锚点"
+        if anchor_segs else "0 段，全篇没有画面集号/锚点")
 
     visual = VISUAL.findall(" ".join(queries))
     add("查询无构图词", not visual, "、".join(sorted(set(visual))) or "无")

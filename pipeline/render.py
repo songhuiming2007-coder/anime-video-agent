@@ -922,16 +922,18 @@ def run(episode: Path, keep: bool = False) -> Path:
         n = len(clips_flat)
         jobs = [(c, work / f"c{i:03d}.mp4", i) for i, c in enumerate(clips_flat, 1)]
         workers = min(6, os.cpu_count() or 1)
-        done_cnt = 0
+
         def _do_cut(j):
-            nonlocal done_cnt
             cut(j[0], j[1])
-            done_cnt += 1
-            print(f"\r  切片 {done_cnt}/{n}", end="", flush=True)
             return j[1]
 
+        # 进度在主线程打印：工作线程只干活。`done_cnt += 1` 放 worker 里是非原子
+        # 的 read-add-write，6 线程共享会丢计数（GIL 不保证连贯）。
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            parts = list(pool.map(_do_cut, jobs))
+            parts = []
+            for i, dest in enumerate(pool.map(_do_cut, jobs), 1):
+                parts.append(dest)
+                print(f"\r  切片 {i}/{n}", end="", flush=True)
         print()
 
         # 2. 拼画面轨。
