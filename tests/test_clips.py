@@ -799,3 +799,69 @@ class TestAnchorCandidate:
         for k in ("season", "episode", "source", "start", "dur", "span",
                   "limit", "score", "line", "presence"):
             assert k in cand
+
+
+class TestAnchorIntegration:
+    """run() 级集成：预占位 → 3 轮 quota 循环 → final size → 序列化。
+
+    mock 掉检索与镜头表，只留真实 run() 链路——审查列出的交互疑点
+    （clips 重置循环、锚点跨轮存活、检索撞锚点、双锚撞车）都在这条链上。
+    """
+
+    TBL = {"shots": [{"i": 0, "start": 0.0, "end": 10.0, "rep": 5.0},
+                     {"i": 1, "start": 10.0, "end": 25.0, "rep": 17.5},
+                     {"i": 2, "start": 25.0, "end": 200.0, "rep": 112.5}]}
+    SRC = {"S01E01": {"path": "/x/e01.mkv", "duration": 200.0}}
+
+    class U:
+        def __init__(self, start, end, text="台词"):
+            self.anime, self.season, self.episode = "番", 1, 1
+            self.start, self.end, self.text = start, end, text
+
+    def _run(self, tmp_path, monkeypatch, script_text, durations, hits=()):
+        import json as _json
+        monkeypatch.setattr(c, "load_sources", lambda a: self.SRC)
+        monkeypatch.setattr(c, "load_all", lambda d, a: (None, None))
+        monkeypatch.setattr(c, "search",
+                            lambda *a, **k: [(0.9, u) for u in hits])
+        from pipeline import shots as sh
+        monkeypatch.setattr(sh, "load", lambda a, k: self.TBL)
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text(script_text, encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(_json.dumps({"segments": [
+            {"index": i, "label": str(i), "text": "x", "file": f"s{i}.wav",
+             "duration": d, "cer": 0.0, "attempts": 1}
+            for i, d in enumerate(durations, 1)]}), encoding="utf-8")
+        return _json.loads(c.run(ep, anime="番").read_text(encoding="utf-8"))
+
+    def test_锚点段水填到配音时长且不泄漏临时字段(self, tmp_path, monkeypatch):
+        data = self._run(tmp_path, monkeypatch,
+                         "## 段落 1\n\n配音：一。\n\n画面：\n  锚点: S01E01 00:12\n",
+                         [8.0])
+        seg = data["segments"][0]
+        assert seg["channel"] == "anchor" and seg["status"] == "ok"
+        clip = seg["clips"][0]
+        assert (clip["start"], clip["dur"]) == (10.0, 8.0)
+        for k in ("limit", "span", "floor"):
+            assert k not in clip          # 排版临时字段不进产物
+
+    def test_检索候选撞锚点被拒退到次优(self, tmp_path, monkeypatch):
+        # 锚点占 [10,25)；检索首选 (11,13) 落在里面必须被拒，退到 (60,63)
+        script = ("## 段落 1\n\n配音：一。\n\n画面：\n  锚点: S01E01 00:12\n\n"
+                  "## 段落 2\n\n配音：二。\n\n画面：\n  查询: q\n  锚点: 无（测试）\n")
+        data = self._run(tmp_path, monkeypatch, script, [8.0, 4.0],
+                         hits=[self.U(11.0, 13.0), self.U(60.0, 63.0)])
+        seg2 = data["segments"][1]
+        assert seg2["status"] == "ok" and seg2["clips"][0]["start"] == 59.75
+
+    def test_双锚撞车标_anchor_overlap_不静默挪(self, tmp_path, monkeypatch):
+        script = ("## 段落 1\n\n配音：一。\n\n画面：\n  锚点: S01E01 00:12\n\n"
+                  "## 段落 2\n\n配音：二。\n\n画面：\n  锚点: S01E01 00:14\n")
+        data = self._run(tmp_path, monkeypatch, script, [8.0, 4.0])
+        seg2 = data["segments"][1]
+        assert seg2["status"] == "anchor_overlap" and seg2["clips"] == []
+
+    def test_全角波浪号当区间分隔符(self):
+        a = c._parse_anchor("S01E01 17:50～18:20", 1)
+        assert (a["t0"], a["t1"]) == (1070.0, 1100.0)
