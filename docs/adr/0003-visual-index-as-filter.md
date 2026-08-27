@@ -1,3 +1,9 @@
+---
+related-issues: D4, D5, D6, D8, N1, N2, N8, N9, N14, N16
+related-plans: —
+status: accepted
+---
+
 # ADR-0003：视觉索引只做角色在场，且当过滤门槛而不参与排序
 
 日期：2026-07-30

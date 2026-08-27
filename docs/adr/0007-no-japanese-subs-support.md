@@ -1,3 +1,9 @@
+---
+related-issues: D8
+related-plans: —
+status: accepted
+---
+
 # ADR-0007：不支持日语无字幕片源（ASR 兜底仅中文）
 
 日期：2026-08-24

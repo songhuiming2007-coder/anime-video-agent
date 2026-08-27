@@ -1,3 +1,9 @@
+---
+related-issues: B1, D1, D2, D6, D18, D20
+related-plans: P1
+status: provisional
+---
+
 # ADR-0005：排片错配的核心缺陷是「文本表面相似度」代替不了「语义理解」
 
 日期：2026-08-10

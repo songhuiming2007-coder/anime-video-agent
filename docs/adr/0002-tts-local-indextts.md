@@ -1,3 +1,9 @@
+---
+related-issues: N7, N11, N12, N19, D21
+related-plans: —
+status: superseded
+---
+
 # ADR-0002：配音走本地 MLX + IndexTTS-1.5，解码循环自己写
 
 日期：2026-07-29
