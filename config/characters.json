@@ -1,111 +1,389 @@
 {
-  "_note": "角色名表：中文名 ↔ booru 标签。Phase 0 资产，与 config/bgm.json 同类——一部番建一次，之后只维护。索引里存的是模型原样吐出来的 booru 标签，中文映射在查询时才做，所以改译名、加别名都不用重跑推理；只有换模型或改判定阈值才需要重建索引。",
-  "_format": "{\"<番>\": {\"<booru 标签>\": [\"显示名\", \"别名\", ...]}}。第一个名字是显示名。标签本身也自动算作别名。",
-
-  "春物": {
-    "_note": "标签取自 camie tagger 的词表（27021 个角色标签）。**训练样本数差得很远**，2026-08-03 查表：雪乃 1773、结衣 1557、一色 1088、八幡 631、小町 259、陽乃 196、户冢 160、静 118、川崎 108、叶山 94、三浦 75。样本少的那几个可靠性存疑，逐角色抽检见 `python -m pipeline.vprobe presence`。",
-    "_missing": "材木座义辉、海老名姬菜、折本香织、川崎大志/京华 不在词表里，写这几个名字会当场报错而不是静默返回空——这是有意的。",
-
-    "hikigaya_hachiman": ["八幡", "比企谷八幡", "大老师", "老师"],
-    "yukinoshita_yukino": ["雪乃", "雪之下雪乃", "雪之下"],
-    "yuigahama_yui": ["结衣", "由比滨结衣", "由比滨", "团子"],
-    "isshiki_iroha": ["一色", "一色彩羽", "彩羽"],
-    "hikigaya_komachi": ["小町", "比企谷小町"],
-    "yukinoshita_haruno": ["陽乃", "雪之下阳乃", "阳乃"],
-    "totsuka_saika": ["户冢", "户冢彩加", "彩加"],
-    "hiratsuka_shizuka": ["静老师", "平冢静", "平冢"],
-    "kawasaki_saki": ["川崎", "川崎沙希", "沙希"],
-    "hayama_hayato": ["叶山", "叶山隼人"],
-    "miura_yumiko": ["三浦", "三浦优美子"]
-  },
-
-  "东京喰种": {
-    "_note": "presence_producer 用的是 ccip（config/project.json「visual」一节），不是 tagger——这里的键不是真实 booru 标签，只是给聚类结果起的稳定标识符，写法沿用罗马音习惯方便辨认。2026-08-07 建，只贴了聚类图里认得准的几个，人贴名逐步补。",
-
-    "kamishiro_rize": ["利世", "神代利世"],
-    "nishio_nishiki": ["西尾", "西尾锦"],
-    "kirishima_touka": ["董香", "雾嶋董香"],
-    "kaneki_ken": ["金木", "金木研", "佐佐木琲世", "佐佐木", "琲世", "Haise"],
-    "nagachika_hideyoshi": ["永近", "永近英良", "Hide"],
-    "tsukiyama_shuu": ["月山", "月山习"],
-
-    "yoshimura": ["芳村", "芳村功善"],
-    "fueguchi_hinami": ["雏实", "笛口雏实"],
-    "fueguchi_ryoko": ["凉子", "笛口凉子"],
-    "yomo_renji": ["四方", "四方莲示"],
-    "irimi_kaya": ["佳耶", "入见佳耶"],
-    "koma_enji": ["古间", "古间圆儿"],
-    "nishino_kimi": ["贵未", "西野贵未"],
-
-    "amon_kotarou": ["亚门", "亚门钢太朗"],
-    "mado_kureo": ["真户", "真户吴绪"],
-    "marude_itsuki": ["丸手", "丸手斋"],
-    "kusaba_ippei": ["草场", "草场一平"],
-    "kosaka_yoriko": ["依子", "小坂依子"],
-
-    "yamori": ["壁虎", "大守八云"],
-    "uta": ["诗", "呗"],
-    "itori": ["系璃"],
-    "naki": ["尼克"],
-
-    "_note_re": "2026-08-08 追加 re 篇（S03+S04）新角色，用户提供外貌描述辅助人工贴名。",
-    "urie_kuki": ["瓜江", "瓜江久生"],
-    "shirazu_ginshi": ["不知", "不知吟士"],
-    "mutsuki_tooru": ["六月", "六月透"],
-    "yonebayashi_saiko": ["米林", "米林才子"],
-    "arima_kishou": ["有马", "有马贵将"],
-    "mado_akira": ["真户晓", "晓"],
-    "suzuya_juuzou": ["铃屋", "铃屋什造"],
-    "furuta_nimura": ["旧多", "旧多二福"],
-    "takizawa_seidou": ["泷泽", "泷泽政道"],
-    "kirishima_ayato": ["绚都", "雾岛绚都"],
-    "eto": ["艾特", "高槻泉"],
-    "anju_kurona": ["黑奈", "安久黑奈"],
-    "donato_porpora": ["唐纳托", "唐纳托·波尔波拉", "亚门养父"],
-    "_note_sqrtA_ova": "2026-08-09 追加 √A(S02)+OVA(S00)新角色，用户人贴名辅助识别。",
-    "tatara": ["多多良"],
-    "kuroiwa": ["黑磐", "黑磐搜查官"],
-    "sannami_rika": ["三波丽花"],
-    "shinohara": ["篠原"],
-    "washuu_yoshitoki": ["和修吉时", "吉时"],
-    "ukina": ["忧那"],
-    "anju_nashiro": ["奈白", "安久奈白"]
-  },
-
-  "罪恶王冠": {
-    "_note": "presence_producer 是 ccip（config/project.json「visual」一节，全项目当前统一用这个），不是 tagger——键不是靠 tagger 推理出来的，但这次特意查了 danbooru 真实标签（而不是像东京喰种那样自造罗马音标识符），因为查得到、更标准。18 个角色 2026-08-09 建，danbooru.donmai.us 逐个核实过 wiki_pages 存在（返回 404 的写进 _missing，不是漏查）；显示名/别名逐个在本地 GB 简体字幕正文里 grep 核实过确切简体写法（而不是照抄维基百科的繁体/日文转写）——诸神字幕组这批字幕 ep01-08 是繁体单文件、ep09-22 才有 GB 简体可选，两者汉字形态不同，抄错一个就会让检索/引用两套字混用。核对方法与命中记录见 data/library/notes/罪恶王冠.md「角色名来源」节。",
-    "_missing": "莖道修一郎(Keido)、梟(Owl，葬仪社最年幼成员)——danbooru 试过多种罗马音拼法（keido_shuuichirou/keido_shuichiro 等）均 404，guilty_crown wiki 页面的角色列表本身也没收录 Keido，判定为该角色没有专属 danbooru 标签，不是我没找到；faces 聚类如果真聚出这几个人的簇，贴名时用罗马音自造标识符（沿用东京喰种的例外做法）。大雲(Oogumo) 2026-08-09 faces 聚类（簇 12）时用户认出并补上，见下面 oogumo 条——键名沿用东京喰种例外做法自造，不是真 danbooru 角色标签：danbooru 上 \"oogumo\" 是个不相关的画师标签，\"oogumo_(guilty_crown)\" 404，这个角色没有专属标签。",
-
-    "ouma_shuu": ["樱满集", "集"],
-    "yuzuriha_inori": ["楪祈", "祈"],
-    "tsutsugami_gai": ["恙神涯", "涯"],
-    "ouma_mana": ["樱满真名", "真名"],
-    "shinomiya_ayase": ["筱宫绫濑", "绫濑"],
-    "tsugumi_(guilty_crown)": ["鸫"],
-    "kuhouin_arisa": ["供奉院亚里沙", "亚里沙"],
-    "samukawa_yahiro": ["寒川谷寻", "谷寻"],
-    "menjou_hare": ["校条祭", "祭"],
-    "tamadate_souta": ["魂馆飒太", "飒太"],
-    "kusama_kanon": ["草间花音", "花音"],
-    "daryl_yan": ["达利尔·杨", "达利尔"],
-    "segai_waltz_makoto": ["嘘界", "嘘界·巴鲁兹·诚"],
-    "ouma_haruka": ["樱满春夏", "春夏"],
-    "kido_kenji": ["城户研二", "研二"],
-    "tsukishima_arugo": ["月岛阿尔戈", "阿尔戈"],
-    "shibungi": ["四分仪"],
-    "oogumo": ["大云"],
-    "_note_yuu": "「佑」译名只查到中文维基交叉确认，本地 GB 字幕正文没能 grep 到确凿的具名台词（搜「佑」只命中「天佑」这类无关词）——faces 贴名前建议先用 subindex search 核对这个角色实际出场时台词里怎么称呼他，再确认这个显示名。",
-    "yuu_(guilty_crown)": ["佑"]
-  },
-
-  "夏隧": {
-    "_note": "presence_producer 是 ccip，键名使用标准罗马音自造标识符。显示名及别名已在本地内封字幕与官方设定核实。",
-    "tono_kaoru": ["塔野薰", "薰", "塔野同学", "塔野"],
-    "hanashiro_anzu": ["花城杏子", "花城", "杏子", "花城同学"],
-    "kawasaki_koharu": ["川崎小春", "川崎", "川崎同学", "小春"],
-    "tono_karen": ["塔野华恋", "华恋", "妹妹", "华伶", "塔野华伶"],
-    "kaga_shouhei": ["加贺翔平", "加贺", "翔平"],
-    "hamamoto": ["滨本老师", "滨本", "老师"],
-    "tono_father": ["薰的父亲", "父亲", "爸爸"]
-  }
+ "_note": "角色名表：中文名 ↔ booru 标签。Phase 0 资产，与 config/bgm.json 同类——一部番建一次，之后只维护。索引里存的是模型原样吐出来的 booru 标签，中文映射在查询时才做，所以改译名、加别名都不用重跑推理；只有换模型或改判定阈值才需要重建索引。",
+ "_format": "{\"<番>\": {\"<booru 标签>\": [\"显示名\", \"别名\", ...]}}。第一个名字是显示名。标签本身也自动算作别名。",
+ "春物": {
+  "_note": "标签取自 camie tagger 的词表（27021 个角色标签）。**训练样本数差得很远**，2026-08-03 查表：雪乃 1773、结衣 1557、一色 1088、八幡 631、小町 259、陽乃 196、户冢 160、静 118、川崎 108、叶山 94、三浦 75。样本少的那几个可靠性存疑，逐角色抽检见 `python -m pipeline.vprobe presence`。",
+  "_missing": "材木座义辉、海老名姬菜、折本香织、川崎大志/京华 不在词表里，写这几个名字会当场报错而不是静默返回空——这是有意的。",
+  "hikigaya_hachiman": [
+   "八幡",
+   "比企谷八幡",
+   "大老师",
+   "老师"
+  ],
+  "yukinoshita_yukino": [
+   "雪乃",
+   "雪之下雪乃",
+   "雪之下"
+  ],
+  "yuigahama_yui": [
+   "结衣",
+   "由比滨结衣",
+   "由比滨",
+   "团子"
+  ],
+  "isshiki_iroha": [
+   "一色",
+   "一色彩羽",
+   "彩羽"
+  ],
+  "hikigaya_komachi": [
+   "小町",
+   "比企谷小町"
+  ],
+  "yukinoshita_haruno": [
+   "陽乃",
+   "雪之下阳乃",
+   "阳乃"
+  ],
+  "totsuka_saika": [
+   "户冢",
+   "户冢彩加",
+   "彩加"
+  ],
+  "hiratsuka_shizuka": [
+   "静老师",
+   "平冢静",
+   "平冢"
+  ],
+  "kawasaki_saki": [
+   "川崎",
+   "川崎沙希",
+   "沙希"
+  ],
+  "hayama_hayato": [
+   "叶山",
+   "叶山隼人"
+  ],
+  "miura_yumiko": [
+   "三浦",
+   "三浦优美子"
+  ]
+ },
+ "东京喰种": {
+  "_note": "presence_producer 用的是 ccip（config/project.json「visual」一节），不是 tagger——这里的键不是真实 booru 标签，只是给聚类结果起的稳定标识符，写法沿用罗马音习惯方便辨认。2026-08-07 建，只贴了聚类图里认得准的几个，人贴名逐步补。",
+  "kamishiro_rize": [
+   "利世",
+   "神代利世"
+  ],
+  "nishio_nishiki": [
+   "西尾",
+   "西尾锦"
+  ],
+  "kirishima_touka": [
+   "董香",
+   "雾嶋董香"
+  ],
+  "kaneki_ken": [
+   "金木",
+   "金木研",
+   "佐佐木琲世",
+   "佐佐木",
+   "琲世",
+   "Haise"
+  ],
+  "nagachika_hideyoshi": [
+   "永近",
+   "永近英良",
+   "Hide"
+  ],
+  "tsukiyama_shuu": [
+   "月山",
+   "月山习"
+  ],
+  "yoshimura": [
+   "芳村",
+   "芳村功善"
+  ],
+  "fueguchi_hinami": [
+   "雏实",
+   "笛口雏实"
+  ],
+  "fueguchi_ryoko": [
+   "凉子",
+   "笛口凉子"
+  ],
+  "yomo_renji": [
+   "四方",
+   "四方莲示"
+  ],
+  "irimi_kaya": [
+   "佳耶",
+   "入见佳耶"
+  ],
+  "koma_enji": [
+   "古间",
+   "古间圆儿"
+  ],
+  "nishino_kimi": [
+   "贵未",
+   "西野贵未"
+  ],
+  "amon_kotarou": [
+   "亚门",
+   "亚门钢太朗"
+  ],
+  "mado_kureo": [
+   "真户",
+   "真户吴绪"
+  ],
+  "marude_itsuki": [
+   "丸手",
+   "丸手斋"
+  ],
+  "kusaba_ippei": [
+   "草场",
+   "草场一平"
+  ],
+  "kosaka_yoriko": [
+   "依子",
+   "小坂依子"
+  ],
+  "yamori": [
+   "壁虎",
+   "大守八云"
+  ],
+  "uta": [
+   "诗",
+   "呗"
+  ],
+  "itori": [
+   "系璃"
+  ],
+  "naki": [
+   "尼克"
+  ],
+  "_note_re": "2026-08-08 追加 re 篇（S03+S04）新角色，用户提供外貌描述辅助人工贴名。",
+  "urie_kuki": [
+   "瓜江",
+   "瓜江久生"
+  ],
+  "shirazu_ginshi": [
+   "不知",
+   "不知吟士"
+  ],
+  "mutsuki_tooru": [
+   "六月",
+   "六月透"
+  ],
+  "yonebayashi_saiko": [
+   "米林",
+   "米林才子"
+  ],
+  "arima_kishou": [
+   "有马",
+   "有马贵将"
+  ],
+  "mado_akira": [
+   "真户晓",
+   "晓"
+  ],
+  "suzuya_juuzou": [
+   "铃屋",
+   "铃屋什造"
+  ],
+  "furuta_nimura": [
+   "旧多",
+   "旧多二福"
+  ],
+  "takizawa_seidou": [
+   "泷泽",
+   "泷泽政道"
+  ],
+  "kirishima_ayato": [
+   "绚都",
+   "雾岛绚都"
+  ],
+  "eto": [
+   "艾特",
+   "高槻泉"
+  ],
+  "anju_kurona": [
+   "黑奈",
+   "安久黑奈"
+  ],
+  "donato_porpora": [
+   "唐纳托",
+   "唐纳托·波尔波拉",
+   "亚门养父"
+  ],
+  "_note_sqrtA_ova": "2026-08-09 追加 √A(S02)+OVA(S00)新角色，用户人贴名辅助识别。",
+  "tatara": [
+   "多多良"
+  ],
+  "kuroiwa": [
+   "黑磐",
+   "黑磐搜查官"
+  ],
+  "sannami_rika": [
+   "三波丽花"
+  ],
+  "shinohara": [
+   "篠原"
+  ],
+  "washuu_yoshitoki": [
+   "和修吉时",
+   "吉时"
+  ],
+  "ukina": [
+   "忧那"
+  ],
+  "anju_nashiro": [
+   "奈白",
+   "安久奈白"
+  ]
+ },
+ "罪恶王冠": {
+  "_note": "presence_producer 是 ccip（config/project.json「visual」一节，全项目当前统一用这个），不是 tagger——键不是靠 tagger 推理出来的，但这次特意查了 danbooru 真实标签（而不是像东京喰种那样自造罗马音标识符），因为查得到、更标准。18 个角色 2026-08-09 建，danbooru.donmai.us 逐个核实过 wiki_pages 存在（返回 404 的写进 _missing，不是漏查）；显示名/别名逐个在本地 GB 简体字幕正文里 grep 核实过确切简体写法（而不是照抄维基百科的繁体/日文转写）——诸神字幕组这批字幕 ep01-08 是繁体单文件、ep09-22 才有 GB 简体可选，两者汉字形态不同，抄错一个就会让检索/引用两套字混用。核对方法与命中记录见 data/library/notes/罪恶王冠.md「角色名来源」节。",
+  "_missing": "莖道修一郎(Keido)、梟(Owl，葬仪社最年幼成员)——danbooru 试过多种罗马音拼法（keido_shuuichirou/keido_shuichiro 等）均 404，guilty_crown wiki 页面的角色列表本身也没收录 Keido，判定为该角色没有专属 danbooru 标签，不是我没找到；faces 聚类如果真聚出这几个人的簇，贴名时用罗马音自造标识符（沿用东京喰种的例外做法）。大雲(Oogumo) 2026-08-09 faces 聚类（簇 12）时用户认出并补上，见下面 oogumo 条——键名沿用东京喰种例外做法自造，不是真 danbooru 角色标签：danbooru 上 \"oogumo\" 是个不相关的画师标签，\"oogumo_(guilty_crown)\" 404，这个角色没有专属标签。",
+  "ouma_shuu": [
+   "樱满集",
+   "集"
+  ],
+  "yuzuriha_inori": [
+   "楪祈",
+   "祈"
+  ],
+  "tsutsugami_gai": [
+   "恙神涯",
+   "涯"
+  ],
+  "ouma_mana": [
+   "樱满真名",
+   "真名"
+  ],
+  "shinomiya_ayase": [
+   "筱宫绫濑",
+   "绫濑"
+  ],
+  "tsugumi_(guilty_crown)": [
+   "鸫"
+  ],
+  "kuhouin_arisa": [
+   "供奉院亚里沙",
+   "亚里沙"
+  ],
+  "samukawa_yahiro": [
+   "寒川谷寻",
+   "谷寻"
+  ],
+  "menjou_hare": [
+   "校条祭",
+   "祭"
+  ],
+  "tamadate_souta": [
+   "魂馆飒太",
+   "飒太"
+  ],
+  "kusama_kanon": [
+   "草间花音",
+   "花音"
+  ],
+  "daryl_yan": [
+   "达利尔·杨",
+   "达利尔"
+  ],
+  "segai_waltz_makoto": [
+   "嘘界",
+   "嘘界·巴鲁兹·诚"
+  ],
+  "ouma_haruka": [
+   "樱满春夏",
+   "春夏"
+  ],
+  "kido_kenji": [
+   "城户研二",
+   "研二"
+  ],
+  "tsukishima_arugo": [
+   "月岛阿尔戈",
+   "阿尔戈"
+  ],
+  "shibungi": [
+   "四分仪"
+  ],
+  "oogumo": [
+   "大云"
+  ],
+  "_note_yuu": "「佑」译名只查到中文维基交叉确认，本地 GB 字幕正文没能 grep 到确凿的具名台词（搜「佑」只命中「天佑」这类无关词）——faces 贴名前建议先用 subindex search 核对这个角色实际出场时台词里怎么称呼他，再确认这个显示名。",
+  "yuu_(guilty_crown)": [
+   "佑"
+  ]
+ },
+ "夏隧": {
+  "_note": "presence_producer 是 ccip，键名使用标准罗马音自造标识符。显示名及别名已在本地内封字幕与官方设定核实。",
+  "tono_kaoru": [
+   "塔野薰",
+   "薰",
+   "塔野同学",
+   "塔野"
+  ],
+  "hanashiro_anzu": [
+   "花城杏子",
+   "花城",
+   "杏子",
+   "花城同学"
+  ],
+  "kawasaki_koharu": [
+   "川崎小春",
+   "川崎",
+   "川崎同学",
+   "小春"
+  ],
+  "tono_karen": [
+   "塔野华恋",
+   "华恋",
+   "妹妹",
+   "华伶",
+   "塔野华伶"
+  ],
+  "kaga_shouhei": [
+   "加贺翔平",
+   "加贺",
+   "翔平"
+  ],
+  "hamamoto": [
+   "滨本老师",
+   "滨本",
+   "老师"
+  ],
+  "tono_father": [
+   "薰的父亲",
+   "父亲",
+   "爸爸"
+  ]
+ },
+ "天气之子": {
+  "_note": "剧场版电影(新海诚 2019)。本片走 ccip 身份聚类贴名(非 tagger)，标签为规范标签、运行时只校验名字在本表内。2026-08-22 建：帆高在簇4/5/6、须贺簇7、阳菜仅簇11(检出少)、夏美簇12+10、安井簇9、占卜师簇13。凪(天野凪)人脸检出太少未成簇，presence 无其数据，不编造。",
+  "morishima_hodaka": [
+   "帆高",
+   "森岛帆高",
+   "森嶋帆高"
+  ],
+  "amano_hina": [
+   "阳菜",
+   "天野阳菜"
+  ],
+  "suga_keisuke": [
+   "须贺",
+   "须贺圭介"
+  ],
+  "suga_natsumi": [
+   "夏美",
+   "须贺夏美"
+  ],
+  "amano_nagi": [
+   "凪",
+   "天野凪"
+  ],
+  "yasui": [
+   "安井",
+   "安井刑事",
+   "安井刑警"
+  ],
+  "uranaishi": [
+   "占卜师",
+   "算命婆婆",
+   "占卜婆婆"
+  ]
+ }
 }

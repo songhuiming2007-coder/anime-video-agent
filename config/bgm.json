@@ -657,5 +657,288 @@
         "vocal": false
       }
     }
+  },
+  "天气之子": {
+    "tracks": {
+      "K&A 初訪問": {
+        "path": "data/library/bgm/天气之子/K&A 初訪問.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 109.6,
+        "lufs": -13.8,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "K&A 入社式": {
+        "path": "data/library/bgm/天气之子/K&A 入社式.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 63.5,
+        "lufs": -11.6,
+        "onset": 1.1,
+        "vocal": false
+      },
+      "『天気の子』のテーマ": {
+        "path": "data/library/bgm/天气之子/『天気の子』のテーマ.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 41.7,
+        "lufs": -11.1,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "ふたたびの、雨": {
+        "path": "data/library/bgm/天气之子/ふたたびの、雨.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 44.6,
+        "lufs": -14.1,
+        "onset": 1.4,
+        "vocal": false
+      },
+      "バイクチェイス": {
+        "path": "data/library/bgm/天气之子/バイクチェイス.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 59.2,
+        "lufs": -8.3,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "三浦透子 - グランドエスケープ (Movie edit)": {
+        "path": "data/library/bgm/天气之子/三浦透子 - グランドエスケープ (Movie edit).flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
+        "dur": 188.1,
+        "lufs": -9.9,
+        "onset": 33.4,
+        "vocal": true
+      },
+      "三浦透子 - 祝祭 (Movie edit)": {
+        "path": "data/library/bgm/天气之子/三浦透子 - 祝祭 (Movie edit).flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
+        "dur": 156.2,
+        "lufs": -6.2,
+        "onset": 0.0,
+        "vocal": true
+      },
+      "二つの告白": {
+        "path": "data/library/bgm/天气之子/二つの告白.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 96.7,
+        "lufs": -16.5,
+        "onset": 3.3,
+        "vocal": false
+      },
+      "優しさの味": {
+        "path": "data/library/bgm/天气之子/優しさの味.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 48.9,
+        "lufs": -17.5,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "初の晴れ女バイト": {
+        "path": "data/library/bgm/天气之子/初の晴れ女バイト.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 79.8,
+        "lufs": -6.9,
+        "onset": 0.3,
+        "vocal": false
+      },
+      "占秘館へようこそ": {
+        "path": "data/library/bgm/天气之子/占秘館へようこそ.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 53.7,
+        "lufs": -11.4,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "大丈夫 (Movie edit)": {
+        "path": "data/library/bgm/天气之子/大丈夫 (Movie edit).flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
+        "dur": 258.4,
+        "lufs": -8.1,
+        "onset": 6.7,
+        "vocal": true
+      },
+      "天気の力": {
+        "path": "data/library/bgm/天气之子/天気の力.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 82.7,
+        "lufs": -16.5,
+        "onset": 7.2,
+        "vocal": false
+      },
+      "家族の時間": {
+        "path": "data/library/bgm/天气之子/家族の時間.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 153.3,
+        "lufs": -15.1,
+        "onset": 1.4,
+        "vocal": false
+      },
+      "帆高、逃走 ~子供達の画策": {
+        "path": "data/library/bgm/天气之子/帆高、逃走 ~子供達の画策.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 181.6,
+        "lufs": -9.9,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "御宅訪問": {
+        "path": "data/library/bgm/天气之子/御宅訪問.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 222.7,
+        "lufs": -14.8,
+        "onset": 3.3,
+        "vocal": false
+      },
+      "愛にできることはまだあるかい (Movie edit)": {
+        "path": "data/library/bgm/天气之子/愛にできることはまだあるかい (Movie edit).flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
+        "dur": 150.7,
+        "lufs": -9.3,
+        "onset": 3.3,
+        "vocal": true
+      },
+      "愛にできることはまだあるかい": {
+        "path": "data/library/bgm/天气之子/愛にできることはまだあるかい.flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 414.5,
+        "lufs": -8.2,
+        "onset": 3.6,
+        "vocal": true
+      },
+      "晴れゆく空": {
+        "path": "data/library/bgm/天气之子/晴れゆく空.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 133.6,
+        "lufs": -13.0,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "晴天と喪失": {
+        "path": "data/library/bgm/天气之子/晴天と喪失.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 165.3,
+        "lufs": -14.3,
+        "onset": 23.4,
+        "vocal": false
+      },
+      "気象神社": {
+        "path": "data/library/bgm/天气之子/気象神社.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 160.8,
+        "lufs": -17.9,
+        "onset": 1.1,
+        "vocal": false
+      },
+      "永遠の雲の上": {
+        "path": "data/library/bgm/天气之子/永遠の雲の上.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 52.0,
+        "lufs": -25.6,
+        "onset": 28.1,
+        "vocal": false
+      },
+      "消えゆく陽菜": {
+        "path": "data/library/bgm/天气之子/消えゆく陽菜.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 68.1,
+        "lufs": -16.6,
+        "onset": 18.1,
+        "vocal": false
+      },
+      "真夏の雪": {
+        "path": "data/library/bgm/天气之子/真夏の雪.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 78.9,
+        "lufs": -16.0,
+        "onset": 2.2,
+        "vocal": false
+      },
+      "空の海": {
+        "path": "data/library/bgm/天气之子/空の海.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 59.7,
+        "lufs": -19.0,
+        "onset": 10.0,
+        "vocal": false
+      },
+      "芝公園": {
+        "path": "data/library/bgm/天气之子/芝公園.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 192.0,
+        "lufs": -14.9,
+        "onset": 2.8,
+        "vocal": false
+      },
+      "花火大会": {
+        "path": "data/library/bgm/天气之子/花火大会.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 185.0,
+        "lufs": -12.1,
+        "onset": 8.4,
+        "vocal": false
+      },
+      "陽菜、救出": {
+        "path": "data/library/bgm/天气之子/陽菜、救出.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 107.8,
+        "lufs": -15.9,
+        "onset": 7.0,
+        "vocal": false
+      },
+      "陽菜と、走る帆高": {
+        "path": "data/library/bgm/天气之子/陽菜と、走る帆高.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 143.9,
+        "lufs": -11.9,
+        "onset": 1.4,
+        "vocal": false
+      },
+      "風たちの声 (Movie edit)": {
+        "path": "data/library/bgm/天气之子/風たちの声 (Movie edit).flac",
+        "slot": "结尾",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
+        "dur": 157.1,
+        "lufs": -5.8,
+        "onset": 0.8,
+        "vocal": true
+      },
+      "首都危機": {
+        "path": "data/library/bgm/天气之子/首都危機.flac",
+        "slot": "正文",
+        "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
+        "dur": 97.0,
+        "lufs": -11.1,
+        "onset": 1.4,
+        "vocal": false
+      }
+    }
   }
 }
