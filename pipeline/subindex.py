@@ -329,6 +329,26 @@ def _check(d, path: Path) -> list[dict]:
     return d["units"]
 
 
+def load_units(index_dir: Path, anime: str) -> list[Unit]:
+    """只加载单元（不读 .npy 向量）。时间网格这类纯时间分析不需要嵌入。
+
+    与 load_all 同一份文件、同一个番过滤规矩，但不跑 _check——
+    那套校验管的是「向量与当前模型兼不兼容」，这里根本不碰向量。
+    """
+    units: list[Unit] = []
+    for meta_path in sorted(index_dir.glob("*.json")):
+        if not meta_path.with_suffix(".npy").exists():
+            continue
+        d = json.loads(meta_path.read_text(encoding="utf-8"))
+        rows = d if isinstance(d, list) else d.get("units", [])
+        if not rows or rows[0].get("anime") != anime:
+            continue
+        units.extend(Unit(**r) for r in rows)
+    if not units:
+        raise SystemExit(f"FAIL {index_dir} 下没有《{anime}》的索引，先跑 build")
+    return units
+
+
 def search(
     query: str, vecs: np.ndarray, units: list[Unit], k: int = 5,
     season: int | None = None, episode: int | None = None,
