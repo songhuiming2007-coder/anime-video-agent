@@ -144,6 +144,28 @@ class TestTopicEpisodes:
                         "张力: S3E12 那一集他终于说了\n锚点: S1E01\n")
         assert cover._topic_episodes(f) == ["S01E01"]
 
+    def test_零填充季度号也认(self, tmp_path):
+        # 旧正则 `S(\d)` 只认单数字季度，`S01E15` 静默匹配不上——
+        # 2026-08-31 校条祭期实测：名场面/通篇两路取样全空，封面 FAIL。
+        f = self._topic(tmp_path,
+                        "锚点: S01E15 16:39\n封面集: S01E15 (备选 S01E22)\n")
+        assert cover._topic_episodes(f) == ["S01E15", "S01E22"]
+
+    def test_名场面通路的笔记表头认零填充集号(self, tmp_path, monkeypatch):
+        # 同族 bug：笔记分集表头正则 `S(\d)E` 只认单数字季度，`### S01E15`
+        # 匹配不上 → 名场面通路静默失效（该函数注释里早就埋着这条教训）。
+        (tmp_path / "library" / "notes").mkdir(parents=True)
+        (tmp_path / "library" / "notes" / "测试番.md").write_text(
+            "## 分集速查\n\n### S01E15 标题\n\n| 16:39 | 台词 |\n", encoding="utf-8")
+        topic = tmp_path / "01-topic.md"
+        topic.write_text("封面集: S01E15\n", encoding="utf-8")
+        monkeypatch.setattr(cover.paths, "DATA", tmp_path)
+        monkeypatch.setattr(cover, "load_sources",
+                            lambda anime: {"S01E15": {"path": "/x.mkv", "duration": 1500.0}})
+        pts = cover._notes_points("测试番", topic)
+        # 999.5 = 16×60+39（台词起点）+ 0.5（防闪烁后移）
+        assert pts == [("/x.mkv", 999.5, "名场面 S01E15")]
+
 
 class TestEmptyPool:
     """候选池筛空 → 失败，不静默出 0 张候选、退出码 0（2026-08-16 审计 2-14）。

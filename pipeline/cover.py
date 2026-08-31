@@ -135,7 +135,7 @@ def _notes_points(anime: str, topic: Path) -> list[tuple[str, float, str]]:
 
     pts, cur = [], None
     for line in notes.read_text(encoding="utf-8").splitlines():
-        if m := re.match(r"^#{2,4}\s*S(\d)E(\d{1,2})", line.strip()):
+        if m := re.match(r"^#{2,4}\s*S(\d{1,2})E(\d{1,2})", line.strip()):
             cur = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
         elif cur in anchors and (m := re.match(r"^\|\s*(\d{1,2}):(\d{2})\s*\|", line)):
             rec = sources.get(cur)
@@ -219,7 +219,7 @@ def _topic_episodes(topic: Path) -> list[str]:
         s = line.strip()
         if not (s.startswith("封面集") or s.startswith("锚点")):
             continue
-        for m in re.finditer(r"S(\d)\s*(?:E(\d{1,2})|(OVA))", s, re.I):
+        for m in re.finditer(r"S(\d{1,2})\s*(?:E(\d{1,2})|(OVA))", s, re.I):
             ep = 0 if m.group(3) else int(m.group(2))
             key = f"S{int(m.group(1)):02d}E{ep:02d}"
             if key not in eps:
