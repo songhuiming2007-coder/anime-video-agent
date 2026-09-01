@@ -452,21 +452,26 @@ def _body_entry_delay(episode: Path) -> float:
 BGM_LIST_HEAD = re.compile(r"^\s*BGM\s*[:：]\s*$")
 BGM_ITEM = re.compile(r"^-\s*(.+?)\s*$")
 BGM_ITEM_AT = re.compile(r"^(.+?)\s*@\s*([\d.]+)\s*秒$")
+BGM_ITEM_OFFSET = re.compile(r"^(.*?)\s*\+\s*([\d.]+)\s*秒$")
 BGM_MID_ENTRY = re.compile(r"^\s*BGM中段切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
 BGM_OUTRO_ENTRY = re.compile(r"^\s*BGM结尾切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
 
 
-def _bgm_list(episode: Path) -> list[tuple[str, float | None]] | None:
+def _bgm_list(episode: Path) -> list[tuple[str, float | None, float]] | None:
     """读 `01-topic.md` 的 `BGM:` 列表——通用 N 首拼接格式。
 
     ```
     BGM:
       - Departures ～あなたにおくるアイの歌～ @36秒
       - 想いを巡らす100の事象
-      - Planetes @470秒
+      - Planetes @470秒 +9秒
     ```
     每行一首；`@N秒` = 绝对起点，不写 = 自动接上一首自然结尾（第一首自动 = 0）。
-    行里带了 `@` 但格式不对直接报错——静默当自动接等于写错了却不报。
+    `+M秒` = 曲内偏移，从曲内第 M 秒放起（跳片头引子），不写 = 0（从头放）；
+    与 @ 并用时 @ 在前。返回 (曲名, 起点|None, 偏移) 三元组。
+    行里带了 `@`/`+` 但格式不对直接报错——静默当自动接等于写错了却不报。
+    代价：曲名本身含 @ 或 + 的（罪恶王冠 美♂-K+…、fUE+p@D…）进不了列表语法，
+    那两首走老槽位格式（`BGM正文:`），需要时再说（YAGNI）。
     没 `BGM:` 块返回 None，退回命名槽位（`BGM正文`/`BGM中段`/`BGM结尾`，老格式）。
     """
     topic = episode / "01-topic.md"
@@ -476,7 +481,7 @@ def _bgm_list(episode: Path) -> list[tuple[str, float | None]] | None:
     for idx, line in enumerate(lines):
         if not BGM_LIST_HEAD.match(line):
             continue
-        seq: list[tuple[str, float | None]] = []
+        seq: list[tuple[str, float | None, float]] = []
         for ln in lines[idx + 1:]:
             s = ln.strip()
             if not s:
@@ -485,14 +490,21 @@ def _bgm_list(episode: Path) -> list[tuple[str, float | None]] | None:
             if not m:
                 break  # 非 `- ` 行 = 块结束
             item = m.group(1).strip()
+            offset = 0.0
+            if mo := BGM_ITEM_OFFSET.match(item):
+                item, offset = mo.group(1).strip(), float(mo.group(2))
+            elif "+" in item:
+                raise SystemExit(
+                    f"FAIL `BGM:` 列表行 + 曲内偏移格式不对：{item}\n"
+                    f"     应为 `- 曲名 +N秒`（与起点并用时 @ 在前：`- 曲名 @N秒 +M秒`）")
             if mm := BGM_ITEM_AT.match(item):
-                seq.append((mm.group(1).strip(), float(mm.group(2))))
+                seq.append((mm.group(1).strip(), float(mm.group(2)), offset))
             elif "@" in item:
                 raise SystemExit(
                     f"FAIL `BGM:` 列表行 @ 起点格式不对：{item}\n"
                     f"     应为 `- 曲名 @N秒`")
             else:
-                seq.append((item, None))
+                seq.append((item, None, offset))
         return seq
     return None
 
@@ -511,8 +523,8 @@ def _seg_entry(episode: Path, slot: str, pattern: re.Pattern) -> float | None:
     return None
 
 
-def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[dict, float]] | None:
-    """拼 BGM 段序列 [(曲目记录, 绝对起点)]。起点显式或自动接上一首结尾。
+def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[dict, float, float]] | None:
+    """拼 BGM 段序列 [(曲目记录, 绝对起点, 曲内偏移)]。起点显式或自动接上一首结尾。
 
     没配曲目表返回 None（渲染无 BGM 版，允许状态）。`BGM:` 列表优先，
     没有就退回命名槽位。
@@ -532,53 +544,59 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
 
     seq = _bgm_list(episode)
     if seq is not None:
-        plan: list[tuple[dict, float]] = []
-        for name, at in seq:
+        plan: list[tuple[dict, float, float]] = []
+        for name, at, offset in seq:
             rec = bgm.resolve(anime, "列表", name)
+            if not 0 <= offset < rec["dur"]:
+                raise SystemExit(
+                    f"FAIL BGM「{name}」曲内偏移 {offset:g}s 越界（曲长 {rec['dur']:g}s）")
             if at is None:
-                at = plan[-1][1] + plan[-1][0]["dur"] if plan else 0.0
-            plan.append((rec, at))
+                # 自动接棒点 = 上一首起点 + 上一首有效曲长（曲内偏移要吃掉片头）
+                at = plan[-1][1] + (plan[-1][0]["dur"] - plan[-1][2]) if plan else 0.0
+            plan.append((rec, at, offset))
         return plan
 
     body = bgm.resolve(anime, "正文", bgm.episode_choice(episode, "正文"))
     if not body:
         return None
-    plan = [(body, _body_entry_delay(episode))]
+    plan = [(body, _body_entry_delay(episode), 0.0)]
     mid = bgm.episode_choice(episode, "中段")
     if mid:
         c1 = _seg_entry(episode, "中段", BGM_MID_ENTRY)
         if c1 is None:
             raise SystemExit("FAIL 有 `BGM中段` 就必须写 `BGM中段切入点: N秒`")
-        plan.append((bgm.resolve(anime, "中段", mid), c1))
+        plan.append((bgm.resolve(anime, "中段", mid), c1, 0.0))
     outro = bgm.episode_choice(episode, "结尾")
     if outro:
         c2 = _seg_entry(episode, "结尾", BGM_OUTRO_ENTRY)
         if c2 is None:
             c2 = _outro_start(starts, total)
         if c2 is not None:
-            plan.append((bgm.resolve(anime, "结尾", outro), c2))
+            plan.append((bgm.resolve(anime, "结尾", outro), c2, 0.0))
     return plan
 
 
-def _bgm_layout(plan: list[tuple[dict, float]], total: float) -> tuple[list[float], list[int]]:
+def _bgm_layout(plan: list[tuple[dict, float, float]], total: float) -> tuple[list[float], list[int]]:
     """每段的循环输入长度 + 各 run 的首段下标。纯函数，好测。
 
+    - 曲内偏移 o：从曲内第 o 秒放起，有效曲长 = dur - o，接棒/交叉/停顿判定全用它。
     - 非末段、后一段起点 ≤ 本段自然结尾 → 交叉，长度 = 距后一段 + XFADE。
-    - 非末段、后一段起点 > 本段自然结尾 → 停顿，长度 = 曲长（放一遍即止）。
+    - 非末段、后一段起点 > 本段自然结尾 → 停顿，长度 = 有效曲长（放一遍即止）。
     - 末段 → 铺到片尾，长度 = total - 起点。
     run = 连续可交叉的一段链；run 与 run 之间有停顿，靠 adelay 各自定位、amix 合并。
     """
     n = len(plan)
     lens: list[float] = []
     run_starts: list[int] = []
-    for i, (rec, s) in enumerate(plan):
+    for i, (rec, s, o) in enumerate(plan):
+        d = rec["dur"] - o
         if i == n - 1:
             lens.append(total - s)
-        elif plan[i + 1][1] <= s + rec["dur"]:
+        elif plan[i + 1][1] <= s + d:
             lens.append(plan[i + 1][1] - s + BGM_XFADE)
         else:
-            lens.append(rec["dur"])
-        if i == 0 or plan[i][1] > plan[i - 1][1] + plan[i - 1][0]["dur"]:
+            lens.append(d)
+        if i == 0 or plan[i][1] > plan[i - 1][1] + (plan[i - 1][0]["dur"] - plan[i - 1][2]):
             run_starts.append(i)
     return lens, run_starts
 
@@ -594,11 +612,12 @@ def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) ->
     最后一首循环/裁剪铺到片尾。
 
     没配曲目表（plan 为 None）就返回 None，渲染出无 BGM 版——这是允许的状态，不报错。
+    曲内偏移 o > 0 时输入加 `-ss o` 从曲内第 o 秒放起（跳片头引子）。
     """
     if not plan:
         return None
 
-    for i, (rec, s) in enumerate(plan):
+    for i, (rec, s, o) in enumerate(plan):
         if s < 0 or s >= total - BGM_FADE:
             raise SystemExit(
                 f"FAIL 第 {i + 1} 首 BGM 起点 {s:g}s 越界，须在 "
@@ -612,14 +631,26 @@ def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) ->
         return f"{BGM_TARGET_LUFS - rec['lufs']:.2f}dB"
 
     lens, run_starts = _bgm_layout(plan, total)
+    for i, (rec, s, o) in enumerate(plan):
+        if o and rec["dur"] - o < lens[i]:
+            raise SystemExit(
+                f"FAIL 第 {i + 1} 首 BGM 从曲内 {o:g}s 放起只剩 {rec['dur'] - o:.1f}s，"
+                f"不够铺 {lens[i]:.1f}s。`-ss` 与 `-stream_loop` 的回绕组合没实测过，"
+                "不许静默绕——把起点后移、缩短偏移或换更长的曲")
     start_run = set(run_starts)
     bed = work / "bgm.wav"
     fades = (f"afade=t=in:st={plan[0][1]:.3f}:d={BGM_FADE},"
              f"afade=t=out:st={max(0.0, total - BGM_FADE):.3f}:d={BGM_FADE}")
 
     inputs, fg = [], []
-    for i, (rec, s) in enumerate(plan):
-        inputs += ["-stream_loop", "-1", "-t", f"{lens[i]:.3f}", "-i", str(rec["path"])]
+    for i, (rec, s, o) in enumerate(plan):
+        inputs += ["-stream_loop", "-1"]
+        if o:
+            # 输入级 seek 跳片头引子。gain 仍按全曲实测 lufs 算：跳过的引子比全曲
+            # 安静时实际响度略高于表值，归一后 BGM 略偏小——偏小是安全方向
+            # （压过口播才是事故），不单独重测。
+            inputs += ["-ss", f"{o:.3f}"]
+        inputs += ["-t", f"{lens[i]:.3f}", "-i", str(rec["path"])]
         v = f"volume={gain(rec)}"
         if i in start_run and s > 0:
             v += f",adelay={int(round(s * 1000))}:all=1"
@@ -630,7 +661,7 @@ def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) ->
     while i < len(plan):
         j = i
         while (j + 1 < len(plan)
-               and plan[j + 1][1] <= plan[j][1] + plan[j][0]["dur"]):
+               and plan[j + 1][1] <= plan[j][1] + (plan[j][0]["dur"] - plan[j][2])):
             j += 1
         if j == i:
             labels.append(f"[s{i}]")

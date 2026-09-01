@@ -43,7 +43,7 @@ def test_no_topic_file_returns_zero(tmp_path: Path):
 
 def test_bgm_list_parses_entries_and_auto(tmp_path: Path):
     ep = _topic(tmp_path, "BGM:\n  - A @36秒\n  - B\n  - C @470秒\n")
-    assert _bgm_list(ep) == [("A", 36.0), ("B", None), ("C", 470.0)]
+    assert _bgm_list(ep) == [("A", 36.0, 0.0), ("B", None, 0.0), ("C", 470.0, 0.0)]
 
 
 def test_bgm_list_absent_returns_none(tmp_path: Path):
@@ -59,7 +59,19 @@ def test_bgm_list_malformed_at_raises(tmp_path: Path):
 
 def test_bgm_list_stops_at_non_item_line(tmp_path: Path):
     ep = _topic(tmp_path, "BGM:\n  - A @36秒\n\n## 下一节\n")
-    assert _bgm_list(ep) == [("A", 36.0)]
+    assert _bgm_list(ep) == [("A", 36.0, 0.0)]
+
+
+def test_bgm_list_offset_parses(tmp_path: Path):
+    """+M秒 = 曲内偏移（跳片头引子），可单独用也可跟 @起点并用（@ 在前）。"""
+    ep = _topic(tmp_path, "BGM:\n  - A +9秒\n  - B @204秒 +9.5秒\n")
+    assert _bgm_list(ep) == [("A", None, 9.0), ("B", 204.0, 9.5)]
+
+
+def test_bgm_list_malformed_offset_raises(tmp_path: Path):
+    ep = _topic(tmp_path, "BGM:\n  - A +九秒\n")
+    with pytest.raises(SystemExit):
+        _bgm_list(ep)
 
 
 def test_seg_entry_reads_and_rejects(tmp_path: Path):
@@ -71,8 +83,8 @@ def test_seg_entry_reads_and_rejects(tmp_path: Path):
     assert _seg_entry(tmp_path, "结尾", BGM_OUTRO_ENTRY) is None
 
 
-def _rec(dur: float, start: float) -> tuple[dict, float]:
-    return {"dur": dur}, start
+def _rec(dur: float, start: float, offset: float = 0.0) -> tuple[dict, float, float]:
+    return {"dur": dur}, start, offset
 
 
 def test_layout_crossfade_gap_last():
@@ -95,6 +107,22 @@ def test_layout_gap_mid_run():
     lens, runs = _bgm_layout(plan, 300)
     assert lens == [93, 100, 100]
     assert runs == [0, 2]
+
+
+def test_layout_seek_offset_single_last():
+    # 本期真实结构：愛にできる 414.5s 从曲内 9s 放起，单首铺到片尾
+    plan = [_rec(414.5, 0, 9.0)]
+    lens, runs = _bgm_layout(plan, 223.7)
+    assert lens == [223.7]
+    assert runs == [0]
+
+
+def test_layout_seek_offset_shrinks_effective_dur():
+    # 偏移 9s → 有效曲长 91s < 到下一首的 95s 间隔 → 停顿而非交叉，并拆成两个 run
+    plan = [_rec(100, 0, 9.0), _rec(100, 95)]
+    lens, runs = _bgm_layout(plan, 300)
+    assert lens == [91, 205]
+    assert runs == [0, 1]
 
 
 class TestMusicBedRuns:
