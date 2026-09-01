@@ -102,6 +102,7 @@ class Take:
     attempts: int
     sentences: list[dict] | None = None
     qc_skip: str | None = None   # "asr-blind" = ASR 对音色严重失真，CER 不可用，交人前必须人耳确认
+    speakable: str | None = None  # 实际喂给模型的文本（剥引号+读音替换后）：段级复用比对的依据
 
 
 # ---------- 稿件解析 ----------
@@ -746,7 +747,8 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
         _pad_tail(dest, _para_gap())
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta,
-                    qc_skip="asr-blind" if skipped else None)
+                    qc_skip="asr-blind" if skipped else None,
+                    speakable=speakable(seg.text))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -904,7 +906,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
             os.replace(tmp, dest)
             _cleanup_takes(dest, ATTEMPTS)
             return Take(seg.index, seg.label, seg.text, dest.name,
-                        round(dur, 3), round(err, 4), attempt)
+                        round(dur, 3), round(err, 4), attempt,
+                        speakable=speakable(seg.text))
 
         why = []
         if not ok_dur:
@@ -927,7 +930,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         print(f"    回读：{['「' + h[:30] + '」' for h in heard_all]}", file=sys.stderr)
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(dur, 3), round(err, 4), ATTEMPTS,
-                    sentences=None, qc_skip="asr-blind")
+                    sentences=None, qc_skip="asr-blind",
+                    speakable=speakable(seg.text))
 
     _cleanup_takes(dest, ATTEMPTS)
     raise SystemExit(
@@ -956,22 +960,44 @@ def _voice_fingerprint(cfg: dict) -> dict:
 
 
 def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[int, Take]:
-    """从旧 manifest 里挑可复用的段：文本没变 + 音色指纹没变 + wav 在盘。"""
+    """从旧 manifest 里挑可复用的段：文本没变 + 音色没变 + 合成文本没变 + wav 在盘。
+
+    读音表的比对是**段级**的：readings 影响的是每段实际喂给模型的文本，
+    改一个词只该重做「念出来不一样」的段（WORKFLOW 承诺的「自动重做受影响
+    的段」）。此前按全表指纹一刀切，改一个词九段全废（2026-09-02 须贺期
+    实录：修段 2/8/9 的读音，指纹一变所有段都不能复用）。段级比对还顺带
+    覆盖全表指纹漏检的**键序变化**——指纹 sort_keys 对顺序不敏感，而
+    str.replace 按插入序生效，只调键序不改词条时旧行为会静默复用旧音频。
+    """
     fp = _voice_fingerprint(cfg)
     texts = {s.index: s.text for s in segs}
-    if any(old.get(k) != v for k, v in fp.items()):
-        why = [k for k, v in fp.items() if old.get(k) != v]
-        print(f"     音色配置变了（{ '、'.join(why) }），旧配音全部重做")
+    voice_changed = [k for k in ("engine", "model", "ref_audio") if old.get(k) != fp[k]]
+    if voice_changed:
+        print(f"     音色配置变了（{'、'.join(voice_changed)}），旧配音全部重做")
+    readings_changed = old.get("readings") != fp["readings"]
     done: dict[int, Take] = {}
+    affected: list[int] = []
     for t in old.get("segments", []):
         take = Take(**{**t, "qc_skip": t.get("qc_skip")})
         if texts.get(take.index) != take.text:
             continue
-        if any(old.get(k) != v for k, v in fp.items()):
+        if voice_changed:
             continue
         if not (out_dir / take.file).exists():
             continue
+        if take.speakable is not None:
+            if take.speakable != speakable(take.text):
+                affected.append(take.index)
+                continue
+        elif readings_changed:
+            # 旧 manifest 没存 speakable：退回全表指纹比对，行为与从前一致
+            continue
         done[take.index] = take
+    if readings_changed and not voice_changed and old.get("segments"):
+        if affected:
+            print(f"     读音表变了，重做受影响段：{'、'.join(map(str, sorted(affected)))}")
+        elif any(t.get("speakable") is not None for t in old["segments"]):
+            print("     读音表变了，但各段合成文本不变，全部复用")
     return done
 
 

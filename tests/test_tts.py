@@ -559,3 +559,95 @@ class TestStaleDownstream:
         self._clips(tmp_path, "04-clips.approved.json", [8.0])
         out = t._stale_downstream(tmp_path, self.AUDIO)
         assert len(out) == 1 and "approved" in out[0]
+
+
+class TestReusable:
+    """段级复用（2026-09-02 须贺期）：readings 改动只重做「合成文本变了」的段。
+
+    此前 _reusable 按 readings 全表指纹一刀切，改一个词九段全废——WORKFLOW
+    承诺的「自动重做受影响的段」从未实现。改法：合成时把每段的 speakable
+    存进 manifest，复用时段级比对。段级比对还覆盖全表指纹漏检的键序变化
+    （指纹 sort_keys 对顺序不敏感，而 str.replace 按插入序生效）。
+    """
+
+    def _cfg(self, readings):
+        return {"engine": "eng", "model": "m", "ref_audio": "ref.wav",
+                "readings": readings}
+
+    def _mk(self, tmp_path, segs):
+        """造旧 manifest + 盘上 wav。segs: [(text, speakable)]，speakable=None 表示旧 manifest 没存。"""
+        old = {"engine": "eng", "model": "m", "ref_audio": "ref.wav",
+               "readings": "旧指纹", "segments": []}
+        for i, (text, sp) in enumerate(segs, 1):
+            (tmp_path / f"seg-{i:02d}.wav").write_bytes(b"x")
+            d = {"index": i, "label": str(i), "text": text,
+                 "file": f"seg-{i:02d}.wav", "duration": 1.0,
+                 "cer": 0.0, "attempts": 1}
+            if sp is not None:
+                d["speakable"] = sp
+            old["segments"].append(d)
+        return old
+
+    def test_改读音只重做受影响段(self, tmp_path, monkeypatch):
+        # 旧表只有 私奔→丝奔；新表加了 世界→试介。段 2 合成文本变了，段 1 没变。
+        monkeypatch.setattr(t, "_readings",
+                            lambda: {"私奔": "丝奔", "世界": "试介"})
+        old = self._mk(tmp_path, [("他们私奔了", "他们丝奔了"),
+                                  ("一个世界本来", "一个世界本来")])
+        segs = [t.Segment(1, "1", "他们私奔了"), t.Segment(2, "2", "一个世界本来")]
+        done = t._reusable(old, segs, tmp_path,
+                           self._cfg({"私奔": "丝奔", "世界": "试介"}))
+        assert list(done) == [1]
+
+    def test_加无关读音全部复用(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(t, "_readings", lambda: {"喰种": "餐种"})
+        old = self._mk(tmp_path, [("他们私奔了", "他们私奔了")])
+        segs = [t.Segment(1, "1", "他们私奔了")]
+        done = t._reusable(old, segs, tmp_path, self._cfg({"喰种": "餐种"}))
+        assert list(done) == [1]
+
+    def test_键序变化能检出_指纹检不出的变异(self, tmp_path, monkeypatch):
+        # 同一组词条只调插入序：全表指纹 sort_keys 不变（旧行为静默复用），
+        # 但 str.replace 按序生效，合成文本实际变了——段级比对必须抓住。
+        monkeypatch.setattr(t, "_readings",
+                            lambda: {"私奔到": "远奔", "私奔": "丝奔"})
+        old = self._mk(tmp_path, [("他们私奔到东京", "他们丝奔到东京")])  # 旧序：私奔先替
+        segs = [t.Segment(1, "1", "他们私奔到东京")]
+        cfg = self._cfg({"私奔到": "远奔", "私奔": "丝奔"})
+        assert t._voice_fingerprint(cfg)["readings"] == t._voice_fingerprint(
+            self._cfg({"私奔": "丝奔", "私奔到": "远奔"}))["readings"]  # 前提：指纹确实对序不敏感
+        assert t._reusable(old, segs, tmp_path, cfg) == {}
+
+    def test_旧manifest无speakable_指纹没变才复用(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(t, "_readings", lambda: {"私奔": "丝奔"})
+        cfg = self._cfg({"私奔": "丝奔"})
+        segs = [t.Segment(1, "1", "他们私奔了")]
+        old = self._mk(tmp_path, [("他们私奔了", None)])                 # 无 speakable
+        old["readings"] = t._voice_fingerprint(cfg)["readings"]         # 指纹一致
+        assert list(t._reusable(old, segs, tmp_path, cfg)) == [1]
+        old["readings"] = "别的指纹"
+        assert t._reusable(old, segs, tmp_path, cfg) == {}              # 退回旧行为
+
+    def test_音色变了仍全量重做(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(t, "_readings", lambda: {})
+        old = self._mk(tmp_path, [("他们私奔了", "他们私奔了")])
+        old["engine"] = "旧引擎"
+        segs = [t.Segment(1, "1", "他们私奔了")]
+        assert t._reusable(old, segs, tmp_path, self._cfg({})) == {}
+
+    def test_合成的take带speakable(self, tmp_path, monkeypatch):
+        """speakable 必须落进 Take——漏了它，段级比对静默退化成旧的全表指纹。"""
+        text = "他们私奔了"
+        monkeypatch.setattr(t, "_readings", lambda: {"私奔": "丝奔"})
+        monkeypatch.setattr(t, "transcribe", lambda _p: text)
+        want = t.expected_duration(text)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: want)
+
+        class E:
+            def synthesize(self, _text, dest, attempt, seed=0):
+                with wave.open(str(dest), "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+                    w.writeframes(struct.pack("<4000h", *([3000] * 4000)))
+
+        take = t._render_one(E(), t.Segment(1, "1", text), tmp_path / "seg.wav")
+        assert take.speakable == "他们丝奔了"
