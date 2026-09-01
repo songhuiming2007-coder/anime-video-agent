@@ -408,7 +408,20 @@ def _parse_ep_scope(episode: str | None) -> tuple[list, int]:
     return [(s, e), (s, None), (None, None)], 0
 
 
-def _ladder(shot: dict, vecs, units) -> tuple[list, str, int, int]:
+def _ladder_steps(shot: dict) -> list[tuple[int, int | None, int | None, int, str]]:
+    """阶梯的完整步序列：(scope, season, episode, rung, 查询文本)，空查询跳过。
+
+    顺序 = 作用域链（集→季→全空间）×（查询→备选→配音）。**顺序本身就是语义**
+    （只救不比，步号越小越优先）；续爬从步号接着走，已试过的步不重查。
+    """
+    scopes, first_scope = _parse_ep_scope(shot.get("episode"))
+    return [(scope, s, e, rung, q)
+            for scope, (s, e) in enumerate(scopes, start=first_scope)
+            for rung, q in enumerate((shot["query"], shot["alt"], shot["text"]), 1)
+            if q]
+
+
+def _ladder(shot: dict, vecs, units, step0: int = 0) -> tuple[list, str, int, int, int]:
     """查询阶梯：`查询` → `备选` → `配音` 原文，逐级重试直到 top-1 够格。
 
     返回（命中列表, 实际用的查询, 用到第几级, 最终 scope）。
@@ -431,23 +444,27 @@ def _ladder(shot: dict, vecs, units) -> tuple[list, str, int, int]:
     「只救不比」同构延伸到检索空间——集级出及格命中就立刻返回，**即使季级/全空间
     级会有更高的分也不许换**。降级只发生在「集级没及格」时，且每次降级都记 scope
     落进 04-clips.json 给 05 看。末端全空间 = 没写集字段的今天的行为。
+
+    **可续爬（`step0`）。** 返回值第 5 个元素是「下一步下标」：及格停梯时 =
+    紧挨着的未试步；全部爬完仍不及格 = len(步序列)。停梯判据是纯检索侧的
+    「top-1 够格」，不管分不分得到画面——检索及格 ≠ 可分派（2026-09-02
+    须贺期段 4：及格候选全被段 3 锚点占完，备选从未被搜就 no_source）。
+    分配饿死的段由 `_rescue_starved` 从 step0=下一步 续爬。
     """
+    steps = _ladder_steps(shot)
     best: tuple[list, str, int] = ([], shot["query"], 1)
     best_scope = 2
-    scopes, first_scope = _parse_ep_scope(shot.get("episode"))
-    for scope, (s, e) in enumerate(scopes, start=first_scope):
-        for rung, q in enumerate((shot["query"], shot["alt"], shot["text"]), 1):
-            if not q:
-                continue
-            hits = search(q, vecs, units, TOPK, season=s, episode=e)
-            if hits and hits[0][0] >= NO_MATCH:
-                return hits, q, rung, scope
-            # 全级都不够格时报最高分那次：它最能说明「差多少」，
-            # 而报最后一次只是碰巧的顺序。
-            if hits and (not best[0] or hits[0][0] > best[0][0][0]):
-                best = hits, q, rung
-                best_scope = scope
-    return best[0], best[1], best[2], best_scope
+    for i in range(step0, len(steps)):
+        scope, s, e, rung, q = steps[i]
+        hits = search(q, vecs, units, TOPK, season=s, episode=e)
+        if hits and hits[0][0] >= NO_MATCH:
+            return hits, q, rung, scope, i + 1
+        # 全级都不够格时报最高分那次：它最能说明「差多少」，
+        # 而报最后一次只是碰巧的顺序。
+        if hits and (not best[0] or hits[0][0] > best[0][0][0]):
+            best = hits, q, rung
+            best_scope = scope
+    return best[0], best[1], best[2], best_scope, len(steps)
 
 
 def scene_no_match(anime: str) -> float:
@@ -551,6 +568,42 @@ def _by_character(hits: list, pres, name: str) -> tuple[list, bool]:
     return present_hits + absent, False
 
 
+def _rescue_starved(live: list[dict], vecs, units, pres) -> bool:
+    """给「检索及格却一个片段都没分到」的台词段续爬一级阶梯。有段被加深返回 True。
+
+    **检索及格 ≠ 可分派。** 2026-09-02 须贺期段 4：查询 top-1 0.5713 及格，
+    但及格的候选全在 60:56-61:03——被段 3 的锚点占完了。阶梯把「有及格
+    候选」当成功即停，备选「你也该长大了 少年」从未被搜过，段 4 饿死成
+    no_source，最后靠 05 人工指定 60:23。及格候选被占完 = 这一段还没找到
+    能用的画面，与检索落空同级，有权继续往梯下走。
+
+    新命中**追加在 hits 尾部**：原查询的候选仍排在前面先试，保住「只救不比」
+    的段内序——续爬是「再给一个机会」，不是「换一批分更高的」。只救饿死
+    （零片段）；short 段靠水填，不触发。画面通道结构上同缺一口，但只有两级、
+    尚无实战案例，暂不扩（YAGNI，出了事再补）。
+    """
+    deepened = False
+    for p in live:
+        if p["clips"] or p["channel"] != "line":
+            continue
+        step = p["ladder_step"]
+        if step >= len(_ladder_steps(p)):
+            continue                        # 阶梯已爬完，不再发搜索
+        hits, q, rung, scope, step = _ladder(p, vecs, units, step0=step)
+        p["ladder_step"] = step
+        if not hits or hits[0][0] < p["threshold"]:
+            continue                        # 续爬也没及格——阶梯已尽
+        if p["person"]:
+            hits, fell_back = _by_character(hits, pres, p["person"])
+            p["filter_fell_back"] = p["filter_fell_back"] or fell_back
+        p["hits"] += hits
+        # rung/used_query 保持首爬语义（检索在哪一级及格）；救回信息单列，
+        # 05 审查页据此显示「首选被占·第 N 级救回」。
+        p["rescue"] = {"rung": rung, "query": q, "scope": scope}
+        deepened = True
+    return deepened
+
+
 def run(episode: Path, index_dir: Path = INDEX_DIR,
         anime: str | None = None) -> Path:
     script = episode / "02-script.md"
@@ -597,6 +650,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     prep = []
     for shot, a in zip(shots, audio):
         fell_back = False
+        ladder_step = None                    # 画面通道不可续爬（_ladder_scene 未改），饿死只救台词段
         if shot["anchor"] is not None:          # 锚点通道（ADR-0008）：不检索，直通镜头表
             prep.append({**shot, "duration": a["duration"], "hits": [],
                          "used_query": None, "fallback": False, "rung": 1,
@@ -611,12 +665,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             hits, used_query, rung, scope = _ladder_scene(shot, svecs, sunits, floor)
             channel = "scene"
         else:                                   # 台词通道（现状）
-            hits, used_query, rung, scope = _ladder(shot, vecs, units)
+            hits, used_query, rung, scope, ladder_step = _ladder(shot, vecs, units)
             channel, floor = "line", NO_MATCH
             if shot["person"]:
                 hits, fell_back = _by_character(hits, pres, shot["person"])
         prep.append({**shot, "duration": a["duration"], "hits": hits,
                      "used_query": used_query, "fallback": rung > 1, "rung": rung,
+                     "ladder_step": ladder_step,
                      "ep_scope": scope,
                      # 没写集字段的段落 scope=2 只是「本来就没锁」，不是降级；
                      # 降级只对写了集号却未在集级及格的情况成立（ADR-0004）
@@ -676,9 +731,10 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
 
     # 分配和排版互为前提：排版能拉多长取决于「下一个片段占在哪」，
     # 而下一个片段占在哪又取决于分配。所以迭代——每轮给上一轮没填满的段多分一个片段。
-    # 三轮足够：实测第二轮就收敛。
+    # 三轮足够：实测第二轮就收敛。饿死续爬进来后上限要盖住阶梯：
+    # 3 轮水填 + 最多 9 步续爬（3 级 × 3 层作用域）。
     quota = {p["index"]: p["duration"] for p in live}
-    for _ in range(3):
+    for _ in range(12):
         for p in prep:
             p["clips"] = []
         # 锚点 dict 是这里唯一跨轮存活的对象（检索候选每轮新建）：by_ep 每轮把
@@ -706,7 +762,8 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             _, status = size([dict(c) for c in p["clips"]], p["duration"])
             if status == "short":
                 short.append(p["index"])
-        if not short:
+        deepened = _rescue_starved(live, vecs, units, pres)
+        if not short and not deepened:
             break
         for idx in short:              # 下一轮多要一点，好多分到一个片段
             quota[idx] += MIN_CLIP
@@ -727,7 +784,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         p["clips"], p["status"] = size(p["clips"], p["duration"])
 
     out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cand",
-                                                    "anchor_conflict")}
+                                                    "anchor_conflict", "ladder_step")}
            for p in sorted(prep, key=lambda x: x["index"])]
 
     dest = episode / "04-clips.json"
@@ -788,6 +845,8 @@ def main() -> int:
         # 用到第几级要显示出来：第 2、3 级说明那条 `查询` 写得不行，
         # 是回去改稿的信号，不是可以忽略的细节。
         rung = {2: "  [第2级·备选]", 3: "  [第3级·配音原文]"}.get(s.get("rung", 1), "")
+        if s.get("rescue"):
+            rung += f"  [首选被占·第{s['rescue']['rung']}级救回]"
         # 通道与过滤要显示出来：**画面分数和台词分数不可比**，不标出来看的人会拿
         # 一列数横着比。退回也要显示——它说明那一段的角色过滤没起作用。
         chan = ("锚点" if s.get("channel") == "anchor"

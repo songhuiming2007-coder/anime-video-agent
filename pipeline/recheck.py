@@ -250,7 +250,7 @@ def _rerun_candidates(shot: dict, vecs, units, pres) -> tuple[list, str]:
     贪心分配，两段抢同一处画面时谁能拿到取决于其它段的状态；探针只重跑单段的
     `_ladder`，判的是「候选本身排得对不对」，不判「多段之间谁该让谁」。
     """
-    hits, used_query, _rung, _scope = _ladder(shot, vecs, units)
+    hits, used_query, _rung, _scope, _step = _ladder(shot, vecs, units)
     if shot.get("person"):
         hits, _fell_back = _by_character(hits, pres, shot["person"])
     return hits, used_query

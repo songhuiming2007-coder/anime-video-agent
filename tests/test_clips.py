@@ -180,7 +180,7 @@ class TestLadder:
     def _run(self, shot, scores, monkeypatch):
         search, calls = self._fake(scores)
         monkeypatch.setattr(c, "search", search)
-        hits, used, rung, scope = c._ladder(shot, None, None)
+        hits, used, rung, scope, _step = c._ladder(shot, None, None)
         return used, rung, scope, calls
 
     def test_第一级够格就不往下试(self, monkeypatch):
@@ -264,6 +264,134 @@ class TestLadder:
             self._shot(episode="S99E99"),
             {("查询语", 99, None): 0.30, ("配音正文。", None, None): 0.60}, monkeypatch)
         assert (used, rung, scope) == ("配音正文。", 3, 2)
+
+
+class TestLadderResume:
+    """阶梯续爬（2026-09-02 须贺期段 4）：检索及格 ≠ 可分派——及格候选
+    全被锚点占完的段，有权从停下的下一步继续往梯下走，已试过的步不重查。"""
+
+    def _shot(self, query="查询语", alt="备选语", text="配音正文。", episode=None):
+        return {"index": 1, "query": query, "alt": alt, "text": text,
+                "episode": episode}
+
+    def _fake(self, scores):
+        calls = []
+
+        def search(q, vecs, units, k, season=None, episode=None):
+            calls.append((q, season, episode))
+            sc = scores.get((q, season, episode), scores.get(q))
+            return [(sc, object())] if sc is not None else []
+        return search, calls
+
+    def test_及格停梯后下一步是紧挨着的未试级(self, monkeypatch):
+        search, calls = self._fake({"查询语": 0.50, "备选语": 0.60})
+        monkeypatch.setattr(c, "search", search)
+        *_, step = c._ladder(self._shot(), None, None)        # 首爬及格停在 rung 1
+        assert step == 1
+        _, used, rung, _, step = c._ladder(self._shot(), None, None, step0=step)
+        assert (used, rung) == ("备选语", 2)
+        assert calls == [("查询语", None, None), ("备选语", None, None)]  # 不重查
+
+    def test_续爬穷尽返回步数_便于标死(self, monkeypatch):
+        search, _ = self._fake({"查询语": 0.50})              # 备选/配音都没命中
+        monkeypatch.setattr(c, "search", search)
+        *_, step = c._ladder(self._shot(), None, None)
+        hits, _, _, _, step = c._ladder(self._shot(), None, None, step0=step)
+        assert not hits and step == len(c._ladder_steps(self._shot()))
+
+    def test_步序列顺序_集优先且空查询跳过(self):
+        steps = c._ladder_steps(self._shot(alt=None, episode="S01E07"))
+        assert [(scope, rung) for scope, _, _, rung, _ in steps] == [
+            (0, 1), (0, 3), (1, 1), (1, 3), (2, 1), (2, 3)]
+
+
+class TestRescueStarved:
+    """饿死段续爬：首选候选全被占（零片段）的台词段爬下一级；新命中追加
+    在 hits 尾部，段内「只救不比」的序不变。"""
+
+    def _p(self, clips=(), hits=((0.50, object()),), step=1, **kw):
+        p = {"index": 1, "query": "查询语", "alt": "备选语", "text": "配音正文。",
+             "episode": None, "person": None, "channel": "line",
+             "threshold": c.NO_MATCH, "hits": list(hits), "clips": list(clips),
+             "filter_fell_back": False, "ladder_step": step}
+        p.update(kw)
+        return p
+
+    def _fake(self, scores):
+        def search(q, vecs, units, k, season=None, episode=None):
+            sc = scores.get(q)
+            return [(sc, object())] if sc is not None else []
+        return search
+
+    def test_饿死段续爬及格_命中追加在尾(self, monkeypatch):
+        monkeypatch.setattr(c, "search", self._fake({"备选语": 0.99}))
+        p = self._p()
+        assert c._rescue_starved([p], None, None, None) is True
+        # 备选分数更高也排尾——原查询的候选仍先试（只救不比）
+        assert [sc for sc, _ in p["hits"]] == [0.50, 0.99]
+        assert p["rescue"] == {"rung": 2, "query": "备选语", "scope": 2}
+        assert p["ladder_step"] == 2
+
+    def test_有片段的段不触发(self, monkeypatch):
+        monkeypatch.setattr(c, "search", self._fake({"备选语": 0.99}))
+        p = self._p(clips=[{"start": 1.0}])
+        assert c._rescue_starved([p], None, None, None) is False
+        assert "rescue" not in p and len(p["hits"]) == 1
+
+    def test_续爬也不及格_标死不再重试(self, monkeypatch):
+        monkeypatch.setattr(c, "search",
+                            self._fake({"备选语": 0.30, "配音正文。": 0.20}))
+        p = self._p()
+        assert c._rescue_starved([p], None, None, None) is False
+        assert len(p["hits"]) == 1 and "rescue" not in p
+        assert p["ladder_step"] == len(c._ladder_steps(p))    # 阶梯已尽
+        assert c._rescue_starved([p], None, None, None) is False   # 不再发搜索
+
+    def test_人物过滤作用于续爬命中(self, monkeypatch):
+        monkeypatch.setattr(c, "search", self._fake({"备选语": 0.60}))
+        seen = {}
+
+        def fake_bc(hits, pres, person):
+            seen["person"] = person
+            return hits, True
+
+        monkeypatch.setattr(c, "_by_character", fake_bc)
+        p = self._p(person="须贺圭介")
+        assert c._rescue_starved([p], None, None, "pres") is True
+        assert seen["person"] == "须贺圭介" and p["filter_fell_back"] is True
+
+
+class TestRescueAllocation:
+    """生产现场回放（2026-09-02 须贺期段 4）：首选命中被锚点占死，
+    分配一轮颗粒无收，续爬备选后第二轮拿到新画面。"""
+
+    def _unit(self, start, end):
+        from types import SimpleNamespace
+        return SimpleNamespace(anime="番", season=1, episode=1,
+                               start=start, end=end, text="台词")
+
+    def test_首选被锚点占死_备选救回(self, monkeypatch):
+        a, b = self._unit(100.0, 104.0), self._unit(200.0, 204.0)
+
+        def search(q, vecs, units, k, season=None, episode=None):
+            return {"查询语": [(0.50, a)], "备选语": [(0.60, b)]}.get(q, [])
+
+        monkeypatch.setattr(c, "search", search)
+        p = {"index": 2, "query": "查询语", "alt": "备选语", "text": "配音正文。",
+             "episode": None, "person": None, "channel": "line",
+             "threshold": c.NO_MATCH, "clips": [], "filter_fell_back": False,
+             "duration": 5.0}
+        hits, *_, step = c._ladder(p, None, None)             # rung 1 及格即停
+        p["hits"], p["ladder_step"] = hits, step
+        anchor = {"season": 1, "episode": 1, "start": 99.75, "span": 4.25}
+        sources = {"S01E01": {"path": "x.mp4", "duration": 1000.0}}
+        for _ in range(12):
+            p["clips"] = []
+            c._allocate([p], {2: p}, sources, "番", {2: 5.0}, pre=[anchor])
+            if not c._rescue_starved([p], None, None, None):
+                break
+        assert p["clips"][0]["start"] == pytest.approx(199.75)   # 备选的 200s 画面
+        assert p["rescue"]["rung"] == 2
 
 
 class TestOverlaps:
