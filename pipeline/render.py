@@ -542,7 +542,6 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
                 " `番: ` 字段，渲染会静默丢掉全部 BGM。补 `番: <番名>` 再跑")
         return None
 
-    seq = _bgm_list(episode)
     if seq is not None:
         plan: list[tuple[dict, float, float]] = []
         for name, at, offset in seq:
@@ -601,7 +600,7 @@ def _bgm_layout(plan: list[tuple[dict, float, float]], total: float) -> tuple[li
     return lens, run_starts
 
 
-def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) -> Path | None:
+def _bgm_bed(plan: list[tuple[dict, float, float]] | None, total: float, work: Path) -> Path | None:
     """铺 BGM 垫底轨：`01-topic.md` 的 BGM 序列逐首拼接，全长 `total` 秒。
 
     `plan` 由 run() 入口的 `_bgm_plan` 解析（配置前置校验，切片前就把曲名/
@@ -693,7 +692,7 @@ def _bgm_bed(plan: list[tuple[dict, float]] | None, total: float, work: Path) ->
     subprocess.run(cmd, check=True, capture_output=True)
 
     print("  BGM  " + " → ".join(
-        f"{rec['name']}（{s:.0f}s 起）" for rec, s in plan))
+        f"{rec['name']}（{s:.0f}s 起{f' 曲内+{o:g}s' if o else ''}）" for rec, s, o in plan))
     return bed
 
 
