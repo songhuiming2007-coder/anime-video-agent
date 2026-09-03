@@ -179,3 +179,87 @@ class TestSafeName:
 
     def test_压缩连续空白(self):
         assert bgm._safe("  a   b  ") == "a b"
+
+
+class TestCleanTrackTitle:
+    def test_常见前缀清洗(self):
+        assert bgm.clean_track_title("01. 回想") == "回想"
+        assert bgm.clean_track_title("04.恋人") == "恋人"
+        assert bgm.clean_track_title("05 - 战斗") == "战斗"
+        assert bgm.clean_track_title("12、日常") == "日常"
+        assert bgm.clean_track_title("03_日常風景") == "日常風景"
+
+    def test_无序号前缀保留原样(self):
+        assert bgm.clean_track_title("K&A 初訪問") == "K&A 初訪問"
+        assert bgm.clean_track_title("春擬き -instrumental-") == "春擬き -instrumental-"
+
+
+class TestInferSlot:
+    def test_含关键词识别为结尾(self):
+        assert bgm.infer_slot("Heart Pattern -instrumental-") == "结尾"
+        assert bgm.infer_slot("芽ぐみの雨 [Instrumental]") == "结尾"
+        assert bgm.infer_slot("某曲 (Off Vocal)") == "结尾"
+        assert bgm.infer_slot("某曲 カラオケ") == "结尾"
+        assert bgm.infer_slot("某曲 inst.") == "结尾"
+
+    def test_普通曲名识别为正文(self):
+        assert bgm.infer_slot("04. 回想") == "正文"
+        assert bgm.infer_slot("繋ぎとめた世界") == "正文"
+
+
+class TestRegister:
+    def test_批量登记与增量合并(self, monkeypatch, tmp_path):
+        import json
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        bgm_json = config_dir / "bgm.json"
+        bgm_json.write_text(json.dumps({
+            "测试番": {
+                "_note": "原有说明",
+                "tracks": {
+                    "旧曲": {"path": "data/library/bgm/测试番/01. 旧曲.flac", "dur": 100.0, "lufs": -14.0}
+                }
+            }
+        }, ensure_ascii=False), encoding="utf-8")
+
+        monkeypatch.setattr(bgm.paths, "CONFIG", config_dir)
+        monkeypatch.setattr(bgm.paths, "ROOT", tmp_path)
+
+        # 创建两首假音频文件
+        audio_dir = tmp_path / "data/library/bgm/测试番"
+        audio_dir.mkdir(parents=True)
+        f1 = audio_dir / "02. 新曲A.flac"
+        f2 = audio_dir / "03. 主题曲 -instrumental-.flac"
+        f1.write_bytes(b"dummy")
+        f2.write_bytes(b"dummy")
+
+        # mock measure
+        monkeypatch.setattr(bgm, "measure", lambda p: {
+            "duration": 120.5,
+            "lufs": -15.345,
+            "onset": 1.234,
+            "vocal": None if "instrumental" in p.stem.lower() else "?"
+        })
+
+        # 1. 增量登记
+        count = bgm.register([f1, f2], anime="测试番")
+        assert count == 2
+
+        db = json.loads(bgm_json.read_text(encoding="utf-8"))
+        tracks = db["测试番"]["tracks"]
+        assert "旧曲" in tracks  # 原有曲目得到保留
+        assert "新曲A" in tracks
+        assert "主题曲 -instrumental-" in tracks
+        assert tracks["新曲A"]["slot"] == "正文"
+        assert tracks["新曲A"]["dur"] == 120.5
+        assert tracks["新曲A"]["lufs"] == -15.35
+        assert tracks["主题曲 -instrumental-"]["slot"] == "结尾"
+
+        # 2. 覆盖登记
+        count = bgm.register([f1], anime="测试番", note="全新备注", overwrite=True)
+        assert count == 1
+        db = json.loads(bgm_json.read_text(encoding="utf-8"))
+        assert db["测试番"]["_note"] == "全新备注"
+        assert "旧曲" not in db["测试番"]["tracks"]
+        assert len(db["测试番"]["tracks"]) == 1
+

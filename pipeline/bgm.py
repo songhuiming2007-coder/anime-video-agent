@@ -204,6 +204,78 @@ def measure(audio: Path) -> dict:
             "vocal": None if "instrumental" in audio.stem.lower() else "?"}
 
 
+def clean_track_title(stem: str) -> str:
+    """去除文件名开头的音轨序号，如 '01. 标题' -> '标题'，'05.交歓' -> '交歓'。"""
+    cleaned = re.sub(r"^\d+\s*[\.\-、_]\s*", "", stem).strip()
+    return cleaned or stem
+
+
+def infer_slot(stem: str) -> str:
+    """根据曲名关键词推断默认 slot（结尾 OP/ED 伴奏 vs 正文劇伴）。"""
+    lower = stem.lower()
+    return "结尾" if any(w in lower for w in INST_WORDS) else "正文"
+
+
+def _rel_repo_path(path: Path) -> str:
+    """转为相对于 paths.ROOT 的统一相对路径字符串。"""
+    try:
+        rel = path.resolve().relative_to(paths.ROOT.resolve())
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        pass
+    try:
+        rel = path.relative_to(paths.ROOT)
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
+def register(files: list[Path], anime: str, note: str | None = None, overwrite: bool = False) -> int:
+    """批量测量音频文件并写入 config/bgm.json，返回成功登记的曲目数。"""
+    cfg_file = paths.CONFIG / "bgm.json"
+    if not cfg_file.exists():
+        raise SystemExit(f"FAIL 配置文件不存在：{cfg_file}")
+
+    db = json.loads(cfg_file.read_text(encoding="utf-8"))
+    anime_entry = db.setdefault(anime, {})
+
+    if note:
+        anime_entry["_note"] = note
+    elif "_note" not in anime_entry:
+        anime_entry["_note"] = f"《{anime}》BGM 曲库（原声带与主题曲/伴奏候选池），每期选曲现选"
+
+    existing_tracks = {} if overwrite else anime_entry.get("tracks", {})
+    count = 0
+
+    print(f"开始批量测量与登记 [{anime}]（共 {len(files)} 首，overwrite={overwrite}）...")
+    for f in sorted(files):
+        if not f.exists():
+            print(f"  跳过不存在文件：{f}")
+            continue
+
+        title = clean_track_title(f.stem)
+        m = measure(f)
+        rel_path = _rel_repo_path(f)
+
+        existing_tracks[title] = {
+            "path": rel_path,
+            "slot": infer_slot(f.stem),
+            "dur": m["duration"],
+            "lufs": round(m["lufs"], 2) if m["lufs"] is not None else None,
+            "onset": round(m["onset"], 3) if m["onset"] is not None else None,
+            "vocal": False,
+        }
+        lufs_str = f"{m['lufs']:.1f}" if m["lufs"] is not None else "—"
+        onset_str = f"{m['onset']:.1f}s" if m["onset"] is not None else "—"
+        print(f"  + [{title}] slot={existing_tracks[title]['slot']} dur={m['duration']}s lufs={lufs_str} onset={onset_str}")
+        count += 1
+
+    anime_entry["tracks"] = existing_tracks
+    cfg_file.write_text(json.dumps(db, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"完成！成功写入 {count} 首曲目至 {cfg_file.relative_to(paths.ROOT)} [{anime}]")
+    return count
+
+
 def load(anime: str) -> dict:
     """读该番的曲目表。render.py 用这个，不直接碰 json 结构。"""
     cfg = paths.CONFIG / "bgm.json"
@@ -297,6 +369,12 @@ def main() -> None:
     p = sub.add_parser("measure", help="量时长/响度/入声点")
     p.add_argument("files", type=Path, nargs="+")
 
+    p = sub.add_parser("register", help="批量测量曲目并登记进 config/bgm.json（Phase 0）")
+    p.add_argument("files", type=Path, nargs="+", help="音频文件列表")
+    p.add_argument("--anime", required=True, help="番剧名称")
+    p.add_argument("--note", help="曲库备注说明")
+    p.add_argument("--overwrite", action="store_true", help="是否覆盖已有曲库（默认增量更新）")
+
     a = ap.parse_args()
     paths.require_data()
 
@@ -329,6 +407,9 @@ def main() -> None:
             lufs = f"{m['lufs']:.1f}" if m["lufs"] is not None else "—"
             onset = f"{m['onset']:.1f}s" if m["onset"] is not None else "—"
             print(f"{f.stem:<40s} {m['duration']:>6.1f}s {lufs:>8s}  {onset:>6s}")
+
+    elif a.cmd == "register":
+        register(a.files, anime=a.anime, note=a.note, overwrite=a.overwrite)
 
 
 if __name__ == "__main__":
