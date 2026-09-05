@@ -1051,6 +1051,24 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     engine: Engine | None = None
     takes: list[Take] = []
     t0 = time.perf_counter()
+    def _save_manifest():
+        total = sum(t.duration for t in takes)
+        # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
+        # json.loads 上裸抛，比「没有 manifest」更难办
+        tmp = manifest_path.with_name(manifest_path.name + ".tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    **_voice_fingerprint(cfg),
+                    "total_duration": round(total, 3),
+                    "segments": [asdict(t) for t in takes],
+                },
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
+        os.replace(tmp, manifest_path)
+
     for seg in segs:
         if seg.index in done:
             takes.append(done[seg.index])
@@ -1062,25 +1080,12 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
         dest = out_dir / f"seg-{seg.index:02d}.wav"
         take = render_segment(engine, seg, dest)
         takes.append(take)
+        _save_manifest()
         print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
               f"{take.attempts} 次  {seg.text[:20]}…")
 
     total = sum(t.duration for t in takes)
-    # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
-    # json.loads 上裸抛，比「没有 manifest」更难办
-    tmp = manifest_path.with_name(manifest_path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(
-            {
-                **_voice_fingerprint(cfg),
-                "total_duration": round(total, 3),
-                "segments": [asdict(t) for t in takes],
-            },
-            ensure_ascii=False, indent=2,
-        ),
-        encoding="utf-8",
-    )
-    os.replace(tmp, manifest_path)
+    _save_manifest()
     print("-" * 60)
     print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
           f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")
