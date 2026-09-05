@@ -26,7 +26,6 @@
 | D13 | 待验证 | 对抗性审查三步流水线已实战一轮，待新番验证 | `WORKFLOW.md`「番剧笔记」 | — | 罪恶王冠大修实测有效；下一部新番从零建笔记时复盘 |
 | D18 | 待决策 | 集号 / 人物字段自觉性缺口导致错配静默发生 | `pipeline/check_script.py` | ADR-0005, ADR-0008, B1 | **2026-08-27 更新**：集号侧已由 `锚点:` 强制字段 + 集/锚点一致性机检覆盖（check_script 与 clips.parse_shots 双卡口）；`人物:` 该写没写仍无判据，保留 |
 | D19 | 待决策 | 说话人确认是全流程最不可靠环节 | `skills/write-script/SKILL.md:54` | — | 字幕 Name 字段基本不填，02 写稿侧仍无机器判据 |
-| D21 | 待销号 | Qwen3-TTS 长段落音色漂移诊断已更正 | `pipeline/tts.py` | ADR-0006, N23 | 根因是仓库根目录临时脚本绕过 `render_segment`；原假设不成立，待用户确认销号 |
 | N1 | 备忘 | WD tagger 是占位死代码 | `pipeline/vindex.py:90-91` | ADR-0003 | 词表覆盖率低但故意保留以跑通路径；换真人影视时整块摘除 |
 | N2 | 备忘 | tagger general 标签落盘但无检索路径读它 | `pipeline/vindex.py:321-324` | ADR-0003 | 为第 2 层万一复活留的备用料 |
 | N4 | 备忘 | CoreML 推理路径不可用，退回 CPU | `pyproject.toml:34-36` | — | onnxruntime CoreML EP 在动漫图上报错，CPU 够用 |

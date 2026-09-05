@@ -1,6 +1,5 @@
 {
   "_note": "配音参数。Phase 0 一次性定死，之后每期不改。换引擎/换音色只动这个文件。\n2026-08-15 换引擎：IndexTTS-1.5 是纯中文模型，读不了英日歌名（My Dearest 念成 Femi Dearest Faye）。换 Qwen3-TTS 1.7B Base（多语种）+ 用户自录日文参考 seg7（x-vector 克隆，只传 ref_audio 不传 ref_text——新版 mlx-audio 的 ICL 克隆路径有 bug，会把 ref_text 复述出来，x-vector 路径实测正常）。0.6B 音色可爱但口齿不清（第一/响起 念糊），1.7B 口齿清晰、音色略逊，用户拍板要 1.7B 的清晰度。",
-  "_chosen": "2026-08-16 换音色：seg7（2026-08-15 选）情绪起伏大（RMS 起伏 CV 1.40，7 段里最高），整篇配音听感带兴奋感、吞字、语气怪。用户重录 7 段平静参考音，试音对比后选定 seg6（试音 6.24-6.48s、完整旁白句回读 CER 1%，起伏 CV 1.24、RMS -21.9）。1.7B + seg6，lang_code=zh（中文旁白 + 英日歌名混读）。\n2026-08-27 换参考：x-vector 长参考实验收口。seg6 发音稳定性差（少年/全城/警察/大人们/体制/世界 在无 readings 替换时错音）。从 VTuber 读书视频 4:01-9:00 切 5 分钟母带，在线去噪 + 压缩停顿（保留 75% 呼吸断点）+ speechnorm 响度归一化，得 vtuber_reading_dn_sqz75_n.wav。盲听：音色追平 seg6，节奏自然度优于 50%/25% 压缩版；固定三测时长稳定 8.80s（seg6 9.12s），稍快 3.5% 但稳定。无 readings 时历史错词全对。readings 表保留作为二级保险。\n2026-08-31 校条祭期：用户拍板本期回到 seg6（08-16 选定、乐评期→阳菜人物志期一直在用的音色），ref_audio 改回 data/voice/reference/seg6.wav；已念错词由 readings 表覆盖（少年/全城/警察/大人们/体制/世界 均在表内）。",
   "engine": "qwen3_tts",
   "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
   "ref_audio": "data/voice/reference/seg6.wav",
