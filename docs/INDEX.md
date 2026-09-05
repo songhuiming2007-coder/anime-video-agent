@@ -27,10 +27,11 @@
 | [ADR-0002](adr/0002-tts-local-indextts.md) | 本地 IndexTTS-1.5 + 自写解码循环 | 已采纳（决定二/三被 ADR-0006 取代） | N7, N11, N12, N19 |
 | [ADR-0003](adr/0003-visual-index-as-filter.md) | 视觉索引只做角色在场过滤，不参与排序 | 第 1 层已验收；第 2 层探针没过，不建 | D4, D5, D6, D8, N1, N2, N8, N9, N14, N16 |
 | [ADR-0004](adr/0004-script-episode-lock.md) | 排片先锁集号，presence 只做带内次级排序 | 已采纳已实现 | B1, D1, D6, D18, N9 |
-| [ADR-0005](adr/0005-clip-mismatch-is-similarity-not-comprehension.md) | 排片错配根因：文本相似度≠语义理解 | 诊断确认，修复方案未定 | B1, D1, D2, D6, D18, D20 |
+| [ADR-0005](adr/0005-clip-mismatch-is-similarity-not-comprehension.md) | 排片错配根因：文本相似度≠语义理解 | 诊断确认，修复方案未定 | B1, D1, D2, D6, D18, D20（已归档） |
 | [ADR-0006](adr/0006-tts-qwen3.md) | 配音引擎换 Qwen3-TTS 1.7B Base | 已采纳 | D21, N7, N11, N12, N19, N22 |
 | [ADR-0007](adr/0007-no-japanese-subs-support.md) | ASR 兜底仅中文，不支持日语无字幕片源 | 已采纳 | D8 |
 | [ADR-0008](adr/0008-ground-truth-anchor-clips.md) | 笔记 Ground Truth 锚点直通排片，检索降级补位 | 已实现，待新番实测验证 | D20（已归档） |
+| [ADR-0009](adr/0009-rvc-pilot-failure.md) | RVC 两段式音色迁移 pilot 失败，停止投入 | 已否决 | — |
 
 ---
 
