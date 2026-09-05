@@ -1155,6 +1155,7 @@ def main() -> int:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--keep", action="store_true", help="保留中间切片，便于排查")
     a = ap.parse_args()
+    paths.require_data()
 
     out = run(a.episode, a.keep)
     v = duration(out)

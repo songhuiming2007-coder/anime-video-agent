@@ -401,8 +401,8 @@ def cluster(anime: str, sample: int = CLUSTER_SAMPLE, seed: int = 0) -> dict:
         "clusters": dict(sorted(clusters.items(),
                                 key=lambda kv: -kv[1]["n"])),
     }
-    clusters_path(anime).write_text(json.dumps(out, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
+    # 贴名库是人工劳动产物（不可重生成），必须原子写
+    paths.atomic_write(clusters_path(anime), json.dumps(out, ensure_ascii=False, indent=1))
     return out
 
 
@@ -483,8 +483,7 @@ def name_cluster(anime: str, cid: str, name: str) -> dict:
             f"FAIL 角色名表里没有「{name}」，先补进 {vindex.CHARACTERS} 的《{anime}》一节")
     db["clusters"][cid]["name"] = alias[name]
     db["clusters"][cid]["named_at"] = date.today().isoformat()
-    clusters_path(anime).write_text(json.dumps(db, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
+    paths.atomic_write(clusters_path(anime), json.dumps(db, ensure_ascii=False, indent=1))
     return db
 
 

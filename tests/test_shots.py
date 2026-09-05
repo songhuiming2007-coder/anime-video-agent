@@ -12,6 +12,8 @@
 期望值全部先在实现上跑过再写进断言（CLAUDE.md「写测试的两条纪律」）。
 """
 
+import sys
+
 import pytest
 
 from pipeline import shots
@@ -136,3 +138,32 @@ class TestPct:
 
     def test_不越界(self):
         assert shots._pct([1.0, 2.0], 1.0) == 2.0
+
+
+class TestCalibrateCli:
+    """calibrate 的 --sheet 与 --long 不互斥（2026-09-05 审计 P0 修复）。
+
+    变异检验：任一分支改回 `return 0`，第一个用例立刻红。
+    """
+
+    def _fake(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(shots, "cut_sheet",
+                            lambda v, t: calls.append(("sheet", t)) or "cuts.jpg")
+        monkeypatch.setattr(shots, "long_sheet",
+                            lambda v, t: calls.append(("long", t)) or "long.jpg")
+        monkeypatch.setattr(shots.paths, "require_data", lambda: None)
+        return calls
+
+    def test_sheet与long同传两张表都出(self, monkeypatch):
+        calls = self._fake(monkeypatch)
+        monkeypatch.setattr(
+            sys, "argv", ["shots", "calibrate", "v.mkv", "--sheet", "10", "--long", "8"])
+        assert shots.main() == 0
+        assert calls == [("sheet", 10.0), ("long", 8.0)]
+
+    def test_只传sheet不碰long(self, monkeypatch):
+        calls = self._fake(monkeypatch)
+        monkeypatch.setattr(sys, "argv", ["shots", "calibrate", "v.mkv", "--sheet", "10"])
+        assert shots.main() == 0
+        assert calls == [("sheet", 10.0)]

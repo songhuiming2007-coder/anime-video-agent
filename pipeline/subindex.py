@@ -225,14 +225,11 @@ def meta(dim: int) -> dict:
 
 
 def _atomic_write(dest: Path, data: str) -> None:
-    """写临时文件再 os.replace。索引是 .npy + .json 两段写，没有事务——
+    """统一走 paths.atomic_write。索引是 .npy + .json 两段写，没有事务——
     崩在中间会留半份。原子替换把窗口压到一次 rename；配合 `has_index` 的
     成对判据，半份索引只会显式变红（phase0 重建、status 不计数），
-    不会冒充完整。vindex.py 有一对同实现的孪生（subindex 不能被 faces
-    反向依赖，两处各留一份）。"""
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    os.replace(tmp, dest)
+    不会冒充完整。"""
+    paths.atomic_write(dest, data)
 
 
 def _atomic_save(dest: Path, vecs: np.ndarray) -> None:

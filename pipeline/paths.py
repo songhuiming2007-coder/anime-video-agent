@@ -86,6 +86,19 @@ def model_revision(repo_id: str) -> str | None:
     return snaps[-1].name if snaps else None
 
 
+def atomic_write(dest: Path, data: str) -> None:
+    """写临时文件再 os.replace：落盘要么完整要么没有，不许半份。
+
+    写一半崩溃（断电 / Ctrl-C）的 JSON 会让下次读取在 json.loads 上裸抛，
+    比「没有文件」更难办——没有文件报的是「先跑 X 步」，半份文件报的是一行
+    离病根很远的解析错误。tmp 与 dest 同目录，os.replace 是同卷原子重命名。
+    此前是 subindex/vindex 各一份孪生实现（2026-09-05 审计合并于此）。
+    """
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, dest)
+
+
 def require_data() -> Path:
     """`data/` 不可达就立刻退出，**绝不自动创建**（CLAUDE.md「存储约定」）。
 

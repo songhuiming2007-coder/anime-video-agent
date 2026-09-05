@@ -13,6 +13,7 @@
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +101,60 @@ class TestDeadKeysRemoved:
         assert "frames_per_shot" not in cfg["visual"]
         assert all(not k.startswith("_") or k != "_frames_note"
                    for k in cfg["visual"])
+
+
+class TestAtomicWrite:
+    """paths.atomic_write：落盘要么完整要么没有，不许半份（2026-09-05 审计合并于此）。"""
+
+    def test_正常写入且不留临时文件(self, tmp_path):
+        dest = tmp_path / "x.json"
+        paths.atomic_write(dest, '{"a": 1}')
+        assert json.loads(dest.read_text(encoding="utf-8")) == {"a": 1}
+        assert not (tmp_path / "x.json.tmp").exists()
+
+    def test_写一半崩溃目标文件不变(self, tmp_path, monkeypatch):
+        dest = tmp_path / "x.json"
+        dest.write_text("old", encoding="utf-8")
+
+        def boom(self, *a, **k):
+            raise OSError("模拟写一半断电")
+
+        monkeypatch.setattr(Path, "write_text", boom)
+        with pytest.raises(OSError):
+            paths.atomic_write(dest, "new")
+        monkeypatch.undo()
+        assert dest.read_text(encoding="utf-8") == "old"
+
+
+class TestRequireDataWiring:
+    """写 data/ 的入口 main() 必须先过 require_data：盘没挂时报引导性 FAIL，
+    而不是几层调用之后的裸 FileNotFoundError（2026-09-05 审计补齐）。
+    check_script 不在此列：--raw 模式明确支持 data/ 之外的参照样本文件。
+    music 是库模块无 CLI 入口，同样不在此列。
+    """
+
+    def _assert_guarded(self, monkeypatch, mod_name, argv):
+        import importlib
+        import sys
+        monkeypatch.setattr(
+            paths, "require_data",
+            lambda: (_ for _ in ()).throw(SystemExit(42)))
+        monkeypatch.setattr(sys, "argv", argv)
+        mod = importlib.import_module(f"pipeline.{mod_name}")
+        with pytest.raises(SystemExit) as e:
+            mod.main()
+        # 不是 42 说明拦我们的不是 require_data，而是更下游的某个失败——
+        # 那意味着 require_data 没接线（变异检验：删掉接线后这里红）
+        assert e.value.code == 42
+
+    def test_render(self, monkeypatch):
+        self._assert_guarded(monkeypatch, "render", ["render", "x"])
+
+    def test_clips(self, monkeypatch):
+        self._assert_guarded(monkeypatch, "clips", ["clips", "x"])
+
+    def test_qc(self, monkeypatch):
+        self._assert_guarded(monkeypatch, "qc", ["qc", "x"])
+
+    def test_timeline(self, monkeypatch):
+        self._assert_guarded(monkeypatch, "timeline", ["timeline", "某番"])

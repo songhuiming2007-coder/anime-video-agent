@@ -176,6 +176,7 @@ def main() -> int:
                     help=f"无台词切块阈值秒数（默认 {DEFAULT_GAP:g}）")
     ap.add_argument("--index-dir", type=Path, default=INDEX_DIR)
     a = ap.parse_args()
+    paths.require_data()
     run(a.anime, a.episode, a.gap, a.index_dir)
     return 0
 
