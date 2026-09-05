@@ -1,7 +1,7 @@
 {
   "_note": "任意首数拼接，人耳现选（2026-08-10 起，CLAUDE.md「BGM 约定」）。这里是攒好的候选池，不是定死的选择。按番分组，路径一律相对仓库根。",
   "_slots": "正文 = 全片打底，用劇伴（无旋律钩子，不抢口播）；结尾 = 最后一段换 OP/ED 伴奏，前奏一响就有情绪。默认一期一首，结尾留空即全程一首。",
-  "_lufs": "每首的实测响度，render.py 据此把 BGM 归一到统一目标再闪避。别删——少了它换曲就得重调闪避参数。量法：python -m pipeline.bgm measure <文件>",
+  "_lufs": "每首的实测响度，render.py 据此把 BGM 归一到统一目标再闪避。别删——少了它换曲就得重调闪避参数。批量入库：python -m pipeline.bgm register <音频...> --anime <番>（单首测量：python -m pipeline.bgm measure <文件>）",
   "_onset": "入声点，秒。从头到第一次超过 -30 dBFS 的时刻，即「观众要等多久才听到东西」。结尾曲这个值要小。",
   "春物": {
     "use": {
@@ -433,6 +433,22 @@
         "dur": 228.9,
         "lufs": -10.9,
         "onset": 6.7,
+        "vocal": true
+      },
+      "キミソラキセキ": {
+        "path": "data/library/bgm/罪恶王冠/キミソラキセキ.flac",
+        "from": "EGOIST（本作剧中歌手团体，ryo(supercell) 制作）专辑曲；文件无元数据标签，碟目未核实。2026-08-31 用户人耳现选为本期唯一 BGM（@12秒 起铺到片尾）",
+        "dur": 303.5,
+        "lufs": -8.7,
+        "onset": 3.3,
+        "vocal": true
+      },
+      "キミソラキセキ_cut12s": {
+        "path": "data/library/bgm/罪恶王冠/キミソラキセキ_cut12s.flac",
+        "from": "キミソラキセキ 的派生文件：去掉前 12 秒（2026-08-31 校条祭期用户指定曲目区间 12s–4:12s，render 的 @N秒 只支持视频时间轴起点、不支持曲内偏移，遂物理切片实现）。原曲见同名条目",
+        "dur": 291.5,
+        "lufs": -8.6,
+        "onset": 0.0,
         "vocal": true
       }
     }
@@ -937,6 +953,1006 @@
         "dur": 97.0,
         "lufs": -11.1,
         "onset": 1.4,
+        "vocal": false
+      }
+    }
+  },
+  "你的名字": {
+    "tracks": {
+      "Dream lantern (English ver.)": {
+        "path": "data/library/bgm/你的名字/Dream lantern (English ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。 English edition（RADWIMPS, 2017）",
+        "dur": 129.4,
+        "lufs": -7.8,
+        "onset": 3.3,
+        "vocal": true
+      },
+      "Nandemonaiya (English ver.)": {
+        "path": "data/library/bgm/你的名字/Nandemonaiya (English ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。 English edition（RADWIMPS, 2017）",
+        "dur": 342.2,
+        "lufs": -9.3,
+        "onset": 2.2,
+        "vocal": true
+      },
+      "Sparkle (English ver.)": {
+        "path": "data/library/bgm/你的名字/Sparkle (English ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。 English edition（RADWIMPS, 2017）",
+        "dur": 409.2,
+        "lufs": -8.1,
+        "onset": 0.0,
+        "vocal": true
+      },
+      "Zenzenzense (English ver.)": {
+        "path": "data/library/bgm/你的名字/Zenzenzense (English ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。 English edition（RADWIMPS, 2017）",
+        "dur": 277.4,
+        "lufs": -6.5,
+        "onset": 0.0,
+        "vocal": true
+      },
+      "かたわれ時": {
+        "path": "data/library/bgm/你的名字/かたわれ時.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 170.0,
+        "lufs": -14.6,
+        "onset": 3.3,
+        "vocal": false
+      },
+      "なんでもないや (Movie Edit)": {
+        "path": "data/library/bgm/你的名字/なんでもないや (Movie Edit).flac",
+        "slot": "结尾",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 196.9,
+        "lufs": -11.3,
+        "onset": 0.3,
+        "vocal": true
+      },
+      "なんでもないや (Movie Ver.)": {
+        "path": "data/library/bgm/你的名字/なんでもないや (Movie Ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 344.1,
+        "lufs": -9.3,
+        "onset": 3.1,
+        "vocal": true
+      },
+      "はじめての、東京": {
+        "path": "data/library/bgm/你的名字/はじめての、東京.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 79.8,
+        "lufs": -12.4,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "ふたりの異変": {
+        "path": "data/library/bgm/你的名字/ふたりの異変.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 156.7,
+        "lufs": -8.8,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "スパークル (Movie Ver.)": {
+        "path": "data/library/bgm/你的名字/スパークル (Movie Ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 537.7,
+        "lufs": -9.4,
+        "onset": 0.6,
+        "vocal": true
+      },
+      "デート": {
+        "path": "data/library/bgm/你的名字/デート.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 245.9,
+        "lufs": -17.3,
+        "onset": 0.3,
+        "vocal": false
+      },
+      "デート2": {
+        "path": "data/library/bgm/你的名字/デート2.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 129.0,
+        "lufs": -18.3,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "三葉のテーマ": {
+        "path": "data/library/bgm/你的名字/三葉のテーマ.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 246.1,
+        "lufs": -15.4,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "三葉の通学": {
+        "path": "data/library/bgm/你的名字/三葉の通学.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 68.2,
+        "lufs": -12.2,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "作戦会議": {
+        "path": "data/library/bgm/你的名字/作戦会議.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 144.1,
+        "lufs": -8.4,
+        "onset": 0.0,
+        "vocal": false
+      },
+      "前前前世 (Movie Ver.)": {
+        "path": "data/library/bgm/你的名字/前前前世 (Movie Ver.).flac",
+        "slot": "结尾",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 285.9,
+        "lufs": -6.9,
+        "onset": 0.0,
+        "vocal": true
+      },
+      "口噛み酒トリップ": {
+        "path": "data/library/bgm/你的名字/口噛み酒トリップ.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 175.1,
+        "lufs": -12.8,
+        "onset": 0.8,
+        "vocal": false
+      },
+      "図書館": {
+        "path": "data/library/bgm/你的名字/図書館.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 103.7,
+        "lufs": -16.6,
+        "onset": 1.1,
+        "vocal": false
+      },
+      "夢灯籠": {
+        "path": "data/library/bgm/你的名字/夢灯籠.flac",
+        "slot": "结尾",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 131.7,
+        "lufs": -7.9,
+        "onset": 3.3,
+        "vocal": true
+      },
+      "奥寺先輩のテーマ": {
+        "path": "data/library/bgm/你的名字/奥寺先輩のテーマ.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 127.1,
+        "lufs": -15.3,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "御神体": {
+        "path": "data/library/bgm/你的名字/御神体.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 208.0,
+        "lufs": -17.2,
+        "onset": 3.3,
+        "vocal": false
+      },
+      "御神体へ再び": {
+        "path": "data/library/bgm/你的名字/御神体へ再び.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 143.3,
+        "lufs": -11.8,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "憧れカフェ": {
+        "path": "data/library/bgm/你的名字/憧れカフェ.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 92.2,
+        "lufs": -11.7,
+        "onset": 0.3,
+        "vocal": false
+      },
+      "旅館の夜": {
+        "path": "data/library/bgm/你的名字/旅館の夜.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 93.8,
+        "lufs": -20.7,
+        "onset": 50.2,
+        "vocal": false
+      },
+      "消えた町": {
+        "path": "data/library/bgm/你的名字/消えた町.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 115.8,
+        "lufs": -18.5,
+        "onset": 40.1,
+        "vocal": false
+      },
+      "町長説得": {
+        "path": "data/library/bgm/你的名字/町長説得.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 169.1,
+        "lufs": -19.6,
+        "onset": 36.8,
+        "vocal": false
+      },
+      "秋祭り": {
+        "path": "data/library/bgm/你的名字/秋祭り.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 68.0,
+        "lufs": -13.4,
+        "onset": 0.3,
+        "vocal": false
+      },
+      "糸守高校": {
+        "path": "data/library/bgm/你的名字/糸守高校.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 111.6,
+        "lufs": -14.0,
+        "onset": 0.3,
+        "vocal": false
+      },
+      "見えないふたり": {
+        "path": "data/library/bgm/你的名字/見えないふたり.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 53.4,
+        "lufs": -16.6,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "記憶を呼び起こす瀧": {
+        "path": "data/library/bgm/你的名字/記憶を呼び起こす瀧.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 103.0,
+        "lufs": -10.8,
+        "onset": 0.6,
+        "vocal": false
+      },
+      "飛騨探訪": {
+        "path": "data/library/bgm/你的名字/飛騨探訪.flac",
+        "slot": "正文",
+        "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
+        "dur": 92.5,
+        "lufs": -14.2,
+        "onset": 0.3,
+        "vocal": false
+      }
+    }
+  },
+  "伪恋": {
+    "_note": "《伪恋》TV动画原声带（菊谷知树 / 神前晓 / MONACA 担当配乐）与主题曲/角色歌伴奏，纯候选池，每期选曲人耳现选并记录在 01-topic.md 或 02-script.md 音乐段",
+    "tracks": {
+      "回想": {
+        "path": "data/library/bgm/伪恋/04. 回想.flac",
+        "slot": "正文",
+        "dur": 84.0,
+        "lufs": -11.58,
+        "onset": 2.786,
+        "vocal": false
+      },
+      "煌々": {
+        "path": "data/library/bgm/伪恋/04. 煌々.flac",
+        "slot": "正文",
+        "dur": 115.1,
+        "lufs": -15.97,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "追随": {
+        "path": "data/library/bgm/伪恋/04. 追随.flac",
+        "slot": "正文",
+        "dur": 93.8,
+        "lufs": -9.17,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "交歓": {
+        "path": "data/library/bgm/伪恋/05. 交歓.flac",
+        "slot": "正文",
+        "dur": 92.5,
+        "lufs": -8.57,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "展開": {
+        "path": "data/library/bgm/伪恋/05. 展開.flac",
+        "slot": "正文",
+        "dur": 52.6,
+        "lufs": -12.54,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "快然": {
+        "path": "data/library/bgm/伪恋/05. 快然.flac",
+        "slot": "正文",
+        "dur": 96.2,
+        "lufs": -10.33,
+        "onset": 1.393,
+        "vocal": false
+      },
+      "動悸": {
+        "path": "data/library/bgm/伪恋/06. 動悸.flac",
+        "slot": "正文",
+        "dur": 62.7,
+        "lufs": -12.33,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "憶説": {
+        "path": "data/library/bgm/伪恋/06. 憶説.flac",
+        "slot": "正文",
+        "dur": 99.4,
+        "lufs": -21.45,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "明朗": {
+        "path": "data/library/bgm/伪恋/06. 明朗.flac",
+        "slot": "正文",
+        "dur": 95.3,
+        "lufs": -10.04,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "分析": {
+        "path": "data/library/bgm/伪恋/07. 分析.flac",
+        "slot": "正文",
+        "dur": 105.4,
+        "lufs": -8.82,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "憂患": {
+        "path": "data/library/bgm/伪恋/07. 憂患.flac",
+        "slot": "正文",
+        "dur": 87.4,
+        "lufs": -17.97,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "関心": {
+        "path": "data/library/bgm/伪恋/07. 関心.flac",
+        "slot": "正文",
+        "dur": 39.5,
+        "lufs": -15.27,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "報復": {
+        "path": "data/library/bgm/伪恋/08. 報復.flac",
+        "slot": "正文",
+        "dur": 104.3,
+        "lufs": -9.32,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "平穏": {
+        "path": "data/library/bgm/伪恋/08. 平穏.flac",
+        "slot": "正文",
+        "dur": 83.8,
+        "lufs": -11.86,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "快活": {
+        "path": "data/library/bgm/伪恋/08. 快活.flac",
+        "slot": "正文",
+        "dur": 88.3,
+        "lufs": -8.01,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "恋人": {
+        "path": "data/library/bgm/伪恋/09. 恋人.flac",
+        "slot": "正文",
+        "dur": 94.9,
+        "lufs": -9.46,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "恫喝": {
+        "path": "data/library/bgm/伪恋/09. 恫喝.flac",
+        "slot": "正文",
+        "dur": 86.9,
+        "lufs": -8.28,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "確執": {
+        "path": "data/library/bgm/伪恋/09. 確執.flac",
+        "slot": "正文",
+        "dur": 141.3,
+        "lufs": -8.16,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "幕間": {
+        "path": "data/library/bgm/伪恋/10. 幕間.flac",
+        "slot": "正文",
+        "dur": 35.7,
+        "lufs": -9.13,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "忖度": {
+        "path": "data/library/bgm/伪恋/10. 忖度.flac",
+        "slot": "正文",
+        "dur": 111.0,
+        "lufs": -17.3,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "神童": {
+        "path": "data/library/bgm/伪恋/10. 神童.flac",
+        "slot": "正文",
+        "dur": 102.8,
+        "lufs": -12.38,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "憂心": {
+        "path": "data/library/bgm/伪恋/11. 憂心.flac",
+        "slot": "正文",
+        "dur": 124.2,
+        "lufs": -13.12,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "操練": {
+        "path": "data/library/bgm/伪恋/11. 操練.flac",
+        "slot": "正文",
+        "dur": 90.3,
+        "lufs": -11.56,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "緊迫": {
+        "path": "data/library/bgm/伪恋/11. 緊迫.flac",
+        "slot": "正文",
+        "dur": 113.4,
+        "lufs": -9.99,
+        "onset": 2.786,
+        "vocal": false
+      },
+      "安逸": {
+        "path": "data/library/bgm/伪恋/12. 安逸.flac",
+        "slot": "正文",
+        "dur": 93.4,
+        "lufs": -15.05,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "潜考": {
+        "path": "data/library/bgm/伪恋/12. 潜考.flac",
+        "slot": "正文",
+        "dur": 94.3,
+        "lufs": -13.17,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "闘争": {
+        "path": "data/library/bgm/伪恋/12. 闘争.flac",
+        "slot": "正文",
+        "dur": 99.5,
+        "lufs": -11.61,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "戦闘": {
+        "path": "data/library/bgm/伪恋/13. 戦闘.flac",
+        "slot": "正文",
+        "dur": 93.6,
+        "lufs": -6.53,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "解決": {
+        "path": "data/library/bgm/伪恋/13. 解決.flac",
+        "slot": "正文",
+        "dur": 89.2,
+        "lufs": -11.75,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "軋轢": {
+        "path": "data/library/bgm/伪恋/13. 軋轢.flac",
+        "slot": "正文",
+        "dur": 97.2,
+        "lufs": -15.61,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "告白": {
+        "path": "data/library/bgm/伪恋/14. 告白.flac",
+        "slot": "正文",
+        "dur": 112.0,
+        "lufs": -21.01,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "後悔": {
+        "path": "data/library/bgm/伪恋/14. 後悔.flac",
+        "slot": "正文",
+        "dur": 108.5,
+        "lufs": -15.8,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "追跡": {
+        "path": "data/library/bgm/伪恋/14. 追跡.flac",
+        "slot": "正文",
+        "dur": 106.3,
+        "lufs": -8.77,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "幼気": {
+        "path": "data/library/bgm/伪恋/15. 幼気.flac",
+        "slot": "正文",
+        "dur": 85.8,
+        "lufs": -13.73,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "憧憬": {
+        "path": "data/library/bgm/伪恋/15. 憧憬.flac",
+        "slot": "正文",
+        "dur": 98.9,
+        "lufs": -12.9,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "邂逅": {
+        "path": "data/library/bgm/伪恋/15. 邂逅.flac",
+        "slot": "正文",
+        "dur": 99.7,
+        "lufs": -19.36,
+        "onset": 1.672,
+        "vocal": false
+      },
+      "内偵": {
+        "path": "data/library/bgm/伪恋/16. 内偵.flac",
+        "slot": "正文",
+        "dur": 95.8,
+        "lufs": -12.66,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "反撥": {
+        "path": "data/library/bgm/伪恋/16. 反撥.flac",
+        "slot": "正文",
+        "dur": 108.1,
+        "lufs": -13.39,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "口論": {
+        "path": "data/library/bgm/伪恋/16. 口論.flac",
+        "slot": "正文",
+        "dur": 96.8,
+        "lufs": -13.3,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "梼昧": {
+        "path": "data/library/bgm/伪恋/17. 梼昧.flac",
+        "slot": "正文",
+        "dur": 87.8,
+        "lufs": -14.22,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "苛苛": {
+        "path": "data/library/bgm/伪恋/17. 苛苛.flac",
+        "slot": "正文",
+        "dur": 48.8,
+        "lufs": -12.19,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "適応": {
+        "path": "data/library/bgm/伪恋/17. 適応.flac",
+        "slot": "正文",
+        "dur": 96.9,
+        "lufs": -9.38,
+        "onset": 2.229,
+        "vocal": false
+      },
+      "叮嚀": {
+        "path": "data/library/bgm/伪恋/18. 叮嚀.flac",
+        "slot": "正文",
+        "dur": 64.8,
+        "lufs": -16.03,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "変節": {
+        "path": "data/library/bgm/伪恋/18. 変節.flac",
+        "slot": "正文",
+        "dur": 63.2,
+        "lufs": -12.08,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "策謀": {
+        "path": "data/library/bgm/伪恋/18. 策謀.flac",
+        "slot": "正文",
+        "dur": 95.4,
+        "lufs": -17.48,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "決断": {
+        "path": "data/library/bgm/伪恋/19. 決断.flac",
+        "slot": "正文",
+        "dur": 132.2,
+        "lufs": -16.76,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "沈痛": {
+        "path": "data/library/bgm/伪恋/19. 沈痛.flac",
+        "slot": "正文",
+        "dur": 91.8,
+        "lufs": -12.33,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "狼狽": {
+        "path": "data/library/bgm/伪恋/19. 狼狽.flac",
+        "slot": "正文",
+        "dur": 98.7,
+        "lufs": -19.75,
+        "onset": 16.718,
+        "vocal": false
+      },
+      "悔恨": {
+        "path": "data/library/bgm/伪恋/20. 悔恨.flac",
+        "slot": "正文",
+        "dur": 116.2,
+        "lufs": -17.04,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "浮足": {
+        "path": "data/library/bgm/伪恋/20. 浮足.flac",
+        "slot": "正文",
+        "dur": 102.0,
+        "lufs": -11.32,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "逸聞": {
+        "path": "data/library/bgm/伪恋/20. 逸聞.flac",
+        "slot": "正文",
+        "dur": 110.7,
+        "lufs": -19.73,
+        "onset": 1.393,
+        "vocal": false
+      },
+      "動転": {
+        "path": "data/library/bgm/伪恋/21. 動転.flac",
+        "slot": "正文",
+        "dur": 30.4,
+        "lufs": -14.2,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "失望": {
+        "path": "data/library/bgm/伪恋/21. 失望.flac",
+        "slot": "正文",
+        "dur": 108.4,
+        "lufs": -14.73,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "水難": {
+        "path": "data/library/bgm/伪恋/21. 水難.flac",
+        "slot": "正文",
+        "dur": 99.1,
+        "lufs": -9.72,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "勇躍": {
+        "path": "data/library/bgm/伪恋/22. 勇躍.flac",
+        "slot": "正文",
+        "dur": 82.1,
+        "lufs": -11.14,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "団樂": {
+        "path": "data/library/bgm/伪恋/22. 団樂.flac",
+        "slot": "正文",
+        "dur": 92.7,
+        "lufs": -13.5,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "透明": {
+        "path": "data/library/bgm/伪恋/22. 透明.flac",
+        "slot": "正文",
+        "dur": 88.2,
+        "lufs": -11.07,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "泰然": {
+        "path": "data/library/bgm/伪恋/23. 泰然.flac",
+        "slot": "正文",
+        "dur": 65.0,
+        "lufs": -17.18,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "煩悶": {
+        "path": "data/library/bgm/伪恋/23. 煩悶.flac",
+        "slot": "正文",
+        "dur": 90.4,
+        "lufs": -11.91,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "諦観": {
+        "path": "data/library/bgm/伪恋/23. 諦観.flac",
+        "slot": "正文",
+        "dur": 98.8,
+        "lufs": -14.1,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "悦楽": {
+        "path": "data/library/bgm/伪恋/24. 悦楽.flac",
+        "slot": "正文",
+        "dur": 122.7,
+        "lufs": -11.44,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "渇望": {
+        "path": "data/library/bgm/伪恋/24. 渇望.flac",
+        "slot": "正文",
+        "dur": 98.5,
+        "lufs": -16.09,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "艱難": {
+        "path": "data/library/bgm/伪恋/25. 艱難.flac",
+        "slot": "正文",
+        "dur": 88.9,
+        "lufs": -18.04,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "落胆": {
+        "path": "data/library/bgm/伪恋/25. 落胆.flac",
+        "slot": "正文",
+        "dur": 111.4,
+        "lufs": -19.87,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "清爽": {
+        "path": "data/library/bgm/伪恋/26. 清爽.flac",
+        "slot": "正文",
+        "dur": 93.9,
+        "lufs": -20.36,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "肉迫": {
+        "path": "data/library/bgm/伪恋/26. 肉迫.flac",
+        "slot": "正文",
+        "dur": 103.9,
+        "lufs": -16.92,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "懇篤": {
+        "path": "data/library/bgm/伪恋/27. 懇篤.flac",
+        "slot": "正文",
+        "dur": 114.9,
+        "lufs": -19.0,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "恍惚": {
+        "path": "data/library/bgm/伪恋/28. 恍惚.flac",
+        "slot": "正文",
+        "dur": 67.4,
+        "lufs": -18.32,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "追憶": {
+        "path": "data/library/bgm/伪恋/29. 追憶.flac",
+        "slot": "正文",
+        "dur": 108.0,
+        "lufs": -14.0,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "才覚": {
+        "path": "data/library/bgm/伪恋/30. 才覚.flac",
+        "slot": "正文",
+        "dur": 97.3,
+        "lufs": -10.23,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "CLICK -Instrumental-": {
+        "path": "data/library/bgm/伪恋/CLICK -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 270.2,
+        "lufs": -8.75,
+        "onset": 1.95,
+        "vocal": false
+      },
+      "Heart Pattern -instrumental-": {
+        "path": "data/library/bgm/伪恋/Heart Pattern -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 223.2,
+        "lufs": -10.34,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "Rally Go Round -Instrumental-": {
+        "path": "data/library/bgm/伪恋/Rally Go Round -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 276.1,
+        "lufs": -7.3,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "STEP -Instrumental-": {
+        "path": "data/library/bgm/伪恋/STEP -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 255.6,
+        "lufs": -11.13,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "Sleep zzz... -Instrumental-": {
+        "path": "data/library/bgm/伪恋/Sleep zzz... -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 281.7,
+        "lufs": -9.77,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "TRICK BOX -instrumental-": {
+        "path": "data/library/bgm/伪恋/TRICK BOX -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 222.3,
+        "lufs": -9.2,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "TrIGgER -Instrumental-": {
+        "path": "data/library/bgm/伪恋/TrIGgER -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 217.1,
+        "lufs": -9.26,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "marchen ticktack -Instrumental-": {
+        "path": "data/library/bgm/伪恋/marchen ticktack -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 199.4,
+        "lufs": -10.43,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "はなごのみ -instrumental-": {
+        "path": "data/library/bgm/伪恋/はなごのみ -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 248.2,
+        "lufs": -11.57,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "またどーらぶ -Instrumental-": {
+        "path": "data/library/bgm/伪恋/またどーらぶ -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 223.5,
+        "lufs": -10.12,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "オーダー×オーダー -instrumental-": {
+        "path": "data/library/bgm/伪恋/オーダー×オーダー -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 256.2,
+        "lufs": -9.45,
+        "onset": 3.622,
+        "vocal": false
+      },
+      "クレヨンカバー -Instrumental-": {
+        "path": "data/library/bgm/伪恋/クレヨンカバー -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 253.6,
+        "lufs": -10.35,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "マジカル☆スタイリング -Instrumental-": {
+        "path": "data/library/bgm/伪恋/マジカル☆スタイリング -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 247.7,
+        "lufs": -9.02,
+        "onset": 6.966,
+        "vocal": false
+      },
+      "リカバーデコレーション -instrumental-": {
+        "path": "data/library/bgm/伪恋/リカバーデコレーション -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 198.5,
+        "lufs": -10.55,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "大切の作り方 -instrumental-": {
+        "path": "data/library/bgm/伪恋/大切の作り方 -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 256.4,
+        "lufs": -10.89,
+        "onset": 0.279,
+        "vocal": false
+      },
+      "想像ダイアリー -instrumental-": {
+        "path": "data/library/bgm/伪恋/想像ダイアリー -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 224.5,
+        "lufs": -9.7,
+        "onset": 3.344,
+        "vocal": false
+      },
+      "曖昧ヘルツ -Instrumental-": {
+        "path": "data/library/bgm/伪恋/曖昧ヘルツ -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 232.8,
+        "lufs": -9.96,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "本命アンサー (Instrumental)": {
+        "path": "data/library/bgm/伪恋/本命アンサー (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 231.1,
+        "lufs": -9.63,
+        "onset": 2.229,
+        "vocal": false
+      },
+      "通り雨drop -Instrumental-": {
+        "path": "data/library/bgm/伪恋/通り雨drop -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 221.0,
+        "lufs": -12.66,
+        "onset": 0.836,
         "vocal": false
       }
     }
