@@ -808,6 +808,7 @@ def main() -> int:
                           "只读写 04-clips.json，不碰检索——别跟不带 --refit 的正常调用搞混，"
                           "后者会重新检索并覆盖人改结果")
     a = ap.parse_args()
+    paths.require_data()
 
     if a.refit:
         src = a.episode / "04-clips.json"

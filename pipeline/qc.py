@@ -419,6 +419,7 @@ def main() -> int:
                     help="结构化输出给 agent 消费。key 稳定（name/ok/detail/skipped），"
                          "别把 detail 里的中文当接口。退出码与人类模式一致。")
     a = ap.parse_args()
+    paths.require_data()
 
     if a.target.is_dir():
         episode, video = a.target, a.target / "05-final.mp4"

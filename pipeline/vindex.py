@@ -46,10 +46,8 @@ SCENES = paths.CONFIG / "scenes.json"
 
 
 def _atomic_write(dest: Path, data: str) -> None:
-    """写临时文件再 os.replace（孪生实现与理由见 subindex._atomic_write）。"""
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    os.replace(tmp, dest)
+    """统一走 paths.atomic_write（理由见 subindex._atomic_write）。"""
+    paths.atomic_write(dest, data)
 
 
 def _atomic_save(dest: Path, vecs: np.ndarray) -> None:

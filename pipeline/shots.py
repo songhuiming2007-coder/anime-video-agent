@@ -154,12 +154,12 @@ def build(video: Path, anime: str, season: int, episode: int,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{anime}_{_key(season, episode)}.json"
-    dest.write_text(json.dumps({
+    paths.atomic_write(dest, json.dumps({
         "meta": meta(anime, season, episode, src),
         # 全部候选切点（>= SCAN_THRESHOLD），供改阈值时免解码重算
         "cuts": [[round(t, 3), round(s, 3)] for t, s in cuts],
         "shots": shots,
-    }, ensure_ascii=False), encoding="utf-8")
+    }, ensure_ascii=False))
     return {"path": dest, "shots": len(shots), "cuts": len(cuts), "sec": elapsed}
 
 
@@ -173,7 +173,7 @@ def rebuild(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
                      d["meta"]["duration"], min_shot())
     d["meta"]["scene_threshold"] = threshold()
     d["meta"]["min_shot"] = min_shot()
-    dest.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    paths.atomic_write(dest, json.dumps(d, ensure_ascii=False))
     return {"path": dest, "shots": len(d["shots"])}
 
 
@@ -437,16 +437,19 @@ def main() -> int:
     paths.require_data()
 
     if a.cmd == "calibrate":
+        # --sheet 与 --long 不互斥：过切/漏切是两个方向的问题，两张表本来就要一起看
+        # （产物文件名不同，无冲突）。此前两个分支各自 return，同传时 --long 被静默
+        # 跳过（2026-09-05 审计 P0）。
         if a.sheet is not None:
             p = cut_sheet(a.video, a.sheet)
             print(f"OK 切点抽检 → {p}\n"
                   f"   判据：真切点的前后两帧应当完全不同。两帧几乎一样 = 这一刀切在镜头内部。")
-            return 0
         if a.long is not None:
             p = long_sheet(a.video, a.long)
             print(f"OK 漏切抽检 → {p}\n"
                   f"   判据：同一个镜头的首中尾三帧应当是同一场戏（人物动、场景不换）。"
                   f"三帧换了场景 = 这里漏切了。")
+        if a.sheet is not None or a.long is not None:
             return 0
         rows = calibrate(a.video, a.seconds)
         print(f"{'阈值':>6} {'镜头数':>7} {'每分钟':>7} {'p10':>7} {'中位':>7} "

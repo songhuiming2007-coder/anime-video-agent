@@ -271,7 +271,7 @@ def register(files: list[Path], anime: str, note: str | None = None, overwrite: 
         count += 1
 
     anime_entry["tracks"] = existing_tracks
-    cfg_file.write_text(json.dumps(db, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    paths.atomic_write(cfg_file, json.dumps(db, ensure_ascii=False, indent=2) + "\n")
     print(f"完成！成功写入 {count} 首曲目至 {cfg_file.relative_to(paths.ROOT)} [{anime}]")
     return count
 

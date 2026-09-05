@@ -388,7 +388,7 @@ def register(video: Path, anime: str, season: int, episode: int,
     entry = {"path": str(video), **probe_video(video)}
     db.setdefault(anime, {})[key] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths.atomic_write(path, json.dumps(db, ensure_ascii=False, indent=2))
     return entry
 
 
