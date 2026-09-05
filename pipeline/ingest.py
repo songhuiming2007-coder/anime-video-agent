@@ -18,6 +18,7 @@
     python -m pipeline.ingest verify <视频> <字幕>          # 外挂字幕对轴校验
     python -m pipeline.ingest run    <视频> --anime 春物 --season 1 --episode 3
     python -m pipeline.ingest phase0 <视频>... --anime 春物 --season 2   # 整季入库
+    python -m pipeline.ingest phase0 <电影.mkv> --anime 君名 --season 1 --episode 1  # 剧场版单文件
 """
 
 from __future__ import annotations
@@ -426,7 +427,8 @@ def _find_sub(video: Path, glob: str) -> Path | None:
 
 def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTERN,
            glob: str = SUB_GLOB, index_dir: Path = INDEX_DIR,
-           force: bool = False, reindex: bool = False) -> int:
+           force: bool = False, reindex: bool = False,
+           episode: int | None = None) -> int:
     """一整季入库：验对轴 → 建索引 → 登记片源。返回失败集数。
 
     **这是 Phase 0 动作，一部番跑一次。** 单独跑 verify / subindex build / sources
@@ -436,6 +438,8 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
 
     最后那条不是假想。2026-07-30 发现片源 41 集早已完整，索引却只建了 6 集——
     中间每一期都在 6 集的池子里挑素材，没有任何地方报错。
+
+    `episode` 参数：剧场版/电影单文件跳过文件名集号正则（N26），由人显式给号。
     """
     rows, bad = [], 0
 
@@ -446,13 +450,18 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
         print(f"{status:<5} {tag:<12} {detail}", flush=True)
 
     for video in sorted(videos):
-        m = re.search(pattern, video.name)
-        if not m:
-            say("FAIL", video.name, "文件名里找不到集号")
-            bad += 1
-            continue
-        raw = m.group("episode")
-        ep = int(raw) if raw.isdigit() else 0
+        if episode is not None:
+            # 剧场版/电影单文件：文件名没有 [NN] 通例可循（N26），集号由人显式给
+            ep = episode
+        else:
+            m = re.search(pattern, video.name)
+            if not m:
+                say("FAIL", video.name,
+                    "文件名里找不到集号（剧场版/电影用 --episode 显式指定）")
+                bad += 1
+                continue
+            raw = m.group("episode")
+            ep = int(raw) if raw.isdigit() else 0
         tag = f"S{season:02d}E{ep:02d}"
 
         if not (force or reindex) and has_index(index_dir, anime, season, ep):
@@ -546,13 +555,17 @@ def main() -> None:
     z.add_argument("--force", action="store_true", help="已索引的也重建（含重跑 verify）")
     z.add_argument("--reindex", action="store_true",
                    help="重建索引但不重跑 verify，仅对已登记的集生效（解析器改了之后用）")
+    z.add_argument("--episode", type=int,
+                   help="剧场版/电影单文件用：跳过文件名集号正则，显式指定集号（一次只能给一部）")
 
     a = ap.parse_args()
     paths.require_data()      # 绝不自动创建 data/：register/build 都会往里写（审计 2-17）
 
     if a.cmd == "phase0":
+        if a.episode is not None and len(a.videos) != 1:
+            raise SystemExit("FAIL --episode 是单文件剧场版/电影的显式集号，一次只能给一部")
         bad = phase0(a.videos, a.anime, a.season, a.pattern, a.sub_glob,
-                     a.index_dir, a.force, a.reindex)
+                     a.index_dir, a.force, a.reindex, a.episode)
         raise SystemExit(1 if bad else 0)
 
     if a.cmd == "sources":

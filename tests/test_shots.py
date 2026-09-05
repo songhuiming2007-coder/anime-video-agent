@@ -12,6 +12,7 @@
 期望值全部先在实现上跑过再写进断言（CLAUDE.md「写测试的两条纪律」）。
 """
 
+import json
 import sys
 
 import pytest
@@ -167,3 +168,33 @@ class TestCalibrateCli:
         monkeypatch.setattr(sys, "argv", ["shots", "calibrate", "v.mkv", "--sheet", "10"])
         assert shots.main() == 0
         assert calls == [("sheet", 10.0)]
+
+
+class TestThreshold:
+    """threshold 按番分键（2026-09-05 审计 P1-1：全局单一标量换番即崩）。"""
+
+    @pytest.fixture
+    def conf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(shots.paths, "_CONF", None)
+        (tmp_path / "project.json").write_text(json.dumps(
+            {"visual": {"scene_threshold": {"春物": 10.0, "天气之子": 8.0}}}),
+            encoding="utf-8")
+        return tmp_path
+
+    def test_按番取值互不干扰(self, conf):
+        # 新番标定改自己的键，旧番镜头表照常 load——这是整个修复的存在理由
+        assert shots.threshold("春物") == 10.0
+        assert shots.threshold("天气之子") == 8.0
+
+    def test_这部番没标定就当场失败(self, conf):
+        with pytest.raises(SystemExit):
+            shots.threshold("没标定的番")
+
+    def test_旧的单标量配置拒绝沿用(self, conf):
+        # 静默把单标量当全局值用 = 回到「抄默认值」，必须显式报错逼人迁移
+        (conf / "project.json").write_text(
+            json.dumps({"visual": {"scene_threshold": 10.0}}), encoding="utf-8")
+        shots.paths._CONF = None
+        with pytest.raises(SystemExit):
+            shots.threshold("春物")

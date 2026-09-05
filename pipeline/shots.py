@@ -52,22 +52,24 @@ SCD = re.compile(r"lavfi\.scd\.score:\s*([\d.]+),\s*lavfi\.scd\.time:\s*([\d.]+)
 FRAME_W = 448
 
 
-def threshold() -> float:
+def threshold(anime: str) -> float:
     """镜头切分阈值。**没有默认值，缺配置就失败。**
 
     ADR-0003：「镜头切分用 ffmpeg 的场景检测。阈值要实测定，不许抄默认值」。
 
-    这与 `paths.conf` 那条「每个调用点都必须给出 default」不冲突——那条约束的是
-    **原来写死过的值**，目的是让缺配置时行为与从前完全一致。这里从来没有过默认值，
-    编一个出来才是错的：抄来的阈值会静默地切出过碎或过粗的镜头，而两者都不报错。
+    **按番分键**（2026-09-05 审计 P1-1）：全局单一标量时代，给新番标定就得改
+    全局值，旧番镜头表随即被 load() 对账判死——「换一部番就要动全局配置」正是
+    总纲点名的缺陷。改成 {番: 值} 后新番标定只加一行，旧番不动。
+    旧的单标量配置拒绝沿用：静默当全局值用等于回到「抄默认值」。
     """
-    t = paths.conf("visual.scene_threshold")
+    table = paths.conf("visual.scene_threshold")
+    t = table.get(anime) if isinstance(table, dict) else None
     if t is None:
         raise SystemExit(
-            "FAIL config/project.json 里没有 visual.scene_threshold。\n"
-            "     阈值必须实测定（ADR-0003）：\n"
-            "     python -m pipeline.shots calibrate <一集视频>\n"
-            "     看完对照表把选定的数写进 config/project.json 的 visual.scene_threshold"
+            f"FAIL config/project.json 的 visual.scene_threshold 里没有《{anime}》。\n"
+            f"     阈值逐番标定、按番分键（ADR-0003）：\n"
+            f"     python -m pipeline.shots calibrate <该番一集视频>\n"
+            f"     看完对照表把选定的数写进 visual.scene_threshold 的「{anime}」键"
         )
     return float(t)
 
@@ -149,7 +151,7 @@ def build(video: Path, anime: str, season: int, episode: int,
 
     t0 = time.perf_counter()
     cuts = scan(video)
-    shots = cut(cuts, threshold(), src["duration"], min_shot())
+    shots = cut(cuts, threshold(anime), src["duration"], min_shot())
     elapsed = time.perf_counter() - t0
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -169,9 +171,9 @@ def rebuild(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
     if not dest.exists():
         raise SystemExit(f"FAIL 没有 {dest}，先跑 `shots build`")
     d = json.loads(dest.read_text(encoding="utf-8"))
-    d["shots"] = cut([(t, s) for t, s in d["cuts"]], threshold(),
+    d["shots"] = cut([(t, s) for t, s in d["cuts"]], threshold(anime),
                      d["meta"]["duration"], min_shot())
-    d["meta"]["scene_threshold"] = threshold()
+    d["meta"]["scene_threshold"] = threshold(anime)
     d["meta"]["min_shot"] = min_shot()
     paths.atomic_write(dest, json.dumps(d, ensure_ascii=False))
     return {"path": dest, "shots": len(d["shots"])}
@@ -188,7 +190,7 @@ def meta(anime: str, season: int, episode: int, src: dict) -> dict:
         "anime": anime, "season": season, "episode": episode,
         "detector": "ffmpeg-scdet",
         "scan_threshold": SCAN_THRESHOLD,
-        "scene_threshold": threshold(),
+        "scene_threshold": threshold(anime),
         "min_shot": min_shot(),
         "duration": src["duration"],
         "fps": src["fps"],
@@ -205,11 +207,11 @@ def load(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
             f"     python -m pipeline.shots build <该集视频> --anime {anime} ...")
     d = json.loads(dest.read_text(encoding="utf-8"))
     m = d["meta"]
-    if abs(m["scene_threshold"] - threshold()) > 1e-9 or abs(m["min_shot"] - min_shot()) > 1e-9:
+    if abs(m["scene_threshold"] - threshold(anime)) > 1e-9 or abs(m["min_shot"] - min_shot()) > 1e-9:
         raise SystemExit(
             f"FAIL {dest.name} 的切分参数与当前配置不一致："
             f"文件 threshold={m['scene_threshold']} min_shot={m['min_shot']}，"
-            f"配置 threshold={threshold()} min_shot={min_shot()}\n"
+            f"配置 threshold={threshold(anime)} min_shot={min_shot()}\n"
             f"     python -m pipeline.shots rebuild --anime {anime} --episode {key}")
     return d
 
@@ -460,7 +462,7 @@ def main() -> int:
         print("-" * 60)
         print("动画单镜头通常 2–5 秒。中位数明显低于 2 秒说明切碎了（转场被当成切点），"
               "明显高于 5 秒说明漏切。\n"
-              "定下来写进 config/project.json 的 visual.scene_threshold，再跑 build。")
+              "定下来写进 config/project.json 的 visual.scene_threshold.<番名>（按番分键），再跑 build。")
         return 0
 
     if a.cmd == "build":

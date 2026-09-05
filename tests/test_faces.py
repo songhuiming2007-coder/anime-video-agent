@@ -98,14 +98,37 @@ class TestCrop:
 
 
 class TestConstants:
-    def test_领先量小于同人上界(self):
-        # 反了的话没有任何一张脸能同时满足两条判据，索引会安安静静地全空
-        assert faces.CCIP_MARGIN < faces.CCIP_SAME
+    """ccip 三值按番分键（2026-09-05 审计 P1-1）；结构关系与具体数值解耦，
+    用临时配置注入，不读本机真实 project.json（clone 下来就能跑）。"""
 
-    def test_同人上界比作者的跨番值严(self):
+    @pytest.fixture
+    def conf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(faces.paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(faces.paths, "_CONF", None)
+        (tmp_path / "project.json").write_text(json.dumps({"visual": {
+            "ccip_same": {"X": 0.05}, "ccip_margin": {"X": 0.02},
+            "face_expand": {"X": 1.6}}}), encoding="utf-8")
+
+    def test_领先量小于同人上界(self, conf):
+        # 反了的话没有任何一张脸能同时满足两条判据，索引会安安静静地全空
+        assert faces.ccip_margin("X") < faces.ccip_same("X")
+
+    def test_同人上界比作者的跨番值严(self, conf):
         # 作者的 0.1785 是跨多部番标的。同一部番里角色是同一个人设计的，
         # 距离整体压缩，照搬会把八幡、海老名、路人一起判成阳乃——实测过。
-        assert faces.CCIP_SAME < faces.CCIP_AUTHOR_THRESHOLD
+        assert faces.ccip_same("X") < faces.CCIP_AUTHOR_THRESHOLD
+
+    def test_缺这部番就当场失败(self, conf):
+        # 不许静默沿用别番的数——那是「抄默认值」的换皮
+        with pytest.raises(SystemExit):
+            faces.ccip_same("没标定的番")
+
+    def test_旧的单标量配置拒绝沿用(self, conf, tmp_path):
+        (tmp_path / "project.json").write_text(
+            json.dumps({"visual": {"ccip_same": 0.05}}), encoding="utf-8")
+        faces.paths._CONF = None
+        with pytest.raises(SystemExit):
+            faces.ccip_same("X")
 
     def test_归一化用的是_CLIP_的均值方差(self):
         # 抄成 ImageNet 的不会报错，只会让所有距离一起漂，
@@ -150,22 +173,28 @@ class TestClusterGuard:
 
 
 class TestCcipFromConfig:
-    """CCIP 三值与 config 同源（2026-08-16 审计 2-16 迁移，值原样不改）。
+    """CCIP 三值从 config 按番读取（2026-08-16 审计 2-16 迁移；2026-09-05 起按番分键）。
 
-    迁移前是 faces.py 硬编码——逐番标定值钉死在代码里，换番只能改代码
-    （违反 R2「机制进代码、内容进配置」）。default 保留春物标定值作留档。
+    按番分键前是全局标量——给新番标定就覆盖旧番口径，与 shots.threshold 的
+    「换番即崩」同源（审计 P1-1）。这里只验证接线：注入临时配置，按番读出对应的值。
     """
 
-    def test_三个标定值从config读(self):
-        from pipeline import paths
-        assert faces.CCIP_SAME == paths.conf("visual.ccip_same", 0.05)
-        assert faces.CCIP_MARGIN == paths.conf("visual.ccip_margin", 0.02)
-        assert faces.FACE_EXPAND == paths.conf("visual.face_expand", 1.6)
+    def test_三个标定值按番从config读(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(faces.paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(faces.paths, "_CONF", None)
+        (tmp_path / "project.json").write_text(json.dumps({"visual": {
+            "ccip_same": {"春物": 0.05, "某番": 0.07},
+            "ccip_margin": {"春物": 0.02},
+            "face_expand": {"春物": 1.6}}}), encoding="utf-8")
+        assert faces.ccip_same("春物") == 0.05
+        assert faces.ccip_same("某番") == 0.07
+        assert faces.ccip_margin("春物") == 0.02
+        assert faces.face_expand("春物") == 1.6
 
     def test_config真的声明了这三个键(self):
         cfg = json.loads((faces.paths.CONFIG / "project.json").read_text(encoding="utf-8"))
-        for k, v in (("ccip_same", 0.05), ("ccip_margin", 0.02), ("face_expand", 1.6)):
-            assert cfg["visual"][k] == v, k
+        for k in ("ccip_same", "ccip_margin", "face_expand"):
+            assert isinstance(cfg["visual"][k], dict) and "春物" in cfg["visual"][k], k
 
 
 class TestEvalRemoved:
