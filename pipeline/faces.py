@@ -73,9 +73,28 @@ CCIP_AUTHOR_THRESHOLD = 0.17847511429108218
 #
 # 所以门槛取 0.05。代价是召回率从 77% 掉到 31%，**这是要的方向**：
 # 整条角色过滤链建在「检测到 X 可信」上，宁可少认，不可认错（ADR-0003「检测的不对称」）。
-# 2026-08-16 从硬编码迁进 config（project.json 的 visual.ccip_same）——它是逐番
-# 标定值，换番要改代码违反 R2；这里的 default 保留春物标定值，行为不变。
-CCIP_SAME = paths.conf("visual.ccip_same", 0.05)
+# 2026-08-16 从硬编码迁进 config（project.json 的 visual.ccip_same）；
+# 2026-09-05 起按番分键（审计 P1-1，与 shots.threshold 的「换番即崩」同源修复），
+# 缺键当场失败，不许抄别番的数。
+def _calibrated(key: str, anime: str) -> float:
+    """逐番标定值的统一读取：按番分键，缺键当场失败。
+
+    这三个值曾是全局标量——给新番标定就覆盖旧番口径，「换一部番就要动全局」
+    正是总纲点名的缺陷。按番分键后新番标定只加一行配置。
+    """
+    table = paths.conf(f"visual.{key}")
+    v = table.get(anime) if isinstance(table, dict) else None
+    if v is None:
+        raise SystemExit(
+            f"FAIL config/project.json 的 visual.{key} 里没有《{anime}》。\n"
+            f"     逐番标定值，不许抄别番的数：先在这部番上标定"
+            f"（方法见本文件上方各注释与 config/project.json 的 _ccip_note），"
+            f"再写进 visual.{key} 的「{anime}」键")
+    return float(v)
+
+
+def ccip_same(anime: str) -> float:
+    return _calibrated("ccip_same", anime)
 
 # 归队时要求最近的角色比第二近的角色近这么多。
 #
@@ -97,8 +116,9 @@ CCIP_SAME = paths.conf("visual.ccip_same", 0.05)
 # **这是在代表脸上标定的，而代表脸是各簇里最典型的那些**，所以真实素材上的领先量
 # 只会更小——那些会被判成「没认出来」，这正是安全的方向（ADR-0003「检测的不对称」）。
 # 逐角色抽检见 `python -m pipeline.vprobe presence`。
-# 2026-08-16 迁进 config（project.json 的 visual.ccip_margin），default 保留春物标定值。
-CCIP_MARGIN = paths.conf("visual.ccip_margin", 0.02)
+# 2026-08-16 迁进 config；2026-09-05 起按番分键（visual.ccip_margin.<番>）。
+def ccip_margin(anime: str) -> float:
+    return _calibrated("ccip_margin", anime)
 
 # 聚类用 OPTICS，参数取 imgutils 的库默认（`ccip_clustering` 的 method='optics'）。
 #
@@ -122,8 +142,9 @@ CCIP_MIN_SAMPLES = 5
 # 人脸框往外扩多少倍再送 CCIP。**动漫角色的身份信息大半在头发上**，
 # 而检测框只框脸，直接裁会把最有辨识度的部分切掉。1.6 是起点，
 # 抽检（`vprobe presence`）发现认混了就回来调，调完要重跑嵌入。
-# 2026-08-16 迁进 config（project.json 的 visual.face_expand）。
-FACE_EXPAND = paths.conf("visual.face_expand", 1.6)
+# 2026-08-16 迁进 config；2026-09-05 起按番分键（visual.face_expand.<番>）。
+def face_expand(anime: str) -> float:
+    return _calibrated("face_expand", anime)
 
 # 聚类用的采样上限。全季一万八千张脸，两两距离矩阵是 O(n²)——
 # 18000² 的 float32 是 1.3G。这一步的目的只是**让人看见有哪些簇**，采样足够；
@@ -228,7 +249,7 @@ def detect(img) -> list[tuple[tuple[int, int, int, int], float]]:
              float(scores[i])) for i in keep]
 
 
-def crop(img, box: tuple[int, int, int, int], expand: float = FACE_EXPAND):
+def crop(img, box: tuple[int, int, int, int], expand: float):
     """按 `expand` 往外扩再裁。扩的是**正方形**，避免拉伸——CCIP 会把图直缩到 384×384。"""
     x0, y0, x1, y1 = box
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -285,7 +306,7 @@ def build_faces(anime: str, key: str, progress=None) -> int:
         img = Image.open(f).convert("RGB")
         hits = detect(img)
         if hits:
-            feats.append(embed([crop(img, b) for b, _ in hits]))
+            feats.append(embed([crop(img, b, face_expand(anime)) for b, _ in hits]))
             recs += [{"shot": s["i"], "box": list(b), "score": round(sc, 4)}
                      for b, sc in hits]
         if progress:
@@ -299,7 +320,7 @@ def build_faces(anime: str, key: str, progress=None) -> int:
             "kind": "faces", "anime": anime, "episode": key,
             "detector": FACE_REPO + "/" + FACE_MODEL,
             "detector_revision": paths.model_revision(FACE_REPO),
-            "conf": FACE_CONF, "iou": FACE_IOU, "expand": FACE_EXPAND,
+            "conf": FACE_CONF, "iou": FACE_IOU, "expand": face_expand(anime),
             "embedder": CCIP_REPO + "/" + CCIP_MODEL,
             "embedder_revision": paths.model_revision(CCIP_REPO),
             "dim": int(vec.shape[1]) if vec.size else 768,
@@ -394,7 +415,7 @@ def cluster(anime: str, sample: int = CLUSTER_SAMPLE, seed: int = 0) -> dict:
             "embedder": CCIP_REPO + "/" + CCIP_MODEL,
             "embedder_revision": paths.model_revision(CCIP_REPO),
             "cluster": "optics", "max_eps": CCIP_MAX_EPS, "min_samples": CCIP_MIN_SAMPLES,
-            "threshold": CCIP_SAME,
+            "threshold": ccip_same(anime),
             "sample": int(len(idx)), "total_faces": int(len(allv)),
             "episodes": keys, "built_at": date.today().isoformat(),
         },
@@ -493,10 +514,10 @@ def name_cluster(anime: str, cid: str, name: str) -> dict:
 def build_presence(anime: str, progress=None) -> dict[str, int]:
     """把「每张脸属于哪个已贴名的簇」变成「每个镜头里有谁」。
 
-    **判据两条，缺一不可**（依据见 `CCIP_MARGIN` 上方的实测表）：
+    **判据两条，缺一不可**（依据见 `ccip_margin` 上方的实测表）：
 
-    1. 到最近角色的距离 < `CCIP_SAME`——像不像某个已登记角色
-    2. 比第二近的角色近至少 `CCIP_MARGIN`——**像谁**
+    1. 到最近角色的距离 < `ccip_same`——像不像某个已登记角色
+    2. 比第二近的角色近至少 `ccip_margin`——**像谁**
 
     到某个角色的距离取到他所有**代表脸**的最小值（不是平均值）：同一个角色在不同集、
     不同角度下差异很大，平均会把「和其中一张几乎一样」这个强证据稀释掉。
@@ -521,6 +542,7 @@ def build_presence(anime: str, progress=None) -> dict[str, int]:
         v = proto_vectors(anime, cid, db)
         protos[tag] = np.vstack([protos[tag], v]) if tag in protos else v
     tags = sorted(protos)
+    same, margin = ccip_same(anime), ccip_margin(anime)
     out = {}
     for n, key in enumerate(db["meta"]["episodes"], 1):
         recs, vec = load_faces(anime, key)
@@ -534,9 +556,9 @@ def build_presence(anime: str, progress=None) -> dict[str, int]:
             for r, row, od in zip(recs, dist, order):
                 best = row[od[0]]
                 second = row[od[1]] if len(tags) > 1 else np.inf
-                if best >= CCIP_SAME:             # 谁都不像
+                if best >= same:                  # 谁都不像
                     continue
-                if second - best < CCIP_MARGIN:   # 像不止一个人，说不准
+                if second - best < margin:        # 像不止一个人，说不准
                     ambiguous += 1
                     continue
                 cur = per_shot.setdefault(r["shot"], {})
@@ -551,14 +573,14 @@ def build_presence(anime: str, progress=None) -> dict[str, int]:
                 "detector": FACE_REPO + "/" + FACE_MODEL,
                 "model_id": CCIP_REPO + "/" + CCIP_MODEL,
                 "revision": paths.model_revision(CCIP_REPO),
-                "expand": FACE_EXPAND, "distance_threshold": CCIP_SAME,
+                "expand": face_expand(anime), "distance_threshold": same,
                 "author_threshold": CCIP_AUTHOR_THRESHOLD,
-                "margin": CCIP_MARGIN,
+                "margin": margin,
                 # 落盘的分数是 1 − 距离，所以判定阈值也要换算成同一个量纲。
                 # 全部落盘的条目都已经过了这道线，这里写下来是为了让加载端不必知道
                 # 「ccip 的分数是怎么来的」——量纲跟着文件走。
-                "decision_threshold": round(1.0 - CCIP_SAME, 6),
-                "keep_threshold": round(1.0 - CCIP_SAME, 6),
+                "decision_threshold": round(1.0 - same, 6),
+                "keep_threshold": round(1.0 - same, 6),
                 "clusters": {cid: named[cid] for cid in named},
                 "characters": tags,
             })

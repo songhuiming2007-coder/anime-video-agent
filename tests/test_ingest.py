@@ -7,6 +7,7 @@ verify/build/register 都是模型/ffmpeg 边界，按项目约定在边界注�
 （先例见 test_tts 的回读豁免、test_check_script 的 load_sources）。
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -129,3 +130,40 @@ class TestVerifyWindowGuard:
         except Exception:
             pass    # 后续需要真模型/文件，任何异常都行——窗口计算已经过掉了
         assert all(lo < hi for lo, hi in calls.get("range", []))
+
+
+class TestPhase0MovieEntry:
+    """剧场版/电影单文件：--episode 显式给号，跳过 [NN] 文件名正则（N26）。
+
+    变异检验：把 phase0 里的 episode 分支删掉，第一个用例立刻红（坏名直接 FAIL）。
+    """
+
+    def _env(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ingest, "verify", lambda v, s: (True, []))
+        monkeypatch.setattr(ingest, "register",
+                            lambda v, a, s, e: calls.append(("reg", e)) or {})
+        monkeypatch.setattr(ingest, "build",
+                            lambda sub, anime, season, ep, index_dir:
+                            calls.append(("build", ep)) or 10)
+        return calls
+
+    def test_episode显式给号跳过文件名正则(self, tmp_path, monkeypatch):
+        v = _mk(tmp_path, "你的名字。.mkv")      # 电影文件名里没有 [NN]
+        calls = self._env(monkeypatch)
+        bad = ingest.phase0([v], "你的名字", 1, index_dir=tmp_path / "idx", episode=1)
+        assert bad == 0
+        assert ("build", 1) in calls and ("reg", 1) in calls
+
+    def test_无episode时电影名诚实失败(self, tmp_path, monkeypatch):
+        v = _mk(tmp_path, "你的名字。.mkv")
+        self._env(monkeypatch)
+        bad = ingest.phase0([v], "你的名字", 1, index_dir=tmp_path / "idx")
+        assert bad == 1          # FAIL 报出来并计入，不是静默跳过也不是崩溃
+
+    def test_episode只许单文件(self, monkeypatch):
+        monkeypatch.setattr(ingest.paths, "require_data", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["ingest", "phase0", "a.mkv", "b.mkv",
+                                          "--anime", "x", "--season", "1", "--episode", "1"])
+        with pytest.raises(SystemExit):
+            ingest.main()
