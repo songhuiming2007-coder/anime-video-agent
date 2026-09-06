@@ -133,13 +133,14 @@ def cut(cuts: list[tuple[float, float]], thr: float, duration: float,
             for i, (a, b) in enumerate(shots)]
 
 
-def _key(season: int, episode: int) -> str:
-    return f"S{season:02d}E{episode:02d}"
+def _key(season: int | None, episode: int) -> str:
+    # season=None 是 SP 特典集（ADR-0010 决策二）；season=0 已被 OVA（S00E0x）占用，别拿它占 SP
+    return f"SP{episode:02d}" if season is None else f"S{season:02d}E{episode:02d}"
 
 
-def build(video: Path, anime: str, season: int, episode: int,
+def build(video: Path, anime: str, season: int | None, episode: int,
           out_dir: Path = SHOTS_DIR) -> dict:
-    """切分一集，落 `<番>_SxxEyy.json`。
+    """切分一集，落 `<番>_SxxEyy.json`（SP 特典落 `<番>_SPxx.json`，season=None）。
 
     **候选切点连同分数一起存。** 判定阈值改了不必重新解码——直接在存下来的
     `cuts` 上重算即可（`rebuild`）。阈值本来就是要反复试的，而重解码一集要一分钟。
@@ -422,8 +423,11 @@ def main() -> int:
     b = sub.add_parser("build", help="切分一集")
     b.add_argument("video", type=Path)
     b.add_argument("--anime", default=paths.conf("anime.default"))
-    b.add_argument("--season", type=int, required=True)
-    b.add_argument("--episode", type=int, required=True)
+    b.add_argument("--season", type=int)
+    b.add_argument("--episode", type=int)
+    b.add_argument("--sp", type=int, metavar="N",
+                   help="切分 SP 特典集 SP%02d（MV/Live/物证，ADR-0010），"
+                        "与 --season/--episode 互斥")
 
     r = sub.add_parser("rebuild", help="阈值改了，在已存切点上重算，不重新解码")
     r.add_argument("--anime", default=paths.conf("anime.default"))
@@ -466,7 +470,10 @@ def main() -> int:
         return 0
 
     if a.cmd == "build":
-        out = build(a.video, a.anime, a.season, a.episode)
+        if (a.sp is None) == (a.episode is None or a.season is None):
+            raise SystemExit("FAIL 二选一：普通集给 --season N --episode N，特典给 --sp N")
+        out = build(a.video, a.anime, a.season if a.sp is None else None,
+                    a.episode if a.sp is None else a.sp)
         print(f"OK {out['shots']} 个镜头（候选切点 {out['cuts']}，"
               f"{out['sec']:.1f}s）→ {out['path']}")
         return 0

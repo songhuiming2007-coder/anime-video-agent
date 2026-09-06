@@ -73,7 +73,7 @@ def _align_txt(seg: dict, audio_seg: dict | None, manifest_present: bool) -> str
         return '　<span class="flag">（缺 manifest，未比对）</span>'
     if audio_seg is None:
         return '　<span class="flag">（配音段缺失，未比对）</span>'
-    got = sum(c["dur"] for c in seg.get("clips") or [])
+    got = sum(c["dur"] + c.get("extend", 0.0) for c in seg.get("clips") or [])
     need = audio_seg["duration"]
     txt = f"画面合计 {got:.1f}s / 配音 {need:.1f}s"
     if abs(got - need) > SEG_TOL:
@@ -132,6 +132,8 @@ def _clip_ep(c: dict) -> str:
     """
     if isinstance(c.get("season"), int) and isinstance(c.get("episode"), int):
         return f"S{c['season']:02d}E{c['episode']:02d}"
+    if c.get("sp") and isinstance(c.get("episode"), int):
+        return f"SP{c['episode']:02d}"                # SP 特典：season=None（ADR-0010）
     return Path(str(c.get("source", ""))).name or "?"
 
 
@@ -185,7 +187,7 @@ def build(episode: Path) -> Path:
             lambda j: _frames(j[1], shots_dir, f"s{j[0]['index']:02d}c{j[2]}"), jobs))
     fmap = {(j[0]["index"], j[2]): f for j, f in zip(jobs, frames)}
 
-    bad = [s for s in segs if s["status"] != "ok"]
+    bad = [s for s in segs if s["status"] not in ("ok", "ok_extended")]
     body = [
         f"<h1>{html.escape(episode.name)}　排片抽检</h1>",
         f'<div class="meta">{len(segs)} 段 · '
@@ -196,17 +198,26 @@ def build(episode: Path) -> Path:
     ]
 
     for s in segs:
-        cls = "seg bad" if s["status"] != "ok" else "seg"
+        # ok_extended（锚点段尾帧定格补足）不是阻断项，但要显眼地标出来：
+        # 定格的几秒人必须亲眼看一眼
+        cls = "seg bad" if s["status"] not in ("ok", "ok_extended") else "seg"
         body.append(f'<div class="{cls}">')
         body.append(f'<div class="say"><span class="no">段 {s["index"]}</span>'
                     f'{html.escape(s["text"])}</div>')
-        note = "" if s["status"] == "ok" else f'　<span class="flag">{s["status"]}</span>'
+        if s["status"] == "ok_extended":
+            ext = sum(c.get("extend", 0.0) for c in s["clips"])
+            note = f'　<span class="flag">尾帧定格 +{ext:.1f}s</span>'
+        else:
+            note = "" if s["status"] == "ok" else f'　<span class="flag">{s["status"]}</span>'
         # **通道要标出来。** 画面通道的分数和台词通道的不是一个量，
         # 人扫这一页时若不知道某段走的是哪条，会拿一列数横着比。
         # 角色过滤退回也要标：它说明那一段的过滤没起作用，画面里未必有那个人。
         chan = ""
         if s.get("channel") == "anchor":
-            chan = f'　<span class="flag">锚点 {html.escape((s.get("anchor") or {}).get("raw", ""))}</span>'
+            # 多锚点蒙太奇（2026-09-07）把整列锚点都亮出来
+            raws = ([a["raw"] for a in s["anchors"] if a] if s.get("anchors")
+                    else [(s.get("anchor") or {}).get("raw", "")])
+            chan = f'　<span class="flag">锚点 {html.escape(" / ".join(raws))}</span>'
         elif s.get("channel") == "scene":
             chan = '　<span class="flag">画面通道</span>'
         elif s.get("person"):

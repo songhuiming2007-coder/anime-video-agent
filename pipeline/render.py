@@ -122,6 +122,9 @@ def cut(clip: dict, dest: Path) -> None:
     """
     src = Path(clip["source"])
     want = clip["dur"]
+    # 尾帧定格延展（ok_extended 段，2026-09-07）：锚点段素材不够长时，末帧克隆
+    # 补足口播时长。定格不读源片 extend 部分，守卫 1 仍只按真实素材时长卡。
+    ext = round(float(clip.get("extend", 0.0)), 3)
 
     # 守卫 0：负起点（在守卫 1 之前，连 ffprobe 都不必跑就能拦下）
     if clip["start"] < 0:
@@ -140,12 +143,15 @@ def cut(clip: dict, dest: Path) -> None:
             f" > 源时长 {src_dur:.3f}s"
         )
 
+    vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+          f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
+    if ext > 0:
+        vf += f",tpad=stop_mode=clone:stop={ext}"
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-         "-ss", f"{clip['start']:.3f}", "-i", str(src), "-t", f"{want:.3f}",
+         "-ss", f"{clip['start']:.3f}", "-i", str(src), "-t", f"{want + ext:.3f}",
          "-an", "-sn",
-         "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
-                f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+         "-vf", vf,
          "-r", FPS, "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
          str(dest)],
         check=True, capture_output=True,
@@ -154,10 +160,10 @@ def cut(clip: dict, dest: Path) -> None:
     # 守卫 2：切之后，容差 = 源片一帧
     got = duration(dest)
     tol = frame_time(src)
-    if abs(got - want) > tol:
+    if abs(got - (want + ext)) > tol:
         raise SystemExit(
             f"FAIL 切后时长不符：{dest.name}\n"
-            f"     要 {want:.3f}s 实得 {got:.3f}s 差 {abs(got - want) * 1000:.0f}ms"
+            f"     要 {want + ext:.3f}s 实得 {got:.3f}s 差 {abs(got - want - ext) * 1000:.0f}ms"
             f" > 1 帧 {tol * 1000:.1f}ms"
         )
 
@@ -947,7 +953,7 @@ def run(episode: Path, keep: bool = False) -> Path:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     segments = plan["segments"]
 
-    bad = [s["index"] for s in segments if s["status"] != "ok"]
+    bad = [s["index"] for s in segments if s["status"] not in ("ok", "ok_extended")]
     if bad:
         raise SystemExit(f"FAIL 这些段落状态不是 ok，不许渲染：{bad}")
 

@@ -24,6 +24,10 @@ LUFS_TOL = paths.conf("audio.lufs_tolerance", 1.5)
 TRUE_PEAK_MAX = paths.conf("audio.true_peak_max", -1.0)   # dBTP
 AV_DRIFT_MAX = 0.5                     # 音画时长差，秒
 BLACK_MAX = 0.5                        # 单段纯黑上限，秒
+BLACK_MAX_SP = 1.5                     # SP 特典素材（MV/Live，ADR-0010）的纯黑上限，秒。
+                                        # 演唱会暗灯转场、艺术 MV 的 Fade to Black 是表达本身，
+                                        # 按番剧的 0.5s 判会大面积误报——只对 clip 带 sp 标记
+                                        # 的源放宽，普通番剧片段的门限不动
 BLACK_MATCH_MIN = 0.35                 # 成片黑帧与源片黑段的重叠 ≥ 此值才算「源片自带」
                                         # 为什么不是 BLACK_MAX：切片 seek 有帧级误差
                                         # （0.04–0.08s），成片黑帧 0.5s 映射回源片最多
@@ -155,12 +159,16 @@ def _map_black_to_sources(blacks: list[tuple[float, float]],
             t = seg_starts.get(seg["index"], t)
         for clip in seg["clips"]:
             idx += 1
-            lo, hi = t, t + clip["dur"]
+            # ok_extended 段的末片含定格延展（extend）：占成片时间但不读源片，
+            # 映射区间按 dur+extend 推，源区间仍只到 dur 为止
+            lo, hi = t, t + clip["dur"] + clip.get("extend", 0.0)
             for bi, (b0, b1) in enumerate(blacks):
                 if b1 > lo and b0 < hi:                 # 有交集
+                    # 源区间两头都夹在真实素材段内：定格延展区（extend）不读源片，
+                    # 映射到源片末帧一个点，不造出倒置区间
                     out.append((
                         clip["source"],
-                        clip["start"] + max(0.0, b0 - lo),
+                        clip["start"] + min(clip["dur"], max(0.0, b0 - lo)),
                         clip["start"] + min(clip["dur"], b1 - lo),
                         max(b0, lo), min(b1, hi),
                         idx, bi,
@@ -196,13 +204,18 @@ def _mapped_covered(span: tuple[str, float, float, float, float, int],
 
 
 def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]],
-                   covered: set[tuple]) -> list[tuple[str, float, float, float, float]]:
-    """按「一条黑」聚合，返回未覆盖时长 ≥ BLACK_MAX 的黑场（的未覆盖映射）。
+                   covered: set[tuple],
+                   sp_srcs: set[str] | frozenset = frozenset()) -> list[tuple[str, float, float, float, float]]:
+    """按「一条黑」聚合，返回未覆盖时长超门限的黑场（的未覆盖映射）。
 
     判据要的是**一段连续黑的未覆盖部分 ≥ 门槛**，不是逐片段看。黑帧跨切片
     边界时，边界上一两帧的暗场可能落进相邻片段，而源片只在主片段里有转场黑：
     逐片段查会把整段源转场误判成缺陷（2026-08-10 实测：源片淡出黑 1.45s
     接邻片段首帧 0.13s 暗场，被判「源无黑」）。
+
+    `sp_srcs`（2026-09-07）：SP 特典素材（MV/Live）的源路径集合。这些源里的
+    暗场按 BLACK_MAX_SP 判——演唱会暗灯/艺术 MV 的黑场转场是表达本身；
+    普通番剧片段仍按 BLACK_MAX。同一条黑跨两类源时分类各自汇总各自判。
     """
     by_black: dict[int, list] = {}
     for span in mapped:
@@ -210,9 +223,14 @@ def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]
     defects: list[tuple[str, float, float, float, float]] = []
     for spans in by_black.values():
         un = [s for s in spans if s not in covered]
-        if sum(f1 - f0 for _, _, _, f0, f1, _, _ in un) >= BLACK_MAX:
+        un_norm = [s for s in un if s[0] not in sp_srcs]
+        un_sp = [s for s in un if s[0] in sp_srcs]
+        if sum(f1 - f0 for _, _, _, f0, f1, _, _ in un_norm) >= BLACK_MAX:
             defects.extend((src, flo, fhi, slo, shi)
-                           for src, slo, shi, flo, fhi, _, _ in un)
+                           for src, slo, shi, flo, fhi, _, _ in un_norm)
+        if sum(f1 - f0 for _, _, _, f0, f1, _, _ in un_sp) >= BLACK_MAX_SP:
+            defects.extend((src, flo, fhi, slo, shi)
+                           for src, slo, shi, flo, fhi, _, _ in un_sp)
     return defects
 
 
@@ -327,7 +345,10 @@ def check(video: Path, plan: dict | None = None,
                                   r"black_start:([\d.]+) black_end:([\d.]+)", err2)]
                 covered |= {span for span in spans
                             if _mapped_covered(span[:6], src_blacks)}
-            defects = _black_defects(mapped, covered)
+            # SP 特典素材（clip 带 sp 标记）的艺术暗场按 BLACK_MAX_SP 放宽
+            sp_srcs = {c["source"] for s in plan["segments"] for c in s["clips"]
+                       if c.get("sp")}
+            defects = _black_defects(mapped, covered, sp_srcs)
         else:
             defects = [(str(video), float(a), float(b), float(a), float(b))
                        for a, b in blacks]

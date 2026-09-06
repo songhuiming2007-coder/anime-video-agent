@@ -283,28 +283,52 @@ def parse_episodes(text: str) -> list[tuple[str, str]]:
 
 
 def _norm_ep(raw: str) -> str | None:
-    """集号归一化为 `SxxEyy` 规范形。认不出返回 None（调用方判格式 FAIL）。"""
+    """集号归一化为 `SxxEyy` / `SPxx`（特典）规范形。认不出返回 None（调用方判格式 FAIL）。"""
     m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
-    if not m:
-        return None
-    return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+    if m:
+        return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+    m = re.fullmatch(r"SP(\d{1,2})", raw, re.I)
+    return f"SP{int(m.group(1)):02d}" if m else None
 
 
-# 锚点时间码（ADR-0008，2026-08-27 加；2026-09-06 加可选番名前缀支持跨番）。
+# 锚点时间码（ADR-0008，2026-08-27 加；2026-09-06 加可选番名前缀支持跨番；
+# 2026-09-07 加 SP 特典集号，ADR-0010 决策二）。
 # 与 clips._ANCHOR 同口径：`S01E01 17:50` 或区间 `S01E01 17:50-18:20`，跨番
-# `罪恶王冠 S01E01 17:50`，分钟允许三位（剧场版 96:08），秒两位、允许小数秒。
-# 两处各自维护（与 配音/查询 字段的三处同口径先例一致），改一处必须同步另一处。
-# 组号：1=anime 前缀（可空），2=季，3=集，4/5=起点分秒，6/7=终点分秒。
-_TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
-ANCHOR_TC = re.compile(rf"^(?:(?P<anime>.+?)\s+)?S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
+# `罪恶王冠 S01E01 17:50`，特典 `EGOIST SP01 108:45`；分钟允许三位（剧场版 96:08），
+# 秒两位、允许小数秒。两处各自维护（与 配音/查询 字段的三处同口径先例一致），
+# 改一处必须同步另一处。组号全部具名：anime/season/episode/sp/m0/s0/m1/s1。
+ANCHOR_TC = re.compile(
+    rf"^(?:(?P<anime>.+?)\s+)?"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}}))\s+"
+    rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
+    rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
+
+# 与 clips._ANCHOR_FIELD 同口径（2026-09-07 单段多锚点）：`锚点:` 行后续的
+# 缩进行都是锚点列表的一部分，直到下一个已知字段、空行或段落块尾。
+_ANCHOR_FIELD = re.compile(
+    r"^\s*锚点[：:][ \t]*([^\n]+(?:\n[ \t]+(?!\s*(?:查询|备选|人物|场景|集|画面|锚点)[：:])[^\n]*)*)",
+    re.M)
+
+
+def _anchor_items(raw_field: str) -> list[str]:
+    """锚点字段原文 → 条目列表：逗号（半/全角）与续行都是分隔符（同 clips）。"""
+    return [x.strip()
+            for line in raw_field.splitlines()
+            for x in re.split(r"[,，]", line)
+            if x.strip()]
 
 
 def _has_visual_source(block: str) -> bool:
-    """段落块有没有画面来源：`查询`（检索通道）或可解析的时间码 `锚点`（ADR-0008）。"""
+    """段落块有没有画面来源：`查询`（检索通道）或可解析的时间码 `锚点`（ADR-0008）。
+
+    多锚点段（2026-09-07）：任一锚点条目可解析就算有画面来源；
+    个别条目坏掉由「锚点格式」专项报，不在这里双报。
+    """
     if re.search(r"^\s*查询[：:]\s*(.+)$", block, re.M):
         return True
-    anc = re.search(r"^\s*锚点[：:]\s*(.+)$", block, re.M)
-    return bool(anc and ANCHOR_TC.fullmatch(anc.group(1).strip()))
+    anc = _ANCHOR_FIELD.search(block)
+    return bool(anc and any(ANCHOR_TC.fullmatch(x)
+                            for x in _anchor_items(anc.group(1).strip())))
 
 
 def parse_anchors(text: str) -> list[tuple[str, str | None]]:
@@ -312,11 +336,12 @@ def parse_anchors(text: str) -> list[tuple[str, str | None]]:
 
     切块口径与 parse_episodes 一致。锚点是排片的确定性输入（ADR-0008），
     缺失本身就是要拦的事，所以这里连「没写」也一并报出来。
+    多锚点段（2026-09-07）：原文含续行与逗号分隔，这里原样带回，拆分在校验侧。
     """
     out = []
     for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)",
                          text, re.M | re.S):
-        anc = re.search(r"^\s*锚点[：:]\s*(.+)$", m.group(2), re.M)
+        anc = _ANCHOR_FIELD.search(m.group(2))
         out.append((m.group(1), anc.group(1).strip() if anc else None))
     return out
 
@@ -390,15 +415,20 @@ def run(path: Path) -> list[Check]:
 
     # 跨番（2026-09-06）：段 → 素材番的分派规则是「锚点写了番名跟锚点，没写归主番」。
     # 集号本身不带番名，它的检索范围由同段锚点决定（锚点自带集号时 `集` 字段可省）。
+    # SP 特典（ADR-0010）：锚点/集号指向企划名自己的素材池，不在素材番池里。
     animes = bgm.animes_of(path.parent)
     anime_main = animes[0] if animes else None
-    anc_match = {label: ANCHOR_TC.fullmatch(raw)
+    main_plan = bgm.anime_of(path.parent)      # 企划名（番: 行第一个）；单番期 = anime_main
+    # 多锚点（2026-09-07）：段的锚点字段可写逗号/续行列表，逐条校验
+    anc_match = {label: [(x, ANCHOR_TC.fullmatch(x)) for x in _anchor_items(raw)]
                  for label, raw in parse_anchors(text)
-                 if raw and not raw.startswith("无") and ANCHOR_TC.fullmatch(raw)}
+                 if raw and not raw.startswith("无")}
 
     def _seg_anime(label: str) -> str | None:
-        m = anc_match.get(label)
-        return (m.group("anime").strip() if m and m.group("anime") else None) or anime_main
+        for _x, m in anc_match.get(label, []):
+            if m:
+                return (m.group("anime").strip() if m.group("anime") else None) or anime_main
+        return anime_main
 
     if eps:
         if not animes:
@@ -416,15 +446,19 @@ def run(path: Path) -> list[Check]:
             unavailable = []
             missing = []
             for p, r in eps:
-                if not _norm_ep(r):
+                norm = _norm_ep(r)
+                if not norm:
                     continue
                 a = _seg_anime(p)
+                # SP 特典登记在企划池（番: 行第一个），不在素材番池
+                if norm.startswith("SP") and a == anime_main and main_plan:
+                    a = main_plan
                 try:
                     sources = _sources(a)
                 except SystemExit as e:
                     unavailable.append(str(e))
                     continue
-                if _norm_ep(r) not in sources:
+                if norm not in sources:
                     missing.append((p, r, a, sources))
             if unavailable:
                 add("集号在素材库", False,
@@ -433,6 +467,14 @@ def run(path: Path) -> list[Check]:
                 msgs = []
                 for p, r, a, sources in missing:
                     norm = _norm_ep(r)
+                    if norm.startswith("SP"):
+                        same = sorted(k for k in sources if k.startswith("SP"))
+                        msgs.append(
+                            f"段{p}「{r}」：《{a}》池里没有 {norm}"
+                            + (f"（现有特典：{'、'.join(same[:4])}）" if same
+                               else "（该池一条 SP 特典都没有）")
+                            + "——SP 素材先登记再引用")
+                        continue
                     season = norm[1:3]
                     same = sorted(k for k in sources
                                   if k.startswith(f"S{season}"))
@@ -469,28 +511,32 @@ def run(path: Path) -> list[Check]:
             if not raw[1:].strip(" 　（）()"):
                 no_reason.append(label)     # ADR-0008：「无」必须附理由，不许留空蒙混
             continue
-        m = anc_match.get(label)            # 上面已按同一条正则解析过，口径一致
-        if not m:
-            bad_fmt.append((label, raw))
-            continue
-        # 番名前缀（2026-09-06）：写了就必须在 01-topic.md 的番表里——
-        # 番名写错 = 画面指到另一部番的同季同集，全程不报错
-        prefix = m.group("anime")
-        if prefix and animes and prefix.strip() not in animes:
-            bad_fmt.append((label, f"{raw}（《{prefix.strip()}》不在 01-topic.md 番表："
-                                   f"{'、'.join(animes)}）"))
-            continue
-        t0 = int(m.group(4)) * 60 + float(m.group(5))
-        t1 = (int(m.group(6)) * 60 + float(m.group(7))) if m.group(6) else None
-        if t1 is not None and t1 <= t0:
-            bad_fmt.append((label, f"{raw}（终点不在起点之后）"))
-            continue
-        akey = f"S{int(m.group(2)):02d}E{int(m.group(3)):02d}"
-        ep_raw = ep_by_label.get(label)
-        if ep_raw and _norm_ep(ep_raw) not in (None, akey):
-            bad_fmt.append((label, f"{raw}（与集号 {ep_raw} 不是同一集）"))
-            continue
-        anchors_tc.append((label, prefix.strip() if prefix else None, akey, t0, t1))
+        for item, m in anc_match.get(label, []):   # 上面已按同一条正则解析过，口径一致
+            if not m:
+                bad_fmt.append((label, item))
+                continue
+            # 番名前缀（2026-09-06）：写了就必须在 01-topic.md 的番表里——
+            # 番名写错 = 画面指到另一部番的同季同集，全程不报错。
+            # SP 锚点（2026-09-07）额外允许指向企划名：特典素材登记在企划池
+            prefix = m.group("anime")
+            is_sp = m.group("sp") is not None
+            if prefix and animes and prefix.strip() not in animes:
+                if not (is_sp and main_plan and prefix.strip() == main_plan):
+                    bad_fmt.append((label, f"{item}（《{prefix.strip()}》不在 01-topic.md 番表："
+                                           f"{'、'.join(animes)}）"))
+                    continue
+            t0 = int(m.group("m0")) * 60 + float(m.group("s0"))
+            t1 = (int(m.group("m1")) * 60 + float(m.group("s1"))) if m.group("m1") else None
+            if t1 is not None and t1 <= t0:
+                bad_fmt.append((label, f"{item}（终点不在起点之后）"))
+                continue
+            akey = (f"SP{int(m.group('sp')):02d}" if is_sp
+                    else f"S{int(m.group('season')):02d}E{int(m.group('episode')):02d}")
+            ep_raw = ep_by_label.get(label)
+            if ep_raw and _norm_ep(ep_raw) not in (None, akey):
+                bad_fmt.append((label, f"{item}（与集号 {ep_raw} 不是同一集）"))
+                continue
+            anchors_tc.append((label, prefix.strip() if prefix else None, akey, t0, t1, is_sp))
     problems = [f"段{l}「{r}」" for l, r in bad_fmt] + \
                [f"段{l} 写「无」没说理由" for l in no_reason]
     add("锚点格式", not problems,
@@ -505,8 +551,10 @@ def run(path: Path) -> list[Check]:
             from . import ingest  # 延迟 import：与上方「集号在素材库」同规矩
             bad_src, unavailable = [], []
             cache: dict[str, dict] = {}
-            for l, a, k, t0, t1 in anchors_tc:
-                pool = a or anime_main       # 未写番名归主番
+            for l, a, k, t0, t1, sp in anchors_tc:
+                # SP 锚点未写番名时归企划池（与 clips._parse_anchor 的默认一致）；
+                # 单番期企划名即主番，行为不变
+                pool = a or ((main_plan or anime_main) if sp else anime_main)
                 try:
                     if pool not in cache:
                         cache[pool] = ingest.load_sources(pool)
