@@ -287,6 +287,7 @@ class TestQcSkipExemption:
     def _fake_engine(self):
         """synthesize 写一个 0.17s 的有声 wav（_trim_silence 要读它）。"""
         class E:
+            kind = "qwen3_tts"      # Engine 契约成员，_render_one 按它决定尾巴检测
             def synthesize(self, text, dest, attempt, seed=0):
                 with wave.open(str(dest), "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
@@ -644,6 +645,7 @@ class TestReusable:
         monkeypatch.setattr(t, "probe_duration", lambda _p: want)
 
         class E:
+            kind = "qwen3_tts"
             def synthesize(self, _text, dest, attempt, seed=0):
                 with wave.open(str(dest), "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
@@ -651,3 +653,36 @@ class TestReusable:
 
         take = t._render_one(E(), t.Segment(1, "1", text), tmp_path / "seg.wav")
         assert take.speakable == "他们丝奔了"
+
+
+class TestTrimSilence:
+    """结尾机械声检测只对 IndexTTS 开（2026-09-05 审计 P2-5）：
+
+    _tail_artifact 认的是 BigVGAN 对停止符的渲染产物；Qwen3-TTS 无此成因
+    （Qwen3 时代 80 句产物零触发），check_tail=False 时尾部必须原样保留。
+    """
+
+    def _wav(self, tmp_path):
+        """0.5s 有声 + 0.1s 谷 + 0.1s 复起——正是 _tail_artifact 要认的形状。"""
+        sr = 16000
+        a = ([10000] * int(sr * 0.5) + [0] * int(sr * 0.1)
+             + [5000] * int(sr * 0.1))
+        p = tmp_path / "x.wav"
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(struct.pack(f"<{len(a)}h", *a))
+        return p, sr, len(a)
+
+    def test_indextts尾巴会被裁掉(self, tmp_path):
+        p, sr, n = self._wav(tmp_path)
+        t._trim_silence(p, check_tail=True)
+        with wave.open(str(p)) as w:
+            assert w.getnframes() < int(sr * 0.6)      # 谷后的复起被裁
+
+    def test_qwen3路径不跑尾巴检测(self, tmp_path):
+        p, sr, n = self._wav(tmp_path)
+        t._trim_silence(p, check_tail=False)
+        with wave.open(str(p)) as w:
+            assert w.getnframes() == n                 # 尾部原样保留

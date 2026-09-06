@@ -31,7 +31,6 @@
 | N4 | 备忘 | CoreML 推理路径不可用，退回 CPU | `pyproject.toml:34-36` | — | onnxruntime CoreML EP 在动漫图上报错，CPU 够用 |
 | N5 | 备忘 | ingest phase0 重建索引时跳过 verify 的静默风险 | `pipeline/ingest.py:465-482` | — | 已登记过的集不重跑 verify；片源被替换后可能静默失效 |
 | N6 | 备忘 | ASR 兜底同音字错误是已知限制 | `pipeline/asr.py:16-17` | — | 语义检索鲁棒，精确文本匹配不要依赖 ASR |
-| N7 | 备忘 | IndexTTS-2 4.4G 遗留模型 + 自写解码循环删除条件 | `docs/adr/0002:60-61` | ADR-0002/0006 | 已换 Qwen3-TTS；IndexTTS 相关模型与自写循环待清理 |
 | N8 | 备忘 | 簇纯度阈值待定 + Phase 0 人工时长待回填 | `docs/adr/0003:270,274` | ADR-0003 | 20 张抽检已执行，正式阈值和总时长未回填 |
 | N9 | 备忘 | PRESENCE_BAND 换番/换模型要重测 | `docs/adr/0004:106-107,127-138` | ADR-0004 | 0.06 是本番语料噪声性质；推翻条件待观察 |
 | N10 | 备忘 | 周复盘 + 选题没脚本化 | `WORKFLOW.md:225,695-697` | ROADMAP 阶段 2/5 | 手写 `01-topic.md`、拉平台数据手动 |
