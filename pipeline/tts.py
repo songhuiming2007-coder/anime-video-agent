@@ -692,11 +692,15 @@ def _tail_artifact(a: list[int], sr: int, hi: int) -> int:
     return hi - look + start * win              # 从谷的起点切
 
 
-def _trim_silence(path: Path) -> None:
+def _trim_silence(path: Path, check_tail: bool = True) -> None:
     """裁掉首尾静音与结尾的机械声，就地重写。
 
     每句自带的首尾静音加起来能有 0.4s，60 来句就是 20 多秒的死时间，
     而且长短不一，节奏没法控制。裁干净之后由 SENT_GAP 统一给停顿。
+
+    `check_tail`：结尾机械声检测只对 IndexTTS 开——那是 BigVGAN 对停止符附近
+    条件不良帧的渲染产物；Qwen3-TTS 没有这个成因（2026-09-05 审计复核：
+    Qwen3 时代 80 句产物零触发），白跑一道启发式只会增加误裁句尾真音的机会。
     """
     import wave
     import struct
@@ -707,7 +711,8 @@ def _trim_silence(path: Path) -> None:
     thr = 32768 * TRIM_DB
     lo = next((i for i, x in enumerate(a) if abs(x) > thr), 0)
     hi = next((i for i in range(n - 1, -1, -1) if abs(a[i]) > thr), n - 1) + 1
-    hi = _tail_artifact(a, sr, hi)            # 先砍掉结尾的机械声
+    if check_tail:
+        hi = _tail_artifact(a, sr, hi)            # 先砍掉结尾的机械声
     lo = max(0, lo - int(sr * 0.01))          # 前后各留 10ms，别把气口裁掉
     hi = min(n, hi + int(sr * 0.01))
     if hi - lo < int(sr * 0.05):              # 兜底：别把整句裁没了
@@ -893,7 +898,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
                           seed=attempt * 1000 + seg.index)
         # **裁剪要排在回读之前。** 裁掉的是首尾静音与结尾的机械声，但判据是启发式的，
         # 万一切进了句尾真实的字，只有回读能发现。放在回读之后裁就没人管了。
-        _trim_silence(tmp)
+        # 机械声检测只对 IndexTTS 有意义（Qwen3 无此成因，80 句零触发——见 _trim_silence）。
+        _trim_silence(tmp, check_tail=(engine.kind == "indextts"))
         dur = probe_duration(tmp)
         ratio = dur / want if want else 0.0
         heard = transcribe(tmp)
