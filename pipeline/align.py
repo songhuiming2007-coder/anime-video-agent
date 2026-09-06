@@ -27,11 +27,26 @@ SEG_TOL = 0.05
 REFIT_MIN_CLIP = 2.5
 
 
+def _key_of(c: dict) -> str | None:
+    """clip → 片源登记键。season=None 是 SP 特典集（`SP01`）。
+
+    与 clips._ep_key 同一条约定，这里抄一份而不是 import——本模块是零依赖叶子
+    （见模块 docstring）。**不能用 season=0 占 SP 的位**：sources.json 里 S00E0x
+    是 OVA 的既有登记（东京喰种/伪恋），0 被占了。缺 season/episode 键返回 None，
+    由调用方报「缺键」错。
+    """
+    if "season" not in c or "episode" not in c:
+        return None
+    s, e = c["season"], c["episode"]
+    return f"SP{e:02d}" if s is None else f"S{s:02d}E{e:02d}"
+
+
 def verify_alignment(segments: list[dict], audio: list[dict]) -> list[str]:
     """返回违例描述列表，空 = 通过。
 
-    status != "ok" 的段没有 clips（render 本就拒收），跳过；但段数与 manifest
-    对不上必须报——zip 会静默吞掉错位（判据 9：跳过不是通过，错位更不是）。
+    status 不在可渲染终态（ok / ok_extended）的段没有 clips（render 本就拒收），
+    跳过；但段数与 manifest 对不上必须报——zip 会静默吞掉错位（判据 9）。
+    ok_extended 段（锚点段尾帧定格，2026-09-07）的总量是 Σ(dur + extend)。
     """
     violations: list[str] = []
     if len(segments) != len(audio):
@@ -39,13 +54,13 @@ def verify_alignment(segments: list[dict], audio: list[dict]) -> list[str]:
             f"段数不齐：04-clips.json {len(segments)} 段 / manifest {len(audio)} 段")
         return violations
     for seg, a in zip(segments, audio):
-        if seg.get("status") != "ok":
+        if seg.get("status") not in ("ok", "ok_extended"):
             continue
         clips = seg.get("clips") or []
         if not clips:
-            violations.append(f"段{seg['index']}: status=ok 但 clips 为空")
+            violations.append(f"段{seg['index']}: status={seg['status']} 但 clips 为空")
             continue
-        got = sum(c["dur"] for c in clips)
+        got = sum(c["dur"] + c.get("extend", 0.0) for c in clips)
         need = a["duration"]
         d = got - need
         if abs(d) > SEG_TOL:
@@ -65,24 +80,46 @@ def refit(segments: list[dict], audio: list[dict],
     机器产物（已对齐）调它是幂等 no-op。返回（segments, 调整报告行）；
     改不了的段抛 SystemExit，带段号和三个数（Σdur / need / 差多少）。
     手写/人改的 clip 缺 season/episode 键时给出能定位的报错，不裸 KeyError。
+
+    ok_extended 段（锚点段尾帧定格）：漂移先由末片 `extend` 吸收——定格秒数
+    本来就是排版产物，人审改的是画面身份（start/source），不动它；定格减光
+    还不够时退回普通末片 dur 吸收，段状态同步降回 ok。
     """
     report: list[str] = []
     for seg, a in zip(segments, audio):
-        if seg.get("status") != "ok" or not seg.get("clips"):
+        if seg.get("status") not in ("ok", "ok_extended") or not seg.get("clips"):
             continue
         clips = seg["clips"]
         need = a["duration"]
-        got = sum(c["dur"] for c in clips)
+        got = sum(c["dur"] + c.get("extend", 0.0) for c in clips)
         drift = round(need - got, 3)
         if abs(drift) <= SEG_TOL:
             continue          # 已对齐，no-op
         last = clips[-1]
-        key = f"S{last.get('season', 0):02d}E{last.get('episode', 0):02d}"
+        if seg["status"] == "ok_extended":
+            ext = last.get("extend", 0.0)
+            if ext + drift >= -SEG_TOL:        # 定格自己吸收得了（含刚好减到 0）
+                new_ext = round(max(0.0, ext + drift), 3)
+                if new_ext <= SEG_TOL:         # 定格减没了，退回普通段
+                    last.pop("extend", None)
+                    seg["status"] = "ok"
+                else:
+                    last["extend"] = new_ext
+                report.append(
+                    f"段{seg['index']}: 末片定格 {ext:.2f}s → {new_ext:.2f}s"
+                    f"（漂移 {drift:+.2f}s 由定格吸收）")
+                continue
+            # 定格减光仍不够：剩余负漂移落到末片 dur，段退回 ok 走下面的末片吸收
+            drift = round(ext + drift, 3)
+            got = round(got - ext, 3)      # extend 已删，总量同步扣掉
+            last.pop("extend", None)
+            seg["status"] = "ok"
+        key = _key_of(last)
         # 跨番产物（clip 带 anime 字段，2026-09-06）走复合键；单番/手写 clip
         # 平面键回退。内联而不 import ingest.sources_get：本模块是零依赖叶子
         # （见模块 docstring），ingest 会拖起整个 ML 栈，不许为它破例。
-        src = sources.get((last.get("anime"), key)) or sources.get(key)
-        if src is None or "season" not in last or "episode" not in last:
+        src = (sources.get((last.get("anime"), key)) or sources.get(key)) if key else None
+        if src is None:
             raise SystemExit(
                 f"FAIL 段{seg['index']} 的末片缺 season/episode 或片源未登记"
                 f"（{last}），refit 拿不到伸缩边界")

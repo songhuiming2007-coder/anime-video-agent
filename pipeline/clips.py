@@ -64,11 +64,46 @@ PRESENCE_BAND = 0.06
 # 分钟允许三位（剧场版 96:08 之类），秒固定两位、允许小数秒。
 # 可选番名前缀（跨番混剪，2026-09-06）：`锚点: 罪恶王冠 S01E01 17:50`，
 # 不写番名默认主番（01-topic.md 番字段第一个 / 素材番剧块第一个）。
-_TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
-_ANCHOR = re.compile(rf"^(?:(?P<anime>.+?)\s+)?S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
+# SP 特典集（ADR-0010 决策二，2026-09-07）：`锚点: EGOIST SP01 108:45`，
+# 集号位写 `SP(\d{1,2})` 即指向企划池里的非番剧素材（MV/Live/物证）。
+# 组号全部具名：anime/season/episode/sp/m0/s0/m1/s1——sp 与 season/episode 互斥。
+_ANCHOR = re.compile(
+    rf"^(?:(?P<anime>.+?)\s+)?"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}}))\s+"
+    rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
+    rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
+
+# 锚点字段值可续行（单段多锚点蒙太奇，2026-09-07）：`锚点:` 一行写不下时，
+# 后续的缩进行都是锚点列表的一部分，直到下一个已知字段、空行或段落块尾。
+# 已知字段名用否定前瞻排除，防止把下一行 `查询:` 吞进锚点里。
+_ANCHOR_FIELD = re.compile(
+    r"^\s*锚点[：:][ \t]*([^\n]+(?:\n[ \t]+(?!\s*(?:查询|备选|人物|场景|集|画面|锚点)[：:])[^\n]*)*)",
+    re.M)
 
 
-def _parse_anchor(raw: str, seg_no: int, animes: list[str] | None = None) -> dict | None:
+def _ep_key(season: int | None, episode: int) -> str:
+    """(season, episode) → 片源登记键。season=None 是 SP 特典集：episode 即 SP 号。
+
+    **不能用 season=0 占 SP 的位**：sources.json 里 S00E0x 已经是 OVA 的既有登记
+    （东京喰种、伪恋），0 被占了。None 与 0 在 `_overlaps` / by_ep 的元组比较里
+    自然分开，键格式化全部走这里一处，别处不许自己拼。
+    """
+    return f"SP{episode:02d}" if season is None else f"S{season:02d}E{episode:02d}"
+
+
+def _anchor_items(raw_field: str) -> list[str]:
+    """锚点字段原文 → 锚点条目列表：逗号（半/全角）与续行都是分隔符。
+
+    `锚点: 无 …` 不在此列——调用方先判 `无` 再调这里（无的理由里可以有逗号）。
+    """
+    return [x.strip()
+            for line in raw_field.splitlines()
+            for x in re.split(r"[,，]", line)
+            if x.strip()]
+
+
+def _parse_anchor(raw: str, seg_no: int, animes: list[str] | None = None,
+                  extra_pools: list[str] | None = None) -> dict | None:
     """`锚点` 字段原文 → {anime, season, episode, t0, t1, raw}；`锚点: 无 …` 返回 None。
 
     ADR-0008：锚点是番剧笔记里的分钟级剧情时间码，排片的一等公民——
@@ -78,6 +113,11 @@ def _parse_anchor(raw: str, seg_no: int, animes: list[str] | None = None) -> dic
     番名前缀（2026-09-06）：写了就必须在 01-topic.md 声明的番表里
     （写错番名 = 画面指到另一部番的同季同集且全程不报错）；没写默认主番。
     `animes` 为空（读不到 01-topic.md）时不校验，前缀原样保留。
+
+    SP 特典（ADR-0010 决策二，2026-09-07）：集号位 `SP01` 指向**企划名自己的
+    素材池**（MV/Live/物证，`extra_pools` 传入，通常就是 `番:` 行的企划名）。
+    SP 锚点不加番名前缀时默认企划池——SP 素材不挂在素材番名下。返回值的
+    season 是 None（0 已被 OVA 的 S00E0x 占用，见 `_ep_key`）。
     """
     if raw.startswith("无"):
         return None
@@ -85,31 +125,42 @@ def _parse_anchor(raw: str, seg_no: int, animes: list[str] | None = None) -> dic
     if not m:
         raise SystemExit(
             f"FAIL 段落 {seg_no} 的 `锚点` 写的是「{raw}」，机器认不了。\n"
-            f"     写规范形 `S01E01 17:50` 或区间 `S01E01 17:50-18:20`，跨番加番名前缀\n"
-            f"     `罪恶王冠 S01E01 17:50`；确实无剧情锚点可写 `锚点: 无（理由）`\n"
+            f"     写规范形 `S01E01 17:50`、区间 `S01E01 17:50-18:20` 或特典 `SP01 12:30`，\n"
+            f"     跨番加番名前缀 `罪恶王冠 S01E01 17:50`；确实无剧情锚点可写 `锚点: 无（理由）`\n"
             f"     ——锚点是排片的确定性输入，写错 = 画面直接指到错误的时间码")
+    is_sp = m.group("sp") is not None
     anime = m.group("anime")
     if anime is not None:
         anime = anime.strip()
-        if animes and anime not in animes:
+        valid = list(animes or [])
+        # SP 锚点允许指向企划池（extra_pools）：SP01 登记在企划名下；
+        # 普通季集锚点不认企划名——企划没有 S01E01，认了只会推迟到运行期才炸
+        if is_sp:
+            valid += [p for p in (extra_pools or []) if p not in valid]
+        if valid and anime not in valid:
             raise SystemExit(
-                f"FAIL 段落 {seg_no} 的 `锚点` 指定了《{anime}》，但 01-topic.md\n"
-                f"     声明的番表是：{'、'.join(animes)}。番名写错 = 画面指到另一部番\n"
-                f"     的同季同集且全程不报错——改锚点，或在 01-topic.md 补声明")
+                f"FAIL 段落 {seg_no} 的 `锚点` 指定了《{anime}》，但可用的番表是：\n"
+                f"     {'、'.join(valid)}。番名写错 = 画面指到另一部番的同季同集且全程\n"
+                f"     不报错——改锚点，或在 01-topic.md 补声明")
+    elif is_sp and extra_pools:
+        anime = extra_pools[0]                # SP 不写番名默认企划池
     elif animes:
         anime = animes[0]                     # 不写番名默认主番
 
     def _sec(mm: str, ss: str) -> float:
         return int(mm) * 60 + float(ss)
 
-    # 组号：1=anime 前缀，2=季，3=集，4/5=起点分秒，6/7=终点分秒
-    t0 = _sec(m.group(4), m.group(5))
-    t1 = _sec(m.group(6), m.group(7)) if m.group(6) else None
+    t0 = _sec(m.group("m0"), m.group("s0"))
+    t1 = _sec(m.group("m1"), m.group("s1")) if m.group("m1") else None
     if t1 is not None and t1 <= t0:
         raise SystemExit(
             f"FAIL 段落 {seg_no} 的 `锚点` 区间「{raw}」终点不在起点之后。\n"
             f"     区间写 `起点-终点`，如 `S01E01 17:50-18:20`")
-    return {"anime": anime, "season": int(m.group(2)), "episode": int(m.group(3)),
+    if is_sp:
+        return {"anime": anime, "season": None, "episode": int(m.group("sp")),
+                "t0": t0, "t1": t1, "raw": raw}
+    return {"anime": anime, "season": int(m.group("season")),
+            "episode": int(m.group("episode")),
             "t0": t0, "t1": t1, "raw": raw}
 
 
@@ -156,7 +207,7 @@ def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
         who = re.search(r"^\s*人物[：:]\s*(.+)$", b, re.M)
         scene = re.search(r"^\s*场景[：:]\s*(.+)$", b, re.M)
         ep = re.search(r"^\s*集[：:]\s*(.+)$", b, re.M)
-        anc = re.search(r"^\s*锚点[：:]\s*(.+)$", b, re.M)
+        anc = _ANCHOR_FIELD.search(b)
         if not vo:
             continue
         if who and scene:
@@ -168,29 +219,48 @@ def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
         if ep:
             raw = ep.group(1).strip()
             m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
-            if not m:
+            sp = re.fullmatch(r"SP(\d{1,2})", raw, re.I)
+            if not m and not sp:
                 raise SystemExit(
                     f"FAIL 段落 {i} 的 `集` 写的是「{raw}」，机器认不了。\n"
-                    f"     写规范形 `S01E07`（季两位、集两位，都补齐），别写中文「第一季第七集」"
-                    f"——集号是检索约束，写错 = 检索范围错了")
-            ep_norm = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+                    f"     写规范形 `S01E07`（季两位、集两位都补齐）或特典 `SP01`，"
+                    f"别写中文「第一季第七集」——集号是检索约束，写错 = 检索范围错了")
+            ep_norm = (f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}" if m
+                       else f"SP{int(sp.group(1)):02d}")
         anchor = None
+        anchors = None
         anchor_none = False
         if anc:
-            anchor = _parse_anchor(anc.group(1).strip(), i, animes)
-            anchor_none = anchor is None
-            if anchor is not None:
+            raw_field = anc.group(1).strip()
+            if raw_field.startswith("无"):
+                anchor_none = True              # 理由缺失由 check_script 拦
+            else:
+                # 单段多锚点蒙太奇（2026-09-07）：逗号/续行分隔的有序锚点列表，
+                # 排片顺序 = 书写顺序。企划池（anime_of）只对 SP 锚点开放。
+                main = bgm.anime_of(path.parent)
+                extra = [main] if main and main not in (animes or []) else []
+                anchors = [_parse_anchor(x, i, animes, extra)
+                           for x in _anchor_items(raw_field)]
+                anchor = anchors[0]             # 单锚点时产物形状与旧版逐字节一致
                 if who or scene:
                     raise SystemExit(
                         f"FAIL 段落 {i} 同时写了 `锚点` 和 `{'人物' if who else '场景'}`。"
                         f"锚点段不检索（ADR-0008），人物/场景过滤器用不上，"
                         f"写了只会被静默忽略——删掉其中一个")
-                akey = f"S{anchor['season']:02d}E{anchor['episode']:02d}"
-                if ep_norm and ep_norm != akey:
+                akeys = {_ep_key(a["season"], a["episode"]) for a in anchors}
+                if ep_norm and akeys != {ep_norm}:
                     raise SystemExit(
-                        f"FAIL 段落 {i} 的 `集`（{ep_norm}）与 `锚点`（{akey}）不是同一集。\n"
+                        f"FAIL 段落 {i} 的 `集`（{ep_norm}）与 `锚点`（{'、'.join(sorted(akeys))}）"
+                        f"不是同一集。\n"
                         f"     两个字段指同一处剧情，写叉了排片必错——以引用核对为准改成一个")
-                ep_norm = ep_norm or akey       # 锚点自带集号，`集` 字段可省
+                # 锚点自带集号，`集` 字段可省；多锚点跨集时段落集号无法单值化，留 None
+                ep_norm = ep_norm or (list(akeys)[0] if len(akeys) == 1 else None)
+        # SP 特典（MV/Live/物证）没有字幕索引，检索通道锁不到它——写 `集: SP01`
+        # 又没给同段锚点，等价于让这段永远检索落空，当场报错而不是排到 no_match
+        if ep_norm and ep_norm.startswith("SP") and not anchors:
+            raise SystemExit(
+                f"FAIL 段落 {i} 的 `集` 锁了 {ep_norm}，但 SP 特典没有字幕索引可检索，\n"
+                f"     这段只能走锚点直通：写 `锚点: [番名] {ep_norm} mm:ss`")
         out.append({
             "index": i,
             "text": vo.group(1).strip(),
@@ -201,6 +271,7 @@ def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
             "episode": ep_norm,
             "anchor": anchor,
             "anchor_none": anchor_none,
+            **({"anchors": anchors} if anchors and len(anchors) > 1 else {}),
         })
     if not out:
         raise SystemExit(f"FAIL 没从 {path} 解析出任何段落")
@@ -290,7 +361,7 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | 
     镜头表按它加载（`_shots.load`），片源按它查复合键（跨番混剪 2026-09-06）。
     """
     from . import shots as _shots      # 函数内 import：run() 里有同名局部变量
-    key = f"S{anchor['season']:02d}E{anchor['episode']:02d}"
+    key = _ep_key(anchor["season"], anchor["episode"])
     src = sources_get(sources, anime, key)
     if src is None:                     # 该集没登记——与 candidate() 同一条规矩
         return None
@@ -316,16 +387,31 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | 
             "source": src["path"], "start": round(start, 3),
             "dur": round(dur, 3), "span": round(span, 3),
             "limit": src["duration"], "score": None,
-            "line": f"锚点 {anchor['raw']}", "presence": None}
+            "line": f"锚点 {anchor['raw']}", "presence": None,
+            # SP 特典片段显式打标（season=None 与人审手补的「缺 season 键」分得开）：
+            # qc 的艺术暗场豁免只认这个标，不认 season 猜测
+            **({"sp": True} if anchor["season"] is None else {})}
 
 
-def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
+# 尾帧定格延展的上限（秒）。锚点段的画面不可替代（名场面/指定镜头），素材自然
+# 时长不够填满口播时允许定格末帧补足（status=ok_extended，render 用 tpad 克隆
+# 末帧），但定格超过这个数就是「盯着静帧发呆」，不是延展——退回 short 交人处理。
+EXTEND_MAX = 8.0
+
+
+def size(chosen: list[dict], need: float,
+         allow_extend: bool = False) -> tuple[list[dict], str]:
     """把选好的片段裁到总长精确等于 need 秒。
 
     1. **凑不满时拉长已选片段，不要退而求其次拿弱命中填。** 同一场戏多放两秒
        仍然对题，换一个不相干的镜头就不对题了。
     2. **超出时不能等比例缩。** 初版只裁末尾，段 17 被裁到 1.8s；改等比例后
        段 6 被压到 1.72s——等比例保的是相对长短，保不住下限。
+    3. **`allow_extend`（锚点段专属，2026-09-07）**：两个方向的水填都拉满仍不够时，
+       不判 short 死刑——末片挂 `extend` 字段（定格延展秒数），状态 ok_extended。
+       锚点是写稿阶段锁定的不可替代画面（名场面、微动静态视频），前后没有可借的
+       余量时，定格末帧比换画面或整段标红更忠于原意。检索段不传这个旗标：
+       检索段的 short 应该触发下一轮多分一个候选，不是定格凑合。
     """
     if not chosen:
         return [], "no_source"
@@ -345,7 +431,9 @@ def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
     # 但向前还有 3.6s 空画面没人用，合起来足够。
     room = [c["limit"] - c["start"] for c in chosen]
     back = [c["start"] - c.get("floor", 0.0) for c in chosen]
-    if sum(room) + sum(back) < need - 0.05:     # 两头都拉满仍然不够
+    if sum(room) + sum(back) < need - 0.05 and not allow_extend:
+        # 两头都拉满仍然不够（allow_extend 时不走这条提前判死——
+        # 让水填先把真实素材拉满，剩下的缺口再定格，定格时长才最小）
         for c in chosen:
             c.pop("limit", None); c.pop("span", None); c.pop("floor", None)
         return chosen, "short"
@@ -382,6 +470,9 @@ def size(chosen: list[dict], need: float) -> tuple[list[dict], str]:
     for c in chosen:
         c.pop("limit", None); c.pop("span", None); c.pop("floor", None)
     if drift > 0.05:
+        if allow_extend and drift <= EXTEND_MAX:
+            chosen[-1]["extend"] = round(drift, 3)
+            return chosen, "ok_extended"
         return chosen, "short"
     return chosen, "ok"
 
@@ -667,9 +758,18 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     if not animes:
         raise SystemExit("FAIL 没指定番名：给 --anime，或在 config/project.json 里设 anime.default")
     anime = animes[0]                       # 主番：笔记/封面/在场索引默认归属
-    multi = len(animes) > 1
 
     shots = parse_shots(script, animes)
+
+    # 企划池按需并入（ADR-0010 决策二）：SP 特典素材登记在企划名（`番:` 行）名下，
+    # 不在素材番表里。只有稿件真的锚了番表外的池（SP 锚点）才把它并进片源加载，
+    # 不用就不并——没登记会在 load_sources_multi 里照常报「没有《X》」。
+    pools = list(animes)
+    for s in shots:
+        for a in (s.get("anchors") or ([s["anchor"]] if s["anchor"] else [])):
+            if a["anime"] and a["anime"] not in pools:
+                pools.append(a["anime"])
+    multi = len(pools) > 1
     audio = json.loads(manifest.read_text(encoding="utf-8"))["segments"]
     if len(shots) != len(audio):
         raise SystemExit(
@@ -678,7 +778,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         )
 
     # 单番保持走 load_sources（既有测试的 monkeypatch 缝就在这）；多番才联合加载
-    sources = load_sources_multi(animes) if multi else load_sources(anime)
+    sources = load_sources_multi(pools) if multi else load_sources(anime)
     vecs, units = load_all(index_dir, animes)
 
     # 两个视觉通道**按需加载**：没有段落声明 `人物` / `场景` 时，
@@ -724,13 +824,16 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         fell_back = False
         ladder_step = None                    # 画面通道不可续爬（_ladder_scene 未改），饿死只救台词段
         if shot["anchor"] is not None:          # 锚点通道（ADR-0008）：不检索，直通镜头表
+            anchor_list = shot.get("anchors") or [shot["anchor"]]
             prep.append({**shot, "duration": a["duration"], "hits": [],
                          "used_query": None, "fallback": False, "rung": 1,
                          "ep_scope": 0, "ep_fell_back": False,
                          "channel": "anchor", "threshold": NO_MATCH,
                          "filter_fell_back": False, "top_score": None,
-                         "anchor_cand": _anchor_candidate(shot["anchor"], sources,
-                                                          shot["anchor"]["anime"]),
+                         # 单段多锚点（2026-09-07）：有序候选列表，排版时按
+                         # 书写顺序交给 size() 按自然时长加权分配
+                         "anchor_cands": [_anchor_candidate(x, sources, x["anime"])
+                                          for x in anchor_list],
                          "anchor_conflict": False})
             continue
         if shot["scene"]:                       # 画面语义通道
@@ -790,14 +893,24 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     # 不静默移花接木。
     placed: list[dict] = []
     for p in prep:
-        cand = p.get("anchor_cand")
-        if cand is None:
+        if p.get("channel") != "anchor":
             continue
-        if _overlaps(cand, placed):
-            p["anchor_cand"] = None
+        cands = p["anchor_cands"]
+        if any(c is None for c in cands):
+            continue            # 有锚点解析不出（未入库/超片长）→ 终态 no_match，不参与预占
+        # 撞车判定含段内：同段的两个锚点指向同一处画面，等于蒙太奇重复放同一镜头，
+        # 与跨段撞车同规——不静默挪，标出来交 05 处理。
+        seen = list(placed)
+        conflict = False
+        for c in cands:
+            if _overlaps(c, seen):
+                conflict = True
+                break
+            seen.append(c)
+        if conflict:
             p["anchor_conflict"] = True
         else:
-            placed.append(cand)
+            placed.extend(cands)
 
     by_index = {p["index"]: p for p in prep}
     live = [p for p in prep if p["hits"] and p["top_score"] >= p["threshold"]]
@@ -814,7 +927,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         # limit 收紧（只紧不松）、floor 由当轮配对写入——轮间不恢复的话，上一轮的
         # 约束会残留到下一轮。恢复全量余量，让当轮 by_ep 重新约束。
         for cand in placed:
-            key = f"S{cand['season']:02d}E{cand['episode']:02d}"
+            key = _ep_key(cand["season"], cand["episode"])
             cand["limit"] = sources_get(sources, cand.get("anime"), key)["duration"]
             cand.pop("floor", None)
         used = _allocate(live, by_index, sources, set(animes), quota, pre=placed)
@@ -846,18 +959,21 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         if p.get("channel") == "anchor":
             if p["anchor_conflict"]:
                 p["status"], p["clips"] = "anchor_overlap", []
-            elif p["anchor_cand"] is None:
+            elif any(c is None for c in p["anchor_cands"]):
                 # 该集没登记或锚点超出片长——与检索落空同一个终态，交 05 人工指定
                 p["status"], p["clips"] = "no_match", []
             else:
-                p["clips"], p["status"] = size([p["anchor_cand"]], p["duration"])
+                # 锚点段允许尾帧定格补足（EXTEND_MAX 内）：不可替代的名场面/微动
+                # 视频自然时长不够时不判 short 死刑，缺口挂末片 extend 交渲染定格
+                p["clips"], p["status"] = size(p["anchor_cands"], p["duration"],
+                                               allow_extend=True)
             continue
         if not p["hits"] or p["top_score"] < p["threshold"]:
             p["status"], p["clips"] = "no_match", []
             continue
         p["clips"], p["status"] = size(p["clips"], p["duration"])
 
-    out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cand",
+    out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cands",
                                                     "anchor_conflict", "ladder_step")}
            for p in sorted(prep, key=lambda x: x["index"])]
 
@@ -865,7 +981,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_text(json.dumps({
         "anime": anime,
-        "animes": animes,
+        "animes": pools,
         "total_duration": sum(s["duration"] for s in out),
         "segments": out,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -920,11 +1036,12 @@ def main() -> int:
     multi = len(data.get("animes") or [data["anime"]]) > 1
     for s in segs:
         # 跨番期片段归属必须可见：同 S01E01 两部番各有一份，只看集号会看错
-        eps = sorted({(f"{c.get('anime') or '?'}S{c['season']:02d}E{c['episode']:02d}"
-                       if multi else f"S{c['season']:02d}E{c['episode']:02d}")
+        eps = sorted({(f"{c.get('anime') or '?'}{_ep_key(c['season'], c['episode'])}"
+                       if multi else _ep_key(c["season"], c["episode"]))
                       for c in s["clips"]})
-        mark = "    " if s["status"] == "ok" else "★   "
-        if s["status"] != "ok":
+        # ok_extended（锚点段尾帧定格补足）是可渲染终态，不算坏段，但状态串照打
+        mark = "    " if s["status"] in ("ok", "ok_extended") else "★   "
+        if s["status"] not in ("ok", "ok_extended"):
             bad += 1
         # 用到第几级要显示出来：第 2、3 级说明那条 `查询` 写得不行，
         # 是回去改稿的信号，不是可以忽略的细节。
@@ -956,6 +1073,9 @@ def main() -> int:
     print(f"{len(segs)} 段 / {n_clips} 个片段 / {data['total_duration']:.1f}s → {dest}")
     if bad:
         print(f"★ {bad} 段不是 ok，渲染前必须处理")
+    n_ext = sum(1 for s in segs if s["status"] == "ok_extended")
+    if n_ext:
+        print(f"◆ {n_ext} 段尾帧定格补足（ok_extended），审片时留意末段定格")
     print("下一步：人抽检时间码，确认后另存为 04-clips.approved.json")
     return 1 if bad else 0
 

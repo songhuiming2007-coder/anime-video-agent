@@ -372,12 +372,15 @@ def probe_video(video: Path) -> dict:
 
 
 def register(video: Path, anime: str, season: int, episode: int,
-             path: Path = SOURCES) -> dict:
+             path: Path = SOURCES, sp: int | None = None) -> dict:
     """把一集片源登记进 sources.json，登记前强制过完整性校验。
 
     渲染阶段要从 (season, episode) 找到 mkv，而索引里只有集号没有路径——
     这张表就是那座桥。**它同时是「这一集验过」的凭证**：`intact` 不过就不许登记，
     所以渲染永远不可能切到残缺片源上。
+
+    `sp`（ADR-0010 决策二，2026-09-07）：给值就登记为 SP 特典集（`SP01`…），
+    season/episode 忽略。MV/Live/物证都走这里，挂企划名（`--anime EGOIST`）下。
 
     合并写入，不覆盖其他集。
     """
@@ -385,7 +388,7 @@ def register(video: Path, anime: str, season: int, episode: int,
     if not ok:
         raise SystemExit(f"FAIL 片源不完整，不予登记：{detail}\n     {video}")
     db = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    key = f"S{season:02d}E{episode:02d}"
+    key = f"SP{sp:02d}" if sp is not None else f"S{season:02d}E{episode:02d}"
     entry = {"path": str(video), **probe_video(video)}
     db.setdefault(anime, {})[key] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -570,8 +573,11 @@ def main() -> None:
     g = sub.add_parser("sources", help="把片源登记进 sources.json（渲染要靠它找文件）")
     g.add_argument("video", type=Path)
     g.add_argument("--anime", required=True)
-    g.add_argument("--season", type=int, required=True)
-    g.add_argument("--episode", type=int, required=True)
+    g.add_argument("--season", type=int)
+    g.add_argument("--episode", type=int)
+    g.add_argument("--sp", type=int, metavar="N",
+                   help="登记为 SP 特典集 SP%02d（MV/Live/物证，ADR-0010），"
+                        "与 --season/--episode 互斥")
 
     z = sub.add_parser("phase0", help="整季入库：验对轴 → 建索引 → 登记片源")
     z.add_argument("videos", type=Path, nargs="+")
@@ -597,8 +603,12 @@ def main() -> None:
         raise SystemExit(1 if bad else 0)
 
     if a.cmd == "sources":
-        e = register(a.video, a.anime, a.season, a.episode)
-        print(f"OK  {a.anime} S{a.season:02d}E{a.episode:02d}  "
+        # --sp 与 --season/--episode 互斥且必居其一（argparse 表达不了「二选一必填」）
+        if (a.sp is None) == (a.episode is None or a.season is None):
+            raise SystemExit("FAIL 二选一：普通集给 --season N --episode N，特典给 --sp N")
+        e = register(a.video, a.anime, a.season or 0, a.episode or 0, sp=a.sp)
+        tag = f"SP{a.sp:02d}" if a.sp is not None else f"S{a.season:02d}E{a.episode:02d}"
+        print(f"OK  {a.anime} {tag}  "
               f"{e['duration']:.1f}s  {e['fps']}  {e['width']}x{e['height']}")
         return
 
