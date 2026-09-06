@@ -32,6 +32,7 @@
 | [ADR-0007](adr/0007-no-japanese-subs-support.md) | ASR 兜底仅中文，不支持日语无字幕片源 | 已采纳 | D8 |
 | [ADR-0008](adr/0008-ground-truth-anchor-clips.md) | 笔记 Ground Truth 锚点直通排片，检索降级补位 | 已实现，待新番实测验证 | D20（已归档） |
 | [ADR-0009](adr/0009-rvc-pilot-failure.md) | RVC 两段式音色迁移 pilot 失败，停止投入 | 已否决 | — |
+| [ADR-0010](adr/0010-cross-anime-and-sp-assets.md) | 跨番混剪与非传统素材（MV/Live/SP）摄入与排片规范 | 已采纳已实现 | — |
 
 ---
 
