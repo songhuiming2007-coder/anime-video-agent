@@ -402,6 +402,34 @@ def load_sources(anime: str, path: Path = SOURCES) -> dict[str, dict]:
     return db[anime]
 
 
+def load_sources_multi(animes: list[str], path: Path = SOURCES) -> dict:
+    """多番联合加载片源表（跨番混剪，2026-09-06）。
+
+    单番返回与 `load_sources` 完全同形的平面 dict（`SxxEyy → entry`），
+    单番路径逐字节不变；多番返回复合键 dict（`(anime, SxxEyy) → entry`）。
+    两种形状的查找统一走 `sources_get`。
+    """
+    if len(animes) == 1:
+        return load_sources(animes[0], path)
+    out = {}
+    for a in animes:
+        for key, entry in load_sources(a, path).items():
+            out[(a, key)] = entry
+    return out
+
+
+def sources_get(sources: dict, anime: str | None, key: str) -> dict | None:
+    """片源查找：复合键 `(anime, key)` 优先，平面键 `key` 回退。
+
+    回退存在是因为单番期的 sources 是平面 dict（load_sources 原样），
+    手写/旧产物里的 clip 也可能没有 anime 字段——两种形状都认，
+    查不到一律返回 None 由调用方判失败，不在这里猜。
+    """
+    if anime is not None and (anime, key) in sources:
+        return sources[(anime, key)]
+    return sources.get(key)
+
+
 # ---------- 整季入库 ----------
 
 # 集号从文件名取。压制组的命名千差万别，但「[NN]」这一段几乎是通例；

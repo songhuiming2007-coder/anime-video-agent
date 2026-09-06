@@ -285,23 +285,68 @@ def load(anime: str) -> dict:
     return d.get(anime, {})
 
 
+def animes_of(episode: Path) -> list[str]:
+    """从 `01-topic.md` 取本期涉及的全部素材番名（跨番混剪，2026-09-06 加）。
+
+    两种声明方式：
+
+        番: 罪恶王冠, PSYCHO-PASS, 甲铁城的卡巴内利     ← 逗号/顿号分隔
+        番: EGOIST                                        ← 企划名 + 素材番剧块
+        素材番剧:
+          - 罪恶王冠
+          - PSYCHO-PASS
+
+    `素材番剧:` 列表块优先——企划名（EGOIST）不是素材番，没入库、没索引，
+    拿它去检索是静默失败（CLAUDE.md「索引按番隔离」）。没有素材番剧块时
+    按 `番:` 行拆；单番期返回长度 1 的列表，行为与旧 `anime_of` 一致。
+    """
+    topic = episode / "01-topic.md"
+    if not topic.exists():
+        return []
+    lines = topic.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*素材番剧\s*[:：]\s*$", line):
+            items = []
+            for follow in lines[i + 1:]:
+                m = re.match(r"^\s*[-*]\s*(.+?)\s*$", follow)
+                if not m:
+                    break                       # 列表块到第一个非列表行为止
+                items.append(re.split(r"[（(]", m.group(1))[0].strip())
+            if items:
+                return items
+            break                               # 写了字段却是空块 → 落回番行，不静默
+    # 不能复用 anime_of——它只取主番（第一个），这里要整行拆开
+    for line in lines:
+        if m := re.match(r"^\s*番\s*[:：]\s*(.+?)\s*$", line):
+            return [re.split(r"[（(]", a)[0].strip()
+                    for a in re.split(r"[,，、]", m.group(1)) if a.strip()]
+    return []
+
+
 def anime_of(episode: Path) -> str | None:
-    """从 `01-topic.md` 的「番:」字段取番名，去掉括号里的全称。
+    """从 `01-topic.md` 的「番:」字段取主番名，去掉括号里的全称。
 
     `番: 春物（我的青春恋爱物语果然有问题）` → `春物`
     曲目表、番剧笔记都按短名做键，全称只是给人看的。
+    多番声明（逗号/顿号分隔）时取**第一个**为主番（2026-09-06 跨番改造）：
+    BGM 池、笔记、封面这些单值消费方都指主番，素材全集走 `animes_of`。
     """
     topic = episode / "01-topic.md"
     if not topic.exists():
         return None
     for line in topic.read_text(encoding="utf-8").splitlines():
         if m := re.match(r"^\s*番\s*[:：]\s*(.+?)\s*$", line):
-            return re.split(r"[（(]", m.group(1))[0].strip()
+            first = re.split(r"[,，、]", m.group(1))[0]
+            return re.split(r"[（(]", first)[0].strip()
     return None
 
 
-def resolve(anime: str, slot: str, override: str | None = None) -> dict | None:
+def resolve(anime: str | list[str], slot: str, override: str | None = None) -> dict | None:
     """取某个用途（`正文` / `结尾`）该用哪首，返回带绝对路径和实测响度的条目。
+
+    `anime` 接受列表（跨番/企划志，2026-09-06）：按池序逐池回查曲目表，
+    第一个含该曲名的池命中——企划池（如 EGOIST）排前面就优先用它。
+    `use` 退路只看首池（主番/企划名），它是没人现选时的兜底，不该跨池乱捡。
 
     2026-08-08 起选曲改成每期人耳现选（CLAUDE.md「十、BGM 约定」）——AI 的音乐审美、
     对经典歌曲的判断不如人，Phase 0 时一次性锁死 3–5 首违背这个事实。`override` 是
@@ -318,14 +363,27 @@ def resolve(anime: str, slot: str, override: str | None = None) -> dict | None:
        繋ぎとめた世界 调的，换成 -7.1 的 芽ぐみの雨 会凭空大 9.8 dB 压过口播。
        所以静态增益是错的控制量，得按每首的实测值归一到统一目标。
     """
-    tbl = load(anime)
+    pools = [anime] if isinstance(anime, str) else list(anime)
+    tbl = load(pools[0])
     name = override or (tbl.get("use") or {}).get(slot)
     if not name:
         return None
-    rec = tbl.get("tracks", {}).get(name)
+    rec = None
+    for pool in pools:
+        rec = load(pool).get("tracks", {}).get(name)
+        if rec is not None:
+            break
     if rec is None:
-        src = f"01-topic.md 的 BGM{slot} 字段" if override else f"config/bgm.json 的 {anime}.use.{slot}"
-        raise SystemExit(f"FAIL 曲目表里没有「{name}」，检查{src}")
+        src = (f"01-topic.md 的 BGM{slot} 字段" if override
+               else f"config/bgm.json 的 {pools[0]}.use.{slot}")
+        raise SystemExit(
+            f"FAIL 曲目表里没有「{name}」，检查{src}"
+            + (f"（已查池：{'、'.join(pools)}）" if len(pools) > 1 else ""))
+    return _resolve_rec(name, rec)
+
+
+def _resolve_rec(name: str, rec: dict) -> dict:
+    """路径与响度校验 + 绝对路径组装（单池/多池共用的收尾）。"""
     p = paths.ROOT / rec["path"]
     if not p.exists():
         raise SystemExit(
