@@ -78,7 +78,10 @@ def refit(segments: list[dict], audio: list[dict],
             continue          # 已对齐，no-op
         last = clips[-1]
         key = f"S{last.get('season', 0):02d}E{last.get('episode', 0):02d}"
-        src = sources.get(key)
+        # 跨番产物（clip 带 anime 字段，2026-09-06）走复合键；单番/手写 clip
+        # 平面键回退。内联而不 import ingest.sources_get：本模块是零依赖叶子
+        # （见模块 docstring），ingest 会拖起整个 ML 栈，不许为它破例。
+        src = sources.get((last.get("anime"), key)) or sources.get(key)
         if src is None or "season" not in last or "episode" not in last:
             raise SystemExit(
                 f"FAIL 段{seg['index']} 的末片缺 season/episode 或片源未登记"

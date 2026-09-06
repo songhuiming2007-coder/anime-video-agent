@@ -267,13 +267,17 @@ def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) 
     return len(units)
 
 
-def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, list[Unit]]:
+def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.ndarray, list[Unit]]:
     """加载分集索引。这个量级（万级）暴力余弦即可，无需向量库。
 
-    **给了 `anime` 就只加载那一部。** 索引目录是全局的，一台机器上做几部番时
+    **给了 `anime` 就只加载那一部（或列表里的那几部）。** 索引目录是全局的，一台机器上做几部番时
     所有 `.npy` 都堆在一起；不过滤就会跨番命中——而下游 `clips.candidate` 拿
     `S02E02` 这样的键去当前番的片源表里查文件，**命中别的番会解析成本番的同季同集，
     切出完全不相干的画面且不报错**。2026-07-29 审计时发现，当时只有一部番所以没暴露。
+
+    `anime` 传列表是跨番混剪（2026-09-06）：联合加载多部番的索引，Unit 自带
+    anime 字段，下游按它归属到各自的片源表——跨番命中在这里是**显式要的功能**，
+    归属正确性由 candidate 的 anime 字段校验与片源复合键保证。
 
     过滤放在加载这一层，不放在检索之后：同一个 `.npy` 里的单元同属一部番，
     整个文件跳过比逐条筛便宜，也不会让 `vecs` 和 `units` 的下标错位。
@@ -283,6 +287,7 @@ def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, lis
     当前番的检索就被拦死，报错还指向别人的文件。番归属从文件名前缀和
     units[0] 都能看出来，不值得为它跑整套校验。
     """
+    allow = None if anime is None else ({anime} if isinstance(anime, str) else set(anime))
     vecs, units = [], []
     for meta_path in sorted(index_dir.glob("*.json")):
         vec_path = meta_path.with_suffix(".npy")
@@ -290,13 +295,16 @@ def load_all(index_dir: Path, anime: str | None = None) -> tuple[np.ndarray, lis
             continue
         d = json.loads(meta_path.read_text(encoding="utf-8"))
         rows_peek = d if isinstance(d, list) else d.get("units", [])
-        if anime is not None and (not rows_peek or rows_peek[0].get("anime") != anime):
+        if allow is not None and (not rows_peek or rows_peek[0].get("anime") not in allow):
             continue
         rows = _check(d, meta_path)
         vecs.append(np.load(vec_path))
         units.extend(Unit(**r) for r in rows)
     if not vecs:
-        where = f"{index_dir} 下" + (f"没有《{anime}》的" if anime else "没有")
+        if isinstance(anime, list):
+            where = f"{index_dir} 下没有《{'、'.join(anime)}》的"
+        else:
+            where = f"{index_dir} 下" + (f"没有《{anime}》的" if anime else "没有")
         raise SystemExit(f"FAIL {where}索引，先跑 build")
     return np.vstack(vecs), units
 

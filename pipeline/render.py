@@ -541,11 +541,14 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
                 "FAIL 01-topic.md 配了 BGM（`BGM:` 列表或 `BGM正文`）但读不到"
                 " `番: ` 字段，渲染会静默丢掉全部 BGM。补 `番: <番名>` 再跑")
         return None
+    # 跨番/企划池（2026-09-06）：曲库回查顺序 = 番字段（可为企划名，如 EGOIST）
+    # 在前 + 素材番剧在后。单番期池长 1，与旧版行为一致。
+    pools = list(dict.fromkeys([anime] + bgm.animes_of(episode)))
 
     if seq is not None:
         plan: list[tuple[dict, float, float]] = []
         for name, at, offset in seq:
-            rec = bgm.resolve(anime, "列表", name)
+            rec = bgm.resolve(pools, "列表", name)
             if not 0 <= offset < rec["dur"]:
                 raise SystemExit(
                     f"FAIL BGM「{name}」曲内偏移 {offset:g}s 越界（曲长 {rec['dur']:g}s）")
@@ -555,7 +558,7 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
             plan.append((rec, at, offset))
         return plan
 
-    body = bgm.resolve(anime, "正文", bgm.episode_choice(episode, "正文"))
+    body = bgm.resolve(pools, "正文", bgm.episode_choice(episode, "正文"))
     if not body:
         return None
     plan = [(body, _body_entry_delay(episode), 0.0)]
@@ -564,14 +567,14 @@ def _bgm_plan(episode: Path, total: float, starts: list[float]) -> list[tuple[di
         c1 = _seg_entry(episode, "中段", BGM_MID_ENTRY)
         if c1 is None:
             raise SystemExit("FAIL 有 `BGM中段` 就必须写 `BGM中段切入点: N秒`")
-        plan.append((bgm.resolve(anime, "中段", mid), c1, 0.0))
+        plan.append((bgm.resolve(pools, "中段", mid), c1, 0.0))
     outro = bgm.episode_choice(episode, "结尾")
     if outro:
         c2 = _seg_entry(episode, "结尾", BGM_OUTRO_ENTRY)
         if c2 is None:
             c2 = _outro_start(starts, total)
         if c2 is not None:
-            plan.append((bgm.resolve(anime, "结尾", outro), c2, 0.0))
+            plan.append((bgm.resolve(pools, "结尾", outro), c2, 0.0))
     return plan
 
 
@@ -804,10 +807,15 @@ def _maybe_music_plan(episode: Path, manifest: dict) -> dict | None:
     anime = bgm.anime_of(episode)
     if anime is None:
         raise SystemExit(f"FAIL 试听型稿子需要 01-topic.md 的 `番: `字段")
-    block = bgm.load(anime)
-    if not block or "tracks" not in block:
+    # 跨番/企划池（2026-09-06）：曲目表按池序合并，同名牌前面的池赢
+    # （企划池 EGOIST 排最前，它的版本优先于番剧 OST 池里的同名伴奏）
+    tracks: dict = {}
+    for pool in reversed(list(dict.fromkeys([anime] + bgm.animes_of(episode)))):
+        tracks.update(bgm.load(pool).get("tracks", {}))
+    if not tracks:
         raise SystemExit(
             f"FAIL 试听型稿子需要「{anime}」的曲库（config/bgm.json 的 tracks）")
+    block = {"tracks": tracks}
     return music_mod.build_timeline(episode, manifest, block)
 
 
@@ -891,12 +899,26 @@ def _still_frames(episode: Path, plan: dict,
 
 
 def _source_path(episode: Path, ep_tag: str) -> Path:
-    """`S01E01` → 该集片源路径（data/library/sources.json）。"""
-    sources = json.loads((paths.ROOT / "data" / "library" / "sources.json")
-                         .read_text(encoding="utf-8"))
+    """`S01E01` / `罪恶王冠 S01E01` → 该集片源路径（data/library/sources.json）。
+
+    番名前缀（跨番混剪，2026-09-06）：`画面:` 行写了番名就用该番的片源表，
+    没写归主番；写了番表里没有的名字当场报错，不静默落到主番同季同集上。
+    """
     anime = bgm.anime_of(episode)
     if anime is None:
         raise SystemExit(f"FAIL 音乐段画面需要 01-topic.md 的 `番: `字段")
+    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2})", ep_tag)
+    if m and m.group(1):
+        prefix = m.group(1).strip()
+        declared = bgm.animes_of(episode)
+        if declared and prefix not in declared:
+            raise SystemExit(
+                f"FAIL 音乐段画面指定了《{prefix}》，但 01-topic.md 的番表是："
+                f"{'、'.join(declared)}")
+        anime = prefix
+        ep_tag = m.group(2)
+    sources = json.loads((paths.ROOT / "data" / "library" / "sources.json")
+                         .read_text(encoding="utf-8"))
     rec = sources.get(anime, {}).get(ep_tag)
     if not rec:
         raise SystemExit(f"FAIL sources.json 里没有 {anime}/{ep_tag} 的片源")

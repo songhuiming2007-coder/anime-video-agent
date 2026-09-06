@@ -290,12 +290,13 @@ def _norm_ep(raw: str) -> str | None:
     return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
 
 
-# 锚点时间码（ADR-0008，2026-08-27 加）。与 clips._ANCHOR 同口径：
-# `S01E01 17:50` 或区间 `S01E01 17:50-18:20`，分钟允许三位（剧场版 96:08），
-# 秒两位、允许小数秒。两处各自维护（与 配音/查询 字段的三处同口径先例一致），
-# 改一处必须同步另一处。
+# 锚点时间码（ADR-0008，2026-08-27 加；2026-09-06 加可选番名前缀支持跨番）。
+# 与 clips._ANCHOR 同口径：`S01E01 17:50` 或区间 `S01E01 17:50-18:20`，跨番
+# `罪恶王冠 S01E01 17:50`，分钟允许三位（剧场版 96:08），秒两位、允许小数秒。
+# 两处各自维护（与 配音/查询 字段的三处同口径先例一致），改一处必须同步另一处。
+# 组号：1=anime 前缀（可空），2=季，3=集，4/5=起点分秒，6/7=终点分秒。
 _TC = r"(\d{1,3}):(\d{2}(?:\.\d+)?)"
-ANCHOR_TC = re.compile(rf"^S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
+ANCHOR_TC = re.compile(rf"^(?:(?P<anime>.+?)\s+)?S(\d{{1,2}})E(\d{{1,2}})\s+{_TC}(?:\s*[-–~～]\s*{_TC})?$", re.I)
 
 
 def _has_visual_source(block: str) -> bool:
@@ -387,42 +388,68 @@ def run(path: Path) -> list[Check]:
     else:
         add("集号格式", True, covered)
 
+    # 跨番（2026-09-06）：段 → 素材番的分派规则是「锚点写了番名跟锚点，没写归主番」。
+    # 集号本身不带番名，它的检索范围由同段锚点决定（锚点自带集号时 `集` 字段可省）。
+    animes = bgm.animes_of(path.parent)
+    anime_main = animes[0] if animes else None
+    anc_match = {label: ANCHOR_TC.fullmatch(raw)
+                 for label, raw in parse_anchors(text)
+                 if raw and not raw.startswith("无") and ANCHOR_TC.fullmatch(raw)}
+
+    def _seg_anime(label: str) -> str | None:
+        m = anc_match.get(label)
+        return (m.group("anime").strip() if m and m.group("anime") else None) or anime_main
+
     if eps:
-        anime = bgm.anime_of(path.parent)
-        if not anime:
+        if not animes:
             add("集号在素材库", False,
                 "跳过不可判定：01-topic.md 没写「番:」字段，读不到番名（S9 跳过不是通过）")
         else:
-            try:
-                from . import ingest  # 延迟 import：只在写了集号时才需要素材库
-                sources = ingest.load_sources(anime)
-            except SystemExit as e:
+            from . import ingest  # 延迟 import：只在写了集号时才需要素材库
+            cache: dict[str, dict] = {}
+
+            def _sources(a: str) -> dict:
+                if a not in cache:
+                    cache[a] = ingest.load_sources(a)
+                return cache[a]
+
+            unavailable = []
+            missing = []
+            for p, r in eps:
+                if not _norm_ep(r):
+                    continue
+                a = _seg_anime(p)
+                try:
+                    sources = _sources(a)
+                except SystemExit as e:
+                    unavailable.append(str(e))
+                    continue
+                if _norm_ep(r) not in sources:
+                    missing.append((p, r, a, sources))
+            if unavailable:
                 add("集号在素材库", False,
-                    f"跳过不可判定：{e}（S9 跳过不是通过）")
+                    f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
+            elif missing:
+                msgs = []
+                for p, r, a, sources in missing:
+                    norm = _norm_ep(r)
+                    season = norm[1:3]
+                    same = sorted(k for k in sources
+                                  if k.startswith(f"S{season}"))
+                    if same:
+                        msgs.append(
+                            f"段{p}「{r}」：《{a}》S{season} 季有 "
+                            f"{len(same)} 集入库（如 {same[0]}），唯独没有 {norm}"
+                            f"——多半是集号写错；确定没写错就是这集没入库，"
+                            f"补 `python -m pipeline.ingest phase0`")
+                    else:
+                        msgs.append(
+                            f"段{p}「{r}」：《{a}》S{season} 季在素材库里一集都没有"
+                            f"——不是集号写错，是整季没入库，"
+                            f"先跑 `python -m pipeline.ingest phase0`")
+                add("集号在素材库", False, "；".join(msgs[:3]))
             else:
-                missing = [(p, r) for p, r in eps
-                           if _norm_ep(r) and _norm_ep(r) not in sources]
-                if missing:
-                    msgs = []
-                    for p, r in missing:
-                        norm = _norm_ep(r)
-                        season = norm[1:3]
-                        same = sorted(k for k in sources
-                                      if k.startswith(f"S{season}"))
-                        if same:
-                            msgs.append(
-                                f"段{p}「{r}」：《{anime}》S{season} 季有 "
-                                f"{len(same)} 集入库（如 {same[0]}），唯独没有 {norm}"
-                                f"——多半是集号写错；确定没写错就是这集没入库，"
-                                f"补 `python -m pipeline.ingest phase0`")
-                        else:
-                            msgs.append(
-                                f"段{p}「{r}」：S{season} 季在素材库里一集都没有"
-                                f"——不是集号写错，是整季没入库，"
-                                f"先跑 `python -m pipeline.ingest phase0`")
-                    add("集号在素材库", False, "；".join(msgs[:3]))
-                else:
-                    add("集号在素材库", True, f"{len(eps)} 段集号都在素材库里")
+                add("集号在素材库", True, f"{len(eps)} 段集号都在素材库里")
 
     # 锚点（ADR-0008，2026-08-27 加）：排片主通道的剧情时间码，三段递进——
     # 字段在不在 → 格式对不对 → 指向的集与时间码真不真（素材库）。
@@ -442,21 +469,28 @@ def run(path: Path) -> list[Check]:
             if not raw[1:].strip(" 　（）()"):
                 no_reason.append(label)     # ADR-0008：「无」必须附理由，不许留空蒙混
             continue
-        m = ANCHOR_TC.fullmatch(raw)
+        m = anc_match.get(label)            # 上面已按同一条正则解析过，口径一致
         if not m:
             bad_fmt.append((label, raw))
             continue
-        t0 = int(m.group(3)) * 60 + float(m.group(4))
-        t1 = (int(m.group(5)) * 60 + float(m.group(6))) if m.group(5) else None
+        # 番名前缀（2026-09-06）：写了就必须在 01-topic.md 的番表里——
+        # 番名写错 = 画面指到另一部番的同季同集，全程不报错
+        prefix = m.group("anime")
+        if prefix and animes and prefix.strip() not in animes:
+            bad_fmt.append((label, f"{raw}（《{prefix.strip()}》不在 01-topic.md 番表："
+                                   f"{'、'.join(animes)}）"))
+            continue
+        t0 = int(m.group(4)) * 60 + float(m.group(5))
+        t1 = (int(m.group(6)) * 60 + float(m.group(7))) if m.group(6) else None
         if t1 is not None and t1 <= t0:
             bad_fmt.append((label, f"{raw}（终点不在起点之后）"))
             continue
-        akey = f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
+        akey = f"S{int(m.group(2)):02d}E{int(m.group(3)):02d}"
         ep_raw = ep_by_label.get(label)
         if ep_raw and _norm_ep(ep_raw) not in (None, akey):
             bad_fmt.append((label, f"{raw}（与集号 {ep_raw} 不是同一集）"))
             continue
-        anchors_tc.append((label, akey, t0, t1))
+        anchors_tc.append((label, prefix.strip() if prefix else None, akey, t0, t1))
     problems = [f"段{l}「{r}」" for l, r in bad_fmt] + \
                [f"段{l} 写「无」没说理由" for l in no_reason]
     add("锚点格式", not problems,
@@ -464,23 +498,31 @@ def run(path: Path) -> list[Check]:
         else f"{len(anchors_tc)} 段时间码锚点，格式全对")
 
     if anchors_tc:
-        anime = bgm.anime_of(path.parent)
-        if not anime:
+        if not animes:
             add("锚点指向素材", False,
                 "跳过不可判定：01-topic.md 没写「番:」字段，读不到番名（S9 跳过不是通过）")
         else:
-            try:
-                from . import ingest  # 延迟 import：与上方「集号在素材库」同规矩
-                sources = ingest.load_sources(anime)
-            except SystemExit as e:
-                add("锚点指向素材", False, f"跳过不可判定：{e}（S9 跳过不是通过）")
+            from . import ingest  # 延迟 import：与上方「集号在素材库」同规矩
+            bad_src, unavailable = [], []
+            cache: dict[str, dict] = {}
+            for l, a, k, t0, t1 in anchors_tc:
+                pool = a or anime_main       # 未写番名归主番
+                try:
+                    if pool not in cache:
+                        cache[pool] = ingest.load_sources(pool)
+                    sources = cache[pool]
+                except SystemExit as e:
+                    unavailable.append(str(e))
+                    continue
+                if k not in sources:
+                    bad_src.append(f"段{l}「{pool} {k}」集未入库")
+                elif t0 >= sources[k]["duration"]:
+                    bad_src.append(f"段{l}「{pool} {k} {int(t0 // 60)}:{int(t0 % 60):02d}」"
+                                   f"超出片长（{sources[k]['duration']:.0f}s）")
+            if unavailable:
+                add("锚点指向素材", False,
+                    f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
             else:
-                bad_src = [f"段{l}「{k}」集未入库" for l, k, t0, t1 in anchors_tc
-                           if k not in sources]
-                bad_src += [f"段{l}「{k} {int(t0 // 60)}:{int(t0 % 60):02d}」超出片长"
-                            f"（{sources[k]['duration']:.0f}s）"
-                            for l, k, t0, t1 in anchors_tc
-                            if k in sources and t0 >= sources[k]["duration"]]
                 add("锚点指向素材", not bad_src,
                     "；".join(bad_src[:4]) if bad_src
                     else f"{len(anchors_tc)} 段锚点都落在已入库集的片长内")
@@ -554,7 +596,7 @@ def run(path: Path) -> list[Check]:
     # **不再从正文找「第X集」字样**——正文要不要点明集数、剧情对不对、
     # 文字像不像人，是 02.5 人审的活，机检逼正文写集数 = 让机器决定内容（2026-08-12 改）。
     anchor_segs = ({l for l, r in parse_episodes(text) if _norm_ep(r)}
-                   | {l for l, _, _, _ in anchors_tc})
+                   | {l for l, *_ in anchors_tc})
     add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchor_segs) >= MIN_ANCHOR,
         f"{len(anchor_segs)}/{len(vo)} 段带集号或时间码锚点"
         if anchor_segs else "0 段，全篇没有画面集号/锚点")
