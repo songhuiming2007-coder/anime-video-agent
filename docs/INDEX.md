@@ -34,6 +34,7 @@
 | [ADR-0009](adr/0009-rvc-pilot-failure.md) | RVC 两段式音色迁移 pilot 失败，停止投入 | 已否决 | — |
 | [ADR-0010](adr/0010-cross-anime-and-sp-assets.md) | 跨番混剪与非传统素材（MV/Live/SP）摄入与排片规范 | 已采纳已实现 | — |
 | [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md) | SP 特典集号落地、单段多锚点蒙太奇与锚点段尾帧定格 | 已采纳已实现 | — |
+| [ADR-0012](adr/0012-multimodal-shot-gallery.md) | 镜头代表帧画廊与多模态视觉阅卷回填 | 已采纳已实现 | — |
 
 ---
 
