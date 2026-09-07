@@ -198,3 +198,48 @@ class TestThreshold:
         shots.paths._CONF = None
         with pytest.raises(SystemExit):
             shots.threshold("春物")
+
+
+class TestThresholdPerKey:
+    """扁平集键覆盖（2026-09-07，EGOIST 企划池）：`"<番>/<集键>"` 优先，回退 `"<番>"`。
+    SP 池里 MV/Live/微动共用番名键，load() 对账不能因换键把已建表判死。"""
+
+    @pytest.fixture
+    def conf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(shots.paths, "_CONF", None)
+        (tmp_path / "project.json").write_text(json.dumps(
+            {"visual": {"scene_threshold": {"EGOIST": 10.0, "EGOIST/SP04": 25.0,
+                                            "春物": 10.0}}}),
+            encoding="utf-8")
+        return tmp_path
+
+    def test_集键覆盖命中(self, conf):
+        assert shots.threshold("EGOIST", "SP04") == 25.0
+
+    def test_无覆盖回退番键(self, conf):
+        assert shots.threshold("EGOIST", "SP01") == 10.0
+        assert shots.threshold("EGOIST") == 10.0
+
+    def test_番键缺失照常失败(self, conf):
+        with pytest.raises(SystemExit):
+            shots.threshold("甲铁城", "SP01")
+
+    def test_老番标量配置零漂移(self, conf):
+        assert shots.threshold("春物") == 10.0
+        assert shots.threshold("春物", "S01E01") == 10.0   # 传了集键也回退到番键
+
+    def test_load对账按覆盖值(self, conf, tmp_path):
+        # SP04 表内记 25.0：按覆盖值放行；番键换成别的数也不许判死这张表
+        d = {"meta": {"scene_threshold": 25.0, "min_shot": shots.min_shot()},
+             "shots": []}
+        (tmp_path / "EGOIST_SP04.json").write_text(json.dumps(d), encoding="utf-8")
+        assert shots.load("EGOIST", "SP04", out_dir=tmp_path)["meta"]["scene_threshold"] == 25.0
+
+    def test_load对账按覆盖值拦截(self, conf, tmp_path):
+        # 表内值与覆盖值不一致照旧判死——覆盖只改变「拿什么对」，不放松「对不对」
+        d = {"meta": {"scene_threshold": 10.0, "min_shot": shots.min_shot()},
+             "shots": []}
+        (tmp_path / "EGOIST_SP04.json").write_text(json.dumps(d), encoding="utf-8")
+        with pytest.raises(SystemExit):
+            shots.load("EGOIST", "SP04", out_dir=tmp_path)
