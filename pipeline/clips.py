@@ -481,7 +481,7 @@ def size(chosen: list[dict], need: float,
 # 单独叶子模块，review/render 的纯文件校验不因 import 本模块（连带
 # sentence_transformers）而背上 ML 依赖。本模块的 `--refit` 与 size() 语义
 # 从那里 import。
-from .align import SEG_TOL, refit, verify_alignment  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` 不改名）
+from .align import REFIT_MIN_CLIP, SEG_TOL, refit, verify_alignment, verify_script_vo_hash  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` 不改名）
 
 
 def _allocate(live, by_index, sources, anime, quota, pre=()):
@@ -745,12 +745,15 @@ def _rescue_starved(live: list[dict], vecs, units, pres) -> bool:
 
 
 def run(episode: Path, index_dir: Path = INDEX_DIR,
-        anime: str | None = None) -> Path:
+        anime: str | None = None, force: bool = False) -> Path:
     script = episode / "02-script.md"
     manifest = episode / "03-audio" / "manifest.json"
     for f in (script, manifest):
         if not f.exists():
             raise SystemExit(f"FAIL 缺 {f}")
+
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+    verify_script_vo_hash(script, manifest_data, force=force)
 
     animes = [anime] if anime else bgm.animes_of(episode)
     if not animes and paths.conf("anime.default"):
@@ -770,7 +773,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             if a["anime"] and a["anime"] not in pools:
                 pools.append(a["anime"])
     multi = len(pools) > 1
-    audio = json.loads(manifest.read_text(encoding="utf-8"))["segments"]
+    audio = manifest_data["segments"]
     if len(shots) != len(audio):
         raise SystemExit(
             f"FAIL 稿件 {len(shots)} 段、配音 {len(audio)} 段，对不上。"
@@ -998,6 +1001,8 @@ def main() -> int:
                      help="人审改过 start/source 之后，把每段 dur 重排到满足段级不变量。"
                           "只读写 04-clips.json，不碰检索——别跟不带 --refit 的正常调用搞混，"
                           "后者会重新检索并覆盖人改结果")
+    ap.add_argument("--force", action="store_true",
+                     help="跳过 02-script.md 台词哈希与 03-audio 配音的因果一致性检查")
     a = ap.parse_args()
     paths.require_data()
 
@@ -1009,7 +1014,11 @@ def main() -> int:
         if not manifest_path.exists():
             raise SystemExit(f"FAIL 缺 {manifest_path}")
         data = json.loads(src.read_text(encoding="utf-8"))
-        audio = json.loads(manifest_path.read_text(encoding="utf-8"))["segments"]
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        script_path = a.episode / "02-script.md"
+        if script_path.exists():
+            verify_script_vo_hash(script_path, manifest_data, force=a.force)
+        audio = manifest_data["segments"]
         # 跨番产物（2026-09-06 起带 animes 列表）按复合键加载；旧单番产物没有
         # animes 字段，退回顶层 anime 单番——旧文件不用手工迁移
         animes = data.get("animes") or [data["anime"]]
@@ -1028,7 +1037,7 @@ def main() -> int:
         print(f"→ {src}")
         return 0
 
-    dest = run(a.episode, a.index_dir, a.anime)
+    dest = run(a.episode, a.index_dir, a.anime, force=a.force)
     data = json.loads(dest.read_text(encoding="utf-8"))
     segs = data["segments"]
 

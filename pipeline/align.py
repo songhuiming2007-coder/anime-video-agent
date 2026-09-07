@@ -13,6 +13,52 @@ JSON 校验、render 的这道闸也不碰检索——把校验挂在这两个�
 
 from __future__ import annotations
 
+import hashlib
+import re
+from pathlib import Path
+
+# 台词哈希因果防线（Stale Artifact Guard）：
+# 保证 04-clips 与 06-render 消费的配音资产与 02-script.md 的配音台词保持因果一致。
+def compute_script_vo_hash(script_path: Path) -> str:
+    """计算 02-script.md 中所有配音台词纯文本的 SHA-256 前 16 位。
+
+    只提取配音台词文本，忽略锚点、画面、注释及微调说明，保证改画面不误伤配音有效性。
+    """
+    text = script_path.read_text(encoding="utf-8")
+    vo_lines = []
+    parts = re.split(r"^##\s*段落\s*\S+\s*$", text, flags=re.M)
+    for block in parts[1::2]:
+        m = re.search(r"^配音[：:]\s*(.+)$", block, re.M)
+        if m:
+            vo_lines.append(m.group(1).strip())
+    if not vo_lines:
+        vo_lines = [m.group(1).strip() for m in re.finditer(r"^配音[：:]\s*(.+)$", text, re.M)]
+    combined = "\n".join(vo_lines)
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+
+
+def verify_script_vo_hash(script_path: Path, manifest_data: dict, force: bool = False) -> None:
+    """因果守卫：校验 02-script.md 当前配音哈希与 manifest.json 记录的哈希是否一致。
+
+    若不一致且未传 force，抛出显式 SystemExit 阻断流水线。
+    若 manifest_data 中未记录 script_vo_hash（旧版本产物），为保证向后兼容，放行。
+    """
+    if force:
+        return
+    manifest_hash = manifest_data.get("script_vo_hash")
+    if not manifest_hash:
+        return
+    current_hash = compute_script_vo_hash(script_path)
+    if current_hash != manifest_hash:
+        ep_dir = script_path.parent
+        raise SystemExit(
+            f"FAIL: 02-script.md 配音台词已被修改（Hash 校验不匹配），但 03-audio 配音尚未更新！\n"
+            f"当前台词哈希: {current_hash} != 配音依据哈希: {manifest_hash}\n"
+            f"请先重新生成配音：uv run python -m pipeline.tts \"{ep_dir}\"\n"
+            f"（若确认无需重新配音，可传 --force 跳过检查）"
+        )
+
+
 # 段级不变量容差。为什么是 0.05：clips.size() 自己的接受线就是 drift ≤ 0.05
 # 判 ok（见 size() 末尾 return 分支），机器产物满足 |Σdur − need| ≤ 0.05；而
 # 人手改 start/dur 造成的漂移通常 ≥ 0.1s，两边分得开。收紧到 0.01 会误伤机器

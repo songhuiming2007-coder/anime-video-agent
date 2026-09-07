@@ -325,3 +325,63 @@ class TestBgmBedEntry:
     def test_无plan返回None(self, tmp_path: Path):
         from pipeline.render import _bgm_bed
         assert _bgm_bed(None, 100.0, tmp_path) is None
+
+
+class TestRenderStaleArtifactGuard:
+    """渲染终极因果防线（Stale Artifact Guard）：
+    若 02-script.md 台词被修改但 03-audio 未更新，render 拒绝渲染，防盲目压制。
+    """
+
+    def test_台词不匹配拒绝渲染(self, tmp_path: Path):
+        import json
+        from pipeline.align import compute_script_vo_hash
+        from pipeline import render
+
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        script_file = ep / "02-script.md"
+        script_file.write_text("## 段落 1\n\n配音：原始台词。\n", encoding="utf-8")
+        h = compute_script_vo_hash(script_file)
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps({"script_vo_hash": h, "segments": [{"index": 1, "duration": 5.0}]}),
+            encoding="utf-8"
+        )
+        (ep / "04-clips.approved.json").write_text(
+            json.dumps({"segments": [{"index": 1, "status": "ok", "clips": []}]}),
+            encoding="utf-8"
+        )
+
+        # 篡改台词
+        script_file.write_text("## 段落 1\n\n配音：改了台词未更配音。\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit, match="配音台词已被修改.*Hash 校验不匹配"):
+            render.run(ep)
+
+    def test_传入force可跳过渲染哈希校验(self, tmp_path: Path, monkeypatch):
+        import json
+        from pipeline.align import compute_script_vo_hash
+        from pipeline import render
+
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        script_file = ep / "02-script.md"
+        script_file.write_text("## 段落 1\n\n配音：原始台词。\n", encoding="utf-8")
+        h = compute_script_vo_hash(script_file)
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps({"script_vo_hash": h, "segments": [{"index": 1, "duration": 5.0}]}),
+            encoding="utf-8"
+        )
+        (ep / "04-clips.approved.json").write_text(
+            json.dumps({"segments": [{"index": 1, "status": "ok", "clips": []}]}),
+            encoding="utf-8"
+        )
+
+        # 篡改台词
+        script_file.write_text("## 段落 1\n\n配音：改了台词未更配音。\n", encoding="utf-8")
+
+        # 传入 force=True 会跳过哈希检查，继续走到后续段落状态或时长校验
+        # 这里没有 clips 会报 status 不是 ok 或 clips 为空，证明哈希校验已被放行
+        with pytest.raises(SystemExit) as exc_info:
+            render.run(ep, force=True)
+        assert "Hash 校验不匹配" not in str(exc_info.value)
+

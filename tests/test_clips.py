@@ -993,3 +993,73 @@ class TestAnchorIntegration:
     def test_全角波浪号当区间分隔符(self):
         a = c._parse_anchor("S01E01 17:50～18:20", 1)
         assert (a["t0"], a["t1"]) == (1070.0, 1100.0)
+
+
+class TestStaleArtifactGuard:
+    """台词哈希因果防线（Stale Artifact Guard）：
+    修改 02-script.md 的配音台词后必须重跑 tts，否则 clips 拒绝排片，防音画错位。
+    改画面锚点或注释不改台词时，哈希不变，不误伤。
+    """
+
+    def _setup_episode(self, tmp_path, script_text, with_hash=True):
+        from pipeline.align import compute_script_vo_hash
+        import json
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True, exist_ok=True)
+        script_file = ep / "02-script.md"
+        script_file.write_text(script_text, encoding="utf-8")
+        manifest_data = {
+            "segments": [{"index": 1, "duration": 8.0}],
+        }
+        if with_hash:
+            manifest_data["script_vo_hash"] = compute_script_vo_hash(script_file)
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps(manifest_data), encoding="utf-8")
+        return ep
+
+    def _mock_pipeline(self, monkeypatch):
+        from pipeline import shots as sh
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/x/e01.mkv", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda d, a: (None, None))
+        monkeypatch.setattr(sh, "load", lambda a, k: {
+            "meta": {"scene_threshold": 10.0, "min_shot": 0.5},
+            "shots": [{"start": 0.0, "end": 50.0, "dur": 50.0, "rep": 25.0}]})
+
+    def test_台词哈希匹配正常排片(self, tmp_path, monkeypatch):
+        script = "## 段落 1\n\n配音：这是原始台词。\n\n画面：\n  锚点: S01E01 00:12\n"
+        ep = self._setup_episode(tmp_path, script, with_hash=True)
+        self._mock_pipeline(monkeypatch)
+        dest = c.run(ep, anime="番")
+        assert dest.exists()
+
+    def test_篡改台词未更配音抛异常拒绝执行(self, tmp_path, monkeypatch):
+        script_orig = "## 段落 1\n\n配音：这是原始台词。\n\n画面：\n  锚点: S01E01 00:12\n"
+        ep = self._setup_episode(tmp_path, script_orig, with_hash=True)
+        # 模拟人类改了台词但没重跑 tts
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：这是篡改后的新台词。\n\n画面：\n  锚点: S01E01 00:12\n",
+            encoding="utf-8")
+        with pytest.raises(SystemExit, match="配音台词已被修改.*Hash 校验不匹配"):
+            c.run(ep, anime="番")
+
+    def test_仅修改锚点时间码哈希不变不误伤(self, tmp_path, monkeypatch):
+        script_orig = "## 段落 1\n\n配音：这是原始台词。\n\n画面：\n  锚点: S01E01 00:12\n"
+        ep = self._setup_episode(tmp_path, script_orig, with_hash=True)
+        # 仅改锚点时间码，台词未动
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：这是原始台词。\n\n画面：\n  锚点: S01E01 00:20\n",
+            encoding="utf-8")
+        self._mock_pipeline(monkeypatch)
+        dest = c.run(ep, anime="番")
+        assert dest.exists()
+
+    def test_传入force参数可跳过因果校验(self, tmp_path, monkeypatch):
+        script_orig = "## 段落 1\n\n配音：这是原始台词。\n\n画面：\n  锚点: S01E01 00:12\n"
+        ep = self._setup_episode(tmp_path, script_orig, with_hash=True)
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：篡改了台词。\n\n画面：\n  锚点: S01E01 00:12\n",
+            encoding="utf-8")
+        self._mock_pipeline(monkeypatch)
+        dest = c.run(ep, anime="番", force=True)
+        assert dest.exists()
+

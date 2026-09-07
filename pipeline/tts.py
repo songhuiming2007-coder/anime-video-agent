@@ -38,6 +38,7 @@ from pathlib import Path
 from pypinyin import Style, pinyin
 
 from . import paths  # 必须在任何 HF 库之前，把模型缓存钉到 SSD
+from .align import compute_script_vo_hash
 from .align import verify_alignment   # 叶子模块，无环
 from .qc import episode_duration_band
 
@@ -1058,6 +1059,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
     engine: Engine | None = None
     takes: list[Take] = []
     t0 = time.perf_counter()
+    vo_hash = compute_script_vo_hash(script)
     def _save_manifest():
         total = sum(t.duration for t in takes)
         # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
@@ -1066,6 +1068,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
         tmp.write_text(
             json.dumps(
                 {
+                    "script_vo_hash": vo_hash,
                     **_voice_fingerprint(cfg),
                     "total_duration": round(total, 3),
                     "segments": [asdict(t) for t in takes],
