@@ -1290,6 +1290,30 @@
         "lufs": -6.0,
         "onset": 2.2,
         "vocal": true
+      },
+      "最後の花弁 (The meaning of love)": {
+        "path": "data/library/bgm/EGOIST/最後の花弁 (The meaning of love).flac",
+        "from": "2020 数字单曲 完整版（2026-09-07 入库）",
+        "dur": 231.17,
+        "lufs": -7.9,
+        "onset": 5.6,
+        "vocal": true
+      },
+      "BANG!!!": {
+        "path": "data/library/bgm/EGOIST/BANG!!!.flac",
+        "from": "VVCL-1947 迷你专 tr.01 完整版（2026-09-07 入库）",
+        "dur": 196.31,
+        "lufs": -3.7,
+        "onset": 1.5,
+        "vocal": true
+      },
+      "当事者": {
+        "path": "data/library/bgm/EGOIST/当事者.flac",
+        "from": "VVCL-2250 终曲单曲 tr.01 完整版（PSYCHO-PASS PROVIDENCE ED，2026-09-07 入库）",
+        "dur": 241.97,
+        "lufs": -6.7,
+        "onset": 3.3,
+        "vocal": true
       }
     },
     "slots": {
