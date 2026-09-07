@@ -83,20 +83,49 @@ mp4、封面图和标题候选。中间的写稿、配音、找素材、剪辑�
 语音部分只跑 Apple Silicon 是硬限制。`config/voice.json` 留了 `engine` 字段作为接缝，
 目前有两种 mlx 实现：IndexTTS-1.5（纯中文）与 Qwen3-TTS 1.7B（多语种，2026-08-15 起为默认）。
 
-## 2.2 coding agent 是前置要求，不是可选项
+## 2.2 Coding Agent 是前置要求，默认宿主为 Pi（特化生产环境）
 
-**这个仓库的预期用法是 clone 下来交给 coding agent 驱动**，不是一个人对着终端敲九条命令。
-仓库里有两份东西专门写给 agent 看：
+**这个仓库的预期用法是交给成熟的 Coding Agent 驱动，而不是人类对着终端一条一条手敲命令。**
 
-| 文件 | 给 agent 的内容 |
+### 核心架构：Agent-Native 生产环境（不自造 Harness，特化成熟 Agent）
+
+本项目**坚决不重复造轮子去实现专用的 Agent Runtime 或 Harness**。现代通用 Coding Agent 的核心能力（文件系统操作、Shell 执行、代码编辑、多模态看图、长上下文与推理自愈循环）已经高度成熟。
+
+项目的真正价值在于：**把成熟的通用 Coding Agent（默认推荐并经过大量实战验证的是 [Pi](https://github.com/earendil-works/pi-coding-agent)）特化为专用的视频内容生产环境**：
+
+```text
+       人类总监 / 导演 (Editorial Intent)
+                 │
+                 ▼
+       ┌──────────────────┐
+       │     成熟 Agent    │  （默认: Pi，模型推荐 Gemini 3.8 / Kimi K3）
+       │  (Harness Layer) │  负责：选题意图理解、文案写作、异常分析、视觉阅卷
+       └─────────┬────────┘
+                 │
+                 ▼
+       ┌──────────────────┐
+       │ 领域特化环境配置   │  System Prompt (AGENTS.md) + 技能库 (skills/)
+       │ (Domain Context) │  四阶段人工停机点 + SSOT 唯一事实来源 + 质检守卫
+       └─────────┬────────┘
+                 │
+                 ▼
+       ┌──────────────────┐
+       │  本地确定性流水线 │  纯 Python CLI (pipeline/) + 本地轻量 AI 模型
+       │  (Deterministic) │  确定性时间码、音画同源切片、LUFS 侧链、FFmpeg 压制
+       └──────────────────┘
+```
+
+- **分工哲学**：`Agent is probabilistic; Pipeline is deterministic.`（Agent 负责概率性的内容创作、审美判断与故障自愈；Pipeline 负责确定性的数据计算、音视频切片与硬性门禁）。
+- **实战验证**：本系统已基于 **Pi** 完成了 15 期全网实际发布的动漫视频，最长单期达 14 分钟，抖音/B站平均完播率 20–30%。
+- **正交性保障**：Pipeline 保持为零宿主绑定的纯 Python CLI，未来亦可在 Claude Code、Codex 等其他 Coding Agent 中平滑驱动。
+
+仓库中为 Agent 提供的专属基础设施：
+
+| 文件 / 目录 | 给 Agent 的内容与职责 |
 |---|---|
-| `CLAUDE.md` | 工程约定：哪些判据不许绕过、哪些失败必须报出来、什么时候该停下来问人 |
-| `skills/write-script/` | 写稿指令：五种题材骨架与判据、节奏量化、`查询` 字段怎么写才检索得到 |
-
-各步骤对 agent 的依赖程度不同：**02 写稿没有 agent 不行**（没有任何脚本会生成稿子）；
-08 挑封面候选和写标题可以没有 agent，但会退化成机械铺开取样、不一定切题；其余各步都是
-纯脚本。对 agent 的能力要求有两条是实的：**能跑 shell**、**能读图**（第 08 步要看 6×5
-的联系表认人）。不能读图的 agent 仍能跑完整条流水线，只是封面挑选退化成机械取样。
+| `AGENTS.md` / `CLAUDE.md` | 常驻工程约定：六条红线、四阶段人工停机点、台词因果哈希、失败必须显式抛出 |
+| `skills/write-script/` | 写稿技能：五种题材骨架、8–12 秒微单元标准、气口起伏与四分法素材映射 |
+| `pipeline/` | 确定性执行工具箱：每个模块独立运行、自解释输入输出，支持增量自愈 |
 
 ## 2.3 需要的模型（合计约 4G）
 
