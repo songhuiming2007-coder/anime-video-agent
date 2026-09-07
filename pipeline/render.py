@@ -146,7 +146,7 @@ def cut(clip: dict, dest: Path) -> None:
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
     if ext > 0:
-        vf += f",tpad=stop_mode=clone:stop={ext}"
+        vf += f",tpad=stop_mode=clone:stop_duration={ext}"
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
          "-ss", f"{clip['start']:.3f}", "-i", str(src), "-t", f"{want + ext:.3f}",
@@ -810,18 +810,7 @@ def _maybe_music_plan(episode: Path, manifest: dict) -> dict | None:
     script = episode / "02-script.md"
     if not script.exists() or not music_mod.parse_script_music(script):
         return None
-    anime = bgm.anime_of(episode)
-    if anime is None:
-        raise SystemExit(f"FAIL 试听型稿子需要 01-topic.md 的 `番: `字段")
-    # 跨番/企划池（2026-09-06）：曲目表按池序合并，同名牌前面的池赢
-    # （企划池 EGOIST 排最前，它的版本优先于番剧 OST 池里的同名伴奏）
-    tracks: dict = {}
-    for pool in reversed(list(dict.fromkeys([anime] + bgm.animes_of(episode)))):
-        tracks.update(bgm.load(pool).get("tracks", {}))
-    if not tracks:
-        raise SystemExit(
-            f"FAIL 试听型稿子需要「{anime}」的曲库（config/bgm.json 的 tracks）")
-    block = {"tracks": tracks}
+    block = music_mod.load_tracks_multi(episode)
     return music_mod.build_timeline(episode, manifest, block)
 
 

@@ -139,6 +139,24 @@ def _track_for(title: str, bgm: dict) -> dict:
     return rec
 
 
+def load_tracks_multi(episode: Path) -> dict:
+    """跨番/企划池加载曲目表（同名排前面的池赢）。
+
+    单番期只加载主番池；多番或企划志按池序合并，排前面的池优先。
+    """
+    from . import bgm
+    anime = bgm.anime_of(episode)
+    if anime is None:
+        raise SystemExit("FAIL 试听型稿子需要 01-topic.md 的 `番: `字段")
+    tracks: dict = {}
+    pools = list(dict.fromkeys([anime] + bgm.animes_of(episode)))
+    for pool in reversed(pools):
+        tracks.update(bgm.load(pool).get("tracks", {}))
+    if not tracks:
+        raise SystemExit(f"FAIL 试听型稿子需要「{anime}」的曲库（config/bgm.json 的 tracks）")
+    return {"tracks": tracks}
+
+
 def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
     """唯一入口：稿子标题顺序 → 成片时间轴 + 每曲事件序列。
 
@@ -243,7 +261,18 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             order.append(title)
         evs = track_evs.setdefault(title, [])
         # natural 从当前曲目播放位置接续：查同曲最后一个事件的曲目内终点
-        tail_t = evs[-1]["t1"] if evs else 0.0
+        # 防御：若前序事件 t1 为 None（如前序也是 natural）或已超出全长，安全判定已播完
+        rec = _track_for(title, bgm)
+        dur_all = rec["dur"]
+        if evs:
+            last_t1 = evs[-1]["t1"]
+            tail_t = dur_all if last_t1 is None else float(last_t1)
+        else:
+            tail_t = 0.0
+        if tail_t >= dur_all - 1e-6:
+            raise SystemExit(
+                f"FAIL 《{title}》在自然收尾前已经播完（已播至 {tail_t:.1f}s，"
+                f"曲目全长 {dur_all:.1f}s），无法继续播放至完整版结束")
         evs.append({"t0": tail_t, "t1": None, "vol": "natural", "at": at})
 
     # 解析曲目信息 + 修正 t1=None（曲目结束）
@@ -259,6 +288,9 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             # natural 段的曲目内终点 = 曲目结束
             if e["vol"] == "natural":
                 e["t1"] = dur_all
+            if e["t0"] >= e["t1"]:
+                raise SystemExit(
+                    f"FAIL 《{title}》的事件时间倒错或负时长：{e['t0']:.1f}s - {e['t1']:.1f}s")
             # BGM 延续事件的终点 = 曲目内起点 + 成片 BGM 段时长，**可能超出
             # 曲目全长**（2026-08-16 审计 2-13）：渲染端 `-ss t0 -t dur` 对超界
             # 静默截短，中段音乐空缺，而 render 的时长校验只查音乐床总长
@@ -273,6 +305,9 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             evs.append(e)
         tracks.append({"name": title, "path": rec["path"],
                        "lufs": rec["lufs"], "events": evs})
+
+    if not timeline:
+        raise SystemExit("FAIL 稿子没有找到任何「## 段落」或「## 音乐段」")
 
     # 成片总长：稿子时间轴末尾 + 自然收尾段（natural 在最后一个段落之后，不在 timeline 里）
     natural_end = max(

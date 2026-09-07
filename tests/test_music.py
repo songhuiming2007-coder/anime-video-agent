@@ -209,6 +209,24 @@ class TestTrackForValidation:
         with pytest.raises(SystemExit, match="不存在"):
             m._track_for("曲", bgm)
 
+
+class TestNaturalContinuationBounds:
+    """自然收尾事件边界防御（审计加固）：自然收尾若已播完当场报错，拒绝负时长。"""
+
+    def test_自然收尾前已播完当场失败(self, tmp_path: Path):
+        # 前景已播到 100s（曲目全长 100s），后续段落再请求自然收尾至结束
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 M1\n\n音乐: `满曲` 完整版 00:00-01:40\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n"
+            "音乐: `满曲` 继续播放至完整版结束\n", encoding="utf-8")
+        (tmp_path / "m.flac").touch()
+        bgm = {"tracks": {"满曲": {"path": "m.flac", "dur": 100.0, "lufs": -9.0}}}
+        manifest = {"segments": [{"index": 1, "duration": 10.0}]}
+        with pytest.raises(SystemExit, match="已经播完"):
+            m.build_timeline(tmp_path, manifest, bgm)
+
+
     def test_记录齐全照常返回(self):
         rec = {"path": "x.flac", "dur": 100.0, "lufs": -9.0}
         assert m._track_for("曲", {"tracks": {"曲": rec}}) is rec

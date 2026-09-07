@@ -242,7 +242,7 @@ def _music_plan(episode: Path) -> dict | None:
     时间轴走。黑帧映射的段落起点、静音豁免的歌尾位置也在这里拿。
     解析失败/缺前置直接报错，不静默回退（跳过不是通过）。
     """
-    from . import bgm, music
+    from . import music
     script = episode / "02-script.md"
     if not script.exists() or not music.parse_script_music(script):
         return None
@@ -250,10 +250,8 @@ def _music_plan(episode: Path) -> dict | None:
     if not mf.exists():
         raise SystemExit(f"FAIL 试听型质检需要 {mf}")
     manifest = json.loads(mf.read_text(encoding="utf-8"))
-    anime = bgm.anime_of(episode)
-    if anime is None:
-        raise SystemExit(f"FAIL 试听型质检需要 01-topic.md 的 `番: `字段")
-    return music.build_timeline(episode, manifest, bgm.load(anime))
+    block = music.load_tracks_multi(episode)
+    return music.build_timeline(episode, manifest, block)
 
 
 def check(video: Path, plan: dict | None = None,

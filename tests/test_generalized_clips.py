@@ -402,7 +402,7 @@ class TestRenderExtend:
     def test_带extend加tpad(self, monkeypatch):
         cmd = self._cut(monkeypatch, {"source": "/x.mkv", "start": 10.0,
                                       "dur": 6.0, "extend": 2.0}, out_dur=8.0)
-        assert "tpad=stop_mode=clone:stop=2.0" in cmd[cmd.index("-vf") + 1]
+        assert "tpad=stop_mode=clone:stop_duration=2.0" in cmd[cmd.index("-vf") + 1]
         assert cmd[cmd.index("-t") + 1] == "8.000"
 
     def test_不带extend零漂移(self, monkeypatch):
