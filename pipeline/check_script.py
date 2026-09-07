@@ -346,16 +346,50 @@ def parse_anchors(text: str) -> list[tuple[str, str | None]]:
     return out
 
 
+def _music_seconds(script_path: Path) -> float:
+    """计算试听型稿件中的音乐前景试听与自然收尾占用的时间（秒）。普通期返回 0.0。"""
+    try:
+        from . import music
+        blocks = music.parse_script_music(script_path)
+    except Exception:
+        return 0.0
+    if not blocks:
+        return 0.0
+    dur = sum((b.t1 - b.t0) for b in blocks if b.t1 is not None)
+    text = script_path.read_text(encoding="utf-8")
+    if "继续播放至完整版结束" in text or "播放至完整版结束" in text:
+        try:
+            from . import bgm
+            anime = bgm.anime_of(script_path.parent)
+            pools = list(dict.fromkeys(([anime] if anime else []) + bgm.animes_of(script_path.parent)))
+            for pool in pools:
+                tracks = bgm.load(pool).get("tracks", {})
+                for tr_name, meta in tracks.items():
+                    if tr_name in text and "dur" in meta:
+                        fg = next(((b.t1 - b.t0) for b in blocks if b.title == tr_name and b.t1 is not None), 0.0)
+                        dur += max(0.0, float(meta["dur"]) - fg - 90.0)
+                        break
+        except Exception:
+            dur += 240.0
+    return dur
+
+
 def run(path: Path) -> list[Check]:
     text = path.read_text(encoding="utf-8")
     vo, queries, alts = parse(text)
 
+    music_sec = _music_seconds(path)
+    music_mins = music_sec / 60.0
+
     override = episode_duration_override(path)
     if override:
         dur_lo, dur_hi = override
-        min_chars, max_chars = round(dur_lo * CPM), round(dur_hi * CPM)
+        vo_dur_lo = max(1.0, dur_lo - music_mins)
+        vo_dur_hi = max(1.0, dur_hi - music_mins)
+        min_chars, max_chars = round(vo_dur_lo * CPM), round(vo_dur_hi * CPM)
     else:
         dur_lo, dur_hi = MIN_CHARS / CPM, MAX_CHARS / CPM
+        vo_dur_lo, vo_dur_hi = dur_lo, dur_hi
         min_chars, max_chars = MIN_CHARS, MAX_CHARS
     if shrink_no_padding(path):
         min_chars = round(min_chars * SHRINK_FACTOR)   # 只降下限，上界不动
@@ -390,7 +424,10 @@ def run(path: Path) -> list[Check]:
     add(f"段落数 8–{max_segs}", 8 <= len(vo) <= max_segs, f"{len(vo)} 段{tail}")
     add(f"字数 {min_chars}–{max_chars}", min_chars <= chars <= max_chars, f"{chars} 字{tail}"
         + ("　（01-topic.md 时长目标覆盖）" if override else ""))
-    add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", dur_lo <= chars / CPM <= dur_hi, f"{chars / CPM:.1f} 分钟")
+    dur_detail = f"{chars / CPM:.1f} 分钟"
+    if music_sec > 0:
+        dur_detail += f"（口播，含试听/收尾约 {(chars / CPM) + music_mins:.1f} 分钟）"
+    add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", vo_dur_lo <= chars / CPM <= vo_dur_hi, dur_detail)
     # 每段都要有画面来源：`查询`（检索通道）或时间码 `锚点`（ADR-0008 直通通道）。
     # 锚点段不检索，不强求查询；其余段照旧每段一条。
     block_list = [(m.group(1), m.group(2)) for m in re.finditer(
