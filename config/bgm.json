@@ -1240,6 +1240,23 @@
       }
     }
   },
+  "PSYCHO-PASS": {
+    "_comment": "PSYCHO-PASS 心理测量者 BGM 库",
+    "tracks": {
+      "名前のない怪物": {
+        "path": "data/library/bgm/PSYCHO-PASS/名前のない怪物.flac",
+        "from": "SRCL-8147 单曲 tr.02 完整版（EGOIST 初回盘无损分轨，2026-09-07 入库）",
+        "dur": 314.64,
+        "lufs": -7.7,
+        "onset": 2.5,
+        "vocal": true
+      }
+    },
+    "slots": {
+      "op": null,
+      "ed": "名前のない怪物"
+    }
+  },
   "伪恋": {
     "_note": "《伪恋》TV动画原声带（菊谷知树 / 神前晓 / MONACA 担当配乐）与主题曲/角色歌伴奏，纯候选池，每期选曲人耳现选并记录在 01-topic.md 或 02-script.md 音乐段",
     "tracks": {
