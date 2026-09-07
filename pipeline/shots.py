@@ -160,13 +160,17 @@ def build(video: Path, anime: str, season: int | None, episode: int,
 
     t0 = time.perf_counter()
     cuts = scan(video)
-    shots = cut(cuts, threshold(anime), src["duration"], min_shot())
+    # 切分阈值从 meta 拿，不在此处另调一次 threshold()：两个调用点各调一次的下场
+    # 就是集键覆盖只改了 meta 的记录而实际切分仍用番键（2026-09-07 SP04 踩过，
+    # 表内记录 15.0 实际按 10.0 切）——meta 是唯一的取值点
+    m = meta(anime, season, episode, src)
+    shots = cut(cuts, m["scene_threshold"], src["duration"], min_shot())
     elapsed = time.perf_counter() - t0
 
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{anime}_{_key(season, episode)}.json"
     paths.atomic_write(dest, json.dumps({
-        "meta": meta(anime, season, episode, src),
+        "meta": m,
         # 全部候选切点（>= SCAN_THRESHOLD），供改阈值时免解码重算
         "cuts": [[round(t, 3), round(s, 3)] for t, s in cuts],
         "shots": shots,
