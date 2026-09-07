@@ -188,6 +188,7 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                     f" {_track_for(b.title, bgm)['dur']:.1f}s）")
             timeline.append({"kind": "music", "label": label,
                              "title": b.title, "t0": b.t0, "t1": t1,
+                             "dur": t1 - b.t0,
                              "after": b.after, "visual": b.visual,
                              "start": t})
             t += t1 - b.t0
