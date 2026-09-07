@@ -347,5 +347,6 @@ class TestRebuildAlsoCut:
 
     def test_时刻解析(self):
         assert shots._mmss("12:55,13:10.5") == [775.0, 790.5]
-        with pytest.raises(SystemExit):
-            shots._mmss("abc")
+        for bad in ("abc", "12", "12:", "12:abc", "12:-5", "12:55,"):
+            with pytest.raises(SystemExit):
+                shots._mmss(bad)

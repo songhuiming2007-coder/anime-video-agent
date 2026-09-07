@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import tempfile
@@ -79,15 +80,22 @@ def apply_links(pairs: list[tuple[Path, Path]]) -> tuple[int, int]:
     made = skipped = 0
     for video, sub in pairs:
         link = video.parent / f"{video.stem}.Chs&Jap.ass"
+        sub_abs = sub.resolve()
+        try:
+            # 优先使用相对目标路径（保证移动硬盘或目录整体迁移时软链不断）
+            sub_target = os.path.relpath(sub_abs, video.parent.resolve())
+        except ValueError:
+            sub_target = str(sub_abs)
+
         if link.is_symlink():
-            if link.resolve() == sub.resolve():
+            if link.resolve() == sub_abs:
                 skipped += 1
                 continue
             raise SystemExit(f"FAIL {link.name} 已存在且指向 {link.resolve()}，"
-                             f"与本次目标 {sub.name} 不符——人工处理，不覆盖")
+                             f"与本次目标 {sub_abs} 不符——人工处理，不覆盖")
         if link.exists():
             raise SystemExit(f"FAIL {link.name} 已存在且不是软链——人工处理，不覆盖")
-        link.symlink_to(sub)
+        link.symlink_to(sub_target)
         made += 1
     return made, skipped
 
@@ -150,16 +158,35 @@ def _selftest() -> int:
         _, problems3 = pair(vids, subs + [root / "[AI] X #01 (v2).ass"], v_pat, s_pat)
         assert any("重复" in p for p in problems3), problems3
 
-        # 落地 + 幂等 + 内容可读
+        # 落地 + 幂等 + 内容可读（含传相对路径时软链不成为死链）
         for f in subs:
             f.write_text("字幕", encoding="utf-8")
+        # 模拟外部传入相对路径
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(root)
+            (root / "vids").mkdir(exist_ok=True)
+            (root / "subs_dir").mkdir(exist_ok=True)
+            for v in vids:
+                (root / "vids" / v.name).touch()
+            for s in subs:
+                (root / "subs_dir" / s.name).write_text("字幕内容", encoding="utf-8")
+            rel_pairs = [(Path("vids") / v.name, Path("subs_dir") / s.name)
+                         for v, s in pairs]
+            made_rel, _ = apply_links(rel_pairs)
+            assert made_rel == 3
+            rel_link = root / "vids" / f"{vids[0].stem}.Chs&Jap.ass"
+            assert rel_link.is_symlink() and rel_link.exists() and rel_link.read_text(encoding="utf-8") == "字幕内容"
+        finally:
+            os.chdir(orig_cwd)
+
         made, skipped = apply_links(pairs)
         assert (made, skipped) == (3, 0)
         made2, skipped2 = apply_links(pairs)
         assert (made2, skipped2) == (0, 3)
         link = root / "[VCB] X [01][1080p].Chs&Jap.ass"
         assert link.is_symlink() and link.read_text(encoding="utf-8") == "字幕"
-    print("OK selftest 全过（配对/缺号/重号/幂等）")
+    print("OK selftest 全过（配对/缺号/重号/幂等/相对路径安全）")
     return 0
 
 
