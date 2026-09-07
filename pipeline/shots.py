@@ -3,6 +3,7 @@
     python -m pipeline.shots calibrate <视频>          # 定阈值，先跑这个
     python -m pipeline.shots build <视频> --anime 春物 --season 1 --episode 3
     python -m pipeline.shots frames 春物 S01E03        # 每镜头抽一张代表帧
+    python -m pipeline.shots gallery EGOIST SP05       # 出镜头画廊 HTML（看图选锚点）
 
 **检索单元是镜头，不是帧**（ADR-0003）。字幕索引的单元是「2 行滑窗 + 时间码」，
 是时间区间；视觉索引若以帧为单位，两边对不上，融合时要做区间到点的映射，凭空多一层。
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import time
@@ -178,18 +180,44 @@ def build(video: Path, anime: str, season: int | None, episode: int,
     return {"path": dest, "shots": len(shots), "cuts": len(cuts), "sec": elapsed}
 
 
-def rebuild(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
-    """阈值改了之后，在已存的候选切点上重算镜头表，不重新解码。"""
+def rebuild(anime: str, key: str, out_dir: Path = SHOTS_DIR,
+            also_cut: list[float] | None = None) -> dict:
+    """阈值改了之后，在已存的候选切点上重算镜头表，不重新解码。
+
+    **手动补刀**（2026-09-07，ADR-0012）：scdet 对「黑底缓淡出」原理性失明
+    （横滨终场消散实测：消散区分数全部低于扫描下限 3.0，调阈值无救），
+    这种人眼看准的切点用 `also_cut` 注入为强制边界（以无穷大分数混进候选，
+    照常过 min_shot 归并）。切点写进 meta.manual_cuts 留痕，后续 rebuild
+    自动重放；要撤销就删表重跑 build。手动切点只能来自看过的画面，不许脑补。
+    """
     dest = out_dir / f"{anime}_{key}.json"
     if not dest.exists():
         raise SystemExit(f"FAIL 没有 {dest}，先跑 `shots build`")
     d = json.loads(dest.read_text(encoding="utf-8"))
-    d["shots"] = cut([(t, s) for t, s in d["cuts"]], threshold(anime, key),
-                     d["meta"]["duration"], min_shot())
+    manual = sorted(set(d["meta"].get("manual_cuts", [])) | set(also_cut or ()))
+    for t in manual:
+        if not 0.0 < t < d["meta"]["duration"]:
+            raise SystemExit(f"FAIL 手动切点 {t}s 超出 {key} 片长 "
+                             f"{d['meta']['duration']:.1f}s——看表核对时刻")
+    cuts = [(t, s) for t, s in d["cuts"]] + [(t, float("inf")) for t in manual]
+    d["shots"] = cut(cuts, threshold(anime, key), d["meta"]["duration"], min_shot())
     d["meta"]["scene_threshold"] = threshold(anime, key)
     d["meta"]["min_shot"] = min_shot()
+    if manual:
+        d["meta"]["manual_cuts"] = manual
     paths.atomic_write(dest, json.dumps(d, ensure_ascii=False))
     return {"path": dest, "shots": len(d["shots"])}
+
+
+def _mmss(text: str) -> list[float]:
+    """`12:55,13:10.5` → 秒列表。时刻格式与锚点语法同源（分钟多位、秒可小数）。"""
+    out = []
+    for part in text.split(","):
+        m, _, s = part.strip().partition(":")
+        if not m.isdigit():
+            raise SystemExit(f"FAIL 切点「{part}」不是 MM:SS 格式")
+        out.append(int(m) * 60 + float(s))
+    return out
 
 
 def meta(anime: str, season: int, episode: int, src: dict) -> dict:
@@ -289,6 +317,93 @@ def frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
 def frame_path(anime: str, key: str, i: int, dest_dir: Path = FRAMES_DIR) -> Path:
     """第 i 个镜头的代表帧。编号从 1 开始（ffmpeg 的 `%05d` 从 1 开始）。"""
     return dest_dir / f"{anime}_{key}" / f"{i + 1:05d}.jpg"
+
+
+def _fmt_t(t: float) -> str:
+    """时刻 → `MM:SS.ss`（分钟三位上限，锚点语法本就允许小数秒与三位分钟）。"""
+    return f"{int(t // 60):02d}:{t % 60:05.2f}"
+
+
+def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
+            dest_dir: Path = FRAMES_DIR) -> Path:
+    """给一部素材出镜头画廊：零依赖单文件 HTML，看图选镜头、一键复制锚点行。
+
+    **图片相对路径引用，不内嵌 base64**：几百张帧内嵌会把单文件撑到几十 MB，
+    浏览器解析 DOM 都卡；相对引用 + `loading=\"lazy\"` 滚到哪加载到哪，双击即开，
+    不用起 HTTP 服务。复制文本的时间码取镜头 start 精确到小数秒——吸附正中
+    本镜头，且消除「取整落到前一镜头尾帧」的边界歧义。
+    """
+    d = load(anime, key, out_dir)
+    shots, m = d["shots"], d["meta"]
+    fr = dest_dir / f"{anime}_{key}"
+    got = len(list(fr.glob("*.jpg"))) if fr.is_dir() else 0
+    if got != len(shots):
+        raise SystemExit(
+            f"FAIL {fr} 有 {got} 张代表帧，镜头表有 {len(shots)} 个镜头——\n"
+            f"     先跑 `python -m pipeline.shots frames {anime} {key}`，"
+            f"画廊不产出裂图")
+
+    cards = []
+    # 画廊落在 out_dir，帧在 dest_dir——相对路径算出来，不许假设 frames/ 是子目录
+    rel = os.path.relpath(fr, out_dir).replace(os.sep, "/")
+    for s in shots:
+        n = s["i"] + 1
+        anchor = f"锚点: {anime} {key} {_fmt_t(s['start'])}"
+        cards.append(
+            f'<div class="card"><img loading="lazy" src="{rel}/{n:05d}.jpg" alt="#{n}">'
+            f'<div class="meta"><b>#{n}</b> {_fmt_t(s["start"])} – {_fmt_t(s["end"])}'
+            f'（{s["end"] - s["start"]:.1f}s）</div>'
+            f'<button onclick="cp(this, {json.dumps(anchor, ensure_ascii=False)})">'
+            f'复制锚点</button></div>')
+    html = _GALLERY_TPL.replace("__TITLE__", f"{anime} {key}").replace(
+        "__SUMMARY__",
+        f"{anime} {key} · {len(shots)} 个镜头 · 阈值 {m['scene_threshold']:g} · "
+        f"{Path(m['source']).name}").replace("__CARDS__", "\n".join(cards))
+    dest = out_dir / f"{anime}_{key}_gallery.html"
+    paths.atomic_write(dest, html)
+    return dest
+
+
+# 画廊模板。零依赖单文件：内联 CSS/JS，无框架无外部字体。
+# 复制走 clipboard API，`file://` 下不可用的浏览器退化到 execCommand 兜底。
+_GALLERY_TPL = """<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ · 镜头画廊</title>
+<style>
+body{background:#0f1115;color:#e8eaed;font:14px/1.5 -apple-system,"PingFang SC",sans-serif;margin:0;padding:20px}
+header{margin:0 auto 16px;max-width:1400px;color:#9aa0a6}
+header b{color:#e8eaed;font-size:18px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;max-width:1400px;margin:0 auto}
+.card{background:#1a1d24;border-radius:8px;overflow:hidden}
+.card img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
+.meta{padding:8px 10px;color:#9aa0a6;font-size:12.5px;font-variant-numeric:tabular-nums}
+.meta b{color:#e8eaed;margin-right:6px}
+button{width:100%;border:0;background:#262a33;color:#8ab4f8;padding:8px;cursor:pointer;font-size:12.5px}
+button:hover{background:#2f343f}button.ok{background:#1e3a2f;color:#81c995}
+</style></head><body>
+<header><b>__TITLE__</b> · 镜头画廊<br>__SUMMARY__</header>
+<div class="grid">
+__CARDS__
+</div>
+<script>
+function cp(btn, text) {
+  var t = btn.textContent;
+  var done = function() { btn.textContent = '\u2713 ' + text; btn.classList.add('ok');
+    setTimeout(function() { btn.textContent = t; btn.classList.remove('ok'); }, 1500); };
+  var legacy = function() {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { btn.textContent = '复制失败'; }
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(text).then(done, legacy);
+  else legacy();
+}
+</script></body></html>
+"""
 
 
 def _pct(xs: list[float], p: float) -> float:
@@ -443,11 +558,18 @@ def main() -> int:
 
     r = sub.add_parser("rebuild", help="阈值改了，在已存切点上重算，不重新解码")
     r.add_argument("--anime", default=paths.conf("anime.default"))
-    r.add_argument("--episode", required=True, help="SxxEyy")
+    r.add_argument("--episode", required=True, help="SxxEyy 或 SPxx")
+    r.add_argument("--also-cut", metavar="MM:SS[,MM:SS...]",
+                   help="手动补刀：注入人眼看准的强制切点（scdet 对黑底缓出失明时用），"
+                        "写入 meta.manual_cuts 留痕，后续 rebuild 自动重放")
 
     f = sub.add_parser("frames", help="抽代表帧，每镜头一张")
     f.add_argument("anime")
-    f.add_argument("episode", help="SxxEyy")
+    f.add_argument("episode", help="SxxEyy 或 SPxx")
+
+    g = sub.add_parser("gallery", help="出镜头画廊 HTML（看图选镜头，一键复制锚点）")
+    g.add_argument("anime")
+    g.add_argument("episode", help="SxxEyy 或 SPxx")
 
     a = ap.parse_args()
     if a.cmd in ("build", "rebuild") and not a.anime:
@@ -491,12 +613,17 @@ def main() -> int:
         return 0
 
     if a.cmd == "rebuild":
-        out = rebuild(a.anime, a.episode)
+        out = rebuild(a.anime, a.episode, also_cut=_mmss(a.also_cut) if a.also_cut else None)
         print(f"OK {out['shots']} 个镜头 → {out['path']}")
         return 0
 
-    out = frames(a.anime, a.episode)
-    print(f"OK 代表帧 → {out}")
+    if a.cmd == "frames":
+        out = frames(a.anime, a.episode)
+        print(f"OK 代表帧 → {out}")
+        return 0
+
+    out = gallery(a.anime, a.episode)
+    print(f"OK 画廊 → {out}")
     return 0
 
 

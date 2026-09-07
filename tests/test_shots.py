@@ -243,3 +243,109 @@ class TestThresholdPerKey:
         (tmp_path / "EGOIST_SP04.json").write_text(json.dumps(d), encoding="utf-8")
         with pytest.raises(SystemExit):
             shots.load("EGOIST", "SP04", out_dir=tmp_path)
+
+
+class TestGallery:
+    """镜头画廊（2026-09-07，ADR-0012）：零依赖单文件 HTML，看图选锚点。"""
+
+    @pytest.fixture
+    def lib(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "CONFIG", tmp_path / "cfg")
+        monkeypatch.setattr(shots.paths, "_CONF", None)
+        (tmp_path / "cfg").mkdir()
+        (tmp_path / "cfg" / "project.json").write_text(json.dumps(
+            {"visual": {"scene_threshold": {"EGOIST": 10.0, "EGOIST/SP05": 8.0}}}),
+            encoding="utf-8")
+        shots_dir, frames_dir = tmp_path / "shots", tmp_path / "shots" / "frames"
+        table = {"meta": {"scene_threshold": 8.0, "min_shot": shots.min_shot(),
+                          "source": "/x/SP05.mp4"},
+                 "shots": [{"i": 0, "start": 0.0, "end": 1.4, "rep": 0.7},
+                           {"i": 1, "start": 1.4, "end": 63.44, "rep": 30.0}]}
+        shots_dir.mkdir()
+        (shots_dir / "EGOIST_SP05.json").write_text(json.dumps(table), encoding="utf-8")
+        return shots_dir, frames_dir
+
+    def test_时间格式化(self):
+        assert shots._fmt_t(0.7) == "00:00.70"
+        assert shots._fmt_t(1062.04) == "17:42.04"
+        assert shots._fmt_t(6510.0) == "108:30.00"   # 三位分钟（剧场版/长 Live）
+
+    def test_生成画廊(self, lib):
+        shots_dir, frames_dir = lib
+        fr = frames_dir / "EGOIST_SP05"
+        fr.mkdir(parents=True)
+        (fr / "00001.jpg").write_bytes(b"x")
+        (fr / "00002.jpg").write_bytes(b"x")
+        dest = shots.gallery("EGOIST", "SP05", out_dir=shots_dir, dest_dir=frames_dir)
+        html = dest.read_text(encoding="utf-8")
+        assert dest.name == "EGOIST_SP05_gallery.html"
+        assert 'src="frames/EGOIST_SP05/00002.jpg"' in html       # 相对路径，非 base64
+        assert "锚点: EGOIST SP05 00:01.40" in html                # 复制文本取 start 小数秒
+        assert "00:00.00 – 00:01.40（1.4s）" in html
+        assert html.count('class="card"') == 2
+        assert "execCommand" in html                               # file:// 兜底在
+
+    def test_帧缺失报错不产出裂图(self, lib):
+        shots_dir, frames_dir = lib
+        with pytest.raises(SystemExit):
+            shots.gallery("EGOIST", "SP05", out_dir=shots_dir, dest_dir=frames_dir)
+        fr = frames_dir / "EGOIST_SP05"
+        fr.mkdir(parents=True)
+        (fr / "00001.jpg").write_bytes(b"x")                     # 只抽了一张，对不上
+        with pytest.raises(SystemExit):
+            shots.gallery("EGOIST", "SP05", out_dir=shots_dir, dest_dir=frames_dir)
+
+    def test_对账用集键覆盖值(self, lib):
+        # SP05 表内记 8.0（覆盖值）——画廊经 load() 对账，覆盖机制必须兜住
+        fr = lib[1] / "EGOIST_SP05"
+        fr.mkdir(parents=True)
+        for n in (1, 2):
+            (fr / f"{n:05d}.jpg").write_bytes(b"x")
+        assert shots.gallery("EGOIST", "SP05", out_dir=lib[0], dest_dir=lib[1]).exists()
+
+
+class TestRebuildAlsoCut:
+    """手动补刀（ADR-0012）：scdet 对黑底缓出失明，人眼看准的切点注入为强制边界。"""
+
+    @pytest.fixture
+    def lib(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "CONFIG", tmp_path / "cfg")
+        monkeypatch.setattr(shots.paths, "_CONF", None)
+        (tmp_path / "cfg").mkdir()
+        (tmp_path / "cfg" / "project.json").write_text(json.dumps(
+            {"visual": {"scene_threshold": {"EGOIST": 10.0}}}), encoding="utf-8")
+        shots_dir = tmp_path / "shots"
+        shots_dir.mkdir()
+        # 600s 片子：只有两个够分的自动切点，消散区（500s 附近）对检测失明
+        table = {"meta": {"scene_threshold": 10.0, "min_shot": shots.min_shot(),
+                          "duration": 600.0, "source": "/x/v.mp4"},
+                 "cuts": [[100.0, 12.0], [300.0, 15.0]],
+                 "shots": []}
+        (shots_dir / "EGOIST_SP05.json").write_text(json.dumps(table), encoding="utf-8")
+        return shots_dir
+
+    def _bounds(self, lib):
+        d = json.loads((lib / "EGOIST_SP05.json").read_text(encoding="utf-8"))
+        return d, [(s["start"], s["end"]) for s in d["shots"]]
+
+    def test_注入强制切点(self, lib):
+        shots.rebuild("EGOIST", "SP05", out_dir=lib, also_cut=[500.0, 520.5])
+        d, bounds = self._bounds(lib)
+        assert (500.0, 520.5) in bounds
+        assert d["meta"]["manual_cuts"] == [500.0, 520.5]     # 留痕可审计
+
+    def test_重放与幂等(self, lib):
+        shots.rebuild("EGOIST", "SP05", out_dir=lib, also_cut=[500.0])
+        shots.rebuild("EGOIST", "SP05", out_dir=lib)          # 不带参数重建
+        d, bounds = self._bounds(lib)
+        assert any(a == 500.0 for a, _ in bounds)             # 手动切点仍在
+        assert d["meta"]["manual_cuts"] == [500.0]
+
+    def test_越界时刻当场报(self, lib):
+        with pytest.raises(SystemExit):
+            shots.rebuild("EGOIST", "SP05", out_dir=lib, also_cut=[700.0])
+
+    def test_时刻解析(self):
+        assert shots._mmss("12:55,13:10.5") == [775.0, 790.5]
+        with pytest.raises(SystemExit):
+            shots._mmss("abc")
