@@ -1240,6 +1240,63 @@
       }
     }
   },
+  "EGOIST": {
+    "_comment": "EGOIST 独立企划曲库（伊藤计划三部曲、甲铁城、Fate 等全系列无损母带）",
+    "tracks": {
+      "Door": {
+        "path": "data/library/bgm/EGOIST/Door.flac",
+        "from": "GREATEST HITS 2011-2017 ALTER EGO tr.04（尸者的帝国主题曲，2026-09-07 入库）",
+        "dur": 333.51,
+        "lufs": -8.2,
+        "onset": 1.7,
+        "vocal": true
+      },
+      "Ghost of a smile": {
+        "path": "data/library/bgm/EGOIST/Ghost of a smile.flac",
+        "from": "GREATEST HITS 2011-2017 ALTER EGO tr.05（和谐主题曲，2026-09-07 入库）",
+        "dur": 324.52,
+        "lufs": -9.4,
+        "onset": 1.5,
+        "vocal": true
+      },
+      "リローデッド": {
+        "path": "data/library/bgm/EGOIST/リローデッド.flac",
+        "from": "GREATEST HITS 2011-2017 ALTER EGO tr.06（虐杀器官主题曲，2026-09-07 入库）",
+        "dur": 306.17,
+        "lufs": -5.8,
+        "onset": 3.1,
+        "vocal": true
+      },
+      "ninelie": {
+        "path": "data/library/bgm/EGOIST/ninelie.flac",
+        "from": "Aimer with chelly (EGOIST) 单曲 tr.01（甲铁城的卡巴内利 ED，2026-09-07 入库）",
+        "dur": 260.32,
+        "lufs": -8.2,
+        "onset": 3.3,
+        "vocal": true
+      },
+      "KABANERI OF THE IRON FORTRESS": {
+        "path": "data/library/bgm/EGOIST/KABANERI OF THE IRON FORTRESS.flac",
+        "from": "SRCL-9070 单曲 tr.01 完整版（甲铁城的卡巴内利 OP，2026-09-07 入库）",
+        "dur": 290.56,
+        "lufs": -5.6,
+        "onset": 2.2,
+        "vocal": true
+      },
+      "英雄 運命の詩": {
+        "path": "data/library/bgm/EGOIST/英雄 運命の詩.flac",
+        "from": "VVXX-00162 单曲 tr.01 完整版（Fate/Apocrypha OP，2026-09-07 入库）",
+        "dur": 282.13,
+        "lufs": -6.0,
+        "onset": 2.2,
+        "vocal": true
+      }
+    },
+    "slots": {
+      "op": "KABANERI OF THE IRON FORTRESS",
+      "ed": "ninelie"
+    }
+  },
   "PSYCHO-PASS": {
     "_comment": "PSYCHO-PASS 心理测量者 BGM 库",
     "tracks": {
