@@ -439,6 +439,7 @@ class Engine:
         self.ref_text = cfg.get("ref_text")
         self.lang_code = cfg.get("lang_code", "auto")
         self.seed_offset = int(cfg.get("seed_offset", 0))
+        self.segment_seeds = {str(k): int(v) for k, v in cfg.get("segment_seeds", {}).items()}
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
@@ -896,8 +897,9 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         # 参考文本没引号，回读多出「非」「匪」两个字，只算 2 处插入，
         # CER 7% 远在 20% 门槛之下，门禁照常放行，要人听出来才发现。
         tmp = dest.parent / f".{dest.stem}.{attempt}.wav"
-        engine.synthesize(speakable(seg.text), tmp, attempt,
-                          seed=attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
+        custom_seed = getattr(engine, "segment_seeds", {}).get(str(seg.label))
+        seed = custom_seed if custom_seed is not None else (attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
+        engine.synthesize(speakable(seg.text), tmp, attempt, seed=seed)
         # **裁剪要排在回读之前。** 裁掉的是首尾静音与结尾的机械声，但判据是启发式的，
         # 万一切进了句尾真实的字，只有回读能发现。放在回读之后裁就没人管了。
         # 机械声检测只对 IndexTTS 有意义（Qwen3 无此成因，80 句零触发——见 _trim_silence）。

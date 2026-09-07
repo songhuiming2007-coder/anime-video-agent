@@ -995,7 +995,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("episode", type=Path)
-    ap.add_argument("--anime", default=paths.conf("anime.default"))
+    ap.add_argument("--anime", default=None)
     ap.add_argument("--index-dir", type=Path, default=INDEX_DIR)
     ap.add_argument("--refit", action="store_true",
                      help="人审改过 start/source 之后，把每段 dur 重排到满足段级不变量。"

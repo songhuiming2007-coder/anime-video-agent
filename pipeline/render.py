@@ -101,6 +101,13 @@ def duration(path: Path) -> float:
     return float(_ffprobe(path, "format=duration").split(",")[0])
 
 
+def _fps_to_frame_time(fps_str: str) -> float:
+    if "/" in fps_str:
+        num, den = (int(x) for x in fps_str.split("/"))
+        return den / num
+    return 1.0 / float(fps_str)
+
+
 def frame_time(path: Path) -> float:
     """源片一帧多少秒。
 
@@ -157,9 +164,9 @@ def cut(clip: dict, dest: Path) -> None:
         check=True, capture_output=True,
     )
 
-    # 守卫 2：切之后，容差 = 源片一帧
+    # 守卫 2：切之后，容差 = 源片与目标输出帧率中较大者的一帧（跨帧率重采样离散量）
     got = duration(dest)
-    tol = frame_time(src)
+    tol = max(frame_time(src), _fps_to_frame_time(FPS))
     if abs(got - (want + ext)) > tol:
         raise SystemExit(
             f"FAIL 切后时长不符：{dest.name}\n"
@@ -902,10 +909,10 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
     anime = bgm.anime_of(episode)
     if anime is None:
         raise SystemExit(f"FAIL 音乐段画面需要 01-topic.md 的 `番: `字段")
-    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2})", ep_tag)
+    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2}|SP\d{1,2})", ep_tag)
     if m and m.group(1):
         prefix = m.group(1).strip()
-        declared = bgm.animes_of(episode)
+        declared = list(dict.fromkeys([anime] + bgm.animes_of(episode)))
         if declared and prefix not in declared:
             raise SystemExit(
                 f"FAIL 音乐段画面指定了《{prefix}》，但 01-topic.md 的番表是："
