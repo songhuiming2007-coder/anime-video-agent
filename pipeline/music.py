@@ -114,8 +114,12 @@ def _track_for(title: str, bgm: dict) -> dict:
     稿子写的是歌名（My Dearest），曲库键名可能带版本后缀
     （My Dearest (Album Mix)）。按前缀匹配，严格到只有一个命中。
     """
-    hits = [rec for key, rec in bgm.get("tracks", {}).items()
-            if key.startswith(title) or title.startswith(key)]
+    tracks_map = bgm.get("tracks", {})
+    if title in tracks_map:
+        hits = [tracks_map[title]]
+    else:
+        hits = [rec for key, rec in tracks_map.items()
+                if key.startswith(title) or title.startswith(key)]
     if len(hits) != 1:
         raise SystemExit(
             f"FAIL 曲库匹配「{title}」得到 {len(hits)} 个（必须恰好 1 个）")
