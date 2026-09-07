@@ -1314,6 +1314,22 @@
         "lufs": -6.7,
         "onset": 3.3,
         "vocal": true
+      },
+      "原罪の灯": {
+        "path": "data/library/bgm/EGOIST/原罪の灯.flac",
+        "from": "SRCL-8091 首专 tr.01 完整版（2012 首专开篇与 2023 横滨终幕封印曲，2026-09-07 入库）",
+        "dur": 132.5,
+        "lufs": -13.7,
+        "onset": 4.7,
+        "vocal": true
+      },
+      "Last Song": {
+        "path": "data/library/bgm/EGOIST/Last Song.flac",
+        "from": "SRCL-8810 单曲 tr.02 完整版（2015 终局绝命神曲，2026-09-07 入库）",
+        "dur": 325.59,
+        "lufs": -8.9,
+        "onset": 1.4,
+        "vocal": true
       }
     },
     "slots": {
