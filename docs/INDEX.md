@@ -9,7 +9,7 @@
 | 我想查 | 主文件 | 相关 ADR |
 |---|---|---|
 | 每期九步的命令、产物、要盯什么 | [`WORKFLOW.md`](WORKFLOW.md) | — |
-| 跨番混剪与异构 SP 特典（MV/Live/微动） | [`WORKFLOW.md`](WORKFLOW.md) | [ADR-0010](adr/0010-cross-anime-and-sp-assets.md), [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md), [ADR-0012](adr/0012-multimodal-shot-gallery.md) |
+| 跨番混剪与异构 SP 特典（MV/Live/微动） | [`WORKFLOW.md`](WORKFLOW.md) | [ADR-0010](adr/0010-cross-anime-and-sp-assets.md), [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md), [ADR-0012](adr/0012-multimodal-shot-gallery.md), [ADR-0013](adr/0013-dual-mode-clip-protocol.md) |
 | 判据 / 标准 / 为什么 / 违反程序 | [`STANDARD.md`](STANDARD.md) | — |
 | 开发顺序与闸门（先做什么、什么条件下做下一件） | [`ROADMAP.md`](ROADMAP.md) | [ADR-0003](adr/0003-visual-index-as-filter.md) |
 | 当前未解决问题 | [`issues/README.md`](issues/README.md) | 见表内「关联」列 |
@@ -36,6 +36,7 @@
 | [ADR-0010](adr/0010-cross-anime-and-sp-assets.md) | 跨番混剪与非传统素材（MV/Live/SP）摄入与排片规范 | 已采纳已实现 | — |
 | [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md) | SP 特典集号落地、单段多锚点蒙太奇与锚点段尾帧定格 | 已采纳已实现 | — |
 | [ADR-0012](adr/0012-multimodal-shot-gallery.md) | 镜头代表帧画廊与多模态视觉阅卷回填 | 已采纳已实现 | — |
+| [ADR-0013](adr/0013-dual-mode-clip-protocol.md) | 双模态片段协议（纯净画面解说 vs 音画同源试听） | 已采纳已实现 | — |
 
 ---
 
