@@ -384,7 +384,10 @@ def run(path: Path) -> list[Check]:
 
 
     tail = "（另有片尾 1 段，不计入）" if outro else ""
-    add("段落数 8–20", 8 <= len(vo) <= 20, f"{len(vo)} 段{tail}")
+    # 视听微单元模式（2026-09-07 变革）：长视频允许 8-12 秒一个微单元分镜，
+    # 避免长段落单画面拖沓。默认上限 20，有时长目标时长自适应放宽（按 8s/段）。
+    max_segs = max(paths.conf("script.max_segs", 20), int(dur_hi * 60 / 8.0)) if override else paths.conf("script.max_segs", 20)
+    add(f"段落数 8–{max_segs}", 8 <= len(vo) <= max_segs, f"{len(vo)} 段{tail}")
     add(f"字数 {min_chars}–{max_chars}", min_chars <= chars <= max_chars, f"{chars} 字{tail}"
         + ("　（01-topic.md 时长目标覆盖）" if override else ""))
     add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", dur_lo <= chars / CPM <= dur_hi, f"{chars / CPM:.1f} 分钟")
