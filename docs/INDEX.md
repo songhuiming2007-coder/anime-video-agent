@@ -9,6 +9,7 @@
 | 我想查 | 主文件 | 相关 ADR |
 |---|---|---|
 | 每期九步的命令、产物、要盯什么 | [`WORKFLOW.md`](WORKFLOW.md) | — |
+| 跨番混剪与异构 SP 特典（MV/Live/微动） | [`WORKFLOW.md`](WORKFLOW.md) | [ADR-0010](adr/0010-cross-anime-and-sp-assets.md), [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md), [ADR-0012](adr/0012-multimodal-shot-gallery.md) |
 | 判据 / 标准 / 为什么 / 违反程序 | [`STANDARD.md`](STANDARD.md) | — |
 | 开发顺序与闸门（先做什么、什么条件下做下一件） | [`ROADMAP.md`](ROADMAP.md) | [ADR-0003](adr/0003-visual-index-as-filter.md) |
 | 当前未解决问题 | [`issues/README.md`](issues/README.md) | 见表内「关联」列 |
