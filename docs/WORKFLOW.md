@@ -35,11 +35,11 @@ data/episodes/YYYY-MM-DD-<番>-<主题>/
 | 事项 | 状态 | 命令 |
 |---|---|---|
 | 片源完整性 | ✅ | `ingest intact` —— 全片解复用，约 0.9s/文件 |
-| 字幕对轴 | ✅ | `ingest verify` —— ASR 回读比对 |
-| 整季入库 | ✅ | `ingest phase0` —— 对轴 + 建索引 + 登记片源，三步合一 |
-| 语义索引 | ✅ | `subindex build` —— bge-base-zh，滑窗 2 行 |
+| 字幕对轴 | ✅ | `ingest verify` —— ASR 回读比对；跨目录异前缀字幕先跑 `tools/link_subs.py` 软链前置对齐（ADR-0012） |
+| 整季入库 | ✅ | `ingest phase0` —— 对轴 + 建索引 + 登记片源，三步合一；非番剧/SP特典走 `ingest sources --sp N`（ADR-0010/0011） |
+| 语义索引 | ✅ | `subindex build` —— bge-base-zh，滑窗 2 行（无字幕 SP 特典不建） |
 | ASR 兜底 | ✅ | 无外挂字幕时用 `mlx-whisper` 转录该文件本身 |
-| 镜头切分 | ✅ | `shots calibrate` 定阈值 → `shots build` → `shots frames`，约 2.2 分钟/集 |
+| 镜头切分 | ✅ | `shots calibrate` 定阈值 → `shots build`（SP 传 `--sp N`，支持 `<番>/<集键>` 扁平覆盖；黑底缓出失明用 `rebuild --also-cut` 补刀） → `shots frames`（抽代表帧） → `shots gallery`（出单文件画廊 HTML 看图选锚点，ADR-0012），约 2.2 分钟/集 |
 | 角色在场 | ✅ | `faces detect` → `cluster` → **人贴名** → `presence`，约 1.3 分钟/集。**已贴名的 clusters.json 不许重跑 `cluster` 覆盖**（会无声抹掉人工贴名，命令会拒绝并给指引）；要重建：`mv <番>.clusters.json <番>.clusters.json.bak` 保住贴名 → 重跑 `cluster` → `sheet` 对照新旧簇的代表脸把名字补回去。只补几集 detect 不必重跑 cluster |
 | 画面语义 | ✗ 探针没过，不建 | `vprobe scene` 跑完的结论：门槛立不住（ADR-0003 待实测 #4）。氛围段落留给人在第 05 步 |
 | 音色 | ✅ | 试音选定后写进 `config/voice.json` |
@@ -580,7 +580,7 @@ python -m pipeline.clips data/episodes/<本期>
 
 | 分镜写法 | 通道 | 排序依据 |
 |---|---|---|
-| `锚点: S01E01 17:50[-18:20]` | **剧情锚点直通**（一等公民，ADR-0008）：起点吸附含锚点的镜头切点，不检索 | 无分数——确定性时间码 |
+| `锚点: S01E01 17:50` 或 `[番] SP01 12:30` | **剧情/特典锚点直通**（一等公民，ADR-0008/0011）：起点吸附含锚点镜头切点，不检索；支持逗号/续行单段多锚点；素材自然时长不足自动尾帧定格（ok_extended ≤8s） | 无分数——确定性时间码 |
 | `锚点: 无（理由）` + `查询` | 台词检索（氛围补位） | 台词分数，门槛 0.45 |
 | `人物: 雪乃` | 台词检索 + **角色在场过滤**（过滤为空则退回不过滤的结果） | 台词分数，门槛 0.45 |
 | `场景: 黄昏的天台空镜` | **画面语义检索**，不看台词 | ✗ **当前不可用**：探针没过，写了会当场报错（见下） |

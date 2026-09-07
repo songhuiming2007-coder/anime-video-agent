@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -213,10 +214,11 @@ def _mmss(text: str) -> list[float]:
     """`12:55,13:10.5` → 秒列表。时刻格式与锚点语法同源（分钟多位、秒可小数）。"""
     out = []
     for part in text.split(","):
-        m, _, s = part.strip().partition(":")
-        if not m.isdigit():
-            raise SystemExit(f"FAIL 切点「{part}」不是 MM:SS 格式")
-        out.append(int(m) * 60 + float(s))
+        p = part.strip()
+        m = re.fullmatch(r"(\d{1,3}):(\d{2}(?:\.\d+)?)", p)
+        if not m:
+            raise SystemExit(f"FAIL 切点「{p}」不是 MM:SS 格式（如 12:55 或 13:10.5）")
+        out.append(int(m.group(1)) * 60 + float(m.group(2)))
     return out
 
 
@@ -355,12 +357,13 @@ def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
             f'（{s["end"] - s["start"]:.1f}s）</div>'
             f'<button onclick="cp(this, {json.dumps(anchor, ensure_ascii=False)})">'
             f'复制锚点</button></div>')
-    html = _GALLERY_TPL.replace("__TITLE__", f"{anime} {key}").replace(
-        "__SUMMARY__",
-        f"{anime} {key} · {len(shots)} 个镜头 · 阈值 {m['scene_threshold']:g} · "
-        f"{Path(m['source']).name}").replace("__CARDS__", "\n".join(cards))
+    safe_title = html.escape(f"{anime} {key}")
+    safe_summary = (f"{safe_title} · {len(shots)} 个镜头 · 阈值 {m['scene_threshold']:g} · "
+                    f"{html.escape(Path(m['source']).name)}")
+    page_html = _GALLERY_TPL.replace("__TITLE__", safe_title).replace(
+        "__SUMMARY__", safe_summary).replace("__CARDS__", "\n".join(cards))
     dest = out_dir / f"{anime}_{key}_gallery.html"
-    paths.atomic_write(dest, html)
+    paths.atomic_write(dest, page_html)
     return dest
 
 
