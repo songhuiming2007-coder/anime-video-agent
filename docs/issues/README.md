@@ -26,6 +26,9 @@
 | D13 | 待验证 | 对抗性审查三步流水线已实战一轮，待新番验证 | `WORKFLOW.md`「番剧笔记」 | — | 罪恶王冠大修实测有效；下一部新番从零建笔记时复盘 |
 | D18 | 待决策 | 集号 / 人物字段自觉性缺口导致错配静默发生 | `pipeline/check_script.py` | ADR-0005, ADR-0008, B1 | **2026-08-27 更新**：集号侧已由 `锚点:` 强制字段 + 集/锚点一致性机检覆盖（check_script 与 clips.parse_shots 双卡口）；`人物:` 该写没写仍无判据，保留 |
 | D19 | 待决策 | 说话人确认是全流程最不可靠环节 | `skills/write-script/SKILL.md:54` | — | 字幕 Name 字段基本不填，02 写稿侧仍无机器判据 |
+| D22 | 待决策 | 泛素材多模态漏斗检索（Top-K 候选轻量视觉意象过滤）待探针设计 | `docs/adr/0005` | B1, D1, D4, D5 | BGE embedding 字面相似≠视觉意象；需验证在 Top-10 代表帧做轻量 VLM 过滤的漏斗机制 |
+| D23 | 待决策 | 配音顺听（工序 B）人机摩擦力大，缺终端流式连播与原地纠偏工作台 | `pipeline/tts.py` | 四阶段工序卡, ADR-0006 | 34 段 wav 散装点播繁琐；需探索 `pipeline.listen <ep>` 终端交互式高亮连播与热键单句重录 |
+| D24 | 待决策 | 数百 GB 海量素材增量索引构建、代表帧缓存管理与跨挂载点迁移机制缺失 | `pipeline/ingest.py` | ADR-0012, Local-First | 素材库向 TB 级扩张，缺少全量 vs 增量 hash 变更检测与智能缓存淘汰，跨设备挂载需保证便携性 |
 | N1 | 备忘 | WD tagger 是占位死代码 | `pipeline/vindex.py:90-91` | ADR-0003 | 词表覆盖率低但故意保留以跑通路径；换真人影视时整块摘除 |
 | N2 | 备忘 | tagger general 标签落盘但无检索路径读它 | `pipeline/vindex.py:321-324` | ADR-0003 | 为第 2 层万一复活留的备用料 |
 | N4 | 备忘 | CoreML 推理路径不可用，退回 CPU | `pyproject.toml:34-36` | — | onnxruntime CoreML EP 在动漫图上报错，CPU 够用 |

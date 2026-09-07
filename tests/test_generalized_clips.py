@@ -567,3 +567,37 @@ class TestSpRegistration:
         db_path = tmp_path / "sources.json"
         ingest.register(tmp_path / "e01.mkv", "番", 1, 1, path=db_path)
         assert "S01E01" in json.loads(db_path.read_text(encoding="utf-8"))["番"]
+
+
+# ---------------------------------------------------------------- 台词哈希因果防线（Stale Artifact Guard）
+
+class TestComputeScriptVoHash:
+    """纯函数校验：只对配音台词纯文本计算哈希，改画面/注释不产生误伤。"""
+
+    def test_改画面锚点或注释不改台词哈希不变(self, tmp_path):
+        from pipeline.align import compute_script_vo_hash
+        p1 = tmp_path / "s1.md"
+        p2 = tmp_path / "s2.md"
+        p1.write_text(
+            "# 标题\n\n## 段落 1\n配音：这是台词一。\n画面:\n  锚点: S01E01 01:00\n\n"
+            "## 音乐段 M1\n音乐: `曲` 00:00-00:20\n\n"
+            "## 段落 2\n配音：这是台词二。\n画面:\n  锚点: S01E01 02:00\n",
+            encoding="utf-8"
+        )
+        p2.write_text(
+            "# 标题修改\n\n## 段落 1\n配音：这是台词一。\n画面:\n  锚点: S01E01 09:99 # 改了锚点和注释\n\n"
+            "## 音乐段 M1\n音乐: `新曲` 00:10-00:30 # 改了音乐段\n\n"
+            "## 段落 2\n配音：这是台词二。\n画面:\n  锚点: S01E02 00:00\n",
+            encoding="utf-8"
+        )
+        assert compute_script_vo_hash(p1) == compute_script_vo_hash(p2)
+
+    def test_改动配音台词任意字符哈希必变(self, tmp_path):
+        from pipeline.align import compute_script_vo_hash
+        p1 = tmp_path / "s1.md"
+        p2 = tmp_path / "s2.md"
+        p1.write_text("## 段落 1\n配音：这是原版台词。\n", encoding="utf-8")
+        p2.write_text("## 段落 1\n配音：这是新版台词。\n", encoding="utf-8")
+        assert compute_script_vo_hash(p1) != compute_script_vo_hash(p2)
+        assert len(compute_script_vo_hash(p1)) == 16
+

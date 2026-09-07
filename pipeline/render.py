@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import bgm, paths
 from .music import FOREGROUND_LUFS  # 试听型前景响度，music.py 单源
-from .align import verify_alignment   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
+from .align import verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
 # 输出规格。片源是 1920x1080 / 23.976fps / yuv420p10le，成片降到 8bit：
 # 抖音和 B 站的转码链对 10bit 支持不稳，而我们又不做调色，10bit 没有收益。
@@ -930,7 +930,7 @@ def _hhmmss_to_sec(s: str) -> float:
     return sec
 
 
-def run(episode: Path, keep: bool = False) -> Path:
+def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
     plan_path = episode / "04-clips.approved.json"
     if not plan_path.exists():
         raise SystemExit(
@@ -939,6 +939,9 @@ def run(episode: Path, keep: bool = False) -> Path:
         )
     audio_dir = episode / "03-audio"
     manifest = json.loads((audio_dir / "manifest.json").read_text(encoding="utf-8"))
+    script_path = episode / "02-script.md"
+    if script_path.exists():
+        verify_script_vo_hash(script_path, manifest, force=force)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     segments = plan["segments"]
 
@@ -1171,10 +1174,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("episode", type=Path)
     ap.add_argument("--keep", action="store_true", help="保留中间切片，便于排查")
+    ap.add_argument("--force", action="store_true",
+                     help="跳过 02-script.md 台词哈希与 03-audio 配音的因果一致性检查")
     a = ap.parse_args()
     paths.require_data()
 
-    out = run(a.episode, a.keep)
+    out = run(a.episode, a.keep, force=a.force)
     v = duration(out)
     plan = json.loads((a.episode / "04-clips.approved.json").read_text(encoding="utf-8"))
     # 审查 B7：试听型的成片基准是音乐时间轴，不是 04-clips 的段落排片
