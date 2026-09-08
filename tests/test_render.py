@@ -385,3 +385,17 @@ class TestRenderStaleArtifactGuard:
             render.run(ep, force=True)
         assert "Hash 校验不匹配" not in str(exc_info.value)
 
+
+
+def test_runs_成片不连续不合并():
+    """自然收尾：曲目内连续（94→324.5s）但成片位置隔几百秒时必须拆成两个 run——
+    合并会把 230s 收尾错摆到前景块后面，音乐床比成片短一半（皮套囚徒期实测）。"""
+    from pipeline.render import _runs
+    fg = {"t0": 61.0, "t1": 94.0, "vol": "foreground", "at": 95.9}
+    nat = {"t0": 94.0, "t1": 324.52, "vol": "natural", "at": 503.13}
+    runs = _runs([fg, nat])
+    assert len(runs) == 2
+    # 两处都连续时仍合并（第一期 M6 前景→收尾形态，行为不变）
+    fg2 = {"t0": 0.0, "t1": 10.0, "vol": "foreground", "at": 494.0}
+    nat2 = {"t0": 10.0, "t1": 272.16, "vol": "natural", "at": 504.0}
+    assert len(_runs([fg2, nat2])) == 1

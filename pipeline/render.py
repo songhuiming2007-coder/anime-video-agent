@@ -721,15 +721,29 @@ def _runs(events: list[dict]) -> list[list[dict]]:
     """把「曲目内位置连续」的事件合并成一个 run。
 
     连续 = 前一事件 t1 与后一事件 t0 相同（同一音轨继续播放，只是音量状态
-    变化）。run 内用音量表达式做斜坡过渡（审查 F2：各事件独立成段再做
-    淡入淡出会在交界处剪出 V 形断口，违反「不重新切一份音频」）。
+    变化）**且成片位置也连续**。run 内用音量表达式做斜坡过渡（审查 F2：
+    各事件独立成段再做淡入淡出会在交界处剪出 V 形断口，违反「不重新切
+    一份音频」）。
+
+    成片连续性必须显式判（2026-09-08 皮套囚徒期实测）：自然收尾事件的
+    曲目内位置接前景块（M2 94s 续播），但成片位置在最后一个段落之后
+    （503s），与前景块的成片位置（96s）隔几百秒——只判曲目连续会把
+    230s 收尾错摆到前景块后面，音乐床比成片短一半（不变量 4.5 拦下）。
+    第一期 M6 前景→收尾两处都连续，补判后行为不变。
     """
     runs: list[list[dict]] = []
     for ev in events:
-        if runs and abs(runs[-1][-1]["t1"] - ev["t0"]) < 1e-6:
-            runs[-1].append(ev)
-        else:
-            runs.append([ev])
+        if runs:
+            prev = runs[-1][-1]
+            track_cont = abs(prev["t1"] - ev["t0"]) < 1e-6
+            # 缺 at 的是合成事件（测试），走旧的纯曲目连续判定；
+            # 生产事件必带 at（build_timeline 写入）
+            out_cont = (prev.get("at") is None or ev.get("at") is None
+                        or abs(prev["at"] + (prev["t1"] - prev["t0"]) - ev["at"]) < 1e-6)
+            if track_cont and out_cont:
+                runs[-1].append(ev)
+                continue
+        runs.append([ev])
     return runs
 
 
@@ -763,7 +777,7 @@ def _vol_expr(events: list[dict], lufs: float) -> str:
     return "".join(parts) + f"{targets[-1][1]:.4f}" + ")" * closes
 
 
-def _music_bed(plan: dict, work: Path) -> Path | None:
+def _music_bed(plan: dict, work: Path, episode: Path | None = None) -> Path | None:
     """试听型音乐床：按 `music.build_timeline` 的事件序列生成整条音乐轨。
 
     每个 run（曲目内位置连续的事件链）切成一个输入段，音量用表达式自动化
@@ -771,6 +785,10 @@ def _music_bed(plan: dict, work: Path) -> Path | None:
     （run 开头淡入、run 末尾淡出）。natural（自然收尾）不淡出——
     cue 原则「让歌曲自然结束」。事件按成片起点 adelay 后 amix 合并。
     侧链闪避在混音阶段统一做（前景段无口播触发，自然不被压）。
+
+    形态 2（音画同源，ADR-0013）：同源块的声音是源片原声切片——不切 CD，
+    实测 LUFS 归一到前景响度后 adelay 到同源槽位。该槽位音乐床无事件、
+    人声轨无旁白，原声物理独占（BGM 完全静音让路）。
     """
     inputs, fg, labels = [], [], []
     n = 0
@@ -791,6 +809,53 @@ def _music_bed(plan: dict, work: Path) -> Path | None:
                       f"adelay={int(round(at * 1000))}:all=1[{out_s}];")
             labels.append(f"[{out_s}]")
             n += 1
+    for b in plan["blocks"]:
+        av = b.get("avsync")
+        if not av:
+            continue
+        if episode is None:
+            raise SystemExit("FAIL 音画同源块需要 episode 解析源片路径（内部调用错误）")
+        src = _source_path(episode, av)
+        t0, dur, at = b["t0"], b["dur"], b["start"]
+        # 切前守卫（E11 同口径）：ffmpeg 对超界区间静默截短，
+        # 20s 的万人海啸变 17s 还不报错——当场失败，不静默。
+        if t0 + dur > duration(src) + frame_time(src):
+            raise SystemExit(
+                f"FAIL 音乐段 {b['label']} 源片原声区间越界："
+                f"{t0:.2f}+{dur:.2f}s > 源片 {duration(src):.2f}s（{src.name}）")
+        # 音轨存在性：没有音轨的源片做同源 = 无声车祸，切片前当场报。
+        has_audio = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(src)],
+            capture_output=True, text=True, check=True).stdout.strip()
+        if not has_audio:
+            raise SystemExit(
+                f"FAIL 音乐段 {b['label']} 的源片 {src.name} 没有音频流，"
+                f"无法音画同源——换有声源片或改回形态 1（`音乐: ` CD 试听）")
+        slice_path = work / f"avsync-{n:02d}.wav"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+             "-ss", f"{t0:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+             "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le",
+             str(slice_path)],
+            check=True, capture_output=True)
+        # 实测 LUFS 归一到前景响度（与 CD 前景同一把尺子）——现场原声响度
+        # 不可预知（Live 录像与碟片极差可达 10dB+），不量就混会炸或闷。
+        measured = bgm.measure(slice_path)["lufs"]
+        if measured is None:
+            raise SystemExit(
+                f"FAIL 音乐段 {b['label']} 源片原声切片响度测量失败（{slice_path}）")
+        gain = FOREGROUND_LUFS - measured
+        out_s = f"s{n}"
+        fg.append(f"[{n}:a]volume={gain:.2f}dB,aresample=48000,"
+                  f"afade=t=in:st=0:d={VOL_RAMP:.2f},"
+                  f"afade=t=out:st={max(0.0, dur - VOL_RAMP):.3f}:d={VOL_RAMP:.2f},"
+                  f"adelay={int(round(at * 1000))}:all=1[{out_s}];")
+        labels.append(f"[{out_s}]")
+        inputs += ["-i", str(slice_path)]
+        n += 1
+        print(f"  音画同源 {b['label']}：{src.name} {t0:.1f}-{t0 + dur:.1f}s"
+              f"（实测 {measured:.1f} LUFS，增益 {gain:+.1f} dB）", file=sys.stderr)
     if not labels:
         return None
     fg.append("".join(labels)
@@ -838,18 +903,24 @@ def _still_frames(episode: Path, plan: dict,
     # 保证同一曲目的画面与音乐一样不重切。
     visual: list[tuple[float, float, str | None]] = []
     for b in plan["blocks"]:
+        if b.get("avsync"):
+            # 形态 2（ADR-0013）：画面与声音切自同一源片同一时间码，
+            # 不走 `画面:` 声明（解析期已强制为「同源」）。
+            visual.append((b["start"], b["dur"], f"{b['avsync']} {b['t0']:.2f}"))
+            continue
         visual.append((b["start"], b["dur"], b.get("visual")))
     last_seg_end = max(s["start"] + s["dur"] for s in plan["segments"])
     for tr in plan["tracks"]:
         for ev in tr["events"]:
             if ev["vol"] == "natural" and ev["at"] >= last_seg_end - 1e-6:
-                vis = None
-                fgs = [b for b in plan["blocks"] if b["title"] == tr["name"]]
-                if fgs and fgs[-1].get("visual"):
-                    ep_tag, start_s = fgs[-1]["visual"].rsplit(" ", 1)
-                    # 统一走 _hhmmss_to_sec（审查 B3'：float() 只认纯秒数，
-                    # 换期写 `1:33.75` 冒号格式会 ValueError 崩溃）
-                    vis = f"{ep_tag} {_hhmmss_to_sec(start_s) + fgs[-1]['dur']:.2f}"
+                vis = ev.get("visual")
+                if vis is None:
+                    fgs = [b for b in plan["blocks"] if b["title"] == tr["name"]]
+                    if fgs and fgs[-1].get("visual"):
+                        ep_tag, start_s = fgs[-1]["visual"].rsplit(" ", 1)
+                        # 统一走 _hhmmss_to_sec（审查 B3'：float() 只认纯秒数，
+                        # 换期写 `1:33.75` 冒号格式会 ValueError 崩溃）
+                        vis = f"{ep_tag} {_hhmmss_to_sec(start_s) + fgs[-1]['dur']:.2f}"
                 visual.append((ev["at"], ev["t1"] - ev["t0"], vis))
     visual.sort(key=lambda v: v[0])
 
@@ -1086,7 +1157,7 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         # 普通期走全片 BGM 铺底（旧路径，行为不变）。
         total = duration(voice)
         if music_plan is not None:
-            bed = _music_bed(music_plan, work)
+            bed = _music_bed(music_plan, work, episode)
         else:
             bed = _bgm_bed(bgm_plan, total, work)
         voice_raw = voice  # 4.5 要查混音前的人声轨（B1'：混音总长测不出人声位置错）
