@@ -37,6 +37,7 @@
 | [ADR-0011](adr/0011-sp-anchor-montage-and-freeze.md) | SP 特典集号落地、单段多锚点蒙太奇与锚点段尾帧定格 | 已采纳已实现 | — |
 | [ADR-0012](adr/0012-multimodal-shot-gallery.md) | 镜头代表帧画廊与多模态视觉阅卷回填 | 已采纳已实现 | — |
 | [ADR-0013](adr/0013-dual-mode-clip-protocol.md) | 双模态片段协议（纯净画面解说 vs 音画同源试听） | 已采纳已实现 | — |
+| [ADR-0014](adr/0014-cloud-gpu-headless-model-stack.md) | 计算与交互解耦 —— 云端 Headless GPU 承载全栈顶配大模型 | 已采纳 | B2, D4, D22, D23, D25 |
 
 ---
 
