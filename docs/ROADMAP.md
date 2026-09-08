@@ -34,29 +34,30 @@
 ## 阶段
 
 ```
-1  Windows 上跑通九步  ──┐
-2  API 接入            ──┤ 都是「把绑定藏到接口后面」的同一个模式
-3  视觉索引             ──┘
+1  跨平台与云端 Headless 算力解耦 (ADR-0014) ──┐
+2  API 接入                                  ──┤ 都是「把绑定藏到接口后面」的同一个模式
+3  视觉索引与 VLM 接入 (ADR-0014)            ──┘
    ══════ 闸门 A：结账 ══════
 4  泛化素材种类
 5  ava run 单命令编排
-6  GUI
+6  GUI / 套壳 Pi 专属终端
 ```
 
 ---
 
-### 阶段 1：Windows 上跑通九步
+### 阶段 1：跨平台与云端 Headless 算力解耦（Windows / Linux CUDA / ADR-0014）
 
 **做什么**
 
 - 把 ASR 从 mlx 上解绑成可替换后端（`asr.py` 只有两个对外函数，三个调用点）
-- TTS 同理。IndexTTS-1.5 与 Qwen3-TTS 上游都是 PyTorch，`mlx-audio` 只是移植（换引擎只动 `config/voice.json`，见 ADR-0006）
+- TTS 同理：支持 PyTorch / CUDA 原生调用，为 ADR-0014（云端 24G RTX 4090 运行 7B 语音大模型与 Flow Matching 流匹配架构）铺平底层执行路径
+- 确立「Mac 本地便携交互 + 云端按需弹性 GPU 算力」架构，彻底解除 16GB 统一内存发烫与 Swap 瓶颈
 - 修掉冒出来的平台假设（字体已经是配置项，`preflight.sh` 是 bash）
 - 三平台 CI + 共享 fixture，见下
 
 **完成判据**
 
-> 协作者在 Windows 上，用他自己的素材跑完九步，**11 项质检全过，出一条能发的片。**
+> 协作者在 Windows/Linux CUDA 节点上，用他自己的素材跑完九步，**11 项质检全过，出一条能发的片。**
 
 不用解释、没有争论空间，和现有门禁同一套标准。
 
