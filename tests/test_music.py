@@ -230,3 +230,167 @@ class TestNaturalContinuationBounds:
     def test_记录齐全照常返回(self):
         rec = {"path": "x.flac", "dur": 100.0, "lufs": -9.0}
         assert m._track_for("曲", {"tracks": {"曲": rec}}) is rec
+
+
+class TestAvsyncBlock:
+    """形态 2 音画同源块（ADR-0013）：源片原声与画面切自同一源片同一时间码。
+
+    每条断言对应一个声明不完整/自相矛盾的写法——同源块的崩法不是报错，
+    是「被当成形态 1 CD 试听静默跑掉」（查曲库失败离病根很远，或更糟：
+    画面切源片、声音放 CD 的两张皮没人拦）。
+    """
+
+    _HEAD = "## 段落 1\n\n配音：第一段。\n\n"
+    _TAIL = "\n## 段落 2\n\n配音：第二段。\n"
+
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        script = tmp_path / "02-script.md"
+        script.write_text(self._HEAD + body + self._TAIL, encoding="utf-8")
+        return script
+
+    def test_解析同源块(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 M5 · 现场海啸\n\n"
+            "源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n")
+        (blk,) = [b for b in m.parse_script_music(script) if b.label == "M5"]
+        assert blk.avsync == "测试企划 SP04"
+        assert blk.t0 == 21.6 and blk.t1 == 41.6
+        assert blk.after == "fade" and blk.visual is None
+
+    def test_缺音画同源声明当场失败(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+            "状态: 前景试听，旁白停止\n过渡: 淡出\n画面: 同源\n")
+        with pytest.raises(SystemExit, match="音画同源"):
+            m.parse_script_music(script)
+
+    def test_画面必须是同源(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n"
+            "画面: 测试企划 SP05 00:01\n")
+        with pytest.raises(SystemExit, match="同源"):
+            m.parse_script_music(script)
+
+    def test_过渡只认淡出(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 降为 BGM\n画面: 同源\n")
+        with pytest.raises(SystemExit, match="淡出"):
+            m.parse_script_music(script)
+
+    def test_时间区间为空当场失败(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:41.60-00:21.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n")
+        with pytest.raises(SystemExit, match="区间为空"):
+            m.parse_script_music(script)
+
+    def test_同源块占时间槽但不产曲目事件(self, tmp_path: Path):
+        """同源块占 20s 成片槽位、进 blocks（渲染切画面用），
+        但 tracks 为空——进曲目事件序列 = 音乐床在该槽位不再静音（两张皮）。"""
+        self._write(tmp_path,
+            "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n")
+        manifest = {"segments": [{"index": 1, "duration": 10.0},
+                                 {"index": 2, "duration": 10.0}]}
+        plan = m.build_timeline(tmp_path, manifest, {"tracks": {}})
+        assert plan["tracks"] == []
+        (blk,) = plan["blocks"]
+        assert blk["avsync"] == "测试企划 SP04"
+        assert blk["dur"] == 20.0 and blk["t0"] == 21.6
+        # 时间轴：段 1（10s）→ M5（20s）→ 段 2（10s），总长 40s
+        assert plan["total_duration"] == 40.0
+        assert [s["start"] for s in plan["segments"]] == [0.0, 30.0]
+
+    def test_自然收尾画面声明(self, tmp_path: Path):
+        """`收尾画面:` 显式指定长源：收尾默认继承同曲前景块画面源（短 MV 必越界），
+        声明后事件直接带该画面——没写时 visual 为 None（继承行为不变）。"""
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 M1\n\n音乐: `测试曲甲` 完整版 00:00-00:15\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n"
+            "音乐: `测试曲甲` 继续播放至完整版结束\n"
+            "收尾画面: 测试番 SP05 13:26.00\n", encoding="utf-8")
+        manifest = {"segments": [{"index": 1, "duration": 10.0}]}
+        plan = m.build_timeline(tmp_path, manifest, _bgm())
+        nat = [e for tr in plan["tracks"] for e in tr["events"] if e["vol"] == "natural"]
+        assert len(nat) == 1 and nat[0]["visual"] == "测试番 SP05 13:26.00"
+
+
+class TestBgmOnlyBlock:
+    """背景铺底块（对齐 cue 乐章设计）：零时长、只做 BGM 边界与铺底事件。
+
+    缺口实录：「段 1–4 片头前奏铺底」「段 17–20 英雄前奏铺底」这类**没有前景试听**
+    的段落，「前景试听后降为 BGM」一条路表达不了——不是内容不要，是机制没有。
+    """
+
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        script = tmp_path / "02-script.md"
+        script.write_text(body, encoding="utf-8")
+        return script
+
+    def test_解析铺底块(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 B1 · 前奏铺底\n\n"
+            "音乐: `测试曲甲` 完整版 00:00\n"
+            "状态: 背景铺底\n")
+        (blk,) = m.parse_script_music(script)
+        assert blk.bgm_only and blk.title == "测试曲甲"
+        assert blk.t0 == 0.0 and blk.t1 is None
+
+    def test_铺底块禁止画面与源片原声(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 B1\n\n音乐: `测试曲甲` 完整版 00:00\n"
+            "状态: 背景铺底\n画面: 测试番 SP01 00:01\n")
+        with pytest.raises(SystemExit, match="不许写"):
+            m.parse_script_music(script)
+
+    def test_铺底块缺时间行报错(self, tmp_path: Path):
+        script = self._write(tmp_path,
+            "## 音乐段 B1\n\n音乐: `测试曲甲` 完整版\n状态: 背景铺底\n")
+        with pytest.raises(SystemExit, match="时间解析失败"):
+            m.parse_script_music(script)
+
+    def test_铺底块零时长占位且产BGM事件(self, tmp_path: Path):
+        """铺底块不占成片时长、不进 blocks（无画面槽）、铺底事件覆盖到下一个音乐段；
+        前序「降为 BGM」的覆盖在铺底块处收束（边界语义）。"""
+        self._write(tmp_path,
+            "## 音乐段 B1 · 片头铺底\n\n音乐: `测试曲甲` 完整版 00:00\n状态: 背景铺底\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n"
+            "## 音乐段 B2 · 换曲铺底\n\n音乐: `测试曲乙` 完整版 00:30\n状态: 背景铺底\n\n"
+            "## 段落 2\n\n配音：第二段。\n\n"
+            "## 音乐段 M1 · 前景\n\n音乐: `测试曲甲` 完整版 01:00-01:15\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n")
+        manifest = {"segments": [{"index": 1, "duration": 10.0},
+                                 {"index": 2, "duration": 10.0}]}
+        plan = m.build_timeline(tmp_path, manifest, _bgm())
+        # 零时长：段 1 起点 0、段 2 起点 10、总长 10+15+10=35
+        assert [s["start"] for s in plan["segments"]] == [0.0, 10.0]
+        assert plan["total_duration"] == 35.0
+        # blocks 只含前景 M1（铺底块无画面槽）
+        assert [b["label"] for b in plan["blocks"]] == ["M1"]
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}
+        # B1：曲甲 00:00 起铺 10s（到 B2 边界）；B2：曲乙 00:30 起铺 10s（到 M1）
+        assert evs["测试曲甲"] == [
+            {"t0": 0.0, "t1": 10.0, "vol": "bgm", "at": 0.0, "underlay": True},
+            {"t0": 60.0, "t1": 75.0, "vol": "foreground", "at": 20.0}]
+        assert evs["测试曲乙"] == [{"t0": 30.0, "t1": 40.0, "vol": "bgm", "at": 10.0,
+                                    "underlay": True}]
+
+    def test_前序降为BGM在铺底块处收束(self, tmp_path: Path):
+        self._write(tmp_path,
+            "## 音乐段 M1 · 前景\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 降为 BGM\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n"
+            "## 音乐段 B1 · 换曲\n\n音乐: `测试曲乙` 完整版 00:00\n状态: 背景铺底\n\n"
+            "## 段落 2\n\n配音：第二段。\n")
+        manifest = {"segments": [{"index": 1, "duration": 10.0},
+                                 {"index": 2, "duration": 10.0}]}
+        plan = m.build_timeline(tmp_path, manifest, _bgm())
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}
+        # M1 的 BGM 延续覆盖 段1（10s）到 B1 边界：曲甲 10.0→20.0
+        assert evs["测试曲甲"][1] == {"t0": 10.0, "t1": 20.0, "vol": "bgm", "at": 10.0}
+        assert evs["测试曲乙"] == [{"t0": 0.0, "t1": 10.0, "vol": "bgm", "at": 20.0,
+                                    "underlay": True}]

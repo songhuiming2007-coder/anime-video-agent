@@ -355,7 +355,10 @@ def _music_seconds(script_path: Path) -> float:
         return 0.0
     if not blocks:
         return 0.0
-    dur = sum((b.t1 - b.t0) for b in blocks if b.t1 is not None)
+    # 背景铺底块是 BGM 不是前景试听，不计入试听时长（t1 为 None 本就被跳过，
+    # 声明了上限的铺底块也要排除——铺底不占口播外的试听预算）
+    dur = sum((b.t1 - b.t0) for b in blocks
+              if b.t1 is not None and not b.bgm_only)
     text = script_path.read_text(encoding="utf-8")
     if "继续播放至完整版结束" in text or "播放至完整版结束" in text:
         try:

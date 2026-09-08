@@ -43,6 +43,24 @@ _TRANSITION = re.compile(r"^过渡[：:]\s*(.+)$", re.M)
 _VISUAL = re.compile(r"^画面[：:]\s*(.+)$", re.M)
 # 段落 9 那种「音乐: `Planetes` 继续播放至完整版结束」——自然收尾标记
 _NATURAL = re.compile(r"^音乐[：:]\s*`(.+?)`.+?(?:自然|完整版结束|继续播放)", re.M)
+# 自然收尾的画面声明（2026-09-08 皮套囚徒期）：收尾事件默认继承同曲最后一个
+# 前景块的画面源并向后续播——前景块挂 4 分钟 MV 时，230s 收尾必然越界。
+# `收尾画面: <番> SxxEyy/SPxx mm:ss` 显式指定长源，不写维持继承行为不变。
+_OUTRO_VISUAL = re.compile(r"^收尾画面[：:]\s*(.+)$", re.M)
+# ADR-0013 形态 2（音画同源）：`源片原声: `EGOIST SP04` 00:21.60-00:41.60`。
+# 该块不查 CD 曲库、不产音乐床事件——声音与画面切自同一源片同一时间码，
+# 音乐床在这个槽位天然静音（无事件），人声轨也静音（非段落槽），原声独占。
+_AVSYNC = re.compile(
+    r"^源片原声[：:]\s*`(.+?)`\s*(\d+):(\d{2}(?:\.\d+)?)-(\d+):(\d{2}(?:\.\d+)?)", re.M)
+_AVSYNC_FLAG = re.compile(r"^音画同源[：:]\s*是\s*$", re.M)
+# 背景铺底块（2026-09-08 皮套囚徒期，对齐 archive/03-music-cues.md 的乐章设计）：
+# 「无前景试听、纯 BGM 铺底」的声明——既有的「前景试听后降为 BGM」表达不了
+# 「段 1–4 片头前奏铺底」「段 17–20 英雄前奏铺底」这类没有前景的段落，
+# 只能新开一类零时长块：不占成片时间轴、只做 BGM 边界与铺底事件。
+_STATUS_BGM = re.compile(r"^状态[：:]\s*背景铺底", re.M)
+# 铺底块的时间行：`音乐: `曲名` 完整版 MM:SS`（只写起点，覆盖到下一个音乐段）；
+# 也允许 `MM:SS-MM:SS` 显式封顶（封顶是明示意图，截断留空隙不算静默失败）。
+_BGM_TIME = re.compile(r"`(.+?)`.+?(\d+):(\d{2})(?:-(?:(\d+):(\d{2})|结束))?\s*$", re.M)
 
 
 @dataclass
@@ -55,10 +73,12 @@ class MusicBlock:
     t1: float | None        # None = 到曲目结束
     after: str              # 'bgm' 降为 BGM / 'fade' 淡出 / 'end' 自然播放至结束
     visual: str | None      # `画面:` 行（如 "S01E01 0:00"）；None = 上一段定格
+    avsync: str | None = None  # 形态 2 源片标签（如 "EGOIST SP04"）；None = 形态 1 CD 试听
+    bgm_only: bool = False     # True = 背景铺底块（零时长，只产 BGM 事件与边界）
 
 
 def _to_sec(m: int, s: str) -> float:
-    return m * 60 + int(s)
+    return m * 60 + float(s)
 
 
 def parse_script_music(path: Path) -> list[MusicBlock]:
@@ -75,23 +95,34 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
     for m in re.finditer(r"^##\s*音乐段\s*(\S+)", text, re.M):
         nxt = text.find("\n## ", m.end())
         body = text[m.end():nxt] if nxt != -1 else text[m.end():]
-        title_m = _TITLE_ONLY.search(body)
-        if not title_m:
-            raise SystemExit(f"FAIL 音乐段 {m.group(1)} 缺 `音乐: `行")
-        tm = _TIME_RANGE.search(body)
-        if not tm:
-            # 审查 B2：时间解析失败静默回退 t0=0/t1=None（整曲从 0 播）——
-            # 这正是本项目最恨的静默失败，直接报错指明块
-            raise SystemExit(
-                f"FAIL 音乐段 {m.group(1)} 的 `音乐: `行时间解析失败"
-                f"（应为 `音乐: `曲名` 完整版 MM:SS-MM:SS` 或 `MM:SS-结束`）")
+
+        if _STATUS_BGM.search(body):
+            # 背景铺底块：无前景、零时长，只声明「从这里起铺哪首到哪」。
+            # 不需要 `过渡:`（语义钉死：铺底到下一个音乐段）；
+            # 不许带 `画面:`/`源片原声:`（不占画面槽，写了就是笔误）。
+            tm = _BGM_TIME.search(body)
+            if not tm:
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)}（背景铺底）的 `音乐: `行时间解析失败"
+                    f"（应为 `音乐: `曲名` 完整版 MM:SS` 或 `MM:SS-MM:SS`）")
+            if _VISUAL.search(body) or _AVSYNC.search(body):
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)}（背景铺底）不许写 `画面:` 或 `源片原声:`——"
+                    f"铺底块不占画面槽，写了就是把它当成了前景块")
+            t0 = _to_sec(int(tm.group(2)), tm.group(3))
+            t1 = None if tm.group(4) is None else (
+                _to_sec(int(tm.group(4)), tm.group(5)))
+            if t1 is not None and t1 <= t0:
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)}（背景铺底）时间区间为空：{t0:.2f}-{t1:.2f}s")
+            blocks.append(MusicBlock(m.group(1), tm.group(1), t0, t1, "bgm",
+                                     None, bgm_only=True))
+            continue
+
         trans = _TRANSITION.search(body)
         if not trans:
             raise SystemExit(f"FAIL 音乐段 {m.group(1)} 缺 `过渡: `行")
         trans_text = trans.group(1)
-        t0 = _to_sec(int(tm.group(2)), tm.group(3))
-        t1 = None if tm.group(4) is None else (
-            _to_sec(int(tm.group(4)), tm.group(5)))
         if "降为 BGM" in trans_text:
             after = "bgm"
         elif "自然播放" in trans_text or "自然结束" in trans_text:
@@ -103,8 +134,50 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
                 f"FAIL 音乐段 {m.group(1)} 的 `过渡: `行不认识"
                 f"（{trans_text}）——只认「降为 BGM / 自然播放(至结束) / 淡出」")
         vis = _VISUAL.search(body)
+        visual = vis.group(1).strip() if vis else None
+
+        av = _AVSYNC.search(body)
+        if av:
+            # 形态 2（音画同源，ADR-0013）：源片原声与画面切自同一源片同一时间码。
+            # 三条硬校验全是「声明不完整/自相矛盾就当场报」，不许静默当形态 1 跑：
+            if not _AVSYNC_FLAG.search(body):
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)} 写了 `源片原声:` 但缺 `音画同源: 是`——"
+                    f"两个声明必须成对出现（ADR-0013），单写一个视为笔误")
+            if visual is not None and visual != "同源":
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)} 音画同源块的 `画面:` 必须是「同源」"
+                    f"（当前：{visual}）——画面切别处就不是同源，是笔误")
+            if after != "fade":
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)} 音画同源块的 `过渡:` 只认「淡出」——"
+                    f"现场原声没有「同一音轨降为 BGM / 自然播放至结束」的语义")
+            t0 = _to_sec(int(av.group(2)), av.group(3))
+            t1 = _to_sec(int(av.group(4)), av.group(5))
+            if t1 <= t0:
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)} 源片原声时间区间为空："
+                    f"{t0:.2f}-{t1:.2f}s")
+            blocks.append(MusicBlock(m.group(1), av.group(1).strip(),
+                                     t0, t1, after, None,
+                                     avsync=av.group(1).strip()))
+            continue
+
+        title_m = _TITLE_ONLY.search(body)
+        if not title_m:
+            raise SystemExit(f"FAIL 音乐段 {m.group(1)} 缺 `音乐: `行")
+        tm = _TIME_RANGE.search(body)
+        if not tm:
+            # 审查 B2：时间解析失败静默回退 t0=0/t1=None（整曲从 0 播）——
+            # 这正是本项目最恨的静默失败，直接报错指明块
+            raise SystemExit(
+                f"FAIL 音乐段 {m.group(1)} 的 `音乐: `行时间解析失败"
+                f"（应为 `音乐: `曲名` 完整版 MM:SS-MM:SS` 或 `MM:SS-结束`）")
+        t0 = _to_sec(int(tm.group(2)), tm.group(3))
+        t1 = None if tm.group(4) is None else (
+            _to_sec(int(tm.group(4)), tm.group(5)))
         blocks.append(MusicBlock(m.group(1), title_m.group(1), t0, t1, after,
-                                 vis.group(1).strip() if vis else None))
+                                 visual))
     return blocks
 
 
@@ -201,6 +274,24 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             t += seg["duration"]
         else:
             b = blocks[label]
+            if b.bgm_only:
+                # 背景铺底块：零时长占位——不占成片时间轴，只做 BGM 边界与铺底事件
+                timeline.append({"kind": "music", "bgm_only": True,
+                                 "label": label, "title": b.title,
+                                 "t0": b.t0, "t1": b.t1,
+                                 "dur": 0.0, "start": t})
+                continue
+            if b.avsync:
+                # 形态 2：不查 CD 曲库（源片不在 bgm.json），越界由 render 切片的
+                # 截取守卫与音轨抽取校验当场报（E11）。
+                timeline.append({"kind": "music", "label": label,
+                                 "title": b.title, "t0": b.t0, "t1": b.t1,
+                                 "dur": b.t1 - b.t0,
+                                 "after": b.after, "visual": b.visual,
+                                 "avsync": b.avsync,
+                                 "start": t})
+                t += b.t1 - b.t0
+                continue
             t1 = b.t1 if b.t1 is not None else _track_for(b.title, bgm)["dur"]
             if not (0.0 <= b.t0 < t1 <= _track_for(b.title, bgm)["dur"] + 1e-6):
                 # 审查 B5：t0/t1 越界不拦的话，ffmpeg -ss 出空流，报错离病根很远
@@ -228,14 +319,37 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                             and it["n"] == int(seg_m.group(1))), None)
             if seg_end is None:
                 raise SystemExit(f"FAIL 段落 {seg_m.group(1)} 不在时间轴里")
+            ovis = _OUTRO_VISUAL.search(body)
             naturals.append((nat.group(1),
-                             seg_end["start"] + seg_end["dur"]))
+                             seg_end["start"] + seg_end["dur"],
+                             ovis.group(1).strip() if ovis else None))
 
     # 每曲事件序列
     track_evs: dict[str, list[dict]] = {}
     order: list[str] = []
     for i, it in enumerate(timeline):
         if it["kind"] != "music":
+            continue
+        if it.get("bgm_only"):
+            # 铺底块 → BGM 事件：覆盖到下一个音乐段（含前景/同源/铺底块），
+            # 没有下一个就铺到时间轴末尾。声明了上限（t1）的按上限截——
+            # 封顶是明示意图，与「不许静默截短」不冲突。
+            title = it["title"]
+            if title not in order:
+                order.append(title)
+            evs = track_evs.setdefault(title, [])
+            nxt = next((x for x in timeline[i + 1:] if x["kind"] == "music"), None)
+            nxt_start = (nxt["start"] if nxt
+                         else timeline[-1]["start"] + timeline[-1]["dur"])
+            t1 = it["t0"] + (nxt_start - it["start"])
+            if it["t1"] is not None:
+                t1 = min(t1, it["t1"])
+            evs.append({"t0": it["t0"], "t1": t1, "vol": "bgm",
+                        "at": it["start"], "underlay": True})
+            continue
+        if it.get("avsync"):
+            # 形态 2 只占时间槽，不进曲目事件序列——它的声音来自源片原声切片，
+            # 音乐床在该槽位保持静音（ADR-0013：BGM 完全静音让路）。
             continue
         title = it["title"]
         if title not in order:
@@ -256,7 +370,7 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             evs.append({"t0": t1, "t1": None, "vol": "natural",
                         "at": it["start"] + (t1 - t0)})
 
-    for title, at in naturals:
+    for title, at, ovis in naturals:
         if title not in order:
             order.append(title)
         evs = track_evs.setdefault(title, [])
@@ -264,8 +378,12 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
         # 防御：若前序事件 t1 为 None（如前序也是 natural）或已超出全长，安全判定已播完
         rec = _track_for(title, bgm)
         dur_all = rec["dur"]
-        if evs:
-            last_t1 = evs[-1]["t1"]
+        # 续播起点取**前景链**最后一个事件的 t1：铺底事件（underlay）是另起的
+        # 背景音乐用，不是「这首歌播到了哪」——拿它的 t1 续播会把自然收尾
+        # 从 94s 错挪到 26.4s，总长随贴炸出目标带（2026-09-08 实测 733.7→801.2s）。
+        chain = [e for e in evs if not e.get("underlay")]
+        if chain:
+            last_t1 = chain[-1]["t1"]
             tail_t = dur_all if last_t1 is None else float(last_t1)
         else:
             tail_t = 0.0
@@ -273,7 +391,8 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             raise SystemExit(
                 f"FAIL 《{title}》在自然收尾前已经播完（已播至 {tail_t:.1f}s，"
                 f"曲目全长 {dur_all:.1f}s），无法继续播放至完整版结束")
-        evs.append({"t0": tail_t, "t1": None, "vol": "natural", "at": at})
+        evs.append({"t0": tail_t, "t1": None, "vol": "natural", "at": at,
+                    "visual": ovis})
 
     # 解析曲目信息 + 修正 t1=None（曲目结束）
     tracks = []
@@ -323,11 +442,12 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                      for it in timeline if it["kind"] == "seg"],
         "blocks": [{"label": it["label"], "title": it["title"],
                     "start": it["start"],
-                    "dur": (min(it["t1"], _track_for(it["title"], bgm)["dur"])
-                            if it["t1"] is not None
-                            else _track_for(it["title"], bgm)["dur"]) - it["t0"],
+                    "dur": it["dur"],
                     "vol": "foreground",
-                    "visual": it["visual"]}
-                   for it in timeline if it["kind"] == "music"],
+                    "visual": it["visual"],
+                    **({"avsync": it["avsync"], "t0": it["t0"]}
+                       if it.get("avsync") else {})}
+                   for it in timeline if it["kind"] == "music"
+                   and not it.get("bgm_only")],
         "tracks": tracks,
     }
