@@ -205,7 +205,7 @@ python -m pipeline.vindex status --anime <番>   # 七条数字对不对得上�
 - **单一事实来源（SSOT）**：所有的解说词、微单元分镜、音乐试听段（`## 音乐段`）、音画同源开关，**唯一法定载体是 `02-script.md`**。严禁维护外置的 `03-music-cues.md` 等多头文件造成 Agent 认知分叉；中间草稿与 patch 归档隔离，生产目录只留唯一生效文件。
 - **严禁一键盲目串联**：一步到位看似省时间，实则最浪费时间——一旦配音读错一个字或排片错一个镜头，半小时渲染完全作废。流水线必须严格遵循四阶段离散工序，遇到人工停机点必须立即停下交卷：
   1. **工序 A【脚本与分镜】**（本地）：Agent 维护 `02-script.md`（段落可带 `情绪:`/`语速:` 受控词表字段 [M2 生效]）──→ 跑 `check_script` 全绿 ──→ 🛑 **【人工停机点 1】**：必须人类总监阅读审稿确认（02.5），封板！
-  2. **工序 B【云端配音与顺听】**（ADR-0016 推理上云 [M2/M3 生效]）：`ava-cloud push` ──→ `ava-cloud run <本期> tts`（云端 IndexTTS2 + g2p 拼音直注 + SenseVoice/Whisper 仲裁回读）──→ `ava-cloud pull` 拉回音频并关机记账 ──→ 🛑 **【人工停机点 2】**：必须人类总监顺听 2 分钟（03.5）+ 30 秒结构化打点（音色/韵律/错字写入 manifest `human_review` [M2 生效]）！错字经 `pipeline/g2p.py` 注音层处理（readings 表降级为个例 override），`rm seg-XX.wav` 单段增量重跑，定死音频时长！
+  2. **工序 B【云端配音与顺听】**（ADR-0016 推理上云 [M2/M3 生效]）：`ava-cloud push` ──→ `ava-cloud run <本期> tts`（云端 TTS（选型见 ADR-0017）+ g2p 拼音直注 + SenseVoice/Whisper 仲裁回读）──→ `ava-cloud pull` 拉回音频并关机记账 ──→ 🛑 **【人工停机点 2】**：必须人类总监顺听 2 分钟（03.5）+ 30 秒结构化打点（音色/韵律/错字写入 manifest `human_review` [M2 生效]）！错字经 `pipeline/g2p.py` 注音层处理（readings 表降级为个例 override），`rm seg-XX.wav` 单段增量重跑，定死音频时长！
   3. **工序 C【排片与审片】**（本地）：配音时长确定后 ──→ 跑 `pipeline.clips` 产出 `04-review.html`（三通道：锚点直通 + 台词检索 + VLM 意象检索 [M2 解封，ADR-0015]）──→ 🛑 **【人工停机点 3】**：人类在浏览器审看 5 分钟（05）+ 30 秒结构化打点（意象贴合/节奏写入 approved `human_review` [M2 生效]），点击 Approve 产生 `04-clips.approved.json`（无此批准文件渲染器坚决拒绝启动）！
   4. **工序 D【确定性渲染与质检】**（本地，ADR-0016 渲染留本地）：读取 `approved.json` ──→ 跑 `pipeline.render` 与 `qc`，一趟确定性出片！
 
