@@ -665,7 +665,7 @@ def main() -> int:
     b.add_argument("--season", type=int)
     b.add_argument("--episode", type=int)
     b.add_argument("--sp", type=int, metavar="N",
-                   help="切分 SP 特典集 SP%02d（MV/Live/物证，ADR-0010），"
+                   help="切分 SP 特典集 SP%%02d（MV/Live/物证，ADR-0010），"
                         "与 --season/--episode 互斥")
 
     r = sub.add_parser("rebuild", help="阈值改了，在已存切点上重算，不重新解码")
