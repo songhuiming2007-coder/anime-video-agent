@@ -678,3 +678,78 @@ class TestAnchorChecks:
         f = script(tmp_path, [BODY], anchors=["S01E01 17:50"])
         chk = get(cs.run(f), "锚点指向素材")
         assert not chk.ok and "跳过不可判定" in chk.detail
+
+
+# ---------------------------------------------------------------------------
+# 情绪/语速受控词表（架构设计 3.3，2026-09-11 加）
+#
+# 这两个字段是**可选**的：不写 = 平静叙述/中，行为与 v1 一致（旧稿零迁移）。
+# 一旦写了，值必须落在 config/voice.json 的受控词表内——自由文本情绪 = 每期发挥
+# 不稳定，且无法进 manifest 审计（情感参数要与合成结果一起进 manifest，
+# eval 才能按情绪分组统计，回答「情感声明是否真的改变了声学输出」）。
+# ---------------------------------------------------------------------------
+
+
+def script_with_emotion(tmp_path, vos, emotions=None, speeds=None):
+    parts = []
+    for i, v in enumerate(vos, 1):
+        lines = [f"## 段落 {i}", "", f"配音：{v}"]
+        if emotions and emotions[i - 1]:
+            lines.append(f"情绪: {emotions[i - 1]}")
+        if speeds and speeds[i - 1]:
+            lines.append(f"语速: {speeds[i - 1]}")
+        lines += ["", "画面：", "  查询: 某句台词", ""]
+        parts.append("\n".join(lines))
+    f = tmp_path / "02-script.md"
+    f.write_text("\n".join(parts), encoding="utf-8")
+    return f
+
+
+class TestEmotionSpeedFields:
+    def test_解析可选字段_未写为None(self):
+        text = (
+            "## 段落 1\n\n配音：甲\n情绪: 低沉克制\n语速: 慢\n\n"
+            "## 段落 2\n\n配音：乙\n"
+        )
+        assert cs.parse_emotion_fields(text) == [
+            ("1", "低沉克制", "慢"),
+            ("2", None, None),
+        ]
+
+    def test_全角冒号也认(self):
+        """稿件里中英冒号混用是常态，解析必须两个都收（与配音/查询字段同口径）。"""
+        text = "## 段落 1\n\n配音：甲\n情绪：激越陈词\n语速：快\n"
+        assert cs.parse_emotion_fields(text) == [("1", "激越陈词", "快")]
+
+    def test_表外值被抓(self):
+        fields = [("1", "肃杀", "慢"), ("2", "平静叙述", "极快"), ("3", None, None)]
+        bad = cs.validate_emotion_speed(fields, {"平静叙述"}, {"慢", "中", "快"})
+        assert ("1", "情绪", "肃杀") in bad
+        assert ("2", "语速", "极快") in bad
+        assert len(bad) == 2, "未写的段落不该产生违规"
+
+    def test_未声明任何字段不算违规(self):
+        """**v1 零迁移**的可证伪判据：不写这两个字段的稿件必须全部通过。"""
+        assert cs.validate_emotion_speed(
+            [("1", None, None), ("2", None, None)], {"平静叙述"}, {"慢", "中", "快"}
+        ) == []
+
+    def test_端到端_合法词通过(self, tmp_path):
+        f = script_with_emotion(
+            tmp_path, [BODY] * 8, emotions=["低沉克制"] + [None] * 7, speeds=["慢"] + [None] * 7
+        )
+        chk = get(cs.run(f), "情绪/语速在受控词表内")
+        assert chk.ok, chk.detail
+        assert "1/8 段声明" in chk.detail
+
+    def test_端到端_表外情绪当场报错(self, tmp_path):
+        f = script_with_emotion(tmp_path, [BODY] * 8, emotions=["悲愤交加"] + [None] * 7)
+        chk = get(cs.run(f), "情绪/语速在受控词表内")
+        assert not chk.ok
+        assert "悲愤交加" in chk.detail
+
+    def test_端到端_v1稿件零迁移(self, tmp_path):
+        """不带这两个字段的 v1 稿件跑完整检查，该项必须通过。"""
+        f = script(tmp_path, [BODY] * 8)
+        chk = get(cs.run(f), "情绪/语速在受控词表内")
+        assert chk.ok and "0/8 段声明" in chk.detail

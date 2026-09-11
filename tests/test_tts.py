@@ -11,12 +11,14 @@
 """
 
 import json
+import numpy as np
 import re
 import struct
 import wave
 
 import pytest
 
+from pipeline import paths
 from pipeline import tts as t
 
 
@@ -173,9 +175,34 @@ class TestSpeakable:
     def test_读音表替换只发生在合成侧(self, monkeypatch):
         # IndexTTS 念错多音字/生僻字只能换同音字（喰种→餐种、绚都→绚督），
         # 替换进合成文本；字幕用原文，「喰种」照常显示。
+        # v2 起 readings 是链路末端的一层，单测它必须把拼音注入层清空——
+        # 否则测的是「拼音表覆盖了什么」，不是「readings 还生不生效」。
+        monkeypatch.setattr(t, "_injections", lambda: {})
         monkeypatch.setattr(t, "_readings",
                             lambda: {"喰种": "餐种", "绚都": "绚督"})
         assert t.speakable("东京喰种里陪着绚都") == "东京餐种里陪着绚督"
+
+    def test_拼音直注优先于读音表(self, monkeypatch):
+        """v2 链路顺序（架构设计三.2）：剥符号 → g2p.inject → readings override。
+
+        已在拼音表里的词不再走同音字替换。**这个顺序有实质含义**：拼音对模型是
+        物理阻断（无日语语义映射可借调），同音字是概率规避（换个字赌它不漂）。
+        顺序反了，注音后的拼音串会让 readings 完全失效。
+        """
+        monkeypatch.setattr(t, "_injections", lambda: {"世界": "shi4jie4"})
+        monkeypatch.setattr(t, "_readings", lambda: {"世界": "逝戒"})
+        assert t.speakable("世界", "indextts2") == "SHI4JIE4"
+        assert t.speakable("世界", "qwen3_tts") == "shìjiè"
+
+    def test_读音表兜住拼音表未覆盖的残留个例(self, monkeypatch):
+        """readings 降级为「逐案 override」后仍有职责：接住非纯汉字的替换词。
+
+        `成人→chéng人` 这类条目替换词含拉丁字母，机械转录会产垃圾，
+        所以它**不在**拼音表里——正是靠 readings 这层兜住。
+        """
+        monkeypatch.setattr(t, "_injections", lambda: {})
+        monkeypatch.setattr(t, "_readings", lambda: {"成人": "chéng人"})
+        assert t.speakable("成人") == "chéng人"
 
     def test_读音表是词级替换_单字不全局替换(self, monkeypatch):
         # 键必须是词。若全局替换「都」，会把念 dōu 对的句子改错
@@ -288,7 +315,10 @@ class TestQcSkipExemption:
         """synthesize 写一个 0.17s 的有声 wav（_trim_silence 要读它）。"""
         class E:
             kind = "qwen3_tts"      # Engine 契约成员，_render_one 按它决定尾巴检测
-            def synthesize(self, text, dest, attempt, seed=0):
+            # Engine 契约还有 cfg：_render_one 从它取情绪/语速受控词表（架构设计 3.3）
+            cfg = {"emotions": {"平静叙述": {"emo_vector": None, "emo_alpha": 1.0}},
+                   "speed": {"慢": 0.92, "中": 1.0, "快": 1.08}}
+            def synthesize(self, text, dest, attempt, seed=0, emo_params=None):
                 with wave.open(str(dest), "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
                     w.writeframes(struct.pack("<4000h", *([3000] * 4000)))
@@ -591,6 +621,7 @@ class TestReusable:
 
     def test_改读音只重做受影响段(self, tmp_path, monkeypatch):
         # 旧表只有 私奔→丝奔；新表加了 世界→试介。段 2 合成文本变了，段 1 没变。
+        monkeypatch.setattr(t, "_injections", lambda: {})
         monkeypatch.setattr(t, "_readings",
                             lambda: {"私奔": "丝奔", "世界": "试介"})
         old = self._mk(tmp_path, [("他们私奔了", "他们丝奔了"),
@@ -601,6 +632,7 @@ class TestReusable:
         assert list(done) == [1]
 
     def test_加无关读音全部复用(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(t, "_injections", lambda: {})
         monkeypatch.setattr(t, "_readings", lambda: {"喰种": "餐种"})
         old = self._mk(tmp_path, [("他们私奔了", "他们私奔了")])
         segs = [t.Segment(1, "1", "他们私奔了")]
@@ -620,6 +652,7 @@ class TestReusable:
         assert t._reusable(old, segs, tmp_path, cfg) == {}
 
     def test_旧manifest无speakable_指纹没变才复用(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(t, "_injections", lambda: {})
         monkeypatch.setattr(t, "_readings", lambda: {"私奔": "丝奔"})
         cfg = self._cfg({"私奔": "丝奔"})
         segs = [t.Segment(1, "1", "他们私奔了")]
@@ -639,6 +672,7 @@ class TestReusable:
     def test_合成的take带speakable(self, tmp_path, monkeypatch):
         """speakable 必须落进 Take——漏了它，段级比对静默退化成旧的全表指纹。"""
         text = "他们私奔了"
+        monkeypatch.setattr(t, "_injections", lambda: {})
         monkeypatch.setattr(t, "_readings", lambda: {"私奔": "丝奔"})
         monkeypatch.setattr(t, "transcribe", lambda _p: text)
         want = t.expected_duration(text)
@@ -646,7 +680,9 @@ class TestReusable:
 
         class E:
             kind = "qwen3_tts"
-            def synthesize(self, _text, dest, attempt, seed=0):
+            cfg = {"emotions": {"平静叙述": {"emo_vector": None, "emo_alpha": 1.0}},
+                   "speed": {"慢": 0.92, "中": 1.0, "快": 1.08}}
+            def synthesize(self, _text, dest, attempt, seed=0, emo_params=None):
                 with wave.open(str(dest), "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
                     w.writeframes(struct.pack("<4000h", *([3000] * 4000)))
@@ -686,3 +722,366 @@ class TestTrimSilence:
         t._trim_silence(p, check_tail=False)
         with wave.open(str(p)) as w:
             assert w.getnframes() == n                 # 尾部原样保留
+
+
+# ---------------------------------------------------------------------------
+# v2 情绪/语速协议、拼音注入留痕、评审打点（架构设计三.2/三.3，2026-09-11）
+# ---------------------------------------------------------------------------
+
+
+class _FakeEngine:
+    """满足 Engine 契约的最小替身：kind + cfg + synthesize。"""
+
+    kind = "qwen3_tts"
+    cfg = {
+        "emotions": {
+            "平静叙述": {"emo_vector": None, "emo_alpha": 1.0},
+            "低沉克制": {"emo_text": "低沉克制", "emo_alpha": 0.8},
+        },
+        "speed": {"慢": 0.92, "中": 1.0, "快": 1.08},
+    }
+
+    def __init__(self):
+        self.seen: list[tuple] = []
+
+    def synthesize(self, text, dest, attempt, seed=0, emo_params=None):
+        self.seen.append((text, emo_params))
+        with wave.open(str(dest), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+            w.writeframes(struct.pack("<4000h", *([3000] * 4000)))
+
+
+V2_SCRIPT = """## 段落 1
+
+配音：第一段口播。
+
+情绪: 低沉克制
+语速: 慢
+
+画面：
+  查询: x
+
+## 段落 2
+
+配音：第二段口播。
+
+画面：
+  查询: y
+"""
+
+
+class TestV2EmotionSpeedProtocol:
+    def test_解析可选字段(self, tmp_path):
+        """情绪/语速是可选的：写了就读出来，没写就是 None。"""
+        f = tmp_path / "02-script.md"
+        f.write_text(V2_SCRIPT, encoding="utf-8")
+        assert [(s.label, s.emotion, s.speed) for s in t.parse_script(f)] == [
+            ("1", "低沉克制", "慢"),
+            ("2", None, None),
+        ]
+
+    def test_v1稿件零迁移(self, tmp_path):
+        """不带新字段的 v1 稿件必须解析成功且两字段为 None（落默认值，行为不变）。"""
+        body = "\n".join(
+            f"## 段落 {i}\n\n配音：第{i}段。\n\n画面：\n  查询: q{i}\n" for i in range(1, 4)
+        )
+        f = tmp_path / "02-script.md"
+        f.write_text(body, encoding="utf-8")
+        segs = t.parse_script(f)
+        assert len(segs) == 3
+        assert all(s.emotion is None and s.speed is None for s in segs)
+
+    def test_情绪默认落平静叙述(self):
+        cfg = {"emotions": {"平静叙述": {"emo_alpha": 1.0}}}
+        assert t.resolve_emotion(cfg, None) == ("平静叙述", {"emo_alpha": 1.0})
+
+    def test_表外情绪报错不静默回退(self):
+        """静默回退会造出「写了但没生效」的安慰剂——而防这个正是它进 manifest 的目的。"""
+        cfg = {"emotions": {"平静叙述": {}}}
+        with pytest.raises(SystemExit, match="受控词表"):
+            t.resolve_emotion(cfg, "悲愤交加")
+
+    def test_语速系数映射(self):
+        cfg = {"speed": {"慢": 0.92, "中": 1.0, "快": 1.08}}
+        assert t.resolve_speed(cfg, None) == ("中", 1.0)
+        assert t.resolve_speed(cfg, "快") == ("快", 1.08)
+        with pytest.raises(SystemExit, match="受控词表"):
+            t.resolve_speed(cfg, "极快")
+
+    def test_情绪参数下传引擎并落manifest字段(self, tmp_path, monkeypatch):
+        """情绪声明必须抵达引擎、并落进 Take——否则 eval 无法回答「声明是否真的改变了声学输出」。"""
+        text = "第一段口播。"
+        monkeypatch.setattr(t, "transcribe", lambda _p: text)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        eng = _FakeEngine()
+        take = t._render_one(eng, t.Segment(1, "1", text, "低沉克制", "慢"), tmp_path / "s.wav")
+        assert eng.seen[0][1] == {"emo_text": "低沉克制", "emo_alpha": 0.8}, "参数必须下传引擎"
+        assert take.emotion == "低沉克制" and take.speed == "慢"
+
+    def test_拼音注入记录落Take(self, tmp_path, monkeypatch):
+        """机器做的替换与 readings 表一样需要可审计（架构设计三.2 要点 3）。"""
+        text = "世界忽然退远了"
+        monkeypatch.setattr(t, "transcribe", lambda _p: text)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        monkeypatch.setattr(t, "_injections", lambda: {"世界": "shi4jie4"})
+        eng = _FakeEngine()
+        take = t._render_one(eng, t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.g2p_injections == [
+            {"from": "世界", "to": "shìjiè", "tone3": "shi4jie4", "hits": 1}
+        ]
+        assert eng.seen[0][0].startswith("shìjiè"), "喂给引擎的必须是注入后文本"
+
+
+class TestReviewArg:
+    def test_全名与别名(self):
+        assert t.parse_review_arg("voice_stability=4,prosody=3") == {
+            "voice_stability": 4, "prosody": 3
+        }
+        assert t.parse_review_arg("voice=4,misread=5") == {
+            "voice_stability": 4, "misread": 5
+        }
+
+    @pytest.mark.parametrize("raw", [
+        "voice=0",      # 低于下界
+        "voice=6",      # 高于上界
+        "voice=abc",    # 非数字
+        "voice",        # 缺 =
+        "nope=3",       # 未知维度
+        "",             # 空
+    ])
+    def test_非法输入当场报错(self, raw):
+        """打点是人工评审的唯一入口：写错还继续跑，会得到一份「看起来打过点」的空 manifest。"""
+        with pytest.raises(SystemExit):
+            t.parse_review_arg(raw)
+
+    def test_写入是合并而非覆盖(self, tmp_path):
+        """一次只打 03.5 的三项、下次补 05 的两项是正常流程。"""
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        mf = ep / "03-audio" / "manifest.json"
+        mf.write_text(json.dumps({"human_review": {"voice_stability": 3}, "segments": []}),
+                      encoding="utf-8")
+        t.write_review(ep, {"prosody": 4})
+        assert json.loads(mf.read_text(encoding="utf-8"))["human_review"] == {
+            "voice_stability": 3, "prosody": 4
+        }
+
+    def test_没有manifest时报错(self, tmp_path):
+        with pytest.raises(SystemExit, match="先跑配音"):
+            t.write_review(tmp_path, {"prosody": 4})
+
+    def test_review短路不触发合成(self, tmp_path, monkeypatch):
+        """打点发生在听完音频之后，不该重跑合成。"""
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text("## 段落 1\n\n配音：甲。\n", encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": []}), encoding="utf-8")
+
+        def _boom(*a, **k):
+            raise AssertionError("--review 不该触发合成")
+
+        monkeypatch.setattr(t, "Engine", _boom)
+        t.run(ep, review={"prosody": 4})
+        assert json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))[
+            "human_review"
+        ] == {"prosody": 4}
+
+
+class TestConfigOverlay:
+    """`_extends` 覆盖层：本地 mlx 与云端 CUDA 各用一份差异配置，共同继承 voice.json。"""
+
+    def test_覆盖层只写差异_其余继承(self, tmp_path):
+        base = tmp_path / "base.json"
+        base.write_text(json.dumps({
+            "engine": "qwen3_tts", "model": "mlx-x", "ref_audio": "a.wav",
+            "readings": {"世界": "逝戒"}, "emotions": {"平静叙述": {}},
+        }), encoding="utf-8")
+        over = tmp_path / "over.json"
+        over.write_text(json.dumps({
+            "_extends": str(base), "engine": "indextts2", "model": "IndexTeam/IndexTTS-2",
+        }), encoding="utf-8")
+
+        cfg = t.load_config(over)
+        assert cfg["engine"] == "indextts2" and cfg["model"] == "IndexTeam/IndexTTS-2"
+        assert cfg["readings"] == {"世界": "逝戒"}, "未覆盖的字段必须继承，否则两份配置会分叉"
+        assert cfg["ref_audio"] == "a.wav"
+
+    def test_extends指向不存在时当场报错(self, tmp_path):
+        over = tmp_path / "over.json"
+        over.write_text(json.dumps({"_extends": "nope.json", "engine": "x",
+                                    "model": "y", "ref_audio": "z"}), encoding="utf-8")
+        with pytest.raises(SystemExit, match="_extends"):
+            t.load_config(over)
+
+    def test_云端覆盖层切到cuda引擎并继承全部共享表(self):
+        """真实文件检查：云端配置必须切到 qwen3_tts_cuda，且共享表一条不少。
+
+        防的错误：覆盖层写错字段名（比如漏了 readings 就该继承却手写了个空表），
+        会让云端用一份残缺的词表跑完整期。
+
+        引擎选型（2026-09-11 定稿）：Qwen3-TTS 的 PyTorch/CUDA 版。
+        与本地 mlx 版同版权重 → 音色一致（用户实听确认「相当好，很纯净」）。
+        Index 系列已否决：IndexTTS2 非多语种，与本项目英日歌名需求直接冲突。
+        """
+        base = t.load_config(paths.CONFIG / "voice.json")
+        cloud = t.load_config(paths.CONFIG / "voice.cloud.json")
+        assert cloud["engine"] == "qwen3_tts_cuda"
+        # 云端模型在数据盘、不在仓库内，所以用绝对路径；本地配置仍用 HF 仓库名
+        assert cloud["model"] == "/root/autodl-tmp/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        assert cloud["readings"] == base["readings"]
+        assert cloud["pinyin_injections"] == base["pinyin_injections"]
+        assert cloud["emotions"] == base["emotions"]
+        assert cloud["speed"] == base["speed"]
+        assert cloud["titles"] == base["titles"]
+
+
+class TestCascadeArbitration:
+    """级联仲裁（架构设计三.5）：主读不过才请仲裁，不是分数融合。
+
+    为什么必须是级联：两个 ASR 的 CER 不可比（S10 同构——不同模型的错误率
+    不是同一个量），混合分数等于把两把不同的尺子接起来量。
+    """
+
+    def test_同一把尺_判据纯函数(self):
+        assert t.readback_passes(0, 0.0) is True
+        assert t.readback_passes(2, 0.9) is True, "错字数少于 MIN_EDITS 时放行（短段落保护）"
+        assert t.readback_passes(5, 0.9) is False
+        assert t.readback_passes(99, 0.1) is True, "CER 达标即放行"
+
+    def test_主读通过时不触发仲裁(self, monkeypatch, tmp_path):
+        """主读过了就没有理由再花一次 ASR——仲裁是补漏，不是例行双跑。"""
+        text = "他站在那里"
+        calls: list = []
+        monkeypatch.setattr(t, "transcribe", lambda _p: text)
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("primary", "arbiter"))
+        monkeypatch.setattr(t.asr, "transcribe_audio",
+                            lambda _p, backend=None: (calls.append(backend) or (text, backend)))
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        take = t._render_one(_FakeEngine(), t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.asr_arbitrated is False
+        assert calls == [], "主读已过就不该请仲裁"
+
+    def test_主读不过_仲裁通过_落痕(self, monkeypatch, tmp_path):
+        """这正是升级 ASR 通道的全部意义：主读念飞、仲裁读对。"""
+        text = "他站在那里很久没有说话"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "完全不同的内容乱码乱码乱码")
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("primary", "arbiter"))
+        monkeypatch.setattr(t.asr, "transcribe_audio", lambda _p, backend=None: (text, backend))
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        take = t._render_one(_FakeEngine(), t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.asr_arbitrated is True
+        assert take.cer <= t.MAX_CER
+
+    def test_没有仲裁后端时不假装仲裁(self, monkeypatch, tmp_path):
+        """单档可用时，主读不过就直落既有重试/豁免链——不拿同一份裁决再判一次充数。"""
+        text = "他站在那里很久没有说话"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "乱码乱码乱码乱码乱码")
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("primary", None))
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        take = t._render_one(_FakeEngine(), t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.qc_skip == "asr-blind", "走既有豁免链，不是新造一条"
+        assert take.asr_arbitrated is None
+
+    def test_仲裁后端故障不静默(self, monkeypatch, tmp_path, capsys):
+        """仲裁后端挂掉会让「主读不过」直接掉进重试链，不说清楚现象就是「质检莫名变严」。"""
+        text = "他站在那里很久没有说话"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "乱码乱码乱码乱码乱码")
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("primary", "arbiter"))
+
+        def _boom(_p, backend=None):
+            raise RuntimeError("funasr 未安装")
+
+        monkeypatch.setattr(t.asr, "transcribe_audio", _boom)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        t._render_one(_FakeEngine(), t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert "仲裁后端 arbiter 执行失败" in capsys.readouterr().err
+
+
+    def test_仲裁也不过_继续走重试链(self, monkeypatch, tmp_path):
+        """仲裁是补漏，不是免罪符：两档都不过就照旧重试，最终落既有豁免链。
+
+        防的错误：把「请过仲裁」当成通过条件——那会让质检在升级 ASR 通道后
+        静默放宽，而放宽的证据（仲裁读对了）根本不存在。
+        """
+        text = "他站在那里很久没有说话"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "乱码乱码乱码乱码乱码")
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("primary", "arbiter"))
+        monkeypatch.setattr(t.asr, "transcribe_audio",
+                            lambda _p, backend=None: ("还是乱码乱码乱码乱码", backend))
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        take = t._render_one(_FakeEngine(), t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.qc_skip == "asr-blind", "仲裁也不过 → 走既有豁免链"
+        assert take.asr_arbitrated is not True, "没过就不能记成仲裁通过"
+
+
+class TestQwen3CudaLoader:
+    """云端引擎接缝：Qwen3-TTS 的 PyTorch/CUDA 版（2026-09-11 实测通过、定为 v2 引擎）。
+
+    与本地 `qwen3_tts`（mlx）是**同一个模型的两条实现路径**，权重相同所以音色一致。
+    """
+
+    def test_必须走x_vector路径(self, monkeypatch, tmp_path):
+        """**ADR-0006 的教训**：ICL 路径（传 ref_text）会把参考转录当正文念出来。
+
+        官方 PyTorch 版把 x-vector 做成了显式开关 `x_vector_only_mode`，
+        本 loader 必须固定用它、且不传 ref_text（我们的参考干声是日文，也没有可靠转录）。
+        """
+        captured: dict = {}
+
+        class FakeModel:
+            def generate_voice_clone(self, **kw):
+                captured.update(kw)
+                # 非零数据：synthesize 有「全静音即报错」的守卫，返回 zeros 会撞它
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+        class FakeEngine:
+            kind = "qwen3_tts_cuda"
+            cfg = {"emotions": {"平静叙述": {}}, "speed": {"中": 1.0}}
+            model = FakeModel()
+            ref_audio = "/nonexistent-ref.wav"
+            lang_code = "zh"
+            # 借用真实现：本用例验证的是 Engine.synthesize 的分派与传参，
+            # 不是重写一遍 cuda 分支（那测的就是测试自己了）
+            _synthesize_cuda = t.Engine._synthesize_cuda
+
+        eng = FakeEngine()
+        t.Engine.synthesize(
+            eng, "世界忽然退远了", tmp_path / "o.wav", attempt=1, seed=0,
+        )
+        assert captured["x_vector_only_mode"] is True, "必须是 x-vector 路径"
+        assert "ref_text" not in captured, "x-vector 路径不该传 ref_text"
+        # 采样率必须由模型返回并被采用，不能写死（不同模型输出率不同）
+        import wave as _wave
+
+        with _wave.open(str(tmp_path / "o.wav")) as w:
+            assert w.getframerate() == 24000, "写盘的采样率应来自模型返回值"
+
+    def test_loader_读取cuda配置(self, monkeypatch):
+        """配置从 voice.cloud.json 的 qwen3_cuda 段读，不在代码里写死。"""
+        seen: dict = {}
+
+        class FakeModel:
+            @staticmethod
+            def from_pretrained(path, **kw):
+                seen["path"] = path
+                seen.update(kw)
+                return object()
+
+        import sys as _sys
+        import types as _types
+
+        fake_mod = _types.ModuleType("qwen_tts")
+        fake_mod.Qwen3TTSModel = FakeModel
+        monkeypatch.setitem(_sys.modules, "qwen_tts", fake_mod)
+
+        t._load_qwen3_cuda(
+            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16"}}, "/models/x"
+        )
+        assert seen["path"] == "/models/x"
+        assert seen["device_map"] == "cuda:0"
+
+    def test_云端配置的模型路径是数据盘绝对路径(self):
+        """云端模型在数据盘、不在仓库内，必须是绝对路径（否则 _resolve_model 会拼到仓库根）。"""
+        cloud = t.load_config(paths.CONFIG / "voice.cloud.json")
+        assert cloud["model"].startswith("/root/autodl-tmp/models/")

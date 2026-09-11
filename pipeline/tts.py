@@ -38,6 +38,8 @@ from pathlib import Path
 from pypinyin import Style, pinyin
 
 from . import paths  # 必须在任何 HF 库之前，把模型缓存钉到 SSD
+from . import asr
+from . import g2p
 from .align import compute_script_vo_hash
 from .align import verify_alignment   # 叶子模块，无环
 from .qc import episode_duration_band
@@ -78,11 +80,18 @@ _FOLD = str.maketrans({"她": "他", "它": "他", "牠": "他", "妳": "你"})
 
 @dataclass
 class Segment:
-    """稿件里的一段口播。label 是稿件标注的段落号，可能不连续。"""
+    """稿件里的一段口播。label 是稿件标注的段落号，可能不连续。
+
+    `emotion`/`speed` 是 v2 新增的**可选**字段（架构设计 3.3）：不写时为 None，
+    由 `resolve_emotion`/`resolve_speed` 落到默认值（平静叙述/中），
+    行为与 v1 一致——旧稿零迁移。
+    """
 
     index: int      # 出现顺序，1-based，决定文件名与渲染顺序
     label: str      # 稿件里写的「段落 N」
     text: str
+    emotion: str | None = None   # 受控词表内的情绪名（check_script 已拦表外值）
+    speed: str | None = None     # 慢/中/快（check_script 已拦表外值）
 
 
 @dataclass
@@ -104,6 +113,17 @@ class Take:
     sentences: list[dict] | None = None
     qc_skip: str | None = None   # "asr-blind" = ASR 对音色严重失真，CER 不可用，交人前必须人耳确认
     speakable: str | None = None  # 实际喂给模型的文本（剥引号+读音替换后）：段级复用比对的依据
+    # v2 新增（架构设计 3.3）：情感与语速声明必须与合成结果一起进 manifest，
+    # eval 才能按情绪分组统计 f0/停顿——回答「情感声明是否真的改变了声学输出」，
+    # 防止情绪字段沦为写了不生效的安慰剂。
+    emotion: str | None = None
+    speed: str | None = None
+    # 级联仲裁通过（架构设计三.5）：主读不过、仲裁读通过。落痕是为了观察
+    # 仲裁率——某段仲裁率 >30% 说明主读对该音色系统性失真，需与 ASR 盲区同源审查。
+    asr_arbitrated: bool | None = None
+    # 拼音直注的替换记录（架构设计三.2 要点 3）：机器做的替换与 readings 表
+    # 一样需要可审计。
+    g2p_injections: list[dict] | None = None
 
 
 # ---------- 稿件解析 ----------
@@ -121,7 +141,15 @@ def parse_script(path: Path) -> list[Segment]:
         vo = re.search(r"^配音[：:]\s*(.+)$", block, re.M)
         if not vo:
             continue
-        segs.append(Segment(len(segs) + 1, label, vo.group(1).strip()))
+        # v2 可选字段（架构设计 3.3）：不写 = None，与 check_script 同口径。
+        # 全角/半角冒号都认——稿件里中英冒号混用是常态。
+        emo = re.search(r"^情绪[：:]\s*(.+)$", block, re.M)
+        spd = re.search(r"^语速[：:]\s*(.+)$", block, re.M)
+        segs.append(Segment(
+            len(segs) + 1, label, vo.group(1).strip(),
+            emo.group(1).strip() if emo else None,
+            spd.group(1).strip() if spd else None,
+        ))
     if not segs:
         raise SystemExit(f"FAIL 没从 {path} 解析出任何「## 段落 N + 配音：」，检查稿件格式")
     return segs
@@ -369,6 +397,44 @@ def _load_qwen3(ref: str | Path):
     return load_model(str(ref))
 
 
+def _load_qwen3_cuda(cfg: dict, model_dir: str | Path):
+    """Qwen3-TTS 的 **PyTorch/CUDA** 版 loader（云端主选，2026-09-11 实测通过）。
+
+    与 `_load_qwen3` 是同一个模型的两条实现路径：
+    - `_load_qwen3`（mlx）：本地 Apple Silicon，v1 一直在用
+    - `_load_qwen3_cuda`（本函数）：云端 CUDA，`pip install qwen-tts`
+
+    两者**权重相同**，所以音色一致——用户实听「音色相当好，很纯净」，
+    这是选它作 v2 云端引擎的决定性理由。
+
+    ## 克隆路径必须走 x-vector（ADR-0006 的教训）
+
+    `generate_voice_clone(..., x_vector_only_mode=True)`：官方 PyTorch 版把
+    x-vector 路径做成了显式开关。mlx 版的 ICL 路径（传 ref_text）有 bug——
+    模型会把参考转录当正文念出来；x-vector 路径（纯说话人嵌入）实测正常。
+    本 loader 固定用它，**不传 ref_text**（我们的参考干声是日文，本来也没有可靠转录）。
+
+    ## Index 系列为何出局（2026-09-11 记录，避免以后重走）
+
+    架构设计 3.1 原定 IndexTTS2 主选，实测否决：
+    1. **不是多语种模型**（官方：仅中文+拼音；日语是 IndexTTS2.5 才加的），
+       而本项目旁白含英日歌名——与 ADR-0006 换掉 IndexTTS-1.5 的理由直接冲突；
+    2. 用户实听 seg6 参考下「音色浑浊、字听不清」且语速异常；
+    3. 部署成本高：IndexTTS2 与 2.5 的 transformers 版本冲突。
+    另 CosyVoice2 亦因 pip 卡死未能评估，留待以后。
+    """
+    from qwen_tts import Qwen3TTSModel
+
+    opts = cfg.get("qwen3_cuda") or {}
+    import torch
+
+    return Qwen3TTSModel.from_pretrained(
+        str(model_dir),
+        device_map=opts.get("device_map", "cuda:0"),
+        dtype=getattr(torch, opts.get("dtype", "bfloat16")),
+    )
+
+
 LOADERS = {"indextts": _load_indextts, "qwen3_tts": _load_qwen3}
 
 
@@ -443,8 +509,11 @@ class Engine:
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
-        loader = LOADERS.get(self.kind, _load_generic)
-        self.model = loader(_resolve_model(cfg["model"]))
+        if self.kind == "qwen3_tts_cuda":
+            self.model = _load_qwen3_cuda(cfg, _resolve_model(cfg["model"]))
+        else:
+            loader = LOADERS.get(self.kind, _load_generic)
+            self.model = loader(_resolve_model(cfg["model"]))
 
         self.ref_mel = None
         if self.kind == "indextts":
@@ -456,11 +525,55 @@ class Engine:
                 load_audio(self.ref_audio, sample_rate=self.model.sample_rate)
             )
 
-    def synthesize(self, text: str, dest: Path, attempt: int, seed: int) -> int:
-        """生成一段并落盘，返回采样率。attempt 从 1 起，决定采样温度。"""
-        import mlx.core as mx
+    def synthesize(
+        self, text: str, dest: Path, attempt: int, seed: int,
+        emo_params: dict | None = None,
+    ) -> int:
+        """生成一段并落盘，返回采样率。attempt 从 1 起，决定采样温度。
+
+        `emo_params` 来自 voice.json 的情绪词表（架构设计 3.3）。**各引擎能力不同**：
+        - indextts2：按实测确认的形式消费（emo_text / emo_vector，以云端 probe 为准）；
+        - qwen3_tts（本地 mlx）：**没有情感控制参数**，此处有意忽略——但情绪声明
+          仍会进 manifest 供 eval 按情绪分组统计（「声明是否真的改变了声学输出」
+          在本地通道上注定答「没改变」，这是该通道的已知能力边界，不是 bug）。
+        """
         import numpy as np
         from scipy.io import wavfile
+
+        # **云端路径与 mlx 路径必须彻底分开**：云端没有 mlx（Apple Silicon 专有），
+        # 任何无条件 import 都会让 qwen3_tts_cuda 直接 ImportError——而它正是云端
+        # 唯一的引擎。2026-09-11 由 TestQwen3CudaLoader 抓出，故拆成两条独立分支。
+        if self.kind == "qwen3_tts_cuda":
+            audio, rate = self._synthesize_cuda(text)
+        else:
+            audio, rate = self._synthesize_mlx(text, attempt, seed)
+
+        audio = audio.reshape(-1)
+        if not audio.size or float(np.max(np.abs(audio))) == 0.0:
+            raise RuntimeError("模型产出全静音")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        wavfile.write(dest, rate, (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
+        return rate
+
+    def _synthesize_cuda(self, text: str):
+        """云端 CUDA 通道（Qwen3-TTS PyTorch 版）。**不碰 mlx。**
+
+        必须 `x_vector_only_mode=True`：ICL 路径（传 ref_text）会把参考转录当正文
+        念出来（ADR-0006 实测）；x-vector 是纯说话人嵌入路径，只传 ref_audio。
+        """
+        import numpy as np
+        wavs, rate = self.model.generate_voice_clone(
+            text=text,
+            language=self.lang_code or "Chinese",
+            ref_audio=self.ref_audio,
+            x_vector_only_mode=True,
+        )
+        return np.asarray(wavs[0]).reshape(-1), rate
+
+    def _synthesize_mlx(self, text: str, attempt: int, seed: int):
+        """本地 mlx 通道（Apple Silicon，v1 一直在用）。返回 (audio, rate)。"""
+        import mlx.core as mx
 
         mx.random.seed(seed)
         temp, top_k = self.SAMPLING[min(attempt, len(self.SAMPLING)) - 1]
@@ -508,23 +621,33 @@ class Engine:
                 raise RuntimeError("模型没有产出任何音频")
             audio = np.concatenate(chunks)
 
-        audio = audio.reshape(-1)
-        if not audio.size or float(np.max(np.abs(audio))) == 0.0:
-            raise RuntimeError("模型产出全静音")
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        wavfile.write(dest, rate, (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
-        return rate
+@lru_cache(maxsize=1)
+def _asr_backends() -> tuple[str, str | None]:
+    """选定 (主读, 仲裁) 后端，进程内复用。
+
+    探测有成本，且选定结果不会中途变化；每段都重探是白费。
+    """
+    return asr.pick_backends()
+
+
+def readback_passes(edits: int, err: float) -> bool:
+    """回读判据（纯函数）。
+
+    仲裁必须与主读用**同一判据**——否则「仲裁通过」与「主读通过」不是同一件事，
+    级联就失去了可比性（S10：不同模型的 CER 不是同一个量，所以判据要同一把尺）。
+    """
+    return err <= MAX_CER or edits < MIN_EDITS
 
 
 def transcribe(path: Path) -> str:
-    """回读：把生成的音频交给 Whisper，用来抓漏读 / 重复 / 跑飞。"""
-    import mlx_whisper
-    from .asr import REPO
+    """回读：音频 → 文本，用来抓漏读 / 重复 / 跑飞。
 
-    return mlx_whisper.transcribe(
-        str(path), path_or_hf_repo=REPO, language="zh", verbose=None
-    )["text"].strip()
+    v2 起走 `asr` 的后端表：本地 Mac 无 CUDA 自动落 mlx-whisper，
+    云端落 SenseVoice/Whisper-CUDA——**同一份裁决代码，两处算力**（ADR-0014 的代码层落地）。
+    """
+    primary, _ = _asr_backends()
+    return asr.transcribe_audio(path, backend=primary)[0]
 
 
 # ---------- 主流程 ----------
@@ -538,6 +661,14 @@ def _ref_text_for(ref: Path) -> str | None:
 
 
 def load_config(path: Path = CONFIG) -> dict:
+    """读配音配置，支持 `_extends` 覆盖层。
+
+    **为什么要覆盖层**（2026-09-11）：本地 Mac 只装得了 mlx（qwen3_tts），
+    云端只装得了 CUDA（indextts2），同一个 `engine` 字段喂不了两边。
+    若让云端配置整份复制，两份必然分叉——加一条 readings 词条要改两处，
+    漏一处就是静默不一致（而读音分叉的代价是某一期突然念错）。
+    覆盖层只写差异，其余字段从基配置继承。
+    """
     if not path.exists():
         raise SystemExit(
             f"FAIL 缺少 {path}。先跑 `python -m pipeline.tts probe` 选定音色，"
@@ -550,6 +681,18 @@ def load_config(path: Path = CONFIG) -> dict:
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise SystemExit(f"FAIL {path} 不是合法 JSON：{e}")
+
+    base_name = cfg.get("_extends")
+    if base_name:
+        base_path = Path(base_name)
+        if not base_path.is_absolute():
+            base_path = paths.CONFIG / base_name
+        if not base_path.exists():
+            raise SystemExit(f"FAIL {path} 的 _extends 指向不存在的 {base_path}")
+        base = load_config(base_path)
+        base.update({k: v for k, v in cfg.items() if k != "_extends"})
+        cfg = base
+
     missing = [k for k in ("engine", "model", "ref_audio") if not cfg.get(k)]
     if missing:
         raise SystemExit(
@@ -600,6 +743,17 @@ _MUTE = re.compile(r"[“”‘’\"'「」『』《》〈〉（）()\[\]【】]
 
 
 @lru_cache(maxsize=1)
+def _voice_cfg() -> dict:
+    """voice.json 只读一次。
+
+    `speakable` 每句都要调，绝不能每句读一次盘（下面 `_readings` 的注释
+    早就写明了这条约束）。v2 把读数集中到这一个入口，免得每加一张表
+    就多一次文件读取。
+    """
+    return json.loads(CONFIG.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
 def _readings() -> dict[str, str]:
     """`config/voice.json` 的读音替换表（键 = 原文词，值 = 合成侧同音替换词）。
 
@@ -607,17 +761,69 @@ def _readings() -> dict[str, str]:
     只能在合成文本上换成模型不会念错的同音字（2026-08-09 实测：
     喰种→餐种、绚都→绚督 有效）。字幕用稿子原文，替换只发生在合成侧。
     每次合成句都调 speakable，表必须只读一次，不能每句读文件。
+
+    **v2 起降级为「逐案 override」**：音读泄漏改由 `g2p` 的拼音直注层治理，
+    本表只保留自动注音仍读错的残余个例。
     """
-    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-    return cfg.get("readings", {})
+    return _voice_cfg().get("readings", {})
 
 
-def speakable(s: str) -> str:
-    """念得出来的那份文本。字幕用原文，合成用这个。"""
+@lru_cache(maxsize=1)
+def _injections() -> dict[str, str]:
+    """voice.json 的 `pinyin_injections`（TONE3 统一表示，引擎语法由 g2p 分派）。"""
+    return g2p.load_injections(_voice_cfg())
+
+
+def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
+    """念得出来的那份文本 + 注入记录（v2 链路，架构设计三.2）。
+
+    链路：剥不发音符号 → 拼音直注 → readings 逐案 override。
+    readings 排在**最后**不是随意：它是「自动注音仍读错」的残留兜底，
+    与 g2p 是两层而非替代关系；顺序反了，注音之后的拼音串会绕过它。
+    """
     s = _MUTE.sub("", s)
+    s, applied = g2p.inject(s, _injections(), engine_kind)
     for src, rep in _readings().items():
         s = s.replace(src, rep)
-    return s
+    return s, applied
+
+
+def speakable(s: str, engine_kind: str = "qwen3_tts") -> str:
+    """念得出来的那份文本。字幕用原文，合成用这个。"""
+    return speakable_traced(s, engine_kind)[0]
+
+
+# 默认情绪/语速（架构设计 3.3）：不写字段的段落落到这两个值，行为与 v1 一致。
+DEFAULT_EMOTION = "平静叙述"
+DEFAULT_SPEED = "中"
+
+
+def resolve_emotion(cfg: dict, emotion: str | None) -> tuple[str, dict]:
+    """情绪名 → (实际生效的情绪名, 引擎参数字典)。纯函数。
+
+    表外词在 check_script 已拦下；这里若再遇一次（比如绕过 check 直接调 run）
+    就报错而不静默回退——静默回退会造出「写了但没生效」的安慰剂，
+    而防止这种安慰剂正是这两个字段进 manifest 的目的。
+    """
+    table = {k: v for k, v in (cfg.get("emotions") or {}).items() if not k.startswith("_")}
+    name = emotion or DEFAULT_EMOTION
+    if name not in table:
+        raise SystemExit(
+            f"FAIL 情绪 '{name}' 不在 voice.json 的受控词表内（{sorted(table)}）。"
+            f"表外词无法映射到引擎参数，也不会进 manifest——不静默回退。"
+        )
+    return name, dict(table[name])
+
+
+def resolve_speed(cfg: dict, speed: str | None) -> tuple[str, float]:
+    """语速名 → (实际生效的语速名, 时长系数)。纯函数。"""
+    table = {k: v for k, v in (cfg.get("speed") or {}).items() if not k.startswith("_")}
+    name = speed or DEFAULT_SPEED
+    if name not in table:
+        raise SystemExit(
+            f"FAIL 语速 '{name}' 不在 voice.json 的受控词表内（{sorted(table)}）。"
+        )
+    return name, float(table[name])
 
 
 def split_sentences(text: str) -> list[str]:
@@ -753,10 +959,17 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
             skipped = skipped or take.qc_skip is not None
         _concat_with_gap(parts, dest, SENT_GAP)
         _pad_tail(dest, _para_gap())
+        # 段级 Take 的情绪/语速按段落声明记录（与上面逐句渲染无关：
+        # 一个段落的情绪对它内部每个句子都成立）；注入记录按段汇总去重。
+        emo_name, _ = resolve_emotion(engine.cfg, seg.emotion)
+        spd_name, _ = resolve_speed(engine.cfg, seg.speed)
+        seg_injections = speakable_traced(seg.text, getattr(engine, "kind", "qwen3_tts"))[1]
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta,
                     qc_skip="asr-blind" if skipped else None,
-                    speakable=speakable(seg.text))
+                    speakable=speakable(seg.text, getattr(engine, "kind", "qwen3_tts")),
+                    emotion=emo_name, speed=spd_name,
+                    g2p_injections=seg_injections or None)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -887,6 +1100,11 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
     want = expected_duration(seg.text)
     last = ""
     heard_all: list[str] = []
+    # 情绪/语速在循环外解析一次（架构设计 3.3）。表外词在这里报错而不是静默回退：
+    # 静默回退会造出「写了但没生效」的安慰剂，而防这种安慰剂正是它们进 manifest 的目的。
+    emo_name, emo_params = resolve_emotion(engine.cfg, seg.emotion)
+    spd_name, _spd_coef = resolve_speed(engine.cfg, seg.speed)
+    engine_kind = getattr(engine, "kind", "qwen3_tts")
     # 每次尝试写独立临时文件（最后 os.replace 到 dest），豁免时要挑 3 次里最好的。
     # 旧实现每次覆盖同一 dest：豁免路径保留的是**最后一次**尝试，而三次是不同种子，
     # 最后一次可能最差（2026-08-16 段落 5.1：attempt 3 把エウテルペ 念成 3s，
@@ -899,7 +1117,10 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         tmp = dest.parent / f".{dest.stem}.{attempt}.wav"
         custom_seed = getattr(engine, "segment_seeds", {}).get(str(seg.label))
         seed = custom_seed if custom_seed is not None else (attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
-        engine.synthesize(speakable(seg.text), tmp, attempt, seed=seed)
+        # v2 链路（架构设计三.2）：剥符号 → 拼音直注 → readings override。
+        # 注入记录进 Take.g2p_injections：机器做的替换与 readings 表一样要可审计。
+        spk_text, injections = speakable_traced(seg.text, engine_kind)
+        engine.synthesize(spk_text, tmp, attempt, seed=seed, emo_params=emo_params)
         # **裁剪要排在回读之前。** 裁掉的是首尾静音与结尾的机械声，但判据是启发式的，
         # 万一切进了句尾真实的字，只有回读能发现。放在回读之后裁就没人管了。
         # 机械声检测只对 IndexTTS 有意义（Qwen3 无此成因，80 句零触发——见 _trim_silence）。
@@ -911,13 +1132,36 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         heard_all.append(heard)
 
         ok_dur = DUR_BAND[0] <= ratio <= DUR_BAND[1]
-        ok_cer = err <= MAX_CER or edits < MIN_EDITS
+        ok_cer = readback_passes(edits, err)
+
+        # 级联仲裁（架构设计三.5）：**主读不过才请仲裁**，不是分数融合——
+        # 两个 ASR 的 CER 不可比，混合分数等于把两把不同的尺子接起来量。
+        arbitrated = False
+        if not ok_cer:
+            _, arbiter = _asr_backends()
+            if arbiter:
+                try:
+                    alt = asr.transcribe_audio(tmp, backend=arbiter)[0]
+                    a_edits, a_err = cer(seg.text, alt)
+                    if readback_passes(a_edits, a_err):
+                        heard, edits, err = alt, a_edits, a_err
+                        ok_cer = True
+                        arbitrated = True
+                        heard_all.append(f"[仲裁/{arbiter} 通过] {alt}")
+                    else:
+                        heard_all.append(f"[仲裁/{arbiter} 也未过] {alt}")
+                except Exception as ex:
+                    # 不静默：仲裁后端故障会让「主读不过」直接掉进重试链，
+                    # 若不说清楚，人看到的现象是「质检莫名变严」
+                    print(f"    WARN 仲裁后端 {arbiter} 执行失败: {type(ex).__name__}: {ex}",
+                          file=sys.stderr)
         if ok_dur and ok_cer:
             os.replace(tmp, dest)
             _cleanup_takes(dest, ATTEMPTS)
             return Take(seg.index, seg.label, seg.text, dest.name,
                         round(dur, 3), round(err, 4), attempt,
-                        speakable=speakable(seg.text))
+                        speakable=spk_text, emotion=emo_name, speed=spd_name,
+                        g2p_injections=injections or None, asr_arbitrated=arbitrated)
 
         why = []
         if not ok_dur:
@@ -941,7 +1185,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(dur, 3), round(err, 4), ATTEMPTS,
                     sentences=None, qc_skip="asr-blind",
-                    speakable=speakable(seg.text))
+                    speakable=spk_text, emotion=emo_name, speed=spd_name,
+                    g2p_injections=injections or None)
 
     _cleanup_takes(dest, ATTEMPTS)
     raise SystemExit(
@@ -1034,17 +1279,94 @@ def _stale_downstream(episode: Path, audio: list[dict]) -> list[str]:
     return out
 
 
-def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
+# 03.5 打点的允许维度复用 eval 的五键约束（架构设计 2.3）。
+# 抄一份到这里必然分叉——评审口径只该有一个真源。
+_REVIEW_ALIASES = {"voice": "voice_stability"}
+
+
+def parse_review_arg(raw: str) -> dict[str, int]:
+    """解析 --review 参数（纯函数）：`voice=4,prosody=3` → {"voice_stability": 4, ...}。
+
+    越界/未知键/格式错**当场报错**（E10）：打点是人工评审的唯一入口，
+    写错维度名还继续跑，会得到一份「看起来打过点」的空 manifest。
+    """
+    from .eval import ALLOWED_HUMAN_REVIEW_KEYS
+
+    out: dict[str, int] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise SystemExit(
+                f"FAIL --review 项 '{item}' 缺 '='（格式：voice_stability=4,prosody=3,misread=4）"
+            )
+        k, v = item.split("=", 1)
+        key = _REVIEW_ALIASES.get(k.strip(), k.strip())
+        if key not in ALLOWED_HUMAN_REVIEW_KEYS:
+            raise SystemExit(
+                f"FAIL 未知评审维度 '{k.strip()}'。允许：{sorted(ALLOWED_HUMAN_REVIEW_KEYS)}"
+                f"（另有别名：{sorted(_REVIEW_ALIASES)}）"
+            )
+        try:
+            score = int(v.strip())
+        except ValueError:
+            raise SystemExit(f"FAIL 评审分 '{v.strip()}' 不是整数")
+        if not 1 <= score <= 5:
+            raise SystemExit(f"FAIL 评审分 {score} 越界（合法范围 1-5）")
+        out[key] = score
+    if not out:
+        raise SystemExit("FAIL --review 没解析出任何维度")
+    return out
+
+
+def write_review(episode: Path, review: dict[str, int]) -> Path:
+    """把 03.5 打点写进已有 manifest 的 human_review 槽位。
+
+    独立于合成：打点发生在听完音频之后，不该触发重合成。
+    **合并而不是覆盖**——一次只打 03.5 的三项、下次再补 05 的两项是正常流程。
+    """
+    manifest_path = episode / "03-audio" / "manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"FAIL 找不到 {manifest_path}，先跑配音再打点")
+    mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+    merged = dict(mf.get("human_review") or {})
+    merged.update(review)
+    mf["human_review"] = merged
+    tmp = manifest_path.with_name(manifest_path.name + ".tmp")
+    tmp.write_text(json.dumps(mf, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, manifest_path)
+    print(f"[OK] 打点已写入 {manifest_path}")
+    for k, v in sorted(review.items()):
+        print(f"     {k} = {v}")
+    return manifest_path
+
+
+def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
+        review: dict[str, int] | None = None) -> Path:
     paths.require_data()
     script = episode / "02-script.md"
     if not script.exists():
         raise SystemExit(f"FAIL 找不到 {script}")
+
+    # --review 是独立动作：听完音频后打点，不该触发重合成
+    if review is not None:
+        return write_review(episode, review)
 
     cfg = load_config(cfg_path)
     segs = parse_script(script)
     out_dir = episode / "03-audio"
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "manifest.json"
+
+    # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
+    # 人工评审结果抹掉（而打点是有人时成本的动作）
+    existing_review = None
+    if manifest_path.exists():
+        try:
+            existing_review = json.loads(manifest_path.read_text(encoding="utf-8")).get("human_review")
+        except Exception as e:
+            print(f"WARN 旧 manifest 不可读，human_review 将丢失: {e}", file=sys.stderr)
 
     done: dict[int, Take] = {}
     if manifest_path.exists() and not force:
@@ -1073,6 +1395,9 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG) -> Path:
                     "script_vo_hash": vo_hash,
                     **_voice_fingerprint(cfg),
                     "total_duration": round(total, 3),
+                    # 03.5/05 人工打点槽位（架构设计 2.3）：eval 从这里取主观分。
+                    # 无打点时为 null——**不是 0 分**，缺失与低分必须可区分（E10）。
+                    "human_review": existing_review,
                     "segments": [asdict(t) for t in takes],
                 },
                 ensure_ascii=False, indent=2,
@@ -1147,6 +1472,8 @@ def main() -> int:
     r.add_argument("episode", type=Path)
     r.add_argument("--force", action="store_true", help="忽略已有产物，全部重生成")
     r.add_argument("--config", type=Path, default=CONFIG)
+    r.add_argument("--review", type=str, default=None,
+                   help="写入 03.5 结构化打点（如 voice=4,prosody=3,misread=4），不触发重合成")
 
     p = sub.add_parser("probe", help="单句试音")
     p.add_argument("text")
@@ -1162,7 +1489,8 @@ def main() -> int:
     if a.cmd == "probe":
         probe(a.text, a.config, a.out, a.ref)
     else:
-        run(a.episode, a.force, a.config)
+        run(a.episode, a.force, a.config,
+            parse_review_arg(a.review) if a.review else None)
     return 0
 
 
