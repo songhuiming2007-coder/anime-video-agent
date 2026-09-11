@@ -372,7 +372,8 @@ def probe_video(video: Path) -> dict:
 
 
 def register(video: Path, anime: str, season: int, episode: int,
-             path: Path = SOURCES, sp: int | None = None) -> dict:
+             path: Path = SOURCES, sp: int | None = None,
+             title: str | None = None) -> dict:
     """把一集片源登记进 sources.json，登记前强制过完整性校验。
 
     渲染阶段要从 (season, episode) 找到 mkv，而索引里只有集号没有路径——
@@ -390,6 +391,8 @@ def register(video: Path, anime: str, season: int, episode: int,
     db = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     key = f"SP{sp:02d}" if sp is not None else f"S{season:02d}E{episode:02d}"
     entry = {"path": str(video), **probe_video(video)}
+    if title:
+        entry["title"] = title
     db.setdefault(anime, {})[key] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     paths.atomic_write(path, json.dumps(db, ensure_ascii=False, indent=2))

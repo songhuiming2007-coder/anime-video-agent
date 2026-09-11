@@ -980,7 +980,7 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
     anime = bgm.anime_of(episode)
     if anime is None:
         raise SystemExit(f"FAIL 音乐段画面需要 01-topic.md 的 `番: `字段")
-    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2}|SP\d{1,2})", ep_tag)
+    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2}|SP\d{1,2}(?:[-_][^\s:]+)?)", ep_tag)
     if m and m.group(1):
         prefix = m.group(1).strip()
         declared = list(dict.fromkeys([anime] + bgm.animes_of(episode)))
@@ -990,6 +990,9 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
                 f"{'、'.join(declared)}")
         anime = prefix
         ep_tag = m.group(2)
+    sp_m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", ep_tag, re.I)
+    if sp_m:
+        ep_tag = f"SP{int(sp_m.group(1)):02d}"
     sources = json.loads((paths.ROOT / "data" / "library" / "sources.json")
                          .read_text(encoding="utf-8"))
     rec = sources.get(anime, {}).get(ep_tag)

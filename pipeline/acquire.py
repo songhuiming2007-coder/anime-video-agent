@@ -484,8 +484,9 @@ def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int
     """登记进 sources.json。**复用 `ingest.register`**（登记前强制过 intact），
     另做三件它不管的事：集键冲突、门禁复核、落到池的 raw 目录。
 
-    为什么要挪文件：池里 SP01–SP18 全在 `data/library/raw/<池>/`，**集键与文件名同号**
-    是这套目录能看懂的约定（E1 产物即状态）。放进来的东西留在 incoming/ 会让池分叉两处。
+    为什么要挪文件：池素材全在 `data/library/raw/<池>/`，**集键与文件名同号**（可加语义
+    后缀，如 SP41-Aimer_ninelie_MV.mp4）是这套目录能看懂的约定（E1 产物即状态）。
+    放进来的东西留在 incoming/ 会让池分叉两处。
     """
     sources = paths.DATA / "library" / "sources.json"
     db = json.loads(sources.read_text(encoding="utf-8")) if sources.exists() else {}
@@ -522,7 +523,8 @@ def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int
         if overall(vs) == "FAIL":
             raise SystemExit("FAIL 门禁没过，没登记。先修素材；确实要收就 --force 并写理由给人看")
 
-    dest = paths.DATA / "library" / "raw" / pool / f"{k}{file.suffix.lower()}"
+    slug = slugify((led or {}).get("title") or file.stem)
+    dest = paths.DATA / "library" / "raw" / pool / f"{k}-{slug}{file.suffix.lower()}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if file.resolve() != dest.resolve():
         if dest.exists():
@@ -532,7 +534,8 @@ def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int
     # 登记表里存**相对仓库根**的路径（E4）；ingest 存的就是传进去的那个字符串
     if Path.cwd() != paths.ROOT:
         os.chdir(paths.ROOT)
-    entry = ingest_register(dest.relative_to(paths.ROOT), anime=pool, season=1, episode=0, sp=key)
+    entry = ingest_register(dest.relative_to(paths.ROOT), anime=pool, season=1,
+                            episode=0, sp=key, title=(led or {}).get("title"))
     print(f"  已登记 {pool}/{k}：{entry['width']}×{entry['height']} "
           f"{entry['duration']:.1f}s fps={entry['fps']}")
     entries = ledger_load()
