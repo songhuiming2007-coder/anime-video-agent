@@ -1,0 +1,61 @@
+{
+  "_note": "端云协同机制配置。实例凭据与 SSH 别名在 cloud.local.json（不进 git）。",
+  "provider": "autodl",
+  "region": "西北B区",
+  "image": "anime-video-agent-v2:py312-torch2.8-cu128",
+  "gpu": "RTX 6000D (实测 85651 MiB ≈ 83.6GB，2026-09-11 nvidia-smi)",
+  "hourly_rate_cny": 2.40,
+  "_rate_note": "2.40元/小时：AutoDL 西北B区 RTX 6000D 单卡实价约 2.2~2.6 元/小时（按 2.40 元保守估算）",
+  "cardless_rate_cny": 0.10,
+  "_cardless_rate_note": "0.10元/小时：AutoDL 无卡模式开机（0.5核 2GB），用于环境准备、代码同步与模型预置",
+  "remote_root": "/root/anime-video-agent",
+  "remote_data": "/root/autodl-tmp/data",
+  "remote_models": "/root/autodl-tmp/models",
+  "budget_per_episode_cny": 0.35,
+  "_budget_note": "0.35元：RTX 6000D 约 2.4元/小时（0.04元/分钟），云端单期 TTS+回读耗时约 6~8 分钟，基准预算 0.35 元",
+  "budget_per_phase0_cny": 25.0,
+  "idle_shutdown_seconds": 300,
+  "_idle_note": "300s：云端任务完成后 5 分钟无心跳且无 tmux 活跃任务即由 watchdog 自动 shutdown 实例，防止忘关机产生高额计费",
+  "_retention_defense_note": "关机 15 天后释放防御规则：若实例超过 10 天未启用，自动以无卡模式开机 1 分钟后关机以续期",
+  "_branch_strategy_note": "远端仓库跟踪 v2-cloud-gpu 分支，M2 开工前经人批准 push、云端 pull 同步",
+  "_disk_expansion_note": "数据盘容量预警：五模型全齐后约占 33GB，Phase 0 打标帧缓存还需空间，M2 前在 AutoDL 控制台确认扩容",
+  "sync": {
+    "up": [
+      "02-script.md",
+      "01-topic.md",
+      "config/"
+    ],
+    "down": [
+      "03-audio/",
+      "04-clips.json",
+      "06-check.log"
+    ]
+  },
+  "models": {
+    "IndexTeam/IndexTTS-2": {
+      "dir": "IndexTeam/IndexTTS-2",
+      "min_gb": 3.0,
+      "description": "IndexTTS2 语音合成主选引擎"
+    },
+    "Qwen/Qwen3-VL-8B-Instruct": {
+      "dir": "Qwen/Qwen3-VL-8B-Instruct",
+      "min_gb": 15.0,
+      "description": "Qwen3-VL-8B 视觉大模型镜头意象打标"
+    },
+    "BAAI/bge-m3": {
+      "dir": "BAAI/bge-m3",
+      "min_gb": 2.0,
+      "description": "bge-m3 意象检索向量模型"
+    },
+    "openai/whisper-large-v3": {
+      "dir": "openai/whisper-large-v3",
+      "min_gb": 3.0,
+      "description": "Whisper-Large-v3 ASR 仲裁模型"
+    },
+    "FunAudioLLM/SenseVoiceSmall": {
+      "dir": "FunAudioLLM/SenseVoiceSmall",
+      "min_gb": 0.5,
+      "description": "SenseVoice-Small 高速回读质检主读模型"
+    }
+  }
+}

@@ -5,6 +5,8 @@
 # 从个人文稿提炼的声音样本。工程约定在 CLAUDE.md（进 git），
 # 模板留 `*.local.md.example`（进 git，不被下面这条命中）。
 *.local.md
+*.local.json
+config/*.local.json
 
 .DS_Store
 .venv/
