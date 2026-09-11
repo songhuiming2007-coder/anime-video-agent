@@ -1063,3 +1063,29 @@ class TestStaleArtifactGuard:
         dest = c.run(ep, anime="番", force=True)
         assert dest.exists()
 
+
+
+class TestEpScopePool:
+    """`集: SPxx`（特典池）的作用域：池就是检索空间，没有「季」这一层。
+
+    v2 之前这条路径根本走不到（SP 素材严禁写查询/场景，只许锚点直通），
+    所以旧代码 `re.fullmatch(r"S\\d+E\\d+")` 返回 None 后直接 `.group(1)` 的
+    AttributeError 一直没被人踩到——而 `check_script._norm_ep` 早就放行 SP 集号。
+    2026-09-11 裁决把池升为 M2b 的主服务对象，这条路就成了主路。
+    """
+
+    def test_池集键返回全空间与_scope_2(self):
+        assert c._parse_ep_scope("SP05") == ([(None, None)], 2)
+        assert c._parse_ep_scope("SP17") == ([(None, None)], 2)
+
+    def test_番剧集键仍是三级作用域(self):
+        assert c._parse_ep_scope("S01E05") == ([(1, 5), (1, None), (None, None)], 0)
+
+    def test_没写集字段与写池集键等价(self):
+        # 池只有一级，所以「写了 SP05」与「不写」的检索空间相同
+        assert c._parse_ep_scope("SP05") == c._parse_ep_scope(None)
+
+    def test_认不出的集号显式失败而不是_AttributeError(self):
+        for bad in ("OVA", "第五集", "S1", "SP", "01", "sp05x"):
+            with pytest.raises(SystemExit, match="SxxEyy"):
+                c._parse_ep_scope(bad)

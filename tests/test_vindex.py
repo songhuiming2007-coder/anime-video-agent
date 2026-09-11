@@ -8,6 +8,7 @@
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -195,6 +196,14 @@ class TestParseKey:
     def test_OVA_记作_E00(self):
         assert vindex._parse_key("S01E00") == (1, 0)
 
+    def test_素材池的_SP_键季是_None(self):
+        # 池索引（EGOIST SP01~08）加载要过这一关：看不懂 SP，整池加载不了
+        assert vindex._parse_key("SP05") == (None, 5)
+
+    def test_命中单元能回到集键(self):
+        assert vindex.key_of(vindex.Shot("EGOIST", None, 5, 0.0, 1.0, "x")) == "SP05"
+        assert vindex.key_of(vindex.Shot("春物", 1, 3, 0.0, 1.0, "x")) == "S01E03"
+
     @pytest.mark.parametrize("bad", ["S1E7", "S02E7", "02E07", "S02E07x", ""])
     def test_格式不对就失败(self, bad):
         with pytest.raises(SystemExit):
@@ -337,3 +346,545 @@ class TestAnimeFallback:
         monkeypatch.setattr("sys.argv", ["vindex", "status"])
         with pytest.raises(SystemExit, match="番名"):
             vindex.main()
+
+
+# ---------------------------------------------------------------- 通道 2（v2：ADR-0015）
+
+
+class TestCaptionCheck:
+    """caption 输出校验：超长 / 禁词 / 空输出（ADR-0015 决定 2）。
+
+    这里放宽或收紧的每一条，都会直接变成对账第七条上的一个洞或一次误伤：
+    误伤把合格描述记成 failed（而 failed 是洞），放宽把评价词和剧情推测放进索引
+    （那可是排片要拿来当画面语义用的文本）。
+    """
+
+    def test_标点与空格不计入字数(self):
+        # ADR 写的是「30 个汉字」——量字符会把标点算进去，把合格描述判成超长
+        assert vindex.caption_chars("夜晚教室，少女伏案，冷白灯光。") == 12
+
+    def test_三十字合格三十一字超长(self):
+        assert vindex.check_caption("字" * 30) is None
+        assert "超长 31" in vindex.check_caption("字" * 31)
+
+    def test_空输出与纯标点都算空(self):
+        assert vindex.check_caption("   ") == "空输出"
+        assert vindex.check_caption("，。！") == "空输出"
+
+    def test_评价词与剧情推测进禁词(self):
+        assert "禁词" in vindex.check_caption("夜晚教室，画面精美，冷白灯光")
+        assert "禁词" in vindex.check_caption("少年站起，似乎要离开")
+
+    def test_情绪词不是禁词(self):
+        # 「情绪氛围」是要求里必须覆盖的一维。把「孤独」也禁掉等于逼模型交白卷
+        assert vindex.check_caption("夜晚教室，少女独坐，冷白灯光，孤独压抑") is None
+
+    def test_去掉前缀与包裹引号(self):
+        assert vindex.clean_caption("描述：夜晚教室") == "夜晚教室"
+        assert vindex.clean_caption("“夜晚教室，少女伏案”") == "夜晚教室，少女伏案"
+        # 只剥离外层，不碰内容
+        assert vindex.clean_caption("画面： 雨中天台") == "雨中天台"
+
+
+class TestOom:
+    """显存不足的判定必须能认出来：认不出来就是「batch 减半重试」整条路白写，
+    认得太宽会把普通报错当成 OOM 无限重试（减到 1 之后再失败才算诚实失败）。
+    """
+
+    def test_认得出显存不足(self):
+        assert vindex.is_oom(RuntimeError("CUDA out of memory. Tried to allocate 2.0 GiB"))
+
+    def test_换后端后的类名也认(self):
+        class OutOfMemoryError(RuntimeError):
+            pass
+
+        assert vindex.is_oom(OutOfMemoryError("nothing in the message"))
+
+    def test_普通报错不算(self):
+        assert not vindex.is_oom(ValueError("bad image size"))
+
+
+class TestEmbedModelRef:
+    """bge-m3 的加载目标：平铺本地目录优先。
+
+    不是风格问题：HF 缓存的 blob 名带 etag，xet 后端每次请求换 etag，断一次就整份重下
+    （2026-09-11 实测 2.27G 权重两次都没下完）。平铺目录 + curl 断点续传才稳得住，
+    而且与云端数据盘的布局是同一个约定。
+    """
+
+    def test_有平铺目录就用它(self, tmp_path, monkeypatch):
+        root = tmp_path / "models"
+        (root / vindex.EMBED_REPO).mkdir(parents=True)
+        monkeypatch.setattr(vindex.paths, "MODELS", root)
+        assert vindex.embed_model_ref() == str(root / vindex.EMBED_REPO)
+
+    def test_没有就退回_HF_repo_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vindex.paths, "MODELS", tmp_path / "空")
+        assert vindex.embed_model_ref() == vindex.EMBED_REPO
+
+
+class TestCaptionMeta:
+    """自描述元信息硬校验：**改 prompt 等于换模型**（ADR-0015 决定 2）。
+
+    这四条不一致都不会崩：旧 captions 照样能读、照样能建库、照样返回 Top-K，
+    只是描述口径已经漂了一半。全都必须在加载时当场失败。
+    """
+
+    def _meta(self):
+        return vindex.caption_meta("春物", "S01E01", {
+            "detector": "ffmpeg-scdet", "scene_threshold": 10.0,
+            "min_shot": 0.5, "duration": 100.0})
+
+    def test_正常元信息带全四个自描述维度(self):
+        m = self._meta()
+        assert m["model_id"] == vindex.CAPTIONS_REPO
+        assert m["prompt_version"] == vindex.CAPTION_PROMPT_VERSION
+        assert m["frames"] == vindex.caption_input_spec()
+        assert m["max_chars"] == vindex.CAPTION_MAX_CHARS
+
+    def test_kind_不对就失败(self, tmp_path):
+        m = self._meta()
+        m["kind"] = "presence"
+        with pytest.raises(SystemExit, match="不是 captions"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+    def test_换模型就失败(self, tmp_path):
+        m = self._meta()
+        m["model_id"] = "Qwen/Qwen2.5-VL-7B-Instruct"
+        with pytest.raises(SystemExit, match="重建 captions"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+    def test_prompt_版本不一致就失败(self, tmp_path):
+        m = self._meta()
+        m["prompt_version"] = "v0"
+        with pytest.raises(SystemExit, match="prompt"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+    def test_模型目录指纹不一致就失败(self, tmp_path, monkeypatch):
+        # 云端模型是平铺目录，没有 hub 的 refs/main（revision 恒为 None），
+        # 所以「换了模型没有」只能靠目录指纹回答
+        model = tmp_path / "model"
+        model.mkdir()
+        (model / "config.json").write_text('{"a":1}', encoding="utf-8")
+        (model / "model.safetensors.index.json").write_text('{"b":2}', encoding="utf-8")
+        monkeypatch.setattr(vindex, "caption_model_ref", lambda: str(model))
+        m = self._meta()
+        m["model_fingerprint"] = "deadbeefdeadbeef"
+        with pytest.raises(SystemExit, match="指纹"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+    def test_版本标识同类不一致才报(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vindex.paths, "model_revision", lambda repo: "aaaa1111")
+        m = self._meta()
+        m["revision"] = "bbbb2222"
+        with pytest.raises(SystemExit, match="模型版本"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+    def test_两类标识不许交叉比较(self, tmp_path, monkeypatch):
+        # 云端平铺目录只有指纹、本地 hub 缓存只有 commit sha：拿一类去比另一类
+        # 会把「同一个模型」判成不一致，所以每一类各自两边都有才比
+        monkeypatch.setattr(vindex.paths, "model_revision", lambda repo: None)
+        monkeypatch.setattr(vindex, "caption_model_ref", lambda: str(tmp_path / "缺"))
+        monkeypatch.setattr(vindex, "_check_meta_shots", lambda m, p: m)
+        m = self._meta()
+        m["revision"] = "aaaa1111"          # 旧文件记着 sha，本机这次认不出来
+        vindex.check_caption_meta(m, tmp_path / "x.json")   # 不抛 = 没拿指纹去比 sha
+
+    def test_取样规格变了就失败(self, tmp_path):
+        m = self._meta()
+        m["frames"] = {"long_shot": 6.0, "points": [0.5], "width": 448}
+        with pytest.raises(SystemExit, match="取样规格"):
+            vindex.check_caption_meta(m, tmp_path / "x.json")
+
+
+class TestCaptionMessages:
+    """对话结构：**system 的 content 必须是部件列表**。
+
+    transformers 4.57 的 processor 版 `apply_chat_template` 会把 `message["content"]`
+    当部件列表逐个取 `content["type"]`，裸字符串当场 TypeError（云端实测，
+    见 pipeline/vindex.py `caption_messages` 的注释）。而这个坑**只有 processor 版有**——
+    本地拿 tokenizer 试会误以为没问题，所以把结构本身钉在测试里。
+    """
+
+    def test_system_与_user_都是部件列表(self):
+        msgs = vindex.caption_messages([Path("a.jpg")])
+        assert [m["role"] for m in msgs] == ["system", "user"]
+        for m in msgs:
+            assert isinstance(m["content"], list)
+            assert all(isinstance(c, dict) and "type" in c for c in m["content"])
+
+    def test_多帧按时间顺序进同一个_user_轮(self):
+        msgs = vindex.caption_messages([Path("a.jpg"), Path("b.jpg"), Path("c.jpg")])
+        parts = msgs[1]["content"]
+        assert [p["image"] for p in parts[:-1]] == ["a.jpg", "b.jpg", "c.jpg"]
+        assert "3 个代表帧" in parts[-1]["text"]
+
+
+class TestPoolScope:
+    """池级加载：**`anime` 的真实语义是素材池**（2026-09-11 裁决）。
+
+    一部番与一池 Live/MV 素材走同一个键系（`S01E03` / `SP05`）。池的特点是没有
+    笔记也没有字幕——视觉索引是它唯一的排片依据，所以这条路径必须能走通：
+    看不懂 SP 键的后果是整池索引加载不了，而 `embed` 要跑完才会发现。
+    """
+
+    def _env(self, tmp_path, monkeypatch, indexed=("SP01", "SP02")):
+        shots_dir = tmp_path / "shots"
+        shots_dir.mkdir()
+        for k in ("SP01", "SP02", "SP03"):        # 池声明了 3 集
+            (shots_dir / f"EGOIST_{k}.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(vindex.shots, "SHOTS_DIR", shots_dir)
+        monkeypatch.setattr(vindex.shots, "load",
+                            lambda a, k, **kw: {"shots": [{"i": 0, "start": 0.0, "end": 2.0}]})
+        monkeypatch.setattr(vindex, "_check_meta", lambda m, p, **kw: m)
+        for k in indexed:
+            import numpy as np
+            np.save(tmp_path / f"EGOIST_{k}.scene.npy",
+                    np.ones((1, vindex.EMBED_DIM), dtype="float32"))
+            (tmp_path / f"EGOIST_{k}.scene.json").write_text(json.dumps({
+                "meta": {"kind": "scene", "producer": "captions", "anime": "EGOIST",
+                         "episode": k, "dim": vindex.EMBED_DIM},
+                "shots": [{"i": 0, "start": 0.0, "end": 2.0, "label": "舞台"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            # 集键清单读的是 captions（抽样与状态都以打标产物为准，不是向量产物）
+            (tmp_path / f"EGOIST_{k}.captions.json").write_text("{}", encoding="utf-8")
+        return tmp_path
+
+    def test_池索引只打了一部分时检索默认拒绝加载(self, tmp_path, monkeypatch):
+        # 拿半份索引去检索排片＝静默的池缩水：Top-K 照常返回、分数照常过阈值
+        d = self._env(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit, match="2/3"):
+            vindex.load_scene("EGOIST", d)
+
+    def test_探针可以显式放宽(self, tmp_path, monkeypatch):
+        # 量噪声地板时「索引盖了多少就量多少」可接受；这个口子只给探针
+        d = self._env(tmp_path, monkeypatch)
+        vecs, units = vindex.load_scene("EGOIST", d, require_full=False)
+        assert vecs.shape == (2, vindex.EMBED_DIM)
+        assert [vindex.key_of(u) for u in units] == ["SP01", "SP02"]
+        assert all(u.season is None for u in units)
+
+    def test_池里的集键可以逐个列出来(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch, indexed=("SP02", "SP01"))
+        assert vindex.caption_keys("EGOIST", d) == ["SP01", "SP02"]   # 抽样要稳定顺序
+
+
+class TestModelFingerprint:
+    """模型指纹：**覆盖权重清单，不哈希 17G 权重**（每次加载都要跑这一步）。"""
+
+    def test_覆盖权重清单(self, tmp_path):
+        d = tmp_path / "m"
+        d.mkdir()
+        (d / "config.json").write_text("{}", encoding="utf-8")
+        fp0 = vindex.model_fingerprint(d)
+        (d / "model.safetensors.index.json").write_text('{"total_size":1}', encoding="utf-8")
+        assert fp0 != vindex.model_fingerprint(d)
+        assert vindex.model_fingerprint(d) == vindex.model_fingerprint(d)   # 确定性
+
+    def test_不是目录或没有清单就返回_None(self, tmp_path):
+        assert vindex.model_fingerprint(tmp_path / "缺") is None
+        d = tmp_path / "empty"
+        d.mkdir()
+        assert vindex.model_fingerprint(d) is None
+
+
+class TestCaptionAlignment:
+    """captions 与镜头表**逐行对齐**。这是本模块最毒的一类静默失败：
+    句子通顺、检索正常、分数正常，只是写的不是那个镜头。"""
+
+    def test_没有文件就报先跑哪条命令(self, tmp_path):
+        with pytest.raises(SystemExit, match="vindex captions"):
+            vindex.load_captions("春物", "S01E01", tmp_path)
+
+    def test_行与镜头错位就失败(self, tmp_path, monkeypatch):
+        p = tmp_path / "春物_S01E01.captions.json"
+        p.write_text(json.dumps({"meta": {"kind": "captions"},
+                                 "captions": [{"shot": 1, "status": "ok"}]},
+                                ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(vindex, "check_caption_meta", lambda m, path: m)
+        monkeypatch.setattr(vindex.shots, "load",
+                            lambda a, k, **kw: {"shots": [{"i": 0}, {"i": 1}]})
+        with pytest.raises(SystemExit, match="对不上"):
+            vindex.load_captions("春物", "S01E01", tmp_path)
+
+
+class TestCaptionCounts:
+    """第七条数字的口径：**数完整覆盖的集，不数文件。**
+
+    跑到一半崩溃的 captions 文件同样会被 glob 数到，而它代表的是一集没打完。
+    文件数口径下这种半份状态看起来和做完了完全一样。
+    """
+
+    def _env(self, monkeypatch, tmp_path):
+        shots_dir = tmp_path / "shots"
+        shots_dir.mkdir()
+        for key, n in (("S01E01", 3), ("S01E02", 2)):
+            (shots_dir / f"春物_{key}.json").write_text(
+                json.dumps({"shots": [{"i": i} for i in range(n)]}), encoding="utf-8")
+        monkeypatch.setattr(vindex.shots, "SHOTS_DIR", shots_dir)
+        return tmp_path / "vindex"
+
+    def _write(self, d, key, statuses):
+        d.mkdir(parents=True, exist_ok=True)
+        rows = [{"shot": i, "start": float(i), "end": float(i + 1),
+                 "caption": "场景" if s == "ok" else "", "status": s}
+                for i, s in enumerate(statuses)]
+        (d / f"春物_{key}.captions.json").write_text(
+            json.dumps({"meta": {}, "captions": rows}, ensure_ascii=False),
+            encoding="utf-8")
+
+    def test_跑到一半的集不计入(self, monkeypatch, tmp_path):
+        d = self._env(monkeypatch, tmp_path)
+        self._write(d, "S01E01", ["ok", "ok", "ok"])
+        self._write(d, "S01E02", ["ok", "pending"])
+        c = vindex.caption_counts("春物", d)
+        assert c["files"] == 2 and c["episodes"] == 1
+        assert c["shots"] == 3 and c["pending"] == 1
+
+    def test_行数与镜头表对不上也不计入(self, monkeypatch, tmp_path):
+        d = self._env(monkeypatch, tmp_path)
+        self._write(d, "S01E01", ["ok", "ok"])          # 少一行
+        assert vindex.caption_counts("春物", d)["episodes"] == 0
+
+    def test_failed_计入覆盖但单独计数(self, monkeypatch, tmp_path):
+        # S4：跳过不定罪，不是不算账（ADR-0015 决定 2）
+        d = self._env(monkeypatch, tmp_path)
+        self._write(d, "S01E01", ["ok", "failed", "ok"])
+        c = vindex.caption_counts("春物", d)
+        assert c["episodes"] == 1 and c["failed"] == 1 and c["shots"] == 3
+
+
+class TestFullIndex:
+    """检索池缩水的当场失败：不给 episode 就要求每一集都在。
+
+    判据不是「找得到东西吗」（那个永远为真），而是「集数对得上吗」。
+    """
+
+    def _env(self, monkeypatch, tmp_path):
+        shots_dir = tmp_path / "shots"
+        shots_dir.mkdir()
+        for key in ("S01E01", "S01E02"):
+            (shots_dir / f"春物_{key}.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(vindex.shots, "SHOTS_DIR", shots_dir)
+
+    def test_缺集当场报(self, monkeypatch, tmp_path):
+        self._env(monkeypatch, tmp_path)
+        with pytest.raises(SystemExit, match="1/2"):
+            vindex._require_full_index("春物", {"S01E01"}, "画面语义索引")
+
+    def test_多出的集也报(self, monkeypatch, tmp_path):
+        # 镜头表里没有的集 = 残留的旧产物，同样说明索引与素材已经不同步
+        self._env(monkeypatch, tmp_path)
+        with pytest.raises(SystemExit, match="多"):
+            vindex._require_full_index("春物", {"S01E01", "S01E02", "S01E09"},
+                                       "画面语义索引")
+
+    def test_对齐就通过(self, monkeypatch, tmp_path):
+        self._env(monkeypatch, tmp_path)
+        vindex._require_full_index("春物", {"S01E01", "S01E02"}, "画面语义索引")
+
+
+class TestCaptionCost:
+    def test_成本估值随镜头数线性(self):
+        # 估值只用来卡预算闸；这里锁的是「它没被写成常数」
+        assert vindex.estimate_caption_cost(3600, 2.4) == pytest.approx(1.5 * 2.4)
+
+    def test_预算闸读得到真实配置(self):
+        rate, budget = vindex.cloud_budget()
+        assert rate > 0 and budget > 0
+
+
+class TestBuildCaptions:
+    """打标主链路：取帧 → 校验 → 降温重试 → 落盘 → 续跑。
+
+    **只把 8B 模型替身掉**（`_generate`），其余全真跑：计划取帧、输出校验、
+    重试、failed 记账、逐行对齐、断点续跑。云端唯一测不到的是模型本身，
+    这一组管的是模型前后那两段代码——而它们才是「不报错但错了」的地方。
+    """
+
+    KEY = "S01E01"
+
+    def _env(self, tmp_path, monkeypatch):
+        frames = tmp_path / "frames"
+        (frames / "春物_S01E01_cap").mkdir(parents=True)
+        table = {"meta": {"detector": "ffmpeg-scdet", "scene_threshold": 10.0,
+                          "min_shot": 0.5, "duration": 30.0},
+                 "shots": [{"i": 0, "start": 0.0, "end": 3.0, "rep": 1.5},
+                           {"i": 1, "start": 3.0, "end": 23.0, "rep": 13.0}]}
+        monkeypatch.setattr(vindex.shots, "SHOTS_DIR", tmp_path / "shots")
+        monkeypatch.setattr(vindex.shots, "FRAMES_DIR", frames)
+        monkeypatch.setattr(vindex.shots, "load", lambda a, k, **kw: table)
+        for i, k in ((0, 0), (1, 0), (1, 1), (1, 2)):
+            vindex.shots.caption_frame_path("春物", self.KEY, i, k, frames).write_bytes(b"x")
+        return tmp_path / "vindex"
+
+    def _read(self, d):
+        return json.loads((d / f"春物_{self.KEY}.captions.json").read_text(encoding="utf-8"))
+
+    def test_短镜头一帧长镜头三帧且逐行对齐(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        seen = []
+
+        def fake(req, temp, seed):
+            seen.append((len(req), temp, [len(r) for r in req]))
+            return ["夜晚教室，少女伏案独坐"] * len(req)
+
+        monkeypatch.setattr(vindex, "_generate", fake)
+        r = vindex.build_captions("春物", self.KEY, out_dir=d)
+        assert r == {"shots": 2, "ok": 2, "failed": 0, "skipped": 0}
+        assert seen == [(2, 0.2, [1, 3])]          # 一次前向：短镜头 1 帧、长镜头 3 帧
+        rows = self._read(d)["captions"]
+        assert [x["shot"] for x in rows] == [0, 1]
+        assert [x["frames"] for x in rows] == [1, 3]
+        assert all(x["status"] == "ok" and x["caption"] for x in rows)
+
+    def test_不合格降温重试一次只重跑那一条(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        calls = []
+
+        def fake(req, temp, seed):
+            calls.append((temp, len(req)))
+            # 首轮两条都不合格（超长 + 禁词），重试时才给合格输出
+            return (["字" * 40, "画面精美"] if temp > 0
+                    else ["夜晚教室，少女伏案独坐"] * len(req))
+
+        monkeypatch.setattr(vindex, "_generate", fake)
+        r = vindex.build_captions("春物", self.KEY, out_dir=d)
+        assert r["ok"] == 2 and r["failed"] == 0
+        assert calls == [(0.2, 2), (0.0, 1), (0.0, 1)]   # 重试逐条跑，不整批重来
+        rows = self._read(d)["captions"]
+        assert [x["tries"] for x in rows] == [2, 2]
+        assert all("reason" not in x for x in rows)      # 合格之后不许留失败痕迹
+
+    def test_两次都不合格记_failed_并写明原因(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda req, temp, seed: ["似乎要离开"] * len(req))
+        r = vindex.build_captions("春物", self.KEY, out_dir=d)
+        assert r["failed"] == 2 and r["ok"] == 0
+        rows = self._read(d)["captions"]
+        # S4：跳过不定罪，但描述留空 + 原因写明，对账第七条上看得见
+        assert all(x["status"] == "failed" and x["caption"] == "" for x in rows)
+        assert all("禁词" in x["reason"] for x in rows)
+
+    def test_续跑只补没打完的(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda req, temp, seed: ["夜晚教室，少女伏案独坐"] * len(req))
+        vindex.build_captions("春物", self.KEY, out_dir=d)
+        # 第二次跑：一个镜头都不该再喂模型（钱已经花过了）
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda *a, **k: pytest.fail("续跑又把已合格的镜头重打了一遍"))
+        r = vindex.build_captions("春物", self.KEY, out_dir=d)
+        assert r == {"shots": 2, "ok": 2, "failed": 0, "skipped": 2}
+
+    def test_冒烟_limit_只打前几个其余留_pending(self, tmp_path, monkeypatch):
+        # 云端第一次跑必须先用 --limit 验链路（批处理/多图 padding 写错了不会崩，
+        # 只会让描述写的不是那个镜头），验收完再全量
+        d = self._env(tmp_path, monkeypatch)
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda req, temp, seed: ["夜晚教室，少女伏案独坐"] * len(req))
+        r = vindex.build_captions("春物", self.KEY, out_dir=d, limit=1)
+        assert r["ok"] == 1 and r["failed"] == 0
+        rows = self._read(d)["captions"]
+        assert [x["status"] for x in rows] == ["ok", "pending"]
+
+    def test_缺帧当场失败且说清先跑哪条命令(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        vindex.shots.caption_frame_path("春物", self.KEY, 1, 2,
+                                        vindex.shots.FRAMES_DIR).unlink()
+        with pytest.raises(SystemExit, match="caption-frames"):
+            vindex.build_captions("春物", self.KEY, out_dir=d)
+        # 失败发生在花钱之前：模型一次都不该被调用
+        assert not (d / f"春物_{self.KEY}.captions.json").exists()
+
+    def test_改_prompt_后旧文件拒绝续跑(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda req, temp, seed: ["夜晚教室，少女伏案独坐"] * len(req))
+        vindex.build_captions("春物", self.KEY, out_dir=d)
+        p = d / f"春物_{self.KEY}.captions.json"
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["meta"]["prompt_version"] = "v0"
+        p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        with pytest.raises(SystemExit, match="prompt"):
+            vindex.build_captions("春物", self.KEY, out_dir=d)
+
+
+class TestBuildEmbed:
+    """captions → 向量库：**行数必须与镜头数相等**，打标失败的镜头留零向量占位。
+
+    跳过 failed 会让向量行与镜头行错位，而错位之后每条检索结果都还是
+    「看起来正常」的——那正是本模块反复要堵的那类失败。
+    """
+
+    def _env(self, tmp_path, monkeypatch):
+        frames = tmp_path / "frames"
+        (frames / "春物_S01E01_cap").mkdir(parents=True)
+        table = {"meta": {"detector": "ffmpeg-scdet", "scene_threshold": 10.0,
+                          "min_shot": 0.5, "duration": 30.0},
+                 "shots": [{"i": 0, "start": 0.0, "end": 3.0, "rep": 1.5},
+                           {"i": 1, "start": 3.0, "end": 23.0, "rep": 13.0}]}
+        monkeypatch.setattr(vindex.shots, "FRAMES_DIR", frames)
+        monkeypatch.setattr(vindex.shots, "load", lambda a, k, **kw: table)
+        for i, k in ((0, 0), (1, 0), (1, 1), (1, 2)):
+            vindex.shots.caption_frame_path("春物", "S01E01", i, k, frames).write_bytes(b"x")
+        monkeypatch.setattr(vindex, "_generate",
+                            lambda req, temp, seed: ["夜晚教室，少女伏案独坐"] * len(req))
+        d = tmp_path / "vindex"
+        vindex.build_captions("春物", "S01E01", out_dir=d)
+        return d
+
+    def test_行数与镜头数相等且失败镜头留零向量(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        p = d / "春物_S01E01.captions.json"
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["captions"][1].update({"status": "failed", "caption": "", "reason": "禁词"})
+        p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+        class FakeEmb:
+            def encode(self, texts, batch_size=64, normalize_embeddings=True,
+                       show_progress_bar=False):
+                import numpy as np
+                return np.ones((len(texts), vindex.EMBED_DIM), dtype="float32")
+
+        monkeypatch.setattr(vindex, "embedder", lambda: FakeEmb())
+        r = vindex.build_embed("春物", out_dir=d)
+        import numpy as np
+        vecs = np.load(d / "春物_S01E01.scene.npy")
+        assert r == {"episodes": 1, "shots": 2, "failed": 1}
+        assert vecs.shape == (2, vindex.EMBED_DIM)      # 失败的那行不删，留零向量
+        assert not vecs[1].any() and vecs[0].any()
+        meta = json.loads((d / "春物_S01E01.scene.json").read_text(encoding="utf-8"))
+        assert meta["meta"]["producer"] == "captions"
+        assert meta["meta"]["model_id"] == vindex.EMBED_REPO
+        assert [s["caption_status"] for s in meta["shots"]] == ["ok", "failed"]
+
+    def test_还有_pending_就拒绝建库(self, tmp_path, monkeypatch):
+        d = self._env(tmp_path, monkeypatch)
+        p = d / "春物_S01E01.captions.json"
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["captions"][1]["status"] = "pending"
+        p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(vindex, "embedder",
+                            lambda: pytest.fail("半份 captions 不该走到建库"))
+        with pytest.raises(SystemExit, match="pending"):
+            vindex.build_embed("春物", out_dir=d)
+
+
+class TestHitLine:
+    """`vindex search` 的一行输出：池素材的集键必须能打出来。
+
+    这一条是实跑撞出来的：池的 `season` 是 None，按 `S%02dE%02d` 格式化直接
+    TypeError——而它是人手动检索时唯一的输出路径（排片前最常用的一条）。
+    """
+
+    def test_池命中不崩且带_SP_键(self):
+        u = vindex.Shot("EGOIST", None, 5, 83.4, 86.1, "镜头 01:23.40 舞台紫光闪烁")
+        line = vindex.hit_line(0.7966, u)
+        assert line.startswith("0.797  SP05 01:23.40-01:26.10")
+        assert "舞台紫光闪烁" in line
+
+    def test_番剧命中仍是_SxxEyy(self):
+        u = vindex.Shot("春物", 1, 3, 12.0, 14.0, "镜头 00:12.00")
+        assert vindex.hit_line(0.61, u).startswith("0.610  S01E03 00:12.00-00:14.00")

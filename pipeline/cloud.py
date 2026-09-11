@@ -51,6 +51,17 @@ MIN_VRAM_GB = 24.0  # 24GB：承载 8B VLM 镜头打标与 7B TTS 流匹配模�
 # 远端日志根目录
 REMOTE_LOG_DIR = "/root/autodl-tmp/logs"
 
+# 远端解释器。**必须是装了模型栈的那一个。** 2026-09-11 实测：这台实例上
+# `/root/miniconda3/bin/python` 里连 transformers 都没有（torch/torchvision 有，模型栈在
+# `/root/it-venv`），而 `run ... tts` / 模型结构探针走的正是它——写死旧值的后果是任务
+# 起来第一行就 ImportError，而账簿里只记「任务已启动」。可用 `config/cloud.json`
+# 的 `remote_python` 覆盖（换实例/换镜像只改配置，不改代码）。
+DEFAULT_REMOTE_PYTHON = "/root/it-venv/bin/python"
+
+# watchdog 脚本与心跳的远端路径。**只此一处定义**：部署与查进程必须指同一个文件，
+# 各写一份的下场是 status 去 pgrep 一个不存在的路径，永远报「未运行」。
+REMOTE_WATCHDOG_PATH = "/root/watchdog.sh"
+
 
 # ---------------------------------------------------------------------------
 # 第一节：纯函数计算层
@@ -66,6 +77,17 @@ def load_cloud_config(config_dir: Path | None = None) -> tuple[dict, dict]:
     cfg_global = json.loads(f_global.read_text(encoding="utf-8")) if f_global.exists() else {}
     cfg_local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
     return cfg_global, cfg_local
+
+
+def remote_python(cfg: dict | None = None) -> str:
+    """远端解释器路径：`config/cloud.json` 的 `remote_python` 优先，缺了用默认值。
+
+    做成可配不是洁癖：云端环境里同时存在多个 venv，模型栈只在其中一个里（见常量注释）。
+    写死在代码里就是把这个实例的现状当机制（ADR-0003 R2：换台机器就要改代码即缺陷）。
+    """
+    if cfg is None:
+        cfg = load_cloud_config()[0]
+    return str(cfg.get("remote_python") or DEFAULT_REMOTE_PYTHON)
 
 
 def build_exec_tmux_command(
@@ -202,7 +224,8 @@ print(json.dumps({"files": len(files), "checked": checked,
 
 
 def build_model_structure_probe_cmd(
-    model_dir: str, models_root: str = "/root/autodl-tmp/models"
+    model_dir: str, models_root: str = "/root/autodl-tmp/models",
+    python: str = DEFAULT_REMOTE_PYTHON,
 ) -> str:
     """生成远端模型结构校验命令（纯函数）。
 
@@ -212,7 +235,7 @@ def build_model_structure_probe_cmd(
     encoded = base64.b64encode(_MODEL_STRUCT_PROBE_SCRIPT.encode("utf-8")).decode("ascii")
     return (
         f"echo {encoded} | base64 -d > /tmp/.ava_model_probe.py && "
-        f"/root/miniconda3/bin/python /tmp/.ava_model_probe.py '{models_root}/{model_dir}'"
+        f"{python} /tmp/.ava_model_probe.py '{models_root}/{model_dir}'"
     )
 
 
@@ -327,9 +350,14 @@ def build_tmux_launch_command(session_name: str, remote_cmd: str, remote_root: s
 
 
 def build_remote_run_command(
-    task: str, ep_rel_path: str, remote_root: str = "/root/anime-video-agent"
+    task: str, ep_rel_path: str, remote_root: str = "/root/anime-video-agent",
+    python: str = DEFAULT_REMOTE_PYTHON,
 ) -> str:
-    """生成远端安全执行命令（P0-1 首尾心跳，P2-5 probe 任务分支）。"""
+    """生成远端安全执行命令（P0-1 首尾心跳，P2-5 probe 任务分支）。
+
+    `python` 由调用方从配置现取（见 `remote_python`），**不在函数里读配置**：
+    这样它仍是纯函数（可测），而「用哪个解释器」这件事只在一个地方决定。
+    """
     task = validate_task_whitelist(task)
     if task == "probe":
         # probe 探针任务：轻量级验证 GPU/Torch/环境，不拖入未移植的 TTS 模块
@@ -337,7 +365,7 @@ def build_remote_run_command(
             f"cd {remote_root} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH} && "
             f"mkdir -p {ep_rel_path}/03-audio && "
-            f"/root/miniconda3/bin/python -c '"
+            f"{python} -c '"
             f"import torch; "
             f"print(f\"GPU Probe: torch={{torch.__version__}}, cuda={{torch.cuda.is_available()}}\")"
             f"' | tee {ep_rel_path}/03-audio/probe.log && "
@@ -350,7 +378,7 @@ def build_remote_run_command(
         cmd = (
             f"cd {remote_root} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH} && "
-            f"/root/miniconda3/bin/python -m pipeline.{task} {ep_rel_path}{extra} && "
+            f"{python} -m pipeline.{task} {ep_rel_path}{extra} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH}"
         )
     return cmd
@@ -419,7 +447,7 @@ def _watchdog_proc_pattern(script_path: str) -> str:
 def build_watchdog_deploy_command(
     watchdog_content: str,
     heartbeat_path: str = WATCHDOG_HEARTBEAT_PATH,
-    script_path: str = "/root/watchdog.sh",
+    script_path: str = REMOTE_WATCHDOG_PATH,
     log_path: str = "/root/watchdog.log",
 ) -> str:
     """生成 watchdog 部署命令：**必须先 kill 旧进程再起新进程**（纯函数）。
@@ -722,7 +750,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # 4. PyTorch 与 CUDA 可用性
     torch_cmd = (
-        "/root/miniconda3/bin/python -c "
+        f"{remote_python()} -c "
         "'import torch; print(f\"{torch.__version__}___{torch.cuda.is_available()}\")'"
     )
     torch_res = _ssh(torch_cmd, host=host, check=False)
@@ -735,7 +763,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         all_passed = False
         print(f"FAIL  [TORCH] PyTorch 未安装或环境损坏: {torch_res.stderr.strip()}")
-        print("      修法: /root/miniconda3/bin/pip install torch torchvision torchaudio")
+        print("      修法: 在远端模型栈环境里装（config/cloud.json 的 remote_python 指的就是它）")
 
     # 5. 数据盘存储
     disk_res = _ssh("df -BG /root/autodl-tmp | tail -1 | awk '{print $4}' | tr -d 'G'", host=host, check=False)
@@ -766,7 +794,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"OK    [MODEL] {m_id:<30} ({sz_gb:.1f}GB ≥ {min_gb}GB) - {desc}")
                     # 体积只证存在、不证完整：再跑一层结构校验（任务 0）。
                     # 失败不推翻体积结论，但会拉倒 all_passed。
-                    st_res = _ssh(build_model_structure_probe_cmd(m_dir), host=host, check=False, timeout=90)
+                    st_res = _ssh(build_model_structure_probe_cmd(m_dir, python=remote_python(cfg_global)),
+                                  host=host, check=False, timeout=90)
                     st_tag, st_desc = parse_model_structure_result(st_res.stdout, st_res.returncode)
                     print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
                     if st_tag == "FAIL":
@@ -824,6 +853,21 @@ def cmd_up(args: argparse.Namespace) -> int:
 
     print("[OK] SSH 连通就绪。")
 
+    # **断言声明的模式与实测一致。** 2026-09-11 实测踩过：`up --mode gpu` 只信参数，
+    # 实际开出来是无卡模式——账簿按 2.4 元/h 虚记 24 倍，而 GPU 任务在加载权重时
+    # 被 cgroup OOM 杀掉，报出来的只有一行 `Killed`，从字面上看不出「这台没有卡」。
+    # `down` 早就有这个探针，`up` 也该有：探测比猜测便宜得多（同一句注释的下半句）。
+    actual = detect_runtime_mode_from_gpu_probe(
+        _ssh("nvidia-smi -L", host=host, check=False).returncode)
+    if actual != mode:
+        print(f"WARN --mode {mode} 与实测不符：这台实例当前是【{actual}】。")
+        if actual == "cardless":
+            print("     → 无 GPU：带卡任务（VLM 打标/重推理）会在加载权重时被 OOM 杀掉，"
+                  "而且报错只有一行 Killed。\n"
+                  "     → 账簿已按实测的 cardless 记（否则虚高 24 倍）；"
+                  "要跑 GPU 任务请关机后在控制台按带卡模式重开。")
+        mode = actual
+
     # 部署并激活远端 watchdog（带活跃任务检测）
     idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
     watchdog_content = generate_watchdog_script(idle_sec)
@@ -852,6 +896,10 @@ def cmd_up(args: argparse.Namespace) -> int:
         "episode": getattr(args, "episode", None),
         "tasks": [],
     }
+    if mode != getattr(args, "mode", mode):
+        # 与声明不符时留痕，事后查账不用猜（带卡/无卡差 24 倍价，不是小事）
+        session_data["mode_corrected"] = (
+            f"up 声明 --mode {getattr(args, 'mode', None)}，实测为 {mode}，按实测记账")
     sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] 会话已开启: {session_data['session']} (模式: {mode})")
     return 0
@@ -1009,7 +1057,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if disk_res.returncode == 0 and disk_res.stdout.strip():
             print(f"数据盘存储   : {disk_res.stdout.strip()}")
 
-        watch_res = _ssh(f"pgrep -f '{_watchdog_proc_pattern()}' >/dev/null && echo '运行中' || echo '未运行'", host=host, check=False)
+        watch_res = _ssh(f"pgrep -f '{_watchdog_proc_pattern(REMOTE_WATCHDOG_PATH)}' >/dev/null && echo '运行中' || echo '未运行'", host=host, check=False)
         print(f"自动关机守卫 : {watch_res.stdout.strip()}")
 
     sfile = get_active_session_file()
@@ -1127,7 +1175,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
 
     session_name = f"ava-{task}"
-    remote_cmd = build_remote_run_command(task, rel_path, remote_root)
+    remote_cmd = build_remote_run_command(task, rel_path, remote_root,
+                                          python=remote_python(cfg_global))
     tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
 
     print(f"[*] 启动远端任务: {task} (tmux: {session_name})")

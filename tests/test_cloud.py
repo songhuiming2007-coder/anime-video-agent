@@ -78,7 +78,8 @@ def test_build_remote_run_command_tts():
     )
     assert "cd /root/anime-video-agent" in cmd, "命令必须先切换到远端仓库根目录"
     assert f"touch {cloud.WATCHDOG_HEARTBEAT_PATH}" in cmd, "命令必须显式 touch 心跳文件防止关机"
-    assert "/root/miniconda3/bin/python -m pipeline.tts data/episodes/test_ep" in cmd
+    assert (f"{cloud.DEFAULT_REMOTE_PYTHON} -m pipeline.tts data/episodes/test_ep" in cmd), (
+        "远端解释器必须是装了模型栈的那个 venv（2026-09-11 实测 miniconda 里没有 transformers）")
 
 
 def test_build_remote_run_command_probe():
@@ -593,3 +594,45 @@ class TestLedgerBudgetScope:
         )
         assert e["over_budget"] is False
         assert e["budget_scoped"] is True
+
+
+def test_远端解释器从配置读且可覆盖():
+    """解释器路径必须可配：这台实例上模型栈只在 /root/it-venv 里。
+
+    2026-09-11 实测：/root/miniconda3/bin/python 有 torch/torchvision 但没有 transformers，
+    而 `run ... tts` 走的就是它 → 任务起来第一行 ImportError，账簿里却只记「任务已启动」。
+    """
+    assert cloud.remote_python({"remote_python": "/opt/x/bin/python"}) == "/opt/x/bin/python"
+    assert cloud.remote_python({}) == cloud.DEFAULT_REMOTE_PYTHON
+
+
+def test_配置里记着本机实例的解释器():
+    cfg, _ = cloud.load_cloud_config()
+    assert cfg.get("remote_python"), "云端解释器是实例事实，必须落在 config/cloud.json"
+
+
+def test_run_命令用配置里的解释器():
+    cmd = cloud.build_remote_run_command("tts", "data/episodes/A/01",
+                                         "/root/anime-video-agent",
+                                         python="/root/it-venv/bin/python")
+    assert cmd.startswith("cd /root/anime-video-agent")
+    assert "/root/it-venv/bin/python -m pipeline.tts" in cmd
+
+
+def test_status_查的是同一个_watchdog_脚本():
+    """部署与查进程必须指同一个文件，否则 status 永远报「未运行」（2026-09-11 崩溃修复）。"""
+    assert cloud.REMOTE_WATCHDOG_PATH == "/root/watchdog.sh"
+    assert cloud.REMOTE_WATCHDOG_PATH in cloud.build_watchdog_deploy_command("#!/bin/bash\n")
+    assert cloud._watchdog_proc_pattern(cloud.REMOTE_WATCHDOG_PATH) == "^/bin/bash /root/watchdog\\.sh$"
+
+
+def test_up_会核验声明的模式(monkeypatch):
+    """`up --mode gpu` 不能只信参数：2026-09-11 实际开出来是无卡模式，
+    账簿按 2.4 元/h 虚记 24 倍，而 GPU 任务在加载权重时被 OOM 杀掉（报错只有一行 Killed）。
+
+    修法：开机后探一次 nvidia-smi，与声明不符时按实测记账并显式 WARN。
+    """
+    assert cloud.detect_runtime_mode_from_gpu_probe(0) == "gpu"
+    assert cloud.detect_runtime_mode_from_gpu_probe(1) == "cardless"
+    # 声明 gpu、实测 cardless → 必须改判（否则账簿虚高 24 倍）
+    assert cloud.detect_runtime_mode_from_gpu_probe(255) == "cardless"
