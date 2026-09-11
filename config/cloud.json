@@ -36,7 +36,7 @@
     "IndexTeam/IndexTTS-2": {
       "dir": "IndexTeam/IndexTTS-2",
       "min_gb": 3.0,
-      "description": "IndexTTS2 语音合成主选引擎"
+      "description": "IndexTTS2（已出局，ADR-0017），权重保留供对照复测"
     },
     "Qwen/Qwen3-VL-8B-Instruct": {
       "dir": "Qwen/Qwen3-VL-8B-Instruct",
