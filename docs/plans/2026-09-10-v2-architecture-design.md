@@ -177,9 +177,14 @@ python -m pipeline.eval diff v1-baseline <新tag>         # v2 每次改动后�
 
 ## 三、 v2 配音与音频工业化流水线（`pipeline/tts.py` 重构）
 
-### 3.1 引擎落地：IndexTTS2 主选，CosyVoice 2.0 备选，Engine 接缝不动
+### 3.1 引擎落地：选型链执行中（2026-09-11 修订：IndexTTS2 出局，ADR-0017）
 
-`Engine` 类与 `LOADERS` 表是既有接缝（ADR-0006 换引擎时验证过这个接缝够宽）。v2 新增 `indextts2` / `cosyvoice2` 两个 loader（PyTorch/CUDA 路径），**本地 mlx 的 `qwen3_tts` loader 保留不删**——它是云端不可用时的诚实降级通道，也是 A/B 对照组。引擎切换仍只改 `config/voice.json` 的 `engine` 字段，别处不动（ADR-0006 决定一的机制原样继承）。
+> **修订记录（2026-09-11）**：主选 IndexTTS2 在 M2a 单点验证中人耳验收不通过
+> （杂质杂音 + 语速失控 + 歌名死刑案例失败，三连），正式出局，判决与证据见 ADR-0017。
+> 当前评审：CosyVoice 2.0 vs Qwen3-TTS 1.7B（PyTorch）同表 A/B，Fish Speech S2 候补。
+> 本节下文保留原始设计供对照，引擎字段一律以 ADR-0017 为准。
+
+`Engine` 类与 `LOADERS` 表是既有接缝（ADR-0006 换引擎时验证过这个接缝够宽）。v2 新增云端 PyTorch/CUDA loader，**本地 mlx 的 `qwen3_tts` loader 保留不删**——它是云端不可用时的诚实降级通道，也是 A/B 对照组。引擎切换仍只改 `config/voice.json` 的 `engine` 字段，别处不动（ADR-0006 决定一的机制原样继承）。
 
 `config/voice.json` v2 扩展：
 
@@ -390,18 +395,32 @@ python -m pipeline.vindex embed <番>             # captions → bge-m3 向量�
 
 ## 六、 素材自动化搜集与预处理（Phase 0 进化）
 
-### 6.1 `pipeline/acquire.py`（新建）：检索 → 人审 → 抓取 → 门禁 → 入库
+### 6.1 分层：检索与判断归 skill + 浏览器，确定性归代码（2026-09-11 修订）
 
-自动化的是**检索与初筛**，入库的最后一公里仍是显式动作（对齐「05 显式 approve」「02.5 封板」的人机边界哲学）：
+**修订记录**：初版把 `acquire search` 写成 Python 子命令——收回。检索评估是判断密集型探索
+（「这个扫图集是不是那本画册」没有机器判据），按 S1 的可证伪性分层：判断进 agent，
+确定性进代码。
+
+**skill 侧**（新建 `skills/acquire-assets/SKILL.md`，M2.5 落地）：agent 主导素材考据——
+渠道清单（SerpAPI/种子站/论坛/B站专栏）、反爬升级链（静态失败 → agent_crawl 无头穿透 →
+agent_browser 独立 profile 登录态，绝不碰主力 Chrome）、候选判断。产物是**交接文件**
+`data/library/incoming/candidates.json`（E2：人机交接走文件）：
+
+```json
+[{"title": "...", "url": "...", "type": "live|mv|scan|interview",
+  "source": "...", "expected_dur": null, "why": "为什么值得下（判断落盘可审计）"}]
+```
+
+**代码侧**（`pipeline/acquire.py`，只留三个确定性命令）：
 
 ```
-python -m pipeline.acquire search "EGOIST 万里行程 演唱会" --type live
-    → data/library/incoming/candidates.json   # 候选清单（标题/来源/时长/分辨率/链接）
-python -m pipeline.acquire fetch <候选号>      # yt-dlp 抓取 → incoming/
+python -m pipeline.acquire fetch <候选号>      # yt-dlp/直链抓取 → incoming/
 python -m pipeline.acquire gate  <文件>        # 质量门禁 → 报告
 python -m pipeline.acquire register <文件> --pool EGOIST --as SP09
     → 走 ingest 既有登记与 intact 校验，落 sources.json
 ```
+
+自动化的是**抓取与初筛**，入库的最后一公里仍是显式动作（对齐「05 显式 approve」「02.5 封板」的人机边界哲学）。
 
 **质量门禁判据**（全部机器可判，S1）：
 
@@ -413,7 +432,9 @@ python -m pipeline.acquire register <文件> --pool EGOIST --as SP09
 | 去重 | 与既有 SP 池按时长 ±1s + 首帧 dHash 判重 | 拒收并指出撞了谁 |
 | 集键 | `--as SPxx` 不与现有登记冲突 | 冲突当场报错 |
 
-**搜集侧纪律**：`acquire search` 只产出清单，不自动下载任何东西——批量抓取的版权与带宽风险由人显式 `fetch` 承担；SerpAPI/种子检索的 agent 驱动流程进 `skills/` 操作手册而非代码硬编码（机制进代码，渠道进手册——渠道三天两头变）。
+**搜集侧纪律**：`candidates.json` 只由 skill/agent 侧产出，`acquire.py` 不自动下载任何未经人/agent
+判断过的东西——批量抓取的版权与带宽风险由显式 `fetch` 承担。渠道清单与检索方法论进
+`skills/acquire-assets/`（机制进代码，渠道进手册——渠道三天两头变）。
 
 ### 6.2 `pipeline/enhance.py`（新建）：按需超分与补帧
 

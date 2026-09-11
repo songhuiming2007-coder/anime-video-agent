@@ -21,7 +21,7 @@
 ├────────────────────────────────────────────────────────────────────────┤
 │ 工序 B【云端配音与顺听】（ADR-0016：推理上云 [M2/M3 生效]）：              │
 │   ava-cloud push（上行稿件+配置）─→ ava-cloud run <本期> tts              │
-│   （云端 IndexTTS2 + g2p 拼音直注 + SenseVoice/Whisper 仲裁回读）          │
+│   （云端 TTS（选型见 ADR-0017）+ g2p 拼音直注 + SenseVoice/Whisper 仲裁回读）  │
 │   ─→ ava-cloud pull 拉回 03-audio/ 并关机记账 ─→ 本地顺听                │
 │   🛑【人工停机点 2】：必须人类总监顺听 2 分钟（03.5）+ 30 秒结构化打点      │
 │   （音色/韵律/错字 1-5 写入 manifest 的 human_review [M2 生效]）！         │
@@ -520,7 +520,7 @@ git diff --no-index --stat 02-script.draft.md 02-script.md > 02-diff.patch
 
 > **v2 端云形态 [M2/M3 生效]**（ADR-0016）：配音在云端 GPU 节点执行——
 > `ava-cloud push data/episodes/<本期>`（上行稿件与配置）→
-> `ava-cloud run data/episodes/<本期> tts`（云端 IndexTTS2 合成 +
+> `ava-cloud run data/episodes/<本期> tts`（云端 TTS（选型见 ADR-0017）合成 +
 > SenseVoice 主读 / Whisper Large-v3 仲裁回读）→ `ava-cloud pull
 > data/episodes/<本期>`（拉回 `03-audio/`）→ 关机记账。
 > M2 验收前仍按下面的本地命令执行。
