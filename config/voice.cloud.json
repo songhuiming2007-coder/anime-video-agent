@@ -1,0 +1,11 @@
+{
+  "_extends": "voice.json",
+  "_note": "云端覆盖层（2026-09-11 定稿）。只写与 voice.json 的差异，其余字段继承。**引擎选型结论：Qwen3-TTS 的 PyTorch/CUDA 版**（与本地 mlx 版同版权重，所以音色一致——用户实听「音色相当好，很纯净」）。Index 系列已实测否决：IndexTTS2 不是多语种模型（与本项目英日歌名需求直接冲突），且 seg6 参考下音色浑浊、语速异常；CosyVoice2 因 pip 卡死未能评估，留待以后。",
+  "engine": "qwen3_tts_cuda",
+  "model": "/root/autodl-tmp/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+  "qwen3_cuda": {
+    "_note": "实测参数（2026-09-11）。dtype=bfloat16 与官方推荐一致；device_map 指 GPU。flash-attn 未装时官方会退到手动 PyTorch 实现（仅影响速度，不影响音色）。",
+    "device_map": "cuda:0",
+    "dtype": "bfloat16"
+  }
+}

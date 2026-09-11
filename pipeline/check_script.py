@@ -9,6 +9,7 @@ write-script 的自检清单里可判定的那部分，交稿前跑，不靠 age
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import statistics
 import sys
@@ -331,6 +332,46 @@ def _has_visual_source(block: str) -> bool:
                             for x in _anchor_items(anc.group(1).strip())))
 
 
+def parse_emotion_fields(text: str) -> list[tuple[str, str | None, str | None]]:
+    """每个段落块的 情绪/语速 字段 → [(段落号, 情绪, 语速)]（未写为 None）。纯函数。
+
+    与 parse_anchors / tts.parse_script 同口径：`## 段落 N` 到下一个段落标题之间。
+    **两个字段都是可选的**（不写 = 平静叙述/中，行为与 v1 一致，旧稿零迁移）。
+    """
+    out: list[tuple[str, str | None, str | None]] = []
+    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S):
+        label, block = m.group(1), m.group(2)
+        emo = re.search(r"^情绪[：:]\s*(.+)$", block, re.M)
+        spd = re.search(r"^语速[：:]\s*(.+)$", block, re.M)
+        out.append((
+            label,
+            emo.group(1).strip() if emo else None,
+            spd.group(1).strip() if spd else None,
+        ))
+    return out
+
+
+def validate_emotion_speed(
+    fields: list[tuple[str, str | None, str | None]],
+    allowed_emotions: set[str],
+    allowed_speed: set[str],
+) -> list[tuple[str, str, str]]:
+    """返回受控词表外的 [(段落号, 字段名, 值)]（空列表 = 全部合法）。纯函数。
+
+    **为什么必须是受控词表**（架构设计 3.3）：自由文本情绪 = 每期发挥不稳定，
+    且无法进 manifest 审计（情感参数要与合成结果一起进 manifest，
+    eval 才能按情绪分组统计 f0/停顿，回答「情感声明是否真的改变了声学输出」）。
+    只校验**写了**的段落——不写就是默认值，不算违规。
+    """
+    bad: list[tuple[str, str, str]] = []
+    for label, emo, spd in fields:
+        if emo is not None and emo not in allowed_emotions:
+            bad.append((label, "情绪", emo))
+        if spd is not None and spd not in allowed_speed:
+            bad.append((label, "语速", spd))
+    return bad
+
+
 def parse_anchors(text: str) -> list[tuple[str, str | None]]:
     """每个段落块的 `锚点:` 字段 → [(段落号, 原文或 None)]。None = 没写这个字段。
 
@@ -439,6 +480,19 @@ def run(path: Path) -> list[Check]:
     add("每段都有查询或锚点", not no_visual,
         f"{len(block_list) - len(no_visual)}/{len(block_list)} 段有画面来源"
         + ("，缺：" + "、".join(f"段{l}" for l in no_visual[:5]) if no_visual else ""))
+
+    # 情绪/语速字段机检（架构设计 3.3，2026-09-11 加）：表外值当场报错。
+    # 受控词表的真源在 config/voice.json，不在这里硬编码——词表会随引擎实测调整，
+    # 抄一份到代码里必然分叉。
+    voice_cfg = json.loads((paths.CONFIG / "voice.json").read_text(encoding="utf-8"))
+    allowed_emo = {k for k in (voice_cfg.get("emotions") or {}) if not k.startswith("_")}
+    allowed_spd = {k for k in (voice_cfg.get("speed") or {}) if not k.startswith("_")}
+    emo_fields = parse_emotion_fields(text)
+    bad_es = validate_emotion_speed(emo_fields, allowed_emo, allowed_spd)
+    declared = sum(1 for _, e, s in emo_fields if e or s)
+    add("情绪/语速在受控词表内", not bad_es,
+        f"{declared}/{len(emo_fields)} 段声明了情绪/语速"
+        + ("；表外：" + "、".join(f"段{l}的{f}={v!r}" for l, f, v in bad_es[:3]) if bad_es else ""))
 
     # 集号（ADR-0004，2026-08-09 加）：格式校验不依赖外部文件、永远可跑；
     # 存在性校验要番名 + 素材库，读不到就显式 FAIL「跳过不可判定」——

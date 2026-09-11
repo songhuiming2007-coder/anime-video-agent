@@ -412,3 +412,148 @@ def test_detect_runtime_mode_from_gpu_probe():
     assert cloud.detect_runtime_mode_from_gpu_probe(0) == "gpu"
     assert cloud.detect_runtime_mode_from_gpu_probe(1) == "cardless"
     assert cloud.detect_runtime_mode_from_gpu_probe(127) == "cardless", "命令不存在（无卡模式）也归 cardless"
+
+
+# ---------------------------------------------------------------------------
+# 8. 模型权重结构校验（任务 0）：体积只证存在，结构才证完整
+# ---------------------------------------------------------------------------
+
+import json as _json
+import struct as _struct
+import subprocess as _subprocess
+import sys as _sys
+
+
+def _make_safetensors(path: Path, tensors: dict | None = None, truncate: int = 0) -> Path:
+    """手工构造最小 safetensors：8 字节头长 + header JSON + 数据区。"""
+    tensors = tensors or {"w": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}}
+    payload = b"\x00" * 8
+    hdr = _json.dumps(tensors).encode("utf-8")
+    blob = _struct.pack("<Q", len(hdr)) + hdr + payload
+    if truncate:
+        blob = blob[:-truncate]
+    path.write_bytes(blob)
+    return path
+
+
+def _run_struct_probe(root: Path) -> dict:
+    """把远端校验脚本拉下来在本地跑一遍（同样的代码、同样的判据）。"""
+    script = root / "_probe.py"
+    script.write_text(cloud._MODEL_STRUCT_PROBE_SCRIPT, encoding="utf-8")
+    res = _subprocess.run(
+        [_sys.executable, str(script), str(root)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    return _json.loads(res.stdout.strip().splitlines()[-1])
+
+
+def test_structure_probe_accepts_intact_safetensors(tmp_path):
+    """完好的 safetensors 必须判通过——否则新门禁会冤枉好模型。"""
+    _make_safetensors(tmp_path / "ok.safetensors")
+    out = _run_struct_probe(tmp_path)
+    assert out["checked"] == 1
+    assert out["bad"] == []
+
+
+def test_structure_probe_catches_truncated_safetensors(tmp_path):
+    """截断的 safetensors 必须被抓住。
+
+    这是本任务存在的**唯一理由**：du 体积在截断下照样可能过阈值，
+    而 max(data_offsets) 越出文件末尾是字节级铁证。
+    """
+    _make_safetensors(tmp_path / "cut.safetensors", truncate=3)
+    out = _run_struct_probe(tmp_path)
+    assert out["checked"] == 0
+    assert len(out["bad"]) == 1 and "字节数不符" in out["bad"][0]
+
+
+def test_structure_probe_handles_zip_and_bare_pickle(tmp_path):
+    """zip 容器查条目越界；裸 pickle 诚实记为 unverifiable（不假装通过也不冤枉）。"""
+    import zipfile
+    with zipfile.ZipFile(tmp_path / "model.bin", "w") as z:
+        z.writestr("data.pkl", b"payload")
+    (tmp_path / "legacy.pth").write_bytes(b"\x80\x02" + b"pickle-bytes-here")
+    out = _run_struct_probe(tmp_path)
+    assert out["checked"] == 1, "zip 容器应通过条目越界检查"
+    assert out["bad"] == []
+    assert out["unverifiable"] == ["legacy.pth"], "裸 pickle 无完整性信息，不能算通过"
+
+
+def test_structure_probe_catches_truncated_zip_as_damage_not_unverifiable(tmp_path):
+    """被截断的 zip 容器必须报「损坏」，不能报「无法校验」。
+
+    防的错误（由变异检验抓出）：zip 截断后中央目录读不出来，is_zipfile 返回 False，
+    若把它一律归入 unverifiable，doctor 看到的就是 WARN「无法静态校验」——
+    而下载中断造成的截断正是本项目最真实的失效模式，必须是 FAIL。
+    """
+    import zipfile
+    p = tmp_path / "cut.bin"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("data.pkl", b"x" * 4096)
+    p.write_bytes(p.read_bytes()[:20])   # 砍到只剩本地文件头
+    out = _run_struct_probe(tmp_path)
+    assert out["checked"] == 0
+    assert len(out["bad"]) == 1 and "截断" in out["bad"][0]
+    assert out["unverifiable"] == [], "截断不得被当成「无法校验」"
+
+
+def test_structure_probe_flags_garbage_file(tmp_path):
+    """既非 zip 也非 pickle 的二进制不能放行。"""
+    (tmp_path / "junk.pt").write_bytes(b"NOPE-not-a-real-weight-file")
+    out = _run_struct_probe(tmp_path)
+    assert out["checked"] == 0 and len(out["bad"]) == 1
+    assert "格式异常" in out["bad"][0]
+
+
+def test_parse_model_structure_result_three_way(tmp_path):
+    """OK / WARN / FAIL 必须严格区分：unverifiable 既不能当通过也不能当损坏。"""
+    ok = _json.dumps({"files": 3, "checked": 3, "bad": [], "unverifiable": []})
+    assert cloud.parse_model_structure_result(ok, 0)[0] == "OK"
+
+    mixed = _json.dumps({"files": 3, "checked": 2, "bad": [], "unverifiable": ["a.pth"]})
+    tag, desc = cloud.parse_model_structure_result(mixed, 0)
+    assert tag == "OK" and "无法静态校验" in desc
+
+    only_bare = _json.dumps({"files": 1, "checked": 0, "bad": [], "unverifiable": ["a.pth"]})
+    assert cloud.parse_model_structure_result(only_bare, 0)[0] == "WARN"
+
+    broken = _json.dumps({"files": 2, "checked": 1, "bad": ["x.safetensors: 字节数不符"], "unverifiable": []})
+    tag, desc = cloud.parse_model_structure_result(broken, 0)
+    assert tag == "FAIL" and "结构损坏" in desc
+
+    empty = _json.dumps({"files": 0, "checked": 0, "bad": [], "unverifiable": []})
+    assert cloud.parse_model_structure_result(empty, 0)[0] == "WARN"
+
+
+def test_parse_model_structure_result_failure_is_warn_not_fail():
+    """脚本跑不起来时判 WARN，不能拉倒整个 doctor。
+
+    防的错误：把「校验机制本身故障」当成「模型损坏」上报，
+    用户会去重下 33GB——而问题其实只是远端缺 python。
+    """
+    assert cloud.parse_model_structure_result("", 1)[0] == "WARN"
+    assert cloud.parse_model_structure_result("bash: python: not found", 127)[0] == "WARN"
+    assert cloud.parse_model_structure_result("not json at all", 0)[0] == "WARN"
+
+
+def test_build_model_structure_probe_cmd_is_base64_landed():
+    """校验脚本必须 base64 落地再跑：内联会让引号在 shell→ssh→远端 shell 三层间互相切断。"""
+    cmd = cloud.build_model_structure_probe_cmd("BAAI/bge-m3")
+    assert "base64 -d >" in cmd
+    assert "'/root/autodl-tmp/models/BAAI/bge-m3'" in cmd
+    assert "json.loads" not in cmd, "脚本正文不得内联，否则引号会切断"
+
+
+def test_tts_run_uses_cloud_config_overlay():
+    """tts 任务必须显式传云端覆盖层配置。
+
+    防的错误：本地 Mac 只有 mlx（qwen3_tts），云端只有 CUDA（indextts2），
+    若沿用默认 voice.json，云端会去加载 mlx 引擎并当场崩——
+    而报错会指向「模块不存在」，离病根（配置没切）隔了好几层。
+    """
+    cmd = cloud.build_remote_run_command("tts", "data/episodes/A/01", "/root/anime-video-agent")
+    assert "--config config/voice.cloud.json" in cmd
+
+    probe = cloud.build_remote_run_command("probe", "data/episodes/A/01", "/root/anime-video-agent")
+    assert "--config" not in probe, "probe 不碰配音配置，不该带这个参数"

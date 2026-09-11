@@ -108,3 +108,124 @@ def run(video: Path, dest: Path, language: str = "zh") -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("\n".join(lines), encoding="utf-8")
     return dest
+
+
+# ---------------------------------------------------------------------------
+# 音频转录后端（v2，架构设计三.5）：TTS 回读质检的算力抽象
+# ---------------------------------------------------------------------------
+#
+# **为什么与上面的 `run()` 分开**：`run()` 是 ingest 的一次性兜底（整集视频 → 带
+# 时间码 SRT）；这里是逐段 TTS 音频的短文本回读。共用的只是「ASR 引擎」这一层，
+# 所以共用后端表，而不是把两个用途塞进一个函数。
+#
+# **为什么是级联而非融合**（架构设计三.5）：两个 ASR 的 CER 不可比——不同模型的
+# 错误率不是同一个量（S10 同构）。所以是「主读不过才请仲裁」，不是分数混合。
+#
+# **本地/云端同一份裁决代码，两处算力**：ADR-0014 解耦在代码层的落地。
+# 本地 Mac 无 CUDA 时自动走 mlx-whisper，云端走 CUDA 后端。
+
+# 云端模型路径与 config/cloud.json 的 models 段对应（那份是机制配置，这份是代码默认）
+CLOUD_WHISPER_DIR = "/root/autodl-tmp/models/openai/whisper-large-v3"
+CLOUD_SENSEVOICE_DIR = "/root/autodl-tmp/models/FunAudioLLM/SenseVoiceSmall"
+
+# 后端优先级：主读取第一个可用的；仲裁取与主读不同的下一个
+PRIMARY_ORDER = ("sensevoice_cuda", "whisper_large_v3_cuda", "mlx_whisper_local")
+
+
+def _backend_mlx_whisper(path: Path) -> str:
+    """本地 Apple Silicon 通道（mlx-whisper）。"""
+    import mlx_whisper
+
+    return mlx_whisper.transcribe(
+        str(path), path_or_hf_repo=REPO, language="zh", verbose=None
+    )["text"].strip()
+
+
+def _backend_whisper_cuda(path: Path) -> str:
+    """云端 Whisper Large-v3（transformers pipeline）。"""
+    from transformers import pipeline
+
+    pipe = pipeline(
+        "automatic-speech-recognition",
+        model=CLOUD_WHISPER_DIR,
+        device=0,
+        generate_kwargs={"language": "zh", "task": "transcribe"},
+    )
+    return pipe(str(path))["text"].strip()
+
+
+def _backend_sensevoice_cuda(path: Path) -> str:
+    """云端 SenseVoice-Small（funasr）。
+
+    主读候选：快（≈15× 实时）且情感标签白送。**情感输出只进 manifest 观测，
+    不进任何门禁**——它测的是「模型觉得什么情绪」，不是「念得对不对」（S1）。
+    """
+    from funasr import AutoModel
+
+    model = AutoModel(model=CLOUD_SENSEVOICE_DIR, disable_update=True)
+    res = model.generate(input=str(path), language="zh", use_itn=True)
+    return res[0]["text"].strip()
+
+
+BACKENDS = {
+    "mlx_whisper_local": _backend_mlx_whisper,
+    "whisper_large_v3_cuda": _backend_whisper_cuda,
+    "sensevoice_cuda": _backend_sensevoice_cuda,
+}
+
+
+def backend_unavailable_reason(name: str) -> str | None:
+    """后端不可用则返回原因，可用返回 None（纯探测，不加载模型）。"""
+    import importlib.util
+
+    if name == "mlx_whisper_local":
+        return None if importlib.util.find_spec("mlx_whisper") else "未安装 mlx_whisper（需 Apple Silicon）"
+    if name == "whisper_large_v3_cuda":
+        if importlib.util.find_spec("transformers") is None:
+            return "未安装 transformers"
+        if not Path(CLOUD_WHISPER_DIR).is_dir():
+            return f"模型目录不存在: {CLOUD_WHISPER_DIR}"
+        return None
+    if name == "sensevoice_cuda":
+        if importlib.util.find_spec("funasr") is None:
+            return "未安装 funasr"
+        if not Path(CLOUD_SENSEVOICE_DIR).is_dir():
+            return f"模型目录不存在: {CLOUD_SENSEVOICE_DIR}"
+        return None
+    return f"未知后端: {name}"
+
+
+def pick_backends(prefer: str | None = None) -> tuple[str, str | None]:
+    """选 (主读后端, 仲裁后端或 None)。纯函数。
+
+    按 PRIMARY_ORDER 取第一个可用的作主读；仲裁取**与主读不同的**下一个可用后端。
+    没有第二档时返回 None——此时主读不过就直落既有重试/豁免链，不做无意义的
+    「用同一份裁决再判一次」。**不假装仲裁存在**。
+    """
+    order = list(PRIMARY_ORDER)
+    if prefer and prefer in order:
+        order.remove(prefer)
+        order.insert(0, prefer)
+    usable = [n for n in order if backend_unavailable_reason(n) is None]
+    if not usable:
+        raise RuntimeError(
+            "没有任何可用的 ASR 后端："
+            + "; ".join(f"{n}({backend_unavailable_reason(n)})" for n in order)
+        )
+    return usable[0], (usable[1] if len(usable) > 1 else None)
+
+
+def transcribe_audio(path: Path, backend: str | None = None) -> tuple[str, str]:
+    """音频 → (文本, 实际使用的后端名)。接缝函数。
+
+    显式传 backend 时不做降级——调用方指定了就该按它执行，静默换后端会让
+    「主读/仲裁」的分工失去意义（而分工正是级联仲裁成立的前提）。
+    """
+    if backend is not None:
+        reason = backend_unavailable_reason(backend)
+        if reason:
+            raise RuntimeError(f"指定后端 {backend} 不可用: {reason}")
+        return BACKENDS[backend](path), backend
+
+    primary, _ = pick_backends()
+    return BACKENDS[primary](path), primary

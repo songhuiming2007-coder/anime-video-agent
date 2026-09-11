@@ -126,6 +126,127 @@ def evaluate_doctor_disk(avail_gb_str: str) -> tuple[str, str, bool]:
         return "FAIL", "数据盘 /root/autodl-tmp 未挂载或不可读", False
 
 
+# 远端模型权重结构校验脚本（任务 0，2026-09-11）
+#
+# **为什么需要它**：原来的 doctor 只比 `du` 体积，而截断的权重照样能凑够体积——
+# 例如 Qwen3-VL 四块共 17.5GB，少一块会掉到 12.6GB 被体积判据抓住，
+# 但某一块内部截断 300MB 则体积照样过 15GB 阈值，doctor 一声不呵。
+# 体积是存在性证据，不是完整性证据。
+#
+# 校验策略按格式分派：
+#   .safetensors —— 读 8 字节头长 + header JSON，断言 8+header+max(data_offsets) 与文件字节数相等。
+#                    这是**字节级**证明：任何截断都会让最大偏移越界。不加载权重，秒级完成。
+#   .bin/.pt/.pth —— 新版 PyTorch 用 zip 容器存（torch>=1.6 默认）：is_zipfile 能读出
+#                    中央目录即算通过（截断会先毁掉位于末尾的中央目录，自然落到损坏
+#                    分支）。不跑 testzip，那要全量读盘（数 GB），而本项目的真实失效
+#                    模式是「下载中断导致截断」，不是「字节被篡改导致 CRC 不符」。
+#                    裸 pickle（\x80 开头）无内建完整性信息，诚实记为 unverifiable。
+# 返回一行 JSON，由 parse_model_structure_result 解析。
+_MODEL_STRUCT_PROBE_SCRIPT = r'''
+import json, struct, sys, zipfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt", ".pth"}
+files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in WEIGHT_SUFFIXES)
+
+checked, bad, unverifiable = 0, [], []
+for p in files:
+    try:
+        if p.suffix == ".safetensors":
+            with p.open("rb") as f:
+                n = struct.unpack("<Q", f.read(8))[0]
+                hdr = json.loads(f.read(n))
+            max_end = max(
+                (v["data_offsets"][1] for k, v in hdr.items() if k != "__metadata__"),
+                default=0,
+            )
+            expect = 8 + n + max_end
+            actual = p.stat().st_size
+            if expect != actual:
+                bad.append(f"{p.name}: 字节数不符 (期望 {expect}, 实得 {actual})")
+            else:
+                checked += 1
+        elif zipfile.is_zipfile(p):
+            size = p.stat().st_size
+            with zipfile.ZipFile(p) as z:
+                truncated = [
+                    i.filename for i in z.infolist()
+                    if i.header_offset + i.compress_size > size
+                ]
+            if truncated:
+                bad.append(f"{p.name}: zip 条目越界（截断）{truncated[:2]}")
+            else:
+                checked += 1
+        else:
+            # 既不是可读的 zip，就看它到底是「裸 pickle」还是「压根就坏了」。
+            # **这一步不能省**：zip 容器被截断时中央目录读不出来，is_zipfile 会返回 False，
+            # 若一律归入 unverifiable，就把「损坏」当成「无法校验」报上去——
+            # 而下载中断导致的截断正是本项目最真实的失效模式。
+            with p.open("rb") as f:
+                head = f.read(4)
+            if len(head) < 4:
+                bad.append(f"{p.name}: 文件过短")
+            elif head[:2] == b"PK":
+                bad.append(f"{p.name}: zip 容器中央目录不可读（截断）")
+            elif head[:1] == b"\x80":
+                unverifiable.append(p.name)   # 裸 pickle：无内建完整性信息，不猜
+            else:
+                bad.append(f"{p.name}: 既非 zip 也非 pickle，格式异常")
+    except Exception as e:
+        bad.append(f"{p.name}: {type(e).__name__} {e}")
+
+print(json.dumps({"files": len(files), "checked": checked,
+                  "bad": bad, "unverifiable": unverifiable}))
+'''
+
+
+def build_model_structure_probe_cmd(
+    model_dir: str, models_root: str = "/root/autodl-tmp/models"
+) -> str:
+    """生成远端模型结构校验命令（纯函数）。
+
+    脚本经 base64 落地：内联走 ssh 时，脚本里的引号会在 shell → ssh → 远端 shell
+    三层之间互相切断（M1b 踩过同样的坑），base64 是唯一不需要在三层引号间走钢练的做法。
+    """
+    encoded = base64.b64encode(_MODEL_STRUCT_PROBE_SCRIPT.encode("utf-8")).decode("ascii")
+    return (
+        f"echo {encoded} | base64 -d > /tmp/.ava_model_probe.py && "
+        f"/root/miniconda3/bin/python /tmp/.ava_model_probe.py '{models_root}/{model_dir}'"
+    )
+
+
+def parse_model_structure_result(stdout: str, returncode: int) -> tuple[str, str]:
+    """解析远端结构校验输出 → (状态标签, 描述)。纯函数。
+
+    标签语义：OK=已验证完好；WARN=无法验证（不是「通过」，也不该判失败）；FAIL=确实损坏。
+    **三者必须区分**：把 unverifiable 当 OK 是撒谎，当 FAIL 是冤枉。
+    """
+    if returncode != 0 or not stdout.strip():
+        return "WARN", "结构校验未能执行（体积判据不受影响）"
+    try:
+        data = json.loads(stdout.strip().splitlines()[-1])
+    except Exception:
+        return "WARN", "结构校验输出无法解析（体积判据不受影响）"
+
+    n_files = int(data.get("files", 0))
+    checked = int(data.get("checked", 0))
+    bad = list(data.get("bad", []))
+    unverifiable = list(data.get("unverifiable", []))
+
+    if bad:
+        return "FAIL", f"结构损坏 {len(bad)} 个: {'; '.join(bad[:3])}"
+    if n_files == 0:
+        return "WARN", "未发现任何权重文件（.safetensors/.bin/.pt/.pth）"
+    if checked == 0 and unverifiable:
+        return "WARN", f"{len(unverifiable)} 个 pickle 权重无内建完整性信息，无法静态校验"
+
+    desc = f"结构校验 {checked} 文件通过"
+    if unverifiable:
+        desc += f"（另 {len(unverifiable)} 个 pickle 无法静态校验）"
+    return "OK", desc
+
+
 def build_sync_up_files(
     ep_dir: Path, sync_items: list[str], remote_ep_dir: str, remote_root: str
 ) -> list[tuple[str, str]]:
@@ -223,10 +344,13 @@ def build_remote_run_command(
             f"touch {WATCHDOG_HEARTBEAT_PATH}"
         )
     else:
+        # tts 必须走云端覆盖层：本地 Mac 只有 mlx（qwen3_tts），云端只有 CUDA（indextts2），
+        # 同一个 engine 字段喂不了两边。覆盖层只写差异，其余字段继承 voice.json。
+        extra = " --config config/voice.cloud.json" if task == "tts" else ""
         cmd = (
             f"cd {remote_root} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH} && "
-            f"/root/miniconda3/bin/python -m pipeline.{task} {ep_rel_path} && "
+            f"/root/miniconda3/bin/python -m pipeline.{task} {ep_rel_path}{extra} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH}"
         )
     return cmd
@@ -633,6 +757,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 sz_gb = float(sz_str)
                 if sz_gb >= min_gb:
                     print(f"OK    [MODEL] {m_id:<30} ({sz_gb:.1f}GB ≥ {min_gb}GB) - {desc}")
+                    # 体积只证存在、不证完整：再跑一层结构校验（任务 0）。
+                    # 失败不推翻体积结论，但会拉倒 all_passed。
+                    st_res = _ssh(build_model_structure_probe_cmd(m_dir), host=host, check=False, timeout=90)
+                    st_tag, st_desc = parse_model_structure_result(st_res.stdout, st_res.returncode)
+                    print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
+                    if st_tag == "FAIL":
+                        all_passed = False
+                        print("      修法: 重新下载该模型（权重截断/损坏，体积判据抓不到）")
                 else:
                     all_passed = False
                     print(f"FAIL  [MODEL] {m_id:<30} 体积不足 ({sz_gb:.1f}GB < {min_gb}GB) - {desc}")
