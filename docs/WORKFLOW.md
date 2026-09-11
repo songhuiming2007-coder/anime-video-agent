@@ -41,10 +41,7 @@
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **[M2]/[M3] 生效闸门说明**：本卡为 v2 目标工序（依据 `docs/plans/2026-09-10-v2-architecture-design.md`）。
-> 标记者在该里程碑验收前按 v1 既有命令执行（本地 `pipeline.tts` + `afplay` 顺听，
-> 无情绪字段、无结构化打点、`场景` 通道封印）；未标记者行为与 v1 完全一致。
-> 文档与代码不许分叉（S6）——闸门标记就是防分叉的机制。
+> **说明**：M1/M2a/M2b/M2.5 均已验收合入（云端配音与 SenseVoice/Whisper 仲裁回读、g2p 拼音直注、Qwen3-VL 意象打标与 EGOIST 池场景解封、acquire 搜集与纪录片视听在场规范均已就位），当前进至 M3 阶段（端到端闭环与人时核销）。未标定门槛的池写 `场景` 仍会报错。
 
 每步的产物落盘且带序号，**产物文件即状态**——看目录里有哪些文件就知道进行到哪，
 不需要额外的状态记录，任何一步失败都能从中间接上重跑。
@@ -77,7 +74,7 @@ data/episodes/YYYY-MM-DD-<番>-<主题>/
 | ASR 兜底 | ✅ | 无外挂字幕时用 `mlx-whisper` 转录该文件本身 |
 | 镜头切分 | ✅ | `shots calibrate` 定阈值 → `shots build`（SP 传 `--sp N`，支持 `<番>/<集键>` 扁平覆盖；黑底缓出失明用 `rebuild --also-cut` 补刀） → `shots frames`（抽代表帧） → `shots gallery`（出单文件画廊 HTML 看图选锚点，ADR-0012），约 2.2 分钟/集 |
 | 角色在场 | ✅ | `faces detect` → `cluster` → **人贴名** → `presence`，约 1.3 分钟/集。**已贴名的 clusters.json 不许重跑 `cluster` 覆盖**（会无声抹掉人工贴名，命令会拒绝并给指引）；要重建：`mv <番>.clusters.json <番>.clusters.json.bak` 保住贴名 → 重跑 `cluster` → `sheet` 对照新旧簇的代表脸把名字补回去。只补几集 detect 不必重跑 cluster |
-| 画面语义 | v2 复活（ADR-0015），**M2 验收后生效** | 云端打标：`vindex captions <番> <集>`（Qwen3-VL 逐镜头 ≤30 字结构化意象，逐镜头落盘 captions.json）→ `vindex embed <番>`（bge-m3 建库）→ `vprobe scene` 零假设组法按番标定 `no_match` 进 `config/scenes.json`。M2 验收前维持封印：`场景` 写了当场报错，氛围段落交 05 |
+| 画面语义 | v2 复活（ADR-0015，**M2b 已验收解封**） | 云端打标：`vindex captions <番> <集>`（Qwen3-VL 逐镜头 ≤30 字结构化意象，逐镜头落盘 captions.json）→ `vindex embed <番>`（bge-m3 建库）→ `vprobe scene` 零假设组法按池标定 `no_match` 进 `config/scenes.json`。已标定池（EGOIST 0.6033）场景通道解封，未标定池写了当场报错 |
 | 音色 | ✅ | 试音选定后写进 `config/voice.json` |
 | BGM 曲库 | ✅（只攒库，不定选曲） | `bgm scan` / `bgm extract` / `bgm register`（批量测量并自动持久化写入 `config/bgm.json`；单首测量用 `bgm measure`）——攒的是候选池，具体哪期用哪首见每期 01（CLAUDE.md「十、BGM 约定」，2026-08-08 起改成每期人耳现选） |
 | 番剧笔记 | **三步流水线**：①主 agent 研究写厚 → ②对抗 agent 审查（零上下文子代理）→ ③主 agent 终审裁决回写 | 产物 `data/library/notes/<番>.md` + `<番>-对抗审查报告.md`。**三步产物齐 + 裁决已回写才算完成，缺一步不许出片。** 全程 agent 劳动，人类零耗时 |
@@ -301,8 +298,7 @@ agent 直接跳进场景，观众不知道前情（楪祈人物志·二错误 3 
 
 **源抓不到 ≠ 放弃，严禁偷懒降级为水百科（2026-09-03 强化）：** 反爬是常态，不是意外。
 模型最容易犯的毛病是遇到 403 / Cloudflare 拦截后偷懒退缩到简陋百科应付差事。
-**必须强制执行工具升级链**：普通静态抓取（fetch/curl）失败 → 立即升级使用真实浏览器
-（`agent_browser` 带 `--profile Default` 复用本地 Chrome 登录态与渲染环境）穿透抓取。
+**必须强制执行工具升级链**：普通静态抓取失败 → 升级走 `agent_crawl`（Crawl4AI + Camoufox 无头静默抓取，遇反爬开 stealth 绕盾）；若确需登录态或复杂交互，升级走 `agent_browser` 带独立持久化配置与真实窗口（`--headed --profile ~/.config/pi-browser-profile`），严禁直连主力 Chrome Default 配置（防 SingletonLock 与 Keychain 阻断）。
 宁可多花十分钟提取一手深度长文，不许带着「大概」往下走。事故复盘见
 [`docs/notes/workflow-notes.md`](notes/workflow-notes.md#2-源抓不到--放弃)。
 
@@ -461,7 +457,7 @@ diff（见 02.5 一节）——这份 diff 才是「账号声音」的标注数�
    `shrink_no_padding()`）
 6. 切成 8–20 段，每段配 `查询` 与 `备选`
 
-> **v2 可选字段 [M2 生效]**：段落块可声明 `情绪:` 与 `语速:`——
+> **v2 情感语速控制**：段落块可声明 `情绪:` 与 `语速:`——
 > 直击 v1 基线反馈的第一硬伤「配音无起伏、无情感」。
 > `情绪` 只许取 `config/voice.json` 的 `emotions` 受控词表（不写 = 平静叙述），
 > 表外值机检当场报错；`语速` 取 慢/中/快。执行映射见架构方案三.3。
@@ -557,12 +553,11 @@ git diff --no-index --stat 02-script.draft.md 02-script.md > 02-diff.patch
 
 ### 03 配音 · Agent 约 5–10 分钟（机器时间）
 
-> **v2 端云形态 [M2/M3 生效]**（ADR-0016）：配音在云端 GPU 节点执行——
+> **v2 端云形态**（ADR-0016）：配音在云端 GPU 节点执行——
 > `ava-cloud push data/episodes/<本期>`（上行稿件与配置）→
-> `ava-cloud run data/episodes/<本期> tts`（云端 TTS（选型见 ADR-0017）合成 +
+> `ava-cloud run data/episodes/<本期> tts`（云端 Qwen3-TTS 合成 +
 > SenseVoice 主读 / Whisper Large-v3 仲裁回读）→ `ava-cloud pull
-> data/episodes/<本期>`（拉回 `03-audio/`）→ 关机记账。
-> M2 验收前仍按下面的本地命令执行。
+> data/episodes/<本期>`（拉回 `03-audio/`）→ 关机记账（本地亦支持 `pipeline.tts` mlx 兜底）。
 
 ```bash
 python -m pipeline.tts data/episodes/<本期>
@@ -577,10 +572,10 @@ python -m pipeline.tts data/episodes/<本期>
 引擎选型与克隆路径见 ADR-0006；v2 起回读为 SenseVoice-Small 主读 +
 Whisper Large-v3 仲裁的级联（架构方案三.5，[M2 生效]）。
 
-> **多音字与 CJK 音读泄漏（D25）的 v2 治理 [M2 生效]**：合成前文本经
+> **多音字与 CJK 音读泄漏（D25）的 v2 治理**：合成前文本经
 > `pipeline/g2p.py` 局部拼音直注——多音字命中历史泄漏音素集时注入拼音，
 > 物理阻断日语音读借调（ADR-0006 补记的根因定性）。手工 `readings`
-> 错别字表降级为极端个例 override；M2 前维持 readings 表现状。
+> 错别字表降级为极端个例 override。
 
 > **ASR 盲区豁免（2026-08-16 改判据）**：三个不同种子生成的音频 Whisper 全部
 > 严重失真（CER 远超门槛）而时长达标时，判为 ASR 对音色的盲区而非 TTS 念错
@@ -680,7 +675,7 @@ python -m pipeline.clips data/episodes/<本期>
 | `锚点: S01E01 17:50` 或 `[番] SP01 12:30` | **剧情/特典锚点直通**（一等公民，ADR-0008/0011）：起点吸附含锚点镜头切点，不检索；支持逗号/续行单段多锚点；素材自然时长不足自动尾帧定格（ok_extended ≤8s） | 无分数——确定性时间码 |
 | `锚点: 无（理由）` + `查询` | 台词检索（氛围补位） | 台词分数，门槛 0.45 |
 | `人物: 雪乃` | 台词检索 + **角色在场过滤**（过滤为空则退回不过滤的结果） | 台词分数，门槛 0.45 |
-| `场景: 黄昏的天台空镜` | **画面语义检索**（VLM 意象 captions + bge-m3 文-文检索，ADR-0015），不看台词 | 画面分数，门槛按番 `config/scenes.json` 标定；**M2 验收前维持封印**：写了当场报错 |
+| `场景: 黄昏的天台空镜` | **画面语义检索**（VLM 意象 captions + bge-m3 文-文检索，ADR-0015，M2b 已解封），不看台词 | 画面分数，门槛按池/番 `config/scenes.json` 标定；未标定写了当场报错 |
 
 **锚点优先于一切检索**（2026-08-27，ADR-0008，已实现）：02 写稿时料单与引用核对
 已经锁定分钟级剧情时间码，排片把它们直通镜头表；双塔检索只服务 `锚点: 无` 的氛围段。
@@ -746,7 +741,7 @@ python -m pipeline.review data/episodes/<本期> --approve
 让 `clips.py` 自动写 approved 是最省事的做法，也正是这一关曾经形同虚设的原因：
 有一期两个文件字节完全相同，画面是检索直出、没过人眼就渲了，错配等成片看完才发现。
 
-**05 结构化打点（30 秒，v2 起 [M2 生效]）**：审片批准当场打两个 1–5 分：
+**05 结构化打点（30 秒，v2 起）**：审片批准当场打两个 1–5 分：
 **意象贴合 / 剪辑节奏**，写入 `04-clips.approved.json` 的 `human_review` 字段，
 与 03.5 的三个分共同构成 eval 的人审真值（架构方案二.3）。
 
@@ -993,7 +988,7 @@ open data/episodes/<本期>/07-cover/index.html
 
 ## 已知局限 · 待做
 
-### 画面语义通道：v1 探针没过（2026-08-04）→ v2 由 ADR-0015 复活（M2 验收后生效）
+### 画面语义通道：v1 探针没过（2026-08-04）→ v2 由 ADR-0015 复活（M2b 已验收解封）
 
 第 1 层（画面里有谁）2026-08-03 已建成。第 2 层（画面是什么，Chinese-CLIP）
 v1 探针结论是不建，完整证据见 ADR-0003「待实测」第 4 条：检索本身不差，
@@ -1004,8 +999,8 @@ v1 探针结论是不建，完整证据见 ADR-0003「待实测」第 4 条：�
 **v2 的复活路线换了机制而不是换了模型**（ADR-0015）：Qwen3-VL 把镜头翻译成
 ≤30 字结构化中文意象，bge-m3 做文-文检索——「算不算命中」交回有标定先例的
 文-文零假设组门槛（subindex 的 0.45 同源方法），VLM 只负责翻译不负责裁决。
-**M2 验收（30 镜头 caption 抽验 + 按番门槛标定）前维持封印**：`场景` 写了
-当场报错，氛围段落继续交 05 人审。
+**2026-09-11 M2b 已验收解封**：抽验 29/30、EGOIST 池 17 集 455 镜头完成打标与入库，
+标定门槛 `no_match=0.6033`。未标定门槛的池写 `场景` 会报错阻止静默错配。
 
 v1 的 CLIP 代码与探针全部保留至 captions 索引验收，验收后删除（删除按红线先问人）；
 那时若门槛仍测不出来，按 ADR-0015 推翻条件②处理：不建，且不再第三次换模型重试。

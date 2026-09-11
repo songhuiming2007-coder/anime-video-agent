@@ -38,9 +38,9 @@
 | [ADR-0012](adr/0012-multimodal-shot-gallery.md) | 镜头代表帧画廊与多模态视觉阅卷回填 | 已采纳已实现 | — |
 | [ADR-0013](adr/0013-dual-mode-clip-protocol.md) | 双模态片段协议（纯净画面解说 vs 音画同源试听） | 已采纳已实现 | — |
 | [ADR-0014](adr/0014-cloud-gpu-headless-model-stack.md) | 计算与交互解耦 —— 云端 Headless GPU 承载全栈顶配大模型 | 已采纳 | B2, D4, D22, D23, D25 |
-| [ADR-0015](adr/0015-vlm-caption-textual-scene-retrieval.md) | VLM 意象文本化 + 文-文检索复活画面通道 | 已采纳（M2 验收后代码生效） | B1, D4, D5, D22 |
+| [ADR-0015](adr/0015-vlm-caption-textual-scene-retrieval.md) | VLM 意象文本化 + 文-文检索复活画面通道 | 已采纳已实现（M2b 验收生效，EGOIST 池解封） | B1, D4, D5, D22 |
 | [ADR-0016](adr/0016-render-local-inference-cloud.md) | 数据引力原则 —— 推理上云，片源与渲染留本地 | 已采纳 | D24, B2 |
-| [ADR-0017](adr/0017-tts-engine-selection-v2.md) | v2 配音引擎选型 —— Index 系列出局，Qwen3-TTS 1.7B 胜出（CosyVoice 未上桌，A/B 不完整） | 部分生效（provisional） | D23, D25, N22 |
+| [ADR-0017](adr/0017-tts-engine-selection-v2.md) | v2 配音引擎选型 —— Index 系列出局，Qwen3-TTS 1.7B 胜出（CosyVoice 未上桌，A/B 不完整） | 已采纳已实现（M2a 入库） | D23, D25, N22 |
 
 ---
 
