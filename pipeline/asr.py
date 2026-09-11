@@ -191,6 +191,15 @@ def backend_unavailable_reason(name: str) -> str | None:
             return "未安装 funasr"
         if not Path(CLOUD_SENSEVOICE_DIR).is_dir():
             return f"模型目录不存在: {CLOUD_SENSEVOICE_DIR}"
+        # `find_spec` 只回答「包在不在」，不回答「能不能用」。2026-09-11 实测：
+        # funasr 装上了，但它依赖的 torch_complex 缺失，`from funasr import
+        # AutoModel` 直接抛——于是 pick_backends 选中它当仲裁，整期跑到第一段
+        # 才炸。**故障晚发现比一开始不可用贵得多**（那一次白烧了 7 段的算力）。
+        # 所以探测必须深到真能拿到 AutoModel。
+        try:
+            from funasr import AutoModel  # noqa: F401
+        except Exception as e:  # noqa: BLE001 —— 探测就是要吞一切异常
+            return f"funasr 在但 AutoModel 不可用（{type(e).__name__}: {e}）"
         return None
     return f"未知后端: {name}"
 
