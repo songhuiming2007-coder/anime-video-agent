@@ -557,3 +557,39 @@ def test_tts_run_uses_cloud_config_overlay():
 
     probe = cloud.build_remote_run_command("probe", "data/episodes/A/01", "/root/anime-video-agent")
     assert "--config" not in probe, "probe 不碰配音配置，不该带这个参数"
+
+
+class TestLedgerBudgetScope:
+    """单期预算的适用范围（2026-09-11 误报修正）。
+
+    事故：一个含 15GB 模型下载 + 两次部署尝试的会话被标「超预算 16 倍」，
+    而它压根没在做任何一期。警告天天误报就没人看了——这正是 S1 说的
+    「判据测错了对象」在预算维度的翻版。
+    """
+
+    def test_未绑定某一期时不判超预算(self):
+        e = cloud.format_ledger_entry(
+            session_id="s", up_time="10:00:00", down_time="12:00:00",
+            gpu_seconds=7200, cost_cny=5.63, episode="unknown", tasks=[],
+            budget_cny=0.35, mode="gpu",
+        )
+        assert e["over_budget"] is False, "没在做某一期，单期预算不适用"
+        assert e["budget_scoped"] is False
+
+    def test_绑定某一期时照常判(self):
+        e = cloud.format_ledger_entry(
+            session_id="s", up_time="10:00:00", down_time="10:20:00",
+            gpu_seconds=1200, cost_cny=0.80, episode="01-借躯降生", tasks=["tts"],
+            budget_cny=0.35, mode="gpu",
+        )
+        assert e["over_budget"] is True
+        assert e["budget_scoped"] is True
+
+    def test_绑定某一期且未超时(self):
+        e = cloud.format_ledger_entry(
+            session_id="s", up_time="10:00:00", down_time="10:05:00",
+            gpu_seconds=300, cost_cny=0.20, episode="01-借躯降生", tasks=["tts"],
+            budget_cny=0.35, mode="gpu",
+        )
+        assert e["over_budget"] is False
+        assert e["budget_scoped"] is True
