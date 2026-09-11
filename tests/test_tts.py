@@ -1230,3 +1230,48 @@ class TestBackendProbe:
         prim, arb = asr.pick_backends()
         assert arb != prim, f"仲裁不能与主读同后端（都是 {prim}）"
         assert arb is None or arb in asr.BACKENDS
+
+
+class TestSynthLogicFingerprint:
+    """引擎代码变化必须让旧音频失效（2026-09-11 事故防回退）。
+
+    事故：修完 seed 与 voice_clone_prompt 缓存后跑增量重跑，`_reusable` 只看
+    文本/音色/合成文本，看不出引擎代码变了 → 27 段被静默复用为修复前的产物，
+    只有因注入表变动而 speakable 变化的 7 段重跑，产出一期「新旧混血」音频，
+    而 manifest 已是新的，表面看起来一切正常。
+    """
+
+    def test_指纹含合成逻辑版本(self):
+        cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
+        fp = t._voice_fingerprint(cfg)
+        assert "synth_logic" in fp, "没有这个字段，引擎代码改动就不会触发重跑"
+        assert fp["synth_logic"] == t.SYNTH_LOGIC_VERSION
+
+    def test_逻辑版本不同则指纹不同(self, monkeypatch):
+        cfg = {"engine": "e", "model": "m", "ref_audio": "r", "readings": {}}
+        before = t._voice_fingerprint(cfg)
+        monkeypatch.setattr(t, "SYNTH_LOGIC_VERSION", t.SYNTH_LOGIC_VERSION + 1)
+        after = t._voice_fingerprint(cfg)
+        assert before != after, "bump 版本号必须让指纹变化，否则等于没加"
+
+    def test_复用会因此失效(self, monkeypatch, tmp_path):
+        """端到端：逻辑版本变了，同样的文本也必须重跑而不是复用。"""
+        from pipeline.tts import Segment, Take
+
+        seg = Segment(1, "1", "世界退远了。")
+        wav = tmp_path / "seg-01.wav"
+        wav.write_bytes(b"RIFF fake")
+        old = {
+            "engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r",
+            "readings": t._voice_fingerprint(
+                {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
+            )["readings"],
+            "synth_logic": 999,  # 旧逻辑版本
+            "segments": [{
+                "index": 1, "label": "1", "text": "世界退远了。", "file": "seg-01.wav",
+                "duration": 2.0, "cer": 0.0, "attempts": 1, "speakable": "世界退远了。",
+            }],
+        }
+        cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
+        got = t._reusable(old, [seg], tmp_path, cfg)
+        assert got == {}, "逻辑版本不同时必须判定为不可复用"
