@@ -1302,6 +1302,23 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
     )
 
 
+# **合成逻辑版本。任何改变合成输出的代码改动都必须 bump 它。**
+#
+# 为什么需要这个号：增量复用的判据是「文本没变 + 音色没变 + 合成文本没变」，
+# 它看不出**引擎代码**变了。2026-09-11 实测栽在这里——修完 seed 与
+# voice_clone_prompt 缓存后跑增量重跑，27 段被静默复用为修复前的随机采样产物，
+# 只有因注入表变动而 speakable 变化的 7 段重跑，产出一期「新旧混血」音频，
+# 而 manifest 已经是新的，看起来一切正常。
+#
+# 这是 S1「判据测错了对象」在复用维度上的翻版：判据测的是「配置有没有变」，
+# 实际需要的是「合成逻辑有没有变」。配置比对覆盖不了代码。
+#
+# 版本历史：
+#   1 —— Qwen3 CUDA 通道初始（每句重新提取说话人嵌入、无种子控制）
+#   2 —— 加 torch.manual_seed + voice_clone_prompt 预计算缓存（2026-09-11）
+SYNTH_LOGIC_VERSION = 2
+
+
 def _voice_fingerprint(cfg: dict) -> dict:
     """增量重跑的音色指纹：决定旧 wav 能不能复用。
 
@@ -1309,6 +1326,8 @@ def _voice_fingerprint(cfg: dict) -> dict:
     换音色后忘带 `--force` 会静默复用旧 wav，出一期混两种音色的成片且零警告
     （2026-08-16 审计 2-6；当天恰好发生 seg7→seg6 换音色）。readings 影响
     合成文本，一并入指纹（换读音表现在自动重做受影响的段）。
+    此外还含 `synth_logic`：**配置指纹拦不住引擎代码变化**，2026-09-11 因此
+    产出过一期「新旧混血」音频（见 SYNTH_LOGIC_VERSION 注释）。
     """
     return {
         "engine": cfg["engine"],
@@ -1317,6 +1336,8 @@ def _voice_fingerprint(cfg: dict) -> dict:
         "readings": hashlib.sha256(json.dumps(
             cfg.get("readings", {}), sort_keys=True, ensure_ascii=False
         ).encode("utf-8")).hexdigest()[:16],
+        # 引擎代码行为版本（见 SYNTH_LOGIC_VERSION 的注释）
+        "synth_logic": SYNTH_LOGIC_VERSION,
     }
 
 
