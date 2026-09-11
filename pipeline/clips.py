@@ -64,12 +64,12 @@ PRESENCE_BAND = 0.06
 # 分钟允许三位（剧场版 96:08 之类），秒固定两位、允许小数秒。
 # 可选番名前缀（跨番混剪，2026-09-06）：`锚点: 罪恶王冠 S01E01 17:50`，
 # 不写番名默认主番（01-topic.md 番字段第一个 / 素材番剧块第一个）。
-# SP 特典集（ADR-0010 决策二，2026-09-07）：`锚点: EGOIST SP01 108:45`，
+# SP 特典集（ADR-0010 决策二，2026-09-07；支持语义后缀如 SP41-ninelie）：`锚点: EGOIST SP01 108:45`，
 # 集号位写 `SP(\d{1,2})` 即指向企划池里的非番剧素材（MV/Live/物证）。
 # 组号全部具名：anime/season/episode/sp/m0/s0/m1/s1——sp 与 season/episode 互斥。
 _ANCHOR = re.compile(
     rf"^(?:(?P<anime>.+?)\s+)?"
-    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}}))\s+"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}})(?:[-_][^\s:]+)?)\s+"
     rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
     rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
 
@@ -219,11 +219,11 @@ def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
         if ep:
             raw = ep.group(1).strip()
             m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
-            sp = re.fullmatch(r"SP(\d{1,2})", raw, re.I)
+            sp = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", raw, re.I)
             if not m and not sp:
                 raise SystemExit(
                     f"FAIL 段落 {i} 的 `集` 写的是「{raw}」，机器认不了。\n"
-                    f"     写规范形 `S01E07`（季两位、集两位都补齐）或特典 `SP01`，"
+                    f"     写规范形 `S01E07`（季两位、集两位都补齐）或特典 `SP01`（可带语义后缀），"
                     f"别写中文「第一季第七集」——集号是检索约束，写错 = 检索范围错了")
             ep_norm = (f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}" if m
                        else f"SP{int(sp.group(1)):02d}")
@@ -547,7 +547,7 @@ def _parse_ep_scope(episode: str | None) -> tuple[list, int]:
     if m:
         s, e = int(m.group(1)), int(m.group(2))
         return [(s, e), (s, None), (None, None)], 0
-    if re.fullmatch(r"SP\d+", episode, re.I):
+    if re.fullmatch(r"SP\d+(?:[-_][^\s:]+)?", episode, re.I):
         return [(None, None)], 2
     raise SystemExit(
         f"FAIL 段落的 `集: {episode}` 不是 SxxEyy 或 SPxx（ADR-0010）。\n"

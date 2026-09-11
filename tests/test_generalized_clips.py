@@ -24,6 +24,14 @@ class TestSpAnchorParse:
         a = clips._parse_anchor("SP02 01:00-02:30", 1)
         assert (a["episode"], a["t0"], a["t1"]) == (2, 60.0, 150.0)
 
+    def test_SP语义后缀(self):
+        # 锚点/集号允许带语义后缀 `SP41-ninelie`，解析只取数字主键（向下兼容纯数字）
+        a = clips._parse_anchor("EGOIST SP41-Aimer_ninelie_MV 01:20", 1,
+                                ["罪恶王冠"], ["EGOIST"])
+        assert (a["episode"], a["t0"]) == (41, 80.0)
+        assert clips._parse_ep_scope("SP41-ninelie") == ([(None, None)], 2)
+        assert clips._parse_ep_scope("SP41") == ([(None, None)], 2)
+
     def test_小写sp也认(self):
         assert clips._parse_anchor("sp3 00:10", 1)["episode"] == 3
 

@@ -286,23 +286,23 @@ def parse_episodes(text: str) -> list[tuple[str, str]]:
 
 
 def _norm_ep(raw: str) -> str | None:
-    """集号归一化为 `SxxEyy` / `SPxx`（特典）规范形。认不出返回 None（调用方判格式 FAIL）。"""
+    """集号归一化为 `SxxEyy` / `SPxx`（特典）规范形。允许带语义后缀如 `SP41-ninelie`。"""
     m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
     if m:
         return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
-    m = re.fullmatch(r"SP(\d{1,2})", raw, re.I)
+    m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", raw, re.I)
     return f"SP{int(m.group(1)):02d}" if m else None
 
 
 # 锚点时间码（ADR-0008，2026-08-27 加；2026-09-06 加可选番名前缀支持跨番；
-# 2026-09-07 加 SP 特典集号，ADR-0010 决策二）。
+# 2026-09-07 加 SP 特典集号，ADR-0010 决策二；支持 SP 带语义后缀如 SP41-ninelie）。
 # 与 clips._ANCHOR 同口径：`S01E01 17:50` 或区间 `S01E01 17:50-18:20`，跨番
 # `罪恶王冠 S01E01 17:50`，特典 `EGOIST SP01 108:45`；分钟允许三位（剧场版 96:08），
 # 秒两位、允许小数秒。两处各自维护（与 配音/查询 字段的三处同口径先例一致），
 # 改一处必须同步另一处。组号全部具名：anime/season/episode/sp/m0/s0/m1/s1。
 ANCHOR_TC = re.compile(
     rf"^(?:(?P<anime>.+?)\s+)?"
-    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}}))\s+"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}})(?:[-_][^\s:]+)?)\s+"
     rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
     rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
 

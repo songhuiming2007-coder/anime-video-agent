@@ -470,6 +470,17 @@ class TestParseEpisodes:
     def test_没写集号返回空(self):
         assert cs.parse_episodes("## 段落 1\n\n配音：a\n\n画面：\n  查询: q\n") == []
 
+    def test_SP语义后缀(self):
+        # `集: SP41-ninelie` 归一化为 SP41 主键，纯数字写法不变（向下兼容）
+        assert cs.parse_episodes("## 段落 1\n\n配音：a\n\n画面：\n  集: SP41-ninelie\n") \
+            == [("1", "SP41-ninelie")]
+        assert cs._norm_ep("SP41-ninelie") == cs._norm_ep("SP41") == "SP41"
+        assert cs._norm_ep("SP41_Aimer_ninelie_MV") == "SP41"
+
+    def test_SP锚点时间码语义后缀(self):
+        m = cs.ANCHOR_TC.fullmatch("EGOIST SP41-ninelie 01:20")
+        assert m and m.group("sp") == "41"
+
 
 class TestEpisodeChecks:
     """机检两道新检查：集号格式（永远可跑）+ 集号在素材库（要番名+登记表）。
