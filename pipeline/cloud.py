@@ -479,7 +479,13 @@ def format_ledger_entry(
     只能把时长算到「执行 down 的此刻」——这会多算一段关机到发现的延迟，
     属于**上界估计**。记进 note 而不是假装精确。
     """
-    over_budget = cost_cny > budget_cny
+    # **单期预算只对「真的在做某一期」的会话有意义。** 模型下载、环境部署、
+    # 引擎选型这类会话根本没有「单期」可言，拿单期预算去量它们必然误报
+    # （2026-09-11 实测：一个含 15GB 模型下载 + 两次部署尝试的会话被标
+    # 「超预算 16 倍」，而它压根没在做任何一期）。警告天天误报就没人看了，
+    # 所以这里显式区分，并把判定范围记进账簿而不是藏起来。
+    budget_scoped = bool(episode) and episode != "unknown"
+    over_budget = budget_scoped and cost_cny > budget_cny
     entry: dict[str, Any] = {
         "session": session_id,
         "mode": mode,
@@ -490,6 +496,7 @@ def format_ledger_entry(
         "episode": episode or "unknown",
         "tasks": tasks,
         "over_budget": over_budget,
+        "budget_scoped": budget_scoped,
     }
     if note:
         entry["note"] = note
@@ -933,8 +940,10 @@ def cmd_down(args: argparse.Namespace) -> int:
     print(f"  本次计费: ¥{cost_cny:.4f} 元")
     if ledger_entry["over_budget"]:
         print(f"  \033[91m⚠️  警告: 本次花费超出单期预算 ¥{budget} 元！\033[0m")
-    else:
+    elif ledger_entry["budget_scoped"]:
         print(f"  预算状态: 达标 (≤ ¥{budget} 元)")
+    else:
+        print(f"  预算状态: 本会话未绑定某一期（{ledger_entry['episode']}），单期预算不适用")
     print(f"  账簿记录: → {lfile}")
     print("=" * 60)
 
