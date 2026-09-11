@@ -93,9 +93,9 @@ def shrink_no_padding(script_path: Path) -> bool:
         return False
     return bool(SHRINK_FIELD.search(topic.read_text(encoding="utf-8")))
 
-# 五种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
-# （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在五种里就返回空串。
-GENRES = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣")
+# 六种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
+# （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在六种里就返回空串。
+GENRES = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣", "纪录片")
 TOPIC_FIELDS = re.compile(r"^\s*(类型|模式)\s*[:：]\s*(.+)", re.M)
 
 
@@ -140,6 +140,8 @@ def subjective_hint(genre: str, mode: str) -> str:
         return f"标准立没立住、每段落点是不是观众、篇幅是否不平均；{common}。"
     if genre == "共鸣":
         return f"有没有归纳道理、情感是否靠形容词堆、结尾落没落具体东西；{common}。"
+    if genre == "纪录片":
+        return f"实证段是否死死咬住 01-hero-shots 物证、思辨段是否留出意象留白、是否有为了凑镜头而强行错配画面的妥协段落（无物证必须停下来调 acquire 补料）；{common}。"
     return f"{common}、篇幅有没有平均分配。"
 
 # 单句上限。**2026-08-04 从 40 提到 90，因为 40 是「三期零长句」的直接成因。**
@@ -745,6 +747,25 @@ def run(path: Path) -> list[Check]:
     add(f"剧情锚点 ≥{MIN_ANCHOR}", len(anchor_segs) >= MIN_ANCHOR,
         f"{len(anchor_segs)}/{len(vo)} 段带集号或时间码锚点"
         if anchor_segs else "0 段，全篇没有画面集号/锚点")
+
+    # 纪录片题材专门门禁（2026-09-11 增补）：
+    # 1. 强制存在 01-hero-shots.md 物证表（写稿前必须有物证卡片，严禁无物证空想写稿）
+    # 2. 实证锚点覆盖率：全篇必须有 ≥3 处 SP 物理物证锚点；实证段必须死死咬住物理物证，严禁架空硬凑
+    genre, mode = episode_genre(path)
+    if genre == "纪录片":
+        hero_shots_path = path.parent / "01-hero-shots.md"
+        add("纪录片物证表 01-hero-shots.md 在位", hero_shots_path.exists(),
+            f"{hero_shots_path.name} 存在" if hero_shots_path.exists()
+            else "缺失！纪录片题材必须先有物证卡片表（01-hero-shots.md），严禁无物证空想写稿")
+
+        sp_anchors = [
+            l for l, prefix, akey, t0, t1, is_sp in anchors_tc
+            if is_sp or (akey and akey.startswith("SP"))
+        ]
+        add("纪录片实证物证锚点 ≥3 处", len(sp_anchors) >= 3,
+            f"全篇共 {len(sp_anchors)} 处引用了 SP 物证锚点"
+            if len(sp_anchors) >= 3
+            else f"仅 {len(sp_anchors)} 处引用了 SP 物证锚点（需≥3），实证段必须死死咬住物理物证，缺素材须触发 acquire 动态补料")
 
     visual = VISUAL.findall(" ".join(queries))
     add("查询无构图词", not visual, "、".join(sorted(set(visual))) or "无")

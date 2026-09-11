@@ -10,6 +10,7 @@
   "_cardless_rate_note": "0.10元/小时：AutoDL 无卡模式开机（0.5核 2GB），用于环境准备、代码同步与模型预置",
   "remote_root": "/root/anime-video-agent",
   "remote_data": "/root/autodl-tmp/data",
+  "_remote_data_note": "**这个键目前没接线**（2026-09-11 实测）：实例上 data/ 是 /root/anime-video-agent/data 的实体目录（系统盘），不是指向 remote_data 的符号链接，而且没有任何代码读这个键。帧级素材（全季 ~550MB / 2h Live ~1GB）上行吃的因此是系统盘；要改道数据盘，需在远端把 data/library 迁到 /root/autodl-tmp 下再软链（一次性动作，需人确认，见 docs/WORKFLOW.md「云端中间物」）。",
   "remote_models": "/root/autodl-tmp/models",
   "remote_python": "/root/it-venv/bin/python",
   "_remote_python_note": "远端解释器。**模型栈只在其中一个 venv 里**：2026-09-11 实测该实例上 /root/miniconda3/bin/python 有 torch/torchvision 但没有 transformers，transformers 4.57 + qwen-tts + SentenceTransformer 都在 /root/it-venv。cloud.py 的 run / 模型结构探针 / doctor 都走这个路径——写死 miniconda 的后果是任务起来第一行就 ImportError，而账簿里只记「任务已启动」。换镜像/换实例改这里即可。",

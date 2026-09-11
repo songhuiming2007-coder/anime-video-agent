@@ -753,3 +753,65 @@ class TestEmotionSpeedFields:
         f = script(tmp_path, [BODY] * 8)
         chk = get(cs.run(f), "情绪/语速在受控词表内")
         assert chk.ok and "0/8 段声明" in chk.detail
+
+
+class TestDocumentaryGenre:
+    """纪录片题材专检（2026-09-11 视听在场与四步螺旋法）：
+    1. 必须存在 01-hero-shots.md 物证表
+    2. 全篇必须有 ≥3 处 SP 物理物证锚点
+    """
+
+    def test_非纪录片题材不触发物证表与SP锚点检查(self, tmp_path):
+        topic = tmp_path / "01-topic.md"
+        topic.write_text("类型: 人物志\n番: 《测试番》\n", encoding="utf-8")
+        f = script(tmp_path, [BODY] * 8, anchors=["S01E01 01:23"] * 8)
+        checks = cs.run(f)
+        names = [c.name for c in checks]
+        assert not any("纪录片物证表" in n for n in names)
+        assert not any("纪录片实证物证锚点" in n for n in names)
+
+    def test_纪录片缺物证表_FAIL(self, tmp_path):
+        topic = tmp_path / "01-topic.md"
+        topic.write_text("类型: 纪录片（音乐企划史）\n番: 《EGOIST》\n", encoding="utf-8")
+        f = script(tmp_path, [BODY] * 8, anchors=["SP01 01:23", "SP02 02:34", "SP03 03:45"] + [None] * 5)
+        checks = cs.run(f)
+        chk = get(checks, "纪录片物证表")
+        assert not chk.ok
+        assert "缺失" in chk.detail
+
+    def test_纪录片物证表在位且SP锚点达标_PASS(self, tmp_path, monkeypatch):
+        topic = tmp_path / "01-topic.md"
+        topic.write_text("类型: 纪录片\n番: 《EGOIST》\n", encoding="utf-8")
+        hero = tmp_path / "01-hero-shots.md"
+        hero.write_text("# 物证卡片表\n| H1 | SP01 | 画面 |\n", encoding="utf-8")
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda pool: {
+            "SP01": {"duration": 300.0},
+            "SP02": {"duration": 300.0},
+            "SP03": {"duration": 300.0},
+        })
+
+        f = script(tmp_path, [BODY] * 8, anchors=["SP01 01:23", "SP02 02:34", "SP03 03:45"] + [None] * 5)
+        checks = cs.run(f)
+        chk_hero = get(checks, "纪录片物证表")
+        assert chk_hero.ok and "存在" in chk_hero.detail
+        chk_anc = get(checks, "纪录片实证物证锚点")
+        assert chk_anc.ok and "3 处" in chk_anc.detail
+
+    def test_纪录片SP锚点不足_FAIL(self, tmp_path):
+        topic = tmp_path / "01-topic.md"
+        topic.write_text("类型: 纪录片\n番: 《EGOIST》\n", encoding="utf-8")
+        hero = tmp_path / "01-hero-shots.md"
+        hero.write_text("# 物证卡片表\n", encoding="utf-8")
+        # 只有 2 处 SP 锚点（需 ≥3）
+        f = script(tmp_path, [BODY] * 8, anchors=["SP01 01:23", "SP02 02:34"] + [None] * 6)
+        checks = cs.run(f)
+        chk_anc = get(checks, "纪录片实证物证锚点")
+        assert not chk_anc.ok
+        assert "仅 2 处" in chk_anc.detail
+
+    def test_纪录片主观项提示包含四步闭环与反哺(self, tmp_path):
+        hint = cs.subjective_hint("纪录片", "")
+        assert "01-hero-shots" in hint
+        assert "acquire" in hint
+
