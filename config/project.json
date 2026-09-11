@@ -32,7 +32,7 @@
   },
   "script": {
     "_note": "口播稿机检的阈值。cpm 随音色和文风变，换音色要重测——实测同一音色在不同文风下差过 24%。min_chars/max_chars 是**默认带**，同 video.duration_band 一样可被该期 01-topic.md 的 `时长目标` 字段覆盖，见 check_script.episode_duration_override()。",
-    "cpm": 315,
+    "cpm": 298,
     "min_chars": 870,
     "max_chars": 1300,
     "max_sentence": 90,

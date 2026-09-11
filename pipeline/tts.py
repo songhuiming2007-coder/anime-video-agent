@@ -157,6 +157,59 @@ def parse_script(path: Path) -> list[Segment]:
 
 # ---------- 质检 ----------
 
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
+# 多字数字串（年份/编号/数量词）：一律转。四个数字字连排不可能是人名。
+_CN_NUM_MULTI = re.compile(r"[零一二两三四五六七八九十百千]{2,}")
+# 单字：**只在后接时间或量词时转**。汉字人名/地名里单个数字字很常见
+# （八幡、千反田、千叶县），转了就制造假阳性；而「十月」这类必须转，
+# 因为 Whisper 回读会写成「10月」。
+_CN_NUM_ONE = re.compile(r"[零一二两三四五六七八九十百千](?=[年月日岁个次份人集口种条部张只篇])")
+
+
+def _cn_number_to_arabic(seq: str) -> str:
+    """中文数字 → 阿拉伯数字。只覆盖稿件实际出现的两类形态。
+
+    **为什么需要**（2026-09-11 实测）：Whisper 回读把「二零一一年十月」转写成
+    「2011年10月」，而稿件写的是中文数字。两者在音节层面毫无交集
+    （`er4 ling2 yi1 yi1` vs `2 0 1 1`），CER 直接假阳性——v1 的
+    seg01/05/11 就是这样被误判成「ASR 盲区」跳过的。
+
+    覆盖两类，不做通用中文数字解析（那是 cn2an 的活，但为判据函数引依赖不划算）：
+      - 逐位读法（年份/编号）：二零一一 → 2011
+      - 数量词：十五 → 15、两千 → 2000
+
+    混杂非数字字符的串原样返回，交回调用方。
+    """
+    if not seq:
+        return seq
+    if all(c in _CN_DIGITS for c in seq):
+        return "".join(str(_CN_DIGITS[c]) for c in seq)
+    if not all(c in _CN_DIGITS or c in _CN_UNITS for c in seq):
+        return seq
+    total, cur = 0, 0
+    for ch in seq:
+        if ch in _CN_DIGITS:
+            cur = _CN_DIGITS[ch]
+        else:
+            total += (cur or 1) * _CN_UNITS[ch]
+            cur = 0
+    return str(total + cur)
+
+
+def _unify_numbers(s: str) -> str:
+    """把中文数字统一成阿拉伯数字，消除 ASR 转写形态差异造成的假阳性。
+
+    **单向**（中文 → 阿拉伯），因为 Whisper 的输出习惯就是阿拉伯数字，
+    对齐到它最省事。反过来把 "15" 写成「一五」还是「十五」是二选一，
+    而两者读音不同，猜错会制造新的假阳性。
+    """
+    # 顺序要紧：先多字（长匹配优先），再单字，否则单字规则会切碎多字串
+    s = _CN_NUM_MULTI.sub(lambda m: _cn_number_to_arabic(m.group()), s)
+    return _CN_NUM_ONE.sub(lambda m: _cn_number_to_arabic(m.group()), s)
+
+
 def normalize(s: str) -> str:
     """回读比对与字数统计的统一口径：去标点、转小写、折叠同音字。
 
@@ -164,7 +217,7 @@ def normalize(s: str) -> str:
     而放在一处能保证参考文本和回读文本走的是同一条路——两边口径不一致
     才是这类比对最容易出的错。
     """
-    return _DROP.sub("", s).lower().translate(_FOLD)
+    return _unify_numbers(_DROP.sub("", s)).lower().translate(_FOLD)
 
 
 def syllables(s: str) -> list[str]:
@@ -397,6 +450,39 @@ def _load_qwen3(ref: str | Path):
     return load_model(str(ref))
 
 
+# Qwen3-TTS PyTorch 版只认语言**全名**，不认 ISO 码（2026-09-11 云端实测抓出：
+# 传 lang_code="zh" 直接 ValueError）。voice.json 的 lang_code 是给 mlx 版用的，
+# 两版对同一字段的解释不同，所以这里必须做一层翻译，不能让配置原样透传。
+_QWEN3_LANG_NAMES = {
+    "zh": "chinese", "zh-cn": "chinese", "chinese": "chinese",
+    "en": "english", "english": "english",
+    "ja": "japanese", "jp": "japanese", "japanese": "japanese",
+    "ko": "korean", "korean": "korean",
+    "fr": "french", "french": "french",
+    "de": "german", "german": "german",
+    "it": "italian", "italian": "italian",
+    "pt": "portuguese", "portuguese": "portuguese",
+    "ru": "russian", "russian": "russian",
+    "es": "spanish", "spanish": "spanish",
+    "auto": "auto",
+}
+
+
+def qwen3_language_name(code: str | None) -> str:
+    """把 voice.json 的 lang_code 翻成 Qwen3-TTS 认的语言名（纯函数）。
+
+    未知码**报错而非猜**：猜错的语言会静默改变输出（比如把中文旁白按日语念），
+    而这是听感上要整期返工的错误，必须早失败（S1）。
+    """
+    key = (code or "auto").strip().lower()
+    if key not in _QWEN3_LANG_NAMES:
+        raise SystemExit(
+            f"FAIL 未知语言码 {code!r}。Qwen3-TTS 只认 "
+            f"{sorted(set(_QWEN3_LANG_NAMES.values()))}，请检查 config/voice.json 的 lang_code。"
+        )
+    return _QWEN3_LANG_NAMES[key]
+
+
 def _load_qwen3_cuda(cfg: dict, model_dir: str | Path):
     """Qwen3-TTS 的 **PyTorch/CUDA** 版 loader（云端主选，2026-09-11 实测通过）。
 
@@ -509,8 +595,15 @@ class Engine:
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
+        self.voice_prompt = None
         if self.kind == "qwen3_tts_cuda":
             self.model = _load_qwen3_cuda(cfg, _resolve_model(cfg["model"]))
+            # **说话人嵌入只提一次，全程复用。** 2026-09-11 人耳验收抓出：
+            # 每句各自提特征会让段内音色漂移（听感是「同一段里像换了好几个人」）。
+            # x_vector 只依赖参考音频，本来就不必每句重算——缓存它既省时间又锁音色。
+            self.voice_prompt = self.model.create_voice_clone_prompt(
+                ref_audio=self.ref_audio, x_vector_only_mode=True
+            )
         else:
             loader = LOADERS.get(self.kind, _load_generic)
             self.model = loader(_resolve_model(cfg["model"]))
@@ -544,7 +637,7 @@ class Engine:
         # 任何无条件 import 都会让 qwen3_tts_cuda 直接 ImportError——而它正是云端
         # 唯一的引擎。2026-09-11 由 TestQwen3CudaLoader 抓出，故拆成两条独立分支。
         if self.kind == "qwen3_tts_cuda":
-            audio, rate = self._synthesize_cuda(text)
+            audio, rate = self._synthesize_cuda(text, seed)
         else:
             audio, rate = self._synthesize_mlx(text, attempt, seed)
 
@@ -556,17 +649,30 @@ class Engine:
         wavfile.write(dest, rate, (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
         return rate
 
-    def _synthesize_cuda(self, text: str):
+    def _synthesize_cuda(self, text: str, seed: int):
         """云端 CUDA 通道（Qwen3-TTS PyTorch 版）。**不碰 mlx。**
 
-        必须 `x_vector_only_mode=True`：ICL 路径（传 ref_text）会把参考转录当正文
-        念出来（ADR-0006 实测）；x-vector 是纯说话人嵌入路径，只传 ref_audio。
+        三件事缺一不可，每一件都对应一次实测故障：
+
+        1. `x_vector_only_mode=True`：ICL 路径（传 ref_text）会把参考转录当正文
+           念出来（ADR-0006 实测）；x-vector 是纯说话人嵌入路径，只传 ref_audio。
+        2. `voice_clone_prompt`（__init__ 里预算好）：每句各自提特征会让段内音色
+           漂移——2026-09-11 人耳验收听到「同一段里像换人」。
+        3. `torch.manual_seed`：mlx 版一直有 `mx.random.seed`，云端版最初漏了，
+           于是默认采样每句随机起步——这是段内语气/语速突变的另一半原因。
+           云端比本地明显，正是因为本地有种子、云端没有。
         """
         import numpy as np
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         wavs, rate = self.model.generate_voice_clone(
             text=text,
-            language=self.lang_code or "Chinese",
-            ref_audio=self.ref_audio,
+            language=qwen3_language_name(self.lang_code),
+            voice_clone_prompt=self.voice_prompt,
             x_vector_only_mode=True,
         )
         return np.asarray(wavs[0]).reshape(-1), rate

@@ -18,6 +18,7 @@ import wave
 
 import pytest
 
+from pipeline import asr
 from pipeline import paths
 from pipeline import tts as t
 
@@ -1041,6 +1042,7 @@ class TestQwen3CudaLoader:
             model = FakeModel()
             ref_audio = "/nonexistent-ref.wav"
             lang_code = "zh"
+            voice_prompt = {"fake": "prompt"}  # 真实现里在 __init__ 预算好
             # 借用真实现：本用例验证的是 Engine.synthesize 的分派与传参，
             # 不是重写一遍 cuda 分支（那测的就是测试自己了）
             _synthesize_cuda = t.Engine._synthesize_cuda
@@ -1081,7 +1083,150 @@ class TestQwen3CudaLoader:
         assert seen["path"] == "/models/x"
         assert seen["device_map"] == "cuda:0"
 
+    def test_语言码必须翻成全名(self):
+        """云端实测（2026-09-11）：PyTorch 版传 `zh` 直接 ValueError。
+
+        这是单测漏掉、只有真实链路才能抓到的 bug——FakeModel 不校验参数值。
+        映射存在的意义：voice.json 的 lang_code 是给 mlx 版用的，两版对同一字段
+        的解释不同，不能让配置原样透传。
+        """
+        assert t.qwen3_language_name("zh") == "chinese"
+        assert t.qwen3_language_name("ja") == "japanese"
+        assert t.qwen3_language_name("EN") == "english"
+        assert t.qwen3_language_name(None) == "auto"
+
+    def test_未知语言码报错不猜(self):
+        """猜错语言会静默改变输出（中文旁白按日语念），听感上要整期返工 → 早失败。"""
+        with pytest.raises(SystemExit, match="未知语言码"):
+            t.qwen3_language_name("xx")
+
+    def test_真实链路传的是全名而非zh(self, monkeypatch, tmp_path):
+        """端到端防回退：Engine.synthesize 传给模型的 language 必须是全名。"""
+        captured: dict = {}
+
+        class FakeModel:
+            def generate_voice_clone(self, **kw):
+                captured.update(kw)
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+            def create_voice_clone_prompt(self, **kw):
+                captured["_prompt_args"] = kw
+                return {"fake": "prompt"}
+
+        class FakeEngine:
+            kind = "qwen3_tts_cuda"
+            cfg = {"emotions": {"平静叙述": {}}, "speed": {"中": 1.0}}
+            model = FakeModel()
+            ref_audio = "/nonexistent.wav"
+            lang_code = "zh"  # ← 配置里就是这个值
+            voice_prompt = {"fake": "prompt"}
+            _synthesize_cuda = t.Engine._synthesize_cuda
+
+        t.Engine.synthesize(FakeEngine(), "世界", tmp_path / "o.wav", attempt=1, seed=0)
+        assert captured["language"] == "chinese", "不能把 zh 原样传给 Qwen3"
+
+    def test_cuda必须设种子(self, monkeypatch, tmp_path):
+        """**段内突变事故的防回退测试**（2026-09-11 人耳验收）。
+
+        用户原话：「同一个片段内，不同句子有的时候语气、语速甚至音色都会突变，
+        之前本地的 Qwen3 tts 也有这个问题，但是很轻微，这次更加明显了」。
+
+        本地轻微、云端明显的差异就来自这里：mlx 版一直有 `mx.random.seed`，
+        云端版最初漏了，默认采样每句随机起步。同一次合成里每句必须用**同一个**
+        种子，否则段内韵律逐句漂移。
+        """
+        import torch
+
+        seen_seeds: list[int] = []
+        real_seed = torch.manual_seed
+
+        def spy_seed(s):
+            seen_seeds.append(s)
+            return real_seed(s)
+
+        monkeypatch.setattr(torch, "manual_seed", spy_seed)
+
+        class FakeModel:
+            def generate_voice_clone(self, **kw):
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+        class FakeEngine:
+            kind = "qwen3_tts_cuda"
+            model = FakeModel()
+            voice_prompt = {"fake": "prompt"}
+            lang_code = "zh"
+            _synthesize_cuda = t.Engine._synthesize_cuda
+
+        eng = FakeEngine()
+        for text in ("第一句。", "第二句。", "第三句。"):
+            eng._synthesize_cuda(text, seed=7)
+        assert seen_seeds == [7, 7, 7], f"每句都要用同一 seed，实际 {seen_seeds}"
+
+    def test_cuda必须复用同一个voice_prompt(self, tmp_path):
+        """音色一致的根本保证：说话人嵌入只提一次，每句传同一个 prompt。
+
+        每句各自提特征会让段内音色漂移（听感是「同一段里像换了好几个人」）。
+        这里断言 prompt 被真的传进 generate_voice_clone，而不是传 ref_audio
+        让它每句重算。
+        """
+        captured: dict = {}
+
+        class FakeModel:
+            def generate_voice_clone(self, **kw):
+                captured.update(kw)
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+        class FakeEngine:
+            kind = "qwen3_tts_cuda"
+            model = FakeModel()
+            voice_prompt = {"cached": True}
+            lang_code = "zh"
+            _synthesize_cuda = t.Engine._synthesize_cuda
+
+        t.Engine._synthesize_cuda(FakeEngine(), "世界", seed=1)
+        assert captured["voice_clone_prompt"] == {"cached": True}, "必须传缓存的 prompt"
+
     def test_云端配置的模型路径是数据盘绝对路径(self):
         """云端模型在数据盘、不在仓库内，必须是绝对路径（否则 _resolve_model 会拼到仓库根）。"""
         cloud = t.load_config(paths.CONFIG / "voice.cloud.json")
         assert cloud["model"].startswith("/root/autodl-tmp/models/")
+
+
+class TestBackendProbe:
+    """后端可用性探测（2026-09-11 事故防回退）。
+
+    事故经过：funasr 装上了，但依赖的 torch_complex 缺失，`pick_backends` 靠
+    `find_spec` 判定「可用」于是选中它当仲裁；真正调用时整期已跑到第一段才炸，
+    白烧了 7 段的算力。**故障晚发现比一开始不可用贵得多。**
+    """
+
+    def test_包装了但导入会炸的后端必须被判不可用(self, monkeypatch, tmp_path):
+        import importlib.util
+        import sys as _sys
+        import types as _types
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(asr, "CLOUD_SENSEVOICE_DIR", str(tmp_path))
+        # 模拟「funasr 在 sys.modules 里，但取 AutoModel 会抛」
+        broken = _types.ModuleType("funasr")
+
+        def _boom(name):
+            raise ImportError("No module named 'torch_complex'")
+
+        broken.__getattr__ = _boom
+        monkeypatch.setitem(_sys.modules, "funasr", broken)
+        monkeypatch.delitem(_sys.modules, "funasr.auto", raising=False)
+        monkeypatch.delitem(_sys.modules, "funasr.auto.auto_model", raising=False)
+
+        reason = asr.backend_unavailable_reason("sensevoice_cuda")
+        assert reason is not None, "探测必须深入，不能只看包在不在"
+        assert "AutoModel" in reason or "funasr" in reason
+
+    def test_未知后端给出理由(self):
+        assert asr.backend_unavailable_reason("nope") is not None
+
+    def test_主读与仲裁不得同源(self):
+        """S10：两个 ASR 的 CER 不是同一个量，仲裁必须换模型。"""
+        prim, arb = asr.pick_backends()
+        assert arb != prim, f"仲裁不能与主读同后端（都是 {prim}）"
+        assert arb is None or arb in asr.BACKENDS
