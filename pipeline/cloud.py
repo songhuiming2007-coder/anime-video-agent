@@ -718,6 +718,16 @@ def cmd_up(args: argparse.Namespace) -> int:
     return 0
 
 
+def detect_runtime_mode_from_gpu_probe(returncode: int) -> str:
+    """由 nvidia-smi 探针返回码判定当前运行模式（纯函数）。
+
+    为什么要探测而不是猜：无卡 ¥0.10/h 与带卡 ¥2.40/h 相差 24 倍。
+    旧代码在缺少会话文件（用户手动开机后直接跑 down）时一律默认 gpu，
+    若实例实际是无卡就会把账目虚高 24 倍。探测比猜测便宜得多。
+    """
+    return "gpu" if returncode == 0 else "cardless"
+
+
 def cmd_down(args: argparse.Namespace) -> int:
     """关机结算命令：按模式精算费用，落盘账簿，提示/下发关机。"""
     cfg_global, cfg_local = load_cloud_config()
@@ -731,10 +741,25 @@ def cmd_down(args: argparse.Namespace) -> int:
         except Exception:
             pass
 
-    mode = session_info.get("mode", "gpu")
+    # 先探一次连通性：它同时决定「时长可信度」与「模式判定」。
+    # 若实例已被 watchdog 自动关机，本地根本联系不上，只能把时长算到此刻——
+    # 这会多计一段「关机到被发现」的延迟，属于**上界估计**，必须写进账簿注记。
+    reachable = is_ssh_reachable(host)
+
+    mode = session_info.get("mode")
+    if not mode:
+        # 无会话文件（用户手动开机后直接 down）：探测真实模式，不猜。
+        if reachable:
+            mode = detect_runtime_mode_from_gpu_probe(_ssh("nvidia-smi -L", host=host, check=False).returncode)
+        else:
+            mode = "unknown"
+
     if mode == "cardless":
         rate = float(cfg_global.get("cardless_rate_cny", 0.10))
+    elif mode == "gpu":
+        rate = float(cfg_global.get("hourly_rate_cny", 2.40))
     else:
+        # mode 不可知时取较贵的费率：宁可高估也不能低估预算风险
         rate = float(cfg_global.get("hourly_rate_cny", 2.40))
 
     budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
@@ -743,10 +768,6 @@ def cmd_down(args: argparse.Namespace) -> int:
     cost_cny = calculate_session_cost(duration_sec, rate)
     down_time = datetime.now().strftime("%H:%M:%S")
 
-    # 先探一次连通性：它决定时长的可信度。
-    # 若实例已被 watchdog 自动关机，本地根本联系不上，只能把时长算到此刻——
-    # 这会多计一段「关机到被发现」的延迟，属于**上界估计**，必须写进账簿注记。
-    reachable = is_ssh_reachable(host)
     note = None
     if not reachable:
         note = (
