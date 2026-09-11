@@ -401,3 +401,14 @@ def test_ledger_note_marks_upper_bound_estimate():
     )
     assert "note" not in without, "无注记时不该凭空多出字段"
     assert without["episode"] == "unknown", "episode 缺失应落 unknown 而不是 None"
+
+
+def test_detect_runtime_mode_from_gpu_probe():
+    """模式探测：nvidia-smi 成功=带卡，失败=无卡。
+
+    防的错误：无会话文件时旧代码一律默认 gpu，若实例实际是无卡则账目虚高 24 倍
+    （¥2.40/h vs ¥0.10/h）。
+    """
+    assert cloud.detect_runtime_mode_from_gpu_probe(0) == "gpu"
+    assert cloud.detect_runtime_mode_from_gpu_probe(1) == "cardless"
+    assert cloud.detect_runtime_mode_from_gpu_probe(127) == "cardless", "命令不存在（无卡模式）也归 cardless"
