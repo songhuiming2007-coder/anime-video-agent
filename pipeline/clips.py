@@ -533,12 +533,25 @@ def _parse_ep_scope(episode: str | None) -> tuple[list, int]:
     写了集 → `[(S,E), (S,None), (None,None)]`（集→季→全空间），初始 scope=0；
     没写 → `[(None,None)]`（全空间，与今天逐字节一致），初始 scope=2。
     scope 是降级级别的记录：0=集级命中、1=季级、2=全空间。
+
+    **`SPxx`（特典池）没有「季」这一层**：池就是检索空间，所以直接返回全空间
+    并记 scope=2（不是降级——它本来就只有这一级）。这在 v2 才成为真问题：
+    池素材（Live/MV/采访）没笔记也没字幕，视觉索引是它**唯一**的排片依据，
+    而 `check_script` 早就放行 `集: SP05`（`_norm_ep`）——旧代码在这里
+    `re.fullmatch(r"S\d+E\d+")` 返回 None 后直接 `.group(1)`，**AttributeError 当场崩**。
+    认不出的一律显式失败：集号格式本该被 02 机检拦住，走到这里说明放行了不该放行的东西。
     """
     if not episode:
         return [(None, None)], 2
     m = re.fullmatch(r"S(\d+)E(\d+)", episode)
-    s, e = int(m.group(1)), int(m.group(2))
-    return [(s, e), (s, None), (None, None)], 0
+    if m:
+        s, e = int(m.group(1)), int(m.group(2))
+        return [(s, e), (s, None), (None, None)], 0
+    if re.fullmatch(r"SP\d+", episode, re.I):
+        return [(None, None)], 2
+    raise SystemExit(
+        f"FAIL 段落的 `集: {episode}` 不是 SxxEyy 或 SPxx（ADR-0010）。\n"
+        f"     集号是检索约束，写错等于检索范围错——02 的「集号格式」本该拦住它")
 
 
 def _ladder_steps(shot: dict) -> list[tuple[int, int | None, int | None, int, str]]:

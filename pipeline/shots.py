@@ -3,6 +3,7 @@
     python -m pipeline.shots calibrate <视频>          # 定阈值，先跑这个
     python -m pipeline.shots build <视频> --anime 春物 --season 1 --episode 3
     python -m pipeline.shots frames 春物 S01E03        # 每镜头抽一张代表帧
+    python -m pipeline.shots caption-frames 罪恶王冠 S01E01  # VLM 打标专用帧（长镜头多帧）
     python -m pipeline.shots gallery EGOIST SP05       # 出镜头画廊 HTML（看图选锚点）
 
 **检索单元是镜头，不是帧**（ADR-0003）。字幕索引的单元是「2 行滑窗 + 时间码」，
@@ -25,7 +26,13 @@ import time
 from pathlib import Path
 
 from . import paths, sheet
-from .ingest import load_sources
+
+# **`ingest` 不在模块顶层 import。** 它经 `subindex` 拖进 pysubs2 与整条字幕栈，
+# 而 `shots` 里只有 `build()` 真正要片源登记表（`load()`/`frames()`/`caption_frames()`
+# 只需要镜头表与 meta 里的 source 路径）。这条依赖本来也不便宜：ADR-0016 把云端的
+# 角色定成**纯无头推理节点**，而 `vindex captions` 要 import `shots`——顶层拖进字幕栈，
+# 云端就得为了给镜头抽帧装一整套字幕解析，而它一行都用不上（2026-09-11 实测：
+# 云端 it-venv 没有 pysubs2，导入直接炸）。
 
 SHOTS_DIR = paths.DATA / "library" / "shots"
 FRAMES_DIR = SHOTS_DIR / "frames"
@@ -156,6 +163,8 @@ def build(video: Path, anime: str, season: int | None, episode: int,
     **候选切点连同分数一起存。** 判定阈值改了不必重新解码——直接在存下来的
     `cuts` 上重算即可（`rebuild`）。阈值本来就是要反复试的，而重解码一集要一分钟。
     """
+    from .ingest import load_sources      # 延迟 import，理由见文件顶部的注释
+
     src = load_sources(anime).get(_key(season, episode))
     if src is None:
         raise SystemExit(
@@ -321,6 +330,102 @@ def frame_path(anime: str, key: str, i: int, dest_dir: Path = FRAMES_DIR) -> Pat
     return dest_dir / f"{anime}_{key}" / f"{i + 1:05d}.jpg"
 
 
+# **caption 专用帧。它和上面那条 448px 单帧的路并列，不合并。**
+#
+# 上游是 `vindex captions`（ADR-0015）：VLM 要回答的比「画面里有谁」多一层——
+# 时间/空间、人物动作、光影色调、情绪氛围——长镜头里这四样会变，而 50% 单帧
+# 只能拍到其中一瞬，于是排片拿到的描述与镜头实际内容对不上。
+#
+# 8.0 秒的依据是**库里实测的分布**，不是拍的数：2026-09-11 量了 `data/library/shots/`
+# 下全部 S01 级镜头表共 36,895 个镜头，中位 2.84s、P90 7.76s、P95 10.09s。
+# 8s 略高于 P90。设计文档原估「8s 是 P95 量级」，实测 P95 是 10.1s——
+# 取 8s 落在 P90 是更保守的一侧（多帧更多），代价只是视觉 token 与机器时间，
+# 不影响正确性；漏掉长镜头的中段才是会露馅的那类错。
+CAPTION_LONG_SHOT = 8.0
+CAPTION_POINTS = (0.25, 0.5, 0.75)
+
+# caption 帧宽。448 是 WD-Tagger 的训练输入边长（tagger 那条路不能动，动了等于
+# 给模型喂没见过的分布）；VLM 打标吃分辨率——896 宽（16:9 时约 896×504）在
+# Qwen3-VL 的像素预算之内，长镜头三帧也撑得住。把它写进 captions.json 的 meta，
+# 改了等于换了输入规格，加载时对不上就硬失败。
+CAPTION_FRAME_W = 896
+
+
+def caption_points(start: float, end: float) -> list[float]:
+    """一个镜头的 caption 采样时刻。`>`CAPTION_LONG_SHOT 取三个位点，否则 50% 单帧。
+
+    中间的位点用 `(start + end) / 2` 算，**与镜头表的 `rep` 是同一个表达式**，
+    所以长镜头的中帧就是那张既有的代表帧，不是另取一个相近的时刻。
+    """
+    mid = round((start + end) / 2, 3)
+    d = end - start
+    if d > CAPTION_LONG_SHOT:
+        return [round(start + d * 0.25, 3), mid, round(start + d * 0.75, 3)]
+    return [mid]
+
+
+def caption_plan(shots: list[dict]) -> list[tuple[int, int, float]]:
+    """采样计划：`[(镜头号, 位点序号, 时刻)]`，按镜头与位点排序。
+
+    **纯函数，本地抽帧与云端打标从同一处取。** 两边各算一份的后果是帧与镜头
+    静默错配——描述看着通顺，只是写的不是那个镜头，而没有任何一处会报错。
+    """
+    return [(s["i"], k, t)
+            for s in shots
+            for k, t in enumerate(caption_points(s["start"], s["end"]))]
+
+
+def caption_frame_dir(anime: str, key: str, dest_dir: Path = FRAMES_DIR) -> Path:
+    """caption 帧目录。**与 `frames/` 分开**，理由见下面 `caption_frames`。"""
+    return dest_dir / f"{anime}_{key}_cap"
+
+
+def caption_frame_path(anime: str, key: str, i: int, k: int,
+                       dest_dir: Path = FRAMES_DIR) -> Path:
+    """第 i 个镜头的第 k 个采样帧。**文件名自带镜头号**，见 `caption_frames`。"""
+    return caption_frame_dir(anime, key, dest_dir) / f"{i + 1:05d}_{k}.jpg"
+
+
+def caption_frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
+                   dest_dir: Path = FRAMES_DIR) -> Path:
+    """抽 VLM 打标用的帧：长镜头三帧（25/50/75%），其余单帧（ADR-0015）。
+
+    **不动 `frames/` 的既有产物。** 那条路（每镜头一张 448px）服务 tagger/CLIP/画廊，
+    张数与镜头数严格相等是个被检查的不变量（`frames()` 与 `gallery()` 都靠它抓错位）；
+    多帧塞进同一个目录会当场把这套对账机制撞坏。
+
+    这里换个更硬的做法：**文件名带镜头号与位点序号**（`00012_1.jpg`），
+    所以错位从「静默发生」变成「文件对不上镜头表」。抽帧仍是一趟解码
+    （`select` 命中全部位点），先按 ffmpeg 的顺序落临时名，再按计划改名。
+    """
+    d = load(anime, key, out_dir)
+    plan = caption_plan(d["shots"])
+    out = caption_frame_dir(anime, key, dest_dir)
+
+    nos = [_frame_no(t, d["meta"]["fps"]) for _, _, t in plan]
+    _extract(Path(d["meta"]["source"]), nos, out, "tmp-%05d.jpg",
+             width=CAPTION_FRAME_W)
+
+    got = sorted(out.glob("tmp-*.jpg"))
+    if len(got) != len(plan):
+        raise SystemExit(
+            f"FAIL {key} 应抽 {len(plan)} 张 caption 帧，实得 {len(got)} 张。"
+            f"位点帧号撞车或解码丢帧都会让帧与镜头错位且不报错，不许继续。\n"
+            f"     删掉 {out} 重跑；仍不对说明该集不是恒定帧率")
+    for p, (i, k, _t) in zip(got, plan):
+        os.replace(p, caption_frame_path(anime, key, i, k, dest_dir))
+
+    # 改名之后按预期文件名核对，不按张数：上一次跑剩下的多余帧必须报错，
+    # 不能让它们混进「这次抽的」里（与 `frames()` 同一条纪律）。
+    want = {caption_frame_path(anime, key, i, k, dest_dir) for i, k, _ in plan}
+    have = set(out.glob("*.jpg"))
+    if have != want:
+        raise SystemExit(
+            f"FAIL {key} caption 帧对不上计划：缺 {len(want - have)} 张、多 {len(have - want)} 张。\n"
+            f"     删掉 {out} 重跑（残留的旧帧不会被自动清）")
+    return out
+
+
 def _fmt_t(t: float) -> str:
     """时刻 → `MM:SS.ss`（分钟三位上限，锚点语法本就允许小数秒与三位分钟）。"""
     return f"{int(t // 60):02d}:{t % 60:05.2f}"
@@ -451,13 +556,17 @@ def _probe(video: Path) -> tuple[float, str]:
     return float(d["format"]["duration"]), d["streams"][0]["r_frame_rate"]
 
 
-def _extract(video: Path, frame_nos: list[int], out: Path, pattern: str) -> None:
-    """一趟解码抽指定帧号。帧号必须升序且去重，`select` 按解码顺序命中。"""
+def _extract(video: Path, frame_nos: list[int], out: Path, pattern: str,
+             width: int = FRAME_W) -> None:
+    """一趟解码抽指定帧号。帧号必须升序且去重，`select` 按解码顺序命中。
+
+    `width` 只为 caption 那条路而存在（FRAME_W 是 tagger 的输入边长，见下面那段）。
+    """
     out.mkdir(parents=True, exist_ok=True)
     expr = "+".join(rf"eq(n\,{n})" for n in frame_nos)
     r = subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video),
-         "-an", "-sn", "-dn", "-vf", f"select='{expr}',scale={FRAME_W}:-2",
+         "-an", "-sn", "-dn", "-vf", f"select='{expr}',scale={width}:-2",
          "-fps_mode", "passthrough", "-q:v", "3", str(out / pattern)],
         capture_output=True, text=True)
     if r.returncode != 0:
@@ -570,6 +679,11 @@ def main() -> int:
     f.add_argument("anime")
     f.add_argument("episode", help="SxxEyy 或 SPxx")
 
+    cf = sub.add_parser("caption-frames",
+                        help="抽 VLM 打标专用帧：长镜头三帧（25/50/75%），其余单帧")
+    cf.add_argument("anime")
+    cf.add_argument("episode", help="SxxEyy 或 SPxx")
+
     g = sub.add_parser("gallery", help="出镜头画廊 HTML（看图选镜头，一键复制锚点）")
     g.add_argument("anime")
     g.add_argument("episode", help="SxxEyy 或 SPxx")
@@ -623,6 +737,16 @@ def main() -> int:
     if a.cmd == "frames":
         out = frames(a.anime, a.episode)
         print(f"OK 代表帧 → {out}")
+        return 0
+
+    if a.cmd == "caption-frames":
+        d = load(a.anime, a.episode)
+        plan = caption_plan(d["shots"])
+        out = caption_frames(a.anime, a.episode)
+        print(f"OK caption 帧 {len(plan)} 张（{len(d['shots'])} 个镜头，"
+              f"其中 {len(plan) - len(d['shots'])} 张来自 >{CAPTION_LONG_SHOT:g}s 的长镜头）"
+              f" → {out}")
+        print(f"   云端打标：vindex captions 按同一套计划取帧，别手动改文件名")
         return 0
 
     out = gallery(a.anime, a.episode)

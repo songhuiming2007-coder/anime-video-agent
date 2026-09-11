@@ -350,3 +350,47 @@ class TestRebuildAlsoCut:
         for bad in ("abc", "12", "12:", "12:abc", "12:-5", "12:55,"):
             with pytest.raises(SystemExit):
                 shots._mmss(bad)
+
+
+class TestCaptionFrames:
+    """caption 专用帧：长镜头多帧，且**帧不许与镜头错位**（ADR-0015）。
+
+    多帧本身不危险，危险的是「哪张图是哪个镜头」——错位之后每条描述都通顺、
+    检索也照常返回，只是写的不是那个镜头。所以计划是纯函数、文件名自带镜头号，
+    两边从同一处取。
+    """
+
+    def test_短镜头单帧取中点(self):
+        assert shots.caption_points(10.0, 16.0) == [13.0]
+
+    def test_中帧与既有代表帧是同一个时刻(self):
+        # 同一个表达式算的，不是「相近的另一个时刻」：长镜头的中帧就该是那张
+        # 已经被抽出来、被 gallery 用过、被人看过的代表帧
+        rep = shots.cut([(20.0, 99.0)], 10.0, 30.0, 0.5)[0]["rep"]
+        assert shots.caption_points(0.0, 20.0)[1] == rep
+
+    def test_长镜头三位点在四分之一处(self):
+        assert shots.caption_points(100.0, 120.0) == [105.0, 110.0, 115.0]
+
+    def test_阈值边界上恰好八秒仍是单帧(self):
+        # 判据是「> 8s」：8.0s 本身不补帧。这条边界值写错了不会报错，
+        # 只会让一批镜头白白多花两倍机器钱
+        assert len(shots.caption_points(0.0, 8.0)) == 1
+        assert len(shots.caption_points(0.0, 8.001)) == 3
+
+    def test_计划按镜头与位点升序且自带镜头号(self):
+        rows = [{"i": 0, "start": 0.0, "end": 3.0},
+                {"i": 1, "start": 3.0, "end": 23.0}]
+        assert shots.caption_plan(rows) == [(0, 0, 1.5),
+                                            (1, 0, 8.0), (1, 1, 13.0), (1, 2, 18.0)]
+
+    def test_文件名自带镜头号与位点(self):
+        p = shots.caption_frame_path("罪恶王冠", "S01E01", 11, 2)
+        assert p.name == "00012_2.jpg"                       # 编号从 1 开始，与 frames 同源
+        assert p.parent.name == "罪恶王冠_S01E01_cap"
+
+    def test_与既有代表帧目录分开(self):
+        # 混进 frames/ 会把两条不变量撞坏：frames()/gallery() 要求「张数 == 镜头数」，
+        # 而 caption 这条路长镜头是三张
+        assert (shots.caption_frame_dir("罪恶王冠", "S01E01")
+                != shots.frame_path("罪恶王冠", "S01E01", 0).parent)
