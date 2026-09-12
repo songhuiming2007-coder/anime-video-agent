@@ -383,7 +383,7 @@ def captions_probe(anime: str, key: str | None = None, n: int = 30,
 def _shot_index(sh: list[dict], start: float) -> int:
     """时间点 → 镜头号。**镜头表由调用方读一次传进来**：
     原先每个命中都重读一遍 shots.json，一次探针要读几十遍同一个文件。"""
-    s = shots.at(sh, start + 0.001)
+    s = shots.at(sh, start, eps=0.05)
     return s["i"] if s else 0
 
 

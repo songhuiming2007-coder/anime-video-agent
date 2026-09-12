@@ -911,6 +911,11 @@ class TestAnchorCandidate:
         cand = self._run("S01E01 00:12", monkeypatch)
         assert cand["start"] == 10.0 and cand["span"] == 15.0
 
+    def test_锚点起点舍入微小偏早时吸附到目标镜头(self, monkeypatch):
+        # 00:24.98 距镜头 2 切点 25.0 仅差 0.02s，应吸附到镜头 2（25.0）而非上一镜头（10.0）
+        cand = self._run("S01E01 00:24.98", monkeypatch)
+        assert cand["start"] == 25.0 and cand["span"] == 15.0
+
     def test_区间跨镜头取到终点镜头的尾切点(self, monkeypatch):
         cand = self._run("S01E01 00:05-00:30", monkeypatch)
         assert cand["start"] == 0.0 and cand["span"] == 40.0

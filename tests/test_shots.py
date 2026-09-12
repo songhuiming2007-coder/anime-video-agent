@@ -92,6 +92,18 @@ class TestAt:
         assert shots.at(sh, -1.0) is None
         assert shots.at(sh, 90.0) is None      # 片长本身是开区间端点
 
+    def test_边界吸附_eps(self, sh):
+        # eps 容忍 MM:SS.xx 舍入微小偏早误差，吸附到目标镜头
+        assert shots.at(sh, 29.999, eps=0.0)["i"] == 0
+        assert shots.at(sh, 29.999, eps=0.01)["i"] == 1
+        assert shots.at(sh, 29.95, eps=0.01)["i"] == 0
+        assert shots.at(sh, 29.95, eps=0.06)["i"] == 1
+        # 远小于切点时不吸附
+        assert shots.at(sh, 25.0, eps=0.05)["i"] == 0
+        # 负时刻与超尾
+        assert shots.at(sh, -0.01, eps=0.05) is None
+        assert shots.at(sh, 90.01, eps=0.05) is None
+
 
 class TestBetween:
     @pytest.fixture
