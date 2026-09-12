@@ -292,9 +292,15 @@ def _overlaps(cand, chosen) -> bool:
             continue
         if (c["season"], c["episode"]) != (cand["season"], cand["episode"]):
             continue
+        # 静态微动物证（时长 ≤ 8s 的单镜头扫图/公信榜/公告）：纪录片在不同章节
+        # 客观引用同一物证是正常合法的，不进排他去重。
+        if (cand.get("sp") and c.get("sp")
+                and cand.get("limit", 999) <= 8.0 and c.get("limit", 999) <= 8.0):
+            continue
         a0, a1 = cand["start"], cand["start"] + cand["span"]
         b0, b1 = c["start"], c["start"] + c["span"]
-        if a0 < b1 + OVERLAP_GAP and b0 < a1 + OVERLAP_GAP:
+        gap = 0.0 if (cand.get("score") is None and c.get("score") is None) else OVERLAP_GAP
+        if a0 < b1 + gap and b0 < a1 + gap:
             return True
     return False
 
@@ -954,10 +960,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         for c in used:
             by_ep.setdefault((c.get("anime"), c["season"], c["episode"]), []).append(c)
         for cs in by_ep.values():
+            if cs and cs[0].get("sp") and cs[0].get("limit", 999) <= 8.0:
+                continue
             cs.sort(key=lambda c: c["start"])
             for a, b in zip(cs, cs[1:]):
-                a["limit"] = min(a["limit"], b["start"] - OVERLAP_GAP)
-                b["floor"] = round(a["start"] + a["span"] + OVERLAP_GAP, 3)
+                if b["start"] > a["start"] + a.get("span", 0.0):
+                    a["limit"] = min(a["limit"], b["start"] - OVERLAP_GAP)
+                    b["floor"] = round(a["start"] + a["span"] + OVERLAP_GAP, 3)
 
 
         short = []
