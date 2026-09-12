@@ -679,6 +679,7 @@ class Engine:
 
     def _synthesize_mlx(self, text: str, attempt: int, seed: int):
         """本地 mlx 通道（Apple Silicon，v1 一直在用）。返回 (audio, rate)。"""
+        import numpy as np
         import mlx.core as mx
 
         mx.random.seed(seed)
@@ -726,6 +727,8 @@ class Engine:
             if not chunks:
                 raise RuntimeError("模型没有产出任何音频")
             audio = np.concatenate(chunks)
+
+        return audio, rate
 
 
 @lru_cache(maxsize=1)
@@ -883,14 +886,28 @@ def _injections() -> dict[str, str]:
 def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
     """念得出来的那份文本 + 注入记录（v2 链路，架构设计三.2）。
 
-    链路：剥不发音符号 → 拼音直注 → readings 逐案 override。
-    readings 排在**最后**不是随意：它是「自动注音仍读错」的残留兜底，
-    与 g2p 是两层而非替代关系；顺序反了，注音之后的拼音串会绕过它。
+    链路：剥不发音符号 → readings 逐案 override → 拼音直注。
+
+    **两层分工（2026-09-12 修正）：**
+      · 与拼音表**同键**的 readings 条目跳过：同键一律交拼音——拼音对模型是
+        物理阻断（无日语语义映射可借调），同音字只是概率规避（换个字赌它不漂）。
+      · 其余 readings 条目必须**抢在直注之前**跑。旧顺序（先直注、后 readings）
+        有一个静默失效：readings 的长键只要含一个会被注入的子串就整条失配，
+        于是落到更短的键上。2026-09-12 EGOIST 一期顺听实录：长键「koeda 以活人
+        身份走上台前」含 g2p 会注入的「台前」→ 失配 → 落到短键 `koeda→こえだ`
+        → **整句被 Qwen3 当日语念**（人耳确认，Whisper 三次回读全是乱码）。
+        旧顺序下 60 余条同键条目也一直在静默死着（拼音先吃掉了原文）。
+
+    顺序反过来（readings 全覆盖在前）也不行：那会把 60 余个已在拼音表里的词
+    从「拼音直注」降级成「同音字替换」，是拿强手段换弱手段。
     """
     s = _MUTE.sub("", s)
-    s, applied = g2p.inject(s, _injections(), engine_kind)
+    inj = _injections()
     for src, rep in _readings().items():
+        if src in inj:
+            continue           # 同键：交拼音直注，见上
         s = s.replace(src, rep)
+    s, applied = g2p.inject(s, inj, engine_kind)
     return s, applied
 
 
@@ -1053,9 +1070,13 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     try:
         parts, worst_cer, tries, skipped = [], 0.0, 1, False
         meta, at = [], 0.0
+        # 段级种子在此查一次，逐句往下传：句子标签（21.1）在配置表里不存在，
+        # 让 _render_one 自己查就把钉的种子静默丢了（见 _render_one 文档）。
+        pinned = getattr(engine, "segment_seeds", {}).get(str(seg.label))
         for i, s in enumerate(sents, 1):
             p = tmp_dir / f"{i:02d}.wav"
-            take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p)
+            take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
+                               seed_override=pinned)
             parts.append(p)
             d = probe_duration(p)
             meta.append({"text": s, "start": round(at, 3), "duration": round(d, 3)})
@@ -1185,9 +1206,15 @@ def _best_take(dest: Path, want: float) -> tuple[int, float] | None:
     return best
 
 
-def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
+def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | None = None) -> Take:
     """生成一句，直到它通过质检；用尽重试仍不过则抛错。
 
+    `seed_override` 是 `render_segment` 传下来的**段级固定种子**：逐句合成时
+    每句的 Segment.label 是 `21.1`/`21.2`，而 `segment_seeds` 的键是稿件里的
+    段号（`21`）——`_render_one` 自己查表永远查不到，钉的种子会静默失效
+    （2026-09-12 实测：钉了 21 的种子，重渲染时长与派生种子那版一模一样）。
+    所以查表发生在本函数：先看段级 override，再看句级标签（兼容老表的 13.1 式键）。
+    
     **ASR 盲区豁免（2026-08-15 加，2026-08-16 改判据）：** Qwen3-TTS 用日语参考
     音色念中文时，Whisper 会把整句听成假名/近音字（「世界忽然退远了」→
     「クランテイエンロ」），CER 30-100%，而音频实际念对了（人耳确认）。
@@ -1221,7 +1248,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path) -> Take:
         # 参考文本没引号，回读多出「非」「匪」两个字，只算 2 处插入，
         # CER 7% 远在 20% 门槛之下，门禁照常放行，要人听出来才发现。
         tmp = dest.parent / f".{dest.stem}.{attempt}.wav"
-        custom_seed = getattr(engine, "segment_seeds", {}).get(str(seg.label))
+        custom_seed = seed_override if seed_override is not None else \
+            getattr(engine, "segment_seeds", {}).get(str(seg.label))
         seed = custom_seed if custom_seed is not None else (attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
         # v2 链路（架构设计三.2）：剥符号 → 拼音直注 → readings override。
         # 注入记录进 Take.g2p_injections：机器做的替换与 readings 表一样要可审计。
@@ -1572,17 +1600,22 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     return manifest_path
 
 
-def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None) -> None:
+def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,
+          seed: int = 0) -> None:
     """试音：单句生成 + 回读，用来比较引擎和参考干声。
 
     选音色是 Phase 0 的一次性动作，不进每期循环。
+
+    `seed` 默认 0：比参考音色时固定住随机源，两次试音只差参考干声这一个变量。
+    要比种子（同一段在 `attempt*1000 + 段号 + seed_offset` 下的表现）就显式传——
+    传 `1000 + 段号 + seed_offset`，得到的就是那一期该段真正会用的种子。
     """
     cfg = load_config(cfg_path)
     if ref is not None:
         cfg = {**cfg, "ref_audio": str(ref), "ref_text": _ref_text_for(ref)}
     engine = Engine(cfg)
     t0 = time.perf_counter()
-    engine.synthesize(speakable(text), dest, attempt=1, seed=0)
+    engine.synthesize(speakable(text), dest, attempt=1, seed=seed)
     dur = probe_duration(dest)
     heard = transcribe(dest)
     edits, err = cer(text, heard)
@@ -1607,6 +1640,8 @@ def main() -> int:
     p.add_argument("--config", type=Path, default=CONFIG)
     p.add_argument("--out", type=Path, default=paths.VOICE / "probe" / "probe.wav")
     p.add_argument("--ref", type=Path, help="临时换参考干声（相对仓库根），用于比音色")
+    p.add_argument("--seed", type=int, default=0,
+                   help="合成种子（默认 0）。比种子时传 1000+段号+seed_offset")
 
     argv = sys.argv[1:]
     if argv and argv[0] not in {"run", "probe", "-h", "--help"}:
@@ -1614,7 +1649,7 @@ def main() -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "probe":
-        probe(a.text, a.config, a.out, a.ref)
+        probe(a.text, a.config, a.out, a.ref, a.seed)
     else:
         run(a.episode, a.force, a.config,
             parse_review_arg(a.review) if a.review else None)

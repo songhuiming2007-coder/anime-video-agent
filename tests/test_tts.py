@@ -195,6 +195,23 @@ class TestSpeakable:
         assert t.speakable("世界", "indextts2") == "SHI4JIE4"
         assert t.speakable("世界", "qwen3_tts") == "shìjiè"
 
+    def test_读音表长键不被拼音注入打断(self, monkeypatch):
+        """2026-09-12 实测的静默失效：长键含一个会被注入的子串 → 整条失配。
+
+        现场：EGOIST 一期段落 12。拼音表会注入「台前」，而 readings 的长键
+        「koeda 以活人身份走上台前」含这三个字，于是长键匹配不上，落到短键
+        `koeda→こえだ`——假名把整句带去日语模式，人耳听到的是全句日语。
+        断言的就是「长键先于注入生效」，否则旧行为会重回。
+        """
+        monkeypatch.setattr(t, "_injections", lambda: {"台前": "tai2qian4"})
+        monkeypatch.setattr(t, "_readings", lambda: {
+            "koeda 以活人身份走上台前": "扣诶达 以活人身份走上抬前",
+            "koeda": "扣诶达",
+        })
+        got = t.speakable("koeda 以活人身份走上台前，摄影机拍摄着真实的脸孔", "qwen3_tts")
+        assert got.startswith("扣诶达 以活人身份走上抬前"), got
+        assert "táiqián" not in got, "长键命中后不该再有拼音注入：" + got
+
     def test_读音表兜住拼音表未覆盖的残留个例(self, monkeypatch):
         """readings 降级为「逐案 override」后仍有职责：接住非纯汉字的替换词。
 
@@ -1275,3 +1292,97 @@ class TestSynthLogicFingerprint:
         cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
         got = t._reusable(old, [seg], tmp_path, cfg)
         assert got == {}, "逻辑版本不同时必须判定为不可复用"
+
+
+class TestQwen3MlxPath:
+    """本地 mlx 通道的返回值与分块拼接（2026-09-11 拆分事故防回退）。
+
+    把 `synthesize` 拆成 `_synthesize_cuda` / `_synthesize_mlx` 时，mlx 那条
+    少了两样东西：`import numpy as np` 和末尾的 `return audio, rate`。
+    M2a 全程只跑云端 CUDA 路径，于是本地通道静默变成死路——先 `NameError: np`，
+    补完 import 又 `cannot unpack non-iterable NoneType`。
+    v1 全系列（含 EGOIST 一期）都是这条通道配的音，它坏掉没有任何测试报警。
+
+    这里不加载真模型：`self.model` 换成一个按块 yield 的假模型，
+    测的是**接缝的契约**（还回 (audio, rate)、分块全拼），不是声学质量。
+    """
+
+    def _engine(self, chunks):
+        class _R:
+            def __init__(self, audio, sr):
+                self.audio, self.sample_rate = audio, sr
+
+        class FakeModel:
+            def generate(self, **kw):
+                for n, v in chunks:
+                    yield _R(np.full(n, v, dtype=np.float32), 24000)
+
+        class FakeEngine:
+            kind = "qwen3_tts"
+            model = FakeModel()
+            ref_audio = "x.wav"
+            ref_text = None
+            lang_code = "zh"
+            SAMPLING = t.Engine.SAMPLING
+            MAX_MEL_TOKENS = t.Engine.MAX_MEL_TOKENS
+
+        FakeEngine._synthesize_mlx = t.Engine._synthesize_mlx
+        return FakeEngine()
+
+    def test_mlx分块拼接并返回_audio_rate(self):
+        audio, rate = self._engine([(2400, 0.1), (1200, 0.2)])._synthesize_mlx(
+            "你好。", attempt=1, seed=0)
+        assert rate == 24000
+        assert audio.shape == (3600,), "generate 是生成器，分块必须全拼"
+
+    def test_mlx没有产出时报错不静默(self):
+        try:
+            self._engine([])._synthesize_mlx("你好。", attempt=1, seed=0)
+        except RuntimeError as e:
+            assert "没有产出" in str(e)
+        else:
+            raise AssertionError("空产出必须报错，不能返回 None 当成功")
+
+
+class TestSegmentSeedsReachSentenceUnits:
+    """段级钉种子必须传到每个句级合成单元（2026-09-12 实测事故）。
+
+    逐句合成时每句的 label 是 `21.1`/`21.2`/`21.3`，而 `segment_seeds` 的键是
+    稿件里的段号 `21`。`_render_one` 自己查表永远查不到 → 钉的种子静默失效，
+    重渲染出来的时长与派生种子那版**一模一样**（19.71s，与 A/B 里同一版本字不差）。
+    配置里写了一条永远读不到的规则，而跑完什么也不报。
+    """
+
+    def test_段级种子传到每个句级单元(self, monkeypatch, tmp_path):
+        seen: list[int] = []
+
+        class FakeEngine:
+            kind = "qwen3_tts"
+            SAMPLING = t.Engine.SAMPLING
+            seed_offset = 7
+            segment_seeds = {"21": 2028}
+            cfg = t.load_config()          # resolve_emotion/speed 要读情绪/语速词表
+
+            def synthesize(self, text, dest, attempt, seed, emo_params=None):
+                seen.append(seed)
+                dest.write_bytes(b"RIFF fake")
+
+        class FakeTakes:
+            pass
+
+        # 只测「种子怎么传」：_render_one 的质检链用桩替换，避免真合成
+        def fake_render_one(engine, seg, dest, seed_override=None):
+            pinned = seed_override if seed_override is not None else \
+                engine.segment_seeds.get(str(seg.label))
+            seen.append(pinned if pinned is not None else 1000 + seg.index + engine.seed_offset)
+            dest.write_bytes(b"RIFF fake")
+            return t.Take(seg.index, seg.label, seg.text, dest.name, 1.0, 0.0, 1)
+
+        monkeypatch.setattr(t, "_render_one", fake_render_one)
+        monkeypatch.setattr(t, "probe_duration", lambda p: 1.0)
+        monkeypatch.setattr(t, "_concat_with_gap", lambda parts, dest, gap: dest.write_bytes(b"x"))
+        monkeypatch.setattr(t, "_pad_tail", lambda p, s: None)
+
+        seg = t.Segment(21, "21", "第一句。第二句。第三句。")
+        t.render_segment(FakeEngine(), seg, tmp_path / "seg-21.wav")
+        assert seen == [2028, 2028, 2028], f"段级钉种子没传到句级单元：{seen}"
