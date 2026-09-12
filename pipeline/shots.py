@@ -268,9 +268,20 @@ def load(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
     return d
 
 
-def at(shots: list[dict], t: float) -> dict | None:
-    """时刻 t 落在哪个镜头里。镜头按时间升序且首尾相接，二分即可。"""
+def at(shots: list[dict], t: float, eps: float = 0.0) -> dict | None:
+    """时刻 t 落在哪个镜头里。镜头按时间升序且首尾相接，二分即可。
+
+    若给定 eps > 0，当 t 贴近下一个镜头的切点边界时（距下个镜头起点 <= eps，
+    典型如 MM:SS.xx 两位小数截断舍入导致比真实切点小千分之几秒），向前吸附到目标镜头，
+    杜绝「抄了当前镜头起始码却判给上一镜」的离散量化错位。
+    """
+    if not shots:
+        return None
+    if eps > 0 and 0 <= t < shots[0]["start"] and (shots[0]["start"] - t) <= eps:
+        return shots[0]
+
     lo, hi = 0, len(shots) - 1
+    found_idx = -1
     while lo <= hi:
         mid = (lo + hi) // 2
         s = shots[mid]
@@ -279,8 +290,18 @@ def at(shots: list[dict], t: float) -> dict | None:
         elif t >= s["end"]:
             lo = mid + 1
         else:
-            return s
-    return None
+            found_idx = mid
+            break
+
+    if found_idx == -1:
+        return None
+
+    if eps > 0 and found_idx + 1 < len(shots):
+        next_s = shots[found_idx + 1]
+        if (next_s["start"] - t) <= eps:
+            return next_s
+
+    return shots[found_idx]
 
 
 def between(shots: list[dict], start: float, end: float) -> list[dict]:

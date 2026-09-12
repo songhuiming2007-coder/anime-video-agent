@@ -366,7 +366,7 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | 
     if src is None:                     # 该集没登记——与 candidate() 同一条规矩
         return None
     table = _shots.load(anime, key)["shots"]    # load 自带切分参数一致性校验
-    s0 = _shots.at(table, anchor["t0"])
+    s0 = _shots.at(table, anchor["t0"], eps=0.05)
     if s0 is None:                      # 锚点超出片长
         return None
     start = s0["start"]
