@@ -294,15 +294,48 @@ def _overlaps(cand, chosen) -> bool:
             continue
         # 静态微动物证（时长 ≤ 8s 的单镜头扫图/公信榜/公告）：纪录片在不同章节
         # 客观引用同一物证是正常合法的，不进排他去重。
+        #
+        # **≤ 8s 是代理判据，它实际读的是片子时长。** EGOIST 池里 19 个微动素材
+        # 恰好全是 6.006006s，今天等价；换番/换素材时一个 12s 循环卡或静态图混进
+        # 长片源，豁免会静默失效、伪重叠原样回来。**换番必须重新核对池内微动素材
+        # 的时长。** 中期方案是给池条目加显式 static 标，判据读它。
         if (cand.get("sp") and c.get("sp")
                 and cand.get("limit", 999) <= 8.0 and c.get("limit", 999) <= 8.0):
             continue
         a0, a1 = cand["start"], cand["start"] + cand["span"]
         b0, b1 = c["start"], c["start"] + c["span"]
+        # 两边都是锚点（无检索分）时不留 OVERLAP_GAP：锚点起点已吸附到镜头切点，
+        # 一个镜头恰好接在另一个后面（b0 == a1）是**接缝**，不是撞车。留了 gap
+        # 会把合法的相邻镜头拦下，交付里 SP33 的 947s 巨镜头就是这么卡住的。
         gap = 0.0 if (cand.get("score") is None and c.get("score") is None) else OVERLAP_GAP
         if a0 < b1 + gap and b0 < a1 + gap:
             return True
     return False
+
+
+def _tighten_by_episode(used: list[dict]) -> None:
+    """把同一集里已分配片段的拉伸上限收紧到「下一个片段的起点」（就地改 used）。
+
+    原先 inline 在 run() 的三轮循环里，无测试、无法单独验证。
+    """
+    by_ep: dict[tuple, list[dict]] = {}
+    for c in used:
+        by_ep.setdefault((c.get("anime"), c["season"], c["episode"]), []).append(c)
+    for cs in by_ep.values():
+        # 整组都是静态微动物证就不收紧：它们的 start 是各自被引用的位置，
+        # 相互之间没有「同一段水流」的先后关系（SP06 被段 2/3/5 引用，段 3 的
+        # 起点去卡段 2 的上限纯属误会）。
+        # **判据必须看全组，不能拿 cs[0] 代表全组**（2026-09-13）：分组键是
+        # (anime, season, episode)，而 sp 只在 season is None 时打标——人审手补
+        # 的缺 season 片段会落进同一组，此时「是否收紧」会取决于 used 里谁先出现，
+        # 是个顺序依赖的静默开关。
+        if cs and all(c.get("sp") and c.get("limit", 999) <= 8.0 for c in cs):
+            continue
+        cs.sort(key=lambda c: c["start"])
+        for a, b in zip(cs, cs[1:]):
+            if b["start"] > a["start"] + a.get("span", 0.0):
+                a["limit"] = min(a["limit"], b["start"] - OVERLAP_GAP)
+                b["floor"] = round(a["start"] + a["span"] + OVERLAP_GAP, 3)
 
 
 def candidate(score: float, u, sources: dict,
@@ -922,6 +955,9 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             continue            # 有锚点解析不出（未入库/超片长）→ 终态 no_match，不参与预占
         # 撞车判定含段内：同段的两个锚点指向同一处画面，等于蒙太奇重复放同一镜头，
         # 与跨段撞车同规——不静默挪，标出来交 05 处理。
+        # **2026-09-13 更正：静态微动物证是这条规矩的例外。** `_overlaps` 的 sp 放行
+        # 不区分段内/段间，所以一段里放两遍同一张 ≤8s 卡片不再报 anchor_overlap
+        # （用户拍板：可接受，同一物证在一段内重复出现不算排片错误）。
         seen = list(placed)
         conflict = False
         for c in cands:
@@ -956,18 +992,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
 
         # 拉伸上限收到「同一集里下一个已分配片段的起点」，不能只收到片尾。
         # 2026-07-29 实测：段 11 的 15:18 被拉到 5.8s 之后撞进了段 12 的 15:24。
-        by_ep: dict[tuple, list[dict]] = {}
-        for c in used:
-            by_ep.setdefault((c.get("anime"), c["season"], c["episode"]), []).append(c)
-        for cs in by_ep.values():
-            if cs and cs[0].get("sp") and cs[0].get("limit", 999) <= 8.0:
-                continue
-            cs.sort(key=lambda c: c["start"])
-            for a, b in zip(cs, cs[1:]):
-                if b["start"] > a["start"] + a.get("span", 0.0):
-                    a["limit"] = min(a["limit"], b["start"] - OVERLAP_GAP)
-                    b["floor"] = round(a["start"] + a["span"] + OVERLAP_GAP, 3)
-
+        _tighten_by_episode(used)
 
         short = []
         for p in live:
