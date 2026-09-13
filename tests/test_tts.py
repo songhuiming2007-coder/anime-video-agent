@@ -1796,3 +1796,33 @@ class TestSegmentSeedsReachSentenceUnits:
         t.render_segment(eng, t.Segment(21, "21", "第一句。第二句。第三句。"),
                          tmp_path / "seg-21.wav")
         assert eng.seeds == [2028, 2028, 2028]
+
+    def test_某句靠重试才过时整段回基准种子重排(self, monkeypatch, tmp_path):
+        """拆句段里某句换了种子才过质检 → 整段回**基准种子**重排，不让两种采样拼在一段里。
+
+        2026-09-13 三期实测：段 22 的第一句用了 4208、其余四句 7，人耳听出来的就是
+        「段内音色语速偏移」。质检判据是段级的（CER 取全段最差、过的是**整段**），
+        执行却是句级的——某一句重试就会单独换采样，同一段里就叠了两次采样。
+        修法不是让重试别换种子（那样重试就没意义了），而是**整段回到基准种子**重排：
+        基准 7 是人耳盲评选定的，那段过不了质检就按盲区豁免交人耳，不自作主张换采样。
+        """
+        TEXTS = {1: "第一句。", 2: "第二句。", 3: "第三句。"}
+        monkeypatch.setattr(t, "probe_duration", lambda _p: 1.0)
+        monkeypatch.setattr(t, "expected_duration", lambda _s: 1.0)
+        monkeypatch.setattr(t, "_concat_with_gap",
+                            lambda parts, dest, gap: dest.write_bytes(b"x"))
+        monkeypatch.setattr(t, "_pad_tail", lambda p, s: None)
+
+        def fake_transcribe(p):
+            idx, att = int(p.name[1:3]), int(p.name.split(".")[-2])
+            # 第二句的第一次尝试故意不过：逼它换种子重试，看整段跟不跟着换
+            return "风马牛不相及" if (idx == 2 and att == 1) else TEXTS[idx]
+
+        monkeypatch.setattr(t, "transcribe", fake_transcribe)
+        eng = _SeedEngine()
+        take = t.render_segment(eng, t.Segment(21, "21", "第一句。第二句。第三句。"),
+                                tmp_path / "seg-21.wav")
+        retry = t._seed_for(eng, t.Segment(2102, "21.2", "第二句。"), None, 2)
+        assert eng.seeds[:4] == [7, 7, retry, 7], "前提：第一轮三句用基准种子，第二句换种子重试"
+        assert take.seeds_used == [7] * 3, f"整段没回到基准种子 7：{take.seeds_used}"
+        assert set(eng.seeds[4:]) == {7}, "整段重排必须逐句重合成，且全部用基准种子"

@@ -1105,27 +1105,64 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     tmp_dir = dest.parent / f".{dest.stem}-sents"
     tmp_dir.mkdir(exist_ok=True)
     try:
-        parts, worst_cer, tries, skipped = [], 0.0, 1, False
-        meta, at = [], 0.0
         # 段级钉种子在此查一次，逐句往下传（句级键 `21.1` 只可能以句级键存在，
         # 让 _render_one 自己查表会把它静默丢掉——见 _render_one 文档）。
         # **只传真正的钉值**：没钉的句子交给 `_seed_for` 走统一基准（同段各句一致，
         # 段内无音色断层），而把基准当 override 传下去会顺手把重试也钉死。
         pinned = getattr(engine, "segment_seeds", {}).get(str(seg.label))
-        seeds_used: list[int] = []
-        for i, s in enumerate(sents, 1):
-            p = tmp_dir / f"{i:02d}.wav"
-            sub_pin = getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}")
-            take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
-                               seed_override=pinned if pinned is not None else sub_pin)
-            seeds_used += take.seeds_used or []
-            parts.append(p)
-            d = probe_duration(p)
-            meta.append({"text": s, "start": round(at, 3), "duration": round(d, 3)})
-            at += d + SENT_GAP
-            worst_cer = max(worst_cer, take.cer)
-            tries = max(tries, take.attempts)
-            skipped = skipped or take.qc_skip is not None
+
+        def render_pass(seed_pin: int | None):
+            """把整段的句子排一遍 → (parts, meta, seeds, worst_cer, tries, skipped)。
+
+            `seeds` 是每句实际用掉的种子连同它的 attempt 次数（选统一种子要用）。
+            """
+            parts: list[Path] = []
+            meta: list[dict] = []
+            seeds: list[tuple[int | None, int]] = []
+            worst_cer, tries, skipped, at = 0.0, 1, False, 0.0
+            for i, s in enumerate(sents, 1):
+                p = tmp_dir / f"{i:02d}.wav"
+                sub_pin = getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}")
+                take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
+                                   seed_override=seed_pin if seed_pin is not None else sub_pin)
+                seeds.append(((take.seeds_used or [None])[0], take.attempts))
+                parts.append(p)
+                d = probe_duration(p)
+                meta.append({"text": s, "start": round(at, 3), "duration": round(d, 3)})
+                at += d + SENT_GAP
+                worst_cer = max(worst_cer, take.cer)
+                tries = max(tries, take.attempts)
+                skipped = skipped or take.qc_skip is not None
+            return parts, meta, seeds, worst_cer, tries, skipped
+
+        # 有人钉过种子就不动：句级钉值（`21.2`）本身就是**有意的**段内不一致，
+        # 统一重排会把人的指定盖掉。要统一的是「靠重试换种子才过」那种意外分歧。
+        has_pin = pinned is not None or any(
+            getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}") is not None
+            for i in range(1, len(sents) + 1))
+        parts, meta, seeds, worst_cer, tries, skipped = render_pass(pinned)
+        if not has_pin and len({s for s, _ in seeds}) > 1:
+            # **段内种子必须一致。** 某一句靠换种子才过质检时，它会落在与邻居不同的
+            # 采样上，成片里就是这一句的音色/语速与上下文断层（2026-09-13 三期实测：
+            # 段22 第一句 4208、其余四句 7，人耳听出来的正是「段内音色偏移」）。
+            # 质检判据本来就是段级的（过不过看整段），执行也得段级：整段**回基准种子**
+            # 重排（不是用那句撞出来的派生种子——7 是人耳盲评选定的基准，整段认它），
+            # 那一声过不了质检就按 ASR 盲区豁免交人耳，不自作主张换采样。
+            base = _seed_for(engine, seg, None, 1)
+            print(f"  段内种子不一致 {[s for s, _ in seeds]} → 整段回基准种子 {base} 重排",
+                  file=sys.stderr)
+            try:
+                parts, meta, seeds, worst_cer, tries, skipped = render_pass(base)
+            except SystemExit as ex:
+                # 不回退到第一遍：那会拼出「一半基准种子、一半派生种子」的音频，
+                # 比两种都差。诚实失败 + 给出退路（单段钉种子是既有机制）。
+                raise SystemExit(
+                    f"{ex}\n"
+                    f"     ↑ 这段是「某句靠重试换种子才过」的段，按基准种子 {base} 整段重排后"
+                    f"仍不达标。\n"
+                    f"       退路：给这一段钉另一个种子"
+                    f"（config/voice.json 的 segment_seeds，键 \"{seg.label}\"）。")
+        seeds_used: list[int] = [s for s, _ in seeds if s is not None]
         _concat_with_gap(parts, dest, SENT_GAP)
         _pad_tail(dest, _para_gap())
         # 段级 Take 的情绪/语速按段落声明记录（与上面逐句渲染无关：
@@ -1435,7 +1472,11 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
 #   4 —— 种子口径定案（2026-09-13）：首次 attempt 用全局基准（同段各句一个种子，
 #        无段内音色断层）、重试换派生种子（否则重试无意义）；Take 增
 #        `seeds_used`（实际用掉的）与 `seed_base`（当时的基准），后者用于基准漂移报账
-SYNTH_LOGIC_VERSION = 4
+#   5 —— 段级种子闭环（2026-09-13）：拆句段里某句靠换种子才过质检时，整段**回基准
+#        种子**重排一次（不回退、不换采样；过不了就按盲区豁免交人耳）。4 只保证
+#        「没钉种子时首次 attempt 同种子」，管不住重试——三期实测段13/22/40 就是
+#        「一句 3308/4208/6008 + 邻居 7」的混合采样
+SYNTH_LOGIC_VERSION = 5
 
 
 def _voice_fingerprint(cfg: dict) -> dict:
