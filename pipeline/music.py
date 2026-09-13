@@ -81,6 +81,47 @@ def _to_sec(m: int, s: str) -> float:
     return m * 60 + float(s)
 
 
+def _bed_boundary(timeline: list[dict], i: int) -> float:
+    """下一个「真正的音乐段」开始的成片位置（铺底/降为 BGM 的覆盖终点）。
+
+    **音画同源槽不算边界**——它是「让路」不是「交接」：槽前槽后是同一首床，
+    中间静音 19 秒（_lets_way 切段）。旧实现把槽当边界，于是铺底事件在槽口
+    提前结束、槽后再无人接管（第二期实测：段落 38-43 整段无音乐）。
+    没有下一个音乐段就铺到时间轴末尾。
+    """
+    nxt = next((x for x in timeline[i + 1:]
+                if x["kind"] == "music" and not x.get("avsync")), None)
+    return nxt["start"] if nxt else (
+        timeline[-1]["start"] + timeline[-1]["dur"])
+
+
+def _lets_way(film0: float, film1: float, t0: float,
+              slots: list[tuple[float, float]]) -> list[tuple[float, float, float]]:
+    """BGM 成片区间 [film0, film1) 按音画同源槽切段 → [(成片起点, 曲内起点, 时长)]。
+
+    **同源槽只让路，不终止床。** ADR-0013 只要求「槽内底层 BGM 完全静音」
+    为源片原声让路，没说槽后不再出声——旧实现把槽当成「下一个音乐段」的
+    边界，于是槽后所有段落永久失去床（2026-09-13 第二期实测：同源槽插进
+    段落 37-38 后，段落 38-43 整段无音乐）。这里把槽按**暂停**处理：槽内
+    曲内位置冻结（听众听到的是一首不被打断的歌，不是静掉 19 秒），槽后从
+    槽前的位置接续。
+
+    返回的段在成片上互不相邻（中间隔着槽），渲染端 `_runs` 的合并条件要求
+    成片位置也连续，因此不会把它们粘回一个 run——槽位保持静音。
+    """
+    out: list[tuple[float, float, float]] = []
+    f, pos = film0, t0
+    for a, b in sorted(s for s in slots if film0 < s[0] < film1):
+        a, b = max(a, film0), min(b, film1)
+        if a - f > 1e-6:
+            out.append((f, pos, a - f))
+            pos += a - f
+        f = max(f, b)
+    if film1 - f > 1e-6:
+        out.append((f, pos, film1 - f))
+    return out
+
+
 def parse_script_music(path: Path) -> list[MusicBlock]:
     """解析 02-script.md 里全部 `音乐段` 块。
 
@@ -249,7 +290,8 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
 
     事件语义：
       - vol=foreground：前景大音量，旁白停
-      - vol=bgm：同音轨低音量 + 侧链闪避，覆盖其后段落
+      - vol=bgm：同音轨低音量 + 侧链闪避，覆盖其后段落（音画同源槽只让路，
+        不终止床：槽内静音、槽后接续）
       - vol=natural：结尾自然播放（同前景音量），播到曲目结束
       - 事件之间曲目内位置不连续 = 跳点（渲染时事件边界淡入淡出衔接）
     """
@@ -306,6 +348,10 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                              "start": t})
             t += t1 - b.t0
 
+    # 音画同源槽的成片区间：BGM 在这几段里静音让路（但不终止，见 _lets_way）
+    slots = [(x["start"], x["start"] + x["dur"])
+             for x in timeline if x.get("avsync")]
+
     # 段落块内的「音乐: `X` 继续播放至完整版结束」→ 自然收尾事件
     # （审查 B6：循环只迭代段落块，body 里不可能有 `音乐段` 标题——死条件已删；
     #  段落找不到时给干净 FAIL，不 TypeError 崩溃）
@@ -334,18 +380,19 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             # 铺底块 → BGM 事件：覆盖到下一个音乐段（含前景/同源/铺底块），
             # 没有下一个就铺到时间轴末尾。声明了上限（t1）的按上限截——
             # 封顶是明示意图，与「不许静默截短」不冲突。
+            # 同源槽不是铺底边界：槽内静音、槽后接续（_lets_way）
             title = it["title"]
             if title not in order:
                 order.append(title)
             evs = track_evs.setdefault(title, [])
-            nxt = next((x for x in timeline[i + 1:] if x["kind"] == "music"), None)
-            nxt_start = (nxt["start"] if nxt
-                         else timeline[-1]["start"] + timeline[-1]["dur"])
-            t1 = it["t0"] + (nxt_start - it["start"])
-            if it["t1"] is not None:
-                t1 = min(t1, it["t1"])
-            evs.append({"t0": it["t0"], "t1": t1, "vol": "bgm",
-                        "at": it["start"], "underlay": True})
+            nxt_start = _bed_boundary(timeline, i)
+            for at_, pos_, dur_ in _lets_way(it["start"], nxt_start, it["t0"], slots):
+                if it["t1"] is not None:
+                    dur_ = min(dur_, it["t1"] - pos_)
+                if dur_ <= 1e-6:
+                    continue
+                evs.append({"t0": pos_, "t1": pos_ + dur_, "vol": "bgm",
+                            "at": at_, "underlay": True})
             continue
         if it.get("avsync"):
             # 形态 2 只占时间槽，不进曲目事件序列——它的声音来自源片原声切片，
@@ -358,14 +405,14 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
         t0, t1 = it["t0"], it["t1"]
         evs.append({"t0": t0, "t1": t1, "vol": "foreground", "at": it["start"]})
         if it["after"] == "bgm":
-            # BGM 从前景结束点继续，覆盖到**下一个音乐段开始**
+            # BGM 从前景结束点继续，覆盖到**下一个真正的音乐段开始**
             # （BGM 是给旁白让路的铺底，旁白段落之间由下一个音乐段接管）。
-            nxt = next((x for x in timeline[i + 1:] if x["kind"] == "music"), None)
-            nxt_start = (nxt["start"] if nxt
-                         else timeline[-1]["start"] + timeline[-1]["dur"])
-            evs.append({"t0": t1, "t1": t1 + (nxt_start - it["start"] - (t1 - t0)),
-                        "vol": "bgm",
-                        "at": it["start"] + (t1 - t0)})
+            # 同源槽只让路不终止：按槽切段，槽内静音、槽后从原位接续。
+            nxt_start = _bed_boundary(timeline, i)
+            for at_, pos_, dur_ in _lets_way(it["start"] + (t1 - t0), nxt_start,
+                                             t1, slots):
+                evs.append({"t0": pos_, "t1": pos_ + dur_, "vol": "bgm",
+                            "at": at_})
         elif it["after"] == "end":
             evs.append({"t0": t1, "t1": None, "vol": "natural",
                         "at": it["start"] + (t1 - t0)})
@@ -391,6 +438,18 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
             raise SystemExit(
                 f"FAIL 《{title}》在自然收尾前已经播完（已播至 {tail_t:.1f}s，"
                 f"曲目全长 {dur_all:.1f}s），无法继续播放至完整版结束")
+        # 收尾段是一整段连续音乐：中途切不出静音（同曲第二段 natural 的曲内终点
+        # 会被下面的 t1=None→全长 改写），所以同源槽落进来就是现场原声被音乐床
+        # 压着播（ADR-0013 禁止的两张皮），且没有任何报错。当期结构要改，不静默。
+        nat_dur = dur_all - tail_t
+        hit = next(((a, b) for a, b in slots
+                    if a < at + nat_dur - 1e-6 and b > at + 1e-6), None)
+        if hit:
+            raise SystemExit(
+                f"FAIL 音画同源槽落在《{title}》的自然收尾区间内："
+                f"槽 {hit[0]:.1f}-{hit[1]:.1f}s，收尾 {at:.1f}-{at + nat_dur:.1f}s。\n"
+                f"     收尾段无法中途静音，槽位落进去等于现场原声被音乐床压着播。\n"
+                f"     把同源槽挪到最后一段落之前，或删掉这段自然收尾。")
         evs.append({"t0": tail_t, "t1": None, "vol": "natural", "at": at,
                     "visual": ovis})
 
