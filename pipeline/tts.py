@@ -124,6 +124,13 @@ class Take:
     # 拼音直注的替换记录（架构设计三.2 要点 3）：机器做的替换与 readings 表
     # 一样需要可审计。
     g2p_injections: list[dict] | None = None
+    # **产出这段音频的引擎代码版本**（见 SYNTH_LOGIC_VERSION）。段级而不是 manifest 级：
+    # 分次重跑会做出「同一期里新老逻辑混着」的 manifest，顶层一个数字表达不了它。
+    # 陈旧段**不拦复用**（2026-09-13 拍板：不替人花钱），但逐段标出来，运行结尾报账。
+    synth_logic: int | None = None
+    # 该段每个合成单元当时实际用的**钉种子**（元素 None = 那道单元走派生式）。
+    # 段级复用判据的一部分：改了 segment_seeds 却不重做，就是「配置里写了不生效」。
+    seed_pins: list[int | None] | None = None
 
 
 # ---------- 稿件解析 ----------
@@ -1054,6 +1061,27 @@ def _trim_silence(path: Path, check_tail: bool = True) -> None:
         w.writeframes(struct.pack(f"<{hi - lo}h", *a[lo:hi]))
 
 
+def _seed_pins(seg: Segment, seeds: dict | None) -> tuple[int | None, ...]:
+    """该段每个合成单元会用的**钉种子**（None = 没钉，走派生式 attempt*1000+index+offset）。
+
+    `seeds` 是 `segment_seeds` 的**原始映射**（不是整个 cfg）：调用方一律传
+    `engine.segment_seeds` 或 `cfg["segment_seeds"]`，两者同源。键规则与
+    `Engine.segment_seeds` 一致：单句段的单元就是这一段（键 = 段号 label）；
+    逐句段的单元是每一句，段级键 label 优先，其次句级老键 `21.1`（兼容旧表）。
+
+    **它是段级复用判据的一部分**（2026-09-13）：此前 `segment_seeds` 完全没进复用
+    比对，于是配置里给某段钉了/换了种子，同文本同读音的旧 wav 会被静默复用——
+    「改了种子却什么也没发生」，与 `synth_logic` 当初的毛病同一类。
+    """
+    table = {str(k): int(v) for k, v in (seeds or {}).items()}
+    n = len(split_sentences(seg.text))
+    if n <= 1:
+        return (table.get(str(seg.label)),)
+    pin = table.get(str(seg.label))
+    return tuple(pin if pin is not None else table.get(f"{seg.label}.{i}")
+                 for i in range(1, n + 1))
+
+
 def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     """生成一段：逐句合成、裁静音、按固定停顿拼起来。"""
     sents = split_sentences(seg.text)
@@ -1063,6 +1091,7 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
         _pad_tail(dest, _para_gap())
         take.duration = round(probe_duration(dest), 3)
         take.sentences = [{"text": seg.text, "start": 0.0, "duration": round(speak, 3)}]
+        take.seed_pins = list(_seed_pins(seg, getattr(engine, "segment_seeds", {})))
         return take
 
     tmp_dir = dest.parent / f".{dest.stem}-sents"
@@ -1096,7 +1125,9 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
                     qc_skip="asr-blind" if skipped else None,
                     speakable=speakable(seg.text, getattr(engine, "kind", "qwen3_tts")),
                     emotion=emo_name, speed=spd_name,
-                    g2p_injections=seg_injections or None)
+                    g2p_injections=seg_injections or None,
+                    synth_logic=SYNTH_LOGIC_VERSION,
+                    seed_pins=list(_seed_pins(seg, getattr(engine, "segment_seeds", {}))))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1298,7 +1329,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
             return Take(seg.index, seg.label, seg.text, dest.name,
                         round(dur, 3), round(err, 4), attempt,
                         speakable=spk_text, emotion=emo_name, speed=spd_name,
-                        g2p_injections=injections or None, asr_arbitrated=arbitrated)
+                        g2p_injections=injections or None, asr_arbitrated=arbitrated,
+                        synth_logic=SYNTH_LOGIC_VERSION)
 
         why = []
         if not ok_dur:
@@ -1323,7 +1355,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
                     round(dur, 3), round(err, 4), ATTEMPTS,
                     sentences=None, qc_skip="asr-blind",
                     speakable=spk_text, emotion=emo_name, speed=spd_name,
-                    g2p_injections=injections or None)
+                    g2p_injections=injections or None,
+                    synth_logic=SYNTH_LOGIC_VERSION)
 
     _cleanup_takes(dest, ATTEMPTS)
     raise SystemExit(
@@ -1344,11 +1377,17 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
 # 这是 S1「判据测错了对象」在复用维度上的翻版：判据测的是「配置有没有变」，
 # 实际需要的是「合成逻辑有没有变」。配置比对覆盖不了代码。
 #
+# **2026-09-13 拍板改了它的作用方式（不再是「bump 就全量重做」）：**
+# 版本号逐段记进 `Take.synth_logic`，陈旧段**不拦复用**，但每段都会被标出来、
+# 运行结尾汇总报账（`--redo` 可以只重做你听出来的那几段，`--force` 才全量）。
+# 为什么不再自动全量重做：那会直接废掉 WORKFLOW 03.5 的「单段增量重跑」纪律
+# （`rm seg-NN.wav` 当时会把全 49 段一起重做），而且自动花掉的钱不归人管。
+# 防护从**强制**降为**可见**：谁要拿混血音频交片，manifest 里一行段级记录就是证据。
+#
 # 版本历史：
 #   1 —— Qwen3 CUDA 通道初始（每句重新提取说话人嵌入、无种子控制）
 #   2 —— 加 torch.manual_seed + voice_clone_prompt 预计算缓存（2026-09-11）
-#   3 —— 首次真正接入复用比对（2026-09-13）：2 只是写进 manifest 从没被读过，
-#        等于零防护；`_reusable` 补上比对后旧 manifest 全部重做
+#   3 —— 首次真正接入复用判据（2026-09-13）：2 只是写进 manifest 从没被读过
 SYNTH_LOGIC_VERSION = 3
 
 
@@ -1363,6 +1402,8 @@ def _voice_fingerprint(cfg: dict) -> dict:
     speakable 字段时只靠指纹能兜住）。
     此外还含 `synth_logic`：**配置指纹拦不住引擎代码变化**，2026-09-11 因此
     产出过一期「新旧混血」音频（见 SYNTH_LOGIC_VERSION 注释）。
+    顶层这个值是「最后一次写入这份 manifest 的代码版本」——**一期里新老混着时
+    看它没用**，混血看每段自己的 `Take.synth_logic`（run() 结尾会汇总报账）。
     """
     return {
         "engine": cfg["engine"],
@@ -1383,7 +1424,7 @@ def _voice_fingerprint(cfg: dict) -> dict:
 
 
 def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[int, Take]:
-    """从旧 manifest 里挑可复用的段：文本没变 + 音色没变 + 合成文本没变 + wav 在盘。
+    """从旧 manifest 里挑可复用的段：文本没变 + 钉种子没变 + 音色没变 + 合成文本没变 + wav 在盘。
 
     读音表的比对是**段级**的：readings 影响的是每段实际喂给模型的文本，
     改一个词只该重做「念出来不一样」的段（WORKFLOW 承诺的「自动重做受影响
@@ -1391,30 +1432,30 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
     实录：修段 2/8/9 的读音，指纹一变所有段都不能复用）。段级比对还顺带
     覆盖全表指纹漏检的**键序变化**——指纹 sort_keys 对顺序不敏感，而
     str.replace 按插入序生效，只调键序不改词条时旧行为会静默复用旧音频。
+
+    **判据只管「不能复用」，不管「该不该花钱」**：引擎代码版本（`synth_logic`）
+    陈旧不拦复用，由 `run()` 结尾报账 + 人工点名（`--redo`/`--force`）——见
+    `SYNTH_LOGIC_VERSION` 的注释（2026-09-13 拍板）。
     """
     fp = _voice_fingerprint(cfg)
     texts = {s.index: s.text for s in segs}
+    by_index = {s.index: s for s in segs}
     voice_changed = [k for k in ("engine", "model", "ref_audio") if old.get(k) != fp[k]]
     if voice_changed:
         print(f"     音色配置变了（{'、'.join(voice_changed)}），旧配音全部重做")
-    # **引擎代码变化只有这一条能看见**（配置指纹拦不住代码）。2026-09-11 的
-    # 「新旧混血」事故就是它漏了比对：字段写进了 manifest 却没人读，等于没防护。
-    # 旧 manifest（没这个键，或值不等于现行版本）一律重做——多花一次合成的钱，
-    # 换不掉一次「表面正常」的混血交付。
-    logic_changed = old.get("synth_logic") != fp["synth_logic"]
-    if logic_changed:
-        print(f"     合成逻辑版本变了（{old.get('synth_logic')} → {fp['synth_logic']}），"
-              f"旧配音全部重做")
+    # 配置指纹拦不住引擎代码变化，那是 `Take.synth_logic` 逐段管的；但读音表/注入表
+    # 变了就是文本输入变了，仍然是一道硬拦。
     readings_changed = old.get("readings") != fp["readings"]
     injections_changed = old.get("injections") != fp["injections"]
     inputs_changed = readings_changed or injections_changed
     done: dict[int, Take] = {}
     affected: list[int] = []
+    seed_changed: list[int] = []
     for t in old.get("segments", []):
         take = Take(**{**t, "qc_skip": t.get("qc_skip")})
         if texts.get(take.index) != take.text:
             continue
-        if voice_changed or logic_changed:
+        if voice_changed:
             continue
         if not (out_dir / take.file).exists():
             continue
@@ -1425,12 +1466,22 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
         elif inputs_changed:
             # 旧 manifest 没存 speakable：退回全表指纹比对，行为与从前一致
             continue
+        # **钉种子变了必须重做**：那一段音频不可能是这个种子产的，而复用就变成了
+        # 「配置里改了种子却什么也没发生」。旧 manifest 没记 seed_pins（None）时
+        # 按「当时没钉」处理——现在也没钉就照样可复用，现在钉了才判重做。
+        cur = _seed_pins(by_index[take.index], cfg.get("segment_seeds"))
+        old_pins = tuple(take.seed_pins) if take.seed_pins is not None else (None,) * len(cur)
+        if cur != old_pins:
+            seed_changed.append(take.index)
+            continue
         done[take.index] = take
-    if inputs_changed and not voice_changed and not logic_changed and old.get("segments"):
+    if inputs_changed and not voice_changed and old.get("segments"):
         if affected:
             print(f"     读音表/注入表变了，重做受影响段：{'、'.join(map(str, sorted(affected)))}")
         elif any(t.get("speakable") is not None for t in old["segments"]):
             print("     读音表/注入表变了，但各段合成文本不变，全部复用")
+    if seed_changed:
+        print(f"     钉种子变了，重做这些段：{'、'.join(map(str, sorted(seed_changed)))}")
     return done
 
 
@@ -1520,8 +1571,62 @@ def write_review(episode: Path, review: dict[str, int]) -> Path:
     return manifest_path
 
 
+def _report_stale(takes: list[Take]) -> int:
+    """混血报账：把「旧合成逻辑产物」逐段列出来，返回陈旧段数。
+
+    陈旧段不拦复用、也不替人花钱重做（2026-09-13 拍板），所以**这次报账就是
+    整套设计的可见性本体**：2026-09-11 事故的现场日志是一堆毫无区别的
+    「skip 段落 N（已有 x.xs）」。抽成函数是为了它能被 capsys 直接测。
+    """
+    stale = [t for t in takes if t.synth_logic != SYNTH_LOGIC_VERSION]
+    if not stale:
+        return 0
+    names = "、".join(t.label for t in stale)
+    print(f"WARN {len(stale)}/{len(takes)} 段是旧合成逻辑的产物（段级 synth_logic != "
+          f"{SYNTH_LOGIC_VERSION}，无记录的也算），本次未重做：{names}\n"
+          f"     要重做就点名：`--redo {names}`（只做这些）/ `--redo stale`；全量用 `--force`。\n"
+          f"     每段自己的版本在 manifest 的段级字段里（不是顶层那一份），"
+          f"交片前请看这一项——旧逻辑产物与当前代码的效果不一致是可能的。",
+          file=sys.stderr)
+    return len(stale)
+
+
+def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str]) -> list[Segment]:
+    """`--redo` 的语义：点名段必须重做，其余段**原样保留**（即使判据说它陈旧）。
+
+    这是「重跑只做人类点名的段落」的唯一通道（2026-09-13 拍板）：判据负责管
+    「不能复用」，花钱重做由人点名。`stale` 是关键字，展开成**会被复用且版本陈旧**
+    的段（= run() 结尾会报账的那一批），所以 `--redo stale` 就等于「把旧逻辑产物
+    全部重做」，但仍精确到段、不牵连别的。
+
+    未知标签直接报错：打错一个段号会变成「静默漏做」，比多打一个字贵得多。
+    """
+    labels = {s.label for s in segs}
+    want: set[str] = set()
+    # 报错时列可用段号：按数字排（1、2、…、10），不按字典序（1、10、2）
+    avail = "、".join(sorted(labels, key=lambda s: [int(p) if p.isdigit() else 0
+                                                   for p in s.split(".")]))
+    for tok in spec:
+        if tok == "stale":
+            want |= {s.label for s in segs
+                     if s.index in done and done[s.index].synth_logic != SYNTH_LOGIC_VERSION}
+        elif tok in labels:
+            want.add(tok)
+        else:
+            raise SystemExit(f"FAIL --redo 里的 {tok!r} 不是本期的段落标签。"
+                             f"可用：{avail}（或 stale = 所有陈旧段）")
+    if not want:
+        raise SystemExit("FAIL --redo 没点名任何段（stale 展开为空 = 没有陈旧段）")
+    targets = [s for s in segs if s.label in want]
+    for s in targets:
+        done.pop(s.index, None)          # 点名 = 无视已有产物
+    return targets
+
+
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
-        review: dict[str, int] | None = None) -> Path:
+        review: dict[str, int] | None = None, redo: list[str] | None = None) -> Path:
+    if force and redo:
+        raise SystemExit("FAIL --force 与 --redo 互斥：前者全量重做，后者只做点名的段")
     paths.require_data()
     script = episode / "02-script.md"
     if not script.exists():
@@ -1550,6 +1655,9 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     if manifest_path.exists() and not force:
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
         done = _reusable(old, segs, out_dir, cfg)
+    if redo:
+        named = _apply_redo(done, segs, redo)
+        print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
 
     miss = _unmeasured_titles([s.text for s in segs])
     if miss:
@@ -1576,6 +1684,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
                     # 03.5/05 人工打点槽位（架构设计 2.3）：eval 从这里取主观分。
                     # 无打点时为 null——**不是 0 分**，缺失与低分必须可区分（E10）。
                     "human_review": existing_review,
+                    # 每段自带 synth_logic（段级）。顶层这个值只是「最后一次写入者的版本」，
+                    # **混血一期里新老交替时它一定是新的**，别拿它判混血（见 run() 结尾报账）。
                     "segments": [asdict(t) for t in takes],
                 },
                 ensure_ascii=False, indent=2,
@@ -1586,8 +1696,13 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
 
     for seg in segs:
         if seg.index in done:
-            takes.append(done[seg.index])
-            print(f"skip 段落 {seg.label}（已有 {done[seg.index].duration:.1f}s）")
+            t = done[seg.index]
+            # 陈旧段也照旧复用，但跳过这一行必须把「这是旧逻辑产物」写在脸上——
+            # 2026-09-11 那次事故的现场日志就是一堆毫无区别的「skip 段落 N（已有 x 秒）」。
+            tag = ("，**旧合成逻辑产物 v%s**" % t.synth_logic
+                   if t.synth_logic != SYNTH_LOGIC_VERSION else "")
+            takes.append(t)
+            print(f"skip 段落 {seg.label}（已有 {t.duration:.1f}s{tag}）")
             continue
         if engine is None:
             print(f"载入 {cfg['model']} …")
@@ -1620,6 +1735,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         print(f"WARN {len(skipped)} 段 ASR 盲区豁免（回读稳定失真，CER 不可用）："
               f"{', '.join(t.label for t in skipped)}。"
               f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
+    # 混血报账（2026-09-13）：陈旧段不拦复用、也不替人花钱重做，但绝不允许静静留下。
+    _report_stale(takes)
     return manifest_path
 
 
@@ -1657,6 +1774,9 @@ def main() -> int:
     r.add_argument("--config", type=Path, default=CONFIG)
     r.add_argument("--review", type=str, default=None,
                    help="写入 03.5 结构化打点（如 voice=4,prosody=3,misread=4），不触发重合成")
+    r.add_argument("--redo", type=str, default=None,
+                   help="只重做点名段（逗号分隔的段号，如 11,12.3）；其余段原样保留。"
+                        "传 stale = 重做所有旧合成逻辑的段")
 
     p = sub.add_parser("probe", help="单句试音")
     p.add_argument("text")
@@ -1676,7 +1796,8 @@ def main() -> int:
         probe(a.text, a.config, a.out, a.ref, a.seed)
     else:
         run(a.episode, a.force, a.config,
-            parse_review_arg(a.review) if a.review else None)
+            parse_review_arg(a.review) if a.review else None,
+            redo=[t for t in re.split(r"[,\s]+", a.redo) if t] if a.redo else None)
     return 0
 
 

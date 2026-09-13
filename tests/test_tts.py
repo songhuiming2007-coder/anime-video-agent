@@ -704,22 +704,25 @@ class TestReusable:
         segs = [t.Segment(1, "1", "他们私奔了")]
         assert t._reusable(old, segs, tmp_path, self._cfg({})) == {}
 
-    def test_逻辑版本变了全部重做(self, tmp_path):
-        """引擎代码变化只有这个键能看见（2026-09-11「新旧混血」防回退）。
+    def test_逻辑版本陈旧不阻止复用_但版本原样带回来(self, tmp_path):
+        """陈旧段照旧复用（不替人花钱），但版本号必须原样带回来——它去哪儿都得可见。
 
-        注意 fixtures 里 readings 是「旧指纹」、speakable 是对的——这条用例只能因为
-        synth_logic 不同而变红；比对一旦被注释掉，它就必须红。
+        2026-09-13 改判：判据管「不能复用」，重做由人点名（--redo/--force）。
+        带回来的版本是运行结尾报账、也是本段该不该 `--redo` 的唯一依据。
         """
         cfg = self._cfg({})
         text = "正文"
         old = self._mk(tmp_path, [(text, t.speakable(text))])
         old["readings"] = t._voice_fingerprint(cfg)["readings"]
         segs = [t.Segment(1, "1", text)]
-        assert list(t._reusable(old, segs, tmp_path, cfg)) == [1], "前提：指纹全对时可复用"
-        old["synth_logic"] = t.SYNTH_LOGIC_VERSION - 1
-        assert t._reusable(old, segs, tmp_path, cfg) == {}
-        del old["synth_logic"]                      # 2026-09-13 之前的 manifest
-        assert t._reusable(old, segs, tmp_path, cfg) == {}
+        # ① 旧 manifest 根本没记版本（2026-09-13 之前）→ 未知也复用，记为 None
+        done = t._reusable(old, segs, tmp_path, cfg)
+        assert list(done) == [1] and done[1].synth_logic is None
+        # ② 记了旧版本 → 照样复用，版本原样带回来
+        old["segments"][0]["synth_logic"] = t.SYNTH_LOGIC_VERSION - 1
+        done = t._reusable(old, segs, tmp_path, cfg)
+        assert list(done) == [1]
+        assert done[1].synth_logic == t.SYNTH_LOGIC_VERSION - 1
 
     def test_注入表变了_无speakable的旧manifest也重做(self, tmp_path):
         """注入表是合成文本的输入之一。带 speakable 的 manifest 靠段级比对兜住，
@@ -754,6 +757,139 @@ class TestReusable:
 
         take = t._render_one(E(), t.Segment(1, "1", text), tmp_path / "seg.wav")
         assert take.speakable == "他们丝奔了"
+
+
+class TestSegmentSeedsInReuse:
+    """钉种子必须进段级复用判据（2026-09-13）。
+
+    此前 `segment_seeds` 完全没参与比对：配置里给某段钉了/换了种子，同文本同读音
+    的旧 wav 会被静默复用——「改了种子却什么也没发生」。与 `synth_logic` 当初的
+    毛病同一类：配置里写了，运行时不生效。
+    """
+
+    TEXT = "第一句。第二句。"
+
+    def _cfg(self, seeds=None):
+        return {"engine": "eng", "model": "m", "ref_audio": "ref.wav",
+                "readings": {}, "segment_seeds": seeds or {}}
+
+    def _old(self, tmp_path, text="正文", label="1", pins=None, index=1):
+        name = f"seg-{index:02d}.wav"
+        (tmp_path / name).write_bytes(b"x")
+        row = {"index": index, "label": label, "text": text, "file": name,
+               "duration": 1.0, "cer": 0.0, "attempts": 1,
+               "speakable": t.speakable(text), "synth_logic": t.SYNTH_LOGIC_VERSION}
+        if pins is not None:
+            row["seed_pins"] = pins
+        return {"engine": "eng", "model": "m", "ref_audio": "ref.wav",
+                "readings": t._voice_fingerprint(self._cfg())["readings"],
+                "segments": [row]}
+
+    def test_给该段钉了种子就必须重做(self, tmp_path):
+        segs = [t.Segment(1, "1", "正文")]
+        old = self._old(tmp_path)                       # 没钉时产的
+        assert list(t._reusable(old, segs, tmp_path, self._cfg())) == [1]
+        assert t._reusable(old, segs, tmp_path, self._cfg({"1": 2028})) == {}
+
+    def test_钉的种子改了也必须重做(self, tmp_path):
+        segs = [t.Segment(1, "1", "正文")]
+        old = self._old(tmp_path, pins=[2028])          # 钉 2028 时产的
+        assert list(t._reusable(old, segs, tmp_path, self._cfg({"1": 2028}))) == [1]
+        assert t._reusable(old, segs, tmp_path, self._cfg({"1": 99})) == {}
+        assert t._reusable(old, segs, tmp_path, self._cfg()) == {}, "撤了钉也要重做"
+
+    def test_旧manifest没记seed_pins_没钉可复用_钉了则重做(self, tmp_path):
+        """没记录时按「当时没钉」算——现在也没钉就照旧复用，现在钉了才重做。"""
+        segs = [t.Segment(1, "1", "正文")]
+        old = self._old(tmp_path, pins=None)
+        assert list(t._reusable(old, segs, tmp_path, self._cfg())) == [1]
+        assert t._reusable(old, segs, tmp_path, self._cfg({"1": 2028})) == {}
+
+    def test_逐句段的句级老键也进判据(self, tmp_path):
+        """兼容键 `1.2` 同样要算：它改的是第 2 句的种子。"""
+        seg = t.Segment(1, "1", self.TEXT)
+        old = self._old(tmp_path, text=self.TEXT, pins=[None, 37])
+        assert list(t._reusable(old, [seg], tmp_path, self._cfg({"1.2": 37}))) == [1]
+        assert t._reusable(old, [seg], tmp_path, self._cfg({"1.2": 38})) == {}
+        assert t._reusable(old, [seg], tmp_path, self._cfg({"1": 2028})) == {}
+
+    def test_只改其他段的种子不影响本段(self, tmp_path):
+        segs = [t.Segment(1, "1", "正文"), t.Segment(2, "2", "另一段")]
+        old = self._old(tmp_path)
+        old["segments"].append({**old["segments"][0], "index": 2, "label": "2",
+                                "text": "另一段", "file": "seg-02.wav",
+                                "speakable": t.speakable("另一段")})
+        (tmp_path / "seg-02.wav").write_bytes(b"x")
+        done = t._reusable(old, segs, tmp_path, self._cfg({"2": 500}))
+        assert list(done) == [1], "重做的只能是被改种子的那段"
+
+
+class TestRedoScope:
+    """`--redo` 的语义（2026-09-13）：点名段必做，其余段原样保留。
+
+    这是「重跑只做人类点名的段落」的入口；判据负责管「不能复用」，花钱重做
+    由人点名。`stale` 关键字展开成会被复用且版本陈旧的段。
+    """
+
+    def _segs(self, n=3):
+        return [t.Segment(i, str(i), "正文") for i in range(1, n + 1)]
+
+    def _done(self, *rows):
+        return {i: t.Take(i, str(i), "正文", f"seg-{i:02d}.wav", 1.0, 0.0, 1, synth_logic=v)
+                for i, v in rows}
+
+    def test_点名段从可复用里剔除_其余保留(self):
+        done = self._done((1, t.SYNTH_LOGIC_VERSION), (2, t.SYNTH_LOGIC_VERSION),
+                          (3, t.SYNTH_LOGIC_VERSION))
+        named = t._apply_redo(done, self._segs(), ["2"])
+        assert [s.label for s in named] == ["2"]
+        assert sorted(done) == [1, 3], "没点名的段必须原样留着"
+
+    def test_stale展开成全部陈旧段(self):
+        done = self._done((1, t.SYNTH_LOGIC_VERSION), (2, 2), (3, None))
+        named = t._apply_redo(done, self._segs(), ["stale"])
+        assert [s.label for s in named] == ["2", "3"], "None（无记录）也算陈旧"
+        assert sorted(done) == [1]
+
+    def test_stale空集不静默空转(self):
+        done = self._done((1, t.SYNTH_LOGIC_VERSION))
+        with pytest.raises(SystemExit):
+            t._apply_redo(done, self._segs(1), ["stale"])
+
+    def test_打错的段号直接报错(self):
+        with pytest.raises(SystemExit) as e:
+            t._apply_redo({}, self._segs(3), ["4"])
+        assert "4" in str(e.value), "打错段号不能变成静默漏做"
+
+    def test_force与redo互斥(self, tmp_path):
+        """一个全量、一个只做点名的：同时给就是两个意思，不能默默选一个。
+
+        （这条拦在任何 I/O 之前，所以不必真箧一期。）
+        """
+        with pytest.raises(SystemExit) as e:
+            t.run(tmp_path / "nope", force=True, redo=["1"])
+        assert "互斥" in str(e.value)
+
+
+class TestStaleCensusReport:
+    """混血报账必须**逐段点名**（2026-09-13）：陈旧不拦复用，可见性就是全部防护。"""
+
+    def _take(self, label, version):
+        return t.Take(int(label), label, "正文", f"seg-{label}.wav", 1.0, 0.0, 1,
+                      synth_logic=version)
+
+    def test_旧逻辑段必须逐段点名打出来(self, capsys):
+        n = t._report_stale([self._take("1", t.SYNTH_LOGIC_VERSION),
+                             self._take("11", t.SYNTH_LOGIC_VERSION - 1),
+                             self._take("12", None)])
+        err = capsys.readouterr().err
+        assert n == 2, "无记录的（None）也算陈旧"
+        assert "11" in err and "12" in err
+        assert "2/3" in err and "--redo" in err and "--force" in err
+
+    def test_全部新版就不则声(self, capsys):
+        assert t._report_stale([self._take("1", t.SYNTH_LOGIC_VERSION)]) == 0
+        assert capsys.readouterr().err == ""
 
 
 class TestTrimSilence:
@@ -1317,12 +1453,16 @@ class TestBackendProbe:
 
 
 class TestSynthLogicFingerprint:
-    """引擎代码变化必须让旧音频失效（2026-09-11 事故防回退）。
+    """引擎代码版本必须留下痕迹（2026-09-11 事故防回退）。
 
     事故：修完 seed 与 voice_clone_prompt 缓存后跑增量重跑，`_reusable` 只看
     文本/音色/合成文本，看不出引擎代码变了 → 27 段被静默复用为修复前的产物，
     只有因注入表变动而 speakable 变化的 7 段重跑，产出一期「新旧混血」音频，
     而 manifest 已是新的，表面看起来一切正常。
+
+    2026-09-13 拍板改了它的作用方式：**陈旧段不再被拦**（自动全量重做会把
+    WORKFLOW 03.5 的「单段增量重跑」直接废掉），但每段自带版本号、运行结尾
+    汇总报账、`--redo` 可以只重做点名的段。防护从「强制」变成「可见」。
     """
 
     def test_指纹含合成逻辑版本(self):
@@ -1338,12 +1478,13 @@ class TestSynthLogicFingerprint:
         after = t._voice_fingerprint(cfg)
         assert before != after, "bump 版本号必须让指纹变化，否则等于没加"
 
-    def test_复用会因此失效(self, tmp_path):
-        """端到端：**只有逻辑版本陈旧**（文本、音色、合成文本全对）也必须重跑。
+    def test_陈旧段仍复用但版本必须带出来(self, tmp_path):
+        """端到端：逻辑版本陈旧的段照旧复用，但 `synth_logic` 不能丢。
 
-        旧版这条用例是假阳性：fixture 的 speakable 写的是稿件原文，而真实读音表
-        把 世界 换成 逝戒——不可复用靠的是那段文本失配，跟 synth_logic 无关。
-        换成 t.speakable(...) 之后，唯一能让第二段断言变红的理由就是那一行比对。
+        旧版这条用例断言「不可复用」；2026-09-13 改判后它的职责变成「必须可追溯」：
+        陈旧可以（不替人花钱），**看不见不行**。fixture 的 speakable 用
+        `t.speakable(...)` 而不是稿件原文，否则这条用例会因为读音表失配而红，
+        测不到逻辑版本这一项（旧版就是这种假阳性）。
         """
         cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
         text = "世界退远了。"
@@ -1355,13 +1496,15 @@ class TestSynthLogicFingerprint:
                 "index": 1, "label": "1", "text": text, "file": "seg-01.wav",
                 "duration": 2.0, "cer": 0.0, "attempts": 1,
                 "speakable": t.speakable(text),
+                "synth_logic": t.SYNTH_LOGIC_VERSION - 1,
             }],
         }
-        assert list(t._reusable(old, [seg], tmp_path, cfg)) == [1], \
-            "前提：指纹与合成文本都一致时本来就该复用"
-        old["synth_logic"] = t.SYNTH_LOGIC_VERSION - 1
-        assert t._reusable(old, [seg], tmp_path, cfg) == {}, \
-            "只有逻辑版本陈旧时也必须判定为不可复用"
+        done = t._reusable(old, [seg], tmp_path, cfg)
+        assert list(done) == [1], "陈旧不拦复用"
+        assert done[1].synth_logic == t.SYNTH_LOGIC_VERSION - 1, "版本必须原样带出来"
+        # 而「点名把它重做」要真的生效（这就是 --redo 的整条链）
+        assert [s.label for s in t._apply_redo(done, [seg], ["stale"])] == ["1"]
+        assert done == {}
 
 
 class TestQwen3MlxPath:
@@ -1457,6 +1600,17 @@ def _stub_qc(monkeypatch, text):
     monkeypatch.setattr(t, "transcribe", lambda _p: text)
 
 
+def _stub_render_env(monkeypatch):
+    """把 render_segment 的外围（时长探测/回读/拼接/补尾）换成确定值——合成本身真跑。"""
+    monkeypatch.setattr(t, "probe_duration", lambda _p: 1.0)
+    monkeypatch.setattr(t, "expected_duration", lambda _s: 1.0)
+    monkeypatch.setattr(t, "cer", lambda a, b: (0, 0.0))
+    monkeypatch.setattr(t, "transcribe", lambda _p: "")
+    monkeypatch.setattr(t, "_concat_with_gap",
+                        lambda parts, dest, gap: dest.write_bytes(b"x"))
+    monkeypatch.setattr(t, "_pad_tail", lambda p, s: None)
+
+
 class TestSegmentSeedsReachSentenceUnits:
     """段级钉种子必须传到每个句级合成单元（2026-09-12 实测事故）。
 
@@ -1492,15 +1646,44 @@ class TestSegmentSeedsReachSentenceUnits:
         t._render_one(eng, t.Segment(21, "21", "第一句。"), tmp_path / "s.wav")
         assert eng.seeds == [1000 + 21 + 7]
 
+    def test_判据用的钉种子与引擎实际用的种子一致(self, monkeypatch, tmp_path):
+        """`_seed_pins` 是**复用判据**、`render_segment` 是**执行路径**——两边必须同源。
+
+        判据指着一个引擎从不使用的种子，就会变成「同一个种子却被判重做」；反过来
+        则是「改了种子却静默复用旧音频」——两头都是判据与执行分家的老毛病。
+        这条用例同时钉住 Take 的两个新字段（synth_logic / seed_pins）。
+        """
+        text = "第一句。第二句。"
+        seg = t.Segment(21, "21", text)
+        _stub_render_env(monkeypatch)
+        for seeds, want in (({"21": 2028}, (2028, 2028)),
+                            ({"21.2": 37}, (None, 37)),
+                            ({}, (None, None))):
+            assert t._seed_pins(seg, seeds) == want, seeds
+            eng = _SeedEngine(segment_seeds=seeds)
+            take = t.render_segment(eng, seg, tmp_path / f"seg-{len(seeds)}.wav")
+            actual = [p if p is not None else 1000 + 2100 + i + 7
+                      for i, p in enumerate(want, 1)]
+            assert eng.seeds == actual, f"引擎实际用的种子与判据不一致：{seeds}"
+            assert take.seed_pins == list(want)
+            assert take.synth_logic == t.SYNTH_LOGIC_VERSION
+
+    def test_单句段的钉种子也要落进Take(self, monkeypatch, tmp_path):
+        """单句段走 render_segment 的短路分支：Take 由 `_render_one` 交出、`seed_pins`
+        由 render_segment 补。漏了那一行，复用判据会把「钉了种子」的段当成没钉——
+        改了种子却静默复用旧音频（而 T5 那组只测种子到了引擎，测不到记没记）。
+        """
+        _stub_render_env(monkeypatch)
+        eng = _SeedEngine(segment_seeds={"7": 4242})
+        take = t.render_segment(eng, t.Segment(7, "7", "就一句。"), tmp_path / "seg-07.wav")
+        assert eng.seeds == [4242], "前提：钉的单句种子确实传到了引擎"
+        assert take.seed_pins == [4242]
+        assert take.synth_logic == t.SYNTH_LOGIC_VERSION
+
     def test_render_segment把段级种子传给每个句级单元(self, monkeypatch, tmp_path):
         """段级键（21）→ 三个句级单元（21.1/21.2/21.3）全拿 2028。"""
         eng = _SeedEngine(segment_seeds={"21": 2028})
-        monkeypatch.setattr(t, "probe_duration", lambda _p: 1.0)
-        monkeypatch.setattr(t, "expected_duration", lambda _s: 1.0)
-        monkeypatch.setattr(t, "cer", lambda a, b: (0, 0.0))
-        monkeypatch.setattr(t, "transcribe", lambda _p: "")
-        monkeypatch.setattr(t, "_concat_with_gap", lambda parts, dest, gap: dest.write_bytes(b"x"))
-        monkeypatch.setattr(t, "_pad_tail", lambda p, s: None)
+        _stub_render_env(monkeypatch)
         t.render_segment(eng, t.Segment(21, "21", "第一句。第二句。第三句。"),
                          tmp_path / "seg-21.wav")
         assert eng.seeds == [2028, 2028, 2028]
