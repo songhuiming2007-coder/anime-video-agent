@@ -356,15 +356,13 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
     # （审查 B6：循环只迭代段落块，body 里不可能有 `音乐段` 标题——死条件已删；
     #  段落找不到时给干净 FAIL，不 TypeError 崩溃）
     naturals: list[tuple[str, float]] = []
-    for seg_m in re.finditer(r"^##\s*段落\s*(\S+)", text, re.M):
-        nxt = text.find("\n## ", seg_m.end())
-        body = text[seg_m.end():nxt] if nxt != -1 else text[seg_m.end():]
+    for label, body in _segment_bodies(text):
         nat = _NATURAL.search(body)
         if nat:
             seg_end = next((it for it in timeline if it["kind"] == "seg"
-                            and it["n"] == int(seg_m.group(1))), None)
+                            and it["n"] == int(label)), None)
             if seg_end is None:
-                raise SystemExit(f"FAIL 段落 {seg_m.group(1)} 不在时间轴里")
+                raise SystemExit(f"FAIL 段落 {label} 不在时间轴里")
             ovis = _OUTRO_VISUAL.search(body)
             naturals.append((nat.group(1),
                              seg_end["start"] + seg_end["dur"],
@@ -510,3 +508,44 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                    and not it.get("bgm_only")],
         "tracks": tracks,
     }
+
+def _segment_bodies(text: str):
+    """按文档顺序产出每个 `## 段落 N` 块的 (标签, 块体)。
+
+    块体 = 该标题与下一个 `## ` 之间的正文。段落块里的
+    `音乐: `X` … 继续播放至完整版结束` 与 `收尾画面:` 都住在这里，所以
+    `build_timeline` 与本模块的 `natural_outro_tail` 共用这一套切块——
+    免得两处对「哪一行算收尾声明」各有一套理解。
+    """
+    for m in re.finditer(r"^##\s*段落\s*(\S+)", text, re.M):
+        nxt = text.find("\n## ", m.end())
+        yield m.group(1), (text[m.end():nxt] if nxt != -1 else text[m.end():])
+
+
+def natural_outro_tail(episode: Path, blocks: list[MusicBlock]) -> float:
+    """自然收尾还要播多久（秒）＝ 曲目全长 − 同曲前景链已播到的曲内位置。
+
+    **只认稿子里声明的那一首**（`音乐: `X` … 播放至完整版结束`）。旧实现在正文里
+    扫「第一个出现过的曲名」，而 `break` 只跳出内层循环——跨番期每个池各加一次：
+    2026-09-13 三期实测，EGOIST 的《最後の花弁》与 罪恶王冠 的《Departures》各被算
+    一遍（124s + 166s），而稿子声明的收尾曲其实是《Last Song》（真值 166s），虚高 124s。
+    虚高的代价不是数字难看：它把时长门禁的字符带两端各压窄 ~617 字（音乐算得越多，
+    留给口播的时间越少），而那个带子是「还能删多少字」的唯一依据。
+
+    没有声明返回 0.0；声明的曲目不在曲库里则 `_track_for` 当场报 FAIL——**不静默估 0**，
+    那种曲子本来也渲染不出来，早点报比渲染到一半才发现好。
+    """
+    script = episode / "02-script.md"
+    if not script.exists():
+        return 0.0
+    title = None
+    for _, body in _segment_bodies(script.read_text(encoding="utf-8")):
+        if nat := _NATURAL.search(body):
+            title = nat.group(1)
+            break
+    if title is None:
+        return 0.0
+    rec = _track_for(title, load_tracks_multi(episode))
+    played = max((b.t1 for b in blocks if b.title == title and b.t1 is not None),
+                 default=0.0)
+    return max(0.0, float(rec["dur"]) - played)
