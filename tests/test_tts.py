@@ -322,6 +322,11 @@ class TestQcSkipExemption:
     在「假名乱码」与「近音中文」间摇摆时判 False → 整期退出。
     新判据：3 次全不达标 + 时长达标即豁免（S4：跳过样本不定罪），
     qc_skip 标注后由成片前的人耳确认兜底。
+
+    **仲裁路径不在 CI 覆盖范围内**（runner 上三个 ASR 后端都不能用，没有东西可探测）。
+    这里 stub 的是 `pick_backends` 文档承诺的那条分支——「没有第二档时返回 None」；
+    「主读与仲裁不同源」由 TestBackendProbe 在本机覆盖。stub 出来的一层覆盖必须
+    写在这儿，不然它就是静默消失的。
     """
 
     # 段落 5.1 的三次真实回读（2026-08-16 实测，CER 60/60/30%）。
@@ -349,6 +354,9 @@ class TestQcSkipExemption:
         monkeypatch.setattr(t, "transcribe", lambda _p: next(heard))
         want = t.expected_duration(text)
         monkeypatch.setattr(t, "probe_duration", lambda _p: want * dur_ratio)
+        # 无仲裁档：无后端的机器上真探测会直接 RuntimeError（三处都不可用），
+        # 而「主读不过→落重试/豁免链」正是这四条要测的工况（见类文档）。
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("stub", None))
         dest = tmp_path / "seg.wav"
         take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
         return take, dest
@@ -391,6 +399,8 @@ class TestQcSkipExemption:
         monkeypatch.setattr(
             t, "probe_duration",
             lambda p: want * ratios[int(re.search(r"\.(\d+)\.wav$", str(p)).group(1))])
+        # 与 _render 同：无后端的机器上真探测会当场 RuntimeError（见类文档）
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("stub", None))
         dest = tmp_path / "seg.wav"
         take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
         assert take.qc_skip == "asr-blind"
@@ -1252,6 +1262,11 @@ class TestBackendProbe:
     事故经过：funasr 装上了，但依赖的 torch_complex 缺失，`pick_backends` 靠
     `find_spec` 判定「可用」于是选中它当仲裁；真正调用时整期已跑到第一段才炸，
     白烧了 7 段的算力。**故障晚发现比一开始不可用贵得多。**
+
+    **本组不依赖跑测试的机器装没装 ASR 后端。** 曾直接调 `pick_backends()`：在
+    无后端的 runner（CI 四条腿全部如此）上它抛 RuntimeError，于是这个文件从
+    2026-09-11 起一直是红的——门禁红着就等于不存在。现在两条都 monkeypatch
+    `backend_unavailable_reason` 变成确定性用例，两端都真跑。
     """
 
     def test_包装了但导入会炸的后端必须被判不可用(self, monkeypatch, tmp_path):
@@ -1279,11 +1294,26 @@ class TestBackendProbe:
     def test_未知后端给出理由(self):
         assert asr.backend_unavailable_reason("nope") is not None
 
-    def test_主读与仲裁不得同源(self):
-        """S10：两个 ASR 的 CER 不是同一个量，仲裁必须换模型。"""
+    def test_主读与仲裁不得同源(self, monkeypatch):
+        """S10：两个 ASR 的 CER 不是同一个量，仲裁必须换模型。
+
+        假装三个后端都可用（不依赖本机装了什么）：usable = PRIMARY_ORDER，
+        于是这条断言在 CI 与本机都是活的。
+        """
+        monkeypatch.setattr(asr, "backend_unavailable_reason", lambda _n: None)
         prim, arb = asr.pick_backends()
         assert arb != prim, f"仲裁不能与主读同后端（都是 {prim}）"
         assert arb is None or arb in asr.BACKENDS
+
+    def test_无可用后端时显式报错并列出全部理由(self, monkeypatch):
+        """一个都用不了时不许安安静静地返回个假的——每个后端为什么不行都要说清楚。"""
+        monkeypatch.setattr(asr, "backend_unavailable_reason", lambda _n: "假不可用")
+        with pytest.raises(RuntimeError) as e:
+            asr.pick_backends()
+        msg = str(e.value)
+        for n in asr.PRIMARY_ORDER:
+            assert n in msg, f"错误信息里没提 {n}"
+        assert msg.count("假不可用") == len(asr.PRIMARY_ORDER), "只列了后端名，没把理由带上"
 
 
 class TestSynthLogicFingerprint:
