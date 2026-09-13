@@ -1330,6 +1330,14 @@
         "lufs": -8.9,
         "onset": 1.4,
         "vocal": true
+      },
+      "Gold": {
+        "path": "data/library/bgm/EGOIST/Gold.flac",
+        "slot": "正文",
+        "dur": 175.7,
+        "lufs": -4.13,
+        "onset": 1.024,
+        "vocal": true
       }
     },
     "slots": {
