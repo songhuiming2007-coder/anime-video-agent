@@ -351,7 +351,7 @@ def build_tmux_launch_command(session_name: str, remote_cmd: str, remote_root: s
 
 def build_remote_run_command(
     task: str, ep_rel_path: str, remote_root: str = "/root/anime-video-agent",
-    python: str = DEFAULT_REMOTE_PYTHON,
+    python: str = DEFAULT_REMOTE_PYTHON, extra_args: str = "",
 ) -> str:
     """生成远端安全执行命令（P0-1 首尾心跳，P2-5 probe 任务分支）。
 
@@ -375,6 +375,8 @@ def build_remote_run_command(
         # tts 必须走云端覆盖层：本地 Mac 只有 mlx（qwen3_tts），云端只有 CUDA（indextts2），
         # 同一个 engine 字段喂不了两边。覆盖层只写差异，其余字段继承 voice.json。
         extra = " --config config/voice.cloud.json" if task == "tts" else ""
+        if extra_args:
+            extra += f" {extra_args.strip()}"
         cmd = (
             f"cd {remote_root} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH} && "
@@ -1175,8 +1177,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
 
     session_name = f"ava-{task}"
+    extra_str = " ".join(args.extra) if getattr(args, "extra", None) else ""
     remote_cmd = build_remote_run_command(task, rel_path, remote_root,
-                                          python=remote_python(cfg_global))
+                                          python=remote_python(cfg_global),
+                                          extra_args=extra_str)
     tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
 
     print(f"[*] 启动远端任务: {task} (tmux: {session_name})")
@@ -1314,6 +1318,7 @@ def main() -> int:
     p_run = sub.add_parser("run", help="在云端执行指定任务（白名单控制：tts, probe）")
     p_run.add_argument("target", type=Path, help="本期目录路径")
     p_run.add_argument("task", type=str, help="任务名称（当前放行：tts, probe）")
+    p_run.add_argument("extra", nargs=argparse.REMAINDER, help="透传给远端任务的额外参数（如 --redo 3,7）")
 
     # pull
     p_pull = sub.add_parser("pull", help="拉取云端产物回本地")
