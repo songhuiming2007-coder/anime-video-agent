@@ -1214,6 +1214,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
     段号（`21`）——`_render_one` 自己查表永远查不到，钉的种子会静默失效
     （2026-09-12 实测：钉了 21 的种子，重渲染时长与派生种子那版一模一样）。
     所以查表发生在本函数：先看段级 override，再看句级标签（兼容老表的 13.1 式键）。
+    段级 override 由 `render_segment` 查好后传入（它的键跟稿件的段号走），本函数
+    自己的查表只兜**句级老键**与**单句路径**（单句段的 label 就是段号，两者同键）。
     
     **ASR 盲区豁免（2026-08-15 加，2026-08-16 改判据）：** Qwen3-TTS 用日语参考
     音色念中文时，Whisper 会把整句听成假名/近音字（「世界忽然退远了」→
@@ -1251,7 +1253,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
         custom_seed = seed_override if seed_override is not None else \
             getattr(engine, "segment_seeds", {}).get(str(seg.label))
         seed = custom_seed if custom_seed is not None else (attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
-        # v2 链路（架构设计三.2）：剥符号 → 拼音直注 → readings override。
+        # v2 链路（架构设计三.2）：剥符号 → readings 逐案 override → 拼音直注
+        #（顺序与理由见 speakable_traced：同键交拼音，其余 readings 必须抢在直注前）。
         # 注入记录进 Take.g2p_injections：机器做的替换与 readings 表一样要可审计。
         spk_text, injections = speakable_traced(seg.text, engine_kind)
         engine.synthesize(spk_text, tmp, attempt, seed=seed, emo_params=emo_params)
@@ -1344,7 +1347,9 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
 # 版本历史：
 #   1 —— Qwen3 CUDA 通道初始（每句重新提取说话人嵌入、无种子控制）
 #   2 —— 加 torch.manual_seed + voice_clone_prompt 预计算缓存（2026-09-11）
-SYNTH_LOGIC_VERSION = 2
+#   3 —— 首次真正接入复用比对（2026-09-13）：2 只是写进 manifest 从没被读过，
+#        等于零防护；`_reusable` 补上比对后旧 manifest 全部重做
+SYNTH_LOGIC_VERSION = 3
 
 
 def _voice_fingerprint(cfg: dict) -> dict:
@@ -1353,7 +1358,9 @@ def _voice_fingerprint(cfg: dict) -> dict:
     manifest 顶层从第一天就存了 engine/model/ref_audio，却从没参与比对——
     换音色后忘带 `--force` 会静默复用旧 wav，出一期混两种音色的成片且零警告
     （2026-08-16 审计 2-6；当天恰好发生 seg7→seg6 换音色）。readings 影响
-    合成文本，一并入指纹（换读音表现在自动重做受影响的段）。
+    合成文本，一并入指纹（换读音表现在自动重做受影响的段）；拼音注入表同理
+    （2026-09-13 补：它是合成文本的另一个输入，进 manifest 的早期产物没有
+    speakable 字段时只靠指纹能兜住）。
     此外还含 `synth_logic`：**配置指纹拦不住引擎代码变化**，2026-09-11 因此
     产出过一期「新旧混血」音频（见 SYNTH_LOGIC_VERSION 注释）。
     """
@@ -1363,6 +1370,12 @@ def _voice_fingerprint(cfg: dict) -> dict:
         "ref_audio": cfg["ref_audio"],
         "readings": hashlib.sha256(json.dumps(
             cfg.get("readings", {}), sort_keys=True, ensure_ascii=False
+        ).encode("utf-8")).hexdigest()[:16],
+        # 拼音注入表同样是合成文本的输入之一，与 readings 平等。sort_keys 对
+        # 「只调插入序」不敏感——那是正常的：注入按词长降序处理，序变化由
+        # speakable 的段级比对兜住（与 readings 同一套分工）。
+        "injections": hashlib.sha256(json.dumps(
+            g2p.load_injections(cfg), sort_keys=True, ensure_ascii=False
         ).encode("utf-8")).hexdigest()[:16],
         # 引擎代码行为版本（见 SYNTH_LOGIC_VERSION 的注释）
         "synth_logic": SYNTH_LOGIC_VERSION,
@@ -1384,14 +1397,24 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
     voice_changed = [k for k in ("engine", "model", "ref_audio") if old.get(k) != fp[k]]
     if voice_changed:
         print(f"     音色配置变了（{'、'.join(voice_changed)}），旧配音全部重做")
+    # **引擎代码变化只有这一条能看见**（配置指纹拦不住代码）。2026-09-11 的
+    # 「新旧混血」事故就是它漏了比对：字段写进了 manifest 却没人读，等于没防护。
+    # 旧 manifest（没这个键，或值不等于现行版本）一律重做——多花一次合成的钱，
+    # 换不掉一次「表面正常」的混血交付。
+    logic_changed = old.get("synth_logic") != fp["synth_logic"]
+    if logic_changed:
+        print(f"     合成逻辑版本变了（{old.get('synth_logic')} → {fp['synth_logic']}），"
+              f"旧配音全部重做")
     readings_changed = old.get("readings") != fp["readings"]
+    injections_changed = old.get("injections") != fp["injections"]
+    inputs_changed = readings_changed or injections_changed
     done: dict[int, Take] = {}
     affected: list[int] = []
     for t in old.get("segments", []):
         take = Take(**{**t, "qc_skip": t.get("qc_skip")})
         if texts.get(take.index) != take.text:
             continue
-        if voice_changed:
+        if voice_changed or logic_changed:
             continue
         if not (out_dir / take.file).exists():
             continue
@@ -1399,15 +1422,15 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
             if take.speakable != speakable(take.text):
                 affected.append(take.index)
                 continue
-        elif readings_changed:
+        elif inputs_changed:
             # 旧 manifest 没存 speakable：退回全表指纹比对，行为与从前一致
             continue
         done[take.index] = take
-    if readings_changed and not voice_changed and old.get("segments"):
+    if inputs_changed and not voice_changed and not logic_changed and old.get("segments"):
         if affected:
-            print(f"     读音表变了，重做受影响段：{'、'.join(map(str, sorted(affected)))}")
+            print(f"     读音表/注入表变了，重做受影响段：{'、'.join(map(str, sorted(affected)))}")
         elif any(t.get("speakable") is not None for t in old["segments"]):
-            print("     读音表变了，但各段合成文本不变，全部复用")
+            print("     读音表/注入表变了，但各段合成文本不变，全部复用")
     return done
 
 
@@ -1641,7 +1664,8 @@ def main() -> int:
     p.add_argument("--out", type=Path, default=paths.VOICE / "probe" / "probe.wav")
     p.add_argument("--ref", type=Path, help="临时换参考干声（相对仓库根），用于比音色")
     p.add_argument("--seed", type=int, default=0,
-                   help="合成种子（默认 0）。比种子时传 1000+段号+seed_offset")
+                   help="合成种子（默认 0）。比种子时：单句段传 1000+段号+seed_offset；"
+                        "逐句段传 1000+段号*100+句序+seed_offset（段号、句序与稿件一致）")
 
     argv = sys.argv[1:]
     if argv and argv[0] not in {"run", "probe", "-h", "--help"}:

@@ -14,11 +14,16 @@ import pytest
 from pipeline import clips as c
 
 
-def mk(start, dur, limit, *, span=None, floor=None, season=2, episode=2):
+def mk(start, dur, limit, *, span=None, floor=None, season=2, episode=2,
+       sp=False, score=None, anime=None):
     d = {"start": start, "dur": dur, "limit": limit, "span": span or dur,
-         "season": season, "episode": episode}
+         "season": season, "episode": episode, "score": score}
     if floor is not None:
         d["floor"] = floor
+    if sp:
+        d["sp"] = True
+    if anime is not None:
+        d["anime"] = anime
     return d
 
 
@@ -411,6 +416,103 @@ class TestOverlaps:
         a = mk(912.0, 9.0, 1400, span=2.4)     # dur 被拉长到 9s，但 span 只有 2.4s
         b = mk(918.0, 3.0, 1400, span=2.0)
         assert not c._overlaps(b, [a])
+
+
+class TestOverlapsStaticEvidenceAndSeams:
+    """静态微动物证跨段复用 + 锚点接缝相邻的放行（2026-09-13）。
+
+    交付的 04-clips.json 里 SP06 被段 2/3/5 复用、SP09 被段 13/15 复用，全靠这几行。
+    删掉它们的代价不是「少一条优化」：伪重叠会让整段判 `anchor_overlap` 交 05 人工，
+    SP33 的 947s 巨镜头就是这么卡住的。
+    """
+
+    def test_跨段复用同一静态物证不算冲突(self):
+        """段内同理——两处调用走的是同一条分支，没有段内/段外之分（见 D2 拍板）。"""
+        a = mk(0.0, 6.006, 6.006, sp=True, season=None, episode=6)
+        b = mk(0.0, 6.006, 6.006, sp=True, season=None, episode=6)
+        assert not c._overlaps(b, [a])
+
+    def test_超过8s的sp物证仍算冲突(self):
+        """≤8s 是「单镜头微动」的**代理判据**（今天池内 19 条恰好全是 6.006006s）。
+        换番时池里混进一个 12s 循环卡，豁免就会静默失效、伪重叠原样回来：
+        这条断言就是那个前提的哨兵，池子变了它应该提醒你重新核对。
+        """
+        a = mk(0.0, 12.0, 12.0, sp=True, season=None, episode=6)
+        b = mk(0.0, 12.0, 12.0, sp=True, season=None, episode=6)
+        assert c._overlaps(b, [a])
+
+    def test_只有一边是sp不算豁免(self):
+        a = mk(0.0, 6.006, 6.006, sp=True, season=None, episode=6)
+        assert c._overlaps(mk(0.0, 6.006, 6.006, season=None, episode=6), [a])
+
+    def test_锚点接缝相邻不算冲突(self):
+        """两个锚点（无检索分）之间 gap=0：b0 == a1 是接缝，不是撞车。
+
+        留 OVERLAP_GAP 会把合法的相邻镜头拦下——SP33 的巨镜头就是这么卡死的。
+        """
+        a = mk(120.0, 30.0, 947.2, span=30.0)
+        assert not c._overlaps(mk(150.0, 30.0, 947.2, span=30.0), [a])
+        assert not c._overlaps(mk(150.3, 30.0, 947.2, span=30.0), [a])
+        assert c._overlaps(mk(149.0, 30.0, 947.2, span=30.0), [a])
+
+    def test_检索候选之间仍保留_OVERLAP_GAP(self):
+        """对照：gap=0 只给「两边都无检索分」的锚点，检索候选之间照旧留 0.5s。"""
+        a = mk(120.0, 30.0, 947.2, span=30.0, score=0.7)
+        assert c._overlaps(mk(150.3, 30.0, 947.2, span=30.0, score=0.7), [a])
+
+
+class TestTightenByEpisode:
+    """同集内「下一个已分配片段的起点」收紧拉伸上限（原 run() 内联，2026-09-13 抽出）。"""
+
+    def test_微动组不收紧limit(self):
+        """段 2 的 SP06 不该被段 3 的起点卡死：两条是同一处物证被合法引用，
+        相互之间没有「同一段水流」的先后关系。"""
+        a = mk(0.0, 6.006, 6.006006, sp=True, season=None, episode=6)
+        b = mk(6.2, 6.006, 6.006006, sp=True, season=None, episode=6)
+        c._tighten_by_episode([a, b])
+        assert a["limit"] == 6.006006 and b["limit"] == 6.006006
+        assert "floor" not in b
+
+    def test_接缝处不把limit压到自然跨度以下(self):
+        """b 恰好接在 a 的自然跨度末尾（接缝，见 `_overlaps` 的 gap=0 规矩）时不收紧。
+
+        收紧会把 a 的上限压到 a.end - 0.5，比 a 自己的跨度还短——
+        `size()` 的 room = limit - start 于是连自然长度都填不满。
+        """
+        a = mk(120.0, 30.0, 947.2, span=30.0)
+        b = mk(150.0, 30.0, 947.2, span=30.0)
+        c._tighten_by_episode([a, b])
+        assert a["limit"] == 947.2, "接缝不该把上限压到 149.5"
+        assert "floor" not in b
+
+    def test_非微动组仍收紧limit(self):
+        """收回过头就没人拦「段 11 拉到撞进段 12」了（2026-07-29 实测）。"""
+        a = mk(100.0, 20.0, 1400, span=20.0, score=0.7)
+        b = mk(125.0, 5.0, 1400, span=5.0, score=0.7)
+        c._tighten_by_episode([a, b])
+        assert a["limit"] == 124.5
+        assert b["floor"] == 120.5
+
+    def test_组内混有非微动就按非微动处理(self):
+        """判据看全组，不拿 cs[0] 代表全组（T9）。
+
+        分组键是 (anime, season, episode)，而 sp 只在 season is None 时打标——
+        人审手补的缺 season 片段会落进同一个样本组。用 cs[0] 当代表的话，
+        「是否收紧」取决于 used 里谁先出现，是个顺序依赖的静默开关。
+        """
+        cs = [mk(0.0, 6.006, 6.006006, sp=True, season=None, episode=6),
+              mk(300.0, 5.0, 1400, span=5.0, score=0.7, season=None, episode=6)]
+        c._tighten_by_episode(cs)
+        assert cs[0]["limit"] == 6.006006
+        assert cs[1]["floor"] == 6.506, "非微动片段照样要拿到 floor"
+
+    def test_组内顺序不影响结果(self):
+        """把同一组倒过来放，结论必须一样（上面那条的顺序无关性实证）。"""
+        a = mk(0.0, 6.006, 6.006006, sp=True, season=None, episode=6)
+        b = mk(300.0, 5.0, 1400, span=5.0, score=0.7, season=None, episode=6)
+        c._tighten_by_episode([b, a])
+        assert b["limit"] == 1400
+        assert b["floor"] == 6.506
 
 
 class TestParseShots:

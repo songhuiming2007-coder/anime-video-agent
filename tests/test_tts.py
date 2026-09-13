@@ -624,9 +624,16 @@ class TestReusable:
                 "readings": readings}
 
     def _mk(self, tmp_path, segs):
-        """造旧 manifest + 盘上 wav。segs: [(text, speakable)]，speakable=None 表示旧 manifest 没存。"""
+        """造旧 manifest + 盘上 wav。segs: [(text, speakable)]，speakable=None 表示旧 manifest 没存。
+
+        逻辑版本与注入表指纹按现行值填——本类测的是 readings/speakable 的重做规则，
+        这两项保持一致才不至于把每个用例都变成「逻辑版本不符」（那另有专门的用例）。
+        """
         old = {"engine": "eng", "model": "m", "ref_audio": "ref.wav",
-               "readings": "旧指纹", "segments": []}
+               "readings": "旧指纹",
+               "synth_logic": t.SYNTH_LOGIC_VERSION,
+               "injections": t._voice_fingerprint(self._cfg({}))["injections"],
+               "segments": []}
         for i, (text, sp) in enumerate(segs, 1):
             (tmp_path / f"seg-{i:02d}.wav").write_bytes(b"x")
             d = {"index": i, "label": str(i), "text": text,
@@ -686,6 +693,36 @@ class TestReusable:
         old["engine"] = "旧引擎"
         segs = [t.Segment(1, "1", "他们私奔了")]
         assert t._reusable(old, segs, tmp_path, self._cfg({})) == {}
+
+    def test_逻辑版本变了全部重做(self, tmp_path):
+        """引擎代码变化只有这个键能看见（2026-09-11「新旧混血」防回退）。
+
+        注意 fixtures 里 readings 是「旧指纹」、speakable 是对的——这条用例只能因为
+        synth_logic 不同而变红；比对一旦被注释掉，它就必须红。
+        """
+        cfg = self._cfg({})
+        text = "正文"
+        old = self._mk(tmp_path, [(text, t.speakable(text))])
+        old["readings"] = t._voice_fingerprint(cfg)["readings"]
+        segs = [t.Segment(1, "1", text)]
+        assert list(t._reusable(old, segs, tmp_path, cfg)) == [1], "前提：指纹全对时可复用"
+        old["synth_logic"] = t.SYNTH_LOGIC_VERSION - 1
+        assert t._reusable(old, segs, tmp_path, cfg) == {}
+        del old["synth_logic"]                      # 2026-09-13 之前的 manifest
+        assert t._reusable(old, segs, tmp_path, cfg) == {}
+
+    def test_注入表变了_无speakable的旧manifest也重做(self, tmp_path):
+        """注入表是合成文本的输入之一。带 speakable 的 manifest 靠段级比对兜住，
+        2026-08-16 之前的老 manifest 没有那个字段，只能靠指纹；指纹漏了这张表，
+        它们会静默复用旧读音（2026-09-13 补）。
+        """
+        cfg = self._cfg({})
+        segs = [t.Segment(1, "1", "同一次两千人海选")]
+        old = self._mk(tmp_path, [("同一次两千人海选", None)])       # 无 speakable
+        old["readings"] = t._voice_fingerprint(cfg)["readings"]
+        assert list(t._reusable(old, segs, tmp_path, cfg)) == [1], "前提：指纹全对时可复用"
+        changed = {**cfg, "pinyin_injections": {"同一次": "tong2yi1ci4"}}
+        assert t._reusable(old, segs, tmp_path, changed) == {}, "只改注入表也必须重做"
 
     def test_合成的take带speakable(self, tmp_path, monkeypatch):
         """speakable 必须落进 Take——漏了它，段级比对静默退化成旧的全表指纹。"""
@@ -1271,27 +1308,30 @@ class TestSynthLogicFingerprint:
         after = t._voice_fingerprint(cfg)
         assert before != after, "bump 版本号必须让指纹变化，否则等于没加"
 
-    def test_复用会因此失效(self, monkeypatch, tmp_path):
-        """端到端：逻辑版本变了，同样的文本也必须重跑而不是复用。"""
-        from pipeline.tts import Segment, Take
+    def test_复用会因此失效(self, tmp_path):
+        """端到端：**只有逻辑版本陈旧**（文本、音色、合成文本全对）也必须重跑。
 
-        seg = Segment(1, "1", "世界退远了。")
-        wav = tmp_path / "seg-01.wav"
-        wav.write_bytes(b"RIFF fake")
+        旧版这条用例是假阳性：fixture 的 speakable 写的是稿件原文，而真实读音表
+        把 世界 换成 逝戒——不可复用靠的是那段文本失配，跟 synth_logic 无关。
+        换成 t.speakable(...) 之后，唯一能让第二段断言变红的理由就是那一行比对。
+        """
+        cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
+        text = "世界退远了。"
+        seg = t.Segment(1, "1", text)
+        (tmp_path / "seg-01.wav").write_bytes(b"RIFF fake")
         old = {
-            "engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r",
-            "readings": t._voice_fingerprint(
-                {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
-            )["readings"],
-            "synth_logic": 999,  # 旧逻辑版本
+            **t._voice_fingerprint(cfg),
             "segments": [{
-                "index": 1, "label": "1", "text": "世界退远了。", "file": "seg-01.wav",
-                "duration": 2.0, "cer": 0.0, "attempts": 1, "speakable": "世界退远了。",
+                "index": 1, "label": "1", "text": text, "file": "seg-01.wav",
+                "duration": 2.0, "cer": 0.0, "attempts": 1,
+                "speakable": t.speakable(text),
             }],
         }
-        cfg = {"engine": "qwen3_tts_cuda", "model": "m", "ref_audio": "r", "readings": {}}
-        got = t._reusable(old, [seg], tmp_path, cfg)
-        assert got == {}, "逻辑版本不同时必须判定为不可复用"
+        assert list(t._reusable(old, [seg], tmp_path, cfg)) == [1], \
+            "前提：指纹与合成文本都一致时本来就该复用"
+        old["synth_logic"] = t.SYNTH_LOGIC_VERSION - 1
+        assert t._reusable(old, [seg], tmp_path, cfg) == {}, \
+            "只有逻辑版本陈旧时也必须判定为不可复用"
 
 
 class TestQwen3MlxPath:
@@ -1306,6 +1346,26 @@ class TestQwen3MlxPath:
     这里不加载真模型：`self.model` 换成一个按块 yield 的假模型，
     测的是**接缝的契约**（还回 (audio, rate)、分块全拼），不是声学质量。
     """
+
+    @pytest.fixture(autouse=True)
+    def _fake_mlx(self, monkeypatch):
+        """**非 Apple 平台也要能真跑这两条。**
+
+        `_synthesize_mlx` 函数体内 `import mlx.core as mx`，而 CI 四条腿
+        （ubuntu×2 / windows / macos）都装不了 mlx（`.github/workflows/test.yml`
+        明写「测试用不到它」）——不塞壳的话这两条在 CI 上是 ModuleNotFoundError，
+        四条腿全红。塞最小壳而不是 `importorskip`：那会让本机仍真跑、CI 静默变
+        skip，而这里要测的是函数自己的返回值与分块拼接，与 mlx 无关。
+        """
+        import sys
+        import types
+
+        core = types.ModuleType("mlx.core")
+        core.random = types.SimpleNamespace(seed=lambda s: None)
+        mlx = types.ModuleType("mlx")
+        mlx.core = core
+        monkeypatch.setitem(sys.modules, "mlx", mlx)
+        monkeypatch.setitem(sys.modules, "mlx.core", core)
 
     def _engine(self, chunks):
         class _R:
@@ -1344,6 +1404,29 @@ class TestQwen3MlxPath:
             raise AssertionError("空产出必须报错，不能返回 None 当成功")
 
 
+class _SeedEngine(_FakeEngine):
+    """记下每次 synthesize 收到的 seed。用真 `_render_one`，不抄一份它的查表逻辑。"""
+
+    seed_offset = 7
+    segment_seeds: dict = {}
+
+    def __init__(self, **kw):
+        super().__init__()
+        self.seeds: list[int] = []
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+    def synthesize(self, text, dest, attempt, seed=0, emo_params=None):
+        self.seeds.append(seed)
+        super().synthesize(text, dest, attempt, seed=seed, emo_params=emo_params)
+
+
+def _stub_qc(monkeypatch, text):
+    """让第一轮就过：时长拿估值（比例 1.0）、回读拿原文（CER 0）。"""
+    monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+    monkeypatch.setattr(t, "transcribe", lambda _p: text)
+
+
 class TestSegmentSeedsReachSentenceUnits:
     """段级钉种子必须传到每个句级合成单元（2026-09-12 实测事故）。
 
@@ -1351,38 +1434,43 @@ class TestSegmentSeedsReachSentenceUnits:
     稿件里的段号 `21`。`_render_one` 自己查表永远查不到 → 钉的种子静默失效，
     重渲染出来的时长与派生种子那版**一模一样**（19.71s，与 A/B 里同一版本字不差）。
     配置里写了一条永远读不到的规则，而跑完什么也不报。
+
+    旧版这一组用 `monkeypatch.setattr(t, "_render_one", ...)` 的桩，而桩里把被测的
+    查表逻辑又抄了一遍——回退 `tts.py` 的 seed_override 分支时零用例变红。
+    现在全部走**真** `_render_one`（`_SeedEngine` 只负责把 seed 记下来）。
     """
 
-    def test_段级种子传到每个句级单元(self, monkeypatch, tmp_path):
-        seen: list[int] = []
+    def test_段级override直接采用(self, monkeypatch, tmp_path):
+        """`render_segment` 查好传下来的段级种子必须原样用，不许被句级标签盖掉。"""
+        eng = _SeedEngine(segment_seeds={"21": 2028})
+        _stub_qc(monkeypatch, "第一句。")
+        t._render_one(eng, t.Segment(2101, "21.1", "第一句。"),
+                      tmp_path / "s.wav", seed_override=2028)
+        assert eng.seeds == [2028]
 
-        class FakeEngine:
-            kind = "qwen3_tts"
-            SAMPLING = t.Engine.SAMPLING
-            seed_offset = 7
-            segment_seeds = {"21": 2028}
-            cfg = t.load_config()          # resolve_emotion/speed 要读情绪/语速词表
+    def test_无override时兜句级老键(self, monkeypatch, tmp_path):
+        """老表的 13.1 式句级键仍然有效（单句路径与手工 probe 靠的就是它）。"""
+        eng = _SeedEngine(segment_seeds={"21.1": 37})
+        _stub_qc(monkeypatch, "第一句。")
+        t._render_one(eng, t.Segment(2101, "21.1", "第一句。"), tmp_path / "s.wav")
+        assert eng.seeds == [37]
 
-            def synthesize(self, text, dest, attempt, seed, emo_params=None):
-                seen.append(seed)
-                dest.write_bytes(b"RIFF fake")
+    def test_无任何钉种子时走派生种子(self, monkeypatch, tmp_path):
+        """两者都没有才退到派生式 attempt*1000 + 段号 + seed_offset。"""
+        eng = _SeedEngine()
+        _stub_qc(monkeypatch, "第一句。")
+        t._render_one(eng, t.Segment(21, "21", "第一句。"), tmp_path / "s.wav")
+        assert eng.seeds == [1000 + 21 + 7]
 
-        class FakeTakes:
-            pass
-
-        # 只测「种子怎么传」：_render_one 的质检链用桩替换，避免真合成
-        def fake_render_one(engine, seg, dest, seed_override=None):
-            pinned = seed_override if seed_override is not None else \
-                engine.segment_seeds.get(str(seg.label))
-            seen.append(pinned if pinned is not None else 1000 + seg.index + engine.seed_offset)
-            dest.write_bytes(b"RIFF fake")
-            return t.Take(seg.index, seg.label, seg.text, dest.name, 1.0, 0.0, 1)
-
-        monkeypatch.setattr(t, "_render_one", fake_render_one)
-        monkeypatch.setattr(t, "probe_duration", lambda p: 1.0)
+    def test_render_segment把段级种子传给每个句级单元(self, monkeypatch, tmp_path):
+        """段级键（21）→ 三个句级单元（21.1/21.2/21.3）全拿 2028。"""
+        eng = _SeedEngine(segment_seeds={"21": 2028})
+        monkeypatch.setattr(t, "probe_duration", lambda _p: 1.0)
+        monkeypatch.setattr(t, "expected_duration", lambda _s: 1.0)
+        monkeypatch.setattr(t, "cer", lambda a, b: (0, 0.0))
+        monkeypatch.setattr(t, "transcribe", lambda _p: "")
         monkeypatch.setattr(t, "_concat_with_gap", lambda parts, dest, gap: dest.write_bytes(b"x"))
         monkeypatch.setattr(t, "_pad_tail", lambda p, s: None)
-
-        seg = t.Segment(21, "21", "第一句。第二句。第三句。")
-        t.render_segment(FakeEngine(), seg, tmp_path / "seg-21.wav")
-        assert seen == [2028, 2028, 2028], f"段级钉种子没传到句级单元：{seen}"
+        t.render_segment(eng, t.Segment(21, "21", "第一句。第二句。第三句。"),
+                         tmp_path / "seg-21.wav")
+        assert eng.seeds == [2028, 2028, 2028]
