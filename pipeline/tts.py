@@ -131,6 +131,14 @@ class Take:
     # 该段每个合成单元当时实际用的**钉种子**（元素 None = 那道单元走派生式）。
     # 段级复用判据的一部分：改了 segment_seeds 却不重做，就是「配置里写了不生效」。
     seed_pins: list[int | None] | None = None
+    # 该段每个合成单元**实际用掉的种子**（生效值，不是「没钉」这种说法）。
+    # 审计与 eval 用：manifest 里直接能读到这段音频是哪个种子产的，不必反推公式。
+    seeds_used: list[int] | None = None
+    # 产出这段音频时的**全局基准** seed_offset。判据用：它一变，所有没钉种子的段
+    # 实际用的种子都跟着变（2026-09-13 补）。此前只比 segment_seeds，于是改基准
+    # 是「改了没生效」——旧音频原地复用，没有任何一处会说话。
+    # **只记不拦**：要不要重做由人点名（`--redo` / `--redo stale`），判据不替人花钱。
+    seed_base: int | None = None
 
 
 # ---------- 稿件解析 ----------
@@ -1099,17 +1107,18 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     try:
         parts, worst_cer, tries, skipped = [], 0.0, 1, False
         meta, at = [], 0.0
-        # 段级种子在此查一次，逐句往下传：
-        # 拆句后所有小句子统一使用同一个 seed（默认全局基准 seed_offset，如 7；若配置了 segment_seeds 则遵从钉值），
-        # 彻底消除段落内不同小句子因 seed 漂移产生的音色与语速断层。
+        # 段级钉种子在此查一次，逐句往下传（句级键 `21.1` 只可能以句级键存在，
+        # 让 _render_one 自己查表会把它静默丢掉——见 _render_one 文档）。
+        # **只传真正的钉值**：没钉的句子交给 `_seed_for` 走统一基准（同段各句一致，
+        # 段内无音色断层），而把基准当 override 传下去会顺手把重试也钉死。
         pinned = getattr(engine, "segment_seeds", {}).get(str(seg.label))
-        default_seed = getattr(engine, "seed_offset", 7)
+        seeds_used: list[int] = []
         for i, s in enumerate(sents, 1):
             p = tmp_dir / f"{i:02d}.wav"
             sub_pin = getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}")
-            seed_for_sentence = pinned if pinned is not None else (sub_pin if sub_pin is not None else default_seed)
             take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
-                               seed_override=seed_for_sentence)
+                               seed_override=pinned if pinned is not None else sub_pin)
+            seeds_used += take.seeds_used or []
             parts.append(p)
             d = probe_duration(p)
             meta.append({"text": s, "start": round(at, 3), "duration": round(d, 3)})
@@ -1131,7 +1140,9 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
                     emotion=emo_name, speed=spd_name,
                     g2p_injections=seg_injections or None,
                     synth_logic=SYNTH_LOGIC_VERSION,
-                    seed_pins=list(_seed_pins(seg, getattr(engine, "segment_seeds", {}))))
+                    seed_pins=list(_seed_pins(seg, getattr(engine, "segment_seeds", {}))),
+                    seeds_used=seeds_used or None,
+                    seed_base=getattr(engine, "seed_offset", 0))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1241,6 +1252,32 @@ def _best_take(dest: Path, want: float) -> tuple[int, float] | None:
     return best
 
 
+def _seed_for(engine: Engine, seg: Segment, seed_override: int | None,
+              attempt: int) -> int:
+    """这一次 attempt 用哪个种子（纯函数）。
+
+    三种情形，判据不一样：
+
+    | 情形 | 种子 | 为什么 |
+    |---|---|---|
+    | 钉了种子（段级/句级） | 恒为钉值 | 钉值是人对这一段的指定，重试不能偷偷换掉 |
+    | 没钉，首次（attempt=1） | `seed_offset` | **同段各句一个种子**：拆句后逐句合成，
+      若每句派生不同种子，段内会出现音色与语速断层（2026-09-13 c869b1f 的初衷） |
+    | 没钉，重试 | `attempt*1000 + 段号 + seed_offset` | 重试若还用首次那只种子，三次采到的是同一份
+      音频，「重试」就是摆设——而重试的用途正是换一次采样看能不能过质检 |
+
+    最后一条是 2026-09-13 补回来的回退：c869b1f 把基准当 override 往下传，
+    于是逐句段的三次重试都用了同一个种子，重试机制被静默地关掉了（拆句段恰恰
+    是最需要重试的长段）。
+    """
+    pinned = seed_override if seed_override is not None else \
+        getattr(engine, "segment_seeds", {}).get(str(seg.label))
+    if pinned is not None:
+        return pinned
+    off = getattr(engine, "seed_offset", 0)
+    return off if attempt == 1 else attempt * 1000 + seg.index + off
+
+
 def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | None = None) -> Take:
     """生成一句，直到它通过质检；用尽重试仍不过则抛错。
 
@@ -1285,9 +1322,7 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
         # 参考文本没引号，回读多出「非」「匪」两个字，只算 2 处插入，
         # CER 7% 远在 20% 门槛之下，门禁照常放行，要人听出来才发现。
         tmp = dest.parent / f".{dest.stem}.{attempt}.wav"
-        custom_seed = seed_override if seed_override is not None else \
-            getattr(engine, "segment_seeds", {}).get(str(seg.label))
-        seed = custom_seed if custom_seed is not None else (attempt * 1000 + seg.index + getattr(engine, "seed_offset", 0))
+        seed = _seed_for(engine, seg, seed_override, attempt)
         # v2 链路（架构设计三.2）：剥符号 → readings 逐案 override → 拼音直注
         #（顺序与理由见 speakable_traced：同键交拼音，其余 readings 必须抢在直注前）。
         # 注入记录进 Take.g2p_injections：机器做的替换与 readings 表一样要可审计。
@@ -1334,7 +1369,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
                         round(dur, 3), round(err, 4), attempt,
                         speakable=spk_text, emotion=emo_name, speed=spd_name,
                         g2p_injections=injections or None, asr_arbitrated=arbitrated,
-                        synth_logic=SYNTH_LOGIC_VERSION)
+                        synth_logic=SYNTH_LOGIC_VERSION,
+                        seeds_used=[seed], seed_base=getattr(engine, "seed_offset", 0))
 
         why = []
         if not ok_dur:
@@ -1360,7 +1396,11 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
                     sentences=None, qc_skip="asr-blind",
                     speakable=spk_text, emotion=emo_name, speed=spd_name,
                     g2p_injections=injections or None,
-                    synth_logic=SYNTH_LOGIC_VERSION)
+                    synth_logic=SYNTH_LOGIC_VERSION,
+                    # 豁免段交的是**被选中那一次** attempt 的音频，所以要按它重算种子，
+                    # 不能沿用循环里最后一次的值（选中的未必是最后一次）。
+                    seeds_used=[_seed_for(engine, seg, seed_override, attempt)],
+                    seed_base=getattr(engine, "seed_offset", 0))
 
     _cleanup_takes(dest, ATTEMPTS)
     raise SystemExit(
@@ -1392,7 +1432,10 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
 #   1 —— Qwen3 CUDA 通道初始（每句重新提取说话人嵌入、无种子控制）
 #   2 —— 加 torch.manual_seed + voice_clone_prompt 预计算缓存（2026-09-11）
 #   3 —— 首次真正接入复用判据（2026-09-13）：2 只是写进 manifest 从没被读过
-SYNTH_LOGIC_VERSION = 3
+#   4 —— 种子口径定案（2026-09-13）：首次 attempt 用全局基准（同段各句一个种子，
+#        无段内音色断层）、重试换派生种子（否则重试无意义）；Take 增
+#        `seeds_used`（实际用掉的）与 `seed_base`（当时的基准），后者用于基准漂移报账
+SYNTH_LOGIC_VERSION = 4
 
 
 def _voice_fingerprint(cfg: dict) -> dict:
@@ -1575,6 +1618,43 @@ def write_review(episode: Path, review: dict[str, int]) -> Path:
     return manifest_path
 
 
+def _seed_drifted(take: Take, cfg: dict) -> bool:
+    """这段音频是用**当时的全局基准**产的，而当前配置的基准已经不同。
+
+    只回答「标注」这个问题，不回答「要不要重做」（判据不替人花钱，2026-09-13 拍板）。
+    钉了种子的段由 `_reusable` 的硬判据管（钉值变了直接重做），产出与基准无关，跳过。
+
+    旧 manifest 没记 `seed_base`（None）时返回 False——**不知道就不报**：
+    拿 None 当真值会把所有旧段刷成漂移，报账就没人看了（没人看的告警等于没有）。
+    """
+    if take.seed_base is None:
+        return False
+    if (cfg.get("segment_seeds") or {}).get(str(take.label)) is not None:
+        return False
+    return take.seed_base != cfg.get("seed_offset", 0)
+
+
+def _report_seed_drift(takes: list[Take], cfg: dict) -> int:
+    """基准漂移报账：全局 seed_offset 变了、旧音频还在用旧基准（本次未重做）。
+
+    与 `_report_stale` 同源（陈旧不拦复用、不替人花钱），也同属地报出「名单 + 怎么点名」。
+    两笔账分开报是因为病因不同：一个是引擎代码变了，一个是种子基准变了——
+    前者该去看代码改了啥，后者该决定到底要不要换基准。
+    """
+    drifted = [t for t in takes if _seed_drifted(t, cfg)]
+    if not drifted:
+        return 0
+    names = "、".join(t.label for t in drifted)
+    # 基准可能改过多次，漂移段身上的值不一定唯一，报全（不能只拿第一段的值代表全部）
+    bases = "/".join(str(b) for b in sorted({t.seed_base for t in drifted}))
+    print(f"WARN {len(drifted)}/{len(takes)} 段是 seed_offset={bases} 时的产物，"
+          f"当前基准是 {cfg.get('seed_offset', 0)}，本次未重做：{names}\n"
+          f"     带着旧基准的段与新段音色不会完全一致（同一个人、不同采样）。"
+          f"要重做就点名：`--redo {names}`（只做这些）/ `--redo stale`；全量用 `--force`。",
+          file=sys.stderr)
+    return len(drifted)
+
+
 def _report_stale(takes: list[Take]) -> int:
     """混血报账：把「旧合成逻辑产物」逐段列出来，返回陈旧段数。
 
@@ -1595,13 +1675,14 @@ def _report_stale(takes: list[Take]) -> int:
     return len(stale)
 
 
-def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str]) -> list[Segment]:
+def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
+                cfg: dict | None = None) -> list[Segment]:
     """`--redo` 的语义：点名段必须重做，其余段**原样保留**（即使判据说它陈旧）。
 
     这是「重跑只做人类点名的段落」的唯一通道（2026-09-13 拍板）：判据负责管
     「不能复用」，花钱重做由人点名。`stale` 是关键字，展开成**会被复用且版本陈旧**
-    的段（= run() 结尾会报账的那一批），所以 `--redo stale` 就等于「把旧逻辑产物
-    全部重做」，但仍精确到段、不牵连别的。
+    的段（= run() 结尾会报账的那一批：旧合成逻辑产物，或种子基准漂移），
+    所以 `--redo stale` 就等于「把陈旧的都重做」，但仍精确到段、不牵连别的。
 
     未知标签直接报错：打错一个段号会变成「静默漏做」，比多打一个字贵得多。
     """
@@ -1613,7 +1694,9 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str]) -> 
     for tok in spec:
         if tok == "stale":
             want |= {s.label for s in segs
-                     if s.index in done and done[s.index].synth_logic != SYNTH_LOGIC_VERSION}
+                     if s.index in done and (
+                         done[s.index].synth_logic != SYNTH_LOGIC_VERSION
+                         or (cfg is not None and _seed_drifted(done[s.index], cfg)))}
         elif tok in labels:
             want.add(tok)
         else:
@@ -1660,7 +1743,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
         done = _reusable(old, segs, out_dir, cfg)
     if redo:
-        named = _apply_redo(done, segs, redo)
+        named = _apply_redo(done, segs, redo, cfg)
         print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
 
     miss = _unmeasured_titles([s.text for s in segs])
@@ -1741,6 +1824,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
               f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
     # 混血报账（2026-09-13）：陈旧段不拦复用、也不替人花钱重做，但绝不允许静静留下。
     _report_stale(takes)
+    _report_seed_drift(takes, cfg)
     return manifest_path
 
 
@@ -1751,8 +1835,9 @@ def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,
     选音色是 Phase 0 的一次性动作，不进每期循环。
 
     `seed` 默认 0：比参考音色时固定住随机源，两次试音只差参考干声这一个变量。
-    要比种子（同一段在 `attempt*1000 + 段号 + seed_offset` 下的表现）就显式传——
-    传 `1000 + 段号 + seed_offset`，得到的就是那一期该段真正会用的种子。
+    要比种子（同一段在首次 attempt 用的 `seed_offset`、重试用的
+    `attempt*1000 + 段号 + seed_offset` 下的表现）就显式传——
+    传 `seed_offset` 得到的就是那一期该段首次真正会用的种子。
     """
     cfg = load_config(cfg_path)
     if ref is not None:

@@ -892,6 +892,102 @@ class TestStaleCensusReport:
         assert capsys.readouterr().err == ""
 
 
+class TestSeedBaseDrift:
+    """全局 seed_offset 变了：旧音频仍可用，但必须看得见、且只由人点名重做。
+
+    2026-09-13：此前复用判据只比 `segment_seeds`，于是把基准从 7 改成别的
+    是「改了没生效」——旧音频原地复用，没有任何一处会说话。现在每段记下
+    产出时的基准（`Take.seed_base`），对不上就报账；**报账不等于重做**：
+    判据不替人花钱，重做走 `--redo` / `--redo stale`（后者现在也收漂移段）。
+    """
+
+    def _take(self, label, base):
+        return t.Take(int(label), label, "正文", f"seg-{label}.wav", 1.0, 0.0, 1,
+                      synth_logic=t.SYNTH_LOGIC_VERSION, seed_base=base)
+
+    def test_基准变了逐段报账但本次不重做(self, capsys):
+        n = t._report_seed_drift([self._take("1", 7), self._take("2", 9)],
+                                 {"seed_offset": 9, "segment_seeds": {}})
+        err = capsys.readouterr().err
+        assert n == 1 and "1/2" in err
+        assert "seed_offset=7" in err and "--redo stale" in err and "--force" in err
+
+    def test_旧manifest没记基准就不报(self, capsys):
+        """不知道就不说：拿 None 当真值会把所有旧段刷成漂移，告警立刻没人看。"""
+        assert t._report_seed_drift([self._take("1", None)], {"seed_offset": 9}) == 0
+        assert capsys.readouterr().err == ""
+
+    def test_钉了种子的段与基准无关(self, capsys):
+        """钉值是人给这一段的指定，产出与全局基准无关，别拿基准报它。"""
+        n = t._report_seed_drift([self._take("1", 7)],
+                                 {"seed_offset": 9, "segment_seeds": {"1": 2028}})
+        assert n == 0 and capsys.readouterr().err == ""
+
+    def test_redo_stale也收基准漂移段(self):
+        """点名通道要认这笔账，否则「看得见」之后还是只能靠手打段号。"""
+        segs = [t.Segment(i, str(i), "正文") for i in range(1, 4)]
+        done = {1: self._take("1", 7), 2: self._take("2", 9), 3: self._take("3", 7)}
+        named = t._apply_redo(done, segs, ["stale"],
+                              {"seed_offset": 9, "segment_seeds": {}})
+        assert [s.label for s in named] == ["1", "3"], "漂移段要一并收进来"
+        assert sorted(done) == [2], "没漂移的段必须原样留着"
+
+
+class TestReuseLedgerWiring:
+    """两笔报账要**接在 run() 上**，不是写完函数等人调。
+
+    2026-09-13 变异检验实录：把 `_report_stale(takes)` 从 run() 里删掉，
+    全套一条都不红——「判据写了没接线」在本项目已经复发过一次（synth_logic
+    当初就是这样：写进 manifest 但从来没人读），所以这里走**真 run()**：
+    全段可复用 → 不载模型、不出声，只验证结尾真的把两笔账打出来。
+    """
+
+    def _cfg(self, tmp_path, seed_offset):
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps({
+            "engine": "qwen3_tts", "model": "m", "ref_audio": "r.wav",
+            "seed_offset": seed_offset, "segment_seeds": {},
+        }), encoding="utf-8")
+        return p
+
+    def _episode(self, tmp_path, cfg, *, synth_logic, seed_base):
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        text = "第一段。"
+        (ep / "02-script.md").write_text(f"## 段落 1\n\n配音：{text}\n", encoding="utf-8")
+        (ep / "03-audio" / "seg-01.wav").write_bytes(b"RIFF fake")
+        (ep / "03-audio" / "manifest.json").write_text(json.dumps({
+            **t._voice_fingerprint(cfg),
+            "segments": [{
+                "index": 1, "label": "1", "text": text, "file": "seg-01.wav",
+                "duration": 2.0, "cer": 0.0, "attempts": 1,
+                "speakable": t.speakable(text),
+                "synth_logic": synth_logic, "seed_base": seed_base,
+            }],
+        }, ensure_ascii=False), encoding="utf-8")
+        return ep
+
+    def _run(self, tmp_path, monkeypatch, **kw):
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        cfgp = self._cfg(tmp_path, kw.pop("seed_offset"))
+        cfg = json.loads(cfgp.read_text(encoding="utf-8"))
+        ep = self._episode(tmp_path, cfg, **kw)
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: pytest.fail(
+            "全段可复用时不该载入模型"))
+        t.run(ep, cfg_path=cfgp)
+
+    def test_基准漂移在run结尾报账(self, tmp_path, monkeypatch, capsys):
+        self._run(tmp_path, monkeypatch, seed_offset=9,
+                  synth_logic=t.SYNTH_LOGIC_VERSION, seed_base=7)
+        err = capsys.readouterr().err
+        assert "seed_offset=7" in err and "--redo stale" in err
+
+    def test_旧合成逻辑在run结尾报账(self, tmp_path, monkeypatch, capsys):
+        self._run(tmp_path, monkeypatch, seed_offset=9,
+                  synth_logic=t.SYNTH_LOGIC_VERSION - 1, seed_base=9)
+        assert "旧合成逻辑" in capsys.readouterr().err
+
+
 class TestTrimSilence:
     """结尾机械声检测只对 IndexTTS 开（2026-09-05 审计 P2-5）：
 
@@ -1639,12 +1735,20 @@ class TestSegmentSeedsReachSentenceUnits:
         t._render_one(eng, t.Segment(2101, "21.1", "第一句。"), tmp_path / "s.wav")
         assert eng.seeds == [37]
 
-    def test_无任何钉种子时走派生种子(self, monkeypatch, tmp_path):
-        """两者都没有才退到派生式 attempt*1000 + 段号 + seed_offset。"""
-        eng = _SeedEngine()
-        _stub_qc(monkeypatch, "第一句。")
-        t._render_one(eng, t.Segment(21, "21", "第一句。"), tmp_path / "s.wav")
-        assert eng.seeds == [1000 + 21 + 7]
+    def test_没钉种子时首次用全局基准重试才派生(self):
+        """没钉种子时，首次与重试的种子是**两个用途**，不能共用一只。
+
+        首次（attempt=1）必须是全局基准 `seed_offset`：拆句后各句共用它，段内
+        才不会有音色与语速断层（2026-09-13 c869b1f 的初衷）；重试则换派生式
+        `attempt*1000 + 段号 + seed_offset`：三次若采到同一份音频，「重试」
+        就是摆设。c869b1f 把基准当 override 往下传，静默把它关掉了
+        （而拆句段恰恰是最需要重试的长段）。纯函数，四条分支一次说清。
+        """
+        seg, off = t.Segment(21, "21", "第一句。"), 7
+        assert t._seed_for(_SeedEngine(), seg, None, 1) == off
+        assert t._seed_for(_SeedEngine(), seg, None, 2) == 2000 + 21 + off
+        assert t._seed_for(_SeedEngine(segment_seeds={"21": 2028}), seg, None, 2) == 2028
+        assert t._seed_for(_SeedEngine(), seg, 37, 3) == 37
 
     def test_判据用的钉种子与引擎实际用的种子一致(self, monkeypatch, tmp_path):
         """`_seed_pins` 是**复用判据**、`render_segment` 是**执行路径**——两边必须同源。
@@ -1665,6 +1769,12 @@ class TestSegmentSeedsReachSentenceUnits:
             actual = [p if p is not None else 7 for p in want]
             assert eng.seeds == actual, f"引擎实际用的种子与判据不一致：{seeds}"
             assert take.seed_pins == list(want)
+            # 落进 manifest 的两样东西都要对：
+            #   seeds_used —— 实际用掉的种子（人看的：这段到底是拿哪个种子做的）
+            #   seed_base  —— 当时的全局基准（判据看的：基准漂移报账靠它）
+            # 没钉种子的那行（{}）里两句都是 7：同段各句共用一只种子，段内无断层。
+            assert take.seeds_used == actual
+            assert take.seed_base == 7
             assert take.synth_logic == t.SYNTH_LOGIC_VERSION
 
     def test_单句段的钉种子也要落进Take(self, monkeypatch, tmp_path):
