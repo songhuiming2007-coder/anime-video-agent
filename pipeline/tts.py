@@ -1099,13 +1099,17 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     try:
         parts, worst_cer, tries, skipped = [], 0.0, 1, False
         meta, at = [], 0.0
-        # 段级种子在此查一次，逐句往下传：句子标签（21.1）在配置表里不存在，
-        # 让 _render_one 自己查就把钉的种子静默丢了（见 _render_one 文档）。
+        # 段级种子在此查一次，逐句往下传：
+        # 拆句后所有小句子统一使用同一个 seed（默认全局基准 seed_offset，如 7；若配置了 segment_seeds 则遵从钉值），
+        # 彻底消除段落内不同小句子因 seed 漂移产生的音色与语速断层。
         pinned = getattr(engine, "segment_seeds", {}).get(str(seg.label))
+        default_seed = getattr(engine, "seed_offset", 7)
         for i, s in enumerate(sents, 1):
             p = tmp_dir / f"{i:02d}.wav"
+            sub_pin = getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}")
+            seed_for_sentence = pinned if pinned is not None else (sub_pin if sub_pin is not None else default_seed)
             take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
-                               seed_override=pinned)
+                               seed_override=seed_for_sentence)
             parts.append(p)
             d = probe_duration(p)
             meta.append({"text": s, "start": round(at, 3), "duration": round(d, 3)})
