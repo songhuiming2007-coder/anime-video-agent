@@ -14,6 +14,7 @@ import re
 import statistics
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from . import bgm, paths
@@ -249,7 +250,41 @@ QUOTES = re.compile(r"[“”‘’「」『』\"']")
 # 机器替人选一个，等于把念法的决定权从写稿的人手里拿走且不留痕迹。
 #
 # 拉丁字母不在此列：同一期的 yy 与 coding 都念得正常，没有证据就不立规矩。
+#
+# **读音表接管的词条豁免**（2026-09-13）：规则的理由是「TTS 对阿拉伯数字的读法不可控」，
+# 而 `config/voice.json` 的 readings 表把读法钉死了，理由不再成立（三期 `M2U → M two U`，
+# 同 redjuice 先例）。豁免范围只限**表内键的原样命中**，不做模式匹配——否则一旦放宽成
+# 「含字母的串就放行」，这条规则就基本作废了。豁免了谁一并打在 detail 里，不静默放行。
+#
+# 拼音注入表不参与豁免：它的值是 TONE3 拼音，本来就写不出拉丁字母+数字的词条，
+# 那种词条只能落在 readings 上。
 DIGITS = re.compile(r"[0-9０-９]")
+
+
+@lru_cache(maxsize=1)
+def _readings_keys() -> tuple[str, ...]:
+    """`config/voice.json` readings 表的键（长键在前）。
+
+    只服务「无阿拉伯数字」的豁免判定，见 DIGITS 上方的理由。直接读 voice.json
+    而不 import tts：tts 拖着 pypinyin/asr 一串重依赖，而机检只跑稿件时
+    不需要碰音频链路。
+    """
+    cfg = json.loads((paths.CONFIG / "voice.json").read_text(encoding="utf-8"))
+    keys = [k for k in cfg.get("readings", {}) if not k.startswith("_")]
+    return tuple(sorted(keys, key=len, reverse=True))
+
+
+def _strip_readings_covered(body: str) -> tuple[str, list[str]]:
+    """把已被读音表接管的词条从正文里剔除，返回 (剔后正文, 剔掉的词条)。
+
+    长键在前，与 `g2p.inject` 同一套降序理由：短键先吃会拆掉长键的命中。
+    """
+    exempt = []
+    for key in _readings_keys():
+        if DIGITS.search(key) and key in body:
+            body = body.replace(key, "")
+            exempt.append(key)
+    return body, exempt
 VISUAL = re.compile(r"(中景|近景|远景|全景|特写|逆光|镜头|构图|俯拍|仰拍|机位)")
 VAGUE = re.compile(r"(那几次事情|那些人|某些|有些人|某个角色|某部作品|后面这句|这类人)")
 # 片尾套话。它是固定收尾、不承担内容，不占正文段数也不进字数——
@@ -720,10 +755,13 @@ def run(path: Path) -> list[Check]:
     add("无引号", not quotes, f"{len(quotes)} 处：{'、'.join(sorted(set(quotes)))}"
         if quotes else "无")
 
-    digits = DIGITS.findall(body)
-    add("无阿拉伯数字", not digits,
-        f"{len(digits)} 处：{''.join(digits[:8])}　改成中文数字，TTS 的读法不可控"
-        if digits else "无")
+    digit_body, exempt_digits = _strip_readings_covered(body)
+    digits = DIGITS.findall(digit_body)
+    detail = (f"{len(digits)} 处：{''.join(digits[:8])}　改成中文数字，TTS 的读法不可控"
+              if digits else "无")
+    if exempt_digits:
+        detail += f"（{'、'.join(exempt_digits)} 已由读音表接管，豁免）"
+    add("无阿拉伯数字", not digits, detail)
 
     vague = VAGUE.findall(body)
     add("无模糊指代", not vague, "、".join(sorted(set(vague))) or "无")

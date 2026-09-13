@@ -409,6 +409,18 @@ class TestNoArabicDigits:
         # 同一期的 yy 与 coding 都念得正常。没有证据就不立规矩。
         assert self._one(tmp_path, "今天开始yy，顺便写点coding。").ok
 
+    def test_读音表接管的词条豁免(self, tmp_path):
+        # M2U 是韩国作曲家的 handle，稿子写不出别的写法（字幕要显示 M2U）。
+        # 规则的理由是「TTS 读法不可控」，readings 把它钉成 M two U 后理由消失。
+        # **本键在 config/voice.json；表里没这条了就该红**——那是三期稿子重新
+        # 变红的先兆，正是要看见的东西。
+        c = self._one(tmp_path, "词曲交由韩国作曲家 M2U 操刀。")
+        assert c.ok and "豁免" in c.detail
+
+    def test_表外的数字照旧判失败(self, tmp_path):
+        # 豁免只限表内键的原样命中：同一个位置换一个 handle 就该拦。
+        assert not self._one(tmp_path, "词曲交由韩国作曲家 M2V 操刀。").ok
+
 
 class TestSubjectiveHint:
     """机检末尾的主观项提示要按题材来，不能焊死杂谈的判据。
