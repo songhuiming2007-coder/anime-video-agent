@@ -255,3 +255,91 @@ class TestDurationFieldProseTolerance:
         (tmp_path / "01-topic.md").write_text(
             f"时长目标: {lo}-{hi}分钟\n", encoding="utf-8")
         assert qc.episode_duration_band(tmp_path) == (float(lo) * 60, float(hi) * 60)
+
+
+class TestAssemblyBlackSpans:
+    """总装期的黑帧归因：来源是**分期成片**，不是素材源片。
+
+    流拷贝这一刀切不出新黑场，切出来的黑只能来自某一期成片。判据因此
+    改问「部件同位置是不是也黑」，而不是「素材源片同位置是不是也黑」。
+    """
+
+    @staticmethod
+    def _asm():
+        return {"total_duration": 30.0, "parts": [
+            {"name": "card_part1", "path": "/x/card_part1.mp4", "kind": "card",
+             "offset": 0.0, "duration": 3.0},
+            {"name": "part1_trimmed", "path": "/x/part1_trimmed.mp4", "kind": "part",
+             "offset": 3.0, "duration": 27.0},
+        ]}
+
+    def _fake(self, monkeypatch, black: bool):
+        """模拟部件上的 blackdetect：覆盖/不覆盖整个请求窗口。"""
+        calls = []
+
+        def fake(cmd):
+            calls.append(cmd)
+            if not black:
+                return "", 0
+            t = float(cmd[cmd.index("-t") + 1])
+            return f"black_start:0.0 black_end:{t}", 0
+
+        monkeypatch.setattr(qc, "_run", fake)
+        return calls
+
+    def test_部件同位置也黑_继承不判缺陷(self, monkeypatch):
+        calls = self._fake(monkeypatch, black=True)
+        defects, inherited, errs = qc._assembly_black_spans([(9.0, 10.0)], self._asm())
+        assert (defects, errs) == ([], [])
+        assert inherited == [("/x/part1_trimmed.mp4", 9.0, 10.0)]
+        # 只在**落进黑帧的那个部件**上开检测器，卡片窗口不跑
+        assert calls[0][calls[0].index("-i") + 1] == "/x/part1_trimmed.mp4"
+        assert len(calls) == 1
+
+    def test_部件同位置不黑_判缺陷(self, monkeypatch):
+        self._fake(monkeypatch, black=False)
+        defects, inherited, errs = qc._assembly_black_spans([(9.0, 10.0)], self._asm())
+        assert inherited == [] and errs == []
+        assert defects == [("/x/part1_trimmed.mp4", 9.0, 10.0, 6.0, 7.0)]
+
+    def test_部件查不动_既记对照失败也不判过(self, monkeypatch):
+        # 检测器跑不动不能当成「没检出」判过（2026-08-16 审计 2-4）。
+        # 与原来「源片对照」分支同款语义：窗口没被证明覆盖 → 照样算缺陷，
+        # 同时把「检测器跑不动」单独记一笔——两笔账都留着。
+        monkeypatch.setattr(qc, "_run", lambda cmd: ("boom", 1))
+        defects, inherited, errs = qc._assembly_black_spans([(9.0, 10.0)], self._asm())
+        assert inherited == []
+        assert defects == [("/x/part1_trimmed.mp4", 9.0, 10.0, 6.0, 7.0)]
+        assert len(errs) == 1 and "part1_trimmed.mp4" in errs[0]
+
+    def test_黑帧跨部件边界_两边分别归因(self, monkeypatch):
+        self._fake(monkeypatch, black=True)
+        defects, inherited, errs = qc._assembly_black_spans([(2.0, 4.0)], self._asm())
+        assert (defects, errs) == ([], [])
+        assert [i[0] for i in inherited] == ["/x/card_part1.mp4", "/x/part1_trimmed.mp4"]
+
+
+class TestSilenceExempt:
+    """静音豁免只有两种：歌曲自然收尾，与**被声明的**章节卡静音桥接。"""
+
+    def test_尾部对齐音乐事件终点_豁免(self):
+        assert qc._silence_exempt(50.0, 51.2, song_ends=[51.5], card_wins=[])
+
+    def test_落在章节卡窗口内_豁免(self):
+        # 一期末尾 1s 淡出 + 3s 卡：静音区间起点在卡之前，只要与卡窗口相交就算桥接
+        assert qc._silence_exempt(888.9, 892.5, song_ends=[], card_wins=[(889.5, 892.5)])
+
+    def test_无声明窗口的静音_不豁免(self):
+        assert not qc._silence_exempt(100.0, 103.0, song_ends=[], card_wins=[(889.5, 892.5)])
+
+
+class TestAssemblyLedger:
+    """总装期账本：有 04-assembly.json 才走总装口径，没有就是普通期。"""
+
+    def test_有账本_读出来(self, tmp_path):
+        (tmp_path / "04-assembly.json").write_text(
+            '{"total_duration": 2915.6, "parts": []}', encoding="utf-8")
+        assert qc.assembly_ledger(tmp_path)["total_duration"] == 2915.6
+
+    def test_无账本_返回None(self, tmp_path):
+        assert qc.assembly_ledger(tmp_path) is None
