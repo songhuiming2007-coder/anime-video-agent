@@ -426,6 +426,67 @@ class TestRenderExtend:
                 if s["status"] not in ("ok", "ok_extended")] == []
 
 
+class TestRenderSlowMotion:
+    """试听型音乐段的短素材放慢（2026-09-13，三期 M1/M2/M3：6s 封面微动
+    铺 17/32/11s）。没这个机制时 `cut` 直接报「截取越界」，整期渲不出来。"""
+
+    def _cmd(self, monkeypatch, clip, slow, src_dur=6.006, out_dur=None):
+        ran = {}
+        monkeypatch.setattr(render, "duration",
+                            lambda p: src_dur if str(p).endswith(".mkv")
+                            else (out_dur if out_dur is not None else clip["dur"]))
+        monkeypatch.setattr(render, "frame_time", lambda p: 1 / 24)
+        monkeypatch.setattr(render.subprocess, "run",
+                            lambda cmd, **k: ran.setdefault("cmd", cmd))
+        render.cut(clip, __import__("pathlib").Path("/tmp/out.mp4"), slow=slow)
+        return ran["cmd"]
+
+    def test_放慢只读take秒并setpts(self, monkeypatch):
+        # 6.006s 源、起点 1.0、槽位 32s → 读 5.006s，setpts 拉 6.39×
+        clip = {"source": "/x.mkv", "start": 1.0, "dur": 32.0}
+        cmd = self._cmd(monkeypatch, clip, slow=32.0 / 5.006)
+        assert cmd[cmd.index("-vf") + 1].endswith(
+            f",setpts=PTS*{32.0 / 5.006:.6f}")
+        # 输入级 -t 在 -i 之前，值= take；输出级 -t 在 -i 之后，值= 槽位
+        i = cmd.index("-i")
+        assert cmd[i - 1] == "5.006" and cmd[cmd.index("-t", i) + 1] == "32.000"
+
+    def test_不带slow的路径一个字节没动(self, monkeypatch):
+        clip = {"source": "/x.mkv", "start": 10.0, "dur": 6.0}
+        cmd = self._cmd(monkeypatch, clip, slow=1.0, src_dur=100.0)
+        assert "setpts" not in cmd[cmd.index("-vf") + 1]
+        # 只有一个 -t，且在 -i 之后（输入级 -t 是 slow 路径专有的）
+        assert cmd.count("-t") == 1
+        assert cmd[cmd.index("-i") - 1] == "10.000"
+        assert cmd[cmd.index("-t") + 1] == "6.000"
+
+    def test_放慢时守卫按take卡而不是want(self, monkeypatch):
+        # 起点 3.0 + take 3.006 = 6.006 <= 6.006，不越界（若按 want=17 卡就误报）
+        clip = {"source": "/x.mkv", "start": 3.0, "dur": 17.0}
+        cmd = self._cmd(monkeypatch, clip, slow=17.0 / 3.006)
+        assert cmd[cmd.index("-t", cmd.index("-i")) + 1] == "17.000"
+
+    def test_放慢系数小于1报错(self, monkeypatch):
+        monkeypatch.setattr(render, "duration", lambda p: 100.0)
+        with pytest.raises(SystemExit, match="小于 1"):
+            render.cut({"source": "/x.mkv", "start": 0.0, "dur": 5.0},
+                       __import__("pathlib").Path("/tmp/out.mp4"), slow=0.5)
+
+    def test_超限直接FAIL并给出两个杠杆(self, monkeypatch, tmp_path):
+        """MAX_SLOW 是真闸：三段里有一段越限就不该静默渲出一个卡帧画面。"""
+        assert render.MAX_SLOW == 8.0
+        # 6.006s 源、起点 5.0、槽位 32s → avail 1.006，要 31.8×
+        monkeypatch.setattr(render, "_source_path", lambda ep, tag: "/x.mkv")
+        monkeypatch.setattr(render, "duration", lambda p: 6.006)
+        monkeypatch.setattr(render.subprocess, "run", lambda cmd, **k: None)
+        plan = {"segments": [{"index": 1, "start": 0.0, "dur": 1.0}],
+                "blocks": [{"label": "M1", "title": "x", "visual": "SP15 00:05",
+                             "start": 1.0, "dur": 32.0}],
+                "tracks": []}
+        with pytest.raises(SystemExit, match="放慢超限"):
+            render._still_frames(tmp_path, plan, {}, tmp_path)
+
+
 class TestReviewExtend:
     def test_审图页把extend算进画面合计(self):
         seg = {"index": 1, "status": "ok_extended",

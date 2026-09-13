@@ -54,6 +54,15 @@ LRA = 11
 # 不磨掉阶跃就会在每个段落交界听到「蹬」的一声。
 FADE_IN, FADE_OUT = 0.008, 0.012
 
+# 试听型音乐段画面的放慢上限（见 cut 的 slow 参数）。
+#
+# 上限的意义：试听段的 `画面:` 可以指向比槽位短的素材，渲染时按比例放慢铺满。
+# 但放慢到一定程度就不是“滑得很慢”，而是“卡住了”——8× 以上一个源帧停 8 帧，
+# 跟静止画面在观感上已经分不出来，而 2026-08-16 用户拍过试听段不允许静止画面。
+# 8 这个量级是沿用已有的「定格延展上限 8.0s」——同一个“多长还能算动”的直觉。
+# 越限直接 FAIL 并告诉写稿人两个杠杆：把起点往前挪，或换长素材。
+MAX_SLOW = 8.0
+
 # BGM 相关。曲目在 config/bgm.json，见 CLAUDE.md「BGM 约定」。
 #
 # **靠闪避，不靠选曲。** 2026-07-29 量过 8 首原声碟曲子在语音带（300–3400Hz）的能量
@@ -119,19 +128,28 @@ def frame_time(path: Path) -> float:
     return den / num
 
 
-def cut(clip: dict, dest: Path) -> None:
+def cut(clip: dict, dest: Path, slow: float = 1.0) -> None:
     """切一个片段，切前切后都校验（CLAUDE.md「截取守卫」，缺一不可）。
 
     ffmpeg 在请求时长超出源片剩余长度时**静默截断且不报错**，踩到就整条音画错位
     而没有任何提示。所以两头都要卡。负起点是同一类静默错：ffmpeg 的 `-ss`
     对负值按片尾倒数解释，切出完全不相干的画面，而时长复核照样通过
     （2026-08-16 审计 2-12，人工写 `画面:` 时间码的试听型路径会踩到）。
+
+    `slow > 1`：槽位比素材长时把**声明的起点到源片末尾**这一段按比例放慢铺满
+    （`take = want / slow`），用于试听型音乐段的短素材（6s 封面微动铺 17/32/11s，
+    2026-09-13 三期）。放弃「素材长度不够就报错」的那条路 —— 试听段的画面就是这样
+    指定的，报错只会逼写稿人换一个不相干的源。**放慢不是静止**：滑镜仍在滑，只是慢，
+    不碰 2026-08-16「试听段不允许静止画面」那条裁定。上限见 MAX_SLOW。
     """
     src = Path(clip["source"])
     want = clip["dur"]
     # 尾帧定格延展（ok_extended 段，2026-09-07）：锚点段素材不够长时，末帧克隆
     # 补足口播时长。定格不读源片 extend 部分，守卫 1 仍只按真实素材时长卡。
     ext = round(float(clip.get("extend", 0.0)), 3)
+    if slow < 1.0:
+        raise SystemExit(f"FAIL 截取放慢系数小于 1（没有加速这条路径）：slow={slow}")
+    take = want / slow          # 真正要从源片读的秒数
 
     # 守卫 0：负起点（在守卫 1 之前，连 ffprobe 都不必跑就能拦下）
     if clip["start"] < 0:
@@ -141,28 +159,33 @@ def cut(clip: dict, dest: Path) -> None:
             f"检查 `画面:` 行的时间码"
         )
 
-    # 守卫 1：切之前
+    # 守卫 1：切之前。放慢时卡的是 take，不是 want —— 真正的边界是「读到哪儿」。
     src_dur = duration(src)
-    if clip["start"] + want > src_dur + 1e-6:
+    if clip["start"] + take > src_dur + 1e-6:
         raise SystemExit(
             f"FAIL 截取越界：{src.name}\n"
-            f"     请求 {clip['start']:.3f}+{want:.3f}={clip['start'] + want:.3f}s"
-            f" > 源时长 {src_dur:.3f}s"
+            f"     请求 {clip['start']:.3f}+{take:.3f}="
+            f"{clip['start'] + take:.3f}s > 源时长 {src_dur:.3f}s"
+            + (f"（槽位 {want:.3f}s 已按 {slow:.2f}× 折算）" if slow > 1.0 else "")
         )
 
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
+    if slow > 1.0:
+        vf += f",setpts=PTS*{slow:.6f}"
     if ext > 0:
         vf += f",tpad=stop_mode=clone:stop_duration={ext}"
-    subprocess.run(
-        ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-         "-ss", f"{clip['start']:.3f}", "-i", str(src), "-t", f"{want + ext:.3f}",
-         "-an", "-sn",
-         "-vf", vf,
-         "-r", FPS, "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-         str(dest)],
-        check=True, capture_output=True,
-    )
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+           "-ss", f"{clip['start']:.3f}"]
+    if slow > 1.0:
+        # 输入级 -t（放在 -i 前）：只读 take 秒，交给 setpts 拉成 want。
+        # 若写成输出级 -t take，它会按**输出**时长截，放慢后正好被砍成 1/slow。
+        cmd += ["-t", f"{take:.3f}"]
+    cmd += ["-i", str(src), "-t", f"{want + ext:.3f}",
+            "-an", "-sn", "-vf", vf,
+            "-r", FPS, "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+            str(dest)]
+    subprocess.run(cmd, check=True, capture_output=True)
 
     # 守卫 2：切之后，容差 = 源片与目标输出帧率中较大者的一帧（跨帧率重采样离散量）
     got = duration(dest)
@@ -930,10 +953,29 @@ def _still_frames(episode: Path, plan: dict,
         if vis:
             ep_tag, start_s = vis.rsplit(" ", 1)
             src = _source_path(episode, ep_tag)
-            clip = {"source": str(src), "start": _hhmmss_to_sec(start_s),
+            clip_start = _hhmmss_to_sec(start_s)
+            # 素材比槽位短 → 按比例放慢铺满（试听型短片源，三期 6s 封面微动铺 17/32/11s）。
+            # 上限 MAX_SLOW：越限声称自己“还在动”就不成立了，当场 FAIL 而不是
+            # 静默出一个卡帧的伪静止画面。
+            slow = 1.0
+            src_dur = duration(src)
+            avail = src_dur - clip_start
+            if clip_start + dur > src_dur + 1e-6:
+                slow = dur / avail if avail > 0 else float("inf")
+                if slow > MAX_SLOW:
+                    raise SystemExit(
+                        f"FAIL 音乐段画面放慢超限：{vis}\n"
+                        f"     槽位 {dur:.2f}s，源片从 {clip_start:.2f}s 起只剩"
+                        f" {avail:.2f}s，要放慢 {slow:.2f}× > 上限 {MAX_SLOW:g}×。\n"
+                        f"     报错的诱因是素材太短：把 `画面:` 的起点往前挪（用满整段源）"
+                        f"或改指一个更长的源片，不要指望放慢到卡住还看着像在动"
+                    )
+            clip = {"source": str(src), "start": clip_start,
                     "dur": dur}
             seg_path = work / f"visual-{k:02d}.mp4"
-            cut(clip, seg_path)
+            cut(clip, seg_path, slow=slow)
+            if slow > 1.0:
+                print(f"  放慢 {slow:.2f}×（{avail:.1f}s → {dur:.1f}s）", file=sys.stderr)
             out.append((seg_path, dur, start))
             continue
         prev = [idx for idx, st in seg_starts if st <= start + 1e-6]
