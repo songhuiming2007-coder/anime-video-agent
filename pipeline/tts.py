@@ -1752,7 +1752,8 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
 
 
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
-        review: dict[str, int] | None = None, redo: list[str] | None = None) -> Path:
+        review: dict[str, int] | None = None, redo: list[str] | None = None,
+        force_all: bool = False) -> Path:
     if force and redo:
         raise SystemExit("FAIL --force 与 --redo 互斥：前者全量重做，后者只做点名的段")
     paths.require_data()
@@ -1773,11 +1774,39 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
     # 人工评审结果抹掉（而打点是有人时成本的动作）
     existing_review = None
+    old_mf = None
     if manifest_path.exists():
         try:
-            existing_review = json.loads(manifest_path.read_text(encoding="utf-8")).get("human_review")
+            old_mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+            existing_review = old_mf.get("human_review")
         except Exception as e:
             print(f"WARN 旧 manifest 不可读，human_review 将丢失: {e}", file=sys.stderr)
+
+    # **全量重配的摩擦**（2026-09-13 事故沉淀）。`--force` 顺手一敲就把用户已逐段
+    # 审听的 40 段全部重配（本地 36 分钟 + 云端 ¥0.847），32 段「确认无问题」作废。
+    # 规则早就写在 WORKFLOW §03 与 SYNTH_LOGIC_VERSION 注释里，而工具零摩擦——
+    # 所以把摩擦补在工具里：全量重配得另写一个名字很长的开关。
+    if force and not force_all:
+        raise SystemExit(
+            "FAIL `--force` 不再直接全量重配，全量请用 `--force-all`。\n"
+            "     为什么加这道摩擦：全量重配 = 本期每一段都重合成 = 人耳逐段审听全部作废\n"
+            "     （2026-09-13 事故：一个顺手的 --force 废掉 40 段审听）。\n"
+            "     只想补点名的段：`--redo 3,7`；旧逻辑产物：`--redo stale`。")
+
+    # 换引擎比 --force 更险：engine/model 在复用指纹里，所以**任何**跑法（连 `--redo 3,7`
+    # 也一样）都会把本期旧产物全部重配——工具层没有「只换一部分引擎」的路。
+    # 不能让调用方在不知情下走进去：报清楚后果，给出两条正路。
+    if old_mf is not None and not force_all:
+        old_pair = (old_mf.get("engine"), old_mf.get("model"))
+        new_pair = (cfg["engine"], cfg["model"])
+        if old_pair != new_pair:
+            raise SystemExit(
+                f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                f"     engine/model 在复用指纹里 → 本期旧产物会**全部**重配\n"
+                f"     （连 `--redo 3,7` 也一样，只换一部分引擎在本工具里没有路）。\n"
+                f"     这意味着人耳审听整期作废。两条正路，由人定：\n"
+                f"       ① 换回产出本期音频的那份 config → 只补点名的段：`--redo 3,7`\n"
+                f"       ② 确认全量重配、接受全部重听 → `--force-all`")
 
     done: dict[int, Take] = {}
     if manifest_path.exists() and not force:
@@ -1900,7 +1929,10 @@ def main() -> int:
 
     r = sub.add_parser("run", help="给一期稿件配音（默认命令）")
     r.add_argument("episode", type=Path)
-    r.add_argument("--force", action="store_true", help="忽略已有产物，全部重生成")
+    r.add_argument("--force", action="store_true",
+                   help="已改名：全量重配必须写 --force-all（这条仍然报错，见 run()）")
+    r.add_argument("--force-all", action="store_true",
+                   help="全量重配（本期每一段都重合成；人耳逐段审听会全部作废，动手前先问人）")
     r.add_argument("--config", type=Path, default=CONFIG)
     r.add_argument("--review", type=str, default=None,
                    help="写入 03.5 结构化打点（如 voice=4,prosody=3,misread=4），不触发重合成")
@@ -1927,7 +1959,8 @@ def main() -> int:
     else:
         run(a.episode, a.force, a.config,
             parse_review_arg(a.review) if a.review else None,
-            redo=[t for t in re.split(r"[,\s]+", a.redo) if t] if a.redo else None)
+            redo=[t for t in re.split(r"[,\s]+", a.redo) if t] if a.redo else None,
+            force_all=a.force_all)
     return 0
 
 

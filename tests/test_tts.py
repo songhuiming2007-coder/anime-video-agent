@@ -1826,3 +1826,85 @@ class TestSegmentSeedsReachSentenceUnits:
         assert eng.seeds[:4] == [7, 7, retry, 7], "前提：第一轮三句用基准种子，第二句换种子重试"
         assert take.seeds_used == [7] * 3, f"整段没回到基准种子 7：{take.seeds_used}"
         assert set(eng.seeds[4:]) == {7}, "整段重排必须逐句重合成，且全部用基准种子"
+
+
+class TestFullRerunGuard:
+    """全量重配必须有摩擦：`--force` 报错、换引擎拦住（2026-09-13 事故）。
+
+    规范一直在（WORKFLOW §03 红线、`SYNTH_LOGIC_VERSION` 注释、用户反复口头交代），
+    而 `--force` 零摩擦，于是「顺手全量」真的发生了：本地 40 段 + 云端 40 段，
+    用户逐段审听过的音频全部作废、必须重听。**规范落在代码里才算数**，这一组
+    用例就是那条规范的可执行部分——它该在有人手滑时把他拦在花钱之前。
+    """
+
+    def _cfg(self, tmp_path, engine):
+        p = tmp_path / f"voice-{engine}.json"
+        p.write_text(json.dumps({
+            "engine": engine, "model": "m", "ref_audio": "r.wav",
+            "seed_offset": 7, "segment_seeds": {},
+        }), encoding="utf-8")
+        return p
+
+    def _episode(self, tmp_path, cfg, *, text="第一段。", with_manifest=True):
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text(
+            f"## 段落 1\n\n配音：{text}\n" if text else "", encoding="utf-8")
+        (ep / "03-audio" / "seg-01.wav").write_bytes(b"RIFF fake")
+        if with_manifest:
+            (ep / "03-audio" / "manifest.json").write_text(json.dumps({
+                **t._voice_fingerprint(cfg),
+                "segments": [{
+                    "index": 1, "label": "1", "text": text, "file": "seg-01.wav",
+                    "duration": 2.0, "cer": 0.0, "attempts": 1,
+                    "speakable": t.speakable(text),
+                    "synth_logic": t.SYNTH_LOGIC_VERSION, "seed_base": 7,
+                }],
+            }, ensure_ascii=False), encoding="utf-8")
+        return ep
+
+    def test_旧名字_force_要报错并指向_force_all(self, tmp_path, monkeypatch):
+        """`--force` 是零摩擦的那个开关，就是它让事故一路滑过去的。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        with pytest.raises(SystemExit) as ex:
+            t.run(ep, force=True, cfg_path=cfgp)
+        msg = str(ex.value)
+        assert "--force-all" in msg and "--redo" in msg, msg
+
+    def test_换引擎会被拦下并说清后果(self, tmp_path, monkeypatch):
+        """engine 在复用指纹里 → 任何跑法都会整期重配（`--redo` 也救不了）。
+
+        调用方以为自己在「只补几段」，实际会把整期的音频换掉——这句话必须在花钱前
+        说出来，而不是跑完由人发现。
+        """
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        old_cfg = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")))
+        new_cfg = self._cfg(tmp_path, "qwen3_tts_cuda")
+        for kw in ({}, {"redo": ["1"]}):
+            with pytest.raises(SystemExit) as ex:
+                t.run(ep, cfg_path=new_cfg, **kw)
+            msg = str(ex.value)
+            assert "qwen3_tts" in msg and "qwen3_tts_cuda" in msg, msg
+            assert "--force-all" in msg and "--redo 3,7" in msg, msg
+
+    def test_显式_force_all_才放行(self, tmp_path, monkeypatch):
+        """写全了那个名字很长的开关就放行——护栏是摩擦，不是封死。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        old_cfg = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")))
+        new_cfg = self._cfg(tmp_path, "qwen3_tts_cuda")
+        # 只验「护栏放行」：把引擎与合成都换成假的，不载模型
+        class _E:
+            kind = "qwen3_tts"
+            seed_offset = 7
+            segment_seeds: dict = {}
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: _E())
+        monkeypatch.setattr(t, "render_segment", lambda eng, seg, dest: t.Take(
+            seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1))
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+        t.run(ep, cfg_path=new_cfg, force_all=True)
+        mf = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+        assert mf["engine"] == "qwen3_tts_cuda"
