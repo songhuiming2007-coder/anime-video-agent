@@ -563,6 +563,18 @@ git diff --no-index --stat 02-script.draft.md 02-script.md > 02-diff.patch
 > SenseVoice 主读 / Whisper Large-v3 仲裁回读）→ `ava-cloud pull
 > data/episodes/<本期>`（拉回 `03-audio/`）→ 关机记账（本地亦支持 `pipeline.tts` mlx 兜底）。
 
+> **云端也能点名重跑**（2026-09-13 加）：任务名后面写的一切都**原样透传给远端任务**，
+> 所以 `--redo` 在云端同样可用：
+>
+> ```bash
+> ava-cloud run data/episodes/<本期> tts --redo 3,7
+> ava-cloud run data/episodes/<本期> tts --redo stale
+> ```
+>
+> 代价要说清楚：**任务名后面的参数本机不看**。打错一个字（`--redoo`）不会在本机报错，
+> 要等远端跑起来报错、翻远端日志才发现；`ava-cloud run <本期> tts -h` 也不会显示本机
+> 帮助（`-h` 被一起透传走了），要看帮助得写 `ava-cloud run -h`。
+
 ```bash
 python -m pipeline.tts data/episodes/<本期>
 ```
@@ -666,6 +678,15 @@ python -m pipeline.tts data/episodes/<本期>
 （自动全量重做会废掉本节这条纪律，而且花的钱不归人管），但运行会逐段点名打出
 `WARN N/M 段是旧合成逻辑的产物`，并进 manifest 的段级字段。
 看到这条就自己拍：`--redo stale`（重做全部旧产物）/ `--redo 那几个段号` / `--force`。
+
+**改全局 `seed_offset` 现在也看得见了（2026-09-13）。** 种子口径：钉了种子的段恒用钉值；
+没钉的段**首次 attempt 用全局 `seed_offset`**（拆句后各句共用同一只——每句各派生一只的话，
+段内会出现音色与语速断层），**重试才换**派生种子 `attempt*1000 + 段号 + seed_offset`
+（三次若采到同一份音频，「重试」就是摆设）。每段把**实际用掉的种子**（`seeds_used`）与
+**产出时的全局基准**（`seed_base`）一并写进 manifest，于是把 `seed_offset` 从 7 改成别的值，
+运行结尾会打 `WARN N/M 段是 seed_offset=7 时的产物`：旧音频照旧复用（同样不替人花钱），
+但 `--redo stale` 会把这批漂移段一起收进来。改之前只有「钉了某段」能拦住重做，
+改全局基准是彻底的「改了没生效」——旧音频原地复用，没有任何一处会说话。
 
 > **为什么不再「版本一变就全量重做」**（2026-09-13 拍板）：一票否决会让本节这条
 > 「单段重跑」纪律直接失效——`rm seg-04.wav` 也会把全篇重做。判据负责管
