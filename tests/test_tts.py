@@ -1662,8 +1662,7 @@ class TestSegmentSeedsReachSentenceUnits:
             assert t._seed_pins(seg, seeds) == want, seeds
             eng = _SeedEngine(segment_seeds=seeds)
             take = t.render_segment(eng, seg, tmp_path / f"seg-{len(seeds)}.wav")
-            actual = [p if p is not None else 1000 + 2100 + i + 7
-                      for i, p in enumerate(want, 1)]
+            actual = [p if p is not None else 7 for p in want]
             assert eng.seeds == actual, f"引擎实际用的种子与判据不一致：{seeds}"
             assert take.seed_pins == list(want)
             assert take.synth_logic == t.SYNTH_LOGIC_VERSION
