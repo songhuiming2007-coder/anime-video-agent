@@ -118,6 +118,22 @@ def test_scan_heteronyms_ignores_non_han():
     assert g2p.scan_heteronyms("Eutelope 123，。") == []
 
 
+def test_scan_heteronyms_按字对齐_标点拉丁不错位():
+    """读音必须安在**对的那个字**身上（2026-09-13 修）。
+
+    旧实现拿 `pinyin()` 的整串结果与正文 `zip`：它按**词/连续段**返回
+    （`。abc ` 并成一项），从第一处标点起就永久错位。实测 `第一句。abc 重来。`
+    里的 `重` 被报成了 `a`——多音字预检是 03.5 顺听的重点关注清单，
+    名单上的字错了，人照着它听也白听。单字用例碰不到这个错位
+    （一个字的串没有第二项可以错），所以这条用例必须带标点和拉丁词。
+    """
+    hits = {h["char"]: h for h in g2p.scan_heteronyms("第一句。abc 重来。")}
+    assert "重" in hits, "标点/拉丁后面的多音字仍要被扫出来"
+    assert hits["重"]["readings"] == ["chong2", "tong2", "zhong4"]
+    assert "a" not in hits, "拉丁字母不是汉字，不许进清单"
+    assert hits["重"]["index"] == 8, "顺听要靠 index 定位上下文"
+
+
 def test_adr0006_leak_cases_are_a_fixed_sample_set():
     """ADR-0006 记载的六例音读泄漏＝项目自己踩出来的清单（E3），固定为回归样本。
 

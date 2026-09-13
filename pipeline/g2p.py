@@ -42,6 +42,7 @@ import argparse
 import json
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 from pypinyin import Style, pinyin
@@ -163,17 +164,35 @@ def scan_heteronyms(text: str, covered: set[str] | None = None) -> list[dict]:
     布尔值让调用方去拦。
 
     `covered` 是已被 injections/readings 治理过的字，命中它们的多音字不再重复报警。
+
+    **逐字查表，不能拿整串跟 `zip` 对齐**（2026-09-13 修）：`pypinyin.pinyin()`
+    返回的项数是**词/连续段**数，不是字数——非汉字连写会并成一项
+    （`"他的。abc在"` 返回 4 项，而它有 7 个字）。旧实现 `zip(text, groups)`
+    从第一处标点起就永久错位，报出来的读音安在别的字身上（实测 `的` 拿到
+    `ru4/yue4`、`在` 拿到 `cuo1/zui4`）。稿件里标点、数字、拉丁词到处都是，
+    所以它在真实稿子上就是垃圾——这也是它一直没人调用的真正原因。
+    单字测试碰不到这个错位（一个字的串没有第二项可以错）。
+
+    返回的每条带字在正文里的下标 `index`：顺听时拿它去定位上下文。
     """
     covered = covered or set()
     out: list[dict] = []
-    groups = pinyin(text, style=Style.TONE3, heteronym=True, neutral_tone_with_five=True)
-    for ch, grp in zip(text, groups):
-        if len(grp) < 2 or not _HAN_ONLY.match(ch):
+    for i, ch in enumerate(text):
+        if not _HAN_ONLY.match(ch) or ch in covered:
             continue
-        if ch in covered:
+        grp = _heteronyms_of(ch)
+        if len(grp) < 2:
             continue
-        out.append({"char": ch, "readings": sorted(set(grp))})
+        out.append({"char": ch, "index": i, "readings": grp})
     return out
+
+
+@lru_cache(maxsize=4096)
+def _heteronyms_of(ch: str) -> list[str]:
+    """单字的多读音清单（排序去重）。逐字查是唯一不会错位的问法。"""
+    grp = pinyin(ch, style=Style.TONE3, heteronym=True,
+                 neutral_tone_with_five=True)[0]
+    return sorted(set(grp))
 
 
 def _cmd_derive(args: argparse.Namespace) -> int:
