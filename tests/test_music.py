@@ -193,6 +193,39 @@ class TestBgmContinuationBounds:
             ("foreground", 90.0, 95.0), ("bgm", 95.0, 125.0)]
 
 
+class TestNaturalOutroTail:
+    """自然收尾估时：**只认稿子里声明的那一首**。
+
+    2026-09-13 三期实测的旧行为：check_script 在正文里扫「第一个出现过的曲名」，
+    而且 `break` 只跳出内层循环——跨番期每池各加一次。三期把 EGOIST 的《最後の花弁》
+    （124s）与 罪恶王冠 的《Departures》（166s）都算成了收尾曲，而声明的其实是
+    《Last Song》（真值 166s）：估时虚高 124s，白压窄了 617 字的口播带。
+    一期/二期回头重算也分别虚高 76s / 244s。
+    """
+
+    def test_按声明的曲目算一次(self, episode, monkeypatch):
+        monkeypatch.setattr(m, "load_tracks_multi", lambda ep: _bgm())
+        blocks = m.parse_script_music(episode / "02-script.md")
+        # SCRIPT 正文里出现过 测试曲甲，收尾声明是 测试曲乙（dur 200，同曲前景已播到 60s）
+        assert m.natural_outro_tail(episode, blocks) == pytest.approx(140.0)
+
+    def test_没声明收尾就是零(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "load_tracks_multi", lambda ep: _bgm())
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 M1\n\n音乐: `测试曲甲` 完整版 00:00-00:15\n"
+            "状态: 前景试听，旁白停止\n过渡: 淡出\n\n## 段落 1\n\n配音：第一段。\n",
+            encoding="utf-8")
+        blocks = m.parse_script_music(tmp_path / "02-script.md")
+        assert m.natural_outro_tail(tmp_path, blocks) == 0.0
+
+    def test_声明的曲目不在曲库则当场报FAIL(self, episode, monkeypatch):
+        """不静默估 0：那首曲子本来也渲染不出来，早报比渲染到一半才发现好。"""
+        monkeypatch.setattr(m, "load_tracks_multi", lambda ep: {"tracks": {}})
+        blocks = m.parse_script_music(episode / "02-script.md")
+        with pytest.raises(SystemExit, match="曲库匹配"):
+            m.natural_outro_tail(episode, blocks)
+
+
 class TestTrackForValidation:
     """曲目记录前置校验（2026-08-18 复盘②）：缺字段 / 文件不存在在解析
     时间轴时当场报——不拦的话错会流到渲染中段的 ffmpeg（文件不存在）

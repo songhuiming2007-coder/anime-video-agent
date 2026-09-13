@@ -437,21 +437,12 @@ def _music_seconds(script_path: Path) -> float:
     # 声明了上限的铺底块也要排除——铺底不占口播外的试听预算）
     dur = sum((b.t1 - b.t0) for b in blocks
               if b.t1 is not None and not b.bgm_only)
-    text = script_path.read_text(encoding="utf-8")
-    if "继续播放至完整版结束" in text or "播放至完整版结束" in text:
-        try:
-            from . import bgm
-            anime = bgm.anime_of(script_path.parent)
-            pools = list(dict.fromkeys(([anime] if anime else []) + bgm.animes_of(script_path.parent)))
-            for pool in pools:
-                tracks = bgm.load(pool).get("tracks", {})
-                for tr_name, meta in tracks.items():
-                    if tr_name in text and "dur" in meta:
-                        fg = next(((b.t1 - b.t0) for b in blocks if b.title == tr_name and b.t1 is not None), 0.0)
-                        dur += max(0.0, float(meta["dur"]) - fg - 90.0)
-                        break
-        except Exception:
-            dur += 240.0
+    # 自然收尾按**稿子里声明的那一首**算（2026-09-13 修）。旧实现在正文里扫
+    # 「第一个出现过的曲名」、而且每个池各加一次：三期实测把 EGOIST 的《最後の花弁》
+    # 与 罪恶王冠 的《Departures》都当成了收尾曲，比真正的《Last Song》多算 124s，
+    # 白压窄了 617 字的口播带。
+    # 末尾 -90s 是本估算自己的安全余量（真实收尾长度以 manifest 为准），一直如此。
+    dur += max(0.0, music.natural_outro_tail(script_path.parent, blocks) - 90.0)
     return dur
 
 
