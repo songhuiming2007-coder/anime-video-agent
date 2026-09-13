@@ -394,3 +394,107 @@ class TestBgmOnlyBlock:
         assert evs["测试曲甲"][1] == {"t0": 10.0, "t1": 20.0, "vol": "bgm", "at": 10.0}
         assert evs["测试曲乙"] == [{"t0": 0.0, "t1": 10.0, "vol": "bgm", "at": 20.0,
                                     "underlay": True}]
+
+
+class TestAvsyncLetsWayNotBoundary:
+    """音画同源槽只让路，不是 BGM 的终点（2026-09-13 第二期实测缺口）。
+
+    旧行为把槽当成「下一个音乐段」的边界：槽后所有段落永久失去床——第二期
+    同源槽插进段落 37-38 后，段落 38-43 整整 94 秒无音乐（片头三处空窗刚
+    修好，槽又开一个）。ADR-0013 只要求「槽内 BGM 完全静音」为源片原声让路，
+    没说槽后不再出声。所以槽按**暂停**处理：槽内曲内位置冻结，槽后从槽前的
+    位置接续（听众听到的是一首不被打断的歌）。
+    """
+
+    SLOT = ("## 音乐段 M5 · 现场海啸\n\n"
+            "源片原声: `测试企划 SP04` 00:21.60-00:31.60\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n")
+
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        script = tmp_path / "02-script.md"
+        script.write_text(body, encoding="utf-8")
+        return script
+
+    @staticmethod
+    def _manifest(*durs: float) -> dict:
+        return {"segments": [{"index": i + 1, "duration": d}
+                             for i, d in enumerate(durs)]}
+
+    def test_降为BGM的床跨槽接回(self, tmp_path: Path):
+        """M1 前景（降为 BGM）→ 段落1 → 同源槽 → 段落2 → 下一首：床必须
+        覆盖段落 1 与段落 2（槽前一段、槽后一段），终点仍是下一个音乐段。"""
+        self._write(tmp_path,
+            "## 音乐段 M1 · 前景\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 降为 BGM\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n" + self.SLOT +
+            "\n## 段落 2\n\n配音：第二段。\n\n"
+            "## 音乐段 M2 · 下一首\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n")
+        plan = m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
+        # 时间轴：M1 0-10 / 段1 10-20 / 槽 20-30 / 段2 30-40 / M2 40-50
+        assert [(s["index"], s["start"]) for s in plan["segments"]] == [(1, 10.0), (2, 30.0)]
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲甲"]
+        assert evs == [
+            {"t0": 0.0, "t1": 10.0, "vol": "foreground", "at": 0.0},
+            {"t0": 10.0, "t1": 20.0, "vol": "bgm", "at": 10.0},   # 段落 1，止于槽口
+            {"t0": 20.0, "t1": 30.0, "vol": "bgm", "at": 30.0},   # 段落 2，槽后续播
+        ]
+
+    def test_槽后床不越过下一个音乐段(self, tmp_path: Path):
+        """接回的床仍以「下一个音乐段开始」为终点——不能因为跨槽就铺过头，
+        否则下一首前景起来时两条床叠在一起。"""
+        self._write(tmp_path,
+            "## 音乐段 M1 · 前景\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+            "状态：前景试听，旁白停止\n过渡: 降为 BGM\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n" + self.SLOT +
+            "\n## 段落 2\n\n配音：第二段。\n\n"
+            "## 音乐段 M2 · 下一首\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n")
+        plan = m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲甲"]
+        last = [e for e in evs if e["vol"] == "bgm"][-1]
+        assert last["at"] + (last["t1"] - last["t0"]) == pytest.approx(40.0)
+
+    def test_铺底块跨槽也接回(self, tmp_path: Path):
+        """铺底块（underlay）同规矩：槽不是铺底边界。"""
+        self._write(tmp_path,
+            "## 音乐段 B1 · 铺底\n\n音乐: `测试曲甲` 完整版 00:00\n状态: 背景铺底\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n" + self.SLOT +
+            "\n## 段落 2\n\n配音：第二段。\n\n"
+            "## 音乐段 M2 · 前景\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n")
+        plan = m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲甲"]
+        assert evs == [
+            {"t0": 0.0, "t1": 10.0, "vol": "bgm", "at": 0.0, "underlay": True},
+            {"t0": 10.0, "t1": 20.0, "vol": "bgm", "at": 20.0, "underlay": True},
+        ]
+
+    def test_铺底块封顶在槽后按曲内上限截(self, tmp_path: Path):
+        """`MM:SS-MM:SS` 封顶是**曲内**上限：槽内冻结因此不吃掉封顶额度，
+        槽后按剩余额度截短（写死了 `t0 + 成片时长` 就会多播 10s）。"""
+        self._write(tmp_path,
+            "## 音乐段 B1 · 铺底\n\n音乐: `测试曲甲` 完整版 00:00-00:15\n"
+            "状态: 背景铺底\n\n"
+            "## 段落 1\n\n配音：第一段。\n\n" + self.SLOT +
+            "\n## 段落 2\n\n配音：第二段。\n\n"
+            "## 音乐段 M2 · 前景\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n")
+        plan = m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
+        evs = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲甲"]
+        assert evs[0]["t1"] == pytest.approx(10.0)
+        assert evs[1]["t0"] == pytest.approx(10.0)
+        assert evs[1]["t1"] == pytest.approx(15.0), "封顶 15s，槽后只剩 5s"
+        assert evs[1]["at"] == pytest.approx(20.0)
+
+    def test_槽落在自然收尾区间内当场失败(self, tmp_path: Path):
+        """收尾段是一整段连续音乐，中途切不出静音：槽落进去 = 现场原声被音乐床
+        压着播（ADR-0013 禁止的两张皮），而且是静默发生。当期结构要改，当场报。"""
+        self._write(tmp_path,
+            "## 音乐段 M1 · 前景\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+            "状态: 前景试听，旁白停止\n过渡: 结尾自然淡出\n\n"
+            "## 段落 1\n\n配音：第一段。\n"
+            "音乐: `测试曲甲` 继续播放至完整版结束\n\n" + self.SLOT +
+            "\n## 段落 2\n\n配音：第二段。\n")
+        with pytest.raises(SystemExit, match="自然收尾区间"):
+            m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
