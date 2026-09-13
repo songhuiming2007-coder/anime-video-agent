@@ -1908,3 +1908,77 @@ class TestFullRerunGuard:
         t.run(ep, cfg_path=new_cfg, force_all=True)
         mf = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
         assert mf["engine"] == "qwen3_tts_cuda"
+
+    # ---- 第三条路：只把点名的段换引擎（2026-09-13 三期实例）----
+
+    def _load(self, ep):
+        return json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+
+    def _multi_episode(self, tmp_path, cfg, n=3, changed=()):
+        """n 段，全部已配音；changed 里的段在稿件里改成新文本（模拟「只改了一段」）。"""
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        script, segs = [], []
+        for i in range(1, n + 1):
+            old_text = f"第{i}段。"
+            script.append(f"## 段落 {i}\n\n配音：{old_text if i not in changed else f'第{i}段（改）。'}\n")
+            (ep / "03-audio" / f"seg-{i:02d}.wav").write_bytes(b"RIFF fake")
+            segs.append({"index": i, "label": str(i), "text": old_text,
+                         "file": f"seg-{i:02d}.wav", "duration": 2.0, "cer": 0.0,
+                         "attempts": 1, "speakable": t.speakable(old_text),
+                         "synth_logic": t.SYNTH_LOGIC_VERSION, "seed_base": 7})
+        (ep / "02-script.md").write_text("\n".join(script), encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(json.dumps(
+            {**t._voice_fingerprint(cfg), "segments": segs}, ensure_ascii=False),
+            encoding="utf-8")
+        return ep
+
+    def _fake_render(self, monkeypatch):
+        calls = []
+
+        class _E:
+            kind = "qwen3_tts_cuda"
+            seed_offset = 7
+            segment_seeds: dict = {}
+
+        def fake(eng, seg, dest):
+            calls.append(seg.index)
+            return t.Take(seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1)
+
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: _E())
+        monkeypatch.setattr(t, "render_segment", fake)
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+        return calls
+
+    def test_混引擎只重做点名的段_其余不动(self, tmp_path, monkeypatch):
+        """没这条路时，改一段稿子要么开云端 GPU、要么把 39 段已审听的音频全废。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        old_cfg = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._multi_episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")),
+                                n=3, changed={2})
+        calls = self._fake_render(monkeypatch)
+        t.run(ep, cfg_path=self._cfg(tmp_path, "qwen3_tts_cuda"),
+              redo=["2"], allow_engine_mix=True)
+        # 段 2 文本变了 → 本来就要重做；段 1/3 文本没变、只是引擎变了 → 必须复用
+        assert calls == [2], f"只有段 2 该被合成，实际合成了 {calls}"
+        mf = self._load(ep)
+        assert mf["_mixed_engine"] == {"qwen3_tts": [1, 3], "qwen3_tts_cuda": [2]}
+        assert mf["segments"][0]["file"] == "seg-01.wav"      # 旧产物还在盘上
+
+    def test_不给_allow_engine_mix_就还是拦住(self, tmp_path, monkeypatch):
+        """开关是显式的：没写它，换引擎一律回到「整期作废」那条报警。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        old_cfg = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._multi_episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")),
+                                n=3, changed={2})
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: pytest.fail("不该载模型"))
+        with pytest.raises(SystemExit, match="allow-engine-mix"):
+            t.run(ep, cfg_path=self._cfg(tmp_path, "qwen3_tts_cuda"), redo=["2"])
+
+    def test_allow_engine_mix_不带_redo_无效(self, tmp_path, monkeypatch):
+        """没有点名段就不是「只换一部分」——那是全量重配，不许从这条门进来。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        old_cfg = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._multi_episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")), n=3)
+        with pytest.raises(SystemExit, match="allow-engine-mix"):
+            t.run(ep, cfg_path=self._cfg(tmp_path, "qwen3_tts_cuda"), allow_engine_mix=True)

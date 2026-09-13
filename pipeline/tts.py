@@ -1753,7 +1753,7 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
 
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         review: dict[str, int] | None = None, redo: list[str] | None = None,
-        force_all: bool = False) -> Path:
+        force_all: bool = False, allow_engine_mix: bool = False) -> Path:
     if force and redo:
         raise SystemExit("FAIL --force 与 --redo 互斥：前者全量重做，后者只做点名的段")
     paths.require_data()
@@ -1796,25 +1796,43 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     # 换引擎比 --force 更险：engine/model 在复用指纹里，所以**任何**跑法（连 `--redo 3,7`
     # 也一样）都会把本期旧产物全部重配——工具层没有「只换一部分引擎」的路。
     # 不能让调用方在不知情下走进去：报清楚后果，给出两条正路。
+    #
+    # 2026-09-13 补第三条路（三期实例）：稿子只改了一段，而改它的那天本地只有 mlx——
+    # 前两条路一条要求开云端 GPU、一条要求把已审听的 39 段全部重配（人耳是最贵的资源）。
+    # 缺的不是答案而是这条路本身，所以把它修成显式开关：点名段用新引擎、其余段按
+    # **产出它们的那份引擎**判复用，并把混引擎事实按段序号写在 manifest 里（不静默）。
+    mixing = False
     if old_mf is not None and not force_all:
         old_pair = (old_mf.get("engine"), old_mf.get("model"))
         new_pair = (cfg["engine"], cfg["model"])
         if old_pair != new_pair:
-            raise SystemExit(
-                f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
-                f"     engine/model 在复用指纹里 → 本期旧产物会**全部**重配\n"
-                f"     （连 `--redo 3,7` 也一样，只换一部分引擎在本工具里没有路）。\n"
-                f"     这意味着人耳审听整期作废。两条正路，由人定：\n"
-                f"       ① 换回产出本期音频的那份 config → 只补点名的段：`--redo 3,7`\n"
-                f"       ② 确认全量重配、接受全部重听 → `--force-all`")
+            if not (allow_engine_mix and redo):
+                raise SystemExit(
+                    f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                    f"     engine/model 在复用指纹里 → 本期旧产物会**全部**重配\n"
+                    f"     （连 `--redo 3,7` 也一样，只换一部分引擎在本工具里没有路）。\n"
+                    f"     这意味着人耳审听整期作废。三条正路，由人定：\n"
+                    f"       ① 换回产出本期音频的那份 config → 只补点名的段：`--redo 3,7`\n"
+                    f"       ② 确认全量重配、接受全部重听 → `--force-all`\n"
+                    f"       ③ 只把点名的段换引擎，接受混引擎成片（其余段原样复用、不废审听）\n"
+                    f"          → `--redo 3,7 --allow-engine-mix`")
+            mixing = True
+            print(f"WARN 混引擎点名重做：{old_pair[0]} → {new_pair[0]}，"
+                  f"只重做点名的段，其余段按 {old_pair[0]} 的指纹复用", file=sys.stderr)
 
     done: dict[int, Take] = {}
     if manifest_path.exists() and not force:
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
-        done = _reusable(old, segs, out_dir, cfg)
+        # 混引擎时复用判据要退回**旧引擎**的指纹，否则新引擎把整期判成陈旧，
+        # 点名重做就变成全量重做（那正是这道开关要避的）。只回退配置指纹这一层，
+        # 段级的文本/读音表/钉种子比对一字不动。
+        reuse_cfg = ({**cfg, "engine": old.get("engine"), "model": old.get("model")}
+                     if mixing else cfg)
+        done = _reusable(old, segs, out_dir, reuse_cfg)
     if redo:
         named = _apply_redo(done, segs, redo, cfg)
         print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
+    mixed_from = sorted(set(range(1, len(segs) + 1)) - set(done)) if mixing else []
 
     miss = _unmeasured_titles([s.text for s in segs])
     if miss:
@@ -1827,6 +1845,20 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     takes: list[Take] = []
     t0 = time.perf_counter()
     vo_hash = compute_script_vo_hash(script)
+
+    def _mixed_note() -> dict:
+        """混引擎成片的按段报账（不静默）。
+
+        两边都要写：没有它，顶层 engine 就变成一个会把读者骗到的数字——它只代表
+        「最后一次写入这份 manifest 的引擎」，而那一期里其实混着两个引擎。
+        """
+        if not mixing:
+            return {}
+        return {"_mixed_engine": {
+            old_mf.get("engine"): sorted(set(done)),
+            cfg["engine"]: mixed_from,
+        }}
+
     def _save_manifest():
         total = sum(t.duration for t in takes)
         # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
@@ -1841,6 +1873,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
                     # 03.5/05 人工打点槽位（架构设计 2.3）：eval 从这里取主观分。
                     # 无打点时为 null——**不是 0 分**，缺失与低分必须可区分（E10）。
                     "human_review": existing_review,
+                    **_mixed_note(),
                     # 每段自带 synth_logic（段级）。顶层这个值只是「最后一次写入者的版本」，
                     # **混血一期里新老交替时它一定是新的**，别拿它判混血（见 run() 结尾报账）。
                     "segments": [asdict(t) for t in takes],
@@ -1939,6 +1972,10 @@ def main() -> int:
     r.add_argument("--redo", type=str, default=None,
                    help="只重做点名段（逗号分隔的段号，如 11,12.3）；其余段原样保留。"
                         "传 stale = 重做所有旧合成逻辑的段")
+    r.add_argument("--allow-engine-mix", action="store_true",
+                   help="只把 --redo 点名的段换成当前 config 的引擎，其余段按产出它们的"
+                        "旧引擎复用（接受一期里混两个引擎的成片；否则换引擎只能全量重配）。"
+                        "混的段号会写进 manifest 的 _mixed_engine")
 
     p = sub.add_parser("probe", help="单句试音")
     p.add_argument("text")
@@ -1960,7 +1997,7 @@ def main() -> int:
         run(a.episode, a.force, a.config,
             parse_review_arg(a.review) if a.review else None,
             redo=[t for t in re.split(r"[,\s]+", a.redo) if t] if a.redo else None,
-            force_all=a.force_all)
+            force_all=a.force_all, allow_engine_mix=a.allow_engine_mix)
     return 0
 
 
