@@ -777,14 +777,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # 6. 五大模型逐一核查
     print("-" * 65)
-    print("模型资产在位核查 (/root/autodl-tmp/models):")
+    # 模型根目录走 config/cloud.json 的 remote_models（2026-09-16 接线：键早就
+    # 声明了，代码一直没读）。注意 remote_data 是**有意不接线**的，见该键的 _note。
+    models_root = cfg_global.get("remote_models", "/root/autodl-tmp/models")
+    print(f"模型资产在位核查 ({models_root}):")
     for m_id, spec in models_spec.items():
         m_dir = spec.get("dir", m_id)
         min_gb = float(spec.get("min_gb", 1.0))
         desc = spec.get("description", "")
         chk_cmd = (
-            f"if [ -d '/root/autodl-tmp/models/{m_dir}' ]; then "
-            f"  du -s -BG '/root/autodl-tmp/models/{m_dir}' | awk '{{print $1}}' | tr -d 'G'; "
+            f"if [ -d '{models_root}/{m_dir}' ]; then "
+            f"  du -s -BG '{models_root}/{m_dir}' | awk '{{print $1}}' | tr -d 'G'; "
             f"else echo 'MISSING'; fi"
         )
         m_res = _ssh(chk_cmd, host=host, check=False)
@@ -796,7 +799,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"OK    [MODEL] {m_id:<30} ({sz_gb:.1f}GB ≥ {min_gb}GB) - {desc}")
                     # 体积只证存在、不证完整：再跑一层结构校验（任务 0）。
                     # 失败不推翻体积结论，但会拉倒 all_passed。
-                    st_res = _ssh(build_model_structure_probe_cmd(m_dir, python=remote_python(cfg_global)),
+                    st_res = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=remote_python(cfg_global)),
                                   host=host, check=False, timeout=90)
                     st_tag, st_desc = parse_model_structure_result(st_res.stdout, st_res.returncode)
                     print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
@@ -807,7 +810,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     all_passed = False
                     print(f"FAIL  [MODEL] {m_id:<30} 体积不足 ({sz_gb:.1f}GB < {min_gb}GB) - {desc}")
                     print(f"      下载修复命令:")
-                    print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"/root/autodl-tmp/models/{m_dir}\\\")\"'")
+                    print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"{models_root}/{m_dir}\\\")\"'")
             except ValueError:
                 all_passed = False
                 print(f"FAIL  [MODEL] {m_id:<30} 状态异常 - {desc}")
@@ -815,7 +818,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             all_passed = False
             print(f"FAIL  [MODEL] {m_id:<30} 缺失 - {desc}")
             print(f"      下载修复命令:")
-            print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"/root/autodl-tmp/models/{m_dir}\\\")\"'")
+            print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"{models_root}/{m_dir}\\\")\"'")
 
     print("=" * 65)
     if all_passed:
@@ -924,11 +927,16 @@ def cmd_down(args: argparse.Namespace) -> int:
 
     sfile = get_active_session_file()
     session_info: dict = {}
+    session_corrupt = False
     if sfile.exists():
         try:
             session_info = json.loads(sfile.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            # 不静默（审计 F10）：损坏还按「无会话」走会把 up_epoch 默认成当前时间，
+            # 几小时的开机费用被算成 0 元，随后 unlink 连证据一起销毁
+            session_corrupt = True
+            print(f"WARN 会话文件损坏，按未知会话结算（时长/费用不可靠）: {e}",
+                  file=sys.stderr)
 
     # 先探一次连通性：它同时决定「时长可信度」与「模式判定」。
     # 若实例已被 watchdog 自动关机，本地根本联系不上，只能把时长算到此刻——
@@ -963,6 +971,8 @@ def cmd_down(args: argparse.Namespace) -> int:
             "实例在结算前已停止响应（多为 watchdog 自动关机）；"
             "gpu_seconds 为上界估计，含关机到本地发现之间的延迟"
         )
+    if session_corrupt:
+        note = (note + "；" if note else "") + "会话文件损坏，时长从 0 起算，费用严重低估"
 
     ledger_entry = format_ledger_entry(
         session_id=session_info.get("session", f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
@@ -980,7 +990,7 @@ def cmd_down(args: argparse.Namespace) -> int:
     with lfile.open("a", encoding="utf-8") as f:
         f.write(json.dumps(ledger_entry, ensure_ascii=False) + "\n")
 
-    if sfile.exists():
+    if sfile.exists() and not session_corrupt:
         sfile.unlink()
 
     print("=" * 60)
@@ -1075,8 +1085,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"已运行时间   : {elapsed // 60} 分 {elapsed % 60} 秒")
             cost_color = "\033[91m" if cur_cost > budget else "\033[92m"
             print(f"已产生费用   : {cost_color}¥{cur_cost:.4f}\033[0m 元 (基准单价: ¥{rate}/小时, 限额: ¥{budget})")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"WARN 会话文件损坏，无法展示当前会话: {e}", file=sys.stderr)
 
     lfile = get_ledger_file()
     if lfile.exists():
@@ -1171,8 +1181,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 sdata["tasks"].append(task)
             sdata["episode"] = ep_dir.name
             sfile.write_text(json.dumps(sdata, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"WARN 会话文件损坏，本次任务未记账（不影响远端执行）: {e}",
+                  file=sys.stderr)
 
     _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
 
