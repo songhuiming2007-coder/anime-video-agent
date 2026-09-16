@@ -431,10 +431,12 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | 
             **({"sp": True} if anchor["season"] is None else {})}
 
 
-# 尾帧定格延展的上限（秒）。锚点段的画面不可替代（名场面/指定镜头），素材自然
+# 尾帧定格延展的上限。锚点段的画面不可替代（名场面/指定镜头），素材自然
 # 时长不够填满口播时允许定格末帧补足（status=ok_extended，render 用 tpad 克隆
-# 末帧），但定格超过这个数就是「盯着静帧发呆」，不是延展——退回 short 交人处理。
-EXTEND_MAX = 8.0
+# 末帧），但定格超过上限就是「盯着静帧发呆」，不是延展——退回 short 交人处理。
+# 常量本体住在 align.py（approve/render 两道闸的 verify_alignment 也要用它，
+# 而 align 是不能 import 本模块的零依赖叶子），本模块从尾部那次 import 拿，
+# `clips.EXTEND_MAX` 的外部引用不破。
 
 
 def size(chosen: list[dict], need: float,
@@ -519,7 +521,7 @@ def size(chosen: list[dict], need: float,
 # 单独叶子模块，review/render 的纯文件校验不因 import 本模块（连带
 # sentence_transformers）而背上 ML 依赖。本模块的 `--refit` 与 size() 语义
 # 从那里 import。
-from .align import REFIT_MIN_CLIP, SEG_TOL, refit, verify_alignment, verify_script_vo_hash  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` 不改名）
+from .align import EXTEND_MAX, REFIT_MIN_CLIP, SEG_TOL, refit, verify_alignment, verify_script_vo_hash  # noqa: F401  （re-export：既有调用方 `clips.verify_alignment` / `clips.EXTEND_MAX` 不改名）
 
 
 def _allocate(live, by_index, sources, anime, quota, pre=()):

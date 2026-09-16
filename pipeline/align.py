@@ -73,6 +73,16 @@ SEG_TOL = 0.05
 REFIT_MIN_CLIP = 2.5
 
 
+# 尾帧定格延展的上限（秒）。锚点段画面不可替代（名场面/指定镜头），素材自然
+# 时长不够填满口播时允许定格末帧补足，但定格超过这个数就是「盯着静帧发呆」。
+# **定义在本模块而不是 clips.py**：verify_alignment 是 approve 与 render 两道闸
+# 的公共校验（人审手改 approved.json 的 extend 必须能在这里被拦下），而本模块
+# 是零依赖叶子，不能为拿一个常量去 import clips 的 ML 栈。clips 从这里 import
+# 并 re-export（2026-09-16 审计 F2：此前它只活在 clips.size() 的生成路径里，
+# 人改产物无处被拦）。
+EXTEND_MAX = 8.0
+
+
 def _key_of(c: dict) -> str | None:
     """clip → 片源登记键。season=None 是 SP 特典集（`SP01`）。
 
@@ -106,6 +116,14 @@ def verify_alignment(segments: list[dict], audio: list[dict]) -> list[str]:
         if not clips:
             violations.append(f"段{seg['index']}: status={seg['status']} 但 clips 为空")
             continue
+        # 尾帧定格延展上限（STANDARD 十二，ADR-0011）：生成侧 clips.size() 不会
+        # 产出超限段，但 approved.json 是人审手改的产物——超限在这里拦，
+        # approve 与 render 两道闸同时生效。
+        over = [c.get("extend", 0.0) for c in clips if c.get("extend", 0.0) > EXTEND_MAX]
+        if over:
+            violations.append(
+                f"段{seg['index']}: 尾帧定格延展 {max(over):.2f}s 超上限 {EXTEND_MAX:g}s"
+                f"（ADR-0011：定格超过它就是盯着静帧发呆——改稿或换素材，不是放宽上限）")
         got = sum(c["dur"] + c.get("extend", 0.0) for c in clips)
         need = a["duration"]
         d = got - need
@@ -144,7 +162,10 @@ def refit(segments: list[dict], audio: list[dict],
         last = clips[-1]
         if seg["status"] == "ok_extended":
             ext = last.get("extend", 0.0)
-            if ext + drift >= -SEG_TOL:        # 定格自己吸收得了（含刚好减到 0）
+            # 上限一侧也要管（2026-09-16 审计 F2 红队补充）：正漂移把定格推过
+            # EXTEND_MAX 时不许再由定格吸收——否则 refit 自己产出的段会被
+            # verify_alignment 的延展上限拦下。退回普通末片 dur 吸收（下方既有路径）。
+            if -SEG_TOL <= ext + drift <= EXTEND_MAX:        # 定格自己吸收得了（含刚好减到 0）
                 new_ext = round(max(0.0, ext + drift), 3)
                 if new_ext <= SEG_TOL:         # 定格减没了，退回普通段
                     last.pop("extend", None)

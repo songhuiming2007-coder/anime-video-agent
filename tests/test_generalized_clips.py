@@ -382,6 +382,32 @@ class TestAlignExtend:
         assert "extend" not in last and last["dur"] == pytest.approx(5.0)
         assert out[0]["status"] == "ok"
 
+    def test_verify_定格延展超上限报违例(self):
+        """审计 F2（2026-09-16）：approved.json 是人审手改的产物，verify_alignment
+        此前不查 extend——手改 extend=30 会一路渲出 30 秒定格且 qc 全绿。
+        STANDARD 十二的门禁落点就是这道闸（approve 与 render 都调它）。
+        变异：删掉 verify_alignment 里的 extend 上限判据 → 本条红。"""
+        over = [{"index": 1, "status": "ok_extended",
+                 "clips": [{"dur": 6.0, "extend": 9.0}]}]
+        assert any("延展" in v for v in align.verify_alignment(over, [{"duration": 15.0}]))
+        ok = [{"index": 1, "status": "ok_extended",
+               "clips": [{"dur": 6.0, "extend": 8.0}]}]
+        assert align.verify_alignment(ok, [{"duration": 14.0}]) == []   # 边界 8.0 放行
+
+    def test_refit_定格正溢出退回末片吸收(self):
+        """红队补充（F2）：refit 不能产出被自己门禁枪毙的产物。
+        ext 6 + 正漂移 5 = 11 > EXTEND_MAX 8 → 退回普通段，末片 dur 吸收全部漂移。"""
+        segs = [{"index": 1, "status": "ok_extended", "clips": [
+            {"season": None, "episode": 1, "source": "/sp.mkv",
+             "start": 90.0, "dur": 4.0, "extend": 6.0}]}]
+        out, report = align.refit(segs, [{"duration": 15.0}],
+                                  {"SP01": {"path": "/sp.mkv", "duration": 120.0}})
+        last = out[0]["clips"][-1]
+        assert out[0]["status"] == "ok" and "extend" not in last
+        assert last["dur"] == pytest.approx(15.0)
+        # 产物必须能过自己那道门禁：Σdur == need 且无 extend 超限
+        assert align.verify_alignment(out, [{"duration": 15.0}]) == []
+
     def test_refit_SP末片按SP键查片源(self):
         # season=None 的末片必须查 "SP01"，不能拼成 "S00E01"（OVA 已被占）
         segs = [{"index": 1, "status": "ok", "clips": [
