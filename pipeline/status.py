@@ -38,8 +38,20 @@ def inspect_episode(ep_dir: Path) -> EpisodeStatus:
     has_clips = (d / "04-clips.json").exists()
     has_approved = (d / "04-clips.approved.json").exists()
     has_final = (d / "05-final.mp4").exists()
-    has_qc = (d / "06-check.log").exists()
-    has_cover = (d / "07-titles.md").exists() or (d / "07-cover").exists()
+    # 质检的判据是 log **内容**，不是 log 存在——qc 失败也写 06-check.log，
+    # 只看存在会把 FAIL 的期报成「质检已通过」（审计 F8）。判据复用
+    # eval.parse_qc_log（认 FAIL/SKIP 行），不在这里发明第二份解析。
+    qc_log = d / "06-check.log"
+    qc_failed: list[str] | None = None
+    if qc_log.exists():
+        from .eval import parse_qc_log
+        ok, qc_failed = parse_qc_log(qc_log.read_text(encoding="utf-8"))
+        if ok:
+            qc_failed = None
+    has_qc = qc_log.exists() and qc_failed is None
+    # 封面同理：build() 一开始就建 07-cover/ 目录，筛空崩掉也留目录——
+    # 认目录会误报 08 完成，认最终产物 index.html 才是「真出过候选」
+    has_cover = (d / "07-titles.md").exists() or (d / "07-cover" / "index.html").exists()
 
     completed: list[str] = []
     if has_topic:
@@ -87,6 +99,21 @@ def inspect_episode(ep_dir: Path) -> EpisodeStatus:
             docs_ref="docs/runbook/02-script.md",
         )
 
+    # 2.5. 草稿已出、定稿未成：还在 02，不是 02.5——02.5 的 diff 命令
+    # 需要 02-script.md 存在，把它指到一份不存在的文件上是把人往沟里带（审计 F7）
+    if not has_script:
+        return EpisodeStatus(
+            episode_dir=str(d),
+            episode_name=name,
+            current_step="02 脚本写作（草稿待定稿）",
+            is_blocked=False,
+            block_reason=None,
+            completed_steps=completed,
+            next_action="02-script.draft.md 已出。精修后落定为 02-script.md，并执行 check_script 机检。",
+            next_command=f"python -m pipeline.check_script {d}/02-script.md",
+            docs_ref="docs/runbook/02-script.md",
+        )
+
     # 3. 待人审改稿 (02.5 停机点)
     if not has_audio:
         if not has_diff:
@@ -121,10 +148,13 @@ def inspect_episode(ep_dir: Path) -> EpisodeStatus:
             episode_dir=str(d),
             episode_name=name,
             current_step="03.5 配音顺听 / 04 排片",
+            # 03.5 是 runbook 里的【建议】人工停机点（非强制物理关卡，下游不消费
+            # 打点产物），机器语义上不阻塞——但建议必须显眼，不能悄悄滑过去
             is_blocked=False,
-            block_reason="🛑 人工停机点 2（03.5 顺听）：建议人耳抽检开头与最长段音频无错字发飘。",
+            block_reason=None,
             completed_steps=completed,
-            next_action="顺听确认语速与音色正常后，启动三通道画面排片分派。",
+            next_action="⚠️ 建议先过人耳停机点 03.5：抽检开头与最长段音频无错字发飘，\n"
+            "  确认后启动三通道画面排片分派。",
             next_command=f"python -m pipeline.clips {d}",
             docs_ref="docs/runbook/04-clips.md",
         )
@@ -157,8 +187,21 @@ def inspect_episode(ep_dir: Path) -> EpisodeStatus:
             docs_ref="docs/runbook/06-render.md",
         )
 
-    # 7. 渲染完成，待质检
+    # 7. 渲染完成，待质检（质检未过 = 打回重修，不是「已完成」）
     if not has_qc:
+        if qc_failed:
+            return EpisodeStatus(
+                episode_dir=str(d),
+                episode_name=name,
+                current_step="07 自动质检（未通过）",
+                is_blocked=False,
+                block_reason=None,
+                completed_steps=completed,
+                next_action="质检门禁未全绿，修复后重跑质检：\n  "
+                + "\n  ".join(qc_failed[:5]),
+                next_command=f"python -m pipeline.qc {d}",
+                docs_ref="docs/runbook/07-qc.md",
+            )
         return EpisodeStatus(
             episode_dir=str(d),
             episode_name=name,
