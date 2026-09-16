@@ -1,6 +1,6 @@
 """素材自动化搜集：抓取 / 门禁 / 登记（M2.5）。
 
-**分层（[plan 2026-09-10 §6.1](../docs/plans/2026-09-10-v2-architecture-design.md)）**：
+**分层（[plan 2026-09-10 §6.1](../docs/dev/plans/2026-09-10-v2-architecture-design.md)）**：
 检索与「这本画册是不是那本」这类判断是探索密集型劳动，没有机器判据——归 skill + agent；
 这里只做**确定性**的三件事：
 

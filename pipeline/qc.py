@@ -406,7 +406,7 @@ def check(video: Path, plan: dict | None = None,
                 [(float(a), float(b)) for a, b in blacks], plan, seg_starts)
             # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
             # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
-            # 可能早于请求位置（BLACK_SRC_BUF 的职责在这里，常量已删，见下）。
+            # 可能早于请求位置；BLACK_SRC_BUF 就是为这种边界黑段留的放宽。
             by_src: dict[str, list[tuple[str, float, float, float, float, int, int]]] = {}
             for span in mapped:
                 src, slo, shi, flo, fhi, idx, bi = span

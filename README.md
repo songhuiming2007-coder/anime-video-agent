@@ -68,7 +68,7 @@ pytest
 | **5. 音色试音** | 筛选并标定口播音色参考音频 | `python -m pipeline.tts probe "测试文本" --ref data/voice/reference/sample.wav` |
 | **6. BGM 建池** | 解 cue、转码 flac 并测量响度入库 | `python -m pipeline.bgm scan <CD目录> && python -m pipeline.bgm measure ...` |
 
-详细参数与多模态索引规范详见 [`docs/WORKFLOW.md` Phase 0 章节](docs/WORKFLOW.md)。
+详细参数与多模态索引规范详见 [`docs/dev/postmortems/workflow-history.md` Phase 0 章节](docs/dev/postmortems/workflow-history.md)。
 
 ---
 
