@@ -107,7 +107,7 @@
 - **配置的注记只写技术依据，不写决策过程。**「为什么是这个数」进配置（进 git、进历史）；「谁拍板、哪期、什么考虑」落期目录 `01-topic.md`（不进 git）。开源仓库与自用生产同库，配置是唯一会泄过程叙事的地方。（2026-08-31 立）
 - **脚本绝不自动创建 `data/`，不可达立刻报错退出。** 符号链接指向未挂载的卷时，mkdir 会把几十 G 静默写进系统盘、且盘插上后看不见。建骨架是显式动作：`./pipeline/preflight.sh --init <目标目录>`。
 - HF 缓存：本项目在 `data/models/hub/`（由 paths.py 钉住）；机器上其他工具走外置盘 `hf-cache/`。**盘没插时 HF 工具全报错——这是有意的**，宁当场失败不静默灌内置盘。
-- 目录：`pipeline/`(各阶段脚本，每个可独立运行) `skills/`(写稿 skill) `config/`(project/voice/bgm/characters/scenes，机制与内容的分界见各文件 `_note`) `tests/`(纯函数测试) `docs/`。
+- 目录：`pipeline/`(各阶段脚本，每个可独立运行) `skills/`(写稿 skill) `config/`(project/voice/bgm/characters/scenes，机制与内容的分界见各文件 `_note`) `tests/`(纯函数测试) `docs/` `scripts/`(一次性数据迁移脚本——跑完即留作审计轨迹，不进每期循环) `tools/`(前置数据清洗工具，如跨目录字幕软链)。
 
 ### 素材硬规则
 
