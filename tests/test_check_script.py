@@ -838,3 +838,18 @@ class TestDocumentaryGenre:
         assert "01-hero-shots" in hint
         assert "acquire" in hint
 
+
+
+def test_音乐段解析异常不静默归0(tmp_path, monkeypatch):
+    """红队 R6：解析异常若静默归 0，试听型稿会被按纯口播带卡字数，误杀合规稿
+    且报告里看不出原因。变异：改回 except Exception: return 0.0 → 红。"""
+    import pipeline.check_script as cs
+    script = tmp_path / "02-script.md"
+    script.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
+
+    def _boom(p):
+        raise ValueError("解析器 bug")
+
+    monkeypatch.setattr("pipeline.music.parse_script_music", _boom)
+    with pytest.raises(SystemExit, match="音乐段解析异常"):
+        cs._music_seconds(script)

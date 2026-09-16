@@ -97,6 +97,27 @@ class TestCrop:
         assert (out.width, out.height) == (80, 80)
 
 
+class TestCropsWiring:
+    """簇联系表抽脸的接线测试（2026-09-16 审计 R1）：_crops 曾漏传 crop 的
+    必选参数 expand，一跑 cluster_sheet 就是裸 TypeError——函数级测试全绿、
+    整条通路零覆盖。测的是接线，不是 crop 本身。变异：删掉 expand 实参 → TypeError 红。"""
+
+    def test_crops走通(self, tmp_path, monkeypatch):
+        from PIL import Image
+        monkeypatch.setattr(faces.paths, "CONFIG", tmp_path)
+        monkeypatch.setattr(faces.paths, "_CONF", None)
+        (tmp_path / "project.json").write_text(json.dumps(
+            {"visual": {"face_expand": {"X": 1.6}}}), encoding="utf-8")
+        frame = tmp_path / "frame.png"
+        Image.new("RGB", (100, 100), (128, 64, 200)).save(frame)
+        monkeypatch.setattr(faces, "load_faces",
+                            lambda a, ep: ([{"shot": 0, "box": [10, 10, 30, 30]}], None))
+        monkeypatch.setattr(faces.shots, "frame_path", lambda a, ep, s: frame)
+        db = {"clusters": {"3": {"protos": [{"episode": "S01E01", "face": 0}]}}}
+        cells = faces._crops("X", "3", db, 1, tmp_path / "out")
+        assert len(cells) == 1 and cells[0][0].exists()
+
+
 class TestConstants:
     """ccip 三值按番分键（2026-09-05 审计 P1-1）；结构关系与具体数值解耦，
     用临时配置注入，不读本机真实 project.json（clone 下来就能跑）。"""

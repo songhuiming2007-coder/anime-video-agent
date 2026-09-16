@@ -905,6 +905,7 @@ class TestAnimeFallback:
         (ep / "02-script.md").write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
         (ep / "03-audio" / "manifest.json").write_text(
             '{"segments": [{"duration": 5.0}]}', encoding="utf-8")
+        monkeypatch.setattr(c.paths, "require_data", lambda *a, **k: None)
         monkeypatch.setattr(c.paths, "conf", lambda d, default=None: default)
         monkeypatch.setattr("sys.argv", ["clips", str(ep)])
         with pytest.raises(SystemExit, match="番名"):
@@ -932,6 +933,7 @@ class TestRefitAtomic:
         (ep / "03-audio").mkdir()
         (ep / "03-audio" / "manifest.json").write_text(
             '{"segments": [{"duration": 6.0}]}', encoding="utf-8")
+        monkeypatch.setattr(c.paths, "require_data", lambda *a, **k: None)
         monkeypatch.setattr(c, "load_sources",
                             lambda a: {"S01E01": {"path": "/x.mkv", "duration": 600.0}})
         monkeypatch.setattr("sys.argv", ["clips", str(ep), "--refit"])

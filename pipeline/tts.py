@@ -268,10 +268,9 @@ def _titles() -> list[str]:
     Qwen3-TTS 能念英日歌名，但 Whisper 回读把歌名听岔（エウテルペ→EUTERPE），
     CER 虚高到 100%+，TTS 念对也被门禁误杀（2026-08-15 实测段落 5.1 三次重试全挂）。
     歌名区段不参与 CER 比对；歌名前后的中文照常比对。
-    只读一次，不能每句读文件。
+    走 `_voice_cfg` 的按路径缓存，不每句读盘。
     """
-    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-    v = cfg.get("titles", {})
+    v = _voice_cfg(CONFIG).get("titles", {})
     if isinstance(v, dict):
         v = [k for k in v if not k.startswith("_")]
     return [t for t in v if t]
@@ -285,8 +284,7 @@ def _title_durs() -> dict[str, float]:
     「机制进代码、内容进配置」。值为 null 表示未实测：该歌名按 cpm 估算，
     `run()` 会 WARN（cpm 估英日歌名会高估 1.5-2 倍，见 `expected_duration`）。
     """
-    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-    v = cfg.get("titles", {})
+    v = _voice_cfg(CONFIG).get("titles", {})
     if isinstance(v, list):        # 老格式：裸列表 = 全部未实测
         return {}
     return {t: float(secs) for t, secs in v.items()
@@ -606,7 +604,8 @@ class Engine:
         self.ref_text = cfg.get("ref_text")
         self.lang_code = cfg.get("lang_code", "auto")
         self.seed_offset = int(cfg.get("seed_offset", 0))
-        self.segment_seeds = {str(k): int(v) for k, v in cfg.get("segment_seeds", {}).items()}
+        self.segment_seeds = {str(k): int(v) for k, v in cfg.get("segment_seeds", {}).items()
+                              if not str(k).startswith("_")}   # 配置纪律：_note 注释键不入表
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
@@ -866,15 +865,16 @@ TRIM_DB = 1e-3
 _MUTE = re.compile(r"[“”‘’\"'「」『』《》〈〉（）()\[\]【】]")
 
 
-@lru_cache(maxsize=1)
-def _voice_cfg() -> dict:
-    """voice.json 只读一次。
+@lru_cache(maxsize=8)
+def _voice_cfg(path: Path) -> dict:
+    """voice.json 按路径缓存：同一份配置一个进程只读一次。
 
     `speakable` 每句都要调，绝不能每句读一次盘（下面 `_readings` 的注释
-    早就写明了这条约束）。v2 把读数集中到这一个入口，免得每加一张表
-    就多一次文件读取。
+    早就写明了这条约束）。**按路径做缓存键**而不是零参缓存：测试会
+    monkeypatch `CONFIG` 指到临时文件，零参缓存会让后来的用例吃到上一个
+    用例的脏缓存（红队核实的假红陷阱）；路径变了自然 miss。
     """
-    return json.loads(CONFIG.read_text(encoding="utf-8"))
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
@@ -889,13 +889,13 @@ def _readings() -> dict[str, str]:
     **v2 起降级为「逐案 override」**：音读泄漏改由 `g2p` 的拼音直注层治理，
     本表只保留自动注音仍读错的残余个例。
     """
-    return _voice_cfg().get("readings", {})
+    return _voice_cfg(CONFIG).get("readings", {})
 
 
 @lru_cache(maxsize=1)
 def _injections() -> dict[str, str]:
     """voice.json 的 `pinyin_injections`（TONE3 统一表示，引擎语法由 g2p 分派）。"""
-    return g2p.load_injections(_voice_cfg())
+    return g2p.load_injections(_voice_cfg(CONFIG))
 
 
 def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
@@ -1081,7 +1081,8 @@ def _seed_pins(seg: Segment, seeds: dict | None) -> tuple[int | None, ...]:
     比对，于是配置里给某段钉了/换了种子，同文本同读音的旧 wav 会被静默复用——
     「改了种子却什么也没发生」，与 `synth_logic` 当初的毛病同一类。
     """
-    table = {str(k): int(v) for k, v in (seeds or {}).items()}
+    table = {str(k): int(v) for k, v in (seeds or {}).items()
+             if not str(k).startswith("_")}   # _note 注释键：全项目配置纪律，漏了 int(v) 当场崩
     n = len(split_sentences(seg.text))
     if n <= 1:
         return (table.get(str(seg.label)),)
@@ -1548,7 +1549,10 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
         if not (out_dir / take.file).exists():
             continue
         if take.speakable is not None:
-            if take.speakable != speakable(take.text):
+            # 比对必须按**产出方的引擎**重渲（cfg 在混引擎点名时是旧引擎指纹，
+            # 见 run() 的 reuse_cfg）：各引擎拼音直注语法不同（SHI4JIE4 vs shìjiè），
+            # 用默认引擎比会把含直注的段永远判失配 → 每次重跑都全量重配（红队 R2）
+            if take.speakable != speakable(take.text, cfg.get("engine") or "qwen3_tts"):
                 affected.append(take.index)
                 continue
         elif inputs_changed:
@@ -1943,7 +1947,9 @@ def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,
         cfg = {**cfg, "ref_audio": str(ref), "ref_text": _ref_text_for(ref)}
     engine = Engine(cfg)
     t0 = time.perf_counter()
-    engine.synthesize(speakable(text), dest, attempt=1, seed=seed)
+    # speakable 要按试音引擎自己的语法渲染拼音直注（SHI4JIE4 vs shìjiè），
+    # 否则试音喂的文本与真实 run 不一致，比音色就比错了对象（审计 F13）
+    engine.synthesize(speakable(text, engine.kind), dest, attempt=1, seed=seed)
     dur = probe_duration(dest)
     heard = transcribe(dest)
     edits, err = cer(text, heard)

@@ -425,12 +425,20 @@ def parse_anchors(text: str) -> list[tuple[str, str | None]]:
 
 
 def _music_seconds(script_path: Path) -> float:
-    """计算试听型稿件中的音乐前景试听与自然收尾占用的时间（秒）。普通期返回 0.0。"""
+    """计算试听型稿件中的音乐前景试听与自然收尾占用的时间（秒）。普通期返回 0.0。
+
+    解析失败不许静默归 0（红队 R6）：归 0 会把乐评稿按纯口播带卡字数，
+    误杀合规稿件且报告里看不出原因。SystemExit（稿件格式错）本来就会穿透，
+    这里兜的是 music 模块自身的意外异常——同样是错就要报出来。"""
     try:
         from . import music
         blocks = music.parse_script_music(script_path)
-    except Exception:
-        return 0.0
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise SystemExit(
+            f"FAIL 音乐段解析异常（{type(e).__name__}: {e}）——不能静默按 0 秒算，\n"
+            f"     那会把试听型稿件按纯口播标准卡字数。先修好解析再跑机检") from e
     if not blocks:
         return 0.0
     # 背景铺底块是 BGM 不是前景试听，不计入试听时长（t1 为 None 本就被跳过，

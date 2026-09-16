@@ -758,6 +758,18 @@ class TestReusable:
         take = t._render_one(E(), t.Segment(1, "1", text), tmp_path / "seg.wav")
         assert take.speakable == "他们丝奔了"
 
+    def test_比对按产出方引擎渲染_非默认引擎不误判(self, tmp_path):
+        """红队 R2：复用比对曾固定用默认 qwen3_tts 语法重渲 speakable——indextts2
+        期的旧产物（拼音直注是大写数字调 SHI4JIE4）永远失配，于是每次重跑都把
+        含直注的段误判「文本变了」而全量重配（WORKFLOW 红线要防的事故形态）。
+        变异：把比对改回 speakable(take.text) 默认引擎 → 本用例红。"""
+        text = "世界"
+        cfg = {**self._cfg({}), "engine": "indextts2"}
+        old = self._mk(tmp_path, [(text, t.speakable(text, "indextts2"))])
+        old["engine"] = "indextts2"
+        segs = [t.Segment(1, "1", text)]
+        assert list(t._reusable(old, segs, tmp_path, cfg)) == [1]
+
 
 class TestSegmentSeedsInReuse:
     """钉种子必须进段级复用判据（2026-09-13）。
@@ -1178,6 +1190,7 @@ class TestReviewArg:
         def _boom(*a, **k):
             raise AssertionError("--review 不该触发合成")
 
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
         monkeypatch.setattr(t, "Engine", _boom)
         t.run(ep, review={"prosody": 4})
         assert json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))[
@@ -1982,3 +1995,67 @@ class TestFullRerunGuard:
         ep = self._multi_episode(tmp_path, json.loads(old_cfg.read_text(encoding="utf-8")), n=3)
         with pytest.raises(SystemExit, match="allow-engine-mix"):
             t.run(ep, cfg_path=self._cfg(tmp_path, "qwen3_tts_cuda"), allow_engine_mix=True)
+
+
+
+class TestSeedPinsConfigNotes:
+    """`segment_seeds` 里的 `_note` 注释键（全项目配置纪律：_ 前缀是注释不是数据）
+    不许让 int() 裸崩（红队 R3）。Engine.__init__ 的同名字典推导同款过滤。
+    变异：删掉 startswith("_") 过滤 → ValueError 红。"""
+
+    def test_note键被忽略(self):
+        seg = t.Segment(1, "1", "正文")
+        assert t._seed_pins(seg, {"_note": "说明", "1": 42}) == (42,)
+        assert t._seed_pins(seg, {"_note": "说明"}) == (None,)
+
+
+class TestVoiceCfgCache:
+    """voice.json 按路径缓存（红队 F12 复核后的修法）：同路径一个进程只读一次，
+    换路径（测试 monkeypatch CONFIG 指到临时文件）必须读到新内容——
+    零参缓存会让后来的用例吃到上一个用例的脏缓存，这是当初核实的假红陷阱。
+    变异：改回零参缓存 / 每次读盘 → 两个用例各红一条。"""
+
+    def test_同路径改写后仍用缓存(self, tmp_path, monkeypatch):
+        p = tmp_path / "voice.json"
+        p.write_text(json.dumps({"titles": {"甲": 1.5}}), encoding="utf-8")
+        monkeypatch.setattr(t, "CONFIG", p)
+        assert t._title_durs() == {"甲": 1.5}
+        p.write_text(json.dumps({"titles": {"乙": 2.0}}), encoding="utf-8")
+        assert t._title_durs() == {"甲": 1.5}, "同一路径一个进程只读一次"
+
+    def test_换路径读到新内容(self, tmp_path, monkeypatch):
+        p1, p2 = tmp_path / "a.json", tmp_path / "b.json"
+        p1.write_text(json.dumps({"titles": {"甲": 1.5}}), encoding="utf-8")
+        p2.write_text(json.dumps({"titles": {"乙": 2.0}}), encoding="utf-8")
+        monkeypatch.setattr(t, "CONFIG", p1)
+        assert t._title_durs() == {"甲": 1.5}
+        monkeypatch.setattr(t, "CONFIG", p2)
+        assert t._title_durs() == {"乙": 2.0}
+
+
+class TestProbeSpeakable:
+    """probe 试音的合成文本必须按试音引擎的语法渲染拼音直注（审计 F13）——
+    否则比音色/比引擎时喂进去的文本和真实 run 不是同一份，试音结论失效。
+    变异：probe 改回 speakable(text) 默认引擎 → 本用例红。"""
+
+    def test_probe按引擎kind渲染(self, tmp_path, monkeypatch):
+        captured = {}
+
+        class _Eng:
+            kind = "indextts2"
+
+            def __init__(self, cfg):
+                pass
+
+            def synthesize(self, text, dest, attempt, seed, emo_params=None):
+                captured["text"] = text
+                dest.write_bytes(b"x")
+
+        cfg = tmp_path / "voice.json"
+        cfg.write_text(json.dumps({"engine": "indextts2", "model": "m",
+                                   "ref_audio": "r.wav"}), encoding="utf-8")
+        monkeypatch.setattr(t, "Engine", _Eng)
+        monkeypatch.setattr(t, "probe_duration", lambda p: 1.0)
+        monkeypatch.setattr(t, "transcribe", lambda p: "世界")
+        t.probe("世界", cfg, tmp_path / "out.wav")
+        assert captured["text"] == t.speakable("世界", "indextts2") == "SHI4JIE4"

@@ -158,3 +158,41 @@ class TestRequireDataWiring:
 
     def test_timeline(self, monkeypatch):
         self._assert_guarded(monkeypatch, "timeline", ["timeline", "某番"])
+
+
+class TestHfCacheEnv:
+    """HF 缓存环境变量（红队 R5）：外部显式设了 HF_HOME 时，HF_HUB_CACHE 的默认值
+    必须派生自它，而不是钉死项目目录——否则 docstring 的「尊重外部」是句空话，
+    模型照样写进项目盘。变异：setdefault 改回钉死 MODELS/hub → 第一条红。"""
+
+    def test_外部HF_HOME决定hub缓存(self, monkeypatch):
+        import importlib
+        import os
+        import sys
+        # 其他测试（如 test_clips 经 subindex→sentence_transformers）可能已把
+        # huggingface_hub.constants 钉成常量；reload 时 paths 的防呆校验会发现
+        # 常量与新 env 不符而 SystemExit——那正是守卫该干的活，这里把它摘掉单测 env 逻辑
+        monkeypatch.delitem(sys.modules, "huggingface_hub.constants", raising=False)
+        monkeypatch.setenv("HF_HOME", "/ext/ssd-models")
+        monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+        try:
+            importlib.reload(paths)
+            assert os.environ["HF_HUB_CACHE"] == "/ext/ssd-models/hub"
+        finally:
+            monkeypatch.undo()
+            importlib.reload(paths)
+
+    def test_默认仍钉在项目数据盘(self, monkeypatch):
+        import importlib
+        import os
+        import sys
+        monkeypatch.delitem(sys.modules, "huggingface_hub.constants", raising=False)
+        monkeypatch.delenv("HF_HOME", raising=False)
+        monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+        try:
+            importlib.reload(paths)
+            assert os.environ["HF_HOME"] == str(paths.MODELS)
+            assert os.environ["HF_HUB_CACHE"] == str(paths.MODELS / "hub")
+        finally:
+            monkeypatch.undo()
+            importlib.reload(paths)

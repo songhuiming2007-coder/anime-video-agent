@@ -25,7 +25,10 @@ EPISODES = DATA / "episodes"
 CONFIG = ROOT / "config"
 
 os.environ.setdefault("HF_HOME", str(MODELS))
-os.environ.setdefault("HF_HUB_CACHE", str(MODELS / "hub"))
+# HF_HUB_CACHE 的默认值必须**派生自生效的 HF_HOME**，而不是钉死 MODELS/hub：
+# 外部显式设了 HF_HOME=/my/ssd 而不设 HF_HUB_CACHE 时，钉死会让模型照样写进
+# 项目目录——docstring 承诺的「尊重外部」就成了一句空话（红队 R5）。
+os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ["HF_HOME"]) / "hub"))
 
 # `huggingface_hub.constants` 一旦被 import，缓存路径就算死成常量，此后改环境变量无效。
 # 注意查的是 constants 而不是 huggingface_hub：后者是惰性模块，光 import 它还没定死。
@@ -33,12 +36,38 @@ os.environ.setdefault("HF_HUB_CACHE", str(MODELS / "hub"))
 # hub 的功能。晚于它们 import 本模块等于什么都没做，而且不会报错，模型安安静静写进内置盘。
 # 2026-07-29 就这么漏了 2.6G（whisper 在内置盘重下了一份）。这里把静默泄漏变成当场报错。
 _hf = sys.modules.get("huggingface_hub.constants")
-if _hf is not None and not str(_hf.HF_HUB_CACHE).startswith(str(MODELS)):
+if _hf is not None and os.path.normpath(str(_hf.HF_HUB_CACHE)) != \
+        os.path.normpath(os.environ["HF_HUB_CACHE"]):
     raise SystemExit(
         f"FAIL huggingface_hub 的缓存已被钉在 {_hf.HF_HUB_CACHE}，再设 HF_HOME 无效，"
-        f"模型会写进内置盘。\n"
+        f"模型会写错位置。\n"
         f"     把 `from . import paths` 挪到该文件所有第三方 import 的前面。"
     )
+
+
+def _pipeline_excepthook(exc_type, exc_value, exc_traceback):
+    """流水线哨卫：任何未捕获异常尾部追加「不许私改 pipeline」的硬提示。
+
+    防的是 Agent 见到报错就顺手给 pipeline/ 加单期特判（三期踩出过的形态）。
+    只追加提示，不改退出行为；pytest 下不装（测试需要原样的异常语义）。
+    """
+    import traceback
+
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    if not issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+        print(
+            "\n" + "=" * 64 + "\n"
+            "🛑 [PIPELINE GUARD] 流水线执行异常中断！\n"
+            "👉 先检查当期输入（文稿字段格式、语法、素材缺失）——多数异常出在这里。\n"
+            "👉 严禁 Agent 私自修改 pipeline/ 源码或添加单期特判。\n"
+            "👉 如确信为通用引擎 Bug，必须停下来向人类汇报报错与理由，获准后方可改动代码。\n"
+            + "=" * 64,
+            file=sys.stderr,
+        )
+
+
+if "pytest" not in sys.modules:
+    sys.excepthook = _pipeline_excepthook
 
 
 _CONF: dict | None = None
