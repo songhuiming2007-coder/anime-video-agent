@@ -1756,8 +1756,14 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         review: dict[str, int] | None = None, redo: list[str] | None = None,
         force_all: bool = False, allow_engine_mix: bool = False) -> Path:
+    # force_all 归一进 force（2026-09-16 审计 F1：接线修复）。两个形参各自独立时，
+    # CLI 的 `--force-all` 只置 force_all、force 仍是 False——下方复用闸
+    # `if manifest_path.exists() and not force:` 照常走 _reusable，「全量重配」
+    # 静默退化成增量（一段都不重配），而摩擦报错指引的正是这个开关。
+    # 归一之后 `--force-all --redo` 也进互斥：全量与点名本就是两个意思。
+    force = force or force_all
     if force and redo:
-        raise SystemExit("FAIL --force 与 --redo 互斥：前者全量重做，后者只做点名的段")
+        raise SystemExit("FAIL --force/--force-all 与 --redo 互斥：前者全量重做，后者只做点名的段")
     paths.require_data()
     script = episode / "02-script.md"
     if not script.exists():

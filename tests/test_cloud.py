@@ -636,3 +636,80 @@ def test_up_会核验声明的模式(monkeypatch):
     assert cloud.detect_runtime_mode_from_gpu_probe(1) == "cardless"
     # 声明 gpu、实测 cardless → 必须改判（否则账簿虚高 24 倍）
     assert cloud.detect_runtime_mode_from_gpu_probe(255) == "cardless"
+
+
+# ---------------------------------------------------------------------------
+# 8. SSH I/O 薄壳的调用点观测（2026-09-16 审计 R1/R2/R3）
+#    测试标准允许的唯一例外：monkeypatch subprocess 调用点，观测真实参数。
+# ---------------------------------------------------------------------------
+
+import argparse
+
+
+def _no_config(monkeypatch):
+    """cmd_* 入口会读本机 config/cloud*.json——测试不许碰本机配置与凭据。"""
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({}, {}))
+
+
+def test_attach_列表传参不带shell(monkeypatch):
+    """审计 R1：cmd_attach 旧实现是 `subprocess.call(f"ssh -t {host} '…'", shell=True)`。
+    本地 shell 在这里没有要展开的任何东西，引号拼接只会把合法的会话名截断。
+    变异：改回字符串 + shell=True → 本条红。"""
+    _no_config(monkeypatch)
+    got = {}
+    monkeypatch.setattr(cloud.subprocess, "call",
+                        lambda *a, **k: got.update(argv=a[0], kw=k) or 0)
+    rc = cloud.cmd_attach(argparse.Namespace(session="ava-probe"))
+    assert rc == 0
+    assert isinstance(got["argv"], list), "不许再用字符串 + shell=True"
+    assert got["kw"].get("shell") is not True
+    assert got["argv"] == ["ssh", "-t", "autodl", "tmux attach-session -t ava-probe"]
+
+
+def test_exec_fg_限时与BatchMode(monkeypatch):
+    """审计 R2：docstring 承诺「严格限制 <60s 探针」，旧实现裸 subprocess.run
+    无 timeout 无 BatchMode——远端挂死 = 本地永久挂起，公钥失效 = 挂交互。
+    变异：去掉 timeout=60 或 BatchMode → 本条红。"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    got = {}
+    monkeypatch.setattr(
+        cloud.subprocess, "run",
+        lambda *a, **k: got.update(argv=a[0], kw=k)
+        or cloud.subprocess.CompletedProcess(a[0], 0))
+    rc = cloud.cmd_exec(argparse.Namespace(command="nvidia-smi", fg=True))
+    assert rc == 0
+    assert "BatchMode=yes" in got["argv"], "公钥失效必须立刻失败，不许挂交互"
+    assert got["kw"].get("timeout") == 60, "承诺的 <60s 探针必须真限时"
+
+
+def test_exec_fg_超时返回124且指路(monkeypatch, capsys):
+    """超时不是崩溃，是「你走错通道了」：返回 124 并指向 tmux 通道。"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+
+    def _hang(*a, **k):
+        raise cloud.subprocess.TimeoutExpired(cmd=a[0], timeout=60)
+
+    monkeypatch.setattr(cloud.subprocess, "run", _hang)
+    rc = cloud.cmd_exec(argparse.Namespace(command="sleep 999", fg=True))
+    assert rc == 124
+    assert "--fg" in capsys.readouterr().err
+
+
+def test_pull_rsync失败带上原话(monkeypatch, capsys, tmp_path):
+    """审计 R3：pull 旧实现把 rsync 非零退出码一律报成「未发现远端产物或跳过」——
+    网络闪断与文件缺失混成一句，排查的人会被带偏。跳过消息必须带退出码与
+    stderr 尾行。（单项失败仍不拦整批：兜底在尾部的产物验收。）"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "resolve_episode_rel_path",
+                        lambda t: (tmp_path, "data/episodes/x"))
+    monkeypatch.setattr(cloud, "get_active_session_file",
+                        lambda: tmp_path / "no-session.json")
+    monkeypatch.setattr(cloud, "run_rsync",
+                        lambda s, d, **k: cloud.subprocess.CompletedProcess(
+                            s, 12, "", "rsync: connection unexpectedly closed"))
+    rc = cloud.cmd_pull(argparse.Namespace(target="x"))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "退出码 12" in out and "connection unexpectedly closed" in out

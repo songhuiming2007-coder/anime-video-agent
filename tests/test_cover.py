@@ -244,3 +244,31 @@ class TestSamplePointsSchema:
     def test_反查不到退文件名不KeyError(self):
         pts = cover._sample_points(self.PLAN)   # 不给 by_path
         assert "[07].mkv" in pts[1][2]
+
+
+class TestByCharacterSPKeys:
+    """`_by_character` 遇 SP 特典集键不许裸崩（2026-09-16 审计 F3）。
+
+    旧实现 `int(key[1:3])` 对「SP01」切出 "P0" → `ValueError: invalid literal`。
+    在场索引不覆盖特典素材，SP 候选按「宁可不要也不蒙」的既有语义跳过。
+    变异检验：把 `vindex._parse_key(key)` 改回按位切片
+    `int(key[1:3]), int(key[4:6])` → SP01 切出 "P0" 裸崩，本条立刻红。
+    """
+
+    def test_SP键候选跳过不崩(self, monkeypatch):
+        class _P:
+            threshold = 0.95
+
+            def episodes(self):
+                return {"S01E01"}
+
+            def present(self, season, episode, start, end, name):
+                return True
+
+        monkeypatch.setattr("pipeline.vindex.load_presence", lambda a: _P())
+        monkeypatch.setattr(cover, "load_sources",
+                            lambda a: {"S01E01": {"path": "/a.mkv"},
+                                       "SP01": {"path": "/sp.mkv"}})
+        cands = [frame(1, "/a.mkv", 10.0, 100), frame(2, "/sp.mkv", 5.0, 100)]
+        kept = cover._by_character(cands, "某番", "某人")
+        assert [c["src"] for c in kept] == ["/a.mkv"], "SP 候选应被跳过，普通集照常过滤"

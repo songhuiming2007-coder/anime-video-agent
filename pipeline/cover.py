@@ -182,7 +182,12 @@ def _by_character(cands: list[dict], anime: str, name: str) -> list[dict]:
     kept = []
     for c in cands:
         key = by_path[c["src"]]
-        season, episode = int(key[1:3]), int(key[4:6])
+        # 集键语法走 vindex 真源，不许按位切片：对 SP01 切出 "P0" 就是
+        # 裸 ValueError（2026-09-16 审计 F3）。SP 特典键的 season 是 None
+        # （ADR-0010），在场索引不覆盖特典，按下方「宁可不要也不蒙」跳过。
+        season, episode = vindex._parse_key(key)
+        if season is None:
+            continue
         if key not in pres.episodes():
             continue                   # 该集没建视觉索引，宁可不要也不蒙
         if pres.present(season, episode, c["t"], c["t"] + 0.001, name):

@@ -1922,6 +1922,35 @@ class TestFullRerunGuard:
         mf = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
         assert mf["engine"] == "qwen3_tts_cuda"
 
+    def test_同配置_force_all_是真全量(self, tmp_path, monkeypatch):
+        """审计 F1（2026-09-16）：`--force-all` 单独使用时 force=False，复用闸
+        `not force` 照常走 _reusable——「全量重配」静默退化成增量，一段都不重配。
+        上面那条用例拦不住它：换了引擎，voice_changed 天然清空复用集。
+        本条不换任何配置，唯一该发生的行为就是每段都重合成。
+        变异：删掉 run() 顶部的 `force = force or force_all` → 本条立刻红（calls 为空）。"""
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        calls = []
+
+        class _E:
+            kind = "qwen3_tts"
+            seed_offset = 7
+            segment_seeds: dict = {}
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: _E())
+        monkeypatch.setattr(t, "render_segment", lambda eng, seg, dest: (
+            calls.append(seg.index),
+            t.Take(seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1))[1])
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+        t.run(ep, cfg_path=cfgp, force_all=True)     # 配置、引擎、文本什么都没变
+        assert calls == [1], f"--force-all 必须每段都重合成，实际只合成了 {calls}"
+
+    def test_force_all_与_redo_互斥(self, tmp_path):
+        """全量与点名是两个意思，同给必须报错而不是默默选一个（F1 归一后覆盖）。"""
+        with pytest.raises(SystemExit) as e:
+            t.run(tmp_path / "nope", force_all=True, redo=["1"])
+        assert "互斥" in str(e.value)
+
     # ---- 第三条路：只把点名的段换引擎（2026-09-13 三期实例）----
 
     def _load(self, ep):
