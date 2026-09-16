@@ -1650,9 +1650,7 @@ def write_review(episode: Path, review: dict[str, int]) -> Path:
     merged = dict(mf.get("human_review") or {})
     merged.update(review)
     mf["human_review"] = merged
-    tmp = manifest_path.with_name(manifest_path.name + ".tmp")
-    tmp.write_text(json.dumps(mf, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, manifest_path)
+    paths.atomic_write(manifest_path, json.dumps(mf, ensure_ascii=False, indent=2))
     print(f"[OK] 打点已写入 {manifest_path}")
     for k, v in sorted(review.items()):
         print(f"     {k} = {v}")
@@ -1863,8 +1861,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         total = sum(t.duration for t in takes)
         # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
         # json.loads 上裸抛，比「没有 manifest」更难办
-        tmp = manifest_path.with_name(manifest_path.name + ".tmp")
-        tmp.write_text(
+        paths.atomic_write(
+            manifest_path,
             json.dumps(
                 {
                     "script_vo_hash": vo_hash,
@@ -1880,9 +1878,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
                 },
                 ensure_ascii=False, indent=2,
             ),
-            encoding="utf-8",
         )
-        os.replace(tmp, manifest_path)
 
     for seg in segs:
         if seg.index in done:

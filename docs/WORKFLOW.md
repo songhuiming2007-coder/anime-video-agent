@@ -24,7 +24,7 @@
 ## 二、标准执行速查（01 – 09 步）
 
 1. **[01 选题](runbook/01-topic.md)**（人）：填 `01-topic.md`（番、类型、锚点、张力）。张力是整条流水线唯一编辑判断，定死后不许 agent 篡改。
-2. **[02 写稿](runbook/02-script.md)**（Agent）：调 `skills/write-script` 写 `02-script.md`。跑 `check_script` 机检 23 项全绿。
+2. **[02 写稿](runbook/02-script.md)**（Agent）：调 `skills/write-script` 写 `02-script.md`。跑 `check_script` 机检全绿。
 3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿并在当期目录生成 `02-diff.patch`（`git diff --no-index 02-script.draft.md 02-script.md > 02-diff.patch`）。
 4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：跑 `python -m pipeline.tts <期>`。
    - **红线**：此后一律只补点名段，**严禁擅自 `--force` 全量重配**；错字走 `g2p.py` 注入，换引擎前必须报备影响段数。

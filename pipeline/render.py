@@ -1035,7 +1035,9 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
     sp_m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", ep_tag, re.I)
     if sp_m:
         ep_tag = f"SP{int(sp_m.group(1)):02d}"
-    sources = json.loads((paths.ROOT / "data" / "library" / "sources.json")
+    # 不走 ingest.load_sources：它会连带 subindex 的 ML 栈，渲染刻意不背；
+    # 表的结构就是 {番: {集键: 记录}}，这里只做查 key 这一件事
+    sources = json.loads((paths.DATA / "library" / "sources.json")
                          .read_text(encoding="utf-8"))
     rec = sources.get(anime, {}).get(ep_tag)
     if not rec:

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 from pathlib import Path
 
@@ -1028,14 +1027,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
            for p in sorted(prep, key=lambda x: x["index"])]
 
     dest = episode / "04-clips.json"
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(json.dumps({
+    # 原子落盘（审计 2-27）：产物即状态，不许半份
+    paths.atomic_write(dest, json.dumps({
         "anime": anime,
         "animes": pools,
         "total_duration": sum(s["duration"] for s in out),
         "segments": out,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, dest)        # 原子落盘（审计 2-27）：产物即状态，不许半份
+    }, ensure_ascii=False, indent=2))
     return dest
 
 
@@ -1077,9 +1075,7 @@ def main() -> int:
         # 写一半崩溃连「人改过什么样」都恢复不了
         (src.with_name(src.name + ".prerefit.bak")
          ).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-        tmp = src.with_name(src.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, src)
+        paths.atomic_write(src, json.dumps(data, ensure_ascii=False, indent=2))
         print("\n".join(report) if report else "已对齐，无需调整")
         print(f"→ {src}")
         return 0

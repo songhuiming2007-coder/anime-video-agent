@@ -335,6 +335,9 @@ def check(video: Path, plan: dict | None = None,
     out: list[Check] = []
     asm = assembly_ledger(video.parent)
     dur_band = episode_duration_band(video.parent) or DUR_BAND
+    # 音乐时间轴一次解析，多处复用（与排片一致 / 黑帧映射 / 静音豁免），
+    # 不重复 parse 稿件与 build_timeline
+    mplan = _music_plan(video.parent)
 
     vdur = _duration(video, "v:0")
     adur = _duration(video, "a:0")
@@ -347,7 +350,6 @@ def check(video: Path, plan: dict | None = None,
                      f"画面 {vdur:.3f}s / 音频 {adur:.3f}s 差 {abs(vdur - adur) * 1000:.0f}ms"))
 
     if plan or asm:
-        mplan = _music_plan(video.parent)
         if mplan:
             want, basis = mplan["total_duration"], "排片"
         elif plan:
@@ -398,7 +400,6 @@ def check(video: Path, plan: dict | None = None,
             defects, inherited, src_errs = _assembly_black_spans(
                 [(float(a), float(b)) for a, b in blacks], asm)
         elif plan:
-            mplan = _music_plan(video.parent)
             seg_starts = ({s["index"]: s["start"]
                            for s in mplan["segments"]} if mplan else None)
             mapped = _map_black_to_sources(
@@ -463,7 +464,6 @@ def check(video: Path, plan: dict | None = None,
     # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s）。
     err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
                     f"silencedetect=n=-45dB:d={SILENCE_MAX}", "-f", "null", "-"])
-    mplan = _music_plan(video.parent)
     song_ends: set[float] = set()
     if mplan:
         for tr in mplan["tracks"]:
