@@ -459,7 +459,9 @@ def _crops(anime: str, cid: str, db: dict, limit: int,
         r = recs[p["face"]]
         img = Image.open(shots.frame_path(anime, p["episode"], r["shot"])).convert("RGB")
         dest = tmp / f"{anime}-c{cid}-{n:02d}.jpg"
-        crop(img, tuple(r["box"])).save(dest, quality=90)
+        # expand 必传（与嵌入侧 L309 同源用 face_expand）：脸部框不外扩会把头发
+        # 这些身份信息裁掉；漏传时这里是裸 TypeError，簇联系表整页崩掉
+        crop(img, tuple(r["box"]), face_expand(anime)).save(dest, quality=90)
         cells.append((dest, f'{p["episode"]} 镜{r["shot"]}'))
     return cells
 
