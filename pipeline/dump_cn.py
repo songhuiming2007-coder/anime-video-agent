@@ -12,16 +12,17 @@ import re, sys
 def main(path, want_jp=False):
     styles = {"CN", "TITLE", "Default", "Title"} | ({"JP"} if want_jp else set())
     out = []
-    for line in open(path, encoding="utf-8", errors="replace"):
-        if not line.startswith("Dialogue"):
-            continue
-        parts = line.split(",", 9)
-        if len(parts) < 10 or parts[3] not in styles:
-            continue
-        text = re.sub(r"\{[^}]*\}", "", parts[9]).replace("\\N", " ").strip()
-        if not text:
-            continue
-        out.append((parts[1], parts[3], text))
+    with open(path, encoding="utf-8", errors="replace") as f:   # 不 with 会留未关句柄，
+        for line in f:                                           # pytest 下报 PytestUnraisable
+            if not line.startswith("Dialogue"):
+                continue
+            parts = line.split(",", 9)
+            if len(parts) < 10 or parts[3] not in styles:
+                continue
+            text = re.sub(r"\{[^}]*\}", "", parts[9]).replace("\\N", " ").strip()
+            if not text:
+                continue
+            out.append((parts[1], parts[3], text))
     out.sort()
     for t, st, tx in out:
         print(f"{t}\t{st}\t{tx}")
