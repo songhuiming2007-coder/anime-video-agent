@@ -231,8 +231,10 @@ def build(episode: Path) -> Path:
                     f'{html.escape(s.get("used_query") or "—")}</b>'
                     f'　{s["duration"]:.1f}s{note}{chan}{_ep_label(s)}{align_txt}</div>')
         if not s["clips"]:
+            # render 对非 ok 段直接 SystemExit 拒渲（没有降级方案，S6：文案必须
+            # 反映实际行为）——看到这条就该去补锚点或改稿，不是放过
             body.append('<div class="clip"><div class="side flag">'
-                        '无匹配，渲染会退到降级方案</div></div>')
+                        '无匹配，渲染会拒绝启动（先补锚点或改稿）</div></div>')
         for n, c in enumerate(s["clips"]):
             imgs = "".join(
                 f'<img src="04-thumbs/{p.name}" loading="lazy">'

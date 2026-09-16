@@ -578,7 +578,9 @@ def main() -> None:
 
     r = sub.add_parser("register", help="登记进 sources.json（走 ingest 既有登记）")
     r.add_argument("file", type=Path)
-    r.add_argument("--pool", default="EGOIST", help="素材池名（挂企划名下）")
+    # 池名不给默认值：它是登记写操作的目标（R6），写死单企划名会让忘了带 --pool
+    # 的素材静默进错池子
+    r.add_argument("--pool", required=True, help="素材池名（挂企划名下）")
     r.add_argument("--as", dest="key", required=True, metavar="SPxx")
     r.add_argument("--force", action="store_true", help="门禁不过也登记（会写进交回材料）")
 
