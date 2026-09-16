@@ -97,3 +97,18 @@ subindex 的 `NO_MATCH = 0.45` 就是拿 10 条零假设查询与 21 条真实�
 3. **成本实测**：EGOIST 池 17 集 455 镜头累计打标花费 ¥0.5749，远低于 ¥25 预算闸；
 4. **零假设组门槛标定**：EGOIST 池噪声地板 0.5735、真实查询下沿 0.6331，两组分布不重叠，`no_match=0.6033` 成功落盘 `config/scenes.json`；罪恶王冠参照 0.5840；
 5. **通道状态**：`pipeline/clips.py` 场景通道正式对已标定池解封。
+
+## 回填（2026-09-16）：CLIP 场景编码路径已删除
+
+决定 1 的删除条件（captions 索引验收）已满足，删除动作经人显式裁定后执行：
+
+- 移除 `SCENE_REPO`、`scene_model`、`_features`、`encode_images`、`encode_query`、
+  `build_scene`、`_labels`（约 120 行）。`scene_path` 保留——它是 captions 建库
+  （`build_embed`）的产物路径，与 CLIP 无关。
+- `vindex scene` 子命令保留为**墓碑**：不建索引，直接报错并指向
+  `vindex captions → vindex embed → vprobe scene` 三步。保留该名字是因为主仓
+  文档与会话记录里仍有人在找它，说清楚改去哪比让 argparse 报 unknown command 省一轮排查。
+- 盘上若残留旧的 `.scene.npy`（chinese-clip 产物），`load_scene` 仍按 `model_id`
+  硬拒（原有行为不变），重跑 `vindex embed` 覆盖即可。
+- 判定 1 的另一半（WD tagger 死代码维持 N1 备忘现状）**未动**——本轮裁定只覆盖
+  CLIP 场景编码路径。

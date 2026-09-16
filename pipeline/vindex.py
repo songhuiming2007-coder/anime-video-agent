@@ -131,14 +131,6 @@ def profile() -> dict:
             f"可选：{'、'.join(TAGGERS)}")
     return {**TAGGERS[name], "name": name}
 
-# ---------------------------------------------------------------- 通道 2
-
-# 中文查询直接进图像空间，不经翻译。**CLIP 系模型主要在照片上训练，动漫是域偏移**，
-# 所以这一层动手前先跑探针（`vprobe scene`），命中率过不去就不建——
-# ADR-0003：「探针的成本是半天，建完发现不好用的成本是一整块死代码」。
-SCENE_REPO = "OFA-Sys/chinese-clip-vit-base-patch16"
-
-
 # ---------------------------------------------------------------- 角色名表
 
 
@@ -578,115 +570,8 @@ def _check_meta_shots(m: dict, path: Path) -> None:
 # ---------------------------------------------------------------- 通道 2
 
 
-_SCENE = None
-
-
-def scene_model():
-    global _SCENE
-    if _SCENE is None:
-        import torch
-        from transformers import ChineseCLIPModel, ChineseCLIPProcessor
-
-        model = ChineseCLIPModel.from_pretrained(SCENE_REPO).eval()
-        proc = ChineseCLIPProcessor.from_pretrained(SCENE_REPO)
-        _SCENE = (model, proc, torch)
-    return _SCENE
-
-
-def _features(out, model, torch):
-    """取投影后的嵌入，并校验维度。
-
-    **transformers 5.12 的 `get_image_features` / `get_text_features` 返回的不是张量**，
-    而是整个 `BaseModelOutputWithPooling`，投影后的嵌入被塞在 `pooler_output` 里
-    （两个方法的 docstring 仍写着「返回张量」，与实现不符——所以两种都接住）。
-
-    **维度必须当场校验。** 拿错张量的后果是静默的：`last_hidden_state` 取错一维
-    照样是一堆浮点数，照样归一化得了、照样算得出余弦、照样能排 Top-K，
-    只是它不对应任何东西。这与本模块开头那条「同维度换 backbone 不会崩」同源。
-    """
-    v = out if isinstance(out, torch.Tensor) else out.pooler_output
-    want = model.config.projection_dim
-    if v.ndim != 2 or v.shape[1] != want:
-        raise SystemExit(
-            f"FAIL 取到的嵌入形状是 {tuple(v.shape)}，期望 (N, {want})。\n"
-            f"     多半是 transformers 换了 get_*_features 的返回结构，"
-            f"     去 pipeline/vindex.py 的 `_features` 改取法")
-    return v
-
-
-def encode_images(files: list[Path], batch: int = 16) -> np.ndarray:
-    from PIL import Image
-
-    model, proc, torch = scene_model()
-    out = []
-    for i in range(0, len(files), batch):
-        ims = [Image.open(f).convert("RGB") for f in files[i:i + batch]]
-        x = proc(images=ims, return_tensors="pt")
-        with torch.no_grad():
-            v = _features(model.get_image_features(**x), model, torch)
-        out.append((v / v.norm(dim=-1, keepdim=True)).cpu().numpy().astype(np.float32))
-    return np.vstack(out)
-
-
-def encode_query(text: str) -> np.ndarray:
-    model, proc, torch = scene_model()
-    x = proc(text=[text], padding=True, return_tensors="pt")
-    with torch.no_grad():
-        v = _features(model.get_text_features(**x), model, torch)
-    return (v / v.norm(dim=-1, keepdim=True)).cpu().numpy().astype(np.float32)[0]
-
-
 def scene_path(anime: str, key: str, out_dir: Path = VINDEX_DIR) -> Path:
     return out_dir / f"{anime}_{key}.scene.json"
-
-
-def build_scene(anime: str, key: str, out_dir: Path = VINDEX_DIR) -> int:
-    d = shots.load(anime, key)
-    files = [shots.frame_path(anime, key, s["i"]) for s in d["shots"]]
-    if not all(f.exists() for f in files):
-        raise SystemExit(
-            f"FAIL {anime} {key} 的代表帧不全，先跑 `python -m pipeline.shots frames {anime} {key}`")
-
-    vecs = encode_images(files)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_save(out_dir / f"{anime}_{key}.scene.npy", vecs)
-
-    # 人看的标签，**只用于显示**：`04-clips.json` 里画面通道的命中总得让人看懂是什么镜头。
-    # 它不参与任何判断，也不参与排序。
-    labels = _labels(anime, key, len(d["shots"]), out_dir)
-    _atomic_write(scene_path(anime, key, out_dir), json.dumps({
-        "meta": {
-            "kind": "scene",
-            "anime": anime, "episode": key,
-            "model_id": SCENE_REPO, "revision": paths.model_revision(SCENE_REPO),
-            "dim": int(vecs.shape[1]), "normalize": "l2",
-            "shots": _shots_fingerprint(d["meta"]),
-            "built_at": date.today().isoformat(),
-        },
-        "shots": [{"i": s["i"], "start": s["start"], "end": s["end"],
-                   "label": labels.get(s["i"], "")}
-                  for s in d["shots"]],
-    }, ensure_ascii=False))
-    return len(vecs)
-
-
-def _labels(anime: str, key: str, n: int, out_dir: Path) -> dict[int, str]:
-    """给人看的镜头说明：有 booru 通用标签就用它，没有就留空（由调用方补时间码）。
-
-    **只有 tagger producer 会产出 general 标签**；默认的 ccip producer 只认角色，
-    这里就返回空。这不是缺陷——说明是给人看的，时间码已经够定位了，
-    为了让它更好看去多跑一遍 tagger 不值当（一集 90 秒 × 41 集）。
-    """
-    p = presence_path(anime, key, out_dir)
-    if not p.exists():
-        return {}
-    d = json.loads(p.read_text(encoding="utf-8"))
-    out = {}
-    for r in d["shots"]:
-        top = sorted(r.get("gen", {}).items(), key=lambda kv: -kv[1])[:6]
-        if top:
-            out[r["i"]] = " ".join(t for t, _ in top)
-    return out
 
 
 @dataclass
@@ -844,10 +729,12 @@ def search_scene(query: str, vecs: np.ndarray, units: list[Shot],
 # VLM 只负责把画面翻译成文本；「算不算命中」交回给本项目验证过的文-文标定法。
 # 职责分离是这一层的核心（也是它和 CLIP 路子最根本的区别）。
 #
-# **上面那截 CLIP 代码（`scene_model`/`encode_images`/`encode_query`/`build_scene`
-# /`vindex scene`）本轮不删**——删除是红线动作，按 ADR-0015 由人在 captions 索引
-# 验收后拍板。但它已经是死路径：`load_scene` 只认 captions 索引（model_id=bge-m3），
-# `vindex scene` 建出来的 CLIP 产物加载时会被硬拒。这一点是故意的，不是遗漏。
+# **旧的 CLIP 图文路径已于 2026-09-16 删除**（审计裁定，ADR-0015 授权）：
+# `scene_model`/`encode_images`/`encode_query`/`build_scene`/`_labels` 与
+# `vindex scene` 子命令整体移除——它们在本轮之前已是死路径（`load_scene` 只认
+# captions 索引，CLIP 产物加载时被硬拒），留着只是让报错指向一条走不通的路。
+# 盘上若有旧 `.scene.npy`（chinese-clip 产物），加载时仍按 model_id 硬拒，
+# 重跑 `vindex embed` 覆盖即可。
 
 CAPTIONS_REPO = "Qwen/Qwen3-VL-8B-Instruct"
 EMBED_REPO = "BAAI/bge-m3"           # ADR-0015 指定的 captions 向量模型
@@ -1304,7 +1191,7 @@ def embedder():
 def encode_text_query(text: str) -> np.ndarray:
     """查询文本 → bge-m3 向量（已归一化）。
 
-    **它取代了 `encode_query`（CLIP 图像空间）在检索路径上的位置**：查询与镜头描述
+    **它取代了 CLIP 图像空间的查询编码在检索路径上的位置**：查询与镜头描述
     现在同在文本空间，「算不算命中」才有一个可标定的门槛——这正是第 2 层复活的全部内容。
     """
     v = np.asarray(embedder().encode([text], normalize_embeddings=True,
@@ -1522,7 +1409,9 @@ def main() -> int:
     p.add_argument("episode", nargs="+", help="SxxEyy，可多个")
     p.add_argument("--batch", type=int, default=1)
 
-    s = sub.add_parser("scene", help="通道 2（已弃）：给每个镜头算 CLIP 画面向量")
+    # 子命令名保留作墓碑：主仓文档与会话记录里还有人在找它，
+    # 说清楚改去哪比让 argparse 报 unknown command 省一轮排查
+    s = sub.add_parser("scene", help="已删除：CLIP 图文通道，改走 captions + embed（ADR-0015）")
     s.add_argument("anime")
     s.add_argument("episode", nargs="+")
 
@@ -1586,18 +1475,13 @@ def main() -> int:
         return 1 if bad else 0
 
     if a.cmd == "scene":
-        bad = 0
-        for key in a.episode:
-            try:
-                n = build_scene(a.anime, key)
-            except SystemExit as e:
-                bad += 1
-                print(f"FAIL {key}  {e}", flush=True)
-                continue
-            print(f"OK {key} {n} 个镜头 → {scene_path(a.anime, key).name}", flush=True)
-        if bad:
-            print(f"{bad} 集失败")
-        return 1 if bad else 0
+        # 旧的 CLIP 图文路径已删（2026-09-16 审计裁定，ADR-0015 授权）。
+        # 子命令名保留并显式指向替代路径，而不是让 argparse 报「unknown command」——
+        # 主仓文档、旧会话记录里还有人在找它，说清楚去哪比报错省一轮排查。
+        raise SystemExit(
+            "FAIL `vindex scene`（CLIP 图文通道）已删除（ADR-0015）：v2 的画面语义走\n"
+            "     `vindex captions <池> <集> --confirm-cost`（云端 VLM 打标）\n"
+            "     → `vindex embed <池>`（bge-m3 建库）→ `vprobe scene`（标定门槛）")
 
     if a.cmd == "search":
         vecs, units = load_scene(a.anime)
