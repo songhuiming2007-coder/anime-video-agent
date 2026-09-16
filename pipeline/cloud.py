@@ -660,7 +660,16 @@ def cmd_exec(args: argparse.Namespace) -> int:
     # 1. 前台直连通道（严格限制 <60s 探针短命令）
     if args.fg:
         print(f"[*] 前台直连执行 (限短命令): {remote_cmd}")
-        p = subprocess.run(["ssh", host, remote_cmd])
+        try:
+            # BatchMode 与 _ssh 同标配（公钥失效必须立刻失败，不许挂交互）；
+            # timeout 兑现上面「限 <60s」的承诺——裸 run 会把挂死的远端命令
+            # 变成本地进程永久挂起（2026-09-16 审计 R2）
+            p = subprocess.run(["ssh", "-o", "BatchMode=yes", host, remote_cmd],
+                               timeout=60)
+        except subprocess.TimeoutExpired:
+            print("FAIL 前台命令 60s 未返回，已掐断——长任务去掉 --fg 走 tmux 通道",
+                  file=sys.stderr)
+            return 124
         return p.returncode
 
     # 2. 默认后台 tmux 通道
@@ -1230,7 +1239,10 @@ def cmd_pull(args: argparse.Namespace) -> int:
         if res.returncode == 0:
             print(f"  ✓ 已拉取: {src} -> {dst}")
         else:
-            print(f"  ○ 未发现远端产物或跳过: {src}")
+            # 非零可能是「远端没有这个产物」（正常跳过），也可能是网络/认证
+            # 失败——把 rsync 的原话带上，两种病因不混成一句（审计 R3）
+            tail = (res.stderr.strip().splitlines() or [""])[-1][:120]
+            print(f"  ○ 未发现远端产物或跳过: {src}（rsync 退出码 {res.returncode}：{tail}）")
 
     # 自检验收：只校验**本次任务实际该产出的东西**。
     # 旧写法一看到 manifest.json 存在就报「校验通过」，但那个 manifest 是上轮 v1 留下的，
@@ -1277,9 +1289,10 @@ def cmd_attach(args: argparse.Namespace) -> int:
     cfg_global, cfg_local = load_cloud_config()
     host = _ssh_host(cfg_local)
     session_name = args.session or "ava-tts"
-    cmd = f"ssh -t {host} 'tmux attach-session -t {session_name}'"
+    # 列表传参，不用 shell=True：本地 shell 没有要在这里展开的任何东西，
+    # 引号拼接只会把合法的会话名截断（审计 R1）
     print(f"[*] 接入 tmux 会话 {session_name}...")
-    return subprocess.call(cmd, shell=True)
+    return subprocess.call(["ssh", "-t", host, f"tmux attach-session -t {session_name}"])
 
 
 # ---------------------------------------------------------------------------
