@@ -568,7 +568,7 @@ def _allocate(live, by_index, sources, anime, quota, pre=()):
 
 
 def _parse_ep_scope(episode: str | None) -> tuple[list, int]:
-    """段落 `集` 字段 → 作用域链 + 初始 scope。
+    r"""段落 `集` 字段 → 作用域链 + 初始 scope。
 
     写了集 → `[(S,E), (S,None), (None,None)]`（集→季→全空间），初始 scope=0；
     没写 → `[(None,None)]`（全空间，与今天逐字节一致），初始 scope=2。
