@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -431,6 +432,24 @@ def save_corrections_raw(
     assert p.exists(), "corrections.json 写盘后回读校验失败，文件不存在。"
 
 
+@contextmanager
+def apply_patch_lock(episode: Path):
+    """--apply-patch 单写者排他锁（Spec §3.3 Y1-r16）。"""
+    lock_file = episode / "03-audio" / ".apply_patch.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    if lock_file.exists():
+        raise SystemExit("FAIL 应用纠错进行中（.apply_patch.lock 存在），稍后再试。")
+    lock_file.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        yield
+    finally:
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+            except OSError:
+                pass
+
+
 def append_correction(episode: Path, patch: Patch) -> dict:
     """将 Patch 条目安全追加至 corrections.json。"""
     # 单写者纪律检查
@@ -528,7 +547,7 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
       - redo: 需要重配的段落 label 列表
       - overlay: pending-inclusive overlay
     """
-    entries, _ = load_corrections_raw(episode)
+    entries, fp = load_corrections_raw(episode)
     pending = [c for c in entries if not c.get("applied", False)]
     if not pending:
         return {"pending": [], "affected_labels": [], "redo": [], "overlay": {}}
@@ -590,9 +609,6 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
             c["affected"] = c_aff
             changed_entries = True
 
-    if changed_entries:
-        save_corrections_raw(episode, entries)
-
     # 2. 判据减法计算 redo（不可复用段）
     # redo = affected 中「pending-inclusive overlay 下被 _reusable 判为不可复用」的段
     engine_kind = cfg.get("engine", "qwen3_tts")
@@ -622,6 +638,33 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
         if old_pins != cur_pins:
             redo_set.add(lbl)
             continue
+
+    # P0-2 收口逻辑：检查 pending 条目中是否有受影响段已全部合成完成（不在 redo_set 中且存在于 manifest）
+    # 避免 redo=[] 时直接返回导致条目永久停在 applied=False（静默数据损坏）
+    now_iso = datetime.now().isoformat()
+    for c in pending:
+        c_aff = set(c["affected"]) if c.get("affected") is not None else {str(c.get("segment"))}
+        if c_aff and not (c_aff & redo_set) and all(lbl in takes_by_label for lbl in c_aff):
+            done_segs = set(c.get("done_segments") or [])
+            done_segs.update(c_aff)
+            c["done_segments"] = sorted(
+                done_segs, key=lambda x: [int(p) if p.isdigit() else 0 for p in x.split(".")]
+            )
+            c["applied"] = True
+            c["applied_at"] = now_iso
+            changed_entries = True
+
+    if changed_entries:
+        save_corrections_raw(episode, entries, expected_fp=fp)
+        _, fp = load_corrections_raw(episode)
+
+    # 若 redo 为空但仍有 pending 条目未能收口，报错拒绝，不许打印假完成
+    if not redo_set:
+        stuck_ids = [c.get("id") for c in pending if not c.get("applied", False)]
+        if stuck_ids:
+            raise SystemExit(
+                f"FAIL 纠错条目无法收口（条目 id={stuck_ids}），相关段落在 manifest 中缺失或状态异常。"
+            )
 
     redo_list = sorted(redo_set, key=lambda x: [int(p) if p.isdigit() else 0 for p in x.split(".")])
     affected_list = sorted(affected_set, key=lambda x: [int(p) if p.isdigit() else 0 for p in x.split(".")])

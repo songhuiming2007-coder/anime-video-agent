@@ -711,6 +711,20 @@ class TestWriterDiscipline:
             save_corrections_raw(tmp_path, entries, expected_fp=fp)
         assert "期间 corrections.json 被其他进程改过" in str(exc.value)
 
+    def test_apply_patch_lock_真实创建与释放(self, tmp_path: Path):
+        """P0-1 核心测试：apply_patch_lock 真正创建锁文件并在退出时删除。"""
+        lock_file = tmp_path / "03-audio" / ".apply_patch.lock"
+        assert not lock_file.exists()
+        with corrections.apply_patch_lock(tmp_path):
+            assert lock_file.exists()
+            # 锁存在期间，另一个进程尝试获取锁或落盘均被拒
+            with pytest.raises(SystemExit) as exc:
+                append_correction(tmp_path, Patch("5", "pronunciation", "词", None, "ci2", None, "inject", "segment", "raw"))
+            assert "应用纠错进行中" in str(exc.value)
+
+        # 退出后锁文件自动删除
+        assert not lock_file.exists()
+
     def test_apply运行期间单写者拒绝y确认(self, tmp_path: Path):
         audio_dir = tmp_path / "03-audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -774,15 +788,133 @@ class TestVoiceCommandRouting:
 
 
 class TestStaleCensusWithOverlay:
+    def test_p0_2_redo为空但pending全部满足时自动收口(self, tmp_path: Path):
+        """P0-2 审定测试：当 manifest 已经满足纠错期望时，plan_apply 必须把条目收口置 applied=True。"""
+        ep = tmp_path
+        (ep / "03-audio").mkdir(parents=True, exist_ok=True)
+        (ep / "02-script.md").write_text("## 段落 5\n配音：重叠部分。\n", encoding="utf-8")
+        segs = tts.parse_script(ep / "02-script.md")
+        spk = tts.speakable(
+            "重叠部分。",
+            "qwen3_tts",
+            overlay={"injections": {"5": {"重叠": "zhong4die2"}}, "segment_seeds": {}},
+            label="5",
+        )
+        (ep / "03-audio/manifest.json").write_text(
+            json.dumps({
+                "engine": "qwen3_tts",
+                "model": "m",
+                "ref_audio": "r",
+                "segments": [
+                    {
+                        "index": 1,
+                        "label": "5",
+                        "text": "重叠部分。",
+                        "file": "seg-01.wav",
+                        "speakable": spk,
+                        "seed_pins": [None],
+                        "duration": 1.0,
+                        "cer": 0.0,
+                        "attempts": 1,
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (ep / "03-audio/seg-01.wav").write_bytes(b"wav")
+        corrections.save_corrections_raw(
+            ep,
+            [
+                {
+                    "id": 1,
+                    "segment": "5",
+                    "kind": "pronunciation",
+                    "scope": "segment",
+                    "word": "重叠",
+                    "target_tone3": "zhong4die2",
+                    "action": "inject",
+                    "applied": False,
+                    "affected": ["5"],
+                    "done_segments": ["5"],
+                }
+            ],
+        )
+
+        plan = corrections.plan_apply(ep, segs, {"engine": "qwen3_tts"})
+        assert plan["redo"] == [] and len(plan["pending"]) == 1
+
+        entries, _ = corrections.load_corrections_raw(ep)
+        assert entries[0]["applied"] is True
+
+        old = json.loads((ep / "03-audio/manifest.json").read_text(encoding="utf-8"))
+        ov = corrections.load_overlay(ep, include_pending=False)
+        done = tts._reusable(
+            old,
+            segs,
+            ep / "03-audio",
+            {"engine": "qwen3_tts", "model": "m", "ref_audio": "r", "overlay": ov},
+            overlay=ov,
+        )
+        assert sorted(done) == [1]
+
+    def test_p0_2_redo为空但有段落缺失无法收口时报错(self, tmp_path: Path):
+        """P0-2 负例测试：段落未在稿件/manifest中出现且无法收口时，必须报错拒绝，不许假完成。"""
+        ep = tmp_path
+        (ep / "03-audio").mkdir(parents=True, exist_ok=True)
+        (ep / "02-script.md").write_text("## 段落 5\n配音：重叠部分。\n", encoding="utf-8")
+        segs = tts.parse_script(ep / "02-script.md")
+        (ep / "03-audio/manifest.json").write_text(
+            json.dumps({"engine": "qwen3_tts", "segments": [{"index": 1, "label": "5", "text": "重叠部分。", "file": "seg-01.wav", "speakable": "重叠部分。", "seed_pins": [None]}]}), encoding="utf-8"
+        )
+        # 全局范围但在任何段落中都找不到该词 -> c_aff 为空，无法收口
+        corrections.save_corrections_raw(
+            ep,
+            [{"id": 1, "segment": "5", "scope": "global", "word": "未见之词", "action": "inject", "target_tone3": "ci2", "applied": False}],
+        )
+        with pytest.raises(SystemExit) as exc:
+            corrections.plan_apply(ep, segs, {"engine": "qwen3_tts"})
+        assert "纠错条目无法收口" in str(exc.value)
+
+    def test_apply_patch_引擎不符时改口报错指路(self, tmp_path: Path):
+        """P2 审定测试：apply-patch 遇到旧引擎不同时，明确提示同侧纪律与云端命令。"""
+        ep = tmp_path
+        (ep / "03-audio").mkdir(parents=True, exist_ok=True)
+        (ep / "02-script.md").write_text("## 段落 5\n配音：重叠部分。\n", encoding="utf-8")
+        (ep / "03-audio/manifest.json").write_text(
+            json.dumps({"engine": "qwen3_tts_cuda", "model": "m_cuda", "segments": []}), encoding="utf-8"
+        )
+        corrections.save_corrections_raw(
+            ep,
+            [{"id": 1, "segment": "5", "word": "重叠", "action": "inject", "applied": False}],
+        )
+        with pytest.raises(SystemExit) as exc:
+            tts.run(ep, apply_patch=True, cfg_path=tts.CONFIG)
+        msg = str(exc.value)
+        assert "当前处于纠错 apply-patch 流程" in msg
+        assert "Spec §3.6 侧别纪律" in msg
+        assert "python -m pipeline.cloud run <期号> tts -- --apply-patch" in msg
+
     def test_旧v5段被准确列出且带overlay提示(self, capsys):
         """造一条 synth_logic=5 的旧 Take + 一条 synth_logic=6 的段，_report_stale 必须精确报出。"""
         takes = [
             tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=5),
             tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=6),
         ]
-        count = tts._report_stale(takes)
+        count = tts._report_stale(takes, has_overlay=True)
         assert count == 1
         captured = capsys.readouterr().err
         assert "WARN 1/2 段是旧合成逻辑的产物" in captured
         assert "段落 1" in captured or "1" in captured
         assert "本期存在 overlay 纠错段，其音频由 v6 之后的代码产出" in captured
+
+    def test_无overlay纠错时不虚报overlay文案(self, capsys):
+        """P2 审定测试：has_overlay=False 时，_report_stale 绝不虚报存在 overlay 纠错段。"""
+        takes = [
+            tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=5),
+            tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=6),
+        ]
+        count = tts._report_stale(takes, has_overlay=False)
+        assert count == 1
+        captured = capsys.readouterr().err
+        assert "WARN 1/2 段是旧合成逻辑的产物" in captured
+        assert "overlay 纠错段" not in captured
