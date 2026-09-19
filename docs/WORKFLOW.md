@@ -8,7 +8,8 @@
 > python -m pipeline.status data/episodes/<期号>  # 底层排查参考：同一份状态卡，无宿主包装
 > ```
 > 严格按诊断输出的当前阶段与停机卡点执行，严禁越过未批准节点盲目向下游串联。
-> 宿主内可用 `ava <期> /run <命令>`（先回显、按 y 才执行）、`ava <期> /voice`、`ava <期> /patch`；
+> REPL 内 `/run <命令>` 先回显、按 y 才执行；一次性 `ava <期> /run <命令>` 是人手敲的即视为已确认、直接执行。
+> 另有 `ava <期> /voice`（顺听纠错）与 `ava <期> /patch`（补料）；
 > `--force`/`--force-all` 在 ava 层直接拒收并指引 `--redo` / `--apply-patch`。
 
 ---
@@ -53,7 +54,7 @@
 10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：跑 `ava <期> /run cover`。产出候选池与 `07-titles.md`（5 条候选）。
 11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。
 
-> `ava <期> /run X` 与 `python -m pipeline.X <期>` 等价：宿主只多做白名单校验、命令回显与二次确认。
+> `ava <期> /run X` 与 `python -m pipeline.X <期>` 等价：宿主只多做白名单校验（REPL 内另有命令回显与二次确认）。
 > 要接管道、脚本化或复现问题时用 `python -m` 形式。
 
 ---

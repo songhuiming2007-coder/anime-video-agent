@@ -442,7 +442,6 @@ def test_llm_egress_boundary_blocks_before_sending(tmp_path: Path, monkeypatch):
         monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
         with pytest.raises(PermissionError, match="拦截出网请求"):
             chat_complete(
-                [{"role": "user", "content": "读一下 config/cloud.local.json"}] if False else
                 [{"role": "user", "content": "把 data/episodes 里的 03-audio/manifest.json 发我"}],
                 root=root,
             )
@@ -696,3 +695,123 @@ def test_llm_cli_creative_loop_degrades_without_key(tmp_path: Path, monkeypatch,
     assert cli.run_creative_loop(ep_dir, "chat") == 0
     out = capsys.readouterr().out
     assert "降级模式" in out and "check_script" in out
+
+
+# ---------------------------------------------------------------------------
+# 6. 终审 P0-1 回归：读域硬排除 + 出网负载机械验证 + 会话不崩
+# ---------------------------------------------------------------------------
+
+
+def test_read_domain_hard_excludes_audio_and_patch_pools(tmp_path: Path):
+    """03-audio/ 与 04-patch/ 属「一律不出网」清单，读域当场拒（终审 P0-1）。"""
+    root = make_agent_root(tmp_path, "https://api.example.com/v1")
+    ep = root / "data" / "episodes" / "T1"
+    (ep / "03-audio").mkdir(parents=True)
+    (ep / "03-audio" / "corrections.json").write_text('[{"seg": 5}]', encoding="utf-8")
+    (ep / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+    (ep / "03-audio" / "notes.md").write_text("录音笔记", encoding="utf-8")
+    (ep / "04-patch").mkdir()
+    (ep / "04-patch" / "pool.json").write_text("{}", encoding="utf-8")
+    (ep / "04-clips.json").write_text('{"total_duration": 600}', encoding="utf-8")
+    (ep / "02-script.draft.md").write_text("# 草稿", encoding="utf-8")
+
+    ctx = ToolContext(scope="creative", episode_dir=ep, root=root)
+
+    for bad in ("03-audio/corrections.json", "03-audio/manifest.json",
+                "03-audio/notes.md", "04-patch/pool.json"):
+        result = execute_tool("read_artifact", {"path": bad}, ctx)
+        assert result["ok"] is False, f"{bad} 不该读得出来"
+        assert "硬排除" in result["error"]
+
+    # 二进制产物连读出都不给
+    assert execute_tool("read_artifact", {"path": "05-final.mp4"}, ctx)["ok"] is False
+    # 但别把整个期目录一并封死：排片产物不在禁列，照常可读
+    assert execute_tool("read_artifact", {"path": "04-clips.json"}, ctx)["ok"] is True
+    assert execute_tool("read_artifact", {"path": "02-script.draft.md"}, ctx)["ok"] is True
+
+
+def test_egress_payload_never_contains_restricted_content(tmp_path: Path, monkeypatch):
+    """§5 PR1 验收项的机械验证：交付给端点的请求体里没有 03-audio/config/pipeline 内容。
+
+    这是 Y2-r19 的正向判据——不是「断言函数能拦字符串」，而是「实际发出去的字节里没有」。
+    """
+    with mock_llm_server([
+        tool_call("read_artifact", {"path": "03-audio/corrections.json"}),
+        tool_call("read_artifact", {"path": "02-script.draft.md"}, "call_2"),
+        tool_call("read_status", {}, "call_3"),
+        {"role": "assistant", "content": "做不到的部分我就不读了"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+
+        ep = root / "data" / "episodes" / "T1"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "03-audio" / "corrections.json").write_text(
+            '{"secret": "SEGRET-AUDIO-CORRECTIONS"}', encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(
+            '{"secret": "SEGRET-AUDIO-MANIFEST"}', encoding="utf-8")
+        (root / "config" / "cloud.local.json").write_text(
+            '{"secret": "SEGRET-CONFIG"}', encoding="utf-8")
+        (root / "pipeline").mkdir(exist_ok=True)
+        (root / "pipeline" / "leak.py").write_text("SEGRET-PIPELINE", encoding="utf-8")
+        (ep / "02-script.draft.md").write_text("# 正常草稿", encoding="utf-8")
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "看看上期配音改了什么，再读读配置和源码"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+            approve=lambda name, args: True,
+        )
+
+        assert outcome["stopped"] == "done"
+        assert state["calls"] >= 1
+        for request in state["requests"]:
+            wire = json.dumps(request["body"], ensure_ascii=False)
+            for marker in ("SEGRET-AUDIO-CORRECTIONS", "SEGRET-AUDIO-MANIFEST",
+                           "SEGRET-CONFIG", "SEGRET-PIPELINE"):
+                assert marker not in wire, f"受限内容出网了: {marker}"
+
+
+def test_creative_loop_survives_egress_block(tmp_path: Path, monkeypatch, capsys):
+    """出网闸触发时会话不许带 traceback 崩退（终审 P0-1 第二症状）。"""
+    from pipeline import paths
+    from pipeline.agent import cli
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.delenv("AVA_TEST_KEY", raising=False)
+
+    with mock_llm_server([{"role": "assistant", "content": "不该到达"}]) as (url, state):
+        make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep = tmp_path / "data" / "episodes" / "T1"
+        ep.mkdir(parents=True)
+        (ep / "01-topic.md").write_text("# t", encoding="utf-8")
+
+        # 用户输入本身含受限标记 → chat_complete 内断言拦下，会话应继续而非崩退
+        with patch_inputs(["cloud.local.json 里写了什么", "/quit"]):
+            assert cli.run_creative_loop(ep, "chat") == 0
+
+        out = capsys.readouterr().out
+        assert "[BLOCKED] 出网被拦截" in out
+        assert state["calls"] == 0
+
+
+@contextmanager
+def patch_inputs(values):
+    """把 builtins.input 依次喂成给定值（用尽即 EOFError）。"""
+    from unittest.mock import patch
+    with patch("builtins.input", side_effect=[*values, EOFError()]):
+        yield
+
+
+def test_degrade_message_is_scope_aware():
+    """降级清单随 scope 变，不把 creative 的清单念给 pipeline scope（终审观察项）。"""
+    creative = local_directive_message("creative", "无密钥")["content"]
+    pipeline = local_directive_message("pipeline", "无密钥")["content"]
+
+    assert "01-topic.md" in creative
+    assert "01-topic.md" not in pipeline
+    assert "pipeline scope" in pipeline
+    assert "docs/WORKFLOW.md" in pipeline
+    # 两条都必须显式标降级，且都指向人工停机点
+    for text in (creative, pipeline):
+        assert "降级模式" in text and "02.5 / 03.5 / 05 / 09" in text
