@@ -1,7 +1,7 @@
 """文档不变量测试（PR0 固化，进总闸）
 
 验证：
-1. CLAUDE.md 与 AGENTS.md 首行除外的镜像逐字一致性；
+1. AGENTS.md 是唯一常驻规则真源，CLAUDE.md 已废除（由 Claude Code 2.1.277+ 原生支持）；
 2. 操作类文档白名单内文件存在、超 N 字、且受 git 追踪；
 3. 操作类文档绝不含旧手册变体串（rm seg, 删除.*seg, ava-cloud）；
 4. 配音操作与导航文档具备正向新路锚点（--apply-patch 或 corrections.json）；
@@ -18,7 +18,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # 操作类规程文档白名单（记录类天然豁免，见 spec §5 PR0）
 OPERATIONAL_DOCS = [
-    "CLAUDE.md",
     "AGENTS.md",
     "README.md",
     "docs/INDEX.md",
@@ -40,7 +39,6 @@ OPERATIONAL_DOCS = [
 
 # 涉及配音规程与工序导航的核心操作文档（必须包含新路锚点）
 VOICE_DOCS = [
-    "CLAUDE.md",
     "AGENTS.md",
     "README.md",
     "docs/INDEX.md",
@@ -59,25 +57,19 @@ FORBIDDEN_VARIANTS = [
 ]
 
 
-def test_claude_agents_mirror_identical():
-    """CLAUDE.md 与 AGENTS.md 首行外逐字一致"""
+def test_agents_md_is_unified_ssot_and_no_claude_md():
+    """AGENTS.md 是唯一常驻规则真源，CLAUDE.md 已废除（由 Claude Code 2.1.277+ 原生支持）"""
     claude_path = REPO_ROOT / "CLAUDE.md"
     agents_path = REPO_ROOT / "AGENTS.md"
 
-    assert claude_path.exists(), "CLAUDE.md 必须存在"
-    assert agents_path.exists(), "AGENTS.md 必须存在"
+    assert not claude_path.exists(), (
+        "CLAUDE.md 已于 2026-09-19 正式废除（Claude Code ≥2.1.277 已原生支持 AGENTS.md），"
+        "严禁重新引入双写维护！"
+    )
+    assert agents_path.exists(), "AGENTS.md 必须存在且作为唯一真源"
 
-    claude_lines = claude_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    agents_lines = agents_path.read_text(encoding="utf-8").splitlines(keepends=True)
-
-    assert len(claude_lines) > 10, "CLAUDE.md 正文过短"
-    assert len(agents_lines) > 10, "AGENTS.md 正文过短"
-
-    # 首行是标题注释，允许差异，其余行必须逐字节一致
-    claude_body = "".join(claude_lines[1:])
-    agents_body = "".join(agents_lines[1:])
-
-    assert claude_body == agents_body, "CLAUDE.md 与 AGENTS.md 除首行外必须逐字镜像一致"
+    agents_lines = agents_path.read_text(encoding="utf-8").splitlines()
+    assert len(agents_lines) > 50, "AGENTS.md 正文过短"
 
 
 def test_operational_docs_exist_and_tracked_in_git():
