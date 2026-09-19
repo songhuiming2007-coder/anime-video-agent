@@ -45,6 +45,7 @@ ASSET_COMMANDS: dict[str, set[str]] = {
 # 出网敏感目录与关键词（§2.5 Y2-r19）
 RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
     "cloud.local.json",
+    "agent.local.json",
     "03-audio/manifest.json",
     "03-audio/voice.json",
 )

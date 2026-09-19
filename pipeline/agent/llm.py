@@ -49,8 +49,13 @@ class LLMConfig:
 
 
 def load_llm_config(root: Path | None = None) -> LLMConfig | None:
-    """读 config/agent.json + 指名环境变量；无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。"""
-    cfg_file = Path(root or paths.ROOT) / "config" / "agent.json"
+    """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量。
+
+    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。
+    """
+    cfg_dir = Path(root or paths.ROOT) / "config"
+    local_cfg = cfg_dir / "agent.local.json"
+    cfg_file = local_cfg if local_cfg.exists() else (cfg_dir / "agent.json")
     if not cfg_file.exists():
         return None
     try:

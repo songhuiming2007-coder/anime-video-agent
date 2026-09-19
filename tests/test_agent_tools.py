@@ -937,3 +937,26 @@ def test_case_variant_read_of_unpatterned_audio_file_never_leaves(tmp_path: Path
             assert "SEGRET-CORRECTIONS-UPPER" not in json.dumps(
                 request["body"], ensure_ascii=False
             )
+
+
+def test_llm_config_prefers_agent_local_json_override(tmp_path: Path, monkeypatch):
+    """config/agent.local.json 优先于 agent.json（仿照 cloud.local.json 惯例）。"""
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "agent.json").write_text(json.dumps({
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "api_key_env": "OPENAI_API_KEY",
+    }), encoding="utf-8")
+    (cfg_dir / "agent.local.json").write_text(json.dumps({
+        "base_url": "http://127.0.0.1:8317/v1",
+        "model": "gemini-3.8-flash-high",
+        "api_key_env": "CPA_API_KEY",
+    }), encoding="utf-8")
+
+    monkeypatch.setenv("CPA_API_KEY", "test-cpa-key")
+    cfg = load_llm_config(tmp_path)
+    assert cfg is not None
+    assert cfg.base_url == "http://127.0.0.1:8317/v1"
+    assert cfg.model == "gemini-3.8-flash-high"
+    assert cfg.api_key == "test-cpa-key"
