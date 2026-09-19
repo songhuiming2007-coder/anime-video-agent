@@ -99,7 +99,7 @@ pytest
 - **判据与质检标准定义**：[`docs/dev/STANDARD.md`](docs/dev/STANDARD.md) —— 所有量化门禁、评分与测试用例准则；
 - **文档全景索引表**：[`docs/INDEX.md`](docs/INDEX.md) —— 生产态与开发态双轨索引；
 - **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）等核心决策；
-- **Coding Agent 协作规范**：[`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) —— 人机红线、停机点与工程约定。
+- **Coding Agent 协作规范**：[`AGENTS.md`](AGENTS.md) —— 人机红线、停机点与工程约定（Claude Code 2.1.277+ / pi 等全 Agent 统一 SSOT）。
 
 ---
 

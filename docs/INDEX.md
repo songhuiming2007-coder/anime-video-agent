@@ -40,5 +40,5 @@
 
 ## 常驻与本地事实
 
-- **常驻工程约定**：[`../AGENTS.md`](../AGENTS.md) / [`../CLAUDE.md`](../CLAUDE.md)（每次会话生效）
+- **常驻工程约定**：[`../AGENTS.md`](../AGENTS.md)（每次会话生效，统一 SSOT）
 - **本机专属事实**：`../CLAUDE.local.md`（盘符、账号播放数据，不进 git）
