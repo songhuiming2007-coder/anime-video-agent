@@ -1203,82 +1203,97 @@ class TestEpScopePool:
                 c._parse_ep_scope(bad)
 
 
-class TestRescueA:
-    """Spec §4.4：rescue-A 仅救检索失败段，改 scene 通道并带 patch-rescue 标记。"""
+def _setup_episode_with_patch(tmp_path, script, seg_durations, patch_units=None, patch_floor=0.60):
+    ep = tmp_path / "ep"
+    ep.mkdir(parents=True, exist_ok=True)
+    (ep / "02-script.md").write_text(script, encoding="utf-8")
+    audio_dir = ep / "03-audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    (audio_dir / "manifest.json").write_text(
+        json.dumps({"segments": [{"index": i + 1, "duration": d} for i, d in enumerate(seg_durations)]}),
+        encoding="utf-8"
+    )
+    if patch_units is not None:
+        patch_dir = ep / "04-patch"
+        shots_dir = patch_dir / "shots"
+        vindex_dir = patch_dir / "vindex"
+        for d in (shots_dir, vindex_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        pool_name = "test-patch"
+        assets = {}
+        for u in patch_units:
+            key = f"SP{u.episode:02d}"
+            assets[key] = {"path": f"/tmp/{key}.mp4", "duration": 100.0, "size": 100, "mtime": 100.0, "fps": 24.0}
+            sh = [{"i": 0, "start": u.start, "end": u.end, "rep": (u.start + u.end) / 2}]
+            (shots_dir / f"{pool_name}_{key}.json").write_text(
+                json.dumps({"meta": {"duration": 100.0}, "shots": sh}), encoding="utf-8"
+            )
+            (vindex_dir / f"{pool_name}_{key}.scene.json").write_text(
+                json.dumps({"shots": sh}), encoding="utf-8"
+            )
+            np.save(vindex_dir / f"{pool_name}_{key}.scene.npy", np.ones((len(sh), vindex.EMBED_DIM), dtype=np.float32))
 
-    def test_检索失败段被补丁池命中救起(self, monkeypatch):
-        class DummyPatchUnit:
-            def __init__(self, ep, start):
-                self.anime = "test-patch"
-                self.season = None
+        (patch_dir / "pool.json").write_text(json.dumps({
+            "pool": pool_name,
+            "floor": patch_floor,
+            "no_match": patch_floor,
+            "calibrated": False,
+            "assets": assets
+        }), encoding="utf-8")
+    return ep
+
+
+class TestRescueA:
+    """Spec §4.4：rescue-A 真实端到端测试（驱动 c.run）。"""
+
+    def test_检索失败段被补丁池命中救起(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
                 self.episode = ep
                 self.start = start
                 self.end = start + 5.0
                 self.text = f"镜头 {ep} {start}"
 
-        u1 = DummyPatchUnit(1, 10.0)
-        u2 = DummyPatchUnit(1, 5.0)   # 同分时 start 较小排在前面
-        u3 = DummyPatchUnit(2, 0.0)
+        u_main = DummyUnit("主番", 1, 0.0)
+        u_patch_1 = DummyUnit("test-patch", 1, 5.0)   # start 5.0
+        u_patch_2 = DummyUnit("test-patch", 1, 10.0)  # start 10.0 (同分比 start 较小先出)
 
-        patch = {
-            "pool": "test-patch",
-            "floor": 0.60,
-            "vecs": np.ones((3, vindex.EMBED_DIM), dtype=np.float32),
-            "units": [u1, u2, u3],
-        }
+        script = (
+            "## 段落 1\n\n配音：难命中的查询。\n\n画面：\n  查询: 失败词\n\n"
+            "## 段落 2\n\n配音：及格的台词段。\n\n画面：\n  查询: 成功词\n"
+        )
+        ep = _setup_episode_with_patch(tmp_path, script, [5.0, 5.0], patch_units=[u_patch_1, u_patch_2])
 
-        # search_scene 返回包含同分候选
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.75, u_main)] if "成功词" in q else [])
         monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [
-            (0.70, u1), (0.70, u2), (0.65, u3), (0.50, u1)  # 最后一个低于 floor
+            (0.80, u_patch_2), (0.80, u_patch_1)
         ])
 
-        prep = [
-            {"index": 1, "channel": "line", "hits": [], "top_score": 0.0, "threshold": 0.45, "text": "正文", "query": "查询"},
-            {"index": 2, "channel": "anchor", "hits": [], "top_score": None, "threshold": c.NO_MATCH, "text": "锚点段"},
-            {"index": 3, "channel": "line", "hits": [(0.8, None)], "top_score": 0.8, "threshold": 0.45, "text": "及格段"},
-        ]
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
 
-        # 模拟 rescue-A
-        for p in prep:
-            if p.get("channel") == "anchor":
-                continue
-            if p["hits"] and p["top_score"] >= p["threshold"]:
-                continue
-            q = p.get("scene") or p.get("query") or p["text"]
-            hits = vindex.search_scene(q, patch["vecs"], patch["units"], c.TOPK)
-            hits = sorted(hits, key=lambda h: (-h[0], h[1].episode, h[1].start))
-            hits = [(s, u) for s, u in hits if s >= patch["floor"]]
-            if hits:
-                p.update(
-                    channel="scene",
-                    hits=hits,
-                    top_score=round(float(hits[0][0]), 4),
-                    threshold=patch["floor"],
-                    via="patch-rescue",
-                    rung=1,
-                    used_query=q,
-                    score=round(float(hits[0][0]), 4),
-                    floor=round(float(patch["floor"]), 4),
-                )
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        segs = data["segments"]
 
-        # 段 1 被救起
-        assert prep[0]["channel"] == "scene"
-        assert prep[0]["via"] == "patch-rescue"
-        assert prep[0]["threshold"] == 0.60
-        assert prep[0]["used_query"] == "查询"
-        # 显式 tiebreak 校验：同分 0.70，u2 (start 5.0) 排在 u1 (start 10.0) 之前
-        assert prep[0]["hits"][0][1] == u2
-        assert prep[0]["hits"][1][1] == u1
-        assert prep[0]["hits"][2][1] == u3
-        assert len(prep[0]["hits"]) == 3  # 0.50 被 floor 过滤
+        # 段 1 被 rescue-A 救起
+        assert segs[0]["channel"] == "scene"
+        assert segs[0]["via"] == "patch-rescue"
+        assert segs[0]["status"] == "ok"
+        assert segs[0]["threshold"] == 0.60
+        assert segs[0]["top_score"] == 0.80
+        assert segs[0]["used_query"] == "失败词"
+        # 验证 tiebreak：start 较小的 u_patch_1 (5.0, 减去 PAD 0.25 后为 4.75) 成为首选
+        assert segs[0]["clips"][0]["anime"] == "test-patch"
+        assert segs[0]["clips"][0]["start"] == 4.75
 
-        # 段 2 (anchor) 未被救
-        assert prep[1]["channel"] == "anchor"
-        assert "via" not in prep[1]
-
-        # 段 3 (已及格) 未被救
-        assert prep[2]["top_score"] == 0.8
-        assert "via" not in prep[2]
+        # 段 2 是主池成功段，逐字节未变且不带 via="patch-rescue"
+        assert segs[1]["channel"] == "line"
+        assert "via" not in segs[1]
+        assert segs[1]["clips"][0]["anime"] == "主番"
 
 
 class TestCandidateSP:
@@ -1305,144 +1320,281 @@ class TestCandidateSP:
 
 
 class TestRescueBShort:
-    """Spec §4.4 & R1 定案：rescue-B short 段绝对不调 size()，老 clips 逐字节保留追加补尾。"""
+    """Spec §4.4 & R1 定案：rescue-B short 段真实端到端测试（驱动 c.run）。"""
 
-    def test_short段老clips原样保留且补尾同形(self, monkeypatch):
-        # 准备已命中的老 clip（经 size() 处理后已 pop 掉 limit/span/floor）
-        old_clip = {
-            "anime": "主番", "season": 1, "episode": 2, "source": "ep2.mp4",
-            "start": 10.0, "dur": 4.0, "score": 0.75, "line": "主池片段"
-        }
-        prep_seg = {
-            "index": 1, "duration": 8.0, "channel": "line", "status": "short",
-            "text": "口播", "query": "查询", "scene": None, "clips": [dict(old_clip)],
-            "hits": [], "top_score": 0.75, "threshold": 0.45
-        }
+    def test_short段老clips逐字节保留且补丁片段接在尾部且同形(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = f"镜头 {ep}"
 
-        class DummyPatchUnit:
-            anime = "test-patch"
-            season = None
-            episode = 1
-            start = 0.0
-            end = 10.0
-            text = "补丁镜头"
+        # 主池只能提供 3s 片段 (start=0.0, end=3.0, source=3.0) 无法向前后拉伸
+        u_main = DummyUnit("主番", 1, 0.0, 3.0)
+        # 补丁池提供足量片段
+        u_patch = DummyUnit("test-patch", 1, 0.0, 10.0)
 
-        patch = {
-            "pool": "test-patch",
-            "floor": 0.60,
-            "vecs": np.ones((1, vindex.EMBED_DIM), dtype=np.float32),
-            "units": [DummyPatchUnit()],
-        }
-        sources = {("test-patch", "SP01"): {"path": "patch.mp4", "duration": 20.0}}
-        allow = {"主番", "test-patch"}
+        script = "## 段落 1\n\n配音：需要八秒的段落。\n\n画面：\n  查询: 主池短查询\n"
+        ep = _setup_episode_with_patch(tmp_path, script, [8.0], patch_units=[u_patch])
 
-        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.80, units[0])])
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 3.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.75, u_main)])
+        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.85, u_patch)])
 
-        # 模拟 clips.py 中 rescue-B 的 short 处理逻辑
-        shorts = [prep_seg]
-        used = [old_clip]
-        for p in shorts:
-            cur_dur = sum(cl["dur"] for cl in p["clips"])
-            residual = round(p["duration"] - cur_dur, 3)
-            q = p.get("scene") or p.get("query") or p["text"]
-            hits = vindex.search_scene(q, patch["vecs"], patch["units"], c.TOPK)
-            hits = sorted(hits, key=lambda h: (-h[0], h[1].episode, h[1].start))
-            hits = [(s, u) for s, u in hits if s >= patch["floor"]]
-            for sc, u in hits:
-                cand = c.candidate(sc, u, sources, allow, floor=patch["floor"])
-                if cand is None or c._overlaps(cand, used):
-                    continue
-                room = round(cand["limit"] - cand["start"], 3)
-                append_dur = round(min(room, residual), 3)
-                cand["dur"] = append_dur
-                cand.pop("limit", None)
-                cand.pop("span", None)
-                cand.pop("floor", None)
-                p["clips"].append(cand)
-                used.append(cand)
-                p["via"] = "patch-rescue"
-                break
-            if abs(sum(cl["dur"] for cl in p["clips"]) - p["duration"]) <= c.SEG_TOL:
-                p["status"] = "ok"
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
 
-        # 断言老 clip 逐字节未变
-        assert prep_seg["clips"][0] == old_clip
-        # 断言新追加的 patch clip 紧随其后且同形
-        new_clip = prep_seg["clips"][1]
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        seg = data["segments"][0]
+        assert seg["status"] == "ok"
+        assert seg["via"] == "patch-rescue"
+        assert len(seg["clips"]) == 2
+
+        # 断言老 clip 仍然是主池生成的片段，逐字节未变
+        old_clip = seg["clips"][0]
+        assert old_clip["anime"] == "主番"
+        assert old_clip["start"] == 0.0
+        assert old_clip["dur"] == 3.0
+
+        # 断言新补丁 clip 接在尾部
+        new_clip = seg["clips"][1]
         assert new_clip["anime"] == "test-patch"
-        assert new_clip["dur"] == 4.0
-        assert "limit" not in new_clip and "span" not in new_clip and "floor" not in new_clip
-        assert prep_seg["status"] == "ok"
-        assert prep_seg["via"] == "patch-rescue"
+        assert new_clip["dur"] == 5.0    # 补足 8.0 - 3.0 = 5.0
+        assert old_clip["dur"] + new_clip["dur"] == 8.0
 
-    def test_锚点short段不被自动补尾(self):
-        anchor_seg = {
-            "index": 2, "duration": 10.0, "channel": "anchor", "status": "short",
-            "clips": [{"dur": 5.0}]
-        }
-        shorts = [p for p in [anchor_seg] if p["status"] == "short" and p.get("channel") != "anchor"]
-        assert len(shorts) == 0, "锚点 short 段严禁进入自动补尾"
+        # 断言新 clip 的 limit/span/floor 必须已 pop，与老 clip 保持同形契约！
+        assert "limit" not in new_clip
+        assert "span" not in new_clip
+        assert "floor" not in new_clip
 
-    def test_residual小于MIN_CLIP时不追加保持short(self):
-        seg = {
-            "index": 3, "duration": 6.0, "channel": "line", "status": "short",
-            "clips": [{"dur": 4.5}]  # residual = 1.5 < MIN_CLIP(2.5)
-        }
-        cur_dur = sum(cl["dur"] for cl in seg["clips"])
-        residual = round(seg["duration"] - cur_dur, 3)
-        assert residual < c.MIN_CLIP
+    def test_锚点short段不被补丁补尾(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = "镜头"
+
+        u_patch = DummyUnit("test-patch", 1, 0.0, 10.0)
+        # 锚点段要求 20s，但素材只有 5s（差 15s 超出 EXTEND_MAX 8s，无法定格）
+        script = "## 段落 1\n\n配音：锚点段落。\n\n画面：\n  锚点: S01E01 00:00\n"
+        ep = _setup_episode_with_patch(tmp_path, script, [20.0], patch_units=[u_patch])
+
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 5.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c._shots_mod, "load", lambda a, k, **kw: {
+            "shots": [{"i": 0, "start": 0.0, "end": 5.0}]
+        })
+        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.85, u_patch)])
+
+        dest = c.run(ep, anime="主番")
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        seg = data["segments"][0]
+        # 锚点 short 保持 short，绝不自动接补丁
+        assert seg["status"] == "short"
+        assert len(seg["clips"]) == 1
+        assert seg["clips"][0]["anime"] == "主番"
+
+    def test_residual小于MIN_CLIP时不追加保持short(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = "镜头"
+
+        # 主池能提供 4.5s (start=0.0, end=4.5, dur=4.5)，总需求 6.0s，residual = 1.5s < MIN_CLIP(2.5s)
+        u_main = DummyUnit("主番", 1, 0.0, 4.5)
+        u_patch = DummyUnit("test-patch", 1, 0.0, 10.0)
+
+        script = "## 段落 1\n\n配音：微缺口段落。\n\n画面：\n  查询: 主池微缺查询\n"
+        ep = _setup_episode_with_patch(tmp_path, script, [6.0], patch_units=[u_patch])
+
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 4.5}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.75, u_main)])
+        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.85, u_patch)])
+
+        dest = c.run(ep, anime="主番")
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        seg = data["segments"][0]
+        # 缺口小于 2.5s，闪帧不如保持 short 交人
+        assert seg["status"] == "short"
+        assert len(seg["clips"]) == 1
+
+
+class TestRescueBStarved:
+    """Spec §4.4 & P0-1 修复：rescue-B starved 段重分配与 _tighten_by_episode 键前提。"""
+
+    def test_starved段救起且同集多片段不抛KeyError(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = f"镜头 {ep} {start}"
+
+        # 段 1 与段 2 都看得见同一批候选，但段 1 分更高 → 段 1 把它们全占完
+        # 段 1 拿到 2 个片段并过 size()（复现 P0-1 的前置：used 里是同集、已 size 过的片段）
+        u_m1 = DummyUnit("主番", 1, 0.0, 5.0)
+        u_m2 = DummyUnit("主番", 1, 10.0, 15.0)
+        # 补丁池提供救援
+        u_patch = DummyUnit("test-patch", 1, 0.0, 5.0)
+
+        script = (
+            "## 段落 1\n\n配音：段落一多片段。\n\n画面：\n  查询: 主池强查询\n\n"
+            "## 段落 2\n\n配音：段落二饿死。\n\n画面：\n  查询: 主池弱查询\n"
+        )
+        ep = _setup_episode_with_patch(tmp_path, script, [10.0, 5.0], patch_units=[u_patch])
+
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        # 段 1 高分抢走两个；段 2 也及格（0.50/0.49 > 0.45）但抢不到任何片段 → no_source
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: (
+            [(0.80, u_m1), (0.75, u_m2)] if "强查询" in q
+            else [(0.50, u_m1), (0.49, u_m2)]
+        ))
+        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.85, u_patch)])
+
+        # 验证 c.run 绝不崩 KeyError: 'limit'
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
+
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        segs = data["segments"]
+        assert segs[0]["status"] == "ok"
+        assert len(segs[0]["clips"]) == 2
+
+        # 段 2 原本是真 no_source（hit 及格但全被占），由 rescue-B 救起
+        assert segs[1]["status"] == "ok"
+        assert segs[1]["via"] == "patch-rescue"
+        assert segs[1]["clips"][0]["anime"] == "test-patch"
+
+
+class TestShortSafeLimitNextClip:
+    """Spec §4.4 P1-1 修复：short 补尾 room 必须受同素材下一个已分配片段约束。"""
+
+    def test_short补尾不越过同素材下一个已占片段(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = None if anime == "test-patch" else 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = "镜头"
+
+        # 补丁池有 SP01 素材，总长 100s
+        # 镜头 A: [9.8, 12.8) (span=3.0)
+        # 镜头 B: [30.0, 38.0) (span=8.0)
+        u_patch_a = DummyUnit("test-patch", 1, 9.8, 12.8)
+        u_patch_b = DummyUnit("test-patch", 1, 30.0, 38.0)
+
+        # 段 1 先锁定了镜头 B [30.0, 38.0)
+        # 段 2 需要 25.0s，主池只有 3s (short)，命中镜头 A [9.8, 12.8)
+        script = (
+            "## 段落 1\n\n配音：占用后半段。\n\n画面：\n  锚点: test-patch SP01 00:30\n\n"
+            "## 段落 2\n\n配音：长段落补尾。\n\n画面：\n  查询: 段落二\n"
+        )
+        ep = _setup_episode_with_patch(tmp_path, script, [8.0, 25.0], patch_units=[u_patch_a, u_patch_b])
+
+        # 主池短片段
+        u_main = DummyUnit("主番", 1, 0.0, 3.0)
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 3.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.70, u_main)])
+        monkeypatch.setattr(vindex, "search_scene", lambda q, vecs, units, k: [(0.85, u_patch_a)])
+
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
+
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        segs = data["segments"]
+
+        clip_seg1 = segs[0]["clips"][0]
+        assert clip_seg1["start"] == 30.0
+        assert clip_seg1["dur"] == 8.0
+
+        # 段 2 补尾片段：起点 9.8 - 0.25 = 9.55。
+        # 下一片段起点是 30.0，safe_limit 为 30.0 - 0.05 = 29.95。
+        # append_dur 必须被夹在 29.95 - 9.55 = 20.4s 之内，绝不可放到 25s 导致进入 [30.0, 38.0)！
+        patch_clip = segs[1]["clips"][1]
+        assert patch_clip["start"] + patch_clip["dur"] <= 30.0 - c.OVERLAP_GAP
 
 
 class TestHandEditedDiffGuard:
-    """Spec §4.2 R1-r8 & B1-r9：手改时间码保护闸。"""
+    """Spec §4.2 R1-r8 & B1-r9：手改时间码保护闸端到端测试（驱动 c.run）。"""
 
-    def test_非补丁改动被拦截且文案并列两种成因(self, tmp_path):
-        ep = tmp_path / "ep"
-        ep.mkdir()
-        dest = ep / "04-clips.json"
-        old_content = {
-            "segments": [
-                {"index": 1, "status": "ok", "clips": [{"dur": 5.0, "start": 0.0}]},
-            ]
-        }
-        dest.write_text(json.dumps(old_content), encoding="utf-8")
+    def test_手改非补丁段被拦截且报错归因双成因(self, tmp_path, monkeypatch):
+        class DummyUnit:
+            def __init__(self, anime, ep, start, end):
+                self.anime = anime
+                self.season = 1
+                self.episode = ep
+                self.start = start
+                self.end = end
+                self.text = "镜头"
 
-        new_out = [
-            {"index": 1, "status": "ok", "clips": [{"dur": 5.0, "start": 10.0}]},  # 手改了时间码
-        ]
+        u = DummyUnit("主番", 1, 0.0, 10.0)
+        script = "## 段落 1\n\n配音：正常台词。\n\n画面：\n  查询: 正常查询\n"
+        ep = _setup_episode_with_patch(tmp_path, script, [5.0])
 
-        old_data = json.loads(dest.read_text(encoding="utf-8"))
-        old_segs = old_data.get("segments", [])
-        old_by_idx = {s["index"]: s for s in old_segs}
-        new_by_idx = {s["index"]: s for s in new_out}
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.75, u)])
 
-        suspicious = []
-        for idx, nseg in new_by_idx.items():
-            oseg = old_by_idx.get(idx)
-            if oseg != nseg:
-                is_patch = nseg.get("via") == "patch-rescue"
-                was_failed = oseg.get("status") in ("no_match", "no_source", "short")
-                if not (was_failed and is_patch):
-                    suspicious.append((idx, oseg, nseg))
+        # 第一次运行：产出合法的 04-clips.json
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
 
-        assert len(suspicious) == 1
-        seg_list_str = "、".join(f"段{idx}" for idx, _, _ in suspicious)
-        err_msg = (
-            f"FAIL 检测到段落产物变化（{seg_list_str}）：\n"
-            f"     这些段的产物会变且不是补丁/rescue 引起——可能来自手改 04-clips.json 或稿件改动。\n"
-            f"     请先确认：先 approve 当前版、把手改片段誉走，或传 --force 显式确认丢弃覆盖。"
-        )
-        assert "可能来自手改 04-clips.json 或稿件改动" in err_msg
+        # 人手改 04-clips.json（改动 start 码）
+        clips_data = json.loads(dest.read_text(encoding="utf-8"))
+        clips_data["segments"][0]["clips"][0]["start"] = 20.0
+        dest.write_text(json.dumps(clips_data, ensure_ascii=False), encoding="utf-8")
 
-    def test_坏JSON时WARN且不裸崩(self, tmp_path, capsys):
-        dest = tmp_path / "04-clips.json"
-        dest.write_text("corrupted json {{{", encoding="utf-8")
-        try:
-            json.loads(dest.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            print(f"WARN 旧 04-clips.json 不可读，无法 diff，手改检测跳过: {e}", file=sys.stderr)
+        # 第二次运行：未传 force，必须被手改检测闸拦截！
+        with pytest.raises(SystemExit) as exc:
+            c.run(ep, anime="主番")
+        msg = str(exc.value)
+        assert "FAIL 检测到段落产物变化（段1）" in msg
+        assert "可能来自手改 04-clips.json 或稿件改动" in msg
+
+        # 传 force=True，跳过拦截
+        dest_forced = c.run(ep, anime="主番", force=True)
+        assert dest_forced.exists()
+
+    def test_旧文件损坏时WARN且不裸崩(self, tmp_path, monkeypatch, capsys):
+        script = "## 段落 1\n\n配音：正常台词。\n\n画面：\n  查询: 正常查询\n"
+        ep = _setup_episode_with_patch(tmp_path, script, [5.0])
+        # 预置损坏的 JSON
+        (ep / "04-clips.json").write_text("{corrupted json", encoding="utf-8")
+
+        class DummyUnit:
+            anime = "主番"
+            season = 1
+            episode = 1
+            start = 0.0
+            end = 10.0
+            text = "镜头"
+
+        monkeypatch.setattr(c, "load_sources", lambda a: {"S01E01": {"path": "/main.mp4", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda idx, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [(0.75, DummyUnit())])
+
+        dest = c.run(ep, anime="主番")
+        assert dest.exists()
         err = capsys.readouterr().err
-        assert "旧 04-clips.json 不可读" in err
+        assert "旧 04-clips.json 不可读，无法 diff，手改检测跳过" in err
 
 
 class TestPoolsAssemblySkipsPatch:

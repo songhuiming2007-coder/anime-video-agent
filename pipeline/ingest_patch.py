@@ -154,7 +154,7 @@ def load_pool(episode: Path) -> dict | None:
             f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
         )
 
-    floor = data.get("floor") or data.get("no_match", 0.60)
+    floor = data["floor"] if "floor" in data else data.get("no_match", 0.60)
     assets = data.get("assets", {})
     if not assets:
         # 空补丁池直接返回空容器

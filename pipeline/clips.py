@@ -336,9 +336,11 @@ def _tighten_by_episode(used: list[dict]) -> None:
             continue
         cs.sort(key=lambda c: c["start"])
         for a, b in zip(cs, cs[1:]):
-            if b["start"] > a["start"] + a.get("span", 0.0):
-                a["limit"] = min(a["limit"], b["start"] - OVERLAP_GAP)
-                b["floor"] = round(a["start"] + a["span"] + OVERLAP_GAP, 3)
+            a_span = a.get("span", a.get("dur", 0.0))
+            if b["start"] > a["start"] + a_span:
+                a_limit = a.get("limit", a["start"] + a.get("dur", 0.0))
+                a["limit"] = min(a_limit, b["start"] - OVERLAP_GAP)
+                b["floor"] = round(a["start"] + a_span + OVERLAP_GAP, 3)
 
 
 def candidate(score: float, u, sources: dict,
@@ -845,7 +847,6 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
     # 单番保持走 load_sources（既有测试的 monkeypatch 缝就在这）；多番才联合加载
     sources = load_sources_multi(pools) if multi else load_sources(anime)
     if patch:
-        sources = {**sources, **{(anime, k): v for k, v in sources.items()}}
         sources.update(patch["sources"])
         allow = set(animes) | {patch["pool"]}
     else:
@@ -1105,7 +1106,8 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             for _ in range(12):
                 for p in rescued_starved:
                     p["clips"] = []
-                starved_used = _allocate(rescued_starved, starved_by_index, sources, allow, starved_quota, pre=used)
+                pre_used = [dict(c) for c in used]
+                starved_used = _allocate(rescued_starved, starved_by_index, sources, allow, starved_quota, pre=pre_used)
                 _tighten_by_episode(starved_used)
                 short_idx = []
                 for p in rescued_starved:
@@ -1128,6 +1130,9 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         for p in shorts:
             cur_dur = sum(c["dur"] for c in p["clips"])
             residual = round(p["duration"] - cur_dur, 3)
+            # 早退优化：缺口比 MIN_CLIP 还小就不必花一次 search_scene。
+            # 真正的闸在下面 `append_dur < MIN_CLIP`（两层都留是故意的：
+            # 删任意一层行为不变，删两层闪帧才会漏进成片）。
             if residual < MIN_CLIP:
                 continue
             q = p.get("scene") or p.get("query") or p["text"]
@@ -1141,7 +1146,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
                 cand = candidate(sc, u, sources, allow, floor=patch["floor"])
                 if cand is None or _overlaps(cand, used):
                     continue
-                room = round(cand["limit"] - cand["start"], 3)
+                # 计算受同素材下一个已分配片段约束的 safe_limit（防画面越界复用，Spec §4.4 P1-1）
+                safe_limit = cand["limit"]
+                for other in used:
+                    if (other.get("anime"), other.get("season"), other.get("episode")) == (cand.get("anime"), cand.get("season"), cand.get("episode")):
+                        if other["start"] > cand["start"]:
+                            safe_limit = min(safe_limit, other["start"] - OVERLAP_GAP)
+                room = round(safe_limit - cand["start"], 3)
                 if room < MIN_CLIP:
                     continue
                 append_dur = round(min(room, residual), 3)
@@ -1166,7 +1177,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
                     break
 
             new_total = sum(c["dur"] for c in p["clips"])
-            if abs(new_total - p["duration"]) <= SEG_TOL or new_total >= p["duration"]:
+            if abs(new_total - p["duration"]) <= SEG_TOL:
                 p["status"] = "ok"
 
     out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cands",
