@@ -90,11 +90,13 @@ def write_episode_file(
     ):
         raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
 
-    # 2. 纵深防御：期目录必须落在 data/episodes 之下，严禁写入仓库根或系统 /tmp
+    # 2. 纵深防御（fail-closed，B4-r6）：期目录必须落在 data/episodes 之下
     episodes_root = (paths.ROOT / "data" / "episodes").resolve()
+    if not episodes_root.exists():
+        raise PermissionError(f"data/episodes 不可达（外置盘未挂载？），拒绝写入: {episodes_root}")
     if resolved_ep == (paths.ROOT).resolve() or resolved_ep == Path("/tmp").resolve():
         raise PermissionError(f"禁止将仓库根或 /tmp 作为期目录写入: {resolved_ep}")
-    if episodes_root.exists() and (resolved_ep == episodes_root or episodes_root not in resolved_ep.parents):
+    if resolved_ep == episodes_root or episodes_root not in resolved_ep.parents:
         raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
 
     # 2. 拦截父级或兄弟目录越界
@@ -111,7 +113,11 @@ def write_episode_file(
 
 
 def _extract_positional_args(args: list[str]) -> list[str]:
-    """提取真正的命令行位置参数，跳过旗标及其参数值。"""
+    """提取真正的命令行位置参数，跳过旗标及其参数值。
+
+    注意（债务记账）：模块若新增带值旗标（非布尔 flag），须同步登记到 valued_flags；
+    否则该旗标的值会被误判为位置参数，导致自动注入当前期目录失效。
+    """
     pos: list[str] = []
     i = 0
     valued_flags = {

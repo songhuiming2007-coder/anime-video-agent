@@ -246,6 +246,7 @@ def run_repl(ep_dir: Path) -> int:
             print("  /chat        creative scope 选题发散")
             print("  /script      聚焦写稿 (02-script.draft.md)")
             print("  /quit        退出 ava\n")
+            print("  提示: 手工指定含空格的路径参数时请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
             continue
 
         if line == "/status":
