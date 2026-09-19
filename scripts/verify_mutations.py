@@ -105,7 +105,8 @@ MUTATIONS: list[dict] = [
      "new": '        truncated = False\n        return full.decode("utf-8", errors="replace"), truncated'},
     # ---- M10: max_iterations 默认硬闸 ----
     {"id": "M10", "guard": "max_iterations=10 硬闸", "file": LLM,
-     "old": "DEFAULT_MAX_ITERATIONS = 10", "new": "DEFAULT_MAX_ITERATIONS = 100"},
+     # 锚点带换行：`= 10` 是 `= 100` 的前缀子串，不带换行会在变异后仍「命中」→ 漏报过期锚点
+     "old": "DEFAULT_MAX_ITERATIONS = 10\n", "new": "DEFAULT_MAX_ITERATIONS = 100\n"},
     # ---- M11: scope 热推导 ----
     {"id": "M11", "guard": "scope 每轮热推导（不被会话缓存）", "file": CLI,
      "old": ('    scope_override: str | None = None\n'
@@ -236,7 +237,11 @@ class Harness:
 
     def run_suite(self) -> tuple[int, list[str]]:
         proc = subprocess.run(
-            ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=no"],
+            ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=no",
+             # 反向自检剔除：这条测试检查「矩阵锚点是否逐字命中」，而变异恰好会替换掉
+             # 锚点文本 → 它必然报红，与「护栏是否被绕过」无关，会给每条变异白涨 1 条。
+             # 它由 harness 自己在开跑前把关（check_one 的命中数校验），不参与逐条计分。
+             "--deselect=tests/test_verify_mutations.py::test_anchors_in_shipped_matrix_are_unique_in_repo"],
             cwd=self.repo, text=True, capture_output=True,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
