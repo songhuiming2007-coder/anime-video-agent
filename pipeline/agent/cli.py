@@ -17,7 +17,7 @@ from pathlib import Path
 from pipeline import paths
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.scopes import load_scope
-from pipeline.agent.tools import validate_pipeline_command
+from pipeline.agent.tools import run_pipeline
 from pipeline.status import format_status, inspect_episode
 
 # 人类停机点集合（Spec §2.6）
@@ -73,9 +73,12 @@ def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float
     paths.atomic_write(ht_path, json.dumps(records, ensure_ascii=False, indent=2) + "\n")
 
 
-def get_episodes_list() -> tuple[list[Path], int]:
-    """获取所有期目录，排除 '.' 与 '_' 前缀，按 mtime 降序排列（Spec §2.3）。"""
-    ep_root = paths.ROOT / "data" / "episodes"
+def get_episodes_list(root: Path | None = None) -> tuple[list[Path], int]:
+    """获取所有期目录，排除 '.' 与 '_' 前缀，按 mtime 降序排列（Spec §2.3）。
+
+    root 可注入，便于测试与 LLM 工具（list_episodes）复用同一份扫描逻辑。
+    """
+    ep_root = (root or paths.ROOT) / "data" / "episodes"
     if not ep_root.exists():
         return [], 0
 
@@ -452,6 +455,64 @@ def run_voice_loop(ep_dir: Path) -> int:
     return 0
 
 
+def run_creative_loop(ep_dir: Path, mode: str = "chat") -> int:
+    """creative scope 对话写稿闭环（Spec §2.4, §5 PR4）。
+
+    LLM 不可用时当场降级为本地纯指示模式（不装作有 LLM 在场）。
+    工具调用一律先经人确认（写 01-topic.md 是立项动作，必须人拍板）。
+    """
+    from pipeline.agent.llm import LLMError, load_llm_config, local_directive_message, run_tool_loop
+    from pipeline.agent.tools import ToolContext
+
+    extra = "" if mode == "chat" else (
+        "\n\n本轮聚焦写稿：产出只许写 02-script.draft.md；写完提示跑 check_script。"
+    )
+    messages: list[dict] = [
+        {"role": "system", "content": load_scope("creative").system_prompt + extra}
+    ]
+    ctx = ToolContext(scope="creative", episode_dir=ep_dir)
+
+    if load_llm_config() is None:
+        print(local_directive_message("creative", "缺少 config/agent.json 或环境变量密钥")["content"])
+        return 0
+
+    def _approve(name: str, args: dict) -> bool:
+        print(f"\n  [工具请求] {name} {json.dumps(args, ensure_ascii=False)[:200]}")
+        try:
+            return input("  允许执行? [y/N]: ").strip().lower() == "y"
+        except EOFError:
+            return False
+
+    while True:
+        try:
+            line = input(f"\nava [{ep_dir.name}] (creative) > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[退出 creative 模式]")
+            return 0
+        if not line:
+            continue
+        if line in ("/quit", "/exit", "quit", "exit", "/done"):
+            print("[退出 creative 模式]")
+            return 0
+
+        messages.append({"role": "user", "content": line})
+        try:
+            outcome = run_tool_loop(messages, ctx=ctx, approve=_approve)
+        except LLMError as exc:
+            print(f"[FAIL] {exc}")
+            messages.pop()
+            continue
+        messages = outcome["messages"]
+
+        content = outcome["final"].get("content") or ""
+        if content:
+            print(f"\n{content}")
+        if outcome["stopped"] == "max_iterations":
+            print(f"[WARN] 工具调用已达上限 {outcome['iterations']} 轮，停止并交人接管。")
+        elif outcome["stopped"] == "degraded":
+            return 0
+
+
 def run_repl(ep_dir: Path) -> int:
     """REPL 交互循环（Spec §2.4）。"""
     check_code_freeze()
@@ -520,11 +581,11 @@ def run_repl(ep_dir: Path) -> int:
             continue
 
         if line == "/chat":
-            print(f"[*] 进入 creative 对话模式 (当前 scope: {scope})...")
+            run_creative_loop(ep_dir, "chat")
             continue
 
         if line == "/script":
-            print(f"[*] 进入聚焦写稿模式 (产出只许 02-script.draft.md)...")
+            run_creative_loop(ep_dir, "script")
             continue
 
         if line.startswith("/run"):
@@ -533,14 +594,15 @@ def run_repl(ep_dir: Path) -> int:
                 print("[ERROR] /run 需要指定命令，例如: /run tts --redo 3")
                 continue
 
-            # 校验命令并自动补齐当前期目录参数（🔴 1 修复）
-            valid, msg, norm_cmd = validate_pipeline_command(cmd_part, scope=scope, ep_dir=ep_dir)
-            if not valid:
-                print(f"[REJECT] {msg}")
+            # 校验命令并自动补齐当前期目录参数（🔴 1 修复；/run 与 LLM 工具表共用
+            # run_pipeline 这一个入口，防止校验器两处实现分叉）
+            outcome = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope)
+            if not outcome["ok"]:
+                print(f"[REJECT] {outcome['message']}")
                 continue
 
             # 命令回显与二次确认（Spec §2.4）
-            cmd_str = " ".join(norm_cmd)
+            cmd_str = " ".join(outcome["argv"])
             print(f"\n  待执行: {cmd_str}")
             try:
                 confirm = input("  确认执行? [y/N]: ").strip().lower()
@@ -555,16 +617,12 @@ def run_repl(ep_dir: Path) -> int:
             check_code_freeze()
             print(f"[*] 正在执行: {cmd_str} ...")
             t_start = time.time()
-            try:
-                res = subprocess.run(norm_cmd, cwd=paths.ROOT)
-            except FileNotFoundError as exc:
-                print(f"[FAIL] 执行器未找到: {exc}")
-                continue
+            result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True)
             t_end = time.time()
-            if res.returncode == 0:
+            if result["ok"]:
                 print(f"[OK] 执行完成（耗时: {t_end - t_start:.1f}s）")
             else:
-                print(f"[FAIL] 执行失败，退出码: {res.returncode}")
+                print(f"[FAIL] 执行失败，退出码: {result['returncode']}")
             continue
 
         print(f"[ERROR] 未知命令: '{line}'。输入 /help 查看命令列表。")
@@ -641,17 +699,16 @@ def main(argv: list[str] | None = None) -> int:
         if sub_cmd.startswith("/run"):
             status = inspect_episode(ep_dir)
             scope = scope_of(status)
-            valid, msg, norm_cmd = validate_pipeline_command(sub_cmd[4:].strip(), scope=scope, ep_dir=ep_dir)
-            if not valid:
-                print(f"[REJECT] {msg}", file=sys.stderr)
-                return 1
             check_code_freeze()
-            try:
-                res = subprocess.run(norm_cmd, cwd=paths.ROOT)
-                return res.returncode
-            except FileNotFoundError as exc:
-                print(f"[FAIL] 执行器未找到: {exc}", file=sys.stderr)
+            outcome = run_pipeline(
+                sub_cmd[4:].strip(), episode_dir=ep_dir, scope=scope, confirmed=True
+            )
+            if not outcome["ok"] and outcome["returncode"] is None:
+                print(f"[REJECT] {outcome['message']}", file=sys.stderr)
                 return 1
+            if not outcome["ok"]:
+                print(f"[FAIL] {outcome['message']}", file=sys.stderr)
+            return outcome["returncode"] or 0
         if sub_cmd == "/voice":
             return run_voice_loop(ep_dir)
         if sub_cmd == "/patch":
