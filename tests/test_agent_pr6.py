@@ -549,15 +549,13 @@ def test_repl_run_cloud_up_shows_card_and_records_approval(tmp_path: Path, monke
 
 
 def test_red_1_realtime_unbuffered_streaming():
-    """🔴-1 回归测试：子进程 stdout 实时逐行透传，首行到达时间显著小于总执行时间。"""
+    """🔴-1 回归测试：子进程 stdout 实时逐行透传，首行到达时间显著小于总执行时间（裸 print 无显式 flush，杀死变异）。"""
     import time
     stream_script = (
-        "import sys, time\n"
-        "sys.stdout.write('LINE_ONE\\n')\n"
-        "sys.stdout.flush()\n"
+        "import time\n"
+        "print('LINE_ONE')\n"
         "time.sleep(0.8)\n"
-        "sys.stdout.write('LINE_TWO\\n')\n"
-        "sys.stdout.flush()\n"
+        "print('LINE_TWO')\n"
     )
     arrival_times: list[float] = []
     t_start = time.time()
@@ -577,6 +575,39 @@ def test_red_1_realtime_unbuffered_streaming():
     # 首行到达时间应在 0.4s 之内（立即到达），而总时长应 >= 0.7s
     assert arrival_times[0] < 0.4
     assert res["duration_s"] >= 0.7
+
+
+def test_red_2_half_line_prompt_drained_without_newline():
+    """🔴-2 回归测试：父进程 _drain 使用 read1 分块读，半行交互提示符（无换行）即时透传至终端。"""
+    import time
+    prompt_script = (
+        "import sys, time\n"
+        "sys.stdout.write('[*] 本期包含 1 个补丁段，确认已人工核对完毕并批准？[y/N]: ')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(0.8)\n"
+        "sys.stdout.write('y\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+    arrival_times: list[float] = []
+    received_texts: list[str] = []
+    t_start = time.time()
+
+    orig_write = sys.stdout.write
+    def tracking_write(s):
+        if "[y/N]:" in s:
+            arrival_times.append(time.time() - t_start)
+            received_texts.append(s)
+        return orig_write(s)
+
+    with patch.object(sys.stdout, "write", side_effect=tracking_write):
+        with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys_python(), "-c", prompt_script])):
+            res = run_pipeline("check_script", scope="pipeline", confirmed=True)
+
+    assert res["ok"] is True
+    assert len(arrival_times) >= 1
+    # 提示符必须在 0.4s 内即时到达父进程终端，绝对不能被 readline 扣留到 0.8s 之后的换行！
+    assert arrival_times[0] < 0.4
+    assert "[*] 本期包含 1 个补丁段" in "".join(received_texts)
 
 
 def test_red_2_review_patch_prompt_flushed_before_input(tmp_path: Path, monkeypatch, capsys):
@@ -650,4 +681,13 @@ def test_yellow_3_control_characters_stripped_from_card_and_echo(tmp_path: Path,
     cli._default_approve("read_artifact", {"path": "01-topic.md\x1b[2J"}, ep_dir=ep, scope="creative")
     out = capsys.readouterr().out
     assert "\x1b[2J" not in out
+
+
+def test_yellow_4_argparse_abbreviation_triggers_danger_tags():
+    """🟡-4 回归测试：argparse 缩写（如 --app, --conf）同样触发 [停机点] 与 [跳过人工闸] 危险标记。"""
+    argv = [sys_python(), "-m", "pipeline.review", "data/episodes/01-test", "--app", "--conf"]
+    card = render_approval_card("run_pipeline", {"command": "review --app --conf"}, argv=argv)
+    assert "[停机点]" in card
+    assert "[跳过人工闸]" in card
+
 

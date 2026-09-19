@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import codecs
 import collections
 import json
 import os
@@ -663,6 +664,8 @@ class _TailBuffer:
 
     def append(self, chunk: bytes) -> None:
         self.total_bytes += len(chunk)
+        if len(chunk) > self.max_bytes * 2:
+            chunk = chunk[-(self.max_bytes * 2):]
         self.chunks.append(chunk)
         self.current_bytes += len(chunk)
         while self.current_bytes > self.max_bytes * 2 and len(self.chunks) > 1:
@@ -742,15 +745,23 @@ def run_pipeline(
 
     def _drain(pipe: Any, buf: _TailBuffer, is_stderr: bool) -> None:
         target_stream = sys.stderr if is_stderr else sys.stdout
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
-            for raw_line in iter(pipe.readline, b""):
-                text = raw_line.decode("utf-8", errors="replace")
+            for chunk in iter(lambda: pipe.read1(4096), b""):
+                text = decoder.decode(chunk)
                 try:
                     target_stream.write(text)
                     target_stream.flush()
                 except Exception:
                     pass
-                buf.append(raw_line)
+                buf.append(chunk)
+            final_text = decoder.decode(b"", final=True)
+            if final_text:
+                try:
+                    target_stream.write(final_text)
+                    target_stream.flush()
+                except Exception:
+                    pass
         finally:
             try:
                 pipe.close()

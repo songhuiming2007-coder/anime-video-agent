@@ -118,6 +118,14 @@ def build_status_card(
     return card
 
 
+def _matches_flag_prefix(tokens: list[str], full_flag: str) -> bool:
+    """匹配完整旗标或其 argparse 缩写前缀（如 --app 匹配 --approve）。"""
+    for t in tokens:
+        if t.startswith("--") and len(t) > 2 and full_flag.startswith(t):
+            return True
+    return False
+
+
 def render_approval_card(
     name: str,
     args: dict[str, Any],
@@ -216,8 +224,10 @@ def render_approval_card(
     if is_render:
         danger_tags.append("[长任务] 渲染耗时较长（分钟级）")
 
-    # [停机点] 判定：argv 含 --approve，或调用方传入 stop_label
-    if "--approve" in argv_list or "--approve" in cmd_str.split():
+    all_tokens = argv_list + cmd_str.split()
+
+    # [停机点] 判定：argv 含 --approve（或其缩写如 --app），或调用方传入 stop_label
+    if _matches_flag_prefix(all_tokens, "--approve"):
         if stop_label:
             tag = stop_label if "[停机点]" in stop_label else f"[停机点] {stop_label}"
             danger_tags.append(tag)
@@ -227,8 +237,8 @@ def render_approval_card(
         tag = stop_label if "[停机点]" in stop_label else f"[停机点] {stop_label}"
         danger_tags.append(tag)
 
-    # [跳过人工闸] 判定：argv 含 --confirm-patch
-    if "--confirm-patch" in argv_list or "--confirm-patch" in cmd_str.split():
+    # [跳过人工闸] 判定：argv 含 --confirm-patch（或其缩写如 --conf）
+    if _matches_flag_prefix(all_tokens, "--confirm-patch"):
         danger_tags.append("[跳过人工闸] 补丁段二次确认将被跳过")
 
     danger_str = " ".join(danger_tags) if danger_tags else "无"

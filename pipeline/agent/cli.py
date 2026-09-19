@@ -24,7 +24,7 @@ from pipeline.agent.status_card import (
     render_approval_card,
 )
 from pipeline.agent.tools import run_pipeline
-from pipeline.status import format_status, inspect_episode
+from pipeline.status import EpisodeStatus, format_status, inspect_episode
 
 # 人类停机点集合（Spec §2.6）
 HUMAN_STOPS: set[str] = {"02.5", "03.5", "05", "09"}
