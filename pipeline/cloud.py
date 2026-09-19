@@ -21,6 +21,8 @@ import argparse
 import base64
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -349,6 +351,60 @@ def build_tmux_launch_command(session_name: str, remote_cmd: str, remote_root: s
     )
 
 
+EXTRA_ARG_RULES: dict[str, str] = {
+    "--redo": r"^(?:[\d.,\s]+|stale)$",
+    "--floor": r"^\d+(?:\.\d+)?$",
+}
+EXTRA_ARG_BOOLEAN: set[str] = {
+    "--apply-patch",
+    "--allow-engine-mix",
+    "--dry-run",
+}
+
+
+def validate_extra_args(extra_args: str) -> str:
+    """按 flag+值对白名单校验远端命令参数（Spec §2.4 Y3）。"""
+    if not extra_args or not extra_args.strip():
+        return ""
+    try:
+        tokens = shlex.split(extra_args.strip())
+    except ValueError as exc:
+        raise ValueError(f"extra_args 无法解析: {exc}") from exc
+
+    validated: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        flag = token
+        val: str | None = None
+        if "=" in token and token.startswith("--"):
+            flag, val = token.split("=", 1)
+
+        if flag in EXTRA_ARG_RULES:
+            if val is None:
+                if i + 1 >= len(tokens):
+                    raise ValueError(f"参数 {flag} 缺少值")
+                val = tokens[i + 1]
+                if val.startswith("--"):
+                    raise ValueError(f"参数 {flag} 缺少值")
+                i += 2
+            else:
+                i += 1
+            pat = EXTRA_ARG_RULES[flag]
+            if not re.fullmatch(pat, val.strip()):
+                raise ValueError(f"参数 {flag} 的值非法: {val!r}")
+            validated.extend([flag, val.strip()])
+        elif flag in EXTRA_ARG_BOOLEAN:
+            if val is not None:
+                raise ValueError(f"布尔旗标 {flag} 不得带值: {val!r}")
+            validated.append(flag)
+            i += 1
+        else:
+            raise ValueError(f"不支持或未授权的远端参数旗标: {flag}")
+
+    return " ".join(validated)
+
+
 def build_remote_run_command(
     task: str, ep_rel_path: str, remote_root: str = "/root/anime-video-agent",
     python: str = DEFAULT_REMOTE_PYTHON, extra_args: str = "",
@@ -376,7 +432,9 @@ def build_remote_run_command(
         # 同一个 engine 字段喂不了两边。覆盖层只写差异，其余字段继承 voice.json。
         extra = " --config config/voice.cloud.json" if task == "tts" else ""
         if extra_args:
-            extra += f" {extra_args.strip()}"
+            validated = validate_extra_args(extra_args)
+            if validated:
+                extra += f" {validated}"
         cmd = (
             f"cd {remote_root} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH} && "
@@ -1198,9 +1256,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     session_name = f"ava-{task}"
     extra_str = " ".join(args.extra) if getattr(args, "extra", None) else ""
-    remote_cmd = build_remote_run_command(task, rel_path, remote_root,
-                                          python=remote_python(cfg_global),
-                                          extra_args=extra_str)
+    try:
+        remote_cmd = build_remote_run_command(task, rel_path, remote_root,
+                                              python=remote_python(cfg_global),
+                                              extra_args=extra_str)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
     tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
 
     print(f"[*] 启动远端任务: {task} (tmux: {session_name})")

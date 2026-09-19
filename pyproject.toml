@@ -51,6 +51,9 @@ apple = [
 dev = ["pytest>=8"]
 
 [project.scripts]
+ava = "pipeline.agent.cli:main"
+ava-cloud = "pipeline.cloud:main"
+ava-status = "pipeline.status:main"
 # 每个阶段都能独立跑，产物落盘，中断可从中间接上（CLAUDE.md「每阶段产物落盘」）
 ava-ingest = "pipeline.ingest:main"
 ava-index = "pipeline.subindex:main"

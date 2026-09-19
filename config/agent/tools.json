@@ -1,0 +1,16 @@
+{
+  "creative": [
+    "read_artifact",
+    "write_episode_file",
+    "list_episodes",
+    "read_status",
+    "search_notes"
+  ],
+  "pipeline": [
+    "read_artifact",
+    "read_status",
+    "list_episodes",
+    "run_pipeline"
+  ],
+  "asset": []
+}

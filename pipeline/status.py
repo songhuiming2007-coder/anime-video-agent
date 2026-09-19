@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -24,10 +24,156 @@ class EpisodeStatus:
     next_action: str
     next_command: str | None
     docs_ref: str
+    advisories: list[str] = field(default_factory=list)
+
+
+def _detect_advisories(d: Path) -> list[str]:
+    """常驻检测四条 advisory（Spec §2.2 + §2.6）。
+
+    纪律：常驻性（解耦阶段）、坏文件免疫（各自 try/except）、零重依赖（内联轻逻辑）。
+    """
+    advisories: list[str] = []
+
+    # 1. 03-audio/corrections.json 未完成条目检测
+    corr_path = d / "03-audio" / "corrections.json"
+    if corr_path.exists():
+        try:
+            items = json.loads(corr_path.read_text(encoding="utf-8"))
+            if not isinstance(items, list):
+                advisories.append("corrections.json 格式错误（非列表）")
+            else:
+                pending_count = 0
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    applied = item.get("applied", False)
+                    affected = item.get("affected")
+                    done_segments = item.get("done_segments")
+                    is_done = applied
+                    if affected is not None and done_segments is not None:
+                        if not set(affected).issubset(set(done_segments)):
+                            is_done = False
+                    if not is_done:
+                        pending_count += 1
+                if pending_count > 0:
+                    mf_path = d / "03-audio" / "manifest.json"
+                    engine_hint = "先看 03-audio/manifest.json 的 engine 字段决定本地/云端"
+                    if mf_path.exists():
+                        try:
+                            m_data = json.loads(mf_path.read_text(encoding="utf-8"))
+                            engine = m_data.get("engine")
+                            if engine == "qwen3_tts_cuda":
+                                engine_hint = "这期是云端配音，apply 走 `cloud run`"
+                            elif engine:
+                                engine_hint = "本地配音，apply 走 `tts --apply-patch`"
+                        except Exception:
+                            pass
+                    advisories.append(f"{pending_count} 条纠错待应用/待收尾（{engine_hint}）")
+        except Exception as e:
+            advisories.append(f"corrections.json 不可读：{e}")
+
+    # 2. patch_assets/ 未入库文件检测
+    patch_dir = d / "patch_assets"
+    if patch_dir.is_dir():
+        try:
+            patch_files = [
+                f for f in patch_dir.iterdir()
+                if f.is_file() and not f.name.startswith(".")
+            ]
+            if patch_files:
+                pool_path = d / "04-patch" / "pool.json"
+                registered_names: set[str] = set()
+                if pool_path.exists():
+                    try:
+                        p_data = json.loads(pool_path.read_text(encoding="utf-8"))
+                        assets = []
+                        if isinstance(p_data, list):
+                            assets = p_data
+                        elif isinstance(p_data, dict):
+                            raw_assets = p_data.get("assets", [])
+                            if isinstance(raw_assets, dict):
+                                assets = list(raw_assets.values())
+                            elif isinstance(raw_assets, list):
+                                assets = raw_assets
+                        for a in assets:
+                            if isinstance(a, dict) and "path" in a:
+                                registered_names.add(Path(a["path"]).name)
+                    except Exception:
+                        pass
+                unregistered = [f for f in patch_files if f.name not in registered_names]
+                if unregistered:
+                    advisories.append(f"补料挂起：{len(unregistered)} 个文件待入库")
+        except Exception as e:
+            advisories.append(f"patch_assets 检查失败：{e}")
+
+    # 3. 04-clips.approved.json 与 04-clips.json 段级内容 diff 检测
+    appr_path = d / "04-clips.approved.json"
+    clips_path = d / "04-clips.json"
+    if appr_path.exists() and clips_path.exists():
+        try:
+            clips_data = json.loads(clips_path.read_text(encoding="utf-8"))
+            appr_data = json.loads(appr_path.read_text(encoding="utf-8"))
+            clips_segs = clips_data.get("segments") if isinstance(clips_data, dict) else None
+            appr_segs = appr_data.get("segments") if isinstance(appr_data, dict) else None
+            if clips_segs is not None and appr_segs is not None:
+                has_diff = (clips_segs != appr_segs)
+            else:
+                has_diff = (clips_data != appr_data)
+            if has_diff:
+                advisories.append("approved 已过期，必须重走 05")
+        except Exception as e:
+            advisories.append(f"04-clips.json / approved 不可读：{e}")
+
+    # 4. 人时超预算检测（r19 / v1.20）
+    ht_path = d / "human_time.json"
+    if ht_path.exists():
+        try:
+            ht_data = json.loads(ht_path.read_text(encoding="utf-8"))
+            if isinstance(ht_data, list):
+                total_human_min = sum(entry.get("minutes", 0.0) for entry in ht_data if isinstance(entry, dict))
+                duration_sec: float | None = None
+                if clips_path.exists():
+                    try:
+                        c_data = json.loads(clips_path.read_text(encoding="utf-8"))
+                        if isinstance(c_data, dict) and "total_duration" in c_data:
+                            duration_sec = float(c_data["total_duration"])
+                    except Exception:
+                        pass
+                if duration_sec is None:
+                    mf_path = d / "03-audio" / "manifest.json"
+                    if mf_path.exists():
+                        try:
+                            m_data = json.loads(mf_path.read_text(encoding="utf-8"))
+                            if isinstance(m_data, dict):
+                                if "total_duration" in m_data:
+                                    duration_sec = float(m_data["total_duration"])
+                                elif "segments" in m_data:
+                                    duration_sec = sum(float(s.get("duration", 0.0)) for s in m_data["segments"])
+                        except Exception:
+                            pass
+                if duration_sec is not None and duration_sec > 0:
+                    ep_duration_min = duration_sec / 60.0
+                    k = 1.5  # 暂以 03.5 ≈ 1.5×片长 为基准锚点
+                    budget_min = k * ep_duration_min
+                    if total_human_min > budget_min:
+                        advisories.append(
+                            f"人类耗时超预算：本期已耗时 {total_human_min:.1f} 分钟，"
+                            f"预算 {budget_min:.1f} 分钟（k={k} × {ep_duration_min:.1f} 分钟片长）"
+                        )
+        except Exception as e:
+            advisories.append(f"human_time.json 不可读：{e}")
+
+    return advisories
 
 
 def inspect_episode(ep_dir: Path) -> EpisodeStatus:
     d = ep_dir.resolve()
+    status = _inspect_episode_core(d)
+    status.advisories = _detect_advisories(d)
+    return status
+
+
+def _inspect_episode_core(d: Path) -> EpisodeStatus:
     name = d.name
 
     has_topic = (d / "01-topic.md").exists()
@@ -259,6 +405,11 @@ def format_status(status: EpisodeStatus) -> str:
     else:
         lines.append("【状态】     正常进行中（机器可执行）")
 
+    if status.advisories:
+        lines.append("【注意事项 / 告警】")
+        for adv in status.advisories:
+            lines.append(f"  ⚠️ {adv}")
+
     lines.append(f"【下一步动作】\n  {status.next_action}")
 
     if status.next_command:
@@ -300,17 +451,26 @@ def main() -> int:
             )
             return 2
 
-        # 找最近修改的期目录
+        # 找最近修改的期目录（排除 . 与 _ 两种前缀，B4-r14）
         subdirs = [
             d
             for d in episodes_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
+            if d.is_dir() and not d.name.startswith((".", "_"))
         ]
+        hidden_underscore = len([
+            d
+            for d in episodes_dir.iterdir()
+            if d.is_dir() and d.name.startswith("_")
+        ])
         if not subdirs:
             print(f"[INFO] {episodes_dir} 下暂无期目录。", file=sys.stderr)
+            if hidden_underscore > 0:
+                print(f"[INFO] 已隐藏 {hidden_underscore} 个下划线目录。", file=sys.stderr)
             return 0
         subdirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         target_path = subdirs[0]
+        if hidden_underscore > 0:
+            print(f"[INFO] 已隐藏 {hidden_underscore} 个下划线目录。", file=sys.stderr)
 
     if not target_path.exists():
         print(f"[ERROR] 目标期目录不存在：{target_path}", file=sys.stderr)
