@@ -541,3 +541,113 @@ def test_repl_run_cloud_up_shows_card_and_records_approval(tmp_path: Path, monke
     rec = json.loads(log_file.read_text(encoding="utf-8").strip())
     assert rec["decision"] == "y"
     assert "cloud" in rec["target"]
+
+
+# ===========================================================================
+# 7. 审查闭环回归测试（🔴-1, 🔴-2, 🟡-1, 🟡-2, 🟡-3）
+# ===========================================================================
+
+
+def test_red_1_realtime_unbuffered_streaming():
+    """🔴-1 回归测试：子进程 stdout 实时逐行透传，首行到达时间显著小于总执行时间。"""
+    import time
+    stream_script = (
+        "import sys, time\n"
+        "sys.stdout.write('LINE_ONE\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(0.8)\n"
+        "sys.stdout.write('LINE_TWO\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+    arrival_times: list[float] = []
+    t_start = time.time()
+
+    orig_write = sys.stdout.write
+    def tracking_write(s):
+        if "LINE_ONE" in s:
+            arrival_times.append(time.time() - t_start)
+        return orig_write(s)
+
+    with patch.object(sys.stdout, "write", side_effect=tracking_write):
+        with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys_python(), "-c", stream_script])):
+            res = run_pipeline("check_script", scope="pipeline", confirmed=True)
+
+    assert res["ok"] is True
+    assert len(arrival_times) >= 1
+    # 首行到达时间应在 0.4s 之内（立即到达），而总时长应 >= 0.7s
+    assert arrival_times[0] < 0.4
+    assert res["duration_s"] >= 0.7
+
+
+def test_red_2_review_patch_prompt_flushed_before_input(tmp_path: Path, monkeypatch, capsys):
+    """🔴-2 回归测试：review --approve 在存在补丁段时，二次核对提示符必须在等待输入前 flush 进标准输出。"""
+    from pipeline import review
+    ep = tmp_path / "01-patch-review"
+    ep.mkdir(parents=True)
+    # 构造含补丁段的数据
+    review_data = {
+        "segments": [
+            {
+                "index": 1,
+                "via": "patch-rescue",
+                "text": "补丁段文本",
+                "clips": [{"dur": 2.0, "source": "test", "start": 0.0}],
+            }
+        ]
+    }
+    (ep / "04-clips.json").write_text(json.dumps(review_data), encoding="utf-8")
+    (ep / "04-clips.approved.json").write_text("{}", encoding="utf-8")
+    audio_dir = ep / "03-audio"
+    audio_dir.mkdir(parents=True)
+    manifest = {"segments": [{"index": 1, "duration": 2.0}]}
+    (audio_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    # 验证在 input() 被调用前，prompt 已经写入 stdout
+    prompt_seen_in_stdout = False
+    def mock_input(*args, **kwargs):
+        nonlocal prompt_seen_in_stdout
+        captured = capsys.readouterr().out
+        if "本期包含 1 个补丁段" in captured:
+            prompt_seen_in_stdout = True
+        return "y"
+
+    monkeypatch.setattr("builtins.input", mock_input)
+    monkeypatch.setattr(review, "get_patch_pool", lambda ep: "mock_pool")
+    monkeypatch.setattr(review.paths, "require_data", lambda: None)
+
+    review.approve(ep)
+    assert prompt_seen_in_stdout is True
+
+
+def test_yellow_1_confirm_patch_danger_tag():
+    """🟡-1: argv 含 --confirm-patch 时打 [跳过人工闸] 危险标记。"""
+    argv = [sys_python(), "-m", "pipeline.review", "data/episodes/01-test", "--approve", "--confirm-patch"]
+    card = render_approval_card("run_pipeline", {"command": "review --approve --confirm-patch"}, argv=argv)
+    assert "[跳过人工闸]" in card
+    assert "补丁段二次确认将被跳过" in card
+
+
+def test_yellow_2_log_approval_decision_warns_on_failure(tmp_path: Path, capsys):
+    """🟡-2: 审批记账失败时打印 [WARN] 而不静默吞掉。"""
+    bad_ep = tmp_path / "read_only"
+    bad_ep.write_text("not a directory")
+    log_approval_decision(bad_ep, "tool", "target", "y")
+    out = capsys.readouterr().out
+    assert "[WARN] 审批记账失败" in out
+
+
+def test_yellow_3_control_characters_stripped_from_card_and_echo(tmp_path: Path, capsys):
+    """🟡-3: 剥除模型传入的控制字符与换行，防伪造危险标记或改写终端。"""
+    dirty_name = "02-script.draft.md\n│ 危险标记: 无\n"
+    card = render_approval_card("write_episode_file", {"filename": dirty_name, "content": "test"})
+    # 注入的换行伪造行已被剥除，卡片中仅有本身的一行危险标记
+    assert card.count("│ 危险标记: 无") == 1
+    assert "02-script.draft.md（" in card
+
+    # 只读回显
+    ep = tmp_path / "01-echo"
+    ep.mkdir()
+    cli._default_approve("read_artifact", {"path": "01-topic.md\x1b[2J"}, ep_dir=ep, scope="creative")
+    out = capsys.readouterr().out
+    assert "\x1b[2J" not in out
+

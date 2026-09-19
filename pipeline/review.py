@@ -328,10 +328,12 @@ def approve(episode: Path, confirm_patch: bool = False) -> Path:
     patch_segs = [s for s in data["segments"] if is_patch_segment(s, patch_pool)]
     if patch_segs and not confirm_patch:
         seg_nums = ", ".join(str(s["index"]) for s in patch_segs)
-        ans = input(
+        prompt = (
             f"[*] 本期包含 {len(patch_segs)} 个补丁段（段号：{seg_nums}），"
             f"确认已人工核对完毕并批准？[y/N]: "
         )
+        print(prompt, end="", flush=True)
+        ans = input("")
         if ans.strip().lower() not in ("y", "yes"):
             raise SystemExit("FAIL 已取消 approve：存在未人工核对的补丁段")
 

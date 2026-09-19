@@ -13,6 +13,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
 from pipeline import paths
 from pipeline.agent.resolver import scope_of
@@ -584,7 +585,8 @@ def _default_approve(
             summary = ""
         else:
             summary = json.dumps(args, ensure_ascii=False)[:60] if args else ""
-        echo = f"[tool] {name} {summary}".strip()
+        clean_summary = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", summary)
+        echo = f"[tool] {name} {clean_summary}".strip()
         print(echo)
         return (True, "")
 
@@ -911,7 +913,8 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
                     log_approval_decision(ep_dir, "run_pipeline", cmd_str, "n")
                     continue
 
-                log_approval_decision(ep_dir, "run_pipeline", cmd_str, confirm)
+                norm_confirm = "y" if confirm == "y" else "n"
+                log_approval_decision(ep_dir, "run_pipeline", cmd_str, norm_confirm)
                 if confirm != "y":
                     print("[CANCEL] 已取消执行")
                     continue
