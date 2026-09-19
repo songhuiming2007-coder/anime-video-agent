@@ -190,10 +190,13 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
     qc_log = d / "06-check.log"
     qc_failed: list[str] | None = None
     if qc_log.exists():
-        from .eval import parse_qc_log
-        ok, qc_failed = parse_qc_log(qc_log.read_text(encoding="utf-8"))
-        if ok:
-            qc_failed = None
+        try:
+            from .eval import parse_qc_log
+            ok, qc_failed = parse_qc_log(qc_log.read_text(encoding="utf-8"))
+            if ok:
+                qc_failed = None
+        except Exception:
+            qc_failed = ["06-check.log 读取或解析失败"]
     has_qc = qc_log.exists() and qc_failed is None
     # 封面同理：build() 一开始就建 07-cover/ 目录，筛空崩掉也留目录——
     # 认目录会误报 08 完成，认最终产物 index.html 才是「真出过候选」
