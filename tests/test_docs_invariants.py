@@ -170,9 +170,10 @@ def test_adrs_0018_0019_exist_with_reversal_conditions():
 
 def test_discredited_budget_not_active_rule():
     """已被否证的「每期人类投入 ≤ 10 分钟」不得在现行核心规程（README/STANDARD/AGENTS）中充当活规则"""
+    pattern = re.compile(r"每期人类投入\s*≤\s*10\s*分钟")
     for rel_path in ["README.md", "docs/dev/STANDARD.md", "AGENTS.md"]:
         content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-        assert "每期人类投入 ≤ 10 分钟" not in content, (
+        assert not pattern.search(content), (
             f"{rel_path} 仍包含已被实践否证的活规则「每期人类投入 ≤ 10 分钟」"
         )
         assert "k × 片长" in content, f"{rel_path} 缺少新预算口径「k × 片长」"
