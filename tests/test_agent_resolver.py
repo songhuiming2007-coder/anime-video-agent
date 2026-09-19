@@ -63,7 +63,7 @@ def test_advisories_corrections_pending_local_and_cloud(tmp_path: Path):
     adv = _detect_advisories(tmp_path)
     assert len(adv) == 1
     assert "1 条纠错待应用/待收尾" in adv[0]
-    assert "先看 03-audio/manifest.json 的 engine 字段" in adv[0]
+    assert "先看配音 manifest 的 engine 字段" in adv[0]
 
     # 本地 manifest
     (audio_dir / "manifest.json").write_text(json.dumps({"engine": "qwen3_tts"}), encoding="utf-8")

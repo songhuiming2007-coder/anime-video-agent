@@ -59,7 +59,7 @@ def _detect_advisories(d: Path) -> list[str]:
                         pending_count += 1
                 if pending_count > 0:
                     mf_path = d / "03-audio" / "manifest.json"
-                    engine_hint = "先看 03-audio/manifest.json 的 engine 字段决定本地/云端"
+                    engine_hint = "先看配音 manifest 的 engine 字段决定本地/云端"
                     if mf_path.exists():
                         try:
                             m_data = json.loads(mf_path.read_text(encoding="utf-8"))
