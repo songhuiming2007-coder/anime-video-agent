@@ -48,14 +48,15 @@ python -m pipeline.clips data/episodes/<期号>
 
 当人类需要在文案中手动精准指定补丁池中的特定镜头时：
 
-1. **查看补料联系表**：
+1. **查看补料联系表**（随 PR3 单期补料 CLI 生效）：
    ```bash
-   python -m pipeline.shots gallery data/episodes/<期号>/04-patch/shots/<池名>_SP01.json
+   # 查看补丁池画廊（现行 CLI 签名：shots gallery <anime/pool> <episode>；PR3 支持加载期内补丁池）：
+   python -m pipeline.shots gallery <净化后池名> SP01
    ```
    在生成的联系表 HTML 中直观查看每个镜头的起始时间码与画面特征。
 2. **在 02-script.md 中书写补丁锚点**：
-   - 格式：`锚点: <净化后池名> SP01 01:20`（跨池前缀为净化后的当期补丁池名）；
-   - 示例：`锚点: [EGOIST-ep3-patch] SP01 00:15`。
+   - 格式：`锚点: <净化后池名> SP01 01:20`（跨池前缀为净化后的当期补丁池名，注意无方括号）；
+   - 示例：`锚点: EGOIST--patch SP03 1:20`。
 3. **改稿边界与 vo_hash 保证**：
    - 人审改动仅涉及画面行（`画面:` / `锚点:` / `查询:` / `场景:`）时，**绝不触碰配音文本**；
    - 系统的 `vo_hash` 只计算解说台词文本与情绪，因此改动画面锚点不会使已通过的配音失效，`02-diff.patch` 仅记录画面视听调整，与 `03-audio/corrections.json` 沉淀互不干扰，无需通过 `--apply-patch` 重新配音。
