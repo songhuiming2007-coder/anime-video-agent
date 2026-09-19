@@ -1,9 +1,12 @@
 """render.py 的纯函数测试。ffmpeg 命令本身的正确性由运行期 ffprobe 复核，
 这里只测不依赖音视频的解析逻辑。"""
 
+import json
 from pathlib import Path
 
 import pytest
+
+from pipeline import render
 
 from pipeline.render import (_bgm_layout, _bgm_list, _body_entry_delay, _seg_entry, _music_bed, _runs, _vol_expr, _extract_loudnorm_json)
 from pipeline.render import BGM_MID_ENTRY, BGM_OUTRO_ENTRY, FOREGROUND_LUFS
@@ -399,3 +402,71 @@ def test_runs_成片不连续不合并():
     fg2 = {"t0": 0.0, "t1": 10.0, "vol": "foreground", "at": 494.0}
     nat2 = {"t0": 10.0, "t1": 272.16, "vol": "natural", "at": 504.0}
     assert len(_runs([fg2, nat2])) == 1
+
+
+class TestRenderApprovedDiffHardGate:
+    """Spec §4.2 R6 & R3：render approved 过期硬闸。"""
+
+    def _setup(self, ep: Path, clips_data: dict | None, approved_data: dict):
+        if clips_data is not None:
+            (ep / "04-clips.json").write_text(
+                json.dumps(clips_data, ensure_ascii=False), encoding="utf-8"
+            )
+        (ep / "04-clips.approved.json").write_text(
+            json.dumps(approved_data, ensure_ascii=False), encoding="utf-8"
+        )
+        audio_dir = ep / "03-audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        (audio_dir / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 5.0}]}, ensure_ascii=False),
+            encoding="utf-8"
+        )
+
+    def test_diff非空时抛出SystemExit指向重走05(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        clips_data = {"segments": [{"index": 1, "status": "ok", "clips": [{"dur": 5.0, "start": 10.0}]}]}
+        appr_data = {"segments": [{"index": 1, "status": "ok", "clips": [{"dur": 5.0, "start": 0.0}]}]}
+        self._setup(ep, clips_data, appr_data)
+
+        with pytest.raises(SystemExit) as exc:
+            render.run(ep)
+        assert "04-clips.approved.json 已过期" in str(exc.value)
+        assert "python -m pipeline.review" in str(exc.value)
+
+    def test_diff非空但传force时放行硬闸(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        clips_data = {"segments": [{"index": 1, "status": "bad", "clips": []}]}
+        appr_data = {"segments": [{"index": 1, "status": "bad", "clips": []}]}
+        # 让 clips.json 存在 diff
+        clips_data_diff = {"segments": [{"index": 1, "status": "bad", "clips": [], "diff": True}]}
+        self._setup(ep, clips_data_diff, appr_data)
+
+        with pytest.raises(SystemExit) as exc:
+            render.run(ep, force=True)
+        assert "04-clips.approved.json 已过期" not in str(exc.value)
+        assert "状态不是 ok" in str(exc.value)
+
+    def test_clips_json缺失时不比且放行硬闸(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        appr_data = {"segments": [{"index": 1, "status": "bad", "clips": []}]}
+        self._setup(ep, None, appr_data)  # 无 04-clips.json
+
+        with pytest.raises(SystemExit) as exc:
+            render.run(ep)
+        assert "04-clips.approved.json 已过期" not in str(exc.value)
+        assert "状态不是 ok" in str(exc.value)
+
+    def test_内容相同放行硬闸(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        appr_data = {"segments": [{"index": 1, "status": "bad", "clips": []}]}
+        self._setup(ep, appr_data, appr_data)  # 逐字节一致
+
+        with pytest.raises(SystemExit) as exc:
+            render.run(ep)
+        assert "04-clips.approved.json 已过期" not in str(exc.value)
+        assert "状态不是 ok" in str(exc.value)
+

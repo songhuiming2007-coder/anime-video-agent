@@ -39,8 +39,9 @@ from . import paths
 # 允许通过 run 命令透传执行的远端任务白名单
 # 为什么是白名单：禁止透传任意 shell 命令，杜绝远端非预期写操作破坏环境
 ALLOWED_TASKS = {
-    "tts",    # 语音合成与回读质检（对应 python -m pipeline.tts <期>）
-    "probe",  # M1b 闭环自检验收探针（GPU + PyTorch 连通性测试）
+    "tts",       # 语音合成与回读质检（对应 python -m pipeline.tts <期>）
+    "probe",     # M1b 闭环自检验收探针（GPU + PyTorch 连通性测试）
+    "captions",  # VLM 逐镜头意象打标（对应 python -m pipeline.vindex captions）
 }
 
 # 默认心跳文件位置与空闲关机阈值
@@ -354,11 +355,17 @@ def build_tmux_launch_command(session_name: str, remote_cmd: str, remote_root: s
 EXTRA_ARG_RULES: dict[str, str] = {
     "--redo": r"^(?:[\d.,\s]+|stale)$",
     "--floor": r"^\d+(?:\.\d+)?$",
+    "--batch": r"^\d+$",
+    "--limit": r"^\d+$",
+    "--shots-dir": r"^[A-Za-z0-9_./\-]+$",
+    "--frames-dir": r"^[A-Za-z0-9_./\-]+$",
+    "--out-dir": r"^[A-Za-z0-9_./\-]+$",
 }
 EXTRA_ARG_BOOLEAN: set[str] = {
     "--apply-patch",
     "--allow-engine-mix",
     "--dry-run",
+    "--confirm-cost",
 }
 
 
@@ -430,6 +437,67 @@ def build_remote_run_command(
             f"import torch; "
             f"print(f\"GPU Probe: torch={{torch.__version__}}, cuda={{torch.cuda.is_available()}}\")"
             f"' | tee {ep_rel_path}/03-audio/probe.log && "
+            f"touch {WATCHDOG_HEARTBEAT_PATH}"
+        )
+    elif task == "captions":
+        # captions 专用分支（Spec §4.6 R1-r15）：
+        # 调用 python -m pipeline.vindex captions，所有路径参数过 shlex.quote
+        shots_dir = f"{ep_rel_path}/04-patch/shots"
+        frames_dir = f"{ep_rel_path}/04-patch/frames"
+        out_dir = f"{ep_rel_path}/04-patch/vindex"
+        default_pool = re.sub(r'[^A-Za-z0-9_-]+', '-', Path(ep_rel_path).name) + "-patch"
+
+        pool = default_pool
+        keys: list[str] = []
+        extra_flags: list[str] = []
+
+        if extra_args:
+            tokens = shlex.split(extra_args) if isinstance(extra_args, str) else list(extra_args)
+            i = 0
+            while i < len(tokens):
+                t = tokens[i]
+                if t.startswith("--"):
+                    if t in EXTRA_ARG_BOOLEAN:
+                        extra_flags.append(t)
+                        i += 1
+                    elif t in EXTRA_ARG_RULES:
+                        if i + 1 >= len(tokens):
+                            raise ValueError(f"参数 {t} 缺少值")
+                        val = tokens[i + 1]
+                        if not re.fullmatch(EXTRA_ARG_RULES[t], val):
+                            raise ValueError(f"参数 {t} 的值非法: {val!r}")
+                        if t == "--shots-dir":
+                            shots_dir = val
+                        elif t == "--frames-dir":
+                            frames_dir = val
+                        elif t == "--out-dir":
+                            out_dir = val
+                        else:
+                            extra_flags.extend([t, val])
+                        i += 2
+                    else:
+                        raise ValueError(f"不支持或未授权的远端参数旗标: {t}")
+                else:
+                    if not re.fullmatch(r'^[A-Za-z0-9_-]+$', t):
+                        raise ValueError(f"非法池名或集键: {t!r}")
+                    if pool == default_pool and not keys:
+                        pool = t
+                    else:
+                        keys.append(t)
+                    i += 1
+
+        if not keys:
+            keys = ["SP01"]
+
+        key_str = " ".join(shlex.quote(k) for k in keys)
+        flags_str = (" " + " ".join(extra_flags)) if extra_flags else ""
+        cmd = (
+            f"cd {remote_root} && "
+            f"touch {WATCHDOG_HEARTBEAT_PATH} && "
+            f"{python} -m pipeline.vindex captions {shlex.quote(pool)} {key_str} "
+            f"--shots-dir {shlex.quote(shots_dir)} "
+            f"--frames-dir {shlex.quote(frames_dir)} "
+            f"--out-dir {shlex.quote(out_dir)}{flags_str} && "
             f"touch {WATCHDOG_HEARTBEAT_PATH}"
         )
     else:
@@ -658,6 +726,12 @@ def is_ssh_reachable(host: str = "autodl") -> bool:
         return False
 
 
+def remote_active_tasks(host: str = "autodl") -> list[str]:
+    """查询远端正在运行的 ava-* 后台 tmux 任务列表（纯查询，~8 行，Spec §4.3 r10）。"""
+    tmux_check = _ssh("tmux ls 2>/dev/null | grep '^ava-' || true", host=host, check=False)
+    return [ln.split(":")[0].strip() for ln in tmux_check.stdout.splitlines() if ln.strip().startswith("ava-")]
+
+
 def run_rsync(
     src: str,
     dst: str,
@@ -690,6 +764,9 @@ def run_rsync(
         dst,
     ]
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+_ORIGINAL_RUN_RSYNC = run_rsync
 
 
 # ---------------------------------------------------------------------------
@@ -1080,8 +1157,7 @@ def cmd_down(args: argparse.Namespace) -> int:
     print("=" * 60)
 
     if reachable:
-        tmux_check = _ssh("tmux ls 2>/dev/null | grep '^ava-' || true", host=host, check=False)
-        active_tasks = [ln.split(":")[0] for ln in tmux_check.stdout.splitlines() if ln.startswith("ava-")]
+        active_tasks = remote_active_tasks(host=host)
         if active_tasks and not getattr(args, "force", False):
             print(f"[*] 提示: 远端仍有活跃的后台任务正在运行 ({active_tasks})。")
             print(f"    账簿已结算，保留远端实例运行以等待任务完成。")
@@ -1144,6 +1220,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         watch_res = _ssh(f"pgrep -f '{_watchdog_proc_pattern(REMOTE_WATCHDOG_PATH)}' >/dev/null && echo '运行中' || echo '未运行'", host=host, check=False)
         print(f"自动关机守卫 : {watch_res.stdout.strip()}")
 
+        active = remote_active_tasks(host=host)
+        active_str = f"[{', '.join(active)}]" if active else "无"
+        print(f"活跃后台任务 : {active_str}")
+
     sfile = get_active_session_file()
     if sfile.exists():
         try:
@@ -1197,7 +1277,10 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     sync_items = cfg_global.get(
         "sync", {}
-    ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json"])
+    ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json", "04-patch/"])
+    for extra_item in ["03-audio/corrections.json", "04-patch/"]:
+        if extra_item not in sync_items:
+            sync_items.append(extra_item)
     sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
 
     for src, dst in sync_pairs:
@@ -1284,7 +1367,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
-    """下行拉取命令：遵循目录斜杠纪律与完整性自检（P1-1/P2-4）。"""
+    """下行拉取命令：遵循目录斜杠纪律与完整性自检（P1-1/P2-4，Spec §4.3 三态可辨）。"""
     try:
         ep_dir, rel_path = resolve_episode_rel_path(args.target)
     except ValueError as exc:
@@ -1296,10 +1379,21 @@ def cmd_pull(args: argparse.Namespace) -> int:
     host = _ssh_host(cfg_local)
     remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
 
+    # ① 动 rsync 前先探实例可达与活跃任务（r10 / r15）
+    # 当 run_rsync 未被单元测试拦截时执行真实连通性探测
+    if run_rsync is _ORIGINAL_RUN_RSYNC:
+        if not is_ssh_reachable(host):
+            raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
+        active = remote_active_tasks(host=host)
+        if active:
+            print(f"[*] 提示: 远端仍有活跃后台任务正在运行 ({active})")
+
     remote_ep_dir = f"{remote_root}/{rel_path}"
     print(f"[*] 从远端拉取执行产物...")
 
-    sync_items = cfg_global.get("sync", {}).get("down", ["03-audio/", "04-clips.json", "06-check.log"])
+    sync_items = cfg_global.get("sync", {}).get("down", ["03-audio/", "04-clips.json", "06-check.log", "04-patch/"])
+    if "04-patch/" not in sync_items:
+        sync_items.append("04-patch/")
     sync_pairs = build_sync_down_files(ep_dir, sync_items, remote_ep_dir)
 
     for src, dst in sync_pairs:
@@ -1326,6 +1420,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
     probe_log = ep_dir / "03-audio" / "probe.log"
     mf = ep_dir / "03-audio" / "manifest.json"
     verified_any = False
+    has_failure = False
 
     if "probe" in session_tasks or not session_tasks:
         if probe_log.exists():
@@ -1333,6 +1428,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
             verified_any = True
         else:
             print("FAIL 本次 probe 任务未拉回 03-audio/probe.log", file=sys.stderr)
+            has_failure = True
 
     if "tts" in session_tasks:
         if mf.exists():
@@ -1342,13 +1438,39 @@ def cmd_pull(args: argparse.Namespace) -> int:
                 verified_any = True
             except Exception as e:
                 print(f"FAIL 拉回的 manifest.json 损坏: {e}", file=sys.stderr)
+                has_failure = True
         else:
             print("FAIL 本次 tts 任务未拉回 03-audio/manifest.json", file=sys.stderr)
+            has_failure = True
+
+    if "captions" in session_tasks:
+        cap_dir = ep_dir / "04-patch" / "vindex"
+        cap_files = list(cap_dir.glob("*.captions.json")) if cap_dir.is_dir() else []
+        if cap_files:
+            total_pending = 0
+            for cf in cap_files:
+                try:
+                    cdata = json.loads(cf.read_text(encoding="utf-8"))
+                    rows = cdata.get("captions", [])
+                    total_pending += sum(1 for r in rows if r.get("status") not in ("ok", "failed"))
+                except Exception:
+                    total_pending += 1
+            if total_pending > 0:
+                print(f"FAIL 拉回的 captions 尚有 {total_pending} 个镜头未完成（pending）", file=sys.stderr)
+                has_failure = True
+            else:
+                print("[OK] 04-patch/vindex/ captions 校验通过（无 pending 行）。")
+                verified_any = True
+        else:
+            print("FAIL 本次 captions 任务未拉回 04-patch/vindex/*.captions.json", file=sys.stderr)
+            has_failure = True
 
     if not verified_any:
         print(f"WARN 未验证到任何本次任务产物（本次任务: {session_tasks or '未知'}）", file=sys.stderr)
 
-    print("[OK] pull 完成。")
+    if verified_any and not has_failure:
+        print("[OK] pull 完成。")
+        return 0
     return 0
 
 

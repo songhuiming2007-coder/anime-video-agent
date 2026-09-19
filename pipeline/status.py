@@ -12,6 +12,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .align import has_clips_approved_diff
+
 
 @dataclass
 class EpisodeStatus:
@@ -107,19 +109,11 @@ def _detect_advisories(d: Path) -> list[str]:
             advisories.append(f"patch_assets 检查失败：{e}")
 
     # 3. 04-clips.approved.json 与 04-clips.json 段级内容 diff 检测
-    appr_path = d / "04-clips.approved.json"
     clips_path = d / "04-clips.json"
+    appr_path = d / "04-clips.approved.json"
     if appr_path.exists() and clips_path.exists():
         try:
-            clips_data = json.loads(clips_path.read_text(encoding="utf-8"))
-            appr_data = json.loads(appr_path.read_text(encoding="utf-8"))
-            clips_segs = clips_data.get("segments") if isinstance(clips_data, dict) else None
-            appr_segs = appr_data.get("segments") if isinstance(appr_data, dict) else None
-            if clips_segs is not None and appr_segs is not None:
-                has_diff = (clips_segs != appr_segs)
-            else:
-                has_diff = (clips_data != appr_data)
-            if has_diff:
+            if has_clips_approved_diff(d):
                 advisories.append("approved 已过期，必须重走 05")
         except Exception as e:
             advisories.append(f"04-clips.json / approved 不可读：{e}")

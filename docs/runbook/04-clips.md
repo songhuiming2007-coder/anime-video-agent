@@ -46,17 +46,24 @@ python -m pipeline.clips data/episodes/<期号>
 
 ## 05 人审改稿写补丁锚点规范
 
-当人类需要在文案中手动精准指定补丁池中的特定镜头时：
+当人类审片（`04-review.html`）发现需要手动精准指定补丁池中的特定镜头时，走「改稿 → 重跑 check_script → 重跑 clips」的闭环：
 
-1. **查看补料联系表**（随 PR3 单期补料 CLI 生效）：
+1. **先出补丁画廊再写锚点**（`shots.gallery` 已全部参数化可直接复用，B8-r5）：
+   手写锚点前人需要先看镜头联系表，不然锚点直通的工作流不闭环：
    ```bash
-   # 查看补丁池画廊（现行 CLI 签名：shots gallery <anime/pool> <episode>；PR3 支持加载期内补丁池）：
-   python -m pipeline.shots gallery <净化后池名> SP01
+   python -m pipeline.shots gallery <净化后池名> SP01 --out-dir data/episodes/<期号>/04-patch/shots --dest-dir data/episodes/<期号>/04-patch/frames
    ```
-   在生成的联系表 HTML 中直观查看每个镜头的起始时间码与画面特征。
+   双击打开生成的 HTML 画廊，看图选镜头，一键复制时间码。
+
 2. **在 02-script.md 中书写补丁锚点**：
-   - 格式：`锚点: <净化后池名> SP01 01:20`（跨池前缀为净化后的当期补丁池名，注意无方括号）；
-   - 示例：`锚点: EGOIST--patch SP03 1:20`。
-3. **改稿边界与 vo_hash 保证**：
-   - 人审改动仅涉及画面行（`画面:` / `锚点:` / `查询:` / `场景:`）时，**绝不触碰配音文本**；
-   - 系统的 `vo_hash` 只计算解说台词文本与情绪，因此改动画面锚点不会使已通过的配音失效，`02-diff.patch` 仅记录画面视听调整，与 `03-audio/corrections.json` 沉淀互不干扰，无需通过 `--apply-patch` 重新配音。
+   - 格式：`锚点: <净化后池名> SPxx mm:ss`；
+   - 示例：`锚点: EGOIST--patch SP03 1:20`（期目录名如「EGOIST-三期」经净化后可能含双横线 `EGOIST--patch`，手写请以 `04-patch/pool.json` 里的 `pool` 字段为准，示例比正则更直观，B2）。
+
+3. **改稿校验与重排闭环**：
+   ```bash
+   python -m pipeline.check_script data/episodes/<期号>
+   python -m pipeline.clips data/episodes/<期号>
+   ```
+   - `compute_script_vo_hash` 只提取 `配音：`行（B6），修改画面行（`锚点:`/`查询:`/`场景:`）不改变配音哈希，已合成音频 100% 免重跑；
+   - 与 `03-audio/corrections.json` 沉淀互不干扰，无需通过 `--apply-patch` 重新配音；
+   - 重跑 clips 后，补丁锚点直接生效直通出片。
