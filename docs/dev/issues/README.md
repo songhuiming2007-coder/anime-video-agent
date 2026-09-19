@@ -52,6 +52,7 @@
 | N23 | 备忘/纪律 | 严禁在仓库根目录落地临时脚本 | `AGENTS.md` | — | 2026-08-26 用户严厉指出；单期测试必须在 `data/episodes/<本期>/` 或通过 CLI 完成 |
 | N24 | 备忘 | 剧场版/长篇剧情场景实体核验 | `data/library/notes/天气之子.md:386` | — | 2026-08-26 实测：「审讯室」实为「警车后座」；02 与 02.8 加强核验 |
 | N25 | 备忘 | 歌词混入 JPN 对白轨且无独立 style（君名本版片源），style 过滤对其无效 | `pipeline/subindex.py:67-82` | — | 2026-09-01 Phase 0 绕过；下部电影/下版片源会再踩 |
+| N28 | 备忘 | 非终端信号（`kill -INT <ava pid>`）下 ffmpeg 孙进程存活并继续写输出 | `pipeline/agent/tools.py::run_pipeline` | ava-impl-spec §3.3, 变异 M21 | 2026-09-20 终审登记：**终端 Ctrl-C 不成立**（SIGINT 发给整个前台进程组，且 render.py 的 `subprocess.run` 中断时自 kill）。堵法 `Popen(start_new_session=True)` + 中断时 `os.killpg(SIGKILL)`，代价是子进程从此不再收终端 Ctrl-C、中断唯一入口变成我们的处理器，须拿真渲染复验（实测忠实版中断耗时 0.26s，`4.27s` 那个数字是造了持管道的孙进程所致，已撤回） |
 | N27 | 备忘 | 夏隧的 scene_threshold=10.0 是沿用值，标定实录缺失 | `config/project.json` visual | ADR-0003 | 2026-09-05 审计发现；伪恋已于当日补标定销号（维持 10.0，实录见 config 注记）；夏隧仅 1 集镜头表，补跑 calibrate 即可 |
 
 ---

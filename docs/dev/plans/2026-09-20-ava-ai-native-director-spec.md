@@ -494,7 +494,12 @@ stale `.pyc` 事故的教训），收工 `git diff` 确认无残留。
   「变异验证 4/4 命中」的记账格式）；PR7 实测结果回填在 §5.3（本仓库无 PR，
   故落在 Spec 正文而非 PR 描述）；
 - **恢复动作必须防呆**：`git checkout -- <file>` 会连未提交改动一起丢掉，故
-  变异脚本在开跑前检查目标文件是否干净，脏即 ABORT（§5.3 修正 3 的事故）；
+  变异脚本在开跑前检查工作树是否干净，脏即 ABORT（§5.3 修正 3 的事故）；
+- **harness 本身进版本控制**：执行体在 `scripts/verify_mutations.py`
+  （`uv run python scripts/verify_mutations.py [--only ID…] [--format md]`），
+  三条安全行为由 `tests/test_verify_mutations.py` 钉住：脏树 ABORT 且动手前触发、
+  锚点不唯一报错而不静默跳过、套件抛异常时仍走 finally 恢复。纪律只写散文
+  会退化成「第三次事故」——判据要么被执行，要么被删除；
 - 全量闸：既有 1349 条（HEAD 实测）+ 新增条数，全绿才许交付；
 - **计划内例外（v1.2 R2-1）**：`tests/test_agent_resolver.py:66` 逐字断言
   `status.py:62` 的 advisory 措辞，PR5 修正该措辞时**同步更新这条断言**。
@@ -569,8 +574,15 @@ stale `.pyc` 事故的教训），收工 `git diff` 确认无残留。
    **验证纪律补充（本轮第二条事故教训）**：变异验证的恢复动作是
    `git checkout -- <file>`，它会**连未提交改动一起丢掉**。本轮两次中招：
    一次毁掉 `cli.py` 的计时读数（被新写的 `test_m17_latency` 当红条抓回来），
-   一次毁掉 `tools.py` 的 kill 修复。现在变异脚本带硬闸：**目标文件有未提交
-   改动就 ABORT（exit 2）**，不允许「先跑变异再提交」。
+   一次毁掉 `tools.py` 的 kill 修复。现在 harness 带硬闸：**工作树不干净就
+   ABORT（exit 2）**，不允许「先跑变异再提交」；执行体已入库
+   （`scripts/verify_mutations.py`），不再只是散文里的纪律。
+
+   **M21 的中断语义边界（终审复核补记）**：终端 `Ctrl-C` 把 SIGINT 发给整个
+   前台进程组，且 `render.py` 的 `subprocess.run` 中断时自己 kill ffmpeg，所以
+   **终端路径下无残留**；但只对 ava 单个进程发信号（`kill -INT <ava pid>`）时，
+   已死的直接子进程留下的 ffmpeg 孙进程会继续写输出——这不是本轮引入的
+   （`subprocess.run` 同样只杀直接子进程），已登记 issue N28。
 
 ---
 
