@@ -16,7 +16,8 @@ from pathlib import Path
 
 from pipeline import paths
 from pipeline.agent.resolver import scope_of
-from pipeline.agent.scopes import load_scope
+from pipeline.agent.scopes import get_scopes_dir, load_scope
+from pipeline.agent.status_card import build_status_card
 from pipeline.agent.tools import run_pipeline
 from pipeline.status import format_status, inspect_episode
 
@@ -488,69 +489,168 @@ def run_voice_loop(ep_dir: Path) -> int:
     return 0
 
 
-def run_creative_loop(ep_dir: Path, mode: str = "chat") -> int:
-    """creative scope 对话写稿闭环（Spec §2.4, §5 PR4）。
+def classify_input(line: str) -> str:
+    """判断输入类型（Spec §1.1）：以 '/' 开头走快捷键路由，其余进 Director 对话。"""
+    return "shortcut" if line.startswith("/") else "chat"
 
-    LLM 不可用时当场降级为本地纯指示模式（不装作有 LLM 在场）。
-    工具调用一律先经人确认（写 01-topic.md 是立项动作，必须人拍板）。
+
+def assemble_system_prompt(
+    ep_dir: Path,
+    scope: str,
+    status: EpisodeStatus,
+    extra_prompt: str = "",
+    root: Path | None = None,
+) -> str:
+    """重组装 messages[0]：director 人格 + 当前 scope 边界段 + 状态卡（Spec §1.3）。"""
+    scopes_dir = get_scopes_dir(root)
+    director_file = scopes_dir / "director.md"
+    director_prompt = (
+        director_file.read_text(encoding="utf-8")
+        if director_file.exists()
+        else "# Director Persona"
+    )
+
+    scope_cfg = load_scope(scope, root=root)
+    scope_prompt = scope_cfg.system_prompt
+    if extra_prompt:
+        scope_prompt = f"{scope_prompt}\n\n{extra_prompt}"
+
+    card = build_status_card(ep_dir, status)
+    return f"{director_prompt}\n\n---\n\n{scope_prompt}\n\n---\n\n{card}"
+
+
+def _default_approve(name: str, args: dict) -> bool:
+    print(f"\n  [工具请求] {name} {json.dumps(args, ensure_ascii=False)[:200]}")
+    try:
+        return input("  允许执行? [y/N]: ").strip().lower() == "y"
+    except EOFError:
+        return False
+
+
+def _dispatch_agent_turn(
+    line: str,
+    messages: list[dict[str, Any]],
+    ep_dir: Path,
+    scope: str,
+    status: EpisodeStatus,
+    extra_prompt: str = "",
+    root: Path | None = None,
+    approve_cb: Callable[[str, dict], bool] | None = None,
+) -> dict[str, Any]:
+    """执行单轮 Director 对话（Spec §1.1, §1.2）。
+
+    整段重算替换 messages[0]，不追加；LLM 缺失走显式降级，不假装有 AI 在场。
     """
-    from pipeline.agent.llm import LLMError, load_llm_config, local_directive_message, run_tool_loop
+    from pipeline.agent.llm import (
+        LLMError,
+        load_llm_config,
+        local_directive_message,
+        run_tool_loop,
+    )
     from pipeline.agent.tools import ToolContext
 
-    extra = "" if mode == "chat" else (
-        "\n\n本轮聚焦写稿：产出只许写 02-script.draft.md；写完提示跑 check_script。"
+    sys_content = assemble_system_prompt(
+        ep_dir, scope, status, extra_prompt=extra_prompt, root=root
     )
-    messages: list[dict] = [
-        {"role": "system", "content": load_scope("creative").system_prompt + extra}
-    ]
-    ctx = ToolContext(scope="creative", episode_dir=ep_dir)
+    if not messages:
+        messages.append({"role": "system", "content": sys_content})
+    else:
+        messages[0] = {"role": "system", "content": sys_content}
 
-    if load_llm_config() is None:
-        print(local_directive_message("creative", "缺少 config/agent.json 或环境变量密钥")["content"])
+    if load_llm_config(root) is None:
+        deg = local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
+        print(f"\n{deg['content']}")
+        return {"stopped": "degraded", "messages": messages, "final": deg}
+
+    ctx = ToolContext(scope=scope, episode_dir=ep_dir, root=root)
+    approve = approve_cb or _default_approve
+
+    messages.append({"role": "user", "content": line})
+    try:
+        outcome = run_tool_loop(messages, ctx=ctx, approve=approve)
+    except LLMError as exc:
+        print(f"[FAIL] {exc}")
+        messages.pop()
+        return {"stopped": "error", "messages": messages, "final": {}}
+    except PermissionError as exc:
+        print(f"[BLOCKED] 出网被拦截：{exc}")
+        print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
+        messages.pop()
+        return {"stopped": "error", "messages": messages, "final": {}}
+
+    messages.clear()
+    messages.extend(outcome["messages"])
+
+    content = outcome["final"].get("content") or ""
+    if content:
+        print(f"\n{content}")
+    if outcome["stopped"] == "max_iterations":
+        print(f"[WARN] 工具调用已达上限 {outcome['iterations']} 轮，停止并交人接管。")
+
+    return outcome
+
+
+def run_agent_loop(
+    ep_dir: Path,
+    scope_mode: str = "auto",
+    extra_prompt: str = "",
+    *,
+    root: Path | None = None,
+    on_step: Callable[[str], None] | None = None,
+) -> int:
+    """统一 Agent 对话循环（Spec §1.1, §1.2, §6 PR5）。
+
+    - scope_mode="auto": 主会话 REPL，每轮 scope_of(inspect_episode(ep_dir)) 热推导；
+    - scope_mode="creative": /chat /script 聚焦模式，拥有独立 messages，退出后主会话不受污染。
+    全仓库只保留这一份聊天循环实现。
+    """
+    if scope_mode == "auto":
+        return _run_repl_body(ep_dir, on_step=on_step, root=root)
+
+    # 聚焦子模式（如 creative scope 独立子循环）
+    from pipeline.agent.llm import load_llm_config, local_directive_message
+
+    if load_llm_config(root) is None:
+        print(local_directive_message(scope_mode, "缺少 config/agent.json 或环境变量密钥")["content"])
         return 0
 
-    def _approve(name: str, args: dict) -> bool:
-        print(f"\n  [工具请求] {name} {json.dumps(args, ensure_ascii=False)[:200]}")
-        try:
-            return input("  允许执行? [y/N]: ").strip().lower() == "y"
-        except EOFError:
-            return False
-
+    sub_messages: list[dict[str, Any]] = []
     while True:
+        status = inspect_episode(ep_dir)
+        current_scope = scope_mode
+        if on_step:
+            on_step(status.current_step)
+
         try:
-            line = input(f"\nava [{ep_dir.name}] (creative) > ").strip()
+            line = input(f"\nava [{ep_dir.name}] ({current_scope}) > ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n[退出 creative 模式]")
+            print(f"\n[退出 {current_scope} 模式]")
             return 0
         if not line:
             continue
         if line in ("/quit", "/exit", "quit", "exit", "/done"):
-            print("[退出 creative 模式]")
+            print(f"[退出 {current_scope} 模式]")
             return 0
 
-        messages.append({"role": "user", "content": line})
-        try:
-            outcome = run_tool_loop(messages, ctx=ctx, approve=_approve)
-        except LLMError as exc:
-            print(f"[FAIL] {exc}")
-            messages.pop()
-            continue
-        except PermissionError as exc:
-            # 出网闸在 chat_complete 里拦截（fail-closed）。这是内容问题不是程序崩，
-            # 报清楚并留在会话里——整段 traceback 崩退会让人看不到真正原因。
-            print(f"[BLOCKED] 出网被拦截：{exc}")
-            print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
-            messages.pop()
-            continue
-        messages = outcome["messages"]
-
-        content = outcome["final"].get("content") or ""
-        if content:
-            print(f"\n{content}")
-        if outcome["stopped"] == "max_iterations":
-            print(f"[WARN] 工具调用已达上限 {outcome['iterations']} 轮，停止并交人接管。")
-        elif outcome["stopped"] == "degraded":
+        outcome = _dispatch_agent_turn(
+            line,
+            sub_messages,
+            ep_dir,
+            current_scope,
+            status,
+            extra_prompt=extra_prompt,
+            root=root,
+        )
+        if outcome.get("stopped") == "degraded":
             return 0
+
+
+def run_creative_loop(ep_dir: Path, mode: str = "chat", root: Path | None = None) -> int:
+    """向后兼容别名：调用泛化后的 run_agent_loop（Spec §1.1）。"""
+    extra = "" if mode == "chat" else (
+        "\n\n本轮聚焦写稿：产出只许写 02-script.draft.md；写完提示跑 check_script。"
+    )
+    return run_agent_loop(ep_dir, scope_mode="creative", extra_prompt=extra, root=root)
 
 
 def run_repl(ep_dir: Path) -> int:
@@ -583,18 +683,20 @@ def run_repl(ep_dir: Path) -> int:
         close_stop()
 
 
-def _run_repl_body(ep_dir: Path, on_step) -> int:
-    """REPL 交互循环（Spec §2.4）。on_step 用于停机点墙钟记账（§2.6）。"""
+def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
+    """REPL 交互循环（Spec §1.1, §1.2, §2.4）。on_step 用于停机点墙钟记账（§2.6）。"""
     check_code_freeze()
     print(f"\n已就绪：{ep_dir.name}")
     print("输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。")
 
     scope_override: str | None = None
+    messages: list[dict[str, Any]] = []
 
     while True:
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
-        on_step(status.current_step)
+        if on_step:
+            on_step(status.current_step)
 
         try:
             line = input(f"\nava [{ep_dir.name}] ({scope}) > ").strip()
@@ -609,94 +711,113 @@ def _run_repl_body(ep_dir: Path, on_step) -> int:
             print("[退出]")
             return 0
 
-        if line == "/help":
-            print("\n支持的命令路由:")
-            print("  /status      查看当期阶段状态与推荐命令")
-            print("  /board       查看全局期看板")
-            print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
-            print("  /voice       顺听极简纠错模式")
-            print("  /patch       临时补料模式")
-            print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
-            print("  /pipeline    切回流水线工序模式")
-            print("  /chat        creative scope 选题发散")
-            print("  /script      聚焦写稿 (02-script.draft.md)")
-            print("  /quit        退出 ava\n")
-            print("  提示: 手工指定含空格的路径参数时请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
-            continue
-
-        if line == "/status":
-            print(format_status(inspect_episode(ep_dir)))
-            continue
-
-        if line == "/board":
-            eps, hidden = get_episodes_list()
-            print_board(eps, hidden)
-            continue
-
-        if line == "/voice":
-            run_voice_session(ep_dir)
-            continue
-
-        if line == "/patch":
-            print(f"[*] 进入临时补料模式 (PR3 实现)...")
-            continue
-
-        if line == "/asset":
-            scope_override = "asset"
-            print("[*] 已进入 asset scope（放行 Phase 0 资产与云端调度命令，输入 /pipeline 可切回）")
-            continue
-
-        if line == "/pipeline":
-            scope_override = None
-            print("[*] 已切回自动推导工序模式")
-            continue
-
-        if line == "/chat":
-            run_creative_loop(ep_dir, "chat")
-            continue
-
-        if line == "/script":
-            run_creative_loop(ep_dir, "script")
-            continue
-
-        if line.startswith("/run"):
-            cmd_part = line[4:].strip()
-            if not cmd_part:
-                print("[ERROR] /run 需要指定命令，例如: /run tts --redo 3")
+        kind = classify_input(line)
+        if kind == "shortcut":
+            if line == "/help":
+                print("\n支持的命令路由:")
+                print("  /status      查看当期阶段状态与推荐命令")
+                print("  /board       查看全局期看板")
+                print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
+                print("  /voice       顺听极简纠错模式")
+                print("  /patch       临时补料模式")
+                print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
+                print("  /pipeline    切回流水线工序模式")
+                print("  /chat        creative scope 选题发散")
+                print("  /script      聚焦写稿 (02-script.draft.md)")
+                print("  /quit        退出 ava\n")
+                print("  提示: 手工指定含空格的路径参数时请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
                 continue
 
-            # 校验命令并自动补齐当前期目录参数（🔴 1 修复；/run 与 LLM 工具表共用
-            # run_pipeline 这一个入口，防止校验器两处实现分叉）
-            outcome = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope)
-            if not outcome["ok"]:
-                print(f"[REJECT] {outcome['message']}")
+            if line == "/status":
+                print(format_status(inspect_episode(ep_dir)))
                 continue
 
-            # 命令回显与二次确认（Spec §2.4）
-            cmd_str = " ".join(outcome["argv"])
-            print(f"\n  待执行: {cmd_str}")
-            try:
-                confirm = input("  确认执行? [y/N]: ").strip().lower()
-            except EOFError:
-                print("\n[已取消]")
+            if line == "/board":
+                eps, hidden = get_episodes_list(root=root)
+                print_board(eps, hidden)
                 continue
 
-            if confirm != "y":
-                print("[CANCEL] 已取消执行")
+            if line == "/voice":
+                run_voice_session(ep_dir)
                 continue
 
-            check_code_freeze()
-            print(f"[*] 正在执行: {cmd_str} ...")
-            t_start = time.time()
-            result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True)
-            t_end = time.time()
-            if result["ok"]:
-                print(f"[OK] 执行完成（耗时: {t_end - t_start:.1f}s）")
-            else:
-                print(f"[FAIL] 执行失败，退出码: {result['returncode']}")
+            if line == "/patch":
+                print(f"[*] 进入临时补料模式 (PR3 实现)...")
+                continue
+
+            if line == "/asset":
+                scope_override = "asset"
+                print("[*] 已进入 asset scope（放行 Phase 0 资产与云端调度命令，输入 /pipeline 可切回）")
+                continue
+
+            if line == "/pipeline":
+                scope_override = None
+                print("[*] 已切回自动推导工序模式")
+                continue
+
+            if line == "/chat":
+                run_agent_loop(ep_dir, scope_mode="creative", extra_prompt="", root=root)
+                continue
+
+            if line == "/script":
+                run_agent_loop(
+                    ep_dir,
+                    scope_mode="creative",
+                    extra_prompt="本轮聚焦写稿：产出只许写 02-script.draft.md；写完提示跑 check_script。",
+                    root=root,
+                )
+                continue
+
+            if line.startswith("/run"):
+                cmd_part = line[4:].strip()
+                if not cmd_part:
+                    print("[ERROR] /run 需要指定命令，例如: /run tts --redo 3")
+                    continue
+
+                # 校验命令并自动补齐当前期目录参数（🔴 1 修复；/run 与 LLM 工具表共用
+                # run_pipeline 这一个入口，防止校验器两处实现分叉）
+                outcome = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope)
+                if not outcome["ok"]:
+                    print(f"[REJECT] {outcome['message']}")
+                    continue
+
+                # 命令回显与二次确认（Spec §2.4）
+                cmd_str = " ".join(outcome["argv"])
+                print(f"\n  待执行: {cmd_str}")
+                try:
+                    confirm = input("  确认执行? [y/N]: ").strip().lower()
+                except EOFError:
+                    print("\n[已取消]")
+                    continue
+
+                if confirm != "y":
+                    print("[CANCEL] 已取消执行")
+                    continue
+
+                check_code_freeze()
+                print(f"[*] 正在执行: {cmd_str} ...")
+                t_start = time.time()
+                result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True)
+                t_end = time.time()
+                if result["ok"]:
+                    print(f"[OK] 执行完成（耗时: {t_end - t_start:.1f}s）")
+                else:
+                    print(f"[FAIL] 执行失败，退出码: {result['returncode']}")
+                continue
+
+            print(f"[ERROR] 未知命令: '{line}'。输入 /help 查看命令列表。")
             continue
 
-        print(f"[ERROR] 未知命令: '{line}'。输入 /help 查看命令列表。")
+        # classify_input == "chat" -> Director 回合
+        _dispatch_agent_turn(
+            line,
+            messages,
+            ep_dir,
+            scope,
+            status,
+            extra_prompt="",
+            root=root,
+        )
 
 
 def resolve_episode_target(target: str) -> Path | None:
