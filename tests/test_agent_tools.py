@@ -498,6 +498,26 @@ def test_llm_max_iterations_guard_is_hard_stop(tmp_path: Path, monkeypatch):
         assert state["calls"] == 3  # 端点恰好被调用 3 次，没有第 4 次
 
 
+def test_m10_default_max_iterations_hard_stop_at_10(tmp_path: Path, monkeypatch):
+    """M10: 默认 max_iterations 硬闸为 10，防死循环无限烧 token (Spec §5.1 M10)。"""
+    from pipeline.agent.llm import DEFAULT_MAX_ITERATIONS
+    assert DEFAULT_MAX_ITERATIONS == 10
+
+    with mock_llm_server([tool_call("list_episodes", {})]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "无休止地列期"}],
+            ctx=ToolContext(scope="creative", root=root),
+        )
+
+        assert outcome["stopped"] == "max_iterations"
+        assert outcome["iterations"] == 10
+        assert outcome["tool_calls_made"] == 10
+        assert state["calls"] == 10
+
+
 def test_llm_approve_callback_can_reject_tool(tmp_path: Path, monkeypatch):
     """工具调用前的人为确认闸：拒绝时把「人类拒绝」当结果回喂，不执行副作用。"""
     with mock_llm_server([
