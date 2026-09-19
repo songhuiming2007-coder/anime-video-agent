@@ -960,3 +960,32 @@ def test_llm_config_prefers_agent_local_json_override(tmp_path: Path, monkeypatc
     assert cfg.base_url == "http://127.0.0.1:8317/v1"
     assert cfg.model == "gemini-3.8-flash-high"
     assert cfg.api_key == "test-cpa-key"
+
+
+def test_llm_write_topic_md_succeeds_when_human_approves(tmp_path: Path, monkeypatch):
+    """人类在终端显式按 y 许可后，模型可以代笔写入 01-topic.md（Spec §2.4 B7）。
+
+    模型在参数中未传 confirmed=True 时，只要 approve 回调返回 True，
+    上下文便具备 confirmed=True，允许落盘；若拒绝则绝不落盘。
+    """
+    with mock_llm_server([
+        tool_call("write_episode_file", {
+            "filename": "01-topic.md",
+            "content": "# 春物雪乃选题\n- 番剧：春物\n- 类型：人物志\n- 锚点：S3E11\n- 张力：自我牺牲与真实表达\n",
+        }),
+        {"role": "assistant", "content": "选题配置已为您写入 01-topic.md。"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep = root / "data" / "episodes" / "01-approved"
+        ep.mkdir(parents=True)
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "帮我把讨论好的选题写进 01-topic.md"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+            approve=lambda name, args: True,  # 模拟人类敲 y
+        )
+
+        assert outcome["stopped"] == "done"
+        assert (ep / "01-topic.md").exists()
+        assert "自我牺牲与真实表达" in (ep / "01-topic.md").read_text(encoding="utf-8")
