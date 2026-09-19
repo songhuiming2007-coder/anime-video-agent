@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from pathlib import Path
@@ -115,3 +116,163 @@ def build_status_card(
         card = re.sub(escaped, "[已脱敏]", card, flags=re.IGNORECASE)
 
     return card
+
+
+def render_approval_card(
+    name: str,
+    args: dict[str, Any],
+    argv: list[str] | None = None,
+    stop_label: str | None = None,
+    *,
+    target_exists: bool | None = None,
+    episode_dir: Path | str | None = None,
+) -> str:
+    """标准化人机审批卡片渲染纯函数（Spec §3.2, §6 PR6）。
+
+    版式：
+    1. 执行审批（run_pipeline 普通命令 / render 长任务）
+    2. 计费审批（run_pipeline cloud up/run/push/pull）
+    3. 写入审批（write_episode_file）
+    危险标记由宿主静态规则打，不依赖模型自报。
+    """
+    args = dict(args or {})
+    argv_list = list(argv) if argv is not None else []
+
+    if name == "write_episode_file":
+        filename = str(args.get("filename", "")).strip()
+        content = args.get("content", "")
+        content_bytes = len(content.encode("utf-8")) if isinstance(content, str) else 0
+        size_kb = content_bytes / 1024
+        size_str = f"{size_kb:.1f} KB" if size_kb >= 0.1 else f"{content_bytes} B"
+
+        is_overwrite = target_exists
+        if is_overwrite is None:
+            ep = episode_dir or args.get("episode_dir")
+            if ep and filename:
+                try:
+                    is_overwrite = (Path(ep) / filename).exists()
+                except Exception:
+                    is_overwrite = False
+            else:
+                is_overwrite = False
+
+        if is_overwrite:
+            status_str = "覆盖现有文件"
+            if "draft" in filename:
+                danger_str = "[覆盖] 现有草稿将被替换"
+            else:
+                danger_str = "[覆盖] 现有文件将被替换"
+        else:
+            status_str = "新建文件"
+            danger_str = "无"
+
+        target_str = f"{filename}（{size_str}，{status_str}）" if filename else size_str
+        lines = [
+            "┌─ 写入审批 ──────────────────────────────────────────",
+            f"│ 工具: {name}",
+            f"│ 目标: {target_str}",
+            f"│ 危险标记: {danger_str}",
+            "└─ 执行? [y/N]: ",
+        ]
+        return "\n".join(lines)
+
+    # run_pipeline 或通用执行类工具
+    cmd_str = " ".join(argv_list) if argv_list else str(args.get("command", "")).strip()
+
+    # 分析模块与子命令
+    cloud_sub = None
+    is_cloud = False
+    is_render = False
+
+    if "pipeline.cloud" in argv_list or "cloud" in argv_list:
+        is_cloud = True
+        idx = argv_list.index("pipeline.cloud") if "pipeline.cloud" in argv_list else argv_list.index("cloud")
+        if idx + 1 < len(argv_list):
+            cloud_sub = argv_list[idx + 1]
+    elif "pipeline.render" in argv_list or "render" in argv_list:
+        is_render = True
+    else:
+        # 从 cmd_str 或 args["command"] 分析
+        raw_cmd = str(args.get("command", "")).strip()
+        tokens = raw_cmd.split()
+        if tokens:
+            if tokens[0] == "cloud":
+                is_cloud = True
+                if len(tokens) > 1:
+                    cloud_sub = tokens[1]
+            elif tokens[0] == "render":
+                is_render = True
+
+    if "pipeline.render" in cmd_str:
+        is_render = True
+
+    is_billing = is_cloud and (cloud_sub in {"up", "run", "push", "pull"})
+
+    danger_tags: list[str] = []
+    if is_billing:
+        danger_tags.append("[计费] ☁计费 实例开机将产生费用，关机才停止")
+    if is_render:
+        danger_tags.append("[长任务] 渲染耗时较长（分钟级）")
+
+    # [停机点] 判定：argv 含 --approve，或调用方传入 stop_label
+    if "--approve" in argv_list or "--approve" in cmd_str.split():
+        if stop_label:
+            tag = stop_label if "[停机点]" in stop_label else f"[停机点] {stop_label}"
+            danger_tags.append(tag)
+        else:
+            danger_tags.append("[停机点] 批准操作将产生解封物并推进工序")
+    elif stop_label:
+        tag = stop_label if "[停机点]" in stop_label else f"[停机点] {stop_label}"
+        danger_tags.append(tag)
+
+    danger_str = " ".join(danger_tags) if danger_tags else "无"
+
+    if is_cloud:
+        nature = "☁ 云端计费动作（计费审批）"
+    elif is_render:
+        nature = "本地成片渲染 | 预计耗时较长（分钟级）"
+    else:
+        nature = "本地只读产物生成 | 预计分钟级"
+
+    lines = [
+        "┌─ 执行审批 ──────────────────────────────────────────",
+        f"│ 工具: {name}",
+        f"│ 命令: {cmd_str}",
+        f"│ 性质: {nature}",
+        f"│ 危险标记: {danger_str}",
+        "└─ 执行? [y/N]: ",
+    ]
+    return "\n".join(lines)
+
+
+def log_approval_decision(
+    ep_dir: Path | str | None,
+    tool_name: str,
+    target: str,
+    decision: str,
+) -> None:
+    """追加一行审批记录到期目录 _agent/approvals.jsonl（Spec §3.2-6, §5 M17）。
+
+    .jsonl 后缀天然在读域白名单外，不进读域。
+    """
+    if not ep_dir:
+        return
+    d = Path(ep_dir)
+    agent_dir = d / "_agent"
+    try:
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        log_file = agent_dir / "approvals.jsonl"
+        norm_decision = "y" if decision.strip().lower() in ("y", "yes") else "n"
+        record = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "tool": tool_name,
+            "target": target,
+            "command": target,
+            "decision": norm_decision,
+        }
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+

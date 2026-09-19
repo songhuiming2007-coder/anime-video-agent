@@ -167,7 +167,7 @@ def run_tool_loop(
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     config: LLMConfig | None = None,
     root: Path | None = None,
-    approve: Callable[[str, dict[str, Any]], bool] | None = None,
+    approve: Callable[[str, dict[str, Any]], bool | tuple[bool, str]] | None = None,
 ) -> dict[str, Any]:
     """多轮 tool_calls 状态机，**轮数上限是硬闸**（§2.5 B3-r5）：到顶就停交人。
 
@@ -204,13 +204,20 @@ def run_tool_loop(
             args = _parse_tool_args(function.get("arguments"))
             tool_calls_made += 1
 
-            if approve is not None and not approve(name, args):
-                outcome: dict[str, Any] = {"ok": False, "error": "人类拒绝执行该工具调用"}
+            if approve is not None:
+                decision = approve(name, args)
+                ok, reason = (decision, None) if isinstance(decision, bool) else decision
+                if not ok:
+                    outcome: dict[str, Any] = {
+                        "ok": False,
+                        "error": reason if reason else "人类拒绝执行该工具调用",
+                    }
+                else:
+                    from dataclasses import replace
+                    exec_ctx = replace(context, confirmed=True)
+                    outcome = execute_tool(name, args, exec_ctx)
             else:
-                # 人类已在终端按 y 显式批准，本次执行的上下文具备 confirmed=True
-                from dataclasses import replace
-                exec_ctx = replace(context, confirmed=True) if approve is not None else context
-                outcome = execute_tool(name, args, exec_ctx)
+                outcome = execute_tool(name, args, context)
 
             convo.append({
                 "role": "tool",

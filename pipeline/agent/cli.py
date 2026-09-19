@@ -17,7 +17,11 @@ from pathlib import Path
 from pipeline import paths
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.scopes import get_scopes_dir, load_scope
-from pipeline.agent.status_card import build_status_card
+from pipeline.agent.status_card import (
+    build_status_card,
+    log_approval_decision,
+    render_approval_card,
+)
 from pipeline.agent.tools import run_pipeline
 from pipeline.status import format_status, inspect_episode
 
@@ -519,12 +523,104 @@ def assemble_system_prompt(
     return f"{director_prompt}\n\n---\n\n{scope_prompt}\n\n---\n\n{card}"
 
 
-def _default_approve(name: str, args: dict) -> bool:
-    print(f"\n  [工具请求] {name} {json.dumps(args, ensure_ascii=False)[:200]}")
+def _default_approve(
+    name: str,
+    args: dict[str, Any],
+    *,
+    ep_dir: Path | None = None,
+    scope: str = "creative",
+    status: EpisodeStatus | None = None,
+    root: Path | None = None,
+) -> tuple[bool, str]:
+    """统一人机审批处理函数（Spec §3.2, §6 PR6）。
+
+    步骤：
+    1. 预校验：
+       ① 工具未注册或不在 scope 白名单 → [REJECT] 拦截回喂，不弹卡；
+       ② run_pipeline 跑 confirmed=False 校验 → 拒收直接 [REJECT] 回喂，不弹卡。
+    2. fail-closed side_effect 分流：
+       side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
+       为 False（只读工具）→ 终端回显一行 [tool] ...，免弹卡，直接放行。
+    3. 弹卡人审：
+       危险标记静态打（cloud 计费 / render 长任务 / [覆盖] / [停机点]）；
+       显示卡片并等待人类输入，默认 N；
+    4. 审批记账：
+       向期目录 _agent/approvals.jsonl 追加记录。
+    """
+    from pipeline.agent.tools import TOOL_SCHEMAS, run_pipeline, tool_names_for_scope
+
+    # 1. 通用预校验
+    if name not in TOOL_SCHEMAS:
+        reason = f"未注册的工具 '{name}'（工具清单不现场发明）"
+        print(f"[REJECT] {reason}")
+        return (False, reason)
+
+    allowed = tool_names_for_scope(scope, root)
+    if name not in allowed:
+        reason = f"工具 '{name}' 不在 {scope} scope 白名单内（当前放行: {allowed}）"
+        print(f"[REJECT] {reason}")
+        return (False, reason)
+
+    argv: list[str] | None = None
+    if name == "run_pipeline":
+        cmd_str = str(args.get("command", ""))
+        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)
+        if not outcome["ok"]:
+            reason = outcome["message"]
+            print(f"[REJECT] {reason}")
+            return (False, reason)
+        argv = outcome["argv"]
+
+    # 2. fail-closed side_effect 分流
+    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
+    if not side_effect:
+        if name == "read_artifact":
+            summary = str(args.get("path", "")).strip()
+        elif name == "read_status":
+            summary = str(args.get("episode", "")).strip()
+        elif name == "search_notes":
+            summary = str(args.get("query", "")).strip()
+        elif name == "list_episodes":
+            summary = ""
+        else:
+            summary = json.dumps(args, ensure_ascii=False)[:60] if args else ""
+        echo = f"[tool] {name} {summary}".strip()
+        print(echo)
+        return (True, "")
+
+    # 3. 弹卡人审
+    stop_label = None
+    if status is not None:
+        stop = human_stop_of(status.current_step)
+        if stop is not None:
+            if argv and any(m in argv or f"pipeline.{m}" in argv for m in ("tts", "clips", "render")):
+                stop_label = f"[{stop}] 当前处于停机点 {status.current_step}"
+
+    card = render_approval_card(
+        name,
+        args,
+        argv=argv,
+        stop_label=stop_label,
+        episode_dir=ep_dir,
+    )
+
+    target_str = " ".join(argv) if argv else str(args.get("filename", "") or args.get("command", ""))
+
+    print(f"\n{card}", end="")
     try:
-        return input("  允许执行? [y/N]: ").strip().lower() == "y"
+        ans = input().strip().lower()
     except EOFError:
-        return False
+        ans = "n"
+
+    norm_decision = "y" if ans == "y" else "n"
+    if ep_dir:
+        log_approval_decision(ep_dir, name, target_str, norm_decision)
+
+    if ans == "y":
+        return (True, "")
+
+    print("[CANCEL] 已取消执行")
+    return (False, "人类拒绝执行该工具调用")
 
 
 def _dispatch_agent_turn(
@@ -563,7 +659,12 @@ def _dispatch_agent_turn(
         return {"stopped": "degraded", "messages": messages, "final": deg}
 
     ctx = ToolContext(scope=scope, episode_dir=ep_dir, root=root)
-    approve = approve_cb or _default_approve
+    if approve_cb is not None:
+        approve = approve_cb
+    else:
+        approve = lambda name, args: _default_approve(
+            name, args, ep_dir=ep_dir, scope=scope, status=status, root=root
+        )
 
     messages.append({"role": "user", "content": line})
     try:
@@ -781,26 +882,46 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
                     print(f"[REJECT] {outcome['message']}")
                     continue
 
-                # 命令回显与二次确认（Spec §2.4）
+                # 停机点标签判定
+                stop = human_stop_of(status.current_step)
+                stop_label = None
+                if stop is not None:
+                    module_hit = any(
+                        m in outcome["argv"] or f"pipeline.{m}" in outcome["argv"]
+                        for m in ("tts", "clips", "render")
+                    )
+                    if module_hit:
+                        stop_label = f"[{stop}] 当前处于停机点 {status.current_step}"
+
+                # 命令回显与二次确认（Spec §2.4, §3.2 统一审批卡片）
+                card = render_approval_card(
+                    "run_pipeline",
+                    {"command": cmd_part},
+                    argv=outcome["argv"],
+                    stop_label=stop_label,
+                    episode_dir=ep_dir,
+                )
                 cmd_str = " ".join(outcome["argv"])
                 print(f"\n  待执行: {cmd_str}")
+                print(card, end="")
                 try:
-                    confirm = input("  确认执行? [y/N]: ").strip().lower()
+                    confirm = input().strip().lower()
                 except EOFError:
-                    print("\n[已取消]")
+                    print("\n[CANCEL] 已取消执行")
+                    log_approval_decision(ep_dir, "run_pipeline", cmd_str, "n")
                     continue
 
+                log_approval_decision(ep_dir, "run_pipeline", cmd_str, confirm)
                 if confirm != "y":
                     print("[CANCEL] 已取消执行")
                     continue
 
                 check_code_freeze()
+                cmd_str = " ".join(outcome["argv"])
                 print(f"[*] 正在执行: {cmd_str} ...")
-                t_start = time.time()
                 result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True)
-                t_end = time.time()
                 if result["ok"]:
-                    print(f"[OK] 执行完成（耗时: {t_end - t_start:.1f}s）")
+                    print(f"[OK] 执行完成（耗时: {result['duration_s']:.1f}s）")
                 else:
                     print(f"[FAIL] 执行失败，退出码: {result['returncode']}")
                 continue
