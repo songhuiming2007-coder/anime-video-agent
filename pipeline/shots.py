@@ -250,7 +250,7 @@ def meta(anime: str, season: int, episode: int, src: dict) -> dict:
     }
 
 
-def load(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
+def load(anime: str, key: str, out_dir: Path = SHOTS_DIR, check_config: bool = True) -> dict:
     """读一集的镜头表，并校验切分参数与当前配置一致。"""
     dest = out_dir / f"{anime}_{key}.json"
     if not dest.exists():
@@ -259,12 +259,13 @@ def load(anime: str, key: str, out_dir: Path = SHOTS_DIR) -> dict:
             f"     python -m pipeline.shots build <该集视频> --anime {anime} ...")
     d = json.loads(dest.read_text(encoding="utf-8"))
     m = d["meta"]
-    if abs(m["scene_threshold"] - threshold(anime, key)) > 1e-9 or abs(m["min_shot"] - min_shot()) > 1e-9:
-        raise SystemExit(
-            f"FAIL {dest.name} 的切分参数与当前配置不一致："
-            f"文件 threshold={m['scene_threshold']} min_shot={m['min_shot']}，"
-            f"配置 threshold={threshold(anime, key)} min_shot={min_shot()}\n"
-            f"     python -m pipeline.shots rebuild --anime {anime} --episode {key}")
+    if check_config:
+        if abs(m["scene_threshold"] - threshold(anime, key)) > 1e-9 or abs(m["min_shot"] - min_shot()) > 1e-9:
+            raise SystemExit(
+                f"FAIL {dest.name} 的切分参数与当前配置不一致："
+                f"文件 threshold={m['scene_threshold']} min_shot={m['min_shot']}，"
+                f"配置 threshold={threshold(anime, key)} min_shot={min_shot()}\n"
+                f"     python -m pipeline.shots rebuild --anime {anime} --episode {key}")
     return d
 
 
@@ -408,7 +409,8 @@ def caption_frame_path(anime: str, key: str, i: int, k: int,
 
 
 def caption_frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
-                   dest_dir: Path = FRAMES_DIR) -> Path:
+                   dest_dir: Path = FRAMES_DIR, check: bool = True,
+                   check_config: bool | None = None) -> Path:
     """抽 VLM 打标用的帧：长镜头三帧（25/50/75%），其余单帧（ADR-0015）。
 
     **不动 `frames/` 的既有产物。** 那条路（每镜头一张 448px）服务 tagger/CLIP/画廊，
@@ -419,7 +421,8 @@ def caption_frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     所以错位从「静默发生」变成「文件对不上镜头表」。抽帧仍是一趟解码
     （`select` 命中全部位点），先按 ffmpeg 的顺序落临时名，再按计划改名。
     """
-    d = load(anime, key, out_dir)
+    chk = check if check_config is None else check_config
+    d = load(anime, key, out_dir, check_config=chk)
     plan = caption_plan(d["shots"])
     out = caption_frame_dir(anime, key, dest_dir)
 
@@ -453,7 +456,8 @@ def _fmt_t(t: float) -> str:
 
 
 def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
-            dest_dir: Path = FRAMES_DIR) -> Path:
+            dest_dir: Path = FRAMES_DIR, check: bool = True,
+            check_config: bool | None = None) -> Path:
     """给一部素材出镜头画廊：零依赖单文件 HTML，看图选镜头、一键复制锚点行。
 
     **图片相对路径引用，不内嵌 base64**：几百张帧内嵌会把单文件撑到几十 MB，
@@ -461,7 +465,8 @@ def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     不用起 HTTP 服务。复制文本的时间码取镜头 start 精确到小数秒——吸附正中
     本镜头，且消除「取整落到前一镜头尾帧」的边界歧义。
     """
-    d = load(anime, key, out_dir)
+    chk = check if check_config is None else check_config
+    d = load(anime, key, out_dir, check_config=chk)
     shots, m = d["shots"], d["meta"]
     fr = dest_dir / f"{anime}_{key}"
     got = len(list(fr.glob("*.jpg"))) if fr.is_dir() else 0

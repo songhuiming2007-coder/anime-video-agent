@@ -713,3 +713,53 @@ def test_pull_rsync失败带上原话(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = capsys.readouterr().out
     assert "退出码 12" in out and "connection unexpectedly closed" in out
+
+
+def test_captions_task_allowed_and_builds_vindex_command():
+    """云端路径连通性（Spec §4.6 R1-r15）：两件事钉在一条测试里。
+
+    ① ALLOWED_TASKS 含 'captions'
+    ② build_remote_run_command('captions', ...) 产出的是 python -m pipeline.vindex captions ...
+       而非 python -m pipeline.captions。
+    """
+    assert "captions" in cloud.ALLOWED_TASKS, "ALLOWED_TASKS 必须包含 captions"
+    cmd = cloud.build_remote_run_command(
+        task="captions",
+        ep_rel_path="data/episodes/EGOIST 03",
+        remote_root="/root/anime-video-agent",
+        extra_args="EGOIST--patch SP01 --batch 2",
+    )
+    assert "pipeline.vindex captions" in cmd, "captions 任务必须调用 pipeline.vindex captions"
+    assert "pipeline.captions" not in cmd, "不可拼出不存在的 pipeline.captions 模块"
+    assert "'data/episodes/EGOIST 03/04-patch/shots'" in cmd or "data/episodes/EGOIST\\ 03/04-patch/shots" in cmd
+    assert "--shots-dir" in cmd and "--frames-dir" in cmd and "--out-dir" in cmd
+
+
+def test_remote_active_tasks_and_status_display(monkeypatch, capsys):
+    """Spec §4.3 r10：活跃任务提取与 cmd_status 展示。"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda h: True)
+
+    class DummyRes:
+        returncode = 0
+        stdout = "ava-captions: 1 windows (created Mon)\nother-sess: 1 windows\nava-tts: 1 windows\n"
+        stderr = ""
+
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **k: DummyRes())
+    tasks = cloud.remote_active_tasks()
+    assert tasks == ["ava-captions", "ava-tts"]
+
+    cloud.cmd_status(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert "活跃后台任务" in out and "ava-captions" in out
+
+
+def test_cmd_pull_unreachable_direct_fail(monkeypatch, tmp_path):
+    """Spec §4.3 三态可辨 ①：实例不可达/关机时直接 FAIL，不降级为未发现产物。"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "resolve_episode_rel_path", lambda t: (tmp_path, "data/episodes/x"))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda h: False)
+
+    with pytest.raises(SystemExit, match="实例不可达/已关机"):
+        cloud.cmd_pull(argparse.Namespace(target="x"))
+

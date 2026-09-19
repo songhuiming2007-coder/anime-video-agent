@@ -14,6 +14,7 @@ JSON 校验、render 的这道闸也不碰检索——把校验挂在这两个�
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -204,3 +205,28 @@ def refit(segments: list[dict], audio: list[dict],
             f"段{seg['index']}: 末片 {old_dur:.2f}s → {new_dur:.2f}s"
             f"（漂移 {drift:+.2f}s 由末片吸收）")
     return segments, report
+
+
+def has_clips_approved_diff(episode: Path) -> bool:
+    """检查 04-clips.json 与 04-clips.approved.json 的段级内容差异（Spec §4.2 R3/R6）。
+
+    - 04-clips.json 不存在：不比，返回 False（兼容只保留 approved 的渲染场景）；
+    - 04-clips.approved.json 不存在：返回 False；
+    - 两者均存在：段级内容完全一致返回 False，有 diff 返回 True；
+    - 坏 JSON 免疫：无法读取返回 False。
+    """
+    clips_path = episode / "04-clips.json"
+    appr_path = episode / "04-clips.approved.json"
+    if not clips_path.exists() or not appr_path.exists():
+        return False
+    try:
+        clips_data = json.loads(clips_path.read_text(encoding="utf-8"))
+        appr_data = json.loads(appr_path.read_text(encoding="utf-8"))
+        clips_segs = clips_data.get("segments") if isinstance(clips_data, dict) else None
+        appr_segs = appr_data.get("segments") if isinstance(appr_data, dict) else None
+        if clips_segs is not None and appr_segs is not None:
+            return clips_segs != appr_segs
+        return clips_data != appr_data
+    except Exception:
+        return False
+

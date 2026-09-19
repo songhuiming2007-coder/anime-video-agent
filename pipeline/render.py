@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import bgm, paths
 from .music import FOREGROUND_LUFS  # 试听型前景响度，music.py 单源
-from .align import verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
+from .align import has_clips_approved_diff, verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
 # 输出规格。片源是 1920x1080 / 23.976fps / yuv420p10le，成片降到 8bit：
 # 抖音和 B 站的转码链对 10bit 支持不稳，而我们又不做调色，10bit 没有收益。
@@ -1062,6 +1062,17 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             f"FAIL 缺 {plan_path}\n"
             f"     04-clips.json 是机器排的，要人抽检过时间码、另存为 approved 版才能渲染"
         )
+
+    # approved 过期硬闸（Spec §4.2 R6 & R3）：
+    # 04-clips.json 存在 ∧ approved 存在 ∧ 段级 diff 非空 → SystemExit 指向重走 05
+    if not force and has_clips_approved_diff(episode):
+        raise SystemExit(
+            "FAIL 04-clips.approved.json 已过期（与当前 04-clips.json 存在段级内容差异）！\n"
+            f"     必须重走 05 审片并重新批准：\n"
+            f"     python -m pipeline.review {episode} --approve\n"
+            f"     （若确认强制渲染旧 approved 版，可传 --force 跳过检查）"
+        )
+
     audio_dir = episode / "03-audio"
     manifest = json.loads((audio_dir / "manifest.json").read_text(encoding="utf-8"))
     script_path = episode / "02-script.md"

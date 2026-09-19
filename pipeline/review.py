@@ -137,6 +137,35 @@ def _clip_ep(c: dict) -> str:
     return Path(str(c.get("source", ""))).name or "?"
 
 
+def get_patch_pool(episode: Path) -> str | None:
+    """获取补丁池名称（若存在）。"""
+    pool_path = episode / "04-patch" / "pool.json"
+    if pool_path.exists():
+        try:
+            pdata = json.loads(pool_path.read_text(encoding="utf-8"))
+            return pdata.get("pool")
+        except Exception:
+            pass
+    return None
+
+
+def is_patch_segment(seg: dict, patch_pool: str | None = None) -> bool:
+    """判定是否为补丁段（Spec §4.4 闸 3）。
+
+    段有 via="patch-rescue" ∪ 任一 clip 的 anime == 补丁池名（或以 -patch 结尾）。
+    """
+    if seg.get("via") == "patch-rescue":
+        return True
+    for c in seg.get("clips", []):
+        a = c.get("anime")
+        if a:
+            if patch_pool and a == patch_pool:
+                return True
+            if a.endswith("-patch"):
+                return True
+    return False
+
+
 CSS = """
 :root { color-scheme: dark light; }
 body { margin:0; padding:24px; background:#14161a; color:#e6e8eb;
@@ -188,6 +217,7 @@ def build(episode: Path) -> Path:
     fmap = {(j[0]["index"], j[2]): f for j, f in zip(jobs, frames)}
 
     bad = [s for s in segs if s["status"] not in ("ok", "ok_extended")]
+    patch_pool = get_patch_pool(episode)
     body = [
         f"<h1>{html.escape(episode.name)}　排片抽检</h1>",
         f'<div class="meta">{len(segs)} 段 · '
@@ -209,6 +239,11 @@ def build(episode: Path) -> Path:
             note = f'　<span class="flag">尾帧定格 +{ext:.1f}s</span>'
         else:
             note = "" if s["status"] == "ok" else f'　<span class="flag">{s["status"]}</span>'
+
+        patch_tag = ""
+        if is_patch_segment(s, patch_pool):
+            patch_tag = '　<span class="flag">补丁·必审</span>'
+
         # **通道要标出来。** 画面通道的分数和台词通道的不是一个量，
         # 人扫这一页时若不知道某段走的是哪条，会拿一列数横着比。
         # 角色过滤退回也要标：它说明那一段的过滤没起作用，画面里未必有那个人。
@@ -229,7 +264,7 @@ def build(episode: Path) -> Path:
         align_txt = _align_txt(s, audio_by_index.get(s["index"]), manifest_present)
         body.append(f'<div class="q"><span class="no"></span>查询 <b>'
                     f'{html.escape(s.get("used_query") or "—")}</b>'
-                    f'　{s["duration"]:.1f}s{note}{chan}{_ep_label(s)}{align_txt}</div>')
+                    f'　{s["duration"]:.1f}s{note}{patch_tag}{chan}{_ep_label(s)}{align_txt}</div>')
         if not s["clips"]:
             # render 对非 ok 段直接 SystemExit 拒渲（没有降级方案，S6：文案必须
             # 反映实际行为）——看到这条就该去补锚点或改稿，不是放过
@@ -262,7 +297,7 @@ def build(episode: Path) -> Path:
     return dest
 
 
-def approve(episode: Path) -> Path:
+def approve(episode: Path, confirm_patch: bool = False) -> Path:
     """人看过了，存成 approved 版。渲染只吃这个文件。
 
     **必须是显式动作。** 让 clips.py 自动写 approved 是最省事的做法，
@@ -286,6 +321,20 @@ def approve(episode: Path) -> Path:
             "FAIL 段级时长不对齐，不许 approve：\n  " + "\n  ".join(violations) +
             f"\n     人审改过画面（start/source）？先跑 "
             f"python -m pipeline.clips {episode} --refit 重排版再 approve")
+
+    # 补丁段二次确认闸（Spec §4.4 闸 3 & §5）：
+    # 仅当存在补丁段（via="patch-rescue" ∪ 任一 clip 的 anime == 补丁池名）才触发
+    patch_pool = get_patch_pool(episode)
+    patch_segs = [s for s in data["segments"] if is_patch_segment(s, patch_pool)]
+    if patch_segs and not confirm_patch:
+        seg_nums = ", ".join(str(s["index"]) for s in patch_segs)
+        ans = input(
+            f"[*] 本期包含 {len(patch_segs)} 个补丁段（段号：{seg_nums}），"
+            f"确认已人工核对完毕并批准？[y/N]: "
+        )
+        if ans.strip().lower() not in ("y", "yes"):
+            raise SystemExit("FAIL 已取消 approve：存在未人工核对的补丁段")
+
     shutil.copy2(src, dest)
     return dest
 
@@ -294,11 +343,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="第 05 步：出抽检页 / 批准排片")
     ap.add_argument("episode", type=Path)
     ap.add_argument("--approve", action="store_true", help="批准当前排片，渲染才能开始")
+    ap.add_argument("--confirm-patch", action="store_true", help="显式确认并跳过补丁段人工二次确认提示")
     a = ap.parse_args()
     paths.require_data()
 
     if a.approve:
-        print(f"已批准 → {approve(a.episode)}")
+        print(f"已批准 → {approve(a.episode, confirm_patch=a.confirm_patch)}")
         return 0
 
     dest = build(a.episode)

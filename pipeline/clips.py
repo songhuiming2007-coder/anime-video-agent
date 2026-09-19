@@ -14,11 +14,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
-from . import bgm, paths
-
-from . import vindex
+from . import bgm, ingest_patch, paths, shots as _shots_mod, vindex
 from .ingest import load_sources, load_sources_multi, sources_get
 from .subindex import INDEX_DIR, load_all, search
 
@@ -163,7 +162,8 @@ def _parse_anchor(raw: str, seg_no: int, animes: list[str] | None = None,
             "t0": t0, "t1": t1, "raw": raw}
 
 
-def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
+def parse_shots(path: Path, animes: list[str] | None = None,
+                extra_pools: list[str] | None = None) -> list[dict]:
     """稿件 → 每段的 配音 / 查询 / 备选 / 人物 / 场景 / 集 / 锚点。
 
     `tts.parse_script` 只取配音，这里要连分镜一起拿，所以按段落块重新切。
@@ -237,7 +237,9 @@ def parse_shots(path: Path, animes: list[str] | None = None) -> list[dict]:
                 # 单段多锚点蒙太奇（2026-09-07）：逗号/续行分隔的有序锚点列表，
                 # 排片顺序 = 书写顺序。企划池（anime_of）只对 SP 锚点开放。
                 main = bgm.anime_of(path.parent)
-                extra = [main] if main and main not in (animes or []) else []
+                extra = ([main] if main and main not in (animes or []) else []) + [
+                    p for p in (extra_pools or []) if p != main and p not in (animes or [])
+                ]
                 anchors = [_parse_anchor(x, i, animes, extra)
                            for x in _anchor_items(raw_field)]
                 anchor = anchors[0]             # 单锚点时产物形状与旧版逐字节一致
@@ -301,8 +303,10 @@ def _overlaps(cand, chosen) -> bool:
         if (cand.get("sp") and c.get("sp")
                 and cand.get("limit", 999) <= 8.0 and c.get("limit", 999) <= 8.0):
             continue
-        a0, a1 = cand["start"], cand["start"] + cand["span"]
-        b0, b1 = c["start"], c["start"] + c["span"]
+        a_span = cand.get("span", cand.get("dur", 0.0))
+        b_span = c.get("span", c.get("dur", 0.0))
+        a0, a1 = cand["start"], cand["start"] + a_span
+        b0, b1 = c["start"], c["start"] + b_span
         # 两边都是锚点（无检索分）时不留 OVERLAP_GAP：锚点起点已吸附到镜头切点，
         # 一个镜头恰好接在另一个后面（b0 == a1）是**接缝**，不是撞车。留了 gap
         # 会把合法的相邻镜头拦下，交付里 SP33 的 947s 巨镜头就是这么卡住的。
@@ -362,7 +366,7 @@ def candidate(score: float, u, sources: dict,
             return None
     if score < floor:                   # 门槛随通道走，画面通道有自己的一条
         return None
-    src = sources_get(sources, u.anime, f"S{u.season:02d}E{u.episode:02d}")
+    src = sources_get(sources, u.anime, _shots_mod._key(u.season, u.episode))
     if src is None:                 # 该集没登记（没验过或没下完）——不许用
         return None
     start = max(0.0, u.start - PAD)
@@ -383,7 +387,8 @@ def candidate(score: float, u, sources: dict,
     }
 
 
-def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | None:
+def _anchor_candidate(anchor: dict, sources: dict, anime: str | None,
+                      shots_table: list[dict] | None = None) -> dict | None:
     """锚点 → 单个片段，起点吸附到镜头切点（ADR-0008）。不可用返回 None。
 
     **吸附的是起点，不是时长。** 锚点指向「那一刻」，而切进一个镜头的中间
@@ -403,7 +408,7 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None) -> dict | 
     src = sources_get(sources, anime, key)
     if src is None:                     # 该集没登记——与 candidate() 同一条规矩
         return None
-    table = _shots.load(anime, key)["shots"]    # load 自带切分参数一致性校验
+    table = shots_table if shots_table is not None else _shots.load(anime, key)["shots"]    # load 自带切分参数一致性校验
     s0 = _shots.at(table, anchor["t0"], eps=0.05)
     if s0 is None:                      # 锚点超出片长
         return None
@@ -815,15 +820,19 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         raise SystemExit("FAIL 没指定番名：给 --anime，或在 config/project.json 里设 anime.default")
     anime = animes[0]                       # 主番：笔记/封面/在场索引默认归属
 
-    shots = parse_shots(script, animes)
+    patch = ingest_patch.load_pool(episode)
+    patch_pool = patch["pool"] if patch else None
+    extra_pools = [patch_pool] if patch_pool else []
+    shots = parse_shots(script, animes, extra_pools=extra_pools)
 
     # 企划池按需并入（ADR-0010 决策二）：SP 特典素材登记在企划名（`番:` 行）名下，
     # 不在素材番表里。只有稿件真的锚了番表外的池（SP 锚点）才把它并进片源加载，
     # 不用就不并——没登记会在 load_sources_multi 里照常报「没有《X》」。
+    # pools 组装显式跳过补丁池（Spec §4.4 R2）：补丁池在期级 pool.json，不进全局 sources.json
     pools = list(animes)
     for s in shots:
         for a in (s.get("anchors") or ([s["anchor"]] if s["anchor"] else [])):
-            if a["anime"] and a["anime"] not in pools:
+            if a["anime"] and a["anime"] not in pools and a["anime"] != patch_pool:
                 pools.append(a["anime"])
     multi = len(pools) > 1
     audio = manifest_data["segments"]
@@ -835,6 +844,12 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
 
     # 单番保持走 load_sources（既有测试的 monkeypatch 缝就在这）；多番才联合加载
     sources = load_sources_multi(pools) if multi else load_sources(anime)
+    if patch:
+        sources = {**sources, **{(anime, k): v for k, v in sources.items()}}
+        sources.update(patch["sources"])
+        allow = set(animes) | {patch["pool"]}
+    else:
+        allow = set(animes)
     vecs, units = load_all(index_dir, animes)
 
     # 两个视觉通道**按需加载**：没有段落声明 `人物` / `场景` 时，
@@ -881,6 +896,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         ladder_step = None                    # 画面通道不可续爬（_ladder_scene 未改），饿死只救台词段
         if shot["anchor"] is not None:          # 锚点通道（ADR-0008）：不检索，直通镜头表
             anchor_list = shot.get("anchors") or [shot["anchor"]]
+
+            def _get_shots_table_for_anchor(x: dict) -> list[dict] | None:
+                if patch and x.get("anime") == patch_pool:
+                    ep_val = x["episode"]
+                    return patch["shots"].get(ep_val) or patch["shots"].get(f"SP{ep_val:02d}")
+                return None
+
             prep.append({**shot, "duration": a["duration"], "hits": [],
                          "used_query": None, "fallback": False, "rung": 1,
                          "ep_scope": 0, "ep_fell_back": False,
@@ -888,7 +910,8 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
                          "filter_fell_back": False, "top_score": None,
                          # 单段多锚点（2026-09-07）：有序候选列表，排版时按
                          # 书写顺序交给 size() 按自然时长加权分配
-                         "anchor_cands": [_anchor_candidate(x, sources, x["anime"])
+                         "anchor_cands": [_anchor_candidate(x, sources, x["anime"],
+                                                           shots_table=_get_shots_table_for_anchor(x))
                                           for x in anchor_list],
                          "anchor_conflict": False})
             continue
@@ -971,6 +994,32 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         else:
             placed.extend(cands)
 
+    if patch:
+        # rescue-A：只救检索失败段（Spec §4.4，必须在 live 计算之前）
+        for p in prep:
+            if p.get("channel") == "anchor":
+                continue
+            if p["hits"] and p["top_score"] >= p["threshold"]:
+                continue
+            q = p.get("scene") or p.get("query") or p["text"]
+            hits = vindex.search_scene(q, patch["vecs"], patch["units"], TOPK)
+            hits = sorted(hits, key=lambda h: (-h[0], h[1].episode, h[1].start))
+            hits = [(s, u) for s, u in hits if s >= patch["floor"]]
+            if hits:
+                p.update(
+                    channel="scene",
+                    hits=hits,
+                    top_score=round(float(hits[0][0]), 4),
+                    threshold=patch["floor"],
+                    via="patch-rescue",
+                    rung=1,
+                    used_query=q,
+                    score=round(float(hits[0][0]), 4),
+                    floor=round(float(patch["floor"]), 4),
+                )
+                p.pop("ep_scope", None)
+                p.pop("ep_fell_back", None)
+
     by_index = {p["index"]: p for p in prep}
     live = [p for p in prep if p["hits"] and p["top_score"] >= p["threshold"]]
 
@@ -989,7 +1038,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             key = _ep_key(cand["season"], cand["episode"])
             cand["limit"] = sources_get(sources, cand.get("anime"), key)["duration"]
             cand.pop("floor", None)
-        used = _allocate(live, by_index, sources, set(animes), quota, pre=placed)
+        used = _allocate(live, by_index, sources, allow, quota, pre=placed)
 
         # 拉伸上限收到「同一集里下一个已分配片段的起点」，不能只收到片尾。
         # 2026-07-29 实测：段 11 的 15:18 被拉到 5.8s 之后撞进了段 12 的 15:24。
@@ -1024,11 +1073,160 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             continue
         p["clips"], p["status"] = size(p["clips"], p["duration"])
 
+    if patch:
+        # rescue-B：救分派失败段（Spec §4.4 Y5, R1）
+        # 1. no_source 段：重置无损
+        starved = [p for p in prep if p.get("status") == "no_source" and p.get("channel") != "anchor"]
+        for p in starved:
+            q = p.get("scene") or p.get("query") or p["text"]
+            hits = vindex.search_scene(q, patch["vecs"], patch["units"], TOPK)
+            hits = sorted(hits, key=lambda h: (-h[0], h[1].episode, h[1].start))
+            hits = [(s, u) for s, u in hits if s >= patch["floor"]]
+            if hits:
+                p.update(
+                    channel="scene",
+                    hits=hits,
+                    top_score=round(float(hits[0][0]), 4),
+                    threshold=patch["floor"],
+                    via="patch-rescue",
+                    rung=1,
+                    used_query=q,
+                    score=round(float(hits[0][0]), 4),
+                    floor=round(float(patch["floor"]), 4),
+                )
+                p.pop("ep_scope", None)
+                p.pop("ep_fell_back", None)
+                p["clips"] = []
+
+        rescued_starved = [p for p in starved if p.get("via") == "patch-rescue"]
+        if rescued_starved:
+            starved_by_index = {p["index"]: p for p in rescued_starved}
+            starved_quota = {p["index"]: p["duration"] for p in rescued_starved}
+            for _ in range(12):
+                for p in rescued_starved:
+                    p["clips"] = []
+                starved_used = _allocate(rescued_starved, starved_by_index, sources, allow, starved_quota, pre=used)
+                _tighten_by_episode(starved_used)
+                short_idx = []
+                for p in rescued_starved:
+                    _, st = size([dict(c) for c in p["clips"]], p["duration"])
+                    if st == "short":
+                        short_idx.append(p["index"])
+                if not short_idx:
+                    break
+                for idx in short_idx:
+                    starved_quota[idx] += MIN_CLIP
+            for p in rescued_starved:
+                if not p["clips"]:
+                    p["status"] = "no_source"
+                else:
+                    p["clips"], p["status"] = size(p["clips"], p["duration"])
+                    used.extend(p["clips"])
+
+        # 2. short 段：禁止重置，走追加补尾，不调 size()，保留老 clips (R1)
+        shorts = [p for p in prep if p.get("status") == "short" and p.get("channel") != "anchor"]
+        for p in shorts:
+            cur_dur = sum(c["dur"] for c in p["clips"])
+            residual = round(p["duration"] - cur_dur, 3)
+            if residual < MIN_CLIP:
+                continue
+            q = p.get("scene") or p.get("query") or p["text"]
+            hits = vindex.search_scene(q, patch["vecs"], patch["units"], TOPK)
+            hits = sorted(hits, key=lambda h: (-h[0], h[1].episode, h[1].start))
+            hits = [(s, u) for s, u in hits if s >= patch["floor"]]
+            if not hits:
+                continue
+
+            for sc, u in hits:
+                cand = candidate(sc, u, sources, allow, floor=patch["floor"])
+                if cand is None or _overlaps(cand, used):
+                    continue
+                room = round(cand["limit"] - cand["start"], 3)
+                if room < MIN_CLIP:
+                    continue
+                append_dur = round(min(room, residual), 3)
+                if append_dur < MIN_CLIP:
+                    continue
+
+                cand["dur"] = append_dur
+                cand.pop("limit", None)
+                cand.pop("span", None)
+                cand.pop("floor", None)
+
+                p["clips"].append(cand)
+                used.append(cand)
+
+                if not p.get("via"):
+                    p["via"] = "patch-rescue"
+                p["patch_score"] = round(float(sc), 4)
+                p["patch_floor"] = round(float(patch["floor"]), 4)
+
+                residual = round(p["duration"] - sum(c["dur"] for c in p["clips"]), 3)
+                if residual < MIN_CLIP:
+                    break
+
+            new_total = sum(c["dur"] for c in p["clips"])
+            if abs(new_total - p["duration"]) <= SEG_TOL or new_total >= p["duration"]:
+                p["status"] = "ok"
+
     out = [{k: v for k, v in p.items() if k not in ("hits", "got", "anchor_cands",
                                                     "anchor_conflict", "ladder_step")}
            for p in sorted(prep, key=lambda x: x["index"])]
 
     dest = episode / "04-clips.json"
+    # 1. 手改检测闸 (Spec §4.2 R1-r8, B1-r9, B2-r9) 与 prepatch 备份
+    if dest.exists():
+        if patch:
+            dest.with_name("04-clips.json.prepatch.bak").write_text(
+                dest.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        try:
+            old_data = json.loads(dest.read_text(encoding="utf-8"))
+            old_segs = old_data.get("segments", [])
+            old_by_idx = {s["index"]: s for s in old_segs}
+            new_by_idx = {s["index"]: s for s in out}
+
+            suspicious_segs = []
+            for idx, nseg in new_by_idx.items():
+                oseg = old_by_idx.get(idx)
+                if not oseg:
+                    continue
+                if oseg != nseg:
+                    is_patch_rescue = (
+                        nseg.get("via") == "patch-rescue"
+                        or any(c.get("anime") == patch_pool for c in nseg.get("clips", []))
+                    )
+                    was_failed = oseg.get("status") in ("no_match", "no_source", "short")
+                    if not (was_failed and is_patch_rescue):
+                        suspicious_segs.append((idx, oseg, nseg))
+
+            if suspicious_segs and not force:
+                seg_list_str = "、".join(f"段{idx}" for idx, _, _ in suspicious_segs)
+                raise SystemExit(
+                    f"FAIL 检测到段落产物变化（{seg_list_str}）：\n"
+                    f"     这些段的产物会变且不是补丁/rescue 引起——可能来自手改 04-clips.json 或稿件改动。\n"
+                    f"     请先确认：先 approve 当前版、把手改片段誉走，或传 --force 显式确认丢弃覆盖。"
+                )
+        except json.JSONDecodeError as e:
+            print(f"WARN 旧 04-clips.json 不可读，无法 diff，手改检测跳过: {e}", file=sys.stderr)
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"WARN 旧 04-clips.json 解析异常，手改检测跳过: {e}", file=sys.stderr)
+
+    # 2. approved 过期大字 WARN (Spec §4.2 R6)
+    appr_path = episode / "04-clips.approved.json"
+    if appr_path.exists():
+        try:
+            appr_data = json.loads(appr_path.read_text(encoding="utf-8"))
+            appr_segs = appr_data.get("segments", [])
+            if appr_segs != out:
+                print("=" * 60, file=sys.stderr)
+                print("⚠️  警告: 04-clips.approved.json 已过期！当前生成产物与 approved 存在段级内容差异。", file=sys.stderr)
+                print("    必须重新走 05 人工审片与 approve：python -m pipeline.review <期> --approve", file=sys.stderr)
+                print("=" * 60, file=sys.stderr)
+        except Exception:
+            pass
     # 原子落盘（审计 2-27）：产物即状态，不许半份
     paths.atomic_write(dest, json.dumps({
         "anime": anime,
@@ -1102,6 +1300,8 @@ def main() -> int:
         rung = {2: "  [第2级·备选]", 3: "  [第3级·配音原文]"}.get(s.get("rung", 1), "")
         if s.get("rescue"):
             rung += f"  [首选被占·第{s['rescue']['rung']}级救回]"
+        if s.get("via") == "patch-rescue":
+            rung += "  [补丁补位]"
         # 通道与过滤要显示出来：**画面分数和台词分数不可比**，不标出来看的人会拿
         # 一列数横着比。退回也要显示——它说明那一段的角色过滤没起作用。
         chan = ("锚点" if s.get("channel") == "anchor"

@@ -554,12 +554,16 @@ def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None,
     return m
 
 
-def _check_meta_shots(m: dict, path: Path) -> None:
+def _check_meta_shots(m: dict, path: Path, shots_dir: Path | None = None, check: bool = True) -> None:
     """镜头切分参数必须与当前镜头表一致，否则索引里的镜头号已经指向别的时间段。"""
     key = m.get("episode")
     if not key:
         return
-    cur = shots.load(m["anime"], key)["meta"]
+    s_dir = shots_dir if shots_dir is not None else shots.SHOTS_DIR
+    if s_dir == shots.SHOTS_DIR and check is True:
+        cur = shots.load(m["anime"], key)["meta"]
+    else:
+        cur = shots.load(m["anime"], key, out_dir=s_dir, check_config=check)["meta"]
     if m.get("shots") != _shots_fingerprint(cur):
         raise SystemExit(
             f"FAIL {path.name} 的镜头切分参数与当前镜头表不一致，镜头号已经错位。\n"
@@ -893,7 +897,7 @@ def caption_meta(anime: str, key: str, m: dict) -> dict:
     }
 
 
-def check_caption_meta(m: dict, path: Path) -> dict:
+def check_caption_meta(m: dict, path: Path, shots_dir: Path | None = None, check: bool = True) -> dict:
     """captions 元信息硬校验：模型 / revision / prompt 版本 / 输入规格 / 镜头切分。
 
     `prompt_version` 是 captions 新增的自描述维度（ADR-0015）：**改 prompt 等于换模型**。
@@ -913,7 +917,11 @@ def check_caption_meta(m: dict, path: Path) -> dict:
         raise SystemExit(
             f"FAIL {path.name} 的取样规格是 {m.get('frames')}，当前是 {caption_input_spec()}。\n"
             f"     帧数与位点变了，这批 caption 不再是同一种输入下的产物。重建 captions")
-    _check_meta_shots(m, path)
+    s_dir = shots_dir if shots_dir is not None else shots.SHOTS_DIR
+    if s_dir != shots.SHOTS_DIR or not check:
+        _check_meta_shots(m, path, shots_dir=s_dir, check=check)
+    else:
+        _check_meta_shots(m, path)
     return m
 
 
@@ -923,7 +931,9 @@ def pending_shots(rows: list[dict]) -> int:
 
 
 def load_captions(anime: str, key: str,
-                  out_dir: Path = VINDEX_DIR) -> tuple[dict, list[dict]]:
+                  out_dir: Path = VINDEX_DIR,
+                  shots_dir: Path | None = None,
+                  check: bool = True) -> tuple[dict, list[dict]]:
     """读一集的 captions，并核对它与镜头表逐行对齐。
 
     **逐行对齐是这里唯一的硬判据。** 少了/多了/错了镜头号，描述与镜头的对应
@@ -935,9 +945,14 @@ def load_captions(anime: str, key: str,
             f"FAIL 没有 {p}。意象打标是 Phase 0 的活（ADR-0015）：\n"
             f"     python -m pipeline.vindex captions {anime} {key}")
     d = json.loads(p.read_text(encoding="utf-8"))
-    check_caption_meta(d["meta"], p)
+    s_dir = shots_dir if shots_dir is not None else shots.SHOTS_DIR
+    if s_dir != shots.SHOTS_DIR or not check:
+        check_caption_meta(d["meta"], p, shots_dir=s_dir, check=check)
+        sh = shots.load(anime, key, out_dir=s_dir, check_config=check)["shots"]
+    else:
+        check_caption_meta(d["meta"], p)
+        sh = shots.load(anime, key)["shots"]
     rows = d["captions"]
-    sh = shots.load(anime, key)["shots"]
     if [r.get("shot") for r in rows] != [s["i"] for s in sh]:
         raise SystemExit(
             f"FAIL {p.name} 与镜头表逐行对不上（{len(rows)} 行 vs {len(sh)} 个镜头）。\n"
@@ -1026,8 +1041,10 @@ def _free_cuda() -> None:
 
 
 def build_captions(anime: str, key: str, out_dir: Path = VINDEX_DIR,
+                   shots_dir: Path | None = None,
+                   frames_dir: Path | None = None,
                    batch: int = CAPTION_BATCH, limit: int | None = None,
-                   progress=None) -> dict:
+                   progress=None, check: bool = True) -> dict:
     """打标一集：逐镜头生成 ≤30 字意象，落 `<番>_<集>.captions.json`。
 
     **断点续跑靠「已有 caption 的镜头跳过」**（产物即状态）：文件里每行先按镜头号
@@ -1041,14 +1058,21 @@ def build_captions(anime: str, key: str, out_dir: Path = VINDEX_DIR,
     `limit` 是冒烟闸：只打前 N 个没打过的镜头，其余留 pending（**建库会拒绝 pending**，
     所以半份索引不会静默流到下游）。
     """
-    d = shots.load(anime, key)
+    s_dir = shots_dir if shots_dir is not None else shots.SHOTS_DIR
+    if s_dir == shots.SHOTS_DIR and check is True:
+        d = shots.load(anime, key)
+    else:
+        d = shots.load(anime, key, out_dir=s_dir, check_config=check)
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = captions_path(anime, key, out_dir)
 
     if dest.exists():
         # 元信息对不上就当场失败，不许「接着上次写」：那是两套口径混进一个文件
         old = json.loads(dest.read_text(encoding="utf-8"))
-        check_caption_meta(old["meta"], dest)
+        if s_dir != shots.SHOTS_DIR or not check:
+            check_caption_meta(old["meta"], dest, shots_dir=s_dir, check=check)
+        else:
+            check_caption_meta(old["meta"], dest)
         if len(old["captions"]) != len(d["shots"]):
             raise SystemExit(
                 f"FAIL {dest.name} 的镜头数与当前镜头表不同（{len(old['captions'])} vs "
@@ -1072,7 +1096,8 @@ def build_captions(anime: str, key: str, out_dir: Path = VINDEX_DIR,
     # 时就绑死了，测试换不掉它，而「帧从哪儿取」正是这一层最该被测到的那句
     # （同 clips.scene_no_match 显式传 vindex.SCENES 的理由）。
     def _frame(i: int, k: int) -> Path:
-        return shots.caption_frame_path(anime, key, i, k, shots.FRAMES_DIR)
+        target_fdir = frames_dir if frames_dir is not None else shots.FRAMES_DIR
+        return shots.caption_frame_path(anime, key, i, k, target_fdir)
 
     need = [_frame(i, k) for i in todo for k in range(n_frames[i])]
     missing = [p for p in need if not p.exists()]
@@ -1204,7 +1229,8 @@ def encode_text_query(text: str) -> np.ndarray:
 
 
 def build_embed(anime: str, out_dir: Path = VINDEX_DIR, batch: int = 64,
-                progress=None) -> dict:
+                progress=None, shots_dir: Path | None = None,
+                check: bool = True) -> dict:
     """captions → bge-m3 向量库：每集一个 `<番>_<集>.scene.npy` + `.scene.json`。
 
     产物沿用 `scene` 的文件名（`load_scene` 读的就是它）：**换的是内核，不是契约**。
@@ -1226,7 +1252,7 @@ def build_embed(anime: str, out_dir: Path = VINDEX_DIR, batch: int = 64,
     loaded = []
     for p in files:
         key = p.name[len(anime) + 1:-len(".captions.json")]
-        meta, rows = load_captions(anime, key, out_dir)
+        meta, rows = load_captions(anime, key, out_dir, shots_dir=shots_dir, check=check)
         pend = pending_shots(rows)
         if pend:
             raise SystemExit(
@@ -1425,10 +1451,15 @@ def main() -> int:
     c.add_argument("--limit", type=int, metavar="N",
                    help="冒烟用：只打前 N 个镜头，其余留 pending"
                         "（建库会拒绝 pending，不会静默出半份索引）")
+    c.add_argument("--shots-dir", type=Path, default=shots.SHOTS_DIR)
+    c.add_argument("--frames-dir", type=Path, default=shots.FRAMES_DIR)
+    c.add_argument("--out-dir", type=Path, default=VINDEX_DIR)
 
     e = sub.add_parser("embed", help="通道 2：captions → bge-m3 向量库")
     e.add_argument("anime")
     e.add_argument("--batch", type=int, default=64)
+    e.add_argument("--out-dir", type=Path, default=VINDEX_DIR)
+    e.add_argument("--shots-dir", type=Path, default=shots.SHOTS_DIR)
 
     q = sub.add_parser("search", help="画面语义检索")
     q.add_argument("query")
@@ -1504,8 +1535,9 @@ def main() -> int:
     if a.cmd == "captions":
         rate, budget = cloud_budget()
         shots_total = 0
+        chk = (a.shots_dir == shots.SHOTS_DIR)
         for key in a.episode:
-            shots_total += len(shots.load(a.anime, key)["shots"])
+            shots_total += len(shots.load(a.anime, key, out_dir=a.shots_dir, check_config=chk)["shots"])
         est = estimate_caption_cost(shots_total, rate)
         print(f"[*] 单次运行预估 {shots_total} 个镜头 ≈ ¥{est:.2f}"
               f"（按 {CAPTION_SECONDS_PER_SHOT:g}s/镜头、{rate:g} 元/h 估；"
@@ -1517,22 +1549,25 @@ def main() -> int:
         bad = 0
         for key in a.episode:
             try:
-                r = build_captions(a.anime, key, batch=a.batch, limit=a.limit)
+                r = build_captions(a.anime, key, out_dir=a.out_dir,
+                                   shots_dir=a.shots_dir, frames_dir=a.frames_dir,
+                                   batch=a.batch, limit=a.limit, check=chk)
             except SystemExit as e:
                 bad += 1
                 print(f"FAIL {key}  {e}", flush=True)
                 continue
             print(f"OK {key} 打标 {r['shots']} 个镜头：ok {r['ok']}、failed {r['failed']}"
-                  f"（本轮续跑跳过 {r['skipped']}）→ {captions_path(a.anime, key).name}",
+                  f"（本轮续跑跳过 {r['skipped']}）→ {captions_path(a.anime, key, a.out_dir).name}",
                   flush=True)
         if bad:
             print(f"{bad} 集失败，重跑同一命令即续跑")
         return 1 if bad else 0
 
     if a.cmd == "embed":
-        r = build_embed(a.anime, batch=a.batch)
+        r = build_embed(a.anime, out_dir=a.out_dir, batch=a.batch,
+                        shots_dir=a.shots_dir, check=(a.shots_dir == shots.SHOTS_DIR))
         print(f"OK 建库 {r['episodes']} 集 / {r['shots']} 个镜头"
-              f"（其中 {r['failed']} 个零向量占位）→ {VINDEX_DIR}/{a.anime}_*.scene.npy")
+              f"（其中 {r['failed']} 个零向量占位）→ {a.out_dir}/{a.anime}_*.scene.npy")
         return 0
 
     st_ = status(a.anime)

@@ -124,3 +124,55 @@ class TestClipEp:
 
     def test_连source都没有不崩(self):
         assert _clip_ep({}) == "?"
+
+
+class TestPatchApproveGate:
+    """Spec §4.4 闸 3 & §5：补丁段标记与 approve 二次确认。"""
+
+    def _write_patch_episode(self, episode: Path, is_anchor: bool = False):
+        if is_anchor:
+            # 锚点补丁段：无 via="patch-rescue"，但 clip 的 anime 指向补丁池
+            clip = {"dur": 6.0, "anime": "my-patch"}
+            seg = {"index": 1, "status": "ok", "channel": "anchor", "clips": [clip]}
+        else:
+            clip = {"dur": 6.0, "anime": "test"}
+            seg = {"index": 1, "status": "ok", "via": "patch-rescue", "clips": [clip]}
+
+        (episode / "04-clips.json").write_text(
+            json.dumps({"segments": [seg]}, ensure_ascii=False), encoding="utf-8"
+        )
+        audio_dir = episode / "03-audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        (audio_dir / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 6.0}]}, ensure_ascii=False),
+            encoding="utf-8"
+        )
+        patch_dir = episode / "04-patch"
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        (patch_dir / "pool.json").write_text(
+            json.dumps({"pool": "my-patch", "assets": {}}), encoding="utf-8"
+        )
+
+    def test_存在补丁段且未确认时提示并可拒绝(self, tmp_path, monkeypatch):
+        self._write_patch_episode(tmp_path, is_anchor=False)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        with pytest.raises(SystemExit, match="存在未人工核对的补丁段"):
+            approve(tmp_path)
+
+    def test_存在补丁段且确认后批准(self, tmp_path, monkeypatch):
+        self._write_patch_episode(tmp_path, is_anchor=False)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        dest = approve(tmp_path)
+        assert dest.exists()
+
+    def test_锚点补丁段无via也触发二次确认(self, tmp_path, monkeypatch):
+        # 闸 3 核心用例：锚点补丁段无 via，必须由 anime == 补丁池名 捕获
+        self._write_patch_episode(tmp_path, is_anchor=True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        with pytest.raises(SystemExit, match="存在未人工核对的补丁段"):
+            approve(tmp_path)
+
+    def test_confirm_patch参数可免确认(self, tmp_path):
+        self._write_patch_episode(tmp_path, is_anchor=True)
+        dest = approve(tmp_path, confirm_patch=True)
+        assert dest.exists()
