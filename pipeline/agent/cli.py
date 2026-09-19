@@ -515,7 +515,7 @@ def assemble_system_prompt(
     if extra_prompt:
         scope_prompt = f"{scope_prompt}\n\n{extra_prompt}"
 
-    card = build_status_card(ep_dir, status)
+    card = build_status_card(ep_dir, status, scope=scope)
     return f"{director_prompt}\n\n---\n\n{scope_prompt}\n\n---\n\n{card}"
 
 

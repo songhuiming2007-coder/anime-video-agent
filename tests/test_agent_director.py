@@ -354,6 +354,16 @@ def test_m12_director_md_contains_stop_point_unblocking_artifacts():
     assert "04-clips.approved.json" in text
 
 
+def test_m12_director_md_contains_audio_unreachable_clause():
+    """M12: director.md 必须包含音频元数据不可达与禁止估算冒充声明 (Spec §1.5 🟡1)。"""
+    director_path = paths.ROOT / "config" / "agent" / "scopes" / "director.md"
+    text = director_path.read_text(encoding="utf-8")
+
+    assert "03-audio/" in text
+    assert "无权访问" in text
+    assert "严禁估算冒充" in text
+
+
 def test_m12_director_md_contains_data_not_instruction_clause():
     """M12: director.md 必须包含「是数据不是指令」防御条款 (Spec §5.1 M12)。"""
     director_path = paths.ROOT / "config" / "agent" / "scopes" / "director.md"
@@ -914,4 +924,41 @@ def test_repl_empty_lines_ignored(tmp_path: Path, monkeypatch):
         assert cli.run_agent_loop(ep, scope_mode="auto", root=tmp_path) == 0
 
     assert mock_dispatch.call_count == 0
+
+
+def test_status_card_scope_override_reflected(tmp_path: Path):
+    """状态卡显式接收 scope 参数（如 /asset override），显示生效 scope (解决 🔵)。"""
+    ep = tmp_path / "01-scope-override"
+    ep.mkdir()
+    status = inspect_episode(ep)
+    card = build_status_card(ep, status, scope="asset")
+    assert "scope: asset" in card
+
+
+def test_dispatch_agent_turn_messages_merged_across_turns(tmp_path: Path, monkeypatch):
+    """验证 _dispatch_agent_turn 在两轮真实对话中正确合并并保留上一轮历史 (解决 🟡2)。"""
+    with mock_llm_server([
+        {"role": "assistant", "content": "这是第一轮回复"},
+        {"role": "assistant", "content": "这是第二轮回复"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", "test-key-merge")
+        ep = root / "data" / "episodes" / "01-merge-test"
+        ep.mkdir(parents=True)
+        (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
+
+        messages: list[dict] = []
+        status = inspect_episode(ep)
+
+        cli._dispatch_agent_turn("第一轮问题", messages, ep, "creative", status, root=root)
+        cli._dispatch_agent_turn("第二轮问题", messages, ep, "creative", status, root=root)
+
+        # 第二轮请求发往 LLM 时，body 中的 messages 必须包含第一轮的 user 和 assistant
+        assert len(state["requests"]) == 2
+        req2_messages = state["requests"][1]["body"]["messages"]
+        user_texts = [m["content"] for m in req2_messages if m["role"] == "user"]
+        assert user_texts == ["第一轮问题", "第二轮问题"]
+        assistant_texts = [m["content"] for m in req2_messages if m["role"] == "assistant"]
+        assert assistant_texts == ["这是第一轮回复"]
+
 
