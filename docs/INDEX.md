@@ -12,7 +12,7 @@
 | **每期作业总纲速查（≤100 行）** | [`WORKFLOW.md`](WORKFLOW.md) | 四阶段工序卡、4 处人工停机点与四大物理红线 |
 | **ava 终端交互极简速查** | [`CHEATSHEET.md`](CHEATSHEET.md) | 看板、REPL 路由、顺听纠错白话口诀与全流程命令速查 |
 | 01 选题与张力 | [`runbook/01-topic.md`](runbook/01-topic.md) | 选题字段、体裁选择与编辑判断约束 |
-| 02 脚本写作与机检 | [`runbook/02-script.md`](runbook/02-script.md) | 调 skills/write-script 与 check_script 23 项机检 |
+| 02 脚本写作与机检 | [`runbook/02-script.md`](runbook/02-script.md) | 调 skills/write-script 与 check_script 机检（条数随判据迭代，不写死） |
 | **02.5 人审改稿（停机点 1）** | [`runbook/02.5-human-review.md`](runbook/02.5-human-review.md) | 人工事实核验、精修与 diff 封板规程 |
 | 03 语音合成 | [`runbook/03-tts.md`](runbook/03-tts.md) | 增量合成、注音修复与防 `--force` 红线 |
 | **03.5 配音顺听（停机点 2）** | [`runbook/03.5-voice-check.md`](runbook/03.5-voice-check.md) | 顺听 + /voice 纠错（可选深挖，corrections.json / --apply-patch） |
