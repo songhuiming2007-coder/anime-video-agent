@@ -151,6 +151,56 @@ def evaluate_doctor_disk(avail_gb_str: str) -> tuple[str, str, bool]:
         return "FAIL", "数据盘 /root/autodl-tmp 未挂载或不可读", False
 
 
+# 上行前的余量安全系数。为什么是 2×：
+#   ① `rsync --partial` 把未传完的文件留在目标盘上，单个大文件在传输中的
+#      峰值占用可达其体积的两倍（已存在的一份 + 传了一半的临时件）；
+#   ② 目标盘同时躺着 OS、Python 环境与远端 checkout，「刚好够」迟早变成「刚好炸」。
+UPLOAD_HEADROOM_FACTOR = 2.0
+
+
+def sync_pairs_bytes(pairs) -> int:
+    """估算上行清单的总体积（字节）。目录递归累加，文件取 stat 大小。"""
+    total = 0
+    for src, _dst in pairs:
+        p = Path(str(src).rstrip("/"))
+        try:
+            if p.is_dir():
+                total += sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+            elif p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def evaluate_upload_capacity(
+    upload_bytes: int, avail_gb_str: str, factor: float = UPLOAD_HEADROOM_FACTOR,
+) -> tuple[str, str]:
+    """上行体积 vs 远端目标盘余量（纯函数）。返回 (判定, 说明)。
+
+    判定三态：
+      · `ok`           —— 余量充足；
+      · `insufficient` —— 拦下（这是我们要提前发现的那个失败）；
+      · `unknown`      —— df 读不到数。**「不知道」不等于「有危险」**：不许
+                          假装知道，但也不许拿它当借口拦人，由调用方打 WARN 放行。
+    """
+    try:
+        avail_gb = float(str(avail_gb_str).strip())
+    except (TypeError, ValueError):
+        return "unknown", f"读不到远端余量（df 输出：{str(avail_gb_str).strip()!r}）"
+    need_gb = upload_bytes / (1024 ** 3) * factor
+    up_mb = upload_bytes / (1024 ** 2)
+    if need_gb > avail_gb:
+        return "insufficient", (
+            f"本次上行 {up_mb:.1f}MB，按 {factor:g}× 安全系数需 {need_gb:.2f}GB，"
+            f"远端仅剩 {avail_gb:.1f}GB"
+        )
+    return "ok", (
+        f"本次上行 {up_mb:.1f}MB（按 {factor:g}× 需 {need_gb:.2f}GB）"
+        f"< 远端余量 {avail_gb:.1f}GB"
+    )
+
+
 # 远端模型权重结构校验脚本（任务 0，2026-09-11）
 #
 # **为什么需要它**：原来的 doctor 只比 `du` 体积，而截断的权重照样能凑够体积——
@@ -1255,6 +1305,48 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _preflight_remote_capacity(host: str, remote_root: str, remote_ep_dir: str,
+                              sync_pairs) -> None:
+    """上行前的远端余量 pre-flight（Spec §4.6）。
+
+    **为什么单开一条闸：仓库里所有 `df` 都只查数据盘 `autodl-tmp`**
+    （doctor:920 / status:1216），但上行实际落在**系统盘**——远端 `data/` 是
+    `/root/anime-video-agent/data` 的实体目录，`config/cloud.json` 的 `remote_data`
+    是有意不接线的。于是 doctor 会打「数据盘空间充足 ✓」的同时，让全季帧
+    （~550MB）或 2h Live（~1GB）把系统盘写满。判据一直在回答另一个问题。
+
+    失败模式的代价不是钱（停机不计数）：是**那次开机任务跑到一半才炸**。
+    所以放在入闸处拒，而不是等 rsync 写爆。
+    """
+    upload_bytes = sync_pairs_bytes(sync_pairs)
+    if upload_bytes <= 0:
+        return
+    res = _ssh(
+        f"df -BG {shlex.quote(remote_ep_dir)} | tail -1 | awk '{{print $4}}' | tr -d 'G'",
+        host=host, check=False,
+    )
+    verdict, detail = evaluate_upload_capacity(upload_bytes, res.stdout)
+    if verdict == "ok":
+        print(f"  ✓ 远端余量充足：{detail}")
+        return
+    if verdict == "unknown":
+        print(f"WARN 无法确认远端余量（{detail}），继续上行", file=sys.stderr)
+        return
+    cleanup_cmd = (
+        f"python -m pipeline.cloud exec --fg "
+        f"\"rm -rf {remote_root}/data/library/shots/frames/*_cap\""
+    )
+    raise SystemExit(
+        f"FAIL 远端目标盘余量不足，拒绝上行：{detail}\n"
+        f"     上行落在 {remote_ep_dir}，而远端 data/ 在**系统盘**上\n"
+        f"     （config/cloud.json 的 remote_data 有意未接线）。两条修法任选：\n"
+        f"       ① 清掉上一轮打标帧（本地 shots caption-frames 可秒级重抽）：\n"
+        f"          {cleanup_cmd}\n"
+        f"       ② 全季打标前按 docs/WORKFLOW.md「阶段 0 前置」改道数据盘（一次性）\n"
+        f"     详情：docs/dev/postmortems/workflow-history.md「云端中间物」"
+    )
+
+
 def cmd_push(args: argparse.Namespace) -> int:
     """上行同步命令：采用真实清单构建器并遵循目录斜杠纪律（P1-1/P2-4）。"""
     try:
@@ -1273,7 +1365,9 @@ def cmd_push(args: argparse.Namespace) -> int:
     print(f"    本地源: {ep_dir}")
     print(f"    远端宿: {host}:{remote_ep_dir}")
 
-    _ssh(f"mkdir -p {remote_ep_dir}", host=host)
+    # 路径过 shlex.quote：期目录名可以含空格与中文（B7-r5 同族），
+    # 裸插值会让远端 shell 在空格处断开、在中文处乱码。无特殊字符时输出与原文一致。
+    _ssh(f"mkdir -p {shlex.quote(remote_ep_dir)}", host=host)
 
     sync_items = cfg_global.get(
         "sync", {}
@@ -1282,6 +1376,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         if extra_item not in sync_items:
             sync_items.append(extra_item)
     sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
+
+    _preflight_remote_capacity(host, remote_root, remote_ep_dir, sync_pairs)
 
     for src, dst in sync_pairs:
         res = run_rsync(src, f"{host}:{dst}")

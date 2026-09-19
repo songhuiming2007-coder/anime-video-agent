@@ -1056,6 +1056,15 @@ clip 自带 `source` 绝对路径，渲染不查 sources.json；`_source_path` �
   ③ 两段式的 stage 2 还依赖 `cmd_pull` 的三态可辨（见 §4.3）。
 - (c) `extra_args` 过参数白名单正则（§2.4 第 2 条）。
 
+- (d) **上行余量 pre-flight（B4-r15 的落地点，PR0 欠的那句话）**：全季打标前必须先把远端
+  `data/` 从**系统盘**改道数据盘（`config/cloud.json` 的 `remote_data` **有意未接线**）。
+  落点不在本 spec，而在操作类文档 `docs/WORKFLOW.md` §一「阶段 0 前置」——
+  工序卡原先从「A. 脚本与分镜 / 01 选题」开始，**阶段 0（素材入库与全季打标）整个缺失**，
+  这才是「改道数据盘」一直没被人在开工前读到、将来会「怪到 ava 头上」的根因。
+  `cloud push` 同时新增前置余量闸：**判据必须落在目标盘而不是数据盘**——
+  仓库里所有 `df` 只查 `autodl-tmp`（`cloud.py` doctor/status 两处），于是它会打
+  「数据盘空间充足 ✓」而帧正把系统盘写满；这条闸把这个盲区补在入闸处。
+
 - **`pool.json` 同病（B1-r16）**：ingest_patch 的登记是读-改-写，而 clips 在另一侧读；
   且云端两段式让窗口更长（提交 → 人工重跑）。修法与 corrections.json ①同一句话：
   **写回前比对 mtime + sha，不等则 FAIL 并让重跑**（不静默覆盖）。
@@ -1308,9 +1317,10 @@ python -m pipeline.cloud down          # 立刻关机止损；pull 完 5 分钟�
 rm -rf data/episodes/_ava-verify-p3   # 收尾必删（它不是交付期；看板已排除 `_` 前缀）
 ```
 **B4-r15**：captions 要上行 shots/frames（3 分钟切片约 150 张 896px 帧），而
-`WORKFLOW.md` 的「云端中间物」一节记着 `remote_data` **未接线**（帧级素材走系统盘）
-——本次验收量级可接受，但**全季打标前先按 WORKFLOW 改道数据盘**（PR0 在 §4.6 标一句，
-免得将来怪到 ava 头上）。
+`docs/dev/postmortems/workflow-history.md` 的「云端中间物」一节记着 `remote_data` **未接线**
+（帧级素材走系统盘）——本次验收量级可接受，但**全季打标前先改道数据盘**：
+落点已从 spec 移到 `docs/WORKFLOW.md` §一「阶段 0 前置」（见 §4.6 (d)），
+并配 `cloud push` 的前置余量闸——不再依赖「人恰好读到本 spec」。
 
 ### PR4：LLM 层 + 收尾（**唯一可砍的 PR**）
 

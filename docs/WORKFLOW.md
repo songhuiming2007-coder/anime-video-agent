@@ -12,6 +12,19 @@
 
 ## 一、四阶段工序卡与人工停机点（严禁一键盲目串联）
 
+> **阶段 0 前置（每部番一次，不在 01–09 里）**：素材入库与全季打标。
+> 全季 `vindex captions` 要上行几百 MB 帧，而远端 `data/` 在**系统盘**
+> （`config/cloud.json` 的 `remote_data` 有意未接线）——开工前必须先改道数据盘：
+> ```bash
+> # 远端一次性：把 data/ 迁到数据盘并软链（需人确认后执行）
+> mv /root/anime-video-agent/data /root/autodl-tmp/data
+> ln -s /root/autodl-tmp/data /root/anime-video-agent/data
+> df -BG / | tail -1   # 确认系统盘不再承载素材
+> ```
+> `cloud push` 自带余量闸：系统盘不够会当场拒上行并给出修法，不会传到一半才爆。
+> 单集补料切片（~14MB/集）量级可忽略，但软链仍建议先做好，免得将来忘了。
+> 详见 [`dev/postmortems/workflow-history.md`](dev/postmortems/workflow-history.md)「云端中间物」。
+
 | 工序阶段 | 包含步骤 | 核心命令 | 🛑 人工停机点与硬门禁 |
 |---|---|---|---|
 | **A. 脚本与分镜** | 01 选题 → 02 写稿 | `python -m pipeline.check_script <期>/02-script.md` | **02.5 人审改稿**：人工精修事实与张力，产出 `02-diff.patch` 后封板，严禁跳过。 |

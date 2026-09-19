@@ -763,3 +763,121 @@ def test_cmd_pull_unreachable_direct_fail(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="实例不可达/已关机"):
         cloud.cmd_pull(argparse.Namespace(target="x"))
 
+
+
+# ---------------------------------------------------------------------------
+# 上行余量 pre-flight（Spec §4.6：判据必须落在系统盘，而不是数据盘）
+# ---------------------------------------------------------------------------
+
+
+class TestUploadCapacity:
+    """纯函数：上行体积 vs 远端余量三态判定。"""
+
+    def test_余量充足放行(self):
+        verdict, detail = cloud.evaluate_upload_capacity(600 * 1024**2, "12")
+        assert verdict == "ok"
+        assert "1.17GB" in detail and "12.0GB" in detail
+
+    def test_余量不足拦下(self):
+        # 550MB 全季帧 / 系统盘只剩 0.5GB —— 正是「doctor 说数据盘充足、
+        # 系统盘却在涨」那个盲区对应的场景
+        verdict, detail = cloud.evaluate_upload_capacity(550 * 1024**2, "0.5")
+        assert verdict == "insufficient"
+        assert "仅剩 0.5GB" in detail
+
+    def test_刚好够也判不够(self):
+        # 「刚好够」的语义：upload == avail 时 2× 系数必须判拦，
+        # 因为 rsync --partial 的临时件会让峰值占用翻倍
+        verdict, _ = cloud.evaluate_upload_capacity(1024**3, "1")
+        assert verdict == "insufficient"
+
+    def test_读不到余量是unknown不是不足(self):
+        # 「不知道」≠「有危险」：不许假装知道，但也不许拿它当借口拦人
+        for bad in ("", "   ", "N/A", None):
+            verdict, _ = cloud.evaluate_upload_capacity(1024, bad)
+            assert verdict == "unknown", f"{bad!r} 应判 unknown"
+
+    def test_零字节上行永远放行(self):
+        # 空清单不该因为远端余量读不到而被拦
+        verdict, _ = cloud.evaluate_upload_capacity(0, "")
+        assert verdict == "unknown" or verdict == "ok"
+
+
+class TestSyncPairsBytes:
+    """估算上行清单体积：文件取大小、目录递归累加。"""
+
+    def test_文件与目录都算进(self, tmp_path):
+        f = tmp_path / "a.md"
+        f.write_bytes(b"x" * 1000)
+        d = tmp_path / "frames"
+        (d / "sub").mkdir(parents=True)
+        (d / "f1.jpg").write_bytes(b"y" * 500)
+        (d / "sub" / "f2.jpg").write_bytes(b"z" * 300)
+
+        assert cloud.sync_pairs_bytes([(str(f), "remote/f")]) == 1000
+        assert cloud.sync_pairs_bytes([(str(d) + "/", "remote/d")]) == 800
+        assert cloud.sync_pairs_bytes([(str(f), "r"), (str(d) + "/", "r2")]) == 1800
+
+    def test_清单为空返回零(self):
+        assert cloud.sync_pairs_bytes([]) == 0
+
+
+class TestPreflightGate:
+    """接线测试：闸真的接在 cmd_push 的上行路径上。"""
+
+    def _push_env(self, monkeypatch, tmp_path, df_out, *, pairs_bytes=550 * 1024**2,
+                  rel_path="data/episodes/x"):
+        _no_config(monkeypatch)
+        monkeypatch.setattr(cloud, "resolve_episode_rel_path",
+                            lambda t: (tmp_path, rel_path))
+        ep = tmp_path / "02-script.md"
+        ep.write_bytes(b"x")
+        monkeypatch.setattr(cloud, "sync_pairs_bytes", lambda pairs: pairs_bytes)
+        seen = {}
+
+        class _Res:
+            returncode = 0
+            stdout = df_out
+            stderr = ""
+
+        def fake_ssh(cmd, **kw):
+            seen.setdefault("cmds", []).append(cmd)
+            return _Res()
+
+        monkeypatch.setattr(cloud, "_ssh", fake_ssh)
+        monkeypatch.setattr(cloud, "run_rsync", lambda s, d, **k: _Res())
+        return seen
+
+    def test_余量不足时拒绝上行(self, monkeypatch, tmp_path):
+        seen = self._push_env(monkeypatch, tmp_path, "0.5")
+        with pytest.raises(SystemExit) as exc:
+            cloud.cmd_push(argparse.Namespace(target="x"))
+        msg = str(exc.value)
+        assert "远端目标盘余量不足，拒绝上行" in msg
+        assert "系统盘" in msg, "报错必须点明上行落在系统盘（这是闸存在的理由）"
+        assert "改道数据盘" in msg and "caption-frames" in msg, "两条修法都要给"
+        # 拦在 rsync 之前：不许先传一半才发现
+        assert not any("rsync" in c for c in seen.get("cmds", []))
+
+    def test_余量充足时放行(self, monkeypatch, tmp_path, capsys):
+        self._push_env(monkeypatch, tmp_path, "20")
+        rc = cloud.cmd_push(argparse.Namespace(target="x"))
+        assert rc == 0
+        assert "远端余量充足" in capsys.readouterr().out
+
+    def test_余量读不到时WARN放行(self, monkeypatch, tmp_path, capsys):
+        self._push_env(monkeypatch, tmp_path, "")
+        rc = cloud.cmd_push(argparse.Namespace(target="x"))
+        assert rc == 0
+        assert "无法确认远端余量" in capsys.readouterr().err
+
+    def test_mkdir路径过引号防空格中文(self, monkeypatch, tmp_path):
+        # 期目录名含空格与中文时，裸插值会让远端 shell 在空格处断开
+        # （B7-r5 同族）。用真含空格的 rel_path 考它——无特殊字符时
+        # shlex.quote 本就不加引号，那不是漏网。
+        seen = self._push_env(monkeypatch, tmp_path, "20",
+                              rel_path="data/episodes/EGOIST 三期")
+        cloud.cmd_push(argparse.Namespace(target="x"))
+        mkdir_cmds = [c for c in seen["cmds"] if c.startswith("mkdir -p")]
+        assert mkdir_cmds, "必须下发 mkdir"
+        assert "'" in mkdir_cmds[0], f"含空格的路径未经 shlex.quote: {mkdir_cmds[0]}"
