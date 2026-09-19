@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -715,11 +716,14 @@ def run_pipeline(
 
     t_start = time.time()
     try:
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             argv,
             cwd=paths.ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
     except FileNotFoundError as exc:
         return {

@@ -139,7 +139,9 @@ def render_approval_card(
     argv_list = list(argv) if argv is not None else []
 
     if name == "write_episode_file":
-        filename = str(args.get("filename", "")).strip()
+        raw_filename = str(args.get("filename", "")).strip()
+        first_line = raw_filename.splitlines()[0] if raw_filename else ""
+        filename = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", first_line).strip()
         content = args.get("content", "")
         content_bytes = len(content.encode("utf-8")) if isinstance(content, str) else 0
         size_kb = content_bytes / 1024
@@ -225,6 +227,10 @@ def render_approval_card(
         tag = stop_label if "[停机点]" in stop_label else f"[停机点] {stop_label}"
         danger_tags.append(tag)
 
+    # [跳过人工闸] 判定：argv 含 --confirm-patch
+    if "--confirm-patch" in argv_list or "--confirm-patch" in cmd_str.split():
+        danger_tags.append("[跳过人工闸] 补丁段二次确认将被跳过")
+
     danger_str = " ".join(danger_tags) if danger_tags else "无"
 
     if is_cloud:
@@ -272,7 +278,7 @@ def log_approval_decision(
         }
         with log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[WARN] 审批记账失败: {exc}")
 
 
