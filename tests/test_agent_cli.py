@@ -151,3 +151,141 @@ def test_repl_asset_scope_switch_and_quit(tmp_path: Path, capsys):
     assert "已进入 asset scope" in out
     assert "已切回自动推导工序模式" in out
 
+
+
+# ---------------------------------------------------------------------------
+# 停机点墙钟记账的接线级测试（Spec §2.6；终审 P0-2）
+#
+# 单测 record_human_time 本身在 PR1 就有了，但全仓没有调用点——止损链整条是死的。
+# 下面这些用例驱动真 REPL / 真 /voice 包装，断言 human_time.json 真被写出来。
+# ---------------------------------------------------------------------------
+
+
+def test_human_stop_mapping_covers_the_four_stops():
+    """current_step → 停机点标签的映射；03.5 在 REPL 停留记账里排除（由 /voice 记）。"""
+    from pipeline.agent.cli import human_stop_of, park_stop_of
+
+    assert human_stop_of("02.5 人审改稿") == "02.5"
+    assert human_stop_of("03.5 配音顺听 / 04 排片") == "03.5"
+    assert human_stop_of("05 审时间码") == "05"
+    assert human_stop_of("09 人工发布") == "09"
+
+    assert human_stop_of("03 语音合成") is None
+    assert human_stop_of("06 本地渲染") is None
+    assert human_stop_of("08 封面与标题候选") is None
+
+    assert park_stop_of("03.5 配音顺听 / 04 排片") is None
+    assert park_stop_of("02.5 人审改稿") == "02.5"
+
+
+def _parked_at_02_5(tmp_path: Path) -> Path:
+    """造一个停在 02.5 的期：有 02-script.md、无 02-diff.patch、无音频。"""
+    from pipeline import paths
+    ep = tmp_path / "data" / "episodes" / "01-parked"
+    ep.mkdir(parents=True)
+    (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
+    (ep / "02-script.md").write_text("# Script", encoding="utf-8")
+    paths.ROOT  # noqa: B018  (调用方已 monkeypatch)
+    return ep
+
+
+def test_repl_records_human_time_for_park_stop(tmp_path: Path, monkeypatch, capsys):
+    """接线级：停在 02.5 的 REPL 退出时必须落一条 human_time.json（终审 P0-2）。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+    from pipeline.status import inspect_episode
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    ep = _parked_at_02_5(tmp_path)
+    assert inspect_episode(ep).current_step.startswith("02.5")
+
+    with patch("builtins.input", side_effect=["/status", "/quit"]):
+        assert run_repl(ep) == 0
+
+    data = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert len(data) == 1
+    assert data[0]["stop"] == "02.5"
+    assert data[0]["minutes"] >= 0.0
+    assert "entered_at" in data[0] and "left_at" in data[0]
+    assert "[人时]" in capsys.readouterr().out
+
+
+def test_repl_records_human_time_on_eof_exit(tmp_path: Path, monkeypatch):
+    """EOF 退出路径同样记账（不是只有 /quit 才记）。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    ep = _parked_at_02_5(tmp_path)
+
+    with patch("builtins.input", side_effect=EOFError()):
+        assert run_repl(ep) == 0
+
+    data = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert data[-1]["stop"] == "02.5"
+
+
+def test_repl_does_not_record_outside_stop_points(tmp_path: Path, monkeypatch):
+    """非停机点（如 03 语音合成）不记账——机器时间不是人类时间（§2.6 计数口径）。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+    from pipeline.status import inspect_episode
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    ep = tmp_path / "data" / "episodes" / "01-machine"
+    ep.mkdir(parents=True)
+    (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
+    (ep / "02-script.md").write_text("# Script", encoding="utf-8")
+    (ep / "02-diff.patch").write_text("diff", encoding="utf-8")  # 已封板 → 进 03
+    assert inspect_episode(ep).current_step.startswith("03 ")
+
+    with patch("builtins.input", side_effect=["/quit"]):
+        assert run_repl(ep) == 0
+
+    assert not (ep / "human_time.json").exists()
+
+
+def test_voice_session_records_03_5(tmp_path: Path):
+    """接线级：/voice 进出记 03.5（终审 P0-2 的另一半）。"""
+    from pipeline.agent.cli import run_voice_session
+
+    ep = tmp_path / "01-voice"
+    ep.mkdir()
+    (ep / "02-script.md").write_text("## 段落 1\n配音：这是一句测试台词。\n", encoding="utf-8")
+    (ep / "03-audio").mkdir()
+
+    with patch("builtins.input", side_effect=EOFError()):
+        assert run_voice_session(ep) == 0
+
+    data = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert data[-1]["stop"] == "03.5"
+    assert data[-1]["minutes"] >= 0.0
+
+
+def test_voice_session_without_script_records_nothing(tmp_path: Path):
+    """没有稿件的 /voice 起不来 → 不写空读数（宁可没读数，不要假读数）。"""
+    from pipeline.agent.cli import run_voice_session
+
+    ep = tmp_path / "01-empty"
+    ep.mkdir()
+    assert run_voice_session(ep) == 1
+    assert not (ep / "human_time.json").exists()
+
+
+def test_status_advisory_and_board_read_the_recorded_hours(tmp_path: Path, monkeypatch):
+    """止损链闭环：记下的人时能被 status advisory 与看板读出来（终审 P0-2 的后果链）。"""
+    from pipeline import paths
+    from pipeline.agent.cli import record_human_time
+    from pipeline.status import inspect_episode
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    ep = tmp_path / "data" / "episodes" / "01-budget"
+    ep.mkdir(parents=True)
+    (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
+    (ep / "02-script.md").write_text("# Script", encoding="utf-8")
+    (ep / "02-diff.patch").write_text("diff", encoding="utf-8")
+    (ep / "04-clips.json").write_text(json.dumps({"total_duration": 600.0}), encoding="utf-8")
+
+    assert record_human_time(ep, "03.5", 0.0, 1200.0) == 20.0  # 20 分钟
+    advisories = inspect_episode(ep).advisories
+    assert any("人类耗时超预算" in a for a in advisories), advisories

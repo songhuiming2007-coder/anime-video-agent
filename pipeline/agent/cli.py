@@ -51,8 +51,8 @@ def check_code_freeze() -> bool:
         return False
 
 
-def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float) -> None:
-    """记录人类停机点墙钟时间（Spec §2.6 追加式写入 human_time.json）。"""
+def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float) -> float:
+    """记录人类停机点墙钟时间（Spec §2.6 追加式写入 human_time.json），返回本段分钟数。"""
     ht_path = ep_dir / "human_time.json"
     records: list[dict] = []
     if ht_path.exists():
@@ -71,6 +71,39 @@ def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float
         "minutes": max(0.0, minutes),
     })
     paths.atomic_write(ht_path, json.dumps(records, ensure_ascii=False, indent=2) + "\n")
+    return max(0.0, minutes)
+
+
+def human_stop_of(current_step: str) -> str | None:
+    """current_step 字符串 → 停机点标签（HUMAN_STOPS 的唯一消费者）。
+
+    「02.5 人审改稿」「03.5 配音顺听 / 04 排片」「05 审时间码」「09 人工发布」
+    都是标签前缀形态；非停机点返回 None。
+    """
+    for stop in sorted(HUMAN_STOPS, key=len, reverse=True):
+        if current_step.startswith(stop):
+            return stop
+    return None
+
+
+def park_stop_of(current_step: str) -> str | None:
+    """REPL 停留记账用的停机点：03.5 的墙钟由 /voice 自己记，此处排除以免双记。"""
+    stop = human_stop_of(current_step)
+    return None if stop == "03.5" else stop
+
+
+def run_voice_session(ep_dir: Path) -> int:
+    """03.5 停机点墙钟记账包装（Spec §2.6）。
+
+    顺听正常走完才记账：起不来（没稿）或中途异常退出的默认不写，避免留下假读数。
+    """
+    if not (ep_dir / "02-script.md").exists():
+        return run_voice_loop(ep_dir)
+    started = time.time()
+    code = run_voice_loop(ep_dir)
+    minutes = record_human_time(ep_dir, "03.5", started, time.time())
+    print(f"[人时] 停机点 03.5 墙钟 {minutes:.1f} 分钟 → human_time.json")
+    return code
 
 
 def get_episodes_list(root: Path | None = None) -> tuple[list[Path], int]:
@@ -502,6 +535,13 @@ def run_creative_loop(ep_dir: Path, mode: str = "chat") -> int:
             print(f"[FAIL] {exc}")
             messages.pop()
             continue
+        except PermissionError as exc:
+            # 出网闸在 chat_complete 里拦截（fail-closed）。这是内容问题不是程序崩，
+            # 报清楚并留在会话里——整段 traceback 崩退会让人看不到真正原因。
+            print(f"[BLOCKED] 出网被拦截：{exc}")
+            print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
+            messages.pop()
+            continue
         messages = outcome["messages"]
 
         content = outcome["final"].get("content") or ""
@@ -514,7 +554,37 @@ def run_creative_loop(ep_dir: Path, mode: str = "chat") -> int:
 
 
 def run_repl(ep_dir: Path) -> int:
-    """REPL 交互循环（Spec §2.4）。"""
+    """REPL 入口：包一层停机点墙钟记账（Spec §2.6），机身在 _run_repl_body。
+
+    §2.6 的读数只在**人类停机点**计：进入某停机点 scope 到离开为止的墙钟。
+    没有这一层，human_time.json 永远是空的，status 的第四条 advisory 与看板的
+    「连续三期超预算」横幅就都是死判据（终审 P0-2）。
+    """
+    span: dict[str, object] = {"stop": None, "at": time.time()}
+
+    def close_stop() -> None:
+        stop = span["stop"]
+        if stop:
+            minutes = record_human_time(ep_dir, str(stop), float(span["at"]), time.time())
+            print(f"\n[人时] 停机点 {stop} 墙钟 {minutes:.1f} 分钟 → human_time.json")
+        span["stop"] = None
+
+    def on_step(current_step: str) -> None:
+        """工序变化 = 停机点切换：先结算上一段，再开新的一段。"""
+        new_stop = park_stop_of(current_step)
+        if new_stop == span["stop"]:
+            return
+        close_stop()
+        span["stop"], span["at"] = new_stop, time.time()
+
+    try:
+        return _run_repl_body(ep_dir, on_step)
+    finally:
+        close_stop()
+
+
+def _run_repl_body(ep_dir: Path, on_step) -> int:
+    """REPL 交互循环（Spec §2.4）。on_step 用于停机点墙钟记账（§2.6）。"""
     check_code_freeze()
     print(f"\n已就绪：{ep_dir.name}")
     print("输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。")
@@ -524,6 +594,7 @@ def run_repl(ep_dir: Path) -> int:
     while True:
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
+        on_step(status.current_step)
 
         try:
             line = input(f"\nava [{ep_dir.name}] ({scope}) > ").strip()
@@ -563,7 +634,7 @@ def run_repl(ep_dir: Path) -> int:
             continue
 
         if line == "/voice":
-            run_voice_loop(ep_dir)
+            run_voice_session(ep_dir)
             continue
 
         if line == "/patch":
@@ -710,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[FAIL] {outcome['message']}", file=sys.stderr)
             return outcome["returncode"] or 0
         if sub_cmd == "/voice":
-            return run_voice_loop(ep_dir)
+            return run_voice_session(ep_dir)
         if sub_cmd == "/patch":
             print(f"[*] 直达临时补料模式 (PR3)...")
             return 0

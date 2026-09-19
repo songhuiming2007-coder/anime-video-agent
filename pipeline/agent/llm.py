@@ -72,7 +72,17 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
 
 
 def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
-    """降级输出：打开文件 + 打印 checklist，不假装有 LLM 在场。"""
+    """降级输出：打开文件 + 打印 checklist，不假装有 LLM 在场。清单随 scope 变。"""
+    if scope == "creative":
+        steps = (
+            "  1. 01-topic.md：番 / 类型 / 锚点 / 张力 是否填齐（张力是唯一编辑判断，不许代填）；\n"
+            "  2. 02-script.draft.md：写完跑 `python -m pipeline.check_script` 至全绿；\n"
+        )
+    else:
+        steps = (
+            f"  1. 本 scope（{scope}）的清单见 docs/WORKFLOW.md 与对应 runbook，逐条人工核对；\n"
+            "  2. 机器步骤用 `ava <期> /run <命令>` 推进（先回显、按 y 执行）；\n"
+        )
     return {
         "role": "assistant",
         "degraded": True,
@@ -80,8 +90,7 @@ def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
         "content": (
             f"[降级模式·本地纯指示] LLM 不可用（{reason}）。\n"
             f"本回合不生成内容，请人工按 {scope} scope 的清单逐条走：\n"
-            "  1. 01-topic.md：番 / 类型 / 锚点 / 张力 是否填齐（张力是唯一编辑判断，不许代填）；\n"
-            "  2. 02-script.draft.md：写完跑 `python -m pipeline.check_script` 至全绿；\n"
+            f"{steps}"
             "  3. 到达人工停机点（02.5 / 03.5 / 05 / 09）必须停下等人拍板。"
         ),
     }
@@ -94,6 +103,7 @@ def chat_complete(
     config: LLMConfig | None = None,
     root: Path | None = None,
     timeout: int = REQUEST_TIMEOUT,
+    scope: str = "creative",
 ) -> dict[str, Any]:
     """发一次 chat/completions，返回 `choices[0].message`。
 
@@ -101,7 +111,7 @@ def chat_complete(
     """
     cfg = config if config is not None else load_llm_config(root)
     if cfg is None:
-        return local_directive_message("creative", "缺少 config/agent.json 或环境变量密钥")
+        return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
 
     payload: dict[str, Any] = {"model": cfg.model, "messages": messages}
     if tools:
@@ -175,7 +185,7 @@ def run_tool_loop(
     tool_calls_made = 0
 
     for iteration in range(1, max_iterations + 1):
-        reply = chat_complete(convo, tools=tools or None, config=cfg)
+        reply = chat_complete(convo, tools=tools or None, config=cfg, scope=context.scope)
         convo.append(reply)
 
         calls = reply.get("tool_calls") or []

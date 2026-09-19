@@ -291,6 +291,13 @@ def sys_python() -> str:
 # （B3-r6）。改这张表 = 改护栏，不是普通配置。
 # ---------------------------------------------------------------------------
 
+# read_artifact 的读域硬排除（Spec §2.5 Y2-r19）：03-audio/（音频与 manifest）与
+# 补丁池素材物理上就在期目录里，但属「一律不出网」清单——读域该拒的必须在这里拒，
+# 不能靠发送前的字符串断言补漏（漏一个文件名就是一次静默出网）。
+# 同理只放行文本类后缀，二进制产物连读出都不给。
+READ_DENY_PARTS = frozenset({"03-audio", "04-patch"})
+READ_ALLOWED_SUFFIXES = frozenset({".md", ".txt", ".json", ".patch", ".log"})
+
 MAX_READ_BYTES = 200_000      # read_artifact 单次读出上限
 MAX_NOTE_BYTES = 1_000_000    # search_notes 单文件扫描上限
 MAX_NOTE_LIMIT = 20           # search_notes 命中条数上限
@@ -319,7 +326,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "name": "read_artifact",
         "description": (
             "读取当期目录内文件或 data/library/ 下的笔记（只读）。"
-            "读域写死：期目录内 + data/library/；越界必拒。"
+            "读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；"
+            "越界或非文本类必拒。"
         ),
         "parameters": {
             "type": "object",
@@ -376,8 +384,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "run_pipeline": {
         "name": "run_pipeline",
         "description": (
-            "校验并执行白名单内的 pipeline 子命令（如 tts --redo 3）。"
-            "执行前必须有人类确认；--force/--force-all/cloud exec 一律拒收。"
+            "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回待执行 argv。"
+            "**本工具不会自行执行**：执行只发生在宿主 REPL 由人类确认并走 /run 时；"
+            "--force/--force-all/cloud exec 一律拒收。"
         ),
         "parameters": {
             "type": "object",
@@ -441,13 +450,17 @@ def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
 
 
 def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """读域写死：期目录内 + data/library/ 只读（Spec §2.5 B1-r7）。"""
+    """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。"""
     raw = str(args.get("path", "")).strip()
     if not raw:
         raise ValueError("path 不能为空")
     rel = Path(raw)
     if rel.is_absolute() or ".." in rel.parts:
         raise PermissionError(f"越界读被拒（只读期目录内与 data/library/）: {raw}")
+    if rel.suffix.lower() not in READ_ALLOWED_SUFFIXES:
+        raise PermissionError(
+            f"只读文本类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}"
+        )
 
     candidates: list[Path] = []
     if ctx.episode_dir:
@@ -458,6 +471,12 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     roots = _allowed_read_roots(ctx)
     for cand in candidates:
         target = cand.resolve()
+        # 判 resolve 后的绝对路径：软链接绕进 03-audio 同样拦下
+        denied = READ_DENY_PARTS.intersection(target.parts)
+        if denied:
+            raise PermissionError(
+                f"读域硬排除 {sorted(denied)[0]}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
+            )
         if not any(target == r or r in target.parents for r in roots):
             continue
         if target.is_file():
@@ -525,8 +544,12 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
         confirmed=ctx.confirmed,
     )
     if outcome["ok"] and outcome["returncode"] is None and not ctx.confirmed:
-        # 只校验未执行：报「待人类确认」，不假装跑过了（静默 fallback 是家规禁项）。
-        return {"pending_confirmation": True, "argv": outcome["argv"]}
+        # 只校验未执行：显式报「需人类确认」，不假装跑过了（静默 fallback 是家规禁项）。
+        return {
+            "ok": False,
+            "error": "需人类确认：本工具只校验并回显 argv，执行请由人在宿主 REPL 用 /run 确认",
+            "argv": outcome["argv"],
+        }
     return outcome
 
 
