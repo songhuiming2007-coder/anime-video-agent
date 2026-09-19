@@ -61,13 +61,17 @@ def _strip_episode_prefix(command: str | None, ep_dir: Path) -> str:
     return re.sub(r"\s+", " ", cleaned).strip() or "无"
 
 
-def build_status_card(ep_dir: Path | str, status: EpisodeStatus | None = None) -> str:
+def build_status_card(
+    ep_dir: Path | str,
+    status: EpisodeStatus | None = None,
+    scope: str | None = None,
+) -> str:
     """构建注入 system prompt 的紧凑状态卡（纯函数，目标 ≤ 400 字符）。"""
     d = Path(ep_dir).resolve()
     if status is None:
         status = inspect_episode(d)
 
-    scope = scope_of(status)
+    effective_scope = scope or scope_of(status)
     name = status.episode_name or d.name
     step = status.current_step
     blocked_str = "是" if status.is_blocked else "否"
@@ -99,7 +103,7 @@ def build_status_card(ep_dir: Path | str, status: EpisodeStatus | None = None) -
 
     card = (
         f"[状态卡]\n"
-        f"期名: {name} | 工序: {step} | 阻塞: {blocked_str} | scope: {scope} | 人时: {ht_min:.1f}m\n"
+        f"期名: {name} | 工序: {step} | 阻塞: {blocked_str} | scope: {effective_scope} | 人时: {ht_min:.1f}m\n"
         f"推荐命令: {next_cmd}\n"
         f"产物: {checklist}\n"
         f"提示: {advisories_str}"
