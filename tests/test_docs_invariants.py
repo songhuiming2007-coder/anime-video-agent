@@ -166,3 +166,25 @@ def test_adrs_0018_0019_exist_with_reversal_conditions():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "ADR-0018" in readme, "README.md 缺少 ADR-0018 引用"
     assert "ADR-0019" in readme, "README.md 缺少 ADR-0019 引用"
+
+
+def test_discredited_budget_not_active_rule():
+    """已被否证的「每期人类投入 ≤ 10 分钟」不得在现行核心规程（README/STANDARD/AGENTS）中充当活规则"""
+    for rel_path in ["README.md", "docs/dev/STANDARD.md", "AGENTS.md"]:
+        content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        assert "每期人类投入 ≤ 10 分钟" not in content, (
+            f"{rel_path} 仍包含已被实践否证的活规则「每期人类投入 ≤ 10 分钟」"
+        )
+        assert "k × 片长" in content, f"{rel_path} 缺少新预算口径「k × 片长」"
+
+
+def test_runbook_04_patch_anchor_syntax():
+    """runbook 04 的补丁锚点示例必须无方括号（避免 _parse_anchor literal 匹配失败）"""
+    clips_doc = (REPO_ROOT / "docs/runbook/04-clips.md").read_text(encoding="utf-8")
+    assert "锚点: EGOIST--patch SP03 1:20" in clips_doc, (
+        "docs/runbook/04-clips.md 缺少对齐 spec 的无括号锚点示例"
+    )
+    assert "[-patch]" not in clips_doc and "[EGOIST-ep3-patch]" not in clips_doc, (
+        "docs/runbook/04-clips.md 的补丁锚点不得带方括号（会被 clips._parse_anchor 当字面量比对失败）"
+    )
+
