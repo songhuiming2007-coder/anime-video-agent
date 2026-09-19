@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import re
 import shlex
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -328,6 +332,7 @@ class ToolContext:
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "read_artifact": {
         "name": "read_artifact",
+        "side_effect": False,
         "description": (
             "读取当期目录内文件或 data/library/ 下的笔记（只读）。"
             "读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；"
@@ -371,11 +376,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "list_episodes": {
         "name": "list_episodes",
+        "side_effect": False,
         "description": "列出可见期目录（排除 . 与 _ 前缀）。无参数。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "read_status": {
         "name": "read_status",
+        "side_effect": False,
         "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
         "parameters": {
             "type": "object",
@@ -403,6 +410,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "search_notes": {
         "name": "search_notes",
+        "side_effect": False,
         "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
         "parameters": {
             "type": "object",
@@ -439,7 +447,8 @@ def build_tool_schemas(scope: str, root: Path | None = None) -> list[dict[str, A
                 f"tools.json 声明了未注册的工具 '{name}'；工具清单不现场发明（Spec §2.5 B3-r6），"
                 f"已注册: {sorted(TOOL_SCHEMAS)}"
             )
-        schemas.append({"type": "function", "function": TOOL_SCHEMAS[name]})
+        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k != "side_effect"}
+        schemas.append({"type": "function", "function": fn_schema})
     return schemas
 
 
@@ -644,6 +653,29 @@ def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> di
     return {"ok": True, "result": result}
 
 
+class _TailBuffer:
+    def __init__(self, max_bytes: int = 4096) -> None:
+        self.max_bytes = max_bytes
+        self.chunks: collections.deque[bytes] = collections.deque()
+        self.current_bytes = 0
+        self.total_bytes = 0
+
+    def append(self, chunk: bytes) -> None:
+        self.total_bytes += len(chunk)
+        self.chunks.append(chunk)
+        self.current_bytes += len(chunk)
+        while self.current_bytes > self.max_bytes * 2 and len(self.chunks) > 1:
+            dropped = self.chunks.popleft()
+            self.current_bytes -= len(dropped)
+
+    def get_tail(self) -> tuple[str, bool]:
+        full = b"".join(self.chunks)
+        truncated = self.total_bytes > self.max_bytes
+        if len(full) > self.max_bytes:
+            full = full[-self.max_bytes:]
+        return full.decode("utf-8", errors="replace"), truncated
+
+
 def run_pipeline(
     command: str | list[str],
     episode_dir: Path | str | None = None,
@@ -651,25 +683,97 @@ def run_pipeline(
     scope: str = "pipeline",
     confirmed: bool = False,
 ) -> dict[str, Any]:
-    """白名单执行器的唯一入口（Spec §2.4）：校验 → 回显 → 人类确认后才真跑。
+    """白名单执行器的唯一入口（Spec §2.4, §3.3）：校验 → 回显 → 人类确认后才真跑。
 
     `confirmed=False` 只返回待执行 argv（REPL 回显用）。`/run` 与 LLM 工具表都
     走这里，避免两处实现分叉。
+    执行改用 Popen 双管排水 + 实时透传终端 + 尾环缓冲回喂。
     """
     valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=episode_dir)
     if not valid:
-        return {"ok": False, "message": msg, "argv": [], "returncode": None}
+        return {
+            "ok": False,
+            "message": msg,
+            "argv": [],
+            "returncode": None,
+            "duration_s": 0.0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "truncated": False,
+        }
     if not confirmed:
-        return {"ok": True, "message": "待人类确认", "argv": argv, "returncode": None}
+        return {
+            "ok": True,
+            "message": "待人类确认",
+            "argv": argv,
+            "returncode": None,
+            "duration_s": 0.0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "truncated": False,
+        }
+
+    t_start = time.time()
     try:
-        res = subprocess.run(argv, cwd=paths.ROOT)
+        proc = subprocess.Popen(
+            argv,
+            cwd=paths.ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
     except FileNotFoundError as exc:
         return {
-            "ok": False, "message": f"执行器未找到: {exc}", "argv": argv, "returncode": None,
+            "ok": False,
+            "message": f"执行器未找到: {exc}",
+            "argv": argv,
+            "returncode": None,
+            "duration_s": 0.0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "truncated": False,
         }
+
+    stdout_buf = _TailBuffer(4096)
+    stderr_buf = _TailBuffer(4096)
+
+    def _drain(pipe: Any, buf: _TailBuffer, is_stderr: bool) -> None:
+        target_stream = sys.stderr if is_stderr else sys.stdout
+        try:
+            for raw_line in iter(pipe.readline, b""):
+                text = raw_line.decode("utf-8", errors="replace")
+                try:
+                    target_stream.write(text)
+                    target_stream.flush()
+                except Exception:
+                    pass
+                buf.append(raw_line)
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))
+    t_out.start()
+    t_err.start()
+
+    retcode = proc.wait()
+    t_out.join()
+    t_err.join()
+    duration_s = time.time() - t_start
+
+    stdout_tail, out_trunc = stdout_buf.get_tail()
+    stderr_tail, err_trunc = stderr_buf.get_tail()
+    truncated = out_trunc or err_trunc
+
     return {
-        "ok": res.returncode == 0,
-        "message": f"退出码 {res.returncode}",
+        "ok": retcode == 0,
+        "message": f"退出码 {retcode}",
         "argv": argv,
-        "returncode": res.returncode,
+        "returncode": retcode,
+        "duration_s": round(duration_s, 2),
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "truncated": truncated,
     }
