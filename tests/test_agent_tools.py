@@ -81,6 +81,18 @@ def test_write_episode_file_rejects_repo_root_and_system_tmp(fake_repo):
         write_episode_file(Path("/tmp"), "02-script.draft.md", "bad", scope="creative")
 
 
+def test_write_episode_file_fail_closed_when_episodes_root_missing(tmp_path: Path, monkeypatch):
+    """外置盘未挂载（data/episodes 不存在）时必须 fail-closed 拒绝写入 (🟡 新1)。"""
+    from pipeline import paths
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    # 不创建 tmp_path / data / episodes
+    arbitrary_dir = tmp_path / "somewhere" / "01"
+    arbitrary_dir.mkdir(parents=True)
+
+    with pytest.raises(PermissionError, match="不可达"):
+        write_episode_file(arbitrary_dir, "02-script.draft.md", "bad", scope="creative")
+
+
 def test_write_episode_file_rejects_non_creative_scope(fake_repo):
     """pipeline 与 asset scope 拥有零写权限。"""
     _, ep_dir = fake_repo
