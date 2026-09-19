@@ -207,7 +207,10 @@ def run_tool_loop(
             if approve is not None and not approve(name, args):
                 outcome: dict[str, Any] = {"ok": False, "error": "人类拒绝执行该工具调用"}
             else:
-                outcome = execute_tool(name, args, context)
+                # 人类已在终端按 y 显式批准，本次执行的上下文具备 confirmed=True
+                from dataclasses import replace
+                exec_ctx = replace(context, confirmed=True) if approve is not None else context
+                outcome = execute_tool(name, args, exec_ctx)
 
             convo.append({
                 "role": "tool",
