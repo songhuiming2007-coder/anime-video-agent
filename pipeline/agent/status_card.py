@@ -243,10 +243,17 @@ def render_approval_card(
 
     danger_str = " ".join(danger_tags) if danger_tags else "无"
 
+    # 解封物判定（🔵 终审：review --approve 产出 04-clips.approved.json，非「只读产物」）
+    is_review_approve = _matches_flag_prefix(all_tokens, "--approve") and (
+        "review" in cmd_str or any("review" in t for t in argv_list)
+    )
+
     if is_cloud:
         nature = "☁ 云端计费动作（计费审批）"
     elif is_render:
         nature = "本地成片渲染 | 预计耗时较长（分钟级）"
+    elif is_review_approve:
+        nature = "产生解封物（推进工序，不可回退）"
     else:
         nature = "本地只读产物生成 | 预计分钟级"
 
@@ -266,8 +273,12 @@ def log_approval_decision(
     tool_name: str,
     target: str,
     decision: str,
+    latency_s: float | None = None,
 ) -> None:
     """追加一行审批记录到期目录 _agent/approvals.jsonl（Spec §3.2-6, §5 M17）。
+
+    `latency_s` = 卡片弹出→人类按键的决策耗时（秒）。它是 §7-1「秒按 y」
+    审批疲劳判据的唯一可读量：只有卡片时间戳无法区分「秒敲」与「读完后敲」。
 
     .jsonl 后缀天然在读域白名单外，不进读域。
     """
@@ -285,6 +296,7 @@ def log_approval_decision(
             "target": target,
             "command": target,
             "decision": norm_decision,
+            "decision_latency_s": round(latency_s, 3) if latency_s is not None else None,
         }
         with log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

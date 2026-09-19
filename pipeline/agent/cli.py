@@ -609,14 +609,16 @@ def _default_approve(
     target_str = " ".join(argv) if argv else str(args.get("filename", "") or args.get("command", ""))
 
     print(f"\n{card}", end="")
+    t_card = time.time()
     try:
         ans = input().strip().lower()
     except EOFError:
         ans = "n"
+    latency_s = time.time() - t_card
 
     norm_decision = "y" if ans == "y" else "n"
     if ep_dir:
-        log_approval_decision(ep_dir, name, target_str, norm_decision)
+        log_approval_decision(ep_dir, name, target_str, norm_decision, latency_s=latency_s)
 
     if ans == "y":
         return (True, "")
@@ -906,15 +908,17 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
                 cmd_str = " ".join(outcome["argv"])
                 print(f"\n  待执行: {cmd_str}")
                 print(card, end="")
+                t_card = time.time()
                 try:
                     confirm = input().strip().lower()
                 except EOFError:
                     print("\n[CANCEL] 已取消执行")
-                    log_approval_decision(ep_dir, "run_pipeline", cmd_str, "n")
+                    log_approval_decision(ep_dir, "run_pipeline", cmd_str, "n", latency_s=time.time() - t_card)
                     continue
 
+                latency_s = time.time() - t_card
                 norm_confirm = "y" if confirm == "y" else "n"
-                log_approval_decision(ep_dir, "run_pipeline", cmd_str, norm_confirm)
+                log_approval_decision(ep_dir, "run_pipeline", cmd_str, norm_confirm, latency_s=latency_s)
                 if confirm != "y":
                     print("[CANCEL] 已取消执行")
                     continue

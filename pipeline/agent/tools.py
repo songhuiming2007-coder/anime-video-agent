@@ -397,8 +397,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "run_pipeline": {
         "name": "run_pipeline",
         "description": (
-            "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回待执行 argv。"
-            "**本工具不会自行执行**：执行只发生在宿主 REPL 由人类确认并走 /run 时；"
+            "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回规范化 argv。"
+            "**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，"
+            "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
         ),
         "parameters": {
