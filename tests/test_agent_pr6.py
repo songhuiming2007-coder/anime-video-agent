@@ -122,6 +122,22 @@ def test_m14_render_approval_card_write_new_file_no_danger():
     assert "危险标记: 无" in card
 
 
+def test_review_approve_nature_row_says_unlock_artifact():
+    """终审 🔵-4：review --approve 产出解封物，性质行不得写「本地只读产物生成」。"""
+    argv = [sys_python(), "-m", "pipeline.review", "data/episodes/01-test", "--approve"]
+    card = render_approval_card("run_pipeline", {"command": "review --approve"}, argv=argv)
+    assert "解封物" in card
+    assert "只读产物生成" not in card
+
+    # 非 --approve 的 review（预览态）仍属只读
+    plain = render_approval_card(
+        "run_pipeline",
+        {"command": "review"},
+        argv=[sys_python(), "-m", "pipeline.review", "data/episodes/01-test"],
+    )
+    assert "解封物" not in plain
+
+
 # ===========================================================================
 # 2. M3: 审批拦截、tuple 签归一化与零副作用验收
 # ===========================================================================
@@ -500,6 +516,25 @@ def test_m17_approval_decision_appends_to_approvals_jsonl(tmp_path: Path, monkey
     assert rec2["tool"] == "write_episode_file"
     assert rec2["decision"] == "n"
     assert rec2["target"] == "02-script.draft.md"
+
+
+def test_m17_latency_records_card_to_keypress_delay(tmp_path: Path, monkeypatch):
+    """终审 🟡-2：记账必须带卡片→按键的决策耗时，否则 §7-1「秒按 y」不可观测。"""
+    # 1. 显式传入的耗时被量化入库
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    log_approval_decision(ep_dir, "run_pipeline", "python -m pipeline.clips", "y", latency_s=0.372)
+    rec = json.loads((ep_dir / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").strip())
+    assert rec["decision_latency_s"] == 0.372
+
+    # 2. 走真 _default_approve：卡弹与人按键之间存在真实耗时读数
+    ep2 = tmp_path / "data" / "episodes" / "01-latency"
+    ep2.mkdir(parents=True)
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    cli._default_approve("write_episode_file", {"filename": "01-topic.md"}, ep_dir=ep2, scope="creative")
+    rec2 = json.loads((ep2 / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").strip())
+    assert isinstance(rec2["decision_latency_s"], float)
+    assert rec2["decision_latency_s"] >= 0.0
 
 
 def test_repl_run_cloud_up_shows_card_and_records_approval(tmp_path: Path, monkeypatch, capsys):
