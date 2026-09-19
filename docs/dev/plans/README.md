@@ -19,6 +19,7 @@
 | [v2 云端 GPU 重构](2026-09-08-v2-cloud-gpu-reconstruction.md) | B1, B2, D1, D2, D4, D5, D6, D22, D23, D25 | ADR-0014, ADR-0003, ADR-0005, ADR-0006 | **全局收束施工图**，M1/M2a/M2b/M2.5 已交付，进至 M3 |
 | [v2 系统架构设计](2026-09-10-v2-architecture-design.md) | B1, B2, B3, D1, D2, D4, D5, D6, D22, D23, D24, D25 | ADR-0014, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0010~0013 | v2 架构落地层（7 大子系统设计），核心能力已在 M1~M2.5 交付落地 |
 | [M2b 服务对象修正：番剧域 → 素材池](2026-09-11-m2b-pool-scope.md) | D4 / D5 / D6 / B1 | ADR-0015, ADR-0003, ADR-0008, ADR-0016 | **已执行并验收**（commit `b257e6d`，2026-09-11） |
+| [ava-agent 架构设计与闭环控制](2026-09-18-ava-agent-harness.md) | B2 / B3 / D10 / D23 | ADR-0006, ADR-0014, ADR-0015, ADR-0017 | **已立项，待开工** |
 
 ---
 

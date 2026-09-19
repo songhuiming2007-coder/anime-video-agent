@@ -80,7 +80,7 @@ pytest
 | **02** | **脚本写作** | Agent | 调 `skills/write-script` 查证写稿并运行：<br>`python -m pipeline.check_script data/episodes/<期号>/02-script.md` | 产出 `02-script.md`，机检字数、起伏、节奏、锚点与查询接口 |
 | **02.5** | **人审改稿** | **人类** | 人工通读精修 `02-script.md` | 核验台词原文、说话人与事实判断，去除模型套话 |
 | **03** | **语音合成** | Agent / 机器 | `python -m pipeline.tts data/episodes/<期号>` | 产出 `03-audio/`，Whisper 自动回读比对质检，复核实际时长 |
-| **03.5** | **配音顺听** | **人类** | 人耳抽检开头与最长段音频 | 确认无严重电音、发飘或漏读 |
+| **03.5** | **配音顺听** | **人类** | 顺听 + /voice 纠错（可选深挖） | 三项抽检（开头/最长/生僻词），纠错写入 corrections.json 经 --apply-patch 靶向重配 |
 | **04** | **素材排片** | Agent / 机器 | `python -m pipeline.clips data/episodes/<期号>` | 产出 `04-clips.json`。通过锚点直通 / 台词语义 / 画面 VLM 全局贪心分派 |
 | **05** | **审时间码** | **人类** | `python -m pipeline.review data/episodes/<期号>`<br>浏览器打开 `04-review.html` 确认无误后执行：<br>`python -m pipeline.review data/episodes/<期号> --approve` | **核心人工质量闸门**：抽帧比对口播、画面与台词，拦截画外音错配 |
 | **06** | **本地渲染** | Agent / 机器 | `python -m pipeline.render data/episodes/<期号>` | 切片、拼装、混 BGM、烧录字幕、响度归一，输出 `05-final.mp4` |
@@ -98,7 +98,7 @@ pytest
 - **分工序标准操作 Runbook**：[`docs/runbook/`](docs/runbook/) —— 01–09 独立步骤操作手册（每篇 ≤60 行）；
 - **判据与质检标准定义**：[`docs/dev/STANDARD.md`](docs/dev/STANDARD.md) —— 所有量化门禁、评分与测试用例准则；
 - **文档全景索引表**：[`docs/INDEX.md`](docs/INDEX.md) —— 生产态与开发态双轨索引；
-- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）等核心决策；
+- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）等核心决策；
 - **Coding Agent 协作规范**：[`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) —— 人机红线、停机点与工程约定。
 
 ---

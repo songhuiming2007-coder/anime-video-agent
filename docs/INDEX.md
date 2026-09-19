@@ -14,7 +14,7 @@
 | 02 脚本写作与机检 | [`runbook/02-script.md`](runbook/02-script.md) | 调 skills/write-script 与 check_script 23 项机检 |
 | **02.5 人审改稿（停机点 1）** | [`runbook/02.5-human-review.md`](runbook/02.5-human-review.md) | 人工事实核验、精修与 diff 封板规程 |
 | 03 语音合成 | [`runbook/03-tts.md`](runbook/03-tts.md) | 增量合成、注音修复与防 `--force` 红线 |
-| **03.5 配音顺听（停机点 2）** | [`runbook/03.5-voice-check.md`](runbook/03.5-voice-check.md) | 人耳 2 分钟语速与发音抽检 |
+| **03.5 配音顺听（停机点 2）** | [`runbook/03.5-voice-check.md`](runbook/03.5-voice-check.md) | 顺听 + /voice 纠错（可选深挖，corrections.json / --apply-patch） |
 | 04 素材排片 | [`runbook/04-clips.md`](runbook/04-clips.md) | 三通道互斥分派与全局贪心占坑 |
 | **05 审时间码（停机点 3）** | [`runbook/05-timecode.md`](runbook/05-timecode.md) | 浏览器审片与 `--approve` 显式批准 |
 | 06 本地渲染 | [`runbook/06-render.md`](runbook/06-render.md) | 本地 ffmpeg 一趟出片与双重截取守卫 |
