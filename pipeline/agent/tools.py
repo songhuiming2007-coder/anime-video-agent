@@ -6,8 +6,10 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pipeline import paths
 from pipeline.cloud import validate_extra_args
@@ -54,6 +56,7 @@ def write_episode_file(
     content: str,
     scope: str = "creative",
     confirmed: bool = False,
+    root: Path | None = None,
 ) -> Path:
     """受控期文件写入工具（Spec §2.4 Code Freeze 护栏）。
 
@@ -76,12 +79,13 @@ def write_episode_file(
         )
 
     # 路径解析与双端 resolve 校验
+    base = Path(root or paths.ROOT)
     raw_ep = Path(episode_dir)
     resolved_ep = raw_ep.resolve()
     target_resolved = (raw_ep / clean_name).resolve()
 
     # 1. 拦截对 pipeline/ 源码目录的修改（优先触发 Code Freeze）
-    repo_pipeline = (paths.ROOT / "pipeline").resolve()
+    repo_pipeline = (base / "pipeline").resolve()
     if (
         repo_pipeline in target_resolved.parents
         or str(target_resolved).startswith(str(repo_pipeline))
@@ -91,10 +95,10 @@ def write_episode_file(
         raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
 
     # 2. 纵深防御（fail-closed，B4-r6）：期目录必须落在 data/episodes 之下
-    episodes_root = (paths.ROOT / "data" / "episodes").resolve()
+    episodes_root = (base / "data" / "episodes").resolve()
     if not episodes_root.exists():
         raise PermissionError(f"data/episodes 不可达（外置盘未挂载？），拒绝写入: {episodes_root}")
-    if resolved_ep == (paths.ROOT).resolve() or resolved_ep == Path("/tmp").resolve():
+    if resolved_ep == base.resolve() or resolved_ep == Path("/tmp").resolve():
         raise PermissionError(f"禁止将仓库根或 /tmp 作为期目录写入: {resolved_ep}")
     if resolved_ep == episodes_root or episodes_root not in resolved_ep.parents:
         raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
@@ -278,3 +282,348 @@ def assert_egress_boundary(endpoint: str, content: Any) -> None:
 def sys_python() -> str:
     import sys
     return sys.executable
+
+
+# ---------------------------------------------------------------------------
+# LLM 面向的受控工具表与业务实现（Spec §2.4/§2.5, §5 PR4）
+#
+# 工具清单不现场发明：config/agent/tools.json 是白名单，本表是它们的唯一实现
+# （B3-r6）。改这张表 = 改护栏，不是普通配置。
+# ---------------------------------------------------------------------------
+
+MAX_READ_BYTES = 200_000      # read_artifact 单次读出上限
+MAX_NOTE_BYTES = 1_000_000    # search_notes 单文件扫描上限
+MAX_NOTE_LIMIT = 20           # search_notes 命中条数上限
+NOTE_SUFFIXES = {".md", ".txt"}
+
+
+@dataclass
+class ToolContext:
+    """一次工具执行的会话上下文。
+
+    scope 决定白名单；episode_dir 决定读/写边界。**读域与写域都从上下文绑定，
+    不取 LLM 传来的参数**——参数由模型填，边界由人定。
+    """
+    scope: str = "creative"
+    episode_dir: Path | None = None
+    root: Path | None = None
+    confirmed: bool = False
+
+    @property
+    def base(self) -> Path:
+        return Path(self.root or paths.ROOT)
+
+
+TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "read_artifact": {
+        "name": "read_artifact",
+        "description": (
+            "读取当期目录内文件或 data/library/ 下的笔记（只读）。"
+            "读域写死：期目录内 + data/library/；越界必拒。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    "write_episode_file": {
+        "name": "write_episode_file",
+        "description": (
+            "写入当期稿件文件。仅限 01-topic.md 与 02-script.draft.md；"
+            "写 01-topic.md 必须 confirmed=true 且需人在 REPL 显式确认。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "enum": sorted(CREATIVE_WRITABLE_FILES),
+                    "description": "白名单内的文件名",
+                },
+                "content": {"type": "string", "description": "完整文件内容"},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "写 01-topic.md 时必须为 true（人类已确认）",
+                },
+            },
+            "required": ["filename", "content"],
+            "additionalProperties": False,
+        },
+    },
+    "list_episodes": {
+        "name": "list_episodes",
+        "description": "列出可见期目录（排除 . 与 _ 前缀）。无参数。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "read_status": {
+        "name": "read_status",
+        "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "episode": {"type": "string", "description": "期号或期目录路径；省略则用当期"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "run_pipeline": {
+        "name": "run_pipeline",
+        "description": (
+            "校验并执行白名单内的 pipeline 子命令（如 tts --redo 3）。"
+            "执行前必须有人类确认；--force/--force-all/cloud exec 一律拒收。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "如 'tts --redo 3' 或 'clips'"},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+    "search_notes": {
+        "name": "search_notes",
+        "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索词"},
+                "limit": {"type": "integer", "description": "最多返回几条（默认 5，上限 20）"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def tool_names_for_scope(scope: str, root: Path | None = None) -> list[str]:
+    """读 config/agent/tools.json 里该 scope 的能力表。
+
+    缺键 = 空表（asset scope 的显式空表语义）；读取失败也不静默扩张，一样是空表。
+    """
+    from pipeline.agent.scopes import load_scope
+    return list(load_scope(scope, root).tools)
+
+
+def build_tool_schemas(scope: str, root: Path | None = None) -> list[dict[str, Any]]:
+    """把 scope 白名单翻译成 OpenAI tools 参数。
+
+    tools.json 里出现未注册的名字 = 配置与实现分叉，当场报错而不是静默跳过
+    （静默跳过会让护栏看起来还在，实际已经漏了）。
+    """
+    schemas: list[dict[str, Any]] = []
+    for name in tool_names_for_scope(scope, root):
+        if name not in TOOL_SCHEMAS:
+            raise KeyError(
+                f"tools.json 声明了未注册的工具 '{name}'；工具清单不现场发明（Spec §2.5 B3-r6），"
+                f"已注册: {sorted(TOOL_SCHEMAS)}"
+            )
+        schemas.append({"type": "function", "function": TOOL_SCHEMAS[name]})
+    return schemas
+
+
+def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
+    roots: list[Path] = []
+    if ctx.episode_dir:
+        roots.append(Path(ctx.episode_dir).resolve())
+    library = (ctx.base / "data" / "library").resolve()
+    if library.exists():
+        roots.append(library)
+    return roots
+
+
+def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """读域写死：期目录内 + data/library/ 只读（Spec §2.5 B1-r7）。"""
+    raw = str(args.get("path", "")).strip()
+    if not raw:
+        raise ValueError("path 不能为空")
+    rel = Path(raw)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise PermissionError(f"越界读被拒（只读期目录内与 data/library/）: {raw}")
+
+    candidates: list[Path] = []
+    if ctx.episode_dir:
+        candidates.append(Path(ctx.episode_dir) / rel)
+    candidates.append(ctx.base / "data" / "library" / rel)
+    candidates.append(ctx.base / "data" / "library" / "notes" / rel)
+
+    roots = _allowed_read_roots(ctx)
+    for cand in candidates:
+        target = cand.resolve()
+        if not any(target == r or r in target.parents for r in roots):
+            continue
+        if target.is_file():
+            size = target.stat().st_size
+            with target.open("rb") as fh:
+                blob = fh.read(MAX_READ_BYTES)
+            return {
+                "path": str(target),
+                "text": blob.decode("utf-8", errors="replace"),
+                "truncated": size > MAX_READ_BYTES,
+            }
+    raise FileNotFoundError(f"文件不存在或不在读域内: {raw}（只读期目录内与 data/library/）")
+
+
+def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if not ctx.episode_dir:
+        raise PermissionError("未绑定当期目录，拒绝写入")
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        raise ValueError("content 必须是字符串")
+    filename = str(args.get("filename", "")).strip()
+    confirmed = bool(args.get("confirmed", False)) or ctx.confirmed
+    target = write_episode_file(
+        ctx.episode_dir, filename, content, scope=ctx.scope, confirmed=confirmed, root=ctx.root
+    )
+    return {"written": str(target), "bytes": len(content.encode("utf-8"))}
+
+
+def _tool_list_episodes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.cli import get_episodes_list
+    episodes, hidden = get_episodes_list(root=ctx.root)
+    return {"episodes": [ep.name for ep in episodes], "hidden_underscore": hidden}
+
+
+def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.status import format_status, inspect_episode
+
+    target = str(args.get("episode", "")).strip()
+    if target:
+        from pipeline.agent.cli import resolve_episode_target
+        ep_dir = resolve_episode_target(target)
+        if ep_dir is None:
+            raise FileNotFoundError(f"期目录不存在: {target}")
+    elif ctx.episode_dir:
+        ep_dir = Path(ctx.episode_dir).resolve()
+    else:
+        raise ValueError("未指定期，且当前会话未绑定期目录")
+
+    status = inspect_episode(ep_dir)
+    return {
+        "episode": status.episode_name,
+        "current_step": status.current_step,
+        "is_blocked": status.is_blocked,
+        "next_command": status.next_command,
+        "advisories": status.advisories,
+        "card": format_status(status),
+    }
+
+
+def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    outcome = run_pipeline(
+        str(args.get("command", "")),
+        episode_dir=ctx.episode_dir,
+        scope=ctx.scope,
+        confirmed=ctx.confirmed,
+    )
+    if outcome["ok"] and outcome["returncode"] is None and not ctx.confirmed:
+        # 只校验未执行：报「待人类确认」，不假装跑过了（静默 fallback 是家规禁项）。
+        return {"pending_confirmation": True, "argv": outcome["argv"]}
+    return outcome
+
+
+def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    query = str(args.get("query", "")).strip()
+    if not query:
+        raise ValueError("query 不能为空")
+    try:
+        limit = int(args.get("limit", 5))
+    except (TypeError, ValueError):
+        raise ValueError("limit 必须是整数") from None
+    limit = max(1, min(limit, MAX_NOTE_LIMIT))
+
+    library = (ctx.base / "data" / "library")
+    if not library.exists():
+        return {"query": query, "hits": [], "note": "data/library/ 不可达（外置盘未挂载？）"}
+
+    needle = query.lower()
+    hits: list[dict[str, str]] = []
+    for path in sorted(library.rglob("*")):
+        if len(hits) >= limit:
+            break
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix.lower() not in NOTE_SUFFIXES:
+            continue
+        if path.stat().st_size > MAX_NOTE_BYTES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        idx = text.lower().find(needle)
+        if idx < 0:
+            continue
+        snippet = text[max(0, idx - 80): idx + len(query) + 160].replace("\n", " ").strip()
+        hits.append({"path": str(path.relative_to(library)), "snippet": snippet})
+
+    return {"query": query, "hits": hits, "truncated": len(hits) >= limit}
+
+
+_TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
+    "read_artifact": _tool_read_artifact,
+    "write_episode_file": _tool_write_episode_file,
+    "list_episodes": _tool_list_episodes,
+    "read_status": _tool_read_status,
+    "run_pipeline": _tool_run_pipeline,
+    "search_notes": _tool_search_notes,
+}
+
+
+def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
+    """按 scope 白名单执行一个工具，返回可 JSON 化的结果（错误也当数据回喂 LLM）。
+
+    三层闸：① 名字已注册；② 在当前 scope 白名单内；③ 实现层自身边界（路径/确认）。
+    """
+    if name not in TOOL_SCHEMAS:
+        return {"ok": False, "error": f"未注册的工具 '{name}'（工具清单不现场发明）"}
+    allowed = tool_names_for_scope(ctx.scope, ctx.root)
+    if name not in allowed:
+        return {
+            "ok": False,
+            "error": f"工具 '{name}' 不在 {ctx.scope} scope 白名单内（当前放行: {allowed}）",
+        }
+    try:
+        result = _TOOL_IMPLS[name](dict(args or {}), ctx)
+    except (PermissionError, FileNotFoundError, ValueError, OSError) as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "result": result}
+
+
+def run_pipeline(
+    command: str | list[str],
+    episode_dir: Path | str | None = None,
+    *,
+    scope: str = "pipeline",
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """白名单执行器的唯一入口（Spec §2.4）：校验 → 回显 → 人类确认后才真跑。
+
+    `confirmed=False` 只返回待执行 argv（REPL 回显用）。`/run` 与 LLM 工具表都
+    走这里，避免两处实现分叉。
+    """
+    valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=episode_dir)
+    if not valid:
+        return {"ok": False, "message": msg, "argv": [], "returncode": None}
+    if not confirmed:
+        return {"ok": True, "message": "待人类确认", "argv": argv, "returncode": None}
+    try:
+        res = subprocess.run(argv, cwd=paths.ROOT)
+    except FileNotFoundError as exc:
+        return {
+            "ok": False, "message": f"执行器未找到: {exc}", "argv": argv, "returncode": None,
+        }
+    return {
+        "ok": res.returncode == 0,
+        "message": f"退出码 {res.returncode}",
+        "argv": argv,
+        "returncode": res.returncode,
+    }

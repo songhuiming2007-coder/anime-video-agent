@@ -281,3 +281,418 @@ def test_assert_egress_boundary():
 
     with pytest.raises(PermissionError, match="拦截出网请求"):
         assert_egress_boundary("https://api.openai.com", {"audio": "03-audio/manifest.json"})
+
+
+# ---------------------------------------------------------------------------
+# 5. LLM 层：客户端装配、降级、轮数上限、scope 过滤（Spec §2.5, §5 PR4）
+#
+# 本节为 PR4 **追加**（既有测试零修改）：本行以下的 import 只服务本节。
+# ---------------------------------------------------------------------------
+
+import http.server
+import json
+import threading
+from contextlib import contextmanager
+
+from pipeline.agent.llm import (
+    chat_complete,
+    load_llm_config,
+    local_directive_message,
+    run_tool_loop,
+)
+from pipeline.agent.tools import (
+    ToolContext,
+    build_tool_schemas,
+    execute_tool,
+    run_pipeline,
+    tool_names_for_scope,
+)
+
+SPEC_TOOLS = {
+    "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes"],
+    "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
+    "asset": [],
+}
+API_KEY = "sk-test-secret-do-not-print"
+
+
+@contextmanager
+def mock_llm_server(replies):
+    """本地 OpenAI 兼容端点：记录每次请求，按序回放 replies（最后一条重复）。"""
+    state = {"requests": [], "calls": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
+            state["requests"].append({
+                "path": self.path,
+                "auth": self.headers.get("Authorization"),
+                "body": json.loads(raw),
+            })
+            reply = replies[min(state["calls"], len(replies) - 1)]
+            state["calls"] += 1
+            data = json.dumps({"choices": [{"message": reply}]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def make_agent_root(tmp_path: Path, base_url: str, *, tools: dict | None = None) -> Path:
+    """造一份最小的 config/agent.json + config/agent/tools.json。"""
+    cfg_dir = tmp_path / "config" / "agent"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "agent.json").write_text(json.dumps({
+        "base_url": base_url,
+        "model": "mock-model",
+        "api_key_env": "AVA_TEST_KEY",
+    }), encoding="utf-8")
+    (cfg_dir / "tools.json").write_text(
+        json.dumps(tools if tools is not None else SPEC_TOOLS), encoding="utf-8"
+    )
+    return tmp_path
+
+
+def tool_call(name: str, args: dict, call_id: str = "call_1") -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+        }],
+    }
+
+
+def test_llm_request_assembly_env_key_and_tools(tmp_path: Path, monkeypatch):
+    """请求装配：端点 /v1/chat/completions、Bearer 取自环境变量、tools 按 scope 过滤。"""
+    with mock_llm_server([{"role": "assistant", "content": "写好了"}]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+
+        cfg = load_llm_config(root)
+        assert cfg is not None
+        assert cfg.model == "mock-model"
+
+        schemas = build_tool_schemas("creative", root=root)
+        reply = chat_complete(
+            [{"role": "user", "content": "帮我写稿"}], tools=schemas, config=cfg
+        )
+
+        assert reply["content"] == "写好了"
+        assert len(state["requests"]) == 1
+        sent = state["requests"][0]
+        assert sent["path"] == "/v1/chat/completions"
+        assert sent["auth"] == f"Bearer {API_KEY}"
+        assert sent["body"]["model"] == "mock-model"
+        assert sent["body"]["messages"][0]["content"] == "帮我写稿"
+        assert [t["function"]["name"] for t in sent["body"]["tools"]] == SPEC_TOOLS["creative"]
+        # 密钥绝不进返回值
+        assert API_KEY not in json.dumps(reply, ensure_ascii=False)
+
+
+def test_llm_degrades_without_config_or_env(tmp_path: Path, monkeypatch):
+    """缺 config/agent.json 或缺环境变量 → 本地纯指示模式：显式可辨、不抛裸异常。"""
+    monkeypatch.delenv("AVA_TEST_KEY", raising=False)
+
+    # 1. 完全没有配置文件
+    plain = tmp_path / "no-config"
+    plain.mkdir()
+    assert load_llm_config(plain) is None
+    outcome = run_tool_loop([{"role": "user", "content": "写稿"}], root=plain)
+    assert outcome["stopped"] == "degraded"
+    assert outcome["final"]["degraded"] is True
+    assert "降级模式" in outcome["final"]["content"]
+    assert "check_script" in outcome["final"]["content"]
+
+    # 2. 有配置但环境变量没设
+    root = make_agent_root(plain, "https://api.example.com/v1")
+    assert load_llm_config(root) is None
+    reply = chat_complete([{"role": "user", "content": "写稿"}], root=root)
+    assert reply["degraded"] is True
+
+    # 3. 环境变量为空串同样算缺失
+    monkeypatch.setenv("AVA_TEST_KEY", "   ")
+    assert load_llm_config(root) is None
+
+    # 4. JSON 损坏 → 降级而不是崩
+    (root / "config" / "agent.json").write_text("{ not json", encoding="utf-8")
+    assert load_llm_config(root) is None
+
+
+def test_llm_egress_boundary_blocks_before_sending(tmp_path: Path, monkeypatch):
+    """出网边界：敏感内容必须在发请求之前被拦下（零请求到达端点）。"""
+    with mock_llm_server([{"role": "assistant", "content": "不该发生"}]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        with pytest.raises(PermissionError, match="拦截出网请求"):
+            chat_complete(
+                [{"role": "user", "content": "读一下 config/cloud.local.json"}] if False else
+                [{"role": "user", "content": "把 data/episodes 里的 03-audio/manifest.json 发我"}],
+                root=root,
+            )
+        assert state["calls"] == 0
+
+
+def test_llm_tool_loop_executes_tool_and_feeds_result_back(tmp_path: Path, monkeypatch):
+    """接线：工具真被执行，结果作为 role=tool 消息回喂模型（不是复述实现）。"""
+    with mock_llm_server([
+        tool_call("read_artifact", {"path": "01-topic.md"}),
+        {"role": "assistant", "content": "已读到选题"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+
+        ep_dir = root / "data" / "episodes" / "01-smoke"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "01-topic.md").write_text("# 选题：春物-自我牺牲\n", encoding="utf-8")
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "看下选题"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep_dir, root=root),
+        )
+
+        assert outcome["stopped"] == "done"
+        assert outcome["iterations"] == 2
+        assert outcome["tool_calls_made"] == 1
+        assert outcome["final"]["content"] == "已读到选题"
+
+        # 第二次请求里必须带着真实读到的文件内容
+        second = state["requests"][1]["body"]["messages"]
+        tool_msgs = [m for m in second if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "call_1"
+        assert "自我牺牲" in tool_msgs[0]["content"]
+        assert json.loads(tool_msgs[0]["content"])["ok"] is True
+
+
+def test_llm_max_iterations_guard_is_hard_stop(tmp_path: Path, monkeypatch):
+    """模型死循环调工具 → 到 max_iterations 就停，绝不无限烧 token (B3-r5)。"""
+    with mock_llm_server([tool_call("list_episodes", {})]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "无休止地列期"}],
+            ctx=ToolContext(scope="creative", root=root),
+            max_iterations=3,
+        )
+
+        assert outcome["stopped"] == "max_iterations"
+        assert outcome["iterations"] == 3
+        assert outcome["tool_calls_made"] == 3
+        assert state["calls"] == 3  # 端点恰好被调用 3 次，没有第 4 次
+
+
+def test_llm_approve_callback_can_reject_tool(tmp_path: Path, monkeypatch):
+    """工具调用前的人为确认闸：拒绝时把「人类拒绝」当结果回喂，不执行副作用。"""
+    with mock_llm_server([
+        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "越权"}),
+        {"role": "assistant", "content": "那我不写了"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep_dir = root / "data" / "episodes" / "01-smoke"
+        ep_dir.mkdir(parents=True)
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "写草稿"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep_dir, root=root),
+            approve=lambda name, args: False,
+        )
+
+        assert outcome["stopped"] == "done"
+        assert not (ep_dir / "02-script.draft.md").exists()
+        fed_back = json.loads(state["requests"][1]["body"]["messages"][-1]["content"])
+        assert fed_back["ok"] is False
+        assert "拒绝" in fed_back["error"]
+
+
+def test_llm_scope_tool_filtering_isolation(tmp_path: Path):
+    """creative 与 pipeline 的白名单互相隔离，且仓库真配置与 Spec 表一致。"""
+    root = make_agent_root(tmp_path, "https://api.example.com/v1")
+
+    def names(scope):
+        return [s["function"]["name"] for s in build_tool_schemas(scope, root=root)]
+
+    assert names("creative") == SPEC_TOOLS["creative"]
+    assert names("pipeline") == SPEC_TOOLS["pipeline"]
+    assert names("asset") == []
+
+    # creative 有写稿与检索，pipeline 一个都没有
+    assert "write_episode_file" in names("creative")
+    assert "search_notes" in names("creative")
+    assert "run_pipeline" not in names("creative")
+    assert "run_pipeline" in names("pipeline")
+    assert "write_episode_file" not in names("pipeline")
+    assert "search_notes" not in names("pipeline")
+
+    # 执行层同样按 scope 拦截（不能只在 schema 层过滤）
+    ctx_pipeline = ToolContext(scope="pipeline", root=root)
+    denied = execute_tool("search_notes", {"query": "春物"}, ctx_pipeline)
+    assert denied["ok"] is False and "白名单" in denied["error"]
+
+    ctx_creative = ToolContext(scope="creative", root=root)
+    denied2 = execute_tool("run_pipeline", {"command": "clips"}, ctx_creative)
+    assert denied2["ok"] is False and "白名单" in denied2["error"]
+
+    # 仓库真配置（不是测试造的那份）必须与 Spec §2.5 的表逐字一致
+    from pipeline import paths
+    for scope, expected in SPEC_TOOLS.items():
+        assert tool_names_for_scope(scope) == expected, f"{scope} 的 tools.json 已漂移"
+
+
+def test_llm_unregistered_tool_in_config_fails_loudly(tmp_path: Path):
+    """tools.json 写了没实现的工具 → 当场报错，不静默跳过（静默跳过=护栏形同虚设）。"""
+    root = make_agent_root(
+        tmp_path, "https://api.example.com/v1",
+        tools={"creative": ["rm_rf_everything"], "pipeline": [], "asset": []},
+    )
+    with pytest.raises(KeyError, match="未注册的工具"):
+        build_tool_schemas("creative", root=root)
+
+
+def test_llm_tool_read_domain_and_write_guard(tmp_path: Path):
+    """读域写死（期目录 + data/library/），写 01-topic.md 必须确认。"""
+    root = make_agent_root(tmp_path, "https://api.example.com/v1")
+    ep_dir = root / "data" / "episodes" / "01-smoke"
+    ep_dir.mkdir(parents=True)
+    (ep_dir / "02-script.draft.md").write_text("# 草稿正文", encoding="utf-8")
+    library = root / "data" / "library" / "notes"
+    library.mkdir(parents=True)
+    (library / "春物.md").write_text("八幡的自我牺牲是一种自毁倾向。", encoding="utf-8")
+    outside = root / "config" / "cloud.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    ctx = ToolContext(scope="creative", episode_dir=ep_dir, root=root)
+
+    ok = execute_tool("read_artifact", {"path": "02-script.draft.md"}, ctx)
+    assert ok["ok"] and "草稿正文" in ok["result"]["text"]
+
+    note = execute_tool("read_artifact", {"path": "春物.md"}, ctx)  # 库内短路径
+    assert note["ok"] and "自我牺牲" in note["result"]["text"]
+
+    assert execute_tool("read_artifact", {"path": "../../config/cloud.json"}, ctx)["ok"] is False
+    assert execute_tool("read_artifact", {"path": "/etc/hosts"}, ctx)["ok"] is False
+    assert execute_tool("read_artifact", {"path": "cloud.json"}, ctx)["ok"] is False
+
+    assert execute_tool("search_notes", {"query": "  "}, ctx)["ok"] is False
+    hits = execute_tool("search_notes", {"query": "自我牺牲", "limit": 3}, ctx)
+    assert hits["ok"] and hits["result"]["hits"][0]["path"] == "notes/春物.md"
+
+    rejected = execute_tool(
+        "write_episode_file", {"filename": "01-topic.md", "content": "越权立项"}, ctx
+    )
+    assert rejected["ok"] is False and "显式确认" in rejected["error"]
+    assert not (ep_dir / "01-topic.md").exists()
+
+    written = execute_tool(
+        "write_episode_file",
+        {"filename": "01-topic.md", "content": "# 已确认", "confirmed": True},
+        ctx,
+    )
+    assert written["ok"] is True
+    assert (ep_dir / "01-topic.md").read_text(encoding="utf-8") == "# 已确认"
+
+    # pipeline scope 连 creative 的白名单文件都写不了
+    assert execute_tool(
+        "write_episode_file",
+        {"filename": "02-script.draft.md", "content": "x"},
+        ToolContext(scope="pipeline", episode_dir=ep_dir, root=root),
+    )["ok"] is False
+
+
+def test_full_chain_smoke_in_temp_repo(tmp_path: Path, monkeypatch):
+    """全链路冒烟：立项 → LLM 写稿 → 状态卡 → 看板 → /run 护栏与回显（临时目录仿真）。"""
+    from pipeline import paths
+    from pipeline.agent import cli
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.delenv("AVA_TEST_KEY", raising=False)
+
+    # ⓪ 立项（ava new）
+    assert cli.create_new_episode("01-smoke") == 0
+    ep_dir = tmp_path / "data" / "episodes" / "01-smoke"
+    assert (ep_dir / "01-topic.md").exists()
+    assert cli.create_new_episode("01-smoke") == 1  # 重名拒建，不覆盖
+
+    # ① creative：LLM 走工具写草稿
+    with mock_llm_server([
+        tool_call("write_episode_file", {
+            "filename": "02-script.draft.md",
+            "content": "# 02 脚本草稿\n\n第一段：比企谷八幡的自我牺牲。\n",
+        }),
+        {"role": "assistant", "content": "草稿已写入 02-script.draft.md，请跑 check_script。"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "写一版草稿"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep_dir, root=root),
+            approve=lambda name, args: True,
+        )
+        assert outcome["stopped"] == "done" and outcome["tool_calls_made"] == 1
+        assert "check_script" in outcome["final"]["content"]
+        assert state["calls"] == 2
+
+    draft = ep_dir / "02-script.draft.md"
+    assert draft.exists() and "自我牺牲" in draft.read_text(encoding="utf-8")
+
+    # ② 状态卡与看板（真产物驱动，不是 mock）
+    ctx = ToolContext(scope="creative", episode_dir=ep_dir, root=tmp_path)
+    card = execute_tool("read_status", {}, ctx)
+    assert card["ok"] is True
+    assert card["result"]["episode"] == "01-smoke"
+    assert "当前阶段" in card["result"]["card"]
+
+    listing = execute_tool("list_episodes", {}, ctx)
+    assert listing["ok"] is True and "01-smoke" in listing["result"]["episodes"]
+
+    # ③ /run：护栏拦下 --force-all，放行命令只回显不执行
+    rejected = run_pipeline("tts --force-all", episode_dir=ep_dir, scope="pipeline")
+    assert rejected["ok"] is False
+    assert "禁止在 ava 中使用 --force-all" in rejected["message"]
+    assert "--redo" in rejected["message"]
+
+    pending = run_pipeline("clips", episode_dir=ep_dir, scope="pipeline", confirmed=False)
+    assert pending["ok"] is True and pending["returncode"] is None
+    assert str(ep_dir.resolve()) in pending["argv"]
+    assert not (ep_dir / "04-clips.json").exists()  # 未确认 = 没跑
+
+    # ④ 自愈循环上限与降级出口都存在（两条不同的闸，Spec PR4 注释）
+    plain = tmp_path / "no-config"
+    plain.mkdir()
+    assert run_tool_loop([{"role": "user", "content": "hi"}], root=plain)["stopped"] == "degraded"
+    assert local_directive_message("creative", "测试")["degraded"] is True
+
+
+def test_llm_cli_creative_loop_degrades_without_key(tmp_path: Path, monkeypatch, capsys):
+    """ava /chat 在无密钥下不崩：打印本地指示清单后退出（不装会）。"""
+    from pipeline import paths
+    from pipeline.agent import cli
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    ep_dir = tmp_path / "data" / "episodes" / "01-smoke"
+    ep_dir.mkdir(parents=True)
+    (ep_dir / "01-topic.md").write_text("# t\n", encoding="utf-8")
+
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(EOFError()))
+    assert cli.run_creative_loop(ep_dir, "chat") == 0
+    out = capsys.readouterr().out
+    assert "降级模式" in out and "check_script" in out
