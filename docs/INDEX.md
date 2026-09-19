@@ -10,6 +10,7 @@
 |---|---|---|
 | **生产开工状态诊断与路由** | 运行 `python -m pipeline.status <期目录>` | 自动判断当前卡点，输出唯一命令与对应的 SOP |
 | **每期作业总纲速查（≤100 行）** | [`WORKFLOW.md`](WORKFLOW.md) | 四阶段工序卡、4 处人工停机点与四大物理红线 |
+| **ava 终端交互极简速查** | [`CHEATSHEET.md`](CHEATSHEET.md) | 看板、REPL 路由、顺听纠错白话口诀与全流程命令速查 |
 | 01 选题与张力 | [`runbook/01-topic.md`](runbook/01-topic.md) | 选题字段、体裁选择与编辑判断约束 |
 | 02 脚本写作与机检 | [`runbook/02-script.md`](runbook/02-script.md) | 调 skills/write-script 与 check_script 23 项机检 |
 | **02.5 人审改稿（停机点 1）** | [`runbook/02.5-human-review.md`](runbook/02.5-human-review.md) | 人工事实核验、精修与 diff 封板规程 |
