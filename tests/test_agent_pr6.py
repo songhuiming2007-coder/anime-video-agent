@@ -9,11 +9,13 @@
 - M16: side_effect 标志 fail-closed 分流与 schema 干净性
 - M17: 审批事件记账至 _agent/approvals.jsonl
 - M20: 未注册 / 超 scope 工具预校验拒收不弹卡
+- M21: Ctrl-C 中断时子进程被杀 + 排水线程 daemon（PR6 Popen 化回归）
 """
 
 from __future__ import annotations
 
 import collections
+import io
 import json
 import subprocess
 import sys
@@ -38,6 +40,7 @@ from pipeline.agent.tools import (
     sys_python,
     write_episode_file,
 )
+from pipeline.agent import tools as tools_module
 from pipeline.status import EpisodeStatus, inspect_episode
 from tests.test_agent_director import patch_inputs
 from tests.test_agent_tools import make_agent_root, mock_llm_server, tool_call
@@ -303,6 +306,50 @@ def test_m9_buffer_under_4kb_not_truncated():
     assert res["ok"] is True
     assert res["truncated"] is False
     assert "HELLO_AVA_WORLD" in res["stdout_tail"]
+
+
+def test_m21_keyboard_interrupt_kills_child_and_threads_are_daemon(tmp_path):
+    """M21: Ctrl-C 中断时子进程必须被杀、排水线程必须为 daemon（PR6 Popen 化回归）。
+
+    回归内容：`subprocess.run` 在 PR6 被换成 `Popen` 时，丢掉了 CPython 在中断时
+    替调用方做的那次 `process.kill()`。后果：按 Ctrl-C 后渲染子进程继续写
+    `05-final.mp4`，且非 daemon 的排水线程阻塞在 `read1` 上，解释器退出时
+    `threading._shutdown` 会 join 它们 → 你以为中断了，其实在等它跑完。
+    """
+    killed: list[int] = []
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+
+        def wait(self, *a, **k):
+            raise KeyboardInterrupt
+
+        def kill(self):
+            killed.append(1)
+
+    created: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def spy_thread(*a, **k):
+        t = real_thread(*a, **k)
+        created.append(t)
+        return t
+
+    with patch.object(tools_module.subprocess, "Popen", lambda *a, **k: FakeProc()), \
+         patch.object(tools_module.threading, "Thread", spy_thread), \
+         patch("pipeline.agent.tools.validate_pipeline_command",
+               return_value=(True, "ok", [sys_python(), "-m", "pipeline.clips"])):
+        with pytest.raises(KeyboardInterrupt):
+            run_pipeline("clips", episode_dir=tmp_path, scope="pipeline", confirmed=True)
+
+    assert killed == [1], "中断后子进程必须被 kill，否则渲染会继续写输出文件"
+    assert created, "应创建两个排水线程"
+    assert all(t.daemon for t in created), "排水线程必须 daemon，否则退出时 join 阻塞 read1"
+    for t in created:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in created)
 
 
 def test_popen_dual_pipe_concurrent_draining():

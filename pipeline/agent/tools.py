@@ -769,12 +769,24 @@ def run_pipeline(
             except Exception:
                 pass
 
-    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))
-    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)
     t_out.start()
     t_err.start()
 
-    retcode = proc.wait()
+    try:
+        retcode = proc.wait()
+    except BaseException:
+        # Ctrl-C（含其它中断）时子进程必须一起死：否则渲染会继续写 05-final.mp4，
+        # 人重跑一次就是两个 ffmpeg 写同一个输出文件。`subprocess.run` 在 PR6
+        # 被换成 Popen 时，丢掉了 CPython 在中断时替调用方做的那次 kill。
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        t_out.join(2)
+        t_err.join(2)
+        raise
     t_out.join()
     t_err.join()
     duration_s = time.time() - t_start
