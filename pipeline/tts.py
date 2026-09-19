@@ -898,7 +898,9 @@ def _injections() -> dict[str, str]:
     return g2p.load_injections(_voice_cfg(CONFIG))
 
 
-def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
+def speakable_traced(
+    s: str, engine_kind: str, overlay: dict | None = None, label: str | None = None
+) -> tuple[str, list[dict]]:
     """念得出来的那份文本 + 注入记录（v2 链路，架构设计三.2）。
 
     链路：剥不发音符号 → readings 逐案 override → 拼音直注。
@@ -918,6 +920,11 @@ def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
     """
     s = _MUTE.sub("", s)
     inj = _injections()
+    if overlay:
+        from . import corrections
+
+        eff = corrections.effective_injections(overlay, label)
+        inj = {**inj, **eff}
     for src, rep in _readings().items():
         if src in inj:
             continue           # 同键：交拼音直注，见上
@@ -926,9 +933,11 @@ def speakable_traced(s: str, engine_kind: str) -> tuple[str, list[dict]]:
     return s, applied
 
 
-def speakable(s: str, engine_kind: str = "qwen3_tts") -> str:
+def speakable(
+    s: str, engine_kind: str = "qwen3_tts", overlay: dict | None = None, label: str | None = None
+) -> str:
     """念得出来的那份文本。字幕用原文，合成用这个。"""
-    return speakable_traced(s, engine_kind)[0]
+    return speakable_traced(s, engine_kind, overlay=overlay, label=label)[0]
 
 
 # 默认情绪/语速（架构设计 3.3）：不写字段的段落落到这两个值，行为与 v1 一致。
@@ -1093,9 +1102,10 @@ def _seed_pins(seg: Segment, seeds: dict | None) -> tuple[int | None, ...]:
 
 def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
     """生成一段：逐句合成、裁静音、按固定停顿拼起来。"""
+    overlay = getattr(engine, "cfg", {}).get("overlay")
     sents = split_sentences(seg.text)
     if len(sents) <= 1:
-        take = _render_one(engine, seg, dest)
+        take = _render_one(engine, seg, dest, overlay_label=seg.label)
         speak = take.duration
         _pad_tail(dest, _para_gap())
         take.duration = round(probe_duration(dest), 3)
@@ -1124,8 +1134,13 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
             for i, s in enumerate(sents, 1):
                 p = tmp_dir / f"{i:02d}.wav"
                 sub_pin = getattr(engine, "segment_seeds", {}).get(f"{seg.label}.{i}")
-                take = _render_one(engine, Segment(seg.index * 100 + i, f"{seg.label}.{i}", s), p,
-                                   seed_override=seed_pin if seed_pin is not None else sub_pin)
+                take = _render_one(
+                    engine,
+                    Segment(seg.index * 100 + i, f"{seg.label}.{i}", s),
+                    p,
+                    seed_override=seed_pin if seed_pin is not None else sub_pin,
+                    overlay_label=seg.label,
+                )
                 seeds.append(((take.seeds_used or [None])[0], take.attempts))
                 parts.append(p)
                 d = probe_duration(p)
@@ -1170,11 +1185,15 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
         # 一个段落的情绪对它内部每个句子都成立）；注入记录按段汇总去重。
         emo_name, _ = resolve_emotion(engine.cfg, seg.emotion)
         spd_name, _ = resolve_speed(engine.cfg, seg.speed)
-        seg_injections = speakable_traced(seg.text, getattr(engine, "kind", "qwen3_tts"))[1]
+        seg_injections = speakable_traced(
+            seg.text, getattr(engine, "kind", "qwen3_tts"), overlay=overlay, label=seg.label
+        )[1]
         return Take(seg.index, seg.label, seg.text, dest.name,
                     round(probe_duration(dest), 3), round(worst_cer, 4), tries, meta,
                     qc_skip="asr-blind" if skipped else None,
-                    speakable=speakable(seg.text, getattr(engine, "kind", "qwen3_tts")),
+                    speakable=speakable(
+                        seg.text, getattr(engine, "kind", "qwen3_tts"), overlay=overlay, label=seg.label
+                    ),
                     emotion=emo_name, speed=spd_name,
                     g2p_injections=seg_injections or None,
                     synth_logic=SYNTH_LOGIC_VERSION,
@@ -1316,7 +1335,13 @@ def _seed_for(engine: Engine, seg: Segment, seed_override: int | None,
     return off if attempt == 1 else attempt * 1000 + seg.index + off
 
 
-def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | None = None) -> Take:
+def _render_one(
+    engine: Engine,
+    seg: Segment,
+    dest: Path,
+    seed_override: int | None = None,
+    overlay_label: str | None = None,
+) -> Take:
     """生成一句，直到它通过质检；用尽重试仍不过则抛错。
 
     `seed_override` 是 `render_segment` 传下来的**段级固定种子**：逐句合成时
@@ -1329,7 +1354,7 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
     
     **ASR 盲区豁免（2026-08-15 加，2026-08-16 改判据）：** Qwen3-TTS 用日语参考
     音色念中文时，Whisper 会把整句听成假名/近音字（「世界忽然退远了」→
-    「クランテイエンロ」），CER 30-100%，而音频实际念对了（人耳确认）。
+    「ク兰テイエンロ」），CER 30-100%，而音频实际念对了（人耳确认）。
     这是 ASR 对音色的失真，不是 TTS 随机念错（S4：门禁拿不到能证伪的信息时，
     跳过样本，不定罪）。
 
@@ -1350,6 +1375,8 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
     emo_name, emo_params = resolve_emotion(engine.cfg, seg.emotion)
     spd_name, _spd_coef = resolve_speed(engine.cfg, seg.speed)
     engine_kind = getattr(engine, "kind", "qwen3_tts")
+    overlay = getattr(engine, "cfg", {}).get("overlay")
+    eff_label = overlay_label if overlay_label is not None else seg.label
     # 每次尝试写独立临时文件（最后 os.replace 到 dest），豁免时要挑 3 次里最好的。
     # 旧实现每次覆盖同一 dest：豁免路径保留的是**最后一次**尝试，而三次是不同种子，
     # 最后一次可能最差（2026-08-16 段落 5.1：attempt 3 把エウテルペ 念成 3s，
@@ -1364,7 +1391,9 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
         # v2 链路（架构设计三.2）：剥符号 → readings 逐案 override → 拼音直注
         #（顺序与理由见 speakable_traced：同键交拼音，其余 readings 必须抢在直注前）。
         # 注入记录进 Take.g2p_injections：机器做的替换与 readings 表一样要可审计。
-        spk_text, injections = speakable_traced(seg.text, engine_kind)
+        spk_text, injections = speakable_traced(
+            seg.text, engine_kind, overlay=overlay, label=eff_label
+        )
         engine.synthesize(spk_text, tmp, attempt, seed=seed, emo_params=emo_params)
         # **裁剪要排在回读之前。** 裁掉的是首尾静音与结尾的机械声，但判据是启发式的，
         # 万一切进了句尾真实的字，只有回读能发现。放在回读之后裁就没人管了。
@@ -1477,7 +1506,10 @@ def _render_one(engine: Engine, seg: Segment, dest: Path, seed_override: int | N
 #        种子**重排一次（不回退、不换采样；过不了就按盲区豁免交人耳）。4 只保证
 #        「没钉种子时首次 attempt 同种子」，管不住重试——三期实测段13/22/40 就是
 #        「一句 3308/4208/6008 + 邻居 7」的混合采样
-SYNTH_LOGIC_VERSION = 5
+#   6 —— 顺听纠错与期级 overlay 接管（2026-09-19，PR2 / r17）：引入 corrections overlay
+#        （段级/全局拼音注入与钉种子）接管合成链、speakable 段级比对与 Take 审计；
+#        bump 版本以杜绝新老混血与静默复用旧产物。
+SYNTH_LOGIC_VERSION = 6
 
 
 def _voice_fingerprint(cfg: dict) -> dict:
@@ -1512,7 +1544,13 @@ def _voice_fingerprint(cfg: dict) -> dict:
     }
 
 
-def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[int, Take]:
+def _reusable(
+    old: dict,
+    segs: list[Segment],
+    out_dir: Path,
+    cfg: dict,
+    overlay: dict | None = None,
+) -> dict[int, Take]:
     """从旧 manifest 里挑可复用的段：文本没变 + 钉种子没变 + 音色没变 + 合成文本没变 + wav 在盘。
 
     读音表的比对是**段级**的：readings 影响的是每段实际喂给模型的文本，
@@ -1526,6 +1564,8 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
     陈旧不拦复用，由 `run()` 结尾报账 + 人工点名（`--redo`/`--force`）——见
     `SYNTH_LOGIC_VERSION` 的注释（2026-09-13 拍板）。
     """
+    if overlay is None:
+        overlay = cfg.get("overlay")
     fp = _voice_fingerprint(cfg)
     texts = {s.index: s.text for s in segs}
     by_index = {s.index: s for s in segs}
@@ -1552,7 +1592,9 @@ def _reusable(old: dict, segs: list[Segment], out_dir: Path, cfg: dict) -> dict[
             # 比对必须按**产出方的引擎**重渲（cfg 在混引擎点名时是旧引擎指纹，
             # 见 run() 的 reuse_cfg）：各引擎拼音直注语法不同（SHI4JIE4 vs shìjiè），
             # 用默认引擎比会把含直注的段永远判失配 → 每次重跑都全量重配（红队 R2）
-            if take.speakable != speakable(take.text, cfg.get("engine") or "qwen3_tts"):
+            if take.speakable != speakable(
+                take.text, cfg.get("engine") or "qwen3_tts", overlay=overlay, label=take.label
+            ):
                 affected.append(take.index)
                 continue
         elif inputs_changed:
@@ -1709,8 +1751,11 @@ def _report_stale(takes: list[Take]) -> int:
     if not stale:
         return 0
     names = "、".join(t.label for t in stale)
+    has_v6 = any(t.synth_logic is not None and t.synth_logic >= 6 for t in takes)
+    overlay_note = "     （注：本期存在 overlay 纠错段，其音频由 v6 之后的代码产出）\n" if has_v6 else ""
     print(f"WARN {len(stale)}/{len(takes)} 段是旧合成逻辑的产物（段级 synth_logic != "
           f"{SYNTH_LOGIC_VERSION}，无记录的也算），本次未重做：{names}\n"
+          f"{overlay_note}"
           f"     要重做就点名：`--redo {names}`（只做这些）/ `--redo stale`；全量用 `--force`。\n"
           f"     每段自己的版本在 manifest 的段级字段里（不是顶层那一份），"
           f"交片前请看这一项——旧逻辑产物与当前代码的效果不一致是可能的。",
@@ -1755,7 +1800,8 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
 
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         review: dict[str, int] | None = None, redo: list[str] | None = None,
-        force_all: bool = False, allow_engine_mix: bool = False) -> Path:
+        force_all: bool = False, allow_engine_mix: bool = False,
+        apply_patch: bool = False, _overlay: dict | None = None) -> Path:
     # force_all 归一进 force（2026-09-16 审计 F1：接线修复）。两个形参各自独立时，
     # CLI 的 `--force-all` 只置 force_all、force 仍是 False——下方复用闸
     # `if manifest_path.exists() and not force:` 照常走 _reusable，「全量重配」
@@ -1764,6 +1810,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     force = force or force_all
     if force and redo:
         raise SystemExit("FAIL --force/--force-all 与 --redo 互斥：前者全量重做，后者只做点名的段")
+    if apply_patch and (force or redo or review is not None):
+        raise SystemExit("FAIL --apply-patch 与 --redo/--force/--force-all/--review 互斥")
     paths.require_data()
     script = episode / "02-script.md"
     if not script.exists():
@@ -1778,6 +1826,47 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     out_dir = episode / "03-audio"
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "manifest.json"
+
+    # --apply-patch 流程（Spec §3.5）
+    if apply_patch:
+        from . import corrections
+
+        plan = corrections.plan_apply(episode, segs, cfg)
+        if not plan["pending"]:
+            print("[*] 没有待应用的纠错。")
+            return manifest_path
+        if not plan["redo"]:
+            print("[*] 待应用纠错中所有受影响段落已全部合成完成。")
+            return manifest_path
+        print(f"[*] 纠错计划：待重配 {len(plan['redo'])} 段（{', '.join(plan['redo'])}）")
+        corrections.backup_segments(episode, plan["affected_labels"])
+        patch_overlay = corrections.load_overlay(episode, include_pending=True)
+        return run(
+            episode,
+            redo=plan["redo"],
+            cfg_path=cfg_path,
+            allow_engine_mix=allow_engine_mix,
+            _overlay=patch_overlay,
+        )
+
+    from . import corrections
+
+    if _overlay is not None:
+        overlay = _overlay
+    else:
+        overlay = corrections.load_overlay(episode, include_pending=False)
+
+    if overlay.get("segment_seeds"):
+        cfg = {
+            **cfg,
+            "segment_seeds": {**cfg.get("segment_seeds", {}), **overlay["segment_seeds"]},
+        }
+    if overlay.get("injections"):
+        all_inj = dict(cfg.get("pinyin_injections") or g2p.load_injections(cfg))
+        for k, v in overlay["injections"].items():
+            all_inj.update(v)
+        cfg = {**cfg, "pinyin_injections": all_inj}
+    cfg["overlay"] = overlay
 
     # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
     # 人工评审结果抹掉（而打点是有人时成本的动作）
@@ -1836,7 +1925,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         # 段级的文本/读音表/钉种子比对一字不动。
         reuse_cfg = ({**cfg, "engine": old.get("engine"), "model": old.get("model")}
                      if mixing else cfg)
-        done = _reusable(old, segs, out_dir, reuse_cfg)
+        done = _reusable(old, segs, out_dir, reuse_cfg, overlay=overlay)
     if redo:
         named = _apply_redo(done, segs, redo, cfg)
         print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
@@ -1907,6 +1996,27 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         take = render_segment(engine, seg, dest)
         takes.append(take)
         _save_manifest()
+        # 每次成功完成一段合成，立即将 label 追加到 corrections 条目的 done_segments 并原子写盘；
+        # 仅当 set(done_segments) >= set(affected) 时置 applied=true
+        entries, fp = corrections.load_corrections_raw(episode)
+        if entries:
+            modified = False
+            now_iso = datetime.now().isoformat()
+            for c in entries:
+                aff = c.get("affected") or [str(c.get("segment"))]
+                if str(seg.label) in aff:
+                    done_segs = c.setdefault("done_segments", [])
+                    if str(seg.label) not in done_segs:
+                        done_segs.append(str(seg.label))
+                        modified = True
+                    if not c.get("applied", False) and set(c["done_segments"]) >= set(aff):
+                        c["applied"] = True
+                        c["applied_at"] = now_iso
+                        modified = True
+            if modified:
+                # 每段一次整份重写是刻意的（B3-r16）：40 段 = 40 次全文件写，看着 wasteful，
+                # 但「窗口归零 > IO 成本」（文件小）；免得将来为了省 IO 改回批量写重新打开假完成状态窗口。
+                corrections.save_corrections_raw(episode, entries, expected_fp=fp)
         print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
               f"{take.attempts} 次  {seg.text[:20]}…")
 
@@ -1980,6 +2090,8 @@ def main() -> int:
     r.add_argument("--redo", type=str, default=None,
                    help="只重做点名段（逗号分隔的段号，如 11,12.3）；其余段原样保留。"
                         "传 stale = 重做所有旧合成逻辑的段")
+    r.add_argument("--apply-patch", action="store_true",
+                   help="增量应用 03-audio/corrections.json 中的待处理纠错（与 --redo/--force/--force-all/--review 互斥）")
     r.add_argument("--allow-engine-mix", action="store_true",
                    help="只把 --redo 点名的段换成当前 config 的引擎，其余段按产出它们的"
                         "旧引擎复用（接受一期里混两个引擎的成片；否则换引擎只能全量重配）。"
@@ -2005,7 +2117,8 @@ def main() -> int:
         run(a.episode, a.force, a.config,
             parse_review_arg(a.review) if a.review else None,
             redo=[t for t in re.split(r"[,\s]+", a.redo) if t] if a.redo else None,
-            force_all=a.force_all, allow_engine_mix=a.allow_engine_mix)
+            force_all=a.force_all, allow_engine_mix=a.allow_engine_mix,
+            apply_patch=a.apply_patch)
     return 0
 
 

@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -209,6 +211,247 @@ def create_new_episode(ep_name: str) -> int:
     return 0
 
 
+# /voice 顺听指令表（全部 fullmatch，认小数段号，Spec §3.1）
+RE_PLAY_SEG = re.compile(r"^听\s*(\d+(?:\.\d+)?)$")
+RE_STOP = re.compile(r"^停$")
+RE_PLAY_ALL = re.compile(r"^听$")
+RE_REVERT = re.compile(r"^回滚\s*(\d+(?:\.\d+)?)$")
+RE_RETRACT = re.compile(r"^撤回\s*(\d+)$")
+RE_DONE = re.compile(r"^/?done$")
+
+
+class VoicePlayer:
+    """后台顺序播放器，支持随时终止整个播放序列（Spec §3.1）。"""
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None
+        self._stop_requested = False
+        self._thread: threading.Thread | None = None
+
+    def play_all(self, wav_files: list[Path]) -> None:
+        self.stop()
+        self._stop_requested = False
+
+        def _run() -> None:
+            for wav in wav_files:
+                if self._stop_requested:
+                    break
+                if not wav.exists():
+                    continue
+                cmd = ["afplay", str(wav)] if sys.platform == "darwin" else ["aplay", str(wav)]
+                try:
+                    self._proc = subprocess.Popen(cmd)
+                    self._proc.wait()
+                except Exception:
+                    break
+                finally:
+                    self._proc = None
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_requested = True
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.2)
+        self._thread = None
+
+
+def run_voice_loop(ep_dir: Path) -> int:
+    """顺听极简纠错交互闭环（Spec §3.1）。"""
+    from pipeline import corrections, g2p, tts
+
+    script_path = ep_dir / "02-script.md"
+    if not script_path.exists():
+        print(f"[ERROR] 找不到稿件：{script_path}", file=sys.stderr)
+        return 1
+
+    segs = tts.parse_script(script_path)
+    audio_dir = ep_dir / "03-audio"
+
+    # 1. 打印段号清单（label -> seg-NN.wav 映射表，Y4）
+    print(f"\n[*] 顺听纠错模式已就绪：{ep_dir.name}")
+    print("--------------------------------------------------")
+    print("段落与音频映射表：")
+    label_to_file: dict[str, Path] = {}
+    total_duration = 0.0
+    for s in segs:
+        wav_file = audio_dir / f"seg-{s.index:02d}.wav"
+        label_to_file[str(s.label)] = wav_file
+        dur_str = ""
+        if wav_file.exists():
+            try:
+                dur = tts.probe_duration(wav_file)
+                total_duration += dur
+                dur_str = f" ({dur:.1f}s)"
+            except Exception:
+                pass
+        print(f"  段 {s.label:<4} -> {wav_file.name}{dur_str}")
+    print("--------------------------------------------------")
+
+    # 2. 打印 g2p.scan_heteronyms 预检清单
+    full_text = "\n".join(s.text for s in segs)
+    hetero = g2p.scan_heteronyms(full_text)
+    if hetero:
+        print(f"多音字预检提示（共 {len(hetero)} 处，仅供关注，非错误）：")
+        for h in hetero[:10]:
+            print(f"  · 字 '{h['char']}' 候选: {', '.join(h.get('readings', [])[:3])}")
+        if len(hetero) > 10:
+            print(f"  · ... 另有 {len(hetero) - 10} 处多音字")
+        print("--------------------------------------------------")
+
+    print("顺听指令:")
+    print("  听            顺序播放全量音频序列（输入 '停' 可随时终止）")
+    print("  听 <段号>     QuickTime 打开该段音频（例如：听 5）")
+    print("  停            停止当前音频播放序列")
+    print("  回滚 <段号>   恢复该段上一版音频（例如：回滚 5）")
+    print("  撤回 <id>     删除指定纠错条目（例如：撤回 2）")
+    print("  done          退出纠错并应用补丁 (--apply-patch)")
+    print("  /quit         退出纠错模式\n")
+
+    player = VoicePlayer()
+
+    try:
+        while True:
+            try:
+                line = input(f"ava [{ep_dir.name}] (/voice) > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[退出 /voice 模式]")
+                player.stop()
+                return 0
+
+            if not line:
+                continue
+
+            if line in ("/quit", "/exit", "quit", "exit"):
+                player.stop()
+                print("[退出 /voice 模式]")
+                return 0
+
+            # 路由优先级（写死）：先全串匹配内建指令表，不中才进纠错解析器（Spec §3.1）
+            if RE_STOP.fullmatch(line):
+                player.stop()
+                print("[*] 已停止顺听播放序列。")
+                continue
+
+            m_play_seg = RE_PLAY_SEG.fullmatch(line)
+            if m_play_seg:
+                target_label = m_play_seg.group(1)
+                wav_path = label_to_file.get(target_label)
+                if not wav_path or not wav_path.exists():
+                    print(f"[ERROR] 段 {target_label} 的音频文件不存在 ({wav_path})")
+                    continue
+                print(f"[*] 正在打开段 {target_label} ({wav_path.name}) ...")
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", "-a", "QuickTime Player", str(wav_path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(wav_path)])
+                continue
+
+            if RE_PLAY_ALL.fullmatch(line):
+                print(f"[*] 开始顺序播放全量音频序列（预计总时长: {total_duration:.1f}s / {total_duration/60:.1f}分钟）。")
+                print("    输入 '停' 可随时终止播放。")
+                wav_list = [label_to_file[str(s.label)] for s in segs if label_to_file[str(s.label)].exists()]
+                player.play_all(wav_list)
+                continue
+
+            m_rev = RE_REVERT.fullmatch(line)
+            if m_rev:
+                player.stop()
+                target_label = m_rev.group(1)
+                try:
+                    corrections.revert_segment(ep_dir, target_label)
+                except SystemExit as ex:
+                    print(f"{ex}")
+                continue
+
+            m_ret = RE_RETRACT.fullmatch(line)
+            if m_ret:
+                player.stop()
+                target_id = int(m_ret.group(1))
+                try:
+                    corrections.retract_correction(ep_dir, target_id)
+                except SystemExit as ex:
+                    print(f"{ex}")
+                continue
+
+            if RE_DONE.fullmatch(line):
+                player.stop()
+                print("[*] 退出纠错录入，准备应用补丁...")
+                entries, _ = corrections.load_corrections_raw(ep_dir)
+                pending = [c for c in entries if not c.get("applied", False)]
+                if not pending:
+                    print("[*] 当前没有待应用的纠错条目。")
+                    return 0
+
+                mf_path = audio_dir / "manifest.json"
+                if mf_path.exists():
+                    try:
+                        mf = json.loads(mf_path.read_text(encoding="utf-8"))
+                        eng = mf.get("engine", "")
+                        if "cuda" in eng:
+                            print(f"[*] 提示：本期配音引擎为云端引擎 ({eng})，请去云端执行 apply-patch。")
+                    except Exception:
+                        pass
+
+                try:
+                    confirm = input("是否立即执行增量重配 (--apply-patch)? [Y/n]: ").strip().lower()
+                except EOFError:
+                    confirm = "y"
+
+                if confirm in ("", "y", "yes"):
+                    tts.run(ep_dir, apply_patch=True)
+                return 0
+
+            # 未命中内建指令表，送入纠错文法解析器
+            try:
+                patch = corrections.parse_correction(line, segs)
+            except corrections.PatchError as pe:
+                print(f"[ERROR] {pe}")
+                continue
+
+            print("\n--------------------------------------------------")
+            if patch.action == "inject":
+                print(f"[纠错补丁] 段落: {patch.segment}  范围: {patch.scope}")
+                print(f"  目标词:   {patch.word}")
+                print(f"  听成:     {patch.heard or '（未指定）'}")
+                print(f"  目标读音: {patch.target_tone3}")
+            else:
+                print(f"[听感补丁] 段落: {patch.segment}  范围: {patch.scope}")
+                print(f"  听感现象: {patch.issue}")
+                print(f"  调整动作: 钉新种子 (pin_seed)")
+            if patch.scope == "global":
+                print("  ⚠️  【全局生效】该拼音注入将影响全期所有包含该词的段落！")
+            print("--------------------------------------------------")
+
+            try:
+                confirm = input("确认落盘? [y/N]: ").strip().lower()
+            except EOFError:
+                confirm = "n"
+
+            if confirm == "y":
+                try:
+                    entry = corrections.append_correction(ep_dir, patch)
+                    act_desc = f"pin_seed ({entry.get('seed_pin')})" if entry['action'] == 'pin_seed' else f"inject ({entry.get('target_tone3')})"
+                    print(f"[OK] 已落盘 #{entry['id']} 段{entry['segment']} {act_desc}")
+                    print(f"     提示: 回滚按段号（如: 回滚 {entry['segment']}），撤回按条目 id（如: 撤回 {entry['id']}）\n")
+                except SystemExit as ex:
+                    print(f"{ex}")
+            else:
+                print("[CANCEL] 已放弃本次纠错落盘。\n")
+
+    finally:
+        player.stop()
+
+    return 0
+
+
 def run_repl(ep_dir: Path) -> int:
     """REPL 交互循环（Spec §2.4）。"""
     check_code_freeze()
@@ -259,7 +502,7 @@ def run_repl(ep_dir: Path) -> int:
             continue
 
         if line == "/voice":
-            print(f"[*] 进入顺听纠错模式 (PR2 实现)...")
+            run_voice_loop(ep_dir)
             continue
 
         if line == "/patch":
@@ -410,8 +653,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[FAIL] 执行器未找到: {exc}", file=sys.stderr)
                 return 1
         if sub_cmd == "/voice":
-            print(f"[*] 直达顺听纠错模式 (PR2)...")
-            return 0
+            return run_voice_loop(ep_dir)
         if sub_cmd == "/patch":
             print(f"[*] 直达临时补料模式 (PR3)...")
             return 0

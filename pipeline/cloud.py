@@ -1195,7 +1195,9 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     _ssh(f"mkdir -p {remote_ep_dir}", host=host)
 
-    sync_items = cfg_global.get("sync", {}).get("up", ["02-script.md", "01-topic.md", "config/"])
+    sync_items = cfg_global.get(
+        "sync", {}
+    ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json"])
     sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
 
     for src, dst in sync_pairs:
