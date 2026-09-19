@@ -1838,6 +1838,26 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
             if not plan["redo"]:
                 print("[*] 待应用纠错中所有受影响段落已全部合成完成。")
                 return manifest_path
+
+            # 引擎前置检查：若旧 manifest 存在且引擎不符，直接报错，避免在注定失败前烧掉 attic 快照槽位
+            if manifest_path.exists():
+                try:
+                    cur_mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    old_pair = (cur_mf.get("engine"), cur_mf.get("model"))
+                    new_pair = (cfg["engine"], cfg["model"])
+                    if old_pair != new_pair:
+                        raise SystemExit(
+                            f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                            f"     当前处于纠错 apply-patch 流程，但本期旧配音由 {old_pair[0]} 产出。\n"
+                            f"     同一期音频的 apply 与产出该期的引擎必须同侧（Spec §3.6 侧别纪律）。\n"
+                            f"     若本期为云端配音，请在云端执行：\n"
+                            f"       python -m pipeline.cloud push\n"
+                            f"       python -m pipeline.cloud run <期号> tts -- --apply-patch\n"
+                            f"       python -m pipeline.cloud pull"
+                        )
+                except json.JSONDecodeError:
+                    pass
+
             print(f"[*] 纠错计划：待重配 {len(plan['redo'])} 段（{', '.join(plan['redo'])}）")
             corrections.backup_segments(episode, plan["affected_labels"])
             patch_overlay = corrections.load_overlay(episode, include_pending=True)

@@ -656,7 +656,6 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
 
     if changed_entries:
         save_corrections_raw(episode, entries, expected_fp=fp)
-        _, fp = load_corrections_raw(episode)
 
     # 若 redo 为空但仍有 pending 条目未能收口，报错拒绝，不许打印假完成
     if not redo_set:
