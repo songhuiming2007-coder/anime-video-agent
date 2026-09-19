@@ -1740,7 +1740,7 @@ def _report_seed_drift(takes: list[Take], cfg: dict) -> int:
     return len(drifted)
 
 
-def _report_stale(takes: list[Take]) -> int:
+def _report_stale(takes: list[Take], has_overlay: bool = False) -> int:
     """混血报账：把「旧合成逻辑产物」逐段列出来，返回陈旧段数。
 
     陈旧段不拦复用、也不替人花钱重做（2026-09-13 拍板），所以**这次报账就是
@@ -1751,8 +1751,7 @@ def _report_stale(takes: list[Take]) -> int:
     if not stale:
         return 0
     names = "、".join(t.label for t in stale)
-    has_v6 = any(t.synth_logic is not None and t.synth_logic >= 6 for t in takes)
-    overlay_note = "     （注：本期存在 overlay 纠错段，其音频由 v6 之后的代码产出）\n" if has_v6 else ""
+    overlay_note = "     （注：本期存在 overlay 纠错段，其音频由 v6 之后的代码产出）\n" if has_overlay else ""
     print(f"WARN {len(stale)}/{len(takes)} 段是旧合成逻辑的产物（段级 synth_logic != "
           f"{SYNTH_LOGIC_VERSION}，无记录的也算），本次未重做：{names}\n"
           f"{overlay_note}"
@@ -1831,23 +1830,24 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     if apply_patch:
         from . import corrections
 
-        plan = corrections.plan_apply(episode, segs, cfg)
-        if not plan["pending"]:
-            print("[*] 没有待应用的纠错。")
-            return manifest_path
-        if not plan["redo"]:
-            print("[*] 待应用纠错中所有受影响段落已全部合成完成。")
-            return manifest_path
-        print(f"[*] 纠错计划：待重配 {len(plan['redo'])} 段（{', '.join(plan['redo'])}）")
-        corrections.backup_segments(episode, plan["affected_labels"])
-        patch_overlay = corrections.load_overlay(episode, include_pending=True)
-        return run(
-            episode,
-            redo=plan["redo"],
-            cfg_path=cfg_path,
-            allow_engine_mix=allow_engine_mix,
-            _overlay=patch_overlay,
-        )
+        with corrections.apply_patch_lock(episode):
+            plan = corrections.plan_apply(episode, segs, cfg)
+            if not plan["pending"]:
+                print("[*] 没有待应用的纠错。")
+                return manifest_path
+            if not plan["redo"]:
+                print("[*] 待应用纠错中所有受影响段落已全部合成完成。")
+                return manifest_path
+            print(f"[*] 纠错计划：待重配 {len(plan['redo'])} 段（{', '.join(plan['redo'])}）")
+            corrections.backup_segments(episode, plan["affected_labels"])
+            patch_overlay = corrections.load_overlay(episode, include_pending=True)
+            return run(
+                episode,
+                redo=plan["redo"],
+                cfg_path=cfg_path,
+                allow_engine_mix=allow_engine_mix,
+                _overlay=patch_overlay,
+            )
 
     from . import corrections
 
@@ -1903,6 +1903,15 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         old_pair = (old_mf.get("engine"), old_mf.get("model"))
         new_pair = (cfg["engine"], cfg["model"])
         if old_pair != new_pair:
+            if _overlay is not None:
+                raise SystemExit(
+                    f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                    f"     当前处于纠错 apply-patch 流程，但本期旧配音由 {old_pair[0]} 产出。\n"
+                    f"     同一期音频的 apply 与产出该期的引擎必须同侧（Spec §3.6 侧别纪律）。\n"
+                    f"     若本期为云端配音，请在云端执行：\n"
+                    f"       python -m pipeline.cloud push\n"
+                    f"       python -m pipeline.cloud run <期号> tts -- --apply-patch\n"
+                    f"       python -m pipeline.cloud pull")
             if not (allow_engine_mix and redo):
                 raise SystemExit(
                     f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
@@ -2042,7 +2051,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
               f"{', '.join(t.label for t in skipped)}。"
               f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
     # 混血报账（2026-09-13）：陈旧段不拦复用、也不替人花钱重做，但绝不允许静静留下。
-    _report_stale(takes)
+    has_ov = bool(overlay.get("injections") or overlay.get("segment_seeds"))
+    _report_stale(takes, has_overlay=has_ov)
     _report_seed_drift(takes, cfg)
     return manifest_path
 
