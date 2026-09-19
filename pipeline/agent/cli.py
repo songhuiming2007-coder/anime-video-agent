@@ -215,9 +215,11 @@ def run_repl(ep_dir: Path) -> int:
     print(f"\n已就绪：{ep_dir.name}")
     print("输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。")
 
+    scope_override: str | None = None
+
     while True:
         status = inspect_episode(ep_dir)
-        scope = scope_of(status)
+        scope = scope_override or scope_of(status)
 
         try:
             line = input(f"\nava [{ep_dir.name}] ({scope}) > ").strip()
@@ -239,6 +241,8 @@ def run_repl(ep_dir: Path) -> int:
             print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
             print("  /voice       顺听极简纠错模式")
             print("  /patch       临时补料模式")
+            print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
+            print("  /pipeline    切回流水线工序模式")
             print("  /chat        creative scope 选题发散")
             print("  /script      聚焦写稿 (02-script.draft.md)")
             print("  /quit        退出 ava\n")
@@ -261,6 +265,16 @@ def run_repl(ep_dir: Path) -> int:
             print(f"[*] 进入临时补料模式 (PR3 实现)...")
             continue
 
+        if line == "/asset":
+            scope_override = "asset"
+            print("[*] 已进入 asset scope（放行 Phase 0 资产与云端调度命令，输入 /pipeline 可切回）")
+            continue
+
+        if line == "/pipeline":
+            scope_override = None
+            print("[*] 已切回自动推导工序模式")
+            continue
+
         if line == "/chat":
             print(f"[*] 进入 creative 对话模式 (当前 scope: {scope})...")
             continue
@@ -275,8 +289,8 @@ def run_repl(ep_dir: Path) -> int:
                 print("[ERROR] /run 需要指定命令，例如: /run tts --redo 3")
                 continue
 
-            # 默认补齐期目录参数（若未指定）
-            valid, msg, norm_cmd = validate_pipeline_command(cmd_part, scope=scope)
+            # 校验命令并自动补齐当前期目录参数（🔴 1 修复）
+            valid, msg, norm_cmd = validate_pipeline_command(cmd_part, scope=scope, ep_dir=ep_dir)
             if not valid:
                 print(f"[REJECT] {msg}")
                 continue
@@ -297,7 +311,11 @@ def run_repl(ep_dir: Path) -> int:
             check_code_freeze()
             print(f"[*] 正在执行: {cmd_str} ...")
             t_start = time.time()
-            res = subprocess.run(norm_cmd, cwd=paths.ROOT)
+            try:
+                res = subprocess.run(norm_cmd, cwd=paths.ROOT)
+            except FileNotFoundError as exc:
+                print(f"[FAIL] 执行器未找到: {exc}")
+                continue
             t_end = time.time()
             if res.returncode == 0:
                 print(f"[OK] 执行完成（耗时: {t_end - t_start:.1f}s）")
@@ -379,13 +397,17 @@ def main(argv: list[str] | None = None) -> int:
         if sub_cmd.startswith("/run"):
             status = inspect_episode(ep_dir)
             scope = scope_of(status)
-            valid, msg, norm_cmd = validate_pipeline_command(sub_cmd[4:].strip(), scope=scope)
+            valid, msg, norm_cmd = validate_pipeline_command(sub_cmd[4:].strip(), scope=scope, ep_dir=ep_dir)
             if not valid:
                 print(f"[REJECT] {msg}", file=sys.stderr)
                 return 1
             check_code_freeze()
-            res = subprocess.run(norm_cmd, cwd=paths.ROOT)
-            return res.returncode
+            try:
+                res = subprocess.run(norm_cmd, cwd=paths.ROOT)
+                return res.returncode
+            except FileNotFoundError as exc:
+                print(f"[FAIL] 执行器未找到: {exc}", file=sys.stderr)
+                return 1
         if sub_cmd == "/voice":
             print(f"[*] 直达顺听纠错模式 (PR2)...")
             return 0

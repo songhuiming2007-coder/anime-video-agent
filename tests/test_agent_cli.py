@@ -133,3 +133,21 @@ def test_check_code_freeze_runs_without_crash():
     """验证 Code Freeze 检查函数运行正常。"""
     res = check_code_freeze()
     assert isinstance(res, bool)
+
+
+def test_repl_asset_scope_switch_and_quit(tmp_path: Path, capsys):
+    """验证 REPL 交互中 /asset 与 /pipeline 切换 scope (Spec §2.1, §2.4, 🟡 3)。"""
+    from pipeline.agent.cli import run_repl
+    ep_dir = tmp_path / "01-test"
+    ep_dir.mkdir()
+    (ep_dir / "01-topic.md").write_text("# Topic", encoding="utf-8")
+
+    # 模拟用户输入 /asset，然后 /pipeline，最后 /quit
+    with patch("builtins.input", side_effect=["/asset", "/pipeline", "/quit"]):
+        code = run_repl(ep_dir)
+        assert code == 0
+
+    out, _ = capsys.readouterr()
+    assert "已进入 asset scope" in out
+    assert "已切回自动推导工序模式" in out
+

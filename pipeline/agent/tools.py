@@ -78,14 +78,24 @@ def write_episode_file(
     # 路径解析与双端 resolve 校验
     raw_ep = Path(episode_dir)
     resolved_ep = raw_ep.resolve()
-
-    target_raw = raw_ep / filename
     target_resolved = (raw_ep / clean_name).resolve()
 
-    # 1. 拦截对 pipeline/ 源码目录的修改
+    # 1. 拦截对 pipeline/ 源码目录的修改（优先触发 Code Freeze）
     repo_pipeline = (paths.ROOT / "pipeline").resolve()
-    if repo_pipeline in target_resolved.parents or str(target_resolved).startswith(str(repo_pipeline)):
+    if (
+        repo_pipeline in target_resolved.parents
+        or str(target_resolved).startswith(str(repo_pipeline))
+        or repo_pipeline in resolved_ep.parents
+        or resolved_ep == repo_pipeline
+    ):
         raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
+
+    # 2. 纵深防御：期目录必须落在 data/episodes 之下，严禁写入仓库根或系统 /tmp
+    episodes_root = (paths.ROOT / "data" / "episodes").resolve()
+    if resolved_ep == (paths.ROOT).resolve() or resolved_ep == Path("/tmp").resolve():
+        raise PermissionError(f"禁止将仓库根或 /tmp 作为期目录写入: {resolved_ep}")
+    if episodes_root.exists() and (resolved_ep == episodes_root or episodes_root not in resolved_ep.parents):
+        raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
 
     # 2. 拦截父级或兄弟目录越界
     if target_resolved.parent != resolved_ep:
@@ -100,9 +110,34 @@ def write_episode_file(
     return target_resolved
 
 
+def _extract_positional_args(args: list[str]) -> list[str]:
+    """提取真正的命令行位置参数，跳过旗标及其参数值。"""
+    pos: list[str] = []
+    i = 0
+    valued_flags = {
+        "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
+        "--pattern", "--episode", "--note", "--target", "--session", "--floor",
+    }
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-"):
+            flag = a.split("=")[0]
+            if "=" in a:
+                i += 1
+            elif flag in valued_flags:
+                i += 2
+            else:
+                i += 1
+        else:
+            pos.append(a)
+            i += 1
+    return pos
+
+
 def validate_pipeline_command(
     cmd_tokens: list[str] | str,
     scope: str = "pipeline",
+    ep_dir: Path | str | None = None,
 ) -> tuple[bool, str, list[str]]:
     """白名单子命令校验执行器（Spec §2.4 Y1-r8, Y1-r11, R1-r10, B1-r10）。
 
@@ -133,9 +168,10 @@ def validate_pipeline_command(
         module = mod_token
     args = tokens[idx + 1:]
 
-    # 1. 拒收 --force / --force-all 标志（§2.4 B1-r10, B4-r18）
+    # 1. 拒收 --force / --force-all 标志（含 --force=x, --force-all=true 变体）
     for a in args:
-        if a in ("--force", "--force-all") or a.startswith("--force="):
+        flag_name = a.split("=")[0]
+        if flag_name in ("--force", "--force-all"):
             if module == "cloud" and args and args[0] == "down":
                 return (
                     False,
@@ -144,7 +180,7 @@ def validate_pipeline_command(
                 )
             return (
                 False,
-                f"拒绝执行：禁止在 ava 中使用 {a} 全量覆盖！请使用增量参数：--redo <段号> 或 --apply-patch。",
+                f"拒绝执行：禁止在 ava 中使用 {flag_name} 全量覆盖！请使用增量参数：--redo <段号> 或 --apply-patch。",
                 [],
             )
 
@@ -164,8 +200,31 @@ def validate_pipeline_command(
                 f"模块 'pipeline.{module}' 不在 {scope} 允许的白名单内（当前放行: {sorted(PIPELINE_MODULES)}）",
                 [],
             )
-        # 模块参数简单校验
-        normalized = ["python", "-m", f"pipeline.{module}"] + args
+
+        # 自动补位当前期目录参数（🔴 1 修复）
+        if ep_dir:
+            ep_path = Path(ep_dir).resolve()
+            pos_args = _extract_positional_args(args)
+            if module in ("tts", "clips", "review", "render", "qc", "cover", "status"):
+                if not pos_args:
+                    args = [str(ep_path)] + args
+                elif module == "tts" and pos_args == ["run"]:
+                    run_idx = args.index("run")
+                    args = args[:run_idx + 1] + [str(ep_path)] + args[run_idx + 1:]
+            elif module == "check_script":
+                if not pos_args:
+                    script_file = ep_path / "02-script.md"
+                    if not script_file.exists():
+                        script_file = ep_path / "02-script.draft.md"
+                    args = [str(script_file)] + args
+                else:
+                    first_pos = pos_args[0]
+                    first_path = Path(first_pos)
+                    if not first_path.is_absolute() and (ep_path / first_path).exists():
+                        pos_idx = args.index(first_pos)
+                        args[pos_idx] = str(ep_path / first_path)
+
+        normalized = [sys_python(), "-m", f"pipeline.{module}"] + args
         return True, "校验通过", normalized
 
     elif scope == "asset":
@@ -183,18 +242,17 @@ def validate_pipeline_command(
                 [],
             )
 
-        # 对 cloud run 校验 extra_args
+        # 对 cloud run 校验 extra_args（直接传 token 列表，🔵 2 优化）
         if module == "cloud" and args[0] == "run":
-            # args: run <target> <task> [extra...]
             if len(args) >= 3:
                 extra_tokens = args[3:]
                 if extra_tokens:
                     try:
-                        validate_extra_args(" ".join(extra_tokens))
+                        validate_extra_args(extra_tokens)
                     except ValueError as exc:
                         return False, f"cloud run 参数非法: {exc}", []
 
-        normalized = ["python", "-m", f"pipeline.{module}"] + args
+        normalized = [sys_python(), "-m", f"pipeline.{module}"] + args
         return True, "校验通过", normalized
 
     return False, f"未知的 Scope: {scope}", []

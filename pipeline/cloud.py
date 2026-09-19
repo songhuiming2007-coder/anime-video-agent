@@ -362,14 +362,19 @@ EXTRA_ARG_BOOLEAN: set[str] = {
 }
 
 
-def validate_extra_args(extra_args: str) -> str:
+def validate_extra_args(extra_args: str | list[str]) -> str:
     """按 flag+值对白名单校验远端命令参数（Spec §2.4 Y3）。"""
-    if not extra_args or not extra_args.strip():
+    if not extra_args:
         return ""
-    try:
-        tokens = shlex.split(extra_args.strip())
-    except ValueError as exc:
-        raise ValueError(f"extra_args 无法解析: {exc}") from exc
+    if isinstance(extra_args, str):
+        if not extra_args.strip():
+            return ""
+        try:
+            tokens = shlex.split(extra_args.strip())
+        except ValueError as exc:
+            raise ValueError(f"extra_args 无法解析: {exc}") from exc
+    else:
+        tokens = list(extra_args)
 
     validated: list[str] = []
     i = 0
