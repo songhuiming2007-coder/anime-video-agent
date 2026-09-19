@@ -272,10 +272,13 @@ def assert_egress_boundary(endpoint: str, content: Any) -> None:
     """出网安全边界断言（Spec §2.5 Y2-r19）。
 
     确保发送给外部 LLM 端点的内容不含敏感目录路径及凭据数据。
+    **大小写不敏感**：APFS 默认大小写不敏感，`Cloud.Local.JSON` 与 `cloud.local.json`
+    是同一个文件，字面量比较等于半扇门（终审二轮 P0）。
     """
     text = json.dumps(content, ensure_ascii=False) if not isinstance(content, str) else content
+    folded = text.casefold()
     for pattern in RESTRICTED_EGRESS_PATTERNS:
-        if pattern in text:
+        if pattern.casefold() in folded:
             raise PermissionError(f"拦截出网请求：内容包含受限敏感标记 '{pattern}'")
 
 
@@ -449,6 +452,20 @@ def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
     return roots
 
 
+def deny_dir_hit(path: Path) -> str | None:
+    """路径是否落在读域硬排除目录里（大小写不敏感），命中返回目录名。
+
+    APFS 默认大小写不敏感：`03-AUDIO/manifest.json` 的 is_file() 照样命中真文件，
+    精确比较的部件匹配却匹配不上——不 casefold 就是一条真能读到内容的绕过路径
+    （终审二轮 P0）。判定放在 resolve 后的绝对路径上，软链接穿透同样拦下。
+    """
+    folded = {part.casefold() for part in path.parts}
+    for name in READ_DENY_PARTS:
+        if name.casefold() in folded:
+            return name
+    return None
+
+
 def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。"""
     raw = str(args.get("path", "")).strip()
@@ -457,9 +474,14 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     rel = Path(raw)
     if rel.is_absolute() or ".." in rel.parts:
         raise PermissionError(f"越界读被拒（只读期目录内与 data/library/）: {raw}")
-    if rel.suffix.lower() not in READ_ALLOWED_SUFFIXES:
+    if rel.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
         raise PermissionError(
             f"只读文本类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}"
+        )
+    hit = deny_dir_hit(rel)
+    if hit:
+        raise PermissionError(
+            f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
         )
 
     candidates: list[Path] = []
@@ -472,10 +494,10 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     for cand in candidates:
         target = cand.resolve()
         # 判 resolve 后的绝对路径：软链接绕进 03-audio 同样拦下
-        denied = READ_DENY_PARTS.intersection(target.parts)
-        if denied:
+        hit = deny_dir_hit(target)
+        if hit:
             raise PermissionError(
-                f"读域硬排除 {sorted(denied)[0]}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
+                f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
             )
         if not any(target == r or r in target.parents for r in roots):
             continue

@@ -815,3 +815,125 @@ def test_degrade_message_is_scope_aware():
     # 两条都必须显式标降级，且都指向人工停机点
     for text in (creative, pipeline):
         assert "降级模式" in text and "02.5 / 03.5 / 05 / 09" in text
+
+
+# ---------------------------------------------------------------------------
+# 7. 终审二轮 P0 回归：读域与发送闸的大小写口径（APFS 默认大小写不敏感）
+# ---------------------------------------------------------------------------
+
+
+def _fs_is_case_insensitive(root: Path) -> bool:
+    probe = root / "CaseProbe"
+    probe.mkdir(exist_ok=True)
+    (probe / "probe.TXT").write_text("x", encoding="utf-8")
+    try:
+        return (probe / "PROBE.txt").exists()
+    finally:
+        for item in probe.iterdir():
+            item.unlink()
+        probe.rmdir()
+
+
+def test_read_deny_dir_is_case_insensitive(tmp_path: Path):
+    """大小写变体不得绕过读域硬排除（终审二轮 P0）。"""
+    from pipeline.agent.tools import deny_dir_hit
+
+    assert deny_dir_hit(Path("/x/03-AUDIO/manifest.json")) == "03-audio"
+    assert deny_dir_hit(Path("/x/03-Audio/Corrections.JSON")) == "03-audio"
+    assert deny_dir_hit(Path("/x/04-PATCH/pool.json")) == "04-patch"
+    assert deny_dir_hit(Path("/x/02-script.md")) is None
+    assert deny_dir_hit(Path("/x/notes/03-audioish.md")) is None  # 前缀相似不算命中
+
+    root = make_agent_root(tmp_path, "https://api.example.com/v1")
+    ep = root / "data" / "episodes" / "T1"
+    (ep / "03-audio").mkdir(parents=True)
+    (ep / "03-audio" / "manifest.json").write_text('{"engine":"SECRET-ENGINE"}', encoding="utf-8")
+    ctx = ToolContext(scope="creative", episode_dir=ep, root=root)
+
+    for bad in ("03-AUDIO/manifest.json", "03-Audio/MANIFEST.JSON", "04-PATCH/pool.json"):
+        result = execute_tool("read_artifact", {"path": bad}, ctx)
+        assert result["ok"] is False, f"{bad} 不该读得出来"
+        assert "SECRET-ENGINE" not in json.dumps(result, ensure_ascii=False)
+
+    if _fs_is_case_insensitive(tmp_path):
+        # 部署语义（macOS/APFS）：必须报「硬排除」而不是「文件不存在」——
+        # 说明拦住它的是护栏，不是巧合找不到文件
+        assert "硬排除" in execute_tool(
+            "read_artifact", {"path": "03-AUDIO/manifest.json"}, ctx
+        )["error"]
+
+
+def test_egress_boundary_matching_is_case_insensitive():
+    """发送闸与读域同一判定口径：大小写变体同样命中（终审二轮 P0 的第二半）。"""
+    from pipeline.agent.tools import assert_egress_boundary
+
+    assert_egress_boundary("https://api.openai.com", {"k": "普通内容"})
+    for bad in ("Cloud.Local.JSON", "03-AUDIO/MANIFEST.JSON", "03-Audio/Voice.json"):
+        with pytest.raises(PermissionError, match="拦截出网请求"):
+            assert_egress_boundary("https://api.openai.com", {"k": bad})
+
+
+def test_egress_payload_blocks_case_variant_audio_read(tmp_path: Path, monkeypatch):
+    """大小写变体路径的两层防线：读域拒了；标记一旦进入会话，发送闸把整轮掐掉。
+
+    fail-closed 的实际形状：模型提议读 03-AUDIO/manifest.json → 读域拒绝 → 那条
+    提议（含受限路径标记）留在会话里 → 下一轮请求被发送闸拦下。宁可整轮不发，
+    也不给「半扇门」留缝。
+    """
+    with mock_llm_server([
+        tool_call("read_artifact", {"path": "03-AUDIO/manifest.json"}),
+        {"role": "assistant", "content": "读不到就算了"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep = root / "data" / "episodes" / "T1"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "03-audio" / "manifest.json").write_text(
+            '{"secret": "SEGRET-ENGINE-UPPER"}', encoding="utf-8"
+        )
+
+        with pytest.raises(PermissionError, match="拦截出网请求"):
+            run_tool_loop(
+                [{"role": "user", "content": "读一下那段音频清单"}],
+                ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+            )
+
+        # 第一轮请求发出去了，但不含任何文件内容
+        assert state["calls"] == 1
+        wire = json.dumps(state["requests"][0]["body"], ensure_ascii=False)
+        assert "SEGRET-ENGINE-UPPER" not in wire
+        # 含受限标记的那一轮根本没发出去
+        assert "03-audio/manifest.json" not in wire.casefold()
+
+
+def test_case_variant_read_of_unpatterned_audio_file_never_leaves(tmp_path: Path, monkeypatch):
+    """corrections.json 不在发送闸的字面量模式里 → 只能靠读域拦。
+
+    这是终审二轮 P0 的原始形态：发送闸只认三个字面量文件名（cloud.local.json /
+    03-audio/manifest.json / 03-audio/voice.json），读域一旦被大小写变体破开，
+    未列入模式的文件就是真泄漏。本用例只在读域真的拦得住时才绿。
+    """
+    with mock_llm_server([
+        tool_call("read_artifact", {"path": "03-AUDIO/corrections.json"}),
+        {"role": "assistant", "content": "那我不读了"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep = root / "data" / "episodes" / "T1"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "03-audio" / "corrections.json").write_text(
+            '{"secret": "SEGRET-CORRECTIONS-UPPER"}', encoding="utf-8"
+        )
+
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "看看上期的纠错记录"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+        )
+
+        # 没被发送闸掐掉（会话里没出现受限标记）= 拦住它的是读域
+        assert outcome["stopped"] == "done"
+        assert state["calls"] == 2
+        for request in state["requests"]:
+            assert "SEGRET-CORRECTIONS-UPPER" not in json.dumps(
+                request["body"], ensure_ascii=False
+            )
