@@ -51,7 +51,7 @@ python -m pipeline.clips data/episodes/<期号>
 1. **先出补丁画廊再写锚点**（`shots.gallery` 已全部参数化可直接复用，B8-r5）：
    手写锚点前人需要先看镜头联系表，不然锚点直通的工作流不闭环：
    ```bash
-   python -m pipeline.shots gallery <净化后池名> SP01 --out-dir data/episodes/<期号>/04-patch/shots --dest-dir data/episodes/<期号>/04-patch/frames
+   python -c "from pathlib import Path; from pipeline.shots import gallery; gallery('<净化后池名>', 'SP01', Path('data/episodes/<期号>/04-patch/shots'), Path('data/episodes/<期号>/04-patch/frames'))"
    ```
    双击打开生成的 HTML 画廊，看图选镜头，一键复制时间码。
 
@@ -61,7 +61,7 @@ python -m pipeline.clips data/episodes/<期号>
 
 3. **改稿校验与重排闭环**：
    ```bash
-   python -m pipeline.check_script data/episodes/<期号>
+   python -m pipeline.check_script data/episodes/<期号>/02-script.md
    python -m pipeline.clips data/episodes/<期号>
    ```
    - `compute_script_vo_hash` 只提取 `配音：`行（B6），修改画面行（`锚点:`/`查询:`/`场景:`）不改变配音哈希，已合成音频 100% 免重跑；
