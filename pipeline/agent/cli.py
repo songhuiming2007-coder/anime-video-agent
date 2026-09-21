@@ -247,10 +247,11 @@ def create_new_episode(ep_name: str) -> int:
     target_dir.mkdir(parents=True, exist_ok=False)
     topic_content = (
         f"# {ep_name} 选题配置\n\n"
-        "- 番剧：\n"
-        "- 类型：\n"
-        "- 锚点：\n"
-        "- 张力：\n"
+        "番：\n"
+        "类型：\n"
+        "模式：\n"
+        "张力：\n"
+        "锚点：\n"
     )
     topic_file = target_dir / "01-topic.md"
     paths.atomic_write(topic_file, topic_content)
