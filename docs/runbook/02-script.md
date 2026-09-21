@@ -11,7 +11,7 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
 2. **段落规范**：每段必须明确包含配音文本、`查询:`（台词语义）或 `锚点:`（具体时间码）。
 3. **运行机检**：
    ```bash
-   python -m pipeline.check_script data/episodes/<期号>/02-script.md
+   python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md
    ```
 
 ## 核心规程与铁律

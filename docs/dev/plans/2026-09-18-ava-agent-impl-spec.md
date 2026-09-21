@@ -3,7 +3,7 @@
 日期：2026-09-21（**v1.21**，第二十一轮启动入口改造扩展；版本号由
 `tests/test_docs_invariants.py` 断言与状态行一致——B1-r19）
 上位文档：`docs/dev/plans/2026-09-18-ava-agent-harness.md`（施工图）
-状态：**v1.21 已评审，开工**
+状态：**v1.21 已实施**
 
 > **启动入口改造注记（2026-09-21，v1.21）**：根据
 > [`2026-09-21-ava-entry-idea-scope.md`](2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
