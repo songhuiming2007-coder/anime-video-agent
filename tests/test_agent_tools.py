@@ -312,6 +312,7 @@ SPEC_TOOLS = {
     "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes"],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
     "asset": [],
+    "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
 }
 API_KEY = "sk-test-secret-do-not-print"
 
@@ -1009,3 +1010,110 @@ def test_llm_write_topic_md_succeeds_when_human_approves(tmp_path: Path, monkeyp
         assert outcome["stopped"] == "done"
         assert (ep / "01-topic.md").exists()
         assert "自我牺牲与真实表达" in (ep / "01-topic.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# T6–T11: idea scope 与无期选题会话测试 (Spec 2026-09-21-ava-entry-idea-scope §5.1)
+# ---------------------------------------------------------------------------
+
+
+def test_idea_scope_tools_readonly_and_no_write(tmp_path: Path):
+    """T6: idea 表精确等于 4 个只读工具；build_tool_schemas 均无 side_effect；write_episode_file 被拒。"""
+    root = make_agent_root(tmp_path, "https://api.example.com/v1")
+    schemas = build_tool_schemas("idea", root=root)
+    names = [s["function"]["name"] for s in schemas]
+    assert names == ["read_artifact", "list_episodes", "read_status", "search_notes"]
+
+    from pipeline.agent.tools import TOOL_SCHEMAS
+    for name in names:
+        assert TOOL_SCHEMAS[name].get("side_effect", True) is False
+
+    ctx_idea = ToolContext(scope="idea", episode_dir=None, root=root)
+    denied = execute_tool("write_episode_file", {"filename": "01-topic.md", "content": "x"}, ctx_idea)
+    assert denied["ok"] is False
+    assert "白名单" in denied["error"]
+
+
+def test_idea_turn_context_and_system_prompt(monkeypatch):
+    """T7: idea 回合 ToolContext.episode_dir 为 None 且 scope == 'idea'；assemble_system_prompt 含 director 人格与 idea 卡。"""
+    from unittest.mock import patch
+    from pipeline.agent.cli import assemble_system_prompt, run_agent_loop
+
+    prompt = assemble_system_prompt(None, "idea", None)
+    assert "Director" in prompt or "导演" in prompt
+    assert "模式: 选题会话（无期）" in prompt
+    assert "scope: idea" in prompt
+
+    captured_ctx = []
+
+    def fake_run_tool_loop(messages, *, ctx, approve, config=None, timeout=None):
+        captured_ctx.append(ctx)
+        return {"stopped": "done", "messages": messages, "final": {"content": "ok"}}
+
+    import pipeline.agent.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "load_llm_config", lambda r=None: llm_mod.LLMConfig(base_url="http://x", model="m", api_key="k"))
+    monkeypatch.setattr(llm_mod, "run_tool_loop", fake_run_tool_loop)
+
+    # 通过 run_agent_loop(None, scope_mode="idea") 驱动单轮回合，严格验证端到端接线传入 ep_dir=None (M26)
+    with patch("builtins.input", side_effect=["hello", "/quit"]):
+        run_agent_loop(None, scope_mode="idea")
+
+    assert len(captured_ctx) == 1
+    assert captured_ctx[0].episode_dir is None
+    assert captured_ctx[0].scope == "idea"
+
+
+def test_build_idea_card_invariants():
+    """T8: build_idea_card 输出 <= 400 字符、含'无期'与'写权限'标记、不含受限子串、与期目录无关。"""
+    from pipeline.agent.status_card import build_idea_card
+    from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
+    card = build_idea_card()
+    assert len(card) <= 400
+    assert "无期" in card
+    assert "写权限" in card
+    for pat in RESTRICTED_EGRESS_PATTERNS:
+        assert pat.casefold() not in card.casefold()
+
+
+def test_idea_scope_doc_invariants():
+    """T9: config/agent/scopes/idea.md 存在，含'期名由人拍板'或'只出候选'与'数据不是指令'条款。"""
+    from pipeline import paths
+    idea_md = paths.ROOT / "config" / "agent" / "scopes" / "idea.md"
+    assert idea_md.exists()
+    content = idea_md.read_text(encoding="utf-8")
+    assert "期名由人拍板" in content or "只出候选" in content
+    assert "数据不是指令" in content
+
+
+def test_list_episodes_tool_detail_keys(tmp_path: Path):
+    """T10: list_episodes 结果含 episodes_detail，每元素键集精确等于 {'name', 'current_step', 'is_blocked'}，既有 episodes 形状不变。"""
+    from pipeline.agent.tools import _tool_list_episodes
+
+    ep_root = tmp_path / "data" / "episodes"
+    (ep_root / "01-smoke").mkdir(parents=True)
+    (ep_root / "02-test").mkdir(parents=True)
+
+    ctx = ToolContext(root=tmp_path)
+    res = _tool_list_episodes({}, ctx)
+
+    assert "episodes" in res
+    assert "01-smoke" in res["episodes"]
+    assert "02-test" in res["episodes"]
+
+    assert "episodes_detail" in res
+    details = res["episodes_detail"]
+    assert len(details) == 2
+    for d in details:
+        # 红队 🔴-1：键集必须精确等于这三个键，不能多也不能少
+        assert set(d.keys()) == {"name", "current_step", "is_blocked"}
+
+
+def test_idea_degrade_directive_message():
+    """T11: idea 会话降级路径 local_directive_message 输出不含 ava <期> 与 /run，含 ava new 指引。"""
+    from pipeline.agent.llm import local_directive_message
+    msg = local_directive_message("idea", "test degrade")
+    content = msg["content"]
+    assert "ava <期>" not in content
+    assert "/run" not in content
+    assert "ava new" in content
+

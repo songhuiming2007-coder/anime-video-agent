@@ -289,3 +289,161 @@ def test_status_advisory_and_board_read_the_recorded_hours(tmp_path: Path, monke
     assert record_human_time(ep, "03.5", 0.0, 1200.0) == 20.0  # 20 分钟
     advisories = inspect_episode(ep).advisories
     assert any("人类耗时超预算" in a for a in advisories), advisories
+
+
+# ---------------------------------------------------------------------------
+# T1–T5: 无期选题会话入口与启动形态改造测试 (Spec 2026-09-21-ava-entry-idea-scope §5.1)
+# ---------------------------------------------------------------------------
+
+
+def test_select_episode_interactive_anti_drift_and_sentinel(tmp_path: Path):
+    """T1: 通用防漂移断言——解析 select prompt 的'词=说明'对并验证解析分支；输入 'idea' 返回 IDEA_KEYWORD sentinel。"""
+    import re
+    from unittest.mock import patch
+    from pipeline.agent.cli import IDEA_KEYWORD, select_episode_interactive
+
+    ep1 = tmp_path / "01-alpha"
+    ep2 = tmp_path / "02-beta"
+    ep1.mkdir()
+    ep2.mkdir()
+    episodes = [ep1, ep2]
+
+    # 1. 拦截 input 以获取实际的 prompt 字符串
+    captured_prompt = []
+
+    def fake_input(prompt=""):
+        captured_prompt.append(prompt)
+        return IDEA_KEYWORD
+
+    with patch("builtins.input", side_effect=fake_input):
+        res = select_episode_interactive(episodes)
+        assert res == IDEA_KEYWORD
+
+    assert captured_prompt
+    prompt_str = captured_prompt[0]
+    assert IDEA_KEYWORD in prompt_str
+
+    # 2. 解析 prompt 中除期名段之外的 "词=说明" 关键词列表 (v1.2 🔵-R2)
+    # prompt 形式如: "... [回车默认选 1: 01-alpha, idea=选题会话]: "
+    match = re.search(r"\[(.*?)\]", prompt_str)
+    inner = match.group(1) if match else prompt_str
+    # 逗号分隔各段，过滤掉包含 "回车默认选" 的期名段，提取剩余包含 "=" 的 "词=说明"
+    parts = [p.strip() for p in inner.split(",") if "回车默认选" not in p and "=" in p]
+    keyword_pairs = {}
+    for part in parts:
+        k, v = part.split("=", 1)
+        keyword_pairs[k.strip()] = v.strip()
+
+    assert IDEA_KEYWORD in keyword_pairs, f"prompt 中未声明关键词 {IDEA_KEYWORD}"
+
+    # 对 prompt 中声明的每个关键词，验证 select_episode_interactive 能够识别并返回对应 sentinel
+    for kw in keyword_pairs:
+        with patch("builtins.input", return_value=kw):
+            result = select_episode_interactive(episodes)
+            assert result == kw, f"关键词 '{kw}' 无法被 select_episode_interactive 正常解析"
+
+
+def test_main_idea_subcommand_dispatch_and_extra_args(monkeypatch):
+    """T2: main(['idea']) 在 tty 下以 (None, scope_mode='idea') 调 run_agent_loop；带多余参数报错退出非零。"""
+    from pipeline.agent.cli import main
+    import sys
+
+    calls = []
+
+    def fake_run_agent_loop(ep_dir, scope_mode="auto", **kwargs):
+        calls.append((ep_dir, scope_mode))
+        return 0
+
+    monkeypatch.setattr("pipeline.agent.cli.run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    # 正常调用
+    rc = main(["idea"])
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0] == (None, "idea")
+
+    # 多余参数：退出非零
+    rc_bad = main(["idea", "extra", "param"])
+    assert rc_bad != 0
+    assert len(calls) == 1  # 未增加新调用
+
+
+def test_board_flow_routes_sentinel_to_run_agent_loop(tmp_path: Path, monkeypatch):
+    """T3: 看板流交互选择返回 sentinel 时，路由到 run_agent_loop(None, scope_mode='idea') 而非 run_repl。"""
+    from pipeline.agent.cli import IDEA_KEYWORD, main
+    from pipeline import paths
+    import sys
+
+    ep_root = tmp_path / "data" / "episodes"
+    ep_dir = ep_root / "01-test"
+    ep_dir.mkdir(parents=True)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    loop_calls = []
+    repl_calls = []
+    monkeypatch.setattr("pipeline.agent.cli.select_episode_interactive", lambda eps: IDEA_KEYWORD)
+    monkeypatch.setattr("pipeline.agent.cli.run_agent_loop", lambda ep, scope_mode="auto", **kw: loop_calls.append((ep, scope_mode)) or 0)
+    monkeypatch.setattr("pipeline.agent.cli.run_repl", lambda ep: repl_calls.append(ep) or 0)
+
+    rc = main([])
+    assert rc == 0
+    assert len(loop_calls) == 1
+    assert loop_calls[0] == (None, "idea")
+    assert len(repl_calls) == 0
+
+
+def test_main_new_enters_repl_in_tty(tmp_path: Path, monkeypatch):
+    """T4: main(['new', name]) 在 tty 下建目录后直接以新期目录调用 run_repl；重名 exit 1 且不进对话。"""
+    from pipeline.agent.cli import main
+    from pipeline import paths
+    import sys
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    repl_calls = []
+    monkeypatch.setattr("pipeline.agent.cli.run_repl", lambda ep: repl_calls.append(ep) or 0)
+
+    # 1. 成功创建并进入 run_repl
+    rc = main(["new", "01-new-ep"])
+    assert rc == 0
+    assert len(repl_calls) == 1
+    assert repl_calls[0].name == "01-new-ep"
+    assert repl_calls[0].exists()
+
+    # 2. 重名必拒，且不调用 run_repl
+    rc_dup = main(["new", "01-new-ep"])
+    assert rc_dup == 1
+    assert len(repl_calls) == 1  # 依然是 1
+
+
+def test_non_tty_dual_gates_for_new_and_idea(tmp_path: Path, monkeypatch, capsys):
+    """T5: 非 tty 环境下 main(['new', name]) 与 main(['idea']) 均 exit 0 且不进入交互循环。"""
+    from pipeline.agent.cli import main
+    from pipeline import paths
+    import sys
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    repl_calls = []
+    loop_calls = []
+    monkeypatch.setattr("pipeline.agent.cli.run_repl", lambda ep: repl_calls.append(ep) or 0)
+    monkeypatch.setattr("pipeline.agent.cli.run_agent_loop", lambda ep, scope_mode="auto", **kw: loop_calls.append((ep, scope_mode)) or 0)
+
+    # 1. ava new 在非 tty 下建目录但退出 0，不调 run_repl
+    rc_new = main(["new", "02-non-tty-ep"])
+    assert rc_new == 0
+    assert len(repl_calls) == 0
+    assert (tmp_path / "data" / "episodes" / "02-non-tty-ep").exists()
+
+    # 2. ava idea 在非 tty 下打印说明退出 0，不调 run_agent_loop
+    rc_idea = main(["idea"])
+    assert rc_idea == 0
+    assert len(loop_calls) == 0
+    captured = capsys.readouterr()
+    assert "ava idea" in captured.out
+    assert "选题" in captured.out
+

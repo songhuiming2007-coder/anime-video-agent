@@ -29,6 +29,9 @@ from pipeline.status import EpisodeStatus, format_status, inspect_episode
 # 人类停机点集合（Spec §2.6）
 HUMAN_STOPS: set[str] = {"02.5", "03.5", "05", "09"}
 
+# 选期与子命令共用的关键词唯一真源（Spec §2.4）
+IDEA_KEYWORD = "idea"
+
 
 def check_code_freeze() -> bool:
     """检查 pipeline/ 源码是否存在未提交改动（Spec §2.4 Code Freeze 护栏）。
@@ -197,13 +200,13 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
     print("=" * 70)
 
 
-def select_episode_interactive(episodes: list[Path]) -> Path | None:
-    """交互选择期目录（Spec §2.3 输入语义：回车=1，数字=序号，字符串=期名）。"""
+def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
+    """交互选择期目录（Spec §2.3 输入语义：回车=1，数字=序号，字符串=期名，idea=选题会话）。"""
     if not episodes:
         return None
 
     while True:
-        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}]: "
+        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, {IDEA_KEYWORD}=选题会话]: "
         try:
             choice = input(prompt).strip()
         except EOFError:
@@ -211,6 +214,9 @@ def select_episode_interactive(episodes: list[Path]) -> Path | None:
 
         if not choice:
             return episodes[0]
+
+        if choice == IDEA_KEYWORD:
+            return IDEA_KEYWORD
 
         if choice.isdigit():
             idx = int(choice)
@@ -500,13 +506,13 @@ def classify_input(line: str) -> str:
 
 
 def assemble_system_prompt(
-    ep_dir: Path,
+    ep_dir: Path | None,
     scope: str,
-    status: EpisodeStatus,
+    status: EpisodeStatus | None = None,
     extra_prompt: str = "",
     root: Path | None = None,
 ) -> str:
-    """重组装 messages[0]：director 人格 + 当前 scope 边界段 + 状态卡（Spec §1.3）。"""
+    """重组装 messages[0]：director 人格 + 当前 scope 边界段 + 状态卡（Spec §1.3, §2.3）。"""
     scopes_dir = get_scopes_dir(root)
     director_file = scopes_dir / "director.md"
     director_prompt = (
@@ -520,7 +526,11 @@ def assemble_system_prompt(
     if extra_prompt:
         scope_prompt = f"{scope_prompt}\n\n{extra_prompt}"
 
-    card = build_status_card(ep_dir, status, scope=scope)
+    if ep_dir is None:
+        from pipeline.agent.status_card import build_idea_card
+        card = build_idea_card()
+    else:
+        card = build_status_card(ep_dir, status, scope=scope)
     return f"{director_prompt}\n\n---\n\n{scope_prompt}\n\n---\n\n{card}"
 
 
@@ -630,9 +640,9 @@ def _default_approve(
 def _dispatch_agent_turn(
     line: str,
     messages: list[dict[str, Any]],
-    ep_dir: Path,
+    ep_dir: Path | None,
     scope: str,
-    status: EpisodeStatus,
+    status: EpisodeStatus | None = None,
     extra_prompt: str = "",
     root: Path | None = None,
     approve_cb: Callable[[str, dict], bool] | None = None,
@@ -696,21 +706,63 @@ def _dispatch_agent_turn(
 
 
 def run_agent_loop(
-    ep_dir: Path,
+    ep_dir: Path | None,
     scope_mode: str = "auto",
     extra_prompt: str = "",
     *,
     root: Path | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> int:
-    """统一 Agent 对话循环（Spec §1.1, §1.2, §6 PR5）。
+    """统一 Agent 对话循环（Spec §1.1, §1.2, §2.1, §6 PR5）。
 
     - scope_mode="auto": 主会话 REPL，每轮 scope_of(inspect_episode(ep_dir)) 热推导；
-    - scope_mode="creative": /chat /script 聚焦模式，拥有独立 messages，退出后主会话不受污染。
+    - scope_mode="creative": /chat /script 聚焦模式，拥有独立 messages，退出后主会话不受污染；
+    - scope_mode="idea": 无期选题会话，独立 messages，写权限为零。
     全仓库只保留这一份聊天循环实现。
     """
     if scope_mode == "auto":
+        if ep_dir is None:
+            raise ValueError("auto 模式必须提供 ep_dir")
         return _run_repl_body(ep_dir, on_step=on_step, root=root)
+
+    if scope_mode == "idea":
+        from pipeline.agent.llm import load_llm_config, local_directive_message
+
+        if load_llm_config(root) is None:
+            print(local_directive_message("idea", "缺少 config/agent.json 或环境变量密钥")["content"])
+            return 0
+
+        print("\n" + "=" * 68)
+        print("  ava 选题会话（idea scope · 无期目录）")
+        print("  - 写权限为零（机制保证，不修改任何文件）")
+        print("  - 可通过 read_status 查看既有期状态，或通过 search_notes 查阅番剧笔记")
+        print("  - 讨论定稿后退出本会话，运行 'ava new <期名>' 创建新期")
+        print("=" * 68)
+
+        sub_messages: list[dict[str, Any]] = []
+        while True:
+            try:
+                line = input("\nava [选题] (idea) > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[退出 idea 模式]")
+                return 0
+            if not line:
+                continue
+            if line in ("/quit", "/exit", "quit", "exit", "/done"):
+                print("[退出 idea 模式]")
+                return 0
+
+            outcome = _dispatch_agent_turn(
+                line,
+                sub_messages,
+                None,
+                "idea",
+                None,
+                extra_prompt=extra_prompt,
+                root=root,
+            )
+            if outcome.get("stopped") == "degraded":
+                return 0
 
     # 聚焦子模式（如 creative scope 独立子循环）
     from pipeline.agent.llm import load_llm_config, local_directive_message
@@ -971,13 +1023,28 @@ def resolve_episode_target(target: str) -> Path | None:
     return None
 
 
+def _print_idea_non_tty_help() -> None:
+    """非 TTY 环境下打印 idea 会话说明（Spec §3.3）。"""
+    print(
+        "ava idea: 无期选题会话（idea scope）\n"
+        "说明: 该模式为交互式选题与立项讨论，写权限为零，需在交互终端（TTY）中运行。\n"
+        "等价手动路径: 人工阅读 data/library/notes/ 中的番剧笔记，确定选题与张力后，运行 'ava new <期名>' 创建新期。"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """ava 统一入口。"""
     args = argv if argv is not None else sys.argv[1:]
 
     # 子命令 1: ava new <期号>
     if len(args) >= 2 and args[0] == "new":
-        return create_new_episode(args[1])
+        rc = create_new_episode(args[1])
+        if rc != 0:
+            return rc
+        if not sys.stdin.isatty():
+            return 0
+        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]
+        return run_repl(new_ep_dir)
 
     # 无参数：看板模式
     if not args:
@@ -999,9 +1066,21 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         target = select_episode_interactive(episodes)
+        if target == IDEA_KEYWORD:
+            return run_agent_loop(None, scope_mode="idea")
         if not target:
             return 0
         return run_repl(target)
+
+    # 子命令 2: ava idea (无期选题会话)
+    if args[0] == IDEA_KEYWORD:
+        if len(args) > 1:
+            print(f"[ERROR] '{IDEA_KEYWORD}' 不接受多余参数: {' '.join(args[1:])}", file=sys.stderr)
+            return 1
+        if not sys.stdin.isatty():
+            _print_idea_non_tty_help()
+            return 0
+        return run_agent_loop(None, scope_mode="idea")
 
     # 传了期目录或期号
     target_arg = args[0]

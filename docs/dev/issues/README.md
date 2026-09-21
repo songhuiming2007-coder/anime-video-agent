@@ -54,6 +54,7 @@
 | N25 | 备忘 | 歌词混入 JPN 对白轨且无独立 style（君名本版片源），style 过滤对其无效 | `pipeline/subindex.py:67-82` | — | 2026-09-01 Phase 0 绕过；下部电影/下版片源会再踩 |
 | N28 | 备忘 | 非终端信号（`kill -INT <ava pid>`）下 ffmpeg 孙进程存活并继续写输出 | `pipeline/agent/tools.py::run_pipeline` | ava-impl-spec §3.3, 变异 M21 | 2026-09-20 终审登记：**终端 Ctrl-C 不成立**（SIGINT 发给整个前台进程组，且 render.py 的 `subprocess.run` 中断时自 kill）。堵法 `Popen(start_new_session=True)` + 中断时 `os.killpg(SIGKILL)`，代价是子进程从此不再收终端 Ctrl-C、中断唯一入口变成我们的处理器，须拿真渲染复验（实测忠实版中断耗时 0.26s，`4.27s` 那个数字是造了持管道的孙进程所致，已撤回） |
 | N27 | 备忘 | 夏隧的 scene_threshold=10.0 是沿用值，标定实录缺失 | `config/project.json` visual | ADR-0003 | 2026-09-05 审计发现；伪恋已于当日补标定销号（维持 10.0，实录见 config 注记）；夏隧仅 1 集镜头表，补跑 calibrate 即可 |
+| D27 | 待决策（spec 已出，待终审） | 立项前工作无入口：ava 启动形态缺无期选题会话 | `pipeline/agent/cli.py`（`create_new_episode` / `select_episode_interactive` / `main`） | ava-entry-idea-scope 方案, impl-spec §2.3 | 需求交接 2026-09-20（容器先于内容的顺序倒置）；2026-09-21 spec 已立项；实施时序受需求 §11 约束（当期真片跑完前不动启动路径） |
 
 ---
 

@@ -118,6 +118,17 @@ def build_status_card(
     return card
 
 
+def build_idea_card() -> str:
+    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""
+    return (
+        "[状态卡]\n"
+        "模式: 选题会话（无期） | scope: idea | 写权限: 无（机制保证）\n"
+        "读域: data/library/ 与跨期 read_status\n"
+        "产出落盘: 讨论定稿后运行 ava new <名>，在新期会话中完成写入"
+    )
+
+
+
 def _matches_flag_prefix(tokens: list[str], full_flag: str) -> bool:
     """匹配完整旗标或其 argparse 缩写前缀（如 --app 匹配 --approve）。"""
     for t in tokens:
