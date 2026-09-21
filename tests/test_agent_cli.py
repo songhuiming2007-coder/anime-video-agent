@@ -313,6 +313,8 @@ def test_select_episode_interactive_anti_drift_and_sentinel(tmp_path: Path):
 
     def fake_input(prompt=""):
         captured_prompt.append(prompt)
+        if len(captured_prompt) > 1:
+            raise RuntimeError("select_episode_interactive 未识别关键词而陷入重试")
         return IDEA_KEYWORD
 
     with patch("builtins.input", side_effect=fake_input):
@@ -337,8 +339,9 @@ def test_select_episode_interactive_anti_drift_and_sentinel(tmp_path: Path):
     assert IDEA_KEYWORD in keyword_pairs, f"prompt 中未声明关键词 {IDEA_KEYWORD}"
 
     # 对 prompt 中声明的每个关键词，验证 select_episode_interactive 能够识别并返回对应 sentinel
+    # 使用单元素 side_effect：若未被识别为关键词而进入重试循环，将立刻抛出 StopIteration 失败而不是死循环
     for kw in keyword_pairs:
-        with patch("builtins.input", return_value=kw):
+        with patch("builtins.input", side_effect=[kw]):
             result = select_episode_interactive(episodes)
             assert result == kw, f"关键词 '{kw}' 无法被 select_episode_interactive 正常解析"
 
