@@ -83,6 +83,11 @@ def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
             "  1. 01-topic.md：番 / 类型 / 锚点 / 张力 是否填齐（张力是唯一编辑判断，不许代填）；\n"
             "  2. 02-script.draft.md：写完跑 `python -m pipeline.check_script` 至全绿；\n"
         )
+    elif scope == "idea":
+        steps = (
+            "  1. 人工阅读 `data/library/notes/` 对应的番剧笔记，梳理候选张力与锚点；\n"
+            "  2. 想好选题后运行 `ava new <名>` 创建新期并进入对话；\n"
+        )
     else:
         steps = (
             f"  1. 本 scope（{scope}）的清单见 docs/WORKFLOW.md 与对应 runbook，逐条人工核对；\n"

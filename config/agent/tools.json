@@ -12,5 +12,11 @@
     "list_episodes",
     "run_pipeline"
   ],
-  "asset": []
+  "asset": [],
+  "idea": [
+    "read_artifact",
+    "list_episodes",
+    "read_status",
+    "search_notes"
+  ]
 }

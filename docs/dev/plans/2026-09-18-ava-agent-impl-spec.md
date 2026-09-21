@@ -1,9 +1,15 @@
 # Implementation Spec：ava 统一 CLI Agent Harness
 
-日期：2026-09-19（**v1.20**，第二十轮人类预算口径更正；版本号由
+日期：2026-09-21（**v1.21**，第二十一轮启动入口改造扩展；版本号由
 `tests/test_docs_invariants.py` 断言与状态行一致——B1-r19）
 上位文档：`docs/dev/plans/2026-09-18-ava-agent-harness.md`（施工图）
-状态：**v1.20 已评审，开工**
+状态：**v1.21 已评审，开工**
+
+> **启动入口改造注记（2026-09-21，v1.21）**：根据
+> [`2026-09-21-ava-entry-idea-scope.md`](2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
+> ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零）；
+> ② `ava new <名>` 建完目录后直接以新期目录进入对话（tty 下）；
+> ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。
 
 > **后继扩展注记（2026-09-20）**：本 Spec 的默认交互层（原将 AI 约束于 `/chat`、`/script` 子循环）
 > 已由后继 Spec [`2026-09-20-ava-ai-native-director-spec.md`](2026-09-20-ava-ai-native-director-spec.md)（v1.4）
@@ -311,9 +317,11 @@ ava                       # 根目录看板：各期 current_step + advisories�
                           #（data/episodes 未挂载时走 status.main 同款
                           # 「可能外置硬盘未挂载」分支，不显示空看板，B5-r7）
                           # 选择输入语义写死 (B2-r8)：回车 = 第 1 行；数字 = 序号；
-                          # 字符串 = 当期号直跳；非法输入重提示不猜测
+                          # 字符串 = 当期号直跳；idea = 选题会话（D27）；非法输入重提示不猜测
 ava <期目录|期号>
 ava <期> /voice           # 直达指定模式
+ava new <期号>            # 创建新期目录与 01-topic.md，tty 下直接进该期对话（D27）
+ava idea                  # 无期选题会话（idea scope，只读 4 工具，写权限为零，D27）
 ```
 
 **非 tty 降级** (B2-r5)：看板/REPL 的 `input()` 在非 tty（tmux detached、脚本调用、

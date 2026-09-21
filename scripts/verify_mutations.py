@@ -51,6 +51,8 @@ LLM = "pipeline/agent/llm.py"
 TOOLS = "pipeline/agent/tools.py"
 CARD = "pipeline/agent/status_card.py"
 DOC = "config/agent/scopes/director.md"
+TOOLS_JSON = "config/agent/tools.json"
+IDEA_DOC = "config/agent/scopes/idea.md"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -216,6 +218,149 @@ MUTATIONS: list[dict] = [
              '    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)'),
      "new": ('    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))\n'
              '    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))')},
+    # ---- M22a–M30: idea scope 与启动入口改造变异 (2026-09-21 Spec §5.1) ----
+    {"id": "M22a", "guard": "select_episode_interactive 关键词 sentinel 分支", "file": CLI,
+     "old": '        if choice == IDEA_KEYWORD:\n            return IDEA_KEYWORD\n',
+     "new": '        pass\n'},
+    {"id": "M22b", "guard": "main idea 子命令前置分派", "file": CLI,
+     "old": ('    # 子命令 2: ava idea (无期选题会话)\n'
+             '    if args[0] == IDEA_KEYWORD:\n'
+             '        if len(args) > 1:\n'
+             '            print(f"[ERROR] \'{IDEA_KEYWORD}\' 不接受多余参数: {\' \'.join(args[1:])}", file=sys.stderr)\n'
+             '            return 1\n'
+             '        if not sys.stdin.isatty():\n'
+             '            _print_idea_non_tty_help()\n'
+             '            return 0\n'
+             '        return run_agent_loop(None, scope_mode="idea")\n'),
+     "new": '    pass\n'},
+    {"id": "M23", "guard": "ava new 建完直接进对话", "file": CLI,
+     "old": ('    # 子命令 1: ava new <期号>\n'
+             '    if len(args) >= 2 and args[0] == "new":\n'
+             '        rc = create_new_episode(args[1])\n'
+             '        if rc != 0:\n'
+             '            return rc\n'
+             '        if not sys.stdin.isatty():\n'
+             '            return 0\n'
+             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]\n'
+             '        return run_repl(new_ep_dir)\n'),
+     "new": ('    # 子命令 1: ava new <期号>\n'
+             '    if len(args) >= 2 and args[0] == "new":\n'
+             '        return create_new_episode(args[1])\n')},
+    {"id": "M24", "guard": "idea scope 工具表零写权限（纯只读）", "file": TOOLS_JSON,
+     "old": ('  "idea": [\n'
+             '    "read_artifact",\n'
+             '    "list_episodes",\n'
+             '    "read_status",\n'
+             '    "search_notes"\n'
+             '  ]'),
+     "new": ('  "idea": [\n'
+             '    "read_artifact",\n'
+             '    "write_episode_file",\n'
+             '    "list_episodes",\n'
+             '    "read_status",\n'
+             '    "search_notes"\n'
+             '  ]')},
+    {"id": "M25a", "guard": "ava new 非 tty 闸门", "file": CLI,
+     "old": ('        if not sys.stdin.isatty():\n'
+             '            return 0\n'
+             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]'),
+     "new": ('        if sys.stdin.isatty():\n'
+             '            return 0\n'
+             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]')},
+    {"id": "M25b", "guard": "ava idea 非 tty 闸门", "file": CLI,
+     "old": ('        if not sys.stdin.isatty():\n'
+             '            _print_idea_non_tty_help()\n'
+             '            return 0\n'
+             '        return run_agent_loop(None, scope_mode="idea")'),
+     "new": ('        if sys.stdin.isatty():\n'
+             '            _print_idea_non_tty_help()\n'
+             '            return 0\n'
+             '        return run_agent_loop(None, scope_mode="idea")')},
+    {"id": "M26", "guard": "idea 回合 ep_dir=None 绝不传入真实期目录", "file": CLI,
+     "old": ('            outcome = _dispatch_agent_turn(\n'
+             '                line,\n'
+             '                sub_messages,\n'
+             '                None,\n'
+             '                "idea",\n'
+             '                None,\n'
+             '                extra_prompt=extra_prompt,\n'
+             '                root=root,\n'
+             '            )'),
+     "new": ('            outcome = _dispatch_agent_turn(\n'
+             '                line,\n'
+             '                sub_messages,\n'
+             '                paths.ROOT / "data" / "episodes" / "01-smoke",\n'
+             '                "idea",\n'
+             '                None,\n'
+             '                extra_prompt=extra_prompt,\n'
+             '                root=root,\n'
+             '            )')},
+    {"id": "M27a1", "guard": "select prompt 文案引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
+     "old": '        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, {IDEA_KEYWORD}=选题会话]: "',
+     "new": '        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, idea_drift=选题会话]: "'},
+    {"id": "M27a2", "guard": "select 解析分支引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
+     "old": ('        if choice == IDEA_KEYWORD:\n'
+             '            return IDEA_KEYWORD'),
+     "new": ('        if choice == "idea_drift":\n'
+             '            return "idea_drift"')},
+    {"id": "M27a3", "guard": "main 分派处引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
+     "old": ('    # 子命令 2: ava idea (无期选题会话)\n'
+             '    if args[0] == IDEA_KEYWORD:\n'
+             '        if len(args) > 1:'),
+     "new": ('    # 子命令 2: ava idea (无期选题会话)\n'
+             '    if args[0] == "idea_drift":\n'
+             '        if len(args) > 1:')},
+    {"id": "M27b", "guard": "看板流分派 sentinel 到 run_agent_loop（防类型混线）", "file": CLI,
+     "old": ('        target = select_episode_interactive(episodes)\n'
+             '        if target == IDEA_KEYWORD:\n'
+             '            return run_agent_loop(None, scope_mode="idea")\n'
+             '        if not target:\n'
+             '            return 0\n'
+             '        return run_repl(target)'),
+     "new": ('        target = select_episode_interactive(episodes)\n'
+             '        if not target:\n'
+             '            return 0\n'
+             '        return run_repl(target)')},
+    {"id": "M27c", "guard": "list_episodes episodes_detail 键集精确等于 {name, current_step, is_blocked}", "file": TOOLS,
+     "old": ('    episodes_detail = [\n'
+             '        {\n'
+             '            "name": ep.name,\n'
+             '            "current_step": inspect_episode(ep).current_step,\n'
+             '            "is_blocked": inspect_episode(ep).is_blocked,\n'
+             '        }\n'
+             '        for ep in episodes\n'
+             '    ]'),
+     "new": ('    episodes_detail = [\n'
+             '        {\n'
+             '            "name": ep.name,\n'
+             '            "current_step": inspect_episode(ep).current_step,\n'
+             '            "is_blocked": inspect_episode(ep).is_blocked,\n'
+             '            "advisories": inspect_episode(ep).advisories,\n'
+             '        }\n'
+             '        for ep in episodes\n'
+             '    ]')},
+    {"id": "M28", "guard": "config/agent/scopes/idea.md 保留期名由人拍板条款", "file": IDEA_DOC,
+     "old": '**期名由人拍板，模型只出候选**',
+     "new": '模型代为敲定期名'},
+    {"id": "M29", "guard": "build_idea_card 纯静态卡（不注入期名或外来状态卡）", "file": CARD,
+     "old": ('def build_idea_card() -> str:\n'
+             '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'
+             '    return (\n'
+             '        "[状态卡]\\n"\n'
+             '        "模式: 选题会话（无期） | scope: idea | 写权限: 无（机制保证）\\n"\n'
+             '        "读域: data/library/ 与跨期 read_status\\n"\n'
+             '        "产出落盘: 讨论定稿后运行 ava new <名>，在新期会话中完成写入"\n'
+             '    )'),
+     "new": ('def build_idea_card() -> str:\n'
+             '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'
+             '    return "[状态卡]\\n期名: 01-smoke | 工序: 01-topic\\n"')},
+    {"id": "M30", "guard": "local_directive_message idea scope 指引分支", "file": LLM,
+     "old": ('    elif scope == "idea":\n'
+             '        steps = (\n'
+             '            "  1. 人工阅读 `data/library/notes/` 对应的番剧笔记，梳理候选张力与锚点；\\n"\n'
+             '            "  2. 想好选题后运行 `ava new <名>` 创建新期并进入对话；\\n"\n'
+             '        )'),
+     "new": '    pass'},
 ]
 
 

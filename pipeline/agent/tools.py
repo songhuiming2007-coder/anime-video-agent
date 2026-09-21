@@ -379,7 +379,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_episodes": {
         "name": "list_episodes",
         "side_effect": False,
-        "description": "列出可见期目录（排除 . 与 _ 前缀）。无参数。",
+        "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "read_status": {
@@ -542,8 +542,22 @@ def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str
 
 def _tool_list_episodes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     from pipeline.agent.cli import get_episodes_list
+    from pipeline.status import inspect_episode
+
     episodes, hidden = get_episodes_list(root=ctx.root)
-    return {"episodes": [ep.name for ep in episodes], "hidden_underscore": hidden}
+    episodes_detail = [
+        {
+            "name": ep.name,
+            "current_step": inspect_episode(ep).current_step,
+            "is_blocked": inspect_episode(ep).is_blocked,
+        }
+        for ep in episodes
+    ]
+    return {
+        "episodes": [ep.name for ep in episodes],
+        "episodes_detail": episodes_detail,
+        "hidden_underscore": hidden,
+    }
 
 
 def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
