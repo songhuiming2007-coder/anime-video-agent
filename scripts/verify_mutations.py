@@ -359,8 +359,8 @@ MUTATIONS: list[dict] = [
              '        steps = (\n'
              '            "  1. 人工阅读 `data/library/notes/` 对应的番剧笔记，梳理候选张力与锚点；\\n"\n'
              '            "  2. 想好选题后运行 `ava new <名>` 创建新期并进入对话；\\n"\n'
-             '        )'),
-     "new": '    pass'},
+             '        )\n'),
+     "new": ''},
 ]
 
 
