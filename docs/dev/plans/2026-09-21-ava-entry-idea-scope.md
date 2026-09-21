@@ -7,7 +7,7 @@
 `2026-09-18-ava-agent-impl-spec.md`（v1.20，**本 Spec 扩展其 §2.3 写死的启动形态，
 实施落地时以其 v1.21 修订注记收口**，见 §6.9）
 对应 issues：**D27**（本 Spec 开立）
-状态：**待终审（v1.2 已过两轮红队，待人终审）；实施时序受需求 §11 约束（当期真片跑完前不动启动路径代码）**
+状态：**已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）**
 
 > **v1.2 修订来源**：红队复审（v1.1 收口核验 13/13 属实；本轮 1🔴 + 1🔵）。
 > 🔴-R1：M27a 仍为一号三义（三消费点 = harness 三个条目），拆为 M27a1/a2/a3，
@@ -340,6 +340,29 @@ ABORT 硬闸）；编号续 repo 序列（M21 之后）。
 - 变异 → 红条数映射按 PR7 格式回填本节（实施后）；每条变异单独施加、单独
   恢复、收工 `git diff` 确认无残留。
 
+#### 实测变异验证结果（2026-09-21 实施回填）
+
+实测 **15 组变异（M22a–M30）全部杀死测试，无一条杀不死**：
+（注：当前环境未挂载外置数据盘，全量测试包含 2 条基线环境性红灯，以下 red 为 harness 实测总红条数，净红条数 = red - 2）
+
+| 编号 | 变异内容 | 实测 red (净红) | 恰好红预期那组？ | 击杀测试 |
+|---|---|---|---|---|
+| M22a | 删掉 select 的 idea 解析分支 | 3 (1) | 是 | `test_select_episode_interactive_anti_drift_and_sentinel` |
+| M22b | main 的 idea 分派被删 | 4 (2) | 是 | `test_main_idea_subcommand_dispatch_and_extra_args`, `test_non_tty_dual_gates_for_new_and_idea` |
+| M23 | ava new 建完退回原先仅退出不进对话 | 3 (1) | 是 | `test_main_new_enters_repl_in_tty` |
+| M24 | idea 工具表加入 write_episode_file | 3 (1) | 是 | `test_llm_scope_tool_filtering_isolation` |
+| M25a | ava new 路径 isatty 闸被取反 | 4 (2) | 是 | `test_main_new_enters_repl_in_tty`, `test_non_tty_dual_gates_for_new_and_idea` |
+| M25b | ava idea 路径 isatty 闸被取反 | 4 (2) | 是 | `test_main_idea_subcommand_dispatch_and_extra_args`, `test_non_tty_dual_gates_for_new_and_idea` |
+| M26 | idea 回合 _dispatch_agent_turn 传入真实 ep_dir | 3 (1) | 是 | `test_idea_turn_context_and_system_prompt` |
+| M27a1 | select prompt 文案关键词字面量漂移 | 3 (1) | 是 | `test_select_episode_interactive_anti_drift_and_sentinel` |
+| M27a2 | select 解析分支关键词字面量漂移 | 3 (1) | 是 | `test_select_episode_interactive_anti_drift_and_sentinel` |
+| M27a3 | main 分派处关键词字面量漂移 | 4 (2) | 是 | `test_main_idea_subcommand_dispatch_and_extra_args`, `test_non_tty_dual_gates_for_new_and_idea` |
+| M27b | 看板流把 sentinel 当期目录传给 run_repl | 3 (1) | 是 | `test_board_flow_routes_sentinel_to_run_agent_loop` |
+| M27c | list_episodes detail 塞入 advisories | 3 (1) | 是 | `test_list_episodes_tool_detail_keys` |
+| M28 | idea.md 删掉期名由人拍板条款 | 3 (1) | 是 | `test_idea_scope_doc_invariants` |
+| M29 | build_idea_card 换成非静态卡/期名卡 | 4 (2) | 是 | `test_idea_turn_context_and_system_prompt`, `test_build_idea_card_invariants` |
+| M30 | local_directive_message idea 分支被删退回通用分支 | 3 (1) | 是 | `test_idea_degrade_directive_message` |
+
 ---
 
 ## 6. 改动清单（文件 + 锚点，引原文片段，不给行号）
@@ -418,16 +441,16 @@ PYTHONDONTWRITEBYTECODE=1 uv run python scripts/verify_mutations.py --only M22a 
 
 ## 9. 完成判定（可逐项打勾）
 
-- [ ] `ava new <名>` 后停在该期的对话里（tty），非 tty 建完即退 exit 0；
-- [ ] `ava idea` 与选期提示 `idea` 进入同一个无期会话实现；
-- [ ] idea 会话里写工具一次调用都不可达（T6/T7 三层断言）；
-- [ ] idea 会话能读 `data/library/notes/<番>.md`（`read_artifact` /
+- [x] `ava new <名>` 后停在该期的对话里（tty），非 tty 建完即退 exit 0；
+- [x] `ava idea` 与选期提示 `idea` 进入同一个无期会话实现；
+- [x] idea 会话里写工具一次调用都不可达（T6/T7 三层断言）；
+- [x] idea 会话能读 `data/library/notes/<番>.md`（`read_artifact` /
       `search_notes`，data 盘挂载下手动验收）；
-- [ ] 裸 `ava` + 回车一次按键进最近期；非 tty 打印看板即退出（既有用例全绿）；
-- [ ] 既有选期语义与重名必拒测试全绿不改；`SPEC_TOOLS` 扩展是唯一计划内测试改动；
-- [ ] M22a–M30 全跑（15 条），变异 → 红条数映射回填 §5.3，无一条杀不死；
-- [ ] idea 会话降级文案不含 `ava <期>` / `/run`（T11）；
-- [ ] 上述三条验证命令全绿；impl-spec v1.21 修订注记落盘。
+- [x] 裸 `ava` + 回车一次按键进最近期；非 tty 打印看板即退出（既有用例全绿）；
+- [x] 既有选期语义与重名必拒测试全绿不改；`SPEC_TOOLS` 扩展是唯一计划内测试改动；
+- [x] M22a–M30 全跑（15 条），变异 → 红条数映射回填 §5.3，无一条杀不死；
+- [x] idea 会话降级文案不含 `ava <期>` / `/run`（T11）；
+- [x] 上述三条验证命令全绿；impl-spec v1.21 修订注记落盘。
 
 ## 10. 推翻条件（本 Spec 的自毁条款）
 
