@@ -373,3 +373,9 @@ def test_mutation_probe_predicate(tmp_path: Path):
     assert p["patchable"][0]["index"] == 2
     assert len(p["unrescuable"]) == 1
     assert p["unrescuable"][0]["index"] == 1
+
+
+def test_min_clip_constant_sync():
+    """三处 MIN_CLIP 常量值同步焊死（scout / clips / align），防止数值分叉。"""
+    from pipeline import align, clips
+    assert scout.MIN_CLIP == clips.MIN_CLIP == align.REFIT_MIN_CLIP == 2.5
