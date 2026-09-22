@@ -30,7 +30,7 @@ class EpisodeStatus:
 
 
 def _detect_advisories(d: Path) -> list[str]:
-    """常驻检测四条 advisory（Spec §2.2 + §2.6）。
+    """常驻检测六条 advisory（Spec §2.2 + §2.6 + scout §4）。
 
     纪律：常驻性（解耦阶段）、坏文件免疫（各自 try/except）、零重依赖（内联轻逻辑）。
     """
@@ -156,6 +156,36 @@ def _detect_advisories(d: Path) -> list[str]:
                         )
         except Exception as e:
             advisories.append(f"human_time.json 不可读：{e}")
+
+    # 5. 排片落空与补料检测（Spec §4 / scout.probe）
+    try:
+        from . import scout
+        probe_data = scout.probe(d)
+        patchable = probe_data.get("patchable", [])
+        unrescuable = probe_data.get("unrescuable", [])
+        if patchable:
+            advisories.append(
+                f"{len(patchable)} 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）"
+            )
+        elif unrescuable:
+            advisories.append(
+                f"{len(unrescuable)} 段排片失败且补丁池救不了（改锚点或改稿）"
+            )
+    except Exception:
+        pass
+
+    # 6. 素材番笔记缺失检测（Spec §4 / scout.probe）
+    try:
+        from . import scout
+        probe_data = scout.probe(d)
+        missing_notes = probe_data.get("missing_notes", [])
+        if missing_notes:
+            first = missing_notes[0]
+            advisories.append(
+                f"缺《{first}》等 {len(missing_notes)} 部番剧笔记（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> --type notes）"
+            )
+    except Exception:
+        pass
 
     return advisories
 

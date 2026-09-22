@@ -266,6 +266,90 @@ def test_dependency_isolation():
     assert res.returncode == 0, f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 
 
+def test_status_lightweight_isolation():
+    """看板轻量化断言：import pipeline.status 独立执行绝对不污染 numpy。"""
+    cmd = [
+        sys.executable,
+        "-c",
+        "import pipeline.status, sys; assert 'numpy' not in sys.modules, 'FAIL: numpy 泄漏进了 status 模块！'",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}"
+
+
+def test_status_advisories_no_fork(tmp_path: Path):
+    """构造假期目录验证 status 输出的 advisory 文案与 scout 探针严格对应、正确无分叉。"""
+    from pipeline.status import _detect_advisories
+
+    # 1. 待补料段（patchable 非空）：提示 N 段排片落空可补料
+    ep_patchable = tmp_path / "ep_patchable"
+    ep_patchable.mkdir()
+    _create_clips(ep_patchable, [
+        {"index": 1, "channel": "scene", "status": "no_match", "duration": 5.0, "clips": []},
+        {"index": 2, "channel": "scene", "status": "short", "duration": 6.0, "clips": [{"dur": 3.0}]},  # residual 3.0 >= 2.5
+    ])
+    adv1 = _detect_advisories(ep_patchable)
+    assert "2 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）" in adv1
+    assert not any("补丁池救不了" in a for a in adv1)
+
+    # 2. 混合情况（有 patchable 也有 unrescuable）：优先提示可补料，不报救不了
+    ep_mixed = tmp_path / "ep_mixed"
+    ep_mixed.mkdir()
+    _create_clips(ep_mixed, [
+        {"index": 1, "channel": "scene", "status": "no_match", "duration": 5.0, "clips": []},
+        {"index": 2, "channel": "anchor", "status": "short", "duration": 5.0, "clips": [{"dur": 2.0}]},  # anchor 不可救
+    ])
+    adv_mixed = _detect_advisories(ep_mixed)
+    assert "1 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）" in adv_mixed
+    assert not any("补丁池救不了" in a for a in adv_mixed)
+
+    # 3. 纯不可救段（unrescuable 非空但 patchable 为空）：提示 N 段失败且补丁池救不了
+    ep_unrescuable = tmp_path / "ep_unrescuable"
+    ep_unrescuable.mkdir()
+    _create_clips(ep_unrescuable, [
+        {"index": 1, "channel": "anchor", "status": "no_match", "duration": 5.0, "clips": []},
+        {"index": 2, "channel": "scene", "status": "short", "duration": 5.0, "clips": [{"dur": 3.0}]},  # residual 2.0 < 2.5
+    ])
+    adv2 = _detect_advisories(ep_unrescuable)
+    assert "2 段排片失败且补丁池救不了（改锚点或改稿）" in adv2
+    assert not any("可补料" in a for a in adv2)
+
+    # 4. 缺失番剧笔记（missing_notes 非空）
+    ep_notes = tmp_path / "ep_notes"
+    ep_notes.mkdir()
+    _create_topic(ep_notes, "番: 葬送的芙莉莲, 迷宫饭\n")
+    adv3 = _detect_advisories(ep_notes)
+    assert "缺《葬送的芙莉莲》等 2 部番剧笔记（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> --type notes）" in adv3
+
+    # 5. 异常容错（坏 04-clips.json 按 S4 优雅跳过，绝不抛出异常）
+    ep_corrupt = tmp_path / "ep_corrupt"
+    ep_corrupt.mkdir()
+    (ep_corrupt / "04-clips.json").write_text("{invalid-json", encoding="utf-8")
+    adv_corrupt = _detect_advisories(ep_corrupt)
+    assert isinstance(adv_corrupt, list)
+
+
+def test_clips_footer_guidance_dispatch(tmp_path: Path):
+    """验证 clips.py 失败页脚所调 probe 逻辑的分流一致性。"""
+    # 可救缺口
+    ep_p = tmp_path / "ep_probe_p"
+    ep_p.mkdir()
+    _create_clips(ep_p, [
+        {"index": 1, "channel": "scene", "status": "no_match", "duration": 5.0, "clips": []}
+    ])
+    p1 = scout.probe(ep_p)
+    assert bool(p1.get("patchable")) is True
+    # 纯不可救
+    ep_u = tmp_path / "ep_probe_u"
+    ep_u.mkdir()
+    _create_clips(ep_u, [
+        {"index": 1, "channel": "anchor", "status": "no_match", "duration": 5.0, "clips": []}
+    ])
+    p2 = scout.probe(ep_u)
+    assert not p2.get("patchable")
+    assert bool(p2.get("unrescuable")) is True
+
+
 def test_mutation_probe_predicate(tmp_path: Path):
     """变异检验：故意改坏谓词断言必红（检验 2.5s 边界与 anchor 排除）。"""
     ep = tmp_path / "ep_mut"

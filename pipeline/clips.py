@@ -1338,6 +1338,15 @@ def main() -> int:
     print(f"{len(segs)} 段 / {n_clips} 个片段 / {data['total_duration']:.1f}s → {dest}")
     if bad:
         print(f"★ {bad} 段不是 ok，渲染前必须处理")
+        try:
+            from . import scout
+            p_res = scout.probe(episode)
+            if p_res.get("patchable"):
+                print("  → 存在可补料缺口，REPL 内敲 /scout 生成派工单")
+            elif p_res.get("unrescuable"):
+                print("  → 失败段补丁池结构上无法救回，请改锚点或修改文案")
+        except Exception:
+            pass
     n_ext = sum(1 for s in segs if s["status"] == "ok_extended")
     if n_ext:
         print(f"◆ {n_ext} 段尾帧定格补足（ok_extended），审片时留意末段定格")
