@@ -266,13 +266,22 @@ def test_dependency_isolation():
     assert res.returncode == 0, f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 
 
-def test_status_lightweight_isolation():
-    """看板轻量化断言：import pipeline.status 独立执行绝对不污染 numpy。"""
-    cmd = [
-        sys.executable,
-        "-c",
-        "import pipeline.status, sys; assert 'numpy' not in sys.modules, 'FAIL: numpy 泄漏进了 status 模块！'",
-    ]
+def test_status_lightweight_isolation(tmp_path: Path):
+    """看板轻量化断言：首次渲染 advisory 真实调用 probe 之后，绝对不将 numpy / clips 拖入内存。"""
+    ep = tmp_path / "ep_iso"
+    ep.mkdir()
+    _create_clips(ep, [
+        {"index": 1, "channel": "scene", "status": "no_match", "duration": 5.0, "clips": []},
+    ])
+    code = (
+        "import sys, pipeline.status\n"
+        "from pathlib import Path\n"
+        "assert 'numpy' not in sys.modules, 'FAIL: numpy 泄漏进了 status 模块加载期！'\n"
+        f"advisories = pipeline.status._detect_advisories(Path({repr(str(ep))}))\n"
+        "assert 'numpy' not in sys.modules, 'FAIL: numpy 泄漏进了 status 调用渲染期！'\n"
+        "assert 'pipeline.clips' not in sys.modules, 'FAIL: pipeline.clips 被调用期拖入！'\n"
+    )
+    cmd = [sys.executable, "-c", code]
     res = subprocess.run(cmd, capture_output=True, text=True)
     assert res.returncode == 0, f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 

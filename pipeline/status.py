@@ -157,7 +157,7 @@ def _detect_advisories(d: Path) -> list[str]:
         except Exception as e:
             advisories.append(f"human_time.json 不可读：{e}")
 
-    # 5. 排片落空与补料检测（Spec §4 / scout.probe）
+    # 5 & 6. 排片缺口与素材番笔记检测（Spec §4 / scout.probe 单次探测，消灭重复 WARN）
     try:
         from . import scout
         probe_data = scout.probe(d)
@@ -171,13 +171,7 @@ def _detect_advisories(d: Path) -> list[str]:
             advisories.append(
                 f"{len(unrescuable)} 段排片失败且补丁池救不了（改锚点或改稿）"
             )
-    except Exception:
-        pass
 
-    # 6. 素材番笔记缺失检测（Spec §4 / scout.probe）
-    try:
-        from . import scout
-        probe_data = scout.probe(d)
         missing_notes = probe_data.get("missing_notes", [])
         if missing_notes:
             first = missing_notes[0]
