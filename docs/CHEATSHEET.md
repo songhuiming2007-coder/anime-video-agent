@@ -76,7 +76,8 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/script` | creative | 聚焦写稿（独立子会话） | 02 阶段自动调阅选题与资料库笔记，产出 `02-script.draft.md` |
 | `/asset` | 特殊 | 切入 Phase 0 资产与云端调度模式 | 放行 `faces`, `shots`, `vindex`, `cloud`, `ingest` 命令 |
 | `/pipeline` | 特殊 | 退出 asset，切回自动工序模式 | 完成底层资产维护后切回常规制片 |
-| `/patch` | — | **占位，尚未接通**（只打印一行提示） | 要补料请走 `python -m pipeline.ingest_patch <期>`（见 runbook 04） |
+| `/scout` | pipeline | 生成 pi 侦察派工单 | 缺料/缺笔记/标题候选时生成自包含工单交给 pi 采掘 |
+| `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
 | `/help` | 全阶段 | 查看命令列表 | 随时查看帮助提示 |
 | `/quit` `/exit` | 全阶段 | 退出 ava 交互终端 | 进度 100% 依赖落盘文件，随时安全退出 |
 
@@ -168,7 +169,7 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 | **02.5** | **改稿** | 人工精修事实，另存为 `02-script.md` 并打 patch | `02-script.md`<br>`02-diff.patch` | **🛑 停机点 1**：必须通读改稿，无 patch 渲染器拒绝启动 |
 | **03** | 配音 | 敲 `/run tts` | `03-audio/seg-*.wav` | 首次全量合成；后续一律只补点名段 |
 | **03.5** | **顺听** | 敲 `/voice` 顺听抽检，白话纠错，敲 `done` | `03-audio/corrections.json` | **🛑 停机点 2**：抽检开头与最长段，用 `--apply-patch` 重配 |
-| **04** | 排片 | 敲 `/run clips` | `04-clips.json`<br>`04-review.html` | 三通道自动贪心占坑；有缺口走 `ingest_patch` 补料（`/patch` 未接通） |
+| **04** | 排片 | 敲 `/run clips` | `04-clips.json`<br>`04-review.html` | 三通道自动贪心占坑；有缺口敲 `/scout`（或 `/patch`）生成工单交由 pi 采掘补料 |
 | **05** | **审片** | 浏览器审 `04-review.html`，敲 `/run review --approve` | `04-clips.approved.json` | **🛑 停机点 3**：确认无声画错位后显式 approve 封板。卡片会打 `[停机点]`，**那一眼就是全部防线** |
 | **06** | 渲染 | 敲 `/run render` | `05-final.mp4` | 自动执行双重切片校验、字幕折行、BGM 侧链闪避 |
 | **07** | 质检 | 敲 `/run qc` | `06-check.log` | 11 项机器硬门禁自动化检验（音画同步、黑帧等），以日志实际输出为准 |

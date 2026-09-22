@@ -22,7 +22,7 @@ python -m pipeline.clips data/episodes/<期号>
 
 ## 04.5 临时补料挂起与恢复流程
 
-排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，无需中断全番或重走全量 Phase 0，通过临时补料通道热插拔解决：
+排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，无需中断全番或重走全量 Phase 0。排片落空时，优先在交互 REPL 内运行 `/scout`（或命令行 `python -m pipeline.scout <期>`）生成派工单交由 pi 采掘，通过临时补料通道热插拔解决：
 
 1. **准备补料素材**：
    - 将视频素材放入 `data/episodes/<期号>/patch_assets/`；

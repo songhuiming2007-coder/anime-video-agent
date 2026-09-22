@@ -62,6 +62,11 @@ def check_code_freeze() -> bool:
 
 def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float) -> float:
     """记录人类停机点墙钟时间（Spec §2.6 追加式写入 human_time.json），返回本段分钟数。"""
+    # Spec §7.4 / §4: scout 条目小于 0.1 分钟（6 秒）噪音过滤不落盘（连敲等噪音）
+    if stop == "scout" and (left_at - entered_at) / 60.0 < 0.1:
+        return 0.0
+
+    minutes = round((left_at - entered_at) / 60.0, 2)
     ht_path = ep_dir / "human_time.json"
     records: list[dict] = []
     if ht_path.exists():
@@ -72,7 +77,6 @@ def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float
         except Exception:
             records = []
 
-    minutes = round((left_at - entered_at) / 60.0, 2)
     records.append({
         "stop": stop,
         "entered_at": datetime.fromtimestamp(entered_at).isoformat(),
@@ -820,10 +824,11 @@ def run_repl(ep_dir: Path) -> int:
     """
     span: dict[str, object] = {"stop": None, "at": time.time()}
 
-    def close_stop() -> None:
+    def close_stop(target_dir: Path | None = None) -> None:
+        d = target_dir or ep_dir
         stop = span["stop"]
         if stop:
-            minutes = record_human_time(ep_dir, str(stop), float(span["at"]), time.time())
+            minutes = record_human_time(d, str(stop), float(span["at"]), time.time())
             print(f"\n[人时] 停机点 {stop} 墙钟 {minutes:.1f} 分钟 → human_time.json")
         span["stop"] = None
 
@@ -836,16 +841,49 @@ def run_repl(ep_dir: Path) -> int:
         span["stop"], span["at"] = new_stop, time.time()
 
     try:
-        return _run_repl_body(ep_dir, on_step)
+        return _run_repl_body(ep_dir, on_step, close_stop=close_stop)
     finally:
         close_stop()
 
 
-def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
+def _exec_scout(ep_dir: Path, args: list[str]) -> int:
+    """进程内直调 pipeline.scout（包含 render_ticket）生成并打印工单。"""
+    from pipeline import scout
+    try:
+        return scout.main([str(ep_dir)] + args)
+    except SystemExit as exc:
+        msg = str(exc)
+        if msg and msg != "0":
+            print(f"[ERROR] {msg}", file=sys.stderr)
+        return exc.code if isinstance(exc.code, int) else 1
+    except Exception as exc:
+        print(f"[ERROR] scout 生成异常: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_repl_body(
+    ep_dir: Path,
+    on_step: Callable[[str], None] | None = None,
+    root: Path | None = None,
+    *,
+    close_stop: Callable[..., None] | None = None,
+) -> int:
     """REPL 交互循环（Spec §1.1, §1.2, §2.4）。on_step 用于停机点墙钟记账（§2.6）。"""
     check_code_freeze()
     print(f"\n已就绪：{ep_dir.name}")
     print("输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。")
+
+    _close_stop = close_stop or (lambda *a, **kw: None)
+    scout_entered_at: float | None = None
+
+    def _settle_scout() -> None:
+        nonlocal scout_entered_at
+        if scout_entered_at is None:
+            return
+        minutes = record_human_time(ep_dir, "scout", scout_entered_at, time.time())
+        if minutes > 0:
+            print(f"\n[人时] 停机点 scout 墙钟 {minutes:.1f} 分钟 → human_time.json")
+        scout_entered_at = None
 
     scope_override: str | None = None
     messages: list[dict[str, Any]] = []
@@ -853,17 +891,35 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
     while True:
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
-        if on_step:
+        if on_step and scout_entered_at is None:
             on_step(status.current_step)
 
         try:
             line = input(f"\nava [{ep_dir.name}] ({scope}) > ").strip()
         except (EOFError, KeyboardInterrupt):
+            _settle_scout()
             print("\n[退出]")
             return 0
 
+        # 🟡-1: 裸回车结算 scout span 并恢复停机点（用户肌肉记忆「我回来了」）
         if not line:
+            if scout_entered_at is not None:
+                _settle_scout()
             continue
+
+        # 检查是否离开 scout 计时 span：下一条非 /scout 命令结算工时并恢复停机点
+        if scout_entered_at is not None:
+            is_scout_cmd = (
+                line == "/scout"
+                or line.startswith("/scout ")
+                or ((line == "/patch" or line.startswith("/patch ")) and "--type" not in line)
+            )
+            if not is_scout_cmd:
+                _settle_scout()
+            else:
+                # 连敲 /scout 噪音过滤：结算上一段（噪音由 record_human_time 过滤），重新开始新计时
+                _settle_scout()
+                scout_entered_at = time.time()
 
         if line in ("/quit", "/exit", "exit", "quit"):
             print("[退出]")
@@ -877,7 +933,8 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
                 print("  /board       查看全局期看板")
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
-                print("  /patch       临时补料模式")
+                print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
+                print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
                 print("  /pipeline    切回流水线工序模式")
                 print("  /chat        creative scope 选题发散")
@@ -899,8 +956,26 @@ def _run_repl_body(ep_dir: Path, on_step, root: Path | None = None) -> int:
                 run_voice_session(ep_dir)
                 continue
 
-            if line == "/patch":
-                print(f"[*] 进入临时补料模式 (PR3 实现)...")
+            if line == "/patch" or line.startswith("/patch "):
+                print("[*] 进入临时补料模式...")
+                extra = line[6:].strip().split() if line.startswith("/patch ") else []
+                if any(arg == "--type" or arg.startswith("--type=") for arg in extra):
+                    print("[ERROR] /patch 别名已固定为 --type patch，如需指定其他类型请使用 /scout。", file=sys.stderr)
+                    continue
+                _close_stop(ep_dir)
+                scout_entered_at = time.time()
+                rc = _exec_scout(ep_dir, ["--type", "patch"] + extra)
+                if rc != 0:
+                    _settle_scout()
+                continue
+
+            if line == "/scout" or line.startswith("/scout "):
+                _close_stop(ep_dir)
+                scout_entered_at = time.time()
+                extra = line[6:].strip().split() if line.startswith("/scout ") else []
+                rc = _exec_scout(ep_dir, extra)
+                if rc != 0:
+                    _settle_scout()
                 continue
 
             if line == "/asset":
@@ -1111,9 +1186,15 @@ def main(argv: list[str] | None = None) -> int:
             return outcome["returncode"] or 0
         if sub_cmd == "/voice":
             return run_voice_session(ep_dir)
-        if sub_cmd == "/patch":
-            print(f"[*] 直达临时补料模式 (PR3)...")
-            return 0
+        if sub_cmd == "/patch" or sub_cmd.startswith("/patch "):
+            extra = sub_cmd[6:].strip().split() if sub_cmd.startswith("/patch ") else []
+            if any(arg == "--type" or arg.startswith("--type=") for arg in extra):
+                print("[ERROR] /patch 别名已固定为 --type patch，如需指定其他类型请使用 /scout。", file=sys.stderr)
+                return 1
+            return _exec_scout(ep_dir, ["--type", "patch"] + extra)
+        if sub_cmd == "/scout" or sub_cmd.startswith("/scout "):
+            extra = sub_cmd[6:].strip().split() if sub_cmd.startswith("/scout ") else []
+            return _exec_scout(ep_dir, extra)
 
     return run_repl(ep_dir)
 

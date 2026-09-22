@@ -36,7 +36,7 @@
 | **B. 配音与顺听** | 03 语音合成 | `ava <期> /run tts`<br>`ava <期> /voice`（顺听纠错） | `python -m pipeline.tts <期>` | **03.5 配音顺听**：顺听 + /voice 纠错（可选深挖，corrections.json 永久资产，--apply-patch 靶向重配）。 |
 | **C. 排片与审片** | 04 画面排片 → 05 审时间码 | `ava <期> /run clips`<br>`ava <期> /run review` | `python -m pipeline.clips <期>`<br>`python -m pipeline.review <期>` | **05 审时间码**：浏览器打开 `04-review.html` 确认无画外音错配，显式执行 `--approve`。无此文件渲染器拒绝启动。 |
 | **D. 渲染与发布** | 06 渲染 → 07 质检 → 08 封面标题 → 09 发布 | `ava <期> /run render`<br>`ava <期> /run qc`<br>`ava <期> /run cover` | `python -m pipeline.render <期>`<br>`python -m pipeline.qc <期>`<br>`python -m pipeline.cover <期>` | **09 标题与封面拍板**：Agent 仅出 5 条标题候选与封面池，**严禁自行定稿**，必须由人类挑选并手动上传。 |
-| **补料通道**（04 之后可选） | 04 缺口段 → 补料入池 → 重排 | —（/patch 占位未接通） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
+| **补料通道**（04 之后可选） | 04 缺口段 → 补料入池 → 重排 | `ava <期> /scout`（缺料时生成 pi 派工单） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
 
 ---
 
