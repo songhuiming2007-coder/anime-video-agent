@@ -450,3 +450,356 @@ def test_non_tty_dual_gates_for_new_and_idea(tmp_path: Path, monkeypatch, capsys
     assert "ava idea" in captured.out
     assert "选题" in captured.out
 
+
+# ---------------------------------------------------------------------------
+# S1–S4: pi 派工交互与 scout/patch 人时记账测试 (Spec 2026-09-21-pi-scout §4, §7.4)
+# ---------------------------------------------------------------------------
+
+
+def _parked_at_05(tmp_path: Path) -> Path:
+    """构造停在 05 的期：音频、排片均完备，04-clips.json 含失败段，未获 --approve。"""
+    from pipeline import paths
+
+    # 准备 scout 工单防断链所需的规范文件桩
+    skills_dir = tmp_path / "skills" / "acquire-assets"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+    docs_dir = tmp_path / "docs" / "runbook"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "04-clips.md").write_text("# Runbook\n", encoding="utf-8")
+    dev_dir = tmp_path / "docs" / "dev"
+    dev_dir.mkdir(parents=True, exist_ok=True)
+    (dev_dir / "STANDARD.md").write_text("# Standard\n", encoding="utf-8")
+
+    ep = tmp_path / "data" / "episodes" / "05-parked"
+    ep.mkdir(parents=True, exist_ok=True)
+    (ep / "01-topic.md").write_text("# Topic\n番: 测试番\n", encoding="utf-8")
+    (ep / "02-script.md").write_text("## 段落 1\n配音: 测试\n", encoding="utf-8")
+    (ep / "02-diff.patch").write_text("diff", encoding="utf-8")
+    audio_dir = ep / "03-audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    (audio_dir / "manifest.json").write_text(json.dumps({"segments": []}), encoding="utf-8")
+
+    clips_data = {
+        "anime": "测试番",
+        "segments": [
+            {
+                "index": 1,
+                "channel": "scene",
+                "status": "no_match",
+                "duration": 5.0,
+                "clips": [],
+                "text": "测试",
+                "scene": "测试场景",
+            }
+        ],
+    }
+    (ep / "04-clips.json").write_text(json.dumps(clips_data, ensure_ascii=False), encoding="utf-8")
+
+    notes_dir = tmp_path / "data" / "library" / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / "测试番.md").write_text("# 笔记\n", encoding="utf-8")
+    return ep
+
+
+def test_repl_scout_ticket_output_and_noise_filtering(tmp_path: Path, monkeypatch, capsys):
+    """S1: REPL 敲 /scout 打印工单标记行及 Markdown，落盘工单；<0.1min 噪音过滤不写 scout 记录。"""
+    from pipeline import paths, scout
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/quit":
+            curr_time = 1002.0  # 2 秒后退出（< 0.1 分钟）
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert scout.TICKET_START_MARKER in out
+    assert scout.TICKET_END_MARKER in out
+    assert "pi 侦察派工单 · patch" in out
+    assert (ep / "scout-ticket-patch.md").exists()
+
+    ht_file = ep / "human_time.json"
+    assert ht_file.exists()
+    records = json.loads(ht_file.read_text(encoding="utf-8"))
+    # 2 秒的 scout 噪音被过滤，仅留 05 的停机点记录
+    assert not any(r.get("stop") == "scout" for r in records)
+
+
+def test_repl_scout_human_time_mutual_exclusion_and_park_stop_restore(tmp_path: Path, monkeypatch):
+    """S2: scout 计时与停机点互斥：/scout 挂起 05，下一条命令结算 scout 耗时并恢复 05，人时不双记。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "/status", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/scout":
+            curr_time = 1600.0  # 05 耗时 600s = 10.0m
+        elif cmd == "/status":
+            curr_time = 2800.0  # scout 耗时 1200s = 20.0m
+        elif cmd == "/quit":
+            curr_time = 3400.0  # 恢复后的 05 耗时 600s = 10.0m
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    records = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert len(records) == 3
+
+    # 第 1 段：进入 REPL 到敲 /scout 之前的 05
+    assert records[0]["stop"] == "05"
+    assert records[0]["minutes"] == 10.0
+
+    # 第 2 段：/scout 到敲 /status 之间的 scout 采矿时段
+    assert records[1]["stop"] == "scout"
+    assert records[1]["minutes"] == 20.0
+
+    # 第 3 段：敲 /status 恢复 05 停机点到 /quit 退出
+    assert records[2]["stop"] == "05"
+    assert records[2]["minutes"] == 10.0
+
+    # 严格互斥无重叠检查
+    assert records[0]["left_at"] == records[1]["entered_at"]
+    assert records[1]["left_at"] == records[2]["entered_at"]
+
+
+def test_repl_scout_consecutive_noise_filtering(tmp_path: Path, monkeypatch):
+    """S3: 连敲 /scout 噪音过滤：两次 /scout 之间小于 0.1 分钟不落盘，最后由非 /scout 命令结算真实耗时。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "/scout", "/status", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/scout" and curr_time == 1000.0:
+            curr_time = 1600.0  # 首次 /scout
+        elif cmd == "/scout":
+            curr_time = 1602.0  # 连敲 /scout（2秒后）
+        elif cmd == "/status":
+            curr_time = 2202.0  # 10 分钟后敲 /status
+        elif cmd == "/quit":
+            curr_time = 2205.0
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    records = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    scout_records = [r for r in records if r.get("stop") == "scout"]
+    # 仅落盘一条 10 分钟的 scout 记录，连敲的 2 秒噪音被忽略
+    assert len(scout_records) == 1
+    assert scout_records[0]["minutes"] == 10.0
+
+
+def test_repl_patch_alias_and_cli_subcommand(tmp_path: Path, monkeypatch):
+    """S4: /patch 别名接入：REPL /patch 与 top-level ava <期> /patch 均成功调用 scout --type patch。"""
+    from pipeline import paths
+    from pipeline.agent.cli import main, run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    # 1. REPL /patch 交互别名测试
+    with patch("builtins.input", side_effect=["/patch", "/quit"]):
+        rc = run_repl(ep)
+        assert rc == 0
+        assert (ep / "scout-ticket-patch.md").exists()
+
+    (ep / "scout-ticket-patch.md").unlink()
+
+    # 2. CLI 顶层 ava <期> /patch
+    rc_cli = main([str(ep), "/patch"])
+    assert rc_cli == 0
+    assert (ep / "scout-ticket-patch.md").exists()
+
+    (ep / "scout-ticket-patch.md").unlink()
+
+    # 3. CLI 顶层 ava <期> /scout
+    rc_scout = main([str(ep), "/scout"])
+    assert rc_scout == 0
+    assert (ep / "scout-ticket-patch.md").exists()
+
+    # 4. /patch 传 --type 被拒绝防越狱
+    rc_reject = main([str(ep), "/patch", "--type", "notes"])
+    assert rc_reject != 0
+
+
+def test_repl_scout_bare_enter_settles_and_resumes_park_stop(tmp_path: Path, monkeypatch):
+    """S5: 🟡-1 钉死：裸回车（肌肉记忆「我回来了」）立刻结算 scout span 并恢复停机点，不把后续等待静默错挂进 scout。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/scout":
+            curr_time = 1600.0  # 05 耗时 600s = 10.0m
+        elif cmd == "":
+            curr_time = 2800.0  # 敲裸回车：scout 耗时 1200s = 20.0m，停机点 05 复位
+        elif cmd == "/quit":
+            curr_time = 3400.0  # 回车后又等了 10 分钟退出：正确挂在 05（600s = 10.0m）而非 scout
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    records = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert len(records) == 3
+
+    # 第 1 段：进入 REPL 到敲 /scout 之前的 05
+    assert records[0]["stop"] == "05"
+    assert records[0]["minutes"] == 10.0
+
+    # 第 2 段：/scout 到敲回车之间的 scout 采矿时段
+    assert records[1]["stop"] == "scout"
+    assert records[1]["minutes"] == 20.0
+
+    # 第 3 段：敲回车复位 05 停机点到 /quit 退出（后续等待正确归属 05）
+    assert records[2]["stop"] == "05"
+    assert records[2]["minutes"] == 10.0
+
+    # 时间戳首尾相接无重叠
+    assert records[0]["left_at"] == records[1]["entered_at"]
+    assert records[1]["left_at"] == records[2]["entered_at"]
+
+
+def test_repl_scout_invalid_patch_args_does_not_hang_span(tmp_path: Path, monkeypatch, capsys):
+    """S6: 🔵-1 钉死：scout span 开启时输入非法 /patch --type，不能导致 scout span 空挂；正常结算旧 span 并恢复停机点。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "/patch --type title", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/scout":
+            curr_time = 1600.0  # 05 耗时 600s = 10.0m
+        elif cmd == "/patch --type title":
+            curr_time = 2800.0  # scout 采矿 1200s = 20.0m，敲非法命令应结算 scout
+        elif cmd == "/quit":
+            curr_time = 3400.0  # 非法命令后回到 05 停留 600s = 10.0m
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    err = capsys.readouterr().err
+    assert "/patch 别名已固定为 --type patch" in err
+
+    records = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    assert len(records) == 3
+
+    # 第 1 段：进入 REPL 到 /scout 之前的 05
+    assert records[0]["stop"] == "05"
+    assert records[0]["minutes"] == 10.0
+
+    # 第 2 段：/scout 到敲 /patch 之间的 scout 采矿时段
+    assert records[1]["stop"] == "scout"
+    assert records[1]["minutes"] == 20.0
+
+    # 第 3 段：敲非法 /patch 恢复 05 停机点到 /quit 退出（后续等待正确归属 05）
+    assert records[2]["stop"] == "05"
+    assert records[2]["minutes"] == 10.0
+
+    assert records[0]["left_at"] == records[1]["entered_at"]
+    assert records[1]["left_at"] == records[2]["entered_at"]
+
+
+def test_repl_scout_step_advance_leaves_no_zero_park_garbage(tmp_path: Path, monkeypatch):
+    """S7: 🔵-2 钉死：scout span 后工序被命令推进离开停机点，绝不产生 0.0 分钟 park 垃圾记录。"""
+    from pipeline import paths
+    from pipeline.agent.cli import run_repl
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA", tmp_path / "data")
+    ep = _parked_at_05(tmp_path)
+
+    curr_time = 1000.0
+    inputs = ["/scout", "/advance", "/quit"]
+
+    def fake_input(prompt=""):
+        nonlocal curr_time
+        cmd = inputs.pop(0)
+        if cmd == "/scout":
+            curr_time = 1600.0  # 05 耗时 600s = 10.0m
+        elif cmd == "/advance":
+            curr_time = 2800.0  # scout 采矿 1200s = 20.0m
+            # 模拟工序推进：写入 04-clips.approved.json 使 05 推进至 06
+            (ep / "04-clips.approved.json").write_text("{}", encoding="utf-8")
+        elif cmd == "/quit":
+            curr_time = 3400.0
+        return cmd
+
+    monkeypatch.setattr("time.time", lambda: curr_time)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = run_repl(ep)
+    assert rc == 0
+
+    records = json.loads((ep / "human_time.json").read_text(encoding="utf-8"))
+    # 严格只有 2 条记录：05 (10m) 和 scout (20m)，绝无推进后遗留的 0.0m 停机点垃圾
+    assert len(records) == 2
+    assert records[0]["stop"] == "05"
+    assert records[0]["minutes"] == 10.0
+    assert records[1]["stop"] == "scout"
+    assert records[1]["minutes"] == 20.0
+    assert not any(r["minutes"] == 0.0 for r in records)
+
+
+
