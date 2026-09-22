@@ -1,7 +1,8 @@
 """ava ↔ pi 侦察派工单生成器（纯函数内核与单机 CLI）。
 
 模块级依赖白名单：仅标准库 + paths, bgm。
-clips 与 ingest_patch 必须函数内延迟 import，防循环引用与热路径拖入 ML 栈。
+禁止 import clips（常量 MIN_CLIP 内联，防看板热路径拖入 ML 栈）。
+ingest_patch 仅在工单渲染时函数内延迟 import。
 """
 
 from __future__ import annotations
@@ -19,11 +20,14 @@ from . import bgm, paths
 TICKET_START_MARKER = "════════ pi 派工单（连同首尾标记行整段复制） ════════"
 TICKET_END_MARKER = "════════ 派工单结束 ════════"
 
+# 单个片段的下限，与 clips.MIN_CLIP / align.REFIT_MIN_CLIP 同值（2.5s）。
+# 不从 clips import（会拖起整个 ML 栈与 vindex/subindex），也不让 clips
+# 从这里 import。三处必须同步改，各自注释里都指向对方。
+MIN_CLIP = 2.5
+
 
 def format_unrescuable_action(seg: dict) -> str:
     """格式化不可救段的人工指引（单源化，无硬编码）。"""
-    from .clips import MIN_CLIP
-
     ch = seg.get("channel")
     st = seg.get("status")
     res_d = seg.get("residual", 0.0)
@@ -39,8 +43,6 @@ def probe(ep_dir: Path) -> dict:
 
     段可救 ⟺ channel ≠ anchor 且（status ∈ {no_match, no_source} 或 residual ≥ MIN_CLIP）
     """
-    from .clips import MIN_CLIP
-
     patchable: list[dict] = []
     unrescuable: list[dict] = []
     clips_file = ep_dir / "04-clips.json"
@@ -143,8 +145,6 @@ resolve_floor = resolve_patch_floor
 
 def render_patch_ticket(ep_dir: Path, probe_data: dict, floor: float | None = None) -> str:
     """渲染 patch 工单。"""
-    from .clips import MIN_CLIP
-
     animes = bgm.animes_of(ep_dir)
     anime_str = "/".join(animes) if animes else (bgm.anime_of(ep_dir) or "未知")
     iso_now = datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
