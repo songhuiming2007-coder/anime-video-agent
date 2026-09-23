@@ -30,7 +30,7 @@
 | 我要查 | 主文件 | 说明 |
 |---|---|---|
 | 质量与判据系统权威定义 | [`dev/STANDARD.md`](dev/STANDARD.md) | 每条判据的「为什么」与违反程序（非执行手册） |
-| 架构决策记录 | [`dev/adr/`](dev/adr/) | 19 项架构决策、推翻条件与论证证据 |
+| 架构决策记录 | [`dev/adr/`](dev/adr/) | 23 项架构决策、推翻条件与论证证据 |
 | 全量踩坑论证与历史背景详注 | [`dev/postmortems/workflow-history.md`](dev/postmortems/workflow-history.md) | 包含 Phase 0 完整参数、历史事故与个案分析 |
 | 施工路线与开发闸门 | [`dev/ROADMAP.md`](dev/ROADMAP.md) | 开发顺序与阶段验收条件 |
 | 活跃问题单 | [`dev/issues/README.md`](dev/issues/README.md) | 待解决系统性缺陷与卡点 |
