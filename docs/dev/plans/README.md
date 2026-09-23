@@ -21,6 +21,7 @@
 | [M2b 服务对象修正：番剧域 → 素材池](2026-09-11-m2b-pool-scope.md) | D4 / D5 / D6 / B1 | ADR-0015, ADR-0003, ADR-0008, ADR-0016 | **已执行并验收**（commit `b257e6d`，2026-09-11） |
 | [ava-agent 架构设计与闭环控制](2026-09-18-ava-agent-harness.md) | B2 / B3 / D10 / D23 | ADR-0006, ADR-0014, ADR-0015, ADR-0017 | **已立项，待开工** |
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
+| [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **v0.2 红队两轮收口，可动工**（红队报告为终端输出、未落盘，裁决见 spec §1；2026-09-23 更正一处原始行号错误，**施工前需重核全部行号**） |
 | [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **v0.6 红队四轮收口（定向微轮 🟢），可动工**（PR1/PR2 可先行；PR4 待 Spec 1 PR1+PR2，PR5 真实数据路径待 Spec 3；PR6 须实跑 MUT-1~53 含 15b、52b） |
 
 ---
