@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pipeline.agent import cli
+from pipeline.agent.assembly import SessionContextTracker
 from pipeline.agent.llm import ToolContext, run_tool_loop
 from pipeline.agent.status_card import (
     log_approval_decision,
@@ -170,6 +171,7 @@ def test_m3_reject_on_n_produces_no_file_and_no_popen(tmp_path: Path, monkeypatc
             "creative",
             status,
             root=root,
+            tracker=SessionContextTracker(),
         )
 
         assert mock_popen.call_count == 0
@@ -226,6 +228,7 @@ def test_m3_approve_on_y_executes_write_with_confirmed(tmp_path: Path, monkeypat
             "creative",
             status,
             root=root,
+            tracker=SessionContextTracker(),
         )
 
         draft_path = ep_dir / "02-script.draft.md"
@@ -399,6 +402,7 @@ def test_m15_validate_rejection_no_prompt_and_specific_reason(tmp_path: Path, mo
             "pipeline",
             status,
             root=root,
+            tracker=SessionContextTracker(),
         )
 
         # 绝对不弹卡！
@@ -433,6 +437,7 @@ def test_m20_unregistered_tool_rejected_no_card(tmp_path: Path, monkeypatch):
             "creative",
             status,
             root=root,
+            tracker=SessionContextTracker(),
         )
 
         assert input_mock.call_count == 0
@@ -463,6 +468,7 @@ def test_m20_out_of_scope_tool_rejected_no_card(tmp_path: Path, monkeypatch):
             "creative",  # creative scope 看不到 run_pipeline
             status,
             root=root,
+            tracker=SessionContextTracker(),
         )
 
         assert input_mock.call_count == 0

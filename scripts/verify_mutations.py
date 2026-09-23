@@ -285,6 +285,7 @@ MUTATIONS: list[dict] = [
              '                None,\n'
              '                extra_prompt=extra_prompt,\n'
              '                root=root,\n'
+             '                tracker=tracker,\n'
              '            )'),
      "new": ('            outcome = _dispatch_agent_turn(\n'
              '                line,\n'
@@ -294,6 +295,7 @@ MUTATIONS: list[dict] = [
              '                None,\n'
              '                extra_prompt=extra_prompt,\n'
              '                root=root,\n'
+             '                tracker=tracker,\n'
              '            )')},
     {"id": "M27a1", "guard": "select prompt 文案引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
      "old": '        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, {IDEA_KEYWORD}=选题会话]: "',

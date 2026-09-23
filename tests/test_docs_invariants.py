@@ -189,3 +189,42 @@ def test_runbook_04_patch_anchor_syntax():
         "docs/runbook/04-clips.md 的补丁锚点不得带方括号（会被 clips._parse_anchor 当字面量比对失败）"
     )
 
+
+def test_agents_md_line_budget():
+    """AGENTS.md 瘦身后必须 ≤140 行。"""
+    agents_path = REPO_ROOT / "AGENTS.md"
+    lines = agents_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 140, f"AGENTS.md 当前 {len(lines)} 行，超出 140 行预算"
+
+
+def test_agents_md_thirteen_criteria_intact():
+    """十三条判据完整保留，防搬迁误删。
+
+    红队三轮 M2：非锚定子串匹配会命中硬约束节的编号列表（AGENTS.md:46-48 的
+    「1. 2. 3.」），删判据 1/2/3 照样假绿。必须行首锚定 + 判据节区限定。
+    红队四轮 N1：节区定位必须标题锚定——「判据」一词首现于头部段落与文档地图，
+    非标题锚定的正则会抢先命中第 3 行，导致干净文件上 13 条判据全部漏报假红
+    （已实测复现）。
+    已知上限：判据条目正文未来若出现行首数字编号子列表，对应编号仍可能假绿——
+    当前文件无此形态，可接受。
+    """
+    agents_path = REPO_ROOT / "AGENTS.md"
+    content = agents_path.read_text(encoding="utf-8")
+    # 限定判据节区（标题锚定，至下一节标题），避免命中其他节的编号列表
+    m = re.search(r"^#+ [^\n]*判据[^\n]*\n(.*?)(?=\n#+ |\Z)", content, re.S | re.M)
+    assert m, "未定位到十三条判据节区"
+    section = m.group(1)
+    for i in range(1, 14):
+        assert re.search(rf"^\s*{i}[.、]", section, re.M), f"判据第 {i} 条缺失"
+
+
+def test_runbook_04_clips_line_budget():
+    """04-clips.md 硬门禁 ≤80 行（Spec v0.4 §4.4，永久门禁非临时放宽）。超限时必须拆分或回退。"""
+    clips_path = REPO_ROOT / "docs/runbook/04-clips.md"
+    lines = clips_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 80, (
+        f"04-clips.md 当前 {len(lines)} 行，超出 80 行硬门禁。"
+        "请评估是否将 SP 素材规则拆分为独立 runbook。"
+    )
+
+

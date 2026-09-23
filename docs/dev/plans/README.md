@@ -23,7 +23,7 @@
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
-| [上下文装配器与 AGENTS.md 瘦身（Spec 1）](2026-09-22-context-assembly-spec.md) | B2 | ADR-0022 | **v0.4 红队三轮收口 + 定向复审通过，可动工** |
+| [上下文装配器与 AGENTS.md 瘦身（Spec 1）](2026-09-22-context-assembly-spec.md) | B2 | ADR-0022 | **M1 施工完成，S2 review 🟢**（PR0–PR2；AGENTS.md 126 行，十三判据完整；scope 热切换常驻层重组装；变异矩阵 4 项复核变红） |
 | [jobs 层与 events.jsonl（Spec 2）](2026-09-22-jobs-and-events-spec.md) | B2 / D23 | ADR-0020 | **v0.4 红队三轮收口 + 定向复审通过，可动工** |
 | [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **v0.6：PR1/PR2 可动工，PR3 待红队定向复核**（2026-09-23 四批跨 Spec 修订：v0.3 并入 S3-R1/R2/R5，v0.4 并入 S3-R6（ack 绑定 approval_id）/S3-R7（artifact 对齐后的确认路径），v0.5 并入 S3-R9（`review --approve` 期望指纹原子核验，经授权改 `pipeline/review.py`）/S3-R10（一次进锁）/S3-R11（确认延迟语义），v0.6 并入 S3-R9a（读后二次 fstat，挡原地覆写），见 spec §1.3–§1.6；v0.2 红队两轮收口，报告为终端输出、未落盘；**施工前需重核全部行号**） |
 | [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **v0.3 红队三轮收口，可动工** |

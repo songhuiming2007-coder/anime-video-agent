@@ -517,26 +517,16 @@ def assemble_system_prompt(
     extra_prompt: str = "",
     root: Path | None = None,
 ) -> str:
-    """重组装 messages[0]：director 人格 + 当前 scope 边界段 + 状态卡（Spec §1.3, §2.3）。"""
-    scopes_dir = get_scopes_dir(root)
-    director_file = scopes_dir / "director.md"
-    director_prompt = (
-        director_file.read_text(encoding="utf-8")
-        if director_file.exists()
-        else "# Director Persona"
-    )
+    """重组装 messages[0]：由 assembly.py 单源供给常驻层 + 状态卡（Spec 1 PR2 收编）。"""
+    from pipeline.agent.assembly import assemble_resident_prompt
 
-    scope_cfg = load_scope(scope, root=root)
-    scope_prompt = scope_cfg.system_prompt
-    if extra_prompt:
-        scope_prompt = f"{scope_prompt}\n\n{extra_prompt}"
-
+    resident = assemble_resident_prompt(scope, root=root, extra_prompt=extra_prompt)
     if ep_dir is None:
         from pipeline.agent.status_card import build_idea_card
         card = build_idea_card()
     else:
         card = build_status_card(ep_dir, status, scope=scope)
-    return f"{director_prompt}\n\n---\n\n{scope_prompt}\n\n---\n\n{card}"
+    return f"{resident.content}\n\n---\n\n{card}"
 
 
 def _default_approve(
@@ -651,11 +641,20 @@ def _dispatch_agent_turn(
     extra_prompt: str = "",
     root: Path | None = None,
     approve_cb: Callable[[str, dict], bool] | None = None,
+    tracker: SessionContextTracker | None = None,
 ) -> dict[str, Any]:
-    """执行单轮 Director 对话（Spec §1.1, §1.2）。
+    """执行单轮 Director 对话（Spec 1 §5.1, §5.2）。
 
-    整段重算替换 messages[0]，不追加；LLM 缺失走显式降级，不假装有 AI 在场。
+    整段重算替换 messages[0]，工序层按需增量 user 消息注入。
     """
+    from pipeline.agent.assembly import (
+        SessionContextTracker,
+        assemble_resident_prompt,
+        load_injected_doc,
+        render_step_injection,
+        resolve_step_docs,
+        step_key_of,
+    )
     from pipeline.agent.llm import (
         LLMError,
         load_llm_config,
@@ -664,12 +663,62 @@ def _dispatch_agent_turn(
     )
     from pipeline.agent.tools import ToolContext
 
-    sys_content = assemble_system_prompt(
-        ep_dir, scope, status, extra_prompt=extra_prompt, root=root
-    )
-    if not messages:
-        messages.append({"role": "system", "content": sys_content})
+    if tracker is None:
+        raise ValueError(
+            "tracker 必须由 run_agent_loop 创建并作为会话级单例传入，严禁在 _dispatch_agent_turn 轮内懒创建（Spec 1 M4 铁律）"
+        )
+
+    # Scope 热切换检测：若当前 scope 与 tracker 记录的不一致，或尚未初始化常驻层，重组装 resident_prompt
+    if tracker.active_scope != scope or not tracker.resident_prompt:
+        tracker.resident_prompt = assemble_resident_prompt(
+            scope, root=root, extra_prompt=extra_prompt
+        ).content
+        tracker.active_scope = scope
+
+    step_key = step_key_of(status.current_step if status else None)
+    step_docs = [
+        d
+        for d in (
+            load_injected_doc(p.as_posix(), root=root)
+            for p in resolve_step_docs(scope, step_key, root=root)
+        )
+        if d is not None
+    ]
+
+    if ep_dir is None:
+        from pipeline.agent.status_card import build_idea_card
+        status_card = build_idea_card()
     else:
+        card = build_status_card(ep_dir, status, scope=scope)
+        status_card = card
+
+    if not messages:
+        # 首轮：messages[0] 仅含常驻层 + 动态层，工序层以独立 user 消息注入
+        sys_content = tracker.get_initial_system_prompt(status_card)
+        messages.append({"role": "system", "content": sys_content})
+
+        # 工序层首轮注入（独立 user 消息，不拼入 messages[0]）
+        if step_docs:
+            injection = render_step_injection(
+                step_docs, step_name=status.current_step if status else None
+            )
+            messages.append({"role": "user", "content": injection})
+            tracker.injected_paths.update(d.rel_path for d in step_docs)
+        tracker.active_step_key = step_key
+    else:
+        # 后续轮：检测工序切换
+        if step_key != tracker.active_step_key:
+            new_docs = [d for d in step_docs if d.rel_path not in tracker.injected_paths]
+            if new_docs:
+                injection = render_step_injection(
+                    new_docs, step_name=status.current_step if status else None
+                )
+                messages.append({"role": "user", "content": injection})
+                tracker.injected_paths.update(d.rel_path for d in new_docs)
+            tracker.active_step_key = step_key
+
+        # 刷新 status_card：复用整段重算机制，直接替换 messages[0]
+        sys_content = tracker.get_initial_system_prompt(status_card)
         messages[0] = {"role": "system", "content": sys_content}
 
     if load_llm_config(root) is None:
@@ -744,6 +793,11 @@ def run_agent_loop(
         print("  - 讨论定稿后退出本会话，运行 'ava new <期名>' 创建新期")
         print("=" * 68)
 
+        from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
+
+        tracker = SessionContextTracker()
+        tracker.resident_prompt = assemble_resident_prompt("idea", root=root).content
+
         sub_messages: list[dict[str, Any]] = []
         while True:
             try:
@@ -765,16 +819,23 @@ def run_agent_loop(
                 None,
                 extra_prompt=extra_prompt,
                 root=root,
+                tracker=tracker,
             )
             if outcome.get("stopped") == "degraded":
                 return 0
 
     # 聚焦子模式（如 creative scope 独立子循环）
+    from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
     from pipeline.agent.llm import load_llm_config, local_directive_message
 
     if load_llm_config(root) is None:
         print(local_directive_message(scope_mode, "缺少 config/agent.json 或环境变量密钥")["content"])
         return 0
+
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = assemble_resident_prompt(
+        scope_mode, root=root, extra_prompt=extra_prompt
+    ).content
 
     sub_messages: list[dict[str, Any]] = []
     while True:
@@ -802,6 +863,7 @@ def run_agent_loop(
             status,
             extra_prompt=extra_prompt,
             root=root,
+            tracker=tracker,
         )
         if outcome.get("stopped") == "degraded":
             return 0
@@ -885,6 +947,9 @@ def _run_repl_body(
             print(f"\n[人时] 停机点 scout 墙钟 {minutes:.1f} 分钟 → human_time.json")
         scout_entered_at = None
 
+    from pipeline.agent.assembly import SessionContextTracker
+
+    tracker = SessionContextTracker()
     scope_override: str | None = None
     messages: list[dict[str, Any]] = []
 
@@ -1073,6 +1138,7 @@ def _run_repl_body(
             status,
             extra_prompt="",
             root=root,
+            tracker=tracker,
         )
 
 

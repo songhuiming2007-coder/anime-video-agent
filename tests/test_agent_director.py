@@ -115,7 +115,7 @@ def test_m2_natural_language_enters_run_tool_loop_and_appends_messages(tmp_path:
 
     captured_turns = []
 
-    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         captured_turns.append({"line": line, "scope": scope, "msgs_len": len(messages)})
         messages.append({"role": "user", "content": line})
         messages.append({"role": "assistant", "content": "收到，我是总监"})
@@ -469,7 +469,7 @@ def test_m11_scope_hot_derivation_from_creative_to_pipeline(tmp_path: Path, monk
     sent_tools_per_turn = []
 
     # 模拟两轮对话：第一轮 creative 后产生 02-diff.patch 进入 03；第二轮自动变 pipeline
-    def fake_dispatch_hot(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch_hot(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         from pipeline.agent.tools import tool_names_for_scope
         sent_tools_per_turn.append(tool_names_for_scope(scope, root=root))
         (ep / "02-diff.patch").write_text("diff", encoding="utf-8")
@@ -496,7 +496,7 @@ def test_scope_asset_manual_override_and_return(tmp_path: Path, monkeypatch, cap
 
     scopes_seen = []
 
-    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         scopes_seen.append(scope)
         return {"stopped": "done", "messages": messages, "final": {"content": "ok"}}
 
@@ -598,7 +598,7 @@ def test_m19_chat_subloop_does_not_pollute_main_messages(tmp_path: Path, monkeyp
     turn_counter = 0
     main_history_snapshots = []
 
-    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         nonlocal turn_counter
         turn_counter += 1
         messages.append({"role": "user", "content": line})
@@ -625,8 +625,8 @@ def test_m19_chat_subloop_does_not_pollute_main_messages(tmp_path: Path, monkeyp
     # 包装 _run_repl_body 观察 main_messages
     orig_dispatch = cli._dispatch_agent_turn
 
-    def observing_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
-        res = fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt, root)
+    def observing_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
+        res = fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt, root, tracker)
         if extra_prompt == "":  # 仅在非 script / 主会话层面记录快照
             main_history_snapshots.append(copy.deepcopy(messages))
         return res
@@ -654,7 +654,7 @@ def test_m19_script_subloop_with_focus_prompt(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AVA_TEST_KEY", "test-key-mock")
     prompts_seen = []
 
-    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         prompts_seen.append(extra_prompt)
         return {"stopped": "done", "messages": messages, "final": {"content": "ok"}}
 
@@ -684,7 +684,7 @@ def test_assemble_system_prompt_structure(tmp_path: Path):
     assert "Creative Scope System Prompt" in assembled
     assert "聚焦提示" in assembled
     assert "[状态卡]" in assembled
-    assert assembled.count("---") == 2
+    assert assembled.count("\n\n---\n\n") == 3  # Spec 1 收编后含 AGENTS.md，由 2 处节区分隔升为 3 处
 
 
 def test_system_prompt_replaced_not_appended_across_turns(tmp_path: Path, monkeypatch):
@@ -696,7 +696,7 @@ def test_system_prompt_replaced_not_appended_across_turns(tmp_path: Path, monkey
 
     messages_after_turns = []
 
-    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None):
+    def fake_dispatch(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
         # 真实调用 assemble_system_prompt 检验 messages[0]
         sys_content = assemble_system_prompt(ep_dir, scope, status, extra_prompt="", root=root)
         if not messages:
@@ -949,9 +949,11 @@ def test_dispatch_agent_turn_messages_merged_across_turns(tmp_path: Path, monkey
 
         messages: list[dict] = []
         status = inspect_episode(ep)
+        from pipeline.agent.assembly import SessionContextTracker
+        tracker = SessionContextTracker()
 
-        cli._dispatch_agent_turn("第一轮问题", messages, ep, "creative", status, root=root)
-        cli._dispatch_agent_turn("第二轮问题", messages, ep, "creative", status, root=root)
+        cli._dispatch_agent_turn("第一轮问题", messages, ep, "creative", status, root=root, tracker=tracker)
+        cli._dispatch_agent_turn("第二轮问题", messages, ep, "creative", status, root=root, tracker=tracker)
 
         # 第二轮请求发往 LLM 时，body 中的 messages 必须包含第一轮的 user 和 assistant
         assert len(state["requests"]) == 2

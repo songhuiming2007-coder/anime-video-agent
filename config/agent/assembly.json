@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "_note": "工序层上下文装配路由表（ADR-0022）。机制进代码，路由进配置。",
+  "resident": {
+    "director": "config/agent/scopes/director.md",
+    "scope": "config/agent/scopes/{scope}.md",
+    "agents": "AGENTS.md"
+  },
+  "routes": {
+    "_base": {
+      "default": ["docs/WORKFLOW.md"],
+      "01": ["docs/runbook/01-topic.md"],
+      "02": ["docs/runbook/02-script.md"],
+      "02.5": ["docs/runbook/02.5-human-review.md"],
+      "03": ["docs/runbook/03-tts.md"],
+      "03.5": ["docs/runbook/03.5-voice-check.md", "docs/runbook/04-clips.md"],
+      "05": ["docs/runbook/05-timecode.md"],
+      "06": ["docs/runbook/06-render.md"],
+      "07": ["docs/runbook/07-qc.md"],
+      "08": ["docs/runbook/08-cover-title.md"],
+      "09": ["docs/runbook/09-publish.md"]
+    },
+    "creative": {
+      "_extends": "_base",
+      "02": ["docs/runbook/02-script.md", "skills/write-script/SKILL.md"]
+    },
+    "pipeline": {
+      "_extends": "_base"
+    },
+    "idea": {
+      "default": []
+    }
+  }
+}
