@@ -67,3 +67,8 @@ python -m pipeline.clips data/episodes/<期号>
    - `compute_script_vo_hash` 只提取 `配音：`行（B6），修改画面行（`锚点:`/`查询:`/`场景:`）不改变配音哈希，已合成音频 100% 免重跑；
    - 与 `03-audio/corrections.json` 沉淀互不干扰，无需通过 `--apply-patch` 重新配音；
    - 重跑 clips 后，补丁锚点直接生效直通出片。
+
+## 04.6 SP 素材基础规则
+- **异构素材与跨番支持**：除标准番剧 `SxxEyy` 外，原生支持特典集 `SPxx`（`season=None`，素材池 MV/Live/物证等）；支持跨番前缀 `锚点: [番名] SxxEyy 12:30` 或 `[企划名] SPxx mm:ss` 及多锚点蒙太奇。
+- **确定性直通排片**：SP 素材无字幕索引，**严禁写查询/人物/场景，必须走确定性锚点直通**；素材自然时长不够填满口播时，系统自动尾帧安全定格延展（`ok_extended`，上限 8.0s，超额诚实判 short）。
+- **审帧与音轨隔离**：无字幕素材禁止人工拖进度条，跑 `shots frames` 与 `shots gallery` 选锚点；切片默认强制 `-an` 剔除原生音轨；质检对带 `sp: true` 片段放宽至 1.5s 艺术暗场豁免。
