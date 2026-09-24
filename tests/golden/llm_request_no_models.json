@@ -1,0 +1,894 @@
+{
+ "frozen_tools": {
+  "asset": [
+   {
+    "function": {
+     "description": "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。",
+     "name": "web_search",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "limit": {
+        "description": "最多返回几条（默认 5，上限 10）",
+        "type": "integer"
+       },
+       "query": {
+        "description": "检索词",
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。",
+     "name": "web_fetch",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "url": {
+        "description": "http/https URL",
+        "type": "string"
+       }
+      },
+      "required": [
+       "url"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "把素材候选追加到 data/library/incoming/candidates.json（人审用提案清单，追加式、同 URL 自动跳过）。只写提案，绝不抓取——fetch 永远由人逐条批准后 走 pipeline.acquire。每条必须含 title/url/type/source/why；why 要写清补哪个缺口、凭什么认为是它（skill: acquire-assets §一）。",
+     "name": "acquire_propose",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "candidates": {
+        "description": "一批候选（一次调用一张审批卡审整批）",
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "expected_dur": {
+           "description": "秒数，可空",
+           "type": [
+            "number",
+            "null"
+           ]
+          },
+          "source": {
+           "description": "站点名 + 大致检索路径",
+           "type": "string"
+          },
+          "title": {
+           "type": "string"
+          },
+          "type": {
+           "enum": [
+            "live",
+            "mv",
+            "scan",
+            "interview"
+           ],
+           "type": "string"
+          },
+          "url": {
+           "description": "http/https 直链或视频页",
+           "type": "string"
+          },
+          "why": {
+           "description": "补哪个缺口 + 凭什么认为是它",
+           "type": "string"
+          }
+         },
+         "required": [
+          "title",
+          "url",
+          "type",
+          "source",
+          "why"
+         ],
+         "type": "object"
+        },
+        "type": "array"
+       }
+      },
+      "required": [
+       "candidates"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "creative": [
+   {
+    "function": {
+     "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+     "name": "read_artifact",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "path": {
+        "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+        "type": "string"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "写入当期稿件文件。仅限 01-topic.md 与 02-script.draft.md；写 01-topic.md 必须 confirmed=true 且需人在 REPL 显式确认。",
+     "name": "write_episode_file",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "confirmed": {
+        "description": "写 01-topic.md 时必须为 true（人类已确认）",
+        "type": "boolean"
+       },
+       "content": {
+        "description": "完整文件内容",
+        "type": "string"
+       },
+       "filename": {
+        "description": "白名单内的文件名",
+        "enum": [
+         "01-topic.md",
+         "02-script.draft.md"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "filename",
+       "content"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+     "name": "list_episodes",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+     "name": "read_status",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "episode": {
+        "description": "期号或期目录路径；省略则用当期",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+     "name": "search_notes",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "limit": {
+        "description": "最多返回几条（默认 5，上限 20）",
+        "type": "integer"
+       },
+       "query": {
+        "description": "检索词",
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。",
+     "name": "web_search",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "limit": {
+        "description": "最多返回几条（默认 5，上限 10）",
+        "type": "integer"
+       },
+       "query": {
+        "description": "检索词",
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。",
+     "name": "web_fetch",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "url": {
+        "description": "http/https URL",
+        "type": "string"
+       }
+      },
+      "required": [
+       "url"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "idea": [
+   {
+    "function": {
+     "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+     "name": "read_artifact",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "path": {
+        "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+        "type": "string"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+     "name": "list_episodes",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+     "name": "read_status",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "episode": {
+        "description": "期号或期目录路径；省略则用当期",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+     "name": "search_notes",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "limit": {
+        "description": "最多返回几条（默认 5，上限 20）",
+        "type": "integer"
+       },
+       "query": {
+        "description": "检索词",
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "pipeline": [
+   {
+    "function": {
+     "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+     "name": "read_artifact",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "path": {
+        "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+        "type": "string"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+     "name": "read_status",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "episode": {
+        "description": "期号或期目录路径；省略则用当期",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+     "name": "list_episodes",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回规范化 argv。**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；--force/--force-all/cloud exec 一律拒收。",
+     "name": "run_pipeline",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "command": {
+        "description": "如 'tts --redo 3' 或 'clips'",
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ]
+ },
+ "requests": {
+  "asset": {
+   "messages": [
+    {
+     "content": "常驻层",
+     "role": "system"
+    },
+    {
+     "content": "上一轮回复",
+     "reasoning_content": "私有思考字段",
+     "role": "assistant"
+    },
+    {
+     "content": "asset 的问话",
+     "role": "user"
+    }
+   ],
+   "model": "mock-model",
+   "tools": [
+    {
+     "function": {
+      "description": "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。",
+      "name": "web_search",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "limit": {
+         "description": "最多返回几条（默认 5，上限 10）",
+         "type": "integer"
+        },
+        "query": {
+         "description": "检索词",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。",
+      "name": "web_fetch",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "url": {
+         "description": "http/https URL",
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "把素材候选追加到 data/library/incoming/candidates.json（人审用提案清单，追加式、同 URL 自动跳过）。只写提案，绝不抓取——fetch 永远由人逐条批准后 走 pipeline.acquire。每条必须含 title/url/type/source/why；why 要写清补哪个缺口、凭什么认为是它（skill: acquire-assets §一）。",
+      "name": "acquire_propose",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "candidates": {
+         "description": "一批候选（一次调用一张审批卡审整批）",
+         "items": {
+          "additionalProperties": false,
+          "properties": {
+           "expected_dur": {
+            "description": "秒数，可空",
+            "type": [
+             "number",
+             "null"
+            ]
+           },
+           "source": {
+            "description": "站点名 + 大致检索路径",
+            "type": "string"
+           },
+           "title": {
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "live",
+             "mv",
+             "scan",
+             "interview"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "description": "http/https 直链或视频页",
+            "type": "string"
+           },
+           "why": {
+            "description": "补哪个缺口 + 凭什么认为是它",
+            "type": "string"
+           }
+          },
+          "required": [
+           "title",
+           "url",
+           "type",
+           "source",
+           "why"
+          ],
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "candidates"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "creative": {
+   "messages": [
+    {
+     "content": "常驻层",
+     "role": "system"
+    },
+    {
+     "content": "上一轮回复",
+     "reasoning_content": "私有思考字段",
+     "role": "assistant"
+    },
+    {
+     "content": "creative 的问话",
+     "role": "user"
+    }
+   ],
+   "model": "mock-model",
+   "tools": [
+    {
+     "function": {
+      "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+      "name": "read_artifact",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "path": {
+         "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "写入当期稿件文件。仅限 01-topic.md 与 02-script.draft.md；写 01-topic.md 必须 confirmed=true 且需人在 REPL 显式确认。",
+      "name": "write_episode_file",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "confirmed": {
+         "description": "写 01-topic.md 时必须为 true（人类已确认）",
+         "type": "boolean"
+        },
+        "content": {
+         "description": "完整文件内容",
+         "type": "string"
+        },
+        "filename": {
+         "description": "白名单内的文件名",
+         "enum": [
+          "01-topic.md",
+          "02-script.draft.md"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "filename",
+        "content"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+      "name": "list_episodes",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {},
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+      "name": "read_status",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "episode": {
+         "description": "期号或期目录路径；省略则用当期",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+      "name": "search_notes",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "limit": {
+         "description": "最多返回几条（默认 5，上限 20）",
+         "type": "integer"
+        },
+        "query": {
+         "description": "检索词",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。",
+      "name": "web_search",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "limit": {
+         "description": "最多返回几条（默认 5，上限 10）",
+         "type": "integer"
+        },
+        "query": {
+         "description": "检索词",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。",
+      "name": "web_fetch",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "url": {
+         "description": "http/https URL",
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "idea": {
+   "messages": [
+    {
+     "content": "常驻层",
+     "role": "system"
+    },
+    {
+     "content": "上一轮回复",
+     "reasoning_content": "私有思考字段",
+     "role": "assistant"
+    },
+    {
+     "content": "idea 的问话",
+     "role": "user"
+    }
+   ],
+   "model": "mock-model",
+   "tools": [
+    {
+     "function": {
+      "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+      "name": "read_artifact",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "path": {
+         "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+      "name": "list_episodes",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {},
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+      "name": "read_status",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "episode": {
+         "description": "期号或期目录路径；省略则用当期",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+      "name": "search_notes",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "limit": {
+         "description": "最多返回几条（默认 5，上限 20）",
+         "type": "integer"
+        },
+        "query": {
+         "description": "检索词",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "pipeline": {
+   "messages": [
+    {
+     "content": "常驻层",
+     "role": "system"
+    },
+    {
+     "content": "上一轮回复",
+     "reasoning_content": "私有思考字段",
+     "role": "assistant"
+    },
+    {
+     "content": "pipeline 的问话",
+     "role": "user"
+    }
+   ],
+   "model": "mock-model",
+   "tools": [
+    {
+     "function": {
+      "description": "读取当期目录内文件或 data/library/ 下的笔记（只读）。读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；越界或非文本类必拒。",
+      "name": "read_artifact",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "path": {
+         "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
+      "name": "read_status",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "episode": {
+         "description": "期号或期目录路径；省略则用当期",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
+      "name": "list_episodes",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {},
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回规范化 argv。**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；--force/--force-all/cloud exec 一律拒收。",
+      "name": "run_pipeline",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "command": {
+         "description": "如 'tts --redo 3' 或 'clips'",
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  }
+ }
+}

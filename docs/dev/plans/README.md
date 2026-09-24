@@ -29,7 +29,7 @@
 | [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **M6 施工完成（PR1–PR3），S12 review 🟢**（v0.4：工具表 6→8、scope 掩码、SSRF + fake-ip 段放行；MUT-1~23 全杀；`web_search` 默认 DDG 端点被机器人挑战页拦截，当前不可用，provider 留待后续 spec） |
 | [网络工具第二批 crawl + browser（Spec 5）](2026-09-23-crawl-browser-tools-spec.md) | B2 / D23 | ADR-0021 | **M8 施工完成（PR1–PR3），S16 review 🟢**（工具表 9→11、能力掩码、独立 profile 守卫、启动事件落盘；S16 修复轮：死会话自愈、browser 后 crawl 事件循环冲突、不自建 data/、crawl4ai 基目录重定向 `data/crawl4ai/`（RF-15）；MUT-1~30 全杀；浏览器二进制与门禁 5 lsof 手验待人执行） |
 | [acquire_propose 受控素材提案（Spec 6）](2026-09-23-acquire-propose-spec.md) | B2 / D23 | ADR-0021 | **M7 施工完成（PR1–PR2），S14 review 🟢**（工具表 8→9、asset scope 唯一可见；schema 纯函数与 incoming/ledger 路径单源下移 `pipeline/candidates.py`，acquire 零回归；MUT-1~13 全杀） |
-| [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **v0.6 红队四轮收口（定向微轮 🟢），可动工**（PR1/PR2 可先行；PR4 待 Spec 1 PR1+PR2，PR5 真实数据路径待 Spec 3；PR6 须实跑 MUT-1~53 含 15b、52b） |
+| [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **M9 施工完成（PR1–PR3），S18 review 🟢**（模型按 scope 分档 + 跨档清洗，未配 models 与 golden 字节一致；记忆核心与 `write_memory` 已注册、未登记 `tools.json`，模型仍不可见；S18 修复轮：sha 与正文同一次读盘、读盘失败 fail-closed、边界用例补齐；手工变异 71 条全杀；门禁 8（跨档冒烟）经人裁决推迟至 PR6；下一步 M10：PR4–PR6，PR5 真实数据路径待 Spec 3） |
 | [Electron 桌面端架构冻结稿（Spec 8）](2026-09-23-electron-desktop-spec.md) | B2 / D23 | ADR-0020 | **v0.5 红队三轮收口 + 定向核对 🟢（4🔵 全收），PR0–PR3 可动工**（PR2 首日须实测 Electron 运行时的 JSON.parse `context.source`（假设 10）；PR4 阻塞于 Spec 3 v0.6 PR3 施工，而 Spec 3 §1.3–§1.6 的定向复核尚未进行，见 spec §1.4、§6.2） |
 
 ---

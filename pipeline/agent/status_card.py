@@ -177,6 +177,7 @@ def render_approval_card(
     *,
     target_exists: bool | None = None,
     episode_dir: Path | str | None = None,
+    memory_preview: list[str] | None = None,
 ) -> str:
     """标准化人机审批卡片渲染纯函数（Spec §3.2, §6 PR6）。
 
@@ -184,10 +185,23 @@ def render_approval_card(
     1. 执行审批（run_pipeline 普通命令 / render 长任务）
     2. 计费审批（run_pipeline cloud up/run/push/pull）
     3. 写入审批（write_episode_file）
+    4. 记忆写入审批（write_memory；全文由 memory.render_plan_preview 给出）
     危险标记由宿主静态规则打，不依赖模型自报。
     """
     args = dict(args or {})
     argv_list = list(argv) if argv is not None else []
+
+    if name == "write_memory":
+        lines = [
+            "┌─ 记忆写入审批 ──────────────────────────────────",
+            f"│ 工具: {name}",
+            "│ 危险标记: [跨期记忆] 按 y 即确认下方全文进入之后所有 creative/asset/idea 会话",
+        ]
+        for raw in memory_preview or []:
+            for piece in str(raw).split("\n"):
+                lines.append(f"│ {piece}")
+        lines.append("└─ 执行? [y/N]: ")
+        return "\n".join(lines)
 
     if name == "write_episode_file":
         raw_filename = str(args.get("filename", "")).strip()
