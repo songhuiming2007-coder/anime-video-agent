@@ -544,6 +544,30 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "write_memory": {
+        "name": "write_memory",
+        "side_effect": True,
+        "adr": "ADR-0023",
+        "description": (
+            "跨期记忆 data/library/memory.md 的唯一受控写入口。条目 = 模式 + 证据期 + 适用边界，"
+            "写经验不写规则、不写流水账。op=add/revise/merge/retire 弹人审卡，人看全文按 y 才落盘；"
+            "op=cite 把当期记为某条的证据（免卡）。禁用「可能」类措辞、规则强度词与审批行为词。"
+            "全文 4000 字符预算，超限被拒时按返回的腾位候选序先 merge 或 retire 首位。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["add", "revise", "merge", "cite", "retire"]},
+                "ids": {"type": "array", "items": {"type": "string"}},
+                "pattern": {"type": "string"},
+                "evidence": {"type": "array", "items": {"type": "string"}},
+                "boundary": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["op"],
+            "additionalProperties": False,   # 仅作模型提示；宿主层拒收由 plan_op 执行
+        },
+    },
 }
 
 
@@ -608,6 +632,16 @@ def deny_dir_hit(path: Path) -> str | None:
     return None
 
 
+def _is_memory_file(target: Path, ctx: ToolContext) -> bool:
+    """是否命中 data/library/memory.md（resolve + casefold，Spec 7 §4.3②）。
+
+    记忆只经装配器校验后注入；读工具留口子，校验层就有了旁路。
+    """
+    from pipeline.agent.memory import MEMORY_REL_PATH   # 函数内延迟 import（叶子性）
+
+    return str(Path(target).resolve()).casefold() == str((ctx.base / MEMORY_REL_PATH).resolve()).casefold()
+
+
 def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。"""
     raw = str(args.get("path", "")).strip()
@@ -640,6 +674,10 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
         if hit:
             raise PermissionError(
                 f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
+            )
+        if _is_memory_file(target, ctx):
+            raise PermissionError(
+                "memory.md 只经装配器校验后注入，模型不可直读；人请用 /memory"
             )
         if not any(target == r or r in target.parents for r in roots):
             continue
@@ -747,12 +785,16 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
 
     needle = query.lower()
     hits: list[dict[str, str]] = []
+    excluded: list[str] = []
     for path in sorted(library.rglob("*")):
         if len(hits) >= limit:
             break
         if not path.is_file() or path.is_symlink():
             continue
         if path.suffix.lower() not in NOTE_SUFFIXES:
+            continue
+        if _is_memory_file(path, ctx):
+            excluded.append(path.name)      # 跳过要显式说明，不静默
             continue
         if path.stat().st_size > MAX_NOTE_BYTES:
             continue
@@ -766,7 +808,10 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
         snippet = text[max(0, idx - 80): idx + len(query) + 160].replace("\n", " ").strip()
         hits.append({"path": str(path.relative_to(library)), "snippet": snippet})
 
-    return {"query": query, "hits": hits, "truncated": len(hits) >= limit}
+    result: dict[str, Any] = {"query": query, "hits": hits, "truncated": len(hits) >= limit}
+    if excluded:
+        result["excluded"] = sorted(set(excluded))
+    return result
 
 
 def _tool_web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -830,6 +875,26 @@ def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     )
 
 
+def _tool_write_memory(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """唯一的记忆写入口。confirmed 只取 ctx.confirmed，**不读 args["confirmed"]**（Spec 7 §2.2）。"""
+    from pipeline.agent import memory
+
+    plan = memory.apply_op(
+        str(args.get("op", "")),
+        args,
+        root=ctx.root,
+        episode_dir=ctx.episode_dir,
+        confirmed=ctx.confirmed,
+        scope=ctx.scope,
+    )
+    return {
+        "op": plan.op,
+        "summary": plan.summary,
+        "after_len": plan.after_len,
+        "text": plan.result_text,      # 模型从工具返回值里拿到写后全文（Spec 7 §2.6）
+    }
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -842,6 +907,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "acquire_propose": _tool_acquire_propose,
     "crawl": _tool_crawl,
     "browser": _tool_browser,
+    "write_memory": _tool_write_memory,
 }
 
 

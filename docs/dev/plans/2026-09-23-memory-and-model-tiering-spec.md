@@ -711,7 +711,7 @@ def _wire_messages(messages: list[dict], purpose: str | None) -> list[dict]:
 
 `render_approval_card` 新增 keyword-only 参数 `memory_preview: list[str] | None = None`，并新增 write_memory 分支：
 - 卡面标题为「记忆写入审批」；
-- 危险标记为 `[跨期记忆] 按 y 即确认以上全文进入之后所有 creative/asset/idea 会话`；
+- 危险标记为 `[跨期记忆] 按 y 即确认下方全文进入之后所有 creative/asset/idea 会话`（2026-09-24 人裁决：标记位于全文上方，「以上」改「下方」）；
 - 函数保持纯函数。
 
 ### 4.6 Spec 1 装配器增量（在 Spec 1 PR1/PR2 之后施工）
@@ -745,7 +745,7 @@ if MEMORY_REL_PATH not in tracker.injected_paths:
 
 ## 5. 依赖白名单与纯洁性保障
 
-- **`memory.py` 顶层**：标准库（`contextlib dataclasses datetime fcntl hashlib importlib.util json pathlib re sys threading typing unicodedata`）加 `from pipeline import paths`。
+- **`memory.py` 顶层**：标准库（`contextlib dataclasses datetime difflib fcntl hashlib importlib.util json os pathlib re sys threading typing unicodedata`；`difflib` 与 `os` 为实现期补齐，S18 🔵-5）加 `from pipeline import paths`。
   - `pipeline.agent.tools` 只在函数内延迟 import。
   - 顶层严禁任何重依赖，也严禁任何 `pipeline.agent.*`（保持叶子性）。
 - **`llm.py`**：只新增 `dataclasses.field` 与 `sys`。

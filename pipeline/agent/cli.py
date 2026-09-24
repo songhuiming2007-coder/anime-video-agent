@@ -786,6 +786,23 @@ def _default_approve(
             return (False, reason)
         argv = outcome["argv"]
 
+    # 1.5 write_memory 专用预审（Spec 7 §4.4）：dry-run 不合规就回喂，不弹卡
+    memory_plan = None
+    if name == "write_memory":
+        from pipeline.agent import memory
+
+        try:
+            memory_plan = memory.plan_op(
+                str(args.get("op", "")), args, root=root, episode_dir=ep_dir
+            )
+        except (ValueError, PermissionError, OSError) as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            print(f"[REJECT] {reason}")
+            return (False, reason)
+        if not memory_plan.requires_card:
+            print(f"[memory] {memory_plan.summary}")
+            return (True, "")
+
     # 2. fail-closed side_effect 分流
     side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
     if not side_effect:
@@ -824,10 +841,13 @@ def _default_approve(
         argv=argv,
         stop_label=stop_label,
         episode_dir=ep_dir,
+        memory_preview=memory.render_plan_preview(memory_plan) if memory_plan else None,
     )
 
     target_str = (
-        " ".join(argv)
+        memory_plan.summary
+        if memory_plan is not None
+        else " ".join(argv)
         if argv
         else str(
             args.get("filename", "")

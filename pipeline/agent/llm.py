@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,9 +33,41 @@ from pipeline.agent.tools import (
 DEFAULT_MAX_ITERATIONS = 10
 REQUEST_TIMEOUT = 60
 
+# 模型按用途分层（Spec 7 §2.7）：档位由调用所在的 scope 查表决定，**不看内容**。
+PURPOSES = ("reasoning", "light")
+SCOPE_PURPOSE: dict[str, str] = {
+    "idea": "reasoning",
+    "creative": "reasoning",
+    "asset": "reasoning",
+    "pipeline": "light",
+}
+
+# 宿主内部档位标记：只进会话史，进请求体前由 _wire_messages 一律删除。
+_TIER_KEY = "_ava_tier"
+
+# 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
+_WARN_LATCH: set[tuple[str, str]] = set()
+
+
+def _reset_warn_latch_for_testing() -> None:
+    _WARN_LATCH.clear()
+
+
+def purpose_for_scope(scope: str) -> str:
+    """scope → 档位。未知 scope 回落到 reasoning（风险不对称：错配弱档是事故）。"""
+    return SCOPE_PURPOSE.get(scope, "reasoning")
+
 
 class LLMError(RuntimeError):
     """网络/HTTP/协议层失败（领域异常，不是裸 urllib 报错）。"""
+
+
+def _warn_once(cfg_file: Path, kind: str, message: str) -> None:
+    key = (str(cfg_file), kind)
+    if key in _WARN_LATCH:
+        return
+    _WARN_LATCH.add(key)
+    print(f"[WARN] {message}", file=sys.stderr)
 
 
 @dataclass
@@ -42,20 +75,55 @@ class LLMConfig:
     base_url: str
     model: str
     api_key: str
+    models: dict[str, str] = field(default_factory=dict)
 
     @property
     def endpoint(self) -> str:
         return self.base_url.rstrip("/") + "/chat/completions"
 
+    def model_for(self, purpose: str | None) -> str:
+        """purpose=None 或该档未配置 → 回落到单一 model。"""
+        if purpose is None:
+            return self.model
+        return self.models.get(purpose) or self.model
+
+    @property
+    def tiering_active(self) -> bool:
+        """只有两档真的配成不同模型时才算分档生效。"""
+        return self.model_for("reasoning") != self.model_for("light")
+
+
+def _parse_models(data: dict[str, Any], cfg_file: Path) -> dict[str, str]:
+    """解析 models 段（Spec 7 §2.7 回落表）：非法即**整段作废**，不半信半疑。"""
+    raw = data.get("models")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        _warn_once(cfg_file, "models-shape", "models 段不是对象，整段作废，两档都回落到 model")
+        return {}
+    if set(raw) - set(PURPOSES) or any(not isinstance(v, str) for v in raw.values()):
+        _warn_once(
+            cfg_file, "models-keys",
+            f"models 段含未知键或非字符串值，整段作废，两档都回落到 model（合法键: {list(PURPOSES)}）",
+        )
+        return {}
+    parsed: dict[str, str] = {}
+    for purpose in PURPOSES:
+        value = str(raw.get(purpose, "")).strip()
+        if value:
+            parsed[purpose] = value
+    return parsed
+
 
 def load_llm_config(root: Path | None = None) -> LLMConfig | None:
     """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量。
 
-    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。
+    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。没有 models 段时行为与单模型完全一致。
     """
     cfg_dir = Path(root or paths.ROOT) / "config"
     local_cfg = cfg_dir / "agent.local.json"
-    cfg_file = local_cfg if local_cfg.exists() else (cfg_dir / "agent.json")
+    using_local = local_cfg.exists()
+    cfg_file = local_cfg if using_local else (cfg_dir / "agent.json")
     if not cfg_file.exists():
         return None
     try:
@@ -73,7 +141,22 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
     api_key = os.environ.get(env_name, "").strip()
     if not api_key:
         return None
-    return LLMConfig(base_url=base_url, model=model, api_key=api_key)
+
+    if using_local and "models" not in data:
+        # local 是整文件取代：写在 agent.json 的 models 会被静默埋掉，必须响亮
+        try:
+            peer = json.loads((cfg_dir / "agent.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            peer = None
+        if isinstance(peer, dict) and "models" in peer:
+            _warn_once(
+                local_cfg, "models-shadowed",
+                "models 段写在 agent.json，但本机 agent.local.json 整文件取代它，分档未生效",
+            )
+
+    return LLMConfig(
+        base_url=base_url, model=model, api_key=api_key, models=_parse_models(data, cfg_file)
+    )
 
 
 def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
@@ -106,6 +189,45 @@ def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
     }
 
 
+def _standard_message(message: dict[str, Any]) -> dict[str, Any]:
+    """跨档重放前的白名单字段复制（Spec 7 §2.7 决策 7b）。"""
+    clean: dict[str, Any] = {"role": message.get("role"), "content": message.get("content")}
+    calls = message.get("tool_calls")
+    if calls:
+        clean["tool_calls"] = [
+            {
+                "id": call.get("id"),
+                "type": call.get("type"),
+                "function": {
+                    "name": (call.get("function") or {}).get("name"),
+                    "arguments": (call.get("function") or {}).get("arguments"),
+                },
+            }
+            for call in calls
+        ]
+    return clean
+
+
+def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[dict[str, Any]]:
+    """请求体用的消息序列（Spec 7 §2.7 决策 7b）。
+
+    没有任何消息带档位标记（= 未分档）→ **原样返回同一个列表对象**：请求体与现状字节一致。
+    """
+    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):
+        return messages
+    wired: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            wired.append(message)
+            continue
+        tier = message.get(_TIER_KEY)
+        clean = {k: v for k, v in message.items() if k != _TIER_KEY}
+        if tier is not None and tier != purpose:
+            clean = _standard_message(clean)
+        wired.append(clean)
+    return wired
+
+
 def chat_complete(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -114,6 +236,7 @@ def chat_complete(
     root: Path | None = None,
     timeout: int = REQUEST_TIMEOUT,
     scope: str = "creative",
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """发一次 chat/completions，返回 `choices[0].message`。
 
@@ -123,7 +246,10 @@ def chat_complete(
     if cfg is None:
         return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
 
-    payload: dict[str, Any] = {"model": cfg.model, "messages": messages}
+    payload: dict[str, Any] = {
+        "model": cfg.model_for(purpose),
+        "messages": _wire_messages(messages, purpose),
+    }
     if tools:
         payload["tools"] = tools
     assert_egress_boundary(cfg.endpoint, payload)  # 出网前最后一道断言
@@ -193,9 +319,15 @@ def run_tool_loop(
     tools = build_tool_schemas(context.scope, effective_root)
     convo = list(messages)
     tool_calls_made = 0
+    # 同一次工具循环的所有迭代用同一档（Spec 7 §2.7 决策 7a）
+    purpose = purpose_for_scope(context.scope)
 
     for iteration in range(1, max_iterations + 1):
-        reply = chat_complete(convo, tools=tools or None, config=cfg, scope=context.scope)
+        reply = chat_complete(
+            convo, tools=tools or None, config=cfg, scope=context.scope, purpose=purpose
+        )
+        if cfg.tiering_active:
+            reply[_TIER_KEY] = purpose
         convo.append(reply)
 
         calls = reply.get("tool_calls") or []
