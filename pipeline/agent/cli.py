@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -91,7 +92,10 @@ def park_stop_of(current_step: str) -> str | None:
     return None if stop == "03.5" else stop
 
 
-def _print_pending_approvals(ep_dir: Path) -> None:
+def _print_pending_approvals(
+    ep_dir: Path,
+    displayed_ids: dict[str, str] | None = None,
+) -> None:
     """打印当期挂起的停机点审批对象（REPL 与裸形态 /approvals 共用）。"""
     from pipeline import approvals
 
@@ -100,6 +104,8 @@ def _print_pending_approvals(ep_dir: Path) -> None:
         print("[approvals] 当前无挂起的停机点审批对象。")
         return
     for item in pendings:
+        if displayed_ids is not None:
+            displayed_ids[item.type] = item.approval_id
         arts = ", ".join(a.path for a in item.artifacts) or "无"
         opts = "/".join(item.options)
         note_suffix = f" | {item.note}" if item.note else ""
@@ -107,6 +113,189 @@ def _print_pending_approvals(ep_dir: Path) -> None:
             f"[pending] {item.approval_id} | 停机点: {item.type} | "
             f"创建: {item.created_at} | 产物: {arts} | 可选项: {opts}{note_suffix}"
         )
+
+
+def _sync_repl_displayed_approval(
+    ep_dir: Path,
+    status: EpisodeStatus,
+    displayed_ids: dict[str, str],
+) -> None:
+    """REPL 每轮比对 ensure_pending 返回值与本会话已展示 id，打印更新提示（Spec 3 §4.2 R-1）。"""
+    from pipeline import approvals
+
+    ensured = approvals.ensure_pending(ep_dir, status)
+    if ensured is None:
+        return
+    old_id = displayed_ids.get(ensured.type)
+    if old_id is None:
+        print(f"[approvals] {ensured.type} 待审批已更新：{ensured.approval_id}")
+        displayed_ids[ensured.type] = ensured.approval_id
+    elif old_id != ensured.approval_id:
+        print(
+            f"[approvals] {ensured.type} 待审批已更新：{ensured.approval_id}"
+            f"（产物已变更，旧 {old_id} 作废）"
+        )
+        displayed_ids[ensured.type] = ensured.approval_id
+
+
+def _resolve_repl_approval_id(
+    stop: str,
+    explicit_id: str | None,
+    displayed_ids: dict[str, str],
+) -> str:
+    """REPL 不带 --id 时只做 stop -> 本会话最近展示过 id 的映射，不判断对象状态（Spec 3 §4.2 R-1 / R7-1）。"""
+    from pipeline.approvals import ApprovalError
+
+    if explicit_id is not None:
+        return explicit_id
+    resolved = displayed_ids.get(stop)
+    if resolved is None:
+        raise ApprovalError(f"停机点 {stop} 尚未在本会话展示，请先 /approvals")
+    return resolved
+
+
+def _consume_one_shlex_token(text: str) -> tuple[str, str]:
+    """从 text 开头按 POSIX shlex 规则取一个 token，并返回 (token, 剩余整行原文)。"""
+    s = text.lstrip(" \t")
+    if not s:
+        raise ValueError("missing token")
+    i = 0
+    n = len(s)
+    in_single = False
+    in_double = False
+    escaped = False
+    while i < n:
+        ch = s[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            escaped = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if ch in (" ", "\t") and not in_single and not in_double:
+            break
+        i += 1
+    if in_single or in_double or escaped:
+        raise ValueError("unclosed quote or escape")
+    raw_token = s[:i]
+    parsed = shlex.split(raw_token)
+    if len(parsed) != 1:
+        raise ValueError("invalid token")
+    rest = s[i:].lstrip(" \t")
+    return (parsed[0], rest)
+
+
+def _parse_repl_approve(line: str) -> tuple[str, str | None]:
+    """解析 REPL `/approve <stop> [--id <approval_id>]`。"""
+    tokens = shlex.split(line)
+    if len(tokens) == 2 and tokens[0] == "/approve":
+        stop, approval_id = tokens[1], None
+    elif len(tokens) == 4 and tokens[0] == "/approve" and tokens[2] == "--id":
+        stop, approval_id = tokens[1], tokens[3]
+    else:
+        raise ValueError("invalid /approve syntax")
+    if stop not in HUMAN_STOPS or (approval_id is not None and not approval_id.strip()):
+        raise ValueError("invalid /approve arguments")
+    return (stop, approval_id)
+
+
+def _parse_repl_reject(line: str) -> tuple[str, str | None, str, str]:
+    """解析 REPL `/reject <stop> [--id <approval_id>] <哪段> <问题…>`（Spec 3 §4.2 C.3）。
+
+    --id 仅在 stop 之后的固定位置识别；target 用 shlex 取一个 token，
+    problem 取 target 之后的整行原文（不压缩空格、不剥引号）。
+    """
+    shlex.split(line)
+    cmd, rest = _consume_one_shlex_token(line)
+    if cmd != "/reject":
+        raise ValueError("invalid command")
+    stop, rest = _consume_one_shlex_token(rest)
+    if stop not in HUMAN_STOPS:
+        raise ValueError("invalid stop")
+    approval_id: str | None = None
+    next_tok, after_next = _consume_one_shlex_token(rest)
+    if next_tok == "--id":
+        approval_id, rest = _consume_one_shlex_token(after_next)
+        if not approval_id.strip():
+            raise ValueError("empty approval_id")
+        target, problem = _consume_one_shlex_token(rest)
+    else:
+        target, problem = next_tok, after_next
+    if not target.strip() or not problem.strip():
+        raise ValueError("empty target or problem")
+    return (stop, approval_id, target, problem)
+
+
+def _handle_repl_approve(
+    ep_dir: Path,
+    line: str,
+    displayed_ids: dict[str, str],
+) -> int:
+    """执行 REPL `/approve` 命令，返回契约状态码（0=成功，1=ApprovalError，2=用法错误）。"""
+    from pipeline import approvals
+    from pipeline.approvals import ApprovalError
+
+    try:
+        stop, explicit_id = _parse_repl_approve(line)
+    except ValueError:
+        print(
+            "[ERROR] 用法: /approve <02.5|03.5|05|09> [--id <approval_id>]",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        target_id = _resolve_repl_approval_id(stop, explicit_id, displayed_ids)
+        res = approvals.approve(ep_dir, stop, approval_id=target_id, source="repl")  # type: ignore[arg-type]
+        print(f"[OK] 已批准 {res.type} ({res.approval_id})")
+        return 0
+    except ApprovalError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+
+
+def _handle_repl_reject(
+    ep_dir: Path,
+    line: str,
+    displayed_ids: dict[str, str],
+) -> int:
+    """执行 REPL `/reject` 命令，返回契约状态码（0=成功，1=ApprovalError，2=用法错误）。"""
+    from pipeline import approvals
+    from pipeline.approvals import ApprovalError
+
+    try:
+        stop, explicit_id, target, problem = _parse_repl_reject(line)
+    except ValueError:
+        print(
+            "[ERROR] 用法: /reject <02.5|03.5|05|09> [--id <approval_id>] <哪段> <问题...>",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        target_id = _resolve_repl_approval_id(stop, explicit_id, displayed_ids)
+        res = approvals.reject(
+            ep_dir,
+            stop,  # type: ignore[arg-type]
+            {"target": target, "problem": problem},
+            approval_id=target_id,
+            source="repl",
+        )
+        print(f"[OK] 已驳回 {res.type} ({res.approval_id}) → _agent/approval_feedback.md")
+        return 0
+    except ApprovalError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
 
 
 def run_voice_session(ep_dir: Path) -> int:
@@ -953,6 +1142,7 @@ def _run_repl_body(
     from pipeline.agent.assembly import SessionContextTracker
 
     tracker = SessionContextTracker()
+    displayed_approvals: dict[str, str] = {}
     scope_override: str | None = None
     messages: list[dict[str, Any]] = []
 
@@ -960,9 +1150,7 @@ def _run_repl_body(
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
         try:
-            from pipeline import approvals
-
-            approvals.ensure_pending(ep_dir, status)
+            _sync_repl_displayed_approval(ep_dir, status, displayed_approvals)
         except Exception:
             pass
         if on_step and scout_entered_at is None:
@@ -1005,6 +1193,8 @@ def _run_repl_body(
                 print("\n支持的命令路由:")
                 print("  /status      查看当期阶段状态与推荐命令")
                 print("  /approvals   查看当期挂起的停机点审批对象")
+                print("  /approve     批准停机点: /approve <stop> [--id <approval_id>]")
+                print("  /reject      驳回停机点: /reject <stop> [--id <approval_id>] <哪段> <问题>")
                 print("  /board       查看全局期看板")
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
@@ -1024,9 +1214,17 @@ def _run_repl_body(
 
             if line == "/approvals":
                 try:
-                    _print_pending_approvals(ep_dir)
+                    _print_pending_approvals(ep_dir, displayed_approvals)
                 except Exception as exc:
                     print(f"[WARN] 读取审批队列失败: {exc}")
+                continue
+
+            if line == "/approve" or line.startswith("/approve "):
+                _handle_repl_approve(ep_dir, line, displayed_approvals)
+                continue
+
+            if line == "/reject" or line.startswith("/reject "):
+                _handle_repl_reject(ep_dir, line, displayed_approvals)
                 continue
 
             if line == "/board":
@@ -1250,12 +1448,83 @@ def main(argv: list[str] | None = None) -> int:
 
     # 带子命令，例如 `ava <期> /voice` 或 `ava <期> /run tts`
     if len(args) > 1:
+        # Spec 3 §4.2 (S3-R1/R2/R6)：裸形态 /approvals、/approve、/reject 必须在
+        # `sub_cmd = " ".join(args[1:])` 之前按 argv 位置无损取参
+        if args[1] == "/approvals":
+            if len(args) != 2:
+                print("[ERROR] 用法: ava <期> /approvals", file=sys.stderr)
+                return 2
+            _print_pending_approvals(ep_dir)
+            return 0
+
+        if args[1] == "/approve":
+            if (
+                len(args) != 5
+                or args[2] not in HUMAN_STOPS
+                or args[3] != "--id"
+                or not args[4].strip()
+            ):
+                print(
+                    "[ERROR] 用法: ava <期> /approve <02.5|03.5|05|09> --id <approval_id>",
+                    file=sys.stderr,
+                )
+                return 2
+            from pipeline import approvals
+            from pipeline.approvals import ApprovalError
+
+            try:
+                res = approvals.approve(
+                    ep_dir,
+                    args[2],  # type: ignore[arg-type]
+                    approval_id=args[4],
+                    source="cli",
+                )
+                print(f"[OK] 已批准 {res.type} ({res.approval_id})")
+                return 0
+            except ApprovalError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return 1
+
+        if args[1] == "/reject":
+            if (
+                len(args) < 7
+                or args[2] not in HUMAN_STOPS
+                or args[3] != "--id"
+                or not args[4].strip()
+                or not args[5].strip()
+            ):
+                print(
+                    "[ERROR] 用法: ava <期> /reject <02.5|03.5|05|09> --id <approval_id> <哪段> <问题...>",
+                    file=sys.stderr,
+                )
+                return 2
+            problem_str = " ".join(args[6:])
+            if not problem_str.strip():
+                print(
+                    "[ERROR] 用法: ava <期> /reject <02.5|03.5|05|09> --id <approval_id> <哪段> <问题...>",
+                    file=sys.stderr,
+                )
+                return 2
+            from pipeline import approvals
+            from pipeline.approvals import ApprovalError
+
+            try:
+                res = approvals.reject(
+                    ep_dir,
+                    args[2],  # type: ignore[arg-type]
+                    {"target": args[5], "problem": problem_str},
+                    approval_id=args[4],
+                    source="cli",
+                )
+                print(f"[OK] 已驳回 {res.type} ({res.approval_id}) → _agent/approval_feedback.md")
+                return 0
+            except ApprovalError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return 1
+
         sub_cmd = " ".join(args[1:])
         if sub_cmd == "/status":
             print(format_status(inspect_episode(ep_dir)))
-            return 0
-        if sub_cmd == "/approvals":
-            _print_pending_approvals(ep_dir)
             return 0
         if sub_cmd.startswith("/run"):
             status = inspect_episode(ep_dir)
@@ -1281,6 +1550,14 @@ def main(argv: list[str] | None = None) -> int:
         if sub_cmd == "/scout" or sub_cmd.startswith("/scout "):
             extra = sub_cmd[6:].strip().split() if sub_cmd.startswith("/scout ") else []
             return _exec_scout(ep_dir, extra)
+
+        # Spec 3 §4.2 S3-R5：stdin 非 TTY 且带了未分派的子命令时，报错退出 2，不落入 REPL
+        if not sys.stdin.isatty():
+            print(
+                f"[ERROR] 未识别的子命令：{args[1:]}（非交互环境不进入 REPL）",
+                file=sys.stderr,
+            )
+            return 2
 
     return run_repl(ep_dir)
 

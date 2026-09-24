@@ -10,10 +10,13 @@
 """
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+from pipeline import align, review
 from pipeline.review import _clip_ep, _ep_label, _presence_txt, _thumb_path, approve
 
 
@@ -176,3 +179,180 @@ class TestPatchApproveGate:
         self._write_patch_episode(tmp_path, is_anchor=True)
         dest = approve(tmp_path, confirm_patch=True)
         assert dest.exists()
+
+
+class TestApproveExpectFingerprint:
+    """T20（Spec 3 §4.5 S3-R9 / S3-R9a / C.2）：解封物原子核验。
+
+    变体覆盖 MUT-20 / MUT-21 / MUT-24 / MUT-28。
+    """
+
+    def _make_clips_episode(self, ep: Path, *, start: float = 10.0) -> Path:
+        ep.mkdir(parents=True, exist_ok=True)
+        clips = {
+            "anime": "TestAnime",
+            "segments": [
+                {
+                    "index": 1,
+                    "status": "ok",
+                    "clips": [{"season": 1, "episode": 1, "start": start, "dur": 6.0}],
+                }
+            ],
+        }
+        (ep / "04-clips.json").write_text(
+            json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        audio_dir = ep / "03-audio"
+        audio_dir.mkdir(exist_ok=True)
+        (audio_dir / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 6.0}]}), encoding="utf-8"
+        )
+        return ep / "04-clips.json"
+
+    def _fingerprint(self, src: Path) -> tuple[int, int, int]:
+        st = src.stat()
+        return (st.st_size, st.st_mtime_ns, st.st_atime_ns)
+
+    def test_expect_不符则不写批准文件(self, tmp_path):
+        """①（MUT-20）：expect 与当前 04-clips.json 不符 → 退出 1，approved 不存在。"""
+        src = self._make_clips_episode(tmp_path)
+        size, mtime_ns, atime_ns = self._fingerprint(src)
+        dest = tmp_path / "04-clips.approved.json"
+
+        with pytest.raises(SystemExit) as exc_size:
+            approve(tmp_path, expect=(size + 1, mtime_ns))
+        assert "已不是审阅时的版本" in str(exc_size.value)
+        assert not dest.exists()
+
+        with pytest.raises(SystemExit) as exc_mtime:
+            approve(tmp_path, expect=(size, mtime_ns + 1))
+        assert "已不是审阅时的版本" in str(exc_mtime.value)
+        assert not dest.exists()
+
+    def test_expect_相符则字节与_mtime_一致(self, tmp_path):
+        """②：相符 → 解封物与源字节相等、st_mtime_ns 相等。"""
+        src = self._make_clips_episode(tmp_path)
+        size, mtime_ns, _ = self._fingerprint(src)
+        dest = approve(tmp_path, expect=(size, mtime_ns))
+        assert dest == tmp_path / "04-clips.approved.json"
+        assert dest.read_bytes() == src.read_bytes()
+        assert dest.stat().st_mtime_ns == mtime_ns
+
+    def test_读取期间改写成_F2_仍写_F1(self, tmp_path, monkeypatch):
+        """③（MUT-21 / C.7）：段级校验时源文件已被改成段级对齐的 F2 → 解封物仍是 F1。"""
+        src = self._make_clips_episode(tmp_path, start=10.0)
+        f1_bytes = src.read_bytes()
+        size, mtime_ns, _ = self._fingerprint(src)
+        orig_verify = review.verify_alignment
+
+        def _verify_after_rewrite(segments, audio):
+            # F2：段级内容与 F1 不同（start 变了），但仍段级对齐；字节数不变
+            data = json.loads(src.read_text(encoding="utf-8"))
+            data["segments"][0]["clips"][0]["start"] = 20.0
+            src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            assert len(src.read_bytes()) == size
+            return orig_verify(segments, audio)
+
+        monkeypatch.setattr(review, "verify_alignment", _verify_after_rewrite)
+        dest = approve(tmp_path, expect=(size, mtime_ns))
+        assert dest.read_bytes() == f1_bytes
+        assert align.has_clips_approved_diff(tmp_path) is True
+
+    def test_不给_expect_时行为与现状一致(self, tmp_path):
+        """④：不给 expect → 与 copy2 逐字节、逐 mtime 一致。"""
+        src = self._make_clips_episode(tmp_path)
+        before = self._fingerprint(src)
+        dest = approve(tmp_path)
+        assert dest.read_bytes() == src.read_bytes()
+        assert dest.stat().st_mtime_ns == before[1]
+
+    def test_expect_经等号形式可注入期目录(self, tmp_path):
+        """⑤：`--expect-*` 必须用等号形式，否则 validate_pipeline_command 不再注入期目录。"""
+        from pipeline.agent.tools import sys_python, validate_pipeline_command
+
+        self._make_clips_episode(tmp_path)
+        ok, msg, argv = validate_pipeline_command(
+            ["review", "--approve", "--expect-size=100", "--expect-mtime-ns=200"],
+            scope="pipeline",
+            ep_dir=tmp_path,
+        )
+        assert ok, msg
+        assert argv == [
+            sys_python(), "-m", "pipeline.review", str(tmp_path.resolve()),
+            "--approve", "--expect-size=100", "--expect-mtime-ns=200",
+        ]
+
+        # 空格形式的对照：值被当成位置参数，期目录不再被注入（等号形式的理由）
+        ok2, _msg2, argv2 = validate_pipeline_command(
+            ["review", "--approve", "--expect-size", "100"],
+            scope="pipeline",
+            ep_dir=tmp_path,
+        )
+        assert ok2
+        assert str(tmp_path.resolve()) not in argv2
+
+    def test_同长度原地覆写被二次_fstat_拦下(self, tmp_path, monkeypatch):
+        """⑥（MUT-24）：同长度原地覆写为段级对齐的 F2 → 退出 1、不写文件。"""
+        src = self._make_clips_episode(tmp_path, start=10.0)
+        dest = tmp_path / "04-clips.approved.json"
+        size, mtime_ns, _ = self._fingerprint(src)
+        orig_read_all = review._read_all
+
+        def _read_after_inplace_rewrite(f):
+            time.sleep(0.01)
+            data = json.loads(src.read_text(encoding="utf-8"))
+            data["segments"][0]["clips"][0]["start"] = 20.0
+            src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            assert src.stat().st_size == size
+            return orig_read_all(f)
+
+        monkeypatch.setattr(review, "_read_all", _read_after_inplace_rewrite)
+        with pytest.raises(SystemExit) as exc:
+            approve(tmp_path, expect=(size, mtime_ns))
+        assert "在读取期间被改写" in str(exc.value)
+        assert not dest.exists()
+
+    def test_同长度原地覆写_字节数变化也拦下(self, tmp_path, monkeypatch):
+        """⑥ 变体：F2 字节数不同 → 同样退出 1、不写文件。"""
+        src = self._make_clips_episode(tmp_path, start=10.0)
+        dest = tmp_path / "04-clips.approved.json"
+        size, mtime_ns, _ = self._fingerprint(src)
+        orig_read_all = review._read_all
+
+        def _read_after_longer_rewrite(f):
+            data = json.loads(src.read_text(encoding="utf-8"))
+            data["extra_note"] = "a much longer note to change the byte count"
+            src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            assert src.stat().st_size != size
+            return orig_read_all(f)
+
+        monkeypatch.setattr(review, "_read_all", _read_after_longer_rewrite)
+        with pytest.raises(SystemExit) as exc:
+            approve(tmp_path, expect=(size, mtime_ns))
+        assert "在读取期间被改写" in str(exc.value)
+        assert not dest.exists()
+
+    def test_mtime_回拨也被_ctime_拦下(self, tmp_path, monkeypatch):
+        """⑦（MUT-28 / C.2）：同长度原地覆写后 os.utime 回拨 mtime → 退出 1、不写文件。"""
+        src = self._make_clips_episode(tmp_path, start=10.0)
+        dest = tmp_path / "04-clips.approved.json"
+        st_before = src.stat()
+        orig_read_all = review._read_all
+
+        def _read_after_utime_rollback(f):
+            time.sleep(0.01)
+            data = json.loads(src.read_text(encoding="utf-8"))
+            data["segments"][0]["clips"][0]["start"] = 20.0
+            src.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.utime(src, ns=(st_before.st_atime_ns, st_before.st_mtime_ns))
+            st_after = src.stat()
+            assert st_after.st_size == st_before.st_size
+            assert st_after.st_mtime_ns == st_before.st_mtime_ns
+            assert st_after.st_ctime_ns != st_before.st_ctime_ns
+            return orig_read_all(f)
+
+        monkeypatch.setattr(review, "_read_all", _read_after_utime_rollback)
+        with pytest.raises(SystemExit) as exc:
+            approve(tmp_path, expect=(st_before.st_size, st_before.st_mtime_ns))
+        assert "在读取期间被改写" in str(exc.value)
+        assert not dest.exists()

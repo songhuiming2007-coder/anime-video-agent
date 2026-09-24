@@ -309,6 +309,8 @@ def log_approval_decision(
     target: str,
     decision: str,
     latency_s: float | None = None,
+    *,
+    emit_event: bool = True,
 ) -> None:
     """追加一行审批记录到期目录 _agent/approvals.jsonl（Spec §3.2-6, §5 M17）。
 
@@ -319,20 +321,21 @@ def log_approval_decision(
     """
     norm_y = decision.strip().lower() in ("y", "yes")
     resolved_decision = "approved" if norm_y else "rejected"
-    try:
-        from pipeline.jobs import EventType, get_publisher
+    if emit_event:
+        try:
+            from pipeline.jobs import EventType, get_publisher
 
-        get_publisher().emit(
-            EventType.APPROVAL_RESOLVED,
-            {
-                "command": target,
-                "decision": resolved_decision,
-                "source": tool_name,
-            },
-            episode_dir=ep_dir,
-        )
-    except Exception:
-        pass
+            get_publisher().emit(
+                EventType.APPROVAL_RESOLVED,
+                {
+                    "command": target,
+                    "decision": resolved_decision,
+                    "source": tool_name,
+                },
+                episode_dir=ep_dir,
+            )
+        except Exception:
+            pass
 
     if not ep_dir:
         return

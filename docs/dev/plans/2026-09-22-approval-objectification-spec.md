@@ -374,7 +374,7 @@ def approve(ep_dir: Path, stop: ApprovalType, *, approval_id: str | None = None,
          **绝不转而处理同类型的新 pending（替身）**；为 REJECTED → ApprovalError（异决策）；
        - 未给 id（编程调用；v0.7 R-1 起 REPL 也先解析出 id 再传入，不再走本分支）：transitions
          中若有同类型对象刚转 SUPERSEDED → ApprovalError「对象已被替换（关联产物已变更），请重新审阅」；否则取同类型
-         PENDING，没有则取同类型「APPROVED 且 resolved_by == "artifact"」中最新一条，仍没有 → ApprovalError；
+         PENDING，没有则取同类型「APPROVED 且 resolved_by == "artifact"」中最新一条，仍没有则取同类型最新一条终态对象（维持同决策幂等与异决策报错，2026-09-24 S9 用户裁决），仍没有 → ApprovalError；
     3. 目标为 PENDING：指纹漂移 → 转 SUPERSEDED 并 ApprovalError；解封物联动型（02.5/05）
        解封物缺失或过 §2.3 失效判据 → ApprovalError 并提示正确命令（对象层永不代产解封物，§2.6）；
        通过则转 APPROVED(resolved_by=source)，同源三写：对象库 + log_approval_decision + APPROVAL_RESOLVED；
