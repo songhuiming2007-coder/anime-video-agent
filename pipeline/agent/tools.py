@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import codecs
 import collections
+import importlib
+import importlib.util
 import json
 import os
 import re
@@ -501,7 +503,54 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "crawl": {
+        "name": "crawl",
+        "side_effect": False,
+        "adr": "ADR-0021",
+        "requires_extra": "crawl4ai",
+        "description": (
+            "无头渲染抓取单个 URL（只读，升级链第二级）。仅在 web_fetch 失败后使用，"
+            "reason 必填说明下级为何不够；stealth 仅在普通无头被盾时显式开启。"
+            "失败如实报错并提示升级 browser，严禁静默降级为水百科。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "http/https URL"},
+                "reason": {"type": "string", "description": "为什么 web_fetch 不够（其报错原文/遇到的盾）"},
+                "stealth": {"type": "boolean", "description": "绕盾模式，默认 false"},
+            },
+            "required": ["url", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    "browser": {
+        "name": "browser",
+        "adr": "ADR-0021",
+        "requires_extra": "playwright",
+        "description": (
+            "登录态浏览器（升级链第三级，每次调用过人审卡，每次启动落审批事件）。"
+            "action 仅支持 navigate / extract_text；profile 独立持久化、路径由配置钉死。"
+            "仅在 crawl 也不够或必须登录态时使用，reason 必填。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["navigate", "extract_text"]},
+                "url": {"type": "string", "description": "navigate 的目标 URL"},
+                "reason": {"type": "string", "description": "为什么 crawl 不够/为何需要登录态"},
+            },
+            "required": ["action", "reason"],
+            "additionalProperties": False,
+        },
+    },
 }
+
+
+def _extra_available(dist: str) -> bool:
+    """可选 extras 探测：find_spec 只定位不执行（防顶层 import 重依赖污染热路径）。"""
+    importlib.invalidate_caches()
+    return importlib.util.find_spec(dist) is not None
 
 
 def tool_names_for_scope(scope: str, root: Path | None = None) -> list[str]:
@@ -526,6 +575,9 @@ def build_tool_schemas(scope: str, root: Path | None = None) -> list[dict[str, A
                 f"tools.json 声明了未注册的工具 '{name}'；工具清单不现场发明（Spec §2.5 B3-r6），"
                 f"已注册: {sorted(TOOL_SCHEMAS)}"
             )
+        req_extra = TOOL_SCHEMAS[name].get("requires_extra")
+        if req_extra and not _extra_available(str(req_extra)):
+            continue
         _PROTOCOL_KEYS = ("name", "description", "parameters")
         fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k in _PROTOCOL_KEYS}
         schemas.append({"type": "function", "function": fn_schema})
@@ -748,6 +800,36 @@ def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
     return propose_candidates(raw, data_root=ctx.base / "data")
 
 
+def _tool_crawl(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.web_crawl import crawl_page
+
+    url = str(args.get("url", "")).strip()
+    if not url:
+        raise ValueError("url 不能为空")
+    reason = str(args.get("reason", "")).strip()
+    if not reason:
+        raise ValueError("reason 不能为空")
+    stealth = bool(args.get("stealth", False))
+    return crawl_page(url, reason, stealth=stealth, root=ctx.root)
+
+
+def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.web_browser import browser_action
+
+    action = str(args.get("action", "")).strip()
+    reason = str(args.get("reason", "")).strip()
+    url_raw = args.get("url")
+    url = str(url_raw).strip() if url_raw is not None else None
+    return browser_action(
+        action,
+        reason,
+        url=url,
+        episode_dir=ctx.episode_dir,
+        scope=ctx.scope,
+        root=ctx.root,
+    )
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -758,13 +840,15 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
     "acquire_propose": _tool_acquire_propose,
+    "crawl": _tool_crawl,
+    "browser": _tool_browser,
 }
 
 
 def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
     """按 scope 白名单执行一个工具，返回可 JSON 化的结果（错误也当数据回喂 LLM）。
 
-    三层闸：① 名字已注册；② 在当前 scope 白名单内；③ 实现层自身边界（路径/确认）。
+    四层闸：① 名字已注册；② 在当前 scope 白名单内；③ 可选依赖已安装；④ 实现层自身边界。
     """
     if name not in TOOL_SCHEMAS:
         return {"ok": False, "error": f"未注册的工具 '{name}'（工具清单不现场发明）"}
@@ -773,6 +857,15 @@ def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> di
         return {
             "ok": False,
             "error": f"工具 '{name}' 不在 {ctx.scope} scope 白名单内（当前放行: {allowed}）",
+        }
+    req_extra = TOOL_SCHEMAS[name].get("requires_extra")
+    if req_extra and not _extra_available(str(req_extra)):
+        return {
+            "ok": False,
+            "error": (
+                f"工具 '{name}' 需要可选依赖 '{req_extra}'（uv sync --extra {name}），"
+                "当前环境未安装"
+            ),
         }
     try:
         result = _TOOL_IMPLS[name](dict(args or {}), ctx)

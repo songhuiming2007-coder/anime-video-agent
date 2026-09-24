@@ -309,11 +309,35 @@ from pipeline.agent.tools import (
 )
 
 SPEC_TOOLS = {
-    "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes", "web_search", "web_fetch"],
+    "creative": [
+        "read_artifact",
+        "write_episode_file",
+        "list_episodes",
+        "read_status",
+        "search_notes",
+        "web_search",
+        "web_fetch",
+        "crawl",
+        "browser",
+    ],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
-    "asset": ["web_search", "web_fetch", "acquire_propose"],
+    "asset": ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"],
     "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
 }
+
+
+def _expected_schema_names(scope: str) -> list[str]:
+    """按当前环境的 _extra_available 过滤期望可见 schema 名称清单（Spec 5 §2.1④ / T15）。"""
+    from pipeline.agent.tools import TOOL_SCHEMAS, _extra_available
+
+    return [
+        t
+        for t in SPEC_TOOLS[scope]
+        if not TOOL_SCHEMAS[t].get("requires_extra")
+        or _extra_available(str(TOOL_SCHEMAS[t]["requires_extra"]))
+    ]
+
+
 API_KEY = "sk-test-secret-do-not-print"
 
 
@@ -402,7 +426,7 @@ def test_llm_request_assembly_env_key_and_tools(tmp_path: Path, monkeypatch):
         assert sent["auth"] == f"Bearer {API_KEY}"
         assert sent["body"]["model"] == "mock-model"
         assert sent["body"]["messages"][0]["content"] == "帮我写稿"
-        assert [t["function"]["name"] for t in sent["body"]["tools"]] == SPEC_TOOLS["creative"]
+        assert [t["function"]["name"] for t in sent["body"]["tools"]] == _expected_schema_names("creative")
         # 密钥绝不进返回值
         assert API_KEY not in json.dumps(reply, ensure_ascii=False)
 
@@ -550,9 +574,9 @@ def test_llm_scope_tool_filtering_isolation(tmp_path: Path):
     def names(scope):
         return [s["function"]["name"] for s in build_tool_schemas(scope, root=root)]
 
-    assert names("creative") == SPEC_TOOLS["creative"]
+    assert names("creative") == _expected_schema_names("creative")
     assert names("pipeline") == SPEC_TOOLS["pipeline"]
-    assert names("asset") == SPEC_TOOLS["asset"]
+    assert names("asset") == _expected_schema_names("asset")
 
     # creative 有写稿与检索，pipeline 一个都没有
     assert "write_episode_file" in names("creative")
