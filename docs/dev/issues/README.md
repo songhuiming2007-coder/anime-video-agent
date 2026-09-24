@@ -55,6 +55,7 @@
 | N28 | 备忘 | 非终端信号（`kill -INT <ava pid>`）下 ffmpeg 孙进程存活并继续写输出 | `pipeline/agent/tools.py::run_pipeline` | ava-impl-spec §3.3, 变异 M21 | 2026-09-20 终审登记：**终端 Ctrl-C 不成立**（SIGINT 发给整个前台进程组，且 render.py 的 `subprocess.run` 中断时自 kill）。堵法 `Popen(start_new_session=True)` + 中断时 `os.killpg(SIGKILL)`，代价是子进程从此不再收终端 Ctrl-C、中断唯一入口变成我们的处理器，须拿真渲染复验（实测忠实版中断耗时 0.26s，`4.27s` 那个数字是造了持管道的孙进程所致，已撤回） |
 | N27 | 备忘 | 夏隧的 scene_threshold=10.0 是沿用值，标定实录缺失 | `config/project.json` visual | ADR-0003 | 2026-09-05 审计发现；伪恋已于当日补标定销号（维持 10.0，实录见 config 注记）；夏隧仅 1 集镜头表，补跑 calibrate 即可 |
 | D27 | 已解决（实施与变异全量通过） | 立项前工作无入口：ava 启动形态缺无期选题会话 | `pipeline/agent/cli.py`（`create_new_episode` / `select_episode_interactive` / `main`） | ava-entry-idea-scope 方案, impl-spec §2.3 | 需求交接 2026-09-20（容器先于内容的顺序倒置）；2026-09-21 实施落地，15 组变异全杀闭环 |
+| D28 | 待决策 | 工具循环 10 轮上限对网络调研偏少：被墙或绕路时 10 轮耗尽也拿不到有效信息 | `pipeline/agent/llm.py:33`（`DEFAULT_MAX_ITERATIONS`）、`pipeline/agent/tools.py::_tool_web_fetch` | Spec 4, impl-spec B3-r5 | 2026-09-24 S20 门禁 8 冒烟实测：asset 抓 bgm 一色彩羽，搜索页撞游客登录墙（200 但只有导航栏），随后 9 次 fetch 在作品页与 API 间绕路，没去能直接抓到简介的 `/character/26090` 就耗尽 10 轮。10 这个数本身也没写依据。2026-09-24 用户裁决：**不设固定轮数上限**，停止前必须先做无工具收尾总结，防失控改用「人随时中断 + 完全相同的调用拒绝执行」（归二期 Spec 9）；不靠人指路，改为让模型拿到更好的信息：web_fetch 返回页内链接清单，scope 提示写通用研究策略，站点经验进 memory.md（归二期 Spec 13）；crawl/browser 的 extras 由人安装。到顶回显工具原始 JSON 是另一个 bug（`llm.py:365` 的 `final=convo[-1]`），已交 S25 |
 
 ---
 
