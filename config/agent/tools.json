@@ -16,7 +16,8 @@
   ],
   "asset": [
     "web_search",
-    "web_fetch"
+    "web_fetch",
+    "acquire_propose"
   ],
   "idea": [
     "read_artifact",

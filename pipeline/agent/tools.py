@@ -466,6 +466,41 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "acquire_propose": {
+        "name": "acquire_propose",
+        "adr": "ADR-0021",
+        # 不标 side_effect：fail-closed 默认 True（cli.py:_default_approve），每次调用必过人审卡
+        "description": (
+            "把素材候选追加到 data/library/incoming/candidates.json（人审用提案清单，"
+            "追加式、同 URL 自动跳过）。只写提案，绝不抓取——fetch 永远由人逐条批准后 "
+            "走 pipeline.acquire。每条必须含 title/url/type/source/why；"
+            "why 要写清补哪个缺口、凭什么认为是它（skill: acquire-assets §一）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "description": "一批候选（一次调用一张审批卡审整批）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "url": {"type": "string", "description": "http/https 直链或视频页"},
+                            "type": {"type": "string", "enum": ["live", "mv", "scan", "interview"]},
+                            "source": {"type": "string", "description": "站点名 + 大致检索路径"},
+                            "why": {"type": "string", "description": "补哪个缺口 + 凭什么认为是它"},
+                            "expected_dur": {"type": ["number", "null"], "description": "秒数，可空"},
+                        },
+                        "required": ["title", "url", "type", "source", "why"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["candidates"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -704,6 +739,15 @@ def _tool_web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return fetch_web(url, root=ctx.root)
 
 
+def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.candidates import propose_candidates
+
+    raw = args.get("candidates")
+    if not isinstance(raw, list) or not raw or not all(isinstance(c, dict) for c in raw):
+        raise ValueError("candidates 必须是非空的对象数组")
+    return propose_candidates(raw, data_root=ctx.base / "data")
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -713,6 +757,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "search_notes": _tool_search_notes,
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
+    "acquire_propose": _tool_acquire_propose,
 }
 
 

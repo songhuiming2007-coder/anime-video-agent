@@ -74,7 +74,7 @@
   - `pipeline/subindex.py:22-24` 顶层 `import numpy as np` / `import pysubs2` / `from sentence_transformers import SentenceTransformer`。
   - 结论：**`import pipeline.acquire` 必然链式载入 numpy + sentence_transformers**。即便在 tools.py 里做函数级延迟 import，asset scope 会话第一次调工具就把数百 MB 的 ML 栈拉进 agent 进程——为写一个 JSON 文件，正是 direction §4 红线 7 防的形态（红线 7 原文：「新模块顶层零重依赖（numpy/ML 栈不进 status/scout/装配器热路径），重依赖函数内延迟 import 或 uv extras 隔离」，🔵-18 改引原文）。
 - **决策**：新建 `pipeline/candidates.py`（顶层仅 stdlib + `from pipeline import paths`），把 candidates.json 的 **schema 纯函数层**从 acquire.py 搬入：
-  - `_line_of`（现 `acquire.py:215-226`）、`load_candidates`（现 `acquire.py:229-257`）、`slugify`（现 `acquire.py:290-293`）、`ledger_load`（现 `acquire.py:368-378`）、`ledger_save`（现 `acquire.py:381-383`）、`ledger_seen_urls`（现 `acquire.py:386-387`）；
+  - `_line_of`（现 `acquire.py:215-226`）、`load_candidates`（现 `acquire.py:229-257`）、`slugify`（现 `acquire.py:290-293`）、`ledger_load`（现 `acquire.py:368-378`）、`ledger_save`（现 `acquire.py:381-383`）、`ledger_seen_urls`（现 `acquire.py:386-387`），以及 `TYPES` / `incoming` / `candidates_path` / `ledger_path`（S14 review 🟡-1，经人同意追加下移 incoming/candidates_path/ledger_path，使 ledger_load/ledger_save 函数体与 HEAD 逐字一致）；
   - acquire.py 改为 `from .candidates import ...` **re-export**，对外 API 与行为一字不变——`tests/test_acquire.py:19` 走 `from pipeline import acquire as A` 属性访问，re-export 后零改动全绿；
   - acquire.py docstring（行 16-18）本就自认「纯函数层与执行层分开」，搬迁是顺势收口，不是新发明；`dup_verdicts`（`acquire.py:260-273`）、`fetch_argv`、三个子命令与全部执行层**留在 acquire.py 原地不动**（它们消费 ingest/ffprobe，本就属于重侧）。
 - **为什么不是「propose 直接放 acquire.py」**：见上，import 链污染。为什么不是「propose 模块里复制一份校验」：schema 双源分叉（红队必打项），T12 的 identity 断言（同一函数对象）专杀此捷径（§7.2 MUT-11）。
