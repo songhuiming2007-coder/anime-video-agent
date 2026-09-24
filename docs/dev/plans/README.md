@@ -25,7 +25,7 @@
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
 | [上下文装配器与 AGENTS.md 瘦身（Spec 1）](2026-09-22-context-assembly-spec.md) | B2 | ADR-0022 | **M1 施工完成，S2 review 🟢**（PR0–PR2；AGENTS.md 126 行，十三判据完整；scope 热切换常驻层重组装；变异矩阵 4 项复核变红） |
 | [jobs 层与 events.jsonl（Spec 2）](2026-09-22-jobs-and-events-spec.md) | B2 / D23 | ADR-0020 | **M3 施工完成（PR3–PR4），S6 review 🟢**（执行器置换、CLI 贯通、零回归、MUT-1~6 复核全杀） |
-| [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **M4 施工完成（PR1–PR2，含 PR3 服务层预落地，用户裁决登记于 §8），S8 review 🟢**；**PR3 阻塞于 v0.7 修订**（S8 红队定向复核 §1.3–§1.6 结论 🟡：5🟡 + 10🔵 待修订后定向核对） |
+| [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **M4 施工完成（PR1–PR2，含 PR3 服务层预落地，用户裁决登记于 §8），S8 review 🟢**；**v0.7 定向核对 🟢，PR3–PR4（M5）可动工**（S8 红队复核 §1.3–§1.6 的 5🟡 + 10🔵 与 R7-1 修正已并入 §1.7） |
 | [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **v0.3 红队三轮收口，可动工** |
 | [网络工具第二批 crawl + browser（Spec 5）](2026-09-23-crawl-browser-tools-spec.md) | B2 / D23 | ADR-0021 | **v0.5 红队三轮收口 + 终局微轮全验通过，🟢 可动工**（施工依赖 Spec 4 / Spec 2，均待动工；前置见 spec §6.1/§6.2） |
 | [acquire_propose 受控素材提案（Spec 6）](2026-09-23-acquire-propose-spec.md) | B2 / D23 | ADR-0021 | **v0.3 红队三轮收口，可动工** |
