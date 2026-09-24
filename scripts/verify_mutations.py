@@ -49,6 +49,7 @@ DEFAULT_REPO = Path(__file__).resolve().parent.parent
 CLI = "pipeline/agent/cli.py"
 LLM = "pipeline/agent/llm.py"
 TOOLS = "pipeline/agent/tools.py"
+JOBS = "pipeline/jobs.py"
 CARD = "pipeline/agent/status_card.py"
 DOC = "config/agent/scopes/director.md"
 TOOLS_JSON = "config/agent/tools.json"
@@ -96,8 +97,8 @@ MUTATIONS: list[dict] = [
              '        return {"stopped": "degraded", "messages": messages, "final": deg}')},
     # ---- M8: stderr_tail 回喂 ----
     {"id": "M8", "guard": "非零退出 stderr_tail 回喂", "file": TOOLS,
-     "old": '        "stderr_tail": stderr_tail,\n        "truncated": truncated,',
-     "new": '        "stderr_tail": "",\n        "truncated": truncated,'},
+     "old": '        "stderr_tail": executed_job.stderr_tail,\n        "truncated": executed_job.truncated,',
+     "new": '        "stderr_tail": "",\n        "truncated": executed_job.truncated,'},
     # ---- M9: 尾环 truncated 上界 ----
     {"id": "M9", "guard": ">4KB 截断 + truncated 标记", "file": TOOLS,
      "old": ('        truncated = self.total_bytes > self.max_bytes\n'
@@ -196,28 +197,53 @@ MUTATIONS: list[dict] = [
              '        return (False, reason)'),
      "new": '    pass'},
     # ---- M21: Ctrl-C 中断杀子进程 + 排水线程 daemon（PR6 Popen 化回归） ----
-    {"id": "M21a", "guard": "Ctrl-C 中断时 kill 子进程", "file": TOOLS,
-     "old": ('    try:\n'
-             '        retcode = proc.wait()\n'
-             '    except BaseException:\n'
-             '        # Ctrl-C（含其它中断）时子进程必须一起死：否则渲染会继续写 05-final.mp4，\n'
-             '        # 人重跑一次就是两个 ffmpeg 写同一个输出文件。`subprocess.run` 在 PR6\n'
-             '        # 被换成 Popen 时，丢掉了 CPython 在中断时替调用方做的那次 kill。\n'
+    {"id": "M21a", "guard": "Ctrl-C 中断时 kill 子进程", "file": JOBS,
+     "old": ('        retcode: int | None = None\n'
              '        try:\n'
-             '            proc.kill()\n'
-             '        except Exception:\n'
-             '            pass\n'
-             '        t_out.join(2)\n'
-             '        t_err.join(2)\n'
-             '        raise\n'
-             '    t_out.join()\n'
-             '    t_err.join()'),
-     "new": '    retcode = proc.wait()\n' + CLEAN},
-    {"id": "M21b", "guard": "排水线程 daemon=True", "file": TOOLS,
-     "old": ('    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)\n'
-             '    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)'),
-     "new": ('    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))\n'
-             '    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))')},
+             '            retcode = proc.wait()\n'
+             '        except BaseException:\n'
+             '            # Ctrl-C 或外部中断：子进程必须立刻 kill，防止残留孤儿渲染进程打架（tools.py:794 先例）\n'
+             '            try:\n'
+             '                proc.kill()\n'
+             '            except Exception:\n'
+             '                pass\n'
+             '            t_out.join(2)\n'
+             '            t_err.join(2)\n'
+             '\n'
+             '            job.status = JobStatus.FAILED\n'
+             '            job.ended_at = _utc_now_iso()\n'
+             '            job.duration_s = round(time.time() - t_start, 2)\n'
+             '            actual_code = proc.poll() if proc.poll() is not None else -9\n'
+             '            job.returncode = actual_code\n'
+             '            job.message = f"进程被中断终止 (BaseException, code={actual_code})"\n'
+             '\n'
+             '            stdout_tail, out_trunc = stdout_buf.get_tail()\n'
+             '            stderr_tail, err_trunc = stderr_buf.get_tail()\n'
+             '            job.stdout_tail = stdout_tail\n'
+             '            job.stderr_tail = stderr_tail\n'
+             '            job.truncated = out_trunc or err_trunc\n'
+             '\n'
+             '            pub.emit(\n'
+             '                EventType.JOB_FINISHED,\n'
+             '                {\n'
+             '                    "job_id": job.job_id,\n'
+             '                    "status": job.status.value,\n'
+             '                    "returncode": job.returncode,\n'
+             '                    "duration_s": job.duration_s,\n'
+             '                    "message": job.message,\n'
+             '                    "stdout_tail": job.stdout_tail,\n'
+             '                    "stderr_tail": job.stderr_tail,\n'
+             '                    "truncated": job.truncated,\n'
+             '                },\n'
+             '                episode_dir=job.episode_dir,\n'
+             '            )\n'
+             '            raise'),
+     "new": '        retcode = proc.wait()'},
+    {"id": "M21b", "guard": "排水线程 daemon=True", "file": JOBS,
+     "old": ('        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)\n'
+             '        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)'),
+     "new": ('        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))\n'
+             '        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))')},
     # ---- M22a–M30: idea scope 与启动入口改造变异 (2026-09-21 Spec §5.1) ----
     {"id": "M22a", "guard": "select_episode_interactive 关键词 sentinel 分支", "file": CLI,
      "old": '        if choice == IDEA_KEYWORD:\n            return IDEA_KEYWORD\n',

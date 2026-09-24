@@ -12,6 +12,7 @@ import time
 import pytest
 
 from pipeline import paths
+from pipeline.agent.tools import run_pipeline
 from pipeline.jobs import (
     Event,
     EventPublisher,
@@ -20,7 +21,12 @@ from pipeline.jobs import (
     JobStatus,
     _reset_global_publisher_for_testing,
     _utc_now_iso,
+    cancel_job,
+    create_job,
+    execute_job,
+    get_job,
     get_publisher,
+    list_pending,
 )
 
 
@@ -236,6 +242,296 @@ def test_no_write_to_real_data_root(tmp_path: Path) -> None:
     else:
         stat_after = (real_events.stat().st_size, real_events.stat().st_mtime_ns)
         assert stat_after == stat_before
+
+
+# ---------------------------------------------------------------------------
+# PR3：执行器与兼容适配层（T2, T3, T4a, T4b, T7）
+# ---------------------------------------------------------------------------
+
+
+def test_create_job_validation_and_blocked(tmp_path: Path) -> None:
+    """T2 / MUT-6: 校验失败（如 --force）直接进入 BLOCKED，落盘 job_blocked 事件且不入注册表。"""
+    ep_dir = tmp_path / "01-test"
+    ep_dir.mkdir(parents=True)
+    pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
+    pub.start()
+
+    job, valid, msg = create_job("tts --force", episode_dir=ep_dir, scope="pipeline", publisher=pub)
+    assert valid is False
+    assert job.status == JobStatus.BLOCKED
+    assert "禁止" in msg or "拒绝" in msg or "参数" in msg
+    assert get_job(job.job_id) is None, "BLOCKED 任务不应留在注册表中"
+    assert list_pending() == []
+
+    pub.close()
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    lines = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["type"] == "job_blocked"
+    assert lines[0]["payload"]["job_id"] == job.job_id
+
+
+def test_execute_job_and_events_trail(tmp_path: Path) -> None:
+    """T3 / MUT-5: 正常子进程执行与事件流完整性，验证确定性排序首键为 episode。"""
+    ep_dir = tmp_path / "01-test-trail"
+    ep_dir.mkdir(parents=True)
+    pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
+    pub.start()
+
+    cmd_script = "import sys; print('OUTPUT_DATA'); sys.exit(0)"
+    from unittest.mock import patch
+    with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys.executable, "-c", cmd_script])):
+        job, valid, msg = create_job("check_script", episode_dir=ep_dir, scope="pipeline", publisher=pub)
+        assert valid is True
+        assert job.status == JobStatus.PENDING
+        assert get_job(job.job_id) is not None
+        assert job in list_pending()
+
+        executed = execute_job(job, publisher=pub)
+        assert executed.status == JobStatus.SUCCEEDED
+        assert executed.returncode == 0
+        assert "OUTPUT_DATA" in executed.stdout_tail
+        assert get_job(job.job_id) is None, "终态任务应移出注册表"
+
+    pub.close()
+
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    raw_lines = events_file.read_text(encoding="utf-8").splitlines()
+    assert len(raw_lines) == 3
+
+    # MUT-5: 首行 raw string 顶层首键必须按 sort_keys=True 以 "episode" 开头
+    first_raw = raw_lines[0]
+    assert re.match(r'^\{"episode":\s*"01-test-trail"', first_raw), f"首键不是 episode: {first_raw}"
+
+    events = [json.loads(line) for line in raw_lines]
+    types = [e["type"] for e in events]
+    assert types == ["job_created", "job_started", "job_finished"]
+    assert events[1]["payload"]["pid"] == executed.pid
+    assert events[2]["payload"]["status"] == "succeeded"
+    assert events[2]["payload"]["returncode"] == 0
+    assert "OUTPUT_DATA" in events[2]["payload"]["stdout_tail"]
+
+
+def test_child_process_killed_by_signal(tmp_path: Path) -> None:
+    """T4a / 门禁 2 / MUT-4: 子进程被外部 SIGKILL 强杀，返回 FAILED 且事件层完整还原轨迹。"""
+    ep_dir = tmp_path / "01-test-sigkill"
+    ep_dir.mkdir(parents=True)
+    pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
+    pub.start()
+
+    kill_script = (
+        "import os, sys, time\n"
+        "sys.stdout.write('CHILD_READY\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(10)\n"
+    )
+    from unittest.mock import patch
+    with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys.executable, "-c", kill_script])):
+        job, valid, msg = create_job("check_script", episode_dir=ep_dir, scope="pipeline", publisher=pub)
+        assert valid is True
+
+        import signal
+        import threading
+        def killer():
+            for _ in range(50):
+                if job.pid is not None:
+                    break
+                time.sleep(0.05)
+            if job.pid is not None:
+                try:
+                    os.kill(job.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        t_kill = threading.Thread(target=killer)
+        t_kill.start()
+
+        executed = execute_job(job, publisher=pub)
+        t_kill.join()
+
+        assert executed.status == JobStatus.FAILED
+        assert executed.returncode == -signal.SIGKILL
+        assert "CHILD_READY" in executed.stdout_tail
+
+    pub.close()
+
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    types = [e["type"] for e in events]
+    assert types == ["job_created", "job_started", "job_finished"]
+    finished_payload = events[2]["payload"]
+    assert finished_payload["status"] == "failed"
+    assert finished_payload["returncode"] == -signal.SIGKILL
+    assert "CHILD_READY" in finished_payload["stdout_tail"]
+
+
+def test_parent_process_interrupted_by_sigint(tmp_path: Path) -> None:
+    """T4b: 父进程捕获 KeyboardInterrupt 中断，杀死子进程、抓取 tail、发射 job_finished 并向外抛出。"""
+    ep_dir = tmp_path / "01-test-sigint"
+    ep_dir.mkdir(parents=True)
+    pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
+    pub.start()
+
+    killed_pids: list[int] = []
+
+    class FakeInterruptProc:
+        def __init__(self):
+            import io
+            self.stdout = io.BytesIO(b"PARTIAL_BEFORE_INT\n")
+            self.stderr = io.BytesIO(b"")
+            self.pid = 99999
+
+        def wait(self, *a, **k):
+            raise KeyboardInterrupt("Simulated Ctrl-C")
+
+        def kill(self):
+            killed_pids.append(self.pid)
+
+        def poll(self):
+            return -2
+
+    from unittest.mock import patch
+    with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys.executable, "-m", "pipeline.clips"])):
+        job, valid, msg = create_job("clips", episode_dir=ep_dir, scope="pipeline", publisher=pub)
+        assert valid is True
+
+        with pytest.raises(KeyboardInterrupt, match="Simulated Ctrl-C"):
+            execute_job(job, publisher=pub, popen_factory=lambda *a, **k: FakeInterruptProc())
+
+    assert killed_pids == [99999], "父进程中断时子进程必须被 kill"
+    assert job.status == JobStatus.FAILED
+    assert job.returncode == -2
+    assert "PARTIAL_BEFORE_INT" in job.stdout_tail
+    assert get_job(job.job_id) is None
+
+    pub.close()
+
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    types = [e["type"] for e in events]
+    assert types == ["job_created", "job_started", "job_finished"]
+    assert events[2]["payload"]["status"] == "failed"
+    assert events[2]["payload"]["returncode"] == -2
+    assert "PARTIAL_BEFORE_INT" in events[2]["payload"]["stdout_tail"]
+
+
+def test_run_pipeline_backward_compatibility(tmp_path: Path) -> None:
+    """T7 / MUT-6: run_pipeline 兼容适配器，confirmed=False 零幽灵 Job，confirmed=True 正常流转。"""
+    ep_dir = tmp_path / "01-test-compat"
+    ep_dir.mkdir(parents=True)
+
+    # 1. confirmed=False 纯 dry-run：不创建 Job，不落盘 events.jsonl
+    dry_res = run_pipeline("status", episode_dir=ep_dir, scope="pipeline", confirmed=False)
+    assert dry_res["ok"] is True
+    assert dry_res["message"] == "待人类确认"
+    assert dry_res["job_id"] is None
+    assert dry_res["returncode"] is None
+
+    _reset_global_publisher_for_testing()
+    events_file = ep_dir / "events.jsonl"
+    assert not events_file.exists(), "confirmed=False 绝对不能生成 events.jsonl（防幽灵 Job）"
+    assert list_pending() == []
+
+    # 2. confirmed=True 正式执行：包含 job_id，且落盘事件
+    cmd_script = "import sys; print('COMPAT_SUCCESS'); sys.exit(0)"
+    from unittest.mock import patch
+    with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys.executable, "-c", cmd_script])):
+        real_res = run_pipeline("check_script", episode_dir=ep_dir, scope="pipeline", confirmed=True)
+
+    assert real_res["ok"] is True
+    assert real_res["returncode"] == 0
+    assert real_res["job_id"] is not None
+    assert real_res["job_id"].startswith("job_")
+    assert "COMPAT_SUCCESS" in real_res["stdout_tail"]
+    assert real_res["duration_s"] >= 0.0
+
+    _reset_global_publisher_for_testing()
+    assert events_file.exists()
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    types = [e["type"] for e in events]
+    assert types == ["job_created", "job_started", "job_finished"]
+    assert events[0]["payload"]["job_id"] == real_res["job_id"]
+
+
+def test_cancel_job_blocked_transition(tmp_path: Path) -> None:
+    """PR3: cancel_job 将 PENDING 任务显式置为 BLOCKED，发射 job_blocked 并移出注册表。"""
+    ep_dir = tmp_path / "01-test-cancel"
+    ep_dir.mkdir(parents=True)
+    pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
+    pub.start()
+
+    from unittest.mock import patch
+    with patch("pipeline.agent.tools.validate_pipeline_command", return_value=(True, "ok", [sys.executable, "-m", "pipeline.status"])):
+        job, valid, msg = create_job("status", episode_dir=ep_dir, scope="pipeline", publisher=pub)
+        assert valid is True
+        assert job.status == JobStatus.PENDING
+        assert get_job(job.job_id) is not None
+
+        cancelled = cancel_job(job, reason="human_aborted", publisher=pub)
+        assert cancelled.status == JobStatus.BLOCKED
+        assert cancelled.message == "human_aborted"
+        assert get_job(job.job_id) is None
+        assert list_pending() == []
+
+    pub.close()
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    types = [e["type"] for e in events]
+    assert types == ["job_created", "job_blocked"]
+    assert events[1]["payload"]["reason"] == "human_aborted"
+
+
+def test_log_approval_decision_emits_approval_resolved(tmp_path: Path) -> None:
+    """PR4 / 钉死结论: log_approval_decision 发射 APPROVAL_RESOLVED，且无期会话（ep_dir=None）落 _global。"""
+    from pipeline.agent.status_card import log_approval_decision
+
+    ep_dir = tmp_path / "01-test-approval"
+    ep_dir.mkdir(parents=True)
+
+    # 1. 有期会话：按 n 拒绝
+    log_approval_decision(ep_dir, "run_pipeline", "tts --redo 3", "n", latency_s=1.23)
+    # 有期会话：按 y 批准
+    log_approval_decision(ep_dir, "run_pipeline", "render", "y", latency_s=0.45)
+
+    # 2. 无期会话（ep_dir=None）：emit 必须在早退前执行，落 _global
+    log_approval_decision(None, "run_pipeline", "status", "n", latency_s=0.88)
+
+    _reset_global_publisher_for_testing()
+
+    # 验证有期事件
+    events_file = ep_dir / "events.jsonl"
+    assert events_file.exists()
+    ep_events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    assert len(ep_events) == 2
+    assert ep_events[0]["type"] == "approval_resolved"
+    assert ep_events[0]["payload"]["decision"] == "rejected"
+    assert ep_events[0]["payload"]["command"] == "tts --redo 3"
+    assert ep_events[1]["type"] == "approval_resolved"
+    assert ep_events[1]["payload"]["decision"] == "approved"
+    assert ep_events[1]["payload"]["command"] == "render"
+
+    # 验证有期 approvals.jsonl（保持原格式 "y"/"n"）
+    approvals_file = ep_dir / "_agent" / "approvals.jsonl"
+    assert approvals_file.exists()
+    app_lines = [json.loads(line) for line in approvals_file.read_text(encoding="utf-8").splitlines()]
+    assert len(app_lines) == 2
+    assert app_lines[0]["decision"] == "n"
+    assert app_lines[1]["decision"] == "y"
+
+    # 验证无期会话落 _global（由 conftest 重定向至 tmp_path/_events.jsonl）
+    global_events_file = tmp_path / "_events.jsonl"
+    assert global_events_file.exists()
+    global_events = [json.loads(line) for line in global_events_file.read_text(encoding="utf-8").splitlines()]
+    matching = [e for e in global_events if e.get("type") == "approval_resolved" and e["payload"].get("command") == "status"]
+    assert len(matching) == 1
+    assert matching[0]["episode"] == "_global"
+    assert matching[0]["payload"]["decision"] == "rejected"
+
 
 
 # ---------------------------------------------------------------------------

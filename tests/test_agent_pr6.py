@@ -325,12 +325,16 @@ def test_m21_keyboard_interrupt_kills_child_and_threads_are_daemon(tmp_path):
         def __init__(self):
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
+            self.pid = 12345
 
         def wait(self, *a, **k):
             raise KeyboardInterrupt
 
         def kill(self):
             killed.append(1)
+
+        def poll(self):
+            return -9
 
     created: list[threading.Thread] = []
     real_thread = threading.Thread
@@ -340,8 +344,11 @@ def test_m21_keyboard_interrupt_kills_child_and_threads_are_daemon(tmp_path):
         created.append(t)
         return t
 
-    with patch.object(tools_module.subprocess, "Popen", lambda *a, **k: FakeProc()), \
-         patch.object(tools_module.threading, "Thread", spy_thread), \
+    import pipeline.jobs as jobs_module
+    jobs_module.get_publisher()  # 确保 Sidecar 线程已在监控前就绪，spy 严格捕获排水线程
+
+    with patch.object(jobs_module.subprocess, "Popen", lambda *a, **k: FakeProc()), \
+         patch.object(jobs_module.threading, "Thread", spy_thread), \
          patch("pipeline.agent.tools.validate_pipeline_command",
                return_value=(True, "ok", [sys_python(), "-m", "pipeline.clips"])):
         with pytest.raises(KeyboardInterrupt):

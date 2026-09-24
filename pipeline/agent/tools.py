@@ -702,13 +702,46 @@ def run_pipeline(
     scope: str = "pipeline",
     confirmed: bool = False,
 ) -> dict[str, Any]:
-    """白名单执行器的唯一入口（Spec §2.4, §3.3）：校验 → 回显 → 人类确认后才真跑。
+    """白名单执行器入口（向后兼容适配器，底层由 pipeline.jobs 全权驱动）。
 
-    `confirmed=False` 只返回待执行 argv（REPL 回显用）。`/run` 与 LLM 工具表都
-    走这里，避免两处实现分叉。
-    执行改用 Popen 双管排水 + 实时透传终端 + 尾环缓冲回喂。
+    纪律：
+    1. confirmed=False 时为纯 dry-run 校验，不持久化 Job，不发 job_created，不留幽灵；
+    2. confirmed=True 时真正调用 create_job 立项并 execute_job 执行。
     """
-    valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=episode_dir)
+    from pipeline.agent.tools import validate_pipeline_command
+    from pipeline.jobs import JobStatus, create_job, execute_job
+
+    ep_path = Path(episode_dir).resolve() if episode_dir else None
+
+    # 阶段一：未确认状态，做纯 dry-run 校验，零事件发射，零幽灵对象
+    if not confirmed:
+        valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=ep_path)
+        if not valid:
+            return {
+                "ok": False,
+                "message": msg,
+                "argv": [],
+                "returncode": None,
+                "duration_s": 0.0,
+                "stdout_tail": "",
+                "stderr_tail": "",
+                "truncated": False,
+                "job_id": None,
+            }
+        return {
+            "ok": True,
+            "message": "待人类确认",
+            "argv": argv,
+            "returncode": None,
+            "duration_s": 0.0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "truncated": False,
+            "job_id": None,
+        }
+
+    # 阶段二：已确认状态，正式立项并流转状态机
+    job, valid, msg = create_job(command, episode_dir=ep_path, scope=scope)
     if not valid:
         return {
             "ok": False,
@@ -719,103 +752,18 @@ def run_pipeline(
             "stdout_tail": "",
             "stderr_tail": "",
             "truncated": False,
-        }
-    if not confirmed:
-        return {
-            "ok": True,
-            "message": "待人类确认",
-            "argv": argv,
-            "returncode": None,
-            "duration_s": 0.0,
-            "stdout_tail": "",
-            "stderr_tail": "",
-            "truncated": False,
+            "job_id": job.job_id,
         }
 
-    t_start = time.time()
-    try:
-        env = dict(os.environ)
-        env["PYTHONUNBUFFERED"] = "1"
-        proc = subprocess.Popen(
-            argv,
-            cwd=paths.ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-    except FileNotFoundError as exc:
-        return {
-            "ok": False,
-            "message": f"执行器未找到: {exc}",
-            "argv": argv,
-            "returncode": None,
-            "duration_s": 0.0,
-            "stdout_tail": "",
-            "stderr_tail": "",
-            "truncated": False,
-        }
-
-    stdout_buf = _TailBuffer(4096)
-    stderr_buf = _TailBuffer(4096)
-
-    def _drain(pipe: Any, buf: _TailBuffer, is_stderr: bool) -> None:
-        target_stream = sys.stderr if is_stderr else sys.stdout
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        try:
-            for chunk in iter(lambda: pipe.read1(4096), b""):
-                text = decoder.decode(chunk)
-                try:
-                    target_stream.write(text)
-                    target_stream.flush()
-                except Exception:
-                    pass
-                buf.append(chunk)
-            final_text = decoder.decode(b"", final=True)
-            if final_text:
-                try:
-                    target_stream.write(final_text)
-                    target_stream.flush()
-                except Exception:
-                    pass
-        finally:
-            try:
-                pipe.close()
-            except Exception:
-                pass
-
-    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)
-    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)
-    t_out.start()
-    t_err.start()
-
-    try:
-        retcode = proc.wait()
-    except BaseException:
-        # Ctrl-C（含其它中断）时子进程必须一起死：否则渲染会继续写 05-final.mp4，
-        # 人重跑一次就是两个 ffmpeg 写同一个输出文件。`subprocess.run` 在 PR6
-        # 被换成 Popen 时，丢掉了 CPython 在中断时替调用方做的那次 kill。
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        t_out.join(2)
-        t_err.join(2)
-        raise
-    t_out.join()
-    t_err.join()
-    duration_s = time.time() - t_start
-
-    stdout_tail, out_trunc = stdout_buf.get_tail()
-    stderr_tail, err_trunc = stderr_buf.get_tail()
-    truncated = out_trunc or err_trunc
-
+    executed_job = execute_job(job)
     return {
-        "ok": retcode == 0,
-        "message": f"退出码 {retcode}",
-        "argv": argv,
-        "returncode": retcode,
-        "duration_s": round(duration_s, 2),
-        "stdout_tail": stdout_tail,
-        "stderr_tail": stderr_tail,
-        "truncated": truncated,
+        "ok": executed_job.status == JobStatus.SUCCEEDED,
+        "message": executed_job.message,
+        "argv": executed_job.argv,
+        "returncode": executed_job.returncode,
+        "duration_s": executed_job.duration_s,
+        "stdout_tail": executed_job.stdout_tail,
+        "stderr_tail": executed_job.stderr_tail,
+        "truncated": executed_job.truncated,
+        "job_id": executed_job.job_id,
     }

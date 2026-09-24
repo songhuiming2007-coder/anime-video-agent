@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import codecs
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -11,9 +12,12 @@ import json
 import os
 from pathlib import Path
 import queue
+import shlex
+import subprocess
+import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from pipeline import paths
@@ -338,3 +342,294 @@ def _reset_global_publisher_for_testing() -> None:
         if _GLOBAL_PUBLISHER is not None:
             _GLOBAL_PUBLISHER.close(timeout=0.2)
             _GLOBAL_PUBLISHER = None
+
+
+# ---------------------------------------------------------------------------
+# 3. Job 注册表、创建、执行与调度入口
+# ---------------------------------------------------------------------------
+
+# 最小内存 Job 注册表（红队三轮 M5）：create_job 注册、终态移除；供 cancel_job 与
+# Spec 3 审批队列枚举 pending 任务。进程内索引，不落盘、不参与 status.py 状态推导。
+_JOB_REGISTRY: dict[str, Job] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+def get_job(job_id: str) -> Job | None:
+    with _REGISTRY_LOCK:
+        return _JOB_REGISTRY.get(job_id)
+
+
+def list_pending() -> list[Job]:
+    with _REGISTRY_LOCK:
+        return [j for j in _JOB_REGISTRY.values() if j.status == JobStatus.PENDING]
+
+
+def _register_job(job: Job) -> None:
+    with _REGISTRY_LOCK:
+        _JOB_REGISTRY[job.job_id] = job
+
+
+def _unregister_job(job: Job) -> None:
+    with _REGISTRY_LOCK:
+        _JOB_REGISTRY.pop(job.job_id, None)
+
+
+def create_job(
+    command: str | list[str],
+    episode_dir: Path | str | None = None,
+    *,
+    scope: str = "pipeline",
+    publisher: EventPublisher | None = None,
+) -> tuple[Job, bool, str]:
+    """显式立项创建一个 Job 对象。通过校验则进入 PENDING，未通过进入 BLOCKED。
+
+    返回: (job, is_valid, validation_message)
+    """
+    from pipeline.agent.tools import validate_pipeline_command
+
+    cmd_str = shlex.join(command) if isinstance(command, list) else str(command).strip()
+    ep_path = Path(episode_dir).resolve() if episode_dir else None
+    job_id = f"job_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}"
+    created_at = _utc_now_iso()
+
+    valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=ep_path)
+
+    job = Job(
+        job_id=job_id,
+        command=cmd_str,
+        scope=scope,
+        episode_dir=ep_path,
+        argv=argv,
+        status=JobStatus.PENDING if valid else JobStatus.BLOCKED,
+        created_at=created_at,
+        message=msg,
+    )
+
+    pub = publisher or get_publisher()
+    if valid:
+        pub.emit(
+            EventType.JOB_CREATED,
+            {"job_id": job.job_id, "command": job.command, "scope": job.scope, "argv": job.argv},
+            episode_dir=ep_path,
+        )
+    else:
+        pub.emit(
+            EventType.JOB_BLOCKED,
+            {"job_id": job.job_id, "command": job.command, "reason": msg},
+            episode_dir=ep_path,
+        )
+
+    _register_job(job)
+    if not valid:
+        _unregister_job(job)  # BLOCKED 即刻终态，不留注册表
+    return job, valid, msg
+
+
+def cancel_job(
+    job: Job,
+    reason: str = "human_rejected",
+    *,
+    publisher: EventPublisher | None = None,
+) -> Job:
+    """显式取消一个 PENDING 状态的 Job，闭环终态，防止幽灵悬空。"""
+    if job.status != JobStatus.PENDING:
+        return job
+
+    job.transition_to(JobStatus.BLOCKED)
+    job.ended_at = _utc_now_iso()
+    job.message = reason
+    _unregister_job(job)
+
+    pub = publisher or get_publisher()
+    pub.emit(
+        EventType.JOB_BLOCKED,
+        {"job_id": job.job_id, "command": job.command, "reason": reason},
+        episode_dir=job.episode_dir,
+    )
+    return job
+
+
+class _LockedTailBuffer:
+    """尾部缓冲双端持锁包装（红队三轮 M4）：防止 join(timeout=3.0) 超时窗口内
+    get_tail() 迭代 deque 时存活 drain 线程并发 append 抛 RuntimeError。"""
+
+    def __init__(self, max_bytes: int = 4096) -> None:
+        from pipeline.agent.tools import _TailBuffer
+
+        self._inner = _TailBuffer(max_bytes)
+        self._lock = threading.Lock()
+
+    def append(self, chunk: bytes) -> None:
+        with self._lock:
+            self._inner.append(chunk)
+
+    def get_tail(self) -> tuple[str, bool]:
+        with self._lock:
+            return self._inner.get_tail()
+
+
+def execute_job(
+    job: Job,
+    *,
+    publisher: EventPublisher | None = None,
+    popen_factory: Callable[..., Any] | None = None,
+) -> Job:
+    """真实执行一个处于 PENDING 状态的 Job。
+
+    负责双管排水、尾部缓冲抓取、生命周期事件发射及异常守护。
+    支持通过 popen_factory 注入执行器（供单元测试与 PR6 测试打桩）。
+    注意：popen_factory 默认为 None 并在函数体内调用时解析——默认参数在 def 时
+    绑定会穿透运行期 mock（红队三轮 B1），严禁写回 subprocess.Popen 作默认值。
+    """
+    if job.status != JobStatus.PENDING:
+        raise ValueError(f"无法执行状态为 {job.status} 的 Job")
+
+    # 调用时解析执行器（红队三轮 B1）：默认参数在 def 时绑定会穿透运行期 mock；
+    # is None 判断（红队四轮）：防止 __bool__ 返回 False 的可调用对象被静默替换
+    if popen_factory is None:
+        popen_factory = subprocess.Popen
+
+    pub = publisher or get_publisher()
+
+    # 注册表安全网（红队四轮 M5 残留）：except 面外的意外异常（如工厂抛 TypeError）也必须移出注册表
+    try:
+        t_start = time.time()
+        job.started_at = _utc_now_iso()
+
+        try:
+            env = dict(os.environ)
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = popen_factory(
+                job.argv,
+                cwd=paths.ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            job.pid = proc.pid
+            job.status = JobStatus.RUNNING
+            pub.emit(
+                EventType.JOB_STARTED,
+                {"job_id": job.job_id, "pid": proc.pid, "started_at": job.started_at},
+                episode_dir=job.episode_dir,
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            job.status = JobStatus.FAILED
+            job.ended_at = _utc_now_iso()
+            job.duration_s = round(time.time() - t_start, 2)
+            job.message = f"执行器启动异常: {exc}"
+            pub.emit(
+                EventType.JOB_FINISHED,
+                {"job_id": job.job_id, "status": job.status.value, "returncode": None, "message": job.message},
+                episode_dir=job.episode_dir,
+            )
+            return job
+
+        stdout_buf = _LockedTailBuffer(4096)
+        stderr_buf = _LockedTailBuffer(4096)
+
+        def _drain(pipe: Any, buf: _LockedTailBuffer, is_stderr: bool) -> None:
+            target_stream = sys.stderr if is_stderr else sys.stdout
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            try:
+                for chunk in iter(lambda: pipe.read1(4096), b""):
+                    text = decoder.decode(chunk)
+                    try:
+                        target_stream.write(text)
+                        target_stream.flush()
+                    except Exception:
+                        pass
+                    buf.append(chunk)
+                final_text = decoder.decode(b"", final=True)
+                if final_text:
+                    try:
+                        target_stream.write(final_text)
+                        target_stream.flush()
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        retcode: int | None = None
+        try:
+            retcode = proc.wait()
+        except BaseException:
+            # Ctrl-C 或外部中断：子进程必须立刻 kill，防止残留孤儿渲染进程打架（tools.py:794 先例）
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            t_out.join(2)
+            t_err.join(2)
+
+            job.status = JobStatus.FAILED
+            job.ended_at = _utc_now_iso()
+            job.duration_s = round(time.time() - t_start, 2)
+            actual_code = proc.poll() if proc.poll() is not None else -9
+            job.returncode = actual_code
+            job.message = f"进程被中断终止 (BaseException, code={actual_code})"
+
+            stdout_tail, out_trunc = stdout_buf.get_tail()
+            stderr_tail, err_trunc = stderr_buf.get_tail()
+            job.stdout_tail = stdout_tail
+            job.stderr_tail = stderr_tail
+            job.truncated = out_trunc or err_trunc
+
+            pub.emit(
+                EventType.JOB_FINISHED,
+                {
+                    "job_id": job.job_id,
+                    "status": job.status.value,
+                    "returncode": job.returncode,
+                    "duration_s": job.duration_s,
+                    "message": job.message,
+                    "stdout_tail": job.stdout_tail,
+                    "stderr_tail": job.stderr_tail,
+                    "truncated": job.truncated,
+                },
+                episode_dir=job.episode_dir,
+            )
+            raise
+
+        # 正常退出加 3 秒防御性超时，防止派生孙进程继承管道导致死锁挂死
+        t_out.join(timeout=3.0)
+        t_err.join(timeout=3.0)
+        job.duration_s = round(time.time() - t_start, 2)
+        job.ended_at = _utc_now_iso()
+        job.returncode = retcode
+        job.status = JobStatus.SUCCEEDED if retcode == 0 else JobStatus.FAILED
+        job.message = f"退出码 {retcode}"
+
+        stdout_tail, out_trunc = stdout_buf.get_tail()
+        stderr_tail, err_trunc = stderr_buf.get_tail()
+        job.stdout_tail = stdout_tail
+        job.stderr_tail = stderr_tail
+        job.truncated = out_trunc or err_trunc
+
+        pub.emit(
+            EventType.JOB_FINISHED,
+            {
+                "job_id": job.job_id,
+                "status": job.status.value,
+                "returncode": job.returncode,
+                "duration_s": job.duration_s,
+                "message": job.message,
+                "stdout_tail": job.stdout_tail,
+                "stderr_tail": job.stderr_tail,
+                "truncated": job.truncated,
+            },
+            episode_dir=job.episode_dir,
+        )
+
+        return job
+    finally:
+        _unregister_job(job)  # 任何退出路径（含 except 面外意外异常）均移出注册表
+

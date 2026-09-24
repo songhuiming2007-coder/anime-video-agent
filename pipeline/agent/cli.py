@@ -622,8 +622,7 @@ def _default_approve(
     latency_s = time.time() - t_card
 
     norm_decision = "y" if ans == "y" else "n"
-    if ep_dir:
-        log_approval_decision(ep_dir, name, target_str, norm_decision, latency_s=latency_s)
+    log_approval_decision(ep_dir, name, target_str, norm_decision, latency_s=latency_s)
 
     if ans == "y":
         return (True, "")
