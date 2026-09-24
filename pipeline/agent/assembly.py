@@ -51,6 +51,7 @@ class SessionContextTracker:
     injected_paths: set[str] = field(default_factory=set)
     active_step_key: str | None = None
     _warned_paths: set[str] = field(default_factory=set)  # 红队 M2：警告去重
+    memory_warned: bool = False  # 记忆告警每会话一次，不占正文注入名额（Spec 7 三轮 🟡-D）
 
     def get_initial_system_prompt(
         self,
@@ -166,6 +167,58 @@ def load_injected_doc(
         abs_path=abs_path,
         content=content,
         token_estimate=token_estimate,
+    )
+
+
+def memory_scopes(
+    config_path: Path | None = None,
+    root: Path | None = None,
+) -> frozenset[str]:
+    """assembly.json 的 `memory.scopes`；缺键或配置损坏 → 空集（任何 scope 都不注入）。"""
+    base_root = root or paths.ROOT
+    cfg_file = config_path or (base_root / "config" / "agent" / "assembly.json")
+    try:
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(data, dict):
+        return frozenset()
+    block = data.get("memory")
+    if not isinstance(block, dict):
+        return frozenset()
+    scopes = block.get("scopes")
+    if not isinstance(scopes, list):
+        return frozenset()
+    return frozenset(str(s) for s in scopes)
+
+
+def resolve_memory_injection(
+    scope: str,
+    *,
+    root: Path | None = None,
+    config_path: Path | None = None,
+) -> tuple[InjectedDoc, bool] | None:
+    """跨期记忆注入文档（Spec 7 §4.6）。返回 (doc, 是否告警)；不注入返回 None。
+
+    不走 `load_injected_doc`：原样读取会绕过 memory 的校验层与来源确认。
+    正文与告警各自每会话一次，判重由调用方按 `tracker.injected_paths` / `memory_warned` 做。
+    """
+    if scope not in memory_scopes(config_path, root):
+        return None
+    from pipeline.agent import memory  # 函数内 import：装配器热路径不背这个模块
+
+    content = memory.render_injection(root)
+    if content is None:
+        return None
+    base_root = Path(root or paths.ROOT)
+    return (
+        InjectedDoc(
+            rel_path=memory.MEMORY_REL_PATH,
+            abs_path=base_root / memory.MEMORY_REL_PATH,
+            content=content,
+            token_estimate=len(content) // 4,
+        ),
+        content.startswith(memory.WARNING_PREFIX),
     )
 
 

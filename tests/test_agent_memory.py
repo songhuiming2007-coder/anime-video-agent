@@ -453,8 +453,10 @@ def test_evidence_folding_and_entry_limits(root):
     assert plan.folded_refs == tuple(folded)
     assert plan.after[0].evidence == tuple(kept)
 
-    # ⑧ R7：match_form 下重复的 add 被拒（在文件被改写之前跑）
-    with pytest.raises(MemoryRuleError, match="R7"):
+    # ⑧ R7：match_form 下重复的 add 被拒（在文件被改写之前跑）。
+    # 断言写到「冲突 id + 改用 cite」这一层：validate 的文件级 R7 只报「与第 k 条重复」，
+    # 若 plan 级的 add 分支 R7 被删掉，报错会退化，本断言随之变红（MUT-26b）。
+    with pytest.raises(MemoryRuleError, match=r"R7（与 M\d{3} 的模式重复）.*cite"):
         plan_op("add", add_args(match_form(entries[0].pattern), [REF_A]),
                 root=root, episode_dir=None, today=TODAY)
 
@@ -577,17 +579,6 @@ def test_audit_log_and_id_allocation(root):
     plan5 = apply_op("add", add_args("模式六", [REF_A], "边界六"), root=root,
                      episode_dir=episode, confirmed=True, scope="creative", today=TODAY)
     assert plan5.after[-1].id == "M008"
-
-
-def test_write_memory_not_registered_before_injection_is_ready():
-    """PR3 之后模型仍然看不到 write_memory：登记挪到 PR4，与注入同步开放（Spec 7 §2.8）。"""
-    from pipeline.agent.tools import build_tool_schemas
-
-    tools = json.loads((paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8"))
-    for scope, names in tools.items():
-        assert "write_memory" not in names, scope
-    for scope in ("creative", "pipeline", "asset", "idea"):
-        assert "write_memory" not in [s["function"]["name"] for s in build_tool_schemas(scope)]
 
 
 def test_log_unwritable_aborts_before_writing_file(root):
@@ -1385,3 +1376,445 @@ def test_unreadable_memory_file_fails_closed(root, monkeypatch, capsys):
     assert check_code(root, monkeypatch) == 2
     assert "不可达" in capsys.readouterr().err
     assert memory.main(["show"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# PR4：装配器注入 + 开放写权限（T4b / T12）
+# ---------------------------------------------------------------------------
+
+
+def _repo_config(root: Path, scopes: list[str] | None) -> None:
+    """写一份最小的装配路由配置；scopes=None 表示整个 memory 键缺席。"""
+    cfg = root / "config" / "agent"
+    cfg.mkdir(parents=True, exist_ok=True)
+    data: dict = {
+        "routes": {
+            "_base": {},
+            "creative": {"_extends": "_base"},
+            "pipeline": {"_extends": "_base"},
+            "idea": {"default": []},
+            "asset": {},
+        }
+    }
+    if scopes is not None:
+        data["memory"] = {"scopes": scopes}
+    (cfg / "assembly.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _repo_config_real(
+    root: Path, *, drop_memory: bool = False, scopes: list[str] | None = None
+) -> None:
+    """把仓库真 assembly.json 拷进假仓库（可改/删 memory 键）。
+
+    注入 scope 集合以**真配置**为准：本用例若自造 scopes，配置被改坏时就验不出来。
+    """
+    cfg = root / "config" / "agent"
+    cfg.mkdir(parents=True, exist_ok=True)
+    data = json.loads(
+        (paths.ROOT / "config" / "agent" / "assembly.json").read_text(encoding="utf-8")
+    )
+    if drop_memory:
+        data.pop("memory", None)
+    elif scopes is not None:
+        data["memory"] = {"scopes": list(scopes)}
+    (cfg / "assembly.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _tracker(root: Path, scope: str):
+    from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
+
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = assemble_resident_prompt(scope, root=root).content
+    tracker.active_scope = scope
+    return tracker
+
+
+def _patch_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 LLM 面换成打桩：只回一句、不出网（注入面与模型无关）。"""
+    from pipeline.agent import llm
+    from pipeline.agent.llm import LLMConfig
+
+    monkeypatch.setattr(
+        llm, "load_llm_config",
+        lambda *a, **kw: LLMConfig(base_url="http://mock/v1", model="mock", api_key="sk-mock"),
+    )
+
+    def fake_loop(convo, **kwargs):
+        out = list(convo) + [{"role": "assistant", "content": "收到"}]
+        return {"messages": out, "final": out[-1], "iterations": 1,
+                "stopped": "done", "tool_calls_made": 0}
+
+    monkeypatch.setattr(llm, "run_tool_loop", fake_loop)
+
+
+def _patch_llm_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """只换配置，保留真正的 run_tool_loop（live-loop 用例需要真出网断言链）。"""
+    from pipeline.agent import llm
+    from pipeline.agent.llm import LLMConfig
+
+    monkeypatch.setattr(
+        llm, "load_llm_config",
+        lambda *a, **kw: LLMConfig(base_url="http://mock/v1", model="mock", api_key="sk-mock"),
+    )
+
+
+def _turn(monkeypatch, root, tracker, scope, messages, *, ep_dir=None, status=None, line="你好"):
+    from pipeline.agent import cli
+
+    _patch_llm(monkeypatch)
+    cli._dispatch_agent_turn(line, messages, ep_dir, scope, status, root=root, tracker=tracker)
+    return messages
+
+
+def _memory_msgs(messages: list[dict]) -> list[str]:
+    out = []
+    for message in messages:
+        content = str(message.get("content", ""))
+        if message.get("role") == "user" and (
+            content.startswith(memory.INJECTION_HEADER) or content.startswith(WARNING_PREFIX)
+        ):
+            out.append(content)
+    return out
+
+
+def _bodies(messages: list[dict]) -> list[str]:
+    return [c for c in _memory_msgs(messages) if c.startswith(memory.INJECTION_HEADER)]
+
+
+def _scope_ctx(scope: str, episode: Path):
+    """各 scope 的 (ep_dir, status)：idea 无期目录，其余用真实期。"""
+    if scope == "idea":
+        return None, None
+    from pipeline.status import inspect_episode
+
+    return episode, inspect_episode(episode)
+
+
+@pytest.mark.parametrize("scope", ["creative", "asset", "idea"])
+def test_assembler_injects_memory_once_as_user_message(root, monkeypatch, scope):
+    """T12 ①②③④⑤⑥⑦：正文每会话一次、告警一次、不占正文名额（Spec 7 §4.6）。"""
+    episode = make_episode(root, REF_A)
+    write_state(root, [entry("M001", "该番检索阈值 0.42 比默认 0.45 命中率高",
+                             (REF_A,), "仅适用于该番字幕池", "2026-09-23")])
+    ep_dir, status = _scope_ctx(scope, episode)
+
+    # ① 基线：关闭记忆时 messages[0] 的字节
+    _repo_config_real(root, drop_memory=True)
+    off = _turn(monkeypatch, root, _tracker(root, scope), scope, [], ep_dir=ep_dir, status=status)
+    # 打开记忆后的同一 scope 首轮（scopes 取真配置：creative / asset / idea）
+    _repo_config_real(root)
+    on = _turn(monkeypatch, root, _tracker(root, scope), scope, [], ep_dir=ep_dir, status=status)
+    assert on[0] == off[0]                                     # messages[0] 字节相等
+    bodies = _bodies(on)
+    assert len(bodies) == 1 and "该番检索阈值" in bodies[0]
+    # ⑥ 注入长度上限
+    assert len(bodies[0]) <= len(memory.INJECTION_HEADER) + 2 + memory.BUDGET_CHARS
+    assert len(memory.INJECTION_HEADER) <= 200
+
+    # ② 后续 10 轮（含一次工序切换、一次 /asset）零重复
+    tracker = _tracker(root, scope)
+    messages: list[dict] = []
+    _turn(monkeypatch, root, tracker, scope, messages, ep_dir=ep_dir, status=status)
+    for round_no in range(10):
+        if round_no == 4:
+            (episode / "01-topic.md").write_text("---\n番: A\n---\n", encoding="utf-8")
+            ep_dir, status = _scope_ctx(scope, episode)
+        current = "asset" if (round_no == 6 and scope != "idea") else scope
+        _turn(monkeypatch, root, tracker, current, messages,
+              ep_dir=(None if current == "idea" else ep_dir),
+              status=(None if current == "idea" else status), line=f"第 {round_no} 轮")
+    assert len(_bodies(messages)) == 1
+
+    # ③ pipeline 会话零新增注入（01/02 注入的记忆留在历史里）
+    pipeline_messages = list(messages)
+    _turn(monkeypatch, root, _tracker(root, "pipeline"), "pipeline", pipeline_messages,
+          ep_dir=ep_dir, status=status, line="我卡在哪")
+    assert len(_bodies(pipeline_messages)) == 1
+
+    # ④ 缺 memory 键 → 零注入
+    _repo_config(root, None)
+    no_key = _turn(monkeypatch, root, _tracker(root, scope), scope, [], ep_dir=ep_dir, status=status)
+    assert _memory_msgs(no_key) == []
+
+    # ⑤ 不合法文件 → 恰好一条告警，不含条目文本、不含路径
+    write_raw(root, "id: M001\n模式: 也许这样\n证据: 番A/01-x\n边界: 边界\n更新: 2026-09-23\n")
+    _repo_config_real(root)
+    bad = _turn(monkeypatch, root, _tracker(root, scope), scope, [], ep_dir=ep_dir, status=status)
+    warnings = [c for c in _memory_msgs(bad) if c.startswith(WARNING_PREFIX)]
+    assert len(warnings) == 1
+    assert "也许" not in warnings[0] and "memory.md" not in warnings[0] and str(root) not in warnings[0]
+
+    # ⑦ 坏文件 10 轮内 stderr 只告警一次
+    tracker = _tracker(root, scope)
+    warned: list[dict] = []
+    for round_no in range(10):
+        _turn(monkeypatch, root, tracker, scope, warned, ep_dir=ep_dir, status=status,
+              line=f"第 {round_no} 轮")
+    assert len([c for c in _memory_msgs(warned) if c.startswith(WARNING_PREFIX)]) == 1
+
+
+def test_assembler_bad_file_warns_once_on_stderr(root, monkeypatch, capsys):
+    """T12⑦：坏文件的 stderr 告警一个会话只打一次（告警态下每轮都会调用 render_injection）。"""
+    episode = make_episode(root, REF_A)
+    write_raw(root, "id: M001\n模式: 也许这样\n证据: 番A/01-x\n边界: 边界\n更新: 2026-09-23\n")
+    _repo_config(root, ["creative"])
+    tracker = _tracker(root, "creative")
+    messages: list[dict] = []
+    for round_no in range(10):
+        _turn(monkeypatch, root, tracker, "creative", messages, ep_dir=episode,
+              status=_scope_ctx("creative", episode)[1], line=f"第 {round_no} 轮")
+    assert capsys.readouterr().err.count("[WARN]") == 1
+
+
+def test_assembler_recovers_after_ack_and_after_repair(root, monkeypatch):
+    """T12 ⑧⑨：会话中途 ack / 人马修好之后，下一轮补注正文，告警不重复。"""
+    episode = make_episode(root, REF_A)
+    ep_dir, status = _scope_ctx("creative", episode)
+
+    # ⑧ 来源未确认（人手在文件末尾追加一条合法条目）
+    write_state(root, [entry("M001")])
+    write_raw(root, serialize([entry("M001"), entry("M002", "人手新增的一条", (REF_A,), "边界二", "2026-02-01")]))
+    _repo_config(root, ["creative"])
+    tracker = _tracker(root, "creative")
+    messages: list[dict] = []
+    _turn(monkeypatch, root, tracker, "creative", messages, ep_dir=ep_dir, status=status)
+    assert len([c for c in _memory_msgs(messages) if c.startswith(WARNING_PREFIX)]) == 1
+    assert memory.ack_external(root=root, confirm=lambda t: (True, 0.3), is_tty=lambda: True) is True
+    _turn(monkeypatch, root, tracker, "creative", messages, ep_dir=ep_dir, status=status, line="第二轮")
+    assert len(_bodies(messages)) == 1
+    assert "人手新增的一条" in _bodies(messages)[0]
+
+    # ⑨ 文件不合法 → 告警；人手修好并 ack → 下一轮补注正文，告警不再重复
+    write_raw(root, "id: M001\n模式: 也许这样\n证据: 番A/01-x\n边界: 边界\n更新: 2026-09-23\n")
+    tracker2 = _tracker(root, "creative")
+    messages2: list[dict] = []
+    _turn(monkeypatch, root, tracker2, "creative", messages2, ep_dir=ep_dir, status=status)
+    assert len([c for c in _memory_msgs(messages2) if c.startswith(WARNING_PREFIX)]) == 1
+    write_raw(root, serialize([entry("M001", "修好后的模式", (REF_A,), "边界一", "2026-01-01")]))
+    assert memory.ack_external(root=root, confirm=lambda t: (True, 0.4), is_tty=lambda: True) is True
+    _turn(monkeypatch, root, tracker2, "creative", messages2, ep_dir=ep_dir, status=status, line="第三轮")
+    assert len(_bodies(messages2)) == 1
+    assert "修好后的模式" in _bodies(messages2)[0]
+    assert len([c for c in _memory_msgs(messages2) if c.startswith(WARNING_PREFIX)]) == 1
+
+
+def test_egress_rejection_live_loop_blocks_turn(root, monkeypatch):
+    """T4b：含受限字样的 write_memory 调用让本轮 [BLOCKED]（T4③ 的 live-loop 腿）。"""
+    from pipeline.agent import cli
+
+    episode = make_episode(root, REF_A)
+    _agent_root(root)
+    _repo_config(root, ["creative"])
+    _patch_llm_config(monkeypatch)
+
+    calls: list[dict] = []
+
+    class _Reply:
+        def __init__(self, payload: dict) -> None:
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> bool:
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Reply({"choices": [{"message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "write_memory",
+                    "arguments": json.dumps({
+                        "op": "add",
+                        "pattern": "读 cloud.local.json 的经验",
+                        "evidence": [REF_A],
+                        "boundary": "边界",
+                    }, ensure_ascii=False),
+                },
+            }],
+        }}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    outcome = cli._dispatch_agent_turn(
+        "记一条", [], episode, "creative", _scope_ctx("creative", episode)[1],
+        root=root, tracker=_tracker(root, "creative"),
+    )
+    assert outcome["stopped"] == "error"
+    assert not lib_path(root, "memory.md").exists()
+    assert len(calls) == 1          # 第二次请求在出网断言处被拦下，从未发出
+
+
+# ---------------------------------------------------------------------------
+# PR5：/memory 命令与驳回反馈聚合（T18 / T22b）
+# ---------------------------------------------------------------------------
+
+
+def _episode_with_feedback(root: Path, ref: str, text: str) -> Path:
+    episode = make_episode(root, ref)
+    agent = episode / "_agent"
+    agent.mkdir(parents=True, exist_ok=True)
+    (agent / "approval_feedback.md").write_text(text, encoding="utf-8")
+    return episode
+
+
+def test_digest_absent_source_zero_side_effects(root, monkeypatch, capsys):
+    """T18①：Spec 3 缺席 → 报「数据源缺席」，零 LLM 调用、零写盘、日志不动。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    make_episode(root, REF_A)
+    before = list(log_rows(root))
+
+    real_find_spec = memory.importlib.util.find_spec
+    monkeypatch.setattr(
+        memory.importlib.util, "find_spec",
+        lambda name, *a, **k: None if name == "pipeline.approvals" else real_find_spec(name, *a, **k),
+    )
+    monkeypatch.setattr(
+        cli, "_dispatch_agent_turn",
+        lambda *a, **k: pytest.fail("数据源缺席时不许起子会话"),
+    )
+    from pipeline.agent import llm
+    monkeypatch.setattr(llm, "run_tool_loop", lambda *a, **k: pytest.fail("数据源缺席时零 LLM 调用"))
+
+    cli.run_memory_digest(None, root=root)
+    assert "数据源缺席" in capsys.readouterr().out
+    assert log_rows(root) == before
+
+
+def test_digest_reports_zero_feedback_with_scanned_counts(root, capsys):
+    """T18②：模块在但一份反馈都没有 → 「0 期有驳回反馈（可见 N / 归档 M）」。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    make_episode(root, REF_A)
+    make_episode(root, "_归档番/01-x")
+
+    cli.run_memory_digest(None, root=root)
+    out = capsys.readouterr().out
+    assert "0 期有驳回反馈（可见 1 / 归档 1）" in out
+
+
+def test_digest_includes_archived_and_logs_one_row(root, monkeypatch, capsys):
+    """T18③：2 可见 + 1 归档期全部纳入；1 次子会话；日志多一条 digest 行；memory.md 不变。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    write_state(root, [entry("M001", "该番检索阈值 0.42 比默认 0.45 命中率高",
+                             (REF_A,), "仅适用于该番字幕池", "2026-09-23")])
+    episode = _episode_with_feedback(root, REF_A, "- 定位: seg-03\n- 问题: 开场拖沓可见一\n")
+    _episode_with_feedback(root, "番B/01-y", "- 定位: seg-07\n- 问题: BGM 压过人声可见二\n")
+    _episode_with_feedback(root, "_归档番/01-x", "- 定位: seg-11\n- 问题: 结尾巴掌可见三\n")
+
+    memory_before = lib_path(root, "memory.md").read_bytes()
+    seen: list[dict] = []
+    real = cli._dispatch_agent_turn
+
+    def spy(line, messages, ep_dir, scope, status, **kwargs):
+        seen.append({"line": line, "messages": messages, "scope": scope, "tracker": kwargs.get("tracker")})
+        return real(line, messages, ep_dir, scope, status, **kwargs)
+
+    _patch_llm(monkeypatch)
+    monkeypatch.setattr(cli, "_dispatch_agent_turn", spy)
+    cli.run_memory_digest(episode, root=root)
+
+    assert len(seen) == 1 and seen[0]["scope"] == "creative"
+    assert seen[0]["tracker"] is not None
+    assert all(marker in seen[0]["line"] for marker in ("可见一", "可见二", "可见三"))
+    sub = seen[0]["messages"]
+    assert any(str(m.get("content", "")).startswith(memory.INJECTION_HEADER) for m in sub)
+    assert "3 期有驳回反馈（可见 2 / 归档 1）" in capsys.readouterr().out
+    digest_rows = [row for row in log_rows(root) if row.get("op") == "digest"]
+    assert len(digest_rows) == 1
+    assert digest_rows[0]["included"] == ["_归档番/01-x", REF_A, "番B/01-y"]
+    assert digest_rows[0]["omitted"] == []
+    assert lib_path(root, "memory.md").read_bytes() == memory_before
+
+
+def test_digest_caps_by_episode_and_lists_omitted(root, capsys):
+    """T18④：超过 8000 字符按期截断，被略去的期名显式列出。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    for ref in ("番A/01-x", "番B/01-y", "番C/01-z"):
+        _episode_with_feedback(root, ref, "甲" * 5000)
+
+    result = memory.feedback_digest(root=root)
+    assert len(result.text) <= memory.DIGEST_MAX_CHARS
+    assert result.included == ("番A/01-x",)
+    assert result.omitted == ("番B/01-y", "番C/01-z")
+
+    cli.run_memory_digest(None, root=root)
+    out = capsys.readouterr().out
+    assert "番B/01-y" in out and "番C/01-z" in out
+
+
+def test_digest_runs_in_isolated_sub_session(root, monkeypatch):
+    """T18⑤：digest 走独立子会话，主 REPL 的 messages 长度前后不变。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    write_state(root, [entry("M001")])
+    episode = _episode_with_feedback(root, REF_A, "- 定位: seg-03\n- 问题: 开场拖沓\n")
+
+    seen: list[dict] = []
+    main_len_at_digest: list[int] = []
+    real = cli._dispatch_agent_turn
+
+    def spy(line, messages, ep_dir, scope, status, **kwargs):
+        if seen:
+            main_len_at_digest.append(len(seen[0]["messages"]))
+        seen.append({"messages": messages, "entry_len": len(messages), "scope": scope})
+        return real(line, messages, ep_dir, scope, status, **kwargs)
+
+    _patch_llm(monkeypatch)
+    monkeypatch.setattr(cli, "_dispatch_agent_turn", spy)
+    inputs = iter(["你好", "/memory digest", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(inputs))
+
+    assert cli._run_repl_body(episode, root=root) == 0
+    assert [call["scope"] for call in seen] == ["creative", "creative"]
+    chat, digest = seen
+    assert digest["messages"] is not chat["messages"]      # 子会话的列表是独立的
+    assert digest["entry_len"] == 0                        # 且入口为空，不背主会话历史
+    assert len(chat["messages"]) == main_len_at_digest[0]   # digest 前后主列表长度不变
+
+
+def test_repl_memory_ack_requires_tty_and_no_cli_ack(root, monkeypatch, capsys):
+    """T22b：命令行 ack 已删；REPL ack 非 tty 拒绝且零写日志，tty + y 才记 memory_ack 账。"""
+    from pipeline.agent import cli
+
+    _repo_config(root, ["creative"])
+    episode = make_episode(root, REF_A)
+
+    # 命令行 ack 返回非零并指向 REPL
+    assert memory.main(["ack"]) != 0
+    assert "REPL" in capsys.readouterr().err
+
+    # 来源未确认（人手改过文件）
+    write_state(root, [entry("M001")])
+    write_raw(root, serialize([entry("M001"), entry("M002", "人手新增", (REF_A,), "边界二", "2026-02-01")]))
+    log_before = list(log_rows(root))
+
+    monkeypatch.setattr(sys, "stdin", type("FakeStdin", (), {"isatty": lambda self: False})())
+    assert cli.run_memory_ack(episode, root=root) is False
+    assert log_rows(root) == log_before
+    assert not (episode / "_agent" / "approvals.jsonl").exists()
+
+    monkeypatch.setattr(sys, "stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr("builtins.input", lambda: "y")
+    assert cli.run_memory_ack(episode, root=root) is True
+    assert [row for row in log_rows(root) if row.get("op") == "external_ack"]
+    decisions = [
+        json.loads(line)
+        for line in (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert decisions[-1]["tool"] == "memory_ack" and decisions[-1]["decision"] == "y"

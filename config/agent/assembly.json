@@ -1,6 +1,9 @@
 {
   "version": "1.0",
   "_note": "工序层上下文装配路由表（ADR-0022）。机制进代码，路由进配置。",
+  "memory": {
+    "scopes": ["creative", "asset", "idea"]
+  },
   "resident": {
     "director": "config/agent/scopes/director.md",
     "scope": "config/agent/scopes/{scope}.md",

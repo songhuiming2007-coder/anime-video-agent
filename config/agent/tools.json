@@ -8,7 +8,8 @@
     "web_search",
     "web_fetch",
     "crawl",
-    "browser"
+    "browser",
+    "write_memory"
   ],
   "pipeline": [
     "read_artifact",
