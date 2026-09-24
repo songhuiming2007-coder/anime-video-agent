@@ -16,6 +16,7 @@ import datetime
 import difflib
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +38,7 @@ BUDGET_CHARS = 4000
 ENTRY_MAX_CHARS = 400
 EVIDENCE_MAX_CHARS = 100
 PRESSURE_THRESHOLD = BUDGET_CHARS - (ENTRY_MAX_CHARS + len(SEP))  # 3597
+DIGEST_MAX_CHARS = 8000          # 不大于仓库里最重的单篇注入文档（Spec 7 §2.10）
 FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"})
 CARD_FREE_OPS = frozenset({"cite"})
 WRITE_OPS = ("add", "revise", "merge", "cite", "retire")
@@ -1138,13 +1140,110 @@ def _safe_parse(text: str) -> list[MemoryEntry]:
 
 
 # ---------------------------------------------------------------------------
+# 驳回反馈聚合（Spec 7 §2.10；数据源是 Spec 3 的 `_agent/approval_feedback.md`）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DigestResult:
+    """聚合结果。visible/archived = 扫到的期数（不管有没有反馈），供「0 期有驳回反馈（可见 N / 归档 M）」用。"""
+
+    visible_episodes: int
+    archived_episodes: int
+    included: tuple[str, ...]
+    omitted: tuple[str, ...]
+    text: str
+
+
+def _iter_episode_dirs(episodes_root: Path) -> list[Path]:
+    """data/episodes 两层以内的全部期（判据同 cli.py：目录下有 01-topic.md）。"""
+    found: list[Path] = []
+    if not episodes_root.is_dir():
+        return found
+    for top in sorted(episodes_root.iterdir()):
+        if not top.is_dir():
+            continue
+        if (top / "01-topic.md").is_file():
+            found.append(top)
+            continue
+        for sub in sorted(top.iterdir()):
+            if sub.is_dir() and (sub / "01-topic.md").is_file():
+                found.append(sub)
+    return found
+
+
+def _is_archived(rel: str) -> bool:
+    """归档判据：任一路径段带 `_` 前缀（项目的隐藏约定，同 cli.py:137-139）。"""
+    return any(part.startswith("_") for part in Path(rel).parts)
+
+
+def feedback_digest(root: Path | None = None) -> DigestResult:
+    """聚合各期的驳回反馈。数据源缺席 → RuntimeError；零 LLM 调用；只追加一条 digest 行。"""
+    if importlib.util.find_spec("pipeline.approvals") is None:
+        raise RuntimeError(
+            "数据源缺席：Spec 3（approval 对象化）未施工，无驳回反馈可聚合。本命令不做任何事。"
+        )
+    episodes_root = Path(root or paths.ROOT) / "data" / "episodes"
+    visible = archived = 0
+    blocks: list[tuple[str, str]] = []
+    for episode in _iter_episode_dirs(episodes_root):
+        rel = episode.relative_to(episodes_root).as_posix()
+        if _is_archived(rel):
+            archived += 1
+        else:
+            visible += 1
+        try:
+            text = (episode / "_agent" / "approval_feedback.md").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if text.strip():
+            blocks.append((rel, text.rstrip()))
+
+    included: list[str] = []
+    omitted: list[str] = []
+    chunks: list[str] = []
+    used = 0
+    for rel, text in blocks:
+        block = f"## {rel}\n{text}\n"
+        if used + len(block) > DIGEST_MAX_CHARS:   # 按期截断，不从中间切
+            omitted.append(rel)
+            continue
+        included.append(rel)
+        chunks.append(block)
+        used += len(block)
+
+    result = DigestResult(visible, archived, tuple(included), tuple(omitted), "\n".join(chunks))
+    _log_digest(root, result)
+    return result
+
+
+def _log_digest(root: Path | None, result: DigestResult) -> None:
+    """零写盘的唯一例外：追加一条 digest 行（不是状态行）。库不可达时静默跳过。"""
+    try:
+        _lib, _mem, log, _lock = _require_lib(root)
+        _append_log(
+            log,
+            {
+                "ts": _utc_now(),
+                "op": "digest",
+                "episodes_visible": result.visible_episodes,
+                "episodes_archived": result.archived_episodes,
+                "included": list(result.included),
+                "omitted": list(result.omitted),
+            },
+        )
+    except PermissionError:
+        return
+
+
+# ---------------------------------------------------------------------------
 # 命令行：check / show（不提供 ack）
 # ---------------------------------------------------------------------------
 
 
-def _cmd_check() -> int:
+def _cmd_check(root: Path | None = None) -> int:
     try:
-        lib, mem, log, _lock = _require_lib(None)
+        lib, mem, log, _lock = _require_lib(root)
         with _locked(lib, exclusive=False):
             snap = _snapshot(mem, log, datetime.date.today())
     except PermissionError as exc:
@@ -1164,9 +1263,9 @@ def _cmd_check() -> int:
     return 0
 
 
-def _cmd_show() -> int:
+def _cmd_show(root: Path | None = None) -> int:
     try:
-        lib, mem, log, _lock = _require_lib(None)
+        lib, mem, log, _lock = _require_lib(root)
         with _locked(lib, exclusive=False):
             snap = _snapshot(mem, log, datetime.date.today())
     except PermissionError as exc:
@@ -1183,13 +1282,13 @@ def _cmd_show() -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, root: Path | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "check"
     if cmd == "check":
-        return _cmd_check()
+        return _cmd_check(root)
     if cmd == "show":
-        return _cmd_show()
+        return _cmd_show(root)
     if cmd == "ack":
         print(
             "[memory] ack 只在 REPL 交互终端可用：进 ava 后运行 /memory ack"

@@ -895,6 +895,7 @@ def _dispatch_agent_turn(
         assemble_resident_prompt,
         load_injected_doc,
         render_step_injection,
+        resolve_memory_injection,
         resolve_step_docs,
         step_key_of,
     )
@@ -963,6 +964,22 @@ def _dispatch_agent_turn(
         # 刷新 status_card：复用整段重算机制，直接替换 messages[0]
         sys_content = tracker.get_initial_system_prompt(status_card)
         messages[0] = {"role": "system", "content": sys_content}
+
+    # 记忆注入（Spec 7 §4.6）：正文每会话一次；告警不占正文名额，也每会话一次。
+    # 告警态下每轮重新读盘判定，状态一恢复（中途 ack / 人手修好 / 另一进程写入完成）就下一轮补注正文。
+    from pipeline.agent.memory import MEMORY_REL_PATH
+
+    if MEMORY_REL_PATH not in tracker.injected_paths:
+        memory_doc = resolve_memory_injection(scope, root=root)
+        if memory_doc is not None:
+            doc, is_warning = memory_doc
+            if not is_warning:
+                messages.append({"role": "user", "content": doc.content})
+                tracker.injected_paths.add(doc.rel_path)
+            elif not tracker.memory_warned:
+                messages.append({"role": "user", "content": doc.content})
+                print(f"[WARN] {doc.content}", file=sys.stderr)
+                tracker.memory_warned = True
 
     if load_llm_config(root) is None:
         deg = local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
@@ -1166,6 +1183,97 @@ def _exec_scout(ep_dir: Path, args: list[str]) -> int:
         return 1
 
 
+MEMORY_DIGEST_PROMPT = (
+    "以下是各期人工驳回的结构化反馈（哪一段、什么问题）。请归纳出可复用的经验候选，"
+    "每条只写模式 + 证据期 + 适用边界，不要写成规则，不要臆断频度。"
+    "需要落盘时用 write_memory（add / revise / merge）。\n\n"
+)
+
+
+def run_memory_ack(ep_dir: Path | None, *, root: Path | None = None) -> bool:
+    """REPL /memory ack：展示「上次确认版本 → 当前文件」的 diff 与全文，按 y 才对账（Spec 7 §2.4）。"""
+    from pipeline.agent import memory
+
+    state: dict[str, float] = {"latency": 0.0}
+
+    def confirm(text: str) -> tuple[bool, float]:
+        print(text)
+        print("\n以上是「上次确认版本 → 当前文件」的改动与当前全文。按 y 确认，其它任意键取消（默认 N）：")
+        started = time.time()
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            answer = "n"
+        state["latency"] = time.time() - started
+        return (answer == "y", state["latency"])
+
+    ok = memory.ack_external(root=root, confirm=confirm)
+    if ok:
+        # 记账只为审批疲劳观测；记忆 ack 不是 approval 对象，不发 APPROVAL_RESOLVED（Spec 7 §6.2）
+        log_approval_decision(
+            ep_dir, "memory_ack", "memory.md", "y", latency_s=state["latency"], emit_event=False
+        )
+    return ok
+
+
+def run_memory_digest(ep_dir: Path | None, *, root: Path | None = None) -> None:
+    """REPL /memory digest：独立子会话聚合驳回反馈（Spec 7 §2.10）。"""
+    from pipeline.agent import memory
+    from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
+    from pipeline.agent.llm import load_llm_config, local_directive_message
+
+    try:
+        digest = memory.feedback_digest(root=root)
+    except RuntimeError as exc:
+        print(f"[memory digest] {exc}")
+        return
+    print(
+        f"[memory digest] {len(digest.included)} 期有驳回反馈"
+        f"（可见 {digest.visible_episodes} / 归档 {digest.archived_episodes}）"
+    )
+    if digest.omitted:
+        print(f"[memory digest] 超出 {memory.DIGEST_MAX_CHARS} 字符未纳入：{list(digest.omitted)}")
+    if not digest.included:
+        return
+    if load_llm_config(root) is None:
+        print(local_directive_message("creative", "缺少 config/agent.json 或环境变量密钥")["content"])
+        return
+
+    # 独立子会话：自建 messages 与 tracker，结束即丢（主 REPL 的 messages 长度不变）
+    messages: list[dict[str, Any]] = []
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = assemble_resident_prompt("creative", root=root).content
+    tracker.active_scope = "creative"
+    status = inspect_episode(ep_dir) if ep_dir else None
+    _dispatch_agent_turn(
+        MEMORY_DIGEST_PROMPT + digest.text, messages, ep_dir, "creative", status,
+        root=root, tracker=tracker,
+    )
+
+
+def run_memory_command(line: str, ep_dir: Path | None, *, root: Path | None = None) -> None:
+    """`/memory` 四个子命令的路由（Spec 7 §4.4）。"""
+    from pipeline.agent import memory
+
+    sub = line[len("/memory"):].strip()
+    if sub in ("", "show"):
+        memory.main(["show"], root=root)
+        return
+    if sub == "check":
+        memory.main(["check"], root=root)
+        return
+    if sub == "ack":
+        run_memory_ack(ep_dir, root=root)
+        return
+    if sub == "digest":
+        run_memory_digest(ep_dir, root=root)
+        return
+    print(
+        f"[ERROR] 未知的 /memory 子命令: '{sub}'。可用: /memory [show|check|ack|digest]",
+        file=sys.stderr,
+    )
+
+
 def _run_repl_body(
     ep_dir: Path,
     on_step: Callable[[str], None] | None = None,
@@ -1249,6 +1357,10 @@ def _run_repl_body(
                 print("  /board       查看全局期看板")
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
+                print("  /memory      查看跨期记忆全文（/memory show）")
+                print("  /memory check 记忆自检（退出码 0 合法 / 1 不合法 / 2 不可达 / 3 合法但来源未确认）")
+                print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
+                print("  /memory digest 聚合各期驳回反馈，在独立子会话里提议记忆条目")
                 print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
                 print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
@@ -1285,6 +1397,10 @@ def _run_repl_body(
 
             if line == "/voice":
                 run_voice_session(ep_dir)
+                continue
+
+            if line == "/memory" or line.startswith("/memory "):
+                run_memory_command(line, ep_dir, root=root)
                 continue
 
             if line == "/patch" or line.startswith("/patch "):

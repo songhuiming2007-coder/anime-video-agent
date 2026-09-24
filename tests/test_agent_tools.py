@@ -319,6 +319,7 @@ SPEC_TOOLS = {
         "web_fetch",
         "crawl",
         "browser",
+        "write_memory",
     ],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
     "asset": ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"],
@@ -599,6 +600,49 @@ def test_llm_scope_tool_filtering_isolation(tmp_path: Path):
     from pipeline import paths
     for scope, expected in SPEC_TOOLS.items():
         assert tool_names_for_scope(scope) == expected, f"{scope} 的 tools.json 已漂移"
+
+
+def test_write_memory_registered_creative_only_with_adr(tmp_path: Path):
+    """T17 (PR4): write_memory 进 creative 尾部、带 ADR-0023、其余三键逐字不变（Spec 7 §2.8）。"""
+    import re
+    from pipeline import paths
+    from pipeline.agent.tools import TOOL_SCHEMAS
+
+    repo_tools = json.loads(
+        (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
+    )
+    assert repo_tools["creative"][-1] == "write_memory"
+    assert [scope for scope, names in repo_tools.items() if "write_memory" in names] == ["creative"]
+    # 其余三键与施工前逐字相等（写死在用例里，不看 SPEC_TOOLS，免得两边一起漂）
+    assert repo_tools["pipeline"] == ["read_artifact", "read_status", "list_episodes", "run_pipeline"]
+    assert repo_tools["asset"] == ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"]
+    assert repo_tools["idea"] == ["read_artifact", "list_episodes", "read_status", "search_notes"]
+    every_tool = set().union(*(set(names) for names in repo_tools.values()))
+    assert len(every_tool) == 12
+
+    # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
+    schema = TOOL_SCHEMAS["write_memory"]
+    matched = re.match(r"^ADR-(\d{4})$", str(schema.get("adr", "")))
+    assert matched is not None and schema["adr"] == "ADR-0023"
+    adr_hits = list((paths.ROOT / "docs" / "dev" / "adr").glob(f"{matched.group(1)}-*.md"))
+    assert len(adr_hits) == 1, adr_hits
+
+    # 协议键零泄漏；非 creative 连执行层都进不去
+    payload = json.dumps(build_tool_schemas("creative"), ensure_ascii=False)
+    assert '"adr"' not in payload and '"side_effect"' not in payload
+    denied = execute_tool(
+        "write_memory", {"op": "add", "pattern": "x", "evidence": ["a/b"], "boundary": "y"},
+        ToolContext(scope="idea", root=tmp_path),
+    )
+    assert denied["ok"] is False and "白名单" in denied["error"]
+
+    # 不变量：挂了 write_memory 的 scope 必须都在 assembly.json 的 memory.scopes 里（看得见才写得动）
+    assembly = json.loads(
+        (paths.ROOT / "config" / "agent" / "assembly.json").read_text(encoding="utf-8")
+    )
+    inject_scopes = set(assembly.get("memory", {}).get("scopes", []))
+    writers = {scope for scope, names in repo_tools.items() if "write_memory" in names}
+    assert writers <= inject_scopes, (writers, inject_scopes)
 
 
 def test_llm_unregistered_tool_in_config_fails_loudly(tmp_path: Path):
