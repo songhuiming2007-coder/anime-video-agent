@@ -11,5 +11,14 @@
     "max_bytes": 1000000,
     "max_chars": 30000
   },
+  "crawl": {
+    "timeout_s": 60,
+    "max_chars": 30000
+  },
+  "browser": {
+    "profile_dir": "data/browser-profile",
+    "headed": true,
+    "timeout_s": 60
+  },
   "trusted_fake_ip_ranges": []
 }

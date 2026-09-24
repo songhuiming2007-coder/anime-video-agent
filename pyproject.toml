@@ -46,6 +46,19 @@ apple = [
     "mlx-whisper>=0.4.3",
     "mlx-lm>=0.31",
 ]
+# 网络升级链第二、三级（Spec 5 / ADR-0021）：顶层只用 find_spec 探测，未安装时从工具 schema 隐藏。
+# 下界钉死依据（S16 🔵-6 / RF-1）：2026-09 实测 uv.lock 锁定 crawl4ai 0.9.4 与 playwright 1.63.0，
+# 前者 AsyncWebCrawler + BrowserConfig/CrawlerRunConfig + fit_markdown API 契约稳定，
+# 后者 launch_persistent_context + context.on("close") 死会话探活契约稳定。
+# 浏览器二进制不进依赖解析，需人工一次性安装：
+#   uv run crawl4ai-setup
+#   uv run playwright install chromium
+crawl = [
+    "crawl4ai>=0.9.4",
+]
+browser = [
+    "playwright>=1.63.0",
+]
 # 测试只覆盖纯函数，**不需要片源、模型、外置盘**——clone 下来装完就能跑。
 # 涉及媒体的部分靠 pipeline 自己的守卫（截取守卫、质检门禁）在真跑时兜。
 dev = ["pytest>=8"]

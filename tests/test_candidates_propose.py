@@ -438,7 +438,7 @@ def test_tools_import_does_not_pull_candidates() -> None:
 def test_acquire_propose_scope_mask(tmp_path: Path) -> None:
     # ① 注册表常驻
     assert "acquire_propose" in TOOL_SCHEMAS
-    assert len(TOOL_SCHEMAS) == 9
+    assert len(TOOL_SCHEMAS) == 11
 
     # ② build_tool_schemas 仅 asset 含 acquire_propose
     def _schema_names(scope: str) -> list[str]:

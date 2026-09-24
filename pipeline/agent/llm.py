@@ -1,7 +1,7 @@
 """极简 OpenAI 兼容 LLM 客户端与工具调用循环（Spec §2.5, §5 PR4）。
 
 零新依赖：只用 stdlib `urllib` POST `{base_url}/chat/completions`。代价是自己追
-协议变化——接受，因为工具表 8 个、字段用量是协议的最小公约数（Y11）。
+协议变化——接受，因为工具表 11 个、字段用量是协议的最小公约数（Y11）。
 
 两条硬边界：
 1. 密钥只从 `config/agent.json` 的 `api_key_env` 指名环境变量读，绝不落盘/打印/回传；

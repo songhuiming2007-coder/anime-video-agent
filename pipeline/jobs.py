@@ -54,6 +54,7 @@ class EventType(str, Enum):
     APPROVAL_RESOLVED = "approval_resolved"    # 预留 Spec 3
     HUMAN_TIME_RECORDED = "human_time_recorded"
     SIDECAR_DEGRADED = "sidecar_degraded"  # Sidecar 自愈诊断（熔断恢复后补发）
+    BROWSER_SESSION_STARTED = "browser_session_started"  # Spec 5 browser 进程启动事件
 
 
 @dataclass

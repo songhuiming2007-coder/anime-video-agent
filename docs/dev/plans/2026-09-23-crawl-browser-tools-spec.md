@@ -432,8 +432,10 @@ def browser_action(
     navigate 落地后对 final_url 复跑 _guard_url（🟡-4：首跳合法、30x 跳进
     内网是 Spec 4 §2.6③ 已点名的标准绕法，浏览器内核自行跟跳，ava 侧初始
     校验覆盖不到；extract_text 对当前页 URL 同款复跑）→
-    死会话自愈分流（v0.4 收口，🟡-R4/🟡-R5）：会话调用遇 playwright 族异常
-    时**先探活**（廉价调用，如读会话页表）——探活存活 = 操作本身失败
+    死会话自愈分流（v0.4 收口，🟡-R4/🟡-R5；S16 🟡-1 修订）：会话调用遇 playwright 族异常
+    时**先探活**（订阅 `context.on("close")` 事件置 dead 标记，`probe()` 返回 `not _dead`——
+    playwright 中 `context.pages` 仅返回本地 `_pages.copy()` 永不抛错，不可用于探活；严禁
+    调用 `cookies()` 触碰 cookie 本体，S16 🟡-1）——探活存活 = 操作本身失败
     （真实超时是 browser.timeout_s=60 设计预期的常态，不是死会话），直接
     包装 ValueError「操作失败」，会话不动；探活也败 = 死会话：丢弃旧会话、
     按新启动重启后重试该操作一次——重启**复用当前调用的人审卡**（同一
@@ -661,14 +663,16 @@ def test_capability_probe_itself_is_side_effect_free():
 | **T17** | `test_partial_install_import_failure_is_explicit_error` | PR1/PR2 | **🔴-1：find_spec 假阳性 → ImportError 不穿透** | 双腿（v0.3 据 🟡-R2 改写为 import 机制层 mock，**双环境同绿、零真 import**）：前置 `monkeypatch.setitem(sys.modules, "crawl4ai", None)` / `("playwright", None)`——sys.modules 置 None 使对应 import 必抛 ImportError（标准技巧，Spec 3 T10b 先例，monkeypatch 自动 teardown）——① 直调 `_default_crawl_fn`/`_default_launch_fn` → 抛 **ValueError**（含「导入失败/重装」文案），绝非 ImportError；② monkeypatch `tools._extra_available → True`（模拟部分安装：能力闸放行、import 必败），fixture：tmp web.json 含**合法 crawl 段** + getaddrinfo patch（🔵-R1：缺段会先报「crawl 段」而非「导入失败」，guard 需 DNS patch），`execute_tool("crawl", {"url": "https://example.com", "reason": "r"}, creative ctx)` → `{"ok": False, "error": 含 "导入失败"}` 且**不抛异常**（包装后落入 `tools.py:668` 捕获面） |
 | **T18** | `test_playwright_errors_wrapped_as_value_error` | PR2 | **🔴-2：playwright 异常族包装** | monkeypatch `web_browser._pw_error_types` 返回 `(FakePWError,)`：fake launch_fn 抛 FakePWError（启动失败/双开抢 profile 场景）→ `browser_action` 抛 ValueError 含「browser 操作失败」；fake 会话 navigate 超时抛 FakePWError 同款（探活桩钉**存活**——v0.4 分流下直接包装、不触发自愈重启，🔵-R5）；**对照腿**：非 playwright 异常（守卫的 PermissionError、参数 ValueError）原样穿透不被误包 |
 
+> **S16 修复轮新增（本表止于 T18，不逐行展开）**：T19 `test_adapter_probe_marks_dead_on_context_close`、T20 `test_default_crawl_fn_runs_coroutine_in_worker_thread`、T21 `test_default_crawl_fn_forces_base_dir_env_before_import`（含 X-6 腿：已导入但绑定目录不可知 → ValueError）、T22 `test_missing_data_dir_is_explicit_error`，外加 T9⑤（profile 首建 chmod 0700）、T12⑤（extract_text 落地复跑）、T18④（非 playwright 异常穿透）；逐条断言见各用例 docstring 与 S15/S16 报告。本节两条铁律不变，且**不依赖真实 `data/`**：外置盘拔掉时 `tests/test_agent_crawl_browser.py` 必须全绿（T17/T20/T21/T22 自钉 `paths.DATA`）。
+
 ### 7.2 变异检验矩阵（Mutation Testing Matrix）
 
 | 变异编号 | 注入变异（故意写坏代码） | 预期变红的测试 | 证伪机理（为什么必须红） |
 |---|---|---|---|
 | **MUT-1** | `build_tool_schemas` 删除能力过滤（requires_extra 存在也不跳过） | T4② | extras 缺失下 crawl/browser 出现在 creative/asset 的 schema 清单，「不含」断言失败变红——钉死「schema 层隐藏」 |
 | **MUT-2** | `execute_tool` 删除能力闸 | T4③ | extras 缺失下 execute 穿透到 `_TOOL_IMPLS["crawl"]`，其函数体 `import crawl4ai` 抛 ImportError——不在 `tools.py:668` 四异常捕获面内 → 异常穿透，「不抛异常 + 显式错误数据」断言失败变红 |
-| **MUT-3** | `web_crawl.py` 顶层加 `import crawl4ai` | T6 | 未装 extras 的子进程探针 import 即 ImportError（非零退出码）变红；装了的环境则 `crawl4ai in sys.modules` 断言变红——双环境均红 |
-| **MUT-4** | `_extra_available` 改为 `try: importlib.import_module(dist)` 实现 | T6（第二腿，v0.2 据 🟡-1 修复空转） | 第二腿探针**显式调用** `_extra_available` 与 `build_tool_schemas`：已装 extras 环境下 import_module 使 crawl4ai 真实进入 sys.modules，泄漏断言红；未装环境下 import_module 在调用点抛 ModuleNotFoundError，子进程非零退出红——双环境杀法均落在探针代码内（v0.1 探针从不调用变异点，机理栏却写「探针中 build_tool_schemas 触发真实 import」，文不对题，红队指控属实） |
+| **MUT-3** | `web_crawl.py` 顶层加 `import crawl4ai` | T6 | 未装 extras 的子进程探针 import 即 ImportError（非零退出码）变红；装了的环境则 `crawl4ai in sys.modules` 断言变红——双环境均红。**S16 实测注记**：无 extras 环境下红在**收集测试**——顶层 import 使 `tests/test_agent_crawl_browser.py` 自身 import 即失败，探针根本没跑到；探针断言变红只发生在装了 extras 的环境（两环境都红，但机理只在有 extras 那侧成立） |
+| **MUT-4** | `_extra_available` 改为 `importlib.import_module(dist)` 实现 | T6（第二腿，v0.2 据 🟡-1 修复空转；S16 🔵-4 补注） | 第二腿探针**显式调用** `_extra_available` 与 `build_tool_schemas`：已装 extras 环境下 import_module 使 crawl4ai 真实进入 sys.modules，泄漏断言红；未装环境下不带 try 的 import_module 在调用点抛 ModuleNotFoundError，子进程非零退出红（「双环境均红」仅适用于不带 try 的 `import_module` 变体；若写为 `try: import_module(...) except ImportError: return False` 变体，在无 extras 环境下会因抛错早退而未留 sys.modules 记录从而存活，只在有 extras 的环境里变红，S16 🔵-4） |
 | **MUT-5** | `crawl_page` 删除 `assert_egress_boundary` 调用 | T2 | 编码形态模式串不再抛 PermissionError，fake crawl_fn 被真实调用（计数 ≥1），「零调用 + raises」双断言失败变红 |
 | **MUT-6** | `crawl_page` 删除 `_guard_url` 调用 | T3 | 私网地址用例 fake 被调用，「零调用 + PermissionError」失败变红 |
 | **MUT-7** | `_assert_profile_isolation` 删除 data/ 子树校验（只返回 resolve） | T7 | Chrome Default 等六个危险路径全部放行，PermissionError 断言逐一失败变红——钉死 profile 隔离唯一不变量 |
@@ -685,6 +689,8 @@ def test_capability_probe_itself_is_side_effect_free():
 | **MUT-18** | 删除 navigate/extract_text 对落地 URL 的 `_guard_url` 复跑（🟡-R3 配套） | T12（重定向腿） | 删复跑后内网 `final_url` 不抛错、页面内容进返回值，「PermissionError + 内网内容不进返回值」断言失败红——钉死「首跳合法、30x 跳进内网」旁路的封闭；v0.2 漏配此变异（关键断言缺变异，红队指控属实） |
 
 （每条变异的反向验证：正确实现下对应测试确绿——T4/T9 的双腿设计保证变异杀的是真断言而非环境巧合；期望值先跑再写断言，AGENTS.md:217。）
+
+> **S16 修复轮新增（本表止于 MUT-18，不逐行展开）**：MUT-19（`probe()` 恒 True）、MUT-20（协程改回主线程 `asyncio.run`）、MUT-21（删 `chmod 0700`）、MUT-22/MUT-23（删 `data/` 可达检查，browser/crawl 各一）、MUT-24/MUT-25（删/改 `CRAWL4_AI_BASE_DIRECTORY` 赋值）、MUT-26（只删 extract_text 落地复跑）、MUT-27（操作层 `isinstance` 改恒真）、MUT-28（绑定目录不可知时不再拒绝）；另有两条定向变异 MUT-29（删 T17 的 `paths.DATA` 钉死，须在「无盘插件」下变红）/ MUT-30（删会话级 env 归还，须在「ambient 插件」下变红）。逐条目标用例与变红机理见 S15/S16 报告。
 
 ---
 
@@ -712,15 +718,15 @@ def test_capability_probe_itself_is_side_effect_free():
 
 ## 9. 验收门禁清单（Accept Gates）
 
-- [ ] **门禁 1（未装 extras 三层证据 + 部分安装封闭）**：无 extras 环境下 `build_tool_schemas("creative")`/`("asset")` 无 crawl/browser（schema 隐藏）；两工具常驻 `TOOL_SCHEMAS`（注册表不删）；`execute_tool` 返回显式「可选依赖未安装」错误数据、零异常穿透；**部分/损坏安装**（find_spec 假阳性）路径同样显式错误数据、ImportError 零穿透——T4/T17 全绿，MUT-1/MUT-2/MUT-16 必红；
-- [ ] **门禁 2（依赖纯洁性）**：独立子进程断言两新模块顶层零重依赖、未装 extras 时可 import——T6 全绿，MUT-3/MUT-4 必红；
-- [ ] **门禁 3（browser 启动审批事件落盘）**：每次进程启动恰一条 `browser_session_started`（payload **必备四键**齐全、pid 可缺省、无凭据字段、无审批自证字段），**前置条件：读取前 `publisher.close()` 完成有界排空**（Spec 2 同步点铁律）；会话续用不重复发射，重启才再发射——T9/T11 全绿，MUT-10/MUT-12 必红；
-- [ ] **门禁 4（approval 门逐调用、确定性、零 guardian）**：browser 不标 side_effect，每次调用过 `_default_approve` 人审卡；拒绝则零启动零事件；全 diff 无 LLM 审批判断代码——T10 全绿，MUT-11 必红；
-- [ ] **门禁 5（profile 隔离可验证）**：守卫放行 `data/browser-profile`、拒绝 Chrome Default 等六个危险路径；fake launch_fn 实参 `user_data_dir` 与 config 钉死路径逐字节相等；工具 schema 无 profile/headless 入口——T7/T8/T9① 全绿，MUT-7/MUT-8/MUT-9 必红。**人工附加项（不进 CI）**：真机启动一次后 `lsof -p <pid> | grep user-data-dir` 或 `ps aux | grep user-data-dir` 核对实际进程路径；
-- [ ] **门禁 6（升级链职责切分 + 异常接管）**：crawl/browser 的 `reason` 必填钉死在 schema；crawl 失败文案含升级 browser 提示；egress/私网守卫在两工具同 Spec 4 口径生效（含 navigate/extract 对落地 URL 的重定向复跑，🟡-4）；crawl4ai/playwright 异常族全包装为 ValueError，REPL 零 traceback——T2/T3/T5/T12/T18 全绿，MUT-5/MUT-6/MUT-17/MUT-18 必红；
-- [ ] **门禁 7（scope 分组不变 + 位次台账）**：`pipeline`/`idea` 两表逐字不变；asset/creative 加两工具；`adr` 均指 ADR-0021 真实文件；工具表总数 10 ≤ 12——T15/T16 全绿；
-- [ ] **门禁 8（红线零触碰）**：`git diff` 中 `acquire.py`、四个停机点、`resolver.py`、四份 scope 提示词、`_default_approve` 卡片渲染逻辑零改动；无数据库、无 web server、无 guardian LLM、无会话级授权缓存；
-- [ ] **门禁 9（既有测试零回归 + 文档门禁）**：`tests/test_agent_tools.py`、`test_agent_pr6.py`、`test_agent_director.py`、`test_agent_cli.py`、（Spec 2/4 落地后）`test_jobs.py`、`test_agent_web.py` 全绿；`uv run pytest tests/test_docs_invariants.py` 全绿。
+- [x] **门禁 1（未装 extras 三层证据 + 部分安装封闭）**：无 extras 环境下 `build_tool_schemas("creative")`/`("asset")` 无 crawl/browser（schema 隐藏）；两工具常驻 `TOOL_SCHEMAS`（注册表不删）；`execute_tool` 返回显式「可选依赖未安装」错误数据、零异常穿透；**部分/损坏安装**（find_spec 假阳性）路径同样显式错误数据、ImportError 零穿透——T4/T17 全绿，MUT-1/MUT-2/MUT-16 必红；
+- [x] **门禁 2（依赖纯洁性）**：独立子进程断言两新模块顶层零重依赖、未装 extras 时可 import——T6 全绿，MUT-3/MUT-4 必红；
+- [x] **门禁 3（browser 启动审批事件落盘）**：每次进程启动恰一条 `browser_session_started`（payload **必备四键**齐全、pid 可缺省、无凭据字段、无审批自证字段），**前置条件：读取前 `publisher.close()` 完成有界排空**（Spec 2 同步点铁律）；会话续用不重复发射，重启才再发射——T9/T11 全绿，MUT-10/MUT-12 必红；
+- [x] **门禁 4（approval 门逐调用、确定性、零 guardian）**：browser 不标 side_effect，每次调用过 `_default_approve` 人审卡；拒绝则零启动零事件；全 diff 无 LLM 审批判断代码——T10 全绿，MUT-11 必红；
+- [x] **门禁 5（profile 隔离可验证）**：守卫放行 `data/browser-profile`、拒绝 Chrome Default 等六个危险路径；fake launch_fn 实参 `user_data_dir` 与 config 钉死路径逐字节相等；工具 schema 无 profile/headless 入口——T7/T8/T9① 全绿，MUT-7/MUT-8/MUT-9 必红。**人工附加项（不进 CI，待人装好二进制后手验）**：真机启动一次后 `lsof -p <pid> | grep user-data-dir` 或 `ps aux | grep user-data-dir` 核对实际进程路径；
+- [x] **门禁 6（升级链职责切分 + 异常接管）**：crawl/browser 的 `reason` 必填钉死在 schema；crawl 失败文案含升级 browser 提示；egress/私网守卫在两工具同 Spec 4 口径生效（含 navigate/extract 对落地 URL 的重定向复跑，🟡-4）；crawl4ai/playwright 异常族全包装为 ValueError，REPL 零 traceback——T2/T3/T5/T12/T18 全绿，MUT-5/MUT-6/MUT-17/MUT-18 必红；
+- [x] **门禁 7（scope 分组不变 + 位次台账）**：`pipeline`/`idea` 两表逐字不变；asset/creative 加两工具；`adr` 均指 ADR-0021 真实文件；工具表总数 11 ≤ 12（Spec 6 acquire_propose 已于 M7 先行落地，故 9 → 11）——T15/T16 全绿；
+- [x] **门禁 8（红线零触碰）**：`git diff` 中 `acquire.py`、四个停机点、`resolver.py`、四份 scope 提示词、`_default_approve` 卡片渲染逻辑零改动；无数据库、无 web server、无 guardian LLM、无会话级授权缓存；
+- [x] **门禁 9（既有测试零回归 + 文档门禁）**：`tests/test_agent_tools.py`、`test_agent_pr6.py`、`test_agent_director.py`、`test_agent_cli.py`、`test_jobs.py`、`test_agent_web.py` 全绿；`uv run pytest tests/test_docs_invariants.py` 全绿。
 
 ---
 
@@ -742,6 +748,7 @@ def test_capability_probe_itself_is_side_effect_free():
 | **RF-12** | **crawl 被当 web_fetch 平替滥用（跳级常态化）** | 模型发现 crawl 成功率高就跳过 web_fetch，成本与风控暴露面上升，升级链名存实亡。**审计面如实声明（🟡-5）**：reason 只在内存会话史可审（退出即灭），crawl 免弹卡无记账——crawl 层无持久追责面 | `reason` 必填（事前声明 + 内存可审）+ description 链位声明（§2.4）；browser 层持久面 = 卡记账（含所批 URL，§4.5②）+ 启动事件；**已知上限**：crawl 层无持久审计、不做跨调用状态机强制（机制发明）；若事后发现常态跳级，收紧手段是 description 强化或 crawl 改弹卡，单独立 ADR |
 | **RF-13** | **无显示环境下 browser 不可启动（🔵-5）** | `headed=true` 钉死可见窗口先例，但 SSH/云主机（本仓有 `pipeline/cloud.py` 云端路径）无显示服务器，headed 启动必败 | **已知上限登记**：`headed` 本就是 config 项（§3.1），无显示环境配 `false` 即可；ava 的制片主战场是本地 macOS（direction §0.1 桌面端终态），云端无头浏览非本期场景，不发明 Xvfb 包装 |
 | **RF-14** | **cookie at-rest 依赖平台行为（🔵-6）** | profile 内 cookie 的静态加密依赖 Chromium Safe Storage/Keychain 集成，是平台继承行为而非 ava 的保证；profile 目录权限不收紧则同机其他用户可读登录态 | profile 目录首建 `chmod 0700`（§2.2）；**声明**：ava 不另立 at-rest 加密承诺；主机被入侵场景不在威胁模型内（彼时登录态在内存中同样可用） |
+| **RF-15** | **crawl4ai 默认写 `~/.crawl4ai` 与 pi 共用及内置盘污染（S16 🔵-5，人裁决方案 B）** | `import crawl4ai` 会建 `.crawl4ai/` 与 5 个空内容目录，实例化 `AsyncWebCrawler` 会建 `robots/robots_cache.db`（stdlib sqlite3 WAL）；其基目录在模块首次 import 时定死（`async_database.py:17-20` 读取 `CRAWL4_AI_BASE_DIRECTORY`），构造传参盖不住，且 `~/.crawl4ai` 同时被 pi 侧 `agent_crawl` 使用 | 在 `_default_crawl_fn` 函数级 `import crawl4ai` 之前：先验 `data/` 可达，再直接赋值 `os.environ["CRAWL4_AI_BASE_DIRECTORY"] = str(paths.DATA / "crawl4ai")`（禁 `setdefault`，防外部为 pi 设的值令两边重回共用；若导入前已在 `sys.modules` 且绑定目录不符则抛 `ValueError` 诚实失败）。`data/crawl4ai/` 下仅含上述空内容目录与 `robots_cache.db`，ava 业务逻辑不读取、可随时删除重建 |
 
 ---
 

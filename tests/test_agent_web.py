@@ -856,12 +856,12 @@ def test_tool_schemas_protocol_keys_whitelist() -> None:
 
 
 def test_every_tool_has_existing_adr() -> None:
-    """T12 (PR2): 工具表变更必须登记现存 ADR 编号（数字段 glob 恰中 1），总数 9 <= 12。"""
+    """T12 (PR2): 工具表变更必须登记现存 ADR 编号（数字段 glob 恰中 1），总数 11 <= 12。"""
     import re
     from pipeline import paths
     from pipeline.agent.tools import TOOL_SCHEMAS
 
-    assert len(TOOL_SCHEMAS) == 9
+    assert len(TOOL_SCHEMAS) == 11
     assert len(TOOL_SCHEMAS) <= 12
 
     adr_dir = paths.ROOT / "docs" / "dev" / "adr"

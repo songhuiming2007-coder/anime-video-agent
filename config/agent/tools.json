@@ -6,7 +6,9 @@
     "read_status",
     "search_notes",
     "web_search",
-    "web_fetch"
+    "web_fetch",
+    "crawl",
+    "browser"
   ],
   "pipeline": [
     "read_artifact",
@@ -17,7 +19,9 @@
   "asset": [
     "web_search",
     "web_fetch",
-    "acquire_propose"
+    "acquire_propose",
+    "crawl",
+    "browser"
   ],
   "idea": [
     "read_artifact",
