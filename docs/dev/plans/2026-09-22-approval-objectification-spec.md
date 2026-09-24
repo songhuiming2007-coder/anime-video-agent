@@ -109,7 +109,8 @@
 
 - **superseded 触发条件（确定性规则）**：
   1. **同型顶替**：同 `(期, 类型)` 新 pending 创建时（按 §2.2 规则，此时指纹必已漂移），同型旧 PENDING → `superseded`；
-  2. **指纹漂移**：ack 或列举时惰性校验 `artifacts` 指纹，当前磁盘状态与钉住值不符 → `superseded`，本次 ack 拒绝执行（人审的是旧版产物，批准作废）。
+  2. **指纹漂移**：ack 或列举时惰性校验 `artifacts` 指纹，当前磁盘状态与钉住值不符 → `superseded`，本次 ack 拒绝执行（人审的是旧版产物，批准作废）；
+  3. **工序越过（2026-09-24 S8 review / 用户裁决）**：03.5 的 PENDING 对象在 `04-clips.json` 存在时转为 `superseded`，`resolved_by` 记 `"artifact"`，`Transition` 的 `reason` 记 `"stage_passed"`，同时发一次 `approval_resolved`（`decision: "superseded"`）。判据用的是 `status.py:313` 里 03.5 分支的退出条件 `if not has_clips`，属于确定性的物理事实。
 - **解封物对齐条件（B1 重写，双闸缺一不可）**：惰性检测发现解封物存在时，**必须同时满足**下列两条才允许 pending → `approved`（`resolved_by="artifact"`）：
   1. **时序单调性**：解封物 `mtime_ns ≥` 全部关联产物的 `mtime_ns`（解封物诞生于关联产物当前版本之后）；
   2. **内容一致性**：
@@ -148,7 +149,7 @@
 | 停机点 | 类型枚举 | 物理闸门（现状，行号已核实） | ack 语义 | ack 副作用 |
 |---|---|---|---|---|
 | 02.5 人审改稿 | `"02.5"` | `02-diff.patch` 存在性（`status.py:284-297`；runbook 02.5 封板操作） | **解封物联动型**：`/approve 02.5` 仅当 `02-diff.patch` 已存在且通过 §2.3 失效判据时落 `approved`（补登记）；否则拒绝并提示封板命令 | 纯记录，不产任何文件 |
-| 03.5 配音顺听 | `"03.5"` | 无（建议型停机点，机器语义不阻塞，`status.py:312-326` 注释写死） | **纯记录型**：`/approve 03.5` 落 `approved` 即「人已顺听」的自证 | 纯记录；纠错仍走 `/voice`（`cli.py:108` 起） |
+| 03.5 配音顺听 | `"03.5"` | 无（建议型停机点，机器语义不阻塞，`status.py:312-326` 注释写死） | **纯记录型**：`/approve 03.5` 落 `approved` 即「人已顺听」的自证；越过之后自动作废，不补批准，也不新增闸门（与 RF-7 一致；2026-09-24 S8 review / 用户裁决） | 纯记录；纠错仍走 `/voice`（`cli.py:108` 起） |
 | 05 审时间码 | `"05"` | `04-clips.approved.json`（`status.py:329-341`；`review.py:300-325 approve` 是显式动作 + 段级不变量第一道闸） | **解封物联动型**：`/approve 05` 仅当 `04-clips.approved.json` 已存在且通过 §2.3 失效判据（时序单调 + `has_clips_approved_diff` 为空）时落 `approved`；否则拒绝并提示 `python -m pipeline.review <期> --approve` | 纯记录；解封物只能由 review --approve 产出，对象层永不代产 |
 | 09 人工发布 | `"09"` | 无（`status.py:398-409`，`next_command=None`；runbook 09「坚决不做自动上传」） | **纯记录型**：`/approve 09` 落 `approved` 即本期闭环记账 | **零副作用**，不触发任何上传/打包/状态推进 |
 
@@ -524,6 +525,8 @@ def get(approval_id: str, ep_dir: Path) -> Approval | None:
 ---
 
 ## 8. 施工与 PR 划分
+
+> **M4 施工登记（2026-09-24 S8 review / 用户裁决 a）**：`approve`/`reject` 的完整语义和 `T21` 已在 M4 预先落地，M5 要按 Spec 3 v0.7 逐条对齐并补齐 PR3 的测试。
 
 ### PR1：Approval 数据模型、持久化与恢复（底座就绪）
 - **范围**：新建 `pipeline/approvals.py`——`ApprovalStatus`/`Approval`/`ArtifactFingerprint`/`ApprovalError` 与不变量校验、`_locked_approvals`（flock 全程包裹读-改-写 + atomic_write + 绝不 mkdir）、`_episode_repr`、`get`；淘汰阶梯；测试 T1/T2/T8/T9/T11。
