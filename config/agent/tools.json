@@ -4,7 +4,9 @@
     "write_episode_file",
     "list_episodes",
     "read_status",
-    "search_notes"
+    "search_notes",
+    "web_search",
+    "web_fetch"
   ],
   "pipeline": [
     "read_artifact",
@@ -12,7 +14,10 @@
     "list_episodes",
     "run_pipeline"
   ],
-  "asset": [],
+  "asset": [
+    "web_search",
+    "web_fetch"
+  ],
   "idea": [
     "read_artifact",
     "list_episodes",

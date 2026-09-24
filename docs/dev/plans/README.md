@@ -26,7 +26,7 @@
 | [上下文装配器与 AGENTS.md 瘦身（Spec 1）](2026-09-22-context-assembly-spec.md) | B2 | ADR-0022 | **M1 施工完成，S2 review 🟢**（PR0–PR2；AGENTS.md 126 行，十三判据完整；scope 热切换常驻层重组装；变异矩阵 4 项复核变红） |
 | [jobs 层与 events.jsonl（Spec 2）](2026-09-22-jobs-and-events-spec.md) | B2 / D23 | ADR-0020 | **M3 施工完成（PR3–PR4），S6 review 🟢**（执行器置换、CLI 贯通、零回归、MUT-1~6 复核全杀） |
 | [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **M4、M5 施工完成（PR1–PR4），S8 / S10 review 🟢**（ack 表面、确认路径复核、一次进锁、`review.py` 期望指纹；MUT-1~28 全杀；门禁 11 真实期 REPL 手验待人执行） |
-| [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **v0.3 红队三轮收口，可动工** |
+| [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **M6 施工完成（PR1–PR3），S12 review 🟢**（v0.4：工具表 6→8、scope 掩码、SSRF + fake-ip 段放行；MUT-1~23 全杀；`web_search` 默认 DDG 端点被机器人挑战页拦截，当前不可用，provider 留待后续 spec） |
 | [网络工具第二批 crawl + browser（Spec 5）](2026-09-23-crawl-browser-tools-spec.md) | B2 / D23 | ADR-0021 | **v0.5 红队三轮收口 + 终局微轮全验通过，🟢 可动工**（施工依赖 Spec 4 / Spec 2，均待动工；前置见 spec §6.1/§6.2） |
 | [acquire_propose 受控素材提案（Spec 6）](2026-09-23-acquire-propose-spec.md) | B2 / D23 | ADR-0021 | **v0.3 红队三轮收口，可动工** |
 | [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **v0.6 红队四轮收口（定向微轮 🟢），可动工**（PR1/PR2 可先行；PR4 待 Spec 1 PR1+PR2，PR5 真实数据路径待 Spec 3；PR6 须实跑 MUT-1~53 含 15b、52b） |

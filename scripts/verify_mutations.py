@@ -166,7 +166,8 @@ MUTATIONS: list[dict] = [
      "new": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", False)\n'
              '    if not side_effect:')},
     {"id": "M16-3", "guard": "side_effect 不泄进 LLM payload", "file": TOOLS,
-     "old": '        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k != "side_effect"}',
+     "old": ('        _PROTOCOL_KEYS = ("name", "description", "parameters")\n'
+             '        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k in _PROTOCOL_KEYS}'),
      "new": '        fn_schema = dict(TOOL_SCHEMAS[name])'},
     # ---- M17: 审批记账 ----
     {"id": "M17", "guard": "审批决定记账 approvals.jsonl", "file": CARD,

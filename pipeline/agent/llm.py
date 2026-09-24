@@ -1,11 +1,11 @@
 """极简 OpenAI 兼容 LLM 客户端与工具调用循环（Spec §2.5, §5 PR4）。
 
 零新依赖：只用 stdlib `urllib` POST `{base_url}/chat/completions`。代价是自己追
-协议变化——接受，因为工具表只有 6 个、字段用量是协议的最小公约数（Y11）。
+协议变化——接受，因为工具表 8 个、字段用量是协议的最小公约数（Y11）。
 
 两条硬边界：
 1. 密钥只从 `config/agent.json` 的 `api_key_env` 指名环境变量读，绝不落盘/打印/回传；
-2. 本模块是仓库唯一出网路径（§2.5 Y2-r19）：发请求前必须过 `assert_egress_boundary`。
+2. 本模块与 `pipeline.agent.web` 是仓库仅有的两条出网路径：发请求前都必须过 `assert_egress_boundary`。
 
 配置或密钥缺失时不抛异常，降级为本地纯指示模式，且降级显式可辨（返回消息带
 `degraded` 与原因）——静默换一条假回答是家规禁项。

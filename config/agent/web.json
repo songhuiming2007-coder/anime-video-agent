@@ -1,0 +1,15 @@
+{
+  "search": {
+    "endpoint": "https://html.duckduckgo.com/html/",
+    "query_param": "q",
+    "api_key_env": "",
+    "api_key_param": "",
+    "timeout_s": 20
+  },
+  "fetch": {
+    "timeout_s": 30,
+    "max_bytes": 1000000,
+    "max_chars": 30000
+  },
+  "trusted_fake_ip_ranges": []
+}
