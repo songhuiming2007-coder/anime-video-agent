@@ -293,6 +293,23 @@ def log_approval_decision(
 
     .jsonl 后缀天然在读域白名单外，不进读域。
     """
+    norm_y = decision.strip().lower() in ("y", "yes")
+    resolved_decision = "approved" if norm_y else "rejected"
+    try:
+        from pipeline.jobs import EventType, get_publisher
+
+        get_publisher().emit(
+            EventType.APPROVAL_RESOLVED,
+            {
+                "command": target,
+                "decision": resolved_decision,
+                "source": tool_name,
+            },
+            episode_dir=ep_dir,
+        )
+    except Exception:
+        pass
+
     if not ep_dir:
         return
     d = Path(ep_dir)
@@ -300,7 +317,7 @@ def log_approval_decision(
     try:
         agent_dir.mkdir(parents=True, exist_ok=True)
         log_file = agent_dir / "approvals.jsonl"
-        norm_decision = "y" if decision.strip().lower() in ("y", "yes") else "n"
+        norm_decision = "y" if norm_y else "n"
         record = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "tool": tool_name,
