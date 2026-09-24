@@ -234,6 +234,21 @@ class Transition:
 class _StoreState:
     items: list[Approval]
     dirty: bool = False
+    backup_failed: bool = False
+
+
+def _raise_if_store_unwritable(state: _StoreState) -> None:
+    """坏条目备份失败时 store 处于不可安全写回的状态（§8 M5：备份成功后才置 dirty）。
+
+    写路径（approve / reject / ensure_pending）必须立刻中止：否则会带着「内存里改了、
+    盘上没写」的假成功返回（S10 review 🟡-1：CLI 退出 0、记一行 y、发出事件，对象却
+    仍是 PENDING）。读路径（list_pending / 状态卡）保持失败静默。
+    """
+    if state.backup_failed:
+        raise ApprovalError(
+            "approvals_store.json 存在损坏或违反不变量的条目且备份失败（_agent/ 写权限或磁盘异常），"
+            "本次审批未落盘，请先修复存储后重试"
+        )
 
 
 def _get_episodes_root() -> Path | None:
@@ -345,12 +360,21 @@ def _log_decision(
     target: str,
     decision: str,
     latency_s: float | None,
+    *,
+    emit_event: bool = False,
 ) -> None:
-    """函数级延迟 import status_card.log_approval_decision 完成记账（§2.5/§4.1）。"""
+    """函数级延迟 import status_card.log_approval_decision 完成记账（§2.5/§4.1 R-3）。"""
     try:
         from pipeline.agent.status_card import log_approval_decision
 
-        log_approval_decision(ep_dir, source, target, decision, latency_s=latency_s)
+        log_approval_decision(
+            ep_dir,
+            source,
+            target,
+            decision,
+            latency_s=latency_s,
+            emit_event=emit_event,
+        )
     except Exception:
         pass
 
@@ -382,11 +406,12 @@ def _evict_for_new_pending_locked(store: list[Approval]) -> bool:
     return True
 
 
-def _load_store_items_with_recovery(store_path: Path) -> tuple[list[Approval], bool]:
-    """加载 approvals_store.json（M4-2 修复：遇损坏文件或非法条目时先备份至 corrupt-<ts>.json，
-    逐条挽救合法条目，并返回 had_corrupt=True 触发当次写回清理，防重复备份无限增长）。"""
+def _load_store_items_with_recovery(store_path: Path) -> tuple[list[Approval], bool, bool]:
+    """加载 approvals_store.json（M4-2 & M5 修复：遇损坏文件或非法条目时先备份至 corrupt-<ts>.json，
+    仅在备份成功后才返回 (loaded, True, False) 置 dirty=True 触发写回清理；
+    若备份失败则返回 (loaded, False, True) 严禁覆写原文件）。"""
     if not store_path.exists():
-        return ([], False)
+        return ([], False, False)
     loaded: list[Approval] = []
     had_corrupt = False
     try:
@@ -405,15 +430,23 @@ def _load_store_items_with_recovery(store_path: Path) -> tuple[list[Approval], b
     except Exception:
         had_corrupt = True
 
+    should_dirty = False
+    backup_failed = False
     if had_corrupt:
         ts_ms = int(time.time() * 1000)
         corrupt_backup = store_path.with_name(f"approvals_store.corrupt-{ts_ms}.json")
-        with contextlib.suppress(Exception):
+        try:
             shutil.copy2(store_path, corrupt_backup)
-        print(
-            f"[WARN] approvals_store.json 存在损坏或违反不变量的条目，已备份原文件至 {corrupt_backup.name}"
-        )
-    return (loaded, had_corrupt)
+            should_dirty = True
+            print(
+                f"[WARN] approvals_store.json 存在损坏或违反不变量的条目，已备份原文件至 {corrupt_backup.name}"
+            )
+        except Exception as exc:
+            backup_failed = True
+            print(
+                f"[WARN] approvals_store.json 存在损坏或违反不变量的条目，但备份失败（{exc}），跳过写回以保护原文件"
+            )
+    return (loaded, should_dirty, backup_failed)
 
 
 @contextlib.contextmanager
@@ -449,12 +482,12 @@ def _locked_approvals(
                 return
             raise
 
-        loaded, had_corrupt = _load_store_items_with_recovery(store_path)
-        state = _StoreState(items=loaded, dirty=had_corrupt)
+        loaded, should_dirty, backup_failed = _load_store_items_with_recovery(store_path)
+        state = _StoreState(items=loaded, dirty=should_dirty, backup_failed=backup_failed)
         try:
             yield state
         finally:
-            if state.dirty:
+            if state.dirty and not backup_failed:
                 try:
                     payload = (
                         json.dumps(
@@ -737,6 +770,7 @@ def ensure_pending(
         return None
 
     with _locked_approvals(ep_path, silent_write_error=True) as state:
+        _raise_if_store_unwritable(state)
         if status is None:
             try:
                 from pipeline.status import inspect_episode
@@ -810,6 +844,7 @@ def approve(
         raise ApprovalError(f"目标期目录不存在: {ep_dir}")
 
     with _locked_approvals(ep_path) as state:
+        _raise_if_store_unwritable(state)
         # 1. 一次进锁后先执行 _self_heal_locked
         transitions = _self_heal_locked(state, ep_path)
 
@@ -913,12 +948,18 @@ def approve(
             )
             return target_obj
 
-        # 4. 确认路径（v0.4 S3-R7 & v0.5 S3-R11）：APPROVED 且 resolved_by == "artifact" 且未确认
+        # 4. 确认路径（v0.4 S3-R7 & v0.5 S3-R11 & v0.7 R-2）：APPROVED 且 resolved_by == "artifact" 且未确认
         if (
             target_obj.status == ApprovalStatus.APPROVED
             and target_obj.resolved_by == "artifact"
             and target_obj.confirmed_by is None
         ):
+            curr_fp = _fingerprint(ep_path, _STOP_ARTIFACTS[stop])
+            if not _fingerprints_equal(target_obj.artifacts, curr_fp) or (
+                _STOP_GATE.get(stop) is not None and not _gate_valid(ep_path, stop)
+            ):
+                raise ApprovalError(_gate_error_message(ep_path, stop))
+
             now_iso = _utc_now_iso()
             target_obj.confirmed_by = source
             target_obj.confirmed_at = now_iso
@@ -973,6 +1014,7 @@ def reject(
         raise ApprovalError(f"目标期目录不存在: {ep_dir}")
 
     with _locked_approvals(ep_path) as state:
+        _raise_if_store_unwritable(state)
         # 1. 一次进锁后先执行 _self_heal_locked
         transitions = _self_heal_locked(state, ep_path)
 

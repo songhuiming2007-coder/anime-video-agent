@@ -22,10 +22,12 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import BinaryIO
 
 from . import paths
 from .align import SEG_TOL, verify_alignment   # 叶子模块：approve 纯 JSON 校验，不背 clips 的 ML 依赖
@@ -297,7 +299,16 @@ def build(episode: Path) -> Path:
     return dest
 
 
-def approve(episode: Path, confirm_patch: bool = False) -> Path:
+def _read_all(f: BinaryIO) -> bytes:
+    """从已打开的二进制文件描述符读取全部字节（Spec 3 §4.5 S3-R9a 测试缝）。"""
+    return f.read()
+
+
+def approve(
+    episode: Path,
+    confirm_patch: bool = False,
+    expect: tuple[int, int] | None = None,
+) -> Path:
     """人看过了，存成 approved 版。渲染只吃这个文件。
 
     **必须是显式动作。** 让 clips.py 自动写 approved 是最省事的做法，
@@ -313,7 +324,33 @@ def approve(episode: Path, confirm_patch: bool = False) -> Path:
     manifest_path = episode / "03-audio" / "manifest.json"
     if not manifest_path.exists():
         raise SystemExit(f"FAIL 缺 {manifest_path}，approve 前必须能校验段级时长不变量")
-    data = json.loads(src.read_text(encoding="utf-8"))
+
+    raw_bytes: bytes | None = None
+    st1: os.stat_result | None = None
+    if expect is None:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    else:
+        if len(expect) != 2 or expect[0] is None or expect[1] is None:
+            raise SystemExit(2)
+        exp_size, exp_mtime_ns = int(expect[0]), int(expect[1])
+        with open(src, "rb") as f:
+            st1 = os.fstat(f.fileno())
+            if (st1.st_size, st1.st_mtime_ns) != (exp_size, exp_mtime_ns):
+                raise SystemExit(
+                    f"FAIL 04-clips.json 已不是审阅时的版本"
+                    f"（期望 size={exp_size}, mtime_ns={exp_mtime_ns}；"
+                    f"实际 size={st1.st_size}, mtime_ns={st1.st_mtime_ns}），未写批准文件"
+                )
+            raw_bytes = _read_all(f)
+            st2 = os.fstat(f.fileno())
+            if (
+                (st2.st_size, st2.st_mtime_ns, st2.st_ctime_ns)
+                != (st1.st_size, st1.st_mtime_ns, st1.st_ctime_ns)
+                or len(raw_bytes) != st1.st_size
+            ):
+                raise SystemExit("FAIL 04-clips.json 在读取期间被改写，未写批准文件")
+        data = json.loads(raw_bytes.decode("utf-8"))
+
     audio = json.loads(manifest_path.read_text(encoding="utf-8"))["segments"]
     violations = verify_alignment(data["segments"], audio)
     if violations:
@@ -337,7 +374,19 @@ def approve(episode: Path, confirm_patch: bool = False) -> Path:
         if ans.strip().lower() not in ("y", "yes"):
             raise SystemExit("FAIL 已取消 approve：存在未人工核对的补丁段")
 
-    shutil.copy2(src, dest)
+    if expect is None:
+        shutil.copy2(src, dest)
+    else:
+        assert raw_bytes is not None and st1 is not None
+        tmp = dest.with_name(f".{dest.name}.tmp.{os.getpid()}")
+        try:
+            tmp.write_bytes(raw_bytes)
+            os.utime(tmp, ns=(st1.st_atime_ns, st1.st_mtime_ns))
+            os.replace(tmp, dest)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+            raise
     return dest
 
 
@@ -346,11 +395,20 @@ def main() -> int:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--approve", action="store_true", help="批准当前排片，渲染才能开始")
     ap.add_argument("--confirm-patch", action="store_true", help="显式确认并跳过补丁段人工二次确认提示")
+    ap.add_argument("--expect-size", type=int, default=None, help="期望的 04-clips.json 字节数（须与 --expect-mtime-ns 同时给）")
+    ap.add_argument("--expect-mtime-ns", type=int, default=None, help="期望的 04-clips.json mtime_ns（须与 --expect-size 同时给）")
     a = ap.parse_args()
+    if (a.expect_size is None) != (a.expect_mtime_ns is None):
+        ap.error("--expect-size 与 --expect-mtime-ns 必须同时提供或同时省略")
     paths.require_data()
 
     if a.approve:
-        print(f"已批准 → {approve(a.episode, confirm_patch=a.confirm_patch)}")
+        expect_pair = (
+            (a.expect_size, a.expect_mtime_ns)
+            if a.expect_size is not None and a.expect_mtime_ns is not None
+            else None
+        )
+        print(f"已批准 → {approve(a.episode, confirm_patch=a.confirm_patch, expect=expect_pair)}")
         return 0
 
     dest = build(a.episode)
