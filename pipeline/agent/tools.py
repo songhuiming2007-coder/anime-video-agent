@@ -335,6 +335,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "read_artifact": {
         "name": "read_artifact",
         "side_effect": False,
+        "adr": "ADR-0018",
         "description": (
             "读取当期目录内文件或 data/library/ 下的笔记（只读）。"
             "读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；"
@@ -354,6 +355,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "write_episode_file": {
         "name": "write_episode_file",
+        "adr": "ADR-0018",
         "description": (
             "写入当期稿件文件。仅限 01-topic.md 与 02-script.draft.md；"
             "写 01-topic.md 必须 confirmed=true 且需人在 REPL 显式确认。"
@@ -379,12 +381,14 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_episodes": {
         "name": "list_episodes",
         "side_effect": False,
+        "adr": "ADR-0018",
         "description": "列出可见期目录（排除 . 与 _ 前缀），返回期名列表与每期的阶段及阻塞标记（episodes_detail）。无参数。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "read_status": {
         "name": "read_status",
         "side_effect": False,
+        "adr": "ADR-0018",
         "description": "读取某期的阶段状态卡（当前工序、停机点、advisories、推荐命令）。",
         "parameters": {
             "type": "object",
@@ -396,6 +400,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "run_pipeline": {
         "name": "run_pipeline",
+        "adr": "ADR-0018",
         "description": (
             "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回规范化 argv。"
             "**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，"
@@ -414,6 +419,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "search_notes": {
         "name": "search_notes",
         "side_effect": False,
+        "adr": "ADR-0018",
         "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
         "parameters": {
             "type": "object",
@@ -422,6 +428,41 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "limit": {"type": "integer", "description": "最多返回几条（默认 5，上限 20）"},
             },
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    "web_search": {
+        "name": "web_search",
+        "side_effect": False,
+        "adr": "ADR-0021",
+        "description": (
+            "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。"
+            "静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索词"},
+                "limit": {"type": "integer", "description": "最多返回几条（默认 5，上限 10）"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    "web_fetch": {
+        "name": "web_fetch",
+        "side_effect": False,
+        "adr": "ADR-0021",
+        "description": (
+            "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。"
+            "限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "http/https URL"},
+            },
+            "required": ["url"],
             "additionalProperties": False,
         },
     },
@@ -450,7 +491,8 @@ def build_tool_schemas(scope: str, root: Path | None = None) -> list[dict[str, A
                 f"tools.json 声明了未注册的工具 '{name}'；工具清单不现场发明（Spec §2.5 B3-r6），"
                 f"已注册: {sorted(TOOL_SCHEMAS)}"
             )
-        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k != "side_effect"}
+        _PROTOCOL_KEYS = ("name", "description", "parameters")
+        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k in _PROTOCOL_KEYS}
         schemas.append({"type": "function", "function": fn_schema})
     return schemas
 
@@ -640,6 +682,28 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     return {"query": query, "hits": hits, "truncated": len(hits) >= limit}
 
 
+def _tool_web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.web import SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, search_web
+
+    query = str(args.get("query", "")).strip()
+    if not query:
+        raise ValueError("query 不能为空")
+    try:
+        limit = int(args.get("limit", SEARCH_DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        raise ValueError("limit 必须是整数") from None
+    return search_web(query, max(1, min(limit, SEARCH_MAX_LIMIT)), root=ctx.root)
+
+
+def _tool_web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.web import fetch_web
+
+    url = str(args.get("url", "")).strip()
+    if not url:
+        raise ValueError("url 不能为空")
+    return fetch_web(url, root=ctx.root)
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -647,6 +711,8 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_status": _tool_read_status,
     "run_pipeline": _tool_run_pipeline,
     "search_notes": _tool_search_notes,
+    "web_search": _tool_web_search,
+    "web_fetch": _tool_web_fetch,
 }
 
 

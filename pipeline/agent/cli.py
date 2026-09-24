@@ -779,6 +779,10 @@ def _default_approve(
             summary = str(args.get("episode", "")).strip()
         elif name == "search_notes":
             summary = str(args.get("query", "")).strip()
+        elif name == "web_search":
+            summary = str(args.get("query", "")).strip()
+        elif name == "web_fetch":
+            summary = str(args.get("url", "")).strip()
         elif name == "list_episodes":
             summary = ""
         else:

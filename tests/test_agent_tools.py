@@ -309,9 +309,9 @@ from pipeline.agent.tools import (
 )
 
 SPEC_TOOLS = {
-    "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes"],
+    "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes", "web_search", "web_fetch"],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
-    "asset": [],
+    "asset": ["web_search", "web_fetch"],
     "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
 }
 API_KEY = "sk-test-secret-do-not-print"
@@ -552,7 +552,7 @@ def test_llm_scope_tool_filtering_isolation(tmp_path: Path):
 
     assert names("creative") == SPEC_TOOLS["creative"]
     assert names("pipeline") == SPEC_TOOLS["pipeline"]
-    assert names("asset") == []
+    assert names("asset") == SPEC_TOOLS["asset"]
 
     # creative 有写稿与检索，pipeline 一个都没有
     assert "write_episode_file" in names("creative")
