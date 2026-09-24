@@ -1,4 +1,4 @@
-"""状态卡纯函数组装器（Spec §1.3, §2.2, §6 PR5）。
+"""状态卡组装器（Spec §1.3, §2.2, §6 PR5；Spec 3 §2.8 引导行）。
 
 输入：期目录与 EpisodeStatus。
 输出：注入 messages[0] 的紧凑状态卡字符串（目标 ≤ 400 字符）。
@@ -67,7 +67,7 @@ def build_status_card(
     status: EpisodeStatus | None = None,
     scope: str | None = None,
 ) -> str:
-    """构建注入 system prompt 的紧凑状态卡（纯函数，目标 ≤ 400 字符）。"""
+    """构建注入 system prompt 的紧凑状态卡（目标 ≤ 400 字符）。"""
     d = Path(ep_dir).resolve()
     if status is None:
         status = inspect_episode(d)
@@ -109,6 +109,30 @@ def build_status_card(
         f"产物: {checklist}\n"
         f"提示: {advisories_str}"
     )
+
+    # Spec 3 §2.8 / §4.3：确定性引导行（经 approvals.get_status_card_guidance 一次进锁获取）
+    try:
+        from pipeline import approvals
+
+        pending_labels, has_uncovered_rejected = approvals.get_status_card_guidance(d)
+        guidance_lines: list[str] = []
+        if pending_labels:
+            full_line = f"待审批: {'、'.join(pending_labels)}（/approvals 查看详情）"
+            fallback_line = f"待审批: {len(pending_labels)} 项（/approvals 查看详情）"
+            if len(card) + 1 + len(full_line) <= 400:
+                guidance_lines.append(full_line)
+            elif len(card) + 1 + len(fallback_line) <= 400:
+                guidance_lines.append(fallback_line)
+            else:
+                guidance_lines.append(f"待审批: {len(pending_labels)} 项")
+
+        if has_uncovered_rejected:
+            guidance_lines.append("驳回反馈: _agent/approval_feedback.md（read_artifact 可读）")
+
+        if guidance_lines:
+            card = card + "\n" + "\n".join(guidance_lines)
+    except Exception:
+        pass
 
     # 返回前对整串做一次 RESTRICTED_EGRESS_PATTERNS 清洗（casefold 判定，命中替换为 [已脱敏]）
     for pattern in RESTRICTED_EGRESS_PATTERNS:

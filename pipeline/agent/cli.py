@@ -24,10 +24,8 @@ from pipeline.agent.status_card import (
     render_approval_card,
 )
 from pipeline.agent.tools import run_pipeline
+from pipeline.approvals import HUMAN_STOPS, human_stop_of
 from pipeline.status import EpisodeStatus, format_status, inspect_episode
-
-# 人类停机点集合（Spec §2.6）
-HUMAN_STOPS: set[str] = {"02.5", "03.5", "05", "09"}
 
 # 选期与子命令共用的关键词唯一真源（Spec §2.4）
 IDEA_KEYWORD = "idea"
@@ -87,22 +85,28 @@ def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float
     return max(0.0, minutes)
 
 
-def human_stop_of(current_step: str) -> str | None:
-    """current_step 字符串 → 停机点标签（HUMAN_STOPS 的唯一消费者）。
-
-    「02.5 人审改稿」「03.5 配音顺听 / 04 排片」「05 审时间码」「09 人工发布」
-    都是标签前缀形态；非停机点返回 None。
-    """
-    for stop in sorted(HUMAN_STOPS, key=len, reverse=True):
-        if current_step.startswith(stop):
-            return stop
-    return None
-
-
 def park_stop_of(current_step: str) -> str | None:
     """REPL 停留记账用的停机点：03.5 的墙钟由 /voice 自己记，此处排除以免双记。"""
     stop = human_stop_of(current_step)
     return None if stop == "03.5" else stop
+
+
+def _print_pending_approvals(ep_dir: Path) -> None:
+    """打印当期挂起的停机点审批对象（REPL 与裸形态 /approvals 共用）。"""
+    from pipeline import approvals
+
+    pendings = approvals.list_pending(ep_dir)
+    if not pendings:
+        print("[approvals] 当前无挂起的停机点审批对象。")
+        return
+    for item in pendings:
+        arts = ", ".join(a.path for a in item.artifacts) or "无"
+        opts = "/".join(item.options)
+        note_suffix = f" | {item.note}" if item.note else ""
+        print(
+            f"[pending] {item.approval_id} | 停机点: {item.type} | "
+            f"创建: {item.created_at} | 产物: {arts} | 可选项: {opts}{note_suffix}"
+        )
 
 
 def run_voice_session(ep_dir: Path) -> int:
@@ -955,6 +959,12 @@ def _run_repl_body(
     while True:
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
+        try:
+            from pipeline import approvals
+
+            approvals.ensure_pending(ep_dir, status)
+        except Exception:
+            pass
         if on_step and scout_entered_at is None:
             on_step(status.current_step)
 
@@ -994,6 +1004,7 @@ def _run_repl_body(
             if line == "/help":
                 print("\n支持的命令路由:")
                 print("  /status      查看当期阶段状态与推荐命令")
+                print("  /approvals   查看当期挂起的停机点审批对象")
                 print("  /board       查看全局期看板")
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
@@ -1009,6 +1020,13 @@ def _run_repl_body(
 
             if line == "/status":
                 print(format_status(inspect_episode(ep_dir)))
+                continue
+
+            if line == "/approvals":
+                try:
+                    _print_pending_approvals(ep_dir)
+                except Exception as exc:
+                    print(f"[WARN] 读取审批队列失败: {exc}")
                 continue
 
             if line == "/board":
@@ -1235,6 +1253,9 @@ def main(argv: list[str] | None = None) -> int:
         sub_cmd = " ".join(args[1:])
         if sub_cmd == "/status":
             print(format_status(inspect_episode(ep_dir)))
+            return 0
+        if sub_cmd == "/approvals":
+            _print_pending_approvals(ep_dir)
             return 0
         if sub_cmd.startswith("/run"):
             status = inspect_episode(ep_dir)
