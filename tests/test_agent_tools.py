@@ -311,7 +311,7 @@ from pipeline.agent.tools import (
 SPEC_TOOLS = {
     "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes", "web_search", "web_fetch"],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
-    "asset": ["web_search", "web_fetch"],
+    "asset": ["web_search", "web_fetch", "acquire_propose"],
     "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
 }
 API_KEY = "sk-test-secret-do-not-print"

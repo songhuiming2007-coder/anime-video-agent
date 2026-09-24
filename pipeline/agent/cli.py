@@ -722,6 +722,22 @@ def assemble_system_prompt(
     return f"{resident.content}\n\n---\n\n{card}"
 
 
+def _candidates_brief(raw: Any) -> str:
+    """提取 candidates 数组中的 title 摘要（以「、」拼接，截断 120 字符，不含 URL）。"""
+    if not isinstance(raw, list):
+        return ""
+    titles: list[str] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        raw_t = str(c.get("title", "")).strip()
+        first = raw_t.splitlines()[0] if raw_t else ""
+        clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", first).strip()
+        if clean:
+            titles.append(clean)
+    return "、".join(titles)[:120]
+
+
 def _default_approve(
     name: str,
     args: dict[str, Any],
@@ -808,7 +824,16 @@ def _default_approve(
         episode_dir=ep_dir,
     )
 
-    target_str = " ".join(argv) if argv else str(args.get("filename", "") or args.get("command", ""))
+    target_str = (
+        " ".join(argv)
+        if argv
+        else str(
+            args.get("filename", "")
+            or args.get("command", "")
+            or args.get("url", "")
+            or _candidates_brief(args.get("candidates"))
+        )
+    )
 
     print(f"\n{card}", end="")
     t_card = time.time()

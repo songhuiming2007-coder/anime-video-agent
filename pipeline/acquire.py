@@ -32,6 +32,18 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import paths
+from .candidates import (
+    TYPES,
+    _line_of,
+    candidates_path,
+    incoming,
+    ledger_load,
+    ledger_path,
+    ledger_save,
+    ledger_seen_urls,
+    load_candidates,
+    slugify,
+)
 from .ingest import register as ingest_register
 from .ingest import intact
 
@@ -55,32 +67,11 @@ DUR_TOLERANCE = 0.05
 #: 「必须有音轨」当硬判据会把本池 17/18 全拦掉，是典型的「拦了不该拦的」（S3）。
 AUDIO_REQUIRED = ("interview",)
 
-TYPES = ("live", "mv", "scan", "interview")
 VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".flv", ".ts", ".avi")
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
 
 #: 直链判定用的后缀：命中就 curl（不经 yt-dlp），否则交给 yt-dlp 解析页面。
 DIRECT_EXT = VIDEO_EXT + IMAGE_EXT + (".pdf", ".zip", ".m4v")
-
-
-def incoming() -> Path:
-    """人机交接目录 `data/library/incoming/`。
-
-    走 `require_data()` 再建目录：T7 没挂时 `mkdir` 会在 /Volumes 下建出实体目录，
-    几十 G 静默写进系统盘（数据与存储标准）。
-    """
-    root = paths.require_data()
-    d = root / "library" / "incoming"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def candidates_path() -> Path:
-    return incoming() / "candidates.json"
-
-
-def ledger_path() -> Path:
-    return incoming() / "fetched.json"
 
 
 # ---------- 判据裁决（纯函数） ----------
@@ -209,52 +200,7 @@ def kind_of(name: str) -> str:
     return "unknown"
 
 
-# ---------- candidates.json（纯函数） ----------
-
-
-def _line_of(raw: str, needle: str | None) -> int | None:
-    """在原文里定位某个字符串所在行（1 起）。找不到返回 None。
-
-    报错点行号是为了**能直接跳过去改**：这份文件是 agent 写的，说「第 3 条错了」
-    等于让人自己数一遍。
-    """
-    if not needle:
-        return None
-    for i, ln in enumerate(raw.splitlines(), 1):
-        if needle in ln:
-            return i
-    return None
-
-
-def load_candidates(raw: str) -> list[dict]:
-    """校验 candidates.json，坏条目**一次报全**并点名位置（E10：批量里一个坏不打断整批）。"""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"FAIL candidates.json 不是合法 JSON：第 {e.lineno} 行 {e.msg}")
-    if not isinstance(data, list):
-        raise SystemExit("FAIL candidates.json 顶层必须是数组（plan §6.1 的 schema）")
-
-    bad: list[str] = []
-    for i, c in enumerate(data, 1):
-        line = _line_of(raw, (c.get("url") or c.get("title"))
-                        if isinstance(c, dict) else None)
-        where = f"第 {line} 行" if line else f"第 {i} 条"
-        if not isinstance(c, dict):
-            bad.append(f"  {where}：不是对象")
-            continue
-        missing = [k for k in ("title", "url", "type", "source", "why") if not c.get(k)]
-        if missing:
-            bad.append(f"  {where}（{c.get('title') or '无标题'}）：缺字段 {'/'.join(missing)}")
-        if c.get("type") and c["type"] not in TYPES:
-            bad.append(f"  {where}（{c.get('title')}）：type={c['type']!r} 不在 {TYPES}")
-        if c.get("url") and urlparse(str(c["url"])).scheme not in ("http", "https"):
-            bad.append(f"  {where}（{c.get('title')}）：url 不可解析 {c['url']!r}")
-        if c.get("expected_dur") is not None and not isinstance(c["expected_dur"], (int, float)):
-            bad.append(f"  {where}（{c.get('title')}）：expected_dur 须为秒数或 null")
-    if bad:
-        raise SystemExit("FAIL candidates.json 有问题的条目（修好再跑 fetch）：\n" + "\n".join(bad))
-    return data
+# ---------- candidates.json（纯函数已下移 pipeline.candidates 并 re-export） ----------
 
 
 def dup_verdicts(*, url: str, slug: str, seen_urls: set[str],
@@ -285,12 +231,6 @@ def pick_fetcher(url: str) -> str:
     """
     ext = Path(urlparse(url).path).suffix.lower()
     return "curl" if ext in DIRECT_EXT else "yt-dlp"
-
-
-def slugify(title: str) -> str:
-    """标题 → 安全的文件名前缀（英文/数字保留，其余折成 `_`）。"""
-    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", title).strip("_")
-    return (s or "asset")[:80]
 
 
 def fetch_argv(url: str, dest_dir: Path, slug: str, *, yt_dlp: list[str] | None = None) -> list[str]:
@@ -362,29 +302,7 @@ def probe_image(path: Path) -> dict:
                 "width": 0, "height": 0}
 
 
-# ---------- 执行层：台账 ----------
-
-
-def ledger_load(path: Path | None = None) -> list[dict]:
-    """抓取台账。**为什么不用 sources.json 记 URL**：那张表是 ingest 的，按 SP 键存
-    视音频规格、没有 url 字段，而且 register 是整条覆盖写入——往里塞自定义字段
-    下次重登记就没了。所以 URL 历史放交接目录里，与 candidates.json 同源。"""
-    p = path or ledger_path()
-    if not p.exists():
-        return []
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        raise SystemExit(f"FAIL 台账不是合法 JSON：{p}（修好或移走再跑）")
-
-
-def ledger_save(entries: list[dict], path: Path | None = None) -> None:
-    p = path or ledger_path()
-    paths.atomic_write(p, json.dumps(entries, ensure_ascii=False, indent=2))
-
-
-def ledger_seen_urls(entries: list[dict]) -> set[str]:
-    return {e["url"] for e in entries if e.get("url")}
+# ---------- 执行层：台账（已下移 pipeline.candidates 并 re-export） ----------
 
 
 # ---------- 三个子命令 ----------

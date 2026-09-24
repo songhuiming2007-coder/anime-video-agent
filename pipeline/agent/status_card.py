@@ -161,6 +161,14 @@ def _matches_flag_prefix(tokens: list[str], full_flag: str) -> bool:
     return False
 
 
+def _sanitize_card_field(val: Any) -> str:
+    """单行化并剥离 ANSI / 控制字符（防模型可控字段伪造审批卡面行）。"""
+    raw = str(val or "").strip()
+    first = raw.splitlines()[0] if raw else ""
+    no_ansi = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", first)
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", no_ansi).strip()
+
+
 def render_approval_card(
     name: str,
     args: dict[str, Any],
@@ -219,6 +227,28 @@ def render_approval_card(
             f"│ 危险标记: {danger_str}",
             "└─ 执行? [y/N]: ",
         ]
+        return "\n".join(lines)
+
+    if name == "acquire_propose":
+        raw_cands = args.get("candidates")
+        items = [c for c in raw_cands if isinstance(c, dict)] if isinstance(raw_cands, list) else []
+        lines = [
+            "┌─ 提案审批 ──────────────────────────────────────────",
+            f"│ 工具: {name}",
+            "│ 目标: data/library/incoming/candidates.json（追加候选，不触发抓取）",
+            f"│ 候选 ({len(items)} 条):",
+        ]
+        for idx, c in enumerate(items[:10], 1):
+            t = _sanitize_card_field(c.get("title", "")) or "无标题"
+            k = _sanitize_card_field(c.get("type", "")) or "?"
+            u = _sanitize_card_field(c.get("url", ""))
+            lines.append(f"│   {idx}. {t}（{k}）{u}")
+        if len(items) > 10:
+            lines.append(f"│   …共 {len(items)} 条")
+        lines.extend([
+            "│ 危险标记: 无",
+            "└─ 执行? [y/N]: ",
+        ])
         return "\n".join(lines)
 
     # run_pipeline 或通用执行类工具
