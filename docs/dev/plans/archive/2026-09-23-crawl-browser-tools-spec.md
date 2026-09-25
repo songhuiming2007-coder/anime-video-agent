@@ -106,7 +106,7 @@
      **不做结果缓存**——缓存是测试敌对状态（装了 extras 的环境无法模拟「未安装」），每轮探测的开销可忽略。
   3. **能力掩码（本 spec 对注册链的唯一语义增量）**：`TOOL_SCHEMAS` 条目新增宿主元数据键 `"requires_extra": "<import 名>"`（crawl → `"crawl4ai"`，browser → `"playwright"`）。**注册表常驻不变**（mask-don't-remove，Spec 4 §2.2 精神），变化在翻译层：
      - `build_tool_schemas` 在 scope 过滤之后追加能力过滤：`requires_extra` 存在且 `_extra_available(...) is False` → **跳过该条目**（schema 层隐藏，ADR-0021 §5 原文语义）；
-     - `execute_tool`（`tools.py:653-670`）在 scope 闸（660-665 行）之后追加能力闸：extras 缺失 → 返回显式错误数据 `{"ok": False, "error": "工具 'crawl' 需要可选依赖（uv sync --extra crawl），当前环境未安装"}`——**显式可辨，不是静默跳过，也不是裸 ImportError**（ImportError 不在 `tools.py:668` 的四异常捕获面内，不设此闸会异常穿透）；
+     - `execute_tool`（`tools.py:653-670`）在 scope 闸（660-665 行）之后追加能力闸：extras 缺失 → 返回显式错误数据 `{"ok": False, "error": "工具 'crawl' 需要可选依赖（uv sync --extra crawl；注意 uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出），当前环境未安装"}`——**显式可辨，不是静默跳过，也不是裸 ImportError**（ImportError 不在 `tools.py:668` 的四异常捕获面内，不设此闸会异常穿透）；
      - 未注册名 KeyError 行为**不变**（配置与实现分叉仍当场报错）；能力掩码只作用于「已注册但缺依赖」一种情形。
      - **ADR 字面张力的解释裁决（🔵-1，登记）**：ADR-0021 §5 原文「未安装时工具在 schema 层隐藏（**不注册进工具表**）」与本设计的「注册表常驻、翻译层跳过」存在字面张力。裁决：ADR 语境中的「工具表」指 **LLM 可见的 schema 清单**（`build_tool_schemas` 输出），不是 `TOOL_SCHEMAS` 注册表本体——注册表常驻是 Spec 4 §2.2 mask-don't-remove 的既有口径，两者在「模型看不见」这一实质上一致。
   4. **与既有 drift 测试的相容**：`tests/test_agent_tools.py:311-316 SPEC_TOOLS` 与 `:405`、`:546-578` 的逐字断言在加入 crawl/browser 后会随环境有无 extras 而漂移——本 spec 要求这些断言的期望清单统一改为经 `_extra_available` 过滤计算（或 monkeypatch 探测缝钉死可用性），杜绝「同一代码在两种环境一绿一红」（§7.1 T15）。
@@ -698,13 +698,13 @@ def test_capability_probe_itself_is_side_effect_free():
 
 ### PR1：extras 声明、能力掩码层与 crawl 工具（schema 隐藏机制落地）
 
-- **前置**：Spec 4 **完整**落地（含其 PR2 的协议键白名单化，§6.1）；开工前 `uv run pytest` 基线全绿；真跑 crawl 的端到端验证前需人工 `uv sync --extra crawl && uv run crawl4ai-setup`（浏览器二进制，🟡-6/§2.1①——单测全 fake 不依赖此前置）。
+- **前置**：Spec 4 **完整**落地（含其 PR2 的协议键白名单化，§6.1）；开工前 `uv run pytest` 基线全绿；真跑 crawl 的端到端验证前需人工 `uv sync --extra apple --extra dev --extra crawl && uv run crawl4ai-setup`（浏览器二进制，🟡-6/§2.1①——单测全 fake 不依赖此前置。S25 修订：extras 必须列全，裸 `--extra crawl` 会把在用的 apple/dev 卸掉）。
 - **范围**：`pyproject.toml` 加 `crawl` extras（§2.1①）；`tools.py` 三处增量（`_extra_available`、build_tool_schemas 能力过滤、execute_tool 能力闸，§4.3）+ TOOL_SCHEMAS/`_TOOL_IMPLS` 加 crawl 条目；`config/agent/tools.json` 加 crawl（§4.4 的 crawl 部分）；`config/agent/web.json` 加 crawl 段；新建 `pipeline/agent/web_crawl.py`（§4.1）；`cli.py` 只读回显分支与 target_str 扩展（§4.5）；`llm.py:4` 计数修订；测试 T1/T2/T3/T4/T5/T6/T14a/T17（crawl 腿）+ T15（crawl 部分）。
-- **验证命令**：`uv run pytest tests/test_agent_crawl_browser.py tests/test_agent_tools.py tests/test_agent_pr6.py`（默认环境无 extras：验证隐藏腿）；`uv sync --extra crawl && uv run pytest tests/test_agent_crawl_browser.py -k "T5 or T6"`（有 extras 环境验正向腿，T6 口径见 §7.1 铁律）。
+- **验证命令**：`uv run pytest tests/test_agent_crawl_browser.py tests/test_agent_tools.py tests/test_agent_pr6.py`（默认环境无 extras：验证隐藏腿）；`uv sync --extra apple --extra dev --extra crawl && uv run pytest tests/test_agent_crawl_browser.py -k "T5 or T6"`（有 extras 环境验正向腿，T6 口径见 §7.1 铁律）。
 
 ### PR2：browser 工具与启动审批事件
 
-- **前置**：PR1 合入；**Spec 2 已落地**（§6.2 硬依赖）；本机已 `uv sync --extra browser && uv run playwright install chromium`（人工一次性步骤）。
+- **前置**：PR1 合入；**Spec 2 已落地**（§6.2 硬依赖）；本机已 `uv sync --extra apple --extra dev --extra crawl --extra browser && uv run playwright install chromium`（人工一次性步骤）。
 - **范围**：`pyproject.toml` 加 `browser` extras；`pipeline/jobs.py` 的 `EventType` 加一行 `BROWSER_SESSION_STARTED`（归属裁决见 §6.2）；新建 `pipeline/agent/web_browser.py`（§4.2）；TOOL_SCHEMAS/`_TOOL_IMPLS`/tools.json/web.json 加 browser；测试 T7~T13、T14b、T15（browser 部分）、T16、T17（browser 腿）、T18。
 - **验证命令**：`uv run pytest tests/test_agent_crawl_browser.py tests/test_jobs.py tests/test_agent_cli.py`
 
@@ -740,7 +740,7 @@ def test_capability_probe_itself_is_side_effect_free():
 | **RF-4** | **profile 目录损坏 / 多会话并发抢同一 profile** | 两个 ava REPL 同时启动 browser → 同一 user_data_dir 的 SingletonLock 冲突，启动失败；或 profile 损坏导致登录态丢失 | 启动失败 → 显式错误数据（诚实失败，不静默重试）；登录态丢失 → 人重新在 headed 窗口登录（§2.2 人因流程）；**已知上限**：不做 profile 健康检查与跨进程互斥锁（单用户单机工具，YAGNI；真撞上了报错文案足以自解释） |
 | **RF-5** | **browser 会话单例泄漏/状态污染** | 模块级 `_SESSION` 在崩溃后持有死 context，后续调用打到死对象上；atexit 未跑（SIGKILL）时浏览器孤儿进程残留 | 调用前探活（dead 则丢弃并视为新启动——新卡 + 新事件，语义自洽）；`_reset_session_for_testing()` 保证测试隔离；**已知上限**：SIGKILL 下孤儿浏览器进程由 OS 回收策略兜底（headed 窗口人可见可关），不发明进程看护 |
 | **RF-6** | **extras 体积失控推翻内化决策** | crawl4ai 链（含浏览器二进制）安装体积大、更新频繁断裂，维护税超收益 | ADR-0021 自带推翻条件：允许将第二、三级重新外置为 sidecar 进程，工具 schema 与 scope 授权层保留——本 spec 的能力掩码层（`_extra_available` + requires_extra）恰好就是外置化的切换点（探测对象从「包装了没」换成「sidecar 在不在」），回退成本低是有意设计 |
-| **RF-7** | **能力掩码被误读为「功能缺失 bug」** | 用户/施工者在无 extras 环境发现工具表没有 crawl，误判为注册丢失而「修复」掉掩码 | description/错误文案全部自带安装提示（`uv sync --extra crawl`）；T4 三层断言把「隐藏」钉为**规格**而非偶发；§0 一句话设计点明机制 |
+| **RF-7** | **能力掩码被误读为「功能缺失 bug」** | 用户/施工者在无 extras 环境发现工具表没有 crawl，误判为注册丢失而「修复」掉掩码 | description/错误文案全部自带安装提示（`uv sync --extra …`，附 extras 须列全的提醒）；T4 三层断言把「隐藏」钉为**规格**而非偶发；§0 一句话设计点明机制 |
 | **RF-8** | **~~测试环境装有 extras 导致 T6 口径失效~~（v0.3 关闭，🔵-R2）** | v0.2 前的探针写法依赖「CI 未装 extras」事实前提，本机全装时可能假绿/假红 | **已消解**：T6 双腿与 T17 均为环境无关设计（正确实现双环境绿、对应变异双环境红，§7.1 可用性铁律）；登记此行仅为留痕，无残余风险 |
 | **RF-9** | **SSRF 残余面：DNS rebinding 与重定向跳内网** | navigate/crawl 的 URL 守卫复用 Spec 4 `_guard_url`；**重定向跳内网**（首跳合法、30x 跳进 169.254.169.254，人卡上只见初始 URL）是 Spec 4 §2.6③ 已点名的标准绕法——浏览器内核自行跟跳、ava 侧初始校验覆盖不到（v0.1 漏登记，🟡-4） | 缓解（已纳入设计）：navigate 落地后对 `final_url` 复跑 `_guard_url`，extract_text 对当前页 URL 同款（近零成本，T12 重定向腿钉死）；其余已知上限（DNS rebinding TOCTOU、Unicode 同形）不在本 spec 发明防线（Spec 4 §2.6④/RF-11 已登记）；browser 的人审卡额外提供一层人眼 URL 审查 |
 | **RF-10** | **「每次启动」粒度被施工者改写** | 把事件改成按调用发射（观测噪音淹没审批轨迹）或按 REPL 会话发射（重启浏览器不落事件，观测黑洞） | §2.3 粒度定义 + T11 双腿断言（续用不重复、重启必再发）+ MUT-12；门禁 3 逐项打勾 |

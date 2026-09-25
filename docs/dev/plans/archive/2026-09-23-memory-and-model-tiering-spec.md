@@ -705,7 +705,7 @@ def _wire_messages(messages: list[dict], purpose: str | None) -> list[dict]:
    
    `target_str`（`cli.py:624`）取 `plan.summary`；这处改动与 Spec 6 的改动在同一行上，结果一致，谁先落地都行。
 2. REPL 命令：`/memory`（show）、`/memory check`、`/memory ack`（要求 `sys.stdin.isatty()`，展示 diff，经 `log_approval_decision` 记账，二轮 🟡-B）、`/memory digest`（子会话自建 tracker，§2.10）；`/help` 补四行。
-3. `_dispatch_agent_turn` 本体不改（`cli.py:690` 的调用形状不变）。
+3. `_dispatch_agent_turn` 内、工序层注入之后插入记忆注入（§4.6），其余调用形状不变。（S25 修订：原句「`_dispatch_agent_turn` 本体不改」与 §4.6 矛盾——工序层注入就在 `_dispatch_agent_turn` 里；实现按 §4.6，S20 已验收。）
 
 ### 4.5 `pipeline/agent/status_card.py` 变更
 

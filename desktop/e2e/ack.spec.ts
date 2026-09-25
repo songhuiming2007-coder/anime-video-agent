@@ -632,7 +632,7 @@ test("门禁 14 人时数据源缺口常驻可见：03.5/05 决策条「本次�
   const R = ackRepo();
   const e35 = epAt035(R.eps, "G14-035");
   const e05 = epAt05(R.repo, R.eps, "G14-05");
-  // 人时超预算的 advisory（status.py 人时检测）：片长 4 s、已记 5 分钟
+  // 人时观测 advisory（status.py 人时检测）：片长 4 s、已记 5 分钟
   writeFileSync(join(e05, "human_time.json"), JSON.stringify([{ stop: "02.5", minutes: 5.0 }]));
   // RF-20：审片页生成时间早于排片文件最后修改时间
   fpy(R.repo, "import os, sys; os.utime(sys.argv[1], (1_700_000_000, 1_700_000_000))", [join(e05, "04-review.html")]);
@@ -647,7 +647,7 @@ test("门禁 14 人时数据源缺口常驻可见：03.5/05 决策条「本次�
   await expect(c05.getByTestId("no-human-time")).toHaveText("本次审阅不计人时");
   await expect(c05.getByTestId("review-page-older")).toHaveText("审片页生成时间早于排片文件最后修改时间");
   await expect(L.page.getByTestId("human-time-incomplete")).toHaveText("（数据源不完整：桌面端审阅不计入）");
-  await expect(L.page.locator(".advisories li", { hasText: "人类耗时超预算" })).toHaveCount(1);
+  await expect(L.page.locator(".advisories li", { hasText: "人类耗时：本期已记" })).toHaveCount(1);
   await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-05.png") });
   void e35;
 });

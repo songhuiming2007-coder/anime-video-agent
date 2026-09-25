@@ -288,7 +288,7 @@ def test_status_advisory_and_board_read_the_recorded_hours(tmp_path: Path, monke
 
     assert record_human_time(ep, "03.5", 0.0, 1200.0) == 20.0  # 20 分钟
     advisories = inspect_episode(ep).advisories
-    assert any("人类耗时超预算" in a for a in advisories), advisories
+    assert any("人类耗时：本期已记" in a for a in advisories), advisories
 
 
 # ---------------------------------------------------------------------------

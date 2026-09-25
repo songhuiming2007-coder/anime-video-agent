@@ -87,12 +87,16 @@ def _assert_profile_isolation(profile_dir: str, root: Path) -> Path:
     return target
 
 
+def _active_config_path(root: Path | None = None) -> Path:
+    """实际生效的配置文件：web.local.json 存在时整份取代 web.json（Spec 4 §3.1 覆盖语义）。"""
+    cfg_dir = Path(root or paths.ROOT) / "config" / "agent"
+    local_cfg = cfg_dir / "web.local.json"
+    return local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+
+
 def load_browser_section(root: Path | None = None) -> BrowserSection | None:
     """读 web.local.json（优先）/ web.json 的 browser 段（同 §2.6 独立校验）。"""
-    base_root = Path(root or paths.ROOT)
-    cfg_dir = base_root / "config" / "agent"
-    local_cfg = cfg_dir / "web.local.json"
-    cfg_file = local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+    cfg_file = _active_config_path(root)
     if not cfg_file.exists():
         return None
     try:
@@ -118,7 +122,7 @@ def load_browser_section(root: Path | None = None) -> BrowserSection | None:
         return None
 
     # 配置指向危险位置是对抗性事件，必须抛 PermissionError 而非返回 None（§3.1 / T14b）
-    _assert_profile_isolation(profile_dir.strip(), base_root)
+    _assert_profile_isolation(profile_dir.strip(), Path(root or paths.ROOT))
 
     max_chars_raw = browser.get("max_chars", 30000)
     if not _is_int(max_chars_raw) or int(max_chars_raw) < 1000:
@@ -224,7 +228,7 @@ def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
     except ImportError as exc:
         raise ValueError(
             f"browser 依赖已定位但导入失败（部分或损坏安装: {exc}），"
-            "请重装: uv sync --extra browser"
+            "请重装: uv sync --extra browser（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
         ) from exc
 
     pw = None
@@ -398,7 +402,10 @@ def browser_action(
     base_root = Path(root or paths.ROOT)
     cfg = section if section is not None else load_browser_section(base_root)
     if cfg is None:
-        raise ValueError("缺少或损坏 config/agent/web.json 的 browser 段")
+        raise ValueError(
+            f"缺少或损坏 {_active_config_path(base_root)} 的 browser 段"
+            "（web.local.json 存在时整份取代 web.json）"
+        )
 
     resolved_profile_dir = _assert_profile_isolation(cfg.profile_dir, base_root)
     if not (base_root / "data").is_dir():

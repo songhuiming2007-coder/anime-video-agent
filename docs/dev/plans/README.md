@@ -22,15 +22,7 @@
 | [ava-agent 架构设计与闭环控制](2026-09-18-ava-agent-harness.md) | B2 / B3 / D10 / D23 | ADR-0006, ADR-0014, ADR-0015, ADR-0017 | **已立项，待开工** |
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
-| [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
-| [上下文装配器与 AGENTS.md 瘦身（Spec 1）](2026-09-22-context-assembly-spec.md) | B2 | ADR-0022 | **M1 施工完成，S2 review 🟢**（PR0–PR2；AGENTS.md 126 行，十三判据完整；scope 热切换常驻层重组装；变异矩阵 4 项复核变红） |
-| [jobs 层与 events.jsonl（Spec 2）](2026-09-22-jobs-and-events-spec.md) | B2 / D23 | ADR-0020 | **M3 施工完成（PR3–PR4），S6 review 🟢**（执行器置换、CLI 贯通、零回归、MUT-1~6 复核全杀） |
-| [approval 对象化（Spec 3）](2026-09-22-approval-objectification-spec.md) | B2 / D23 | ADR-0020 | **M4、M5 施工完成（PR1–PR4），S8 / S10 review 🟢**（ack 表面、确认路径复核、一次进锁、`review.py` 期望指纹；MUT-1~28 全杀；门禁 11 真实期 REPL 手验待人执行） |
-| [网络工具第一批 web_search + web_fetch（Spec 4）](2026-09-23-network-tools-spec.md) | B2 / D23 | ADR-0021 | **M6 施工完成（PR1–PR3），S12 review 🟢**（v0.4：工具表 6→8、scope 掩码、SSRF + fake-ip 段放行；MUT-1~23 全杀；`web_search` 默认 DDG 端点被机器人挑战页拦截，当前不可用，provider 留待后续 spec） |
-| [网络工具第二批 crawl + browser（Spec 5）](2026-09-23-crawl-browser-tools-spec.md) | B2 / D23 | ADR-0021 | **M8 施工完成（PR1–PR3），S16 review 🟢**（工具表 9→11、能力掩码、独立 profile 守卫、启动事件落盘；S16 修复轮：死会话自愈、browser 后 crawl 事件循环冲突、不自建 data/、crawl4ai 基目录重定向 `data/crawl4ai/`（RF-15）；MUT-1~30 全杀；浏览器二进制与门禁 5 lsof 手验待人执行） |
-| [acquire_propose 受控素材提案（Spec 6）](2026-09-23-acquire-propose-spec.md) | B2 / D23 | ADR-0021 | **M7 施工完成（PR1–PR2），S14 review 🟢**（工具表 8→9、asset scope 唯一可见；schema 纯函数与 incoming/ledger 路径单源下移 `pipeline/candidates.py`，acquire 零回归；MUT-1~13 全杀） |
-| [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **M9 + M10 施工完成（PR1–PR6），S20 review 🟢**（装配器注入与开放写权限同 PR 落地，注入 scope = creative/asset/idea；`/memory` show/check/ack/digest，ack 仅交互终端；工具表 12/12，`write_memory` 仅 creative；MUT-1~53 全量实跑，S20 独立复跑 32 条；S20 修复轮：R7 断言收紧到冲突 id；门禁 8 跨档冒烟 2026-09-24 人执行通过，本机 models 段启用） |
-| [Electron 桌面端架构冻结稿（Spec 8）](2026-09-23-electron-desktop-spec.md) | B2 / D23 | ADR-0020 | **M11（PR0–PR3）S22 🟢；M12（PR4–PR5）S24 🟢，一期施工完成**（决策条与 ack 链路 TA-1~TA-12（含 2b/2c/9b/9c）、host 看护、打包加固（asar 完整性、9 位 fuses、argv 白名单、构建溯源、关闭 AppKit 窗口恢复 N30）；门禁 2/5/6/15 真机手验通过、门禁 11 以真实 EventPublisher 回看；MUT 共 61 条，S24 独立复跑其中 45 条（含 MUT-58/59），全部红在目标断言上） |
+| [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列（**一期 8 份 spec 已全部完工验收，2026-09-25 S25 移入 [`archive/`](archive/)**）；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
 
 ---
 
