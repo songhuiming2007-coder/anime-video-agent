@@ -413,11 +413,14 @@ class Harness:
             self.purge_pycache()   # 施加后清：防同秒同尺寸的 stale .pyc
             n_failed, failed = self.run_suite()
         finally:
-            # 无论如何都恢复：恢复失败会毁掉未提交改动，宁可不严谨也不能丢工作
-            self.purge_pycache()
-            self.git("checkout", "--", mut["file"])
-        residue = self.dirty_files()
-        assert not residue, f"变异 {mut['id']} 恢复后工作树仍不干净: {residue}"
+            # 恢复 = 写回开跑前读到的原文，而不是 git checkout：后者把目标文件
+            # 还原到 HEAD，会连未提交改动一起丢掉。这类事故已发生三次（2026-09-20
+            # 两次、2026-09-25 N28 验收时未提交的 jobs.py 被整个抹掉）。原文已在
+            # 内存里，写回即逐字节精确复原，脏树上也安全。
+            path.write_text(original, encoding="utf-8")
+            self.purge_pycache()   # 恢复后再清：防变异态的 stale .pyc
+        assert path.read_text(encoding="utf-8") == original, \
+            f"变异 {mut['id']} 恢复失败：{mut['file']} 内容未逐字节复原"
         return {**mut, "error": None, "failed": n_failed, "tests": failed}
 
 
@@ -450,8 +453,9 @@ def main(argv: list[str] | None = None) -> int:
 
     h = Harness(Path(args.repo).resolve(), dirty_ok=args.dirty_ok)
 
-    # 硬闸：`git checkout -- <file>` 是恢复动作，它会连未提交改动一起丢掉。
-    # 2026-09-20 已栽两次（cli.py 计时读数、tools.py kill 修复），所以这里拒绝开跑。
+    # 硬闸：恢复动作已是写回原文、脏树不再丢工作，但脏树上跑出的红条数
+    # 不对应任何 commit（变异是施加在未提交改动之上的），结果不可复现，
+    # 所以默认仍拒绝开跑，显式 --dirty-ok 才放行。
     dirty = h.dirty_files()
     if dirty and not args.dirty_ok:
         print("ABORT: 工作树不干净，恢复动作会毁掉未提交改动。先 commit/stash，"
