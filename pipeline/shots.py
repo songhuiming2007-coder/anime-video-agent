@@ -486,7 +486,7 @@ def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
             f'<div class="card"><img loading="lazy" src="{rel}/{n:05d}.jpg" alt="#{n}">'
             f'<div class="meta"><b>#{n}</b> {_fmt_t(s["start"])} – {_fmt_t(s["end"])}'
             f'（{s["end"] - s["start"]:.1f}s）</div>'
-            f'<button onclick="cp(this, {json.dumps(anchor, ensure_ascii=False)})">'
+            f'<button onclick="cp(this, {html.escape(json.dumps(anchor, ensure_ascii=False))})">'
             f'复制锚点</button></div>')
     safe_title = html.escape(f"{anime} {key}")
     safe_summary = (f"{safe_title} · {len(shots)} 个镜头 · 阈值 {m['scene_threshold']:g} · "
