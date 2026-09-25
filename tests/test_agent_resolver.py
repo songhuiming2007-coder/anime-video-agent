@@ -123,18 +123,18 @@ def test_advisories_clips_approved_diff_expired(tmp_path: Path):
     assert not any("approved 已过期" in a for a in adv)
 
 
-def test_advisories_human_time_over_budget(tmp_path: Path):
-    """human_time.json 超出 k × 片长 时触发报警 (Spec §2.6, Y1-r19, v1.20)。"""
-    # 模拟片长 120 秒 (2 分钟)，预算 1.5 * 2 = 3 分钟
+def test_advisories_human_time_observation(tmp_path: Path):
+    """human_time.json 记入耗时后呈现人时观测行（2026-09-23 起仅观测，不设门禁）。"""
+    # 模拟片长 120 秒（2 分钟），参考线 1.5 * 2 = 3 分钟
     (tmp_path / "04-clips.json").write_text(json.dumps({"total_duration": 120.0}), encoding="utf-8")
 
-    # 人类耗时 5 分钟 (> 3 分钟)
+    # 人类耗时 5 分钟（> 3 分钟参考线）
     (tmp_path / "human_time.json").write_text(json.dumps([
         {"stop": "03.5", "minutes": 5.0}
     ]), encoding="utf-8")
 
     adv = _detect_advisories(tmp_path)
-    assert any("人类耗时超预算" in a for a in adv)
+    assert any("人类耗时：本期已记" in a for a in adv)
 
     # 坏 human_time.json 免疫
     (tmp_path / "human_time.json").write_text("{bad json", encoding="utf-8")

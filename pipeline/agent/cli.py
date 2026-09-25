@@ -361,7 +361,6 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
         print("=" * 70)
         return
 
-    over_budget_streaks = 0
     for i, ep in enumerate(episodes, 1):
         status = inspect_episode(ep)
         line = f" [{i:2d}] {ep.name:<24} | {status.current_step}"
@@ -385,14 +384,9 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
         # 打印告警
         for adv in status.advisories:
             print(f"      ⚠️  {adv}")
-            if "超预算" in adv:
-                over_budget_streaks += 1
 
     if hidden_count > 0:
         print(f"\n  (已隐藏 {hidden_count} 个下划线验证/临时目录)")
-
-    if over_budget_streaks >= 3:
-        print("\n  🛑 [警告] 连续多期超出人类时间预算！请停产复盘并优化工作流。")
 
     print("=" * 70)
 
@@ -1010,11 +1004,13 @@ def _dispatch_agent_turn(
     messages.clear()
     messages.extend(outcome["messages"])
 
-    content = outcome["final"].get("content") or ""
-    if content:
-        print(f"\n{content}")
     if outcome["stopped"] == "max_iterations":
+        # 上限时 final 是最后一条工具返回原文（run_tool_loop 交回 convo[-1]），不是回答，不回显
         print(f"[WARN] 工具调用已达上限 {outcome['iterations']} 轮，停止并交人接管。")
+    else:
+        content = outcome["final"].get("content") or ""
+        if content:
+            print(f"\n{content}")
 
     return outcome
 
@@ -1141,8 +1137,7 @@ def run_repl(ep_dir: Path) -> int:
     """REPL 入口：包一层停机点墙钟记账（Spec §2.6），机身在 _run_repl_body。
 
     §2.6 的读数只在**人类停机点**计：进入某停机点 scope 到离开为止的墙钟。
-    没有这一层，human_time.json 永远是空的，status 的第四条 advisory 与看板的
-    「连续三期超预算」横幅就都是死判据（终审 P0-2）。
+    没有这一层，human_time.json 永远是空的，status 的人时观测行就成了死数据（终审 P0-2）。
     """
     span: dict[str, object] = {"stop": None, "at": time.time()}
 

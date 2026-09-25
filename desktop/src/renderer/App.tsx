@@ -17,7 +17,7 @@ const rpc = new RpcClient(window);
 const FATAL = new URLSearchParams(window.location.search).get("fatal");
 
 /**
- * 人时类 advisory（pipeline/status.py「人时超预算检测」的两种原文开头）旁标数据源不完整（门禁 14，红队 M8）：
+ * 人时类 advisory（pipeline/status.py 人时观测行的两种原文开头）旁标数据源不完整（门禁 14，红队 M8）：
  * 桌面端审阅不写 human_time.json，判据 4——不把「不知道」当成合格。
  */
 const HUMAN_TIME_ADVISORY = /^(人类耗时|human_time\.json)/;

@@ -1,7 +1,7 @@
 # ava 终端交互与作业极简速查 (CHEATSHEET)
 
 本文档是操作员（Operator）使用 `ava` 宿主进行全流程视频制作的日常速查手册。
-最后按实际行为校对：2026-09-20（PR7 后）。
+最后按实际行为校对：2026-09-25（S25 全局校对）。
 
 ---
 
@@ -69,6 +69,8 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | 命令 | 适用阶段 | 功能说明 | 典型场景 |
 |---|---|---|---|
 | `/status` | 全阶段 | 打印 64 宽结构化诊断卡 | 不知道下一步干啥时敲，看【下一步动作】与【推荐命令】 |
+| `/approvals` | 全阶段 | 查看当期挂起的停机点审批对象 | 停机点 ack 前看对象清单与 id |
+| `/approve` `/reject` | 全阶段 | 批准/驳回停机点：`/approve <stop> [--id <id>]`；`/reject <stop> [--id <id>] <哪段> <问题>` | 02.5/03.5/05/09 的显式 ack，拒因回喂 agent |
 | `/board` | 全阶段 | 唤起全局期看板（含各期人时） | 制作中途想查看其他期进度 |
 | `/run <cmd>` | pipeline | 安全执行白名单工序命令 | **弹审批卡 → 敲 y 才真跑**，带耗时统计与尾部日志 |
 | `/voice` | pipeline | 进入配音顺听纠错台 | 03 配音完成后，戴耳机极简挑错字、改读音、钉种子 |
@@ -78,6 +80,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/pipeline` | 特殊 | 退出 asset，切回自动工序模式 | 完成底层资产维护后切回常规制片 |
 | `/scout` | pipeline | 生成 pi 侦察派工单 | 缺料/缺笔记/标题候选时生成自包含工单交给 pi 采掘 |
 | `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
+| `/memory` | 全阶段 | 跨期记忆：`show`（默认）/ `check` / `ack` / `digest` | 查看记忆全文；外部改动后 ack 对齐；聚合驳回反馈提议新条目 |
 | `/help` | 全阶段 | 查看命令列表 | 随时查看帮助提示 |
 | `/quit` `/exit` | 全阶段 | 退出 ava 交互终端 | 进度 100% 依赖落盘文件，随时安全退出 |
 
@@ -102,11 +105,12 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `[停机点]` | 命令含 `--approve`（或它的 argparse 缩写，如 `--app`），或停机点未过时推进 `tts`/`clips`/`render` |
 | `[跳过人工闸]` | 命令含 `--confirm-patch`（或缩写 `--conf`），补丁段二次确认将被跳过 |
 | `[覆盖]` | `write_episode_file` 目标文件已存在 |
+| `[跨期记忆]` | `write_memory`：按 y 即确认全文进入之后所有 creative/asset/idea 会话 |
 
 **按键纪律**：
 
 - **默认 N**：回车、EOF、任何非 `y` 输入一律不执行——注意只有单个 `y` 算批准，敲 `yes` 不算。
-- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` 四个只读工具不弹卡，只回显一行 `[tool] read_artifact 01-topic.md`，让你看见模型在读什么。
+- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` 七个只读工具不弹卡，只回显一行 `[tool] read_artifact 01-topic.md`，让你看见模型在读什么。
 - **拒收不弹卡**：`--force`、白名单外、未注册/超 scope 的工具在弹卡**之前**就被拦下，直接 `[REJECT] <具体拒因>` 回喂模型（它分得清「护栏拒的」和「你拒的」）。
 - **留痕**：每次按键都追加一行到 `data/episodes/<期>/_agent/approvals.jsonl`（时间、工具、规范化命令、y/n、决策耗时秒数）——这是审批疲劳的唯一读数来源。
 
@@ -194,6 +198,7 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 - **环境变量**：在 `~/.zshrc` 里确保 `export CPA_API_KEY="..."`（密钥绝不写进仓库文件）；
 - **无模型降级**：未起 CPA 或未配 Key 时，任何自然语言输入都打印 `[降级模式·本地纯指示]` 并给出人工清单，
   **快捷键照常可用**，不抛裸异常；`/chat` `/script` 同样降级退出。
+- **网络工具配置同理**：`config/agent/web.local.json` 存在时**整份取代** `web.json`（不做深合并，search/fetch/crawl/browser 段要写全，缺段等于该段没配）。
 
 ---
 

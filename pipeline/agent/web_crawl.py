@@ -60,14 +60,19 @@ def _parse_trusted_ranges(
     return tuple(parsed)
 
 
+def _active_config_path(root: Path | None = None) -> Path:
+    """实际生效的配置文件：web.local.json 存在时整份取代 web.json（Spec 4 §3.1 覆盖语义）。"""
+    cfg_dir = Path(root or paths.ROOT) / "config" / "agent"
+    local_cfg = cfg_dir / "web.local.json"
+    return local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+
+
 def load_crawl_section(root: Path | None = None) -> CrawlSection | None:
     """读 web.local.json（优先）/ web.json 的 crawl 段，逐字段按 §3.1 校验。
 
     缺失/损坏/违例 → None（显式降级，不拖垮基座段，§2.6）。
     """
-    cfg_dir = Path(root or paths.ROOT) / "config" / "agent"
-    local_cfg = cfg_dir / "web.local.json"
-    cfg_file = local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+    cfg_file = _active_config_path(root)
     if not cfg_file.exists():
         return None
     try:
@@ -151,7 +156,7 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
     except ImportError as exc:
         raise ValueError(
             f"crawl 依赖已定位但导入失败（部分或损坏安装: {exc}），"
-            "请重装: uv sync --extra crawl"
+            "请重装: uv sync --extra crawl（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
         ) from exc
 
     async def _run() -> dict[str, str]:
@@ -218,7 +223,8 @@ def crawl_page(
     cfg = section if section is not None else load_crawl_section(root)
     if cfg is None:
         raise ValueError(
-            "缺少或损坏 config/agent/web.json 的 crawl 段；"
+            f"缺少或损坏 {_active_config_path(root)} 的 crawl 段"
+            "（web.local.json 存在时整份取代 web.json）；"
             "按 STANDARD.md 五节升级链应升级 browser（登录态，需人审卡）；"
             "严禁静默降级为水百科（STANDARD.md:196-199）。"
         )

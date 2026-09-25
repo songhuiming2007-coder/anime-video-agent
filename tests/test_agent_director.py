@@ -761,12 +761,14 @@ def test_repl_handles_llm_error_and_rolls_back_user_message(tmp_path: Path, monk
 
 
 def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
-    """达到 max_iterations 时发出显式警告交人接管 (Spec §1.2)。"""
+    """达到 max_iterations 时发出显式警告交人接管，且不回显工具返回原文 (Spec §1.2；S20 遗留 D28)。"""
     monkeypatch.setenv("AVA_TEST_KEY", "test-key-mock")
     root = make_agent_root(tmp_path, "http://127.0.0.1:9/v1")
     ep = root / "data" / "episodes" / "01-max-iter"
     ep.mkdir(parents=True)
     (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
+
+    raw_tool_json = '{"ok": true, "data": [{"id": 15, "name": "\\u7981\\u672c"}]}'
 
     def mock_run_tool_loop(messages, ctx, approve):
         return {
@@ -774,7 +776,8 @@ def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
             "iterations": 10,
             "tool_calls_made": 10,
             "messages": messages,
-            "final": {"content": "我跑了 10 轮"},
+            # 真实场景：上限时 run_tool_loop 交回 convo[-1]，即最后一条 tool 消息原文
+            "final": {"role": "tool", "tool_call_id": "call_1", "content": raw_tool_json},
         }
 
     monkeypatch.setattr("pipeline.agent.llm.run_tool_loop", mock_run_tool_loop)
@@ -784,6 +787,7 @@ def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "[WARN] 工具调用已达上限 10 轮，停止并交人接管。" in out
+    assert raw_tool_json not in out
 
 
 def test_run_creative_loop_alias_compatibility(tmp_path: Path, monkeypatch):

@@ -929,7 +929,8 @@ def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> di
         return {
             "ok": False,
             "error": (
-                f"工具 '{name}' 需要可选依赖 '{req_extra}'（uv sync --extra {name}），"
+                f"工具 '{name}' 需要可选依赖 '{req_extra}'（uv sync --extra {name}；"
+                "注意 uv sync 会卸掉未列出的 extras，在用的 apple/dev 等须一并列出），"
                 "当前环境未安装"
             ),
         }

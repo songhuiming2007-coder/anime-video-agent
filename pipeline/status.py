@@ -118,7 +118,7 @@ def _detect_advisories(d: Path) -> list[str]:
         except Exception as e:
             advisories.append(f"04-clips.json / approved 不可读：{e}")
 
-    # 4. 人时超预算检测（r19 / v1.20）
+    # 4. 人时观测（r19 / v1.20；2026-09-23 降为观测量：只呈现读数与参考线，不构成门禁）
     ht_path = d / "human_time.json"
     if ht_path.exists():
         try:
@@ -151,8 +151,8 @@ def _detect_advisories(d: Path) -> list[str]:
                     budget_min = k * ep_duration_min
                     if total_human_min > budget_min:
                         advisories.append(
-                            f"人类耗时超预算：本期已耗时 {total_human_min:.1f} 分钟，"
-                            f"预算 {budget_min:.1f} 分钟（k={k} × {ep_duration_min:.1f} 分钟片长）"
+                            f"人类耗时：本期已记 {total_human_min:.1f} 分钟，"
+                            f"参考线 {budget_min:.1f} 分钟（k={k} × {ep_duration_min:.1f} 分钟片长，仅观测）"
                         )
         except Exception as e:
             advisories.append(f"human_time.json 不可读：{e}")

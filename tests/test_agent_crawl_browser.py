@@ -831,6 +831,17 @@ def test_crawl_section_independent_degradation(
     assert load_crawl_section(root) is None
     assert load_web_config(root) is not None
 
+    # web.local.json 整份取代 web.json：local 只有 search/fetch 段时，报错点名 local 而非 web.json（S20 遗留）
+    full_data = json.loads(web_cfg_path.read_text(encoding="utf-8"))
+    local_cfg_path = root / "config" / "agent" / "web.local.json"
+    local_cfg_path.write_text(
+        json.dumps({k: v for k, v in full_data.items() if k in ("search", "fetch")}),
+        encoding="utf-8",
+    )
+    assert load_crawl_section(root) is None
+    with pytest.raises(ValueError, match=r"web\.local\.json 的 crawl 段"):
+        crawl_page("https://example.com", "r", root=root, crawl_fn=lambda *a, **kw: {})
+
 
 def test_browser_section_independent_degradation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -855,6 +866,16 @@ def test_browser_section_independent_degradation(
     with pytest.raises(PermissionError):
         load_browser_section(root)
     with pytest.raises(PermissionError):
+        browser_action("navigate", "r", url="https://example.com", root=root)
+
+    # web.local.json 整份取代 web.json：local 缺 browser 段时，报错点名 local 而非 web.json（S20 遗留）
+    local_cfg_path = root / "config" / "agent" / "web.local.json"
+    local_cfg_path.write_text(
+        json.dumps({k: v for k, v in data.items() if k in ("search", "fetch")}),
+        encoding="utf-8",
+    )
+    assert load_browser_section(root) is None
+    with pytest.raises(ValueError, match=r"web\.local\.json 的 browser 段"):
         browser_action("navigate", "r", url="https://example.com", root=root)
 
 
