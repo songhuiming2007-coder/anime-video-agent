@@ -80,6 +80,20 @@ def test_anchor_miss_is_reported_not_silently_skipped(tmp_path):
     assert (repo / "target.py").read_text(encoding="utf-8") == "VALUE = 1\n"
 
 
+def test_dirty_target_file_preserved_under_dirty_ok(tmp_path):
+    """2026-09-25 N28 验收实踩：恢复走 git checkout 时，--dirty-ok 下目标文件的
+    未提交改动会被整个抹掉（还原到 HEAD）。恢复必须写回开跑前原文，
+    脏内容逐字节保留。脏内容里保留锚点，让变异真正施加→恢复走完全程。"""
+    mod = _load_module()
+    repo = _make_repo(tmp_path)
+    (repo / "target.py").write_text("VALUE = 1\nEXTRA = 1\n", encoding="utf-8")  # 未提交改动
+    h = mod.Harness(repo)
+    row = h.check_one(MUT)
+    assert row["error"] is None, "锚点在脏内容上应照常命中"
+    assert (repo / "target.py").read_text(encoding="utf-8") == "VALUE = 1\nEXTRA = 1\n", \
+        "恢复后未提交改动必须逐字节保留，不得还原到 HEAD"
+
+
 def test_revert_still_happens_when_suite_explodes(tmp_path):
     """两次真实事故的形状：跑测试这一步炸了，未提交改动不能被留在变异态。"""
     mod = _load_module()
