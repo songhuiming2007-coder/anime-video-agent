@@ -6,7 +6,7 @@
 状态：**v1.21 已实施**
 
 > **启动入口改造注记（2026-09-21，v1.21）**：根据
-> [`2026-09-21-ava-entry-idea-scope.md`](2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
+> [`archive/2026-09-21-ava-entry-idea-scope.md`](archive/2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
 > ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零）；
 > ② `ava new <名>` 建完目录后直接以新期目录进入对话（tty 下）；
 > ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。
