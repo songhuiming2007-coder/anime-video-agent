@@ -40,8 +40,6 @@ export function buildFixture(opts: { withApprovals?: boolean } = {}): Fixture {
   ff("-f", "lavfi", "-i", "color=c=red:size=160x90", "-frames:v", "1", join(epA, "04-thumbs/t2.jpg"));
   ff("-f", "lavfi", "-i", "color=c=blue:size=64x64", "-frames:v", "1", join(epA, "07-cover/c1.png"));
   ff("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24000/1001", "-t", "20", "-pix_fmt", "yuv420p", "-c:v", "libx264", join(epA, "05-final.mp4"));
-  // TP-6 专用：足够大，Chromium 播放时不会一次读完，响应流（及其 fd）在播放期间保持打开
-  ff("-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "60", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "8M", join(epA, "big.mp4"));
   for (const n of ["seg-01", "seg-02", "seg-10"]) {
     ff("-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", join(epA, `03-audio/${n}.wav`));
   }
