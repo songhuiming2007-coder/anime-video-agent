@@ -219,7 +219,7 @@ desktop/
 | 5 | `size ≥ offset` 且 `offset ≥ 64` 且 `[offset−64, offset)` 与记录的锚点不同 | 截断后又被写到更长 | resync |
 | 6 | `size > offset` | 正常追加 | 读 `[offset, min(size, offset + 4 MiB))`，拼上 `partial`，按 `\n` 切行；最后一段无换行的留作 `partial`——**半行永不解析、永不下发** |
 | — | 某完整行 `JSON.parse` 失败 | 损坏行 | 跳过，`malformed += 1`，不中断 |
-| — | `partial` 超过 1 MiB 仍无换行 | 非 JSONL 垃圾 | 丢弃 partial，resync，诊断计数 |
+| — | `partial` 超过 1 MiB 仍无换行 | 非 JSONL 垃圾 | 丢弃 partial，跳到下一个换行之后继续读，诊断计数（**S21 施工修订，经用户同意**：原「resync」从 0 重读，文件里持久存在的超长行会让每次 poll 都重读一遍，永不前进） |
 
 - **snapshot 首载**：从 0 读到当前 size，**按 4 MiB 分块异步读、块间让出事件循环**（红队 m3）；超过 32 MiB 时只读尾部 32 MiB（从第一个 `\n` 之后开始），标 `truncatedHead: true`，UI 提示「更早的 job 未载入」。折叠成 `JobView[]`（§3.3），连同 `generation`、`offset` 一起下发；此后只下发 delta。
 - **snapshot + delta + coalesce**（借 ZCode）：每个 tick 把该期所有新行合并成**一条** delta（`seq` 递增）；renderer 只在 `generation` 相同且 `seq == last + 1` 时应用，否则丢弃本地状态并请求 snapshot。
@@ -275,7 +275,7 @@ desktop/
 | 其他 | — | 只显示元数据 | 不猜格式 |
 
 - **只读媒体协议 `ava-media://`**（main 进程，§3.5 URL 契约）：
-  - 启动前 `protocol.registerSchemesAsPrivileged`（`electron.d.ts:11734`），privileges `standard: true`（相对 URL 解析必需：`review.py:275` 的相对缩略图路径、`shots.py:481` 的 `os.path.relpath`）、`secure: true`、`stream: true`、`supportFetchAPI: true`；**不给 `bypassCSP`、不给 `corsEnabled`**（`electron.d.ts:23488-23516`）；
+  - 启动前 `protocol.registerSchemesAsPrivileged`（`electron.d.ts:11734`），privileges `standard: true`（相对 URL 解析必需：`review.py:275` 的相对缩略图路径、`shots.py:481` 的 `os.path.relpath`）、`secure: true`、`stream: true`、`supportFetchAPI: true`；**不给 `bypassCSP`**（`electron.d.ts:23488-23516`）；`corsEnabled: true`，但协议只在请求 Origin 恰为 renderer 自身源（`file://`；未打包构建另加 dev server 源）时回 `Access-Control-Allow-Origin`，沙箱 iframe 的 Origin 为 `null`，读不到（**S21 施工修订，经用户同意**：原「不给 `corsEnabled`」下 Chromium 拒绝 renderer 对非 CORS scheme 的一切跨源 fetch，文本类预览取不到正文）；
   - 只接受 `GET`/`HEAD`；Range **自行实现**单段 `bytes=a-b` → 206；多段 → 416；
   - MIME 按扩展名白名单；html 响应附带自己的 CSP 头（episodes 根：`default-src 'none'; img-src ava-media:; style-src 'unsafe-inline'`；shots 根额外 `script-src 'unsafe-inline'`）；
   - **fd 生命周期（红队 m9）**：main 登记每个进行中的响应流；收到 host 的 reach 非 ok 通知时全部 `destroy()`；renderer 卸载媒体元素时请求被中止，流随之关闭。目标：脱盘前 app 不持有 `data/` 下任何 fd，不阻止正常推出（TP-6）。
@@ -371,9 +371,9 @@ desktop/
 |---|---|---|---|
 | H1 | 某期**被设为活跃期**（`episode.activate`：首次打开、从后台切回、重连后恢复活跃；v0.3 按 R2-M4 由「subscribe」改为「设为活跃」） | 该期 | 首载与切回都必须看到自愈后的队列（Spec 3 §2.2 B2）。后台期保持订阅（§2.4），订阅本身不触发 heal |
 | H2 | 活跃期 `status --json` 的 `current_step` **发生变化**（边沿触发，每次变化恰一次；基线 = 设为活跃期后的第一次 status 采样，该次不触发，红队 m4） | 仅活跃期 | 保住 direction §0.1 旅程第 4 步「停机点主动触达」。触发源是 `status --json`——`status.py` 无写操作——**不读对象库，不会形成反馈环**；工序变化是低频事件，写放大有上界 |
-| H3 | 用户点击「刷新」（`episode.refresh`） | 仅活跃期 | 显式人令 |
+| H3 | 用户点击「刷新」（`episode.refresh`） | 仅活跃期 | 显式人令。刷新期间 `current_step` 的变化只吸收进 H2 基线、不补触发 H2（刷新本身已 heal；**S22 审核修订，经用户同意**） |
 | H4 | `approval.decide` 处理流程中的 HEAL 步（§3.2.1） | 被 ack 的期 | 陈旧校验必须基于自愈后的对象库（§2.5） |
-| H5 | 活跃期对象库中，**每种停机点最新的那个对象**（按 `created_at`，相同取数组中靠后者）若为 PENDING 或 REJECTED，其 `artifacts` 所列路径 stat 得到的 (size, mtime_ns) 与钉住值不一致。与 `ACTIVE_POLL_MS` 同频采样；**基线** = 设为活跃期后的第一次采样，该次不触发；**稳定期** = 同一指纹元组在连续两次采样中都出现才触发；每个对象的每个新指纹元组至多触发一次；`artifacts[].path` 先过 §3.5 规则 1 的段检查，拒绝 `..`、绝对路径、空段与 `\0`，被拒路径只记诊断、不 stat（v0.3 按 R2-M4 新增；v0.4 按红队 R3 m1/m2/m3 加基线、最新对象、稳定期与段检查） | 仅活跃期 | 覆盖「打回 → 返工」闭环（ADR-0020 §3「驳回并回喂」）：05 被打回后 `current_step` 一直停在 05，H2 永远不触发；返工改变 `04-clips.json` 指纹后 H5 触发，Spec 3 自愈据指纹漂移新建 pending，新卡片出现。路径直接取自对象库，TS 不复制 `_STOP_ARTIFACTS` 这类业务映射；heal 不改产物，不会自我触发 |
+| H5 | 活跃期对象库中，**每种停机点最新的那个对象**（按 `created_at`，相同取数组中靠后者）若为 PENDING 或 REJECTED，其 `artifacts` 所列路径 stat 得到的 (size, mtime_ns) 与钉住值不一致。与 `ACTIVE_POLL_MS` 同频采样；**基线** = 设为活跃期后的第一次采样，该次不触发；**稳定期** = 同一指纹元组在连续两次采样中都出现才触发；每个对象的每个新指纹元组至多触发一次；`artifacts[].path` 先过 §3.5 规则 1 的段检查，拒绝 `..`、绝对路径、空段与 `\0`，被拒路径只记诊断、不 stat（v0.3 按 R2-M4 新增；v0.4 按红队 R3 m1/m2/m3 加基线、最新对象、稳定期与段检查）；基线采样中已存在的漂移元组记为已触发、此后永不触发，之后出现的新元组照常按稳定期触发（**S22 审核修订，经用户同意**） | 仅活跃期 | 覆盖「打回 → 返工」闭环（ADR-0020 §3「驳回并回喂」）：05 被打回后 `current_step` 一直停在 05，H2 永远不触发；返工改变 `04-clips.json` 指纹后 H5 触发，Spec 3 自愈据指纹漂移新建 pending，新卡片出现。路径直接取自对象库，TS 不复制 `_STOP_ARTIFACTS` 这类业务映射；heal 不改产物，不会自我触发 |
 
 - **明令禁止**：后台期 heal；按周期 heal；由对象库文件本身的 (ino, size, mtime) 变化或任何事件行触发 heal。同一期同一时刻至多一个 heal 在途，在途期间的新触发合并为「完成后再跑一次」。
 - **heal 失败（红队 m8）**：非 0 退出写入诊断面板（附 stderr 尾部），不重试；H4 场景下 ack 流程继续，由 core 侧 `--id` 定位兜底。
@@ -419,6 +419,7 @@ export type Method =                       // 方法闭集：新增方法 = 修�
   | "episode.resnapshot"                   // { epKey } → EpisodeSnapshot（协议跳号时内部使用，不触发 heal）
   | "episode.refresh"                      // { epKey } → EpisodeSnapshot；用户点击刷新，触发 H3
   | "tree.list"                            // { epKey, relDir } → TreeEntry[]
+  | "shots.list"                           // 无参数 → { name, size, mtimeMs }[]：data/library/shots 顶层的 *.html（S21 修订，经用户同意：原闭集没有任何方法能到达 shots 根，gallery 在 UI 里打不开）
   | "approval.decide";                     // §3.2.1（v0.1 的 retryReviewWithConfirmPatch 已删除，红队 B3）
 
 export type Envelope =
@@ -671,8 +672,8 @@ async function decide(p: DecideParams): Promise<Result> {
 ### 4.4 main 与 preload
 
 - main：第一行做启动参数白名单检查（packaged：`process.argv.slice(1)` 只允许 `-psn_*`，红队 m3）；repoRoot 选择对话框与二次确认在 main 内完成（R2-M5）；`requestSingleInstanceLock()`；`registerSchemesAsPrivileged` 在 `app.whenReady()` 之前；`BrowserWindow` 的 `webPreferences` 固定为 `{ contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, preload }`，不开 `webviewTag`；`setWindowOpenHandler` 拒绝、`will-navigate` 阻止；`utilityProcess.fork(hostEntry, [], { serviceName: "ava-host", stdio: "pipe" })`（`electron.d.ts:22028` 起注明 utilityProcess 的 stdin 只能是 ignore）；host 就绪时向 stdout 打印 `AVA_BOOT host-ready lossless-json=<ok|fail>`（供打包版验证，§7.1；后半为 §3.1 规则 8 启动自检结果）。
-- preload：只做 `ipcRenderer.once("ava-port", e => window.postMessage("ava-port", "*", e.ports))`，不 `exposeInMainWorld` 任何函数。
-- renderer 接收端口时**只接受 `event.source === window` 的消息**，每次 main 撮合只接受一次（两条规则各自独立守卫：TI-2 在重新握手窗口内注入伪造端口，使「只接受一次」无法掩盖 source 校验的缺失，红队 R2-M3）；iframe 向父窗口 `postMessage` 的同名消息一律忽略（否则 `allow-scripts` 的 gallery 页面可伪造假 host 端口）。
+- preload：只做 `ipcRenderer.on("ava-port", (e, handshake) => window.postMessage({ type: "ava-port", handshake }, "*", e.ports))`，不 `exposeInMainWorld` 任何函数。main 每次撮合把单调递增的握手号随端口一起投递；`rendererLoaded` 只跟踪主框架导航（`did-navigate`）。（**S22 审核修订，经用户同意**：原 `once` 使页面不重载时的重新撮合全部丢失；iframe 导航触发的 `did-start-loading` 曾把撮合静默卡死。）
+- renderer 接收端口时**只接受 `event.source === window` 的消息**，每次 main 撮合只接受一次——握手号严格大于已采纳的号才采纳（两条规则各自独立守卫：TI-2 在重新握手窗口内注入与真实消息同形、握手号极大的伪造端口，使「只接受一次」无法掩盖 source 校验的缺失，红队 R2-M3）；iframe 向父窗口 `postMessage` 的同名消息一律忽略（否则 `allow-scripts` 的 gallery 页面可伪造假 host 端口）。RPC 不设超时：当前端口 `close` 即把挂起请求以 `E_UNREACHABLE` 拒绝，断开期间的新请求立即拒绝（S22 审核修订，经用户同意）。
 
 ---
 
@@ -789,7 +790,7 @@ def test_core_imports_no_server_stack():
 | **TE-4** | 截断后写长 | 写入比原 offset 更长的新内容（inode 不变）→ 锚点不符触发 resync，下发等于新文件全文 |
 | **TE-5** | 替换 | 以新 inode 文件 `rename` 覆盖 → resync |
 | **TE-6** | 缺席与出现 | 文件不存在 → `absent: true`；随后创建 → 从 0 读起 |
-| **TE-7** | 损坏行与超长半行 | 非 JSON 行跳过且 `malformed == 1`；1 MiB+1 字节无换行 → resync，诊断 +1 |
+| **TE-7** | 损坏行与超长半行 | 非 JSON 行跳过且 `malformed == 1`；1 MiB+1 字节无换行 → 丢弃并跳到下一行、不重读（`resynced: false`），其后的完整行照常下发，诊断 +1（S21 修订） |
 | **TE-8** | host 侧串扰隔离 | 期 A、B 同时写；A 的行永不出现在 B 的 delta；行内 `episode` 写成 B 的 A 文件行仍归 A，`episodeFieldMismatch == 1`；`sidecar_degraded` 行不进 `jobs`，进 `degradedNotices` |
 | **TE-9** | 折叠与缺口呈现 | Spec 2 §3.3 六个示例载荷 → `foldEvents` 逐字段等于期望；删去 `job_finished` 且 pid 指向已退出进程：第 1 个 tick `finishedEventMissing == false`、第 2 个 tick `== true`；pid 存活时恒 false；`job_created` 后无后续且超过 `PENDING_STALE_MS` → `noFollowupEvents == true` |
 | **TE-10** | renderer reducer 协议 | `generation` 不同的 delta 被丢弃；`seq` 跳号触发 resnapshot 请求 |
@@ -823,12 +824,12 @@ def test_core_imports_no_server_stack():
 | 编号 | 断言 |
 |---|---|
 | **TI-1** | renderer 中 `typeof require === "undefined"`、`typeof process === "undefined"`；`window` 上除端口外无 preload 暴露对象 |
-| **TI-2** | `04-review.html` iframe 的 `contentDocument === null`；伪造端口在**重新握手窗口**内注入（红队 R2-M3）：受 `!app.isPackaged` 守卫的测试钩子先让 renderer 进入「等待端口」态，**放在 shots 根下**（`allow-scripts`）的夹具 html 立即向父窗口 `postMessage("ava-port", "*", [伪造端口])`，之后 main 才投递真实端口 → 断言后续请求全部到达真实 host、伪造端口收到零条消息。钩子在两侧：renderer 侧「进入等待端口」与 main 侧「延迟投递真实端口」，均受 `!app.isPackaged` 守卫（红队 R3 m6）；观测方式：Playwright 对不透明源 iframe 做 frame evaluate，由 iframe 脚本统计 port2 收到的消息数 |
+| **TI-2** | `04-review.html` iframe 的 `contentDocument === null`；伪造端口在**重新握手窗口**内注入（红队 R2-M3）：**放在 shots 根下**（`allow-scripts`）的夹具 html 持续向父窗口投递与 preload 同形、握手号极大的伪造端口，受 `!app.isPackaged` 守卫的 main 侧钩子触发一次重新撮合并延迟投递真实端口 → 断言 renderer 采纳的握手号恰为这次撮合的号（真实端口确实被采纳，不是靠旧端口通过）、后续请求全部到达真实 host、伪造端口收到零条消息。钩子在两侧：renderer 侧「读出已采纳的握手号」与 main 侧「重新撮合并延迟投递真实端口」（S22 审核修订：原 renderer 侧「进入等待端口」在握手号机制下已无意义），均受 `!app.isPackaged` 守卫（红队 R3 m6）；观测方式：Playwright 对不透明源 iframe 做 frame evaluate，由 iframe 脚本统计 port2 收到的消息数 |
 | **TI-3a** | 关闭 heal（能力探针置为缺席）后，对 `chmod -R a-w` 的夹具树执行期列表、订阅、tail、树浏览、全部预览 → 功能正常，前后树的（路径, 大小, mtime）清单完全相同（I1） |
 | **TI-3b** | 在可写夹具树上只触发 H1 → 树清单差异 ⊆ { `_agent/`（若原先不存在）、`_agent/approvals_store.json`、`_agent/approvals_store.lock`、`events.jsonl`（Spec 2 在场时） }；期目录本身与其他产物零变化（I2 自愈类） |
 | **TI-4** | `app.getPath("userData")` 与 `app.getPath("crashDumps")` 均不在 `realpath(dataRoot)` 子树内；userData 不等于 `data/browser-profile`、不在 `~/Library/Application Support/Google/Chrome` 子树内；`crashDumps` 在 userData 子树内 |
 | **TI-5** | **期列表对拍**：同一夹具树（含 `.`/`_` 前缀、含与不含 `01-topic.md` 的子目录、**软链期目录**）上，TS `listEpisodes` 与 Python `cli.get_episodes_list(root=…)` 的（相对路径集合, 顺序, `hidden_underscore`）完全一致 |
-| **TI-6** | `app.getAppMetrics()` 含 `serviceName == "ava-host"` 的 Utility 进程；Python 子进程 `ppid == host pid`；app 全部进程 `lsof -iTCP -sTCP:LISTEN` 为空 |
+| **TI-6** | `app.getAppMetrics()` 含 `type == "Utility"` 且 `name == "ava-host"` 的进程（S22 审核修订，经用户同意：Electron 44 实测 fork 传入的 `serviceName` 出现在 `name` 字段，`serviceName` 字段恒为 `node.mojom.NodeService`）；Python 子进程 `ppid == host pid`；app 全部进程 `lsof -iTCP -sTCP:LISTEN` 为空 |
 | **TI-7** | 子进程 `os.environ` 键集合 ⊆ §3.4 白名单；host 环境里设 `AVA_EVENTS_ROOT` 与 `FOO_API_KEY` 后子进程均看不到 |
 | **TI-8** | `approval.decide` 参数多一个 `path` 键 → `E_BAD_REQUEST`、零 spawn；合法请求的 spawn argv 中期路径恒等于 host 映射路径（红队 M5：MUT-6 的被依赖断言）；`app.requestRepoRootChange` 带任何参数（如 `{ path: "/tmp/x" }`）→ `E_BAD_REQUEST`，settings 不变、不弹对话框（红队 R2-M5） |
 | **TI-9** | （未打包构建）`kill -9` host pid → 10 s 内健康面板显示 host 在线且活跃期重新订阅成功（红队 M5：MUT-23 的被依赖断言） |
@@ -898,7 +899,7 @@ def test_core_imports_no_server_stack():
 | **MUT-11** | 路径守卫只做字符串 `startsWith`、不 `realpath` | TS-3 | 指向 root 外的符号链接被放行 |
 | **MUT-12** | 规则 1 不拒段内 `/`、`\`（红队 M6 更正：原「不拒 `..`」可能被 URL 规范化掩盖） | TS-3（root 内部 `%2F` 用例） | `ava-media://episodes/<EP>%2F02-script.md` 返回 200 或 404 而非 400（v0.3 按 R2-M2 更正：跨 root 用例会被规则 2 拦成 403，抓不到本变异） |
 | **MUT-13** | iframe 加 `allow-same-origin` | TI-2 | `contentDocument` 不再为 null |
-| **MUT-13b** | renderer 接收端口时去掉 `event.source === window` 校验 | TI-2（shots 根夹具 + 重新握手窗口） | 伪造端口先于真实端口到达并被采纳，后续请求发往伪造端口，「伪造端口收到零条消息」失败（两层掩盖均已排除：夹具在 shots 根才能执行脚本；注入在等待端口态才能先于真实端口） |
+| **MUT-13b** | renderer 接收端口时去掉 `event.source === window` 校验 | TI-2（shots 根夹具 + 重新握手窗口） | 伪造端口（握手号极大）被采纳，真实端口的握手号更小而被拒，「采纳的握手号恰为本次撮合的号」与「伪造端口收到零条消息」失败（两层掩盖均已排除：夹具在 shots 根才能执行脚本；伪造消息与真实消息同形，只有 source 校验能挡住；S22 审核修订） |
 | **MUT-14** | `electronFuses.enableEmbeddedAsarIntegrityValidation: false` | TS-1、TS-2、TG-5 | 篡改 main 入口的包照常出现 `AVA_BOOT`；fuse 读数不符；配置断言失败 |
 | **MUT-15** | 加 `express` 并在 host `createServer().listen()` | TG-1、TG-3、TI-6 | 依赖集合不等；import 纪律命中；`lsof` 出现 LISTEN |
 | **MUT-16** | `pipeline/` 任意模块顶层 `import http.server` | TC-1 | 独立子进程探针捕获 |

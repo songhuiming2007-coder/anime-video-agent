@@ -30,7 +30,7 @@
 | [网络工具第二批 crawl + browser（Spec 5）](2026-09-23-crawl-browser-tools-spec.md) | B2 / D23 | ADR-0021 | **M8 施工完成（PR1–PR3），S16 review 🟢**（工具表 9→11、能力掩码、独立 profile 守卫、启动事件落盘；S16 修复轮：死会话自愈、browser 后 crawl 事件循环冲突、不自建 data/、crawl4ai 基目录重定向 `data/crawl4ai/`（RF-15）；MUT-1~30 全杀；浏览器二进制与门禁 5 lsof 手验待人执行） |
 | [acquire_propose 受控素材提案（Spec 6）](2026-09-23-acquire-propose-spec.md) | B2 / D23 | ADR-0021 | **M7 施工完成（PR1–PR2），S14 review 🟢**（工具表 8→9、asset scope 唯一可见；schema 纯函数与 incoming/ledger 路径单源下移 `pipeline/candidates.py`，acquire 零回归；MUT-1~13 全杀） |
 | [跨期记忆 memory.md 与模型分层（Spec 7）](2026-09-23-memory-and-model-tiering-spec.md) | B2 | ADR-0023 | **M9 + M10 施工完成（PR1–PR6），S20 review 🟢**（装配器注入与开放写权限同 PR 落地，注入 scope = creative/asset/idea；`/memory` show/check/ack/digest，ack 仅交互终端；工具表 12/12，`write_memory` 仅 creative；MUT-1~53 全量实跑，S20 独立复跑 32 条；S20 修复轮：R7 断言收紧到冲突 id；门禁 8 跨档冒烟 2026-09-24 人执行通过，本机 models 段启用） |
-| [Electron 桌面端架构冻结稿（Spec 8）](2026-09-23-electron-desktop-spec.md) | B2 / D23 | ADR-0020 | **v0.5 红队三轮收口 + 定向核对 🟢（4🔵 全收），PR0–PR3 可动工**（PR2 首日须实测 Electron 运行时的 JSON.parse `context.source`（假设 10）；PR4 阻塞于 Spec 3 v0.6 PR3 施工，而 Spec 3 §1.3–§1.6 的定向复核尚未进行，见 spec §1.4、§6.2） |
+| [Electron 桌面端架构冻结稿（Spec 8）](2026-09-23-electron-desktop-spec.md) | B2 / D23 | ADR-0020 | **M11 施工完成（PR0–PR3），S22 review 🟢**（`desktop/` 骨架、host 读路径、renderer 五类预览与 `ava-media://`；假设 10 实测成立；S22 修复轮：握手号重新撮合（preload `on`、只跟主框架）、tick 在途与载入互斥、RPC 端口 close 即拒、重新挂载 generation 单调、`tree.list` realpath 约束、status 完整读入、真实数据零污染断言；MUT 已落地部分全杀，S22 独立复跑 49 条；PR4–PR5 属 M12） |
 
 ---
 
