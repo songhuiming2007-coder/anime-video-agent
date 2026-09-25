@@ -11,7 +11,7 @@ export const DESKTOP = resolve(__dirname, "..");
 // require("electron") 在 Node 里返回可执行文件路径；Electron 44 起二进制懒下载，缺失时由它补下
 export const ELECTRON = createRequire(__filename)("electron") as string;
 
-const ff = (...args: string[]) => execFileSync("/opt/homebrew/bin/ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...args]);
+export const ff = (...args: string[]) => execFileSync("/opt/homebrew/bin/ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...args]);
 
 export interface Fixture {
   repo: string;
@@ -62,17 +62,17 @@ body = '<div class="q">查询 <b>测试</b></div><div class="clip"><div class="s
   symlinkSync(join(dataReal, "library/shots/frames/T_S01E01/00001.jpg"), join(epA, "link-shots.jpg"));
   mkdirSync(join(dataReal, "browser-profile"));
   writeFileSync(join(dataReal, "browser-profile/x.json"), '{"cookie":1}\n');
-  // shots 根：真实 gallery 模板 + TI-2 的伪造端口页
-  // 按钮属性按 html.escape 转义：pipeline/shots.py:489 现状把 json.dumps 的双引号直接塞进双引号属性，
-  // 真实 gallery 的「复制锚点」在任何浏览器里都点不动（core 既有缺陷，S21 报告、不在本模块修）；夹具用修好后的形态，只测沙箱对剪贴板的影响
+  // shots 根：真实 shots.gallery() 产出的画廊（N29 修复后按钮属性已正确转义，S23 起不再手写卡片）+ TI-2 的伪造端口页
+  writeFileSync(
+    join(dataReal, "library/shots/T_S01E01.json"),
+    JSON.stringify({ meta: { scene_threshold: 8.0, min_shot: 0.5, source: "/x/T_S01E01.mkv" }, shots: [{ i: 0, start: 1.0, end: 3.0, rep: 2.0 }] }),
+  );
   py(
-    `import html, json, sys
+    `import sys
 from pathlib import Path
-from pipeline.shots import _GALLERY_TPL
+from pipeline import shots
 out = Path(sys.argv[1])
-anchor = "锚点: T S01E01 00:01.000"
-card = f'<div class="card"><img loading="lazy" src="frames/T_S01E01/00001.jpg" alt="#1"><div class="meta"><b>#1</b></div><button onclick="cp(this, {html.escape(json.dumps(anchor, ensure_ascii=False))})">复制锚点</button></div>'
-(out / "T_S01E01_gallery.html").write_text(_GALLERY_TPL.replace("__TITLE__", "T S01E01").replace("__SUMMARY__", "1 个镜头").replace("__CARDS__", card), encoding="utf-8")`,
+shots.gallery("T", "S01E01", out_dir=out, dest_dir=out / "frames", check=False)`,
     [join(dataReal, "library/shots")],
   );
   writeFileSync(
@@ -94,6 +94,10 @@ setInterval(forge, 50);
   mkdirSync(epB);
   writeFileSync(join(epB, "01-topic.md"), "# B\n");
   writeFileSync(join(epB, "02-script.md"), "# B 稿\n");
+  // 不在任何停机点的期（只有选题）：切过去不会触发停机点自动呼出，TP-3 的「切换期卸载媒体」才不被预览替换掩盖（S23 MUT-33）
+  const epC = join(eps, "E2E-C");
+  mkdirSync(epC);
+  writeFileSync(join(epC, "01-topic.md"), "# C\n");
   return { repo, dataReal: realpathSync(dataReal), epA, cleanup: () => { cleanup(repo); cleanup(resolve(dataReal, "..")); } };
 }
 
@@ -101,10 +105,10 @@ export interface Launched {
   app: ElectronApplication;
   page: Page;
   stdout: () => string;
+  userData: string;
 }
 
-export async function launch(repo: string, extraArgs: string[] = []): Promise<Launched> {
-  const userData = tmp("ud");
+export async function launch(repo: string, extraArgs: string[] = [], userData = tmp("ud")): Promise<Launched> {
   const app = await electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, `--ava-repo-root=${repo}`, `--ava-user-data=${userData}`, ...extraArgs],
@@ -115,7 +119,7 @@ export async function launch(repo: string, extraArgs: string[] = []): Promise<La
   app.process().stderr?.on("data", (b: Buffer) => (out += b.toString()));
   const page = await app.firstWindow();
   await page.waitForSelector("[data-testid=episode]", { timeout: 30_000 }).catch(() => undefined);
-  return { app, page, stdout: () => out };
+  return { app, page, stdout: () => out, userData };
 }
 
 export async function openEpisode(page: Page, epKey: string): Promise<void> {

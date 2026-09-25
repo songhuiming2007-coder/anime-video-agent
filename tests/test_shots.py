@@ -340,8 +340,9 @@ class TestGallery:
             'cp(this, "锚点: EGOIST SP05 00:01.40")',
         ]
 
-        # 含 <、&、' 的番名夹具：HTML 属性转义后由 html.parser 还原应与原文严格一致
-        anime_sp = "A<B&C'D"
+        # 含 <、&、' 与现成实体串 &amp; 的番名夹具：HTML 属性转义后由 html.parser 还原应与原文严格一致。
+        # 「&amp;」是关键：只转义双引号的写法会让它被浏览器解码成「&」，还原结果与原文不等（S23 补强）
+        anime_sp = "A<B&amp;C'D"
         table = json.loads((shots_dir / "EGOIST_SP05.json").read_text(encoding="utf-8"))
         (shots_dir / f"{anime_sp}_01.json").write_text(json.dumps(table), encoding="utf-8")
         fr_sp = frames_dir / f"{anime_sp}_01"
@@ -354,10 +355,10 @@ class TestGallery:
         p_sp = _BtnParser()
         p_sp.feed(raw_sp)
         assert p_sp.onclicks == [
-            "cp(this, \"锚点: A<B&C'D 01 00:00.00\")",
-            "cp(this, \"锚点: A<B&C'D 01 00:01.40\")",
+            "cp(this, \"锚点: A<B&amp;C'D 01 00:00.00\")",
+            "cp(this, \"锚点: A<B&amp;C'D 01 00:01.40\")",
         ]
-        assert json.loads(p_sp.onclicks[0].removeprefix("cp(this, ").removesuffix(")")) == "锚点: A<B&C'D 01 00:00.00"
+        assert json.loads(p_sp.onclicks[0].removeprefix("cp(this, ").removesuffix(")")) == "锚点: A<B&amp;C'D 01 00:00.00"
 
 
 class TestRebuildAlsoCut:

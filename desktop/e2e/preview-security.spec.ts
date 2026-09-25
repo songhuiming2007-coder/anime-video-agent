@@ -214,7 +214,7 @@ test("假设 3：沙箱 iframe（无 allow-same-origin）内 gallery 的「复�
     const frame = await openGallery("T_S01E01_gallery.html");
     await expect.poll(() => frame.evaluate(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0))).toBe(true);
     await frame.getByRole("button", { name: "复制锚点" }).click();
-    await expect.poll(clip, { timeout: 3000 }).toBe("锚点: T S01E01 00:01.000");
+    await expect.poll(clip, { timeout: 3000 }).toBe("锚点: T S01E01 00:01.00");
     // 实测机理：不透明源 iframe 未获 clipboard-write 委托，writeText 被 permissions policy 拒绝；
     // 模板的 textarea + execCommand('copy') 兜底在用户手势内生效（点击后 iframe 已聚焦，此时的拒绝原因才是真因）
     const probe = await frame.evaluate(() => navigator.clipboard.writeText("probe").then(() => "resolved", (e: unknown) => String(e)));

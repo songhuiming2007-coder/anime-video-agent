@@ -48,3 +48,21 @@ export const SPAWN_LOG_MAX = 1000;
 
 /** 期内最大文本产物实测 171 KB（pool.json），5 MiB 约 30 倍余量；超出只显示前 5 MiB。 */
 export const TEXT_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * host 崩溃重启看护（§2.9，§3.7「host 重启退避」行）：1 s 起翻倍、封顶 30 s；60 s 内崩溃 5 次熔断。
+ * 崩溃循环时不刷屏、不空转，同时给偶发崩溃快速恢复。连续计数在 host 存活满一个熔断窗口后清零。
+ */
+export const HOST_RESTART_BASE_MS = 1000;
+export const HOST_RESTART_MAX_MS = 30_000;
+export const HOST_CRASH_WINDOW_MS = 60_000;
+export const HOST_CRASH_LIMIT = 5;
+/** 致命面板里 host stderr 的尾部字节数（与 spawn 尾部同量级） */
+export const HOST_STDERR_TAIL_BYTES = 8 * 1024;
+
+/**
+ * ava-media:// 响应体的单次读取块（S23 门禁 6 修订，经用户同意）：响应体按块拉取，每块「打开 → 读 → 关闭」，
+ * <video> 缓冲满后暂停拉取时不持有任何 fd，播放中外置盘可正常推出。HTTP 语义不变（Content-Range 照实到请求末尾）。
+ * 取 1 MiB：外置盘上单次读取为毫秒级；8 Mbps 视频约每秒一次打开/关闭；每条在途流的内存约为 2 块。
+ */
+export const MEDIA_READ_CHUNK_BYTES = 1024 * 1024;

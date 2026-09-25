@@ -1,16 +1,27 @@
 // spawn 闭集（Spec 8 §3.4）。desktop/ 中唯一 import node:child_process 的文件（TG-3）。
 // 全部以 argv 数组调用：shell:false、stdin ignore、detached（子进程为进程组组长）、cwd = repoRoot、环境变量白名单。
-// PR2 接入 PROBE_* / GIT_* / STATUS；HEAL / APPROVE / REJECT / REVIEW_APPROVE 属 PR4。
 import { spawn } from "node:child_process";
 import {
   SPAWN_KILL_GRACE_MS,
   SPAWN_LOG_MAX,
   SPAWN_TAIL_BYTES,
+  SPAWN_TIMEOUT_ACK_MS,
+  SPAWN_TIMEOUT_REVIEW_MS,
   SPAWN_TIMEOUT_SHORT_MS,
   STATUS_STDOUT_MAX_BYTES,
 } from "../shared/constants";
+import type { StopType } from "../shared/contracts";
 
-export type Template = "PROBE_APPROVALS" | "PROBE_FREEZE" | "GIT_HEAD" | "GIT_DESKTOP_DIFF" | "STATUS";
+export type Template =
+  | "PROBE_APPROVALS"
+  | "PROBE_FREEZE"
+  | "GIT_HEAD"
+  | "GIT_DESKTOP_DIFF"
+  | "STATUS"
+  | "HEAL"
+  | "APPROVE"
+  | "REJECT"
+  | "REVIEW_APPROVE";
 
 export interface TemplateArgs {
   PROBE_APPROVALS: Record<string, never>;
@@ -18,6 +29,17 @@ export interface TemplateArgs {
   GIT_HEAD: Record<string, never>;
   GIT_DESKTOP_DIFF: { buildHead: string };
   STATUS: { ep: string };
+  HEAL: { ep: string };
+  APPROVE: { ep: string; stop: StopType; approvalId: string };
+  REJECT: { ep: string; stop: StopType; approvalId: string; target: string; problem: string };
+  /** size / mtimeNs 取自对象钉住的 04-clips.json 指纹；mtimeNs 为 bigint，argv 里写 String(bigint)（§3.1 规则 8） */
+  REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
+}
+
+/** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
+export interface SpawnTag {
+  trigger?: string;
+  decide?: number;
 }
 
 export interface CoreResult {
@@ -58,6 +80,28 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep } = args as TemplateArgs["STATUS"];
       // JSON 只能整份解析：取尾部会在输出超过尾部长度时截掉开头（S22 🔵6）
       return { argv: [py, "-m", "pipeline.status", ep, "--json"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: STATUS_STDOUT_MAX_BYTES };
+    }
+    case "HEAL": {
+      const { ep } = args as TemplateArgs["HEAL"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/approvals"], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "APPROVE": {
+      const { ep, stop, approvalId } = args as TemplateArgs["APPROVE"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/approve", stop, "--id", approvalId], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "REJECT": {
+      // target / problem 各为一个 argv 元素，不经 shell、不拼接（Spec 3 §4.2 第 1 条固定位置语法）
+      const { ep, stop, approvalId, target, problem } = args as TemplateArgs["REJECT"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/reject", stop, "--id", approvalId, target, problem], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "REVIEW_APPROVE": {
+      // 必须用等号形式：tools.py _extract_positional_args 的 valued_flags 不含这两个旗标，
+      // 空格形式会把值当成位置参数，validate_pipeline_command 随之不注入期目录（Spec 3 v0.6 §4.5）
+      const { ep, size, mtimeNs } = args as TemplateArgs["REVIEW_APPROVE"];
+      return {
+        argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "review", "--approve", `--expect-size=${size}`, `--expect-mtime-ns=${String(mtimeNs)}`],
+        timeoutMs: SPAWN_TIMEOUT_REVIEW_MS,
+      };
     }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
@@ -123,6 +167,8 @@ export interface SpawnLogEntry {
   template: Template;
   argv: string[];
   at: number;
+  trigger?: string;
+  decide?: number;
 }
 
 /** 测试与诊断用：本进程最近 SPAWN_LOG_MAX 次 spawn（按时间序，环形缓冲）。 */
@@ -134,10 +180,18 @@ export function spawnTotal(): number {
   return spawnCount;
 }
 
+let spawnObserver: ((e: SpawnLogEntry) => void) | null = null;
+
+/** 未打包构建的 e2e 观测口：host 入口据此把每次 spawn 打到 stdout（仅未打包构建接入，TG-6） */
+export function setSpawnObserver(fn: ((e: SpawnLogEntry) => void) | null): void {
+  spawnObserver = fn;
+}
+
 export function recordSpawn(e: SpawnLogEntry): void {
   spawnCount += 1;
   spawnLog.push(e);
   if (spawnLog.length > SPAWN_LOG_MAX) spawnLog.splice(0, spawnLog.length - SPAWN_LOG_MAX);
+  spawnObserver?.(e);
 }
 
 export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Record<string, string>, stdoutMax?: number): Promise<CoreResult> {
@@ -195,8 +249,8 @@ export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Rec
   });
 }
 
-export function runCore<T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }): Promise<CoreResult> {
+export function runCore<T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag: SpawnTag = {}): Promise<CoreResult> {
   const { argv, timeoutMs, stdoutMax } = buildArgv(t, args, ctx.repoRoot);
-  recordSpawn({ template: t, argv, at: Date.now() });
+  recordSpawn({ template: t, argv, at: Date.now(), ...tag });
   return runArgv(argv, timeoutMs, ctx.repoRoot, childEnv(process.env), stdoutMax);
 }

@@ -22,7 +22,8 @@ export interface Store {
 export type Action =
   | { type: "snapshot"; snap: EpisodeSnapshot }
   | { type: "delta"; delta: EpisodeDelta }
-  | { type: "forget"; epKey: string };
+  | { type: "forget"; epKey: string }
+  | { type: "reset" };
 
 export interface ReduceResult {
   store: Store;
@@ -51,6 +52,8 @@ export function reduce(store: Store, action: Action): ReduceResult {
   switch (action.type) {
     case "snapshot":
       return { store: { episodes: { ...store.episodes, [action.snap.epKey]: fromSnapshot(action.snap) } }, resnapshot: null };
+    case "reset":
+      return { store: emptyStore, resnapshot: null };
     case "forget": {
       const next = { ...store.episodes };
       delete next[action.epKey];
@@ -80,7 +83,7 @@ export function select(store: Store, epKey: string | null): EpisodeState | undef
   return epKey === null ? undefined : store.episodes[epKey];
 }
 
-/** 决策条用的对象集合（PR4 起使用）；只取本期桶 */
+/** 决策条用的对象集合；只取本期桶 */
 export function approvalsOf(ep: EpisodeState | undefined): ApprovalJson[] {
   if (!ep) return [];
   const a = ep.approvals;

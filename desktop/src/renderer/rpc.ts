@@ -9,6 +9,9 @@ import { PROTOCOL_VERSION, type Envelope, type Method, type PushTopic, type RpcE
 type PushEnvelope = Extract<Envelope, { kind: "push" }>;
 type PushHandler = (p: PushEnvelope) => void;
 
+/** 端口断开时 renderer 自己合成的 E_UNREACHABLE 的消息前缀（区别于 host 报告的数据不可达） */
+export const HOST_LINK_LOST = "host 连接";
+
 export class RpcFailure extends Error {
   constructor(readonly error: RpcError) {
     super(error.message);
@@ -24,6 +27,7 @@ export class RpcClient {
   private handlers = new Map<PushTopic, Set<PushHandler>>();
   private readyWaiters: (() => void)[] = [];
   private onConnectFns: (() => void)[] = [];
+  private onDisconnectFns: (() => void)[] = [];
 
   constructor(win: Window) {
     win.addEventListener("message", (e: MessageEvent) => {
@@ -45,13 +49,14 @@ export class RpcClient {
     this.port?.close();
     this.port = port;
     this.disconnected = false;
-    this.rejectPending("host 连接已重置");
+    this.rejectPending(`${HOST_LINK_LOST}已重置`);
     port.onmessage = (e: MessageEvent<Envelope>) => this.onEnvelope(e.data);
     port.addEventListener("close", () => {
       if (this.port !== port) return; // 换端口时自己关掉的旧端口
       this.port = null;
       this.disconnected = true;
-      this.rejectPending("host 连接已断开");
+      this.rejectPending(`${HOST_LINK_LOST}已断开`);
+      for (const f of this.onDisconnectFns) f();
     });
     port.start();
     for (const w of this.readyWaiters.splice(0)) w();
@@ -67,6 +72,15 @@ export class RpcClient {
   onConnect(fn: () => void): void {
     this.onConnectFns.push(fn);
     if (this.port) fn();
+  }
+
+  /** 端口断开（host 死亡或关端口）时回调 */
+  onDisconnect(fn: () => void): void {
+    this.onDisconnectFns.push(fn);
+  }
+
+  get connected(): boolean {
+    return this.port !== null;
   }
 
   ready(): Promise<void> {
@@ -94,7 +108,7 @@ export class RpcClient {
   }
 
   async call<T>(method: Method, params?: Record<string, unknown>): Promise<T> {
-    if (this.disconnected) throw new RpcFailure({ code: "E_UNREACHABLE", message: "host 连接已断开，等待重新连接" });
+    if (this.disconnected) throw new RpcFailure({ code: "E_UNREACHABLE", message: `${HOST_LINK_LOST}已断开，等待重新连接` });
     await this.ready();
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
