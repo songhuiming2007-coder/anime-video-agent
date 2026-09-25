@@ -151,6 +151,31 @@ class TestStyleFilter:
         assert subindex.NON_DIALOGUE_STYLE.match("NOTE")
         assert subindex.NON_DIALOGUE_STYLE.match("note")
 
+    def test_次回预告独立样式前缀与后缀全部滤掉_且不误伤N25对白轨(self):
+        # D7：独立预告 style（前缀 Yokoku/Preview/预告/予告，或后缀 -Yokoku/_preview/-预告）
+        # 一律滤除；原本 Title-Yokoku 只靠 ^title 命中，Sub-Yokoku / Yokoku-CN 会漏网。
+        for s in ("Yokoku", "yokoku", "Yokoku-CN", "Preview", "Preview-CN",
+                  "次回予告", "下集预告", "预告", "予告",
+                  "Sub-Yokoku", "CN_yokoku", "Sub-Preview", "CN-预告", "Text.yokoku"):
+            assert subindex.NON_DIALOGUE_STYLE.match(s), s
+        # 三番正片主对白轨（Sub-CN/Text-cn/CN/Default/DefaultUP）与 N25 君名 JPN 对白轨绝不误伤
+        for s in ("Sub-CN", "Text-cn", "CN", "Default", "DefaultUP", "JPN"):
+            assert not subindex.NON_DIALOGUE_STYLE.match(s), s
+
+    def test_次回预告台词不进索引_而主对白轨与N25不受误伤(self, tmp_path):
+        f = ass(tmp_path,
+                line(1, 4, "青春是谎言 亦是罪恶", style="Sub-CN"),
+                line(5, 8, "京都啊 八幡有想去的地方吗", style="Yokoku-CN"),
+                line(9, 12, "我想守护这睡颜", style="Sub-Yokoku"),
+                line(13, 16, "从你的前前前世开始我就一直在找你", style="JPN"),
+                line(17, 20, "盲目地肯定周遭的所有事物", style="Sub-CN"))
+        out = subindex.parse(f, "春物", 1, 1)
+        assert [(u.start, u.end, u.text) for u in out] == [
+            (1.0, 16.0, "青春是谎言 亦是罪恶 从你的前前前世开始我就一直在找你"),
+            (13.0, 20.0, "从你的前前前世开始我就一直在找你 盲目地肯定周遭的所有事物"),
+            (17.0, 20.0, "盲目地肯定周遭的所有事物"),
+        ]
+
     def test_ED_歌词不进索引(self, tmp_path):
         f = ass(tmp_path,
                 line(1, 4, "青春是谎言 亦是罪恶"),

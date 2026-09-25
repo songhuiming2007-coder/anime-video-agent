@@ -97,11 +97,18 @@ CJK = re.compile(r"[一-鿿]")
 #    画面文字/台词的行、没有其他 style 重复。两难之下按「宁可漏，不可错」处理：滤掉整个
 #    style——留着的坏处是把译注当台词检索、送进只认中文的 embedding 模型且不报错，
 #    滤掉的坏处只是那几条查不到、退回下一个候选，后者的代价明显更小。
+# 4. **次回预告独立样式（D7）**：`Yokoku` / `Preview` / `预告` / `予告`（前缀或 `[-_.]` 后缀，
+#    如 `Yokoku-CN`、`Sub-Yokoku`、`Preview-CN`、`CN-预告`）。注意：春物 S2 的 `Title-Yokoku`
+#    原先仅靠 `^title` 侥幸命中，若字幕组将预告台词标为 `Yokoku-CN` 或 `Sub-Yokoku` 则会漏网；
+#    而三番实测中，春物（`Sub-CN`/`Text-cn`）与东京喰种（`CN`/`Default`）的预告对白直接混在
+#    正片主对白 style 中（与 N25 君名歌词混入 `JPN`/`CN` 对白轨同构），罪恶王冠 BD 无预告段——
+#    因此这里严守独立预告 style 前后缀边界，绝不触碰 `Sub-CN`/`Text-cn`/`CN`/`Default`/`JPN`
+#    等主对白轨，避免误伤正片台词。
 NON_DIALOGUE_STYLE = re.compile(
     r"^(?:op|ed|in)(?:[-_ ]|cn|jp|\d|$)"
-    r"|^(?:title|staff|bgm|gamen|logo|sign|song|lyric|kara)"
+    r"|^(?:title|staff|bgm|gamen|logo|sign|song|lyric|kara|yokoku|preview|次回予告|下集预告|予告|预告)"
     r"|^(?:jp|note)$"
-    r"|^.*[-_.]song$", re.I)
+    r"|^.*[-_.](?:song|yokoku|preview|予告|预告)$", re.I)
 
 
 @dataclass
