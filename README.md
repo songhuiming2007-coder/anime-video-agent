@@ -1,8 +1,8 @@
 # anime-video-agent
 
-自动化动漫二创短视频（解说 / 杂谈 / 盘点）命令行流水线。
+自动化动漫二创短视频（解说 / 杂谈 / 盘点）agent 流水线。
 
-输入选题，自动完成写稿、配音、素材检索、排片、音视频渲染与质检，输出可直接上传的 1080p MP4、封面图与标题候选。主流程由脚本与 Coding Agent 驱动，人类仅在 4 处关键质检节点介入确认。另有 Electron 桌面端（`desktop/`，v1：期看板 + 全格式产物预览 + 停机点审批卡，只读 + 审批不写产物）。
+输入选题，自动完成写稿、配音、素材检索、排片、音视频渲染与质检，输出可直接上传的 1080p MP4、封面候选与标题候选。日常经 `ava` 宿主入口与内置制片 agent 对话推进（有副作用的操作逐次弹卡、默认 N），人类在 4 处停机点介入确认。另有 Electron 桌面端（`desktop/`，v1：期看板 + 全格式产物预览 + 停机点审批卡，只读 + 审批不写产物）。
 
 ---
 
@@ -12,17 +12,17 @@
 - **本地 Mac（Apple Silicon）**：负责交互、代码执行、视频解复用与 ffmpeg 最终渲染，解除本地显存与散热瓶颈；
 - **云端 Headless GPU（AutoDL）**：承载重型大模型推理（Qwen3-TTS 1.7B、Qwen3-VL、SenseVoice、bge-m3）；本地亦支持 mlx 轻量引擎离线兜底。
 
-### 2. 流水线与耗时（每期人类投入为观测量：原「预算 = k × 片长」2026-09-23 起降为观测，只按停机点分布呈现）
+### 2. 流水线（每期人类投入是观测量：原「预算 = k × 片长」2026-09-23 起降为观测，`human_time.json` 按停机点记录）
 
 ```
 [01 选题] ──> [02 写稿] ──> [02.5 人审改稿] ──> [03 配音] ──> [03.5 配音顺听]
-  (人 1.5m)    (Agent 3m)     (人 3-5m)       (云端/本地 5m)     (人 2-3m)
+   (人)        (Agent)         (人)          (云端/本地)         (人)
                                                      │
 [09 发布] <── [08 封面标题] <── [07 质检] <── [06 渲染] <── [05 审时间码] <── [04 排片]
-  (人 3m)      (Agent 1m)     (机器 40s)    (机器 1.5m)     (人 5m)        (Agent 1m)
+   (人)         (Agent)         (机器)        (机器)           (人)          (Agent)
 ```
 
-- **产物即状态**：无数据库、无外部队列。所有中间件与产物依序落盘至 `data/episodes/<期号>/`（从 `01-topic.md` 到 `07-cover/`），随断随续。
+- **产物即状态**：无数据库、无外部队列。所有中间产物依序落盘至 `data/episodes/<期号>/`（从 `01-topic.md` 到 `07-cover/`），随断随续。
 - **让失败显式发生**：杜绝静默降级（空镜兜底、截断容错等），不达标当场报错中断。
 
 ---
@@ -39,8 +39,8 @@
 
 ```bash
 # 1. 克隆并安装依赖
-git clone <repo-url> && cd anime-video-agent-v2
-uv venv && uv pip install -e ".[apple,dev]"
+git clone <repo-url> && cd anime-video-agent
+uv venv && uv pip install -e ".[apple,dev]"   # 网络升级链另有 crawl / browser 两组 extras，浏览器二进制需人工一次性安装（见 pyproject.toml 注释）
 
 # 2. 初始化数据目录（本地或外置存储盘软链接）
 ./pipeline/preflight.sh --init                           # 使用本地系统盘
@@ -74,9 +74,11 @@ pytest
 
 ### 每期生产流水线（01 – 09 步）
 
+日常入口是 `ava`：`ava new <期号>` 建期并进对话，`ava <期号>` 进当期对话，`ava idea` 进无期选题会话；`/` 开头的快捷键零 token（`ava <期号> /run <命令>` 即下表命令的宿主等价）。下表列的是底层命令，详见 [`docs/WORKFLOW.md`](docs/WORKFLOW.md)。
+
 | 步骤 | 名称 | 执行者 | 命令 / 操作 | 核心产物与检查点 |
 |---|---|---|---|---|
-| **01** | **选题定稿** | 人类 | 创建 `data/episodes/<期号>/01-topic.md` | 明确番剧、体裁、模式、张力与核心锚点 |
+| **01** | **选题定稿** | 人类 | 填 `data/episodes/<期号>/01-topic.md` | 明确番剧、体裁、模式、张力与核心锚点 |
 | **02** | **脚本写作** | Agent | 调 `skills/write-script` 查证写稿并运行：<br>`python -m pipeline.check_script data/episodes/<期号>/02-script.md` | 产出 `02-script.md`，机检字数、起伏、节奏、锚点与查询接口 |
 | **02.5** | **人审改稿** | **人类** | 人工通读精修 `02-script.md` | 核验台词原文、说话人与事实判断，去除模型套话 |
 | **03** | **语音合成** | Agent / 机器 | `python -m pipeline.tts data/episodes/<期号>` | 产出 `03-audio/`，Whisper 自动回读比对质检，复核实际时长 |
@@ -85,7 +87,7 @@ pytest
 | **05** | **审时间码** | **人类** | `python -m pipeline.review data/episodes/<期号>`<br>浏览器打开 `04-review.html` 确认无误后执行：<br>`python -m pipeline.review data/episodes/<期号> --approve` | **核心人工质量闸门**：抽帧比对口播、画面与台词，拦截画外音错配 |
 | **06** | **本地渲染** | Agent / 机器 | `python -m pipeline.render data/episodes/<期号>` | 切片、拼装、混 BGM、烧录字幕、响度归一，输出 `05-final.mp4` |
 | **07** | **质量门禁** | 机器 | `python -m pipeline.qc data/episodes/<期号>` | 11 项机器硬指标质检（音画同步、黑帧、静音、字幕超宽/空段等），产出 `06-check.log` |
-| **08** | **封面与标题** | Agent / 机器 | `python -m pipeline.cover data/episodes/<期号>` | 候选帧自动去重过滤，输出封面联系表与 5 条候选标题（`07-titles.md`） |
+| **08** | **封面与标题** | Agent / 机器 | `python -m pipeline.cover data/episodes/<期号>` | 候选帧硬过滤 + 去重，输出 9 张不排序的封面候选（`07-cover/`）与标题原料（`07-titles.md`，候选标题由 agent 据此写） |
 | **09** | **人工发布** | **人类** | 人选定稿封面与标题，手动上传平台 | 闭环发布 |
 
 ---
@@ -98,7 +100,7 @@ pytest
 - **分工序标准操作 Runbook**：[`docs/runbook/`](docs/runbook/) —— 01–09 独立步骤操作手册（每篇独立成册）；
 - **判据与质检标准定义**：[`docs/dev/STANDARD.md`](docs/dev/STANDARD.md) —— 所有量化门禁、评分与测试用例准则；
 - **文档全景索引表**：[`docs/INDEX.md`](docs/INDEX.md) —— 生产态与开发态双轨索引；
-- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）等核心决策；
+- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）、事件层与桌面端（ADR-0020）、网络与素材工具（ADR-0021）、上下文装配（ADR-0022）、跨期记忆与模型分层（ADR-0023）等核心决策；
 - **Coding Agent 协作规范**：[`AGENTS.md`](AGENTS.md) —— 人机红线、停机点与工程约定（Claude Code 2.1.277+ / pi 等全 Agent 统一 SSOT）。
 
 ---
