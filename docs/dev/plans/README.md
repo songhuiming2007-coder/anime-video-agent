@@ -21,6 +21,8 @@
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列（**一期 8 份 spec 已全部完工验收，2026-09-25 S25 移入 [`archive/`](archive/)**）；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
+| [Spec 9：无终端 agent 会话协议与 Session 恢复（core）](2026-09-25-agent-session-protocol-spec.md) | D28 | ADR-0020, ADR-0021, ADR-0022, ADR-0023 | **v0.7 红队 🟢，可动工**（六轮评审全部闭环）；§6.1 修订请求已获授权（2026-09-25）；从 PR0 开始；Spec 10 提出的 S9-R1~R4 待并入 v0.8 并经红队定向复核，PR3（协议进程）施工前须完成 |
+| [Spec 10：桌面端对话面板与人审卡片（desktop）](2026-09-25-desktop-conversation-panel-spec.md) | — | ADR-0020, ADR-0018, ADR-0021, ADR-0023 | **v0.5 红队四轮 🟢**：PR0–PR3 可动工；PR4 须待 S9-R4 最终措辞获人确认、S9-R1~R4 并入 Spec 9 v0.8 并经定向复核、Spec 9 PR3 施工完成；§6.1 修订请求已获授权（2026-09-26） |
 
 > 2026-09-25 文档同步归档 4 份（完成判定已满足，移入 [`archive/`](archive/)）：P2 段级时长不变量（`pipeline/align.py` refit + review/render 双卡口已落地）、M2b 素材池修正（b257e6d 已验收）、ava idea scope 启动入口（D27 闭环）、pi 侦察派工单（v0.4 已验收）。B4 仅为 P2 内部编号，issues 表无对应行，无需同步。
 
