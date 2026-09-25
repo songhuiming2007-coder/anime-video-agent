@@ -38,7 +38,7 @@
 | N11 | 备忘 | Python 3.15 未验 + 语音 engine 接缝只 mlx 实现 | `README.md:76,80-81` | ADR-0006 | Qwen3-TTS 已用接缝；Windows 侧未补 |
 | N12 | 备忘 | BGM 素材缺口 + voice readings 换番要清 | `config/bgm.json:61,170` | — | 伴奏单曲缺；readings 表每番积累需清理 |
 | N14 | 备忘 | FACE_EXPAND=1.6 待逐番标定 | `pipeline/faces.py:120-122` | ADR-0003 | 起点值，抽检认混时调 |
-| N16 | 备忘 | 春物角色样本少 + _note 口径与实际通道不符 | `config/characters.json:6` | ADR-0003 | 川崎/叶山/三浦样本少；`_note` 仍按 camie 口径写，实际已是 ccip |
+| N16 | 备忘（_note 已对齐 ccip） | 春物角色样本少 | `config/characters.json:5-6` | ADR-0003 | `_note`（及顶层 `_note`/`_format`、`春物._missing`、`伪恋._note`）已按 `presence_producer=ccip` 实际实现、阈值标定依据（`ccip_same=0.05`/`ccip_margin=0.02`/`face_expand=1.6`）与 40 集 64 簇贴 24 簇实况对齐；川崎/叶山/三浦/小町代表脸簇少（1–2 簇）、陽乃 0 簇属内容资产事实，保留备忘 |
 | N17 | 备忘 | 三番合计 239 个角色簇未贴名 | `vindex/*.clusters.json` | D11 | 春物 40 / 东京喰种 173 / 罪恶王冠 26 簇无名字 |
 | N19 | 备忘 | cpm 换音色/换题材/换引擎要重测 | `config/project.json:49` | ADR-0006 | 同一音色不同文风可差 24%；Qwen3 语速待实测 |
 | N20 | 备忘 | 触发式推翻条件未单独立档 | `ADR-0002/0003/0004/0005` | — | 各 ADR 的 what-if 分散在库里；是否抽成备忘是结构性取舍 |
