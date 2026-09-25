@@ -28,7 +28,7 @@ class TestPhase0Batch:
         calls = []
         monkeypatch.setattr(ingest, "verify", lambda v, s: (True, []))
         monkeypatch.setattr(ingest, "register",
-                            lambda v, a, s, e: calls.append(("reg", e)) or {})
+                            lambda v, a, s, e, **_: calls.append(("reg", e)) or {})
 
         def build(sub, anime, season, ep, index_dir):
             calls.append(("build", ep))
@@ -50,7 +50,7 @@ class TestPhase0Batch:
         v1, v2 = _mk(tmp_path, "[01].mkv"), _mk(tmp_path, "[02].mkv")
         calls = self._env(monkeypatch, {1: 120, 2: 121})
         monkeypatch.setattr(ingest, "register",
-                            lambda v, a, s, e: (_ for _ in ()).throw(
+                            lambda v, a, s, e, **_: (_ for _ in ()).throw(
                                 SystemExit("FAIL 片源不完整")) if e == 1
                             else calls.append(("reg", e)) or {})
         bad = ingest.phase0([v1, v2], "春物", 1, index_dir=tmp_path / "idx")
@@ -142,7 +142,7 @@ class TestPhase0MovieEntry:
         calls = []
         monkeypatch.setattr(ingest, "verify", lambda v, s: (True, []))
         monkeypatch.setattr(ingest, "register",
-                            lambda v, a, s, e: calls.append(("reg", e)) or {})
+                            lambda v, a, s, e, **_: calls.append(("reg", e)) or {})
         monkeypatch.setattr(ingest, "build",
                             lambda sub, anime, season, ep, index_dir:
                             calls.append(("build", ep)) or 10)
@@ -167,3 +167,93 @@ class TestPhase0MovieEntry:
                                           "--anime", "x", "--season", "1", "--episode", "1"])
         with pytest.raises(SystemExit):
             ingest.main()
+
+
+class TestPhase0ReindexFingerprint:
+    """N5：phase0 --reindex 跳过 verify 的指纹门禁（path + size + sub_sha256）。
+
+    旧实现只看集号 tag（如 S01E01）在不在 sources.json[anime] 里——
+    同名替换 .mkv/.ass 或换路径重跑 --reindex 时，对轴校验被静默跳过，
+    新片源/新字幕未经 verify 直接写进索引与 sources.json。
+    """
+
+    def _setup(self, tmp_path, monkeypatch):
+        src_json = tmp_path / "sources.json"
+        monkeypatch.setattr(ingest, "SOURCES", src_json)
+        monkeypatch.setattr(ingest, "intact", lambda v: (True, ""))
+        monkeypatch.setattr(
+            ingest, "probe_video",
+            lambda v: {"duration": 1440.0, "fps": "24000/1001",
+                       "frame": 1001 / 24000, "width": 1920, "height": 1080},
+        )
+        calls = []
+        monkeypatch.setattr(
+            ingest, "verify",
+            lambda v, s: (calls.append(("verify", v.name, s.name)) or True, []),
+        )
+        monkeypatch.setattr(
+            ingest, "build",
+            lambda sub, a, s, e, idx: calls.append(("build", e)) or 120,
+        )
+        return src_json, calls
+
+    def test_指纹未变免跑verify_替换片源或字幕强制重跑(self, tmp_path, monkeypatch):
+        src_json, calls = self._setup(tmp_path, monkeypatch)
+        v1 = _mk(tmp_path, "[01].mkv")
+        s1 = tmp_path / "[01].Chs&Jap.ass"
+        idx = tmp_path / "idx"
+
+        # ① 首次入库：跑 verify + build + register（落盘 size 与 sub_sha256）
+        assert ingest.phase0([v1], "春物", 1, index_dir=idx) == 0
+        assert calls == [("verify", "[01].mkv", "[01].Chs&Jap.ass"), ("build", 1)]
+        entry = __import__("json").loads(src_json.read_text(encoding="utf-8"))["春物"]["S01E01"]
+        assert entry["size"] == 3 and len(entry["sub_sha256"]) == 64
+
+        # ② 未动片源与字幕，跑 --reindex → 免跑 verify，只跑 build
+        calls.clear()
+        assert ingest.phase0([v1], "春物", 1, index_dir=idx, reindex=True) == 0
+        assert calls == [("build", 1)]
+
+        # ③ 同文件名替换片源 .mkv（size 变）→ 强制重跑 verify
+        calls.clear()
+        v1.write_bytes(b"mkv-replaced-v2")
+        assert ingest.phase0([v1], "春物", 1, index_dir=idx, reindex=True) == 0
+        assert calls == [("verify", "[01].mkv", "[01].Chs&Jap.ass"), ("build", 1)]
+
+        # ④ 同文件名替换外挂字幕 .ass（sub_sha256 变）→ 强制重跑 verify
+        calls.clear()
+        s1.write_text("[Script Info]\nreplaced-sub-v2", encoding="utf-8")
+        assert ingest.phase0([v1], "春物", 1, index_dir=idx, reindex=True) == 0
+        assert calls == [("verify", "[01].mkv", "[01].Chs&Jap.ass"), ("build", 1)]
+
+        # ⑤ 换了文件路径（size 与字幕内容完全相同，仅 path 变）→ 同样强制重跑 verify
+        calls.clear()
+        sub_dir = tmp_path / "other_group"
+        sub_dir.mkdir()
+        v2 = sub_dir / "[01].mkv"
+        v2.write_bytes(v1.read_bytes())
+        (sub_dir / "[01].Chs&Jap.ass").write_text(s1.read_text(encoding="utf-8"), encoding="utf-8")
+        assert ingest.phase0([v2], "春物", 1, index_dir=idx, reindex=True) == 0
+        assert calls == [("verify", "[01].mkv", "[01].Chs&Jap.ass"), ("build", 1)]
+
+    def test_换文件路径或旧表缺指纹强制重跑_且对轴不过则拦截(self, tmp_path, monkeypatch):
+        import json as _json
+        src_json, calls = self._setup(tmp_path, monkeypatch)
+        v1 = _mk(tmp_path, "[01].mkv")
+        idx = tmp_path / "idx"
+
+        # 模拟旧版 sources.json（只有 path/duration，无 size/sub_sha256）
+        src_json.write_text(_json.dumps({
+            "春物": {"S01E01": {"path": str(v1), "duration": 1440.0,
+                                "fps": "24000/1001", "frame": 0.0417,
+                                "width": 1920, "height": 1080}}
+        }), encoding="utf-8")
+        # 且此时被替换的新片源对轴校验不过
+        monkeypatch.setattr(
+            ingest, "verify",
+            lambda v, s: (calls.append(("verify", v.name)) and False, ["  对齐窗偏移 5.0s"]),
+        )
+        bad = ingest.phase0([v1], "春物", 1, index_dir=idx, reindex=True)
+        assert bad == 1
+        assert calls == [("verify", "[01].mkv")]  # 必须触发 verify 且拦截 build/register
+

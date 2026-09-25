@@ -26,6 +26,7 @@ from __future__ import annotations
 from . import paths  # 必须在任何 HF 库之前：把模型缓存钉到 SSD
 
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -371,26 +372,42 @@ def probe_video(video: Path) -> dict:
     }
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def register(video: Path, anime: str, season: int, episode: int,
-             path: Path = SOURCES, sp: int | None = None,
-             title: str | None = None) -> dict:
+             path: Path | None = None, sp: int | None = None,
+             title: str | None = None,
+             sub_path: Path | None = None) -> dict:
     """把一集片源登记进 sources.json，登记前强制过完整性校验。
 
     渲染阶段要从 (season, episode) 找到 mkv，而索引里只有集号没有路径——
     这张表就是那座桥。**它同时是「这一集验过」的凭证**：`intact` 不过就不许登记，
     所以渲染永远不可能切到残缺片源上。
 
+    N5（2026-09-25）：同时落盘视频字节大小 `size` 与（若给 `sub_path`）外挂字幕
+    `sub_sha256`。`phase0 --reindex` 仅在 `path + size + sub_sha256` 三项全部匹配时
+    才免跑 `verify`；同名替换 `.mkv`/`.ass` 或换路径都会因指纹不一致自动重跑 `verify`。
+
     `sp`（ADR-0010 决策二，2026-09-07）：给值就登记为 SP 特典集（`SP01`…），
     season/episode 忽略。MV/Live/物证都走这里，挂企划名（`--anime EGOIST`）下。
 
     合并写入，不覆盖其他集。
     """
+    path = path if path is not None else SOURCES
     ok, detail = intact(video)
     if not ok:
         raise SystemExit(f"FAIL 片源不完整，不予登记：{detail}\n     {video}")
     db = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     key = f"SP{sp:02d}" if sp is not None else f"S{season:02d}E{episode:02d}"
-    entry = {"path": str(video), **probe_video(video)}
+    entry = {
+        "path": str(video),
+        "size": video.stat().st_size if video.exists() else 0,
+        **probe_video(video),
+    }
+    if sub_path is not None and sub_path.exists():
+        entry["sub_sha256"] = _sha256(sub_path)
     if title:
         entry["title"] = title
     db.setdefault(anime, {})[key] = entry
@@ -399,7 +416,8 @@ def register(video: Path, anime: str, season: int, episode: int,
     return entry
 
 
-def load_sources(anime: str, path: Path = SOURCES) -> dict[str, dict]:
+def load_sources(anime: str, path: Path | None = None) -> dict[str, dict]:
+    path = path if path is not None else SOURCES
     if not path.exists():
         raise SystemExit(f"FAIL 没有片源登记表 {path}，先跑 `ingest sources`")
     db = json.loads(path.read_text(encoding="utf-8"))
@@ -508,14 +526,21 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
             bad += 1
             continue
 
-        # --reindex 免跑 verify，但**只对已登记的集生效**。
+        # --reindex 免跑 verify，但**只对已登记且片源/字幕指纹未变的集生效**（N5）。
         # 登记过 = 当初过了 verify（register 是 phase0 里 verify 之后才做的），
-        # 而 verify 判的是「这个字幕的轴对不对得上这个视频」——解析器改了不影响这个结论。
-        # 把条件绑在登记表上而不是绑在一个裸开关上，是为了让它没法被用来
-        # 把没验过的字幕塞进索引：没登记的集，--reindex 一样要老老实实跑 verify。
-        registered = (reindex and SOURCES.exists()
-                      and tag in json.loads(SOURCES.read_text(encoding="utf-8"))
-                      .get(anime, {}))
+        # 而 verify 判的是「这个字幕的轴对不对得上这个视频」——解析器改了不影响这个结论，
+        # 但若片源 .mkv 或外挂 .ass 被同名替换（或换了文件）而仍只看集号 tag 在不在表里，
+        # 就会把没对过轴的新片源/新字幕静默塞进索引。因此必须同时核对 path + size + sub_sha256。
+        entry = (json.loads(SOURCES.read_text(encoding="utf-8"))
+                 .get(anime, {}).get(tag)
+                 if reindex and SOURCES.exists() else None)
+        registered = bool(
+            entry
+            and entry.get("path") == str(video)
+            and entry.get("size") == video.stat().st_size
+            and entry.get("sub_sha256") == _sha256(sub_path)
+        )
+        reverified = bool(entry and not registered)
         if not registered:
             ok, detail = verify(video, sub_path)
             if not ok:
@@ -534,12 +559,14 @@ def phase0(videos: list[Path], anime: str, season: int, pattern: str = EP_PATTER
         # 批量命令里单点失败停下整批，等于逼人一次次重跑前端。
         try:
             n = build(sub_path, anime, season, ep, index_dir)
-            register(video, anime, season, ep)
+            register(video, anime, season, ep, sub_path=sub_path)
         except (SystemExit, subprocess.CalledProcessError) as e:
             say("FAIL", tag, str(e).strip() or e.__class__.__name__)
             bad += 1
             continue
-        say("OK", tag, f"{n} 个检索单元" + ("（重建，未重跑 verify）" if registered else ""))
+        suffix = ("（重建，未重跑 verify）" if registered
+                  else "（片源/字幕指纹变更或缺失，已重跑 verify）" if reverified else "")
+        say("OK", tag, f"{n} 个检索单元{suffix}")
 
     print("-" * 60)
     done = sum(r[0] == "OK" for r in rows)

@@ -28,7 +28,7 @@
 | N1 | 备忘 | WD tagger 是占位死代码 | `pipeline/vindex.py:90-91` | ADR-0003 | 词表覆盖率低但故意保留以跑通路径；换真人影视时整块摘除 |
 | N2 | 备忘 | tagger general 标签落盘但无检索路径读它 | `pipeline/vindex.py:321-324` | ADR-0003 | 为第 2 层万一复活留的备用料 |
 | N4 | 备忘 | CoreML 推理路径不可用，退回 CPU | `pyproject.toml:34-36` | — | onnxruntime CoreML EP 在动漫图上报错，CPU 够用 |
-| N5 | 备忘 | ingest phase0 重建索引时跳过 verify 的静默风险 | `pipeline/ingest.py:465-482` | — | 已登记过的集不重跑 verify；片源被替换后可能静默失效 |
+| N5 | 已解决（已落盘指纹校验） | ingest phase0 重建索引时跳过 verify 的静默风险 | `pipeline/ingest.py:375-418,529-562` | — | `register()` 落盘视频字节大小 `size` 与外挂字幕 `sub_sha256`；`phase0 --reindex` 仅在 `path + size + sub_sha256` 三项全匹配时才免跑 `verify`，同名替换片源/字幕、换路径或旧表缺指纹均自动重跑 `verify`（`tests/test_ingest.py::TestPhase0ReindexFingerprint` + M1/M2/M3 变异检验锁死） |
 | N6 | 备忘 | ASR 兜底同音字错误是已知限制 | `pipeline/asr.py:16-17` | — | 语义检索鲁棒，精确文本匹配不要依赖 ASR |
 | N8 | 备忘 | 簇纯度阈值待定 + Phase 0 人工时长待回填 | `docs/adr/0003:270,274` | ADR-0003 | 20 张抽检已执行，正式阈值和总时长未回填 |
 | N9 | 备忘 | PRESENCE_BAND 换番/换模型要重测 | `docs/adr/0004:106-107,127-138` | ADR-0004 | 0.06 是本番语料噪声性质；推翻条件待观察 |
