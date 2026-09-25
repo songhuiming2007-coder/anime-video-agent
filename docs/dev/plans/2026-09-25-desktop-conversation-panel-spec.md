@@ -1,6 +1,6 @@
 # Implementation Spec：桌面端对话面板与人审卡片（Spec 10 / desktop 侧，消费 Spec 9）
 
-日期：2026-09-26（**v0.5**，红队四轮定向复审 **🟢**，所提 4🔵 已按用户指示并入；三轮 1🟡 + 4🔵 已于 v0.4、二轮 3🟡 + 11🔵 已于 v0.3、一轮 1🔴 + 12🟡 + 13🔵 已于 v0.2 收口；状态：**PR0–PR3 可动工；PR4 须待 S9-R4 最终措辞获人确认、S9-R1~R4 并入 Spec 9 v0.8 并经定向复核、Spec 9 PR3 施工完成**，见 §1.4）  
+日期：2026-09-26（**v0.5**，红队四轮定向复审 **🟢**，所提 4🔵 已按用户指示并入；三轮 1🟡 + 4🔵 已于 v0.4、二轮 3🟡 + 11🔵 已于 v0.3、一轮 1🔴 + 12🟡 + 13🔵 已于 v0.2 收口；状态：**PR0–PR3 可动工；PR4 须待 S9-R1~R4 并入 Spec 9 v0.8 并经定向复核、Spec 9 PR3 施工完成**（S9-R3/R4 最终措辞已于 2026-09-26 获人确认），见 §1.4）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1 旅程第 2–5 步、§0.2 第 1/2 条、§4 施工红线、§5 明确排除、§6 Spec 10）  
 相关 ADR：ADR-0020（§3、§4「host utilityProcess 承载 agent 会话」、§5）、ADR-0018（保留条款）、ADR-0021（素材 fetch 人批、browser 逐调用卡）、ADR-0023（记忆首次写入人确认）。**不新立 ADR**（理由见 §6.7）  
 契约依赖：**Spec 8**（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；**Spec 9**（v0.7 红队 🟢、**尚未施工**，`2026-09-25-agent-session-protocol-spec.md`，以其 §3.1 冻结协议与 §6.6 H-1~H-10 为准）；Spec 2/3/5/6/7（已施工）  
@@ -29,6 +29,7 @@
 | 红队一轮后（🟡-1） | renderer 被攻破后可自行驱动 agent 并批卡 | **browser 卡与素材抓取卡的「批准」改走 main 原生确认框**；其余卡维持一次点击，残余影响范围如实写入 RF-3 |
 | 红队一轮后（🟡-4） | 退出 app 时回合中的会话 | **确认退出即跳过收尾**：空闲会话发 `shutdown`；回合中或有未答卡的会话直接 SIGTERM，确定地记 `wrapup:"skipped"`；提 S9-R3 修订 H-6 措辞 |
 | 2026-09-26 | §6.1 全部修订请求（S8-R2~R12、S9-R1~R4、C10-R1~R4、DIR-R2、测试改动） | **授权**（「授权你」）；落地时机见 §8：C10-* 随 PR0，S8-* 随 PR1–PR3，S9-* 须先并入 Spec 9 并经其定向复核，DIR-R2 随 PR0 落盘 |
+| 红队四轮后 | S9-R3（`aborted` 例外）、S9-R4（每回合恰好一帧、覆盖全部结局、失败照发、带 `turn_id`）在 2026-09-26 授权后补充的措辞 | **确认**（v0.5 最终措辞）；并入 Spec 9 v0.8 后对 Spec 9 做只限 S9-R1~R4 的定向复核 |
 | 红队一轮后（🟡-6） | 空模板 `01-topic.md` 被判为 01 已完成 | **改 core：字段没填算 01 未完成**（C10-R3；判定规则由 core 定，本 spec 按「0 期真实回归」的最小规则提出，见 §3.8） |
 
 **作者自报的未实测假设**（红队优先攻击面；正文相应处已标「约」）
@@ -67,7 +68,7 @@ host 新增 `sessions.ts`：每个会话键（`ep:<epKey>` 或 `idea`）至多�
 | 🔵-3 | R6 扫描 `entries` 重建 `awaiting`，长回合日志让缓冲超过 `CONV_BUFFER_MAX_BYTES` 截头后 `turn_started` 丢失，中间版本重新闪进预览 | `ConvSnapshot` 增 `settlePending`（单独保存，不受截头影响）；R6 改为只看 `phase`/`turnId`/`settlePending` 三个顶层字段；TV-6 ⑪(d)；MUT-73 |
 | 🔵-4 | TX-5 ⑤ 缺同步点：两次 `clips` 间隔过短时第一版 pending 从未建出，MUT-50 下「第二版、计数恰增 1」照样成立，用例抓不到它 | TX-5 ⑤ 增同步点：批准第一张卡后先等第一版 pending 出现在 `approvals_store.json` 并断言呼出计数未变，再点第二张卡 |
 
-**授权确认**：S9-R4 的 `turn_id` 键为用户 2026-09-26 指示加入；S9-R4（含 v0.3/v0.4 补充的义务）的最终措辞仍须人明确确认一句，再并入 Spec 9 v0.8，并对 Spec 9 做只限 S9-R1~R4 的定向复核。
+**授权确认**：S9-R4 的 `turn_id` 键为用户 2026-09-26 指示加入；S9-R3（含 `aborted` 例外）与 S9-R4（含 v0.3/v0.4 补充的义务与 `turn_id`）的 v0.5 最终措辞已于 2026-09-26 获用户确认（「确认」）。下一步：并入 Spec 9 v0.8，并对 Spec 9 做只限 S9-R1~R4 的定向复核。
 
 ### 1.3 第三轮红队定向复审裁决与修订纪要（v0.3 → v0.4，1🟡 + 4🔵 全收；原裁决「🟡 修订后定向复审，只剩 1 条 🟡」）
 
@@ -652,8 +653,8 @@ export function spawnSession(t: SessionTemplate, args: { ep?: string }, ctx: { r
 | **S8-R12** | `desktop/src/host/heal.ts:109` `latestPerStop` | 按字符串 `>=` 比较 `created_at`，在微秒恰为 0 的时间戳上排错序（🔵-12 扩大）；改用 `shared/isoTime.ts` 的 `compareIso` | 非阻塞（Spec 8 已落地代码的潜在缺陷，概率约百万分之一，可随 PR2 修） |
 | **S9-R1** | Spec 9 §3.1 | `tool` 帧 `summary`/`ok` 的定义与新增 `observation`；`history` 的 tool 条目增 `ok`、`text` 规则（§3.2） | 阻塞（Spec 9 未施工，越早改越省；须红队对 Spec 9 做定向复核） |
 | **S9-R2** | Spec 9 §3.1 | 入站可选 `rid`、四类出站帧回显（§3.2） | 阻塞（同上） |
-| **S9-R3** | Spec 9 §6.6 H-6 | 原文「关窗先发 shutdown，留出收尾时间后再 SIGTERM」→「**结束会话**先发 `shutdown`、留出收尾时间后再 SIGTERM；**退出 app**（人已在确认框同意中断）时，空闲会话发 `shutdown`，回合中或有未答卡的会话直接 SIGTERM，记 `turn_end{wrapup:"skipped"}`；若会话已在收尾中（人先点过停止），SIGTERM 按 §2.2 状态表放弃收尾、记 `aborted`」（二轮 🔵-7：与 §2.10 一致） | 阻塞；已授权（2026-09-26）；`aborted` 例外为授权后补充，请人确认 |
-| **S9-R4** | Spec 9 §4.7、§3.1 | 每个回合恰好一帧 `stop_points`（`items` 可空、覆盖全部结局），在 `turn_finished` 之后、本回合 `ensure_pending` 完成写盘之后发出，**不要求相邻**；该帧新增键 `turn_id`（回合外发出的 `ready` 那帧为 `null`）（§3.2） | 阻塞（§2.7 host 结算依赖）；v0.3/v0.4 在 2026-09-26 授权之后补充了措辞（新增义务：每回合恰好一帧、覆盖全部结局、失败照发）；`turn_id` 键为用户 2026-09-26 指示加入（四轮 🔵-1）；**最终措辞须人明确确认后再并入 Spec 9** |
+| **S9-R3** | Spec 9 §6.6 H-6 | 原文「关窗先发 shutdown，留出收尾时间后再 SIGTERM」→「**结束会话**先发 `shutdown`、留出收尾时间后再 SIGTERM；**退出 app**（人已在确认框同意中断）时，空闲会话发 `shutdown`，回合中或有未答卡的会话直接 SIGTERM，记 `turn_end{wrapup:"skipped"}`；若会话已在收尾中（人先点过停止），SIGTERM 按 §2.2 状态表放弃收尾、记 `aborted`」（二轮 🔵-7：与 §2.10 一致） | 阻塞；已授权（2026-09-26）；`aborted` 例外为授权后补充，2026-09-26 已获人确认 |
+| **S9-R4** | Spec 9 §4.7、§3.1 | 每个回合恰好一帧 `stop_points`（`items` 可空、覆盖全部结局），在 `turn_finished` 之后、本回合 `ensure_pending` 完成写盘之后发出，**不要求相邻**；该帧新增键 `turn_id`（回合外发出的 `ready` 那帧为 `null`）（§3.2） | 阻塞（§2.7 host 结算依赖）；v0.3/v0.4 在 2026-09-26 授权之后补充了措辞（新增义务：每回合恰好一帧、覆盖全部结局、失败照发）；`turn_id` 键为用户 2026-09-26 指示加入（四轮 🔵-1）；v0.5 最终措辞 2026-09-26 已获人确认，待并入 Spec 9 v0.8 |
 | **C10-R1** | `pipeline/paths.py`、`pipeline/agent/cli.py` `create_new_episode`、`main` | §3.7 全部：`require_data_at`；检查与写入同源；名字规则（含禁 `-` 前缀）；退出码 | 阻塞（其中「建出 `data/`」违反 AGENTS.md 五，与桌面端无关也该修） |
 | **C10-R2** | `pipeline/agent/llm.py` | 新增 `api_key_env_name(root=None) -> str \| None`（只读配置、不读环境变量；`base_url`/`model`/`api_key_env` 缺一即 `None`，同 `llm.py:136-140`）；`load_llm_config` 改为调用它取名字，行为字节不变 | 阻塞 |
 | **C10-R3** | `pipeline/status.py` | §3.8：存在「类型」行且值全为空 → 01 未完成 | 阻塞；方向已由用户裁决（🟡-6） |
