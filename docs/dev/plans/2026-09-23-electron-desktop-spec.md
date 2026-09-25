@@ -104,15 +104,15 @@
 | 🔵 m11 | 「core 零改动」标题误导；TG-7 字面量禁令可被拼接绕过 | **采纳** | 措辞改为「本 spec 的 PR 零改动；依赖的 core 改动经 Spec 3 修订请求」；§6.5 如实写明 TG-7 只防无意识引入，门禁 2 的真防线是真期人工对照 |
 
 **作者自报的未实测假设（红队复审优先攻击面；正文均已标「约」）**：
-1. `mac.identity: null` + `resetAdHocDarwinSignature: true` 下 arm64 包能启动（v0.3 按红队 m2 改验收标准：能启动、记录 `codesign -dv` 输出、记录重建后 TCC 行为；不要求 `codesign --verify --deep --strict` 通过——bundle 本身未签名）（§2.10）；
+1. `mac.identity: null` + `resetAdHocDarwinSignature: true` 下 arm64 包能启动（v0.3 按红队 m2 改验收标准：能启动、记录 `codesign -dv` 输出、记录重建后 TCC 行为；不要求 `codesign --verify --deep --strict` 通过——bundle 本身未签名）（§2.10）；S23 实测：能启动，fuses 步骤对整个 bundle ad-hoc 重签（Sealed Resources 10 个文件），`codesign --verify --deep --strict` 退 0；
 2. `utilityProcess.fork` 可直接加载 asar 内的 host 入口，全部 fuse 打开后仍可拉起（§2.10）；
 3. 沙箱 iframe（无 `allow-same-origin`）内 gallery 的剪贴板写入是否可用（§2.7，RF-7）；
-4. host 拉起的 Python 子进程访问外置卷时 TCC 权限归属于 app；**ad-hoc 签名每次重建 cdhash 变化后，可移除卷授权是否需要重授**（§2.8）；
+4. host 拉起的 Python 子进程访问外置卷时 TCC 权限归属于 app；**ad-hoc 签名每次重建 cdhash 变化后，可移除卷授权是否需要重授**（§2.8）；门禁 15 实测（2026-09-25）：首次启动弹 TCC 框（仓库在 `~/Documents` 时先弹「Documents 文件夹」，再弹可移除卷），允许后正常；每次 `release-build` 后重新弹框，不会静默变成 `permission-denied`；
 5. 临时 repo 副本内 `.venv` 软链后 `import pipeline` 解析到副本（§7.1 夹具）；
 6. `standard: true` 的自定义 scheme 在交给 handler 前已规范化 dot-segment（§3.5，影响 TS-3 期望值）；
 7. packaged 版检测 `remote-debugging-*` 后退出时，DevTools 端口是否已短暂监听（§2.10，TS-6 如实记录）；
 8. 外置盘（T7）文件系统上 `os.utime(ns=…)` 与 `copy2` 同样保留纳秒 mtime，使 05 解封物与 host 事后核验的指纹比对成立（§2.6；APFS 已实测相等）；
-9. 开发构建与打包构建的 userData 路径不同，二者可同时运行（§2.2，RF-21；红队 m10）；
+9. 开发构建与打包构建的 userData 路径不同，二者可同时运行（§2.2，RF-21；红队 m10）；**S23 实测证伪**：二者同为 `~/Library/Application Support/ava`（productName 同为 ava），单实例锁互相可见、不能同时运行，settings.json 共用；
 10. Electron 44 的 utilityProcess 里，`JSON.parse` 的 reviver 能拿到 `context.source`（V8 的 JSON.parse source text access；系统 Node v26.10.0 已实测支持，但 vitest 跑在系统 Node 上，证明不了 Electron 运行时）。host 启动自检 fail-closed；PR2 首日在 `electron-vite dev` 下记录自检结果，TS-2 在打包版上断言（§3.1 规则 8，红队 R3-B1）。
 
 ---
@@ -175,7 +175,7 @@ desktop/
 | **host**（`utilityProcess.fork`，`electron.d.ts:15844`，`serviceName: "ava-host"`） | 期列表；`events.jsonl` 轮询 tail 与折叠；`approvals_store.json` 直读；可达性诊断；heal 调度（§2.12）；**全部 spawn**；RPC 分发 | 对 `data/` 任何写（含 mkdir/rename/unlink/appendFile）；出网；监听端口；自行推导工序 |
 | **renderer**（`contextIsolation: true`、`sandbox: true`、`nodeIntegration: false`） | 期列表、产物树、事件时间线、PreviewPane、Approval 决策条、健康面板与横幅 | 任何 Node API；直接读文件（文件内容一律经 `ava-media://`）；直连 host 以外的通道 |
 
-- **通信**：不引入 RPC 框架（ADR-0020 §4）。renderer↔host 直连一条 `MessagePort`（main 只撮合不转发），载荷为 §3.2 的自有信封；host↔main 仅有生命周期消息（`port`、`renderer-reset`、`reach`、`host-ready`、`shutdown`）。**协议自有、方法闭集**：UI 只投影 Spec 2 事件与 Spec 3 approval 对象，不做 ACP/MCP 等通用 agent 协议适配（ZCode v2→v3 教训，direction §5）。
+- **通信**：不引入 RPC 框架（ADR-0020 §4）。renderer↔host 直连一条 `MessagePort`（main 只撮合不转发），载荷为 §3.2 的自有信封；host↔main 仅有生命周期消息（`port`、`renderer-reset`、`reach`、`host-ready`、`shutdown`；另有 repoRoot 对话框往返 `repo-root-dialog`/`repo-root-chosen` 与仅未打包构建的 `test-*` 钩子中继，**S23 施工修订，经用户同意**）。**协议自有、方法闭集**：UI 只投影 Spec 2 事件与 Spec 3 approval 对象，不做 ACP/MCP 等通用 agent 协议适配（ZCode v2→v3 教训，direction §5）。
 - **core 零 server**：host 通过 `child_process.spawn` 调既有 CLI，core 不为 UI 开任何端口、不加常驻进程。host 自身也不 `listen`（TI-6 以 `lsof` 断言）。
 - **崩溃转储**：不启用崩溃上报；`app.getPath("crashDumps")` 必须位于 userData 子树（TI-4），因为内存转储里可能有稿件与打回原文。
 
@@ -278,7 +278,7 @@ desktop/
   - 启动前 `protocol.registerSchemesAsPrivileged`（`electron.d.ts:11734`），privileges `standard: true`（相对 URL 解析必需：`review.py:275` 的相对缩略图路径、`shots.py:481` 的 `os.path.relpath`）、`secure: true`、`stream: true`、`supportFetchAPI: true`；**不给 `bypassCSP`**（`electron.d.ts:23488-23516`）；`corsEnabled: true`，但协议只在请求 Origin 恰为 renderer 自身源（`file://`；未打包构建另加 dev server 源）时回 `Access-Control-Allow-Origin`，沙箱 iframe 的 Origin 为 `null`，读不到（**S21 施工修订，经用户同意**：原「不给 `corsEnabled`」下 Chromium 拒绝 renderer 对非 CORS scheme 的一切跨源 fetch，文本类预览取不到正文）；
   - 只接受 `GET`/`HEAD`；Range **自行实现**单段 `bytes=a-b` → 206；多段 → 416；
   - MIME 按扩展名白名单；html 响应附带自己的 CSP 头（episodes 根：`default-src 'none'; img-src ava-media:; style-src 'unsafe-inline'`；shots 根额外 `script-src 'unsafe-inline'`）；
-  - **fd 生命周期（红队 m9）**：main 登记每个进行中的响应流；收到 host 的 reach 非 ok 通知时全部 `destroy()`；renderer 卸载媒体元素时请求被中止，流随之关闭。目标：脱盘前 app 不持有 `data/` 下任何 fd，不阻止正常推出（TP-6）。
+  - **fd 生命周期（红队 m9；**S23 施工修订，经用户同意**）**：响应体按 `MEDIA_READ_CHUNK_BYTES` 分块拉取，每块「打开 → 读 → 关闭」，`<video>` 缓冲满暂停拉取时不持有任何 fd；main 仍登记在途响应流，reach 非 ok 时全部终止，renderer 卸载媒体元素时请求被中止。原设计（一条读流开到文件末尾、reach 非 ok 才销毁）在门禁 6 真机失败：reach 只在卸载之后才变，而 fd 不关就卸载不了，普通推出被拒。截断 Range 响应不可行：Chromium 对开放尾端请求收到截短的 206 后不续发。目标：播放中 app 不持有 `data/` 下任何 fd，不阻止正常推出（TP-6）。
 - **renderer 自身 CSP**：`default-src 'none'; script-src 'self'; style-src 'self'; img-src ava-media: data:; media-src ava-media:; frame-src ava-media:; connect-src ava-media:`。
 - **出站网络为零**：main 在默认 session 上 `webRequest.onBeforeRequest` 取消一切 scheme ∉ {`ava-media`, 指向 app 自身资源的 `file`（仅限 `app.getAppPath()` 子树）, `devtools`} 的请求；host 不 import 网络模块、不调 `fetch`（TG-3，TS-5，MUT-29）。桌面端 v1 不向任何外部端点发送内容；未来加入对话面板（LLM 出网）时 egress 边界须重新审计（§6.3）。
 
@@ -324,7 +324,7 @@ desktop/
 | `runAsNode` | `false` | 禁止把 app 二进制当通用 node 用 |
 | `enableNodeOptionsEnvironmentVariable` | `false` | 禁止经 `NODE_OPTIONS` 注入 |
 | `enableNodeCliInspectArguments` | `false` | 禁止 `--inspect` 挂调试器 |
-| `grantFileProtocolExtraPrivileges` | `false` | 媒体走 `ava-media://`，`file://` 不需额外特权 |
+| `grantFileProtocolExtraPrivileges` | `true` | renderer 经 `file://` 从 asar 载入；取 `false` 时打包版主框架 `ERR_FILE_NOT_FOUND`、窗口空白（**S23 施工修订，经用户同意**：只翻这一位的副本对照实测）。媒体仍走 `ava-media://`；`file://` 的额外特权由 renderer CSP（`connect-src ava-media:`）与出网拦截（`file:` 只放行 app 目录）兜住 |
 | `enableCookieEncryption` | `true` | 无副作用的加固 |
 | `loadBrowserProcessSpecificV8Snapshot` | `false` | 不使用自定义 V8 快照 |
 | `WasmTrapHandlers` | **不设值，保持 Electron 44 默认** | electron-builder 26.15.3 无法设置；不为一位与 v1 无关的 fuse 引入 afterPack 脚本。TS-2 读出实际位值写入期望表，漂移即红 |
@@ -333,6 +333,7 @@ desktop/
   4. **其余打包项冻结**（TG-5 全部纳入）：`publish: null`——electron-builder 在 `publish` 未设时会因 npm `release` 生命周期、CI tag 或 CI 环境**隐式发布**（`publish/PublishManager.js:46-60`），且有 `GH_TOKEN`/`GITHUB_TOKEN` 时自动选 github provider（`:365`），碰红线 6；`mac.identity: null`——源码语义为「跳过签名、不查 keychain」（`macPackager.js:295-297` → `mac/MacTargetHelper.js:13-19`），避免构建结果取决于本机 keychain 内容；因此**整个 bundle 不签名**，只有 fuses 步骤对主二进制做 ad-hoc 重签（红队 m2；不改用 `identity: "-"`：`codeSign/macCodeSign.js:227` 按 `line.includes(qualifier)` 子串匹配，会误选名字含连字符的钥匙串身份）；`mac.target: dir`。
 - **失败行为（冻结）**：校验不过 → Electron 在应用代码运行前终止进程（Electron 语义，约；TS-1 以篡改实测）。**fail-closed、无旁路**。诊断走 `scripts/verify-fuses.mjs`（读全部 9 位 fuse，复算 asar 头哈希并与 Info.plist 比对）。恢复唯一路径：重新构建安装。
 - **启动参数白名单（红队 B4，v0.3 按 m3 由黑名单改白名单）**：9 位 fuses 中没有禁用 `--remote-debugging-port/pipe` 的一位，而黑名单不可能列全。packaged 版 main 入口第一件事检查 `process.argv.slice(1)`：除 macOS 可能附带的 `-psn_*` 外出现任何参数，即向 stdout 打印 `AVA_REFUSE argv` 并 `app.exit(1)`，不建窗口、不起 host（TS-6）。DevTools 端口在 JS 执行前是否已短暂监听为假设 7，TS-6 如实记录。
+- **关闭 AppKit 窗口状态恢复（N30，S23 修复轮新增，经用户同意）**：app 崩溃过之后，AppKit 会在 `finishLaunching` 里弹模态框「上次意外退出，要重新打开窗口吗？」，没人点就永远到不了 ready。ava 的窗口不靠 AppKit 恢复，packaged 版 main 在通过白名单后、`boot()` 之前向 app 自己的偏好域写 `ApplePersistenceIgnoreState=YES`（`systemPreferences.setUserDefault`；须早于 `finishLaunching`）。未打包构建的偏好域是 Electron 共用的，不写（TS-9）。
 - **构建溯源横幅（红队 B4；v0.3 按 R2-M6 补 `node_modules`）**：发布构建脚本 `npm run release-build` 固定为 `npm ci` → `node scripts/write-build-info.mjs` → `electron-vite build` → `electron-builder`。第一步 `npm ci` 从 `package-lock.json` 干净重装，冲掉对被 gitignore 的 `desktop/node_modules/` 的一切手改；`write-build-info.mjs` 把 `{ gitHead, desktopDirty, lockfileSha256, builtAt }` 写入 `out/build-info.json`（随 asar 一起受完整性保护）。健康面板经 spawn 取当前 repoRoot 的 `git rev-parse HEAD`，并在 `gitHead` 与当前 HEAD 不同时跑 `git diff --quiet <gitHead> HEAD -- desktop/`：
   - `desktopDirty == true` → 顶栏常驻**红色**「UI 构建自未提交的 desktop/ 改动」；
   - `desktop/` 在构建之后有新提交，或当前仓库 `desktop/package-lock.json` 的 sha256 ≠ `lockfileSha256` → 常驻**黄色**「UI 未按当前源码重建（构建于 <sha>）」；
@@ -411,7 +412,7 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type Method =                       // 方法闭集：新增方法 = 修订本 spec
   | "app.health"                           // repoRoot/python/capabilities/codeFreeze/buildProvenance/reach
-  | "app.requestRepoRootChange"            // 无参数：由 main 弹原生对话框选择并二次确认（§2.10，红队 R2-M5）；decide/heal 在途 → E_BUSY（红队 R3 m4）
+  | "app.requestRepoRootChange"            // 无参数：由 main 弹原生对话框选择并二次确认（§2.10，红队 R2-M5）；decide/heal 在途 → E_BUSY（红队 R3 m4）；→ { changed, repoRoot, problem }（S23）
   | "episodes.list"
   | "episode.subscribe"                    // { epKey } → EpisodeSnapshot；不触发 heal
   | "episode.activate"                     // { epKey }：设为活跃期，触发 H1（红队 R2-M4）
@@ -548,6 +549,7 @@ interface JobView {
 | `FINISHED_MISSING_TICKS` | 2 | 子进程退出与父进程 sidecar 刷盘之间存在瞬时窗口；连续两个 tick（≥1 s）仍成立才显示 |
 | 各 spawn 超时 | 10/30/60 s | ack 路径锁持有是毫秒级（Spec 3 §2.1），30 s 是两个数量级余量；`review --approve` 在外置盘上多给一倍 |
 | host 重启退避 | 1 s 起翻倍、封顶 30 s；60 s 内 5 次熔断 | 崩溃循环时不刷屏、不空转，同时给偶发崩溃快速恢复 |
+| `MEDIA_READ_CHUNK_BYTES` | 1 MiB | **S23 施工修订，经用户同意**：`ava-media://` 响应体单次读取块，每块读完即关 fd；外置盘上单次读取为毫秒级，8 Mbps 视频约每秒一次打开/关闭，每条在途流内存约 2 块 |
 | `TEXT_PREVIEW_MAX_BYTES` | 5 MiB | 期内最大的文本产物（`04-clips.json`）为数百 KB 量级（约，PR3 实测） |
 
 ---
@@ -643,6 +645,7 @@ async function decide(p: DecideParams): Promise<Result> {
   if (!existsDir(ep.abs)) { refreshEpisodes(); return err("E_STALE"); }           // 红队 m7
   if (!ackLock.tryAcquire(p.epKey)) return err("E_BUSY");
   try {
+    testHook("before-heal");                                                     // 仅未打包构建；TA-4、TA-9 变体 2 在此制造「H4 之前」的状态（S23 施工修订，经用户同意）
     const h = await requestHeal(p.epKey, "H4-pre-ack");                           // 红队 B1/B5
     if (!h.ok) diag("heal failed before ack", h.stderrTail);                      // 红队 m8：只记诊断，core 侧 --id 兜底
     testHook("after-heal");                                                      // 仅未打包构建；TA-9 变体 3 在此改写产物，单独考 fingerprintsMatch（v0.5，红队 m2）
@@ -671,7 +674,7 @@ async function decide(p: DecideParams): Promise<Result> {
 
 ### 4.4 main 与 preload
 
-- main：第一行做启动参数白名单检查（packaged：`process.argv.slice(1)` 只允许 `-psn_*`，红队 m3）；repoRoot 选择对话框与二次确认在 main 内完成（R2-M5）；`requestSingleInstanceLock()`；`registerSchemesAsPrivileged` 在 `app.whenReady()` 之前；`BrowserWindow` 的 `webPreferences` 固定为 `{ contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, preload }`，不开 `webviewTag`；`setWindowOpenHandler` 拒绝、`will-navigate` 阻止；`utilityProcess.fork(hostEntry, [], { serviceName: "ava-host", stdio: "pipe" })`（`electron.d.ts:22028` 起注明 utilityProcess 的 stdin 只能是 ignore）；host 就绪时向 stdout 打印 `AVA_BOOT host-ready lossless-json=<ok|fail>`（供打包版验证，§7.1；后半为 §3.1 规则 8 启动自检结果）。
+- main：第一行做启动参数白名单检查（packaged：`process.argv.slice(1)` 只允许 `-psn_*`，红队 m3）；repoRoot 选择对话框与二次确认在 main 内完成（R2-M5）；`requestSingleInstanceLock()`；`registerSchemesAsPrivileged` 在 `app.whenReady()` 之前；`BrowserWindow` 的 `webPreferences` 固定为 `{ contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, preload }`，不开 `webviewTag`；`setWindowOpenHandler` 拒绝、`will-navigate` 阻止；`utilityProcess.fork(hostEntry, [], { serviceName: "ava-host", stdio: "pipe" })`（`electron.d.ts:22028` 起注明 utilityProcess 的 stdin 只能是 ignore）；host 就绪时向 stdout 打印 `AVA_BOOT host-ready lossless-json=<ok|fail>`（供打包版验证，§7.1；后半为 §3.1 规则 8 启动自检结果），随后 `AVA_DIAG dataRoot=… provenance=…` 与 `AVA_PATHS {userData, crashDumps}`；主框架载入成功 / 失败各打印 `AVA_RENDERER loaded` / `AVA_RENDERER fail …`（**S23 施工修订，经用户同意**：TS-7、TS-8、TI-4 与「窗口空白」的打包版观测口）。
 - preload：只做 `ipcRenderer.on("ava-port", (e, handshake) => window.postMessage({ type: "ava-port", handshake }, "*", e.ports))`，不 `exposeInMainWorld` 任何函数。main 每次撮合把单调递增的握手号随端口一起投递；`rendererLoaded` 只跟踪主框架导航（`did-navigate`）。（**S22 审核修订，经用户同意**：原 `once` 使页面不重载时的重新撮合全部丢失；iframe 导航触发的 `did-start-loading` 曾把撮合静默卡死。）
 - renderer 接收端口时**只接受 `event.source === window` 的消息**，每次 main 撮合只接受一次——握手号严格大于已采纳的号才采纳（两条规则各自独立守卫：TI-2 在重新握手窗口内注入与真实消息同形、握手号极大的伪造端口，使「只接受一次」无法掩盖 source 校验的缺失，红队 R2-M3）；iframe 向父窗口 `postMessage` 的同名消息一律忽略（否则 `allow-scripts` 的 gallery 页面可伪造假 host 端口）。RPC 不设超时：当前端口 `close` 即把挂起请求以 `E_UNREACHABLE` 拒绝，断开期间的新请求立即拒绝（S22 审核修订，经用户同意）。
 
@@ -806,8 +809,9 @@ def test_core_imports_no_server_stack():
 | **TA-1** | 打回（无损） | 夹具期 05 停机点点「打回」，target `04-clips.json s07 1:20`、problem 含换行、双引号、前导 `-` → spawn argv 恰为 `REJECT` 模板（含 `--id <A>`），target/problem 各占一个元素；对象 `rejected`，feedback 逐字节相等；`_agent/approval_feedback.md` 含原文 |
 | **TA-2** | 05 批准（两步 + 确认路径） | 夹具 `04-clips.json` 与 manifest 段级对齐 → 点「批准」→ **该次 decide 关联的** spawn 序列恰为 `[HEAL, REVIEW_APPROVE(--expect-size=…, --expect-mtime-ns=… 等于钉住值), APPROVE --id A]`；夹具 `04-clips.json` 的 mtime 经 `os.utime(ns=…)` 设为 `1790171112636927676`，argv 中 `--expect-mtime-ns=` 之后的数字串逐字节等于对象库原文里的该数字（红队 R3-B1）（批准后 05→06 引起的 H2 heal 按 trigger 标签排除，红队 m4）；`04-clips.approved.json` 与 `04-clips.json` 字节相等且 (size, mtime_ns) 相等；对象 `approved`、`resolved_by == "artifact"`、`confirmed_by == "cli"`；`approvals.jsonl` 恰新增 1 行且 `decision_latency_s` 非空（对齐发生在同一次 `approve` 调用中，Spec 3 S3-R11）；Spec 2 在场时读出 `job_finished`(review) 与带 `confirms` 的 `approval_resolved` |
 | **TA-2b** | 05 已在终端批准后确认 | 含补丁段的夹具期先在终端执行 `python -m pipeline.review <期> --approve`（输入 y）→ 桌面端点「批准」→ 该次 decide 关联的 spawn 序列恰为 `[HEAL, APPROVE --id A]`，**无 `REVIEW_APPROVE`**；对象 `confirmed_by == "cli"`；`approvals.jsonl` 恰新增 1 行且 `decision_latency_s` 为空（对齐发生在更早的 heal 中，S3-R11） |
+| **TA-2c** | 05 已对齐待确认后解封物被改动（S24 🟡-1） | 同 TA-2b 先在终端批准、桌面端卡片显示「待你确认」后，把 `04-clips.approved.json` 的 mtime 后移 1 s、内容不变（core 双闸仍通过、自愈只动 PENDING 对象，§4.3 这一分支是唯一拦截点）→ 点「批准」→ `E_GATE_MISMATCH`，该次 decide 的 spawn 序列恰为 `[HEAL]`，对象仍 `approved` 且 `confirmed_by` 为空，host 未删除该文件 |
 | **TA-3** | 05 批准失败原样呈现（红队 B3） | ① 段级不对齐夹具 → `E_CORE`，UI 同时显示 stdout 与 stderr 尾部（含 `review.py` 的「段级时长不对齐」原文）；② 补丁段夹具 → UI 显示的 stdout 尾部含「补丁段（段号：…）」原文；两种情况下**界面上不存在任何重试按钮**，对象仍 `pending` |
-| **TA-4** | 陈旧卡 | UI 显示 pending 后在终端先行 `ava <期> /approve 03.5 --id A` → 再点按钮 → `E_STALE`，零 ack spawn |
+| **TA-4** | 陈旧卡 | UI 显示 pending 后在终端先行 `ava <期> /approve 03.5 --id A` → 再点按钮 → `E_STALE`，零 ack spawn。终端 ack 经 `before-heal` 钩子在 H4 之前执行（UI 每 1 s 重读对象库，点击赛跑不确定；**S23 施工修订，经用户同意**） |
 | **TA-5** | 无点击零 ack | 打开期、预览 `04-review.html`、播放音频、切换期、重载窗口全过程中 `APPROVE/REJECT/REVIEW_APPROVE` spawn 计数为 0 |
 | **TA-6** | 能力缺席 | repoRoot 指向无 `pipeline/approvals.py` 的副本 → 按钮禁用、`HEAL` 从未 spawn；期目录无 `human_time.json` |
 | **TA-7** | 后置核验 | 以「退出码 0 但什么都不做」的假 core 替换 `APPROVE` → `E_UNVERIFIED`，UI 不显示成功 |
@@ -829,11 +833,12 @@ def test_core_imports_no_server_stack():
 | **TI-3b** | 在可写夹具树上只触发 H1 → 树清单差异 ⊆ { `_agent/`（若原先不存在）、`_agent/approvals_store.json`、`_agent/approvals_store.lock`、`events.jsonl`（Spec 2 在场时） }；期目录本身与其他产物零变化（I2 自愈类） |
 | **TI-4** | `app.getPath("userData")` 与 `app.getPath("crashDumps")` 均不在 `realpath(dataRoot)` 子树内；userData 不等于 `data/browser-profile`、不在 `~/Library/Application Support/Google/Chrome` 子树内；`crashDumps` 在 userData 子树内 |
 | **TI-5** | **期列表对拍**：同一夹具树（含 `.`/`_` 前缀、含与不含 `01-topic.md` 的子目录、**软链期目录**）上，TS `listEpisodes` 与 Python `cli.get_episodes_list(root=…)` 的（相对路径集合, 顺序, `hidden_underscore`）完全一致 |
-| **TI-6** | `app.getAppMetrics()` 含 `type == "Utility"` 且 `name == "ava-host"` 的进程（S22 审核修订，经用户同意：Electron 44 实测 fork 传入的 `serviceName` 出现在 `name` 字段，`serviceName` 字段恒为 `node.mojom.NodeService`）；Python 子进程 `ppid == host pid`；app 全部进程 `lsof -iTCP -sTCP:LISTEN` 为空 |
+| **TI-6** | `app.getAppMetrics()` 含 `type == "Utility"` 且 `name == "ava-host"` 的进程（S22 审核修订，经用户同意：Electron 44 实测 fork 传入的 `serviceName` 出现在 `name` 字段，`serviceName` 字段恒为 `node.mojom.NodeService`）；Python 子进程 `ppid == host pid`；app 全部进程 `lsof -iTCP -sTCP:LISTEN` 为空（**S23 施工修订，经用户同意**：Playwright 驱动时 main 上有它自己的调试口，e2e 只查非 main 进程与 Python 子进程；全部进程零 LISTEN 由打包版 TI-6b 断言） |
 | **TI-7** | 子进程 `os.environ` 键集合 ⊆ §3.4 白名单；host 环境里设 `AVA_EVENTS_ROOT` 与 `FOO_API_KEY` 后子进程均看不到 |
 | **TI-8** | `approval.decide` 参数多一个 `path` 键 → `E_BAD_REQUEST`、零 spawn；合法请求的 spawn argv 中期路径恒等于 host 映射路径（红队 M5：MUT-6 的被依赖断言）；`app.requestRepoRootChange` 带任何参数（如 `{ path: "/tmp/x" }`）→ `E_BAD_REQUEST`，settings 不变、不弹对话框（红队 R2-M5） |
 | **TI-9** | （未打包构建）`kill -9` host pid → 10 s 内健康面板显示 host 在线且活跃期重新订阅成功（红队 M5：MUT-23 的被依赖断言） |
-| **TI-10** | 已运行一个实例时再次启动**同一构建** → 第二个进程 5 s 内退出，已有窗口获得焦点；全机仅一个 `ava-host`。如实声明：开发构建与打包构建 userData 不同，单实例锁拦不住二者同时运行（红队 m10，RF-21），本用例只覆盖同一构建 |
+| **TI-9b** | （未打包构建）60 s 内连续 `kill -9` host 5 次 → 停止重启，renderer 换成含 host stderr 尾部的致命面板（S23 新增） |
+| **TI-10** | 已运行一个实例时再次启动**同一构建** → 第二个进程 5 s 内退出，已有窗口获得焦点；全机仅一个 `ava-host`。S23 实测开发构建与打包构建 userData 相同（假设 9 证伪），单实例锁能拦住二者同时运行，见 RF-21；本用例只覆盖同一构建 |
 
 **TC：core 零改动回归**（PR0，pytest）
 
@@ -847,15 +852,16 @@ def test_core_imports_no_server_stack():
 
 | 编号 | 断言 |
 |---|---|
-| **TS-1** | 打包产物复制两份：A 份翻转 `app.asar` 内 **main 入口文件**内容区一个字节；B 份翻转 **asar 头**一个字节 → 两份启动均非 0 退出、10 s 内 stdout 无 `AVA_BOOT`；原件出现 `AVA_BOOT host-ready`（红队 M7） |
+| **TS-1** | 打包产物复制两份：A 份翻转 `app.asar` 内 **main 入口文件**内容区一个字节；B 份翻转 **asar 头**一个字节 → 两份启动均非 0 退出、10 s 内 stdout 无 `AVA_BOOT`；原件出现 `AVA_BOOT host-ready`（红队 M7）。篡改副本的崩溃给本 app 留下崩溃历史，紧随其后由 TS-9 考启动不被挡住 |
 | **TS-2** | `verify-fuses.mjs` 读出**全部 9 位**：8 位与 §2.10 表逐项一致，`WasmTrapHandlers` 等于期望表中记录的 Electron 默认值；Info.plist 含 `ElectronAsarIntegrity`；打包版拉起后 stdout 出现 `AVA_BOOT host-ready`（证明 host 从 asar 拉起成功），且该行含 `lossless-json=ok`（假设 10 在打包运行时成立，红队 R3-B1） |
 | **TS-3** | 路径守卫（期望值先跑）：**root 内部的 `%2F` 注入 `ava-media://episodes/<EP>%2F02-script.md` → 必须 400**（只有规则 1 能拦住：拼接结果仍在 root 内，规则 2 会放行，红队 R2-M2）；跨 root 的 `%2F`/`%5C` 段注入、`\0`、空段、夹具内指向**所选 root 外**的符号链接（含指向同一 dataRoot 下另一 root 的链接）、白名单外扩展名 → 分别拒绝；`..`/`%2e%2e` 的实际状态码按 PR3 实测写入；`ava-media://shots/..%2F..%2Fbrowser-profile/x.json` 必不返回 200 |
 | **TS-4** | Range：`bytes=100-199` → 206 且正文与文件切片相等；多段 → 416；`POST` → 405 |
 | **TS-5** | 出网：renderer 内 `fetch("https://example.com")` 与 `<img src="http://…">` 均被取消 |
 | **TS-6** | 打包版分别以 `--remote-debugging-port=0`、`--remote-debugging-pipe`、任意未知开关 `--foo` 启动 → stdout 出现 `AVA_REFUSE argv`、非 0 退出、无 `AVA_BOOT`；不带参数启动正常出现 `AVA_BOOT`；DevTools 端口是否短暂监听按实测如实记录（假设 7） |
-| **TS-7** | 打包版带测试专用启动开关启动 → 开关被忽略（经 stdout 诊断行确认 dataRoot 仍为 `<repoRoot>/data`） |
+| **TS-7** | 打包版带测试专用启动开关启动 → 被启动参数白名单拒绝（`AVA_REFUSE argv`，开关到不了解析处）；正常启动经 `AVA_DIAG` 确认 dataRoot 恒为 settings 中 repoRoot 的 `data`（**S23 施工修订，经用户同意**：v0.3 白名单使原文「开关被忽略」不可达；MUT-30 因此只由 TG-6 捕获） |
 | **TS-8** | 构建溯源：在 `desktop/` 有未提交改动时构建 → `build-info.json` 的 `desktopDirty == true`，健康数据含红色横幅；干净构建后在 `desktop/` 提交一次 → 黄色横幅；把 `build-info.json` 的 `gitHead` 换成不存在的 sha → 灰色横幅 |
 | **TS-8b** | `node_modules` 手改被冲掉（红队 R2-M6） | 在 `desktop/node_modules/react-dom/` 某个会被打进 renderer 的文件里插入标记串，执行 `npm run release-build` → `out/` 下构建产物不含该标记串；`build-info.json` 的 `lockfileSha256` 等于当前 `package-lock.json` 的 sha256 |
+| **TS-9** | 崩溃之后启动不被「重新打开窗口」模态框挡住（N30） | 紧跟 TS-1 的两次崩溃，连续 3 次：先删 app 偏好域的 `ApplePersistenceIgnoreState`，再正常启动 → 出现 `AVA_BOOT host-ready`，且启动后该键为 1（只能由这次启动自己写入） |
 
 **TG：静态守卫**（vitest 扫源码与配置，PR1 起入库）
 
@@ -880,7 +886,7 @@ def test_core_imports_no_server_stack():
 | **TP-3** | 点 `03-audio/` → 队列等于文件名自然序；首段 `ended` 后自动播放第二段；切换期后页面内 `video`/`audio` 元素数为 0 |
 | **TP-4** | `.md` 中的 `<script>` 原文按文本显示不执行；`.json` 折叠/展开；超 5 MiB 显示截断标注 |
 | **TP-5** | 夹具 `data` 为悬空符号链接 → `volume-unmounted`；`chmod 000` → `permission-denied`；均无新建目录 |
-| **TP-6** | 播放夹具视频时模拟 reach 转 `volume-unmounted`（改夹具 `data` 软链指向）→ 1 s 内 `lsof -p <main pid>` 不再列出 dataRoot 下任何 fd（红队 m9） |
+| **TP-6** | 数据盘为真实 APFS 磁盘映像（`hdiutil attach`），播放大视频（约 60 MB）中执行不带 force 的 `diskutil unmount`（与 Finder 推出同一条 DiskArbitration 路径）→ 推出成功、5 s 内横幅 `volume-unmounted`、app 存活；重新挂载后 5 s 内恢复（**S23 施工修订，经用户同意**：原「改软链模拟脱盘后 fd 释放」测不到真实推出，门禁 6 真机失败而它为绿；判据 1） |
 
 ### 7.2 变异检验矩阵
 
@@ -916,7 +922,7 @@ def test_core_imports_no_server_stack():
 | **MUT-27** | 删除 packaged 调试口拒启 | TS-6 | 带开关启动出现 `AVA_BOOT`，无 `AVA_REFUSE` |
 | **MUT-28** | spawn 不用 `detached`、超时只杀直接子进程 | TA-10 | 孙进程存活，80 s 时标记文件存在 |
 | **MUT-29** | 删除 `webRequest` 出网拦截 | TS-5 | 外部请求未被取消 |
-| **MUT-30** | 测试专用开关在 packaged 版也生效 | TS-7、TG-6 | dataRoot 被开关改写 |
+| **MUT-30** | 测试专用开关在 packaged 版也生效 | TG-6 | 守卫缺失被静态扫描命中（TS-7 在白名单之后按构造抓不到，S23 实跑：TG-6 红、TS-7 绿） |
 | **MUT-31** | `finishedEventMissing` 不看 pid 或只需 1 个 tick | TE-9 | pid 存活时误报，或第 1 个 tick 即为 true |
 | **MUT-32** | userData 改到 dataRoot 下 | TI-4 | 子树断言失败 |
 | **MUT-33** | 切换期不卸载媒体元素 | TP-3 | `video`/`audio` 元素数不为 0 |
@@ -942,6 +948,11 @@ def test_core_imports_no_server_stack():
 | **MUT-53** | 删除 §4.3 的 `fingerprintsMatch` 一行 | TA-9 变体 3 | spawn 了 `APPROVE --id A`，由 core 退 1 → 得到 `E_CORE` 而非 `E_STALE`，「零 ack spawn」断言失败 |
 | **MUT-54** | 规则 8 的 reviver 对非数字 `mtime_ns` 原样放行 | TE-13 ⑦ | 字符串值被接受，解析未失败 |
 | **MUT-55** | host 诊断模块直接调用 `JSON.stringify` | TG-9 | 静态扫描命中 `losslessJson.ts` 之外的调用 |
+| **MUT-23b** | 删除熔断分支（60 s 内崩 5 次仍重启） | TI-9b、hostRestart 单测 | 致命面板不出现（S23 新增，host 看护并入 M12） |
+| **MUT-57** | 媒体响应退回单条开到文件末尾的读流 | TP-6 | 播放中 fd 常开，`diskutil unmount` 被 app 拦下（S23 门禁 6 修订） |
+| **MUT-56** | 删除 decide 的能力检查 | TE-13 ⑤ | 能力缺席时照常 spawn，「E_CAPABILITY 且零 spawn」失败（S23 新增，S22 🔵8：PR3 时 decide 恒返回 E_CAPABILITY，⑤ 恒真） |
+| **MUT-58** | 删除 05「已对齐待确认」分支确认前的解封物指纹核验 | TA-2c | APPROVE 照常 spawn、core 完成确认，「`E_GATE_MISMATCH` 且零 APPROVE spawn」失败（S24 🟡-1 新增；此前删掉它无测试变红） |
+| **MUT-59** | 删除 main 里关闭 AppKit 窗口恢复的调用 | TS-9 | 启动后偏好键不存在；有崩溃历史时启动被模态框挡住（N30） |
 
 ---
 
@@ -964,11 +975,11 @@ def test_core_imports_no_server_stack():
 - **验证命令**：`cd desktop && npx vitest run && npx playwright test e2e/preview`
 
 ### PR4：Approval 决策条与 ack 链路（**阻塞于 Spec 3 v0.6 PR3 施工且其 T15–T21（含 T20 ⑥）全绿、`tests/test_review.py` 零回归**）
-- **范围**：决策条、Reject 表单、`approval.decide` 全流程（§4.3，含 `--id`、`--expect-*`、`gateCheck.ts` 事后核验、测试钩子）、HEAL/APPROVE/REJECT/REVIEW_APPROVE 模板、进程组超时、门禁 14 横幅、main 侧 repoRoot 对话框、临时 repo 副本夹具；TA-1~TA-12（含 TA-2b、TA-9b、TA-9c）、TI-2、TI-3b、TI-6、TI-8、TI-9、TI-10；验证假设 5、8（假设 8 须在真实外置盘上跑一次 TA-2）。
+- **范围**：决策条、Reject 表单、`approval.decide` 全流程（§4.3，含 `--id`、`--expect-*`、`gateCheck.ts` 事后核验、测试钩子）、HEAL/APPROVE/REJECT/REVIEW_APPROVE 模板、进程组超时、门禁 14 横幅、main 侧 repoRoot 对话框、临时 repo 副本夹具；TA-1~TA-12（含 TA-2b、TA-2c、TA-9b、TA-9c）、TI-2、TI-3b、TI-4、TI-6、TI-8、TI-9、TI-9b、TI-10（TI-4 原未分配到任何 PR，S23 补入）；验证假设 5、8（假设 8 须在真实外置盘上跑一次 TA-2）。
 - **验证命令**：`cd desktop && npx playwright test e2e/ack`；`uv run pytest tests/test_approvals.py tests/test_desktop_core_isolation.py`
 
 ### PR5：打包、完整性与收口
-- **范围**：`npm run release-build`（`npm ci` → build-info → 构建 → 打包，`mac.target: dir`）、`verify-fuses.mjs`、启动参数白名单、`e2e-packaged/`（TS-1、TS-2、TS-6、TS-7、TS-8、TS-8b）；全部变异 MUT-1~MUT-55（含 MUT-13b）实跑并回填结果；验证假设 1、2、4（重建后授权）、7；`docs/dev/plans/README.md` 状态更新。
+- **范围**：`npm run release-build`（`npm ci` → build-info → 构建 → 打包，`mac.target: dir`）、`verify-fuses.mjs`、启动参数白名单、`e2e-packaged/`（TS-1、TS-2、TS-6、TS-7、TS-8、TS-8b、TS-9、TI-4、TI-6b）；全部变异 MUT-1~MUT-55（含 MUT-13b）实跑并回填结果；验证假设 1、2、4（重建后授权）、7；`docs/dev/plans/README.md` 状态更新（由 review session 在 🟢 后更新，direction §7.1）。
 - **验证命令**：`cd desktop && npm run release-build && node scripts/verify-fuses.mjs && npx playwright test && npx vitest run e2e-packaged`；`uv run pytest tests/test_docs_invariants.py`
 
 ---
@@ -979,10 +990,10 @@ def test_core_imports_no_server_stack():
 - [ ] **门禁 2（状态单源）**：TG-7 全绿；UI 显示的当前工序、停机点、advisories 与同时刻 `python -m pipeline.status <期> --json` 一致（手验 3 个处于不同停机点的真实期——这是本门禁的真防线，TG-7 只防无意识引入）；
 - [ ] **门禁 3（tail 正确性）**：TE-1~TE-10 全绿，MUT-1/2/3/19/31 被捕获；
 - [ ] **门禁 4（多期隔离与 renderer 不可信）**：TE-8、TE-12、TA-4、TP-3、TI-8 全绿，MUT-5/6/24/33/42 被捕获；
-- [ ] **门禁 5（ack 显式、绑定且可验证；物理闸门只为人审版本打开）**：TA-1~TA-10（含 TA-2b、TA-9b、TA-9c）全绿；MUT-7/8/9/10/18/25/26/28/38/39 被捕获；**纳秒指纹无损（红队 R3-B1）**：TE-13 全绿、TS-2 的 `lossless-json=ok` 成立，MUT-45/46/47/54 被捕获；host 侧指纹校验：TA-9 变体 3 全绿，MUT-53 被捕获；repoRoot 切换互斥：TA-12 全绿，MUT-52 被捕获；**在真实（非夹具）期上走一遍 05 打回 → 终端 `ava <期> /approvals` 可见终态且 feedback 原文一致**；
+- [ ] **门禁 5（ack 显式、绑定且可验证；物理闸门只为人审版本打开）**：TA-1~TA-10（含 TA-2b、TA-2c、TA-9b、TA-9c）全绿；MUT-7/8/9/10/18/25/26/28/38/39/58 被捕获；**纳秒指纹无损（红队 R3-B1）**：TE-13 全绿、TS-2 的 `lossless-json=ok` 成立，MUT-45/46/47/54 被捕获；host 侧指纹校验：TA-9 变体 3 全绿，MUT-53 被捕获；repoRoot 切换互斥：TA-12 全绿，MUT-52 被捕获；**在真实（非夹具）期上走一遍 05 打回 → 终端 `ava <期> /approvals` 可见终态且 feedback 原文一致**；
 - [ ] **门禁 6（脱盘不脆弱）**：拔盘状态下启动 app → 显示 `volume-unmounted` 与 readlink 目标，无崩溃、无新建目录；播放中推出外置盘 → 系统能正常推出（不需强制推出）；插盘后 5 s 内自动恢复（真机手验，外加 TP-5、TP-6）；
-- [ ] **门禁 7（崩溃恢复）**：TI-9 全绿；手验在 ack 在途时退出 app，重开后 UI 与磁盘一致；
-- [ ] **门禁 8（打包加固）**：TS-1、TS-2、TS-6、TS-7、TS-8、TS-8b 全绿；MUT-14/27/30/36/43/44 被捕获；
+- [ ] **门禁 7（崩溃恢复）**：TI-9 全绿；手验在 ack 在途时退出 app，重开后 UI 与磁盘一致（S23 起由 e2e「门禁 7」用例自动覆盖）；
+- [ ] **门禁 8（打包加固）**：TS-1、TS-2、TS-6、TS-7、TS-8、TS-8b、TS-9 全绿（`e2e-packaged` 连续重跑也须全绿）；MUT-14/27/30/36/43/44/59 被捕获；
 - [ ] **门禁 9（本 spec 的 PR 对 core 零改动）**：TC-1、TC-2、TC-4 全绿；本 spec 全部 PR 合计对 `pipeline/`、`config/` 的 diff 为空；`pyproject.toml` 依赖未变；
 - [ ] **门禁 10（进程与 profile 隔离）**：TI-1、TI-2、TI-4、TI-6、TI-7、TI-10 全绿，MUT-13/13b/32/37 被捕获；
 - [ ] **门禁 11（Spec 2 降级 caveat）**：Spec 2 未施工期间 TE-1 以模拟写端通过；**Spec 2 施工后必须用真实 `EventPublisher` 回看 TE-1、TA-2 的事件断言转绿，本门禁才算关闭**；
@@ -1000,7 +1011,7 @@ def test_core_imports_no_server_stack():
 | **RF-1** | UI 里长出第二份状态推导 | 与 `status.py` 分歧时 UI 与 CLI 给出不同答案 | §2.3；TG-7；门禁 2 真期对照 |
 | **RF-2** | 退出码 0 被当成成功 | 实测：不支持的子命令落入 REPL 后退 0 | 能力探针 + 后置核验；Spec 3 v0.3 §4.2 第 3 条从 core 侧再堵一次；TA-6/TA-7 |
 | **RF-3** | GUI 环境与终端不同 | Finder 启动的 app 没有 shell PATH、没有 LANG | §3.4 固定 PATH + 环境白名单；加模板时必须复核 |
-| **RF-4** | TCC 拒绝被误报为脱盘；重建后授权失效 | 指错方向的提示会让人反复插拔盘 | `permission-denied` 独立分类，文案含「重建后可能需重新授权」；假设 4 实测；MUT-20 |
+| **RF-4** | TCC 拒绝被误报为脱盘；重建后授权失效 | 指错方向的提示会让人反复插拔盘 | `permission-denied` 独立分类，文案含「重建后可能需重新授权」；假设 4 实测（门禁 15：每次重建后系统重新弹框请求 Documents 与可移除卷授权，属预期代价）；MUT-20 |
 | **RF-5** | renderer 路径注入 | XSS 即可把 ack 或文件读取指向任意目录 | epKey 映射只在 host；exact-keys；媒体守卫按所选 root realpath；MUT-6/11/12 |
 | **RF-6** | iframe 沙箱被打穿 | 为让 gallery 某功能可用加 `allow-same-origin` | TI-2 + MUT-13；明令禁止 |
 | **RF-7** | gallery「复制锚点」在沙箱内不可用 | 不透明源 iframe 的剪贴板权限未实测（假设 3） | PR3 实测。不可用时的选项只列不选（留复审裁决）：a) iframe `allow="clipboard-write"` 委托；b) 接受 v1 降级并在 gallery 预览顶部说明；**禁止**以 `allow-same-origin` 解决 |
@@ -1016,7 +1027,7 @@ def test_core_imports_no_server_stack():
 | **RF-17** | Spec 3 v0.6 的修订在其定向复核中被推翻 | S3-R1/R2/R6/R7/R9（含 v0.6 读后二次 fstat）/R10/R11 若被改动，打回会被切碎、ack 会落到替身上、05 批准会误报失败、闸门可能为未审版本打开、ack 会死锁 | PR4 以 Spec 3 v0.6 PR3 落地且 T15–T21（含 T20 ⑥）全绿为动工前置条件；不以 UI 侧拼接或解析输出绕过 |
 | **RF-18** | 含补丁段的期无法在桌面端完成 05 批准（红队 B3） | v1 删除了盲签按钮；`review.approve` 的补丁段二次确认（`review.py:325-338`）需要交互输入 | 已知缺口：UI 原样显示 stdout 中的补丁段号与提示，人在终端执行 `python -m pipeline.review <期> --approve`；回到桌面端后，自愈已把对象对齐为 `APPROVED(artifact)`，此时点「批准」只做闸 3 指纹核验与确认路径，**不再跑第 ① 步**（§2.6 表 05 行、§4.3）。补齐须 core 提供非交互的补丁段确认通道，另立修订 |
 | **RF-19** | 打回原文在进程表可见（红队 M4） | `REJECT` 把 target/problem 作为 argv 传入，本机其他进程可经 `ps` 看到 | 单用户本机可接受，如实记录；若将来多用户或出网，改为经 stdin 传递并修订 Spec 3 语法 |
-| **RF-21** | 开发构建与打包构建同时运行（红队 m10） | 二者 userData 不同（约），单实例锁互不可见，会出现两个 host 各自轮询与 spawn | 如实声明；跨实例的对象库安全由 Spec 3 按期 flock 兜底；开发构建常驻「DEV BUILD」水印便于辨认 |
+| **RF-21** | 开发构建与打包构建同时运行（红队 m10） | ~~二者 userData 不同（约），单实例锁互不可见~~ S23 实测：二者 userData 同为 `~/Library/Application Support/ava`，单实例锁互相可见、不会同时运行；代价是二者共用 settings.json 与 Chromium 缓存 | 如实声明；跨实例的对象库安全仍由 Spec 3 按期 flock 兜底；开发构建常驻「DEV BUILD」水印便于辨认 |
 | **RF-22** | agent 绕过 UI 直接 ack（红队 m9） | 裸形态 `/approve --id` 在非 TTY 下任何有 shell 的 agent 都能调用 | 不在本 spec 能力范围：UI 纪律不可能严于 CLI 暴露面。由 AGENTS.md「ack 永远显式」与 core 侧纪律约束；§2.10 威胁模型已写明 |
 | **RF-20** | 人看的审片页与对象钉住的排片不是同一版 | `04-review.html` 由 `review` 生成时的 `04-clips.json` 渲染；之后若 `04-clips.json` 被改而未重建审片页，人看的是旧页面，而对象钉住的是新指纹 | 决策条显示确定性事实「审片页生成时间早于排片文件最后修改时间」；不自动重建（RF-11） |
 | **RF-23** | 跨语言契约里的大整数被静默截断（红队 R3-B1） | Python 的 int 无上限，JS number 超过 2^53 丢精度且不报错；任何新增的纳秒/大整数字段都会重演 | §3.1 规则 8 只对 `mtime_ns` 键生效——**新增任何可能超过 2^53 的整数字段必须同步扩展规则 8 与 TE-13**；启动自检 fail-closed；出 host 协议面转字符串（规则 9） |

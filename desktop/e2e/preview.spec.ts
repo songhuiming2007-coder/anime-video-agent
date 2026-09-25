@@ -1,10 +1,10 @@
 // TP-1~TP-6、TI-1：PreviewPane 与只读媒体协议（未打包构建，夹具期）。
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { buildFixture, launch, openEpisode, pick, type Fixture, type Launched } from "./fixtures";
-import { cleanup, makeFixtureRepo, treeManifest } from "../tests/helpers";
+import { buildFixture, ff, launch, openEpisode, pick, type Fixture, type Launched } from "./fixtures";
+import { cleanup, makeFixtureRepo, tmp, treeManifest } from "../tests/helpers";
 
 let fx: Fixture;
 let L: Launched;
@@ -40,7 +40,7 @@ test("TI-1 renderer 零 Node；window 上除测试钩子外无任何额外全局
     return names;
   });
   const extra = r.names.filter((k) => !baseline.includes(k)).sort();
-  expect(extra).toEqual(["__avaTestHandshake", "__avaTestHealth"]);
+  expect(extra).toEqual(["__avaTestCall", "__avaTestHandshake", "__avaTestHealth"]);
 });
 
 test("TP-1 04-review.html 在 iframe 内渲染，相对路径缩略图全部加载；iframe 为不透明源", async () => {
@@ -82,7 +82,9 @@ test("TP-3 点 03-audio/ → 队列为自然序，首段 ended 后自动接第�
     void a.play();
   });
   await expect.poll(() => L.page.evaluate(() => (window as unknown as { __played: string[] }).__played), { timeout: 5000 }).toEqual(["seg-01.wav", "seg-02.wav", "seg-10.wav"]);
-  await L.page.locator("[data-testid=episode]", { hasText: "E2E-B" }).click();
+  // 切到不在停机点的期：E2E-B 处于 02.5，H1 自愈建出 pending 后自动呼出会替换预览，掩盖「切换期卸载媒体」本身（S23 MUT-33）
+  await L.page.locator("[data-testid=episode]", { hasText: "E2E-C" }).click();
+  await L.page.getByTestId("center").and(L.page.locator("[data-ep='E2E-C'][data-loading='0']")).waitFor();
   await expect.poll(() => L.page.evaluate(() => document.querySelectorAll("video, audio").length)).toBe(0);
   await openEpisode(L.page, "E2E-A");
 });
@@ -123,53 +125,51 @@ test("图片预览与只显示元数据的类型", async () => {
   await expect(L.page.locator(".meta")).toContainText("只显示元数据");
 });
 
-test("TP-6 播放中数据盘脱卸 → main 销毁全部媒体流，app 进程不再持有 dataRoot 下任何 fd", async () => {
-  await pick(L.page, "big.mp4");
-  await L.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement).play());
-  const lsofData = () => {
-    let out = "";
-    try {
-      out = execFileSync("/usr/sbin/lsof", ["-p", String(L.app.process().pid)], { encoding: "utf-8" });
-    } catch {
-      out = "";
-    }
-    return out.split("\n").filter((l) => l.includes(fx.dataReal)).length;
+test("TP-6 播放中普通推出数据盘（真实磁盘映像 + 不带 force 的 diskutil unmount，与 Finder 推出同一条 DiskArbitration 路径）→ 推出成功、横幅 volume-unmounted、app 存活；重新挂载后自动恢复", async () => {
+  // S23 门禁 6 修订（经用户同意）：旧版以「改符号链接指向」模拟脱盘，只验证了 reach 变化之后 fd 会释放，
+  // 没验证「播放中能否正常推出」——真实推出须在卸载前就不持有 fd（判据 1：测真实产物）。
+  test.setTimeout(150_000);
+  const dir = tmp("tp6");
+  const dmg = join(dir, "tp6.dmg");
+  execFileSync("/usr/bin/hdiutil", ["create", "-quiet", "-size", "200m", "-fs", "APFS", "-volname", `AVA-TP6-${process.pid}`, dmg]);
+  const attach = () => {
+    const out = execFileSync("/usr/bin/hdiutil", ["attach", "-nobrowse", dmg], { encoding: "utf-8" });
+    const mnt = /\t(\/Volumes\/[^\t\n]+)\s*$/m.exec(out)![1].trim();
+    writeFileSync(join(mnt, ".metadata_never_index"), ""); // 不让 Spotlight 占着卷（否则推出失败的原因不是我们）
+    return mnt;
   };
-  await expect.poll(lsofData, { timeout: 5000 }).toBeGreaterThan(0);
-  // 计时起点 = reach 横幅出现（spec TP-6「1 s 内」）：页面内 MutationObserver 记下横幅首次出现的 Date.now()，
-  // 不含 REACH_POLL_MS 的采样等待；终点 = 第一次 lsof 采样完成且计数为 0 的时刻（偏保守的上界）
-  await L.page.evaluate(() => {
-    const w = window as unknown as { __bannerAt: number | null };
-    w.__bannerAt = null;
-    new MutationObserver((_m, obs) => {
-      if (document.querySelector("[data-testid=reach-banner]")) {
-        w.__bannerAt = Date.now();
-        obs.disconnect();
-      }
-    }).observe(document.body, { childList: true, subtree: true });
-  });
-  // 模拟脱盘：data 软链改指向不存在的卷
-  unlinkSync(join(fx.repo, "data"));
-  symlinkSync("/Volumes/NoSuchDisk/anime-video-data", join(fx.repo, "data"));
-  let releasedAt = 0;
-  await expect
-    .poll(() => {
-      const n = lsofData();
-      if (n === 0 && releasedAt === 0) releasedAt = Date.now();
-      return n;
-    }, { timeout: 6000, intervals: [50] })
-    .toBe(0);
-  await expect(L.page.getByTestId("reach-banner")).toContainText("volume-unmounted");
-  await expect(L.page.getByTestId("reach-banner")).toContainText("/Volumes/NoSuchDisk/anime-video-data");
-  const bannerAt = await L.page.evaluate(() => (window as unknown as { __bannerAt: number | null }).__bannerAt);
-  expect(bannerAt).not.toBeNull();
-  const releasedMs = releasedAt - bannerAt!; // 负数 = fd 先于横幅释放
-  console.log(`TP-6: 自 reach 横幅出现起 ${releasedMs} ms 内 fd 已释放`);
-  expect(releasedMs).toBeLessThanOrEqual(1000);
-  // 重新挂载：自动恢复
-  unlinkSync(join(fx.repo, "data"));
-  symlinkSync(fx.dataReal, join(fx.repo, "data"));
-  await expect(L.page.getByTestId("reach-banner")).toHaveCount(0, { timeout: 8000 });
+  const mnt = attach();
+  const repo = makeFixtureRepo();
+  let X: Launched | null = null;
+  try {
+    const dataReal = join(mnt, "anime-video-data");
+    const ep = join(dataReal, "episodes/TP6");
+    mkdirSync(ep, { recursive: true });
+    mkdirSync(join(dataReal, "library/shots"), { recursive: true });
+    writeFileSync(join(ep, "01-topic.md"), "# TP6\n");
+    // 足够大（约 60 MB）：Chromium 播放时不会一次读完，旧实现的开放尾端流会在整个播放期间持有 fd
+    ff("-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "60", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "8M", join(ep, "big.mp4"));
+    rmSync(join(repo, "data"), { recursive: true });
+    symlinkSync(dataReal, join(repo, "data"));
+    X = await launch(repo);
+    await openEpisode(X.page, "TP6");
+    await X.page.locator(`[data-testid=tree-row][data-rel="big.mp4"]`).click();
+    await X.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement).play());
+    await expect.poll(() => X!.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement).currentTime), { timeout: 15_000 }).toBeGreaterThan(3);
+    const r = spawnSync("/usr/sbin/diskutil", ["unmount", mnt], { encoding: "utf-8" });
+    const holders = r.status === 0 ? "" : spawnSync("/usr/sbin/lsof", ["+D", mnt], { encoding: "utf-8" }).stdout;
+    expect(r.status, `普通推出失败：${r.stdout}${r.stderr}\n${holders}`).toBe(0);
+    await expect(X.page.getByTestId("reach-banner")).toContainText("volume-unmounted", { timeout: 5000 });
+    expect(X.app.process().exitCode).toBeNull();
+    // 重新挂载（同卷名 → 同挂载点）：5 s 内自动恢复
+    expect(attach()).toBe(mnt);
+    await expect(X.page.getByTestId("reach-banner")).toHaveCount(0, { timeout: 5000 });
+  } finally {
+    await X?.app.close();
+    spawnSync("/usr/bin/hdiutil", ["detach", "-force", mnt]);
+    cleanup(dir);
+    cleanup(repo);
+  }
 });
 
 test("TP-5 悬空 data → volume-unmounted；chmod 000 → permission-denied；均无新建目录", async () => {
@@ -206,7 +206,7 @@ test("TI-3a（预览部分）关闭 heal 后，对 chmod -R a-w 的夹具树执�
   try {
     const health = (await R.page.evaluate(() => (window as unknown as { __avaTestHealth: () => Promise<unknown> }).__avaTestHealth())) as { capabilities: { approvals: boolean } };
     expect(health.capabilities.approvals).toBe(false);
-    await expect(R.page.locator("[data-testid=episode]")).toHaveCount(2);
+    await expect(R.page.locator("[data-testid=episode]")).toHaveCount(3); // E2E-A、E2E-B、E2E-C
     await openEpisode(R.page, "E2E-A");
     // 网页（episodes 根，sandbox=""）
     await R.page.locator(`[data-testid=tree-row][data-rel="04-review.html"]`).click();

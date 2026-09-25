@@ -3,8 +3,12 @@ appId: local.ava.desktop
 productName: ava
 directories:
   output: dist
+# 只打构建产物与构建溯源：out/ 下还有 e2e 的结果目录（截图含夹具路径），不许进包
 files:
-  - out/**/*
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
+  - out/build-info.json
   - package.json
 asar: true
 # 未设 publish 时 electron-builder 会按 npm release / CI tag / CI 环境隐式发布（红线 6）
@@ -21,5 +25,6 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
   loadBrowserProcessSpecificV8Snapshot: false
-  grantFileProtocolExtraPrivileges: false
+  # true：renderer 经 file:// 从 asar 载入，关掉这一位打包版窗口空白（S23 实测 ERR_FILE_NOT_FOUND，经用户同意）
+  grantFileProtocolExtraPrivileges: true
   resetAdHocDarwinSignature: true

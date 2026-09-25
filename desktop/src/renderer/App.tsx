@@ -1,17 +1,26 @@
 // 桌面端 v1 主界面（Spec 8 §2.11）：期列表 + 产物树 + PreviewPane + 只读事件时间线 + 健康面板。
 // UI 自身零判定：工序一律取 status --json，只呈现确定性事实；不做 LLM 推荐（direction §5）。
-// Approval 决策条属 PR4。
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { EventJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import type { EpisodeDelta, EpisodeSnapshot, EpisodesList, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
 import { STOP_PREVIEW } from "../shared/stopPreview";
+import { DecisionBar } from "./DecisionBar";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { RpcClient, RpcFailure } from "./rpc";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
 import { installTestHooks } from "./testHooks";
 
 const rpc = new RpcClient(window);
+
+/** 熔断后 main 把 renderer 换成致命面板（§2.9）：内容随 URL 查询参数带来，不再连接任何 host */
+const FATAL = new URLSearchParams(window.location.search).get("fatal");
+
+/**
+ * 人时类 advisory（pipeline/status.py「人时超预算检测」的两种原文开头）旁标数据源不完整（门禁 14，红队 M8）：
+ * 桌面端审阅不写 human_time.json，判据 4——不把「不知道」当成合格。
+ */
+const HUMAN_TIME_ADVISORY = /^(人类耗时|human_time\.json)/;
 
 function storeReducer(s: Store, a: Action): Store {
   return reduce(s, a).store;
@@ -22,12 +31,31 @@ function errText(e: unknown): string {
 }
 
 export function App() {
+  return FATAL !== null ? <FatalPanel text={FATAL} /> : <Main />;
+}
+
+function FatalPanel({ text }: { text: string }) {
+  return (
+    <div className="fatal" data-testid="fatal">
+      <h2>ava-host 反复崩溃，已停止重启</h2>
+      <p>界面不再连接任何后台进程。排查后请退出并重新打开 app。</p>
+      <pre data-testid="fatal-detail">{text}</pre>
+    </div>
+  );
+}
+
+function Main() {
   const [health, setHealth] = useState<Health | null>(null);
   const [list, setList] = useState<EpisodesList | null>(null);
   const [store, dispatch] = useReducer(storeReducer, emptyStore);
   const storeRef = useRef(store);
   storeRef.current = store;
   const [active, setActive] = useState<string | null>(null);
+  const activeRef = useRef<string | null>(null);
+  activeRef.current = active;
+  const [linked, setLinked] = useState(false);
+  /** 激活 / 刷新在途（载入含 heal 与 status），供界面与 e2e 判断载入是否结束 */
+  const [loading, setLoading] = useState(0);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [diags, setDiags] = useState<string[]>([]);
@@ -56,9 +84,14 @@ export function App() {
       rpc.on("diag", (p) => setDiags((d) => [...d.slice(-49), String(p.data)])),
     ];
     rpc.onConnect(() => {
+      setLinked(true);
       void loadHealth().then(() => undefined);
       void rpc.call<EpisodesList>("episodes.list").then(setList, (e) => setError(errText(e)));
+      // 重连后恢复活跃（H1，§2.12）：host 重启后订阅全部丢失，一切从磁盘重新 snapshot（§2.9）
+      const cur = activeRef.current;
+      if (cur) void rpc.call<EpisodeSnapshot>("episode.activate", { epKey: cur }).then((snap) => dispatch({ type: "snapshot", snap }), (e) => setError(errText(e)));
     });
+    rpc.onDisconnect(() => setLinked(false));
     return () => offs.forEach((f) => f());
   }, [loadHealth]);
 
@@ -70,23 +103,46 @@ export function App() {
     setError(null);
     setPreview(null);
     setActive(epKey);
+    setLoading((n) => n + 1);
     try {
       const snap = await rpc.call<EpisodeSnapshot>("episode.activate", { epKey });
       dispatch({ type: "snapshot", snap });
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setLoading((n) => n - 1);
     }
   }, []);
 
   const refresh = useCallback(async () => {
     if (!active) return;
+    setLoading((n) => n + 1);
     try {
       dispatch({ type: "snapshot", snap: await rpc.call<EpisodeSnapshot>("episode.refresh", { epKey: active }) });
       void loadHealth();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setLoading((n) => n - 1);
     }
   }, [active, loadHealth]);
+
+  const changeRepo = useCallback(async () => {
+    setError(null);
+    try {
+      const r = await rpc.call<{ changed: boolean; repoRoot: string | null; problem: string | null }>("app.requestRepoRootChange");
+      if (r.problem) setError(`仓库未切换：${r.problem}`);
+      if (!r.changed) return;
+      setActive(null);
+      setPreview(null);
+      dispatch({ type: "reset" });
+      seenApprovals.current.clear();
+      void loadHealth();
+      setList(await rpc.call<EpisodesList>("episodes.list"));
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, [loadHealth]);
 
   const ep = select(store, active);
 
@@ -113,8 +169,8 @@ export function App() {
 
   return (
     <div className="app">
-      <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} />
-      {showHealth && health && <HealthPanel health={health} diags={diags} />}
+      <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} onChangeRepo={changeRepo} />
+      {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} />}
       {error && (
         <div className="banner banner-red" data-testid="error">
           {error}
@@ -125,10 +181,11 @@ export function App() {
           <EpisodeList list={list} active={active} onOpen={open} />
           <GalleryList reachOk={reachOk} onPick={setPreview} />
         </nav>
-        <section className="center">
+        <section className="center" data-testid="center" data-ep={active ?? ""} data-loading={loading > 0 ? "1" : "0"}>
           {ep ? (
             <>
               <StatusCard ep={ep} />
+              <DecisionBar key={ep.epKey} ep={ep} health={health} rpc={rpc} />
               <ArtifactTree key={ep.epKey} epKey={ep.epKey} onPick={setPreview} />
             </>
           ) : (
@@ -146,7 +203,7 @@ export function App() {
 
 // ---------------- 顶栏与横幅 ----------------
 
-function TopBar({ health, onToggleHealth, onRefresh, canRefresh }: { health: Health | null; onToggleHealth: () => void; onRefresh: () => void; canRefresh: boolean }) {
+function TopBar({ health, onToggleHealth, onRefresh, canRefresh, onChangeRepo }: { health: Health | null; onToggleHealth: () => void; onRefresh: () => void; canRefresh: boolean; onChangeRepo: () => void }) {
   const p = health?.buildProvenance;
   return (
     <header className="topbar">
@@ -158,7 +215,8 @@ function TopBar({ health, onToggleHealth, onRefresh, canRefresh }: { health: Hea
           {health?.repoHead && <code> @{health.repoHead.slice(0, 8)}</code>}
         </span>
         <span className="spacer" />
-        <button onClick={onRefresh} disabled={!canRefresh}>刷新</button>
+        <button onClick={onChangeRepo} data-testid="change-repo">切换仓库…</button>
+        <button onClick={onRefresh} disabled={!canRefresh} data-testid="refresh">刷新</button>
         <button onClick={onToggleHealth} data-testid="health-toggle">健康</button>
       </div>
       {health && health.reach !== "ok" && (
@@ -175,8 +233,9 @@ function TopBar({ health, onToggleHealth, onRefresh, canRefresh }: { health: Hea
   );
 }
 
-function HealthPanel({ health, diags }: { health: Health; diags: string[] }) {
+function HealthPanel({ health, diags, linked }: { health: Health; diags: string[]; linked: boolean }) {
   const rows: [string, string][] = [
+    ["host 连接", linked ? "在线" : "断开"],
     ["repoRoot", health.repoRoot ?? `未就绪：${health.repoRootProblem ?? ""}`],
     ["HEAD", health.repoHead ?? "—"],
     ["Python", health.python ?? "—"],
@@ -191,7 +250,7 @@ function HealthPanel({ health, diags }: { health: Health; diags: string[] }) {
       <table>
         <tbody>
           {rows.map(([k, v]) => (
-            <tr key={k}>
+            <tr key={k} data-row={k}>
               <th>{k}</th>
               <td>{v}</td>
             </tr>
@@ -267,7 +326,10 @@ function StatusCard({ ep }: { ep: EpisodeState }) {
       {v.advisories.length > 0 && (
         <ul className="advisories">
           {v.advisories.map((a) => (
-            <li key={a}>{a}</li>
+            <li key={a}>
+              {a}
+              {HUMAN_TIME_ADVISORY.test(a) && <span className="muted" data-testid="human-time-incomplete">（数据源不完整：桌面端审阅不计入）</span>}
+            </li>
           ))}
         </ul>
       )}

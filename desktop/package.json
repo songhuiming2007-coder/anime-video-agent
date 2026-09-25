@@ -9,7 +9,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "release-build": "npm ci && node scripts/write-build-info.mjs && electron-vite build && electron-builder"
   },
   "dependencies": {
     "markdown-it": "15.0.2",

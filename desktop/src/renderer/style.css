@@ -64,3 +64,17 @@ button { font: inherit; padding: 2px 10px; }
 .meta-title { font-weight: 600; }
 .left { overflow: auto; border-right: 1px solid var(--line); }
 .section-title { padding: 6px 10px; font-weight: 600; cursor: pointer; border-top: 1px solid var(--line); }
+.decisions { border-bottom: 1px solid var(--line); }
+.decision { padding: 8px 10px; border-left: 4px solid var(--accent); margin: 6px 8px; background: var(--panel); }
+.decision.readonly, .decision-readonly { color: var(--muted); padding: 6px 10px; }
+.decision-head { display: flex; flex-direction: column; gap: 2px; }
+.fingerprints { margin: 4px 0; padding-left: 18px; font-size: 12px; }
+.decision-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.reject-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.reject-form label { display: flex; flex-direction: column; gap: 2px; }
+.reject-form input, .reject-form textarea { font: inherit; }
+.decision-ok { color: #2e8b57; margin-top: 4px; }
+.decision-err { color: var(--red); margin-top: 4px; }
+.tail { white-space: pre-wrap; word-break: break-word; font: 11px ui-monospace, monospace; max-height: 160px; overflow: auto; margin: 4px 0; }
+.fatal { padding: 24px; }
+.fatal pre { white-space: pre-wrap; font: 12px ui-monospace, monospace; }

@@ -16,9 +16,11 @@ import { degradedNoticesOf, foldEvents, goneRunningJobIds, parseEventLine } from
 import { LineSplitter } from "../shared/jsonl";
 import { losslessSelfCheck, stringifyLossless, toWireApproval, toWireEvent } from "../shared/losslessJson";
 import { relPathProblem } from "../shared/mediaUrl";
+import { repoRootProblem } from "../shared/repoRoot";
 import {
   checkParamKeys,
   isMethod,
+  type DecideParams,
   PROTOCOL_VERSION,
   type EpisodeDelta,
   type EpisodeSnapshot,
@@ -36,12 +38,13 @@ import {
   type SnapshotStatus,
   type TreeEntry,
 } from "../shared/protocol";
+import { decide, DecideFail, parseDecideParams } from "./decide";
 import { errnoOf, realFs, type FsRead } from "./fsio";
 import { listEpisodes, type EpisodeEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
-import { loadSettings } from "./settings";
-import { pythonOf, runCore } from "./spawner";
+import { loadSettings, saveSettings } from "./settings";
+import { pythonOf, runCore, type CoreResult, type SpawnTag, type Template, type TemplateArgs } from "./spawner";
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
 import { pollOnce, resyncState, type TailState } from "./tailer";
@@ -59,7 +62,13 @@ export interface HostDeps {
   pidAlive: (pid: number) => boolean;
   fetchStatus: (repoRoot: string, epAbs: string) => Promise<SnapshotStatus>;
   selfCheck: () => boolean;
-  healExecutor: HealExecutor | null;
+  /** undefined = 真实 HEAL spawn（能力在场时）；null = 永不 spawn；函数 = 测试注入 */
+  healExecutor: HealExecutor | null | undefined;
+  runCore: <T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag?: SpawnTag) => Promise<CoreResult>;
+  /** main 的原生对话框选择 + 二次确认（§2.10）；返回确认后的 repoRoot，取消为 null */
+  chooseRepoRoot: () => Promise<string | null>;
+  /** 仅未打包构建（TG-6）：测试驱动在此暂停 host（§4.3 after-heal / after-fingerprint-check 等） */
+  testHook: (name: string) => Promise<void>;
   /** false = 不启动定时器（测试逐次驱动 tick） */
   timers: boolean;
 }
@@ -68,6 +77,7 @@ export class RpcFail extends Error {
   constructor(
     readonly code: ErrCode,
     message: string,
+    readonly tails: { stdoutTail?: string; stderrTail?: string } = {},
   ) {
     super(message);
   }
@@ -124,19 +134,24 @@ function defaultPidAlive(pid: number): boolean {
 }
 
 export function validateRepoRoot(repoRoot: string): string | null {
-  try {
-    const py = fs.readFileSync(join(repoRoot, "pyproject.toml"), "utf-8");
-    if (!/^name\s*=\s*"anime-video-agent"\s*$/m.test(py)) return "pyproject.toml 的 name 不是 anime-video-agent";
-  } catch {
-    return "pyproject.toml 不存在";
-  }
-  try {
-    fs.accessSync(pythonOf(repoRoot), fs.constants.X_OK);
-  } catch {
-    return ".venv/bin/python 不可执行";
-  }
-  if (!fs.existsSync(join(repoRoot, "pipeline/agent/cli.py"))) return "pipeline/agent/cli.py 不存在";
-  return null;
+  return repoRootProblem(repoRoot, {
+    readText: (p) => {
+      try {
+        return fs.readFileSync(p, "utf-8");
+      } catch {
+        return null;
+      }
+    },
+    isExecutable: (p) => {
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    exists: (p) => fs.existsSync(p),
+  });
 }
 
 export class HostService {
@@ -150,7 +165,7 @@ export class HostService {
   capDetail = "未探测";
   codeFreeze: Health["codeFreeze"] = { ok: null, detail: "未探测" };
   repoHead: string | null = null;
-  provenance: Provenance = { kind: "dev" };
+  provenance: Provenance = { kind: "unknown", message: "尚未探测" };
   reach: Reach = "missing";
   reachDetail = "";
   diagnostics: string[] = [];
@@ -159,6 +174,17 @@ export class HostService {
   summaries = new Map<string, EpisodeSummary>();
   subs = new Map<string, EpisodeRuntime>();
   active: string | null = null;
+  /** repoRoot 代号：每次确认切换 +1；只读 spawn 的结果若代号已过期则丢弃（§2.10，红队 R3 m4） */
+  repoGen = 0;
+  /** 确认切换之后、换好之前：拒绝新 decide（E_BUSY）、不启动新 heal */
+  switching = false;
+  /** main 的对话框在途（选择与二次确认之间） */
+  private choosing = false;
+  /** 在途 spawn（含只读）：切换等它们全部结束再换 */
+  private inflight = new Set<Promise<unknown>>();
+  /** 期内 ack 互斥（同期 ack 串行）；单实例锁保证全机唯一，跨进程由 Spec 3 按期 flock 兜底 */
+  private acking = new Set<string>();
+  private decideSeq = 0;
   private started = false;
   private timers: NodeJS.Timeout[] = [];
   private send: (env: Envelope) => void = () => {};
@@ -167,6 +193,7 @@ export class HostService {
     readonly cfg: HostConfig,
     deps: Partial<HostDeps> = {},
     private readonly onReach: (r: Reach) => void = () => {},
+    private readonly onDataRoot: (dataRoot: string | null) => void = () => {},
   ) {
     this.deps = {
       fs: realFs,
@@ -174,13 +201,42 @@ export class HostService {
       pidAlive: defaultPidAlive,
       fetchStatus,
       selfCheck: () => losslessSelfCheck(),
-      healExecutor: null,
+      healExecutor: undefined,
+      runCore,
+      chooseRepoRoot: async () => null,
+      testHook: async () => {},
       timers: true,
       ...deps,
     };
-    this.heal = new HealScheduler(this.deps.healExecutor, (epKey, r) =>
-      this.diag(`heal 失败（${epKey}）：${r.stderrTail.trim().slice(-400)}`),
-    );
+    this.heal = new HealScheduler(null, (epKey, r) => this.diag(`heal 失败（${epKey}）：${r.stderrTail.trim().slice(-400)}`));
+  }
+
+  /** 默认 HEAL executor：spawn `ava <期> /approvals`（§3.4），退出码必须 0，输出丢弃。 */
+  private realHeal: HealExecutor = async (epKey, trigger, decideId) => {
+    const e = this.episodes.get(epKey);
+    if (!this.repoRoot || !e) return { ok: false, stderrTail: `未知期 ${epKey}` };
+    const r = await this.core("HEAL", { ep: e.abs }, { trigger, ...(decideId !== undefined ? { decide: decideId } : {}) });
+    return { ok: r.code === 0 && !r.timedOut, stderrTail: r.stderrTail };
+  };
+
+  /** 全部 spawn 的唯一出口：登记在途，供 repoRoot 切换等待。 */
+  private core<T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag = {}): Promise<CoreResult> {
+    const repoRoot = this.repoRoot;
+    if (!repoRoot) return Promise.resolve({ code: null, signal: null, stdoutTail: "", stderrTail: "无仓库", timedOut: false, stdoutFull: null, stdoutOverflow: false });
+    return this.track(this.deps.runCore(t, args, { repoRoot }, tag));
+  }
+
+  private track<T>(p: Promise<T>): Promise<T> {
+    this.inflight.add(p);
+    const done = () => this.inflight.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
+  /** 仅未打包构建：测试驱动在此暂停 host（TG-6） */
+  private async testHook(name: string): Promise<void> {
+    if (this.cfg.isPackaged) return;
+    await this.deps.testHook(name);
   }
 
   // ---------------- 生命周期 ----------------
@@ -256,13 +312,14 @@ export class HostService {
     if (!repoRoot) {
       this.capApprovals = false;
       this.capDetail = this.repoRootProblem ?? "无仓库";
+      this.heal.setExecutor(null);
+      this.repoHead = null;
+      this.provenance = await this.computeProvenance(); // 打包版无仓库时也要给出溯源判定，不能停在初值
       return;
     }
-    const [appr, freeze, head] = await Promise.all([
-      runCore("PROBE_APPROVALS", {}, { repoRoot }),
-      runCore("PROBE_FREEZE", {}, { repoRoot }),
-      runCore("GIT_HEAD", {}, { repoRoot }),
-    ]);
+    const gen = this.repoGen;
+    const [appr, freeze, head] = await Promise.all([this.core("PROBE_APPROVALS", {}), this.core("PROBE_FREEZE", {}), this.core("GIT_HEAD", {})]);
+    if (gen !== this.repoGen) return; // 代号已过期：结果丢弃
     const probeOk = appr.code === 0;
     this.capApprovals = probeOk && this.losslessJson;
     this.capDetail = !probeOk
@@ -270,7 +327,7 @@ export class HostService {
       : !this.losslessJson
         ? "运行时不支持无损解析纳秒指纹（假设 10），决策条只读"
         : "ok";
-    this.heal.setExecutor(this.capApprovals ? this.deps.healExecutor : null);
+    this.heal.setExecutor(this.capApprovals ? (this.deps.healExecutor === undefined ? this.realHeal : this.deps.healExecutor) : null);
     this.codeFreeze =
       freeze.code === 0
         ? { ok: true, detail: "pipeline/ 无未提交改动" }
@@ -291,7 +348,7 @@ export class HostService {
     if (info.desktopDirty === true) return { kind: "dirty", gitHead };
     if (!this.repoRoot || !this.repoHead) return { kind: "unknown", message: "无法读取当前仓库 HEAD" };
     if (gitHead !== this.repoHead) {
-      const d = await runCore("GIT_DESKTOP_DIFF", { buildHead: gitHead }, { repoRoot: this.repoRoot });
+      const d = await this.core("GIT_DESKTOP_DIFF", { buildHead: gitHead });
       if (d.code === 128) return { kind: "incomparable", gitHead };
       if (d.code !== 0) return { kind: "stale", gitHead };
     }
@@ -355,9 +412,11 @@ export class HostService {
     this.refreshEpisodes();
     const queue = [...this.episodes.values()];
     const repoRoot = this.repoRoot;
+    const gen = this.repoGen;
     const worker = async () => {
       for (let e = queue.shift(); e; e = queue.shift()) {
-        const st = await this.deps.fetchStatus(repoRoot, e.abs);
+        const st = await this.track(this.deps.fetchStatus(repoRoot, e.abs));
+        if (gen !== this.repoGen) return; // 代号已过期：结果丢弃
         this.summaries.set(e.epKey, {
           epKey: e.epKey,
           mtimeMs: e.mtimeMs,
@@ -367,6 +426,7 @@ export class HostService {
       }
     };
     await Promise.all(Array.from({ length: EPISODE_STATUS_CONCURRENCY }, worker));
+    if (gen !== this.repoGen) return;
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
   }
 
@@ -413,12 +473,21 @@ export class HostService {
       const result = await this.dispatch(env.method, env.params);
       reply({ ok: true, result });
     } catch (e) {
-      if (e instanceof RpcFail) reply({ ok: false, error: { code: e.code, message: e.message } });
+      if (e instanceof RpcFail) reply({ ok: false, error: { code: e.code, message: e.message, ...e.tails } });
       else reply({ ok: false, error: { code: "E_BAD_REQUEST", message: e instanceof Error ? e.message : String(e) } });
     }
   }
 
   async dispatch(method: Method, params: unknown): Promise<unknown> {
+    try {
+      return await this.dispatchOnce(method, params);
+    } catch (e) {
+      if (e instanceof DecideFail) throw new RpcFail(e.error.code, e.error.message);
+      throw e;
+    }
+  }
+
+  private async dispatchOnce(method: Method, params: unknown): Promise<unknown> {
     if (!isMethod(method)) throw new RpcFail("E_BAD_REQUEST", `未知方法 ${String(method)}`);
     const keyProblem = checkParamKeys(method, params);
     if (keyProblem) throw new RpcFail("E_BAD_REQUEST", keyProblem);
@@ -427,7 +496,7 @@ export class HostService {
       case "app.health":
         return this.health();
       case "app.requestRepoRootChange":
-        throw new RpcFail("E_CAPABILITY", "repoRoot 切换对话框属 PR4，尚未施工");
+        return this.requestRepoRootChange();
       case "episodes.list":
         this.refreshEpisodes();
         return this.episodesList();
@@ -450,8 +519,7 @@ export class HostService {
       case "shots.list":
         return this.shotsList();
       case "approval.decide":
-        if (!this.capApprovals) throw new RpcFail("E_CAPABILITY", this.capDetail);
-        throw new RpcFail("E_CAPABILITY", "决策条与 ack 链路属 PR4，尚未施工");
+        return this.decide(parseDecideParams(params as Record<string, unknown>));
       default:
         throw new RpcFail("E_BAD_REQUEST", `未知方法 ${String(method)}`);
     }
@@ -555,6 +623,7 @@ export class HostService {
 
   private async healAndReload(rt: EpisodeRuntime, trigger: HealTrigger): Promise<void> {
     if (!this.capApprovals) return; // 能力缺席：heal 不 spawn（§2.6 闸 1）
+    if (this.switching) return; // 切换中不启动新 heal（§2.10）
     const r = await this.heal.requestHeal(rt.epKey, trigger);
     if (r.ok) rt.healedAt = new Date(this.deps.now()).toISOString();
   }
@@ -604,7 +673,11 @@ export class HostService {
       rt.status = { ok: false, code: "E_UNREACHABLE", message: this.repoRootProblem ?? "无仓库" };
       return;
     }
-    rt.status = await this.deps.fetchStatus(this.repoRoot, rt.abs);
+    const gen = this.repoGen;
+    const st = await this.track(this.deps.fetchStatus(this.repoRoot, rt.abs));
+    if (!this.cfg.isPackaged) await this.track(this.testHook("status-result")); // TA-12 ③：暂停一个在途 STATUS
+    if (gen !== this.repoGen) return; // 代号已过期：结果丢弃，不进入任何 snapshot
+    rt.status = st;
     rt.lastStatusTick = this.deps.now();
     const s = rt.status;
     if (s.ok) this.summaries.set(rt.epKey, { epKey: rt.epKey, mtimeMs: this.episodes.get(rt.epKey)?.mtimeMs ?? 0, currentStep: s.value.current_step, isBlocked: s.value.is_blocked });
@@ -667,6 +740,7 @@ export class HostService {
 
   private async pushSnapshot(rt: EpisodeRuntime): Promise<void> {
     await this.loadAll(rt);
+    if (!this.isCurrent(rt)) return;
     const snap = this.snapshotOf(rt);
     this.push({ v: 1, kind: "push", topic: "episode.snapshot", epKey: rt.epKey, generation: snap.generation, seq: 0, data: snap });
   }
@@ -712,6 +786,7 @@ export class HostService {
       await this.checkH5(rt);
     }
     this.refold(rt);
+    if (!this.isCurrent(rt)) return; // 已退订或 repoRoot 已切换：旧 runtime 不再下发（同名期会被新仓库的订阅误收）
     const genAfter = rt.tail?.generation ?? 0;
     if (genAfter !== genBefore) {
       const snap = this.snapshotOf(rt);
@@ -742,6 +817,10 @@ export class HostService {
     if (!changed) return;
     rt.seq = delta.seq;
     this.push({ v: 1, kind: "push", topic: "episode.delta", epKey: rt.epKey, generation: delta.generation, seq: delta.seq, data: delta });
+  }
+
+  private isCurrent(rt: EpisodeRuntime): boolean {
+    return this.subs.get(rt.epKey) === rt;
   }
 
   private dirExists(p: string): boolean {
@@ -795,6 +874,96 @@ export class HostService {
     for (const rt of [...this.subs.values()]) {
       if (rt.epKey !== this.active) await this.tickEpisode(rt, false);
     }
+  }
+
+  // ---------------- approval.decide（§3.2.1、§4.3） ----------------
+
+  async decide(p: DecideParams): Promise<unknown> {
+    try {
+      return await this.decideOnce(p);
+    } catch (e) {
+      if (e instanceof DecideFail) throw new RpcFail(e.error.code, e.error.message, { stdoutTail: e.error.stdoutTail, stderrTail: e.error.stderrTail });
+      throw e;
+    }
+  }
+
+  private decideOnce(p: DecideParams): Promise<unknown> {
+    const decideId = ++this.decideSeq;
+    return decide(
+      {
+        isPackaged: this.cfg.isPackaged,
+        capApprovals: () => this.capApprovals,
+        capDetail: () => this.capDetail,
+        episode: (k) => this.episodes.get(k),
+        reach: () => this.reach,
+        reachDetail: () => this.reachDetail,
+        existsDir: (abs) => this.dirExists(abs),
+        refreshEpisodes: () => this.refreshEpisodes(),
+        tryAcquire: (k) => {
+          if (this.switching || this.acking.has(k)) return false;
+          this.acking.add(k);
+          return true;
+        },
+        release: (k) => this.acking.delete(k),
+        heal: (k, id) => (this.switching ? Promise.resolve({ ok: false, stderrTail: "切换仓库中，未自愈" }) : this.heal.requestHeal(k, "H4-pre-ack", id)),
+        diag: (m) => this.diag(m),
+        testHook: (n) => (!this.cfg.isPackaged ? this.testHook(n) : Promise.resolve()),
+        readStore: (e) => readApprovalRecords(`${e.abs}/_agent/approvals_store.json`, this.deps.fs),
+        fs: this.deps.fs,
+        run: (t, args, tag) => this.core(t, args, tag),
+        resnapshot: (k) => this.resnapshot(k),
+      },
+      p,
+      decideId,
+    );
+  }
+
+  /** decide 的 finally：订阅中的期推一次 snapshot（不触发 heal） */
+  private async resnapshot(epKey: string): Promise<void> {
+    const rt = this.subs.get(epKey);
+    if (!rt) return;
+    await this.withLoad(rt, () => this.pushSnapshot(rt));
+  }
+
+  // ---------------- repoRoot 切换（§2.10；renderer 只发无参请求，路径只在 main 里选） ----------------
+
+  async requestRepoRootChange(): Promise<{ changed: boolean; repoRoot: string | null; problem: string | null }> {
+    // 第一段守卫：有 decide 或 heal 在途 → E_BUSY、不弹框；对话框已开着也不再叠一个
+    if (this.choosing) throw new RpcFail("E_BUSY", "仓库选择对话框已打开");
+    if (this.switching || this.acking.size > 0 || this.heal.busy()) throw new RpcFail("E_BUSY", "有操作在途（审批或自愈），稍后再切换仓库");
+    let chosen: string | null;
+    this.choosing = true;
+    try {
+      chosen = await this.deps.chooseRepoRoot();
+    } finally {
+      this.choosing = false;
+    }
+    if (chosen === null) return { changed: false, repoRoot: this.repoRoot, problem: null };
+    const problem = validateRepoRoot(chosen); // main 已校验并由人确认；生效前按同一规则复核
+    if (problem) return { changed: false, repoRoot: this.repoRoot, problem };
+    // 第二段：进入切换中，代号 +1（在途只读 spawn 的结果随之作废），等在途 spawn 全部结束再换
+    this.switching = true;
+    this.repoGen += 1;
+    try {
+      while (this.inflight.size > 0 || this.acking.size > 0 || this.heal.busy()) {
+        await Promise.allSettled([...this.inflight]);
+        if (this.inflight.size === 0) await new Promise<void>((r) => setTimeout(r, 50)); // decide 停在非 spawn 处时轮询等待
+      }
+      saveSettings(this.cfg.userData, { version: 1, repoRoot: chosen });
+      this.subs.clear();
+      this.active = null;
+      this.summaries.clear();
+      this.episodes.clear();
+      this.resolveRepoRoot();
+      this.onDataRoot(this.dataRoot);
+      this.pollReach();
+      this.refreshEpisodes();
+      await this.probe();
+    } finally {
+      this.switching = false;
+    }
+    void this.refreshEpisodeStatuses();
+    return { changed: true, repoRoot: this.repoRoot, problem: this.repoRootProblem };
   }
 
   // ---------------- 镜头画廊（shots 根顶层 *.html；内容仍经 ava-media:// 读） ----------------

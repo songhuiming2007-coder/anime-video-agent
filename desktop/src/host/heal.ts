@@ -1,6 +1,6 @@
 // heal 触发闭集 H1–H5 的唯一入口（Spec 8 §2.12）。heal = spawn `ava <期> /approvals` 让 core 自愈落盘。
 // 明令禁止：后台期 heal；周期 heal；由对象库文件本身或事件行触发 heal。
-// HEAL spawn 模板属 PR4；在它接入之前 executor 为 null，调度照常记录、不 spawn。
+// 能力缺席时 executor 为 null：调度照常记录、不 spawn（§2.6 闸 1）。
 import type { ApprovalRecord } from "../shared/contracts";
 import { relPathProblem } from "../shared/mediaUrl";
 
@@ -11,7 +11,8 @@ export interface HealResult {
   stderrTail: string;
 }
 
-export type HealExecutor = (epKey: string, trigger: HealTrigger) => Promise<HealResult>;
+/** decideId：H4 的 decide 关联号，写进 spawn 日志（TA-2 只统计该次 decide 关联的 spawn） */
+export type HealExecutor = (epKey: string, trigger: HealTrigger, decideId?: number) => Promise<HealResult>;
 
 export interface HealLogEntry {
   epKey: string;
@@ -20,11 +21,17 @@ export interface HealLogEntry {
   spawned: boolean;
 }
 
+interface Queued {
+  trigger: HealTrigger;
+  decideId?: number;
+  promise: Promise<HealResult>;
+}
+
 /** 同一期同一时刻至多一个 heal 在途；在途期间的新触发合并为「完成后再跑一次」。 */
 export class HealScheduler {
   readonly log: HealLogEntry[] = [];
   private inflight = new Map<string, Promise<HealResult>>();
-  private queued = new Map<string, { trigger: HealTrigger; promise: Promise<HealResult> }>();
+  private queued = new Map<string, Queued>();
 
   constructor(
     private executor: HealExecutor | null,
@@ -39,26 +46,34 @@ export class HealScheduler {
     return this.inflight.size > 0;
   }
 
-  requestHeal(epKey: string, trigger: HealTrigger): Promise<HealResult> {
+  requestHeal(epKey: string, trigger: HealTrigger, decideId?: number): Promise<HealResult> {
     const q = this.queued.get(epKey);
-    if (q) return q.promise; // 已有排队的「再跑一次」，合并
+    if (q) {
+      // 已有排队的「再跑一次」，合并；保留首个触发的标签，只有 H4 覆盖（它的 decide 关联号不能丢）
+      if (decideId !== undefined) {
+        q.trigger = trigger;
+        q.decideId = decideId;
+      }
+      return q.promise;
+    }
     const cur = this.inflight.get(epKey);
     if (cur) {
-      const promise = cur.then(() => {
+      const entry = { trigger, decideId } as Queued;
+      entry.promise = cur.then(() => {
         this.queued.delete(epKey);
-        return this.start(epKey, trigger);
+        return this.start(epKey, entry.trigger, entry.decideId);
       });
-      this.queued.set(epKey, { trigger, promise });
-      return promise;
+      this.queued.set(epKey, entry);
+      return entry.promise;
     }
-    return this.start(epKey, trigger);
+    return this.start(epKey, trigger, decideId);
   }
 
-  private start(epKey: string, trigger: HealTrigger): Promise<HealResult> {
+  private start(epKey: string, trigger: HealTrigger, decideId?: number): Promise<HealResult> {
     const exec = this.executor;
     this.log.push({ epKey, trigger, at: Date.now(), spawned: exec !== null });
-    if (!exec) return Promise.resolve({ ok: false, stderrTail: "HEAL 未接入（能力缺席或 PR4 未施工）" });
-    const p = exec(epKey, trigger)
+    if (!exec) return Promise.resolve({ ok: false, stderrTail: "HEAL 未接入（能力缺席）" });
+    const p = exec(epKey, trigger, decideId)
       .catch((e: unknown) => ({ ok: false, stderrTail: e instanceof Error ? e.message : String(e) }))
       .then((r) => {
         if (!r.ok) this.onFailure(epKey, r); // 红队 m8：失败只记诊断，不重试

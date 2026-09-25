@@ -95,7 +95,23 @@ describe("HealScheduler", () => {
     await Promise.all([p1, p2, p3, pb]);
     expect(calls).toEqual(["A:H1-activated", "B:H1-activated", "A:H3-user-refresh"]);
   });
-  it("executor 为 null（能力缺席 / PR4 未接入）：只记录、不 spawn", async () => {
+  it("H4 合并进排队的「再跑一次」时覆盖标签并带上 decide 关联号（TA-2 按关联号统计 spawn）", async () => {
+    const calls: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const s = new HealScheduler(async (ep, t, d) => {
+      calls.push(`${ep}:${t}:${d ?? "-"}`);
+      if (calls.length === 1) await gate;
+      return { ok: true, stderrTail: "" };
+    });
+    const p1 = s.requestHeal("A", "H5-artifact-drift");
+    const p2 = s.requestHeal("A", "H2-step-changed");
+    const p3 = s.requestHeal("A", "H4-pre-ack", 7);
+    release();
+    await Promise.all([p1, p2, p3]);
+    expect(calls).toEqual(["A:H5-artifact-drift:-", "A:H4-pre-ack:7"]);
+  });
+  it("executor 为 null（能力缺席）：只记录、不 spawn", async () => {
     const s = new HealScheduler(null);
     const r = await s.requestHeal("A", "H1-activated");
     expect(r.ok).toBe(false);

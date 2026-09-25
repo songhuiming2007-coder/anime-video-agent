@@ -129,7 +129,7 @@ describe("TG-5 electron-builder.yml 冻结项（§2.10）", () => {
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
       loadBrowserProcessSpecificV8Snapshot: false,
-      grantFileProtocolExtraPrivileges: false,
+      grantFileProtocolExtraPrivileges: true,
       resetAdHocDarwinSignature: true,
     });
   });
