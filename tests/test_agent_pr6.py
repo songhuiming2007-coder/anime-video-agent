@@ -362,6 +362,147 @@ def test_m21_keyboard_interrupt_kills_child_and_threads_are_daemon(tmp_path):
     assert not any(t.is_alive() for t in created)
 
 
+import os as _os
+import signal as _signal
+import time as _time
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        _os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def test_n28_non_terminal_sigint_kills_grandchild_process_group(tmp_path):
+    """N28 腿 1：非终端信号（`kill -INT <ava pid>`）下，子进程与派生的孙进程（如 ffmpeg）
+    必须在同一独立进程组（start_new_session=True）中被 os.killpg(SIGKILL) 一并强杀，
+    不得残留孤儿孙进程继续往 05-final.mp4 写数据。"""
+    pids_file = tmp_path / "pids.txt"
+    out_file = tmp_path / "05-final.mp4"
+    grandchild_script = tmp_path / "grandchild.py"
+    grandchild_script.write_text(
+        "import time\n"
+        f"with open({str(out_file)!r}, 'ab') as p:\n"
+        "    while True:\n"
+        "        p.write(b'x' * 1024)\n"
+        "        p.flush()\n"
+        "        time.sleep(0.01)\n",
+        encoding="utf-8",
+    )
+    child_code = (
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        f"gp = subprocess.Popen([sys.executable, {str(grandchild_script)!r}],\n"
+        "                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"Path({str(pids_file)!r}).write_text(f'{{os.getpid()}},{{gp.pid}},{{os.getpgid(0)}},{{os.getpgid(gp.pid)}}')\n"
+        "gp.wait()\n"
+    )
+
+    stop_trigger = threading.Event()
+
+    def _send_non_terminal_sigint():
+        while not pids_file.exists() and not stop_trigger.is_set():
+            _time.sleep(0.01)
+        if not stop_trigger.is_set():
+            _time.sleep(0.03)
+            _os.kill(_os.getpid(), _signal.SIGINT)
+
+    t = threading.Thread(target=_send_non_terminal_sigint, daemon=True)
+    t.start()
+
+    try:
+        with patch("pipeline.agent.tools.validate_pipeline_command",
+                   return_value=(True, "ok", [sys_python(), "-c", child_code])):
+            with pytest.raises(KeyboardInterrupt):
+                run_pipeline("render", episode_dir=tmp_path, scope="pipeline", confirmed=True)
+    finally:
+        stop_trigger.set()
+        t.join(timeout=2.0)
+
+    c_pid, g_pid, c_pgid, g_pgid = [int(x) for x in pids_file.read_text().split(",")]
+    try:
+        assert c_pgid == c_pid and g_pgid == c_pid and c_pgid != _os.getpgrp()
+        for _ in range(30):
+            if not _pid_alive(c_pid) and not _pid_alive(g_pid):
+                break
+            _time.sleep(0.02)
+        assert not _pid_alive(c_pid), "直接子进程必须已被杀灭"
+        assert not _pid_alive(g_pid), "派生的孙进程（ffmpeg）必须随进程组一并被杀灭"
+        size_t0 = out_file.stat().st_size if out_file.exists() else 0
+        _time.sleep(0.08)
+        size_t1 = out_file.stat().st_size if out_file.exists() else 0
+        assert size_t1 == size_t0, "中断后 05-final.mp4 字节数不得继续增长"
+    finally:
+        for p in (g_pid, c_pid):
+            try:
+                _os.kill(p, _signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def test_n28_terminal_ctrl_c_process_group_sigint_zero_regression(tmp_path):
+    """N28 腿 2：终端 Ctrl-C 路径零回归——开启 start_new_session=True 后，子进程与孙进程
+    不再直接收到终端前台进程组的 SIGINT（此处显式让子/孙进程均 SIG_IGN 忽略 SIGINT），
+    且即便在 Popen 返回后、进入 proc.wait() 之前的启动窗口收到 KeyboardInterrupt，
+    也必须由 execute_job 的唯一中断入口通过 os.killpg(SIGKILL) 将整个子进程组杀净。"""
+    import pipeline.jobs as jobs_module
+
+    pids_file = tmp_path / "pids_ctrlc.txt"
+    child_code = (
+        "import os, signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "gp = subprocess.Popen([sys.executable, '-c', "
+        "'import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)'],\n"
+        "                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"Path({str(pids_file)!r}).write_text(f'{{os.getpid()}},{{gp.pid}}')\n"
+        "gp.wait()\n"
+    )
+
+    real_popen = subprocess.Popen
+
+    def popen_then_early_ctrl_c(*a, **k):
+        p = real_popen(*a, **k)
+        while not pids_file.exists():
+            _time.sleep(0.01)
+        return p
+
+    orig_emit = jobs_module.get_publisher().emit
+
+    def emit_with_ctrl_c(event_type, payload, **kw):
+        orig_emit(event_type, payload, **kw)
+        if event_type == jobs_module.EventType.JOB_STARTED:
+            # 模拟 Popen 刚返回、尚未走到 proc.wait() 时终端按下 Ctrl-C
+            raise KeyboardInterrupt("simulated terminal Ctrl-C during startup")
+
+    with patch.object(jobs_module.get_publisher(), "emit", side_effect=emit_with_ctrl_c), \
+         patch("pipeline.agent.tools.validate_pipeline_command",
+               return_value=(True, "ok", [sys_python(), "-c", child_code])):
+        job, valid, _ = jobs_module.create_job("render", episode_dir=tmp_path, scope="pipeline")
+        assert valid
+        with pytest.raises(KeyboardInterrupt):
+            jobs_module.execute_job(job, popen_factory=popen_then_early_ctrl_c)
+
+    c_pid, g_pid = [int(x) for x in pids_file.read_text().split(",")]
+    try:
+        for _ in range(30):
+            if not _pid_alive(c_pid) and not _pid_alive(g_pid):
+                break
+            _time.sleep(0.02)
+        assert not _pid_alive(c_pid) and not _pid_alive(g_pid), (
+            "即使子/孙进程均忽略 SIGINT 且中断发生在 Popen 后 wait 前，整个进程组也必须被杀净"
+        )
+    finally:
+        for p in (g_pid, c_pid):
+            try:
+                _os.kill(p, _signal.SIGKILL)
+            except OSError:
+                pass
+
+
+
 def test_popen_dual_pipe_concurrent_draining():
     """证明 stdout/stderr 双管并发排水：各写入 128 KB 数据不发生管道死锁。"""
     flood_script = (

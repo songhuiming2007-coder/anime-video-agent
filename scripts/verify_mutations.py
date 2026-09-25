@@ -197,54 +197,27 @@ MUTATIONS: list[dict] = [
              '        print(f"[REJECT] {reason}")\n'
              '        return (False, reason)'),
      "new": '    pass'},
-    # ---- M21: Ctrl-C 中断杀子进程 + 排水线程 daemon（PR6 Popen 化回归） ----
-    {"id": "M21a", "guard": "Ctrl-C 中断时 kill 子进程", "file": JOBS,
-     "old": ('        retcode: int | None = None\n'
-             '        try:\n'
-             '            retcode = proc.wait()\n'
+    # ---- M21: Ctrl-C 中断杀子进程 + 排水线程 daemon（PR6 Popen 化回归 + N28 进程组强杀） ----
+    {"id": "M21a", "guard": "Ctrl-C / SIGINT 中断时 kill 子进程组", "file": JOBS,
+     "old": ('            retcode = proc.wait()\n'
              '        except BaseException:\n'
-             '            # Ctrl-C 或外部中断：子进程必须立刻 kill，防止残留孤儿渲染进程打架（tools.py:794 先例）\n'
-             '            try:\n'
-             '                proc.kill()\n'
-             '            except Exception:\n'
-             '                pass\n'
-             '            t_out.join(2)\n'
-             '            t_err.join(2)\n'
-             '\n'
-             '            job.status = JobStatus.FAILED\n'
-             '            job.ended_at = _utc_now_iso()\n'
-             '            job.duration_s = round(time.time() - t_start, 2)\n'
-             '            actual_code = proc.poll() if proc.poll() is not None else -9\n'
-             '            job.returncode = actual_code\n'
-             '            job.message = f"进程被中断终止 (BaseException, code={actual_code})"\n'
-             '\n'
-             '            stdout_tail, out_trunc = stdout_buf.get_tail()\n'
-             '            stderr_tail, err_trunc = stderr_buf.get_tail()\n'
-             '            job.stdout_tail = stdout_tail\n'
-             '            job.stderr_tail = stderr_tail\n'
-             '            job.truncated = out_trunc or err_trunc\n'
-             '\n'
-             '            pub.emit(\n'
-             '                EventType.JOB_FINISHED,\n'
-             '                {\n'
-             '                    "job_id": job.job_id,\n'
-             '                    "status": job.status.value,\n'
-             '                    "returncode": job.returncode,\n'
-             '                    "duration_s": job.duration_s,\n'
-             '                    "message": job.message,\n'
-             '                    "stdout_tail": job.stdout_tail,\n'
-             '                    "stderr_tail": job.stderr_tail,\n'
-             '                    "truncated": job.truncated,\n'
-             '                },\n'
-             '                episode_dir=job.episode_dir,\n'
-             '            )\n'
-             '            raise'),
-     "new": '        retcode = proc.wait()'},
+             '            # Ctrl-C（终端前台进程组 SIGINT）或外部单点信号（kill -INT <ava pid>）：\n'
+             '            # 子进程因 start_new_session=True 处于独立进程组，不再自收终端 SIGINT，\n'
+             '            # 这里是中断的唯一入口，必须用 _kill_process_group (os.killpg SIGKILL)\n'
+             '            # 连同其派生的所有 ffmpeg 孙进程一并强杀（N28）。\n'
+             '            _kill_process_group(proc)\n'
+             '            if t_out is not None:\n'
+             '                t_out.join(2)\n'
+             '            if t_err is not None:\n'
+             '                t_err.join(2)'),
+     "new": ('            retcode = proc.wait()\n'
+             '        except ValueError:\n'
+             '            raise')},
     {"id": "M21b", "guard": "排水线程 daemon=True", "file": JOBS,
-     "old": ('        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)\n'
-             '        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)'),
-     "new": ('        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))\n'
-             '        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))')},
+     "old": ('            t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)\n'
+             '            t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)'),
+     "new": ('            t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False))\n'
+             '            t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True))')},
     # ---- M22a–M30: idea scope 与启动入口改造变异 (2026-09-21 Spec §5.1) ----
     {"id": "M22a", "guard": "select_episode_interactive 关键词 sentinel 分支", "file": CLI,
      "old": '        if choice == IDEA_KEYWORD:\n            return IDEA_KEYWORD\n',

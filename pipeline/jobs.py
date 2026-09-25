@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import queue
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -469,6 +470,35 @@ class _LockedTailBuffer:
             return self._inner.get_tail()
 
 
+_REAL_POPEN = subprocess.Popen
+
+
+def _kill_process_group(proc: Any) -> None:
+    """杀灭子进程所在的整个进程组（N28：start_new_session=True 下的唯一中断入口）。
+
+    当 start_new_session=True 时，子进程（如 render.py）及其派生的全部孙进程（如并行
+    切片或最终合成的 ffmpeg）同属 pgid=proc.pid 的独立进程组，不再直接接收终端前台
+    进程组的 SIGINT。无论中断来自终端 Ctrl-C 还是非终端 `kill -INT <ava pid>`，
+    均由宿主捕获 BaseException 后在此处统一调用 os.killpg(proc.pid, signal.SIGKILL)
+    将整个子进程组连根拔起，再调 proc.kill() 兜底（兼容非 Popen 假对象）。
+    """
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, int) and pid > 0 and isinstance(proc, _REAL_POPEN):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    if isinstance(proc, _REAL_POPEN):
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
+
+
 def execute_job(
     job: Job,
     *,
@@ -506,13 +536,7 @@ def execute_job(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
-            )
-            job.pid = proc.pid
-            job.status = JobStatus.RUNNING
-            pub.emit(
-                EventType.JOB_STARTED,
-                {"job_id": job.job_id, "pid": proc.pid, "started_at": job.started_at},
-                episode_dir=job.episode_dir,
+                start_new_session=True,
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
             job.status = JobStatus.FAILED
@@ -554,22 +578,34 @@ def execute_job(
                 except Exception:
                     pass
 
-        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)
-        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)
-        t_out.start()
-        t_err.start()
-
+        t_out: threading.Thread | None = None
+        t_err: threading.Thread | None = None
         retcode: int | None = None
         try:
+            job.pid = proc.pid
+            job.status = JobStatus.RUNNING
+            pub.emit(
+                EventType.JOB_STARTED,
+                {"job_id": job.job_id, "pid": proc.pid, "started_at": job.started_at},
+                episode_dir=job.episode_dir,
+            )
+
+            t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf, False), daemon=True)
+            t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf, True), daemon=True)
+            t_out.start()
+            t_err.start()
+
             retcode = proc.wait()
         except BaseException:
-            # Ctrl-C 或外部中断：子进程必须立刻 kill，防止残留孤儿渲染进程打架（tools.py:794 先例）
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            t_out.join(2)
-            t_err.join(2)
+            # Ctrl-C（终端前台进程组 SIGINT）或外部单点信号（kill -INT <ava pid>）：
+            # 子进程因 start_new_session=True 处于独立进程组，不再自收终端 SIGINT，
+            # 这里是中断的唯一入口，必须用 _kill_process_group (os.killpg SIGKILL)
+            # 连同其派生的所有 ffmpeg 孙进程一并强杀（N28）。
+            _kill_process_group(proc)
+            if t_out is not None:
+                t_out.join(2)
+            if t_err is not None:
+                t_err.join(2)
 
             job.status = JobStatus.FAILED
             job.ended_at = _utc_now_iso()
