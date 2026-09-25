@@ -19,8 +19,6 @@
 | D11 | 待决策 | 角色贴名未完成 + 「佑」显示名待核对 | `config/characters.json:23,51,65,97` | — | 东京喰种 / 罪恶王冠贴名进度未标完成；用 subindex 核「佑」显示名 |
 | D12 | 待决策 | BASELINE 语气词密度判据挂起 | `skills/write-script/BASELINE.md:80` | P4 | 口语体样本仅 1 篇；P4 E2 已建 diff 对样本积累机制，≥4 期后决定 |
 | D13 | 待验证 | 对抗性审查三步流水线已实战一轮，待新番验证 | `WORKFLOW.md`「番剧笔记」 | — | 罪恶王冠大修实测有效；下一部新番从零建笔记时复盘 |
-| D18 | 待决策 | 集号 / 人物字段自觉性缺口导致错配静默发生 | `pipeline/check_script.py` | ADR-0005, ADR-0008, B1 | **2026-08-27 更新**：集号侧已由 `锚点:` 强制字段 + 集/锚点一致性机检覆盖（check_script 与 clips.parse_shots 双卡口）；`人物:` 该写没写仍无判据，保留 |
-| D19 | 待决策 | 说话人确认是全流程最不可靠环节 | `skills/write-script/SKILL.md:54` | — | 字幕 Name 字段基本不填，02 写稿侧仍无机器判据 |
 | D22 | 已定案（ADR-0015），v2 推进中 | 泛素材多模态漏斗检索（Top-K 候选轻量视觉意象过滤）待探针设计 | `docs/adr/0005` | B1, D1, ADR-0015, v2架构方案 | 全镜头 VLM 打标取代漏斗粗滤设计；漏斗复核子题（D1）范围收窄到台词检索段 |
 | D23 | 已定案（M2a 落地） | 配音顺听人机摩擦力大 | `pipeline/tts.py` | 四阶段工序卡, ADR-0006, ADR-0016, ADR-0017 | 云端 Qwen3-TTS + SenseVoice/Whisper 仲裁已入库（ADR-0017）；结构化打点机制就绪。2026-09-25 S25：一期 8 份 spec 全部完工并移入 `docs/dev/plans/archive/` |
 | D24 | 待决策 | 数百 GB 海量素材增量索引构建、代表帧缓存管理与跨挂载点迁移机制缺失 | `pipeline/ingest.py` | ADR-0012, Local-First | 素材库向 TB 级扩张，缺少全量 vs 增量 hash 变更检测与智能缓存淘汰，跨设备挂载需保证便携性 |
