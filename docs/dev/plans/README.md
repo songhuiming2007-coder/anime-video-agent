@@ -1,8 +1,8 @@
 # Plans：可执行改进方案（施工图）
 
 给执行代理（或未来会话）的**施工图**：目标、改动清单、验证命令、完成判定写死在文件里，
-执行者只做清单内的事。不是 ADR（难以回头的决策，在 `docs/adr/`）、不是 issues（未解决
-问题账本，在 `docs/issues/README.md`）。
+执行者只做清单内的事。不是 ADR（难以回头的决策，在 `docs/dev/adr/`）、不是 issues（未解决
+问题账本，在 `docs/dev/issues/README.md`）。
 
 > **查当前该做什么，先看下表。** 已归档方案见 [`archive/`](archive/)。
 
@@ -19,7 +19,6 @@
 | [v2 云端 GPU 重构](2026-09-08-v2-cloud-gpu-reconstruction.md) | B1, B2, D1, D2, D4, D5, D6, D22, D23, D25 | ADR-0014, ADR-0003, ADR-0005, ADR-0006 | **全局收束施工图**，M1/M2a/M2b/M2.5 已交付，进至 M3 |
 | [v2 系统架构设计](2026-09-10-v2-architecture-design.md) | B1, B2, B3, D1, D2, D4, D5, D6, D22, D23, D24, D25 | ADR-0014, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0010~0013 | v2 架构落地层（7 大子系统设计），核心能力已在 M1~M2.5 交付落地 |
 | [M2b 服务对象修正：番剧域 → 素材池](2026-09-11-m2b-pool-scope.md) | D4 / D5 / D6 / B1 | ADR-0015, ADR-0003, ADR-0008, ADR-0016 | **已执行并验收**（commit `b257e6d`，2026-09-11） |
-| [ava-agent 架构设计与闭环控制](2026-09-18-ava-agent-harness.md) | B2 / B3 / D10 / D23 | ADR-0006, ADR-0014, ADR-0015, ADR-0017 | **已立项，待开工** |
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列（**一期 8 份 spec 已全部完工验收，2026-09-25 S25 移入 [`archive/`](archive/)**）；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 待立；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
@@ -31,7 +30,7 @@
 | 项 | 规则 |
 |---|---|
 | 命名 | `YYYY-MM-DD-<slug>.md`，slug 用 kebab-case 英文 |
-| 来源 | 正文第一节写明对应的 B/D/N 编号（`docs/issues/README.md`）与相关 ADR |
+| 来源 | 正文第一节写明对应的 B/D/N 编号（`docs/dev/issues/README.md`）与相关 ADR |
 | 生命周期 | 完成判定全部满足后**移入 `archive/`，不删除**（历史在 git），对应 issues 条目同步归档 |
 | 孤儿 | 超过 60 天没动工的方案：要么重写（现实变了），要么归档。不养尸 |
 

@@ -7,7 +7,7 @@
 
 ---
 
-> **文档定位说明**：本文档为项目对外开源与招募伙伴时的一条命令行 pipeline 阶段概览。当前研发重点为构建统一 CLI 的 ava-agent Harness（参见 ADR-0018 及 `docs/dev/plans/2026-09-18-ava-agent-harness.md`）；本文档保留原始对外沟通叙事，各步规程以 `docs/runbook/` 为准。
+> **文档定位说明**：本文档为项目对外开源与招募伙伴时的一条命令行 pipeline 阶段概览。当前研发重点为构建统一 CLI 的 ava-agent Harness（参见 ADR-0018、`docs/dev/plans/2026-09-22-harness-evolution-direction.md` 及归档施工图 `docs/dev/plans/archive/2026-09-18-ava-agent-harness.md`）；本文档保留原始对外沟通叙事，各步规程以 `docs/runbook/` 为准。
 
 ## 现在有什么
 

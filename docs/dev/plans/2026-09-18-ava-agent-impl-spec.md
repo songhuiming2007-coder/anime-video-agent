@@ -2,7 +2,7 @@
 
 日期：2026-09-21（**v1.21**，第二十一轮启动入口改造扩展；版本号由
 `tests/test_docs_invariants.py` 断言与状态行一致——B1-r19）
-上位文档：`docs/dev/plans/2026-09-18-ava-agent-harness.md`（施工图）
+上位文档：`docs/dev/plans/archive/2026-09-18-ava-agent-harness.md`（施工图）
 状态：**v1.21 已实施**
 
 > **启动入口改造注记（2026-09-21，v1.21）**：根据
@@ -12,7 +12,7 @@
 > ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。
 
 > **后继扩展注记（2026-09-20）**：本 Spec 的默认交互层（原将 AI 约束于 `/chat`、`/script` 子循环）
-> 已由后继 Spec [`2026-09-20-ava-ai-native-director-spec.md`](2026-09-20-ava-ai-native-director-spec.md)（v1.4）
+> 已由后继 Spec [`archive/2026-09-20-ava-ai-native-director-spec.md`](archive/2026-09-20-ava-ai-native-director-spec.md)（v1.4）
 > 扩展为默认 AI 制片总监连续对话。该扩展是**后继扩展而非修订**：本 Spec 定义的 scope 模型、
 > 护栏矩阵与 PR0–PR4 交付物全部继续有效。
 >
@@ -131,7 +131,7 @@
 
 > **用户拍板落痕（2026-09-18）**：① R2 砍语速调整——/voice 对「太快/太慢」明确报错，
 > 真机制（atempo + refit 联动）记账为 issue D26，以后再做；② R5 PR3 视频-only，
-> 图片走 ffmpeg 转换兜底，真图片形态记账为 N11；③ 补丁池门槛判决采纳——pool.json
+> 图片走 ffmpeg 转换兜底，真图片形态记账为 N31；③ 补丁池门槛判决采纳——pool.json
 > 自带 `no_match` 字段 + 三闸（零向量报账 / score+floor 落盘 / 补丁段 approve 二次确认）。
 
 > **v1.1 修订来源**：2026-09-18 红队 Review 报告（9🔴/11🟡/9🔵）。验伤结论：
