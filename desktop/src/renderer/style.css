@@ -1,0 +1,66 @@
+:root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --accent: #0a66c2; --red: #c0392b; --yellow: #b7791f; --grey: #6e6e73; --panel: #fff; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --fg: #f2f2f7; --muted: #98989d; --line: #3a3a3c; --accent: #4ea1ff; --panel: #2c2c2e; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.45 -apple-system, "PingFang SC", sans-serif; background: var(--bg); color: var(--fg); }
+.app { display: flex; flex-direction: column; height: 100vh; }
+.topbar { border-bottom: 1px solid var(--line); background: var(--panel); }
+.topbar-row { display: flex; gap: 10px; align-items: center; padding: 6px 12px; }
+.spacer { flex: 1; }
+.repo { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-mark { background: var(--yellow); color: #fff; border-radius: 3px; padding: 0 6px; font-weight: 600; }
+.banner { padding: 4px 12px; color: #fff; }
+.banner-red { background: var(--red); }
+.banner-yellow { background: var(--yellow); }
+.banner-grey { background: var(--grey); }
+button { font: inherit; padding: 2px 10px; }
+.main { flex: 1; display: grid; grid-template-columns: 240px 320px 1fr; min-height: 0; }
+.main.stale { opacity: 0.55; }
+.center, .preview { overflow: auto; border-right: 1px solid var(--line); }
+.ep { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.ep.active { background: var(--accent); color: #fff; }
+.ep-step { font-size: 12px; opacity: 0.8; }
+.stop-mark { background: var(--red); color: #fff; border-radius: 3px; padding: 0 4px; margin: 0 4px; font-size: 11px; }
+.status { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.cmd { display: block; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+.advisories { margin: 4px 0; padding-left: 18px; color: var(--yellow); }
+.tree-list { list-style: none; margin: 0; padding: 0; }
+.tree-row { padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+.tree-row:hover { background: rgba(127, 127, 127, 0.15); }
+.tree-row.dir { font-weight: 600; }
+.preview { position: relative; }
+.empty, .muted { color: var(--muted); padding: 8px; }
+.error { color: var(--red); padding: 8px; }
+.notice { color: var(--yellow); padding: 2px 8px; }
+.html-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.video-wrap { position: relative; }
+.video-wrap video { width: 100%; max-height: 70vh; background: #000; }
+.timecode { position: absolute; top: 8px; right: 8px; background: rgba(0, 0, 0, 0.7); color: #fff; font: 13px ui-monospace, monospace; padding: 2px 6px; }
+.audio-wrap { padding: 10px; }
+.audio-wrap audio { width: 100%; }
+.queue li { cursor: pointer; }
+.queue li.current { font-weight: 700; color: var(--accent); }
+.image-wrap { overflow: hidden; height: 100%; cursor: grab; display: flex; align-items: center; justify-content: center; }
+.image-wrap img { max-width: 100%; transform-origin: center; user-select: none; }
+.text-wrap { padding: 10px; }
+.plain { white-space: pre-wrap; word-break: break-word; font: 12px ui-monospace, monospace; }
+.markdown { max-width: 860px; }
+.json { font: 12px ui-monospace, monospace; }
+.j-children { padding-left: 16px; }
+.j-toggle { cursor: pointer; display: inline-block; width: 12px; }
+.j-key { color: var(--accent); }
+.j-str { color: #2e8b57; }
+.j-num { color: #b35c00; }
+.j-lit { color: #8e44ad; }
+.timeline { max-height: 28vh; overflow: auto; border-top: 1px solid var(--line); background: var(--panel); padding: 4px 8px; }
+.jobs, .events { list-style: none; margin: 0; padding: 0; }
+.job-state { display: inline-block; min-width: 72px; font-weight: 600; }
+.job.failed .job-state { color: var(--red); }
+.warn { color: var(--yellow); }
+.stderr { white-space: pre-wrap; font: 11px ui-monospace, monospace; color: var(--red); }
+.health { padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.health th { text-align: left; padding-right: 12px; color: var(--muted); font-weight: 400; }
+.diag { max-height: 120px; overflow: auto; font: 11px ui-monospace, monospace; }
+.meta { padding: 10px; }
+.meta-title { font-weight: 600; }
+.left { overflow: auto; border-right: 1px solid var(--line); }
+.section-title { padding: 6px 10px; font-weight: 600; cursor: pointer; border-top: 1px solid var(--line); }

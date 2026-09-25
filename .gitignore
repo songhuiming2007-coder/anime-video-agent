@@ -28,3 +28,8 @@ __pycache__/
 
 # JetBrains IDE
 .idea/
+
+# 桌面端（Spec 8）：依赖与构建产物不进库
+desktop/node_modules/
+desktop/out/
+desktop/dist/

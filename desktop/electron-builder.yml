@@ -1,0 +1,25 @@
+# Spec 8 §2.10：打包加固冻结项。TG-5 逐项守护，改动 = 修订 spec。
+appId: local.ava.desktop
+productName: ava
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+asar: true
+# 未设 publish 时 electron-builder 会按 npm release / CI tag / CI 环境隐式发布（红线 6）
+publish: null
+mac:
+  target: dir
+  # null = 跳过签名、不查 keychain；只有 fuses 步骤对主二进制 ad-hoc 重签（假设 1）
+  identity: null
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  loadBrowserProcessSpecificV8Snapshot: false
+  grantFileProtocolExtraPrivileges: false
+  resetAdHocDarwinSignature: true

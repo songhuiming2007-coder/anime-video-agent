@@ -57,6 +57,7 @@
 | D27 | 已解决（实施与变异全量通过） | 立项前工作无入口：ava 启动形态缺无期选题会话 | `pipeline/agent/cli.py`（`create_new_episode` / `select_episode_interactive` / `main`） | ava-entry-idea-scope 方案, impl-spec §2.3 | 需求交接 2026-09-20（容器先于内容的顺序倒置）；2026-09-21 实施落地，15 组变异全杀闭环 |
 | D28 | 待决策 | 工具循环 10 轮上限对网络调研偏少：被墙或绕路时 10 轮耗尽也拿不到有效信息 | `pipeline/agent/llm.py:33`（`DEFAULT_MAX_ITERATIONS`）、`pipeline/agent/tools.py::_tool_web_fetch` | Spec 4, impl-spec B3-r5 | 2026-09-24 S20 门禁 8 冒烟实测：asset 抓 bgm 一色彩羽，搜索页撞游客登录墙（200 但只有导航栏），随后 9 次 fetch 在作品页与 API 间绕路，没去能直接抓到简介的 `/character/26090` 就耗尽 10 轮。10 这个数本身也没写依据。2026-09-24 用户裁决：**不设固定轮数上限**，停止前必须先做无工具收尾总结，防失控改用「人随时中断 + 完全相同的调用拒绝执行」（归二期 Spec 9）；不靠人指路，改为让模型拿到更好的信息：web_fetch 返回页内链接清单，scope 提示写通用研究策略，站点经验进 memory.md（归二期 Spec 13）；crawl/browser 的 extras 由人安装。到顶回显工具原始 JSON 是另一个 bug（`llm.py:365` 的 `final=convo[-1]`），已交 S25 |
 
+| N29 | 待修（已排插单 session） | 镜头画廊「复制锚点」按钮点不动：`json.dumps` 的双引号直接塞进双引号 `onclick` 属性，浏览器解析出的属性值只剩 `cp(this, ` | `pipeline/shots.py` `gallery()` 的 `onclick="cp(this, {json.dumps(anchor, …)})"` 一行 | Spec 8 §2.7 RF-7 | 2026-09-24 S21 施工发现（桌面端 e2e 夹具已按修好后的形态绕开）；修法为该处加 `html.escape`，经用户同意排为 M11 提交后、S23 前的独立插单 session（不并入 M11：TC-4 要求 `pipeline/` 零改动）；data/ 下已有画廊需重生成，批量还是按需由人定 |
 ---
 
 ## 维护规则
