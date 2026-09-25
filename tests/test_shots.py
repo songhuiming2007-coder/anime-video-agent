@@ -315,6 +315,50 @@ class TestGallery:
             (fr / f"{n:05d}.jpg").write_bytes(b"x")
         assert shots.gallery("EGOIST", "SP05", out_dir=lib[0], dest_dir=lib[1]).exists()
 
+    def test_按钮onclick属性转义还原(self, lib):
+        from html.parser import HTMLParser
+
+        class _BtnParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.onclicks: list[str | None] = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "button":
+                    self.onclicks.append(dict(attrs).get("onclick"))
+
+        shots_dir, frames_dir = lib
+        fr = frames_dir / "EGOIST_SP05"
+        fr.mkdir(parents=True)
+        (fr / "00001.jpg").write_bytes(b"x")
+        (fr / "00002.jpg").write_bytes(b"x")
+        dest = shots.gallery("EGOIST", "SP05", out_dir=shots_dir, dest_dir=frames_dir)
+        p = _BtnParser()
+        p.feed(dest.read_text(encoding="utf-8"))
+        assert p.onclicks == [
+            'cp(this, "锚点: EGOIST SP05 00:00.00")',
+            'cp(this, "锚点: EGOIST SP05 00:01.40")',
+        ]
+
+        # 含 <、&、' 的番名夹具：HTML 属性转义后由 html.parser 还原应与原文严格一致
+        anime_sp = "A<B&C'D"
+        table = json.loads((shots_dir / "EGOIST_SP05.json").read_text(encoding="utf-8"))
+        (shots_dir / f"{anime_sp}_01.json").write_text(json.dumps(table), encoding="utf-8")
+        fr_sp = frames_dir / f"{anime_sp}_01"
+        fr_sp.mkdir(parents=True)
+        (fr_sp / "00001.jpg").write_bytes(b"x")
+        (fr_sp / "00002.jpg").write_bytes(b"x")
+        dest_sp = shots.gallery(anime_sp, "01", out_dir=shots_dir, dest_dir=frames_dir, check=False)
+        raw_sp = dest_sp.read_text(encoding="utf-8")
+        assert "&lt;" in raw_sp and "&amp;" in raw_sp and "&#x27;" in raw_sp and "&quot;" in raw_sp
+        p_sp = _BtnParser()
+        p_sp.feed(raw_sp)
+        assert p_sp.onclicks == [
+            "cp(this, \"锚点: A<B&C'D 01 00:00.00\")",
+            "cp(this, \"锚点: A<B&C'D 01 00:01.40\")",
+        ]
+        assert json.loads(p_sp.onclicks[0].removeprefix("cp(this, ").removesuffix(")")) == "锚点: A<B&C'D 01 00:00.00"
+
 
 class TestRebuildAlsoCut:
     """手动补刀（ADR-0012）：scdet 对黑底缓出失明，人眼看准的切点注入为强制边界。"""
