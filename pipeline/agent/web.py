@@ -31,6 +31,13 @@ from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS, assert_egress_bound
 
 SEARCH_DEFAULT_LIMIT = 5
 SEARCH_MAX_LIMIT = 10
+# Spec 13 §3.2 常量依据：ANCHOR_MAX_CHARS=60（实测四页锚文本绝大多数 <40 字符，
+# 60 容下长句锚并截断异常值）；LINKS_MAX_COUNT/CHARS=200/12000（JSON 口径实测四类
+# 真实页面，内容链接区止于 idx 185 / 累计 11373 字符，覆盖全部样本的最小整百/整千值，
+# 12000 ≈ max_fetch_chars(30000) 的 40%）。调大常量须附新实测表（§10 RF-1）。
+ANCHOR_MAX_CHARS = 60
+LINKS_MAX_COUNT = 200
+LINKS_MAX_CHARS = 12000  # JSON 计长口径（json.dumps(entry, ensure_ascii=False)）
 _TEXT_CONTENT_TYPES = (
     "text/html",
     "text/plain",
@@ -323,6 +330,116 @@ class _TextExtractor(HTMLParser):
         return re.sub(r"\s+", " ", " ".join(self._chunks)).strip()
 
 
+class _LinkExtractor(HTMLParser):
+    """<a> 链接提取：与 _TextExtractor 同款的 stdlib HTMLParser 子类。
+
+    收集 (href, 锚文本) 对；script/style/noscript 内的链接同样跳过
+    （复用 _TextExtractor._SKIP_TAGS，不复制第二份清单）。
+    """
+
+    _SKIP_TAGS = _TextExtractor._SKIP_TAGS
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._in_anchor = False
+        self._href = ""
+        self._parts: list[str] = []
+        self.pairs: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth or self._in_anchor or tag != "a":
+            return
+        attr_map = {k.lower(): (v or "") for k, v in attrs}
+        href = attr_map.get("href", "").strip()
+        if href:
+            self._in_anchor = True
+            self._href = href
+            self._parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            if self._skip_depth > 0:
+                self._skip_depth -= 1
+            return
+        if tag == "a" and self._in_anchor:
+            anchor = re.sub(r"\s+", " ", "".join(self._parts)).strip()
+            self.pairs.append((self._href, anchor))
+            self._in_anchor = False
+            self._href = ""
+            self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and self._in_anchor and data:
+            self._parts.append(data)
+
+
+def _extract_links(html: str, base_url: str) -> list[dict[str, str]]:
+    """Spec 13 §3.2 七步管线 → [{"url", "anchor"}]，未 scrub、未做清单双帽截断。
+
+    1 数据源是已抓取的 HTML（零新请求）；2 urljoin(base_url=final_url) 绝对化；
+    3 scheme ∈ {http, https}；4 按去 fragment 的 URL 去重，锚文本回填（首个非空胜出）；
+    5 丢空锚；6 同站（hostname 相等）优先、组内文档序、跨站殿后；7 锚文本封顶 60。
+    纯函数，可单测。
+    """
+    parser = _LinkExtractor()
+    parser.feed(html)
+
+    base_host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+    entries: dict[str, dict[str, str]] = {}
+    for href, anchor in parser.pairs:
+        absolute = urllib.parse.urljoin(base_url, href)
+        parts = urllib.parse.urlsplit(absolute)
+        if (parts.scheme or "").lower() not in ("http", "https"):
+            continue
+        url = urllib.parse.urlunsplit(parts._replace(fragment=""))
+        entry = entries.get(url)
+        if entry is None:
+            entries[url] = {"url": url, "anchor": anchor[:ANCHOR_MAX_CHARS]}
+        elif not entry["anchor"] and anchor:
+            entry["anchor"] = anchor[:ANCHOR_MAX_CHARS]
+
+    same_site: list[dict[str, str]] = []
+    cross_site: list[dict[str, str]] = []
+    for entry in entries.values():
+        if not entry["anchor"]:
+            continue
+        host = (urllib.parse.urlparse(entry["url"]).hostname or "").lower()
+        (same_site if host == base_host else cross_site).append(entry)
+    return same_site + cross_site
+
+
+def _cap_links(
+    entries: list[dict[str, str]], api_key: str
+) -> tuple[list[dict[str, str]], bool]:
+    """逐条 _scrub + _redact_secret，再双帽截断（条数帽或 JSON 字符帽任一触发即截断）。
+
+    §2.3：url 与 anchor 与正文同纪律过清洗，受限字样进上下文的是 [已脱敏]，会话不炸。
+    §4.1：字符帽按逐条 json.dumps 计长累计，数组括号与条目间分隔符 ~400 字符从简不计
+    （2×(n-1)+2），小于帽余量 12000-11373=627。
+    """
+    links: list[dict[str, str]] = []
+    used_chars = 0
+    truncated = False
+    for entry in entries:
+        cleaned = {
+            "url": _redact_secret(_scrub(entry["url"]), api_key),
+            "anchor": _redact_secret(_scrub(entry["anchor"]), api_key),
+        }
+        size = len(json.dumps(cleaned, ensure_ascii=False))
+        if len(links) >= LINKS_MAX_COUNT or used_chars + size > LINKS_MAX_CHARS:
+            truncated = True
+            break
+        used_chars += size
+        links.append(cleaned)
+    return links, truncated
+
+
 def _decode_ddg_href(href: str) -> str:
     """若为 DuckDuckGo 重定向链接（含 uddg 参数），解码出真实目标 URL。"""
     raw = href.strip()
@@ -526,7 +643,9 @@ def fetch_web(
     utf-8 errors="replace"；不探 <meta>、不声明 gzip，§2.5⑤）→
     _TextExtractor 净文 → _scrub → max_fetch_chars 截断 →
     final_url 凭据值替换 "***" 并对 geturl() 结果再验 scheme →
-    返回 §3.3 契约。
+    _extract_links(decoded, raw_final_url) 链接清单（同站优先、去 fragment 去重、
+    丢空锚、锚文本封顶）逐条 _scrub/_redact_secret 后双帽截断 →
+    返回 §3.3 契约（Spec 13 增 links / links_truncated 两键）。
     """
     cfg = config if config is not None else load_web_config(root)
     if cfg is None:
@@ -577,6 +696,10 @@ def fetch_web(
     final_url = _redact_secret(_scrub(raw_final_url), cfg.api_key)
     status_code = int(getattr(resp, "status", None) or getattr(resp, "code", 200))
 
+    links, links_truncated = _cap_links(
+        _extract_links(decoded, raw_final_url), cfg.api_key
+    )
+
     return {
         "url": _redact_secret(url, cfg.api_key),
         "final_url": final_url,
@@ -585,4 +708,6 @@ def fetch_web(
         "text": text,
         "truncated": truncated,
         "fetched_bytes": fetched_bytes,
+        "links": links,
+        "links_truncated": links_truncated,
     }

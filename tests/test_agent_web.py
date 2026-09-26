@@ -1059,6 +1059,221 @@ def test_egress_hit_aborts_turn_blocked(
     )
     captured = capsys.readouterr().out
     assert "[BLOCKED] 出网被拦截" in captured
+    # 腿③走的是**外层**捕获（打桩直接把异常抛到 run_tool_loop 之外，🔵-10）：与现状同为 error
     assert outcome["stopped"] == "error"
     assert all(m.get("content") != user_line for m in messages)
 
+
+# ——— Spec 13 §7.1：web_fetch 链接清单（T1–T11，全部 fixture HTML，零真网依赖） ———
+
+LINKS_FIXTURE_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <script>var x = '<a href="/from-script">脚本内链接</a>';</script>
+  <style>/* <a href="/from-style">样式内链接</a> */</style>
+</head>
+<body>
+  <!-- T1/T4：同一 URL 先空锚（纯图片）后文字锚，回填后保留 -->
+  <a href="/a"><img src="/i.png" alt="图"></a>
+  <a href="/a#frag">甲页</a>
+  <a href="https://ta.example/a">甲页重复</a>
+  <a href="/img-only"><img src="/x.png" alt="无文字"></a>
+  <a href="b">乙页</a>
+  <a href="https://tb.example/ext">跨站页</a>
+</body>
+</html>
+"""
+
+SCHEME_FIXTURE_HTML = """<!DOCTYPE html>
+<html><body>
+  <a href="/ok">可用页</a>
+  <a href="javascript:alert(1)">脚本伪链接</a>
+  <a href="mailto:a@ta.example">邮件</a>
+  <a href="ftp://files.tb.example/x">FTP</a>
+  <a href="data:text/html,hi">数据链接</a>
+</body></html>
+"""
+
+INTERLEAVED_FIXTURE_HTML = """<!DOCTYPE html>
+<html><body>
+  <a href="https://tb.example/ext1">跨1</a>
+  <a href="/s1">站内1</a>
+  <a href="https://tb.example/ext2">跨2</a>
+  <a href="/s2">站内2</a>
+</body></html>
+"""
+
+LONG_ANCHOR_FIXTURE_HTML = (
+    '<!DOCTYPE html><html><body><a href="/long">' + ("字" * 80) + "</a></body></html>"
+)
+
+CAP_CONSTRAINT_HOST = "https://s.test/"
+MANY_LINKS_FIXTURE_HTML = (
+    "<!DOCTYPE html><html><body>"
+    + "".join(
+        f'<a href="p{i}">n{i}</a>' for i in range(250)
+    )
+    + "</body></html>"
+)
+
+LONG_URL_FIXTURE_HTML = (
+    "<!DOCTYPE html><html><body>"
+    + "".join(
+        f'<a href="https://ta.example/{"x" * 1480}{i}">{i}</a>' for i in range(10)
+    )
+    + "</body></html>"
+)
+
+DIRTY_LINKS_FIXTURE_HTML = """<!DOCTYPE html>
+<html><body>
+  <a href="https://ta.example/03-audio/manifest.json">受限路径</a>
+  <a href="/safe">引用 Cloud.Local.JSON 与 agent.local.json 的锚</a>
+</body></html>
+"""
+
+NO_LINKS_FIXTURE_HTML = """<!DOCTYPE html>
+<html><body><h1>纯文本页</h1><p>没有任何链接。</p></body></html>
+"""
+
+
+def _fetch_fixture(
+    html_text: str,
+    *,
+    final_url: str = "https://ta.example/dir/page",
+    requested_url: str = "https://ta.example/dir/page",
+    monkeypatch: pytest.MonkeyPatch,
+    cfg: WebConfig | None = None,
+) -> dict[str, Any]:
+    _pin_public_dns(monkeypatch)
+    return fetch_web(
+        requested_url,
+        config=cfg or _make_config(),
+        opener=lambda req, timeout=30.0: _FakeResponse(
+            html_text.encode("utf-8"), final_url=final_url
+        ),
+    )
+
+
+def test_extract_links_absolutize_dedupe_and_anchor_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T1 (Spec 13 门禁 2): 绝对化、去 fragment 去重、锚文本回填、同站优先。"""
+    out = _fetch_fixture(LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
+    links = out["links"]
+    assert [item["url"] for item in links] == [
+        "https://ta.example/a",
+        "https://ta.example/dir/b",
+        "https://tb.example/ext",
+    ]
+    # 回填：首个非空锚胜出（先出现的空锚不覆盖后出现的文字锚）
+    assert links[0]["anchor"] == "甲页"
+    assert links[1]["anchor"] == "乙页"
+    # script/style 内链接不进清单（复用 _SKIP_TAGS 语义）
+    assert all("from-script" not in item["url"] for item in links)
+    assert all("from-style" not in item["url"] for item in links)
+
+
+def test_extract_links_scheme_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T2 (门禁 2): 仅 http/https 存活。"""
+    out = _fetch_fixture(SCHEME_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert [item["url"] for item in out["links"]] == ["https://ta.example/ok"]
+
+
+def test_extract_links_same_site_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T3 (门禁 2): 同站全体在前且组内文档序，跨站殿后。"""
+    out = _fetch_fixture(INTERLEAVED_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert [item["url"] for item in out["links"]] == [
+        "https://ta.example/s1",
+        "https://ta.example/s2",
+        "https://tb.example/ext1",
+        "https://tb.example/ext2",
+    ]
+
+
+def test_extract_links_drops_empty_anchors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T4 (门禁 2): 纯图片链接（无文字锚）不进清单；同 URL 有文字锚时回填保留。"""
+    out = _fetch_fixture(LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
+    urls = [item["url"] for item in out["links"]]
+    assert "https://ta.example/img-only" not in urls
+    assert "https://ta.example/a" in urls  # 空锚先出现但被文字锚回填
+
+
+def test_extract_links_anchor_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T5 (门禁 2): 锚文本截断至 ANCHOR_MAX_CHARS。"""
+    out = _fetch_fixture(LONG_ANCHOR_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert len(out["links"]) == 1
+    assert len(out["links"][0]["anchor"]) == 60
+
+
+def test_fetch_links_count_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T6 (门禁 3): 条数帽 200 触发且字符帽不先触发（fixture 单条 JSON ≤50 字符）。"""
+    entries = [
+        {"url": f"{CAP_CONSTRAINT_HOST}p{i}", "anchor": f"n{i}"} for i in range(250)
+    ]
+    sizes = [len(json.dumps(e, ensure_ascii=False)) for e in entries]
+    assert max(sizes) <= 50, "fixture 约束：单条 JSON 计长 ≤50 字符（🟡-4）"
+    assert sum(sizes[:200]) <= 10000, "fixture 约束：200 条累计 ≤10000 < 12000"
+
+    out = _fetch_fixture(
+        MANY_LINKS_FIXTURE_HTML,
+        final_url="https://s.test/page",
+        requested_url="https://s.test/page",
+        monkeypatch=monkeypatch,
+    )
+    assert len(out["links"]) == 200
+    assert out["links_truncated"] is True
+
+
+def test_fetch_links_char_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T7 (门禁 3): 字符帽 12000 触发而条数帽不触发（fixture 条数 <200）。"""
+    out = _fetch_fixture(LONG_URL_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert len(out["links"]) < 200
+    assert 0 < len(out["links"]) < 10, "长 URL 使字符帽在中途触发"
+    assert out["links_truncated"] is True
+    used = sum(len(json.dumps(e, ensure_ascii=False)) for e in out["links"])
+    assert used <= 12000
+
+
+def test_fetch_links_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T8 (门禁 4): 链接 URL/锚文本同过 _scrub，受限字样不进上下文（会话不炸）。"""
+    out = _fetch_fixture(DIRTY_LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
+    dumped = json.dumps(out["links"], ensure_ascii=False)
+    assert "03-audio/manifest.json" not in dumped
+    assert "Cloud.Local.JSON" not in dumped
+    assert "agent.local.json" not in dumped
+    assert "[已脱敏]" in dumped
+
+
+def test_fetch_links_contract_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T9 (门禁 1): 返回含 links/links_truncated 两键，既有 7 键不动。"""
+    out = _fetch_fixture(NO_LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
+    for key in (
+        "url",
+        "final_url",
+        "status",
+        "content_type",
+        "text",
+        "truncated",
+        "fetched_bytes",
+    ):
+        assert key in out
+    assert isinstance(out["links"], list)
+    assert isinstance(out["links_truncated"], bool)
+
+
+def test_fetch_no_links_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T10 (门禁 2): 无 <a> 页 → 空清单且未截断（空清单是合法结果）。"""
+    out = _fetch_fixture(NO_LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert out["links"] == []
+    assert out["links_truncated"] is False
+
+
+def test_fetch_links_base_is_final_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T11 (门禁 2): 相对链接以重定向后的 final_url 绝对化。"""
+    out = _fetch_fixture(
+        '<html><body><a href="next">下一跳</a></body></html>',
+        requested_url="https://ta.example/start",
+        final_url="https://tb.example/deep/page",
+        monkeypatch=monkeypatch,
+    )
+    assert [item["url"] for item in out["links"]] == ["https://tb.example/deep/next"]
