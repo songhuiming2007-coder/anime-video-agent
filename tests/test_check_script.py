@@ -10,6 +10,9 @@
 """
 
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -853,3 +856,186 @@ def test_音乐段解析异常不静默归0(tmp_path, monkeypatch):
     monkeypatch.setattr("pipeline.music.parse_script_music", _boom)
     with pytest.raises(SystemExit, match="音乐段解析异常"):
         cs._music_seconds(script)
+
+
+# ---------- Spec 11 §2.5：INFO 级人物提示（D18 收口落点 ①） ----------
+
+# 真实期（外置盘；不在则用下面同一套嵌套规则的等价夹具期）
+REAL_HINT_EPISODE = paths.ROOT / "data" / "episodes" / "2026-07-30-春物-雪乃适合大老师"
+
+# §2.5 冻结的期望值：21 段全未写 `人物:`，按「最长优先、位置升序、去重」输出恰 9 行
+REAL_HINT_LINES = [
+    "INFO 段1 提到已登记角色但未写 `人物:`：雪乃、团子",
+    "INFO 段2 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段4 提到已登记角色但未写 `人物:`：雪之下雪乃",
+    "INFO 段9 提到已登记角色但未写 `人物:`：由比滨、雪乃",
+    "INFO 段13 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段14 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段17 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段18 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段20 提到已登记角色但未写 `人物:`：雪之下雪乃、大老师",
+]
+
+# 等价夹具期：同一批嵌套案例（大老师/老师、雪之下雪乃/雪乃/雪之下）+ 跳过与场景段
+FIXTURE_BLOCKS = """## 段落 1
+
+配音：雪乃和团子都没想到。
+
+画面：
+  查询: 甲
+
+## 段落 2
+
+配音：大老师在里面亲口给过一条标准。
+
+画面：
+  查询: 乙
+
+## 段落 3
+
+配音：雪之下雪乃是最适合大老师的。
+
+画面：
+  查询: 丙
+
+## 段落 4
+
+配音：大老师，大老师说得对。
+
+画面：
+  查询: 丁
+
+## 段落 5
+
+配音：一色说得对。
+
+画面：
+  人物: 一色彩羽
+  查询: 戊
+
+## 段落 6
+
+配音：结衣说得对。
+
+画面：
+  锚点: S01E01 01:00
+  查询: 己
+
+## 段落 7
+
+配音：由比滨说得对。
+
+画面：
+  场景: 黄昏时分空无一人的天台
+  查询: 庚
+
+## 段落 8
+
+配音：雪乃、团子、大老师、结衣、一色、小町都在。
+
+画面：
+  查询: 辛
+"""
+
+FIXTURE_HINT_LINES = [
+    "INFO 段1 提到已登记角色但未写 `人物:`：雪乃、团子",
+    "INFO 段2 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段3 提到已登记角色但未写 `人物:`：雪之下雪乃、大老师",
+    "INFO 段4 提到已登记角色但未写 `人物:`：大老师",
+    "INFO 段7 提到已登记角色但未写 `人物:`：由比滨",
+    "INFO 段8 提到已登记角色但未写 `人物:`：雪乃、团子、大老师、结衣、一色、小町",
+]
+
+
+def hint_episode(tmp_path, blocks: str, topic: str | None = "番: 春物\n"):
+    """造一个夹具期目录：01-topic.md（番表）+ 02-script.md。topic=None 表示无番表。"""
+    if topic is not None:
+        (tmp_path / "01-topic.md").write_text(topic, encoding="utf-8")
+    f = tmp_path / "02-script.md"
+    f.write_text(blocks, encoding="utf-8")
+    return f
+
+
+class TestCharacterHints:
+    def test_等价夹具期期望值(self, tmp_path):
+        """TC-1（外置盘不在时的等价夹具）：嵌套别名、去重、跳过规则一次覆盖。"""
+        f = hint_episode(tmp_path, FIXTURE_BLOCKS)
+        assert cs.character_hints(f) == FIXTURE_HINT_LINES
+
+    @pytest.mark.skipif(not REAL_HINT_EPISODE.exists(), reason="外置盘未挂载，真实期不在")
+    def test_真实期期望值(self, tmp_path):
+        """TC-1：真实期 `2026-07-30-春物-雪乃适合大老师` 恰 9 行（§2.5 冻结值）。
+
+        期望值先跑：改动前用只读脚本在同一期上跑出，v0.2 按冻结顺序规则重跑。
+        21 段全部未写 `人物:`，对照实验里朴素子串匹配会多报「老师/雪乃/雪之下」。
+        """
+        lines = cs.character_hints(REAL_HINT_EPISODE / "02-script.md")
+        assert lines == REAL_HINT_LINES
+
+    def test_别名嵌套不双报(self, tmp_path):
+        """TC-3：文本含「大老师」时命中「大老师」不含「老师」。"""
+        f = hint_episode(tmp_path, "## 段落 1\n\n配音：大老师说得对。\n")
+        assert cs.character_hints(f) == [
+            "INFO 段1 提到已登记角色但未写 `人物:`：大老师"
+        ]
+
+    def test_写了人物或锚点的段不报_场景段照报(self, tmp_path):
+        """TC-4 前半：`人物:`/`锚点:` 段跳过（人已显式选择），`场景:` 段照列。"""
+        lines = cs.character_hints(hint_episode(tmp_path, FIXTURE_BLOCKS))
+        assert not any("段5" in l for l in lines), "写了 `人物:` 的段不该报"
+        assert not any("段6" in l for l in lines), "写了 `锚点:` 的段不该报（锚点与人物互斥）"
+        assert any("段7" in l and "由比滨" in l for l in lines), "写了 `场景:` 的段照样列"
+
+    def test_拿不到别名表就安静返回空(self, tmp_path, monkeypatch):
+        """TC-4 后半：无番表 / characters.json 缺席 / 番不在表 → []，不抛不报。"""
+        blocks = "## 段落 1\n\n配音：大老师说得对。\n"
+        assert cs.character_hints(hint_episode(tmp_path, blocks, topic=None)) == []
+        assert cs.character_hints(hint_episode(tmp_path, blocks, topic="模式: 立论\n")) == []
+        assert cs.character_hints(hint_episode(tmp_path, blocks, topic="番: 不存在的番\n")) == []
+        empty = tmp_path / "cfg"
+        empty.mkdir()
+        monkeypatch.setattr(paths, "CONFIG", empty)
+        assert cs.character_hints(hint_episode(tmp_path, blocks)) == []
+
+    def test_INFO_不改变退出码且排在判定块之后(self, tmp_path, monkeypatch, capsys):
+        """TC-2：INFO 行不进 failed、不影响退出码，且打印在 PASS/FAIL 块之后、总结行之前。"""
+        f = hint_episode(tmp_path, "## 段落 1\n\n配音：大老师说得对。\n")
+        argv = ["check_script", str(f)]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(cs, "run", lambda p: [cs.Check("段落数 8–20", True, "8 段")])
+        assert cs.main() == 0
+        out = capsys.readouterr().out.splitlines()
+        pass_i = next(i for i, l in enumerate(out) if l.startswith("PASS"))
+        info_i = next(i for i, l in enumerate(out) if l.startswith("INFO 段1"))
+        sum_i = next(i for i, l in enumerate(out) if "机检全过" in l)
+        assert pass_i < info_i < sum_i
+        assert cs.main() == 0 and "0 项" not in capsys.readouterr().out  # INFO 不当 FAIL 计数
+
+        monkeypatch.setattr(
+            cs, "run",
+            lambda p: [cs.Check("段落数 8–20", False, "0 段"), cs.Check("字数 870–1300", True, "900 字")],
+        )
+        assert cs.main() == 1
+        assert "1 项未过" in capsys.readouterr().out
+
+
+def test_人物提示跨进程确定性(tmp_path):
+    """TC-1b：同一实现跨进程（不同 PYTHONHASHSEED）输出逐字节一致。
+
+    set 收集之类的非确定实现在此变红：段 8 一行里 6 个别名，set 迭代序的翻转
+    概率极高（单次运行可能侥绿）。"""
+    f = hint_episode(tmp_path, FIXTURE_BLOCKS)
+    code = (
+        "import sys; from pipeline import check_script as cs;"
+        f"print(chr(10).join(cs.character_hints(__import__('pathlib').Path({str(f)!r}))))"
+    )
+    outs = set()
+    for seed in ("0", "1", "42", "12345", "random"):
+        r = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, cwd=paths.ROOT,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert r.returncode == 0, r.stderr
+        outs.add(r.stdout)
+    assert outs == {"\n".join(FIXTURE_HINT_LINES) + "\n"}, outs

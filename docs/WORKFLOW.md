@@ -51,7 +51,7 @@
 
 1. **[01 选题](runbook/01-topic.md)**（人）：填 `01-topic.md`（番、类型、锚点、张力）。张力是整条流水线唯一编辑判断，定死后不许 agent 篡改。
 2. **[02 写稿](runbook/02-script.md)**（Agent）：`ava <期> /script`（creative scope，LLM 在场；无 LLM 时降级为「打开文件 + 打印 checklist」）或调 `skills/write-script` 写 `02-script.md`。跑 `ava <期> /run check_script` 机检全绿。
-3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿并在当期目录生成 `02-diff.patch`（`git diff --no-index 02-script.draft.md 02-script.md > 02-diff.patch`）。
+3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿并在当期目录生成 `02-diff.patch`（`git diff --no-index 02-script.draft.md 02-script.md > 02-diff.patch`；或在 app 内 02.5 编辑器点「封板」，等价）。
 4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：跑 `ava <期> /run tts`（底层等价 `python -m pipeline.tts <期>`）。
    - **红线**：此后一律只补点名段，**严禁擅自 `--force` 全量重配**（ava 层直接拒收该旗标并指引 `--redo`）；错字走 `g2p.py` 注入，换引擎前必须报备影响段数。
 5. **[03.5 顺听](runbook/03.5-voice-check.md)**（人）：`ava <期> /voice` 顺听 + 纠错（可选深挖；三项抽检为主，corrections.json / --apply-patch）。
