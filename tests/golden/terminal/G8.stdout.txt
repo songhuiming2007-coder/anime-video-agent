@@ -1,0 +1,5 @@
+
+已就绪：01-smoke
+输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。
+[FAIL] API 500: Internal Server Error
+[退出]

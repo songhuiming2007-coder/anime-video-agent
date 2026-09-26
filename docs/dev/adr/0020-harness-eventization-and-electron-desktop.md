@@ -49,7 +49,7 @@ ADR-0018「不搞 review.html/Webview GUI」解除，替换为本条第 4 节的
 ### 4. 桌面端：Electron，不自研 UI 协议
 
 - **形态**：Electron + React。进程模型借 ZCode：main（窗口/系统）+ host utilityProcess（agent 会话、流水线 job 执行）+ renderer（纯 UI）——业务不跑主进程，崩溃隔离。
-- **通信**：不引入外部 RPC 框架。renderer 与 host 之间用 Electron MessagePort/IPC，事件流直接镜像 events.jsonl 的增量（tail 式订阅 + snapshot 首载）。**ava core 保持纯 Python、无 server 依赖**：host 进程 spawn `ava`/pipeline 子进程并解析事件，不反过来改造 core 去服务 UI。
+- **通信**：不引入外部 RPC 框架。renderer 与 host 之间用 Electron MessagePort/IPC，事件流直接镜像 events.jsonl 的增量（tail 式订阅 + snapshot 首载）——job/approval 等流水线事件如此；agent 会话的对话、工具轨迹与人审请求经会话进程的 stdio 协议传递（Spec 9），会话进程不开端口。**ava core 保持纯 Python、无 server 依赖**：host 进程 spawn `ava`/pipeline 子进程并解析事件，不反过来改造 core 去服务 UI。
 - **协议自有**：UI 只投影 ava 自己的事件与 approval 对象，不做通用 agent 协议适配（ZCode 放弃多 CLI 聚合的教训）。
 - **通用多格式文件预览中心（PreviewPane，桌面端第一基座）**：
   - 深度契合「产物即状态」哲学：右侧主面板为按文件扩展名分发的内容路由容器，**以原生多媒体与网页全保真渲染为第一公民**：

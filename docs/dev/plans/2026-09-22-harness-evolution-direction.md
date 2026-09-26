@@ -157,7 +157,7 @@
 
 - **定位**：§0.2 第 1 条「终端零依赖」的 core 侧地基。桌面端没有 TTY，需要一个 host 能 spawn、经 stdio 驱动的 agent 会话进程。
 - **范围**：非 TTY 会话协议（用户消息进；agent 回复、工具轨迹、人审请求出；ava 自有协议，不做通用 agent 协议适配，ADR-0020 §4）；**人审请求统一协议化**——工具调用审批（`cli.py` 的 `_default_approve`，含 Spec 5 browser 逐调用卡）、Spec 6 素材 fetch 批准、Spec 7 `/memory ack`，答复只能来自人的操作，agent 不能自答；**Session 恢复**：ADR-0020 已决定（`data/episodes/<期>/session.jsonl` append-only + `ava --continue`，停机点挂起期间退出不丢上下文），一期没有任何 spec 覆盖，并入本 spec。
-- **约束**：core 不起 server、不开端口（§4 红线 2）；终端 REPL 零回归；Spec 1 的系统提示会话内稳定纪律在恢复时仍成立；审批是确定性规则，无 guardian LLM（§5）。
+- **约束**：core 不起 server、不开端口（§4 红线 2）；终端 REPL 零回归；Spec 1 的系统提示会话内稳定纪律在恢复时仍成立——稳定指一个进程段内字节级不变，恢复时按当前文件重建 `messages[0]`，历史逐字重放，注入变更以追加处理（Spec 9 §2.7）；审批是确定性规则，无 guardian LLM（§5）。
 
 ### Spec 10：桌面端对话面板与人审卡片（desktop）
 

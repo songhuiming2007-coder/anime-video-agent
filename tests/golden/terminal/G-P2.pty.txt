@@ -1,0 +1,5 @@
+
+已就绪：01-smoke
+输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。
+
+ava [01-smoke] (creative) > [DRIVER] 回合中中断未被 REPL 接住: KeyboardInterrupt
