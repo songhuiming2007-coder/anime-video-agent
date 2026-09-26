@@ -97,6 +97,13 @@ PNG 截图不进 git，重现命令见 §2.7。
 
 同日（2026-09-26）人确认 N1–N11、授权 S8-R23，裁决表新增两行。后续若有复审，范围限于 PR0 落盘时的 sha256 对拍与 README 状态行；其余章节三轮已闭环，不再重开。
 
+**PR1 验收 session 的裁决（2026-09-26，验收方独立复跑后由人拍板）**：
+
+| 编号 | 指控 | 复核 | 裁决 |
+|---|---|---|---|
+| VS-10/§2.5 冲突 | VS-10 要求 `ui.tsx` 只 import `react`，§2.5 要求图标路径数据只进 `icons.tsx`；`StateView` 要渲染状态图标，两条不能同时成立 | 属实（施工方按 VS-10 取字面，在 `ui.tsx` 内联 `file`/`alert`/`info` 三段路径，与 `icons.tsx` 逐字相同、当前无漂移） | **选 B：放宽 VS-10 白名单到 `react` + `./icons`**，§2.5 的唯一落点优先；`ui.tsx` 改 `import { Icon }`，删除内联路径。同日落地 |
+| M10/M39 落点 | §7.2 把两条变异植在 `style.css`，但 §7.1 的 PR1 扫描集只含 `ui.css` | 属实（验收方实测：M39 植入 `style.css` 后 VS-3 全绿，该落点在 PR1 不可见） | 表内补落点注记，PR1 阶段按等价植入 `ui.css` 实跑；`style.css` 到 PR2 进扫描集 |
+
 ### 1.2 第二轮红队定向复审裁决与修订纪要（v0.2 → v0.3，4🟡 全收；🔵 B1–B3 全收，B4/B5 按人裁决关闭；原裁决「🟡 修订后定向复审」）
 
 红队确认一轮两条 🔴 与 Y1–Y9 已关闭，并复跑了 tk.mjs（290 对）、vs.mjs、render.cjs（18 次、元素数 82/63/33/70/72/54）与 6 条变异，与作者报数一致。以下每条都先独立复核。
@@ -329,7 +336,7 @@ PNG 截图不进 git，重现命令见 §2.7。
 
 1. **CSS 变量清单**（§3.1）：新 CSS 只许引用这些变量。
 2. **类契约**（§3.2）：交互元素一律是原生元素加 `ui-*` 类，与 Spec 10 TG-4′「`onClick` 只挂小写原生元素」兼容。状态用原生或 ARIA 属性表达：`disabled`、`aria-current`、`aria-pressed`、`aria-expanded`、`aria-busy`（`<button>` 上不用 `aria-selected`）。**闸门同权**：`onClick` 里调用答复类方法（`approval.decide`、`conv.answer`）的按钮不许带 `ui-btn--primary`（VS-12）。
-3. **纯展示 React 组件**：`Icon`、`Badge`、`StatusDot`、`StateView`，props 类型里没有任何 `on*`（VS-10）。
+3. **纯展示 React 组件**：`Icon`、`Badge`、`StatusDot`、`StateView`，props 类型里没有任何 `on*`（VS-10）。`ui.tsx` 的 `StateView` 渲染状态图标时从 `./icons` 取（§2.5 的路径数据唯一落点优先于 VS-10 的 import 白名单长度，2026-09-26 裁决）。
 
 **重构边界**（冻结）：
 
@@ -509,7 +516,7 @@ PNG 截图不进 git，重现命令见 §2.7。
 | 文件 | 导出 | 约束 |
 |---|---|---|
 | `icons.tsx`（PR1 新增） | `type IconName`、`Icon({ name, size? })` | 只 import `react`；无事件属性；`aria-hidden` |
-| `ui.tsx`（PR1 新增） | `Badge({ tone?, children })`、`StatusDot({ tone })`、`StateView({ kind, title, detail? })` | props 类型里没有 `on*`（VS-10） |
+| `ui.tsx`（PR1 新增） | `Badge({ tone?, children })`、`StatusDot({ tone })`、`StateView({ kind, title, detail? })` | 只 import `react` 与 `./icons`；props 类型里没有 `on*`（VS-10） |
 | `theme.ts`（PR3 新增） | §3.3 | 全仓唯一碰 localStorage 的模块（VS-9） |
 | `App.tsx`（PR2、PR3 改） | PR2：换类名，行改按钮，`StatusCard` / `ArtifactTree` / `Timeline` / `HealthPanel` / `GalleryList` 换装。PR3：`EpisodeList` 加侧栏头部与新行结构；`TopBar` 加外观浮层（popover API） | §2.8 边界 |
 | `DecisionBar.tsx`（PR2 改；若 Spec 10 PR1 已搬到 `HumanCards.tsx`，则改那边） | 只换类名：批准 / 打回 / 提交打回为同权的 `ui-btn`；只读态为 `decision-readonly` | `approval.decide` 调用点与闸门逻辑一字不动（TG-4 照旧绿） |
@@ -531,7 +538,7 @@ PNG 截图不进 git，重现命令见 §2.7。
 - **Python**：零改动。`pipeline/`、`config/`、`tests/`、`pyproject.toml` 不在任何 PR 的 diff 里（门禁 5）。
 - **纯洁性**（红线 7 的对应物）：
   - 本 spec 没有新 Python 模块，也不碰 Python 热路径，既有子进程纯洁性断言原样生效。
-  - 新 TS 模块：`shared/*.ts` 零 import（TG-3）；`icons.tsx`、`ui.tsx` 只 import `react`（VS-10）。
+  - 新 TS 模块：`shared/*.ts` 零 import（TG-3）；`icons.tsx` 只 import `react`、`ui.tsx` 只 import `react` 与 `./icons`（VS-10）。
 - **运行时样式注入**：禁止。CSP 本身会拦，VS-3 也扫 `document.createElement("style")` 与 `setAttribute("style"`。
 
 ---
@@ -612,7 +619,7 @@ PNG 截图不进 git，重现命令见 §2.7。
 | VS-7 | TSX 内联样式白名单 | `style={{…}}` 的键只许 `paddingLeft`（树缩进）与 `transform`（图片平移） |
 | VS-8 | 可点击元素是原生交互元素 | `onClick` 只挂在 `button`/`input`/`textarea`/`select`/`summary`/`a` 上；唯一豁免是 `PreviewPane.tsx` 的 `.markdown` 容器（它拦截链接导航，不是交互目标），按文件 + 类名精确列出 |
 | VS-9 | localStorage 纪律 | `localStorage` 只出现在 `renderer/theme.ts`，且每处成员访问都位于某个 `try` 块内 |
-| VS-10 | 纯展示组件无事件 | `icons.tsx`、`ui.tsx` 只 import `react`；导出组件的 props 类型没有 `on*` 键 |
+| VS-10 | 纯展示组件无事件 | `icons.tsx` 只 import `react`，`ui.tsx` 只 import `react` 与 `./icons`（白名单两个模块，2026-09-26 验收裁决：§2.5 的路径数据唯一落点优先）；导出组件的 props 类型没有 `on*` 键 |
 | VS-11 | `ui.css` 作用域 | 除三条全局规则外，每个选择器都以 `.ui-` 或 Spec 10–12 预留前缀开头 |
 | VS-12 | 闸门按钮同权（v0.3 按红队二轮 🟡-3 重写，原型 `tools/vs12.mjs`） | 闸门卡片文件（`DecisionBar.tsx`，Spec 10 后为 `HumanCards.tsx`）里：① 每个 `<button>` 的 className 是含 `ui-btn` 的字符串字面量（动态写法一律违规）；② 不许 `ui-btn--primary` / `ui-btn--ghost`；③ 同一动作区（className 含 `ui-card-actions` 或 `decision-actions`）内各按钮的变体类集合（尺寸类除外）完全相同。期望值：现状 `DecisionBar.tsx` 报 3 处（按钮无 className，PR2 加上后应为 0）。闸门卡片文件名单为硬编码，文件增减时须同步扩名单（红队三轮 🔵-3） |
 | VS-13 | 无效 ARIA | `button` 元素上不出现 `aria-selected` |
@@ -650,7 +657,7 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | M23 | 只改跟随系统深色块的 `--bg-panel` | VS-1 | 两块不一致 | 手动块覆盖完整，missing 为空 | ✓ blockDiff=[--bg-panel] |
 | M25 | 浅色 `--wait` 回退 v0.1 值 | VS-2 | 悬停 / 选中叠法 < 4.5（红队 Y2 的 4.22） | 仅 VS-2；v0.1 的 148 对不含这类叠法，这正是 Y2 所指 | ✓ 3 对 |
 | M26 | 浅色 `--border-input` 回退 v0.1 值 | VS-2 | 侧栏搜索框 2.86 | 同上 | ✓ 1 对 |
-| M10 | `style.css` 加 `color: #333` | VS-3 | 声明值字面量 | VS-1/VS-2 不扫 style.css | ✓ vs3=1 |
+| M10 | `style.css` 加 `color: #333`（PR1 落点改为 `ui.css`：§7.1 的 PR1 扫描集只含 `ui.css`，style.css 要到 PR2 换掉后才进扫描集；PR1 验收实测 style.css 植入 22/22 绿，证实该落点在 PR1 不可见） | VS-3 | 声明值字面量 | VS-1/VS-2 不扫 style.css | ✓ vs3=1 |
 | M11 | 期行用 `var(--text-xs)` | VS-4、VE-1 | 选择器不含徽标类；渲染后 10px | Y1 修掉后 VS-4 基线为 0，不再被既有红掩盖 | ✓ vs4=1 |
 | M22 | 恢复 v0.1 的 `.dev-mark { font-size: var(--text-xs) }` | VS-4 | 同上（红队 Y1 原形） | 同上 | ✓ vs4=1 |
 | M12 | 删 `outline-offset` | VS-5 | 缺 offset | VE-3 也断言 `outlineOffset`，两层冗余；VS-5 基线为 0 | ✓ vs5=1 |
@@ -665,7 +672,7 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | M31 | PR1 漏改 `style.css` 的 `--bg` 同名变量（或只改定义、不改 `var()` 引用） | VE-0 深色态 | token 深色块（特异性 0,2,0）覆盖旧 `--bg`，旧界面深色底色从 `#1c1c1e` 变为 `#161618`（E11 实测） | 浅色态不红（旧 style.css 后加载、同特异性胜出），所以 VE-0 必须跑深色态 | 施工回填（E11 已证机理） |
 | M37 | 给 `.left, .center, .preview, .topbar, .timeline` 加一层透明渐变 `background-image`（红队二轮 🟡-1） | VE-1 的 `bgImage = 0` 断言 | 非白名单祖先带背景图，一律记失败 | v0.2 的审计会整段跳过、`n` 只少 1，下限断言照样绿 | ✓ mock-01 浅色 `bgImageFail=61`；叠加 M1 时另有对比度失败 12（其余被背景图遮住的 26 处改记为 bgImage） |
 | M38 | 「打回…」改为 `ui-btn ui-btn--ghost`（红队二轮 🟡-3） | VS-12 | 带 ghost + 动作区变体不一致 | v0.2 的 VS-12 只查调用 `approval.decide` 的按钮，「打回…」不在其内 | ✓ vs12.mjs 自测：2 处 |
-| M39 | `style.css` 写 `.ep { --fg-muted: #999999; }`（红队二轮 B1 ①） | VS-3 | tokens.css 以外定义自定义属性 | v0.2 的 vs3 跳过所有 `--*` 声明 | ✓ vs3=1 |
+| M39 | `style.css` 写 `.ep { --fg-muted: #999999; }`（红队二轮 B1 ①；PR1 落点同 M10 改为 `ui.css` 等价植入） | VS-3 | tokens.css 以外定义自定义属性 | v0.2 的 vs3 跳过所有 `--*` 声明 | ✓ vs3=1 |
 | M40 | `ui.css` 写 `.ui-btn--primary:focus-visible { outline-color: var(--accent); }`（红队二轮 B1 ②） | VS-5 | `outline*` 出现在全局规则之外 | v0.2 的 vs5 只查 `outline: none` 或 `outline: 0` | ✓ vs5=1 |
 | M41 | 手动深色块删 `--warn`（同 M2），看 VS-2 是否空跑（红队二轮 B2） | VS-2 的 `out.length === 290` | 检查器提前返回空表，对子数为 0 | 只断言失败数时为 0 失败、空过 | ✓ `tk.mjs` 退出码 1，「EXIT 1：期望 290 对全绿」 |
 | M8 | 对子表删去「状态徽标压选中 / 悬停行」一类 | VE-1 | 夹具里的悬停停机行 / 待答徽标 | 对子表失去该类后 VS-2 全绿 | 施工回填 |
