@@ -11,6 +11,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from pipeline.agent.session import (
     AgentSession,
     HumanAnswer,
     SessionHost,
+    TurnInterrupt,
     prepare_resume,
     review_tool_call,
 )
@@ -635,3 +638,107 @@ def test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs(root: Path,
     # 恢复段写的是 segment_start，且带上当前常驻层 sha
     kinds = [json.loads(line)["k"] for line in lease.read().decode("utf-8").splitlines()]
     assert "segment_start" in kinds
+
+
+# ---------------------------------------------------------------------------
+# TL-9b / TL-9d / TL-17：延迟区与四状态表（§2.2）——PR3 补，用真 TurnInterrupt
+#
+# TL-9c（「停止中」只置标志、不抛）在 test_agent_loop.py 里已用替身覆盖；
+# 这里补的是三个**必须依赖真信号路径与真 TurnInterrupt** 的用例。
+# ---------------------------------------------------------------------------
+
+
+def _fire_from_thread(
+    interrupt: TurnInterrupt, *, times: int = 1, delay: float = 0.15, gap: float = 0.05
+) -> threading.Thread:
+    """从另一个线程把中断打到主线程（与协议读者线程 / 终端 SIGINT 同构）。"""
+
+    def worker() -> None:
+        time.sleep(delay)
+        for _ in range(times):
+            interrupt.request()
+            time.sleep(gap)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_tl17_defer_on_non_main_thread_is_a_noop() -> None:
+    """TL-17：非主线程持有 `defer()` 时，主线程的中断仍立即浮出；非主线程退出时不抛。"""
+    interrupt = TurnInterrupt()
+    worker_errors: list[BaseException] = []
+    holding = threading.Event()
+    release = threading.Event()
+
+    def worker() -> None:
+        try:
+            with interrupt.defer():  # 非主线程：空操作，不进深度计数
+                holding.set()
+                release.wait(3.0)
+        except BaseException as exc:  # noqa: BLE001 - 非主线程绝不该抛（抛了会关掉管道）
+            worker_errors.append(exc)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    assert holding.wait(2.0), "辅助线程没能持有延迟区"
+    begun = time.time()
+    with pytest.raises(KeyboardInterrupt):
+        _fire_from_thread(interrupt, delay=0.1)
+        time.sleep(1.0)  # 辅助线程仍在 defer() 里
+    elapsed = time.time() - begun
+    assert elapsed < 0.5, f"非主线程持有延迟区不许推迟主线程的中断（实测 {elapsed:.2f}s）"
+    release.set()
+    thread.join(3.0)
+    assert worker_errors == [], f"非主线程退出 defer() 时不许抛: {worker_errors}"
+
+
+def test_tl9d_interrupt_after_wrapup_is_dropped_with_notice(
+    root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TL-9d：「收尾后」（写 `turn_end` 期间）到达的中断 → `run_turn` 正常返回、`turn_end`
+    已写、该中断被丢弃并发 `notice`，**不带进空闲态**。"""
+    from pipeline.agent.assembly import SessionContextTracker
+
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    monkeypatch.setattr(
+        "pipeline.agent.llm.chat_complete",
+        lambda messages, tools=None, **kw: {"role": "assistant", "content": "好"},
+    )
+    fired: list[str] = []
+    original = AgentSession._record
+
+    def record(self, rec, origin=None):  # noqa: ANN001, ANN202
+        original(self, rec, origin)
+        if rec.get("k") == "turn_end":
+            fired.append("turn_end")
+            # 落点就在「收尾后」区（`_finish_turn` 的 absorbed）内：同线程立刻抛
+            self.interrupt.request()
+
+    monkeypatch.setattr(AgentSession, "_record", record)
+
+    with cli.activate_host(episode, root=root, channel=FakeChannel()) as host:
+        messages: list[dict] = [{"role": "system", "content": "常驻层"}]
+        host.bind_main(messages)  # 落盘看**对象同一性**，不看参数
+        outcome = cli._dispatch_agent_turn(
+            "甲", messages, episode, "creative", None, root=root, tracker=SessionContextTracker()
+        )
+        assert fired == ["turn_end"], "turn_end 必须真的写过（否则本用例没打到落点）"
+        assert outcome["stopped"] == "done", "「收尾后」的中断不许掀桌"
+        kinds = [
+            json.loads(line)["k"]
+            for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert "turn_end" in kinds
+        assert "interrupt_dropped" in host.channel.codes(), "丢弃必须发 notice"
+        assert host.interrupt.clear_dropped() == 0, "丢弃的中断不许带进空闲态"
+
+    # 空闲态不受影响：再跑一个回合照常
+    with cli.activate_host(episode, root=root, channel=FakeChannel()) as host2:
+        monkeypatch.setattr(AgentSession, "_record", original)
+        messages2: list[dict] = [{"role": "system", "content": "常驻层"}]
+        host2.bind_main(messages2)
+        outcome2 = cli._dispatch_agent_turn(
+            "乙", messages2, episode, "creative", None, root=root, tracker=SessionContextTracker()
+        )
+    assert outcome2["stopped"] == "done"

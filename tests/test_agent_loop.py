@@ -3,7 +3,8 @@
 一切都在替身上跑：`chat_complete` 换成脚本机，`execute_tool` 换成记录器，人审与检查点
 由 `LoopControl` 注入。**不打真网、不碰真 data/**。
 
-PR1 覆盖 TL-1~TL-16；TL-9b/9c/9d/17 依赖 `TurnInterrupt`（会话头等对象），随 PR2 落地。
+PR1 覆盖 TL-1~TL-16；TL-9b（真 `TurnInterrupt` + 真信号）与 TL-9d/17（会话级）
+在 PR3 补齐，见 `tests/test_agent_session.py` 与文件末尾。
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import os
+import signal
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +32,7 @@ from pipeline.agent.llm import (
     chat_complete,
     run_tool_loop,
 )
+from pipeline.agent.session import TurnInterrupt
 from pipeline.agent.tools import ToolContext
 from tests.test_agent_tools import make_agent_root, tool_call
 
@@ -79,8 +85,11 @@ class Interrupt:
 
     def __init__(self) -> None:
         self.wrapup_started = False
+        self.skip_wrapup = False
         self.depth = 0
         self.pending = 0
+        self._absorb_depth = 0
+        self.dropped = 0
 
     @contextlib.contextmanager
     def defer(self):
@@ -90,8 +99,26 @@ class Interrupt:
         finally:
             self.depth -= 1
             if self.depth == 0 and self.pending:
-                self.pending = 0
-                raise KeyboardInterrupt
+                count, self.pending = self.pending, 0
+                if self._absorb_depth:
+                    self.dropped += count
+                else:
+                    raise KeyboardInterrupt
+
+    @contextlib.contextmanager
+    def absorb(self):
+        """「只置标志、不抛」区：区内到达的中断在回合结束时丢弃（§2.2 状态表）。"""
+        self._absorb_depth += 1
+        try:
+            yield
+        finally:
+            self._absorb_depth -= 1
+
+    @contextlib.contextmanager
+    def absorbed(self):
+        with self.absorb():
+            with self.defer():
+                yield
 
     def request(self) -> None:
         """模拟信号落点：延迟区内只置 pending；区外等价于直接打断当前帧。"""
@@ -585,6 +612,8 @@ def test_tl11_error_with_failing_wrapup_yields_local_note(root: Path, monkeypatc
     assert outcome["stopped"] == "error"
     assert outcome["wrapup"] == "failed"
     assert outcome["local_note"] and outcome["local_note"].startswith("[收尾·本地]")
+    # 名称×次数要**跨本轮全部回复**累计（真机手验发现的回归：只看最后一条回复会写成「（无）」）
+    assert "read_artifact×1" in outcome["local_note"]
     assert not any(
         m.get("role") == "assistant" and "[收尾·本地]" in str(m.get("content") or "")
         for m in messages
@@ -734,4 +763,55 @@ def test_tl16_critical_tool_finishes_before_interrupt_is_handled(root: Path, mon
     result = json.loads(tool_messages(messages)[0]["content"])
     assert result["ok"] is True, "临界区工具用**真实结果**，不是「结果未知」"
     assert outcome["wrapup"] == "ok"
+    assert_paired(messages)
+
+
+def test_tl9b_two_interrupts_before_surfacing_merge(root: Path, monkeypatch) -> None:
+    """TL-9b：首个中断尚未浮出时再注入一次（crawl 慢浮出）→ 两次合并为**一次**浮出，
+    收尾不被第二次中断打断（`wrapup == "ok"`，不是 `"aborted"`）。
+
+    这是真 `TurnInterrupt` + 真 SIGINT（替身的区内 `request()` 只置标志、从不抛，
+    写得出「合并」但覆盖不到生产代码）。两次信号都打在临界区里：第一次浮出之前。
+    """
+    interrupt = TurnInterrupt()
+    script = Script([
+        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "x"}, call_id="w1"),
+        {"role": "assistant", "content": "收尾答复"},
+    ])
+    monkeypatch.setattr(llm_mod, "chat_complete", script)
+
+    def handler(name, args, ctx):
+        time.sleep(0.6)  # 临界区内：两次 SIGINT 都落在这里
+        return {"ok": True, "result": {"written": name}}
+
+    patch_execute(monkeypatch, handler)
+    review = Reviewer(lambda name, args: Decision(ok=True, provenance="human"))
+
+    messages = [{"role": "user", "content": "写草稿"}]
+    control = build_control(messages, review=review, interrupt=interrupt,
+                            critical_tools=frozenset({"write_episode_file"}))
+    both_sent = threading.Event()
+
+    def fire() -> None:
+        time.sleep(0.15)
+        os.kill(os.getpid(), signal.SIGINT)
+        time.sleep(0.12)
+        os.kill(os.getpid(), signal.SIGINT)
+        both_sent.set()
+
+    thread = threading.Thread(target=fire, daemon=True)
+    thread.start()
+    outcome = run(messages, root, control)
+    # 两次信号都该在回合内送达；万一时序漂了，挡在用例之外（否则会打到 pytest 自己）
+    previous = signal.signal(signal.SIGINT, lambda *_args: None)
+    try:
+        both_sent.wait(3.0)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        thread.join(3.0)
+
+    assert outcome["stopped"] == "interrupted"
+    assert outcome["wrapup"] == "ok", "两次中断合并 → 收尾没被打断（MUT-45）"
+    assert outcome["final"] is not None
+    assert interrupt._pending == 0, "合并之后不许再留一次待处理中断"
     assert_paired(messages)

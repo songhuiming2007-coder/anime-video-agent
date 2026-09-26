@@ -1189,8 +1189,10 @@ class TtyChannel:
         if kind == "stderr":
             print(payload.get("text", ""), file=sys.stderr)
             return
-        if kind == "tool":
-            print(payload.get("echo", ""))
+        if kind in ("echo", "tool"):
+            # `tool` 只在协议下承载帧；终端只认 `echo`（回显原文）
+            if kind == "echo" or payload.get("echo"):
+                print(payload.get("echo") or payload.get("text", ""))
             return
         if kind == "card":
             print(f"\n{payload.get('text', '')}", end="")
