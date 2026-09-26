@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- Spec 14 mock：对话面板（Spec 10 版面套用 token）。只用 tokens.css + ui.css + style.css（将发货的样式）+ mock.css（画布与媒体占位）。
+     CSP 与 desktop/src/renderer/index.html 生产版逐字相同：页面里不许出现 style="" 属性与 <style> 元素。
+     看明暗两版：切 macOS 外观，或按 Spec 14 §2.7 的截图命令渲染。 -->
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src ava-media: data:; media-src ava-media:; frame-src ava-media:; connect-src ava-media:">
+<title>ava mock · 对话面板（Spec 10 版面套用 token）</title>
+<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./ui.css"><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./mock.css"></head>
+<body><div class="mock-frame">
+<div class="app">
+<header class="topbar">
+  <div class="topbar-row">
+    <span class="wordmark">ava</span><span class="ui-badge ui-badge--warn dev-mark">DEV BUILD</span>
+    <span class="repo"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.25h8.5a1 1 0 0 1 1 1v10.5H4a1 1 0 0 1-1-1z"/><path d="M3 11.75h9.5"/></svg> ~/Documents/code/anime-video-agent-ava <code>@9eb1f97a</code></span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">切换仓库…</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.5v3.25H10"/></svg>刷新</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8.5h3l1.75-4 3.25 7.5 1.75-3.5h3.25"/></svg>健康</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="外观" popovertarget="theme-menu"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 2.25v11.5"/><path d="M8 3.5a4.5 4.5 0 0 1 0 9z" fill="currentColor" stroke="none"/></svg></button>
+  </div>
+  <div class="banner banner-yellow"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg>core Code Freeze：pipeline/ 存在未提交改动或 git 检查异常（Code Freeze WARN）</div>
+  
+</header>
+<div class="main">
+<nav class="left">
+  <div class="side-head">
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名"></label>
+    <div class="side-head-row"><div class="ui-seg"><button aria-pressed="true">按时间</button><button>按工序</button></div><span class="spacer"></span><span class="ui-count">5</span></div>
+  </div>
+  
+<button class="ui-row ep" aria-current="true" data-testid="episode">
+  <span class="ep-line"><span class="ep-name">罪恶王冠-EP07-集与祈</span><span class="ep-time" title="期目录顶层最近变动">3 分钟</span></span>
+  <span class="ep-step"><span class="ui-badge stop-mark">停机</span><span class="ep-step-text">05 审时间码</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">东京喰种-人物志-金木研</span><span class="ep-time" title="期目录顶层最近变动">12 分钟</span></span>
+  <span class="ep-step"><span class="ep-step-text">03.5 配音顺听 / 04 排片</span></span>
+</button>
+  
+<button class="ui-row ep mock-hover"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">命运石之门-EP02-世界线</span><span class="ep-time" title="期目录顶层最近变动">1 小时</span></span>
+  <span class="ep-step"><span class="ui-badge stop-mark">停机</span><span class="ep-step-text">02.5 人审改稿</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">进击的巨人-杂谈-自由的代价</span><span class="ep-time" title="期目录顶层最近变动">2 小时</span></span>
+  <span class="ep-step"><span class="ep-step-text">03 语音合成</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">CLANNAD-人物志-古河渚</span><span class="ep-time" title="期目录顶层最近变动">3 天</span></span>
+  <span class="ep-step"><span class="ui-dot ui-dot--unknown"></span><span class="ep-step-text">…</span></span>
+</button>
+  <div class="muted mock-pad">另有 2 个 _ 前缀目录未显示</div>
+  
+  <button class="ui-section"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>镜头画廊</button>
+</nav>
+<section class="center conv">
+  <div class="session-head"><span class="ui-badge">创作模式</span><span class="ui-dot ui-dot--ok"></span><span class="muted">LLM 已连接</span><span class="spacer"></span>
+    <div class="ui-seg"><button aria-pressed="true">创作</button><button>素材</button></div><button class="ui-btn ui-btn--ghost ui-btn--sm">结束会话</button></div>
+  <div class="conv-stream">
+    <div class="conv-user">把第 3 段的查询改成「祈 唱歌 城市」，然后重排 04</div>
+    <div class="conv-tool"><svg class="ui-icon ui-icon--sm conv-tool-ok" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7"/></svg><code>read_episode_file</code><span>02-script.md</span><span class="spacer"></span><span>0.1s</span></div>
+    <div class="conv-tool"><svg class="ui-icon ui-icon--sm conv-tool-fail" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg><code>run_pipeline</code><span>clips 罪恶王冠-EP07</span><span class="spacer"></span><span>3.4s</span></div>
+    <pre class="conv-obs">退出码 1：02-script.md 第 3 段「集」字段缺失，检索掩码无法生效
+（observation 原文逐字显示，不截断）</pre>
+    <div class="conv-assistant">第 3 段缺了「集」字段，我没法给检索加集内掩码。你希望这段素材限定在第几集？我先把查询改好，写回前会弹卡请你批准。</div>
+    <div class="conv-note">[工具卡] write_episode_file · 待答</div>
+    <div class="conv-foot">模型调用 2 · 工具 3（执行 3、重复拒绝 0）· 用时 14 s · end_turn</div>
+  </div>
+  <div class="dock">
+    <div class="ui-card"><div class="ui-card-head"><span class="ui-card-title">写入 02-script.md</span><span class="ui-badge ui-badge--wait">待答</span><span class="spacer"></span><span class="ui-card-sub">write_episode_file</span></div>
+      <code class="ui-code mock-mt">段落 3 · 查询：王之能力 虚空 → 祈 唱歌 城市</code>
+      <div class="ui-card-actions"><button class="ui-btn">批准</button><button class="ui-btn">拒绝</button><input class="ui-input mock-flex1" placeholder="告诉它怎么改（可选）"></div></div>
+  </div>
+  <div class="composer"><textarea placeholder="告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="composer-row"><span class="muted">罪恶王冠-EP07-集与祈</span><span class="spacer"></span><button class="ui-btn ui-btn--primary ui-btn--sm">发送</button></div></div>
+</section>
+<section class="preview">
+  <div class="preview-head"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 3v10M11 3v10M2 6.5h3M2 9.5h3M11 6.5h3M11 9.5h3"/></svg><span class="ui-row-title">罪恶王冠-EP07-集与祈/05-final.mp4</span><span class="ui-badge">视频</span></div>
+  <div class="preview-body"><div class="video-wrap"><div class="mock-video"></div><div class="mock-video-caption">当祈唱起 Euterpe 的时候</div><div class="timecode">00:01:42.375</div></div>
+  <div class="mock-pad"><div class="ui-state ui-state--inline"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r="0.5" fill="currentColor"/></svg>停机点 05 已就绪 · <button class="ui-btn ui-btn--sm">查看审片页</button></div></div></div>
+</section>
+</div></div></div></body></html>

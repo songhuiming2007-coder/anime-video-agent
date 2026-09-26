@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Spec 14 mock：停机点组件（02.5 / 03.5 / 05 / 09）。只用 tokens.css + ui.css + style.css（将发货的样式）+ mock.css（画布与媒体占位）。
+     CSP 与 desktop/src/renderer/index.html 生产版逐字相同：页面里不许出现 style="" 属性与 <style> 元素。
+     看明暗两版：切 macOS 外观，或按 Spec 14 §2.7 的截图命令渲染。 -->
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src ava-media: data:; media-src ava-media:; frame-src ava-media:; connect-src ava-media:">
+<title>ava mock · 停机点组件（02.5 / 03.5 / 05 / 09）</title>
+<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./ui.css"><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./mock.css"></head>
+<body><div class="mock-frame">
+<div class="mock-grid-2">
+<div class="mock-cell"><div class="mock-cell-title">02.5 · app 内改稿与封板（Spec 11 ScriptEditor）</div>
+  <div class="toolbar"><button class="ui-btn ui-btn--primary ui-btn--sm">保存 <span class="ui-kbd">⌘S</span></button><button class="ui-btn ui-btn--sm">机检</button><span class="spacer"></span><span class="notice">有未保存改动，封板对象必须是磁盘上的最新版本</span><button class="ui-btn ui-btn--sm" disabled>封板</button></div>
+  <div class="editor-split">
+    <div class="mock-col mock-pad"><div class="ui-state ui-state--inline"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r="0.5" fill="currentColor"/></svg>示意：真实编辑器是 CodeMirror 6（.cm-* DOM），高亮经 HighlightStyle 引用 --syntax-* 变量（S11-R1）</div>
+    <pre class="ui-code">## 段落 1
+配音：那一天，集第一次握住了祈的手。
+查询：集 握手 祈
+集：7</pre></div>
+    <div class="text-wrap markdown"><h2>段落 1</h2><p>配音：那一天，集第一次握住了祈的手。</p><p>查询：<code>集 握手 祈</code></p></div>
+    <div class="checklist"><strong>人审要点</strong><label>☐ 人物名与集数对得上</label><label>☐ 查询写台词语义，不写构图</label><label>☐ 没有政治议题</label></div>
+  </div></div>
+<div class="mock-cell"><div class="mock-cell-title">03.5 · 顺听纠错（Spec 11 VoicePanel）</div>
+  <div class="toolbar"><button class="ui-btn ui-btn--sm"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg>顺序播放</button><button class="ui-btn ui-btn--sm"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>停</button><span class="spacer"></span><button class="ui-btn ui-btn--sm">完成并应用补丁</button></div>
+  <div class="mock-pad"><div class="notice"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r="0.5" fill="currentColor"/></svg>多音字预检：「重」×3（zhòng / chóng）· 「行」×1</div>
+  <div class="composer-row mock-mt"><input class="ui-input" placeholder="纠错，例如：段 3 把「虚空」读成 xū kōng" value="段 3 把「虚空」读成 xū kōng"><button class="ui-btn ui-btn--sm">解析</button></div></div>
+  <div class="seg-row"><span>01</span><span class="muted">4.21s</span><span class="ui-row-title">那一天，集第一次握住了祈的手。</span><span class="mock-flex"><button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="播放"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button></span></div>
+  <div class="seg-row" aria-current="true"><span>02</span><span class="muted">5.08s</span><span class="ui-row-title">王之能力从来不是礼物，而是枷锁。</span><span class="mock-flex"><span class="ui-spinner"></span></span></div>
+  <div class="seg-row"><span>03</span><span class="muted">3.90s</span><span class="ui-row-title">每拔出一把虚空……</span><span class="mock-flex"><span class="ui-badge ui-badge--warn">待应用 #4</span><button class="ui-btn ui-btn--sm">撤回</button><button class="ui-btn ui-btn--sm">回滚</button></span></div>
+  <div class="mock-pad"><div class="ui-card"><div class="ui-card-head"><span class="ui-card-title">确认纠错条目</span><span class="ui-badge ui-badge--warn">⚠️ 全局生效</span></div>
+  <dl class="ui-kv"><dt>原文</dt><dd>虚空</dd><dt>读音</dt><dd>xū kōng</dd><dt>范围</dt><dd>全部段落</dd></dl>
+  <div class="ui-card-actions"><button class="ui-btn ui-btn--sm">确认落盘</button><button class="ui-btn ui-btn--sm">取消</button></div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">05 · 打回表单展开 + 失败回执</div><div class="mock-pad">
+<div class="ui-card decision" data-testid="decision">
+  <div class="ui-card-head"><span class="ui-card-title">停机点 05 审时间码</span></div>
+  <div class="ui-card-sub">待审 · 创建于 2026-09-26T05:26:16.051194Z · appr_1790400376051_75b9</div>
+  <ul class="fingerprints"><li><code>04-clips.json</code> 277 字节 · mtime_ns 1790400375238421234</li></ul>
+  <div class="muted mock-mt">批准须先显式执行 python -m pipeline.review &lt;期&gt; --approve</div>
+  <div class="notice mock-mt"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r="0.5" fill="currentColor"/></svg>本次审阅不计人时</div>
+  <div class="ui-card-actions"><button class="ui-btn">批准</button><button class="ui-btn" aria-expanded="true">打回…</button></div>
+  <div class="reject-form"><label class="ui-field">哪段<input class="ui-input" placeholder="例如 04-clips.json s07 1:20" value="04-clips.json s03 0:42"></label>
+  <label class="ui-field">问题<textarea class="ui-textarea" rows="3">画面是第 2 集的战斗，台词说的是第 1 集的告白，换一个镜头</textarea></label>
+  <div><button class="ui-btn">提交打回</button></div></div>
+</div>
+  <div class="decision-err mock-mt">停机点 05（appr_1790400376051_75b9）E_STALE：批准文件对应的不是你审阅的版本</div><pre class="tail stderr">EOFError: 已不是审阅时的版本（size 277 ≠ 281）</pre></div></div>
+<div class="mock-cell"><div class="mock-cell-title">09 · 封面与标题定稿（Spec 12 两输入）</div><div class="mock-pad">
+  <div class="ui-card decision"><div class="ui-card-head"><span class="ui-card-title">停机点 09 人工发布</span></div><div class="ui-card-sub">待审 · 创建于 2026-09-26T06:02:41.118305Z · appr_1790402561118_0c2e</div>
+  <div class="ui-dropzone mock-mt" data-dragover="true"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.75" width="12" height="10.5" rx="1.5"/><circle cx="5.75" cy="6.25" r="1.25"/><path d="m2.5 12 3.5-3.5 2.5 2.5 2-2 3 3"/></svg>松开以导入到 07-cover/import/</div>
+  <div class="ui-card-sub mock-mt">选一张封面</div>
+  <div class="cover-grid mock-mt"><button class="cover-opt" aria-pressed="true"><div class="mock-cover-169"></div><span class="ui-badge">1920×1080</span></button><button class="cover-opt"><div class="mock-cover-169b"></div><span class="ui-badge">1920×1080</span></button><button class="cover-opt"><div class="mock-cover-916"></div><span class="ui-badge">1080×1920</span></button></div>
+  <label class="ui-field mock-mt">标题<input class="ui-input" value="集与祈：王之能力是礼物还是枷锁？"></label>
+  <div class="ui-card-actions"><button class="ui-btn">批准并记录定稿</button><button class="ui-btn">打回…</button></div></div></div></div>
+</div></div></body></html>

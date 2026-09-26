@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- Spec 14 mock：数据盘不可达（stale）。只用 tokens.css + ui.css + style.css（将发货的样式）+ mock.css（画布与媒体占位）。
+     CSP 与 desktop/src/renderer/index.html 生产版逐字相同：页面里不许出现 style="" 属性与 <style> 元素。
+     看明暗两版：切 macOS 外观，或按 Spec 14 §2.7 的截图命令渲染。 -->
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src ava-media: data:; media-src ava-media:; frame-src ava-media:; connect-src ava-media:">
+<title>ava mock · 数据盘不可达（stale）</title>
+<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./ui.css"><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./mock.css"></head>
+<body><div class="mock-frame">
+<div class="app"><header class="topbar"><div class="topbar-row"><span class="wordmark">ava</span><span class="repo"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.25h8.5a1 1 0 0 1 1 1v10.5H4a1 1 0 0 1-1-1z"/><path d="M3 11.75h9.5"/></svg> ~/Documents/code/anime-video-agent-ava</span><span class="spacer"></span><button class="ui-btn ui-btn--ghost ui-btn--sm">刷新</button></div>
+<div class="banner banner-red" data-testid="reach-banner"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg>unreachable：data 指向的 /Volumes/Samsung T7/anime-video-data 不存在（外置盘未挂载？）</div>
+<div class="banner banner-yellow"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg>core Code Freeze：pipeline/ 存在未提交改动或 git 检查异常（Code Freeze WARN）</div></header>
+<div class="main stale">
+<nav class="left">
+  <div class="side-head">
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名"></label>
+    <div class="side-head-row"><div class="ui-seg"><button aria-pressed="true">按时间</button><button>按工序</button></div><span class="spacer"></span><span class="ui-count">5</span></div>
+  </div>
+  
+<button class="ui-row ep" aria-current="true" data-testid="episode">
+  <span class="ep-line"><span class="ep-name">罪恶王冠-EP07-集与祈</span><span class="ep-time" title="期目录顶层最近变动">3 分钟</span></span>
+  <span class="ep-step"><span class="ui-badge stop-mark">停机</span><span class="ep-step-text">05 审时间码</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">东京喰种-人物志-金木研</span><span class="ep-time" title="期目录顶层最近变动">12 分钟</span></span>
+  <span class="ep-step"><span class="ep-step-text">03.5 配音顺听 / 04 排片</span></span>
+</button>
+  
+<button class="ui-row ep mock-hover"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">命运石之门-EP02-世界线</span><span class="ep-time" title="期目录顶层最近变动">1 小时</span></span>
+  <span class="ep-step"><span class="ui-badge stop-mark">停机</span><span class="ep-step-text">02.5 人审改稿</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">进击的巨人-杂谈-自由的代价</span><span class="ep-time" title="期目录顶层最近变动">2 小时</span></span>
+  <span class="ep-step"><span class="ep-step-text">03 语音合成</span></span>
+</button>
+  
+<button class="ui-row ep"  data-testid="episode">
+  <span class="ep-line"><span class="ep-name">CLANNAD-人物志-古河渚</span><span class="ep-time" title="期目录顶层最近变动">3 天</span></span>
+  <span class="ep-step"><span class="ui-dot ui-dot--unknown"></span><span class="ep-step-text">…</span></span>
+</button>
+  <div class="muted mock-pad">另有 2 个 _ 前缀目录未显示</div>
+  
+  <button class="ui-section"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>镜头画廊</button>
+</nav>
+<section class="center"><div class="status" data-testid="status"><span class="status-label">当前工序</span><div class="status-step"><strong data-testid="current-step">05 审时间码</strong><span class="ui-badge stop-mark">停机</span></div><div>下一步：严禁直接启动渲染！请在浏览器打开 04-review.html 抽检画面与台词，确认无画外音错配后执行批准：</div></div>
+<div class="decisions">
+<div class="ui-card decision" data-testid="decision">
+  <div class="ui-card-head"><span class="ui-card-title">停机点 05 审时间码</span></div>
+  <div class="ui-card-sub">待审 · 创建于 2026-09-26T05:26:16.051194Z · appr_1790400376051_75b9</div>
+  <ul class="fingerprints"><li><code>04-clips.json</code> 277 字节 · mtime_ns 1790400375238421234</li></ul>
+  <div class="muted mock-mt">批准须先显式执行 python -m pipeline.review &lt;期&gt; --approve</div>
+  <div class="notice mock-mt"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r="0.5" fill="currentColor"/></svg>本次审阅不计人时</div>
+  <div class="ui-card-actions"><button class="ui-btn">批准</button><button class="ui-btn" >打回…</button></div>
+  
+</div></div></section>
+
+<section class="preview">
+  <div class="preview-head"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5.25h3.5"/></svg><span class="ui-row-title">罪恶王冠-EP07-集与祈/02-script.md</span><span class="ui-badge">Markdown</span></div>
+  <div class="preview-body"><div class="text-wrap"><div class="markdown">
+    <h1>集与祈：命运的回响</h1>
+    <h2>段落 1</h2><p>配音：那一天，集第一次握住了祈的手。他还不知道，这只手会把他拖进一场没有退路的战争。</p><p>查询：<code>集 握手 祈</code></p>
+    <h2>段落 2</h2><p>配音：王之能力从来不是礼物，而是枷锁。每拔出一把虚空，就要亲手剖开一个人的心。</p><p>查询：<code>王之能力 虚空</code></p>
+    <h2>段落 3</h2><p>配音：当祈唱起 Euterpe 的时候，整座城市都安静了下来。</p>
+  </div></div></div>
+</section></div></div></div></body></html>

@@ -1,0 +1,64 @@
+/* 仅供 mock 页面：画布与媒体占位。不进 desktop/，不受 TK-2 约束。 */
+body { overflow: hidden; }
+.mock-frame { width: 1280px; height: 820px; position: relative; overflow: hidden; }
+.mock-hover { background: var(--bg-hover); }
+.mock-video { aspect-ratio: 16 / 9; width: 100%; background: linear-gradient(135deg, #1b2a4a 0%, #3a2150 55%, #8a3a5c 100%); }
+.mock-video-caption { position: absolute; left: 50%; bottom: 10%; transform: translateX(-50%); color: #ffffff; font-size: 18px; text-shadow: 0 1px 3px #000000; }
+.mock-cover-169 { aspect-ratio: 16 / 9; background: linear-gradient(135deg, #25355c, #9b4466); }
+.mock-cover-916 { aspect-ratio: 9 / 16; background: linear-gradient(160deg, #3a2a5a, #c46a8a); }
+.mock-cover-169b { aspect-ratio: 16 / 9; background: linear-gradient(135deg, #1f4a45, #d0a060); }
+.mock-img { width: 70%; aspect-ratio: 16 / 9; background: linear-gradient(135deg, #25355c, #9b4466); }
+.mock-note { position: absolute; right: 12px; bottom: 8px; font-size: 11px; color: var(--fg-subtle); }
+.mock-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; height: 100%; }
+.mock-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: minmax(0, 1fr); gap: 12px; padding: 12px; height: 100%; }
+.mock-cell { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.mock-cell-title { padding: 6px 12px; font-size: 12px; color: var(--fg-muted); border-bottom: 1px solid var(--border); }
+.mock-sheet { padding: 16px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px 28px; height: 100%; overflow: hidden; }
+.mock-sheet h3 { margin: 0 0 8px; font-size: 12px; color: var(--fg-muted); font-weight: 600; }
+.mock-flex { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mock-col { display: flex; flex-direction: column; gap: 6px; }
+.mock-swatch { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); }
+.mock-chip { width: 18px; height: 18px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--border); }
+.mock-w220 { width: 220px; }
+.mock-w260 { width: 260px; }
+.mock-pad { padding: 12px; }
+.mock-pop { right: 12px; top: 40px; }
+.mock-mt { margin-top: 8px; }
+.mock-flex1 { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mock-c-bg { background: var(--bg); }
+.mock-c-bg-sidebar { background: var(--bg-sidebar); }
+.mock-c-bg-panel { background: var(--bg-panel); }
+.mock-c-bg-card { background: var(--bg-card); }
+.mock-c-bg-popover { background: var(--bg-popover); }
+.mock-c-bg-input { background: var(--bg-input); }
+.mock-c-bg-subtle { background: var(--bg-subtle); }
+.mock-c-bg-hover { background: var(--bg-hover); }
+.mock-c-bg-selected { background: var(--bg-selected); }
+.mock-c-bg-media { background: var(--bg-media); }
+.mock-c-bg-frame { background: var(--bg-frame); }
+.mock-c-border { background: var(--border); }
+.mock-c-border-strong { background: var(--border-strong); }
+.mock-c-border-input { background: var(--border-input); }
+.mock-c-fg { background: var(--fg); }
+.mock-c-fg-muted { background: var(--fg-muted); }
+.mock-c-fg-subtle { background: var(--fg-subtle); }
+.mock-c-accent { background: var(--accent); }
+.mock-c-accent-hover { background: var(--accent-hover); }
+.mock-c-accent-border { background: var(--accent-border); }
+.mock-c-fg-on-accent { background: var(--fg-on-accent); }
+.mock-c-accent-strong { background: var(--accent-strong); }
+.mock-c-focus-ring { background: var(--focus-ring); }
+.mock-c-ok { background: var(--ok); }
+.mock-c-ok-surface { background: var(--ok-surface); }
+.mock-c-warn { background: var(--warn); }
+.mock-c-warn-surface { background: var(--warn-surface); }
+.mock-c-danger { background: var(--danger); }
+.mock-c-danger-surface { background: var(--danger-surface); }
+.mock-c-wait { background: var(--wait); }
+.mock-c-wait-surface { background: var(--wait-surface); }
+.mock-c-overlay-bg { background: var(--overlay-bg); }
+.mock-c-overlay-fg { background: var(--overlay-fg); }
+.mock-c-syntax-key { background: var(--syntax-key); }
+.mock-c-syntax-str { background: var(--syntax-str); }
+.mock-c-syntax-num { background: var(--syntax-num); }
+.mock-c-syntax-lit { background: var(--syntax-lit); }

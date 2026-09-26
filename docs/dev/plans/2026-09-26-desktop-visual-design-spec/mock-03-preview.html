@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Spec 14 mock：预览面板各态。只用 tokens.css + ui.css + style.css（将发货的样式）+ mock.css（画布与媒体占位）。
+     CSP 与 desktop/src/renderer/index.html 生产版逐字相同：页面里不许出现 style="" 属性与 <style> 元素。
+     看明暗两版：切 macOS 外观，或按 Spec 14 §2.7 的截图命令渲染。 -->
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src ava-media: data:; media-src ava-media:; frame-src ava-media:; connect-src ava-media:">
+<title>ava mock · 预览面板各态</title>
+<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./ui.css"><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./mock.css"></head>
+<body><div class="mock-frame">
+<div class="mock-grid-3">
+<div class="mock-cell"><div class="mock-cell-title">视频 · 时间码浮层</div><div class="mock-flex1"><div class="video-wrap"><div class="mock-video"></div><div class="timecode">00:03:17.042</div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">音频队列 · 03-audio/（当前段高亮）</div><div class="mock-flex1"><div class="audio-wrap"><div class="ui-code">▶ ━━━━━━━━○──────  0:02 / 0:05（原生 &lt;audio controls&gt; 随 color-scheme 变色）</div>
+<ol class="queue" data-testid="audio-queue"><li><button class="ui-row">seg-01.wav</button></li><li class="current"><button class="ui-row" aria-current="true">seg-02.wav</button></li><li><button class="ui-row">seg-03.wav</button></li><li><button class="ui-row">seg-10.wav</button></li></ol></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">图片 · 缩放平移</div><div class="mock-flex1"><div class="image-wrap"><div class="mock-img"></div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">JSON · 折叠树（数字按源码原文）</div><div class="mock-flex1"><div class="text-wrap json"><div><button class="j-toggle" aria-expanded="true">▾</button>{</div><div class="j-children">
+<div><span class="j-key">"anime"</span>: <span class="j-str">"罪恶王冠"</span></div><div><span class="j-key">"total_duration"</span>: <span class="j-num">312.48</span></div>
+<div><span class="j-key">"approved"</span>: <span class="j-lit">false</span></div><div><button class="j-toggle" aria-expanded="false">▸</button><span class="j-key">"segments"</span>: [ …24 项 ]</div>
+<div><span class="j-key">"mtime_ns"</span>: <span class="j-num">1790171112636927676</span></div></div><div>}</div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">空态</div><div class="mock-flex1"><div class="ui-state"><svg class="ui-icon " viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5.25h3.5"/></svg><div class="ui-state-title">选择左侧产物以预览</div><div>支持 html / 视频 / 音频 / 图片 / md / json</div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">错误态</div><div class="mock-flex1"><div class="ui-state ui-state--error"><svg class="ui-icon " viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg><div class="ui-state-title">读取失败</div><div class="ui-state-detail">HTTP 404 · ava-media://episodes/罪恶王冠-EP07/02-script.md</div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">加载态（骨架）</div><div class="mock-flex1"><div class="text-wrap mock-col"><div class="ui-skeleton mock-w260"></div><div class="ui-skeleton"></div><div class="ui-skeleton"></div><div class="ui-skeleton mock-w220"></div><div class="ui-state ui-state--inline"><span class="ui-spinner"></span>读取中…</div></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">截断提示 · 纯文本</div><div class="mock-flex1"><div class="text-wrap"><div class="notice notice--warn"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg>文件超过 5 MiB，只显示前 5 MiB 原文</div><pre class="plain mock-mt">2026-09-26 13:02:11 INFO clips: 段 01 命中 S01E07 12:31.4 score 0.71
+2026-09-26 13:02:11 INFO clips: 段 02 命中 S01E07 18:02.0 score 0.64
+2026-09-26 13:02:12 WARN clips: 段 03 查询阶梯落到「配音」级</pre></div></div></div>
+<div class="mock-cell"><div class="mock-cell-title">未知类型 · 只显示元数据</div><div class="mock-flex1"><div class="meta"><div class="meta-title">run.sh</div><div class="muted">该类型只显示元数据</div></div></div></div>
+</div></div></body></html>
