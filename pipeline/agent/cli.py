@@ -1413,6 +1413,7 @@ def _dispatch_agent_turn(
     try:
         outcome = run_tool_loop(messages, ctx=ctx, approve=approve)
     except LLMError as exc:
+        # 打桩/循环外抛出的异常（🔵-10）：与现状 cli.py:994-1002 相同，回滚
         print(f"[FAIL] {exc}")
         messages.pop()
         return {"stopped": "error", "messages": messages, "final": {}}
@@ -1422,16 +1423,27 @@ def _dispatch_agent_turn(
         messages.pop()
         return {"stopped": "error", "messages": messages, "final": {}}
 
-    messages.clear()
-    messages.extend(outcome["messages"])
-
-    if outcome["stopped"] == "max_iterations":
-        # 上限时 final 是最后一条工具返回原文（run_tool_loop 交回 convo[-1]），不是回答，不回显
-        print(f"[WARN] 工具调用已达上限 {outcome['iterations']} 轮，停止并交人接管。")
+    if outcome.get("rollback"):
+        # 回滚 = 恢复到回合开始时的快照（Spec 9 §2.3 第 3 条）：本轮注入 + 用户消息一并丢弃
+        messages.pop()
     else:
-        content = outcome["final"].get("content") or ""
+        messages.clear()
+        messages.extend(outcome["messages"])
+
+    stopped = outcome.get("stopped")
+    if stopped == "blocked":
+        # 出网断言拒绝：不做收尾（同一份历史必然再被拒）
+        print(f"[BLOCKED] 出网被拦截：{outcome['error']}")
+        print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
+    elif stopped == "error" and outcome.get("error"):
+        print(f"[FAIL] {outcome['error']}")
+    else:
+        content = (outcome.get("final") or {}).get("content") or ""
         if content:
             print(f"\n{content}")
+    if outcome.get("local_note"):
+        # 本地确定性说明（Spec 9 §2.3 第 4 条）：只呈现，不进 messages
+        print(f"\n{outcome['local_note']}")
 
     return outcome
 

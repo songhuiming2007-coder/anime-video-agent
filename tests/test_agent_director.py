@@ -760,8 +760,12 @@ def test_repl_handles_llm_error_and_rolls_back_user_message(tmp_path: Path, monk
     assert "[FAIL] API 500: Internal Server Error" in out
 
 
-def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
-    """达到 max_iterations 时发出显式警告交人接管，且不回显工具返回原文 (Spec §1.2；S20 遗留 D28)。"""
+def test_repl_non_normal_stop_never_echoes_raw_tool_json(tmp_path: Path, monkeypatch, capsys):
+    """非正常停止（原 max_iterations 场景）不复述工具返回原文，只呈现收尾答复/本地说明。
+
+    Spec 9 §2.3 第 4 条 + I-1：10 轮硬上限已删；到点/出错一律「先收尾后停」。收尾答不出来时
+    给本地确定性说明（`[收尾·本地]`），**仍不得**把最后一条 tool 消息原文当回答回显。
+    """
     monkeypatch.setenv("AVA_TEST_KEY", "test-key-mock")
     root = make_agent_root(tmp_path, "http://127.0.0.1:9/v1")
     ep = root / "data" / "episodes" / "01-max-iter"
@@ -769,15 +773,24 @@ def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
     (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
 
     raw_tool_json = '{"ok": true, "data": [{"id": 15, "name": "\\u7981\\u672c"}]}'
+    local_note = (
+        "[收尾·本地] 本轮在第 50 次模型调用后因检查点停止停止；工具调用 50 次"
+        "（read_status×50）；收尾调用失败（LLMError: boom）。已执行的工具结果保留在会话中。"
+    )
 
     def mock_run_tool_loop(messages, ctx, approve):
         return {
-            "stopped": "max_iterations",
-            "iterations": 10,
-            "tool_calls_made": 10,
+            "stopped": "checkpoint_stop",
+            "iterations": 50,
+            "llm_calls": 50,
+            "tool_calls_made": 50,
+            "tool_executions": 50,
+            "rollback": False,
+            "wrapup": "failed",
+            "local_note": local_note,
             "messages": messages,
-            # 真实场景：上限时 run_tool_loop 交回 convo[-1]，即最后一条 tool 消息原文
-            "final": {"role": "tool", "tool_call_id": "call_1", "content": raw_tool_json},
+            # 真实场景里 final 是收尾答复；答不出来时是 None，绝不是最后一条 tool 原文
+            "final": None,
         }
 
     monkeypatch.setattr("pipeline.agent.llm.run_tool_loop", mock_run_tool_loop)
@@ -786,8 +799,9 @@ def test_repl_max_iterations_warning(tmp_path: Path, monkeypatch, capsys):
         assert cli.run_agent_loop(ep, scope_mode="auto", root=root) == 0
 
     out = capsys.readouterr().out
-    assert "[WARN] 工具调用已达上限 10 轮，停止并交人接管。" in out
-    assert raw_tool_json not in out
+    assert "[WARN] 工具调用已达上限" not in out, "I-1：固定轮数硬上限已删"
+    assert raw_tool_json not in out, "工具返回原文不得被当作答案回显"
+    assert local_note in out
 
 
 def test_run_creative_loop_alias_compatibility(tmp_path: Path, monkeypatch):
