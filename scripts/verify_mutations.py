@@ -57,6 +57,8 @@ IDEA_DOC = "config/agent/scopes/idea.md"
 SESSION = "pipeline/agent/session.py"
 SESSION_LOG = "pipeline/agent/session_log.py"
 PROTO = "pipeline/agent/protocol.py"
+COVER_EDIT = "pipeline/cover_edit.py"
+APPROVALS = "pipeline/approvals.py"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -75,10 +77,10 @@ MUTATIONS: list[dict] = [
     {"id": "M3b", "guard": "审批结果被消费（非恒放行）", "file": LLM,
      "old": '                decision = control.review(name, args)  # type: ignore[union-attr]\n',
      "new": '                decision = Decision(ok=True, provenance="auto")  # type: ignore[union-attr]\n'},
-    # ---- M4: CREATIVE_WRITABLE_FILES 精确集合 ----
+    # ---- M4: CREATIVE_WRITABLE_FILES 精确集合（Spec 12 C12-R1 重锚：白名单增 07-titles.md）----
     {"id": "M4", "guard": "定稿 02-script.md 不可写", "file": TOOLS,
-     "old": '    "01-topic.md",\n    "02-script.draft.md",\n}',
-     "new": '    "01-topic.md",\n    "02-script.draft.md",\n    "02-script.md",\n}'},
+     "old": '    "01-topic.md",\n    "02-script.draft.md",\n    "07-titles.md",\n}',
+     "new": '    "01-topic.md",\n    "02-script.draft.md",\n    "07-titles.md",\n    "02-script.md",\n}'},
     # ---- M5: 状态卡受限标记清洗 ----
     {"id": "M5", "guard": "状态卡 advisory 脱敏", "file": CARD,
      "old": '    for pattern in RESTRICTED_EGRESS_PATTERNS:\n        escaped = re.escape(pattern)\n        card = re.sub(escaped, "[已脱敏]", card, flags=re.IGNORECASE)\n',
@@ -467,6 +469,84 @@ MUTATIONS: list[dict] = [
              '        except (SessionLocked, SessionLogBroken) as exc:\n'
              '            return fail("E_SESSION_LOCKED", str(exc), 3)\n'),
      "new": '    lease = None  # MUT-50：改为懒取（dispatch 里 ensure_lease）\n'},
+
+    # ---- Spec 12 PR1：导入与确定性渲染（MUT-1~6、12~14）----
+    {"id": "MUT-1", "guard": "完整解码（verify 不够，非 zlib 乱字节 IDAT 由 load 拦）",
+     "file": COVER_EDIT,
+     "old": ('    try:\n'
+             '        with Image.open(BytesIO(data)) as img:\n'
+             '            img.load()\n'
+             '    except Exception as exc:\n'
+             '        raise CoverEditError(f"图片完整解码失败：{exc}") from exc\n'),
+     "new": '    pass  # MUT-1：只 verify 不 load\n'},
+    {"id": "MUT-2", "guard": "导入冲突不覆盖（追加 -2 后缀）", "file": COVER_EDIT,
+     "old": ('        cand = target_dir / (f"{stem}{ext}" if seq == 1 else f"{stem}-{seq}{ext}")\n'
+             '        if not cand.exists():\n'
+             '            break\n'
+             '        seq += 1\n'),
+     "new": '        cand = target_dir / f"{stem}{ext}"  # MUT-2：恒用第一个名字（覆盖）\n        break\n'},
+    {"id": "MUT-3", "guard": "描边参数真进渲染（stroke_width/stroke_fill）", "file": COVER_EDIT,
+     "old": ('            anchor=anchor,\n'
+             '            stroke_width=line["stroke_width"],\n'
+             '            stroke_fill=line["stroke_color"],\n'
+             '        )\n'),
+     "new": '            anchor=anchor,\n        )\n'},
+    {"id": "MUT-4", "guard": "九宫锚点 tl 映射到左上（不与 br 对调）", "file": COVER_EDIT,
+     "old": '    "tl": ("la", 0, 0), "tc": ("ma", 1, 0), "tr": ("ra", 2, 0),\n',
+     "new": '    "tl": ("la", 2, 2), "tc": ("ma", 1, 0), "tr": ("ra", 2, 0),\n'},
+    {"id": "MUT-5", "guard": "渲染目标不覆盖（已存在即拒）", "file": COVER_EDIT,
+     "old": ('    if dest.exists():\n'
+             '        raise CoverEditError(f"输出目标已存在，绝不覆盖：{spec[\'output\']}（换一个 output 名）")\n'),
+     "new": '    pass  # MUT-5：已存在也覆写\n'},
+    {"id": "MUT-6", "guard": "字体缺席如实报错，绝不 fallback 系统字体", "file": COVER_EDIT,
+     "old": ('    if not path.is_file():\n'
+             '        raise CoverEditError(\n'
+             '            f"字体文件缺席：config cover.font_file={rel}"\n'
+             '            f"（期望路径 {path}）。请把开源字体放入 data/fonts/（文件不进 git），"\n'
+             '            f"或改 config/project.json 的 cover.font_file。"\n'
+             '        )\n'),
+     "new": '    if not path.is_file():\n        return ImageFont.load_default(size)  # MUT-6：静默 fallback\n'},
+    {"id": "MUT-12", "guard": "cover_edit 顶层零重依赖（PIL 仅函数级）", "file": COVER_EDIT,
+     "old": 'from pipeline import paths\n\n\nclass CoverEditError',
+     "new": 'from pipeline import paths\nfrom PIL import Image  # MUT-12：PIL 改回顶层 import\n\n\nclass CoverEditError'},
+    {"id": "MUT-13", "guard": "stdin 32 MiB 上限（分派层限流）", "file": CLI,
+     "old": '    data = sys.stdin.buffer.read(limit + 1)\n    return None if len(data) > limit else data\n',
+     "new": '    return sys.stdin.buffer.read()  # MUT-13：不整读后判也不限流\n'},
+    {"id": "MUT-14", "guard": "单期 edit-*.png 64 上限", "file": COVER_EDIT,
+     "old": ('    if len(list(cover_dir.glob("edit-*.png"))) >= EDIT_MAX_FILES:\n'
+             '        raise CoverEditError(\n'
+             '            f"单期 edit-*.png 已达上限 {EDIT_MAX_FILES}，拒收（先清理不再要的版本）"\n'
+             '        )\n'),
+     "new": '    pass  # MUT-14：无上限\n'},
+
+    # ---- Spec 12 PR2：09 定稿记录与标题白名单（MUT-7~11）----
+    {"id": "MUT-7", "guard": "09 ack 缺 finalize 必拒", "file": APPROVALS,
+     "old": ('        if finalize is None:\n'
+             '            raise ApprovalError(\n'
+             '                "09 定稿必须携带封面与标题（finalize.cover / finalize.title），"\n'
+             '                "缺一个一律拒批：定稿权在人（ADR-0018）"\n'
+             '            )\n'
+             '        resolved_finalize = _validate_finalize(ep_path, finalize)\n'),
+     "new": ('        resolved_finalize = (\n'
+             '            _validate_finalize(ep_path, finalize) if finalize is not None else None\n'
+             '        )  # MUT-7：09 不校验必填\n')},
+    {"id": "MUT-8", "guard": "finalize.cover 的 resolve 防穿透校验", "file": APPROVALS,
+     "old": ('    if cover_root not in target.parents:\n'
+             '        raise ApprovalError(f"finalize.cover 越出 07-cover/：{cover}")\n'),
+     "new": '    pass  # MUT-8：去掉防穿透\n'},
+    {"id": "MUT-9", "guard": "approval_resolved 载荷携带 finalize", "file": APPROVALS,
+     "old": ('            if resolved_finalize is not None:\n'
+             '                resolved_payload["finalize"] = resolved_finalize\n'),
+     "new": '            pass  # MUT-9：载荷漏 finalize\n'},
+    {"id": "MUT-10", "guard": "09 之外停机点收到 finalize 必拒", "file": APPROVALS,
+     "old": '    elif finalize is not None:\n',
+     "new": '    elif False:  # MUT-10：非 09 停机点静默接受 finalize\n'},
+    {"id": "MUT-11", "guard": "07-titles.md 经白名单放行（不是工具层特判）", "file": TOOLS,
+     "old": '    "02-script.draft.md",\n    "07-titles.md",\n}',
+     "new": '    "02-script.draft.md",\n}'},
+    {"id": "MUT-15", "guard": "cover_mtime_ns 落盘为十进制字符串（非 int，🔴-1 ①）", "file": APPROVALS,
+     "old": '        "cover_mtime_ns": mtime_ns,\n',
+     "new": '        "cover_mtime_ns": int(mtime_ns),\n'},
 ]
 
 

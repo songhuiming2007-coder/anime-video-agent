@@ -320,6 +320,7 @@ SPEC_TOOLS = {
         "crawl",
         "browser",
         "write_memory",
+        "cover_edit",
     ],
     "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
     "asset": ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"],
@@ -641,14 +642,15 @@ def test_write_memory_registered_creative_only_with_adr(tmp_path: Path):
     repo_tools = json.loads(
         (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
     )
-    assert repo_tools["creative"][-1] == "write_memory"
+    assert repo_tools["creative"][-2] == "write_memory"
+    assert repo_tools["creative"][-1] == "cover_edit"   # Spec 12 在尾部追加（ADR-0025）
     assert [scope for scope, names in repo_tools.items() if "write_memory" in names] == ["creative"]
     # 其余三键与施工前逐字相等（写死在用例里，不看 SPEC_TOOLS，免得两边一起漂）
     assert repo_tools["pipeline"] == ["read_artifact", "read_status", "list_episodes", "run_pipeline"]
     assert repo_tools["asset"] == ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"]
     assert repo_tools["idea"] == ["read_artifact", "list_episodes", "read_status", "search_notes"]
     every_tool = set().union(*(set(names) for names in repo_tools.values()))
-    assert len(every_tool) == 12
+    assert len(every_tool) == 13
 
     # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
     schema = TOOL_SCHEMAS["write_memory"]

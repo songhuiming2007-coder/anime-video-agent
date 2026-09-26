@@ -9,7 +9,8 @@
     "web_fetch",
     "crawl",
     "browser",
-    "write_memory"
+    "write_memory",
+    "cover_edit"
   ],
   "pipeline": [
     "read_artifact",

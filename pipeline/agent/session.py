@@ -50,7 +50,10 @@ from pipeline.agent.session_log import (
 REQUEST_ID_BYTES = 16
 
 # 临界区工具（§2.2 第 3 条）：显式字面量，TG-5 比对它与「side_effect 为真的工具 − run_pipeline」。
-CRITICAL_TOOLS = frozenset({"write_episode_file", "acquire_propose", "write_memory", "browser"})
+# Spec 12：cover_edit 不标 side_effect（fail-closed 弹卡）→ 必须同步进临界区。
+CRITICAL_TOOLS = frozenset(
+    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit"}
+)
 
 # 终端卡片的末行提示（§3.2 的两种文案 + 工具卡的既有文案）
 _PROMPTS = {
