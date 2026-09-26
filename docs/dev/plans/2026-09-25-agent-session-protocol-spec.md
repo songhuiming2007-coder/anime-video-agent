@@ -1,6 +1,6 @@
 # Implementation Spec：无终端 agent 会话协议与 Session 恢复（Spec 9 / core 侧）
 
-日期：2026-09-25（**v0.7**，红队第六轮定向复审 🟢；三条 🔵 由红队按用户指示直接修订；状态：**v0.7 红队 🟢，可动工**（§6.1 授权已获，从 PR0 开始））  
+日期：2026-09-25（**v0.8**，红队第六轮定向复审 🟢；三条 🔵 由红队按用户指示直接修订；状态：**红队 🟢，可动工**（§6.1 授权已获，从 PR0 开始）。**v0.8（2026-09-26）**：并入 Spec 10 §6.1 的 S9-R1~R4（最终措辞已于 2026-09-26 获人确认），落点为 §3.1、§4.7、§6.6 H-6、§7.1 TP-12/TP-15；**PR3（`protocol.py`）施工前须经红队只限这四处落点的定向复核**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1、§0.2 第 1/2 条、§4 施工红线、§5 明确排除、§6 Spec 9）  
 相关 ADR：ADR-0020（§3、§4、§5）、ADR-0018（保留条款）、ADR-0021（素材 fetch 人批、browser 逐调用卡）、ADR-0022（系统提示只增不改）、ADR-0023（记忆首次写入人确认）  
 契约依赖（均已施工，代码即现状）：Spec 1/2/3/5/6/7/8，见 `docs/dev/plans/archive/`  
@@ -52,6 +52,8 @@
 六轮红队评审（2026-09-25）全部闭环，**第六轮结论 🟢 可动工**。累计：一轮 2🔴 + 12🟡 + 12🔵，二轮 9🟡 + 4🔵，三轮 1🟡 + 4🔵，四轮 1🟡 + 3🔵，五轮 2🟡 + 2🔵，六轮 3🔵；另作者自查 3 项。无驳回。逐轮裁决表见文末「附：红队裁决纪要」。
 
 施工须知（从裁决中提炼，正文已落实）：实测复现过的 5 处问题（`review` 前缀缩写旁路、同进程二次 flock 被拒、大帧被中断撕裂、终端 Ctrl-C 连带杀同组浏览器子进程、crawl 中断须等工作线程）均有对应用例与变异；A1、A2 须人持密钥在 PR1 首日实测；RF-15（判重挡不住参数微扰）是用户裁决时已接受的代价。
+
+**v0.8 并入（2026-09-26）**：Spec 10 §6.1 的 S9-R1~R4 全部并入（S9-R1/S9-R2/S9-R4 → §3.1 与 TP-12/TP-15，S9-R4 顺序条款 → §4.7，S9-R3 → §6.6 H-6）；四条最终措辞已于 2026-09-26 获人确认。PR3 施工前须经红队只限这些落点的定向复核。
 
 ---
 
@@ -303,6 +305,7 @@ Spec 1 实际保证的是：常驻层会话内字节级恒定（只在 scope 变
 - 公共键：`"v": 1`、`"t"`；出站另有 `"seq"`（进程内单调）、`"sid"`。
 - 不含可能超过 2^53 的整数（Spec 8 RF-23）。
 - 入站逐类型 exact-keys；违例 → `error{E_BAD_REQUEST}`，进程继续；单行超过 `MAX_INBOUND_LINE_BYTES` → `E_TOO_LARGE`，并丢弃到下一个换行。
+- **入站可选键 `rid`**（S9-R2，v0.8 并入）：字符串，`^[A-Za-z0-9_-]{1,64}$`，host 生成；入站 exact-keys 相应放宽为「必需键 + 可选 `rid`」。由某条入站帧直接引起的出站帧回显其 `rid`：`turn_started`（对 `user_message`）、`request_closed{reason:"answered"}`（对 `answer`）、`command_result`（对 `command`）、`error`（对任何入站帧）；其余出站帧不带 `rid`。
 
 **入站**
 
@@ -319,19 +322,27 @@ Spec 1 实际保证的是：常驻层会话内字节级恒定（只在 scope 变
 | `t` | 主要键 |
 |---|---|
 | `ready` | `episode`、`scope`、`continue_status ∈ {new, resumed, no_session, corrupt, schema_unknown, ambiguous}`、`llm ∈ {ok, degraded}`、`degrade_reason`、`code_freeze_ok`、`history_count`、`session_bytes`、`other_sessions: [{sid, messages, last_activity}]` |
-| `history` | `index`、`role ∈ {user, assistant, tool, system_note}`（按 `origin` 映射：`user`→user，`assistant`→assistant，`tool`/`synthetic_tool`→tool，`injection`/`memory`/`wrapup_instruction`/`recovery_note`→system_note）、`text`、`name` |
+| `history` | `index`、`role ∈ {user, assistant, tool, system_note}`（按 `origin` 映射：`user`→user，`assistant`→assistant，`tool`/`synthetic_tool`→tool，`injection`/`memory`/`wrapup_instruction`/`recovery_note`→system_note）、`text`、`name`；**`role:"tool"` 时另有 `ok`**（判定同下；`ok` 为真时 `text` 为空串，否则为 `content` 逐字）（S9-R1，v0.8 并入） |
 | `turn_started` | `turn_id` |
 | `assistant` | `turn_id`、`kind ∈ {answer, wrapup, local_note}`、`text` |
-| `tool` | `turn_id`、`phase ∈ {start, end}`、`index`、`name`、`summary`、`ok`、`duplicate` |
+| `tool` | `turn_id`、`phase ∈ {start, end}`、`index`、`name`、`summary`、`ok`、`observation`、`duplicate`（S9-R1，v0.8 并入，定义见下表） |
 | `request` | `request_id`、`kind`、`turn_id`、`title`、`card_text`、`fields`、`options`、`feedback_allowed` |
 | `request_closed` | `request_id`、`reason ∈ {answered, voided}`、`decision` |
 | `command_result` | `name`、`ok`、`text`（`memory_ack` 时为 `ack_external` 本次打印的原文，🟡-12） |
-| `stop_points` | `items: [{approval_id, type, created_at, artifacts: [path], options, note, answer_via: "decision_bar"}]` |
+| `stop_points` | `items: [{approval_id, type, created_at, artifacts: [path], options, note, answer_via: "decision_bar"}]`、`turn_id`（本回合的 `turn_id`；回合外发出的 `ready` 时那帧为 `null`）（S9-R4，v0.8 并入） |
 | `turn_finished` | `turn_id`、`stopped`、`llm_calls`、`tool_calls`、`tool_executions`、`duplicates_rejected`、`checkpoints`、`wrapup`、`duration_s`、`prompt_chars` |
 | `log` | `stream: "stdout"`、`text` |
 | `notice` | `level`、`code`、`text` |
 | `error` | `code`、`message` |
 | `bye` | `reason` |
+
+**`tool` 帧与 `history` 的内容定义**（S9-R1，v0.8 并入；判定只在 core 做一次，host/TS 侧不解析 tool 消息内容）：
+
+| 键 | 定义 |
+|---|---|
+| `tool{phase:"start"}.summary` | 与终端 `[tool]` 回显同一规则（`cli.py:803-819`，已搬入内核的 `ToolVerdict.echo`）扩展到全部工具：已列举的工具取指定参数，其余取 `json.dumps(args, ensure_ascii=False)[:60]`；剥控制字符 |
+| `tool{phase:"end"}.ok` | 该调用**明确成功**：提交进 `messages` 的 tool 消息 `content` 能解析为 JSON 对象、顶层 `ok is True`，且 `result` 不是 `ok is False` 的对象（`run_pipeline` 失败时顶层仍为 `ok: True`、失败在 `result` 里，`tools.py:937-941`、`755-769`） |
+| `tool{phase:"end"}.observation` | `ok` 为假时 = 该 tool 消息 `content` **逐字**（含判重、人拒、预校验拒、中断、未执行等合成结果）；`ok` 为真时为 `null` |
 
 ### 3.2 人审请求
 
@@ -570,7 +581,7 @@ run_turn(text):
           commit(tool 消息)
       except KeyboardInterrupt / LLMError / Exception → 经 commit() 补齐合成结果 → 收尾或回滚
     rollback → 恢复 snapshot，写 turn_rollback
-    写 turn_end；（协议）turn_finished、stop_points；ensure_pending
+    写 turn_end；（协议）turn_finished；ensure_pending 完成写盘；随后恰好一帧 stop_points（S9-R4，v0.8 并入：`items` 可空、覆盖全部结局、带本回合 `turn_id`；`ensure_pending` 失败时照发并另发 `notice`；两帧之间可夹 `log`/`notice` 等任意帧，不要求相邻）
 ```
 
 ---
@@ -646,7 +657,7 @@ run_turn(text):
 | H-3 | 卡片字段与模型文本按纯文本渲染 |
 | H-4 | 抓取卡逐条答复，没有「全部批准」；检查点卡没有「以后不再询问」 |
 | H-5 | 会话进程退出时，它的全部未关闭请求卡立即作废 |
-| H-6 | 停止按钮发 `interrupt{turn_id}`；关窗先发 `shutdown`，留出收尾时间后再 SIGTERM |
+| H-6 | 停止按钮发 `interrupt{turn_id}`；**结束会话**先发 `shutdown`，留出收尾时间后再 SIGTERM；**退出 app**（人已在确认框同意中断）时，空闲会话发 `shutdown`，回合中或有未答卡的会话直接 SIGTERM，记 `turn_end{wrapup:"skipped"}`；若会话已在收尾中（人先点过停止），SIGTERM 按 §2.2 状态表放弃收尾、记 `aborted`（S9-R3，v0.8 并入） |
 | H-7 | spawn 时提供 LLM 密钥环境变量；缺失时如实显示降级 |
 | **H-8** | host 不得在没有人操作时生成 `user_message`（🟡-7：否则检查点按轮重置就被绕过） |
 | **H-9** | host 只从会话进程的 stdout 解析帧；stderr 只作诊断显示，不解析 |
@@ -758,7 +769,8 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | TP-9 | 同期第二个协议进程（带与不带 `--continue` 各一次） | 在 `ready` 之前以 `error` 帧说明并退出 3；文件字节不变 |
 | TP-10 | `memory_ack` 批准 / 拒绝 / 「无需 ack」 | `command_result.ok` 与 `text` 为 `ack_external` 原文；批准时出现审计行且 `channel == "protocol"` |
 | TP-11 | job 运行中 SIGTERM | 进程组消失；`wrapup == "skipped"`；退出 0 |
-| TP-12 | 有挂起停机点 | `stop_points` 对象键集合精确等于 §3.1 |
+| TP-12 | 有挂起停机点 | `stop_points` 对象键集合精确等于 §3.1（含 `turn_id`，v0.8） |
+| TP-15 | 每回合的 `stop_points`（S9-R4，v0.8 并入） | 每种结局（`done`、`interrupted`、`error`、`checkpoint_stop`、`blocked`、`degraded`、回滚）各恰好一帧，在该回合 `turn_finished` 之后、本回合 `ensure_pending` 完成写盘之后；`items` 可空；`ensure_pending` 失败时照发（`items` 取失败前可读到的对象或为空）并另发 `notice`；`turn_id` 等于本回合 `turn_id`，`ready` 那帧为 `null`；两帧之间可夹 `log`/`notice` |
 | TP-13 | job 子进程读 stdin 时 host 发 `user_message`（用例 10 s 超时） | 子进程得 EOF；该帧被会话处理（可见 `E_BUSY`） |
 | TP-14 | 读端慢速读取时发大帧（≥ 400 KB），写出途中 `interrupt` | host 收到的每一行都能解析；没有残帧 |
 
@@ -861,7 +873,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | **PR0** | DIR-R1、ADR20-R1 文本落盘；录制金样本 G1–G13、G-P1、G-P2（只加测试与夹具，不改生产代码） | TT-1 | §6.1 授权（已获）+ 红队 🟢 |
 | **PR1** | C-R1；改写 3 条上限测试；`verify_mutations` 的 M3a/M3b/M15b/M10 重锚；首日由人持密钥实测 A1、A2 | TL-*、TG-3 | PR0 |
 | **PR2** | `session_log.py`、`session.py`、`cli.py` 接线（C-R2/C-R3/C-R4/C-R5）、S6-R1、`--continue`/`--sessions`；打桩签名；M15a/M16-1/M16-2/M20/M7 重锚（M11、M19、M26 不动） | TK-*、TS-*、TT-*、TG-1/2/4/5 | PR1 |
-| **PR3** | `protocol.py` | TP-* | PR2 |
+| **PR3** | `protocol.py` | TP-* | PR2 + S9-R1~R4 并入（v0.8 ✓ 2026-09-26）经红队定向复核 |
 | **PR4** | `docs/WORKFLOW.md` 增 `--continue` 一行、`/help` 增两行；MUT 全表实跑；A1–A8 回填 | MUT 全表 | PR3 |
 
 ---
