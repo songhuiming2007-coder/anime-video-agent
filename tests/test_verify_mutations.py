@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -121,3 +123,29 @@ def test_anchors_in_shipped_matrix_are_unique_in_repo():
         if n != 1:
             misses.append(f"{mut['id']} @ {mut['file']}: 命中 {n} 次")
     assert not misses, "过期/歧义锚点：\n" + "\n".join(misses)
+
+
+def test_aborted_round_is_not_credited_as_killed(tmp_path, monkeypatch, capsys):
+    """逃逸的 KeyboardInterrupt 让 pytest 中止整轮（rc=2）→ 标 ABORTED 且**不算杀死**。
+
+    2026-09-26 M3 实测：MUT-49 已被 TL-9d 抓住，却因为「中止轮没有汇总行 → 解出 0 条红」
+    被误报成 SURVIVED。这条自检锁住「不给没被证明的护栏盖绿章」。
+    """
+    mod = _load_module()
+    repo = _make_repo(tmp_path)
+    h = mod.Harness(repo)
+    h.run_suite = lambda: (0, [], True)  # 中止轮：没有汇总行、0 条红
+
+    row = h.check_one(MUT)
+    assert row["interrupted"] is True and row["failed"] == 0
+    assert "ABORTED" in mod.render_table([row]), "表格结论必须是 ABORTED"
+
+    monkeypatch.setattr(mod, "MUTATIONS", [MUT])
+    monkeypatch.setattr(mod, "Harness", lambda *a, **k: h)
+    out = tmp_path / "r.json"
+    assert mod.main(["--repo", str(repo), "--only", "X", "--dirty-ok", "--out", str(out)]) == 0
+
+    err = capsys.readouterr().err
+    assert "[ABORTED]" in err and "X" in err, "中止轮必须单独警示"
+    assert "杀不死的变异" not in err, "中止轮不许被算进「杀不死」（那是另一种结论）"
+    assert json.loads(out.read_text(encoding="utf-8"))[0]["interrupted"] is True

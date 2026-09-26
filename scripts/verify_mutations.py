@@ -486,7 +486,7 @@ class Harness:
         for p in self.repo.rglob("__pycache__"):
             subprocess.run(["rm", "-rf", str(p)], check=False)
 
-    def run_suite(self) -> tuple[int, list[str]]:
+    def run_suite(self) -> tuple[int, list[str], bool]:
         proc = subprocess.run(
             ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=no",
              # 反向自检剔除：这条测试检查「矩阵锚点是否逐字命中」，而变异恰好会替换掉
@@ -499,7 +499,11 @@ class Harness:
         out = proc.stdout + proc.stderr
         failed = re.findall(r"^FAILED (\S+)", out, flags=re.MULTILINE)
         m = re.search(r"(\d+) failed", out)
-        return (int(m.group(1)) if m else 0), failed
+        # pytest 遇到逃逸的 KeyboardInterrupt 会**中止整轮**（退出码 2）：没有汇总行，上面就
+        # 解出 0 条。若按 0 条红处理，**真被抓住**的变异会被误报成「杀不死」（假阴性）——
+        # 而中断语义恰恰是本矩阵的重灾区（2026-09-26 M3 实测：MUT-49 就被这么误报）。
+        # 中止轮单独标记，且**不计为杀死**：宁可误报红，也不给一条没被证明的护栏盖绿章。
+        return (int(m.group(1)) if m else 0), failed, proc.returncode == 2
 
     def check_one(self, mut: dict) -> dict:
         path = self.repo / mut["file"]
@@ -515,7 +519,7 @@ class Harness:
         path.write_text(original.replace(mut["old"], mut["new"]), encoding="utf-8")
         try:
             self.purge_pycache()   # 施加后清：防同秒同尺寸的 stale .pyc
-            n_failed, failed = self.run_suite()
+            n_failed, failed, interrupted = self.run_suite()
         finally:
             # 恢复 = 写回开跑前读到的原文，而不是 git checkout：后者把目标文件
             # 还原到 HEAD，会连未提交改动一起丢掉。这类事故已发生三次（2026-09-20
@@ -525,7 +529,8 @@ class Harness:
             self.purge_pycache()   # 恢复后再清：防变异态的 stale .pyc
         assert path.read_text(encoding="utf-8") == original, \
             f"变异 {mut['id']} 恢复失败：{mut['file']} 内容未逐字节复原"
-        return {**mut, "error": None, "failed": n_failed, "tests": failed}
+        return {**mut, "error": None, "failed": n_failed, "tests": failed,
+                "interrupted": interrupted}
 
 
 def render_table(rows: list[dict]) -> str:
@@ -534,7 +539,12 @@ def render_table(rows: list[dict]) -> str:
         if r.get("error"):
             lines.append(f"| {r['id']} | {r['guard']} | — | — | ⚠️ {r['error']} |")
         else:
-            verdict = "杀死 ✓" if r["failed"] else "**杀不死 ⚠️**"
+            if r.get("interrupted"):
+                verdict = "**ABORTED（中止轮，不算杀死）**"
+            elif r["failed"]:
+                verdict = "杀死 ✓"
+            else:
+                verdict = "**杀不死 ⚠️**"
             lines.append(f"| {r['id']} | {r['guard']} | {r['file']} | {r['failed']} | {verdict} |")
     return "\n".join(lines)
 
@@ -580,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{mut['id']}] ⚠️ {row['error']}", flush=True)
         else:
             verdict = "KILLED" if row["failed"] else "SURVIVED (杀不死)"
+            if row.get("interrupted"):
+                verdict = "ABORTED (中止轮，不算杀死)"
             print(f"[{mut['id']}] red={row['failed']} {verdict} :: "
                   + "; ".join(row["tests"][:4]), flush=True)
 
@@ -593,11 +605,16 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text(json.dumps(list(merged.values()), ensure_ascii=False, indent=2),
                    encoding="utf-8")
 
-    survived = [r["id"] for r in rows if not r.get("error") and not r["failed"]]
+    survived = [r["id"] for r in rows
+                if not r.get("error") and not r["failed"] and not r.get("interrupted")]
+    aborted = [r["id"] for r in rows if r.get("interrupted")]
     if args.format == "md":
         print()
         print(render_table(rows))
     print(f"\n结果已写入 {out}")
+    if aborted:
+        print(f"[ABORTED] 中止轮（逃逸中断让 pytest 退出码 2，不计为杀死；请把该测试改成普通失败）: "
+              f"{' '.join(aborted)}", file=sys.stderr)
     if survived:
         print(f"⚠️ 杀不死的变异（护栏无测试可杀）: {' '.join(survived)}", file=sys.stderr)
     return 0
