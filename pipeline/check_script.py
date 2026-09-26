@@ -819,6 +819,100 @@ def run(path: Path) -> list[Check]:
     return checks
 
 
+# ---------- D18 人物提示（INFO，只报不拦）----------
+
+# 切块口径与 run/parse_episodes/parse_emotion_fields（本文件）及
+# tts.parse_script/clips.parse_shots 一致：`## 段落 N` 到下一个段落标题之间。
+# 与 clips 同款的多处同口径先例，改一处必须同步另一处。
+_HINT_BLOCK = re.compile(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", re.M | re.S)
+_HINT_VO = re.compile(r"^配音[：:]\s*(.+)$", re.M)
+_HINT_WHO = re.compile(r"^\s*人物[：:]\s*(.+)$", re.M)
+
+
+def _character_aliases(episode: Path) -> dict[str, str]:
+    """本期番表 → {别名: 规范键}。任一步拿不到就安静返回空表（判据 4：跳过不定罪）。
+
+    与 `vindex.alias_map` 同口径（规范键自身也算别名、`_` 前缀是注释键），但
+    **不能直接调它**：vindex 顶层 `import numpy`，而 check_script 是纯 stdlib
+    机检，必须零重依赖可跑（Spec 11 §5.2 的纯洁性断言就建在这条上）。
+    """
+    chars = paths.CONFIG / "characters.json"
+    if not chars.exists():
+        return {}
+    db = json.loads(chars.read_text(encoding="utf-8"))
+    out: dict[str, str] = {}
+    for anime in bgm.animes_of(episode):
+        table = db.get(anime)
+        if not isinstance(table, dict):      # 番不在表：这一番不报，其余番照常
+            continue
+        for tag, names in table.items():
+            if tag.startswith("_"):
+                continue
+            out.setdefault(tag, tag)         # 规范键自己也当别名（同 vindex）
+            for n in names:
+                out.setdefault(str(n).strip(), tag)
+    return out
+
+
+def _alias_hits(text: str, aliases: dict[str, str]) -> list[str]:
+    """最长优先、位置不重叠地匹配别名；返回按首现位置升序、已去重的别名列表。
+
+    朴素子串匹配会双报嵌套别名（「大老师」里的「老师」、真实期命中别名总数
+    12 → 22）。顺序必须由位置决定，命中收集**禁用 set**——set 迭代序随
+    PYTHONHASHSEED 变，期望值不可复现（Spec 11 红队 🔴-1 的教训）。
+    """
+    spans: list[tuple[int, int, int, str]] = []
+    for alias in aliases:
+        if not alias:
+            continue
+        i = text.find(alias)
+        while i >= 0:
+            spans.append((-len(alias), i, i + len(alias), alias))
+            i = text.find(alias, i + 1)
+    spans.sort()                             # (取负长度, 起点, 终点, 别名)：长匹配先占位
+    taken: list[tuple[int, int]] = []
+    hits: list[tuple[int, str]] = []
+    for _, s, e, alias in spans:
+        if any(s < te and ts < e for ts, te in taken):
+            continue                         # 与已占位的长匹配重叠，丢弃
+        taken.append((s, e))
+        hits.append((s, alias))
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, alias in sorted(hits):
+        if alias not in seen:
+            seen.add(alias)
+            out.append(alias)
+    return out
+
+
+def character_hints(path: Path) -> list[str]:
+    """D18 收口（Spec 11 §2.5）：口播段提到已登记角色却没写 `人物:` 的 INFO 提示行。
+
+    **只报 INFO、永不进 FAIL、永不影响退出码。** 依据（issues archive D18，
+    2026-09-25 拍板）：「该写没写」不可证伪（提到名字 ≠ 画面需求是该角色，
+    强制每段写 = 逼人编字段），所以不立判据，`人物` 保持「写了就走过滤、
+    不写不勉强」的纯可选通道。
+
+    跳过规则：写了 `人物:`（人已显式选择）或 `锚点:`（锚点与人物/场景互斥，
+    锚点段写人物本来就是 FAIL，提示它去写是教犯错）的段不报；写了 `场景:`
+    的段照样列出——人选了场景通道，提示只是给人扫一眼。
+    """
+    aliases = _character_aliases(path.parent)
+    if not aliases:
+        return []
+    out: list[str] = []
+    for m in _HINT_BLOCK.finditer(path.read_text(encoding="utf-8")):
+        label, block = m.group(1), m.group(2)
+        vo = _HINT_VO.search(block)
+        if not vo or _HINT_WHO.search(block) or _ANCHOR_FIELD.search(block):
+            continue
+        names = _alias_hits(vo.group(1).strip(), aliases)
+        if names:
+            out.append(f"INFO 段{label} 提到已登记角色但未写 `人物:`：{'、'.join(names)}")
+    return out
+
+
 def rhythm(text: str) -> dict[str, float]:
     """只量节奏，不判定。给 `--raw` 用：拿任意一篇文章当参照样本重算基线。
 
@@ -867,6 +961,9 @@ def main() -> int:
         if not c.ok:
             failed += 1
         print(f"{mark}  {c.name:<{width}}{c.detail}")
+
+    for line in character_hints(a.script[0]):
+        print(line)
 
     print("-" * 60)
     genre, mode = episode_genre(a.script[0])

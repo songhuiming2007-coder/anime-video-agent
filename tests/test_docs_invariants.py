@@ -179,6 +179,28 @@ def test_discredited_budget_not_active_rule():
         assert "k × 片长" in content, f"{rel_path} 缺少新预算口径「k × 片长」"
 
 
+# 02.5 人审要点五条的**关键串**（Spec 11 §2.6 冻结）。真源是 runbook，桌面端
+# ScriptEditor.tsx 侧栏硬编码镜像；PR3 的桌面等价断言复用本常量（两处五条同时齐）。
+REVIEW_POINT_KEYWORDS = (
+    "编辑判断立不立得住",   # 1
+    "事实核验",             # 2
+    "去模型味",             # 3
+    "`人物:` 该写没写",     # 4（Spec 11 新增，D18）
+    "抽帧",                 # 5（Spec 11 新增，D19）
+)
+
+
+def test_runbook_02_5_review_points_five_items():
+    """TC-13（core 半）：runbook 02.5 的审查重点必须五条齐全（Spec 11 §2.6，D18/D19 收口）。
+
+    打勾式确认是把形式当实质，与「不立判据」的拍板同源，所以只断言文案在，
+    不要求 UI/文档做强制确认。
+    """
+    runbook = (REPO_ROOT / "docs/runbook/02.5-human-review.md").read_text(encoding="utf-8")
+    for kw in REVIEW_POINT_KEYWORDS:
+        assert kw in runbook, f"runbook 02.5 缺第 {REVIEW_POINT_KEYWORDS.index(kw) + 1} 条要点关键串：{kw}"
+
+
 def test_runbook_04_patch_anchor_syntax():
     """runbook 04 的补丁锚点示例必须无方括号（避免 _parse_anchor literal 匹配失败）"""
     clips_doc = (REPO_ROOT / "docs/runbook/04-clips.md").read_text(encoding="utf-8")
