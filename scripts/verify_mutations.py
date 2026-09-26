@@ -65,14 +65,13 @@ MUTATIONS: list[dict] = [
     {"id": "M2", "guard": "自然语言进 Director 会话", "file": CLI,
      "old": '    return "shortcut" if line.startswith("/") else "chat"',
      "new": '    return "shortcut"'},
-    # ---- M3: 审批拦截与元组归一化 ----
-    {"id": "M3a", "guard": "approve 返回 (False,reason) 归一化", "file": LLM,
-     "old": '                ok, reason = (decision, None) if isinstance(decision, bool) else decision',
-     "new": '                ok, reason = decision, None'},
-    {"id": "M3b", "guard": "approve 结果被消费（非恒放行）", "file": LLM,
-     "old": ('                decision = approve(name, args)\n'
-             '                ok, reason = (decision, None) if isinstance(decision, bool) else decision\n'),
-     "new": '                approve(name, args)\n                ok, reason = True, None\n'},
+    # ---- M3: 审批拦截与结果消费（Spec 9 §6.1 重锚：锚在生产路径 control.review 上，不锚裸循环适配器）----
+    {"id": "M3a", "guard": "拒绝被识别（Decision.ok 被消费）", "file": LLM,
+     "old": "                if not decision.ok:\n",
+     "new": "                if False:\n"},
+    {"id": "M3b", "guard": "审批结果被消费（非恒放行）", "file": LLM,
+     "old": '                decision = control.review(name, args)  # type: ignore[union-attr]\n',
+     "new": '                decision = Decision(ok=True, provenance="auto")  # type: ignore[union-attr]\n'},
     # ---- M4: CREATIVE_WRITABLE_FILES 精确集合 ----
     {"id": "M4", "guard": "定稿 02-script.md 不可写", "file": TOOLS,
      "old": '    "01-topic.md",\n    "02-script.draft.md",\n}',
@@ -106,10 +105,10 @@ MUTATIONS: list[dict] = [
              '            full = full[-self.max_bytes:]\n'
              '        return full.decode("utf-8", errors="replace"), truncated'),
      "new": '        truncated = False\n        return full.decode("utf-8", errors="replace"), truncated'},
-    # ---- M10: max_iterations 默认硬闸 ----
-    {"id": "M10", "guard": "max_iterations=10 硬闸", "file": LLM,
-     # 锚点带换行：`= 10` 是 `= 100` 的前缀子串，不带换行会在变异后仍「命中」→ 漏报过期锚点
-     "old": "DEFAULT_MAX_ITERATIONS = 10\n", "new": "DEFAULT_MAX_ITERATIONS = 100\n"},
+    # ---- M10: 检查点间隔（Spec 9 §6.1 重锚：守「检查点确实触发」，不再守轮数硬上限）----
+    {"id": "M10", "guard": "CHECKPOINT_EVERY=50 真的触发检查点", "file": LLM,
+     # 锚点带换行：`= 50` 是 `= 500` 的前缀子串，不带换行会在变异后仍「命中」→ 漏报过期锚点
+     "old": "CHECKPOINT_EVERY = 50\n", "new": "CHECKPOINT_EVERY = 10**9\n"},
     # ---- M11: scope 热推导 ----
     {"id": "M11", "guard": "scope 每轮热推导（不被会话缓存）", "file": CLI,
      "old": ('    scope_override: str | None = None\n'
@@ -152,8 +151,8 @@ MUTATIONS: list[dict] = [
              '        argv = outcome["argv"]'),
      "new": '    argv: list[str] | None = None'},
     {"id": "M15b", "guard": "拒因具体回喂（非固定文案）", "file": LLM,
-     "old": '                        "error": reason if reason else "人类拒绝执行该工具调用",',
-     "new": '                        "error": "人类拒绝执行该工具调用",'},
+     "old": '    return {"ok": False, "error": decision.reason or "人类拒绝执行该工具调用"}\n',
+     "new": '    return {"ok": False, "error": "人类拒绝执行该工具调用"}\n'},
     # ---- M16: side_effect fail-closed 三层 ----
     {"id": "M16-1", "guard": "审批分流从注册表读（非枚举拒绝名单，fail-open）", "file": CLI,
      "old": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)\n'

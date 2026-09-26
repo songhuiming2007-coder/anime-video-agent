@@ -1647,7 +1647,8 @@ def test_egress_rejection_live_loop_blocks_turn(root, monkeypatch):
         "记一条", [], episode, "creative", _scope_ctx("creative", episode)[1],
         root=root, tracker=_tracker(root, "creative"),
     )
-    assert outcome["stopped"] == "error"
+    # Spec 9 §2.3 第 1 条：出网断言拒绝 = `blocked`（独立于 error：不做收尾，直接回滚）
+    assert outcome["stopped"] == "blocked"
     assert not lib_path(root, "memory.md").exists()
     assert len(calls) == 1          # 第二次请求在出网断言处被拦下，从未发出
 

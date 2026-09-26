@@ -13,14 +13,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pipeline import paths
 from pipeline.agent.tools import (
@@ -30,8 +32,33 @@ from pipeline.agent.tools import (
     execute_tool,
 )
 
-DEFAULT_MAX_ITERATIONS = 10
 REQUEST_TIMEOUT = 60
+
+# 检查点间隔（Spec 9 §2.3 第 6 条）：本轮自上次检查点起，模型回复满 CHECKPOINT_EVERY 条
+# **或**工具执行满 CHECKPOINT_EVERY 次（先到先停）就问一次人。防失控靠「人中断 + 本轮判重
+# + 检查点」，**不再有固定轮数硬上限**（2026-09-24 用户裁决，D28）。
+CHECKPOINT_EVERY = 50
+
+# 收尾指令（Spec 9 §3.5，逐字冻结；reason 用 replace 注入，不用 format——正文里有花括号）。
+WRAPUP_INSTRUCTION = (
+    "[系统收尾] 本轮因{reason}停止，不再执行任何工具。请只基于上文已获得的信息作答："
+    "① 目前能确定的结论；② 还缺什么信息、为什么没拿到；③ 需要人做什么决定或操作。"
+    "不要假装已完成未完成的步骤。"
+)
+
+# 停止原因 → 收尾指令里的中文短语。
+_STOP_REASON_TEXT = {
+    "interrupted": "人类中断",
+    "error": "出错",
+    "checkpoint_stop": "检查点停止",
+}
+
+# 合成工具结果（Spec 9 §2.2.4 表，逐字）。
+_SYNTH_HUMAN_VOIDED = "人审请求因人类中断作废，未执行"
+_SYNTH_HUMAN_UNEXECUTED = "未执行：人类中断"
+_SYNTH_UNKNOWN = "已中断：执行被打断，结果未知"
+_SYNTH_CHECKPOINT = "未执行：检查点停止"
+_SYNTH_WRAPUP = "未执行：收尾阶段禁止调用工具"
 
 # 模型按用途分层（Spec 7 §2.7）：档位由调用所在的 scope 查表决定，**不看内容**。
 PURPOSES = ("reasoning", "light")
@@ -237,10 +264,12 @@ def chat_complete(
     timeout: int = REQUEST_TIMEOUT,
     scope: str = "creative",
     purpose: str | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
     """发一次 chat/completions，返回 `choices[0].message`。
 
     配置缺失 → 降级消息（不抛）；网络/HTTP/协议失败 → `LLMError`。
+    `tool_choice=None`（默认）时请求体**不含该键**——与加这个参数之前逐字节相同（TL-15）。
     """
     cfg = config if config is not None else load_llm_config(root)
     if cfg is None:
@@ -252,6 +281,8 @@ def chat_complete(
     }
     if tools:
         payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     assert_egress_boundary(cfg.endpoint, payload)  # 出网前最后一道断言
 
     request = urllib.request.Request(
@@ -290,21 +321,167 @@ def _parse_tool_args(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+@dataclass(frozen=True)
+class Decision:
+    """结构化的人审/放行决定（Spec 9 §4.1）。
+
+    `provenance` 是判重清空规则的唯一依据：只有 `provenance == "human"` 且真的执行了，
+    才清空本轮判重表（§2.3 第 5 条）。`feedback` 是协议下自由文本拒绝的回喂内容。
+    """
+
+    ok: bool
+    reason: str = ""
+    provenance: Literal["human", "auto", "card_free", "precheck", "voided"] = "auto"
+    feedback: str | None = None
+
+
+@dataclass
+class LoopControl:
+    """工具循环的外部控制面（Spec 9 §4.1）。
+
+    `llm.py` 不认识 `session.py`，只认这里的鸭子类型（import 方向固定 session → llm，TG-7）。
+    """
+
+    interrupt: Any
+    commit: Callable[[dict[str, Any], str], None]
+    """唯一提交入口：写盘 → 追加进内存 `messages`（Spec 9 §2.5）。
+
+    实现必须把消息追加进 `run_tool_loop` 收到的**同一个**列表对象，循环直接拿它当上下文。
+    """
+    review: Callable[[str, dict[str, Any]], Decision]
+    ask_checkpoint: Callable[[dict[str, Any]], bool]
+    post_execute: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None
+    fetch_executor: Callable[[int], dict[str, Any]] | None = None
+    on_trace: Callable[[dict[str, Any]], None] | None = None
+    on_exec_started: Callable[[str, str], None] | None = None
+    critical_tools: frozenset[str] = frozenset()
+
+
+def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
+    """本轮判重键（Spec 9 §2.3 第 5 条）：工具名 + 规范化参数串。
+
+    顶层字符串 `strip()`；**不做 URL 或语义归一**（与 Spec 6 §2.3 同口径）。参数微扰
+    （URL 加 `?`、`#`）挡不住，这是裁决时已知并接受的代价（RF-15），由检查点兜底。
+    """
+    normalized = {
+        str(key): (value.strip() if isinstance(value, str) else value)
+        for key, value in (args or {}).items()
+    }
+    return (
+        name,
+        json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _never_continue(snapshot: dict[str, Any]) -> bool:
+    """裸循环的检查点答复：一律「停止」——有界，随后照常收尾。"""
+    return False
+
+
+def _bare_review(
+    approve: Callable[[str, dict[str, Any]], bool | tuple[bool, str]] | None,
+) -> Callable[[str, dict[str, Any]], Decision]:
+    """裸循环的 review：旧 `approve` 适配器（approve 为 None → 直接执行，与改造前相同）。"""
+
+    def review(name: str, args: dict[str, Any]) -> Decision:
+        if approve is None:
+            return Decision(ok=True, provenance="auto")
+        raw = approve(name, args)
+        if isinstance(raw, bool):
+            if raw:
+                return Decision(ok=True, provenance="auto")
+            return Decision(ok=False, provenance="human", reason="人类拒绝执行该工具调用")
+        ok, reason = raw
+        if ok:
+            return Decision(ok=True, provenance="auto")
+        return Decision(
+            ok=False, provenance="human", reason=reason or "人类拒绝执行该工具调用"
+        )
+
+    return review
+
+
+def _tool_message(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "role": "tool",
+        "tool_call_id": str(call.get("id", "")),
+        "content": json.dumps(outcome, ensure_ascii=False),
+    }
+
+
+def _reject_outcome(decision: Decision) -> dict[str, Any]:
+    """被拒时的合成工具结果（M15b：拒因**具体**回喂，不是一句固定文案）。"""
+    if decision.feedback:
+        return {"ok": False, "error": f"人类拒绝执行该工具调用：{decision.feedback}"}
+    return {"ok": False, "error": decision.reason or "人类拒绝执行该工具调用"}
+
+
+def _duplicate_outcome(name: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": (
+            f"重复调用：本轮已用完全相同的参数调用过 {name}（上次结果见上文）。"
+            "换一条路，或基于已有信息作答。"
+        ),
+    }
+
+
+def _loop_result(
+    convo: list[dict[str, Any]],
+    *,
+    final: dict[str, Any] | None = None,
+    local_note: str | None = None,
+    stopped: str,
+    rollback: bool = False,
+    llm_calls: int = 0,
+    tool_calls_made: int = 0,
+    tool_executions: int = 0,
+    duplicates_rejected: int = 0,
+    checkpoints: int = 0,
+    wrapup: str = "none",
+    error: str | None = None,
+    prompt_chars: int = 0,
+    elapsed_s: float = 0.0,
+) -> dict[str, Any]:
+    """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。"""
+    return {
+        "messages": convo,
+        "final": final,
+        "local_note": local_note,
+        "stopped": stopped,
+        "rollback": rollback,
+        "iterations": llm_calls,
+        "llm_calls": llm_calls,
+        "tool_calls_made": tool_calls_made,
+        "tool_executions": tool_executions,
+        "duplicates_rejected": duplicates_rejected,
+        "checkpoints": checkpoints,
+        "wrapup": wrapup,
+        "error": error,
+        "prompt_chars": prompt_chars,
+        "elapsed_s": elapsed_s,
+    }
+
+
 def run_tool_loop(
     messages: list[dict[str, Any]],
     *,
     ctx: ToolContext | None = None,
     scope: str = "creative",
-    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     config: LLMConfig | None = None,
     root: Path | None = None,
     approve: Callable[[str, dict[str, Any]], bool | tuple[bool, str]] | None = None,
+    control: LoopControl | None = None,
 ) -> dict[str, Any]:
-    """多轮 tool_calls 状态机，**轮数上限是硬闸**（§2.5 B3-r5）：到顶就停交人。
+    """多轮 tool_calls 状态机（Spec 9 §2.3、§4.7）。**没有固定轮数上限。**
 
-    返回 `{messages, final, iterations, stopped, tool_calls_made}`，stopped ∈
-    done / max_iterations / degraded。approve 在每次工具执行前问人，返回 False 则把
-    「人类拒绝」当结果回喂模型。
+    防失控三件套：人中断、本轮判重、检查点（回复或工具执行满 `CHECKPOINT_EVERY` 次先到先停）。
+    任何非正常停止都先做一次 `tool_choice:"none"` 的无工具收尾（除非本轮一条回复都没拿到，
+    或本轮被出网断言拒绝——那时收尾没有意义，直接回滚）。
+
+    `control is None` 时是**裸循环**（仅测试与兼容用途，生产调用点必须传 `control`，TG-6）：
+    不装中断处理器、不判重、有检查点且一律「停止」、`review` 是旧 `approve` 的适配器。
+    「没有人审通道就拒绝运行」由内核（`AgentSession`）执行，不在这里（TK-5）。
     """
     context = ctx or ToolContext(scope=scope, root=root)
     # root 未显式给定时用 ctx 的（会话绑定的仓库根），否则 ctx.root 会被静默忽略
@@ -313,54 +490,251 @@ def run_tool_loop(
 
     if cfg is None:
         final = local_directive_message(context.scope, "缺少 config/agent.json 或环境变量密钥")
-        return {"messages": list(messages), "final": final, "iterations": 0,
-                "stopped": "degraded", "tool_calls_made": 0}
+        return _loop_result(list(messages), final=final, stopped="degraded")
 
     tools = build_tool_schemas(context.scope, effective_root)
-    convo = list(messages)
-    tool_calls_made = 0
     # 同一次工具循环的所有迭代用同一档（Spec 7 §2.7 决策 7a）
     purpose = purpose_for_scope(context.scope)
 
-    for iteration in range(1, max_iterations + 1):
-        reply = chat_complete(
-            convo, tools=tools or None, config=cfg, scope=context.scope, purpose=purpose
+    bare = control is None
+    # 裸循环照旧复制（调用方随后 clear+extend，与改造前一致）；有 control 时用**调用方的那个
+    # 列表对象**：commit 的契约就是「写盘 → 追加进内存 messages」（Spec 9 §2.5）。
+    convo = list(messages) if bare else messages
+    if bare:
+        control = LoopControl(
+            interrupt=None,
+            commit=lambda message, origin: convo.append(message),
+            review=_bare_review(approve),
+            ask_checkpoint=_never_continue,
+            critical_tools=frozenset(),
         )
-        if cfg.tiering_active:
-            reply[_TIER_KEY] = purpose
-        convo.append(reply)
 
+    dedup: dict[tuple[str, str], None] = {}
+    llm_calls = tool_calls_made = tool_executions = duplicates_rejected = checkpoints = 0
+    replies_since_cp = execs_since_cp = 0
+    prompt_chars = 0
+    started = time.monotonic()
+    # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
+    live: dict[str, Any] = {
+        "calls": [], "index": 0, "call": None, "stage": None, "outcome": None, "name": "",
+    }
+
+    def _chat(tool_choice: str | None = None) -> dict[str, Any]:
+        nonlocal prompt_chars
+        prompt_chars = sum(
+            len(str(m.get("content") or "")) for m in convo if isinstance(m, dict)
+        )
+        return chat_complete(
+            convo,
+            tools=tools or None,
+            config=cfg,
+            scope=context.scope,
+            purpose=purpose,
+            tool_choice=tool_choice,
+        )
+
+    def _checkpoint_snapshot(trigger: str) -> dict[str, Any]:
+        return {
+            "llm_calls": llm_calls,
+            "tool_executions": tool_executions,
+            "elapsed_s": time.monotonic() - started,
+            "trigger": trigger,
+        }
+
+    def _synthesize_rest(start: int, text: str) -> None:
+        for rest in live["calls"][start:]:
+            control.commit(  # type: ignore[union-attr]
+                _tool_message(rest, {"ok": False, "error": text}), "synthetic_tool"
+            )
+
+    def _local_note(reason: str, wrapup_error: str | None) -> str:
+        tally: dict[str, int] = {}
+        for call in live["calls"]:
+            name = str((call.get("function") or {}).get("name", ""))
+            tally[name] = tally.get(name, 0) + 1
+        detail = "、".join(f"{name}×{count}" for name, count in tally.items()) or "无"
+        why = f"失败（{wrapup_error}）" if wrapup_error else "未产生可用答复"
+        return (
+            f"[收尾·本地] 本轮在第 {llm_calls} 次模型调用后因{_STOP_REASON_TEXT.get(reason, reason)}"
+            f"停止；工具调用 {tool_calls_made} 次（{detail}）；收尾调用{why}。"
+            "已执行的工具结果保留在会话中。"
+        )
+
+    def _wrapup(reason: str) -> tuple[str, dict[str, Any] | None, str | None, str | None]:
+        """收尾调用（§2.3 第 2 条）。返回 (wrapup 状态, final, local_note, error)。"""
+        nonlocal llm_calls
+        if control.interrupt is not None:  # type: ignore[union-attr]
+            with contextlib.suppress(AttributeError):
+                control.interrupt.wrapup_started = True  # type: ignore[union-attr]
+        control.commit(  # type: ignore[union-attr]
+            {
+                "role": "user",
+                "content": WRAPUP_INSTRUCTION.replace(
+                    "{reason}", _STOP_REASON_TEXT.get(reason, reason)
+                ),
+            },
+            "wrapup_instruction",
+        )
+        try:
+            reply = _chat(tool_choice="none")
+        except KeyboardInterrupt:
+            return "aborted", None, None, None
+        except Exception as exc:  # noqa: BLE001 - 收尾失败必须如实降级，不许假装答完
+            return "failed", None, _local_note(reason, f"{type(exc).__name__}: {exc}"), str(exc)
+        llm_calls += 1
+        control.commit(reply, "assistant")  # type: ignore[union-attr]
         calls = reply.get("tool_calls") or []
         if not calls:
-            return {"messages": convo, "final": reply, "iterations": iteration,
-                    "stopped": "done", "tool_calls_made": tool_calls_made}
-
+            return "ok", reply, None, None
+        # A1 不成立：服务商忽略了 tool_choice:"none"。不执行，逐个补合成结果。
         for call in calls:
-            function = call.get("function") or {}
-            name = str(function.get("name", ""))
-            args = _parse_tool_args(function.get("arguments"))
-            tool_calls_made += 1
+            control.commit(  # type: ignore[union-attr]
+                _tool_message(call, {"ok": False, "error": _SYNTH_WRAPUP}), "synthetic_tool"
+            )
+        if str(reply.get("content") or ""):
+            return "ok", reply, None, None
+        return "failed", None, _local_note(reason, None), "收尾回复不含可用答复"
 
-            if approve is not None:
-                decision = approve(name, args)
-                ok, reason = (decision, None) if isinstance(decision, bool) else decision
-                if not ok:
-                    outcome: dict[str, Any] = {
-                        "ok": False,
-                        "error": reason if reason else "人类拒绝执行该工具调用",
-                    }
+    def _stop(reason: str, *, error: str | None = None):
+        """非正常停止的收尾闸：本轮一条回复都没拿到 → 回滚；否则收尾。"""
+        if llm_calls == 0:
+            return _loop_result(
+                convo, stopped=reason, rollback=True, llm_calls=llm_calls,
+                tool_calls_made=tool_calls_made, tool_executions=tool_executions,
+                duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
+                error=error, prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+            )
+        state, final, note, wrapup_error = _wrapup(reason)
+        return _loop_result(
+            convo, final=final, local_note=note, stopped=reason, llm_calls=llm_calls,
+            tool_calls_made=tool_calls_made, tool_executions=tool_executions,
+            duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
+            wrapup=state, error=error or wrapup_error,
+            prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+        )
+
+    try:
+        while True:
+            if replies_since_cp >= CHECKPOINT_EVERY or execs_since_cp >= CHECKPOINT_EVERY:
+                trigger = "replies" if replies_since_cp >= CHECKPOINT_EVERY else "executions"
+                checkpoints += 1
+                if not control.ask_checkpoint(_checkpoint_snapshot(trigger)):  # type: ignore[union-attr]
+                    live["call"] = None
+                    return _stop("checkpoint_stop")
+                replies_since_cp = execs_since_cp = 0
+
+            live["call"] = None
+            live["calls"] = []
+            live["index"] = 0
+            live["stage"] = "model"
+            reply = _chat()
+            control.commit(reply, "assistant")  # type: ignore[union-attr]
+            llm_calls += 1
+            replies_since_cp += 1
+
+            calls = reply.get("tool_calls") or []
+            if not calls:
+                return _loop_result(
+                    convo, final=reply, stopped="done", llm_calls=llm_calls,
+                    tool_calls_made=tool_calls_made, tool_executions=tool_executions,
+                    duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
+                    prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+                )
+
+            live["calls"] = calls
+            for index, call in enumerate(calls):
+                live["index"] = index
+                live["call"] = call
+                function = call.get("function") or {}
+                name = str(function.get("name", ""))
+                args = _parse_tool_args(function.get("arguments"))
+                live["name"] = name
+                tool_calls_made += 1
+
+                # 执行计数**每次执行之前**查（🟡-A）：同一条回复里的并行调用也逐个受约束
+                if execs_since_cp >= CHECKPOINT_EVERY:
+                    checkpoints += 1
+                    if not control.ask_checkpoint(_checkpoint_snapshot("executions")):  # type: ignore[union-attr]
+                        _synthesize_rest(index, _SYNTH_CHECKPOINT)
+                        live["call"] = None
+                        return _stop("checkpoint_stop")
+                    replies_since_cp = execs_since_cp = 0
+
+                if bare:
+                    key: tuple[str, str] | None = None
                 else:
-                    from dataclasses import replace
-                    exec_ctx = replace(context, confirmed=True)
-                    outcome = execute_tool(name, args, exec_ctx)
+                    key = dedup_key(name, args)
+                    if key in dedup:
+                        duplicates_rejected += 1
+                        control.commit(  # type: ignore[union-attr]
+                            _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
+                        )
+                        continue
+                    dedup[key] = None  # 预登记：中断落在这里也算「已调过」
+
+                live["stage"] = "review"
+                decision = control.review(name, args)  # type: ignore[union-attr]
+                live["stage"] = "tool"
+                if not decision.ok:
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, _reject_outcome(decision)), "synthetic_tool"
+                    )
+                    continue
+
+                if control.on_exec_started is not None:  # type: ignore[union-attr]
+                    control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
+                live["outcome"] = None
+                exec_ctx = (
+                    replace(context, confirmed=True) if (approve is not None or not bare) else context
+                )
+                if control.interrupt is not None and name in control.critical_tools:  # type: ignore[union-attr]
+                    with control.interrupt.defer():  # type: ignore[union-attr]
+                        live["outcome"] = execute_tool(name, args, exec_ctx)
+                else:
+                    live["outcome"] = execute_tool(name, args, exec_ctx)
+                outcome = live["outcome"]
+                live["outcome"] = None
+                tool_executions += 1
+                execs_since_cp += 1
+
+                if name == "acquire_propose" and outcome.get("ok") and control.post_execute is not None:  # type: ignore[union-attr]
+                    outcome = control.post_execute(name, args, outcome)  # type: ignore[union-attr]
+                if control.on_trace is not None:  # type: ignore[union-attr]
+                    control.on_trace(  # type: ignore[union-attr]
+                        {"phase": "end", "index": index, "name": name, "content": outcome}
+                    )
+                if decision.provenance == "human":
+                    dedup.clear()  # 只在一个经人批准的执行完成后清空（§2.3 第 5 条）
+                control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+
+    except KeyboardInterrupt:
+        # 落点表（§2.2 第 4 条）：补合成结果 → 收尾或回滚
+        call = live["call"]
+        if call is not None:
+            if live["stage"] == "tool" and live["outcome"] is not None:
+                # 临界区工具已经跑完，中断在延迟区退出时才浮出：用**真实结果**，配对不受影响
+                tool_executions += 1
+                control.commit(  # type: ignore[union-attr]
+                    _tool_message(call, live["outcome"]), "tool"
+                )
+                live["outcome"] = None
             else:
-                outcome = execute_tool(name, args, context)
-
-            convo.append({
-                "role": "tool",
-                "tool_call_id": str(call.get("id", "")),
-                "content": json.dumps(outcome, ensure_ascii=False),
-            })
-
-    return {"messages": convo, "final": convo[-1], "iterations": max_iterations,
-            "stopped": "max_iterations", "tool_calls_made": tool_calls_made}
+                text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else _SYNTH_UNKNOWN
+                control.commit(  # type: ignore[union-attr]
+                    _tool_message(call, {"ok": False, "error": text}), "synthetic_tool"
+                )
+            _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
+            live["call"] = None
+        return _stop("interrupted")
+    except PermissionError as exc:
+        # 出网断言拒绝（llm.py::assert_egress_boundary）：不做收尾（同一份历史必然再被拒），回滚
+        return _loop_result(
+            convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
+            tool_calls_made=tool_calls_made, tool_executions=tool_executions,
+            duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
+            prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+        )
+    except LLMError as exc:
+        return _stop("error", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 - 意外异常也走「先收尾后停」，不假装无事发生
+        return _stop("error", error=f"{type(exc).__name__}: {exc}")

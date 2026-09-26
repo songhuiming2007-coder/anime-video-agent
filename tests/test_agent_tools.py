@@ -506,28 +506,13 @@ def test_llm_tool_loop_executes_tool_and_feeds_result_back(tmp_path: Path, monke
         assert json.loads(tool_msgs[0]["content"])["ok"] is True
 
 
-def test_llm_max_iterations_guard_is_hard_stop(tmp_path: Path, monkeypatch):
-    """模型死循环调工具 → 到 max_iterations 就停，绝不无限烧 token (B3-r5)。"""
-    with mock_llm_server([tool_call("list_episodes", {})]) as (url, state):
-        root = make_agent_root(tmp_path, url + "/v1")
-        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+def test_llm_no_hard_iteration_limit_but_checkpoint_bounds(tmp_path: Path, monkeypatch):
+    """推翻固定轮数上限，改用检查点兜底（Spec 9 §2.3；IS-R1 / D28 用户裁决）。
 
-        outcome = run_tool_loop(
-            [{"role": "user", "content": "无休止地列期"}],
-            ctx=ToolContext(scope="creative", root=root),
-            max_iterations=3,
-        )
-
-        assert outcome["stopped"] == "max_iterations"
-        assert outcome["iterations"] == 3
-        assert outcome["tool_calls_made"] == 3
-        assert state["calls"] == 3  # 端点恰好被调用 3 次，没有第 4 次
-
-
-def test_m10_default_max_iterations_hard_stop_at_10(tmp_path: Path, monkeypatch):
-    """M10: 默认 max_iterations 硬闸为 10，防死循环无限烧 token (Spec §5.1 M10)。"""
-    from pipeline.agent.llm import DEFAULT_MAX_ITERATIONS
-    assert DEFAULT_MAX_ITERATIONS == 10
+    裸循环（`control=None`）的检查点一律「停止」：所以它仍然有界，但界是「回复满 50 条」，
+    不是「轮数到 10」。到点**先收尾后停**（`tool_choice:"none"` 的无工具收尾调用）。
+    """
+    from pipeline.agent.llm import CHECKPOINT_EVERY
 
     with mock_llm_server([tool_call("list_episodes", {})]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
@@ -538,10 +523,55 @@ def test_m10_default_max_iterations_hard_stop_at_10(tmp_path: Path, monkeypatch)
             ctx=ToolContext(scope="creative", root=root),
         )
 
-        assert outcome["stopped"] == "max_iterations"
-        assert outcome["iterations"] == 10
-        assert outcome["tool_calls_made"] == 10
-        assert state["calls"] == 10
+        assert outcome["stopped"] == "checkpoint_stop"
+        assert outcome["checkpoints"] == 1
+        assert outcome["llm_calls"] == CHECKPOINT_EVERY + 1  # 50 条工具回复 + 收尾调用
+        assert outcome["tool_calls_made"] == CHECKPOINT_EVERY
+        assert state["calls"] == CHECKPOINT_EVERY + 1
+        # 收尾请求带 tool_choice:"none"，但 tools 与前一次相同（保住前缀缓存）
+        assert state["requests"][-1]["body"]["tool_choice"] == "none"
+        assert state["requests"][-1]["body"]["tools"] == state["requests"][-2]["body"]["tools"]
+
+
+def test_m10_checkpoint_every_is_50(tmp_path: Path, monkeypatch):
+    """M10 新锚点：`CHECKPOINT_EVERY = 50` 真的会在 50 处触发（Spec 9 §6.1 重锚表）。
+
+    变异（`CHECKPOINT_EVERY = 10**9`）下检查点永不触发，这里靠 200 次请求的安全阀强制失败，
+    而不是挂死——与 MUT-3 所称的「请求计数 200 为护栏」同法。
+    """
+    from pipeline.agent import llm as llm_mod
+
+    assert llm_mod.CHECKPOINT_EVERY == 50
+
+    calls = {"n": 0, "checkpoints": 0}
+
+    def fake_chat_complete(messages, tools=None, **kwargs):
+        calls["n"] += 1
+        assert calls["n"] <= 200, "检查点没有触发：循环无界（M10 变异）"
+        return tool_call("list_episodes", {}, call_id=f"call_{calls['n']}")
+
+    class _StopAtOnce:
+        def __call__(self, snapshot):
+            calls["checkpoints"] += 1
+            # 第一次问就是 50 条回复；第二次问说明阈值没生效
+            assert snapshot["llm_calls"] == 50, snapshot
+            assert snapshot["trigger"] == "replies", snapshot
+            return False
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fake_chat_complete)
+    from tests.test_agent_loop import build_control
+
+    messages: list[dict] = [{"role": "user", "content": "无休止地列期"}]
+    outcome = llm_mod.run_tool_loop(
+        messages,
+        ctx=ToolContext(scope="creative", root=make_agent_root(tmp_path, "http://127.0.0.1:9/v1")),
+        config=llm_mod.LLMConfig(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"),
+        control=build_control(messages, ask_checkpoint=_StopAtOnce()),
+    )
+
+    assert outcome["stopped"] == "checkpoint_stop"
+    assert calls["checkpoints"] == 1
+    assert outcome["llm_calls"] == 51
 
 
 def test_llm_approve_callback_can_reject_tool(tmp_path: Path, monkeypatch):
@@ -981,11 +1011,14 @@ def test_egress_payload_blocks_case_variant_audio_read(tmp_path: Path, monkeypat
             '{"secret": "SEGRET-ENGINE-UPPER"}', encoding="utf-8"
         )
 
-        with pytest.raises(PermissionError, match="拦截出网请求"):
-            run_tool_loop(
-                [{"role": "user", "content": "读一下那段音频清单"}],
-                ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
-            )
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "读一下那段音频清单"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+        )
+        # Spec 9 §2.3 第 1 条：出网断言拒绝 = blocked + 回滚（不做收尾——同一份历史必然再被拒）
+        assert outcome["stopped"] == "blocked"
+        assert outcome["rollback"] is True
+        assert "拦截出网请求" in outcome["error"]
 
         # 第一轮请求发出去了，但不含任何文件内容
         assert state["calls"] == 1

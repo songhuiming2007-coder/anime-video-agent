@@ -383,17 +383,17 @@ llm.load_llm_config = lambda root=None: llm.LLMConfig(
     base_url="http://127.0.0.1:9/v1", model="mock-model", api_key="pty-test-key"
 )
 _REPLIES = %(replies)r
-_BLOCK = %(block)r
+_BLOCK_AT = %(block)r
 _STATE = {"n": 0}
 
 
 def _fake(messages, tools=None, **kwargs):
-    if _BLOCK:
+    _call = _STATE["n"]
+    _STATE["n"] += 1
+    if _BLOCK_AT is not None and _call == _BLOCK_AT:
         time.sleep(120)
     import copy
-    index = min(_STATE["n"], len(_REPLIES) - 1)
-    _STATE["n"] += 1
-    return copy.deepcopy(_REPLIES[index])
+    return copy.deepcopy(_REPLIES[min(_call, len(_REPLIES) - 1)])
 
 
 llm.chat_complete = _fake
@@ -408,10 +408,12 @@ sys.exit(_rc)
 """
 
 
-def _write_driver(tmp_path: Path, *, replies: list[dict], block: bool, ep: Path) -> Path:
+def _write_driver(
+    tmp_path: Path, *, replies: list[dict], block_at: int | None, ep: Path
+) -> Path:
     path = tmp_path / "pty_driver.py"
     path.write_text(
-        _PTY_DRIVER % {"replies": replies, "block": block, "ep": str(ep)}, encoding="utf-8"
+        _PTY_DRIVER % {"replies": replies, "block": block_at, "ep": str(ep)}, encoding="utf-8"
     )
     return path
 
@@ -500,7 +502,7 @@ def test_golden_pty_tool_card(tmp_path, monkeypatch) -> None:
         tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "第一段。"}),
         {"role": "assistant", "content": "草稿已落盘。"},
     ]
-    driver = _write_driver(tmp_path, replies=replies, block=False, ep=ep)
+    driver = _write_driver(tmp_path, replies=replies, block_at=None, ep=ep)
     rc, text = _run_pty(driver, [(0.5, "写个草稿\n".encode()), (1.5, b"y\n"), (2.5, b"/quit\n")])
     _record_pty("G-P1", text, rc, root)
 
@@ -509,15 +511,22 @@ def test_golden_pty_tool_card(tmp_path, monkeypatch) -> None:
 def test_golden_pty_interrupt_mid_turn(tmp_path, monkeypatch) -> None:
     """TT-1（pty）G-P2：回合一进行中按 ^C。
 
-    **改动前录下，是为了证明它确实变了**（§2.6）：PR0 录到的契约是「中断逃出 REPL、
-    进程非正常退出」（`[DRIVER] 回合中中断未被 REPL 接住: KeyboardInterrupt`、rc=1）。
-    PR2（I-2）之后必须重录，契约改为「停止本轮、收尾、回到提示符、rc=0」——
-    重录时逐行 diff 必须解释清楚，这是有意改变闭集里的一条。
+    **改动前录下的契约**（PR0，2026-09-26）：中断逃出 REPL、进程非正常退出
+    （`[DRIVER] 回合中中断未被 REPL 接住: KeyboardInterrupt`、rc=1）。
+
+    PR1 重录（有意改变 I-2）：工具循环自己接住 KeyboardInterrupt，停止本轮并发起收尾调用，
+    REPL 回到提示符、rc=0。阻塞打在**第二次**模型调用上：那时本轮已有一条回复、工具也执行过，
+    所以走「先收尾后停」而不是回滚（回滚那一支是第一次调用就被打断，见 §2.3 第 1 条表）。
     """
     root, ep = _world(tmp_path)
     _no_freeze(monkeypatch)
-    driver = _write_driver(tmp_path, replies=[{"role": "assistant", "content": "不该到这"}], block=True, ep=ep)
-    rc, text = _run_pty(driver, [(0.8, "深度任务\n".encode()), (2.2, b"\x03"), (3.5, b"/quit\n")])
+    replies = [
+        tool_call("read_artifact", {"path": "01-topic.md"}),
+        {"role": "assistant", "content": "不该到这"},
+        {"role": "assistant", "content": "收尾：被中断时已读完 01-topic.md，还缺三幕骨架。"},
+    ]
+    driver = _write_driver(tmp_path, replies=replies, block_at=1, ep=ep)
+    rc, text = _run_pty(driver, [(0.8, "深度任务\n".encode()), (2.5, b"\x03"), (4.0, b"/quit\n")])
     _record_pty("G-P2", text, rc, root)
 
 

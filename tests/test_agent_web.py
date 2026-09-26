@@ -909,7 +909,7 @@ def test_readonly_web_tools_auto_approve_no_card(
 def test_egress_hit_aborts_turn_blocked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """T17 (PR2): live-loop 三腿验证——egress 命中时请求零发出、PermissionError 穿透 run_tool_loop、本轮 [BLOCKED] 交人。"""
+    """T17 (PR2): live-loop 三腿验证——egress 命中时请求零发出、run_tool_loop 以 `blocked` 收口、本轮 [BLOCKED] 交人。"""
     from pipeline.agent import cli, llm
     from pipeline.agent.assembly import SessionContextTracker
     from pipeline.agent.tools import ToolContext
@@ -1022,12 +1022,14 @@ def test_egress_hit_aborts_turn_blocked(
         )
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_llm_urlopen)
-    with pytest.raises(PermissionError):
-        llm.run_tool_loop(
-            [{"role": "user", "content": "开始检索"}],
-            ctx=ToolContext(scope="creative", root=tmp_path),
-            approve=lambda name, args: (True, ""),
-        )
+    outcome = llm.run_tool_loop(
+        [{"role": "user", "content": "开始检索"}],
+        ctx=ToolContext(scope="creative", root=tmp_path),
+        approve=lambda name, args: (True, ""),
+    )
+    # Spec 9 §2.3 第 1 条：出网断言拒绝 = `blocked` + 回滚（不再穿透成异常，见 TL-13）
+    assert outcome["stopped"] == "blocked"
+    assert outcome["rollback"] is True
     assert llm_urlopen_count == 1
     assert len(web_opener_calls) == 0
 
