@@ -323,95 +323,66 @@ class _TextExtractor(HTMLParser):
         return re.sub(r"\s+", " ", " ".join(self._chunks)).strip()
 
 
-def _resolve_result_url(attr_map: dict[str, str]) -> str:
-    """从 360 搜索（so.com）结果锚点提取真实目标 URL：优先 data-mdurl / data-replaceurl 直链，回落 href。"""
-    for key in ("data-mdurl", "data-replaceurl", "href"):
-        raw = attr_map.get(key, "").strip()
-        if raw:
-            if raw.startswith("//"):
-                return "https:" + raw
-            return raw
-    return ""
+def _decode_ddg_href(href: str) -> str:
+    """若为 DuckDuckGo 重定向链接（含 uddg 参数），解码出真实目标 URL。"""
+    raw = href.strip()
+    if raw.startswith("//"):
+        raw = "https:" + raw
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "uddg" in qs and qs["uddg"]:
+            return urllib.parse.unquote(qs["uddg"][0])
+    except Exception:
+        pass
+    return raw
 
 
 class _SearchResultParser(HTMLParser):
-    """搜索结果页解析（360 搜索 https://www.so.com/s DOM）：提取 标题/URL/摘要 三元组。
+    """搜索结果页解析：提取 标题/URL/摘要 三元组，uddg 重定向参数解码。
 
-    DOM 结构以 2026-09 实测为准：<h3 class="res-title"> 内 <a> 提取标题与直链
-    （data-mdurl > data-replaceurl > href），<p class="res-desc"> 或
-    <span class="res-list-summary"> 提取摘要；跳过 script/style/noscript。
-    fixture 钉死（§7.1 T1），线上漂移时由 §3.2 空结果纪律诚实报错（§7.1 T16）。
+    DOM 结构以 2026-09 观测为准（约）；fixture 钉死（§7.1 T1），线上漂移时
+    由 §3.2 空结果纪律诚实报错（§7.1 T16）。
     """
-
-    _SKIP_TAGS = frozenset({"script", "style", "noscript"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: list[dict[str, str]] = []
-        self._skip_depth = 0
-        self._in_title_h3 = False
         self._in_title = False
         self._title_depth = 0
         self._in_snippet = False
-        self._snippet_tag = ""
         self._snippet_depth = 0
         self._cur_url = ""
         self._cur_title_parts: list[str] = []
         self._cur_snippet_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        t = tag.lower()
-        if t in self._SKIP_TAGS:
-            self._skip_depth += 1
-            return
-        if self._skip_depth > 0:
-            return
-
         attr_map = {k.lower(): (v or "") for k, v in attrs}
         classes = set(attr_map.get("class", "").split())
 
-        if t == "h3" and "res-title" in classes:
-            self._in_title_h3 = True
-            return
-
-        if self._in_title_h3 and t == "a" and not self._in_title:
-            target_url = _resolve_result_url(attr_map)
-            if target_url:
+        if tag.lower() == "a" and "result__a" in classes:
+            href = attr_map.get("href", "").strip()
+            if href:
                 self._in_title = True
                 self._title_depth = 1
-                self._cur_url = target_url
+                self._cur_url = _decode_ddg_href(href)
                 self._cur_title_parts = []
                 return
 
-        if self._in_title and t == "a":
+        if self._in_title:
             self._title_depth += 1
 
-        if (
-            ("res-desc" in classes or "res-list-summary" in classes)
-            and not self._in_snippet
-        ):
+        if "result__snippet" in classes and not self._in_snippet:
             self._in_snippet = True
-            self._snippet_tag = t
             self._snippet_depth = 1
             self._cur_snippet_parts = []
             return
 
-        if self._in_snippet and t == self._snippet_tag:
+        if self._in_snippet:
             self._snippet_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
-        t = tag.lower()
-        if t in self._SKIP_TAGS:
-            if self._skip_depth > 0:
-                self._skip_depth -= 1
-            return
-        if self._skip_depth > 0:
-            return
-
-        if t == "h3":
-            self._in_title_h3 = False
-
-        if self._in_title and t == "a":
+        if self._in_title:
             self._title_depth -= 1
             if self._title_depth <= 0:
                 self._in_title = False
@@ -423,19 +394,16 @@ class _SearchResultParser(HTMLParser):
                 self._cur_url = ""
                 self._cur_title_parts = []
 
-        if self._in_snippet and t == self._snippet_tag:
+        if self._in_snippet:
             self._snippet_depth -= 1
             if self._snippet_depth <= 0:
                 self._in_snippet = False
-                self._snippet_tag = ""
                 snippet = re.sub(r"\s+", " ", "".join(self._cur_snippet_parts)).strip()
-                if self.results and not self.results[-1]["snippet"] and snippet:
+                if self.results and not self.results[-1]["snippet"]:
                     self.results[-1]["snippet"] = snippet
                 self._cur_snippet_parts = []
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth > 0:
-            return
         if self._in_title:
             self._cur_title_parts.append(data)
         elif self._in_snippet:
