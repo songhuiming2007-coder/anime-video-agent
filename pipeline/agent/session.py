@@ -112,6 +112,8 @@ class TurnInterrupt:
 
     def __init__(self) -> None:
         self.wrapup_started = False
+        # SIGTERM 语义（§2.2 第 5 条）：中断 + **跳过收尾** + turn_end{wrapup:"skipped"}
+        self.skip_wrapup = False
         self._main = threading.get_ident()
         self._depth = 0
         self._pending = 0
@@ -125,6 +127,7 @@ class TurnInterrupt:
     def installed(self) -> Iterator[None]:
         """回合边界：复位状态。空闲态不装任何东西，Ctrl-C 行为与现状一致。"""
         self.wrapup_started = False
+        self.skip_wrapup = False
         self._depth = self._pending = self._absorb = self._dropped = 0
         self._handling = False
         try:
@@ -173,6 +176,16 @@ class TurnInterrupt:
                     self._dropped += pending
                 else:
                     raise KeyboardInterrupt
+
+    @contextlib.contextmanager
+    def absorbed(self) -> Iterator[None]:
+        """「收尾后」区（§2.2 状态表）：区内到达的中断只置标志、不抛，回合结束时丢弃并发 notice。
+
+        顺序不能颠倒：`defer()` 退出时才查 `_absorb`，外层的 `absorb()` 必须先于它退出。
+        """
+        with self.absorb():
+            with self.defer():
+                yield
 
     def request(self) -> None:
         """协议读者线程调用：把中断打到主线程（`pthread_kill`，E2 实测 0.5 s 内浮出）。"""
@@ -271,8 +284,8 @@ def _model_argv_has_options(argv: list[str], ep_dir: Path | None) -> bool:
     return False
 
 
-def _echo_line(name: str, args: dict[str, Any]) -> str:
-    """终端 `[tool]` 回显（与 Spec 1 cli.py:803-819 同一规则，扩展到全部工具）。"""
+def tool_summary(name: str, args: dict[str, Any]) -> str:
+    """`tool{phase:"start"}.summary` 与终端 `[tool]` 回显共用同一规则（§3.1，剥控制字符）。"""
     listed = {
         "read_artifact": "path",
         "read_status": "episode",
@@ -287,7 +300,32 @@ def _echo_line(name: str, args: dict[str, Any]) -> str:
         summary = "" if key is None else str(args.get(key, "")).strip()
     else:
         summary = json.dumps(args, ensure_ascii=False)[:60] if args else ""
-    return _clean(f"[tool] {name} {summary}".strip())
+    return _clean(summary)
+
+
+def tool_flags(content: Any) -> tuple[bool | None, str | None]:
+    """§3.1 的 ok/observation 判定（只在 core 做一次，host/TS 不解析工具内容）。
+
+    明确成功 = tool 消息 content 能解析为 JSON 对象、顶层 `ok is True`，且 `result`
+    不是 `ok is False` 的对象（run_pipeline 失败时顶层仍为 `ok: True`，失败在 result 里）。
+    """
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return False, text
+    if not isinstance(parsed, dict) or "ok" not in parsed:
+        return False, text
+    ok = parsed.get("ok") is True
+    result = parsed.get("result")
+    if ok and isinstance(result, dict) and result.get("ok") is False:
+        ok = False
+    return ok, (None if ok else text)
+
+
+def _echo_line(name: str, args: dict[str, Any]) -> str:
+    """终端 `[tool]` 回显（与 Spec 1 cli.py:803-819 同一规则，扩展到全部工具）。"""
+    return _clean(f"[tool] {name} {tool_summary(name, args)}".strip())
 
 
 def _target_of(memory_plan: Any, argv: list[str] | None, args: dict[str, Any]) -> str:
@@ -513,8 +551,17 @@ class AgentSession:
         record: dict[str, Any] = {"k": "msg", "message": message}
         if docs:
             record["docs"] = docs
-        self._record(record, origin)
-        self.messages.append(message)
+        # 延迟区闭集（§2.2 第 3 条）：区内到达的中断在退出时才抛，所以下面这两步
+        # 不会被**撕开**（MUT-37）。注意 `defer()` 只是在 yield 处接住异常——落在
+        # `_record` 里的信号照旧会丢掉后面的 `append`（盘上有、内存里没有 → 配对照
+        # 不上 → 下次请求 400），所以这里显式把两步做完再抛。
+        with self.interrupt.defer():
+            try:
+                self._record(record, origin)
+            except KeyboardInterrupt:
+                self.messages.append(message)
+                raise
+            self.messages.append(message)
 
     def _open_session(self, scope: str, tracker: Any, root: Path | None) -> None:
         """首个落盘回合写 `session_start`；带 `--continue` 时写 `segment_start`（§2.5）。"""
@@ -564,8 +611,13 @@ class AgentSession:
         tracker: Any = None,
         root: Path | None = None,
         approve_cb: Callable[[str, dict], Any] | None = None,
+        turn_id: str | None = None,
     ) -> dict[str, Any]:
-        """跑一轮（§4.7 的处理顺序）。"""
+        """跑一轮（§4.7 的处理顺序）。
+
+        `turn_id` 可由调用方给定：协议要先发 `turn_started{turn_id}` 出去，host 才可能
+        发回 `interrupt{turn_id}`（§3.1）；终端路径不传，自行生成。
+        """
         from pipeline.agent.assembly import step_key_of
         from pipeline.agent.llm import LLMError, local_directive_message  # noqa: F401
 
@@ -580,7 +632,7 @@ class AgentSession:
             raise RuntimeError("没有可用的通道：拒绝运行工具循环（Spec 9 §2.4.2）")
 
         self.messages = messages
-        self._turn_id = secrets.token_hex(8)
+        self._turn_id = turn_id or secrets.token_hex(8)
         effective_scope = self._scope_override or scope
         # 本轮的工具审查一律用调用方给的 scope（终端每轮热推导，M11 锚点不动）；
         # 绝不在这里从 status 重新推一份——那会把 pipeline scope 的回合按产物阶段错配成 creative。
@@ -588,14 +640,16 @@ class AgentSession:
         with self.interrupt.installed():
             snapshot = (len(messages), copy.deepcopy(tracker))
             outcome: dict[str, Any] | None = None
-            with self.interrupt.absorb():
-                self._open_session(effective_scope, tracker, root)
-                self._record({
-                    "k": "turn_start",
-                    "scope": effective_scope,
-                    "step_key": step_key_of(status.current_step if status else None),
-                })
             try:
+                # 回合起点的写盘临界区（§2.2 第 3 条）：区内到达的中断等退出后再抛，
+                # 写盘与进内存不会被撕开。浮出后由本函数的 except 接住 → interrupted + 回滚。
+                with self.interrupt.defer():
+                    self._open_session(effective_scope, tracker, root)
+                    self._record({
+                        "k": "turn_start",
+                        "scope": effective_scope,
+                        "step_key": step_key_of(status.current_step if status else None),
+                    })
                 degraded = self._assemble(
                     messages, tracker, status, effective_scope, line, root=root
                 )
@@ -614,6 +668,14 @@ class AgentSession:
                         turn_id=self._turn_id, status=status, root=root, approve_cb=approve_cb
                     ),
                 )
+            except KeyboardInterrupt:
+                # 首个模型请求之前浮出（回合起点/装配期）：本轮 0 条回复 → 回滚（§2.3 第 3 条）
+                outcome = {
+                    "stopped": "interrupted", "rollback": True,
+                    "llm_calls": 0, "tool_calls_made": 0, "tool_executions": 0,
+                    "duplicates_rejected": 0, "checkpoints": 0,
+                    "wrapup": "skipped" if self.interrupt.skip_wrapup else "none",
+                }
             except LLMError as exc:
                 self.channel.show("stdout", {"text": f"[FAIL] {exc}"})
                 self._rollback(messages, snapshot, tracker)
@@ -645,7 +707,7 @@ class AgentSession:
             return
         if outcome.get("rollback"):
             self._rollback(messages, snapshot, tracker)
-        with self.interrupt.absorb():
+        with self.interrupt.absorbed():
             self._record({
                 "k": "turn_end",
                 "stopped": outcome.get("stopped", "error"),
@@ -846,11 +908,24 @@ class AgentSession:
             review=lambda name, args: self._review(name, args, turn_id, status, root, approve_cb),
             ask_checkpoint=lambda snapshot: self._ask_checkpoint(snapshot, turn_id),
             post_execute=self._post_execute,
+            on_trace=self._on_trace,
             on_exec_started=lambda call_id, name: self._record({
                 "k": "tool_exec_started", "tool_call_id": call_id, "name": name, "turn_id": turn_id,
             }),
             critical_tools=CRITICAL_TOOLS,
         )
+
+    def _on_trace(self, payload: dict[str, Any]) -> None:
+        """工具帧（§3.1 的 `tool`）：判定在这里做一次，terminal 忽略，协议通道转成帧。"""
+        frame = dict(payload)
+        frame.setdefault("turn_id", self._turn_id)
+        if "args" in frame:
+            frame["summary"] = tool_summary(str(frame.get("name", "")), frame["args"])
+        if "content" in frame:
+            ok, observation = tool_flags(frame["content"])
+            frame["ok"] = ok
+            frame["observation"] = observation
+        self.channel.show("tool", frame)
 
     def _review(
         self,
@@ -881,7 +956,8 @@ class AgentSession:
             return Decision(ok=False, reason=verdict.reason, provenance="precheck")
         if verdict.action == "allow":
             if verdict.echo:
-                self.channel.show("tool", {"echo": verdict.echo})
+                # 终端回显走 kind="echo"（协议下由 tool 帧的 summary 承担，不再重复一份）
+                self.channel.show("echo", {"text": verdict.echo})
             return Decision(ok=True, provenance="card_free")
 
         request = verdict.request
@@ -1150,6 +1226,9 @@ def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
     if loaded.torn_tail_bytes:
         lease.truncate_torn_tail()
         loaded = load_session(lease.read(), sid)
+    # 修复行也必须是**本会话**的记录：先登记 sid 与续号。否则 append 写成 sid=null、seq 从 1
+    # 重来，`load_session` 一按 sid 过滤，这批修复等于没写（TP-8 实测：恢复后仍发配对不全的历史）。
+    lease.begin(sid, resumed_from_seq=int(loaded.last_seq))
     repairs = plan_repairs(loaded)
     if repairs:
         for record in repairs:
@@ -1171,6 +1250,7 @@ def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
     state = {
         "status": "resumed",
         "sid": sid,
+        "records": loaded.records,
         "messages": rebuild_messages(loaded),
         "docs": docs,
         "step_key": step_key,

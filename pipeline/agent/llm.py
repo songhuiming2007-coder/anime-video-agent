@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from pipeline import paths
 from pipeline.agent.tools import (
@@ -335,6 +335,23 @@ class Decision:
     feedback: str | None = None
 
 
+@contextlib.contextmanager
+def _stopping(control: "LoopControl") -> Iterator[None]:
+    """「停止中」（§2.2 状态表）：补合成结果 / 决定收尾期间到达的中断只置标志、不抛。
+
+    这里**只吸收、不放延迟区**：`defer()` 会把异常挡在区内，代价是中止它包住的那段语句，
+    合成结果就不齐了（实测：24 个调用只写出 9 条 tool 消息）。真正的临界区是 `commit()`
+    自己的延迟区（§2.2 第 3 条的延迟区闭集）——信号落在那里被接住、按吸收标志丢弃，
+    循环继续跑下一个。**收尾请求不在区内**：「收尾中」到达的中断照旧要能放弃收尾（TL-9）。
+    """
+    interrupt = control.interrupt
+    if interrupt is None:
+        yield
+        return
+    with interrupt.absorb():  # type: ignore[union-attr]
+        yield
+
+
 @dataclass
 class LoopControl:
     """工具循环的外部控制面（Spec 9 §4.1）。
@@ -426,6 +443,31 @@ def _duplicate_outcome(name: str) -> dict[str, Any]:
     }
 
 
+def _trace(
+    control: "LoopControl",
+    index: int,
+    name: str,
+    args: dict[str, Any],
+    *,
+    content: Any = None,
+    duplicate: bool = False,
+) -> None:
+    """工具帧轨迹（§3.1 的 `tool`）：start 在每次调用之前，end 在结果提交之前。
+
+    `summary`/`ok`/`observation` 的判定在 session 侧做一次（core 只做一次），这里只给原始材料。
+    """
+    if control.on_trace is None:
+        return
+    frame: dict[str, Any] = {"index": index, "name": name, "duplicate": duplicate}
+    if content is None:
+        frame["phase"] = "start"
+        frame["args"] = args
+    else:
+        frame["phase"] = "end"
+        frame["content"] = content
+    control.on_trace(frame)
+
+
 def _loop_result(
     convo: list[dict[str, Any]],
     *,
@@ -510,6 +552,7 @@ def run_tool_loop(
         )
 
     dedup: dict[tuple[str, str], None] = {}
+    turn_tally: dict[str, int] = {}   # 本轮调用名 → 次数（本地说明用，§2.3 第 4 条）
     llm_calls = tool_calls_made = tool_executions = duplicates_rejected = checkpoints = 0
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
@@ -548,11 +591,8 @@ def run_tool_loop(
             )
 
     def _local_note(reason: str, wrapup_error: str | None) -> str:
-        tally: dict[str, int] = {}
-        for call in live["calls"]:
-            name = str((call.get("function") or {}).get("name", ""))
-            tally[name] = tally.get(name, 0) + 1
-        detail = "、".join(f"{name}×{count}" for name, count in tally.items()) or "无"
+        # 本轮**全部**调用（跨回复累计）：只看最后一条回复会在多轮后写成「（无）」
+        detail = "、".join(f"{name}×{count}" for name, count in turn_tally.items()) or "无"
         why = f"失败（{wrapup_error}）" if wrapup_error else "未产生可用答复"
         return (
             f"[收尾·本地] 本轮在第 {llm_calls} 次模型调用后因{_STOP_REASON_TEXT.get(reason, reason)}"
@@ -597,6 +637,14 @@ def run_tool_loop(
 
     def _stop(reason: str, *, error: str | None = None):
         """非正常停止的收尾闸：本轮一条回复都没拿到 → 回滚；否则收尾。"""
+        if getattr(control.interrupt, "skip_wrapup", False):
+            # SIGTERM（§2.2 第 5 条）：host 的 SIGKILL 倒计时只有 5 s，收尾最长 60 s → 跳过收尾
+            return _loop_result(
+                convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
+                tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
+                checkpoints=checkpoints, wrapup="skipped", error=error,
+                prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+            )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
@@ -650,6 +698,7 @@ def run_tool_loop(
                 args = _parse_tool_args(function.get("arguments"))
                 live["name"] = name
                 tool_calls_made += 1
+                turn_tally[name] = turn_tally.get(name, 0) + 1
 
                 # 执行计数**每次执行之前**查（🟡-A）：同一条回复里的并行调用也逐个受约束
                 if execs_since_cp >= CHECKPOINT_EVERY:
@@ -666,9 +715,12 @@ def run_tool_loop(
                     key = dedup_key(name, args)
                     if key in dedup:
                         duplicates_rejected += 1
+                        _trace(control, index, name, args, duplicate=True)
                         control.commit(  # type: ignore[union-attr]
                             _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
                         )
+                        _trace(control, index, name, args, content=_duplicate_outcome(name),
+                               duplicate=True)
                         continue
                     dedup[key] = None  # 预登记：中断落在这里也算「已调过」
 
@@ -676,11 +728,15 @@ def run_tool_loop(
                 decision = control.review(name, args)  # type: ignore[union-attr]
                 live["stage"] = "tool"
                 if not decision.ok:
+                    rejected = _reject_outcome(decision)
+                    _trace(control, index, name, args)
                     control.commit(  # type: ignore[union-attr]
-                        _tool_message(call, _reject_outcome(decision)), "synthetic_tool"
+                        _tool_message(call, rejected), "synthetic_tool"
                     )
+                    _trace(control, index, name, args, content=rejected)
                     continue
 
+                _trace(control, index, name, args)
                 if control.on_exec_started is not None:  # type: ignore[union-attr]
                     control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
                 live["outcome"] = None
@@ -699,32 +755,32 @@ def run_tool_loop(
 
                 if name == "acquire_propose" and outcome.get("ok") and control.post_execute is not None:  # type: ignore[union-attr]
                     outcome = control.post_execute(name, args, outcome)  # type: ignore[union-attr]
-                if control.on_trace is not None:  # type: ignore[union-attr]
-                    control.on_trace(  # type: ignore[union-attr]
-                        {"phase": "end", "index": index, "name": name, "content": outcome}
-                    )
+                _trace(control, index, name, args, content=outcome)
                 if decision.provenance == "human":
                     dedup.clear()  # 只在一个经人批准的执行完成后清空（§2.3 第 5 条）
                 control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
 
     except KeyboardInterrupt:
-        # 落点表（§2.2 第 4 条）：补合成结果 → 收尾或回滚
-        call = live["call"]
-        if call is not None:
-            if live["stage"] == "tool" and live["outcome"] is not None:
-                # 临界区工具已经跑完，中断在延迟区退出时才浮出：用**真实结果**，配对不受影响
-                tool_executions += 1
-                control.commit(  # type: ignore[union-attr]
-                    _tool_message(call, live["outcome"]), "tool"
-                )
-                live["outcome"] = None
-            else:
-                text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else _SYNTH_UNKNOWN
-                control.commit(  # type: ignore[union-attr]
-                    _tool_message(call, {"ok": False, "error": text}), "synthetic_tool"
-                )
-            _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
-            live["call"] = None
+        # 落点表（§2.2 第 4 条）：补合成结果 → 收尾或回滚。
+        # 「停止中」：这期间到达的中断只置标志、不抛（合成结果必须齐全，不许丢）。
+        # 随后的 `_stop` 在吸收区**之外**，所以「收尾中」的中断照旧能放弃收尾（TL-9）。
+        with _stopping(control):
+            call = live["call"]
+            if call is not None:
+                if live["stage"] == "tool" and live["outcome"] is not None:
+                    # 临界区工具已经跑完，中断在延迟区退出时才浮出：用**真实结果**，配对不受影响
+                    tool_executions += 1
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, live["outcome"]), "tool"
+                    )
+                    live["outcome"] = None
+                else:
+                    text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else _SYNTH_UNKNOWN
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, {"ok": False, "error": text}), "synthetic_tool"
+                    )
+                _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
+                live["call"] = None
         return _stop("interrupted")
     except PermissionError as exc:
         # 出网断言拒绝（llm.py::assert_egress_boundary）：不做收尾（同一份历史必然再被拒），回滚

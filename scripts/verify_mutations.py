@@ -55,6 +55,8 @@ DOC = "config/agent/scopes/director.md"
 TOOLS_JSON = "config/agent/tools.json"
 IDEA_DOC = "config/agent/scopes/idea.md"
 SESSION = "pipeline/agent/session.py"
+SESSION_LOG = "pipeline/agent/session_log.py"
+PROTO = "pipeline/agent/protocol.py"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -357,6 +359,70 @@ MUTATIONS: list[dict] = [
              '            "  2. 想好选题后运行 `ava new <名>` 创建新期并进入对话；\\n"\n'
              '        )\n'),
      "new": ''},
+
+    # ---- Spec 9 §7.2 PR3：协议入口 / 帧 / 租约 / 中断（MUT-16~21, 30~33, 38, 50）----
+    {"id": "MUT-16", "guard": "协议启动 dup2(2,1)：C 层写 fd 1 走到 stderr", "file": PROTO,
+     "old": '    os.dup2(2, 1)          # C 层写 fd 1 / 继承 fd 1 的子进程 → stderr\n',
+     "new": '    pass                   # MUT-16\n'},
+    {"id": "MUT-17", "guard": "协议启动换掉 fd 0：job 子进程读到 EOF", "file": PROTO,
+     "old": '    os.dup2(devnull, 0)    # input() 与继承 stdin 的子进程读到 EOF\n',
+     "new": '    pass                   # MUT-17\n'},
+    {"id": "MUT-18", "guard": "interrupt 核对 turn_id", "file": PROTO,
+     "old": ('        if kind == "interrupt":\n'
+             '            current = slots.get("turn_id")\n'
+             '            if current is None or frame["turn_id"] != current:\n'),
+     "new": ('        if kind == "interrupt":\n'
+             '            current = slots.get("turn_id")\n'
+             '            if False:  # MUT-18\n')},
+    {"id": "MUT-19", "guard": "EOF/结束时请求作废，从不算批准", "file": PROTO,
+     "old": ('        except BaseException:\n'
+             '            self._close(request.request_id, reason="voided", decision=None, rid=None,\n'
+             '                        cause="interrupted")\n'
+             '            raise\n'),
+     "new": ('        except BaseException:\n'
+             '            self._close(request.request_id, reason="answered", decision="approve", rid=None,\n'
+             '                        cause=None)\n'
+             '            return HumanAnswer(request.request_id, "approve", None, "protocol", 0.0)\n')},
+    {"id": "MUT-20", "guard": "对已关闭请求的答复被拒（与「没见过这个号」可区分）", "file": PROTO,
+     "old": '    if frame["request_id"] in slots.get("closed_requests", ()):\n',
+     "new": '    if False:  # MUT-20\n'},
+    {"id": "MUT-21", "guard": "期租约真的 flock 住（第二个进程拿不到）", "file": SESSION_LOG,
+     "old": '                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n',
+     "new": '                pass  # MUT-21\n'},
+    {"id": "MUT-30", "guard": "审批记录写 channel 字段", "file": SESSION,
+     "old": '            "y" if approved else "n", latency_s=answer.latency_s, channel=answer.channel,\n',
+     "new": '            "y" if approved else "n", latency_s=answer.latency_s, channel=None,  # MUT-30\n'},
+    {"id": "MUT-31", "guard": "协议空闲时的 SIGINT 只提示、不退出", "file": PROTO,
+     "old": ('            except KeyboardInterrupt:\n'
+             '                # MUT-31：这里不忽略，进程就会被一次空闲点按死\n'
+             '                _idle_notice(writer)\n'
+             '                continue\n'),
+     "new": '            except KeyboardInterrupt:\n                raise  # MUT-31\n'},
+    {"id": "MUT-32", "guard": "stop_points（items 键集合精等于 §3.1）", "file": PROTO,
+     "old": ('            "note": item.note,\n'
+             '            "answer_via": "decision_bar",\n'),
+     "new": ('            "note": item.note,\n'
+             '            "answer_via": "decision_bar",\n'
+             '            "mtime_ns": 0,  # MUT-32\n')},
+    {"id": "MUT-33", "guard": "请求号不进工具结果（不进请求体）", "file": SESSION,
+     "old": '            reason="人类拒绝执行该工具调用",\n',
+     "new": '            reason=f"人类拒绝执行该工具调用（请求 {request.request_id}）",  # MUT-33\n'},
+    {"id": "MUT-38", "guard": "帧由写线程整帧写出（主线程只入队）", "file": PROTO,
+     "old": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
+             '        self._queue.put(payload)\n'),
+     "new": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
+             '        data = _dump(payload)  # MUT-38：主线程直接写，去掉写线程\n'
+             '        written = 0\n'
+             '        while written < len(data):\n'
+             '            written += os.write(self._fd, data[written:])\n')},
+    {"id": "MUT-50", "guard": "协议启动/--continue 一律读文件前取租约", "file": PROTO,
+     "old": ('    lease = None\n'
+             '    if ep_dir is not None:\n'
+             '        try:\n'
+             '            lease = EpisodeLease.acquire(ep_dir)\n'
+             '        except (SessionLocked, SessionLogBroken) as exc:\n'
+             '            return fail("E_SESSION_LOCKED", str(exc), 3)\n'),
+     "new": '    lease = None  # MUT-50：改为懒取（dispatch 里 ensure_lease）\n'},
 ]
 
 
