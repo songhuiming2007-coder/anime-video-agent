@@ -24,7 +24,7 @@ from pipeline.agent.status_card import (
     log_approval_decision,
     render_approval_card,
 )
-from pipeline.agent.tools import run_pipeline
+from pipeline.agent.tools import resolve_episode_dir, run_pipeline
 from pipeline.approvals import HUMAN_STOPS, human_stop_of
 from pipeline.status import EpisodeStatus, format_status, inspect_episode
 
@@ -59,8 +59,13 @@ def check_code_freeze() -> bool:
         return False
 
 
-def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float) -> float:
-    """记录人类停机点墙钟时间（Spec §2.6 追加式写入 human_time.json），返回本段分钟数。"""
+def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float,
+                      *, source: str | None = None) -> float:
+    """记录人类停机点墙钟时间（Spec §2.6 追加式写入 human_time.json），返回本段分钟数。
+
+    `source`（Spec 11 §3.2）：桌面端条目传 `"desktop"`，终端条目不传——下游消费
+    只读 `minutes`/`stop`，形状兼容；不传时落盘字节与从前完全一致。
+    """
     # Spec §7.4 / §4: scout 条目小于 0.1 分钟（6 秒）噪音过滤不落盘（连敲等噪音）
     if stop == "scout" and (left_at - entered_at) / 60.0 < 0.1:
         return 0.0
@@ -76,12 +81,15 @@ def record_human_time(ep_dir: Path, stop: str, entered_at: float, left_at: float
         except Exception:
             records = []
 
-    records.append({
+    entry = {
         "stop": stop,
         "entered_at": datetime.fromtimestamp(entered_at).isoformat(),
         "left_at": datetime.fromtimestamp(left_at).isoformat(),
         "minutes": max(0.0, minutes),
-    })
+    }
+    if source:
+        entry["source"] = source
+    records.append(entry)
     paths.atomic_write(ht_path, json.dumps(records, ensure_ascii=False, indent=2) + "\n")
     return max(0.0, minutes)
 
@@ -643,7 +651,10 @@ def run_voice_loop(ep_dir: Path) -> int:
                 try:
                     confirm = input("是否立即执行增量重配 (--apply-patch)? [Y/n]: ").strip().lower()
                 except EOFError:
-                    confirm = "y"
+                    # Spec 11 §2.7 / RF17-C1（Spec 9 RF-17 的处置）：EOF 一律取「否」，
+                    # 与其余确认类 EOF 默认否的口径一致。TTY 下 EOF 只在 Ctrl-D 时发生。
+                    print("[CANCEL] 未获确认，未执行增量重配。")
+                    return 0
 
                 if confirm in ("", "y", "yes"):
                     tts.run(ep_dir, apply_patch=True)
@@ -690,6 +701,416 @@ def run_voice_loop(ep_dir: Path) -> int:
         player.stop()
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# 停机点深度组件（Spec 11 §3.1）：core 裸形态子命令全集
+#
+# 八个确定性人令：桌面端按钮点击 → host spawn → 这里。分派与 `/approve`、`/reject`
+# 同级（按 argv 位置无损取参、不过 `validate_pipeline_command`），终端 REPL 与裸形态
+# 共用同一份分派。**不进 LLM 工具表、不扩 `write_episode_file` 白名单**：模型写草稿、
+# 人写正稿，两条通道分开（ADR-0024 决策 1）。
+# 退出码：0 成 / 1 败 / 2 用法错；落盘一律经 `paths.atomic_write`。
+# ---------------------------------------------------------------------------
+
+STOP_POINT_COMMANDS = (
+    "/save-script", "/seal-script", "/voice-info", "/voice-parse", "/voice-add",
+    "/voice-revert", "/voice-retract", "/record-time",
+)
+SAVE_SCRIPT_MAX_BYTES = 1024 * 1024      # 真实稿件是 KB 级，余量两个数量级
+VOICE_PARSE_MAX_BYTES = 64 * 1024        # 纠错原文是一行文法
+RECORD_TIME_CLOCK_TOLERANCE_S = 60.0     # host 与 core 同机同时钟，只防取整边界
+
+
+class _UsageError(Exception):
+    """本族子命令的用法错（CLI 退 2，与未识别子命令同码）。"""
+
+
+def _valued_flags(rest: list[str], names: tuple[str, ...]) -> dict[str, str]:
+    """`--name=value` 等号旗标 → {name: value}；缺项/多项/裸名一律 _UsageError。
+
+    等号形式是本族命令的约定（Spec 11 §3.1）：无分词歧义，也不需要 POSIX 引号。
+    """
+    out: dict[str, str] = {}
+    for token in rest:
+        name, sep, value = token.partition("=")
+        if not sep or name not in names or name in out or not value:
+            raise _UsageError(f"无法识别的参数 {token!r}（本族命令用 --name=value 等号形式）")
+        out[name] = value
+    missing = [n for n in names if n not in out]
+    if missing:
+        raise _UsageError(f"缺少参数：{'、'.join(missing)}")
+    return out
+
+
+def _flag_number(raw: str, flag: str, cast: Callable[[str], Any]) -> Any:
+    try:
+        return cast(raw)
+    except ValueError:
+        raise _UsageError(f"{flag} 需要数字，收到 {raw!r}")
+
+
+def _read_stdin_text(limit: int) -> str | None:
+    """读 stdin 全文；超 limit（UTF-8 字节）返回 None，调用方退 2（Spec 11 §3.1）。"""
+    text = sys.stdin.read(limit)
+    if sys.stdin.read(1) or len(text.encode("utf-8")) > limit:
+        return None
+    return text
+
+
+def _episode_file(ep_dir: Path | str, name: str, root: Path | None = None) -> Path:
+    """期目录内的固定文件名 → 绝对路径（越界抛 PermissionError）。
+
+    期目录解析复用 `tools.resolve_episode_dir`（与 LLM 写工具同一条纪律）；这里只多
+    一层「文件名不得是逃出期目录的符号链接」。
+    """
+    resolved_ep = resolve_episode_dir(ep_dir, root=root)
+    target = (resolved_ep / name).resolve()
+    if target.parent != resolved_ep:
+        raise PermissionError(f"目标路径越界：{target} 不在当期根目录 {resolved_ep} 下")
+    return target
+
+
+def _pid_alive(pid: int) -> bool:
+    """锁内 pid 是否存活（确定性事实，供面板区分「应用进行中」与「锁残留」）。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True      # 进程在，只是不属于当前用户
+    return True
+
+
+def _cmd_save_script(ep_dir: Path | str, expect_size: int, expect_mtime_ns: int,
+                     stdin_text: str) -> int:
+    """`/save-script`：指纹相符才写 `02-script.md`，stdout 回新指纹 JSON（Spec 11 §2.2）。
+
+    指纹不符退 1 且**一字不写**：并发编辑没有安全出路，拒存让人看见冲突后自己决定。
+    `--expect-size=-1 --expect-mtime-ns=-1` 表示断言文件**不存在**（「从草稿新建」）。
+    """
+    target = _episode_file(ep_dir, "02-script.md")
+    want_missing = (expect_size, expect_mtime_ns) == (-1, -1)
+    if want_missing and target.exists():
+        print("[ERROR] 磁盘版本已变：02-script.md 已存在，未保存。", file=sys.stderr)
+        return 1
+    if not want_missing:
+        if not target.exists():
+            print("[ERROR] 磁盘版本已变：02-script.md 不存在，未保存。", file=sys.stderr)
+            return 1
+        st = target.stat()
+        if (st.st_size, st.st_mtime_ns) != (expect_size, expect_mtime_ns):
+            print(
+                f"[ERROR] 磁盘版本已变（实际 size={st.st_size} mtime_ns={st.st_mtime_ns}，"
+                f"期望 size={expect_size} mtime_ns={expect_mtime_ns}），未保存。",
+                file=sys.stderr,
+            )
+            return 1
+
+    paths.atomic_write(target, stdin_text)
+    st = target.stat()
+    print(json.dumps({"size": st.st_size, "mtime_ns": st.st_mtime_ns}))
+    return 0
+
+
+def _cmd_seal_script(ep_dir: Path | str) -> int:
+    """`/seal-script`：core 内跑终端同一条 `git diff --no-index`，空 diff 拒封（§2.2）。
+
+    产物与终端手工封板字节一致：同一个 git 二进制、同一组参数、cwd 同为期目录。
+    shell 重定向无法被 `shell: false` 的 spawn 闭集表达，所以才有了这个子命令。
+    """
+    script = _episode_file(ep_dir, "02-script.md")
+    draft = _episode_file(ep_dir, "02-script.draft.md")
+    if not script.exists():
+        print("[ERROR] 找不到 02-script.md，无法封板。", file=sys.stderr)
+        return 1
+    if not draft.exists():
+        print("[ERROR] 找不到 02-script.draft.md（早期目录可能没有草稿），无法封板。", file=sys.stderr)
+        return 1
+
+    proc = subprocess.run(
+        ["git", "diff", "--no-index", draft.name, script.name],
+        cwd=script.parent,
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        print(
+            "[ERROR] 未做任何修改，无封板痕迹可留：未写 02-diff.patch（零改动不可封板）。",
+            file=sys.stderr,
+        )
+        return 1
+    if proc.returncode != 1:
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        print(f"[ERROR] git diff 失败（退出码 {proc.returncode}）：{err}", file=sys.stderr)
+        return 1
+
+    paths.atomic_write(script.parent / "02-diff.patch", proc.stdout.decode("utf-8"))
+    print(len(proc.stdout))
+    return 0
+
+
+def voice_info_payload(ep_dir: Path | str) -> dict:
+    """`/voice-info` 的 payload（Spec 11 §3.3 v1 schema，冻结）。纯读。
+
+    `segments` 由 core 单源供给（TS 不解析稿件、不拼 wav 文件名，RF-1）；`has_attic`
+    是「回滚」按钮可用性的确定性依据；`apply_patch_lock` 区分「应用进行中」与
+    「锁残留」（SIGKILL/断电后残余）。**不含时长**：由 renderer 的 `<audio>` 自读 metadata。
+    """
+    from pipeline import corrections, g2p, tts
+
+    from_ep = resolve_episode_dir(ep_dir)
+    segs = tts.parse_script(from_ep / "02-script.md")
+    audio_dir = from_ep / "03-audio"
+
+    engine = ""
+    mf_path = audio_dir / "manifest.json"
+    if mf_path.exists():
+        try:
+            engine = str(json.loads(mf_path.read_text(encoding="utf-8")).get("engine", ""))
+        except Exception:
+            engine = ""          # 清单损坏不归本命令管，空串即可
+
+    entries, _ = corrections.load_corrections_raw(from_ep)
+
+    segments = []
+    for s in segs:
+        wav = f"seg-{s.index:02d}.wav"
+        segments.append({
+            "label": str(s.label),
+            "index": s.index,
+            "wav": wav,
+            "wav_exists": (audio_dir / wav).exists(),
+            "text": s.text,
+            "has_attic": corrections.find_attic_snapshot(from_ep, str(s.label)) is not None,
+        })
+
+    hetero = g2p.scan_heteronyms("\n".join(s.text for s in segs))
+    pid: int | None = None
+    pid_alive: bool | None = None
+    lock = audio_dir / ".apply_patch.lock"
+    if lock.exists():
+        try:
+            pid = int(lock.read_text(encoding="utf-8").strip())
+            pid_alive = _pid_alive(pid)
+        except (OSError, ValueError):
+            pid = pid_alive = None
+
+    return {
+        "v": 1,
+        "engine": engine,
+        "engine_cloud": "cuda" in engine,
+        "segments": segments,
+        "heteronyms": [
+            {"char": h["char"], "readings": list(h.get("readings", []))[:3]}
+            for h in hetero[:10]        # 条数与 readings 截断同终端（cli.py 异读预检）
+        ],
+        "pending_corrections": [c for c in entries if not c.get("applied", False)],
+        "apply_patch_lock": {
+            "exists": lock.exists(),
+            "pid": pid,
+            "pid_alive": pid_alive,
+        },
+    }
+
+
+def _cmd_voice_info(ep_dir: Path | str) -> int:
+    """`/voice-info`：纯读（零写入），stdout 单行 JSON。"""
+    if not _episode_file(ep_dir, "02-script.md").exists():
+        print("[ERROR] 找不到 02-script.md（同 /voice 前置）。", file=sys.stderr)
+        return 1
+    print(json.dumps(voice_info_payload(ep_dir), ensure_ascii=False))
+    return 0
+
+
+def _cmd_voice_parse(ep_dir: Path | str, stdin_text: str) -> int:
+    """`/voice-parse`：纯算（零写入）——终端同一个 `parse_correction`，stdout 单行 JSON。
+
+    输出是 Patch 的 8 个字段：**不含 `raw`**（原文就在输入框，回传只增帧面），
+    **不含 `seed_pin`**（它在 `append_correction` 落盘时才生成）。
+    """
+    from pipeline import corrections, tts
+
+    script = _episode_file(ep_dir, "02-script.md")
+    if not script.exists():
+        print("[ERROR] 找不到 02-script.md（同 /voice 前置）。", file=sys.stderr)
+        return 1
+    try:
+        patch = corrections.parse_correction(stdin_text, tts.parse_script(script))
+    except corrections.PatchError as exc:
+        print(f"{exc}", file=sys.stderr)      # 终端同款错误原文
+        return 1
+    print(json.dumps({
+        "v": 1,
+        "segment": patch.segment,
+        "kind": patch.kind,
+        "word": patch.word,
+        "heard": patch.heard,
+        "target_tone3": patch.target_tone3,
+        "issue": patch.issue,
+        "action": patch.action,
+        "scope": patch.scope,
+    }, ensure_ascii=False))
+    return 0
+
+
+def _cmd_voice_add(ep_dir: Path | str, stdin_text: str) -> int:
+    """`/voice-add`：**重新解析** stdin 原文再落盘（§2.3）：不信任跨进程往返的解析结果。
+
+    解析与落盘都对同一文法函数求值，等价且防篡改；stdout 为 `append_correction`
+    返回的条目 dict 原样（含 `id`，pin_seed 条目含 `seed_pin`）。
+    """
+    from pipeline import corrections, tts
+
+    script = _episode_file(ep_dir, "02-script.md")
+    if not script.exists():
+        print("[ERROR] 找不到 02-script.md（同 /voice 前置）。", file=sys.stderr)
+        return 1
+    try:
+        patch = corrections.parse_correction(stdin_text, tts.parse_script(script))
+        entry = corrections.append_correction(script.parent, patch)
+    except corrections.PatchError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    except SystemExit as exc:                  # 单写者锁 / corrections.json 损坏 / 回读失败
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(entry, ensure_ascii=False))
+    return 0
+
+
+def _cmd_voice_revert(ep_dir: Path | str, label: str) -> int:
+    """`/voice-revert <段号>`：`corrections.revert_segment`（终端「回滚」同函数）。"""
+    from pipeline import corrections
+
+    try:
+        corrections.revert_segment(resolve_episode_dir(ep_dir), label)
+    except SystemExit as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_voice_retract(ep_dir: Path | str, item_id: int) -> int:
+    """`/voice-retract <id>`：`corrections.retract_correction`（终端「撤回」同函数）。"""
+    from pipeline import corrections
+
+    try:
+        corrections.retract_correction(resolve_episode_dir(ep_dir), item_id)
+    except SystemExit as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_record_time(ep_dir: Path | str, stop: str, entered: float, left: float) -> int:
+    """`/record-time`：墙钟人时条目落 `human_time.json`（复用 `record_human_time`，§2.4）。
+
+    审阅面可见即计时、失焦照算、**不设时长下限**（与终端停机点停留口径一致，两端可比）。
+    """
+    if stop not in HUMAN_STOPS:
+        print(
+            f"[ERROR] 停机点必须是 {'|'.join(sorted(HUMAN_STOPS))} 之一，收到 {stop!r}",
+            file=sys.stderr,
+        )
+        return 2
+    if not entered < left:
+        print("[ERROR] --entered 必须早于 --left。", file=sys.stderr)
+        return 2
+    if left > time.time() + RECORD_TIME_CLOCK_TOLERANCE_S:
+        print(
+            f"[ERROR] --left 晚于当前时刻（超过 {RECORD_TIME_CLOCK_TOLERANCE_S:g} s 钟差容差）。",
+            file=sys.stderr,
+        )
+        return 2
+
+    ep_resolved = resolve_episode_dir(ep_dir)
+    try:
+        minutes = record_human_time(ep_resolved, stop, entered, left, source="desktop")
+    except OSError as exc:
+        print(f"[ERROR] 人时落盘失败：{exc}", file=sys.stderr)
+        return 1
+
+    from pipeline.jobs import EventType, get_publisher
+    get_publisher().emit(
+        EventType.HUMAN_TIME_RECORDED,
+        {"stop": stop, "minutes": minutes},
+        episode_dir=ep_resolved,
+    )
+    print(f"[OK] 停机点 {stop} 墙钟 {minutes:.1f} 分钟 → human_time.json")
+    return 0
+
+
+def _dispatch_stop_point(ep_dir: Path, argv: list[str]) -> int | None:
+    """Spec 11 §3.1 八个子命令的统一分派（裸形态与 REPL 共用）。非本族命令返回 None。
+
+    只路由，不做业务：每个子命令一个 `_cmd_*` 私有函数。"""
+    if not argv or argv[0] not in STOP_POINT_COMMANDS:
+        return None
+    cmd, rest = argv[0], argv[1:]
+
+    try:
+        if cmd == "/save-script":
+            flags = _valued_flags(rest, ("--expect-size", "--expect-mtime-ns"))
+            text = _read_stdin_text(SAVE_SCRIPT_MAX_BYTES)
+            if text is None:
+                raise _UsageError(f"正文超过 {SAVE_SCRIPT_MAX_BYTES} 字节上限，拒收。")
+            return _cmd_save_script(
+                ep_dir,
+                _flag_number(flags["--expect-size"], "--expect-size", int),
+                _flag_number(flags["--expect-mtime-ns"], "--expect-mtime-ns", int),
+                text,
+            )
+        if cmd == "/seal-script":
+            if rest:
+                raise _UsageError("用法: ava <期> /seal-script")
+            return _cmd_seal_script(ep_dir)
+        if cmd == "/voice-info":
+            if rest:
+                raise _UsageError("用法: ava <期> /voice-info")
+            return _cmd_voice_info(ep_dir)
+        if cmd == "/voice-parse":
+            if rest:
+                raise _UsageError("用法: ava <期> /voice-parse（纠错原文走 stdin）")
+            text = _read_stdin_text(VOICE_PARSE_MAX_BYTES)
+            if text is None:
+                raise _UsageError(f"纠错原文超过 {VOICE_PARSE_MAX_BYTES} 字节上限，拒收。")
+            return _cmd_voice_parse(ep_dir, text)
+        if cmd == "/voice-add":
+            if rest:
+                raise _UsageError("用法: ava <期> /voice-add（纠错原文走 stdin）")
+            text = _read_stdin_text(VOICE_PARSE_MAX_BYTES)
+            if text is None:
+                raise _UsageError(f"纠错原文超过 {VOICE_PARSE_MAX_BYTES} 字节上限，拒收。")
+            return _cmd_voice_add(ep_dir, text)
+        if cmd == "/voice-revert":
+            if len(rest) != 1:
+                raise _UsageError("用法: ava <期> /voice-revert <段号>")
+            return _cmd_voice_revert(ep_dir, rest[0])
+        if cmd == "/voice-retract":
+            if len(rest) != 1:
+                raise _UsageError("用法: ava <期> /voice-retract <id>")
+            return _cmd_voice_retract(ep_dir, _flag_number(rest[0], "<id>", int))
+        if cmd == "/record-time":
+            if not rest:
+                raise _UsageError(
+                    "用法: ava <期> /record-time <02.5|03.5|05|09> "
+                    "--entered=<epoch_s> --left=<epoch_s>"
+                )
+            flags = _valued_flags(rest[1:], ("--entered", "--left"))
+            return _cmd_record_time(
+                ep_dir, rest[0],
+                _flag_number(flags["--entered"], "--entered", float),
+                _flag_number(flags["--left"], "--left", float),
+            )
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    except PermissionError as exc:              # 期目录越界 / 外置盘未挂载
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    return None
 
 
 def classify_input(line: str) -> str:
@@ -1352,6 +1773,7 @@ def _run_repl_body(
                 print("  /board       查看全局期看板")
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
+                print("  /save-script 停机点组件子命令族（等 8 个）: /save-script /seal-script /voice-info /voice-parse /voice-add /voice-revert /voice-retract /record-time")
                 print("  /memory      查看跨期记忆全文（/memory show）")
                 print("  /memory check 记忆自检（退出码 0 合法 / 1 不合法 / 2 不可达 / 3 合法但来源未确认）")
                 print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
@@ -1503,6 +1925,11 @@ def _run_repl_body(
                     print(f"[FAIL] 执行失败，退出码: {result['returncode']}")
                 continue
 
+            # Spec 11 §3.1：停机点组件子命令与裸形态共用同一份分派
+            rc = _dispatch_stop_point(ep_dir, line.split())
+            if rc is not None:
+                continue
+
             print(f"[ERROR] 未知命令: '{line}'。输入 /help 查看命令列表。")
             continue
 
@@ -1610,6 +2037,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # 带子命令，例如 `ava <期> /voice` 或 `ava <期> /run tts`
     if len(args) > 1:
+        # Spec 11 §3.1：停机点深度组件的八个子命令按 argv 位置无损取参（等号形式），
+        # 与 /approve、/reject 同级，不经 validate_pipeline_command、不进 LLM 工具表。
+        rc = _dispatch_stop_point(ep_dir, args[1:])
+        if rc is not None:
+            return rc
+
         # Spec 3 §4.2 (S3-R1/R2/R6)：裸形态 /approvals、/approve、/reject 必须在
         # `sub_cmd = " ".join(args[1:])` 之前按 argv 位置无损取参
         if args[1] == "/approvals":

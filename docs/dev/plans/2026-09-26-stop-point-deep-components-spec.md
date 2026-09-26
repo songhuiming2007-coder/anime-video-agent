@@ -1,6 +1,6 @@
 # Implementation Spec：停机点深度组件（Spec 11：02.5 app 内编辑与封板、03.5 顺听按钮、人时采集）
 
-日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零））  
+日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零）；**施工进度（2026-09-26）：PR1、PR2 已落地**（core 人物提示 + 八个子命令，`uv run pytest` 1769 passed，变异实跑见 §7.4））  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0 产品画像与终态判据、§4 施工红线八条、§5 明确排除、§6 Spec 11 范围全文）  
 相关 ADR：**ADR-0024（桌面端写产物，`docs/dev/adr/0024-desktop-artifact-writes.md`，状态「已通过」——2026-09-26 用户接受；PR2–PR5 以其为前置，已满足）**、ADR-0018（保留条款）、ADR-0019（corrections 生命周期）、ADR-0020（§3 审批对象、§4 桌面端、§5 Context 纪律）  
 契约依赖：**Spec 8**（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；Spec 3（已施工，`pipeline/approvals.py`）；Spec 2（已施工，`pipeline/jobs.py`）；Spec 9（v0.7 红队 🟢、未施工——本 spec **不消费其协议进程**，仅落实其 RF-17 的遗留处置）；Spec 10（v0.5 红队 🟢、未施工——本 spec 与其无修订关系，边界见 §6.2）  
@@ -198,7 +198,7 @@ Spec 9 RF-17 明确「Spec 11 按钮化 `/voice` 时必须改为显式答复」�
 | `/voice-retract` | `ava <期> /voice-retract <id>`（十进制整数） | 无 | `corrections.retract_correction`（`corrections.py:813`），退 0 | 同上；id 非整数退 2 |
 | `/record-time` | `ava <期> /record-time <02.5\|03.5\|05\|09> --entered=<epoch_s> --left=<epoch_s>`（等号形式） | 无 | §2.4 校验 → `record_human_time` → emit `human_time_recorded`；退 0 | 校验失败退 2；写失败退 1 |
 
-- **写纪律**：以上凡落盘必走 `paths.atomic_write`；目标文件是闭集（§2.1 I2）；期目录校验复用 `write_episode_file` 的双端 resolve 段（`tools.py:90-113`，抽成共享私有函数或直接复用——施工时择一，以不复制第二份解析逻辑为准）。
+- **写纪律**：以上凡落盘必走 `paths.atomic_write`（**复用既有函数内部写入路径除外**：`/voice-revert` 的 wav 恢复走 `revert_segment` 的 `shutil.copy2`——与终端同一函数、语义一对一无替代，且 I2 闭集已含 `seg-*.wav`）；目标文件是闭集（§2.1 I2）；期目录校验复用 `write_episode_file` 的双端 resolve 段（`tools.py:90-113`，抽成共享私有函数或直接复用——施工时择一，以不复制第二份解析逻辑为准）。**施工实际选择**：抽成 `tools.resolve_episode_dir`，与 `write_episode_file` 共用同一份。
 - **无副作用子命令**：`/voice-info`、`/voice-parse` 纯读/纯算，零写入（测试断言前后目录树哈希不变）。
 - 这些子命令**不进** REPL 的 `/help` 指令表？——进。REPL 里同样可用（裸形态与 REPL 共用分派是自然结果），REPL `/help` 文案同步列出（一行）。
 
@@ -255,7 +255,7 @@ Spec 9 RF-17 明确「Spec 11 按钮化 `/voice` 时必须改为显式答复」�
 | `VOICE_PARSE_MAX_BYTES` | 64 KiB | 纠错原文是一行文法，64 KiB 已远超任何合法输入 |
 | 预览节流 `EDITOR_PREVIEW_DEBOUNCE_MS` | 300 | markdown-it 渲染 KB 级文本为亚毫秒（约，PR3 实测）；300 ms 节流在人感知上即时 |
 | `RECORD_TIME` 钟差容差 | 60 s | host 与 core 同机同时钟，容差只为防取整边界 |
-| 新子命令启动开销 | 实测回填 | status spawn 0.03–0.04 s（Spec 8 §2.3）；`from pipeline import corrections, g2p, tts` 暖进程约 0.18 s（红队一轮实测值，v0.2 回填）；VOICE_* 在此量级，可接受 |
+| 新子命令启动开销 | **实测**：`/voice-info` 0.155 s、`/voice-parse` 0.155 s（暖进程中位，各 7 次；裸解释器 0.018 s、既有 `/status` 0.049 s 为对照）；`/seal-script` 与 `/save-script` 约 0.043 s（不导入 tts/g2p） | status spawn 0.03–0.04 s（Spec 8 §2.3）；与红队一轮 🔵-8 的 0.18 s 参考值同量级（差距来自暖进程测量位置）；VOICE_* 一次点击的等待量级可接受（PR2 实测回填，2026-09-26，本机 arm64 macOS） |
 
 ---
 
@@ -432,6 +432,26 @@ export function flushHumanTimers(reason: "ack" | "close" | "switch" | "quit"): v
 | MUT-16 | 去掉 dirty-seal 禁用（dirty 时封板按钮可点） | TD-3 的 dirty 子用例、门禁 3 手验 | TD-3 专设 dirty 子用例；干净状态用例不受影响（红队 🔴-2） |
 | MUT-17 | host 用普通 `JSON.parse` 读 SAVE_SCRIPT stdout 指纹 | TD-5 | TD-5 夹具值 `1790171112636927676` 不可被 double 精确表示（普通 parse 得 `…927700`），与 statSync(bigint) 不等 → 下次保存恒拒存的行为断言变红（红队 🟡-2） |
 
+### 7.4 施工实跑回填（逐条实跑，2026-09-26）
+
+植入变异 → 跑目标用例 → 还原；**每条变异只击中预期用例**（唯一例外：MUT-1 连带击中 TC-1b，见下行——TC-1b 断言的是冻结期望输出本身，任何改输出的变异都会打中它，属「预期外但合理」的连带）；还原后两份源文件逐字节等于变异前。
+
+| PR | 变异（实跑） | 目标用例实测结果 |
+|---|---|---|
+| PR1 | MUT-1 朴素子串匹配 | **4 红**：TC-1 真实期、TC-1 等价夹具期、TC-3、TC-1b（连带，见上）；真实期命中别名总数实测 **22**（冻结规则下 12），与红队值吻合 |
+| PR1 | MUT-2 INFO 计入 `failed` | 1 红：TC-2 |
+| PR1 | MUT-3 锚点段不跳过 | 2 红：TC-4、TC-1 等价夹具期 |
+| PR1 | MUT-8b 命中收集改用 set | 1 红：TC-1b（跨 `PYTHONHASHSEED`） |
+| PR2 | MUT-4 / MUT-5 指纹只比 size / 不符仍落盘 | 各 1 红：TC-5 同长异 mtime 子用例 |
+| PR2 | MUT-6 / MUT-7 空 diff 写空文件 / 改 difflib | 各 1 红：TC-6 空 diff 子用例 / 字节对拍 |
+| PR2 | MUT-9 / MUT-10 漏 `source` 键 / 漏 emit | 各 1 红：TC-11 |
+| PR2 | MUT-11 core 半（core 端加 <6 s 过滤） | 1 红：TC-11 短区间子用例（TD-1 的宿主半留 PR5） |
+| PR2 | MUT-13 RF17-C1 不做 | 1 红：TC-12 |
+| PR2 | MUT-12 | **core 半不存在**：同 stop 双计防护在宿主 per-stop 单区间机（TD-1），留 PR5 实跑 |
+| PR3~5 | MUT-14/15/16/17 | 未施工（桌面侧），留对应 PR |
+
+补充实跑（门禁 6 加强版，PR1）：对全部 17 个带 `02-script.md` 的真实期逐期对拍——剔除 INFO 行后 stdout 与退出码**零 diff**；INFO 合计 61 行、分布在 10 期。
+
 ---
 
 ## 8. 施工 PR 划分
@@ -451,7 +471,7 @@ PR 顺序允许 PR1 ∥ 任何；PR3/PR4 可并行（不同组件、共享 PR2 �
 ## 9. 验收门禁清单
 
 - [ ] **门禁 0（前置）**：ADR-0024 状态为「已通过」；§6.1 全部修订请求获用户授权；本 spec 红队 🟢；
-- [ ] **门禁 1（写纪律）**：全部新写入经 core 子命令 + `atomic_write`；I1 不破（host 对 `data/` 仍零写入——Spec 8 TG-2/TI-3a 全绿）；I2 扩展清单与 TI-3b 一致；**done 全程目录树清单差异 ⊆ §2.1 I2 闭集**（红队 🟡-3）；
+- [ ] **门禁 1（写纪律）**：全部新写入经 core 子命令 + `atomic_write`（§3.1 写纪律的既有函数例外：`/voice-revert` 复用 `revert_segment` 的 `copy2`）；I1 不破（host 对 `data/` 仍零写入——Spec 8 TG-2/TI-3a 全绿）；I2 扩展清单与 TI-3b 一致；**done 全程目录树清单差异 ⊆ §2.1 I2 闭集**（红队 🟡-3）；
 - [ ] **门禁 2（冲突拒存与无损指纹）**：TC-5 全部子用例 + TE-2 + TD-5；MUT-4/5/14/17 被捕获；
 - [ ] **门禁 3（封板保真与 dirty-seal）**：TC-6 字节对拍通过；MUT-6/7 被捕获；真实期手验一次「编辑→封板→批准」零终端闭环（TE-1）；**dirty 时封板/从草稿新建禁用**（TD-3 子用例 + MUT-16 被捕获，红队 🔴-2）；
 - [ ] **门禁 4（03.5 语义一对一）**：§2.3 映射表逐条与终端行为对照手验（含两个「无确认」、两个禁用态）；TC-7~TC-10、TD-2/4、TE-3 全绿；**TC-8 的 `/voice-add` 原文重解析契约断言成立**（替代已删除的 MUT-8，红队二轮 🟡-3）；

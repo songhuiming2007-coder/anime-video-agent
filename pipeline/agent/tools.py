@@ -59,6 +59,33 @@ RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
 )
 
 
+def resolve_episode_dir(episode_dir: Path | str, root: Path | None = None) -> Path:
+    """期目录双端 resolve 校验（fail-closed）：返回解析后的绝对期目录路径。
+
+    `write_episode_file`（LLM 写工具）与 `agent.cli` 的停机点子命令群（Spec 11 §3.1）
+    共用**同一份**解析纪律——两处各写一份迟早分叉。三种越界一律 PermissionError：
+    落进 `pipeline/`、不是 `data/episodes` 的子目录、仓库根或 `/tmp`。
+    """
+    base = Path(root or paths.ROOT)
+    resolved_ep = Path(episode_dir).resolve()
+
+    # 1. 拦截对 pipeline/ 源码目录的操作（优先触发 Code Freeze）
+    repo_pipeline = (base / "pipeline").resolve()
+    if repo_pipeline in resolved_ep.parents or resolved_ep == repo_pipeline:
+        raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
+
+    # 2. 纵深防御（fail-closed，B4-r6）：期目录必须落在 data/episodes 之下
+    episodes_root = (base / "data" / "episodes").resolve()
+    if not episodes_root.exists():
+        raise PermissionError(f"data/episodes 不可达（外置盘未挂载？），拒绝写入: {episodes_root}")
+    if resolved_ep == base.resolve() or resolved_ep == Path("/tmp").resolve():
+        raise PermissionError(f"禁止将仓库根或 /tmp 作为期目录写入: {resolved_ep}")
+    if resolved_ep == episodes_root or episodes_root not in resolved_ep.parents:
+        raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
+
+    return resolved_ep
+
+
 def write_episode_file(
     episode_dir: Path | str,
     filename: str,
@@ -87,30 +114,18 @@ def write_episode_file(
             f"文件 '{filename}' 不在 creative 写入白名单内（仅放行: {sorted(CREATIVE_WRITABLE_FILES)}）"
         )
 
-    # 路径解析与双端 resolve 校验
+    # 路径解析与双端 resolve 校验（期目录级检查见 resolve_episode_dir）
     base = Path(root or paths.ROOT)
-    raw_ep = Path(episode_dir)
-    resolved_ep = raw_ep.resolve()
-    target_resolved = (raw_ep / clean_name).resolve()
+    resolved_ep = resolve_episode_dir(episode_dir, root=root)
+    target_resolved = (Path(episode_dir) / clean_name).resolve()
 
     # 1. 拦截对 pipeline/ 源码目录的修改（优先触发 Code Freeze）
     repo_pipeline = (base / "pipeline").resolve()
     if (
         repo_pipeline in target_resolved.parents
         or str(target_resolved).startswith(str(repo_pipeline))
-        or repo_pipeline in resolved_ep.parents
-        or resolved_ep == repo_pipeline
     ):
         raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
-
-    # 2. 纵深防御（fail-closed，B4-r6）：期目录必须落在 data/episodes 之下
-    episodes_root = (base / "data" / "episodes").resolve()
-    if not episodes_root.exists():
-        raise PermissionError(f"data/episodes 不可达（外置盘未挂载？），拒绝写入: {episodes_root}")
-    if resolved_ep == base.resolve() or resolved_ep == Path("/tmp").resolve():
-        raise PermissionError(f"禁止将仓库根或 /tmp 作为期目录写入: {resolved_ep}")
-    if resolved_ep == episodes_root or episodes_root not in resolved_ep.parents:
-        raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
 
     # 2. 拦截父级或兄弟目录越界
     if target_resolved.parent != resolved_ep:

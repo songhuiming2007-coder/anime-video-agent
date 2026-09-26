@@ -726,21 +726,20 @@ def _prune_attic(attic_dir: Path, keep: int = 10) -> None:
     )
 
 
-def revert_segment(episode: Path, label: str) -> dict:
-    """从包含该段的最近 attic 快照恢复 wav 与 manifest 段条目，条目回到 pending。"""
+def find_attic_snapshot(episode: Path, label: str) -> tuple[Path, dict] | None:
+    """包含该段可用音频的最近 attic 快照 → (快照目录, manifest 段条目)，没有则 None。
+
+    纯读。`revert_segment`（回滚）与 `agent.cli` 的 `/voice-info`（面板上「回滚」
+    按钮可用性的确定性依据，Spec 11 §3.3 `has_attic`）共用同一份查找——两个
+    调用点各写一份迟早分叉。
+    """
     attic_dir = episode / "03-audio" / "attic"
     if not attic_dir.exists():
-        raise SystemExit(f"FAIL 未找到包含段 {label} 的 attic 快照（attic 目录不存在）。")
-
+        return None
     snapshots = sorted(
         [p for p in attic_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
         reverse=True,
     )
-
-    audio_dir = episode / "03-audio"
-    matched_snap = None
-    target_take = None
-
     for snap in snapshots:
         snap_mf = snap / "manifest.json"
         if not snap_mf.exists():
@@ -751,20 +750,27 @@ def revert_segment(episode: Path, label: str) -> dict:
                 if str(t.get("label")) == str(label):
                     wav_name = t.get("file")
                     if wav_name and (snap / wav_name).exists():
-                        matched_snap = snap
-                        target_take = t
-                        break
+                        return snap, t
         except Exception:
             continue
-        if matched_snap:
-            break
+    return None
 
-    if not matched_snap or not target_take:
+
+def revert_segment(episode: Path, label: str) -> dict:
+    """从包含该段的最近 attic 快照恢复 wav 与 manifest 段条目，条目回到 pending。"""
+    attic_dir = episode / "03-audio" / "attic"
+    if not attic_dir.exists():
+        raise SystemExit(f"FAIL 未找到包含段 {label} 的 attic 快照（attic 目录不存在）。")
+
+    found = find_attic_snapshot(episode, label)
+    if found is None:
         raise SystemExit(
             f"FAIL 未找到包含段 {label} 的 attic 快照（快照已滚出保留窗，只能重新纠错）。"
         )
+    matched_snap, target_take = found
 
-    # 1. 恢复 wav 文件
+    audio_dir = episode / "03-audio"
+
     wav_file = target_take["file"]
     shutil.copy2(matched_snap / wav_file, audio_dir / wav_file)
 
