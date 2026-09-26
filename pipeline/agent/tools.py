@@ -42,12 +42,14 @@ PIPELINE_MODULES: set[str] = {
 }
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
+# Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
 ASSET_COMMANDS: dict[str, set[str]] = {
     "ingest": {"phase0"},
     "shots": {"build", "frames", "caption-frames"},
     "vindex": {"captions", "embed"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull"},
+    "acquire": {"fetch"},
 }
 
 # 出网敏感目录与关键词（§2.5 Y2-r19）
@@ -203,20 +205,27 @@ def validate_pipeline_command(
     args = tokens[idx + 1:]
 
     # 1. 拒收 --force / --force-all 标志（含 --force=x, --force-all=true 变体）
+    #    Spec 9 C-R5（自查 S-1）：argparse 的前缀缩写让 `--force-a` 能命中 `--force-all`，
+    #    所以按**前缀**判定（`--` 开头、`split("=")[0]`、长度 ≥ 3），人与模型两条路同时生效。
     for a in args:
-        flag_name = a.split("=")[0]
-        if flag_name in ("--force", "--force-all"):
-            if module == "cloud" and args and args[0] == "down":
-                return (
-                    False,
-                    "拒绝执行：cloud down --force 会强行销毁正在运行的后台任务！请先运行 cloud status 确认无活跃任务。",
-                    [],
-                )
+        bare = a.split("=")[0]
+        if not bare.startswith("--") or len(bare) < 3:
+            continue
+        forced = bare[2:]
+        if not any(flag.startswith(forced) for flag in ("force", "force-all")):
+            continue
+        flag_name = "--force-all" if "force-all".startswith(forced) and forced != "force" else "--force"
+        if module == "cloud" and args and args[0] == "down":
             return (
                 False,
-                f"拒绝执行：禁止在 ava 中使用 {flag_name} 全量覆盖！请使用增量参数：--redo <段号> 或 --apply-patch。",
+                "拒绝执行：cloud down --force 会强行销毁正在运行的后台任务！请先运行 cloud status 确认无活跃任务。",
                 [],
             )
+        return (
+            False,
+            f"拒绝执行：禁止在 ava 中使用 {flag_name} 全量覆盖！请使用增量参数：--redo <段号> 或 --apply-patch。",
+            [],
+        )
 
     # 2. 绝对拒收 cloud exec（R1-r10）
     if module == "cloud" and args and args[0] == "exec":

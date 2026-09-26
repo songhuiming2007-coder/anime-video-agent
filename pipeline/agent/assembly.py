@@ -51,7 +51,11 @@ class SessionContextTracker:
     injected_paths: set[str] = field(default_factory=set)
     active_step_key: str | None = None
     _warned_paths: set[str] = field(default_factory=set)  # 红队 M2：警告去重
-    memory_warned: bool = False  # 记忆告警每会话一次，不占正文注入名额（Spec 7 三轮 🟡-D）
+    # 记忆告警拆成两个标志（Spec 9 §2.3 第 3 条 🔵-1）：
+    #   printed  = 终端已经打过（**不随回滚回退**，免得下一轮重复刷屏）
+    #   injected = 告警消息还在历史里（**随回滚回退**，下一轮重新注入）
+    memory_warn_printed: bool = False
+    memory_warn_injected: bool = False
 
     def get_initial_system_prompt(
         self,
@@ -201,7 +205,8 @@ def resolve_memory_injection(
     """跨期记忆注入文档（Spec 7 §4.6）。返回 (doc, 是否告警)；不注入返回 None。
 
     不走 `load_injected_doc`：原样读取会绕过 memory 的校验层与来源确认。
-    正文与告警各自每会话一次，判重由调用方按 `tracker.injected_paths` / `memory_warned` 做。
+    正文与告警各自每会话一次，判重由调用方按 `tracker.injected_paths` /
+    `memory_warn_injected` / `memory_warn_printed` 做。
     """
     if scope not in memory_scopes(config_path, root):
         return None

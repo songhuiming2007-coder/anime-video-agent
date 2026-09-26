@@ -355,11 +355,15 @@ def log_approval_decision(
     latency_s: float | None = None,
     *,
     emit_event: bool = True,
+    channel: str | None = None,
 ) -> None:
     """追加一行审批记录到期目录 _agent/approvals.jsonl（Spec §3.2-6, §5 M17）。
 
     `latency_s` = 卡片弹出→人类按键的决策耗时（秒）。它是 §7-1「秒按 y」
     审批疲劳判据的唯一可读量：只有卡片时间戳无法区分「秒敲」与「读完后敲」。
+
+    `channel`（Spec 9 C-R4）= 答复从哪条线进来（`tty` / `protocol`）。**默认为 None 时
+    记录逐字节不变**——历史记录与只关心旧字段的读者都不受影响。
 
     .jsonl 后缀天然在读域白名单外，不进读域。
     """
@@ -397,6 +401,8 @@ def log_approval_decision(
             "decision": norm_decision,
             "decision_latency_s": round(latency_s, 3) if latency_s is not None else None,
         }
+        if channel is not None:
+            record["channel"] = channel
         with log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:

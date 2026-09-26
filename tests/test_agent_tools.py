@@ -1147,7 +1147,7 @@ def test_idea_turn_context_and_system_prompt(monkeypatch):
 
     captured_ctx = []
 
-    def fake_run_tool_loop(messages, *, ctx, approve, config=None, timeout=None):
+    def fake_run_tool_loop(messages, *, ctx, approve=None, config=None, timeout=None, **_):
         captured_ctx.append(ctx)
         return {"stopped": "done", "messages": messages, "final": {"content": "ok"}}
 

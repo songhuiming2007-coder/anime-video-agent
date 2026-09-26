@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -14,11 +15,30 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from pipeline import paths
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.scopes import get_scopes_dir, load_scope
+from pipeline.agent.session import (
+    CRITICAL_TOOLS,
+    AgentSession,
+    HumanAnswer,
+    HumanRequest,
+    SessionHost,
+    prepare_resume,
+    prompt_for,
+    review_tool_call,
+)
+from pipeline.agent.session_log import (
+    LOG_NAME,
+    EpisodeLease,
+    SessionLocked,
+    SessionLogBroken,
+    list_sessions,
+    read_log,
+    resume_target,
+)
 from pipeline.agent.status_card import (
     build_status_card,
     log_approval_decision,
@@ -1153,6 +1173,99 @@ def _candidates_brief(raw: Any) -> str:
     return "、".join(titles)[:120]
 
 
+class TtyChannel:
+    """终端通道（Spec 9 §2.6）：打印 + `input()`，EOF 视为否。
+
+    内核不打印、不提问；所有面向人的文本都从这里出去。文案与改造前逐字一致——
+    金样本（TT-1）就是尺子，改文案得单独提出来（RF-13）。
+    """
+
+    name = "tty"
+
+    def is_tty(self) -> bool:
+        return sys.stdin.isatty()
+
+    def show(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "stderr":
+            print(payload.get("text", ""), file=sys.stderr)
+            return
+        if kind == "tool":
+            print(payload.get("echo", ""))
+            return
+        if kind == "card":
+            print(f"\n{payload.get('text', '')}", end="")
+            return
+        print(payload.get("text", ""))
+
+    def ask(self, request: HumanRequest) -> HumanAnswer:
+        if request.kind == "memory_ack":
+            print(request.card_text)
+            print("\n以上是「上次确认版本 → 当前文件」的改动与当前全文。按 y 确认，其它任意键取消（默认 N）：")
+        else:
+            self.show("card", {"text": f"{request.card_text}\n{prompt_for(request.kind)}"})
+        started = time.time()
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            answer = "n"
+        latency = time.time() - started
+        decision = request.options[0] if answer == "y" else request.options[-1]
+        return HumanAnswer(request.request_id, decision, None, "tty", latency)
+
+
+# 进程内唯一登记（Spec 9 §2.6）：只经 activate_host 设置，finally 里注销并释放租约。
+_SESSION_HOST: SessionHost | None = None
+_HOST_DEPTH = 0
+_HOST_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def activate_host(
+    ep_dir: Path | str | None,
+    *,
+    root: Path | None = None,
+    channel: Any = None,
+) -> Iterator[SessionHost]:
+    """登记一个 SessionHost（可重入）。
+
+    范围正好覆盖 `run_repl` / `_run_repl_body` / `run_agent_loop` 的执行期：`finally` 里
+    注销并释放租约，任何异常路径都不会把登记留在进程里。已有同一个 `ep_dir` 的活动登记
+    只计数、不替换（`/chat`、`/script` 在 REPL 循环内再进一次）；`ep_dir` 不同的嵌套进入
+    视为错误（现有代码中不存在）。
+    """
+    global _SESSION_HOST, _HOST_DEPTH
+    resolved = Path(ep_dir).resolve() if ep_dir is not None else None
+    with _HOST_LOCK:
+        current = _SESSION_HOST
+        if current is not None and current.ep_dir == resolved:
+            _HOST_DEPTH += 1
+            reentrant = True
+        else:
+            if current is not None:
+                raise RuntimeError(f"activate_host 的期目录不同的嵌套进入: {resolved} vs {current.ep_dir}")
+            _SESSION_HOST = SessionHost(resolved, root=root, channel=channel or TtyChannel())
+            _HOST_DEPTH = 1
+            reentrant = False
+    if reentrant:
+        try:
+            yield _SESSION_HOST  # type: ignore[misc]
+        finally:
+            with _HOST_LOCK:
+                _HOST_DEPTH -= 1
+        return
+    host = _SESSION_HOST
+    assert host is not None
+    try:
+        yield host
+    finally:
+        with _HOST_LOCK:
+            _HOST_DEPTH -= 1
+            if _HOST_DEPTH <= 0:
+                _SESSION_HOST = None
+        if host.lease is not None:
+            host.lease.close()
+
+
 def _default_approve(
     name: str,
     args: dict[str, Any],
@@ -1162,132 +1275,31 @@ def _default_approve(
     status: EpisodeStatus | None = None,
     root: Path | None = None,
 ) -> tuple[bool, str]:
-    """统一人机审批处理函数（Spec §3.2, §6 PR6）。
+    """薄包装（Spec 9 §2.6）：签名与返回类型不变，内部改走内核的工具审查。
 
-    步骤：
-    1. 预校验：
-       ① 工具未注册或不在 scope 白名单 → [REJECT] 拦截回喂，不弹卡；
-       ② run_pipeline 跑 confirmed=False 校验 → 拒收直接 [REJECT] 回喂，不弹卡。
-    2. fail-closed side_effect 分流：
-       side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
-       为 False（只读工具）→ 终端回显一行 [tool] ...，免弹卡，直接放行。
-    3. 弹卡人审：
-       危险标记静态打（cloud 计费 / render 长任务 / [覆盖] / [停机点]）；
-       显示卡片并等待人类输入，默认 N；
-    4. 审批记账：
-       向期目录 _agent/approvals.jsonl 追加记录。
+    真正的审查逻辑在 `session.review_tool_call`（M15a/M16-1/M16-2/M20 的锚点）。
     """
-    from pipeline.agent.tools import TOOL_SCHEMAS, run_pipeline, tool_names_for_scope
-
-    # 1. 通用预校验
-    if name not in TOOL_SCHEMAS:
-        reason = f"未注册的工具 '{name}'（工具清单不现场发明）"
-        print(f"[REJECT] {reason}")
-        return (False, reason)
-
-    allowed = tool_names_for_scope(scope, root)
-    if name not in allowed:
-        reason = f"工具 '{name}' 不在 {scope} scope 白名单内（当前放行: {allowed}）"
-        print(f"[REJECT] {reason}")
-        return (False, reason)
-
-    argv: list[str] | None = None
-    if name == "run_pipeline":
-        cmd_str = str(args.get("command", ""))
-        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)
-        if not outcome["ok"]:
-            reason = outcome["message"]
-            print(f"[REJECT] {reason}")
-            return (False, reason)
-        argv = outcome["argv"]
-
-    # 1.5 write_memory 专用预审（Spec 7 §4.4）：dry-run 不合规就回喂，不弹卡
-    memory_plan = None
-    if name == "write_memory":
-        from pipeline.agent import memory
-
-        try:
-            memory_plan = memory.plan_op(
-                str(args.get("op", "")), args, root=root, episode_dir=ep_dir
-            )
-        except (ValueError, PermissionError, OSError) as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            print(f"[REJECT] {reason}")
-            return (False, reason)
-        if not memory_plan.requires_card:
-            print(f"[memory] {memory_plan.summary}")
-            return (True, "")
-
-    # 2. fail-closed side_effect 分流
-    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
-    if not side_effect:
-        if name == "read_artifact":
-            summary = str(args.get("path", "")).strip()
-        elif name == "read_status":
-            summary = str(args.get("episode", "")).strip()
-        elif name == "search_notes":
-            summary = str(args.get("query", "")).strip()
-        elif name == "web_search":
-            summary = str(args.get("query", "")).strip()
-        elif name == "web_fetch":
-            summary = str(args.get("url", "")).strip()
-        elif name == "crawl":
-            summary = str(args.get("url", "")).strip()
-        elif name == "list_episodes":
-            summary = ""
-        else:
-            summary = json.dumps(args, ensure_ascii=False)[:60] if args else ""
-        clean_summary = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", summary)
-        echo = f"[tool] {name} {clean_summary}".strip()
-        print(echo)
-        return (True, "")
-
-    # 3. 弹卡人审
-    stop_label = None
-    if status is not None:
-        stop = human_stop_of(status.current_step)
-        if stop is not None:
-            if argv and any(m in argv or f"pipeline.{m}" in argv for m in ("tts", "clips", "render")):
-                stop_label = f"[{stop}] 当前处于停机点 {status.current_step}"
-
-    card = render_approval_card(
-        name,
-        args,
-        argv=argv,
-        stop_label=stop_label,
-        episode_dir=ep_dir,
-        memory_preview=memory.render_plan_preview(memory_plan) if memory_plan else None,
+    channel = TtyChannel()
+    verdict = review_tool_call(
+        name, args, ep_dir=ep_dir, scope=scope, status=status, root=root
     )
-
-    target_str = (
-        memory_plan.summary
-        if memory_plan is not None
-        else " ".join(argv)
-        if argv
-        else str(
-            args.get("filename", "")
-            or args.get("command", "")
-            or args.get("url", "")
-            or _candidates_brief(args.get("candidates"))
-        )
-    )
-
-    print(f"\n{card}", end="")
-    t_card = time.time()
-    try:
-        ans = input().strip().lower()
-    except EOFError:
-        ans = "n"
-    latency_s = time.time() - t_card
-
-    norm_decision = "y" if ans == "y" else "n"
-    log_approval_decision(ep_dir, name, target_str, norm_decision, latency_s=latency_s)
-
-    if ans == "y":
+    if verdict.action == "reject":
+        print(f"[REJECT] {verdict.reason}")
+        return (False, verdict.reason)
+    if verdict.action == "allow":
+        if verdict.echo:
+            print(verdict.echo)
         return (True, "")
-
-    print("[CANCEL] 已取消执行")
-    return (False, "人类拒绝执行该工具调用")
+    request = verdict.request
+    assert request is not None
+    answer = channel.ask(request)
+    target = str(request.fields.get("target", ""))
+    if answer.decision != "approve":
+        log_approval_decision(ep_dir, name, target, "n", latency_s=answer.latency_s, channel="tty")
+        print("[CANCEL] 已取消执行")
+        return (False, "人类拒绝执行该工具调用")
+    log_approval_decision(ep_dir, name, target, "y", latency_s=answer.latency_s, channel="tty")
+    return (True, "")
 
 
 def _dispatch_agent_turn(
@@ -1301,154 +1313,64 @@ def _dispatch_agent_turn(
     approve_cb: Callable[[str, dict], bool] | None = None,
     tracker: SessionContextTracker | None = None,
 ) -> dict[str, Any]:
-    """执行单轮 Director 对话（Spec 1 §5.1, §5.2）。
+    """执行单轮 Director 对话（Spec 9 §2.6 的薄包装，签名不变）。
 
-    整段重算替换 messages[0]，工序层按需增量 user 消息注入。
+    四个调用点（idea / `/chat` / `/script` / `/memory digest` / 主 REPL）一律经模块属性调用
+    这里，参数与签名不变；是否落盘不看参数，看**对象同一性**：`messages is host.main_messages`。
+    进程里没有登记（或登记的是别的期）时，走「没有登记」的契约：原地修改调用方传入的
+    `messages` 与 `tracker`，`persist=False`，不取租约、不写 `session.jsonl`。
     """
-    from pipeline.agent.assembly import (
-        SessionContextTracker,
-        assemble_resident_prompt,
-        load_injected_doc,
-        render_step_injection,
-        resolve_memory_injection,
-        resolve_step_docs,
-        step_key_of,
+    host = _SESSION_HOST
+    if host is None or not host.matches(ep_dir):
+        host = SessionHost(ep_dir, root=root, channel=TtyChannel(), ephemeral=True)
+    outcome = host.dispatch(
+        line, messages, ep_dir, scope, status, extra_prompt, root, approve_cb, tracker
     )
-    from pipeline.agent.llm import (
-        LLMError,
-        load_llm_config,
-        local_directive_message,
-        run_tool_loop,
-    )
-    from pipeline.agent.tools import ToolContext
-
-    if tracker is None:
-        raise ValueError(
-            "tracker 必须由 run_agent_loop 创建并作为会话级单例传入，严禁在 _dispatch_agent_turn 轮内懒创建（Spec 1 M4 铁律）"
-        )
-
-    # Scope 热切换检测：若当前 scope 与 tracker 记录的不一致，或尚未初始化常驻层，重组装 resident_prompt
-    if tracker.active_scope != scope or not tracker.resident_prompt:
-        tracker.resident_prompt = assemble_resident_prompt(
-            scope, root=root, extra_prompt=extra_prompt
-        ).content
-        tracker.active_scope = scope
-
-    step_key = step_key_of(status.current_step if status else None)
-    step_docs = [
-        d
-        for d in (
-            load_injected_doc(p.as_posix(), root=root)
-            for p in resolve_step_docs(scope, step_key, root=root)
-        )
-        if d is not None
-    ]
-
-    if ep_dir is None:
-        from pipeline.agent.status_card import build_idea_card
-        status_card = build_idea_card()
-    else:
-        card = build_status_card(ep_dir, status, scope=scope)
-        status_card = card
-
-    if not messages:
-        # 首轮：messages[0] 仅含常驻层 + 动态层，工序层以独立 user 消息注入
-        sys_content = tracker.get_initial_system_prompt(status_card)
-        messages.append({"role": "system", "content": sys_content})
-
-        # 工序层首轮注入（独立 user 消息，不拼入 messages[0]）
-        if step_docs:
-            injection = render_step_injection(
-                step_docs, step_name=status.current_step if status else None
-            )
-            messages.append({"role": "user", "content": injection})
-            tracker.injected_paths.update(d.rel_path for d in step_docs)
-        tracker.active_step_key = step_key
-    else:
-        # 后续轮：检测工序切换
-        if step_key != tracker.active_step_key:
-            new_docs = [d for d in step_docs if d.rel_path not in tracker.injected_paths]
-            if new_docs:
-                injection = render_step_injection(
-                    new_docs, step_name=status.current_step if status else None
-                )
-                messages.append({"role": "user", "content": injection})
-                tracker.injected_paths.update(d.rel_path for d in new_docs)
-            tracker.active_step_key = step_key
-
-        # 刷新 status_card：复用整段重算机制，直接替换 messages[0]
-        sys_content = tracker.get_initial_system_prompt(status_card)
-        messages[0] = {"role": "system", "content": sys_content}
-
-    # 记忆注入（Spec 7 §4.6）：正文每会话一次；告警不占正文名额，也每会话一次。
-    # 告警态下每轮重新读盘判定，状态一恢复（中途 ack / 人手修好 / 另一进程写入完成）就下一轮补注正文。
-    from pipeline.agent.memory import MEMORY_REL_PATH
-
-    if MEMORY_REL_PATH not in tracker.injected_paths:
-        memory_doc = resolve_memory_injection(scope, root=root)
-        if memory_doc is not None:
-            doc, is_warning = memory_doc
-            if not is_warning:
-                messages.append({"role": "user", "content": doc.content})
-                tracker.injected_paths.add(doc.rel_path)
-            elif not tracker.memory_warned:
-                messages.append({"role": "user", "content": doc.content})
-                print(f"[WARN] {doc.content}", file=sys.stderr)
-                tracker.memory_warned = True
-
-    if load_llm_config(root) is None:
-        deg = local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
-        print(f"\n{deg['content']}")
-        return {"stopped": "degraded", "messages": messages, "final": deg}
-
-    ctx = ToolContext(scope=scope, episode_dir=ep_dir, root=root)
-    if approve_cb is not None:
-        approve = approve_cb
-    else:
-        approve = lambda name, args: _default_approve(
-            name, args, ep_dir=ep_dir, scope=scope, status=status, root=root
-        )
-
-    messages.append({"role": "user", "content": line})
-    try:
-        outcome = run_tool_loop(messages, ctx=ctx, approve=approve)
-    except LLMError as exc:
-        # 打桩/循环外抛出的异常（🔵-10）：与现状 cli.py:994-1002 相同，回滚
-        print(f"[FAIL] {exc}")
-        messages.pop()
-        return {"stopped": "error", "messages": messages, "final": {}}
-    except PermissionError as exc:
-        print(f"[BLOCKED] 出网被拦截：{exc}")
-        print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
-        messages.pop()
-        return {"stopped": "error", "messages": messages, "final": {}}
-
+    channel = host.channel
     if outcome.get("rollback"):
-        # 回滚 = 恢复到回合开始时的快照（Spec 9 §2.3 第 3 条）：本轮注入 + 用户消息一并丢弃
-        messages.pop()
-    else:
+        if outcome.get("messages") is not messages:
+            messages.pop()
+    elif outcome.get("messages") is not messages:
         messages.clear()
         messages.extend(outcome["messages"])
 
     stopped = outcome.get("stopped")
+    if stopped == "degraded":
+        # 降级消息已经在装配里打过（与改造前一样只打一次）
+        return outcome
     if stopped == "blocked":
-        # 出网断言拒绝：不做收尾（同一份历史必然再被拒）
-        print(f"[BLOCKED] 出网被拦截：{outcome['error']}")
-        print("          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。")
+        channel.show("stdout", {"text": f"[BLOCKED] 出网被拦截：{outcome.get('error', '')}"})
+        channel.show("stdout", {
+            "text": "          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。"
+        })
     elif stopped == "error" and outcome.get("error"):
-        print(f"[FAIL] {outcome['error']}")
+        channel.show("stdout", {"text": f"[FAIL] {outcome['error']}"})
     else:
         content = (outcome.get("final") or {}).get("content") or ""
         if content:
-            print(f"\n{content}")
+            channel.show("stdout", {"text": f"\n{content}"})
     if outcome.get("local_note"):
         # 本地确定性说明（Spec 9 §2.3 第 4 条）：只呈现，不进 messages
-        print(f"\n{outcome['local_note']}")
-
+        channel.show("stdout", {"text": f"\n{outcome['local_note']}"})
     return outcome
 
 
 def run_agent_loop(
+    ep_dir: Path | None,
+    scope_mode: str = "auto",
+    extra_prompt: str = "",
+    *,
+    root: Path | None = None,
+    on_step: Callable[[str], None] | None = None,
+) -> int:
+    """登记 SessionHost 后进真正的循环（Spec 9 §2.6：范围覆盖整个执行期）。"""
+    with activate_host(ep_dir, root=root):
+        return _run_agent_loop_body(
+            ep_dir, scope_mode, extra_prompt, root=root, on_step=on_step
+        )
+
+
+def _run_agent_loop_body(
     ep_dir: Path | None,
     scope_mode: str = "auto",
     extra_prompt: str = "",
@@ -1590,10 +1512,11 @@ def run_repl(ep_dir: Path) -> int:
         close_stop()
         span["stop"], span["at"] = new_stop, time.time()
 
-    try:
-        return _run_repl_body(ep_dir, on_step, close_stop=close_stop)
-    finally:
-        close_stop()
+    with activate_host(ep_dir):
+        try:
+            return _run_repl_body(ep_dir, on_step, close_stop=close_stop)
+        finally:
+            close_stop()
 
 
 def _exec_scout(ep_dir: Path, args: list[str]) -> int:
@@ -1702,6 +1625,41 @@ def run_memory_command(line: str, ep_dir: Path | None, *, root: Path | None = No
     )
 
 
+def _seed_resume(
+    ep_dir: Path, messages: list[dict[str, Any]], tracker: SessionContextTracker, root: Path | None
+) -> None:
+    """`--continue`：把历史填回主会话（`messages[0]` 按**当前**文件重建，§2.7）。"""
+    host = _SESSION_HOST
+    state = host.resume_state if host is not None else None
+    if not state or state.get("status") != "resumed":
+        # 普通启动开新会话：存在更早可恢复的会话时打印一行提示，**不提问**（§2.5 用户裁决）
+        if host is not None and host.ep_dir is not None:
+            target, _candidates = resume_target(list_sessions(read_log(host.ep_dir)))
+            if target is not None:
+                print(
+                    f"[会话] 上次会话 {target.sid[:8]} · {target.messages} 条消息 · "
+                    f"{target.last_activity}，可用 ava {ep_dir.name} --continue 恢复"
+                )
+        return
+    from pipeline.agent.assembly import assemble_resident_prompt
+
+    status = inspect_episode(ep_dir)
+    scope = scope_of(status)
+    tracker.resident_prompt = assemble_resident_prompt(scope, root=root).content
+    tracker.active_scope = scope  # §2.7 第 3 条：active_scope 从空开始
+    tracker.injected_paths = set((state.get("docs") or {}).keys())
+    tracker.active_step_key = state.get("step_key")
+    messages.append({
+        "role": "system",
+        "content": tracker.get_initial_system_prompt(
+            build_status_card(ep_dir, status, scope=scope)
+        ),
+    })
+    messages.extend(state.get("messages") or [])
+    count = len(state.get("messages") or [])
+    print(f"[会话] 已恢复 {str(state.get('sid', ''))[:8]}，重放 {count} 条消息。")
+
+
 def _run_repl_body(
     ep_dir: Path,
     on_step: Callable[[str], None] | None = None,
@@ -1730,12 +1688,20 @@ def _run_repl_body(
 
     tracker = SessionContextTracker()
     displayed_approvals: dict[str, str] = {}
+    session_ready = False
     scope_override: str | None = None
     messages: list[dict[str, Any]] = []
 
     while True:
         status = inspect_episode(ep_dir)
         scope = scope_override or scope_of(status)
+        if not session_ready:
+            # 主会话的 messages **就在这一层**（M11 锚点不动）；登记这个列表对象之后，
+            # 是否落盘只看 `messages is host.main_messages`，与参数无关。
+            session_ready = True
+            if _SESSION_HOST is not None:
+                _SESSION_HOST.bind_main(messages)
+                _seed_resume(ep_dir, messages, tracker, root)
         try:
             _sync_repl_displayed_approval(ep_dir, status, displayed_approvals)
         except Exception:
@@ -1797,6 +1763,8 @@ def _run_repl_body(
                 print("  /chat        creative scope 选题发散")
                 print("  /script      聚焦写稿 (02-script.draft.md)")
                 print("  /quit        退出 ava\n")
+                print("  Ctrl-C       回合中按一次：停止本轮、先收尾再回到提示符；在提示符处按一次：退出 ava")
+                print("  --continue   恢复本期的会话: ava <期> --continue [<会话号前缀>]（ava <期> --sessions 列出全部会话）")
                 print("  提示: 手工指定含空格的路径参数时请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
                 continue
 
@@ -1958,6 +1926,59 @@ def _run_repl_body(
         )
 
 
+def _print_sessions(ep_dir: Path) -> None:
+    """`ava <期> --sessions`：列出全部会话（含不可恢复的，如实标注）。"""
+    summaries = list_sessions(read_log(ep_dir))
+    if not summaries:
+        print(f"[会话] {ep_dir.name} 没有任何会话记录。")
+        return
+    print(f"[会话] {ep_dir.name} 共 {len(summaries)} 个会话：")
+    for summary in summaries:
+        mark = "" if summary.resumable else "（无 assistant 消息，不能作 --continue 默认目标）"
+        print(f"  {summary.sid[:8]} · {summary.messages} 条消息 · 最后活动 {summary.last_activity} {mark}")
+
+
+def _latest_episode_with_log() -> Path | None:
+    """`ava --continue`（不带期）：选 session.jsonl 最近写入的可见期。"""
+    episodes, _hidden = get_episodes_list()
+    best: tuple[float, Path] | None = None
+    for episode in episodes:
+        log = episode / LOG_NAME
+        try:
+            mtime = log.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, episode)
+    return best[1] if best else None
+
+
+def _continue_repl(ep_dir: Path, prefix: str | None) -> int:
+    """`--continue [<前缀>]`：**读文件之前**先取租约（§2.5），拿不到就退出 3。"""
+    summaries = list_sessions(read_log(ep_dir))
+    target, candidates = resume_target(summaries, prefix)
+    if candidates:
+        print("[会话] 前缀不唯一，候选：", file=sys.stderr)
+        for summary in candidates:
+            print(f"  {summary.sid[:8]} · {summary.messages} 条消息 · {summary.last_activity}",
+                  file=sys.stderr)
+        return 2
+    if target is None:
+        print("[会话] 该期没有可恢复的会话，本次开新会话。")
+    with activate_host(ep_dir) as host:
+        try:
+            host.lease = EpisodeLease.acquire(ep_dir)
+        except (SessionLocked, SessionLogBroken) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 3
+        if target is not None:
+            state = prepare_resume(host, target.sid)
+            if state["status"] != "resumed":
+                print(f"[会话] 无法恢复（{state['status']}），本次开新会话。")
+                host.resume_state = None
+        return _run_repl_body(ep_dir)
+
+
 def resolve_episode_target(target: str) -> Path | None:
     """将参数解析为期目录。"""
     p = Path(target)
@@ -1993,6 +2014,27 @@ def _print_idea_non_tty_help() -> None:
 def main(argv: list[str] | None = None) -> int:
     """ava 统一入口。"""
     args = argv if argv is not None else sys.argv[1:]
+
+    # 子命令 0: ava --continue [<会话号前缀>] / ava --sessions（不带期）
+    if args and args[0] in ("--continue", "--sessions"):
+        if not sys.stdin.isatty():
+            print(f"[ERROR] {args[0]} 只在交互终端可用（非 TTY 不进入 REPL）", file=sys.stderr)
+            return 2
+        if args[0] == "--sessions":
+            if len(args) != 1:
+                print("[ERROR] 用法: ava --sessions（列期请用 ava --sessions 之外的形式）", file=sys.stderr)
+                return 2
+            print("[ERROR] 用法: ava <期> --sessions", file=sys.stderr)
+            return 2
+        if len(args) > 2:
+            print("[ERROR] 用法: ava --continue [<会话号前缀>]", file=sys.stderr)
+            return 2
+        ep_dir = _latest_episode_with_log()
+        if ep_dir is None:
+            print("[会话] 没有任何期存在会话记录。")
+            return 0
+        print(f"[会话] 最近写入的期：{ep_dir.name}")
+        return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
 
     # 子命令 1: ava new <期号>
     if len(args) >= 2 and args[0] == "new":
@@ -2054,6 +2096,22 @@ def main(argv: list[str] | None = None) -> int:
         rc = _dispatch_stop_point(ep_dir, args[1:])
         if rc is not None:
             return rc
+
+        # Spec 9 §2.5：`ava <期> --sessions` 与 `ava <期> --continue [前缀]`
+        if args[1] == "--sessions":
+            if len(args) != 2:
+                print("[ERROR] 用法: ava <期> --sessions", file=sys.stderr)
+                return 2
+            _print_sessions(ep_dir)
+            return 0
+        if args[1] == "--continue":
+            if len(args) > 3:
+                print("[ERROR] 用法: ava <期> --continue [<会话号前缀>]", file=sys.stderr)
+                return 2
+            if not sys.stdin.isatty():
+                print("[ERROR] --continue 只在交互终端可用（非 TTY 不进入 REPL）", file=sys.stderr)
+                return 2
+            return _continue_repl(ep_dir, args[2] if len(args) > 2 else None)
 
         # Spec 3 §4.2 (S3-R1/R2/R6)：裸形态 /approvals、/approve、/reject 必须在
         # `sub_cmd = " ".join(args[1:])` 之前按 argv 位置无损取参
