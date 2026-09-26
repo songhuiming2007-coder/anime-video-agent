@@ -1,6 +1,6 @@
 # Implementation Spec：停机点深度组件（Spec 11：02.5 app 内编辑与封板、03.5 顺听按钮、人时采集）
 
-日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞仍待人最终确认））  
+日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零））  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0 产品画像与终态判据、§4 施工红线八条、§5 明确排除、§6 Spec 11 范围全文）  
 相关 ADR：**ADR-0024（桌面端写产物，`docs/dev/adr/0024-desktop-artifact-writes.md`，状态「已通过」——2026-09-26 用户接受；PR2–PR5 以其为前置，已满足）**、ADR-0018（保留条款）、ADR-0019（corrections 生命周期）、ADR-0020（§3 审批对象、§4 桌面端、§5 Context 纪律）  
 契约依赖：**Spec 8**（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；Spec 3（已施工，`pipeline/approvals.py`）；Spec 2（已施工，`pipeline/jobs.py`）；Spec 9（v0.7 红队 🟢、未施工——本 spec **不消费其协议进程**，仅落实其 RF-17 的遗留处置）；Spec 10（v0.5 红队 🟢、未施工——本 spec 与其无修订关系，边界见 §6.2）  
@@ -17,7 +17,7 @@
 | 2026-09-26 | 人时口径 | **审阅面可见即计时，墙钟，失焦照算**（与终端 REPL 停留口径一致，两端可比） |
 | 2026-09-26 | 零改动封板 | **保持现状：diff 为空不可封板**，按钮禁用并说明；不改 approvals 闸门格式 |
 | 2026-09-26 | ADR-0024（桌面端写产物） | **接受**（ADR 状态转「已通过」） |
-| 2026-09-26 | §6.1 全部修订请求（S8-R13~R17、RF17-C1、D-R1） | **授权**（「接收；授权」）；S8-R17 在 v0.2 按红队 🟡-5 改写前置条件处置（§1.1 🔴/🟡 表），改写后的措辞随本轮定向复审一并呈人确认 |
+| 2026-09-26 | §6.1 全部修订请求（S8-R13~R17、RF17-C1、D-R1） | **授权**（「接收；授权」）；S8-R17 在 v0.2 按红队 🟡-5 改写前置条件处置（§1.1 🔴/🟡 表），改写后的措辞经定向复审呈人，**2026-09-26 已最终确认** |
 
 **作者自报的未实测假设**（红队复审优先攻击面；正文相应处已标「约」）
 
@@ -66,7 +66,7 @@
 | 🟡-2 | SAVE_SCRIPT stdout 指纹 JSON 的无损解析没接线；普通 `JSON.parse` 丢精度后「刚存完就冲突」 | **属实**（Spec 8 R3-B1 同机理；§2.2 只规定了 argv 方向） | **采纳** | §3.1 SAVE_SCRIPT 行明写 stdout 指纹 JSON 必须经 `losslessJson` 的 `parseLossless` 解析（`mtime_ns` → bigint）；§4.3 host 接口同步；§7.2 新增 TD-5（`os.utime(ns=1790171112636927676)` 夹具对拍，沿用 Spec 8 TA-2 夹具值）；§7.3 新增 MUT-17 |
 | 🟡-3 | I2 闭集遗漏 done 的直接产物（seg wav 本体、新 attic 快照、`.apply_patch.lock` 创建与删除、applied 回写、job 事件），TI-3b 扩展后跑一次 done 必红 | **属实**（`tts.py:1830-1833` apply_patch 分支持锁；`corrections.py:436-450` 锁创建/删除；`679-704` `backup_segments` 新建快照含 copy2 manifest+wav；applied 回写经 `save_corrections_raw:410`；job 事件经 `run_pipeline` 包装） | **采纳** | §2.1 I2 闭集按实际写清单补全为五项 + events；门禁 1 增「done 全程目录树清单差异 ⊆ 闭集」断言。（**v0.2 实际未落入**：当时一批三处 edit 中另一处 oldText 不匹配导致整批回滚，作者未逐项回验，正文与 ADR-0024 §3 仍是旧枚举——红队二轮 🟡-1 抓出，v0.3 才实际落入 §2.1 与 ADR-0024 §3） |
 | 🟡-4 | MUT-8 纸面推演不成立：stdin 只收原文，「篡改 JSON 再 add」无通道，TC-9 两断言照常绿 | **属实**（纯推演：接口冻结本身已是防护，用例无处着力） | **采纳** | MUT-8 删除，防护改由契约断言承担：TC-8 增「`/voice-add` 的 stdin 按文法原文处理」对拍（同一原文经 `/voice-add` 落盘 == `append_correction(parse_correction(原文))` 直调），§7.3 注明理由 |
-| 🟡-5 | S8-R17 无视 Spec 8 自写前置（`archive` line 729「将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭」）；锁残留无恢复路径 | **属实**（line 729 原文比对一致；`apply_patch_lock`（`corrections.py:436-450`）无存活检测，SIGKILL/断电残留后 `append_correction:457` 与后续 apply-patch 双双 SystemExit） | **采纳，选 (b) 并改写前置** | 选 (b) 的理由：本设计宿主**永不**向该任务发信号（无超时、退出不杀、detached 孤儿跑完时 finally 正常清锁），SIGTERM 优雅关闭在本通道无用武之地；残余风险只有 SIGKILL/断电。S8-R17 措辞改写为「前置条件改写 + 例外」并配套：`/voice-info` 增 `apply_patch_lock: {exists, pid, pid_alive}` 确定性事实字段；面板与 runbook 写明手工清除路径（删 `03-audio/.apply_patch.lock`）；新增 TI 用例 TI-11；改写后的 S8-R17 措辞随复审呈人确认 |
+| 🟡-5 | S8-R17 无视 Spec 8 自写前置（`archive` line 729「将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭」）；锁残留无恢复路径 | **属实**（line 729 原文比对一致；`apply_patch_lock`（`corrections.py:436-450`）无存活检测，SIGKILL/断电残留后 `append_correction:457` 与后续 apply-patch 双双 SystemExit） | **采纳，选 (b) 并改写前置** | 选 (b) 的理由：本设计宿主**永不**向该任务发信号（无超时、退出不杀、detached 孤儿跑完时 finally 正常清锁），SIGTERM 优雅关闭在本通道无用武之地；残余风险只有 SIGKILL/断电。S8-R17 措辞改写为「前置条件改写 + 例外」并配套：`/voice-info` 增 `apply_patch_lock: {exists, pid, pid_alive}` 确定性事实字段；面板与 runbook 写明手工清除路径（删 `03-audio/.apply_patch.lock`）；新增 TI 用例 TI-11；改写后的 S8-R17 措辞 2026-09-26 已获人最终确认 |
 | 🟡-6 | S8-R15 自称「沿用/保留」Spec 8 门禁 14 的半句，实际把「终端 `/voice`」改成了「`--review`」——是修订不是保留 | **属实**（archive line 256/1002 原文为「须在终端 `/voice` 完成」；真实打点入口是 `tts.py:1686 write_review`，`/voice` 指令表无打点命令，grep 核实一致） | **采纳** | S8-R15 如实改写：门禁 14 的「不计人时」半句随人时落地退役；「结构化打点」半句**修订**为「须在终端 `python -m pipeline.tts <期> --review` 完成」（同时修正 Spec 8 line 256 的表述错误）；§2.3 末、§6.1 同步 |
 | 🟡-7 | 行号自查表 9 处累积偏差（含 ADR-0024 的 `approvals.py:329-330` 同错） | **属实**（逐条复核全中：85/540/1687/330-331/163-167/148-149/shared 12/六个正则/377） | **采纳** | 附表全量重核回填（v0.2 起逐行附复核方式）；ADR-0024 §4 的行号同步修正；§2.3「五个」改「六个」；§2.4 看板行号改 377；<6s 过滤的引用依据改写（见 🔵-2） |
 | 🔵-1 | 映射表漏伴随行为：终端回滚/撤回先 `player.stop()`；done 的「退出纠错」在桌面无对应 | **属实**（`cli.py:605/614` 两行 `player.stop()` 复核一致） | **采纳** | §2.3 映射表增「差异说明」列：回滚/撤回前桌面同样先停播放；done 无「退出纠错」对应（面板常驻，无模式可退）；「一一对应」措辞收窄为「六指令语义一一对应，伴随行为差异逐行列出」 |
@@ -346,7 +346,7 @@ export function flushHumanTimers(reason: "ack" | "close" | "switch" | "quit"): v
 | **S8-R14** | Spec 8 §2.3 I2 | 「显式点击」类清单扩展（§2.1）；TI-3b 清单同步 | 阻塞 |
 | **S8-R15** | Spec 8 门禁 14、RF-12、archive line 256 | 人时落地后「本次审阅不计人时」横幅与「数据源不完整」旁标退役；「结构化打点」半句**修订**（红队 🟡-6：原文「须在终端 `/voice` 完成」与真实入口不符，修订不是保留）：改为「须在终端 `python -m pipeline.tts <期> --review` 完成」，同步 archive line 256 与门禁 14 两处；RF-12 标关闭 | 阻塞 |
 | **S8-R16** | Spec 8 §2.11 | 「v1 明确不做」删去三条：02.5 封板与产物编辑（RF-13）、划词注音等深度业务组件、人时记账（RF-12）；RF-13 标关闭 | 阻塞（文字） |
-| **S8-R17** | Spec 8 §2.9、§6.1（archive line 729） | 「v1 不拉起长任务」为 `RUN_TTS_APPLY_PATCH` 开一个模板级例外：无超时、app 退出不发信号、进度经 events.jsonl 观测。**v0.2 按红队 🟡-5 增写前置条件处置**：§6.1 line 729「将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭」对本模板改写为不适用（宿主永不发信号，论证见 §3.4）；锁残留风险由 `voice-info` 的 `apply_patch_lock` 字段 + 手工清除路径（runbook 与面板文案）承接。**改写后的措辞随 v0.2 定向复审呈人再确认** | 阻塞 |
+| **S8-R17** | Spec 8 §2.9、§6.1（archive line 729） | 「v1 不拉起长任务」为 `RUN_TTS_APPLY_PATCH` 开一个模板级例外：无超时、app 退出不发信号、进度经 events.jsonl 观测。**v0.2 按红队 🟡-5 增写前置条件处置**：§6.1 line 729「将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭」对本模板改写为不适用（宿主永不发信号，论证见 §3.4）；锁残留风险由 `voice-info` 的 `apply_patch_lock` 字段 + 手工清除路径（runbook 与面板文案）承接。**改写后的措辞 2026-09-26 已获人最终确认** | 阻塞 |
 | **RF17-C1** | `pipeline/agent/cli.py:644-646` | EOF 默认由「是」改「否」（落实 Spec 9 RF-17 的既有处置授权；`tests/test_agent_cli.py` 若有覆盖该分支的期望值同步改写——期望值先跑） | 阻塞（core 改动；Spec 9 已把处置权委托给本 spec） |
 | **D-R1** | `docs/runbook/02.5-human-review.md` | 审查重点 +2 条（§2.6）；封板操作节增一句「或在 app 内 02.5 编辑器点『封板』」；`docs/WORKFLOW.md` 02.5 行同步一句 | 阻塞（文档；只许瘦身不许膨胀，合计净增 ≤6 行） |
 | **S3** | Spec 3 | **无修订**——02.5 确认路径、指纹、解封物闸门全部沿用（§2.2 已论证） | — |
