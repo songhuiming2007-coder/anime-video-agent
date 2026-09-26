@@ -19,6 +19,7 @@ import pytest
 
 from pipeline import paths
 from pipeline.agent import cli, session as session_mod
+from pipeline.agent.assembly import SessionContextTracker
 from pipeline.agent.session import (
     AgentSession,
     HumanAnswer,
@@ -665,7 +666,12 @@ def _fire_from_thread(
 
 
 def test_tl17_defer_on_non_main_thread_is_a_noop() -> None:
-    """TL-17：非主线程持有 `defer()` 时，主线程的中断仍立即浮出；非主线程退出时不抛。"""
+    """TL-17：非主线程持有 `defer()` 时，主线程的中断仍立即浮出；非主线程退出时不抛。
+
+    关键构造：**主线程自己也进延迟区**。只有在主线程有未退出的延迟区时，「深度计数
+    不分线程」才会显形：非主线程把深度抬到 1，主线程出区时深度仍是 1，中断被推迟到
+    辅助线程出区（且最终在错误的线程里抛）。否则这个变异看不出来（MUT-47）。
+    """
     interrupt = TurnInterrupt()
     worker_errors: list[BaseException] = []
     holding = threading.Event()
@@ -673,23 +679,25 @@ def test_tl17_defer_on_non_main_thread_is_a_noop() -> None:
 
     def worker() -> None:
         try:
-            with interrupt.defer():  # 非主线程：空操作，不进深度计数
+            with interrupt.defer():  # 非主线程：空操作，不计入深度
                 holding.set()
-                release.wait(3.0)
+                release.wait(5.0)
         except BaseException as exc:  # noqa: BLE001 - 非主线程绝不该抛（抛了会关掉管道）
             worker_errors.append(exc)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     assert holding.wait(2.0), "辅助线程没能持有延迟区"
+
     begun = time.time()
     with pytest.raises(KeyboardInterrupt):
-        _fire_from_thread(interrupt, delay=0.1)
-        time.sleep(1.0)  # 辅助线程仍在 defer() 里
+        with interrupt.defer():  # 主线程自己的延迟区
+            _fire_from_thread(interrupt, delay=0.1)
+            time.sleep(0.6)  # 辅助线程仍持有它的那份
     elapsed = time.time() - begun
     assert elapsed < 0.5, f"非主线程持有延迟区不许推迟主线程的中断（实测 {elapsed:.2f}s）"
     release.set()
-    thread.join(3.0)
+    thread.join(5.0)
     assert worker_errors == [], f"非主线程退出 defer() 时不许抛: {worker_errors}"
 
 
@@ -720,9 +728,14 @@ def test_tl9d_interrupt_after_wrapup_is_dropped_with_notice(
     with cli.activate_host(episode, root=root, channel=FakeChannel()) as host:
         messages: list[dict] = [{"role": "system", "content": "常驻层"}]
         host.bind_main(messages)  # 落盘看**对象同一性**，不看参数
-        outcome = cli._dispatch_agent_turn(
-            "甲", messages, episode, "creative", None, root=root, tracker=SessionContextTracker()
-        )
+        try:
+            outcome = cli._dispatch_agent_turn(
+                "甲", messages, episode, "creative", None, root=root, tracker=SessionContextTracker()
+            )
+        except KeyboardInterrupt:
+            # 逃逸的 KeyboardInterrupt 会让 pytest 直接中止整轮（不计失败），
+            # harness 就会把这条变异误报成 SURVIVED，所以在这里转成正常失败。
+            pytest.fail("「收尾后」的中断逃出了回合（MUT-49：收尾后区没吸住）")
         assert fired == ["turn_end"], "turn_end 必须真的写过（否则本用例没打到落点）"
         assert outcome["stopped"] == "done", "「收尾后」的中断不许掀桌"
         kinds = [
@@ -742,3 +755,178 @@ def test_tl9d_interrupt_after_wrapup_is_dropped_with_notice(
             "乙", messages2, episode, "creative", None, root=root, tracker=SessionContextTracker()
         )
     assert outcome2["stopped"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# TS-10：commit 的写盘与进内存在同一延迟区（门禁 10）
+# ---------------------------------------------------------------------------
+
+
+def test_ts10_commit_write_and_append_stay_in_one_region(
+    root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TS-10：在 `commit()` 的写盘与进内存之间注入中断 → 中断在提交完成后才浮出，
+    盘上与内存条数相等。
+
+    MUT-37（两步既不同在延迟区、也不补齐）：中断在两步之间浮出 → 盘上多一条、内存少一条。
+    """
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    lease = host.ensure_lease()
+    assert lease is not None
+    lease.begin("sid-ts10")
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    session.messages = []
+
+    armed = {"on": True}
+    original = session._record
+
+    def record(rec, origin=None):  # noqa: ANN001, ANN202
+        original(rec, origin)
+        if rec.get("k") == "msg" and armed["on"]:
+            armed["on"] = False
+            session.interrupt.request()  # 落点：写盘已发生、进内存还没发生
+
+    monkeypatch.setattr(session, "_record", record)
+
+    with pytest.raises(KeyboardInterrupt), host.interrupt.installed():
+        session._commit({"role": "user", "content": "甲"}, "user")
+
+    assert [m["content"] for m in session.messages] == ["甲"], \
+        "写盘之后的中断不许吃掉「进内存」那一步（MUT-37）"
+    on_disk = [
+        json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("k") == "msg"
+    ]
+    assert len(on_disk) == len(session.messages) == 1, "盘上与内存条数必须相等"
+    assert on_disk[0]["message"]["content"] == "甲"
+
+
+# ---------------------------------------------------------------------------
+# TS-11：每种回合结局下内存 ≡ 重建（门禁 10）；记忆告警的回滚/再注入/不重印
+# ---------------------------------------------------------------------------
+
+
+def _seed_messages() -> list[dict]:
+    """REPL 形态：`messages[0]` 是装配时重建的常驻层，**不落盘**——磁盘只承载 `messages[1:]`。"""
+    return [{"role": "system", "content": "常驻层"}]
+
+
+def _rebuild(episode: Path, sid: str) -> list[dict]:
+    from pipeline.agent import session_log as slog
+
+    return slog.rebuild_messages(slog.load_session(slog.read_log(episode), sid))
+
+
+def _tool_reply(call_id: str) -> dict:
+    return {"role": "assistant", "content": None, "tool_calls": [{
+        "id": call_id, "type": "function",
+        "function": {"name": "read_artifact", "arguments": json.dumps({"path": "01-topic.md"})},
+    }]}
+
+
+@pytest.mark.parametrize(
+    "outcome", ["done", "rollback", "blocked", "error", "interrupted", "checkpoint_stop"]
+)
+def test_ts11_memory_equals_rebuild_for_every_outcome(
+    root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """TS-11：各种回合结局后，内存 `messages[1:]` == `rebuild_messages(磁盘)`。"""
+    from pipeline.agent import llm as llm_mod
+    from pipeline.agent.llm import LLMError
+
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    state = {"n": 0}
+
+    def scripted(messages, tools=None, **kw):
+        state["n"] += 1
+        if outcome == "done":
+            return {"role": "assistant", "content": "好"}
+        if outcome == "rollback":  # 0 条回复 → 回滚
+            raise LLMError("首请求就炸")
+        if outcome == "blocked":
+            raise PermissionError("出网被拦截")
+        if state["n"] == 2:
+            if outcome == "interrupted":
+                raise KeyboardInterrupt
+            if outcome == "error":
+                raise LLMError("第二轮炸")
+        return _tool_reply(f"c{state['n']}")
+
+    monkeypatch.setattr(llm_mod, "chat_complete", scripted)
+    if outcome == "checkpoint_stop":
+        monkeypatch.setattr(llm_mod, "CHECKPOINT_EVERY", 1)  # 执行 1 次就问检查点（默认答 stop）
+
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    lease = host.ensure_lease()
+    assert lease is not None
+    lease.begin("sid-ts11")
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    messages = _seed_messages()
+
+    session.run_turn("看下选题", messages=messages, scope="creative", status=None,
+                     tracker=SessionContextTracker(), root=root)
+
+    assert messages[1:] == _rebuild(episode, host.sid), f"{outcome}：内存历史与重建历史不等"
+    if outcome in ("rollback", "blocked"):
+        assert messages[1:] == [], f"{outcome}：回滚的回合不许在内存里留下消息"
+    else:
+        assert messages[1:], f"{outcome}：这一轮该留下历史（空了说明用例没打到落点）"
+
+
+def test_ts11_rolled_back_memory_warning_is_reinjected_and_not_reprinted(
+    root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TS-11（记忆告警那一支）：回滚掉的回合里注入过告警 → 告警随回滚出历史、下一轮重新注入、
+    终端**不重复打印**；回滚后内存仍与重建恒等。
+
+    MUT-42（回滚只弹用户消息、注入留在内存）→ 内存与重建不等。
+    MUT-53（不回退 `memory_warn_injected`）→ 下一轮历史里没有告警。
+    """
+    from pipeline.agent import assembly as asm
+    from pipeline.agent import llm as llm_mod
+    from pipeline.agent.llm import LLMError
+
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    warn = "[记忆告警] 跨期记忆有冲突，请先人工确认"
+    monkeypatch.setattr(
+        asm, "resolve_memory_injection",
+        lambda scope, root=None, config_path=None: (
+            asm.InjectedDoc(rel_path="memory/x.md", abs_path=episode / "mem.md",
+                            content=warn, token_estimate=len(warn) // 4),
+            True,
+        ),
+    )
+    state = {"n": 0}
+
+    def scripted(messages, tools=None, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise LLMError("首请求就炸")  # 这一轮注入告警后立刻回滚
+        return {"role": "assistant", "content": "好"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", scripted)
+
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    lease = host.ensure_lease()
+    assert lease is not None
+    lease.begin("sid-ts11w")
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    messages = _seed_messages()
+    tracker = SessionContextTracker()  # 两个回合共用：告警标志的存续才看得出来
+
+    def warns_printed() -> int:
+        return len([p for _k, p in host.channel.shown if warn in str(p.get("text", ""))])
+
+    session.run_turn("甲", messages=messages, scope="creative", status=None,
+                     tracker=tracker, root=root)
+    assert messages[1:] == [], "回滚的回合不许在内存里留下任何消息（含告警）"
+    assert messages[1:] == _rebuild(episode, host.sid), "回滚后内存必须与重建恒等（MUT-42）"
+    assert warns_printed() == 1, "告警该打印一次"
+    assert tracker.memory_warn_injected is False, "告警标志必须随回滚回退"
+
+    session.run_turn("乙", messages=messages, scope="creative", status=None,
+                     tracker=tracker, root=root)
+    assert any(warn in str(m.get("content")) for m in messages[1:]), \
+        "回滚掉的告警必须在下一轮重新注入（MUT-53）"
+    assert messages[1:] == _rebuild(episode, host.sid)
+    assert warns_printed() == 1, "告警不许重复打印（§2.3 第 3 条：printed 锁存不回退）"

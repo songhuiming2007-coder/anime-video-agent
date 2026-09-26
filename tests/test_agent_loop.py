@@ -538,36 +538,66 @@ def test_tl9_interrupt_during_wrapup_aborts_it(root: Path, monkeypatch) -> None:
 
 
 def test_tl9c_interrupt_while_stopping_does_not_raise(root: Path, monkeypatch) -> None:
-    """TL-9c：「停止中」（补合成结果的各次 commit 之间）注入中断 → 不抛、合成结果齐全。"""
+    """TL-9c：「停止中」（补合成结果的各次 commit 之间）注入中断 → 不抛、合成结果齐全。
+
+    真 `TurnInterrupt` + 真 SIGINT。替身版（手工 poke `pending`）测不到这条：它的
+    commit 没有延迟区，「停止中」的吸收区拿掉也不会红（MUT-48）。这里把 `commit` 包成
+    与生产 `AgentSession._commit` 同契约（临界区 = `defer()`），信号就落在延迟区里，
+    再按吸收标志丢弃。
+    """
+    interrupt = TurnInterrupt()
+    n = 24  # 一轮 24 个并行只读调用：合成结果得一条不少
     reply = {
         "role": "assistant",
         "content": None,
         "tool_calls": [
             {"id": f"e{i}", "type": "function",
              "function": {"name": "read_artifact", "arguments": json.dumps({"path": f"e{i}.md"})}}
-            for i in range(3)
+            for i in range(n)
         ],
     }
     script = Script([reply, {"role": "assistant", "content": "收尾"}])
     monkeypatch.setattr(llm_mod, "chat_complete", script)
-    patch_execute(monkeypatch, handler=lambda name, args, ctx: (_ for _ in ()).throw(KeyboardInterrupt()))
+    patch_execute(monkeypatch, handler=lambda name, args, ctx: (
+        time.sleep(0.4), {"ok": True, "result": {}})[1])  # 第一次执行停在这里，等第一次中断
 
-    messages = [{"role": "user", "content": "三个一起做"}]
-    control = build_control(messages, interrupt=Interrupt())
-    # 「停止中」：第一条合成结果写完后再来一次中断，只置标志、不抛
-    original_commit = control.commit
+    messages = [{"role": "user", "content": "全读一遍"}]
+    control = build_control(messages, interrupt=interrupt)
+    base_commit = control.commit
 
     def commit(message, origin):
-        original_commit(message, origin)
-        if message.get("role") == "tool":
-            control.interrupt.pending += 1  # 不抛，只置标志（§2.2 状态表「停止中」）
+        # 与生产 `_commit` 同契约：写盘 → 进内存在一个延迟区内；合成期间再慢一点，
+        # 把「停止中」那个窗口撑开到能稳定命中
+        with interrupt.defer():
+            base_commit(message, origin)
+            if origin == "synthetic_tool":
+                time.sleep(0.03)
 
     control.commit = commit
-    outcome = run(messages, root, control)
+
+    def fire() -> None:
+        time.sleep(0.15)
+        os.kill(os.getpid(), signal.SIGINT)  # 第一次：执行中
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGINT)  # 第二次：停止中（合成期间）
+
+    thread = threading.Thread(target=fire, daemon=True)
+    thread.start()
+    try:
+        outcome = run(messages, root, control)
+    except KeyboardInterrupt:
+        pytest.fail("「停止中」的中断逃出了工具循环（MUT-48：吸收区没起作用）")
+    finally:
+        # 迟到的信号挡在用例之外（否则会打到 pytest 自己）
+        previous = signal.signal(signal.SIGINT, lambda *_args: None)
+        signal.signal(signal.SIGINT, previous)
+        thread.join(3.0)
 
     assert outcome["stopped"] == "interrupted"
     assert outcome["wrapup"] == "ok"
-    assert len(tool_messages(messages)) == 3
+    assert len(tool_messages(messages)) == n, "合成结果必须齐全（吸收区丢掉的是中断，不是结果）"
+    assert interrupt._dropped >= 1, "第二次中断应被「停止中」的吸收区丢弃"
+    assert interrupt._pending == 0
     assert_paired(messages)
 
 
