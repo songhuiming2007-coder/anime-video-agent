@@ -482,6 +482,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "抓取单个 URL 的网页净文（只读，升级链第一级静态获取）。"
             "限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。"
+            "返回含 `links`（本页可跟进链接清单，同站优先，去重，≤200 条）与"
+            " `links_truncated`；清单被截断或静态被挡时升级 crawl。"
         ),
         "parameters": {
             "type": "object",
