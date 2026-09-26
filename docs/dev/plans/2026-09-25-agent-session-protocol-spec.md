@@ -55,6 +55,8 @@
 
 **v0.8 并入（2026-09-26）**：Spec 10 §6.1 的 S9-R1~R4 全部并入（S9-R1/S9-R2/S9-R4 → §3.1 与 TP-12/TP-15，S9-R4 顺序条款 → §4.7，S9-R3 → §6.6 H-6）；四条最终措辞已于 2026-09-26 获人确认。PR3 施工前须经红队只限这些落点的定向复核。
 
+**v0.8 定向复核（2026-09-26，独立验收评审，对照 Spec 10 §3.2/§6.1 原文逐字核对）**：四处落点（① §3.1 `tool` 帧三键定义与 `history` 工具条规则、② §3.1 `rid` 条款、③ §4.7 末尾顺序与 §3.1 `stop_points` 的 `turn_id`、TP-12/TP-15、④ §6.6 H-6 含 `aborted` 例外）均与 S9-R1~R4 最终措辞语义一致，无语义级偏差；措辞级偏差 1 处（§3.1 `stop_points` 行 `turn_id` 括注歧义）已由复核方直接修订。结论 🟢，PR3 可动工。
+
 ---
 
 ## 2. 关键设计决策（含代码现状证据）
@@ -329,7 +331,7 @@ Spec 1 实际保证的是：常驻层会话内字节级恒定（只在 scope 变
 | `request` | `request_id`、`kind`、`turn_id`、`title`、`card_text`、`fields`、`options`、`feedback_allowed` |
 | `request_closed` | `request_id`、`reason ∈ {answered, voided}`、`decision` |
 | `command_result` | `name`、`ok`、`text`（`memory_ack` 时为 `ack_external` 本次打印的原文，🟡-12） |
-| `stop_points` | `items: [{approval_id, type, created_at, artifacts: [path], options, note, answer_via: "decision_bar"}]`、`turn_id`（本回合的 `turn_id`；回合外发出的 `ready` 时那帧为 `null`）（S9-R4，v0.8 并入） |
+| `stop_points` | `items: [{approval_id, type, created_at, artifacts: [path], options, note, answer_via: "decision_bar"}]`、`turn_id`（本回合的 `turn_id`；回合外（`ready` 时）发出的那帧为 `null`）（S9-R4，v0.8 并入） |
 | `turn_finished` | `turn_id`、`stopped`、`llm_calls`、`tool_calls`、`tool_executions`、`duplicates_rejected`、`checkpoints`、`wrapup`、`duration_s`、`prompt_chars` |
 | `log` | `stream: "stdout"`、`text` |
 | `notice` | `level`、`code`、`text` |
