@@ -731,9 +731,11 @@ class AgentSession:
         """回滚 = 恢复到回合开始时的快照（§2.3 第 3 条）。"""
         length, saved_tracker = snapshot
         del messages[length:]
+        # §2.3 第 3 条 / 🔵-1 / 🟡-6：**只有**显示锁存不回退（`memory_warn_printed`，
+        # 免得终端重复打印同一条告警）；告警消息本身随回滚出历史，下一轮重新注入。
         for name in (
             "injected_paths", "active_step_key", "resident_prompt", "active_scope",
-            "memory_warn_injected", "memory_warn_printed",
+            "memory_warn_injected",
         ):
             value = getattr(saved_tracker, name)
             setattr(tracker, name, set(value) if isinstance(value, set) else value)

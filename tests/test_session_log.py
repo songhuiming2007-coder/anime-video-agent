@@ -303,3 +303,35 @@ def test_ts13_sessions_list_reads_without_truncating_under_foreign_lock(ep: Path
     assert (ep / slog.LOG_NAME).read_bytes() == before
     # 持锁进程被杀后立即可取（持锁者死亡 = 自动释放，进程级 flock 的性质）
     assert slog.EpisodeLease.acquire(ep) is not None
+
+
+# ---------------------------------------------------------------------------
+# TS-9：观测层不参与状态（门禁 12）
+# ---------------------------------------------------------------------------
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def test_ts9_status_json_does_not_read_the_session_log(ep: Path) -> None:
+    """TS-9：删掉 `session.jsonl` 前后 `python -m pipeline.status <期> --json` 逐字节相同。
+
+    观测层（status）不许读会话日志，否则「观测」就参与了状态。走真子进程 + 真 argv；
+    期目录用 tmp 里的绝对路径（`status.main` 只按 argv 解析，不碰真 data）。
+    MUT-26 给 status.py 加一行读会话日志 → 输出就不同。
+    """
+    _write(ep, [_start("sid-a"), _user("t1", "甲"), _assistant("t1", "乙")])
+    log = ep / slog.LOG_NAME
+    assert log.exists()
+
+    def status_json() -> bytes:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pipeline.status", str(ep), "--json"],
+            capture_output=True, cwd=REPO,
+        )
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")[-800:]
+        return proc.stdout
+
+    before = status_json()
+    assert before.strip().startswith(b"{"), f"输出不是 JSON（这条断言会空转）：{before[:120]!r}"
+    log.unlink()
+    assert status_json() == before, "status --json 的输出不许因为会话日志的有无而改变（MUT-26）"

@@ -415,6 +415,50 @@ MUTATIONS: list[dict] = [
              '        written = 0\n'
              '        while written < len(data):\n'
              '            written += os.write(self._fd, data[written:])\n')},
+    # ---- Spec 9 §7.2 门禁 4 的中断配对（MUT-45/47/48/49）----
+    {"id": "MUT-45", "guard": "同一回合内尚未浮出的中断合并为一次", "file": SESSION,
+     "old": '                pending, self._pending = self._pending, 0\n',
+     "new": '                pending = self._pending  # MUT-45：不清零 → 后续延迟区还会再浮出\n'},
+    {"id": "MUT-47", "guard": "延迟区深度与待处理中断只属于主线程", "file": SESSION,
+     "old": '        if not self._is_main():\n',
+     "new": '        if False:  # MUT-47：不分线程 → 非主线程也能污染深度\n'},
+    {"id": "MUT-48", "guard": "「停止中」到达的中断只置标志、不抛", "file": LLM,
+     "old": '    with interrupt.absorb():  # type: ignore[union-attr]\n        yield\n',
+     "new": '    yield  # MUT-48：去掉「停止中」的吸收区\n'},
+    {"id": "MUT-49", "guard": "「收尾后」到达的中断被丢弃，不带进空闲态", "file": SESSION,
+     "old": ('        with self.interrupt.absorbed():\n'
+             '            self._record({\n'
+             '                "k": "turn_end",\n'),
+     "new": ('        if True:  # MUT-49：收尾后的中断不再被吸收\n'
+             '            self._record({\n'
+             '                "k": "turn_end",\n')},
+    # ---- Spec 9 §7.2：TS-9/TS-10 的配对杀手（门禁 10、12）----
+    {"id": "MUT-26", "guard": "status.py 不读 session.jsonl（观测层不参与状态）",
+     "file": "pipeline/status.py",
+     "old": ('    if args.json:\n'
+             '        print(json.dumps(asdict(status), ensure_ascii=False, indent=2))\n'),
+     "new": ('    if args.json:\n'
+             '        extra = {}  # MUT-26：观测层读会话日志\n'
+             '        _log = (target_path / "session.jsonl") if target_path is not None else None\n'
+             '        if _log is not None and _log.exists():\n'
+             '            extra["session_log_bytes"] = _log.stat().st_size\n'
+             '        print(json.dumps({**asdict(status), **extra}, ensure_ascii=False, indent=2))\n')},
+    {"id": "MUT-42", "guard": "回滚丢弃本轮**全部**消息（含注入）", "file": SESSION,
+     "old": '        del messages[length:]\n',
+     "new": '        del messages[length:length + 1]  # MUT-42：只弹用户消息，注入留在内存\n'},
+    {"id": "MUT-53", "guard": "回滚把 memory_warn_injected 也回退（下一轮重新注入）", "file": SESSION,
+     "old": '            "memory_warn_injected",\n',
+     "new": '            # MUT-53：不回退 memory_warn_injected\n'},
+    {"id": "MUT-37", "guard": "commit 的写盘与进内存在同一延迟区", "file": SESSION,
+     "old": ('        with self.interrupt.defer():\n'
+             '            try:\n'
+             '                self._record(record, origin)\n'
+             '            except KeyboardInterrupt:\n'
+             '                self.messages.append(message)\n'
+             '                raise\n'
+             '            self.messages.append(message)\n'),
+     "new": ('        self._record(record, origin)  # MUT-37：两步既不同在延迟区，也不补齐\n'
+             '        self.messages.append(message)\n')},
     {"id": "MUT-50", "guard": "协议启动/--continue 一律读文件前取租约", "file": PROTO,
      "old": ('    lease = None\n'
              '    if ep_dir is not None:\n'
