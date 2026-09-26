@@ -23,60 +23,62 @@ from pipeline.agent.web import (
     search_web,
 )
 
-DDG_FIXTURE_HTML = """<!DOCTYPE html>
+SO_FIXTURE_HTML = """<!DOCTYPE html>
 <html>
-<head><title>DuckDuckGo Search</title></head>
+<head><title>一色彩羽_360搜索</title></head>
 <body>
-  <div class="results">
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbgm.tv%2Fsubject%2F292970&amp;rut=abc">
-          葬送的芙莉莲 - Bangumi 番组计划
-        </a>
-      </h2>
-      <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbgm.tv%2Fsubject%2F292970">
-        电视动画《葬送的芙莉莲》改编自山田钟人原作、阿部司作画的同名漫画。
-      </a>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fzh.moegirl.org.cn%2F%25E8%258A%2599%25E8%258E%2589%25E8%258E%25B2">
-          芙莉莲 - 萌娘百科
-        </a>
-      </h2>
-      <div class="result__snippet">
-        辛美尔逝世五十年后，芙莉莲再次踏上旅途。
+  <ul class="result">
+    <li class="res-list">
+      <div id="mohe-biu_graph" class="g-mohe">
+        <style>#mohe-biu_graph .mh-long { width: 540px; }</style>
+        <h3 class="g-title"><a href="https://baike.so.com/doc/8402832-32396489.html"><em>一色彩羽</em><span>百科</span></a></h3>
       </div>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="https://example.org/frieren-review">
-          芙莉莲剧评长文
-        </a>
-      </h2>
-      <div class="result__snippet">
-        第一集关于寿命论与记忆的展开。
+    </li>
+    <li class="res-list">
+      <h3 class="res-title">
+        <a href="https://ai.so.com/search/so863814e0bc75d452d2fc420b6c9dd2a1" data-replaceurl="https://wenda.so.com/q/1608159187210264" target="_blank"><em>一色彩羽</em>的介绍</a>
+      </h3>
+      <div class="res-rich res-rich-wenda_box">
+        <div class="best-ans">
+          <span class="res-list-summary"><em>一色彩羽是轻小说作品《我的青春恋爱物语果然有问题。</em>》及其衍生作品中女主角之一。</span>
+        </div>
       </div>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="https://example.org/frieren-ep2">
-          第二集考据
-        </a>
-      </h2>
-      <div class="result__snippet">
-        蓝月草的隐喻分析。
+    </li>
+    <li class="res-list">
+      <h3 class="res-title">
+        <a href="https://www.so.com/link?m=eTXclcn2" data-mdurl="https://www.bilibili.com/read/cv3434398/" target="_blank">if线:<em>一色彩羽</em> - 哔哩哔哩</a>
+      </h3>
+      <div class="res-rich so-rich-image clearfix">
+        <div class="res-comm-con">
+          <span class="res-list-summary">美少女,没错她正是现任高三的学生会长——<em>一色</em>彩羽。</span>
+        </div>
       </div>
-    </div>
-  </div>
+    </li>
+    <li class="res-list">
+      <h3 class="res-title ">
+        <a href="https://www.so.com/link?m=uOpIru5Z" data-mdurl="https://www.zhihu.com/topic/20598738/questions" target="_blank"><em>一色彩羽</em>- 知乎</a>
+      </h3>
+      <p class="res-desc"><span class="gray g-c-gray">2026年3月10日&nbsp;-&nbsp;</span><em>一色彩羽</em>是在轻小说作品《我的青春恋爱物语果然有问题》中登场的人物，扮演天然系学妹。</p>
+    </li>
+    <li class="res-list">
+      <h3 class="res-title">
+        <a href="https://baike.so.com/doc/8402832-32396489.html" target="_blank"><em>一色彩羽</em>_360百科</a>
+      </h3>
+      <div class="res-rich res-baike clearfix">
+        <div class="res-comm-con">
+          <p class="res-desc">比企谷八幡对一色彩羽的评价是完全不可爱的小町。</p>
+        </div>
+      </div>
+    </li>
+  </ul>
 </body>
 </html>
 """
 
-EMPTY_DDG_FIXTURE_HTML = """<!DOCTYPE html>
+EMPTY_SO_FIXTURE_HTML = """<!DOCTYPE html>
 <html>
 <body>
-  <div class="no-results">未找到任何相关结果</div>
+  <div class="so-tips">抱歉，未找到相关结果。</div>
 </body>
 </html>
 """
@@ -91,7 +93,7 @@ def _make_config(
     trusted_fake_ip_ranges: tuple[Any, ...] = (),
 ) -> WebConfig:
     return WebConfig(
-        search_endpoint="https://html.duckduckgo.com/html/",
+        search_endpoint="https://www.so.com/s",
         search_query_param="q",
         api_key=api_key,
         api_key_param=api_key_param,
@@ -144,27 +146,45 @@ class _FakeResponse:
 
 
 def test_search_parses_results_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
-    """T1 (PR1): 搜索解析 fixture HTML，uddg 解码与 limit 截断。"""
+    """T1 (PR1): 搜索解析 fixture HTML（360 搜索 DOM），data-mdurl/data-replaceurl/href 解码与 limit 截断。"""
     _pin_public_dns(monkeypatch)
     calls: list[Any] = []
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append((req, timeout))
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(SO_FIXTURE_HTML.encode("utf-8"))
 
-    out = search_web("芙莉莲", limit=3, config=_make_config(), opener=fake_opener)
+    out = search_web("一色彩羽", limit=3, config=_make_config(), opener=fake_opener)
     assert len(calls) == 1
-    assert out["query"] == "芙莉莲"
-    assert out["provider"] == "https://html.duckduckgo.com/html/"
+    assert out["query"] == "一色彩羽"
+    assert out["provider"] == "https://www.so.com/s"
     assert out["truncated"] is True
     assert len(out["results"]) == 3
     assert out["results"][0] == {
-        "title": "葬送的芙莉莲 - Bangumi 番组计划",
-        "url": "https://bgm.tv/subject/292970",
-        "snippet": "电视动画《葬送的芙莉莲》改编自山田钟人原作、阿部司作画的同名漫画。",
+        "title": "一色彩羽的介绍",
+        "url": "https://wenda.so.com/q/1608159187210264",
+        "snippet": "一色彩羽是轻小说作品《我的青春恋爱物语果然有问题。》及其衍生作品中女主角之一。",
     }
-    assert out["results"][1]["url"] == "https://zh.moegirl.org.cn/芙莉莲"
-    assert out["results"][2]["url"] == "https://example.org/frieren-review"
+    assert out["results"][1] == {
+        "title": "if线:一色彩羽 - 哔哩哔哩",
+        "url": "https://www.bilibili.com/read/cv3434398/",
+        "snippet": "美少女,没错她正是现任高三的学生会长——一色彩羽。",
+    }
+    assert out["results"][2] == {
+        "title": "一色彩羽- 知乎",
+        "url": "https://www.zhihu.com/topic/20598738/questions",
+        "snippet": "2026年3月10日 - 一色彩羽是在轻小说作品《我的青春恋爱物语果然有问题》中登场的人物，扮演天然系学妹。",
+    }
+
+    # limit=5 时返回全部 4 条（含第 4 条无 data-mdurl 时回落 href）且 truncated=False
+    out_all = search_web("一色彩羽", limit=5, config=_make_config(), opener=fake_opener)
+    assert out_all["truncated"] is False
+    assert len(out_all["results"]) == 4
+    assert out_all["results"][3] == {
+        "title": "一色彩羽_360百科",
+        "url": "https://baike.so.com/doc/8402832-32396489.html",
+        "snippet": "比企谷八幡对一色彩羽的评价是完全不可爱的小町。",
+    }
 
 
 def test_fetch_strips_html_and_caps_size(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,7 +261,7 @@ def test_egress_blocks_before_send_direct(monkeypatch: pytest.MonkeyPatch) -> No
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(SO_FIXTURE_HTML.encode("utf-8"))
 
     cfg = _make_config()
     for bad_query in (
@@ -308,8 +328,8 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     dirty_search_html = """
     <html><body>
-      <a class="result__a" href="https://example.org/1">引用 agent.local.json 的文章</a>
-      <div class="result__snippet">文中提到了 cloud.local.json 和 03-audio/voice.json</div>
+      <h3 class="res-title"><a href="https://example.org/1">引用 agent.local.json 的文章</a></h3>
+      <p class="res-desc">文中提到了 cloud.local.json 和 03-audio/voice.json</p>
     </body></html>
     """
     s_out = search_web(
@@ -393,7 +413,7 @@ def test_fetch_rejects_bad_scheme_and_private_ip(
     )
     def _search_guard_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         search_guard_calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(SO_FIXTURE_HTML.encode("utf-8"))
 
     with pytest.raises(PermissionError):
         search_web("芙莉莲", config=cfg, opener=_search_guard_opener)
@@ -657,7 +677,7 @@ def test_web_config_local_override_and_credential_hygiene(
 
     def search_opener(req: Any, timeout: float = 15.0) -> _FakeResponse:
         captured_urls.append(req.full_url)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(SO_FIXTURE_HTML.encode("utf-8"))
 
     s_res = search_web("frieren", root=tmp_path, opener=search_opener)
     assert len(captured_urls) == 1
@@ -699,7 +719,7 @@ def test_search_empty_parse_raises_honestly(monkeypatch: pytest.MonkeyPatch) -> 
             "不存在的词",
             config=_make_config(),
             opener=lambda req, timeout=20.0: _FakeResponse(
-                EMPTY_DDG_FIXTURE_HTML.encode("utf-8")
+                EMPTY_SO_FIXTURE_HTML.encode("utf-8")
             ),
         )
 
@@ -772,7 +792,7 @@ def test_egress_blocks_via_execute_tool(monkeypatch: pytest.MonkeyPatch) -> None
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(SO_FIXTURE_HTML.encode("utf-8"))
 
     monkeypatch.setattr(web, "_default_opener", lambda *_: fake_opener)
     ctx = ToolContext(scope="creative")

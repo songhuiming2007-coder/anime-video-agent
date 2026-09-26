@@ -1,6 +1,6 @@
 {
   "search": {
-    "endpoint": "https://html.duckduckgo.com/html/",
+    "endpoint": "https://www.so.com/s",
     "query_param": "q",
     "api_key_env": "",
     "api_key_param": "",
