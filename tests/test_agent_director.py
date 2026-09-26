@@ -726,7 +726,7 @@ def test_repl_handles_permission_error_and_rolls_back_user_message(tmp_path: Pat
     ep.mkdir(parents=True)
     (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
 
-    def mock_run_tool_loop(messages, ctx, approve):
+    def mock_run_tool_loop(messages, ctx, approve, **_):
         raise PermissionError("命中受限出网子串: cloud.local.json")
 
     monkeypatch.setattr("pipeline.agent.llm.run_tool_loop", mock_run_tool_loop)
@@ -748,7 +748,7 @@ def test_repl_handles_llm_error_and_rolls_back_user_message(tmp_path: Path, monk
     ep.mkdir(parents=True)
     (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
 
-    def mock_run_tool_loop(messages, ctx, approve):
+    def mock_run_tool_loop(messages, ctx, approve, **_):
         raise LLMError("API 500: Internal Server Error")
 
     monkeypatch.setattr("pipeline.agent.llm.run_tool_loop", mock_run_tool_loop)
@@ -778,7 +778,7 @@ def test_repl_non_normal_stop_never_echoes_raw_tool_json(tmp_path: Path, monkeyp
         "（read_status×50）；收尾调用失败（LLMError: boom）。已执行的工具结果保留在会话中。"
     )
 
-    def mock_run_tool_loop(messages, ctx, approve):
+    def mock_run_tool_loop(messages, ctx, approve, **_):
         return {
             "stopped": "checkpoint_stop",
             "iterations": 50,

@@ -3,6 +3,7 @@
 输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。
 
 ava [01-smoke] (creative) > [tool] read_artifact 01-topic.md
+[中断] 本轮已停止，已执行的工具结果保留在会话中。
 
 收尾：被中断时已读完 01-topic.md，还缺三幕骨架。
 

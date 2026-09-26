@@ -54,6 +54,7 @@ CARD = "pipeline/agent/status_card.py"
 DOC = "config/agent/scopes/director.md"
 TOOLS_JSON = "config/agent/tools.json"
 IDEA_DOC = "config/agent/scopes/idea.md"
+SESSION = "pipeline/agent/session.py"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -87,13 +88,12 @@ MUTATIONS: list[dict] = [
              '    return re.sub(r"\\s+", " ", cleaned).strip() or "无"'),
      "new": '    return command'},
     # ---- M7: 降级路径显式可辨 ----
-    {"id": "M7", "guard": "LLM 缺失显式降级", "file": CLI,
-     "old": ('        deg = local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")\n'
-             '        print(f"\\n{deg[\'content\']}")\n'
-             '        return {"stopped": "degraded", "messages": messages, "final": deg}'),
-     "new": ('        deg = {"role": "assistant", "content": "您好，当前服务暂时不可用，请稍后再试。"}\n'
-             '        print(f"\\n{deg[\'content\']}")\n'
-             '        return {"stopped": "degraded", "messages": messages, "final": deg}')},
+    {"id": "M7", "guard": "LLM 缺失显式降级", "file": SESSION,
+     # Spec 9 §6.1 重锚：降级分支搬进内核（打印移到 TtyChannel），返回值不再是 dict
+     "old": ('        if load_llm_config(root) is None:\n'
+             '            return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")\n'),
+     "new": ('        if load_llm_config(root) is None:\n'
+             '            return {"role": "assistant", "content": "您好，当前服务暂时不可用，请稍后再试。"}\n')},
     # ---- M8: stderr_tail 回喂 ----
     {"id": "M8", "guard": "非零退出 stderr_tail 回喂", "file": TOOLS,
      "old": '        "stderr_tail": executed_job.stderr_tail,\n        "truncated": executed_job.truncated,',
@@ -139,27 +139,24 @@ MUTATIONS: list[dict] = [
      "old": '    danger_str = " ".join(danger_tags) if danger_tags else "无"',
      "new": '    danger_tags = []\n    danger_str = " ".join(danger_tags) if danger_tags else "无"'},
     # ---- M15: 预校验优先 + 具体拒因 ----
-    {"id": "M15a", "guard": "run_pipeline 预校验先于弹卡", "file": CLI,
-     "old": ('    argv: list[str] | None = None\n'
-             '    if name == "run_pipeline":\n'
-             '        cmd_str = str(args.get("command", ""))\n'
-             '        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)\n'
+    {"id": "M15a", "guard": "run_pipeline 预校验先于弹卡", "file": SESSION,
+     # Spec 9 §6.1 重锚：确定性审查搬进 session.review_tool_call（打印/记账在调用方）
+     "old": ('        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)\n'
              '        if not outcome["ok"]:\n'
-             '            reason = outcome["message"]\n'
-             '            print(f"[REJECT] {reason}")\n'
-             '            return (False, reason)\n'
-             '        argv = outcome["argv"]'),
-     "new": '    argv: list[str] | None = None'},
+             '            # 先走既有的白名单/dry-run 拒因（--force 全量覆盖等），文案不许被下面的模型规则截走\n'
+             '            return ToolVerdict("reject", reason=outcome["message"])\n'
+             '        argv = list(outcome["argv"])\n'),
+     "new": ''},
     {"id": "M15b", "guard": "拒因具体回喂（非固定文案）", "file": LLM,
      "old": '    return {"ok": False, "error": decision.reason or "人类拒绝执行该工具调用"}\n',
      "new": '    return {"ok": False, "error": "人类拒绝执行该工具调用"}\n'},
     # ---- M16: side_effect fail-closed 三层 ----
-    {"id": "M16-1", "guard": "审批分流从注册表读（非枚举拒绝名单，fail-open）", "file": CLI,
+    {"id": "M16-1", "guard": "审批分流从注册表读（非枚举拒绝名单，fail-open）", "file": SESSION,
      "old": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)\n'
              '    if not side_effect:'),
      "new": ('    _needs_approval = ("run_pipeline", "write_episode_file")\n'
              '    if name not in _needs_approval:')},
-    {"id": "M16-2", "guard": "未声明 side_effect 默认弹卡", "file": CLI,
+    {"id": "M16-2", "guard": "未声明 side_effect 默认弹卡", "file": SESSION,
      "old": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)\n'
              '    if not side_effect:'),
      "new": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", False)\n'
@@ -184,17 +181,15 @@ MUTATIONS: list[dict] = [
              '                messages.append({"role": "user", "content": "子循环污染"})\n'
              '                run_agent_loop(ep_dir, scope_mode="creative", extra_prompt="", root=root)')},
     # ---- M20: 未注册/超 scope 预校验 ----
-    {"id": "M20", "guard": "未注册/超 scope 工具预校验", "file": CLI,
+    {"id": "M20", "guard": "未注册/超 scope 工具预校验", "file": SESSION,
      "old": ('    if name not in TOOL_SCHEMAS:\n'
-             '        reason = f"未注册的工具 \'{name}\'（工具清单不现场发明）"\n'
-             '        print(f"[REJECT] {reason}")\n'
-             '        return (False, reason)\n'
+             '        return ToolVerdict("reject", reason=f"未注册的工具 \'{name}\'（工具清单不现场发明）")\n'
              '\n'
              '    allowed = tool_names_for_scope(scope, root)\n'
              '    if name not in allowed:\n'
-             '        reason = f"工具 \'{name}\' 不在 {scope} scope 白名单内（当前放行: {allowed}）"\n'
-             '        print(f"[REJECT] {reason}")\n'
-             '        return (False, reason)'),
+             '        return ToolVerdict(\n'
+             '            "reject", reason=f"工具 \'{name}\' 不在 {scope} scope 白名单内（当前放行: {allowed}）"\n'
+             '        )'),
      "new": '    pass'},
     # ---- M21: Ctrl-C 中断杀子进程 + 排水线程 daemon（PR6 Popen 化回归 + N28 进程组强杀） ----
     {"id": "M21a", "guard": "Ctrl-C / SIGINT 中断时 kill 子进程组", "file": JOBS,
