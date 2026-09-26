@@ -1,0 +1,10 @@
+
+已就绪：01-smoke
+输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。
+
+[降级模式·本地纯指示] LLM 不可用（缺少 config/agent.json 或环境变量密钥）。
+本回合不生成内容，请人工按 creative scope 的清单逐条走：
+  1. 01-topic.md：番 / 类型 / 锚点 / 张力 是否填齐（张力是唯一编辑判断，不许代填）；
+  2. 02-script.draft.md：写完跑 `python -m pipeline.check_script` 至全绿；
+  3. 到达人工停机点（02.5 / 03.5 / 05 / 09）必须停下等人拍板。
+[退出]

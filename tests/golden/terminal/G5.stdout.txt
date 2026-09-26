@@ -1,0 +1,7 @@
+
+已就绪：01-smoke
+输入 /help 查看命令，输入 /status 查看状态，输入 /quit 退出。
+[REJECT] 拒绝执行：禁止在 ava 中使用 --force 全量覆盖！请使用增量参数：--redo <段号> 或 --apply-patch。
+
+那我改用 --redo。
+[退出]
