@@ -5,6 +5,7 @@
 > **开工第一指令（自然语言优先）**：
 > ```bash
 > ava <期号>                                      # 宿主入口：与 AI 制片总监连续对话（ava idea 选题发散）
+> ava <期号> --continue [<会话号前缀>]             # 接着本期上一段会话继续（ava <期号> --sessions 列出全部会话）
 > python -m pipeline.status data/episodes/<期号>  # 底层排查参考：同一份状态卡，无宿主包装
 > ```
 > 1. **直接说白话**：`ava <期>` 进当期对话；`ava idea` 进无期选题会话；`ava new <名>` 建期并进对话。
