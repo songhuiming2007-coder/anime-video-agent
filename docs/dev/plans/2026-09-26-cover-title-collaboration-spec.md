@@ -21,11 +21,11 @@
 
 | 编号 | 假设 | 状态 / 退路 |
 |---|---|---|
-| A1 | 正式字体文件的形态（文件名、字重、是否 ttc） | 机制已用 `/System/Library/Fonts/Hiragino Sans GB.ttc` 实测（2026-09-26 scratchpad）；正式字体待人放置后回填 config 默认值与渲染基线。**注意实测发现**：同一 ttc 不同 index 是不同家族（index=0 `Hiragino Sans GB`、index=1 `.Hiragino Sans GB Interface`），故 config 必须钉 `font_index` |
-| A2 | 渲染基线 sha256 在正式字体 + Pillow 12.3.0 下可稳定复现 | 机制已实测：同参数跨两个独立进程渲染 sha256 全同（`3e606ec3…`，scratchpad）；正式基线值 PR1 首日先跑回填 |
+| A1 | 正式字体文件的形态（文件名、字重、是否 ttc） | 机制已用 `/System/Library/Fonts/Hiragino Sans GB.ttc` 实测（2026-09-26 scratchpad）；正式字体待人放置后回填 config 默认值与渲染基线。**注意实测发现**：同一 ttc 不同 index 是不同家族（index=0 `Hiragino Sans GB`、index=1 `.Hiragino Sans GB Interface`），故 config 必须钉 `font_index`。**2026-09-26 PR1 已回填**：正式字体 = 思源黑体 SC Bold（`data/fonts/SourceHanSansSC-Bold.otf`，Adobe source-han-sans 官方 release `OTF/SimplifiedChinese/`，SIL OFL 1.1，16963428 字节，sha256 `df2b90f5bcc6d01dfc964cec5f6d535d6b6aebd26ed7fd79a9c1b3f2112fcb6b`）；config 钉 `cover.font_file` + `cover.font_index=0`，实测家族名 `('Source Han Sans SC', 'Bold')` |
+| A2 | 渲染基线 sha256 在正式字体 + Pillow 12.3.0 下可稳定复现 | 机制已实测：同参数跨两个独立进程渲染 sha256 全同（`3e606ec3…`，scratchpad）；正式基线值 PR1 首日先跑回填。**2026-09-26 PR1 已回填**：正式基线（1280×720 夹具 + 主标 96 号 tl + 副标 40 号 bl 含描边）= `c0f96a584668913d01a9363ad4a567eba954bdaaf30169a53d85d2d4d3ec51c7`，跨两个独立子进程实测一致，写入 `tests/test_cover_edit.py` 的 `BASELINE_SHA256` |
 | A3 | Electron 44 sandbox renderer 里拖拽 `DataTransferItem.getAsFile().arrayBuffer()` 可用 | Chromium 标准 API，未实测；退路：`<input type="file">` 同样给出 `File` 对象，拖拽只是便利层 |
 | A4 | 32 MiB 图上界经 renderer→host（MessagePort）→core（stdin）的性能 | 未测；封面图实际 1–5 MiB 量级（约），上限是防御性的；PR3 实测回填 |
-| A5 | `/import-cover` 经 spawn stdin 传 MB 级字节无截断 | Spec 11 的 stdin 先例（SAVE_SCRIPT）只传 KB 级文本；PR1 实测回填 |
+| A5 | `/import-cover` 经 spawn stdin 传 MB 级字节无截断 | Spec 11 的 stdin 先例（SAVE_SCRIPT）只传 KB 级文本；PR1 实测回填。**2026-09-26 PR1 部分回填**：分派层 `sys.stdin.buffer.read(N+1)` 限流与字节无损已实测（TC-1 落盘字节与输入逐字节相同、TC-2 用 32 MiB+ 载荷验「退 2 且零落盘」），但**真 spawn 管道**（host → spawner stdin）仍留 PR3 + 门禁 9 |
 
 ---
 
@@ -343,6 +343,39 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 | MUT-13 | 去掉 stdin 32 MiB 上限（分派层限流删除，🔵-11） | TC-2 超限子用例 | 超限输入不再退 2，「退 2 且零落盘」断言失败；其他拒绝子用例不经过该分支 |
 | MUT-14 | 去掉 `edit-*` 64 上限（🔵-11） | TC-4 上限子用例 | 第 65 个 edit 文件被放行，「上限拒绝」断言失败；其他 schema 校验用例不掩盖 |
 | MUT-15 | core 把 `finalize.cover_mtime_ns` 写成 int（非十进制字符串，🔴-1 ①） | TC-8 | `^\d+$` 字符串断言与 lossless 通路逐字节相等断言双杀——int 形态在桌面端会被静默截成有损 double，这正是 🔴-1 要防的 |
+
+### 7.4 变异实跑回填（2026-09-26，PR1+PR2 施工后实跑）
+
+命令：`uv run python scripts/verify_mutations.py --only M4 MUT-1 MUT-2 MUT-3 MUT-4 MUT-5 MUT-6 MUT-7 MUT-8 MUT-9 MUT-10 MUT-11 MUT-12 MUT-13 MUT-14 MUT-15`（全量套件逐条施加 → 变红 → 写回原文复原）。
+
+**结果：16/16 全部杀死，零存活、零中毒锚点。** 首轮批跑时 MUT-1 多红了一条 `test_agent_protocol.py::test_tp6_busy_and_bad_frames`（与本变异无关的定时敏感用例在套件负载下抖动；单跑 MUT-1 只有 TC-2 变红，清洁树上该用例 3/3 通过）；每条变异的预期观察者均在其红名单内。
+
+| 编号 | 红的测试数 | 观察者（红名单） | 结论 |
+|---|---|---|---|
+| M4（重锚后回归） | 2 | `test_write_episode_file_rejects_out_of_whitelist_files`、TC-11a | 杀死 ✓ |
+| MUT-1 | 1 | TC-2 | 杀死 ✓ |
+| MUT-2 | 1 | TC-1 | 杀死 ✓ |
+| MUT-3 | 1 | TC-3 | 杀死 ✓ |
+| MUT-4 | 2 | TC-3、TC-5（双杀，符合 §7.3 预期） | 杀死 ✓ |
+| MUT-5 | 1 | TC-4 | 杀死 ✓ |
+| MUT-6 | 1 | TC-6 | 杀死 ✓ |
+| MUT-7 | 2 | TC-9、TC-10 | 杀死 ✓ |
+| MUT-8 | 1 | TC-9 | 杀死 ✓ |
+| MUT-9 | 1 | TC-8 | 杀死 ✓ |
+| MUT-10 | 1 | TC-9 | 杀死 ✓ |
+| MUT-11 | 2 | TC-11a、TC-11b | 杀死 ✓ |
+| MUT-12 | 1 | TC-7 | 杀死 ✓ |
+| MUT-13 | 1 | TC-2 | 杀死 ✓ |
+| MUT-14 | 1 | TC-4 | 杀死 ✓ |
+| MUT-15 | 1 | TC-8 | 杀死 ✓ |
+
+**施工期与 spec 正文的偏差（如实登记）**
+
+1. **`pipeline/agent/session.py` 的 `CRITICAL_TOOLS` 必须同步加入 `cover_edit`**——§4.1 的改动清单未列该文件，但 `test_tg5` 以字面量断言「side_effect 为真的工具 − run_pipeline」，不登记即红。已加（渲染与写稿同属不可中断的临界区）。
+2. **MUT-11 的落地形态**：harness 一条变异只能做一处 old→new 替换，故实现为「从 `CREATIVE_WRITABLE_FILES` 删掉 `07-titles.md`」；spec 描述的复合形态（不扩白名单 + 工具层特判放行）在单变异下行为上不可达。红点 = TC-11a 精确集合断言 + TC-11b 写入用例。
+3. **TC-8 的「桌面通路断言」在 PR2 侧的实现**：以 raw JSON 原文正则 `"cover_mtime_ns": "(\d+)"` +「值 > 2^53」断言钉死字符串形态——这正是 `losslessJson.parseLossless` reviver 的语义（reviver 只重写 `mtime_ns` 键，其余键原样返回，字符串天然逐字节无损）；TS 侧真 `parseLossless` 端到端对拍随 PR3 的 TD/TE 收口（已由 MUT-15 证明该断言对「改回 int」敏感）。
+4. **09 ack 的补记语义**（spec 未覆盖，施工按 fail-loud 定）：非 PENDING 对象收到 finalize 一律 `ApprovalError`（含「同参数重复 ack」），不静默丢弃人刚给的封面与标题。
+5. `/import-cover` 的 REPL 形态多给参数 → 用法错退 2（`/help` 同步增一行）；裸形态下 `--name` 可缺省（stem 落到 `img`）。
 
 ---
 
