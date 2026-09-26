@@ -856,13 +856,13 @@ def test_tool_schemas_protocol_keys_whitelist() -> None:
 
 
 def test_every_tool_has_existing_adr() -> None:
-    """T12 (PR2): 工具表变更必须登记现存 ADR 编号（数字段 glob 恰中 1），总数 12 <= 12。"""
+    """T12 (PR2): 工具表变更必须登记现存 ADR 编号（数字段 glob 恰中 1），13 <= 14。"""
     import re
     from pipeline import paths
     from pipeline.agent.tools import TOOL_SCHEMAS
 
-    assert len(TOOL_SCHEMAS) == 12     # Spec 7 PR3 登记 write_memory，占满 ADR-0021 的预留位
-    assert len(TOOL_SCHEMAS) <= 12
+    assert len(TOOL_SCHEMAS) == 13     # Spec 12 登记 cover_edit（ADR-0025 上调封顶 12 → 14）
+    assert len(TOOL_SCHEMAS) <= 14     # 上限断言：ADR-0021 口径，第 15 个须再立 ADR
 
     adr_dir = paths.ROOT / "docs" / "dev" / "adr"
     for name, schema in TOOL_SCHEMAS.items():

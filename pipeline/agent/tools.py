@@ -23,9 +23,12 @@ from pipeline import paths
 from pipeline.cloud import validate_extra_args
 
 # Creative Scope 允许写入的文件白名单（§2.4）
+# Spec 12 C12-R1：扩入 `07-titles.md`——标题候选的落盘点（07-titles.md 从来就是
+# 「agent 写候选、人定稿」的文件，不是 02-script.md 那种定稿物；写仍弹人审卡）。
 CREATIVE_WRITABLE_FILES: set[str] = {
     "01-topic.md",
     "02-script.draft.md",
+    "07-titles.md",
 }
 
 # 制片期（creative / pipeline）允许执行的 pipeline 模块白名单（§2.4）
@@ -99,7 +102,7 @@ def write_episode_file(
     """受控期文件写入工具（Spec §2.4 Code Freeze 护栏）。
 
     纪律：
-    1. 仅限 creative scope 且文件名在白名单：{01-topic.md, 02-script.draft.md}；
+    1. 仅限 creative scope 且文件名在白名单：{01-topic.md, 02-script.draft.md, 07-titles.md}；
     2. pipeline / asset scope 零写权限；
     3. 双端 resolve 防 symlink 穿透；
     4. 三种越界拦截：写 pipeline/、写父级/祖先目录、写白名单外文件；
@@ -594,6 +597,58 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,   # 仅作模型提示；宿主层拒收由 plan_op 执行
         },
     },
+    "cover_edit": {
+        "name": "cover_edit",
+        "adr": "ADR-0025",
+        # 不标 side_effect：fail-closed 默认 True（cli.py:_default_approve）——
+        # 每次渲染弹一张人审卡（2026-09-26 用户裁决：多轮迭代就多张卡，每张一次点击）
+        "description": (
+            "把标题文字确定性叠到 07-cover/ 下的一张源图上，产出候选 07-cover/edit-*.png。"
+            "**只产候选、定稿权在人**：本工具不排名、不推荐，也不存在任何「定稿/选最终版」动作，"
+            "唯一写入点是人自己的 09 ack。不同缩放/裁剪/滤镜/多图合成；同参数同字节，"
+            "output 目标已存在则拒收（换名迭代 edit-1、edit-2…）。每次调用弹人审卡。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "07-cover/（可含 import/）下的 .png/.jpg 相对路径，必须存在（只读源）",
+                },
+                "output": {
+                    "type": "string",
+                    "description": "如 07-cover/edit-1.png（^07-cover/edit-[a-z0-9][a-z0-9-]{0,38}\\.png$，目标必须不存在）",
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "description": "1–6 行文字，按数组顺序依次绘制（后画的盖先画的）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "1–40 字符"},
+                            "size": {"type": "integer", "description": "字号 8–400"},
+                            "anchor": {
+                                "type": "string",
+                                "enum": ["tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br"],
+                                "description": "九宫锚点（tl=左上，cc=正中心，br=右下）",
+                            },
+                            "dx": {"type": "integer", "description": "锚点基础上的水平像素偏移，-4000–4000，默认 0"},
+                            "dy": {"type": "integer", "description": "锚点基础上的垂直像素偏移（向下为正），-4000–4000，默认 0"},
+                            "color": {"type": "string", "description": "文字色 ^#[0-9a-fA-F]{6}$，默认 #FFFFFF"},
+                            "stroke_width": {"type": "integer", "description": "描边宽 0–40，默认 0"},
+                            "stroke_color": {"type": "string", "description": "描边色 ^#[0-9a-fA-F]{6}$，默认 #000000"},
+                        },
+                        "required": ["text", "size", "anchor"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["source", "output", "lines"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -921,6 +976,22 @@ def _tool_write_memory(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     }
 
 
+def _tool_cover_edit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """第 13 个工具（Spec 12 / ADR-0025）：委托 `pipeline.cover_edit` 确定性渲染。
+
+    函数级 import cover_edit：顶层不背 Pillow（红线 7）。受控领域异常转 ValueError，
+    由 execute_tool 的统一闸转成结构化错误回喂 LLM（不裸抛 RuntimeException）。
+    """
+    if not ctx.episode_dir:
+        raise PermissionError("未绑定当期目录，拒绝渲染")
+    from pipeline import cover_edit
+
+    try:
+        return cover_edit.render_cover(ctx.episode_dir, dict(args))
+    except cover_edit.CoverEditError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -934,6 +1005,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "crawl": _tool_crawl,
     "browser": _tool_browser,
     "write_memory": _tool_write_memory,
+    "cover_edit": _tool_cover_edit,
 }
 
 

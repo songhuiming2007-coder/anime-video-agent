@@ -223,18 +223,40 @@ def _consume_one_shlex_token(text: str) -> tuple[str, str]:
     return (parsed[0], rest)
 
 
-def _parse_repl_approve(line: str) -> tuple[str, str | None]:
-    """解析 REPL `/approve <stop> [--id <approval_id>]`。"""
-    tokens = shlex.split(line)
-    if len(tokens) == 2 and tokens[0] == "/approve":
-        stop, approval_id = tokens[1], None
-    elif len(tokens) == 4 and tokens[0] == "/approve" and tokens[2] == "--id":
-        stop, approval_id = tokens[1], tokens[3]
-    else:
-        raise ValueError("invalid /approve syntax")
-    if stop not in HUMAN_STOPS or (approval_id is not None and not approval_id.strip()):
-        raise ValueError("invalid /approve arguments")
-    return (stop, approval_id)
+def _parse_repl_approve(line: str) -> tuple[str, str | None, dict[str, str] | None]:
+    """解析 REPL `/approve <stop> [--id <approval_id>] [--cover <路径> --title <标题原文>]`。
+
+    `--cover` / `--title` 仅 09 接受、两个都要给（S3-R12）；`--cover` 后取 shlex 单 token
+    （含空格的路径用引号包住），`--title` 之后取整行原文（同 C.3 的 problem 口径）。
+    """
+    cmd, rest = _consume_one_shlex_token(line)
+    if cmd != "/approve":
+        raise ValueError("invalid command")
+    stop, rest = _consume_one_shlex_token(rest)
+    if stop not in HUMAN_STOPS:
+        raise ValueError("invalid stop")
+
+    approval_id: str | None = None
+    if rest:
+        token, after = _consume_one_shlex_token(rest)
+        if token == "--id":
+            approval_id, rest = _consume_one_shlex_token(after)
+            if not approval_id.strip():
+                raise ValueError("empty approval_id")
+
+    finalize: dict[str, str] | None = None
+    if rest:
+        token, after = _consume_one_shlex_token(rest)
+        if token != "--cover" or stop != "09":
+            raise ValueError("invalid /approve syntax")
+        cover, rest = _consume_one_shlex_token(after)
+        if not cover.strip():
+            raise ValueError("empty cover")
+        token, title = _consume_one_shlex_token(rest)
+        if token != "--title" or not title.strip():
+            raise ValueError("missing --title")
+        finalize = {"cover": cover, "title": title}
+    return (stop, approval_id, finalize)
 
 
 def _parse_repl_reject(line: str) -> tuple[str, str | None, str, str]:
@@ -274,17 +296,20 @@ def _handle_repl_approve(
     from pipeline.approvals import ApprovalError
 
     try:
-        stop, explicit_id = _parse_repl_approve(line)
+        stop, explicit_id, finalize = _parse_repl_approve(line)
     except ValueError:
         print(
-            "[ERROR] 用法: /approve <02.5|03.5|05|09> [--id <approval_id>]",
+            "[ERROR] 用法: /approve <02.5|03.5|05|09> [--id <approval_id>] "
+            "[--cover <07-cover 相对路径> --title <标题>]（cover/title 仅 09，两个都要给）",
             file=sys.stderr,
         )
         return 2
 
     try:
         target_id = _resolve_repl_approval_id(stop, explicit_id, displayed_ids)
-        res = approvals.approve(ep_dir, stop, approval_id=target_id, source="repl")  # type: ignore[arg-type]
+        res = approvals.approve(
+            ep_dir, stop, approval_id=target_id, source="repl", finalize=finalize  # type: ignore[arg-type]
+        )
         print(f"[OK] 已批准 {res.type} ({res.approval_id})")
         return 0
     except ApprovalError as exc:
@@ -776,6 +801,74 @@ def _read_stdin_text(limit: int) -> str | None:
     if sys.stdin.read(1) or len(text.encode("utf-8")) > limit:
         return None
     return text
+
+
+# 图片导入（Spec 12 §3.1）：与 Spec 11 八命令同级（argv 位置取参、不过
+# validate_pipeline_command、不进 LLM 工具表），但**不进 Spec 11 的八命令表**。
+IMPORT_COVER_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _read_stdin_bytes(limit: int) -> bytes | None:
+    """读 stdin 二进制全文；超 limit 返回 None，调用方退 2。
+
+    限流冻结在分派层（Spec 12 🔵-10）：`_cmd_import_cover` 收到的是已限流的 bytes。
+    """
+    data = sys.stdin.buffer.read(limit + 1)
+    return None if len(data) > limit else data
+
+
+def _cmd_import_cover(ep_dir: Path | str, name: str | None, data: bytes) -> int:
+    """校验并原子落盘导入图，stdout 单行 JSON（Spec 12 §3.1，data 已限流）。"""
+    from pipeline import cover_edit
+
+    try:
+        resolved = resolve_episode_dir(ep_dir)
+        out = cover_edit.import_cover(resolved, name, data)
+    except (cover_edit.CoverEditError, PermissionError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -> int | None:
+    """`/import-cover` 的统一分派（裸形态 / REPL 共用）。非本命令返回 None。
+
+    裸形态（from_stdin=True）：`ava <期> /import-cover --name=<原始文件名>`，图片字节走 stdin；
+    REPL（from_stdin=False）：`/import-cover <源图片路径>`，由 core 读文件——REPL 内没有
+    stdin 管道，这是两种形态唯一的行为差异，校验与落盘同一函数。
+    """
+    if not argv or argv[0] != "/import-cover":
+        return None
+    rest = argv[1:]
+    try:
+        if from_stdin:
+            name: str | None = None
+            if rest:
+                if len(rest) != 1 or not rest[0].startswith("--name="):
+                    raise _UsageError(
+                        "用法: ava <期> /import-cover --name=<原始文件名>（图片字节走 stdin）"
+                    )
+                name = rest[0][len("--name="):]
+            data = _read_stdin_bytes(IMPORT_COVER_MAX_BYTES)
+            if data is None:
+                raise _UsageError(f"图片字节超过 {IMPORT_COVER_MAX_BYTES} 字节上限，拒收。")
+            return _cmd_import_cover(ep_dir, name, data)
+
+        if len(rest) != 1:
+            raise _UsageError("用法: /import-cover <源图片路径>")
+        src = Path(rest[0]).expanduser()
+        try:
+            if src.stat().st_size > IMPORT_COVER_MAX_BYTES:
+                raise _UsageError(f"图片字节超过 {IMPORT_COVER_MAX_BYTES} 字节上限，拒收。")
+            data = src.read_bytes()
+        except OSError as exc:
+            print(f"[ERROR] 读不到源图片：{src}（{exc}）", file=sys.stderr)
+            return 1
+        return _cmd_import_cover(ep_dir, src.name, data)
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
 
 
 def _episode_file(ep_dir: Path | str, name: str, root: Path | None = None) -> Path:
@@ -1754,6 +1847,7 @@ def _run_repl_body(
                 print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
                 print("  /voice       顺听极简纠错模式")
                 print("  /save-script 停机点组件子命令族（等 8 个）: /save-script /seal-script /voice-info /voice-parse /voice-add /voice-revert /voice-retract /record-time")
+                print("  /import-cover 导入封面图（REPL 形态）: /import-cover <源图片路径>")
                 print("  /memory      查看跨期记忆全文（/memory show）")
                 print("  /memory check 记忆自检（退出码 0 合法 / 1 不合法 / 2 不可达 / 3 合法但来源未确认）")
                 print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
@@ -1909,6 +2003,11 @@ def _run_repl_body(
 
             # Spec 11 §3.1：停机点组件子命令与裸形态共用同一份分派
             rc = _dispatch_stop_point(ep_dir, line.split())
+            if rc is not None:
+                continue
+
+            # Spec 12 §3.1：图片导入（REPL 形态：源路径由 core 读文件）
+            rc = _dispatch_import_cover(ep_dir, line.split(), from_stdin=False)
             if rc is not None:
                 continue
 
@@ -2099,6 +2198,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
 
+        # Spec 12 §3.1：图片导入（裸形态：图片字节走 stdin；不进 Spec 11 的八命令表）
+        rc = _dispatch_import_cover(ep_dir, args[1:], from_stdin=True)
+        if rc is not None:
+            return rc
+
         # Spec 9 §2.5：`ava <期> --sessions` 与 `ava <期> --continue [前缀]`
         if args[1] == "--sessions":
             if len(args) != 2:
@@ -2125,17 +2229,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args[1] == "/approve":
-            if (
-                len(args) != 5
-                or args[2] not in HUMAN_STOPS
-                or args[3] != "--id"
-                or not args[4].strip()
-            ):
+            ok_bare = (
+                len(args) == 5
+                and args[2] in HUMAN_STOPS
+                and args[3] == "--id"
+                and bool(args[4].strip())
+            )
+            # S3-R12：09 定稿形态——空格固定位置（与 REPL 同一套语法；shell:false 下
+            # argv 元素天然逐字节无损）。args[5:9] = --cover / <路径> / --title / <标题整元素>
+            ok_09 = (
+                len(args) == 9
+                and args[2] == "09"
+                and args[3] == "--id"
+                and bool(args[4].strip())
+                and args[5] == "--cover"
+                and args[7] == "--title"
+            )
+            if not (ok_bare or ok_09):
                 print(
-                    "[ERROR] 用法: ava <期> /approve <02.5|03.5|05|09> --id <approval_id>",
+                    "[ERROR] 用法: ava <期> /approve <02.5|03.5|05|09> --id <approval_id>"
+                    " [--cover <07-cover 相对路径> --title <标题>]（cover/title 仅 09，两个都要给）",
                     file=sys.stderr,
                 )
                 return 2
+            # 结构由 argv 位置定死，语义（封面是否存在、标题长度）一律交领域层拒
+            cli_finalize = {"cover": args[6], "title": args[8]} if ok_09 else None
             from pipeline import approvals
             from pipeline.approvals import ApprovalError
 
@@ -2145,6 +2263,7 @@ def main(argv: list[str] | None = None) -> int:
                     args[2],  # type: ignore[arg-type]
                     approval_id=args[4],
                     source="cli",
+                    finalize=cli_finalize,
                 )
                 print(f"[OK] 已批准 {res.type} ({res.approval_id})")
                 return 0

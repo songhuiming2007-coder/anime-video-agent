@@ -24,6 +24,12 @@
     "margin_v": 90,
     "margin_lr": 120
   },
+  "cover": {
+    "_note": "封面叠字字体（Spec 12）。Pillow 要字体文件路径（与 subtitle.font 的 fontconfig 字体名是两个机制，见上）。文件由人放置，不进 git；缺席时 cover_edit 如实报错、绝不 fallback 系统字体（fallback 会让同参数在不同机器产出不同字节）。ttc 必须钉 index：实测同一 ttc 不同 index 是不同字体家族，不钉会静默换字。改字体或 index 必须重跑渲染基线（tests/test_cover_edit.py 的 BASELINE_SHA256）。",
+    "font_file": "data/fonts/SourceHanSansSC-Bold.otf",
+    "font_index": 0,
+    "_font_source_note": "思源黑体 SC Bold，Adobe source-han-sans 官方 release（OTF/SimplifiedChinese/SourceHanSansSC-Bold.otf，2026-09-26 放置，sha256 df2b90f5bcc6d01dfc964cec5f6d535d6b6aebd26ed7fd79a9c1b3f2112fcb6b，16963428 字节），SIL OFL 1.1 开源可再分发。加载出的家族名 = ('Source Han Sans SC', 'Bold')。"
+  },
   "audio": {
     "_note": "响度目标，EBU R128。质检门禁按这三个数判。",
     "lufs": -16.0,

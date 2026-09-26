@@ -86,6 +86,18 @@ def _write_valid_approved_clips(ep: Path) -> Path:
     return appr_path
 
 
+def _make_episode_at_09(base: Path, name: str = "ep-09") -> Path:
+    """构造处于 09 人工发布停机点的期目录（含一张可被定稿的封面图）。"""
+    ep = _make_episode_at_05(base, name=name)
+    _write_valid_approved_clips(ep)
+    (ep / "05-final.mp4").write_bytes(b"fake-mp4")
+    (ep / "06-check.log").write_text("[PASS] 11 项质检全绿\n", encoding="utf-8")
+    (ep / "07-titles.md").write_text("# titles\n", encoding="utf-8")
+    (ep / "07-cover" / "import").mkdir(parents=True)
+    (ep / "07-cover" / "import" / "final.png").write_bytes(b"fake-png")
+    return ep
+
+
 # ---------------------------------------------------------------------------
 # PR1: T1, T2, T8, T9, T11 (+ T21 一次进锁子进程超时断言 + M4-2 坏条目恢复)
 # ---------------------------------------------------------------------------
@@ -1009,6 +1021,8 @@ def test_no_approve_without_gate_artifact(tmp_path: Path) -> None:
     (ep_09 / "05-final.mp4").write_bytes(b"fake-mp4")
     (ep_09 / "06-check.log").write_text("[PASS] 11 项质检全绿\n", encoding="utf-8")
     (ep_09 / "07-titles.md").write_text("# titles\n", encoding="utf-8")
+    (ep_09 / "07-cover" / "import").mkdir(parents=True)
+    (ep_09 / "07-cover" / "import" / "final.png").write_bytes(b"fake-png")
     assert inspect_episode(ep_09).current_step == "09 人工发布"
     item_09 = ensure_pending(ep_09)
     assert item_09 is not None and item_09.type == "09"
@@ -1027,7 +1041,13 @@ def test_no_approve_without_gate_artifact(tmp_path: Path) -> None:
         return out
 
     before_09 = _dir_snapshot(ep_09)
-    res_09 = approve(ep_09, "09", approval_id=item_09.approval_id, source="cli")
+    res_09 = approve(
+        ep_09,
+        "09",
+        approval_id=item_09.approval_id,
+        source="cli",
+        finalize={"cover": "07-cover/import/final.png", "title": "定稿标题"},   # S3-R12：09 必填
+    )
     assert res_09.status == ApprovalStatus.APPROVED
     assert _dir_snapshot(ep_09) == before_09, "09 ack 必须零副作用（除 _agent/ 外零文件变化）"
 
@@ -1509,3 +1529,197 @@ def test_approvals_gate5_approved_assignment_sites() -> None:
     assert _def_line("_self_heal_locked") < lines[0] < _def_line("approve") < lines[1] < _def_line("reject"), (
         "两处 APPROVED 赋值点应分别落在 _self_heal_locked（惰性对齐）与 approve（显式 ack）内"
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec 12 PR2：09 定稿记录（TC-8~TC-10）与 07-titles.md 白名单（TC-11）
+# ---------------------------------------------------------------------------
+
+
+def test_tc8_09_finalize_object_event_and_lossless_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TC-8：09 ack 携定稿 → 对象四键 + 事件载荷 + `cover_mtime_ns` 字符串形态无损（🔴-1 ①）。"""
+    import re
+
+    from pipeline import jobs
+
+    pub = jobs.EventPublisher(queue_capacity=64, data_root=tmp_path / "evt")
+    pub.start()
+    monkeypatch.setattr(jobs, "_GLOBAL_PUBLISHER", pub)
+
+    ep = _make_episode_at_09(tmp_path, "ep-finalize-ok")
+    item = ensure_pending(ep)
+    assert item is not None and item.type == "09"
+    cover = ep / "07-cover" / "import" / "final.png"
+    st = cover.stat()
+
+    proc = _run_cli(
+        ep, "/approve", "09", "--id", item.approval_id,
+        "--cover", "07-cover/import/final.png", "--title", "标题 带空格 #tag",
+    )
+    pub.close()
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+
+    stored = get(item.approval_id, ep)
+    finalize = stored.finalize
+    assert finalize is not None
+    assert set(finalize) == {"cover", "title", "cover_size", "cover_mtime_ns"}
+    assert finalize["cover"] == "07-cover/import/final.png"
+    assert finalize["title"] == "标题 带空格 #tag"
+    assert finalize["cover_size"] == st.st_size
+    assert finalize["cover_mtime_ns"] == str(st.st_mtime_ns)
+    assert re.fullmatch(r"\d+", finalize["cover_mtime_ns"])
+    # 纳秒值确实超 2^53，字符串形态不是洁癖：存 int 会被桌面端静默截成有损 double
+    assert int(finalize["cover_mtime_ns"]) > 2**53
+
+    # 事件载荷含 finalize（MUT-9 的唯一观察点）
+    evt_lines = (ep / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    evts = [json.loads(line) for line in evt_lines if line.strip()]
+    resolved = [
+        e for e in evts
+        if e["type"] == "approval_resolved" and e["payload"].get("approval_id") == item.approval_id
+    ]
+    assert len(resolved) == 1
+    assert resolved[0]["payload"]["finalize"] == finalize
+
+    # 桌面通路（无损）：raw JSON 原文里该字段必须是**带引号的十进制字符串**。
+    # `losslessJson.parseLossless` 的 reviver 只按 `mtime_ns` 键做十进制→bigint 还原，
+    # 其余键原样返回——字符串形态天然逐字节无损；写成 int 则这条正则立即失配（MUT-15）。
+    store_text = (ep / "_agent" / "approvals_store.json").read_text(encoding="utf-8")
+    hit = re.search(r'"cover_mtime_ns": "(\d+)"', store_text)
+    assert hit is not None, "store 里的 cover_mtime_ns 必须是带引号的十进制字符串"
+    assert hit.group(1) == finalize["cover_mtime_ns"], "无损通路读出的值必须与 core 写入逐字节相等"
+    raw_event_lines = [
+        line for line in evt_lines
+        if item.approval_id in line and '"approval_resolved"' in line
+    ]
+    assert len(raw_event_lines) == 1
+    assert f'"cover_mtime_ns": "{finalize["cover_mtime_ns"]}"' in raw_event_lines[0]
+
+
+def test_tc9_09_finalize_rejections(tmp_path: Path) -> None:
+    """TC-9：缺 finalize / 封面不存在 / 越出 07-cover/ / 标题违规 → ApprovalError 且对象不转移。"""
+    ep = _make_episode_at_09(tmp_path, "ep-finalize-bad")
+    item = ensure_pending(ep)
+    assert item is not None and item.type == "09"
+    rel = "07-cover/import/final.png"
+    # 07-cover 之外、后缀合法的一份图：专杀「去掉 resolve 防穿透」（MUT-8）
+    (ep / "outside.png").write_bytes(b"fake-png")
+
+    bad: list[tuple[str, dict[str, str] | None]] = [
+        ("缺 finalize", None),
+        ("cover 不存在", {"cover": "07-cover/import/nope.png", "title": "t"}),
+        ("cover 越出 07-cover/", {"cover": "07-cover/../outside.png", "title": "t"}),
+        ("cover 绝对路径", {"cover": "/etc/hosts", "title": "t"}),
+        ("cover 空", {"cover": " ", "title": "t"}),
+        ("title 空", {"cover": rel, "title": "   "}),
+        ("title 含换行", {"cover": rel, "title": "第一行\n第二行"}),
+        ("title 101 字符", {"cover": rel, "title": "字" * 101}),
+        ("多余键", {"cover": rel, "title": "t", "cover_size": 1}),
+    ]
+    for label, finalize in bad:
+        with pytest.raises(ApprovalError):
+            approve(ep, "09", approval_id=item.approval_id, source="cli", finalize=finalize)
+        assert get(item.approval_id, ep).status == ApprovalStatus.PENDING, label
+
+    # 其余停机点给 finalize → ApprovalError（参数语义严格分停机点）
+    for stop, make in (("02.5", _make_episode_at_02_5),
+                       ("03.5", _make_episode_at_03_5),
+                       ("05", _make_episode_at_05)):
+        ep_other = make(tmp_path, f"ep-fin-{stop.replace('.', '-')}")
+        obj = ensure_pending(ep_other)
+        assert obj is not None
+        with pytest.raises(ApprovalError, match="不接受 finalize"):
+            approve(
+                ep_other, stop,  # type: ignore[arg-type]
+                approval_id=obj.approval_id,
+                finalize={"cover": "x.png", "title": "y"},
+            )
+        assert get(obj.approval_id, ep_other).status == ApprovalStatus.PENDING
+
+
+def test_tc10_09_cli_surfaces_are_lossless(tmp_path: Path) -> None:
+    """TC-10：裸形态 argv 位置取参逐字节无损；其余停机点带 --cover 退 2；REPL 取整行原文。"""
+    from pipeline.agent import cli
+
+    ep = _make_episode_at_09(tmp_path, "ep-09-cli")
+    item = ensure_pending(ep)
+    assert item is not None
+
+    title = '标题 带空格 "引号" -x --id 假选项'
+    proc = _run_cli(
+        ep, "/approve", "09", "--id", item.approval_id,
+        "--cover", "07-cover/import/final.png", "--title", title,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert get(item.approval_id, ep).finalize["title"] == title, "argv 元素必须逐字节无损"
+
+    # 09 不带 --cover/--title → 领域拒（退 1，不是用法错）
+    ep_no = _make_episode_at_09(tmp_path, "ep-09-nofin")
+    item_no = ensure_pending(ep_no)
+    assert item_no is not None
+    assert _run_cli(ep_no, "/approve", "09", "--id", item_no.approval_id).returncode == 1
+
+    # 其余停机点带 --cover/--title → 用法错（退 2）
+    ep_05 = _make_episode_at_05(tmp_path, "ep-05-cover")
+    item_05 = ensure_pending(ep_05)
+    assert item_05 is not None
+    assert _run_cli(
+        ep_05, "/approve", "05", "--id", item_05.approval_id, "--cover", "p", "--title", "t"
+    ).returncode == 2
+
+    # REPL：--cover 取 shlex 单 token（含空格用引号），--title 后取整行原文
+    stop, rid, finalize = cli._parse_repl_approve(
+        '/approve 09 --id appr_x --cover "07-cover/import/a b.png" --title 我的 标题  "引号"'
+    )
+    assert (stop, rid) == ("09", "appr_x")
+    assert finalize == {"cover": "07-cover/import/a b.png", "title": '我的 标题  "引号"'}
+    # 非 09 带 --cover → 用法错
+    assert cli._handle_repl_approve(ep_05, "/approve 05 --cover x --title y", {}) == 2
+
+
+def test_tc11_creative_writable_files_exact_set() -> None:
+    """TC-11a（C12-R1）：白名单精确集合——扩入 07-titles.md 且不多不少。"""
+    from pipeline.agent.tools import CREATIVE_WRITABLE_FILES
+
+    assert CREATIVE_WRITABLE_FILES == {"01-topic.md", "02-script.draft.md", "07-titles.md"}
+
+
+def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TC-11b：写 07-titles.md 仍弹人审卡；写后 09 pending 指纹漂移走既有自愈。"""
+    from pipeline import paths
+    from pipeline.agent.session import review_tool_call
+    from pipeline.agent.tools import ToolContext, _tool_write_episode_file
+
+    real_root = paths.ROOT          # monkeypatch 之前的真仓库根（读真 config/agent/tools.json）
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    base = tmp_path / "data" / "episodes"
+    base.mkdir(parents=True)
+    ep = _make_episode_at_09(base, "ep-titles")
+    item = ensure_pending(ep)
+    assert item is not None and item.type == "09"
+
+    # 写仍弹卡：schema 不标 side_effect → fail-closed 走人审（root 传真仓库根，拿真配置）
+    verdict = review_tool_call(
+        "write_episode_file",
+        {"filename": "07-titles.md", "content": "x"},
+        ep_dir=ep,
+        scope="creative",
+        root=real_root,
+    )
+    assert verdict.action == "ask", verdict
+
+    ctx = ToolContext(scope="creative", episode_dir=ep, root=tmp_path)
+    content = "# 标题与简介候选\n\n| # | 路子 | 标题 |\n|---|---|---|\n| 1 | 反常识 | 候选一 |\n"
+    res = _tool_write_episode_file({"filename": "07-titles.md", "content": content}, ctx)
+    assert res["written"].endswith("07-titles.md")
+    assert (ep / "07-titles.md").read_text(encoding="utf-8") == content
+
+    # 指纹漂移 → 旧 09 SUPERSEDED + 新 pending（「候选变了要人重看」零新增逻辑）
+    new_item = ensure_pending(ep)
+    assert new_item is not None and new_item.approval_id != item.approval_id
+    assert new_item.type == "09" and new_item.status == ApprovalStatus.PENDING
+    assert get(item.approval_id, ep).status == ApprovalStatus.SUPERSEDED

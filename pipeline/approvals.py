@@ -18,6 +18,7 @@ from enum import Enum
 import fcntl
 import json
 from pathlib import Path
+import re
 import shutil
 import threading
 import time
@@ -70,6 +71,12 @@ _STOP_NAMES: dict[str, str] = {
     "09": "人工发布",
 }
 _MAX_APPROVALS_PER_EPISODE = 64
+
+# 09 定稿记录（S3-R12）的校验常量
+_FINALIZE_COVER_EXTS = (".png", ".jpg", ".jpeg")
+FINALIZE_TITLE_MAX_CHARS = 100
+"""标题长度上限。B 站标题上限 80 字符，100 留余量；超限不是机器判内容好坏，
+是防把简介抹进来（§2.3）。"""
 
 _THREAD_LOCK = threading.Lock()
 _EPISODES_ROOT_CACHE: Path | None = None
@@ -153,6 +160,7 @@ class Approval:
     confirmed_at: str | None = None      # v0.4 S3-R7：显式确认时刻（ISO 8601 UTC，Z 标记）
     feedback: dict[str, str] | None = None  # rejected 时必填：{"target": ..., "problem": ...}
     note: str = ""                       # 05 携带 review --approve 提示等
+    finalize: dict[str, Any] | None = None  # 09 定稿记录（S3-R12，见 §3.3）
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ApprovalStatus):
@@ -183,6 +191,16 @@ class Approval:
                     "confirmed_by 非空时必须满足 status == APPROVED 且 resolved_by == 'artifact'"
                 )
 
+        # §3.3 不变量：finalize 非空 ⟹ type == "09" 且 status == APPROVED
+        # （写入点只在 approve 的 PENDING→APPROVED 转移内）
+        if self.finalize is not None and (
+            self.type != "09" or self.status != ApprovalStatus.APPROVED
+        ):
+            raise ApprovalError(
+                "finalize 非空时必须满足 type == '09' 且 status == APPROVED，"
+                f"当前 type={self.type!r} status={self.status.value}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "approval_id": self.approval_id,
@@ -198,6 +216,7 @@ class Approval:
             "confirmed_at": self.confirmed_at,
             "feedback": dict(self.feedback) if self.feedback is not None else None,
             "note": self.note,
+            "finalize": dict(self.finalize) if self.finalize is not None else None,
         }
 
     @classmethod
@@ -216,6 +235,7 @@ class Approval:
             confirmed_at=data.get("confirmed_at"),
             feedback=dict(data["feedback"]) if data.get("feedback") is not None else None,
             note=str(data.get("note") or ""),
+            finalize=dict(data["finalize"]) if data.get("finalize") is not None else None,
         )
 
 
@@ -829,19 +849,85 @@ def get_status_card_guidance(ep_dir: Path | str) -> tuple[list[str], bool]:
         return (pending_labels, has_uncovered_rejected)
 
 
+def _validate_finalize(ep_dir: Path, finalize: dict[str, Any] | None) -> dict[str, Any]:
+    """09 ack 的定稿记录校验（S3-R12 / §2.3）：人只给 cover 与 title。
+
+    `cover_size`（int）与 `cover_mtime_ns`（**十进制字符串**，🔴-1 ①）由 core 在 ack 时刻
+    自 stat 填入——纳秒值 ≈1.79e18 超 2^53，存 int 会被桌面端 losslessJson 静默落成有损
+    double；RF-5 的消费只是相等性审计比对，字符串相等即够。
+    """
+    if not isinstance(finalize, dict):
+        raise ApprovalError("09 ack 的 finalize 必须是包含 cover 与 title 的字典")
+    unknown = sorted(set(finalize) - {"cover", "title"})
+    if unknown:
+        raise ApprovalError(
+            f"finalize 只接受 cover 与 title（cover_size / cover_mtime_ns 由 core 自填），"
+            f"收到多余键：{unknown}"
+        )
+
+    cover = finalize.get("cover")
+    if not isinstance(cover, str) or not cover.strip():
+        raise ApprovalError("finalize.cover 必须是 07-cover/ 下的期目录相对路径")
+    cover_root = (ep_dir / "07-cover").resolve()
+    target = (ep_dir / cover).resolve()
+    if cover_root not in target.parents:
+        raise ApprovalError(f"finalize.cover 越出 07-cover/：{cover}")
+    if not target.is_file():
+        raise ApprovalError(f"finalize.cover 文件不存在：{cover}")
+    if target.suffix.lower() not in _FINALIZE_COVER_EXTS:
+        raise ApprovalError(f"finalize.cover 只接受 .png/.jpg/.jpeg，收到 {cover}")
+
+    title = finalize.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ApprovalError("finalize.title 不能为空")
+    if "\n" in title or "\r" in title:
+        raise ApprovalError("finalize.title 不能含换行")
+    if len(title.strip()) > FINALIZE_TITLE_MAX_CHARS:
+        raise ApprovalError(
+            f"finalize.title 超过 {FINALIZE_TITLE_MAX_CHARS} 字符（防把简介抹进来）"
+        )
+
+    st = target.stat()
+    mtime_ns = str(st.st_mtime_ns)
+    if not re.fullmatch(r"\d+", mtime_ns):      # 纯十进制字面量（🔴-1 ①）
+        raise ApprovalError(f"cover_mtime_ns 必须是十进制字符串，收到 {mtime_ns!r}")
+    return {
+        "cover": cover,
+        "title": title,
+        "cover_size": int(st.st_size),
+        "cover_mtime_ns": mtime_ns,
+    }
+
+
 def approve(
     ep_dir: Path | str,
     stop: ApprovalType,
     *,
     approval_id: str | None = None,
     source: str = "repl",
+    finalize: dict[str, str] | None = None,
 ) -> Approval:
-    """显式 ack 通过（§4.1 v0.4/v0.5 S3-R6/R7/R10/R11 冻结顺序，全程一次进锁）。"""
+    """显式 ack 通过（§4.1 v0.4/v0.5 S3-R6/R7/R10/R11 冻结顺序，全程一次进锁）。
+
+    `finalize`（S3-R12）：**仅 09 必填**（人最终选定的封面文件与标题原文），其余停机点
+    给了一律 ApprovalError；落库字段比入参多两个 core 自填的指纹（§3.3）。
+    """
     if stop not in HUMAN_STOPS:
         raise ApprovalError(f"非法停机点类型: {stop!r}")
     ep_path = Path(ep_dir) if ep_dir else None
     if ep_path is None or not ep_path.exists() or not ep_path.is_dir():
         raise ApprovalError(f"目标期目录不存在: {ep_dir}")
+
+    resolved_finalize: dict[str, Any] | None = None
+    if stop == "09":
+        if finalize is None:
+            raise ApprovalError(
+                "09 定稿必须携带封面与标题（finalize.cover / finalize.title），"
+                "缺一个一律拒批：定稿权在人（ADR-0018）"
+            )
+        resolved_finalize = _validate_finalize(ep_path, finalize)
+    elif finalize is not None:
+        raise ApprovalError(f"停机点 {stop} 不接受 finalize 参数（只有 09 定稿需要）")
 
     with _locked_approvals(ep_path) as state:
         _raise_if_store_unwritable(state)
@@ -909,6 +995,12 @@ def approve(
                 raise ApprovalError(f"停机点 {stop} 对象已处于 rejected 终态，不可异决策批准")
 
         # 3. 目标为 PENDING
+        if resolved_finalize is not None and target_obj.status != ApprovalStatus.PENDING:
+            # 定稿记录只在批准转移时写入：宁可报错，也不静默丢掉人刚给的封面与标题
+            raise ApprovalError(
+                f"定稿记录只在批准转移时写入；对象 {target_obj.approval_id} 当前为 "
+                f"{target_obj.status.value}，不接受补记"
+            )
         if target_obj.status == ApprovalStatus.PENDING:
             curr_fp = _fingerprint(ep_path, _STOP_ARTIFACTS[stop])
             if not _fingerprints_equal(target_obj.artifacts, curr_fp):
@@ -925,6 +1017,8 @@ def approve(
             target_obj.status = ApprovalStatus.APPROVED
             target_obj.resolved_at = now_iso
             target_obj.resolved_by = source
+            target_obj.finalize = resolved_finalize
+            target_obj.validate()      # §3.3 不变量（finalize 非空 ⟹ 09 且 APPROVED）
             state.dirty = True
 
             now_s = _parse_iso_seconds(now_iso)
@@ -935,15 +1029,18 @@ def approve(
                 else None
             )
             _log_decision(ep_path, source, f"approve:{stop}", "y", latency_s=latency_s)
+            resolved_payload: dict[str, Any] = {
+                "approval_id": target_obj.approval_id,
+                "stop": stop,
+                "decision": "approved",
+                "source": source,
+                "latency_s": latency_s,
+            }
+            if resolved_finalize is not None:
+                resolved_payload["finalize"] = resolved_finalize
             _emit(
                 "approval_resolved",
-                {
-                    "approval_id": target_obj.approval_id,
-                    "stop": stop,
-                    "decision": "approved",
-                    "source": source,
-                    "latency_s": latency_s,
-                },
+                resolved_payload,
                 episode_dir=ep_path,
             )
             return target_obj
