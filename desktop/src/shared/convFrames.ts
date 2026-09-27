@@ -28,8 +28,11 @@ export type ParseResult = { ok: true; frame: OutFrame } | { ok: false; reason: "
 
 type Kind = "string" | "number" | "boolean" | "array" | "object" | "null";
 
-/** 每类帧的必需键与允许类型（null 表示允许为 null）。缺键或类型不符即 malformed。 */
-const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
+/**
+ * 每类帧的必需键与允许类型（null 表示允许为 null）。缺键或类型不符即 malformed。
+ * 导出只为 TX-0（Spec 10 PR4）：拿真实 core 实际发出的键集合与这张表逐类比对，两侧不各写期望。
+ */
+export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   ready: {
     episode: ["string", "null"],
     scope: ["string"],
@@ -86,7 +89,7 @@ const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
 };
 
 /** history 的 tool 条目多一个必需键 ok（S9-R1）。 */
-const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) => Record<string, readonly Kind[]> | null>> = {
+export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) => Record<string, readonly Kind[]> | null>> = {
   history: (f) => (f.role === "tool" ? { ok: ["boolean"] } : null),
 };
 
