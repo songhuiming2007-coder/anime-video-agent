@@ -366,20 +366,20 @@ MUTATIONS: list[dict] = [
      "new": ''},
 
     # ---- Spec 9 §7.2 PR3：协议入口 / 帧 / 租约 / 中断（MUT-16~21, 30~33, 38, 50）----
-    {"id": "MUT-16", "guard": "协议启动 dup2(2,1)：C 层写 fd 1 走到 stderr", "file": PROTO,
+    {"id": "S9-MUT-16", "guard": "协议启动 dup2(2,1)：C 层写 fd 1 走到 stderr", "file": PROTO,
      "old": '    os.dup2(2, 1)          # C 层写 fd 1 / 继承 fd 1 的子进程 → stderr\n',
      "new": '    pass                   # MUT-16\n'},
-    {"id": "MUT-17", "guard": "协议启动换掉 fd 0：job 子进程读到 EOF", "file": PROTO,
+    {"id": "S9-MUT-17", "guard": "协议启动换掉 fd 0：job 子进程读到 EOF", "file": PROTO,
      "old": '    os.dup2(devnull, 0)    # input() 与继承 stdin 的子进程读到 EOF\n',
      "new": '    pass                   # MUT-17\n'},
-    {"id": "MUT-18", "guard": "interrupt 核对 turn_id", "file": PROTO,
+    {"id": "S9-MUT-18", "guard": "interrupt 核对 turn_id", "file": PROTO,
      "old": ('        if kind == "interrupt":\n'
              '            current = slots.get("turn_id")\n'
              '            if current is None or frame["turn_id"] != current:\n'),
      "new": ('        if kind == "interrupt":\n'
              '            current = slots.get("turn_id")\n'
              '            if False:  # MUT-18\n')},
-    {"id": "MUT-19", "guard": "EOF/结束时请求作废，从不算批准", "file": PROTO,
+    {"id": "S9-MUT-19", "guard": "EOF/结束时请求作废，从不算批准", "file": PROTO,
      "old": ('        except BaseException:\n'
              '            self._close(request.request_id, reason="voided", decision=None, rid=None,\n'
              '                        cause="interrupted")\n'
@@ -388,31 +388,31 @@ MUTATIONS: list[dict] = [
              '            self._close(request.request_id, reason="answered", decision="approve", rid=None,\n'
              '                        cause=None)\n'
              '            return HumanAnswer(request.request_id, "approve", None, "protocol", 0.0)\n')},
-    {"id": "MUT-20", "guard": "对已关闭请求的答复被拒（与「没见过这个号」可区分）", "file": PROTO,
+    {"id": "S9-MUT-20", "guard": "对已关闭请求的答复被拒（与「没见过这个号」可区分）", "file": PROTO,
      "old": '    if frame["request_id"] in slots.get("closed_requests", ()):\n',
      "new": '    if False:  # MUT-20\n'},
-    {"id": "MUT-21", "guard": "期租约真的 flock 住（第二个进程拿不到）", "file": SESSION_LOG,
+    {"id": "S9-MUT-21", "guard": "期租约真的 flock 住（第二个进程拿不到）", "file": SESSION_LOG,
      "old": '                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n',
      "new": '                pass  # MUT-21\n'},
-    {"id": "MUT-30", "guard": "审批记录写 channel 字段", "file": SESSION,
+    {"id": "S9-MUT-30", "guard": "审批记录写 channel 字段", "file": SESSION,
      "old": '            "y" if approved else "n", latency_s=answer.latency_s, channel=answer.channel,\n',
      "new": '            "y" if approved else "n", latency_s=answer.latency_s, channel=None,  # MUT-30\n'},
-    {"id": "MUT-31", "guard": "协议空闲时的 SIGINT 只提示、不退出", "file": PROTO,
+    {"id": "S9-MUT-31", "guard": "协议空闲时的 SIGINT 只提示、不退出", "file": PROTO,
      "old": ('            except KeyboardInterrupt:\n'
              '                # MUT-31：这里不忽略，进程就会被一次空闲点按死\n'
              '                _idle_notice(writer)\n'
              '                continue\n'),
      "new": '            except KeyboardInterrupt:\n                raise  # MUT-31\n'},
-    {"id": "MUT-32", "guard": "stop_points（items 键集合精等于 §3.1）", "file": PROTO,
+    {"id": "S9-MUT-32", "guard": "stop_points（items 键集合精等于 §3.1）", "file": PROTO,
      "old": ('            "note": item.note,\n'
              '            "answer_via": "decision_bar",\n'),
      "new": ('            "note": item.note,\n'
              '            "answer_via": "decision_bar",\n'
              '            "mtime_ns": 0,  # MUT-32\n')},
-    {"id": "MUT-33", "guard": "请求号不进工具结果（不进请求体）", "file": SESSION,
+    {"id": "S9-MUT-33", "guard": "请求号不进工具结果（不进请求体）", "file": SESSION,
      "old": '            reason="人类拒绝执行该工具调用",\n',
      "new": '            reason=f"人类拒绝执行该工具调用（请求 {request.request_id}）",  # MUT-33\n'},
-    {"id": "MUT-38", "guard": "帧由写线程整帧写出（主线程只入队）", "file": PROTO,
+    {"id": "S9-MUT-38", "guard": "帧由写线程整帧写出（主线程只入队）", "file": PROTO,
      "old": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
              '        self._queue.put(payload)\n'),
      "new": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
@@ -421,16 +421,16 @@ MUTATIONS: list[dict] = [
              '        while written < len(data):\n'
              '            written += os.write(self._fd, data[written:])\n')},
     # ---- Spec 9 §7.2 门禁 4 的中断配对（MUT-45/47/48/49）----
-    {"id": "MUT-45", "guard": "同一回合内尚未浮出的中断合并为一次", "file": SESSION,
+    {"id": "S9-MUT-45", "guard": "同一回合内尚未浮出的中断合并为一次", "file": SESSION,
      "old": '                pending, self._pending = self._pending, 0\n',
      "new": '                pending = self._pending  # MUT-45：不清零 → 后续延迟区还会再浮出\n'},
-    {"id": "MUT-47", "guard": "延迟区深度与待处理中断只属于主线程", "file": SESSION,
+    {"id": "S9-MUT-47", "guard": "延迟区深度与待处理中断只属于主线程", "file": SESSION,
      "old": '        if not self._is_main():\n',
      "new": '        if False:  # MUT-47：不分线程 → 非主线程也能污染深度\n'},
-    {"id": "MUT-48", "guard": "「停止中」到达的中断只置标志、不抛", "file": LLM,
+    {"id": "S9-MUT-48", "guard": "「停止中」到达的中断只置标志、不抛", "file": LLM,
      "old": '    with interrupt.absorb():  # type: ignore[union-attr]\n        yield\n',
      "new": '    yield  # MUT-48：去掉「停止中」的吸收区\n'},
-    {"id": "MUT-49", "guard": "「收尾后」到达的中断被丢弃，不带进空闲态", "file": SESSION,
+    {"id": "S9-MUT-49", "guard": "「收尾后」到达的中断被丢弃，不带进空闲态", "file": SESSION,
      "old": ('        with self.interrupt.absorbed():\n'
              '            self._record({\n'
              '                "k": "turn_end",\n'),
@@ -438,7 +438,7 @@ MUTATIONS: list[dict] = [
              '            self._record({\n'
              '                "k": "turn_end",\n')},
     # ---- Spec 9 §7.2：TS-9/TS-10 的配对杀手（门禁 10、12）----
-    {"id": "MUT-26", "guard": "status.py 不读 session.jsonl（观测层不参与状态）",
+    {"id": "S9-MUT-26", "guard": "status.py 不读 session.jsonl（观测层不参与状态）",
      "file": "pipeline/status.py",
      "old": ('    if args.json:\n'
              '        print(json.dumps(asdict(status), ensure_ascii=False, indent=2))\n'),
@@ -448,13 +448,13 @@ MUTATIONS: list[dict] = [
              '        if _log is not None and _log.exists():\n'
              '            extra["session_log_bytes"] = _log.stat().st_size\n'
              '        print(json.dumps({**asdict(status), **extra}, ensure_ascii=False, indent=2))\n')},
-    {"id": "MUT-42", "guard": "回滚丢弃本轮**全部**消息（含注入）", "file": SESSION,
+    {"id": "S9-MUT-42", "guard": "回滚丢弃本轮**全部**消息（含注入）", "file": SESSION,
      "old": '        del messages[length:]\n',
      "new": '        del messages[length:length + 1]  # MUT-42：只弹用户消息，注入留在内存\n'},
-    {"id": "MUT-53", "guard": "回滚把 memory_warn_injected 也回退（下一轮重新注入）", "file": SESSION,
+    {"id": "S9-MUT-53", "guard": "回滚把 memory_warn_injected 也回退（下一轮重新注入）", "file": SESSION,
      "old": '            "memory_warn_injected",\n',
      "new": '            # MUT-53：不回退 memory_warn_injected\n'},
-    {"id": "MUT-37", "guard": "commit 的写盘与进内存在同一延迟区", "file": SESSION,
+    {"id": "S9-MUT-37", "guard": "commit 的写盘与进内存在同一延迟区", "file": SESSION,
      "old": ('        with self.interrupt.defer():\n'
              '            try:\n'
              '                self._record(record, origin)\n'
@@ -464,7 +464,7 @@ MUTATIONS: list[dict] = [
              '            self.messages.append(message)\n'),
      "new": ('        self._record(record, origin)  # MUT-37：两步既不同在延迟区，也不补齐\n'
              '        self.messages.append(message)\n')},
-    {"id": "MUT-50", "guard": "协议启动/--continue 一律读文件前取租约", "file": PROTO,
+    {"id": "S9-MUT-50", "guard": "协议启动/--continue 一律读文件前取租约", "file": PROTO,
      "old": ('    lease = None\n'
              '    if ep_dir is not None:\n'
              '        try:\n'
@@ -621,6 +621,215 @@ MUTATIONS: list[dict] = [
              '        if not any(g in value for g in genres):\n'
              '            return True\n'
              '    return not seen\n')},
+    # ---- Spec 9 §7.2 矩阵补齐（M9，2026-09-27）：编号加 `S9-` 前缀，避开 Spec 12 的 MUT-1..15 ----
+    {"id": "S9-MUT-1", "guard": "无固定轮数上限（第 10 次回复后不许自停）", "file": LLM,
+     "old": ('            calls = reply.get("tool_calls") or []\n'
+             '            if not calls:\n'),
+     "new": ('            calls = reply.get("tool_calls") or []\n'
+             '            if not calls or llm_calls >= 10:  # MUT-1\n')},
+    {"id": "S9-MUT-2", "guard": "检查点恰在第 50 次回复后问（不差一）", "file": LLM,
+     "old": "            if replies_since_cp >= CHECKPOINT_EVERY or execs_since_cp >= CHECKPOINT_EVERY:\n",
+     "new": "            if replies_since_cp >= CHECKPOINT_EVERY - 1 or execs_since_cp >= CHECKPOINT_EVERY:  # MUT-2\n"},
+    {"id": "S9-MUT-3", "guard": "检查点答复被消费（答「停止」即停）", "file": LLM,
+     "old": "                if not control.ask_checkpoint(_checkpoint_snapshot(trigger)):  # type: ignore[union-attr]\n",
+     "new": "                if not (control.ask_checkpoint(_checkpoint_snapshot(trigger)) or True):  # MUT-3\n"},
+    {"id": "S9-MUT-4", "guard": "收尾调用带 tool_choice:\"none\"", "file": LLM,
+     "old": '        reply = _chat(tool_choice="none")\n',
+     "new": '        reply = _chat()  # MUT-4\n'},
+    {"id": "S9-MUT-5", "guard": "中断时为未配对的调用补合成结果", "file": LLM,
+     "old": ('            if call is not None:\n'
+             '                if live["stage"] == "tool" and live["outcome"] is not None:\n'),
+     "new": ('            if False:  # MUT-5\n'
+             '                if live["stage"] == "tool" and live["outcome"] is not None:\n')},
+    {"id": "S9-MUT-6", "guard": "判重键 sort_keys（参数顺序无关）", "file": LLM,
+     "old": "json.dumps(normalized, sort_keys=True,",
+     "new": "json.dumps(normalized, sort_keys=False,"},
+    {"id": "S9-MUT-7", "guard": "人批准的副作用执行后清空判重表", "file": LLM,
+     "old": ('                if decision.provenance == "human":\n'
+             '                    dedup.clear()'),
+     "new": ('                if decision.provenance == "human":\n'
+             '                    pass  # MUT-7')},
+    {"id": "S9-MUT-8", "guard": "只有人批准的执行才清空判重表（只读执行不清）", "file": LLM,
+     "old": ('                if decision.provenance == "human":\n'
+             '                    dedup.clear()'),
+     "new": ('                if True:  # MUT-8\n'
+             '                    dedup.clear()')},
+    {"id": "S9-MUT-9", "guard": "人拒过的调用也记入判重", "file": LLM,
+     "old": "                    rejected = _reject_outcome(decision)\n",
+     "new": ("                    rejected = _reject_outcome(decision)\n"
+             "                    if key is not None:\n"
+             "                        dedup.pop(key, None)  # MUT-9\n")},
+    {"id": "S9-MUT-10", "guard": "本地说明不进 messages", "file": LLM,
+     "old": "        state, final, note, wrapup_error = _wrapup(reason)\n",
+     "new": ("        state, final, note, wrapup_error = _wrapup(reason)\n"
+             "        if note:\n"
+             '            control.commit({"role": "assistant", "content": note}, "assistant")  # MUT-10\n')},
+    {"id": "S9-MUT-11", "guard": "首个模型请求就失败 → 回滚、不收尾", "file": LLM,
+     "old": "        if llm_calls == 0:\n",
+     "new": "        if False:  # MUT-11\n"},
+    {"id": "S9-MUT-12", "guard": "临界区工具执行在延迟区内", "file": LLM,
+     "old": "                    with control.interrupt.defer():  # type: ignore[union-attr]\n",
+     "new": "                    with contextlib.nullcontext():  # MUT-12\n"},
+    {"id": "S9-MUT-13", "guard": "模型发起的 review 带选项一律拒", "file": SESSION,
+     "old": '        if origin == "model" and _model_argv_has_options(argv, ep_dir):\n',
+     "new": '        if False:  # MUT-13\n'},
+    {"id": "S9-MUT-14", "guard": "批准抓取前复核序号仍指向该 URL", "file": SESSION,
+     "old": '        aligned = 0 < no <= len(current) and str(current[no - 1].get("url") or "") == url\n',
+     "new": '        aligned = True  # MUT-14\n'},
+    {"id": "S9-MUT-15", "guard": "抓取卡逐条问人（不跳过人审）", "file": SESSION,
+     "old": ('            answer = self.channel.ask(request)\n'
+             '        except KeyboardInterrupt:\n'
+             '            self._close_request(request, reason="voided", decision=None, latency_s=None,\n'
+             '                                cause="interrupted")\n'
+             '            record.update({"decision": "voided"'),
+     "new": ('            answer = HumanAnswer(request.request_id, "approve", None, self.channel.name, 0.0)  # MUT-15\n'
+             '        except KeyboardInterrupt:\n'
+             '            self._close_request(request, reason="voided", decision=None, latency_s=None,\n'
+             '                                cause="interrupted")\n'
+             '            record.update({"decision": "voided"')},
+    {"id": "S9-MUT-22", "guard": "恢复时截断末尾撕裂残行", "file": SESSION_LOG,
+     "old": "            os.ftruncate(self._fd, cut)\n",
+     "new": "            pass  # MUT-22\n"},
+    {"id": "S9-MUT-23", "guard": "修复只追加、已提交整行一字不改", "file": SESSION,
+     "old": ("        for record in repairs:\n"
+             "            lease.append(record)\n"),
+     "new": ("        for record in repairs:\n"
+             "            lease.append(record)\n"
+             "        _all = [json.loads(x) for x in lease.read().splitlines() if x.strip()]  # MUT-23\n"
+             "        os.ftruncate(lease._fd, 0)\n"
+             "        os.lseek(lease._fd, 0, 0)\n"
+             '        os.write(lease._fd, b"".join(json.dumps(r, ensure_ascii=False).encode("utf-8") + b"\\n" for r in _all))\n')},
+    {"id": "S9-MUT-24", "guard": "恢复后按当前文件重建 messages[0]", "file": SESSION,
+     "old": ("            # 刷新状态卡：整段替换 messages[0]（一轮之内不再变）\n"
+             "            messages[0] = {\n"),
+     "new": ("            # 刷新状态卡：整段替换 messages[0]（一轮之内不再变）\n"
+             "            if not self._injected_docs:  # MUT-24：恢复首轮沿用旧常驻层\n"
+             "              messages[0] = {\n")},
+    {"id": "S9-MUT-25", "guard": "恢复首轮比对注入文档 sha", "file": SESSION,
+     "old": ("            if current == recorded:\n"
+             "                continue\n"),
+     "new": ("            if True:  # MUT-25\n"
+             "                continue\n")},
+    {"id": "S9-MUT-27", "guard": "session.py 顶层零重依赖", "file": SESSION,
+     "old": "import contextlib\nimport copy\n",
+     "new": "import contextlib\nimport copy\nimport numpy  # noqa: F401  MUT-27\n"},
+    {"id": "S9-MUT-28", "guard": "终端卡片提示文案与金样本逐字一致", "file": SESSION,
+     "old": '    "tool_call": "└─ 执行? [y/N]: ",\n',
+     "new": '    "tool_call": "└─ 执行吗? [y/N]: ",  # MUT-28\n'},
+    {"id": "S9-MUT-29", "guard": "终端 REPL 在回合级接住中断（不退进程）", "file": SESSION,
+     "old": ("            self._finish_turn(snapshot, tracker, outcome, messages)\n"
+             '            if outcome.get("stopped") == "interrupted":\n'),
+     "new": ("            self._finish_turn(snapshot, tracker, outcome, messages)\n"
+             '            if outcome.get("stopped") == "interrupted" and self.channel.name == "tty":\n'
+             "                raise KeyboardInterrupt  # MUT-29\n"
+             '            if outcome.get("stopped") == "interrupted":\n')},
+    {"id": "S9-MUT-34", "guard": "CRITICAL_TOOLS 是字面量且等于 side_effect 集合 − run_pipeline", "file": TOOLS,
+     "old": ('    "read_artifact": {\n'
+             '        "name": "read_artifact",\n'
+             '        "side_effect": False,\n'),
+     "new": ('    "read_artifact": {\n'
+             '        "name": "read_artifact",\n'
+             '        "side_effect": True,  # MUT-34\n')},
+    {"id": "S9-MUT-35", "guard": "review 选项拦截按「任何 - 开头」而非只认 --approve", "file": SESSION,
+     "old": ('        if token.startswith("-"):\n'
+             '            return True\n'),
+     "new": ('        if token == "--approve" or token.startswith("--approve="):  # MUT-35\n'
+             '            return True\n')},
+    {"id": "S9-MUT-36", "guard": "--force 禁令按前缀判定（挡 --force-a 缩写）", "file": TOOLS,
+     "old": '        if not any(flag.startswith(forced) for flag in ("force", "force-all")):\n',
+     "new": '        if forced not in ("force", "force-all"):  # MUT-36\n'},
+    {"id": "S9-MUT-39", "guard": "子会话共用进程级租约（不各自 acquire）", "file": SESSION,
+     "old": ("        persist = messages is self.main_messages\n"
+             "        self.ensure_lease()\n"),
+     "new": ("        persist = messages is self.main_messages\n"
+             "        self.ensure_lease()\n"
+             "        if not persist and not self.ephemeral and self.ep_dir is not None:\n"
+             "            EpisodeLease.acquire(self.ep_dir)  # MUT-39\n")},
+    {"id": "S9-MUT-40", "guard": "免卡写入不清空判重表", "file": LLM,
+     "old": ('                if decision.provenance == "human":\n'
+             '                    dedup.clear()'),
+     "new": ('                if decision.provenance in ("human", "card_free"):  # MUT-40\n'
+             '                    dedup.clear()')},
+    {"id": "S9-MUT-41", "guard": "检查点同时数工具执行（不只数回复）", "file": LLM,
+     "old": "                execs_since_cp += 1\n",
+     "new": "                pass  # MUT-41\n"},
+    {"id": "S9-MUT-43", "guard": "会话根与素材目录同源才出抓取卡", "file": SESSION,
+     "old": "        if os.path.realpath(data_root) != os.path.realpath(base_data):\n",
+     "new": "        if False:  # MUT-43\n"},
+    {"id": "S9-MUT-44", "guard": "--continue 默认只取含 assistant 消息的会话", "file": SESSION_LOG,
+     "old": "    resumable = [s for s in summaries if s.resumable]\n",
+     "new": "    resumable = list(summaries)  # MUT-44\n"},
+    {"id": "S9-MUT-46", "guard": "执行计数在每次执行之前查（并行调用逐个受约束）", "file": LLM,
+     "old": "                if execs_since_cp >= CHECKPOINT_EVERY:\n",
+     "new": "                if False:  # MUT-46\n"},
+    {"id": "S9-MUT-51", "guard": "生产调用点把 control 传给 run_tool_loop", "file": SESSION,
+     "old": ("                    control=self._control(\n"
+             "                        turn_id=self._turn_id, status=status, root=root, approve_cb=approve_cb\n"
+             "                    ),\n"),
+     "new": "                    # MUT-51：不传 control\n"},
+    {"id": "S9-MUT-52", "guard": "抓取卡的可达性检查不走 require_data()（SystemExit 路径）", "file": SESSION,
+     "old": ("        if not data_root.exists():\n"
+             '            self.channel.show("notice", {\n'
+             '                "level": "warn", "code": "fetch_disabled_data_unreachable",\n'),
+     "new": ("        paths.require_data()  # MUT-52\n"
+             "        if not data_root.exists():\n"
+             '            self.channel.show("notice", {\n'
+             '                "level": "warn", "code": "fetch_disabled_data_unreachable",\n')},
+    {"id": "S9-MUT-54", "guard": "是否落盘看 messages 对象同一性（不看有无 SessionHost）", "file": SESSION,
+     "old": "        persist = messages is self.main_messages\n",
+     "new": "        persist = not self.ephemeral  # MUT-54\n"},
+    {"id": "S9-MUT-55", "guard": "REPL 回合经模块属性 cli._dispatch_agent_turn（替身可达）", "file": CLI,
+     "old": ('        _dispatch_agent_turn(\n'
+             '            line,\n'
+             '            messages,\n'
+             '            ep_dir,\n'
+             '            scope,\n'
+             '            status,\n'
+             '            extra_prompt="",\n'
+             '            root=root,\n'
+             '            tracker=tracker,\n'
+             '        )\n'),
+     "new": ('        (_SESSION_HOST or SessionHost(ep_dir, root=root, channel=TtyChannel(), ephemeral=True)).dispatch(  # MUT-55\n'
+             '            line,\n'
+             '            messages,\n'
+             '            ep_dir,\n'
+             '            scope,\n'
+             '            status,\n'
+             '            "",\n'
+             '            root,\n'
+             '            None,\n'
+             '            tracker,\n'
+             '        )\n')},
+    {"id": "S9-MUT-56", "guard": "activate_host 退出时注销登记", "file": CLI,
+     "old": ("            if _HOST_DEPTH <= 0:\n"
+             "                _SESSION_HOST = None\n"),
+     "new": ("            if False:  # MUT-56\n"
+             "                _SESSION_HOST = None\n")},
+    {"id": "S9-MUT-57", "guard": "包装比较 ep_dir（登记的是别的期 → 按没有登记处理）", "file": CLI,
+     "old": "    if host is None or not host.matches(ep_dir):\n",
+     "new": "    if host is None:  # MUT-57\n"},
+    {"id": "S9-MUT-58", "guard": "activate_host 可重入（嵌套退出不注销外层登记）", "file": CLI,
+     "old": ("            yield _SESSION_HOST  # type: ignore[misc]\n"
+             "        finally:\n"
+             "            with _HOST_LOCK:\n"
+             "                _HOST_DEPTH -= 1\n"),
+     "new": ("            yield _SESSION_HOST  # type: ignore[misc]\n"
+             "        finally:\n"
+             "            with _HOST_LOCK:\n"
+             "                _HOST_DEPTH -= 1\n"
+             "                _SESSION_HOST = None  # MUT-58\n")},
+    {"id": "S9-MUT-59", "guard": "REPL 主会话 messages 列表对象全程同一个", "file": CLI,
+     "old": ('            tracker=tracker,\n'
+             '        )\n'
+             '\n'
+             '\n'
+             'def _print_sessions('),
+     "new": ('            tracker=tracker,\n'
+             '        )\n'
+             '        messages = []  # MUT-59\n'
+             '\n'
+             '\n'
+             'def _print_sessions(')},
 ]
 
 
