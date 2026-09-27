@@ -378,7 +378,9 @@ def cmd_fetch(no: int, *, dry_run: bool = False) -> int:
     if overall(dvs) == "FAIL":
         raise SystemExit("FAIL 查重没过，没抓。确认要重抓就先清台账/改文件名（人显式动作）")
 
-    argv = fetch_argv(c["url"], dest, slug, yt_dlp=yt_dlp_argv())
+    # 只有页面那一支才找 yt-dlp：直链走 curl，本机没装 yt-dlp 不该连累它（N35）
+    yt_dlp = yt_dlp_argv() if pick_fetcher(c["url"]) == "yt-dlp" else None
+    argv = fetch_argv(c["url"], dest, slug, yt_dlp=yt_dlp)
     print("  执行：" + " ".join(argv))
     if dry_run:
         return 0
