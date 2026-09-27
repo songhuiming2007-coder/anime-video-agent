@@ -236,6 +236,73 @@ class TestFetcher:
         assert A.kind_of("场刊.jpg") == "scan"
 
 
+
+class TestCmdFetchWithoutYtDlp:
+    """N35：本机 yt-dlp 既不在 PATH 也不在虚拟环境时，直链照样走 curl，页面仍报原错。
+
+    2026-09-27 M9 门禁 12 实测：`.mp4` 直链的 `acquire fetch 7` 以「FAIL 找不到 yt-dlp」退 1——
+    `yt_dlp_argv()` 在选工具之前就被求值。
+    """
+
+    DIRECT = "https://example.com/probe.mp4"
+    PAGE = "https://www.youtube.com/watch?v=x"
+
+    @pytest.fixture
+    def repo(self, tmp_path, monkeypatch):
+        import importlib.util
+        import json
+        import shutil
+
+        from pipeline import paths
+
+        data = tmp_path / "data"
+        (data / "episodes").mkdir(parents=True)
+        inc = data / "library" / "incoming"
+        inc.mkdir(parents=True)
+        cands = [{"title": "直链探针", "url": self.DIRECT, "type": "live", "source": "测试", "why": "N35"},
+                 {"title": "页面候选", "url": self.PAGE, "type": "live", "source": "测试", "why": "N35"}]
+        (inc / "candidates.json").write_text(json.dumps(cands, ensure_ascii=False), encoding="utf-8")
+        (inc / "fetched.json").write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(paths, "DATA", data)
+        # yt-dlp 两条找法都落空（命令不在 PATH、模块不可导入）
+        real_which, real_find = shutil.which, importlib.util.find_spec
+        monkeypatch.setattr(A.shutil, "which", lambda n, *a, **k: None if n == "yt-dlp" else real_which(n, *a, **k))
+        monkeypatch.setattr(A.importlib.util, "find_spec",
+                            lambda n, *a, **k: None if n == "yt_dlp" else real_find(n, *a, **k))
+        with pytest.raises(SystemExit, match="找不到 yt-dlp"):
+            A.yt_dlp_argv()  # 夹具自检：环境里确实没有 yt-dlp
+        return inc
+
+    def test_直链dry_run打印curl命令(self, repo, capsys):
+        assert A.cmd_fetch(1, dry_run=True) == 0
+        line = next(ln for ln in capsys.readouterr().out.splitlines() if "执行：" in ln)
+        assert line.split("执行：", 1)[1].split()[0] == "curl"
+        assert line.endswith(self.DIRECT)
+
+    def test_直链真跑用curl且台账加一(self, repo, monkeypatch):
+        import json
+        import subprocess
+
+        ran: list[list[str]] = []
+
+        def fake_run(argv, *a, **k):
+            ran.append(list(argv))
+            (repo / "直链探针.mp4").write_bytes(b"\0")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(A.subprocess, "run", fake_run)
+        assert A.cmd_fetch(1) == 0
+        assert [a[0] for a in ran] == ["curl"]
+        ledger = json.loads((repo / "fetched.json").read_text(encoding="utf-8"))
+        assert [e["url"] for e in ledger] == [self.DIRECT]
+
+    def test_页面URL仍报原错且文案逐字(self, repo):
+        with pytest.raises(SystemExit) as ei:
+            A.cmd_fetch(2, dry_run=True)
+        assert str(ei.value) == ("FAIL 找不到 yt-dlp。二选一：\n"
+                                 "     uv add yt-dlp        # 进项目虚拟环境（推荐，E6）\n"
+                                 "     brew install yt-dlp  # 系统级")
+
 # ---------- 集键 ----------
 
 
