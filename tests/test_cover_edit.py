@@ -420,3 +420,35 @@ def test_tc7_no_heavy_imports_in_cover_edit_tools_cli() -> None:
     )
     res = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, capture_output=True, text=True)
     assert res.returncode == 0, f"纯洁性探针失败:\n{res.stdout}{res.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# §5 子进程纯洁性：env -i PATH=<白名单> 下 /import-cover 行为不变（不依赖 git/ffprobe）
+# ---------------------------------------------------------------------------
+
+
+def test_import_cover_在最小_PATH_下行为不变(tmp_path: Path) -> None:
+    """A3 的回归化：导入不碰任何外部二进制，白名单 PATH 下与常规一致、字节全同。"""
+    import os
+
+    ep = tmp_path / "data" / "episodes" / "clean-env"
+    ep.mkdir(parents=True)
+    code = (
+        "import sys, io\n"
+        "from pathlib import Path\n"
+        "from pipeline import paths\n"
+        "paths.ROOT = Path(sys.argv[1])\n"
+        "from pipeline.agent import cli\n"
+        "sys.stdin = io.TextIOWrapper(io.BytesIO(sys.stdin.buffer.read()), encoding='utf-8')\n"
+        "sys.exit(cli.main([sys.argv[2], '/import-cover', '--name=x.png']))\n"
+    )
+    blob = _png_bytes()
+    res = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path), str(ep)],
+        input=blob, capture_output=True, cwd=REPO_ROOT,
+        env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp"), "PYTHONUTF8": "1"},
+    )
+    assert res.returncode == 0, res.stderr.decode("utf-8", "replace")
+    landed = sorted((ep / "07-cover" / "import").glob("*.png"))
+    assert len(landed) == 1
+    assert landed[0].read_bytes() == blob  # 原始字节，不重编码

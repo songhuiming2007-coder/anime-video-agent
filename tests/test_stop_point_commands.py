@@ -488,3 +488,52 @@ def test_repl_也路由停机点子命令(repo, capsys):
     out = capsys.readouterr().out
     assert '"v": 1' in out
     assert "未知命令" not in out
+
+
+# ---------------------------------------------------------------------------
+# §5.2 子进程纯洁性：env -i PATH=<白名单> 下行为不变（A3 的回归化）
+# ---------------------------------------------------------------------------
+
+def _cleanenv_cli(root: Path, *argv: str, stdin: str | None = None, path: str) -> subprocess.CompletedProcess:
+    """在最小环境下跑 core 子命令（真子进程；root 在进程内改 paths.ROOT）。"""
+    code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from pipeline import paths\n"
+        "paths.ROOT = Path(sys.argv[1])\n"
+        "from pipeline.agent import cli\n"
+        "sys.exit(cli.main([sys.argv[2]] + sys.argv[3:]))\n"
+    )
+    import os
+    return subprocess.run(
+        [sys.executable, "-c", code, str(root), str(argv[0]), *argv[1:]],
+        capture_output=True, text=True, input=stdin, cwd=paths.ROOT,
+        env={"PATH": path, "HOME": os.environ.get("HOME", "/tmp"), "PYTHONUTF8": "1"},
+    )
+
+
+def test_停机点子命令在最小_PATH_下行为不变(tmp_path):
+    """白名单 PATH（无 /opt/homebrew，无 shell 环境）下：/save-script 与 /voice-info 照常，/seal-script 靠 /usr/bin/git。"""
+    ep = tmp_path / "data" / "episodes" / "clean-env"
+    (ep / "03-audio").mkdir(parents=True)
+    (ep / "02-script.md").write_text(SCRIPT, encoding="utf-8")
+    (ep / "02-script.draft.md").write_text(DRAFT, encoding="utf-8")
+    st = (ep / "02-script.md").stat()
+
+    saved = _cleanenv_cli(
+        tmp_path,
+        str(ep), "/save-script",
+        f"--expect-size={st.st_size}", f"--expect-mtime-ns={st.st_mtime_ns}",
+        stdin=SCRIPT.replace("都没想到。", "都没想到！！"),
+        path="/usr/bin:/bin:/usr/sbin:/sbin",
+    )
+    assert saved.returncode == 0, saved.stderr
+    assert "都没想到！！" in (ep / "02-script.md").read_text(encoding="utf-8")
+
+    info = _cleanenv_cli(tmp_path, str(ep), "/voice-info", path="/usr/bin:/bin")
+    assert info.returncode == 0, info.stderr
+    assert '"wav_exists"' in info.stdout
+
+    sealed = _cleanenv_cli(tmp_path, str(ep), "/seal-script", path="/usr/bin:/bin:/usr/sbin:/sbin")
+    assert sealed.returncode == 0, sealed.stderr
+    assert (ep / "02-diff.patch").exists()
