@@ -127,3 +127,19 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-notice--error { color: var(--danger); }
 .conv-logs summary { cursor: pointer; }
 .decisions.dock { border-bottom: 0; }
+
+/* ---- Spec 11/12 深度组件（02.5 编辑器 / 03.5 顺听面板 / 封面导入）：只引用 token 变量（VS-3/4） ---- */
+.editor-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.editor-src { min-width: 0; overflow: auto; }
+.editor-preview { min-width: 0; overflow: auto; padding: var(--space-3); background: var(--bg); }
+.editor-preview > .markdown { max-width: none; }
+.seg-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--space-3); }
+.seg-list, .pending, .voice-input, .voice-card, .hetero { padding: 0 var(--space-3); }
+.seg-actions { display: flex; gap: var(--space-1); justify-self: end; }
+.cover-import { padding: var(--space-2) 0; }
+.hidden-input { display: none; }
+
+/* 封面缩略图（ui.css 的 .cover-grid/.cover-opt 是容器骨架，图片与单选框的落位在这里） */
+.cover-opt img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.cover-opt input[type="radio"] { position: absolute; top: var(--space-1); left: var(--space-1); width: var(--text-sm); height: var(--text-sm); margin: 0; accent-color: var(--accent-strong); }
+.cover-opt:has(input:checked) { border-color: var(--accent-strong); }

@@ -67,6 +67,21 @@ export const HOST_STDERR_TAIL_BYTES = 8 * 1024;
  */
 export const MEDIA_READ_CHUNK_BYTES = 1024 * 1024;
 
+// ---------------- Spec 11 §3.5 / Spec 12 §3.1：停机点组件常量（全部为初值，spec 各 PR 实测回填） ----------------
+
+/** 真实 02-script.md 为 KB 级（约 20 段 × 百字）；1 MiB 是两个数量级余量（Spec 11 §3.5）。 */
+export const SAVE_SCRIPT_MAX_BYTES = 1024 * 1024;
+/** 纠错原文是一行文法，64 KiB 已远超任何合法输入（Spec 11 §3.5）。 */
+export const VOICE_PARSE_MAX_BYTES = 64 * 1024;
+/** markdown-it 渲染 KB 级文本为亚毫秒；300 ms 节流在人感知上即时（Spec 11 §3.5）。 */
+export const EDITOR_PREVIEW_DEBOUNCE_MS = 300;
+/** host 与 core 同机同时钟，容差只为防取整边界（Spec 11 §3.5）。 */
+export const RECORD_TIME_CLOCK_TOLERANCE_S = 60;
+/** 封面图上限：真实 1–5 MiB，32 MiB 是防御性上界（Spec 12 §3.1；core 侧同值）。 */
+export const IMPORT_COVER_MAX_BYTES = 32 * 1024 * 1024;
+/** `/voice-info` stdout 完整读入上限：段表 + 待应用纠错条目（每条约 200 B）逐字节完整，超出按错误处理。 */
+export const VOICE_INFO_STDOUT_MAX_BYTES = 1024 * 1024;
+
 // ---------------- Spec 10 §3.5：会话常量（全部为初值，PR2/PR4 实测回填） ----------------
 
 /** Spec 9 MAX_INBOUND_LINE_BYTES：入站只有人打的字与答复；超出即 E_BAD_REQUEST、零写入。 */

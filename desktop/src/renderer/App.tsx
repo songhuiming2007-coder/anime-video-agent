@@ -14,6 +14,10 @@ import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
 import { AnswerDock } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane } from "./ConversationPane";
+import { CoverImport } from "./CoverImport";
+import { HumanTimeReadout } from "./HumanTimeReadout";
+import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
+import { VoicePanel } from "./VoicePanel";
 import { readyInfo, SessionHeader } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
@@ -29,10 +33,9 @@ const rpc = new RpcClient(window);
 const FATAL = new URLSearchParams(window.location.search).get("fatal");
 
 /**
- * 人时类 advisory（pipeline/status.py 人时观测行的两种原文开头）旁标数据源不完整（门禁 14，红队 M8）：
- * 桌面端审阅不写 human_time.json，判据 4——不把「不知道」当成合格。
+ * 门禁 14 已退役（Spec 11 S8-R15，2026-09-26）：人时记账命令（/record-time）落地，
+ * 桌面端审阅面可见即计时并落 human_time.json，不再需要「数据源不完整」旁标。
  */
-const HUMAN_TIME_ADVISORY = /^(人类耗时|human_time\.json)/;
 
 /** 产物树行图标（按扩展名分发，与 PreviewPane 同一份判据） */
 const KIND_ICON: Record<string, IconName> = { video: "film", audio: "wave", image: "image", html: "file" };
@@ -91,6 +94,8 @@ function Main() {
   const autoRef = useRef<AutoOpenState>(initialAutoOpen);
   const [strip, setStrip] = useState<ApprovalJson | null>(null);
   const [autoOpened, setAutoOpened] = useState<{ id: string | null; count: number }>({ id: null, count: 0 });
+  /** 封面导入成功后重挂产物树（导入人刚放下的图应在树里立刻可见） */
+  const [treeBump, setTreeBump] = useState(0);
 
   const loadHealth = useCallback(() => rpc.call<Health>("app.health").then(setHealth, (e) => setError(errText(e))), []);
 
@@ -163,6 +168,8 @@ function Main() {
   }, [health]);
 
   const open = useCallback(async (epKey: string) => {
+    // RF-7：02.5 编辑器有未保存改动时先二次确认（切期即卸载，脏缓冲区会蒸发）
+    if (!confirmDiscardDirty()) return;
     setError(null);
     setPreview(null);
     setShowIdea(false);
@@ -192,6 +199,7 @@ function Main() {
   }, [active, loadHealth]);
 
   const changeRepo = useCallback(async () => {
+    if (!confirmDiscardDirty()) return;
     setError(null);
     try {
       const r = await rpc.call<{ changed: boolean; repoRoot: string | null; problem: string | null }>("app.requestRepoRootChange");
@@ -306,6 +314,10 @@ function Main() {
   fetchConvRef.current = fetchConv;
 
   const reachOk = health?.reach === "ok";
+  /** Spec 11 的深度组件按预览目标长出：02.5 编辑器长在 02-script.md 的 .md 预览旁；03.5 顺听面板替下 03-audio 队列 */
+  const editorTarget = preview?.kind === "file" && preview.root === "episodes" && preview.rel === `${active}/02-script.md`;
+  // 03-audio 目标有两个来源：自动呼出（STOP_PREVIEW 的 rel 不带期名前缀）与产物树行（带期名前缀）
+  const voiceTarget = preview?.kind === "dir" && preview.root === "episodes" && (preview.rel === "03-audio" || preview.rel === `${active}/03-audio`);
 
   return (
     <div className="app">
@@ -321,11 +333,17 @@ function Main() {
         <nav className="left">
           <NewEpisodeForm rpc={rpc} onCreated={(k) => { setJustCreated(k); setShowIdea(false); void open(k); }} />
           <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} />
-          {ep && !showIdea && <ArtifactTree key={ep.epKey} epKey={ep.epKey} onPick={pickHuman} />}
+          {ep && !showIdea && (
+            <>
+              <CoverImport epKey={ep.epKey} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
+              <ArtifactTree key={`${ep.epKey}:${treeBump}`} epKey={ep.epKey} onPick={pickHuman} />
+            </>
+          )}
           <GalleryList reachOk={reachOk} onPick={pickHuman} />
         </nav>
         <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
           {ep && !showIdea && <StatusCard ep={ep} />}
+          {ep && !showIdea && <HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />}
           <SessionHeader
             rpc={rpc}
             convKey={convKey}
@@ -367,7 +385,15 @@ function Main() {
               停机点 {strip.type} 已就绪 · 查看
             </button>
           )}
-          <PreviewPane key={active ?? "-"} target={preview} />
+          {active !== null && editorTarget ? (
+            <ScriptEditor key={`script:${active}`} epKey={active} rpc={rpc} />
+          ) : (
+            <>
+              {/* Spec 11 §2.3：03.5 的顺听面板与既有音频队列并存（队列是 Spec 8 的原位预览，不被替下） */}
+              {active !== null && voiceTarget && <VoicePanel key={`voice:${active}`} epKey={active} rpc={rpc} />}
+              <PreviewPane key={active ?? "-"} target={preview} />
+            </>
+          )}
         </section>
       </div>
       {ep && <Timeline ep={ep} />}
@@ -588,11 +614,6 @@ function StatusCard({ ep }: { ep: EpisodeState }) {
             <li key={a}>
               <Icon name="alert" size="sm" />
               {a}
-              {HUMAN_TIME_ADVISORY.test(a) && (
-                <span className="muted" data-testid="human-time-incomplete">
-                  （数据源不完整：桌面端审阅不计入）
-                </span>
-              )}
             </li>
           ))}
         </ul>

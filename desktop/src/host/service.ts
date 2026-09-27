@@ -8,13 +8,19 @@ import {
   BACKGROUND_POLL_MS,
   EPISODE_LIST_REFRESH_MS,
   EPISODE_STATUS_CONCURRENCY,
+  IMPORT_COVER_MAX_BYTES,
   MAX_PARTIAL_BYTES,
   REACH_POLL_MS,
+  SAVE_SCRIPT_MAX_BYTES,
   STATUS_REFRESH_MS,
+  VOICE_PARSE_MAX_BYTES,
 } from "../shared/constants";
 import { degradedNoticesOf, foldEvents, goneRunningJobIds, parseEventLine } from "../shared/fold";
 import { LineSplitter } from "../shared/jsonl";
-import { losslessSelfCheck, stringifyLossless, toWireApproval, toWireEvent } from "../shared/losslessJson";
+import { losslessSelfCheck, parseLossless, stringifyLossless, toWireApproval, toWireEvent } from "../shared/losslessJson";
+import { parseVoiceInfo } from "../shared/voiceInfo";
+import { epochSeconds, reduceHumanTime, type HumanTimeRecord } from "../shared/humanTime";
+import { HumanTimers, type FlushReason } from "./humanTime";
 import { relPathProblem } from "../shared/mediaUrl";
 import { repoRootProblem } from "../shared/repoRoot";
 import {
@@ -39,6 +45,13 @@ import {
   type TreeEntry,
   type ConvKey,
   type ConvSnapshot,
+  type FingerJson,
+  type ImportedCoverJson,
+  type SavedFingerprintJson,
+  type ScriptStatJson,
+  type TimeReadJson,
+  type VoiceInfoJson,
+  type VoicePatchJson,
 } from "../shared/protocol";
 import { decide, DecideFail, parseDecideParams } from "./decide";
 import { errnoOf, realFs, type FsRead } from "./fsio";
@@ -68,7 +81,7 @@ export interface HostDeps {
   selfCheck: () => boolean;
   /** undefined = 真实 HEAL spawn（能力在场时）；null = 永不 spawn；函数 = 测试注入 */
   healExecutor: HealExecutor | null | undefined;
-  runCore: <T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag?: SpawnTag) => Promise<CoreResult>;
+  runCore: <T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag?: SpawnTag, stdinData?: string | Uint8Array) => Promise<CoreResult>;
   /** main 的原生对话框选择 + 二次确认（§2.10）；返回确认后的 repoRoot，取消为 null */
   chooseRepoRoot: () => Promise<string | null>;
   /** browser/抓取卡「批准」前的原生确认框（Spec 10 §2.4 第 5 层）；true = 人点了批准 */
@@ -204,6 +217,8 @@ export class HostService {
   private send: (env: Envelope) => void = () => {};
   /** 会话管理（Spec 10 §2.1、§4.2） */
   readonly sessions: SessionManager;
+  /** 人时计时器（Spec 11 §2.4/§4.3）：审阅面可见即计时，flush 时 spawn RECORD_TIME */
+  readonly humanTimers: HumanTimers;
   /** 退出第 5 步开始后拒绝建期等新请求（Spec 10 §2.10、二轮 🔵-6） */
   private sessionQuitting = false;
 
@@ -231,6 +246,11 @@ export class HostService {
       ...deps,
     };
     this.heal = new HealScheduler(null, (epKey, r) => this.diag(`heal 失败（${epKey}）：${r.stderrTail.trim().slice(-400)}`));
+    this.humanTimers = new HumanTimers(
+      () => this.deps.now(),
+      (epKey, iv, reason) => this.recordHumanTime(epKey, iv, reason),
+      (m) => this.diag(m),
+    );
     this.sessions = new SessionManager({
       spawnSession,
       resolveKey: () => this.deps.resolveSessionKey(this.repoRoot ?? ""),
@@ -259,10 +279,10 @@ export class HostService {
   };
 
   /** 全部 spawn 的唯一出口：登记在途，供 repoRoot 切换等待。 */
-  private core<T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag = {}): Promise<CoreResult> {
+  private core<T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag = {}, stdinData?: string | Uint8Array): Promise<CoreResult> {
     const repoRoot = this.repoRoot;
     if (!repoRoot) return Promise.resolve({ code: null, signal: null, stdoutTail: "", stderrTail: "无仓库", timedOut: false, stdoutFull: null, stdoutOverflow: false });
-    return this.track(this.deps.runCore(t, args, { repoRoot }, tag));
+    return this.track(this.deps.runCore(t, args, { repoRoot }, tag, stdinData));
   }
 
   private track<T>(p: Promise<T>): Promise<T> {
@@ -298,6 +318,8 @@ export class HostService {
   }
 
   stop(): void {
+    // 退出时 best-effort 结算在途区间（Spec 11 §2.4）：detached 的 RECORD_TIME 会跑完；失败则丢失该段。
+    this.humanTimers.flushAll("quit");
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
   }
@@ -580,6 +602,33 @@ export class HostService {
         return this.sessions.end(p.convKey as ConvKey);
       case "conv.snapshot":
         return this.sessions.snapshot(p.convKey as ConvKey);
+      // ---- Spec 11 §4.3/§4.4 + Spec 12 §4.2 ----
+      case "script.stat":
+        return this.scriptStat(this.epForIo(p.epKey));
+      case "script.save":
+        return this.scriptSave(this.epForIo(p.epKey), p.text, p.expectSize, p.expectMtimeNs);
+      case "script.seal":
+        return this.scriptSeal(this.epForIo(p.epKey));
+      case "script.check":
+        return this.scriptCheck(this.epForIo(p.epKey));
+      case "voice.info":
+        return this.voiceInfo(this.epForIo(p.epKey));
+      case "voice.parse":
+        return this.voiceParse(this.epForIo(p.epKey), p.text);
+      case "voice.add":
+        return this.voiceAdd(this.epForIo(p.epKey), p.text);
+      case "voice.revert":
+        return this.voiceRevert(this.epForIo(p.epKey), p.label);
+      case "voice.retract":
+        return this.voiceRetract(this.epForIo(p.epKey), p.id);
+      case "voice.applyPatch":
+        return this.voiceApplyPatch(this.epForIo(p.epKey));
+      case "time.surface":
+        return this.timeSurface(this.epForIo(p.epKey), p.stop, p.visible === "true");
+      case "time.read":
+        return this.timeRead(this.epForIo(p.epKey));
+      case "cover.import":
+        return this.coverImport(this.epForIo(p.epKey), p.name, (params as Record<string, unknown>).bytes);
       default:
         throw new RpcFail("E_BAD_REQUEST", `未知方法 ${String(method)}`);
     }
@@ -956,7 +1005,10 @@ export class HostService {
 
   async decide(p: DecideParams): Promise<unknown> {
     try {
-      return await this.decideOnce(p);
+      const r = await this.decideOnce(p);
+      // ack 成功：该停机点区间立即关闭（Spec 11 §2.4「区间结束于 ack 点击」）
+      this.humanTimers.closeStop(p.epKey, p.stop, "ack");
+      return r;
     } catch (e) {
       if (e instanceof DecideFail) throw new RpcFail(e.error.code, e.error.message, { stdoutTail: e.error.stdoutTail, stderrTail: e.error.stderrTail });
       throw e;
@@ -1162,5 +1214,195 @@ export class HostService {
       }
     }
     return out.sort((a, b) => (a.kind === "dir") !== (b.kind === "dir") ? (a.kind === "dir" ? -1 : 1) : a.name.localeCompare(b.name, "en", { numeric: true }));
+  }
+
+  // ---------------- Spec 11/12：停机点深度组件（§4.3/§4.4；host 只 spawn，不写 data/） ----------------
+
+  /** 期就绪检查：期在列表里 + 数据可达 + 期目录仍在。 */
+  private epForIo(epKey: string): EpisodeEntry {
+    const e = this.epOf(epKey);
+    if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
+    if (!this.dirExists(e.abs)) {
+      this.refreshEpisodes();
+      throw new RpcFail("E_STALE", "期目录已不存在");
+    }
+    return e;
+  }
+
+  private static fingerOf(fs: FsRead, abs: string): FingerJson | null {
+    try {
+      const st = fs.statBig(abs);
+      if (!st.isFile()) return null;
+      return { size: Number(st.size), mtimeNs: st.mtimeNs.toString() };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 编辑器的基线指纹（只读；两项都缺席 = 既无正稿也无草稿）。 */
+  private scriptStat(e: EpisodeEntry): ScriptStatJson {
+    return {
+      script: HostService.fingerOf(this.deps.fs, `${e.abs}/02-script.md`),
+      draft: HostService.fingerOf(this.deps.fs, `${e.abs}/02-script.draft.md`),
+    };
+  }
+
+  /**
+   * 保存正文（指纹不符即拒存）。stdout 指纹经 `parseLossless` 解析：
+   * `mtime_ns` 是约 1.8e18 的纳秒值，普通 `JSON.parse` 丢精度后「刚存完就冲突」（Spec 11 红队 🟡-2）。
+   */
+  private async scriptSave(e: EpisodeEntry, text: string, expectSize: string, expectMtimeNs: string): Promise<SavedFingerprintJson> {
+    if (!this.losslessJson) throw new RpcFail("E_CAPABILITY", "运行时不支持无损解析纳秒指纹，无法校验保存结果");
+    if (Buffer.byteLength(text, "utf-8") > SAVE_SCRIPT_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `正文超过 ${SAVE_SCRIPT_MAX_BYTES} 字节上限`);
+    const r = await this.core("SAVE_SCRIPT", { ep: e.abs, size: expectSize, mtimeNs: expectMtimeNs }, {}, text);
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "保存超时，请刷新确认磁盘版本", tails);
+    if (r.code !== 0) {
+      const msg = r.stderrTail.trim() || `保存失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`;
+      // 「磁盘版本已变」是语义上的陈旧（而非引擎故障）：UI 据此转入冲突分支
+      throw new RpcFail(msg.includes("磁盘版本已变") ? "E_STALE" : "E_CORE", msg, tails);
+    }
+    let parsed: unknown;
+    try {
+      parsed = parseLossless(r.stdoutTail.trim());
+    } catch {
+      parsed = null;
+    }
+    const fp = parsed as { size?: unknown; mtime_ns?: unknown } | null;
+    if (!fp || typeof fp.size !== "number" || typeof fp.mtime_ns !== "bigint") {
+      throw new RpcFail("E_CORE", "core 未返回可信的新指纹，请刷新后重试", tails);
+    }
+    return { size: fp.size, mtimeNs: fp.mtime_ns.toString() };
+  }
+
+  /** 封板：core 内同一条 `git diff --no-index`，空 diff 拒封（core 侧退出 1）。 */
+  private async scriptSeal(e: EpisodeEntry): Promise<{ bytes: number }> {
+    const r = await this.core("SEAL_SCRIPT", { ep: e.abs });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "封板超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `封板失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    const n = Number.parseInt(r.stdoutTail.trim(), 10);
+    return { bytes: Number.isFinite(n) ? n : 0 };
+  }
+
+  /** 机检：PASS/FAIL/INFO 原文照传，UI 不解析判定语义（退出码 1 = 有 FAIL，不是错误）。 */
+  private async scriptCheck(e: EpisodeEntry): Promise<{ code: number | null; stdoutTail: string; stderrTail: string }> {
+    const scriptAbs = `${e.abs}/02-script.md`;
+    if (HostService.fingerOf(this.deps.fs, scriptAbs) === null) throw new RpcFail("E_STALE", "找不到 02-script.md");
+    const r = await this.core("CHECK_SCRIPT", { scriptAbs });
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "机检超时", { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail });
+    return { code: r.code, stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+  }
+
+  private async voiceInfo(e: EpisodeEntry): Promise<VoiceInfoJson> {
+    const r = await this.core("VOICE_INFO", { ep: e.abs });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "voice-info 超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "voice-info 失败", tails);
+    const parsed = parseVoiceInfo((r.stdoutFull ?? r.stdoutTail).trim());
+    if (!parsed.ok) throw new RpcFail("E_CORE", "core 的 /voice-info 输出不符合 schema v1", tails);
+    return parsed.info;
+  }
+
+  private async voiceParse(e: EpisodeEntry, text: string): Promise<VoicePatchJson> {
+    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${VOICE_PARSE_MAX_BYTES} 字节上限`);
+    const r = await this.core("VOICE_PARSE", { ep: e.abs }, {}, text);
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "解析超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "纠错原文解析失败", tails);
+    try {
+      return JSON.parse(r.stdoutTail.trim()) as VoicePatchJson;
+    } catch {
+      throw new RpcFail("E_CORE", "core 的 /voice-parse 输出不是 JSON", tails);
+    }
+  }
+
+  /** 落盘：stdin 传**原文**（core 重新解析）。跨进程只回读条目 dict，不回传解析结果（Spec 11 §2.3）。 */
+  private async voiceAdd(e: EpisodeEntry, text: string): Promise<Record<string, unknown>> {
+    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${VOICE_PARSE_MAX_BYTES} 字节上限`);
+    const r = await this.core("VOICE_ADD", { ep: e.abs }, {}, text);
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "纠错落盘超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "纠错落盘失败", tails);
+    try {
+      const v = JSON.parse(r.stdoutTail.trim()) as unknown;
+      if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error("not an object");
+      return v as Record<string, unknown>;
+    } catch {
+      throw new RpcFail("E_CORE", "core 的 /voice-add 输出不是 JSON 对象", tails);
+    }
+  }
+
+  private async voiceRevert(e: EpisodeEntry, label: string): Promise<null> {
+    const r = await this.core("VOICE_REVERT", { ep: e.abs, label });
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "回滚超时", { stderrTail: r.stderrTail });
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `回滚失败（core 退出码 ${r.code}）`, { stderrTail: r.stderrTail });
+    return null;
+  }
+
+  private async voiceRetract(e: EpisodeEntry, id: string): Promise<null> {
+    const r = await this.core("VOICE_RETRACT", { ep: e.abs, id });
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "撤回超时", { stderrTail: r.stderrTail });
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `撤回失败（core 退出码 ${r.code}）`, { stderrTail: r.stderrTail });
+    return null;
+  }
+
+  /** done：长任务（无超时、app 退出不发信号、进度经 events.jsonl 观测；S8-R16/R17）。
+   *  先请 main 弹原生确认框（Spec 11 §2.3；确认框取消则不 spawn，Spec 9 RF-17 的显式答复）。 */
+  private async voiceApplyPatch(e: EpisodeEntry): Promise<{ started: boolean }> {
+    if (!(await this.deps.confirm("执行增量重配？", "是否立即执行增量重配 (--apply-patch)?"))) return { started: false };
+    const r = await this.core("RUN_TTS_APPLY_PATCH", { ep: e.abs });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "增量重配超时（本模板无超时，此路径不应到达）", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `增量重配失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    return { started: true };
+  }
+
+  private timeSurface(e: EpisodeEntry, stop: string, visible: boolean): null {
+    this.humanTimers.noteReviewSurface(e.epKey, stop, visible, "close");
+    return null;
+  }
+
+  /** 区间结算：spawn RECORD_TIME（sidecar 纪律：失败静默、只记诊断，绝不因此阻塞 UI）。 */
+  private recordHumanTime(epKey: string, iv: { stop: string; enteredAt: number; leftAt: number }, reason: FlushReason): void {
+    const e = this.episodes.get(epKey);
+    if (!e || !this.repoRoot) return;
+    void this.core("RECORD_TIME", { ep: e.abs, stop: iv.stop, entered: epochSeconds(iv.enteredAt), left: epochSeconds(iv.leftAt) }).then(
+      (r) => {
+        if (r.code !== 0 || r.timedOut) this.diag(`人时落盘失败（${epKey} ${iv.stop}，${reason}）：${r.stderrTail.trim().slice(-200)}`);
+      },
+      (err) => this.diag(`人时落盘异常（${epKey} ${iv.stop}）：${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+
+  /** 人时读数：host 直读 `human_time.json`（整文件 `os.replace` 替换，与 approvals_store 同一安全论证；A4）。 */
+  private timeRead(e: EpisodeEntry): TimeReadJson {
+    let records: HumanTimeRecord[] = [];
+    try {
+      const raw = JSON.parse(Buffer.from(this.deps.fs.readFile(`${e.abs}/human_time.json`)).toString("utf-8")) as unknown;
+      if (Array.isArray(raw)) records = raw as HumanTimeRecord[];
+    } catch {
+      records = []; // 缺席 / 损坏 / 半写：呈现层事实定为「暂无记录」，不是错误
+    }
+    return reduceHumanTime(records);
+  }
+
+  /** 封面导入：字节走 stdin（core 侧限流 + 完整解码 + 不重编码落盘，Spec 12 §2.1）。 */
+  private async coverImport(e: EpisodeEntry, name: string, bytes: unknown): Promise<ImportedCoverJson> {
+    if (!(bytes instanceof Uint8Array)) throw new RpcFail("E_BAD_REQUEST", "bytes 必须是字节数组");
+    if (bytes.byteLength === 0) throw new RpcFail("E_BAD_REQUEST", "空的图片字节");
+    if (bytes.byteLength > IMPORT_COVER_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `图片字节超过 ${IMPORT_COVER_MAX_BYTES} 字节上限`);
+    const r = await this.core("IMPORT_COVER", { ep: e.abs, name }, {}, bytes);
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "导入超时", tails);
+    if (r.code === 2) throw new RpcFail("E_BAD_REQUEST", r.stderrTail.trim() || "导入参数不合法", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `导入失败（core 退出码 ${r.code}）`, tails);
+    try {
+      const v = JSON.parse(r.stdoutTail.trim()) as ImportedCoverJson;
+      if (typeof v.path !== "string") throw new Error("bad path");
+      return v;
+    } catch {
+      throw new RpcFail("E_CORE", "core 的 /import-cover 输出不是合法 JSON", tails);
+    }
   }
 }

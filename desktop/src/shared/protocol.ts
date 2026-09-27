@@ -25,7 +25,21 @@ export type Method =
   | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层
   | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope}
   | "conv.end" // { convKey } → { code, signal }：§2.10 结束序列
-  | "conv.snapshot"; // { convKey } → ConvSnapshot
+  | "conv.snapshot" // { convKey } → ConvSnapshot
+  // ---- Spec 11 §4.3/§4.4：02.5 编辑器 / 03.5 顺听 / 人时；Spec 12 §4.2：封面导入 ----
+  | "script.stat" // { epKey } → ScriptStatJson：打开编辑器时的基线指纹（只读）
+  | "script.save" // { epKey, text, expectSize, expectMtimeNs } → SavedFingerprintJson（spawn SAVE_SCRIPT）
+  | "script.seal" // { epKey } → { bytes }（spawn SEAL_SCRIPT）
+  | "script.check" // { epKey } → { code, stdoutTail, stderrTail }（spawn CHECK_SCRIPT，UI 不解析判定）
+  | "voice.info" // { epKey } → VoiceInfoJson（spawn VOICE_INFO，纯读）
+  | "voice.parse" // { epKey, text } → VoicePatchJson（spawn VOICE_PARSE，纯算）
+  | "voice.add" // { epKey, text } → 落盘条目 dict（spawn VOICE_ADD，core 重解析原文）
+  | "voice.revert" // { epKey, label }（spawn VOICE_REVERT）
+  | "voice.retract" // { epKey, id }（spawn VOICE_RETRACT）
+  | "voice.applyPatch" // { epKey }：长任务（RUN_TTS_APPLY_PATCH，无超时、退出不发信号）
+  | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
+  | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
+  | "cover.import"; // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
 
 export type ErrCode =
   | "E_BAD_REQUEST"
@@ -78,6 +92,19 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "conv.command": { required: ["convKey", "name"], optional: ["arg"] },
   "conv.end": { required: ["convKey"], optional: [] },
   "conv.snapshot": { required: ["convKey"], optional: [] },
+  "script.stat": { required: ["epKey"], optional: [] },
+  "script.save": { required: ["epKey", "text", "expectSize", "expectMtimeNs"], optional: [] },
+  "script.seal": { required: ["epKey"], optional: [] },
+  "script.check": { required: ["epKey"], optional: [] },
+  "voice.info": { required: ["epKey"], optional: [] },
+  "voice.parse": { required: ["epKey", "text"], optional: [] },
+  "voice.add": { required: ["epKey", "text"], optional: [] },
+  "voice.revert": { required: ["epKey", "label"], optional: [] },
+  "voice.retract": { required: ["epKey", "id"], optional: [] },
+  "voice.applyPatch": { required: ["epKey"], optional: [] },
+  "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
+  "time.read": { required: ["epKey"], optional: [] },
+  "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },
 };
 
 export const METHODS = Object.keys(PARAM_KEYS) as Method[];
@@ -86,7 +113,10 @@ export function isMethod(v: unknown): v is Method {
   return typeof v === "string" && Object.prototype.hasOwnProperty.call(PARAM_KEYS, v);
 }
 
-/** exact-keys 校验：params 必须是普通对象（无参方法允许 undefined/{}），键集合恰在闭集内且必填齐全，值为字符串（feedback 除外）。 */
+/** 值不是字符串的参数键（§3.1 唯一例外）：feedback 是对象，bytes 是封面图字节。 */
+export const NON_STRING_PARAM_KEYS: readonly string[] = ["feedback", "bytes"];
+
+/** exact-keys 校验：params 必须是普通对象（无参方法允许 undefined/{}），键集合恰在闭集内且必填齐全，值为字符串（NON_STRING_PARAM_KEYS 除外）。 */
 export function checkParamKeys(method: Method, params: unknown): string | null {
   const spec = PARAM_KEYS[method];
   if (params === undefined || params === null) {
@@ -99,7 +129,7 @@ export function checkParamKeys(method: Method, params: unknown): string | null {
   for (const k of spec.required) if (!keys.includes(k)) return `缺少参数键 ${k}`;
   for (const k of keys) {
     const v = (params as Record<string, unknown>)[k];
-    if (k === "feedback") continue;
+    if (NON_STRING_PARAM_KEYS.includes(k)) continue;
     if (typeof v !== "string") return `参数 ${k} 必须是字符串`;
   }
   return null;
@@ -213,6 +243,87 @@ export interface TreeEntry {
   kind: "dir" | "file" | "other";
   size: number;
   mtimeMs: number;
+}
+
+// ---- Spec 11/12 的窄接口（§4.3/§4.4）----
+
+/** 期目录内单文件的指纹（出 host 一律十进制字符串，Spec 8 §3.1 规则 9）。 */
+export interface FingerJson {
+  size: number;
+  mtimeNs: string;
+}
+
+/** 02.5 编辑器的基线指纹：两项都缺席表示「从草稿新建」也不可用。 */
+export interface ScriptStatJson {
+  script: FingerJson | null;
+  draft: FingerJson | null;
+}
+
+/** SAVE_SCRIPT 的 stdout（`{"size":…,"mtime_ns":…}`）经 parseLossless 读出的新基线。 */
+export interface SavedFingerprintJson {
+  size: number;
+  mtimeNs: string;
+}
+
+/** `/voice-info` schema v1（Spec 11 §3.3，冻结）。 */
+export interface VoiceSegmentJson {
+  label: string;
+  index: number;
+  wav: string;
+  wav_exists: boolean;
+  text: string;
+  has_attic: boolean;
+}
+
+export interface VoiceHeteronymJson {
+  char: string;
+  readings: string[];
+}
+
+export interface ApplyPatchLockJson {
+  exists: boolean;
+  pid: number | null;
+  pid_alive: boolean | null;
+}
+
+export interface VoiceInfoJson {
+  v: 1;
+  engine: string;
+  engine_cloud: boolean;
+  segments: VoiceSegmentJson[];
+  heteronyms: VoiceHeteronymJson[];
+  /** 条目 dict 原样透传（消费方忽略未知键，Spec 11 §3.3） */
+  pending_corrections: Record<string, unknown>[];
+  apply_patch_lock: ApplyPatchLockJson;
+}
+
+/** `/voice-parse` 输出 = Patch 的 8 个字段（不含 raw / seed_pin，Spec 11 §3.3）。 */
+export interface VoicePatchJson {
+  v: 1;
+  segment: number | null;
+  kind: string | null;
+  word: string | null;
+  heard: string | null;
+  target_tone3: string | null;
+  issue: string | null;
+  action: string | null;
+  scope: string | null;
+}
+
+/** 人时读数（host 直读 human_time.json；Spec 11 §2.4） */
+export interface TimeReadJson {
+  perStop: Record<string, number>;
+  otherMin: number;
+  totalMin: number;
+  count: number;
+}
+
+/** `/import-cover` 的 stdout（Spec 12 §2.1） */
+export interface ImportedCoverJson {
+  path: string;
+  width: number;
+  height: number;
+  format: string;
 }
 
 // ---- 会话状态（Spec 10 §3.1）----

@@ -218,6 +218,22 @@ function ImagePreview({ url }: { url: string }) {
   );
 }
 
+// ---- markdown 渲染（html:false，链接不导航）：PreviewPane 是唯一持有 markdown-it 的文件（TG-13）。
+// Spec 11 的编辑器预览也复用本组件（同一渲染参数），避免第二份 markdown 实现。
+export function MarkdownBody({ text }: { text: string }) {
+  const html = useMemo(() => md.render(text), [text]);
+  return (
+    <div
+      className="markdown"
+      data-testid="markdown"
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest("a")) e.preventDefault(); // 链接点击不导航
+      }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
 // ---- 文本：md 渲染（html:false）、json 折叠树、其余纯文本；超 5 MiB 截断 ----
 function TextPreview({ url, name, size }: { url: string; name: string; size: number | null }) {
   const [text, setText] = useState<string | null>(null);
@@ -250,14 +266,7 @@ function TextPreview({ url, name, size }: { url: string; name: string; size: num
         </div>
       )}
       {kind === "markdown" && !truncated ? (
-        <div
-          className="markdown"
-          data-testid="markdown"
-          onClick={(e) => {
-            if ((e.target as HTMLElement).closest("a")) e.preventDefault(); // 链接点击不导航
-          }}
-          dangerouslySetInnerHTML={{ __html: md.render(text) }}
-        />
+        <MarkdownBody text={text} />
       ) : kind === "json" && !truncated ? (
         <JsonView text={text} />
       ) : (

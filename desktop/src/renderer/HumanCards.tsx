@@ -11,6 +11,7 @@ import { isStopType } from "../shared/contracts";
 import type { OutFrame } from "../shared/convFrames";
 import type { ConvKey, Health, RpcError, TreeEntry } from "../shared/protocol";
 import type { ConvState } from "./convStore";
+import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
 import { Icon } from "./icons";
@@ -126,6 +127,15 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
   const aligned = obj.status === "approved";
   const off = disabled;
 
+  // 人时：05/09 的决策卡呈现即计时（Spec 11 §2.4；与编辑器/顺听面板同一 per-stop 单区间机）
+  useEffect(() => {
+    if (stop !== "05" && stop !== "09") return;
+    void rpc.call("time.surface", { epKey: ep.epKey, stop, visible: "true" }).catch(() => undefined);
+    return () => {
+      void rpc.call("time.surface", { epKey: ep.epKey, stop, visible: "false" }).catch(() => undefined);
+    };
+  }, [rpc, ep.epKey, stop]);
+
   const base = { epKey: ep.epKey, approvalId: obj.approval_id, stop };
   // 09 定稿（Spec 12 S3-R12）：两个输入；其余停机点不带这两个键（exact-keys 会拒）
   const needsFinalize = stop === "09" && !aligned;
@@ -147,12 +157,6 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
         ))}
       </ul>
       {obj.note && <div className="muted">{obj.note}</div>}
-      {(stop === "03.5" || stop === "05") && (
-        <div className="notice" data-testid="no-human-time">
-          <Icon name="info" size="sm" />
-          本次审阅不计人时
-        </div>
-      )}
       {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} />}
       {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
       <div className="ui-card-actions">
@@ -167,7 +171,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
         >
           批准
         </button>
-        {stop === "03.5" && <span className="muted">结构化打点（manifest human_review）须在终端 /voice 完成</span>}
+        {stop === "03.5" && <span className="muted">结构化打点（manifest human_review）须在终端 <code>{`python -m pipeline.tts ${ep.epKey} --review`}</code> 完成</span>}
         {!aligned && (
           <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
             打回…
@@ -224,17 +228,28 @@ export function FinalizeInputs({ epKey, rpc, cover, title, onCover, onTitle }: {
   }, [epKey, rpc]);
   return (
     <div className="finalize" data-testid="finalize-inputs">
-      <label className="ui-field">
-        封面
-        <select className="ui-input" data-testid="cover-select" value={cover} onChange={(e) => onCover(e.target.value)}>
-          <option value="">选择封面…</option>
+      <div className="ui-field">
+        <span>封面</span>
+        {/* Spec 14 S12-R1（VS-3/S12-R1）：.cover-grid/.cover-opt，缩略图 + 压在图上的文件名走 --overlay-*。
+            控件用**原生 radio 组**而不是 aria-pressed 按钮：一是闸门卡片里不得出现非 ui-btn 的 <button>（VS-12，
+            红队 🟡-3 采纳的判据），二是「N 选一」本身就是 radio 语义（屏幕阅读器与方向键都是原生的）。 */}
+        <div className="cover-grid" data-testid="cover-select" role="radiogroup" aria-label="封面">
           {(covers ?? []).map((c) => (
-            <option key={c.rel} value={c.rel}>
-              {c.rel}
-            </option>
+            <label key={c.rel} className="cover-opt" data-testid="cover-opt" data-rel={c.rel}>
+              <input
+                type="radio"
+                name={`cover-${epKey}`}
+                value={c.rel}
+                checked={cover === c.rel}
+                aria-label={c.rel}
+                onChange={() => onCover(c.rel)}
+              />
+              <img src={encodeMediaUrl("episodes", `${epKey}/${c.rel}`)} alt="" />
+              <span className="ui-badge">{c.rel.replace(/^07-cover\//, "")}</span>
+            </label>
           ))}
-        </select>
-      </label>
+        </div>
+      </div>
       {covers?.length === 0 && <div className="muted">07-cover/ 下没有可选封面文件</div>}
       <label className="ui-field">
         标题
