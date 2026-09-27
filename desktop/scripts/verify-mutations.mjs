@@ -59,10 +59,15 @@ function runVitest(files) {
 
 /** Playwright：JSON 报告里 ok=false 的 spec 标题。 */
 function runE2e(file, grep) {
-  const r = spawnSync(join(BIN, "playwright"), ["test", file, "-g", grep, "--reporter=json"], { cwd: DESKTOP, encoding: "utf-8", timeout: 30 * 60_000, maxBuffer: 256 * 1024 * 1024 });
+  // JSON 报告写文件：global-setup 的构建日志走 stdout，会把 --reporter=json 的输出搅乱
+  const outFile = join(mkdtempSync(join(tmpdir(), "mut-e2e-")), "r.json");
+  const r = spawnSync(join(BIN, "playwright"), ["test", file, "-g", grep, "--reporter=json"], {
+    cwd: DESKTOP, encoding: "utf-8", timeout: 30 * 60_000, maxBuffer: 256 * 1024 * 1024,
+    env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: outFile },
+  });
   let rep;
   try {
-    rep = JSON.parse(r.stdout);
+    rep = JSON.parse(readFileSync(outFile, "utf-8"));
   } catch {
     return { failed: [`<playwright 无报告：exit=${r.status} ${String(r.stderr).slice(-300)}>`], ran: false };
   }
