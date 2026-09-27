@@ -655,3 +655,42 @@ describe("VS-13 button 上没有 aria-selected", () => {
     expect(rendererFiles().flatMap(vs13)).toEqual([]);
   });
 });
+
+// ---------------- VS-9 localStorage 纪律（Spec 14 §3.3：读写均 try/catch，唯一落点 renderer/theme.ts） ----------------
+
+export function vs9(f: SourceFile): string[] {
+  const bad: string[] = [];
+  // 白名单（Spec 14 §3.3）：theme.ts 是本 spec 的偏好读写；ScriptEditor.tsx 是 Spec 11 先落地的草稿便利层
+  // （RF-7，读写同样在 try/catch 里）。spec 原文「只出现在 theme.ts」撰写时 ScriptEditor 尚未施工，按同纪律收录；施工报告如实登记。
+  const OWNERS = new Set(["renderer/theme.ts", "renderer/ScriptEditor.tsx"]);
+  const walk = (n: ts.Node, inTry: boolean) => {
+    if (ts.isTryStatement(n)) {
+      walk(n.tryBlock, true);
+      if (n.catchClause) walk(n.catchClause, inTry);
+      if (n.finallyBlock) walk(n.finallyBlock, inTry);
+      return;
+    }
+    if (ts.isIdentifier(n) && n.text === "localStorage") {
+      const p = n.parent;
+      const isPropName = p && ts.isPropertyAccessExpression(p) && p.name === n;
+      if (isPropName) return;
+      if (!OWNERS.has(f.rel)) bad.push(`${f.rel}: localStorage 只许出现在 theme.ts / ScriptEditor.tsx（草稿便利层）`);
+      else if (!inTry) bad.push(`${f.rel}: localStorage 的成员访问不在 try 块内`);
+    }
+    ts.forEachChild(n, (c) => walk(c, inTry));
+  };
+  walk(parse(f), false);
+  return bad;
+}
+
+describe("VS-9 localStorage 只在 theme.ts 且每处访问都在 try 里", () => {
+  it("检查器自测", () => {
+    expect(vs9(src("renderer/theme.ts", `function r() { try { return localStorage.getItem("k"); } catch { return null; } }`))).toEqual([]);
+    expect(vs9(src("renderer/ScriptEditor.tsx", `function r() { try { return localStorage.getItem("k"); } catch { return null; } }`))).toEqual([]);
+    expect(vs9(src("renderer/theme.ts", `function r() { return localStorage.getItem("k"); }`))).toHaveLength(1); // M32 的形状
+    expect(vs9(src("renderer/App.tsx", `function r() { try { return localStorage.getItem("k"); } catch { return null; } }`))).toHaveLength(1);
+  });
+  it("真实源码", () => {
+    expect(sourceFiles().flatMap(vs9)).toEqual([]);
+  });
+});
