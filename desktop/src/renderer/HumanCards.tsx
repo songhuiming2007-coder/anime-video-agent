@@ -1,12 +1,17 @@
-// Approval 决策条（Spec 8 §2.6）：显式点击是 ack 的唯一触发源——approval.decide 只出现在本文件的 onClick 里（TG-4）。
+// 人审卡片（Spec 10 §2.4）：`CardFrame` + `StopPointCard`（原 DecisionBar.tsx 搬入，语义不变）+ `AnswerDock`。
+// 全仓唯一出现 "approval.decide" 与（PR3 起）"conv.answer" 的文件。
+//
+// 「显式点击」纪律（Spec 10 §2.4 第 1 层，TG-4′）：答复类方法只许写在 JSX 事件属性（onClick）的值函数里，
+// 处理器首句检查第一个形参的 nativeEvent.isTrusted、体内不许有循环与迭代方法、每个处理器至多一处此类调用。
 // 只呈现确定性事实（停机点类型、对象创建时间、关联产物指纹、note、审片页时间先后），UI 自身零判定、不做 LLM 推荐（direction §5）。
 // 失败时 stdout 与 stderr 尾部都原样显示（补丁段号在 stdout，红队 B3）；不提供任何重试按钮（RF-18）。
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ApprovalJson, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import type { Health, RpcError, TreeEntry } from "../shared/protocol";
 import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure } from "./rpc";
+import { Icon } from "./icons";
 import { approvalsOf, type EpisodeState } from "./store";
 
 const STOP_NAMES: Record<StopType, string> = { "02.5": "人审改稿", "03.5": "配音顺听", "05": "审时间码", "09": "人工发布" };
@@ -16,21 +21,35 @@ function actionable(a: ApprovalJson): boolean {
   return a.status === "pending" || (a.status === "approved" && a.resolved_by === "artifact" && a.confirmed_by === null);
 }
 
+/** 卡片外框（Spec 10 §2.8；类名按 Spec 14 §3.2）：Spec 12 的 09 定稿控件、Spec 11 的编辑器都挂在这里的 body 插槽里。 */
+export function CardFrame({ className, testId, attrs, title, sub, children }: { className: string; testId: string; attrs: Record<string, string>; title: ReactNode; sub?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className={`ui-card ${className}`} data-testid={testId} {...attrs}>
+      <div className="ui-card-head">
+        <span className="ui-card-title">{title}</span>
+      </div>
+      {sub ? <div className="ui-card-sub">{sub}</div> : null}
+      {children}
+    </div>
+  );
+}
+
 /** 最近一次决定的结果挂在决策条上而不是卡片上：成功或陈旧后对象离开可操作态，卡片随 resnapshot 卸载 */
 type Outcome = { approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
 
-export function DecisionBar({ ep, health, rpc }: { ep: EpisodeState; health: Health | null; rpc: RpcClient }) {
+/** 待答区（用户裁决：输入框上方常驻；PR1 只有停机点对象，PR3 起并入会话请求卡） */
+export function AnswerDock({ ep, health, rpc }: { ep: EpisodeState; health: Health | null; rpc: RpcClient }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
   const items = approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type));
   const a = ep.approvals;
 
-  const run = async (obj: ApprovalJson, call: () => Promise<unknown>, okText: string) => {
+  const run = async (obj: ApprovalJson, call: Promise<unknown>, okText: string) => {
     const head = { approvalId: obj.approval_id, stop: obj.type as StopType };
     setBusy(true);
     setOutcome(null);
     try {
-      await call();
+      await call;
       setOutcome({ ...head, kind: "ok", text: okText });
     } catch (e) {
       const error: RpcError =
@@ -48,6 +67,7 @@ export function DecisionBar({ ep, health, rpc }: { ep: EpisodeState; health: Hea
   if (a.state === "unsupported" || (health && !health.capabilities.approvals)) {
     return (
       <div className="decision readonly" data-testid="decision-readonly">
+        <Icon name="info" size="sm" />
         决策条只读：{health?.capabilities.approvalsDetail ?? "approval 能力缺席"}
       </div>
     );
@@ -58,11 +78,12 @@ export function DecisionBar({ ep, health, rpc }: { ep: EpisodeState; health: Hea
     <div className="decisions" data-testid="decisions">
       {a.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
       {items.map((obj) => (
-        <DecisionCard key={obj.approval_id} ep={ep} obj={obj} rpc={rpc} disabled={disabled} run={run} />
+        <StopPointCard key={obj.approval_id} ep={ep} obj={obj} rpc={rpc} disabled={disabled} run={run} />
       ))}
       {busy && <div className="muted">处理中…</div>}
       {outcome?.kind === "ok" && (
         <div className="decision-ok" data-testid="decision-ok" data-approval-id={outcome.approvalId}>
+          <Icon name="check" size="sm" />
           停机点 {outcome.stop}：{outcome.text}（{outcome.approvalId}）
         </div>
       )}
@@ -87,27 +108,31 @@ export function DecisionBar({ ep, health, rpc }: { ep: EpisodeState; health: Hea
   );
 }
 
-type Run = (obj: ApprovalJson, call: () => Promise<unknown>, okText: string) => Promise<void>;
+type Run = (obj: ApprovalJson, call: Promise<unknown>, okText: string) => Promise<void>;
 
-function DecisionCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeState; obj: ApprovalJson; rpc: RpcClient; disabled: boolean; run: Run }) {
+export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeState; obj: ApprovalJson; rpc: RpcClient; disabled: boolean; run: Run }) {
   const stop = obj.type as StopType;
   const [rejecting, setRejecting] = useState(false);
   const [target, setTarget] = useState("");
   const [problem, setProblem] = useState("");
+  const [cover, setCover] = useState("");
+  const [title, setTitle] = useState("");
   const aligned = obj.status === "approved";
   const off = disabled;
 
   const base = { epKey: ep.epKey, approvalId: obj.approval_id, stop };
+  // 09 定稿（Spec 12 S3-R12）：两个输入；其余停机点不带这两个键（exact-keys 会拒）
+  const needsFinalize = stop === "09" && !aligned;
+  const ready = !needsFinalize || (cover.trim() !== "" && title.trim() !== "");
+  const approveParams = needsFinalize ? { ...base, decision: "approve", cover, title } : { ...base, decision: "approve" };
   return (
-    <div className="decision" data-testid="decision" data-stop={stop} data-approval-id={obj.approval_id}>
-      <div className="decision-head">
-        <strong>
-          停机点 {stop} {STOP_NAMES[stop]}
-        </strong>
-        <span className="muted">
-          {aligned ? "解封物已在终端生成，待你确认" : "待审"} · 创建于 {obj.created_at} · {obj.approval_id}
-        </span>
-      </div>
+    <CardFrame
+      className="decision"
+      testId="decision"
+      attrs={{ "data-stop": stop, "data-approval-id": obj.approval_id }}
+      title={`停机点 ${stop} ${STOP_NAMES[stop]}`}
+      sub={`${aligned ? "解封物已在终端生成，待你确认" : "待审"} · 创建于 ${obj.created_at} · ${obj.approval_id}`}
+    >
       <ul className="fingerprints">
         {obj.artifacts.map((f) => (
           <li key={f.path}>
@@ -118,40 +143,97 @@ function DecisionCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeState; obj: 
       {obj.note && <div className="muted">{obj.note}</div>}
       {(stop === "03.5" || stop === "05") && (
         <div className="notice" data-testid="no-human-time">
+          <Icon name="info" size="sm" />
           本次审阅不计人时
         </div>
       )}
       {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} />}
-      <div className="decision-actions">
-        <button data-testid="approve" disabled={off} onClick={() => void run(obj, () => rpc.call("approval.decide", { ...base, decision: "approve" }), aligned ? "已确认批准" : "已批准")}>
+      {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
+      <div className="ui-card-actions">
+        <button
+          className="ui-btn"
+          data-testid="approve"
+          disabled={off || !ready}
+          onClick={(e) => {
+            if (!e.nativeEvent.isTrusted) return;
+            void run(obj, rpc.call("approval.decide", approveParams), aligned ? "已确认批准" : "已批准");
+          }}
+        >
           批准
         </button>
         {stop === "03.5" && <span className="muted">结构化打点（manifest human_review）须在终端 /voice 完成</span>}
         {!aligned && (
-          <button data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
+          <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
             打回…
           </button>
         )}
       </div>
       {rejecting && !aligned && (
         <div className="reject-form" data-testid="reject-form">
-          <label>
+          <label className="ui-field">
             哪段
-            <input data-testid="reject-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="例如 04-clips.json s07 1:20" />
+            <input className="ui-input" data-testid="reject-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="例如 04-clips.json s07 1:20" />
           </label>
-          <label>
+          <label className="ui-field">
             问题
-            <textarea data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} />
+            <textarea className="ui-textarea" data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} />
           </label>
           <button
+            className="ui-btn"
             data-testid="reject-submit"
             disabled={off || !target.trim() || !problem.trim()}
-            onClick={() => void run(obj, () => rpc.call("approval.decide", { ...base, decision: "reject", feedback: { target, problem } }), "已打回")}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void run(obj, rpc.call("approval.decide", { ...base, decision: "reject", feedback: { target, problem } }), "已打回");
+            }}
           >
             提交打回
           </button>
         </div>
       )}
+    </CardFrame>
+  );
+}
+
+/**
+ * 09 定稿的两个输入（Spec 12 S8-R19 / Spec 10 S10-R1）：
+ * 封面选项 = host 直读 `07-cover/` 下的现存文件清单（确定性事实，按文件名排序，**不排名**——判据 2/10），
+ * 标题文本框；两者非空才可点批准（core 侧还会再校验路径与长度）。approval 调用点在批准处理器里，本组件不碰。
+ */
+export function FinalizeInputs({ epKey, rpc, cover, title, onCover, onTitle }: { epKey: string; rpc: RpcClient; cover: string; title: string; onCover: (v: string) => void; onTitle: (v: string) => void }) {
+  const [covers, setCovers] = useState<TreeEntry[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "07-cover" }).then(
+      (es) => {
+        if (live) setCovers(es.filter((e) => e.kind === "file" && /\.(png|jpe?g)$/i.test(e.name)).sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true })));
+      },
+      () => {
+        if (live) setCovers([]);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [epKey, rpc]);
+  return (
+    <div className="finalize" data-testid="finalize-inputs">
+      <label className="ui-field">
+        封面
+        <select className="ui-input" data-testid="cover-select" value={cover} onChange={(e) => onCover(e.target.value)}>
+          <option value="">选择封面…</option>
+          {(covers ?? []).map((c) => (
+            <option key={c.rel} value={c.rel}>
+              {c.rel}
+            </option>
+          ))}
+        </select>
+      </label>
+      {covers?.length === 0 && <div className="muted">07-cover/ 下没有可选封面文件</div>}
+      <label className="ui-field">
+        标题
+        <input className="ui-input" data-testid="title-input" value={title} onChange={(e) => onTitle(e.target.value)} placeholder="最终发布标题" />
+      </label>
     </div>
   );
 }

@@ -480,15 +480,71 @@ def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
         print(f"[ERROR] 未找到匹配 '{choice}' 的期，请重新输入。")
 
 
+_RE_EP_NAME_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _episode_name_problem(ep_name: str) -> str | None:
+    r"""期名不合规的具体原因，合规返回 None（Spec 10 C10-R1 §3.7 第 2 步）。
+
+    每条都有来历：`.`/`_` 前缀会被 `get_episodes_list` 藏起来（建了看不见）；
+    `-` 开头会与 `ava --continue` 这类开关歧义；`/`、`\`、NUL 与控制字符
+    会让 `mkdir` 建到期根之外或不存在的路径；255 字节是 APFS 单段名上限。
+    """
+    if not ep_name or ep_name != ep_name.strip():
+        return "不许为空或首尾带空白"
+    if ep_name in (".", ".."):
+        return f"不许是 {ep_name!r}"
+    if ep_name[0] in "._":
+        return f"不许以 {ep_name[0]!r} 开头（期列表会把它藏起来）"
+    if ep_name.startswith("-"):
+        return "不许以 '-' 开头（会与命令行开关混淆）"
+    if any(ch in ep_name for ch in ("/", "\\", "\0")):
+        return "不许含 '/'、'\\' 或 NUL"
+    ctrl = _RE_EP_NAME_CTRL.search(ep_name)
+    if ctrl:
+        return f"不许含控制字符（U+{ord(ctrl.group()):04X}）"
+    if len(ep_name.encode("utf-8")) > 255:
+        return "过长（UTF-8 超过 255 字节，APFS 单段名上限）"
+    return None
+
+
 def create_new_episode(ep_name: str) -> int:
-    """创建新期目录与 01-topic.md 模板（Spec §5 PR0/PR1 B3-r9）。"""
-    ep_root = paths.ROOT / "data" / "episodes"
+    """创建新期目录与 01-topic.md 模板（Spec 10 C10-R1 §3.7；Spec §5 PR0/PR1 B3-r9）。
+
+    **检查与写入同源**：`data` 在调用时取 `paths.ROOT / "data"`，所以检查落在
+    即将写入的那个 `data/` 上（曾用 import 时算好的 `paths.DATA`，测试替换
+    `paths.ROOT` 后检查跑到真实盘、写入落在临时根，甚至建到期根之外）。
+    `data/` 不可达或 `data/episodes/` 缺席一律退 2、**绝不创建**
+    （AGENTS.md 五：脚本绝不自动创建 `data/`）。退出码：0 成功 / 1 已存在 / 2 不合规。
+    """
+    data = paths.ROOT / "data"
+    try:
+        paths.require_data_at(data)
+    except SystemExit as e:
+        print(e.code if isinstance(e.code, str) else str(e), file=sys.stderr)
+        return 2
+    ep_root = data / "episodes"
+    if not ep_root.is_dir():
+        print(f"FAIL {ep_root} 不存在：先跑 ./pipeline/preflight.sh --init", file=sys.stderr)
+        return 2
+
+    problem = _episode_name_problem(ep_name)
+    if problem is not None:
+        print(f"[ERROR] 期名不合规：{problem}", file=sys.stderr)
+        return 2
+
     target_dir = ep_root / ep_name
     if target_dir.exists():
         print(f"[ERROR] 期目录已存在：{target_dir}，拒绝覆盖！", file=sys.stderr)
         return 1
 
-    target_dir.mkdir(parents=True, exist_ok=False)
+    target_dir.mkdir(parents=False, exist_ok=False)
+    if target_dir.resolve().parent != ep_root.resolve():
+        # 纵深防御：名字规则已挡住分隔符与符号链接，正常不可达
+        target_dir.rmdir()
+        print(f"[ERROR] 期目录会落在 {ep_root} 之外，已删除：{target_dir}", file=sys.stderr)
+        return 2
+
     topic_content = (
         f"# {ep_name} 选题配置\n\n"
         "番：\n"
@@ -2137,8 +2193,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[会话] 最近写入的期：{ep_dir.name}")
         return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
 
-    # 子命令 1: ava new <期号>
-    if len(args) >= 2 and args[0] == "new":
+    # 子命令 1: ava new <期名>
+    if args and args[0] == "new":
+        if len(args) != 2:
+            print("[ERROR] 用法: ava new <期名>（期名恰好一个）", file=sys.stderr)
+            return 2
         rc = create_new_episode(args[1])
         if rc != 0:
             return rc

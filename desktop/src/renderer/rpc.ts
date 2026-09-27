@@ -18,6 +18,11 @@ export class RpcFailure extends Error {
   }
 }
 
+/** 任意抛错 → 一行可读文案（renderer 各处统一口径）。 */
+export function errText(e: unknown): string {
+  return e instanceof RpcFailure ? `${e.error.code}：${e.error.message}` : e instanceof Error ? e.message : String(e);
+}
+
 export class RpcClient {
   private port: MessagePort | null = null;
   private adopted = 0;

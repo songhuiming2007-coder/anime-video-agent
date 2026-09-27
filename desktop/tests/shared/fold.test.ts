@@ -1,6 +1,6 @@
 // TE-9 折叠与缺口呈现：Spec 2 §3.3 六个示例载荷逐字段；finishedEventMissing 须连续 2 个 tick；noFollowupEvents。
 import { describe, expect, it } from "vitest";
-import { foldEvents, goneRunningJobIds, parseEventLine } from "../../src/shared/fold";
+import { foldEvents, goneRunningJobIds, parseEventLine, eventLabel } from "../../src/shared/fold";
 import type { EventRecord } from "../../src/shared/contracts";
 
 // Spec 2 §3.3 示例 1–6 原样（示例 4、5、6 的 episode 字段与 1–3 不同，折叠不看该字段）
@@ -74,5 +74,28 @@ describe("TE-9 foldEvents", () => {
     ]);
     const jobs = foldEvents(evs, NOW, alive, new Set());
     expect(jobs.map((j) => [j.jobId, j.state])).toEqual([["job_1790089200100_01a2", "running"]]);
+  });
+});
+
+describe("TV-7 时间线标签（S8-R9 / H-10）", () => {
+  const ev = (payload: Record<string, unknown>) => ({ kind: "approval_resolved", type: "approval_resolved", payload });
+  it("无 approval_id：按 decision 与 source 区分批准与拒绝", () => {
+    expect(eventLabel(ev({ command: "tts --redo 3", decision: "approved", source: "write_episode_file" }))).toBe(
+      "命令卡批准（write_episode_file）：tts --redo 3",
+    );
+    expect(eventLabel(ev({ command: "tts --redo 3", decision: "rejected", source: "write_episode_file" }))).toBe(
+      "命令卡拒绝（write_episode_file）：tts --redo 3",
+    );
+  });
+  it("decision 缺失或未知值不冒充批准或拒绝", () => {
+    const t = eventLabel(ev({ command: "x" }));
+    expect(t).not.toContain("命令卡批准");
+    expect(t).not.toContain("命令卡拒绝");
+  });
+  it("带 approval_id 的两种形状不变", () => {
+    expect(eventLabel(ev({ approval_id: "appr_1", stop: "05", decision: "approved", confirms: "artifact" }))).toBe(
+      "确认已对齐的批准：05",
+    );
+    expect(eventLabel(ev({ approval_id: "appr_1", stop: "03.5", decision: "rejected" }))).toBe("停机点决策：03.5 → rejected");
   });
 });

@@ -3,7 +3,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { SPAWN_LOG_MAX, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
-import { childEnv, recordSpawn, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
+import { buildArgv, childEnv, recordSpawn, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fetchStatus } from "../../src/host/status";
 import { cleanup, PY, shellScript, tmp } from "../helpers";
 
@@ -113,5 +113,26 @@ describe("S22 🔵6 status --json 的 stdout 完整读入（上限 STATUS_STDOUT
     expect(atCap.ok).toBe(true);
     const over = await fetchStatus(repoPrinting(statusJson(STATUS_STDOUT_MAX_BYTES + 1)), "/x");
     expect(over).toEqual({ ok: false, code: "E_CORE", message: `status --json 输出超过 ${STATUS_STDOUT_MAX_BYTES} 字节上限` });
+  });
+});
+
+describe("Spec 10 S8-R2 / Spec 12 S8-R19：NEW_EPISODE 与 09 定稿的 argv 形状", () => {
+  it("NEW_EPISODE：期名单个 argv 元素，不经 shell", () => {
+    const pyPath = join("/repo", ".venv/bin/python");
+    expect(buildArgv("NEW_EPISODE", { name: "2026-09-26-建期测试" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试",
+    ]);
+    // 名字里的空格 / 怪字符都是一个 argv 元素（无 shell，逐字节到达 core）
+    expect(buildArgv("NEW_EPISODE", { name: "a b;$(x)" }, "/repo").argv.at(-1)).toBe("a b;$(x)");
+  });
+
+  it("APPROVE 09 变体：四个额外元素 --cover <路径> --title <标题>；其余停机点只有五元素形态", () => {
+    const pyPath = join("/repo", ".venv/bin/python");
+    expect(buildArgv("APPROVE", { ep: "/ep", stop: "09", approvalId: "appr_1", cover: "07-cover/a.png", title: "标题 带空格" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/approve", "09", "--id", "appr_1", "--cover", "07-cover/a.png", "--title", "标题 带空格",
+    ]);
+    expect(buildArgv("APPROVE", { ep: "/ep", stop: "05", approvalId: "appr_2" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/approve", "05", "--id", "appr_2",
+    ]);
   });
 });

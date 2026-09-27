@@ -1,10 +1,14 @@
 // PreviewPane（Spec 8 §2.7）：按扩展名分发五类预览；文件内容一律经 ava-media://（单一读闸）。
 // 切换活跃期时由父组件以 key 卸载本组件，媒体元素随之卸载、请求中止（TP-3、TP-6）。
+// Spec 14 PR2：预览区加文件头（D6：图标 + 相对路径 + 类型徽标）、空/错/载三态统一为 StateView、
+// 折叠三角与音频队列项改为原生 <button>（VS-8，键盘可达）。
 import MarkdownIt from "markdown-it";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type WheelEvent } from "react";
 import { TEXT_PREVIEW_MAX_BYTES } from "../shared/constants";
 import { encodeMediaUrl, type MediaRoot } from "../shared/mediaUrl";
-import { formatMediaTime, naturalAudioQueue, previewKind } from "../shared/previewKind";
+import { formatMediaTime, naturalAudioQueue, previewKind, type PreviewKind } from "../shared/previewKind";
+import { Icon, type IconName } from "./icons";
+import { Badge, StateView } from "./ui";
 
 export type PreviewTarget =
   | { kind: "file"; root: MediaRoot; rel: string; size: number | null }
@@ -12,37 +16,96 @@ export type PreviewTarget =
 
 const md = new MarkdownIt({ html: false, linkify: false });
 
+/** 类型徽标的文案（Spec 14 §2.8 的 N2；目录另算） */
+const KIND_LABEL: Record<PreviewKind | "dir", string> = {
+  html: "HTML",
+  video: "视频",
+  audio: "音频",
+  image: "图片",
+  markdown: "Markdown",
+  json: "JSON",
+  text: "文本",
+  other: "其他",
+  dir: "目录",
+};
+
+const KIND_ICON: Record<PreviewKind | "dir", IconName> = {
+  html: "file",
+  video: "film",
+  audio: "wave",
+  image: "image",
+  markdown: "file",
+  json: "file",
+  text: "file",
+  other: "file",
+  dir: "folder",
+};
+
 function nameOf(rel: string): string {
   return rel.slice(rel.lastIndexOf("/") + 1);
 }
 
+function Head({ rel, kind }: { rel: string; kind: PreviewKind | "dir" }) {
+  return (
+    <div className="preview-head" data-testid="preview-head">
+      <Icon name={KIND_ICON[kind]} size="sm" />
+      <span className="ui-row-title">{rel}</span>
+      <Badge>{KIND_LABEL[kind]}</Badge>
+    </div>
+  );
+}
+
 export function PreviewPane({ target }: { target: PreviewTarget | null }) {
-  if (!target) return <div className="empty">选择左侧产物以预览</div>;
+  if (!target) {
+    return (
+      <div className="preview-body">
+        <StateView kind="empty" title="选择左侧产物以预览" />
+      </div>
+    );
+  }
   if (target.kind === "dir") {
     const queue = naturalAudioQueue(target.entries);
-    if (queue.length === 0) return <DirMeta rel={target.rel} entries={target.entries} />;
-    return <AudioQueue key={target.rel} root={target.root} dir={target.rel} files={queue} />;
+    const body = queue.length === 0 ? <DirMeta rel={target.rel} entries={target.entries} /> : <AudioQueue key={target.rel} root={target.root} dir={target.rel} files={queue} />;
+    return (
+      <>
+        <Head rel={target.rel || "（期目录）"} kind={queue.length === 0 ? "dir" : "audio"} />
+        <div className="preview-body">{body}</div>
+      </>
+    );
   }
   const name = nameOf(target.rel);
+  const kind = previewKind(name);
   const url = encodeMediaUrl(target.root, target.rel);
   const size = target.size;
   // key = url：换文件即重建组件，不让上一个文件的状态（正文、缩放、播放位置）串到下一个文件
-  switch (previewKind(name)) {
+  let body: ReactNode;
+  switch (kind) {
     case "html":
-      return <HtmlFrame key={url} url={url} root={target.root} />;
+      body = <HtmlFrame key={url} url={url} root={target.root} />;
+      break;
     case "video":
-      return <VideoPreview key={url} url={url} />;
+      body = <VideoPreview key={url} url={url} />;
+      break;
     case "audio":
-      return <AudioQueue key={url} root={target.root} dir="" files={[]} single={url} />;
+      body = <AudioQueue key={url} root={target.root} dir="" files={[]} single={url} />;
+      break;
     case "image":
-      return <ImagePreview key={url} url={url} />;
+      body = <ImagePreview key={url} url={url} />;
+      break;
     case "markdown":
     case "json":
     case "text":
-      return <TextPreview key={url} url={url} name={name} size={size} />;
+      body = <TextPreview key={url} url={url} name={name} size={size} />;
+      break;
     default:
-      return <DirMeta key={url} rel={name} entries={[]} note="该类型只显示元数据" />;
+      body = <DirMeta key={url} rel={name} entries={[]} note="该类型只显示元数据" />;
   }
+  return (
+    <>
+      <Head rel={target.rel} kind={kind} />
+      <div className="preview-body">{body}</div>
+    </>
+  );
 }
 
 function DirMeta({ rel, entries, note }: { rel: string; entries: string[]; note?: string }) {
@@ -87,7 +150,7 @@ function VideoPreview({ url }: { url: string }) {
     <div className="video-wrap">
       <video ref={ref} src={url} controls preload="metadata" data-testid="video" onError={() => setErr(`媒体错误码 ${ref.current?.error?.code ?? "?"}`)} />
       <div className="timecode" data-testid="timecode">{t}</div>
-      {err && <div className="error">{err}</div>}
+      {err && <StateView kind="error" title={err} />}
     </div>
   );
 }
@@ -121,8 +184,17 @@ function AudioQueue({ root, dir, files, single }: { root: MediaRoot; dir: string
       {!single && (
         <ol className="queue" data-testid="audio-queue">
           {files.map((f, k) => (
-            <li key={f} className={k === i ? "current" : ""} onClick={() => { autoplay.current = true; setI(k); }}>
-              {f}
+            <li key={f} className={k === i ? "current" : ""}>
+              <button
+                className="ui-row"
+                aria-current={k === i ? "true" : undefined}
+                onClick={() => {
+                  autoplay.current = true;
+                  setI(k);
+                }}
+              >
+                {f}
+              </button>
             </li>
           ))}
         </ol>
@@ -166,12 +238,17 @@ function TextPreview({ url, name, size }: { url: string; name: string; size: num
       });
     return () => ac.abort();
   }, [url, truncated]);
-  if (err) return <div className="error">读取失败：{err}</div>;
-  if (text === null) return <div className="muted">读取中…</div>;
+  if (err) return <StateView kind="error" title={`读取失败：${err}`} />;
+  if (text === null) return <StateView kind="loading" title="读取中…" />;
   const kind = previewKind(name);
   return (
     <div className="text-wrap">
-      {truncated && <div className="notice" data-testid="truncated">文件超过 5 MiB，只显示前 5 MiB 原文</div>}
+      {truncated && (
+        <div className="notice" data-testid="truncated">
+          <Icon name="info" size="sm" />
+          文件超过 5 MiB，只显示前 5 MiB 原文
+        </div>
+      )}
       {kind === "markdown" && !truncated ? (
         <div
           className="markdown"
@@ -232,7 +309,9 @@ function JsonNode({ k, v, depth }: { k: string | null; v: unknown; depth: number
     const [l, r] = Array.isArray(v) ? ["[", "]"] : ["{", "}"];
     return (
       <div className="j-node">
-        <span className="j-toggle" data-testid="json-toggle" onClick={() => setOpen(!open)}>{open ? "▾" : "▸"}</span>
+        <button className="j-toggle" data-testid="json-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "▾" : "▸"}
+        </button>
         {label}
         {l}
         {open ? (

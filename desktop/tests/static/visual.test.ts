@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { DESKTOP, moduleSpecifiers, parse, type SourceFile } from "./scan";
+import { DESKTOP, moduleSpecifiers, parse, sourceFiles, type SourceFile } from "./scan";
 
 const RENDERER = join(DESKTOP, "src/renderer");
 const read = (rel: string) => readFileSync(rel, "utf-8");
@@ -27,8 +27,8 @@ const mutateMediaDark = (fn: (mid: string) => string) => {
   const j = TOKENS.indexOf(':root[data-theme="dark"] {');
   return TOKENS.slice(0, i) + fn(TOKENS.slice(i, j)) + TOKENS.slice(j);
 };
-/** PR1 只扫 ui.css；PR2 换掉 style.css 后加入 "src/renderer/style.css"（Spec 14 §8 PR2） */
-const STYLE_SHEETS = ["src/renderer/ui.css"];
+/** PR1 只扫 ui.css；PR2 换掉 style.css 后加入（Spec 14 §8 PR2） */
+const STYLE_SHEETS = ["src/renderer/ui.css", "src/renderer/style.css"];
 const cssOf = (rels: string[]) => parseCss(rels.map((r) => read(join(DESKTOP, r))).join("\n"));
 const sheetRules = () => cssOf(STYLE_SHEETS);
 const uiRules = () => cssOf(["src/renderer/ui.css"]);
@@ -302,6 +302,7 @@ export function vs10(f: SourceFile): string[] {
 }
 
 const src = (rel: string, text: string): SourceFile => ({ rel, text });
+const rendererFiles = () => sourceFiles().filter((f) => f.rel.startsWith("renderer/"));
 
 // ---------------- 用例 ----------------
 
@@ -447,5 +448,210 @@ describe("VS-11 ui.css 作用域（PR1 落地时旧界面零变化）", () => {
   });
   it("真实 ui.css 每条规则都在 .ui-* 或 Spec 10–12 预留前缀内（三条全局规则除外）", () => {
     expect(vs11(uiRules())).toEqual([]);
+  });
+});
+
+
+// ---------------- VS-3 的 TSX 半边：内联样式与运行时注入 ----------------
+
+const COLORISH = /#[0-9a-f]{3,8}\b|\b(rgba?|hsla?|color-mix|oklch|oklab)\(|\b(white|black|red|green|blue|gray|grey|yellow|orange|purple|pink|silver|navy)\b/i;
+
+/** 只做两件客观事实的断言：运行时注入样式（CSP 会拦）与 style={{…}} 里的颜色字面量。 */
+export function vs3Tsx(f: SourceFile): string[] {
+  const bad: string[] = [];
+  if (/createElement\(\s*["']style["']\s*\)/.test(f.text)) bad.push(`${f.rel}: 运行时插入 <style> 元素（CSP 拦得住，判据不许写）`);
+  if (/setAttribute\(\s*["']style["']/.test(f.text)) bad.push(`${f.rel}: setAttribute("style")（CSP 拦得住，判据不许写）`);
+  const walk = (n: ts.Node) => {
+    if (ts.isJsxAttribute(n) && n.name.getText() === "style" && n.initializer && ts.isJsxExpression(n.initializer) && n.initializer.expression && ts.isObjectLiteralExpression(n.initializer.expression)) {
+      for (const prop of n.initializer.expression.properties) {
+        if (COLORISH.test(prop.getText())) bad.push(`${f.rel}: style={{…}} 的值里有颜色字面量（${prop.getText().slice(0, 40)}）`);
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(parse(f));
+  return bad;
+}
+
+// ---------------- VS-7 TSX 内联样式白名单 ----------------
+
+const STYLE_KEYS = new Set(["paddingLeft", "transform"]);
+
+export function vs7(f: SourceFile): string[] {
+  const bad: string[] = [];
+  if (/\bstyle="/.test(f.text)) bad.push(`${f.rel}: 字符串形式的 style 属性`);
+  const walk = (n: ts.Node) => {
+    if (ts.isJsxAttribute(n) && n.name.getText() === "style" && n.initializer && ts.isJsxExpression(n.initializer) && n.initializer.expression) {
+      const e = n.initializer.expression;
+      if (!ts.isObjectLiteralExpression(e)) {
+        bad.push(`${f.rel}: style 的值不是就地字面量`);
+      } else {
+        for (const prop of e.properties) {
+          const name = ts.isPropertyAssignment(prop) && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.getText().replace(/"/g, "") : null;
+          if (name === null || !STYLE_KEYS.has(name)) bad.push(`${f.rel}: style 里出现白名单外的键（${prop.getText().slice(0, 40)}）`);
+        }
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(parse(f));
+  return bad;
+}
+
+// ---------------- VS-8 可点击元素必须是原生交互元素 ----------------
+
+const NATIVE_CLICKABLE = new Set(["button", "input", "textarea", "select", "summary", "a"]);
+const MARKDOWN_EXEMPT = "renderer/PreviewPane.tsx";
+
+export function vs8(f: SourceFile): string[] {
+  const bad: string[] = [];
+  const sf = parse(f);
+  const walk = (n: ts.Node) => {
+    if (ts.isJsxAttribute(n) && n.name.getText() === "onClick") {
+      const opening = n.parent.parent; // JsxAttributes → JsxOpeningElement / JsxSelfClosingElement
+      const tag = opening && (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) ? opening.tagName.getText(sf) : "?";
+      const clsAttr = opening && (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening))
+        ? opening.attributes.properties.find((a): a is ts.JsxAttribute => ts.isJsxAttribute(a) && a.name.getText() === "className")
+        : undefined;
+      const cls = clsAttr?.initializer && ts.isStringLiteral(clsAttr.initializer) ? clsAttr.initializer.text : "";
+      if (NATIVE_CLICKABLE.has(tag)) return;
+      // 唯一豁免：PreviewPane 的 .markdown 容器（它拦链接导航，不是交互目标）
+      if (f.rel === MARKDOWN_EXEMPT && /\bmarkdown\b/.test(cls)) return;
+      bad.push(`${f.rel}: onClick 挂在 <${tag}> 上（须是原生交互元素）`);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  return bad;
+}
+
+// ---------------- VS-12 闸门按钮同权（附件 tools/vs12.mjs） ----------------
+
+const GATE_CARD_FILES = ["renderer/HumanCards.tsx"];
+const SIZE_CLASS = new Set(["ui-btn--sm", "ui-btn--lg"]);
+
+type El = ts.JsxElement | ts.JsxSelfClosingElement;
+const isEl = (n: ts.Node): n is El => ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n);
+const tagOf = (n: El) => (ts.isJsxElement(n) ? n.openingElement : n).tagName.getText();
+const attrsOf = (n: El) => (ts.isJsxElement(n) ? n.openingElement : n).attributes.properties;
+function classOf(n: El): { text?: string; missing?: boolean; dynamic?: boolean } {
+  const a = attrsOf(n).find((p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === "className");
+  if (!a) return { missing: true };
+  if (a.initializer && ts.isStringLiteral(a.initializer)) return { text: a.initializer.text };
+  return { dynamic: true };
+}
+const variants = (cls: string) => new Set(cls.split(/\s+/).filter((c) => c.startsWith("ui-btn--") && !SIZE_CLASS.has(c)));
+
+export function vs12(rel: string, text: string): string[] {
+  const sf = parse({ rel, text });
+  const bad: string[] = [];
+  const walk = (n: ts.Node) => {
+    if (isEl(n)) {
+      if (tagOf(n) === "button") {
+        const c = classOf(n);
+        if (c.missing || c.dynamic || !/\bui-btn\b/.test(c.text ?? "")) bad.push(`${rel}: <button> 的 className 须为含 ui-btn 的字符串字面量`);
+        else if (/ui-btn--(primary|ghost)\b/.test(c.text!)) bad.push(`${rel}: 闸门按钮带 ${/ui-btn--(primary|ghost)/.exec(c.text!)![0]}`);
+      }
+      const own = classOf(n);
+      if (own.text && /\b(ui-card-actions|decision-actions)\b/.test(own.text)) {
+        const sets: string[] = [];
+        const inner = (m: ts.Node) => {
+          if (m !== n && isEl(m) && tagOf(m) === "button") {
+            const c = classOf(m);
+            if (c.text) sets.push([...variants(c.text)].sort().join(" "));
+          }
+          ts.forEachChild(m, inner);
+        };
+        ts.forEachChild(n, inner);
+        if (new Set(sets).size > 1) bad.push(`${rel}: 同一动作区按钮变体不一致 ${JSON.stringify(sets)}`);
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  return bad;
+}
+
+// ---------------- VS-13 无效 ARIA ----------------
+
+export function vs13(f: SourceFile): string[] {
+  const sf = parse(f);
+  const bad: string[] = [];
+  const walk = (n: ts.Node) => {
+    if (ts.isJsxAttribute(n) && n.name.getText() === "aria-selected") {
+      const opening = n.parent.parent;
+      const tag = opening && (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) ? opening.tagName.getText(sf) : "?";
+      if (tag === "button") bad.push(`${f.rel}: <button> 上的 aria-selected 对 button 角色无效`);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  return bad;
+}
+
+// ---------------- 用例：VS-3 的 TSX 半边、VS-7、VS-8、VS-12、VS-13 ----------------
+
+describe("VS-3（TSX）内联样式值与运行时注入", () => {
+  it("检查器自测", () => {
+    expect(vs3Tsx(src("renderer/A.tsx", `const A = () => <div style={{ color: "#333" }} />;`))).toHaveLength(1); // M33
+    expect(vs3Tsx(src("renderer/A.tsx", `const A = () => <div style={{ transform: x }} />;`))).toEqual([]);
+    expect(vs3Tsx(src("renderer/A.tsx", `document.createElement("style");`))).toHaveLength(1);
+    expect(vs3Tsx(src("renderer/A.tsx", `el.setAttribute("style", "color: red");`))).toHaveLength(1);
+  });
+  it("真实 renderer 源码", () => {
+    expect(rendererFiles().flatMap((f) => vs3Tsx(src(f.rel, f.text)))).toEqual([]);
+  });
+});
+
+describe("VS-7 TSX 内联样式白名单（paddingLeft / transform）", () => {
+  it("检查器自测", () => {
+    expect(vs7(src("renderer/A.tsx", `const A = () => <div style={{ paddingLeft: 8 }} />;`))).toEqual([]);
+    expect(vs7(src("renderer/A.tsx", `const A = () => <img style={{ transform: t }} />;`))).toEqual([]);
+    expect(vs7(src("renderer/A.tsx", `const A = () => <div style={{ color: x }} />;`))).toHaveLength(1); // M33
+    expect(vs7(src("renderer/A.tsx", `const A = () => <div style="color: red" />;`))).toHaveLength(1);
+  });
+  it("真实 renderer 源码", () => {
+    expect(rendererFiles().flatMap((f) => vs7(src(f.rel, f.text)))).toEqual([]);
+  });
+});
+
+describe("VS-8 可点击元素是原生交互元素（唯一的 .markdown 豁免）", () => {
+  it("检查器自测", () => {
+    expect(vs8(src("renderer/A.tsx", `const A = () => <button onClick={f} />;`))).toEqual([]);
+    expect(vs8(src("renderer/A.tsx", `const A = () => <li onClick={f} />;`))).toHaveLength(1); // M13 的形状
+    expect(vs8(src("renderer/A.tsx", `const A = () => <div onClick={f} />;`))).toHaveLength(1);
+    expect(vs8(src("renderer/PreviewPane.tsx", `const A = () => <div className="markdown" onClick={f} />;`))).toEqual([]);
+    expect(vs8(src("renderer/PreviewPane.tsx", `const A = () => <div className="other" onClick={f} />;`))).toHaveLength(1);
+  });
+  it("真实 renderer 源码", () => {
+    expect(rendererFiles().flatMap((f) => vs8(src(f.rel, f.text)))).toEqual([]);
+  });
+});
+
+describe("VS-12 闸门按钮同权（附件 tools/vs12.mjs）", () => {
+  const OK = `const A = () => <div className="ui-card-actions"><button className="ui-btn" onClick={f}>批准</button><button className="ui-btn">打回…</button></div>;`;
+  it("检查器自测", () => {
+    expect(vs12("x.tsx", OK)).toEqual([]);
+    expect(vs12("x.tsx", OK.replace(`className="ui-btn">打回`, `className="ui-btn ui-btn--ghost">打回`))).toHaveLength(2); // M38
+    expect(vs12("x.tsx", OK.replace(`className="ui-btn" onClick`, `className="ui-btn ui-btn--primary" onClick`))).toHaveLength(2); // M34
+    expect(vs12("x.tsx", `const A = () => <button onClick={f}>批准</button>;`)).toHaveLength(1);
+    expect(vs12("x.tsx", `const A = () => <div className="ui-card-actions"><button className="ui-btn ui-btn--sm">批准</button><button className="ui-btn ui-btn--sm">打回…</button></div>;`)).toEqual([]);
+  });
+  it("真实闸门卡片文件零违规", () => {
+    expect(GATE_CARD_FILES.flatMap((rel) => vs12(rel, read(join(DESKTOP, "src", rel))))).toEqual([]);
+  });
+  it("名单不失效：凡出现 approval.decide 的 renderer 文件都必须在名单里（🔵-3）", () => {
+    const holders = rendererFiles().filter((f) => f.text.includes("approval.decide")).map((f) => f.rel);
+    expect(holders.sort()).toEqual([...GATE_CARD_FILES].sort());
+  });
+});
+
+describe("VS-13 button 上没有 aria-selected", () => {
+  it("检查器自测", () => {
+    expect(vs13(src("renderer/A.tsx", `const A = () => <button aria-selected="true" />;`))).toHaveLength(1); // M35
+    expect(vs13(src("renderer/A.tsx", `const A = () => <button aria-current="true" />;`))).toEqual([]);
+  });
+  it("真实 renderer 源码", () => {
+    expect(rendererFiles().flatMap(vs13)).toEqual([]);
   });
 });

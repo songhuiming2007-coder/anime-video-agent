@@ -742,6 +742,8 @@ def test_full_chain_smoke_in_temp_repo(tmp_path: Path, monkeypatch):
     from pipeline import paths
     from pipeline.agent import cli
 
+    (tmp_path / "data" / "library").mkdir(parents=True)
+    (tmp_path / "data" / "episodes").mkdir(parents=True)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     monkeypatch.delenv("AVA_TEST_KEY", raising=False)
 

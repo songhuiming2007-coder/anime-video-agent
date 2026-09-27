@@ -134,8 +134,8 @@ def atomic_write(dest: Path, data: str | bytes) -> None:
     os.replace(tmp, dest)
 
 
-def require_data() -> Path:
-    """`data/` 不可达就立刻退出，**绝不自动创建**（CLAUDE.md「存储约定」）。
+def require_data_at(data: Path) -> Path:
+    """`data` 不可达就立刻退出，**绝不自动创建**（CLAUDE.md「存储约定」）。
 
     与 preflight.sh 的 require_data 同义，Python 侧的等价物。
 
@@ -143,22 +143,32 @@ def require_data() -> Path:
     2026-07-30 之前这里只认符号链接，于是没有外置盘、把 data 建成真实目录的人
     拿到的提示是「可能已被误建成本地目录」——**指错了方向，而且是唯一的提示**。
     存放位置是使用者的选择，符号链接只是其中一种放法。
+
+    参数化（Spec 10 C10-R1）：调用方要**检查与写入同一个 data/**，就得在调用时
+    取路径——`DATA` 是 import 时算好的模块常量，测试替换 `paths.ROOT` 后它不会变，
+    于是检查落在真实 `data/` 上、写入落在临时根里（`ava new` 曾因此建出仓库根
+    之外的期目录）。
     """
-    if not DATA.exists():           # 跟随符号链接，悬空即为 False
-        if DATA.is_symlink():
+    if not data.exists():           # 跟随符号链接，悬空即为 False
+        if data.is_symlink():
             hint = conf("storage.volume_hint", "外置盘")
             raise SystemExit(
-                f"FAIL {DATA} 是悬空的符号链接，指向 {os.readlink(DATA)}\n"
+                f"FAIL {data} 是悬空的符号链接，指向 {os.readlink(data)}\n"
                 f"     插上{hint} 再跑。别 mkdir——那会在挂载点里建出实体目录，"
                 f"盘插上之后反而看不见"
             )
         raise SystemExit(
-            f"FAIL {DATA} 不存在。先建存储骨架：\n"
+            f"FAIL {data} 不存在。先建存储骨架：\n"
             f"     ./pipeline/preflight.sh --init [外置盘上的目标目录]"
         )
-    if not (DATA / "library").is_dir():
+    if not (data / "library").is_dir():
         raise SystemExit(
-            f"FAIL {DATA} 在，但 {DATA / 'library'} 不在——骨架不全，或者指错了位置\n"
+            f"FAIL {data} 在，但 {data / 'library'} 不在——骨架不全，或者指错了位置\n"
             f"     ./pipeline/preflight.sh --init [外置盘上的目标目录] 会补齐"
         )
-    return DATA
+    return data
+
+
+def require_data() -> Path:
+    """模块常量 `DATA` 上的 `require_data_at`，行为与输出字节不变。"""
+    return require_data_at(DATA)

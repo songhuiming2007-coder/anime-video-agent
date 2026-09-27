@@ -3,14 +3,21 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { METHODS } from "../../src/shared/protocol";
 import {
-  DECISION_BAR_FILE,
+  ACTION_METHODS,
   DESKTOP,
-  decideCallViolations,
+  RPC_CALL_EXEMPT,
+  actionClickViolations,
+  cardKeyViolations,
   forbiddenElectronApis,
   fsWriteCalls,
   importViolations,
   jsonStringifyCalls,
+  markdownViolations,
+  newEpisodeFormViolations,
+  rpcCallViolations,
+  sessionLogViolations,
   sourceFiles,
   topDir,
   unguardedHooks,
@@ -88,16 +95,112 @@ describe("TG-3 §5.2 import 纪律", () => {
   });
 });
 
-describe("TG-4 approval.decide 只在决策条组件的 onClick 里", () => {
+describe("TG-4′ 答复类方法只在人审卡片的 onClick 里（Spec 10 §2.4 第 1 层）", () => {
+  const okHandler = `export const C = ({ rpc }) => <button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; void rpc.call("approval.decide", p); }}>批准</button>;`;
+  it("检查器自测：正例", () => {
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", okHandler))).toEqual([]);
+  });
+  it("检查器自测：反例（Spec 10 TG-4′ 逐条点名）", () => {
+    const inEffect = `export const C = ({rpc}) => { useEffect(() => { rpc.call("approval.decide", p); }, []); return null; };`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", inEffect))).toHaveLength(1); // useEffect 里调用
+    const inMap = `export const C = ({rpc, xs}) => <ul>{xs.map((x) => rpc.call("approval.decide", x))}</ul>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", inMap))).toHaveLength(1); // .map 回调里调用
+    const named = `export const C = ({rpc, ids}) => <button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; const a = (id) => rpc.call("approval.decide", id); ids.forEach(a); }}>批准</button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", named)).length).toBeGreaterThanOrEqual(1); // 具名函数 + forEach
+    const noGuard = `export const C = ({rpc}) => <button onClick={() => void rpc.call("approval.decide", p)}>批准</button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", noGuard))).toHaveLength(1); // 无 isTrusted 首句
+    const wrongVar = `export const C = ({rpc, other}) => <button onClick={(e) => { if (!other.nativeEvent.isTrusted) return; void rpc.call("approval.decide", p); }}>批准</button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", wrongVar))).toHaveLength(1); // 首句检查的不是第一个形参
+    const customTag = `export const C = ({rpc}) => <Button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; void rpc.call("approval.decide", p); }}>批准</Button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", customTag))).toHaveLength(1); // 挂在自定义组件上
+    const twice = `export const C = ({rpc}) => <button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; void rpc.call("approval.decide", a); void rpc.call("approval.decide", b); }}>批准</button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", twice))).toHaveLength(1); // 同一处理器连写两处
+    const loop = `export const C = ({rpc, xs}) => <button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; for (const x of xs) void rpc.call("approval.decide", x); }}>批准</button>;`;
+    expect(actionClickViolations(src("renderer/HumanCards.tsx", loop))).toHaveLength(1); // 处理器体内有循环
+    expect(actionClickViolations(src("renderer/Other.tsx", okHandler))).toHaveLength(1); // 文件不符
+  });
+  it("真实源码：approval.decide 与 conv.answer 全部合规", () => {
+    expect(files.filter((f) => topDir(f.rel) === "renderer").flatMap(actionClickViolations)).toEqual([]);
+  });
+  it("表里点名的文件必须存在（否则守卫悄悄失明）", () => {
+    for (const spec of Object.values(ACTION_METHODS)) {
+      if (spec.file === "renderer/Composer.tsx" || spec.file === "renderer/SessionHeader.tsx") continue; // PR3 才落地
+      expect(files.some((f) => f.rel === spec.file), spec.file).toBe(true);
+    }
+  });
+});
+
+describe("TG-10 发送 / 建期类方法只在各自组件的点击处理器里（Spec 10 §2.4 第 1 层）", () => {
+  it("检查器自测：onKeyDown 与 episode.create", () => {
+    const send = `export const C = ({rpc}) => <textarea onKeyDown={(e) => { if (!e.nativeEvent.isTrusted) return; void rpc.call("conv.send", { text }); }} />;`;
+    expect(actionClickViolations(src("renderer/Composer.tsx", send))).toEqual([]);
+    const create = `export const C = ({rpc}) => <button onClick={(e) => { if (!e.nativeEvent.isTrusted) return; void rpc.call("episode.create", { name }); }}>建期</button>;`;
+    expect(actionClickViolations(src("renderer/NewEpisodeForm.tsx", create))).toEqual([]);
+    expect(actionClickViolations(src("renderer/Composer.tsx", create))).toHaveLength(1); // episode.create 放错了文件
+  });
+  it("真实源码：episode.create 合规（conv.* 随 PR3 落地）", () => {
+    const hits = files.flatMap(actionClickViolations).filter((h) => !h.includes("conv."));
+    expect(hits).toEqual([]);
+  });
+});
+
+describe("TG-13 只有 PreviewPane.tsx 能渲染 Markdown 与危险 HTML（§7.1）", () => {
   it("检查器自测", () => {
-    const ok = `export function B(){ return <button onClick={() => rpc.call("approval.decide", p)}>批准</button>; }`;
-    const inEffect = `useEffect(() => { rpc.call("approval.decide", p); }, []);`;
-    expect(decideCallViolations(src(DECISION_BAR_FILE, ok))).toEqual([]);
-    expect(decideCallViolations(src(DECISION_BAR_FILE, inEffect))).toHaveLength(1);
-    expect(decideCallViolations(src("renderer/Preview.tsx", ok))).toHaveLength(1);
+    expect(markdownViolations(src("renderer/App.tsx", "import MarkdownIt from 'markdown-it';"))).toHaveLength(1);
+    expect(markdownViolations(src("renderer/App.tsx", "el.innerHTML = 1; dangerouslySetInnerHTML={{ __html: x }};"))).toHaveLength(1);
+    expect(markdownViolations(src("renderer/PreviewPane.tsx", "import MarkdownIt from 'markdown-it'; dangerouslySetInnerHTML={{ __html: x }};"))).toEqual([]);
   });
   it("真实源码", () => {
-    expect(files.filter((f) => topDir(f.rel) === "renderer").flatMap(decideCallViolations)).toEqual([]);
+    expect(files.flatMap(markdownViolations)).toEqual([]);
+  });
+});
+
+describe("TG-14 桌面端不读会话记录（红线 3）", () => {
+  it("desktop/src 全文没有 session.jsonl 字面量", () => {
+    expect(sessionLogViolations()).toEqual([]);
+  });
+});
+
+describe("TG-15 建期表单的期名不从对话预填（§2.5）", () => {
+  it("检查器自测", () => {
+    const ok = `export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: (epKey: string) => void }) { const [name, setName] = useState(""); return null; }`;
+    expect(newEpisodeFormViolations(src("renderer/NewEpisodeForm.tsx", ok))).toEqual([]);
+    const prefilled = `export function NewEpisodeForm({ rpc, suggested }: { rpc: RpcClient; suggested: string }) { const [name, setName] = useState(""); return null; }`;
+    expect(newEpisodeFormViolations(src("renderer/NewEpisodeForm.tsx", prefilled))).toHaveLength(1); // string prop
+    const fromProp = `export function NewEpisodeForm({ rpc, initial }: { rpc: RpcClient; initial: string }) { const [name, setName] = useState(initial); return null; }`;
+    expect(newEpisodeFormViolations(src("renderer/NewEpisodeForm.tsx", fromProp)).length).toBeGreaterThanOrEqual(1);
+  });
+  it("真实源码：初值为空串字面量、无 string 型 props", () => {
+    expect(files.filter((f) => f.rel === "renderer/NewEpisodeForm.tsx").flatMap(newEpisodeFormViolations)).toEqual([]);
+  });
+});
+
+describe("TG-16 rpc.call 的首参必须是方法闭集里的字符串字面量（🔵-3）", () => {
+  it("检查器自测", () => {
+    expect(rpcCallViolations(src("renderer/App.tsx", 'rpc.call("app.health");'), METHODS)).toEqual([]);
+    expect(rpcCallViolations(src("renderer/App.tsx", 'const m = "conv.send"; rpc.call(m, {});'), METHODS)).toHaveLength(1);
+    expect(rpcCallViolations(src("renderer/App.tsx", "rpc.call.bind(rpc);"), METHODS)).toHaveLength(1);
+    expect(rpcCallViolations(src("renderer/App.tsx", "rpc.call.apply(rpc, a);"), METHODS)).toHaveLength(1);
+    expect(rpcCallViolations(src("renderer/App.tsx", "const c = rpc.call;"), METHODS)).toHaveLength(1);
+    expect(rpcCallViolations(src("renderer/App.tsx", 'rpc.call("no.such");'), METHODS)).toHaveLength(1);
+    expect(rpcCallViolations(src(RPC_CALL_EXEMPT, "rpc.call(m, a);"), METHODS)).toEqual([]);
+  });
+  it("真实源码（renderer/，只豁免 testHooks.ts）", () => {
+    expect(files.filter((f) => topDir(f.rel) === "renderer").flatMap((f) => rpcCallViolations(f, METHODS))).toEqual([]);
+  });
+});
+
+describe("TG-17 卡片的 key（🟡-2 d）", () => {
+  it("检查器自测", () => {
+    const ok = `export const D = ({ rpc, objs }) => <>{objs.map((o) => <StopPointCard key={o.approval_id} obj={o} />)}</>;`;
+    expect(cardKeyViolations(src("renderer/HumanCards.tsx", ok))).toEqual([]);
+    const byIndex = `export const D = ({ objs }) => <>{objs.map((o, i) => <StopPointCard key={i} obj={o} />)}</>;`;
+    expect(cardKeyViolations(src("renderer/HumanCards.tsx", byIndex))).toHaveLength(1);
+    const noKey = `export const D = ({ objs }) => <>{objs.map((o) => <RequestCard obj={o} />)}</>;`;
+    expect(cardKeyViolations(src("renderer/HumanCards.tsx", noKey))).toHaveLength(1);
+  });
+  it("真实源码", () => {
+    expect(files.flatMap(cardKeyViolations)).toEqual([]);
   });
 });
 

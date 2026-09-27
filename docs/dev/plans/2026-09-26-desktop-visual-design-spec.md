@@ -685,6 +685,39 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | M35 | 期行用 `aria-selected` | VS-13 | button 上的无效 ARIA | 仅 VS-13（视觉上此时选中态也会消失，但没有 e2e 看颜色） | 施工回填 |
 | M36 | `ui.tsx` 的 `Badge` 接收 `onClick` | VS-10 | props 带 `on*` | 仅 VS-10 | 施工回填 |
 
+### 7.3 PR2 施工实跑回填（2026-09-26）
+
+**归属变异（§7.2 的 11 条，逐条「植入 → 目标用例红 → 逐字节还原」，工作树已复原）**
+
+| 变异 | 落点（真实 app） | 目标用例 | 实跑红条数 |
+|---|---|---|---|
+| M7 | `style.css` `.muted` 用 `--fg-subtle`（`.conv-foot` 的宿主在 Spec 10 PR3 才落地，按同机理等价植入） | VE-1 | 1（浅色，`--fg-subtle` 不当承载必读文字） |
+| M8 | `style.css` 加 `.ui-badge.stop-mark { color: var(--fg-subtle) }`（对子表不含「弱提示色压徽标」这一类的形状；原式的「删一类」会先把 `pairs === 290` 断言打红，失去「VS-2 全绿而 VE-1 红」的对照意义） | VE-1 | 1 |
+| M13 | 期行改回 `<div onClick>` | VS-8 | 1 |
+| M18 | 审计遍历 `SHOW_TEXT` → `SHOW_COMMENT` | VE-1 的 `n` 下限 | 1（`n` 从 51 塌到个位数） |
+| M29 | `.main.stale` 透明度 0.75 → 0.6 | VE-1 stale 态 | 1 |
+| M30 | `.ui-kbd` 回 `--fg-muted`（原式实跑：临时把它放进主按钮的键帽宿主，两文件植入，含 `color: inherit` 还原） | VE-1 | 1（浅色 4.14，与 E9 同值） |
+| M33 | `style={{ color: "#333" }}` | VS-7 + VS-3(TSX) | 2 |
+| M34 | 批准按钮加 `ui-btn--primary` | VS-12 | 1 |
+| M35 | 期行 `aria-current` → `aria-selected` | VS-13 | 1 |
+| M37 | 面板加透明渐变 `background-image` | VE-1 的 `bgImage = 0` | 1 |
+| M38 | 「打回…」改 `ui-btn--ghost` | VS-12 | 1 |
+
+**VE-1 首次实跑的元素数 `n`（三态一致；已按此填入 `N_LOWER`）**：list 51、markdown 56、json 63、empty 39、error 52、health 70、stale 48、card 52、card-reject 57、card-err 60（门禁 5 回改 4 处 `StateView` 的 `detail` 后重测）；对比度/非文本/字号/`bgImage`/`skippedMedia` 全为 0。
+
+**验收结论（2026-09-26）**：独立评审逐条复核后**关闭全部四条发现，M6 验收通过**；Spec 14 门禁 3 / 4 / 5 判为 ✅（VE-3 的外观浮层部分随 PR3，已登记）。
+
+**验收回改（2026-09-26，独立评审门禁 5 发现 🔴 后）**：门禁 5 的字符串差集曾多出 6 项——4 个清单外新增可见串（中栏空态 detail、预览空态 detail、`产物树读取失败`、`媒体打不开`）与 2 处既有文案的格式变化（`工序读取失败（code）：msg` 被拆成 title+detail、`读取失败：err` 同理）。处置：**全部改回原文**（`StateView` 的 `title` 直接承载 HEAD 的原句、去掉 detail），零新增串、零信息丢失，未动 N1–N11。回改后 VE-1 的元素数重测并重新填入 `N_LOWER`。
+
+**门禁 5 的取证方式（如实声明）**：源文本级「可见字符串集合差集」在本仓库不可靠——正则抽文本会在两侧都产生假阳/假阴（JSX 子节点跨行、`className="…">文案<` 的行首、模板串与 JSX 子节点等价但文本不同形）。因此本 spec 的门禁 5 取证改为两条可复核证据：① 6 处逐条列出 HEAD 源码行与工作树源码行的可见文本对照；② 新增串清单（21 条）人工分类为「N1/N2」与「Spec 10 PR1/Spec 12 S8-R19 的新功能串」两类。真正的机器判据应是**真实 app 的渲染文本**，需要一份 HEAD 构建做对照——本次未做（`git checkout` 是事故形状，禁用），登记为后续可选项。
+
+**施工偏差（如实登记）**
+1. VE-3 只落「Tab 到 `[data-testid=episode]`、焦点环为 `--focus-ring`、Enter 打开该期」；**外观浮层（Space 打开 / Esc 关闭 / 焦点回到按钮）随 PR3 落地**——浮层本身属 §8 PR3 的「TopBar 加外观浮层」。
+2. VE-1 的夹具状态与 §7.1 清单对齐，但「选中的未取到行」由 stale 态覆盖（脱盘时 status 取不到 → `currentStep: null` 与未知圆环同时出现）；外观浮层展开态随 PR3。
+3. 已按 §8 PR2 清单整体替换 `style.css`，并保留 Spec 10 的区块（`.tree` `.galleries` `.new-episode*` `.strip` `.finalize`）；`tokens.css`、`ui.css` 一字未动（sha256 断言仍绿）。
+4. S8-R23（「陈旧」标记）**未施工**：不属本次施工单，仍是已授权待办。
+
+
 ---
 
 ## 8. PR 划分

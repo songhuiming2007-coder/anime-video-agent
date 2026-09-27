@@ -50,6 +50,11 @@ interface ApprovalCommon {
   confirmed_by: string | null;
   confirmed_at: string | null;
   feedback: { target: string; problem: string } | null;
+  /**
+   * 09 定稿记录（Spec 12 S3-R12 / §3.3）：只在 09 的 ack 转入，历史对象无此字段。
+   * `cover_mtime_ns` 是十进制字符串（纳秒 > 2^53，不做 bigint——Spec 8 规则 8 的键集合不动）。
+   */
+  finalize?: { cover: string; title: string; cover_size: number; cover_mtime_ns: string } | null;
   note: string;
 }
 

@@ -32,9 +32,21 @@ const bad = (raw: Record<string, unknown>) => {
 describe("parseDecideParams（§3.2.1）", () => {
   const base = { epKey: "EP", approvalId: "appr_1", stop: "05" };
   it("合法的 approve / reject", () => {
-    expect(parseDecideParams({ ...base, decision: "approve" })).toEqual({ ...base, decision: "approve" });
+    expect(parseDecideParams({ ...base, decision: "approve" })).toEqual({ ...base, decision: "approve", finalize: null });
     const r = parseDecideParams({ ...base, decision: "reject", feedback: { target: " s07 ", problem: "-x\n\"y\"" } });
     expect(r).toEqual({ ...base, decision: "reject", feedback: { target: " s07 ", problem: "-x\n\"y\"" } }); // 原样保留，不 trim 不改写
+  });
+  it("09 定稿：cover 与 title 必须同时非空；其余停机点不许带", () => {
+    const nine = { epKey: "EP", approvalId: "appr_9", stop: "09" };
+    expect(parseDecideParams({ ...nine, decision: "approve", cover: "07-cover/a.png", title: "标题" })).toEqual({
+      ...nine, decision: "approve", finalize: { cover: "07-cover/a.png", title: "标题" },
+    });
+    expect(bad({ ...nine, decision: "approve", cover: "07-cover/a.png" })).toBe("E_BAD_REQUEST");
+    expect(bad({ ...nine, decision: "approve", title: "标题" })).toBe("E_BAD_REQUEST");
+    expect(bad({ ...nine, decision: "approve", cover: "  ", title: "标题" })).toBe("E_BAD_REQUEST");
+    expect(bad({ ...nine, decision: "approve" })).toBe("E_BAD_REQUEST");
+    expect(bad({ ...base, decision: "approve", cover: "07-cover/a.png", title: "标题" })).toBe("E_BAD_REQUEST");
+    expect(bad({ ...base, decision: "reject", feedback: { target: "t", problem: "p" }, cover: "x" })).toBe("E_BAD_REQUEST");
   });
   it("feedback 两项 trim 后为空、多余键、缺失、approve 带 feedback、未知停机点与决定 → E_BAD_REQUEST", () => {
     expect(bad({ ...base, decision: "reject", feedback: { target: "  ", problem: "p" } })).toBe("E_BAD_REQUEST");
@@ -79,6 +91,15 @@ describe("plan（§2.6 表）", () => {
     expect(plan({ ...p, stop: "03.5", decision: "approve" }, obj({ type: "03.5" }), "/ep").map((x) => x.t)).toEqual(["APPROVE"]);
     expect(plan({ ...p, stop: "05", decision: "reject", feedback: { target: "t", problem: "q" } }, obj(), "/ep")).toEqual([
       { t: "REJECT", args: { ep: "/ep", stop: "05", approvalId: "appr_1", target: "t", problem: "q" } },
+    ]);
+  });
+  it("09 定稿：APPROVE 的 argv 带 cover 与 title（空格固定位置，Spec 12 S8-R19）", () => {
+    const nine = { epKey: "EP", approvalId: "appr_9", stop: "09" as const };
+    expect(plan({ ...nine, decision: "approve", finalize: { cover: "07-cover/a.png", title: "标题 带空格" } }, obj({ type: "09" }), "/ep")).toEqual([
+      { t: "APPROVE", args: { ep: "/ep", stop: "09", approvalId: "appr_9", cover: "07-cover/a.png", title: "标题 带空格" } },
+    ]);
+    expect(plan({ ...nine, decision: "approve" }, obj({ type: "09" }), "/ep")).toEqual([
+      { t: "APPROVE", args: { ep: "/ep", stop: "09", approvalId: "appr_9" } },
     ]);
   });
 });

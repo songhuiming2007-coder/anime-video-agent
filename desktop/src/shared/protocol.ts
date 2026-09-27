@@ -15,7 +15,8 @@ export type Method =
   | "episode.refresh" // { epKey } → EpisodeSnapshot；用户点击刷新，触发 H3
   | "tree.list" // { epKey, relDir } → TreeEntry[]
   | "shots.list" // 无参数 → ShotsEntry[]：data/library/shots 顶层的 *.html（S21 修订）
-  | "approval.decide"; // §3.2.1（PR4）
+  | "approval.decide" // §3.2.1（PR4）；09 定稿另带 cover/title（Spec 12 S8-R19）
+  | "episode.create"; // { name } → { epKey }：spawn NEW_EPISODE；校验全在 core（Spec 10 S8-R2）
 
 export type ErrCode =
   | "E_BAD_REQUEST"
@@ -55,7 +56,8 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "episode.refresh": { required: ["epKey"], optional: [] },
   "tree.list": { required: ["epKey", "relDir"], optional: [] },
   "shots.list": { required: [], optional: [] },
-  "approval.decide": { required: ["epKey", "approvalId", "stop", "decision"], optional: ["feedback"] },
+  "approval.decide": { required: ["epKey", "approvalId", "stop", "decision"], optional: ["feedback", "cover", "title"] },
+  "episode.create": { required: ["name"], optional: [] },
 };
 
 export const METHODS = Object.keys(PARAM_KEYS) as Method[];
@@ -84,8 +86,9 @@ export function checkParamKeys(method: Method, params: unknown): string | null {
 }
 
 // ---- §3.2.1 approval.decide ----
+export type FinalizeInput = { cover: string; title: string };
 export type DecideParams =
-  | { epKey: string; approvalId: string; stop: StopType; decision: "approve" }
+  | { epKey: string; approvalId: string; stop: StopType; decision: "approve"; finalize?: FinalizeInput | null }
   | { epKey: string; approvalId: string; stop: StopType; decision: "reject"; feedback: { target: string; problem: string } };
 
 // ---- §3.3 snapshot / delta ----

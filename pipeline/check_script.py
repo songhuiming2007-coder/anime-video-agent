@@ -97,7 +97,7 @@ def shrink_no_padding(script_path: Path) -> bool:
 # 六种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
 # （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在六种里就返回空串。
 GENRES = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣", "纪录片")
-TOPIC_FIELDS = re.compile(r"^\s*(类型|模式)\s*[:：]\s*(.+)", re.M)
+TOPIC_FIELDS = re.compile(r"^[ \t]*(类型|模式)[ \t]*[:：][ \t]*(.+)", re.M)
 
 
 def episode_genre(script_path: Path) -> tuple[str, str]:
