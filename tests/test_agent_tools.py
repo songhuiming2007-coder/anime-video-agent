@@ -343,6 +343,10 @@ def _expected_schema_names(scope: str) -> list[str]:
 API_KEY = "sk-test-secret-do-not-print"
 
 
+#: 与 test_agent_loop.Script.MAX_REQUESTS 同一口径（矩阵 MUT-3 行「请求计数 200 为护栏」）
+MOCK_LLM_MAX_CALLS = 200
+
+
 @contextmanager
 def mock_llm_server(replies):
     """本地 OpenAI 兼容端点：记录每次请求，按序回放 replies（最后一条重复）。"""
@@ -358,6 +362,16 @@ def mock_llm_server(replies):
             })
             reply = replies[min(state["calls"], len(replies) - 1)]
             state["calls"] += 1
+            if state["calls"] > MOCK_LLM_MAX_CALLS:
+                # 安全阀：靠检查点才停得下来的用例，在「检查点被绕过」时回 500 让 core 以 LLMError 停下
+                #（变红），而不是无限循环挂死（M9 实测 S9-MUT-3 让本文件一条用例挂到 harness 超时）
+                data = json.dumps({"error": {"message": "mock: too many calls"}}).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             data = json.dumps({"choices": [{"message": reply}]}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
