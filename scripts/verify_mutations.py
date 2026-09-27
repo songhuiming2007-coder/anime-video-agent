@@ -643,10 +643,11 @@ MUTATIONS: list[dict] = [
      "old": '        reply = _chat(tool_choice="none")\n',
      "new": '        reply = _chat()  # MUT-4\n'},
     {"id": "S9-MUT-5", "guard": "中断时为未配对的调用补合成结果", "file": LLM,
+     # D35 在这两行之间插了 `hook` 分支（抓取钩子中断），锚点随之改到新的首个分支
      "old": ('            if call is not None:\n'
-             '                if live["stage"] == "tool" and live["outcome"] is not None:\n'),
+             '                if live["stage"] == "hook":\n'),
      "new": ('            if False:  # MUT-5\n'
-             '                if live["stage"] == "tool" and live["outcome"] is not None:\n')},
+             '                if live["stage"] == "hook":\n')},
     {"id": "S9-MUT-6", "guard": "判重键 sort_keys（参数顺序无关）", "file": LLM,
      "old": "json.dumps(normalized, sort_keys=True,",
      "new": "json.dumps(normalized, sort_keys=False,"},

@@ -195,6 +195,26 @@ class TurnInterrupt:
         signal.pthread_kill(self._main, signal.SIGINT)
 
 
+class FetchHookInterrupted(KeyboardInterrupt):
+    """抓取钩子里浮出的中断（§2.2 落点表「等人答复」「抓取 job 中」两行）：整轮停，
+    但 `acquire_propose` 的结果照常，带上已答/作废的抓取记录（`outcome`）。
+
+    是 KeyboardInterrupt 的子类：不认识它的上层照旧按中断处理。
+    """
+
+    def __init__(self, outcome: dict[str, Any]) -> None:
+        super().__init__()
+        self.outcome = outcome
+
+
+class _FetchStopped(Exception):
+    """`_ask_fetch` → `_fetch_cards` 的内部信号：本卡已按中断记账，余卡不再出。"""
+
+    def __init__(self, record: dict[str, Any]) -> None:
+        super().__init__()
+        self.record = record
+
+
 @dataclass(frozen=True)
 class ToolVerdict:
     """确定性工具审查结果（§4.3）：不打印、不提问，只给判断。"""
@@ -1081,6 +1101,11 @@ class AgentSession:
             return outcome
         try:
             fetches = self._fetch_cards(outcome)
+        except FetchHookInterrupted as stop:
+            # D35：中断即整轮停——结果照常交回（带抓取记录），中断继续往上浮给工具循环
+            stop.outcome = {**outcome, "result": {**(outcome.get("result") or {}),
+                                                  "fetch": stop.outcome["fetch"]}}
+            raise
         except SystemExit as exc:  # 纵深防御：钩子里的任何 SystemExit 都转成 notice
             self.channel.show("notice", {"level": "error", "code": "fetch_hook_error",
                                          "text": str(exc)})
@@ -1112,11 +1137,18 @@ class AgentSession:
 
         fetches: list[dict[str, Any]] = []
         seen: set[str] = set()
+        stopped = False
         for index, candidate in enumerate(candidates, 1):
             url = str(candidate.get("url") or "")
             if not url or url in seen or url in fetched_urls:
                 continue
             seen.add(url)
+            if stopped:
+                # §2.2：中断之后其余候选的卡一律 voided（不再出卡，只记账）
+                fetches.append({"no": index, "url": url, "decision": "voided", "ok": False,
+                                "returncode": None, "message": "人类中断，未出卡未抓取",
+                                "stdout_tail": ""})
+                continue
             request = HumanRequest(
                 request_id=new_request_id(),
                 kind="fetch",
@@ -1135,7 +1167,13 @@ class AgentSession:
                 options=("approve", "reject"),
                 feedback_allowed=False,
             )
-            fetches.append(self._ask_fetch(request, index, url))
+            try:
+                fetches.append(self._ask_fetch(request, index, url))
+            except _FetchStopped as stop:
+                fetches.append(stop.record)
+                stopped = True
+        if stopped:
+            raise FetchHookInterrupted({"fetch": fetches})
         return fetches
 
     def _ask_fetch(self, request: HumanRequest, no: int, url: str) -> dict[str, Any]:
@@ -1153,7 +1191,8 @@ class AgentSession:
                                 cause="interrupted")
             record.update({"decision": "voided", "ok": False, "returncode": None,
                            "message": "人类中断，未抓取", "stdout_tail": ""})
-            return record
+            # D35：此前 `return record`，`_fetch_cards` 接着问下一张——中断停不下回合
+            raise _FetchStopped(record) from None
         self._close_request(request, reason="answered", decision=answer.decision,
                             latency_s=answer.latency_s, cause=None)
         if not answer.decision == "approve":
@@ -1171,7 +1210,14 @@ class AgentSession:
             record.update({"decision": "misaligned", "ok": False, "returncode": None,
                            "message": "清单已变，序号不再指向该 URL，未抓取", "stdout_tail": ""})
             return record
-        result = self._fetch_executor(no)
+        try:
+            result = self._fetch_executor(no)
+        except KeyboardInterrupt:
+            # §2.2「抓取 job 中」：job 进程组已被杀（jobs.py），该候选 interrupted、余卡 voided
+            record.update({"decision": "interrupted", "ok": False, "returncode": None,
+                           "message": "人类中断，抓取 job 已被终止，产物可能不完整",
+                           "stdout_tail": ""})
+            raise _FetchStopped(record) from None
         record.update({
             "decision": "approved",
             "ok": bool(result.get("ok")),

@@ -300,6 +300,119 @@ def test_tk3c_unreachable_data_dir_notices_and_continues(root: Path, episode: Pa
     assert "fetch" not in result["result"]
 
 
+def _fetch_turn(root: Path, episode: Path, monkeypatch, channel, *, parallel: bool = True):
+    """真 `run_turn` + 真 `acquire_propose`：模型一条回复里提 3 条新候选（+ 一个并行只读调用）。"""
+    from pipeline.agent import llm as llm_mod
+
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    _write_candidates(root, [])
+    proposal = [_candidate(f"新{n}", f"https://b.example/{n}") for n in (1, 2, 3)]
+    calls = [{"id": "c1", "type": "function", "function": {
+        "name": "acquire_propose",
+        "arguments": json.dumps({"candidates": proposal}, ensure_ascii=False)}}]
+    if parallel:
+        calls.append({"id": "c2", "type": "function", "function": {
+            "name": "web_fetch", "arguments": json.dumps({"url": "https://b.example/x"})}})
+    requests: list[list[dict]] = []
+
+    def scripted(messages, tools=None, **kw):
+        requests.append(messages)
+        if len(requests) == 1:
+            return {"role": "assistant", "content": None, "tool_calls": calls}
+        if len(requests) > 5:
+            raise AssertionError("模型请求超过 5 次：中断没有停下回合")
+        return {"role": "assistant", "content": "收尾"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", scripted)
+    fetched: list[int] = []
+    host = SessionHost(episode, root=root, channel=channel)
+    host.fetch_executor = lambda no: (
+        fetched.append(no), {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": ""})[1]
+    lease = host.ensure_lease()
+    lease.begin("sid-d35")
+    session = AgentSession(host, scope_mode="asset", persist=True)
+    messages = _seed_messages()
+    outcome = session.run_turn("找素材", messages=messages, scope="asset", status=None,
+                               tracker=SessionContextTracker(), root=root)
+    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    return outcome, messages, records, fetched, requests
+
+
+class _InterruptOnFetch(FakeChannel):
+    """批准提案卡；第 `at` 张抓取卡上「人按停止」（中断在等答复时浮出）。"""
+
+    def __init__(self, at: int = 1) -> None:
+        super().__init__(["approve"])
+        self.at = at
+
+    def ask(self, request):
+        if request.kind == "fetch" and sum(r.kind == "fetch" for r in self.requests) + 1 == self.at:
+            self.requests.append(request)
+            raise KeyboardInterrupt
+        if request.kind == "fetch":
+            self.requests.append(request)
+            return HumanAnswer(request.request_id, "reject", None, "tty", 0.1)
+        return super().ask(request)
+
+
+def test_tk3d_interrupt_on_fetch_card_stops_the_turn(root: Path, episode: Path, monkeypatch) -> None:
+    """TK-3d（D35）：抓取卡上中断 → 整轮停：当前卡与余卡全 voided、不再出第二张卡、
+    提案结果照常、并行的后续调用补「未执行」、收尾后恰一条 turn_end{interrupted}。
+
+    M9 实测：此前 `_ask_fetch` 吃掉中断后 `return record`，循环接着弹下一张卡，回合停不下。
+    """
+    channel = _InterruptOnFetch(at=1)
+    outcome, messages, records, fetched, requests = _fetch_turn(root, episode, monkeypatch, channel)
+
+    assert [r.kind for r in channel.requests].count("fetch") == 1, "中断后不许再出卡"
+    assert outcome["stopped"] == "interrupted"
+    assert fetched == []
+    tools = {m["tool_call_id"]: json.loads(m["content"]) for m in messages if m.get("role") == "tool"}
+    fetch = tools["c1"]["result"]["fetch"]
+    assert [(f["no"], f["decision"]) for f in fetch] == [(1, "voided"), (2, "voided"), (3, "voided")]
+    assert tools["c1"]["ok"] is True, "提案本身已执行，结果照常"
+    assert "未执行" in tools["c2"]["error"], "同一回复里其后的调用补合成结果"
+    assert len(requests) == 2, "中断后走收尾（第 2 次请求是收尾），不再继续工具循环"
+    opened = [r for r in records if r.get("k") == "request_opened" and r.get("kind") == "fetch"]
+    closed = [r for r in records if r.get("k") == "request_closed"
+              and r.get("request_id") == opened[0]["request_id"]]
+    assert len(opened) == 1 and [c["reason"] for c in closed] == ["voided"]
+    assert [r["stopped"] for r in records if r.get("k") == "turn_end"] == ["interrupted"]
+
+
+def test_tk3e_interrupt_on_later_fetch_card_keeps_earlier_answers(
+    root: Path, episode: Path, monkeypatch
+) -> None:
+    """TK-3e（D35）：第 1 张已答（拒），第 2 张上中断 → 第 1 张记录保留，只 void 当前与其后。"""
+    channel = _InterruptOnFetch(at=2)
+    outcome, messages, _records, fetched, _requests = _fetch_turn(
+        root, episode, monkeypatch, channel, parallel=False)
+    assert outcome["stopped"] == "interrupted"
+    assert [r.kind for r in channel.requests].count("fetch") == 2
+    tool = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
+    assert [(f["no"], f["decision"]) for f in tool["result"]["fetch"]] == [
+        (1, "rejected"), (2, "voided"), (3, "voided")]
+    assert fetched == []
+
+
+def test_tk3f_interrupt_during_fetch_job_marks_interrupted(root: Path, episode: Path, monkeypatch) -> None:
+    """TK-3f（D35 / §2.2「抓取 job 中」）：批准后抓取 job 被中断 → 该候选 interrupted、余卡 voided、整轮停。"""
+    from pipeline.agent import session as session_mod_
+
+    def killed(self, no):
+        raise KeyboardInterrupt  # jobs.py 杀组后原样重抛
+
+    monkeypatch.setattr(session_mod_.AgentSession, "_fetch_executor", killed)
+    channel = FakeChannel(["approve", "approve"])
+    outcome, messages, _records, _fetched, _requests = _fetch_turn(
+        root, episode, monkeypatch, channel, parallel=False)
+    assert outcome["stopped"] == "interrupted"
+    assert [r.kind for r in channel.requests].count("fetch") == 1
+    tool = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
+    assert [(f["no"], f["decision"]) for f in tool["result"]["fetch"]] == [
+        (1, "interrupted"), (2, "voided"), (3, "voided")]
+
+
 # ---------------------------------------------------------------------------
 # TK-6 / TK-7：请求号与记账
 # ---------------------------------------------------------------------------
