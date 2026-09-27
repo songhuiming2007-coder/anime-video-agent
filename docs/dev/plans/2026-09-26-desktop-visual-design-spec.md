@@ -375,7 +375,7 @@ PNG 截图不进 git，重现命令见 §2.7。
 |---|---|---|
 | Spec 10 | `HumanCards.tsx` 的卡片用 `.ui-card`，停机点卡另加 `.decision`；按钮用 `.ui-btn*`，**答复类按钮同权**；对话流用 `.conv-*`，输入框用 `.composer`，会话头用 `.session-head`（mock-02 给出全部形态）；期列表的「运行中」「N 张卡待答」徽标放在期行次行，与「停机」并列、不互相遮挡；时间线「横幅不变」按「文字与出现条件不变」解释，颜色改为说明色（D7） | S10-R2（建议性） |
 | Spec 11 | `ScriptEditor` 用 `.toolbar` / `.editor-split` / `.checklist`；CodeMirror 主题经 `EditorView.theme`、`HighlightStyle` 只引用 CSS 变量（`--syntax-heading/-link/-meta/-key/-str`、`--fg`、`--fg-muted` 等），行号用 `--fg-muted`；「封板」「确认落盘」「完成并应用补丁」是闸门动作，同权；`VoicePanel` 用 `.seg-row` | S11-R1（建议性） |
-| Spec 12 | 09 卡的封面选择用 `.cover-grid` / `.cover-opt[aria-pressed]`；导入拖放区用 `.ui-dropzone[data-dragover]`；压在图片上的文字只用 `--overlay-*`（DOM 审计看不到媒体上的文字，RF-3）；「批准并记录定稿」同权 | S12-R1（建议性） |
+| Spec 12 | 09 卡的封面选择用 `.cover-grid` / `.cover-opt[aria-pressed]`；导入拖放区用 `.ui-dropzone[data-dragover]`；压在图片上的文字只用 `--overlay-*`（DOM 审计看不到媒体上的文字，RF-3）；「批准并记录定稿」同权 | S12-R1（建议性；**2026-09-27 已落地**，见 Spec 12 §7.6：选择控件用原生 radio 组而非 `aria-pressed` 按钮——闸门卡片里不得出现非 `ui-btn` 的 `<button>`（VS-12）；选择态用 `.cover-opt:has(input:checked)` |
 
 ### 2.9 决策 9：明暗双主题与可访问性基线（正面回答设计问题 6）
 

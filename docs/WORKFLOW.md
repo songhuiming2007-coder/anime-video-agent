@@ -60,8 +60,8 @@
 7. **[05 审片](runbook/05-timecode.md)**（人）：浏览器看 `04-review.html`，通过后执行 `ava <期> /run review --approve` 产出 `04-clips.approved.json`。
 8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：跑 `ava <期> /run render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
 9. **[07 质检](runbook/07-qc.md)**（机器）：跑 `ava <期> /run qc`，11 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
-10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：跑 `ava <期> /run cover`。产出候选池与 `07-titles.md`（5 条候选）。
-11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。
+10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：跑 `ava <期> /run cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`），叠字排版由 agent 调 `cover_edit`，每次渲染弹人审卡。
+11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面路径与标题原文（app 内两个输入；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
 
 > `ava <期> /run X` 与 `python -m pipeline.X <期>` 等价：宿主只多做白名单校验（REPL 内另有命令回显与二次确认）。
 > 要接管道、脚本化或复现问题时用 `python -m` 形式。
