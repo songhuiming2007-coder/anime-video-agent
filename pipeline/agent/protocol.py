@@ -382,19 +382,17 @@ class ProtocolChannel:
                 if self.slots.get("eof") or self.slots.get("shutdown"):
                     break  # 一律作废，从不算批准
             if entry["answer"] is None:
-                self._close(request.request_id, reason="voided", decision=None,
-                            rid=None, cause="session_ended")
+                self._close(request.request_id, reason="voided", decision=None, rid=None)
                 raise KeyboardInterrupt
             answer = entry["answer"]
             self._close(request.request_id, reason="answered", decision=answer["decision"],
-                        rid=entry["rid"], cause=None)
+                        rid=entry["rid"])
             return HumanAnswer(
                 answer["request_id"], answer["decision"], answer["feedback"],
                 "protocol", answer["latency_s"],
             )
         except BaseException:
-            self._close(request.request_id, reason="voided", decision=None, rid=None,
-                        cause="interrupted")
+            self._close(request.request_id, reason="voided", decision=None, rid=None)
             raise
         finally:
             entry["closed"] = True
@@ -403,16 +401,17 @@ class ProtocolChannel:
             self.slots["pending"].pop(request.request_id, None)
 
     def _close(self, request_id: str, *, reason: str, decision: str | None,
-               rid: str | None, cause: str | None) -> None:
+               rid: str | None) -> None:
         entry = self.slots["pending"].get(request_id) or {}
         if entry.get("closed"):
             return
         entry["closed"] = True
-        frame: dict[str, Any] = {"t": "request_closed", "request_id": request_id, "reason": reason}
-        if decision is not None:
-            frame["decision"] = decision
-        if cause is not None:
-            frame["cause"] = cause
+        # §3.1 键集恰为 request_id / reason / decision（作废时 decision 为 null）+ 回显的 rid。
+        # D36（M9 实测）：此前作废帧省略 decision、另带表外的 cause——host 的 parseOutFrame
+        # 按 §3.1 要求 decision 在场，整帧判 malformed 丢弃，作废的卡于是永远留在待答区与徽标里。
+        # 作废原因只进盘（session.jsonl 的 request_closed 记录带 cause），不上帧（Spec 10 🔵-2）。
+        frame: dict[str, Any] = {"t": "request_closed", "request_id": request_id, "reason": reason,
+                                 "decision": decision}
         if rid:
             frame["rid"] = rid
         self.writer.send(frame)

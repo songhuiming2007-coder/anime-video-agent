@@ -529,6 +529,9 @@ def test_tp4b_idle_interrupt_is_notice_not_exit(world, endpoint, tmp_path) -> No
 # ---------------------------------------------------------------------------
 
 
+_ENVELOPE = {"v", "seq", "sid", "t", "rid"}
+
+
 def test_tp5_eof_while_waiting_voids_and_exits_zero(world, endpoint, tmp_path) -> None:
     """TP-5：等答复时关闭 stdin → 请求作废、工具未执行、退出 0、全程无批准。"""
     root, episode = world
@@ -541,6 +544,9 @@ def test_tp5_eof_while_waiting_voids_and_exits_zero(world, endpoint, tmp_path) -
         proto_proc.close_input()
         closed = proto_proc.wait_for("request_closed", timeout=20)
         assert closed["reason"] == "voided"
+        # §3.1 键集（D36）：作废帧也必须带 decision（null）、不带表外键——否则 host 判 malformed 丢帧
+        assert set(closed) - _ENVELOPE == {"request_id", "reason", "decision"}, closed
+        assert closed["decision"] is None
         rc = proto_proc.finish(timeout=30)
         proto_proc.drain(1.0)
     finally:
@@ -569,7 +575,9 @@ def test_tp5c_eof_while_tool_runs_stops_turn(world, endpoint, tmp_path) -> None:
         request = proto_proc.wait_for("request")
         proto_proc.send({"t": "answer", "request_id": request["request_id"], "decision": "approve",
                          "feedback": None})
-        assert proto_proc.wait_for("request_closed")["reason"] == "answered"
+        answered = proto_proc.wait_for("request_closed")
+        assert answered["reason"] == "answered"
+        assert set(answered) - _ENVELOPE == {"request_id", "reason", "decision"}, answered
         proto_proc.close_input()
         finished = proto_proc.wait_for("turn_finished", timeout=30)
         rc = proto_proc.finish(timeout=10)
