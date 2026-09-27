@@ -96,7 +96,7 @@ const N_LOWER: Record<string, number> = {
   empty: 63,
   error: 73,
   health: 91,
-  stale: 65, // 脱盘后 host 清空期列表，等落定再审计后的稳定值（此前 81 是竞态读数）
+  stale: 67, // 脱盘后 host 清空期列表，等落定再审计后的稳定值 + S8-R23 的两处「陈旧」徽标（65 → 67）
   card: 73,
   "card-reject": 78,
   "card-err": 81,
@@ -302,6 +302,36 @@ test("VE-2 主题三档：深色立即生效且重启保持；跟随系统对齐
     }
   } finally {
     await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
+
+// ---------------- S8-R23：「陈旧」标记（Spec 8 §2.8 补文，随 Spec 14 PR2 同批施工、单独提交） ----------------
+
+test("S8-R23 脱盘时侧栏头部与中栏顶部各出一个「陈旧」中性徽标，恢复后都消失；与 reach-banner 分工不同", async () => {
+  const fx = buildFixture();
+  const L = await launch(fx.repo);
+  try {
+    await openEpisode(L.page, "E2E-A");
+    await expect(L.page.getByTestId("stale-mark")).toHaveCount(0);
+    execFileSync("/bin/chmod", ["000", fx.dataReal]);
+    try {
+      await L.page.getByTestId("reach-banner").waitFor({ timeout: 10_000 });
+      const marks = L.page.getByTestId("stale-mark");
+      await expect(marks).toHaveCount(2);
+      await expect(L.page.locator(".left [data-testid=stale-mark]")).toHaveText("陈旧");
+      await expect(L.page.locator(".center [data-testid=stale-mark]")).toHaveText("陈旧");
+      // 横幅说原因，标记说「哪些区域是旧数据」：两处并存、文本不同
+      await expect(L.page.getByTestId("reach-banner")).toContainText("permission-denied");
+      await expect(L.page.locator(".left [data-testid=stale-mark]")).not.toContainText("permission-denied");
+    } finally {
+      execFileSync("/bin/chmod", ["755", fx.dataReal]);
+    }
+    // 恢复：横幅与两处标记都消失
+    await expect(L.page.getByTestId("reach-banner")).toHaveCount(0, { timeout: 15_000 });
+    await expect(L.page.getByTestId("stale-mark")).toHaveCount(0);
+  } finally {
+    await L.app.close();
     fx.cleanup();
   }
 });

@@ -24,6 +24,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .repo { min-width: 0; color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--sidebar-w) var(--center-w) minmax(0, 1fr); gap: var(--space-1); padding: 0 var(--space-1) var(--space-1) 0; }
 .main.stale .center, .main.stale .preview { opacity: 0.75; } /* Spec 8 §2.8「置灰」：非活动界面，文字守 3:1 下限（VE-1 stale 态） */
+/* S8-R23：「陈旧」标记的落位（中栏顶部那条；侧栏里直接放在 .side-head-row 里） */
+.stale-note { padding: var(--space-2) var(--space-3) 0; }
 .left { min-height: 0; overflow: auto; background: var(--bg-sidebar); padding: 0 var(--space-2) var(--space-2); }
 .center, .preview { min-height: 0; overflow: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-xl); }
 .preview { position: relative; display: flex; flex-direction: column; }

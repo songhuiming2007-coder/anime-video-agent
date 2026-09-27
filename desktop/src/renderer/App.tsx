@@ -335,7 +335,7 @@ function Main() {
       <div className={`main ${reachOk ? "" : "stale"}`}>
         <nav className="left">
           <NewEpisodeForm rpc={rpc} onCreated={(k) => { setJustCreated(k); setShowIdea(false); void open(k); }} />
-          <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} />
+          <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} stale={!reachOk} />
           {ep && !showIdea && (
             <>
               <CoverImport epKey={ep.epKey} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
@@ -345,6 +345,14 @@ function Main() {
           <GalleryList reachOk={reachOk} onPick={pickHuman} />
         </nav>
         <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
+          {/* S8-R23：与 .main.stale 同一条件（不引入新判定），与 reach-banner 分工不同——横幅说原因，这里标出哪些区域是旧数据 */}
+          {!reachOk && (
+            <div className="stale-note">
+              <span className="ui-badge" data-testid="stale-mark">
+                陈旧
+              </span>
+            </div>
+          )}
           {ep && !showIdea && <StatusCard ep={ep} />}
           {ep && !showIdea && <HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />}
           <SessionHeader
@@ -540,7 +548,7 @@ function ThemeMenu() {
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, showIdea, onOpen, onIdea }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void }) {
+function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
@@ -609,6 +617,11 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea }: { list: Episode
             </button>
           </div>
           <span className="spacer" />
+          {stale && (
+            <span className="ui-badge" data-testid="stale-mark">
+              陈旧
+            </span>
+          )}
           {list && <span className="ui-count">{eps.length}</span>}
         </div>
       </div>
