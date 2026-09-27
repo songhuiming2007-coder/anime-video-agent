@@ -223,8 +223,9 @@ class Protocol:
     # ---- 帧收发 ----
 
     def send(self, frame: dict) -> None:
+        """发一条入站帧：公共键 `v` 在这里统一补上（§3.1；测试体只写类型相关的键）。"""
         assert self.proc.stdin is not None
-        self.proc.stdin.write(json.dumps(frame, ensure_ascii=False) + "\n")
+        self.proc.stdin.write(json.dumps({"v": 1, **frame}, ensure_ascii=False) + "\n")
         self.proc.stdin.flush()
 
     def send_raw(self, text: str) -> None:
@@ -416,9 +417,14 @@ def test_tp3_tool_card_approve_and_reject_with_feedback(world, endpoint, tmp_pat
     try:
         proto_proc.wait_for_ready()
         proto_proc.send({"t": "user_message", "text": "跑慢工具"})
-        proto_proc.wait_for("turn_started")
+        started = proto_proc.wait_for("turn_started")
         request = proto_proc.wait_for("request")
         assert request["kind"] == "tool_call" and request["feedback_allowed"] is True
+        # §3.1：回合内的请求带本回合 turn_id（M9 实测此前恒为 null）
+        assert request["turn_id"] == started["turn_id"]
+        # §3.2 fields.danger 是卡片的危险标记值，不是终端提示符（M9 实测此前是「└─ 执行? [y/N]:」）
+        assert request["fields"]["danger"] and not request["fields"]["danger"].startswith("└─")
+        assert f"危险标记: {request['fields']['danger']}" in request["card_text"]
         proto_proc.send({"t": "answer", "request_id": request["request_id"],
                          "decision": "reject", "feedback": "这段先别写"})
         closed = proto_proc.wait_for("request_closed")
@@ -432,8 +438,20 @@ def test_tp3_tool_card_approve_and_reject_with_feedback(world, endpoint, tmp_pat
     assert "这段先别写" in fed, "拒因反馈要原文回喂"
     tools = [f for f in proto_proc.frames if f.get("t") == "tool"]
     assert [f["phase"] for f in tools] == ["start", "end"]
+    # S9-R1：键集合**恰为** §3.1 的 8 个 + 信封（M9 实测此前多发原始 args/content、缺按阶段的键，
+    # host 整帧丢弃；只断言「存在的键」的旧写法对此永远是绿的）
+    want = {"v", "seq", "sid", "t", "turn_id", "phase", "index", "name", "summary", "ok",
+            "observation", "duplicate"}
+    assert [set(f) for f in tools] == [want, want]
     assert tools[0]["summary"] and tools[0]["duplicate"] is False
+    assert (tools[0]["ok"], tools[0]["observation"]) == (None, None)
+    assert tools[1]["summary"] == tools[0]["summary"]
     assert tools[1]["ok"] is False and "这段先别写" in tools[1]["observation"]
+    # observation 逐字节等于 session.jsonl 中对应 tool 消息的 content（Spec 10 §7.1 对 S9-R1 的要求）
+    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    tool_msgs = [r["message"]["content"] for r in records
+                 if r.get("k") == "msg" and r["message"].get("role") == "tool"]
+    assert tool_msgs == [tools[1]["observation"]]
 
 
 def test_tp3b_tool_card_approve_runs_the_tool(world, endpoint, tmp_path) -> None:
@@ -552,6 +570,32 @@ def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
         proto_proc.wait_for("turn_finished")
         proto_proc.send({"t": "user_message", "text": "丁"})
         proto_proc.wait_for("turn_started")
+        proto_proc.shutdown()
+    finally:
+        assert proto_proc.finish() == 0
+
+
+def test_tp6b_inbound_frames_require_v_1(world, endpoint, tmp_path) -> None:
+    """TP-6b（M9）：§3.1 公共键 `v` 对入站同样必需——缺 v、v:2、v:true 一律 E_BAD_REQUEST 且带回 rid，
+    不开回合；带 v:1 的同一帧正常开回合。
+
+    M9 真实联调实测：host 按 spec 带 v、core 却把它当多余键拒收，桌面端对真实 core 一条消息都发不进去；
+    两侧测试各写各的期望、各自全绿。这条用例用原始行（send_raw）绕开会自动补 v 的 send()，直接钉住 core 侧。
+    """
+    root, episode = world
+    endpoint.replies = [{"role": "assistant", "content": "好"}]
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        for bad in ({}, {"v": 2}, {"v": True}):
+            frame = {**bad, "t": "user_message", "text": "甲", "rid": "rv"}
+            proto_proc.send_raw(json.dumps(frame, ensure_ascii=False) + "\n")
+            err = proto_proc.wait_for("error")
+            assert (err["code"], err.get("rid")) == ("E_BAD_REQUEST", "rv"), err
+        assert endpoint.requests == []
+        proto_proc.send_raw(json.dumps({"v": 1, "t": "user_message", "text": "甲", "rid": "ok"}, ensure_ascii=False) + "\n")
+        assert proto_proc.wait_for("turn_started")["rid"] == "ok"
+        proto_proc.wait_for("turn_finished")
         proto_proc.shutdown()
     finally:
         assert proto_proc.finish() == 0
@@ -858,3 +902,45 @@ def test_tp14b_frames_are_written_by_writer_thread(monkeypatch: pytest.MonkeyPat
     assert set(writers) == {"proto-writer"}, (
         f"帧由 {sorted(set(writers))} 写出；主线程自己写 fd 就是 MUT-38（写线程形同虚设）"
     )
+
+
+# ---------------------------------------------------------------------------
+# TP-16（M9）：idea 会话开回合
+# ---------------------------------------------------------------------------
+
+
+def _tree(root: Path) -> list[tuple[str, int]]:
+    return sorted((str(p.relative_to(root)), p.stat().st_size) for p in root.rglob("*") if p.is_file())
+
+
+def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path) -> None:
+    """TP-16：`--idea` 会话照常开回合（scope 固定 idea、零写权限、不落盘）。
+
+    M9 真实联调实测：此前 core 对无期目录的 user_message 回 E_NO_EPISODE，§3.1 的错误表里没有它，
+    桌面端「选题」对话（Spec 10 §2.5）因此一轮都开不了；终端 `ava idea` 走 cli.py 的另一条路，从未暴露。
+    """
+    root, _episode = world
+    endpoint.replies = [{"role": "assistant", "content": "先聊聊"}, {"role": "assistant", "content": "接着聊"}]
+    before = _tree(root)
+    proto_proc = Protocol(root, endpoint, episode="--idea", tmp=tmp_path)
+    try:
+        ready = proto_proc.wait_for_ready()  # 已消费 ready 那帧 stop_points（turn_id 为 null）
+        assert ready["episode"] is None
+        for n, text in enumerate(("想做一期杂谈", "换个角度"), start=1):
+            proto_proc.send({"t": "user_message", "text": text, "rid": f"i{n}"})
+            started = proto_proc.wait_for("turn_started")
+            assert started["rid"] == f"i{n}"
+            finished = proto_proc.wait_for("turn_finished")
+            assert (finished["turn_id"], finished["stopped"]) == (started["turn_id"], "done")
+            stops = proto_proc.wait_for("stop_points")
+            assert (stops["items"], stops["turn_id"]) == ([], started["turn_id"])
+        # 发给模型的工具表只有 idea scope 的那几个（夹具里 idea = [read_artifact]）
+        names = {t["function"]["name"] for t in endpoint.requests[0].get("tools") or []}
+        assert names == {"read_artifact"}
+        # 第二轮带着第一轮的历史（同一进程内的 messages 连续）
+        contents = [m.get("content") for m in endpoint.requests[1]["messages"]]
+        assert "想做一期杂谈" in contents and "先聊聊" in contents
+        proto_proc.shutdown()
+    finally:
+        assert proto_proc.finish() == 0
+    assert _tree(root) == before  # 不落盘、不建任何文件

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 import pytest
 
@@ -50,3 +52,19 @@ def _isolate_ava_events_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_global_publisher_for_testing()
     yield tmp_path
     _reset_global_publisher_for_testing()
+
+
+# 变异 harness 专用（scripts/verify_mutations.py 设置 AVA_KI_AS_FAILURE=1）：测试体里逃逸的
+# KeyboardInterrupt 转成**普通失败**。不转的话 pytest 会把它当成用户 Ctrl-C、中止整轮（退出码 2），
+# harness 只能标 ABORTED、不算杀死——而中断语义恰恰是 Spec 9 矩阵的重灾区（M3：MUT-49；M9：MUT-5、
+# MUT-29）。逐条用例补 try/except 补不完，这里统一收口。平时手动跑不设这个变量，Ctrl-C 照常中止。
+if os.environ.get("AVA_KI_AS_FAILURE") == "1":
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_call(item):
+        try:
+            return (yield)
+        except KeyboardInterrupt as exc:
+            raise AssertionError(
+                f"{item.nodeid}：测试体内逃逸了 KeyboardInterrupt（中断语义被打穿）"
+            ) from exc
