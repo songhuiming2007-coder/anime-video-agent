@@ -40,11 +40,15 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 DEFAULT_REPO = Path(__file__).resolve().parent.parent
+#: 单轮全量套件的上限。基线约 80 s，中断类变异常把个别用例拖到自身超时（约 30 s 一条），
+#: 15 分钟是基线的 10 倍以上——超过它只可能是挂死，不是慢。
+SUITE_TIMEOUT_S = 900
 
 CLI = "pipeline/agent/cli.py"
 LLM = "pipeline/agent/llm.py"
@@ -865,17 +869,12 @@ class Harness:
             subprocess.run(["rm", "-rf", str(p)], check=False)
 
     def run_suite(self) -> tuple[int, list[str], bool]:
-        proc = subprocess.run(
-            ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=no",
-             # 反向自检剔除：这条测试检查「矩阵锚点是否逐字命中」，而变异恰好会替换掉
-             # 锚点文本 → 它必然报红，与「护栏是否被绕过」无关，会给每条变异白涨 1 条。
-             # 它由 harness 自己在开跑前把关（check_one 的命中数校验），不参与逐条计分。
-             "--deselect=tests/test_verify_mutations.py::test_anchors_in_shipped_matrix_are_unique_in_repo"],
-            cwd=self.repo, text=True, capture_output=True,
-            # AVA_KI_AS_FAILURE：tests/conftest.py 把测试体内逃逸的 KeyboardInterrupt 转成普通失败，
-            # 免得一条打穿中断语义的变异让整轮中止、被记成 ABORTED（M9：MUT-5、MUT-29）
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "AVA_KI_AS_FAILURE": "1"},
-        )
+        try:
+            proc = self._run_pytest()
+        except subprocess.TimeoutExpired:
+            # 挂死 ≠ 杀死：套件没有给出结论，按中止轮记（不算杀死），名单里标出来供人追查。
+            # M9 实测：旧提交上 S9-MUT-12 让一个分片卡了约 40 分钟没有结束。
+            return 0, [f"<TIMEOUT {SUITE_TIMEOUT_S}s>"], True
         out = proc.stdout + proc.stderr
         failed = re.findall(r"^FAILED (\S+)", out, flags=re.MULTILINE)
         m = re.search(r"(\d+) failed", out)
@@ -884,6 +883,33 @@ class Harness:
         # 而中断语义恰恰是本矩阵的重灾区（2026-09-26 M3 实测：MUT-49 就被这么误报）。
         # 中止轮单独标记，且**不计为杀死**：宁可误报红，也不给一条没被证明的护栏盖绿章。
         return (int(m.group(1)) if m else 0), failed, proc.returncode == 2
+
+    def _run_pytest(self) -> subprocess.CompletedProcess:
+        # 新会话起跑：超时时整组杀掉（pytest 起的 protocol/job 子进程一并清理）
+        proc = subprocess.Popen(
+            # 直接用 harness 自己的解释器（项目 venv）：`uv run` 会把真正的 python 放进另一个进程组，
+            # 超时整组杀时杀不到它（M9 实测留下残余 pytest）；也免得分片里 uv 去同步共享的 venv
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=no",
+             # 反向自检剔除：这条测试检查「矩阵锚点是否逐字命中」，而变异恰好会替换掉
+             # 锚点文本 → 它必然报红，与「护栏是否被绕过」无关，会给每条变异白涨 1 条。
+             # 它由 harness 自己在开跑前把关（check_one 的命中数校验），不参与逐条计分。
+             "--deselect=tests/test_verify_mutations.py::test_anchors_in_shipped_matrix_are_unique_in_repo"],
+            cwd=self.repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+            # AVA_KI_AS_FAILURE：tests/conftest.py 把测试体内逃逸的 KeyboardInterrupt 转成普通失败，
+            # 免得一条打穿中断语义的变异让整轮中止、被记成 ABORTED（M9：MUT-5、MUT-29）
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "AVA_KI_AS_FAILURE": "1"},
+        )
+        try:
+            out, err = proc.communicate(timeout=SUITE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
     def check_one(self, mut: dict) -> dict:
         path = self.repo / mut["file"]
