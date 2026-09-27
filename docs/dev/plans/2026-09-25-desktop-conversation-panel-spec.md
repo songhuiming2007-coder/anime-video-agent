@@ -40,10 +40,10 @@
 | A2 | 聚焦窗口里的键盘 Enter 产生可信 keydown；输入法选词期间 `isComposing` 为真（或 `keyCode === 229`） | **前一半红队实测成立**（`keyboard.press("Enter")` → 可信 keydown，`isComposing:false`、`keyCode:13`）；输入法一半无法自动化，改为门禁 12 手验 |
 | A3 | host（utilityProcess）被 SIGKILL 后，它 spawn 的 detached 会话进程的 stdin 立即读到 EOF | **已由红队实测成立**（utilityProcess 内 spawn，host SIGKILL 后约 8 ms EOF）；作者先前在纯 Node 下测得 0.9 s 内（E4） |
 | A4 | `security add-generic-password` 建的条目，被 app spawn 的 `/usr/bin/security` 读取时不弹授权框 | 未测（需写登录钥匙串，不在只读实验范围）。退路：首次弹框点「始终允许」；门禁 6 打包版手验 |
-| A5 | Spec 9 协议进程从 spawn 到 `ready` 在 1 s 内 | 部分实测：`import pipeline.agent.cli, llm, memory, approvals, jobs` 0.06 s、RSS 约 27 MiB（E6）；租约、恢复与 `ensure_pending` 待 Spec 9 施工 |
-| A6 | `SESSION_FRAME_MAX_BYTES = 8 MiB` 盖得住全部合法帧 | 未对真实会话测量；v0.2 起会话读端对完整行也检查长度（🟡-8），超限可检测、不会被静默照收 |
-| A7 | Spec 9 实现后的帧逐键符合其 §3.1 + 本 spec S9-R1/R2/R4 | Spec 9 未施工；PR4 以真实 core 跑契约用例 TX-0 |
-| A8 | render 等 job 刷 `log` 帧时 renderer 不卡顿 | 未测；host 以 `CONV_PUSH_COALESCE_MS` 合并下发，PR4 实测回填 |
+| A5 | Spec 9 协议进程从 spawn 到 `ready` 在 1 s 内 | **成立**（PR4 实测，2026-09-27）：真实 core、空会话记录，`SESSION_NEW` spawn → `ready` **129 ms**（`e2e/sessionReal.spec.ts`「A5 实测」）。此前：`import …` 0.06 s、RSS 约 27 MiB（E6） |
+| A6 | `SESSION_FRAME_MAX_BYTES = 8 MiB` 盖得住全部合法帧 | **成立，样本小**（PR4 实测）：真实 `data/episodes/*/session.jsonl` 全部 56 条消息中最大一条 **57.5 KB**（一条 `tool` 结果）；协议帧的最大载体（`assistant.text`/`history.text`/`tool.observation`/`request.fields.args`）不超过对应消息的 JSON，距 8 MiB 上限约 140 倍。常量不改，样本积累后再看。v0.2 起会话读端对完整行也检查长度（🟡-8），超限可检测、不会被静默照收 |
+| A7 | Spec 9 实现后的帧逐键符合其 §3.1 + 本 spec S9-R1/R2/R4 | **首次联调不成立，core 侧修复后成立**（PR4）：真实 core 暴露 5 处不符（入站 `v`、idea 回合、`tool` 帧键集合、`request.turn_id`、`fields.danger`），按 RF-8 停下报告、经人批准在 core 侧修（Spec 9 `f5bc649`），TS 侧未打补丁；修后 TX-0 逐类键集合与 `REQUIRED`/`CONDITIONAL` 双向一致、`framesLost == 0` |
+| A8 | render 等 job 刷 `log` 帧时 renderer 不卡顿 | **基本成立、有轻微卡顿**（PR4 实测）：桩 job 一口气打 2 万行经真实 core → **20 371 个 `log` 帧、0 丢失**；洪峰期间 renderer 最大 rAF 间隔 **333 ms**，超过 250 ms 的共 **3 次**，其余均在一帧量级。不影响正确性；若真实 render 下人感到卡，再调 `CONV_PUSH_COALESCE_MS` 或折叠 log 渲染（不预设） |
 
 ---
 
@@ -1005,6 +1005,32 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 **回改变异实跑**：F-1 回退（stopping 不 preventDefault）→ `TX-8e` 红；F-2 回退（删 `quitQueryTimer`）→ `TX-8b②` 红；F-4 回退（stopping 不短路）→ `TX-8f` 红（11.3 s，即看护重启 + 10 s 兜底）。
 
 **回归**：`npx vitest run` 287 passed（27 文件，F-3 新增两条）；全套未打包 e2e 67 passed / 1 skipped（`e2e/session.spec.ts` 22 passed，新增 TX-8b②/8e/8f）；`tsc --noEmit` 干净。
+
+### 8.5 PR4 施工回填（M9，2026-09-27）
+
+**做了什么**：`e2e/sessionReal.spec.ts` 用真实 `pipeline.agent.protocol` + 本地假 LLM 端点（`e2e/fakeLlm.ts`：OpenAI 兼容；`tool` 配对不齐回 400；剧本里任何非 `127.0.0.1` 的 URL 加载即拒——真实 core 会真的执行被批准的工具）重写 TX-0~TX-15 全表，另加 TX-5 ⑤、A5、A8。夹具 `sessionRepo` 增 `llmUrl`：给出时不写假 `protocol.py`，副本即复制来的真实 core，并自检与仓库逐字节相同；TF-1/2/3 守卫原样覆盖。TC-1 探针追加 `pipeline.agent.protocol`（TY-7，`7e302cd`），泄漏清单 `[]`。
+
+**结果**：
+- **TX-0**：真实 core 每类帧的键集合与 `convFrames.REQUIRED`/`CONDITIONAL` 双向比对（为此导出两表，内容不变）——期望值只有一份，不在两侧各写对拍；`framesLost == 0`。
+- **真实 core 版 TX 26 条全绿**；TX-5 ⑤ 连续 10 次一致（`settled.timedOut === false`，无「回合结算超时」诊断）。
+- **首次联调暴露 core 侧 5 处协议不符**（见 A7），按 RF-8 停下报告、经人批准在 core 修，TS 侧零适配；Spec 9 补 TP-6b/TP-16 与 MUT-61/62。
+- A5 / A6 / A8 见 §0 假设表。
+- **门禁 10**：`vitest` 全绿；未打包 e2e 全量 100 过 / 1 跳过（负载下 TA-12 红过一次、单跑 3/3 绿，登记 issues D32）；打包构建（`26c9fbc`，`desktopDirty=false`）上 `e2e-packaged` 11/11（TS-8 夹具在 desktop/ 干净时 `git commit` 退 1，加 `--allow-empty` 修，`26c9fbc`）。
+
+**施工偏差（如实登记）**：
+1. **TX-12 / TX-14 的「同时两张卡」改为「逐张出现」**：真实 core 同一会话的人审卡串行打开（上一张答完才会有下一张），spec 原文措辞预设了并发。并发两卡的场景只剩假进程版 TX-14 能造（见下 MUT-46）。
+2. TX-12b/13 的候选 `type` 用 `mv`（`video` 不是合法类型），第二张卡按 `request_id` 定位。
+3. 假进程版 TX-1/TX-8 断言比 spec 窄（TX-1 只在待答区内数按钮、spec 要求整页；TX-8 不断言确认框桩被调用），MUT-26/39 在其下存活 → 目标改指真实 core 版（断言按 spec 全写）；假进程版的缺口登记 issues N34。
+
+**变异全表实跑**（逐条植入 → 目标用例变红 → 写回原文）：TS 侧 68 条由新 harness `desktop/scripts/verify-mutations.mjs` + `scripts/mutations.mjs` 执行（每条的 `targets` 指明 vitest 全量或 e2e grep，`expect` 为矩阵指定的杀手；判定 KILLED = 指定杀手红，PARTIAL = 只红了一部分指定杀手，OTHER = 红的不是指定杀手）；Python 侧 MUT-18~21/53/54 在 `scripts/verify_mutations.py`（S10-MUT-*）。
+- TS 侧 **66/68 KILLED**，杀手与矩阵一致（MUT-55/67 的期望按可达性收窄并在表内写明原因）；
+  - **MUT-46 PARTIAL**：静态守卫 TG-17 红，但假进程版 TX-14 在 key 改下标后仍绿——DOM 复用未导致第二次 Enter 答到第二张卡，机理**未证实**；
+  - **MUT-62 SURVIVED**：变异落在 `App.tsx` 的 onConnect 调用点，TV-6 ⑪ 测的是纯 reducer，e2e 无「host 重启跨越自动呼出等待」路径——测试缺口；
+  - 两条均登记 issues N34，待补用例。
+- Python 侧 **6/6 KILLED**（S10-MUT-18→TY-1 红 4；-19→TY-2 红 3；-20→TY-2 红 6；-21→TY-5 红 2；-53→TY-8 ⑤ 红 2；-54→TY-8 ③ 非标准夹具 + 30 条中含依赖 status 的既有用例），在 `b728a61` 的干净分片工作树上跑（唯一未跟踪项是软链的 `.venv`，故带 `--dirty-ok`）。
+- 实跑中查出并修掉的**测试自身缺陷 10 处**（`af0d0ff`，均非生产代码问题）：夹具孙进程读 `sys.argv[2]`（应为 `[1]`），SIGTERM 处理器抛 `IndexError`、TH-9 ② 恒真（MUT-11）；TH-10 重置后同步断言、异步退出未发生（MUT-13）；TH-18 标题写拒绝、用例体从未拒绝（MUT-57）；TH-19 只比了无会话时的缺省 generation（MUT-51）；TH-20 ①/⑦ 时刻构造使变异无从区分（MUT-60/71）；TV-2 失败原文太短、截断 500 字无影响（MUT-32）；真实 core 版 TX-2/5③/6/7 补 spec 子句或时序（MUT-22/28/31/35）。另 TF-1 改用根外诱饵 `.venv`（`871bcef`，原诱饵在仓库内，安全修复）。
+
+**PR5 文档一项调整（人裁决，2026-09-27）**：§8 PR5 的「`desktop/` 相关说明一行写明钥匙串命令」不在现有 README 上修补，**并入 M10 之后的 README 重写**。
 
 ## 9. 验收门禁清单
 
