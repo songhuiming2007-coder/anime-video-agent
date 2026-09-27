@@ -51,7 +51,7 @@ function runVitest(files) {
   const rep = JSON.parse(readFileSync(outFile, "utf-8"));
   const failed = [];
   for (const f of rep.testResults ?? []) {
-    for (const a of f.assertionResults ?? []) if (a.status === "failed") failed.push(a.title ?? a.fullName);
+    for (const a of f.assertionResults ?? []) if (a.status === "failed") failed.push(a.fullName ?? a.title); // fullName 含 describe 前缀：编号常写在 describe 上
     if ((f.assertionResults ?? []).length === 0 && f.status === "failed") failed.push(`<文件失败：${f.name}：${String(f.message ?? "").slice(0, 200)}>`);
   }
   return { failed, ran: true };
