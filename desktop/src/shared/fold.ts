@@ -120,6 +120,30 @@ export function goneRunningJobIds(jobs: JobView[], pidAlive: (pid: number) => bo
   return new Set(jobs.filter((j) => j.state === "running" && j.pid !== null && !pidAlive(j.pid)).map((j) => j.jobId));
 }
 
+/**
+ * 时间线一行的文案（Spec 8 §3.1 规则 6；Spec 10 S8-R9 修的是最后一条）。
+ *
+ * S8-R9：无 `approval_id` 的 `approval_resolved` 原先一律标「命令卡拒执」，
+ * 而 `status_card.py:366-378` 对批准与拒绝都发该事件——批准过的命令卡被显示成「拒执」。
+ * 现在按载荷的 `decision` 与 `source` 区分。带 `approval_id` 的两种形状不变。
+ */
+export function eventLabel(e: { kind: string; type: string; payload: Record<string, unknown> }): string {
+  const p = e.payload;
+  if (e.kind === "approval_resolved") {
+    if (typeof p.approval_id !== "string") {
+      const decision = typeof p.decision === "string" ? p.decision : "";
+      const source = typeof p.source === "string" ? p.source : "";
+      const verdict = decision === "approved" ? "批准" : decision === "rejected" ? "拒绝" : `未识别（${decision}）`;
+      return `命令卡${verdict}（${source}）：${String(p.command ?? "")}`;
+    }
+    if (p.confirms === "artifact") return `确认已对齐的批准：${String(p.stop ?? "")}`;
+    return `停机点决策：${String(p.stop ?? "")} → ${String(p.decision ?? "")}`;
+  }
+  if (e.kind === "approval_requested") return `停机点待审：${String(p.stop ?? "")}`;
+  if (e.kind === "unknown") return `未知事件 ${e.type}`;
+  return `${e.kind}${typeof p.job_id === "string" ? ` ${p.job_id}` : ""}`;
+}
+
 export function degradedNoticesOf(events: EventRecord[]): DegradedNotice[] {
   return events
     .filter((e) => e.kind === "sidecar_degraded")

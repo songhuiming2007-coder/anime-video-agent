@@ -232,8 +232,11 @@ MUTATIONS: list[dict] = [
              '        return run_agent_loop(None, scope_mode="idea")\n'),
      "new": '    pass\n'},
     {"id": "M23", "guard": "ava new 建完直接进对话", "file": CLI,
-     "old": ('    # 子命令 1: ava new <期号>\n'
-             '    if len(args) >= 2 and args[0] == "new":\n'
+     "old": ('    # 子命令 1: ava new <期名>\n'
+             '    if args and args[0] == "new":\n'
+             '        if len(args) != 2:\n'
+             '            print("[ERROR] 用法: ava new <期名>（期名恰好一个）", file=sys.stderr)\n'
+             '            return 2\n'
              '        rc = create_new_episode(args[1])\n'
              '        if rc != 0:\n'
              '            return rc\n'
@@ -241,8 +244,8 @@ MUTATIONS: list[dict] = [
              '            return 0\n'
              '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]\n'
              '        return run_repl(new_ep_dir)\n'),
-     "new": ('    # 子命令 1: ava new <期号>\n'
-             '    if len(args) >= 2 and args[0] == "new":\n'
+     "new": ('    # 子命令 1: ava new <期名>\n'
+             '    if args and args[0] == "new":\n'
              '        return create_new_episode(args[1])\n')},
     {"id": "M24", "guard": "idea scope 工具表零写权限（纯只读）", "file": TOOLS_JSON,
      "old": ('  "idea": [\n'
@@ -547,6 +550,77 @@ MUTATIONS: list[dict] = [
     {"id": "MUT-15", "guard": "cover_mtime_ns 落盘为十进制字符串（非 int，🔴-1 ①）", "file": APPROVALS,
      "old": '        "cover_mtime_ns": mtime_ns,\n',
      "new": '        "cover_mtime_ns": int(mtime_ns),\n'},
+    # ---- Spec 10 PR0（C10-R1~R4）。id 加 `S10-` 前缀：MUT-18~21/53 已被 Spec 9 占用 ----
+    {"id": "S10-MUT-18", "guard": "create_new_episode 第 1 步真的过 require_data_at（Spec 10 MUT-18）",
+     "file": CLI,
+     "old": ('    try:\n'
+             '        paths.require_data_at(data)\n'
+             '    except SystemExit as e:\n'
+             '        print(e.code if isinstance(e.code, str) else str(e), file=sys.stderr)\n'
+             '        return 2\n'),
+     "new": '    pass  # MUT-18\n'},
+    {"id": "S10-MUT-19", "guard": "期名禁 `/`、`\\`、NUL（Spec 10 MUT-19）",
+     "file": CLI,
+     "old": ('    if any(ch in ep_name for ch in ("/", "\\\\", "\\0")):\n'
+             '        return "不许含 \'/\'、\'\\\\\' 或 NUL"\n'),
+     "new": '    if False:\n        return "MUT-19"\n'},
+    {"id": "S10-MUT-20", "guard": "期名禁 `.` / `_` / `-` 前缀（Spec 10 MUT-20）",
+     "file": CLI,
+     "old": ('    if ep_name in (".", ".."):\n'
+             '        return f"不许是 {ep_name!r}"\n'
+             '    if ep_name[0] in "._":\n'
+             '        return f"不许以 {ep_name[0]!r} 开头（期列表会把它藏起来）"\n'
+             '    if ep_name.startswith("-"):\n'
+             '        return "不许以 \'-\' 开头（会与命令行开关混淆）"\n'),
+     "new": '    pass  # MUT-20\n'},
+    {"id": "S10-MUT-21", "guard": "api_key_env_name 只读配置、不读 os.environ（Spec 10 MUT-21）",
+     "file": LLM,
+     "old": ('    if not (base_url and model and env_name):\n'
+             '        return None\n'
+             '    return env_name\n'),
+     "new": ('    if not (base_url and model and env_name):\n'
+             '        return None\n'
+             '    if not os.environ.get(env_name):  # MUT-21\n'
+             '        return None\n'
+             '    return env_name\n')},
+    {"id": "S10-MUT-53", "guard": "C10-R3 「类型」行取值不跨行（Spec 10 MUT-53）",
+     "file": "pipeline/status.py",
+     "old": ('        seen = True\n'
+             '        if rest[1:].strip(" \\t"):\n'
+             '            return False\n'
+             '    return seen\n'),
+     "new": ('        seen = True\n'
+             '        if rest[1:].strip(" \\t") or len(lines) > 1:\n'
+             '            return False\n'
+             '    return seen\n')},
+    {"id": "S10-MUT-54", "guard": "C10-R3 只用最小规则、不收紧到题材表（Spec 10 MUT-54）",
+     "file": "pipeline/status.py",
+     "old": ('    seen = False\n'
+             '    for raw in lines:\n'
+             '        line = raw.lstrip(" \\t")\n'
+             '        if not line.startswith("类型"):\n'
+             '            continue\n'
+             '        rest = line[len("类型"):].lstrip(" \\t")\n'
+             '        if not rest or rest[0] not in ":：":\n'
+             '            continue\n'
+             '        seen = True\n'
+             '        if rest[1:].strip(" \\t"):\n'
+             '            return False\n'
+             '    return seen\n'),
+     "new": ('    genres = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣", "纪录片")  # MUT-54\n'
+             '    seen = False\n'
+             '    for raw in lines:\n'
+             '        line = raw.lstrip(" \\t")\n'
+             '        if not line.startswith("类型"):\n'
+             '            continue\n'
+             '        rest = line[len("类型"):].lstrip(" \\t")\n'
+             '        if not rest or rest[0] not in ":：":\n'
+             '            continue\n'
+             '        seen = True\n'
+             '        value = rest[1:].strip(" \\t")\n'
+             '        if not any(g in value for g in genres):\n'
+             '            return True\n'
+             '    return not seen\n')},
 ]
 
 

@@ -184,6 +184,31 @@ def _detect_advisories(d: Path) -> list[str]:
     return advisories
 
 
+def _topic_type_unfilled(topic: Path) -> bool:
+    r"""存在「类型」行、且**所有**这样的行的值都为空 → True（Spec 10 C10-R3 §3.8）。
+
+    逐行匹配、不跨行：曾用可跨行的 `\s*` 正则，对 `ava new` 模板解析出
+    「类型 = 模式：」（Spec 10 C10-R4 / E9）。为什么只拿这条最小规则（而不是
+    「类型须属题材表」）：更严的规则会让 26 个真实期里的 5 个倒退回 01（E7）。
+    """
+    try:
+        lines = topic.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    seen = False
+    for raw in lines:
+        line = raw.lstrip(" \t")
+        if not line.startswith("类型"):
+            continue
+        rest = line[len("类型"):].lstrip(" \t")
+        if not rest or rest[0] not in ":：":
+            continue
+        seen = True
+        if rest[1:].strip(" \t"):
+            return False
+    return seen
+
+
 def inspect_episode(ep_dir: Path) -> EpisodeStatus:
     d = ep_dir.resolve()
     status = _inspect_episode_core(d)
@@ -248,6 +273,24 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason="缺少 01-topic.md 选题配置",
             completed_steps=[],
             next_action="请人类创建 01-topic.md 并填写番剧、类型、锚点与张力。",
+            next_command=None,
+            docs_ref="docs/runbook/01-topic.md",
+        )
+
+    # 1.5 已立项但「类型」未填：01 还没完成（Spec 10 C10-R3 §3.8）。
+    # 不是停机点（is_blocked=False）——agent 可以自己推断后经写入卡填写。
+    if _topic_type_unfilled(d / "01-topic.md"):
+        return EpisodeStatus(
+            episode_dir=str(d),
+            episode_name=name,
+            current_step="01 选题",
+            is_blocked=False,
+            block_reason=None,
+            completed_steps=[],
+            next_action=(
+                "01-topic.md 的「类型」尚未填写：在对话里说明本期想做什么，"
+                "agent 推断后经写入卡填写；也可以手动填写"
+            ),
             next_command=None,
             docs_ref="docs/runbook/01-topic.md",
         )

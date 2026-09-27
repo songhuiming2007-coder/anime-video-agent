@@ -142,10 +142,11 @@ def _parse_models(data: dict[str, Any], cfg_file: Path) -> dict[str, str]:
     return parsed
 
 
-def load_llm_config(root: Path | None = None) -> LLMConfig | None:
-    """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量。
+def _load_agent_cfg(root: Path | None) -> tuple[dict[str, Any], Path, bool, Path] | None:
+    """读生效的 agent 配置：`(data, cfg_file, using_local, local_cfg)`；读不到/损坏返回 None。
 
-    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。没有 models 段时行为与单模型完全一致。
+    local 整文件优先，其次 agent.json。四个值一起返回，是为了让调用方**只读一次**：
+    取名字与取密钥必须来自同一份数据（两次读取之间配置被改会拿到互相矛盾的组合）。
     """
     cfg_dir = Path(root or paths.ROOT) / "config"
     local_cfg = cfg_dir / "agent.local.json"
@@ -159,11 +160,46 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
         return None
     if not isinstance(data, dict):
         return None
+    return data, cfg_file, using_local, local_cfg
 
+
+def _env_name_of(data: dict[str, Any]) -> str | None:
+    """三个字段缺一即 None——`api_key_env_name` 与 `load_llm_config` 共用这一段。"""
     base_url = str(data.get("base_url") or "").strip()
     model = str(data.get("model") or "").strip()
     env_name = str(data.get("api_key_env") or "").strip()
     if not (base_url and model and env_name):
+        return None
+    return env_name
+
+
+def api_key_env_name(root: Path | None = None) -> str | None:
+    """当前生效配置指名的密钥环境变量名（只读配置，**不**读环境变量）。
+
+    Spec 10 C10-R2：桌面端从钥匙串取值前先问 core「该注入哪个名字」，TS 侧
+    因此不需要第二份「local 优先」规则。`base_url` / `model` / `api_key_env`
+    缺一即 None，与 `load_llm_config` 同一段选择逻辑。
+    """
+    loaded = _load_agent_cfg(root)
+    if loaded is None:
+        return None
+    return _env_name_of(loaded[0])
+
+
+def load_llm_config(root: Path | None = None) -> LLMConfig | None:
+    """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量。
+
+    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。没有 models 段时行为与单模型完全一致。
+    """
+    loaded = _load_agent_cfg(root)
+    if loaded is None:
+        return None
+    data, cfg_file, using_local, local_cfg = loaded
+    cfg_dir = cfg_file.parent
+    base_url = str(data.get("base_url") or "").strip()
+    model = str(data.get("model") or "").strip()
+    env_name = _env_name_of(data)  # 与 api_key_env_name 同一段规则，但不再重读配置文件
+    if env_name is None:
         return None
     api_key = os.environ.get(env_name, "").strip()
     if not api_key:

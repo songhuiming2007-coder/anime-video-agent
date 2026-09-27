@@ -386,7 +386,7 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 | **PR0**（文档，非代码） | ~~ADR-0025 用户接受 + 同步修订~~（2026-09-26 已完成）+ D-R2 文档 | 用户接受 ADR-0025（已完成）、D-R2 授权（已获） | `uv run pytest tests/test_docs_invariants.py` |
 | **PR1**（core：导入 + 编辑） | `paths.atomic_write` bytes（C12-R2）→ `/import-cover` → `pipeline/cover_edit.py` + 工具注册 + `config/agent/tools.json` creative 清单 + `config/project.json` cover 段；**既有断言更新（🟡-7）**：`tests/test_candidates_propose.py:441` 与 `tests/test_agent_web.py:864` 的 `== 12` → `== 13`、865 的 `<= 12` → `<= 14`（`test_every_tool_has_existing_adr` 的逐工具 ADR glob 对 `ADR-0025` 天然通过——文件已存在）；TC-1~TC-7 + MUT-1~6、MUT-12~14 | PR0 + C12-R1/R2 授权；**渲染基线 sha256 首日先跑回填**（A1/A2） | `uv run pytest` 全绿 + 变异实跑回填 |
 | **PR2**（core：定稿记录） | S3-R12（approvals + cli 双表面）+ C12-R1 白名单；TC-8~TC-11 + MUT-7~11 | S3-R12、C12-R1 授权 | 同上 |
-| **PR3**（desktop） | S8-R18（spawn 模板）+ 导入 UI + S8-R19（09 卡两输入）；TD-1/2、TE-1 | PR1/PR2 + S8-R18/R19 授权；S10-R1 已并入 Spec 10 或其迁移义务已登记 | `npx vitest run` 全绿 + e2e + A3/A4 实测回填 |
+| **PR3**（desktop） | S8-R18（`IMPORT_COVER` spawn 模板）+ 导入 UI（拖放区）+ ~~S8-R19（09 卡两输入）~~ **已由 Spec 10 `S10-R1` 落地**（2026-09-26：`HumanCards.tsx` 的 09 卡含封面选择器 + 标题输入、`APPROVE` 的 09 变体 argv、`contracts.ts` 的 `finalize` 形状；见 Spec 10 §8.1）——PR3 只做导入链路；TD-1/2、TE-1 | PR1/PR2 + S8-R18 授权；S8-R19 已落地、S10-R1 已闭环 | `npx vitest run` 全绿 + e2e + A3/A4 实测回填 |
 
 ---
 

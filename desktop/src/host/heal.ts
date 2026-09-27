@@ -2,6 +2,7 @@
 // 明令禁止：后台期 heal；周期 heal；由对象库文件本身或事件行触发 heal。
 // 能力缺席时 executor 为 null：调度照常记录、不 spawn（§2.6 闸 1）。
 import type { ApprovalRecord } from "../shared/contracts";
+import { compareIso } from "../shared/isoTime";
 import { relPathProblem } from "../shared/mediaUrl";
 
 export type HealTrigger = "H1-activated" | "H2-step-changed" | "H3-user-refresh" | "H4-pre-ack" | "H5-artifact-drift";
@@ -101,12 +102,17 @@ export function newH5State(): H5State {
 
 export type H5Stat = (rel: string) => { size: bigint; mtimeNs: bigint } | "missing";
 
-/** 每种停机点最新的那个对象（按 created_at，相同取数组中靠后者）。 */
+/**
+ * 每种停机点最新的那个对象（按 created_at，相同取数组中靠后者）。
+ *
+ * S8-R12：`created_at` 用 `compareIso` 按数值比，不按字符串（`isoformat()` 在微秒恰为 0 时
+ * 省掉小数部分，字符串比较会把 "…:00Z" 判成比 "…:00.000001Z" 更新）。
+ */
 export function latestPerStop(objs: ApprovalRecord[]): ApprovalRecord[] {
   const best = new Map<string, ApprovalRecord>();
   for (const o of objs) {
     const cur = best.get(o.type);
-    if (!cur || o.created_at >= cur.created_at) best.set(o.type, o);
+    if (!cur || compareIso(o.created_at, cur.created_at) >= 0) best.set(o.type, o);
   }
   return [...best.values()];
 }

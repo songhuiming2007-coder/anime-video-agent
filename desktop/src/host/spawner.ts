@@ -21,7 +21,8 @@ export type Template =
   | "HEAL"
   | "APPROVE"
   | "REJECT"
-  | "REVIEW_APPROVE";
+  | "REVIEW_APPROVE"
+  | "NEW_EPISODE";
 
 export interface TemplateArgs {
   PROBE_APPROVALS: Record<string, never>;
@@ -30,10 +31,13 @@ export interface TemplateArgs {
   GIT_DESKTOP_DIFF: { buildHead: string };
   STATUS: { ep: string };
   HEAL: { ep: string };
-  APPROVE: { ep: string; stop: StopType; approvalId: string };
+  /** cover/title 只在 09 定稿时给出（Spec 12 S3-R12：空格固定位置四个独立 argv 元素） */
+  APPROVE: { ep: string; stop: StopType; approvalId: string; cover?: string; title?: string };
   REJECT: { ep: string; stop: StopType; approvalId: string; target: string; problem: string };
   /** size / mtimeNs 取自对象钉住的 04-clips.json 指纹；mtimeNs 为 bigint，argv 里写 String(bigint)（§3.1 规则 8） */
   REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
+  /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
+  NEW_EPISODE: { name: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -86,8 +90,11 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/approvals"], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
     case "APPROVE": {
-      const { ep, stop, approvalId } = args as TemplateArgs["APPROVE"];
-      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/approve", stop, "--id", approvalId], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+      const { ep, stop, approvalId, cover, title } = args as TemplateArgs["APPROVE"];
+      const argv = [py, "-m", "pipeline.agent.cli", ep, "/approve", stop, "--id", approvalId];
+      // 09 定稿：argv 追加 --cover <路径> --title <标题>（空格固定位置，与裸形态同一套语法）
+      if (cover !== undefined && title !== undefined) argv.push("--cover", cover, "--title", title);
+      return { argv, timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
     case "REJECT": {
       // target / problem 各为一个 argv 元素，不经 shell、不拼接（Spec 3 §4.2 第 1 条固定位置语法）
@@ -102,6 +109,11 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
         argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "review", "--approve", `--expect-size=${size}`, `--expect-mtime-ns=${String(mtimeNs)}`],
         timeoutMs: SPAWN_TIMEOUT_REVIEW_MS,
       };
+    }
+    case "NEW_EPISODE": {
+      // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core
+      const { name } = args as TemplateArgs["NEW_EPISODE"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "new", name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);

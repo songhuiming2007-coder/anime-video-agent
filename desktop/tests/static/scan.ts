@@ -160,29 +160,210 @@ export function fsWriteCalls(f: SourceFile): string[] {
   return hits;
 }
 
-// ---------------- TG-4：approval.decide 只在决策条的 onClick 里 ----------------
+// ---------------- TG-4′ / TG-10：答复类与发送类方法的点击纪律（Spec 10 §2.4 第 1 层） ----------------
 
-export const DECISION_BAR_FILE = "renderer/DecisionBar.tsx";
+/** 方法 → （唯一允许的文件，允许的事件属性）。这张表就是 Spec 10 §2.4 第 1 层的闭集。 */
+export const ACTION_METHODS: Record<string, { file: string; attrs: readonly string[] }> = {
+  "approval.decide": { file: "renderer/HumanCards.tsx", attrs: ["onClick"] },
+  "conv.answer": { file: "renderer/HumanCards.tsx", attrs: ["onClick"] },
+  "conv.send": { file: "renderer/Composer.tsx", attrs: ["onClick", "onKeyDown"] },
+  "conv.interrupt": { file: "renderer/Composer.tsx", attrs: ["onClick", "onKeyDown"] },
+  "conv.command": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
+  "conv.end": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
+  "conv.resume": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
+  "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick"] },
+};
 
-export function decideCallViolations(f: SourceFile): string[] {
+const LOOP_KINDS = [
+  ts.SyntaxKind.ForStatement,
+  ts.SyntaxKind.ForInStatement,
+  ts.SyntaxKind.ForOfStatement,
+  ts.SyntaxKind.WhileStatement,
+  ts.SyntaxKind.DoStatement,
+];
+const ITER_METHODS = new Set(["map", "forEach", "reduce", "filter", "some", "every", "flatMap", "find"]);
+
+function isFunctionLike(n: ts.Node): n is ts.FunctionLikeDeclaration {
+  return (
+    ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isMethodDeclaration(n) ||
+    ts.isGetAccessorDeclaration(n) || ts.isSetAccessorDeclaration(n) || ts.isConstructorDeclaration(n)
+  );
+}
+
+function enclosingFunction(n: ts.Node): ts.FunctionLikeDeclaration | null {
+  for (let p = n.parent; p; p = p.parent) if (isFunctionLike(p)) return p;
+  return null;
+}
+
+/** 这个函数是不是直接挂在允许的 JSX 事件属性上，且元素标签是小写原生元素。 */
+function jsxEventOf(fn: ts.FunctionLikeDeclaration): { attr: string; native: boolean } | null {
+  const expr = fn.parent;
+  if (!expr || !ts.isJsxExpression(expr)) return null;
+  const attr = expr.parent;
+  if (!attr || !ts.isJsxAttribute(attr) || attr.initializer !== expr) return null;
+  const opening = attr.parent?.parent; // JsxAttributes → JsxOpeningElement / JsxSelfClosingElement
+  if (!opening || !(ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening))) return null;
+  const tag = opening.tagName;
+  return { attr: attr.name.getText(), native: ts.isIdentifier(tag) && /^[a-z]/.test(tag.text) };
+}
+
+export function actionClickViolations(f: SourceFile): string[] {
+  // 纪律只针对 renderer（UI 里能把答复发出去的地方）；host/ 的方法名出现在分派表里是正常的
+  if (topDir(f.rel) !== "renderer") return [];
+  const sf = parse(f);
+  const bad: string[] = [];
+  const countedHandlers = new Set<ts.Node>();
+  visit(sf, (n) => {
+    if (!ts.isStringLiteralLike(n)) return;
+    const spec = ACTION_METHODS[n.text];
+    if (!spec) return;
+    if (f.rel !== spec.file) {
+      bad.push(`${f.rel}: ${n.text} 出现在禁写文件（只许 ${spec.file}）`);
+      return;
+    }
+    const fn = enclosingFunction(n);
+    if (!fn) {
+      bad.push(`${f.rel}: ${n.text} 的调用点不在任何函数里`);
+      return;
+    }
+    const jsx = jsxEventOf(fn);
+    if (!jsx || !spec.attrs.includes(jsx.attr)) {
+      bad.push(`${f.rel}: ${n.text} 的最近外层函数不是 ${spec.attrs.join("/")} 的值函数`);
+      return;
+    }
+    if (!jsx.native) {
+      bad.push(`${f.rel}: ${jsx.attr} 挂在自定义组件上（须是小写原生元素）`);
+      return;
+    }
+    // 首句：if (!<第一形参>.nativeEvent.isTrusted) return;
+    const body = fn.body;
+    if (!body || !ts.isBlock(body)) {
+      bad.push(`${f.rel}: ${n.text} 的处理器没有函数体，无法检查 isTrusted 首句`);
+      return;
+    }
+    const first = body.statements[0];
+    const guard = first && ts.isIfStatement(first) ? /^!\s*([A-Za-z_$][\w$]*)\.nativeEvent\.isTrusted$/.exec(first.expression.getText(sf)) : null;
+    const param = fn.parameters[0]?.name.getText(sf);
+    const isBareReturn = !!first && ts.isIfStatement(first) && ts.isReturnStatement(first.thenStatement) && first.thenStatement.expression === undefined;
+    if (!guard || !isBareReturn || guard[1] !== param) {
+      bad.push(`${f.rel}: ${n.text} 的处理器首句不是对第一个形参的 nativeEvent.isTrusted 检查`);
+      return;
+    }
+    // 处理器体内：无循环、无迭代方法
+    let loop = false;
+    const scan = (node: ts.Node) => {
+      if (LOOP_KINDS.includes(node.kind)) loop = true;
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ITER_METHODS.has(node.expression.name.text)) loop = true;
+      ts.forEachChild(node, scan);
+    };
+    ts.forEachChild(body, scan);
+    if (loop) {
+      bad.push(`${f.rel}: ${n.text} 的处理器体内有循环或迭代方法调用`);
+      return;
+    }
+    // 每个处理器里闭集方法的调用合计至多一处（防把两次答复展开连写）；同一处理器只计一次
+    if (!countedHandlers.has(fn)) {
+      countedHandlers.add(fn);
+      let count = 0;
+      const countCalls = (node: ts.Node) => {
+        if (ts.isStringLiteralLike(node) && ACTION_METHODS[node.text]) count += 1;
+        ts.forEachChild(node, countCalls);
+      };
+      ts.forEachChild(body, countCalls);
+      if (count > 1) bad.push(`${f.rel}: 同一个处理器里出现了多处闭集方法调用`);
+    }
+  });
+  return bad;
+}
+
+// ---------------- TG-13：markdown 与危险 HTML 只在 PreviewPane.tsx ----------------
+
+export const PREVIEW_FILE = "renderer/PreviewPane.tsx";
+
+export function markdownViolations(f: SourceFile): string[] {
+  const bad: string[] = [];
+  if (f.rel === PREVIEW_FILE) return bad;
+  if (moduleSpecifiers(f).some((s) => s === "markdown-it" || s.startsWith("markdown-it/"))) bad.push(`${f.rel}: 只有 PreviewPane.tsx 能 import markdown-it`);
+  if (f.text.includes("dangerouslySetInnerHTML")) bad.push(`${f.rel}: 只有 PreviewPane.tsx 能用 dangerouslySetInnerHTML`);
+  return bad;
+}
+
+// ---------------- TG-14：桌面端不读会话记录 ----------------
+
+export function sessionLogViolations(): string[] {
+  return walk(SRC).filter((p) => !/(^|\/)index\.html$/.test(p) && readFileSync(p, "utf-8").includes("session.jsonl")).map((p) => `${relative(SRC, p)}: 出现 session.jsonl 字面量`);
+}
+
+// ---------------- TG-15：建期表单的期名初值不从对话预填 ----------------
+
+export function newEpisodeFormViolations(f: SourceFile): string[] {
+  if (f.rel !== "renderer/NewEpisodeForm.tsx") return [];
+  const sf = parse(f);
+  const bad: string[] = [];
+  if (!/useState\(\s*""\s*\)/.test(f.text)) bad.push(`${f.rel}: 期名初值不是空串字面量 useState("")`);
+  let found = false;
+  visit(sf, (n) => {
+    if (!ts.isFunctionDeclaration(n) || n.name?.text !== "NewEpisodeForm") return;
+    found = true;
+    const param = n.parameters[0];
+    if (param) {
+      const t = param.type;
+      if (!t || !ts.isTypeLiteralNode(t)) {
+        bad.push(`${f.rel}: props 类型必须就地写明（否则无法检查是否含 string 字段）`);
+        return;
+      }
+      for (const m of t.members) {
+        if (!ts.isPropertySignature(m) || !m.type) continue;
+        const text = m.type.getText(sf).trim();
+        // 只禁「能装下对话原文」的字段：没有任何 string 类型的 prop 能承载期名预填
+        if (/^string(\s*\|\s*null)?$/.test(text)) bad.push(`${f.rel}: 存在 string 类型的 prop —— 可能承载对话预填`);
+      }
+    }
+  });
+  if (!found) bad.push(`${f.rel}: 找不到 NewEpisodeForm 组件`);
+  return bad;
+}
+
+// ---------------- TG-16：rpc.call 的首参必须是方法闭集字面量 ----------------
+
+export const RPC_CALL_EXEMPT = "renderer/testHooks.ts";
+
+export function rpcCallViolations(f: SourceFile, methods: readonly string[]): string[] {
+  if (f.rel === RPC_CALL_EXEMPT) return [];
   const sf = parse(f);
   const bad: string[] = [];
   visit(sf, (n) => {
-    if (!ts.isStringLiteralLike(n) || n.text !== "approval.decide") return;
-    if (f.rel !== DECISION_BAR_FILE) {
-      bad.push(`${f.rel}: approval.decide 出现在决策条组件之外`);
+    if (!ts.isPropertyAccessExpression(n) || n.name.text !== "call") return;
+    const call = n.parent;
+    if (!ts.isCallExpression(call) || call.expression !== n) {
+      bad.push(`${f.rel}: rpc.call 不是直接被调用（bind/apply/赋值都不许）`);
       return;
     }
-    let p: ts.Node | undefined = n.parent;
-    let inOnClick = false;
-    while (p) {
-      if (ts.isJsxAttribute(p) && p.name.getText(sf) === "onClick") {
-        inOnClick = true;
-        break;
-      }
-      p = p.parent;
+    const first = call.arguments[0];
+    if (!first || !ts.isStringLiteralLike(first) || !methods.includes(first.text)) {
+      bad.push(`${f.rel}: rpc.call 的首参不是方法闭集里的字符串字面量`);
     }
-    if (!inOnClick) bad.push(`${f.rel}: approval.decide 的调用点祖先不是 onClick 属性值函数`);
+  });
+  return bad;
+}
+
+// ---------------- TG-17：卡片的 key ----------------
+
+export function cardKeyViolations(f: SourceFile): string[] {
+  if (f.rel !== "renderer/HumanCards.tsx") return [];
+  const sf = parse(f);
+  const bad: string[] = [];
+  visit(sf, (n) => {
+    if (!ts.isJsxOpeningElement(n) && !ts.isJsxSelfClosingElement(n)) return;
+    const tag = n.tagName.getText();
+    const want = tag === "RequestCard" ? "request_id" : tag === "StopPointCard" ? "approval_id" : null;
+    if (!want) return;
+    const key = n.attributes.properties.find((a): a is ts.JsxAttribute => ts.isJsxAttribute(a) && a.name.getText() === "key");
+    if (!key) {
+      bad.push(`${f.rel}: <${tag}> 没有 key`);
+      return;
+    }
+    if (!key.initializer?.getText().includes(want)) bad.push(`${f.rel}: <${tag}> 的 key 不是 ${want}`);
   });
   return bad;
 }

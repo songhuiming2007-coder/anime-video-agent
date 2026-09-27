@@ -93,7 +93,11 @@ def test_non_tty_degradation_exits_cleanly(tmp_path: Path, monkeypatch, capsys):
 
 
 def test_create_new_episode_and_reject_duplicates(tmp_path: Path, monkeypatch):
-    """ava new <期号> 建立目录 + 01-topic.md 模板，重名拒绝覆盖 (Spec §5 PR1, B3-r9)。"""
+    """ava new <期号> 建立目录 + 01-topic.md 模板，重名拒绝覆盖 (Spec §5 PR1, B3-r9)。
+
+    Spec 10 C10-R1 后检查与写入同源：骨架要齐（含 data/library），否则退 2。
+    """
+    (tmp_path / "data" / "library").mkdir(parents=True)
     ep_root = tmp_path / "data" / "episodes"
     ep_root.mkdir(parents=True)
 
@@ -403,6 +407,8 @@ def test_main_new_enters_repl_in_tty(tmp_path: Path, monkeypatch):
     from pipeline import paths
     import sys
 
+    (tmp_path / "data" / "library").mkdir(parents=True)
+    (tmp_path / "data" / "episodes").mkdir(parents=True)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
@@ -428,6 +434,8 @@ def test_non_tty_dual_gates_for_new_and_idea(tmp_path: Path, monkeypatch, capsys
     from pipeline import paths
     import sys
 
+    (tmp_path / "data" / "library").mkdir(parents=True)
+    (tmp_path / "data" / "episodes").mkdir(parents=True)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
 

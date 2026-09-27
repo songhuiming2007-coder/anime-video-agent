@@ -928,6 +928,25 @@ browser 逐调用卡、素材抓取卡、`write_memory` 卡与记忆确认卡都
 
 ---
 
+### 8.1 PR0 / PR1 施工回填（2026-09-26）
+
+**PR0（Python）**：`uv run pytest` **1938 passed**（改动前 1899）；TY-1~TY-9 落为 `tests/test_spec10_episode_create.py`（4 个既有用例按 C10-R1 同源语义改写：`test_create_new_episode_and_reject_duplicates` 改由 spec §6.1 点名的 3 个 + 实测新增的第 4 个 `test_full_chain_smoke_in_temp_repo`）；TC-1 探针追加 `pipeline.agent.llm`，泄漏清单 `[]`。变异 **S10-MUT-18/19/20/21/53/54 全部杀死**（走 `scripts/verify_mutations.py`：红条数 4 / 3 / 6 / 2 / 2 / 30；前四条编号与 Spec 9 的 MUT-矩阵撞号，故加 `S10-` 前缀）。**另一处既有影响**：`scripts/verify_mutations.py` 的 M23 锚点随 `ava new` 分派改写同步更新（未更新会让「锚点逐字命中」自检变红）。
+
+**PR1（desktop）**：`npx vitest run` **191 passed**；`npx playwright test` **45 passed / 1 skipped**（`e2e/ack.spec.ts` 与 `e2e/preview*.spec.ts` **零改动**，`e2e/visual.spec.ts` 新增 VE-1/VE-3 属 Spec 14 的单子）；`npx tsc --noEmit` 干净。TV-6①~⑦、TV-7、TV-11、TG-4′/TG-10/TG-13~TG-17、TH-14 全绿；另补 09 定稿的 `plan`/argv 形状断言（Spec 12 S8-R19 的接口，`tests/host/decide.test.ts`、`tests/host/spawner.test.ts`）。
+
+**Spec 12 的 S10-R1（09 卡两输入）**：**已做完，不需迁移义务**——`HumanCards.tsx` 的 09 卡含封面选择器（`tree.list` 直读 `07-cover/`，按文件名排序、不排名）与标题输入，两者非空才可点批准；`approval.decide` 增可选 `cover`/`title`（承载 `finalize`），`APPROVE` 模板 09 变体按空格固定位置追加四个独立 argv 元素；`contracts.ts` 的 `ApprovalRecord`/`ApprovalJson` 增 `finalize` 形状并在 `parseApproval` 里校验（`cover_mtime_ns` 只收十进制字符串）。Spec 12 PR3 只剩 `IMPORT_COVER` 模板与导入 UI（拖放区）。
+
+**归属变异实跑（PR1 相关，逐条植入 → 目标用例红 → 逐字节还原）**：MUT-22 / 23b / 45（TG-4′，各 2 条红）、MUT-25（TG-13，1）、MUT-44（TG-16，2）、MUT-34（TG-15，1）、MUT-33（TV-7，1）、MUT-17（TG-2，1）、MUT-27（TV-6 ②，3）。**MUT-55 首次实跑存活**（TV-6 的夹具里 created_at 的字符串序恰好等于数值序），已补一条「微秒恰为 0」的用例（`…:00Z` 对 `…:00.000001Z`），复跑红 1 条。
+
+**验收结论（2026-09-26）**：独立评审复跑一致、四条发现全部关闭，**PR0 / PR1 范围判为通过**（Spec 10 门禁 2~7、11 的对应项 ✅）；**PR2 起不在本里程碑**，下一段从 PR2（host 会话管理，对假 `protocol.py`）起手。
+
+**验收回改（2026-09-26，独立评审）**：① 🟡 `llm.py` 双读配置——改为 `_load_agent_cfg` 一次读入后由 `_env_name_of(data)` 取名字（`api_key_env_name` 与 `load_llm_config` 共用这一段），消除「两次读取之间配置被改」与多余 IO；`_warn_once` 的去重键恢复为 `local_cfg`（与 HEAD 逐字一致）；新增 `test_ty5_config_read_once` 钉住「只读一次」（`uv run pytest` 1939 passed）。此处与 C10-R2 的字面「load_llm_config 改为调用它取名字」略有出入（改为调用同段规则），理由即评审所指的双读缺陷——行为与可观察输出不变。② Spec 12 §8 的 PR3 行已同步标注 S8-R19 的 09 卡部分由本 spec S10-R1 落地，防做两遍。③ `test_tp6_busy_and_bad_frames` 全量负载下偶发红已登记为 `D31`。
+
+**残余风险（如实登记）**：S8-R12 把 `heal.ts:latestPerStop` 改成 `compareIso` 后，`approvals_store.json` 里若出现不可解析的 `created_at`，比较会抛错（`compareIso` 契约如此，TV-11 钉住）；core 的 `_utc_now_iso()` 恒为可解析形状，故只可能由外部改坏的对象库触发，届时表现为 host 熔断而非静默按字符串比较。
+
+**待办（不在本单）**：`docs/dev/plans/README.md` 的 Spec 10 状态行未动（PR2/PR3/PR4 未完，等 Spec 10 全绿再更新）。
+
+
 ## 9. 验收门禁清单
 
 - [ ] **门禁 1（授权）**：§6.1 全部阻塞项获用户授权；S9-R1~R4 经红队对 Spec 9 的定向复核 🟢；

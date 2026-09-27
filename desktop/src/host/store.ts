@@ -53,6 +53,16 @@ export function parseApproval(v: unknown): ApprovalRecord | null {
     feedback = { target: f.target, problem: f.problem };
   }
   const options = Array.isArray(o.options) && o.options.every((x) => typeof x === "string") ? (o.options as string[]) : ["approve", "reject"];
+  let finalize: ApprovalRecord["finalize"] = null;
+  if (o.finalize !== null && o.finalize !== undefined) {
+    const f = o.finalize as Record<string, unknown>;
+    if (typeof f !== "object" || Array.isArray(f)) return null;
+    if (typeof f.cover !== "string" || typeof f.title !== "string") return null;
+    if (typeof f.cover_size !== "number" || !Number.isSafeInteger(f.cover_size)) return null;
+    // cover_mtime_ns 是十进制字符串（Spec 12 §3.3）：纳秒不做 bigint，也不接受 number 形态
+    if (typeof f.cover_mtime_ns !== "string" || !/^\d+$/.test(f.cover_mtime_ns)) return null;
+    finalize = { cover: f.cover, title: f.title, cover_size: f.cover_size, cover_mtime_ns: f.cover_mtime_ns };
+  }
   return {
     approval_id: o.approval_id as string,
     episode: o.episode as string,
@@ -66,6 +76,7 @@ export function parseApproval(v: unknown): ApprovalRecord | null {
     confirmed_by: confirmed_by as string | null,
     confirmed_at: confirmed_at as string | null,
     feedback,
+    finalize,
     note: typeof o.note === "string" ? o.note : "",
   };
 }

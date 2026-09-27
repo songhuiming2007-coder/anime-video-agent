@@ -32,7 +32,7 @@ def _dist_name(requirement: str) -> str:
 def test_core_imports_no_server_stack():
     """TC-1：core 热路径不因桌面端载入任何 server / 数据库 / ML 栈（独立子进程，防共享进程假阳性）。"""
     probe = (
-        "import sys, pipeline.agent.cli, pipeline.status, pipeline.review; "
+        "import sys, pipeline.agent.cli, pipeline.status, pipeline.review, pipeline.agent.llm; "
         "bad = ('http.server','socketserver','wsgiref','asyncio','websockets','aiohttp',"
         "'fastapi','uvicorn','flask','starlette','sqlite3','numpy','torch'); "
         "leaked = [m for m in bad if m in sys.modules]; "

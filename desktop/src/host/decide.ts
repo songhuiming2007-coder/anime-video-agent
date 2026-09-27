@@ -26,14 +26,23 @@ const fail = (code: RpcError["code"], message: string, tails: { stdoutTail?: str
 
 /** §3.2.1 参数形状（checkParamKeys 只管键集合；这里管值）。不合法 → E_BAD_REQUEST。 */
 export function parseDecideParams(raw: Record<string, unknown>): DecideParams {
-  const { epKey, approvalId, stop, decision, feedback } = raw;
+  const { epKey, approvalId, stop, decision, feedback, cover, title } = raw;
   if (typeof epKey !== "string" || typeof approvalId !== "string" || !approvalId.trim()) fail("E_BAD_REQUEST", "epKey / approvalId 不合法");
   if (!isStopType(stop)) fail("E_BAD_REQUEST", `未知停机点 ${String(stop)}`);
   if (decision === "approve") {
     if (feedback !== undefined) fail("E_BAD_REQUEST", "approve 不带 feedback");
-    return { epKey: epKey as string, approvalId: approvalId as string, stop: stop as StopType, decision };
+    // 09 定稿：cover 与 title 必须同时给出、trim 后非空（Spec 12 S8-R19）；其余停机点不许带
+    const hasCover = typeof cover === "string" && cover.trim() !== "";
+    const hasTitle = typeof title === "string" && title.trim() !== "";
+    if (stop === "09") {
+      if (!hasCover || !hasTitle) fail("E_BAD_REQUEST", "09 定稿必须同时给出封面与标题");
+      return { epKey: epKey as string, approvalId: approvalId as string, stop: stop as StopType, decision: "approve", finalize: { cover: cover as string, title: title as string } };
+    }
+    if (cover !== undefined || title !== undefined) fail("E_BAD_REQUEST", `停机点 ${stop} 不接受 cover / title`);
+    return { epKey: epKey as string, approvalId: approvalId as string, stop: stop as StopType, decision: "approve", finalize: null };
   }
   if (decision !== "reject") fail("E_BAD_REQUEST", `未知决定 ${String(decision)}`);
+  if (cover !== undefined || title !== undefined) fail("E_BAD_REQUEST", "reject 不带 cover / title");
   if (feedback === null || typeof feedback !== "object" || Array.isArray(feedback)) fail("E_BAD_REQUEST", "reject 必须带 feedback { target, problem }");
   const f = feedback as Record<string, unknown>;
   const keys = Object.keys(f).sort();
@@ -43,7 +52,6 @@ export function parseDecideParams(raw: Record<string, unknown>): DecideParams {
   }
   return { epKey: epKey as string, approvalId: approvalId as string, stop: stop as StopType, decision: "reject", feedback: { target: f.target as string, problem: f.problem as string } };
 }
-
 /** approve：PENDING，或 artifact 已对齐、待确认（Spec 3 v0.4 确认路径）；reject：PENDING。 */
 export function ackable(obj: ApprovalRecord, decision: DecideParams["decision"]): boolean {
   if (obj.status === "pending") return true;
@@ -64,7 +72,10 @@ export function plan(p: DecideParams, obj: ApprovalRecord, ep: string): Step[] {
   if (p.decision === "reject") {
     return [{ t: "REJECT", args: { ep, stop: p.stop, approvalId: p.approvalId, target: p.feedback.target, problem: p.feedback.problem } }];
   }
-  const approve: Step = { t: "APPROVE", args: { ep, stop: p.stop, approvalId: p.approvalId } };
+  const approve: Step = {
+    t: "APPROVE",
+    args: { ep, stop: p.stop, approvalId: p.approvalId, ...(p.finalize ? { cover: p.finalize.cover, title: p.finalize.title } : {}) },
+  };
   if (p.stop === "05" && obj.status === "pending") {
     const clips = obj.artifacts.find((a) => a.path === "04-clips.json");
     if (!clips) fail("E_STALE", "对象未钉住 04-clips.json 的指纹，无法核验审阅版本，请刷新");

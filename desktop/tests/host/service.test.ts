@@ -8,7 +8,7 @@ import type { Envelope, EpisodeDelta, EpisodeSnapshot, SnapshotStatus } from "..
 import { parseEventLine } from "../../src/shared/fold";
 import { toWireApproval, toWireEvent } from "../../src/shared/losslessJson";
 import { realFs } from "../../src/host/fsio";
-import { HostService, RpcFail } from "../../src/host/service";
+import { HostService, RpcFail, type HostDeps } from "../../src/host/service";
 import { spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fingerprintsMatch, readApprovalRecords, readApprovalStore } from "../../src/host/store";
 import { emptyStore, reduce, type Store } from "../../src/renderer/store";
@@ -440,6 +440,58 @@ describe("TI-3a I1：关闭 heal（能力缺席）后，对只读夹具树执行
     } finally {
       expect(treeManifest(join(ro, "data"))).toEqual(before);
       chmodSync(join(ro, "data"), 0o755);
+    }
+  });
+});
+
+describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
+  it("argv 逐元素等于 NEW_EPISODE 模板；真 core 退 0 → 期列表含该 epKey", async () => {
+    const r = makeFixtureRepo();
+    try {
+      const { svc } = await startService({}, r);
+      const before = spawnTotal();
+      const res = (await svc.dispatch("episode.create", { name: "2026-09-26-建期测试" })) as { epKey: string };
+      expect(res.epKey).toBe("2026-09-26-建期测试");
+      expect(spawnTotal()).toBe(before + 1);
+      const rec = spawnLog.at(-1)!;
+      expect(rec.template).toBe("NEW_EPISODE");
+      expect(rec.argv).toEqual([join(r, ".venv/bin/python"), "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试"]);
+      const list = (await svc.dispatch("episodes.list", {})) as { episodes: { epKey: string }[] };
+      expect(list.episodes.map((e) => e.epKey)).toContain("2026-09-26-建期测试");
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("core 退 2 → E_CORE 且附 stderr 尾部；失败时 host 自身零写入", async () => {
+    const r = makeFixtureRepo();
+    try {
+      const fakeRun = (async () => ({
+        code: 2, signal: null, stdoutTail: "", stderrTail: "[ERROR] 期名不合规：不许为空或首尾带空白\n",
+        timedOut: false, stdoutFull: null, stdoutOverflow: false,
+      })) as unknown as HostDeps["runCore"];
+      const { svc } = await startService({ runCore: fakeRun }, r);
+      const before = treeManifest(join(r, "data"));
+      const err = await svc.dispatch("episode.create", { name: "../x" }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(RpcFail);
+      expect((err as RpcFail).code).toBe("E_CORE");
+      expect((err as RpcFail).tails.stderrTail).toContain("期名不合规");
+      expect(treeManifest(join(r, "data"))).toEqual(before);
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("缺 name 参数 → E_BAD_REQUEST（exact-keys）", async () => {
+    const r = makeFixtureRepo();
+    try {
+      const { svc } = await startService({}, r);
+      const before = spawnTotal();
+      const err = await svc.dispatch("episode.create", {}).catch((e: unknown) => e);
+      expect((err as RpcFail).code).toBe("E_BAD_REQUEST");
+      expect(spawnTotal()).toBe(before); // 零 spawn
+    } finally {
+      cleanup(r);
     }
   });
 });

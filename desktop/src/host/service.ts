@@ -520,6 +520,8 @@ export class HostService {
         return this.shotsList();
       case "approval.decide":
         return this.decide(parseDecideParams(params as Record<string, unknown>));
+      case "episode.create":
+        return this.createEpisode(p.name);
       default:
         throw new RpcFail("E_BAD_REQUEST", `未知方法 ${String(method)}`);
     }
@@ -964,6 +966,24 @@ export class HostService {
     }
     void this.refreshEpisodeStatuses();
     return { changed: true, repoRoot: this.repoRoot, problem: this.repoRootProblem };
+  }
+
+  // ---------------- 建期（S8-R2 / Spec 10 §2.5、§3.7） ----------------
+
+  /**
+   * 建期：**校验与写入全在 core**（C10-R1），host 只做 exact-keys 与「是字符串」检查，
+   * 期名作为单个 argv 元素传入（`shell:false`，无路径字段）；UI 绝不 mkdir（TG-2）。
+   * spawn 计入在途（S8-R10）：切仓等它结束。失败原样回 core 的 stderr 尾部。
+   */
+  private async createEpisode(name: string): Promise<{ epKey: string }> {
+    if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
+    if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
+    const r = await this.core("NEW_EPISODE", { name });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    this.refreshEpisodes();
+    return { epKey: name };
   }
 
   // ---------------- 镜头画廊（shots 根顶层 *.html；内容仍经 ava-media:// 读） ----------------
