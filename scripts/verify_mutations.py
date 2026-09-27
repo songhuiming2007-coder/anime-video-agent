@@ -31,7 +31,9 @@
 
 - `MUTATIONS` 是纯数据：`old` 必须**逐字**命中且全仓唯一，否则报 ANCHOR 错误而不
   静默跳过（锚点过期=这条护栏事实上没在验，与「静默跳过会让护栏看起来还在」同病）；
-- 新增护栏时同步加条目：没被变异杀过的护栏等于没验过。
+- 新增护栏时同步加条目：没被变异杀过的护栏等于没验过；
+- 复合变异（如 S9-MUT-60）把其余改动放进 `also: [{file, old, new}]`，每处同样逐字唯一，
+  一起施加、一起写回原文。
 """
 
 from __future__ import annotations
@@ -815,6 +817,13 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-57", "guard": "包装比较 ep_dir（登记的是别的期 → 按没有登记处理）", "file": CLI,
      "old": "    if host is None or not host.matches(ep_dir):\n",
      "new": "    if host is None:  # MUT-57\n"},
+    {"id": "S9-MUT-60", "guard": "子会话工具上下文的期目录取自包装参数（MUT-57 之上的纵深防御，复合变异）",
+     "file": CLI,
+     "old": "    if host is None or not host.matches(ep_dir):\n",
+     "new": "    if host is None:  # MUT-60（含 MUT-57）\n",
+     "also": [{"file": "pipeline/agent/session.py",
+               "old": "        return ToolContext(scope=scope, episode_dir=self._ep_dir, root=root)\n",
+               "new": "        return ToolContext(scope=scope, episode_dir=self.host.ep_dir, root=root)  # MUT-60\n"}]},
     {"id": "S9-MUT-58", "guard": "activate_host 可重入（嵌套退出不注销外层登记）", "file": CLI,
      "old": ("            yield _SESSION_HOST  # type: ignore[misc]\n"
              "        finally:\n"
@@ -912,18 +921,25 @@ class Harness:
         return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
     def check_one(self, mut: dict) -> dict:
-        path = self.repo / mut["file"]
-        try:
-            original = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            # 目标文件不存在（如 --repo 指到别的树）：报错而不是裸抛栈
-            return {**mut, "error": f"读不到 {mut['file']}: {exc}", "failed": None, "tests": []}
-        n = original.count(mut["old"])
-        if n != 1:
-            return {**mut, "error": f"anchor matched {n} times (需逐字命中且唯一)", "failed": None, "tests": []}
+        originals: dict[Path, str] = {}
+        mutated: dict[Path, str] = {}
+        for e in mutation_edits(mut):
+            path = self.repo / e["file"]
+            try:
+                text = mutated.get(path) or path.read_text(encoding="utf-8")
+            except OSError as exc:
+                # 目标文件不存在（如 --repo 指到别的树）：报错而不是裸抛栈
+                return {**mut, "error": f"读不到 {e['file']}: {exc}", "failed": None, "tests": []}
+            originals.setdefault(path, text)
+            n = text.count(e["old"])
+            if n != 1:
+                return {**mut, "error": f"anchor matched {n} times in {e['file']} (需逐字命中且唯一)",
+                        "failed": None, "tests": []}
+            mutated[path] = text.replace(e["old"], e["new"])
 
-        path.write_text(original.replace(mut["old"], mut["new"]), encoding="utf-8")
         try:
+            for path, text in mutated.items():
+                path.write_text(text, encoding="utf-8")
             self.purge_pycache()   # 施加后清：防同秒同尺寸的 stale .pyc
             n_failed, failed, interrupted = self.run_suite()
         finally:
@@ -931,12 +947,19 @@ class Harness:
             # 还原到 HEAD，会连未提交改动一起丢掉。这类事故已发生三次（2026-09-20
             # 两次、2026-09-25 N28 验收时未提交的 jobs.py 被整个抹掉）。原文已在
             # 内存里，写回即逐字节精确复原，脏树上也安全。
-            path.write_text(original, encoding="utf-8")
+            for path, text in originals.items():
+                path.write_text(text, encoding="utf-8")
             self.purge_pycache()   # 恢复后再清：防变异态的 stale .pyc
-        assert path.read_text(encoding="utf-8") == original, \
-            f"变异 {mut['id']} 恢复失败：{mut['file']} 内容未逐字节复原"
+        for path, text in originals.items():
+            assert path.read_text(encoding="utf-8") == text, \
+                f"变异 {mut['id']} 恢复失败：{path.name} 内容未逐字节复原"
         return {**mut, "error": None, "failed": n_failed, "tests": failed,
                 "interrupted": interrupted}
+
+
+def mutation_edits(mut: dict) -> list[dict]:
+    """一条变异的全部改动：主锚点 + 复合变异的 `also`。"""
+    return [{"file": mut["file"], "old": mut["old"], "new": mut["new"]}, *mut.get("also", [])]
 
 
 def render_table(rows: list[dict]) -> str:

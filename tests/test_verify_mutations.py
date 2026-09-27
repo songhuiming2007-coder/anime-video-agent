@@ -118,10 +118,11 @@ def test_anchors_in_shipped_matrix_are_unique_in_repo():
     mod = _load_module()
     misses = []
     for mut in mod.MUTATIONS:
-        text = (REPO_ROOT / mut["file"]).read_text(encoding="utf-8")
-        n = text.count(mut["old"])
-        if n != 1:
-            misses.append(f"{mut['id']} @ {mut['file']}: 命中 {n} 次")
+        for e in mod.mutation_edits(mut):
+            text = (REPO_ROOT / e["file"]).read_text(encoding="utf-8")
+            n = text.count(e["old"])
+            if n != 1:
+                misses.append(f"{mut['id']} @ {e['file']}: 命中 {n} 次")
     assert not misses, "过期/歧义锚点：\n" + "\n".join(misses)
 
 

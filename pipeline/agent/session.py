@@ -508,7 +508,12 @@ class SessionHost:
             tracker=tracker,
             root=root if root is not None else self.root,
             approve_cb=approve_cb,
+            ep_dir=ep_dir,
         )
+
+
+# run_turn 的 ep_dir 缺省哨兵：None 是合法的期目录（idea 无期），不能拿来表示「未传」
+_HOST_EP = object()
 
 
 class AgentSession:
@@ -623,11 +628,13 @@ class AgentSession:
         root: Path | None = None,
         approve_cb: Callable[[str, dict], Any] | None = None,
         turn_id: str | None = None,
+        ep_dir: Path | str | None | object = _HOST_EP,
     ) -> dict[str, Any]:
         """跑一轮（§4.7 的处理顺序）。
 
         `turn_id` 可由调用方给定：协议要先发 `turn_started{turn_id}` 出去，host 才可能
         发回 `interrupt{turn_id}`（§3.1）；终端路径不传，自行生成。
+        `ep_dir` 由包装传入（§4.3）：工具上下文的期目录取它；不传（协议进程、测试直调）即登记本身的期。
         """
         from pipeline.agent.assembly import step_key_of
         from pipeline.agent.llm import LLMError, local_directive_message  # noqa: F401
@@ -644,6 +651,9 @@ class AgentSession:
 
         self.messages = messages
         self._turn_id = turn_id or secrets.token_hex(8)
+        self._ep_dir = self.host.ep_dir if ep_dir is _HOST_EP else (
+            Path(ep_dir).resolve() if ep_dir is not None else None  # type: ignore[arg-type]
+        )
         effective_scope = self._scope_override or scope
         # 本轮的工具审查一律用调用方给的 scope（终端每轮热推导，M11 锚点不动）；
         # 绝不在这里从 status 重新推一份——那会把 pipeline scope 的回合按产物阶段错配成 creative。
@@ -903,7 +913,7 @@ class AgentSession:
         from pipeline.agent.tools import ToolContext
 
         # 期目录一律取自**包装收到的参数**，从不取自 SessionHost（五轮自查 / MUT-60）
-        return ToolContext(scope=scope, episode_dir=self.host.ep_dir, root=root)
+        return ToolContext(scope=scope, episode_dir=self._ep_dir, root=root)
 
     # ---- 控制面 ----
 
