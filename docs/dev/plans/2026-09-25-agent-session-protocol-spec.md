@@ -842,7 +842,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | MUT-35 | `review` 拦截退回「只认 `--approve`、`--approve=`」 | TK-1 | `--a`、`--ap`、`--appr` 进卡 |
 | MUT-36 | `--force` 禁令退回全拼比对 | TK-9 | `--force-a` 通过 |
 | MUT-37 | `commit()` 的写盘与进内存不在同一延迟区 | TS-10 | 中断在两步之间浮出，盘上多一条 |
-| MUT-38 | 主线程直接写帧（去掉写线程） | TP-14 | host 收到残帧，该行不能解析 |
+| MUT-38 | 主线程直接写帧（去掉写线程） | TP-11（2026-09-26 M3 验收实测改正：TP-14 在此变异下不变红，残帧竞态敏感性未由本变异证明） | 主线程同步写帧使中断浮出点改变，SIGTERM 转化的 KeyboardInterrupt 在回合快照（deepcopy）处逃逸，断言失败 |
 | MUT-39 | 子会话各自 `EpisodeLease.acquire` | TK-8 | 进 `/script` 时 `SessionLocked` |
 | MUT-40 | 免卡写入也清空判重 | TL-4b | 第二次 `read_status` 被执行 |
 | MUT-41 | 检查点只数回复 | TL-2b | 第 9 次请求前没有提问 |
