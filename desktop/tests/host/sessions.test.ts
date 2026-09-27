@@ -358,10 +358,12 @@ describe("TH-9 结束与退出序列", () => {
     await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
     await waitFor(() => sessionRecords(b.repo, b.epKey).some((r) => r.kind === "grandchild"));
     const childPid = sessionRecords(b.repo, b.epKey).find((r) => r.kind === "grandchild")!.pid!;
+    // 前提：孙进程的 SIGTERM 处理器已装好——否则下面「从未收到」可能只是它按默认动作悄悄死了（MUT-11）
+    await waitFor(() => childSignals(b.repo, b.epKey).some((x) => x.kind === "child_ready"));
     const r = (await b.svc.dispatch("conv.end", { convKey: b.key })) as { signal: string | null };
     expect(r.signal).toBe("SIGKILL");
     expect(sessionRecords(b.repo, b.epKey).some((x) => x.kind === "signal" && x.signal === "SIGTERM")).toBe(true);
-    expect(childSignals(b.repo, b.epKey)).toEqual([]); // 孙进程从未收到 SIGTERM
+    expect(childSignals(b.repo, b.epKey).filter((x) => x.kind === "child_signal")).toEqual([]); // 孙进程从未收到 SIGTERM
     await waitFor(() => {
       try {
         process.kill(childPid, 0);
@@ -410,12 +412,15 @@ describe("TH-9 结束与退出序列", () => {
 
 describe("TH-10 renderer 重置", () => {
   it("resetRenderer 后会话进程仍在，snapshot 返回之前的条目与打开请求", async () => {
-    const b = await boot();
+    const b = await boot({ timing: { killGraceMs: 200 } });
     sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "q1", kind: "tool_call", turn_id: "t1", title: "t", card_text: "c", fields: { tool: "write_episode_file" }, options: ["approve", "reject"], feedback_allowed: true }] }]);
     await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
     await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
     const pid = sessionRecords(b.repo, b.epKey).find((r) => r.kind === "pid")!.pid!;
     b.svc.resetRenderer();
+    // 等过宽限期再看（M9：信号送达与退出处理都是异步的，同步紧跟的断言在「重置顺手结束会话」的缺陷下
+    // 仍然成立——MUT-13 因此存活）
+    await new Promise((r) => setTimeout(r, 800));
     process.kill(pid, 0); // 仍在
     const snap = await snapOf(b.svc, b.key);
     expect(snap.open.map((o) => o.request_id)).toEqual(["q1"]);
@@ -611,6 +616,15 @@ describe("TH-18 原生确认框（§2.4 第 5 层）", () => {
     expect(b.stub.calls).toBe(callsAfterApprove);
   });
 
+  it("拒绝抓取卡与 browser 卡 → 确认框桩调用 0 次（MUT-57）", async () => {
+    // M9：上下两条的标题都写「拒绝不需要确认框」，用例体里却从没做过拒绝——MUT-57（拒绝也弹框）因此只有纯函数单测红
+    const b = await withCards([FETCH("https://example.com/candidate"), BROWSER("https://example.com/b", "看看")]);
+    b.stub.respond = true;
+    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "reject" });
+    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qb", decision: "reject" });
+    expect(b.stub.calls).toBe(0);
+  });
+
   it("browser 卡：批准要确认框，拒绝不要", async () => {
     const b = await withCards([BROWSER("https://example.com/b", "看看")]);
     b.stub.respond = true;
@@ -669,10 +683,19 @@ describe("TH-19 host 重启后的 generation", () => {
   it("两个不同 bootId 的实例对同一会话键给出不同的 generation", async () => {
     const a = await boot({ bootId: "bootA" });
     const b = await boot({ bootId: "bootB" });
+    // 没有会话时的默认快照（snapshot() 的缺省分支）
+    expect((await snapOf(a.svc, a.key)).generation).toBe("bootA:0");
+    expect((await snapOf(b.svc, b.key)).generation).toBe("bootB:0");
+    // spec：各**起一次会话**后比较（M9：此前只比了缺省分支，ensure() 里真正生成会话 generation 的那一行
+    // 没被测到——MUT-51 因此存活）
+    for (const x of [a, b]) {
+      sessionScript(x.repo, x.epKey, [READY(x.epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+      await x.svc.dispatch("conv.send", { convKey: x.key, text: "hi" });
+    }
     const sa = await snapOf(a.svc, a.key);
     const sb = await snapOf(b.svc, b.key);
-    expect(sa.generation).toBe("bootA:0");
-    expect(sb.generation).toBe("bootB:0");
+    expect(sa.generation).toBe("bootA:1");
+    expect(sb.generation).toBe("bootB:1");
     expect(sa.generation).not.toBe(sb.generation);
   });
 });
