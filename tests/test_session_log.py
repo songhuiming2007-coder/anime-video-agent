@@ -158,15 +158,28 @@ def test_ts4_repairs_are_append_only_and_prefix_is_byte_identical(ep: Path) -> N
     prefix = (ep / slog.LOG_NAME).read_bytes()
     assert prefix == b"".join(dirty_lines), "夹具自己必须先逐字节成立"
 
+    # 走**生产入口** prepare_resume（M9：此前这里复刻了一遍它的修复流程，生产路径退化成
+    # 「重写整个文件」时本用例照样绿——S9-MUT-23 在 HEAD 上实跑 red=0 即此因）
+    from pipeline.agent.session import SessionHost, prepare_resume
+
+    class _Quiet:
+        name = "tty"
+
+        def show(self, kind: str, payload: dict) -> None:
+            pass
+
+        def ask(self, request):  # 修复路径不问人
+            raise AssertionError("prepare_resume 不应向人提问")
+
     lease = slog.EpisodeLease.acquire(ep)
-    loaded = slog.load_session(lease.read(), "sid-a")
-    lease.begin("sid-a", resumed_from_seq=loaded.last_seq)
-    repairs = slog.plan_repairs(loaded)
-    for record in repairs:
-        lease.append(record)
+    host = SessionHost(ep, channel=_Quiet())
+    host.lease = lease
+    state = prepare_resume(host, "sid-a")
+    assert state["status"] == "resumed"
 
     after = (ep / slog.LOG_NAME).read_bytes()
     assert after.startswith(prefix), "原前缀必须逐字节不变（修复只许追加）"
+    repairs = [json.loads(line) for line in after[len(prefix):].splitlines() if line.strip()]
 
     kinds = [r["k"] for r in repairs]
     assert kinds.count("repair_tool_results") == 1
