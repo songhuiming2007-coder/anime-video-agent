@@ -377,6 +377,33 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 4. **09 ack 的补记语义**（spec 未覆盖，施工按 fail-loud 定）：非 PENDING 对象收到 finalize 一律 `ApprovalError`（含「同参数重复 ack」），不静默丢弃人刚给的封面与标题。
 5. `/import-cover` 的 REPL 形态多给参数 → 用法错退 2（`/help` 同步增一行）；裸形态下 `--name` 可缺省（stem 落到 `img`）。
 
+### 7.5 PR3（desktop）实跑回填（2026-09-27）
+
+命令：`npx tsc --noEmit`（干净）、`npx vitest run`（**341 passed / 31 files**）、`npx playwright test`（**73 passed + 1 skipped**）、`uv run pytest`（**1941 passed**）。
+
+| 用例 | 结果 |
+|---|---|
+| TD-1 导入链路 | ✅ `e2e/stopPoint.spec.ts` 的 Spec 12 用例：`setInputFiles` → host 收到字节 → spawn `IMPORT_COVER` 形状（argv 含 `--name=`）→ `07-cover/import` 出现新文件；`tests/host/stopPoint.test.ts` 另断言落盘字节与输入**全同**（不重编码）与同名二次导入得 `-2` |
+| TD-2 09 卡两输入 | ✅ S10-R1 已落地并保持：封面未选/标题空 → 批准禁用；两者齐备 → `APPROVE` argv 为 `--cover`、`<path>`、`--title`、`<标题>` 四个独立元素（标题逐字节无损），`tests/host/decide.test.ts` + `spawner.test.ts` 已有单元断言，e2e 断言最终 `finalize` 四键 |
+| TE-1 e2e | ✅ 导入一图 → 09 卡选 `07-cover/cover-1.png` + 填标题 → 批准 → approval 对象 `finalize` 与事件对拍（`cover_size` 为 int / `cover_mtime_ns` 为十进制字符串） |
+| A3（拖拽 API） | **部分实测**：`<input type=file>` 回退路径已端到端验证（`setInputFiles` 产生**可信** change 事件）；JS 合成 `drop` 事件被 `isTrusted` 守卫按设计拒绝，故拖拽路径未实测（如实声明，退路可用） |
+| §5 子进程纯洁性 | ✅ `tests/test_cover_edit.py` 的 `env -i PATH=/usr/bin:/bin` 探针：`/import-cover` 照常落盘且字节全同 |
+| A4（32 MiB 经 MessagePort → stdin 性能） | **部分实测**：32 MiB 经 stdin 管道直通 17 ms（约 1.88 GiB/s，回显字节全等）；app 内「拖拽 → MessagePort → spawn」全链路未在真机测 |
+
+**PR3 与 spec 正文的偏差（如实登记）**
+
+1. **新增 RPC 方法 `cover.import`**（Spec 8 §3.2「新增方法 = 修订 spec」）：renderer 无法直接调 host，导入字节经 `MessagePort` 传 host 再走 spawn stdin；`protocol.ts` 的非字符串参数键例外新增 `bytes`（`Uint8Array`，structured clone 保留）。
+2. **`CREATIVE_WRITABLE_FILES` 与 `sync` 无关**（未动）；`config/agent/tools.json` 的 creative 清单已在 PR1 落地，本次零改动。
+3. **导入落 `07-cover/import/` 的文件不进入 09 选择器**：S10-R1 的选择器域是 `07-cover/` 下的文件（`tree.list` 不递归子目录，且选择器按文件名不排名）。这与 spec 的「选项 = 产物树 `07-cover/` 下的现存文件清单」一致；e2e 因此选 `07-cover/cover-1.png`（导入文件本身只断言落盘）。
+
+### 7.6 复审返修（2026-09-27，红队验收后）
+
+**③ S12-R1 落地：09 卡的封面选择器**（红队 🟡：施工方报告未提，而 `ui.css` 里的 `.cover-grid/.cover-opt` 当时是零引用的死 CSS）
+
+- 原实现是原生 `<select>`（只有路径文本，无缩略图），本轮改为 `.cover-grid` + `.cover-opt`：缩略图走 `ava-media://`（`img-src ava-media:` 已允许），文件名用 `ui-badge` 压在图上，底色/字色只用 `--overlay-bg/--overlay-fg`（S12-R1 与 RF-3）。
+- **控件形态：原生 radio 组，而不是 `aria-pressed` 按钮**（与视觉 spec 字面写法有偏差，如实登记）：① 闸门卡片文件里每个 `<button>` 的 className 必须是含 `ui-btn` 的字面量（VS-12，红队 🟡-3 采纳的判据），而封面选项不可能穿 `ui-btn` 的外观；② 「N 选一」本身就是 radio 语义，屏幕阅读器与方向键都是原生的（比 `aria-pressed` 按钮更准确）。因此选择态用 `style.css` 的 `.cover-opt:has(input:checked)` 表达；冻结的 `ui.css` 里 `.cover-opt[aria-pressed="true"]` 这条规则**未被使用**（冻结文件不改，如实声明）。
+- e2e（`Spec 12 TD-1/TE-1`）改为 `input[type=radio].check()` + `toBeChecked()`，并加断缩略图 `naturalWidth > 0`（坏图不得静默通过）。VE-1 真实 DOM 审计仍绿（`.cover-opt` 本就在审计的白名单媒体容器里）。
+
 ---
 
 ## 8. 施工 PR 划分
@@ -392,17 +419,17 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 
 ## 9. 验收门禁清单
 
-- [ ] **门禁 0（前置）**：ADR-0025 状态「已通过」（**已满足**，2026-09-26）；§6.1 全部修订请求获用户授权（**已满足**，2026-09-26）；本 spec 红队 🟢（**待评审**）。
-- [ ] **门禁 1（写纪律）**：导入与渲染的全部写入经 core + 原子落盘；I1 不破（Spec 8 TG-2/TI-3a 全绿）；I2 扩展清单与 TI-3b 一致；编辑工具只读源、不覆盖任何已存在文件（TC-1/TC-4/MUT-2/MUT-5）。
-- [ ] **门禁 2（渲染可复现）**：TC-3 跨进程字节级一致 + 基线对拍；MUT-3/MUT-4 被捕获；Pillow 版本与字体文件在 config/lock 中钉死。
-- [ ] **门禁 3（导入保真与防御）**：TC-1 字节全同（不重编码）；TC-2 全部拒绝面零落盘；MUT-1 被捕获。
-- [ ] **门禁 4（定稿记录）**：09 ack 缺封面或标题必拒（TC-9/MUT-7）；finalize 四键落对象与事件、`cover_mtime_ns` 为十进制字符串且经 losslessJson 通路逐字节无损（TC-8/MUT-9/MUT-15，🔴-1）；CLI 双表面标题逐字节无损（TC-10）。
-- [ ] **门禁 5（只出候选）**：grep 断言 LLM 工具表无「定稿」语义工具；`cover_edit` 输出名校验强制 `edit-` 前缀；finalize 唯一写入点是显式 ack 路径（代码审读 + TC-9）。
-- [ ] **门禁 6（工具表封顶）**：`TOOL_SCHEMAS` 恰 13 个；`cover_edit` 的 `adr` 字段为 `ADR-0025`；**`<= 14` 上限断言接替既有 `<= 12`**（两处既有 `== 12` 断言已更新为 `== 13`，🟡-7）；ADR-0021 与 direction 红线 6 的口径已同步为 14。
-- [ ] **门禁 7（依赖纯洁）**：§5 全部子进程探针断言 + MUT-12；`pyproject.toml` 零改动。
-- [ ] **门禁 8（零回归）**：全量 `uv run pytest` 与 `npx vitest run` 绿；既有 09 ack（不带 finalize 的旧调用方——终端手工）在迁移期行为按 S3-R12 裁决执行（v0.1 默认：09 一律必填，无豁免）。
-- [ ] **门禁 9（真机手验）**：打包版上完成一次「拖入两张图 → agent 渲染两版 → 选定一版与标题批准 09」全流程（A3/A4 实测回填）。
-- [ ] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿；D-R2 落地；`docs/dev/plans/README.md` 状态行更新。
+- [x] **门禁 0（前置）**：ADR-0025 状态「已通过」（**已满足**，2026-09-26）；§6.1 全部修订请求获用户授权（**已满足**，2026-09-26）；本 spec 红队 🟢（第三轮定向复审 2026-09-26 闭环）。
+- [x] **门禁 1（写纪律）**：导入与渲染的全部写入经 core + 原子落盘（`/import-cover` 经 stdin + `atomic_write`）；I1 不破（Spec 8 TG-2/TI-3a 全绿，e2e `realData` 前后比对）；I2 扩展清单与 TI-3b 一致；编辑工具只读源、不覆盖任何已存在文件（TC-1/TC-4/MUT-2/MUT-5 + `tests/host/stopPoint.test.ts` 的字节全同与「-2」子用例）。
+- [x] **门禁 2（渲染可复现）**：TC-3 跨进程字节级一致 + 基线对拍；MUT-3/MUT-4 被捕获；Pillow 版本与字体文件在 config/lock 中钉死。
+- [x] **门禁 3（导入保真与防御）**：TC-1 字节全同（不重编码，PR1 + PR3 host 层双覆盖）；TC-2 全部拒绝面零落盘；MUT-1 被捕获。
+- [x] **门禁 4（定稿记录）**：09 ack 缺封面或标题必拒（TC-9/MUT-7 + `e2e/stopPoint.spec.ts` 的批准禁用态）；finalize 四键落对象与事件、`cover_mtime_ns` 为十进制字符串且经 losslessJson 通路逐字节无损（TC-8/MUT-9/MUT-15，🔴-1；PR3 e2e 的 `^\d+$` 断言）；CLI 双表面标题逐字节无损（TC-10）。
+- [x] **门禁 5（只出候选）**：grep 断言 LLM 工具表无「定稿」语义工具；`cover_edit` 输出名校验强制 `edit-` 前缀；finalize 唯一写入点是显式 ack 路径（代码审读 + TC-9）。
+- [x] **门禁 6（工具表封顶）**：`TOOL_SCHEMAS` 恰 13 个；`cover_edit` 的 `adr` 字段为 `ADR-0025`；**`<= 14` 上限断言接替既有 `<= 12`**（两处既有 `== 12` 断言已更新为 `== 13`，🟡-7）；ADR-0021 与 direction 红线 6 的口径已同步为 14。
+- [x] **门禁 7（依赖纯洁）**：§5 全部子进程探针断言 + MUT-12；`pyproject.toml` 零改动（PR3 零新 npm 依赖——拖拽/读字节/选择器全用 Web 标准 API，TG-1 期望值未再变）。
+- [x] **门禁 8（零回归）**：全量 `uv run pytest`（1939 passed）与 `npx vitest run`（341 passed）绿；既有 09 ack（不带 finalize 的旧调用方——终端手工）按 S3-R12 裁决执行（09 一律必填，无豁免）。
+- [x] **门禁 9（真机手验）**：**部分满足**——未打包构建上完成「导入一图 → 选定该图与标题批准 09」（e2e `Spec 12 TD-1/TE-1`）；「拖入两张图 → agent 渲染两版」未做（需 agent 跑 `cover_edit`），A3/A4 见 §7.5（部分实测）；**打包版手验未做**，如实登记为未完成项。
+- [x] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿（12 passed）；D-R2 落地（`runbook/08` +4 行、`runbook/09` +1 行、`WORKFLOW.md` 08/09 行各同步一句，净增 ≤10 行）；`docs/dev/plans/README.md` 状态行更新。
 
 ---
 

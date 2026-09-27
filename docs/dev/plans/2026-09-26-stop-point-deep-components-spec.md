@@ -1,6 +1,6 @@
 # Implementation Spec：停机点深度组件（Spec 11：02.5 app 内编辑与封板、03.5 顺听按钮、人时采集）
 
-日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零）；**施工进度（2026-09-26）：PR1、PR2 已落地**（core 人物提示 + 八个子命令，`uv run pytest` 1769 passed，变异实跑见 §7.4））  
+日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零）；**施工进度（2026-09-26）：PR1、PR2 已落地**（core 人物提示 + 八个子命令，`uv run pytest` 1769 passed，变异实跑见 §7.4）；**2026-09-27：PR3/PR4/PR5 已落地**（desktop：02.5 CodeMirror 编辑器、03.5 顺听面板、人时采集与门禁 14 退役；`npx vitest run` 343 passed、`npx playwright test` 75 passed + 1 skipped、`uv run pytest` 1941 passed，变异与假设回填见 §7.4/§7.5）；**同日红队验收 1🔴 后已返修，待复审**（① CSP 下 CM 样式失效 → ShadowRoot + adoptedStyleSheets，A1 升为计算样式级；② TI-11 `pid_alive=null` 归锁残留；④ 错误态不计时；逐条见 §7.6））  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0 产品画像与终态判据、§4 施工红线八条、§5 明确排除、§6 Spec 11 范围全文）  
 相关 ADR：**ADR-0024（桌面端写产物，`docs/dev/adr/0024-desktop-artifact-writes.md`，状态「已通过」——2026-09-26 用户接受；PR2–PR5 以其为前置，已满足）**、ADR-0018（保留条款）、ADR-0019（corrections 生命周期）、ADR-0020（§3 审批对象、§4 桌面端、§5 Context 纪律）  
 契约依赖：**Spec 8**（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；Spec 3（已施工，`pipeline/approvals.py`）；Spec 2（已施工，`pipeline/jobs.py`）；Spec 9（v0.7 红队 🟢、未施工——本 spec **不消费其协议进程**，仅落实其 RF-17 的遗留处置）；Spec 10（v0.5 红队 🟢、未施工——本 spec 与其无修订关系，边界见 §6.2）  
@@ -447,10 +447,72 @@ export function flushHumanTimers(reason: "ack" | "close" | "switch" | "quit"): v
 | PR2 | MUT-9 / MUT-10 漏 `source` 键 / 漏 emit | 各 1 红：TC-11 |
 | PR2 | MUT-11 core 半（core 端加 <6 s 过滤） | 1 红：TC-11 短区间子用例（TD-1 的宿主半留 PR5） |
 | PR2 | MUT-13 RF17-C1 不做 | 1 红：TC-12 |
-| PR2 | MUT-12 | **core 半不存在**：同 stop 双计防护在宿主 per-stop 单区间机（TD-1），留 PR5 实跑 |
-| PR3~5 | MUT-14/15/16/17 | 未施工（桌面侧），留对应 PR |
+| PR2 | MUT-12 | **core 半不存在**：同 stop 双计防护在宿主 per-stop 单区间机（TD-1），PR5 已实跑（见下） |
+| PR3 | MUT-14 编辑器冲突后 UI 仍显示「已保存」 | **2 红**：TD-3（`tests/shared/editorState.test.ts` 的冲突子用例）、TE-2（`e2e/stopPoint.spec.ts:115`：`save-conflict` 不可见） |
+| PR3 | MUT-15 `@codemirror/*` 被 import 进 `host/` 或 `shared/`（实跑改为 import 进 `renderer/VoicePanel.tsx`） | **2 红**：`tests/static/guards.test.ts` TG-3 的「真实源码」与「只出现在 ScriptEditor.tsx」两条 |
+| PR3 | MUT-16 去掉 dirty-seal 禁用 | **3 红**：TD-3 的 dirty 子用例、`canSeal` 子用例、TE-1（`e2e/stopPoint.spec.ts:84`：封板按钮在 dirty 时仍 enabled） |
+| PR3 | MUT-17 host 用普通 `JSON.parse` 读 SAVE_SCRIPT stdout | **2 红**：TD-5（`tests/host/stopPoint.test.ts`：真实保存往返期望新指纹与 `statSync(bigint)` 逐位相等，普通 parse 落入 `E_CORE`）、`(-1,-1)` 子用例 |
+| PR5 | MUT-11 host 半（`HostTimers.emit` 加 <6 s 过滤） | **1 红**：`tests/host/stopPoint.test.ts` 的「不设时长下限：0.5 s 的区间照常落盘」 |
+| PR5 | MUT-12 同 stop 双区间并行（`noteVisible` 对已在计的 stop 重置起点） | **1 红**：TD-1 的「同 stop 双 visible 不双计」 |
+
+**PR3~PR5 实跑结果（2026-09-27，`uv run pytest` 1941 passed / `npx vitest run` 341 passed / `npx playwright test` 73 passed + 1 skipped / `npx tsc --noEmit` 干净）**
+
+- TD-1~TD-5、TI-11、TE-1~TE-4 全部落地：`tests/shared/{humanTime,voiceInfo,editorState}.test.ts`、`tests/host/stopPoint.test.ts`（16 例，全部真实 core 往返）、`e2e/stopPoint.spec.ts`（6 例，含 A1 实测）。
+- 上文 6 条变异逐条实跑 → 变红 → 写回原文复原；每条只击中预期用例（MUT-14/MUT-16 多处观察者属预期）。
+- 新增骨架用例：`tests/host/spawner.test.ts` 的停机点模板 argv/超时/PATH 开口与 `runArgv` 的 stdin 直通（含 300 KB 全等）；`tests/test_stop_point_commands.py` 的 §5.2 子进程纯洁性断言（`env -i PATH=<白名单>` 下 `/save-script`、`/voice-info`、`/seal-script` 行为不变）。
+
+**未实测假设回填（PR3~PR5）**
+
+| 编号 | 结果 |
+|---|---|
+| A1 | **✅ 已实测**：`e2e/stopPoint.spec.ts` 的「A1 首日实测」断言 Electron 44 renderer 里 `.cm-editor`、`.cm-line` 与 HighlightStyle 生成的 `ͼ*` 高亮类均存在；五包（+ `@lezer/highlight`）正常装载，无降级为 textarea |
+| A2 | **❌ 仍未测**（需真实纠错条目触发云端/本地重配）：`RUN_TTS_APPLY_PATCH` 保持无超时（S8-R17 的模板级例外），确认框取消不 spawn 已由 TD-4 覆盖 |
+| A3 | **部分实测**：`<input type=file>` 回退路径已 e2e 验证（`setInputFiles` 产生可信 change 事件）；**JS 合成 drop 事件被 `isTrusted` 守卫按设计拒绝**，故拖拽路径未端到端实测（如实声明，回退路径可用） |
+| A4 | **部分实测**：32 MiB 经 stdin 管道直通 17 ms（约 1.88 GiB/s，`/bin/cat` 回显字节全等），管道不是瓶颈；app 内「拖拽 → MessagePort → spawn」全链路未在真机测 |
+| A5 | **确认**：实现按 spec 原文，host `script.stat` 先取基线指纹、renderer 再经 `ava-media://` 取正文，窗口存在且后果只能是「保存时指纹不符拒存」（安全方向） |
 
 补充实跑（门禁 6 加强版，PR1）：对全部 17 个带 `02-script.md` 的真实期逐期对拍——剔除 INFO 行后 stdout 与退出码**零 diff**；INFO 合计 61 行、分布在 10 期。
+
+### 7.5 施工偏差登记（PR3–PR5，2026-09-27）
+
+逐条如实登记——spec 正文未覆盖但施工必须做的决定，以及连带修改的既有契约：
+
+1. **RPC 方法闭集 +14**（Spec 8 §3.2「新增方法 = 修订 spec」）：`script.stat` / `script.save` / `script.seal` / `script.check` / `voice.info` / `voice.parse` / `voice.add` / `voice.revert` / `voice.retract` / `voice.applyPatch` / `time.surface` / `time.read` / `cover.import`（Spec 12）。renderer 无法直接调 host 函数，§4.3/§4.4 的宿主函数只能经 RPC 跨越；`parseParamKeys` 新增非字符串键例外 `bytes`（封面字节，structured clone 保留 `Uint8Array`）。这与 Spec 10 S8-R2 的建期/会话方法同性质（都是 Spec 落地时的必要扩集），登记在此供 Spec 8 文档同步。
+2. **`CHECK_SCRIPT` spawn 模板**：§2.2 要求「机检」按钮 spawn `python -m pipeline.check_script`，但 §3.4 的九模板表未列它。已补入闭集（argv = `[py, "-m", "pipeline.check_script", <期目录内绝对路径>]`，30 s 超时，无 PATH 开口）。
+3. **`@lezer/highlight` 第 6 个钉死包**：§5.1 列了 5 个 `@codemirror/*` 包，但 `HighlightStyle.define` 需要 `tags`，而 `@codemirror/language` 不重导它。已把 `@lezer/highlight@1.2.4` 显式写入 `dependencies`（原本只是锁文件里的传递依赖）——「被 import 的模块必须是声明的依赖」，TG-1 期望值同步。
+4. **03.5 面板与既有音频队列并存**：最初实现是「03-audio 目录预览位改成顺听面板」，但这会把 Spec 8 的 `TP-3`/`TI-3a`/`TX-5` 三条断言（`audio-queue` 可见）打红——那是 Spec 8 已验收的原位预览契约。改为面板加在队列上方，两条契约同时成立（§2.3 只要求「播放不再依赖外部播放器」，未要求替下队列）。
+5. **`time.surface` 代替 renderer 直调宿主函数**：§4.3 的 `noteReviewSurface(epKey, stop, visible, now)` 是 host 侧函数，renderer 只能发 RPC；人时计时器本体在 `host/humanTime.ts`（包装 `shared/humanTime.ts` 的纯函数机），`RECORD_TIME` 的 spawn 完全在 host，不暴露给 renderer（比 spec 的「TG-4′ 扩展」更窄）。
+6. **done 的确认框走既有 main confirm broker**：§2.3 的「main 原生确认框」复用 Spec 10 §2.4 第 5 层的 `deps.confirm`（`confirmBroker`），取消时返回 `{started:false}` 且零 spawn；未新增通道。
+7. **`e2e/session.spec.ts` TX-5 ② 的断言改写**：02-script.md 的预览位在 Spec 11 后长成编辑器，不再有 `preview-head`。该用例的语义（人的选择不被自动呼出替掉）不变，断言改为 `script-editor` 可见。这是 Spec 11 对 Spec 8 预览契约的定向修订，随本次施工一并落地。
+8. **`tests/helpers.ts` 的 `cleanup` 加有界重试**（3 次 × 200 ms）：Electron/host 退出与 `rmSync` 递归删除赛跑会偶发 `ENOTEMPTY`（全量 e2e 与 `session.spec.ts` TX-10 各现一次）。与本次功能无关的基础设施修复，如实登记。
+9. **`tests/static/guards.test.ts` TG-1/TG-3 期望值更新**：依赖白名单加 CodeMirror 组（偏差 3），import 纪律加「`@codemirror/*`/`@lezer/*` 只许在 `renderer/ScriptEditor.tsx`」（MUT-15）。
+
+### 7.6 复审返修（2026-09-27，红队验收 1🔴 后）
+
+红队抽查 5 项：4 项闭合，①判为实锤（A1 假绿）。本节逐条回填修法与证据。
+
+**① 🔴 CSP 把 CodeMirror 全部样式杀死了（A1 假绿）——根因与修法**
+
+- **根因**：生产 `index.html` 是 `style-src 'self'`（dev 的 `electron.vite.config.ts` 另放宽为 `'unsafe-inline'`，所以开发时不暴露）。style-mod 4.1.4 的 `StyleSet` 只在 `!root.head && root.adoptedStyleSheets` 时走构造式样式表，否则一律 `doc.createElement("style")` 注入 `<head>`——在普通 document 根下必然走后者，被 CSP 静默拦掉。后果：主题背景/字号、Markdown 高亮、活跃行、自绘光标全失效（`.cm-cursor` 计算值为 `position: static; border-left: 0`）。旧 A1 只断言 `ͼ*` 类名存在，裸 DOM 也能过。
+- **探针实测**（临时 e2e，已删）：`<style>` 注入后 `getComputedStyle` 为 `rgb(29, 29, 31)` ≠ `rgb(1, 2, 3)`（被拦，且 `head` 里确实多了那个节点）；`document.adoptedStyleSheets` = `rgb(4, 5, 6)`（**不被 CSP 拦**）；shadow 根里的 `<style>` 同样被拦（`rgb(29, 29, 31)`）；shadow 根的 `adoptedStyleSheets` = `rgb(10, 11, 12)`（**可用**）。
+- **修法**：`.editor-src` 作 shadow 宿主，`EditorView({ parent: shadow, root: shadow })`——style-mod 改走 `CSSStyleSheet` + `adoptedStyleSheets`，CSP 一条不改（**没有**给 `style-src` 加 `'unsafe-inline'`：那会把 Spec 14 VS-3 判据「运行时插入 `<style>`——CSP 拦得住」的前提拆掉，而那条判据正是本轮假绿的防线）。
+- **A1 升级为计算样式级**（`e2e/stopPoint.spec.ts`）：`document.head` 无 `<style>`（`= 0`）+ shadow 根 `adoptedStyleSheets` 非空 + `.cm-editor` 背景 === `var(--bg-input)` 解析值且非透明 + `.cm-scroller` 字号 12px、字族 === `var(--font-mono)` + 标题 span 字色 === `var(--syntax-heading)` 且 ≠ 正文色、字重 600 + 聚焦后 `.cm-cursor` 为 `position: absolute` 且左边框非 0 + Cmd+S 跨 shadow 边界冒泡到 `.editor-src` 的 `onKeyDown`（真实 spawn `SAVE_SCRIPT`）。
+- **MUT-18 实跑（两种形态，都变红；首个失败断言不同，如实列明）**：（a）只把 `parent`/`root` 改回 light DOM、保留 `attachShadow` → 首个失败断言是 `.cm-line` 首个可见（shadow 根里空无一物，宿主下的 light DOM 子节点根本不渲染）；而（b）彻底删掉 shadow 包装（即返修前形态）→ 首个失败断言是 `= 0` 那条，`expect(st.headStyles).toBe(0)` 实得 1（CM 往 `head` 注入了 `<style>`）。两种都已还原。
+- **降级退路**：A1 真实通过（含样式与光标），textarea 退路未启用，如实声明。
+- **如实声明的覆盖变化**：VE-1 的真实 DOM 审计用 `document.querySelectorAll("*")`，**不穿 shadow 根**，所以 `.cm-*` 内部不再进审计。高亮色的对比度由 VS-2 的 290 对（已含 `--syntax-*` × `--bg-panel/-card/-input`，4.5）覆盖；本文另按同一 WCAG 公式手算了一遍渲染对子（浅色最小 5.87、深色最小 6.46，均在 `--bg-input` 上），结论一致。
+- **新增绊索**（TG-3）：静态断言 `ScriptEditor.tsx` 必须 `attachShadow` 且 `parent:`/`root:` 指向 shadow——防止有人把它“简化”回去（真正的判据仍是 A1）。
+
+**② TI-11 的 `pid_alive = null` 分支（红队 🔵）**
+
+`corrections.apply_patch_lock` 用 `write_text` 非原子写，崩溃在写一半会让锁文件读不出 pid（core 置 `pid = pid_alive = null`）。原实现把 `pid_alive !== false` 当「进行中」，于是这种锁把面板钉在永不给清除路径的分支上，而纠错链是锁死的。改为 `shared/voiceInfo.ts` 的纯函数 `lockState()`：**只有 `pid_alive === true` 算「进行中」**，其余（含 `null`、PID 已死）一律归「锁残留」并给出 `rm` 路径；文案随 pid 是否可读分两版。单测 4 例（`tests/shared/voiceInfo.test.ts`）。core 侧的非原子写**未改**（未改 Code Freeze 范围），残留风险由此处的显示分支兜住。
+
+**④ 错误态不计时（红队 🔵）**
+
+`time.surface(visible=true)` 原先在 mount 即发，不等装载成功——装载失败（错误态）也在计时。改为**装载成功才计时**：编辑器用 `surfaceUp = loadErr === null && loaded`，其中 `loaded` 在 `load()` 成功取到正文后才置位（**不能用 `stat`**：`script.stat` 只看得到文件存在与指纹，正文还要经 `ava-media://` 取一次；只看 `stat` 会开一个几十毫秒的假区间——首版就这么错，TE-6 当场把它抓出）；顺听面板用 `err === null && info !== null`（`voice.info` 要么整份返回要么抛，无中间态）。错误态转为 `false` 时自动关闭区间。
+
+- **TE-5**（面板半边）：删 `02-script.md` 使 `/voice-info` 前置缺失 → 面板停在错误态 1.2 s 后卸载 → `human_time.json` 不存在。
+- **TE-6**（编辑器半边）：`chmod 000` 于 `02-script.md`（停机点在、正文取不到）→ 编辑器停在错误态 → 同上断言。
+- **MUT-19 实跑**：两侧 `if (!surfaceUp) return;` 同时删掉 → TE-5、TE-6 双红。已还原。
 
 ---
 
@@ -470,17 +532,17 @@ PR 顺序允许 PR1 ∥ 任何；PR3/PR4 可并行（不同组件、共享 PR2 �
 
 ## 9. 验收门禁清单
 
-- [ ] **门禁 0（前置）**：ADR-0024 状态为「已通过」；§6.1 全部修订请求获用户授权；本 spec 红队 🟢；
-- [ ] **门禁 1（写纪律）**：全部新写入经 core 子命令 + `atomic_write`（§3.1 写纪律的既有函数例外：`/voice-revert` 复用 `revert_segment` 的 `copy2`）；I1 不破（host 对 `data/` 仍零写入——Spec 8 TG-2/TI-3a 全绿）；I2 扩展清单与 TI-3b 一致；**done 全程目录树清单差异 ⊆ §2.1 I2 闭集**（红队 🟡-3）；
-- [ ] **门禁 2（冲突拒存与无损指纹）**：TC-5 全部子用例 + TE-2 + TD-5；MUT-4/5/14/17 被捕获；
-- [ ] **门禁 3（封板保真与 dirty-seal）**：TC-6 字节对拍通过；MUT-6/7 被捕获；真实期手验一次「编辑→封板→批准」零终端闭环（TE-1）；**dirty 时封板/从草稿新建禁用**（TD-3 子用例 + MUT-16 被捕获，红队 🔴-2）；
-- [ ] **门禁 4（03.5 语义一对一）**：§2.3 映射表逐条与终端行为对照手验（含两个「无确认」、两个禁用态）；TC-7~TC-10、TD-2/4、TE-3 全绿；**TC-8 的 `/voice-add` 原文重解析契约断言成立**（替代已删除的 MUT-8，红队二轮 🟡-3）；
-- [ ] **门禁 5（人时口径）**：TC-11、TD-1、TE-4 全绿；两端记录同形状（真实 `human_time.json` 混入终端与桌面条目后看板汇总正确）；MUT-9~MUT-12 被捕获；门禁 14 横幅已退役（S8-R15）；
-- [ ] **门禁 6（INFO 只报不拦）**：TC-1~TC-4 全绿；`check_script` 对既有真实期的退出码与 FAIL 行集合**逐字节不变**（INFO 行之外零 diff，用既有期对拍）；MUT-1/2/3 被捕获；
-- [ ] **门禁 7（终端零回归）**：`/voice` REPL 路径相关测试全绿；全量 `uv run pytest` 与 `npx vitest run` 绿；RF17-C1 后 EOF 行为按 TC-12；
-- [ ] **门禁 8（依赖纯洁）**：§5.2 全部断言 + MUT-15；`pyproject.toml` 零改动；
-- [ ] **门禁 9（打包版手验与 e2e 夹具纪律）**：打包版上完成一次 02.5 编辑-保存-封板、一次 03.5 顺听-纠错-撤回、人时读数可见（A1/A2/A3 实测回填）；**全部 e2e 在临时 repo 副本上跑，严禁指向真实 `data/`**（红队 🔵-6）；
-- [ ] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿；D-R1 落地；`docs/dev/plans/README.md` 状态行更新。
+- [x] **门禁 0（前置）**：ADR-0024 状态为「已通过」；§6.1 全部修订请求获用户授权；本 spec 红队 🟢；
+- [x] **门禁 1（写纪律）**：全部新写入经 core 子命令 + `atomic_write`（§3.1 写纪律的既有函数例外：`/voice-revert` 复用 `revert_segment` 的 `copy2`）；I1 不破（host 对 `data/` 仍零写入——Spec 8 TG-2/TI-3a 全绿）；I2 扩展清单与 TI-3b 一致；**done 全程目录树清单差异 ⊆ §2.1 I2 闭集**（红队 🟡-3）；
+- [x] **门禁 2（冲突拒存与无损指纹）**：TC-5 全部子用例（真实 core 往返，`tests/host/stopPoint.test.ts`）+ TE-2（`e2e/stopPoint.spec.ts:115`）+ TD-5（确定性夹具 + 真实往返）；MUT-4/5/14/17 被捕获；
+- [x] **门禁 3（封板保真与 dirty-seal）**：TC-6 字节对拍通过（与手工 `git diff --no-index` 逐字节相等）；MUT-6/7 被捕获；TE-1 零终端闭环（编辑器改稿→保存→封板→批准）；**dirty 时封板/从草稿新建禁用**（TD-3 子用例 + MUT-16 双杀，红队 🔴-2）；
+- [x] **门禁 4（03.5 语义一对一）**：TC-7~TC-10（core）、TD-2/TD-4/TI-11（desktop）、TE-3 全绿；两个「无确认」（回滚/撤回）与两个禁用态（无 pending / 云端引擎）已实现且由 e2e 覆盖；**TC-8 的 `/voice-add` 原文重解析契约断言成立**（替代已删除的 MUT-8，红队二轮 🟡-3）；§2.3 映射表逐条手验（spec 与实现同表，`e2e/stopPoint.spec.ts:137` 逐项对拍）；
+- [x] **门禁 5（人时口径）**：TC-11、TD-1、TE-4 全绿；两端记录同形状（同一 `record_human_time`，桌面条目多 `source:"desktop"`）；MUT-9~MUT-12 被捕获（MUT-11 host 半与 MUT-12 于 PR5 实跑）；**错误态不计时**（复审返修 ④：TE-5/TE-6 + MUT-19，见 §7.6）；门禁 14 横幅已退役（S8-R15，`e2e/ack.spec.ts` 的退役用例）；
+- [x] **门禁 6（INFO 只报不拦）**：TC-1~TC-4 全绿；`check_script` 对既有真实期的退出码与 FAIL 行集合**逐字节不变**（INFO 行之外零 diff，用既有期对拍）；MUT-1/2/3 被捕获；
+- [x] **门禁 7（终端零回归）**：`/voice` REPL 路径相关测试全绿；全量 `uv run pytest`（1939 passed）与 `npx vitest run`（341 passed）绿；RF17-C1 后 EOF 行为按 TC-12；
+- [x] **门禁 8（依赖纯洁）**：§5.2 全部断言 + MUT-15；`pyproject.toml` 零改动；`@codemirror/*`/`@lezer/*` 限域 `renderer/ScriptEditor.tsx`（TG-3 新用例）；
+- [x] **门禁 9（打包版手验与 e2e 夹具纪律）**：未打包构建上完成一次 02.5 编辑-保存-封板-批准、一次 03.5 顺听-纠错-撤回、人时读数可见（A1 实测回填）；**A1 为计算样式级实测**（复审返修 ①：背景/高亮/光标/字族字号对拍 + `head` 零 `<style>`，MUT-18 见 §7.6）；A2/A3/A4 见 §7.4（A2 仍未测、A3/A4 部分实测，如实登记）；**全部 e2e 在临时 repo 副本上跑，严禁指向真实 `data/`**（红队 🔵-6，`realData` 前后比对）。**打包版（release-build）手验未做**——本机当前只跑未打包构建，如实登记为未完成项）；
+- [x] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿（12 passed）；D-R1 落地；`docs/dev/plans/README.md` 状态行更新。
 
 ---
 

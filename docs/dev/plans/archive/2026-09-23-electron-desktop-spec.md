@@ -253,7 +253,7 @@ desktop/
 | 停机点 | 预览自动呼出 | 「批准」spawn 序列 | 「打回」 | 说明 |
 |---|---|---|---|---|
 | 02.5 | `02-script.md`（md 渲染） | `APPROVE 02.5 --id` | `REJECT 02.5 --id …` | Spec 3 要求 `02-diff.patch` 有效；patch 在时，自愈已把对象对齐为 `APPROVED(artifact)`，本次点击走 Spec 3 v0.4 **确认路径**（S3-R7：退 0、写 `confirmed_by`、记决策延迟）；无 patch 时 core 退 1，UI 原样显示其封板提示。v1 桌面端不能生成 patch（RF-13） |
-| 03.5 | `03-audio/` 播放队列 | `APPROVE 03.5 --id` | `REJECT 03.5 --id …` | 纯记录型。批准按钮旁常驻「结构化打点（manifest `human_review`）须在终端 `/voice` 完成；本次审阅不计人时」（门禁 14） |
+| 03.5 | `03-audio/` 播放队列 | `APPROVE 03.5 --id` | `REJECT 03.5 --id …` | 纯记录型。批准按钮旁常驻「结构化打点（manifest `human_review`）须在终端 `python -m pipeline.tts <期> --review` 完成」（**Spec 11 S8-R15 修订**：原文误写 `/voice`，与真实入口不符；「本次审阅不计人时」半句已随 Spec 11 人时落地退役） |
 | 05 | `04-review.html`（沙箱 iframe） | 对象为 PENDING：① `REVIEW_APPROVE --expect-size=… --expect-mtime-ns=…` → 闸 3 事后核验 → ② `APPROVE 05 --id`；对象已是 `APPROVED(artifact)` 待确认（解封物已在终端生成）：闸 3 指纹核验 → `APPROVE 05 --id`，**不再跑 ①** | `REJECT 05 --id …`（仅 PENDING） | ① 产出解封物（显式人令，走白名单与 jobs 层）；② 走确认路径（① 之后自愈必然已对齐，S3-R7 冻结其为退 0）。① 失败时 **stdout 与 stderr 尾部都原样显示**（补丁段号在 stdout，`review.py:335`），**不提供任何重试按钮**；含补丁段的期须在终端执行 `python -m pipeline.review <期> --approve` 完成二次确认（RF-18）。另显示确定性事实：`04-review.html` 的 mtime 早于 `04-clips.json` 时标「审片页生成时间早于排片文件最后修改时间」（RF-20）。决策条常驻「本次审阅不计人时」 |
 | 09 | `05-final.mp4` | `APPROVE 09 --id` | `REJECT 09 --id …` | 纯记录型，零副作用 |
 
@@ -307,7 +307,7 @@ desktop/
 - **host 崩溃**：main 以退避 1 s→2 s→4 s…封顶 30 s 重启；60 s 内崩溃 5 次则停止并显示致命面板（含 host stderr 尾部）。TI-9 验证。
 - **崩溃时有 ack 在途**：Python 子进程不随 host 死亡而被杀（孤儿由 launchd 接管跑完）。Spec 3 的 ack 在 flock 内读-改-写并 `atomic_write`，要么完整生效要么完全没发生。host 重启后 UI 显示「上次操作结果未知，已从磁盘重新读取」。
 - **超时**：对进程组 SIGTERM，5 s 后 SIGKILL（§3.4）；UI 显示「结果未知，请以稍后刷新为准」（红队 M2：孙进程可能在信号送达前已完成写入）。
-- **v1 不拉起长任务**：spawn 闭集全部是短命令，app 退出时 host 不向子进程发信号，在途短命令自行跑完；这同时回避了 Spec 2 RF-7。
+- **v1 不拉起长任务**：spawn 闭集全部是短命令，app 退出时 host 不向子进程发信号，在途短命令自行跑完；这同时回避了 Spec 2 RF-7。**Spec 11 S8-R17 开口**：`RUN_TTS_APPLY_PATCH`（03.5 的「完成并应用补丁」）为模板级例外——无超时、app 退出不发信号、进度经 events.jsonl 观测；锁残留由 `voice-info` 的 `apply_patch_lock` 字段 + 手工清除路径承接。
 - **snapshot 首载契约**：见 §3.3 `EpisodeSnapshot`；`generation` 单调递增使旧 delta 无法污染新 snapshot。
 
 ### 2.10 决策 10：asar 完整性与打包加固——机制、失败行为、威胁模型（正面回答预审问题 4）
@@ -354,10 +354,7 @@ desktop/
 - **v1 做**：期列表 + 产物文件树 + PreviewPane 五类预览 + Approval 决策条（Approve / Reject 携带结构化反馈）+ 只读事件时间线（job 生命周期与审批事件；失败 job 的 `stderr_tail` 原样展示；**时间线是有损观测，不承诺完整**，§2.4）+ 健康面板（repoRoot、Python、approval 能力、core Code Freeze、UI 构建溯源、数据可达性）。
 - **v1 明确不做**（均须另立 spec）：
   - 中央伴随式对话面板（二期 Spec 9/10，见 direction §6）；
-  - 从 UI 发起任意流水线 job（唯一的 `/run` 是 05 的 `review --approve`），因此不需要 Spec 2 的 `job_heartbeat` 与 SIGTERM 优雅关闭；
-  - 02.5 封板与任何产物编辑（RF-13；2026-09-23 产品裁决：二期做 app 内置 Markdown 编辑器，见 direction §6 Spec 11）；含补丁段的 05 批准（RF-18）；
-  - 划词注音打点、03.5 结构化打点等深度业务组件；
-  - 人时记账（RF-12，门禁 14）；
+  - 从 UI 发起任意流水线 job（唯一的 `/run` 是 05 的 `review --approve`），因此不需要 Spec 2 的 `job_heartbeat` 与 SIGTERM 优雅关闭；~~02.5 封板与任何产物编辑~~、~~划词注音打点、03.5 结构化打点等深度业务组件~~、~~人时记账~~（**Spec 11 S8-R16 删除**：三项均已在 Spec 11 落地——02.5 编辑器与封板、03.5 顺听面板、`/record-time` 人时；`RUN_TTS_APPLY_PATCH` 见 S8-R17）；
   - `data/_events.jsonl` 全局事件视图；
   - LLM 推荐/预判断、guardian LLM、多 agent 聚合、通用 agent 协议、数据库、web server（direction §5、ADR-0020「不做的事」）；
   - 自动更新、公证、dmg 分发、发布（`publish: null`）、Windows/Linux；
@@ -726,7 +723,7 @@ def test_core_imports_no_server_stack():
 - **消费的契约**：文件位置 `data/episodes/<期>/events.jsonl`；每行 `json.dumps(sort_keys=True) + "\n"`，在 `fcntl.flock` 内整行写入（Spec 2 §2.3 第 3 条、§4.1）；append-only；9 个 `EventType` 值与六种载荷形状。
 - **桌面端依赖的 Spec 2 保证只有两条**：整行写入 + append-only。**不依赖**事件不丢、`episode` 字段准确、`job_heartbeat` 存在；时间线如实声明有损（§2.4）。
 - **施工依赖声明**：`pipeline/jobs.py` 未施工。PR2 的 tail 集成测试以「按 Spec 2 §3.3 格式写行的 Python 写端」（`json.dumps(sort_keys=True)` + `fcntl.flock`）驱动；Spec 2 施工后改用真实 `EventPublisher` 回看 TE-1 转绿（门禁 11 caveat）。
-- **RF-7 边界**：桌面端 v1 不向 core 长任务发信号；超时只针对短命令进程组。将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭。
+- **RF-7 边界**：桌面端 v1 不向 core 长任务发信号；超时只针对短命令进程组。将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭。**Spec 11 S8-R17 改写**：该前置对 `RUN_TTS_APPLY_PATCH` 不适用——宿主永不向该任务发信号（无超时、退出不杀，detached 孤儿跑完时 finally 正常清锁），SIGTERM 优雅关闭在本通道无用武之地；残余风险只剩 SIGKILL/断电造成的锁残留，由 `apply_patch_lock` 可见性与终端 `rm 03-audio/.apply_patch.lock` 承接。
 
 ### 6.2 与 Spec 3（approval 对象化）——修订请求及其去向
 
@@ -999,7 +996,7 @@ def test_core_imports_no_server_stack():
 - [ ] **门禁 11（Spec 2 降级 caveat）**：Spec 2 未施工期间 TE-1 以模拟写端通过；**Spec 2 施工后必须用真实 `EventPublisher` 回看 TE-1、TA-2 的事件断言转绿，本门禁才算关闭**；
 - [ ] **门禁 12（依赖纯洁）**：TG-1、TG-3、TG-8、TG-9 全绿，MUT-55 被捕获；
 - [ ] **门禁 13（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿；
-- [ ] **门禁 14（人时数据源不被静默掏空，红队 M8）**：人时记账命令（另立 spec）落地之前，03.5/05 决策条常驻「本次审阅不计人时」，人时类 advisory 旁标「数据源不完整：桌面端审阅不计入」，03.5 批准按钮旁注明「结构化打点须在终端 `/voice` 完成」（手验截图存档）；
+- [x] **门禁 14（人时数据源不被静默掏空，红队 M8）——Spec 11 S8-R15 起退役**：人时记账命令（`/record-time`）已由 Spec 11 落地，03.5/05 决策条的「本次审阅不计人时」横幅与人时类 advisory 的「数据源不完整」旁标**已退役**，改由期视图人时读数接管；「结构化打点」半句**修订**为「须在终端 `python -m pipeline.tts <期> --review` 完成」（原文误写 `/voice`）；RF-12 关闭（`e2e/ack.spec.ts` 的退役用例 + Spec 11 TE-4）；
 - [ ] **门禁 15（打包版手验）**：在打包版上手验一次：打开真实期、预览五类文件各一个、在夹具期上完成一次打回（打包版无 UI 自动化，见 §7.1 说明）。
 
 ---
@@ -1019,7 +1016,7 @@ def test_core_imports_no_server_stack():
 | **RF-9** | 自动 ack 偷渡 | 为少点一下在预览时自动批准，重演「自动写 approved 形同虚设」 | TG-4 + TA-5 + MUT-18；运行时注入由调试口拒启挡命令行入口 |
 | **RF-10** | 加固措施被过度宣传 | 把绊线说成防护，会让人放松对真实风险的警惕 | §2.10 威胁模型逐条写明「挡住」与「只可见」的边界 |
 | **RF-11** | `04-review.html` 缺失时 UI 自己去生成 | `review` 生成会写 `04-thumbs/` 与 `04-review.html`（`review.py:211`、`291`） | spawn 闭集不含 `review` 生成；缺失时显示 status 的推荐命令 |
-| **RF-12** | 人时记账回归 | REPL 停留在停机点会记 `human_time.json`（`cli.py:818-846`）；桌面端审阅不产生这份记录，`k × 片长` 预算失去数据源 | **如实重写（红队 B2、R2-M8）**：桌面端不写 `human_time.json`。有效的决策**延迟**只来自三种情形：03.5/09 的显式转移；**在桌面端同一次 decide 中先跑第 ① 步再确认的 05**（artifact 对齐发生在同一次 `approve` 调用中，Spec 3 S3-R11）；02.5 同理仅当 patch 恰在本次调用前产生。其余确认只记「已确认」、延迟为空；纯终端工作流（`review --approve` 后不再确认）的 02.5/05 延迟照旧缺失。决策延迟也不等于人时（不含批准前的审阅时长）。门禁 14 让缺口在界面上可见；另立 spec 提供 core 侧人时记账命令前，桌面端不得作为 03.5/05 的主要审阅面 |
+| **RF-12** | 人时记账回归 | REPL 停留在停机点会记 `human_time.json`（`cli.py:818-846`）；桌面端审阅不产生这份记录，`k × 片长` 预算失去数据源 | **已于 Spec 11 关闭（S8-R15）**：桌面端审阅面可见即计时，经 `/record-time` 复用 `record_human_time` 落同形状条目（`source: "desktop"`），门禁 14 横幅退役。以下为 v1 期的如实重写（红队 B2、R2-M8）：桌面端不写 `human_time.json`。有效的决策**延迟**只来自三种情形：03.5/09 的显式转移；**在桌面端同一次 decide 中先跑第 ① 步再确认的 05**（artifact 对齐发生在同一次 `approve` 调用中，Spec 3 S3-R11）；02.5 同理仅当 patch 恰在本次调用前产生。其余确认只记「已确认」、延迟为空；纯终端工作流（`review --approve` 后不再确认）的 02.5/05 延迟照旧缺失。决策延迟也不等于人时（不含批准前的审阅时长） |
 | **RF-13** | 02.5 在桌面端无法闭环 | 须先有 `02-diff.patch`，v1 不生成 | 已知缺口；须先在终端封板 |
 | **RF-14** | userData 放进 `data/` | 盘没插时 app 起不来 | §2.8；TI-4 |
 | **RF-15** | Electron 版本长期不升级 | 钉死保证可复现，但会失去安全更新 | 升级是独立 PR，全量跑 §7 与 MUT 矩阵 |

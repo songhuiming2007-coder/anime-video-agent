@@ -19,3 +19,7 @@ python -m pipeline.cover data/episodes/<期号>
 3. **标题与封面定稿权在人**：
    - 产出的 5 条标题涵盖不同受众心理（反问/下判断/剧情钩子等）。
    - **Agent 严禁擅自拍板标题或修改封面文案**，必须如实呈现候选，交由人类决策。
+4. **人自备图导入与 `cover_edit`（Spec 12）**：
+   - 人自己找的图（含在 Google Flow 扩好的横/竖版）：在 app 里拖入或选文件导入，落 `07-cover/import/`（不重编码、不覆盖同名）；终端等价路径 `cat <图> | ava <期> /import-cover --name=<原始文件名>`。
+   - 叠字排版由 agent 调 `cover_edit`（文字/九宫锚点/字号/颜色/描边为参数，Pillow 确定性渲染，同参数同字节），每次渲染弹人审卡；输出 `07-cover/edit-*.png` 候选（不覆盖、不排名）。
+   - 字体文件由人一次性放置到 `config/project.json` 的 `cover.font_file`（不在时渲染如实报错，不 fallback）。`cover_edit` 不做缩放/裁剪/滤镜/生图/扩图。
