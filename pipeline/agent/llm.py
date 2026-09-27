@@ -790,7 +790,14 @@ def run_tool_loop(
                 execs_since_cp += 1
 
                 if name == "acquire_propose" and outcome.get("ok") and control.post_execute is not None:  # type: ignore[union-attr]
-                    outcome = control.post_execute(name, args, outcome)  # type: ignore[union-attr]
+                    live["stage"] = "hook"
+                    try:
+                        outcome = control.post_execute(name, args, outcome)  # type: ignore[union-attr]
+                    except KeyboardInterrupt as exc:
+                        # 抓取钩子被中断（D35）：提案已执行、已计数，结果照常（带抓取记录）
+                        live["outcome"] = getattr(exc, "outcome", None) or outcome
+                        raise
+                    live["stage"] = "tool"
                 _trace(control, index, name, args, content=outcome)
                 if decision.provenance == "human":
                     dedup.clear()  # 只在一个经人批准的执行完成后清空（§2.3 第 5 条）
@@ -803,7 +810,13 @@ def run_tool_loop(
         with _stopping(control):
             call = live["call"]
             if call is not None:
-                if live["stage"] == "tool" and live["outcome"] is not None:
+                if live["stage"] == "hook":
+                    # 抓取钩子里的中断：真实结果照常配对（执行计数在钩子之前已加过）
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, live["outcome"]), "tool"
+                    )
+                    live["outcome"] = None
+                elif live["stage"] == "tool" and live["outcome"] is not None:
                     # 临界区工具已经跑完，中断在延迟区退出时才浮出：用**真实结果**，配对不受影响
                     tool_executions += 1
                     control.commit(  # type: ignore[union-attr]
