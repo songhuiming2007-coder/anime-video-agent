@@ -11,7 +11,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
 import { assistant, startFakeLlm, toolCalls, type FakeLlm } from "./fakeLlm";
 import { convSnapshot, fingerprintOf, launchSession, pendingObj, quitStubCalls, realCoreFixture, stubConfirm, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
-import { spawns } from "./ackFixtures";
+import { ACK_TEMPLATES, spawns } from "./ackFixtures";
 import { CONDITIONAL, OUT_TYPES, parseOutFrame, REQUIRED } from "../src/shared/convFrames";
 import { parseLossless } from "../src/shared/losslessJson";
 import { fixtureWrite } from "../tests/fixtures/session";
@@ -175,6 +175,15 @@ test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工�
     expect(sessionLog(fx, "SESS-A").filter((r) => r.k === "tool_exec_started").map((r) => r.name)).toEqual(["run_pipeline"]);
     // 打开期、发送、答复全过程：user_message 只有人发的这一条（session.jsonl 的 user 消息计数）
     expect(sessionLog(fx, "SESS-A").filter((r) => r.k === "msg" && r.origin === "user")).toHaveLength(1);
+    // spec TX-2 的另一半：停机点卡「批准」同样合成点击 → 零 ack spawn、对象仍 pending
+    //（M9：此前两版 TX-2 都只测了工具卡，MUT-22 去掉停机点卡的 isTrusted 首句时只有静态守卫红）
+    const approve = L.page.locator("[data-testid=decisions] [data-testid=approve]").first();
+    await expect(approve).toBeVisible({ timeout: 15_000 });
+    const acksBefore = spawns(L).filter((x) => ACK_TEMPLATES.includes(x.template)).length;
+    await L.page.evaluate(() => (document.querySelector("[data-testid=decisions] [data-testid=approve]") as HTMLButtonElement).click());
+    await L.page.waitForTimeout(800);
+    expect(spawns(L).filter((x) => ACK_TEMPLATES.includes(x.template)).length).toBe(acksBefore);
+    await expect(approve).toBeVisible();
   });
 });
 
@@ -214,15 +223,19 @@ test("TX-4 真实 core：慢端点上点「停止」→ 2 s 内出现收尾总�
 test("TX-6 真实 core：A 挂卡时切到 B 对话 → A 显示运行中；B 的待答区不含 A 的卡；切回 A 卡仍在", async () => {
   await withRealCore(
     async ({ L, llm }) => {
-      llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("B 这边好了"));
+      // A 的第一次回复挂在慢端点上：A 的卡在 B 的会话桶建立之后才到——两个会话的 delta 真的交错
+      //（M9：此前 A 的卡先到、之后 A 再无 delta，「A 的更新污染 B 的桶」无从发生，MUT-31 因此存活）
+      llm.push({ ...toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), delayMs: 4_000 }, assistant("B 这边好了"));
       await openEp(L.page, "SESS-A");
       await send(L.page, "A 的任务");
-      await expect(L.page.getByTestId("request-card")).toBeVisible();
-      const aCard = await L.page.getByTestId("request-card").getAttribute("data-request-id");
+      await expect.poll(() => llm.requests.length, { timeout: 10_000 }).toBe(1);
       await openEp(L.page, "SESS-B");
       await send(L.page, "B 的任务");
       await waitTurns(L, "ep:SESS-B", 1);
       await expect(L.page.getByTestId("conv-stream")).toContainText("B 这边好了");
+      await expect.poll(async () => (await snapFrames(L, "ep:SESS-A")).filter((f) => f.t === "request").length, { timeout: 15_000 }).toBe(1);
+      const aCard = (await snapFrames(L, "ep:SESS-A")).find((f) => f.t === "request")!.request_id as string;
+      await L.page.waitForTimeout(500); // 让 A 的 delta 到达 renderer（此时停在 B 的视图）
       await expect(L.page.locator("[data-testid=episode]", { hasText: "SESS-A" }).getByTestId("conv-running")).toBeVisible({ timeout: 10_000 });
       await expect(L.page.locator(`[data-testid=request-card][data-request-id='${aCard}']`)).toHaveCount(0);
       const bFrames = await snapFrames(L, "ep:SESS-B");
@@ -247,6 +260,11 @@ test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原�
     await L.page.getByTestId("episode-create").click();
     await expect(L.page.locator("[data-testid=episode]", { hasText: "2026-09-26-e2e-新期" })).toBeVisible({ timeout: 20_000 });
     await expect(L.page.getByTestId("current-step")).toContainText("01");
+    // spec：新期对话区只有本地提示行——host 不把 idea 讨论代发给新期（M9：此前没查，MUT-35 因此存活）
+    await L.page.waitForTimeout(1_500);
+    const fresh = await convSnapshot(L, "ep:2026-09-26-e2e-新期");
+    expect(fresh.entries.filter((e) => e.k === "user" || (e.k === "frame" && e.frame?.t === "turn_started"))).toEqual([]);
+    expect(llm.requests.length).toBe(1); // 只有 idea 那一轮
     await L.page.getByTestId("idea").click();
     await expect(L.page.getByTestId("conv-stream")).toContainText("先聊聊这期想做什么");
   });
@@ -481,7 +499,7 @@ test("TX-5 ①②④ 真实 core：新 pending 自动打开预览；人占用时
 
 test("TX-5 ③ 真实 core：回合中对象库先后出现两版 → 回合中零呼出，结算后恰呼出第二版一次", async () => {
   await withRealCore(async ({ repo, L, llm }) => {
-    llm.push({ message: { role: "assistant", content: "排好了" }, delayMs: 2_000 });
+    llm.push({ message: { role: "assistant", content: "排好了" }, delayMs: 6_000 });
     await openEp(L.page, "SESS-A");
     const fp = fingerprintOf(repo, "SESS-A", "04-clips.json");
     await send(L.page, "重排一下");
@@ -490,7 +508,10 @@ test("TX-5 ③ 真实 core：回合中对象库先后出现两版 → 回合中�
     writeStore(repo, "SESS-A", [pendingObj("v1", "05", "2026-09-25T10:00:01Z", "04-clips.json", fp)]);
     await L.page.waitForTimeout(250);
     writeStore(repo, "SESS-A", [pendingObj("v2", "05", "2026-09-25T10:00:02Z", "04-clips.json", fp)]);
-    await L.page.waitForTimeout(300);
+    // 等过至少两个活跃期轮询周期（ACTIVE_POLL_MS 1 s），确保 host 在回合中**确实读到了**新对象再检查——
+    // M9：此前只等 300 ms，host 多半还没读，「回合中零呼出」恒真（MUT-28 因此存活）
+    await L.page.waitForTimeout(2_500);
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "running"); // 回合仍在跑
     expect(Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"))).toBe(before);
     await expect.poll(async () => Number(await L.page.locator(".preview").getAttribute("data-auto-open-count")), { timeout: 15_000 }).toBe(before + 1);
     expect(await L.page.locator(".preview").getAttribute("data-auto-open-approval-id")).toBe("v2");

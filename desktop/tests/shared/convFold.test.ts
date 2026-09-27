@@ -8,6 +8,9 @@ const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1,
 
 const toolStart = (name: string, summary: string, index: number, seq: number) =>
   F("tool", { turn_id: "t1", phase: "start", index, name, summary, ok: null, observation: null, duplicate: false }, seq);
+// 失败原文刻意超过 500 字：observation 逐字不截断（判据 4）。M9：此前原文很短，「截断到 500 字」的
+// 变异（MUT-32）对它毫无影响，TV-2 抓不住，只剩真实 core 的 TX-1 在守
+const LONG_OBS = `退出码 1：02-script.md 第 3 段「集」字段缺失，检索掩码无法生效\n${"stderr 尾部：Traceback 第 N 行…\n".repeat(40)}`;
 const toolEnd = (name: string, index: number, ok: boolean, seq: number, observation: string | null = null, duplicate = false) =>
   F("tool", { turn_id: "t1", phase: "end", index, name, summary: "", ok, observation, duplicate }, seq);
 
@@ -24,7 +27,7 @@ describe("TV-2 foldConv 一回合", () => {
     { k: "frame", at: 3, frame: F("log", { stream: "stdout", text: "line1\nline2" }, 2) },
     { k: "frame", at: 5, frame: toolEnd("read_episode_file", 0, true, 3) },
     { k: "frame", at: 6, frame: toolStart("run_pipeline", "clips 罪恶王冠-EP07", 1, 4) },
-    { k: "frame", at: 10, frame: toolEnd("run_pipeline", 1, false, 5, "退出码 1：02-script.md 第 3 段「集」字段缺失，检索掩码无法生效") },
+    { k: "frame", at: 10, frame: toolEnd("run_pipeline", 1, false, 5, LONG_OBS) },
     { k: "frame", at: 11, frame: F("assistant", { turn_id: "t1", kind: "answer", text: "第 3 段缺了「集」字段。" }, 6) },
     { k: "frame", at: 12, frame: request("q1", 7) },
     { k: "frame", at: 14, frame: F("request_closed", { request_id: "q1", reason: "answered", decision: "reject" }, 8) },
@@ -45,7 +48,7 @@ describe("TV-2 foldConv 一回合", () => {
     expect(t1.logs).toEqual(["line1", "line2"]); // log 挂在第一个工具行下
     expect(t2).toMatchObject({ name: "run_pipeline", ok: false, durationMs: 4 });
     // 失败原文逐字节保留（判据 4）
-    expect(t2.observation).toBe("退出码 1：02-script.md 第 3 段「集」字段缺失，检索掩码无法生效");
+    expect(t2.observation).toBe(LONG_OBS);
   });
 
   it("助手回复与卡片留痕", () => {

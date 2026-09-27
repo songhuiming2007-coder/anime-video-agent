@@ -83,7 +83,9 @@ describe("TH-20 host 侧回合结算（§2.7）", () => {
     p.feed({ t: "stop_points", items: [], turn_id: "t1" });
     expect(h.settledCount()).toBe(0);
 
-    // 一次「stop_points 之前开始、之后读完」的读取
+    // 一次「stop_points 之前开始、之后读完」的读取：读完时时钟确实晚于 stop_points（M9：此前读完时刻
+    // 恰等于 stop_points 到达时刻，「按完成时刻比较」的变异 MUT-60 与正确实现在这里无从区分）
+    h.clock.t = 1007;
     h.pushes.push({ v: 1, kind: "push", topic: "episode.delta", epKey: "E", generation: 1, seq: 1, data: {} });
     h.mgr.onApprovalsRead("E", 1000);
     expect(h.settledCount()).toBe(0);
@@ -164,6 +166,11 @@ describe("TH-20 host 侧回合结算（§2.7）", () => {
     p.feed({ ...TAG, turn_id: "t2" }); // 覆盖为 t2
     p.feed({ t: "stop_points", items: [], turn_id: "t1" }); // 迟到旧帧：不推进
     p.feed({ t: "stop_points", items: [], turn_id: null }); // ready 帧形态：从不推进
+    // 此刻 t2 的槽位仍在等自己的 stop_points：一次读取不许结算（M9：此前这里不读，
+    // 「不看 turn_id、被旧帧推进」的变异 MUT-71 被后面 t2 自己的帧覆盖掉了）
+    h.clock.t = 1003;
+    h.mgr.onApprovalsRead("E", 1003);
+    expect(h.settledCount()).toBe(0);
     h.clock.t = 1005;
     p.feed({ t: "stop_points", items: [], turn_id: "t2" });
     h.clock.t = 1010;

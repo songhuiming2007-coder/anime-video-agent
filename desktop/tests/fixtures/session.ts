@@ -177,8 +177,13 @@ def main():
             code = (
                 "import json,signal,sys\\n"
                 "def h(s,f):\\n"
-                "    open(sys.argv[2],'a').write(json.dumps({'kind':'child_signal','signal':'SIGTERM'})+'\\\\n')\\n"
+                "    open(sys.argv[1],'a').write(json.dumps({'kind':'child_signal','signal':'SIGTERM'})+'\\\\n')\\n"
                 "signal.signal(signal.SIGTERM,h)\\n"
+                # python -c code PATH 下 sys.argv == ['-c', PATH]：路径在 argv[1]。M9 实测此前写的是
+                # argv[2]——处理器抛 IndexError、永远写不出 child_signal，TH-9 ②「孙进程未收到 SIGTERM」
+                # 恒真（MUT-11 因此存活）。另：处理器装好后才报就绪，测试等到它再发信号，否则
+                # 「没收到」可能只是处理器还没装、按默认动作悄悄死了。
+                "open(sys.argv[1],'a').write(json.dumps({'kind':'child_ready'})+'\\\\n')\\n"
                 "import time\\n"
                 "while True: time.sleep(0.2)\\n"
             )
@@ -269,7 +274,7 @@ export function sessionKey(repo: SessionRepo, value: string): void {
 }
 
 export interface SessionRecord {
-  kind: "stdin" | "signal" | "grandchild" | "child_signal" | "env" | "env_keys" | "eof" | "pid";
+  kind: "stdin" | "signal" | "grandchild" | "child_signal" | "child_ready" | "env" | "env_keys" | "eof" | "pid";
   line?: string;
   signal?: string;
   pid?: number;
