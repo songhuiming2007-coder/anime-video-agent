@@ -819,5 +819,42 @@ def test_tp14_large_frame_survives_interrupt(tmp_path: Path) -> None:
     lines = state["collected"].split(b"\n")
     assert lines[-1] == b"", "最后一行为空 = 没有残帧"
     for line in lines[:-1]:
-        json.loads(line.decode("utf-8"))  # 主线程直写（MUT-38）会在这里炸
+        json.loads(line.decode("utf-8"))
     assert len(lines) - 1 == 2, "两帧都必须整帧到达（写线程整帧写出）"
+
+
+def test_tp14b_frames_are_written_by_writer_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TP-14b：帧只由 `proto-writer` 线程写出，主线程只入队（MUT-38 的确定性杀手）。
+
+    为什么另立一条（2026-09-27 M3 收口）：TP-14 **结构上**杀不掉 MUT-38——它的 kicker 在
+    `send()` 返回之后才启动，而变异体里 `send()` 是同步写，"并发插入第二帧" 发生时大帧早已
+    写完，根本没有并发写者（实测 0/3 红；逐字复刻测试体 6/6 绿）。这里不断言时长，只断言
+    **写者身份**：变异后是主线程调 `os.write`，当场红。
+    """
+    read_fd, write_fd = os.pipe()
+    writer = proto.FrameWriter(write_fd)
+    real_write = os.write
+    writers: list[str] = []
+
+    def spy(fd: int, data: bytes) -> int:
+        if fd == write_fd:                      # 只记本测试的 fd，不吃 pytest 自己的写
+            writers.append(threading.current_thread().name)
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", spy)
+    try:
+        writer.send({"t": "log", "stream": "stdout", "text": "x" * 200})
+        collected = b""
+        while b"\n" not in collected:          # 等事实（字节到达），不看时长
+            chunk = os.read(read_fd, 4096)
+            assert chunk, "写线程没有写出任何字节"
+            collected += chunk
+    finally:
+        monkeypatch.undo()
+        writer.close()
+        os.close(read_fd)
+
+    assert writers, "没有任何写出调用到达"
+    assert set(writers) == {"proto-writer"}, (
+        f"帧由 {sorted(set(writers))} 写出；主线程自己写 fd 就是 MUT-38（写线程形同虚设）"
+    )

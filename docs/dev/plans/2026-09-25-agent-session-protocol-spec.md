@@ -775,6 +775,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | TP-15 | 每回合的 `stop_points`（S9-R4，v0.8 并入） | 每种结局（`done`、`interrupted`、`error`、`checkpoint_stop`、`blocked`、`degraded`、回滚）各恰好一帧，在该回合 `turn_finished` 之后、本回合 `ensure_pending` 完成写盘之后；`items` 可空；`ensure_pending` 失败时照发（`items` 取失败前可读到的对象或为空）并另发 `notice`；`turn_id` 等于本回合 `turn_id`，`ready` 那帧为 `null`；两帧之间可夹 `log`/`notice` |
 | TP-13 | job 子进程读 stdin 时 host 发 `user_message`（用例 10 s 超时） | 子进程得 EOF；该帧被会话处理（可见 `E_BUSY`） |
 | TP-14 | 读端慢速读取时发大帧（≥ 400 KB），写出途中 `interrupt` | host 收到的每一行都能解析；没有残帧 |
+| TP-14b（2026-09-27 M3 收口补） | `os.write` 观察者：往满 pipe 发帧时的**写者身份** | 全部写出调用来自 `proto-writer` 线程（主线程只入队）；MUT-38 的**确定性**杀手——TP-14 结构上杀不掉它（kicker 在 `send()` 返回之后才启动，同步写下无并发写者，实测 0/3 红） |
 
 **终端（PR0/PR2）**
 
@@ -842,7 +843,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | MUT-35 | `review` 拦截退回「只认 `--approve`、`--approve=`」 | TK-1 | `--a`、`--ap`、`--appr` 进卡 |
 | MUT-36 | `--force` 禁令退回全拼比对 | TK-9 | `--force-a` 通过 |
 | MUT-37 | `commit()` 的写盘与进内存不在同一延迟区 | TS-10 | 中断在两步之间浮出，盘上多一条 |
-| MUT-38 | 主线程直接写帧（去掉写线程） | TP-11（2026-09-26 M3 验收实测改正：TP-14 在此变异下不变红，残帧竞态敏感性未由本变异证明） | 主线程同步写帧使中断浮出点改变，SIGTERM 转化的 KeyboardInterrupt 在回合快照（deepcopy）处逃逸，断言失败 |
+| MUT-38 | 主线程直接写帧（去掉写线程） | **TP-14b**（设计观察者，2026-09-27 补：写者身份断言，变异下当场红）；TP-11 为附带杀伤（2026-09-26 M3 验收实测，变异下该用例由 1.6 s 拖到 ≈30 s） | 写线程形同虚设 = 写者身份变了，TP-14b 白盒断言直接命中；**TP-14 结构性不可能成为杀手**（kicker 在 `send()` 返回后才启动，变异体里 `send()` 同步写完大帧时根本没有并发写者——0/3 实测，逐字复刻测试体 6/6 绿）；附带杀伤不掩盖：「读端事件驱动插帧」的加固变体实测仅 4/6 红，故不采用 |
 | MUT-39 | 子会话各自 `EpisodeLease.acquire` | TK-8 | 进 `/script` 时 `SessionLocked` |
 | MUT-40 | 免卡写入也清空判重 | TL-4b | 第二次 `read_status` 被执行 |
 | MUT-41 | 检查点只数回复 | TL-2b | 第 9 次请求前没有提问 |
@@ -891,7 +892,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 - [ ] **门禁 7（旁路已堵）**：TK-1、TK-9 全绿，MUT-13/35/36 被捕获；
 - [ ] **门禁 8（抓取卡）**：TK-2/3/3b/3c/4 全绿，MUT-14/15/43/52 被捕获；**在真实 `data/` 上手验一次**：提案 2 条 → 出 2 张卡 → 批准 1 条 → 台账 +1；
 - [ ] **门禁 9（中断）**：TL-16、TP-4、TP-4b、TP-11、TT-2、TT-5 全绿，MUT-12/18/29/31 被捕获；**真机手验**：`render` 运行中按 ^C → `pgrep ffmpeg` 为空、回到提示符、有收尾输出；
-- [ ] **门禁 10（崩溃恢复与提交）**：TS-1~12、TP-8、TP-14 全绿，MUT-22/23/24/25/37/38/42/44/53 被捕获；**手验**：工具卡上 `kill -9` 后 `--continue` 继续对话不报 400；
+- [ ] **门禁 10（崩溃恢复与提交）**：TS-1~12、TP-8、TP-14、TP-14b 全绿，MUT-22/23/24/25/37/38/42/44/53 被捕获；**手验**：工具卡上 `kill -9` 后 `--continue` 继续对话不报 400；
 - [ ] **门禁 11（隔离与租约）**：TK-8、TK-11、TK-12、TK-13、TP-9、TP-13、TS-13 全绿，MUT-16/17/21/39/50/54/56/57/58/59/60 被捕获；排除执行顺序依赖：`uv run pytest tests/test_agent_director.py tests/test_agent_memory.py tests/test_agent_session.py` 与反过来的文件顺序各跑一遍全绿（不引入新插件）；
 - [ ] **门禁 12（观测层不参与状态）**：TS-9、TG-4 全绿，MUT-26 被捕获；
 - [ ] **门禁 13（依赖纯洁、无 server）**：TG-1/2/5 全绿，MUT-27/34 被捕获；`pyproject.toml` 无 diff；
