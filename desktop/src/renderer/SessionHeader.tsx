@@ -1,5 +1,6 @@
 // Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、继续上次会话、建期…。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
+import { useEffect, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase } from "../shared/protocol";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
@@ -57,6 +58,9 @@ export function SessionHeader({
   const live = phase === "starting" || phase === "idle" || phase === "running" || phase === "ending";
   const running = phase === "running";
   const asset = info.scope === "asset";
+  // N32：无活会话时 scope 命令无处可发——点击不发任何 RPC，只给一行可读提示（换期即清）
+  const [needSession, setNeedSession] = useState(false);
+  useEffect(() => setNeedSession(false), [convKey]);
   return (
     <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
       <span className="ui-badge" data-testid="session-scope">
@@ -92,11 +96,20 @@ export function SessionHeader({
           disabled={running || phase === "ending"}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
+            if (!live) {
+              setNeedSession(true);
+              return;
+            }
             void rpc.call("conv.command", { convKey, name: "scope", arg: asset ? "auto" : "asset" }).catch(() => undefined);
           }}
         >
           素材模式
         </button>
+      )}
+      {!isIdea && needSession && !live && (
+        <span className="muted" role="status" data-testid="scope-needs-session">
+          没有进行中的会话：先发一条消息（或「继续上次会话」）再切素材模式
+        </span>
       )}
       {memoryAsk && (
         <button

@@ -365,6 +365,38 @@ test("TX-8h 有回合在跑时退出：弹确认框（列出该期）、取消�
   }
 });
 
+test("N32 无会话时点「素材模式」：零 conv.command、出现可读提示；会话起来后照常发命令", async () => {
+  await withSession(async ({ repo, L }) => {
+    sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await openEp(L.page, "SESS-A");
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none");
+    // 观察者：记下 renderer 经端口发出的每个 RPC 方法名（不改行为）
+    await L.page.evaluate(() => {
+      const w = window as unknown as { __rpcSent: string[] };
+      w.__rpcSent = [];
+      const orig = MessagePort.prototype.postMessage;
+      MessagePort.prototype.postMessage = function (this: MessagePort, m: unknown, ...rest: unknown[]) {
+        const method = (m as { method?: unknown } | null)?.method;
+        if (typeof method === "string") w.__rpcSent.push(method);
+        return (orig as (...a: unknown[]) => void).call(this, m, ...rest);
+      } as typeof orig;
+    });
+    const sent = () => L.page.evaluate(() => (window as unknown as { __rpcSent: string[] }).__rpcSent.filter((m) => m === "conv.send" || m === "conv.command"));
+    await L.page.getByTestId("scope-toggle").click();
+    await expect(L.page.getByTestId("scope-needs-session")).toBeVisible();
+    await L.page.waitForTimeout(300);
+    expect(await sent()).toEqual([]);
+
+    // 对照组：会话起来后同一按钮照常发 scope 命令，提示消失
+    await send(L.page, "在吗");
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "idle");
+    await expect(L.page.getByTestId("scope-needs-session")).toHaveCount(0);
+    await L.page.getByTestId("scope-toggle").click();
+    await expect.poll(sent).toEqual(["conv.send", "conv.command"]);
+    await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "command").length).toBe(1);
+  });
+});
+
 test("TX-15 host 重启：原会话键显示已结束、待答区为空、可继续上次会话", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "qh", kind: "tool_call", turn_id: "$turn", title: "卡", card_text: "c", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: false }] }]);
