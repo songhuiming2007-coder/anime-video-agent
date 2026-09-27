@@ -302,7 +302,8 @@ describe("TS-8 / TS-8b 构建溯源横幅", () => {
   beforeAll(() => {
     c1 = cloneRepo();
     git(c1, "add", "-A", "desktop");
-    git(c1, "commit", "--quiet", "-m", "e2e: 同步工作树 desktop/");
+    // --allow-empty：desktop/ 工作树干净时同步后无差异，普通 commit 会以「nothing to commit」退 1（M9 实测）
+    git(c1, "commit", "--quiet", "--allow-empty", "-m", "e2e: 同步工作树 desktop/");
     // 依赖先装好：TS-8b 要证伪的是「release-build 自己的 npm ci」，不能让克隆里缺依赖把构建提前弄挂（MUT-43 的机理）
     sh(join(c1, "desktop"), "/usr/bin/env", ["npm", "ci"]);
     c2 = cloneRepo(); // 另一个克隆：没有 c1 的这次提交
