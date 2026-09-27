@@ -282,6 +282,7 @@ test("VE-2 主题三档：深色立即生效且重启保持；跟随系统对齐
     await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
     expect(await L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg（冻结文件）
     await L.page.keyboard.press("Escape");
+    expect(await L.page.evaluate(() => location.origin)).toBe("file://"); // A7 的实质：渲染器从 file:// 载入（打包版同源），偏好才跨重启留在 userData 里
     // ② 重启（同 userData）后仍为深色
     await L.app.close();
     const L2 = await launch(fx.repo, [], ud);
