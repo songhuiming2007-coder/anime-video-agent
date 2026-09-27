@@ -776,6 +776,8 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | TP-13 | job 子进程读 stdin 时 host 发 `user_message`（用例 10 s 超时） | 子进程得 EOF；该帧被会话处理（可见 `E_BUSY`） |
 | TP-14 | 读端慢速读取时发大帧（≥ 400 KB），写出途中 `interrupt` | host 收到的每一行都能解析；没有残帧 |
 | TP-14b（2026-09-27 M3 收口补） | `os.write` 观察者：往满 pipe 发帧时的**写者身份** | 全部写出调用来自 `proto-writer` 线程（主线程只入队）；MUT-38 的**确定性**杀手——TP-14 结构上杀不掉它（kicker 在 `send()` 返回之后才启动，同步写下无并发写者，实测 0/3 红） |
+| TP-6b（2026-09-27 M9 补） | 入站帧缺 `v`、`v:2`、`v:true` | 一律 `E_BAD_REQUEST` 且带回 `rid`、不开回合；同一帧带 `v:1` 正常开回合。M9 真实联调实测：core 曾把 host 按 §3.1 带上的 `v` 当多余键拒收，两侧测试各写各的期望、各自全绿（MUT-61） |
+| TP-16（2026-09-27 M9 补） | `--idea` 会话发 `user_message` | 照常开回合：scope 固定 `idea`、零写权限、不写 `session.jsonl`；回合末照发 `stop_points{items:[]}`。此前 core 回 §3.1 错误表里没有的 `E_NO_EPISODE`，桌面端选题对话一轮都开不了（MUT-62） |
 
 **终端（PR0/PR2）**
 
@@ -844,7 +846,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | MUT-36 | `--force` 禁令退回全拼比对 | TK-9 | `--force-a` 通过 |
 | MUT-37 | `commit()` 的写盘与进内存不在同一延迟区 | TS-10 | 中断在两步之间浮出，盘上多一条 |
 | MUT-38 | 主线程直接写帧（去掉写线程） | **TP-14b**（设计观察者，2026-09-27 补：写者身份断言，变异下当场红）；TP-11 为附带杀伤（2026-09-26 M3 验收实测，变异下该用例由 1.6 s 拖到 ≈30 s） | 写线程形同虚设 = 写者身份变了，TP-14b 白盒断言直接命中；**TP-14 结构性不可能成为杀手**（kicker 在 `send()` 返回后才启动，变异体里 `send()` 同步写完大帧时根本没有并发写者——0/3 实测，逐字复刻测试体 6/6 绿）；附带杀伤不掩盖：「读端事件驱动插帧」的加固变体实测仅 4/6 红，故不采用 |
-| MUT-39 | 子会话各自 `EpisodeLease.acquire` | TK-8 | 进 `/script` 时 `SessionLocked` |
+| MUT-39 | 子会话各自 `EpisodeLease.acquire` | TK-8 | 进 `/script` 时 `SessionLocked`。**PR4 重锚**：原锚点在现行实现下是等价变异（子会话本就经 `SessionHost.ensure_lease` 拿同一个租约，改调用点不改行为，实跑存活）；改锚到 `session_log.EpisodeLease.acquire` 的进程级登记表（「已登记即返回同一对象」一行改为 `if False:`），TK-8 在其下变红 |
 | MUT-40 | 免卡写入也清空判重 | TL-4b | 第二次 `read_status` 被执行 |
 | MUT-41 | 检查点只数回复 | TL-2b | 第 9 次请求前没有提问 |
 | MUT-42 | 回滚只弹用户消息（注入留在内存） | TS-11 | 内存与重建不等 |
@@ -863,8 +865,10 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | MUT-56 | `activate_host` 退出时不注销登记 | TK-12 ② | 未注销的登记仍持有 `ep_A` 的租约（直接调用走子会话分支、`persist=False`，不写会话记录），「另一进程可立即取得租约」失败（v0.6 按五轮 🔵-1 改正机理） |
 | MUT-57 | 包装不比较 `ep_dir`（有登记即用） | TK-12 ③ | `ep_B` 的调用借用 `ep_A` 的登记走子会话分支，首个 agent 回合使 host 懒取 `ep_A` 租约，「另一进程仍可立即取得 `ep_A` 租约」失败（`ep_B` 下无文件在两种实现下都成立，不作杀手，五轮 🟡-2） |
 | MUT-58 | `activate_host` 不可重入（嵌套进入时替换或注销） | TK-12 ① | `/chat` 返回后登记已被撤销，主会话「丙」未落盘 |
-| MUT-60 | **复合变异**：MUT-57 + 子会话的 `ToolContext.episode_dir` 取自 `SessionHost.ep_dir` 而非包装参数 | TK-12 ③b（③ 同样变红，但那里租约断言会先失败，证明不了期目录断言单独有效） | ③b 中租约已被持有，租约断言在变异下仍成立；只有「记录的 `ctx.episode_dir == ep_B`」失败（变异下为 `ep_A`）。单独植入后者是**等价变异**（期目录比较正确时，进子会话分支的调用其 `ep_dir` 与 `host.ep_dir` 解析后同一目录），不单列；「期目录取自参数」是 MUT-57 之上的纵深防御，只能以复合形式检验 |
+| MUT-60 | **复合变异**：MUT-57 + 子会话的 `ToolContext.episode_dir` 取自 `SessionHost.ep_dir` 而非包装参数 | TK-12 ③b（③ 同样变红，但那里租约断言会先失败，证明不了期目录断言单独有效） | ③b 中租约已被持有，租约断言在变异下仍成立；只有「记录的 `ctx.episode_dir == ep_B`」失败（变异下为 `ep_A`）。单独植入后者是**等价变异**（期目录比较正确时，进子会话分支的调用其 `ep_dir` 与 `host.ep_dir` 解析后同一目录），不单列；「期目录取自参数」是 MUT-57 之上的纵深防御，只能以复合形式检验。**PR4 实跑（修复后）**：harness 增 `also` 字段支持跨文件复合变异；TK-12 在 ③ 的 `seen == [ep_B]` 处先红（变异下记录为 `ep_A`，`test_agent_session.py:527`），租约断言未走到——杀手正是期目录断言本身。M9 实测此前实现就是变异态（`_tool_context` 取 `host.ep_dir`，与本行设计相反），修于 `SessionHost.dispatch` → `run_turn(ep_dir=…)` |
 | MUT-59 | `_run_repl_body` 第一个回合后执行 `messages = []` 重新赋值 | TK-13 | 其后的回合不再落盘，`turn_end` 少于 5 条 |
+| MUT-61（M9 补） | 入站校验改为「`v` 在场时才查」 | TP-6b | 缺 `v` 的帧被接受并开回合 |
+| MUT-62（M9 补） | 无期目录的 `user_message` 回 `E_NO_EPISODE` | TP-16 | 收到 `error` 而非 `turn_started` |
 | MUT-55 | `_run_repl_body` 的回合改为直接调 `SessionHost`、绕过模块属性 `cli._dispatch_agent_turn` | `tests/test_agent_director.py:455`、`:590` 等现有替身用例 | 替身不再被调用：`test_m11` 记录的 scope 序列为空、`test_m19` 断言的调用不发生 |
 
 ---
@@ -896,12 +900,20 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 - [x] **门禁 11（隔离与租约）**：TK-8、TK-11、TK-12、TK-13、TP-9、TP-13、TS-13 全绿，MUT-16/17/21/39/50/54/56/57/58/59/60 被捕获；排除执行顺序依赖：`uv run pytest tests/test_agent_director.py tests/test_agent_memory.py tests/test_agent_session.py` 与反过来的文件顺序各跑一遍全绿（不引入新插件）；
 - [x] **门禁 12（观测层不参与状态）**：TS-9、TG-4 全绿，MUT-26 被捕获；
 - [x] **门禁 13（依赖纯洁、无 server）**：TG-1/2/5 全绿，MUT-27/34 被捕获；`pyproject.toml` 无 diff；
-- [ ] **门禁 14（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；`docs/WORKFLOW.md` ≤ 100 行。
+- [x] **门禁 14（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；`docs/WORKFLOW.md` ≤ 100 行。（PR4：12 passed，WORKFLOW 78 行，`--continue` 一行、`/help` 两行已落）
 
 **M3 验收记录（门禁 2–13，2026-09-27 回填）**：独立验收评审（pi 会话 `2026-09-26T09-17-35-867Z_01a0dd01`，2026-09-27 01:15–02:08 UTC）判 2–13 全过；勾选当时漏回填，M9 施工方于 2026-09-27 核对会话日志与盘上物证后补勾。基线：`uv run pytest` 1898 passed；TP-1~15 逐条重跑全绿；门禁 11 三文件正反顺序各 165 passed；变异抽查实跑且逐条核实杀手为指定测试（MUT-45/47/48/49、MUT-16→TP-1、MUT-17→TP-13、MUT-50→TP-9；MUT-38 杀手经实测改为 TP-11，见 `061fe17`、`2069b52`）。**MUT 全表实跑不在此列，归 PR4。** 三条手验均由评审亲手在真机做（驱动脚本与 transcript 在 `/tmp/m3/`，未入库、重启即失，以本段摘要为准）：
 - 门禁 8：期 `EGOIST-传奇企划志-V2` 会话 `5db7f870`——提案恰 2 条 → 恰 2 张抓取卡 → 批 #1（yt-dlp 真抓，`EGOIST_Departures_MV_4K60.mp4` 25 MB）、拒 #2 → `fetched.json` 31→32 条，新增条目即批准那条，被拒者不入账；
 - 门禁 9：scratch 期 `tmp-m3-gate9-render`（验收后已删）真跑 `render`，切片 12/60 时 ^C → 6 个 ffmpeg 进程 2 s 内清空（`pgrep -fl ffmpeg` 为空）、打印 `[中断]`、生成收尾汇报、回到提示符，`/quit` rc=0；
 - 门禁 10：会话 `f4e3ea28` 在 `write_episode_file` 工具卡待答时 `kill -9` → 日志留 `repair_tool_results` 与 `turn_end{stopped:"crashed", recovered:true}` → `--continue` 恢复并重放 11 条；恢复后首轮为代理 `timed out`（60 s，非 400），重试一轮得真实模型回复，无 400。
+
+**PR4 实跑记录（M9，2026-09-27）**：`scripts/verify_mutations.py` 登记 S9-MUT-1~62 全部 62 条（harness 共 124 条，其余为一期 M 系列），**62/62 KILLED，杀手逐条与本表一致**（首轮 4 分片并行，非 KILLED 条目在 HEAD 上串行复跑确认；MUT-60 于修复提交后单跑）。实跑中查出并修掉的**测试自身缺陷**（不是护栏缺陷）：
+- TS-4 复刻了修复流程而非走生产入口，MUT-23 在其下存活 → 改经 `SessionHost` + `prepare_resume`（`559b448`）；
+- MUT-3 行所称「请求计数 200 为护栏」只写在文档里，三处模型桩没有上限，变异下无限循环挂死 → 统一加 200 次护栏（`9ace249`）；
+- MUT-39 原锚点为等价变异 → 重锚（见表内）；
+- harness：单轮 15 分钟超时（整组 `killpg`，记 ABORTED）；改用 `sys.executable -m pytest`（`uv run` 残留进程）；`AVA_KI_AS_FAILURE=1` 让测试体内逃逸的 `KeyboardInterrupt` 记为失败而非中止整轮（MUT-5、MUT-29）；支持复合变异 `also`。
+
+M9 真实联调（Spec 10 PR4，桌面端对真实 `protocol.py`）暴露并修复的 **core 侧协议不符 5 处**（`f5bc649`，经人批准动 `pipeline/`）：① 入站 `v` 被当多余键拒收（→ TP-6b / MUT-61）；② idea 会话回 `E_NO_EPISODE`（→ TP-16 / MUT-62）；③ `tool` 帧键集合多于 S9-R1 的 8 键；④ `request` 缺 `turn_id`（S9-R4）；⑤ `fields.danger` 取值不是卡片「危险标记」行。TP-3 同步加强为整键集合比对 + observation 与 `session.jsonl` 逐字节一致。另修 MUT-60 所示的纵深防御缺失（见表内）。D31（TP-6 负载下偶发红）在分片并行时复现，记于 issues。
 
 ---
 
