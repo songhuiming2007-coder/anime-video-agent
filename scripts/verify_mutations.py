@@ -386,13 +386,12 @@ MUTATIONS: list[dict] = [
              '            current = slots.get("turn_id")\n'
              '            if False:  # MUT-18\n')},
     {"id": "S9-MUT-19", "guard": "EOF/结束时请求作废，从不算批准", "file": PROTO,
+     # D36 去掉了帧上的表外键 cause（§3.1），锚点随之改为单行调用
      "old": ('        except BaseException:\n'
-             '            self._close(request.request_id, reason="voided", decision=None, rid=None,\n'
-             '                        cause="interrupted")\n'
+             '            self._close(request.request_id, reason="voided", decision=None, rid=None)\n'
              '            raise\n'),
      "new": ('        except BaseException:\n'
-             '            self._close(request.request_id, reason="answered", decision="approve", rid=None,\n'
-             '                        cause=None)\n'
+             '            self._close(request.request_id, reason="answered", decision="approve", rid=None)\n'
              '            return HumanAnswer(request.request_id, "approve", None, "protocol", 0.0)\n')},
     {"id": "S9-MUT-20", "guard": "对已关闭请求的答复被拒（与「没见过这个号」可区分）", "file": PROTO,
      "old": '    if frame["request_id"] in slots.get("closed_requests", ()):\n',

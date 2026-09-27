@@ -75,6 +75,24 @@ function sessionLog(fx: SessionFixture, ep: string): Record<string, unknown>[] {
 
 const ENVELOPE = new Set(["v", "t", "seq", "sid", "rid"]);
 
+/** 逐帧对拍 TS 表（REQUIRED + CONDITIONAL）：返回每类帧实际出现过的键。 */
+function assertFrameContract(frames: Frame[]): Map<string, Set<string>> {
+  const seen = new Map<string, Set<string>>();
+  for (const f of frames) {
+    // host 已校验过一遍；这里对「原样再序列化」再过一次，钉住 host 缓冲里没有被改形的帧
+    expect(parseOutFrame(JSON.stringify(f)).ok, `帧未通过 parseOutFrame：${JSON.stringify(f)}`).toBe(true);
+    const keys = new Set(Object.keys(f).filter((k) => !ENVELOPE.has(k)));
+    const want = new Set([...Object.keys(REQUIRED[f.t as (typeof OUT_TYPES)[number]]), ...Object.keys(CONDITIONAL[f.t as (typeof OUT_TYPES)[number]]?.(f) ?? {})]);
+    // 两个方向都查：core 少发（TS 的必需键缺席）已由 parseOutFrame 判 malformed；
+    // core 多发（TS 表里没有、会被「向前兼容」静默忽略的键）只有这里查得出
+    expect([...keys].filter((k) => !want.has(k)), `core 发出了 TS 表外的键（t=${f.t}）`).toEqual([]);
+    expect([...want].filter((k) => !keys.has(k)), `TS 必需键在真实帧里缺席（t=${f.t}）`).toEqual([]);
+    if (!seen.has(f.t)) seen.set(f.t, new Set());
+    for (const k of keys) seen.get(f.t)!.add(k);
+  }
+  return seen;
+}
+
 test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0，且逐类键集合与 REQUIRED 完全一致", async () => {
   await withRealCore(async ({ L, llm }) => {
     // 一轮：只读工具 + 失败的 run_pipeline（经工具卡）→ 收尾答复
@@ -88,19 +106,7 @@ test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0
     expect(snap.framesLost).toBe(0);
     expect(llm.badPairings).toBe(0);
 
-    const seen = new Map<string, Set<string>>();
-    for (const f of frames) {
-      // host 已校验过一遍；这里对「原样再序列化」再过一次，钉住 host 缓冲里没有被改形的帧
-      expect(parseOutFrame(JSON.stringify(f)).ok, `帧未通过 parseOutFrame：${JSON.stringify(f)}`).toBe(true);
-      const keys = new Set(Object.keys(f).filter((k) => !ENVELOPE.has(k)));
-      const want = new Set([...Object.keys(REQUIRED[f.t as (typeof OUT_TYPES)[number]]), ...Object.keys(CONDITIONAL[f.t as (typeof OUT_TYPES)[number]]?.(f) ?? {})]);
-      // 两个方向都查：core 少发（TS 的必需键缺席）已由 parseOutFrame 判 malformed；
-      // core 多发（TS 表里没有、会被「向前兼容」静默忽略的键）只有这里查得出
-      expect([...keys].filter((k) => !want.has(k)), `core 发出了 TS 表外的键（t=${f.t}）`).toEqual([]);
-      expect([...want].filter((k) => !keys.has(k)), `TS 必需键在真实帧里缺席（t=${f.t}）`).toEqual([]);
-      if (!seen.has(f.t)) seen.set(f.t, new Set());
-      for (const k of keys) seen.get(f.t)!.add(k);
-    }
+    const seen = assertFrameContract(frames);
     // 这一轮必须真的覆盖到这些帧类，否则上面的逐类比对是空转
     for (const t of ["ready", "turn_started", "tool", "request", "request_closed", "assistant", "turn_finished", "stop_points"]) {
       expect(seen.has(t), `本轮没有出现 ${t} 帧`).toBe(true);
@@ -111,6 +117,27 @@ test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0
       ["read_status", true],
       ["run_pipeline", false],
     ]);
+  });
+});
+
+test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
+  await withRealCore(async ({ L, llm }) => {
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("已停下。"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "检查稿件");
+    await expect(L.page.getByTestId("request-answer-approve")).toBeVisible({ timeout: 15_000 });
+    await L.page.getByTestId("composer-stop").click();
+    const frames = await waitTurns(L, "ep:SESS-A", 1);
+
+    const closed = frames.filter((f) => f.t === "request_closed");
+    expect(closed.map((f) => [f.reason, f.decision])).toEqual([["voided", null]]);
+    assertFrameContract(frames);
+    const snap = await convSnapshot(L, "ep:SESS-A");
+    // M9 现场：作废帧缺 decision → host 判 malformed 丢帧 → 卡与「1 张卡待答」徽标永不撤下
+    expect(snap.framesLost).toBe(0);
+    expect(snap.open).toEqual([]);
+    await expect(L.page.getByTestId("request-answer-approve")).toHaveCount(0);
+    await expect(L.page.getByText(/张卡待答/)).toHaveCount(0);
   });
 });
 

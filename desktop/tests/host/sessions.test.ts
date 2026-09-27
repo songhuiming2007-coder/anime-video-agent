@@ -569,6 +569,38 @@ describe("TH-16 后台常驻与徽标", () => {
   });
 });
 
+describe("TH-18 作废的卡立即撤下（D36）", () => {
+  const card = (id: string) => ({ t: "request", request_id: id, kind: "fetch", turn_id: "t1", title: id, card_text: id, fields: { no: 1 }, options: ["approve", "reject"], feedback_allowed: false });
+  // 真实 core 修后的作废帧形状（Spec 9 §3.1：decision 在场、为 null）
+  const VOIDED = (id: string) => ({ t: "request_closed", request_id: id, reason: "voided", decision: null });
+
+  async function run(closed: Record<string, unknown>) {
+    const b = await boot();
+    // M9 现场的帧序：#6 出卡 → #6 作废 → #7 出卡
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, card("q6"), closed, card("q7")] }]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    await waitFor(async () => (await snapOf(b.svc, b.key)).open.some((o) => o.request_id === "q7"));
+    return b;
+  }
+
+  it("request_closed{voided, decision:null} → open 与徽标同步收缩、零丢帧、最后一条 delta 已不含该卡", async () => {
+    const b = await run(VOIDED("q6"));
+    const snap = await snapOf(b.svc, b.key);
+    expect(snap.framesLost).toBe(0);
+    expect(snap.open.map((o) => o.request_id)).toEqual(["q7"]);
+    expect(b.svc.episodesList().episodes.find((e) => e.epKey === b.epKey)!.conv).toMatchObject({ openRequests: 1 });
+    const deltas = b.pushes.filter((p) => p.kind === "push" && p.topic === "conv.delta") as unknown as { data: { open: { request_id: string }[] } }[];
+    expect(deltas.at(-1)!.data.open.map((o) => o.request_id)).toEqual(["q7"]);
+  });
+
+  it("钉住根因：缺 decision 的作废帧被 parseOutFrame 判 malformed → 丢帧、卡留在待答区（core 必须带 decision）", async () => {
+    const b = await run({ t: "request_closed", request_id: "q6", reason: "voided", cause: "interrupted" });
+    const snap = await snapOf(b.svc, b.key);
+    expect(snap.framesLost).toBe(1);
+    expect(snap.open.map((o) => o.request_id)).toEqual(["q6", "q7"]);
+  });
+});
+
 describe("TH-17 rid 关联（S9-R2）", () => {
   it("不带 rid 的无关 error 只进流内提示，同 rid 的 turn_started 让 conv.send 成功", async () => {
     const b = await boot();
