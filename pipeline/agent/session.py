@@ -207,6 +207,16 @@ class FetchHookInterrupted(KeyboardInterrupt):
         self.outcome = outcome
 
 
+def _proposed_urls(args: dict[str, Any]) -> list[str]:
+    """`acquire_propose` 入参里的 URL：按输入顺序去重，与 `propose_candidates` 同样 strip。"""
+    urls: list[str] = []
+    for item in args.get("candidates") or []:
+        url = item.get("url") if isinstance(item, dict) else None
+        if isinstance(url, str) and url.strip() and url.strip() not in urls:
+            urls.append(url.strip())
+    return urls
+
+
 class _FetchStopped(Exception):
     """`_ask_fetch` → `_fetch_cards` 的内部信号：本卡已按中断记账，余卡不再出。"""
 
@@ -1100,7 +1110,7 @@ class AgentSession:
         if name != "acquire_propose" or not outcome.get("ok"):
             return outcome
         try:
-            fetches = self._fetch_cards(outcome)
+            fetches = self._fetch_cards(outcome, _proposed_urls(args))
         except FetchHookInterrupted as stop:
             # D35：中断即整轮停——结果照常交回（带抓取记录），中断继续往上浮给工具循环
             stop.outcome = {**outcome, "result": {**(outcome.get("result") or {}),
@@ -1114,7 +1124,8 @@ class AgentSession:
             outcome = {**outcome, "result": {**(outcome.get("result") or {}), "fetch": fetches}}
         return outcome
 
-    def _fetch_cards(self, outcome: dict[str, Any]) -> list[dict[str, Any]]:
+    def _fetch_cards(self, outcome: dict[str, Any], urls: list[str]) -> list[dict[str, Any]]:
+        """§2.4.4 第 2 条：只对**本次输入**的 URL 出卡（在清单中、不在台账；序号取清单里的 1-based N）。"""
         data_root = Path(paths.DATA)
         base_data = Path(self.host.root or paths.ROOT) / "data"
         if not data_root.exists():
@@ -1135,14 +1146,17 @@ class AgentSession:
         ledger = _read_json_list(incoming / "fetched.json")
         fetched_urls = {str(entry.get("url")) for entry in ledger if entry.get("url")}
 
-        fetches: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        stopped = False
+        # D34（M9 实测）：此前遍历**整份**清单，一次提案会把全部历史未抓候选逐张推给人
+        position: dict[str, int] = {}
         for index, candidate in enumerate(candidates, 1):
-            url = str(candidate.get("url") or "")
-            if not url or url in seen or url in fetched_urls:
+            position.setdefault(str(candidate.get("url") or ""), index)
+        fetches: list[dict[str, Any]] = []
+        stopped = False
+        for url in urls:  # 已按输入顺序去重
+            index = position.get(url)
+            if not url or index is None or url in fetched_urls:
                 continue
-            seen.add(url)
+            candidate = candidates[index - 1]
             if stopped:
                 # §2.2：中断之后其余候选的卡一律 voided（不再出卡，只记账）
                 fetches.append({"no": index, "url": url, "decision": "voided", "ok": False,

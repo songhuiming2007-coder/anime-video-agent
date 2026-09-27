@@ -238,12 +238,17 @@ def _fetch_scenario(root: Path, episode: Path, answers: list[str]):
     return session, host, channel, fetched, incoming, outcome
 
 
+# 本次 `acquire_propose` 的入参：4 条都在输入里（§2.4.4 第 2 条「以前提过未抓」= 本次又提了、
+# 被 propose 按同 URL 跳过的那条；已在台账那条也在输入里，但不出卡）
+_ALL_FOUR = {"candidates": [_candidate("x", f"https://a.example/{n}") for n in (1, 2, 3, 4)]}
+
+
 def test_tk2_fetch_cards_are_one_per_unfetched_candidate(root: Path, episode: Path) -> None:
     """TK-2：清单 4 条（2 新增、1 以前未抓、1 已在台账）→ 恰 3 张卡，序号与顺序正确。"""
     session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(
         root, episode, ["approve", "reject", "reject"]
     )
-    result = session._post_execute("acquire_propose", {}, outcome)
+    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
     assert len(channel.requests) == 3
     assert [r.fields["no"] for r in channel.requests] == [1, 3, 4]
@@ -251,6 +256,30 @@ def test_tk2_fetch_cards_are_one_per_unfetched_candidate(root: Path, episode: Pa
     fetch = result["result"]["fetch"]
     assert [item["decision"] for item in fetch] == ["approved", "rejected", "rejected"]
     assert fetched == [1], "只批准第 1 张 → 执行器只收到 1"
+
+
+def test_tk2b_only_this_calls_urls_get_cards(root: Path, episode: Path) -> None:
+    """TK-2b（D34）：清单里有历史未抓候选，本轮只提案一条 → 只出这一张卡，序号取清单位置。
+
+    M9 实测：本轮只提案清单第 7 条，弹出来的却是第 3 条（真人 YouTube 候选），批准即真抓。
+    """
+    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, ["approve"])
+    only_new = {"candidates": [_candidate("新增乙", " https://a.example/4 ")]}  # propose 会 strip
+    result = session._post_execute("acquire_propose", only_new, outcome)
+
+    assert [r.fields["no"] for r in channel.requests] == [4]
+    assert [item["no"] for item in result["result"]["fetch"]] == [4]
+    assert fetched == [4]
+
+
+def test_tk2c_same_url_twice_in_one_call_is_one_card(root: Path, episode: Path) -> None:
+    """TK-2c（D34）：同一 URL 在本次输入里出现两次 → 只一张卡；输入顺序决定出卡顺序。"""
+    session, _host, channel, _fetched, _incoming, outcome = _fetch_scenario(
+        root, episode, ["reject", "reject"])
+    twice = {"candidates": [_candidate("乙", "https://a.example/4"), _candidate("甲", "https://a.example/1"),
+                            _candidate("乙again", "https://a.example/4")]}
+    session._post_execute("acquire_propose", twice, outcome)
+    assert [r.fields["no"] for r in channel.requests] == [4, 1]
 
 
 def test_tk3_misaligned_candidate_index_is_not_fetched(root: Path, episode: Path) -> None:
@@ -269,7 +298,7 @@ def test_tk3_misaligned_candidate_index_is_not_fetched(root: Path, episode: Path
         return HumanAnswer(request.request_id, "approve", None, "tty", 0.1)
 
     channel.ask = rewrite_then_fetch
-    result = session._post_execute("acquire_propose", {}, outcome)
+    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
     assert result["result"]["fetch"][0]["decision"] == "misaligned"
     assert fetched == []
 
@@ -280,7 +309,7 @@ def test_tk3b_root_mismatch_disables_fetch_cards(root: Path, episode: Path, monk
     other = root / "elsewhere" / "data"
     other.mkdir(parents=True)
     monkeypatch.setattr(paths, "DATA", other)
-    result = session._post_execute("acquire_propose", {}, outcome)
+    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
     assert channel.requests == []
     assert "fetch_disabled_root_mismatch" in channel.codes()
@@ -292,7 +321,7 @@ def test_tk3c_unreachable_data_dir_notices_and_continues(root: Path, episode: Pa
     """TK-3c：`paths.DATA` 指向不存在的路径 → 不出卡、发 notice，提案结果照常（进程不退）。"""
     session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
     monkeypatch.setattr(paths, "DATA", root / "unmounted" / "data")
-    result = session._post_execute("acquire_propose", {}, outcome)
+    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
     assert "fetch_disabled_data_unreachable" in channel.codes()
     assert channel.requests == [] and fetched == []
