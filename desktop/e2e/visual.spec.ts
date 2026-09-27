@@ -8,11 +8,12 @@
 // 以及 `--*` 自定义属性（Chromium 会把继承下来的 token 值列进计算样式：新增 token 必然改变这些 *输入*，
 // 它们不是渲染结果；旧界面如果真吃到了新值，会体现在 background-color 这类渲染属性上——那正是 E11 的证据）。
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { ava, writeClips, writeManifest } from "./ackFixtures";
 import { domAudit } from "./audit";
+import { tmp } from "../tests/helpers";
 import { buildFixture, launch, openEpisode, pick } from "./fixtures";
 
 const OUT = process.env.AVA_VE0_OUT;
@@ -85,16 +86,20 @@ type Theme = (typeof THEMES)[number];
 
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
-  list: 51,
-  markdown: 56,
-  json: 63,
-  empty: 39,
-  error: 52,
-  health: 70,
-  stale: 48,
-  card: 52,
-  "card-reject": 57,
-  "card-err": 60,
+  // PR3 实测（2026-09-27，三态一致）：侧栏头部、期行相对时间、外观浮层进了 DOM，逐值重填
+  list: 67,
+  "sidebar-step": 71,
+  "sidebar-search": 60,
+  popover: 71,
+  markdown: 79,
+  json: 79,
+  empty: 63,
+  error: 73,
+  health: 91,
+  stale: 65, // 脱盘后 host 清空期列表，等落定再审计后的稳定值（此前 81 是竞态读数）
+  card: 73,
+  "card-reject": 78,
+  "card-err": 81,
 };
 
 interface AuditResult {
@@ -126,6 +131,7 @@ async function audit(page: Page, label: string): Promise<void> {
     expect({ where, nonText: r.nonText }).toEqual({ where, nonText: [] });
     expect({ where, small: r.small }).toEqual({ where, small: [] });
     expect({ where, bgImage: r.bgImage, skippedMedia: r.skippedMedia }).toEqual({ where, bgImage: [], skippedMedia: 0 });
+    console.log(`VE-1 n[${where}]=${r.n}`);
     expect(r.n, `${where} 的审计元素数低于下限 ${N_LOWER[label]}（M18 的形状：选择器失效时 n 会塌到个位数）`).toBeGreaterThanOrEqual(N_LOWER[label]);
   }
 }
@@ -142,6 +148,17 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     await openEpisode(L.page, "E2E-A");
     await L.page.locator("[data-testid=episode]").first().hover();
     await audit(L.page, "list");
+    // ①b 侧栏：「按工序」分组、搜索空态以外的匹配态、外观浮层（Spec 14 PR3）
+    await L.page.getByText("按工序", { exact: true }).click();
+    await audit(L.page, "sidebar-step");
+    await L.page.getByText("按时间", { exact: true }).click();
+    await L.page.getByTestId("ep-search").fill("E2E-A");
+    await audit(L.page, "sidebar-search");
+    await L.page.getByTestId("ep-search").fill("");
+    await L.page.getByTestId("appearance").click();
+    await L.page.getByTestId("theme-menu").waitFor();
+    await audit(L.page, "popover");
+    await L.page.keyboard.press("Escape");
     // ② markdown 预览
     await pick(L.page, "02-script.md");
     await L.page.getByTestId("markdown").waitFor();
@@ -177,9 +194,16 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     await audit(L.page, "card-err");
     // ⑩ stale（脱盘：期行变「未取到」+ 未知圆环，预览/中栏置灰）
     execFileSync("/bin/chmod", ["000", fx.dataReal]);
-    await L.page.getByTestId("reach-banner").waitFor({ timeout: 10_000 });
-    await audit(L.page, "stale");
-    execFileSync("/bin/chmod", ["755", fx.dataReal]);
+    try {
+      await L.page.getByTestId("reach-banner").waitFor({ timeout: 10_000 });
+      // 脱盘后 host 会推一份空期列表：等它落定再审计，否则 n 取决于「推送到没到」的竞态（PR3 实测：
+      // 同一份代码先测出 81、后测出 65），下限断言会假红。这不是判据变化，是把夹具状态钉死。
+      await expect.poll(() => L.page.getByTestId("episode").count(), { timeout: 10_000 }).toBe(0);
+      await audit(L.page, "stale");
+    } finally {
+      // 权限必须无条件还原：否则断言一红，清理就会以 ENOTEMPTY 掩盖真因
+      execFileSync("/bin/chmod", ["755", fx.dataReal]);
+    }
   } finally {
     await L.app.close();
     fx.cleanup();
@@ -220,8 +244,64 @@ test("VE-3 键盘：Tab 到 [data-testid=episode] 时焦点环为 --focus-ring�
     await expect
       .poll(async () => await L.page.getByTestId("center").getAttribute("data-ep"), { timeout: 10_000 })
       .not.toBe(before);
+    // 外观浮层（PR3；PR2 施工偏差 ① 的补做）：Tab 到「外观」按钮后 Space 打开，Esc 关闭，焦点回到按钮（E8）
+    let atAppearance = false;
+    for (let i = 0; i < 30; i++) {
+      await L.page.keyboard.press("Tab");
+      if (await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid") === "appearance")) {
+        atAppearance = true;
+        break;
+      }
+    }
+    expect(atAppearance, "30 次 Tab 内没走到「外观」按钮").toBe(true);
+    await L.page.keyboard.press("Space");
+    await expect(L.page.getByTestId("theme-menu")).toBeVisible();
+    await L.page.keyboard.press("Escape");
+    await expect(L.page.getByTestId("theme-menu")).toBeHidden();
+    expect(await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid"))).toBe("appearance");
   } finally {
     await L.app.close();
+    fx.cleanup();
+  }
+});
+
+// ---------------- VE-2：主题三档（Spec 14 §7.1；localStorage + data-theme，协议零改动） ----------------
+
+test("VE-2 主题三档：深色立即生效且重启保持；跟随系统对齐 nativeTheme；settings.json 不变", async () => {
+  const fx = buildFixture();
+  const ud = tmp("ud-ve2");
+  mkdirSync(ud, { recursive: true });
+  const settingsPath = join(ud, "settings.json");
+  writeFileSync(settingsPath, JSON.stringify({ version: 1, repoRoot: fx.repo }), "utf-8");
+  const L = await launch(fx.repo, [], ud);
+  try {
+    const settingsBefore = readFileSync(settingsPath, "utf-8");
+    // ① 点「深色」→ data-theme="dark"，body 背景 = 深色 --bg（模拟 light 下也成立）
+    await L.page.getByTestId("appearance").click();
+    await L.page.getByTestId("theme-menu").getByText("深色", { exact: true }).click();
+    await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
+    expect(await L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg（冻结文件）
+    await L.page.keyboard.press("Escape");
+    // ② 重启（同 userData）后仍为深色
+    await L.app.close();
+    const L2 = await launch(fx.repo, [], ud);
+    try {
+      expect(await L2.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
+      // ③ 点「跟随系统」并解除 Playwright 的 light 模拟 → 页面 matchMedia 与 main 的 nativeTheme 一致
+      await L2.page.getByTestId("appearance").click();
+      await L2.page.getByTestId("theme-menu").getByText("跟随系统", { exact: true }).click();
+      await expect.poll(() => L2.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe(null);
+      await L2.page.emulateMedia({ colorScheme: null });
+      const pageDark = await L2.page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);
+      const nativeDark = await L2.app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors);
+      expect(pageDark).toBe(nativeDark);
+      // ④ settings.json 与操作前逐字节相同（主题不进 settings 写入通路）
+      expect(readFileSync(settingsPath, "utf-8")).toBe(settingsBefore);
+    } finally {
+      await L2.app.close();
+    }
+  } finally {
+    await L.app.close().catch(() => undefined);
     fx.cleanup();
   }
 });

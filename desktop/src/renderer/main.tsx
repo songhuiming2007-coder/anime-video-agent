@@ -4,5 +4,9 @@ import { App } from "./App";
 import "./tokens.css";
 import "./ui.css";
 import "./style.css";
+import { applyTheme, readTheme } from "./theme";
+
+// Spec 14 §2.3：createRoot 之前同步应用主题；模块脚本是延迟执行，首帧可能先按系统外观画一帧空白底色（A2，PR3 实测）
+applyTheme(readTheme());
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -6,11 +6,13 @@ import type { ApprovalJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
-import type { ConvDelta, ConvKey, ConvSnapshot, EpisodeDelta, EpisodeSnapshot, EpisodesList, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
+import { formatRelTime } from "../shared/relTime";
+import { filterEpisodes, groupByStep } from "../shared/episodeView";
 import { AnswerDock } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane } from "./ConversationPane";
@@ -23,6 +25,7 @@ import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { errText, RpcClient } from "./rpc";
+import { applyTheme, readEpisodeView, readTheme, saveEpisodeView, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
 import { installTestHooks } from "./testHooks";
 import { Badge, StateView, StatusDot } from "./ui";
@@ -431,6 +434,7 @@ function TopBar({ health, onToggleHealth, onRefresh, canRefresh, onChangeRepo }:
           <Icon name="pulse" size="sm" />
           健康
         </button>
+        <ThemeMenu />
       </div>
       {health && health.reach !== "ok" && (
         <div className="banner banner-red" data-testid="reach-banner">
@@ -501,12 +505,113 @@ function HealthPanel({ health, diags, linked }: { health: Health; diags: string[
   );
 }
 
+/** 外观浮层（D3）：原生 popover API，Esc 关闭且焦点回到触发按钮（E8）；主题三档存 localStorage（§3.3） */
+function ThemeMenu() {
+  const [theme, setTheme] = useState<Theme>(() => readTheme());
+  const choose = (t: Theme) => {
+    setTheme(t);
+    applyTheme(t);
+    saveTheme(t);
+  };
+  const OPTS: [Theme, string][] = [
+    ["system", "跟随系统"],
+    ["light", "浅色"],
+    ["dark", "深色"],
+  ];
+  return (
+    <>
+      <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="外观" popoverTarget="theme-menu" data-testid="appearance">
+        <Icon name="appearance" size="sm" />
+      </button>
+      <div className="ui-popover" id="theme-menu" popover="" data-testid="theme-menu">
+        <div className="ui-popover-title">外观</div>
+        <div className="ui-seg">
+          {OPTS.map(([v, label]) => (
+            <button key={v} aria-pressed={theme === v} onClick={() => choose(v)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ---------------- 期列表 ----------------
 
+/** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
 function EpisodeList({ list, active, showIdea, onOpen, onIdea }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void }) {
   const idea = list?.idea ?? null;
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  /** 相对时间每 60 s 与回到前台时重算（RF-11） */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const t = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+  const chooseView = (v: EpisodeViewPref) => {
+    setView(v);
+    saveEpisodeView(v);
+  };
+  const eps = list ? filterEpisodes(list.episodes, query) : [];
+  const row = (e: EpisodeSummary) => (
+    <button
+      key={e.epKey}
+      className="ui-row ep"
+      aria-current={!showIdea && e.epKey === active ? "true" : undefined}
+      onClick={() => onOpen(e.epKey)}
+      data-testid="episode"
+    >
+      <span className="ep-line">
+        <span className="ep-name">{e.epKey}</span>
+        <span className="ep-time" title="期目录顶层最近变动">
+          {formatRelTime(e.mtimeMs, now)}
+        </span>
+      </span>
+      <span className="ep-step">
+        {e.conv?.running && (
+          <span className="ui-badge ui-badge--wait" data-testid="conv-running">
+            运行中
+          </span>
+        )}
+        {e.conv && e.conv.openRequests > 0 && (
+          <span className="ui-badge ui-badge--wait" data-testid="conv-open">
+            {e.conv.openRequests} 张卡待答
+          </span>
+        )}
+        {e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
+        {e.currentStep === null && <StatusDot tone="unknown" />}
+        <span className="ep-step-text">{e.currentStep ?? "…"}</span>
+      </span>
+    </button>
+  );
   return (
     <div className="episodes" data-testid="episodes">
+      <div className="side-head">
+        <label className="ui-search">
+          <Icon name="search" size="sm" />
+          <input className="ui-input" placeholder="搜索期名" value={query} onChange={(e) => setQuery(e.target.value)} data-testid="ep-search" />
+        </label>
+        <div className="side-head-row">
+          <div className="ui-seg">
+            <button aria-pressed={view === "time"} onClick={() => chooseView("time")}>
+              按时间
+            </button>
+            <button aria-pressed={view === "step"} onClick={() => chooseView("step")}>
+              按工序
+            </button>
+          </div>
+          <span className="spacer" />
+          {list && <span className="ui-count">{eps.length}</span>}
+        </div>
+      </div>
       <button className="ui-row ep" aria-current={showIdea ? "true" : undefined} onClick={onIdea} data-testid="idea">
         <span className="ep-line">
           <span className="ep-name">选题</span>
@@ -525,34 +630,19 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea }: { list: Episode
         </span>
       </button>
       {!list && <div className="muted">加载中…</div>}
-      {list?.episodes.map((e) => (
-        <button
-          key={e.epKey}
-          className="ui-row ep"
-          aria-current={!showIdea && e.epKey === active ? "true" : undefined}
-          onClick={() => onOpen(e.epKey)}
-          data-testid="episode"
-        >
-          <span className="ep-line">
-            <span className="ep-name">{e.epKey}</span>
-          </span>
-          <span className="ep-step">
-            {e.conv?.running && (
-              <span className="ui-badge ui-badge--wait" data-testid="conv-running">
-                运行中
-              </span>
-            )}
-            {e.conv && e.conv.openRequests > 0 && (
-              <span className="ui-badge ui-badge--wait" data-testid="conv-open">
-                {e.conv.openRequests} 张卡待答
-              </span>
-            )}
-            {e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
-            {e.currentStep === null && <StatusDot tone="unknown" />}
-            <span className="ep-step-text">{e.currentStep ?? "…"}</span>
-          </span>
-        </button>
-      ))}
+      {list && query.trim() !== "" && eps.length === 0 && <div className="muted">没有匹配的期</div>}
+      {view === "time" && eps.map(row)}
+      {view === "step" &&
+        groupByStep(eps).map((g) => (
+          <div key={g.key}>
+            <button className="ui-section" aria-expanded={!collapsed[g.key]} onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}>
+              <Icon name={collapsed[g.key] ? "chevron-right" : "chevron-down"} size="sm" />
+              {g.label}
+              <span className="ui-count">{g.items.length}</span>
+            </button>
+            {!collapsed[g.key] && g.items.map(row)}
+          </div>
+        ))}
       {list && list.hiddenUnderscore > 0 && <div className="muted">另有 {list.hiddenUnderscore} 个 _ 前缀目录未显示</div>}
     </div>
   );
