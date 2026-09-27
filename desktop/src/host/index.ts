@@ -3,7 +3,9 @@
 import type { Envelope } from "../shared/protocol";
 import type { HostToMain, MainToHost } from "../shared/lifecycle";
 import { stringifyLossless } from "../shared/losslessJson";
+import { createConfirmBroker } from "./confirm";
 import { HostService } from "./service";
+import { __avaTestSetKeychainExec } from "./spawner";
 import { setSpawnObserver } from "./spawner";
 
 interface PortLike {
@@ -38,6 +40,11 @@ function chooseRepoRoot(): Promise<string | null> {
   });
 }
 
+// Spec 10 §2.4 第 5 层：browser/抓取卡「批准」前的原生确认框。reqId = "<bootId>:<n>"（🟡-5 防串号）。
+const bootId = Math.random().toString(36).slice(2, 10);
+let svcRef: HostService | null = null;
+const confirmBroker = createConfirmBroker({ bootId, post: (m) => parentPort.postMessage(m) });
+
 // 测试钩子（仅未打包构建，TG-6）：main 布置 → 走到钩子处通知 main 并暂停，直到 main 放行
 const armed = new Set<string>();
 const releases = new Map<string, () => void>();
@@ -65,18 +72,21 @@ parentPort.on("message", (e) => {
   switch (m.type) {
     case "init": {
       packaged = m.isPackaged;
+      // 仅未打包构建的测试钩子（TG-6）：把 KEYCHAIN_READ 换成夹具脚本
+      if (!m.isPackaged && m.keychainExec) __avaTestSetKeychainExec(m.keychainExec);
       if (!m.isPackaged) {
         // e2e 观测口：每次 spawn 一行 AVA_SPAWN（TA-2/TA-11 按 decide 关联号与 trigger 标签统计）
         setSpawnObserver((s) => process.stdout.write(`AVA_SPAWN ${stringifyLossless({ template: s.template, argv: s.argv, trigger: s.trigger ?? null, decide: s.decide ?? null })}\n`));
       }
       const svc = new HostService(
         { userData: m.userData, isPackaged: m.isPackaged, appPath: m.appPath, devRepoRoot: m.devRepoRoot },
-        { chooseRepoRoot, testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()) },
+        { chooseRepoRoot, confirm: (t, d) => confirmBroker.request(t, d), bootId, testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()) },
         (reach) => parentPort.postMessage({ type: "reach", reach }),
         (dataRoot) => parentPort.postMessage({ type: "data-root", dataRoot }),
       );
       void svc.start().then(() => {
         service = svc;
+        svcRef = svc;
         parentPort.postMessage({ type: "host-ready", losslessJson: svc.losslessJson, dataRoot: svc.dataRoot, provenance: svc.provenance.kind });
         for (const p of pendingPorts.splice(0)) bindPort(p);
       });
@@ -90,6 +100,19 @@ parentPort.on("message", (e) => {
       break;
     case "shutdown":
       service?.stop();
+      break;
+    case "quit-query":
+      // M7 F-2 的测试钩子路径：armed("quit-query") 时吞掉这次应答，考 main 的 QUIT_QUERY_TIMEOUT_MS 兜底
+      void pauseAt("quit-query").then(() => parentPort.postMessage({ type: "quit-state", busy: svcRef?.quitState() ?? [] }));
+      break;
+    case "quit-proceed":
+      // M7 F-1/E-5 的测试钩子路径：armed("quit-proceed") 时把 stopping 阶段拉长，考 before-quit 的重入拦截
+      void pauseAt("quit-proceed")
+        .then(() => svcRef?.stopAllForQuit() ?? Promise.resolve())
+        .then(() => parentPort.postMessage({ type: "sessions-down" }));
+      break;
+    case "confirm-result":
+      confirmBroker.resolve(m.reqId, m.ok);
       break;
     case "repo-root-chosen": {
       const w = dialogWaiters.get(m.reqId);

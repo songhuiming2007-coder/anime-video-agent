@@ -1,6 +1,7 @@
 // renderer ↔ host 的 MessagePort 自有信封（Spec 8 §3.2，v1 冻结）。
 // 方法闭集：新增方法 = 修订 spec。任何方法的参数里都没有文件系统路径字段（红队 R2-M5）。
 import type { ApprovalJson, EpisodeStatusJson, EventJson, Reach, StopType } from "./contracts";
+import type { OutFrame } from "./convFrames";
 
 export const PROTOCOL_VERSION = 1 as const;
 
@@ -16,7 +17,15 @@ export type Method =
   | "tree.list" // { epKey, relDir } → TreeEntry[]
   | "shots.list" // 无参数 → ShotsEntry[]：data/library/shots 顶层的 *.html（S21 修订）
   | "approval.decide" // §3.2.1（PR4）；09 定稿另带 cover/title（Spec 12 S8-R19）
-  | "episode.create"; // { name } → { epKey }：spawn NEW_EPISODE；校验全在 core（Spec 10 S8-R2）
+  | "episode.create" // { name } → { epKey }：spawn NEW_EPISODE；校验全在 core（Spec 10 S8-R2）
+  // ---- Spec 10 S8-R2：会话方法（§3.1）----
+  | "conv.send" // { convKey, text } → { turnId }：无活进程则先起 new 会话、等 ready
+  | "conv.resume" // { convKey } → ConvSnapshot：仅 ep:*；以 --continue 起会话；已有活进程 → E_BUSY
+  | "conv.interrupt" // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
+  | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层
+  | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope}
+  | "conv.end" // { convKey } → { code, signal }：§2.10 结束序列
+  | "conv.snapshot"; // { convKey } → ConvSnapshot
 
 export type ErrCode =
   | "E_BAD_REQUEST"
@@ -27,9 +36,12 @@ export type ErrCode =
   | "E_CORE"
   | "E_GATE_MISMATCH"
   | "E_UNVERIFIED"
-  | "E_TIMEOUT";
+  | "E_TIMEOUT"
+  // Spec 10 S8-R2：会话进程未就绪 / 已退出 / 回了协议错误（附原错误码与原文）；期租约被占
+  | "E_SESSION"
+  | "E_SESSION_LOCKED";
 
-export type PushTopic = "episode.delta" | "episode.snapshot" | "episodes.summary" | "reach" | "diag";
+export type PushTopic = "episode.delta" | "episode.snapshot" | "episodes.summary" | "reach" | "diag" | "conv.snapshot" | "conv.delta";
 
 export interface RpcError {
   code: ErrCode;
@@ -42,7 +54,7 @@ export type Envelope =
   | { v: 1; kind: "req"; id: number; method: Method; params: unknown }
   | { v: 1; kind: "res"; id: number; ok: true; result: unknown }
   | { v: 1; kind: "res"; id: number; ok: false; error: RpcError }
-  | { v: 1; kind: "push"; topic: PushTopic; epKey?: string; generation?: number; seq?: number; data: unknown };
+  | { v: 1; kind: "push"; topic: PushTopic; epKey?: string; convKey?: string; generation?: number | string; seq?: number; data: unknown };
 
 /** 逐方法参数键闭集（exact-keys：多一个、少一个都拒，TI-8）。 */
 export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional: readonly string[] }> = {
@@ -58,6 +70,14 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "shots.list": { required: [], optional: [] },
   "approval.decide": { required: ["epKey", "approvalId", "stop", "decision"], optional: ["feedback", "cover", "title"] },
   "episode.create": { required: ["name"], optional: [] },
+  "conv.send": { required: ["convKey", "text"], optional: [] },
+  "conv.resume": { required: ["convKey"], optional: [] },
+  "conv.interrupt": { required: ["convKey", "turnId"], optional: [] },
+  // feedback 的类型由 host 自行校验（checkParamKeys 对名为 feedback 的键跳过类型检查，§3.1 🔵-1）
+  "conv.answer": { required: ["convKey", "requestId", "decision"], optional: ["feedback"] },
+  "conv.command": { required: ["convKey", "name"], optional: ["arg"] },
+  "conv.end": { required: ["convKey"], optional: [] },
+  "conv.snapshot": { required: ["convKey"], optional: [] },
 };
 
 export const METHODS = Object.keys(PARAM_KEYS) as Method[];
@@ -150,12 +170,24 @@ export interface EpisodeDelta {
 }
 
 // ---- 期列表、产物树、健康数据 ----
+/** 会话键（Spec 10 §2.1）：idea 全局至多一个；ep:<期名> 每期至多一个进程 */
+export type ConvKey = "idea" | `ep:${string}`;
+
+/** 会话徽标（Spec 10 §2.6）：由 host 从帧折叠得出，随 episodes.summary 下发 */
+export interface ConvSummary {
+  live: boolean;
+  running: boolean;
+  openRequests: number;
+}
+
 export interface EpisodeSummary {
   epKey: string;
   mtimeMs: number;
   /** 后台期徽标：只显示 status --json 的 current_step 原文（§2.12），未取到时为 null */
   currentStep: string | null;
   isBlocked: boolean | null;
+  /** Spec 10 S8-R8：该期的会话徽标；无活会话为 null */
+  conv: ConvSummary | null;
 }
 
 export interface EpisodesList {
@@ -163,6 +195,8 @@ export interface EpisodesList {
   reachDetail: string;
   episodes: EpisodeSummary[];
   hiddenUnderscore: number;
+  /** Spec 10 S8-R8：选题（idea）会话徽标；无活会话为 null */
+  idea: ConvSummary | null;
 }
 
 /** shots 根顶层的 html（镜头画廊）；name 即 ava-media://shots/<name> 的相对路径 */
@@ -179,6 +213,48 @@ export interface TreeEntry {
   kind: "dir" | "file" | "other";
   size: number;
   mtimeMs: number;
+}
+
+// ---- 会话状态（Spec 10 §3.1）----
+/** host 缓冲的单位，只追加 */
+export type ConvEntry =
+  | { k: "frame"; at: number; frame: OutFrame }
+  | { k: "user"; at: number; text: string }
+  | { k: "answered_local"; at: number; requestId: string; decision: string; feedback: string | null }
+  | { k: "settled"; at: number; turnId: string; timedOut: boolean }
+  | { k: "spawned"; at: number; mode: "new" | "continue" | "idea"; pid: number }
+  | { k: "exited"; at: number; code: number | null; signal: string | null; stderrTail: string }
+  | { k: "voided_local"; at: number; requestIds: string[]; cause: "session_exited" }
+  | { k: "frames_lost"; at: number; count: number; reason: "oversize" | "malformed" };
+
+export type ConvPhase = "none" | "starting" | "idle" | "running" | "ending" | "exited";
+
+export interface ConvSnapshot {
+  convKey: ConvKey;
+  /** "<hostBootId>:<n>"（🟡-9） */
+  generation: string;
+  seq: number;
+  phase: ConvPhase;
+  turnId: string | null;
+  entries: ConvEntry[];
+  truncatedHead: boolean;
+  open: OutFrame[];
+  framesLost: number;
+  /** host 待结算槽位里的 turnId（§2.7 第 2 条），无则 null；单独保存，截头不影响（四轮 🔵-3） */
+  settlePending: string | null;
+  /** §2.9 第 6 条：密钥未就绪时头部显示的原因与可复制的命令；就绪或未起会话为 null */
+  keyProblem: string | null;
+}
+
+export interface ConvDelta {
+  convKey: ConvKey;
+  generation: string;
+  seq: number;
+  entries: ConvEntry[];
+  phase: ConvPhase;
+  turnId: string | null;
+  open: OutFrame[];
+  keyProblem: string | null;
 }
 
 export type Provenance =

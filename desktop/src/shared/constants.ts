@@ -66,3 +66,39 @@ export const HOST_STDERR_TAIL_BYTES = 8 * 1024;
  * 取 1 MiB：外置盘上单次读取为毫秒级；8 Mbps 视频约每秒一次打开/关闭；每条在途流的内存约为 2 块。
  */
 export const MEDIA_READ_CHUNK_BYTES = 1024 * 1024;
+
+// ---------------- Spec 10 §3.5：会话常量（全部为初值，PR2/PR4 实测回填） ----------------
+
+/** Spec 9 MAX_INBOUND_LINE_BYTES：入站只有人打的字与答复；超出即 E_BAD_REQUEST、零写入。 */
+export const MAX_INBOUND_LINE_BYTES = 1_048_576;
+/** 最大合法帧估计为 request.fields.args 里的整份稿件与长回复；8 MiB 约是 read_artifact 上限 200 000 字节的 40 倍（A6）。 */
+export const SESSION_FRAME_MAX_BYTES = 8 * 1024 * 1024;
+/** 超过即截头并标出；未关闭请求单独保存不受影响（§3.5）。 */
+export const CONV_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
+/** spawn → ready；import 实测 0.06 s，恢复大会话历史与 ensure_pending 未测，留两个数量级余量（A5）。 */
+export const SESSION_READY_TIMEOUT_MS = 30_000;
+/** 装配前写 turn_start，turn_started 帧的发出时刻估计为毫秒级（约，PR4 实测）；超时 → E_TIMEOUT「结果未知」。 */
+export const SEND_ACK_TIMEOUT_MS = 10_000;
+export const ANSWER_ACK_TIMEOUT_MS = 10_000;
+/** 人手写的改法说明；远小于 1 MiB 帧上限。 */
+export const FEEDBACK_MAX_BYTES = 65_536;
+/** 收尾最长一次模型请求（REQUEST_TIMEOUT = 60 s）+ job 杀组 + 余量。 */
+export const SESSION_END_WAIT_MS = 90_000;
+/** 与 Spec 8 SIGTERM→SIGKILL 一致，高于 Spec 9 FRAME_DRAIN_TIMEOUT_S 2 s。 */
+export const SESSION_KILL_GRACE_MS = 5_000;
+/** host 在线时 quit-state 是内存查询，毫秒级；2 s 内不答视同 host 不可用（🟡-3）。 */
+export const QUIT_QUERY_TIMEOUT_MS = 2_000;
+/** 退出第 5 步兜底：SESSION_KILL_GRACE_MS + 进程组清理 + 余量。 */
+export const QUIT_STOP_TIMEOUT_MS = 10_000;
+/** 结算要等的只有两帧（毫秒级）与一次活跃期读取（ACTIVE_POLL_MS 1 s）；10 倍余量（§2.7 第 6 条）。 */
+export const SETTLE_TIMEOUT_MS = 10_000;
+/** 原生确认框里模型自由文本的显示上限；确定性字段不受此限、全文显示（三轮 🔵-4）。 */
+export const CONFIRM_FREE_TEXT_MAX_CHARS = 2_000;
+/** 合并 log 洪峰（A8）；人的感知阈值约 100 ms。 */
+export const CONV_PUSH_COALESCE_MS = 50;
+/** 每个工具行下展示的作业输出行数上限（只影响显示）。 */
+export const LOG_TAIL_LINES = 200;
+/** 固定服务名；账户名 = 变量名（§2.9）。 */
+export const KEYCHAIN_SERVICE = "ava";
+/** 排除一切改变子进程行为的名字（PATH、PYTHON*、DYLD_*、NODE_OPTIONS…）。 */
+export const KEY_ENV_NAME_RE = /^[A-Z][A-Z0-9_]*_(API_KEY|KEY|TOKEN)$/;

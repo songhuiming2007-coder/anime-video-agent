@@ -8,9 +8,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { ApprovalJson, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
-import type { Health, RpcError, TreeEntry } from "../shared/protocol";
+import type { OutFrame } from "../shared/convFrames";
+import type { ConvKey, Health, RpcError, TreeEntry } from "../shared/protocol";
+import type { ConvState } from "./convStore";
 import type { RpcClient } from "./rpc";
-import { HOST_LINK_LOST, RpcFailure } from "./rpc";
+import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
 import { Icon } from "./icons";
 import { approvalsOf, type EpisodeState } from "./store";
 
@@ -37,12 +39,13 @@ export function CardFrame({ className, testId, attrs, title, sub, children }: { 
 /** 最近一次决定的结果挂在决策条上而不是卡片上：成功或陈旧后对象离开可操作态，卡片随 resnapshot 卸载 */
 type Outcome = { approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
 
-/** 待答区（用户裁决：输入框上方常驻；PR1 只有停机点对象，PR3 起并入会话请求卡） */
-export function AnswerDock({ ep, health, rpc }: { ep: EpisodeState; health: Health | null; rpc: RpcClient }) {
+/** 待答区（用户裁决：输入框上方常驻；停机点对象 + Spec 9 的四种请求卡，PR3 起并入）。 */
+export function AnswerDock({ ep, conv, health, rpc }: { ep?: EpisodeState; conv?: ConvState; health: Health | null; rpc: RpcClient }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
-  const items = approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type));
-  const a = ep.approvals;
+  const items = ep ? approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type)) : [];
+  const a = ep?.approvals;
+  const requests = conv?.open ?? [];
 
   const run = async (obj: ApprovalJson, call: Promise<unknown>, okText: string) => {
     const head = { approvalId: obj.approval_id, stop: obj.type as StopType };
@@ -64,7 +67,7 @@ export function AnswerDock({ ep, health, rpc }: { ep: EpisodeState; health: Heal
     }
   };
 
-  if (a.state === "unsupported" || (health && !health.capabilities.approvals)) {
+  if (a?.state === "unsupported" || (a !== undefined && health && !health.capabilities.approvals)) {
     return (
       <div className="decision readonly" data-testid="decision-readonly">
         <Icon name="info" size="sm" />
@@ -72,13 +75,16 @@ export function AnswerDock({ ep, health, rpc }: { ep: EpisodeState; health: Heal
       </div>
     );
   }
-  if (items.length === 0 && a.state !== "error" && !outcome) return null;
-  const disabled = a.state !== "ok" || health?.reach !== "ok" || busy;
+  if (items.length === 0 && requests.length === 0 && a?.state !== "error" && !outcome) return null;
+  const disabled = a?.state !== "ok" || health?.reach !== "ok" || busy;
   return (
-    <div className="decisions" data-testid="decisions">
-      {a.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
+    <div className="decisions dock" data-testid="decisions">
+      {a?.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
+      {requests.map((req) => (
+        <RequestCard key={String(req.request_id)} convKey={conv!.convKey} req={req} rpc={rpc} disabled={busy} />
+      ))}
       {items.map((obj) => (
-        <StopPointCard key={obj.approval_id} ep={ep} obj={obj} rpc={rpc} disabled={disabled} run={run} />
+        <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} run={run} />
       ))}
       {busy && <div className="muted">处理中…</div>}
       {outcome?.kind === "ok" && (
@@ -260,4 +266,86 @@ function ReviewPageAge({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
       审片页生成时间早于排片文件最后修改时间
     </div>
   ) : null;
+}
+
+// ---------------- Spec 9 的四种人审请求卡（Spec 10 §2.4；PR3） ----------------
+
+const DECISION_LABEL: Record<string, string> = { approve: "批准", reject: "拒绝", continue: "继续", stop: "停止" };
+const KIND_LABEL: Record<string, string> = { tool_call: "工具卡", fetch: "抓取卡", checkpoint: "检查点", memory_ack: "记忆确认" };
+
+function fieldText(v: unknown): string {
+  if (typeof v === "object" && v !== null) return JSON.stringify(v, null, 2);
+  return v === null || v === undefined ? "" : String(v);
+}
+
+/**
+ * 会话请求卡：按钮只取 `request.options`（H-4：UI 不增不减），没有批量、没有默认高亮。
+ * browser 卡与抓取卡的「批准」由 host 请 main 弹原生确认框后才写 answer（§2.4 第 5 层），UI 不感知。
+ */
+export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean }) {
+  const requestId = String(req.request_id);
+  const kind = String(req.kind);
+  const options = Array.isArray(req.options) ? (req.options as unknown[]).map(String) : [];
+  const fields = (req.fields ?? {}) as Record<string, unknown>;
+  const [feedback, setFeedback] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
+  const feedbackAllowed = kind === "tool_call" && req.feedback_allowed === true && options.includes("reject");
+  const off = disabled || busy;
+  return (
+    <CardFrame
+      className="decision request-card"
+      testId="request-card"
+      attrs={{ "data-kind": kind, "data-request-id": requestId }}
+      title={`${KIND_LABEL[kind] ?? "请求卡"}${tool ? ` · ${tool}` : ""}${req.title ? ` · ${String(req.title)}` : ""}`}
+      sub={<>{String(req.card_text)}</>}
+    >
+      <ul className="fingerprints ui-kv">
+        {Object.entries(fields).map(([k, v]) => (
+          <li key={k}>
+            <span className="muted">{k}</span>
+            <code>{fieldText(v)}</code>
+          </li>
+        ))}
+      </ul>
+      {feedbackAllowed && (
+        <label className="ui-field">
+          告诉它怎么改
+          <textarea className="ui-textarea" data-testid="request-feedback" rows={2} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+        </label>
+      )}
+      <div className="ui-card-actions">
+        {options.map((decision) => (
+          <button
+            key={decision}
+            className="ui-btn"
+            data-testid={`request-answer-${decision}`}
+            disabled={off}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              const fb = feedbackAllowed && decision === "reject" && feedback.trim() !== "" ? feedback : null;
+              setBusy(true);
+              setError(null);
+              void rpc
+                .call("conv.answer", fb === null ? { convKey, requestId, decision } : { convKey, requestId, decision, feedback: fb })
+                .then(() => setBusy(false))
+                .catch((err) => {
+                  setBusy(false);
+                  setError(errText(err));
+                });
+            }}
+          >
+            {DECISION_LABEL[decision] ?? decision}
+          </button>
+        ))}
+        {busy && <span className="muted">处理中…</span>}
+      </div>
+      {error && (
+        <div className="decision-err" data-testid="request-error">
+          {error}
+        </div>
+      )}
+    </CardFrame>
+  );
 }

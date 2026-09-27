@@ -6,11 +6,15 @@
 import type { Reach } from "./contracts";
 
 export type MainToHost =
-  | { type: "init"; userData: string; isPackaged: boolean; appPath: string; devRepoRoot: string | null }
+  | { type: "init"; userData: string; isPackaged: boolean; appPath: string; devRepoRoot: string | null; keychainExec?: string | null }
   | { type: "port" }
   | { type: "renderer-reset" }
   | { type: "shutdown" }
   | { type: "repo-root-chosen"; reqId: number; repoRoot: string | null }
+  // Spec 10 S8-R5/§2.10 退出状态机与原生确认框
+  | { type: "quit-query" }
+  | { type: "quit-proceed" }
+  | { type: "confirm-result"; reqId: string; ok: boolean }
   | { type: "test-arm"; name: string }
   | { type: "test-release"; name: string };
 
@@ -19,4 +23,7 @@ export type HostToMain =
   | { type: "reach"; reach: Reach }
   | { type: "data-root"; dataRoot: string | null }
   | { type: "repo-root-dialog"; reqId: number }
+  | { type: "quit-state"; busy: { convKey: string; label: string; running: boolean; openRequests: number }[] }
+  | { type: "sessions-down" }
+  | { type: "confirm-query"; reqId: string; title: string; detail: string }
   | { type: "test-hook-hit"; name: string };
