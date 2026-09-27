@@ -408,6 +408,33 @@ describe("TH-9 结束与退出序列", () => {
     expect(idle.some((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "shutdown")).toBe(true);
     expect(idle.some((r) => r.kind === "signal")).toBe(false);
   });
+
+  it("⑤ quitState 只列忙会话（D38）：全空闲为空；回合在跑、回合已完但有未答卡各列一条", async () => {
+    const b = await boot({ epKey: "IDLE", timing: { killGraceMs: 400 } });
+    mkEpisode(b.repo.root, "RUN", { "01-topic.md": "# r\n" });
+    mkEpisode(b.repo.root, "CARD", { "01-topic.md": "# c\n" });
+    b.svc.refreshEpisodes();
+    const CARD_REQ = { t: "request", request_id: "qc", kind: "tool_call", turn_id: "$turn", title: "t", card_text: "c", fields: { tool: "write_episode_file" }, options: ["approve", "reject"], feedback_allowed: true };
+    sessionScript(b.repo, "IDLE", [READY("IDLE"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    sessionScript(b.repo, "RUN", [READY("RUN"), { op: "serve", on_turn: [TURN_STARTED] }]);
+    sessionScript(b.repo, "CARD", [READY("CARD"), { op: "serve", on_turn: [TURN_STARTED, CARD_REQ, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:IDLE", text: "hi" });
+    await waitFor(async () => (await snapOf(b.svc, "ep:IDLE")).phase === "idle");
+    expect(b.svc.quitState()).toEqual([]);
+
+    await b.svc.dispatch("conv.send", { convKey: "ep:RUN", text: "hi" });
+    await b.svc.dispatch("conv.send", { convKey: "ep:CARD", text: "hi" });
+    await waitFor(async () => {
+      const c = await snapOf(b.svc, "ep:CARD");
+      return c.phase === "idle" && c.open.length === 1;
+    });
+    const busy = b.svc.quitState().sort((x, y) => x.convKey.localeCompare(y.convKey));
+    expect(busy).toEqual([
+      { convKey: "ep:CARD", label: "CARD", running: false, openRequests: 1 },
+      { convKey: "ep:RUN", label: "RUN", running: true, openRequests: 0 },
+    ]);
+    await b.svc.stopAllForQuit();
+  });
 });
 
 describe("TH-10 renderer 重置", () => {
