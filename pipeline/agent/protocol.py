@@ -140,8 +140,13 @@ class FrameReader(threading.Thread):
         """stdin EOF：中断当前回合（作废挂起请求），主循环随后退出 0。"""
         slots = self._slots
         slots["eof"] = True
-        with contextlib.suppress(Exception):
-            slots["interrupt"].request()
+        # 与 shutdown 帧同一条出路（§2.8 表同一行）：有回合才打中断，然后**入队**唤醒主循环。
+        # D33（M9 打包版实测）：此前只打中断不入队——空闲时主线程阻塞在 `out.get()` 的锁等上，
+        # macOS 上 SIGINT 唤不醒它，进程读过 EOF 后永不退出（host 死后留下 PPID=1 的孤儿）。
+        if slots["in_flight"]:
+            with contextlib.suppress(Exception):
+                slots["interrupt"].request()
+        slots["out"].put(("eof", None, None))
 
     def _error(self, code: str, message: str, rid: str | None = None) -> None:
         frame: dict[str, Any] = {"t": "error", "code": code, "message": message}

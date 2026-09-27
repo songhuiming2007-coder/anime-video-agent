@@ -548,6 +548,73 @@ def test_tp5_eof_while_waiting_voids_and_exits_zero(world, endpoint, tmp_path) -
     assert rc == 0
     assert proto_proc.frames[-1]["t"] == "bye" and proto_proc.frames[-1]["reason"] == "eof"
     assert "slept" not in json.dumps(endpoint.requests[-1]["messages"], ensure_ascii=False)
+    # §2.8「中断当前回合 → 收尾 → 写 turn_end」：盘上的顺序是 voided 关闭 → turn_end（D33）
+    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    kinds = [(r.get("k"), r.get("reason") or r.get("stopped")) for r in records
+             if r.get("k") in ("request_closed", "turn_end")]
+    assert kinds == [("request_closed", "voided"), ("turn_end", "interrupted")], kinds
+
+
+def test_tp5c_eof_while_tool_runs_stops_turn(world, endpoint, tmp_path) -> None:
+    """TP-5c（D33）：工具执行中 stdin EOF → 中断当前回合（不等工具跑完）、turn_end{interrupted}、退 0。
+
+    TP-5 的挂起请求会自己轮询 eof 旗标作废，测不到「EOF 必须打中断」——得让 EOF 落在执行中。
+    """
+    root, episode = world
+    endpoint.replies = [tool_call("test_slow", {"seconds": 120}), {"role": "assistant", "content": "收尾"}]
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "跑慢工具"})
+        request = proto_proc.wait_for("request")
+        proto_proc.send({"t": "answer", "request_id": request["request_id"], "decision": "approve",
+                         "feedback": None})
+        assert proto_proc.wait_for("request_closed")["reason"] == "answered"
+        proto_proc.close_input()
+        finished = proto_proc.wait_for("turn_finished", timeout=30)
+        rc = proto_proc.finish(timeout=10)
+        proto_proc.drain(0.5)
+    finally:
+        proto_proc.proc.kill()
+    assert finished["stopped"] == "interrupted", finished
+    assert rc == 0
+    assert proto_proc.frames[-1]["t"] == "bye" and proto_proc.frames[-1]["reason"] == "eof"
+    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["stopped"] for r in records if r.get("k") == "turn_end"] == ["interrupted"]
+
+
+def test_tp5b_eof_while_idle_exits_zero(world, endpoint, tmp_path) -> None:
+    """TP-5b（D33）：空闲时 stdin EOF → 限时内发 bye{eof} 退 0、释放租约。
+
+    M9 打包版实测：此前 EOF 只打中断不唤醒主循环，空闲会话读过 EOF 后永不退出，
+    host/app 意外死亡后留下租约指向已删目录的孤儿进程。
+    """
+    root, episode = world
+    endpoint.replies = [{"role": "assistant", "content": "好"}]
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        # 先跑完一轮再 EOF：覆盖「回合结束后回到空闲」这条最常见的现场
+        proto_proc.send({"t": "user_message", "text": "在吗"})
+        proto_proc.wait_for("turn_finished", timeout=30)
+        proto_proc.wait_for("stop_points", timeout=10)
+        proto_proc.close_input()
+        rc = proto_proc.finish(timeout=10)
+        proto_proc.drain(0.5)
+    finally:
+        proto_proc.proc.kill()
+    assert rc == 0, f"空闲 EOF 后 10 s 内必须退出 0（rc={rc}）"
+    assert proto_proc.frames[-1] == {**proto_proc.frames[-1], "t": "bye", "reason": "eof"}
+    # 空闲 EOF 不是「空闲中断」：不许多出一条 notice（不打中断就不会有）
+    tail = proto_proc.kinds()[proto_proc.kinds().index("turn_finished"):]
+    assert "notice" not in tail, tail
+    # 租约已释放：同一期能立刻再起一个协议进程
+    second = Protocol(root, endpoint, tmp=tmp_path / "second")
+    try:
+        second.wait_for_ready(timeout=30)
+        assert second.shutdown() == 0
+    finally:
+        second.proc.kill()
 
 
 def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
