@@ -738,13 +738,16 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-36", "guard": "--force 禁令按前缀判定（挡 --force-a 缩写）", "file": TOOLS,
      "old": '        if not any(flag.startswith(forced) for flag in ("force", "force-all")):\n',
      "new": '        if forced not in ("force", "force-all"):  # MUT-36\n'},
-    {"id": "S9-MUT-39", "guard": "子会话共用进程级租约（不各自 acquire）", "file": SESSION,
-     "old": ("        persist = messages is self.main_messages\n"
-             "        self.ensure_lease()\n"),
-     "new": ("        persist = messages is self.main_messages\n"
-             "        self.ensure_lease()\n"
-             "        if not persist and not self.ephemeral and self.ep_dir is not None:\n"
-             "            EpisodeLease.acquire(self.ep_dir)  # MUT-39\n")},
+    # MUT-39 重锚（M9 实跑）：「子会话再调一次 acquire」在现行实现下是等价变异——acquire 有进程级
+    # 登记表，同进程第二次拿回同一个租约，永远不会 SessionLocked（首跑 red=0 即此因）。护栏真正
+    # 落在登记表上：绕过它、每次新开 fd 去 flock，同进程第二次就撞 Errno 35（R3 实测）。
+    {"id": "S9-MUT-39", "guard": "同进程主/子会话共用一个租约（acquire 进程级登记，不自我锁死）", "file": SESSION_LOG,
+     "old": ("            existing = _LEASES.get(key)\n"
+             "            if existing is not None:\n"
+             "                return existing\n"),
+     "new": ("            existing = _LEASES.get(key)\n"
+             "            if False:  # MUT-39\n"
+             "                return existing\n")},
     {"id": "S9-MUT-40", "guard": "免卡写入不清空判重表", "file": LLM,
      "old": ('                if decision.provenance == "human":\n'
              '                    dedup.clear()'),
@@ -830,6 +833,18 @@ MUTATIONS: list[dict] = [
              '\n'
              '\n'
              'def _print_sessions(')},
+    # ---- M9 真实联调修复的两处（矩阵 §7.2 新增 MUT-61/62）----
+    {"id": "S9-MUT-61", "guard": "入站帧必须带 v:1（§3.1 公共键，缺席即拒）", "file": PROTO,
+     "old": '        if frame.get("v") != PROTOCOL_VERSION or isinstance(frame.get("v"), bool):\n',
+     "new": '        if "v" in frame and (frame.get("v") != PROTOCOL_VERSION or isinstance(frame.get("v"), bool)):  # MUT-61\n'},
+    {"id": "S9-MUT-62", "guard": "idea 会话照常开回合（不回 E_NO_EPISODE）", "file": PROTO,
+     "old": ('            if kind == "user_message":\n'
+             '                # idea 会话（--idea）照样开回合'),
+     "new": ('            if kind == "user_message":\n'
+             '                if ep_dir is None:  # MUT-62\n'
+             '                    writer.send({"t": "error", "code": "E_NO_EPISODE", "message": "本会话没有期目录，不能开对话轮", "rid": rid})\n'
+             '                    continue\n'
+             '                # idea 会话（--idea）照样开回合')},
 ]
 
 
@@ -857,7 +872,9 @@ class Harness:
              # 它由 harness 自己在开跑前把关（check_one 的命中数校验），不参与逐条计分。
              "--deselect=tests/test_verify_mutations.py::test_anchors_in_shipped_matrix_are_unique_in_repo"],
             cwd=self.repo, text=True, capture_output=True,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            # AVA_KI_AS_FAILURE：tests/conftest.py 把测试体内逃逸的 KeyboardInterrupt 转成普通失败，
+            # 免得一条打穿中断语义的变异让整轮中止、被记成 ABORTED（M9：MUT-5、MUT-29）
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "AVA_KI_AS_FAILURE": "1"},
         )
         out = proc.stdout + proc.stderr
         failed = re.findall(r"^FAILED (\S+)", out, flags=re.MULTILINE)

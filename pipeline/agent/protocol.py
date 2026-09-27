@@ -169,7 +169,13 @@ class FrameReader(threading.Thread):
         if required is None:
             self._error("E_BAD_REQUEST", f"未知入站帧类型: {kind!r}", rid)
             return
-        keys = set(frame) - {"t", "rid"}
+        # §3.1「公共键：`"v": 1`、`"t"`」对两个方向都成立：入站帧必须带 v 且等于 1。
+        # M9 真实联调实测：此前这里只剔除 t/rid，host 按 spec 带上的 v 被当成多余键拒收，
+        # 两侧的测试各按自己的理解写期望、各自全绿（Spec 10 RF-8）。
+        if frame.get("v") != PROTOCOL_VERSION or isinstance(frame.get("v"), bool):
+            self._error("E_BAD_REQUEST", f"入站帧必须带 \"v\": {PROTOCOL_VERSION}", rid)
+            return
+        keys = set(frame) - {"v", "t", "rid"}
         if keys != required:
             self._error(
                 "E_BAD_REQUEST",
@@ -620,7 +626,11 @@ def main(argv: list[str] | None = None) -> int:
     # ⑧ 历史帧（按 origin 映射 role；S9-R1 的 tool 角色带 ok/text）
     tracker = SessionContextTracker()
     messages: list[dict[str, Any]] = []
-    if ep_dir is not None:
+    if ep_dir is None:
+        # idea：与终端 `ava idea` 同一语义（cli.py 的 idea 分支）——messages 不绑到 host，因此不落盘
+        tracker.resident_prompt = assemble_resident_prompt("idea", root=paths.ROOT).content
+        tracker.active_scope = "idea"
+    else:
         host.bind_main(messages)
         scope = _scope_of(status)
         tracker.resident_prompt = assemble_resident_prompt(scope, root=paths.ROOT).content
@@ -679,10 +689,8 @@ def main(argv: list[str] | None = None) -> int:
                 writer.send({"t": "bye", "reason": "eof"})
                 break
             if kind == "user_message":
-                if ep_dir is None:
-                    writer.send({"t": "error", "code": "E_NO_EPISODE",
-                                 "message": "本会话没有期目录，不能开对话轮", "rid": rid})
-                    continue
+                # idea 会话（--idea）照样开回合：scope 固定 idea、零写权限、不落盘（§2.5 / Spec 10 §2.5）。
+                # M9 真实联调前这里回 E_NO_EPISODE——§3.1 的 user_message 错误表里没有它，桌面端「选题」对话因此开不了回合。
                 exit_code = _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid)
                 if slots["eof"]:
                     writer.send({"t": "bye", "reason": "eof"})
@@ -738,14 +746,15 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     turn_id = secrets.token_hex(8)
     slots["turn_id"] = turn_id
     slots["closed_requests"] = set()  # 「已关闭请求号」每回合清零，不让它无限长
-    status = inspect_episode(ep_dir)
-    override = slots.get("scope_override")
+    idea = ep_dir is None
+    status = None if idea else inspect_episode(ep_dir)
+    override = None if idea else slots.get("scope_override")
     if override:
         host.set_scope_override(override)
-    scope = override or scope_of(status)
+    scope = "idea" if idea else (override or scope_of(status))
     writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
 
-    session = host.session(persist=True, scope_mode=scope)
+    session = host.session(persist=not idea, scope_mode=scope)
     outcome: dict[str, Any] = {}
     try:
         outcome = session.run_turn(
@@ -779,8 +788,12 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():
-        _ensure_pending(ep_dir, status)
-        _send_stop_points(writer, ep_dir, turn_id)
+        if idea:
+            # S9-R4：每回合恰好一帧 stop_points、带本回合 turn_id；idea 没有期目录，也就没有停机点
+            writer.send({"t": "stop_points", "items": [], "turn_id": turn_id})
+        else:
+            _ensure_pending(ep_dir, status)
+            _send_stop_points(writer, ep_dir, turn_id)
     if host.interrupt.clear_dropped():
         writer.send({"t": "notice", "level": "info", "code": "interrupt_dropped",
                      "text": "回合已结束，这次中断被丢弃（未带进空闲态）。"})

@@ -268,7 +268,9 @@ def review_tool_call(
     if not side_effect:
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
-    return ToolVerdict("ask", request=_tool_request(name, args, argv, ep_dir, status, memory_plan))
+    return ToolVerdict(
+        "ask", request=_tool_request(name, args, argv, ep_dir, status, memory_plan, turn_id)
+    )
 
 
 def _model_argv_has_options(argv: list[str], ep_dir: Path | None) -> bool:
@@ -353,6 +355,7 @@ def _tool_request(
     ep_dir: Path | None,
     status: Any,
     memory_plan: Any,
+    turn_id: str | None = None,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -375,20 +378,24 @@ def _tool_request(
         memory_preview=render_plan_preview(memory_plan) if memory_plan else None,
     )
     body = card.split("\n")
-    prompt = body.pop() if body and body[-1].strip().startswith("└─") else ""
+    if body and body[-1].strip().startswith("└─"):
+        body.pop()  # 终端提示符行：协议下由 options 承担
+    # §3.2 的 danger = 卡片「危险标记」那一行的值（M9 实测此前取的是末行的终端提示符）
+    marks = [ln.split("危险标记:", 1)[1].strip() for ln in body if "危险标记:" in ln]
     fields = {
         "tool": name,
         "args": _jsonable(args),
         "argv": argv or [],
         "target": _target_of(memory_plan, argv, args),
         "stop_label": stop_label,
-        "danger": _clean(prompt or "无"),
+        "danger": _clean(marks[-1] if marks else "无"),
         "memory_preview": list(render_plan_preview(memory_plan)) if memory_plan else [],
     }
     return HumanRequest(
         request_id=new_request_id(),
         kind="tool_call",
-        turn_id=None,
+        # §3.1：回合内的请求带本回合 turn_id（M9 实测此前写死 None，review_tool_call 收到的 turn_id 白传）
+        turn_id=turn_id,
         title=f"工具审查: {name}",
         card_text="\n".join(body),
         fields=fields,
@@ -528,6 +535,7 @@ class AgentSession:
         self._log_broken = False
         self._last_records: list[dict[str, Any]] = []
         self._injected_docs: dict[str, str] = {}
+        self._tool_summaries: dict[int, str] = {}  # 本条回复内 index → start 帧的 summary（end 帧复用）
 
     # ---- 会话记录 ----
 
@@ -921,16 +929,33 @@ class AgentSession:
         )
 
     def _on_trace(self, payload: dict[str, Any]) -> None:
-        """工具帧（§3.1 的 `tool`）：判定在这里做一次，terminal 忽略，协议通道转成帧。"""
-        frame = dict(payload)
-        frame.setdefault("turn_id", self._turn_id)
-        if "args" in frame:
-            frame["summary"] = tool_summary(str(frame.get("name", "")), frame["args"])
-        if "content" in frame:
-            ok, observation = tool_flags(frame["content"])
-            frame["ok"] = ok
-            frame["observation"] = observation
-        self.channel.show("tool", frame)
+        """工具帧（§3.1 的 `tool`）：判定在这里做一次，terminal 忽略，协议通道转成帧。
+
+        帧的键**恰为** §3.1 的 8 个（S9-R1）：原始 `args` 与工具结果 `content` 只是判定材料，
+        不出进程（host 不解析工具内容；整份稿件也不该塞进帧里）。未在该阶段定义的键取中性值：
+        start 的 ok/observation 为 null；end 的 summary 复用同一调用 start 时算出的值。
+        M9 真实联调实测：此前只「添加」判定结果，start 缺 ok/observation、end 缺 summary，
+        host 按 §3.2 整帧判 malformed 丢弃——界面上一条工具行都没有。
+        """
+        name = str(payload.get("name", ""))
+        index = int(payload.get("index", 0))
+        if payload.get("phase") == "start":
+            summary = tool_summary(name, payload.get("args") or {})
+            self._tool_summaries[index] = summary
+            ok, observation = None, None
+        else:
+            summary = self._tool_summaries.get(index, "")
+            ok, observation = tool_flags(payload.get("content"))
+        self.channel.show("tool", {
+            "turn_id": self._turn_id,
+            "phase": payload.get("phase"),
+            "index": index,
+            "name": name,
+            "summary": summary,
+            "ok": ok,
+            "observation": observation,
+            "duplicate": bool(payload.get("duplicate", False)),
+        })
 
     def _review(
         self,
