@@ -947,6 +947,65 @@ browser 逐调用卡、素材抓取卡、`write_memory` 卡与记忆确认卡都
 **待办（不在本单）**：`docs/dev/plans/README.md` 的 Spec 10 状态行未动（PR2/PR3/PR4 未完，等 Spec 10 全绿再更新）。
 
 
+### 8.2 PR2 施工回填（2026-09-27）
+
+**交付物**（对假 `protocol.py`，Spec 9 未施工）：
+
+- `shared/convFrames.ts`（§3.2 出站帧校验，14 类闭集 + 安全整数 + 多键忽略）、`shared/convFold.ts`（§2.3 帧 → 流 + `convSummary`）、`shared/secretsRules.ts`（TV-8/9）、`shared/nativeConfirm.ts`（§2.4 第 5 层触发与正文）、`shared/isoTime.ts`（PR1 已有）。
+- `host/sessions.ts`（§4.2 `SessionManager`：懒启动、后台常驻、只读 stdout、`rid` 关联、`turn_id` 精确实时结算、结束/退出序列、进程组清理）、`host/secrets.ts`、`host/confirm.ts`（reqId `<bootId>:<n>` 的 host 侧端点）、`host/spawner.ts` 增补（`SESSION_NEW/CONTINUE/IDEA`、`PROBE_KEY_ENV`、`KEYCHAIN_READ`、`spawnSession`/`killGroup`/`groupAlive`）、`host/service.ts` 接线（会话方法、`readStart` 结算、repoRoot 切换互斥、建期后的 `episodes.summary` 推送）、`host/index.ts`（quit-query/quit-proceed/confirm-query/sessions-down、`bootId`、`--ava-keychain` 测试钩子）、`shared/protocol.ts` / `shared/lifecycle.ts` / `shared/constants.ts` 增量。
+- 夹具：`tests/fixtures/session.ts`（`fixtureWrite` 逐级 `lstat`+`realpath` 守卫、假 `protocol.py` 剧本解释器、按会话键分文件、不出网配置改写、假钥匙串）、`e2e/sessionFixtures.ts`（复用同一份夹具 + 退出/确认框桩）。
+
+**测试**：`npx vitest run` **285 passed**（PR1 后 191）。新增 `tests/shared/{convFrames,convFold,convStore,secretsRules,nativeConfirm}.test.ts`、`tests/host/{sessions,settle,confirm,sessionFixtures}.test.ts`；TF-1~3、TV-1~5/8~10/12、TH-1~TH-22 全绿。
+
+**PR2 范围外登记**：TH-20 的"结算由 service 侧的活跃期读取驱动"另有一条集成用例（`sessions.test.ts` 末条），其余 ①~⑧ 在 `settle.test.ts` 用注入时钟与假 `SessionProc` 逐条驱动。
+
+**施工偏差（如实登记）**：
+
+1. `ConvSnapshot`/`ConvDelta` 增 `keyProblem: string | null`（§2.9 第 6 条要求会话头部显示密钥未就绪的**命令**；§3.1 原结构无此字段，host 无处安放）。其余字段与 §3.1 逐字一致。
+2. `SessionDeps` 比 §4.2 多四项：`repoRoot`（spawn 的 cwd）、`isActive`、`canReadApprovals`（§2.7 第 4 条的两种即时结算）、`killGroup`/`groupAlive`/`changed`（进程组回收与徽标重推）。§4.2 只列了 `blocked`，但这四项无法从 `blocked` 推出。
+3. `HostDeps` 增 `confirm`、`bootId`、`sessionTiming`、`resolveSessionKey`（测试注入密钥解析，避免真钥匙串）。
+4. `host/confirm.ts` 与 `main/confirm.ts` 是把 §3.3 的确认框两端拆成可单测模块（TH-22）；`main/index.ts` 用注入的 `dialog` 接线。
+5. 假 `protocol.py` 的 `reply` 指令用 `subst`（与 `serve` 同一替换规则）；首版用键 `$rid` 拔键，脚本里的 `rid:"$rid"` 是**值**而非键，导致 rid 未被替换——TF/TH 用例在 8.2 期间逮到，已改。
+6. `createEpisode` 成功后追加一次 `episodes.summary` 推送：否则新期只在 30 s 周期后才出现在左栏（TX-7 实测）。
+
+### 8.3 PR3 施工回填（2026-09-27）
+
+**交付物**（对假 `protocol.py`）：
+
+- `renderer/ConversationPane.tsx`（§2.3 行渲染；失败 observation 默认展开、逐字）、`renderer/Composer.tsx`（唯一 `conv.send`/`conv.interrupt`）、`renderer/SessionHeader.tsx`（唯一 `conv.command`/`conv.end`/`conv.resume`；scope/LLM/素材模式/确认记忆/建期）、`renderer/convStore.ts`（§3.6 纯 reducer + `reset-convs`）、`renderer/HumanCards.tsx`（新增 `RequestCard`；`conv.answer` 与 `approval.decide` 同文件）、`renderer/NewEpisodeForm.tsx`（唯一 `episode.create`，未改语义）、`renderer/App.tsx`（中栏 = 工序条 + 会话头 + 对话流 + 待答区 + 输入框；左栏「选题」入口与「运行中 / N 张卡待答」徽标；`onConnect` 清空会话桶并按新 host 的 `episodes.summary` 重取快照；R6 从 snapshot 顶层字段重建 `awaiting`；`turn_started`/`settled` 驱动 autoOpen）、`renderer/style.css`（`.conv-shell`/`.conv-notice` 等业务区块，只引用 §3.1 变量）。
+- `main/index.ts` 退出状态机（`idle/querying/confirming/stopping`、重入保护、`QUIT_QUERY_TIMEOUT_MS`/`QUIT_STOP_TIMEOUT_MS` 兜底、`window-all-closed` 只调 `app.quit()`）、退出确认与原生确认框接线、`dialog` 桩（`__avaTestQuit` 含 `hold`）+ `__avaTestQuitRelease`。
+- 静态守卫：`tests/static/scan.ts` 新增 `inboundFrameOwners`（TG-11）与 `keychainTemplateViolations`（TG-12）；`guards.test.ts` 的 TG-4′/TG-10 去掉「PR3 才落地」豁免，新增 TG-11/12。
+
+**测试**：`TV-6 ⑧~⑪`（`tests/renderer/autoOpen.test.ts`）、`TG-10/11/12`（`guards.test.ts`）、`e2e/session.spec.ts` **19 passed**（TX-1~TX-11、TX-12~TX-15、TX-8b/8c/8d 的假会话版本）。全套未打包 e2e：**64 passed / 1 skipped**（VE-0 为 Spec 14 既有跳过项），`e2e/ack.spec.ts` 零改动全绿。
+
+**施工偏差（如实登记）**：
+
+1. Idea 视图的「建期…」同时挂在左栏与 `SessionHeader`（§2.5 要求头部常驻、左栏入口是同一表单）；两处都渲染 `NewEpisodeForm`，左栏那份用 `data-testid` 定位。
+2. `TV-6 ④` 的 activeElement 断言只覆盖「出现『已就绪』条」的前后（自动呼出由人点期行触发，点击本身会移焦，无法把点击排除在观测窗口外）。
+3. `TX-5 ①` 用 H1 自愈真实建出的 03.5 待审对象（夹具期停在 03.5），不写死 approval_id；②的候选对象钉住真实 `mtime_ns`，避免 H5 自愈把对象 supersede。
+4. ~~`TX-8b②`（host 就绪但不应答 `quit-query`）未单独造钩子，以「host 不在 / 未就绪 → 直接退出」的等价路径覆盖。~~ **该偏差已在 §8.4 取消**：新增 host 侧 `pauseAt("quit-query")` 钩子，`TX-8b②` 真跑 `QUIT_QUERY_TIMEOUT_MS` 兜底分支（M7 F-2）。
+5. `TX-5 ⑤`、`TX-0`、真实 `session.jsonl` 逐字比对属 PR4（需真实 `pipeline.agent.protocol`），未做。
+
+**变异实跑（抽验，逐条植入 → 目标用例变红 → 还原）**：MUT-3（answer 不查打开集合）→ TH-3 红 1；MUT-15（去掉完整行长度检查）→ TH-12 ① 红 1；MUT-43（跳过原生确认框）→ TH-18 红 5；MUT-66（`fixtureWrite` 不 lstat 目标）→ TF-1 红 3。§7.2 其余条目按 §8 的 PR 划分留在 PR4（需要真实 core 或跨进程时序）。
+
+**残余风险**：`conv.answer` 的 in-flight 记录与 `answered_local` 的 feedback 取自 host 自己写下的值（core 的 `request_closed` 不带 feedback，S9-R2 只回显 rid）——若 core 拒绝了答复却仍发 `request_closed{reason:"answered"}`，host 的留痕会与事实不符；真实 core 由 PR4 的 TX-0 契约用例覆盖。
+
+### 8.4 M7 验收回改（2026-09-27）
+
+M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 按验收意见登记不改；F-6 为正向确认）。
+
+| # | 处置 | 落点 | 新测试 |
+|---|---|---|---|
+| F-1 🟡 | `before-quit` 不再只拦 `querying`/`confirming`，`stopping` 期间一样 `preventDefault`；收尾只由 `sessions-down` 或 `QUIT_STOP_TIMEOUT_MS` 决定 | `main/index.ts` | `TX-8e`：host 停在 `quit-proceed` 钩子上（stopping），第二次 `app.quit()` 必须被拦下（app 与 host 仍活），放行后才退 |
+| F-2 🟡 | 新增 host 侧 `pauseAt("quit-query")` 钩子，真跑「就绪但不应答」分支 | `host/index.ts` | `TX-8b②`：arm 后退出，耗时 ≥ 2 s（兜底）且 < 8 s，走不到确认框 |
+| F-3 🟡 | 钥匙串 `argv` 逐位钉住；补真实 `/usr/bin/security` 查不存在账户 → 退 44 的冒烟（离线、不碰真实条目） | `tests/host/spawner.test.ts` | 「M7 F-3 钥匙串读取」两条 |
+| F-4 🔵 | host exit 处理器把 `stopping` 一并短路（原先只短路 querying/confirming，会白拉一个新 host 再被兜底带走） | `main/index.ts` | `TX-8f`：stopping 中 SIGKILL host → < 5 s 退出 |
+| F-5 🔵 | 接受：TH-6 以 `spawnLog`/`pushes`/`diagnostics` 三处断言替代「host stdout 捕获」逐字落实，功能等价 | — | — |
+
+**回改变异实跑**：F-1 回退（stopping 不 preventDefault）→ `TX-8e` 红；F-2 回退（删 `quitQueryTimer`）→ `TX-8b②` 红；F-4 回退（stopping 不短路）→ `TX-8f` 红（11.3 s，即看护重启 + 10 s 兜底）。
+
+**回归**：`npx vitest run` 287 passed（27 文件，F-3 新增两条）；全套未打包 e2e 67 passed / 1 skipped（`e2e/session.spec.ts` 22 passed，新增 TX-8b②/8e/8f）；`tsc --noEmit` 干净。
+
 ## 9. 验收门禁清单
 
 - [ ] **门禁 1（授权）**：§6.1 全部阻塞项获用户授权；S9-R1~R4 经红队对 Spec 9 的定向复核 🟢；

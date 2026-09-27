@@ -9,6 +9,7 @@ import {
   SPAWN_TIMEOUT_REVIEW_MS,
   SPAWN_TIMEOUT_SHORT_MS,
   STATUS_STDOUT_MAX_BYTES,
+  KEYCHAIN_SERVICE,
 } from "../shared/constants";
 import type { StopType } from "../shared/contracts";
 
@@ -22,7 +23,13 @@ export type Template =
   | "APPROVE"
   | "REJECT"
   | "REVIEW_APPROVE"
-  | "NEW_EPISODE";
+  | "NEW_EPISODE"
+  // Spec 10 S8-R3：密钥探测与钥匙串读取（短命令，规则同现状）
+  | "PROBE_KEY_ENV"
+  | "KEYCHAIN_READ";
+
+/** 长驻会话进程模板（Spec 10 S8-R3）；不经 runCore（stdin pipe、无超时），只用 sessionArgv。 */
+export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA";
 
 export interface TemplateArgs {
   PROBE_APPROVALS: Record<string, never>;
@@ -38,6 +45,9 @@ export interface TemplateArgs {
   REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
   /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
   NEW_EPISODE: { name: string };
+  PROBE_KEY_ENV: Record<string, never>;
+  /** Spec 10 §2.9：账户名 = core 回答的变量名 */
+  KEYCHAIN_READ: { envName: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -58,6 +68,21 @@ export interface CoreResult {
 }
 
 const GIT = "/usr/bin/git";
+/** Spec 10 §2.9：固定服务名；账户名 = 变量名。 */
+const DEFAULT_KEYCHAIN_EXEC = "/usr/bin/security";
+let keychainExec = DEFAULT_KEYCHAIN_EXEC;
+
+/**
+ * 仅未打包构建的测试钩子（TG-6，Spec 10 §3.4）：把 KEYCHAIN_READ 的可执行路径换成夹具脚本。
+ * 打包版没有任何调用点；标识以 `__avaTest` 前缀，由 guards.test.ts 的 HOOK_IDENT 覆盖。
+ */
+export function __avaTestSetKeychainExec(path: string): void {
+  keychainExec = path;
+}
+
+export function keychainExecPath(): string {
+  return keychainExec;
+}
 
 export function pythonOf(repoRoot: string): string {
   return `${repoRoot}/.venv/bin/python`;
@@ -115,8 +140,28 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { name } = args as TemplateArgs["NEW_EPISODE"];
       return { argv: [py, "-m", "pipeline.agent.cli", "new", name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
+    case "PROBE_KEY_ENV":
+      // 只读配置、不读环境变量（C10-R2）；stdout 就是变量名，缺失为空串
+      return { argv: [py, "-c", "import sys; from pipeline.agent.llm import api_key_env_name; sys.stdout.write(api_key_env_name() or '')"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    case "KEYCHAIN_READ": {
+      const { envName } = args as TemplateArgs["KEYCHAIN_READ"];
+      return { argv: [keychainExec, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", envName, "-w"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
+  }
+}
+
+/** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。 */
+export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string): string[] {
+  const py = pythonOf(repoRoot);
+  switch (t) {
+    case "SESSION_NEW":
+      return [py, "-m", "pipeline.agent.protocol", ep as string];
+    case "SESSION_CONTINUE":
+      return [py, "-m", "pipeline.agent.protocol", ep as string, "--continue"];
+    case "SESSION_IDEA":
+      return [py, "-m", "pipeline.agent.protocol", "--idea"];
   }
 }
 
@@ -176,7 +221,7 @@ class Full {
 }
 
 export interface SpawnLogEntry {
-  template: Template;
+  template: Template | SessionTemplate;
   argv: string[];
   at: number;
   trigger?: string;
@@ -265,4 +310,66 @@ export function runCore<T extends Template>(t: T, args: TemplateArgs[T], ctx: { 
   const { argv, timeoutMs, stdoutMax } = buildArgv(t, args, ctx.repoRoot);
   recordSpawn({ template: t, argv, at: Date.now(), ...tag });
   return runArgv(argv, timeoutMs, ctx.repoRoot, childEnv(process.env), stdoutMax);
+}
+
+/**
+ * Spec 10 §3.4：会话进程的窄接口；`ChildProcess` 类型/API 不漏出本文件（TG-3）。
+ * stdin 为 pipe、无超时（长驻）；detached 使其成为进程组组长，退出时 host 对整个进程组收尾（§2.10）。
+ */
+export interface SessionProc {
+  readonly pid: number | undefined;
+  write(line: string): void;
+  onStdout(fn: (chunk: Buffer) => void): void;
+  onStderr(fn: (chunk: Buffer) => void): void;
+  onExit(fn: (code: number | null, signal: string | null) => void): void;
+  /** group=true 时对整组发信号（结束序列的 SIGKILL）；SIGTERM 只发给会话 pid（§2.10）。 */
+  signal(sig: NodeJS.Signals, group: boolean): void;
+}
+
+export function spawnSession(t: SessionTemplate, args: { ep?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
+  const argv = sessionArgv(t, args.ep, ctx.repoRoot);
+  // spawn 日志只记模板名与 argv，不记环境（§3.4）；密钥值绝不进任何日志（TH-6）
+  recordSpawn({ template: t, argv, at: Date.now() });
+  const child = spawn(argv[0], argv.slice(1), {
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+    cwd: ctx.repoRoot,
+    env: { ...childEnv(process.env), ...extraEnv },
+  });
+  return {
+    pid: child.pid,
+    write: (line) => void child.stdin?.write(line),
+    onStdout: (fn) => void child.stdout?.on("data", fn),
+    onStderr: (fn) => void child.stderr?.on("data", fn),
+    onExit: (fn) => child.on("exit", (code, signal) => fn(code, signal ?? null)),
+    signal: (sig, group) => {
+      const pid = child.pid;
+      if (pid === undefined) return;
+      try {
+        process.kill(group ? -pid : pid, sig);
+      } catch {
+        /* 进程组已不存在 */
+      }
+    },
+  };
+}
+
+/** §2.10 进程组清理：会话 pid 退出后若组内仍有成员，对整组发一次 SIGKILL。 */
+export function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    /* 进程组已不存在 */
+  }
+}
+
+/** 组内是否仍有存活成员（探测用；EPERM 也表示存在）。 */
+export function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 }

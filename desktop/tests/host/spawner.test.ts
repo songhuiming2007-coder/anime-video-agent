@@ -2,8 +2,8 @@
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { SPAWN_LOG_MAX, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
-import { buildArgv, childEnv, recordSpawn, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
+import { KEYCHAIN_SERVICE, SPAWN_LOG_MAX, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
+import { __avaTestSetKeychainExec, buildArgv, childEnv, keychainExecPath, recordSpawn, runArgv, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fetchStatus } from "../../src/host/status";
 import { cleanup, PY, shellScript, tmp } from "../helpers";
 
@@ -135,4 +135,23 @@ describe("Spec 10 S8-R2 / Spec 12 S8-R19：NEW_EPISODE 与 09 定稿的 argv 形
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/approve", "05", "--id", "appr_2",
     ]);
   });
+});
+
+describe("M7 F-3 钥匙串读取的 argv 形状与真实退出码", () => {
+  it("KEYCHAIN_READ 的 argv 逐位钉住（-s <服务> -a <变量名> -w）", () => {
+    const { argv, timeoutMs } = buildArgv("KEYCHAIN_READ", { envName: "MY_API_KEY" }, "/repo");
+    expect(argv).toEqual([keychainExecPath(), "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "MY_API_KEY", "-w"]);
+    expect(timeoutMs).toBeGreaterThan(0);
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "真实 /usr/bin/security 按 buildArgv 的 argv 查不存在的账户 → 退 44（不碰真实条目、无交互）",
+    async () => {
+      __avaTestSetKeychainExec("/usr/bin/security"); // 默认值即此，显式写死以免夹具残留
+      const { argv, timeoutMs } = buildArgv("KEYCHAIN_READ", { envName: "M7_NO_SUCH_ACCOUNT" }, "/repo");
+      const r = await runArgv(argv, timeoutMs, root, childEnv(process.env));
+      expect(r.code).toBe(44); // security 的「item could not be found」
+      expect(keychainExecPath()).toBe("/usr/bin/security");
+    },
+  );
 });

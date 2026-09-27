@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { app, BrowserWindow, dialog, MessageChannelMain, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
 import { installEgressBlock } from "./egress";
 import { MediaServer, registerMediaScheme } from "./mediaProtocol";
-import { HOST_STDERR_TAIL_BYTES } from "../shared/constants";
+import { createMainConfirmBroker } from "./confirm";
+import { HOST_STDERR_TAIL_BYTES, QUIT_QUERY_TIMEOUT_MS, QUIT_STOP_TIMEOUT_MS } from "../shared/constants";
 import { initialRestartState, onHostCrash, onHostStarted } from "../shared/hostRestart";
 import type { HostToMain, MainToHost } from "../shared/lifecycle";
 import { repoRootProblem } from "../shared/repoRoot";
@@ -32,6 +33,8 @@ interface DevSwitches {
   repoRoot: string | null;
   userData: string | null;
   handshakeHook: boolean;
+  /** 仅未打包构建的测试钩子（TG-6）：把 KEYCHAIN_READ 的可执行路径换成夹具脚本（Spec 10 §3.4） */
+  keychainExec: string | null;
 }
 
 /** 测试驱动经 electronApp.evaluate 摆放的对话框桩（仅未打包构建，TA-12） */
@@ -47,15 +50,21 @@ type TestGlobals = typeof globalThis & {
   __avaTestRelease?: (name: string) => void;
   __avaTestHookHits?: string[];
   __avaTestHostPid?: () => number | null;
+  /** Spec 10 §2.10 退出确认桩（仅未打包构建） */
+  __avaTestQuit?: { calls: number; lists: string[][]; respond: "quit" | "cancel"; hold?: boolean };
+  __avaTestQuitRelease?: (respond: "quit" | "cancel") => void;
+  /** Spec 10 §3.3 原生确认框桩（仅未打包构建） */
+  __avaTestConfirm?: { calls: number; respond: boolean; last: { title: string; detail: string } | null };
 };
 
 // 测试专用启动开关：只在未打包构建中解析（TG-6、TS-7）
 function readDevSwitches(): DevSwitches {
-  const sw: DevSwitches = { repoRoot: null, userData: null, handshakeHook: false };
+  const sw: DevSwitches = { repoRoot: null, userData: null, handshakeHook: false, keychainExec: null };
   if (!app.isPackaged) {
     for (const a of process.argv) {
       if (a.startsWith("--ava-repo-root=")) sw.repoRoot = a.slice("--ava-repo-root=".length);
       else if (a.startsWith("--ava-user-data=")) sw.userData = a.slice("--ava-user-data=".length);
+      else if (a.startsWith("--ava-keychain=")) sw.keychainExec = a.slice("--ava-keychain=".length);
       else if (a === "--ava-test-handshake-hook") sw.handshakeHook = true;
     }
   }
@@ -80,6 +89,13 @@ function boot(): void {
   let mainLoadFailed = false; // 本次主框架载入是否失败（did-fail-load 之后的错误页 did-finish-load 不算载入成功）
   let quitting = false;
   let fatal: string | null = null;
+  /** Spec 10 §2.10 退出状态机：防连按 Cmd+Q 重入 */
+  type QuitPhase = "idle" | "querying" | "confirming" | "stopping";
+  let quitPhase: QuitPhase = "idle";
+  let quitQueryTimer: NodeJS.Timeout | null = null;
+  let quitStopTimer: NodeJS.Timeout | null = null;
+  /** 桩把确认框「挂住」时，放行它的入口（TX-8c 重入） */
+  let pendingQuitConfirm: ((ok: boolean) => void) | null = null;
   let restartState = initialRestartState(Date.now());
   let hostStderr = Buffer.alloc(0);
   let handshake = 0; // 每次撮合单调 +1，随端口一起投递；renderer 每个握手号至多采纳一次（§4.4）
@@ -148,6 +164,39 @@ function boot(): void {
   };
 
   /** 熔断：停止重启，renderer 换成致命面板（含 host stderr 尾部）；UI 不再持有任何 host 端口 */
+  const mainConfirm = createMainConfirmBroker({
+    show: async (title, detail, signal) => {
+      const box: Electron.MessageBoxOptions = { type: "question", title, message: title, detail, buttons: ["批准", "取消"], defaultId: 1, cancelId: 1, signal };
+      const r = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
+      return r.response === 0;
+    },
+    result: (reqId, ok) => sendToHost({ type: "confirm-result", reqId, ok }),
+    stub: () => (!app.isPackaged ? testGlobals.__avaTestConfirm : undefined),
+  });
+
+  /** Spec 10 §2.10 第 5 步：main 发送 quit-proceed → host 收尾 → sessions-down → 停定时器 → 退出 */
+  const proceedQuit = () => {
+    quitPhase = "stopping";
+    if (quitQueryTimer) clearTimeout(quitQueryTimer);
+    sendToHost({ type: "quit-proceed" });
+    quitStopTimer = setTimeout(() => {
+      quitting = true;
+      app.exit(0);
+    }, QUIT_STOP_TIMEOUT_MS);
+  };
+
+  const finishQuit = () => {
+    if (quitStopTimer) clearTimeout(quitStopTimer);
+    sendToHost({ type: "shutdown" });
+    quitting = true;
+    app.exit(0);
+  };
+
+  const completeQuitConfirm = (ok: boolean) => {
+    if (ok) proceedQuit();
+    else quitPhase = "idle"; // 取消：不向 host 发任何消息，host 照常轮询
+  };
+
   const showFatal = (why: string) => {
     fatal = `${why}\n\n--- host stderr 尾部 ---\n${hostStderr.toString("utf-8")}`;
     process.stderr.write(`ava-host 熔断：${why}\n`);
@@ -196,6 +245,42 @@ function boot(): void {
         );
       } else if (m.type === "test-hook-hit") {
         if (!app.isPackaged) testGlobals.__avaTestHookHits?.push(m.name);
+      } else if (m.type === "quit-state") {
+        if (quitPhase !== "querying") return; // 重入/迟到：忽略
+        if (quitQueryTimer) clearTimeout(quitQueryTimer);
+        if (m.busy.length === 0) {
+          proceedQuit();
+          return;
+        }
+        quitPhase = "confirming";
+        const lists = m.busy.map((b) => `${b.label} · ${b.running ? "运行中" : "空闲"}${b.openRequests > 0 ? ` · ${b.openRequests} 张卡未答` : ""}`);
+        const stub = !app.isPackaged ? testGlobals.__avaTestQuit : undefined;
+        if (stub) {
+          stub.calls += 1;
+          stub.lists.push(lists);
+          if (stub.hold) {
+            pendingQuitConfirm = completeQuitConfirm; // 挂住：模拟确认框已打开（TX-8c）
+            return;
+          }
+          completeQuitConfirm(stub.respond === "quit");
+          return;
+        }
+        const box: Electron.MessageBoxOptions = {
+          type: "warning",
+          message: "有会话在运行，仍然退出？",
+          detail: `${lists.join("\n")}\n\n正在运行的渲染等作业会被中断；回合不会再做收尾总结。`,
+          buttons: ["退出", "取消"],
+          defaultId: 1,
+          cancelId: 1,
+        };
+        void (win ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).then((r) => {
+          if (r.response === 0) proceedQuit();
+          else quitPhase = "idle";
+        });
+      } else if (m.type === "sessions-down") {
+        if (quitPhase === "stopping") finishQuit();
+      } else if (m.type === "confirm-query") {
+        mainConfirm.request(m.reqId, m.title, m.detail);
       }
     });
     h.on("exit", (code) => {
@@ -204,6 +289,14 @@ function boot(): void {
       host = null;
       hostReady = false;
       media.destroyAll();
+      mainConfirm.hostExited(); // 撤下已打开的确认框、丢弃排队中的全部（二轮 🔵-5）
+      // 退出流程中的 host 消失：视同 host 不可用，直接退出（§2.10 第 1、2 步）。
+      // stopping 也短路（M7 F-4）：否则会落进看护重启分支，白拉一个新 host 再被兜底定时器带走。
+      if (quitPhase !== "idle") {
+        quitting = true;
+        app.exit(0);
+        return;
+      }
       if (quitting) return;
       // 看护（§2.9）：退避 1 s → 2 s → 4 s …封顶 30 s；60 s 内崩 5 次熔断
       const r = onHostCrash(restartState, Date.now());
@@ -217,6 +310,7 @@ function boot(): void {
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       devRepoRoot: !app.isPackaged ? dev.repoRoot : null,
+      keychainExec: !app.isPackaged ? dev.keychainExec : null,
     });
   };
 
@@ -282,6 +376,11 @@ function boot(): void {
     testGlobals.__avaTestArm = (name: string) => sendToHost({ type: "test-arm", name });
     testGlobals.__avaTestRelease = (name: string) => sendToHost({ type: "test-release", name });
     testGlobals.__avaTestHostPid = () => host?.pid ?? null;
+    testGlobals.__avaTestQuitRelease = (respond: "quit" | "cancel") => {
+      const f = pendingQuitConfirm;
+      pendingQuitConfirm = null;
+      if (f) f(respond === "quit");
+    };
   }
 
   app.on("second-instance", focusWindow);
@@ -296,14 +395,30 @@ function boot(): void {
     });
   });
 
-  app.on("before-quit", () => {
-    quitting = true;
+  app.on("before-quit", (e) => {
+    if (quitPhase !== "idle") {
+      // 重入（连按 Cmd+Q）：一律拦下。stopping 期间也拦（M7 F-1）：收尾只能由 sessions-down 或
+      // QUIT_STOP_TIMEOUT_MS 结束，不能被第二次 Cmd+Q 抢在前面 app.exit，否则 host 的 shutdown 与
+      // 会话的确定收尾（S9-R3 wrapup:"skipped"）都会被跳过。
+      e.preventDefault();
+      return;
+    }
+    // 『结束会话』与其实时性无关的退出路径：host 不在、未就绪或已熔断 → 直接退出
+    if (!host || !hostReady || fatal !== null) {
+      quitting = true;
+      return;
+    }
+    e.preventDefault();
+    quitPhase = "querying";
+    sendToHost({ type: "quit-query" });
+    quitQueryTimer = setTimeout(() => {
+      quitting = true;
+      app.exit(0);
+    }, QUIT_QUERY_TIMEOUT_MS);
   });
 
   app.on("window-all-closed", () => {
-    quitting = true;
-    sendToHost({ type: "shutdown" });
-    app.quit();
+    app.quit(); // 不再先发 shutdown（Spec 10 S8-R5）：退出统一走 before-quit 状态机
   });
 }
 

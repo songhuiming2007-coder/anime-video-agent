@@ -18,6 +18,8 @@ import {
   newEpisodeFormViolations,
   rpcCallViolations,
   sessionLogViolations,
+  inboundFrameOwners,
+  keychainTemplateViolations,
   sourceFiles,
   topDir,
   unguardedHooks,
@@ -124,7 +126,6 @@ describe("TG-4′ 答复类方法只在人审卡片的 onClick 里（Spec 10 §2
   });
   it("表里点名的文件必须存在（否则守卫悄悄失明）", () => {
     for (const spec of Object.values(ACTION_METHODS)) {
-      if (spec.file === "renderer/Composer.tsx" || spec.file === "renderer/SessionHeader.tsx") continue; // PR3 才落地
       expect(files.some((f) => f.rel === spec.file), spec.file).toBe(true);
     }
   });
@@ -138,9 +139,8 @@ describe("TG-10 发送 / 建期类方法只在各自组件的点击处理器里�
     expect(actionClickViolations(src("renderer/NewEpisodeForm.tsx", create))).toEqual([]);
     expect(actionClickViolations(src("renderer/Composer.tsx", create))).toHaveLength(1); // episode.create 放错了文件
   });
-  it("真实源码：episode.create 合规（conv.* 随 PR3 落地）", () => {
-    const hits = files.flatMap(actionClickViolations).filter((h) => !h.includes("conv."));
-    expect(hits).toEqual([]);
+  it("真实源码：conv.* 与 episode.create 全部合规", () => {
+    expect(files.flatMap(actionClickViolations)).toEqual([]);
   });
 });
 
@@ -201,6 +201,30 @@ describe("TG-17 卡片的 key（🟡-2 d）", () => {
   });
   it("真实源码", () => {
     expect(files.flatMap(cardKeyViolations)).toEqual([]);
+  });
+});
+
+describe("TG-11 入站帧的构造点只在 host/sessions.ts，且每种恰 1 处（Spec 10 §2.4 第 1 层）", () => {
+  it("真实源码", () => {
+    const hits = inboundFrameOwners(files);
+    expect(hits.map((h) => h.file)).toEqual(hits.map(() => "host/sessions.ts"));
+    const counts = new Map<string, number>();
+    for (const h of hits) counts.set(h.t, (counts.get(h.t) ?? 0) + 1);
+    for (const t of ["user_message", "answer", "interrupt", "command", "shutdown"]) expect(counts.get(t), t).toBe(1);
+  });
+  it("合成片段：另一文件里的入站帧被点名", () => {
+    expect(inboundFrameOwners([src("renderer/App.tsx", 'const f = { v: 1, t: "user_message", text: "x" };')])).toEqual([{ file: "renderer/App.tsx", t: "user_message" }]);
+  });
+});
+
+describe("TG-12 KEYCHAIN_READ 只在 spawner.ts 与 secrets.ts（Spec 10 §2.9）", () => {
+  it("真实源码", () => {
+    expect(keychainTemplateViolations(files)).toEqual([]);
+    expect(files.some((f) => f.rel === "host/spawner.ts" && f.text.includes("KEYCHAIN_READ"))).toBe(true);
+    expect(files.some((f) => f.rel === "host/secrets.ts" && f.text.includes("KEYCHAIN_READ"))).toBe(true);
+  });
+  it("合成片段", () => {
+    expect(keychainTemplateViolations([src("renderer/App.tsx", 'const t = "KEYCHAIN_READ";')])).toHaveLength(1);
   });
 });
 

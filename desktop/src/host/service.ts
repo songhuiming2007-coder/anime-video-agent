@@ -37,6 +37,8 @@ import {
   type ShotsEntry,
   type SnapshotStatus,
   type TreeEntry,
+  type ConvKey,
+  type ConvSnapshot,
 } from "../shared/protocol";
 import { decide, DecideFail, parseDecideParams } from "./decide";
 import { errnoOf, realFs, type FsRead } from "./fsio";
@@ -44,7 +46,9 @@ import { listEpisodes, type EpisodeEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
-import { pythonOf, runCore, type CoreResult, type SpawnTag, type Template, type TemplateArgs } from "./spawner";
+import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs } from "./spawner";
+import { resolveLlmKey, type KeyResolution } from "./secrets";
+import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
 import { pollOnce, resyncState, type TailState } from "./tailer";
@@ -67,6 +71,14 @@ export interface HostDeps {
   runCore: <T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag?: SpawnTag) => Promise<CoreResult>;
   /** main 的原生对话框选择 + 二次确认（§2.10）；返回确认后的 repoRoot，取消为 null */
   chooseRepoRoot: () => Promise<string | null>;
+  /** browser/抓取卡「批准」前的原生确认框（Spec 10 §2.4 第 5 层）；true = 人点了批准 */
+  confirm: (title: string, detail: string) => Promise<boolean>;
+  /** 会话进程启动时的随机串（Spec 10 🟡-9）：generation = "<bootId>:<n>" */
+  bootId: string;
+  /** 密钥解析（§2.9）；默认走 PROBE_KEY_ENV + 钥匙串，测试可注入 */
+  resolveSessionKey: (repoRoot: string) => Promise<KeyResolution>;
+  /** 会话定时器初值（测试注入缩短） */
+  sessionTiming: Partial<SessionTiming>;
   /** 仅未打包构建（TG-6）：测试驱动在此暂停 host（§4.3 after-heal / after-fingerprint-check 等） */
   testHook: (name: string) => Promise<void>;
   /** false = 不启动定时器（测试逐次驱动 tick） */
@@ -101,6 +113,8 @@ interface EpisodeRuntime {
   statusKey: string;
   approvals: SnapshotApprovals;
   approvalsKey: string;
+  /** 本次对象库读取的**开始**时刻（打开文件之前取）；§2.7 结算用它，不用读完时刻 */
+  approvalsReadStart: number | null;
   approvalRecords: ApprovalRecord[];
   lastGoodApprovals: ApprovalRecord[] | null;
   healedAt: string | null;
@@ -171,7 +185,7 @@ export class HostService {
   diagnostics: string[] = [];
   episodes = new Map<string, EpisodeEntry>();
   hiddenUnderscore = 0;
-  summaries = new Map<string, EpisodeSummary>();
+  summaries = new Map<string, Omit<EpisodeSummary, "conv">>();
   subs = new Map<string, EpisodeRuntime>();
   active: string | null = null;
   /** repoRoot 代号：每次确认切换 +1；只读 spawn 的结果若代号已过期则丢弃（§2.10，红队 R3 m4） */
@@ -188,6 +202,10 @@ export class HostService {
   private started = false;
   private timers: NodeJS.Timeout[] = [];
   private send: (env: Envelope) => void = () => {};
+  /** 会话管理（Spec 10 §2.1、§4.2） */
+  readonly sessions: SessionManager;
+  /** 退出第 5 步开始后拒绝建期等新请求（Spec 10 §2.10、二轮 🔵-6） */
+  private sessionQuitting = false;
 
   constructor(
     readonly cfg: HostConfig,
@@ -204,11 +222,32 @@ export class HostService {
       healExecutor: undefined,
       runCore,
       chooseRepoRoot: async () => null,
+      confirm: async () => false,
+      bootId: Math.random().toString(36).slice(2, 10),
+      resolveSessionKey: (root: string) => resolveLlmKey(this.core.bind(this) as Parameters<typeof resolveLlmKey>[0], root),
+      sessionTiming: {},
       testHook: async () => {},
       timers: true,
       ...deps,
     };
     this.heal = new HealScheduler(null, (epKey, r) => this.diag(`heal 失败（${epKey}）：${r.stderrTail.trim().slice(-400)}`));
+    this.sessions = new SessionManager({
+      spawnSession,
+      resolveKey: () => this.deps.resolveSessionKey(this.repoRoot ?? ""),
+      confirm: (title, detail) => this.deps.confirm(title, detail),
+      now: () => this.deps.now(),
+      bootId: this.deps.bootId,
+      push: (env) => this.push(env),
+      diag: (m) => this.diag(m),
+      blocked: () => this.choosing || this.switching,
+      repoRoot: () => this.repoRoot,
+      isActive: (epKey) => this.active === epKey,
+      canReadApprovals: (epKey) => this.capApprovals && this.reach === "ok" && this.episodes.has(epKey),
+      killGroup,
+      groupAlive,
+      changed: () => this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() }),
+      timing: this.deps.sessionTiming,
+    });
   }
 
   /** 默认 HEAL executor：spawn `ava <期> /approvals`（§3.4），退出码必须 0，输出丢弃。 */
@@ -431,13 +470,16 @@ export class HostService {
   }
 
   episodesList(): EpisodesList {
+    const convs = this.sessions.summaries();
     return {
       reach: this.reach,
       reachDetail: this.reachDetail,
       hiddenUnderscore: this.hiddenUnderscore,
-      episodes: [...this.episodes.values()].map(
-        (e) => this.summaries.get(e.epKey) ?? { epKey: e.epKey, mtimeMs: e.mtimeMs, currentStep: null, isBlocked: null },
-      ),
+      episodes: [...this.episodes.values()].map((e) => ({
+        ...(this.summaries.get(e.epKey) ?? { epKey: e.epKey, mtimeMs: e.mtimeMs, currentStep: null, isBlocked: null }),
+        conv: convs.get(`ep:${e.epKey}` as ConvKey) ?? null,
+      })),
+      idea: convs.get("idea") ?? null,
     };
   }
 
@@ -483,6 +525,7 @@ export class HostService {
       return await this.dispatchOnce(method, params);
     } catch (e) {
       if (e instanceof DecideFail) throw new RpcFail(e.error.code, e.error.message);
+      if (e instanceof SessionError) throw new RpcFail(e.code, e.message);
       throw e;
     }
   }
@@ -522,6 +565,21 @@ export class HostService {
         return this.decide(parseDecideParams(params as Record<string, unknown>));
       case "episode.create":
         return this.createEpisode(p.name);
+      case "conv.send":
+        return this.convSend(p.convKey, p.text);
+      case "conv.resume":
+        return this.convResume(p.convKey);
+      case "conv.interrupt":
+        this.sessions.interrupt(p.convKey as ConvKey, p.turnId);
+        return null;
+      case "conv.answer":
+        return this.sessions.answer(p.convKey as ConvKey, p.requestId, p.decision, p.feedback ?? null);
+      case "conv.command":
+        return this.sessions.command(p.convKey as ConvKey, p.name as "memory_ack" | "scope", (p.arg as "asset" | "auto" | undefined) ?? null);
+      case "conv.end":
+        return this.sessions.end(p.convKey as ConvKey);
+      case "conv.snapshot":
+        return this.sessions.snapshot(p.convKey as ConvKey);
       default:
         throw new RpcFail("E_BAD_REQUEST", `未知方法 ${String(method)}`);
     }
@@ -554,6 +612,7 @@ export class HostService {
         statusKey: "",
         approvals: { state: "absent" },
         approvalsKey: "",
+        approvalsReadStart: null,
         approvalRecords: [],
         lastGoodApprovals: null,
         healedAt: null,
@@ -692,6 +751,7 @@ export class HostService {
       rt.approvalRecords = [];
       return;
     }
+    rt.approvalsReadStart = this.deps.now(); // 打开文件之前取（§2.7 第 1 条）
     const r = readApprovalRecords(`${rt.abs}/_agent/approvals_store.json`, this.deps.fs);
     if (r.state === "absent") {
       rt.approvals = { state: "absent" };
@@ -740,11 +800,20 @@ export class HostService {
     };
   }
 
+  /** 对象库读取完成、且本次读取带来的推送已发出之后才通知会话结算（§2.7 第 3 条）。 */
+  private notifyApprovalsRead(rt: EpisodeRuntime): void {
+    const readStart = rt.approvalsReadStart;
+    if (readStart === null) return;
+    rt.approvalsReadStart = null;
+    this.sessions.onApprovalsRead(rt.epKey, readStart);
+  }
+
   private async pushSnapshot(rt: EpisodeRuntime): Promise<void> {
     await this.loadAll(rt);
     if (!this.isCurrent(rt)) return;
     const snap = this.snapshotOf(rt);
     this.push({ v: 1, kind: "push", topic: "episode.snapshot", epKey: rt.epKey, generation: snap.generation, seq: 0, data: snap });
+    this.notifyApprovalsRead(rt);
   }
 
   // ---------------- 轮询 ----------------
@@ -793,6 +862,7 @@ export class HostService {
     if (genAfter !== genBefore) {
       const snap = this.snapshotOf(rt);
       this.push({ v: 1, kind: "push", topic: "episode.snapshot", epKey: rt.epKey, generation: snap.generation, seq: 0, data: snap });
+      this.notifyApprovalsRead(rt);
       return;
     }
     const delta: EpisodeDelta = { epKey: rt.epKey, generation: genAfter, seq: rt.seq + 1, newEvents: rt.events.slice(before).map(toWireEvent) };
@@ -816,9 +886,13 @@ export class HostService {
       delta.approvals = rt.approvals;
       changed = true;
     }
-    if (!changed) return;
+    if (!changed) {
+      this.notifyApprovalsRead(rt);
+      return;
+    }
     rt.seq = delta.seq;
     this.push({ v: 1, kind: "push", topic: "episode.delta", epKey: rt.epKey, generation: delta.generation, seq: delta.seq, data: delta });
+    this.notifyApprovalsRead(rt); // 先推 episode.delta，再追加 settled（§2.7 第 3 条）
   }
 
   private isCurrent(rt: EpisodeRuntime): boolean {
@@ -933,6 +1007,7 @@ export class HostService {
     // 第一段守卫：有 decide 或 heal 在途 → E_BUSY、不弹框；对话框已开着也不再叠一个
     if (this.choosing) throw new RpcFail("E_BUSY", "仓库选择对话框已打开");
     if (this.switching || this.acking.size > 0 || this.heal.busy()) throw new RpcFail("E_BUSY", "有操作在途（审批或自愈），稍后再切换仓库");
+    if (this.sessions.anyLive()) throw new RpcFail("E_BUSY", "存在活会话，先结束全部会话再切换仓库");
     let chosen: string | null;
     this.choosing = true;
     try {
@@ -976,6 +1051,7 @@ export class HostService {
    * spawn 计入在途（S8-R10）：切仓等它结束。失败原样回 core 的 stderr 尾部。
    */
   private async createEpisode(name: string): Promise<{ epKey: string }> {
+    if (this.sessionQuitting) throw new RpcFail("E_BUSY", "正在退出");
     if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
     if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
     const r = await this.core("NEW_EPISODE", { name });
@@ -983,7 +1059,47 @@ export class HostService {
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
     if (r.code !== 0) throw new RpcFail("E_CORE", `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     this.refreshEpisodes();
+    this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
     return { epKey: name };
+  }
+
+  // ---------------- 会话（Spec 10 §2.1、§3.1） ----------------
+
+  private convTarget(convKey: string, mode: "new" | "continue"): SessionTarget {
+    if (convKey === "idea") {
+      if (mode === "continue") throw new RpcFail("E_BAD_REQUEST", "idea 会话不支持「继续上次会话」");
+      return { key: "idea", epKey: null, abs: null, mode: "idea" };
+    }
+    if (!convKey.startsWith("ep:")) throw new RpcFail("E_BAD_REQUEST", `未知会话键 ${convKey}`);
+    const epKey = convKey.slice(3);
+    const e = this.episodes.get(epKey);
+    if (!e) throw new RpcFail("E_BAD_REQUEST", `未知期 ${epKey}`);
+    return { key: convKey as ConvKey, epKey, abs: e.abs, mode };
+  }
+
+  /** §2.1 第 8 条：可达性不 ok 时 conv.send / conv.resume 得 E_UNREACHABLE（已在跑的会话不杀）。 */
+  private async convSend(convKey: string, text: string): Promise<{ turnId: string }> {
+    if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
+    const target = this.convTarget(convKey, "new");
+    return this.sessions.send(target.key, target, text);
+  }
+
+  private async convResume(convKey: string): Promise<ConvSnapshot> {
+    if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
+    const target = this.convTarget(convKey, "continue");
+    return this.sessions.resume(target.key, target);
+  }
+
+  // ---------------- 退出（Spec 10 §2.10） ----------------
+
+  quitState(): QuitBusy[] {
+    return this.sessions.quitState();
+  }
+
+  /** 退出第 5 步：空闲 shutdown、忙 SIGTERM、宽限后整组 SIGKILL；此后拒绝新请求。 */
+  async stopAllForQuit(): Promise<void> {
+    this.sessionQuitting = true;
+    await this.sessions.stopAllForQuit();
   }
 
   // ---------------- 镜头画廊（shots 根顶层 *.html；内容仍经 ava-media:// 读） ----------------

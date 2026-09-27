@@ -1,5 +1,4 @@
 // TV-6 ①②③④⑤⑥⑦：autoOpen 逐条驱动（Spec 10 §2.7 的 R1–R6）。
-// ⑧~⑪（回合结算与 R6 从 snapshot 重建 awaiting）属 PR3，见后续用例。
 import { describe, expect, it } from "vitest";
 import type { ApprovalJson } from "../../src/shared/contracts";
 import { initialAutoOpen, step, type AutoOpenEnv, type AutoOpenEvent, type AutoOpenState } from "../../src/renderer/autoOpen";
@@ -111,5 +110,64 @@ describe("TV-6 autoOpen", () => {
     expect(opened.map((o) => o?.approval_id ?? null)).toEqual(["a1", null, null]);
     expect(state.owner).toBe("none");
     expect(state.strip).toBeNull();
+  });
+
+  it("⑧ 回合中先后出现 v1、v2 → 结算前零 open，settled 到达时恰 open v2 一次", () => {
+    const events: AutoOpenEvent[] = [
+      { kind: "turn_started", turnId: "t1" },
+      { kind: "pendings", items: [obj("v1", "05", "2026-09-25T10:00:01Z")] },
+      { kind: "pendings", items: [obj("v2", "05", "2026-09-25T10:00:02Z")] },
+      { kind: "settled", turnId: "t1", items: [obj("v1", "05", "2026-09-25T10:00:01Z"), obj("v2", "05", "2026-09-25T10:00:02Z")] },
+    ];
+    const { opened } = drive(events);
+    expect(opened.map((o) => o?.approval_id ?? null)).toEqual([null, null, null, "v2"]);
+  });
+
+  it("⑨ settled 的 turnId 与 awaiting 不符 → 忽略", () => {
+    const { opened, state } = drive([
+      { kind: "turn_started", turnId: "t1" },
+      { kind: "pendings", items: [obj("v1", "05")] },
+      { kind: "settled", turnId: "other", items: [obj("v1", "05")] },
+    ]);
+    expect(opened).toEqual([null, null, null]);
+    expect(state.awaiting).toBe("t1");
+  });
+
+  it("⑩ 回合内零停机点：settled 后新 pending 立即 open（不卡在等待态）", () => {
+    const { opened, state } = drive([
+      { kind: "turn_started", turnId: "t1" },
+      { kind: "settled", turnId: "t1", items: [] },
+      { kind: "pendings", items: [obj("a1", "03.5")] },
+    ]);
+    expect(opened.map((o) => o?.approval_id ?? null)).toEqual([null, null, "a1"]);
+    expect(state.awaiting).toBeNull();
+  });
+
+  it("⑪ R6 从 snapshot 顶层字段重建 awaiting", () => {
+    // (a) host 重启：新 snapshot 两个字段都为空 → awaiting null，新 pending 立即处理
+    const a = drive([
+      { kind: "turn_started", turnId: "t1" },
+      { kind: "reset", phase: "none", turnId: null, settlePending: null },
+      { kind: "pendings", items: [obj("a1", "03.5")] },
+    ]);
+    expect(a.opened.map((o) => o?.approval_id ?? null)).toEqual([null, null, "a1"]);
+    // (b) renderer 重载、回合仍在跑：awaiting 恢复；中间版本零 open；settled 后恰一次
+    const b = drive([
+      { kind: "reset", phase: "running", turnId: "t1", settlePending: null },
+      { kind: "pendings", items: [obj("v1", "05")] },
+      { kind: "settled", turnId: "t1", items: [obj("v1", "05")] },
+    ]);
+    expect(b.opened.map((o) => o?.approval_id ?? null)).toEqual([null, null, "v1"]);
+    // (c) 重载时该回合已结算 → awaiting null
+    const c = drive([{ kind: "reset", phase: "idle", turnId: null, settlePending: null }, { kind: "pendings", items: [obj("a1", "03.5")] }]);
+    expect(c.opened.map((o) => o?.approval_id ?? null)).toEqual([null, "a1"]);
+    // (d) 四轮 🔵-3：已截头、entries 里没有该回合的 turn_started，靠顶层字段仍能恢复
+    const d = drive([
+      { kind: "reset", phase: "running", turnId: "t1", settlePending: null },
+      { kind: "pendings", items: [obj("v1", "05")] },
+    ]);
+    expect(d.opened).toEqual([null, null]);
+    const e = drive([{ kind: "reset", phase: "idle", turnId: null, settlePending: "t9" }]);
+    expect(e.state.awaiting).toBe("t9");
   });
 });

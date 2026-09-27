@@ -432,3 +432,39 @@ export function jsonStringifyCalls(f: SourceFile): string[] {
   });
   return hits;
 }
+
+// ---------------- TG-11：入站帧的构造点只在 host/sessions.ts ----------------
+
+const INBOUND_TYPES = new Set(["user_message", "answer", "interrupt", "command", "shutdown"]);
+
+/** 对象字面量里属性名为 t、值为入站类型字符串的构造点（AST 匹配属性赋值，不按裸字符串匹配）。 */
+export function inboundFrameOwners(files: readonly SourceFile[]): { file: string; t: string }[] {
+  const hits: { file: string; t: string }[] = [];
+  for (const f of files) {
+    const sf = parse(f);
+    visit(sf, (n) => {
+      if (!ts.isObjectLiteralExpression(n)) return;
+      for (const prop of n.properties) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        const name = ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
+        if (name !== "t") continue;
+        if (ts.isStringLiteralLike(prop.initializer) && INBOUND_TYPES.has(prop.initializer.text)) hits.push({ file: f.rel, t: prop.initializer.text });
+      }
+    });
+  }
+  return hits;
+}
+
+// ---------------- TG-12：KEYCHAIN_READ 只在 spawner.ts（定义）与 secrets.ts（唯一调用） ----------------
+
+export function keychainTemplateViolations(files: readonly SourceFile[]): string[] {
+  const bad: string[] = [];
+  for (const f of files) {
+    if (f.rel === "host/spawner.ts" || f.rel === "host/secrets.ts") continue;
+    const sf = parse(f);
+    visit(sf, (n) => {
+      if (ts.isStringLiteralLike(n) && n.text === "KEYCHAIN_READ") bad.push(`${f.rel}: KEYCHAIN_READ`);
+    });
+  }
+  return bad;
+}

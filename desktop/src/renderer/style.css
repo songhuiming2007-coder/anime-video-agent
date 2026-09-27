@@ -116,3 +116,14 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 /* 停机点自动呼出的「已就绪 · 查看」条（Spec 10 §2.7 R3）：真实待答请求，用 --wait */
 .strip { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: var(--space-1) var(--space-3); border: 0; border-bottom: 1px solid var(--border); background: var(--wait-surface); color: var(--wait); font-size: var(--text-sm); font-weight: var(--weight-medium); text-align: left; cursor: pointer; }
 .finalize { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+
+/* Spec 10 §2.3/§4.3 的会话版面：中栏是「工序条 + 会话头 + 对话流 + 待答区 + 输入框」的竖向流。
+   只引用 §3.1 的变量（Spec 14 §3.2「业务区块……沿用或新增」），不新建颜色与字号。 */
+.center.conv-shell { display: flex; flex-direction: column; overflow: hidden; }
+.conv-shell .conv { flex: 1; min-height: 0; height: auto; }
+.conv-label { display: block; margin-bottom: var(--space-1); color: var(--fg-muted); font-size: var(--text-sm); }
+.conv-notice { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); }
+.conv-notice--warn { color: var(--warn); }
+.conv-notice--error { color: var(--danger); }
+.conv-logs summary { cursor: pointer; }
+.decisions.dock { border-bottom: 0; }

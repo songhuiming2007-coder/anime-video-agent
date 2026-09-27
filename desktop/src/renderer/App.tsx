@@ -4,12 +4,17 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ApprovalJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
+import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
-import type { EpisodeDelta, EpisodeSnapshot, EpisodesList, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, EpisodeDelta, EpisodeSnapshot, EpisodesList, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
 import { AnswerDock } from "./HumanCards";
+import { Composer } from "./Composer";
+import { ConversationPane } from "./ConversationPane";
+import { readyInfo, SessionHeader } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
@@ -36,6 +41,15 @@ function storeReducer(s: Store, a: Action): Store {
   return reduce(s, a).store;
 }
 
+function convReducer(s: ConvStore, a: ConvAction): ConvStore {
+  return reduceConvs(s, a).store;
+}
+
+/** 从会话条目里取出已在界面提醒过的记忆待确认（notice{code:"memory_unconfirmed"}）。 */
+function hasMemoryAsk(entries: readonly ConvEntry[]): boolean {
+  return entries.some((e) => e.k === "frame" && e.frame.t === "notice" && e.frame.code === "memory_unconfirmed");
+}
+
 export function App() {
   return FATAL !== null ? <FatalPanel text={FATAL} /> : <Main />;
 }
@@ -56,6 +70,13 @@ function Main() {
   const [store, dispatch] = useReducer(storeReducer, emptyStore);
   const storeRef = useRef(store);
   storeRef.current = store;
+  const [convs, dispatchConv] = useReducer(convReducer, emptyConvStore);
+  const convsRef = useRef(convs);
+  convsRef.current = convs;
+  /** 左栏「选题」入口：未选期时中栏即为 idea 视图；不结束任何会话（后台期照常跑） */
+  const [showIdea, setShowIdea] = useState(true);
+  /** 刚建好的期：对话区首行本地提示（不是消息，H-8） */
+  const [justCreated, setJustCreated] = useState<string | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = active;
@@ -73,9 +94,28 @@ function Main() {
 
   const loadHealth = useCallback(() => rpc.call<Health>("app.health").then(setHealth, (e) => setError(errText(e))), []);
 
+  const convKeyOf = (epKey: string | null): ConvKey => (showIdea || !epKey ? "idea" : `ep:${epKey}`);
+  const convKey = convKeyOf(active);
+  const convKeyRef = useRef<ConvKey>(convKey);
+  convKeyRef.current = convKey;
+  /** autoOpen 的 reset 事件只接受 none/idle/running/exited；starting/ending 视为 idle */
+  const phaseForAuto = (p: ConvSnapshot["phase"]): "none" | "idle" | "running" | "exited" => (p === "starting" || p === "ending" ? "idle" : p);
+
   useEffect(() => {
     const offs = [
       rpc.on("episode.snapshot", (p) => dispatch({ type: "snapshot", snap: p.data as EpisodeSnapshot })),
+      rpc.on("conv.snapshot", (p) => {
+        const snap = p.data as ConvSnapshot;
+        dispatchConv({ type: "snapshot", snap });
+        if (snap.convKey === convKeyRef.current) applyAuto(step(autoRef.current, { kind: "reset", phase: phaseForAuto(snap.phase), turnId: snap.turnId, settlePending: snap.settlePending }, { mediaPlaying: false }));
+      }),
+      rpc.on("conv.delta", (p) => {
+        const d = p.data as ConvDelta;
+        const r = reduceConvs(convsRef.current, { type: "delta", delta: d });
+        if (r.resnapshot) void rpc.call<ConvSnapshot>("conv.snapshot", { convKey: r.resnapshot }).then((snap) => dispatchConv({ type: "snapshot", snap }));
+        else dispatchConv({ type: "delta", delta: d });
+          applyConvEventsRef.current(d.convKey, d.entries);
+      }),
       rpc.on("episode.delta", (p) => {
         const delta = p.data as EpisodeDelta;
         const r = reduce(storeRef.current, { type: "delta", delta });
@@ -94,12 +134,23 @@ function Main() {
     ];
     rpc.onConnect(() => {
       setLinked(true);
-      // R6：host 重连（或 renderer 重载）后预览清空、owner 归 none；`seen` 保留，旧的自动呼出不会被重放
+      // 🟡-9：host 重连（或 renderer 重载）后清空全部会话桶——新 host 的 generation 带新 bootId
+      dispatchConv({ type: "reset-convs" });
       autoRef.current = step(autoRef.current, { kind: "reset", phase: "none", turnId: null, settlePending: null }, { mediaPlaying: false }).state;
       setStrip(null);
       void loadHealth().then(() => undefined);
-      void rpc.call<EpisodesList>("episodes.list").then(setList, (e) => setError(errText(e)));
-      // 重连后恢复活跃（H1，§2.12）：host 重启后订阅全部丢失，一切从磁盘重新 snapshot（§2.9）
+      void rpc
+        .call<EpisodesList>("episodes.list")
+        .then((l) => {
+          setList(l);
+          // 按新 host 认识的活会话取 snapshot（本 spec 只有「当前视图」与「活会话」两类）
+          const keys: ConvKey[] = [convKeyRef.current];
+          for (const e of l.episodes) if (e.conv?.live) keys.push(`ep:${e.epKey}`);
+          if (l.idea?.live) keys.push("idea");
+          const unique = [...new Set(keys)];
+          unique.forEach((k) => fetchConvRef.current(k, k === convKeyRef.current));
+        }, (e) => setError(errText(e)));
+      // 重连后恢复活跃（H1，§2.12）
       const cur = activeRef.current;
       if (cur) void rpc.call<EpisodeSnapshot>("episode.activate", { epKey: cur }).then((snap) => dispatch({ type: "snapshot", snap }), (e) => setError(errText(e)));
     });
@@ -114,6 +165,7 @@ function Main() {
   const open = useCallback(async (epKey: string) => {
     setError(null);
     setPreview(null);
+    setShowIdea(false);
     setActive(epKey);
     setLoading((n) => n + 1);
     try {
@@ -158,6 +210,8 @@ function Main() {
   }, [loadHealth]);
 
   const ep = select(store, active);
+  const conv = convs.convs[convKey];
+  const rows = foldOf(conv).rows;
 
   /** 打开停机点的预览目标（沿用 Spec 8 §2.5 的映射；这里只决定「看哪份文件」） */
   const showStopPreview = useCallback((epKey: string, a: ApprovalJson) => {
@@ -206,14 +260,50 @@ function Main() {
     setPreview(t);
   }, []);
 
-  /** R6：切期或 host 重连 → 预览清空、owner 归 none、deferred/strip 清空；`seen` 保留。PR1 的 snapshot 字段是常量 */
-  const resetAuto = useCallback(() => {
-    autoRef.current = step(autoRef.current, { kind: "reset", phase: "none", turnId: null, settlePending: null }, { mediaPlaying: false }).state;
+  /** R6：切期 / host 重连 / renderer 重载 → 预览清空、owner 归 none、deferred/strip 清空；`seen` 保留；
+   * `awaiting` 从会话 snapshot 的三个顶层字段重建（不扫条目：长回合截头会丢 `turn_started`，四轮 🔵-3）。 */
+  const resetAutoFor = useCallback((key: ConvKey) => {
+    const c = convsRef.current.convs[key];
+    const phase = c?.phase ?? "none";
+    autoRef.current = step(autoRef.current, { kind: "reset", phase: phaseForAuto(phase), turnId: c?.turnId ?? null, settlePending: c?.settlePending ?? null }, { mediaPlaying: false }).state;
     setStrip(null);
   }, []);
   useEffect(() => {
-    resetAuto();
-  }, [active, resetAuto]);
+    resetAutoFor(convKey);
+  }, [convKey, resetAutoFor]);
+
+  /** 会话帧驱动 autoOpen：turn_started（R2a）与 host 结算（R2b）。只对当前视图的会话生效。 */
+  const applyConvEvents = useCallback(
+    (key: ConvKey, entries: readonly ConvEntry[]) => {
+      if (key !== convKeyRef.current) return;
+      for (const e of entries) {
+        if (e.k === "frame" && e.frame.t === "turn_started") applyAuto(step(autoRef.current, { kind: "turn_started", turnId: String(e.frame.turn_id) }, { mediaPlaying: mediaPlaying() }));
+        if (e.k === "settled") {
+          const epKey = key.startsWith("ep:") ? key.slice(3) : null;
+          const items = epKey ? approvalsOf(select(storeRef.current, epKey)).filter((a) => a.status === "pending" && isStopType(a.type)) : [];
+          applyAuto(step(autoRef.current, { kind: "settled", turnId: e.turnId, items }, { mediaPlaying: mediaPlaying() }));
+        }
+      }
+    },
+    [applyAuto],
+  );
+  const applyConvEventsRef = useRef(applyConvEvents);
+  applyConvEventsRef.current = applyConvEvents;
+
+  const fetchConv = useCallback(
+    (key: ConvKey, resetAuto = false) => {
+      void rpc.call<ConvSnapshot>("conv.snapshot", { convKey: key }).then(
+        (snap) => {
+          dispatchConv({ type: "snapshot", snap });
+          if (resetAuto && snap.convKey === convKeyRef.current) applyAuto(step(autoRef.current, { kind: "reset", phase: phaseForAuto(snap.phase), turnId: snap.turnId, settlePending: snap.settlePending }, { mediaPlaying: false }));
+        },
+        () => undefined,
+      );
+    },
+    [applyAuto],
+  );
+  const fetchConvRef = useRef(fetchConv);
+  fetchConvRef.current = fetchConv;
 
   const reachOk = health?.reach === "ok";
 
@@ -229,20 +319,46 @@ function Main() {
       )}
       <div className={`main ${reachOk ? "" : "stale"}`}>
         <nav className="left">
-          <NewEpisodeForm rpc={rpc} onCreated={open} />
-          <EpisodeList list={list} active={active} onOpen={open} />
-          {ep && <ArtifactTree key={ep.epKey} epKey={ep.epKey} onPick={pickHuman} />}
+          <NewEpisodeForm rpc={rpc} onCreated={(k) => { setJustCreated(k); setShowIdea(false); void open(k); }} />
+          <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} />
+          {ep && !showIdea && <ArtifactTree key={ep.epKey} epKey={ep.epKey} onPick={pickHuman} />}
           <GalleryList reachOk={reachOk} onPick={pickHuman} />
         </nav>
-        <section className="center" data-testid="center" data-ep={active ?? ""} data-loading={loading > 0 ? "1" : "0"}>
-          {ep ? (
-            <>
-              <StatusCard ep={ep} />
-              <AnswerDock key={ep.epKey} ep={ep} health={health} rpc={rpc} />
-            </>
-          ) : (
-            <StateView kind="empty" title="选择一期" />
-          )}
+        <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
+          {ep && !showIdea && <StatusCard ep={ep} />}
+          <SessionHeader
+            rpc={rpc}
+            convKey={convKey}
+            phase={conv?.phase ?? "none"}
+            info={readyInfo(conv?.entries ?? [])}
+            keyProblem={conv?.keyProblem ?? null}
+            memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
+            isIdea={convKey === "idea"}
+            onCreated={(k) => {
+              setJustCreated(k);
+              setShowIdea(false);
+              void open(k);
+            }}
+            onResumed={() => fetchConvRef.current(convKey, true)}
+            onEnded={() => fetchConvRef.current(convKey, true)}
+          />
+          <div className="conv">
+            {justCreated !== null && justCreated === active && (
+              <div className="conv-note" data-testid="idea-note">
+                选题会话的讨论不会带入本期；需要的要点请在这里重述
+              </div>
+            )}
+            <ConversationPane rows={rows} />
+            <AnswerDock conv={conv} ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
+            <Composer
+              rpc={rpc}
+              convKey={convKey}
+              running={conv?.phase === "running"}
+              turnId={conv?.turnId ?? null}
+              disabled={health?.reach !== "ok"}
+              placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
+            />
+          </div>
         </section>
         <section className="preview" data-auto-open-approval-id={autoOpened.id ?? ""} data-auto-open-count={autoOpened.count}>
           {strip && (
@@ -361,15 +477,33 @@ function HealthPanel({ health, diags, linked }: { health: Health; diags: string[
 
 // ---------------- 期列表 ----------------
 
-function EpisodeList({ list, active, onOpen }: { list: EpisodesList | null; active: string | null; onOpen: (k: string) => void }) {
+function EpisodeList({ list, active, showIdea, onOpen, onIdea }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void }) {
+  const idea = list?.idea ?? null;
   return (
     <div className="episodes" data-testid="episodes">
+      <button className="ui-row ep" aria-current={showIdea ? "true" : undefined} onClick={onIdea} data-testid="idea">
+        <span className="ep-line">
+          <span className="ep-name">选题</span>
+        </span>
+        <span className="ep-step">
+          {idea?.running && (
+            <span className="ui-badge ui-badge--wait" data-testid="conv-running">
+              运行中
+            </span>
+          )}
+          {idea !== null && idea.openRequests > 0 && (
+            <span className="ui-badge ui-badge--wait" data-testid="conv-open">
+              {idea.openRequests} 张卡待答
+            </span>
+          )}
+        </span>
+      </button>
       {!list && <div className="muted">加载中…</div>}
       {list?.episodes.map((e) => (
         <button
           key={e.epKey}
           className="ui-row ep"
-          aria-current={e.epKey === active ? "true" : undefined}
+          aria-current={!showIdea && e.epKey === active ? "true" : undefined}
           onClick={() => onOpen(e.epKey)}
           data-testid="episode"
         >
@@ -377,6 +511,16 @@ function EpisodeList({ list, active, onOpen }: { list: EpisodesList | null; acti
             <span className="ep-name">{e.epKey}</span>
           </span>
           <span className="ep-step">
+            {e.conv?.running && (
+              <span className="ui-badge ui-badge--wait" data-testid="conv-running">
+                运行中
+              </span>
+            )}
+            {e.conv && e.conv.openRequests > 0 && (
+              <span className="ui-badge ui-badge--wait" data-testid="conv-open">
+                {e.conv.openRequests} 张卡待答
+              </span>
+            )}
             {e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
             {e.currentStep === null && <StatusDot tone="unknown" />}
             <span className="ep-step-text">{e.currentStep ?? "…"}</span>
