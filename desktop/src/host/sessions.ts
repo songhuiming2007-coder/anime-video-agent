@@ -176,6 +176,11 @@ function ridOf(f: OutFrame): string | null {
   return typeof v === "string" && RID_RE.test(v) ? v : null;
 }
 
+/** §2.10：「忙」= 回合在跑或有未答卡。退出确认（quitState）与第 5 步（stopAllForQuit）共用，两边不许分叉。 */
+function isBusyForQuit(s: Pick<SessionState, "turnId" | "open">): boolean {
+  return s.turnId !== null || s.open.length > 0;
+}
+
 /** 结束序列的入站帧（TG-11：shutdown 的构造点恰 1 处）。 */
 function SHUTDOWN_FRAME(): Record<string, unknown> {
   return { v: 1, t: "shutdown" };
@@ -241,10 +246,11 @@ export class SessionManager {
     return false;
   }
 
+  /** §2.10 第 3/4 步：只列忙会话（与第 5 步同一判定）；全空闲时为空 → main 不弹确认框直接退。 */
   quitState(): QuitBusy[] {
     const out: QuitBusy[] = [];
     for (const s of this.states.values()) {
-      if (s.phase === "exited" || s.phase === "none") continue;
+      if (s.phase === "exited" || s.phase === "none" || !isBusyForQuit(s)) continue;
       out.push({ convKey: s.key, label: s.key === "idea" ? "选题会话" : s.key.slice(3), running: s.phase === "running", openRequests: s.open.length });
     }
     return out;
@@ -362,7 +368,7 @@ export class SessionManager {
     const live = [...this.states.values()].filter((s) => s.phase !== "exited" && s.phase !== "none");
     for (const s of live) {
       s.phase = "ending";
-      if (s.open.length > 0 || s.turnId !== null) s.proc?.signal("SIGTERM", false);
+      if (isBusyForQuit(s)) s.proc?.signal("SIGTERM", false);
       else this.writeFrame(s, SHUTDOWN_FRAME());
     }
     const deadline = Date.now() + this.timing.killGraceMs;

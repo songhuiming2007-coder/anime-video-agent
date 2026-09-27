@@ -316,6 +316,55 @@ test("TX-8 退出确认：确认后会话收 SIGTERM（不是 shutdown），app 
   }
 });
 
+test("TX-8g 全部会话空闲时退出：不弹确认框直接退，空闲会话收 shutdown（D38）", async () => {
+  const fx = sessionFixture();
+  const L = await launchSession(fx.repo);
+  try {
+    sessionScript(fx.repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "说完就停");
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "idle");
+    // 桩答「取消」：一旦弹框，app 就退不出——能退出本身即证明确认框没弹
+    await stubQuit(L, "cancel");
+    const closed = L.app.waitForEvent("close", { timeout: 8_000 });
+    void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+    await closed;
+    const recs = sessionRecords(fx.repo, "SESS-A");
+    expect(recs.some((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "shutdown")).toBe(true);
+    expect(recs.some((r) => r.kind === "signal")).toBe(false);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined); // 修复失效时别让 app.close() 挂在「取消」桩上
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
+
+test("TX-8h 有回合在跑时退出：弹确认框（列出该期）、取消不退出、会话零写入零信号（D38 对照组）", async () => {
+  const fx = sessionFixture();
+  const L = await launchSession(fx.repo);
+  try {
+    sessionScript(fx.repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED] }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "跑着");
+    await expect(L.page.getByTestId("session-running")).toBeVisible();
+    await stubQuit(L, "cancel");
+    void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+    await expect.poll(() => quitStubCalls(L)).toBe(1);
+    const lists = await L.app.evaluate(() => (globalThis as unknown as { __avaTestQuit: { lists: string[][] } }).__avaTestQuit.lists);
+    expect(lists).toEqual([["SESS-A · 运行中"]]);
+    await L.page.waitForTimeout(400);
+    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid())).toBeGreaterThan(0);
+    await expect(L.page.getByTestId("session-running")).toBeVisible();
+    const recs = sessionRecords(fx.repo, "SESS-A");
+    expect(recs.some((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "shutdown")).toBe(false);
+    expect(recs.some((r) => r.kind === "signal")).toBe(false);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
+
 test("TX-15 host 重启：原会话键显示已结束、待答区为空、可继续上次会话", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "qh", kind: "tool_call", turn_id: "$turn", title: "卡", card_text: "c", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: false }] }]);
