@@ -20,6 +20,7 @@ import {
   sessionLogViolations,
   inboundFrameOwners,
   keychainTemplateViolations,
+  moduleSpecifiers,
   sourceFiles,
   topDir,
   unguardedHooks,
@@ -31,8 +32,18 @@ const src = (rel: string, text: string): SourceFile => ({ rel, text });
 
 describe("TG-1 npm 依赖精确白名单（§5.1）", () => {
   const pkg = JSON.parse(readFileSync(join(DESKTOP, "package.json"), "utf-8"));
-  it("dependencies 恰为 react/react-dom/markdown-it，精确版本", () => {
-    expect(pkg.dependencies).toEqual({ "markdown-it": "15.0.2", react: "19.3.0", "react-dom": "19.3.0" });
+  it("dependencies 恰为 Spec 11 §5.1 的 CodeMirror 组 + react/react-dom/markdown-it，精确版本", () => {
+    expect(pkg.dependencies).toEqual({
+      "@codemirror/commands": "6.11.1",
+      "@codemirror/lang-markdown": "6.5.2",
+      "@codemirror/language": "6.12.4",
+      "@codemirror/state": "6.7.6",
+      "@codemirror/view": "6.43.13",
+      "@lezer/highlight": "1.2.4",
+      "markdown-it": "15.0.2",
+      react: "19.3.0",
+      "react-dom": "19.3.0",
+    });
   });
   it("devDependencies 恰为 §2.1 其余各包 + 三个 @types", () => {
     expect(pkg.devDependencies).toEqual({
@@ -94,6 +105,17 @@ describe("TG-3 §5.2 import 纪律", () => {
   it("源码只分布在五个约定目录", () => {
     const dirs = new Set(files.map((f) => topDir(f.rel)));
     for (const d of dirs) expect(["shared", "main", "preload", "host", "renderer"]).toContain(d);
+  });
+  it("真实源码：@codemirror/* 与 @lezer/* 只出现在 renderer/ScriptEditor.tsx（MUT-15）", () => {
+    const holders = files.filter((f) => moduleSpecifiers(f).some((s) => /^(@codemirror|@lezer)\//.test(s))).map((f) => f.rel);
+    expect(holders).toEqual(["renderer/ScriptEditor.tsx"]);
+  });
+  it("真实源码：CodeMirror 必须挂在 ShadowRoot 里（生产 CSP 是 style-src 'self'，light DOM 下 style-mod 注入的 <style> 会被拦 → 主题/高亮/光标全失效）", () => {
+    // 本条只做「没被顺手删掉」的绊索；真正的判据是 e2e A1 的计算样式对拍
+    const ed = files.find((f) => f.rel === "renderer/ScriptEditor.tsx")!;
+    expect(ed.text).toContain("attachShadow({ mode: \"open\" })");
+    expect(/root:\s*shadow/.test(ed.text)).toBe(true);
+    expect(/parent:\s*shadow/.test(ed.text)).toBe(true);
   });
 });
 
@@ -307,5 +329,16 @@ describe("TG-9 host/ 与 shared/ 的 JSON.stringify 只在 shared/losslessJson.t
       .flatMap(jsonStringifyCalls);
     expect(hits).toEqual([]);
     expect(jsonStringifyCalls(files.find((f) => f.rel === "shared/losslessJson.ts")!)).toHaveLength(1);
+  });
+});
+
+describe("TC-13 人审要点双源一致（runbook 02.5 ↔ ScriptEditor.tsx，Spec 11 §2.6）", () => {
+  it("两处都含清单五条的关键串（含「人物」「抽帧」两条新串）", () => {
+    const runbook = readFileSync(join(DESKTOP, "../docs/runbook/02.5-human-review.md"), "utf-8");
+    const tsx = readFileSync(join(DESKTOP, "src/renderer/ScriptEditor.tsx"), "utf-8");
+    for (const key of ["编辑判断立不立得住", "事实核验", "去模型味", "人物:", "抽帧"]) {
+      expect(runbook, `runbook: ${key}`).toContain(key);
+      expect(tsx, `ScriptEditor: ${key}`).toContain(key);
+    }
   });
 });

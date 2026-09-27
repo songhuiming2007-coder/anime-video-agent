@@ -138,14 +138,15 @@ test("TX-5 ①②④ 自动呼出：新 pending 打开预览；人占用时只�
     await expect(L.page.getByTestId("audio-queue")).toBeVisible({ timeout: 15_000 });
     expect(Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"))).toBe(1);
     // ② 人点开别的文件 → 新 pending 只出「已就绪」条
+    // Spec 11 §2.2：02-script.md 的预览位长成 CodeMirror 编辑器（.md 预览由编辑器右栏承担）
     await L.page.locator("[data-testid=tree-row][data-rel='02-script.md']").click();
-    await expect(L.page.getByTestId("preview-head")).toContainText("02-script.md");
+    await expect(L.page.getByTestId("script-editor")).toBeVisible();
     // ④ 出现「已就绪」条的前后 activeElement 不变（期间无任何人手操作）
     const before = await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
     const fp = fingerprintOf(fx.repo, "SESS-A", "03-audio/manifest.json");
     writeStore(fx.repo, "SESS-A", [pendingObj("a05", "05", "2026-09-25T10:00:05Z", "03-audio/manifest.json", fp)]);
     await expect(L.page.getByTestId("auto-open-strip")).toBeVisible({ timeout: 12_000 });
-    await expect(L.page.getByTestId("preview-head")).toContainText("02-script.md");
+    await expect(L.page.getByTestId("script-editor")).toBeVisible(); // 人的选择不被替换
     const after = await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
     expect(after).toBe(before);
   } finally {

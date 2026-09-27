@@ -9,6 +9,7 @@ import {
   SPAWN_TIMEOUT_REVIEW_MS,
   SPAWN_TIMEOUT_SHORT_MS,
   STATUS_STDOUT_MAX_BYTES,
+  VOICE_INFO_STDOUT_MAX_BYTES,
   KEYCHAIN_SERVICE,
 } from "../shared/constants";
 import type { StopType } from "../shared/contracts";
@@ -26,7 +27,20 @@ export type Template =
   | "NEW_EPISODE"
   // Spec 10 S8-R3：密钥探测与钥匙串读取（短命令，规则同现状）
   | "PROBE_KEY_ENV"
-  | "KEYCHAIN_READ";
+  | "KEYCHAIN_READ"
+  // Spec 11 §3.4：02.5 编辑器 / 03.5 顺听 / 人时（S8-R13 闭集）
+  | "SAVE_SCRIPT"
+  | "SEAL_SCRIPT"
+  | "CHECK_SCRIPT"
+  | "VOICE_INFO"
+  | "VOICE_PARSE"
+  | "VOICE_ADD"
+  | "VOICE_REVERT"
+  | "VOICE_RETRACT"
+  | "RECORD_TIME"
+  | "RUN_TTS_APPLY_PATCH"
+  // Spec 12 S8-R18：封面导入（字节走 stdin）
+  | "IMPORT_COVER";
 
 /** 长驻会话进程模板（Spec 10 S8-R3）；不经 runCore（stdin pipe、无超时），只用 sessionArgv。 */
 export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA";
@@ -48,6 +62,22 @@ export interface TemplateArgs {
   PROBE_KEY_ENV: Record<string, never>;
   /** Spec 10 §2.9：账户名 = core 回答的变量名 */
   KEYCHAIN_READ: { envName: string };
+  // ---- Spec 11 §3.4 / Spec 12 §3.5 ----
+  /** mtimeNs 为十进制字符串（沿用规则 8/9）；`-1/-1` 断言文件不存在（从草稿新建） */
+  SAVE_SCRIPT: { ep: string; size: string; mtimeNs: string };
+  SEAL_SCRIPT: { ep: string };
+  /** `scriptAbs` = 期目录内 02-script.md 的绝对路径（core 侧 parser 收 Path） */
+  CHECK_SCRIPT: { scriptAbs: string };
+  VOICE_INFO: { ep: string };
+  VOICE_PARSE: { ep: string };
+  VOICE_ADD: { ep: string };
+  VOICE_REVERT: { ep: string; label: string };
+  VOICE_RETRACT: { ep: string; id: string };
+  RECORD_TIME: { ep: string; stop: string; entered: string; left: string };
+  /** 长任务：无超时、app 退出不发信号（S8-R17） */
+  RUN_TTS_APPLY_PATCH: { ep: string };
+  /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
+  IMPORT_COVER: { ep: string; name: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -88,8 +118,20 @@ export function pythonOf(repoRoot: string): string {
   return `${repoRoot}/.venv/bin/python`;
 }
 
+/** buildArgv 的产物：argv + 超时 + stdout 上限 + stdin/PATH 两类受控例外。 */
+export interface BuiltCore {
+  argv: string[];
+  /** null = 无超时（RUN_TTS_APPLY_PATCH，Spec 11 S8-R17 的模板级开口） */
+  timeoutMs: number | null;
+  stdoutMax?: number;
+  /** stdin pipe 例外（Spec 11 S8-R13 / Spec 12 S8-R18）：写入端写完即 end() */
+  stdinPipe?: boolean;
+  /** git/ffprobe 在 /opt/homebrew/bin（仅 SEAL_SCRIPT 与 RUN_TTS_APPLY_PATCH，A3） */
+  homebrewPath?: boolean;
+}
+
 /** stdoutMax：要求完整读入 stdout 的模板给出上限（字节）；其余模板只保留尾部 */
-export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoRoot: string): { argv: string[]; timeoutMs: number; stdoutMax?: number } {
+export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoRoot: string): BuiltCore {
   const py = pythonOf(repoRoot);
   switch (t) {
     case "PROBE_APPROVALS":
@@ -147,6 +189,60 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { envName } = args as TemplateArgs["KEYCHAIN_READ"];
       return { argv: [keychainExec, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", envName, "-w"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
+    // ---- Spec 11 §3.4：停机点组件子命令（全部是 core 裸形态，不过 validate_pipeline_command） ----
+    case "SAVE_SCRIPT": {
+      const { ep, size, mtimeNs } = args as TemplateArgs["SAVE_SCRIPT"];
+      return {
+        argv: [py, "-m", "pipeline.agent.cli", ep, "/save-script", `--expect-size=${size}`, `--expect-mtime-ns=${mtimeNs}`],
+        timeoutMs: SPAWN_TIMEOUT_ACK_MS,
+        stdinPipe: true,
+      };
+    }
+    case "SEAL_SCRIPT": {
+      const { ep } = args as TemplateArgs["SEAL_SCRIPT"];
+      // 封板在 core 内跑 `git diff --no-index`：git 在 /opt/homebrew/bin，须显式开口（A3）
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/seal-script"], timeoutMs: SPAWN_TIMEOUT_ACK_MS, homebrewPath: true };
+    }
+    case "CHECK_SCRIPT": {
+      const { scriptAbs } = args as TemplateArgs["CHECK_SCRIPT"];
+      return { argv: [py, "-m", "pipeline.check_script", scriptAbs], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "VOICE_INFO": {
+      const { ep } = args as TemplateArgs["VOICE_INFO"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/voice-info"], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdoutMax: VOICE_INFO_STDOUT_MAX_BYTES };
+    }
+    case "VOICE_PARSE": {
+      const { ep } = args as TemplateArgs["VOICE_PARSE"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/voice-parse"], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdinPipe: true };
+    }
+    case "VOICE_ADD": {
+      const { ep } = args as TemplateArgs["VOICE_ADD"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/voice-add"], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdinPipe: true };
+    }
+    case "VOICE_REVERT": {
+      const { ep, label } = args as TemplateArgs["VOICE_REVERT"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/voice-revert", label], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "VOICE_RETRACT": {
+      const { ep, id } = args as TemplateArgs["VOICE_RETRACT"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/voice-retract", id], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "RECORD_TIME": {
+      const { ep, stop, entered, left } = args as TemplateArgs["RECORD_TIME"];
+      return {
+        argv: [py, "-m", "pipeline.agent.cli", ep, "/record-time", stop, `--entered=${entered}`, `--left=${left}`],
+        timeoutMs: SPAWN_TIMEOUT_ACK_MS,
+      };
+    }
+    case "RUN_TTS_APPLY_PATCH": {
+      const { ep } = args as TemplateArgs["RUN_TTS_APPLY_PATCH"];
+      // 无超时（长任务；S8-R17）；tts/ffprobe 在 PATH 白名单之外，须显式开口
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts", "--apply-patch"], timeoutMs: null, homebrewPath: true };
+    }
+    case "IMPORT_COVER": {
+      const { ep, name } = args as TemplateArgs["IMPORT_COVER"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/import-cover", `--name=${name}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdinPipe: true };
+    }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
   }
@@ -169,9 +265,10 @@ export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot
  * 环境变量白名单（不继承 process.env）。PATH 固定：Finder 启动的 GUI app 拿不到 shell 的 PATH，
  * 固定后「将来加了需要 ffmpeg 的模板」会当场失败（RF-3）。明确排除 AVA_EVENTS_ROOT、*_API_KEY、*_TOKEN、NODE_OPTIONS、ELECTRON_*。
  */
-export function childEnv(src: Record<string, string | undefined>): Record<string, string> {
+export function childEnv(src: Record<string, string | undefined>, homebrewPath = false): Record<string, string> {
+  const path = homebrewPath ? "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" : "/usr/bin:/bin:/usr/sbin:/sbin";
   const env: Record<string, string> = {
-    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    PATH: path,
     LANG: src.LANG || "en_US.UTF-8",
     PYTHONUTF8: "1",
     PYTHONUNBUFFERED: "1",
@@ -251,7 +348,14 @@ export function recordSpawn(e: SpawnLogEntry): void {
   spawnObserver?.(e);
 }
 
-export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Record<string, string>, stdoutMax?: number): Promise<CoreResult> {
+export function runArgv(
+  argv: string[],
+  timeoutMs: number | null,
+  cwd: string,
+  env: Record<string, string>,
+  stdoutMax?: number,
+  stdinData?: string | Uint8Array,
+): Promise<CoreResult> {
   return new Promise((resolve) => {
     const out = new Tail();
     const full = stdoutMax === undefined ? null : new Full(stdoutMax);
@@ -259,17 +363,23 @@ export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Rec
     let timedOut = false;
     let settled = false;
     let killTimer: NodeJS.Timeout | null = null;
+    const pipe = stdinData !== undefined;
     const child = spawn(argv[0], argv.slice(1), {
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [pipe ? "pipe" : "ignore", "pipe", "pipe"],
       detached: true,
       cwd,
       env,
     });
+    if (pipe) {
+      // 写入端写完即 end()：core 侧限流读取（Spec 11 §3.1 / Spec 12 §3.1）
+      child.stdin?.on("error", () => undefined); // core 早退（如限流拒收）导致的 EPIPE 不炸 host
+      child.stdin?.end(stdinData);
+    }
     const finish = (r: CoreResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       resolve(r);
     };
@@ -279,7 +389,7 @@ export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Rec
     });
     child.stderr?.on("data", (b: Buffer) => err.push(b));
     // 超时对整个进程组发信号：只杀直接子进程会让孙进程成孤儿继续写（红队 M2）
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? null : setTimeout(() => {
       timedOut = true;
       const pid = child.pid;
       if (pid === undefined) return;
@@ -295,7 +405,7 @@ export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Rec
           /* 进程组已不存在 */
         }
       }, SPAWN_KILL_GRACE_MS);
-    }, timeoutMs);
+    }, timeoutMs ?? 0);
     const fullOf = () => ({ stdoutFull: full ? full.text() : null, stdoutOverflow: full?.overflow ?? false });
     child.on("error", (e) =>
       finish({ code: null, signal: null, stdoutTail: out.text(), stderrTail: `${err.text()}${e.message}`, timedOut, ...fullOf() }),
@@ -306,10 +416,25 @@ export function runArgv(argv: string[], timeoutMs: number, cwd: string, env: Rec
   });
 }
 
-export function runCore<T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag: SpawnTag = {}): Promise<CoreResult> {
-  const { argv, timeoutMs, stdoutMax } = buildArgv(t, args, ctx.repoRoot);
+/**
+ * 模板的长任务例外（S8-R17）：`RUN_TTS_APPLY_PATCH` **永不**向在途子进程发信号——
+ * host 进程退出时该子进程是 detached 的孤儿，自行跑完（`apply_patch_lock` 的 finally 清锁）。
+ * 这里只提供一个「是否长任务」的判定，宿主退出路径据此跳过收尾。
+ */
+export function isLongRunning(t: Template): boolean {
+  return t === "RUN_TTS_APPLY_PATCH";
+}
+
+export function runCore<T extends Template>(
+  t: T,
+  args: TemplateArgs[T],
+  ctx: { repoRoot: string },
+  tag: SpawnTag = {},
+  stdinData?: string | Uint8Array,
+): Promise<CoreResult> {
+  const { argv, timeoutMs, stdoutMax, homebrewPath } = buildArgv(t, args, ctx.repoRoot);
   recordSpawn({ template: t, argv, at: Date.now(), ...tag });
-  return runArgv(argv, timeoutMs, ctx.repoRoot, childEnv(process.env), stdoutMax);
+  return runArgv(argv, timeoutMs, ctx.repoRoot, childEnv(process.env, homebrewPath === true), stdoutMax, stdinData);
 }
 
 /**

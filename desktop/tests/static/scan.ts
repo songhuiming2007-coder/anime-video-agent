@@ -89,7 +89,10 @@ export function importViolations(f: SourceFile): string[] {
         bad.push(`${f.rel}: shared/ 只允许纯 TS，禁止 ${spec}`);
         break;
       case "renderer":
-        if (!/^(react|react-dom|markdown-it)(\/|$)/.test(spec)) bad.push(`${f.rel}: renderer/ 禁止 ${spec}`);
+        // Spec 11 §5.2：`@codemirror/*` / `@lezer/*` 只允许出现在 renderer/ScriptEditor.tsx（MUT-15）
+        if (/^(react|react-dom|markdown-it)(\/|$)/.test(spec)) break;
+        if (f.rel === "renderer/ScriptEditor.tsx" && /^(@codemirror|@lezer)\//.test(spec)) break;
+        bad.push(`${f.rel}: renderer/ 禁止 ${spec}`);
         break;
       case "preload":
         if (spec !== "electron") bad.push(`${f.rel}: preload/ 只允许 electron，禁止 ${spec}`);
@@ -172,6 +175,18 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   "conv.end": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "conv.resume": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick"] },
+  // Spec 11 S8-R13 的显式点击纪律扩展：停机点写路径只许挂在对应按钮/确认框上。
+  // RECORD_TIME 的发送点在 host/humanTime.ts（审核面事件驱动），不在 renderer，故不在此表。
+  "script.save": { file: "renderer/ScriptEditor.tsx", attrs: ["onClick", "onKeyDown"] },
+  "script.seal": { file: "renderer/ScriptEditor.tsx", attrs: ["onClick"] },
+  "script.check": { file: "renderer/ScriptEditor.tsx", attrs: ["onClick"] },
+  "voice.parse": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.add": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.revert": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.retract": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.applyPatch": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  // Spec 12 S8-R18：导入由拖放 / 选择器 / 点击三种显式动作发起
+  "cover.import": { file: "renderer/CoverImport.tsx", attrs: ["onClick", "onDrop", "onChange"] },
 };
 
 const LOOP_KINDS = [

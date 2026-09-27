@@ -628,26 +628,28 @@ test("门禁 7 ack 在途时退出 app：core 子进程不随 app 退出而被�
   expect(readStore(ep).find((o) => o.approval_id === A)).toMatchObject({ status: "approved", resolved_by: "cli" });
 });
 
-test("门禁 14 人时数据源缺口常驻可见：03.5/05 决策条「本次审阅不计人时」、03.5 结构化打点提示、人时类 advisory 旁标；截图存档", async () => {
+test("门禁 14 已退役（Spec 11 S8-R15）：03.5/05 决策条不再常驻「本次审阅不计人时」；03.5 打点提示改指 --review；人时读数在期视图可见", async () => {
   const R = ackRepo();
   const e35 = epAt035(R.eps, "G14-035");
   const e05 = epAt05(R.repo, R.eps, "G14-05");
-  // 人时观测 advisory（status.py 人时检测）：片长 4 s、已记 5 分钟
-  writeFileSync(join(e05, "human_time.json"), JSON.stringify([{ stop: "02.5", minutes: 5.0 }]));
+  // 人时观测（Spec 11 §2.4）：桌面端已把审阅时长写进 human_time.json
+  writeFileSync(join(e05, "human_time.json"), JSON.stringify([{ stop: "02.5", minutes: 5.0, source: "desktop" }]));
   // RF-20：审片页生成时间早于排片文件最后修改时间
   fpy(R.repo, "import os, sys; os.utime(sys.argv[1], (1_700_000_000, 1_700_000_000))", [join(e05, "04-review.html")]);
   const L = await start(R);
   await openEp(L.page, "G14-035");
   const c35 = card(L.page, "03.5");
-  await expect(c35.getByTestId("no-human-time")).toHaveText("本次审阅不计人时");
-  await expect(c35).toContainText("结构化打点（manifest human_review）须在终端 /voice 完成");
-  await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-0305.png") });
+  await expect(c35).toBeVisible();
+  await expect(c35.getByTestId("no-human-time")).toHaveCount(0); // 横幅退役
+  await expect(c35).toContainText("结构化打点（manifest human_review）须在终端 python -m pipeline.tts"); // S8-R15 措辞修订
+  await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-retired-0305.png") });
   await openEp(L.page, "G14-05");
   const c05 = card(L.page, "05");
-  await expect(c05.getByTestId("no-human-time")).toHaveText("本次审阅不计人时");
+  await expect(c05.getByTestId("no-human-time")).toHaveCount(0);
   await expect(c05.getByTestId("review-page-older")).toHaveText("审片页生成时间早于排片文件最后修改时间");
-  await expect(L.page.getByTestId("human-time-incomplete")).toHaveText("（数据源不完整：桌面端审阅不计入）");
+  await expect(L.page.getByTestId("human-time-incomplete")).toHaveCount(0); // 旁标退役
+  await expect(L.page.getByTestId("human-time")).toContainText("02.5 5.0 m"); // 人时读数接管
   await expect(L.page.locator(".advisories li", { hasText: "人类耗时：本期已记" })).toHaveCount(1);
-  await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-05.png") });
+  await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-retired-05.png") });
   void e35;
 });

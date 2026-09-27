@@ -28,7 +28,17 @@ export function cleanup(dir: string): void {
   } catch {
     /* 已不存在 */
   }
-  rmSync(dir, { recursive: true, force: true });
+  // Electron/host 退出是异步的：宿主进程可能还在写 events.jsonl，与 rmSync 的递归删除赛跑（ENOTEMPTY）。
+  // 有界重试（3 次、每次 200 ms）比把 flake 归给测试环境干净。
+  for (let i = 0; ; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (i >= 2) throw e;
+      execFileSync("/bin/sleep", ["0.2"]);
+    }
+  }
 }
 
 /**

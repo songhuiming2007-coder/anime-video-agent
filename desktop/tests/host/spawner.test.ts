@@ -155,3 +155,59 @@ describe("M7 F-3 钥匙串读取的 argv 形状与真实退出码", () => {
     },
   );
 });
+
+describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超时与 PATH 开口", () => {
+  const pyPath = join("/repo", ".venv/bin/python");
+  const NS = "1790171112636927676";
+
+  it("SAVE_SCRIPT：等号形式携带期望指纹 + stdin pipe", () => {
+    const b = buildArgv("SAVE_SCRIPT", { ep: "/ep", size: "12", mtimeNs: NS }, "/repo");
+    expect(b.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/save-script", "--expect-size=12", `--expect-mtime-ns=${NS}`]);
+    expect(b.stdinPipe).toBe(true);
+    expect(b.timeoutMs).toBe(30000);
+    expect(b.homebrewPath).toBeUndefined();
+  });
+
+  it("SEAL_SCRIPT / RUN_TTS_APPLY_PATCH 显式开口 /opt/homebrew/bin；后者无超时（S8-R17）", () => {
+    const seal = buildArgv("SEAL_SCRIPT", { ep: "/ep" }, "/repo");
+    expect(seal.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/seal-script"]);
+    expect(seal.homebrewPath).toBe(true);
+    const done = buildArgv("RUN_TTS_APPLY_PATCH", { ep: "/ep" }, "/repo");
+    expect(done.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/run", "tts", "--apply-patch"]);
+    expect(done.timeoutMs).toBeNull();
+    expect(done.homebrewPath).toBe(true);
+    expect(childEnv(process.env, true).PATH).toBe("/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin");
+    expect(childEnv(process.env).PATH).toBe("/usr/bin:/bin:/usr/sbin:/sbin");
+  });
+
+  it("VOICE_* 与 RECORD_TIME、CHECK_SCRIPT 的 argv 形状", () => {
+    expect(buildArgv("VOICE_INFO", { ep: "/ep" }, "/repo").argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/voice-info"]);
+    expect(buildArgv("VOICE_PARSE", { ep: "/ep" }, "/repo").stdinPipe).toBe(true);
+    expect(buildArgv("VOICE_ADD", { ep: "/ep" }, "/repo").stdinPipe).toBe(true);
+    expect(buildArgv("VOICE_REVERT", { ep: "/ep", label: "2" }, "/repo").argv.at(-1)).toBe("2");
+    expect(buildArgv("VOICE_RETRACT", { ep: "/ep", id: "7" }, "/repo").argv.at(-1)).toBe("7");
+    expect(buildArgv("RECORD_TIME", { ep: "/ep", stop: "02.5", entered: "1000.000", left: "1060.000" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/record-time", "02.5", "--entered=1000.000", "--left=1060.000",
+    ]);
+    expect(buildArgv("CHECK_SCRIPT", { scriptAbs: "/ep/02-script.md" }, "/repo").argv).toEqual([pyPath, "-m", "pipeline.check_script", "/ep/02-script.md"]);
+  });
+
+  it("IMPORT_COVER：--name 为单个 argv 元素、stdin pipe（S8-R18）", () => {
+    const b = buildArgv("IMPORT_COVER", { ep: "/ep", name: "我的图 名.png" }, "/repo");
+    expect(b.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/import-cover", "--name=我的图 名.png"]);
+    expect(b.stdinPipe).toBe(true);
+  });
+
+  it("runArgv 的 stdin pipe：逐字节到达、写完即 end()（stdoutFull 完整读入大载荷）", async () => {
+    const r = await runArgv(["/bin/cat"], 30_000, root, childEnv(process.env), undefined, "hello 雪乃\n");
+    expect(r.stdoutTail).toBe("hello 雪乃\n");
+    const big = "x".repeat(300_000);
+    const full = await runArgv(["/bin/cat"], 30_000, root, childEnv(process.env), 1 << 20, big);
+    expect(full.stdoutFull).toBe(big);
+  });
+
+  it("无 stdin 数据时仍为 ignore（既有闭集不变）", async () => {
+    const r = await runArgv(["/bin/sh", "-c", "read -r x; echo got=[$x]"], 30_000, root, childEnv(process.env));
+    expect(r.stdoutTail).toBe("got=[]\n");
+  });
+});
