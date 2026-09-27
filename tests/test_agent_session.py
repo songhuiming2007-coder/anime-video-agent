@@ -839,6 +839,10 @@ def test_ts11_memory_equals_rebuild_for_every_outcome(
 
     def scripted(messages, tools=None, **kw):
         state["n"] += 1
+        # 请求数护栏（同 test_agent_loop.Script.MAX_REQUESTS）：checkpoint_stop 场景靠检查点才停得下来，
+        # 「检查点答复被忽略」时会无限循环——M9 实测 S9-MUT-3 让本用例挂死到 harness 超时
+        if state["n"] > 200:
+            raise AssertionError("模型请求超过 200 次：循环没有停下（检查点被绕过）")
         if outcome == "done":
             return {"role": "assistant", "content": "好"}
         if outcome == "rollback":  # 0 条回复 → 回滚

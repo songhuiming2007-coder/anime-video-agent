@@ -52,7 +52,14 @@ class Script:
         self.steps = list(steps)
         self.requests: list[dict] = []
 
+    #: 请求数护栏（矩阵 MUT-3 行「请求计数 200 为护栏，强制失败」）：靠检查点才停得下来的剧本，
+    #: 在「检查点答复被忽略」一类缺陷下会无限循环。M9 实测 S9-MUT-3 让 TL-10 挂死 15 分钟——
+    #: 此前这道护栏只写在矩阵里、代码里没有。现有用例最多 61 次请求（TL-1）。
+    MAX_REQUESTS = 200
+
     def __call__(self, messages, tools=None, **kwargs):  # noqa: ANN001
+        if len(self.requests) >= self.MAX_REQUESTS:
+            raise AssertionError(f"模型请求超过 {self.MAX_REQUESTS} 次：循环没有停下（检查点/上限被绕过）")
         self.requests.append({
             "messages": copy.deepcopy(messages),
             "tools": copy.deepcopy(tools),
