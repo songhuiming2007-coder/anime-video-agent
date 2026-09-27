@@ -1,6 +1,6 @@
 # Implementation Spec：桌面端视觉设计系统与 UI 美化（Spec 14）
 
-日期：2026-09-26（**v0.3.1**，红队一轮修订（2🔴 + 9🟡 + 🔵 B1–B5）+ 二轮定向复审修订（4🟡 全收；🔵 B1–B3 全收，B4/B5 按人裁决关闭）+ **三轮定向复审 🟢**（0🔴/0🟡，4 条 🔵 由红队经人授权直接落地，见 §1.3）；状态：**🟢 可动工**；mock 已获人拍板（2026-09-26），S8-R22 / DIR-R3 / DOC-R1 / S8-R23 已授权（2026-09-26），N1–N11 已获人确认（2026-09-26））
+日期：2026-09-26（**v0.3.1**，红队一轮修订（2🔴 + 9🟡 + 🔵 B1–B5）+ 二轮定向复审修订（4🟡 全收；🔵 B1–B3 全收，B4/B5 按人裁决关闭）+ **三轮定向复审 🟢**（0🔴/0🟡，4 条 🔵 由红队经人授权直接落地，见 §1.3）；状态：**🟢 可动工**；mock 已获人拍板（2026-09-26），S8-R22 / DIR-R3 / DOC-R1 / S8-R23 已授权（2026-09-26），N1–N11 已获人确认（2026-09-26）；**PR0–PR3 均已施工**（PR3 与 S8-R23 见 §7.4，2026-09-27））
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1 产品画像、§0.3 借鉴边界、§4 施工红线八条、§5 明确排除）。**§6 二期需求原清单里没有本 spec**：来源是 2026-09-26 用户追加（对现状 UI 原话「堪比厕所」，指示学习 ZCode Desktop 的前端设计与 UI 风格），先例同 Spec 13，条目补登见 §6.1 DIR-R3
 相关 ADR：ADR-0020（§4 桌面端）。**不新立 ADR**（§6.4）
 契约依赖：**Spec 8**（已施工，`desktop/` 即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；**Spec 10 / 11 / 12**（红队 🟢、**均未施工**；本 spec 给它们提供样式契约，**不阻塞它们**，边界见 §2.8、§6.2）
@@ -668,7 +668,7 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | M29 | stale 透明度回到 0.6（红队 Y2） | VE-1 stale 态 | 合成 opacity 后浅色 < 3 | v0.1 的审计不读 opacity，永远绿 | ✓ mock-06 浅色 7、深色 0 |
 | M30 | `.ui-kbd` 回到 `--fg-muted`（E9） | VE-1 | 主按钮里的键帽 4.14 / 1.36 | VS-2 看不出 | ✓ mock-04 三态各 1，合计 3 |
 | M18 | 审计的文本遍历失效（`SHOW_TEXT` → `SHOW_COMMENT`） | VE-1 的下限断言 | `n` 从 82 降到 2 | 失败数仍为 0：没有下限断言时审计永远绿 | ✓ n=2、TOTAL_FAIL=0 |
-| M19 | VE-2 ③ 去掉 `emulateMedia({ colorScheme: null })` | VE-2 ③ | 系统为深色时 `matchMedia` 仍为 false，与 `shouldUseDarkColors` 不等（E4） | 反向变异：证明解除模拟这一步不可省 | ✓ E4 实测该现象 |
+| M19 | VE-2 ③ 去掉 `emulateMedia({ colorScheme: null })` | VE-2 ③ | 系统为深色时 `matchMedia` 仍为 false，与 `shouldUseDarkColors` 不等（E4） | 反向变异：证明解除模拟这一步不可省 | ✓ 机理实测（PR3）：本机系统浅色时删掉该行 VE-2 仍绿（pageDark=false ≡ nativeDark=false，杀不死）；把 `nativeTheme.themeSource` 置 `dark` 后实测 `{nativeDark:true, 不解除:false, 解除:true}` —— 这一步在深色主机上必红 |
 | M31 | PR1 漏改 `style.css` 的 `--bg` 同名变量（或只改定义、不改 `var()` 引用） | VE-0 深色态 | token 深色块（特异性 0,2,0）覆盖旧 `--bg`，旧界面深色底色从 `#1c1c1e` 变为 `#161618`（E11 实测） | 浅色态不红（旧 style.css 后加载、同特异性胜出），所以 VE-0 必须跑深色态 | 施工回填（E11 已证机理） |
 | M37 | 给 `.left, .center, .preview, .topbar, .timeline` 加一层透明渐变 `background-image`（红队二轮 🟡-1） | VE-1 的 `bgImage = 0` 断言 | 非白名单祖先带背景图，一律记失败 | v0.2 的审计会整段跳过、`n` 只少 1，下限断言照样绿 | ✓ mock-01 浅色 `bgImageFail=61`；叠加 M1 时另有对比度失败 12（其余被背景图遮住的 26 处改记为 bgImage） |
 | M38 | 「打回…」改为 `ui-btn ui-btn--ghost`（红队二轮 🟡-3） | VS-12 | 带 ghost + 动作区变体不一致 | v0.2 的 VS-12 只查调用 `approval.decide` 的按钮，「打回…」不在其内 | ✓ vs12.mjs 自测：2 处 |
@@ -677,9 +677,9 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | M41 | 手动深色块删 `--warn`（同 M2），看 VS-2 是否空跑（红队二轮 B2） | VS-2 的 `out.length === 290` | 检查器提前返回空表，对子数为 0 | 只断言失败数时为 0 失败、空过 | ✓ `tk.mjs` 退出码 1，「EXIT 1：期望 290 对全绿」 |
 | M8 | 对子表删去「状态徽标压选中 / 悬停行」一类 | VE-1 | 夹具里的悬停停机行 / 待答徽标 | 对子表失去该类后 VS-2 全绿 | 施工回填 |
 | M13 | 期行改回 `<div onClick>` | VS-8、VE-3 | onClick 挂在 div；Tab 到不了 | VE-4 用鼠标点击，不会先红 | 施工回填 |
-| M14 | `formatRelTime` 的 `< 60 s` 写成 `<= 60 s` | VU-1 | 60 s 边界输出「刚刚」 | 仅 VU-1 | 施工回填 |
-| M15 | `groupByStep` 把 `null` 并入 `false` 组 | VU-2 | 「未取到」行出现在「非停机点」 | 仅 VU-2 | 施工回填 |
-| M32 | `readTheme` 去掉 try/catch | VS-9、VU-3 | 静态：成员访问不在 try 内；单元：localStorage 抛错时向上抛 | 两层冗余 | 施工回填 |
+| M14 | `formatRelTime` 的 `< 60 s` 写成 `<= 60 s` | VU-1 | 60 s 边界输出「刚刚」 | 仅 VU-1 | ✓ VU-1 1 红 |
+| M15 | `groupByStep` 把 `null` 并入 `false` 组 | VU-2 | 「未取到」行出现在「非停机点」 | 仅 VU-2 | ✓ VU-2 2 红 |
+| M32 | `readTheme` 去掉 try/catch | VS-9、VU-3 | 静态：成员访问不在 try 内；单元：localStorage 抛错时向上抛 | 两层冗余 | ✓ 两层各 1 红 |
 | M33 | `style={{ color: … }}` | VS-7、VS-3 | 键不在白名单；值是字面量 | 两层冗余 | 施工回填 |
 | M34 | 批准按钮加 `ui-btn--primary` | VS-12 | 闸门按钮带主按钮类 | 仅 VS-12（VE-1 对比度照样过） | 施工回填 |
 | M35 | 期行用 `aria-selected` | VS-13 | button 上的无效 ARIA | 仅 VS-13（视觉上此时选中态也会消失，但没有 e2e 看颜色） | 施工回填 |
@@ -718,6 +718,48 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 4. S8-R23（「陈旧」标记）**未施工**：不属本次施工单，仍是已授权待办。
 
 
+### 7.4 PR3 施工实跑回填（2026-09-27）
+
+**落地**（提交：`10d214f` PR3 主体、`ee5d296` VE-2 的 origin 断言、`25940a2` 门禁 7 截图工具；S8-R23 单独一笔 `7bdd4a4`）：
+
+| 项 | 内容 |
+|---|---|
+| `shared/relTime.ts` / `shared/episodeView.ts` | §3.4 / §3.5 冻结接口逐字实现；零 import |
+| `renderer/theme.ts` | §3.3；全仓唯一碰 localStorage 的**主题**模块（另一处见偏差 1） |
+| `App.tsx` | 侧栏头部（搜索框 + 按时间/按工序分段 + 期总数）、期行首行右侧恒显示相对时间（60 s 定时器 + `visibilitychange` 重算）、按工序三组（可折叠，`ui-section` + `ui-count`）、TopBar 外观按钮 + `.ui-popover`（原生 popover API，Esc 关闭且焦点回触发按钮） |
+| `main.tsx` | `createRoot` 之前 `applyTheme(readTheme())` |
+| `style.css` | `#theme-menu` 的落位（popover 的 UA 默认是 `fixed` + `inset:0` + `margin:auto`，不盖掉会落在窗口正中） |
+
+**验证命令（原样结果）**：`npx vitest run` → **360 passed**（34 files）；`npx tsc --noEmit -p tsconfig.json` → 干净；`npx playwright test` → **103 passed + 1 skipped**（VE-4：`preview.spec.ts`、`ack.spec.ts`、`preview-security.spec.ts` 三份零改动全绿）；`npx vitest run e2e-packaged` → **11 passed**（release 构建 `dirty=false`、`gitHead=ee5d296`）；`uv run pytest tests/test_docs_invariants.py` → **12 passed**。
+
+**变异实跑（植入 → 目标用例红 → 逐字节还原；还原后 sha256 与植入前一致）**
+
+| 变异 | 落点 | 实跑结果 |
+|---|---|---|
+| M14 | `relTime.ts` 的 `diff < 60_000` → `<= 60_000` | VU-1 1 红（60 s 档变「刚刚」） |
+| M15 | `episodeView.ts` 把 `null` 并入 `false` 组 | VU-2 2 红（「未取到」并进「非停机点」、组序断言） |
+| M32 | `readTheme` 去掉 try/catch | VS-9 1 红 + VU-3 1 红（两层冗余各杀一次） |
+| M19 | VE-2 ③ 删 `emulateMedia({ colorScheme: null })` | 本机系统浅色：删掉仍绿（`nativeDark=false` 与模拟的 `false` 相等，杀不死）；按 E4 机理把 `nativeTheme.themeSource` 置 `dark` 后实测 `{nativeDark:true, 不解除模拟:false, 解除:true}` —— 深色主机上必红 |
+
+**VE-1 三态元素数下限（`n`，三态一致；逐值实测回填）**：list 67、sidebar-step 71、sidebar-search 60、popover 71、markdown 79、json 79、empty 63、error 73、health 91、stale 65→67（S8-R23 的两处「陈旧」）、card 73、card-reject 78、card-err 81。对比度 / 非文本 / 字号 / `bgImage` / `skippedMedia` 全 0。
+
+**S8-R23（单独提交 `7bdd4a4`）**：侧栏头部与中栏顶部各一处中性徽标，文案就是「陈旧」二字（`data-testid="stale-mark"`），条件与 `.main.stale` 相同；与 `reach-banner` 分开（横幅 `permission-denied` 说原因，标记说哪些区域是旧数据）。e2e：脱盘时两处出现且不含横幅的原因串、恢复后都消失；「陈旧」单列，不计入 §2.8 的 N1–N11。
+
+**门禁 5 的对拍（施工报告附件）**：`git diff 33e866b..HEAD` 中 renderer 文件的中文片段——**被删除行的中文片段只有「停机」「运行中」「张卡待答」**（期行重构时随 JSX 搬运，两侧都在），即既有可见文案零变化；新增片段全部落在 N1–N11，另加单列的「陈旧」。`data-testid` 新增 4 个（`appearance` `theme-menu` `ep-search` `stale-mark`）、删除 0；rpc 方法名新增 0、删除 0。`host/`、`main/`、`preload/`、`shared/protocol.ts`、`shared/lifecycle.ts`、`pipeline/`、`config/`、`tests/`、`pyproject.toml` 零 diff。
+
+**施工偏差（如实登记）**
+
+1. **VS-9 的白名单放宽到 `theme.ts` + `ScriptEditor.tsx`**：spec 原文写「localStorage 只出现在 `renderer/theme.ts`」，但 Spec 11 的 RF-7 草稿便利层（02.5 编辑器）先落地，读写同样在 try/catch 里。施工时按同纪律收录，并在 VS-9 的注释与消息里写明；若人认为应只留 `theme.ts`，那是 Spec 11 的独立修订（改草稿暂存机制），不属本 spec。
+2. **VE-1 stale 态的 `n` 下限由 81 改为 65**：81 是竞态读数——脱盘后 host 会推一份空期列表，审计落在「推送到没到」之间就多算十几行期行。改为审计前先等 `[data-testid=episode]` 清空；判据（失败数 = 0、`n` ≥ 下限）未变，只是夹具状态钉死。另：该步的 `chmod 755` 恢复改放进 `finally`，否则断言一红就以 `ENOTEMPTY` 掩盖真因（PR3 期间实际踩到）；`tests/helpers.ts` 既有的清理重试未动，它管的是 host 退出竞态，与这次的掩盖是两件事。
+3. **VE-3 的外观浮层部分随 PR3 补做**（PR2 §7.3 的施工偏差 ①）：Tab 到「外观」按钮 → Space 打开 → Esc 关闭 → 焦点回到按钮。
+4. **A2（首帧）未取得可复现的自动实测**：试过在 reload 前注入 `addInitScript` 量「`data-theme` 写入 vs 首次内容绘制」，Electron 的 reload 路径下注入不稳（同一用例两种结果），按判据 9 不许当证据，已撤掉。留给门禁 6 的人眼首帧观察；结论未定，**本轮不加 `theme-boot.js`**（它也只能管页面首帧，管不到窗口自己那一帧默认底色）。
+5. **A7 的自动证据边界**：e2e 与打包版渲染器同走 `file://`（VE-2 现断言 `location.origin === "file://"`），「重启后偏好还在」由 VE-2 ② 覆盖；打包版 `~/Library/Application Support/ava/Local Storage/leveldb/` 已由打包运行创建（打包版 UD 固定、测试开关不生效），但「写进去的值跨重启还在」的收尾确认归门禁 6。
+
+**待人决定**：① 门禁 6 手验（打包版三档切换、重启保持、首帧观察）；② 门禁 7 审美判定（`out/pr3-shots/` 9 张 PNG 对 mock-01/05）；③ 上面偏差 4 的结论（要不要加 `theme-boot.js`）。
+
+**未回填的遗留（不属 PR3 范围）**：§7.2 里 M31（PR1 落点）与 M36（VS-10）标着「施工回填」但 PR1/PR2 都没实跑，本轮未越界补，登记待人派单。
+
+
 ---
 
 ## 8. PR 划分
@@ -729,7 +771,7 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | **PR0**（文档） | DIR-R3、DOC-R1 落盘；**人看 mock 拍板**（可改 token 取值与 D1–D7，改后重跑 `tk.mjs` 与 `render.cjs`）；提交前重核 `tokens.css`/`ui.css` 的 sha256 与头部「拍板基准」对拍（红队三轮 🔵-2） | `uv run pytest tests/test_docs_invariants.py` | §6.1 授权 + 红队 🟢 |
 | **PR1**（契约，零视觉变化） | `renderer/tokens.css`、`renderer/ui.css`、`icons.tsx`、`ui.tsx`；旧 `style.css` 的 3 个同名变量改为 `--legacy-*`；`main.tsx` 的 import 顺序；判据移植（VS-1~6、VS-10、VS-11，并与附件对拍）；`desktop/scripts/render-mocks.cjs` | VS-1~6（扫 `ui.css`）、VS-10、VS-11、VE-0（浅、深两态）、VE-4；M1–M6、M10–M12、M20–M23、M25–M27、M31、M36、M39–M41 | PR0 |
 | **PR2**（旧界面换皮，Spec 10 PR1 之后） | S8-R22：`style.css` 替换 Spec 8 时代的规则（清单：`.ep*` `.stop-mark` `.status*` `.cmd` `.advisories` `.tree*` `.section-title` `.decision*` `.fingerprints` `.reject-form` `.banner*` `.notice` `.warn` `.empty` `.muted` `.error` `.html-frame` `.video-wrap` `.timecode` `.audio-wrap` `.queue*` `.image-wrap` `.text-wrap` `.plain` `.markdown` `.json` `.j-*` `.timeline` `.jobs` `.events` `.job*` `.stderr` `.tail` `.health` `.diag` `.meta*` `.fatal` `.topbar*` `.repo` `.dev-mark` `.main` `.left` `.center` `.preview` `.app` `.spacer` 与基座规则）；Spec 10 已加的区块保留；组件改类名与元素种类；预览文件头 | VS-3~6 扩到新 `style.css`、VS-7、VS-8、VS-12、VS-13、VE-1、VE-3、VE-4；M7、M8、M13、M18、M29、M30、M33–M35、M37、M38 | PR1、Spec 10 PR1 |
-| **PR3**（侧栏与主题） | `shared/relTime.ts`、`shared/episodeView.ts`、`renderer/theme.ts`；侧栏头部与期行；外观浮层 | VS-9、VU-1~3、VE-2、VE-1 增侧栏与浮层状态；M14、M15、M19、M32；A2、A7 实测回填 | PR2 |
+| **PR3**（侧栏与主题）**已施工 2026-09-27**（见 §7.4） | `shared/relTime.ts`、`shared/episodeView.ts`、`renderer/theme.ts`；侧栏头部与期行；外观浮层 | VS-9、VU-1~3、VE-2、VE-1 增侧栏与浮层状态；M14、M15、M19、M32；A2、A7 实测回填 | PR2 |
 
 每个 PR 结束时跑：`cd desktop && npx vitest run && npx tsc --noEmit -p tsconfig.json && npx playwright test`，再跑截图命令，把 PNG 交人看。
 
@@ -747,6 +789,9 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 - [ ] **门禁 7（人看终版）**：PR2、PR3 完成后对真实 app 按 §2.7 截图（三态），人确认与 mock 一致或更好。这是验收里唯一的审美判定，由人做
 - [ ] **门禁 8（变异）**：§7.2 逐条实跑，已实跑的 26 条失败数与表内一致，其余回填
 - [ ] **门禁 9（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；`docs/dev/plans/README.md` 状态行更新
+
+**PR3 施工方自评（2026-09-27，不替验收方打勾）**：门禁 1（VS-1~13 全绿 + 两个冻结文件 sha256 对拍）、门禁 3（VE-1 全部夹具状态 × 三态 + VE-3，含本项目新增的侧栏/浮层状态与浮层键盘行为）、门禁 4（VE-4 与全量 vitest）、门禁 5（§7.4 的对拍）、门禁 9（文档不变量 12 passed + 本文件状态行）由本轮实跑覆盖；门禁 6 / 7 待人；门禁 8：§7.2 表内 36 条已实跑 34 条（撰写时 26 条 + PR2 §7.3 的 5 条 M8/M13/M33/M34/M35 + PR3 的 4 条 M14/M15/M19/M32，M19 本机系统浅色杀不死、机理对照已证深色主机必红），剩 M31 / M36 两条（PR1/PR2 落点）未跑。
+
 
 ---
 
