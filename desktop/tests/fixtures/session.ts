@@ -227,15 +227,23 @@ export function nameOf(convKey: string): string {
   return convKey === "idea" ? "idea" : convKey.slice(3);
 }
 
-/** 建好一个会话专用夹具仓库：配置改本地、假钥匙串在临时根内、假 protocol.py 就位（TF-2）。 */
-export function sessionRepo(opts: { withApprovals?: boolean } = {}): SessionRepo {
+/**
+ * 建好一个会话专用夹具仓库：配置改本地、假钥匙串在临时根内、假 protocol.py 就位（TF-2）。
+ *
+ * `llmUrl` 给出时（Spec 10 PR4，真实 core）：**不写**假 protocol.py——副本里就是 `makeFixtureRepo`
+ * 复制来的真实 `pipeline/agent/protocol.py`；`base_url` 指向调用方起的本地假 LLM 端点。
+ * 其余守卫（配置改本地、钥匙串在临时根内、写入经 fixtureWrite）与假进程版完全相同。
+ */
+export function sessionRepo(opts: { withApprovals?: boolean; llmUrl?: string } = {}): SessionRepo {
   const root = makeFixtureRepo(opts);
   const baseDir = join(root, ".ava-session");
-  fixtureWrite(root, "config/agent.local.json", JSON.stringify({ base_url: "http://127.0.0.1:9/v1", model: "fake", api_key_env: "AVA_TEST_KEY" }, null, 2));
+  const baseUrl = opts.llmUrl ?? "http://127.0.0.1:9/v1";
+  if (!baseUrl.startsWith("http://127.0.0.1:")) throw new Error(`假 LLM 端点必须在本机：${baseUrl}`);
+  fixtureWrite(root, "config/agent.local.json", JSON.stringify({ base_url: baseUrl, model: "fake", api_key_env: "AVA_TEST_KEY" }, null, 2));
   fixtureWrite(root, "config/agent/web.local.json", JSON.stringify({ search: { endpoint: "http://127.0.0.1:9/search" } }, null, 2));
   const keychainPath = join(baseDir, "security");
   fixtureWrite(root, ".ava-session/security", `#!/bin/sh\nf=${JSON.stringify(join(baseDir, "key"))}\nif [ -f "$f" ]; then cat "$f"; else exit 44; fi\n`, 0o755);
-  fixtureWrite(root, "pipeline/agent/protocol.py", protocolPy(baseDir));
+  if (opts.llmUrl === undefined) fixtureWrite(root, "pipeline/agent/protocol.py", protocolPy(baseDir));
   __avaTestSetKeychainExec(keychainPath);
   return { root, baseDir, keychainPath, eps: join(root, "data/episodes") };
 }

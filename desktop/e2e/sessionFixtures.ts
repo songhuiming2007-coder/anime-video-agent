@@ -1,19 +1,19 @@
 // e2e 会话夹具（Spec 10 §7）：假 protocol.py 的临时仓库 + 未打包构建的确认框/退出桩。
 // 复用 vitest 侧的 sessionRepo/fixtureWrite/sessionScript（同一份"会话类夹具"，TF-1/TF-2/TF-3 覆盖它）。
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { launch, type Launched } from "./fixtures";
 import { stringifyLossless } from "../src/shared/losslessJson";
-import { cleanup, tmp } from "../tests/helpers";
-import { fixtureWrite, sessionRepo, type SessionRepo } from "../tests/fixtures/session";
+import { cleanup, REPO, tmp } from "../tests/helpers";
+import { fixtureWrite, sessionKey, sessionRepo, type SessionRepo } from "../tests/fixtures/session";
 
 export interface SessionFixture {
   repo: SessionRepo;
   cleanup: () => void;
 }
 
-export function sessionFixture(eps: string[] = ["SESS-A"], opts: { at035?: boolean } = {}): SessionFixture {
-  const repo = sessionRepo();
+export function sessionFixture(eps: string[] = ["SESS-A"], opts: { at035?: boolean; llmUrl?: string } = {}): SessionFixture {
+  const repo = sessionRepo({ llmUrl: opts.llmUrl });
   for (const key of eps) {
     // 所有写入经 fixtureWrite（TF-1 守卫；它自己负责建父目录）
     fixtureWrite(repo.root, `data/episodes/${key}/01-topic.md`, "# 选题\n类型：杂谈\n");
@@ -71,4 +71,26 @@ export async function stubConfirm(L: Launched, respond: boolean): Promise<void> 
   await L.app.evaluate((_e, r) => {
     (globalThis as unknown as { __avaTestConfirm: unknown }).__avaTestConfirm = { calls: 0, respond: r, last: null };
   }, respond);
+}
+
+/**
+ * 真实 core 夹具（Spec 10 PR4）：副本里是复制来的真实 `pipeline/agent/protocol.py`，LLM 指向本地假端点，
+ * 钥匙串脚本吐出测试密钥（host 注入 `AVA_TEST_KEY`，真实 `load_llm_config` 才返回非 None）。
+ * 夹具自检：副本 protocol.py 必须与仓库里的逐字节相同——否则测到的不是真实 core。
+ */
+export function realCoreFixture(llmUrl: string, eps: string[] = ["SESS-A"], opts: { at035?: boolean } = {}): SessionFixture {
+  const fx = sessionFixture(eps, { ...opts, llmUrl });
+  const copied = readFileSync(join(fx.repo.root, "pipeline/agent/protocol.py"), "utf-8");
+  const real = readFileSync(join(REPO, "pipeline/agent/protocol.py"), "utf-8");
+  if (copied !== real) throw new Error("真实 core 夹具里的 protocol.py 与仓库不一致（被假进程覆盖了？）");
+  sessionKey(fx.repo, "sk-ava-test-key");
+  return fx;
+}
+
+/** host 缓冲的该会话全部条目（经 renderer 测试钩子取 conv.snapshot；仅未打包构建）。 */
+export async function convSnapshot(L: Launched, convKey: string): Promise<{ entries: { k: string; frame?: Record<string, unknown> }[]; framesLost: number; open: Record<string, unknown>[]; phase: string }> {
+  return L.page.evaluate(
+    (k) => (window as unknown as { __avaTestCall: (m: string, p: unknown) => Promise<unknown> }).__avaTestCall("conv.snapshot", { convKey: k }),
+    convKey,
+  ) as never;
 }
