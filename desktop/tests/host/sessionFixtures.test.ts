@@ -1,5 +1,5 @@
 // TF-1 / TF-2 / TF-3：会话类夹具自检（Spec 10 §7.1）。
-import { readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { assertLocalUrls, fixtureWrite, sessionRepo, sessionRepoChecks } from "../fixtures/session";
@@ -13,10 +13,21 @@ describe("TF-1 fixtureWrite 的 realpath + lstat 守卫", () => {
   it("经 .venv（指向仓库外的软链）写入被拒，目标 mtime 不变", () => {
     const repo = sessionRepo();
     roots.push(repo.root);
+    // 诱饵（M9）：副本的 .venv 原本软链到**真实** venv——守卫一旦被改坏（MUT-42 或真实回归），
+    // 这条用例本身就会顺着软链覆盖真实解释器。改指向根外的临时诱饵：检验的性质不变
+    //（经指向根外的软链写入必须被拒），坏了也只坏诱饵。
+    const decoyDir = tmp("decoy-venv");
+    roots.push(decoyDir);
+    mkdirSync(join(decoyDir, "bin"));
+    writeFileSync(join(decoyDir, "bin/python"), "DECOY");
+    unlinkSync(join(repo.root, ".venv"));
+    symlinkSync(decoyDir, join(repo.root, ".venv"));
     const target = join(repo.root, ".venv/bin/python");
+    expect(realpathSync(target).startsWith(realpathSync(decoyDir))).toBe(true); // 前提：确实走到了诱饵
     const before = statSync(target).mtimeMs;
     expect(() => fixtureWrite(repo.root, ".venv/bin/python", "pwned")).toThrow();
     expect(statSync(target).mtimeMs).toBe(before);
+    expect(readFileSync(join(decoyDir, "bin/python"), "utf-8")).toBe("DECOY");
   });
 
   it("目标本身是指向根外的符号链接 → 拒绝，根外文件内容不变（MUT-66）", () => {
