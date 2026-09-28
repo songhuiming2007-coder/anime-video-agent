@@ -522,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
     from pipeline.agent.cli import check_code_freeze, resolve_episode_target
     from pipeline.agent.llm import load_llm_config
-    from pipeline.agent.session import SessionHost, prepare_resume, tool_flags
+    from pipeline.agent.session import SessionHost, prepare_resume
     from pipeline.agent.session_log import (
         EpisodeLease,
         SessionLocked,
@@ -742,6 +742,10 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
             "text": str(message.get("content") or ""), "name": None,
         }
         if role == "tool":
+            # 延迟 import：协议进程 fd 隔离（main ②）必须先于任何 pipeline.* import，
+            # 本函数是模块级的，拿不到 main() 里的局部 import（N48 实测 NameError）
+            from pipeline.agent.session import tool_flags
+
             ok, text = tool_flags(message.get("content"))
             frame["ok"] = ok
             frame["text"] = "" if ok else (text or "")

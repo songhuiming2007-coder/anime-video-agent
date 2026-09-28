@@ -902,6 +902,46 @@ def test_tp8_sigkill_then_continue_resumes_with_history(world, endpoint, tmp_pat
     assert endpoint.bad_pairings == 0, "修复后的历史必须过配对校验（不是 400）"
 
 
+def test_tp8b_continue_replays_tool_records(world, endpoint, tmp_path) -> None:
+    """TP-8b（N48）：含已执行工具结果（tool 角色记录）的会话 --continue 恢复时，
+    _send_history 重放 tool 记录不崩（修复前必 NameError 退 1），ok/obs 映射正确。
+
+    TP-8 的场景（等卡时被杀）不一定产生 tool 记录，这个洞因此藏了整场二期。
+    """
+    root, episode = world
+    endpoint.replies = [tool_call("test_slow", {"seconds": 0}), {"role": "assistant", "content": "好"}]
+    first = Protocol(root, endpoint, tmp=tmp_path / "a")
+    try:
+        first.wait_for_ready()
+        first.send({"t": "user_message", "text": "跑慢工具"})
+        request = first.wait_for("request")
+        first.send({"t": "answer", "request_id": request["request_id"],
+                    "decision": "approve", "feedback": None})
+        first.wait_for("turn_finished")
+        first.shutdown()
+        assert first.finish() == 0
+    finally:
+        first.proc.kill()
+    # 前提自检：确有 tool 角色记录进盘（没有则本用例打不到那条路径）
+    records = [json.loads(line)
+               for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r.get("k") == "msg" and r["message"].get("role") == "tool" for r in records)
+
+    second = Protocol(root, endpoint, extra=["--continue"], tmp=tmp_path / "b")
+    try:
+        ready = second.wait_for_ready()
+        assert ready["continue_status"] == "resumed"
+        history = [f for f in second.frames if f.get("t") == "history"]
+        tools = [f for f in history if f["role"] == "tool"]
+        assert tools, "恢复的历史必须含 tool 帧"
+        # 成功工具：ok=True、text 置空（observation 不回放，§3.1）
+        assert all(f["ok"] is True and f["text"] == "" for f in tools)
+        second.shutdown()
+        assert second.finish() == 0
+    finally:
+        second.proc.kill()
+
+
 # ---------------------------------------------------------------------------
 # TP-10：memory_ack
 # ---------------------------------------------------------------------------
