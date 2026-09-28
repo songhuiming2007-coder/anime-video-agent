@@ -7,6 +7,12 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [N34] 桌面端 e2e 的四处断言缺口（变异实跑暴露）
+- 状态：**已解决**（施工 a9e2a77；2026-09-28 独立评审通过）
+- 关联：`desktop/e2e/session.spec.ts`（假进程版 TX-1 / TX-8 / TX-14）、`desktop/src/renderer/App.tsx`（onConnect 调用点）；Spec 10 §7 变异表
+- 原记录（活跃表原文，含施工回填）：2026-09-27 M9 桌面端变异 68 条实跑 66 KILLED。① 假进程版 TX-1 只在待答区内数批准按钮（spec 要求整页），MUT-26 在它下面存活 → 目标改指真实 core 版；② 假进程版 TX-8 不断言确认框桩被调用，MUT-39 存活 → 同上；③ **MUT-46（RequestCard key 改下标）PARTIAL**：静态守卫 TG-17 红，但能造并发两卡的假进程版 TX-14 仍绿，DOM 复用未导致第二次 Enter 答到第二张卡，机理**未证实**；真实 core 的卡串行出现、无从检验；④ **MUT-62 SURVIVED**：变异在 App.tsx 的 onConnect 调用点，单测打不到，e2e 无「host 重启跨越自动呼出等待」路径。③④ 待补用例。**2026-09-28 施工**：①② 核实（读码，未重跑）：真实 core 版 TX-1 以 `[data-testid^=request-answer]` 数**整页**按钮、TX-8 断言 `quitStubCalls == 1`，矩阵已指向真实版，无需补。③ MUT-46 取 (a)：机理＝答复即 `setBusy(true)` → 按钮 `disabled` → 焦点离开，第二次 Enter 与 key 无关（推断，与「变异下 TX-14 仍绿」一致）；key 真正守的是**组件状态归属**，新增假进程版 **TX-14b**（第一张卡写反馈并拒绝后，第二张卡的反馈框为空、其拒绝帧 `feedback:null`）。harness 实跑 **KILLED**（TG-17 + TX-14b；TX-14b 原文 `Expected: "" Received: "只改第一段"`）。④ MUT-62：补 e2e **TX-15b**（回合在跑时 kill -9 host → 重连 → 追加新 pending 必须照常呼出；回合中不写对象库，避开新 host 激活时 H1 自愈 supersede 另建新号的干扰——首版用例正是被它假红）。MUT-62 实跑仍 **SURVIVED**，判为**等价变异**：重连后 `fetchConv(当前键, resetAuto=true)` 以新 snapshot 做同一次 reset，其间无可达的 pendings 事件；两处 reset 一起去掉的 **MUT-62′ → TX-15b 红，KILLED**。矩阵与 Spec 10 §8 如实改写（MUT-46 期望杀手改为 TG-17/TX-14b；MUT-62 标等价、新增 MUT-62′），**没有把 SURVIVED 记成 KILLED**。验证：`vitest` 364 passed、`tsc --noEmit` 0、未打包全量 e2e 110 过 / 2 跳过；三条变异均经 `scripts/verify-mutations.mjs` 实跑、还原后 md5 一致。**顺带发现（未修，报人）**（已单独登记为 N38）：`verify-mutations.mjs:84` 把「e2e 未选中任何用例」记成一条红——变异若把构建弄坏（本次 MUT-62′ 首版就是：`//` 注释落在行中间），harness 会报 **假 KILLED**；判定应把构建失败/零用例归为 OTHER
+- 评审：✅ 通过（附一处措辞更正）。① 亲自用 N38 修后的 harness 实跑三条（`--only`，净树）：MUT-46 **KILLED**（TG-17 + TX-14b 双红）、MUT-62 **SURVIVED**、MUT-62′ **KILLED**（TX-15b）——与矩阵写法一致；MUT-46 已由 TX-14b 真杀，矩阵与报告未把 PARTIAL 冒充为 KILLED。② 新用例能真红：TX-14b 由 MUT-46、TX-15b 由 MUT-62′ 实证。③ **更正**：矩阵称 MUT-62 为「等价变异」不严谨——同一行自承重连后 `episodes.list`/`conv.snapshot` 失败时 onConnect 的同步 reset 是唯一一次 reset，即失败路径可观测、只是无用例；已把 Spec 10 §7 该行、§8 回填段与 `mutations.mjs` note 改为「成功路径不可观测、失败路径无用例」，判定仍为预期 SURVIVED。④ 🔵 观察（不阻塞）：TX-15b 用 `waitForTimeout(3000)` 作「计数不变」的观察窗，负载下窗口可能不够；后续 `approval-id === \"after\"` 断言兜住误判为绿的风险。本次负载全量 ×3（N37 验收同批）中 TX-14b/TX-15b 3/3 绿。⑤ diff 只动 `e2e/session.spec.ts`、`scripts/mutations.mjs`、Spec 10 与 issues 行，未越界。
+
 ### [D32] TA-12 在全量 e2e 负载下红一次：旧代号的 STATUS 结果进了 snapshot
 - 状态：**已解决**（施工 e4243fa；2026-09-28 独立评审通过）
 - 关联：`desktop/e2e/ack.spec.ts`（TA-12）、host 侧 repoRoot 切换与在途命令互斥；Spec 8, Spec 10

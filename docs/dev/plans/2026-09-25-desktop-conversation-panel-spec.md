@@ -900,7 +900,7 @@ browser 逐调用卡、素材抓取卡、`write_memory` 卡与记忆确认卡都
 | MUT-59 | host 只在 `stop_points.items` 非空时推进结算（模拟 S9-R4 未补全的实现） | TH-20 ②、TV-6 ⑩ | 零停机点回合永不结算，超时前没有 `settled`；renderer 侧 ⑩ 中新 pending 被延迟 |
 | MUT-60 | 结算以读取**完成**时刻比较 | TH-20 ① | 那次「`stop_points` 之前开始、之后读完」的读取被当成结算依据，第一次读取后即出现 `settled` |
 | MUT-61 | 删去结算超时兜底 | TH-20 ⑤ | 不发 `stop_points` 的假进程下永无 `settled` |
-| MUT-62 | `onConnect` 不重置 `autoOpen` | —（等价变异） | N34 判定：重连后 `fetchConv(当前会话键, resetAuto=true)` 以新 host 的 snapshot 再做同一次 reset，两次之间没有可达的 pendings 事件，故不可观测；只有 `episodes.list`/`conv.snapshot` 失败时 onConnect 的同步 reset 才起作用 |
+| MUT-62 | `onConnect` 不重置 `autoOpen` | —（SURVIVED：成功路径不可观测，失败路径无用例；N34 评审把「等价」更正为此） | N34 判定：重连后 `fetchConv(当前会话键, resetAuto=true)` 以新 host 的 snapshot 再做同一次 reset，两次之间没有可达的 pendings 事件，故不可观测；只有 `episodes.list`/`conv.snapshot` 失败时 onConnect 的同步 reset 才起作用 |
 | MUT-62′（N34 补） | onConnect 与 `fetchConv` 两处 reset 一起去掉 | TX-15b | 旧 `awaiting` 残留，重连后的新 pending 只登记不呼出 |
 | MUT-63 | `renderConfirmDetail` 不转义 `\p{Cf}` | TH-18 | `detail` 含原始 U+202E，断言的 `⟨U+202E⟩` 不存在 |
 | MUT-64 | `reqId` 去掉 `bootId`、host 退出时不 abort | TH-22 | 桩未收到 abort；旧 `confirm-result` 被新 host 接受 |
@@ -1028,7 +1028,7 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
   - **MUT-46 PARTIAL**：静态守卫 TG-17 红，但假进程版 TX-14 在 key 改下标后仍绿——DOM 复用未导致第二次 Enter 答到第二张卡，机理**未证实**；
     **2026-09-28 N34 回填**：机理＝答复即 `setBusy(true)` → 按钮 `disabled` → 焦点离开，第二次 Enter 落空与 key 无关（推断，与「变异下 TX-14 仍绿」相符）；key 真正守的是组件状态归属，新增假进程版 **TX-14b**（第一张卡写反馈后拒绝，第二张卡的反馈框必须为空、第二次拒绝的 `feedback` 为 null），harness 实跑 MUT-46 → **KILLED**（TG-17 + TX-14b 红，TX-14b 失败原文 `Expected: "" Received: "只改第一段"`）；
   - **MUT-62 SURVIVED**：变异落在 `App.tsx` 的 onConnect 调用点，TV-6 ⑪ 测的是纯 reducer，e2e 无「host 重启跨越自动呼出等待」路径——测试缺口；
-    **2026-09-28 N34 回填**：补了该路径的 e2e **TX-15b**（回合在跑时 kill -9 host → 重连 → 追加新 pending 必须照常呼出），MUT-62 实跑仍 **SURVIVED**——判为**等价变异**（理由见 §7 矩阵该行）；两处 reset 一起去掉的 **MUT-62′** → TX-15b 红，**KILLED**（失败原文 `Expected: 2 Received: 1`）；
+    **2026-09-28 N34 回填**：补了该路径的 e2e **TX-15b**（回合在跑时 kill -9 host → 重连 → 追加新 pending 必须照常呼出），MUT-62 实跑仍 **SURVIVED**——施工判为等价变异，**评审更正**：成功路径下不可观测，但重连后 `episodes.list`/`conv.snapshot` 失败时 onConnect 的同步 reset 是唯一一次 reset，该失败路径无用例，故不是严格等价（理由见 §7 矩阵该行）；两处 reset 一起去掉的 **MUT-62′** → TX-15b 红，**KILLED**（失败原文 `Expected: 2 Received: 1`）；
   - 两条均登记 issues N34，待补用例。
 - Python 侧 **6/6 KILLED**（S10-MUT-18→TY-1 红 4；-19→TY-2 红 3；-20→TY-2 红 6；-21→TY-5 红 2；-53→TY-8 ⑤ 红 2；-54→TY-8 ③ 非标准夹具 + 30 条中含依赖 status 的既有用例），在 `b728a61` 的干净分片工作树上跑（唯一未跟踪项是软链的 `.venv`，故带 `--dirty-ok`）。
 - 实跑中查出并修掉的**测试自身缺陷 10 处**（`af0d0ff`，均非生产代码问题）：夹具孙进程读 `sys.argv[2]`（应为 `[1]`），SIGTERM 处理器抛 `IndexError`、TH-9 ② 恒真（MUT-11）；TH-10 重置后同步断言、异步退出未发生（MUT-13）；TH-18 标题写拒绝、用例体从未拒绝（MUT-57）；TH-19 只比了无会话时的缺省 generation（MUT-51）；TH-20 ①/⑦ 时刻构造使变异无从区分（MUT-60/71）；TV-2 失败原文太短、截断 500 字无影响（MUT-32）；真实 core 版 TX-2/5③/6/7 补 spec 子句或时序（MUT-22/28/31/35）。另 TF-1 改用根外诱饵 `.venv`（`871bcef`，原诱饵在仓库内，安全修复）。
