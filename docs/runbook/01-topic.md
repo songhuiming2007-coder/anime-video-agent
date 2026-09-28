@@ -48,3 +48,19 @@
 - **扫曲库必须解 cue**：OP/ED 单曲碟是整轨镜像 + cue，按 flac 文件数扫会漏掉整档（而它恰恰最强）。
 - 曲库两份，改一份同步另一份：`config/bgm.json`（给机器，攒的是候选池，不是定死的选择——`use` 字段现在只是没人现选时的退路）+ 番剧笔记（给人，和分集笔记同文件）。
 - **该番所有下载到的音乐一律放 `bgm/<番>/`**（2026-08-09 定）：顶层是已测量、进 `bgm.json` 候选池的曲子（flat 文件，路径被直接引用，不能动）；`raw/` 子目录放完整原始下载——不管是独立下载的 OST 压缩包，还是随 BD 一起下的附赠 CD（Drama CD / 角色歌 / 单曲），只要是音乐就不留在 `raw/<番>/`（那里只放视频+字幕）。理由：音乐找起来独立于「按哪个 BD 组下的」，混在片源目录里下次想扩曲库还得先想起某季附了什么 CD。
+
+## 01.4 换条件重测清单（开新番 / 换引擎 / 换音色时必经）
+
+下面这些量都是**在某个条件下标定的**，条件一换就要重测。它们原本散在各 ADR 与配置注释里，2026-09-28 复核实证会被漏掉（N9 换多部番未重测、N14 五番照抄、N19 说明没跟上数值），所以收在这里。不许抄别番/别引擎的数；测不了就标「未测」，别沿用旧值冒充。
+
+| 触发事件 | 要重测的量 | 配置位置 | 方法指针 |
+|---|---|---|---|
+| 开新番 | `scene_threshold`（镜头切分） | `config/project.json` 的 `visual.scene_threshold.<番>` | `_scene_threshold_note`；ADR-0003 |
+| 开新番 | `ccip_same` / `ccip_margin` / `face_expand` | `config/project.json` 的 `visual.*.<番>` | `_ccip_note`；ADR-0003（留一法 + 逐角色 `vprobe presence` 抽检：远景小人不计，其余错一张即处置） |
+| 开新番（台词通道 ≥5 段的那期） | `PRESENCE_BAND` | `pipeline/clips.py` 常量 | ADR-0004「实测」节（20 段 × 2 同义改写，取分差中位数）；见 N9 |
+| 开新番 | 歌词是否混进对白轨（无独立歌词 style 的片源） | —（人工核验） | 抽看 OP/ED/插曲时段的字幕行，带成段一致覆写标签（如 `\fad`）的连续行多半是歌词；见 N25 |
+| 换 TTS 引擎 / 换音色 | `cpm`（语速） | `config/project.json` 的 `script.cpm` 与 `_cpm_note` | 用现行引擎近期各期 `03-audio/manifest.json` 复算：`tts.normalize` 字数 ÷ ffprobe 段时长；见 N19 |
+| 换 TTS 引擎 / 换音色 | 歌名实测秒数 | `config/voice.json` 的 `titles` | `tts probe` 单念一遍；其 `_note` |
+| 换 TTS 引擎 / 换音色 | 读音替换条目是否仍成立 | `config/voice.json` 的 `readings` | 条目来历只在 `_note` 散文里，逐条对「哪番/哪个音色/哪个引擎」核；见 N12 |
+| 换 embedding 模型 | `PRESENCE_BAND`、检索门槛 0.45 | `pipeline/clips.py`、`pipeline/subindex.py` | ADR-0004；换模型须重建索引（`subindex` 会拒绝跨模型加载） |
+| 换推理 provider（如 CPU→CoreML） | CCIP 判同阈值 | 同上 `visual.ccip_*` | 输出与 CPU 不一致即视为换模型，按新 provider 重标；见 N4 |
