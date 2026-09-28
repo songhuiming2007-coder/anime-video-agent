@@ -507,6 +507,37 @@ def test_tp4_interrupt_matches_turn_id(world, endpoint, tmp_path) -> None:
     assert endpoint.requests[-1]["tool_choice"] == "none", "收尾调用必须带 tool_choice:none"
 
 
+def test_tp4d_interrupt_survives_inherited_sigint_ignore(world, endpoint, tmp_path) -> None:
+    """TP-4d（N40）：以 SIGINT=SIG_IGN 继承启动（非交互 shell 的 `&` 后台进程就是这样）→
+    等卡时中断仍 2 s 量级内 interrupted。
+
+    Python 启动时见 SIGINT 已是 SIG_IGN 就不装默认处理器，`pthread_kill(SIGINT)` 被内核丢弃，
+    回合停不下——D31 负载复现时 TP-4 24/24 红。
+    """
+    root, _episode = world
+    endpoint.replies = [tool_call("test_slow", {"seconds": 0}), {"role": "assistant", "content": "收尾"}]
+    # SIG_IGN 跨 exec 继承：只在 Popen 这一刻让父进程忽略，随即恢复
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "先慢慢来"})
+        started = proto_proc.wait_for("turn_started")
+        proto_proc.wait_for("request")
+        began = time.time()
+        proto_proc.send({"t": "interrupt", "turn_id": started["turn_id"]})
+        finished = proto_proc.wait_for("turn_finished", timeout=10)
+        assert time.time() - began < 5, "中断必须 2 s 量级内浮出"
+        assert finished["stopped"] == "interrupted"
+        proto_proc.shutdown()
+        assert proto_proc.finish() == 0
+    finally:
+        proto_proc.proc.kill()
+
+
 def test_tp4b_idle_interrupt_is_notice_not_exit(world, endpoint, tmp_path) -> None:
     """TP-4b：空闲时进程收 SIGINT → 进程存活、发 notice（不退出）。"""
     root, episode = world
