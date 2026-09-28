@@ -87,6 +87,12 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [N38] 桌面端变异 harness 把「e2e 未选中任何用例」记成红，构建坏掉的变异会报**假 KILLED**
+- 状态：**已解决**（施工 5dd7825 + 4a13b4e；2026-09-28 独立评审通过）
+- 关联：`desktop/scripts/verify-mutations.mjs:84`
+- 原记录（活跃表原文，含施工回填）：2026-09-28 N34 施工实测：MUT-62′ 首版的 `//` 注释落在行中间把整行后半截注释掉，`electron-vite build` 失败，e2e 一条用例都没选中，harness 却判 `KILLED (1s) red=1 :: <e2e 未选中任何用例…>`。后果：任何「把构建弄坏」的变异都会被当成已杀死，变异矩阵的 KILLED 数被虚增。推进：构建失败 / 零用例归为 OTHER（或单列 BUILD_FAIL）且不计杀死；补 harness 自测；用新判定复跑 TS 侧全表，确认没有历史 KILLED 实为构建失败 **2026-09-28 修复（`5dd7825` + `4a13b4e`）**：跑器层面的问题从红条名单分离为 `problems`，判定新增 `BUILD_FAIL`（无报告 / 零 spec 时的顶层错误如 global-setup 构建失败 / vitest 文件级失败且零断言）与 `NO_TESTS`（零用例，含 Playwright「No tests found」），二者优先于红条判定、一律不计杀死；用例已跑时的顶层错误（如 Worker teardown timeout）只进 `notes`。旧版假 KILLED 的机理：占位串塞进红条，串里带着 grep（多半就是期望编号）。自测：`tests/harness/verifyMutations.test.ts` 11 条（纯函数，每条关键分支去掉即红）+ `--self-test` 实跑三条人造变异（坏 e2e 构建 / grep 不中 / vitest 导入源码编译失败）——HEAD 旧判定对前两条报 KILLED，新判定分别 BUILD_FAIL / NO_TESTS / BUILD_FAIL。**全表复跑（净树，N41 落地后）**：69 条 → 68 KILLED、1 SURVIVED（MUT-62，矩阵预期）、BUILD_FAIL/NO_TESTS 0——**历史 KILLED 无一实为构建失败**，Spec 10 §7/§8 无需更正。过程中发现首版把 teardown 超时误判为 BUILD_FAIL（MUT-47/48/49，期望用例其实真红），已由 `4a13b4e` 修正并 `--only` 复跑三条均 KILLED。**评审注意**：① 用「先退回旧判定」复现假 KILLED（`--self-test` 的两条 e2e 人造变异即可）；② 挑战「零 spec 才算 build」这条边界：有没有「部分 spec 跑了、构建其实坏了」的形态
+- 评审：✅ 通过。① `--self-test` 实跑（实测）：三条人造变异各归其位——e2e 构建失败 → BUILD_FAIL、grep 选不中 → NO_TESTS、vitest 导入编译失败 → BUILD_FAIL；零假 KILLED。② 自测真能红（实测）：把 BUILD_FAIL/NO_TESTS 优先级分支置否后，--self-test 三条全 FAIL（got=SURVIVED，即「没跑就当存活」同样是误判方向）、harness 单测 11 条红 2 条；还原后 md5 对拍一致、自测复绿。③ 抽查复跑（实测）：MUT-47（首版被 teardown 超时误判 BUILD_FAIL 的那条）经 `--only` 重跑得 KILLED (184s)，MUT-62 得 SURVIVED——与矩阵「等价变异」预期一致。④ 「零 spec 才算 build」边界挑战：Playwright 构建在 global-setup，构建坏则零 spec 跑，不存在「部分 spec 跑了但构建坏了」的形态；vitest 侧「一文件编译失败 + 另一文件真红」会判 BUILD_FAIL 掩盖真红——方向是保守侧（少记杀死、不虚增），可接受。全表 68 KILLED / 1 SURVIVED / 0 BUILD_FAIL 的数字为施工方转述（结果文件已不在），评审未全量重跑。
+
 ### [N41] 桌面端 e2e 每条用例都弹出并激活一个 1280×820 窗口，全量跑下来本机无法正常使用
 - 状态：**已解决**（施工 d28c736；2026-09-28 独立评审通过）
 - 关联：`desktop/src/main/index.ts`（`createWindow()`：未隐藏、未隐藏 Dock 图标）、`desktop/e2e/fixtures.ts`（`electron.launch`）
