@@ -584,7 +584,7 @@ test("TI-9b 熔断：60 s 内崩溃 5 次 → 停止重启，renderer 换成致�
   expect(await hostPid(L)).toBeNull();
 });
 
-test("TI-10 已运行一个实例时再启动同一构建 → 第二个进程 5 s 内退出，已有窗口获得焦点；全机仅一个 ava-host", async () => {
+test("TI-10 已运行一个实例时再启动同一构建 → 第二个进程 5 s 内退出，main 对已有窗口调 focusWindow（restore/show）；全机仅一个 ava-host", async () => {
   const R = ackRepo();
   epAt035(R.eps, "TI10");
   const L = await start(R);
@@ -594,7 +594,15 @@ test("TI-10 已运行一个实例时再启动同一构建 → 第二个进程 5 
   expect(second.error).toBeUndefined();
   expect(Date.now() - t0).toBeLessThan(5000);
   expect(second.stdout).not.toContain("AVA_BOOT");
-  await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused()), { timeout: 3000 }).toBe(true);
+  // N44（2026-09-28 拍板候选①）：macOS 14 起协作式激活，人正操作别的 app 时系统会拒绝
+  // 授予焦点，isFocused 断言偶发红。焦点是否授予本就不归 app 控制，断言降为 app 可控部分：
+  // main 确实调用了 focusWindow，且窗口已 restore/show。系统焦点改打包版真机手验。
+  await expect.poll(() => L.app.evaluate(() => (globalThis as { __avaTestFocusCalls?: number }).__avaTestFocusCalls ?? 0), { timeout: 3000 }).toBe(1);
+  const winState = await L.app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    return { minimized: w.isMinimized(), visible: w.isVisible() };
+  });
+  expect(winState).toEqual({ minimized: false, visible: true });
   const metrics = await L.app.evaluate(({ app }) => app.getAppMetrics().filter((m) => m.type === "Utility" && m.name === "ava-host").length);
   expect(metrics).toBe(1);
   const ps = execFileSync("/bin/ps", ["-axo", "command"], { encoding: "utf-8" }).split("\n").filter((l) => l.includes(L.userData) && !l.includes("--type=")).length;

@@ -835,7 +835,7 @@ def test_core_imports_no_server_stack():
 | **TI-8** | `approval.decide` 参数多一个 `path` 键 → `E_BAD_REQUEST`、零 spawn；合法请求的 spawn argv 中期路径恒等于 host 映射路径（红队 M5：MUT-6 的被依赖断言）；`app.requestRepoRootChange` 带任何参数（如 `{ path: "/tmp/x" }`）→ `E_BAD_REQUEST`，settings 不变、不弹对话框（红队 R2-M5） |
 | **TI-9** | （未打包构建）`kill -9` host pid → 10 s 内健康面板显示 host 在线且活跃期重新订阅成功（红队 M5：MUT-23 的被依赖断言） |
 | **TI-9b** | （未打包构建）60 s 内连续 `kill -9` host 5 次 → 停止重启，renderer 换成含 host stderr 尾部的致命面板（S23 新增） |
-| **TI-10** | 已运行一个实例时再次启动**同一构建** → 第二个进程 5 s 内退出，已有窗口获得焦点；全机仅一个 `ava-host`。S23 实测开发构建与打包构建 userData 相同（假设 9 证伪），单实例锁能拦住二者同时运行，见 RF-21；本用例只覆盖同一构建 |
+| **TI-10** | 已运行一个实例时再次启动**同一构建** → 第二个进程 5 s 内退出，已有窗口获得焦点；全机仅一个 `ava-host`。**（N44 修订，2026-09-28 人拍板）**：macOS 14 起协作式激活会在人正操作别的 app 时拒绝授予焦点，`isFocused` 断言对环境的依赖改为断言 app 可控部分——main 确实调用了 `focusWindow` 且窗口已 restore/show（`__avaTestFocusCalls` + `isMinimized/isVisible`）；系统焦点是否授予改列为打包版真机手验项。S23 实测开发构建与打包构建 userData 相同（假设 9 证伪），单实例锁能拦住二者同时运行，见 RF-21；本用例只覆盖同一构建 |
 
 **TC：core 零改动回归**（PR0，pytest）
 
