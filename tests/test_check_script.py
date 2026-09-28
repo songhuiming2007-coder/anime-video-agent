@@ -1039,3 +1039,48 @@ def test_人物提示跨进程确定性(tmp_path):
         assert r.returncode == 0, r.stderr
         outs.add(r.stdout)
     assert outs == {"\n".join(FIXTURE_HINT_LINES) + "\n"}, outs
+
+
+class TestFacelessCharacterHints:
+    """N47：写了 `人物:` 但该角色在该番 clusters 里零个已贴名簇 → INFO（只报不拦）。"""
+
+    def _vindex(self, tmp_path, clusters: "dict | None") -> "Path":
+        """造一个假 vindex 目录：clusters=None 表示文件缺席。"""
+        vdir = tmp_path / "vindex"
+        vdir.mkdir()
+        if clusters is not None:
+            (vdir / "春物.clusters.json").write_text(
+                json.dumps({"clusters": clusters}, ensure_ascii=False), encoding="utf-8"
+            )
+        return vdir
+
+    def test_零贴名簇出_INFO(self, tmp_path):
+        """「阳乃」→ yukinoshita_haruno，簇里没人贴这个键 → INFO 一行。"""
+        vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9},
+                                       "7": {"name": None, "n": 4}})
+        f = hint_episode(tmp_path, "## 段落 2\n\n配音：阳乃出场了。\n\n画面：\n  人物: 阳乃\n")
+        assert cs.faceless_character_hints(f, vindex_dir=vdir) == [
+            "INFO 段2 `人物:` 的「阳乃」在《春物》索引里无代表脸，"
+            "在场过滤对本段无效（贴名：python -m pipeline.faces sheet 春物）"
+        ]
+
+    def test_有贴名簇不报(self, tmp_path):
+        """「雪乃」→ yukinoshita_yukino 已有簇贴名 → 不报。"""
+        vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9}})
+        f = hint_episode(tmp_path, "## 段落 1\n\n配音：雪乃说得对。\n\n画面：\n  人物: 雪乃\n")
+        assert cs.faceless_character_hints(f, vindex_dir=vdir) == []
+
+    def test_clusters_缺席安静跳过(self, tmp_path):
+        """判据 4：clusters 文件缺席/坏 json → 不定罪、安静返回空。"""
+        f = hint_episode(tmp_path, "## 段落 1\n\n配音：阳乃出场。\n\n画面：\n  人物: 阳乃\n")
+        assert cs.faceless_character_hints(f, vindex_dir=self._vindex(tmp_path, None)) == []
+        bad = tmp_path / "v2"
+        bad.mkdir()
+        (bad / "春物.clusters.json").write_text("{bad json", encoding="utf-8")
+        assert cs.faceless_character_hints(f, vindex_dir=bad) == []
+
+    def test_未写人物的段不报(self, tmp_path):
+        """没写 `人物:` 的段与本提示无关（那是 D18 的地盘）。"""
+        vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9}})
+        f = hint_episode(tmp_path, "## 段落 1\n\n配音：阳乃出场。\n")
+        assert cs.faceless_character_hints(f, vindex_dir=vdir) == []
