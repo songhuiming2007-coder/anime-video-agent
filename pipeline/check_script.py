@@ -829,8 +829,8 @@ _HINT_VO = re.compile(r"^配音[：:]\s*(.+)$", re.M)
 _HINT_WHO = re.compile(r"^\s*人物[：:]\s*(.+)$", re.M)
 
 
-def _character_aliases(episode: Path) -> dict[str, str]:
-    """本期番表 → {别名: 规范键}。任一步拿不到就安静返回空表（判据 4：跳过不定罪）。
+def _character_alias_tables(episode: Path) -> dict[str, dict[str, str]]:
+    """本期每部番 → {别名: 规范键}。任一步拿不到就安静返回空表（判据 4：跳过不定罪）。
 
     与 `vindex.alias_map` 同口径（规范键自身也算别名、`_` 前缀是注释键），但
     **不能直接调它**：vindex 顶层 `import numpy`，而 check_script 是纯 stdlib
@@ -840,18 +840,32 @@ def _character_aliases(episode: Path) -> dict[str, str]:
     if not chars.exists():
         return {}
     db = json.loads(chars.read_text(encoding="utf-8"))
-    out: dict[str, str] = {}
+    tables: dict[str, dict[str, str]] = {}
     for anime in bgm.animes_of(episode):
         table = db.get(anime)
         if not isinstance(table, dict):      # 番不在表：这一番不报，其余番照常
             continue
+        out: dict[str, str] = {}
         for tag, names in table.items():
             if tag.startswith("_"):
                 continue
             out.setdefault(tag, tag)         # 规范键自己也当别名（同 vindex）
             for n in names:
-                out.setdefault(str(n).strip(), tag)
-    return out
+                out[str(n).strip()] = tag
+        tables[anime] = out
+    return tables
+
+
+def _character_aliases(episode: Path) -> dict[str, str]:
+    """本期全部番的别名表合并（跨番键冲突时后番覆盖别名、setdefault 保规范键，与旧版同）。"""
+    merged: dict[str, str] = {}
+    for table in _character_alias_tables(episode).values():
+        for alias, tag in table.items():
+            if alias == tag:
+                merged.setdefault(alias, tag)
+            else:
+                merged[alias] = tag
+    return merged
 
 
 def _alias_hits(text: str, aliases: dict[str, str]) -> list[str]:
@@ -913,6 +927,59 @@ def character_hints(path: Path) -> list[str]:
     return out
 
 
+# ---------- N47 人物贴名缺口提示（INFO，只报不拦）----------
+
+
+def _named_cluster_tags(anime: str, vindex_dir: Path) -> set[str] | None:
+    """该番 clusters 里已贴名的规范键集合；文件缺席/不可读 → None（判据 4：跳过不定罪）。
+
+    簇的 `name` 是规范键（`faces.py` 贴名时过 alias 映射写入）。纯 json 读取，
+    不碰 vindex/faces（numpy 依赖，check_script 必须零重依赖）。
+    """
+    p = vindex_dir / f"{anime}.clusters.json"
+    if not p.exists():
+        return None
+    try:
+        db = json.loads(p.read_text(encoding="utf-8"))
+        clusters = db["clusters"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {str(c["name"]) for c in clusters.values()
+            if isinstance(c, dict) and c.get("name")}
+
+
+def faceless_character_hints(path: Path, *, vindex_dir: Path | None = None) -> list[str]:
+    """N47：段里写了 `人物:`，但该角色在该番 clusters 里零个已贴名簇 → INFO。
+
+    **只 INFO、永不 FAIL**（与 D18 同口径「写了就走过滤、不写不勉强」——这条报的是
+    「写了也白写」：没有任何簇贴名时在场过滤恒为空并静默退回，人会把 Phase 0
+    贴名缺口当成检索漏检）。clusters 文件缺席/不可读的番安静跳过（判据 4）。
+    """
+    tables = _character_alias_tables(path.parent)
+    if not tables:
+        return []
+    vdir = vindex_dir if vindex_dir is not None else paths.DATA / "library" / "vindex"
+    named = {a: tags for a in tables if (tags := _named_cluster_tags(a, vdir)) is not None}
+    out: list[str] = []
+    for m in _HINT_BLOCK.finditer(path.read_text(encoding="utf-8")):
+        label, block = m.group(1), m.group(2)
+        who = _HINT_WHO.search(block)
+        if not who:
+            continue
+        name = who.group(1).strip()
+        for anime, table in tables.items():
+            tag = table.get(name)
+            if tag is None:
+                continue
+            if anime in named and tag not in named[anime]:
+                out.append(
+                    f"INFO 段{label} `人物:` 的「{name}」在《{anime}》索引里无代表脸，"
+                    f"在场过滤对本段无效（贴名：python -m pipeline.faces sheet {anime}）"
+                )
+            break
+    return out
+
+
 def rhythm(text: str) -> dict[str, float]:
     """只量节奏，不判定。给 `--raw` 用：拿任意一篇文章当参照样本重算基线。
 
@@ -963,6 +1030,8 @@ def main() -> int:
         print(f"{mark}  {c.name:<{width}}{c.detail}")
 
     for line in character_hints(a.script[0]):
+        print(line)
+    for line in faceless_character_hints(a.script[0]):
         print(line)
 
     print("-" * 60)
