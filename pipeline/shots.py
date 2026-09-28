@@ -231,6 +231,51 @@ def _mmss(text: str) -> list[float]:
     return out
 
 
+def _store_source(raw: str) -> str:
+    """meta.source 的现行落盘形态：相对 data 根（D24③，2026-09-28 拍板）。
+
+    存量有三种形态：相对仓库根（`data/library/...`，216 个）、绝对路径（15 个，
+    换盘/改名即失效——夏隧那条就指向改名前的旧仓库）。新写一律相对 data 根；
+    绝对路径在 data 根之外的（理论上不存在）保持绝对。
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        try:
+            return str(p.relative_to(paths.DATA.resolve()))
+        except ValueError:
+            real = _resolve_source(raw)
+            try:
+                return str(real.relative_to(paths.DATA.resolve()))
+            except ValueError:
+                return str(real)
+    if p.parts and p.parts[0] == "data":
+        return str(Path(*p.parts[1:]))
+    return raw
+
+
+def _resolve_source(raw: str) -> Path:
+    """把 meta.source 的任一落盘形态解析回真实路径；失效给可操作报错（D24③）。
+
+    绝对路径失效时按 data 根重定位：取 `library/` 起的尾部拼到当前 data 根
+    （换盘/换挂载点/仓库改名的正解都在这一歨）。
+    """
+    p = Path(raw)
+    cands: list[Path] = []
+    if p.is_absolute():
+        cands.append(p)
+        if "library" in p.parts:
+            cands.append(paths.DATA.joinpath(*p.parts[p.parts.index("library"):]))
+    else:
+        cands += [paths.DATA / raw, paths.ROOT / raw]
+    for c in cands:
+        if c.exists():
+            return c
+    raise SystemExit(
+        f"FAIL 镜头表记录的片源找不到：{raw}\n"
+        f"     已按当前 data 根（{paths.DATA}）重定位仍不存在。\n"
+        f"     若片源挪了位置：改 data/library/sources.json 里该集的 path 后重跑 shots build")
+
+
 def meta(anime: str, season: int, episode: int, src: dict) -> dict:
     """镜头表的自描述元信息。
 
@@ -246,7 +291,7 @@ def meta(anime: str, season: int, episode: int, src: dict) -> dict:
         "min_shot": min_shot(),
         "duration": src["duration"],
         "fps": src["fps"],
-        "source": src["path"],
+        "source": _store_source(src["path"]),
     }
 
 
@@ -333,7 +378,7 @@ def frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     shots, m = d["shots"], d["meta"]
     out = dest_dir / f"{anime}_{key}"
 
-    _extract(Path(m["source"]), [_frame_no(s["rep"], m["fps"]) for s in shots],
+    _extract(_resolve_source(m["source"]), [_frame_no(s["rep"], m["fps"]) for s in shots],
              out, "%05d.jpg")
 
     # 这里用 glob 而不是按预期文件名数，是**故意的**：上一次跑剩下的多余帧同样要报错。
@@ -427,7 +472,7 @@ def caption_frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     out = caption_frame_dir(anime, key, dest_dir)
 
     nos = [_frame_no(t, d["meta"]["fps"]) for _, _, t in plan]
-    _extract(Path(d["meta"]["source"]), nos, out, "tmp-%05d.jpg",
+    _extract(_resolve_source(d["meta"]["source"]), nos, out, "tmp-%05d.jpg",
              width=CAPTION_FRAME_W)
 
     got = sorted(out.glob("tmp-*.jpg"))
