@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Envelope, EpisodeDelta, EpisodeSnapshot, SnapshotStatus } from "../../src/shared/protocol";
+import type { Envelope, EpisodeDelta, EpisodeSnapshot, EpisodesList, SnapshotStatus } from "../../src/shared/protocol";
 import { parseEventLine } from "../../src/shared/fold";
 import { toWireApproval, toWireEvent } from "../../src/shared/losslessJson";
 import { realFs } from "../../src/host/fsio";
@@ -492,6 +492,49 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
       expect(spawnTotal()).toBe(before); // 零 spawn
     } finally {
       cleanup(r);
+    }
+  });
+});
+// ---------------- N37 ----------------
+describe("N37 脱盘时期列表保留（Spec 8 §2.8「保留最后快照并标陈旧」）", () => {
+  it("数据根不可达、reach 尚未轮询到时的活跃期 tick → 不清空期列表；随后 reach 翻红、列表仍在", async () => {
+    const r2 = makeFixtureRepo();
+    try {
+      mkEpisode(r2, "UNPLUG-A");
+      mkEpisode(r2, "UNPLUG-B");
+      const { svc, pushes } = await startService({ fetchStatus: fakeStatus(() => "03 配音") }, r2);
+      await svc.dispatch("episode.activate", { epKey: "UNPLUG-A" });
+      const keys = () => (svc.episodesList().episodes.map((e) => e.epKey) as string[]).sort();
+      expect(keys()).toEqual(["UNPLUG-A", "UNPLUG-B"]);
+      // 负载下的真实顺序：脱盘后活跃期 tick（1 s）先于 reach 轮询（2 s）跑到
+      renameSync(join(r2, "data"), join(r2, "data.off"));
+      await svc.tickActive();
+      expect(keys()).toEqual(["UNPLUG-A", "UNPLUG-B"]);
+      // 脱盘不是「期目录被删」：不许把活跃期状态改成 E_STALE「期目录已不存在」推给界面
+      expect(deltasOf(pushes, "UNPLUG-A").filter((d) => d.status && !d.status.ok)).toEqual([]);
+      svc.pollReach();
+      expect(svc.reach).not.toBe("ok");
+      expect((await svc.dispatch("episodes.list", {})) as EpisodesList).toMatchObject({ reach: svc.reach });
+      expect(keys()).toEqual(["UNPLUG-A", "UNPLUG-B"]);
+      renameSync(join(r2, "data.off"), join(r2, "data"));
+    } finally {
+      cleanup(r2);
+    }
+  });
+
+  it("对照组：数据根可达、只有活跃期目录被删 → tick 照常刷新期列表（该期消失）", async () => {
+    const r2 = makeFixtureRepo();
+    try {
+      const a = mkEpisode(r2, "GONE-A");
+      mkEpisode(r2, "GONE-B");
+      const { svc } = await startService({ fetchStatus: fakeStatus(() => "03 配音") }, r2);
+      await svc.dispatch("episode.activate", { epKey: "GONE-A" });
+      renameSync(a, join(r2, "moved-away"));
+      await svc.tickActive();
+      expect(svc.reach).toBe("ok");
+      expect(svc.episodesList().episodes.map((e) => e.epKey)).toEqual(["GONE-B"]);
+    } finally {
+      cleanup(r2);
     }
   });
 });
