@@ -59,7 +59,7 @@
 | 开新番 | `ccip_same` / `ccip_margin` / `face_expand` | `config/project.json` 的 `visual.*.<番>` | `_ccip_note`；ADR-0003（留一法 + 逐角色 `vprobe presence` 抽检：远景小人不计，其余错一张即处置） |
 | 开新番（台词通道 ≥5 段的那期） | `PRESENCE_BAND` | `pipeline/clips.py` 常量 | ADR-0004「实测」节（20 段 × 2 同义改写，取分差中位数）；见 N9 |
 | 开新番 | 歌词是否混进对白轨（无独立歌词 style 的片源） | —（人工核验） | 抽看 OP/ED/插曲时段的字幕行，带成段一致覆写标签（如 `\fad`）的连续行多半是歌词；见 N25 |
-| 换 TTS 引擎 / 换音色 | `cpm`（语速） | `config/project.json` 的 `script.cpm` 与 `_cpm_note` | 用现行引擎近期各期 `03-audio/manifest.json` 复算：`tts.normalize` 字数 ÷ ffprobe 段时长；见 N19 |
+| 换 TTS 引擎 / 换音色 | `cpm`（语速） | `config/project.json` 的 `script.cpm` 与 `_cpm_note` | 用现行引擎近期各期 03-audio 下的 manifest（段时长清单）复算：`tts.normalize` 字数 ÷ ffprobe 段时长；见 N19 |
 | 换 TTS 引擎 / 换音色 | 歌名实测秒数 | `config/voice.json` 的 `titles` | `tts probe` 单念一遍；其 `_note` |
 | 换 TTS 引擎 / 换音色 | 读音替换条目是否仍成立 | `config/voice.json` 的 `readings` | 条目来历只在 `_note` 散文里，逐条对「哪番/哪个音色/哪个引擎」核；见 N12 |
 | 换 embedding 模型 | `PRESENCE_BAND`、检索门槛 0.45 | `pipeline/clips.py`、`pipeline/subindex.py` | ADR-0004；换模型须重建索引（`subindex` 会拒绝跨模型加载） |
