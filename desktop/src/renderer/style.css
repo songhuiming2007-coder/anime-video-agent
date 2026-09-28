@@ -125,6 +125,9 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
    只引用 §3.1 的变量（Spec 14 §3.2「业务区块……沿用或新增」），不新建颜色与字号。 */
 .center.conv-shell { display: flex; flex-direction: column; overflow: hidden; }
 .conv-shell .conv { flex: 1; min-height: 0; height: auto; }
+/* N36：降级说明 + 可复制的钥匙串命令会换成多行，ui.css 的固定 40px 让它向上下越出盒子、压住对话流。
+   头部改为随内容长高并换行，封顶后自身滚动（ui.css 冻结，覆盖写在这里；单行时仍是 40px）。 */
+.session-head { height: auto; min-height: 40px; max-height: 30vh; overflow-y: auto; flex-wrap: wrap; row-gap: var(--space-1); padding-block: var(--space-1); }
 .conv-label { display: block; margin-bottom: var(--space-1); color: var(--fg-muted); font-size: var(--text-sm); }
 .conv-notice { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); }
 .conv-notice--warn { color: var(--warn); }
