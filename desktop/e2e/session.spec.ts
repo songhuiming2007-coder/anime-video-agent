@@ -1,6 +1,8 @@
 // TX-1~TX-15（假 protocol.py 版，Spec 10 §7.1 / PR3）：renderer 会话界面 + main 退出流程。
 // 每个用例自建夹具与会话剧本；收尾一律先装「退出」桩再 app.close()（§2.10 e2e 约定）。
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
+import { stringifyLossless } from "../src/shared/losslessJson";
+import { fixtureWrite } from "../tests/fixtures/session";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
@@ -297,6 +299,28 @@ test("TX-14 Tab + Enter 答复第一张后，再按 Enter 答复不到第二张"
   });
 });
 
+test("TX-14b 卡片身份按 request_id：第一张卡上写的反馈不串到第二张（N34 / MUT-46）", async () => {
+  // TX-14 杀不死 MUT-46（key 改下标）：点下答复即 setBusy(true)，按钮 disabled 后焦点离开，
+  // 第二次 Enter 无论 key 对错都落空。key 真正守的是**组件状态归属**——下标 key 下，第一张卡关闭后
+  // 第二张卡复用它的组件实例，连同人在第一张卡里写的反馈一起继承，拒绝第二张时就把别人的反馈发出去了。
+  await withSession(async ({ repo, L }) => {
+    const card = (id: string) => ({ t: "request", request_id: id, kind: "tool_call", turn_id: "$turn", title: id, card_text: "…", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: true });
+    sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, card("q1"), card("q2")], on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }] }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "两张卡");
+    await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(2);
+    const q = (id: string) => L.page.locator(`[data-testid=request-card][data-request-id='${id}']`);
+    await q("q1").getByTestId("request-feedback").fill("只改第一段");
+    await q("q1").getByTestId("request-answer-reject").click();
+    await expect(q("q1")).toHaveCount(0);
+    await expect(q("q2").getByTestId("request-feedback")).toHaveValue("");
+    await q("q2").getByTestId("request-answer-reject").click();
+    await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(2);
+    const answers = stdinLines(repo, "SESS-A").map((l) => JSON.parse(l)).filter((f) => f.t === "answer").map((f) => [f.request_id, f.feedback]);
+    expect(answers).toEqual([["q1", "只改第一段"], ["q2", null]]);
+  });
+});
+
 test("TX-8 退出确认：确认后会话收 SIGTERM（不是 shutdown），app 退出", async () => {
   const fx = sessionFixture();
   const L = await launchSession(fx.repo);
@@ -456,6 +480,40 @@ test("TX-15 host 重启：原会话键显示已结束、待答区为空、可继
     await expect(L.page.getByTestId("request-card")).toHaveCount(0, { timeout: 20_000 });
     await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 });
   });
+});
+
+test("TX-15b host 重启跨越回合：等待从新 snapshot 重建，重连后的新 pending 照常呼出（N34 / MUT-62）", async () => {
+  // §2.6 / R6：host 重连 → autoOpen 的 awaiting 从新 host 的会话 snapshot 重建（phase none → 不等待）。
+  // 若旧回合的 awaiting 残留，重连后的新 pending 会被当成「回合中」只登记，而那个回合的结算永远不会来。
+  // 回合中不写对象库：新 host 激活时的 H1 自愈会 supersede 与当期工序不符的对象并另建新号，混进呼出计数。
+  const fx = sessionFixture(["SESS-A"], { at035: true });
+  const L = await launchSession(fx.repo);
+  try {
+    sessionScript(fx.repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED] }]); // 回合永不结束
+    await openEp(L.page, "SESS-A");
+    await expect(L.page.getByTestId("audio-queue")).toBeVisible({ timeout: 15_000 }); // H1 自愈的 03.5 先呼出一次
+    const count = async () => Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"));
+    const base = await count();
+    await send(L.page, "开一轮");
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "running"); // awaiting = 该回合
+    const hostPid = await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid());
+    process.kill(hostPid!, "SIGKILL");
+    await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 }); // 新 host：该会话键回到「无会话」
+    await L.page.waitForTimeout(3000); // 新 host 激活（含 H1 自愈）落定：现有 03.5 对象仍有效，计数不变
+    expect(await count()).toBe(base);
+    // 追加而非整表替换（替换会删掉 H1 建出的 03.5 pending，触发再次自愈）
+    const rel = "data/episodes/SESS-A/_agent/approvals_store.json";
+    const raw = readFileSync(join(fx.repo.root, rel), "utf-8").trimEnd();
+    const fp = fingerprintOf(fx.repo, "SESS-A", "03-audio/manifest.json");
+    const obj = pendingObj("after", "05", "2026-09-25T10:00:09Z", "03-audio/manifest.json", fp);
+    fixtureWrite(fx.repo.root, rel, `${raw.slice(0, raw.lastIndexOf("]")).trimEnd()},\n${stringifyLossless(obj)}\n]\n`);
+    await expect.poll(count, { timeout: 12_000 }).toBe(base + 1);
+    expect(await L.page.locator(".preview").getAttribute("data-auto-open-approval-id")).toBe("after");
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
 });
 
 test("TX-8c 退出确认框打开时再触发退出 → 桩仍 1 次、app 未退出", async () => {
