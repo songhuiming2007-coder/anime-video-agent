@@ -482,7 +482,17 @@ test("TA-12 repoRoot 切换与在途命令互斥：decide 在途 → E_BUSY 且�
   expect(readStore(ep).filter((o) => o.type === "03.5").map((o) => o.status)).toEqual(["approved"]);
   expect(readStore(ep2)).toEqual([]);
   // ③ 让旧仓库的这一期工序变成 X（新仓库同名期仍是 03.5），暂停一个在途 STATUS，再确认切换
+  // D32：被扣住的那次 STATUS 必须是「写入 05 之后才开始」的——旧写法先写再 arm，
+  // arm 到达 host 之前完成的常规轮询（当前代号、切换前）会合法地把 05 渲染出来，负载下即假红
+  //（注入「arm 晚 6 s」必现，05 出现在切换开始之前）；反过来被扣住的若是写入前开始的那次，
+  // 它读到的是 03.5，这条防线断言就成了空转。钩子是一次性的，按条件排序、不靠等待：
+  await arm(L, "status-result");
+  await waitHit(L, "status-result"); // H1：写入前的一次（活跃期每 5 s 一次 status），扣住期间同期不会再起 status
   writeClips(R.repo, ep); // 旧仓库 SAME → 05
+  await arm(L, "status-result"); // 与下一行同一条 IPC 通道、按序到达：H1 放行前已布防
+  await release(L, "status-result");
+  await waitHit(L, "status-result"); // H2：必然在写入之后开始、读到 05，被扣住
+  await expect(L.page.getByTestId("current-step")).toContainText("03.5"); // 05 此刻尚未进入任何 snapshot
   await L.page.evaluate(() => {
     const w = window as unknown as { __steps: string[] };
     w.__steps = [];
@@ -490,8 +500,6 @@ test("TA-12 repoRoot 切换与在途命令互斥：decide 在途 → E_BUSY 且�
       for (const el of document.querySelectorAll("[data-testid=current-step]")) w.__steps.push(el.textContent ?? "");
     }).observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await arm(L, "status-result");
-  await waitHit(L, "status-result"); // 活跃期每 5 s 一次 status
   const switching = call(L.page, "app.requestRepoRootChange");
   await expect.poll(() => dialogCalls(L)).toBe(1);
   const busy = await call(L.page, "approval.decide", { epKey: "SAME", approvalId: "appr_x", stop: "03.5", decision: "approve" });
