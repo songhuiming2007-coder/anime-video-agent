@@ -76,7 +76,8 @@ function runVitest(files) {
 
 /**
  * Playwright JSON 报告 → ok=false 的 spec 标题（failed）+ 跑器层面的问题（problems）。
- * 顶层 errors = global-setup（构建）或加载失败 → build，其中「No tests found」→ empty；一条 spec 都没有 → empty。
+ * 零 spec 时的顶层 errors = global-setup（构建）或加载失败 → build，其中「No tests found」→ empty；
+ * 已有 spec 跑过时的顶层 errors（如 Worker teardown timeout）只进 notes，不算问题。
  */
 export function parseE2eReport(rep, label = "") {
   const failed = [];
@@ -90,14 +91,21 @@ export function parseE2eReport(rep, label = "") {
     for (const s of suite.suites ?? []) walk(s);
   };
   for (const s of rep.suites ?? []) walk(s);
+  const notes = [];
   for (const e of rep.errors ?? []) {
     const msg = String(e.message ?? e.value ?? JSON.stringify(e));
+    if (total > 0) {
+      // 用例已经跑了：顶层错误是变异造成的后果（如 app 退不出 → Worker teardown timeout，MUT-47/48/49 实测），
+      // 不是跑器坏了——红条照常判，错误只作附注。只有一条都没跑成时才是构建/加载失败
+      notes.push(msg.slice(0, 300));
+      continue;
+    }
     // grep 选不中时 Playwright 也报顶层错误（「No tests found」），归 empty 而不是 build
     const kind = /^Error: No tests found/.test(msg) ? "empty" : "build";
     problems.push({ kind, detail: `e2e ${kind === "empty" ? "未选中任何用例" : "全局错误"}${label}：${msg.slice(0, 300)}` });
   }
   if (total === 0 && problems.length === 0) problems.push({ kind: "empty", detail: `e2e 未选中任何用例${label}` });
-  return { failed, problems };
+  return { failed, problems, notes };
 }
 
 function runE2e(file, grep) {
@@ -153,11 +161,13 @@ function checkOne(mut) {
   for (const [p, text] of next) writeFileSync(p, text);
   let failed = [];
   const problems = [];
+  const notes = [];
   try {
     for (const t of mut.targets) {
       const r = t.vitest ? runVitest(t.vitest) : runE2e(t.e2e, t.grep);
       failed.push(...r.failed);
       problems.push(...r.problems);
+      notes.push(...(r.notes ?? []));
     }
   } finally {
     for (const [p, text] of originals) writeFileSync(p, text);
@@ -167,7 +177,7 @@ function checkOne(mut) {
   }
   failed = [...new Set(failed)];
   const { hit, verdict } = classify(mut.expect, failed, problems);
-  return { ...mut, error: null, failed, problems, hit, verdict };
+  return { ...mut, error: null, failed, problems, notes, hit, verdict };
 }
 
 // harness 自测（N38）：三条人造变异，判定都必须不是 KILLED。期望编号故意写成 grep 串本身——

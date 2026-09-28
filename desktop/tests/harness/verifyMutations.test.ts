@@ -21,9 +21,16 @@ describe("N38 parseE2eReport", () => {
     expect(r.failed).toEqual([]);
     expect(r.problems.map((p) => p.kind)).toEqual(["empty"]);
   });
+  it("用例已跑、另有 Worker teardown timeout（变异让 app 退不出，MUT-47/48/49 实测）→ 红条照记、不算问题", () => {
+    const r = parseE2eReport({ suites: [{ specs: [spec("TX-8b② 真实 core：兜底退出", false)] }], errors: [{ message: "Worker teardown timeout of 90000ms exceeded." }] });
+    expect(r.failed).toEqual(["TX-8b② 真实 core：兜底退出"]);
+    expect(r.problems).toEqual([]);
+    expect(r.notes).toEqual(["Worker teardown timeout of 90000ms exceeded."]);
+    expect(classify(["TX-8b"], r.failed, r.problems).verdict).toBe("KILLED");
+  });
   it("正常跑：红条照记、无问题", () => {
     const r = parseE2eReport({ suites: [{ specs: [spec("TX-15b 重连", false), spec("TX-15 其他", true)] }] });
-    expect(r).toEqual({ failed: ["TX-15b 重连"], problems: [] });
+    expect(r).toEqual({ failed: ["TX-15b 重连"], problems: [], notes: [] });
   });
 });
 
