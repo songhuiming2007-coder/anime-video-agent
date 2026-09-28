@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -520,6 +521,59 @@ def test_tp4b_idle_interrupt_is_notice_not_exit(world, endpoint, tmp_path) -> No
         proto_proc.wait_for("turn_finished", timeout=30)
         proto_proc.shutdown()
         assert proto_proc.finish() == 0, "空闲时的一次 SIGINT 不该弄死进程"
+    finally:
+        proto_proc.proc.kill()
+
+
+@pytest.mark.parametrize("how", ["sigterm", "shutdown"])
+def test_tp4c_idle_shutdown_sends_no_interrupt_notice(world, endpoint, tmp_path, how) -> None:
+    """TP-4c（N33）：跑过一轮后空闲关停 → 关停段只有 bye、退 0，不冒「空闲态收到中断」notice。
+
+    实测触发源是**空闲时的 SIGTERM**：`_on_term` 无条件打中断，落进主循环的 MUT-31 空闲分支。
+    shutdown 帧这一支本就不打中断，一并钉住。
+    """
+    root, _episode = world
+    endpoint.replies = [{"role": "assistant", "content": "先聊聊"}]
+    proto_proc = Protocol(root, endpoint, episode="--idea", tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "想做一期杂谈", "rid": "i1"})
+        proto_proc.wait_for("turn_finished")
+        proto_proc.wait_for("stop_points")
+        time.sleep(0.3)
+        mark = len(proto_proc.frames)
+        if how == "sigterm":
+            os.kill(proto_proc.proc.pid, signal.SIGTERM)
+        else:
+            proto_proc.send({"t": "shutdown"})
+        assert proto_proc.finish() == 0
+        proto_proc.drain(1.0)
+        assert [(f["t"], f.get("reason")) for f in proto_proc.frames[mark:]] == [("bye", "shutdown")]
+    finally:
+        proto_proc.proc.kill()
+
+
+def test_tp4c_idle_sigint_still_notices(world, endpoint, tmp_path) -> None:
+    """TP-4c 对照组：未关停时的空闲 SIGINT 仍发 interrupt_ignored、进程存活（MUT-31 语义不变）。"""
+    root, _episode = world
+    endpoint.replies = [{"role": "assistant", "content": "先聊聊"}]
+    proto_proc = Protocol(root, endpoint, episode="--idea", tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "想做一期杂谈", "rid": "i1"})
+        proto_proc.wait_for("turn_finished")
+        proto_proc.wait_for("stop_points")
+        time.sleep(0.3)
+        mark = len(proto_proc.frames)
+        os.kill(proto_proc.proc.pid, signal.SIGINT)
+        end = time.time() + 5
+        while time.time() < end and not any(f.get("code") == "interrupt_ignored" for f in proto_proc.frames[mark:]):
+            with contextlib.suppress(queue.Empty):
+                proto_proc.next_frame(timeout=0.2)
+        assert [f.get("code") for f in proto_proc.frames[mark:] if f.get("t") == "notice"] == ["interrupt_ignored"]
+        assert proto_proc.proc.poll() is None
+        proto_proc.shutdown()
+        assert proto_proc.finish() == 0
     finally:
         proto_proc.proc.kill()
 

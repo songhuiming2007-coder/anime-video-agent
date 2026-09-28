@@ -670,6 +670,10 @@ def main(argv: list[str] | None = None) -> int:
         # 主循环却还在等队列（TP-11 实测：帧都对，进程就是不退）。中断照旧抛出，
         # 由回合内的延迟区/落点表接住。
         slots["out"].put(("shutdown", {"t": "shutdown"}, None))
+        # 空闲时入队就足以唤醒主循环；再打中断只会落进 MUT-31 的空闲分支，
+        # 在 bye 前多一条「空闲态收到中断」notice（N33，与 shutdown 帧的 `in_flight` 判定一致）
+        if not slots["in_flight"]:
+            return
         try:
             host.interrupt.request()
         except OSError:  # 线程已退出等：中断这条路走不通，但退出这件事已经排上了
