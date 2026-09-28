@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-09-28：收尾批复核收口（只读复核 / 决策准备 session）
+
+### [D28] 工具循环 10 轮上限对网络调研偏少
+- 状态：**已收口**（2026-09-28 复核）
+- 关联：`pipeline/agent/llm.py:33`（`DEFAULT_MAX_ITERATIONS`）、`pipeline/agent/tools.py::_tool_web_fetch`；Spec 4, impl-spec B3-r5
+- 原记录（活跃表原文）：2026-09-24 S20 门禁 8 冒烟实测：asset 抓 bgm 一色彩羽，搜索页撞游客登录墙（200 但只有导航栏），随后 9 次 fetch 在作品页与 API 间绕路，没去能直接抓到简介的 `/character/26090` 就耗尽 10 轮。10 这个数本身也没写依据。2026-09-24 用户裁决：**不设固定轮数上限**，停止前必须先做无工具收尾总结，防失控改用「人随时中断 + 完全相同的调用拒绝执行」（归二期 Spec 9）；不靠人指路，改为让模型拿到更好的信息：web_fetch 返回页内链接清单，scope 提示写通用研究策略，站点经验进 memory.md（归二期 Spec 13）；crawl/browser 的 extras 由人安装。到顶回显工具原始 JSON 是另一个 bug（`llm.py` 上限时 `final=convo[-1]` 即最后一条 tool 消息），已交 S25——**S25 已修**：`_dispatch_agent_turn` 在 `max_iterations` 时只打 WARN 交人接管，不回显 `final` 原文（`tests/test_agent_director.py::test_repl_max_iterations_warning` 锁死，变异检验杀死）
+- 收口依据：核心裁决（不设固定轮数上限，靠人中断 + 本轮判重 + 检查点）由 Spec 9 落地（`llm.py` 的 CHECKPOINT_EVERY 与 `dedup_key`）；三件配套事逐条核实已落地：① `web_fetch` 返回 `links`/`links_truncated`（`web.py::_extract_links`/`_cap_links`，工具描述已同步），实跑 docs.python.org 取回 58 条；② 「联网研究策略」节已进 `config/agent/scopes/creative.md` 与 `asset.md`；③ 站点经验经 `write_memory` 走 ADR-0023 记忆通道（首次写入人确认）；crawl/browser 依赖为 pyproject 可选组并附人工安装命令（crawl4ai-setup / playwright install）。实跑中另发现 `web_fetch` 不处理 `Content-Encoding` 的静默失败，已单列 N45，不属本条。
+
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
 ### [N34] 桌面端 e2e 的四处断言缺口（变异实跑暴露）
