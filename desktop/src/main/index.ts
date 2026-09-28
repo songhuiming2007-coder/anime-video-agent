@@ -63,6 +63,8 @@ type TestGlobals = typeof globalThis & {
   __avaTestQuitRelease?: (respond: "quit" | "cancel") => void;
   /** Spec 10 §3.3 原生确认框桩（仅未打包构建） */
   __avaTestConfirm?: { calls: number; respond: boolean; last: { title: string; detail: string } | null };
+  /** N44：focusWindow 被调次数（仅未打包构建，TI-10 断言用；系统焦点是否授予不归 app 控制） */
+  __avaTestFocusCalls?: number;
 };
 
 // 测试专用启动开关：只在未打包构建中解析（TG-6、TS-7）
@@ -114,6 +116,7 @@ function boot(): void {
 
   const focusWindow = () => {
     if (!win) return;
+    if (!app.isPackaged) testGlobals.__avaTestFocusCalls = (testGlobals.__avaTestFocusCalls ?? 0) + 1;
     if (win.isMinimized()) win.restore();
     win.focus();
   };
