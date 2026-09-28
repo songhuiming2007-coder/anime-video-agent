@@ -336,3 +336,24 @@ test("S8-R23 脱盘时侧栏头部与中栏顶部各出一个「陈旧」中性�
     fx.cleanup();
   }
 });
+
+// ---------------- N41：e2e 实例不打扰人（--ava-test-background） ----------------
+
+test("N41 e2e 实例：窗口可见、不聚焦、不进 Dock，停在主屏右下角只露一角", async () => {
+  const fx = buildFixture();
+  const L = await launch(fx.repo);
+  try {
+    await L.page.getByTestId("episode").first().waitFor();
+    const st = await L.app.evaluate(({ app, BrowserWindow, screen }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      const b = w.getBounds();
+      const wa = screen.getPrimaryDisplay().workArea;
+      return { visible: w.isVisible(), focused: w.isFocused(), dock: app.dock?.isVisible() ?? false, dx: wa.x + wa.width - b.x, dy: wa.y + wa.height - b.y };
+    });
+    // 可见：不是 show:false（隐藏窗口绘制被压低）；dx/dy = 露在工作区内的边长（显示后才移，macOS 不再拉回）
+    expect(st).toEqual({ visible: true, focused: false, dock: false, dx: 32, dy: 32 });
+  } finally {
+    await L.app.close();
+    fx.cleanup();
+  }
+});
