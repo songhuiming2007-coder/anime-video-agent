@@ -104,11 +104,51 @@ CJK = re.compile(r"[一-鿿]")
 #    正片主对白 style 中（与 N25 君名歌词混入 `JPN`/`CN` 对白轨同构），罪恶王冠 BD 无预告段——
 #    因此这里严守独立预告 style 前后缀边界，绝不触碰 `Sub-CN`/`Text-cn`/`CN`/`Default`/`JPN`
 #    等主对白轨，避免误伤正片台词。
-NON_DIALOGUE_STYLE = re.compile(
-    r"^(?:op|ed|in)(?:[-_ ]|cn|jp|\d|$)"
-    r"|^(?:title|staff|bgm|gamen|logo|sign|song|lyric|kara|yokoku|preview|次回予告|下集预告|予告|预告)"
-    r"|^(?:jp|note)$"
-    r"|^.*[-_.](?:song|yokoku|preview|予告|预告)$", re.I)
+#
+# N46（2026-09-28）：样式命名表迁 config（`subtitle.non_dialogue_styles`，
+# 换番/换字幕组只改配置不改代码），机制（四类匹配）留在代码：
+_DEFAULT_NON_DIALOGUE_STYLES = {
+    # 有界前缀：后随分隔符/语言码/数字/结尾才滤（`op`/`ed`/`in` 单独成词或带后缀，
+    # 但绝不碰 `Inner` 这类内心独白样式）
+    "prefix_bounded": ["op", "ed", "in"],
+    # 裸前缀：title/staff/bgm/… 开头即滤（`Title-Yokoku` 靠 title 命中）
+    "prefix": ["title", "staff", "bgm", "gamen", "logo", "sign", "song",
+               "lyric", "kara", "yokoku", "preview", "次回予告", "下集预告", "予告", "预告"],
+    # 精确匹配：裸 `JP`（纯汉字日文人名零假名会漏过 KANA 兜底）、`NOTE`（译注混标）
+    "exact": ["jp", "note"],
+    # `[-_.]` 后缀：反序复合名（`CN_song`/`JP_song`/`Eng.song`/`Sub-Yokoku`/`CN-预告`）
+    "suffix": ["song", "yokoku", "preview", "予告", "预告"],
+}
+
+
+def build_non_dialogue_re(table: dict) -> re.Pattern:
+    """把 style 命名表编成单条正则。表是 config 内容（N46），匹配机制在代码。"""
+    parts = []
+    bounded = [re.escape(x) for x in table.get("prefix_bounded", [])]
+    if bounded:
+        parts.append(r"^(?:" + "|".join(bounded) + r")(?:[-_ ]|cn|jp|\d|$)")
+    prefix = [re.escape(x) for x in table.get("prefix", [])]
+    if prefix:
+        parts.append(r"^(?:" + "|".join(prefix) + r")")
+    exact = [re.escape(x) for x in table.get("exact", [])]
+    if exact:
+        parts.append(r"^(?:" + "|".join(exact) + r")$")
+    suffix = [re.escape(x) for x in table.get("suffix", [])]
+    if suffix:
+        parts.append(r"^.*[-_.](?:" + "|".join(suffix) + r")$")
+    return re.compile("|".join(parts), re.I)
+
+
+_NON_DIALOGUE_RE: re.Pattern | None = None
+
+
+def non_dialogue_re() -> re.Pattern:
+    """当前生效的非对白 style 正则：表从 config/project.json 读，缓存编译一次。"""
+    global _NON_DIALOGUE_RE
+    if _NON_DIALOGUE_RE is None:
+        _NON_DIALOGUE_RE = build_non_dialogue_re(
+            paths.conf("subtitle.non_dialogue_styles", _DEFAULT_NON_DIALOGUE_STYLES))
+    return _NON_DIALOGUE_RE
 
 
 @dataclass
@@ -158,7 +198,7 @@ def parse(path: Path, anime: str, season: int, episode: int) -> list[Unit]:
     for ev in subs:
         if ev.is_comment:
             continue
-        if NON_DIALOGUE_STYLE.match(ev.style):  # OP/ED 歌词、标题、画面字
+        if non_dialogue_re().match(ev.style):  # OP/ED 歌词、标题、画面字
             continue
         if DRAW.search(ev.text):  # 绘图事件，必须在 _clean 剥掉标签之前判
             continue

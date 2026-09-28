@@ -102,27 +102,27 @@ class TestStyleFilter:
 
     def test_对话样式全部放行(self):
         for s in self.KEEP:
-            assert not subindex.NON_DIALOGUE_STYLE.match(s), s
+            assert not subindex.non_dialogue_re().match(s), s
 
     def test_歌词与标题样式全部滤掉(self):
         # 这 13 个是春物三季实际用到的命名，逐季不同（OP-CN / EDCN / EDCN-yui…）
         for s in self.DROP:
-            assert subindex.NON_DIALOGUE_STYLE.match(s), s
+            assert subindex.non_dialogue_re().match(s), s
 
     def test_Inner_不会被当成_In_误杀(self):
         # `^in` 要求后面接分隔符或语言码，否则「Inner」这类内心独白样式会被连带滤掉
-        assert not subindex.NON_DIALOGUE_STYLE.match("Inner")
-        assert subindex.NON_DIALOGUE_STYLE.match("In-CN")
+        assert not subindex.non_dialogue_re().match("Inner")
+        assert subindex.non_dialogue_re().match("In-CN")
 
     def test_裸JP样式被滤掉_但SubJP不受牵连(self):
         # 2026-08-09 罪恶王冠（诸神字幕组）：日文轨样式就叫裸 "JP"，不落进任何前缀规则，
         # 全靠 KANA 兜底——但纯汉字的日文词/人名零假名，会被当中文台词漏进索引
         # （实测漏了 183 条：「桜満集」「了解」「作戦開始」…）。精确匹配，不是前缀匹配，
         # 就是为了不牵连 Sub-JP 这类已有样式。
-        assert subindex.NON_DIALOGUE_STYLE.match("JP")
-        assert subindex.NON_DIALOGUE_STYLE.match("jp")
-        assert not subindex.NON_DIALOGUE_STYLE.match("Sub-JP")
-        assert not subindex.NON_DIALOGUE_STYLE.match("JPSC")
+        assert subindex.non_dialogue_re().match("JP")
+        assert subindex.non_dialogue_re().match("jp")
+        assert not subindex.non_dialogue_re().match("Sub-JP")
+        assert not subindex.non_dialogue_re().match("JPSC")
 
     def test_纯汉字日文人名不会当中文台词进索引(self, tmp_path):
         # test_裸JP样式被滤掉 保证的是「style 判据挡住了它」；这条守的是端到端结果——
@@ -139,7 +139,7 @@ class TestStyleFilter:
         # song_CN_ed 是同一个陷阱（语义贴题、画面是别的），只是复合顺序反了，
         # 前缀规则抓不到，实测漏了 16+22 条，用后缀匹配补上。
         for s in ("CN_song", "JP_song", "Eng.song", "cn_song"):
-            assert subindex.NON_DIALOGUE_STYLE.match(s), s
+            assert subindex.non_dialogue_re().match(s), s
         # 不能因为加了后缀匹配就误伤真台词样式——它们都不以 song 结尾
         for s in self.KEEP:
             assert "song" not in s.lower()
@@ -148,8 +148,8 @@ class TestStyleFilter:
         # 2026-08-09 罪恶王冠：NOTE 混标译注（多数，如「Daath：希伯来语…」）与极少数
         # 唯一承载某个画面文字的真台词。两难之下选「宁可漏，不可错」，整个 style 滤掉——
         # 详细取舍见 subindex.py 里 NON_DIALOGUE_STYLE 上方的注释。
-        assert subindex.NON_DIALOGUE_STYLE.match("NOTE")
-        assert subindex.NON_DIALOGUE_STYLE.match("note")
+        assert subindex.non_dialogue_re().match("NOTE")
+        assert subindex.non_dialogue_re().match("note")
 
     def test_次回预告独立样式前缀与后缀全部滤掉_且不误伤N25对白轨(self):
         # D7：独立预告 style（前缀 Yokoku/Preview/预告/予告，或后缀 -Yokoku/_preview/-预告）
@@ -157,10 +157,33 @@ class TestStyleFilter:
         for s in ("Yokoku", "yokoku", "Yokoku-CN", "Preview", "Preview-CN",
                   "次回予告", "下集预告", "预告", "予告",
                   "Sub-Yokoku", "CN_yokoku", "Sub-Preview", "CN-预告", "Text.yokoku"):
-            assert subindex.NON_DIALOGUE_STYLE.match(s), s
+            assert subindex.non_dialogue_re().match(s), s
         # 三番正片主对白轨（Sub-CN/Text-cn/CN/Default/DefaultUP）与 N25 君名 JPN 对白轨绝不误伤
         for s in ("Sub-CN", "Text-cn", "CN", "Default", "DefaultUP", "JPN"):
-            assert not subindex.NON_DIALOGUE_STYLE.match(s), s
+            assert not subindex.non_dialogue_re().match(s), s
+
+    def test_机制读表_新命名只改config不改代码(self):
+        # N46：表是 config 内容。机制（四类匹配）对任意表生效——新字幕组命名
+        # 只改 project.json 即可生效，不需要动 pipeline/。
+        custom = dict(subindex._DEFAULT_NON_DIALOGUE_STYLES)
+        custom["prefix"] = custom["prefix"] + ["pv"]
+        re_custom = subindex.build_non_dialogue_re(custom)
+        assert re_custom.match("PV-CN")
+        assert not re_custom.match("Sub-CN")
+        # 默认表不认识 PV（证明上一条断言不是机制无条件放行）
+        assert not subindex.build_non_dialogue_re(
+            subindex._DEFAULT_NON_DIALOGUE_STYLES).match("PV-CN")
+
+    def test_config表与代码默认值行为一致(self):
+        # N46：project.json 里的表与代码默认表同值（paths.conf 纪律：default 等于原硬编码值），
+        # 两者对 KEEP/DROP 全表行为一致——配置漂移会在这一步现形。
+        from pipeline import paths as _paths
+        cfg_table = _paths.conf("subtitle.non_dialogue_styles", None)
+        assert cfg_table == subindex._DEFAULT_NON_DIALOGUE_STYLES
+        for s in self.KEEP:
+            assert not subindex.build_non_dialogue_re(cfg_table).match(s), s
+        for s in self.DROP:
+            assert subindex.build_non_dialogue_re(cfg_table).match(s), s
 
     def test_次回预告台词不进索引_而主对白轨与N25不受误伤(self, tmp_path):
         f = ass(tmp_path,
