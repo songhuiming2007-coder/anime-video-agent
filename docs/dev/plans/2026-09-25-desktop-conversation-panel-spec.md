@@ -884,7 +884,7 @@ browser 逐调用卡、素材抓取卡、`write_memory` 卡与记忆确认卡都
 | MUT-43 | 抓取卡批准跳过原生确认框 | TH-18、TX-13 | 桩返回 `false` 时仍写了 `answer` |
 | MUT-44 | renderer 新增 `const m = "conv.answer"; rpc.call(m, …)` | TG-16 | 首参不是字面量；且 TG-4′ 因字面量不在调用处而无法覆盖，只有 TG-16 能抓 |
 | MUT-45 | `onClick` 挂到自定义组件 `<CardButton onClick>` 上 | TG-4′ | 标签名非小写 |
-| MUT-46 | `RequestCard` 的 `key` 改为数组下标 | TG-17、TX-14 | 静态 key 表达式不符；第二次 Enter 以复用的按钮答复了第二张卡 |
+| MUT-46 | `RequestCard` 的 `key` 改为数组下标 | TG-17、TX-14b | 静态 key 表达式不符；第一张卡关闭后第二张卡复用其组件实例，继承人在第一张卡里写的反馈（N34 更正：原写的「第二次 Enter 答到第二张卡」不可观测——答复即 `disabled`、焦点离开，第二次 Enter 无论 key 对错都落空，TX-14 因此杀不死它） |
 | MUT-47 | `before-quit` 无条件等 `quit-state`（去掉 host 缺席与超时分支） | TX-8b | 熔断后 `app.close()` 5 s 内不退出 |
 | MUT-48 | `window-all-closed` 恢复「先发 `shutdown` 再 `app.quit()`」 | TX-8d | 关窗后取消，host 定时器已停，`STATUS` spawn 不再出现（v0.3 按二轮 🟡-3 改挂：TX-8 走 `before-quit`、不经过 `window-all-closed`，抓不到它） |
 | MUT-49 | 去掉退出状态机的重入保护 | TX-8c | 确认框桩被调用 2 次 |
@@ -900,7 +900,8 @@ browser 逐调用卡、素材抓取卡、`write_memory` 卡与记忆确认卡都
 | MUT-59 | host 只在 `stop_points.items` 非空时推进结算（模拟 S9-R4 未补全的实现） | TH-20 ②、TV-6 ⑩ | 零停机点回合永不结算，超时前没有 `settled`；renderer 侧 ⑩ 中新 pending 被延迟 |
 | MUT-60 | 结算以读取**完成**时刻比较 | TH-20 ① | 那次「`stop_points` 之前开始、之后读完」的读取被当成结算依据，第一次读取后即出现 `settled` |
 | MUT-61 | 删去结算超时兜底 | TH-20 ⑤ | 不发 `stop_points` 的假进程下永无 `settled` |
-| MUT-62 | `onConnect` 不重置 `autoOpen` | TV-6 ⑪ | 旧 `awaiting` 残留，新 host 的 pending 被延迟 |
+| MUT-62 | `onConnect` 不重置 `autoOpen` | —（等价变异） | N34 判定：重连后 `fetchConv(当前会话键, resetAuto=true)` 以新 host 的 snapshot 再做同一次 reset，两次之间没有可达的 pendings 事件，故不可观测；只有 `episodes.list`/`conv.snapshot` 失败时 onConnect 的同步 reset 才起作用 |
+| MUT-62′（N34 补） | onConnect 与 `fetchConv` 两处 reset 一起去掉 | TX-15b | 旧 `awaiting` 残留，重连后的新 pending 只登记不呼出 |
 | MUT-63 | `renderConfirmDetail` 不转义 `\p{Cf}` | TH-18 | `detail` 含原始 U+202E，断言的 `⟨U+202E⟩` 不存在 |
 | MUT-64 | `reqId` 去掉 `bootId`、host 退出时不 abort | TH-22 | 桩未收到 abort；旧 `confirm-result` 被新 host 接受 |
 | MUT-65 | `quit-proceed` 后仍接受 `conv.send` | TH-21 | 退出期间写入了 `user_message` |
@@ -1025,7 +1026,9 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 **变异全表实跑**（逐条植入 → 目标用例变红 → 写回原文）：TS 侧 68 条由新 harness `desktop/scripts/verify-mutations.mjs` + `scripts/mutations.mjs` 执行（每条的 `targets` 指明 vitest 全量或 e2e grep，`expect` 为矩阵指定的杀手；判定 KILLED = 指定杀手红，PARTIAL = 只红了一部分指定杀手，OTHER = 红的不是指定杀手）；Python 侧 MUT-18~21/53/54 在 `scripts/verify_mutations.py`（S10-MUT-*）。
 - TS 侧 **66/68 KILLED**，杀手与矩阵一致（MUT-55/67 的期望按可达性收窄并在表内写明原因）；
   - **MUT-46 PARTIAL**：静态守卫 TG-17 红，但假进程版 TX-14 在 key 改下标后仍绿——DOM 复用未导致第二次 Enter 答到第二张卡，机理**未证实**；
+    **2026-09-28 N34 回填**：机理＝答复即 `setBusy(true)` → 按钮 `disabled` → 焦点离开，第二次 Enter 落空与 key 无关（推断，与「变异下 TX-14 仍绿」相符）；key 真正守的是组件状态归属，新增假进程版 **TX-14b**（第一张卡写反馈后拒绝，第二张卡的反馈框必须为空、第二次拒绝的 `feedback` 为 null），harness 实跑 MUT-46 → **KILLED**（TG-17 + TX-14b 红，TX-14b 失败原文 `Expected: "" Received: "只改第一段"`）；
   - **MUT-62 SURVIVED**：变异落在 `App.tsx` 的 onConnect 调用点，TV-6 ⑪ 测的是纯 reducer，e2e 无「host 重启跨越自动呼出等待」路径——测试缺口；
+    **2026-09-28 N34 回填**：补了该路径的 e2e **TX-15b**（回合在跑时 kill -9 host → 重连 → 追加新 pending 必须照常呼出），MUT-62 实跑仍 **SURVIVED**——判为**等价变异**（理由见 §7 矩阵该行）；两处 reset 一起去掉的 **MUT-62′** → TX-15b 红，**KILLED**（失败原文 `Expected: 2 Received: 1`）；
   - 两条均登记 issues N34，待补用例。
 - Python 侧 **6/6 KILLED**（S10-MUT-18→TY-1 红 4；-19→TY-2 红 3；-20→TY-2 红 6；-21→TY-5 红 2；-53→TY-8 ⑤ 红 2；-54→TY-8 ③ 非标准夹具 + 30 条中含依赖 status 的既有用例），在 `b728a61` 的干净分片工作树上跑（唯一未跟踪项是软链的 `.venv`，故带 `--dirty-ok`）。
 - 实跑中查出并修掉的**测试自身缺陷 10 处**（`af0d0ff`，均非生产代码问题）：夹具孙进程读 `sys.argv[2]`（应为 `[1]`），SIGTERM 处理器抛 `IndexError`、TH-9 ② 恒真（MUT-11）；TH-10 重置后同步断言、异步退出未发生（MUT-13）；TH-18 标题写拒绝、用例体从未拒绝（MUT-57）；TH-19 只比了无会话时的缺省 generation（MUT-51）；TH-20 ①/⑦ 时刻构造使变异无从区分（MUT-60/71）；TV-2 失败原文太短、截断 500 字无影响（MUT-32）；真实 core 版 TX-2/5③/6/7 补 spec 子句或时序（MUT-22/28/31/35）。另 TF-1 改用根外诱饵 `.venv`（`871bcef`，原诱饵在仓库内，安全修复）。
