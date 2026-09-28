@@ -397,6 +397,53 @@ test("N32 无会话时点「素材模式」：零 conv.command、出现可读提
   });
 });
 
+test("N36 降级文案不溢出会话头：头部盒子包住全部子元素、不压对话区；命令整句可复制", async () => {
+  await withSession(async ({ repo, L }) => {
+    const reason = "钥匙串里没有该密钥；配置指名的环境变量 AVA_TEST_KEY 在本次 spawn 中缺失，已按 Spec 9 如实降级（无模型可用）";
+    const degraded = { ...READY("SESS-A"), frame: { ...READY("SESS-A").frame, llm: "degraded", degrade_reason: reason } };
+    sessionScript(repo, "SESS-A", [degraded, { op: "serve", on_turn: [TURN_STARTED, { t: "assistant", turn_id: "$turn", kind: "answer", text: "对话流首行" }, TURN_ENDED, STOP_POINTS] }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "在吗");
+    await expect(L.page.getByTestId("llm-degraded")).toBeVisible();
+    await expect(L.page.getByTestId("key-problem")).toContainText("security add-generic-password -s ava -a AVA_TEST_KEY -w");
+    for (const width of [900, 1280]) {
+      await L.app.evaluate(({ BrowserWindow }, w) => BrowserWindow.getAllWindows()[0].setSize(w, 800), width);
+      await L.page.waitForTimeout(200);
+      const g = await L.page.evaluate(() => {
+        const head = document.querySelector("[data-testid=session-head]") as HTMLElement;
+        const hb = head.getBoundingClientRect();
+        const kids = [...head.children].map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0);
+        const conv = (document.querySelector(".conv") as HTMLElement).getBoundingClientRect();
+        return {
+          headTop: hb.top,
+          headBottom: hb.bottom,
+          kidTop: Math.min(...kids.map((r) => r.top)),
+          kidBottom: Math.max(...kids.map((r) => r.bottom)),
+          convTop: conv.top,
+          scrollH: head.scrollHeight,
+          clientH: head.clientHeight,
+        };
+      });
+      // 头部与对话区不重叠；子元素全部落在头部盒子内；常规窗口下不靠内部滚动藏字（挡住「40px + overflow」式假修）
+      expect(g.headBottom, `width=${width}`).toBeLessThanOrEqual(g.convTop + 0.5);
+      expect(g.kidTop, `width=${width}`).toBeGreaterThanOrEqual(g.headTop - 0.5);
+      expect(g.kidBottom, `width=${width}`).toBeLessThanOrEqual(g.headBottom + 0.5);
+      expect(g.scrollH, `width=${width}`).toBeLessThanOrEqual(g.clientH + 1);
+    }
+    // 命令整句仍在同一个文本节点里，可一次选中复制
+    const selected = await L.page.evaluate(() => {
+      const el = document.querySelector("[data-testid=key-problem]") as HTMLElement;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return sel.toString();
+    });
+    expect(selected).toContain("设置密钥：security add-generic-password -s ava -a AVA_TEST_KEY -w");
+  });
+});
+
 test("TX-15 host 重启：原会话键显示已结束、待答区为空、可继续上次会话", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "qh", kind: "tool_call", turn_id: "$turn", title: "卡", card_text: "c", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: false }] }]);
