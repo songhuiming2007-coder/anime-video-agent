@@ -680,6 +680,12 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     signal.signal(signal.SIGTERM, _on_term)
+    # N40：中断走 `pthread_kill(SIGINT)` 打到主线程，靠的是 Python 的默认处理器把它变成
+    # KeyboardInterrupt。以 SIGINT=SIG_IGN 继承启动（非交互 shell 的 `&` 后台进程）时 Python
+    # 不装这个处理器，信号被内核丢弃、回合停不下，所以这里显式装回。必须是
+    # `default_int_handler` 而不是 SIG_DFL：后者收到 SIGINT 直接杀进程，空闲 notice（MUT-31）
+    # 与回合内的延迟区/落点表都接不住。
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
     exit_code = 0
     try:
