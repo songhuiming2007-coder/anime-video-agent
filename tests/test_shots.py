@@ -451,3 +451,53 @@ class TestCaptionFrames:
         # 而 caption 这条路长镜头是三张
         assert (shots.caption_frame_dir("罪恶王冠", "S01E01")
                 != shots.frame_path("罪恶王冠", "S01E01", 0).parent)
+
+
+class TestSourcePathPortability:
+    """D24③：meta.source 存相对 data 根；读取侧三形态解析 + 绝对路径失效按 data 根重定位。"""
+
+    def test_store_绝对路径在data根内存相对(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        src = tmp_path / "data" / "library" / "raw" / "番" / "ep01.mkv"
+        src.parent.mkdir(parents=True)
+        src.touch()
+        assert shots._store_source(str(src)) == "library/raw/番/ep01.mkv"
+
+    def test_store_仓库根相对形态改存data根相对(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        assert shots._store_source("data/library/raw/番/ep01.mkv") == "library/raw/番/ep01.mkv"
+        assert shots._store_source("library/raw/番/ep01.mkv") == "library/raw/番/ep01.mkv"
+
+    def test_resolve_data根相对与仓库根相对(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        monkeypatch.setattr(shots.paths, "ROOT", tmp_path)
+        f = tmp_path / "data" / "library" / "raw" / "番" / "ep01.mkv"
+        f.parent.mkdir(parents=True)
+        f.touch()
+        assert shots._resolve_source("library/raw/番/ep01.mkv") == f
+        assert shots._resolve_source("data/library/raw/番/ep01.mkv") == f
+
+    def test_resolve_绝对路径失效按data根重定位(self, tmp_path, monkeypatch):
+        """夏隧形态：旧仓库绝对路径已失效，按 library/ 尾部拼当前 data 根能找回。"""
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        f = tmp_path / "data" / "library" / "raw" / "夏隧" / "ep01.mkv"
+        f.parent.mkdir(parents=True)
+        f.touch()
+        stale = "/Users/someone/old-repo/data/library/raw/夏隧/ep01.mkv"
+        assert shots._resolve_source(stale) == f
+
+    def test_resolve_找不到就给可操作报错(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        monkeypatch.setattr(shots.paths, "ROOT", tmp_path)
+        with pytest.raises(SystemExit, match="sources.json"):
+            shots._resolve_source("library/raw/番/不存在.mkv")
+
+    def test_meta_写入侧走store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        monkeypatch.setattr(shots, "threshold", lambda *a, **k: 10.0)
+        monkeypatch.setattr(shots, "min_shot", lambda: 0.5)
+        src_file = tmp_path / "data" / "library" / "raw" / "番" / "ep01.mkv"
+        src_file.parent.mkdir(parents=True)
+        src_file.touch()
+        m = shots.meta("番", 1, 1, {"path": str(src_file), "duration": 100.0, "fps": 23.976})
+        assert m["source"] == "library/raw/番/ep01.mkv"
