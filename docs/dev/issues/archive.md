@@ -7,6 +7,12 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [D31] TP-6 在全量负载下偶发红
+- 状态：**已解决**（施工 df88840；2026-09-28 独立评审通过）
+- 关联：`tests/test_agent_protocol.py`（用例名见该文件 TP-6）；Spec 9, Spec 10
+- 原记录（活跃表原文，含施工回填）：2026-09-26 Spec 10 PR0 验收复跑中实测：整套 pytest 下偶发红一次（施工方报红 4、验收方同条件测得红 5）；该用例单独跑 3/3 绿、干净树 3/3 绿，确认与本轮变异无关。风险点是**变异 harness 的红条数被当门禁数字**时，flake 会污染计数（`scripts/verify_mutations.py` 已用「中止轮标 ABORTED」堵住另一类假红，这条是超时/竞态类，未堵）。推进：先复现并定位（怀疑与 TP-6 的 busy 帧时序有关），再决定是收紧时序断言还是给该用例加隔离；不调阈值。**2026-09-27 M9 复现**：Spec 9 变异全表实跑（4 分片并行、机器满载）期间再次出现同形态偶发红，单跑仍绿；harness 已加单轮 15 分钟超时，但计分仍会被它污染，复跑非 KILLED 条目时需单独确认。**2026-09-28 修复（测试侧竞态，非 core 缺陷）**：负载下自然复现未抓到（TP-6 单条 96 次、协议+会话四文件 15 轮×94 条、全量 3 轮，全绿），改用注入定位——在两次 `send` 之间插 0.3 s（模拟测试进程被抢占）即必现，失败原文 `等不到 error；已收到 [ready, notice, stop_points, turn_started, assistant, turn_finished, stop_points, turn_started, assistant, turn_finished, stop_points]`：假端点秒回，「甲」已跑完、「乙」开了第二轮，E_BUSY 无从产生。core 的忙判定（读者线程置 `in_flight`）无误。修法＝等待条件化：「甲」改为停在 `test_slow` 人审卡上（卡未答复＝回合必在进行中）再发「乙」，断言收紧为恰 `E_BUSY`、两条坏帧恰 `[E_BAD_REQUEST, E_BAD_REQUEST]`、被拒帧不进对话；零 sleep / 零 skip / 零阈值改动。验证：注入 0.5 s 间隔仍绿；变异 2/2（删 `E_BUSY` 分支→TP-6 红；键集合校验放宽为 ⊇→TP-6 红，旧断言 `in codes` 放得过它）；负载（8 个 `yes` 占满 10 核）下全量 `uv run pytest` 1956 passed ×3。harness 无需加「单跑复核」标记（竞态已从用例里消除）。**顺带发现（未修，报人）**（已单独登记为 N40）：协议进程若以 SIGINT=SIG_IGN 启动（非交互 shell 里 `&` 起的后台进程默认如此），Python 不装默认 SIGINT 处理器，`interrupt` 全部失效（TP-4 24/24 红）；桌面端经 libuv spawn 会重置信号，不受影响，但 harness/脚本若在后台起 core 会踩到
+- 评审：✅ 通过。① 原始复现（实测）：取修前写法、在两次 send 间注入 0.3 s → 红（等不到 E_BUSY，进程超时被杀 finish()==-9）；同注入下新写法绿。② 「为什么不是 core 竞态」（读码）：`protocol.py::_dispatch` 由读者线程在读到「甲」时同步置 `in_flight`，「乙」拿不到 E_BUSY 只可能是「甲」整轮已结束（主循环 finally 清标志），判测试侧竞态成立。③ diff 只动 `tests/test_agent_protocol.py` 的 TP-6 与 issues 行；无 sleep / flaky / skip，断言收紧（E_BUSY 精确、两条 E_BAD_REQUEST、被拒帧不进对话）。④ 变异 3 条实跑（还原后 md5 一致）：删 E_BUSY 分支 / 忙时回 E_NOT_READY（旧断言 `in (E_BUSY, E_NOT_READY)` 会放过）/ 回合结束不清忙标志 → 均被 TP-6 杀死。⑤ 负载（6×`yes`）下全量 `uv run pytest` ×3：1957 passed ×3（实测；N40 修复后 `&` 后台 SIG_IGN 假象亦不再出现）。
+
 ### [N36] 会话头降级文案溢出并与对话流重叠
 - 状态：**已解决**（施工 db44529；2026-09-28 独立评审通过）
 - 关联：`desktop/src/renderer/SessionHeader.tsx` + `style.css`；Spec 10 §2.9 第 6 条
