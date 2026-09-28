@@ -87,6 +87,12 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [N41] 桌面端 e2e 每条用例都弹出并激活一个 1280×820 窗口，全量跑下来本机无法正常使用
+- 状态：**已解决**（施工 d28c736；2026-09-28 独立评审通过）
+- 关联：`desktop/src/main/index.ts`（`createWindow()`：未隐藏、未隐藏 Dock 图标）、`desktop/e2e/fixtures.ts`（`electron.launch`）
+- 原记录（活跃表原文，含施工回填）：2026-09-28 人报、读码核实：8 个 spec 文件共 112 个 `test()`，每条独立 `electron.launch()` → `app.close()`，全量约十余分钟、平均 5–6 s 抢一次键盘与前台焦点；变异实跑按条目数放大（N38 全表跑到 47/69 时因此被人叫停）。D37 已有「键盘探针会把按键打进其他前台应用」的同类教训。推进：只对未打包构建且由 e2e 启动的实例加测试开关（启动即隐藏 Dock 图标、窗口 `showInactive()` 不激活 app），**打包版零改动**；不用 `show:false`（Chromium 会压低隐藏窗口的绘制，VE 视觉审计与截图可能失真）；键盘/焦点类用例（TX-14/14b、VE-3 等）在无系统焦点下是否仍成立必须全量实测 **2026-09-28 修复（人裁插队）**：未打包构建新增测试开关 `--ava-test-background`（`fixtures.ts::launch` 默认带上），三件事：`app.setActivationPolicy("accessory")`（不进 Dock、不激活 app）；窗口 `show:false` 后 `showInactive()`（可见、照常绘制、不抢焦点）；**显示之后**再移到主屏工作区右下角只露 32×32（先移后显示会被 macOS 在上屏时拉回，实测）。完全移出屏幕与透明度方案未采用（前者会被判遮挡、Chromium 停绘制；后者人裁暂不做）。实测：窗口内 `visibilityState=visible`、rAF 62/s；前台采样对照——改前单条 VE-3 即被 Electron 抢走，改后整轮全量见下。守卫 e2e `N41`（可见/未聚焦/不在 Dock/dx=dy=32）；变异 3/3（去 accessory→dock:true；照常 show→focused:true；先移后显示→dx/dy 变整窗）。打包版零改动（未打包才解析、打包版本就拒绝未知 argv）。
+- 评审：✅ 通过。① 变异 3/3 实跑（还原后 md5 对拍一致）：m1 去 accessory→N41 用例红（dock:true）；m2 showInactive 退回 show→红（focused:true）；m3 先移后显示→红（dx/dy 变整窗）——杀手均为守卫用例 N41 本身。② diff 边界：只动 `main/index.ts`（dev.background 分支，打包版 `readDevSwitches` 不解析该开关）、`fixtures.ts`（launch 默认带开关）、`visual.spec.ts`（守卫用例）、issues 行——打包版零改动成立。③ 全量佐证（与 N44 同轮）：vitest 377 passed、未打包全量 e2e 111 passed / 2 skipped、真实数据零污染；N44 的 TI-10 在 background 模式下绿。备注（转述未复核）：「整轮前台采样 1067 次零抢占」为施工方实测。
+
 ### [N40] 协议进程以 SIGINT=SIG_IGN 启动时，`interrupt` 全部失效
 - 状态：**已解决**（施工 40cb104；2026-09-28 独立评审通过）
 - 关联：`pipeline/agent/protocol.py`（启动序列）、`session.py::TurnInterrupt`
