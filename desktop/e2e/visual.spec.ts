@@ -96,7 +96,7 @@ const N_LOWER: Record<string, number> = {
   empty: 63,
   error: 73,
   health: 91,
-  stale: 67, // 脱盘后 host 清空期列表，等落定再审计后的稳定值 + S8-R23 的两处「陈旧」徽标（65 → 67）
+  stale: 83, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒 83；旧值 67 是 host 竞态清空期列表时的数
   card: 73,
   "card-reject": 78,
   "card-err": 81,
@@ -192,13 +192,15 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     await card.getByTestId("approve").click();
     await L.page.getByTestId("decision-err").waitFor({ timeout: 30_000 });
     await audit(L.page, "card-err");
-    // ⑩ stale（脱盘：期行变「未取到」+ 未知圆环，预览/中栏置灰）
+    // ⑩ stale（脱盘：期列表保留、置灰并标「陈旧」，Spec 8 §2.8 / mock-06）
+    const rowsBefore = await L.page.getByTestId("episode").count();
     execFileSync("/bin/chmod", ["000", fx.dataReal]);
     try {
       await L.page.getByTestId("reach-banner").waitFor({ timeout: 10_000 });
-      // 脱盘后 host 会推一份空期列表：等它落定再审计，否则 n 取决于「推送到没到」的竞态（PR3 实测：
-      // 同一份代码先测出 81、后测出 65），下限断言会假红。这不是判据变化，是把夹具状态钉死。
-      await expect.poll(() => L.page.getByTestId("episode").count(), { timeout: 10_000 }).toBe(0);
+      // N37：旧写法等期列表清空，但清空来自 host 把脱盘误判成「期目录被删」——只在活跃期 tick 抢在
+      // reach 轮询之前时发生（PR3 测出 81/65 两个 n、负载下 4/4 次不清空，都是这个竞态）。修后列表恒保留
+      await expect(L.page.locator(".left [data-testid=stale-mark]")).toBeVisible();
+      await expect(L.page.getByTestId("episode")).toHaveCount(rowsBefore);
       await audit(L.page, "stale");
     } finally {
       // 权限必须无条件还原：否则断言一红，清理就会以 ENOTEMPTY 掩盖真因

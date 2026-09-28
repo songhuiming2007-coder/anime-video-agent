@@ -893,7 +893,13 @@ export class HostService {
       if (!more) break;
       await new Promise<void>((res) => setImmediate(res));
     }
-    if (!this.dirExists(rt.abs)) dirGone = true;
+    if (!this.dirExists(rt.abs)) {
+      // N37：期目录不在，可能只是整个数据根不可达（脱盘/TCC）而 reach 还没轮询到。
+      // 先重判可达性：脱盘按 §2.8「保留最后快照并标陈旧」，不能当成期目录被删去刷新（那会清空期列表）
+      this.pollReach();
+      if (this.reach !== "ok") return;
+      dirGone = true;
+    }
     if (dirGone) {
       rt.status = { ok: false, code: "E_STALE", message: "期目录已不存在" };
       this.refreshEpisodes();
