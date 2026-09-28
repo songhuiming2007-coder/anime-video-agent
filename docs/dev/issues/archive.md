@@ -7,6 +7,13 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [N36] 会话头降级文案溢出并与对话流重叠
+- 状态：**已解决**（施工 db44529；2026-09-28 独立评审通过）
+- 关联：`desktop/src/renderer/SessionHeader.tsx` + `style.css`；Spec 10 §2.9 第 6 条
+- 原记录（活跃表原文，含施工回填）：2026-09-27 M9 门禁 6(b) 实测（钥匙串条目删除后）：`LLM 未就绪：…` 与 `设置密钥：security add-generic-password -s ava -a CPA_API_KEY -w ｜不注入密钥…` 整段在会话头换行后越出自身盒子，与对话流首行、消息气泡互相压字（截图两处独立复现）。文本内容本身正确、命令与 `secrets.ts:15` 逐字一致，属排版缺陷；建议给该块加 `max-height + overflow: auto` 或收成可展开的一行。**2026-09-28 施工**：取「max-height + overflow」（不改 DOM；`<details>` 要动元素种类，越出 Spec 14 重构边界）。根因 = `ui.css` 的 `.session-head` 写死 `height: 40px` + `align-items: center`，多行文案向上下两个方向越出（900 宽实测子元素顶端 299.5、头部顶端 378.5）。`ui.css` 有 sha256 冻结，覆盖写在 `style.css`：`height:auto; min-height:40px; max-height:30vh; overflow-y:auto; flex-wrap:wrap`，单行时仍是 40px；零颜色、零字号、零文案与 `data-testid` 改动，也没改 TSX。用例 e2e `N36`（900/1280 两种宽度，按几何断言）：头部底边不超过对话区顶边、子元素全部在头部盒子内、常规窗口下 `scrollHeight ≤ clientHeight`（挡住「40px + 内部滚动」式假修）、`key-problem` 整段选中后含完整命令。变异 2/2：删规则（原状）→ 子元素越出顶端红；保留 40px 只加滚动 → 子元素越出底端红。深/浅两态截图已目视：无压字、配色不变。代价：800 高窗口里降级态头部约占 200px，对话流变窄（上限 30vh）。验证：vitest 364 passed（含 VS-3/4/5 扫 style.css 与冻结 sha256）、`tsc` 干净、未打包 e2e 108 passed / 2 skipped
+- 评审：✅ 通过（打包版真机门禁 6(b) 留人）。① 深/浅两态（实测，未打包构建 + `emulateMedia` 截中栏）：降级说明与 `security add-generic-password -s ava -a AVA_TEST_KEY -w` 整段落在头部盒子内、不压对话流，两态文字均可读；命令仍在同一文本节点可整句选中（用例末段断言）。diff 只动 `style.css` 一条 `.session-head` 覆盖，文案与 `data-testid` 零改动。② 只引用 `--space-1`，不新增颜色/字号；`ui.css`（sha256 冻结）未动，未越 Spec 14 边界。③ 断言是几何的（头部不压 `.conv`、子元素全在盒内、常规窗口 `scrollHeight ≤ clientHeight`），不是只看文案：变异 3 条实跑（还原后 md5 一致）——A 删掉覆盖（原状）→第 453 行红；B「固定 40px + 内部滚动」假修→第 454 行红；C 只换行不长高→第 454 行红。观察（不阻塞、交人判）：窄中栏下降级态头部占去大半高度，对话流只剩一线（施工报告已提）；中栏「人时」行贴左缘无内边距，属既有排版、与本条无关
+
+
 ### [N32] 会话未启动时「素材模式」按钮可点，但点了静默无反应
 - 状态：**已解决**（施工 96a3b86；2026-09-28 独立评审通过）
 - 关联：`desktop/src/renderer/SessionHeader.tsx`（素材模式按钮）；Spec 10 §2.6
