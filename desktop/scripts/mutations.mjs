@@ -169,7 +169,7 @@ export const MUTATIONS = [
   { id: "MUT-62", guard: "onConnect 重置 autoOpen", expect: ["TV-6"], targets: [ALL, real("TX-15")], file: APP,
     old: "      autoRef.current = step(autoRef.current, { kind: \"reset\", phase: \"none\", turnId: null, settlePending: null }, { mediaPlaying: false }).state;\n      setStrip(null);",
     new: "      setStrip(null); // MUT-62",
-    note: "N34 判为等价变异（预期 SURVIVED）：重连后 fetchConv(当前会话键, resetAuto=true) 以新 host 的 snapshot 再做一次同样的 reset，两次之间没有可达的 pendings 事件（episode.activate 要 spawn STATUS，慢于 episodes.list→conv.snapshot 两跳）；只有这两次 RPC 失败时 onConnect 的同步 reset 才有差别。两处 reset 都去掉的 MUT-62′ 由 TX-15b 杀死" },
+    note: "预期 SURVIVED（N34 施工判等价，评审更正为「成功路径不可观测、失败路径无用例」）：重连后 fetchConv(当前会话键, resetAuto=true) 以新 host 的 snapshot 再做一次同样的 reset，两次之间没有可达的 pendings 事件（episode.activate 要 spawn STATUS，慢于 episodes.list→conv.snapshot 两跳）；只有这两次 RPC 失败时 onConnect 的同步 reset 才有差别。两处 reset 都去掉的 MUT-62′ 由 TX-15b 杀死" },
   { id: "MUT-62′", guard: "host 重连后 autoOpen 的 awaiting 被重建（两处 reset 一起失效）", expect: ["TX-15b"], targets: [e2e("TX-15b")],
     edits: [
       { file: APP, old: "      autoRef.current = step(autoRef.current, { kind: \"reset\", phase: \"none\", turnId: null, settlePending: null }, { mediaPlaying: false }).state;\n      setStrip(null);", new: "      setStrip(null); // MUT-62′" },
