@@ -109,7 +109,8 @@ export interface Launched {
 export async function launch(repo: string, extraArgs: string[] = [], userData = tmp("ud")): Promise<Launched> {
   const app = await electron.launch({
     executablePath: ELECTRON,
-    args: [DESKTOP, `--ava-repo-root=${repo}`, `--ava-user-data=${userData}`, ...extraArgs],
+    // --ava-test-background（N41）：不进 Dock、不激活、窗口不抢焦点，跑 e2e 时本机仍可正常使用
+    args: [DESKTOP, `--ava-repo-root=${repo}`, `--ava-user-data=${userData}`, "--ava-test-background", ...extraArgs],
     cwd: DESKTOP,
   });
   let out = "";

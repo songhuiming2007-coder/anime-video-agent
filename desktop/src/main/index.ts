@@ -3,7 +3,7 @@
 // 禁止：spawn 子进程、解析事件/审批、对 data/ 的任何写、crashReporter.start（TG-3、TG-8）。
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, MessageChannelMain, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
+import { app, BrowserWindow, dialog, MessageChannelMain, screen, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
 import { installEgressBlock } from "./egress";
 import { MediaServer, registerMediaScheme } from "./mediaProtocol";
 import { createMainConfirmBroker } from "./confirm";
@@ -29,12 +29,20 @@ function disableWindowRestoration(): void {
   if (app.isPackaged) systemPreferences.setUserDefault("ApplePersistenceIgnoreState", "boolean", true);
 }
 
+/** N41：e2e 窗口露在屏幕内的边长（px）；够让窗口仍算「可见」，又小到不挡人 */
+const BACKGROUND_SLIVER_PX = 32;
+
 interface DevSwitches {
   repoRoot: string | null;
   userData: string | null;
   handshakeHook: boolean;
   /** 仅未打包构建的测试钩子（TG-6）：把 KEYCHAIN_READ 的可执行路径换成夹具脚本（Spec 10 §3.4） */
   keychainExec: string | null;
+  /**
+   * 仅未打包构建（N41）：e2e 起的实例不进 Dock、不激活 app、窗口显示但不抢焦点。
+   * 全量 e2e 每条用例起一次 app，不加这个开关本机在整轮里无法正常打字。
+   */
+  background: boolean;
 }
 
 /** 测试驱动经 electronApp.evaluate 摆放的对话框桩（仅未打包构建，TA-12） */
@@ -59,13 +67,14 @@ type TestGlobals = typeof globalThis & {
 
 // 测试专用启动开关：只在未打包构建中解析（TG-6、TS-7）
 function readDevSwitches(): DevSwitches {
-  const sw: DevSwitches = { repoRoot: null, userData: null, handshakeHook: false, keychainExec: null };
+  const sw: DevSwitches = { repoRoot: null, userData: null, handshakeHook: false, keychainExec: null, background: false };
   if (!app.isPackaged) {
     for (const a of process.argv) {
       if (a.startsWith("--ava-repo-root=")) sw.repoRoot = a.slice("--ava-repo-root=".length);
       else if (a.startsWith("--ava-user-data=")) sw.userData = a.slice("--ava-user-data=".length);
       else if (a.startsWith("--ava-keychain=")) sw.keychainExec = a.slice("--ava-keychain=".length);
       else if (a === "--ava-test-handshake-hook") sw.handshakeHook = true;
+      else if (a === "--ava-test-background") sw.background = true;
     }
   }
   return sw;
@@ -333,6 +342,8 @@ function boot(): void {
       width: 1280,
       height: 820,
       title: "ava",
+      // N41：不用 show:false 了事——隐藏窗口的绘制会被 Chromium 压低，视觉审计与截图会失真；改为下面 showInactive
+      show: !dev.background,
       webPreferences: {
         contextIsolation: true,
         sandbox: true,
@@ -341,6 +352,14 @@ function boot(): void {
         preload: join(__dirname, "../preload/index.js"),
       },
     });
+    if (dev.background) {
+      // 固定停在主屏右下角、只露 BACKGROUND_SLIVER_PX 一条边：不压在人正在用的窗口上。
+      // 不整窗移出屏幕：完全不可见时 macOS 判为被遮挡，Chromium 会停绘制、压定时器，视觉审计与计时用例失真
+      // 先显示再移：macOS 在窗口上屏那一刻会把越界的位置拉回屏幕内，之后的移动不再纠正（实测）
+      win.showInactive();
+      const wa = screen.getPrimaryDisplay().workArea;
+      win.setPosition(wa.x + wa.width - BACKGROUND_SLIVER_PX, wa.y + wa.height - BACKGROUND_SLIVER_PX);
+    }
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     win.webContents.on("will-navigate", (e) => e.preventDefault()); // 同时封住拖放文件导航
     // 只跟踪主框架：iframe 导航也会发 did-start-loading 却没有对应的 did-finish-load，
@@ -384,6 +403,9 @@ function boot(): void {
   }
 
   app.on("second-instance", focusWindow);
+
+  // N41：accessory = 不进 Dock、启动不激活 app（macOS）；要在窗口创建前设
+  if (dev.background && process.platform === "darwin") app.setActivationPolicy("accessory");
 
   void app.whenReady().then(() => {
     media.install();
