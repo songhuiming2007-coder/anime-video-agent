@@ -87,6 +87,12 @@
 
 ## 2026-09-28：收尾批评审通过（独立评审 session）
 
+### [N40] 协议进程以 SIGINT=SIG_IGN 启动时，`interrupt` 全部失效
+- 状态：**已解决**（施工 40cb104；2026-09-28 独立评审通过）
+- 关联：`pipeline/agent/protocol.py`（启动序列）、`session.py::TurnInterrupt`
+- 原记录（活跃表原文，含施工回填）：2026-09-28 D31 负载复现时实测：非交互 shell 里 `&` 起的后台进程继承 SIGINT=SIG_IGN，Python 不装默认处理器，`pthread_kill(SIGINT)` 被内核丢弃——TP-4（等卡时中断）24/24 红，同一用例前台跑全绿。桌面端经 libuv spawn 会重置信号，当前不受影响；但 harness/脚本/将来别的宿主在后台起 core 就会踩到（中断按钮无效、回合停不下）。推进：启动时显式 `signal.signal(SIGINT, signal.default_int_handler)`（或等效），并补「以 SIG_IGN 继承启动仍能中断」的用例 **2026-09-28 修复（已修·待评审）**：`protocol.py` 在装 SIGTERM 处理器处紧接着 `signal.signal(SIGINT, signal.default_int_handler)`（中断只在 ready 后带 turn_id 才有效，装在这里够早）。新增 TP-4d：Popen 时父进程临时 SIG_IGN 让子进程继承，断言等卡中断 <5 s 内 `turn_finished{interrupted}`——修前红（收不到 turn_finished）、修后绿。变异 2/2：A 删恢复行→TP-4d 红；B 装成 SIG_DFL→TP-4/4d/4b/4c 四红（SIG_DFL 收 SIGINT 直接杀进程，空闲 notice 与回合内落点都接不住，所以必须是 default_int_handler）。原始场景复跑：非交互 `bash -c '… & wait'` 后台跑 TP-4 族 6/6 绿（原 24/24 红）；全量 1957 passed。终端 `ava`（cli.py）不用 `pthread_kill`，只靠 tty 的 Ctrl-C；以 SIG_IGN 启动的终端进程本就是启动方有意忽略（nohup 等），不改。**评审注意**：修后以 SIG_IGN 启动的协议进程也会接住外部 SIGINT（空闲发 notice、回合内中断）——这是本条要的语义，但与「启动方想忽略 SIGINT」相反，host 只用 SIGTERM/shutdown 关停，不受影响。
+- 评审：✅ 通过。① 变异 2/2 实跑（`PYTHONDONTWRITEBYTECODE=1`，还原后 md5 对拍一致）：A 删恢复行→TP-4d 红（中断 10 s 无 `turn_finished`）；B 装成 SIG_DFL→TP-4/4b/4c/4d 四红（SIGINT 直接杀进程，空闲 notice 与回合内落点都接不住）——与施工回填一致，且证实非 `default_int_handler` 不可。② 原始场景复跑（实测）：非交互 `bash -c '… & wait'` 后台跑 TP-4 族 6/6 绿（修复前此场景 24/24 红）；`tests/test_agent_protocol.py` + `test_agent_session.py` 63 passed，TP-11（SIGTERM）单跑绿——关停与空闲 notice 语义未破。③ diff 边界：只动 `protocol.py` 启动序列 1 行 + 测试 + issues 行，未碰帧构造与 `_on_term`。施工方提示的语义变化（以 SIG_IGN 启动的进程修后也会接外部 SIGINT）已核：host 关停只用 SIGTERM/shutdown，不受影响，成立。
+
 ### [N34] 桌面端 e2e 的四处断言缺口（变异实跑暴露）
 - 状态：**已解决**（施工 a9e2a77；2026-09-28 独立评审通过）
 - 关联：`desktop/e2e/session.spec.ts`（假进程版 TX-1 / TX-8 / TX-14）、`desktop/src/renderer/App.tsx`（onConnect 调用点）；Spec 10 §7 变异表
