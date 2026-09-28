@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import gzip
 import ipaddress
 import json
 import os
@@ -21,6 +22,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -534,6 +536,47 @@ def _extract_charset(content_type: str) -> str:
     return "utf-8"
 
 
+def _read_body_capped(resp: Any, content_encoding: str, limit: int) -> bytes:
+    """读响应体至 limit 封顶；gzip/deflate 流式解压且解压后字节同受封顶（防解压炸弹）。
+
+    N45：请求不声明 gzip，但服务器仍可能强制压缩（python.org 实测无视
+    Accept-Encoding: identity）；不处理会把压缩字节当正文，静默产出乱码净文。
+    identity 之外的未知编码诚实报错并附升级 crawl 提示（严禁静默错解）。
+    """
+    encoding = content_encoding.lower().strip()
+    if encoding in ("", "identity"):
+        return resp.read(limit)
+    if encoding == "gzip":
+        try:
+            with gzip.GzipFile(fileobj=resp) as gz:
+                return gz.read(limit)
+        except (EOFError, OSError) as exc:
+            raise ValueError(
+                f"gzip 响应体解压失败（{exc}）：静态获取被拒。按 STANDARD.md 五节"
+                "升级链应升级 crawl（无头绕盾，Spec 5）。"
+            ) from None
+    if encoding == "deflate":
+        decomp = zlib.decompressobj()
+        out = bytearray()
+        try:
+            while len(out) <= limit:
+                chunk = resp.read(65536)
+                if not chunk:
+                    out += decomp.flush()
+                    break
+                out += decomp.decompress(chunk, limit + 1 - len(out))
+        except zlib.error as exc:
+            raise ValueError(
+                f"deflate 响应体解压失败（{exc}）：静态获取被拒。按 STANDARD.md 五节"
+                "升级链应升级 crawl（无头绕盾，Spec 5）。"
+            ) from None
+        return bytes(out[:limit])
+    raise ValueError(
+        f"不支持的 Content-Encoding '{content_encoding}'（仅 identity/gzip/deflate）："
+        "静态获取被拒。按 STANDARD.md 五节升级链应升级 crawl（无头绕盾，Spec 5）。"
+    )
+
+
 def _decode_body(raw_bytes: bytes, content_type: str) -> str:
     charset = _extract_charset(content_type)
     try:
@@ -596,9 +639,11 @@ def search_web(
     except urllib.error.HTTPError as exc:
         _raise_http_upgrade_error(exc)
 
-    raw_bytes = resp.read(cfg.max_fetch_bytes)
     headers = getattr(resp, "headers", None) or {}
     content_type = str(headers.get("Content-Type", "text/html; charset=utf-8"))
+    raw_bytes = _read_body_capped(
+        resp, str(headers.get("Content-Encoding", "identity")), cfg.max_fetch_bytes
+    )
     html_text = _decode_body(raw_bytes, content_type)
 
     parser = _SearchResultParser()
@@ -637,15 +682,18 @@ def fetch_web(
 
     流程：load_web_config → assert_egress_boundary(url,
     {"url": _normalized_for_assert(url)}) → _guard_url(url) →
-    opener GET（timeout=fetch_timeout_s，流式读至 max_fetch_bytes 即断）→
+    opener GET（timeout=fetch_timeout_s，读至 max_fetch_bytes 即断）→
     Content-Type 白名单校验（§2.5）→ HTTPError 转含升级提示的
-    ValueError（§3.4）→ charset 解码（响应头 charset 优先，回落
-    utf-8 errors="replace"；不探 <meta>、不声明 gzip，§2.5⑤）→
+    ValueError（§3.4）→ Content-Encoding 处理（N45 修订：不声明 gzip，
+    但服务器强制 gzip/deflate 时流式解压且解压后同受 max_fetch_bytes 封顶，
+    未知编码诚实报错附升级 crawl 提示）→ charset 解码（响应头 charset 优先，回落
+    utf-8 errors="replace"；不探 <meta>，§2.5⑤）→
     _TextExtractor 净文 → _scrub → max_fetch_chars 截断 →
     final_url 凭据值替换 "***" 并对 geturl() 结果再验 scheme →
     _extract_links(decoded, raw_final_url) 链接清单（同站优先、去 fragment 去重、
     丢空锚、锚文本封顶）逐条 _scrub/_redact_secret 后双帽截断 →
-    返回 §3.3 契约（Spec 13 增 links / links_truncated 两键）。
+    返回 §3.3 契约（Spec 13 增 links / links_truncated 两键；
+    fetched_bytes 为进入解码的字节数——压缩响应为解压后字节，N45 修订）。
     """
     cfg = config if config is not None else load_web_config(root)
     if cfg is None:
@@ -673,7 +721,9 @@ def fetch_web(
             f"不支持的 Content-Type '{content_type}'（仅允许文本类 {_TEXT_CONTENT_TYPES}）"
         )
 
-    raw_bytes = resp.read(cfg.max_fetch_bytes)
+    raw_bytes = _read_body_capped(
+        resp, str(headers.get("Content-Encoding", "identity")), cfg.max_fetch_bytes
+    )
     fetched_bytes = len(raw_bytes)
     decoded = _decode_body(raw_bytes, content_type)
 

@@ -19,6 +19,8 @@
 
 ## 1. 红队裁决与修订纪要
 
+> **v0.5 修订记录（2026-09-28，N45 施工，issue 已拍板）**：`web_fetch`/`search_web` 读取响应体统一走 `_read_body_capped`——gzip/deflate 强制压缩流式解压、解压后字节同受 `max_fetch_bytes` 封顶，未知编码 ValueError 附升级 crawl 提示；`fetched_bytes` 语义改为「进入解码的字节数」（压缩响应报解压后字节）。§2.5⑤ 与 §10 RF-12 同步修订。真网复测：`fetch_web("https://www.python.org/")` 由乱码净文/0 链接变为正常净文/127 链接。
+
 > **v0.4 修订记录（S12 验收发现，人批准，🟡-1/🟡-3/🔵/F）**：① 本机 Clash TUN fake-ip 将域名解析至 `198.18.0.0/15` / `2001:2::/48`（`is_private=True`），新增配置项 `trusted_fake_ip_ranges`（默认 `[]`，仅对域名生效、对 IP 字面量含十进制/缩写/十六进制/八进制 `socket.inet_aton` 非标准写法永不生效，其它地址仍过六谓词）；② T5a 撤出 DNS patch 豁免清单并强制 `match="拦截出网请求"`（S12 验收发现，S11 实现已如此）；③ 补齐生产 `_default_opener` handler 接线（C1/MUT-20）、Content-Type 白名单拒绝（C2/MUT-21）、`search_web` 路径 `_guard_url`（C3/MUT-22）与非标准 IPv4 字面量（D/MUT-23）测试与变异；④ 去掉只为测试存在的无参 opener 分支（E）；⑤ 如实登记 DDG HTML 端点返回 HTTP 202 机器人挑战页现状，删改「换任意 GET 端点无需改码」（F，人选 a）。
 >
 > **第三轮复审收口记录（v0.3，总裁决「🟢 可动工」）**：二轮限定的三处修订（🟡-10 铁律改写 / 🔵-9 五行端点 + 区间口径 / fake req 机理对齐）经红队逐项独立验证全部落地；铁律豁免清单（T5b/T8/T17② 死于 boundary 无 DNS；**注（v0.4 B，S12 验收发现，S11 实现已如此）**：T5a 因 MUT-2/MUT-13 注入时执行流会穿过 boundary 走到 `_guard_url`，在 fake-ip 本机不钉死公网 DNS 会由守卫抛 `PermissionError` 掩盖变异，故 T5a 也必须钉死公网 DNS 且 `pytest.raises` 带 `match="拦截出网请求"`）补充核查无遗漏；`redirect_request` 源码实测（Python 3.12.13）确认四属性桩为全访问集安全超集，MUT-12 机理与触发路径严丝合缝；变异矩阵终态 13 条逐条推演必红成立，无伪证伪/空转/永红/永绿；v0.3 相对 v0.2 零功能增量、无夹带。三轮收口终态：一轮 9🟡+8🔵 → 二轮 1🟡+5🔵+1 机理 → 三轮全验通过。
@@ -133,7 +135,7 @@
   2. **内容类型白名单**：只接受 `text/html` / `text/plain` / `application/json` / `application/xhtml+xml` / `text/markdown`（Content-Type 前缀匹配），其余（图片/视频/二进制）返回结构化拒绝——二进制不进入上下文；
   3. **体积封顶**：1MB 下载 + 30K 字符返回（§2.1），压缩注入载荷的最大篇幅；
   4. **egress 清洗**：`[已脱敏]` 替换（§2.4③）；
-  5. **解码纪律**：charset 只认响应头、回落 `utf-8 errors="replace"`（`tools.py:761-784 _drain` 同款，763 行增量解码先例）；**不探 `<meta charset>`、不声明 gzip 支持**——遇 meta 声明的非 UTF-8 页面或压缩强制响应体，产出为可辨的乱码/不可解析净文而非静默错解（🔵-3/🔵-4，已知上限登记 §10 RF-12）。
+  5. **解码纪律**：charset 只认响应头、回落 `utf-8 errors="replace"`（`tools.py:761-784 _drain` 同款，763 行增量解码先例）；**不探 `<meta charset>`**——遇 meta 声明的非 UTF-8 页面产出为可辨的乱码/不可解析净文而非静默错解（🔵-3，已知上限登记 §10 RF-12）。**（v0.5 修订，N45，2026-09-28）**：gzip/deflate 强制压缩响应体不再是已知上限——服务器无视「未声明 gzip」强行压缩时（python.org 实测）流式解压且解压后字节同受 `max_fetch_bytes` 封顶（防解压炸弹）；其余非 identity 编码诚实报错并附升级 crawl 提示，严禁静默产出乱码净文。
 - **工具层不做（写死，防施工者发明防线）**：不做注入识别/打分/关键词过滤；不引入 guardian LLM（direction §5 明确排除项）；不改写抓回文本的语义（不「总结」、不「提炼」——净文原样回喂，加工是模型的事）。
 - **为什么敢不做（防线的真实位置）**：注入载荷要造成实质破坏，必须驱动**写/执行类**工具。ava 的全部副作用工具都在人审卡之后——`write_episode_file`（`tools.py:60-124`，且未标 `side_effect=False`，`cli.py:591` 默认 True 必弹卡）、`run_pipeline`（弹卡 + 白名单校验，`cli.py:581-588`）。注入文本驱动人卡社会工程的风险由「人读卡」兜住；asset scope 会话里模型**连写工具都看不到**（§2.2 掩码表）。
 - **已知上限（如实声明）**：抓回文本以 JSON 字符串字段回喂，模型仍可能把其中指令当上下文对话的一部分遵从，表现为答非所问、编造「页面说」的结论或诱导人去按 y——工具层对此**不设防**，依赖停机点人审与 §10 RF-2 的明示。
@@ -681,7 +683,7 @@ def test_web_module_pure_and_no_heavy_imports():
 | **RF-9** | **测试真实出网** | 漏注入 opener 导致测试打真实端点：慢、脆、CI 不可靠，且把测试流量打成对端点的实际负载 | §7.1 网络隔离铁律写死在测试规格头部（含 T17 的 urlopen patch 口径）；fake opener/urlopen 计数断言（T5a/T8/T9/T17）同时证明「该发的没多发」；code review 时 grep 测试文件无 `urlopen` 直调（除 patch 目标） |
 | **RF-10** | **工具表借本 spec 顺手提权** | 施工者顺手把 `read_status`/`search_notes` 加进 asset 表，或给 pipeline 表加「只读网络工具应该没事吧」 | §4.3 逐字 diff 即全部变更，`pipeline`/`idea` 两键一字不动写进范围闸门；T4 逐字回归；tools.json 变更按护栏变更评审（§2.2） |
 | **RF-11** | **Unicode 同形/全角编码绕过 egress 断言**（v0.2 登记，🟡-7 残余面） | `assert_egress_boundary` 是 casefold 子串匹配 + web.py 侧迭代 unquote 归一，但全角 `ｃｌｏｕｄ．ｌｏｃａｌ．ｊｓｏｎ` 等同形/全角变体不做 NFKC 归一，仍可漏过 | **已知上限，声明不设防**：泄漏物是文件名/路径标记（非文件内容），接收方是搜索端点（非攻击者服务器），烈度低；NFKC 归一涉及 boundary 归口改动，属 ADR-0018 体系，本 spec 不越位；若未来证明被实际利用，单独立 ADR 收紧 |
-| **RF-12** | **响应解码的已知上限**（🔵-3/🔵-4） | charset 只认响应头、不探 `<meta charset>`；不声明 gzip 支持——遇 meta 声明的非 UTF-8 页面或压缩强制响应体，产出乱码/不可解析净文 | **已知上限登记**：产出是可辨的乱码（`errors="replace"` 的 `` 铺满），不是静默错解成的「通顺错文」，模型与人均可辨识后放弃该源或升级 crawl；不发明 chardet 式嗅探（重依赖） |
+| **RF-12** | **响应解码的已知上限**（🔵-3/🔵-4） | charset 只认响应头、不探 `<meta charset>`；~~不声明 gzip 支持~~（v0.5 修订，N45，2026-09-28：gzip/deflate 强制压缩已支持流式解压 + 解压后字节同受 `max_fetch_bytes` 封顶；其余非 identity 编码诚实报错附升级 crawl 提示）；meta 声明的非 UTF-8 页面仍产出乱码/不可解析净文 | **已知上限登记**（现仅余 charset 一项）：产出是可辨的乱码（`errors="replace"` 的 `` 铺满），不是静默错解成的「通顺错文」，模型与人均可辨识后放弃该源或升级 crawl；不发明 chardet 式嗅探（重依赖） |
 | **RF-13** | **robots.txt 不检查**（🔵-8） | 静态第一级单页抓取不查 robots，与站点意愿可能相左 | **已知上限登记**：单页、低频、人启动的探测性抓取不查 robots 是行业常见取舍；反爬纪律的衔接在 STANDARD.md 五节——静态级失败的正解是升级 crawl（Spec 5），robots/频率议题归 crawl 层处理，本 spec 不发明 robots 解析器 |
 | **RF-14** | **`trusted_fake_ip_ranges` 启用时的代理解析盲区**（v0.4，🟡-1） | 清单非空时，fake-ip 下「域名→内网」的 SSRF 本地守卫不可见（本机只拿到 fake-ip，真实 DNS 解析发生在代理侧） | **接受理由与边界**：个人 Mac 开发机无云元数据端点（169.254.169.254 等字面量仍由本机直接拒连），且 `web.json` 默认 `[]`、只在 `web.local.json` 显式填写；**未覆盖场景登记**：本机 DNS 不通、只能经代理解析的严格内网（不做「有代理就跳过解析」，代价过大） |
 

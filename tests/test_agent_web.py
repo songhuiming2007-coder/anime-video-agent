@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import email.message
+import gzip
 import json
 import socket
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -122,11 +124,14 @@ class _FakeResponse:
         content_type: str = "text/html; charset=utf-8",
         final_url: str = "https://example.org/page",
         status: int = 200,
+        content_encoding: str | None = None,
     ) -> None:
         self._body = body
         self._pos = 0
         self.bytes_read = 0
         self.headers = {"Content-Type": content_type}
+        if content_encoding is not None:
+            self.headers["Content-Encoding"] = content_encoding
         self._final_url = final_url
         self.status = status
 
@@ -232,6 +237,108 @@ def test_fetch_strips_html_and_caps_size(monkeypatch: pytest.MonkeyPatch) -> Non
                 b"\x89PNG\r\n\x1a\n", content_type="image/png"
             ),
         )
+
+
+def test_fetch_content_encoding_gzip_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：服务器强制 gzip（未声明也压缩，python.org 实测形态）→ 流式解压出正常净文与链接。"""
+    _pin_public_dns(monkeypatch)
+    html = '<html><body><p>正文一段</p><a href="/x">链接甲</a></body></html>'
+    raw = html.encode("utf-8")
+    resp = _FakeResponse(gzip.compress(raw), content_encoding="gzip")
+    out = fetch_web(
+        "https://example.org/g",
+        config=_make_config(),
+        opener=lambda req, timeout=30.0: resp,
+    )
+    assert out["text"] == "正文一段 链接甲"
+    assert [item["url"] for item in out["links"]] == ["https://example.org/x"]
+    # fetched_bytes 为进入解码的字节数：压缩响应报解压后字节
+    assert out["fetched_bytes"] == len(raw)
+
+
+def test_fetch_content_encoding_deflate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：deflate（zlib 包封）同样流式解压。"""
+    _pin_public_dns(monkeypatch)
+    html = "<html><body><p>deflate 正文</p></body></html>"
+    resp = _FakeResponse(
+        zlib.compress(html.encode("utf-8")), content_encoding="deflate"
+    )
+    out = fetch_web(
+        "https://example.org/d",
+        config=_make_config(),
+        opener=lambda req, timeout=30.0: resp,
+    )
+    assert out["text"] == "deflate 正文"
+
+
+def test_fetch_content_encoding_bomb_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：解压炸弹——解压后字节同受 max_fetch_bytes 封顶。"""
+    _pin_public_dns(monkeypatch)
+    body = gzip.compress(b"A" * 1_000_000)
+    resp = _FakeResponse(
+        body, content_type="text/plain; charset=utf-8", content_encoding="gzip"
+    )
+    out = fetch_web(
+        "https://example.org/bomb",
+        config=_make_config(max_fetch_bytes=65536),
+        opener=lambda req, timeout=30.0: resp,
+    )
+    assert out["fetched_bytes"] == 65536
+    assert out["text"] == "A" * 30000  # max_fetch_chars 默认 3 万
+    assert out["truncated"] is True
+
+
+def test_fetch_content_encoding_unsupported_is_honest_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：未知编码（br 等）明确报错并附升级 crawl 提示，严禁静默错解。"""
+    _pin_public_dns(monkeypatch)
+    resp = _FakeResponse(b"\x1b\x00", content_encoding="br")
+    with pytest.raises(ValueError, match="Content-Encoding.*crawl"):
+        fetch_web(
+            "https://example.org/br",
+            config=_make_config(),
+            opener=lambda req, timeout=30.0: resp,
+        )
+
+
+def test_fetch_content_encoding_corrupt_gzip_is_honest_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：损坏的 gzip 流诚实报错（不静默产出乱码）。"""
+    _pin_public_dns(monkeypatch)
+    resp = _FakeResponse(b"\x1f\x8b broken", content_encoding="gzip")
+    with pytest.raises(ValueError, match="gzip"):
+        fetch_web(
+            "https://example.org/corrupt",
+            config=_make_config(),
+            opener=lambda req, timeout=30.0: resp,
+        )
+
+
+def test_fetch_content_encoding_identity_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：显式 identity 与原路径一致。"""
+    _pin_public_dns(monkeypatch)
+    html = "<html><body><p>identity 正文</p></body></html>"
+    resp = _FakeResponse(html.encode("utf-8"), content_encoding="identity")
+    out = fetch_web(
+        "https://example.org/i",
+        config=_make_config(),
+        opener=lambda req, timeout=30.0: resp,
+    )
+    assert out["text"] == "identity 正文"
+
+
+def test_search_content_encoding_gzip_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45：search_web 同一读取路径——端点强制 gzip 时仍解析出结果。"""
+    _pin_public_dns(monkeypatch)
+    resp = _FakeResponse(
+        gzip.compress(DDG_FIXTURE_HTML.encode("utf-8")), content_encoding="gzip"
+    )
+    out = search_web(
+        "芙莉莲",
+        limit=3,
+        config=_make_config(),
+        opener=lambda req, timeout=20.0: resp,
+    )
+    assert len(out["results"]) >= 1
+    assert "bgm.tv" in out["results"][0]["url"]
 
 
 def test_egress_blocks_before_send_direct(monkeypatch: pytest.MonkeyPatch) -> None:
