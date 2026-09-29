@@ -21,7 +21,7 @@
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
-| [Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）](2026-09-29-web-search-provider-spec.md) | D29 | ADR-0021 | **v0.1 草案，待人审 → 红队 → 施工**（选型已拍板；§11 五问待确认；PR0 需人注册 Tavily key） |
+| [Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）](2026-09-29-web-search-provider-spec.md) | D29 | ADR-0021 | **v0.1 草案，§11 五问人已裁决，待红队 → 施工**（PR0 需人注册 Tavily key） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
