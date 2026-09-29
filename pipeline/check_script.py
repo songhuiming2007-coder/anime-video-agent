@@ -851,20 +851,17 @@ def _character_alias_tables(episode: Path) -> dict[str, dict[str, str]]:
                 continue
             out.setdefault(tag, tag)         # 规范键自己也当别名（同 vindex）
             for n in names:
-                out[str(n).strip()] = tag
+                out.setdefault(str(n).strip(), tag)   # 先到先得，同 vindex.alias_map
         tables[anime] = out
     return tables
 
 
 def _character_aliases(episode: Path) -> dict[str, str]:
-    """本期全部番的别名表合并（跨番键冲突时后番覆盖别名、setdefault 保规范键，与旧版同）。"""
+    """本期全部番的别名表合并：键冲突一律先到先得（番序、表内序），与旧版及 vindex.alias_map 同。"""
     merged: dict[str, str] = {}
     for table in _character_alias_tables(episode).values():
         for alias, tag in table.items():
-            if alias == tag:
-                merged.setdefault(alias, tag)
-            else:
-                merged[alias] = tag
+            merged.setdefault(alias, tag)
     return merged
 
 

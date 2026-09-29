@@ -1041,6 +1041,35 @@ def test_人物提示跨进程确定性(tmp_path):
     assert outs == {"\n".join(FIXTURE_HINT_LINES) + "\n"}, outs
 
 
+class TestCharacterAliasMergeFirstWins:
+    """N47 评审补：拆 `_character_alias_tables` 时合并语义不许变——键冲突先到先得
+    （旧版 `setdefault`，与 vindex.alias_map 同口径）。"""
+
+    def _chars(self, tmp_path, monkeypatch, db: dict):
+        conf = tmp_path / "cfg"
+        conf.mkdir()
+        (conf / "characters.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(cs.paths, "CONFIG", conf)
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        (ep / "01-topic.md").write_text("番: 甲番, 乙番\n", encoding="utf-8")
+        return ep
+
+    def test_跨番同别名_先到先得(self, tmp_path, monkeypatch):
+        ep = self._chars(tmp_path, monkeypatch, {
+            "甲番": {"a_first": ["小明"]},
+            "乙番": {"b_second": ["小明"]},
+        })
+        assert cs._character_aliases(ep)["小明"] == "a_first"
+
+    def test_单番内同别名_先到先得(self, tmp_path, monkeypatch):
+        ep = self._chars(tmp_path, monkeypatch, {
+            "甲番": {"x1": ["阿"], "x2": ["阿"]},
+            "乙番": {},
+        })
+        assert cs._character_aliases(ep)["阿"] == "x1"
+
+
 class TestFacelessCharacterHints:
     """N47：写了 `人物:` 但该角色在该番 clusters 里零个已贴名簇 → INFO（只报不拦）。"""
 
@@ -1078,6 +1107,23 @@ class TestFacelessCharacterHints:
         bad.mkdir()
         (bad / "春物.clusters.json").write_text("{bad json", encoding="utf-8")
         assert cs.faceless_character_hints(f, vindex_dir=bad) == []
+
+    def test_main_接线_INFO_进输出且不改退出码(self, tmp_path, monkeypatch, capsys):
+        """N47 评审补：函数对了但 main() 没调用 = 无效代码。假 DATA 根 + 假 clusters，
+        走 main()，INFO 行必须出现在输出里、退出码仍 0。"""
+        data = tmp_path / "data"
+        vdir = data / "library" / "vindex"
+        vdir.mkdir(parents=True)
+        (vdir / "春物.clusters.json").write_text(
+            json.dumps({"clusters": {"3": {"name": "yukinoshita_yukino", "n": 9}}}),
+            encoding="utf-8")
+        monkeypatch.setattr(cs.paths, "DATA", data)
+        f = hint_episode(tmp_path, "## 段落 2\n\n配音：阳乃出场了。\n\n画面：\n  人物: 阳乃\n")
+        monkeypatch.setattr(sys, "argv", ["check_script", str(f)])
+        monkeypatch.setattr(cs, "run", lambda p: [cs.Check("段落数 8–20", True, "8 段")])
+        assert cs.main() == 0
+        out = capsys.readouterr().out
+        assert "INFO 段2 `人物:` 的「阳乃」在《春物》索引里无代表脸" in out
 
     def test_未写人物的段不报(self, tmp_path):
         """没写 `人物:` 的段与本提示无关（那是 D18 的地盘）。"""

@@ -174,6 +174,36 @@ class TestStyleFilter:
         assert not subindex.build_non_dialogue_re(
             subindex._DEFAULT_NON_DIALOGUE_STYLES).match("PV-CN")
 
+    def test_坏表诚实报错_不编出匹配一切的正则(self):
+        # N46 评审补：表是人改的 config。空表 / 空串条目 / 字符串代替列表 / 过宽前缀
+        # 都会让 match 对一切 style 为真，整部番对白被静默丢光——必须在加载时报错。
+        import pytest
+        bad_tables = [
+            {},                                                  # 空表
+            {"prefix": []},                                      # 全空列表
+            {"prefix": [""]},                                    # 空串条目
+            {"prefix": "title"},                                 # 字符串代替列表
+            {"prefix": ["title", "s"]},                          # 过宽前缀吞掉 Sub-CN
+            {"prefix": ["title"], "exact": ["cn"]},              # 精确命中主对白 CN
+            {"prefix": ["title"], "exact": [""]},                # 空串但不吞主对白：只有形状校验能抓
+        ]
+        for table in bad_tables:
+            with pytest.raises(ValueError):
+                subindex.build_non_dialogue_re(table)
+        with pytest.raises(ValueError):
+            subindex.build_non_dialogue_re(["title"])  # type: ignore[arg-type]
+
+    def test_accessor真的读config_而不是固定用默认表(self, monkeypatch):
+        # N46 评审补：config 表与默认表同值时，「accessor 忽略 config」是等价行为，
+        # 其它用例都看不出来；这里把 config 换成带 pv 的表，accessor 必须跟着变。
+        from pipeline import paths as _paths
+        custom = dict(subindex._DEFAULT_NON_DIALOGUE_STYLES)
+        custom["prefix"] = custom["prefix"] + ["pv"]
+        monkeypatch.setattr(_paths, "_CONF", {"subtitle": {"non_dialogue_styles": custom}})
+        monkeypatch.setattr(subindex, "_NON_DIALOGUE_RE", None)
+        assert subindex.non_dialogue_re().match("PV-CN")
+        assert not subindex.non_dialogue_re().match("Sub-CN")
+
     def test_config表与代码默认值行为一致(self):
         # N46：project.json 里的表与代码默认表同值（paths.conf 纪律：default 等于原硬编码值），
         # 两者对 KEEP/DROP 全表行为一致——配置漂移会在这一步现形。
