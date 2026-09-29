@@ -121,7 +121,8 @@ export async function launch(repo: string, extraArgs: string[] = [], userData = 
   app.process().stdout?.on("data", (b: Buffer) => (out += b.toString()));
   app.process().stderr?.on("data", (b: Buffer) => (out += b.toString()));
   const page = await app.firstWindow();
-  await page.waitForSelector("[data-testid=episode]", { timeout: 30_000 }).catch(() => undefined);
+  // attached 而非 visible：D39 S3 起侧栏可能按上次记忆收起着，期行在 DOM 里但不可见
+  await page.waitForSelector("[data-testid=episode]", { state: "attached", timeout: 30_000 }).catch(() => undefined);
   const toggle = page.getByTestId("toggle-preview");
   if (opts.previewOpen !== false && (await toggle.count()) > 0 && (await toggle.getAttribute("aria-pressed")) === "false") await toggle.click();
   return { app, page, stdout: () => out, userData };
