@@ -909,6 +909,8 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 - 门禁 9：scratch 期 `tmp-m3-gate9-render`（验收后已删）真跑 `render`，切片 12/60 时 ^C → 6 个 ffmpeg 进程 2 s 内清空（`pgrep -fl ffmpeg` 为空）、打印 `[中断]`、生成收尾汇报、回到提示符，`/quit` rc=0；
 - 门禁 10：会话 `f4e3ea28` 在 `write_episode_file` 工具卡待答时 `kill -9` → 日志留 `repair_tool_results` 与 `turn_end{stopped:"crashed", recovered:true}` → `--continue` 恢复并重放 11 条；恢复后首轮为代理 `timed out`（60 s，非 400），重试一轮得真实模型回复，无 400。
 
+**S21 抽验（2026-09-29，独立复跑）**：`verify_mutations.py --only` 抽 9 条（S9-MUT-6/19/31/45/55/61、S10-MUT-19、Spec 12 MUT-9、一期 M5），**9/9 KILLED，杀手与本表一致**（S9-MUT-19→TP-4/TP-4d 等 3 红；-31→TP-4b/4c；-45→TL-9b/9c；-55→18 红；-61→TP-6b；-6→TL-3）；净树、`PYTHONDONTWRITEBYTECODE=1`，未发现假杀。
+
 **PR4 实跑记录（M9，2026-09-27）**：`scripts/verify_mutations.py` 登记 S9-MUT-1~62 全部 62 条（harness 共 124 条，其余为一期 M 系列），**62/62 KILLED，杀手逐条与本表一致**（首轮 4 分片并行，非 KILLED 条目在 HEAD 上串行复跑确认；MUT-60 于修复提交后单跑）。实跑中查出并修掉的**测试自身缺陷**（不是护栏缺陷）：
 - TS-4 复刻了修复流程而非走生产入口，MUT-23 在其下存活 → 改经 `SessionHost` + `prepare_resume`（`559b448`）；
 - MUT-3 行所称「请求计数 200 为护栏」只写在文档里，三处模型桩没有上限，变异下无限循环挂死 → 统一加 200 次护栏（`9ace249`）；
