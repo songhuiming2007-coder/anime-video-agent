@@ -626,7 +626,7 @@ test("TI-4 app 自身状态不放数据盘：userData、crashDumps 不在 realpa
   // 假设 9：开发构建不带 --ava-user-data 时的默认 userData（只读取路径，不启动第二个实例）
   const d = await L.app.evaluate(({ app }) => ({ appData: app.getPath("appData"), name: app.getName() }));
   const dflt = join(d.appData, d.name);
-  console.log(`假设 9：开发构建默认 userData = ${dflt}（打包版为 ~/Library/Application Support/ava）`);
+  console.log(`假设 9：开发构建默认 userData = ${dflt}（打包版为 ~/Library/Application Support/AVA）`);
 });
 
 test("门禁 7 ack 在途时退出 app：core 子进程不随 app 退出而被杀，自行跑完；重开后 UI 与磁盘一致", async () => {

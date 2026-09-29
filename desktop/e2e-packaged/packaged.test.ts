@@ -1,7 +1,7 @@
 // 打包版验证（Spec 8 §7.1 TS 系列，红队 M7）：直接拉起 .app 二进制、读 stdout 的 AVA_BOOT / AVA_REFUSE / AVA_DIAG 行，
 // 查退出码、lsof、ps——不经 inspector（fuse 已关，Playwright 驱动不了打包版）。打包版上的 UI 交互由门禁 15 手验。
-// 前置：`npm run release-build` 已产出 dist/mac-arm64/ava.app（验证命令的第一步）。
-// 打包版的 userData 固定在 ~/Library/Application Support/ava（测试开关在打包版不生效）：用例只写其中的 settings.json，
+// 前置：`npm run release-build` 已产出 dist/mac-arm64/AVA.app（验证命令的第一步）。
+// 打包版的 userData 固定在 ~/Library/Application Support/AVA（测试开关在打包版不生效）：用例只写其中的 settings.json，
 // 结束时恢复原状（原先不存在的删掉）；repoRoot 一律指向系统临时目录里的夹具仓库，不碰外置盘（避免触发 TCC 授权弹窗）。
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -12,9 +12,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, makeFixtureRepo, REPO, tmp } from "../tests/helpers";
 
 const DESKTOP = resolve(__dirname, "..");
-const APP = join(DESKTOP, "dist/mac-arm64/ava.app");
+const APP = join(DESKTOP, "dist/mac-arm64/AVA.app");
 const binOf = (app: string) => join(app, "Contents/MacOS/ava");
-const UD = join(homedir(), "Library/Application Support/ava");
+const UD = join(homedir(), "Library/Application Support/AVA");
 const SETTINGS = join(UD, "settings.json");
 
 interface Run {
@@ -152,7 +152,7 @@ describe("TS-2 fuses 与 asar 完整性（假设 2、10）", () => {
 /** 复制一份 .app 并翻转 app.asar 的一个字节：where = 主入口文件内容区 / asar 头 */
 function tamperedCopy(where: "main-entry" | "header"): string {
   const dir = tmp("tamper");
-  const app = join(dir, "ava.app");
+  const app = join(dir, "AVA.app");
   execFileSync("/usr/bin/ditto", [APP, app]);
   const asar = join(app, "Contents/Resources/app.asar");
   const b = readFileSync(asar);
@@ -314,7 +314,7 @@ describe("TS-8 / TS-8b 构建溯源横幅", () => {
 
   it("干净构建 → 一致；构建后 desktop/ 有新提交 → stale；构建提交不在所选仓库 → incomparable；脏树构建 → dirty；node_modules 手改被 npm ci 冲掉（TS-8b）", async () => {
     releaseBuild(c1);
-    const app1 = join(c1, "desktop/dist/mac-arm64/ava.app");
+    const app1 = join(c1, "desktop/dist/mac-arm64/AVA.app");
     const info1 = JSON.parse(readFileSync(join(c1, "desktop/out/build-info.json"), "utf-8"));
     expect(info1.desktopDirty).toBe(false);
     expect(info1.gitHead).toBe(git(c1, "rev-parse", "HEAD"));

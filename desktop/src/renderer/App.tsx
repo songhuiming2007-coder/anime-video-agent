@@ -498,7 +498,7 @@ function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-row">
-        <span className="wordmark">ava</span>
+        <span className="wordmark">AVA</span>
         {health && !health.isPackaged && (
           <span className="ui-badge ui-badge--warn dev-mark" data-testid="dev-build">
             DEV BUILD

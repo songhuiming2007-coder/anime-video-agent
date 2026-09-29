@@ -1,5 +1,5 @@
 // 打包产物加固核验（Spec 8 §2.10、TS-2）：读已打包二进制的全部 9 位 fuse，并复算 app.asar 头哈希与 Info.plist 比对。
-// 用法：node scripts/verify-fuses.mjs [<.app 路径>]（缺省 dist/mac-arm64/ava.app）。任何一项不符 → 退出 1。
+// 用法：node scripts/verify-fuses.mjs [<.app 路径>]（缺省 dist/mac-arm64/AVA.app）。任何一项不符 → 退出 1。
 // 最后一行输出 `VERIFY_FUSES <json>` 供 e2e-packaged 读取。
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { FuseState, FuseV1Options, getCurrentFuseWire } from "@electron/fuses";
 
 const desktop = join(dirname(fileURLToPath(import.meta.url)), "..");
-const app = process.argv[2] ?? join(desktop, "dist/mac-arm64/ava.app");
+const app = process.argv[2] ?? join(desktop, "dist/mac-arm64/AVA.app");
 const binary = join(app, "Contents/MacOS/ava");
 
 // §2.10 表的 8 位（electron-builder.yml electronFuses 段）；WasmTrapHandlers 不由 electron-builder 设置，
