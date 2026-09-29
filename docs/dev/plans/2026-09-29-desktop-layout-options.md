@@ -2,6 +2,8 @@
 
 日期：2026-09-29　对应：issues **D39**；关联 Spec 14（视觉，archive）、Spec 10（会话面板，archive）
 性质：**选型页，不是施工图**（人 2026-09-29 定：不写完整 Spec 16，不做红队/变异矩阵/PR 划分）。人选定方案前不改 `desktop/src`。
+
+**人的裁决（2026-09-29）**：① 选 **B**（人：「A 太抽象了，不是人类能接受的交互」）；② `tokens.css` 一字不改；③ 同意降级说明挪进对话流首行；④ 同意工序卡默认收成一行；⑤ 列宽与折叠状态全局一份。施工按 §5 小步推进，每步交真实窗口截图给人确认。
 附件：[`2026-09-29-desktop-layout-options/`](2026-09-29-desktop-layout-options/)（`layout-probe.spec.ts` 实测探针 + 方案原型，`layout.config.ts`）。复现：在 `desktop/` 下 `PYTHONDONTWRITEBYTECODE=1 npx playwright test -c ../docs/dev/plans/2026-09-29-desktop-layout-options/layout.config.ts`，约 1 分钟，截图与量测 JSON 落 `desktop/out/d39-shots/`（已被忽略，不进 git）。
 
 ## 0. 用户场景（UI 方案第一节，按 plans/README 规则 1）
@@ -54,6 +56,7 @@
 ## 5. 选定后的施工步骤（每步交一张真实窗口截图给人确认）
 
 - **S1 公共修正 C1–C5**：单这一步就解决 #3–#7。
+  **2026-09-29 已施工，待人看截图确认**：对话流可见高度 32 → 271px（1280×800）/ 371px（1440×900）；4 视口 × 4 状态文本相交 0、控件被裁 0；VE-1 新增 expanded 态（详情与时间线展开）审计全 0，各态元素数下限按实测回填；`vitest` 378 passed、全量 e2e 111 passed / 2 skipped。列宽仍是旧的 260/360，留给 S2。截图 `desktop/out/d39-shots/s3-humantime-keychain-{1440x900,1280x800}.png`。
 - **S2 分栏、拖拽、折叠**（按所选方案）：手柄是 `role="separator"`（带 `aria-orientation`、`aria-valuenow/min/max`、`tabindex=0`），方向键每次 16px、双击恢复默认；折叠按钮带 `aria-expanded` + `aria-controls`。键盘行为用纯函数单元测试覆盖，**不做键盘自动化**。
 - **S3 持久化**：localStorage 键 `ava.layout`，值为 `{v:1, widths, collapsed}`，读写都包在 try/catch 里（同 `theme.ts` 纪律，VS-9 白名单加该模块）。JSON 坏了、版本不对、数值越界或读取抛错，一律回落默认值并按 min/max 夹紧。单元测试覆盖「文件损坏回落默认」。
 - **S4 两条底线机检**（e2e，1280×800 与 1440×900 × s3 状态）：① 当前工序、批准、打回、输入框、发送五个元素两两 boundingBox 不相交，且各自 100% 落在可见区；② 对话流 `clientHeight ≥ 160`，中栏 `scrollWidth ≤ clientWidth`。

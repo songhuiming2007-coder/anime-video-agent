@@ -86,20 +86,22 @@ type Theme = (typeof THEMES)[number];
 
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
-  // PR3 实测（2026-09-27，三态一致）：侧栏头部、期行相对时间、外观浮层进了 DOM，逐值重填
-  list: 67,
-  "sidebar-step": 71,
-  "sidebar-search": 60,
-  popover: 71,
-  markdown: 79,
-  json: 79,
-  empty: 63,
-  error: 73,
-  health: 91,
-  stale: 83, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒 83；旧值 67 是 host 竞态清空期列表时的数
-  card: 73,
-  "card-reject": 78,
-  "card-err": 81,
+  // D39 S1 实测（2026-09-29，三态一致）：工序卡默认收成一行、时间线收成摘要条，收起部分不再计入各态；
+  // 收起的内容由新增的 expanded 态单独审计（76 ≥ 原 card 态 73，覆盖不丢）。上一版（PR3）数值见 git 历史。
+  list: 64,
+  "sidebar-step": 68,
+  "sidebar-search": 57,
+  popover: 68,
+  markdown: 76,
+  json: 76,
+  empty: 60,
+  error: 66,
+  health: 84,
+  stale: 71, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定（S1 前为 83，差值同上：收起的工序详情与时间线正文）
+  card: 66,
+  "card-reject": 71,
+  "card-err": 69,
+  expanded: 76,
 };
 
 interface AuditResult {
@@ -183,6 +185,13 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     const card = L.page.locator('[data-testid=decision][data-stop="05"]');
     await card.waitFor({ timeout: 15_000 });
     await audit(L.page, "card");
+    // ⑦b D39 C1/C4：工序卡「详情」与时间线默认收起，展开态单独审计（收起的内容不因折叠逃出审计）
+    await L.page.getByTestId("status-toggle").click();
+    await L.page.getByTestId("timeline-toggle").click();
+    await L.page.getByTestId("status-details").waitFor();
+    await audit(L.page, "expanded");
+    await L.page.getByTestId("status-toggle").click();
+    await L.page.getByTestId("timeline-toggle").click();
     // ⑧ 打回表单
     await card.getByTestId("reject-open").click();
     await card.getByTestId("reject-form").waitFor();
