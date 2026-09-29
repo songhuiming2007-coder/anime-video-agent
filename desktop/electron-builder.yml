@@ -1,6 +1,6 @@
 # Spec 8 §2.10：打包加固冻结项。TG-5 逐项守护，改动 = 修订 spec。
 appId: local.ava.desktop
-productName: ava
+productName: AVA
 directories:
   output: dist
 # 只打构建产物与构建溯源：out/ 下还有 e2e 的结果目录（截图含夹具路径），不许进包

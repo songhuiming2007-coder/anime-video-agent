@@ -1,6 +1,6 @@
 {
   "name": "ava-desktop",
-  "productName": "ava",
+  "productName": "AVA",
   "version": "0.1.0",
   "private": true,
   "description": "ava 桌面端（Spec 8）：只读镜子 + 显式按钮",
