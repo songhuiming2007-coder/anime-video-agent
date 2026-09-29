@@ -42,10 +42,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .side-head-row { display: flex; align-items: center; gap: var(--space-2); }
 /* 外观浮层落位（D3）：popover 的 UA 默认是 fixed + inset:0 + margin:auto（居中），须显式盖掉 */
 #theme-menu { inset: auto; top: calc(40px + var(--space-1)); right: var(--space-3); margin: 0; }
-.status { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); border-bottom: 1px solid var(--border); }
-.status-label { color: var(--fg-muted); font-size: var(--text-sm); }
-.status-step { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-lg); font-weight: var(--weight-semibold); }
-.status .cmd { margin-top: var(--space-1); }
+/* D39 C1：工序卡默认一行，详情收起（[hidden] 须显式盖掉 display:flex） */
+.status { flex: none; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); border-bottom: 1px solid var(--border); }
+.status-details { display: flex; flex-direction: column; gap: var(--space-2); }
+.status-details[hidden] { display: none; }
+.status-step { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.status-step .ui-btn { font-weight: var(--weight-regular); }
+.status .cmd { margin: 0; }
 .advisories { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 .advisories li { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); background: var(--warn-surface); color: var(--fg); font-size: var(--text-sm); }
 .advisories li .ui-icon { color: var(--warn); vertical-align: -3px; margin-right: var(--space-2); }
@@ -101,7 +104,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .j-lit { color: var(--syntax-lit); }
 .meta { padding: var(--space-4); }
 .meta-title { font-family: var(--font-mono); font-weight: var(--weight-semibold); }
-.timeline { flex: none; max-height: 28vh; overflow: auto; margin: 0 var(--space-1) var(--space-1) var(--sidebar-w); padding: var(--space-2) var(--space-3); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-xl); font-size: var(--text-sm); }
+/* D39 C4：时间线在预览列底部，默认一行摘要；展开上限 40vh（不再横跨对话列，也不再依赖 --sidebar-w） */
+.timeline { flex: none; margin-top: auto; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.timeline-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-height: 32px; padding: 0 var(--space-2); }
+.timeline-body { max-height: 40vh; overflow: auto; padding: 0 var(--space-3) var(--space-2); }
 .jobs, .events { list-style: none; margin: var(--space-1) 0 0; padding: 0; }
 .job, .events li { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; min-height: 24px; }
 .job-state { min-width: 72px; }
@@ -123,8 +129,16 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 
 /* Spec 10 §2.3/§4.3 的会话版面：中栏是「工序条 + 会话头 + 对话流 + 待答区 + 输入框」的竖向流。
    只引用 §3.1 的变量（Spec 14 §3.2「业务区块……沿用或新增」），不新建颜色与字号。 */
-.center.conv-shell { display: flex; flex-direction: column; overflow: hidden; }
+/* D39 C3：放不下时整列滚动，永不静默裁掉按钮（原 overflow:hidden 会把批准/发送裁到 0%，且聚焦后被滚走滚不回）；
+   对话流保底 160px，待答区上限 40%（ui.css 冻结，覆盖写在这里） */
+.center.conv-shell { display: flex; flex-direction: column; overflow: auto; }
 .conv-shell .conv { flex: 1; min-height: 0; height: auto; }
+.conv-shell .conv-stream { min-height: 160px; }
+.conv-shell .dock { max-height: 40%; }
+/* D39 C2：会话说明进对话流首行（配色同 .advisories li：--fg 压 --warn-surface，VE-1 已覆盖此对子） */
+.session-notes { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); background: var(--warn-surface); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.session-notes > div { color: var(--fg); }
+.session-notes > .warn { font-weight: var(--weight-medium); }
 /* N36：降级说明 + 可复制的钥匙串命令会换成多行，ui.css 的固定 40px 让它向上下越出盒子、压住对话流。
    头部改为随内容长高并换行，封顶后自身滚动（ui.css 冻结，覆盖写在这里；单行时仍是 40px）。 */
 .session-head { height: auto; min-height: 40px; max-height: 30vh; overflow-y: auto; flex-wrap: wrap; row-gap: var(--space-1); padding-block: var(--space-1); }

@@ -1,7 +1,7 @@
 // 桌面端 v1 主界面（Spec 8 §2.11；Spec 10 PR1 版面重排：产物树移左栏、中栏 = 工序卡 + 待答区）。
 // UI 自身零判定：工序一律取 status --json，只呈现确定性事实；不做 LLM 推荐（direction §5）。
 // 类名与元素种类按 Spec 14 §3.1/§3.2 的契约（可点击的行一律原生 <button class="ui-row">，VS-8）。
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import type { ApprovalJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
@@ -20,7 +20,7 @@ import { CoverImport } from "./CoverImport";
 import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
-import { readyInfo, SessionHeader } from "./SessionHeader";
+import { readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
@@ -353,14 +353,12 @@ function Main() {
               </span>
             </div>
           )}
-          {ep && !showIdea && <StatusCard ep={ep} />}
-          {ep && !showIdea && <HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />}
+          {ep && !showIdea && <StatusCard key={ep.epKey} ep={ep} extra={<HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />} />}
           <SessionHeader
             rpc={rpc}
             convKey={convKey}
             phase={conv?.phase ?? "none"}
             info={readyInfo(conv?.entries ?? [])}
-            keyProblem={conv?.keyProblem ?? null}
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
             onCreated={(k) => {
@@ -377,7 +375,7 @@ function Main() {
                 选题会话的讨论不会带入本期；需要的要点请在这里重述
               </div>
             )}
-            <ConversationPane rows={rows} />
+            <ConversationPane rows={rows} lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />} />
             <AnswerDock conv={conv} ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
             <Composer
               rpc={rpc}
@@ -405,9 +403,9 @@ function Main() {
               <PreviewPane key={active ?? "-"} target={preview} />
             </>
           )}
+          {ep && <Timeline key={ep.epKey} ep={ep} />}
         </section>
       </div>
-      {ep && <Timeline ep={ep} />}
     </div>
   );
 }
@@ -696,31 +694,49 @@ function GalleryList({ reachOk, onPick }: { reachOk: boolean; onPick: (t: Previe
 
 // ---------------- 工序卡（status --json 原文） ----------------
 
-function StatusCard({ ep }: { ep: EpisodeState }) {
+/**
+ * D39 C1/C5：工序卡默认一行（工序 + 停机 + 命令），停机原因、下一步、advisories、人时收进「详情」。
+ * 收起时详情仍在 DOM 里（`hidden`），文案一字不改；有 advisories 时「详情」旁标条数，警告不被静默藏掉。
+ */
+function StatusCard({ ep, extra }: { ep: EpisodeState; extra?: ReactNode }) {
+  const [open, setOpen] = useState(false);
   const s = ep.status;
   // 门禁 5：文案与 HEAD 逐字相同（不为换皮改可见字符串），StateView 的形态只承载这一条原文
   if (!s.ok) return <StateView kind="error" title={`工序读取失败（${s.code}）：${s.message}`} />;
   const v = s.value;
+  const detailsId = `status-details-${ep.epKey}`;
   return (
-    <div className="status" data-testid="status">
-      <span className="status-label">当前工序</span>
+    <div className="status" role="group" aria-label="当前工序" data-testid="status">
       <div className="status-step">
         <strong data-testid="current-step">{v.current_step}</strong>
         {v.is_blocked && <span className="ui-badge stop-mark">停机</span>}
+        <span className="spacer" />
+        {v.advisories.length > 0 && (
+          <span className="ui-badge ui-badge--warn" data-testid="status-advisory-count">
+            {v.advisories.length} 条提示
+          </span>
+        )}
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen((o) => !o)} data-testid="status-toggle">
+          详情
+          <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
+        </button>
       </div>
-      {v.block_reason && <div className="muted">{v.block_reason}</div>}
-      <div>下一步：{v.next_action}</div>
       {v.next_command && <code className="ui-code cmd">{v.next_command}</code>}
-      {v.advisories.length > 0 && (
-        <ul className="advisories">
-          {v.advisories.map((a) => (
-            <li key={a}>
-              <Icon name="alert" size="sm" />
-              {a}
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="status-details" id={detailsId} hidden={!open} data-testid="status-details">
+        {v.block_reason && <div className="muted">{v.block_reason}</div>}
+        <div>下一步：{v.next_action}</div>
+        {v.advisories.length > 0 && (
+          <ul className="advisories">
+            {v.advisories.map((a) => (
+              <li key={a}>
+                <Icon name="alert" size="sm" />
+                {a}
+              </li>
+            ))}
+          </ul>
+        )}
+        {extra}
+      </div>
     </div>
   );
 }
@@ -789,50 +805,69 @@ const JOB_TONE: Record<string, "ok" | "danger" | "warn" | "wait" | undefined> = 
   pending: undefined,
 };
 
+/**
+ * D39 C4：时间线收成预览列底部的一行摘要（作业 / 失败 / 事件计数），点开才展开（上限 40vh）。
+ * 收起时正文仍在 DOM 里（`hidden`），「观测层有损」声明原样留在正文顶部。
+ */
 function Timeline({ ep }: { ep: EpisodeState }) {
+  const [open, setOpen] = useState(false);
   const nonJob = ep.events.filter((e) => e.kind.startsWith("approval_") || e.kind === "unknown" || e.kind === "human_time_recorded");
+  const failed = ep.jobs.filter((j) => j.state === "failed").length;
+  const bodyId = `timeline-body-${ep.epKey}`;
   return (
     <footer className="timeline" data-testid="timeline">
-      <div className="notice">
-        <Icon name="info" size="sm" />
-        观测层有损（Spec 2 §2.3），轨迹可能不完整；工序以 status 为准
+      <div className="timeline-head">
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)} data-testid="timeline-toggle">
+          <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
+          时间线
+        </button>
+        <span className="ui-badge">作业 {ep.jobs.length}</span>
+        {failed > 0 && <span className="ui-badge ui-badge--danger">失败 {failed}</span>}
+        {ep.degradedNotices.length > 0 && <span className="ui-badge ui-badge--warn">丢事件</span>}
+        <span className="ui-badge">事件 {nonJob.length}</span>
       </div>
-      {ep.eventsMeta.truncatedHead && <div className="notice">更早的 job 未载入</div>}
-      {ep.degradedNotices.map((d) => (
-        <div key={d.at} className="notice notice--warn" data-testid="degraded">
-          某进程在熔断期丢了 {d.droppedDuringCircuit} 条事件（不限于本期）· {d.at}
+      <div className="timeline-body" id={bodyId} hidden={!open}>
+        <div className="notice">
+          <Icon name="info" size="sm" />
+          观测层有损（Spec 2 §2.3），轨迹可能不完整；工序以 status 为准
         </div>
-      ))}
-      <ul className="jobs">
-        {ep.jobs.map((j) => (
-          <li key={j.jobId} className={`job ${j.state}`} data-testid="job">
-            <span className="job-state">
-              <Badge tone={JOB_TONE[j.state]}>{j.state}</Badge>
-            </span>
-            <code>{j.command ?? j.jobId}</code>
-            {j.returncode !== null && <span className="muted">rc={j.returncode}</span>}
-            {j.durationS !== null && <span className="muted">{j.durationS}s</span>}
-            {j.noFollowupEvents && <span className="warn">未见后续事件</span>}
-            {j.finishedEventMissing && <span className="warn">进程已不在，未收到 job_finished</span>}
-            {j.message && <span className="muted">{j.message}</span>}
-            {j.state === "failed" && j.stderrTail && <pre className="stderr">{j.stderrTail}</pre>}
-          </li>
+        {ep.eventsMeta.truncatedHead && <div className="notice">更早的 job 未载入</div>}
+        {ep.degradedNotices.map((d) => (
+          <div key={d.at} className="notice notice--warn" data-testid="degraded">
+            某进程在熔断期丢了 {d.droppedDuringCircuit} 条事件（不限于本期）· {d.at}
+          </div>
         ))}
-      </ul>
-      {nonJob.length > 0 && (
-        <ul className="events">
-          {nonJob.map((e) => (
-            <li key={e.event_id}>
-              <span className="muted">{e.timestamp}</span> {eventLabel(e)}
+        <ul className="jobs">
+          {ep.jobs.map((j) => (
+            <li key={j.jobId} className={`job ${j.state}`} data-testid="job">
+              <span className="job-state">
+                <Badge tone={JOB_TONE[j.state]}>{j.state}</Badge>
+              </span>
+              <code>{j.command ?? j.jobId}</code>
+              {j.returncode !== null && <span className="muted">rc={j.returncode}</span>}
+              {j.durationS !== null && <span className="muted">{j.durationS}s</span>}
+              {j.noFollowupEvents && <span className="warn">未见后续事件</span>}
+              {j.finishedEventMissing && <span className="warn">进程已不在，未收到 job_finished</span>}
+              {j.message && <span className="muted">{j.message}</span>}
+              {j.state === "failed" && j.stderrTail && <pre className="stderr">{j.stderrTail}</pre>}
             </li>
           ))}
         </ul>
-      )}
-      {(ep.eventsMeta.malformed > 0 || ep.eventsMeta.episodeFieldMismatch > 0) && (
-        <div className="muted">
-          损坏行 {ep.eventsMeta.malformed}；episode 字段与文件位置不一致 {ep.eventsMeta.episodeFieldMismatch}
-        </div>
-      )}
+        {nonJob.length > 0 && (
+          <ul className="events">
+            {nonJob.map((e) => (
+              <li key={e.event_id}>
+                <span className="muted">{e.timestamp}</span> {eventLabel(e)}
+              </li>
+            ))}
+          </ul>
+        )}
+        {(ep.eventsMeta.malformed > 0 || ep.eventsMeta.episodeFieldMismatch > 0) && (
+          <div className="muted">
+            损坏行 {ep.eventsMeta.malformed}；episode 字段与文件位置不一致 {ep.eventsMeta.episodeFieldMismatch}
+          </div>
+        )}
+      </div>
     </footer>
   );
 }

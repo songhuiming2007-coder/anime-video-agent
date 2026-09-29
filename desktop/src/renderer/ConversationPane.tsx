@@ -1,11 +1,13 @@
 // Spec 10 §2.3 / §4.3：对话流（foldConv 的行）。纯展示，不含任何答复/发送类方法名（TG-4′/TG-10/TG-16）。
 // 助手回复按纯文本渲染（H-3：不渲染 Markdown、不识别链接）；失败调用的 observation 逐字展开（判据 4）。
+import type { ReactNode } from "react";
 import type { ConvRow } from "../shared/convFold";
 import { Icon } from "./icons";
 
-export function ConversationPane({ rows }: { rows: ConvRow[] }) {
+export function ConversationPane({ rows, lead }: { rows: ConvRow[]; lead?: ReactNode }) {
   return (
     <div className="conv-stream" data-testid="conv-stream">
+      {lead}
       {rows.map((r, i) => (
         <Row key={i} row={r} />
       ))}

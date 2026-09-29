@@ -37,7 +37,6 @@ export function SessionHeader({
   convKey,
   phase,
   info,
-  keyProblem,
   memoryAsk,
   isIdea,
   onCreated,
@@ -48,7 +47,6 @@ export function SessionHeader({
   convKey: ConvKey;
   phase: ConvPhase;
   info: ReadyInfo;
-  keyProblem: string | null;
   memoryAsk: boolean;
   isIdea: boolean;
   onCreated: (epKey: string) => void;
@@ -72,19 +70,10 @@ export function SessionHeader({
           <span className="muted">LLM 已连接</span>
         </>
       )}
+      {/* D39 C2：头部恒为一行，只留短标；原因全文、钥匙串命令、更早会话进对话流首行（SessionNotes，Spec 10 §2.3「流内一行」） */}
       {info.llm === "degraded" && (
-        <span className="warn" data-testid="llm-degraded">
-          LLM 未就绪：{info.degradeReason ?? "未知原因"}
-        </span>
-      )}
-      {keyProblem !== null && (
-        <span className="muted" data-testid="key-problem">
-          {keyProblem}
-        </span>
-      )}
-      {info.otherSessions > 0 && (
-        <span className="muted" data-testid="other-sessions">
-          该期还有 {info.otherSessions} 个更早的会话{info.otherLatest ? `；最近一个 ${info.otherLatest}` : ""}
+        <span className="warn" data-testid="llm-degraded-mark">
+          LLM 未就绪
         </span>
       )}
       <span className="spacer" />
@@ -152,6 +141,33 @@ export function SessionHeader({
       )}
       {running && <span className="ui-spinner" data-testid="session-running" />}
       {info.llm === null && <Icon name="info" size="sm" />}
+    </div>
+  );
+}
+
+/**
+ * 对话流首行的会话说明（D39 C2；Spec 10 §2.3：`llm: "degraded"` 时流内一行降级说明、`other_sessions` 非空时流首一行）。
+ * 文案与原会话头逐字相同；钥匙串命令仍在同一个文本节点里，可一次选中复制（N36）。
+ */
+export function SessionNotes({ info, keyProblem }: { info: ReadyInfo; keyProblem: string | null }) {
+  if (info.llm !== "degraded" && keyProblem === null && info.otherSessions === 0) return null;
+  return (
+    <div className="session-notes" data-testid="session-notes">
+      {info.llm === "degraded" && (
+        <div className="warn" data-testid="llm-degraded">
+          LLM 未就绪：{info.degradeReason ?? "未知原因"}
+        </div>
+      )}
+      {keyProblem !== null && (
+        <div className="muted" data-testid="key-problem">
+          {keyProblem}
+        </div>
+      )}
+      {info.otherSessions > 0 && (
+        <div className="muted" data-testid="other-sessions">
+          该期还有 {info.otherSessions} 个更早的会话{info.otherLatest ? `；最近一个 ${info.otherLatest}` : ""}
+        </div>
+      )}
     </div>
   );
 }
