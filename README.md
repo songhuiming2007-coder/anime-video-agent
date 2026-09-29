@@ -2,7 +2,7 @@
 
 自动化动漫二创短视频（解说 / 杂谈 / 盘点）agent 流水线。
 
-输入选题，自动完成写稿、配音、素材检索、排片、音视频渲染与质检，输出可直接上传的 1080p MP4、封面候选与标题候选。日常经 `ava` 宿主入口与内置制片 agent 对话推进（有副作用的操作逐次弹卡、默认 N），人类在 4 处停机点介入确认。另有 Electron 桌面端（`desktop/`，v1：期看板 + 全格式产物预览 + 停机点审批卡，只读 + 审批不写产物）。
+输入选题，自动完成写稿、配音、素材检索、排片、音视频渲染与质检，输出可直接上传的 1080p MP4、封面候选与标题候选。日常经 `ava` 宿主入口与内置制片 agent 对话推进（有副作用的操作逐次弹卡、默认 N），人类在 4 处停机点介入确认。另有 Electron 桌面端（`desktop/`）：期看板、对话面板（与终端同一套 agent 会话协议）、产物预览、停机点与工具审批卡、02.5 内置 Markdown 编辑器、03.5 配音顺听与纠错、09 封面导入与定稿。**桌面端目前的可用性有已知缺口**（对话区过窄、分栏不能收起/拖拽、多处 UI 重叠，见 [issues D39](docs/dev/issues/README.md)），日常推进以终端 `ava` 为主。
 
 ---
 
@@ -74,7 +74,7 @@ pytest
 
 ### 每期生产流水线（01 – 09 步）
 
-日常入口是 `ava`：`ava new <期号>` 建期并进对话，`ava <期号>` 进当期对话，`ava idea` 进无期选题会话；`/` 开头的快捷键零 token（`ava <期号> /run <命令>` 即下表命令的宿主等价）。下表列的是底层命令，详见 [`docs/WORKFLOW.md`](docs/WORKFLOW.md)。
+日常入口是 `ava`：`ava new <期号>` 建期并进对话，`ava <期号>` 进当期对话，`ava idea` 进无期选题会话；`ava <期号> --continue [<会话号前缀>]` 接着本期上一段会话继续，`ava <期号> --sessions` 列出全部会话；`/` 开头的快捷键零 token（`ava <期号> /run <命令>` 即下表命令的宿主等价）。下表列的是底层命令，详见 [`docs/WORKFLOW.md`](docs/WORKFLOW.md)。
 
 | 步骤 | 名称 | 执行者 | 命令 / 操作 | 核心产物与检查点 |
 |---|---|---|---|---|
@@ -92,6 +92,37 @@ pytest
 
 ---
 
+## 桌面端（`desktop/`）
+
+Electron + React，只是 core 的一层壳：**不 mkdir、不直接写产物**，一切写入经 core 的既有子命令落盘（ADR-0024），有副作用的操作由人的一次真实点击答复，抓取与 browser 类批准还要过一道原生确认框。
+
+```bash
+cd desktop
+npm ci
+npm run dev                                   # 开发态（electron-vite）
+npx vitest run && npx tsc --noEmit -p tsconfig.json   # 单测 + 类型
+npm run release-build                         # 打包版（electron-builder）
+```
+
+- 首次启动会选仓库根；LLM 密钥由桌面端从系统钥匙串读出，只进会话子进程环境，缺失时会话降级并在界面给出补密钥的命令。
+- e2e（Playwright，`desktop/e2e/`）一律在临时 repo 副本上跑，不碰真实 `data/`。
+- 打包版的真机手验（钥匙串、05 返工、完整一回合、原生确认框）**尚未完成**，被 D39 挡住；清单见 [`docs/dev/plans/README.md`](docs/dev/plans/README.md)「已归档：二期六份 spec」表。
+
+---
+
+## 已知限制（以 issues 为准）
+
+| 项 | 现状 | 编号 |
+|---|---|---|
+| `web_search` | 默认 DuckDuckGo 端点被反机器人页拦截，实际不可用；已定 Exa 主 + Tavily 备，spec 草案待红队 | D29、[Spec 15](docs/dev/plans/2026-09-29-web-search-provider-spec.md) |
+| 桌面端布局 | 对话区过窄、分栏不能收起/拖拽、多处 UI 重叠 | D39 |
+| 桌面端确认框 | 原生确认框曾未经点击被记为「批准」，定性中（安全相关） | D37 |
+| 03.5 期目录会话 | runbook 文本含受限出网字面量，第一轮即 `[BLOCKED]` | D30 |
+
+完整活跃问题见 [`docs/dev/issues/README.md`](docs/dev/issues/README.md)。
+
+---
+
 ## 深入文档索引
 
 项目所有详细规范与历史决策均模块化沉淀在 `docs/` 目录中，按需查阅：
@@ -100,7 +131,7 @@ pytest
 - **分工序标准操作 Runbook**：[`docs/runbook/`](docs/runbook/) —— 01–09 独立步骤操作手册（每篇独立成册）；
 - **判据与质检标准定义**：[`docs/dev/STANDARD.md`](docs/dev/STANDARD.md) —— 所有量化门禁、评分与测试用例准则；
 - **文档全景索引表**：[`docs/INDEX.md`](docs/INDEX.md) —— 生产态与开发态双轨索引；
-- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）、事件层与桌面端（ADR-0020）、网络与素材工具（ADR-0021）、上下文装配（ADR-0022）、跨期记忆与模型分层（ADR-0023）等核心决策；
+- **架构决策记录**：[`docs/dev/adr/`](docs/dev/adr/) —— 包含端云解耦（ADR-0014/0016）、音色选型（ADR-0017）、VLM 检索（ADR-0015）、CLI 护栏（ADR-0018）、期级纠错生命周期（ADR-0019）、事件层与桌面端（ADR-0020）、网络与素材工具（ADR-0021）、上下文装配（ADR-0022）、跨期记忆与模型分层（ADR-0023）、桌面端写产物（ADR-0024）、工具表封顶上调（ADR-0025）等核心决策；
 - **Coding Agent 协作规范**：[`AGENTS.md`](AGENTS.md) —— 人机红线、停机点与工程约定（Claude Code 2.1.277+ / pi 等全 Agent 统一 SSOT）。
 
 ---
