@@ -217,7 +217,7 @@ test("A：空态 / 有会话+停机点卡 / 02.5 编辑器在预览区", async (
   writeStore(repo, "SESS-A", [pendingObj("appr_05a", "05", "2026-09-25T10:00:02Z", "04-clips.json", fingerprintOf(repo, "SESS-A", "04-clips.json"))]);
   sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: TURN }]);
   writeEvents(repo.root, "SESS-A");
-  const L = await launchSession(repo);
+  const L = await launchSession(repo, [], { previewOpen: false }); // 看真实默认态
   try {
     await L.page.waitForSelector("[data-testid=episode]");
     await shoot(L.page, "s1-empty");
@@ -249,7 +249,7 @@ test("B：人时 + 钥匙串降级提示 / 素材模式", async () => {
   sessionScript(repo, "SESS-C", [READY("SESS-C", { scope: "asset" }), { op: "serve", on_turn: TURN }]);
   writeEvents(repo.root, "SESS-A");
   writeEvents(repo.root, "SESS-C");
-  const L = await launchSession(repo);
+  const L = await launchSession(repo, [], { previewOpen: false }); // 看真实默认态
   try {
     await L.page.waitForSelector("[data-testid=episode]");
     await openEp(L.page, "SESS-A");
@@ -260,6 +260,10 @@ test("B：人时 + 钥匙串降级提示 / 素材模式", async () => {
     await L.page.locator("[data-testid=conv-row][data-kind=footer]").first().waitFor();
     await expect(L.page.getByTestId("human-time")).toContainText("12.4");
     await shoot(L.page, "s3-humantime-keychain");
+    // D39 S2：同一状态，人点开预览（顶栏「预览」）
+    await L.page.getByTestId("toggle-preview").click();
+    await shoot(L.page, "s3o-preview-open");
+    await L.page.getByTestId("toggle-preview").click();
     await openEp(L.page, "SESS-C");
     await sendClick(L.page, "去找第 7 集的素材");
     await L.page.locator("[data-testid=conv-row][data-kind=footer]").first().waitFor();
@@ -398,7 +402,8 @@ function applyProto(v: Variant) {
   center.scrollTop = 0;
 }
 
-test("方案原型：同一状态（有会话 + 05 停机点卡 + 人时 + 钥匙串降级）", async () => {
+// 选型已完成（2026-09-29 人选 B）；原型是按 S1 之前的 DOM 打的补丁，S1 起结构已变，保留代码作证据、不再运行
+test.skip("方案原型：同一状态（有会话 + 05 停机点卡 + 人时 + 钥匙串降级）", async () => {
   const fx = sessionFixture(["SESS-A", "SESS-C"]);
   const repo = fx.repo;
   rmSync(join(repo.baseDir, "key"), { force: true });
@@ -409,7 +414,7 @@ test("方案原型：同一状态（有会话 + 05 停机点卡 + 人时 + 钥�
   writeEvents(repo.root, "SESS-A");
   const variants: Variant[] = ["A", "A-rails", "B", "B-open"];
   for (const v of variants) {
-    const L = await launchSession(repo);
+    const L = await launchSession(repo, [], { previewOpen: false }); // 看真实默认态
     try {
       await L.page.waitForSelector("[data-testid=episode]");
       await openEp(L.page, "SESS-A");

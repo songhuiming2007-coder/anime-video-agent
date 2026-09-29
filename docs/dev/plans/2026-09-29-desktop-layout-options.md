@@ -58,6 +58,7 @@
 - **S1 公共修正 C1–C5**：单这一步就解决 #3–#7。
   **2026-09-29 已施工，待人看截图确认**：对话流可见高度 32 → 271px（1280×800）/ 371px（1440×900）；4 视口 × 4 状态文本相交 0、控件被裁 0；VE-1 新增 expanded 态（详情与时间线展开）审计全 0，各态元素数下限按实测回填；`vitest` 378 passed、全量 e2e 111 passed / 2 skipped。列宽仍是旧的 260/360，留给 S2。截图 `desktop/out/d39-shots/s3-humantime-keychain-{1440x900,1280x800}.png`。
 - **S2 分栏、拖拽、折叠**（按所选方案）：手柄是 `role="separator"`（带 `aria-orientation`、`aria-valuenow/min/max`、`tabindex=0`），方向键每次 16px、双击恢复默认；折叠按钮带 `aria-expanded` + `aria-controls`。键盘行为用纯函数单元测试覆盖，**不做键盘自动化**。
+  **2026-09-29 已施工，待人看截图确认**（人定：预览默认收起；对话流自动跟到最新并入本步）：左栏 240（200–400）｜对话 1fr（宽时阅读行宽 880 居中）｜预览收成 40px 窄条，顶栏「侧栏」「预览」两个开关；人在文件树 / 画廊点开文件自动展开预览，停机点自动呼出只在窄条亮点、不展开；展开后默认左栏右侧的 40%（1280 下对话 607 / 预览 413），上限保住对话 360。收起的栏仍挂在 DOM 里（搜索词、树展开、编辑器未保存内容不丢）。`layout.ts` 单元 13 例；VS-7 白名单加 `gridTemplateColumns`；e2e 夹具默认替既有用例展开预览（它们测的是预览内容），探针传 `previewOpen:false` 看真实默认态。4 视口 × 5 状态文本相交 0、控件被裁 0；vitest 391、e2e 111 passed / 2 skipped。截图 `desktop/out/d39-shots/s3-humantime-keychain-1280x800.png`（默认）、`s3o-preview-open-1280x800.png`（展开）。
 - **S3 持久化**：localStorage 键 `ava.layout`，值为 `{v:1, widths, collapsed}`，读写都包在 try/catch 里（同 `theme.ts` 纪律，VS-9 白名单加该模块）。JSON 坏了、版本不对、数值越界或读取抛错，一律回落默认值并按 min/max 夹紧。单元测试覆盖「文件损坏回落默认」。
 - **S4 两条底线机检**（e2e，1280×800 与 1440×900 × s3 状态）：① 当前工序、批准、打回、输入框、发送五个元素两两 boundingBox 不相交，且各自 100% 落在可见区；② 对话流 `clientHeight ≥ 160`，中栏 `scrollWidth ≤ clientWidth`。
 - **最终验收（人做、人勾）**：人在**真实打包版**上完整跑一期真实工作并确认可用（plans/README UI 规则 2），agent 不代勾。

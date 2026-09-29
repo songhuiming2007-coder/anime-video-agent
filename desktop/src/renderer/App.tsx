@@ -23,6 +23,8 @@ import { VoicePanel } from "./VoicePanel";
 import { readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
+import { clampLeft, DEFAULT_LAYOUT, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
+import { Splitter } from "./Splitter";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { errText, RpcClient } from "./rpc";
 import { applyTheme, readEpisodeView, readTheme, saveEpisodeView, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
@@ -99,6 +101,25 @@ function Main() {
   const [autoOpened, setAutoOpened] = useState<{ id: string | null; count: number }>({ id: null, count: 0 });
   /** 封面导入成功后重挂产物树（导入人刚放下的图应在树里立刻可见） */
   const [treeBump, setTreeBump] = useState(0);
+  /** D39 S2 分栏（方案 B）：预览默认收起；停机点自动呼出时不展开（不抢），只在窄条上亮点 */
+  const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const [previewUnseen, setPreviewUnseen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(true);
+  const mainRef = useRef<HTMLDivElement | null>(null);
+  const [mainW, setMainW] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setMainW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const setPreviewOpen = useCallback((open: boolean) => {
+    setLayout((l) => ({ ...l, previewOpen: open }));
+    if (open) setPreviewUnseen(false);
+  }, []);
 
   const loadHealth = useCallback(() => rpc.call<Health>("app.health").then(setHealth, (e) => setError(errText(e))), []);
 
@@ -175,6 +196,7 @@ function Main() {
     if (!confirmDiscardDirty()) return;
     setError(null);
     setPreview(null);
+    setPreviewUnseen(false);
     setShowIdea(false);
     setActive(epKey);
     setLoading((n) => n + 1);
@@ -252,6 +274,7 @@ function Main() {
       if (r.open && activeRef.current) {
         showStopPreview(activeRef.current, r.open);
         setAutoOpened((s) => ({ id: r.open!.approval_id, count: s.count + 1 }));
+        if (!layoutRef.current.previewOpen) setPreviewUnseen(true);
       }
     },
     [showStopPreview],
@@ -269,7 +292,9 @@ function Main() {
     autoRef.current = step(autoRef.current, { kind: "human" }, { mediaPlaying: false }).state;
     setStrip(autoRef.current.strip);
     setPreview(t);
-  }, []);
+    // 人自己点开文件 = 要看它：展开预览（与停机点自动呼出不同，这不是「抢」）
+    setPreviewOpen(true);
+  }, [setPreviewOpen]);
 
   /** R6：切期 / host 重连 / renderer 重载 → 预览清空、owner 归 none、deferred/strip 清空；`seen` 保留；
    * `awaiting` 从会话 snapshot 的三个顶层字段重建（不扫条目：长回合截头会丢 `turn_started`，四轮 🔵-3）。 */
@@ -324,7 +349,7 @@ function Main() {
 
   return (
     <div className="app">
-      <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} onChangeRepo={changeRepo} />
+      <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} onChangeRepo={changeRepo} layout={layout} onToggleLeft={() => setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }))} onTogglePreview={() => setPreviewOpen(!layout.previewOpen)} />
       {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} />}
       {error && (
         <div className="banner banner-red" data-testid="error">
@@ -332,18 +357,37 @@ function Main() {
           {error}
         </div>
       )}
-      <div className={`main ${reachOk ? "" : "stale"}`}>
-        <nav className="left">
+      <div className={`main ${reachOk ? "" : "stale"}`} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
+        <nav className="left" id="ava-left" hidden={!layout.leftOpen}>
           <NewEpisodeForm rpc={rpc} onCreated={(k) => { setJustCreated(k); setShowIdea(false); void open(k); }} />
           <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} stale={!reachOk} />
           {ep && !showIdea && (
-            <>
-              <CoverImport epKey={ep.epKey} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
-              <ArtifactTree key={`${ep.epKey}:${treeBump}`} epKey={ep.epKey} onPick={pickHuman} />
-            </>
+            <div className="files">
+              <button className="ui-section" aria-expanded={filesOpen} aria-controls="ava-files" onClick={() => setFilesOpen((o) => !o)} data-testid="files-toggle">
+                <Icon name={filesOpen ? "chevron-down" : "chevron-right"} size="sm" />
+                本期文件
+              </button>
+              <div id="ava-files" hidden={!filesOpen}>
+                <CoverImport epKey={ep.epKey} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
+                <ArtifactTree key={`${ep.epKey}:${treeBump}`} epKey={ep.epKey} onPick={pickHuman} />
+              </div>
+            </div>
           )}
           <GalleryList reachOk={reachOk} onPick={pickHuman} />
         </nav>
+        {layout.leftOpen && (
+          <Splitter
+            label="调整侧栏宽度"
+            controls="ava-left"
+            value={layout.leftW}
+            min={LEFT_MIN}
+            max={LEFT_MAX}
+            dir={1}
+            onChange={(w) => setLayout((l) => ({ ...l, leftW: clampLeft(w) }))}
+            onReset={() => setLayout((l) => ({ ...l, leftW: LEFT_DEFAULT }))}
+            testId="split-left"
+          />
+        )}
         <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
           {/* S8-R23：与 .main.stale 同一条件（不引入新判定），与 reach-banner 分工不同——横幅说原因，这里标出哪些区域是旧数据 */}
           {!reachOk && (
@@ -375,7 +419,7 @@ function Main() {
                 选题会话的讨论不会带入本期；需要的要点请在这里重述
               </div>
             )}
-            <ConversationPane rows={rows} lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />} />
+            <ConversationPane key={convKey} rows={rows} lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />} />
             <AnswerDock conv={conv} ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
             <Composer
               rpc={rpc}
@@ -387,7 +431,21 @@ function Main() {
             />
           </div>
         </section>
-        <section className="preview" data-auto-open-approval-id={autoOpened.id ?? ""} data-auto-open-count={autoOpened.count}>
+        {layout.previewOpen && (
+          <Splitter
+            label="调整预览宽度"
+            controls="ava-preview"
+            value={effectivePreviewW(mainW, layout)}
+            min={PREVIEW_MIN}
+            max={previewMax(mainW, layout)}
+            dir={-1}
+            onChange={(w) => setLayout((l) => ({ ...l, previewW: w }))}
+            onReset={() => setLayout((l) => ({ ...l, previewW: null }))}
+            testId="split-preview"
+          />
+        )}
+        {!layout.previewOpen && <PreviewRail target={preview} attention={previewUnseen || strip !== null} onOpen={() => setPreviewOpen(true)} />}
+        <section className="preview" id="ava-preview" hidden={!layout.previewOpen} data-auto-open-approval-id={autoOpened.id ?? ""} data-auto-open-count={autoOpened.count}>
           {strip && (
             <button className="strip" data-testid="auto-open-strip" onClick={() => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }))}>
               <Icon name="info" size="sm" />
@@ -412,7 +470,25 @@ function Main() {
 
 // ---------------- 顶栏与横幅 ----------------
 
-function TopBar({ health, onToggleHealth, onRefresh, canRefresh, onChangeRepo }: { health: Health | null; onToggleHealth: () => void; onRefresh: () => void; canRefresh: boolean; onChangeRepo: () => void }) {
+function TopBar({
+  health,
+  onToggleHealth,
+  onRefresh,
+  canRefresh,
+  onChangeRepo,
+  layout,
+  onToggleLeft,
+  onTogglePreview,
+}: {
+  health: Health | null;
+  onToggleHealth: () => void;
+  onRefresh: () => void;
+  canRefresh: boolean;
+  onChangeRepo: () => void;
+  layout: Layout;
+  onToggleLeft: () => void;
+  onTogglePreview: () => void;
+}) {
   const p = health?.buildProvenance;
   return (
     <header className="topbar">
@@ -429,6 +505,13 @@ function TopBar({ health, onToggleHealth, onRefresh, canRefresh, onChangeRepo }:
           {health?.repoHead && <code> @{health.repoHead.slice(0, 8)}</code>}
         </span>
         <span className="spacer" />
+        {/* D39 S2：两栏的收起 / 展开开关（macOS 工具栏惯例）；收起的栏仍挂在 DOM 里，搜索词、树展开状态、未保存的编辑都不丢 */}
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-pressed={layout.leftOpen} aria-controls="ava-left" onClick={onToggleLeft} data-testid="toggle-left">
+          侧栏
+        </button>
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-pressed={layout.previewOpen} aria-controls="ava-preview" onClick={onTogglePreview} data-testid="toggle-preview">
+          预览
+        </button>
         <button className="ui-btn ui-btn--ghost ui-btn--sm" onClick={onChangeRepo} data-testid="change-repo">
           切换仓库…
         </button>
@@ -540,6 +623,20 @@ function ThemeMenu() {
         </div>
       </div>
     </>
+  );
+}
+
+// ---------------- 预览收起后的窄条（D39 S2） ----------------
+
+/** 整条是一个按钮：点哪儿都展开。停机点自动呼出（或「已就绪」条）发生在收起期间时亮等待色圆点，不自动展开、不动焦点 */
+function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | null; attention: boolean; onOpen: () => void }) {
+  const name = target ? target.rel.split("/").pop() : null;
+  return (
+    <button className="preview-rail" aria-controls="ava-preview" aria-expanded={false} aria-label={attention ? "展开预览（停机点已就绪）" : "展开预览"} onClick={onOpen} data-testid="preview-rail" data-attention={attention ? "1" : "0"}>
+      <Icon name="chevron-right" size="sm" />
+      {attention && <span className="ui-dot ui-dot--wait" aria-hidden="true" />}
+      <span className="preview-rail-label">预览{name ? ` · ${name}` : ""}</span>
+    </button>
   );
 }
 

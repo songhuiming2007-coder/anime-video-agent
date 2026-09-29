@@ -44,8 +44,8 @@ export function pendingObj(id: string, type: string, createdAt = "2026-09-25T10:
   };
 }
 
-export async function launchSession(repo: SessionRepo, extra: string[] = []): Promise<Launched> {
-  return launch(repo.root, [`--ava-keychain=${repo.keychainPath}`, ...extra], tmp("ud"));
+export async function launchSession(repo: SessionRepo, extra: string[] = [], opts: { previewOpen?: boolean } = {}): Promise<Launched> {
+  return launch(repo.root, [`--ava-keychain=${repo.keychainPath}`, ...extra], tmp("ud"), opts);
 }
 
 /** Spec 10 §2.10 退出确认桩（仅未打包构建）；hold=true 时挂住不回答（TX-8c 重入） */
