@@ -1,6 +1,8 @@
 # Implementation Spec：09 封面与标题协作（Spec 12）
 
-日期：2026-09-26（**v0.3**，红队二轮修订（1🟡 + 4🔵 全收，逐条裁决见 §1.2）；状态：**待红队定向复审（第三轮，仅限 §1.2 五处文本手术）**；ADR-0025 已被用户接受、§6.1 全部修订请求已获授权（2026-09-26）——授权不等于可动工，动工仍须红队 🟢）  
+> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR1–PR3）；§9 门禁 0–8、10 已勾；**未验**：门禁 9 的「拖入两张图 → agent 渲染两版」与打包版手验。
+
+日期：2026-09-26（**v0.3**，红队二轮修订（1🟡 + 4🔵 全收，逐条裁决见 §1.2）；状态：**已施工（PR1+PR2 core 2026-09-26、PR3 desktop 2026-09-27；2026-09-29 S21 收尾核对：门禁 0–8、10 已验，门禁 9 仅部分——打包版手验与「拖入两张图 → agent 渲染两版」未做，见 §9）**；ADR-0025 已被用户接受、§6.1 全部修订请求已获授权）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md` §6 Spec 12（范围以该节为准；§0 产品画像、§4 施工红线八条、§5 明确排除同样生效）  
 相关 ADR：**ADR-0025（工具表封顶上调至 14，`docs/dev/adr/0025-tool-table-cap-raise.md`，已通过——2026-09-26 用户接受，ADR-0021 口径与 direction §4 红线 6 已同步修订）**、ADR-0021（封顶口径的立法者，随 ADR-0025 接受同步修订）、ADR-0024（桌面端写产物：人令 → host spawn → core 裸形态子命令）、ADR-0018（封面标题只出候选）、ADR-0020（§3 approval 对象、§4 桌面端）  
 契约依赖：Spec 3（已施工，`pipeline/approvals.py`）；Spec 8（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md`）；Spec 9 / Spec 10 / Spec 11（红队 🟢、未施工——标题讨论承载依赖 Spec 10 的对话面板，桌面导入 UI 沿用 Spec 11 的 spawn 先例）  
@@ -428,7 +430,7 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 - [x] **门禁 6（工具表封顶）**：`TOOL_SCHEMAS` 恰 13 个；`cover_edit` 的 `adr` 字段为 `ADR-0025`；**`<= 14` 上限断言接替既有 `<= 12`**（两处既有 `== 12` 断言已更新为 `== 13`，🟡-7）；ADR-0021 与 direction 红线 6 的口径已同步为 14。
 - [x] **门禁 7（依赖纯洁）**：§5 全部子进程探针断言 + MUT-12；`pyproject.toml` 零改动（PR3 零新 npm 依赖——拖拽/读字节/选择器全用 Web 标准 API，TG-1 期望值未再变）。
 - [x] **门禁 8（零回归）**：全量 `uv run pytest`（1939 passed）与 `npx vitest run`（341 passed）绿；既有 09 ack（不带 finalize 的旧调用方——终端手工）按 S3-R12 裁决执行（09 一律必填，无豁免）。
-- [x] **门禁 9（真机手验）**：**部分满足**——未打包构建上完成「导入一图 → 选定该图与标题批准 09」（e2e `Spec 12 TD-1/TE-1`）；「拖入两张图 → agent 渲染两版」未做（需 agent 跑 `cover_edit`），A3/A4 见 §7.5（部分实测）；**打包版手验未做**，如实登记为未完成项。
+- [ ] **门禁 9（真机手验；2026-09-29 S21：仅部分满足，未验部分如实保留）**：**部分满足**——未打包构建上完成「导入一图 → 选定该图与标题批准 09」（e2e `Spec 12 TD-1/TE-1`）；「拖入两张图 → agent 渲染两版」未做（需 agent 跑 `cover_edit`），A3/A4 见 §7.5（部分实测）；**打包版手验未做**，如实登记为未完成项。
 - [x] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿（12 passed）；D-R2 落地（`runbook/08` +4 行、`runbook/09` +1 行、`WORKFLOW.md` 08/09 行各同步一句，净增 ≤10 行）；`docs/dev/plans/README.md` 状态行更新。
 
 ---
@@ -451,43 +453,23 @@ def approve(ep_dir, stop, *, approval_id=None, source="repl",
 
 ---
 
-## 附：行号核实自查表
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核；以符号为锚，行号为 HEAD 快照会漂）
 
-2026-09-26 对照工作树逐行核实（HEAD `8bf711d`；`uv run pytest` 1715 passed、`npx vitest run` 121 passed 基线实跑）。
+> v0.1–v0.2 的逐行核实表（HEAD `8bf711d` 基线，施工前）已整体作废：多处引用的行为已被施工改变（如工具表 12→13、`cli.py` 分派块位移）。下表由 `ast`/grep 取 HEAD 现状。历史红队核实过程见 §1.1/§1.2 与 git 历史。
 
-| 引用 | 核实结果 |
-|---|---|
-| `tools.py:26-29` CREATIVE_WRITABLE_FILES | ✓ 26 行 `CREATIVE_WRITABLE_FILES: set[str] = {`，27-28 两个成员，29 收尾 |
-| `tools.py:336` TOOL_SCHEMAS 起；全表恰 12 键 | ✓（336 `TOOL_SCHEMAS: dict[str, dict[str, Any]] = {`；键逐一数：read_artifact/write_episode_file/list_episodes/read_status/run_pipeline/search_notes/web_search/web_fetch/acquire_propose/crawl/browser/write_memory） |
-| `cli.py:1612` 裸形态分派块起；1622 `/approve`（`len(args) != 5`）；1650 `/reject` | ✓（1612 `if len(args) > 1:`；1622 `if args[1] == "/approve"`；1624-1628 长度与 `--id` 校验） |
-| `cli.py:800-802` fail-closed side_effect 分流 | ✓（801 `side_effect = TOOL_SCHEMAS[name].get("side_effect", True)`；802 `if not side_effect:`） |
-| `approvals.py:35` HUMAN_STOPS；`51-56` _STOP_ARTIFACTS（55 行 09）；`57-63` _STOP_GATE（61 行 09 None）；`832` def approve | ✓（逐行实读；832 `def approve(`，签名无 finalize） |
-| `paths.py:118-128` atomic_write（text 形态） | ✓（118 def；127 `tmp.write_text(data, encoding="utf-8")`；128 `os.replace`） |
-| `cover.py:511-556 titles()`（517 dest；518-522 已填表不覆盖守卫） | ✓（511 def；517 `dest = episode / "07-titles.md"`；518-522 正则判已填 + 打印跳过） |
-| `status.py:398-409` 09 工序（`next_command=None`） | ✓（402 `current_step="09 人工发布"`；408 docs_ref 09） |
-| `config/agent/tools.json` creative 清单 10 项 | ✓（实读 JSON：read_artifact/write_episode_file/list_episodes/read_status/search_notes/web_search/web_fetch/crawl/browser/write_memory） |
-| `config/project.json:21-22` subtitle.font 是 fontconfig 名（与 Pillow 文件路径机制不同） | ✓（21 `_note`「font 必须是本机 fontconfig 认得的名字」；22 `"font": "Hiragino Sans GB"`） |
-| `pyproject.toml:31` pillow>=11.0；uv.lock 钉 12.3.0 | ✓（31 行原文；uv.lock `pillow-12.3.0` whl 条目；`PIL.__version__` 实测 12.3.0） |
-| `scout.py:385-393` pi 工单追加 07-titles.md 第 6–10 行 | ✓（385 严禁覆盖 1–5 行；390 目标文件；393 验收） |
-| 真实期 07-titles.md 候选表全空 | ✓ 实读 `data/episodes/2026-07-30-春物-雪乃适合大老师/07-titles.md`（1–5 行全空；模板头「标题由 agent 写」） |
-| 渲染跨进程字节级确定性 | ✓ 实测（2026-09-26 `/tmp/ava-spec12-scratch/probe.py`：Hiragino ttc index=0、96 号、stroke 6，1280×720 两独立进程 sha256 全同 `3e606ec392c33b80…`，35919 字节） |
-| ttc index=1 是另一家族 | ✓ 实测（同 probe：index=0 `('Hiragino Sans GB','W3')`、index=1 `('.Hiragino Sans GB Interface','W3')`） |
-| `/System/Library/Fonts/Hiragino Sans GB.ttc` 存在 | ✓（ls 实测） |
-| Pillow `MAX_IMAGE_PIXELS` 默认值 | ✓ 实测（`uv run python -c "from PIL import Image; print(Image.MAX_IMAGE_PIXELS)"` → **89478485**；🔵-9 更正，v0.1 写的「178M」不成立） |
-| Spec 9 请求帧四类（`tool_call/fetch/checkpoint/memory_ack`） | ✓（2026-09-25-agent-session-protocol-spec.md:342，**位于 §3.2「人审请求」**（起于 336 行）——🔵-9 更正，v0.1 误写 §3.1） |
-| `cover.py` `titles()` 行范围 | ✓（511 def 起、555 `return dest` 止；558 已是 `main`——🔵-9 更正，v0.1 写 511-556） |
-
-### v0.2 补核（红队一轮修订涉及的新引用与实测，2026-09-26 逐行/逐次核实）
-
-| 引用 | 核实结果 |
-|---|---|
-| `desktop/src/shared/losslessJson.ts` reviver 只认 `mtime_ns` 键（`k !== "mtime_ns" ? v : …`） | ✓ 实读源文件（🔴-1 属实）；`SELF_CHECK_TEXT` 夹具值 `1790171112636927676` 在位 |
-| Spec 8 RF-23 冻结预案「新增任何可能超过 2^53 的整数字段必须同步扩展规则 8 与 TE-13」 | ✓ 原文比对（archive line 1033） |
-| `spawner.ts:22` 模板名 `APPROVE`（非「ACK」） | ✓（`export type Template` 22 行 `| "APPROVE"`，88-90 case 分支） |
-| `cli.py:1624` `/approve` 手解析 `len(args) != 5` 即退 2 | ✓（🔴-2 属实） |
-| `tests/test_candidates_propose.py:441`、`tests/test_agent_web.py:864-865` 的 `== 12` / `<= 12` | ✓（441 行 `assert len(TOOL_SCHEMAS) == 12`；864-865 在 `test_every_tool_has_existing_adr`（858 def）内，该用例 866-875 逐工具 glob ADR 文件，ADR-0025 已存在故 `adr: "ADR-0025"` 天然过） |
-| Pillow 12.3.0 校验边界（verify/load 分工） | ✓ 实测（scratchpad `mut1b/c/d.py`）：文件级截断 → open/verify FAIL（`UnidentifiedImageError`）；IDAT CRC 错 → verify FAIL / load OK；IDAT 乱字节 → verify OK / load FAIL（`broken data stream`）；zlib 合法缺 1 字节 → verify OK / load FAIL（`image file is truncated`）；**zlib 合法缺整行 → verify OK / load OK（缺行补黑像素 `(0,0,0)`）**——RF-11 的证据，🟡-5 红队建议构造「短 IDAT」只在该行对齐情形下成立，行对齐时不成立 |
-| Spec 8 §2.3 I1/I2、§3.4 spawn 闭集、§4.4 preload 零暴露 | ✓（archive 文档 199-200/500-510 行原文比对；preload 源文件注释「不 exposeInMainWorld 任何函数（§4.4）」一致） |
-| direction §6 Spec 12 范围全文（导入/编辑工具/标题讨论/定稿权在人/明确不做；工具表封顶条已改写为「ADR-0025 已于 2026-09-26 接受，封顶 12 → 14」） | ✓（direction 原文比对，v0.2 接受后重核） |
-| ADR-0021「数量封顶在 14 个（2026-09-26 经 ADR-0025 由 ~12 上调：现役 13 + 预留 1，第 15 个须再立 ADR）」 | ✓（ADR-0021「不做的事」首条原文，v0.2 接受后重核） |
-| direction §4 红线 6「工具表封顶 14 个（2026-09-26 经 ADR-0025 由 ~12 上调：现役 13 + 预留 1）；新增工具必须有 ADR 编号」 | ✓（原文比对，v0.2 接受后重核） |
+| 引用（符号） | HEAD 位置 / 现状 | 核实 |
+|---|---|---|
+| `tools.py::CREATIVE_WRITABLE_FILES` | 28–32 | ✅ |
+| `tools.py::TOOL_SCHEMAS`（**13 键**：v0.2 时 12 + `cover_edit`） | 363–652 | ✅ 与门禁 6 一致；`tests/test_agent_tools.py:667`、`test_candidates_propose.py:441`、`test_agent_web.py:1006-1007` 现为 `== 13` / `<= 14` |
+| `config/agent/tools.json` creative 清单 | 11 项（v0.2 的 10 项 + `cover_edit`）；pipeline 4、asset 5、idea 4 | ✅ |
+| `cover_edit.py`：`CoverEditError` / `load_cover_font` / `sanitize_stem` / `probe_image` / `import_cover` / `render_cover` / `_validate_params` | 23 / 73 / 108 / 119 / 158 / 194 / 267 | ✅ 与 §3 工具面一致（函数名以此为准，spec 正文若写 `render_edit` 属旧称） |
+| `cover.py::titles`（已填表不覆盖守卫）/ `main` | 511–555 / 558–571 | ✅ 未漂移 |
+| `approvals.py::approve`（含 `finalize` 定稿记录）/ `Approval.finalize` 字段 | 902–1094 / 163（不变量 194–196：finalize 非空 ⟹ type=="09" 且 APPROVED） | ✅ v0.2「签名无 finalize」已随 PR2 落地作废 |
+| `cli.py` 裸形态 `/approve` 与 REPL `/approve` 分派 | 233（`cmd != "/approve"`）、1934；`len(args)` 校验分布于 2181/2198/2267 | ✅ 双表面（S3-R12）；具体行号随 cli 增长而漂 |
+| `spawner.ts` 模板 `APPROVE`（带 `cover?`/`title?`）与 `IMPORT_COVER` | 24、56；43 | ✅ |
+| `losslessJson.ts` reviver 只认 `mtime_ns` 键；自检夹具 `1790171112636927676` | 28、32 | ✅ |
+| `pyproject.toml` `pillow>=11.0`；`uv.lock` 钉 / `PIL.__version__` | 31；实测 12.3.0 | ✅ |
+| `config/project.json` `cover.font_index` 钉 0 | 63–66 | ✅ |
+| `scout.py` pi 工单对 07-titles.md 第 6–10 槽的约束 | 385、390 | ✅ |
+| 渲染字节级确定性、ttc index 家族差异、`Image.MAX_IMAGE_PIXELS` 默认 89478485、Pillow 缺行 PNG 行为（RF-11） | 2026-09-26 scratchpad 实测 | ⚪ 历史实测，非活断言；渲染基线已由 `tests/test_cover_edit.py` 的 `BASELINE_SHA256` 常驻守卫 |
+| Spec 8 RF-23 / Spec 9 §3.2 / direction §4·§6 / ADR-0021 口径（封顶 14） | 施工前红队原文比对 | ⚪ 未逐字重比（引用对象为已冻结文档）；ADR-0021「封顶 14」口径核为现行（工具表现 13） |

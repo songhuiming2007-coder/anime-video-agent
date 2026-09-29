@@ -1,6 +1,6 @@
 """Spec 12（09 封面与标题协作）：图片导入校验与确定性的封面叠字渲染。
 
-契约见 `docs/dev/plans/2026-09-26-cover-title-collaboration-spec.md` §2.1 / §2.2 / §3.1 / §3.2。
+契约见 `docs/dev/plans/archive/2026-09-26-cover-title-collaboration-spec.md` §2.1 / §2.2 / §3.1 / §3.2。
 
 三条纪律：
 1. **顶层仅 stdlib + `pipeline.paths`**（红线 7）：PIL / io 一律函数级延迟 import，

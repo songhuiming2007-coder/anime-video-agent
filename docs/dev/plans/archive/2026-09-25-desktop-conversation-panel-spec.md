@@ -1,6 +1,8 @@
 # Implementation Spec：桌面端对话面板与人审卡片（Spec 10 / desktop 侧，消费 Spec 9）
 
-日期：2026-09-26（**v0.5**，红队四轮定向复审 **🟢**，所提 4🔵 已按用户指示并入；三轮 1🟡 + 4🔵 已于 v0.4、二轮 3🟡 + 11🔵 已于 v0.3、一轮 1🔴 + 12🟡 + 13🔵 已于 v0.2 收口；状态：**PR0–PR3 可动工；PR4 须待 S9-R1~R4 经定向复核（已于 2026-09-26 并入 Spec 9 v0.8）、Spec 9 PR3 施工完成**（S9-R3/R4 最终措辞已于 2026-09-26 获人确认），见 §1.4）  
+> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR0–PR4）；§9 门禁 1–5、7、8、10、11、13 已勾；**未验**：门禁 6（密钥打包版手验）、9（05 返工真机手验）、12（打包版完整回合手验）——均待人；**遗留**：D37（原生确认框未经人手点击被记批准，定性中，安全相关）、N39（切仓窗口新代号+旧根，待拍板）。
+
+日期：2026-09-26（**v0.5**，红队四轮定向复审 **🟢**，所提 4🔵 已按用户指示并入；三轮 1🟡 + 4🔵 已于 v0.4、二轮 3🟡 + 11🔵 已于 v0.3、一轮 1🔴 + 12🟡 + 13🔵 已于 v0.2 收口；状态：**已施工并验收（PR0–PR4，M6–M9；2026-09-29 S21 收尾核对：门禁 6/9/12 含打包版/真机手验，未验，见 §9；D37 定性中、N39 待拍板）**；原动工条件——S9-R1~R4 经定向复核并入 Spec 9 v0.8、Spec 9 PR3 施工完成——均已满足，见 §1.4）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1 旅程第 2–5 步、§0.2 第 1/2 条、§4 施工红线、§5 明确排除、§6 Spec 10）  
 相关 ADR：ADR-0020（§3、§4「host utilityProcess 承载 agent 会话」、§5）、ADR-0018（保留条款）、ADR-0021（素材 fetch 人批、browser 逐调用卡）、ADR-0023（记忆首次写入人确认）。**不新立 ADR**（理由见 §6.7）  
 契约依赖：**Spec 8**（已施工，`desktop/` 代码即现状，文档 `archive/2026-09-23-electron-desktop-spec.md` v0.5）；**Spec 9**（v0.7 红队 🟢、**尚未施工**，`2026-09-25-agent-session-protocol-spec.md`，以其 §3.1 冻结协议与 §6.6 H-1~H-10 为准）；Spec 2/3/5/6/7（已施工）  
@@ -1037,19 +1039,19 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 
 ## 9. 验收门禁清单
 
-- [ ] **门禁 1（授权）**：§6.1 全部阻塞项获用户授权；S9-R1~R4 经红队对 Spec 9 的定向复核 🟢；
-- [ ] **门禁 2（建期由 core 完成、UI 不 mkdir、新期停在 01）**：TY-1~TY-4、TY-8、TY-9、TH-14、TX-7、TG-15 全绿，MUT-17~20/34/53/54 被捕获；TG-2 不变；
-- [ ] **门禁 3（答复只来自人的可信点击）**：TG-4′、TG-10、TG-16、TG-17、TX-2、TX-14、TH-3、TH-17 全绿，MUT-3/22/23/23b/24/37/44/45/46 被捕获；
-- [ ] **门禁 4（不代发、不自动；browser 与抓取另需原生确认）**：TH-5、TH-18、TG-11、TX-7、TX-13、TV-12 全绿，TH-22 全绿，MUT-5/35/43/57/58/63/64/69 被捕获；
-- [ ] **门禁 5（作废、结束与退出）**：TH-4、TH-8、TH-9、TH-21、TX-4、TX-8、TX-8b、TX-8c、TX-8d、TX-9 全绿，MUT-4/10/11/12/39/41/47/48/49/65 被捕获；
-- [ ] **门禁 6（密钥）**：TH-6、TH-7、TV-8、TV-9、TY-5 全绿，MUT-6~9/21 被捕获；**打包版手验一次**：钥匙串有条目 → `ready.llm == "ok"`；删除条目 → 降级文案含正确命令；
-- [ ] **门禁 7（对话呈现与缺口可见）**：TV-1~TV-3、TV-7、TX-0、TX-1、TX-11、TH-2、TH-12 全绿，MUT-2/15/25/26/32/33 被捕获；
-- [ ] **门禁 8（多期多会话隔离与 host 重启）**：TV-4、TV-10、TH-1、TH-10、TH-11、TH-11b、TH-13、TH-16、TH-19、TX-6、TX-15 全绿，MUT-1/13/14/16/31/38/51/52 被捕获；
-- [ ] **门禁 9（呼出与焦点）**：TV-6、TV-11、TH-20、TX-5（含 ⑤ 连续 10 次一致）全绿，MUT-27~30/50/55/59~62/67/68/70~73 被捕获；**真机手验**：在 05 返工的真实期上，agent 连改两版期间预览不闪，回合结束只呼出一次；
-- [ ] **门禁 10（Spec 8 不回归）**：Spec 8 全部 vitest、`e2e/ack.spec.ts`（零改动）、`e2e/preview*.spec.ts`、`e2e-packaged` 全绿；
-- [ ] **门禁 11（依赖、纯洁与测试夹具安全）**：TG-1 不改仍绿、TG-9（Spec 8）与 TG-14 全绿；TF-1~TF-3 全绿，MUT-36/40/42/56/66 被捕获；TY-7 泄漏清单 `[]`；`pyproject.toml`、`desktop/package.json` 无 diff；TI-6 扩展后会话进程无 LISTEN；
-- [ ] **门禁 12（打包版手验）**：打包版上完成一次「idea 聊一轮 → 建期 → 新期发消息（agent 补全 01）→ 批准一张写入卡 → 批准一张抓取卡（过原生确认框）→ 退出确认」；输入法选词中按 Enter 不发送；
-- [ ] **门禁 13（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；H-1~H-10 在 §6.2 逐条有测试且全绿。
+- [x] **门禁 1（授权）**：§6.1 全部阻塞项获用户授权；S9-R1~R4 经红队对 Spec 9 的定向复核 🟢；　证据：§6.1 授权与 S9-R1~R4 并入 Spec 9 v0.8（定向复核 🟢）已闭环，见 §1.4；M3 评审 2026-09-27 见 Spec 9 §9。
+- [x] **门禁 2（建期由 core 完成、UI 不 mkdir、新期停在 01）**：TY-1~TY-4、TY-8、TY-9、TH-14、TX-7、TG-15 全绿，MUT-17~20/34/53/54 被捕获；TG-2 不变；　证据：TY-1~9 落为 `tests/test_spec10_episode_create.py`（§8.1）、TX-7、TG-15、TH-14 在全量中绿；2026-09-29 全量：`uv run pytest` 1983 passed、`npx vitest run` 377 passed、未打包 e2e 111 passed / 2 skipped（workers=2，空载 5.7 min，数据零污染）；TS 变异全表 69 条 68 KILLED / 1 SURVIVED（MUT-62，预期，见 §8.5）/ 0 BUILD_FAIL（N38 回填，`789f60e`）；Python 侧 S10-MUT-18/19/20/21/53/54 6/6 KILLED（§8.5）。
+- [x] **门禁 3（答复只来自人的可信点击）**：TG-4′、TG-10、TG-16、TG-17、TX-2、TX-14、TH-3、TH-17 全绿，MUT-3/22/23/23b/24/37/44/45/46 被捕获；　证据：TG-4′/TG-10/TG-16/TG-17、TX-2、TX-14/14b、TH-3、TH-17 全绿；MUT-46 由 TX-14b 杀死（N34），其余 MUT-3/22/23/23b/24/37/44/45 KILLED；2026-09-29 全量：`uv run pytest` 1983 passed、`npx vitest run` 377 passed、未打包 e2e 111 passed / 2 skipped（workers=2，空载 5.7 min，数据零污染）；TS 变异全表 69 条 68 KILLED / 1 SURVIVED（MUT-62，预期，见 §8.5）/ 0 BUILD_FAIL（N38 回填，`789f60e`）；Python 侧 S10-MUT-18/19/20/21/53/54 6/6 KILLED（§8.5）。
+- [x] **门禁 4（不代发、不自动；browser 与抓取另需原生确认）**：TH-5、TH-18、TG-11、TX-7、TX-13、TV-12 全绿，TH-22 全绿，MUT-5/35/43/57/58/63/64/69 被捕获；　证据：TH-5/TH-18/TH-22、TG-11、TX-7/TX-13、TV-12 全绿，MUT-5/35/43/57/58/63/64/69 KILLED。**遗留（不改本门禁的测试口径）**：D37——打包版真机上原生确认框曾被记为「批准」而未经人手点击，定性中（代码侧 fail-open 假说未证实，Return 键行为不定，待人手复现），安全相关，列入归档遗留。
+- [x] **门禁 5（作废、结束与退出）**：TH-4、TH-8、TH-9、TH-21、TX-4、TX-8、TX-8b、TX-8c、TX-8d、TX-9 全绿，MUT-4/10/11/12/39/41/47/48/49/65 被捕获；　证据：TH-4/8/9/21、TX-4/8/8b/8c/8d/8e/8f/9 全绿；MUT-4/10/11/12/39/41/47/48/49/65 KILLED；D38（退出确认把空闲会话也算忙）已修并评审通过（`isBusyForQuit`，TH-9⑤、TX-8g/8h）。打包版「空闲直接退/忙弹框」手验未做（并入 D37 配方第 6 步）。
+- [ ] **门禁 6（密钥；**未验部分：打包版手验——钥匙串有条目→`ready.llm=="ok"`、删条目→降级文案含命令**）**：TH-6、TH-7、TV-8、TV-9、TY-5 全绿，MUT-6~9/21 被捕获；**打包版手验一次**：钥匙串有条目 → `ready.llm == "ok"`；删除条目 → 降级文案含正确命令；
+- [x] **门禁 7（对话呈现与缺口可见）**：TV-1~TV-3、TV-7、TX-0、TX-1、TX-11、TH-2、TH-12 全绿，MUT-2/15/25/26/32/33 被捕获；　证据：TV-1~3/7、TX-0/1/11、TH-2/12 全绿；MUT-2/15/25/26/32/33 KILLED；D36（作废卡不撤待答区）已修并评审通过。
+- [x] **门禁 8（多期多会话隔离与 host 重启）**：TV-4、TV-10、TH-1、TH-10、TH-11、TH-11b、TH-13、TH-16、TH-19、TX-6、TX-15 全绿，MUT-1/13/14/16/31/38/51/52 被捕获；　证据：TV-4/10、TH-1/10/11/11b/13/16/19、TX-6/15 全绿；MUT-1/13/14/16/31/38/51/52 KILLED；D32、N37 已修并评审通过，N39（切仓窗口「新代号+旧根」）待拍板，未构造出可见现场。
+- [ ] **门禁 9（呼出与焦点；**未验部分：05 返工真实期的真机手验**；MUT-62 SURVIVED 属预期——两处 reset 同时去掉的 MUT-62′ 已 KILLED）**：TV-6、TV-11、TH-20、TX-5（含 ⑤ 连续 10 次一致）全绿，MUT-27~30/50/55/59~62/67/68/70~73 被捕获；**真机手验**：在 05 返工的真实期上，agent 连改两版期间预览不闪，回合结束只呼出一次；
+- [x] **门禁 10（Spec 8 不回归）**：Spec 8 全部 vitest、`e2e/ack.spec.ts`（零改动）、`e2e/preview*.spec.ts`、`e2e-packaged` 全绿；　证据：Spec 8 全部 vitest、`e2e/ack.spec.ts`（除 N44 把 TI-10 焦点断言降为 app 可控面、经人拍板）、`e2e/preview*.spec.ts` 全绿；`e2e-packaged` 11/11（M9，打包构建 `26c9fbc`）。
+- [x] **门禁 11（依赖、纯洁与测试夹具安全）**：TG-1 不改仍绿、TG-9（Spec 8）与 TG-14 全绿；TF-1~TF-3 全绿，MUT-36/40/42/56/66 被捕获；TY-7 泄漏清单 `[]`；`pyproject.toml`、`desktop/package.json` 无 diff；TI-6 扩展后会话进程无 LISTEN；　证据：TG-1/TG-9/TG-14、TF-1~3、TY-7（泄漏清单 `[]`）全绿；MUT-36/40/42/56/66 KILLED；`pyproject.toml` 自 2026-09-25 起无 diff；`desktop/package.json` 仅两次改动（`2de9cb6` Spec 8 M12 打包加固、`ac4635e` Spec 11 PR3 的 CodeMirror 依赖），均非本 spec 的 PR（2026-09-29 `git log --since=2026-09-25 -- pyproject.toml desktop/package.json` 核实）。
+- [ ] **门禁 12（打包版手验；**未验，待人：完整回合 + 原生确认框 + 退出确认 + 输入法选词中 Enter，与 D37 人手配方同场**）**：打包版上完成一次「idea 聊一轮 → 建期 → 新期发消息（agent 补全 01）→ 批准一张写入卡 → 批准一张抓取卡（过原生确认框）→ 退出确认」；输入法选词中按 Enter 不发送；
+- [x] **门禁 13（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；H-1~H-10 在 §6.2 逐条有测试且全绿。　证据：`uv run pytest tests/test_docs_invariants.py` 12 passed；H-1~H-10 各有测试且全绿（§6.2）。
 
 ---
 
@@ -1093,40 +1095,22 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 | E10 | `\p{Cf}` 覆盖哪些不可见字符（Node） | U+200B–200F、U+202A–202E、U+2066–2069、U+FEFF、U+00AD、U+2060 全部为 true；普通 URL 为 false。另：`electron@44.4.5` 的 `MessageBoxOptions` 有 `signal?: AbortSignal`（`electron.d.ts:22586`） |
 | E11 | C10-R1 同源语义对现有测试的影响（二轮 🟡-1 后作者重跑） | 以 pytest 插件实现 §3.7 同源语义（`require_data_at(ROOT/"data")`、要求 `episodes/` 已是目录、名字规则、`parents=False`），**全量** `uv run pytest -p <插件>`：`4 failed, 1711 passed`，即 `test_create_new_episode_and_reject_duplicates`、`test_main_new_enters_repl_in_tty`、`test_non_tty_dual_gates_for_new_and_idea`、`test_full_chain_smoke_in_temp_repo` |
 
-## 附：行号核实自查表
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核；以符号为锚，行号为 HEAD 快照会漂）
 
-2026-09-25/26 对照工作树（HEAD `c31201d`）逐行核实；v0.2、v0.3 新增引用分别标注。红队一轮抽查 32 处全部相符，唯一不符为 `lifecycle.ts`（已改正）。
+> v0.2–v0.5 的逐行核实表（HEAD `c31201d`，施工前）核的是施工前的 `cli.py`/`llm.py`/`host/service.ts`/`App.tsx` 等；PR0–PR4 已整体改写这些文件，旧行号全部作废，不再保留。下表只列本 spec 落地物在 HEAD 上的位置与仍依赖的外部符号。契约面由 TX-0（真实 core 帧键集与 `convFrames.REQUIRED/CONDITIONAL` 双向比对）与静态守卫机械守护。
 
-| 引用 | 核实结果 |
-|---|---|
-| `pipeline/agent/cli.py:315-353` / `330` / `332` | ✓ `get_episodes_list`；`330`、`332` 排除 `.`、`_` 前缀（Spec 8 撰写时引作 `122-158`，已漂移） |
-| `cli.py:430-451` / `432` / `438` | ✓ `create_new_episode`；`432` `ep_root = paths.ROOT / "data" / "episodes"`（v0.2）；`438` `mkdir(parents=True, exist_ok=False)` |
-| `cli.py:803-819` | ✓ 只读工具 `[tool]` 回显的摘要规则 |
-| `cli.py:1559-1566` | ✓ `ava new`：`len(args) >= 2`；非 TTY `return 0` |
-| `pipeline/agent/llm.py:34` / `118-160`（`136-140`、`138`、`141`） | ✓ `REQUEST_TIMEOUT = 60`；`load_llm_config`；三字段缺一返回 `None`（v0.2）；`os.environ.get(env_name)` |
-| `pipeline/agent/resolver.py:23` | ✓ 01/02 → creative，其余 → pipeline |
-| `pipeline/agent/tools.py:26-29` / `280-291` / `313` / `755-769` / `937-941` | ✓ |
-| `pipeline/agent/status_card.py:350-382`（`366-378`） | ✓ `log_approval_decision` 对批准与拒绝都发 `approval_resolved` |
-| `pipeline/paths.py:20-21` / `131-158` | ✓ `DATA = ROOT / "data"` 为 import 时常量（v0.2）；`require_data` 三分报错、绝不创建 |
-| `pipeline/status.py:197` / `242-253` | ✓ `has_topic` 只看存在；「未立项」分支（v0.2） |
-| `pipeline/check_script.py:20` / `99` / `100` | ✓ import `bgm`；`GENRES`；`TOPIC_FIELDS` 含 `\s*`（v0.2） |
-| `pipeline/approvals.py:91-93` | ✓ `_utc_now_iso` 为 `isoformat()`（v0.2） |
-| `tests/test_agent_cli.py:95-98` / `400` / `425`；`tests/test_agent_tools.py:708` | ✓ `95-98` 只建 `data/episodes`（v0.3）；其余三个只替换 `paths.ROOT` 并依赖自建 `data/episodes`（v0.2） |
-| `desktop/src/shared/protocol.ts:7-18` / `20-29` / `31` / `47-59` / `68-84` / `80` | ✓；`80` 对 `feedback` 键 `continue`（v0.2） |
-| `desktop/src/shared/lifecycle.ts:8-22` | ✓ 生命周期消息闭集（v0.2 按 🔵-6 改正） |
-| `desktop/src/shared/jsonl.ts:13-41` | ✓ 只在残段分支比较 `maxPartialBytes`（v0.2） |
-| `desktop/src/host/spawner.ts:15-24` / `63-109` / `115-127` / `205-211` | ✓ |
-| `desktop/src/host/index.ts:91-93` | ✓ `shutdown` → `service?.stop()` |
-| `desktop/src/host/service.ts:261-264` / `271-274` / `496-521` / `783-786` / `812-813` / `931-963`（`933`） | ✓；`812-813` 仅在 `approvalsKey` 变化时下发 `approvals`（v0.3）；`931-963` 仅在入口检查 `choosing`/`switching`（v0.2） |
-| `desktop/src/host/heal.ts:104-112`（`109`） | ✓ `latestPerStop` 以字符串 `>=` 比较 `created_at`（v0.2） |
-| `desktop/src/main/index.ts:201-212` / `264-273` / `299-307` | ✓ host 退出、看护与熔断（v0.2）；`did-finish-load` 才发 `renderer-reset`、`closed` 只置空窗口（v0.3）；`before-quit` 置标志、`window-all-closed` 先发 `shutdown` 再 `app.quit()` |
-| `desktop/src/renderer/App.tsx:86-93` / `104` / `149-166` / `184-194` / `395` | ✓ `onConnect` 只重新 activate（v0.2）；切期清预览；自动呼出 effect；中栏版面；无 `approval_id` 标「命令卡拒执」 |
-| `desktop/src/renderer/DecisionBar.tsx:15-17` / `126` / `146-150` | ✓ |
-| `desktop/src/renderer/testHooks.ts:17` | ✓ `rpc.call(method, params)` 动态方法名（v0.2） |
-| `desktop/src/renderer/store.ts:51-80` | ✓ |
-| `config/agent/web.json`；`pipeline/agent/web.py:73-74` | ✓ 搜索端点为 duckduckgo；`web.local.json` 优先（v0.3） |
-| `desktop/node_modules/electron/electron.d.ts:22559` / `22586` | ✓ `MessageBoxOptions.signal?: AbortSignal`（v0.3） |
-| `desktop/tests/helpers.ts:41` / `43` | ✓ 复制真实 `config/`；软链 `.venv`（v0.2） |
-| `desktop/e2e/ackFixtures.ts:154` | ✓ `fakeCore` 写入已复制的 `pipeline/` 源文件（v0.2） |
-| `desktop/tests/static/scan.ts:165-188` / `192` | ✓ |
-| Spec 9 §2.2、§2.5、§2.8、§3.1、§3.6、§4.4、§4.7、§6.6 | ✓ 收尾中到达的中断记 `aborted`、SIGTERM 记 `skipped`；协议启动即取租约；非流式；帧闭集；退出码；读者线程与主循环分工；回合末尾顺序未规定 `stop_points` 与 `ensure_pending` 的先后；H-1~H-10 |
+| 引用（符号） | HEAD 位置 | 核实 |
+|---|---|---|
+| `cli.py::create_new_episode`（C10-R1 同源语义；`paths.require_data_at` 在 `paths.py` 137 起） | `cli.py` 511 起 | ✅ TY-1~4 守 |
+| `llm.py::_load_agent_cfg` / `_env_name_of` / `api_key_env_name`（评审回改：单次读配置） | 145 / 166 / 176 | ✅ `test_ty5_config_read_once` 守 |
+| `host/sessions.ts::SessionManager` / `quitState` / `isBusyForQuit`（D38） | 189 / 179 / 180 | ✅ |
+| `host/spawner.ts` 模板：`KEYCHAIN_READ` / `SESSION_NEW`（及 `SESSION_CONTINUE/IDEA`） | 30 / 46 | ✅ 模板闭集由 TG-12 守 |
+| `host/heal.ts::latestPerStop`（`compareIso` 解析比较）/ `shared/isoTime.ts::compareIso` | 111 / 19 | ✅ |
+| `shared/convFrames.ts::REQUIRED`（导出，供 TX-0 对拍） | 35 | ✅ |
+| `shared/protocol.ts` 快照增 `keyProblem` | 357 附近 | ✅ 即 §8.2 偏差 1 |
+| `main/index.ts`：`createMainConfirmBroker`（原生确认框第 5 层）/ `before-quit` 退出状态机 | 9 / 423 | ✅（D37 定性中，见 issues） |
+| `renderer/App.tsx::onConnect`（重置会话桶并按新 host 重取快照） | 143 附近 | ✅ MUT-62/62′ 守 |
+| 夹具：`tests/fixtures/session.ts::fixtureWrite`；静态守卫 `tests/static/scan.ts::inboundFrameOwners`（TG-11） | 18 / 456 | ✅ |
+| e2e：`e2e/session.spec.ts`（假进程版）、`e2e/sessionReal.spec.ts`（真实 core 版）、`e2e/fakeLlm.ts` | 目录现状 | ✅ |
+| Spec 9 §2.2/§2.5/§2.8/§3.1/§3.6/§4.4/§4.7/§6.6、`S9-R1~R4` | 见 Spec 9 v0.8 与其 §9 实跑记录 | ✅ 已并入并由 TP-3/12/15 守 |
+| 实验记录 E1–E11（`create_new_episode` 边界、`security` 退出码、`isTrusted`、EOF、`\p{Cf}` 等） | 2026-09-25/26 scratchpad 实测 | ⚪ 历史实测，非活断言 |

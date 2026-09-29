@@ -1,5 +1,7 @@
 # Implementation Spec：停机点深度组件（Spec 11：02.5 app 内编辑与封板、03.5 顺听按钮、人时采集）
 
+> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR1–PR5）；§9 门禁 0–8、10 已勾；**未验**：门禁 9 的打包版手验与 A2（如实登记）。
+
 日期：2026-09-26（**v0.3**，红队一轮修订（2🔴 + 7🟡 全收、🔵 9 条全收或部分收）+ 二轮定向复审修订（3🟡 + 1🔵 全收），逐条裁决见 §1.1/§1.2；状态：**v0.3 红队三轮 🟢，可动工**（第三轮定向复审 2026-09-26 闭环，唯一残留 ADR 注记版本号失实已随手修正；S8-R17 改写措辞 2026-09-26 已获人最终确认，动工前置全部清零）；**施工进度（2026-09-26）：PR1、PR2 已落地**（core 人物提示 + 八个子命令，`uv run pytest` 1769 passed，变异实跑见 §7.4）；**2026-09-27：PR3/PR4/PR5 已落地**（desktop：02.5 CodeMirror 编辑器、03.5 顺听面板、人时采集与门禁 14 退役；`npx vitest run` 343 passed、`npx playwright test` 75 passed + 1 skipped、`uv run pytest` 1941 passed，变异与假设回填见 §7.4/§7.5）；**同日红队验收 1🔴 后已返修，待复审**（① CSP 下 CM 样式失效 → ShadowRoot + adoptedStyleSheets，A1 升为计算样式级；② TI-11 `pid_alive=null` 归锁残留；④ 错误态不计时；逐条见 §7.6））  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0 产品画像与终态判据、§4 施工红线八条、§5 明确排除、§6 Spec 11 范围全文）  
 相关 ADR：**ADR-0024（桌面端写产物，`docs/dev/adr/0024-desktop-artifact-writes.md`，状态「已通过」——2026-09-26 用户接受；PR2–PR5 以其为前置，已满足）**、ADR-0018（保留条款）、ADR-0019（corrections 生命周期）、ADR-0020（§3 审批对象、§4 桌面端、§5 Context 纪律）  
@@ -541,7 +543,7 @@ PR 顺序允许 PR1 ∥ 任何；PR3/PR4 可并行（不同组件、共享 PR2 �
 - [x] **门禁 6（INFO 只报不拦）**：TC-1~TC-4 全绿；`check_script` 对既有真实期的退出码与 FAIL 行集合**逐字节不变**（INFO 行之外零 diff，用既有期对拍）；MUT-1/2/3 被捕获；
 - [x] **门禁 7（终端零回归）**：`/voice` REPL 路径相关测试全绿；全量 `uv run pytest`（1939 passed）与 `npx vitest run`（341 passed）绿；RF17-C1 后 EOF 行为按 TC-12；
 - [x] **门禁 8（依赖纯洁）**：§5.2 全部断言 + MUT-15；`pyproject.toml` 零改动；`@codemirror/*`/`@lezer/*` 限域 `renderer/ScriptEditor.tsx`（TG-3 新用例）；
-- [x] **门禁 9（打包版手验与 e2e 夹具纪律）**：未打包构建上完成一次 02.5 编辑-保存-封板-批准、一次 03.5 顺听-纠错-撤回、人时读数可见（A1 实测回填）；**A1 为计算样式级实测**（复审返修 ①：背景/高亮/光标/字族字号对拍 + `head` 零 `<style>`，MUT-18 见 §7.6）；A2/A3/A4 见 §7.4（A2 仍未测、A3/A4 部分实测，如实登记）；**全部 e2e 在临时 repo 副本上跑，严禁指向真实 `data/`**（红队 🔵-6，`realData` 前后比对）。**打包版（release-build）手验未做**——本机当前只跑未打包构建，如实登记为未完成项）；
+- [ ] **门禁 9（打包版手验与 e2e 夹具纪律；2026-09-29 S21：未验部分如实保留——打包版手验、A2 未测；其余已验）**：未打包构建上完成一次 02.5 编辑-保存-封板-批准、一次 03.5 顺听-纠错-撤回、人时读数可见（A1 实测回填）；**A1 为计算样式级实测**（复审返修 ①：背景/高亮/光标/字族字号对拍 + `head` 零 `<style>`，MUT-18 见 §7.6）；A2/A3/A4 见 §7.4（A2 仍未测、A3/A4 部分实测，如实登记）；**全部 e2e 在临时 repo 副本上跑，严禁指向真实 `data/`**（红队 🔵-6，`realData` 前后比对）。**打包版（release-build）手验未做**——本机当前只跑未打包构建，如实登记为未完成项）；
 - [x] **门禁 10（文档门禁）**：`uv run pytest tests/test_docs_invariants.py` 全绿（12 passed）；D-R1 落地；`docs/dev/plans/README.md` 状态行更新。
 
 ---
@@ -565,63 +567,34 @@ PR 顺序允许 PR1 ∥ 任何；PR3/PR4 可并行（不同组件、共享 PR2 �
 
 ---
 
-## 附：行号核实自查表
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核；以符号为锚，行号为 HEAD 快照会漂）
 
-2026-09-26 对照工作树逐行核实（HEAD `5baf6a0`；`uv run pytest` 1715 passed、`npx vitest run` 121 passed 基线实跑）。v0.1 表经红队一轮抓出 9 处偏差（🟡-7），v0.2 全量重核回填，并在表尾增「v0.2 补核」一节（本轮修订涉及的新引用全部逐行核实）。
+> v0.1–v0.2 的逐行核实表（HEAD `5baf6a0` 基线，施工前）已整体作废：`cli.py` 因八个子命令增长约 900 行，其余文件亦有漂移。下表由 `ast` 脚本取 HEAD 的 def/class/常量起止行；漂移后以符号名为准。历史红队核实过程见 §1.1/§1.2 与 git 历史，不在活跃文档里重复。
 
-| 引用 | 核实结果 |
-|---|---|
-| `tools.py:26-28` CREATIVE_WRITABLE_FILES | ✓ `{"01-topic.md", "02-script.draft.md"}`（26 行起 set 定义，27-28 两行成员） |
-| `tools.py:62-125 write_episode_file` | ✓ 62 def；85-87 白名单检查；124 `paths.atomic_write`；scope≠creative 拒（77-79） |
-| `paths.py:118-128 atomic_write` | ✓ 118 def、126 `.tmp`、128 `os.replace`（沿用 Spec 8 附表复核结论，本机抽核一致） |
-| `cli.py:62-86 record_human_time` | ✓ 62 def；66 scout<0.1 过滤；85 `paths.atomic_write`（v0.2 按红队 🟡-7 更正：83 是 `minutes` 行） |
-| `cli.py:301-311 run_voice_session` | ✓ 301 def；306 无稿直进 loop；310 记账 |
-| `cli.py:455-460` 指令正则 | ✓ 455 `听 N`、456 `停`、457 `听`、458 `回滚 N`、459 `撤回 N`、460 `done`（均 `fullmatch`） |
-| `cli.py:463-503 VoicePlayer` / `506 run_voice_loop` / `510-513` 无稿退 1 | ✓（463 `class VoicePlayer`；471 `play_all`；481 afplay/aplay 分支；493 `stop`） |
-| `cli.py:540-548` 异读预检打印（540 调 `scan_heteronyms`、543 `[:10]`、544 `readings[:3]`） | ✓（v0.2 按红队 🟡-7/🔵-7 更正与补截断位） |
-| `cli.py:588-594`「听 N」QuickTime | ✓（592 `open -a "QuickTime Player"`；594 `xdg-open` 分支） |
-| `cli.py:624-651` done 分支 / `634-641` 云端提示（638 `cuda` 判定）/ `644-646` EOF→`"y"` | ✓（644 `input("是否立即执行增量重配 (--apply-patch)? [Y/n]")`；645-646 `except EOFError: confirm = "y"`；649 `tts.run(ep_dir, apply_patch=True)`） |
-| `cli.py:1393` REPL `/voice` 入口；`1704-1705` 裸形态 `/voice` | ✓ |
-| `cli.py:1612-1687` 裸形态分派块；`1716-1721` 非 TTY 未分派退 2（S3-R5） | ✓（1612 `if len(args) > 1`、1615 `/approvals`、1622 `/approve`、1650 `/reject`、1687 `sub_cmd = " ".join`——v0.2 按红队 🟡-7 更正） |
-| `cli.py:1148` / `1291` 人时调用点 | ✓ |
-| `corrections.py:162/393/429/453/729/813` | ✓（162 `parse_correction`、393 `load_corrections_raw`、429 `atomic_write`、453 `append_correction`、729 `revert_segment`、813 `retract_correction`） |
-| `approvals.py:51-56` `_STOP_ARTIFACTS` / `:58-63` `_STOP_GATE` / `327` 时序闸 / `330-331` 02.5 非空闸 / `735-736` 封板提示 | ✓（51 `_STOP_ARTIFACTS` 起；327 `gate_st.st_mtime_ns < art_st.st_mtime_ns`；330-331 `if stop == "02.5": return gate_st.st_size > 0`——v0.2 按红队 🟡-7 更正；735-736 提示文案含 `git diff --no-index`） |
-| `status.py:198-200` / `292-295` 02.5 分支与封板命令文本 | ✓ |
-| `tts.py:146-171 parse_script` / `1686 write_review` / `1813-1821` apply-patch 互斥与 review 独立 / `2024` seg 命名 / `395-397 probe_duration(ffprobe)` / `1852、1930` 引擎同侧拦截 | ✓（146 def parse_script、163-167 段构造——v0.2 按红队 🟡-7 更正；2024 命名沿用 Spec 8 附表复核结论；395 def probe_duration、397 ffprobe argv） |
-| `clips.py:167-175` 通道选择器注释 / `206` 人物正则 / `248-249` 锚点互斥 FAIL | ✓ |
-| `vindex.py:52 CHARACTERS` / `137-155 alias_map`（缺席抛 SystemExit 在 143-146 与 148-149） | ✓（137 def；143-146 无文件 FAIL、148-149 无番 FAIL——v0.2 按红队 🟡-7 更正） |
-| `bgm.py:288 animes_of` / `g2p.py:159 scan_heteronyms` | ✓ |
-| `check_script.py:862-875` main 输出与退出码 | ✓（862 `checks = run(...)`；866 `mark = "PASS" if c.ok else "FAIL"`；875 `return 1 if failed else 0`） |
-CLI 侧「确认类 EOF 默认否」先例 | ✓（`cli.py:674-676` 纠错落盘确认 EOF→`"n"`） |
-| `jobs.py:56 HUMAN_TIME_RECORDED` 预留且无调用点 | ✓（grep 全仓库除定义行与注释外无引用） |
-| `config/characters.json` 别名表结构（`{"<番>": {"<规范键>": [别名…]}}`，`_` 前缀为注释键） | ✓（实读文件头与「春物」段；`_note`/`_missing` 为注释键，alias_map 的 `tag.startswith("_")` 跳过逻辑一致） |
-| Spec 8 §2.3/§3.1 规则 8-9/§3.4/§3.5/门禁 14/RF-12/RF-13/§2.11 | ✓（archive 文档原文比对） |
-| Spec 9 RF-17（`cli.py:644-646` EOF 取「是」，处置归 Spec 11） | ✓（`2026-09-25-agent-session-protocol-spec.md` 正文与裁决表） |
-| Spec 10 §6.4（与 Spec 11 边界：不预置控件；RF-17 归 Spec 11） | ✓（`2026-09-25-desktop-conversation-panel-spec.md` 原文比对） |
-| `docs/runbook/02.5-human-review.md` 审查重点 3 条与封板命令 | ✓（实读全文） |
-| `skills/write-script/SKILL.md:54` 说话人抽帧约束 | ✓（54 行附近「『某某说』之前必须抽帧确认说话人」段；issues archive D19 同引） |
-| issues archive D18/D19（2026-09-25 拍板「不立判据、走替代处置」，两落点归 Spec 11） | ✓（`docs/dev/issues/archive.md:169-177` 原文比对） |
-| `git diff --no-index` 行为（有差异 exit 1 输出 unified diff；无差异 exit 0 输出空） | ✓ 实测（/tmp scratchpad，2026-09-26；输出头 `diff --git a/draft.md b/script.md` + `index …` 行） |
-| `env -i PATH=/usr/bin:/bin` 下 `git diff --no-index` 可用 | ✓ 实测（同 scratchpad；输出正常） |
-| `ffmpeg`/`ffprobe` 位于 `/opt/homebrew/bin` | ✓（`which` 实测；Spec 8 §3.4 PATH 白名单之外，§3.4 开口的依据） |
-| INFO 提示期望值 9 行（§2.5） | ✓ 实测（scratchpad 只读脚本跑真实期 `2026-07-30-春物-雪乃适合大老师`；对照实验：朴素子串匹配命中别名总数 12 → 22）**；v0.2 重跑：位置升序 + 去重规则下 4 个 PYTHONHASHSEED（0/1/42/random）输出 md5 全同 `02bd00b6…`，红队 🔴-1 预测的回填值（段 1 `雪乃、团子`、段 20 `雪之下雪乃、大老师`）逐一吻合** |
-| npm 版本（2026-09-26 `npm view`） | ✓ `@codemirror/state` 6.7.6、`@codemirror/view` 6.43.13、`@codemirror/language` 6.12.4、`@codemirror/commands` 6.11.1、`@codemirror/lang-markdown` 6.5.2 |
-| `desktop/src/` 现状（host 13 文件、renderer 9 文件、shared 12 文件；无 ScriptEditor/VoicePanel） | ✓（ls 核实——v0.2 按红队 🟡-7 更正 shared 计数；新增组件不撞名） |
-
-### v0.2 补核（红队一轮修订涉及的新引用，2026-09-26 逐行核实）
-
-| 引用 | 核实结果 |
-|---|---|
-| `corrections.py:38-47` Patch 九字段（segment/kind/word/heard/target_tone3/issue/action/scope/raw，无 `seed_pin`） | ✓（38 `class Patch`，字段逐一比对；🟡-1 属实） |
-| `corrections.py:484` `seed_pin` 落盘时生成 | ✓（`entry["seed_pin"] = random.SystemRandom().randint(1, 999999)`） |
-| `corrections.py:436-450` `apply_patch_lock`（无存活检测）/ `457` append_correction 锁检查 / `410` `save_corrections_raw` | ✓（436 def；440 存在即 SystemExit；446-450 finally unlink；457 同锁检查；🟡-3/🟡-5 属实） |
-| `corrections.py:679-704` `backup_segments`（新建快照 mkdir + copy2 manifest 与 wav）/ `tts.py:1830-1833` apply-patch 持锁分支 / `1862` 调 backup_segments | ✓（679 def；681-698 mkdir/copy2；tts 1830 `if apply_patch:`、1833 `with corrections.apply_patch_lock`、1862 `backup_segments`） |
-| Spec 8 archive line 729「将来拉起长任务必须先落 Spec 2 RF-7 的 SIGTERM 优雅关闭」 | ✓ 原文比对一致（🟡-5 属实） |
-| Spec 8 archive line 256 / 1002「结构化打点须在终端 `/voice` 完成」 | ✓ 原文比对一致（🟡-6 属实）；真实入口 `tts.py:1686 write_review`、1819-1821 独立动作分支 |
-| `cli.py:606` / `616` 回滚/撤回前 `player.stop()` | ✓（🔵-1 属实；红队写 605/614，实测 606/616，差 1 行，已在映射表采用实测值） |
-| `cli.py:66` 的 0.1 分钟过滤仅对 `scout` 生效 | ✓（`if stop == "scout"`，🔵-2 属实） |
-| `approvals.py:311-338` `_gate_valid` 三条件（存在、逐产物新于、02.5 非空） | ✓（🔵-4 属实；312 def、319-327 存在与时序、330-331 非空） |
-| `record_human_time` 消费方只读 `minutes`/`stop` | ✓（`cli.py:377` 看板 sum `minutes`；红队复核 `status.py:126` 同结论） |
-| `HUMAN_STOPS`（`approvals.py:35`）含四停机点 | ✓（红队复核一致，本机抽核 `{"02.5","03.5","05","09"}`） |
-| 位置升序 + 去重的确定性 | ✓ 实测：PYTHONHASHSEED=0/1/42/random 四轮 md5 全同 `02bd00b6685ed2dd6ef1b03595bf91c20`；同进程 3 次复跑一致 |
-| RF17-C1 目标分支（`cli.py:644-646`）无既有测试覆盖 | ✓ 红队核实，作者抽核 `tests/test_agent_cli.py` 的 EOFError 用例均不打 done 分支，改动无既有期望值破碎风险 |
+| 引用（符号） | HEAD 位置 | 核实 |
+|---|---|---|
+| `tools.py::CREATIVE_WRITABLE_FILES`（`{"01-topic.md","02-script.draft.md"}`）/ `write_episode_file` | 28–32 / 94–145 | ✅ |
+| `paths.py::atomic_write` | 118–134 | ✅ |
+| `cli.py::record_human_time`（`scout` 才有 <0.1 分钟过滤） | 82–114 | ✅ |
+| `cli.py::run_voice_session` / `VoicePlayer` / `run_voice_loop` | 354–365 / 572–612 / 615–804 | ✅ |
+| `cli.py` 顺听指令正则 `RE_PLAY_SEG/RE_STOP/RE_PLAY_ALL/RE_REVERT/RE_RETRACT/RE_DONE`（均 `fullmatch` 语义） | 563–569 | ✅ |
+| `cli.py` done 分支 EOF：**已改为取「否」**（RF17-C1，`print("[CANCEL] 未获确认…")` 后 `return 0`）；纠错落盘确认 EOF→`"n"` | 753–758；786–788 | ✅ 与 TC-12（`tests/test_stop_point_commands.py`）一致 |
+| `cli.py` 八个裸形态子命令 `/save-script /seal-script /voice-info /voice-parse /voice-add /voice-revert /voice-retract /record-time` | 818–819（清单）；分派 1238–1262 | ✅ 名称与 §3.1 一致；`VOICE_PARSE_MAX_BYTES = 64*1024` 在 822 |
+| `corrections.py::Patch`（九字段，无 `seed_pin`） | 38–47 | ✅ |
+| `corrections.py::parse_correction` / `load_corrections_raw` / `save_corrections_raw` / `apply_patch_lock` / `append_correction` | 162–373 / 393–407 / 410–432 / 436–450 / 453–494 | ✅ |
+| `corrections.py::backup_segments` / `revert_segment` / `retract_correction` | 679–704 / 759–816 / 819–841 | ✅ |
+| `approvals.py::_STOP_ARTIFACTS` / `_STOP_GATE` / `HUMAN_STOPS` / `_gate_valid` | 52–57 / 58–63 / 36 / 332–359（时序闸 347，02.5 非空闸 351） | ✅ |
+| `approvals.py` 封板提示文案（含 `git diff --no-index`） | 756 | ✅ |
+| `status.py` 02.5 分支与封板命令文本（`git diff --no-index …`） | 327–340 | ✅ |
+| `tts.py::parse_script` / `write_review` / `probe_duration` / `run`（apply-patch 互斥在 1812、持锁分支 1830–1833） | 146–170 / 1686–1703 / 395–401 / 1800–2077 | ✅ |
+| `clips.py` 人物正则（`who = re.search(r"^\s*人物…"`）与锚点互斥 FAIL | 206；248 附近 | ✅ 未漂移 |
+| `vindex.py::alias_map` / `CHARACTERS` | 137–158 / 52 | ✅ |
+| `bgm.py::animes_of` / `g2p.py::scan_heteronyms` | 288–323 / 159–187 | ✅ |
+| `check_script.py::character_hints` / `faceless_character_hints`（N47 新增，INFO 只报不拦）/ `main` | 900–924 / 948–977 / 1000–1038 | ✅ 两者均在 `main` 中调用（接线用例见 tests） |
+| `jobs.py::EventType.HUMAN_TIME_RECORDED` | 56；**已有调用点** `cli.py` 1206 | ⚠ **与 v0.2 表述相反**：v0.2 写「预留且无调用点」，PR2 后 `/record-time` 已发该事件——追认清单条目 |
+| `skills/write-script/SKILL.md` 说话人抽帧约束 | 57–58、225 | ✅（行号较 v0.2 的 54 漂移，语义不变） |
+| issues archive D18 / D19 | `archive.md` `### [D18]`、`### [D19]` | ✅ 以标题锚定 |
+| `desktop/src/` 文件（host 17、renderer 24、shared 22 文件（2026-09-29 ls 计数）；含 `ScriptEditor.tsx`、`VoicePanel.tsx`、`HumanTimeReadout.tsx`） | 目录现状 | ✅ v0.2「无 ScriptEditor/VoicePanel」已随 PR3/PR4 落地作废 |
+| e2e：`desktop/e2e/stopPoint.spec.ts` TE-1…TE-6；vitest `tests/host/stopPoint.test.ts` | TE-2 在 115、TE-3 在 137（门禁 2/4 引用的行号仍成立） | ✅ |
+| 外部事实（`git diff --no-index` 退出码语义、`env -i PATH=/usr/bin:/bin` 下可用、ffmpeg 在 `/opt/homebrew/bin`、npm 版本、INFO 期望值 9 行的 4 种 `PYTHONHASHSEED` md5 一致） | 2026-09-26 scratchpad 实测 | ⚪ 历史实测，非活断言；`package.json` 现钉版本以文件为准 |
+| Spec 8 / Spec 9 RF-17 / Spec 10 §6.4 / runbook 02.5 / issues D18·D19 原文引用 | — | ⚪ 施工前红队比对记录，S21 未逐字重比（引用的是已冻结的 archive 文档） |

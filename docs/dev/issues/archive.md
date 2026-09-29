@@ -7,6 +7,26 @@
 
 ## 2026-09-28：收尾批复核收口（只读复核 / 决策准备 session）
 
+### [D7] 次回预告仍在索引里未滤除
+- 状态：**已收口（style 侧已落盘；混入主对白轨属 N25 同构局限）**（2026-09-29 S21 收尾：状态早已是终态，按维护规则「解决即归档」仅迁移，不改结论）
+- 关联：`pipeline/subindex.py:66-105`；N25
+- 原记录（活跃表原文）：`NON_DIALOGUE_STYLE` 已补齐独立预告样式（前/后缀 `yokoku`/`preview`/`次回予告`/`下集预告`/`予告`/`预告`）并由单测+变异检验锁死。三番 ASS 实测核明：预告标题卡（春物 S2 `Title-Yokoku`、春物 S1/S3 与喰种 `Title`/`TITLE`）早已被 `^title` 滤除；真正占 ~2% 的预告角色对白在春物（`Sub-CN`/`Text-cn`，420/15009=2.80%）、东京喰种（`CN`/`Default`/`DefaultUP`，338/13810=2.45%）中直接混入正片主对白 style（与 N25 同构，纯 style 过滤若触碰会误伤全片正片台词），罪恶王冠 BD 则不含预告段（0%）。在库 151 集旧索引零差异、免重建
+
+### [D8] 纯中文字幕集数过不了对轴校验
+- 状态：**已决策（放弃该集，不入库）**（2026-09-29 S21 收尾：状态早已是终态，按维护规则「解决即归档」仅迁移，不改结论）
+- 关联：`pipeline/ingest.py:278-345`、`docs/dev/postmortems/workflow-history.md:1080`；ADR-0007
+- 原记录（活跃表原文）：2026-09-25 拍板：**放弃，不走 ASR 兜底**。verify 靠字幕含假名行对日语 ASR（对照窗判据），纯中文/假名稀疏轨无窗可用。全库实测唯一活实例 = 春物 S3 OVA（`.SC.ass` 假名行仅 4%，未入库，笔记已登记素材边界）；夏隧 zh.ass 同为 3% 但已入库。理由三条：① 1 集番外 OVA 不值「ASR(ja)+机翻+质检判据」一整条边链；② ASR+机翻双重无标定误差会混进按字幕组文本标定的检索池，质检体系不覆盖；③ 与 ADR-0007 同逻辑同判。未来若某番大量集数纯中文轨（=整部拒收）再重估 ASR 兜底
+
+### [N5] ingest phase0 重建索引时跳过 verify 的静默风险
+- 状态：**已解决（已落盘指纹校验）**（2026-09-29 S21 收尾：状态早已是终态，按维护规则「解决即归档」仅迁移，不改结论）
+- 关联：`pipeline/ingest.py:375-418,529-562`；—
+- 原记录（活跃表原文）：`register()` 落盘视频字节大小 `size` 与外挂字幕 `sub_sha256`；`phase0 --reindex` 仅在 `path + size + sub_sha256` 三项全匹配时才免跑 `verify`，同名替换片源/字幕、换路径或旧表缺指纹均自动重跑 `verify`（`tests/test_ingest.py::TestPhase0ReindexFingerprint` + M1/M2/M3 变异检验锁死）
+
+### [N28] 非终端信号（`kill -INT <ava pid>`）下 ffmpeg 孙进程存活并继续写输出
+- 状态：**已解决（真渲染复验通过）**（2026-09-29 S21 收尾：状态早已是终态，按维护规则「解决即归档」仅迁移，不改结论）
+- 关联：`pipeline/jobs.py::execute_job`；ava-impl-spec §3.3, 变异 M21
+- 原记录（活跃表原文）：`execute_job` 已开启 `Popen(start_new_session=True)` 并将 `Popen` 返回后的全周期纳入 `try ... except BaseException:`，中断时由 `_kill_process_group` 调用 `os.killpg(proc.pid, signal.SIGKILL)` + `proc.wait(timeout=2.0)` 连根拔起子进程及全部 `ffmpeg` 孙进程并收尸（`tests/test_agent_pr6.py::test_n28_*` 双腿单测 + M1/M2/M3 变异检验锁死）。2026-09-25 真渲染复验（`2026-09-06-你的名字-遗忘的代价`）：6 并发 `ffmpeg` 孙进程（PIDs 6709–6714）下发单点 `kill -INT`，响应耗时 `0.258s`，残留 `ffmpeg` 进程 `[]`（0 存活）
+
 ### [D24③] 跨挂载点迁移：shots 镜头表 meta.source 存绝对路径（D24 的 ①② 仍在活跃表挂触发条件）
 - 状态：**已解决**（施工 08f5c5a；2026-09-29 独立评审通过；仅 ③ 部分）
 - 关联：`pipeline/ingest.py`；ADR-0012, Local-First
