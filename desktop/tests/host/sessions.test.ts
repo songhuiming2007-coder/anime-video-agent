@@ -541,6 +541,45 @@ describe("TH-13 切换仓库互斥（S8-R10）", () => {
   });
 });
 
+describe("TH-13b 切仓窗口内不起新读取（N39）", () => {
+  it("switching 期间 refreshEpisodeStatuses / 活跃期 tick 都不 spawn STATUS；窗口关闭后恢复", async () => {
+    let calls = 0;
+    let gate: Promise<void> | null = null;
+    let clock = 1_000_000;
+    const base = fakeStatus();
+    const b = await boot({
+      overrides: {
+        now: () => clock,
+        chooseRepoRoot: async () => b.repo.root,
+        fetchStatus: async (r, e) => {
+          calls += 1;
+          if (gate) await gate;
+          return base(r, e);
+        },
+      },
+    });
+    await b.svc.dispatch("episode.activate", { epKey: b.epKey });
+    let release!: () => void;
+    gate = new Promise<void>((r) => (release = r));
+    const inflight = b.svc.refreshEpisodeStatuses(); // 占住一个在途读取 → 切换的 while 循环会等它，窗口保持打开
+    await waitFor(() => calls > 0);
+    const before = calls;
+    const change = b.svc.dispatch("app.requestRepoRootChange", {});
+    await waitFor(() => b.svc.switching);
+    clock += 6000; // 活跃期 status 已到期，tick 本会重读
+    const inWindow = [b.svc.refreshEpisodeStatuses(), b.svc.tickActive()]; // 不 await：无守卫时它们会卡在闸门上，断言照常先跑
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls).toBe(before);
+    release();
+    await Promise.all([inflight, change, ...inWindow]);
+    gate = null;
+    const after = calls;
+    clock += 6000;
+    await b.svc.refreshEpisodeStatuses(); // 窗口已关：恢复正常读取
+    expect(calls).toBeGreaterThan(after);
+  });
+});
+
 describe("TH-14 建期", () => {
   it("argv 逐元素等于 NEW_EPISODE 模板；成功返回 epKey；host 零写入", async () => {
     const b = await boot({ realCore: true });
