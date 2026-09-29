@@ -589,6 +589,10 @@ test("TI-10 已运行一个实例时再启动同一构建 → 第二个进程 5 
   epAt035(R.eps, "TI10");
   const L = await start(R);
   await L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].blur());
+  // N44 评审补：先把窗口最小化，「restore」才可观测——否则窗口本来就没最小化，
+  // 删掉 focusWindow 里的 restore 断言也照绿（评审变异 c 存活）。
+  await L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+  await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()), { timeout: 3000 }).toBe(true);
   const t0 = Date.now();
   const second = spawnSync(ELECTRON, [DESKTOP, `--ava-repo-root=${R.repo}`, `--ava-user-data=${L.userData}`], { cwd: DESKTOP, timeout: 10_000, encoding: "utf-8" });
   expect(second.error).toBeUndefined();
