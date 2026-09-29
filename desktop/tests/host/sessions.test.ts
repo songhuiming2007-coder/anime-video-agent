@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ConvSnapshot, Envelope, SnapshotStatus } from "../../src/shared/protocol";
 import { HostService, type HostDeps } from "../../src/host/service";
-import { spawnLog } from "../../src/host/spawner";
+import { childEnv, spawnLog } from "../../src/host/spawner";
 import { cleanup, mkEpisode, treeManifest } from "../helpers";
 import { childSignals, fixtureWrite, sessionKey, sessionRepo, sessionRecords, sessionScript, stdinLines, type SessionRepo } from "../fixtures/session";
 
@@ -240,7 +240,7 @@ describe("TH-5 不代发（H-8）", () => {
 });
 
 describe("TH-6 密钥全链路", () => {
-  it("SESSION_* 环境恰多一个键、值为标记串；标记串不进 spawn 日志 / 诊断 / 推送", async () => {
+  it("SESSION_* 环境恰多一个键、值为标记串，PATH 含 /opt/homebrew/bin（N49）；标记串不进 spawn 日志 / 诊断 / 推送", async () => {
     const marker = `SK-MARKER-${Math.random().toString(36).slice(2)}`;
     const b = await boot({ realCore: true, realKey: true });
     sessionKey(b.repo, marker);
@@ -252,6 +252,10 @@ describe("TH-6 密钥全链路", () => {
     expect(env.AVA_TEST_KEY).toBe(marker);
     const extra = Object.keys(env).filter((k) => !["PATH", "HOME", "USER", "TMPDIR", "LANG", "PYTHONUTF8", "PYTHONUNBUFFERED", "__CF_USER_TEXT_ENCODING"].includes(k));
     expect(extra).toEqual(["AVA_TEST_KEY"]);
+    // N49：会话进程实际拿到的 PATH 恰为「系统四段 + /opt/homebrew/bin」（取自子进程内部的 os.environ，不是 spawn 参数）；
+    // 其余白名单项与 childEnv 的产物逐项相同——开 PATH 口子不许顺带改别的
+    expect(env.PATH).toBe("/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin");
+    for (const [k, v] of Object.entries(childEnv(process.env))) if (k !== "PATH") expect(env[k], k).toBe(v);
     expect(JSON.stringify(spawnLog)).not.toContain(marker);
     expect(JSON.stringify(b.pushes)).not.toContain(marker);
     expect(b.svc.health().diagnostics.join("\n")).not.toContain(marker);

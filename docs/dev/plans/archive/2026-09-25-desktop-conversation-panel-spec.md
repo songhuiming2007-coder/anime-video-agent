@@ -501,6 +501,7 @@ interface EpisodesList  { /* 现有字段 */ idea: { live: boolean; running: boo
 
 - `spawner.ts` 仍是全 `desktop/` 唯一 import `node:child_process` 的文件（TG-3 不变）；新增 `spawnSession()` 返回一个窄接口 `{ pid, write(line), onStdout(chunk), onStderr(chunk), onExit(code, signal), signal(sig, group) }`，不把 `ChildProcess` 类型漏出该文件。
 - `SESSION_*` 的 spawn 日志只记模板名、argv 与会话键，不记环境。
+- **2026-09-29 修订（N49），经用户同意**：`SESSION_*` 的「白名单」里 PATH 为 `/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`（Spec 8 §3.4 同日修订记录）。原因：会话内 `run_pipeline` 起的作业原样继承会话 env，固定 PATH 下 render/qc/cover/tts 等按名字调 `ffmpeg`/`ffprobe` 全部 `FileNotFoundError`，桌面端跑不完任何一期。密钥变量仍至多一个，且 §2.9 规则 2 拒绝名为 `PATH` 的密钥变量，注入覆盖不到 PATH。
 - 未打包构建的测试钩子可把 `KEYCHAIN_READ` 的可执行路径换成夹具脚本（`!isPackaged` 守卫，TG-6）；打包版无此开关。
 
 ### 3.5 常量（全部为初值，PR2/PR4 实测回填）

@@ -5,7 +5,7 @@
 // - 失败原文：界面文本与真实 `session.jsonl` 里对应 tool 消息的 content 逐字节比对（TX-1）；
 // - 配对：假端点对配对不齐的历史回 400，`badPairings == 0` 由真实请求体证明。
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
@@ -445,6 +445,37 @@ test("TX-15 真实 core：有打开卡时 kill -9 host → 原会话键结束、
       await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 3_000 });
     }).toPass({ timeout: 90_000 });
     await expect(L.page.getByTestId("conv-stream")).toContainText("第一轮答复");
+  });
+});
+
+// N49：会话 spawn 的 PATH 白名单里没有 /opt/homebrew/bin，会话里 run_pipeline 起的作业（jobs.py 原样继承
+// 会话 env）按名字调 ffmpeg/ffprobe 就 FileNotFoundError。既有真实 core 用例只跑 check_script（不碰 ffmpeg），
+// 所以一直没暴露。这里用 qc：它先 ffprobe 两条流的时长，再用 ffmpeg 测响度，两个程序都走到。
+// qc 在 5 s 夹具上本身判不合格（片长、响度），作业退出码必非 0——断言落在「ffmpeg/ffprobe 真的跑了」，不在作业成败。
+const HOMEBREW_FFMPEG = "/opt/homebrew/bin/ffmpeg";
+
+test("N49 真实 core：会话里批准 run_pipeline qc → 作业能按名字找到 ffprobe/ffmpeg（06-check.log 有实测的音画时长与响度）", async () => {
+  // 修法假定 ffmpeg 在 /opt/homebrew/bin（Apple Silicon Homebrew）；不在就不是这条用例能证明的环境
+  expect(existsSync(HOMEBREW_FFMPEG), `${HOMEBREW_FFMPEG} 不存在`).toBe(true);
+  await withRealCore(async (fx) => {
+    const { L, llm } = fx;
+    const epDir = join(fx.repo.eps, "SESS-A");
+    execFileSync(HOMEBREW_FFMPEG, ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(epDir, "05-final.mp4")]);
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("质检跑完了。"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "跑一下质检");
+    await L.page.getByTestId("request-answer-approve").click();
+    await waitTurns(L, "ep:SESS-A", 1);
+
+    const toolMsg = sessionLog(fx, "SESS-A").find((r) => r.k === "msg" && (r.message as { role: string }).role === "tool")!;
+    const content = (toolMsg.message as { content: string }).content;
+    const result = JSON.parse(content).result as { argv: string[] };
+    expect(result.argv.slice(1, 3)).toEqual(["-m", "pipeline.qc"]); // 前提：跑的确实是 qc 作业
+    expect(content, "作业按名字找不到 ffmpeg/ffprobe").not.toMatch(/No such file or directory: '(ffprobe|ffmpeg)'/);
+    // 两条都只能由真实跑过的探测写出：音画时长对齐 = ffprobe 读到两条流；响度读数 = ffmpeg ebur128 跑完
+    const log = readFileSync(join(epDir, "06-check.log"), "utf-8");
+    expect(log).toMatch(/PASS\s+音画时长对齐\s+画面 5\.000s \/ 音频 5\.000s/);
+    expect(log).toMatch(/响度 .*-\d+\.\d+ LUFS/);
   });
 });
 
