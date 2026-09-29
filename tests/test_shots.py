@@ -501,3 +501,41 @@ class TestSourcePathPortability:
         src_file.touch()
         m = shots.meta("番", 1, 1, {"path": str(src_file), "duration": 100.0, "fps": 23.976})
         assert m["source"] == "library/raw/番/ep01.mkv"
+
+    def _table_with_source(self, tmp_path, monkeypatch, source: str):
+        """造一张镜头表（meta.source 为给定落盘形态）+ 真实存在的片源，_extract 换成记录器。"""
+        monkeypatch.setattr(shots.paths, "DATA", tmp_path / "data")
+        monkeypatch.setattr(shots.paths, "ROOT", tmp_path)
+        f = tmp_path / "data" / "library" / "raw" / "番" / "ep01.mkv"
+        f.parent.mkdir(parents=True)
+        f.touch()
+        out_dir = tmp_path / "shots"
+        out_dir.mkdir()
+        table = {"meta": {"scene_threshold": 10.0, "min_shot": 0.5, "fps": "25/1",
+                          "duration": 10.0, "source": source},
+                 "shots": [{"i": 0, "start": 0.0, "end": 1.0, "rep": 0.5}]}
+        (out_dir / "番_S01E01.json").write_text(json.dumps(table), encoding="utf-8")
+        monkeypatch.setattr(shots, "threshold", lambda *a, **k: 10.0)
+        monkeypatch.setattr(shots, "min_shot", lambda: 0.5)
+        self._f = f
+        return out_dir
+
+    class _Stop(Exception):
+        pass
+
+    def test_frames_与_caption_frames_读取侧走resolve(self, tmp_path, monkeypatch):
+        """D24③ 评审补：写入侧存相对 data 根后，两个抽帧入口若仍直接 Path(meta.source)，
+        相对路径按 cwd 解析必然找不到片源——只测 _resolve_source 本身守不到这两处接线。"""
+        seen: list = []
+
+        def fake_extract(src, *a, **k):
+            seen.append(src)
+            raise self._Stop
+
+        out_dir = self._table_with_source(tmp_path, monkeypatch, "library/raw/番/ep01.mkv")
+        monkeypatch.setattr(shots, "_extract", fake_extract)
+        with pytest.raises(self._Stop):
+            shots.frames("番", "S01E01", out_dir, dest_dir=tmp_path / "frames")
+        with pytest.raises(self._Stop):
+            shots.caption_frames("番", "S01E01", out_dir, dest_dir=tmp_path / "frames")
+        assert seen == [self._f, self._f]
