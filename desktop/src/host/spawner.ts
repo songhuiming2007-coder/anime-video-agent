@@ -126,7 +126,7 @@ export interface BuiltCore {
   stdoutMax?: number;
   /** stdin pipe 例外（Spec 11 S8-R13 / Spec 12 S8-R18）：写入端写完即 end() */
   stdinPipe?: boolean;
-  /** git/ffprobe 在 /opt/homebrew/bin（仅 SEAL_SCRIPT 与 RUN_TTS_APPLY_PATCH，A3） */
+  /** git/ffprobe 在 /opt/homebrew/bin（SEAL_SCRIPT 与 RUN_TTS_APPLY_PATCH，A3；SESSION_* 在 spawnSession 里恒开，N49） */
   homebrewPath?: boolean;
 }
 
@@ -460,7 +460,10 @@ export function spawnSession(t: SessionTemplate, args: { ep?: string }, ctx: { r
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
     cwd: ctx.repoRoot,
-    env: { ...childEnv(process.env), ...extraEnv },
+    // N49：会话里 run_pipeline 起的作业（jobs.py 原样继承本 env）按名字调 ffmpeg/ffprobe（与 acquire 的 yt-dlp），
+    // 它们只在 /opt/homebrew/bin——与 SEAL_SCRIPT、RUN_TTS_APPLY_PATCH 同一开口（A3）。追加在末尾，系统目录里的同名程序仍优先。
+    // extraEnv 只可能是密钥变量：指名 PATH 的配置在注入前就被 validKeyEnvName 拒掉（TH-7），覆盖不到这里。
+    env: { ...childEnv(process.env, true), ...extraEnv },
   });
   return {
     pid: child.pid,
