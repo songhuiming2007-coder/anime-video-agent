@@ -149,7 +149,8 @@
 desktop/
   package.json  package-lock.json  tsconfig.json
   electron.vite.config.ts            # main / preload / renderer / host 四入口
-  electron-builder.yml               # asar + 9 位 fuses + publish: null + identity: null（§2.10）
+  electron-builder.yml               # asar + 9 位 fuses + publish: null + identity: null + mac.icon（§2.10）
+  build/icon.icns                    # app 图标；源稿 build/icon-source/（2026-09-29 修订）
   scripts/verify-fuses.mjs           # 读已打包二进制的全部 9 位 fuse + 复算 asar 头哈希
   scripts/write-build-info.mjs       # 构建时写 out/build-info.json（git HEAD、desktop/ 是否脏）
   src/
@@ -330,7 +331,7 @@ desktop/
 | `WasmTrapHandlers` | **不设值，保持 Electron 44 默认** | electron-builder 26.15.3 无法设置；不为一位与 v1 无关的 fuse 引入 afterPack 脚本。TS-2 读出实际位值写入期望表，漂移即红 |
 | `resetAdHocDarwinSignature`（非 fuse，选项） | `true` | 翻 fuse 改了二进制，arm64 需重新 ad-hoc 签名（约，假设 1） |
 
-  4. **其余打包项冻结**（TG-5 全部纳入）：`publish: null`——electron-builder 在 `publish` 未设时会因 npm `release` 生命周期、CI tag 或 CI 环境**隐式发布**（`publish/PublishManager.js:46-60`），且有 `GH_TOKEN`/`GITHUB_TOKEN` 时自动选 github provider（`:365`），碰红线 6；`mac.identity: null`——源码语义为「跳过签名、不查 keychain」（`macPackager.js:295-297` → `mac/MacTargetHelper.js:13-19`），避免构建结果取决于本机 keychain 内容；因此**整个 bundle 不签名**，只有 fuses 步骤对主二进制做 ad-hoc 重签（红队 m2；不改用 `identity: "-"`：`codeSign/macCodeSign.js:227` 按 `line.includes(qualifier)` 子串匹配，会误选名字含连字符的钥匙串身份）；`mac.target: dir`。
+  4. **其余打包项冻结**（TG-5 全部纳入）：`publish: null`——electron-builder 在 `publish` 未设时会因 npm `release` 生命周期、CI tag 或 CI 环境**隐式发布**（`publish/PublishManager.js:46-60`），且有 `GH_TOKEN`/`GITHUB_TOKEN` 时自动选 github provider（`:365`），碰红线 6；`mac.identity: null`——源码语义为「跳过签名、不查 keychain」（`macPackager.js:295-297` → `mac/MacTargetHelper.js:13-19`），避免构建结果取决于本机 keychain 内容；因此**整个 bundle 不签名**，只有 fuses 步骤对主二进制做 ad-hoc 重签（红队 m2；不改用 `identity: "-"`：`codeSign/macCodeSign.js:227` 按 `line.includes(qualifier)` 子串匹配，会误选名字含连字符的钥匙串身份）；`mac.target: dir`。`mac.icon: build/icon.icns`（**2026-09-29 修订，经用户同意**：app 图标。纯资源，打进 `Contents/Resources/`，不改 asar、fuses、签名、发布任何一项语义，TG-5 不纳入；源稿、定稿参数与 1024px 母版在 `desktop/build/icon-source/`——`render.html` 内嵌绘制代码与定稿参数（同 `final-props.json`），浏览器打开即重绘，`#out` 里是 1024px PNG 的 dataURL；改图标 = 改参数重导出，再用 `sips` + `iconutil` 生成 `.icns`）。
 - **失败行为（冻结）**：校验不过 → Electron 在应用代码运行前终止进程（Electron 语义，约；TS-1 以篡改实测）。**fail-closed、无旁路**。诊断走 `scripts/verify-fuses.mjs`（读全部 9 位 fuse，复算 asar 头哈希并与 Info.plist 比对）。恢复唯一路径：重新构建安装。
 - **启动参数白名单（红队 B4，v0.3 按 m3 由黑名单改白名单）**：9 位 fuses 中没有禁用 `--remote-debugging-port/pipe` 的一位，而黑名单不可能列全。packaged 版 main 入口第一件事检查 `process.argv.slice(1)`：除 macOS 可能附带的 `-psn_*` 外出现任何参数，即向 stdout 打印 `AVA_REFUSE argv` 并 `app.exit(1)`，不建窗口、不起 host（TS-6）。DevTools 端口在 JS 执行前是否已短暂监听为假设 7，TS-6 如实记录。
 - **关闭 AppKit 窗口状态恢复（N30，S23 修复轮新增，经用户同意）**：app 崩溃过之后，AppKit 会在 `finishLaunching` 里弹模态框「上次意外退出，要重新打开窗口吗？」，没人点就永远到不了 ready。ava 的窗口不靠 AppKit 恢复，packaged 版 main 在通过白名单后、`boot()` 之前向 app 自己的偏好域写 `ApplePersistenceIgnoreState=YES`（`systemPreferences.setUserDefault`；须早于 `finishLaunching`）。未打包构建的偏好域是 Electron 共用的，不写（TS-9）。
