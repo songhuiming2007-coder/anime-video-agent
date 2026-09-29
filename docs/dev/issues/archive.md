@@ -7,6 +7,18 @@
 
 ## 2026-09-28：收尾批复核收口（只读复核 / 决策准备 session）
 
+### [N43] Playwright 硬编码 `workers: 1`，全量 e2e 只能串行
+- 状态：**已解决**（施工 9f07166；2026-09-29 独立评审通过）
+- 关联：`desktop/playwright.config.ts`（`workers: 1`）；Spec 8 §7, Spec 10 §7
+- 原记录（活跃表原文，含施工回填）：2026-09-28 人报：各用例已有独立临时 `--ava-repo-root` / `--ava-user-data`，理论上可并行。**但并行等于自加负载**：D31/D32/N37 都是「负载下才红」的时序问题，且真实数据零污染的 globalSetup/teardown 在多 worker 下是否仍成立未核。推进：等 D31/D32/N37 收口、N41/N42 落地后再试 `workers: 2–3`，负载下复跑全量 ×3 全绿才可改 **2026-09-28 人拍板：开施工试点 workers=2**。验收：负载下未打包全量 ×3 全绿、真实数据零污染的 globalSetup/teardown 在多 worker 下仍成立（逐条核）；不达标则登记原因退回 workers=1。  **2026-09-28 施工（已修·待评审）**：`playwright.config.ts` workers 1→2（config 注释写明前置与多 worker 安全性论证：用例 mkdtemp 独立 repo/userData、无共享端口——媒体走自定义 scheme、globalSetup/Teardown 是进程级钩子仍只跑一次）。验收实测：空载全量绿（5.6 min，串行 9.3 min，约 -40%）；负载（6×yes）下——N48 修复前 5 轮 3 红（VE-1 ×2 + TX-15 ×1，TX-15 查实是 N48 的 NameError 与 workers 无关）；**N48 修复后负载 ×3 全绿**（111 passed / 2 skipped ×3），真实数据零污染校验逐轮通过。**评审注意（诚实申报）**：N48 修复前 VE-1 在 workers=2+负载下红过 2 次，当时未存日志、直接证据缺失；修复后 3/3 绿。VE-1 那两次红疑似 2 worker + 6×yes 超订下 10 s 等待预算见底，若复发应登记新条目（不许调大超时消音）。TX-15 负载红（N48）已修，workers=2 的验收轮次是在它修复后跑的
+- 评审：✅ 通过。① workers=2 独立验证（实测）：空载全量 e2e 1 次 111 passed / 2 skipped（5.7 min）；6×yes 满载全量 2 次均 111 passed / 2 skipped（5.9 / 6.1 min），零失败零重试，每轮 globalTeardown 输出「真实数据零污染」。② 未复测 workers=1 的串行基线耗时，施工方『空载 -40%』未独立证实（本次只证 workers=2 稳定）。③ 边界：config diff 被卷进 N48 的 commit a532725（施工时工作树未提交）属提交卫生问题，内容本身正确；施工方记录的『N48 修复前 VE-1 在 workers=2+负载下红 2 次、直接证据未抓到』——评审满载 ×2 未复现，若复发须登记新条目。
+
+### [N44] TI-10「第二实例启动 → 已有窗口获得焦点」在人正操作别的 app 时偶发红
+- 状态：**已解决**（施工 c7036ac；2026-09-29 独立评审通过）
+- 关联：`desktop/e2e/ack.spec.ts`（TI-10 的 `isFocused()` 轮询 3 s）；Spec 8 §7（TI-10）
+- 原记录（活跃表原文，含施工回填）：2026-09-28 N37 负载验收时发现：负载全量 ×3 中 2 次红；随后单跑——后台模式负载 1/3、前台模式（不带 `--ava-test-background`）负载 2/3、前台空载 3/4 通过，均在人正用终端打字时。判断：断言要的是「macOS 把系统焦点交给本窗口」，macOS 14 起协作式激活会在用户正操作别的 app 时拒绝抢前台，属用例对环境的依赖，**未证实与 N41 有关**（样本小，两种模式分不出差别，故未给 TI-10 开前台特例）。候选：① 断言降为「main 调用了 focusWindow 且窗口 restore/show」+ 真机手验焦点；② 保留焦点断言但仅在无人值守时跑（需可检测的开关）；③ 维持现状并在评审口径里注明「人在机器前时 TI-10 红不算回归」。推荐 ①（焦点是否授予本就不归 app 控制），待人拍板 **2026-09-28 人拍板：采纳候选 ①**——TI-10 的焦点断言改为「main 确实调用了 focusWindow，且窗口已 restore/show」（可观测、不依赖 macOS 是否授予焦点），系统焦点是否真的给到改为打包版真机手验一项；不改 N41 的后台模式。  **2026-09-28 修复（已修·待评审）**：TI-10 的 `isFocused()` 轮询删除，改为断言 ① main 侧 `__avaTestFocusCalls` 计数 +1（仅未打包构建的 dev 计数器，focusWindow 内自增）② 窗口 `isMinimized:false` + `isVisible:true`。Spec 8（archive）TI-10 行已加 N44 修订注记；系统焦点授予列入打包版真机手验。变异 2/2（还原 md5 对拍）：删计数自增→TI-10 红；second-instance 不调 focusWindow→TI-10 红。tsc 通过、vitest 377 passed、未打包全量 e2e 111 passed/2 skipped（真实数据零污染）。**评审注意**：① 「窗口 blur 后 focusWindow 被调」由 dev 计数器观测，focus() 本身的系统效果不再有机检（已转述给人的手验项）；② 手验可与 D37 配方同场做
+- 评审：✅ 通过（附一处加固）。① 复现与基线（实测）：TI-10 单跑 3/3 绿；未打包全量 e2e 空载 111 passed / 2 skipped。② 变异 4 条（每条改 main 后 electron-vite build、还原后重建，md5 对拍）：删计数自增→TI-10 红；second-instance 不调 focusWindow→TI-10 红；**删 focusWindow 里的 restore→SURVIVED**（窗口本来就没最小化，『restore/show』断言不可观测）——评审补：先 minimize 并轮询到 isMinimized 再起第二实例，重跑 KILLED，加固版单跑 3/3 绿；删 win.focus()→仍绿，属人拍板候选①的既定边界（系统焦点授予不归 app 控制，改打包版真机手验，未机检）。③ 遗留：打包版真机焦点手验仍是待人项，可与 D37 配方同场。
+
 ### [D7] 次回预告仍在索引里未滤除
 - 状态：**已收口（style 侧已落盘；混入主对白轨属 N25 同构局限）**（2026-09-29 S21 收尾：状态早已是终态，按维护规则「解决即归档」仅迁移，不改结论）
 - 关联：`pipeline/subindex.py:66-105`；N25
