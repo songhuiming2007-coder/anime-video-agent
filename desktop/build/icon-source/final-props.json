@@ -1,0 +1,13 @@
+{
+  "palette": "violet",
+  "ring": true,
+  "lean": 14,
+  "legWeight": 34,
+  "cut": 0,
+  "angle": 33,
+  "reach": 21,
+  "bend": 0.85,
+  "blade": 20,
+  "spark": 31,
+  "centerOn": "massA"
+}

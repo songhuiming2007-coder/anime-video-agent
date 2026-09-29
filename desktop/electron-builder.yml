@@ -17,6 +17,8 @@ mac:
   target: dir
   # null = 跳过签名、不查 keychain；只有 fuses 步骤对主二进制 ad-hoc 重签（假设 1）
   identity: null
+  # 纯资源，不碰签名 / 完整性 / fuses / 发布；源稿与参数在 build/icon-source/（2026-09-29 修订，经用户同意）
+  icon: build/icon.icns
 electronFuses:
   runAsNode: false
   enableCookieEncryption: true

@@ -1,0 +1,250 @@
+<!doctype html><html><body><pre id="out"></pre><script>
+class DCLogic {}
+
+const PALETTES = {
+hot: ['#3F1530', '#8E2F5A', '#FF4F86'],
+violet: ['#2E1440', '#6B2F8E', '#A86BFF'],
+ice: ['#3F1530', '#8E2F5A', '#3FB8F5']
+};
+function poly(ctx, pts) {
+ctx.beginPath();
+ctx.moveTo(pts[0], pts[1]);
+for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+ctx.closePath();
+}
+function bez(s, t) {
+const u = 1 - t;
+return [
+u * u * u * s[0] + 3 * u * u * t * s[2] + 3 * u * t * t * s[4] + t * t * t * s[6],
+u * u * u * s[1] + 3 * u * u * t * s[3] + 3 * u * t * t * s[5] + t * t * t * s[7]
+];
+}
+function bezTan(s, t) {
+const u = 1 - t;
+const dx = 3 * u * u * (s[2] - s[0]) + 6 * u * t * (s[4] - s[2]) + 3 * t * t * (s[6] - s[4]);
+const dy = 3 * u * u * (s[3] - s[1]) + 6 * u * t * (s[5] - s[3]) + 3 * t * t * (s[7] - s[5]);
+const L = Math.hypot(dx, dy) || 1;
+return [dx / L, dy / L];
+}
+function bezPolyline(ctx, s, t0, t1) {
+ctx.beginPath();
+for (let i = 0; i <= 48; i++) {
+const p = bez(s, t0 + (t1 - t0) * i / 48);
+if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+}
+}
+function blade(ctx, s, widthAt) {
+const up = [];
+const down = [];
+for (let i = 0; i <= 64; i++) {
+const t = i / 64;
+const p = bez(s, t);
+const d = bezTan(s, t);
+const w = widthAt(t) / 2;
+up.push(p[0] - d[1] * w, p[1] + d[0] * w);
+down.unshift(p[0] + d[1] * w, p[1] - d[0] * w);
+}
+poly(ctx, up.concat(down));
+}
+function polyCentroid(pts) {
+let a = 0;
+let cx = 0;
+let cy = 0;
+for (let i = 0; i < pts.length; i++) {
+const p0 = pts[i];
+const p1 = pts[(i + 1) % pts.length];
+const f = p0[0] * p1[1] - p1[0] * p0[1];
+a += f;
+cx += (p0[0] + p1[0]) * f;
+cy += (p0[1] + p1[1]) * f;
+}
+a /= 2;
+return { a: Math.abs(a), x: cx / (6 * a), y: cy / (6 * a) };
+}
+function bladeWidth(max, t) {
+// 收尖段用 1-u²：起点斜率为 0，与前段平滑衔接（线性收尖在 t=0.82 处会折出一个角），末端仍收成尖
+const u = t < 0.82 ? 0 : (t - 0.82) / 0.18;
+return max * Math.pow(t, 0.8) * (1 - u * u);
+}
+function sparkle(ctx, cx, cy, r, thin) {
+const w = r * thin;
+ctx.beginPath();
+ctx.moveTo(cx, cy - r);
+ctx.lineTo(cx + w, cy - w);
+ctx.lineTo(cx + r, cy);
+ctx.lineTo(cx + w, cy + w);
+ctx.lineTo(cx, cy + r);
+ctx.lineTo(cx - w, cy + w);
+ctx.lineTo(cx - r, cy);
+ctx.lineTo(cx - w, cy - w);
+ctx.closePath();
+}
+class Component extends DCLogic {
+componentDidMount() { this.draw(); }
+componentDidUpdate() { this.draw(); }
+geom() {
+const p = this.props;
+const t = Math.tan((p.lean ?? 8) * Math.PI / 180);
+const w = p.legWeight ?? 28;
+const cut = p.cut ?? 0;
+const innerY = 92 + 64 * w / 28;
+const legs = [194, 92, 276, 300 - cut, 276 - w, 300 + cut, 194, innerY, 112 + w, 300 - cut, 112, 300 + cut];
+const sx = 112 + (44 / 208) * 82 + w * 0.232 + t * 44;
+const ang = (p.angle ?? 33) * Math.PI / 180;
+const R = 148.5 + (p.reach ?? 32);
+const ex = 206 + R * Math.cos(ang);
+const ey = 206 - R * Math.sin(ang);
+const bend = p.bend ?? 1;
+const c2x = ex - 58 * bend;
+const c2y = ey + 92 * bend;
+const swoosh = [sx, 256, 220, 240, c2x, c2y, ex, ey];
+const tl = Math.hypot(ex - c2x, ey - c2y) || 1;
+const r = p.spark ?? 30;
+const sparkX = Math.min(406 - r, Math.max(r + 6, ex + (ex - c2x) / tl * r * 0.8));
+const sparkY = Math.min(406 - r, Math.max(r + 6, ey + (ey - c2y) / tl * r * 0.8));
+const bladeW = p.blade ?? 22;
+// 几何居中：默认只取 A 字形（斜切后）的包围盒中心，平移到圆环中心 (206,206)；刀锋与星芒是破框部分，不参与；圆环不移动
+const legPts = [];
+for (let i = 0; i < legs.length; i += 2) legPts.push([legs[i] - t * (legs[i + 1] - 300), legs[i + 1]]);
+const allPts = legPts.slice();
+for (let i = 0; i <= 128; i++) {
+const tt = i / 128;
+const q = bez(swoosh, tt);
+const d = bezTan(swoosh, tt);
+const hw = bladeWidth(bladeW, tt) / 2;
+allPts.push([q[0] - d[1] * hw, q[1] + d[0] * hw], [q[0] + d[1] * hw, q[1] - d[0] * hw]);
+}
+if (r > 0) allPts.push([sparkX - r, sparkY], [sparkX + r, sparkY], [sparkX, sparkY - r], [sparkX, sparkY + r]);
+const mode = p.centerOn ?? 'massA';
+const src = mode === 'whole' ? allPts : legPts;
+const xs = src.map((q) => q[0]);
+const ys = src.map((q) => q[1]);
+let ox = mode === 'none' ? 0 : 206 - (Math.min(...xs) + Math.max(...xs)) / 2;
+const oy = mode === 'none' ? 0 : 206 - (Math.min(...ys) + Math.max(...ys)) / 2;
+// 横向按面积重心：前倾后 A 的质量偏右，包围盒中心会低估它
+if (mode === 'massA' || mode === 'mass') {
+const cA = polyCentroid(legPts);
+let m = cA.a;
+let mx = cA.a * cA.x;
+if (mode === 'mass') {
+const up = [];
+const down = [];
+for (let i = 0; i <= 64; i++) {
+const tt = i / 64;
+const q = bez(swoosh, tt);
+const d = bezTan(swoosh, tt);
+const hw = bladeWidth(bladeW, tt) / 2;
+up.push([q[0] - d[1] * hw, q[1] + d[0] * hw]);
+down.unshift([q[0] + d[1] * hw, q[1] - d[0] * hw]);
+}
+const cB = polyCentroid(up.concat(down));
+m += cB.a;
+mx += cB.a * cB.x;
+if (r > 0) {
+const aS = 0.4 * r * r;
+m += aS;
+mx += aS * sparkX;
+}
+}
+ox = 206 - mx / m;
+}
+return { t: t, legs: legs, swoosh: swoosh, blade: bladeW, r: r, sparkX: sparkX, sparkY: sparkY, ox: ox, oy: oy };
+}
+draw() {
+const el = this.cv;
+if (!el) return;
+const c = PALETTES[this.props.palette ?? 'hot'] || PALETTES.hot;
+const g = this.geom();
+const ctx = el.getContext('2d');
+const k = el.width / 512;
+ctx.setTransform(1, 0, 0, 1, 0, 0);
+ctx.clearRect(0, 0, el.width, el.height);
+ctx.setTransform(k, 0, 0, k, 0, 0);
+ctx.save();
+ctx.shadowColor = 'rgba(90,20,50,0.2)';
+ctx.shadowBlur = 16;
+ctx.shadowOffsetY = 6;
+const bg = ctx.createLinearGradient(0, 50, 0, 462);
+bg.addColorStop(0, '#FCF0F3');
+bg.addColorStop(1, '#F6DEE6');
+ctx.beginPath();
+ctx.roundRect(50, 50, 412, 412, 93);
+ctx.fillStyle = bg;
+ctx.fill();
+ctx.restore();
+if (!this.layer) this.layer = document.createElement('canvas');
+const layer = this.layer;
+layer.width = el.width;
+layer.height = el.height;
+const l = layer.getContext('2d');
+l.setTransform(k, 0, 0, k, 0, 0);
+if (this.props.ring ?? true) {
+l.beginPath();
+l.arc(256, 256, 148.5, 0, Math.PI * 2);
+l.strokeStyle = '#D9A0B3';
+l.lineWidth = 3;
+l.stroke();
+}
+l.save();
+l.translate(50 + g.ox, 50 + g.oy);
+l.save();
+l.translate(206, 300);
+l.transform(1, 0, -g.t, 1, 0, 0);
+l.translate(-206, -300);
+const lg = l.createLinearGradient(0, 92, 0, 300);
+lg.addColorStop(0, c[1]);
+lg.addColorStop(1, c[0]);
+poly(l, g.legs);
+l.fillStyle = lg;
+l.fill();
+l.restore();
+l.globalCompositeOperation = 'destination-out';
+bezPolyline(l, g.swoosh, 0.35, 0.9);
+l.lineWidth = g.blade + 8;
+l.lineCap = 'butt';
+l.stroke();
+l.restore();
+ctx.setTransform(1, 0, 0, 1, 0, 0);
+ctx.drawImage(layer, 0, 0);
+ctx.setTransform(k, 0, 0, k, 0, 0);
+ctx.save();
+ctx.translate(50 + g.ox, 50 + g.oy);
+const s = g.swoosh;
+const sg = ctx.createLinearGradient(s[0], s[1], s[6], s[7]);
+sg.addColorStop(0, c[1]);
+sg.addColorStop(1, c[2]);
+blade(ctx, s, (t) => bladeWidth(g.blade, t));
+ctx.fillStyle = sg;
+ctx.fill();
+if (g.r > 0) {
+ctx.shadowColor = c[2];
+ctx.shadowBlur = 6;
+ctx.fillStyle = c[2];
+sparkle(ctx, g.sparkX, g.sparkY, g.r, 0.1);
+ctx.fill();
+ctx.fillStyle = '#FFFFFF';
+sparkle(ctx, g.sparkX, g.sparkY, g.r * 0.43, 0.14);
+ctx.fill();
+}
+ctx.restore();
+}
+renderVals() {
+if (!this._setCanvas) this._setCanvas = (el) => { this.cv = el; if (el) this.draw(); };
+const px = this.props.px ?? 512;
+const dpr = Math.max(2, window.devicePixelRatio || 1);
+return { px: px, cw: Math.round(px * dpr), setCanvas: this._setCanvas };
+}
+}
+
+const c = new Component();
+c.props = {"palette": "violet", "ring": true, "lean": 14, "legWeight": 34, "cut": 0, "angle": 33, "reach": 21, "bend": 0.85, "blade": 20, "spark": 31, "centerOn": "massA"};
+const el = document.createElement('canvas');
+el.width = 1024;
+el.height = 1024;
+c.cv = el;
+c.draw();
+document.getElementById('out').textContent = el.toDataURL('image/png');
+document.getElementById('out').style.display = 'none';
+el.style.width = '512px';
+document.body.appendChild(el);
+</script></body></html>
