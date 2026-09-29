@@ -470,6 +470,7 @@ export class HostService {
 
   async refreshEpisodeStatuses(): Promise<void> {
     if (!this.repoRoot || this.reach !== "ok") return;
+    if (this.switching) return; // N39：切换窗口内代号已 +1 而仓库根还是旧的，此时起跑会拿「新代号 + 旧根」读；切换收尾会自己再刷一次
     this.refreshEpisodes();
     const queue = [...this.episodes.values()];
     const repoRoot = this.repoRoot;
@@ -783,6 +784,7 @@ export class HostService {
       rt.status = { ok: false, code: "E_UNREACHABLE", message: this.repoRootProblem ?? "无仓库" };
       return;
     }
+    if (this.switching) return; // N39：同上——切换窗口内不起新读取（rt 随后会被 episodes.clear 丢弃）
     const gen = this.repoGen;
     const st = await this.track(this.deps.fetchStatus(this.repoRoot, rt.abs));
     if (!this.cfg.isPackaged) await this.track(this.testHook("status-result")); // TA-12 ③：暂停一个在途 STATUS
