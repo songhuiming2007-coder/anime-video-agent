@@ -22,7 +22,17 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .topbar .wordmark { font-weight: var(--weight-semibold); letter-spacing: 0.02em; }
 .spacer { flex: 1; }
 .repo { min-width: 0; color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--sidebar-w) var(--center-w) minmax(0, 1fr); gap: var(--space-1); padding: 0 var(--space-1) var(--space-1) 0; }
+/* D39 S2：列宽由 App 按分栏状态运行时设（layout.ts::gridColumns），这里只是首帧兜底；栏间距由 8px 的拖拽手柄承担。
+   不再引用 --sidebar-w / --center-w（tokens.css 一字不改，人 2026-09-29 裁决） */
+.main { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 8px minmax(0, 1fr) 40px; gap: 0; padding: 0 var(--space-1) var(--space-1) 0; }
+.preview[hidden] { display: none; }
+.splitter { position: relative; cursor: col-resize; touch-action: none; border-radius: var(--radius-sm); }
+.splitter::after { content: ""; position: absolute; left: 3px; top: calc(50% - 16px); width: 2px; height: 32px; border-radius: var(--radius-pill); background: var(--border-strong); }
+.splitter:hover::after, .splitter:active::after { top: 0; height: 100%; background: var(--accent-strong); }
+.preview-rail { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); min-height: 0; margin-left: var(--space-1); padding: var(--space-2) 0; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--bg-panel); color: var(--fg-muted); cursor: pointer; }
+.preview-rail:hover { color: var(--fg); background: var(--bg-hover); }
+.preview-rail-label { writing-mode: vertical-rl; font-size: var(--text-sm); letter-spacing: 0.04em; overflow: hidden; }
+.files { padding-bottom: var(--space-1); }
 .main.stale .center, .main.stale .preview { opacity: 0.75; } /* Spec 8 §2.8「置灰」：非活动界面，文字守 3:1 下限（VE-1 stale 态） */
 /* S8-R23：「陈旧」标记的落位（中栏顶部那条；侧栏里直接放在 .side-head-row 里） */
 .stale-note { padding: var(--space-2) var(--space-3) 0; }
@@ -134,6 +144,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .center.conv-shell { display: flex; flex-direction: column; overflow: auto; }
 .conv-shell .conv { flex: 1; min-height: 0; height: auto; }
 .conv-shell .conv-stream { min-height: 160px; }
+/* 对话列很宽时（预览收起）限制阅读行宽 880px 并居中；窄时退回原内边距。padding 的百分比按中栏宽度算 */
+.conv-shell .status, .conv-shell .session-head, .conv-shell .conv-stream { padding-inline: max(var(--space-4), calc((100% - 880px) / 2)); }
+.conv-shell .dock { padding-inline: max(var(--space-3), calc((100% - 880px) / 2)); }
+.conv-shell .composer { margin-inline: max(var(--space-3), calc((100% - 880px) / 2)); }
 .conv-shell .dock { max-height: 40%; }
 /* D39 C2：会话说明进对话流首行（配色同 .advisories li：--fg 压 --warn-surface，VE-1 已覆盖此对子） */
 .session-notes { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); background: var(--warn-surface); font-size: var(--text-sm); overflow-wrap: anywhere; }

@@ -475,7 +475,8 @@ export function vs3Tsx(f: SourceFile): string[] {
 
 // ---------------- VS-7 TSX 内联样式白名单 ----------------
 
-const STYLE_KEYS = new Set(["paddingLeft", "transform"]);
+// gridTemplateColumns：D39 S2 分栏宽度随拖拽变化，只能运行时设；React 的 style 走 CSSOM，不受 CSP style-src 拦截（Spec 14 E1）
+const STYLE_KEYS = new Set(["paddingLeft", "transform", "gridTemplateColumns"]);
 
 export function vs7(f: SourceFile): string[] {
   const bad: string[] = [];

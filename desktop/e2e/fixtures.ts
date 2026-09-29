@@ -106,7 +106,11 @@ export interface Launched {
   userData: string;
 }
 
-export async function launch(repo: string, extraArgs: string[] = [], userData = tmp("ud")): Promise<Launched> {
+/**
+ * `previewOpen`（默认 true）：D39 S2 起预览栏默认收起（人 2026-09-29 裁决），而既有用例测的是预览内容本身，
+ * 所以夹具启动后替它点开一次；要看真实默认态（布局探针、S4 底线机检）的用例传 false。
+ */
+export async function launch(repo: string, extraArgs: string[] = [], userData = tmp("ud"), opts: { previewOpen?: boolean } = {}): Promise<Launched> {
   const app = await electron.launch({
     executablePath: ELECTRON,
     // --ava-test-background（N41）：不进 Dock、不激活、窗口不抢焦点，跑 e2e 时本机仍可正常使用
@@ -118,6 +122,8 @@ export async function launch(repo: string, extraArgs: string[] = [], userData = 
   app.process().stderr?.on("data", (b: Buffer) => (out += b.toString()));
   const page = await app.firstWindow();
   await page.waitForSelector("[data-testid=episode]", { timeout: 30_000 }).catch(() => undefined);
+  const toggle = page.getByTestId("toggle-preview");
+  if (opts.previewOpen !== false && (await toggle.count()) > 0 && (await toggle.getAttribute("aria-pressed")) === "false") await toggle.click();
   return { app, page, stdout: () => out, userData };
 }
 

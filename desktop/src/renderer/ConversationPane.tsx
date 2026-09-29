@@ -1,12 +1,30 @@
 // Spec 10 §2.3 / §4.3：对话流（foldConv 的行）。纯展示，不含任何答复/发送类方法名（TG-4′/TG-10/TG-16）。
 // 助手回复按纯文本渲染（H-3：不渲染 Markdown、不识别链接）；失败调用的 observation 逐字展开（判据 4）。
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { ConvRow } from "../shared/convFold";
 import { Icon } from "./icons";
 
+/** 离底部不超过这么多像素就算「人在看最新」：新行到来时跟到底；人往上翻了就不打扰（D39 S2） */
+const STICK_PX = 48;
+
 export function ConversationPane({ rows, lead }: { rows: ConvRow[]; lead?: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const stick = useRef(true);
+  // 每次渲染后（新帧、卡片进出、窗口变化引起的重排）若人在底部就跟到底；App 以 convKey 为 key 重挂，切会话即从底部开始
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  });
   return (
-    <div className="conv-stream" data-testid="conv-stream">
+    <div
+      className="conv-stream"
+      data-testid="conv-stream"
+      ref={ref}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
+      }}
+    >
       {lead}
       {rows.map((r, i) => (
         <Row key={i} row={r} />
