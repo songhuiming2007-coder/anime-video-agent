@@ -1,6 +1,8 @@
 # Implementation Spec：无终端 agent 会话协议与 Session 恢复（Spec 9 / core 侧）
 
-日期：2026-09-25（**v0.8**，红队第六轮定向复审 🟢；三条 🔵 由红队按用户指示直接修订；状态：**红队 🟢，可动工**（§6.1 授权已获，从 PR0 开始）。**v0.8（2026-09-26）**：并入 Spec 10 §6.1 的 S9-R1~R4（最终措辞已于 2026-09-26 获人确认），落点为 §3.1、§4.7、§6.6 H-6、§7.1 TP-12/TP-15；**PR3（`protocol.py`）施工前须经红队只限这四处落点的定向复核**）  
+> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR0–PR4）；§9 门禁 1–14 全勾，变异 S9-MUT-1~62 全部 KILLED（§9 PR4 实跑记录）。无未验门禁。
+
+日期：2026-09-25（**v0.8**，红队第六轮定向复审 🟢；三条 🔵 由红队按用户指示直接修订；状态：**已施工并验收（PR0–PR4，门禁 1–14 全勾；M3 验收 2026-09-27、M9 PR4 2026-09-27；2026-09-29 S21 收尾核对，遗留见 §9 备注与 issues D37/N39）**。**v0.8（2026-09-26）**：并入 Spec 10 §6.1 的 S9-R1~R4（最终措辞已于 2026-09-26 获人确认），落点为 §3.1、§4.7、§6.6 H-6、§7.1 TP-12/TP-15；**PR3（`protocol.py`）施工前须经红队只限这四处落点的定向复核**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1、§0.2 第 1/2 条、§4 施工红线、§5 明确排除、§6 Spec 9）  
 相关 ADR：ADR-0020（§3、§4、§5）、ADR-0018（保留条款）、ADR-0021（素材 fetch 人批、browser 逐调用卡）、ADR-0022（系统提示只增不改）、ADR-0023（记忆首次写入人确认）  
 契约依赖（均已施工，代码即现状）：Spec 1/2/3/5/6/7/8，见 `docs/dev/plans/archive/`  
@@ -937,7 +939,7 @@ M9 真实联调（Spec 10 PR4，桌面端对真实 `protocol.py`）暴露并修�
 | RF-14 | 状态卡刷新使历史前缀缓存失效（S1-R0） | 未提出；`prompt_chars` 观测 |
 | RF-15 | 判重挡不住参数微扰 | 裁决的已知代价；检查点兜底 |
 | RF-16 | 桌面端违反 H-1~H-10 | Spec 10 逐条承接并测试 |
-| RF-17 | `cli.py:644-646` 在 EOF 时取「是」 | 协议下不可达；Spec 11 按钮化 `/voice` 时必须改为显式答复 |
+| RF-17 | `cli.py` `/voice` done 分支在 EOF 时取「是」 | 协议下不可达；Spec 11 按钮化 `/voice` 时必须改为显式答复——**已落地**（Spec 11 RF17-C1：EOF 一律取「否」，`tests/test_stop_point_commands.py` TC-12） |
 
 ---
 
@@ -959,43 +961,29 @@ M9 真实联调（Spec 10 PR4，桌面端对真实 `protocol.py`）暴露并修�
 | R3 | （复核 🔴-2）同进程二次 flock | 第二个 fd `LOCK_EX\|LOCK_NB` 得 Errno 35 |
 | R4 | （复核 🔵-2、🟡-12、🟡-9、🔵-3、🔵-5） | T7 为 `apfs, local`；`memory.py:1091` 拼接后传给 `confirm`；`candidates.py:30-49` 走 `require_data()`；`cli.py:644-646` EOF → "y"；`App.tsx:395` 对无 `approval_id` 的事件标「命令卡拒执」 |
 
-## 附：行号核实自查表
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核；以符号为锚，行号为 HEAD 快照会漂）
 
-2026-09-25 对照工作树（HEAD `c31201d`）。v0.1 的约 70 处引用经红队抽查全部命中；下表为 v0.2 现存引用。
+> v0.1–v0.5 的逐行核实表（HEAD `c31201d`，约 100 行引用）核的是施工前的 `llm.py`/`cli.py`/`tools.py`/`memory.py` 等；本 spec 自己的 PR0–PR4 已把这些文件整体改写（新增 `protocol.py`、`session.py` 大改），旧行号全部作废，不再保留。下表只列本 spec 语义直接依赖、HEAD 上仍活着的符号。**帧键集与请求/响应契约不靠本表守——它们由 TP-3（整键集合逐字比对）、TP-12、TP-15 机械守护。**
 
-| 引用 | 核实结果 |
-|---|---|
-| `llm.py:33` / `255` / `263-277` / `320` / `325` / `344-357` / `353-355` / `365-366` | ✓（v0.1 已核，红队复核一致） |
-| `cli.py:644-646` | ✓ v0.2 补核：`except EOFError: confirm = "y"` |
-| `cli.py:829` / `841-852` / `856-859` | ✓ |
-| `cli.py:887-976` / `909-976` / `910-914` / `938-944` / `943` / `958-960` / `991` / `994-1002` / `998-1002` / `1007-1009` | ✓ |
-| `cli.py:1038-1125` / `1070` / `1114` / `1237-1246` / `1243` / `1510` | ✓ v0.2 补核：`_dispatch_agent_turn(` 的四个调用点 |
-| `cli.py:1299` / `1307` / `1313-1318` / `1315` / `1446-1504` / `1691-1703` / `1716-1722` | ✓ `1299` 为 `displayed_approvals: dict[str, str] = {}` |
-| `tools.py:26` / `32-42` / `45-51` / `156-277` / `311` / `313` / `703` / `898-911` | ✓ |
-| `tts.py:2113-2116` | ✓ v0.2 补核：`run` 子命令的 `--force`、`--force-all` |
-| `review.py:373` / `394` | ✓ `input("")`；`ArgumentParser` 未设 `allow_abbrev` |
-| `jobs.py:533-540` / `535` / `536` / `539` / `563` / `598` / `599-637` | ✓ `cwd=paths.ROOT`；`stdout=subprocess.PIPE`；BaseException 分支至 `raise`（637） |
-| `approvals.py:57-62` / `58` | ✓ |
-| `memory.py:43` / `810` / `1055-1064` / `1091` | ✓ `CARD_FREE_OPS = frozenset({"cite"})`；`requires_card=op not in CARD_FREE_OPS`；`is_tty` 注入点；`confirm(f"{diff}\n\n{text}")`（v0.3 更正：v0.2 误作 1093，1093 为 `return False`） |
-| `candidates.py:30-49` | ✓ `incoming()` 经 `require_data()` 并 mkdir；`candidates_path()`、`ledger_path()` |
-| `status_card.py:368` 起 | ✓ `if emit_event:` 默认发 `approval_resolved` |
-| `web_browser.py:317-322` | ✓ |
-| `web_crawl.py:186-187` | ✓ `with ThreadPoolExecutor(max_workers=1)` + `asyncio.run` |
-| `playwright/_impl/_transport.py:120`（`.venv` 内） | ✓ `asyncio.create_subprocess_exec`，未开新会话 |
-| `desktop/src/main/index.ts:166` | ✓ 按 `"\n"` 切行 |
-| `desktop/src/renderer/App.tsx:395` | ✓ |
-| `scripts/verify_mutations.py:69` / `72` / `110` / `143` / `154` / `158` / `163` / `181` / `188` / `279` | ✓ v0.2 补核：M3a/M3b/M10/M15a/M15b/M16-1/M16-2/M19/M20/M26 条目起始行 |
-| `tests/test_verify_mutations.py:114` | ✓ 锚点须命中且唯一 |
-| `tests/test_agent_tools.py:509` / `527`；`tests/test_agent_director.py:729-730` / `751-752` / `763` / `773` | ✓ 两处打桩直接抛 `PermissionError`、`LLMError` |
-| `jobs.py:556-579` | ✓ v0.3 补核：`_drain` 在工作线程中 `target_stream.write`，只 `except Exception`，`finally` 关管道 |
-| `paths.py:20-21` / `131` / `144` / `149` | ✓ v0.3 补核：`ROOT`、`DATA` 模块常量；`require_data()` 两处 `raise SystemExit` |
-| `scripts/verify_mutations.py:91-97` / `111` / `114-120` / `184-186` | ✓ v0.3 补核：M7 锚点含 `print`；M10 注释「锚点带换行」；M11 锚在局部 `messages`；M19 变异文本 `messages.append(...)` |
-| 测试中 `run_tool_loop` 调用 | ✓ v0.3 补核（AST）：24 处，16 处未传 `approve`：`test_agent_pr6.py:276`、`test_agent_tools.py:443/490/515/536/768/985/1017`、`test_agent_llm_tiering.py:115/131/141/169/241/266/283/320` |
-| `tests/test_agent_director.py:100/124/143/478/503/608/634/661/710/925`、`tests/test_agent_memory.py:1726/1779` | ✓ v0.4 补核：12 处 `setattr` 替身；director 各处替身签名固定为 `(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None)`（`:118`、`:472`、`:499`、`:601`、`:657`、`:699`），memory 两处为 `**kwargs` |
-| `tests/test_agent_director.py:455` / `590` / `647` | ✓ v0.4 补核：`test_m11_scope_hot_derivation_from_creative_to_pipeline`、`test_m19_chat_subloop_does_not_pollute_main_messages`、`test_m19_script_subloop_with_focus_prompt` 的 `def` 行 |
-| 测试中直接调用 `_dispatch_agent_turn(` | ✓ v0.4 补核：21 处 |
-| `cli.py:1301` / `1512` / `1433-1444` | ✓ v0.5 补核：`messages` 唯一声明；作为参数下传；`/chat`、`/script` 在 REPL 循环内调 `run_agent_loop`（嵌套进入） |
-| 基线 | ✓ 1715 passed |
+| 引用（符号） | HEAD 位置 | 核实 |
+|---|---|---|
+| `llm.py::run_tool_loop` / `LoopControl` / `_tool_message` | 544–845 / 392–410 / 457–462 | ✅ |
+| `llm.py::load_llm_config`（三字段缺一返回 `None`） | 189–222 | ✅ |
+| `llm.py::REQUEST_TIMEOUT = 60` / `CHECKPOINT_EVERY = 50` | 35 / 40 | ✅ 常量值与 §2.3 一致 |
+| `session.py::TurnInterrupt` / `SessionHost` / `prepare_resume` / `tool_flags` | 113–195 / 445–542 / 1311–1361 / 341–358 | ✅ |
+| `session.py::_fetch_cards` / `_ask_fetch` / `_proposed_urls`（D34 后按本次入参出卡） | 1127–1191 / 1193–1242 / 210–217 | ✅ |
+| `session.py::CRITICAL_TOOLS`（字面量 frozenset） | 54 起 | ✅ |
+| `protocol.py::main` / `FrameWriter` / `_dispatch` / `_on_eof` / `_run_turn` / `_send_history` / `_idle_notice` | 486–724 / 54–93 / 228–257 / 139–149 / 757–818 / 733–754 / 455 | ✅；`FRAME_DRAIN_TIMEOUT_S = 2`（35）；`_on_term` 为 `main` 内嵌套处理器（664） |
+| `session_log.py::EpisodeLease` / `read_log` / `SessionLocked` | 337–442 / 445–451 / 42–43 | ✅ |
+| `cli.py::_dispatch_agent_turn` / `activate_host` / `run_agent_loop` | 1456–1506 / 1374–1417 / 1509–1521 | ✅ 替身可达性由 MUT-55 守 |
+| `cli.py::select_episode_interactive` / `create_new_episode` / `get_episodes_list` | 447–480 / 511–560 / 368–404 | ✅ |
+| `tools.py::TOOL_SCHEMAS`（现 13 个；本 spec 撰写时 12） | 363–652 | ⚠ 计数漂移（Spec 12 增 `cover_edit`），无碍本 spec 断言 |
+| `jobs.py::execute_job` / `_kill_process_group`（`start_new_session=True`，BaseException 分支 killpg） | 502–671 / 476–499 | ✅ |
+| `status_card.py::log_approval_decision`（默认发 `approval_resolved`） | 350–409 | ✅ |
+| `memory.py::CARD_FREE_OPS = frozenset({"cite"})` | 43 | ✅ |
+| `candidates.py::incoming` / `candidates_path` / `ledger_path` | 32–41 / 44–45 / 48–49 | ✅ 经 `require_data()` |
+| `scripts/verify_mutations.py` 变异矩阵 | `--list`：一期 M 系列 + `S9-MUT-1~62`（62 条）+ Spec 12 `MUT-1~15` + `S10-MUT-18~21/53/54` | ✅ 62/62 见 §9 PR4 实跑记录 |
+| 实验记录 E1–E8、R1–R4（协议 fd、中断落点、延迟区、注入体量等） | 2026-09-25 scratchpad 实测 | ⚪ 历史实测，非活断言；相应行为已由 TP/TL/TT 用例常驻守护 |
 
 ## 附：红队裁决纪要（一至六轮，新轮次在前）
 

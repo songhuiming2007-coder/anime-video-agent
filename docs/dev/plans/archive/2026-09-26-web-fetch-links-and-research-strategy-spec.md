@@ -1,5 +1,7 @@
 # Implementation Spec：web_fetch 链接清单与研究策略（Spec 13，2026-09-24 追加）
 
+> **归档状态（2026-09-29，S21 收尾）**：已施工；§9 门禁 1–7 已勾（2026-09-29 复核重跑变异）；**未验**：门禁 8（人工端到端冒烟，唯一终判）——前置 D29（web_search provider 替换）未完成，首跑 6 样本判定①未过，但判定环境被 D29 污染、无法定性（见 §9 首跑记录），待 D29 收口后复跑。
+
 日期：2026-09-26（**v0.4**；v0.3 红队二轮 0🔴 + 1🟡 + 2🔵 全收、三轮定向复核闭环；v0.4 = 验收评审修订：§8 变异口径 11/11、§9 门禁 8 判定①观测口径写死与首跑记录，2026-09-26 人拍板。状态：**门禁 1–7 验收通过，门禁 8 待 D29 修复后复跑**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§4 施工红线八条、§5 明确排除；本 spec 不在 §6 清单内，范围为 2026-09-24 用户追加段落）  
 相关 ADR：ADR-0021（网络工具内化）、ADR-0022（上下文装配）、ADR-0023（跨期记忆）  
@@ -323,14 +325,14 @@ fixture 测的是机制，测不了「模型真的变聪明」（H5）。门禁 
 
 ## 9. 验收门禁清单（Accept Gates）
 
-- [ ] **门禁 1（契约增量）**：T9 绿；既有 `test_agent_web.py` 全部 18 用例零回归。
-- [ ] **门禁 2（七步管线）**：T1–T5、T10、T11 绿。
-- [ ] **门禁 3（双帽）**：T6、T7 绿；MUT-6/7/10 实测变红记录回填。
-- [ ] **门禁 4（不炸会话）**：T8 绿 + MUT-8 实测变红；§2.3 的 scratchpad 实测记录（PermissionError 复现）引用在 PR 描述里。
-- [ ] **门禁 5（纯洁性）**：`test_agent_web.py` 的子进程纯洁性用例绿。
-- [ ] **门禁 6（提示层零回归）**：PR2 的三文件测试命令全绿；`assemble_resident_prompt("asset")` 两次组装结果逐字节相等（会话内恒定在新内容下仍成立）。
-- [ ] **门禁 7（无站点特判）**：`git diff` 全文 grep 不出 `bgm` / `bangumi` / `萌娘` / `wikipedia` 字样（fixture 用虚构域名）。
-- [ ] **门禁 8（人工端到端冒烟，唯一终判）**：asset scope 新会话，任务 = 「找《我的青春恋爱物语果然有问题》角色一色彩羽的介绍」。判定标准（两条同时成立才算过）：① 模型全程**不猜 URL**——自第二跳起，轨迹中每个被 fetch/crawl 的 URL 都有出处（API 返回或前一页面的 links/内嵌链接）；**起手第一跳豁免**（v0.3，🟡-5）：允许来自模型对公开 API 端点或站点根路径的先验知识，须声明为先验——**观测口径**（v0.4，2026-09-26 验收评审拍板）：`crawl`/`browser` 调用看其必填 `reason` 参数；`web_fetch` 无 `reason` 参数（tools.py schema 仅 `url`），看紧邻该调用之前的 assistant 文本。两处皆无声明 = 未声明，豁免不成立、判定①即红；先验只放行端点与根路径，具体深路径 id（如 `/character/26090`）必须有出处、不允许先验直取；② 最终抓到 `/character/26090`（或 API 等价物）的简介内容。起手约束（v0.2，🟡-1）：web_search 默认端点 2026-09-26 实测被盾（202 + challenge 页），**起手走站点公开 API 而非 web_search**。参考路径（实测可行，非唯一）：`api.bgm.tv/search/subject/<作品名>?type=2` 得 subject id → `api.bgm.tv/v0/subjects/<id>/characters`（或作品页 links）→ 角色页。**冒烟失败 → 按 §10 RF-1 处理，不许调阈值放过。**
+- [x] **门禁 1（契约增量）**：T9 绿；既有 `test_agent_web.py` 全部 18 用例零回归。　证据（2026-09-29 S21 复核）：`tests/test_agent_web.py::test_fetch_links_contract_keys`（T9）绿；该文件现 37 例全绿（含 N45 后新增的 Content-Encoding 用例）。
+- [x] **门禁 2（七步管线）**：T1–T5、T10、T11 绿。　证据：`test_extract_links_absolutize_dedupe_and_anchor_backfill`(T1)、`_scheme_whitelist`、`_same_site_priority`、`_drops_empty_anchors`、`_anchor_cap`、`test_fetch_no_links_page`(T10)、`test_fetch_links_base_is_final_url`(T11) 全绿。
+- [x] **门禁 3（双帽）**：T6、T7 绿；MUT-6/7/10 实测变红记录回填。　证据：`test_fetch_links_count_cap`(T6)、`test_fetch_links_char_cap`(T7) 绿；2026-09-29 S21 重跑（PYTHONDONTWRITEBYTECODE=1，还原 md5 对拍）：MUT-6（200→250）→T6 红、MUT-7（删字符帽）→T7 红、MUT-10（截断不置标志）→T6 红，均 KILLED。
+- [x] **门禁 4（不炸会话）**：T8 绿 + MUT-8 实测变红；§2.3 的 scratchpad 实测记录（PermissionError 复现）引用在 PR 描述里。　证据：T8（`test_fetch_links_scrubbed`）绿；2026-09-29 重跑 MUT-8（links 不过 `_scrub`）→T8 红，KILLED；scratchpad 实测记录见 §2.3。
+- [x] **门禁 5（纯洁性）**：`test_agent_web.py` 的子进程纯洁性用例绿。　证据：`test_web_module_pure_and_no_heavy_imports`（独立子进程探针）绿。
+- [x] **门禁 6（提示层零回归）**：PR2 的三文件测试命令全绿；`assemble_resident_prompt("asset")` 两次组装结果逐字节相等（会话内恒定在新内容下仍成立）。　证据：`test_agent_assembly.py` / `test_agent_llm_tiering.py` / `test_docs_invariants.py` 全量 pytest 绿；2026-09-29 实测 `assemble_resident_prompt("asset")` 两次组装逐字节相等，`asset.md` 与 `creative.md` 的「联网研究策略」节逐字相同。
+- [x] **门禁 7（无站点特判）**：`git diff` 全文 grep 不出 `bgm` / `bangumi` / `萌娘` / `wikipedia` 字样（fixture 用虚构域名）。　证据：2026-09-29 grep `web.py` / `asset.md` / `creative.md` 无 `bgm|bangumi|萌娘|wikipedia` 命中。
+- [ ] **门禁 8（人工端到端冒烟，唯一终判；**未验**，2026-09-29 S21 核：前置 D29 仍「待施工」——web_search 默认端点被盾、provider 未拍板，见 issues D29；D29 收口后复跑，若判定①仍全红才定性 H5 失败）**：asset scope 新会话，任务 = 「找《我的青春恋爱物语果然有问题》角色一色彩羽的介绍」。判定标准（两条同时成立才算过）：① 模型全程**不猜 URL**——自第二跳起，轨迹中每个被 fetch/crawl 的 URL 都有出处（API 返回或前一页面的 links/内嵌链接）；**起手第一跳豁免**（v0.3，🟡-5）：允许来自模型对公开 API 端点或站点根路径的先验知识，须声明为先验——**观测口径**（v0.4，2026-09-26 验收评审拍板）：`crawl`/`browser` 调用看其必填 `reason` 参数；`web_fetch` 无 `reason` 参数（tools.py schema 仅 `url`），看紧邻该调用之前的 assistant 文本。两处皆无声明 = 未声明，豁免不成立、判定①即红；先验只放行端点与根路径，具体深路径 id（如 `/character/26090`）必须有出处、不允许先验直取；② 最终抓到 `/character/26090`（或 API 等价物）的简介内容。起手约束（v0.2，🟡-1）：web_search 默认端点 2026-09-26 实测被盾（202 + challenge 页），**起手走站点公开 API 而非 web_search**。参考路径（实测可行，非唯一）：`api.bgm.tv/search/subject/<作品名>?type=2` 得 subject id → `api.bgm.tv/v0/subjects/<id>/characters`（或作品页 links）→ 角色页。**冒烟失败 → 按 §10 RF-1 处理，不许调阈值放过。**
 
 **门禁 8 首跑记录（v0.4，2026-09-26）**：6 样本（3 无期目录 + 3 绑定真实期目录 step=05），判定① 6/6 未过（第二跳起均有先验直取深路径，6 次会话两处观测面皆无先验声明）、判定② 2/6 过（其中 1 次的 26090 出处真实来自前页 links，机制本身在真网可用：moegirl 91 条、bgm subject 142 条、character 页 200 条且 links_truncated=true）。**判定：未通过**。归因：D29 未修导致 web_search 起手 6/6 必报错，判定环境被污染，无法区分「策略文本无效」与「策略够不着的场景」。**复跑前置（2026-09-26 人拍板）：先修 D29，再按上述观测口径复跑**；若 D29 修复后判定①仍全红，方可定性 H5 失败，再评估提示层补降级指引或降级登记。
 
@@ -351,30 +353,28 @@ fixture 测的是机制，测不了「模型真的变聪明」（H5）。门禁 
 
 ---
 
-## 附：行号核实自查表（v0.1：2026-09-26 对照工作树逐行核实；v0.2：红队一轮 🔵-1 的 6 处漂移全部独立复核属实并已修正，口径统一为「def 行至下一个 def/闭合行的前一非空行」）
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核；以符号为锚，行号为 HEAD 快照会漂）
 
-| 引用 | 核实结果 |
-|---|---|
-| `web.py:512-588` fetch_web（返回 dict 在 580-588） | ✅ 逐行读（v0.2 修正端点 589→588） |
-| `web.py:298-323` `_TextExtractor`（丢弃全部属性） | ✅ 逐行读 |
-| `web.py:164-173` `_scrub` | ✅ 逐行读（v0.2 修正 171→173） |
-| `web.py:151-161` `_normalized_for_assert` | ✅ 逐行读 |
-| `web.py:200-238` `_guard_url`（六谓词 + trusted_ranges） | ✅ 逐行读 |
-| `web.py:535` fetch_web 的 `assert_egress_boundary` | ✅ 逐行读 |
-| `tools.py:54-59` `RESTRICTED_EGRESS_PATTERNS` 四条 | ✅ 逐行读 |
-| `tools.py:280-291` `assert_egress_boundary`（raise 在 291） | ✅ 逐行读（v0.2 修正端点 290→291） |
-| `tools.py:454-467` `TOOL_SCHEMAS["web_fetch"]` | ✅ 逐行读 |
-| `tools.py:830-836` `_tool_web_fetch` 透传 | ✅ 逐行读 |
-| `llm.py:255` payload 出网断言；`llm.py:359-363` tool 结果入历史 | ✅ 逐行读（255 行为 `assert_egress_boundary(cfg.endpoint, payload)`） |
-| `web_crawl.py:232-239` crawl 双闸；`web_crawl.py:264-270` 返回契约 | ✅ 逐行读（v0.2 修正 240→239、248-268→264-270） |
-| `web_browser.py:420-427` browser navigate 双闸 | ✅ 逐行读 |
-| `assembly.py:225-286` `assemble_resident_prompt`（233 行 docstring「会话内字节级恒定」；266-270 scope 文件 fallback） | ✅ 逐行读（v0.2 修正 265→266） |
-| `scopes.py:30-37` `load_scope` fallback `"# Asset Scope"` | ✅ 逐行读（37 行 fallback；35-36 读文件） |
-| `tests/test_agent_llm_tiering.py:100-117` T13（假历史 `_history` 在 79-84 行） | ✅ 逐行读（v0.2 修正 84-89→79-84） |
-| `tests/test_agent_assembly.py:112-125` 常驻层结构测试 | ✅ 逐行读 |
-| `tests/test_agent_web.py:682-691` 子进程纯洁性探针主体；`:1036` tmp 自建 creative.md | ✅ 逐行读（688 行 subprocess.run、691 行断言；探针函数 def 行未核，**约**） |
-| `config/agent/tools.json` 四 scope 工具清单（代码现役 12；ADR-0025 口径含已批准未施工的 cover_edit 为 13，🔵-3） | ✅ 全文读 |
-| `config/agent/web.json` fetch/crawl `max_chars: 30000` | ✅ 全文读 |
-| `config/agent/scopes/` 无 asset.md | ✅ `ls` 核实（creative/director/idea/pipeline 四个） |
-| Spec 7 R1–R9 冻结词表 | ✅ 读 archive spec §2.5 全表 |
-| §2.1/§2.2 全部实测数字 | ✅ 2026-09-26 scratchpad 脚本实测（`/tmp/ava-spec13-scratch/`），bgm/wikipedia/萌娘四页 + bgm 公开 API + crawl 对照 + PermissionError 复现；v0.2 追加 JSON 计长口径复测（🟡-3）与 DDG 端点 202/challenge 实测（🟡-1） |
+> v0.1/v0.2 的逐行核实表已随施工全部漂移（`web.py` 因链接清单、N45 Content-Encoding 增长 150+ 行），旧行号不再保留。下表由 `ast` 脚本取 HEAD 的 def/class/常量起止行；漂移后以符号名为准。
+
+| 引用（符号） | HEAD 位置 | 核实 |
+|---|---|---|
+| `web.py::fetch_web`（返回含 `links`/`links_truncated`） | 674–763 | ✅ |
+| `web.py::_TextExtractor` / `_LinkExtractor` / `_extract_links` | 307–332 / 335–381 / 384–416 | ✅（链接三件套已按 §4.1 落地） |
+| `web.py::_scrub` / `_normalized_for_assert` / `_guard_url` | 173–182 / 160–170 / 209–261 | ✅ |
+| `web.py::_read_body_capped`（N45 新增，不属本 spec 契约面） | 539– | ✅ 已核：`fetch_web` 经它读体，`fetched_bytes` 为解压后字节 |
+| `tools.py::RESTRICTED_EGRESS_PATTERNS`（四条） | 59–64 | ✅ |
+| `tools.py::assert_egress_boundary`（raise 在函数尾） | 307–318 | ✅ |
+| `tools.py::TOOL_SCHEMAS["web_fetch"]`（description 含 links 一句，参数仅 `url`） | 481–~500（`TOOL_SCHEMAS` 363–652） | ✅ |
+| `tools.py::_tool_web_fetch` 透传 | 911–917 | ✅ |
+| `llm.py` payload 出网断言 `assert_egress_boundary(cfg.endpoint, payload)`；`_tool_message`（tool 结果入历史） | 322；457–462 | ✅ |
+| `web_crawl.py::crawl_page`（出网双闸在 232、239） | 201–270 | ✅ |
+| `web_browser.py` navigate 双闸（`assert_egress_boundary` 420、`_guard_url` 427） | 420–427 | ✅ 未漂移 |
+| `assembly.py::assemble_resident_prompt` | 230–290 | ✅ |
+| `scopes.py::load_scope`（fallback `# {scope.capitalize()} Scope`） | 30–49 | ✅ |
+| `config/agent/scopes/` | asset / creative / director / idea / pipeline 五个（asset.md 已建） | ✅ 已变：v0.3 时无 asset.md |
+| `config/agent/tools.json` 工具清单 | creative 11、pipeline 4、asset 5、idea 4；`TOOL_SCHEMAS` 现 13 个（含 cover_edit） | ✅ 与 ADR-0025 口径一致 |
+| `config/agent/web.json` fetch/crawl `max_chars` | 30000 / 30000 | ✅ |
+| `tests/test_agent_web.py` 纯洁性探针 | `test_web_module_pure_and_no_heavy_imports` | ✅ 函数名锚定（v0.2 记的 682-691 行号已作废） |
+| `tests/test_agent_llm_tiering.py` T13 | `test_models_tier_mapping_and_fallback`（125–144），`_history` 在 79 | ✅ |
+| §2.1/§2.2 实测数字 | 2026-09-26 scratchpad 实测（bgm/wikipedia/萌娘四页 + API + crawl 对照 + PermissionError + DDG 202） | ⚪ 未在 S21 重测：外部网页形态会变，属历史实测记录，非活断言 |

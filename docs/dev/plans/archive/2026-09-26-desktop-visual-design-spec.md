@@ -1,5 +1,7 @@
 # Implementation Spec：桌面端视觉设计系统与 UI 美化（Spec 14）
 
+> **归档状态（2026-09-29，S21 收尾）**：已施工（PR0–PR3 + S8-R23）；§9 门禁 1–5、9 已勾；**未验**：门禁 6（打包版三档手验）、7（人看终版三态截图，审美判定归人）、8 中 M31（依赖已不可复现的 PR1 前基线）。
+
 日期：2026-09-26（**v0.3.1**，红队一轮修订（2🔴 + 9🟡 + 🔵 B1–B5）+ 二轮定向复审修订（4🟡 全收；🔵 B1–B3 全收，B4/B5 按人裁决关闭）+ **三轮定向复审 🟢**（0🔴/0🟡，4 条 🔵 由红队经人授权直接落地，见 §1.3）；状态：**🟢 可动工**；mock 已获人拍板（2026-09-26），S8-R22 / DIR-R3 / DOC-R1 / S8-R23 已授权（2026-09-26），N1–N11 已获人确认（2026-09-26）；**PR0–PR3 均已施工**（PR3 与 S8-R23 见 §7.4，2026-09-27））
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1 产品画像、§0.3 借鉴边界、§4 施工红线八条、§5 明确排除）。**§6 二期需求原清单里没有本 spec**：来源是 2026-09-26 用户追加（对现状 UI 原话「堪比厕所」，指示学习 ZCode Desktop 的前端设计与 UI 风格），先例同 Spec 13，条目补登见 §6.1 DIR-R3
 相关 ADR：ADR-0020（§4 桌面端）。**不新立 ADR**（§6.4）
@@ -7,7 +9,7 @@
 对应 issues：—
 格式范本：Spec 2、Spec 3、Spec 8（`archive/`），及 Spec 10
 撰写基线：HEAD `9eb1f97`；`cd desktop && npx vitest run` 121 passed；`uv run pytest` 1712 passed / 3 failed，3 条红全在 `tests/test_agent_web.py`，源于工作树里他人未提交的 `config/agent/web.json`、`pipeline/agent/web.py`、`tests/test_agent_web.py` 改动，与本 spec 无关，未触碰（均 2026-09-26 实跑）；另有本 spec 自己的 `docs/dev/plans/README.md` 状态行改动在途（红队三轮 🔵-4 补记）
-附件目录：`docs/dev/plans/2026-09-26-desktop-visual-design-spec/`，全部纯文本：
+附件目录：`docs/dev/plans/archive/2026-09-26-desktop-visual-design-spec/`，全部纯文本：
 - 将发货的样式：`tokens.css`、`ui.css`、`style.css`；
 - mock：`mock-01`~`mock-06` 共 6 张，外加画布样式 `mock.css`；
 - 判据与工具（v0.2 按红队 Y3 入库）：`tools/` 下的 `contrast.mjs`、`tk.mjs`、`vs.mjs`、`audit.js`、`render.cjs`、`gen.mjs`、`icons.mjs`。
@@ -780,15 +782,15 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 ## 9. 验收门禁清单
 
 - [x] **门禁 0（前置）**：§6.1 修订请求获人授权（S8-R22 / DIR-R3 / DOC-R1 / S8-R23 ✓ 2026-09-26）；本 spec 红队 🟢（三轮，2026-09-26）；人看过 6 张 mock 并拍板（✓ 2026-09-26，含 D1–D7）；§2.8 新增字符串清单 N1–N11 获人确认（✓ 2026-09-26）
-- [ ] **门禁 1（契约）**：VS-1~VS-13 全绿；`renderer/tokens.css`、`renderer/ui.css` 的 sha256 与头部「拍板基准」一致；判据移植后与附件对拍一致（290 对、各类最小值）
-- [ ] **门禁 2（零视觉变化）**：PR1 的 VE-0 绿
-- [ ] **门禁 3（可访问性）**：VE-1 在全部夹具状态 × 三种主题态下对比度失败 0、非文本失败 0、字号越界 0，且 `n` 不低于下限；VE-3 绿
-- [ ] **门禁 4（零回归）**：VE-4；TG-1~TG-9 全绿；`npx vitest run` 全绿
-- [ ] **门禁 5（边界）**：`git diff` 中 renderer 文件的既有可见文案、`data-testid`、rpc 方法名零变化（施工报告附对拍：改动前后各抽一次可见字符串，求差集，差集必须恰好落在 §2.8 清单 N1–N11 内；若 S8-R23 同批施工，「陈旧」单列，不算违规）；`host/`、`main/`、`preload/`、`shared/protocol.ts`、`shared/lifecycle.ts` 零 diff；`pipeline/`、`config/`、`tests/`、`pyproject.toml` 零 diff
-- [ ] **门禁 6（主题）**：VE-2 绿；打包版手验一次三档切换与重启保持（A2 首帧、A7 回填）
-- [ ] **门禁 7（人看终版）**：PR2、PR3 完成后对真实 app 按 §2.7 截图（三态），人确认与 mock 一致或更好。这是验收里唯一的审美判定，由人做
-- [ ] **门禁 8（变异）**：§7.2 逐条实跑，已实跑的 26 条失败数与表内一致，其余回填
-- [ ] **门禁 9（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；`docs/dev/plans/README.md` 状态行更新
+- [x] **门禁 1（契约）**：VS-1~VS-13 全绿；`renderer/tokens.css`、`renderer/ui.css` 的 sha256 与头部「拍板基准」一致；判据移植后与附件对拍一致（290 对、各类最小值）　证据（2026-09-29 S21）：`npx vitest run` 36 文件 377 例全绿（含 `tests/static/visual.test.ts` VS-1~VS-6/VS-10/VS-11 与 `guards.test.ts`）；`tokens.css` sha256 `3d62bafa…382`、`ui.css` sha256 `9c123bc3…67b` 实测与头部「拍板基准」逐字一致；附件 `node tools/tk.mjs desktop/src/renderer/tokens.css` → `pairs 290 fail 0 missingDark [] badFormat 0 blockDiff []`。
+- [x] **门禁 2（零视觉变化）**：PR1 的 VE-0 绿　证据：提交 `9609819`（PR1）信息记「VE-0 浅/深两态各 228 元素 × 107616 属性槽与 PR1 前逐项相等（0 差异）」；VE-0 只在设 `AVA_VE0_OUT` 时运行且需 PR1 前基线快照，现在无法复跑（属一次性对拍）。
+- [x] **门禁 3（可访问性）**：VE-1 在全部夹具状态 × 三种主题态下对比度失败 0、非文本失败 0、字号越界 0，且 `n` 不低于下限；VE-3 绿　证据：2026-09-29 空载与 workers=2 下全量 e2e 111 passed / 2 skipped（5.7 min），`e2e/visual.spec.ts` 的 VE-1（全部夹具态×三态）、VE-3 均在内；VE-1 各态 `n` 下限见 §7.3。
+- [x] **门禁 4（零回归）**：VE-4；TG-1~TG-9 全绿；`npx vitest run` 全绿　证据：同上——`npx vitest run` 377 passed、`npx tsc --noEmit` 干净、全量 e2e 111 passed / 2 skipped。
+- [x] **门禁 5（边界）**：`git diff` 中 renderer 文件的既有可见文案、`data-testid`、rpc 方法名零变化（施工报告附对拍：改动前后各抽一次可见字符串，求差集，差集必须恰好落在 §2.8 清单 N1–N11 内；若 S8-R23 同批施工，「陈旧」单列，不算违规）；`host/`、`main/`、`preload/`、`shared/protocol.ts`、`shared/lifecycle.ts` 零 diff；`pipeline/`、`config/`、`tests/`、`pyproject.toml` 零 diff　证据：施工时对拍见 §7.3「门禁 5 的对拍」与 §7.4（既有可见文案零变化、`data-testid` 新增 4 删 0、rpc 方法名零变化、`host/` `main/` `preload/` `protocol.ts` `lifecycle.ts` 零 diff）；**HEAD 已含 Spec 10/11/12 对这些目录的合法后续改动，不能再以「零 diff」复验**，此项以施工期对拍为准。
+- [ ] **门禁 6（主题；**未验，待人：打包版三档手验与首帧观察**）**：VE-2 绿；打包版手验一次三档切换与重启保持（A2 首帧、A7 回填）
+- [ ] **门禁 7（人看终版；**未验，待人：`out/pr3-shots/` 9 张三态截图的审美判定**）**：PR2、PR3 完成后对真实 app 按 §2.7 截图（三态），人确认与 mock 一致或更好。这是验收里唯一的审美判定，由人做
+- [ ] **门禁 8（变异；2026-09-29 S21：§7.2 表内 36 条已实跑 35 条——补跑 M36（`ui.tsx` 的 `Badge` 接收 `onClick`）→ VS-10 红，还原 md5 一致；**M31 未测**：其杀手 VE-0 需 PR1 前基线快照，现无法复现，如实保留）**：§7.2 逐条实跑，已实跑的 26 条失败数与表内一致，其余回填
+- [x] **门禁 9（文档）**：`uv run pytest tests/test_docs_invariants.py` 全绿；`docs/dev/plans/README.md` 状态行更新　证据：`uv run pytest tests/test_docs_invariants.py` 12 passed（2026-09-29）；README 状态行由 S21 更新。
 
 **PR3 施工方自评（2026-09-27，不替验收方打勾）**：门禁 1（VS-1~13 全绿 + 两个冻结文件 sha256 对拍）、门禁 3（VE-1 全部夹具状态 × 三态 + VE-3，含本项目新增的侧栏/浮层状态与浮层键盘行为）、门禁 4（VE-4 与全量 vitest）、门禁 5（§7.4 的对拍）、门禁 9（文档不变量 12 passed + 本文件状态行）由本轮实跑覆盖；门禁 6 / 7 待人；门禁 8：§7.2 表内 36 条已实跑 34 条（撰写时 26 条 + PR2 §7.3 的 5 条 M8/M13/M33/M34/M35 + PR3 的 4 条 M14/M15/M19/M32，M19 本机系统浅色杀不死、机理对照已证深色主机必红），剩 M31 / M36 两条（PR1/PR2 落点）未跑。
 
@@ -833,27 +835,18 @@ v0.3 起共 26 条已实跑（v0.2 的 21 条 + M37–M41）。「撰写时实�
 | E13 | `tools/vs12.mjs` 原型（typescript AST） | 6 条自测通过；对现状 `DecisionBar.tsx` 报 3 处（按钮均无 className，属 PR2 前的预期） |
 | E10 | 按红队 Y2 复算 | 悬停行徽标 4.22、选中行未知圆环 2.92、侧栏搜索框边界 2.86、stale 0.6 下 muted 2.65，全部复现；v0.2 的对子表复现 4.22 与 2.86 后调到全绿 |
 
-## 附：行号核实自查表
+## 附：引用自查表（2026-09-29 S21 按施工后 HEAD 重核）
 
-2026-09-26 对照工作树 HEAD `9eb1f97` 逐行核实（`sed -n <行>p | grep -F <锚>`，v0.1 42 条 + v0.2 补核 9 条全部命中）：
+> v0.1/v0.2 的表核的是**施工前**的 `style.css`、`App.tsx`、`DecisionBar.tsx` 等行号；这些文件已被 PR2/PR3 与 Spec 10 整体重写（`DecisionBar.tsx` 已不存在，`style.css` 已整体替换），对应行号引用无从重核，整表作废。下表只保留 HEAD 上仍活着、且本 spec 语义依赖的引用。
 
-| 引用 | 核实结果 |
-|---|---|
-| `renderer/style.css:1`、`:2`、`:4`、`:10`、`:13-16`、`:20`、`:22`、`:24`、`:28`、`:33-34`、`:36-37`、`:51-53`、`:59`、`:62`、`:76`、`:78` | ✓ |
-| `renderer/App.tsx:175`、`:192`、`:227`、`:272`、`:274`、`:276-279`、`:303`、`:325`、`:363`、`:365`、`:408` | ✓ |
-| `renderer/DecisionBar.tsx:108`、`:114`、`:126`、`:131` | ✓ |
-| `renderer/PreviewPane.tsx:20`、`:124`（v0.2 补核：音频队列 `li onClick`）、`:144`、`:169-170`、`:235` | ✓ |
-| `renderer/index.html:5` | ✓ 生产 CSP，无 `font-src` |
-| `tests/static/guards.test.ts:25-43`、`scan.ts:167-188` | ✓ |
-| `shared/protocol.ts:21`（v0.2 补核：错误码闭集只有 `E_BAD_REQUEST`）、`:150-156` | ✓ |
-| `host/service.ts:491`、`:493`（v0.2 补核） | ✓ `E_BAD_REQUEST` |
-| `main/index.ts:292-293`（v0.2 补核） | ✓ `startHost(); createWindow();` 同步相继执行 |
-| Spec 8 archive 第 241、298、306、381 行；§3.6（v0.2 补核） | ✓ 「加停机标记」；「置灰标『陈旧』」；「UI 便利状态由 renderer `localStorage` 记忆」；「修改只经 main 的原生对话框」 |
-| `host/episodes.ts:55-56` | ✓ |
-| `pipeline/status.py:360-364`（v0.2 补核）、`:398-409` | ✓ 「07 自动质检（未通过）」`is_blocked=False`；末态 `09 人工发布` `is_blocked=True` |
-| `pipeline/paths.py:126-128` | ✓ |
-| `e2e/ackFixtures.ts:244`、`e2e/preview.spec.ts:75`、`:125`、`:220`、`:234`（v0.2 补核 75/220）、`e2e/preview-security.spec.ts:53`（v0.2 补核）、`e2e/ack.spec.ts:505`（v0.2 补核）、`:547`、`:642-643`、`:650` | ✓ |
-| Spec 10 第 21、301 行（v0.2 补核） | ✓ 「运行中」「N 张卡待答」两徽标；「停机标记仍只来自 `status --json`」 |
-| `node_modules/electron/electron.d.ts:10195` | ✓ |
-| ZCode `29628c9`：`task-row.tsx:101-104`（v0.2 补核：胶囊注释）、`styles.css:461-760`、`types.ts:45-47`、`taskListItemPresentation.ts:33-53` | ✓；提交日期 author 09-23 / commit 09-24 |
-| 渲染包体积 | ✓ JS 879,322 B、CSS 5,378 B |
+| 引用（符号/文件） | HEAD 现状 | 核实 |
+|---|---|---|
+| `renderer/tokens.css`、`renderer/ui.css`（冻结面） | sha256 与 §头部「拍板基准」逐字一致（见门禁 1） | ✅ |
+| `renderer/index.html` 生产 CSP（`style-src 'self'`，无 `font-src`） | 第 5 行，原文一致 | ✅ |
+| `shared/protocol.ts` 错误码闭集含 `E_BAD_REQUEST` | 45 行；`host/service.ts` 533/541/556 使用 | ✅ 语义不变（行号漂移，以符号为准） |
+| `main/index.ts` `startHost()` 与窗口创建 | 416 附近（含 N41/N44 新增开关） | ✅ 语义不变 |
+| `pipeline/status.py` `is_blocked` 语义（停机点 True、07 自动质检未过 False、末态 09 True） | 多处 `is_blocked=`（272/287/304/319/334/347…） | ✅ 语义与 §3.4/RF-8 一致 |
+| `pipeline/paths.py::atomic_write`（同目录 tmp + `os.replace`，E6） | 118–134 | ✅ |
+| 静态守卫 `tests/static/guards.test.ts`、`visual.test.ts` | 现役；vitest 377 全绿 | ✅ |
+| 相对时间/分组/主题纯函数：`shared/relTime.ts`、`shared/episodeView.ts`、`renderer/theme.ts` | 现役（VU-1/2/3 在 vitest 内） | ✅ |
+| 施工前的 `style.css`/`App.tsx`/`DecisionBar.tsx`/`PreviewPane.tsx`/e2e 夹具行号、Spec 8/10 archive 行号、ZCode `29628c9` 引用、渲染包体积 | 已被重写或属历史快照 | ⚪ 作废，不再维护（历史见 git `2e1b9dc` 之前的版本与 §1 红队纪要） |

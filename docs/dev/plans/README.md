@@ -20,13 +20,20 @@
 | [M2b 服务对象修正：番剧域 → 素材池](2026-09-11-m2b-pool-scope.md) | D4 / D5 / D6 / B1 | ADR-0015, ADR-0003, ADR-0008, ADR-0016 | **已执行并验收**（commit `b257e6d`，2026-09-11） |
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
-| [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0023 | 上位需求文档，定义 8 份 Spec 施工序列（**一期 8 份 spec 已全部完工验收，2026-09-25 S25 移入 [`archive/`](archive/)**）；2026-09-23 补 §6 二期需求（Spec 9 无终端 agent 会话与 Session 恢复、Spec 10 桌面对话面板、Spec 11 停机点深度组件、Spec 12 封面标题协作；ADR-0024/0025 均已通过；一期完工后再写）与 **§7 一期施工 25 个 session（M1–M12 + 全局纠偏）及通用守则**；人时预算降为观测 |
-| [Spec 9：无终端 agent 会话协议与 Session 恢复（core）](2026-09-25-agent-session-protocol-spec.md) | D28 | ADR-0020, ADR-0021, ADR-0022, ADR-0023 | **v0.8 红队 🟢，可动工**（六轮评审全部闭环）；§6.1 修订请求已获授权（2026-09-25）；从 PR0 开始；Spec 10 提出的 S9-R1~R4 已并入 v0.8（2026-09-26），PR3（协议进程）施工前须经红队只限该四处落点的定向复核 |
-| [Spec 10：桌面端对话面板与人审卡片（desktop）](2026-09-25-desktop-conversation-panel-spec.md) | — | ADR-0020, ADR-0018, ADR-0021, ADR-0023 | **v0.5 红队四轮 🟢**：PR0–PR3 可动工；PR4 须待 S9-R1~R4 并入 Spec 9 v0.8 并经定向复核、Spec 9 PR3 施工完成（S9-R3/R4 最终措辞 2026-09-26 已获人确认）；§6.1 修订请求已获授权（2026-09-26） |
-| [Spec 11：停机点深度组件（02.5 app 内编辑与封板、03.5 顺听按钮、人时采集）](2026-09-26-stop-point-deep-components-spec.md) | D18 / D19 | ADR-0024（**已通过**，2026-09-26）, ADR-0018, ADR-0019, ADR-0020 | **v0.3 红队三轮 🟢，可动工**（一轮 2🔴+7🟡+9🔵、二轮 3🟡+1🔵 全收，三轮定向复核闭环）；§6.1 修订请求已获授权（2026-09-26）；S8-R17 改写措辞同日已获人最终确认，动工前置清零；**PR1 已施工**（`check_script.character_hints` INFO 提示 + D-R1 文档，2026-09-26）；**PR2 已施工**（§3.1 八个子命令 + RF17-C1，§3.5 启动开销实测回填，变异实跑见 spec §7.4；`uv run pytest` 1769 passed，2026-09-26）；**PR3/PR4/PR5 已施工**（2026-09-27：02.5 CodeMirror 编辑器 + 03.5 顺听面板 + 人时采集与门禁 14 退役；`npx vitest run` 341 passed、`npx playwright test` 73 passed + 1 skipped、`uv run pytest` 1941 passed；MUT-14/15/16/17/11/12 实跑杀死、A1 实测回填见 spec §7.4/§7.5）；**红队验收 1🔴（CSP 下 CM 样式全失效，A1 假绿）已返修**（2026-09-27：ShadowRoot + adoptedStyleSheets，A1 升为计算样式级 + MUT-18；另修 TI-11 不可读锁归残留、错误态不计时；见 spec §7.6） |
-| [Spec 12：09 封面与标题协作（图片导入、确定性编辑工具、09 定稿记录）](2026-09-26-cover-title-collaboration-spec.md) | — | ADR-0025（**已通过**，2026-09-26）, ADR-0021, ADR-0024, ADR-0018, ADR-0020 | **v0.3 红队三轮 🟢，可动工**（一轮 2🔴+5🟡+6🔵、二轮 1🟡+4🔵、三轮 5 处文本手术全收闭环）；ADR-0025 已接受、§6.1 修订请求已授权（2026-09-26），门禁 0 三格全满足；**PR1+PR2（core）已施工**（2026-09-26：`/import-cover` + `cover_edit` 第 13 个工具 + 09 定稿记录；`uv run pytest` 1898 passed、变异 16/16 杀死，回填见 spec §7.4）；**PR0 的 D-R2 文档与 PR3（desktop）已施工**（2026-09-27：`IMPORT_COVER` spawn 模板 + 导入 UI + 09 定稿 e2e；vitest 343 / playwright 75 / pytest 1941；A3/A4 部分实测见 spec §7.5）；**S12-R1 已落地**（09 卡封面选择器用 `.cover-grid/.cover-opt` + 原生 radio 组，见 spec §7.6） |
-| [Spec 13：web_fetch 链接清单与研究策略（2026-09-24 追加）](2026-09-26-web-fetch-links-and-research-strategy-spec.md) | — | ADR-0021, ADR-0022, ADR-0023 | **v0.3 红队二轮 🟢 可动工**（一轮 0🔴+4🟡+5🔵、二轮 0🔴+1🟡+2🔵 全收，二轮修订由红队经人授权直接落地，三轮复核人确认闭环 2026-09-26）；direction §6 条目已补 |
-| [Spec 14：桌面端视觉设计系统与 UI 美化（2026-09-26 追加）](2026-09-26-desktop-visual-design-spec.md) | — | ADR-0020 | **v0.3.1 红队三轮 🟢，可动工**（一轮 2🔴 + 9🟡 + 5🔵、二轮 4🟡 + 3🔵 全收，B4/B5 按人裁决关闭；三轮 0🔴/0🟡，4 条 🔵 由红队经人授权直接落地）；mock 已拍板、`tokens.css`/`ui.css` 冻结为基准（2026-09-26）；S8-R22 / DIR-R3 / DOC-R1 / S8-R23 已授权、N1–N11 已确认（2026-09-26），门禁 0 全满足，可按 PR0→PR3 动工；**PR0–PR3 已施工**（2026-09-27：PR1 契约 + 零视觉变化、PR2 换皮、PR3 侧栏头部与期行重构 + 外观浮层三档主题；`npx vitest run` 360 passed、`npx playwright test` 103 passed + 1 skipped、`npx vitest run e2e-packaged` 11 passed、`uv run pytest tests/test_docs_invariants.py` 12 passed；M14/M15/M19/M32 实跑见 spec §7.4；**S8-R23「陈旧」标记已单独施工**（`7bdd4a4`）；门禁 6/7 待人——打包版三档手验与此处 9 张三态截图交人看） |
+| [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
+
+## 已归档：二期六份 spec（2026-09-29 S21 收尾）
+
+原文（含红队裁决纪要长表、变异矩阵与实跑回填）全部在 [`archive/`](archive/)，活跃文档不复述。「一票否决信息」＝§9 里仍未验的门禁，逐份指针如下：
+
+| 方案 | 状态 | 未验门禁 / 遗留（指针） |
+|---|---|---|
+| [Spec 9：无终端 agent 会话协议与 Session 恢复（core）](archive/2026-09-25-agent-session-protocol-spec.md) | 已施工 | 无（§9 门禁 1–14 全勾；S9-MUT-1~62 全 KILLED） |
+| [Spec 10：桌面端对话面板与人审卡片](archive/2026-09-25-desktop-conversation-panel-spec.md) | 已施工 | 门禁 6 / 9 / 12（打包版·真机手验，待人）；遗留 D37（确认框定性中，安全相关）、N39（待拍板） |
+| [Spec 11：停机点深度组件](archive/2026-09-26-stop-point-deep-components-spec.md) | 已施工 | 门禁 9 的打包版手验与 A2 |
+| [Spec 12：09 封面与标题协作](archive/2026-09-26-cover-title-collaboration-spec.md) | 已施工 | 门禁 9 的「两图渲染两版」与打包版手验 |
+| [Spec 13：web_fetch 链接清单与研究策略](archive/2026-09-26-web-fetch-links-and-research-strategy-spec.md) | 已施工 | **门禁 8（唯一终判）待 D29 收口后复跑** |
+| [Spec 14：桌面端视觉设计系统](archive/2026-09-26-desktop-visual-design-spec.md) | 已施工 | 门禁 6 / 7（待人）、门禁 8 的 M31（不可复现） |
 
 > 2026-09-25 文档同步归档 4 份（完成判定已满足，移入 [`archive/`](archive/)）：P2 段级时长不变量（`pipeline/align.py` refit + review/render 双卡口已落地）、M2b 素材池修正（b257e6d 已验收）、ava idea scope 启动入口（D27 闭环）、pi 侦察派工单（v0.4 已验收）。B4 仅为 P2 内部编号，issues 表无对应行，无需同步。
 
