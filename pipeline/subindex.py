@@ -121,8 +121,32 @@ _DEFAULT_NON_DIALOGUE_STYLES = {
 }
 
 
+# 主对白轨的常见 style 名：任何命名表都不许把它们判成非对白（表是人改的 config，
+# 空表 / 空串条目 / 把列表写成字符串都会编出「匹配一切」的正则，整部番对白被静默丢光）。
+_MAIN_DIALOGUE_CANARIES = ("Sub-CN", "Text-cn", "CN", "Default", "JPN")
+
+
 def build_non_dialogue_re(table: dict) -> re.Pattern:
-    """把 style 命名表编成单条正则。表是 config 内容（N46），匹配机制在代码。"""
+    """把 style 命名表编成单条正则。表是 config 内容（N46），匹配机制在代码。
+
+    表形状不合法、或编出的正则会吞掉主对白 style 时，诚实报错（不静默）。
+    """
+    if not isinstance(table, dict):
+        raise ValueError(f"subtitle.non_dialogue_styles 必须是对象，实得 {type(table).__name__}")
+    for kind, items in table.items():
+        if not isinstance(items, list) or not all(isinstance(x, str) and x for x in items):
+            raise ValueError(
+                f"subtitle.non_dialogue_styles.{kind} 必须是非空字符串组成的列表（空串会匹配一切）")
+    compiled = _compile_non_dialogue(table)
+    swallowed = [s for s in _MAIN_DIALOGUE_CANARIES if compiled.match(s)]
+    if swallowed:
+        raise ValueError(
+            f"subtitle.non_dialogue_styles 会把主对白 style {swallowed} 判成非对白"
+            "（空表或过宽的前缀？）：拒绝加载，避免整部番对白被静默丢光")
+    return compiled
+
+
+def _compile_non_dialogue(table: dict) -> re.Pattern:
     parts = []
     bounded = [re.escape(x) for x in table.get("prefix_bounded", [])]
     if bounded:

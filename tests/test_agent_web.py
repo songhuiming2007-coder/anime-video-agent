@@ -288,6 +288,41 @@ def test_fetch_content_encoding_bomb_capped(monkeypatch: pytest.MonkeyPatch) -> 
     assert out["truncated"] is True
 
 
+def test_fetch_content_encoding_deflate_bomb_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N45（评审补）：deflate 分支的解压炸弹同样受 max_fetch_bytes 封顶——
+    gzip 版用例守不到 deflate 分支自己的 max_length 限流。"""
+    _pin_public_dns(monkeypatch)
+    body = zlib.compress(b"A" * 1_000_000)
+    resp = _FakeResponse(
+        body, content_type="text/plain; charset=utf-8", content_encoding="deflate"
+    )
+    # 末尾 out[:limit] 会兜住输出，所以「不限流也得到同样输出」的变异只有靠间谍抓：
+    # 每次 decompress 必须带 max_length，且不超过 limit+1（内存上界，不是事后截断）
+    real = zlib.decompressobj
+    max_lengths: list[int] = []
+
+    class _Spy:
+        def __init__(self) -> None:
+            self._inner = real()
+
+        def decompress(self, data: bytes, max_length: int = 0) -> bytes:
+            max_lengths.append(max_length)
+            return self._inner.decompress(data, max_length)
+
+        def flush(self) -> bytes:
+            return self._inner.flush()
+
+    monkeypatch.setattr(zlib, "decompressobj", lambda *a, **k: _Spy())
+    out = fetch_web(
+        "https://example.org/deflate-bomb",
+        config=_make_config(max_fetch_bytes=65536),
+        opener=lambda req, timeout=30.0: resp,
+    )
+    assert out["fetched_bytes"] == 65536
+    assert out["truncated"] is True
+    assert max_lengths and all(0 < m <= 65537 for m in max_lengths), max_lengths
+
+
 def test_fetch_content_encoding_unsupported_is_honest_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """N45：未知编码（br 等）明确报错并附升级 crawl 提示，严禁静默错解。"""
     _pin_public_dns(monkeypatch)
