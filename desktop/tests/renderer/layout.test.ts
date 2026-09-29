@@ -1,6 +1,6 @@
 // D39 S2：分栏布局纯函数。期望值先手算（见各行注释）再跑。
 import { describe, expect, test } from "vitest";
-import { clampLeft, DEFAULT_LAYOUT, effectivePreviewW, gridColumns, nudge, previewMax, type Layout } from "../../src/renderer/layout";
+import { clampLeft, DEFAULT_LAYOUT, effectivePreviewW, gridColumns, nudge, parseLayout, previewMax, serializeLayout, type Layout } from "../../src/renderer/layout";
 
 const open = (over: Partial<Layout> = {}): Layout => ({ ...DEFAULT_LAYOUT, previewOpen: true, ...over });
 
@@ -62,5 +62,29 @@ describe("手柄键盘（不做键盘自动化，D37；这里只验纯函数）"
   test("其余键不处理（返回 null，调用方不 preventDefault，Tab 照常移焦）", () => {
     expect(nudge(240, "Tab", 200, 400, 1)).toBeNull();
     expect(nudge(240, "Enter", 200, 400, 1)).toBeNull();
+  });
+});
+
+describe("持久化读回（D39 S3：坏数据回落默认，永不抛错）", () => {
+  const saved: Layout = { leftOpen: false, leftW: 312, previewOpen: true, previewW: 520, filesOpen: false };
+  test("存了什么读回什么", () => {
+    expect(parseLayout(serializeLayout(saved))).toEqual(saved);
+    expect(parseLayout(serializeLayout(DEFAULT_LAYOUT))).toEqual(DEFAULT_LAYOUT);
+  });
+  test("整份不可用 → 整份默认：缺失 / 截断的 JSON / 非对象 / 数组 / 版本不对 / 没有版本", () => {
+    for (const raw of [null, "", '{"v":1,"leftW":3', "garbage", "null", "42", '"x"', "[]", JSON.stringify({ ...saved, v: 2 }), JSON.stringify(saved)]) {
+      expect(parseLayout(raw), String(raw)).toEqual(DEFAULT_LAYOUT);
+    }
+  });
+  test("个别字段坏 → 只那个字段取默认，其余照用", () => {
+    const bad = { v: 1, leftOpen: "no", leftW: "wide", previewOpen: true, previewW: "big", filesOpen: 0 };
+    expect(parseLayout(JSON.stringify(bad))).toEqual({ ...DEFAULT_LAYOUT, previewOpen: true });
+  });
+  test("数值越界按上下限夹紧：左栏 9999 → 400、-5 → 200；预览 10 → 320、1e9 → 4000", () => {
+    expect(parseLayout(JSON.stringify({ ...saved, v: 1, leftW: 9999, previewW: 10 }))).toMatchObject({ leftW: 400, previewW: 320 });
+    expect(parseLayout(JSON.stringify({ ...saved, v: 1, leftW: -5, previewW: 1e9 }))).toMatchObject({ leftW: 200, previewW: 4000 });
+  });
+  test("previewW 为 null（人没拖过）原样保留，仍按窗口比例算", () => {
+    expect(parseLayout(JSON.stringify({ ...saved, v: 1, previewW: null })).previewW).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 // VU-3：theme.ts 的读写纪律（Spec 14 §3.3 / §7.1）。vitest 环境是 node：localStorage / document 一律桩出来。
 import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, readEpisodeView, readTheme, saveEpisodeView, saveTheme } from "../../src/renderer/theme";
+import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme } from "../../src/renderer/theme";
+import { DEFAULT_LAYOUT } from "../../src/renderer/layout";
 
 const g = globalThis as unknown as Record<string, unknown>;
 
@@ -64,5 +65,22 @@ describe("VU-3 theme.ts", () => {
     expect(attrs.get("data-theme")).toBe("light");
     applyTheme("system");
     expect(attrs.has("data-theme")).toBe(false);
+  });
+});
+
+describe("D39 S3 布局记忆（与主题同一纪律）", () => {
+  it("localStorage 抛错：读回默认布局、写返回 false，都不抛", () => {
+    g.localStorage = throwingStorage();
+    expect(readLayout()).toEqual(DEFAULT_LAYOUT);
+    expect(saveLayout({ ...DEFAULT_LAYOUT, leftOpen: false })).toBe(false);
+  });
+  it("写进去的下次读得回；存储里是坏 JSON 时回落默认", () => {
+    const s = memStorage();
+    g.localStorage = s;
+    const l = { ...DEFAULT_LAYOUT, leftOpen: false, previewOpen: true, previewW: 500 };
+    expect(saveLayout(l)).toBe(true);
+    expect(readLayout()).toEqual(l);
+    s.setItem("ava.layout", '{"v":1,"leftOpen":fa');
+    expect(readLayout()).toEqual(DEFAULT_LAYOUT);
   });
 });

@@ -23,11 +23,11 @@ import { VoicePanel } from "./VoicePanel";
 import { readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
-import { clampLeft, DEFAULT_LAYOUT, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
+import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
 import { Splitter } from "./Splitter";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { errText, RpcClient } from "./rpc";
-import { applyTheme, readEpisodeView, readTheme, saveEpisodeView, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
+import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
 import { installTestHooks } from "./testHooks";
 import { Badge, StateView, StatusDot } from "./ui";
@@ -102,11 +102,16 @@ function Main() {
   /** 封面导入成功后重挂产物树（导入人刚放下的图应在树里立刻可见） */
   const [treeBump, setTreeBump] = useState(0);
   /** D39 S2 分栏（方案 B）：预览默认收起；停机点自动呼出时不展开（不抢），只在窄条上亮点 */
-  const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
+  // D39 S3：跨重启记忆（全局一份，theme.ts / layout.ts::parseLayout；坏数据回落默认）。写失败只影响下次启动
+  const [layout, setLayout] = useState<Layout>(() => readLayout());
+  useEffect(() => {
+    saveLayout(layout);
+  }, [layout]);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   const [previewUnseen, setPreviewUnseen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(true);
+  const filesOpen = layout.filesOpen;
+  const setFilesOpen = (f: (o: boolean) => boolean) => setLayout((l) => ({ ...l, filesOpen: f(l.filesOpen) }));
   const mainRef = useRef<HTMLDivElement | null>(null);
   const [mainW, setMainW] = useState(() => window.innerWidth);
   useEffect(() => {

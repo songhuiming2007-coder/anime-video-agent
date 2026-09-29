@@ -1,12 +1,15 @@
 // 主题三档与侧栏视图偏好（Spec 14 §3.3，🔴-1 方案 a）：localStorage + <html data-theme>，零协议改动。
 // 授权依据：Spec 8 §2.9「UI 便利状态由 renderer localStorage 记忆，读写均 try/catch」。
 // VS-9：全仓只有本模块碰 localStorage，且每处成员访问都在 try 块里（M32 的形状：去掉 try/catch 两层都红）。
+// D39 S3：分栏布局（列宽、收起状态）也存在这里，校验与回落规则在 layout.ts::parseLayout（纯函数）。
+import { parseLayout, serializeLayout, type Layout } from "./layout";
 
 export type Theme = "system" | "light" | "dark";
 export type EpisodeViewPref = "time" | "step";
 
 const THEME_KEY = "ava.theme";
 const VIEW_KEY = "ava.episodeView";
+const LAYOUT_KEY = "ava.layout";
 
 /** 非法值、缺失或读取抛错一律返回 "system"（主题不是安全面，取中性默认值，不当故障） */
 export function readTheme(): Theme {
@@ -49,6 +52,26 @@ export function readEpisodeView(): EpisodeViewPref {
 export function saveEpisodeView(v: EpisodeViewPref): boolean {
   try {
     localStorage.setItem(VIEW_KEY, v);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读取抛错（隐私模式、存储被禁）与坏数据同样回落默认布局 */
+export function readLayout(): Layout {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_KEY);
+  } catch {
+    /* 读取失败按缺省 */
+  }
+  return parseLayout(raw);
+}
+
+export function saveLayout(l: Layout): boolean {
+  try {
+    localStorage.setItem(LAYOUT_KEY, serializeLayout(l));
     return true;
   } catch {
     return false;

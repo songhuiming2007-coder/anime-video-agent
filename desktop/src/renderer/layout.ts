@@ -23,9 +23,50 @@ export interface Layout {
   previewOpen: boolean;
   /** null = 未被人拖过，按 PREVIEW_DEFAULT_RATIO 随窗口算 */
   previewW: number | null;
+  /** 左栏「本期文件」段是否展开 */
+  filesOpen: boolean;
 }
 
-export const DEFAULT_LAYOUT: Layout = { leftOpen: true, leftW: LEFT_DEFAULT, previewOpen: false, previewW: null };
+export const DEFAULT_LAYOUT: Layout = { leftOpen: true, leftW: LEFT_DEFAULT, previewOpen: false, previewW: null, filesOpen: true };
+
+/** 持久化格式版本（S3）。格式一变就升版本号：旧值整份回落默认，不做迁移（这是便利状态，不是数据） */
+export const LAYOUT_VERSION = 1;
+/** 存盘时预览宽的绝对上限：只挡明显的坏值；真正的上限随窗口在 effectivePreviewW 里夹 */
+const PREVIEW_STORE_MAX = 4000;
+
+export function serializeLayout(l: Layout): string {
+  return JSON.stringify({ v: LAYOUT_VERSION, ...l });
+}
+
+/**
+ * 从存储读回布局（D39 S3，全局一份，人 2026-09-29 裁决）。坏数据的回落分两级：
+ * - 整份不可用（缺失、不是合法 JSON、不是对象、版本不对）→ 整份默认值；
+ * - 个别字段坏（类型不对、非有限数）→ 只那个字段取默认，数值按上下限夹紧。
+ * 永不抛错：布局不是安全面，读坏了就回到默认，不当故障。
+ */
+export function parseLayout(raw: string | null): Layout {
+  if (raw === null) return DEFAULT_LAYOUT;
+  let o: unknown;
+  try {
+    o = JSON.parse(raw);
+  } catch {
+    return DEFAULT_LAYOUT;
+  }
+  if (typeof o !== "object" || o === null || Array.isArray(o)) return DEFAULT_LAYOUT;
+  const r = o as Record<string, unknown>;
+  if (r.v !== LAYOUT_VERSION) return DEFAULT_LAYOUT;
+  const bool = (k: keyof Layout): boolean => (typeof r[k] === "boolean" ? (r[k] as boolean) : (DEFAULT_LAYOUT[k] as boolean));
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const lw = num(r.leftW);
+  const pw = num(r.previewW);
+  return {
+    leftOpen: bool("leftOpen"),
+    leftW: lw === null ? DEFAULT_LAYOUT.leftW : clampLeft(lw),
+    previewOpen: bool("previewOpen"),
+    previewW: pw === null ? null : clamp(pw, PREVIEW_MIN, PREVIEW_STORE_MAX),
+    filesOpen: bool("filesOpen"),
+  };
+}
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, Math.round(v)));
 
