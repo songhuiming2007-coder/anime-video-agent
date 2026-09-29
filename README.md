@@ -116,7 +116,6 @@ npm run release-build                         # 打包版（electron-builder）
 |---|---|---|
 | `web_search` | 默认 DuckDuckGo 端点被反机器人页拦截，实际不可用；已定 Exa 主 + Tavily 备，spec 草案待红队 | D29、[Spec 15](docs/dev/plans/2026-09-29-web-search-provider-spec.md) |
 | 桌面端布局 | 已按方案 B 修复（对话为主、预览默认收起、可拖拽、跨重启记忆）；打包版人体验通过，真实一期验收待做 | D39 |
-| 桌面端会话里的作业 | 会话进程 PATH 不含 `/opt/homebrew/bin`，agent 起的作业找不到 ffmpeg/ffprobe（配音复核、排片、渲染、质检、封面）；终端不受影响 | N49 |
 | 桌面端上下文 | 看不到上下文用量，没有 `/compact`；绕法：结束会话后发新消息即开新会话 | D41 |
 | 桌面端确认框 | 原生确认框曾未经点击被记为「批准」，定性中（安全相关） | D37 |
 | 03.5 期目录会话 | runbook 文本含受限出网字面量，第一轮即 `[BLOCKED]` | D30 |
