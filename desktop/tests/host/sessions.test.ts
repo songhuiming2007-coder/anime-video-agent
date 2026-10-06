@@ -5,6 +5,8 @@ import type { ConvSnapshot, Envelope, SnapshotStatus } from "../../src/shared/pr
 import { HostService, type HostDeps } from "../../src/host/service";
 import { childEnv, spawnLog } from "../../src/host/spawner";
 import { cleanup, mkEpisode, treeManifest } from "../helpers";
+import { createConfirmBroker } from "../../src/host/confirm";
+import { createMainConfirmBroker } from "../../src/main/confirm";
 import { childSignals, fixtureWrite, sessionKey, sessionRepo, sessionRecords, sessionScript, stdinLines, type SessionRepo } from "../fixtures/session";
 
 const roots: string[] = [];
@@ -778,6 +780,45 @@ describe("TH-18 原生确认框（§2.4 第 5 层）", () => {
     const err = (await p) as { code?: string };
     expect(err.code).toBe("E_STALE");
     expect(stdinLines(b.repo, b.epKey).filter((l) => JSON.parse(l).t === "answer")).toEqual([]);
+  });
+});
+
+describe("TH-18b 确认框所属窗口被销毁（D40）", () => {
+  const FETCH = { t: "request", request_id: "qf", kind: "fetch", turn_id: "t1", title: "候选", card_text: "…", fields: { no: 1, title: "t", url: "https://example.com/x", type: "image", source: "web", why: "需要素材", expected_dur: "12" }, options: ["approve", "reject"], feedback_allowed: false };
+  const ON_ANSWER = { t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" };
+
+  it("挂起期间重答 E_BUSY；windowGone → E_STALE、零写入、卡仍打开；之后能重答并恰写 1 行 answer", async () => {
+    // 真实的 host/main 两端 broker 串起来；show 模拟 destroy：永不 resolve（Electron 44.4.5 实测）
+    let respondNext: ((ok: boolean) => void) | null = null;
+    let hang = true;
+    const main = createMainConfirmBroker({
+      show: () => new Promise<boolean>((r) => { if (hang) return; respondNext = r; }),
+      result: (reqId, ok) => hostBroker.resolve(reqId, ok),
+    });
+    const hostBroker = createConfirmBroker({ bootId: "boot1", post: (m) => { if (m.type === "confirm-query") main.request(m.reqId, m.title, m.detail); } });
+    const b = await boot({ overrides: { confirm: (t: string, d: string) => hostBroker.request(t, d) } });
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, FETCH], on_answer: [ON_ANSWER] }]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
+    const answers = () => stdinLines(b.repo, b.epKey).filter((l) => JSON.parse(l).t === "answer");
+
+    const first = b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" }).catch((e) => e);
+    await new Promise((r) => setTimeout(r, 50));
+    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" })).rejects.toMatchObject({ code: "E_BUSY" });
+
+    main.windowGone();
+    // 挂起转普通失败：windowGone 不回复时 first 永不结束，这里在 2 s 内给出「仍挂起」而不是撞用例超时
+    const settled = await Promise.race([first, new Promise((r) => setTimeout(() => r({ code: "仍挂起" }), 2000))]);
+    expect((settled as { code?: string }).code).toBe("E_STALE");
+    expect(answers()).toEqual([]);
+    expect((await snapOf(b.svc, b.key)).open.map((o) => o.request_id)).toEqual(["qf"]);
+
+    hang = false;
+    const again = b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" });
+    await waitFor(async () => respondNext !== null);
+    respondNext!(true);
+    await again;
+    expect(answers()).toHaveLength(1);
   });
 });
 

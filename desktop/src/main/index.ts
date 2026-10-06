@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { app, BrowserWindow, dialog, MessageChannelMain, screen, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
 import { installEgressBlock } from "./egress";
 import { MediaServer, registerMediaScheme } from "./mediaProtocol";
-import { createMainConfirmBroker } from "./confirm";
+import { approveBoxOptions, APPROVE_BUTTON, createMainConfirmBroker, quitBoxOptions } from "./confirm";
 import { HOST_STDERR_TAIL_BYTES, QUIT_QUERY_TIMEOUT_MS, QUIT_STOP_TIMEOUT_MS } from "../shared/constants";
 import { initialRestartState, onHostCrash, onHostStarted } from "../shared/hostRestart";
 import type { HostToMain, MainToHost } from "../shared/lifecycle";
@@ -178,9 +178,9 @@ function boot(): void {
   /** 熔断：停止重启，renderer 换成致命面板（含 host stderr 尾部）；UI 不再持有任何 host 端口 */
   const mainConfirm = createMainConfirmBroker({
     show: async (title, detail, signal) => {
-      const box: Electron.MessageBoxOptions = { type: "question", title, message: title, detail, buttons: ["批准", "取消"], defaultId: 1, cancelId: 1, signal };
+      const box: Electron.MessageBoxOptions = approveBoxOptions(title, detail, signal);
       const r = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
-      return r.response === 0;
+      return r.response === APPROVE_BUTTON;
     },
     result: (reqId, ok) => sendToHost({ type: "confirm-result", reqId, ok }),
     stub: () => (!app.isPackaged ? testGlobals.__avaTestConfirm : undefined),
@@ -277,16 +277,9 @@ function boot(): void {
           completeQuitConfirm(stub.respond === "quit");
           return;
         }
-        const box: Electron.MessageBoxOptions = {
-          type: "warning",
-          message: "有会话在运行，仍然退出？",
-          detail: `${lists.join("\n")}\n\n正在运行的渲染等作业会被中断；回合不会再做收尾总结。`,
-          buttons: ["退出", "取消"],
-          defaultId: 1,
-          cancelId: 1,
-        };
+        const box: Electron.MessageBoxOptions = quitBoxOptions(lists);
         void (win ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).then((r) => {
-          if (r.response === 0) proceedQuit();
+          if (r.response === APPROVE_BUTTON) proceedQuit();
           else quitPhase = "idle";
         });
       } else if (m.type === "sessions-down") {
@@ -386,6 +379,7 @@ function boot(): void {
     });
     win.on("closed", () => {
       win = null;
+      mainConfirm.windowGone(); // D40：挂在已销毁窗口上的确认框永不 resolve，主动回 ok:false
     });
     loadRenderer();
   };
