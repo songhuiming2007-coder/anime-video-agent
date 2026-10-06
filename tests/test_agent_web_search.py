@@ -505,13 +505,24 @@ def test_tp9_unset_key_marks_provider_not_ready(
 def test_tp9_web_key_env_names_reads_no_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """§2.7 第 1 条：只回答名字、保持链序，不读环境变量。"""
-    monkeypatch.setattr(web.os.environ, "get", lambda *a, **k: pytest.fail("读了环境变量"))
+    """§2.7 第 1 条：只回答名字、保持链序，不读环境变量。
+
+    N59 B-3：只替换 web 模块看到的 `os`，并且间谍只记录不抛——替换进程全局的 os.environ.get
+    会连 pytest 的 junitxml 插件一起拦，--junitxml 下变异的杀死会变成内部崩溃、报告假绿。"""
+    import types
+
+    reads: list[tuple[Any, ...]] = []
+    spy_environ = types.SimpleNamespace(get=lambda *a, **k: reads.append(a) or "")
+    monkeypatch.setattr(web, "os", types.SimpleNamespace(environ=spy_environ))
     root = _write_cfg(
         tmp_path,
         {"timeout_s": 20, "providers": [{"name": "exa_mcp"}, {"name": "tavily", "api_key_env": "TAVILY_API_KEY"}]},
     )
     assert web_key_env_names(root) == ["TAVILY_API_KEY"]
+    assert reads == []
+    # 对照：load_web_config 确实经由同一个 web.os 读值——间谍接得住，上面的 [] 才有意义
+    web.load_web_config(root)
+    assert reads == [("TAVILY_API_KEY", "")]
 
 
 # ——— T-P10：归一化 ———
@@ -680,6 +691,17 @@ def test_tp15_in_band_error_falls_through(fixture: str, expected: str) -> None:
     assert len(reason) <= len("带内错误：") + 200
 
 
+def test_tp15_in_band_key_across_the_cut_never_leaks() -> None:
+    """N59 B-2：key 跨在 200 字截断处时，先脱敏再截——前半段也不能漏出来。"""
+    text = "x" * 195 + FAKE_KEY + " tail"
+    router = _Router(exa_mcp=_exa_in_band(text), tavily=_http_error(500))
+    with pytest.raises(ValueError) as exc_info:
+        search_web("frieren", config=DEFAULT_CHAIN, opener=router)
+    msg = str(exc_info.value)
+    assert FAKE_KEY[:5] not in msg  # "test-"
+    assert "x" * 195 + "***" in msg
+
+
 def test_tp15_in_band_text_never_echoes_query() -> None:
     """T-P15（R2-6）：带内文案回显原始或归一后的 query → 换成 <query>。"""
     query = "secret%20plan 一色彩羽"
@@ -721,19 +743,38 @@ def test_sent_url_is_the_checked_endpoint(monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.parametrize("limit", [1, 5, 10, 20])
 def test_tp16_request_count_is_limit_plus_one(limit: int) -> None:
-    """T-P16（M23）：请求条数 = limit + 1；返回 limit + 1 条 → 截到 limit 且 truncated。"""
+    """T-P16（M23）：请求条数 = limit + 1（tavily 再受单次上限 20 约束，N59 B-1）；
+    返回 limit + 1 条 → 截到 limit 且 truncated。"""
     router = _Router(exa_mcp=_http_error(429), tavily=_tavily(limit + 1))
     out = search_web("frieren", limit=limit, config=DEFAULT_CHAIN, opener=router)
     exa_body = json.loads(router.requests[0].data)
     tavily_body = json.loads(router.requests[1].data)
     assert exa_body["params"]["arguments"]["numResults"] == limit + 1
-    assert tavily_body["max_results"] == limit + 1
+    assert tavily_body["max_results"] == min(limit + 1, 20)
     assert len(out["results"]) == limit
     assert out["truncated"] is True
 
-    exact = search_web("frieren", limit=limit, config=_cfg(TAVILY), opener=_Router(tavily=_tavily(limit)))
-    assert len(exact["results"]) == limit
+    exact = search_web("frieren", limit=limit, config=_cfg(TAVILY), opener=_Router(tavily=_tavily(limit - 1 if limit == 20 else limit)))
     assert exact["truncated"] is False
+
+
+def test_tp16_tavily_capped_request_uses_returned_equals_requested() -> None:
+    """N59 B-1：limit=20 时 tavily 只请求 20（文档上限）；拿到恰 20 条按 §2.3 判 truncated，19 条不判。"""
+    full = _Router(tavily=_tavily(20))
+    out = search_web("frieren", limit=20, config=_cfg(TAVILY), opener=full)
+    assert json.loads(full.requests[0].data)["max_results"] == 20
+    assert len(out["results"]) == 20
+    assert out["truncated"] is True
+
+    short = search_web("frieren", limit=20, config=_cfg(TAVILY), opener=_Router(tavily=_tavily(19)))
+    assert len(short["results"]) == 19
+    assert short["truncated"] is False
+
+    # exa_mcp 不设上限：limit=20 照样请求 21
+    exa = _Router(exa_mcp=_exa_sse([(f"T{i}", f"https://e.example/{i}", "x") for i in range(21)]))
+    out_exa = search_web("frieren", limit=20, config=_cfg(EXA), opener=exa)
+    assert json.loads(exa.requests[0].data)["params"]["arguments"]["numResults"] == 21
+    assert out_exa["truncated"] is True
 
 
 def test_n59_default_and_cap_are_20() -> None:

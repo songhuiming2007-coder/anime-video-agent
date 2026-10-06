@@ -147,7 +147,7 @@
 
 | 类别 | 例 | 行为 |
 |---|---|---|
-| 可落下一家 | HTTP 429 / 5xx、超时、DNS/连接失败、解析出 0 条、响应结构不符；**HTTP 3xx（不跟随，v0.2 🟡-2）**；**JSON-RPC 带内错误**（HTTP 200 下 `error` 或 `result.isError: true`，v0.2 🔵-1）；**免 key 的家（本次请求未带 key，即 `exa_mcp`）返回 401/403**（v0.2 🟡-5） | 记下失败原因，尝试链上下一家。带内错误的原因取其文案：先把原始 query 与归一后的 query 都替换为 `<query>`（v0.3 R2-6），再截断 200 字、`_scrub` + `_redact_all`；免 key 家 401/403 的原因固定写「Exa 免 key 入口被拒（HTTP 40x），需配 `EXA_API_KEY` 改用 `exa_api`」 |
+| 可落下一家 | HTTP 429 / 5xx、超时、DNS/连接失败、解析出 0 条、响应结构不符；**HTTP 3xx（不跟随，v0.2 🟡-2）**；**JSON-RPC 带内错误**（HTTP 200 下 `error` 或 `result.isError: true`，v0.2 🔵-1）；**免 key 的家（本次请求未带 key，即 `exa_mcp`）返回 401/403**（v0.2 🟡-5） | 记下失败原因，尝试链上下一家。带内错误的原因取其文案：先把原始 query 与归一后的 query 都替换为 `<query>`（v0.3 R2-6），再 `_scrub` + `_redact_all`，**最后**截断 200 字（N59 B-2 改序：先截后脱敏会让跨在截断处的 key 前半段漏出）；免 key 家 401/403 的原因固定写「Exa 免 key 入口被拒（HTTP 40x），需配 `EXA_API_KEY` 改用 `exa_api`」 |
 | **不落下一家，直接失败** | egress 命中（`PermissionError`）、`_guard_url` 拒连、**配了 key 的家**（本次请求带了 key：`exa_api` / `tavily`）返回 HTTP 401/403（key 无效/被拒） | 立即抛出。egress 命中必须停（换一家发同样的 query 依然是泄漏）；配了 key 的家 401/403 是**配置错误**，静默换家会把「key 配错了」藏起来（家规禁静默降级）。免 key 的家被拒不是配置错误，而是 §2.1 RF-1 预言的入口收紧，恰是备家该顶上的场景（人 2026-10-06 裁决）。取舍见 §11 Q3 |
 
 - **全链失败**：抛 `ValueError`，消息**逐家列出** `provider名: 原因`（429 / 超时 / 解析为空 / …），不含请求串与密钥。这是 Spec 4 §3.2「空结果不静默」的推广——模型看到的是「三家都挂了，原因分别是…」，而不是一个含糊的「搜索失败」。
@@ -155,7 +155,7 @@
 ### 2.3 决策 3：对外契约不变、`provider` 字段语义微调
 
 - 返回值仍是 `{"query","provider","results","truncated"}` 四键，`results[]` 仍是 `{"title","url","snippet"}`。**`provider` 的值从「端点 URL」改为「适配器名」**（如 `"exa_mcp"`），这样模型/人能看出这次是主还是备回答的。这是 Spec 4 §3.2 示例值的语义变化，非键集变化；`tools.py` 的 `web_search` description 只需补一句「由配置的检索服务按序尝试」，**不改参数 schema**。
-- **`limit` 映射与 `truncated` 判定（v0.2 🔵-2）**：`tools.py` 已把 `limit` clamp 到 [1, 10]；每家请求条数（`exa_mcp` 的 `numResults`、`exa_api` 的 `numResults`、`tavily` 的 `max_results`）一律为 `limit + 1`；归一化（去重、丢非 http）之后条数 > limit → 截到 limit、`truncated = true`，否则 `false`。PR0 用真实请求核实各家单次上限 ≥ 11；若某家达不到，该家改为「返回数 == 请求数即判 `truncated`」并在本节注明。
+- **`limit` 映射与 `truncated` 判定（v0.2 🔵-2）**：`tools.py` 已把 `limit` clamp 到 [1, 10]；每家请求条数（`exa_mcp` 的 `numResults`、`exa_api` 的 `numResults`、`tavily` 的 `max_results`）一律为 `limit + 1`；归一化（去重、丢非 http）之后条数 > limit → 截到 limit、`truncated = true`，否则 `false`。PR0 用真实请求核实各家单次上限 ≥ 11；若某家达不到，该家改为「返回数 == 请求数即判 `truncated`」并在本节注明。**注明（N59 B-1，2026-10-06）**：`tavily` 文档上限 `max_results ≤ 20`，注册表 `max_count = 20`，请求条数 = `min(limit + 1, 20)`；被截住时（limit = 20）按「返回数 == 请求数」判 `truncated`。`exa_mcp` 不设上限（实测 30 照给）。
 - `snippet` 统一封顶 `SEARCH_SNIPPET_MAX_CHARS = 500`（Exa 的 Highlights 会到上千字，6 条就是数千字进上下文；Tavily 的 `content` 同理）。截断处不加省略号以外的标记，`truncated` 仍只表示「结果条数被 limit 截断」，不与 snippet 截断混用。
 - 结果 URL 去重（同一 URL 保留首条）；`url` 非 http/https 的丢弃（防 `javascript:` 之类进入后续 `web_fetch`）。丢弃后为 0 条 → 按「解析出 0 条」处理。
 
@@ -486,6 +486,18 @@ M18～M20、M24、M25 属 PR3（desktop）。
 | 🔵 B-3 | `test_tp9_web_key_env_names_reads_no_values` 用会抛异常的 lambda 替换了进程全局的 `os.environ.get`。pytest 的 junitxml 插件在出报告时也会调它，所以加 `--junitxml` 跑时，V5 的杀死会变成 pytest 内部崩溃，junit 报告里是 `failures="0"` | 本人的变异脚本按 junit 判杀，V5 先被判成 SURVIVED；不加 `--junitxml` 直接跑则是该用例本身的 `Failed: 读了环境变量`。按第三节纪律，以后者为准 | 用例本身没错，只是在 junit 口径下会报假绿。建议改成只替换 `web` 模块里的 `os`（例如 `monkeypatch.setattr(web, "os", 桩)`），或者让间谍只记录、不抛异常，用例最后再断言「没有读过」 |
 
 **未实测项（如实）**：桌面端门禁 4、5 没有重跑（需要人手点打包版），依据是施工方存证与上面对 `session.jsonl` 的被动核对；`exa_api` 未注册，没有可测对象；429 样本没有真实取到（施工方 PR0 也没取到），T-P4 的 429 腿用的是手造的 `HTTPError`。
+
+## 15. N59 打回项复修（2026-10-06；修订人 = D29-A / N59 施工方，未参与 D29-B）
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| 🟡 B-1 | 采纳 | `_Provider` 加 `max_count`（`tavily = 20`，`exa_mcp` 不设）；请求条数 = `min(limit + 1, max_count)`；被截住时 `truncated = 返回数 >= 请求数`（§2.3 原文规则，本节已注明）。新用例 `test_tp16_tavily_capped_request_uses_returned_equals_requested`（limit=20：tavily 请求 20、回 20 判截断、回 19 不判；exa_mcp 仍请求 21）；T-P16 的 tavily 腿改断言 `max_results == min(limit + 1, 20)` |
+| 🔵 B-2 | 采纳 | `_in_band_reason` 改为替换 query → 折叠空白 → `_scrub` → `_redact_all` → 截 200 字；§2.2 文字同步。新用例 `test_tp15_in_band_key_across_the_cut_never_leaks`（195 字填充 + key 跨在截断处，`test-` 前缀不得出现） |
+| 🔵 B-3 | 采纳 | `test_tp9_web_key_env_names_reads_no_values` 只替换 `web` 模块看到的 `os`，间谍只记录不抛，最后断言没读过；并加对照腿（`load_web_config` 经同一间谍读到 `TAVILY_API_KEY`，证明间谍接得住） |
+
+- **变异**（`mutate.py` 的 junit 判杀口径，正好覆盖 B-3 的场景；还原后 md5 一致）：M-B1 去掉 tavily 上限 → 新用例与 T-P16[20] 杀（`21 == 20`）；M-B1b 去掉「被截住时返回数 == 请求数判截断」→ 新用例杀；M-B2 改回先截后脱敏 → 新 B-2 用例杀（`xxxx…test-` 漏出）；V5（评审自设：`web_key_env_names` 读环境变量）**在 `--junitxml` 下**由该用例以断言杀死（`[('TAVILY_API_KEY', '')] == []`），B-3 的假绿消失；M23 在新写法上复跑仍杀。
+- **真机**：只用 tavily、limit=20 → 实际请求体 `max_results = 20`，回 10 条、`truncated=false`；默认链不带 limit → `exa_mcp` 20 条、`truncated=true`。
+- 只动 `web.py` 搜索侧与 `tests/test_agent_web_search.py`；`fetch_web`、出网断言、`_guard_url`、清洗一行未动。待另一个 session 对这一处定向复核。
 
 ## 附：引用自查表（2026-09-29 草案时按 HEAD `4ca9a03` 核对；以符号为锚）
 

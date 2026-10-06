@@ -656,6 +656,9 @@ class _Provider:
     # _guard_url 校验的地址与实际发送的地址是同一个
     build: Callable[[str, str, int, ProviderCfg], urllib.request.Request]
     parse: Callable[[str], list[dict[str, str]]]
+    # 单次请求条数上限（N59 B-1）：None = 不设。请求条数 = min(limit + 1, 该值)；被它截住时按
+    # Spec 15 §2.3「返回数 == 请求数即判 truncated」
+    max_count: int | None = None
 
 
 def _json_post(url: str, body: dict[str, Any], accept: str) -> urllib.request.Request:
@@ -794,7 +797,11 @@ _PROVIDERS: dict[str, _Provider] = {
     "exa_mcp": _Provider(
         "https://mcp.exa.ai/mcp?tools=web_search_exa", None, _build_exa_mcp, _parse_exa_mcp
     ),
-    "tavily": _Provider("https://api.tavily.com/search", "TAVILY_", _build_tavily, _parse_tavily),
+    # Tavily 官方 API 参考：max_results 取值 0 <= x <= 20（2026-10-06 D29-B 核对）；实测 21 目前不报错，
+    # 但不能指望——Exa 挂了轮到它时一个 400 就让备家形同不存在
+    "tavily": _Provider(
+        "https://api.tavily.com/search", "TAVILY_", _build_tavily, _parse_tavily, max_count=20
+    ),
 }
 
 
@@ -806,13 +813,14 @@ def _missing_key_reason(pcfg: ProviderCfg) -> str:
 
 
 def _in_band_reason(text: str, query: str, secrets: tuple[str, ...]) -> str:
-    """带内错误文案（v0.3 R2-6）：先把原始与归一后的 query 换成 <query>，再截 200 字、清洗、脱敏。"""
+    """带内错误文案（v0.3 R2-6）：先把原始与归一后的 query 换成 <query>，清洗、脱敏之后再截 200 字
+    （N59 B-2：先截后脱敏时，跨在截断处的 key 前半段会漏出来；与 snippet 路径同序）。"""
     out = text
     for q in sorted({query, _normalized_for_assert(query)}, key=len, reverse=True):
         if q:
             out = out.replace(q, "<query>")
-    out = re.sub(r"\s+", " ", out).strip()[:200]
-    return "带内错误：" + _redact_all(_scrub(out), secrets)
+    out = _redact_all(_scrub(re.sub(r"\s+", " ", out).strip()), secrets)
+    return "带内错误：" + out[:200]
 
 
 def search_web(
@@ -848,7 +856,11 @@ def search_web(
             failures.append(f"{pcfg.name}: {_missing_key_reason(pcfg)}")
             continue
         attempted = True
-        req = provider.build(provider.endpoint, query, clamped_limit + 1, pcfg)
+        count = clamped_limit + 1
+        capped = provider.max_count is not None and count > provider.max_count
+        if capped:
+            count = provider.max_count  # type: ignore[assignment]
+        req = provider.build(provider.endpoint, query, count, pcfg)
         assert_egress_boundary(provider.endpoint, {"query": normalized_query})
         _guard_url(provider.endpoint, trusted_ranges=cfg.trusted_fake_ip_ranges)
 
@@ -925,7 +937,8 @@ def search_web(
             "query": query,
             "provider": _redact_all(pcfg.name, secrets),
             "results": normalized[:clamped_limit],
-            "truncated": len(normalized) > clamped_limit,
+            # 请求被该家上限截住时多要的那一条拿不到，按 §2.3 以「返回数 == 请求数」判还有更多
+            "truncated": len(normalized) > clamped_limit or (capped and len(items) >= count),
         }
 
     head = "web_search 全部检索服务失败" if attempted else "web_search 无可用检索服务"
