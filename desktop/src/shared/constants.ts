@@ -117,3 +117,5 @@ export const LOG_TAIL_LINES = 200;
 export const KEYCHAIN_SERVICE = "ava";
 /** 排除一切改变子进程行为的名字（PATH、PYTHON*、DYLD_*、NODE_OPTIONS…）。 */
 export const KEY_ENV_NAME_RE = /^[A-Z][A-Z0-9_]*_(API_KEY|KEY|TOKEN)$/;
+/** web 检索链上至多注入几个密钥（Spec 15 §2.7）：= core 侧 SEARCH_MAX_PROVIDERS（链上至多 4 家）。 */
+export const WEB_KEY_MAX = 4;

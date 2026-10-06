@@ -47,6 +47,7 @@ function harness(opts: { active?: boolean; canRead?: boolean; settleMs?: number 
       return p;
     },
     resolveKey: async () => ({ name: "K", value: "V" }),
+    resolveWebKeys: async () => ({}),
     confirm: async () => true,
     now: () => clock.t,
     bootId: "boot1",

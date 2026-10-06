@@ -247,7 +247,15 @@ export function sessionRepo(opts: { withApprovals?: boolean; llmUrl?: string } =
   fixtureWrite(root, "config/agent.local.json", JSON.stringify({ base_url: baseUrl, model: "fake", api_key_env: "AVA_TEST_KEY" }, null, 2));
   fixtureWrite(root, "config/agent/web.local.json", JSON.stringify({ search: { endpoint: "http://127.0.0.1:9/search" } }, null, 2));
   const keychainPath = join(baseDir, "security");
-  fixtureWrite(root, ".ava-session/security", `#!/bin/sh\nf=${JSON.stringify(join(baseDir, "key"))}\nif [ -f "$f" ]; then cat "$f"; else exit 44; fi\n`, 0o755);
+  // 默认：任何账户名都读同一个 key 文件（TH-6/TH-7 沿用）。keys.strict 存在时按账户名读 key.<名字>（Spec 15 TH-W*：
+  // LLM 与 web 密钥要能各自有值 / 各自缺条目）。
+  fixtureWrite(
+    root,
+    ".ava-session/security",
+    `#!/bin/sh\nd=${JSON.stringify(baseDir)}\na=""\nwhile [ $# -gt 0 ]; do if [ "$1" = "-a" ]; then a="$2"; fi; shift; done\n` +
+      `if [ -f "$d/keys.strict" ]; then f="$d/key.$a"; else f="$d/key"; fi\nif [ -f "$f" ]; then cat "$f"; else exit 44; fi\n`,
+    0o755,
+  );
   if (opts.llmUrl === undefined) fixtureWrite(root, "pipeline/agent/protocol.py", protocolPy(baseDir));
   __avaTestSetKeychainExec(keychainPath);
   return { root, baseDir, keychainPath, eps: join(root, "data/episodes") };
@@ -271,6 +279,12 @@ export function sessionScript(repo: SessionRepo, name: string, ops: unknown[]): 
 /** 写假钥匙串的值（不调用 = 脚本退 44「找不到条目」）。 */
 export function sessionKey(repo: SessionRepo, value: string): void {
   fixtureWrite(repo.root, ".ava-session/key", value);
+}
+
+/** 按账户名写假钥匙串（切到 keys.strict：此后每个名字只认自己的 key.<名字>，没写的退 44）。 */
+export function sessionKeyFor(repo: SessionRepo, name: string, value: string): void {
+  fixtureWrite(repo.root, ".ava-session/keys.strict", "");
+  fixtureWrite(repo.root, `.ava-session/key.${name}`, value);
 }
 
 export interface SessionRecord {

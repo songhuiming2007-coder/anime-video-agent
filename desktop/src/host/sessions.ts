@@ -71,6 +71,8 @@ export interface SessionDeps {
   spawnSession: (t: SessionTemplate, args: { ep?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
   /** 每次 spawn SESSION_* 前执行一次（§2.9）；失败给 problem 文案，照常 spawn、如实降级 */
   resolveKey: () => Promise<{ name: string; value: string } | { problem: string }>;
+  /** Spec 15 §2.7：web 检索链上声明的密钥（LLM 名字之后执行）；自身兜住一切失败，只返回读成功的 */
+  resolveWebKeys: (llmName: string | null) => Promise<Record<string, string>>;
   /** → main 的 confirm-query（§2.4 第 5 层） */
   confirm: (title: string, detail: string) => Promise<boolean>;
   now: () => number;
@@ -455,6 +457,9 @@ export class SessionManager {
     const keyInfo = await this.deps.resolveKey();
     if ("problem" in keyInfo) s.keyProblem = keyInfo.problem;
     else extraEnv[keyInfo.name] = keyInfo.value;
+    // Spec 15 §2.7：web 密钥失败只是不注入该名字——LLM 密钥与 keyProblem 不受影响
+    const webEnv = await this.deps.resolveWebKeys("problem" in keyInfo ? null : keyInfo.name);
+    for (const [name, value] of Object.entries(webEnv)) if (!(name in extraEnv)) extraEnv[name] = value;
     if (s.phase === "exited") this.fail("E_SESSION", "会话进程已退出");
     const proc = this.deps.spawnSession(t, { ep: target.abs ?? undefined }, { repoRoot }, extraEnv);
     const gen = (s.procGen += 1);

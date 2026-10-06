@@ -60,7 +60,7 @@ import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, typ
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
 import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs } from "./spawner";
-import { resolveLlmKey, type KeyResolution } from "./secrets";
+import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
 import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
@@ -90,6 +90,8 @@ export interface HostDeps {
   bootId: string;
   /** 密钥解析（§2.9）；默认走 PROBE_KEY_ENV + 钥匙串，测试可注入 */
   resolveSessionKey: (repoRoot: string) => Promise<KeyResolution>;
+  /** web 检索密钥（Spec 15 §2.7）；默认走 PROBE_WEB_KEY_ENVS + 钥匙串，测试可注入 */
+  resolveSessionWebKeys: (repoRoot: string, llmName: string | null) => Promise<Record<string, string>>;
   /** 会话定时器初值（测试注入缩短） */
   sessionTiming: Partial<SessionTiming>;
   /** 仅未打包构建（TG-6）：测试驱动在此暂停 host（§4.3 after-heal / after-fingerprint-check 等） */
@@ -240,6 +242,8 @@ export class HostService {
       confirm: async () => false,
       bootId: Math.random().toString(36).slice(2, 10),
       resolveSessionKey: (root: string) => resolveLlmKey(this.core.bind(this) as Parameters<typeof resolveLlmKey>[0], root),
+      resolveSessionWebKeys: (root: string, llmName: string | null) =>
+        resolveWebKeys(this.core.bind(this) as Parameters<typeof resolveWebKeys>[0], root, llmName, (m) => this.diag(m)),
       sessionTiming: {},
       testHook: async () => {},
       timers: true,
@@ -254,6 +258,7 @@ export class HostService {
     this.sessions = new SessionManager({
       spawnSession,
       resolveKey: () => this.deps.resolveSessionKey(this.repoRoot ?? ""),
+      resolveWebKeys: (llmName) => this.deps.resolveSessionWebKeys(this.repoRoot ?? "", llmName),
       confirm: (title, detail) => this.deps.confirm(title, detail),
       now: () => this.deps.now(),
       bootId: this.deps.bootId,

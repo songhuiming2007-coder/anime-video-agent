@@ -2,7 +2,7 @@
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { KEYCHAIN_SERVICE, SPAWN_LOG_MAX, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
+import { KEYCHAIN_SERVICE, SPAWN_LOG_MAX, SPAWN_TIMEOUT_SHORT_MS, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
 import { __avaTestSetKeychainExec, buildArgv, childEnv, keychainExecPath, recordSpawn, runArgv, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fetchStatus } from "../../src/host/status";
 import { cleanup, PY, shellScript, tmp } from "../helpers";
@@ -134,6 +134,19 @@ describe("Spec 10 S8-R2 / Spec 12 S8-R19：NEW_EPISODE 与 09 定稿的 argv 形
     expect(buildArgv("APPROVE", { ep: "/ep", stop: "05", approvalId: "appr_2" }, "/repo").argv).toEqual([
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/approve", "05", "--id", "appr_2",
     ]);
+  });
+});
+
+describe("Spec 15 §2.7 PROBE_WEB_KEY_ENVS", () => {
+  it("argv 逐位钉住：只调 core 的 web_key_env_names、每行一个名字；短超时；不开 PATH 口子", () => {
+    const { argv, timeoutMs, homebrewPath } = buildArgv("PROBE_WEB_KEY_ENVS", {}, "/repo");
+    expect(argv).toEqual([
+      join("/repo", ".venv/bin/python"),
+      "-c",
+      "import sys; from pipeline.agent.web import web_key_env_names; sys.stdout.write(''.join(n + '\\n' for n in web_key_env_names()))",
+    ]);
+    expect(timeoutMs).toBe(SPAWN_TIMEOUT_SHORT_MS);
+    expect(homebrewPath).toBeUndefined();
   });
 });
 
