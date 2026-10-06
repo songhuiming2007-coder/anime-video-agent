@@ -501,8 +501,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "side_effect": False,
         "adr": "ADR-0021",
         "description": (
-            "关键词联网检索（只读）。返回标题/URL/摘要三元组清单。"
-            "静态获取失败会如实报错并提示升级链，严禁静默降级为水百科。"
+            "关键词联网检索（只读）。由配置的检索服务按序尝试（provider 字段写明这次是哪一家答的），"
+            "返回标题/URL/摘要三元组清单；摘要只够辨认页面，要全文用 web_fetch。"
+            "全部检索服务失败会逐家如实报错，严禁静默降级为水百科。"
         ),
         "parameters": {
             "type": "object",

@@ -583,11 +583,11 @@ def test_tp12_retired_parser_and_stdlib_only() -> None:
 
 def test_tp14a_key_header_is_unredirected() -> None:
     """T-P14a（M15）：密钥只在 unredirected_hdrs；exa_mcp 不带任何鉴权头。"""
-    req = web._build_tavily("q", 6, TAVILY)
+    req = web._build_tavily("https://api.tavily.com/search", "q", 6, TAVILY)
     assert req.unredirected_hdrs.get("Authorization") == f"Bearer {FAKE_KEY}"
     assert "Authorization" not in req.headers
     assert all(FAKE_KEY not in v for v in req.headers.values())
-    exa_req = web._build_exa_mcp("q", 6, EXA)
+    exa_req = web._build_exa_mcp("https://mcp.exa.ai/mcp?tools=web_search_exa", "q", 6, EXA)
     assert "Authorization" not in exa_req.headers and not exa_req.unredirected_hdrs
 
 
@@ -693,6 +693,29 @@ def test_tp15_in_band_text_never_echoes_query() -> None:
     assert FAKE_KEY not in msg
 
 
+def test_sent_url_is_the_checked_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """发送地址 = egress 断言与 _guard_url 校验的地址（端点只在注册表里写一处）。"""
+    import dataclasses
+
+    for name in ("exa_mcp", "tavily"):
+        moved = "https://moved.example/" + name
+        monkeypatch.setitem(
+            web._PROVIDERS, name, dataclasses.replace(web._PROVIDERS[name], endpoint=moved)
+        )
+    sent: list[str] = []
+    checked: list[str] = []
+    real = web._guard_url
+    monkeypatch.setattr(web, "_guard_url", lambda url, **kw: (checked.append(url), real(url, **kw)))
+
+    def opener(req: Any, timeout: float = 20.0) -> _Resp:
+        sent.append(req.full_url)
+        raise _http_error(500)
+
+    with pytest.raises(ValueError, match="全部检索服务失败"):
+        search_web("frieren", config=DEFAULT_CHAIN, opener=opener)
+    assert sent == checked == ["https://moved.example/exa_mcp", "https://moved.example/tavily"]
+
+
 # ——— T-P16：limit 映射与 truncated ———
 
 
@@ -715,7 +738,7 @@ def test_tp16_request_count_is_limit_plus_one(limit: int) -> None:
 
 def test_exa_mcp_request_shape() -> None:
     """请求形态与 PR0 实测一致；objective 为固定通用文案（§12 偏差 1），不含 query。"""
-    req = web._build_exa_mcp("一色彩羽", 6, EXA)
+    req = web._build_exa_mcp(web._PROVIDERS["exa_mcp"].endpoint, "一色彩羽", 6, EXA)
     body = json.loads(req.data)
     assert req.get_method() == "POST"
     assert req.full_url == "https://mcp.exa.ai/mcp?tools=web_search_exa"
@@ -727,7 +750,7 @@ def test_exa_mcp_request_shape() -> None:
         "numResults": 6,
         "objective": web.EXA_MCP_OBJECTIVE,
     }
-    tav = json.loads(web._build_tavily("一色彩羽", 6, TAVILY).data)
+    tav = json.loads(web._build_tavily(web._PROVIDERS["tavily"].endpoint, "一色彩羽", 6, TAVILY).data)
     assert tav == {"query": "一色彩羽", "max_results": 6, "search_depth": "basic"}
 
 
