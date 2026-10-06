@@ -7,7 +7,7 @@ status: proposed
 # ADR-0027：工具不按模式（scope）授权，所有模式开放全部工具
 
 日期：2026-10-06
-状态：**提议中**（2026-10-06 人裁决方向并确认两点：模式检查一起去掉、人审卡照旧；同日 Spec 17 §8 Q1–Q3 人裁决全部按建议；Spec 17 v0.1 待红队 D43-R，红队 🟢 且施工评审通过后改「已通过」）
+状态：**提议中**（2026-10-06 人裁决方向并确认两点：模式检查一起去掉、人审卡照旧；同日 Spec 17 §8 Q1–Q3 人裁决全部按建议；同日红队一轮 D43-R 🟡；2026-10-07 人裁决 🟡-1 选 (A)，Spec 17 v0.2 作者修订，待定向复审；红队 🟢 且施工评审通过后改「已通过」）
 前置：ADR-0021（网络工具内化，scope 过滤）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、Spec 10 §2.5（idea 会话零写权限）
 
 ## 背景
@@ -21,7 +21,7 @@ status: proposed
 1. 模式只决定注入哪份提示与工序手册，不参与任何工具放行判断；`tools.json` 收为单表（Spec 17 §3.1，§8 Q1 人已裁决）。
 2. 删除：调用前的「越 scope」拒绝；`write_episode_file` 与 `write_memory` 的 creative-only 检查；`run_pipeline` 的按模式分表（合为一表）。
 3. 保留（与模式无关，一条不动）：写入文件白名单与路径防穿透、写 `01-topic.md` 必须人确认、`CRITICAL_TOOLS` 人审卡、`browser` 原生确认框、出网断言与 URL 守卫、清洗与脱敏、`cloud exec` 与 `--force` 禁令、`run_pipeline` 执行须人在宿主确认、Code Freeze。
-4. 需要期目录的工具在无期会话（idea）里统一报「先建期」，不藏工具。
+4. 需要期目录的工具（`write_episode_file`、`cover_edit`、`run_pipeline`、`acquire_propose`）在无期会话（idea）里统一报「先建期」，不藏工具；拦截在弹卡之前（Spec 17 §3.4）。
 
 ## 理由
 
@@ -31,7 +31,7 @@ status: proposed
 
 - 取代 ADR-0021「网络工具只对 asset / creative 可见；pipeline 永不见网络工具」与「scope 过滤」；
 - 取代 ADR-0025 中 `cover_edit` 的 scope 归属与「不改动任何既有工具的 scope 归属」；封顶数字 14 不变；
-- 修订 ADR-0023 中 `write_memory` 只挂 creative 的表述（记忆注入范围不变）；
+- 修订 ADR-0023 中「idea 零写权限（机制保证），写入工具仍只挂在 creative」整行（记忆注入范围不变）；
 - 修订 Spec 10 §2.5 idea「零写权限」为「无期目录，写期文件前须先建期」。
 具体修订面见 Spec 17 §7。
 

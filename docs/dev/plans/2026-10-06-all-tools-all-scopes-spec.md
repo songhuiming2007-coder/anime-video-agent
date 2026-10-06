@@ -1,6 +1,6 @@
 # Spec 17：工具不再按模式（scope）分配，所有模式开放全部工具（D43）
 
-> **状态：v0.1 草案（2026-10-06 立文；§8 Q1–Q3 人同日裁决：全部按建议），红队一轮（D43-R，2026-10-06）🟡 修订后复审——5🟡（🟡-1 需人裁决）+ 8🔵，见「红队一轮裁决」**。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
+> **状态：v0.2，待红队定向复审**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
 > 对应 issues：**D43**（主）；与 **D42** 交叉（D42 方案 (a) 的「idea 补联网工具」被本 spec 覆盖，见 §6）。
 > 相关：ADR-0021（网络工具内化，「网络工具只对 asset / creative 可见」）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、Spec 10（`archive/2026-09-25-desktop-conversation-panel-spec.md`）§2.5（idea 会话零写权限）、impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.4 / §2.5 B3-r6（scope 白名单）；新提 **ADR-0027**（`docs/dev/adr/0027-tools-not-gated-by-scope.md`，提议中）。
 
@@ -36,6 +36,26 @@
 
 **探针与原型**（全部在 scratchpad，未进仓库）：`d43r/probe_r1_egress.py`（R1，14 例，纯字符串判定层、零网络）、`d43r/probe_r4_idea.py`（R4，ep None 逐工具 + 批准落点，假 root）、`d43r/proto/`（按 spec 意图的最小原型副本：单表 tools.json、删三处实现内检查、合表、review 层「先建期」reject、§3.5 文案；全量 `uv run pytest` 实跑拿真实失败清单，即 🔵-1 来源；原型不进仓库）。
 
+## 作者修订回应（v0.2，2026-10-07；修订人 = v0.1 立文人，人指定，未参与 D43-R）
+
+逐条核过证据再改：🟡-2（`memory.py::plan_op` 签名无 scope，creative-only 只在 `apply_op`）、🟡-3（`session.py::review_tool_call` 的越 scope 拒绝在 run_pipeline / write_memory dry-run 之前）、🟡-4（五处原文逐行 grep 命中）、🟡-5（`scripts/verify_mutations.py` M20 / M24 / M29 的 `old` 锚点）均属实。
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| 🟡-1 | **采纳，人 2026-10-07 裁决 (A)**：idea 下 `acquire_propose` 也统一报「先建期」。抓取卡链因此在 idea 下不会出现，内核 `_fetch_executor` 与 `run_pipeline` 函数本体不改 | §3.4 表与拦截机制段、§8 Q4、§9 TA-6 / MUT-A11 |
+| 🟡-2 | 采纳：TA-6 的 `write_memory` 腿改为完整回环（弹卡 → 人按 y → `memory.md` 真落盘、日志行 `episode` 为 null）；另加 TA-6b「非 creative 直调 `apply_op` 成功」；MUT-A8 杀手改为 TA-6b | §9 |
+| 🟡-3 | 采纳：新增 TA-3b（review 层）与 MUT-A9（`review_tool_call` 保留越 scope 拒绝 → TA-3b 杀） | §9 |
+| 🟡-4 | 采纳：§7 补列 (a)–(e) 与 ADR-0023 L76 整行；§3.5 的 grep 范围扩为 `docs/` 全仓（含 archive） | §3.5、§7 |
+| 🟡-5 | **部分采纳**：M24（idea 四键工具表）守的语义被本 spec 废除 → 退役；M29 随 §3.5 新文案改锚；**M20 不退役、改锚**——它守的是「未注册 / 超 scope」两件事，本 spec 只废掉「超 scope」一半，「未注册名字在弹卡前拒绝」仍是现役护栏，锚点缩到剩下的那段；MUT-A1～A11 全部登记进 `scripts/verify_mutations.py` | §9「shipped 矩阵」段、§10 PR1 |
+| 🔵-1 | 采纳：§9 写明改写轴（先共享夹具与签名替身，再按实跑列表收尾），照录红队实跑的文件清单 | §9 |
+| 🔵-2 | 采纳：反向检查与 B3-r6 正向检查同点同形态（`build_tool_schemas` 当场抛错）；夹具 `tools.json` 须与测试注册的假工具同步扩张 | §3.1、§9 |
+| 🔵-3 | 采纳：合表两条语义写死 | §3.3 run_pipeline 行 |
+| 🔵-4 | 采纳：「先建期」拦截写死在 review 层 reject（不弹卡），实现层同文案双保险；`run_pipeline` 函数本体不拦（终端 `/run` 无期调用的既有语义与用例不动） | §3.4 |
+| 🔵-5 | 采纳：TA-1 写明 extras 前提；TA-5 改「任意调用路径下」 | §9 |
+| 🔵-6 | 采纳：R4 实测落点写进 §3.4，库级事件少字段一项**接受**（idea 本就不落盘，库级 `approval_resolved` 事件已够追溯）；`write_memory` 的 `cite` 在 idea 下报错属正确语义 | §3.4 |
+| 🔵-7 | 采纳：R2 判断列补审计面残余 | §5 R2 |
+| 🔵-8 | 采纳：施工顺手改 `desktop/e2e/sessionReal.spec.ts` 过期注释 | §10 PR1 |
+
 ## 0. 一句话
 
 模式（`creative` / `pipeline` / `asset` / `idea`）只决定注入哪份提示与工序手册，**不再决定模型能用哪些工具**。全部 13 个工具在任何模式下都可见、可调用；工具实现里按模式拒绝的检查一并删除；与模式无关的护栏（写入文件白名单、路径防穿透、人审卡、出网断言、`cloud exec` 禁令、`--force` 禁令、Code Freeze）一条不动。
@@ -63,7 +83,7 @@
 
 - `config/agent/tools.json` 从「四模式各一份」改为**单一清单** `{"tools": [13 个工具名]}`；`tool_names_for_scope(scope, root)` 改名为 `tool_names(root)`（不再收 scope），`build_tool_schemas(root)` 同理；`scopes.load_scope` 不再读工具表（只管提示文件）。
 - 理由：四份完全相同的清单会各自漂移，「哪个模式漏了一个」正是本次要消除的那类问题；单表让「工具全开」由结构保证，而不是靠四份配置碰巧一致。（备选：保留四键、内容相同——改动更小，但留着漂移口子。§8 Q1 人已选单表。）
-- 保留现有「`tools.json` 写了未注册的名字 → 当场报错」的分叉检查（B3-r6），新增反向检查：`TOOL_SCHEMAS` 里注册了但 `tools.json` 没列的 → 同样报错（全开之后两边应恰好相等）。
+- 保留现有「`tools.json` 写了未注册的名字 → 当场报错」的分叉检查（B3-r6），新增反向检查：`TOOL_SCHEMAS` 里注册了但 `tools.json` 没列的 → 同样报错（全开之后两边应恰好相等）。反向检查与正向检查同点同形态：都在 `build_tool_schemas` 里当场抛错（v0.2，🔵-2）。`tools.json` 缺失、损坏或残留旧四键格式时加载得空表，反向检查随即报错，fail-closed，「读取失败不静默扩张」语义保持。
 - ADR-0025 的封顶（14，现役 13）按全局数量计，本 spec 不新增工具，不触发。
 
 ### 3.2 调用前闸：② 层变成「是否注册」
@@ -77,7 +97,7 @@
 |---|---|---|
 | `write_episode_file` | `scope != "creative"` 的零写权限 | 文件名白名单 `CREATIVE_WRITABLE_FILES`（`01-topic.md`、`02-script.draft.md`、`07-titles.md`；常量改名 `EPISODE_WRITABLE_FILES`）、双端 resolve、禁写 `pipeline/`、禁越出期根、写 `01-topic.md` 必须人确认、`atomic_write`；`CRITICAL_TOOLS` 人审卡 |
 | `write_memory` | `memory.apply_op` 的 `scope != "creative"` | 持锁 → 锁内重读重规划 → 卡闸 → 日志 → 原子写；人审卡 |
-| `run_pipeline` | 按 scope 分派的两份白名单与「未知的 Scope」分支 | 合成**一份**放行表：`PIPELINE_MODULES` 的 9 个模块（不限子命令）∪ `ASSET_COMMANDS` 的 6 个模块与各自子命令清单；`--force` / `--force-all` 前缀禁令、`cloud exec` 永久禁令、`cloud run` 的 `validate_extra_args`、当期目录自动补位；人在宿主确认后才执行（`confirmed`）的既有流程 |
+| `run_pipeline` | 按 scope 分派的两份白名单与「未知的 Scope」分支 | 合成**一份**放行表：`PIPELINE_MODULES` 的 9 个模块（不限子命令）∪ `ASSET_COMMANDS` 的 6 个模块与各自子命令清单；`--force` / `--force-all` 前缀禁令、`cloud exec` 永久禁令、`cloud run` 的 `validate_extra_args`、当期目录自动补位；人在宿主确认后才执行（`confirmed`）的既有流程。合表语义写死（v0.2，🔵-3）：(a) 模块属于 `ASSET_COMMANDS` 时子命令校验永远生效，将来两表若出现重名模块，以子命令限制为准；(b) 当期目录自动补位只对原 `PIPELINE_MODULES` 侧的 8 个模块生效，asset 侧 6 个模块不补位（维持现状） |
 | 其余 10 个 | 无实现内模式检查（`browser` / 记录类 `scope` 参数保留为记录） | 全部照旧：`assert_egress_boundary`、`_guard_url`、`_scrub` / `_redact_secret`、读域、`browser` 人审卡 + 原生确认框、`acquire_propose` 只写候选池 |
 
 `validate_pipeline_command` 的 `scope` 参数删除；`create_job` / `run_pipeline` 的 `scope` 参数降为记录字段（`jobs.py` 的 `Job.scope` 仍写入，值取当时会话模式）。
@@ -89,13 +109,18 @@ idea 会话没有期目录。工具全部可见，但凡需要期目录的调用
 | 工具 | idea 下的行为 |
 |---|---|
 | `write_episode_file`、`cover_edit` | 返回上述错误（`cover_edit` 现已有 `if not ctx.episode_dir` 分支，改用同一文案） |
-| `run_pipeline` | **建议**：返回上述错误（理由：作业、`approvals.jsonl`、事件都挂在期目录下，无期路径从未实测；`ASSET_COMMANDS` 里的库级命令如 `ingest phase0`、`cloud status` 理论上可无期执行，但要另补无期的记录落点，属于扩面）。§8 Q2 人已裁决按建议 |
+| `run_pipeline` | 返回上述错误（§8 Q2 人已裁决） |
+| `acquire_propose` | 返回上述错误（v0.2，🟡-1，人 2026-10-07 裁决 (A)）。原因：`acquire_propose` 成功后内核无条件弹抓取卡，批准后的执行器以 `episode_dir=None` 调 `run_pipeline("acquire fetch N")`，与 Q2 冲突；放行提案、不弹卡又会留下无人认领的孤儿候选。抓素材为某一期服务，建期后再提 |
 | `read_status` 不带期名 | 现状已报「未指定期，且当前会话未绑定期目录」，照旧 |
-| `write_memory` | 放行（记忆是库级，`apply_op` 已接受 `episode_dir=None`）；过人审卡 |
-| `acquire_propose` | 放行（只写库级候选池 `data/library/incoming`，不依赖期目录）；过人审卡 |
+| `write_memory` | 放行（记忆是库级，`apply_op` 已接受 `episode_dir=None`）；过人审卡。例外：`op=cite` 需要期目录，`episode_ref_of(None)` 报错，属正确语义（v0.2，🔵-6） |
 | `web_search` / `web_fetch` / `crawl` / `browser` | 放行（`browser` 过人审卡 + 原生确认框） |
 
-idea 会话「不落盘」（messages 不写 `session.jsonl`）的语义不变。施工时须核实：idea 下弹出的人审卡在无期目录时的批准记录落点（`session.py` 现有 `self.ep_dir is None` 分支），写清是「不记」还是「记到库级」，不许静默丢。
+**拦截机制写死（v0.2，🔵-4）**：
+- 主闸在 `review_tool_call`：`ep_dir is None` 且工具 ∈ {`write_episode_file`, `cover_edit`, `run_pipeline`, `acquire_propose`} → 在弹卡**之前** `reject`，理由即上述统一文案。四个工具的集合写成一个常量（如 `NEEDS_EPISODE_TOOLS`），review 层与实现层共用。
+- 双保险在实现层：`_tool_write_episode_file`、`_tool_cover_edit`、`_tool_run_pipeline`、`_tool_acquire_propose` 在 `ctx.episode_dir is None` 时抛同一文案。
+- `run_pipeline` **函数本体不拦**：终端 `/run` 与既有用例（如 `run_pipeline("check_script", scope="pipeline", confirmed=True)` 无期调用）的语义不动；内核 `_fetch_executor` 也不改。idea 下抓取卡不会出现，因为它的唯一来源 `acquire_propose` 已被拦。
+
+**批准记录落点（v0.2，🔵-6，红队探针实测，接受）**：idea 下仍会弹卡的只有 `write_memory` 与 `browser`。`ep_dir is None` 时 `log_approval_decision` 把 `approval_resolved` 事件写到库级 `data/_events.jsonl`，期级 `approvals.jsonl` 不产生；idea 会话本身不落盘（`persist=False`）。库级事件比期级记录少 latency / channel / request_id 字段，**接受**：idea 的批准不静默丢，追溯靠库级事件已够；补齐另立文。
 
 ### 3.5 文案同步
 
@@ -104,7 +129,7 @@ idea 会话「不落盘」（messages 不写 `session.jsonl`）的语义不变�
 - `pipeline.md`：「零直接文件写权限」改为「写期文件只走 `write_episode_file`（白名单三份文件、过人审卡）」。
 - `status_card.py` idea 卡：「写权限: 无（机制保证）」改为「期目录: 无（写期文件前须先建期）」。
 - `cli.py` idea 横幅 / 帮助 / docstring 三处与 `protocol.py` 注释同步。
-- **不改** `AGENTS.md`（常驻规则不涉及按模式分工具；140 行预算不动）。施工时 grep `AGENTS.md` 与 `docs/runbook/` 有无「某模式不能用某工具」的说法，有则列入修订面。
+- **不改** `AGENTS.md`（常驻规则不涉及按模式分工具；140 行预算不动）。施工时 grep `AGENTS.md` 与 `docs/` 全仓（含 `archive/`），口令「零写\|写权限为零\|只对.*可见\|永不见\|超 scope」，有则列入修订面（v0.2，🟡-4：v0.1 只 grep 了 `docs/runbook/`，漏了五处，见 §7）。
 
 ### 3.6 客观效果（供红队核对，不是立项理由）
 
@@ -125,9 +150,9 @@ idea 会话「不落盘」（messages 不写 `session.jsonl`）的语义不变�
 | # | 风险 | 本 spec 的判断 | 请红队核 |
 |---|---|---|---|
 | R1 | pipeline 模式此前「永不见网络工具」（ADR-0021）。03 / 03.5 等工序的会话上下文里有期内产物路径，开放网络工具后出网面变大 | 出网断言 `assert_egress_boundary` 对 LLM 请求体与 web 四个出方向都照旧生效（Spec 16 豁免只针对可信规程原文），与模式无关 | 构造 pipeline 模式下把 `03-audio/manifest.json` 内容或受限文件名带进 `web_search` query / `web_fetch` URL 的最坏样例，确认仍被拦 |
-| R2 | 非 creative 模式能写期文件：例如 05 返工期间改写 `02-script.draft.md` | 白名单只有三份文件，全部过人审卡；`02-script.md` 本就不在白名单；`status.py` 在 `02-script.md` 存在时不看草稿，工序不会倒退 | 核实封板后改写草稿是否影响 02.5 的 diff / 人时统计等任何下游判定 |
+| R2 | 非 creative 模式能写期文件：例如 05 返工期间改写 `02-script.draft.md` | 白名单只有三份文件，全部过人审卡；`02-script.md` 本就不在白名单；`status.py` 在 `02-script.md` 存在时不看草稿，工序不会倒退。v0.2（🔵-7，红队读码确认）：02.5 闸 `_gate_valid` 只比 `02-diff.patch` 与 `02-script.md` 的 mtime，人时 `human_time.json` 只增，都不受影响；唯一残余是审计面——封板后改写草稿，`02-diff.patch` 的左半原文无法再由两份文件重现（patch 内文仍在），接受 | 核实封板后改写草稿是否影响 02.5 的 diff / 人时统计等任何下游判定 |
 | R3 | pipeline 模式没注入记忆全文，模型可能在没读过记忆时调 `write_memory` | 写入走「锁内重读重规划」，且返回写后全文；不读而写最坏是写出重复或冲突条目，人审卡兜底 | 判断是否应把 pipeline 加进 `memory.scopes`（会改 ADR-0023 补记的「pipeline 不单独注入」），或接受现状 |
-| R4 | idea 无期路径：人审卡记录落点、`run_pipeline` 作业落点 | §3.4 定为统一报错 / 核实记录落点 | 逐个工具实跑 idea 下的调用，确认没有静默丢记录或写到意外位置 |
+| R4 | idea 无期路径：人审卡记录落点、`run_pipeline` 作业落点、抓取卡链 | v0.2：§3.4 已写死——四个需期工具 review 层拒、实现层双保险；批准落点按红队实测接受 | 逐个工具实跑 idea 下的调用，确认没有静默丢记录或写到意外位置 |
 | R5 | `run_pipeline` 合表后，creative / pipeline 模式也能提议 `cloud up` / `cloud run`（花钱）与 `faces` / `shots` 等库级重活 | 执行一律要人在宿主确认；`cloud exec` 与 `--force` 禁令不变 | 核 `cloud down` 在作业运行中被提议的提示是否足够 |
 | R6 | 13 个工具全量可见，模型选错工具的概率上升 | 不在本 spec 内设防（人裁决的取舍）；施工后观察 | 无（列出即可） |
 
@@ -144,42 +169,61 @@ D42 人选方案 (a) 含两半：① idea 补联网三件（`web_search` / `web_
 - Spec 10 §2.5：idea「零写权限」改为「无期目录，写期文件前须先建期」。
 - impl spec §2.4 / §2.5 B3-r6：scope 白名单语义改为单表。
 - Spec 4（`archive/2026-09-23-network-tools-spec.md`）与 Spec 12（cover）中「仅 X scope 可见」的句子：施工前 `grep -n "scope" ` 逐份核全，列表回填 §10。
+- v0.2 补列（🟡-4，红队逐行核对）：
+  - (a) `docs/CHEATSHEET.md`：「idea scope，写权限为零」一行；「未注册/超 scope 的工具在弹卡之前就被拦下」一行改为「未注册的工具、无期会话里需要期目录的工具在弹卡之前就被拦下」；
+  - (b) `archive/2026-09-21-ava-entry-idea-scope.md`（D27，idea 零写机制的立规文件）：§2.2「写权限为零不靠 prompt 劝导：`write_episode_file` 不在表内……」等多处，加修订注记；
+  - (c) `archive/2026-09-25-agent-session-protocol-spec.md`（Spec 9）：§2「idea 会话不落盘：无期目录可挂，零写权限」与 TP-16 行「零写权限」两处；
+  - (d) `archive/2026-09-20-ava-ai-native-director-spec.md`：「pipeline scope 看不到 `write_episode_file`——制片期零写权限」一处；
+  - (e) impl spec：文首 ①「idea scope，写权限为零」、§2.3「ava idea……只读 4 工具，写权限为零」、§2.4「pipeline: `{}` 零写权限」与 §1.2 目录注释；
+  - ADR-0023：「idea 零写权限（机制保证），写入工具仍只挂在 creative」整行加注（不止 `write_memory` 半句）。
 - 新 ADR-0027 转「已通过」。
 
-## 8. 待人裁决（2026-10-06 人裁决：Q1–Q3 全部按建议，不再争议）
+## 8. 待人裁决（Q1–Q3 人 2026-10-06 裁决全部按建议；Q4 人 2026-10-07 裁决 (A)；均不再争议）
 
 | # | 问题 | 建议 |
 |---|---|---|
 | Q1 | `tools.json` 收成单表（改函数签名，测试改动面大一些），还是保留四个键、内容全相同（改动小，但留漂移口子） | **单表**（§3.1）——✅ 人裁决采纳 |
 | Q2 | idea 会话里 `run_pipeline` 怎么处理：统一报「先建期」，还是放行库级命令（`ingest phase0`、`cloud status` 等）并补无期记录落点 | **统一报「先建期」**（§3.4）；以后真有无期跑库级命令的需求再立文——✅ 人裁决采纳 |
 | Q3 | pipeline 模式要不要也注入记忆全文（§5 R3） | **不加**，维持 ADR-0023 补记；人审卡兜底——✅ 人裁决采纳 |
+| Q4（v0.2，红队 🟡-1） | idea 下 `acquire_propose` 怎么处理：(A) 也报「先建期」/ (B) 放行但无期不弹抓取卡 / (C) 抓取链无期转正 | **(A)**——✅ 人 2026-10-07 裁决采纳（§3.4） |
 
 ## 9. 测试与变异（施工时按实现跑出期望值再写断言）
 
-**改写**（被删语义的旧断言换成等强的新断言，不许只删）：`tests/test_agent_tools.py`（零写权限两条 → 改为「pipeline / asset 模式写白名单文件成功、写白名单外仍拒」；`validate_pipeline_command` 按 scope 的若干条 → 合表后同等覆盖；「tools.json 已漂移」的逐 scope 精确断言 → 单表精确等于 `TOOL_SCHEMAS` 全集；T6 idea 表等于 4 个只读工具 → 改为全集 + 无期报错）、`tests/test_agent_pr6.py` M20（越 scope 拦截 → 改为「未注册名字」拦截）、`tests/test_agent_memory.py`（idea 写记忆被拒 → 改为过卡）、`tests/test_agent_session.py`、`tests/test_agent_crawl_browser.py`、`tests/test_agent_director.py`（逐回合工具表断言）。清单以施工前**全量 `uv run pytest` 实跑失败列表**为准，逐条在 §10 回填「改成了什么」。
+**改写**（被删语义的旧断言换成等强的新断言，不许只删）。v0.2（🔵-1）：红队在按本 spec 意图做的最小原型上实跑全量 pytest，失败约 90 条、分布于 ≥ 15 份文件，绝大多数同根因。**改写轴**：先改共享夹具与签名替身（写四键 `tools.json` 的 `make_agent_root` / `SPEC_TOOLS`、`_agent_root`、`_make_web_root`、golden / protocol 夹具；`test_agent_llm_tiering` 对旧签名的 monkeypatch；7 份文件导入旧名 `tool_names_for_scope` / `CREATIVE_WRITABLE_FILES` 的 collection 错误），再按实跑失败列表逐条收尾。夹具 `tools.json` 必须与该测试注册的假工具（`test_ping` / `test_slow` / `test_stdin_child` / `test_writer` 等）同步扩张，否则反向检查当场报错（🔵-2）。红队实跑分布（供估量，以施工前实跑为准）：test_agent_tools（约 24）、test_agent_protocol（19）、test_agent_pr6（13）、test_agent_loop（12）、test_golden_terminal（12）、test_agent_llm_tiering（7）、test_agent_web（5）、test_agent_crawl_browser（4）、test_agent_session（4 + 10 夹具 error）、test_agent_director（3）、test_agent_assembly_integration（2）、test_agent_memory（2）、test_candidates_propose（2）、test_review（1）、test_run_pipeline_pinning（1）。语义改写要点：`test_agent_tools.py` 零写权限两条 → 「pipeline / asset 模式写白名单文件成功、写白名单外仍拒」；`validate_pipeline_command` 按 scope 的若干条 → 合表后同等覆盖；「tools.json 已漂移」的逐 scope 精确断言 → 单表等于注册全集；T6 idea 表等于 4 个只读工具 → 全集 + 无期报错；`test_agent_pr6.py` M20 → 「未注册名字」拦截；`test_agent_memory.py` idea 写记忆被拒 → 过卡落盘；`test_agent_director.py` 逐回合工具表断言 → 各回合相同。逐条在施工回填里写「改成了什么」。
 
 **新增**：
-- TA-1：四个模式 `build_tool_schemas` 输出逐字节相等，且名字集合 == `TOOL_SCHEMAS` 键集合。
-- TA-2：`tools.json` 少列一个已注册工具 → 加载报错（反向分叉检查）。
+- TA-1：四个模式 `build_tool_schemas` 输出逐字节相等，且名字集合 == 注册集 ∩ 可选依赖可用集（`build_tool_schemas` 对缺 crawl4ai / playwright 的工具跳过；施工机两者都装，断言写成交集形式，v0.2 🔵-5）。
+- TA-2：`tools.json` 少列一个已注册工具 → `build_tool_schemas` 抛错；缺失 / 损坏 / 旧四键格式三态同样抛错。
 - TA-3：pipeline / asset / idea 三个模式下 `execute_tool` 调 `web_search`（打桩）都执行，不返回白名单错误。
+- TA-3b（v0.2，🟡-3）：pipeline / asset / idea 三个模式下 `review_tool_call` 对 `web_search`、`write_memory`（`op=add`）的裁决都不是 `reject`；pipeline / asset 模式下对 `run_pipeline("cloud status")` 不是 `reject`。
 - TA-4：asset 模式 `write_episode_file("02-script.draft.md")` 过卡后落盘；写 `02-script.md` / `../x` / `pipeline/x` 仍拒；`01-topic.md` 未确认仍拒。
-- TA-5：creative 模式 `validate_pipeline_command("cloud status")` 通过；`cloud exec`、`tts --force-a`、`faces unknown` 在任何调用路径下仍拒。
-- TA-6：idea 会话调 `write_episode_file` / `cover_edit` / `run_pipeline` → 统一「先建期」错误、零写入、不弹卡；调 `write_memory` → 弹卡。
+- TA-5：任意调用路径下（v0.2，🔵-5）`validate_pipeline_command("cloud status")` 通过；`cloud exec`、`tts --force-a`、`faces unknown` 仍拒。
+- TA-6：idea 会话调 `write_episode_file` / `cover_edit` / `run_pipeline` / `acquire_propose`（v0.2，🟡-1）→ `review_tool_call` 返回 `reject`、理由为「先建期」统一文案、不弹卡、零写入（`incoming` 候选池不变）；直调 `execute_tool` 同样得到统一文案（实现层双保险）。`write_memory` 腿（v0.2，🟡-2）为完整回环：弹卡 → 人按 y → `memory.md` 出现该条、`memory.log.jsonl` 新增一行且 `episode` 为 null。
+- TA-6b（v0.2，🟡-2）：`memory.apply_op(..., scope="pipeline", confirmed=True)` 与 `scope="idea"` 都成功落盘。
 - TA-7：pipeline 模式下 `web_fetch` 的 URL 含 `agent.local.json` → 仍被出网断言拦截（R1 的回归守卫）。
 
 **变异**（每条须由指定用例的断言杀死；`PYTHONDONTWRITEBYTECODE=1`，还原 md5 对拍）：
-- MUT-A1：`build_tool_schemas` 对 idea 只返回旧 4 件 → TA-1 / TA-6 杀。
+- MUT-A1：`build_tool_schemas` 对 idea 只返回旧 4 件 → TA-1 杀。
 - MUT-A2：删掉反向分叉检查 → TA-2 杀。
 - MUT-A3：`write_episode_file` 恢复 `scope != "creative"` 检查 → TA-4 杀。
 - MUT-A4：合表时漏掉 `ASSET_COMMANDS` → TA-5 杀。
-- MUT-A5：合表时把 `cloud exec` 禁令挪进某个 scope 分支后丢失 → TA-5 杀。
-- MUT-A6：idea 下 `run_pipeline` 不报错、直接校验通过 → TA-6 杀。
+- MUT-A5：合表时把 `cloud exec` 禁令挪进某个分支后丢失 → TA-5 杀。
+- MUT-A6：idea 下 `run_pipeline` 在 review 层不拒 → TA-6 杀。
 - MUT-A7：web 工具在 pipeline 模式跳过 `assert_egress_boundary` → TA-7 杀。
-- MUT-A8：`memory.apply_op` 恢复 creative-only → TA-6（idea 写记忆弹卡）杀。
+- MUT-A8：`memory.apply_op` 恢复 creative-only → **TA-6b 杀**（v0.2，🟡-2：TA-6 原措辞只到弹卡，走的是不含 scope 闸的 `plan_op`，杀不死）。
+- MUT-A9（v0.2，🟡-3）：`review_tool_call` 保留越 scope 拒绝 → TA-3b 杀。
+- MUT-A10（v0.2）：review 层「先建期」拒绝删掉（只剩实现层）→ TA-6 的「不弹卡」断言杀。
+- MUT-A11（v0.2，🟡-1）：`acquire_propose` 从需期工具集合里漏掉 → TA-6 杀。
+
+**shipped 变异矩阵（v0.2，🟡-5）**：`scripts/verify_mutations.py` 在 PR1 同一提交内同步，否则元守卫 `test_anchors_in_shipped_matrix_are_unique_in_repo` 当场红：
+- M24（idea 四键工具表零写权限）：守的语义被本 spec 废除 → **退役**，条目删除并在注释里写「D43 / Spec 17 废除」；
+- M20（未注册 / 超 scope 预校验）：**改锚，不退役**——「未注册名字在弹卡前拒绝」仍是现役护栏，`old` 缩到剩下的那段，`guard` 改为「未注册工具预校验」；
+- M29（idea 卡纯静态）：锚点随 §3.5 新文案更新；
+- MUT-A1～A11 全部登记为新条目，各配逐字唯一的 `old` 锚点。
 
 ## 10. PR 划分、验证与门禁
 
-- PR1（core 一个提交）：`tools.json`、`tools.py`、`scopes.py`、`memory.py`、`session.py`、`status_card.py`、`cli.py`、`protocol.py` 注释、三份 scope 提示、测试；PR2（文档）：§7 全部修订面 + ADR-0027 状态。
+- PR1（core 一个提交）：`tools.json`、`tools.py`、`scopes.py`、`memory.py`、`session.py`、`status_card.py`、`cli.py`、`protocol.py` 注释、三份 scope 提示、测试、`scripts/verify_mutations.py`（§9 shipped 矩阵段）、`desktop/e2e/sessionReal.spec.ts` 过期注释「acquire_propose 只在 asset scope」（v0.2，🔵-8；只改注释）；PR2（文档）：§7 全部修订面 + ADR-0027 状态。
 - 验证：全量 `uv run pytest` 全绿；`cd desktop && npx vitest run`、全量 `npx playwright test`（`workers: 2`，临时副本）全绿；§9 变异逐条回填。
-- 门禁：① §9 新增用例与改写用例全绿，改写逐条可追溯；② 变异 8 条全杀；③ 真会话冒烟（临时仓库副本、真 LLM）：pipeline 模式会话里让模型查一条网页资料，确认 `web_search` 可用且出网断言照常；idea 会话里让模型写 `01-topic.md`，确认返回「先建期」而不是白名单错误；④ §7 文档修订面完整。
+- 门禁：① §9 新增用例与改写用例全绿，改写逐条可追溯；② 变异 MUT-A1～A11 共 11 条全杀，且已登记进 shipped 矩阵、`verify_mutations.py --only` 逐条可复跑；③ 真会话冒烟（临时仓库副本、真 LLM）：pipeline 模式会话里让模型查一条网页资料，确认 `web_search` 可用且出网断言照常；idea 会话里让模型写 `01-topic.md`，确认返回「先建期」而不是白名单错误；同一会话里让模型提一条素材候选，确认 `acquire_propose` 同样返回「先建期」、`incoming` 池不变；④ §7 文档修订面完整。
 - 施工回填（D43-B 写）：测试失败清单与改写对照、变异回填表、偏差。
