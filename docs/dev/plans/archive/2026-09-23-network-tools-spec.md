@@ -19,6 +19,8 @@
 
 ## 1. 红队裁决与修订纪要
 
+> **修订注记（2026-10-06，D29 施工 PR1；Spec 15 `2026-09-29-web-search-provider-spec.md`，不改本文正文）**：`web_search` 由「GET 单端点 + DDG DOM 解析器」改为按配置顺序尝试 provider 链（默认 `exa_mcp` → `tavily`），`_SearchResultParser` / `_decode_ddg_href` 退役。影响本文的点：① §3.1 `search` 段旧五字段作废，改为 `search.timeout_s` + `search.providers`（旧字段出现即判无效，见 §3.1 注）；② §2.3 第 5 条与 §3.1「指名环境变量为空 → 配置无效」对 search 改为**该家未就绪、跳过**（Spec 15 §11 Q2，人 2026-09-29 裁决），`web_fetch` 不再因检索服务的 key 缺失而不可用；③ §3.2 返回值四键不变，`provider` 的值从端点 URL 改为适配器名（如 `"exa_mcp"`）；④ 超时 / 断网 / 429 / 5xx 对 search 是「可落下一家」，全链失败汇总成 `ValueError` 逐家列原因（§3.4 的「原样抛出」只对 fetch 仍成立）；⑤ 出方向四纪律不变：每家发送前 `assert_egress_boundary`（POST body 里的 query 同样归一后断言）+ `_guard_url`、零自动重试（每家至多 1 次）、入方向 `_scrub`、密钥脱敏改为链上全部 key 逐一替换（`_redact_all`，fetch 同步）；⑥ §7.1 T1 / T16 改用 provider 实测 fixture，T5a / T5b / T6a / T6b / T7 / T8 / T10 / T17 只换管道、断言不删（T6a 的 search 腿随 ④ 改为断言汇总错误里点名异常类型；T17 腿 ② 加断言「tool 结果是拦截出网请求而非配置无效」）。
+
 > **v0.5 修订记录（2026-09-28，N45 施工，issue 已拍板）**：`web_fetch`/`search_web` 读取响应体统一走 `_read_body_capped`——gzip/deflate 强制压缩流式解压、解压后字节同受 `max_fetch_bytes` 封顶，未知编码 ValueError 附升级 crawl 提示；`fetched_bytes` 语义改为「进入解码的字节数」（压缩响应报解压后字节）。§2.5⑤ 与 §10 RF-12 同步修订。真网复测：`fetch_web("https://www.python.org/")` 由乱码净文/0 链接变为正常净文/127 链接。
 
 > **v0.4 修订记录（S12 验收发现，人批准，🟡-1/🟡-3/🔵/F）**：① 本机 Clash TUN fake-ip 将域名解析至 `198.18.0.0/15` / `2001:2::/48`（`is_private=True`），新增配置项 `trusted_fake_ip_ranges`（默认 `[]`，仅对域名生效、对 IP 字面量含十进制/缩写/十六进制/八进制 `socket.inet_aton` 非标准写法永不生效，其它地址仍过六谓词）；② T5a 撤出 DNS patch 豁免清单并强制 `match="拦截出网请求"`（S12 验收发现，S11 实现已如此）；③ 补齐生产 `_default_opener` handler 接线（C1/MUT-20）、Content-Type 白名单拒绝（C2/MUT-21）、`search_web` 路径 `_guard_url`（C3/MUT-22）与非标准 IPv4 字面量（D/MUT-23）测试与变异；④ 去掉只为测试存在的无参 opener 分支（E）；⑤ 如实登记 DDG HTML 端点返回 HTTP 202 机器人挑战页现状，删改「换任意 GET 端点无需改码」（F，人选 a）。
@@ -186,6 +188,8 @@
 
 `web.local.json` 同 schema 整文件覆盖（不做深合并——两个文件、8 个字段，深合并是不必要的机制，YAGNI）。校验失败（缺键/类型错/约束违例）一律 `load_web_config → None` → 工具显式错误，不静默回落默认值（与 tools.json「读取失败不静默扩张」同款纪律，`tools.py:431-437` docstring）。
 
+> **修订注记（2026-10-06，D29 / Spec 15 §2.4）**：上表 `search.endpoint` / `query_param` / `api_key_env` / `api_key_param` 四行作废，出现即判无效（错误消息指向 `search.providers`）。新 `search` 段 = `timeout_s`（每家超时，>0 ≤60）+ `providers`（1～4 项，`name` ∈ 注册表、不重名；`tavily` 必填 `api_key_env`，须以 `TAVILY_` 开头、形如 `*_API_KEY|*_KEY|*_TOKEN`、不与 LLM 密钥同名；`exa_mcp` 不接受 `api_key_env`）。整文件覆盖规则不变——本机 `web.local.json` 的 `search` 段须**替换**为新链，删段会让 search 与 fetch 一起失效。
+
 ### 3.2 `web_search` 工具契约
 
 - **参数 schema**（LLM 可见）：`query: string`（必填，非空）、`limit: integer`（可选，默认 5，clamp 至 [1, 10]，`tools.py:613` 同款）。
@@ -201,6 +205,8 @@
   }
   ```
 - **空结果纪律**：HTTP 正常但解析出 0 条结果 → `ValueError("搜索解析为空：可能是无结果，也可能是端点页面结构已变更（解析器 fixture 失效）")`——**严禁静默返回空 list**，那会让模型把「工具坏了」误读为「世界上没有结果」（静默失败变体，家规禁项）。测试锚点：§7.1 T16。
+
+> **修订注记（2026-10-06，D29 / Spec 15 §2.3）**：上方示例的 `provider` 值改为适配器名（`"exa_mcp"` / `"tavily"`），`url` 不再有 uddg 解码；`snippet` 封顶 500 字；URL 去重、丢弃非 http(s)。空结果纪律推广到链：各家都解析出 0 条（或全部失败）→ `ValueError("web_search 全部检索服务失败：exa_mcp: …；tavily: …")`，仍严禁返回空 list。
 
 ### 3.3 `web_fetch` 工具契约
 

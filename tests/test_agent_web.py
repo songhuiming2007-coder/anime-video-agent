@@ -18,6 +18,7 @@ import pytest
 
 from pipeline.agent import web
 from pipeline.agent.web import (
+    ProviderCfg,
     WebConfig,
     _GuardedRedirectHandler,
     fetch_web,
@@ -25,84 +26,63 @@ from pipeline.agent.web import (
     search_web,
 )
 
-DDG_FIXTURE_HTML = """<!DOCTYPE html>
-<html>
-<head><title>DuckDuckGo Search</title></head>
-<body>
-  <div class="results">
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbgm.tv%2Fsubject%2F292970&amp;rut=abc">
-          葬送的芙莉莲 - Bangumi 番组计划
-        </a>
-      </h2>
-      <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbgm.tv%2Fsubject%2F292970">
-        电视动画《葬送的芙莉莲》改编自山田钟人原作、阿部司作画的同名漫画。
-      </a>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fzh.moegirl.org.cn%2F%25E8%258A%2599%25E8%258E%2589%25E8%258E%25B2">
-          芙莉莲 - 萌娘百科
-        </a>
-      </h2>
-      <div class="result__snippet">
-        辛美尔逝世五十年后，芙莉莲再次踏上旅途。
-      </div>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="https://example.org/frieren-review">
-          芙莉莲剧评长文
-        </a>
-      </h2>
-      <div class="result__snippet">
-        第一集关于寿命论与记忆的展开。
-      </div>
-    </div>
-    <div class="result">
-      <h2 class="result__title">
-        <a class="result__a" href="https://example.org/frieren-ep2">
-          第二集考据
-        </a>
-      </h2>
-      <div class="result__snippet">
-        蓝月草的隐喻分析。
-      </div>
-    </div>
-  </div>
-</body>
-</html>
-"""
+# Spec 15 T-P13：DDG HTML fixture 随 _SearchResultParser 退役，搜索用例换成 PR0 实测的
+# provider 原始响应（tests/fixtures/web_search/，2026-10-06 真实请求，中性查询词）。
+WEB_SEARCH_FIXTURES = Path(__file__).parent / "fixtures" / "web_search"
+EXA_OK_SSE = (WEB_SEARCH_FIXTURES / "exa_mcp_ok.sse.txt").read_bytes()
+NEW_SEARCH_SECTION = {"timeout_s": 20, "providers": [{"name": "exa_mcp"}]}
 
-EMPTY_DDG_FIXTURE_HTML = """<!DOCTYPE html>
-<html>
-<body>
-  <div class="no-results">未找到任何相关结果</div>
-</body>
-</html>
-"""
+
+def _exa_sse(blocks: list[tuple[str, str, str]]) -> bytes:
+    """按实测 exa_mcp 形态（exa_mcp_ok.sse.txt：SSE + 文本块 \n\n---\n\n 分隔）拼响应，
+    供需要特定内容（受限串、空结果）的用例使用。"""
+    text = "\n\n---\n\n".join(
+        f"Title: {t}\nURL: {u}\nPublished: N/A\nAuthor: N/A\nHighlights:\n{h}"
+        for t, u, h in blocks
+    )
+    msg = {"result": {"content": [{"type": "text", "text": text}]}, "jsonrpc": "2.0", "id": 1}
+    return ("event: message\ndata: " + json.dumps(msg, ensure_ascii=False) + "\n\n").encode(
+        "utf-8"
+    )
 
 
 def _make_config(
     *,
-    api_key: str = "",
-    api_key_param: str = "",
+    providers: tuple[ProviderCfg, ...] = (ProviderCfg(name="exa_mcp"),),
+    secret_values: tuple[str, ...] = (),
     max_fetch_bytes: int = 1_000_000,
     max_fetch_chars: int = 30_000,
     trusted_fake_ip_ranges: tuple[Any, ...] = (),
 ) -> WebConfig:
     return WebConfig(
-        search_endpoint="https://html.duckduckgo.com/html/",
-        search_query_param="q",
-        api_key=api_key,
-        api_key_param=api_key_param,
+        search_providers=providers,
+        secret_values=secret_values,
         search_timeout_s=20.0,
         fetch_timeout_s=30.0,
         max_fetch_bytes=max_fetch_bytes,
         max_fetch_chars=max_fetch_chars,
         trusted_fake_ip_ranges=trusted_fake_ip_ranges,
     )
+
+
+def _make_web_root(tmp_path: Path) -> Path:
+    """新 schema web.json + creative 工具表的临时仓库根（Spec 15 T-P13：execute_tool 层用例
+    不再读真实仓库的 config/，本机 web.local.json 的形态不得左右测试结论）。"""
+    cfg_dir = tmp_path / "config" / "agent"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "tools.json").write_text(
+        json.dumps({"creative": ["web_search", "web_fetch"]}), encoding="utf-8"
+    )
+    (cfg_dir / "web.json").write_text(
+        json.dumps(
+            {
+                "search": NEW_SEARCH_SECTION,
+                "fetch": {"timeout_s": 30, "max_bytes": 1000000, "max_chars": 30000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
 
 
 def _pin_public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,27 +129,32 @@ class _FakeResponse:
 
 
 def test_search_parses_results_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
-    """T1 (PR1): 搜索解析 fixture HTML，uddg 解码与 limit 截断。"""
+    """T1 (PR1；Spec 15 T-P13 换管道)：exa_mcp 实测 fixture 解析与 limit 截断。"""
     _pin_public_dns(monkeypatch)
     calls: list[Any] = []
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append((req, timeout))
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(EXA_OK_SSE, content_type="text/event-stream")
 
-    out = search_web("芙莉莲", limit=3, config=_make_config(), opener=fake_opener)
+    out = search_web("一色彩羽", limit=3, config=_make_config(), opener=fake_opener)
     assert len(calls) == 1
-    assert out["query"] == "芙莉莲"
-    assert out["provider"] == "https://html.duckduckgo.com/html/"
+    assert out["query"] == "一色彩羽"
+    assert out["provider"] == "exa_mcp"
     assert out["truncated"] is True
     assert len(out["results"]) == 3
-    assert out["results"][0] == {
-        "title": "葬送的芙莉莲 - Bangumi 番组计划",
-        "url": "https://bgm.tv/subject/292970",
-        "snippet": "电视动画《葬送的芙莉莲》改编自山田钟人原作、阿部司作画的同名漫画。",
-    }
-    assert out["results"][1]["url"] == "https://zh.moegirl.org.cn/芙莉莲"
-    assert out["results"][2]["url"] == "https://example.org/frieren-review"
+    first = out["results"][0]
+    assert set(first) == {"title", "url", "snippet"}
+    assert first["title"] == "Isshiki, Iroha"
+    assert first["url"] == "https://myanimelist.net/character/110743/Iroha_Isshiki"
+    assert first["snippet"].startswith(
+        "Iroha Isshiki (Yahari Ore no Seishun Love Comedy wa Machigatteiru. Zoku) - MyAnimeList.net"
+    )
+    assert len(first["snippet"]) == 469
+    assert out["results"][1]["url"] == (
+        "https://lndb.info/light_novel/Yahari_Ore_no_Seishun_Rom-Com_wa_Machigatteiru./char/749"
+    )
+    assert out["results"][2]["url"] == "https://anilist.co/character/88727/Isshiki-Iroha"
 
 
 def test_fetch_strips_html_and_caps_size(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -364,16 +349,16 @@ def test_search_content_encoding_gzip_forced(monkeypatch: pytest.MonkeyPatch) ->
     """N45：search_web 同一读取路径——端点强制 gzip 时仍解析出结果。"""
     _pin_public_dns(monkeypatch)
     resp = _FakeResponse(
-        gzip.compress(DDG_FIXTURE_HTML.encode("utf-8")), content_encoding="gzip"
+        gzip.compress(EXA_OK_SSE), content_type="text/event-stream", content_encoding="gzip"
     )
     out = search_web(
-        "芙莉莲",
+        "一色彩羽",
         limit=3,
         config=_make_config(),
         opener=lambda req, timeout=20.0: resp,
     )
     assert len(out["results"]) >= 1
-    assert "bgm.tv" in out["results"][0]["url"]
+    assert "myanimelist.net" in out["results"][0]["url"]
 
 
 def test_egress_blocks_before_send_direct(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -383,7 +368,7 @@ def test_egress_blocks_before_send_direct(monkeypatch: pytest.MonkeyPatch) -> No
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(EXA_OK_SSE, content_type="text/event-stream")
 
     cfg = _make_config()
     for bad_query in (
@@ -419,7 +404,9 @@ def test_offline_and_timeout_raise_direct(
         TimeoutError("timed out"),
         socket.gaierror(8, "nodename nor servname provided"),
     ):
-        with pytest.raises(type(exc)):
+        # Spec 15 §2.2：超时/断网对 search 是「可落下一家」，全链失败时汇总成 ValueError，
+        # 原因里点名异常类型（不再原样穿出）；fetch 腿语义不变。
+        with pytest.raises(ValueError, match=f"全部检索服务失败.*{type(exc).__name__}"):
             search_web("test", config=cfg, opener=lambda req, timeout=20.0, e=exc: (_ for _ in ()).throw(e))
         with pytest.raises(type(exc)):
             fetch_web("https://example.org/", config=cfg, opener=lambda req, timeout=30.0, e=exc: (_ for _ in ()).throw(e))
@@ -448,16 +435,19 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "03-audio/manifest.json" not in f_out["text"]
     assert f_out["text"].count("[已脱敏]") == 2
 
-    dirty_search_html = """
-    <html><body>
-      <a class="result__a" href="https://example.org/1">引用 agent.local.json 的文章</a>
-      <div class="result__snippet">文中提到了 cloud.local.json 和 03-audio/voice.json</div>
-    </body></html>
-    """
+    dirty_search_sse = _exa_sse(
+        [
+            (
+                "引用 agent.local.json 的文章",
+                "https://example.org/1",
+                "文中提到了 cloud.local.json 和 03-audio/voice.json",
+            )
+        ]
+    )
     s_out = search_web(
         "配置说明",
         config=cfg,
-        opener=lambda req, timeout=20.0: _FakeResponse(dirty_search_html.encode("utf-8")),
+        opener=lambda req, timeout=20.0: _FakeResponse(dirty_search_sse),
     )
     item = s_out["results"][0]
     assert "agent.local.json" not in item["title"]
@@ -535,7 +525,7 @@ def test_fetch_rejects_bad_scheme_and_private_ip(
     )
     def _search_guard_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         search_guard_calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(EXA_OK_SSE, content_type="text/event-stream")
 
     with pytest.raises(PermissionError):
         search_web("芙莉莲", config=cfg, opener=_search_guard_opener)
@@ -681,13 +671,7 @@ def test_fetch_rejects_bad_scheme_and_private_ip(
     cfg_dir = tmp_path / "config" / "agent"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     base_json = {
-        "search": {
-            "endpoint": "https://html.duckduckgo.com/html/",
-            "query_param": "q",
-            "api_key_env": "",
-            "api_key_param": "",
-            "timeout_s": 20,
-        },
+        "search": NEW_SEARCH_SECTION,
         "fetch": {"timeout_s": 30, "max_bytes": 1000000, "max_chars": 30000},
     }
     # 缺键 -> ()
@@ -747,7 +731,7 @@ def test_http_403_fails_honestly_no_retry(monkeypatch: pytest.MonkeyPatch) -> No
 def test_web_config_local_override_and_credential_hygiene(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """T10 (PR1): web.local.json 整文件覆盖与凭据四不泄漏。"""
+    """T10 (PR1；Spec 15 T-P13 换管道)：web.local.json 整文件覆盖与凭据四不泄漏。"""
     _pin_public_dns(monkeypatch)
     cfg_dir = tmp_path / "config" / "agent"
     cfg_dir.mkdir(parents=True)
@@ -755,13 +739,7 @@ def test_web_config_local_override_and_credential_hygiene(
     (cfg_dir / "web.json").write_text(
         json.dumps(
             {
-                "search": {
-                    "endpoint": "https://html.duckduckgo.com/html/",
-                    "query_param": "q",
-                    "api_key_env": "",
-                    "api_key_param": "",
-                    "timeout_s": 20,
-                },
+                "search": NEW_SEARCH_SECTION,
                 "fetch": {"timeout_s": 30, "max_bytes": 1000000, "max_chars": 30000},
             }
         ),
@@ -771,11 +749,10 @@ def test_web_config_local_override_and_credential_hygiene(
         json.dumps(
             {
                 "search": {
-                    "endpoint": "https://search.example.org/api",
-                    "query_param": "query",
-                    "api_key_env": "AVA_TEST_WEB_SECRET_KEY",
-                    "api_key_param": "api_key",
                     "timeout_s": 15,
+                    "providers": [
+                        {"name": "tavily", "api_key_env": "TAVILY_AVA_TEST_API_KEY"}
+                    ],
                 },
                 "fetch": {"timeout_s": 25, "max_bytes": 131072, "max_chars": 5000},
             }
@@ -783,28 +760,39 @@ def test_web_config_local_override_and_credential_hygiene(
         encoding="utf-8",
     )
 
-    # 指名了环境变量但未设置 -> 返回 None（不静默退无凭据模式）
-    monkeypatch.delenv("AVA_TEST_WEB_SECRET_KEY", raising=False)
-    assert load_web_config(tmp_path) is None
-
-    # 注入假密钥
-    fake_secret = "test-key-0000"
-    monkeypatch.setenv("AVA_TEST_WEB_SECRET_KEY", fake_secret)
-    loaded = load_web_config(tmp_path)
-    assert loaded is not None
-    assert loaded.search_endpoint == "https://search.example.org/api"
-    assert loaded.api_key == fake_secret
-
-    captured_urls: list[str] = []
+    captured: list[Any] = []
 
     def search_opener(req: Any, timeout: float = 15.0) -> _FakeResponse:
-        captured_urls.append(req.full_url)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        captured.append(req)
+        body = json.loads((WEB_SEARCH_FIXTURES / "tavily_ok.json").read_text("utf-8"))
+        body["results"][0]["content"] += f" echo {fake_secret}"
+        return _FakeResponse(json.dumps(body).encode("utf-8"), content_type="application/json")
+
+    # 指名了环境变量但未设置 -> 该家未就绪（Spec 15 §11 Q2），绝不静默退无凭据模式发裸请求
+    fake_secret = "test-key-0000"
+    monkeypatch.delenv("TAVILY_AVA_TEST_API_KEY", raising=False)
+    unset = load_web_config(tmp_path)
+    assert unset is not None
+    assert unset.search_providers == (
+        ProviderCfg(name="tavily", api_key_env="TAVILY_AVA_TEST_API_KEY", api_key=""),
+    )
+    with pytest.raises(ValueError, match="无可用检索服务.*TAVILY_AVA_TEST_API_KEY"):
+        search_web("frieren", root=tmp_path, opener=search_opener)
+    assert captured == []
+
+    # 注入假密钥
+    monkeypatch.setenv("TAVILY_AVA_TEST_API_KEY", fake_secret)
+    loaded = load_web_config(tmp_path)
+    assert loaded is not None
+    assert [p.name for p in loaded.search_providers] == ["tavily"]
+    assert loaded.search_providers[0].api_key == fake_secret
+    assert loaded.secret_values == (fake_secret,)
 
     s_res = search_web("frieren", root=tmp_path, opener=search_opener)
-    assert len(captured_urls) == 1
-    assert f"api_key={fake_secret}" in captured_urls[0]
+    assert len(captured) == 1
+    assert captured[0].unredirected_hdrs["Authorization"] == f"Bearer {fake_secret}"
     assert fake_secret not in json.dumps(s_res, ensure_ascii=False)
+    assert "***" in s_res["results"][0]["snippet"]
 
     f_res = fetch_web(
         f"https://example.org/data?api_key={fake_secret}",
@@ -834,15 +822,13 @@ def test_web_module_pure_and_no_heavy_imports() -> None:
 
 
 def test_search_empty_parse_raises_honestly(monkeypatch: pytest.MonkeyPatch) -> None:
-    """T16 (PR1): 空结果纪律——解析 0 条结果必须抛 ValueError 且含「无结果或结构变更」。"""
+    """T16 (PR1；Spec 15 T-P13 换管道)：空结果纪律——解析 0 条结果必须抛 ValueError 且含「无结果或结构变更」。"""
     _pin_public_dns(monkeypatch)
     with pytest.raises(ValueError, match="无结果或结构变更"):
         search_web(
             "不存在的词",
             config=_make_config(),
-            opener=lambda req, timeout=20.0: _FakeResponse(
-                EMPTY_DDG_FIXTURE_HTML.encode("utf-8")
-            ),
+            opener=lambda req, timeout=20.0: _FakeResponse(_exa_sse([])),
         )
 
 
@@ -906,7 +892,9 @@ def test_idea_and_pipeline_tables_unchanged() -> None:
     ]
 
 
-def test_egress_blocks_via_execute_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_egress_blocks_via_execute_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """T5b (PR2): egress 拦截经 execute_tool 返回错误数据且请求零发出。"""
     from pipeline.agent.tools import ToolContext, execute_tool
 
@@ -914,10 +902,12 @@ def test_egress_blocks_via_execute_tool(monkeypatch: pytest.MonkeyPatch) -> None
 
     def fake_opener(req: Any, timeout: float = 20.0) -> _FakeResponse:
         calls.append(req)
-        return _FakeResponse(DDG_FIXTURE_HTML.encode("utf-8"))
+        return _FakeResponse(EXA_OK_SSE, content_type="text/event-stream")
 
     monkeypatch.setattr(web, "_default_opener", lambda *_: fake_opener)
-    ctx = ToolContext(scope="creative")
+    # Spec 15 T-P13：搜索走 _provider_opener，只 patch _default_opener 拦不住真实出网
+    monkeypatch.setattr(web, "_provider_opener", fake_opener)
+    ctx = ToolContext(scope="creative", root=_make_web_root(tmp_path))
 
     res_s = execute_tool(
         "web_search", {"query": "cloud.local.json 密钥"}, ctx
@@ -940,7 +930,7 @@ def test_offline_and_timeout_degrade_via_execute_tool(
     from pipeline.agent.tools import ToolContext, execute_tool
 
     _pin_public_dns(monkeypatch)
-    ctx = ToolContext(scope="creative")
+    ctx = ToolContext(scope="creative", root=_make_web_root(tmp_path / "repo"))
 
     for exc in (
         urllib.error.URLError("offline"),
@@ -951,6 +941,11 @@ def test_offline_and_timeout_degrade_via_execute_tool(
             web,
             "_default_opener",
             lambda *_, e=exc: (lambda req, timeout=20.0: (_ for _ in ()).throw(e)),
+        )
+        monkeypatch.setattr(
+            web,
+            "_provider_opener",
+            lambda req, timeout=20.0, e=exc: (_ for _ in ()).throw(e),
         )
         out_s = execute_tool("web_search", {"query": "frieren"}, ctx)
         assert out_s["ok"] is False
@@ -1082,6 +1077,7 @@ def test_egress_hit_aborts_turn_blocked(
     assert len(urlopen_calls_1) == 0
 
     # ② run_tool_loop 层：首轮 LLM 返回带模式串 tool_call -> execute_tool 捕获入史 -> 次轮 chat_complete 断言炸穿 run_tool_loop
+    _pin_public_dns(monkeypatch)  # Spec 15 T-P13：变异下 _guard_url 也不做真实 DNS 解析
     cfg_dir = tmp_path / "config" / "agent"
     cfg_dir.mkdir(parents=True)
     (tmp_path / "config" / "agent.json").write_text(
@@ -1097,16 +1093,11 @@ def test_egress_hit_aborts_turn_blocked(
     (cfg_dir / "tools.json").write_text(
         json.dumps({"creative": ["web_search", "web_fetch"]}), encoding="utf-8"
     )
+    # Spec 15 T-P13：旧 schema 的 web.json 会被新 loader 判无效，换成新 schema（做不到字面不改）
     (cfg_dir / "web.json").write_text(
         json.dumps(
             {
-                "search": {
-                    "endpoint": "https://html.duckduckgo.com/html/",
-                    "query_param": "q",
-                    "api_key_env": "",
-                    "api_key_param": "",
-                    "timeout_s": 20,
-                },
+                "search": NEW_SEARCH_SECTION,
                 "fetch": {"timeout_s": 30, "max_bytes": 1000000, "max_chars": 30000},
             }
         ),
@@ -1118,6 +1109,20 @@ def test_egress_hit_aborts_turn_blocked(
     monkeypatch.setattr(
         web, "_default_opener", lambda *_: (lambda req, timeout=20.0: web_opener_calls.append(req))
     )
+    monkeypatch.setattr(
+        web, "_provider_opener", lambda req, timeout=20.0: web_opener_calls.append(req)
+    )
+    # Spec 15 T-P13 / R2-4：间谍记下 tool 结果——光看 blocked 不够，配置无效时
+    # tool_call 参数里的受限串照样会让下一轮 chat_complete 拦下，整条腿仍绿
+    tool_outcomes: list[dict[str, Any]] = []
+    real_execute_tool = llm.execute_tool
+
+    def _spy_execute_tool(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        res = real_execute_tool(*args, **kwargs)
+        tool_outcomes.append(res)
+        return res
+
+    monkeypatch.setattr(llm, "execute_tool", _spy_execute_tool)
 
     llm_urlopen_count = 0
 
@@ -1174,6 +1179,10 @@ def test_egress_hit_aborts_turn_blocked(
     assert outcome["rollback"] is True
     assert llm_urlopen_count == 1
     assert len(web_opener_calls) == 0
+    assert len(tool_outcomes) == 1
+    assert tool_outcomes[0]["ok"] is False
+    assert "拦截出网请求" in tool_outcomes[0]["error"]
+    assert "web.json" not in tool_outcomes[0]["error"]  # 不是「配置无效」
 
     # ③ _dispatch_agent_turn 层：PermissionError 被捕获，打印 [BLOCKED] 出网被拦截 并 pop 回滚用户消息
     (cfg_dir / "scopes").mkdir(parents=True, exist_ok=True)

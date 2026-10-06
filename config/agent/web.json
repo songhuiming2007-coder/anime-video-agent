@@ -1,10 +1,10 @@
 {
   "search": {
-    "endpoint": "https://html.duckduckgo.com/html/",
-    "query_param": "q",
-    "api_key_env": "",
-    "api_key_param": "",
-    "timeout_s": 20
+    "timeout_s": 20,
+    "providers": [
+      { "name": "exa_mcp" },
+      { "name": "tavily", "api_key_env": "TAVILY_API_KEY" }
+    ]
   },
   "fetch": {
     "timeout_s": 30,
