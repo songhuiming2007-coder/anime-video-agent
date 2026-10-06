@@ -1,7 +1,7 @@
 # Spec 16：出网断言对「可信仓库文档」做命中位置级豁免（D30）
 
-> **状态：v0.1 草案（2026-10-06，D30-A 立文；同日人裁决 §10：Q1 = ②a，Q2–Q4 同意建议）；2026-10-06 红队一轮（D30-R）裁决 🟡 修订后复审**（见下方「红队一轮裁决」）。下一步：作者按 🟡-1~3 修订 → 定向复审 → 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
-> 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4。
+> **状态：v0.2，待红队定向复审**（2026-10-06 作者修订，回应 D30-R 的 3🟡 + 6🔵，见「作者修订回应」；无需人裁决的新取舍）。沿革：v0.1 草案 2026-10-06 D30-A 立文；同日人裁决 §10（Q1 = ②a，Q2–Q4 同意建议）；同日红队一轮 D30-R 🟡 修订后复审。下一步：定向复审（不能由 v0.2 修订人做）→ 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
+> 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4；v0.2 另登记 **N55**（装配器读域缺口，§3）。
 > 相关：Spec 4（`archive/2026-09-23-network-tools-spec.md`）§2.4 出网断言生效点、§7.1 T5a/T5b/T17、MUT-2/MUT-13；impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.5 **Y2-r19** 出网边界；ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）；新提 **ADR-0026**（`docs/dev/adr/0026-egress-assert-trusted-repo-docs.md`，提议中）。
 
 ## 红队一轮裁决（2026-10-06，D30-R，独立 session 未参与起草；只审文稿，未改代码）
@@ -35,6 +35,28 @@
 - **用例与变异能否杀死回退**：「断言整个关掉」→ MUT-D7（T5a / T17 / TD-2a）✔；「豁免退化为整条消息级」→ MUT-D3（TD-3）✔，P5 实测拦；「先删后匹配」→ MUT-D4（TD-4）✔，P6 实测拦；「只认当前工序」「`resident_prompt` 整体入集」「reinject 不滤记忆」**三条回退现稿杀不死**，需补 MUT-D9～D11；MUT-D8 需要指定杀手（🔵-3）。
 - **文档修订面**：Spec 4 §2.4、ADR-0026、ADR-0021/0022 的 frontmatter、plans/README、issues D30 都已列出；缺 README 已知限制与第二处 Y2-r19（🔵-5）。
 - **核对过的现状事实**：`chat_complete` 全仓只有 `llm.py::run_tool_loop._chat` 一个调用方，收尾调用也经它，所以 §5.2「收尾若另走 `chat_complete`」的条件不成立，传一处即覆盖。web 四个调用点只传 query、url 或 reason，确实不需要可信集。现有用例 `test_assert_egress_boundary`、`test_egress_payload_blocks_case_variant_audio_read`、`test_m5_status_card_passes_assert_egress_boundary`、T5a / T5b / T17 都在。性能方面，24.5 万字符的请求体加 3 段可信文本，判定耗时约 1 ms。
+
+### 作者修订回应（v0.2，2026-10-06；修订人未参与 D30-R）
+
+先核证据再改。红队探针 `d30r/probe.py` 仍在，复跑 P1–P13（跳过全码位 casefold 扫描），结果与裁决表一致：P3 拦、P4 放、P11 拦、P13 放。另写了 scratchpad `d30v2/probe_v2.py`，调用真实 `assembly.py` 的读法与渲染，只复刻 §5.1 判定，不改仓库，用来验证修订方案：
+- V1：同会话 03 → 03.5 → 05，可信 = (a)∪(b) → 放；V2：只认当前工序 → 拦（MUT-D9 的信号）；V3：`--continue` 恢复后只有 (b) → 放。
+- V4：短可信文本被模型复述进工具参数，加门槛后 → 拦。
+- V5：scope 文件的 strip 形态是带 `extra_prompt` 的常驻层的子串。V6 / V7：`extra_prompt` 含受限串，可信 = 三件原文 → 拦；可信 = `resident_prompt` 整体 → 放（MUT-D10 的信号）。
+- V8 / V9：CRLF 路由文档，同一读法 → 放；改用 `read_text` → 拦。V10：str 口径。V11：门槛边界上模式恰在开头、恰在结尾 → 放。
+
+另核：现有 17 份常驻 / 被路由文档 resolve 后全部落在白名单根内，没有软链，最短的是 390 字（`config/agent/scopes/pipeline.md`）。白名单和 200 字门槛都不会挡掉现有文档，**没有需要人裁决的新取舍**。
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| 🟡-1 | 采纳 | §5.2.1 (a)：本进程装配器提交过的全部正文，存 `tracker.trusted_doc_texts`，不进 `_rollback` 的恢复清单。§5.2.2 (b)：resident 三件 + 全部 routes 的当前磁盘正文，每回合装配时重读。§8 补 TD-1b（同会话 03 → 03.5 → 05；仓库没有单独的 04 工序键，03.5 已含 04 排片）、TD-1c（`--continue` 恢复到 05，历史含 03 与 03.5 注入）、TD-1e（同进程中途改版），以及 MUT-D9 / D9b |
+| 🟡-2 | 采纳 | §5.2.1 逐文件在读入处捕获：工序层取 `doc.content.strip()`；常驻层改由 `assemble_resident_prompt` 返回三份文件各自的 strip 原文，scope 取拼 `extra_prompt` **之前**的那份，不取 `resident_prompt`。§5.2.3 记忆两道排除，`_reinject_changed` 只收 `resolve_step_docs` 的候选。§5.2.2 写明 CRLF 口径：同一层用同一读法（路由文档走 `load_injected_doc`，不翻译换行；常驻三件走 `read_text`，翻译换行），两种读法各抽成一个函数，装配和可信集共用。§8 补 TD-2e、TD-2f、TD-1d（CRLF）与 MUT-D10、D11、D12。另删去 v0.1「收尾若另走 `chat_complete`」的条件句（红队已核实不成立） |
+| 🟡-3 | 采纳（四项） | ① §3 新增「这道断言管不到的东西」，§4 ②a 行与 §5.2.3 如实改写：豁免不扩大内容泄露面，凭据内容被路由进消息是装配器读域的既有缺口。② §5.2.3 改为白名单根 + resolve 后判定，显式排除 `data/` 与 `MEMORY_REL_PATH`，规则写成一个函数供 N55 复用。③ §8 TD-5 改为直接断言可信集本身。④ issues 新登记 **N55**（`load_injected_doc` 不设读域），§7 文档面加一行 |
+| 🔵-1 | 采纳，选「长度门槛」 | §5.1 第 3 步：`trusted_texts` 里短于 `TRUSTED_TEXT_MIN_CHARS = 200` 字符的元素一律忽略。理由有三条。① 位置限定要知道哪几条是注入消息，但 `origin` 只记在 `session.jsonl` 里，内存中和发出去的消息都不带它。要做位置限定，得把消息下标一路传进断言，再在序列化后的请求体里换算区间，改动面和出错面都大。② **对 🟡-1 的历史注入仍然成立**：恢复出来的历史里，旧注入是整份规程正文（现有最短 390 字），门槛不影响它们；判定与位置无关，这些正文在请求体里的任何位置都能认出来。反过来，如果改成位置限定，旧注入的 origin 只能从期目录里的 `session.jsonl` 取，而那正是 §5.3 拒绝信任的东西。③ 残余：模型如果把 ≥ 200 字的规程原文逐字抄进工具参数，这段会被豁免。但被豁免的字节就是仓库文档本身，没有新内容出去。「读域拒了 + 发送闸再掐」防的是模型在参数里写路径，只写一个路径远不到 200 字。已在 §5.3 登记 |
+| 🔵-2 | 采纳（并入 🔵-1） | 门槛顺带滤掉空串 |
+| 🔵-3 | 采纳 | §8 新增 TD-7b（≥ 200 字的可信文本，模式恰在开头、恰在结尾各一例），定为 MUT-D8 的指定杀手 |
+| 🔵-4 | 采纳 | §5.1 第 3 步：可信文本的形态与 content 的序列化口径一致（dict / list → JSON 转义形态；str → 原文），并写明只有 `chat_complete` 传可信集；§8 补 TD-6b |
+| 🔵-5 | 采纳 | §7 补 README「已知限制」的「03.5 期的会话」一行（施工时改为 03 / 03.5，D30-C 通过后删除）；impl spec 两处 Y2-r19（L433 设计段、L1215 验收段）都加修订注记 |
+| 🔵-6 | 采纳 | §5.3 登记：工具 schema 不在可信集里，今天的 description 不含受限模式 |
 
 ## 0. 一句话
 
@@ -95,12 +117,14 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 
 **D30 的本质**：绊线按「名字出现」判，分不清「仓库规程里人写的一句路径说明」和「模型/外部内容里出现的路径」。前者是 git 跟踪、人手写、模型改不了的静态文本，它出网等于把仓库文档发出去，与 Y2-r19 要防的内容无关。
 
+**这道断言管不到的东西（v0.2，🟡-3 ①）**：断言只比对四个**文件名**，不看内容。由此有两点。第一，本 spec 的豁免**不扩大任何内容泄露面**，被放过的只是规程逐字副本里的文件名字面量。第二，反过来说，如果 `assembly.json` 被误配，路由到 `config/cloud.local.json`（或 `docs/` 下一个软链到它的 `.md`），装配器会把密钥**内容**拼进消息。这些内容里一般不含那四个文件名，所以修前修后断言都不会响。这是装配器读域的既有缺口（`load_injected_doc` 接受绝对路径和任意相对路径，不设读域），登记为 **N55**，应在装配器层拒载，另行修复，不由本断言承担。§5.2.3 的读域过滤只管一件事：不让非规程来源的文本获得豁免。
+
 ## 4. 候选方案（每个都写清放过了什么）
 
 | 编号 | 方案 | 放过了什么 | 放过的面里有没有真凭据风险 | 治本？ | 冻结面 |
 |---|---|---|---|---|---|
 | ① | 改写两份 runbook，避开字面路径（如写成「期目录下 03-audio 里的 manifest」） | 无（断言不变） | 无 | **否**：任何规程再写一次字面路径就复发；还逼文档作者绕着护栏措辞 | 不动 |
-| **②a（推荐）** | **命中位置级豁免**：断言时额外给一组「可信文本」（本回合装配器从仓库读入的常驻层与工序层文档正文）；一个模式命中**只有整体落在某段可信文本的逐字副本区间内**才放过，其余命中照旧拦 | 仓库规程文档里的字面路径（只限逐字副本那几段字节） | **无**：可信文本 = 磁盘上 git 跟踪的 `.md` 规程，模型无写入口；记忆（模型可写）明确不在可信集内；凭据文件不可能被选为可信文档（§5.2 路径过滤） | **是**：任何规程写任何字面量都不再炸；其他来源的命中一条不放 | 改 Spec 4 §2.4 生效点措辞（加修订记录），T5a/T5b/T17 不变 |
+| **②a（推荐）** | **命中位置级豁免**：断言时额外给一组「可信文本」（本回合装配器从仓库读入的常驻层与工序层文档正文）；一个模式命中**只有整体落在某段可信文本的逐字副本区间内**才放过，其余命中照旧拦 | 仓库规程文档里的字面路径（只限逐字副本那几段字节） | **无新增**：被放过的只是白名单根内 `.md` 规程逐字副本里的文件名字面量，模型没有写入口；记忆（模型可写）有两道排除（§5.2.3）。断言本来就不看内容，凭据**内容**一旦被误路由进消息，修前修后都拦不住，那是装配器读域的既有缺口（N55），不由本断言承担（§3） | **是**：任何规程写任何字面量都不再炸；其他来源的命中一条不放 | 改 Spec 4 §2.4 生效点措辞（加修订记录），T5a/T5b/T17 不变 |
 | ②b | 整条消息按来源豁免：会话提交时给 origin=`injection` 的消息打内部标记，断言跳过整条 | 整条 `messages[0]`（含状态卡、`extra_prompt`）与整条工序层注入消息 | 低但非零：状态卡已清洗、`extra_prompt` 来自宿主；但豁免粒度是「整条消息」，以后谁往注入消息里拼了动态内容就一起被放过 | 是 | 同上，且要改 `_wire_messages` 的标记剥离 |
 | ②c | 拆模式表：`03-audio/manifest.json`、`03-audio/voice.json` 退出 LLM 请求体断言，只留在 web 出方向与清洗 | 全部来源里出现的这两条期内产物路径（含模型工具调用参数） | 无凭据风险，但**拆掉了现有双保险**：`test_egress_payload_blocks_case_variant_audio_read` 守的「读域拒了 + 发送闸再掐」对 03-audio 失效 | 半治本：哪天规程写了 `cloud.local.json`（比如云端配置说明）照样炸 | 改模式表语义，动 T14/大小写用例 |
 | ②d | 改值匹配：请求体断言改查密钥真值（环境变量里的 key、两份 local.json 的敏感字段），不再查文件名 | 一切「提到文件名」 | 凭据真值仍拦；但 manifest/voice 没有「真值」可匹配，等于这两条从请求体断言里消失（同 ②c 的代价） | 对凭据最精确，对期内产物是拆护栏 | 重写 Y2-r19 语义，影响面最大 |
@@ -116,36 +140,76 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 
 1. `text`、`folded` 的算法与现状完全相同（`json.dumps(..., ensure_ascii=False)` → `casefold()`）。
 2. `trusted_texts` 为空 → **行为与现状逐字节一致**（web 四个调用点不传，零变化）。
-3. 非空时，对每段可信文本 `t`：取它在**同一序列化口径**下的形态 `j = json.dumps(t, ensure_ascii=False)[1:-1].casefold()`（与请求体里那段字节的转义形态一致：换行、引号、反斜杠都已转义），在 `folded` 中找出 `j` 的**全部**出现区间（`str.find` 循环，允许重叠起点前移 1）。
+3. 非空时，先**丢弃短于 `TRUSTED_TEXT_MIN_CHARS = 200` 字符的元素**（含空串；v0.2 🔵-1 / 🔵-2，理由见「作者修订回应」）。对余下每段可信文本 `t`，取它在**与 content 相同的序列化口径**下的形态：content 为 dict / list 时 `j = json.dumps(t, ensure_ascii=False)[1:-1].casefold()`（与请求体里那段字节的转义形态一致，换行、引号、反斜杠都已转义）；content 为 str 时 `j = t.casefold()`（v0.2 🔵-4）。然后在 `folded` 中找出 `j` 的**全部**出现区间（`str.find` 循环，允许重叠起点前移 1）。全仓只有 `llm.py::chat_complete` 传可信集（其 payload 恒为 dict），web 四个调用点不传。
 4. 对每条模式找出它在 `folded` 中的**全部**命中区间；某个命中 `[s, s+len(p))` 若**整体包含于**某个可信区间之内 → 这次命中豁免；**任何一个命中不被包含 → 照旧 `PermissionError`**（报错文案不变）。
 5. 不做「先删掉可信文本再匹配」：删除会把横跨可信文本边界的命中拆碎（可信文本末尾 `cloud.lo` + 后接外来文本 `cal.json`），区间包含判定不受此影响。
 6. 长度：`casefold` 可能改变长度（如 `ß`→`ss`），区间全部在 folded 串上计算，可信文本也先 fold 再找，两边同一坐标系。
 
-### 5.2 可信文本集从哪来
+### 5.2 可信文本集从哪来（v0.2 重写，回应 🟡-1～🟡-3）
 
-只取**本回合装配器从仓库读入的规程正文**，按 `strip()` 后的形态（与 `render_step_injection` / `assemble_resident_prompt` 实际拼进消息的字节一致）：
+可信集 = **(a) ∪ (b)**。每个元素都是一份**通过 §5.2.3 读域过滤**的仓库文档，按装配器对该层的读法读入后取 `.strip()` 的字符串。可信集是超集也无害，因为豁免只认逐字字节（§5.1）；但每一份进入可信集的文档都必须过 §5.2.3。
 
-- 常驻层三件：`assembly.json` `resident` 指名的 director / scope / agents 文档；
-- 工序层：`resolve_step_docs(scope, step_key)` 解析出的全部文档（含 `_reinject_changed` 追加的修订版）。
+#### 5.2.1 (a) 本进程装配器提交过的正文（只增不减）
 
-**硬排除**：
-- 记忆文档（`resolve_memory_injection`，`memory.MEMORY_REL_PATH`）——模型经 `write_memory` 可写，永不进可信集；
-- 路径不以 `.md` 结尾的文档；路径本身命中 `RESTRICTED_EGRESS_PATTERNS`（casefold）或 resolve 后不在仓库根之内的文档——防 `assembly.json` 被人误配指向 `config/cloud.local.json` 之类时，凭据被当成「可信规程」放出去（此时不进可信集，断言照常拦下）；
-- `extra_prompt`、状态卡、`render_step_injection` 的页眉页脚——它们不是仓库文档，照常断言。
+捕获点在装配器的读入处，取它**实际拼进消息的那份字符串**，逐文件取，不从拼接结果反推：
+- **工序层**：`session.py::_assemble` 的首轮与换工序两处，对每个 `InjectedDoc` 取 `doc.content.strip()`（`render_step_injection` 拼进去的正是这个）。
+- **修订重注入**：`_reinject_changed` **只对来自 `resolve_step_docs` 的候选**取 `doc.content.strip()`。消息里拼的是未 strip 的 `doc.content`，它的 strip 形态是消息的子串（探针 P12）。`resolve_memory_injection` 产出的记忆候选**一律不收**。
+- **常驻层**：`assemble_resident_prompt` 改为同时返回三份文件**各自读入后**的 `.strip()`。scope 取拼 `extra_prompt` **之前**的文件原文；文件缺失时的占位标题（`# Director Persona` 等）不收。**不取 `tracker.resident_prompt`**，因为它含 `extra_prompt`（🟡-2(a)）。scope 原文的 strip 形态是常驻层的子串（探针 V5）。
 
-可信集由会话持有（`SessionContextTracker` 已有 `resident_prompt` 与 `injected_paths`，施工时加一个只读的可信正文列表），经 `run_tool_loop` → `chat_complete(..., egress_trusted=...)` 显式传到断言，不用模块级全局状态。终端 `ava`（`cli.py`）与协议会话都经 `session.py::AgentSession` 的同一处 `llm_module.run_tool_loop(...)` 调用（读码确认只有这一处），在这里传一次即覆盖两个入口；收尾调用（wrapup）若另走 `chat_complete`，同样要传。
+存放：`SessionContextTracker` 新增 `trusted_doc_texts`（有序、去重），**不加入 `_rollback` 的恢复清单**。回滚只删消息，不收缩可信集。
+
+(a) 的作用：同一进程里规程中途被改过时，历史里是旧版、磁盘上是新版，旧版只有 (a) 记得。
+
+#### 5.2.2 (b) 路由表所指文档的当前磁盘正文（每回合装配时重读）
+
+范围：`assembly.json` 的 resident 三件（按当前 scope 展开），加上 `routes` 下**全部 scope、全部工序键（含 `default`）**所指的文档。
+
+读法：**与装配器对该层的读法相同**，再取 `.strip()`：
+- 路由文档一律经 `load_injected_doc(...).content`（`read_bytes().decode("utf-8")`，**不翻译换行**）；
+- 常驻三件经与 `assemble_resident_prompt` 共用的读函数（`read_text(encoding="utf-8", errors="replace")`，**翻译换行**）。
+
+施工时把这两种读法各抽成一个函数，装配和可信集都调用它，不许另写第三种。CRLF 口径（🟡-2(c)）由此保证：同一层用同一读法，CRLF 文档的可信形态与消息里的字节一致（探针 V8）；把路由文档改用 `read_text` 读就会对不上（V9，MUT-D12）。
+
+(b) 的作用：`--continue` 恢复出来的历史里，上一进程注入的规程只要没改版，就能在这里被认出（探针 V3）。规程改过版的残余见 §5.3。
+
+#### 5.2.3 读域过滤（白名单根；(a)、(b) 一律适用）
+
+一份文档的正文要进可信集，须**同时**满足以下各条：
+1. `target.resolve(strict=True)` 成功，且 resolve 后的真实路径在 `root.resolve()` 之内（软链指向仓库外、或配置里写的是仓库外的绝对路径，都过不了这一条）；
+2. resolve 后的相对路径落在**白名单根**内：`docs/`、`skills/`、`config/agent/scopes/`，或者恰好是仓库根的 `AGENTS.md`；
+3. **不在 `data/` 下**（`data/` 软链到外置盘时第 1 条已经挡住；没软链时由这一条挡。`data/episodes/*/01-topic.md` 一类文件是模型经 `write_episode_file` 可写的），也不等于 `memory.MEMORY_REL_PATH`；
+4. 后缀为 `.md`；
+5. 配置里写的路径和 resolve 后的相对路径，casefold 后都不含任何 `RESTRICTED_EGRESS_PATTERNS`。
+
+规则写成**一个**函数（如 `assembly.is_trusted_doc_path(root, rel) -> bool`），可信集收集调用它，N55 的装配器拒载修复也复用它，不许出现第二份规则。2026-10-06 核对：现有全部常驻 / 被路由文档都满足 1～5。
+
+**记忆双重排除**：
+- 来源上，`resolve_memory_injection` 的产物从不进入收集：`_inject_memory` 不调用收集逻辑，`_reinject_changed` 显式跳过记忆候选；
+- 路径上，第 3 条再挡一次，即使有人把 `memory.md` 写进路由也进不来。
+
+**不进可信集**：`extra_prompt`、状态卡、`render_step_injection` 与 `_reinject_changed` 的页眉页脚、工具 schema（🔵-6，§5.3）。
+
+**这道过滤保障什么**：保障的是「模型可写或非规程来源的文本拿不到豁免」，**不保障**凭据内容不出网（断言本来就不看内容，§3、N55）。
+
+#### 5.2.4 传递
+
+可信集 = `tracker.trusted_doc_texts` ∪ 本回合 (b)，由 `session.py::AgentSession.run_turn` 在调用 `llm_module.run_tool_loop(..., egress_trusted=...)` 时传入，经 `run_tool_loop._chat` → `chat_complete(..., egress_trusted=...)` 到达断言。终端 `ava`（`cli.py`）和协议会话都走这同一处调用；`chat_complete` 全仓只有 `_chat` 一个调用方（收尾也经它，红队已核实），所以传一处就覆盖两个入口。不用模块级全局状态。
 
 ### 5.3 已知残余（如实接受）
 
 - **恢复会话后规程已改**：`--continue` 重建的历史里是旧版规程正文，可信集只认磁盘上的现版本；若旧版含字面量而现版改了，旧消息里的命中不被豁免 → 仍会 `[BLOCKED]`。触发要求「规程恰好改了这几行」且恢复旧会话，概率低；绕法是开新会话。不为此把历史版本纳入可信集（那要信任 `session.jsonl`，它在期目录里）。
 - **模型逐字复述整段规程**：复述出来的字节与仓库文档相同，豁免它不放出任何新内容，可接受。
 - **人亲手在对话里打出受限路径**、**作业输出尾巴里带路径**：本方案不放过，仍会拦（见 §10 Q2/Q3）。
+- **（v0.2，🔵-1）模型把 ≥ 200 字的规程原文逐字抄进工具参数**：判定与位置无关，这段会被豁免。被豁免的字节就是仓库文档本身，没有新内容出去；只写一个路径（「读域拒了 + 发送闸再掐」防的情形）远不到门槛。可以接受。
+- **（v0.2，🔵-6）工具 schema 不在可信集里**：payload 的 `tools[].description` 也是仓库静态文本，哪天写进受限文件名，所有请求都会被拦。今天的 description 不含受限模式；真遇到时改措辞，或另行把 description 纳入可信集，本 spec 不预做。
+- **（v0.2）凭据内容被误路由进消息**：不归本断言管，见 §3 与 N55。
 
 ## 6. 不做的事（施工纪律）
 
 - 不放宽 `casefold`、不去掉 `_normalized_for_assert` 的 unquote 归一；Spec 4 §2.4 登记的 Unicode 同形上限（RF-11）不是扩面的口子。
 - 不改 `_scrub`、状态卡清洗、记忆 R3；不改模式表四条内容。
 - 不删、不弱化任何现有用例（T5a/T5b/T17、`test_assert_egress_boundary`、大小写用例、`test_egress_payload_blocks_case_variant_audio_read`、`test_m5_status_card_passes_assert_egress_boundary`）。
+  - 与 Spec 15（D29）的交叉（v0.2 补，见 Spec 15 定向复审 R2-4）：Spec 15 PR1 会把 T5a / T5b / T17 的管道换成新 search 配置与 `_provider_opener`，要求断言强度不变。两者谁后落地，谁就在改写后的 T5a / T17 上复跑一次 MUT-D7，确认仍被杀死。
 - 不改两份 runbook 的字面路径（那是方案 ①，会把复现用例变成假绿）。
 
 ## 7. 冻结面影响与文档修订面
@@ -156,6 +220,9 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 | impl spec `2026-09-18-ava-agent-impl-spec.md` §2.5 Y2-r19 | 「出网边界」段尾加一句修订注记（日期、D30）：仓库规程逐字副本不视为越界内容 |
 | ADR-0026（新，提议中 → 人接受后改「已通过」） | 决策、理由、放过面、残余 |
 | ADR-0021 / ADR-0022 | frontmatter `related-issues` 加 D30（不改正文） |
+| impl spec 第二处 Y2-r19（L1215 验收段，v0.2 🔵-5） | 同上加修订注记（L433 设计段即上面那一行），两处都写 |
+| `README.md`「已知限制」的「03.5 期的会话」一行（v0.2 🔵-5） | 施工时改为「03 / 03.5 期的会话」并注明修复中；D30-C 通过后删除 |
+| issues **N55**（v0.2 🟡-3 ④，已登记） | 本 spec 不修；§5.2.3 的白名单函数供其复用 |
 | `docs/dev/plans/README.md`、issues D30 行 | 登记与状态 |
 
 ## 8. 测试与变异清单
@@ -165,15 +232,24 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 | 编号 | 断言 |
 |---|---|
 | **TD-1（复现转绿）** | 真实仓库规程 + step=03.5 与 step=03 两期：会话首轮 `chat_complete` 照常发出（fake urlopen 恰 1 次），请求体里**仍含** runbook 原文（含 `03-audio/manifest.json` 字面量）。修前同一用例红、失败原文是该命中串 |
+| TD-1b（v0.2，🟡-1） | 同一 `AgentSession`、同一 tracker 跑三轮，期目录依次处在 03 → 03.5 → 05（真实仓库规程）：每轮首个 `chat_complete` 都照常发出（fake urlopen 各 1 次），第三轮请求体里仍含 03 与 03.5 两份规程原文 |
+| TD-1c（v0.2，🟡-1） | 新进程 `--continue`（`prepare_resume`）恢复一份历史含 03 与 03.5 注入的会话，期目录处在 05：首轮照常发出（此时 tracker 是空的，只靠 (b)） |
+| TD-1d（v0.2，🟡-2(c)） | 临时仓库里一份 **CRLF 换行**、含受限字面量的路由文档：首轮照常发出 |
+| TD-1e（v0.2，🟡-1） | 临时仓库、同一进程：step 03 注入后，把 `03-tts.md` 的另一行改掉（字面量那行不动），再推进到 03.5：照常发出（历史里的旧版只有 (a) 认得） |
 | TD-2a | 可信文本 = 规程；人发的消息里含 `cloud.local.json` → 拦 |
 | TD-2b | 模型工具调用参数含 `03-AUDIO/MANIFEST.JSON` → 拦（与现有双保险用例同口径） |
 | TD-2c | 工具返回值（role=tool）含 `agent.local.json` → 拦 |
 | TD-2d | 记忆文档含受限串（人手改坏 `memory.md`、绕过 R3）→ 拦（记忆不在可信集） |
+| TD-2e（v0.2，🟡-2(a)） | `extra_prompt` 含 `cloud.local.json` → 拦（常驻层的可信正文是三份文件各自的原文，不含 `extra_prompt`） |
+| TD-2f（v0.2，🟡-2(b)） | `--continue` 后记忆文件被改（含受限串，绕过 R3 直接改盘），经 `_reinject_changed` 以 origin=`injection`、页眉「规程已修订」重注入 → 拦；并直接断言 `tracker.trusted_doc_texts` 和本回合 (b) 都不含记忆正文 |
 | TD-3 | 同一条注入消息里，规程正文之后拼接一段非规程文字含受限串 → 拦（豁免是区间级，不是整条消息级） |
 | TD-4 | 跨边界：可信文本以 `…cloud.lo` 结尾、后接外来文本 `cal.json` → 拦 |
-| TD-5 | `assembly.json` 路由指向非 `.md` 文件 / 路径含受限模式 / 仓库根之外 → 不进可信集，内容含受限串 → 拦 |
+| TD-5（v0.2 改，🟡-3 ③） | **直接断言可信集本身**（对收集函数 / `is_trusted_doc_path` 的返回值断言，不再借「内容含受限串 → 拦」间接测）：`assembly.json` 路由（及 resident）分别指向 ① 非 `.md` 文件；② 路径含受限模式；③ 仓库根外的绝对路径；④ `docs/` 下软链到 `config/` 的 `.md`；⑤ 未软链的 `data/episodes/<期>/01-topic.md`；⑥ `data/library/memory.md`；⑦ 白名单根外的根内 `.md`（如 `pipeline/x.md`）。各一例，该文档正文都不在可信集里；对照组：真实 `docs/runbook/03-tts.md` 在 |
 | TD-6 | `trusted_texts=()` 时与修前逐字节同判（对现有 `test_assert_egress_boundary` 全部输入再跑一遍，结果相同） |
+| TD-6b（v0.2，🔵-4） | content 为 str 时按原文找可信文本：含换行、≥ 200 字的可信文本能被认出（放），在它之外拼上受限串（拦） |
 | TD-7 | 可信文本含 `ß` 等 casefold 变长字符、受限串在其后：区间计算不错位（该放的放、该拦的拦各一例） |
+| TD-7b（v0.2，🔵-3） | ≥ 200 字的可信文本，模式**恰在开头**、**恰在结尾**各一例 → 放（MUT-D8 的指定杀手） |
+| TD-8（v0.2，🔵-1） | 可信文本「见 03-audio/manifest.json。」（短于 200 字），模型在工具参数里写出同一句 → 拦；门槛边界：同构文本 199 字 → 拦、200 字 → 放 |
 
 变异（每条须由指定用例以断言杀死；前置失败、超时不算）：
 
@@ -183,14 +259,20 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 | MUT-D2 | 记忆文档进了可信集 | TD-2d |
 | MUT-D3 | 区间判定改为「命中出现在任意含可信文本的消息里就放」（整条消息级） | TD-3 |
 | MUT-D4 | 区间判定改为「先删除可信文本再匹配」 | TD-4 |
-| MUT-D5 | 去掉可信文档的路径过滤 | TD-5 |
+| MUT-D5 | 去掉可信文档的路径过滤（或只留后缀判断） | TD-5 |
 | MUT-D6 | 可信文本不做 JSON 转义形态直接找（换行处对不上） | TD-1 |
 | MUT-D7 | 断言整个关掉（`assert_egress_boundary` 直接 return） | T5a、T17、TD-2a |
-| MUT-D8 | 包含判定的边界差一（`<=` 写成 `<`） | TD-1 或 TD-7（施工时指认到具体一条） |
+| MUT-D8 | 包含判定的边界差一（`<=` 写成 `<`） | TD-7b |
+| MUT-D9（v0.2） | 可信集只认当前工序（(a) 不累积、(b) 只取当前 step 的路由） | TD-1b |
+| MUT-D9b（v0.2） | 去掉 (a)，只用 (b) | TD-1e |
+| MUT-D10（v0.2） | `tracker.resident_prompt` 整体入集（代替三份文件原文） | TD-2e |
+| MUT-D11（v0.2） | `_reinject_changed` 收集可信正文时不滤记忆候选 | TD-2f |
+| MUT-D12（v0.2） | (b) 读路由文档改用 `read_text`（换行翻译，与注入读法不一致） | TD-1d |
+| MUT-D13（v0.2） | 去掉长度门槛 | TD-8 |
 
 ## 9. PR 划分与验证
 
-单 PR（core only）：`tools.py`（断言签名与区间判定）、`llm.py`（`chat_complete` 透传）、会话两入口传可信集、用例；文档按 §7。
+单 PR（core only）：`tools.py`（断言签名、区间判定、长度门槛）、`llm.py`（`run_tool_loop` / `chat_complete` 透传）、`assembly.py`（`assemble_resident_prompt` 返回三份文件原文、两种读法各抽一个函数、`is_trusted_doc_path`、(b) 的收集函数）、`session.py`（`tracker.trusted_doc_texts` 的累积点与 `run_turn` 传参，`_rollback` 恢复清单**不加**这个字段）、用例；文档按 §7。
 
 验证：`PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_agent_tools.py tests/test_agent_web.py tests/test_agent_loop.py tests/test_agent_session.py` → 全量 `uv run pytest` 全绿；变异逐条实跑回填并 md5 对拍；在临时仓库副本上用**真会话**（protocol，假 LLM 端点）复跑 §1 的复现，两期首轮不再 `[BLOCKED]` 并存证。
 
@@ -206,8 +288,8 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 ## 11. 门禁
 
 1. 人裁决 Q1–Q4；红队 🟢。
-2. TD-1 修前红（失败原文为命中串）、修后绿；TD-2～TD-7 全绿。
-3. MUT-D1～D8 全部由指定用例以断言杀死，还原 md5 一致。
+2. TD-1 修前红（失败原文为命中串）、修后绿；TD-1b～TD-1e、TD-2～TD-8（含 b～f 子项）全绿。
+3. MUT-D1～D13（含 D9b）全部由指定用例以断言杀死，还原 md5 一致。
 4. 全量 `uv run pytest` 全绿。
 5. 真会话复跑 §1 复现存证（03 与 03.5 两期）。
 6. §7 文档修订面齐全；ADR-0026 状态与人裁决一致。
