@@ -1,6 +1,6 @@
 # Spec 17：工具不再按模式（scope）分配，所有模式开放全部工具（D43）
 
-> **状态：v0.1 草案（2026-10-06 立文），待人审 §8 → 红队（D43-R）**。本文件不改代码；红队 🟢 且人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
+> **状态：v0.1 草案（2026-10-06 立文；§8 Q1–Q3 人同日裁决：全部按建议），待红队（D43-R）**。本文件不改代码；红队 🟢 且人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
 > 对应 issues：**D43**（主）；与 **D42** 交叉（D42 方案 (a) 的「idea 补联网工具」被本 spec 覆盖，见 §6）。
 > 相关：ADR-0021（网络工具内化，「网络工具只对 asset / creative 可见」）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、Spec 10（`archive/2026-09-25-desktop-conversation-panel-spec.md`）§2.5（idea 会话零写权限）、impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.4 / §2.5 B3-r6（scope 白名单）；新提 **ADR-0027**（`docs/dev/adr/0027-tools-not-gated-by-scope.md`，提议中）。
 
@@ -30,7 +30,7 @@
 ### 3.1 可见清单：`tools.json` 收为一张表
 
 - `config/agent/tools.json` 从「四模式各一份」改为**单一清单** `{"tools": [13 个工具名]}`；`tool_names_for_scope(scope, root)` 改名为 `tool_names(root)`（不再收 scope），`build_tool_schemas(root)` 同理；`scopes.load_scope` 不再读工具表（只管提示文件）。
-- 理由：四份完全相同的清单会各自漂移，「哪个模式漏了一个」正是本次要消除的那类问题；单表让「工具全开」由结构保证，而不是靠四份配置碰巧一致。（备选：保留四键、内容相同——改动更小，但留着漂移口子。见 §8 Q1。）
+- 理由：四份完全相同的清单会各自漂移，「哪个模式漏了一个」正是本次要消除的那类问题；单表让「工具全开」由结构保证，而不是靠四份配置碰巧一致。（备选：保留四键、内容相同——改动更小，但留着漂移口子。§8 Q1 人已选单表。）
 - 保留现有「`tools.json` 写了未注册的名字 → 当场报错」的分叉检查（B3-r6），新增反向检查：`TOOL_SCHEMAS` 里注册了但 `tools.json` 没列的 → 同样报错（全开之后两边应恰好相等）。
 - ADR-0025 的封顶（14，现役 13）按全局数量计，本 spec 不新增工具，不触发。
 
@@ -57,7 +57,7 @@ idea 会话没有期目录。工具全部可见，但凡需要期目录的调用
 | 工具 | idea 下的行为 |
 |---|---|
 | `write_episode_file`、`cover_edit` | 返回上述错误（`cover_edit` 现已有 `if not ctx.episode_dir` 分支，改用同一文案） |
-| `run_pipeline` | **建议**：返回上述错误（理由：作业、`approvals.jsonl`、事件都挂在期目录下，无期路径从未实测；`ASSET_COMMANDS` 里的库级命令如 `ingest phase0`、`cloud status` 理论上可无期执行，但要另补无期的记录落点，属于扩面）。见 §8 Q2 |
+| `run_pipeline` | **建议**：返回上述错误（理由：作业、`approvals.jsonl`、事件都挂在期目录下，无期路径从未实测；`ASSET_COMMANDS` 里的库级命令如 `ingest phase0`、`cloud status` 理论上可无期执行，但要另补无期的记录落点，属于扩面）。§8 Q2 人已裁决按建议 |
 | `read_status` 不带期名 | 现状已报「未指定期，且当前会话未绑定期目录」，照旧 |
 | `write_memory` | 放行（记忆是库级，`apply_op` 已接受 `episode_dir=None`）；过人审卡 |
 | `acquire_propose` | 放行（只写库级候选池 `data/library/incoming`，不依赖期目录）；过人审卡 |
@@ -114,13 +114,13 @@ D42 人选方案 (a) 含两半：① idea 补联网三件（`web_search` / `web_
 - Spec 4（`archive/2026-09-23-network-tools-spec.md`）与 Spec 12（cover）中「仅 X scope 可见」的句子：施工前 `grep -n "scope" ` 逐份核全，列表回填 §10。
 - 新 ADR-0027 转「已通过」。
 
-## 8. 待人裁决
+## 8. 待人裁决（2026-10-06 人裁决：Q1–Q3 全部按建议，不再争议）
 
 | # | 问题 | 建议 |
 |---|---|---|
-| Q1 | `tools.json` 收成单表（改函数签名，测试改动面大一些），还是保留四个键、内容全相同（改动小，但留漂移口子） | **单表**（§3.1） |
-| Q2 | idea 会话里 `run_pipeline` 怎么处理：统一报「先建期」，还是放行库级命令（`ingest phase0`、`cloud status` 等）并补无期记录落点 | **统一报「先建期」**（§3.4）；以后真有无期跑库级命令的需求再立文 |
-| Q3 | pipeline 模式要不要也注入记忆全文（§5 R3） | **不加**，维持 ADR-0023 补记；人审卡兜底 |
+| Q1 | `tools.json` 收成单表（改函数签名，测试改动面大一些），还是保留四个键、内容全相同（改动小，但留漂移口子） | **单表**（§3.1）——✅ 人裁决采纳 |
+| Q2 | idea 会话里 `run_pipeline` 怎么处理：统一报「先建期」，还是放行库级命令（`ingest phase0`、`cloud status` 等）并补无期记录落点 | **统一报「先建期」**（§3.4）；以后真有无期跑库级命令的需求再立文——✅ 人裁决采纳 |
+| Q3 | pipeline 模式要不要也注入记忆全文（§5 R3） | **不加**，维持 ADR-0023 补记；人审卡兜底——✅ 人裁决采纳 |
 
 ## 9. 测试与变异（施工时按实现跑出期望值再写断言）
 
@@ -141,7 +141,7 @@ D42 人选方案 (a) 含两半：① idea 补联网三件（`web_search` / `web_
 - MUT-A3：`write_episode_file` 恢复 `scope != "creative"` 检查 → TA-4 杀。
 - MUT-A4：合表时漏掉 `ASSET_COMMANDS` → TA-5 杀。
 - MUT-A5：合表时把 `cloud exec` 禁令挪进某个 scope 分支后丢失 → TA-5 杀。
-- MUT-A6：idea 下 `run_pipeline` 不报错、直接校验通过 → TA-6 杀（若 Q2 选放行，本条改写）。
+- MUT-A6：idea 下 `run_pipeline` 不报错、直接校验通过 → TA-6 杀。
 - MUT-A7：web 工具在 pipeline 模式跳过 `assert_egress_boundary` → TA-7 杀。
 - MUT-A8：`memory.apply_op` 恢复 creative-only → TA-6（idea 写记忆弹卡）杀。
 
