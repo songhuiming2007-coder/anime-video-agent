@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ConvSnapshot, Envelope, SnapshotStatus } from "../../src/shared/protocol";
 import { HostService, type HostDeps } from "../../src/host/service";
-import { childEnv, spawnLog } from "../../src/host/spawner";
+import { childEnv, runCore, spawnLog } from "../../src/host/spawner";
 import { cleanup, mkEpisode, treeManifest } from "../helpers";
 import { createConfirmBroker } from "../../src/host/confirm";
 import { createMainConfirmBroker } from "../../src/main/confirm";
-import { childSignals, fixtureWrite, sessionKey, sessionRepo, sessionRecords, sessionScript, stdinLines, type SessionRepo } from "../fixtures/session";
+import { childSignals, fixtureWrite, sessionKey, sessionKeyFor, sessionRepo, sessionRecords, sessionScript, stdinLines, type SessionRepo } from "../fixtures/session";
 
 const roots: string[] = [];
 afterAll(() => roots.forEach((c) => cleanup(c)));
@@ -242,6 +242,8 @@ describe("TH-5 不代发（H-8）", () => {
 });
 
 describe("TH-6 密钥全链路", () => {
+  // Spec 15 §2.7 口径：会话环境只多出 LLM 名 + web 链上声明的名字。本夹具的 web 配置是旧 schema（core 判无效、
+  // 不声明任何名字），所以这里仍恰多一个键；有 web 链时的口径见 TH-W1。
   it("SESSION_* 环境恰多一个键、值为标记串，PATH 含 /opt/homebrew/bin（N49）；标记串不进 spawn 日志 / 诊断 / 推送", async () => {
     const marker = `SK-MARKER-${Math.random().toString(36).slice(2)}`;
     const b = await boot({ realCore: true, realKey: true });
@@ -322,6 +324,158 @@ describe("TH-7 密钥缺失与不合规", () => {
       fixtureWrite(repo.root, "config/agent.local.json", JSON.stringify({ base_url: "http://127.0.0.1:9/v1", model: "fake", api_key_env: "" }));
     });
     expect(problem).toContain("未能读取 config/agent*.json 的 api_key_env");
+  });
+});
+
+describe("TH-W1～W4 web 检索密钥注入（Spec 15 §2.7）", () => {
+  const BASE = ["PATH", "HOME", "USER", "TMPDIR", "LANG", "PYTHONUTF8", "PYTHONUNBUFFERED", "__CF_USER_TEXT_ENCODING"];
+  const llmMarker = () => `SK-LLM-${Math.random().toString(36).slice(2)}`;
+  const webMarker = () => `tvly-WEB-${Math.random().toString(36).slice(2)}`;
+
+  /** 新 schema 的 web 链（真实 core 的 web_key_env_names 会回答 TAVILY_API_KEY）。 */
+  function webChain(repo: SessionRepo): void {
+    fixtureWrite(
+      repo.root,
+      "config/agent/web.local.json",
+      JSON.stringify({
+        search: { timeout_s: 20, providers: [{ name: "exa_mcp" }, { name: "tavily", api_key_env: "TAVILY_API_KEY" }] },
+        fetch: { timeout_s: 30, max_bytes: 1000000, max_chars: 30000 },
+      }),
+    );
+  }
+
+  type Probe = { code?: number | null; stdout?: string; timedOut?: boolean; reject?: boolean };
+  /** 真实 runCore，只把 PROBE_WEB_KEY_ENVS（与可选的某个 KEYCHAIN_READ）换成剧本——模拟 core 违约或失败。 */
+  function scripted(probe: Probe | null, keychainRejectFor?: string): HostDeps["runCore"] {
+    return ((t: string, args: { envName?: string }, ctx: { repoRoot: string }, tag?: object, stdin?: string) => {
+      if (t === "PROBE_WEB_KEY_ENVS" && probe) {
+        if (probe.reject) return Promise.reject(new Error("probe boom"));
+        return Promise.resolve({ code: probe.code === undefined ? 0 : probe.code, signal: null, stdoutTail: probe.stdout ?? "", stderrTail: "", timedOut: probe.timedOut ?? false, stdoutFull: null, stdoutOverflow: false });
+      }
+      if (t === "KEYCHAIN_READ" && args.envName === keychainRejectFor) return Promise.reject(new Error("keychain boom"));
+      return (runCore as (...a: unknown[]) => unknown)(t, args, ctx, tag, stdin);
+    }) as unknown as HostDeps["runCore"];
+  }
+
+  async function sessionEnv(mutate: (repo: SessionRepo) => void, runCoreOverride?: HostDeps["runCore"]) {
+    const b = await boot({ realCore: true, realKey: true, overrides: runCoreOverride ? { runCore: runCoreOverride } : {} });
+    mutate(b.repo);
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "dump_env" }, { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    // 会话必须照常启动：web 密钥解析的任何异常都不许冒到 conv.send（§2.7 第 6 条）——逃逸转成普通断言失败
+    const sent = await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" }).then(
+      () => "started",
+      (e: unknown) => `conv.send 抛出：${e instanceof Error ? e.message : String(e)}`,
+    );
+    expect(sent).toBe("started");
+    await waitFor(() => sessionRecords(b.repo, b.epKey).some((r) => r.kind === "env"));
+    const env = sessionRecords(b.repo, b.epKey).find((r) => r.kind === "env")!.env!;
+    const extra = Object.keys(env).filter((k) => !BASE.includes(k)).sort();
+    const snap = await snapOf(b.svc, b.key);
+    const diag = b.svc.health().diagnostics.join("\n");
+    const keychainReads = (name: string) => spawnLog.filter((e) => e.template === "KEYCHAIN_READ" && (e.argv as string[]).includes(name)).length;
+    return { b, env, extra, snap, diag, keychainReads };
+  }
+
+  it("TH-W1：钥匙串两条都有 → 会话环境恰多出 LLM 名与 TAVILY_API_KEY；两个值都不进 spawn 日志 / 推送 / 诊断", async () => {
+    const m1 = llmMarker();
+    const m2 = webMarker();
+    const r = await sessionEnv((repo) => {
+      webChain(repo);
+      sessionKeyFor(repo, "AVA_TEST_KEY", m1);
+      sessionKeyFor(repo, "TAVILY_API_KEY", m2);
+    });
+    expect(r.extra).toEqual(["AVA_TEST_KEY", "TAVILY_API_KEY"]);
+    expect(r.env.AVA_TEST_KEY).toBe(m1);
+    expect(r.env.TAVILY_API_KEY).toBe(m2);
+    expect(r.snap.keyProblem).toBeNull();
+    for (const m of [m1, m2]) {
+      expect(JSON.stringify(spawnLog)).not.toContain(m);
+      expect(JSON.stringify(r.b.pushes)).not.toContain(m);
+      expect(r.diag).not.toContain(m);
+    }
+  });
+
+  for (const [label, webValue] of [["钥匙串退 44", null], ["值非 ASCII", "tvly-é"]] as const) {
+    it(`TH-W2：web 密钥${label} → 会话照常启动，keyProblem 为空，LLM 名与值仍在、web 名不在`, async () => {
+      const m1 = llmMarker();
+      const r = await sessionEnv((repo) => {
+        webChain(repo);
+        sessionKeyFor(repo, "AVA_TEST_KEY", m1);
+        if (webValue !== null) sessionKeyFor(repo, "TAVILY_API_KEY", webValue);
+      });
+      expect(r.snap.keyProblem).toBeNull();
+      expect(r.env.AVA_TEST_KEY).toBe(m1);
+      expect(r.extra).toEqual(["AVA_TEST_KEY"]);
+      expect(r.diag).toContain("web 检索密钥 TAVILY_API_KEY");
+      expect(r.diag).toContain("security add-generic-password -s ava -a TAVILY_API_KEY -w");
+    });
+  }
+
+  it("TH-W3：假 core 违约回答与 LLM 同名 → KEYCHAIN_READ 对该名只调一次，env 里是 LLM 的值", async () => {
+    const m1 = llmMarker();
+    const r = await sessionEnv((repo) => sessionKeyFor(repo, "AVA_TEST_KEY", m1), scripted({ stdout: "AVA_TEST_KEY\n" }));
+    expect(r.keychainReads("AVA_TEST_KEY")).toBe(1);
+    expect(r.extra).toEqual(["AVA_TEST_KEY"]);
+    expect(r.env.AVA_TEST_KEY).toBe(m1);
+  });
+
+  const NONE: [string, Probe | null, string | undefined][] = [
+    ["探针退出码非 0", { code: 1, stdout: "TAVILY_API_KEY\n" }, undefined],
+    ["探针超时", { code: null, timedOut: true, stdout: "TAVILY_API_KEY\n" }, undefined],
+    ["输出含不合规行", { stdout: "TAVILY_API_KEY\nPATH\n" }, undefined],
+    ["探针调用抛异常", { reject: true }, undefined],
+    ["钥匙串调用抛异常", null, "TAVILY_API_KEY"],
+  ];
+  for (const [label, probe, rejectFor] of NONE) {
+    it(`TH-W4：${label} → 会话照常启动，keyProblem 为空，LLM 在、无任何 web 名`, async () => {
+      const m1 = llmMarker();
+      const m2 = webMarker();
+      const r = await sessionEnv(
+        (repo) => {
+          webChain(repo);
+          sessionKeyFor(repo, "AVA_TEST_KEY", m1);
+          sessionKeyFor(repo, "TAVILY_API_KEY", m2);
+        },
+        scripted(probe, rejectFor),
+      );
+      expect(r.snap.keyProblem).toBeNull();
+      expect(r.env.AVA_TEST_KEY).toBe(m1);
+      expect(r.extra).toEqual(["AVA_TEST_KEY"]);
+      expect(r.diag).toContain("web 检索密钥");
+      expect(r.diag).not.toContain(m2);
+      expect(r.diag).not.toContain(m1);
+    });
+  }
+
+  it("TH-W4：名字重复 → 只读一次、注入一次", async () => {
+    const m2 = webMarker();
+    const r = await sessionEnv(
+      (repo) => {
+        sessionKeyFor(repo, "AVA_TEST_KEY", llmMarker());
+        sessionKeyFor(repo, "TAVILY_API_KEY", m2);
+      },
+      scripted({ stdout: "TAVILY_API_KEY\nTAVILY_API_KEY\n" }),
+    );
+    expect(r.keychainReads("TAVILY_API_KEY")).toBe(1);
+    expect(r.env.TAVILY_API_KEY).toBe(m2);
+    expect(r.extra).toEqual(["AVA_TEST_KEY", "TAVILY_API_KEY"]);
+  });
+
+  it("TH-W4：超过 4 个 → 只注入前 4 个并记诊断（不含值）", async () => {
+    const names = ["TAVILY_A_KEY", "TAVILY_B_KEY", "TAVILY_C_KEY", "TAVILY_D_KEY", "TAVILY_E_KEY"];
+    const values = names.map(() => webMarker());
+    const r = await sessionEnv(
+      (repo) => {
+        sessionKeyFor(repo, "AVA_TEST_KEY", llmMarker());
+        names.forEach((n, i) => sessionKeyFor(repo, n, values[i]));
+      },
+      scripted({ stdout: names.join("\n") + "\n" }),
+    );
+    expect(r.extra).toEqual(["AVA_TEST_KEY", ...names.slice(0, 4)]);
+    expect(r.keychainReads("TAVILY_E_KEY")).toBe(0);
+    expect(r.diag).toContain("只注入前 4 个");
+    for (const v of values) expect(r.diag).not.toContain(v);
+    expect(r.snap.keyProblem).toBeNull();
   });
 });
 

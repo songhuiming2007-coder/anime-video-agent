@@ -1,6 +1,6 @@
 # Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）
 
-日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；**2026-10-06 v0.3（作者修订，回应 D29-R2 的 4🟡 + 5🔵，见「作者修订回应（v0.3）」）**；状态：**v0.3 定向复核（2026-10-06，D29-R3）🟢 可动工**（R2-1～R2-4 核销；2🔵 施工时顺手改，见「定向复核」）→ 施工 D29-A（PR0 → PR1 → PR2 → PR3；**2026-10-06 PR0 ✅、PR1 ✅、PR2 ✅（门禁 4、5 终端侧过）**，施工记录与偏差见 §12）（§11 五问、🟡-1 / 🟡-3 / 🟡-5 三处补充裁决、R2-9 / N50、Q5 措辞改为「替换」均已由人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
+日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；**2026-10-06 v0.3（作者修订，回应 D29-R2 的 4🟡 + 5🔵，见「作者修订回应（v0.3）」）**；状态：**v0.3 定向复核（2026-10-06，D29-R3）🟢 可动工**（R2-1～R2-4 核销；2🔵 施工时顺手改，见「定向复核」）→ 施工 D29-A（PR0 → PR1 → PR2 → PR3；**2026-10-06 PR0 ✅、PR1 ✅、PR2 ✅（门禁 4、5 终端侧过）、PR3 ✅ 代码（桌面端门禁 4、5 待打包版实跑）**，施工记录与偏差见 §12）（§11 五问、🟡-1 / 🟡-3 / 🟡-5 三处补充裁决、R2-9 / N50、Q5 措辞改为「替换」均已由人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
 
 > **本稿是 v0.2 修订稿。** 选型（Exa 主、Tavily 备）已由人 2026-09-29 拍板；§11 的 Q1～Q5 与 2026-10-06 的三处补充裁决（Q3 注、Q5 注、Q6）均已拍板，本稿不再有待人确认项（施工时动本机 `web.local.json` 仍须人当场确认，§4.3）。**施工时点**：按 2026-09-26 人拍板，晚于二期 21 个 session 收官——现已满足，可排期。
 > 本稿的 API 形态中：**Exa 免 key MCP 端点已在代理下实测**（§2.1 证据）；**Exa 带 key 的 REST 与 Tavily 的请求/响应形态来自官方文档与我的记忆，本机没有 key，未实测**——PR1 第一步必须用真实 key 各打一发，把响应存成 fixture 后再写解析器（§8）。
@@ -408,6 +408,23 @@ M18～M20、M24、M25 属 PR3（desktop）。
 - **门禁 5（终端）✅**：进程内把 `exa_mcp` 端点临时指到 `https://mcp.exa.ai/no-such-endpoint`（真机，非 fake）→ `exa_mcp: HTTP 404` 落下一家，`provider == "tavily"`、5 条结果。桌面端那一半随 PR3。
 - **门禁 7（人审检索质量）**：上述三条查询的结果清单已交人看，待人判。
 - RF-4 用量观察登记为 issues **N58**。
+
+### 12.5 PR3（2026-10-06，desktop）
+
+- `spawner.ts` 新模板 `PROBE_WEB_KEY_ENVS`（短命令，argv 逐位钉住；Spec 8 RF-3 复核记在 Spec 8 §3.4 修订注记）；`secrets.ts::resolveWebKeys`（整体 try；探针非 0 / 超时 / 含不合规行 / 抛异常 → 整体无 web 密钥；去重、跳过 LLM 同名、> 4 取前 4；单个名字失败只跳过该名；诊断只写名字与退出码）；`sessions.ts` 在 LLM 密钥之后合并 web 密钥（`keyProblem` 只由 LLM 决定）；`service.ts` 新 dep `resolveSessionWebKeys`；常量 `WEB_KEY_MAX = 4`。
+- 夹具：假钥匙串脚本加按账户名模式（`keys.strict` + `key.<名字>`），原「任何账户读同一个 key」行为不变。
+- 用例：TH-W1、TH-W2（钥匙串 44 / 值非 ASCII 两腿；R3-2：「web 名不合规」腿已删，由 TH-W4 覆盖）、TH-W3、TH-W4（探针非 0 / 超时 / 含不合规行 / 探针抛异常 / 钥匙串抛异常 / 名字重复 / 超过 4 个）；`spawner.test.ts` 钉 `PROBE_WEB_KEY_ENVS` argv。TH-W* 的 `conv.send` 以断言「会话照常启动」收口，异常逃逸转成普通断言失败。
+- 变异（植入 → vitest 指定用例 → 还原，md5 对拍一致；全部是断言失败）：
+
+| 变异 | 指定杀手 | 结果 |
+|---|---|---|
+| M18 web 失败时把 LLM 也判降级 | TH-W2 | KILLED（两腿：`keyProblem` 非 null） |
+| M19 不合规的名字也注入 | TH-W4「输出含不合规行」（R3-2 后由它守，原表写 TH-W2） | KILLED（env 多出 `TAVILY_API_KEY`） |
+| M20 密钥写进 spawn 日志 | TH-W1 | KILLED（spawn 日志含标记串） |
+| M24 web 失败时清空整份 `extraEnv` | TH-W2 | KILLED（两腿：LLM 值消失） |
+| M25 web 解析不包 try | TH-W4「探针调用抛异常」 | KILLED（`conv.send 抛出：probe boom` ≠ `started`） |
+
+- 验证：`npx tsc --noEmit` 过；`npx vitest run` 37 文件 422 条全绿；全量 `npx playwright test` 115 passed / 2 skipped（两个跳过与 D41 时相同，是环境变量门控的截图用例）；`uv run pytest` 全绿。
 
 ## 附：引用自查表（2026-09-29 草案时按 HEAD `4ca9a03` 核对；以符号为锚）
 

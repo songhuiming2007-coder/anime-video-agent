@@ -356,6 +356,8 @@ Spec 8 三个闭集与两条不变量的修订全部列在这里，编号对应 
 6. 任一步失败 → 照常 spawn（不带密钥），Spec 9 以 `ready{llm:"degraded", degrade_reason}` 如实降级；会话头部显示「LLM 未就绪：<原因>」与一行可复制的命令 `security add-generic-password -s ava -a <名字> -w`（名字取自第 1 步；第 1 步失败时显示「未能读取 config/agent*.json 的 api_key_env」）。不弹任何输入密钥的界面（renderer 永不接触密钥）。
 7. 钥匙串授权框（A4）属于系统行为，不在 UI 控制之内；每次重建 app 后是否需要重新授权，同 Spec 8 假设 4 的实测口径记录。
 
+> **修订记录（2026-10-06，D29；Spec 15 `2026-09-29-web-search-provider-spec.md` §2.7，人 2026-10-06 裁决「桌面端也要能用备用检索服务」，不接受「备家只在终端可用」）**：「每次 spawn 只注入**一个**密钥」改为「**LLM 密钥 + web 检索链上声明的密钥**（至多 1 + 4 个）」。新增短命令模板 `PROBE_WEB_KEY_ENVS`（core 纯读函数 `web_key_env_names`：与 `load_web_config` 共用「local 优先」选择，只回答通过 Spec 15 §2.4 名字校验的名字——族前缀、`KEY_ENV_NAME_RE` 同形、不与 LLM 同名；stdout 每行一个名字）。host 在 LLM 密钥之后对每个名字照第 2～4 步读钥匙串，通过的写进同一次 `SESSION_*` spawn 的 `env[名字]`。**web 密钥任何失败都不影响 LLM 密钥的注入与会话头的降级文案**：解析整体一个 try，探针退出码非 0 / 超时 / 输出含不合规行 / 调用抛异常 → 整体不注入 web 密钥；单个名字钥匙串缺条目或值不合法 → 只是不注入该名字（core 侧该检索服务「未就绪」并在错误消息里写明两处放法）；重复只读一次、与 LLM 同名跳过、超过 4 个只取前 4 个。原因只进诊断（名字与退出码，从不含值）。第 5 条的密钥纪律对 web 密钥逐字适用（TH-W1 以两个标记串全链路断言）；`KEYCHAIN_READ` 仍只在 `host/secrets.ts` 内读取（TG-12）。TH-6「恰多一个键」在没有 web 链的夹具上照旧成立，有 web 链时的口径由 TH-W1～W4 守。放过的面：会话进程多出至多 4 个密钥变量，随 `jobs.py` 继承给作业子孙（N50 扩面，人裁决接受）。
+
 > **2026-10-06 修订记录（D37 / D40，经用户裁决方案 (b)）**——第 5 层与 §2.10 的确认框。
 > - **原因**：D37-A 人手定性（打包版 HEAD `239f51f`，Electron 44.4.5，macOS Darwin 27.0，全部点击与按键由人完成）：两处确认框里按 Return **都不触发任何按钮**（`defaultId: 1` 未把 Return 绑到「取消」），Esc = 取消，鼠标点「取消」= 取消，只有鼠标点「批准」/「退出」才放行；等待 30 s、切到其他应用再切回均零写入。原文「默认按钮是取消」与实测不符，但方向安全，用户裁决不改按键绑定、改措辞。证据见 issues D37 行。
 > - **改动**：① 按钮、`defaultId`、`cancelId` 不变，抽到 `main/confirm.ts`（`approveBoxOptions` / `quitBoxOptions` / `APPROVE_BUTTON`），TH-22b 钉住「放行按钮永不在默认位或取消位」并静态核对 `main/index.ts` 两处只经这两个函数取选项；② **非人手路径一律 `ok:false`**：对话框抛异常此前只撤状态不回复（host 的 `await confirm` 会永久挂起），改为回 `ok:false`；③ **D40**：主窗口 `closed`（含 `destroy()`，挂在其上的对话框永不 resolve）时 broker 新增 `windowGone()`：abort 已打开的一个，并对它与排队中的全部各回一次 `ok:false`，卡片回到打开、可在新窗口重答。选 broker 补回包而不是给 host 的 `await confirm` 加超时：人看确认框可以很久（D37-A 实测一次 766 s），超时会误伤正常审阅。用例 TH-18b（host 端到端：挂起期间重答 `E_BUSY` → `windowGone` → `E_STALE`、零写入、卡仍打开 → 重答恰 1 行 `answer`）、TH-22c（show 回 false / 抛异常 / windowGone / windowGone 后重答 / 空闲 windowGone）。
@@ -497,7 +499,7 @@ interface EpisodesList  { /* 现有字段 */ idea: { live: boolean; running: boo
 
 | 模板 | argv | stdio / 超时 | 环境 |
 |---|---|---|---|
-| `SESSION_NEW` | `[py, "-m", "pipeline.agent.protocol", ep]` | `["pipe","pipe","pipe"]`、`detached: true`、**无超时**（长驻） | 白名单 + 至多一个密钥变量（§2.9） |
+| `SESSION_NEW` | `[py, "-m", "pipeline.agent.protocol", ep]` | `["pipe","pipe","pipe"]`、`detached: true`、**无超时**（长驻） | 白名单 + 至多一个密钥变量（§2.9）（**2026-10-06 D29 修订**：+ web 检索链上至多 4 个，见 §2.9 修订记录） |
 | `SESSION_CONTINUE` | `[py, "-m", "pipeline.agent.protocol", ep, "--continue"]` | 同上 | 同上 |
 | `SESSION_IDEA` | `[py, "-m", "pipeline.agent.protocol", "--idea"]` | 同上 | 同上 |
 | `NEW_EPISODE` | `[py, "-m", "pipeline.agent.cli", "new", name]` | 现状规则（stdin `ignore`、`detached`）、30 s；**计入在途**（切换仓库须等它结束，🟡-11） | 白名单 |

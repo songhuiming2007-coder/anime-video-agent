@@ -28,6 +28,8 @@ export type Template =
   // Spec 10 S8-R3：密钥探测与钥匙串读取（短命令，规则同现状）
   | "PROBE_KEY_ENV"
   | "KEYCHAIN_READ"
+  // Spec 15 §2.7：web 检索链上声明的密钥变量名（短命令，同 PROBE_KEY_ENV）
+  | "PROBE_WEB_KEY_ENVS"
   // Spec 11 §3.4：02.5 编辑器 / 03.5 顺听 / 人时（S8-R13 闭集）
   | "SAVE_SCRIPT"
   | "SEAL_SCRIPT"
@@ -62,6 +64,7 @@ export interface TemplateArgs {
   PROBE_KEY_ENV: Record<string, never>;
   /** Spec 10 §2.9：账户名 = core 回答的变量名 */
   KEYCHAIN_READ: { envName: string };
+  PROBE_WEB_KEY_ENVS: Record<string, never>;
   // ---- Spec 11 §3.4 / Spec 12 §3.5 ----
   /** mtimeNs 为十进制字符串（沿用规则 8/9）；`-1/-1` 断言文件不存在（从草稿新建） */
   SAVE_SCRIPT: { ep: string; size: string; mtimeNs: string };
@@ -185,6 +188,12 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "PROBE_KEY_ENV":
       // 只读配置、不读环境变量（C10-R2）；stdout 就是变量名，缺失为空串
       return { argv: [py, "-c", "import sys; from pipeline.agent.llm import api_key_env_name; sys.stdout.write(api_key_env_name() or '')"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    case "PROBE_WEB_KEY_ENVS":
+      // Spec 15 §2.7 第 1/6 条：只读配置、不读环境变量；stdout 每行一个名字（UTF-8、无其他内容），配置无效为空
+      return {
+        argv: [py, "-c", "import sys; from pipeline.agent.web import web_key_env_names; sys.stdout.write(''.join(n + '\\n' for n in web_key_env_names()))"],
+        timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
+      };
     case "KEYCHAIN_READ": {
       const { envName } = args as TemplateArgs["KEYCHAIN_READ"];
       return { argv: [keychainExec, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", envName, "-w"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
