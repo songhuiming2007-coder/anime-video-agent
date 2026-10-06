@@ -108,12 +108,9 @@ def _make_full_web_root(tmp_path: Path) -> Path:
     (cfg_dir / "web.json").write_text(
         json.dumps(
             {
-                "search": {
-                    "endpoint": "https://html.duckduckgo.com/html/",
-                    "query_param": "q",
-                    "api_key_env": "",
-                    "api_key_param": "",
+                "search": {  # Spec 15 §2.4 新 schema（旧五字段已判无效）
                     "timeout_s": 20,
+                    "providers": [{"name": "exa_mcp"}],
                 },
                 "fetch": {
                     "timeout_s": 30,

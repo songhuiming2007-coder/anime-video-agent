@@ -49,17 +49,35 @@ _TEXT_CONTENT_TYPES = (
 )
 
 
+# Spec 15 §2.3 / §11 Q4：每条 snippet 封顶 500 字（人 2026-09-29 确认）。摘录只需够
+# 辨认页面，全文由 web_fetch 取；Exa Highlights 可达上千字，不封顶时 5 条就占数千字，
+# 且每轮后续 LLM 调用都会重发。
+SEARCH_SNIPPET_MAX_CHARS = 500
+# Spec 15 §2.4：全链最坏耗时 = 家数 × timeout_s，故链上至多 4 家。
+SEARCH_MAX_PROVIDERS = 4
+# Spec 15 §2.4 名字校验②：与 Spec 10 §2.9 KEY_ENV_NAME_RE（desktop/src/shared/constants.ts）同形。
+_KEY_ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*_(API_KEY|KEY|TOKEN)$")
+# search 段旧五字段（DDG/360 时代的单端点 schema）：出现即判无效，不许被静默当新配置读。
+_LEGACY_SEARCH_FIELDS = ("endpoint", "query_param", "api_key_env", "api_key_param")
+
+
+@dataclass(frozen=True)
+class ProviderCfg:
+    name: str
+    api_key_env: str = ""   # 指名的环境变量；空串 = 免 key 的家（exa_mcp）
+    api_key: str = ""       # 已从环境变量读出；空串 = 无 key / 未就绪。绝不出模块。
+
+
 @dataclass(frozen=True)
 class WebConfig:
-    search_endpoint: str
-    search_query_param: str
-    api_key: str            # 已从环境变量读出；空串 = 无凭据模式。绝不出模块。
-    api_key_param: str
+    search_providers: tuple[ProviderCfg, ...]
     search_timeout_s: float
     fetch_timeout_s: float
     max_fetch_bytes: int
     max_fetch_chars: int
     trusted_fake_ip_ranges: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+    # 链上全部非空 key（Spec 15 §4.1，v0.2 🟡-4）：search 与 fetch 的出向脱敏都按它逐一替换。
+    secret_values: tuple[str, ...] = ()
 
 
 def _is_number(val: Any) -> bool:
@@ -70,91 +88,160 @@ def _is_int(val: Any) -> bool:
     return isinstance(val, int) and not isinstance(val, bool)
 
 
-def load_web_config(root: Path | None = None) -> WebConfig | None:
-    """读 config/agent/web.local.json（优先）或 config/agent/web.json + 指名环境变量。
-
-    缺失 / JSON 损坏 / 字段不全 / 约束违例 → None（显式降级，不静默回落默认值）。
-    镜像 llm.py:51-76 load_llm_config 纪律：密钥只从 api_key_env 指名的
-    环境变量读；指名了变量但环境变量为空 → None（配了凭据却拿不到 = 配置错误，
-    不许静默退成无凭据模式发裸请求）。
-    """
+def _web_cfg_file(root: Path | None) -> Path:
+    """local 优先（整份取代 web.json）：load_web_config 与 web_key_env_names 共用这一段选择。"""
     cfg_dir = Path(root or paths.ROOT) / "config" / "agent"
     local_cfg = cfg_dir / "web.local.json"
-    cfg_file = local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+    return local_cfg if local_cfg.exists() else (cfg_dir / "web.json")
+
+
+def _parse_web_config(
+    root: Path | None, *, read_env: bool
+) -> tuple[WebConfig | None, str]:
+    """校验 web 配置 → (WebConfig | None, 无效原因)。read_env=False 时不读任何环境变量
+    （web_key_env_names 只要名字，Spec 15 §2.7 第 1 条）。"""
+    cfg_file = _web_cfg_file(root)
     if not cfg_file.exists():
-        return None
+        return None, ""
     try:
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        return None, f"{cfg_file.name} 不是合法 JSON"
     if not isinstance(data, dict):
-        return None
+        return None, ""
 
     search = data.get("search")
     fetch = data.get("fetch")
     if not isinstance(search, dict) or not isinstance(fetch, dict):
-        return None
+        return None, ""
 
-    endpoint = search.get("endpoint")
-    query_param = search.get("query_param")
-    api_key_env = search.get("api_key_env")
-    api_key_param = search.get("api_key_param")
+    legacy = [k for k in _LEGACY_SEARCH_FIELDS if k in search]
+    if legacy:
+        return None, (
+            f"{cfg_file.name} 的 search 段含旧字段 {legacy}，"
+            "请改用 search.providers（Spec 15 §2.4）"
+        )
+
+    providers_raw = search.get("providers")
+    if (
+        not isinstance(providers_raw, list)
+        or not providers_raw
+        or len(providers_raw) > SEARCH_MAX_PROVIDERS
+    ):
+        return None, f"search.providers 须为 1～{SEARCH_MAX_PROVIDERS} 项的数组"
+
+    llm_env_name: str | None = None
+    if any(isinstance(p, dict) and "api_key_env" in p for p in providers_raw):
+        # Spec 4 §5.1 依赖白名单：web.py 顶层只导 paths 与 tools，这里函数内延迟导入（R3-1）。
+        from pipeline.agent.llm import api_key_env_name
+
+        llm_env_name = api_key_env_name(root)
+
+    providers: list[ProviderCfg] = []
+    seen: set[str] = set()
+    for item in providers_raw:
+        if not isinstance(item, dict):
+            return None, "search.providers 每项须为对象"
+        name = item.get("name")
+        if not isinstance(name, str) or name not in _PROVIDERS:
+            return None, f"search.providers 含未知检索服务 {name!r}"
+        if name in seen:
+            return None, f"search.providers 中 {name} 重复"
+        seen.add(name)
+        prefix = _PROVIDERS[name].key_env_prefix
+        if prefix is None:
+            if "api_key_env" in item:
+                return None, f"search.providers.{name} 不接受 api_key_env"
+            providers.append(ProviderCfg(name=name))
+            continue
+        env_name = item.get("api_key_env")
+        if not isinstance(env_name, str) or not env_name.strip():
+            return None, f"search.providers.{name} 缺少 api_key_env"
+        env_name = env_name.strip()
+        if (
+            not env_name.startswith(prefix)
+            or not _KEY_ENV_NAME_RE.match(env_name)
+            or env_name == llm_env_name
+        ):
+            return None, (
+                f"search.providers.{name}.api_key_env = {env_name!r} 不合规"
+                f"（须以 {prefix} 开头、形如 *_API_KEY，且不得与 LLM 密钥同名）"
+            )
+        api_key = os.environ.get(env_name, "").strip() if read_env else ""
+        providers.append(ProviderCfg(name=name, api_key_env=env_name, api_key=api_key))
+
     search_timeout_s = search.get("timeout_s")
-
     fetch_timeout_s = fetch.get("timeout_s")
     max_bytes = fetch.get("max_bytes")
     max_chars = fetch.get("max_chars")
 
-    if not isinstance(endpoint, str) or not re.match(r"^https?://\S+", endpoint.strip()):
-        return None
-    if not isinstance(query_param, str) or not query_param.strip():
-        return None
-    if not isinstance(api_key_env, str) or not isinstance(api_key_param, str):
-        return None
-
-    env_name = api_key_env.strip()
-    param_name = api_key_param.strip()
-    if bool(env_name) != bool(param_name):
-        return None
-    if env_name:
-        api_key = os.environ.get(env_name, "").strip()
-        if not api_key:
-            return None
-    else:
-        api_key = ""
-
     if not _is_number(search_timeout_s) or not (0 < float(search_timeout_s) <= 60):
-        return None
+        return None, ""
     if not _is_number(fetch_timeout_s) or not (0 < float(fetch_timeout_s) <= 60):
-        return None
+        return None, ""
     if not _is_int(max_bytes) or max_bytes < 65536:
-        return None
+        return None, ""
     if not _is_int(max_chars) or max_chars < 1000:
-        return None
+        return None, ""
 
     raw_ranges = data.get("trusted_fake_ip_ranges", [])
     if not isinstance(raw_ranges, list):
-        return None
+        return None, ""
     parsed_ranges: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for item in raw_ranges:
         if not isinstance(item, str) or not item.strip():
-            return None
+            return None, ""
         try:
             parsed_ranges.append(ipaddress.ip_network(item.strip(), strict=False))
         except ValueError:
-            return None
+            return None, ""
 
-    return WebConfig(
-        search_endpoint=endpoint.strip(),
-        search_query_param=query_param.strip(),
-        api_key=api_key,
-        api_key_param=param_name,
-        search_timeout_s=float(search_timeout_s),
-        fetch_timeout_s=float(fetch_timeout_s),
-        max_fetch_bytes=int(max_bytes),
-        max_fetch_chars=int(max_chars),
-        trusted_fake_ip_ranges=tuple(parsed_ranges),
+    return (
+        WebConfig(
+            search_providers=tuple(providers),
+            search_timeout_s=float(search_timeout_s),
+            fetch_timeout_s=float(fetch_timeout_s),
+            max_fetch_bytes=int(max_bytes),
+            max_fetch_chars=int(max_chars),
+            trusted_fake_ip_ranges=tuple(parsed_ranges),
+            secret_values=tuple(p.api_key for p in providers if p.api_key),
+        ),
+        "",
     )
+
+
+def load_web_config(root: Path | None = None) -> WebConfig | None:
+    """读 config/agent/web.local.json（优先）或 config/agent/web.json + 指名环境变量。
+
+    缺失 / JSON 损坏 / 字段不全 / 约束违例 / search 段含旧字段 → None（显式降级，不静默
+    回落默认值）。密钥只从 api_key_env 指名的环境变量读；指名了变量但为空 → **该家未就绪**，
+    不使整份配置无效（Spec 15 §2.4、§11 Q2：否则缺 Tavily key 会连免 key 的 exa_mcp
+    与 web_fetch 一起拖垮）。
+    """
+    return _parse_web_config(root, read_env=True)[0]
+
+
+def web_key_env_names(root: Path | None = None) -> list[str]:
+    """当前生效 web 配置链上各家指名的密钥环境变量名（Spec 15 §2.7 第 1 条）。
+
+    供桌面端 PROBE_WEB_KEY_ENVS 问 core「该从钥匙串注入哪些名字」：纯读配置、不读环境
+    变量、不读值；保持链序、去重；配置无效时返回空清单。只会回答通过 §2.4 名字校验的
+    名字（族前缀、KEY_ENV_NAME_RE、≠ LLM 名）。
+    """
+    cfg, _ = _parse_web_config(root, read_env=False)
+    if cfg is None:
+        return []
+    names: list[str] = []
+    for p in cfg.search_providers:
+        if p.api_key_env and p.api_key_env not in names:
+            names.append(p.api_key_env)
+    return names
+
+
+def _invalid_config_error(root: Path | None) -> ValueError:
+    reason = _parse_web_config(root, read_env=False)[1]
+    msg = "缺少或无效的 config/agent/web.json（或 web.local.json）"
+    return ValueError(f"{msg}：{reason}" if reason else msg)
 
 
 def _normalized_for_assert(text: str) -> str:
@@ -190,6 +277,14 @@ def _redact_secret(text: str, api_key: str) -> str:
     if quoted and quoted != api_key:
         out = out.replace(quoted, "***")
     return out
+
+
+def _redact_all(text: str, secrets: tuple[str, ...]) -> str:
+    """链上全部非空 key 逐一 _redact_secret（Spec 15 §4.1，v0.2 🟡-4）：任一 key 都可能被
+    页面或 provider 回显，只脱一个等于没脱。"""
+    for secret in secrets:
+        text = _redact_secret(text, secret)
+    return text
 
 
 def _parse_ip_literal(
@@ -302,6 +397,30 @@ def _default_opener(
         )
         _OPENER_CACHE[key] = director
     return director.open
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """provider 请求不跟随重定向（Spec 15 §2.5 ⑤）：返回 None 让 3xx 以 HTTPError 浮出。
+
+    provider 端点都是 POST API，被重定向本身就是端点漂移；urllib 跟随 301/302/303 会把
+    POST 改成 GET、丢 body，却把 headers= 设的密钥头原样转发给新主机（2026-10-06 本机
+    127.0.0.1 探针实测）。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_PROVIDER_DIRECTOR: urllib.request.OpenerDirector | None = None
+
+
+def _provider_opener(request: urllib.request.Request, timeout: float) -> Any:
+    """检索 provider 专用 opener（不跟随重定向）。search_web 在调用点以 opener is None
+    解析到它（B1 纪律，不做函数默认参数）。"""
+    global _PROVIDER_DIRECTOR
+    if _PROVIDER_DIRECTOR is None:
+        _PROVIDER_DIRECTOR = urllib.request.build_opener(_NoRedirectHandler())
+    return _PROVIDER_DIRECTOR.open(request, timeout=timeout)
 
 
 class _TextExtractor(HTMLParser):
@@ -417,9 +536,9 @@ def _extract_links(html: str, base_url: str) -> list[dict[str, str]]:
 
 
 def _cap_links(
-    entries: list[dict[str, str]], api_key: str
+    entries: list[dict[str, str]], secrets: tuple[str, ...]
 ) -> tuple[list[dict[str, str]], bool]:
-    """逐条 _scrub + _redact_secret，再双帽截断（条数帽或 JSON 字符帽任一触发即截断）。
+    """逐条 _scrub + _redact_all，再双帽截断（条数帽或 JSON 字符帽任一触发即截断）。
 
     §2.3：url 与 anchor 与正文同纪律过清洗，受限字样进上下文的是 [已脱敏]，会话不炸。
     §4.1：字符帽按逐条 json.dumps 计长累计，数组括号与条目间分隔符 ~400 字符从简不计
@@ -430,8 +549,8 @@ def _cap_links(
     truncated = False
     for entry in entries:
         cleaned = {
-            "url": _redact_secret(_scrub(entry["url"]), api_key),
-            "anchor": _redact_secret(_scrub(entry["anchor"]), api_key),
+            "url": _redact_all(_scrub(entry["url"]), secrets),
+            "anchor": _redact_all(_scrub(entry["anchor"]), secrets),
         }
         size = len(json.dumps(cleaned, ensure_ascii=False))
         if len(links) >= LINKS_MAX_COUNT or used_chars + size > LINKS_MAX_CHARS:
@@ -440,93 +559,6 @@ def _cap_links(
         used_chars += size
         links.append(cleaned)
     return links, truncated
-
-
-def _decode_ddg_href(href: str) -> str:
-    """若为 DuckDuckGo 重定向链接（含 uddg 参数），解码出真实目标 URL。"""
-    raw = href.strip()
-    if raw.startswith("//"):
-        raw = "https:" + raw
-    try:
-        parsed = urllib.parse.urlparse(raw)
-        qs = urllib.parse.parse_qs(parsed.query)
-        if "uddg" in qs and qs["uddg"]:
-            return urllib.parse.unquote(qs["uddg"][0])
-    except Exception:
-        pass
-    return raw
-
-
-class _SearchResultParser(HTMLParser):
-    """搜索结果页解析：提取 标题/URL/摘要 三元组，uddg 重定向参数解码。
-
-    DOM 结构以 2026-09 观测为准（约）；fixture 钉死（§7.1 T1），线上漂移时
-    由 §3.2 空结果纪律诚实报错（§7.1 T16）。
-    """
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.results: list[dict[str, str]] = []
-        self._in_title = False
-        self._title_depth = 0
-        self._in_snippet = False
-        self._snippet_depth = 0
-        self._cur_url = ""
-        self._cur_title_parts: list[str] = []
-        self._cur_snippet_parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_map = {k.lower(): (v or "") for k, v in attrs}
-        classes = set(attr_map.get("class", "").split())
-
-        if tag.lower() == "a" and "result__a" in classes:
-            href = attr_map.get("href", "").strip()
-            if href:
-                self._in_title = True
-                self._title_depth = 1
-                self._cur_url = _decode_ddg_href(href)
-                self._cur_title_parts = []
-                return
-
-        if self._in_title:
-            self._title_depth += 1
-
-        if "result__snippet" in classes and not self._in_snippet:
-            self._in_snippet = True
-            self._snippet_depth = 1
-            self._cur_snippet_parts = []
-            return
-
-        if self._in_snippet:
-            self._snippet_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if self._in_title:
-            self._title_depth -= 1
-            if self._title_depth <= 0:
-                self._in_title = False
-                title = re.sub(r"\s+", " ", "".join(self._cur_title_parts)).strip()
-                if title and self._cur_url:
-                    self.results.append(
-                        {"title": title, "url": self._cur_url, "snippet": ""}
-                    )
-                self._cur_url = ""
-                self._cur_title_parts = []
-
-        if self._in_snippet:
-            self._snippet_depth -= 1
-            if self._snippet_depth <= 0:
-                self._in_snippet = False
-                snippet = re.sub(r"\s+", " ", "".join(self._cur_snippet_parts)).strip()
-                if self.results and not self.results[-1]["snippet"]:
-                    self.results[-1]["snippet"] = snippet
-                self._cur_snippet_parts = []
-
-    def handle_data(self, data: str) -> None:
-        if self._in_title:
-            self._cur_title_parts.append(data)
-        elif self._in_snippet:
-            self._cur_snippet_parts.append(data)
 
 
 def _extract_charset(content_type: str) -> str:
@@ -592,6 +624,188 @@ def _raise_http_upgrade_error(exc: urllib.error.HTTPError) -> None:
     ) from None
 
 
+# ——— Spec 15：检索 provider 适配器（Exa 主 + Tavily 备）———
+#
+# 适配器只做「构造请求」与「解析响应」两件纯函数；egress 断言 / _guard_url / 清洗 /
+# 脱敏由 search_web 主流程在每次发送前后统一做（§2.2，避免每家各写一遍而漏一个）。
+
+# exa_mcp 的 objective 参数（Spec 15 §12 施工偏差 1）：2026-10-06 PR0 实测 tools/list 已把
+# objective 标为必填（服务端当下仍宽容缺省）。人 2026-10-06 裁决固定传一段不含用户内容的
+# 通用文案：没有新的外发面，服务端收紧校验时也不会断。
+EXA_MCP_OBJECTIVE = (
+    "Return the pages that best match the query, most relevant first."
+)
+# Exa MCP 文本块分隔符（2026-09-29 / 2026-10-06 两次实测，fixture exa_mcp_ok.sse.txt）。
+_EXA_BLOCK_SEP = "\n\n---\n\n"
+
+
+class _InBandError(Exception):
+    """JSON-RPC 带内错误（HTTP 200 下 error 或 result.isError: true，v0.2 🔵-1）。"""
+
+
+@dataclass(frozen=True)
+class _Provider:
+    endpoint: str
+    # None = 免 key 的家；否则 api_key_env 必须以此前缀开头（§2.4 名字校验①）
+    key_env_prefix: str | None
+    build: Callable[[str, int, ProviderCfg], urllib.request.Request]
+    parse: Callable[[str], list[dict[str, str]]]
+
+
+def _json_post(url: str, body: dict[str, Any], accept: str) -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": accept,
+            "User-Agent": "ava-agent/1.0",
+        },
+        method="POST",
+    )
+
+
+def _build_exa_mcp(query: str, count: int, pcfg: ProviderCfg) -> urllib.request.Request:
+    return _json_post(
+        _EXA_MCP_ENDPOINT,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "web_search_exa",
+                "arguments": {
+                    "query": query,
+                    "numResults": count,
+                    "objective": EXA_MCP_OBJECTIVE,
+                },
+            },
+        },
+        "application/json, text/event-stream",
+    )
+
+
+def _parse_sse_json(body: str) -> dict[str, Any]:
+    """SSE 响应 → 第一条带 result 或 error 的 JSON-RPC 消息；纯 JSON 响应原样解析。"""
+    stripped = body.lstrip()
+    if stripped.startswith("{"):
+        msg = json.loads(stripped)
+        if isinstance(msg, dict):
+            return msg
+        raise ValueError("JSON-RPC 响应不是对象")
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload:
+            continue
+        msg = json.loads(payload)
+        if isinstance(msg, dict) and ("result" in msg or "error" in msg):
+            return msg
+    raise ValueError("SSE 响应中没有 JSON-RPC 结果")
+
+
+def _parse_exa_mcp(body: str) -> list[dict[str, str]]:
+    msg = _parse_sse_json(body)
+    if "error" in msg:
+        err = msg["error"]
+        text = err.get("message") if isinstance(err, dict) else err
+        raise _InBandError(str(text))
+    result = msg["result"]
+    content = result["content"]
+    texts = [
+        str(item.get("text", ""))
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "text"
+    ]
+    if result.get("isError"):
+        raise _InBandError(" ".join(texts))
+    results: list[dict[str, str]] = []
+    for block in "\n".join(texts).split(_EXA_BLOCK_SEP):
+        title = url = ""
+        snippet_lines: list[str] = []
+        in_highlights = False
+        for line in block.split("\n"):
+            if in_highlights:
+                snippet_lines.append(line)
+            elif line.startswith("Title:"):
+                title = line[len("Title:"):].strip()
+            elif line.startswith("URL:"):
+                url = line[len("URL:"):].strip()
+            elif line.startswith("Highlights:"):
+                in_highlights = True
+                snippet_lines.append(line[len("Highlights:"):])
+        if url:
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": re.sub(r"\s+", " ", "\n".join(snippet_lines)).strip(),
+                }
+            )
+    return results
+
+
+def _build_tavily(query: str, count: int, pcfg: ProviderCfg) -> urllib.request.Request:
+    req = _json_post(
+        _TAVILY_ENDPOINT,
+        {"query": query, "max_results": count, "search_depth": "basic"},
+        "application/json",
+    )
+    # 密钥头一律 unredirected（§2.5 ⑤ 纵深）：即使将来换回跟随重定向的 opener 也不随跳转转发。
+    req.add_unredirected_header("Authorization", f"Bearer {pcfg.api_key}")
+    return req
+
+
+def _parse_tavily(body: str) -> list[dict[str, str]]:
+    data = json.loads(body)
+    items = data["results"]
+    if not isinstance(items, list):
+        raise ValueError("results 不是数组")
+    results: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if url:
+            results.append(
+                {
+                    "title": re.sub(r"\s+", " ", str(item.get("title") or "")).strip(),
+                    "url": url,
+                    "snippet": re.sub(r"\s+", " ", str(item.get("content") or "")).strip(),
+                }
+            )
+    return results
+
+
+_EXA_MCP_ENDPOINT = "https://mcp.exa.ai/mcp?tools=web_search_exa"
+_TAVILY_ENDPOINT = "https://api.tavily.com/search"
+
+# 注册表（§2.2）。exa_api 暂不注册（Spec 15 §12 施工偏差 2：人 2026-10-06 裁决先不申请
+# EXA_API_KEY，没有真实响应不写解析器；写进链里会被 load_web_config 判为未知服务）。
+_PROVIDERS: dict[str, _Provider] = {
+    "exa_mcp": _Provider(_EXA_MCP_ENDPOINT, None, _build_exa_mcp, _parse_exa_mcp),
+    "tavily": _Provider(_TAVILY_ENDPOINT, "TAVILY_", _build_tavily, _parse_tavily),
+}
+
+
+def _missing_key_reason(pcfg: ProviderCfg) -> str:
+    return (
+        f"需要环境变量 {pcfg.api_key_env}（未设置；终端：在 shell profile 里 export；"
+        f"桌面端：security add-generic-password -s ava -a {pcfg.api_key_env} -w）"
+    )
+
+
+def _in_band_reason(text: str, query: str, secrets: tuple[str, ...]) -> str:
+    """带内错误文案（v0.3 R2-6）：先把原始与归一后的 query 换成 <query>，再截 200 字、清洗、脱敏。"""
+    out = text
+    for q in sorted({query, _normalized_for_assert(query)}, key=len, reverse=True):
+        if q:
+            out = out.replace(q, "<query>")
+    out = re.sub(r"\s+", " ", out).strip()[:200]
+    return "带内错误：" + _redact_all(_scrub(out), secrets)
+
+
 def search_web(
     query: str,
     limit: int = SEARCH_DEFAULT_LIMIT,
@@ -600,75 +814,113 @@ def search_web(
     opener: Callable[..., Any] | None = None,
     root: Path | None = None,
 ) -> dict[str, Any]:
-    """关键词探测：GET endpoint?<query_param>=<query>[&<api_key_param>=<key>]。
+    """关键词探测：按配置顺序尝试 provider 链（Spec 15），第一家成功的答。
 
-    流程：limit clamp → load_web_config（None → ValueError 显式降级）→
-    assert_egress_boundary(endpoint, {"query": _normalized_for_assert(query)})
-    （发送前最后一道，v0.2 归一后断言）→ _guard_url(完整请求串) →
-    opener(request, timeout=search_timeout_s) → 解析三元组（0 条 →
-    ValueError 空结果纪律，§3.2）→ _scrub 文本字段 → 返回 §3.2 契约。
-    opener 为 None 时调用点解析 _default_opener()（B1 纪律）。
+    对链上每一家、每一次实际发送（§2.5）：构造请求 → assert_egress_boundary(该家端点,
+    {"query": 归一后 query}) → _guard_url(端点) → opener(request, timeout)。
+    可落下一家（§2.2）：429 / 5xx / 3xx（不跟随）/ 超时 / 连接失败 / 结构不符 / 带内错误 /
+    解析出 0 条 / 免 key 的家 401/403。直接失败：egress 命中、_guard_url 拒连、配了 key 的家
+    401/403。全链失败 → ValueError 逐家列原因（空结果不静默，Spec 4 §3.2）。
+    零自动重试：每家至多 1 次请求。opener 为 None 时调用点解析 _provider_opener（B1 纪律）。
     """
     clamped_limit = max(1, min(int(limit), SEARCH_MAX_LIMIT))
     cfg = config if config is not None else load_web_config(root)
     if cfg is None:
-        raise ValueError("缺少或无效的 config/agent/web.json（或指名环境变量未设置）")
+        raise _invalid_config_error(root)
+    open_fn = opener if opener is not None else _provider_opener
+    secrets = cfg.secret_values
+    normalized_query = _normalized_for_assert(query)
 
-    assert_egress_boundary(
-        cfg.search_endpoint, {"query": _normalized_for_assert(query)}
-    )
+    failures: list[str] = []
+    attempted = False
+    for pcfg in cfg.search_providers:
+        provider = _PROVIDERS[pcfg.name]
+        if provider.key_env_prefix is not None and not pcfg.api_key:
+            failures.append(f"{pcfg.name}: {_missing_key_reason(pcfg)}")
+            continue
+        attempted = True
+        req = provider.build(query, clamped_limit + 1, pcfg)
+        assert_egress_boundary(provider.endpoint, {"query": normalized_query})
+        _guard_url(provider.endpoint, trusted_ranges=cfg.trusted_fake_ip_ranges)
 
-    parsed_ep = urllib.parse.urlparse(cfg.search_endpoint)
-    qs_pairs = urllib.parse.parse_qsl(parsed_ep.query, keep_blank_values=True)
-    qs_pairs.append((cfg.search_query_param, query))
-    if cfg.api_key and cfg.api_key_param:
-        qs_pairs.append((cfg.api_key_param, cfg.api_key))
-    full_query = urllib.parse.urlencode(qs_pairs)
-    req_url = urllib.parse.urlunparse(parsed_ep._replace(query=full_query))
+        try:
+            resp = open_fn(req, timeout=cfg.search_timeout_s)
+            headers = getattr(resp, "headers", None) or {}
+            raw_bytes = _read_body_capped(
+                resp, str(headers.get("Content-Encoding", "identity")), cfg.max_fetch_bytes
+            )
+            body = _decode_body(
+                raw_bytes, str(headers.get("Content-Type", "application/json; charset=utf-8"))
+            )
+            items = provider.parse(body)
+        except PermissionError:
+            raise
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            if code in (401, 403):
+                if provider.key_env_prefix is not None:
+                    tried = f"；此前已尝试：{'；'.join(failures)}" if failures else ""
+                    raise ValueError(
+                        f"web_search {pcfg.name} 的密钥被拒（HTTP {code}）：检查环境变量 "
+                        f"{pcfg.api_key_env} 的值（终端：shell profile；桌面端：钥匙串 "
+                        f"security add-generic-password -s ava -a {pcfg.api_key_env} -w）{tried}"
+                    ) from None
+                reason = (
+                    f"Exa 免 key 入口被拒（HTTP {code}），需申请 EXA_API_KEY 并补 exa_api "
+                    "适配器（Spec 15 §12）"
+                )
+            elif 300 <= code < 400:
+                reason = f"HTTP {code} 重定向（未跟随）"
+            elif code == 429:
+                reason = "HTTP 429（限流）"
+            else:
+                reason = f"HTTP {code}"
+            failures.append(f"{pcfg.name}: {reason}")
+            continue
+        except _InBandError as exc:
+            failures.append(f"{pcfg.name}: {_in_band_reason(str(exc), query, secrets)}")
+            continue
+        except TimeoutError as exc:
+            failures.append(f"{pcfg.name}: 超时（{type(exc).__name__}）")
+            continue
+        except OSError as exc:  # URLError / gaierror / ConnectionError 等
+            failures.append(f"{pcfg.name}: 连接失败（{type(exc).__name__}）")
+            continue
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            failures.append(f"{pcfg.name}: 响应结构不符（{type(exc).__name__}）")
+            continue
 
-    _guard_url(req_url, trusted_ranges=cfg.trusted_fake_ip_ranges)
+        seen_urls: set[str] = set()
+        normalized: list[dict[str, str]] = []
+        for item in items:
+            url = item["url"]
+            if (urllib.parse.urlparse(url).scheme or "").lower() not in ("http", "https"):
+                continue
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            normalized.append(
+                {
+                    "title": _redact_all(_scrub(item["title"]), secrets),
+                    "url": _redact_all(_scrub(url), secrets),
+                    "snippet": _redact_all(_scrub(item["snippet"]), secrets)[
+                        :SEARCH_SNIPPET_MAX_CHARS
+                    ],
+                }
+            )
+        if not normalized:
+            failures.append(f"{pcfg.name}: 解析为空（无结果或结构变更）")
+            continue
 
-    open_fn = (
-        opener
-        if opener is not None
-        else _default_opener(cfg.trusted_fake_ip_ranges)
-    )
-    req = urllib.request.Request(req_url, headers={"User-Agent": "ava-agent/1.0"})
-    try:
-        resp = open_fn(req, timeout=cfg.search_timeout_s)
-    except urllib.error.HTTPError as exc:
-        _raise_http_upgrade_error(exc)
-
-    headers = getattr(resp, "headers", None) or {}
-    content_type = str(headers.get("Content-Type", "text/html; charset=utf-8"))
-    raw_bytes = _read_body_capped(
-        resp, str(headers.get("Content-Encoding", "identity")), cfg.max_fetch_bytes
-    )
-    html_text = _decode_body(raw_bytes, content_type)
-
-    parser = _SearchResultParser()
-    parser.feed(html_text)
-    if not parser.results:
-        raise ValueError(
-            "搜索解析为空（无结果或结构变更）：可能是无结果，也可能是端点页面结构已变更（解析器 fixture 失效）"
-        )
-
-    truncated = len(parser.results) > clamped_limit
-    sliced = parser.results[:clamped_limit]
-    cleaned_results = [
-        {
-            "title": _redact_secret(_scrub(item["title"]), cfg.api_key),
-            "url": _redact_secret(_scrub(item["url"]), cfg.api_key),
-            "snippet": _redact_secret(_scrub(item["snippet"]), cfg.api_key),
+        return {
+            "query": query,
+            "provider": _redact_all(pcfg.name, secrets),
+            "results": normalized[:clamped_limit],
+            "truncated": len(normalized) > clamped_limit,
         }
-        for item in sliced
-    ]
-    return {
-        "query": query,
-        "provider": _redact_secret(cfg.search_endpoint, cfg.api_key),
-        "results": cleaned_results,
-        "truncated": truncated,
-    }
+
+    head = "web_search 全部检索服务失败" if attempted else "web_search 无可用检索服务"
+    raise ValueError(_redact_all(f"{head}：{'；'.join(failures)}", secrets))
 
 
 def fetch_web(
@@ -691,13 +943,13 @@ def fetch_web(
     _TextExtractor 净文 → _scrub → max_fetch_chars 截断 →
     final_url 凭据值替换 "***" 并对 geturl() 结果再验 scheme →
     _extract_links(decoded, raw_final_url) 链接清单（同站优先、去 fragment 去重、
-    丢空锚、锚文本封顶）逐条 _scrub/_redact_secret 后双帽截断 →
+    丢空锚、锚文本封顶）逐条 _scrub/_redact_all 后双帽截断 →
     返回 §3.3 契约（Spec 13 增 links / links_truncated 两键；
     fetched_bytes 为进入解码的字节数——压缩响应为解压后字节，N45 修订）。
     """
     cfg = config if config is not None else load_web_config(root)
     if cfg is None:
-        raise ValueError("缺少或无效的 config/agent/web.json（或指名环境变量未设置）")
+        raise _invalid_config_error(root)
 
     assert_egress_boundary(url, {"url": _normalized_for_assert(url)})
     _guard_url(url, trusted_ranges=cfg.trusted_fake_ip_ranges)
@@ -729,7 +981,7 @@ def fetch_web(
 
     extractor = _TextExtractor()
     extractor.feed(decoded)
-    text = _redact_secret(_scrub(extractor.get_text()), cfg.api_key)
+    text = _redact_all(_scrub(extractor.get_text()), cfg.secret_values)
 
     truncated = False
     if len(text) > cfg.max_fetch_chars:
@@ -743,15 +995,15 @@ def fetch_web(
     if final_scheme not in ("http", "https"):
         raise PermissionError(f"重定向最终 URL 协议非法: '{final_scheme}'")
 
-    final_url = _redact_secret(_scrub(raw_final_url), cfg.api_key)
+    final_url = _redact_all(_scrub(raw_final_url), cfg.secret_values)
     status_code = int(getattr(resp, "status", None) or getattr(resp, "code", 200))
 
     links, links_truncated = _cap_links(
-        _extract_links(decoded, raw_final_url), cfg.api_key
+        _extract_links(decoded, raw_final_url), cfg.secret_values
     )
 
     return {
-        "url": _redact_secret(url, cfg.api_key),
+        "url": _redact_all(url, cfg.secret_values),
         "final_url": final_url,
         "status": status_code,
         "content_type": content_type,
