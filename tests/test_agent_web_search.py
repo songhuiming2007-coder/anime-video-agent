@@ -755,6 +755,7 @@ def test_tp16_request_count_is_limit_plus_one(limit: int) -> None:
     assert out["truncated"] is True
 
     exact = search_web("frieren", limit=limit, config=_cfg(TAVILY), opener=_Router(tavily=_tavily(limit - 1 if limit == 20 else limit)))
+    assert len(exact["results"]) == (limit - 1 if limit == 20 else limit)  # Spec 15 §16 🔵 C-1
     assert exact["truncated"] is False
 
 
