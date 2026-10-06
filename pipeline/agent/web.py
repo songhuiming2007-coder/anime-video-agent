@@ -648,7 +648,9 @@ class _Provider:
     endpoint: str
     # None = 免 key 的家；否则 api_key_env 必须以此前缀开头（§2.4 名字校验①）
     key_env_prefix: str | None
-    build: Callable[[str, int, ProviderCfg], urllib.request.Request]
+    # (endpoint, query, 请求条数, ProviderCfg) → 请求；endpoint 由主流程传入，保证断言 /
+    # _guard_url 校验的地址与实际发送的地址是同一个
+    build: Callable[[str, str, int, ProviderCfg], urllib.request.Request]
     parse: Callable[[str], list[dict[str, str]]]
 
 
@@ -665,9 +667,11 @@ def _json_post(url: str, body: dict[str, Any], accept: str) -> urllib.request.Re
     )
 
 
-def _build_exa_mcp(query: str, count: int, pcfg: ProviderCfg) -> urllib.request.Request:
+def _build_exa_mcp(
+    endpoint: str, query: str, count: int, pcfg: ProviderCfg
+) -> urllib.request.Request:
     return _json_post(
-        _EXA_MCP_ENDPOINT,
+        endpoint,
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -746,9 +750,11 @@ def _parse_exa_mcp(body: str) -> list[dict[str, str]]:
     return results
 
 
-def _build_tavily(query: str, count: int, pcfg: ProviderCfg) -> urllib.request.Request:
+def _build_tavily(
+    endpoint: str, query: str, count: int, pcfg: ProviderCfg
+) -> urllib.request.Request:
     req = _json_post(
-        _TAVILY_ENDPOINT,
+        endpoint,
         {"query": query, "max_results": count, "search_depth": "basic"},
         "application/json",
     )
@@ -778,14 +784,13 @@ def _parse_tavily(body: str) -> list[dict[str, str]]:
     return results
 
 
-_EXA_MCP_ENDPOINT = "https://mcp.exa.ai/mcp?tools=web_search_exa"
-_TAVILY_ENDPOINT = "https://api.tavily.com/search"
-
 # 注册表（§2.2）。exa_api 暂不注册（Spec 15 §12 施工偏差 2：人 2026-10-06 裁决先不申请
 # EXA_API_KEY，没有真实响应不写解析器；写进链里会被 load_web_config 判为未知服务）。
 _PROVIDERS: dict[str, _Provider] = {
-    "exa_mcp": _Provider(_EXA_MCP_ENDPOINT, None, _build_exa_mcp, _parse_exa_mcp),
-    "tavily": _Provider(_TAVILY_ENDPOINT, "TAVILY_", _build_tavily, _parse_tavily),
+    "exa_mcp": _Provider(
+        "https://mcp.exa.ai/mcp?tools=web_search_exa", None, _build_exa_mcp, _parse_exa_mcp
+    ),
+    "tavily": _Provider("https://api.tavily.com/search", "TAVILY_", _build_tavily, _parse_tavily),
 }
 
 
@@ -839,7 +844,7 @@ def search_web(
             failures.append(f"{pcfg.name}: {_missing_key_reason(pcfg)}")
             continue
         attempted = True
-        req = provider.build(query, clamped_limit + 1, pcfg)
+        req = provider.build(provider.endpoint, query, clamped_limit + 1, pcfg)
         assert_egress_boundary(provider.endpoint, {"query": normalized_query})
         _guard_url(provider.endpoint, trusted_ranges=cfg.trusted_fake_ip_ranges)
 
