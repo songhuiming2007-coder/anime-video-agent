@@ -709,9 +709,16 @@ class AgentSession:
                     self._finish_turn(snapshot, tracker, {"stopped": "degraded"}, messages)
                     return {"stopped": "degraded", "messages": messages, "final": degraded}
 
+                from pipeline.agent.assembly import route_trusted_texts
+
+                # 出网断言可信集 = (a) 本进程已提交的规程正文 ∪ (b) 路由表当前正文（Spec 16 §5.2.4）
+                egress_trusted = [
+                    *tracker.trusted_doc_texts, *route_trusted_texts(effective_scope, root=root)
+                ]
                 outcome = llm_module.run_tool_loop(
                     messages,
                     ctx=self._tool_context(effective_scope, root),
+                    egress_trusted=egress_trusted,
                     # approve 显式传 None（裸循环适配器不用），control 才是生产路径。
                     # 现有多处打桩的签名带位置参数 approve，不传就当场 TypeError。
                     approve=None,
@@ -811,15 +818,18 @@ class AgentSession:
             resolve_memory_injection,
             resolve_step_docs,
             step_key_of,
+            trusted_texts_of_docs,
+            trusted_texts_of_resident,
         )
         from pipeline.agent.llm import load_llm_config, local_directive_message
         from pipeline.agent.status_card import build_idea_card
 
         if tracker.active_scope != scope or not tracker.resident_prompt:
-            tracker.resident_prompt = assemble_resident_prompt(
-                scope, root=root, extra_prompt=self.extra_prompt
-            ).content
+            resident = assemble_resident_prompt(scope, root=root, extra_prompt=self.extra_prompt)
+            tracker.resident_prompt = resident.content
             tracker.active_scope = scope
+            # 可信集 (a) 常驻层：三份文件各自的原文，**不取** resident_prompt（它含 extra_prompt）
+            tracker.trust(trusted_texts_of_resident(resident, root))
 
         step_key = step_key_of(status.current_step if status else None)
         step_docs = [
@@ -845,6 +855,7 @@ class AgentSession:
                 )
                 self._commit({"role": "user", "content": injection}, "injection")
                 tracker.injected_paths.update(d.rel_path for d in step_docs)
+                tracker.trust(trusted_texts_of_docs(step_docs, root))  # 可信集 (a) 工序层
             tracker.active_step_key = step_key
         else:
             if step_key != tracker.active_step_key:
@@ -855,6 +866,7 @@ class AgentSession:
                     )
                     self._commit({"role": "user", "content": injection}, "injection")
                     tracker.injected_paths.update(d.rel_path for d in new_docs)
+                    tracker.trust(trusted_texts_of_docs(new_docs, root))  # 可信集 (a) 工序层
                 tracker.active_step_key = step_key
             # 刷新状态卡：整段替换 messages[0]（一轮之内不再变）
             messages[0] = {
@@ -910,18 +922,20 @@ class AgentSession:
             resolve_memory_injection,
             resolve_step_docs,
             step_key_of,
+            trusted_texts_of_docs,
         )
 
-        candidates = []
+        # (文档, 能否进出网可信集)：只有 resolve_step_docs 的候选可以；记忆永不可信（Spec 16 §5.2.3）
+        candidates: list[tuple[Any, bool]] = []
         step_key = step_key_of(status.current_step if status else None)
         for path in resolve_step_docs(scope, step_key, root=root):
             doc = load_injected_doc(path.as_posix(), root=root)
             if doc is not None:
-                candidates.append(doc)
+                candidates.append((doc, True))
         memory_doc = resolve_memory_injection(scope, root=root)
         if memory_doc is not None:
-            candidates.append(memory_doc[0])
-        for doc in candidates:
+            candidates.append((memory_doc[0], False))
+        for doc, trustable in candidates:
             recorded = self._injected_docs.get(doc.rel_path)
             if not recorded:
                 continue
@@ -937,6 +951,8 @@ class AgentSession:
                 docs=[{"path": doc.rel_path, "sha256": current}],
             )
             tracker.injected_paths.add(doc.rel_path)
+            if trustable:
+                tracker.trust(trusted_texts_of_docs([doc], root))  # 可信集 (a) 修订重注入
         self._injected_docs = {}
 
     def _tool_context(self, scope: str, root: Path | None):

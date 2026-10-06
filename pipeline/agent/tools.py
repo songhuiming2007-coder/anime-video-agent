@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from pipeline import paths
 from pipeline.cloud import validate_extra_args
@@ -304,18 +304,54 @@ def validate_pipeline_command(
     return False, f"未知的 Scope: {scope}", []
 
 
-def assert_egress_boundary(endpoint: str, content: Any) -> None:
+# 可信文本的长度门槛（Spec 16 §5.1 第 3 步，🔵-1）：短于此的可信文本一律忽略——
+# 防「全文只有一句含路径」的短文档被模型在工具参数里复述一遍就拿到豁免；顺带滤掉空串。
+TRUSTED_TEXT_MIN_CHARS = 200
+
+
+def _spans(haystack: str, needle: str) -> list[tuple[int, int]]:
+    """needle 在 haystack 中的全部出现区间（允许重叠：起点前移 1）。"""
+    out: list[tuple[int, int]] = []
+    i = haystack.find(needle)
+    while i != -1:
+        out.append((i, i + len(needle)))
+        i = haystack.find(needle, i + 1)
+    return out
+
+
+def assert_egress_boundary(
+    endpoint: str, content: Any, *, trusted_texts: Sequence[str] = ()
+) -> None:
     """出网安全边界断言（Spec §2.5 Y2-r19）。
 
     确保发送给外部 LLM 端点的内容不含敏感目录路径及凭据数据。
     **大小写不敏感**：APFS 默认大小写不敏感，`Cloud.Local.JSON` 与 `cloud.local.json`
     是同一个文件，字面量比较等于半扇门（终审二轮 P0）。
+
+    `trusted_texts`（Spec 16 / ADR-0026，命中位置级豁免）：仓库规程的逐字正文。一次模式命中
+    只有**整体落在**某段可信文本的逐字副本区间内才放过，其余命中照旧拦；不做「先删后匹配」。
+    可信文本按与 content 相同的序列化口径找（dict/list → JSON 转义形态；str → 原文），
+    两边都在 casefold 后的同一坐标系里算区间。为空时与改动前逐字节同判。
+    全仓只有 `llm.py::chat_complete` 传它；web 四个出方向不传。
     """
-    text = json.dumps(content, ensure_ascii=False) if not isinstance(content, str) else content
+    is_str = isinstance(content, str)
+    text = content if is_str else json.dumps(content, ensure_ascii=False)
     folded = text.casefold()
+    trusted_spans: list[tuple[int, int]] | None = None  # 惰性：没有命中就不算
     for pattern in RESTRICTED_EGRESS_PATTERNS:
-        if pattern.casefold() in folded:
-            raise PermissionError(f"拦截出网请求：内容包含受限敏感标记 '{pattern}'")
+        needle = pattern.casefold()
+        if needle not in folded:
+            continue
+        if trusted_spans is None:
+            trusted_spans = []
+            for trusted in trusted_texts:
+                if len(trusted) < TRUSTED_TEXT_MIN_CHARS:
+                    continue
+                form = trusted if is_str else json.dumps(trusted, ensure_ascii=False)[1:-1]
+                trusted_spans.extend(_spans(folded, form.casefold()))
+        for start, end in _spans(folded, needle):
+            if not any(a <= start and end <= b for a, b in trusted_spans):
+                raise PermissionError(f"拦截出网请求：内容包含受限敏感标记 '{pattern}'")
 
 
 def sys_python() -> str:

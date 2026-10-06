@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
 from pipeline.agent.tools import (
@@ -301,11 +301,13 @@ def chat_complete(
     scope: str = "creative",
     purpose: str | None = None,
     tool_choice: str | None = None,
+    egress_trusted: Sequence[str] = (),
 ) -> dict[str, Any]:
     """发一次 chat/completions，返回 `choices[0].message`。
 
     配置缺失 → 降级消息（不抛）；网络/HTTP/协议失败 → `LLMError`。
     `tool_choice=None`（默认）时请求体**不含该键**——与加这个参数之前逐字节相同（TL-15）。
+    `egress_trusted`：出网断言的可信文本集（仓库规程正文，Spec 16 §5.2），原样交给断言。
     """
     cfg = config if config is not None else load_llm_config(root)
     if cfg is None:
@@ -319,7 +321,7 @@ def chat_complete(
         payload["tools"] = tools
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
-    assert_egress_boundary(cfg.endpoint, payload)  # 出网前最后一道断言
+    assert_egress_boundary(cfg.endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
 
     request = urllib.request.Request(
         cfg.endpoint,
@@ -550,6 +552,7 @@ def run_tool_loop(
     root: Path | None = None,
     approve: Callable[[str, dict[str, Any]], bool | tuple[bool, str]] | None = None,
     control: LoopControl | None = None,
+    egress_trusted: Sequence[str] = (),
 ) -> dict[str, Any]:
     """多轮 tool_calls 状态机（Spec 9 §2.3、§4.7）。**没有固定轮数上限。**
 
@@ -610,6 +613,7 @@ def run_tool_loop(
             scope=context.scope,
             purpose=purpose,
             tool_choice=tool_choice,
+            egress_trusted=egress_trusted,
         )
 
     def _checkpoint_snapshot(trigger: str) -> dict[str, Any]:

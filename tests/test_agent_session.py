@@ -1076,3 +1076,338 @@ def test_ts11_rolled_back_memory_warning_is_reinjected_and_not_reprinted(
         "回滚掉的告警必须在下一轮重新注入（MUT-53）"
     assert messages[1:] == _rebuild(episode, host.sid)
     assert warns_printed() == 1, "告警不许重复打印（§2.3 第 3 条：printed 锁存不回退）"
+
+
+# ---------------------------------------------------------------------------
+# Spec 16（D30）：出网断言对仓库规程逐字副本做命中位置级豁免——会话层用例
+#
+# 断言在**真** `chat_complete` 里跑：只替换 `urlopen`（零出网），payload 照常装配、照常断言。
+# 规程一律取**真实仓库**的文档（复制进假仓库），复现的就是 2026-10-06 那两份 runbook。
+# ---------------------------------------------------------------------------
+
+_STEP_03 = "03 语音合成"
+_STEP_035 = "03.5 配音顺听 / 04 排片"
+_STEP_05 = "05 审时间码"
+_HIT = "03-audio/manifest.json"
+
+
+class _Step:
+    """最小 status 替身：装配只读 `current_step`（状态卡另行打桩）。"""
+
+    def __init__(self, current_step: str) -> None:
+        self.current_step = current_step
+
+
+def _seed_repo_docs(root: Path) -> None:
+    """把真实仓库的路由表、常驻层与全部被路由的规程复制进假仓库。"""
+    import shutil
+
+    shutil.copy(REPO / "config" / "agent" / "assembly.json", root / "config" / "agent" / "assembly.json")
+    shutil.copytree(REPO / "config" / "agent" / "scopes", root / "config" / "agent" / "scopes", dirs_exist_ok=True)
+    shutil.copytree(REPO / "docs" / "runbook", root / "docs" / "runbook", dirs_exist_ok=True)
+    shutil.copy(REPO / "docs" / "WORKFLOW.md", root / "docs" / "WORKFLOW.md")
+    (root / "skills" / "write-script").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "skills" / "write-script" / "SKILL.md", root / "skills" / "write-script" / "SKILL.md")
+    shutil.copy(REPO / "AGENTS.md", root / "AGENTS.md")
+
+
+class _LLMResp:
+    def __init__(self, payload: dict) -> None:
+        self._raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._raw
+
+    def __enter__(self) -> "_LLMResp":
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
+@pytest.fixture
+def egress_env(root: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """真实规程 + 假 urlopen（记下每个真正发出的请求体）+ 状态卡打桩。"""
+    from pipeline.agent import llm as llm_mod
+
+    _seed_repo_docs(root)
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    sent: list[dict] = []
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(json.loads(request.data.decode("utf-8")))
+        return _LLMResp({"choices": [{"message": {"role": "assistant", "content": "好"}}]})
+
+    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(AgentSession, "_status_card", lambda self, scope, status: "## 状态卡")
+    return sent
+
+
+def _turn(session: AgentSession, messages: list[dict], tracker, root: Path, step: str, line: str = "你好") -> dict:
+    return session.run_turn(line, messages=messages, scope="creative", status=_Step(step),
+                            tracker=tracker, root=root)
+
+
+def _not_blocked(outcome: dict) -> None:
+    assert outcome.get("stopped") != "blocked", f"本轮被出网断言拦下：{outcome.get('error')}"
+
+
+def _payload_text(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("step", [_STEP_03, _STEP_035])
+def test_td1_runbook_literal_no_longer_blocks_first_turn(root: Path, episode: Path, egress_env: list[dict], step: str) -> None:
+    """TD-1（D30 复现转绿）：期目录处在 03 / 03.5，首轮请求照常发出，且请求体里仍含 runbook 原文与字面量。"""
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    outcome = _turn(session, [], SessionContextTracker(), root, step)
+    _not_blocked(outcome)
+    assert len(egress_env) == 1
+    body = _payload_text(egress_env[0])
+    assert _HIT in body
+    runbook = "03-tts.md" if step == _STEP_03 else "03.5-voice-check.md"
+    first_line = (root / "docs" / "runbook" / runbook).read_text(encoding="utf-8").strip().splitlines()[0]
+    assert first_line in body
+
+
+def _runbook_line(root: Path, name: str, contains: str) -> str:
+    """取 runbook 里含某子串的那一行（用来在请求体里认出整份规程确实还在）。"""
+    text = (root / "docs" / "runbook" / name).read_text(encoding="utf-8")
+    return next(line for line in text.splitlines() if contains in line).strip()
+
+
+def test_td1b_same_session_across_steps_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-1b（🟡-1）：同一会话 03 → 03.5 → 05，每轮首个请求都照常发出；第三轮请求体里两份旧规程仍在。"""
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    tracker = SessionContextTracker()
+    messages: list[dict] = []
+    for n, step in enumerate((_STEP_03, _STEP_035, _STEP_05), 1):
+        _not_blocked(_turn(session, messages, tracker, root, step))
+        assert len(egress_env) == n, f"第 {n} 轮没有恰好发出 1 个请求"
+    body = _payload_text(egress_env[-1])
+    assert _runbook_line(root, "03-tts.md", _HIT) in body
+    assert _runbook_line(root, "03.5-voice-check.md", _HIT) in body
+
+
+def _resume_session(root: Path, episode: Path, history: list[dict]) -> tuple[AgentSession, list[dict], SessionContextTracker]:
+    """照协议 `--continue` 的做法起一个**新进程视角**的会话：tracker 是空的，历史来自 session.jsonl。
+
+    `history` 里每项是 `{"message": ..., "origin": ..., ["docs": ...]}`，原样写成 msg 记录。
+    """
+    from pipeline.agent.assembly import assemble_resident_prompt
+
+    lease = EpisodeLease.acquire(episode)
+    lease.begin("sid-d30", resumed_from_seq=0)
+    lease.append({"k": "session_start", "schema": 1, "sid": "sid-d30", "seq": 1,
+                  "episode": episode.name, "scope_mode": "auto",
+                  "resident_sha256": "0" * 64, "pid": 1})
+    for seq, item in enumerate(history, 2):
+        lease.append({"k": "msg", "sid": "sid-d30", "seq": seq, "turn_id": "t1", **item})
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    host.lease = lease
+    state = prepare_resume(host, "sid-d30")
+    assert state["status"] == "resumed"
+    # 协议进程（protocol.py ⑧）的恢复装配：常驻层在会话外预置，injected_paths 取记录里的 docs
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = assemble_resident_prompt("creative", root=root).content
+    tracker.active_scope = "creative"
+    tracker.injected_paths = set((state.get("docs") or {}).keys())
+    tracker.active_step_key = state.get("step_key")
+    messages = [{"role": "system", "content": tracker.get_initial_system_prompt("## 状态卡")}]
+    messages.extend(state["messages"])
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    return session, messages, tracker
+
+
+def _injection_record(root: Path, rel: str, step: str) -> dict:
+    """生产路径写下的注入记录：正文由 render_step_injection 渲染，**不带 docs**（见 N56）。"""
+    from pipeline.agent.assembly import load_injected_doc, render_step_injection
+
+    doc = load_injected_doc(rel, root=root)
+    assert doc is not None
+    return {"origin": "injection",
+            "message": {"role": "user", "content": render_step_injection([doc], step_name=step)}}
+
+
+def _chat_pair(text: str) -> list[dict]:
+    return [{"origin": "user", "message": {"role": "user", "content": text}},
+            {"origin": "assistant", "message": {"role": "assistant", "content": "好"}}]
+
+
+def test_td1c_resumed_history_with_old_injections_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-1c（🟡-1）：新进程 `--continue` 恢复到 05，历史含 03 与 03.5 注入：首轮照常发出（tracker 为空，只靠 (b)）。"""
+    history = [
+        _injection_record(root, "docs/runbook/03-tts.md", _STEP_03), *_chat_pair("合成吧"),
+        _injection_record(root, "docs/runbook/03.5-voice-check.md", _STEP_035), *_chat_pair("顺听"),
+    ]
+    session, messages, tracker = _resume_session(root, episode, history)
+    assert tracker.trusted_doc_texts == []
+    _not_blocked(_turn(session, messages, tracker, root, _STEP_05))
+    assert len(egress_env) == 1
+    body = _payload_text(egress_env[0])
+    assert _runbook_line(root, "03-tts.md", _HIT) in body
+    assert _runbook_line(root, "03.5-voice-check.md", _HIT) in body
+
+
+def test_td1d_crlf_routed_doc_matches_with_same_reader(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-1d（🟡-2(c)）：CRLF 换行、含受限字面量的路由文档。恢复后只有 (b) 能认出它：
+    (b) 必须与注入同读法（`load_injected_doc`，不翻译换行），否则 `\\r\\n` 对不上。"""
+    body_text = ("说明行，产物位置如下。\r\n" * 12) + f"- `data/episodes/<期号>/{_HIT}`\r\n" + ("尾行\r\n" * 12)
+    (root / "docs" / "runbook" / "crlf.md").write_bytes(body_text.encode("utf-8"))
+    cfg_path = root / "config" / "agent" / "assembly.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["routes"]["_base"]["03"] = ["docs/runbook/03-tts.md", "docs/runbook/crlf.md"]
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+    history = [_injection_record(root, "docs/runbook/crlf.md", _STEP_03), *_chat_pair("合成吧")]
+    assert "\\r\\n" in json.dumps(history[0]["message"]["content"])  # 注入正文确实带 CRLF
+    session, messages, tracker = _resume_session(root, episode, history)
+    _not_blocked(_turn(session, messages, tracker, root, _STEP_05))
+    assert len(egress_env) == 1
+
+
+def test_td1e_doc_edited_mid_process_old_version_still_trusted(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-1e（🟡-1）：同一进程里 03 注入后 `03-tts.md` 被改了另一行，再推进到 03.5：
+    历史里的旧版只有 (a) 认得，请求照常发出。"""
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    tracker = SessionContextTracker()
+    messages: list[dict] = []
+    _not_blocked(_turn(session, messages, tracker, root, _STEP_03))
+    runbook = root / "docs" / "runbook" / "03-tts.md"
+    old = runbook.read_text(encoding="utf-8")
+    first = old.splitlines()[0]
+    assert _HIT not in first
+    runbook.write_text(old.replace(first, first + "（修订版）", 1), encoding="utf-8")
+    _not_blocked(_turn(session, messages, tracker, root, _STEP_035))
+    assert len(egress_env) == 2
+    assert first + "（修订版）" not in _payload_text(egress_env[-1])  # 历史里确实是旧版
+
+
+def test_td2a_human_message_with_restricted_path_still_blocks(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-2a：可信集里有规程，人打的话里含 `cloud.local.json` → 照旧拦，零发出。"""
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    outcome = _turn(session, [], SessionContextTracker(), root, _STEP_035, line="看下 cloud.local.json 里写了啥")
+    assert outcome.get("stopped") == "blocked"
+    assert "cloud.local.json" in str(outcome.get("error"))
+    assert egress_env == []
+
+
+def _stub_memory(monkeypatch: pytest.MonkeyPatch, body: str) -> str:
+    """模拟「R3 被绕过」：真读盘路径在读取时也做 R3（含受限串的 memory.md 只会渲染成告警），
+    所以这里直接给渲染打桩，假设记忆层失守，验证出网断言这第二层仍不把记忆当可信文本。"""
+    from pipeline.agent import memory
+
+    content = f"{memory.INJECTION_HEADER}\n\n{body}"
+    monkeypatch.setattr(memory, "render_injection", lambda root=None, **kw: content)
+    return content
+
+
+_BAD_MEMORY = ("- M001 模式：口播段落控制在两句以内，边界：只适用于人物志。\n" * 6) + "- M002 模式：先看 cloud.local.json 再动手\n"
+
+
+def test_td2d_memory_with_restricted_string_blocks(root: Path, episode: Path, egress_env: list[dict],
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """TD-2d：记忆正文含受限串（R3 失守）→ 照旧拦；记忆正文不进可信集。"""
+    content = _stub_memory(monkeypatch, _BAD_MEMORY)
+    assert len(content) >= 200  # 够长：门槛不能替它挡
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    tracker = SessionContextTracker()
+    outcome = _turn(session, [], tracker, root, _STEP_035)
+    assert outcome.get("stopped") == "blocked"
+    assert "cloud.local.json" in str(outcome.get("error"))
+    assert egress_env == []
+    assert all(content.strip() not in t and t not in content for t in tracker.trusted_doc_texts)
+
+
+def test_td2e_extra_prompt_is_not_trusted(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """TD-2e（🟡-2(a)）：`extra_prompt` 含 `cloud.local.json` → 拦。常驻层的可信正文是三份文件各自的原文，
+    不是拼了 extra_prompt 的 resident_prompt。"""
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True, extra_prompt="宿主附加：先读 cloud.local.json")
+    tracker = SessionContextTracker()
+    outcome = _turn(session, [], tracker, root, _STEP_035)
+    assert outcome.get("stopped") == "blocked"
+    assert "cloud.local.json" in str(outcome.get("error"))
+    assert egress_env == []
+    assert tracker.resident_prompt not in tracker.trusted_doc_texts
+
+
+def test_td2f_reinjected_memory_is_not_trusted(root: Path, episode: Path, egress_env: list[dict],
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """TD-2f（🟡-2(b)；按定向复审 🔵-R2-1 构造）：生产路径从不记 docs（N56），所以照 TS-6 手写一条
+    带 `docs` 的记忆注入记录，让 `_reinject_changed` 真的触发；先断言「规程已修订：记忆」确实出现，
+    再断言被拦、可信集里没有记忆正文。"""
+    from pipeline.agent.assembly import route_trusted_texts
+    from pipeline.agent.memory import MEMORY_REL_PATH
+
+    content = _stub_memory(monkeypatch, _BAD_MEMORY)
+    history = [
+        {"origin": "injection", "message": {"role": "user", "content": "旧记忆：口播段落控制在两句以内"},
+         "docs": [{"path": MEMORY_REL_PATH, "sha256": "0" * 64}]},
+        *_chat_pair("继续"),
+    ]
+    session, messages, tracker = _resume_session(root, episode, history)
+    outcome = _turn(session, messages, tracker, root, _STEP_05)
+
+    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    reinjected = [r for r in records if r.get("k") == "msg"
+                  and f"规程已修订：{MEMORY_REL_PATH}" in str(r["message"].get("content"))]
+    assert len(reinjected) == 1, "重注入没有发生：用例构造失效，MUT-D11 不会被执行到"
+    assert outcome.get("stopped") == "blocked"
+    assert "cloud.local.json" in str(outcome.get("error"))
+    assert egress_env == []
+    for trusted in [*tracker.trusted_doc_texts, *route_trusted_texts("creative", root=root)]:
+        assert "cloud.local.json" not in trusted
+        assert content.strip() != trusted
+
+
+def test_td5_trusted_set_excludes_non_whitelisted_docs(root: Path, tmp_path: Path) -> None:
+    """TD-5（🟡-3 ③）：直接断言可信集本身。七种不该进集的文档各一例，对照组照常在。"""
+    from pipeline.agent.assembly import is_trusted_doc_path, route_trusted_texts
+
+    _seed_repo_docs(root)
+    filler = "这是一份足够长的说明文字，用来越过可信文本的长度门槛。" * 10
+
+    def put(rel: str, marker: str) -> str:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{marker}\n{filler}", encoding="utf-8")
+        return marker
+
+    cases: dict[str, str] = {}
+    cases["docs/notes.txt"] = put("docs/notes.txt", "①非md")
+    cases[f"docs/{_HIT}.md"] = put(f"docs/{_HIT}.md", "②路径含受限模式")
+    outside = tmp_path / "outside" / "rules.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text(f"③仓库外\n{filler}", encoding="utf-8")
+    cases[str(outside)] = "③仓库外"
+    put("config/secret.md", "④软链目标")
+    (root / "docs" / "link.md").symlink_to(root / "config" / "secret.md")
+    cases["docs/link.md"] = "④软链目标"
+    cases["data/episodes/01-smoke/01-topic.md"] = put("data/episodes/01-smoke/01-topic.md", "⑤期内可写")
+    cases["data/library/memory.md"] = put("data/library/memory.md", "⑥记忆")
+    cases["pipeline/notes.md"] = put("pipeline/notes.md", "⑦白名单根外")
+
+    for rel, marker in cases.items():
+        assert not is_trusted_doc_path(root, rel), f"{marker} 不该进可信集：{rel}"
+    assert is_trusted_doc_path(root, "docs/runbook/03-tts.md")
+    assert is_trusted_doc_path(root, "AGENTS.md")
+    assert is_trusted_doc_path(root, "config/agent/scopes/director.md")
+    assert is_trusted_doc_path(root, "skills/write-script/SKILL.md")
+
+    # 收集函数层：把它们全部路由进去（resident 也指向一个），可信集里只有对照组
+    cfg_path = root / "config" / "agent" / "assembly.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["routes"]["_base"]["03"] = ["docs/runbook/03-tts.md", *cases.keys()]
+    cfg["resident"]["agents"] = "data/library/memory.md"
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    texts = route_trusted_texts("creative", root=root)
+    joined = "\n".join(texts)
+    for marker in set(cases.values()):
+        assert marker not in joined, f"{marker} 混进了可信集"
+    assert (root / "docs" / "runbook" / "03-tts.md").read_text(encoding="utf-8").strip() in texts

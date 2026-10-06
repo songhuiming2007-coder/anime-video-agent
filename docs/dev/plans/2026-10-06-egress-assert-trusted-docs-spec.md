@@ -1,6 +1,6 @@
 # Spec 16：出网断言对「可信仓库文档」做命中位置级豁免（D30）
 
-> **状态：v0.2，红队定向复审（D30-R2，2026-10-06）🟢 可动工**（附 2 条施工约束 🔵，见「红队定向复审裁决」）。v0.2 = 2026-10-06 作者修订，回应 D30-R 的 3🟡 + 6🔵（见「作者修订回应」）。沿革：v0.1 草案 2026-10-06 D30-A 立文；同日人裁决 §10（Q1 = ②a，Q2–Q4 同意建议）；同日红队一轮 D30-R 🟡 修订后复审。下一步：施工（D30-B，按定向复审的 🔵-R2-1/R2-2 补齐 TD-2f 构造与 MUT-D9c）→ 独立评审（D30-C）。本文件不改代码。
+> **状态：已施工·待独立评审（D30-B，2026-10-06；施工回填见文末 §12）**。v0.2 红队定向复审（D30-R2，2026-10-06）🟢 可动工（附 2 条施工约束 🔵，见「红队定向复审裁决」，均已照做）。v0.2 = 2026-10-06 作者修订，回应 D30-R 的 3🟡 + 6🔵（见「作者修订回应」）。沿革：v0.1 草案 2026-10-06 D30-A 立文；同日人裁决 §10（Q1 = ②a，Q2–Q4 同意建议）；同日红队一轮 D30-R 🟡 修订后复审。下一步：施工（D30-B，按定向复审的 🔵-R2-1/R2-2 补齐 TD-2f 构造与 MUT-D9c）→ 独立评审（D30-C）。本文件不改代码。
 > 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4；v0.2 另登记 **N55**（装配器读域缺口，§3）。
 > 相关：Spec 4（`archive/2026-09-23-network-tools-spec.md`）§2.4 出网断言生效点、§7.1 T5a/T5b/T17、MUT-2/MUT-13；impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.5 **Y2-r19** 出网边界；ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）；新提 **ADR-0026**（`docs/dev/adr/0026-egress-assert-trusted-repo-docs.md`，提议中）。
 
@@ -311,3 +311,52 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 4. 全量 `uv run pytest` 全绿。
 5. 真会话复跑 §1 复现存证（03 与 03.5 两期）。
 6. §7 文档修订面齐全；ADR-0026 状态与人裁决一致。
+
+## 12. 施工回填（D30-B，2026-10-06；施工人 = v0.2 作者，未参与 D30-R / D30-R2；D30-C 须另开 session）
+
+**diff 摘要**（core only，均在 §9 声明的文件内）：
+- `tools.py`：`assert_egress_boundary(..., *, trusted_texts=())`，区间包含判定 + `TRUSTED_TEXT_MIN_CHARS = 200`；可信区间惰性计算（没有任何模式命中就不算）；str / dict 两种序列化口径。
+- `llm.py`：`chat_complete` 与 `run_tool_loop` 加 `egress_trusted`，`_chat` 透传；默认 `()`，现有调用与桩不受影响。
+- `assembly.py`：`AssembledResident.doc_texts`（三份文件各自的 strip 原文，scope 取拼 `extra_prompt` 之前）；常驻层读法抽成 `read_resident_file`、resident 路径解析抽成 `resident_paths`；`is_trusted_doc_path`（§5.2.3 五条，唯一一份规则，供 N55 复用）；`trusted_texts_of_docs` / `trusted_texts_of_resident`（(a) 的捕获）；`route_trusted_texts`（(b)，路由文档一律经 `load_injected_doc`）；`SessionContextTracker.trusted_doc_texts` + `trust()`。
+- `session.py`：`_assemble` 在常驻层重算、首轮注入、换工序注入三处累积 (a)；`_reinject_changed` 只对 `resolve_step_docs` 的候选累积，记忆候选标记为不可信；`run_turn` 组装 (a) ∪ (b) 传给 `run_tool_loop`；`_rollback` 恢复清单**未加**该字段。
+- 用例：`tests/test_agent_session.py` 会话层 11 条（TD-1 ×2、TD-1b～1e、TD-2a、TD-2d、TD-2e、TD-2f、TD-5），`tests/test_agent_tools.py` 断言层 8 条（TD-2b/2c、TD-3、TD-4、TD-6、TD-6b、TD-7、TD-7b、TD-8）。会话层用例走真 `chat_complete`、只替换 `urlopen`，规程取真实仓库文档。
+
+**门禁对照**：
+- 门禁 2：TD-1 修前实跑红，两期失败原文均为 `本轮被出网断言拦下：拦截出网请求：内容包含受限敏感标记 '03-audio/manifest.json'`；修后全绿。
+- 门禁 4：全量 `PYTHONDONTWRITEBYTECODE=1 uv run pytest` → `2003 passed in 94.65s`。
+- 门禁 5（真会话，临时仓库副本、不含任何 `*.local.json`，假 LLM 只监听 127.0.0.1，`python -m pipeline.agent.protocol data/episodes/<期>` 发一条 `user_message{"text":"你好"}`）：
+
+| 期 | 修前（HEAD `21a2278` 的四个文件） | 修后 |
+|---|---|---|
+| D30-S03（step 03） | `turn_finished.stopped=blocked`，`llm_calls=0`，`prompt_chars=9192`，假 LLM 收到 0 个请求 | `stopped=done`，`llm_calls=1`，`prompt_chars=9192`，收到 1 个请求，请求体含 `03-tts.md` 原文与字面量 |
+| D30-S035（step 03.5） | `blocked`，`llm_calls=0`，`prompt_chars=14031`，0 个请求 | `done`，`llm_calls=1`，`prompt_chars=14031`，1 个请求，请求体含 `03.5-voice-check.md` 原文与字面量 |
+
+`prompt_chars` 与 D30-A 复现时的 14 031 / 9 192 一致。
+
+**变异回填**（`PYTHONDONTWRITEBYTECODE=1`，每条只跑 `test_agent_tools.py` + `test_agent_session.py` + `test_agent_web.py`，还原后 md5 对拍全部一致，零 collection 错误）：
+
+| 变异 | 实际植入 | 指定杀手 | 结果与杀法 |
+|---|---|---|---|
+| MUT-D1 | 包含判定恒为「不包含」 | TD-1 | KILLED：`AssertionError: 本轮被出网断言拦下…` |
+| MUT-D2 | `_inject_memory` 把记忆正文 `trust` 进 (a) | TD-2d | KILLED：`assert 'done' == 'blocked'` |
+| MUT-D3 | 只要请求体里出现任一可信文本就整体放行（比整条消息级更粗；TD-3 是单条消息，两者在杀手上等价） | TD-3 | KILLED：`DID NOT RAISE PermissionError` |
+| MUT-D4 | 先删可信文本再匹配 | TD-4 | KILLED：`DID NOT RAISE PermissionError` |
+| MUT-D5 | `is_trusted_doc_path` 只判 `.md` 后缀 | TD-5 | KILLED：`②路径含受限模式 不该进可信集` |
+| MUT-D6 | 可信文本不转 JSON 转义形态 | TD-1 | KILLED：`AssertionError: 本轮被出网断言拦下…` |
+| MUT-D7 | 断言直接 `return` | T5a、T17、TD-2a | KILLED（T5a `DID NOT RAISE`、TD-2a `assert 'done' == 'blocked'`）。**T17 不计**：它的失败是 `llm.py` 里的 `TypeError`（请求真的到了返回 `None` 的 urlopen 桩），属逃逸类症状；T17 是 Spec 4 冻结用例，本 PR 不改它，如实登记 |
+| MUT-D8a / D8b | `a <= start` → `<`；`end <= b` → `<` | TD-7b | 均 KILLED：TD-7b 期望放行，实际抛 `PermissionError`（被测性质本身翻转，不是前置失败） |
+| MUT-D9 | (a)、(b) 都只取当前工序的文档 | TD-1b | KILLED：`AssertionError: 本轮被出网断言拦下…` |
+| MUT-D9b | 去掉 (a)，只用 (b) | TD-1e | KILLED：同上 |
+| MUT-D9c | (b) 只取当前工序，(a) 照旧 | TD-1c | KILLED：同上 |
+| MUT-D10 | 常驻层把 `resident.content`（含 `extra_prompt`）整体入集 | TD-2e | KILLED：`assert 'done' == 'blocked'` |
+| MUT-D11 | `_reinject_changed` 对全部候选（含记忆）直接 `trust(doc.content.strip())`，不过来源与路径过滤 | TD-2f | KILLED：`assert 'done' == 'blocked'`（用例先断言「规程已修订：data/library/memory.md」确实写进 session.jsonl） |
+| MUT-D11s（补充） | 只把记忆候选的来源标记翻成「可信」 | TD-2f | **SURVIVED，等价变异**：路径过滤（§5.2.3 第 3 条）照样把 `data/library/memory.md` 挡在可信集外。记忆的两道排除互为后备，单拆一道观察不到；路径那道单独由 TD-5 ⑥ 守 |
+| MUT-D12 | (b) 读路由文档改用 `read_text` | TD-1d | KILLED：`AssertionError: 本轮被出网断言拦下…` |
+| MUT-D13 | 去掉长度门槛 | TD-8 | KILLED：`DID NOT RAISE PermissionError` |
+
+**与 spec 的偏差与未实测项（如实）**：
+1. **常驻层 (a) 只在 `_assemble` 重算处捕获**。`protocol.py` / `cli.py` 共 6 处在会话外直接 `tracker.resident_prompt = assemble_resident_prompt(...).content`，那里不在 §9 声明的改动文件内，没有改。这些入口的常驻层由 (b)（每回合按当前 scope 重读三件）覆盖。残余：同一进程内常驻文件被改、且旧版含受限字面量时，旧常驻层不被认出、会被拦（今天三件常驻文档都不含受限模式）。D30-C 若认为必须补，改法是让这 6 处也走 `tracker.trust(trusted_texts_of_resident(...))`。
+2. **TD-2d / TD-2f 用打桩模拟「R3 失守」**：`memory.render_injection` 读盘时同样执行 R3，含受限串的 `memory.md` 只会渲染成告警、不会出现在消息里，所以「人手改坏 memory.md」在真实读路径上构造不出来。用例给渲染函数打桩，假设记忆层失守，验证的是出网断言这第二层不把记忆当可信文本。
+3. TD-1b 的第三步用 05（仓库没有 04 工序键），与 v0.2 回应表一致。
+4. 未在桌面端打包版上复跑；门禁 5 用的是协议子进程（与桌面端会话同一入口 `pipeline.agent.protocol`）。
+

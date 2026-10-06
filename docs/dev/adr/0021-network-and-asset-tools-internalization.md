@@ -1,5 +1,5 @@
 ---
-related-issues: B2, D23
+related-issues: B2, D23, D30
 related-plans: 2026-09-21-pi-scout-handoff-spec, 2026-09-18-ava-agent-harness
 status: accepted
 ---
