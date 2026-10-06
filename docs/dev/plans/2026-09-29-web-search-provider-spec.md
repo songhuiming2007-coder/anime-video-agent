@@ -430,6 +430,16 @@ M18～M20、M24、M25 属 PR3（desktop）。
 - **门禁 7（人审检索质量）**：人 2026-10-06 原话「还行吧，5条其实远远不够，"人物介绍"的话还可以，如果要做人物剖析这样的搜索是有问题的」。判为**人物介绍类过、人物剖析类不足**；剖析类的取证（limit=10 两家全部截断、约一半仍是百科、两家重叠不到一半）与三个候选方向登记为 issues **N59**，涉及 Spec 4 冻结的 limit 上限与本 spec「每家至多 1 次」的取舍，须人排序后另立文，不在本 spec 修。
 - 验证：`npx tsc --noEmit` 过；`npx vitest run` 37 文件 422 条全绿；全量 `npx playwright test` 115 passed / 2 skipped（两个跳过与 D41 时相同，是环境变量门控的截图用例）；`uv run pytest` 全绿。
 
+## 13. 增补：N59 条数上限（2026-10-06，人裁决；施工方 = D29-A）
+
+- **起因**：门禁 7 人审「5 条远远不够；人物介绍还可以，人物剖析有问题」；取证见 issues N59。
+- **人裁决（2026-10-06）**：① 提高条数——**默认 20、上限 20**；② **不写**调研策略文案：「调研策略非常多……人物剖析、剧情伏笔等等等，完全数不完，这种决策不是 harness 该做的，是 LLM 该做的决策，你不要限制它轮数和上限就好了」；③ 两家合并模式**搁置**。
+- **轮数现状（读码，未改）**：`run_tool_loop` 没有硬性轮数上限；只有 Spec 9 的防失控三件套——人中断、本轮完全相同参数判重（换说法不受影响）、每 50 次回复或工具执行问一次人（检查点，人可继续）。三者都不限制调研本身，不动。
+- **改动**：`web.py` `SEARCH_DEFAULT_LIMIT = SEARCH_MAX_LIMIT = 20`（常量旁写依据与代价）；`tools.py` `web_search` 的 `limit` 描述「默认 20，上限 20」。请求条数仍为 limit + 1 = 21：Exa 免 key 入口实测 20 / 21 / 30 条照给；Tavily 文档写 `max_results` 上限 20，实测 21 不报错（广查询也只回 8～10 条）——若日后 Tavily 拒收 21，错误会以「tavily: HTTP 400」如实出现在汇总里，不静默。Spec 4 §3.2 archive 加修订注记。
+- **用例**：`test_n59_default_and_cap_are_20`（直调层默认 / clamp / 工具描述）、`test_n59_tool_layer_passes_default_20`（工具层不带 limit 与超大 limit 都传 20）；T-P16 参数加 20；T-P4 的条数断言随默认值改为 fixture 全部 11 条。顺带：`test_exa_mcp_request_shape` 钉住 `User-Agent: ava-agent/1.0`——2026-10-06 探针实测不带 UA（urllib 默认 `Python-urllib/x`）时 Exa 免 key 入口回 Cloudflare 1010 / 403，生产代码一直带着，此前没有用例守。
+- **变异**（同 §12.3 口径）：M-L1 上限改回 10 → `test_n59_default_and_cap_are_20` 与 T-P16[20] 杀；M-L2 默认改回 5 → 两条 N59 用例杀；M-L3 工具层写死 10 → `test_n59_tool_layer_passes_default_20` 杀；M-UA 删 UA 头 → `test_exa_mcp_request_shape` 杀（断言失败）；M23 复跑仍杀。
+- **真机**：终端 `execute_tool("web_search", {"query": "春物 一色彩羽 角色剖析 长评"})`（不带 limit）→ `exa_mcp` 20 条、`truncated=true`、snippet 合计 9,818 字。桌面端无需重建：会话进程跑的是仓库里的 `pipeline/`。
+
 ## 附：引用自查表（2026-09-29 草案时按 HEAD `4ca9a03` 核对；以符号为锚）
 
 | 引用 | 位置 | 核对 |

@@ -193,6 +193,7 @@
 ### 3.2 `web_search` 工具契约
 
 - **参数 schema**（LLM 可见）：`query: string`（必填，非空）、`limit: integer`（可选，默认 5，clamp 至 [1, 10]，`tools.py:613` 同款）。
+  > **修订注记（2026-10-06，N59，人裁决）**：默认与上限都改为 **20**（`SEARCH_DEFAULT_LIMIT = SEARCH_MAX_LIMIT = 20`）。原因：人物剖析类查询在 limit=10 时两家全部截断、约一半仍是百科；人原话「调研策略……完全数不完，这种决策不是 harness 该做的，是 LLM 该做的决策，你不要限制它轮数和上限就好了」。20 = Tavily 文档单次上限（Exa 免 key 入口实测 30 照给）。代价：每条 snippet 封顶 500 字，一次至多约 1 万字进上下文（实测一次 20 条 ≈ 9.8k 字）。不加按题材的调研策略文案，查什么、查几次由模型决定。
 - **实现返回值**（`execute_tool` 包装为 `{"ok": True, "result": ...}`，`tools.py:670`）：
   ```json
   {

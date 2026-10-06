@@ -266,7 +266,7 @@ def test_tp4_fall_through_to_backup(primary: Any, reason: str) -> None:
     router = _Router(exa_mcp=primary, tavily=TAVILY_OK)
     out = search_web("frieren", config=DEFAULT_CHAIN, opener=router)
     assert out["provider"] == "tavily"
-    assert len(out["results"]) == 5
+    assert len(out["results"]) == 11  # fixture 全部 11 条（默认 limit 20，N59）
     assert router.calls == {"exa_mcp": 1, "tavily": 1}
     # 同一故障在全链失败时出现在汇总里（原因措辞钉住）
     router2 = _Router(exa_mcp=primary, tavily=_http_error(500))
@@ -719,7 +719,7 @@ def test_sent_url_is_the_checked_endpoint(monkeypatch: pytest.MonkeyPatch) -> No
 # ——— T-P16：limit 映射与 truncated ———
 
 
-@pytest.mark.parametrize("limit", [1, 5, 10])
+@pytest.mark.parametrize("limit", [1, 5, 10, 20])
 def test_tp16_request_count_is_limit_plus_one(limit: int) -> None:
     """T-P16（M23）：请求条数 = limit + 1；返回 limit + 1 条 → 截到 limit 且 truncated。"""
     router = _Router(exa_mcp=_http_error(429), tavily=_tavily(limit + 1))
@@ -736,6 +736,33 @@ def test_tp16_request_count_is_limit_plus_one(limit: int) -> None:
     assert exact["truncated"] is False
 
 
+def test_n59_default_and_cap_are_20() -> None:
+    """N59（人 2026-10-06 裁决）：不传 limit 即 20；传更大值 clamp 到 20；直调层与工具层一致。"""
+    from pipeline.agent.tools import TOOL_SCHEMAS
+
+    assert (web.SEARCH_DEFAULT_LIMIT, web.SEARCH_MAX_LIMIT) == (20, 20)
+    for kwargs in ({}, {"limit": 50}):
+        router = _Router(exa_mcp=_exa_sse([(f"T{i}", f"https://e.example/{i}", "x") for i in range(30)]))
+        out = search_web("frieren", config=_cfg(EXA), opener=router, **kwargs)
+        assert json.loads(router.requests[0].data)["params"]["arguments"]["numResults"] == 21
+        assert len(out["results"]) == 20
+        assert out["truncated"] is True
+    desc = TOOL_SCHEMAS["web_search"]["parameters"]["properties"]["limit"]["description"]
+    assert "默认 20" in desc and "上限 20" in desc
+
+
+def test_n59_tool_layer_passes_default_20(monkeypatch: pytest.MonkeyPatch) -> None:
+    """execute_tool 不带 limit 时传给 search_web 的是 20（工具层没有第二个更小的默认值）。"""
+    from pipeline.agent.tools import ToolContext, execute_tool
+
+    seen: list[int] = []
+    monkeypatch.setattr(web, "search_web", lambda q, limit, **kw: seen.append(limit) or {"query": q})
+    for args in ({"query": "x"}, {"query": "x", "limit": 99}):
+        res = execute_tool("web_search", args, ToolContext(scope="creative"))
+        assert res["ok"] is True, res
+    assert seen == [20, 20]
+
+
 def test_exa_mcp_request_shape() -> None:
     """请求形态与 PR0 实测一致；objective 为固定通用文案（§12 偏差 1），不含 query。"""
     req = web._build_exa_mcp(web._PROVIDERS["exa_mcp"].endpoint, "一色彩羽", 6, EXA)
@@ -743,6 +770,8 @@ def test_exa_mcp_request_shape() -> None:
     assert req.get_method() == "POST"
     assert req.full_url == "https://mcp.exa.ai/mcp?tools=web_search_exa"
     assert req.headers["Accept"] == "application/json, text/event-stream"
+    # 2026-10-06 实测：不带 UA（urllib 默认 Python-urllib/x）时 Exa 免 key 入口回 Cloudflare 1010 / 403
+    assert req.headers.get("User-agent") == "ava-agent/1.0"
     assert body["method"] == "tools/call"
     assert body["params"]["name"] == "web_search_exa"
     assert body["params"]["arguments"] == {
