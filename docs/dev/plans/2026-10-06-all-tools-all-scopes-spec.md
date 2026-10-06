@@ -1,6 +1,6 @@
 # Spec 17：工具不再按模式（scope）分配，所有模式开放全部工具（D43）
 
-> **状态：v0.2，待红队定向复审**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
+> **状态：v0.2，定向复审 🟢 可动工，待人确认后施工 D43-B**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)；同日 D43-R2 定向复审 🟢，13 条全部核销，另 6🔵 由施工吸收，见「定向复审」）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
 > 对应 issues：**D43**（主）；与 **D42** 交叉（D42 方案 (a) 的「idea 补联网工具」被本 spec 覆盖，见 §6）。
 > 相关：ADR-0021（网络工具内化，「网络工具只对 asset / creative 可见」）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、Spec 10（`archive/2026-09-25-desktop-conversation-panel-spec.md`）§2.5（idea 会话零写权限）、impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.4 / §2.5 B3-r6（scope 白名单）；新提 **ADR-0027**（`docs/dev/adr/0027-tools-not-gated-by-scope.md`，提议中）。
 
@@ -55,6 +55,42 @@
 | 🔵-6 | 采纳：R4 实测落点写进 §3.4，库级事件少字段一项**接受**（idea 本就不落盘，库级 `approval_resolved` 事件已够追溯）；`write_memory` 的 `cite` 在 idea 下报错属正确语义 | §3.4 |
 | 🔵-7 | 采纳：R2 判断列补审计面残余 | §5 R2 |
 | 🔵-8 | 采纳：施工顺手改 `desktop/e2e/sessionReal.spec.ts` 过期注释 | §10 PR1 |
+
+## 定向复审（2026-10-07，D43-R2；复审人 = D43-R 红队 session，未参与 v0.1 立文与 v0.2 修订；只审文稿，未改仓库代码）
+
+**裁决：🟢 可动工**（13 条全部核销，另有 6🔵 由 D43-B 施工时吸收，在施工回填里逐条写清处置；不需要人重新拍板）。复审对象为 v0.2（`726f5cb`）与措辞收口 `81598a8`。
+
+**核销**（逐条去回应表指向的正文核对，并在 scratchpad 原型上实跑）：
+
+| 编号 | 结论 | 依据 |
+|---|---|---|
+| 🟡-1 | ✅ | §3.4 表、拦截机制段，§8 Q4，§9 TA-6 与 MUT-A11 都已落地；原型上 MUT-A11 被 TA-6[acquire_propose] 杀死 |
+| 🟡-2 | ✅ | TA-6 的 write_memory 腿改为完整回环，另加 TA-6b；原型上 MUT-A8 被 TA-6b（两个 scope）杀死，TA-6 回环腿也一起变红 |
+| 🟡-3 | ✅ | 已加 TA-3b 与 MUT-A9；原型上 MUT-A9 被 TA-3b 在三个 scope 下全部杀死 |
+| 🟡-4 | ✅（另有新漏项，见 R2-2） | §7 (a)–(e) 与 ADR-0023 L76 的原文逐行 grep 都命中；§3.5 的 grep 范围已扩到整个 `docs/` |
+| 🟡-5 | ✅，部分采纳的理由成立 | M24 退役、M29 改锚已写进 §9。M20 改锚、不退役：`review_tool_call` 去掉「未注册」两行后，未注册名字会在 `TOOL_SCHEMAS[name].get("side_effect")` 处抛 KeyError，`run_tool_loop` 兜底走 `_stop("error")`，整个回合中止，不再是「拒收并回喂拒因」，所以这两行是现役护栏。改锚后的杀手是 `test_m20_unregistered_tool_rejected_no_card`（断言回喂拒因）；`test_m20_out_of_scope_tool_rejected_no_card` 按 §9 改写 |
+| 🔵-1 | ✅ | 改写轴与清单已写进 §9；`81598a8` 剔除 test_run_pipeline_pinning 的理由由原型实测确认（函数本体不拦时，该文件全绿） |
+| 🔵-2 / 🔵-3 / 🔵-4 / 🔵-5 / 🔵-6 / 🔵-7 / 🔵-8 | ✅ | 分别落在 §3.1、§3.3、§3.4、§9、§3.4、§5 R2、§10 PR1，正文措辞与回应表一致 |
+| 预检残余 ①（`81598a8` §9） | ✅ 核销 | 见 🔵-1 行 |
+| 预检残余 ②（`81598a8` §3.4） | ✅ 核销 | 实测 13 个工具的 `side_effect`：有副作用的 6 个是 write_episode_file / run_pipeline / acquire_propose / browser / write_memory / cover_edit；减去 4 个需期工具，剩 write_memory 与 browser，措辞准确 |
+
+**v0.2 新增面的攻击结论**：
+
+- **① §3.4 拦截无缺口**。逐条核过 idea 下以 `episode_dir=None` 触发抓取卡或执行 `run_pipeline` 的路径：终端 idea REPL 没有 `/run`（`cli.py` idea 分支每一行都进 agent 回合）；`/run` 只在期 REPL 里（`cli.py` 主 REPL）和裸形态 `ava <期> /run`（需要先解析期目录）；协议层 idea 会话忽略 scope override（`protocol.py::_run_turn`：`idea = ep_dir is None` 时 override 置空）；idea 会话 `persist=False`，没有 `--continue` 可恢复；抓取卡唯一来源是 `llm.py` 在 `acquire_propose` 成功后调 `post_execute`，review 层与实现层都拦住了这一步；裸循环（`control is None` 且 `approve is None`）绕过 review，但实现层双保险覆盖全部 4 个工具（原型 TA-6 的 `execute_tool` 腿）。`run_pipeline` 函数本体不拦以后，剩下的无期调用只有 review 的 dry-run（`confirmed=False`，零副作用）和内核 `_fetch_executor`（已不可达）。「scope 切换中途建期」属于 D42 的范围，建期后 `ep_dir` 不再为 None，需期工具本来就该放行。
+- **② 批准落点「接受」对追溯够用**，有两个边界要写明（R2-5）。
+- **③ TA-3b / TA-6 / TA-6b 都能写成断言**：原型 10 例在 v0.2 实现上全绿，MUT-A8～A11 各自被指定用例杀死，还原后 md5 对拍一致。MUT-A9 是插入型变异、A10 / A11 是删除型，代码写出来后都能取到逐字唯一的锚点。§9 只要求登记、没钉锚点原文，这是对的，施工前写不出来。TA-1 / MUT-A1 有问题，见 R2-3。
+- **④ 重新 grep 整个 `docs/`**：(a)–(e) 与 ADR-0023 都在，另有新漏项（R2-1、R2-2）。
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🔵 R2-1 | **Spec 7 的 T17 不变量与 Q3 直接冲突，§9 没点名，施工时容易被反向「修绿」**。`test_agent_tools.py::test_write_memory_registered_creative_only_with_adr` 末段的不变量是「挂了 write_memory 的 scope 必须都在 `memory.scopes` 里（看得见才写得动）」（Spec 7 §2.8、二轮 🟡-A、Spec 7 内部编号 MUT-45）。单表之后每个 scope 都挂 write_memory，而 Q3 已裁决 pipeline 不注入，这条必然变红。让它变绿最顺手的两种改法都错：往 `memory.scopes` 里加 pipeline 会推翻 Q3，并违反 §4「不改记忆注入范围」；直接删掉又违反「不许只删」 | `tests/test_agent_tools.py:685-691`；`archive/2026-09-23-memory-and-model-tiering-spec.md` L62、L320、L391-397、T17 行；ADR-0023 补记 L80「pipeline scope 仍不单独注入」 | §9 改写要点补一句：T17 不变量按 Q3 退役，换成等强断言「`memory.scopes` 恰为 {creative, asset, idea}，不含 pipeline」，Q3 往哪边漂都会被拦；§7 补列 Spec 7 上述各处，加修订注记 |
+| 🔵 R2-2 | §7 还漏三处「某模式不可见/只挂 creative」的原文 | `archive/2026-09-23-acquire-propose-spec.md` L119「idea scope 不加……扩可见性须另立 ADR」、L149（scope 闸表）；`archive/2026-09-26-web-fetch-links-and-research-strategy-spec.md` L145「write_memory 只挂 creative scope」；D42 选型稿 `2026-10-06-idea-to-episode-options.md` L24 说 `browser`「要期目录挂登录态 profile」，与代码不符（profile 来自 `web.json` 的 `browser.profile_dir`，`episode_dir` 只用于事件落点，见 `web_browser.py`） | 补进 §7；D42 选型稿按 §6 加注时把这句一起更正 |
+| 🔵 R2-3 | **TA-1 / MUT-A1 在新签名下是空转的**。§3.1 把签名改成 `build_tool_schemas(root)`，不再收 scope，所以「四个模式 `build_tool_schemas` 输出逐字节相等」恒真；MUT-A1「对 idea 只返回旧 4 件」在函数体里没有 scope 可判断，按原文植不进去。全仓唯一调用点是 `llm.py::run_tool_loop` 的 `build_tool_schemas(context.scope, effective_root)` | `grep -rn "build_tool_schemas(" pipeline/` 只有 1 处 | TA-1 改在请求层断言：四个 scope 的 `ToolContext` 各跑一次 `run_tool_loop`（假 LLM），请求体里的 `tools` 逐字节相等；MUT-A1 植在 `llm.py` 调用点（如 `context.scope == "idea"` 时过滤），TA-1 杀 |
+| 🔵 R2-4 | 🟡-1 (A) 带来一条估量清单外的改写：T13② 的子进程 `execute_tool('acquire_propose', ToolContext(scope='asset', root=root))` 没传期目录，实现层双保险会让它报「先建期」 | 原型实跑 `test_candidates_propose.py::test_tools_import_does_not_pull_candidates` 红，报错正文就是统一文案；同一份原型上 `test_run_pipeline_pinning`、`test_review` 全绿 | 改写时给这条用例补 `episode_dir`，保留「实调后按需加载 candidates、不拉 acquire」这条原断言；照「以施工前实跑为准」处理即可 |
+| 🔵 R2-5 | §3.4「批准不静默丢」有两个边界没写：① idea 下卡被中断作废时，只有 `_record`，而它在 `persist=False` 时什么也不写，所以作废没有任何记录；② `log_approval_decision` 的事件写入包在 `except Exception: pass` 里，`ep_dir` 为 None 时又直接 return，库级事件一旦写失败（如外置盘掉线），y/n 都不留痕。write_memory 的 y 另有 `memory.log.jsonl` 一行（含 scope，episode 为 null），这一条可靠 | `status_card.py::log_approval_decision`（emit 吞异常；`if not ep_dir: return`）；`session.py::_record`（`if not self.persist: return`） | 作废的卡没执行任何操作，不丢证据；事件写失败与期级共用同一个吞异常点，属既有行为。§3.4 的「接受」后面补半句写明这两种情况，不改代码 |
+| 🔵 R2-6 | 拦截顺序没写死：`review_tool_call` 里的「先建期」reject 必须排在 `run_pipeline` dry-run 之前，否则 idea 下一条本身非法的命令（如 `faces unknown`）拿到的是白名单拒因，不是统一文案。TA-6 用合法命令测不出这个差别 | `session.py::review_tool_call` 现在的顺序：未注册 → 越 scope → run_pipeline dry-run → write_memory dry-run | §3.4 拦截机制段补「排在未注册检查之后、一切 dry-run 之前」；TA-6 的 run_pipeline 腿加一个非法命令样例 |
+
+**原型与探针**（都在 scratchpad 的 `d43r2/`，未进仓库）：`base/` 是 HEAD 导出的副本，相关的 22 份测试文件基线为 4 红（`test_agent_assembly_integration` 2 条、`test_golden_terminal` 2 条，副本缺 `data/` 等本机文件，与本 spec 无关）；`proto/` 按 v0.2 意图做最小改动：单表、反向检查、删越 scope 与三处实现内检查、合表、`NEEDS_EPISODE_TOOLS` 两层拦截。为了把语义失败和改名引起的 collection 错误分开，原型保留了旧名 `tool_names_for_scope` 作为别名。`test_d43r2_proto.py` 是 TA-3b / TA-6 / TA-6b 的原型，`d43r2_mut.py` 负责植入并还原 MUT-A8～A11、做 md5 对拍。逐文件实跑时 `test_agent_protocol` 的子进程因夹具 KeyError 逐条等超时（🔵-1 已知面），跑到该文件即中止，没有跑完全量。
 
 ## 0. 一句话
 
