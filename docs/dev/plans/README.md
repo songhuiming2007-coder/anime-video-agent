@@ -21,7 +21,7 @@
 | [ava 启动入口改造：idea scope](2026-09-21-ava-entry-idea-scope.md) | D27 | — | **已落地实施并全量验证通过（v1.2，D27 实施闭环，15 组变异全杀）** |
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
-| [Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）](2026-09-29-web-search-provider-spec.md) | D29 | ADR-0021 | **v0.1 草案，§11 五问人已裁决，待红队 → 施工**（PR0 需人注册 Tavily key） |
+| [Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）](2026-09-29-web-search-provider-spec.md) | D29 | ADR-0021 | v0.1 草案；**2026-10-06 红队 🟡 修订后复审**（5🟡：桌面端拿不到 Tavily key、重定向转发密钥头、PR1/PR2 顺序打断 web_fetch、fetch 脱敏用的 key 被删、401/403 与免 key 入口冲突待人裁决） |
 | [Spec 16：出网断言对可信仓库文档做命中位置级豁免](2026-10-06-egress-assert-trusted-docs-spec.md) | D30 | ADR-0026（提议中）、ADR-0021、ADR-0022 | **v0.1 草案（2026-10-06 D30-A）**，复现已存证（03 与 03.5 两工序首轮 `[BLOCKED]`）；人 2026-10-06 已裁决（Q1 = ②a，Q2–Q4 同意）→ 待红队 D30-R |
 | [D39 桌面端布局：现状实测与方案候选](2026-09-29-desktop-layout-options.md) | D39 | — | 人选 **B**（预览默认收起）；S1–S4 已施工、每步人看过真实窗口截图（S1/S2 人确认满意），机检通过；**2026-09-29 人在打包版体验「整体很舒适」**，真实一期验收待硬盘到手（UI 规则 2 未勾，不归档） |
 

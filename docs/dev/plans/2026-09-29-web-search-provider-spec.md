@@ -1,9 +1,29 @@
 # Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）
 
-日期：2026-09-29（**v0.1 草案**，未经红队；状态：**§11 五问人已全部裁决（2026-09-29）→ 待红队 → 施工**；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
+日期：2026-09-29（**v0.1 草案**；**2026-10-06 红队一轮（D29-R）裁决 🟡 修订后复审**，见下方「红队一轮裁决」；状态：§11 五问人已裁决 → **待按 🟡-1~5 修订（🟡-5 需人裁决）→ 定向复审 → 施工**；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
 
 > **本稿只是草案。** 选型（Exa 主、Tavily 备）已由人 2026-09-29 拍板；其余设计点（§2）是我的建议，每条都标了「待人确认」的地方（§11）。**施工时点**：按 2026-09-26 人拍板，晚于二期 21 个 session 收官——现已满足，可排期。
 > 本稿的 API 形态中：**Exa 免 key MCP 端点已在代理下实测**（§2.1 证据）；**Exa 带 key 的 REST 与 Tavily 的请求/响应形态来自官方文档与我的记忆，本机没有 key，未实测**——PR1 第一步必须用真实 key 各打一发，把响应存成 fixture 后再写解析器（§8）。
+
+## 红队一轮裁决（2026-10-06，D29-R，独立 session 未参与起草；只审文稿，未改代码）
+
+**裁决：🟡 修订后复审**（5🟡 + 6🔵）。契约零回归（四键、参数 schema、`tools.py` 的 limit clamp [1,10] 不动）、stdlib only、发送前 egress + `_guard_url`、零自动重试、空结果不静默、`_scrub` 入方向——这几条落地忠实于 Spec 4 与 §11 裁决。阻塞项在凭据流转与施工顺序。
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🟡-1 | **桌面端会话永远拿不到 `TAVILY_API_KEY`，备家在主力界面形同不存在** | Spec 10 §2.9：Finder 启动的 app 拿不到 shell 环境；`SESSION_*` 只注入**一个**钥匙串密钥（`config/agent*.json` 的 LLM `api_key_env`，`host/sessions.ts` 的 `extraEnv`）；`spawner.ts::childEnv` 白名单只有 PATH/LANG/PYTHONUTF8/PYTHONUNBUFFERED/HOME/USER/TMPDIR。PR0 写「放 shell profile」只对终端 `ava` 生效。按 §11 Q2，缺 key 的 tavily 被标「未就绪」跳过——桌面端里 Exa 一挂就是「无可用检索服务」 | 补一条对 Spec 10 §2.9 的修订请求：host 依 `web.json` 链上各家的 `api_key_env`（同 `KEY_ENV_NAME_RE` 与值校验）从钥匙串 `-s ava` 读并注入，日志/诊断同 TH-6 纪律；或由人明确接受「备家只在终端可用」。PR0 写清两处放 key（shell profile 与 `security add-generic-password -s ava -a TAVILY_API_KEY`）。门禁 5 必须在桌面端会话里跑 |
+| 🟡-2 | **重定向会把密钥头带到别的主机** | 2026-10-06 本机 127.0.0.1 探针（scratchpad `redirect_probe.py`）：`urllib` 对 POST 收到 302 → 改 GET 跳到另一端口，**`Authorization: Bearer …` 与 `x-api-key` 原样转发**；`add_unredirected_header` 设的头不转发。`_GuardedRedirectHandler` 只逐跳 `_guard_url`，不剥头；公网目标照样通过 `_guard_url` | provider 请求的密钥头一律 `add_unredirected_header`，或 provider 请求不跟随重定向（3xx 记为「可落下一家」的故障并报出）。新增用例：fake opener 模拟 302 → 断言新请求不含任何密钥头；变异「改回 `headers=` 设头」应被杀 |
+| 🟡-3 | **PR 划分与 §11 Q5 自相矛盾，PR1 落地即打断 web_fetch** | §8：PR1 改 `load_web_config`（旧字段 → `None`），`web.json` 与本机 `web.local.json` 的 `search` 段要到 PR2 才换；§11 Q5 却要求「同一步」。`load_web_config` 是 search/fetch 共用配置（`fetch_web` 同样 `cfg is None` 即报错），而 `web.local.json` 整文件覆盖 `web.json`——PR1 与 PR2 之间，web_search **和 web_fetch** 在本机与默认配置下都不可用，读真实配置的用例也会红 | 把 `web.json` 默认链与 `web.local.json` 清理并入 PR1 的同一提交（人确认后改本机文件）；或 PR1 期间旧字段仍兼容读、PR2 再收紧——二选一写死 |
+| 🟡-4 | **删 `WebConfig.api_key` 会打断 `fetch_web` 的脱敏，而 §6 声称 fetch 原样** | `web.py` 的 `fetch_web` 在正文、`final_url`、链接清单、`url` 四处用 `_redact_secret(..., cfg.api_key)`；§4.1 删掉 `api_key`、改为每家 `ProviderCfg.api_key`，未说 fetch 用哪个 | 写死：search 与 fetch 都对**链上全部非空 key**逐一 `_redact_secret`（结果、错误消息、`provider` 字段、fetch 四处）；T-P8 增 fetch 腿 |
+| 🟡-5 | **§11 Q3「401/403 直接失败」与 §2.1 RF-1「Exa 免 key 入口可能加验证」冲突** | 免 key 的 `exa_mcp` 若被收紧（或前置 Cloudflare 挑战），返回的正是 401/403；按 Q3 直接失败、Tavily 一次不试——备家恰在它最该顶上的场景缺席。Q3 的理由「key 配错了不许静默」只对**配了 key 的家**成立 | 不改 Q3 本意，**请人澄清适用范围**：建议「配了 key 的家 401/403 → 直接失败；免 key 的家 401/403 → 可落下一家，原因写『免 key 入口被拒，需配 key』」。需人裁决 |
+| 🔵-1 | MCP 带内错误被误报为「解析为空」 | JSON-RPC 可在 HTTP 200 下返回 `error` 或 `result.isError: true`（限流文案常走这里）；§2.2 只按 HTTP 状态分类 | 带内错误单列一类（可落下一家），原因取其文案（截断 200 字、`_scrub`、不含 query）；PR0 尽量取一份带内错误样本做 fixture |
+| 🔵-2 | `limit` 到各家请求参数的映射与 `truncated` 判定未写 | §2.3 只说 `truncated` 表示被 limit 截断；若向 provider 请求恰好 limit 条，`truncated` 恒为假 | 写死每家请求 `numResults`/`max_results` = limit + 1（≤ 10），按返回条数是否超 limit 判 `truncated` |
+| 🔵-3 | 变异矩阵缺两条最粗的回退 | 「fallback 永不触发」只隐含在 T-P4；「未就绪的家仍被发送（无 key 请求 → 401 → 按 Q3 直接失败，掩盖缺 key）」无对应 | 增 M13「可落下一家的故障直接抛出」→ T-P4；M14「未就绪家照发」→ T-P9（断言该家 opener 零调用、汇总里写缺哪个变量） |
+| 🔵-4 | 「key 泄进日志」只测了返回值与错误消息 | T-P8 未覆盖 stdout/stderr | T-P8 加 `capsys` 断言 stdout/stderr 不含假 key |
+| 🔵-5 | PR0 真实响应 fixture 的卫生 | 原始响应入库前未要求检查 | 入库前 `grep` 不含 key 值与个人信息；查询用中性词 |
+| 🔵-6 | 实测环境与运行环境不同 | 2026-09-29 实测走显式代理 `127.0.0.1:7897`；桌面端会话 env 无任何代理变量，依赖 TUN / 系统代理 | 门禁 4/5 在终端与桌面端各跑一次，记录各自出网路径 |
+
+与 Spec 16（D30）的交叉：Spec 16 给 `assert_egress_boundary` 加的是带默认值的关键字参数，本 spec 的调用点不传、行为不变，两者无冲突；谁后落地谁 rebase。
 
 ## 0. 一句话设计
 
