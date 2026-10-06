@@ -1,6 +1,6 @@
 # Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）
 
-日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；状态：**v0.2 定向复审（2026-10-06，D29-R2）🟡 再修订**（4🟡 + 5🔵，见「定向复审」；🟡-3 未堵住）→ v0.3 作者修订 → 定向复核 R2-1～R2-4 → 施工（§11 五问与 🟡-1 / 🟡-3 / 🟡-5 三处补充裁决人均已拍板；R2-9 / N50 待人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
+日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；**2026-10-06 v0.3（作者修订，回应 D29-R2 的 4🟡 + 5🔵，见「作者修订回应（v0.3）」）**；状态：**v0.3，待定向复核 R2-1～R2-4** → 施工（§11 五问、🟡-1 / 🟡-3 / 🟡-5 三处补充裁决、R2-9 / N50、Q5 措辞改为「替换」均已由人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
 
 > **本稿是 v0.2 修订稿。** 选型（Exa 主、Tavily 备）已由人 2026-09-29 拍板；§11 的 Q1～Q5 与 2026-10-06 的三处补充裁决（Q3 注、Q5 注、Q6）均已拍板，本稿不再有待人确认项（施工时动本机 `web.local.json` 仍须人当场确认，§4.3）。**施工时点**：按 2026-09-26 人拍板，晚于二期 21 个 session 收官——现已满足，可排期。
 > 本稿的 API 形态中：**Exa 免 key MCP 端点已在代理下实测**（§2.1 证据）；**Exa 带 key 的 REST 与 Tavily 的请求/响应形态来自官方文档与我的记忆，本机没有 key，未实测**——PR1 第一步必须用真实 key 各打一发，把响应存成 fixture 后再写解析器（§8）。
@@ -41,7 +41,7 @@
 | 🔵-5 | 采纳 | §8 PR0：fixture 入库前 `grep` 不含 key 值与个人信息，查询用中性词 |
 | 🔵-6 | 采纳 | §9 门禁 4 / 5 在终端与桌面端各跑一次，记录各自的出网路径（显式代理 / TUN / 系统代理） |
 
-与 Spec 16（D30）的交叉：Spec 16 给 `assert_egress_boundary` 加的是带默认值的关键字参数，本 spec 的调用点不传、行为不变，两者无冲突；谁后落地谁 rebase。
+与 Spec 16（D30）的交叉（v0.3 改，R2-4）：代码面无冲突——Spec 16 给 `assert_egress_boundary` 加的是带默认值的关键字参数，本 spec 的调用点不传。**测试面有交集**：本 spec PR1 必须改写 T5a / T5b / T17，而它们是 Spec 16 冻结「不删、不弱化」的用例、也是其 MUT-D7 的指定杀手。改写规则见 §7 T-P13；PR1 落地时在改写后的 T5a / T17 上复跑 Spec 16 的 MUT-D7。
 
 ### 定向复审（2026-10-06，D29-R2；复审人未参与红队一轮，也未参与 v0.2 修订；只审文稿，未改代码）
 
@@ -81,6 +81,22 @@
 
 **施工前人还要做什么**：PR0 照旧。注册 Tavily，**两处都放 key**：shell profile 里 `export TAVILY_API_KEY=…`，钥匙串里 `security add-generic-password -s ava -a TAVILY_API_KEY -w`。如果采纳 R2-2，变量名必须以 `TAVILY_` 开头（`TAVILY_API_KEY` 符合）。PR1 施工当天按 R2-7 的顺序当场确认本机 `web.local.json` 的改写。v0.3 修订后只需对 R2-1～R2-4 做定向复核。
 
+### 作者修订回应（v0.3，2026-10-06；修订人 = v0.2 作者，未参与 D29-R2）
+
+先核证据再改：R2-1 读 `web.py::load_web_config`（`cfg_file = local_cfg if local_cfg.exists() else web.json`，整份取代），属实；R2-2 读 §2.7 第 2 条与 TH-W3，确实把「与 LLM 同名」写成了正常情形，属实；R2-3 读 `desktop/tests/host/sessions.test.ts`（READY 由 `sessionScript([READY(...), …])` 写死，host 侧的降级标记是 `snap.keyProblem`）与 `protocol.py`（`"llm": "ok" if config is not None`），属实；R2-4 读 `tests/test_agent_web.py`：T5a 用 `_make_config()`（旧字段），T5b / T17 monkeypatch `_default_opener`，T17 在临时目录写旧 schema 的 `web.json`，属实。
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| R2-1 | **采纳 (a)；人 2026-10-06 当场同意把 Q5 措辞从「删除 search 段」改为「替换为新链」** | §4.3、§8 PR1、§11 Q5 注：本机 `web.local.json` 的 `search` 段**替换为**与 `web.json` 默认链相同的新 schema 链，其余本机段不动，此后两处人手同步；§7 新增 T-P17（本机形态的临时 local 文件，`load_web_config` 与 `fetch_web` 均可用）。v0.2 写「删除」是我只想到「local 会遮住 web.json 的新链」，没想到删段后生效的仍是 local、读出来整份无效——属作者失误 |
+| R2-2 | 采纳 | §2.4 字段表：`api_key_env` 须以该家族前缀开头（`exa_api` → `EXA_`，`tavily` → `TAVILY_`）、匹配 `KEY_ENV_NAME_RE` 同形正则、且不等于 LLM 的 `api_key_env_name()`，否则整份配置无效、消息指向该字段（core 一处，终端与桌面端共用）；§2.7 第 1、2 条改写（`web_key_env_names` 只回答过了校验的名字；host 去重降为纵深，不再当正常情形）；§7 T-P9 补借名例、TH-W3 改写、新增 M22 |
+| R2-3 | 采纳 | §2.7 新增第 6 条（web 密钥解析整体 try、stdout 每行一个名字、host 去重、> 4 个只取前 4 并记诊断）；§7 TH-W2 改为断言 `keyProblem` 为空且 `dump_env` 里 LLM 名与值仍在、web 名不在；新增 TH-W4（探针非 0 / 超时 / 乱码 / 抛异常 / 名字重复 / 超过 4 个）；新增 M24「web 失败时清空 `extraEnv`」→ TH-W2 |
+| R2-4 | 采纳 | 文首「与 Spec 16 的交叉」与 §6 D30 行改写为「测试面有交集」；§7 T-P13 扩到 T5a / T5b / T17 及全部 `_make_config` / `_default_opener` 依赖用例，**只换管道、断言一条不删**；T17 腿 ② 加断言「tool 结果是『拦截出网请求』而不是『配置无效』」；「搜索前先拦受限内容」由三条接力守：直调层 T-P3、`execute_tool` 层改写后的 T5b、完整循环层 T17 腿 ②；§8 PR1 加「在改写后的 T5a / T17 上复跑 Spec 16 MUT-D7」 |
+| R2-5 | 采纳 | §2.4 字段表：`exa_mcp` **不接受** `api_key_env`（出现即判无效），有 key 就用 `exa_api`；「免 key 的家」由此唯一指 `exa_mcp` |
+| R2-6 | 采纳 | §2.2：带内错误文案先把原始 query 与归一后 query 都替换为 `<query>`，再截断 200 字、`_scrub`、`_redact_all`；T-P15 补「文案回显 query」一例 |
+| R2-7 | **部分采纳** | §8 PR1 写死本机文件的顺序、备份、回滚，并注明施工期间人不用 `ava`。「fetch 也改成按段加载」这条可选的结构性改进**不做**：它改 Spec 4 §3.1 的覆盖语义，R2-1 (a) 已经消除了连带失效的触发条件 |
+| R2-8 | 采纳 | §7 T-P9 行删去「取决于 §11 Q2」，写全「该家 opener 零调用、汇总写缺哪个变量」；新增 M23「各家请求条数 = limit（不 +1）」→ T-P16 |
+| R2-9 | **人 2026-10-06 裁决：接受，PR3 不改 `jobs.py`** | §2.7「放过了什么」写明裁决与理由；issues N50 行加注扩面（本提交） |
+
 ## 0. 一句话设计
 
 `search_web` 从「GET 一个 HTML 端点 + 钉死 DOM 的解析器」改成「**按配置顺序尝试一串 provider 适配器**」：第一个成功的答；失败（限流 / 5xx / 超时 / 空结果）落到下一个；全失败则**逐家如实报错**。`web_search` 的**对外契约四键不变**（`query/provider/results/truncated`），`_SearchResultParser` 与 DDG 端点退役。
@@ -113,7 +129,7 @@
 
 | 类别 | 例 | 行为 |
 |---|---|---|
-| 可落下一家 | HTTP 429 / 5xx、超时、DNS/连接失败、解析出 0 条、响应结构不符；**HTTP 3xx（不跟随，v0.2 🟡-2）**；**JSON-RPC 带内错误**（HTTP 200 下 `error` 或 `result.isError: true`，v0.2 🔵-1）；**免 key 的家（本次请求未带 key，即 `exa_mcp`）返回 401/403**（v0.2 🟡-5） | 记下失败原因，尝试链上下一家。带内错误的原因取其文案（截断 200 字、`_scrub` + `_redact_all`、不含 query）；免 key 家 401/403 的原因固定写「Exa 免 key 入口被拒（HTTP 40x），需配 `EXA_API_KEY` 改用 `exa_api`」 |
+| 可落下一家 | HTTP 429 / 5xx、超时、DNS/连接失败、解析出 0 条、响应结构不符；**HTTP 3xx（不跟随，v0.2 🟡-2）**；**JSON-RPC 带内错误**（HTTP 200 下 `error` 或 `result.isError: true`，v0.2 🔵-1）；**免 key 的家（本次请求未带 key，即 `exa_mcp`）返回 401/403**（v0.2 🟡-5） | 记下失败原因，尝试链上下一家。带内错误的原因取其文案：先把原始 query 与归一后的 query 都替换为 `<query>`（v0.3 R2-6），再截断 200 字、`_scrub` + `_redact_all`；免 key 家 401/403 的原因固定写「Exa 免 key 入口被拒（HTTP 40x），需配 `EXA_API_KEY` 改用 `exa_api`」 |
 | **不落下一家，直接失败** | egress 命中（`PermissionError`）、`_guard_url` 拒连、**配了 key 的家**（本次请求带了 key：`exa_api` / `tavily`）返回 HTTP 401/403（key 无效/被拒） | 立即抛出。egress 命中必须停（换一家发同样的 query 依然是泄漏）；配了 key 的家 401/403 是**配置错误**，静默换家会把「key 配错了」藏起来（家规禁静默降级）。免 key 的家被拒不是配置错误，而是 §2.1 RF-1 预言的入口收紧，恰是备家该顶上的场景（人 2026-10-06 裁决）。取舍见 §11 Q3 |
 
 - **全链失败**：抛 `ValueError`，消息**逐家列出** `provider名: 原因`（429 / 超时 / 解析为空 / …），不含请求串与密钥。这是 Spec 4 §3.2「空结果不静默」的推广——模型看到的是「三家都挂了，原因分别是…」，而不是一个含糊的「搜索失败」。
@@ -142,7 +158,7 @@
 | 字段 | 约束 |
 |---|---|
 | `search.providers` | 非空数组；每项 `name` 必须在 `_PROVIDERS` 注册表内；**同名不得重复** |
-| `providers[].api_key_env` | 指名环境变量；`exa_mcp` 允许省略（无 key 模式）；`exa_api` / `tavily` **必填** |
+| `providers[].api_key_env` | 指名环境变量。`exa_api` / `tavily` **必填**；**`exa_mcp` 不接受**（出现即判无效，有 key 就用 `exa_api`；v0.3 R2-5）。**名字校验（v0.3 R2-2，core 一处，终端与桌面端共用）**：① 以该家族前缀开头——`exa_api` → `EXA_`，`tavily` → `TAVILY_`；② 匹配与 Spec 10 §2.9 `KEY_ENV_NAME_RE` 同形的正则 `^[A-Z][A-Z0-9_]*_(API_KEY\|KEY\|TOKEN)$`；③ 不等于 LLM 配置的 `api_key_env_name()`。任一不满足 → 整份配置无效（`None`），消息指向该字段。理由：防止把 LLM 密钥或 shell 里的 `GITHUB_TOKEN` 之类借名发给检索服务——按 Q3 对方会回 401，但那时密钥已经发出去了 |
 | `search.timeout_s` | 沿用（>0，≤60），作为**每家**的超时；全链最坏耗时 = 家数 × timeout，故 `providers` 上限 4 家 |
 | **旧字段** `search.endpoint/query_param/api_key_env/api_key_param` | **出现即判无效**（`load_web_config → None`），错误消息指向 `search.providers`——旧配置不得被静默当成新配置读（否则 `web.local.json` 里残留的 so.com 会悄悄失效或悄悄生效，两者都是静默） |
 
@@ -164,13 +180,14 @@
 **问题**：Finder 启动的 app 拿不到 shell 环境；Spec 10 §2.9 每次 `SESSION_*` spawn 只从钥匙串注入**一个**密钥（LLM 的 `api_key_env`），`childEnv` 白名单不含任何 `*_API_KEY`。不改的话，桌面端会话里 `tavily` 永远「未就绪」（§11 Q2），`exa_mcp` 一挂就是「无可用检索服务」——备家在主力界面形同不存在。
 
 **流程**（扩展 Spec 10 §2.9，host 侧，PR3）：
-1. 新增 `PROBE_WEB_KEY_ENVS` 模板问 core：当前生效的 web 配置（与 `load_web_config` 共用同一段「local 优先」选择逻辑）链上各家的 `api_key_env` 叫什么。core 新增纯读函数 `web_key_env_names() -> list[str]`（去重、保持链序、配置无效时返回空清单；不读环境变量、不读值）。host 不自己读 `config/`（与 C10-R2 同理，避免 TS 侧出现第二份规则）。新模板按 Spec 8 RF-3「加模板时必须复核」走一遍白名单。
-2. 每个名字照 §2.9 第 2～4 步：`KEY_ENV_NAME_RE` 校验 → `KEYCHAIN_READ`（`security find-generic-password -s ava -a <名字> -w`）→ 值校验（可打印 ASCII、去恰好一个末尾换行）。与 LLM 密钥同名时只读一次。
+1. 新增 `PROBE_WEB_KEY_ENVS` 模板问 core：当前生效的 web 配置（与 `load_web_config` 共用同一段「local 优先」选择逻辑）链上各家的 `api_key_env` 叫什么。core 新增纯读函数 `web_key_env_names() -> list[str]`（去重、保持链序、配置无效时返回空清单；不读环境变量、不读值；**只会回答通过 §2.4 名字校验的名字**，所以不可能回答 LLM 的名字或族外名字，v0.3 R2-2）。host 不自己读 `config/`（与 C10-R2 同理，避免 TS 侧出现第二份规则）。新模板按 Spec 8 RF-3「加模板时必须复核」走一遍白名单。
+2. 每个名字照 §2.9 第 2～4 步：`KEY_ENV_NAME_RE` 校验 → `KEYCHAIN_READ`（`security find-generic-password -s ava -a <名字> -w`）→ 值校验（可打印 ASCII、去恰好一个末尾换行）。host 仍对「与 LLM 名相同」做去重，但这只是纵深：core 的校验保证正常配置下不会出现同名（v0.3 R2-2，不再把同名当作正常情形）。
 3. 通过的写进同一次 `SESSION_*` spawn 的 `env[名字]`；**任一 web 密钥失败都不影响 LLM 就绪**，只是不注入该名字，core 侧该家按 §11 Q2「未就绪」跳过。失败原因不进会话头的 LLM 降级文案，而由 core 的「无可用检索服务」/「全部检索服务失败」错误消息列出缺哪个变量，并附两处放法（见第 5 条）。
 4. 密钥纪律与 §2.9 第 5 条完全相同：不进 argv、spawn 日志、`AVA_SPAWN` 行、诊断、发往 renderer 的任何消息、host 的 stdout/stderr；`KEYCHAIN_READ` 的结果只在 `host/secrets.ts` 内被读取（TG-12）。注入的键数上限 = 1（LLM）+ 链上家数（≤ 4）。
 5. 两处放 key（§4.3、§8 PR0 写进人手步骤）：终端 `ava` 用 shell profile 的 `export TAVILY_API_KEY=…`；桌面端用 `security add-generic-password -s ava -a TAVILY_API_KEY -w`。core 的错误消息写成「`tavily` 需要环境变量 `TAVILY_API_KEY`（未设置；终端：在 shell profile 里 export；桌面端：`security add-generic-password -s ava -a TAVILY_API_KEY -w`）」。
+6. **失败面（v0.3 R2-3）**：web 密钥解析（探针 + 逐个钥匙串读取）整体包在一个 try 里，任何异常都等同于「无 web 密钥」，绝不冒出 `resolveKey` 之外拖垮会话启动；`PROBE_WEB_KEY_ENVS` 的 stdout 写死为**每行一个名字**（UTF-8、无其他内容），退出码非 0、超时、出现不合 `KEY_ENV_NAME_RE` 的行 → 整体视为「无 web 密钥」并记诊断（不含值）；host 侧去重，超过 4 个只取前 4 个并记诊断。以上任何一种情况，LLM 密钥的注入与 `keyProblem` 都不受影响。
 
-**放过了什么、代价**：会话进程多了至多 4 个密钥变量。它们与 LLM 密钥一样随 `jobs.py` 的 `env = dict(os.environ)` 继承到作业及其子孙（ffmpeg、yt-dlp 等），**N50 的面随之扩大**（N50 仍是备忘，本 spec 不修，在 N50 行加注）。TH-6「会话环境只比白名单多一个密钥键」的断言改为「只多出 LLM 名 + web 链上声明的名字，且每个都匹配 `KEY_ENV_NAME_RE`」。
+**放过了什么、代价**：会话进程多了至多 4 个密钥变量。它们与 LLM 密钥一样随 `jobs.py` 的 `env = dict(os.environ)` 继承到作业及其子孙（ffmpeg、yt-dlp 等），**N50 的面随之扩大**。**人 2026-10-06 裁决（R2-9）：接受，PR3 不在 `jobs.py` 剥离这些变量**，N50 保持备忘、行内加注扩面。理由：同用户进程本来就能直接调 `/usr/bin/security find-generic-password -s ava` 读到 key（`security add-generic-password` 建的条目默认信任 `security` 本身），终端的 key 也明文放在 shell profile 里；浏览器与 crawl4ai 从会话进程内直接拉起、不经 `jobs.py`，只改那里会造成「已收紧」的错觉。若将来要收紧，在 N50 下另立小 spec，同时覆盖 `jobs.py` 与会话进程内的拉起。TH-6「会话环境只比白名单多一个密钥键」的断言改为「只多出 LLM 名 + web 链上声明的名字，且每个都匹配 `KEY_ENV_NAME_RE`」。
 
 ## 3. 数据契约
 
@@ -202,7 +219,7 @@
 ### 4.3 配置与迁移
 
 - `config/agent/web.json`（进 git）：`search` 段换成 §2.4 默认链。
-- **本机 `config/agent/web.local.json`（gitignore，当前指向 so.com）**：整文件覆盖会让 `web.json` 的新默认链**失效**，且含旧字段将被判无效。**施工 PR 必须显式处理**：删掉其中的 `search` 段（保留 `trusted_fake_ip_ranges/crawl/browser` 等本机项）；此步动的是用户本机文件，**需人确认后再改**，不得在 PR 里悄悄改。**时点（v0.2 🟡-3，人 2026-10-06 裁决）**：与 `load_web_config` 的切换、`web.json` 默认链的替换**在 PR1 同一提交里完成**——`load_web_config` 是 search 与 fetch 共用的配置，任何「代码已切、配置未换」的中间态都会让 `web_search` **和 `web_fetch`** 一起不可用。本机文件不进 git，提交说明写明「本机 web.local.json 删除了 search 段（endpoint/query_param/api_key_env/api_key_param/timeout_s）」。
+- **本机 `config/agent/web.local.json`（gitignore，当前指向 so.com）**：整文件覆盖会让 `web.json` 的新默认链**失效**，且含旧字段将被判无效。**施工 PR 必须显式处理**：把其中的 `search` 段**替换为**与 `web.json` 默认链相同的新 schema 链（`{"timeout_s": 20, "providers": [{"name": "exa_mcp"}, {"name": "tavily", "api_key_env": "TAVILY_API_KEY"}]}`），其余本机段（`trusted_fake_ip_ranges/crawl/browser` 等）不动（v0.3 R2-1，人 2026-10-06 同意；**不是删除**——local 存在时整份取代 `web.json`，删段后生效的仍是 local，读出来整份无效）。此后 `web.json` 与本机 local 的 `search` 段要人手同步；此步动的是用户本机文件，**需人确认后再改**，不得在 PR 里悄悄改。**时点（v0.2 🟡-3，人 2026-10-06 裁决）**：与 `load_web_config` 的切换、`web.json` 默认链的替换**在 PR1 同一提交里完成**——`load_web_config` 是 search 与 fetch 共用的配置，任何「代码已切、配置未换」的中间态都会让 `web_search` **和 `web_fetch`** 一起不可用。本机文件不进 git，提交说明写明「本机 web.local.json 的 search 段由旧五字段（endpoint/query_param/api_key_env/api_key_param/timeout_s）替换为新链」。
 - 环境变量（v0.2 🟡-1：两处都要放）：`TAVILY_API_KEY`——终端放 shell profile；桌面端放钥匙串 `security add-generic-password -s ava -a TAVILY_API_KEY -w`（§2.7）。不进仓库、不进 web.local.json（后者只写变量名）。可选 `EXA_API_KEY`，放法相同。
 
 ## 5. 依赖白名单
@@ -214,7 +231,7 @@
 - **Spec 13（门禁 8）**：本 spec 落地并通过后，门禁 8 用同一冒烟任务复跑（一色彩羽 → `/character/26090`）。首跑判定 ① 当时被 D29 污染，复跑才有定性资格；**判据不变、不许调阈值**（Spec 13 §10 RF-1）。
 - **Spec 4**：改 `search_web`（§4.1）；`fetch_web` 只有一处改动——脱敏从单 key `_redact_secret(…, cfg.api_key)` 换成链上全部 key 的 `_redact_all`（v0.2 🟡-4），其余（出网守卫、清洗、`_GuardedRedirectHandler`、依赖白名单）原样。
 - **Spec 10（v0.2 🟡-1）**：§2.9「每次 spawn 只注入一个密钥」改为「LLM 密钥 + web 链上声明的密钥」，在 archive 原文加修订记录（日期、D29、人 2026-10-06 裁决），TH-6 断言口径随之调整（§2.7）。Spec 4 §3.1 配置 schema 表与 §3.2 示例值随本 spec 在归档文件加**修订注记**（不改正文）。
-- **D30**：无交集（§1）。但两者都会在 `03.5` 文本上撞 egress 断言的问题**与本 spec 无关**，不在此修。
+- **D30 / Spec 16（v0.3 改，R2-4）**：代码面无交集；**测试面有交集**——T5a / T5b / T17 是 Spec 16 冻结的用例与 MUT-D7 的杀手，本 spec PR1 只换它们的管道、不弱化断言（§7 T-P13），落地时复跑 MUT-D7。03.5 文本撞 egress 断言的问题本身归 Spec 16，不在此修。
 
 ## 7. 测试规格与变异检验
 
@@ -231,18 +248,20 @@
 | T-P6 | 全链失败 | 消息逐家列出原因；不含 query 全文、不含密钥 |
 | T-P7 | 空结果纪律 | 全部家均 0 条 → 抛错，**严禁**返回空 list（钉 §2.2） |
 | T-P8 | 凭据卫生 | 假 key 出现在请求头，**不出现在**返回值 / 错误消息 / `provider` 字段；**`capsys` 断言 stdout / stderr 不含假 key**（v0.2 🔵-4）；**fetch 腿**（v0.2 🟡-4）：链上两家各配一个假 key，`fetch_web` 抓回的正文、`final_url`、链接清单 url/anchor、`url` 里出现**任一** key 都被替换为脱敏标记 |
-| T-P9 | 配置校验 | 旧字段 → `None` 且消息指路；未知 provider 名、重名、空链、>4 家 → `None`；指名 key 变量为空 → 该家未就绪而非整体无效（**取决于 §11 Q2**） |
+| T-P9 | 配置校验 | 旧字段 → `None` 且消息指路；未知 provider 名、重名、空链、>4 家 → `None`；**借名**（v0.3 R2-2）：`tavily.api_key_env = "CPA_API_KEY"`（族外）、`= "TAVILY_X"`（形状不符）、与 LLM 名相同、`exa_mcp` 带 `api_key_env`（R2-5）各一例 → `None`，且各家 opener 零调用；指名 key 变量为空 → 该家未就绪而非整体无效（§11 Q2），**该家 opener 零调用**，汇总里写明缺哪个变量（v0.3 R2-8） |
 | T-P10 | 归一化 | snippet 封顶 500；URL 去重；`javascript:` 被丢弃 |
 | T-P11 | `_guard_url` 每家生效 | getaddrinfo 指向 `127.0.0.1` 的 provider 端点 → `PermissionError`，opener 零调用 |
 | T-P12 | 退役守卫 | `web.py` 不再含 `_SearchResultParser` / `result__a`（静态守卫，防旧路径复活） |
-| T-P13 | Spec 4 既有 T1/T16 改写 | 改为通过新适配器 fixture 表达同一性质，不留钉 DDG DOM 的用例 |
+| T-P13 | Spec 4 既有用例改写（v0.3 R2-4 扩面） | 范围：T1 / T16，以及**全部**依赖旧 search 配置或 DDG fixture 的用例——点名 **T5a / T5b / T17**，和 `tests/test_agent_web.py` 里所有 `_make_config()`、monkeypatch `_default_opener` 的搜索用例。规则：**只换管道**（新 schema 配置、patch `_provider_opener`、provider fixture），**断言一条不删、强度不变**；变异下也零真实出网（搜索走 `_provider_opener`，只 patch `_default_opener` 拦不住）。**T17 腿 ②** 临时目录里的旧 schema `web.json` 必须换成新 schema（做不到字面不改），并**加一条断言**：tool 结果里的错误是「拦截出网请求」而不是「配置无效」——否则新 loader 拒读旧配置时整条腿仍绿，却不再证明发送前断言。「搜索前先拦受限内容」由三条接力守：直调层 T-P3、`execute_tool` 层改写后的 T5b、完整循环层 T17 腿 ② |
 | T-P14a | **密钥头不随重定向**（v0.2 🟡-2） | 三个适配器构造出的请求：密钥只在 `request.unredirected_hdrs` 里，`request.headers` 里没有 |
 | T-P14b | **provider 不跟随重定向** | `_provider_opener` 对 127.0.0.1 上的两台临时服务器（A 回 302 指向 B）发请求 → 以 `HTTPError` 302 浮出、B 命中计数为 0；`search_web` 把它归为可落下一家，原因含「重定向（未跟随）」（此用例只连回环地址，直接测 opener，不经 `_guard_url`） |
 | T-P15 | **MCP 带内错误**（v0.2 🔵-1） | `exa_mcp` fake 返回 HTTP 200 + `error`（及 `result.isError: true` 各一例）→ 落到 `tavily`；全链失败时原因含带内错误文案（≤ 200 字、不含 query、不含 key），而**不是**「解析为空」 |
+| T-P17 | **本机形态配置**（v0.3 R2-1） | 临时目录里放一份「本机形态」的 `web.local.json`（含 `trusted_fake_ip_ranges` / `crawl` / `browser`，`search` 为新链），同时放一份 `web.json`：`load_web_config` 读出的是 local 的链，`fetch_web` 可用（fake opener）；把 local 的 `search` 段删掉 → `load_web_config` 为 `None`（钉住「不许删、只许替换」的理由） |
 | T-P16 | `limit` 映射与 `truncated`（v0.2 🔵-2） | 请求体里的条数参数 = limit + 1；返回 limit + 1 条 → 截到 limit、`truncated == true`；返回 ≤ limit 条 → `false` |
 | TH-W1（desktop，PR3） | 桌面端 web 密钥注入 | 假 core 回答 `PROBE_WEB_KEY_ENVS = ["TAVILY_API_KEY"]`、钥匙串桩有条目 → 会话子进程 env 恰多出 LLM 名与 `TAVILY_API_KEY` 两个键；`spawnLog`、诊断、发往 renderer 的消息里无标记值（TH-6 同口径） |
-| TH-W2（desktop，PR3） | web 密钥失败不拖累 LLM | web 名不合规 / 钥匙串 44 / 值非 ASCII 各一例 → 不注入该名字，`ready.llm` 仍为 `ok`，会话照常启动 |
-| TH-W3（desktop，PR3） | 同名只读一次 | web 名与 LLM 名相同 → `KEYCHAIN_READ` 只调用一次，env 只有一个键 |
+| TH-W2（desktop，PR3；v0.3 R2-3 改） | web 密钥失败不拖累 LLM | web 名不合规 / 钥匙串 44 / 值非 ASCII 各一例 → 会话照常启动；**断言落在 host 能决定的量上**（READY 是脚本写死的，`ready.llm` 恒为 `ok`，不能当证据）：快照 `keyProblem` 为空，`dump_env`（照 TH-6 写法）里 LLM 名与值仍在、该 web 名不在 |
+| TH-W3（desktop，PR3；v0.3 R2-2 改） | 同名去重（纵深） | 假 core 违约回答与 LLM 相同的名字 → `KEYCHAIN_READ` 只调用一次、env 只有一个该键。正常配置下 core 不会回答这个名字（T-P9 守），本例只验 host 的纵深去重 |
+| TH-W4（desktop，PR3；v0.3 R2-3 新增） | 注入失败面 | `PROBE_WEB_KEY_ENVS` 退出码非 0 / 超时 / 输出含不合规行 / 探针或钥匙串调用抛异常 / 名字重复 / 超过 4 个，各一例：会话照常启动，`keyProblem` 为空，LLM 名与值在 `dump_env` 里；前四例 env 里无任何 web 名；重复只注入一次；超过 4 个只注入前 4 个；诊断不含任何密钥值 |
 
 **变异矩阵（每条须被上表**指定**用例杀死，并核对杀手身份——沿用二期纪律：`PYTHONDONTWRITEBYTECODE=1`、净树、不许因 collection 崩溃/NameError 算 KILLED）**：
 
@@ -270,18 +289,23 @@
 | M19 web 密钥名不过 `KEY_ENV_NAME_RE` 也注入（desktop） | TH-W2 |
 | M20 web 密钥值写进 spawn 日志（desktop） | TH-W1 |
 | M21 `fetch_web` 只脱第一个 key（v0.2 🟡-4） | T-P8（fetch 腿） |
+| M22 去掉族前缀校验（v0.3 R2-2） | T-P9（借名腿） |
+| M23 各家请求条数 = limit（不 +1，v0.3 R2-8） | T-P16 |
+| M24 web 密钥任一失败时清空整份 `extraEnv`（desktop，v0.3 R2-3） | TH-W2 |
+| M25 web 密钥解析不包 try，异常冒出 `resolveKey`（desktop，v0.3 R2-3） | TH-W4（抛异常腿） |
+| M26 删除 `search_web` 发送前的 `assert_egress_boundary` 调用（Spec 4 MUT-2 在新管道上的对应，v0.3 R2-4） | T-P3，以及 T17 腿 ②——后者须由新增的「tool 结果是『拦截出网请求』」断言杀死，而不是被「配置无效」偶然带红 |
 
 ## 8. 施工与 PR 划分
 
 - **PR0（人 + 施工 session，先于代码）**：① 人注册 Tavily，**两处放 key**：shell profile `export TAVILY_API_KEY=…`（终端）与 `security add-generic-password -s ava -a TAVILY_API_KEY -w`（桌面端，v0.2 🟡-1）；可选 Exa key 同样两处；② 用真实 key 各打一发，把 `exa_mcp` / `exa_api` / `tavily` 的**原始响应**存成 fixture（尽量含一个 429 / 无结果 / **JSON-RPC 带内错误**样本，v0.2 🔵-1），并核实各家单次条数上限 ≥ 11（§2.3）；**未拿到真实响应前不写解析器**；③ **fixture 卫生（v0.2 🔵-5）**：查询用中性词（不含个人信息）；入库前 `grep` 确认不含 key 值、邮箱、账号名等个人信息。
-- **PR1（core，v0.2 🟡-3 改）**：`web.py` 适配器 + 新 `search_web` + `load_web_config` + `_redact_all` + `_provider_opener` + `web_key_env_names` + T-P1～T-P16 + 变异 M1～M17、M21 实跑；**同一提交**内替换 `config/agent/web.json` 默认链，并（施工时人当场确认后）删除本机 `web.local.json` 的 `search` 段——提交前用真实配置跑一次 `load_web_config` 与 `web_fetch`，确认两者都可用；Spec 4 归档文件加修订注记。
+- **PR1（core，v0.2 🟡-3 改）**：`web.py` 适配器 + 新 `search_web` + `load_web_config` + `_redact_all` + `_provider_opener` + `web_key_env_names` + T-P1～T-P17 + T-P13 范围内的 T5a / T5b / T17 改写 + 变异 M1～M17、M21～M23、M26 实跑；改写后的 T5a / T17 上复跑 **Spec 16 的 MUT-D7**（断言整个关掉），确认仍被杀（R2-4）。**同一提交**内替换 `config/agent/web.json` 默认链，并按下面的顺序处理本机 `web.local.json`（v0.3 R2-1 / R2-7）：① 代码与测试全绿；② 把本机 `web.local.json` 备份到 scratchpad；③ 人当场确认；④ 把其 `search` 段**替换**为新链（§4.3，不是删除）；⑤ 立刻用真实配置跑 `load_web_config` 与 `web_fetch`，两者都可用才继续；⑥ 提交，说明写清本机文件改了什么。施工期间人不用 `ava`（桌面端直接从工作树起 core）；若之后回滚 PR1，须同时用备份恢复本机文件，否则旧代码会拒读新 schema。Spec 4 归档文件加修订注记。
 - **PR2（core）**：`tools.py` 的 `web_search` description；终端真机跑门禁 4、5。
-- **PR3（desktop，v0.2 🟡-1）**：`PROBE_WEB_KEY_ENVS` 模板 + `host/secrets.ts` 扩展 + `sessions.ts` 注入 + TH-6 口径调整 + TH-W1～W3 + 变异 M18～M20；Spec 10 §2.9 archive 原文加修订记录；N50 行加注；`release-build` 后在**桌面端会话**里跑门禁 4、5。PR3 落地后跑 Spec 13 门禁 8 冒烟；issues D29 迁 archive。
+- **PR3（desktop，v0.2 🟡-1）**：`PROBE_WEB_KEY_ENVS` 模板 + `host/secrets.ts` 扩展 + `sessions.ts` 注入 + TH-6 口径调整 + TH-W1～W4 + 变异 M18～M20、M24、M25；Spec 10 §2.9 archive 原文加修订记录；N50 行加注；`release-build` 后在**桌面端会话**里跑门禁 4、5。PR3 落地后跑 Spec 13 门禁 8 冒烟；issues D29 迁 archive。
 
 ## 9. 验收门禁
 
-1. T-P1～T-P16 与 TH-W1～W3 全绿；全量 pytest 全绿（缺盘才红的既有用例除外，需在结论里写明）；
-2. 变异 M1～M21 全部被**指定用例**杀死，回填矩阵；desktop 侧另跑 `npx vitest run`、`npx tsc --noEmit`、全量 e2e；
+1. T-P1～T-P17 与 TH-W1～W4 全绿；改写后的 T5a / T5b / T17 全绿且断言未减；全量 pytest 全绿（缺盘才红的既有用例除外，需在结论里写明）；
+2. 变异 M1～M26 全部被**指定用例**杀死；Spec 16 MUT-D7 在改写后的 T5a / T17 上仍被杀死，回填矩阵；desktop 侧另跑 `npx vitest run`、`npx tsc --noEmit`、全量 e2e；
 3. `web.py` 静态守卫：无 `_SearchResultParser`、无第三方 import；
 4. `web.json` 与（清理后的）本机配置均能被 `load_web_config` 读出，`web_search` 真实调一次拿到 ≥3 条含正文摘录的结果；`web_fetch` 同时可用；**终端与桌面端各跑一次**，记录各自出网路径（显式代理 / TUN / 系统代理，v0.2 🔵-6）；
 5. **模拟主家故障**（把 `exa_mcp` 端点临时指错）确认落到 Tavily 且 `provider=="tavily"`（真机，非 fake）；**必须在桌面端会话里跑一次**（v0.2 🟡-1：验证钥匙串注入），终端再跑一次；
@@ -302,7 +326,8 @@
 - **Q2 ✅**：`api_key_env` 指名但变量为空 → **该家跳过（标记未就绪）**，不使整个配置无效；全链都未就绪才报「无可用检索服务」并列出缺哪些变量。与 Spec 4「指名却拿不到 = 配置错误」的纪律有出入，**以本条为准**，Spec 4 归档文件加修订注记。
 - **Q3 ✅**：401/403 **直接失败、不落下一家**；错误汇总里同时列出已尝试各家的原因。**2026-10-06 人补充裁决（红队 🟡-5）**：本条只适用于**配了 key 的家**（`exa_api` / `tavily`）；**免 key 的家**（`exa_mcp`）返回 401/403 → 落下一家，并在结果里写明「Exa 免 key 入口被拒」（§2.2）。
 - **Q4 ✅**：`SEARCH_SNIPPET_MAX_CHARS = 500`（人 2026-09-29 确认）。上限的含义见下。
-- **Q5 ✅**：本机 `config/agent/web.local.json` 的 `search` 段**由施工 session 在 PR2 删除**（保留 `trusted_fake_ip_ranges/crawl/browser` 等本机项）；须在代码切换的**同一步**做（先删会让现行 `web_search` 因缺 `search` 段而失效，后删则新代码拒读旧字段），并在提交说明里写明删了什么。**2026-10-06 人补充裁决（红队 🟡-3）**：「同一步」= **PR1 的同一提交**（连同 `web.json` 默认链），不留到 PR2（§8）。
+- **Q5 ✅**：本机 `config/agent/web.local.json` 的 `search` 段**由施工 session 在 PR2 删除**（保留 `trusted_fake_ip_ranges/crawl/browser` 等本机项）；须在代码切换的**同一步**做（先删会让现行 `web_search` 因缺 `search` 段而失效，后删则新代码拒读旧字段），并在提交说明里写明删了什么。**2026-10-06 人补充裁决（红队 🟡-3）**：「同一步」= **PR1 的同一提交**（连同 `web.json` 默认链），不留到 PR2（§8）。**2026-10-06 人再次补充（D29-R2 R2-1）**：动作由「删除 `search` 段」改为「把 `search` 段**替换**为新链」——local 存在时整份取代 `web.json`，删段会让 search 与 fetch 一起失效。
+- **Q7 ✅（2026-10-06，D29-R2 R2-9）**：N50 扩面接受，PR3 不改 `jobs.py`（理由见 §2.7）。
 - **Q6 ✅（2026-10-06，红队 🟡-1）**：桌面端会话也要能用备家——改 Spec 10 §2.9，host 按 web 配置链上各家的 `api_key_env` 从钥匙串读取并注入（§2.7、§8 PR3）；不接受「备家只在终端可用」。
 
 **Q4 展开**：snippet 是 `web_search` 每条结果里给模型看的摘录，进入会话历史后**每一轮后续 LLM 调用都会重发**。上限一头决定上下文成本（默认 5 条 × 500 字 ≈ 2500 字；放到 1000 则翻倍且每轮都背着），另一头决定模型能否仅凭摘录判断「这条要不要 `web_fetch` 全文」——摘录只需够辨认页面，全文由 `web_fetch` 取。太小（如 150）辨认不出，会多花 fetch 次数；太大则挤占上下文、也放大提示注入的面（RF-3）。
