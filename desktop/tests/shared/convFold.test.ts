@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { foldConv } from "../../src/shared/convFold";
+import { charsText, foldConv, lastPromptChars } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -113,5 +113,47 @@ describe("TV-3 foldConv 缺口与作废", () => {
     if (failed.k === "tool") expect(failed.observation).toBe("失败原文");
     const okTool = rows[5];
     if (okTool.k === "tool") expect(okTool.observation).toBeNull();
+  });
+});
+
+// D41：上下文用量读数（只显示，不压缩）。口径 = 最后一次请求模型时全部消息正文的字符数，不是 token。
+describe("D41 上下文用量读数", () => {
+  const fin = (chars: unknown, seq: number) =>
+    F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: chars }, seq);
+  const ready = (seq: number) => F("ready", { episode: "E", scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null }, seq);
+
+  it("charsText：万以下千分位整数，万及以上一位小数的「万字」", () => {
+    expect(charsText(0)).toBe("0 字");
+    expect(charsText(999)).toBe("999 字");
+    expect(charsText(9192)).toBe("9,192 字");
+    expect(charsText(9999)).toBe("9,999 字");
+    expect(charsText(10_000)).toBe("1.0 万字");
+    expect(charsText(14_031)).toBe("1.4 万字");
+    expect(charsText(123_456)).toBe("12.3 万字");
+  });
+
+  it("回合脚注末尾追加「上下文 N」，缺值或非法值不追加", () => {
+    const foot = (chars: unknown) => {
+      const r = foldConv([{ k: "frame", at: 1, frame: fin(chars, 1) }]).rows.at(-1)!;
+      return r.k === "footer" ? r.text : "";
+    };
+    expect(foot(14_031).endsWith(" · done · none · 上下文 1.4 万字")).toBe(true);
+    expect(foot(9192).endsWith(" · 上下文 9,192 字")).toBe(true);
+    for (const bad of [undefined, null, -1, 1.5, "100", Number.MAX_SAFE_INTEGER + 2]) expect(foot(bad)).not.toContain("上下文");
+  });
+
+  it("lastPromptChars：取当前会话最近一次回合结束的值；新 ready 之后清零重计", () => {
+    expect(lastPromptChars([])).toBeNull();
+    const a: ConvEntry[] = [
+      { k: "frame", at: 1, frame: ready(1) },
+      { k: "frame", at: 2, frame: fin(3000, 2) },
+      { k: "frame", at: 3, frame: fin(5000, 3) },
+    ];
+    expect(lastPromptChars(a)).toBe(5000);
+    // 非法值不覆盖上一次的合法读数
+    expect(lastPromptChars([...a, { k: "frame", at: 4, frame: fin("x", 4) }])).toBe(5000);
+    // 结束会话后起的新会话：还没有回合结束 → null，不沿用旧会话的读数
+    expect(lastPromptChars([...a, { k: "frame", at: 5, frame: ready(1) }])).toBeNull();
+    expect(lastPromptChars([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: fin(800, 2) }])).toBe(800);
   });
 });

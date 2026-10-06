@@ -2,6 +2,7 @@
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 import { useEffect, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase } from "../shared/protocol";
+import { charsText } from "../shared/convFold";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
 import { Icon } from "./icons";
@@ -32,6 +33,11 @@ export function readyInfo(entries: readonly ConvEntry[]): ReadyInfo {
   return out;
 }
 
+/** D41：读数的悬停说明——如实标口径，并给出现成的绕法（不做压缩，压缩另立 spec） */
+export const CONTEXT_READOUT_TITLE =
+  "最近一次请求模型时，对话里全部消息正文的字符数（不含工具调用参数与工具定义）。是字符数，不是 token，也没有上限刻度。" +
+  "嫌长可以「结束会话」后再发新消息开新会话：期的进度在产物里，不靠对话记忆。";
+
 export function SessionHeader({
   rpc,
   convKey,
@@ -39,6 +45,7 @@ export function SessionHeader({
   info,
   memoryAsk,
   isIdea,
+  contextChars,
   onCreated,
   onResumed,
   onEnded,
@@ -49,6 +56,8 @@ export function SessionHeader({
   info: ReadyInfo;
   memoryAsk: boolean;
   isIdea: boolean;
+  /** D41：最近一次回合结束时的 prompt_chars（`lastPromptChars`）；null = 本会话还没有回合结束过，不显示 */
+  contextChars: number | null;
   onCreated: (epKey: string) => void;
   onResumed: () => void;
   onEnded: () => void;
@@ -74,6 +83,11 @@ export function SessionHeader({
       {info.llm === "degraded" && (
         <span className="warn" data-testid="llm-degraded-mark">
           LLM 未就绪
+        </span>
+      )}
+      {contextChars !== null && (
+        <span className="muted" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
+          上下文约 {charsText(contextChars)}
         </span>
       )}
       <span className="spacer" />
