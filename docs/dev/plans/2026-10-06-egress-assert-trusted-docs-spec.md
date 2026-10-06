@@ -1,6 +1,6 @@
 # Spec 16：出网断言对「可信仓库文档」做命中位置级豁免（D30）
 
-> **状态：已施工·待独立评审（D30-B，2026-10-06；施工回填见文末 §12）**。v0.2 红队定向复审（D30-R2，2026-10-06）🟢 可动工（附 2 条施工约束 🔵，见「红队定向复审裁决」，均已照做）。v0.2 = 2026-10-06 作者修订，回应 D30-R 的 3🟡 + 6🔵（见「作者修订回应」）。沿革：v0.1 草案 2026-10-06 D30-A 立文；同日人裁决 §10（Q1 = ②a，Q2–Q4 同意建议）；同日红队一轮 D30-R 🟡 修订后复审。下一步：施工（D30-B，按定向复审的 🔵-R2-1/R2-2 补齐 TD-2f 构造与 MUT-D9c）→ 独立评审（D30-C）。本文件不改代码。
+> **状态：已施工并通过独立评审（D30-B 施工 `d5d94bf`；D30-C 评审 ✅ 2026-10-06，见文末 §13）**。v0.2 红队定向复审（D30-R2，2026-10-06）🟢 可动工（附 2 条施工约束 🔵，见「红队定向复审裁决」，均已照做）。v0.2 = 2026-10-06 作者修订，回应 D30-R 的 3🟡 + 6🔵（见「作者修订回应」）。沿革：v0.1 草案 2026-10-06 D30-A 立文；同日人裁决 §10（Q1 = ②a，Q2–Q4 同意建议）；同日红队一轮 D30-R 🟡 修订后复审。下一步：施工（D30-B，按定向复审的 🔵-R2-1/R2-2 补齐 TD-2f 构造与 MUT-D9c）→ 独立评审（D30-C）。本文件不改代码。
 > 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4；v0.2 另登记 **N55**（装配器读域缺口，§3）。
 > 相关：Spec 4（`archive/2026-09-23-network-tools-spec.md`）§2.4 出网断言生效点、§7.1 T5a/T5b/T17、MUT-2/MUT-13；impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.5 **Y2-r19** 出网边界；ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）；新提 **ADR-0026**（`docs/dev/adr/0026-egress-assert-trusted-repo-docs.md`，提议中）。
 
@@ -305,12 +305,12 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 
 ## 11. 门禁
 
-1. 人裁决 Q1–Q4；红队 🟢。
-2. TD-1 修前红（失败原文为命中串）、修后绿；TD-1b～TD-1e、TD-2～TD-8（含 b～f 子项）全绿。
-3. MUT-D1～D13（含 D9b、D9c）全部由指定用例以断言杀死；TD-2f 按定向复审 🔵-R2-1 构造并先断言重注入确实发生，还原 md5 一致。
-4. 全量 `uv run pytest` 全绿。
-5. 真会话复跑 §1 复现存证（03 与 03.5 两期）。
-6. §7 文档修订面齐全；ADR-0026 状态与人裁决一致。
+- [x] 1. 人裁决 Q1–Q4；红队 🟢。　证据：§10 人裁决 2026-10-06；定向复审 D30-R2 🟢（`963ba1c`）。
+- [x] 2. TD-1 修前红（失败原文为命中串）、修后绿；TD-1b～TD-1e、TD-2～TD-8（含 b～f 子项）全绿。　证据：D30-C 把四个文件退回 `d5d94bf^` 亲跑 TD-1，两期均 `AssertionError: 本轮被出网断言拦下：拦截出网请求：内容包含受限敏感标记 '03-audio/manifest.json'`；还原（md5 一致）后全绿（§13）。
+- [x] 3. MUT-D1～D13（含 D9b、D9c）全部由指定用例以断言杀死；TD-2f 按定向复审 🔵-R2-1 构造并先断言重注入确实发生，还原 md5 一致。　证据：§12 施工回填；D30-C 另设计 4 条亲跑，3 条以断言杀死、1 条存活并登记 N57（§13）。
+- [x] 4. 全量 `uv run pytest` 全绿。　证据：D30-C 亲跑 `2003 passed in 94.95s`。
+- [x] 5. 真会话复跑 §1 复现存证（03 与 03.5 两期）。　证据：D30-C 用 `git archive` 取修前 / 修后两份临时仓库副本（不含任何 `*.local.json`），协议子进程 + 只监听 127.0.0.1 的假 LLM 独立复跑，结果与 §12 一致（§13）。
+- [x] 6. §7 文档修订面齐全；ADR-0026 状态与人裁决一致。　证据：Spec 4 §2.4 修订记录、impl spec 两处 Y2-r19 注记、ADR-0021/0022 frontmatter、README 已知限制均在 `d5d94bf`；ADR-0026 已通过。
 
 ## 12. 施工回填（D30-B，2026-10-06；施工人 = v0.2 作者，未参与 D30-R / D30-R2；D30-C 须另开 session）
 
@@ -360,3 +360,41 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 3. TD-1b 的第三步用 05（仓库没有 04 工序键），与 v0.2 回应表一致。
 4. 未在桌面端打包版上复跑；门禁 5 用的是协议子进程（与桌面端会话同一入口 `pipeline.agent.protocol`）。
 
+
+## 13. 独立评审（D30-C，2026-10-06；评审人 = D30-R / D30-R2 红队，未参与 v0.2 修订与 D30-B 施工）
+
+**结论：✅ 通过**。D30 迁 issues archive，README「已知限制」删去 03 / 03.5 一行。无阻断项；2 条 🔵 已登记或记录。
+
+① **亲自复现修前与修后**：
+- 单测层：把 `tools.py` / `llm.py` / `session.py` / `assembly.py` 退回 `d5d94bf^` 跑 TD-1，两期都红，失败原文是命中串 `'03-audio/manifest.json'`；还原后 md5 与修后一致，`git status` 干净。
+- 真会话层：用 `git archive` 分别取 `d5d94bf^` 与 `d5d94bf` 两份临时仓库副本，不含任何 `*.local.json`，`agent.local.json` 现写、指向只监听 127.0.0.1 的假 LLM，环境里剥掉全部 `*_API_KEY` / `*_TOKEN` 与代理变量；起 `python -m pipeline.agent.protocol data/episodes/<期>`，`ready` 后发「你好」：
+
+| 期 | 修前 | 修后 |
+|---|---|---|
+| D30-S03（`inspect` → 03 语音合成） | `stopped=blocked`，`llm_calls=0`，`prompt_chars=9192`，假 LLM 收到 0 个请求 | `done`，`llm_calls=1`，`prompt_chars=9192`，收到 1 个请求；请求体 `messages[1]` 含 `03-tts.md` 的 strip 原文，含字面量 |
+| D30-S035（03.5 配音顺听 / 04 排片） | `blocked`，0 个请求，`prompt_chars=14031` | `done`，1 个请求，`prompt_chars=14031`；`messages[1]` 含 `03.5-voice-check.md` 原文 |
+
+- 全量 `PYTHONDONTWRITEBYTECODE=1 uv run pytest` → `2003 passed`。
+
+② **D30-R 最坏样例清单逐条在修后代码上实跑**（真实 `assert_egress_boundary` + 真实 `route_trusted_texts("creative")` 取到的可信集，16 段、最短 564 字；scratchpad `d30c/worst.py`）：
+- **该拦的全拦**：工具参数大小写变体 `03-AUDIO/MANIFEST.JSON`、工具返回值含 `agent.local.json`、记忆消息含 `cloud.local.json`、规程后紧贴受限串、跨可信边界 `cloud.lo|cal.json`、复述规程再夹带、复述规程并在中间插入受限串、短于 200 字的可信文本被复述、`ß` 可信文本之外拼受限串。
+- **该放的放**：03.5 注入基线；`ß` 变长字符在前的可信文本。
+- **与修前相同、本 spec 不管的**：URL 编码 `cloud%2Elocal%2Ejson` 与全角同形字，修前修后都放（LLM 请求体断言本来就不做 unquote，同形字属 RF-11 上限）。
+- **读域过滤 13 例全部符合预期**：只有白名单内的真实文件为 True；以下都为 False——软链到凭据、软链到期目录、软链出根、仓库外绝对路径、`data/episodes/*/01-topic.md`、`data/library/memory.md`、`pipeline/x.md`、两种 `..` 穿越、大小写变体 `DOCS/…`、不存在的文件、`config/cloud.local.json`。
+
+③ **变异 4 条亲跑，全部自行设计**（非 §12 MUT-D 系列复跑；`PYTHONDONTWRITEBYTECODE=1`，只跑 `test_agent_{tools,session,assembly,loop}.py`，还原后 md5 全部一致）：
+
+| 变异 | 结果 |
+|---|---|
+| V1 包含判定改为重叠判定（`a < end and start < b`） | KILLED by TD-4：`DID NOT RAISE PermissionError` |
+| V3 白名单按配置路径判，不按 resolve 后真实路径判 | KILLED by TD-5：`④软链目标 不该进可信集：docs/link.md` |
+| V6 首轮工序注入不进 (a)（只留换工序那处） | KILLED by TD-1e：`本轮被出网断言拦下…'03-audio/manifest.json'` |
+| V4 (b) 不收常驻三件 | **SURVIVED**（148 passed），见 🔵-C1 |
+
+④ **文档面**：Spec 4 §2.4 修订记录、impl spec 两处 Y2-r19 注记、ADR-0021/0022 frontmatter 关联 D30、README 已知限制、plans/README、issues D30 都在 `d5d94bf`，与 §7 对得上。
+⑤ **diff 边界**：代码只动 §9 声明的 `tools.py` / `llm.py` / `assembly.py` / `session.py`，用例只动 `test_agent_tools.py` / `test_agent_session.py`，其余都是 §7 列出的文档，合规。
+
+**发现（无阻断）**：
+- **🔵-C1 生产入口的常驻层只靠 (b)，而 (b) 的常驻部分没有用例守（V4 存活）**。`protocol.py:640` 与 `cli.py:1799` 等处在进入会话前就设好了 `tracker.resident_prompt` 与 `active_scope`，所以 `_assemble` 里 `trust(trusted_texts_of_resident(...))` 只在 scope 热切换时执行。桌面端与终端的常驻层豁免实际全靠 `route_trusted_texts` 的常驻部分，删掉它全部用例仍绿。今天三份常驻文档都不含受限字面量，所以无可见后果；方向是 fail-closed（将来常驻文档写进字面量会被拦，不会漏）。这与 §12 偏差 1 是同一根源，但 §12 只说了「同进程改版」这一个残余，没说「这一路零用例」。登记 **N57**：补一条用例（常驻文档含字面量、tracker 按 `protocol.py` 的方式预置，首轮应照常发出，用来杀 V4），并视情况让那 6 处也走 `trust(...)`。
+- **🔵-C2 §5.3 一条残余说明与实测不符，实测方向更严**。§5.3 写「模型把 ≥ 200 字的规程原文逐字抄进工具参数会被豁免」，实测 W8 是**被拦**。原因是 `tool_calls[].function.arguments` 本身是 JSON 字符串，在请求体里转义了两次，与可信文本的单层转义形态对不上。逐字复述写在 assistant 的 `content` 里时，才会按 §5.3 所说被豁免。不影响安全；本条记录在此，代替修改 §5.3 正文。
+- **施工方的 MUT-D7 说明成立**：T17 在断言关掉时死于 `TypeError`，属逃逸，不计为杀死；T5a 与 TD-2a 以断言杀死。T17 是 Spec 4 冻结的用例，未改它是对的。Spec 15 PR1 改写 T17 腿 ② 时会补「拦截出网请求」断言（Spec 15 v0.3 R2-4），届时 T17 可重新成为合格杀手。

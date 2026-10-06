@@ -7,6 +7,13 @@
 
 ## 2026-10-06：桌面端可用性收口（续）
 
+### [D30] 期目录处在 03 / 03.5 时会话第一轮即 [BLOCKED]（自家 runbook 字面路径撞出网断言）
+- 状态：**已解决**（Spec 16 / ADR-0026；施工 `d5d94bf`；2026-10-06 D30-C 独立评审通过）
+- 关联：`docs/runbook/03.5-voice-check.md`、`pipeline/agent/tools.py:54-59`、`pipeline/agent/llm.py:255`；Spec 4, Spec 13；Spec 16、ADR-0026、N52、N53、N55、N56、N57
+- 原记录（活跃表原文）：期目录处在 step=03.5 时任何会话第一轮即 [BLOCKED]：runbook 文本含字面 `03-audio/manifest.json` 撞受限出网子串断言——2026-09-26 Spec 13 门禁 8 冒烟复现（绑定 step=03.5 期目录的会话必炸，payload 含该 runbook 文本即触发 `RESTRICTED_EGRESS_PATTERNS` 子串匹配）。候选：① runbook 改写避开字面路径（回避式不治本，别的文档会再撞）；② egress 断言收窄匹配语义（治本，动 Spec 4 冻结面，需独立 spec/ADR）；③ 维持登记人工绕行。验收评审倾向 ② **2026-10-06 D30-A 复现（临时仓库副本、假 LLM 端点、零出网）**：step=03.5 与 **step=03** 两期首轮都 `turn_finished{stopped:"blocked",llm_calls:0}`；逐条断言定位到 origin=`injection` 的工序层注入消息，命中 `docs/runbook/03.5-voice-check.md:7` 与 **`docs/runbook/03-tts.md:16`**（原登记只有 03.5）。注入面全扫：四条模式只有 `03-audio/manifest.json` 出现、只在这两份 runbook。附带发现见 N52（桌面端看不到拦截原因）、N53（作业输出尾巴带路径，未实测）。方案对比与测试/变异清单见 Spec 16。
+- 评审：✅ 通过（2026-10-06 D30-C，评审人为 Spec 16 的一轮红队兼定向复审人，未参与修订与施工）。① 退回修复亲跑 TD-1，两期都红在命中串 `'03-audio/manifest.json'`，还原后 md5 一致、转绿；用 `git archive` 取修前 / 修后两份临时仓库副本，协议子进程 + 只监听 127.0.0.1 的假 LLM 真会话复跑：D30-S03 / D30-S035 修前 `blocked`、0 个请求，修后 `done`、恰 1 个请求，请求体含对应 runbook 原文，`prompt_chars` 9192 / 14031 与 D30-A 一致；全量 `2003 passed`。② D30-R 最坏样例在修后代码上逐条实跑：该拦的全拦，读域过滤 13 例全部符合预期。③ 自设变异 4 条：V1（重叠判定）、V3（不按 resolve 后路径判）、V6（首轮注入不进 (a)）分别被 TD-4、TD-5、TD-1e 以断言杀死；V4（(b) 不收常驻三件）存活，登记 N57。④ 文档面齐全；⑤ diff 边界合规。详见 Spec 16 §13。
+- 发现（无阻断，🔵）：(a) 生产入口的常驻层只靠 (b)，零用例守（N57）；(b) Spec 16 §5.3「规程原文逐字抄进工具参数会被豁免」与实测不符：工具参数在请求体里转义了两次，实际被拦，方向更严，记在 Spec 16 §13。
+
 ### [D37] 原生确认框未经人手点击即记为「批准」
 - 状态：**已解决**（定性 `dd3742d`，人裁决方案 (b) `288d1c5`，施工 `b83c692`、`86df0fb`；2026-10-06 D37-C 独立评审通过）
 - 关联：`desktop/src/main/index.ts`（`dialog.showMessageBox` + `signal` 的 resolve 语义）、`src/main/confirm.ts` 队列；Spec 10 §2.4 第 5 层、H-1/H-2、门禁 4 与门禁 12
