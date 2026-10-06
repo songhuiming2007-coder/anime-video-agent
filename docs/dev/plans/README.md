@@ -22,6 +22,7 @@
 | [pi 侦察派工单（ava ↔ pi 交接协议）](2026-09-21-pi-scout-handoff-spec.md) | — | — | **已落地并验收（v0.4）** |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
 | [Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）](2026-09-29-web-search-provider-spec.md) | D29 | ADR-0021 | **v0.1 草案，§11 五问人已裁决，待红队 → 施工**（PR0 需人注册 Tavily key） |
+| [Spec 16：出网断言对可信仓库文档做命中位置级豁免](2026-10-06-egress-assert-trusted-docs-spec.md) | D30 | ADR-0026（提议中）、ADR-0021、ADR-0022 | **v0.1 草案（2026-10-06 D30-A）**，复现已存证（03 与 03.5 两工序首轮 `[BLOCKED]`）；待人裁决 §10 Q1–Q4 → 红队 D30-R |
 | [D39 桌面端布局：现状实测与方案候选](2026-09-29-desktop-layout-options.md) | D39 | — | 人选 **B**（预览默认收起）；S1–S4 已施工、每步人看过真实窗口截图（S1/S2 人确认满意），机检通过；**2026-09-29 人在打包版体验「整体很舒适」**，真实一期验收待硬盘到手（UI 规则 2 未勾，不归档） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
