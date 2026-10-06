@@ -7,6 +7,12 @@
 
 ## 2026-10-06：桌面端可用性收口（续）
 
+### [N59①] web_search 条数默认 / 上限改为 20（N59 的 ②③ 仍在活跃表：② 不做，③ 搁置）
+- 状态：**已解决**（施工 `ae0b142`；D29-B 打回一处，复修 `a1125fa`；2026-10-06 定向复核 🟢 通过；仅 ① 部分）
+- 关联：`pipeline/agent/web.py`（`SEARCH_DEFAULT_LIMIT` / `SEARCH_MAX_LIMIT` / `_Provider.max_count`）、`pipeline/agent/tools.py`（`web_search` 的 `limit` 描述）；Spec 15 §13 / §14 / §15 / §16，Spec 4 §3.2 修订注记
+- 原记录：D29 门禁 7 人审「5 条远远不够；人物介绍还可以，人物剖析有问题」→ 人 2026-10-06 裁决默认与上限都改为 20，调研策略交给模型、不写进 harness。
+- 评审：D29-B 打回 🟡 B-1（默认 limit=20 时请求 Tavily `max_results = 21`，超出文档范围 `0 <= x <= 20`），另 🔵 B-2（带内错误先截后脱敏）、🔵 B-3（用例补丁打全局 `os.environ.get`，junit 下假绿）。复修后定向复核 ✅：tavily 单次上限 20、截住时以「返回数 == 请求数」判 `truncated`，真网请求体 `max_results = 20`；B-2 改为先脱敏后截断；B-3 只替换 `web` 模块的 `os`。6 条变异在 junit 口径下全杀（2 条自设），全量 pytest 2061 passed。遗留 🔵 C-1：T-P16 `exact` 腿删了一条长度断言，下次顺手补（Spec 15 §16）。
+
 ### [D29] web_search 默认端点（DuckDuckGo html）被盾，工具实际不可用
 - 状态：**已解决**（Spec 15；施工 `4c7059b` PR1、`0a50d0e` PR2、`36fd369` PR3、`4184335` 门禁记录；2026-10-06 D29-B 独立评审通过）
 - 关联：`config/agent/web.json`、`pipeline/agent/web.py::_SearchResultParser`；Spec 4, Spec 13, D28；Spec 15（`plans/2026-09-29-web-search-provider-spec.md`）、N50、N58、N59
