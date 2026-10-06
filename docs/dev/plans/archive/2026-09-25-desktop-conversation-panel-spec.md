@@ -1,6 +1,6 @@
 # Implementation Spec：桌面端对话面板与人审卡片（Spec 10 / desktop 侧，消费 Spec 9）
 
-> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR0–PR4）；§9 门禁 1–5、7、8、10、11、13 已勾；**未验**：门禁 6（密钥打包版手验）、9（05 返工真机手验）、12（打包版完整回合手验）——均待人；**遗留**：D37（原生确认框未经人手点击被记批准，定性中，安全相关）、N39（切仓窗口新代号+旧根，待拍板）。
+> **归档状态（2026-09-29，S21 收尾）**：已施工并验收（PR0–PR4）；§9 门禁 1–5、7、8、10、11、13 已勾；**未验**：门禁 6（密钥打包版手验）、9（05 返工真机手验）、12（打包版完整回合手验）——均待人；**遗留**：D37（2026-10-06 人手定性未复现 fail-open；按用户裁决 (b) 改措辞 + 修 D40，已施工待评审）、N39（切仓窗口新代号+旧根，待拍板）。
 
 日期：2026-09-26（**v0.5**，红队四轮定向复审 **🟢**，所提 4🔵 已按用户指示并入；三轮 1🟡 + 4🔵 已于 v0.4、二轮 3🟡 + 11🔵 已于 v0.3、一轮 1🔴 + 12🟡 + 13🔵 已于 v0.2 收口；状态：**已施工并验收（PR0–PR4，M6–M9；2026-09-29 S21 收尾核对：门禁 6/9/12 含打包版/真机手验，未验，见 §9；D37 定性中、N39 待拍板）**；原动工条件——S9-R1~R4 经定向复核并入 Spec 9 v0.8、Spec 9 PR3 施工完成——均已满足，见 §1.4）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§0.1 旅程第 2–5 步、§0.2 第 1/2 条、§4 施工红线、§5 明确排除、§6 Spec 10）  
@@ -257,7 +257,7 @@ Spec 8 三个闭集与两条不变量的修订全部列在这里，编号对应 
 2. **运行时（可信事件）**：上述处理器首句检查 `isTrusted`。E3 与红队实测（A1、A2）：Electron 44.4.5 下 `el.click()`、`dispatchEvent` 为 `false`，`webContents.sendInputEvent`、Playwright `locator.click()`、`keyboard.press` 为 `true`。它挡住页面内脚本合成的点击；**挡不住**被攻破的 renderer 直接发 RPC（见第 5 层与 RF-3）。
 3. **host 绑定**：`conv.answer` 只接受该会话键当前**打开中**的 `request_id`（否则 `E_STALE`、零写入）；`decision ∈ request.options`；`feedback` 仅 `kind === "tool_call" && decision === "reject" && feedback_allowed` 时允许；同一 `request_id` 同时只允许一个在途答复（第二次 → `E_BUSY`）。它保证答复对得上一张真实的卡，**不**证明答复来自人。
 4. **没有无点击路径**：打开期、切期、窗口聚焦、重连、收到帧、定时器，一律不产生 `conv.answer`/`approval.decide`/`conv.send`（TX-2 以 stdin 与 spawn 日志计数断言）；键盘答完一张卡后再按 Enter，不会答到下一张（TX-14）。
-5. **原生确认框（用户裁决，🟡-1）**：对 browser 卡（`kind === "tool_call"` 且 `fields.tool === "browser"`）与抓取卡（`kind === "fetch"`）的 `decision === "approve"`，host 在第 3 层校验通过后、写 `answer` 之前，经 `confirm-query` 请 main 弹原生 `dialog.showMessageBox`：标题「批准 browser 调用？」/「批准抓取素材？」，正文取自**host 保存的 request 帧**（`fields` 的 `url`/`title`/`args` 等，纯文本，renderer 不参与拼装），按钮「批准」「取消」，默认与取消按钮都是「取消」。main 回 `confirm-result{ok}`；`ok` 为假 → `conv.answer` 返回 `E_STALE`「已在确认框取消」、零写入，卡片仍打开。拒绝不弹框（拒绝不会造成副作用）。边界（二轮 🔵-4、🔵-5）：
+5. **原生确认框（用户裁决，🟡-1）**：对 browser 卡（`kind === "tool_call"` 且 `fields.tool === "browser"`）与抓取卡（`kind === "fetch"`）的 `decision === "approve"`，host 在第 3 层校验通过后、写 `answer` 之前，经 `confirm-query` 请 main 弹原生 `dialog.showMessageBox`：标题「批准 browser 调用？」/「批准抓取素材？」，正文取自**host 保存的 request 帧**（`fields` 的 `url`/`title`/`args` 等，纯文本，renderer 不参与拼装），按钮「批准」「取消」，默认与取消按钮都是「取消」（**2026-10-06 修订（D37），经用户裁决**：语义以实测为准——Return 不触发任何按钮、Esc = 取消、**只有鼠标点「批准」才放行**；选项由 `main/confirm.ts::approveBoxOptions` 生成，TH-22b 钉住）。main 回 `confirm-result{ok}`；`ok` 为假 → `conv.answer` 返回 `E_STALE`「已在确认框取消」、零写入，卡片仍打开。拒绝不弹框（拒绝不会造成副作用）。边界（二轮 🔵-4、🔵-5）：
    - **判定输入取自 host**：`needsNativeConfirm` 的输入是 host 按 `requestId` 从**自己保存的打开请求**里取出的帧，从不使用 renderer 传来的任何字段；
    - **不可见字符显式化**：正文由纯函数 `renderConfirmDetail`（§4.1）生成，把一切 Unicode 格式字符（`\p{Cf}`：双向覆盖 U+202A–202E、U+2066–2069，零宽 U+200B–200F、U+2060、U+FEFF，软连字符 U+00AD 等；E10 实测 `\p{Cf}` 覆盖以上全部）替换为可见的 `⟨U+XXXX⟩`，并在正文首行注明「含 N 个不可见字符，已显式标出」；
    - **按字段排版，不整段转储参数**（三轮 🔵-4）：正文先列**确定性字段、全文不截断**，再列**模型填写的自由文本、单独标注、超长截断**。browser 卡（参数只有 `action`、`url`、`reason`，`tools.py:538-541`）：先「操作：<`args.action`>」「目标：<`fields.target`>」（`target` 即 `args.url`，`cli.py:841-852`），再以一行「以下为模型填写的理由（未经核实）：」引出 `args.reason`；抓取卡：先「序号、标题、URL、类型、来源、预计时长」，再同样引出 `why`。自由文本超过 `CONFIRM_FREE_TEXT_MAX_CHARS` 时截断并标「…（已截断，共 N 字符）」。键序、填充和自由文本里伪造的「URL: …」都挤不掉、冒充不了前面的确定性字段；
@@ -356,6 +356,11 @@ Spec 8 三个闭集与两条不变量的修订全部列在这里，编号对应 
 6. 任一步失败 → 照常 spawn（不带密钥），Spec 9 以 `ready{llm:"degraded", degrade_reason}` 如实降级；会话头部显示「LLM 未就绪：<原因>」与一行可复制的命令 `security add-generic-password -s ava -a <名字> -w`（名字取自第 1 步；第 1 步失败时显示「未能读取 config/agent*.json 的 api_key_env」）。不弹任何输入密钥的界面（renderer 永不接触密钥）。
 7. 钥匙串授权框（A4）属于系统行为，不在 UI 控制之内；每次重建 app 后是否需要重新授权，同 Spec 8 假设 4 的实测口径记录。
 
+> **2026-10-06 修订记录（D37 / D40，经用户裁决方案 (b)）**——第 5 层与 §2.10 的确认框。
+> - **原因**：D37-A 人手定性（打包版 HEAD `239f51f`，Electron 44.4.5，macOS Darwin 27.0，全部点击与按键由人完成）：两处确认框里按 Return **都不触发任何按钮**（`defaultId: 1` 未把 Return 绑到「取消」），Esc = 取消，鼠标点「取消」= 取消，只有鼠标点「批准」/「退出」才放行；等待 30 s、切到其他应用再切回均零写入。原文「默认按钮是取消」与实测不符，但方向安全，用户裁决不改按键绑定、改措辞。证据见 issues D37 行。
+> - **改动**：① 按钮、`defaultId`、`cancelId` 不变，抽到 `main/confirm.ts`（`approveBoxOptions` / `quitBoxOptions` / `APPROVE_BUTTON`），TH-22b 钉住「放行按钮永不在默认位或取消位」并静态核对 `main/index.ts` 两处只经这两个函数取选项；② **非人手路径一律 `ok:false`**：对话框抛异常此前只撤状态不回复（host 的 `await confirm` 会永久挂起），改为回 `ok:false`；③ **D40**：主窗口 `closed`（含 `destroy()`，挂在其上的对话框永不 resolve）时 broker 新增 `windowGone()`：abort 已打开的一个，并对它与排队中的全部各回一次 `ok:false`，卡片回到打开、可在新窗口重答。选 broker 补回包而不是给 host 的 `await confirm` 加超时：人看确认框可以很久（D37-A 实测一次 766 s），超时会误伤正常审阅。用例 TH-18b（host 端到端：挂起期间重答 `E_BUSY` → `windowGone` → `E_STALE`、零写入、卡仍打开 → 重答恰 1 行 `answer`）、TH-22c（show 回 false / 抛异常 / windowGone / windowGone 后重答 / 空闲 windowGone）。
+> - **残余风险**：2026-09-27 两次「未经人手点击被记批准」发生在有自动化介入时（AX dump、System Events 按键），无自动化下未复现；复现需重新引入自动化，违反施工纪律第 5 条，不再追。
+
 ### 2.10 决策 10：结束会话与退出 app（H-5、H-6；用户裁决）
 
 - **会话进程退出时（任何原因）**：host 立即把该会话全部未关闭请求移出打开集合、记一条 `voided_local`（原因 `session_exited`），推送 delta；在途的 `conv.answer`/`conv.send` 以 `E_SESSION` 结束。此后对这些 `request_id` 的答复在打开集合检查处即得 `E_STALE`、零写入（H-5；与 §4.2 冻结顺序一致，🟡-12）。
@@ -365,7 +370,7 @@ Spec 8 三个闭集与两条不变量的修订全部列在这里，编号对应 
   1. `before-quit`：若 host 不存在、未就绪（`hostReady === false`）或已熔断（`fatal !== null`）→ **直接退出**（此时若有会话进程，它们的 stdin 随 host 消失而 EOF，按 Spec 9 自行收尾退出，A3 已实测）。
   2. 否则 `preventDefault`，`quitPhase = querying`，向 host 发 `quit-query`；`QUIT_QUERY_TIMEOUT_MS`（2 s）内没有 `quit-state` → 直接退出（同上）。
   3. `quit-state.busy` 为空 → 进入第 5 步。
-  4. 否则 `quitPhase = confirming`，弹原生 `dialog.showMessageBox`（列出「期名 · 运行中 / N 张卡未答」，并写明「正在运行的渲染等作业会被中断；回合不会再做收尾总结」；按钮「退出」「取消」，默认与取消按钮都是「取消」）。取消 → `quitPhase = idle`，**不向 host 发任何消息**，host 照常轮询。
+  4. 否则 `quitPhase = confirming`，弹原生 `dialog.showMessageBox`（列出「期名 · 运行中 / N 张卡未答」，并写明「正在运行的渲染等作业会被中断；回合不会再做收尾总结」；按钮「退出」「取消」，默认与取消按钮都是「取消」；**2026-10-06 修订（D37）**：实测 Return 不触发任何按钮、Esc = 取消、只有鼠标点「退出」才退出；选项由 `main/confirm.ts::quitBoxOptions` 生成）。取消 → `quitPhase = idle`，**不向 host 发任何消息**，host 照常轮询。
   5. 退出：`quitPhase = stopping`，main 发 `quit-proceed`。host 自收到起对一切 `conv.*` 与 `episode.create` 返回 `E_BUSY`「正在退出」（否则空闲会话收到 `shutdown` 的同时可能刚进来一条 `user_message`，二轮 🔵-6）。随后对每个活会话：**空闲**（无回合在跑、无未答卡）→ 写 `shutdown` 帧；**忙**（回合在跑或有未答卡）→ 直接 `SIGTERM` 会话 pid（Spec 9 §2.2 第 5 条：中断 + 跳过收尾 + `turn_end{wrapup:"skipped"}`；S9-R3）。唯一例外：人先点了「停止」、会话**已在收尾中**时退出，SIGTERM 按 Spec 9 §2.2 状态表放弃收尾、记 `aborted`——这是人两次明确的中断，如实记录，不再为它等待。随后每个会话最长等 `SESSION_KILL_GRACE_MS`（5 s），未退出 → `SIGKILL` 整组；全部结束后进程组清理，回 `sessions-down`；main 此时才发生命周期 `shutdown`（停定时器），然后 `app.exit(0)`。main 侧对第 5 步另设 `QUIT_STOP_TIMEOUT_MS`（10 s）兜底，超时直接退出。
 - **`window-all-closed`**：只调 `app.quit()`，不再先发 `shutdown`（现状 `main/index.ts:303-307` 先发 `shutdown`，取消退出后 host 已停止轮询，🟡-3）；退出统一走上面的状态机。关窗后取消退出时，窗口已不存在而 app 与 host 继续运行（host 的订阅在关窗时不清，`renderer-reset` 只在页面载入完成时发，`main/index.ts:264-273`），`activate` 重开窗口后照常恢复（TX-8d）。
 - **兜底路径的收尾语义如实说明**：第 1、2 步的「直接退出」不经过第 5 步，会话读到 stdin EOF，按 Spec 9 §2.8 走**完整收尾**（最长一次模型请求 60 s）后自行退出——与第 5 步「不收尾」不同，见 RF-17。
@@ -1045,7 +1050,7 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 - [x] **门禁 1（授权）**：§6.1 全部阻塞项获用户授权；S9-R1~R4 经红队对 Spec 9 的定向复核 🟢；　证据：§6.1 授权与 S9-R1~R4 并入 Spec 9 v0.8（定向复核 🟢）已闭环，见 §1.4；M3 评审 2026-09-27 见 Spec 9 §9。
 - [x] **门禁 2（建期由 core 完成、UI 不 mkdir、新期停在 01）**：TY-1~TY-4、TY-8、TY-9、TH-14、TX-7、TG-15 全绿，MUT-17~20/34/53/54 被捕获；TG-2 不变；　证据：TY-1~9 落为 `tests/test_spec10_episode_create.py`（§8.1）、TX-7、TG-15、TH-14 在全量中绿；2026-09-29 全量：`uv run pytest` 1983 passed、`npx vitest run` 377 passed、未打包 e2e 111 passed / 2 skipped（workers=2，空载 5.7 min，数据零污染）；TS 变异全表 69 条 68 KILLED / 1 SURVIVED（MUT-62，预期，见 §8.5）/ 0 BUILD_FAIL（N38 回填，`789f60e`）；Python 侧 S10-MUT-18/19/20/21/53/54 6/6 KILLED（§8.5）。
 - [x] **门禁 3（答复只来自人的可信点击）**：TG-4′、TG-10、TG-16、TG-17、TX-2、TX-14、TH-3、TH-17 全绿，MUT-3/22/23/23b/24/37/44/45/46 被捕获；　证据：TG-4′/TG-10/TG-16/TG-17、TX-2、TX-14/14b、TH-3、TH-17 全绿；MUT-46 由 TX-14b 杀死（N34），其余 MUT-3/22/23/23b/24/37/44/45 KILLED；2026-09-29 全量：`uv run pytest` 1983 passed、`npx vitest run` 377 passed、未打包 e2e 111 passed / 2 skipped（workers=2，空载 5.7 min，数据零污染）；TS 变异全表 69 条 68 KILLED / 1 SURVIVED（MUT-62，预期，见 §8.5）/ 0 BUILD_FAIL（N38 回填，`789f60e`）；Python 侧 S10-MUT-18/19/20/21/53/54 6/6 KILLED（§8.5）。
-- [x] **门禁 4（不代发、不自动；browser 与抓取另需原生确认）**：TH-5、TH-18、TG-11、TX-7、TX-13、TV-12 全绿，TH-22 全绿，MUT-5/35/43/57/58/63/64/69 被捕获；　证据：TH-5/TH-18/TH-22、TG-11、TX-7/TX-13、TV-12 全绿，MUT-5/35/43/57/58/63/64/69 KILLED。**遗留（不改本门禁的测试口径）**：D37——打包版真机上原生确认框曾被记为「批准」而未经人手点击，定性中（代码侧 fail-open 假说未证实，Return 键行为不定，待人手复现），安全相关，列入归档遗留。
+- [x] **门禁 4（不代发、不自动；browser 与抓取另需原生确认）**：TH-5、TH-18、TG-11、TX-7、TX-13、TV-12 全绿，TH-22 全绿，MUT-5/35/43/57/58/63/64/69 被捕获；　证据：TH-5/TH-18/TH-22、TG-11、TX-7/TX-13、TV-12 全绿，MUT-5/35/43/57/58/63/64/69 KILLED。**遗留（不改本门禁的测试口径）**：D37——打包版真机上原生确认框曾被记为「批准」而未经人手点击。**2026-10-06 人手定性：无自动化下未复现**；Return 不触发任何按钮，按用户裁决改措辞、不改绑定，D40 同批修（见 §2.10 前修订记录；待 D37-C 独立评审）。
 - [x] **门禁 5（作废、结束与退出）**：TH-4、TH-8、TH-9、TH-21、TX-4、TX-8、TX-8b、TX-8c、TX-8d、TX-9 全绿，MUT-4/10/11/12/39/41/47/48/49/65 被捕获；　证据：TH-4/8/9/21、TX-4/8/8b/8c/8d/8e/8f/9 全绿；MUT-4/10/11/12/39/41/47/48/49/65 KILLED；D38（退出确认把空闲会话也算忙）已修并评审通过（`isBusyForQuit`，TH-9⑤、TX-8g/8h）。打包版「空闲直接退/忙弹框」手验未做（并入 D37 配方第 6 步）。
 - [ ] **门禁 6（密钥；**未验部分：打包版手验——钥匙串有条目→`ready.llm=="ok"`、删条目→降级文案含命令**）**：TH-6、TH-7、TV-8、TV-9、TY-5 全绿，MUT-6~9/21 被捕获；**打包版手验一次**：钥匙串有条目 → `ready.llm == "ok"`；删除条目 → 降级文案含正确命令；
 - [x] **门禁 7（对话呈现与缺口可见）**：TV-1~TV-3、TV-7、TX-0、TX-1、TX-11、TH-2、TH-12 全绿，MUT-2/15/25/26/32/33 被捕获；　证据：TV-1~3/7、TX-0/1/11、TH-2/12 全绿；MUT-2/15/25/26/32/33 KILLED；D36（作废卡不撤待答区）已修并评审通过。
@@ -1111,7 +1116,7 @@ M7 验收结论为「有条件通过」，四条发现全部处置如下（F-5 �
 | `host/heal.ts::latestPerStop`（`compareIso` 解析比较）/ `shared/isoTime.ts::compareIso` | 111 / 19 | ✅ |
 | `shared/convFrames.ts::REQUIRED`（导出，供 TX-0 对拍） | 35 | ✅ |
 | `shared/protocol.ts` 快照增 `keyProblem` | 357 附近 | ✅ 即 §8.2 偏差 1 |
-| `main/index.ts`：`createMainConfirmBroker`（原生确认框第 5 层）/ `before-quit` 退出状态机 | 9 / 423 | ✅（D37 定性中，见 issues） |
+| `main/index.ts`：`createMainConfirmBroker`（原生确认框第 5 层）/ `before-quit` 退出状态机 | 9 / 423 | ✅（2026-10-06 D37/D40 修订：选项与 `windowGone` 在 `main/confirm.ts`，见 §2.10 前修订记录） |
 | `renderer/App.tsx::onConnect`（重置会话桶并按新 host 重取快照） | 143 附近 | ✅ MUT-62/62′ 守 |
 | 夹具：`tests/fixtures/session.ts::fixtureWrite`；静态守卫 `tests/static/scan.ts::inboundFrameOwners`（TG-11） | 18 / 456 | ✅ |
 | e2e：`e2e/session.spec.ts`（假进程版）、`e2e/sessionReal.spec.ts`（真实 core 版）、`e2e/fakeLlm.ts` | 目录现状 | ✅ |
