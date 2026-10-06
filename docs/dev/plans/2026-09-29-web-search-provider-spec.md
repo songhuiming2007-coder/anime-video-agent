@@ -1,6 +1,6 @@
 # Spec 15：web_search provider 可插拔（Exa 主 + Tavily 备）
 
-日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；**2026-10-06 v0.3（作者修订，回应 D29-R2 的 4🟡 + 5🔵，见「作者修订回应（v0.3）」）**；状态：**v0.3 定向复核（2026-10-06，D29-R3）🟢 可动工**（R2-1～R2-4 核销；2🔵 施工时顺手改，见「定向复核」）→ 施工 D29-A（PR0 → PR1 → PR2 → PR3；**2026-10-06 PR0 ✅、PR1 ✅、PR2 ✅（门禁 4、5 终端侧过）、PR3 ✅（门禁 4、5 终端与桌面端均过）；施工完成，待 D29-B 独立评审；门禁 6（Spec 13 门禁 8 复跑）在评审后；门禁 7 人审：人物介绍类过、人物剖析类不足 → N59**，施工记录与偏差见 §12）（§11 五问、🟡-1 / 🟡-3 / 🟡-5 三处补充裁决、R2-9 / N50、Q5 措辞改为「替换」均已由人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
+日期：2026-09-29（v0.1 草案）；**2026-10-06 v0.2（作者修订，回应红队一轮 5🟡 + 6🔵，见「作者修订回应」）**；**2026-10-06 v0.3（作者修订，回应 D29-R2 的 4🟡 + 5🔵，见「作者修订回应（v0.3）」）**；状态：**v0.3 定向复核（2026-10-06，D29-R3）🟢 可动工**（R2-1～R2-4 核销；2🔵 施工时顺手改，见「定向复核」）→ 施工 D29-A（PR0 → PR1 → PR2 → PR3；**2026-10-06 PR0 ✅、PR1 ✅、PR2 ✅（门禁 4、5 终端侧过）、PR3 ✅（门禁 4、5 终端与桌面端均过）；施工完成；**2026-10-06 D29-B 独立评审：D29 ✅ 通过；N59 ①（§13）❌ 打回 🟡 B-1（Tavily 请求 21 条超文档上限 20），见 §14**；门禁 6（Spec 13 门禁 8 复跑）为下一步；门禁 7 人审：人物介绍类过、人物剖析类不足 → N59**，施工记录与偏差见 §12）（§11 五问、🟡-1 / 🟡-3 / 🟡-5 三处补充裁决、R2-9 / N50、Q5 措辞改为「替换」均已由人拍板）；对应 issues **D29**；上位：Spec 4（`network-tools-spec`，已归档）、Spec 13（门禁 8 复跑的前置）；相关 ADR：ADR-0021）
 
 > **本稿是 v0.2 修订稿。** 选型（Exa 主、Tavily 备）已由人 2026-09-29 拍板；§11 的 Q1～Q5 与 2026-10-06 的三处补充裁决（Q3 注、Q5 注、Q6）均已拍板，本稿不再有待人确认项（施工时动本机 `web.local.json` 仍须人当场确认，§4.3）。**施工时点**：按 2026-09-26 人拍板，晚于二期 21 个 session 收官——现已满足，可排期。
 > 本稿的 API 形态中：**Exa 免 key MCP 端点已在代理下实测**（§2.1 证据）；**Exa 带 key 的 REST 与 Tavily 的请求/响应形态来自官方文档与我的记忆，本机没有 key，未实测**——PR1 第一步必须用真实 key 各打一发，把响应存成 fixture 后再写解析器（§8）。
@@ -439,6 +439,53 @@ M18～M20、M24、M25 属 PR3（desktop）。
 - **用例**：`test_n59_default_and_cap_are_20`（直调层默认 / clamp / 工具描述）、`test_n59_tool_layer_passes_default_20`（工具层不带 limit 与超大 limit 都传 20）；T-P16 参数加 20；T-P4 的条数断言随默认值改为 fixture 全部 11 条。顺带：`test_exa_mcp_request_shape` 钉住 `User-Agent: ava-agent/1.0`——2026-10-06 探针实测不带 UA（urllib 默认 `Python-urllib/x`）时 Exa 免 key 入口回 Cloudflare 1010 / 403，生产代码一直带着，此前没有用例守。
 - **变异**（同 §12.3 口径）：M-L1 上限改回 10 → `test_n59_default_and_cap_are_20` 与 T-P16[20] 杀；M-L2 默认改回 5 → 两条 N59 用例杀；M-L3 工具层写死 10 → `test_n59_tool_layer_passes_default_20` 杀；M-UA 删 UA 头 → `test_exa_mcp_request_shape` 杀（断言失败）；M23 复跑仍杀。
 - **真机**：终端 `execute_tool("web_search", {"query": "春物 一色彩羽 角色剖析 长评"})`（不带 limit）→ `exa_mcp` 20 条、`truncated=true`、snippet 合计 9,818 字。桌面端无需重建：会话进程跑的是仓库里的 `pipeline/`。
+
+## 14. 独立评审（D29-B，2026-10-06；评审人未参与本 spec 的写作、任何一轮审查与施工）
+
+**结论：D29（PR0～PR3）✅ 通过；N59 ①（§13 条数 20）❌ 打回，只改一处（🟡 B-1）。** 评审对象 HEAD `ae0b142`，diff 范围 `fcbc13c..ae0b142`。
+
+**一、门禁逐条重跑**
+
+| 门禁 | 结果 | 证据 |
+|---|---|---|
+| 1 用例全绿 | ✅ | `uv run pytest` 全量 **2059 passed**（94.9 s，数据盘在线，无缺盘红）；T-P1～T-P17 在 `tests/test_agent_web_search.py`，T-P13 改写的 T1 / T5a / T5b / T6a / T16 / T17 在 `tests/test_agent_web.py`。逐条读改写 diff：被删的断言只有钉 DDG 字段的几条（`provider` 值、uddg 解码后的 URL、旧 `api_key` 字段）和「指名变量为空 → `None`」（§11 Q2 人裁决改语义），都换成了新管道上的等强断言；T17 腿 ② 新增四条断言，要求 tool 结果是「拦截出网请求」而不是「配置无效」 |
+| 2 变异 | ✅ | 本人实跑 10 条（下表，其中 7 条是我自己设计的），全部由指定用例的断言杀死，还原后 md5 一致。desktop：`npx tsc --noEmit` 过，`npx vitest run` **37 文件 422 条全绿**，全量 `npx playwright test` **115 passed / 2 skipped**（跳过的两条与施工时相同，是靠环境变量开关的截图用例；真实 `data/_events.jsonl` 前后一致） |
+| 3 静态守卫 | ✅ | T-P12：`web.py` 不含 `_SearchResultParser` / `result__a` / `_decode_ddg_href`，顶层 import 全是 stdlib + `pipeline`；`api_key_env_name` 在函数内延迟导入（R3-1） |
+| 4 真机主路径 | ✅（终端，本人复跑） | 真实配置（本机 `web.local.json` 的 `search` 段已是新链，其余本机段在）、`zsh -ic` 环境（显式代理）：`execute_tool("web_search", {"query": "一色彩羽 角色介绍"})` → `provider=exa_mcp`、20 条、`truncated=true`、20 条都有摘录、最长 500 字；英文 `Iroha Isshiki wiki`（limit=5）→ `exa_mcp` 5 条（fandom / MAL / everipedia）；`web_fetch("https://www.python.org/")` → 200。桌面端那一半没有重跑（需要人手点打包版），被动核对了施工方临时副本里的 `session.jsonl`：两场会话的工具结果分别是 `"provider": "exa_mcp"` 与 `"provider": "tavily"`，全文无 `tvly-` 前缀串 |
+| 5 主家故障 → 备家 | ✅（终端，本人复跑） | 进程内把 `exa_mcp` 端点改为 `https://mcp.exa.ai/no-such-endpoint`：`provider=tavily`、10 条。两条降级路径：① **key 未设**（`env -u TAVILY_API_KEY`）+ 主家故障 → `web_search 全部检索服务失败：exa_mcp: HTTP 404；tavily: 需要环境变量 TAVILY_API_KEY（未设置；终端：…；桌面端：security add-generic-password …）`，与 §3 写死的消息一致；key 未设、主家正常 → `exa_mcp` 照常答（缺 Tavily key 不拖累主家，§11 Q2）；② **key 错误**（假值）+ 主家故障 → `tavily 的密钥被拒（HTTP 401）…；此前已尝试：exa_mcp: HTTP 404`，直接失败，与 §11 Q3 一致。四次的返回值与错误消息里都不含真 key（只打印布尔） |
+| 6 S13-G8 | 未跑（评审之后的下一步） | — |
+| 7 人审 | 人已判：人物介绍类过、人物剖析类不足 → N59 | §12.5 |
+
+**二、变异（`PYTHONDONTWRITEBYTECODE=1`；植入 → 指定用例 → 还原，md5 对拍）**
+
+| 变异 | 来源 | 指定杀手 | 结果 |
+|---|---|---|---|
+| M5 0 条时返回空 list | 矩阵 | T-P7 | KILLED（DID NOT RAISE） |
+| M13 429 直接抛出（fallback 永不触发） | 矩阵 | T-P4[429] | KILLED |
+| M10 全链失败消息拼入密钥 | 矩阵 | T-P8 | KILLED（`test-key-0000` 出现在消息里） |
+| V1 去掉名字形状校验（只留族前缀） | 自设 | T-P9[bad_shape] | KILLED（`TAVILY_X` 被当成合法配置） |
+| V2 去掉「≠ LLM 名」校验 | 自设 | T-P9 借名腿 | KILLED（LLM 密钥被读进 tavily 的 `api_key`） |
+| V3 带内错误不替换 query | 自设 | T-P15 回显腿 | KILLED |
+| V4 `truncated` 判定 `>` 改 `>=` | 自设 | T-P16 | KILLED（4 个参数腿全红） |
+| V5 `web_key_env_names` 改为读环境变量 | 自设 | `test_tp9_web_key_env_names_reads_no_values` | KILLED（普通运行时是该用例的 `Failed: 读了环境变量`）；但见 🔵 B-3 |
+| D1 desktop 去掉「与 LLM 同名跳过」 | 自设 | TH-W3 | KILLED（`KEYCHAIN_READ` 调了 2 次 ≠ 1） |
+| D2 desktop 只取前 `WEB_KEY_MAX + 1` 个 | 自设 | TH-W4「超过 4 个」 | KILLED（env 多出第 5 个名字） |
+
+**三、契约与边界**
+
+- 返回四键与 Spec 4 §3.2 逐键一致（T-P2 `set(out) == {"query","provider","results","truncated"}`），`results[]` 三键；参数 schema 仍是 `query` + `limit`。`limit` 的 clamp 从 [1,10] 改为 [1,20] 是 N59 人裁决，Spec 4 §3.2 有修订注记。
+- `config/agent/tools.json`、`scopes/`、runbook、`llm.py`、`session.py`、`assembly.py` 的 diff 为空；`tools.py` 只改了 `web_search` 的 description 与 `limit` 描述；`_guard_url`、`_scrub`、`_normalized_for_assert`、`_GuardedRedirectHandler`、`_default_opener`、`assert_egress_boundary`、`RESTRICTED_EGRESS_PATTERNS` 一行没动；`fetch_web` 只把单 key 脱敏换成 `_redact_all`。旧 D29-B 提示词写的「只许动 web.py + web.json + 测试」已被 v0.3 扩为本 spec §4 / §8 声明的范围（含 PR3 desktop 与几份 spec 的修订注记），实际 diff 没有超出。
+- 凭据审计（只比对、不打印）：`git diff fcbc13c..HEAD`、这几次提交的提交信息、`tests/fixtures/web_search/*`、HEAD 已跟踪文件，对 shell 里与钥匙串里的真 key 都是 0 次命中（两处的值相同）；diff 里形似 key 的串只有测试标记 `tvly-WEB-…` 与 `tvly-é`；fixture 不含 `Authorization` / `Bearer`，也没有邮箱或本人姓名。
+
+**四、发现**
+
+| 编号 | 问题 | 证据 | 后果与建议 |
+|---|---|---|---|
+| 🟡 B-1（N59） | **默认参数下每次请求 Tavily 都传 `max_results = 21`，超出文档写的取值范围 `0 <= x <= 20`**。§2.3 对这种情况已经写了处理办法：「若某家达不到，该家改为『返回数 == 请求数即判 truncated』」。§13 知道文档上限是 20，却改为依赖服务端「目前实测 21 不报错」。`web.py` 的 N59 注释写着「20 = Tavily 文档单次上限」，下面照样请求 21 条 | Tavily 官方 API 参考（2026-10-06 抓取）：`max_results` 的 Required range 为 `0 <= x <= 20`。本人真网：只用 tavily 时 limit=19（请求 20）回 12 条，limit=20（请求 21）回 7 条，目前确实不报错 | 只要 Tavily 按文档校验，默认 limit 下每次落到备家都会是「tavily: HTTP 400」。这时主家也已经挂了，备家正好在最需要它的时候失效。错误会如实报出来，不会静默，但备家等于没有。**建议**（只改 `web.py` 搜索侧）：注册表给每家加单次请求上限（tavily 20，exa_mcp 不设）；请求条数 = `min(limit + 1, 该家上限)`；请求数被上限截住时，按 §2.3 原文以「返回数 == 请求数」判 `truncated`；T-P16 补 tavily 在 limit=20 时的腿（请求体 `max_results == 20`），配一条变异「去掉该家上限」。修完由另一个 session 定向复核这一处即可，不影响 D29 归档 |
+| 🔵 B-2 | `_in_band_reason` 先截 200 字再 `_redact_all`：一个 key 若跨在第 200 字两侧，截断后剩下的前半段匹配不上整串，脱敏会漏掉 | scratchpad 探针：185 字填充 + `key=<36 位 key>` → 输出末尾是 `key=tvly-ABCDE`（完整 key 不在、前 10 位在）。这个顺序是照 §2.2 原文写的；snippet 那条路径是先脱敏再截，顺序是对的 | **现在没有实际暴露面**：带内错误只来自免 key 的 `exa_mcp`，它不可能知道 Tavily 的 key。将来补 `exa_api`，或者别家也有带内错误时，就会成真。建议把 §2.2 与实现都改成先脱敏再截断（与 snippet 一致），顺手一行 |
+| 🔵 B-3 | `test_tp9_web_key_env_names_reads_no_values` 用会抛异常的 lambda 替换了进程全局的 `os.environ.get`。pytest 的 junitxml 插件在出报告时也会调它，所以加 `--junitxml` 跑时，V5 的杀死会变成 pytest 内部崩溃，junit 报告里是 `failures="0"` | 本人的变异脚本按 junit 判杀，V5 先被判成 SURVIVED；不加 `--junitxml` 直接跑则是该用例本身的 `Failed: 读了环境变量`。按第三节纪律，以后者为准 | 用例本身没错，只是在 junit 口径下会报假绿。建议改成只替换 `web` 模块里的 `os`（例如 `monkeypatch.setattr(web, "os", 桩)`），或者让间谍只记录、不抛异常，用例最后再断言「没有读过」 |
+
+**未实测项（如实）**：桌面端门禁 4、5 没有重跑（需要人手点打包版），依据是施工方存证与上面对 `session.jsonl` 的被动核对；`exa_api` 未注册，没有可测对象；429 样本没有真实取到（施工方 PR0 也没取到），T-P4 的 429 腿用的是手造的 `HTTPError`。
 
 ## 附：引用自查表（2026-09-29 草案时按 HEAD `4ca9a03` 核对；以符号为锚）
 
