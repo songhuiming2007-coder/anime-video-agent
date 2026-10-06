@@ -1,6 +1,6 @@
 # Spec 16：出网断言对「可信仓库文档」做命中位置级豁免（D30）
 
-> **状态：v0.1 草案（2026-10-06，D30-A 立文）**。待人裁决 §10 → 红队（D30-R）🟢 → 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
+> **状态：v0.1 草案（2026-10-06，D30-A 立文；同日人裁决 §10：Q1 = ②a，Q2–Q4 同意建议）**。待红队（D30-R）🟢 → 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
 > 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4。
 > 相关：Spec 4（`archive/2026-09-23-network-tools-spec.md`）§2.4 出网断言生效点、§7.1 T5a/T5b/T17、MUT-2/MUT-13；impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.5 **Y2-r19** 出网边界；ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）；新提 **ADR-0026**（`docs/dev/adr/0026-egress-assert-trusted-repo-docs.md`，提议中）。
 
@@ -163,6 +163,8 @@ LLM 请求体上的子串断言是**第二层绊线**：模型一旦在工具调
 验证：`PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_agent_tools.py tests/test_agent_web.py tests/test_agent_loop.py tests/test_agent_session.py` → 全量 `uv run pytest` 全绿；变异逐条实跑回填并 md5 对拍；在临时仓库副本上用**真会话**（protocol，假 LLM 端点）复跑 §1 的复现，两期首轮不再 `[BLOCKED]` 并存证。
 
 ## 10. 待人裁决
+
+> **2026-10-06 人裁决**：Q1 采用 **②a**；Q2 / Q3 / Q4 均同意建议（人打的受限路径照旧拦；N53 与 N52 另立条目，本 spec 不碰）。下一步：红队 D30-R。
 
 - **Q1 方案**：推荐 ②a。②b/②c/②d/① 的代价见 §4。
 - **Q2 人亲手打出受限路径**：现状与 ②a 下都会拦（例如人问「`03-audio/manifest.json` 里第 3 段时长多少」）。建议**本 spec 不处理**：人打的字也可能是粘贴进来的凭据内容，按名字拦虽然粗，方向是安全的；另立条目再议。
