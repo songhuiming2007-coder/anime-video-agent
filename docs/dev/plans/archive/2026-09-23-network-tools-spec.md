@@ -128,6 +128,8 @@
   3. **入方向（清洗式）**：抓回文本与搜索结果文本字段在返回前过 `_scrub()`——同一 `RESTRICTED_EGRESS_PATTERNS` 常量（import 复用，**严禁复制第二份模式清单**），`re.sub` + `re.IGNORECASE` 替换为 `[已脱敏]`，镜像 `status_card.py:113-116` 实现。理由（双重）：① 防下游误伤——工具结果会进入会话历史，下一轮 `chat_complete` 的 payload 要过 `llm.py:129` 断言，网页若恰好含模式串（如引用了 ava 文档的页面）会把整个会话打成 `[BLOCKED]`；② 纵深——模式串属「一律不出网」清单，即便出现在回显里也不该原样进上下文。**口径登记（🔵-6）**：`_scrub` 用 `re.IGNORECASE` 而 boundary 用 `casefold`，ß/İ 类边角两口径不一致——与 `status_card.py:116` 既有先例保持一致，属有意沿用，不另立第三口径。**已知上限**：清洗只覆盖这四条既有模式，不发明新敏感词表（模式清单的归口在 ADR-0018 体系，本 spec 不动）。
 - **`llm.py` docstring 声明同步修订**：`llm.py:8`「本模块是仓库唯一出网路径」已因本 spec 失效；`llm.py:4`「工具表只有 6 个」连带失效（8 个）。修订见 §4.5。同句历史声明还见于 impl spec `2026-09-18-ava-agent-impl-spec.md:1213`——历史文档不改，以本 spec 与 ADR-0021 为准。
 
+> **修订记录（2026-10-06，D30；Spec 16 `2026-10-06-egress-assert-trusted-docs-spec.md`、ADR-0026）**：第 1 条生效点之外的 **LLM 请求体断言**（`llm.py::chat_complete`）改为可带一组可信文本：`assert_egress_boundary(endpoint, content, *, trusted_texts=())`。可信文本是装配器从仓库读入的规程正文（白名单根内 `.md`、resolve 后判定、排除 `data/` 与记忆、短于 200 字不收）。一次模式命中只有**整体落在**某段可信文本的逐字副本区间内才放过，其余命中照旧 `PermissionError`。判定规则（casefold、四条模式、RF-11 同形上限）不变；`trusted_texts` 为空时与修订前逐字节同判。**web 四个出方向（第 1 条）不传可信文本，行为不变**；第 2 条的 [BLOCKED] 语义、第 3 条的 `_scrub` 清洗不变。T5a / T5b / T17 不改。起因：`03-tts.md` / `03.5-voice-check.md` 写了字面 `03-audio/manifest.json`，期目录处在 03 / 03.5 时会话首轮被自家规程拦下。
+
 ### 2.5 决策 5：抓回内容的注入安全——工具层做什么、不做什么（正面回答预审问题 4）
 
 - **工具层做（全部是确定性动作）**：

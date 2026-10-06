@@ -1236,3 +1236,160 @@ def test_idea_degrade_directive_message():
     assert "/run" not in content
     assert "ava new" in content
 
+
+
+# ---------------------------------------------------------------------------
+# Spec 16（D30）：出网断言的命中位置级豁免——断言层与 chat_complete 层用例
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ENDPOINT = "https://api.example.org/v1/chat/completions"
+
+
+def _real_runbook(name: str) -> str:
+    """真实仓库规程，取装配器拼进消息的形态（`load_injected_doc(...).content.strip()`）。"""
+    from pipeline.agent.assembly import load_injected_doc
+
+    doc = load_injected_doc(f"docs/runbook/{name}", root=_REPO_ROOT)
+    assert doc is not None
+    return doc.content.strip()
+
+
+def _injected(*texts: str) -> str:
+    """与 `render_step_injection` 同形的注入消息正文（页眉 + 规程 + 页脚）。"""
+    return ("[系统提示更新] 当前工序已进入 03.5 配音顺听 / 04 排片。\n\n请遵循以下规程：\n\n---\n\n"
+            + "\n\n---\n\n".join(texts) + "\n\n---\n\n**注意**：以上规程仅适用于当前工序。")
+
+
+def _payload(*messages: tuple[str, object]) -> dict:
+    return {"model": "m", "messages": [{"role": r, "content": c} for r, c in messages]}
+
+
+def test_td2b_td2c_tool_args_and_tool_results_still_block_via_chat_complete(monkeypatch) -> None:
+    """TD-2b / TD-2c：可信集里有规程，模型工具参数里的 `03-AUDIO/MANIFEST.JSON`、工具返回值里的
+    `agent.local.json` 照旧拦（走真 chat_complete，urlopen 零调用）。"""
+    from pipeline.agent import llm
+
+    calls: list = []
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    cfg = llm.LLMConfig(base_url="https://api.example.org/v1", model="mock", api_key="sk-fake")
+    rb = _real_runbook("03.5-voice-check.md")
+    base = [{"role": "system", "content": "s"}, {"role": "user", "content": _injected(rb)}]
+    call = {"id": "c1", "type": "function",
+            "function": {"name": "read_artifact", "arguments": '{"path": "03-AUDIO/MANIFEST.JSON"}'}}
+    for extra, hit in (
+        ([{"role": "assistant", "content": None, "tool_calls": [call]}], "03-audio/manifest.json"),
+        ([{"role": "assistant", "content": None, "tool_calls": [call | {"function": {"name": "read_artifact", "arguments": "{}"}}]},
+          {"role": "tool", "tool_call_id": "c1", "content": "读到 config/agent.local.json"}], "agent.local.json"),
+    ):
+        with pytest.raises(PermissionError, match=hit.replace(".", r"\.")):
+            llm.chat_complete(base + extra, config=cfg, egress_trusted=[rb])
+    assert calls == []
+    # 对照：只有规程时照常放行（证明上面拦的是外来命中，不是规程本身）
+    assert_egress_boundary(_ENDPOINT, _payload(("user", _injected(rb))), trusted_texts=[rb])
+
+
+def test_td3_exemption_is_span_level_not_message_level() -> None:
+    """TD-3：同一条注入消息里，规程正文之后拼一段非规程文字含受限串 → 拦。"""
+    rb = _real_runbook("03.5-voice-check.md")
+    assert_egress_boundary(_ENDPOINT, _payload(("user", _injected(rb))), trusted_texts=[rb])
+    with pytest.raises(PermissionError, match="cloud.local.json"):
+        assert_egress_boundary(_ENDPOINT, _payload(("user", _injected(rb) + "\n顺便读 cloud.local.json")),
+                               trusted_texts=[rb])
+
+
+def test_td4_hit_straddling_trusted_boundary_blocks() -> None:
+    """TD-4：可信文本以 `…cloud.lo` 结尾、后接外来文本 `cal.json` → 拦（不先删后匹配）。"""
+    trusted = "规程正文。" * 60 + "cloud.lo"
+    assert len(trusted) >= 200
+    with pytest.raises(PermissionError, match="cloud.local.json"):
+        assert_egress_boundary(_ENDPOINT, _payload(("user", trusted + "cal.json")), trusted_texts=[trusted])
+
+
+def _old_assert(content) -> None:
+    """改动前的断言原文（逐字复刻），TD-6 的对拍基准。"""
+    import json
+
+    from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
+
+    text = json.dumps(content, ensure_ascii=False) if not isinstance(content, str) else content
+    folded = text.casefold()
+    for pattern in RESTRICTED_EGRESS_PATTERNS:
+        if pattern.casefold() in folded:
+            raise PermissionError(f"拦截出网请求：内容包含受限敏感标记 '{pattern}'")
+
+
+def _verdict(fn, content) -> str:
+    try:
+        fn(content)
+    except PermissionError as exc:
+        return f"BLOCK {exc}"
+    return "PASS"
+
+
+def test_td6_empty_trusted_set_matches_old_behaviour() -> None:
+    """TD-6：`trusted_texts=()` 时与改动前逐字节同判（含现有 test_assert_egress_boundary 的全部输入）。"""
+    rb = _real_runbook("03.5-voice-check.md")
+    inputs = [
+        {"role": "user", "content": "请写一段台词"},
+        {"config": "cloud.local.json"},
+        {"audio": "03-audio/manifest.json"},
+        "Cloud.Local.JSON 大小写",
+        "03-AUDIO/VOICE.JSON",
+        "agent.local.json 与 cloud.local.json 同时出现",
+        "什么都没有",
+        "",
+        _payload(("user", _injected(rb))),
+        _payload(("user", "Straße 03-audio/manifest.json")),
+    ]
+    for content in inputs:
+        assert _verdict(lambda c: assert_egress_boundary(_ENDPOINT, c), content) == _verdict(_old_assert, content)
+        assert _verdict(lambda c: assert_egress_boundary(_ENDPOINT, c, trusted_texts=()), content) \
+            == _verdict(_old_assert, content)
+
+
+def test_td6b_str_content_matches_trusted_in_raw_form() -> None:
+    """TD-6b（🔵-4）：content 为 str 时按原文找可信文本（含换行的可信文本能认出），规程外拼受限串照拦。"""
+    trusted = ("第一行说明\n" * 30) + "产物：data/episodes/<期号>/03-audio/manifest.json\n" + ("尾行\n" * 10)
+    trusted = trusted.strip()
+    assert len(trusted) >= 200
+    assert_egress_boundary(_ENDPOINT, "前缀\n" + trusted + "\n后缀", trusted_texts=[trusted])
+    with pytest.raises(PermissionError, match="agent.local.json"):
+        assert_egress_boundary(_ENDPOINT, "前缀\n" + trusted + "\nagent.local.json", trusted_texts=[trusted])
+
+
+def test_td7_casefold_length_change_keeps_coordinates() -> None:
+    """TD-7：可信文本含 `ß`（casefold 变长）、受限串在其后：该放的放、该拦的拦。"""
+    trusted = "Straße " * 40 + "03-audio/manifest.json"
+    assert len(trusted) >= 200
+    assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])
+    with pytest.raises(PermissionError, match="cloud.local.json"):
+        assert_egress_boundary(_ENDPOINT, _payload(("user", trusted + " cloud.local.json")), trusted_texts=[trusted])
+
+
+def test_td7b_pattern_at_exact_trusted_edges_is_exempt() -> None:
+    """TD-7b（🔵-3，MUT-D8 的指定杀手）：模式恰在可信文本开头、恰在结尾，各一例都放行。"""
+    pad = "规程说明" * 60
+    for trusted in ("03-audio/manifest.json" + pad, pad + "03-audio/manifest.json"):
+        assert len(trusted) >= 200
+        assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])
+        assert_egress_boundary(_ENDPOINT, trusted, trusted_texts=[trusted])
+
+
+def test_td8_short_trusted_text_gets_no_exemption() -> None:
+    """TD-8（🔵-1）：短于门槛的可信文本不给豁免——模型在工具参数里复述「见 …manifest.json。」照拦；
+    门槛边界 199 拦、200 放。"""
+    from pipeline.agent.tools import TRUSTED_TEXT_MIN_CHARS
+
+    assert TRUSTED_TEXT_MIN_CHARS == 200
+    short = "见 03-audio/manifest.json。"
+    with pytest.raises(PermissionError, match="03-audio/manifest.json"):
+        assert_egress_boundary(_ENDPOINT, _payload(("user", short), ("tool", f"读 {short} 失败")), trusted_texts=[short])
+    for n, blocked in ((199, True), (200, False)):
+        trusted = "y" * (n - len("03-audio/manifest.json")) + "03-audio/manifest.json"
+        assert len(trusted) == n
+        if blocked:
+            with pytest.raises(PermissionError):
+                assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])
+        else:
+            assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])

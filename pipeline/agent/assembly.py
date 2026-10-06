@@ -42,6 +42,9 @@ class AssembledResident:
     scope: str
     content: str  # director.md + scope.md + AGENTS.md 瘦身版
     token_estimate: int
+    # 三份文件各自读入后的 (配置路径, strip 原文)，scope 取拼 extra_prompt **之前**的那份；
+    # 缺失文件的占位标题不在其中（Spec 16 §5.2.1：出网断言可信集的常驻层来源）
+    doc_texts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -56,6 +59,14 @@ class SessionContextTracker:
     #   injected = 告警消息还在历史里（**随回滚回退**，下一轮重新注入）
     memory_warn_printed: bool = False
     memory_warn_injected: bool = False
+    # 出网断言可信集 (a)（Spec 16 §5.2.1）：本进程装配器实际拼进消息的规程正文，只增不减。
+    # **不进** `_rollback` 的恢复清单——可信集是超集无害，豁免只认逐字字节。
+    trusted_doc_texts: list[str] = field(default_factory=list)
+
+    def trust(self, texts: list[str]) -> None:
+        for text in texts:
+            if text and text not in self.trusted_doc_texts:
+                self.trusted_doc_texts.append(text)
 
     def get_initial_system_prompt(
         self,
@@ -238,14 +249,62 @@ def assemble_resident_prompt(
     会话内字节级恒定，任何修改都会破坏 Prompt Cache。
     """
     base_root = root or paths.ROOT
-    cfg_file = config_path or (base_root / "config" / "agent" / "assembly.json")
+    resident_map = resident_paths(scope, config_path, root)
+    doc_texts: list[tuple[str, str]] = []
 
+    # 1. Director
+    director_p = base_root / resident_map["director"]
+    if director_p.exists():
+        director_text = read_resident_file(director_p)
+        doc_texts.append((resident_map["director"], director_text.strip()))
+    else:
+        director_text = "# Director Persona"
+
+    # 2. Scope
+    scope_p = base_root / resident_map["scope"]
+    if scope_p.exists():
+        scope_text = read_resident_file(scope_p)
+        doc_texts.append((resident_map["scope"], scope_text.strip()))
+    else:
+        scope_text = f"# {scope.capitalize()} Scope"
+
+    if extra_prompt:
+        scope_text = f"{scope_text}\n\n{extra_prompt}"
+
+    # 3. AGENTS.md
+    agents_p = base_root / resident_map["agents"]
+    if agents_p.exists():
+        agents_text = read_resident_file(agents_p)
+        doc_texts.append((resident_map["agents"], agents_text.strip()))
+    else:
+        agents_text = ""
+
+    parts = [p.strip() for p in (director_text, scope_text, agents_text) if p.strip()]
+    content = "\n\n---\n\n".join(parts)
+    token_estimate = len(content) // 4
+    return AssembledResident(
+        scope=scope, content=content, token_estimate=token_estimate, doc_texts=tuple(doc_texts)
+    )
+
+
+def read_resident_file(path: Path) -> str:
+    """常驻层三件的唯一读法（做换行翻译）。装配与出网可信集 (b) 共用（Spec 16 §5.2.2）。"""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def resident_paths(
+    scope: str,
+    config_path: Path | None = None,
+    root: Path | None = None,
+) -> dict[str, str]:
+    """`assembly.json` 的 resident 三件按 scope 展开后的配置路径（缺键用默认值）。"""
+    base_root = root or paths.ROOT
+    cfg_file = config_path or (base_root / "config" / "agent" / "assembly.json")
     resident_map = {
         "director": "config/agent/scopes/director.md",
         "scope": f"config/agent/scopes/{scope}.md",
         "agents": "AGENTS.md",
     }
-
     if cfg_file.exists():
         try:
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
@@ -259,35 +318,112 @@ def assemble_resident_prompt(
                     resident_map["agents"] = res_cfg["agents"]
         except Exception:
             pass
+    return resident_map
 
-    # 1. Director
-    director_p = base_root / resident_map["director"]
-    if director_p.exists():
-        director_text = director_p.read_text(encoding="utf-8", errors="replace")
-    else:
-        director_text = "# Director Persona"
 
-    # 2. Scope
-    scope_p = base_root / resident_map["scope"]
-    if scope_p.exists():
-        scope_text = scope_p.read_text(encoding="utf-8", errors="replace")
-    else:
-        scope_text = f"# {scope.capitalize()} Scope"
+# ---- 出网断言可信集（Spec 16 §5.2；ADR-0026） ----
 
-    if extra_prompt:
-        scope_text = f"{scope_text}\n\n{extra_prompt}"
+# 白名单根：resolve 后的仓库相对路径必须落在这里（§5.2.3 第 2 条）
+TRUSTED_DOC_ROOTS: tuple[str, ...] = ("docs/", "skills/", "config/agent/scopes/")
+TRUSTED_DOC_FILES: tuple[str, ...] = ("AGENTS.md",)
 
-    # 3. AGENTS.md
-    agents_p = base_root / resident_map["agents"]
-    if agents_p.exists():
-        agents_text = agents_p.read_text(encoding="utf-8", errors="replace")
-    else:
-        agents_text = ""
 
-    parts = [p.strip() for p in (director_text, scope_text, agents_text) if p.strip()]
-    content = "\n\n---\n\n".join(parts)
-    token_estimate = len(content) // 4
-    return AssembledResident(scope=scope, content=content, token_estimate=token_estimate)
+def is_trusted_doc_path(root: Path | None, rel_path: str) -> bool:
+    """这份文档的正文能否进出网断言的可信集（Spec 16 §5.2.3，五条同时满足）。
+
+    唯一一份规则：可信集收集调用它；N55 的装配器拒载修复也复用它，不许另写第二份。
+    """
+    from pipeline.agent.memory import MEMORY_REL_PATH  # 函数内 import：装配器热路径不背这个模块
+    from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
+
+    patterns = tuple(p.casefold() for p in RESTRICTED_EGRESS_PATTERNS)
+    configured = Path(rel_path)
+    # 第 5 条（配置路径一侧）
+    if any(p in configured.as_posix().casefold() for p in patterns):
+        return False
+    base = Path(root or paths.ROOT)
+    target = configured if configured.is_absolute() else base / configured
+    # 第 1 条：resolve(strict=True) 成功且在仓库根之内（软链出根、仓库外绝对路径都过不去）
+    try:
+        real = target.resolve(strict=True)
+        base_real = base.resolve(strict=True)
+        rel_real = real.relative_to(base_real).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    folded = rel_real.casefold()
+    # 第 3 条：不在 data/ 下、不是记忆文档
+    if folded == "data" or folded.startswith("data/") or folded == MEMORY_REL_PATH.casefold():
+        return False
+    # 第 4 条：.md；第 5 条（resolve 后一侧）
+    if not rel_real.endswith(".md") or any(p in folded for p in patterns):
+        return False
+    # 第 2 条：白名单根
+    return rel_real in TRUSTED_DOC_FILES or rel_real.startswith(TRUSTED_DOC_ROOTS)
+
+
+def trusted_texts_of_docs(docs: list[InjectedDoc], root: Path | None) -> list[str]:
+    """(a) 的工序层捕获：装配器拼进消息的正文是 `doc.content.strip()`，逐份过读域过滤。"""
+    return [
+        d.content.strip() for d in docs
+        if d.content.strip() and is_trusted_doc_path(root, d.rel_path)
+    ]
+
+
+def trusted_texts_of_resident(resident: AssembledResident, root: Path | None) -> list[str]:
+    """(a) 的常驻层捕获：三份文件各自的原文（不含 extra_prompt），逐份过读域过滤。"""
+    return [text for rel, text in resident.doc_texts if text and is_trusted_doc_path(root, rel)]
+
+
+def route_trusted_texts(
+    scope: str,
+    config_path: Path | None = None,
+    root: Path | None = None,
+) -> list[str]:
+    """可信集 (b)：resident 三件（当前 scope）+ routes 下全部 scope、全部工序键所指文档的
+    **当前磁盘正文**，读法与装配器同层一致（Spec 16 §5.2.2）。每回合装配时调用。
+
+    作用：`--continue` 恢复出来的历史里，上一进程注入的规程只要没改版，就能在这里被认出。
+    """
+    base_root = root or paths.ROOT
+    cfg_file = config_path or (base_root / "config" / "agent" / "assembly.json")
+    texts: list[str] = []
+
+    for rel in resident_paths(scope, config_path, root).values():
+        target = base_root / rel
+        if not is_trusted_doc_path(root, rel):
+            continue
+        try:
+            text = read_resident_file(target).strip()
+        except OSError:
+            continue
+        if text:
+            texts.append(text)
+
+    try:
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return texts
+    routes = data.get("routes") if isinstance(data, dict) else None
+    if not isinstance(routes, dict):
+        return texts
+    seen: set[str] = set()
+    for scope_routes in routes.values():
+        if not isinstance(scope_routes, dict):
+            continue
+        for key, doc_list in scope_routes.items():
+            if key == "_extends" or not isinstance(doc_list, list):
+                continue
+            for rel in doc_list:
+                rel = str(rel)
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                if not is_trusted_doc_path(root, rel):
+                    continue
+                doc = load_injected_doc(rel, root=root)  # 路由文档的唯一读法：不翻译换行
+                if doc is not None and doc.content.strip():
+                    texts.append(doc.content.strip())
+    return texts
 
 
 def render_step_injection(docs: list[InjectedDoc], step_name: str | None = None) -> str:
