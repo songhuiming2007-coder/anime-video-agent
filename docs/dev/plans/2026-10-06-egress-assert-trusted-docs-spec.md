@@ -1,8 +1,40 @@
 # Spec 16：出网断言对「可信仓库文档」做命中位置级豁免（D30）
 
-> **状态：v0.1 草案（2026-10-06，D30-A 立文；同日人裁决 §10：Q1 = ②a，Q2–Q4 同意建议）**。待红队（D30-R）🟢 → 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
+> **状态：v0.1 草案（2026-10-06，D30-A 立文；同日人裁决 §10：Q1 = ②a，Q2–Q4 同意建议）；2026-10-06 红队一轮（D30-R）裁决 🟡 修订后复审**（见下方「红队一轮裁决」）。下一步：作者按 🟡-1~3 修订 → 定向复审 → 施工（D30-B）→ 独立评审（D30-C）。本文件不改代码。
 > 对应 issues：**D30**（主）；顺带登记的新问题见 §10 Q3/Q4。
 > 相关：Spec 4（`archive/2026-09-23-network-tools-spec.md`）§2.4 出网断言生效点、§7.1 T5a/T5b/T17、MUT-2/MUT-13；impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.5 **Y2-r19** 出网边界；ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）；新提 **ADR-0026**（`docs/dev/adr/0026-egress-assert-trusted-repo-docs.md`，提议中）。
+
+## 红队一轮裁决（2026-10-06，D30-R，独立 session 未参与起草；只审文稿，未改代码）
+
+**裁决：🟡 修订后复审**（3🟡 + 6🔵）。方案 ②a 的核心判定是对的：豁免只放行「逐字等于可信文本」的那几段字节，而断言本来只比对文件名、不比对内容，所以**豁免不扩大任何内容泄露面**；区间包含（非整条消息、非先删后匹配）、`casefold` 坐标一致、web 四个出方向不动，这几条经探针验证成立。阻塞项在**可信集取哪些文本**：按现稿施工，D30 会在同一会话推进工序后原样复发（🟡-1），且有三处容易把不可信内容顺手带进可信集（🟡-2）。
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🟡-1 | **可信集只取「当前工序」，同会话推进或恢复后 D30 复发**。§5.2 写「工序层：`resolve_step_docs(scope, step_key)` 解析出的全部文档」，只认当前 step；但历史里早先工序的注入消息一直留着。`assembly.json` 的 `_base`：`03` → 只有 `03-tts.md`，`03.5` → `03.5-voice-check.md` + `04-clips.md`。正常流程是同一会话里跑完配音、期目录从 03 进入 03.5：此时 03-tts.md（含字面 `03-audio/manifest.json`）在历史里、不在当前集 → 再次 `[BLOCKED]`；进入 04 及以后，两份 runbook 都不在当前集，本会话此后每一轮都被拦。`--continue` 恢复到后续工序同理。且恢复时无法从记录里重建「注入过哪些文档」：`session.py::_commit` 只有 `_reinject_changed` 传 `docs=`，首次注入（`_assemble` 两处）不记 `docs` | 探针（scratchpad `d30r/probe.py`，§5.1 算法忠实复刻）P3：历史含 03 注入、可信集 = 03.5 规程 → `BLOCK 03-audio/manifest.json`；P4：可信集 = 本会话全部已注入 → PASS。`config/agent/assembly.json` routes；`session.py` `_assemble` / `_commit` / `prepare_resume` 的 `docs` 汇总 | 可信集改为两部分的并集：(a) **本进程装配器提交过的全部文档正文**，在读入处捕获、只增不减（不随 `_rollback` 收缩——可信集是超集无害，豁免只认逐字字节）；(b) **`assembly.json` 的 resident 三件 + 全部 routes（所有 scope、所有 step）所指文档的当前磁盘正文**（过滤见 🟡-3），它同时覆盖 `--continue` 历史里未改版的旧注入。§5.3 的「恢复后规程已改」残余照旧成立。补 **TD-1b**（同一会话三轮：step 03 → 03.5 → 04，每轮首个请求照常发出）、**TD-1c**（`--continue` 恢复到 step 04、历史含 03 与 03.5 注入）；补变异 **MUT-D9**「可信集只认当前工序」→ 由 TD-1b 杀 |
+| 🟡-2 | **可信正文的采集口径没写死，三处会把不可信内容顺手带进可信集**。(a) `tracker.resident_prompt` 不是三份文件的原文，而是 director + **scope + `extra_prompt`** + AGENTS 的拼接体（`assembly.py::assemble_resident_prompt`：`scope_text = f"{scope_text}\n\n{extra_prompt}"`）；§5.2 恰好提示「`SessionContextTracker` 已有 `resident_prompt`」，整体入集就把 `extra_prompt` 变成可信。(b) `_reinject_changed` 的候选**含记忆**：`candidates.append(memory_doc[0])`，以 origin=`injection`、页眉「规程已修订」提交；照 §5.2「含 `_reinject_changed` 追加的修订版」施工，记忆就进了可信集，与「记忆永不可信」直接冲突。(c) 若可信正文另从磁盘重读：常驻层用 `read_text`（做换行翻译），工序层 `load_injected_doc` 用 `read_bytes().decode`（不翻译），两种读法对 CRLF 文档的结果不一样，可信集与消息里的字节会对不上（方向是拦，但 D30 会重新炸） | 探针 P13：记忆以 reinject 形态含 `cloud.local.json`、实现若收全部 reinject 候选 → PASS（该拦未拦）；P11：可信集按 `\r\n` 另读、消息为 `\n` → BLOCK。代码：`assembly.py` L276-277、`session.py::_reinject_changed` 的 `candidates` | §5.2 写死：**逐文件**、在装配器读入处捕获**它实际拼进消息的那份字符串**（工序层取 `InjectedDoc.content`；常驻层取三份文件各自读入后的原文，**不取 `resident_prompt`**）；记忆按 `MEMORY_REL_PATH` 与「来自 `resolve_memory_injection`」两道排除，`_reinject_changed` 收集可信正文时显式跳过记忆。补 **TD-2e**（`extra_prompt` 含受限串 → 拦）、**TD-2f**（`--continue` 后记忆被改、经 `_reinject_changed` 重注入且含受限串 → 拦）；补变异 **MUT-D10**「`resident_prompt` 整体入集」→ TD-2e 杀、**MUT-D11**「reinject 候选不滤记忆」→ TD-2f 杀 |
+| 🟡-3 | **§5.2 路径过滤的保障是虚的，而且过滤口径不够**。断言只比对四个文件名，不比对内容：`assembly.json` 误配指向 `config/cloud.local.json`（或 `docs/` 下一个软链到它的 `.md`）时，注入的是密钥**内容**，修前修后断言都不会响——「此时不进可信集，断言照常拦下」不成立，TD-5「内容含受限串 → 拦」测的也不是凭据安全。另：(a) 现稿只说「路径本身命中模式」，没要求对 resolve 后的真实路径再判（软链）；(b) `data/` 未软链外置盘时就在仓库根内，`data/episodes/*/01-topic.md`、`02-script.md` 是模型经 `write_episode_file` 可写的 `.md`，「`.md` + 根内 + 不命中模式」三条都满足，一旦被路由就成了模型可写的可信文本 | `assembly.py::load_injected_doc` 接受绝对路径与任意相对路径，不设读域；`assert_egress_boundary` 只做文件名子串匹配；`memory.MEMORY_REL_PATH = "data/library/memory.md"`（同样是根内 `.md`，现稿靠来源排除而非路径排除） | ① 如实改写 §3 / §5.2：豁免不扩大内容泄露面（断言本来就不看内容）；「装配器会照路由读任意文件、包括凭据」是**既有缺口**，登记新 issue，在 `load_injected_doc` 层拒载另修，不挂在本断言上。② 过滤改为**白名单根**（`docs/`、`skills/`、`config/agent/scopes/`、仓库根的 `AGENTS.md`），对 **resolve 后**的真实路径判定，并显式排除 `data/`。③ TD-5 改为直接断言「这些文档不进可信集」（检查可信集本身），不再借「内容含受限串」间接测 |
+| 🔵-1 | 豁免与命中位置无关：可信区间在**整个请求体**里搜，不限于装配器放置的那几条消息。可信文本若很短且含模式（例如某份规程全文只有「见 03-audio/manifest.json。」），模型在工具参数里写出同一句就会被豁免，「读域拒了 + 发送闸再掐」的双保险对它失效 | 探针 P7、P8 均 PASS。现存含模式的两份 runbook 都是 KB 级，没有现实风险 | 二选一写进 §5.1：含模式的可信文本须 ≥ 某个长度（如 200 字符）才入集；或把可信区间限定在 `messages[0]` 与 origin=`injection` 的消息内。并在 §5.3 登记这一条 |
+| 🔵-2 | 空可信文本（文档 strip 后为空）没排除：`find("")` 会产生 O(n) 个零长区间，不会错判，但白白耗时 | 探针 P14 | 入集时过滤空串 |
+| 🔵-3 | MUT-D8（包含判定差一，`<=` 写成 `<`）在 TD-1 上杀不死：runbook 里的命中在正文中段，离区间边界很远 | 读 §8 | 新增 **TD-7b**：可信文本恰好以模式**开头**、恰好以模式**结尾**各一例，作为 MUT-D8 的指定杀手，不要留到施工时再指认 |
+| 🔵-4 | `assert_egress_boundary` 的 `content` 是 `str` 时不做 `json.dumps`，可信文本却一律按 JSON 转义形态去找，两种口径不一致 | `tools.py` L314 | 写明可信文本只在 `content` 为 dict/list 时按转义形态找、为 str 时按原文找；或规定只有 `chat_complete` 这一处（payload 恒为 dict）可以带可信集 |
+| 🔵-5 | 文档修订面有缺漏：README「已知限制」的「03.5 期的会话」一行（应改为 03 / 03.5，D30-C 通过后删除）没列进 §7；impl spec 里有两处 Y2-r19（L433 与 L1215），§7 只写「§2.5」 | `README.md` 已知限制表；`grep -n Y2-r19` | §7 补 README 一行；两处 Y2-r19 都加修订注记（或指名改哪一处） |
+| 🔵-6 | 工具 schema（payload 的 `tools[].description`）同样是仓库静态文本，但不在可信集里：哪天描述里写了受限文件名，所有请求都会被拦 | `chat_complete` 的 payload 组装 | 今天的描述不含模式。在 §5.3 登记一句即可，不必为它扩展可信集 |
+
+**攻击面逐项结论（含通过项，判据 11 通过率抽样）**：
+- **能出网的最坏样例**，逐条判定（探针结果；「不变」指修前修后行为相同）：
+  - URL 编码：LLM 请求体断言本来就不做 unquote，修前修后不变（web 出方向的 unquote 归一不动）。
+  - Unicode 同形 / 全角：不变，仍是 RF-11 已登记的上限。
+  - `casefold` 变长字符：P9（ß 在前，该放的放）与 P10（ß 在前 + 规程外的受限串，该拦的拦）均符合预期；另对全部 0x110000 个码位验证 `casefold` 与上下文无关（`fold(x+c+y) == x+fold(c)+y`，例外数 0），所以可信文本与请求体折叠到同一坐标系。
+  - 拆分拼接：跨消息拆开的名字修前就不拦，不变。
+  - 横跨可信文本边界：P6 拦。
+  - 藏进工具参数、工具返回值、状态卡的受限串：照旧拦（P5 同口径）。藏进记忆和 `extra_prompt` 的，取决于 🟡-2 的采集口径。
+  - 路由指向凭据文件：豁免不扩大泄露面，但这是既有缺口（🟡-3）。
+  - 模型逐字复述规程再夹带：夹带的字节落在可信区间外，拦（P5）；夹带写进复述内部，复述就不再逐字一致，同样拦。
+- **可信文本集的边界**：记忆必须排除（现稿已写，但 reinject 路径有漏口，见 🟡-2）；`--continue` 恢复后的旧版规程不豁免，方向是拦，可以接受（§5.3）；未改版的旧注入在现稿下也不豁免（🟡-1）。
+- **治本与否**：豁免机制本身是治本的，换一份含同类字面量的规程不会再炸。但前提是 🟡-1 修掉，否则「同会话换工序」正是同类文档再次炸开的路径。
+- **用例与变异能否杀死回退**：「断言整个关掉」→ MUT-D7（T5a / T17 / TD-2a）✔；「豁免退化为整条消息级」→ MUT-D3（TD-3）✔，P5 实测拦；「先删后匹配」→ MUT-D4（TD-4）✔，P6 实测拦；「只认当前工序」「`resident_prompt` 整体入集」「reinject 不滤记忆」**三条回退现稿杀不死**，需补 MUT-D9～D11；MUT-D8 需要指定杀手（🔵-3）。
+- **文档修订面**：Spec 4 §2.4、ADR-0026、ADR-0021/0022 的 frontmatter、plans/README、issues D30 都已列出；缺 README 已知限制与第二处 Y2-r19（🔵-5）。
+- **核对过的现状事实**：`chat_complete` 全仓只有 `llm.py::run_tool_loop._chat` 一个调用方，收尾调用也经它，所以 §5.2「收尾若另走 `chat_complete`」的条件不成立，传一处即覆盖。web 四个调用点只传 query、url 或 reason，确实不需要可信集。现有用例 `test_assert_egress_boundary`、`test_egress_payload_blocks_case_variant_audio_read`、`test_m5_status_card_passes_assert_egress_boundary`、T5a / T5b / T17 都在。性能方面，24.5 万字符的请求体加 3 段可信文本，判定耗时约 1 ms。
 
 ## 0. 一句话
 
