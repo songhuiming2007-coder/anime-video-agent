@@ -513,7 +513,7 @@ M18～M20、M24、M25 属 PR3（desktop）。
 
 | 编号 | 发现 | 建议 |
 |---|---|---|
-| 🔵 C-1 | T-P16 的 `exact` 腿删掉了 `assert len(exact["results"]) == limit`，没有换成条件版本；limit = 1 / 5 / 10 时「未截断时条数等于返回数」这一点不再断言（新用例只覆盖了 limit=20 的 19 条） | 下次动这个文件时补一行 `assert len(exact["results"]) == (limit - 1 if limit == 20 else limit)`。不阻断 |
+| 🔵 C-1 | T-P16 的 `exact` 腿删掉了 `assert len(exact["results"]) == limit`，没有换成条件版本；limit = 1 / 5 / 10 时「未截断时条数等于返回数」这一点不再断言（新用例只覆盖了 limit=20 的 19 条） | 下次动这个文件时补一行 `assert len(exact["results"]) == (limit - 1 if limit == 20 else limit)`。不阻断。**2026-10-06 已补**（D29-A 施工方，紧随 `35391b1`；变异「只在未截断时少给一条（`normalized[:-1]`）」——T-P16 主腿是截断场景、不受影响——由 T-P16[5] 第 758 行这条新断言杀死（junit 口径，md5 一致）） |
 
 ## 附：引用自查表（2026-09-29 草案时按 HEAD `4ca9a03` 核对；以符号为锚）
 
