@@ -33,7 +33,7 @@
 | 方案 | 状态 | 未验门禁 / 遗留（指针） |
 |---|---|---|
 | [Spec 9：无终端 agent 会话协议与 Session 恢复（core）](archive/2026-09-25-agent-session-protocol-spec.md) | 已施工 | 无（§9 门禁 1–14 全勾；S9-MUT-1~62 全 KILLED） |
-| [Spec 10：桌面端对话面板与人审卡片](archive/2026-09-25-desktop-conversation-panel-spec.md) | 机检通过，**待人验收** | 门禁 6 / 9 / 12（打包版·真机手验，待人）；遗留 D37（2026-10-06 人手定性未复现 fail-open；按用户裁决 (b) 改措辞 + 修 D40，已施工待评审）；N39 已于 2026-10-06 评审通过迁 archive |
+| [Spec 10：桌面端对话面板与人审卡片](archive/2026-09-25-desktop-conversation-panel-spec.md) | 机检通过，**待人验收** | 门禁 6 / 9 / 12（打包版·真机手验，待人）；遗留无（D37 / D40 于 2026-10-06 D37-C 评审通过、N39 于同日评审通过，均已迁 issues archive；退出确认框同类缺口另登记 N54 备忘） |
 | [Spec 11：停机点深度组件](archive/2026-09-26-stop-point-deep-components-spec.md) | 机检通过，**待人验收** | 门禁 9 的打包版手验与 A2 |
 | [Spec 12：09 封面与标题协作](archive/2026-09-26-cover-title-collaboration-spec.md) | 机检通过，**待人验收** | 门禁 9 的「两图渲染两版」与打包版手验 |
 | [Spec 13：web_fetch 链接清单与研究策略](archive/2026-09-26-web-fetch-links-and-research-strategy-spec.md) | 已施工 | **门禁 8（唯一终判）待 D29 收口后复跑** |
