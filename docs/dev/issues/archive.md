@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-10-06：桌面端可用性收口（续）
+
+### [N39] repoRoot 切换窗口内新起的读取拿到「新代号 + 旧仓库根」
+- 状态：**已解决**（施工 4ca9a03；2026-10-06 独立评审通过）
+- 关联：`desktop/src/host/service.ts::requestRepoRootChange`（`repoGen += 1` 早于 `resolveRepoRoot()`）；Spec 8 §2.9/§4, D32
+- 原记录（活跃表原文，含施工回填）：repoRoot 切换窗口内新起的读取拿到「新代号 + 旧仓库根」。2026-09-28 D32 施工读码发现（未构造出可见现场）：切换开始即递增代号，仓库根要到 `resolveRepoRoot()` 才换；这段窗口里 30 s 定时的 `refreshEpisodeStatuses` 若起跑，会拿新代号去读旧根，结果通过代号比较写进 `summaries` 并推 `episodes.summary`（侧栏摘要，不进期 snapshot）。纵深缺口。候选：`resolveRepoRoot()` 后再递增一次代号 / 切换中不起新读取 / 读取记下发出时的根并在回包时比对；前两者触及 Spec 8 代号语义，须人拍板 **2026-09-29 人拍板「先试候选 2」并已施工**：`refreshEpisodeStatuses` 与 `loadStatus` 入口加 `if (this.switching) return`（切换窗口内不起新读取；`probe` 不加——切换自己在窗口内调它；切换收尾原本就 `void refreshEpisodeStatuses()` 补刷一次）。用例 TH-13b：占住一个在途读取让窗口保持打开，窗口内调 `refreshEpisodeStatuses` 与活跃期 `tickActive`，断言 STATUS spawn 数不变；窗口关闭后恢复。变异 2/2 被该用例以断言杀死（去 refresh 守卫 / 去 loadStatus 守卫，均 `expected 3 to be 2`）。vitest 378 全绿、tsc 通过。**未做**：未构造出用户可见现场（机理成立，后果限于侧栏摘要）；未走 e2e。
+- 评审：✅ 通过（2026-10-06 独立评审 N39-B，与施工方不共用上下文）。① 读码：守卫只在 `refreshEpisodeStatuses` 与 `loadStatus` 入口（`if (this.switching) return`）；`probe` 未加且理由成立——切换在 `resolveRepoRoot()` 之后才 `await this.probe()`，此时根已是新根、代号已是新代号，组合一致；全文件带代号的读取只有这三处（`const gen = this.repoGen`），无遗漏；切换窗口唯一的让出点是等在途 spawn 的 `while` 循环，循环结束到 `resolveRepoRoot()` 之间全是同步代码，不存在第二个窗口。② 补刷：`finally` 复位 `switching` 后 `void this.refreshEpisodeStatuses()`，窗口内被跳过的读取不会让侧栏永久陈旧；即使补刷因 `reach` 未就绪提前返回，30 s 定时刷新兜底。③ 变异亲跑（`npx vitest run tests/host/sessions.test.ts -t TH-13b`）：去 refresh 守卫、去 loadStatus 守卫 → 均被 TH-13b 以 `AssertionError: expected 3 to be 2` 杀死，还原 md5 一致、复跑绿。④「未构造用户可见现场、未走 e2e」不必补：后果限于侧栏摘要至多一个刷新周期，TH-13b 用真实 `HostService` 与可控闸门精确卡在窗口内，比 e2e 定时撞窗口更确定。
+- 发现（无阻断，🔵）：(a) 删掉切换收尾的 `void this.refreshEpisodeStatuses()`，host 全部 164 个用例仍绿——补刷是 N39 前就有的行为，本修依赖它却无用例守，后果是切仓后侧栏最多空 30 s；(b) 把 refresh 守卫改成永久 `return` 时，TH-13b 是在前置 `waitFor(() => calls > 0)` 超时（8 s）后失败，「窗口关闭后恢复读取」那条断言本身没有独立守住的用例（一般刷新路径只靠 TH-13b 的前置步骤间接覆盖）。两条都不是 N39 引入，记此备查。
+
 ## 2026-09-29：桌面端可用性收口
 
 ### [N49] 桌面端会话里 agent 起的作业找不到 ffmpeg / ffprobe
