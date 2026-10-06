@@ -509,7 +509,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "检索词"},
-                "limit": {"type": "integer", "description": "最多返回几条（默认 5，上限 10）"},
+                "limit": {"type": "integer", "description": "最多返回几条（默认 20，上限 20）"},
             },
             "required": ["query"],
             "additionalProperties": False,

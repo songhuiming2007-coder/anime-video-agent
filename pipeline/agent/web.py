@@ -31,8 +31,12 @@ from typing import Any, Callable
 from pipeline import paths
 from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS, assert_egress_boundary
 
-SEARCH_DEFAULT_LIMIT = 5
-SEARCH_MAX_LIMIT = 10
+# N59（人 2026-10-06 裁决）：默认 = 上限 = 20。原 5 / 10（Spec 4 §3.2）对人物剖析、伏笔考据这类调研
+# 远远不够（剖析类查询 limit=10 时两家全部截断、约一半仍是百科）；查什么、查几次由模型决定，
+# harness 不按题材定策略，只给足够的条数。20 = Tavily 文档单次上限；Exa 免 key 入口实测 30 条
+# 照给。代价：每条 snippet 封顶 500 字，一次至多约 1 万字进上下文、此后每轮重发（人已知悉）。
+SEARCH_DEFAULT_LIMIT = 20
+SEARCH_MAX_LIMIT = 20
 # Spec 13 §3.2 常量依据：ANCHOR_MAX_CHARS=60（实测四页锚文本绝大多数 <40 字符，
 # 60 容下长句锚并截断异常值）；LINKS_MAX_COUNT/CHARS=200/12000（JSON 口径实测四类
 # 真实页面，内容链接区止于 idx 185 / 累计 11373 字符，覆盖全部样本的最小整百/整千值，
