@@ -1,6 +1,6 @@
 # Spec 18：建期迁会话——选题会话（idea）落盘与转正继承（D42）
 
-> **状态：已施工·待评审（D42-B，2026-10-08；回填见 §9）**；此前 v0.2 + 定向复审（D42-R2，2026-10-08）🟢 可动工——8 条全部核销，2 条非阻断残余（见「定向复审」）。2026-10-08 立文（D42-A 第二步）。
+> **状态：✅ 已通过（2026-10-08 D42-C 独立评审通过，D42 迁 issues archive；见「独立评审」）**；此前已施工（D42-B，2026-10-08；回填见 §9）；此前 v0.2 + 定向复审（D42-R2，2026-10-08）🟢 可动工——8 条全部核销，2 条非阻断残余（见「定向复审」）。2026-10-08 立文（D42-A 第二步）。
 > 对应 issues：**D42**。前置：选型稿 `2026-10-06-idea-to-episode-options.md`（人 2026-10-06 裁决：方案 (a)、联网三件含 `crawl`、同一时刻只留一个选题会话）；**D43 / Spec 17 已施工（2026-10-08）**——方案 (a) 的「idea 补联网三件」已被覆盖且更宽（单表全开），本 spec 只剩「建期把选题会话记录带进新期」一半。
 > 触及冻结面：Spec 9（`archive/2026-09-25-agent-session-protocol-spec.md`，`--idea` 不落盘 → 落盘 + 恢复）、Spec 10 §2.5（建期流程与 `idea-note`）、D27 spec（`archive/2026-09-21-ava-entry-idea-scope.md` §3.1，idea 的立规文件；D42-R2 余-1 更正——此前误指 ADR-0018，后者全文无 idea 条款）、Spec 10 §2.5 第 5 条（idea 会话保留后台 → 建期即结束）。
 
@@ -68,6 +68,47 @@
 - ④ **新用例/变异可写性**：T-D42-8（缺失自建 + 悬空 data 拒启）、T-D42-9（两腿断言不重复、盘上 repair 不新增）、T-D42-3b（注入 `ftruncate` 失败 → 非零 + stderr 指引 + 两文件状态）均可落成断言；MUT-D42-f/g/h 的指定杀手逐条对得上。
 
 **探针**（scratchpad，未进仓库）：`d42r/probe_fix_intent.py`（① 三场景）。
+
+## 独立评审（2026-10-08，D42-C；评审人未参与立文、v0.2 修订、两轮红队与 D42-B 施工；读码 + 亲跑全量测试、变异与真 LLM 冒烟）
+
+**结论：✅ 通过。** §3.1–§3.3 逐条落地属实；人裁决的 host 侧一次性标记（§9.6 偏差 1）在所有核过的路径上都不会把 `SESSION_NEW` 误变为 `SESSION_CONTINUE`；§9.2 读数全部复跑一致；变异亲跑 9 条（矩阵 4 + 自设 5），核心侧 7 条中 6 条由指定用例的断言杀死（V2 崩在异常上不算杀，改设 V2b 后断言级杀死）。非阻断 4🔵，主要一条是偏差 1 的两条不变量（「失败不消费」「切仓清空」）**代码正确但零用例守**——自设变异 V3 / V4 在全量 vitest 下存活，登记 N60 备忘。
+
+**逐项核验**：
+
+1. **§3.1–§3.3 读码**：
+   - idea 的 `ep_dir` 恒 `None`：协议 `SessionHost(ep_dir=None, log_dir=lease.ep_dir)`（`protocol.py` ⑤）；终端 `activate_host(None)` 后把 `host.lease` / `host.log_dir` 指到 `_idea`（`cli.py` idea 分支），`_dispatch_agent_turn` 经 `host.matches(None)` 与 `messages is host.main_messages` 落盘。`ensure_lease` 改取 `log_dir`；`prepare_resume` 只经 `host.lease` 读写，不碰 `ep_dir`。`session.py` 里其余 `ep_dir` 用处（需期工具闸、状态卡、批准记录、抓取卡）全是「无期」语义，未见把 `_idea` 当期目录的分支 ✓。
+   - 启动降级：`acquire_idea_lease` 先 `data.is_dir()`（不可达抛 `DataUnreachable`、绝不建 `data/`），`_idea` 缺失 `mkdir`，建不了 / 锁冲突一律抛；协议 ④ 的 data 闸已无条件，⑤ 租约失败 → `E_SESSION_LOCKED` 退 3、`DataUnreachable` → `E_DATA_UNREACHABLE` 退 4；终端 data 不可达退 2、租约失败退 3。终端无 LLM 配置时先走降级说明退 0、不检查 data——该路径本就不开会话、无可落盘之物，不算违背「禁止静默非持久」✓。
+   - `--from-idea`：`create_new_episode` 成功后才 `migrate_idea_session`，失败不回滚；a 取租约（锁冲突退 3、文案「选题会话进行中，请先退出它再建期带入」）→ b 读全部字节 → 无可恢复段 marker `migrated=false` 退 0 → c `_write_new_log`（同目录临时文件 `O_EXCL` + 循环 `os.write` + `fsync` + `os.replace`，目标已存在即拒）→ d `lease.clear()`（持锁 `ftruncate(0)` + `fsync`），失败退 5 + stderr 手动清空指引；marker 只在成功或「无可迁」时打、恰好一行 ✓。
+   - `plan_repairs`：既有 `repair_tool_results` 的 `results[].tool_call_id` 计入 `satisfied`，与 §3.2 第 6 条原文逐字一致，id 级口径 ✓。
+   - 桌面端：`createEpisode` 先 `endForMigration("idea")`（§2.10 结束序列后再等进程真退出，宽限内不退 → `E_BUSY`「未建期」）再 spawn `NEW_EPISODE … --from-idea`；marker 经 `parseFromIdeaMarker`（行首 `[from-idea]` 的行须恰好一行且合式，`migrated` 与 `sid` / `messages` 互相约束）解析，缺失按未带入 + diag；带入时 `resetAfterMigration("idea")` 清缓冲（只清已退出的）；`idea-note` 两态与选题视图「已带入 <期名>」在 `App.tsx`；`convTarget` 的 idea 继续报错已删，`conv.resume` 对 idea 起 `SESSION_IDEA` ✓。TG-10 不受影响：renderer 仍只有 `Composer.tsx` 一处 `conv.send` ✓。
+2. **攻偏差 1（host 侧一次性标记 `carried`）**：设——`createEpisode` 拿到合式 `migrated=true`；消费——该期 `conv.send` 成功返回后、或 `conv.resume` 成功后；清空——确认切仓时 `carried.clear()`。逐路径：① 切仓：标记清空，换仓后同名期首发 `SESSION_NEW` ✓（读码；无用例，见 C-1）；② 同名重建：期已建则 core 拒「期目录已存在」，标记不变也无害；仅当期目录在 app 外被删、同仓同名再建且这次 `migrated=false` 时，旧标记残留使首发走 `SESSION_CONTINUE`——新期无会话记录，core `--continue` 回 `no_session` 照常开新会话，可见差异只有 ready 的 `continue_status`（C-2）；③ resume 先于 send：resume 成功即消费，之后 send 走活进程 ✓；resume 失败不消费，send 仍以 continue 起 ✓；④ 失败不消费：`reach` 不 ok / `E_BUSY` / spawn 失败时标记保留，下次仍接着迁入段起 ✓（读码；无用例，见 C-1）；唯一的偏差面是「发送确认超时但消息其实已送达」——标记保留，进程活着时下一次发送会消费它；若人在此之前点「结束会话」，再发消息会以 continue 接着刚才那段而不是开新会话（C-2，影响仅为「续而非新」，不丢数据）；⑤ idea 键不参与标记（`convKey.startsWith("ep:")`）✓；⑥ 两次并发发送：第二次撞 `starting/busy` 得 `E_BUSY`，不产生第二个进程 ✓。结论：无路径会把应为新会话的发送误接到**别的**会话段；残余两处都只在「同一期、迁入段或其续段」之间取舍。
+3. **全量复跑（亲跑，对照 §9.2）**：`uv run pytest` = `6 failed, 2075 passed, 5 skipped`，6 红即 §9.2 所列数据盘未挂载集合（`data → /Volumes/Samsung T7/…` 不在；其中 `test_idea_scope_zero_step_injection` 与 idea 相关，单跑核实多出的第 4 条是「跨期记忆未注入」告警，属数据盘缺失，非 D42 回归）；`npx vitest run` 432 passed；`npx tsc --noEmit` 绿；`npx playwright test --workers=2`（各用例自带 mkdtemp 临时 repo）115 passed / 2 skipped，L-3 与两版 TX-7 在内。跑后 `git status` 干净。
+4. **变异亲跑**（scratchpad `d42c/mut.py`：施加 → 只跑指定杀手 → 还原 → md5 对拍，`PYTHONDONTWRITEBYTECODE=1`；9 条全部 md5 一致、跑后工作树干净）：
+
+   | 编号 | 植入 | 指定杀手 | 结果（失败行） |
+   |---|---|---|---|
+   | MUT-D42-a | 只建期不复制 | T-D42-2 | KILLED：L208「新期没有会话记录：迁移只建了期、没复制」（`907d280` 收紧后的断言，HEAD 上复核） |
+   | MUT-D42-f | idea 租约失败静默吞 | T-D42-8c | KILLED：L515「租约失败却发了 ready（静默非持久运行）」`'ready' == 'error'` |
+   | MUT-D42-g | `plan_repairs` 不认既有修复 | T-D42-9a / 9b | KILLED：L574「同一 tool_call_id 重建出了两条 tool 消息」`2 == 1`；L591 `2 == 1` |
+   | MUT-D42-e | `--idea` 恒开新段 | T-D42-1 | KILLED：L156 `'new' == 'resumed'` |
+   | 自设 V1 | 先清空 `_idea` 再复制（顺序倒置） | T-D42-3 两腿 | KILLED：L275 `_idea` 逐字节不动断言 `b'' == b'{…'` |
+   | 自设 V2 | data/ 不可达时替人建 data/ | T-D42-8b | **不算杀**：终端腿崩在 `FileExistsError`（悬空链接上 mkdir），协议腿被 protocol ④ 的独立 data 闸挡住；改设 V2b |
+   | 自设 V2b | 去掉 `DataUnreachable`（不可达不拒，落到建 `_idea` 失败） | T-D42-8b | KILLED：L500 `3 == 2`（终端退出码区分「data 不可达」与「租约失败」有牙） |
+   | 自设 V3 | desktop：`carried` 在发送前就消费（失败也消费） | — | **SURVIVED**：全量 vitest 432 绿；e2e 只有两版 TX-7 走建期且都是成功路径 |
+   | 自设 V4 | desktop：切仓不清 `carried` | — | **SURVIVED**：同上 |
+
+   §9.3 的 MUT-D42-b / c / d / h 未重跑：读了 D42-B 的 scratchpad `d42b/killcheck.log`，四条都是指定杀手的断言行失败（L209 `19767 == 0`、L269、L352、L299 `0 == 5`），与矩阵锚点一致。该日志里 a（`FileNotFoundError`）与 f（60 s 等待超时）是 `907d280` 收紧**之前**的形态，按纪律不算杀——这两条本评审已在 HEAD 上重跑，均为断言级杀死（见上表）。
+5. **冒烟证据**：D42-B 的 scratchpad `d42b/smoke-frames.jsonl` 实际仍可读，35 帧逐帧核对与 §9.4 一致（idea-1 `continue_status:new` → idea-2 `resumed` / `history_count 3` / 3 帧 history → `new` 退 0、marker `migrated=true sid=5bd2c0c0eaf6515d messages=3`、stderr 空 → ep `resumed` → `read_artifact` → `write_episode_file` 卡批准 → `read_status`；产物 `01-topic.md` 为草案原文）。另在当前 HEAD 上用自写驱动（scratchpad `d42c/smoke_c.py` / `smoke_c2.py` / `smoke-frames.jsonl`，临时仓库根、真 LLM `CPA_API_KEY`，钥匙串只看退出码、值只进子进程环境）独立复跑并加严：`_idea` 不预建 → 首启自建；idea 第二进程不带 `--continue` 即 `resumed` 并能原样复述上一进程里的张力；`--from-idea` 退 0、marker 恰一行、stderr 空，**新期记录与迁移前 `_idea` 逐字节相等**、`_idea` 0 字节；新期 `--continue` `resumed / history_count 5`；迁移后再起 `--idea` 为 `new / history_count 0`。新期里只说「把刚才的草案写进 01-topic.md」时，模型复述了选题里的番名与张力原句（带入成立、人未重述），但先用文字请人确认、未直接调工具；人回「确认，写入」后弹一张 `write_episode_file` 卡、批准落盘，`01-topic.md` 含「进击的巨人」「自由的代价是成为加害者」。多出的一轮确认是模型行为，不是 D42 缺陷，ACC 时留意。
+6. **文档修订面（§4 逐处）**：Spec 9 入口行、§2「idea 会话不落盘」、§2.6 子会话条的 idea 例外、§2.8 第 1 条（第二截断点不属恢复算法）与第 4 条（🟡-2 (A)）、TP-16 行——注记在位且与实现一致；Spec 10 §2.5 第 1 / 3 / 4 / 5 条、RF-10、门禁 12 ✓；D27 spec §3.1 ✓；ADR-0023 补记第 2 条 ✓；impl spec 文首 ① 与 §2.3 `ava idea` 行 ✓；`session_log.py` 模块 docstring 第 1 条「截断只有两处」✓。README「已知限制」无 D42 行，无需删。§4 清单外的残余见 C-3。
+
+**发现表**（无阻断项）：
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🔵 C-1 | 偏差 1 的两条不变量「发送失败不消费」「切仓清空」代码正确但零用例守；`conv.resume` 成功即消费同样只有读码（TH-D42 ⑤ 只测 idea 的 resume） | 自设变异 V3（发送前消费）、V4（切仓不清）全量 vitest 432 绿；e2e 只有两版 TX-7 走建期，均为成功路径 | 登记 **N60**（备忘·用例缺口）；建议补 TH-D42 ⑥「marker true → 首发失败（如脚本化会话在 ready 前退出）→ 再发仍 `SESSION_CONTINUE`」、⑦「marker true → 切仓 → 换回同名期首发 `SESSION_NEW`」，可顺带 ⑧ resume 消费 |
+| 🔵 C-2 | 标记的两处边界：(a) 发送确认超时但消息已送达 → 标记保留，人随后「结束会话」再发 → 接着刚才那段续而非开新会话；(b) `createEpisode` 在 `migrated=false` 时不删同名旧标记（只在期目录被 app 外删除、同仓同名重建时可达，结果是首发 `continue` 落到 `no_session`、照常开新会话） | `service.ts::convSend`（`await this.sessions.send` 之后才 `delete`；`sessions.ts::send` 的 `race(…, sendAckMs)`）；`createEpisode` 只有 `if (created.migrated) add` | 不阻断：两者都只在同一期的「迁入段 / 其续段 / 空」之间取舍，不丢数据、不串期。(b) 可顺手改为 `else this.carried.delete(name)`；随 N60 一并处理 |
+| 🔵 C-3 | Spec 10 方法契约两处未随 D42 注记：§2.1 第 2 条「`conv.send`（该键无活进程时以 `new` 模式起）」、§3.1 方法表 `conv.send …起 new 会话`、`conv.resume …仅 ep:*`、`episode.create { name } → { epKey }`。§4 清单只列了 §2.5，施工照清单做，属清单漏项；`shared/protocol.ts` 的注释已更新 | `archive/2026-09-25-desktop-conversation-panel-spec.md` L165、L404–L413 | 下次触及 Spec 10 时补注记（指向 §2.5 第 4 条的 D42 注记即可）；不单独立项 |
+| 🔵 C-4 | `endForMigration` 在名字校验之前无条件执行：选题会话正跑回合或挂着卡时点「建期」，即使期名非法、core 拒绝，选题回合也已被结束 | `service.ts::createEpisode` 先 `endForMigration` 后 `this.core("NEW_EPISODE")`；校验全在 core（C10-R1） | 符合 §3.3 ③ 的写死顺序，且选题记录已落盘、再进恒恢复，不丢已提交内容；只记一笔，ACC 观察是否误伤 |
 
 ## 1. 痛点（人 2026-09-29 指出；D43 后仍成立的部分）
 

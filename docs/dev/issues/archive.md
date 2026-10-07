@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-10-08：D42 评审通过归档
+
+### [D42] 选题会话（idea）与建期写 `01-topic.md` 交互断层
+- 状态：**已解决**（Spec 18；施工 `d1baacf` PR1 core、`907d280` 杀手断言收紧、`a7501d2` PR2 desktop、`31f380a` PR3 回填；2026-10-08 D42-C 独立评审通过）
+- 关联：`pipeline/agent/session_log.py`（`acquire_idea_lease`、`EpisodeLease.clear`、`plan_repairs`）、`pipeline/agent/session.py`（`SessionHost.log_dir`、`resume_idea`）、`pipeline/agent/protocol.py`、`pipeline/agent/cli.py`（`migrate_idea_session`、`new --from-idea`）、`desktop/src/host/service.ts`、`sessions.ts`、`spawner.ts`、`desktop/src/renderer/App.tsx`；Spec 10 §2.5, D27 spec（`archive/2026-09-21-ava-entry-idea-scope.md`；原误写 ADR-0018，D42-R2 余-1 更正）, ADR-0021, Spec 18；N60
+- 原记录（活跃表原文）：问题「选题会话（`idea` scope）与建期写 `01-topic.md` 交互断层：左栏「选题」入口缺少联网工具且零写权限，聊定后点「＋ 新建一期」不继承对话上下文（提示「讨论不会带入本期，请在这里重述」），无法在选题会话内一气呵成建期并由模型写入 `01-topic.md`」；位置「`config/agent/tools.json`（`idea` 工具表）、`config/agent/scopes/idea.md`、`desktop/src/renderer/App.tsx:413-426`、`pipeline/agent/tools.py`」；推进「**现状与痛点**：① 桌面端左栏首行「选题」（`idea` scope）是最自然的选题入口，但 `tools.json` 中 `idea` 仅配 `read_artifact`/`list_episodes`/`read_status`/`search_notes`，无联网考据工具（`web_search`/`web_fetch`/`crawl`）且无写权限；② 人在「选题」会话聊透张力与锚点后，点右上角「＋ 新建一期」只会建空期并切入全新的 `creative` 会话（`App.tsx:424` 显示「选题会话的讨论不会带入本期；需要的要点请在这里重述」），迫使人手动复述或复制粘贴才能让 `creative` 模型调 `write_episode_file` 落盘 `01-topic.md`；③ 当前临时绕法：不进左栏「选题」，直接点「＋ 新建一期」进 `creative` 会话聊选题并写 `01-topic.md`。**2026-10-06 加注**：方案 (a) 的「idea 补联网三件」已被 D43（所有模式开放全部工具，Spec 17）覆盖，D42 完整 spec 只剩「建期时把选题会话记录带进新期」，且须在 D43 施工之后施工。**后续重构候选方向（待立 spec 拍板）**：(a) 选题转正继承——给 `idea` 补齐联网只读工具，且在 `idea` 下点「＋ 新建一期」（或新增受控立项工具 `propose_new_episode` 经人审卡一键建期+写 `01-topic.md`）时将当前 `idea` 会话历史迁移/挂载为新期的首场 `creative` 会话，消除上下文断层；(b) 入口合一——评估是否取消独立的无期 `idea` 会话，统一收敛到带期目录的 `01 选题`（`creative` scope）。」
+- 活跃表最后状态：**已修·待评审（2026-10-08，D42-B）**：施工 `d1baacf` PR1 core、`907d280` 杀手断言收紧、`a7501d2` PR2 desktop、PR3 回填；pytest 2075 passed（6 红与基线同一集合，数据盘未挂载）、vitest 432、Playwright 115 passed / 2 skipped；MUT-D42-a～h 全杀并逐条复核为断言级失败、md5 还原一致；门禁③ 真会话冒烟过（idea 聊一轮 → 再进历史在 → `--from-idea` 带入 → 新期不重述直接写 01-topic.md，弹卡批准落盘）；人 2026-10-08 两处裁决：首发改 host 侧一次性标记（TG-10 冲突）、截图按现状。偏差 7 条见 Spec 18 §9.6。下一步：D42-C 独立评审（不能是施工 session）；打包版真机并入 ACC。**此前**：Spec 18 定向复审 🟢 可动工（2026-10-08，D42-R2）：8 条全部核销，无需人裁决；2 条非阻断残余（余-1 文首「触及冻结面」行与两处「相关」列的 ADR-0018 误指随 PR1 清理；余-2 plan_repairs 修法为 id 级满足的病态边界加注）。详见 Spec 18 文首「定向复审」。沿革：v0.1 → D42-R 🟡 3🟡+5🔵 → v0.2 作者修订（🟡-2 人裁决 (A) 顺手修 `plan_repairs`）→ D42-R2 🟢。下一步：D42-B 施工（另开 session）。完整 spec 已立：`plans/2026-10-08-idea-session-migration-spec.md`（Spec 18，2026-10-08 立文；只剩「建期迁会话」一半——联网三件已被 D43 覆盖）（2026-10-06 人裁决选型稿：方案 (a)、联网三件含 `crawl`、同一时刻只留一个选题会话）
+- 评审：✅ 通过（2026-10-08 D42-C，评审人未参与立文、v0.2 修订、D42-R / R2 与 D42-B 施工；详见 Spec 18 文首「独立评审」）。§3.1–§3.3 逐条读码属实（idea `ep_dir` 恒 None、日志目录解耦；data/ 不可达拒启、`_idea` 缺失自建、租约失败显式报错；先建期后迁移、临时文件 + fsync + `os.replace`、清空失败退 5 + 手动指引、marker 恰一行；`plan_repairs` id 级满足；桌面端先结束选题会话、结束不了不建期、带入后清缓冲、idea-note 两态）；偏差 1（host 侧一次性标记）逐路径攻过，无误接别的会话段；全量复跑 pytest 2075 passed（6 红即数据盘未挂载集合）、vitest 432、tsc 绿、Playwright 115 passed / 2 skipped；变异亲跑 9 条——MUT-D42-a / e / f / g 与自设 V1、V2b 断言级杀死，自设 V2 崩在异常不算杀，desktop 自设 V3 / V4 存活（登记 N60）；冒烟：读 D42-B 帧证据 35 帧逐帧一致，并在 HEAD 上用真 LLM 独立复跑（新期记录与迁移前 `_idea` 逐字节相等、迁移后再进 idea 为全新会话、新期带入后弹卡写 01-topic.md）。
+- 发现（无阻断，🔵）：C-1 偏差 1 的「失败不消费 / 切仓清空」零用例守（N60）；C-2 标记两处边界（发送确认超时但已送达 / `migrated=false` 不删旧标记）；C-3 Spec 10 §2.1 第 2 条与 §3.1 方法表未随 D42 注记；C-4 建期前无条件结束选题回合（符合 §3.3 ③，ACC 观察）。打包版真机（Spec 10 门禁 12 更新版）并入 ACC。
+
+---
+
 ## 2026-10-08：D43 评审通过归档
 
 ### [D43] 工具按模式（scope）授权 → 所有模式开放全部工具
