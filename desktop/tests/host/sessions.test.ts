@@ -1,4 +1,5 @@
 // TH-1~TH-19、TH-21：host 会话集成（Spec 10 §7.1）。节拍 = 驱动假会话进程写帧 → 断言，不 sleep 等轮询。
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ConvSnapshot, Envelope, SnapshotStatus } from "../../src/shared/protocol";
@@ -841,6 +842,55 @@ describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
     const idea = await snapOf(b.svc, "idea");
     expect(idea.phase).toBe("exited");
     expect(idea.entries.some((e) => e.k === "user")).toBe(true);
+  });
+
+  // ⑥~⑨：host 侧一次性标记（Spec 18 §9.6 偏差 1）的不变量，N60 补（D42-C 自设变异 V3 / V4 曾存活）
+  it("⑥ 带入的期首发失败（进程 ready 前退出）→ 标记不消费，再发仍以 SESSION_CONTINUE 起", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    await b.svc.dispatch("episode.create", { name: "新期-首发失败" });
+    sessionScript(b.repo, "新期-首发失败", []); // 剧本为空：假进程 ready 之前就退出
+    await expect(b.svc.dispatch("conv.send", { convKey: "ep:新期-首发失败", text: "第一次" })).rejects.toBeDefined();
+    sessionScript(b.repo, "新期-首发失败", [READY("新期-首发失败"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-首发失败", text: "第二次" });
+    expect(sessionSpawns()).toEqual(["SESSION_CONTINUE", "SESSION_CONTINUE"]);
+  });
+
+  it("⑦ 带入后切仓（哪怕切回同一个根）→ 标记清空，该期首发以 SESSION_NEW 起", async () => {
+    let root = "";
+    const b = await boot({ realCore: true, overrides: { chooseRepoRoot: async () => root } });
+    root = b.repo.root;
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    await b.svc.dispatch("episode.create", { name: "新期-切仓" });
+    const changed = (await b.svc.dispatch("app.requestRepoRootChange", {})) as { changed: boolean };
+    expect(changed.changed).toBe(true);
+    sessionScript(b.repo, "新期-切仓", [READY("新期-切仓"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-切仓", text: "hi" });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+  });
+
+  it("⑧ 带入的期先点「继续上次会话」→ 标记随 resume 成功消费；结束后再发以 SESSION_NEW 起", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    await b.svc.dispatch("episode.create", { name: "新期-先续" });
+    sessionScript(b.repo, "新期-先续", [READY("新期-先续"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.resume", { convKey: "ep:新期-先续" });
+    await b.svc.dispatch("conv.end", { convKey: "ep:新期-先续" });
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-先续", text: "hi" });
+    expect(sessionSpawns()).toEqual(["SESSION_CONTINUE", "SESSION_NEW"]);
+  });
+
+  it("⑨ 同名期在 app 外被删后重建、这次未带入 → 旧标记作废，首发以 SESSION_NEW 起", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    await b.svc.dispatch("episode.create", { name: "新期-重建" });
+    rmSync(join(b.repo.root, "data", "episodes", "新期-重建"), { recursive: true });
+    // 多打一行让文件长度不同：同秒同长的改写会被 Python 的 .pyc 缓存当成没变（stale .pyc 事故同型）
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[OK] 重建", "[from-idea] migrated=false sid=- messages=0"]));
+    await b.svc.dispatch("episode.create", { name: "新期-重建" });
+    sessionScript(b.repo, "新期-重建", [READY("新期-重建"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-重建", text: "hi" });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
   });
 
   it("⑤ conv.resume 对 idea 不再报错：以 SESSION_IDEA 起（core 启动即恒恢复）", async () => {

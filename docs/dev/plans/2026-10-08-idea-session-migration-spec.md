@@ -300,3 +300,25 @@ scratchpad `d42b/shots/`：1280×800 与 1440×900 各 4 张（选题聊一轮 /
 5. **未带入时选题缓冲保留**：§3.3 ④ 只规定带入成功后清缓冲；未带入（选题没聊过 / 只有 user）时不清，与改造前一致（假进程版 TX-7 钉住）。
 6. **未实测**：打包版真机（Spec 10 门禁 12 更新版，并入 ACC，需硬盘）；`endForMigration` 返回假 → 服务层 `E_BUSY` 不建期这一支只在 SessionManager 单元层测到（集成层的真进程挨 SIGKILL 必死，造不出）；`ava new --from-idea` 的 TTY 续聊分支未做 pty 测试（逻辑是既有 `_continue_repl`，`test_main_new_enters_repl_in_tty` 覆盖的是未带入分支）。
 7. **旁见（非本 spec 引入，未修）**：desktop 变异矩阵 MUT-7 / MUT-24 / MUT-64 的锚点在 HEAD（施工前）即已命中 0 / 0 / 2 次，未登记；恢复后的历史把旧常驻层作为 system_note 回放是 `--continue` 既有行为（D42-R 已记）。
+
+## 10. N60 小修（2026-10-08，施工方 = D42-B session；处置 D42-C 🔵 C-1 / C-2(b) / C-3；待评审 session 定向复核）
+
+| 来源 | 处置 | 改了哪里 |
+|---|---|---|
+| 🔵 C-1（N60） | 补用例：TH-D42 ⑥ 首发失败（假进程 ready 前退出）→ 标记不消费、再发仍 `SESSION_CONTINUE`；⑦ 带入后切仓（切回同一根也走完整切换）→ 首发 `SESSION_NEW`；⑧ 先 `conv.resume` → 标记随之消费，结束后再发 `SESSION_NEW` | `desktop/tests/host/sessions.test.ts` |
+| 🔵 C-2(b) | 采纳：`createEpisode` 在 `migrated=false` 时 `carried.delete(name)`（同名期被 app 外删除后重建、未带入，旧标记作废）；补 TH-D42 ⑨ | `desktop/src/host/service.ts`、同上 |
+| 🔵 C-2(a) | 不改：发送确认超时但消息已送达、之后人结束会话再发 → 接着同一期的迁入段续聊；不丢数据、不串期，堵它要给标记加状态机，不值 | — |
+| 🔵 C-3 | 补注记：Spec 10 §2.1 第 2 条（起进程的两种操作在 D42 后的模板变化）、§3.1 方法表 `conv.send` / `conv.resume` / `episode.create` 三行 | `plans/archive/2026-09-25-desktop-conversation-panel-spec.md` |
+| 🔵 C-4 | 不改：§3.3 ③ 的设计如此，选题记录已落盘、被结束的会话下次再进即恒恢复 | — |
+
+**变异**（scratchpad `d42b/n60_mut.py`：施加 → `vitest run tests/host/sessions.test.ts -t TH-D42` → 写回 → md5 对拍；四条都由一一对应的那条用例断言杀死）：
+
+| 编号 | 变异 | 杀手 | 失败行 | md5 |
+|---|---|---|---|---|
+| V3（D42-C 自设，原存活） | 发送前就消费标记 | ⑥ | `['SESSION_CONTINUE', 'SESSION_NEW']` ≠ 期望两次 CONTINUE | ✓ |
+| V4（D42-C 自设，原存活） | 切仓不清标记 | ⑦ | `['SESSION_CONTINUE']` ≠ `['SESSION_NEW']` | ✓ |
+| V6（新设） | `conv.resume` 成功不消费 | ⑧ | 第二次仍 CONTINUE | ✓ |
+| V5（新设） | 未带入不删旧标记 | ⑨ | `['SESSION_CONTINUE']` ≠ `['SESSION_NEW']` | ✓ |
+
+**读数**：`npx tsc --noEmit` 绿；`npx vitest run` 436（432 + 4）；e2e TX-7 两版回归绿（只有 `createEpisode` 未带入分支的行为变化，假进程版 TX-7 走这一支）。core 零改动，pytest 不受影响。
+**写用例时踩到一次 stale .pyc**：⑨ 两次写入的假 `cli.py` 恰好同长、同秒，Python 用了旧字节码、第二次仍打 `migrated=true`；给第二版多打一行使长度不同即可（与 `verify_mutations.py` 文档里的事故同型，属测试夹具问题，非产品缺陷）。

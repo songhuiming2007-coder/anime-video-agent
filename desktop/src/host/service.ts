@@ -1147,6 +1147,9 @@ export class HostService {
     if (created.migrated) {
       this.carried.add(name);
       this.sessions.resetAfterMigration("idea"); // §3.3 ④：选题视图不再显示已带走的旧讨论
+    } else {
+      // 同名期被 app 外删除后重建、这次没带入：上一次留下的标记不许让新期接着旧段起（N60 / D42-C C-2(b)）
+      this.carried.delete(name);
     }
     return created;
   }
