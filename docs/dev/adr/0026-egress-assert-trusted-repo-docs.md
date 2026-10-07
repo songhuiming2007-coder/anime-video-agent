@@ -1,6 +1,6 @@
 ---
 related-issues: D30
-related-plans: 2026-10-06-egress-assert-trusted-docs-spec, archive/2026-09-23-network-tools-spec
+related-plans: archive/2026-10-06-egress-assert-trusted-docs-spec, archive/2026-09-23-network-tools-spec
 status: accepted
 ---
 
