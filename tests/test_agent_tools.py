@@ -32,13 +32,13 @@ def fake_repo(tmp_path: Path, monkeypatch):
 
 
 def test_write_episode_file_allows_draft_and_topic_with_confirm(fake_repo):
-    """creative scope 放行 02-script.draft.md，以及在确认后的 01-topic.md。"""
+    """放行 02-script.draft.md，以及在确认后的 01-topic.md（D43 后不再按 scope 收窄）。"""
     _, ep_dir = fake_repo
-    draft = write_episode_file(ep_dir, "02-script.draft.md", "# Draft", scope="creative")
+    draft = write_episode_file(ep_dir, "02-script.draft.md", "# Draft")
     assert draft.exists()
     assert draft.read_text(encoding="utf-8") == "# Draft"
 
-    topic = write_episode_file(ep_dir, "01-topic.md", "# Topic", scope="creative", confirmed=True)
+    topic = write_episode_file(ep_dir, "01-topic.md", "# Topic", confirmed=True)
     assert topic.exists()
     assert topic.read_text(encoding="utf-8") == "# Topic"
 
@@ -47,17 +47,17 @@ def test_write_episode_file_rejects_topic_without_confirmation(fake_repo):
     """写 01-topic.md 未获显式确认时必须拦截 (Spec §2.4, B7)。"""
     _, ep_dir = fake_repo
     with pytest.raises(PermissionError, match="显式确认"):
-        write_episode_file(ep_dir, "01-topic.md", "# Topic", scope="creative", confirmed=False)
+        write_episode_file(ep_dir, "01-topic.md", "# Topic", confirmed=False)
 
 
 def test_write_episode_file_rejects_out_of_whitelist_files(fake_repo):
     """拦截白名单外文件的写入（如 02-script.md、04-clips.json 等）。"""
     _, ep_dir = fake_repo
     with pytest.raises(PermissionError, match="白名单"):
-        write_episode_file(ep_dir, "02-script.md", "# Final", scope="creative")
+        write_episode_file(ep_dir, "02-script.md", "# Final")
 
     with pytest.raises(PermissionError, match="白名单"):
-        write_episode_file(ep_dir, "notes.txt", "abc", scope="creative")
+        write_episode_file(ep_dir, "notes.txt", "abc")
 
 
 def test_write_episode_file_rejects_parent_or_outside_directory(fake_repo):
@@ -65,20 +65,20 @@ def test_write_episode_file_rejects_parent_or_outside_directory(fake_repo):
     _, ep_dir = fake_repo
 
     with pytest.raises(PermissionError):
-        write_episode_file(ep_dir, "../02-script.draft.md", "bad", scope="creative")
+        write_episode_file(ep_dir, "../02-script.draft.md", "bad")
 
     with pytest.raises(PermissionError):
-        write_episode_file(ep_dir, "subdir/02-script.draft.md", "bad", scope="creative")
+        write_episode_file(ep_dir, "subdir/02-script.draft.md", "bad")
 
 
 def test_write_episode_file_rejects_repo_root_and_system_tmp(fake_repo):
     """拦截写到仓库根或 /tmp 等任意非期目录路径 (🟡 1 纵深防御)。"""
     root, _ = fake_repo
     with pytest.raises(PermissionError, match="禁止"):
-        write_episode_file(root, "02-script.draft.md", "bad", scope="creative")
+        write_episode_file(root, "02-script.draft.md", "bad")
 
     with pytest.raises(PermissionError, match="禁止"):
-        write_episode_file(Path("/tmp"), "02-script.draft.md", "bad", scope="creative")
+        write_episode_file(Path("/tmp"), "02-script.draft.md", "bad")
 
 
 def test_write_episode_file_fail_closed_when_episodes_root_missing(tmp_path: Path, monkeypatch):
@@ -90,24 +90,46 @@ def test_write_episode_file_fail_closed_when_episodes_root_missing(tmp_path: Pat
     arbitrary_dir.mkdir(parents=True)
 
     with pytest.raises(PermissionError, match="不可达"):
-        write_episode_file(arbitrary_dir, "02-script.draft.md", "bad", scope="creative")
+        write_episode_file(arbitrary_dir, "02-script.draft.md", "bad")
 
 
-def test_write_episode_file_rejects_non_creative_scope(fake_repo):
-    """pipeline 与 asset scope 拥有零写权限。"""
-    _, ep_dir = fake_repo
-    with pytest.raises(PermissionError, match="零写权限"):
-        write_episode_file(ep_dir, "02-script.draft.md", "# Draft", scope="pipeline")
+def test_write_episode_file_all_scopes_write_whitelist_only(fake_repo):
+    """D43 / Spec 17 TA-4：pipeline / asset 模式写白名单文件成功；写白名单外仍拒；
+    01-topic.md 未确认仍拒（被删的「零写权限」语义换成等强断言，不是只删）。"""
+    root, ep_dir = fake_repo
+    for scope in ("pipeline", "asset"):
+        ctx = ToolContext(scope=scope, episode_dir=ep_dir, root=root, confirmed=True)
+        ok = execute_tool(
+            "write_episode_file",
+            {"filename": "02-script.draft.md", "content": f"# {scope} 草稿"},
+            ctx,
+        )
+        assert ok["ok"] is True, ok
+        assert (ep_dir / "02-script.draft.md").read_text(encoding="utf-8") == f"# {scope} 草稿"
 
-    with pytest.raises(PermissionError, match="零写权限"):
-        write_episode_file(ep_dir, "02-script.draft.md", "# Draft", scope="asset")
+        denied = execute_tool(
+            "write_episode_file", {"filename": "02-script.md", "content": "x"}, ctx
+        )
+        assert denied["ok"] is False and "白名单" in denied["error"]
+
+        denied2 = execute_tool(
+            "write_episode_file", {"filename": "../x", "content": "x"}, ctx
+        )
+        assert denied2["ok"] is False
+
+        unconfirmed = execute_tool(
+            "write_episode_file",
+            {"filename": "01-topic.md", "content": "x"},
+            ToolContext(scope=scope, episode_dir=ep_dir, root=root, confirmed=False),
+        )
+        assert unconfirmed["ok"] is False and "显式确认" in unconfirmed["error"]
 
 
 def test_write_episode_file_rejects_writing_pipeline_src(fake_repo):
     """绝不允许写入 pipeline/ 代码源码（Code Freeze 核心护栏）。"""
     from pipeline import paths
     with pytest.raises(PermissionError, match="Code Freeze"):
-        write_episode_file(paths.ROOT / "pipeline", "01-topic.md", "bad", scope="creative", confirmed=True)
+        write_episode_file(paths.ROOT / "pipeline", "01-topic.md", "bad", confirmed=True)
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +171,9 @@ def test_validate_pipeline_command_rejects_cloud_exec():
 
 
 def test_validate_pipeline_command_allows_pipeline_modules():
-    """pipeline scope 下放行 9 个制片模块，且执行器使用 sys.executable (🔴 2)。"""
+    """合表后放行 9 个制片模块（D43 / Spec 17 §3.3），且执行器使用 sys.executable (🔴 2)。"""
     for mod in ["check_script", "tts", "clips", "review", "render", "qc", "cover", "bgm", "status"]:
-        ok, msg, norm = validate_pipeline_command(f"{mod} data/episodes/01", scope="pipeline")
+        ok, msg, norm = validate_pipeline_command(f"{mod} data/episodes/01")
         assert ok, f"模块 {mod} 应该被放行，却被拒: {msg}"
         assert norm[0] == sys.executable, f"执行器必须是 sys.executable，不能硬编码 python: {norm[0]}"
         assert norm[1:3] == ["-m", f"pipeline.{mod}"]
@@ -163,56 +185,65 @@ def test_validate_pipeline_command_injects_episode_dir(tmp_path: Path):
     ep_dir.mkdir(parents=True)
 
     # 1. tts --redo 3 自动补位 ep_dir
-    ok, msg, norm = validate_pipeline_command("tts --redo 3", scope="pipeline", ep_dir=ep_dir)
+    ok, msg, norm = validate_pipeline_command("tts --redo 3", ep_dir=ep_dir)
     assert ok
     assert str(ep_dir.resolve()) in norm
     assert norm == [sys.executable, "-m", "pipeline.tts", str(ep_dir.resolve()), "--redo", "3"]
 
     # 2. clips 自动补位 ep_dir
-    ok, msg, norm = validate_pipeline_command("clips", scope="pipeline", ep_dir=ep_dir)
+    ok, msg, norm = validate_pipeline_command("clips", ep_dir=ep_dir)
     assert ok
     assert norm == [sys.executable, "-m", "pipeline.clips", str(ep_dir.resolve())]
 
     # 3. check_script 自动补位当期脚本
     script_file = ep_dir / "02-script.md"
     script_file.write_text("# Script", encoding="utf-8")
-    ok, msg, norm = validate_pipeline_command("check_script", scope="pipeline", ep_dir=ep_dir)
+    ok, msg, norm = validate_pipeline_command("check_script", ep_dir=ep_dir)
     assert ok
     assert norm == [sys.executable, "-m", "pipeline.check_script", str(script_file.resolve())]
 
 
 def test_validate_pipeline_command_rejects_unauthorized_module():
     """拒收非白名单外部命令或任意 bash。"""
-    ok, msg, _ = validate_pipeline_command("rm -rf data/", scope="pipeline")
+    ok, msg, _ = validate_pipeline_command("rm -rf data/")
     assert not ok
-    assert "不在 pipeline 允许的白名单内" in msg
+    assert "不在白名单内" in msg
 
 
-def test_validate_pipeline_command_asset_scope_phase0_commands():
-    """asset scope 下放行 Phase 0 子命令，且 faces 必须 5 个子命令全在 (Y1-r8, Y2-r10)。"""
+def test_validate_pipeline_command_asset_side_commands():
+    """asset 侧 6 模块的子命令清单合表后仍生效（D43 / Spec 17 §3.3 合表语义 (a)）。"""
     # faces 5 个命令全在
     for sub in ["detect", "cluster", "sheet", "name", "presence"]:
-        ok, msg, norm = validate_pipeline_command(f"faces {sub} anime_test", scope="asset")
+        ok, msg, norm = validate_pipeline_command(f"faces {sub} anime_test")
         assert ok, f"faces {sub} 应该被放行，却被拒: {msg}"
 
     # shots 3 个命令
     for sub in ["build", "frames", "caption-frames"]:
-        ok, msg, _ = validate_pipeline_command(f"shots {sub} /path", scope="asset")
+        ok, msg, _ = validate_pipeline_command(f"shots {sub} /path")
         assert ok, f"shots {sub} 应该被放行: {msg}"
 
     # vindex 2 个命令
     for sub in ["captions", "embed"]:
-        ok, msg, _ = validate_pipeline_command(f"vindex {sub} /path", scope="asset")
+        ok, msg, _ = validate_pipeline_command(f"vindex {sub} /path")
         assert ok, f"vindex {sub} 应该被放行: {msg}"
 
     # cloud 子命令
     for sub in ["status", "logs", "doctor", "up", "down", "push", "pull"]:
-        ok, msg, _ = validate_pipeline_command(f"cloud {sub}", scope="asset")
+        ok, msg, _ = validate_pipeline_command(f"cloud {sub}")
         assert ok, f"cloud {sub} 应该被放行: {msg}"
 
-    # asset scope 拒收未授权子命令
-    ok_bad, msg_bad, _ = validate_pipeline_command("faces unknown_action", scope="asset")
+    # asset 侧模块的子命令校验永远生效（合表后不被「不限子命令」侧吞掉）
+    ok_bad, msg_bad, _ = validate_pipeline_command("faces unknown_action")
     assert not ok_bad
+
+
+def test_validate_pipeline_command_asset_side_no_ep_injection(tmp_path: Path):
+    """合表语义 (b)：asset 侧 6 模块不做当期目录自动补位（维持现状，D43 / Spec 17 §3.3）。"""
+    ep_dir = tmp_path / "data" / "episodes" / "01"
+    ep_dir.mkdir(parents=True)
+    ok, msg, norm = validate_pipeline_command("shots build", ep_dir=ep_dir)
+    assert ok, msg
+    assert str(ep_dir.resolve()) not in norm
 
 
 def test_pipeline_command_wiring_real_cli_execution(tmp_path: Path):
@@ -221,14 +252,14 @@ def test_pipeline_command_wiring_real_cli_execution(tmp_path: Path):
     ep_dir.mkdir(parents=True)
 
     # 1. 验证 tts 能真跑 --help
-    ok, _, norm_cmd = validate_pipeline_command("tts --help", scope="pipeline", ep_dir=ep_dir)
+    ok, _, norm_cmd = validate_pipeline_command("tts --help", ep_dir=ep_dir)
     assert ok
     res = subprocess.run(norm_cmd, capture_output=True, text=True)
     assert res.returncode == 0
     assert "给一期稿件配音" in res.stdout or "run" in res.stdout
 
     # 2. 验证 clips 能真跑 --help
-    ok, _, norm_cmd = validate_pipeline_command("clips --help", scope="pipeline", ep_dir=ep_dir)
+    ok, _, norm_cmd = validate_pipeline_command("clips --help", ep_dir=ep_dir)
     assert ok
     res = subprocess.run(norm_cmd, capture_output=True, text=True)
     assert res.returncode == 0
@@ -305,36 +336,34 @@ from pipeline.agent.tools import (
     build_tool_schemas,
     execute_tool,
     run_pipeline,
-    tool_names_for_scope,
+    tool_names,
 )
 
-SPEC_TOOLS = {
-    "creative": [
-        "read_artifact",
-        "write_episode_file",
-        "list_episodes",
-        "read_status",
-        "search_notes",
-        "web_search",
-        "web_fetch",
-        "crawl",
-        "browser",
-        "write_memory",
-        "cover_edit",
-    ],
-    "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
-    "asset": ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"],
-    "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
-}
+# D43 / Spec 17：tools.json 收为单表，与 TOOL_SCHEMAS 注册顺序一致
+SPEC_TOOLS = [
+    "read_artifact",
+    "write_episode_file",
+    "list_episodes",
+    "read_status",
+    "run_pipeline",
+    "search_notes",
+    "web_search",
+    "web_fetch",
+    "acquire_propose",
+    "crawl",
+    "browser",
+    "write_memory",
+    "cover_edit",
+]
 
 
-def _expected_schema_names(scope: str) -> list[str]:
+def _expected_schema_names() -> list[str]:
     """按当前环境的 _extra_available 过滤期望可见 schema 名称清单（Spec 5 §2.1④ / T15）。"""
     from pipeline.agent.tools import TOOL_SCHEMAS, _extra_available
 
     return [
         t
-        for t in SPEC_TOOLS[scope]
+        for t in SPEC_TOOLS
         if not TOOL_SCHEMAS[t].get("requires_extra")
         or _extra_available(str(TOOL_SCHEMAS[t]["requires_extra"]))
     ]
@@ -393,8 +422,8 @@ def mock_llm_server(replies):
         thread.join(timeout=5)
 
 
-def make_agent_root(tmp_path: Path, base_url: str, *, tools: dict | None = None) -> Path:
-    """造一份最小的 config/agent.json + config/agent/tools.json。"""
+def make_agent_root(tmp_path: Path, base_url: str, *, tools: list | None = None) -> Path:
+    """造一份最小的 config/agent.json + config/agent/tools.json（D43：单表）。"""
     cfg_dir = tmp_path / "config" / "agent"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / "config" / "agent.json").write_text(json.dumps({
@@ -403,7 +432,7 @@ def make_agent_root(tmp_path: Path, base_url: str, *, tools: dict | None = None)
         "api_key_env": "AVA_TEST_KEY",
     }), encoding="utf-8")
     (cfg_dir / "tools.json").write_text(
-        json.dumps(tools if tools is not None else SPEC_TOOLS), encoding="utf-8"
+        json.dumps({"tools": tools if tools is not None else SPEC_TOOLS}), encoding="utf-8"
     )
     return tmp_path
 
@@ -421,7 +450,7 @@ def tool_call(name: str, args: dict, call_id: str = "call_1") -> dict:
 
 
 def test_llm_request_assembly_env_key_and_tools(tmp_path: Path, monkeypatch):
-    """请求装配：端点 /v1/chat/completions、Bearer 取自环境变量、tools 按 scope 过滤。"""
+    """请求装配：端点 /v1/chat/completions、Bearer 取自环境变量、tools 为单表全量（D43）。"""
     with mock_llm_server([{"role": "assistant", "content": "写好了"}]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
         monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
@@ -430,7 +459,7 @@ def test_llm_request_assembly_env_key_and_tools(tmp_path: Path, monkeypatch):
         assert cfg is not None
         assert cfg.model == "mock-model"
 
-        schemas = build_tool_schemas("creative", root=root)
+        schemas = build_tool_schemas(root=root)
         reply = chat_complete(
             [{"role": "user", "content": "帮我写稿"}], tools=schemas, config=cfg
         )
@@ -442,7 +471,7 @@ def test_llm_request_assembly_env_key_and_tools(tmp_path: Path, monkeypatch):
         assert sent["auth"] == f"Bearer {API_KEY}"
         assert sent["body"]["model"] == "mock-model"
         assert sent["body"]["messages"][0]["content"] == "帮我写稿"
-        assert [t["function"]["name"] for t in sent["body"]["tools"]] == _expected_schema_names("creative")
+        assert [t["function"]["name"] for t in sent["body"]["tools"]] == _expected_schema_names()
         # 密钥绝不进返回值
         assert API_KEY not in json.dumps(reply, ensure_ascii=False)
 
@@ -613,42 +642,32 @@ def test_llm_approve_callback_can_reject_tool(tmp_path: Path, monkeypatch):
         assert "拒绝" in fed_back["error"]
 
 
-def test_llm_scope_tool_filtering_isolation(tmp_path: Path):
-    """creative 与 pipeline 的白名单互相隔离，且仓库真配置与 Spec 表一致。"""
+def test_llm_tool_table_is_single_and_matches_registry(tmp_path: Path):
+    """D43 / Spec 17 §3.1：tools.json 单表，build_tool_schemas 不再收 scope；
+    单表恰好等于注册全集（缺一个反向分叉检查就报错），各模式共用同一张表。"""
     root = make_agent_root(tmp_path, "https://api.example.com/v1")
 
-    def names(scope):
-        return [s["function"]["name"] for s in build_tool_schemas(scope, root=root)]
+    names = [s["function"]["name"] for s in build_tool_schemas(root=root)]
+    assert names == _expected_schema_names()
 
-    assert names("creative") == _expected_schema_names("creative")
-    assert names("pipeline") == SPEC_TOOLS["pipeline"]
-    assert names("asset") == _expected_schema_names("asset")
-
-    # creative 有写稿与检索，pipeline 一个都没有
-    assert "write_episode_file" in names("creative")
-    assert "search_notes" in names("creative")
-    assert "run_pipeline" not in names("creative")
-    assert "run_pipeline" in names("pipeline")
-    assert "write_episode_file" not in names("pipeline")
-    assert "search_notes" not in names("pipeline")
-
-    # 执行层同样按 scope 拦截（不能只在 schema 层过滤）
+    # 执行层不再有按 scope 的白名单拦截（只读工具在任意 scope 都能调）
     ctx_pipeline = ToolContext(scope="pipeline", root=root)
-    denied = execute_tool("search_notes", {"query": "春物"}, ctx_pipeline)
-    assert denied["ok"] is False and "白名单" in denied["error"]
+    (root / "data" / "library").mkdir(parents=True, exist_ok=True)
+    ok = execute_tool("search_notes", {"query": "春物"}, ctx_pipeline)
+    assert "白名单" not in ok.get("error", ""), ok
 
-    ctx_creative = ToolContext(scope="creative", root=root)
-    denied2 = execute_tool("run_pipeline", {"command": "clips"}, ctx_creative)
-    assert denied2["ok"] is False and "白名单" in denied2["error"]
-
-    # 仓库真配置（不是测试造的那份）必须与 Spec §2.5 的表逐字一致
+    # 仓库真配置（不是测试造的那份）是单表，且恰好等于注册全集
     from pipeline import paths
-    for scope, expected in SPEC_TOOLS.items():
-        assert tool_names_for_scope(scope) == expected, f"{scope} 的 tools.json 已漂移"
+    from pipeline.agent.tools import TOOL_SCHEMAS
+    repo_names = tool_names()
+    assert sorted(repo_names) == sorted(TOOL_SCHEMAS), "仓库 tools.json 单表与注册集已漂移"
+    assert set(json.loads((paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8"))) == {"tools"}
 
 
-def test_write_memory_registered_creative_only_with_adr(tmp_path: Path):
-    """T17 (PR4): write_memory 进 creative 尾部、带 ADR-0023、其余三键逐字不变（Spec 7 §2.8）。"""
+def test_write_memory_registered_with_adr_and_memory_scopes(tmp_path: Path):
+    """T17 (PR4) 按 D43 / Spec 17（Q3）改写：write_memory 在单表内、带 ADR-0023；
+    不变量换成等强断言「memory.scopes 恰为 {creative, asset, idea}，不含 pipeline」——
+    Q3（pipeline 不注入记忆）往哪边漂都会被拦（D43-R2 🔵 R2-1）。"""
     import re
     from pipeline import paths
     from pipeline.agent.tools import TOOL_SCHEMAS
@@ -656,15 +675,8 @@ def test_write_memory_registered_creative_only_with_adr(tmp_path: Path):
     repo_tools = json.loads(
         (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
     )
-    assert repo_tools["creative"][-2] == "write_memory"
-    assert repo_tools["creative"][-1] == "cover_edit"   # Spec 12 在尾部追加（ADR-0025）
-    assert [scope for scope, names in repo_tools.items() if "write_memory" in names] == ["creative"]
-    # 其余三键与施工前逐字相等（写死在用例里，不看 SPEC_TOOLS，免得两边一起漂）
-    assert repo_tools["pipeline"] == ["read_artifact", "read_status", "list_episodes", "run_pipeline"]
-    assert repo_tools["asset"] == ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"]
-    assert repo_tools["idea"] == ["read_artifact", "list_episodes", "read_status", "search_notes"]
-    every_tool = set().union(*(set(names) for names in repo_tools.values()))
-    assert len(every_tool) == 13
+    assert "write_memory" in repo_tools["tools"]
+    assert len(repo_tools["tools"]) == 13
 
     # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
     schema = TOOL_SCHEMAS["write_memory"]
@@ -673,32 +685,26 @@ def test_write_memory_registered_creative_only_with_adr(tmp_path: Path):
     adr_hits = list((paths.ROOT / "docs" / "dev" / "adr").glob(f"{matched.group(1)}-*.md"))
     assert len(adr_hits) == 1, adr_hits
 
-    # 协议键零泄漏；非 creative 连执行层都进不去
-    payload = json.dumps(build_tool_schemas("creative"), ensure_ascii=False)
+    # 协议键零泄漏
+    payload = json.dumps(build_tool_schemas(), ensure_ascii=False)
     assert '"adr"' not in payload and '"side_effect"' not in payload
-    denied = execute_tool(
-        "write_memory", {"op": "add", "pattern": "x", "evidence": ["a/b"], "boundary": "y"},
-        ToolContext(scope="idea", root=tmp_path),
-    )
-    assert denied["ok"] is False and "白名单" in denied["error"]
 
-    # 不变量：挂了 write_memory 的 scope 必须都在 assembly.json 的 memory.scopes 里（看得见才写得动）
+    # 不变量（D43-R2 🔵 R2-1）：memory.scopes 恰为 {creative, asset, idea}，不含 pipeline
     assembly = json.loads(
         (paths.ROOT / "config" / "agent" / "assembly.json").read_text(encoding="utf-8")
     )
     inject_scopes = set(assembly.get("memory", {}).get("scopes", []))
-    writers = {scope for scope, names in repo_tools.items() if "write_memory" in names}
-    assert writers <= inject_scopes, (writers, inject_scopes)
+    assert inject_scopes == {"creative", "asset", "idea"}, inject_scopes
 
 
 def test_llm_unregistered_tool_in_config_fails_loudly(tmp_path: Path):
     """tools.json 写了没实现的工具 → 当场报错，不静默跳过（静默跳过=护栏形同虚设）。"""
     root = make_agent_root(
         tmp_path, "https://api.example.com/v1",
-        tools={"creative": ["rm_rf_everything"], "pipeline": [], "asset": []},
+        tools=["rm_rf_everything"],
     )
     with pytest.raises(KeyError, match="未注册的工具"):
-        build_tool_schemas("creative", root=root)
+        build_tool_schemas(root=root)
 
 
 def test_llm_tool_read_domain_and_write_guard(tmp_path: Path):
@@ -743,12 +749,12 @@ def test_llm_tool_read_domain_and_write_guard(tmp_path: Path):
     assert written["ok"] is True
     assert (ep_dir / "01-topic.md").read_text(encoding="utf-8") == "# 已确认"
 
-    # pipeline scope 连 creative 的白名单文件都写不了
+    # D43 / Spec 17：pipeline scope 也能写白名单文件（按 scope 的写闸已废除；白名单与人审卡照旧）
     assert execute_tool(
         "write_episode_file",
         {"filename": "02-script.draft.md", "content": "x"},
         ToolContext(scope="pipeline", episode_dir=ep_dir, root=root),
-    )["ok"] is False
+    )["ok"] is True
 
 
 def test_full_chain_smoke_in_temp_repo(tmp_path: Path, monkeypatch):
@@ -1136,21 +1142,27 @@ def test_llm_write_topic_md_succeeds_when_human_approves(tmp_path: Path, monkeyp
 # ---------------------------------------------------------------------------
 
 
-def test_idea_scope_tools_readonly_and_no_write(tmp_path: Path):
-    """T6: idea 表精确等于 4 个只读工具；build_tool_schemas 均无 side_effect；write_episode_file 被拒。"""
+def test_idea_scope_full_table_and_needs_episode_message(tmp_path: Path):
+    """T6 按 D43 / Spec 17 改写：idea 与其余模式同一张全量工具表（不再精确等于 4 个只读工具）；
+    需期工具在无期会话拿到「先建期」统一文案，只读工具不受影响。"""
     root = make_agent_root(tmp_path, "https://api.example.com/v1")
-    schemas = build_tool_schemas("idea", root=root)
+    schemas = build_tool_schemas(root=root)
     names = [s["function"]["name"] for s in schemas]
-    assert names == ["read_artifact", "list_episodes", "read_status", "search_notes"]
+    assert names == _expected_schema_names()
 
-    from pipeline.agent.tools import TOOL_SCHEMAS
-    for name in names:
-        assert TOOL_SCHEMAS[name].get("side_effect", True) is False
+    from pipeline.agent.tools import NEEDS_EPISODE_TOOLS, NO_EPISODE_MESSAGE, TOOL_SCHEMAS
+    assert NEEDS_EPISODE_TOOLS == {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}
 
     ctx_idea = ToolContext(scope="idea", episode_dir=None, root=root)
-    denied = execute_tool("write_episode_file", {"filename": "01-topic.md", "content": "x"}, ctx_idea)
-    assert denied["ok"] is False
-    assert "白名单" in denied["error"]
+    for name in ("write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"):
+        args = {"filename": "01-topic.md", "content": "x", "command": "status", "candidates": [{}]}
+        denied = execute_tool(name, args, ctx_idea)
+        assert denied["ok"] is False, name
+        assert NO_EPISODE_MESSAGE in denied["error"], (name, denied)
+
+    # 只读工具在 idea 下不受影响
+    ok = execute_tool("list_episodes", {}, ctx_idea)
+    assert ok["ok"] is True
 
 
 def test_idea_turn_context_and_system_prompt(monkeypatch):
@@ -1183,13 +1195,13 @@ def test_idea_turn_context_and_system_prompt(monkeypatch):
 
 
 def test_build_idea_card_invariants():
-    """T8: build_idea_card 输出 <= 400 字符、含'无期'与'写权限'标记、不含受限子串、与期目录无关。"""
+    """T8 按 D43 改措辞：build_idea_card 输出 <= 400 字符、含「无期」与「期目录」标记、不含受限子串、与期目录无关。"""
     from pipeline.agent.status_card import build_idea_card
     from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
     card = build_idea_card()
     assert len(card) <= 400
     assert "无期" in card
-    assert "写权限" in card
+    assert "期目录" in card
     for pat in RESTRICTED_EGRESS_PATTERNS:
         assert pat.casefold() not in card.casefold()
 

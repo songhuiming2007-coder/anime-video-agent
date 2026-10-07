@@ -313,9 +313,13 @@ def world(tmp_path: Path, endpoint: FakeEndpoint):
         encoding="utf-8",
     )
     (root / "config" / "agent" / "tools.json").write_text(
-        json.dumps({"creative": ["read_artifact", "test_ping", "test_writer", "test_slow",
-                                 "test_stdin_child"],
-                    "pipeline": ["read_artifact"], "asset": [], "idea": ["read_artifact"]}),
+        # D43 / Spec 17：单表；反向分叉检查要求恰好等于注册集（含子进程注册的 4 个测试工具，🔵-2）
+        json.dumps({"tools": [
+            "read_artifact", "write_episode_file", "list_episodes", "read_status",
+            "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
+            "crawl", "browser", "write_memory", "cover_edit",
+            "test_ping", "test_writer", "test_slow", "test_stdin_child",
+        ]}),
         encoding="utf-8",
     )
     episode = root / "data" / "episodes" / "01-smoke"
@@ -1124,7 +1128,7 @@ def _tree(root: Path) -> list[tuple[str, int]]:
 
 
 def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path) -> None:
-    """TP-16：`--idea` 会话照常开回合（scope 固定 idea、零写权限、不落盘）。
+    """TP-16：`--idea` 会话照常开回合（scope 固定 idea、无期目录、不落盘；D43 后工具表为全量）。
 
     M9 真实联调实测：此前 core 对无期目录的 user_message 回 E_NO_EPISODE，§3.1 的错误表里没有它，
     桌面端「选题」对话（Spec 10 §2.5）因此一轮都开不了；终端 `ava idea` 走 cli.py 的另一条路，从未暴露。
@@ -1144,9 +1148,10 @@ def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path)
             assert (finished["turn_id"], finished["stopped"]) == (started["turn_id"], "done")
             stops = proto_proc.wait_for("stop_points")
             assert (stops["items"], stops["turn_id"]) == ([], started["turn_id"])
-        # 发给模型的工具表只有 idea scope 的那几个（夹具里 idea = [read_artifact]）
+        # D43 / Spec 17：单表全开——发给模型的工具表是全量（含子进程注册的测试工具），不再是 idea 4 件
         names = {t["function"]["name"] for t in endpoint.requests[0].get("tools") or []}
-        assert names == {"read_artifact"}
+        assert {"read_artifact", "write_episode_file", "run_pipeline", "write_memory",
+                "test_ping", "test_writer", "test_slow", "test_stdin_child"} <= names
         # 第二轮带着第一轮的历史（同一进程内的 messages 连续）
         contents = [m.get("content") for m in endpoint.requests[1]["messages"]]
         assert "想做一期杂谈" in contents and "先聊聊" in contents

@@ -832,8 +832,9 @@ def test_search_empty_parse_raises_honestly(monkeypatch: pytest.MonkeyPatch) -> 
         )
 
 
-def test_pipeline_scope_masks_web_tools() -> None:
-    """T3 (PR2): mask-don't-remove 三层证据（注册表常驻 + schema 层掩码 + execute_tool 双闸）。"""
+def test_web_tools_visible_in_all_scopes(tmp_path: Path) -> None:
+    """T3 (PR2) 按 D43 / Spec 17 改写：原「mask-don't-remove 三层证据」的按 scope 掩码已废除——
+    注册表常驻不变；schema 层单表全量可见；执行层不再有按 scope 的第二道闸。"""
     from pipeline.agent.tools import (
         TOOL_SCHEMAS,
         ToolContext,
@@ -845,51 +846,32 @@ def test_pipeline_scope_masks_web_tools() -> None:
     assert "web_search" in TOOL_SCHEMAS
     assert "web_fetch" in TOOL_SCHEMAS
 
-    # ② schema 层按 scope 掩码
-    for masked_scope in ("pipeline", "idea"):
-        masked_names = [
-            s["function"]["name"] for s in build_tool_schemas(masked_scope)
-        ]
-        assert "web_search" not in masked_names
-        assert "web_fetch" not in masked_names
+    # ② schema 层：单表全量可见（不再按 scope 掩码）
+    names = [s["function"]["name"] for s in build_tool_schemas()]
+    assert "web_search" in names
+    assert "web_fetch" in names
 
-    for visible_scope in ("creative", "asset"):
-        visible_names = [
-            s["function"]["name"] for s in build_tool_schemas(visible_scope)
-        ]
-        assert "web_search" in visible_names
-        assert "web_fetch" in visible_names
-
-    # ③ 执行层第二道闸
-    ctx_pipeline = ToolContext(scope="pipeline")
+    # ③ 执行层：pipeline scope 调 web 工具拿到的不再是「白名单」拒因
+    #    （root 无 web.json → 报配置缺失，证明调用已穿过已删除的 scope 闸）
+    ctx_pipeline = ToolContext(scope="pipeline", root=tmp_path)
     for tool_name, sample_args in (
         ("web_search", {"query": "芙莉莲"}),
         ("web_fetch", {"url": "https://example.org/"}),
     ):
-        denied = execute_tool(tool_name, sample_args, ctx_pipeline)
-        assert denied["ok"] is False
-        assert "白名单" in denied["error"]
+        out = execute_tool(tool_name, sample_args, ctx_pipeline)
+        assert "白名单" not in out.get("error", "")
 
 
-def test_idea_and_pipeline_tables_unchanged() -> None:
-    """T4 (PR2): pipeline 与 idea 两 scope 的工具表经 build_tool_schemas 取清单逐字不变。"""
-    from pipeline.agent.tools import build_tool_schemas
+def test_all_scope_tables_equal_full_set() -> None:
+    """T4 (PR2) 按 D43 / Spec 17 改写：pipeline 与 idea 不再逐字等于旧 4 件——
+    单表全量，且与注册集一致（请求层逐字节相等的等强断言见 TA-1）。"""
+    from pipeline.agent.tools import TOOL_SCHEMAS, _extra_available, build_tool_schemas
 
-    idea_names = [s["function"]["name"] for s in build_tool_schemas("idea")]
-    pipeline_names = [s["function"]["name"] for s in build_tool_schemas("pipeline")]
-
-    assert idea_names == [
-        "read_artifact",
-        "list_episodes",
-        "read_status",
-        "search_notes",
-    ]
-    assert pipeline_names == [
-        "read_artifact",
-        "read_status",
-        "list_episodes",
-        "run_pipeline",
-    ]
+    names = [s["function"]["name"] for s in build_tool_schemas()]
+    assert sorted(names) == sorted(
+        n for n, s in TOOL_SCHEMAS.items()
+        if not s.get("requires_extra") or _extra_available(str(s["requires_extra"]))
+    )
 
 
 def test_egress_blocks_via_execute_tool(
@@ -976,20 +958,19 @@ def test_offline_and_timeout_degrade_via_execute_tool(
 
 
 def test_tool_schemas_protocol_keys_whitelist() -> None:
-    """T11 (PR2): build_tool_schemas 协议键白名单，side_effect 与 adr 零泄漏。"""
+    """T11 (PR2): build_tool_schemas 协议键白名单，side_effect 与 adr 零泄漏（D43 后单表）。"""
     from pipeline.agent.tools import build_tool_schemas
 
-    for scope in ("creative", "pipeline", "asset", "idea"):
-        schemas = build_tool_schemas(scope)
-        for item in schemas:
-            assert set(item["function"].keys()) == {
-                "name",
-                "description",
-                "parameters",
-            }
-        serialized = json.dumps(schemas, ensure_ascii=False)
-        assert "side_effect" not in serialized
-        assert '"adr"' not in serialized
+    schemas = build_tool_schemas()
+    for item in schemas:
+        assert set(item["function"].keys()) == {
+            "name",
+            "description",
+            "parameters",
+        }
+    serialized = json.dumps(schemas, ensure_ascii=False)
+    assert "side_effect" not in serialized
+    assert '"adr"' not in serialized
 
 
 def test_every_tool_has_existing_adr() -> None:
@@ -1091,7 +1072,13 @@ def test_egress_hit_aborts_turn_blocked(
         encoding="utf-8",
     )
     (cfg_dir / "tools.json").write_text(
-        json.dumps({"creative": ["web_search", "web_fetch"]}), encoding="utf-8"
+        # D43 / Spec 17：单表（恰为注册全集，否则反向分叉检查报错）
+        json.dumps({"tools": [
+            "read_artifact", "write_episode_file", "list_episodes", "read_status",
+            "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
+            "crawl", "browser", "write_memory", "cover_edit",
+        ]}),
+        encoding="utf-8",
     )
     # Spec 15 T-P13：旧 schema 的 web.json 会被新 loader 判无效，换成新 schema（做不到字面不改）
     (cfg_dir / "web.json").write_text(

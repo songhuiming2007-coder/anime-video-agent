@@ -369,7 +369,7 @@ test("TX-12b/TX-13 真实 core：acquire_propose 2 条 → 逐张出 2 张抓取
     const cand = (n: number) => ({ title: `候选${n}`, url: `http://127.0.0.1:9/cand-${n}`, type: "mv", source: "local", why: `第 ${n} 条候选的理由写够二十个字以免触发提示`, expected_dur: 30 });
     llm.push(assistant("在。"), toolCalls({ name: "acquire_propose", args: { candidates: [cand(1), cand(2)] } }), assistant("两条都处理了。"));
     await openEp(L.page, "SESS-A");
-    // conv.command 要有活会话：先聊一轮把会话起来，再切到 asset（acquire_propose 只在 asset scope）
+    // conv.command 要有活会话：先聊一轮把会话起来，再切到 asset（D43 后 acquire_propose 全模式可见，切 asset 仅为沿用原测试路径）
     await send(L.page, "在吗");
     await waitTurns(L, "ep:SESS-A", 1);
     await L.page.getByTestId("scope-toggle").click();

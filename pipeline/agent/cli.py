@@ -1533,7 +1533,7 @@ def _run_agent_loop_body(
 
     - scope_mode="auto": 主会话 REPL，每轮 scope_of(inspect_episode(ep_dir)) 热推导；
     - scope_mode="creative": /chat /script 聚焦模式，拥有独立 messages，退出后主会话不受污染；
-    - scope_mode="idea": 无期选题会话，独立 messages，写权限为零。
+    - scope_mode="idea": 无期选题会话，独立 messages，无期目录（写期文件前须先建期）。
     全仓库只保留这一份聊天循环实现。
     """
     if scope_mode == "auto":
@@ -1550,7 +1550,7 @@ def _run_agent_loop_body(
 
         print("\n" + "=" * 68)
         print("  ava 选题会话（idea scope · 无期目录）")
-        print("  - 写权限为零（机制保证，不修改任何文件）")
+        print("  - 无期目录：写期文件前请先运行 'ava new <期名>' 建期")
         print("  - 可通过 read_status 查看既有期状态，或通过 search_notes 查阅番剧笔记")
         print("  - 讨论定稿后退出本会话，运行 'ava new <期名>' 创建新期")
         print("=" * 68)
@@ -2163,7 +2163,7 @@ def _print_idea_non_tty_help() -> None:
     """非 TTY 环境下打印 idea 会话说明（Spec §3.3）。"""
     print(
         "ava idea: 无期选题会话（idea scope）\n"
-        "说明: 该模式为交互式选题与立项讨论，写权限为零，需在交互终端（TTY）中运行。\n"
+        "说明: 该模式为交互式选题与立项讨论，无期目录（写期文件前须先建期），需在交互终端（TTY）中运行。\n"
         "等价手动路径: 人工阅读 data/library/notes/ 中的番剧笔记，确定选题与张力后，运行 'ava new <期名>' 创建新期。"
     )
 

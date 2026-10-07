@@ -1120,16 +1120,15 @@ def test_dead_refs_are_only_a_hint_not_a_block(root, monkeypatch):
 
 
 def _agent_root(root: Path, *, scope: str = "creative") -> Path:
-    """给假仓库补一份 config/agent/tools.json（write_memory 已登记在 creative）。"""
+    """给假仓库补一份 config/agent/tools.json（D43 / Spec 17：单表，恰为注册全集）。"""
     cfg = root / "config" / "agent"
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "tools.json").write_text(
-        json.dumps({
-            "creative": ["read_artifact", "search_notes", "write_memory"],
-            "pipeline": ["read_artifact"],
-            "asset": ["read_artifact"],
-            "idea": ["read_artifact", "search_notes"],
-        }),
+        json.dumps({"tools": [
+            "read_artifact", "write_episode_file", "list_episodes", "read_status",
+            "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
+            "crawl", "browser", "write_memory", "cover_edit",
+        ]}),
         encoding="utf-8",
     )
     return root
@@ -1262,10 +1261,20 @@ def test_write_memory_tool_uses_ctx_confirmed_only(root, monkeypatch):
     assert "工具层写入的模式" in outcome["result"]["text"]
     assert outcome["result"]["text"] == lib_path(root, "memory.md").read_text(encoding="utf-8")
 
-    # 非 creative scope：白名单外，连工具都调不到
+    # D43 / Spec 17（TA-6 write_memory 腿）：非 creative scope 也能写记忆——过人审卡后真落盘，
+    # 日志行 episode 为 null、scope 记为 idea（不再是「白名单外调不到」）。
+    other_args = add_args("idea 会话写入的模式", [REF_A])
     other = ToolContext(scope="idea", episode_dir=None, root=root, confirmed=True)
-    denied = execute_tool("write_memory", args, other)
-    assert denied["ok"] is False and "白名单" in denied["error"]
+    ok_idea = execute_tool("write_memory", other_args, other)
+    assert ok_idea["ok"] is True, ok_idea
+    assert "idea 会话写入的模式" in lib_path(root, "memory.md").read_text(encoding="utf-8")
+    log_rows = [
+        json.loads(line)
+        for line in lib_path(root, "memory.log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    idea_rows = [r for r in log_rows if r.get("scope") == "idea"]
+    assert idea_rows and idea_rows[-1]["episode"] is None
 
 
 def test_read_tools_refuse_memory_file(root):

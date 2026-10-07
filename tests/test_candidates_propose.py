@@ -409,6 +409,8 @@ def test_candidates_module_pure_subprocess() -> None:
 
 
 def test_tools_import_does_not_pull_candidates() -> None:
+    # D43 / Spec 17（R2-4）：实调腿补 episode_dir（需期工具的实现层双保险会拦无期调用）；
+    # 原断言（实调后按需加载 candidates、不拉 acquire）保留。
     probe = (
         "import pipeline.agent.tools as T, sys, tempfile; "
         "from pathlib import Path; "
@@ -416,13 +418,14 @@ def test_tools_import_does_not_pull_candidates() -> None:
         "assert 'pipeline.acquire' not in sys.modules, 'tools 顶层拉入 acquire（ML 链）'; "
         "td = tempfile.TemporaryDirectory(); "
         "root = Path(td.name); "
+        "ep = root / 'data' / 'episodes' / '01-x'; "
+        "ep.mkdir(parents=True); "
         "(root / 'data' / 'library').mkdir(parents=True); "
         "(root / 'config' / 'agent').mkdir(parents=True); "
-        "(root / 'config' / 'agent' / 'tools.json').write_text('{\"asset\": [\"acquire_propose\"]}', encoding='utf-8'); "
         "out = T.execute_tool('acquire_propose', {'candidates': [{"
         "'title': '子进程实调', 'url': 'https://example.com/sub', 'type': 'live', "
         "'source': 's', 'why': '验证延迟 import 下实调 execute_tool 成功落盘且不拉入 acquire'}]}, "
-        "T.ToolContext(scope='asset', root=root)); "
+        "T.ToolContext(scope='asset', root=root, episode_dir=ep)); "
         "assert out.get('ok') is True, f'execute_tool 失败: {out}'; "
         "assert 'pipeline.candidates' in sys.modules, '实调后应按需加载 candidates'; "
         "assert 'pipeline.acquire' not in sys.modules, '实调后仍绝不拉入 acquire（ML 链）'; "
@@ -432,7 +435,7 @@ def test_tools_import_does_not_pull_candidates() -> None:
     assert res.returncode == 0, f"延迟 import 检验失败:\n{res.stderr}"
 
 
-# ---- T9: scope 掩码三层断言 ----
+# ---- T9: scope 掩码三层断言（D43 / Spec 17 改写：不再按 scope 掩码）----
 
 
 def test_acquire_propose_scope_mask(tmp_path: Path) -> None:
@@ -440,24 +443,20 @@ def test_acquire_propose_scope_mask(tmp_path: Path) -> None:
     assert "acquire_propose" in TOOL_SCHEMAS
     assert len(TOOL_SCHEMAS) == 13     # Spec 12 登记 cover_edit（ADR-0025 封顶上调至 14）
 
-    # ② build_tool_schemas 仅 asset 含 acquire_propose
-    def _schema_names(scope: str) -> list[str]:
-        return [s["function"]["name"] for s in build_tool_schemas(scope)]
+    # ② build_tool_schemas 单表全量含 acquire_propose（D43：不再按 scope 过滤）
+    names = [s["function"]["name"] for s in build_tool_schemas()]
+    assert "acquire_propose" in names
 
-    assert "acquire_propose" in _schema_names("asset")
-    assert "acquire_propose" not in _schema_names("creative")
-    assert "acquire_propose" not in _schema_names("pipeline")
-    assert "acquire_propose" not in _schema_names("idea")
-
-    # ③ execute_tool 执行层第二道闸：非 asset scope 一律拒
-    for denied_scope in ("pipeline", "creative", "idea"):
+    # ③ 执行层不再按 scope 拒（D43 删第②层）；无期目录才被「先建期」拦（实现层双保险）
+    for scope in ("pipeline", "creative", "idea"):
         res = execute_tool(
             "acquire_propose",
             {"candidates": [_valid_entry(1)]},
-            ToolContext(scope=denied_scope, root=tmp_path),
+            ToolContext(scope=scope, root=tmp_path),
         )
         assert res["ok"] is False
-        assert "白名单" in res["error"]
+        assert "白名单" not in res["error"]
+        assert "先建期" in res["error"]
 
 
 # ---- T10: 人审卡纪律（side_effect fail-closed + ADR-0021）----
@@ -473,7 +472,7 @@ def test_acquire_propose_pops_approval_card() -> None:
 
 
 def test_protocol_keys_no_leak() -> None:
-    for item in build_tool_schemas("asset"):
+    for item in build_tool_schemas():
         fn_keys = set(item["function"].keys())
         assert fn_keys == {"name", "description", "parameters"}
         assert "adr" not in fn_keys

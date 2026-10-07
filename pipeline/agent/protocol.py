@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
                 writer.send({"t": "bye", "reason": "eof"})
                 break
             if kind == "user_message":
-                # idea 会话（--idea）照样开回合：scope 固定 idea、零写权限、不落盘（§2.5 / Spec 10 §2.5）。
+                # idea 会话（--idea）照样开回合：scope 固定 idea、无期目录（写期文件前须先建期）、不落盘（§2.5 / Spec 10 §2.5）。
                 # M9 真实联调前这里回 E_NO_EPISODE——§3.1 的 user_message 错误表里没有它，桌面端「选题」对话因此开不了回合。
                 exit_code = _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid)
                 if slots["eof"]:

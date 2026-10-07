@@ -131,24 +131,12 @@ def _make_full_web_root(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (cfg_dir / "tools.json").write_text(
-        json.dumps(
-            {
-                "creative": [
-                    "read_artifact",
-                    "write_episode_file",
-                    "list_episodes",
-                    "read_status",
-                    "search_notes",
-                    "web_search",
-                    "web_fetch",
-                    "crawl",
-                    "browser",
-                ],
-                "pipeline": ["read_artifact", "read_status", "list_episodes", "run_pipeline"],
-                "asset": ["web_search", "web_fetch", "acquire_propose", "crawl", "browser"],
-                "idea": ["read_artifact", "list_episodes", "read_status", "search_notes"],
-            }
-        ),
+        # D43 / Spec 17：单表（恰为注册全集，否则反向分叉检查报错）
+        json.dumps({"tools": [
+            "read_artifact", "write_episode_file", "list_episodes", "read_status",
+            "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
+            "crawl", "browser", "write_memory", "cover_edit",
+        ]}),
         encoding="utf-8",
     )
     return tmp_path
@@ -257,11 +245,10 @@ def test_extras_missing_hides_and_blocks_tools(
     assert "crawl" in TOOL_SCHEMAS
     assert "browser" in TOOL_SCHEMAS
 
-    # ② schema 层隐藏
-    for scope in ("creative", "asset"):
-        names = [s["function"]["name"] for s in build_tool_schemas(scope, root=root)]
-        assert "crawl" not in names
-        assert "browser" not in names
+    # ② schema 层隐藏（D43：单表，不再按 scope 区分）
+    names = [s["function"]["name"] for s in build_tool_schemas(root=root)]
+    assert "crawl" not in names
+    assert "browser" not in names
 
     # ③ execute_tool 能力闸显式报错、不抛异常、fake 零调用
     crawl_calls: list[str] = []
@@ -296,25 +283,24 @@ def test_extras_present_exposes_tools(
     monkeypatch.setattr(tools, "_extra_available", lambda dist: True)
     root = _make_full_web_root(tmp_path)
 
-    for scope in ("creative", "asset"):
-        schemas = build_tool_schemas(scope, root=root)
-        by_name = {s["function"]["name"]: s["function"] for s in schemas}
-        assert "crawl" in by_name
-        assert "browser" in by_name
-        for fn in by_name.values():
-            assert set(fn.keys()) == {"name", "description", "parameters"}
-            assert "requires_extra" not in fn
-            assert "side_effect" not in fn
-            assert "adr" not in fn
+    schemas = build_tool_schemas(root=root)
+    by_name = {s["function"]["name"]: s["function"] for s in schemas}
+    assert "crawl" in by_name
+    assert "browser" in by_name
+    for fn in by_name.values():
+        assert set(fn.keys()) == {"name", "description", "parameters"}
+        assert "requires_extra" not in fn
+        assert "side_effect" not in fn
+        assert "adr" not in fn
 
-        crawl_params = by_name["crawl"]["parameters"]
-        assert crawl_params["required"] == ["url", "reason"]
-        assert set(crawl_params["properties"].keys()) == {"url", "reason", "stealth"}
+    crawl_params = by_name["crawl"]["parameters"]
+    assert crawl_params["required"] == ["url", "reason"]
+    assert set(crawl_params["properties"].keys()) == {"url", "reason", "stealth"}
 
-        browser_params = by_name["browser"]["parameters"]
-        assert set(browser_params["properties"].keys()) == {"action", "url", "reason"}
-        assert browser_params["properties"]["action"]["enum"] == ["navigate", "extract_text"]
-        assert browser_params["required"] == ["action", "reason"]
+    browser_params = by_name["browser"]["parameters"]
+    assert set(browser_params["properties"].keys()) == {"action", "url", "reason"}
+    assert browser_params["properties"]["action"]["enum"] == ["navigate", "extract_text"]
+    assert browser_params["required"] == ["action", "reason"]
 
 
 def test_crawl_browser_modules_pure() -> None:
@@ -332,7 +318,7 @@ def test_crawl_browser_modules_pure() -> None:
     probe_capability = (
         "from pipeline.agent import tools; "
         "tools._extra_available('crawl4ai'); tools._extra_available('playwright'); "
-        "tools.build_tool_schemas('creative'); "
+        "tools.build_tool_schemas(); "
         "import sys; "
         "leaked = [m for m in ('crawl4ai', 'playwright') if m in sys.modules]; "
         "assert not leaked, f'探测路径泄漏重包: {leaked}'"

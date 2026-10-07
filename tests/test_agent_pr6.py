@@ -594,27 +594,25 @@ def test_m20_unregistered_tool_rejected_no_card(tmp_path: Path, monkeypatch):
         assert "未注册的工具" in fed_back["error"]
 
 
-def test_m20_out_of_scope_tool_rejected_no_card(tmp_path: Path, monkeypatch):
-    """M20: 不在当前 scope 白名单内的工具预校验拦截，不弹卡 (Spec §5.1 M20)。"""
+def test_m20_needs_episode_tool_rejected_no_card_in_idea(tmp_path: Path, monkeypatch):
+    """M20 按 D43 / Spec 17 §9 改写：原「越 scope 预校验拦截」语义已废除，换成等强的现役护栏——
+    无期会话（idea）里需期工具在预校验拦截（「先建期」统一文案），不弹卡，拒因回喂。"""
     with mock_llm_server([
-        tool_call("run_pipeline", {"command": "clips"}),
-        {"role": "assistant", "content": "creative 阶段不跑排片"},
+        tool_call("write_episode_file", {"filename": "01-topic.md", "content": "# 选题"}),
+        {"role": "assistant", "content": "好的，先建期再写"},
     ]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
         monkeypatch.setenv("AVA_TEST_KEY", "test-key-mock")
-        ep_dir = root / "data" / "episodes" / "01-test-m20-scope"
-        ep_dir.mkdir(parents=True)
 
         input_mock = MagicMock()
         monkeypatch.setattr("builtins.input", input_mock)
 
-        status = inspect_episode(ep_dir)
         cli._dispatch_agent_turn(
-            "跑排片",
+            "直接写入 01-topic.md",
             [],
-            ep_dir,
-            "creative",  # creative scope 看不到 run_pipeline
-            status,
+            None,  # idea 会话：无期目录
+            "idea",
+            None,
             root=root,
             tracker=SessionContextTracker(),
         )
@@ -622,7 +620,7 @@ def test_m20_out_of_scope_tool_rejected_no_card(tmp_path: Path, monkeypatch):
         assert input_mock.call_count == 0
         fed_back = json.loads(state["requests"][1]["body"]["messages"][-1]["content"])
         assert fed_back["ok"] is False
-        assert "不在 creative scope 白名单内" in fed_back["error"]
+        assert "先建期" in fed_back["error"]
 
 
 # ===========================================================================
@@ -667,7 +665,6 @@ def test_m16_monkeypatch_unregistered_side_effect_prompts_user_fail_closed(tmp_p
     }
 
     monkeypatch.setitem(TOOL_SCHEMAS, fake_tool_name, fake_tool_schema)
-    monkeypatch.setattr("pipeline.agent.tools.tool_names_for_scope", lambda scope, root=None: [fake_tool_name])
 
     input_mock = MagicMock(return_value="n")
     monkeypatch.setattr("builtins.input", input_mock)
@@ -681,11 +678,11 @@ def test_m16_monkeypatch_unregistered_side_effect_prompts_user_fail_closed(tmp_p
 
 
 def test_m16_side_effect_not_leaked_into_llm_schemas(tmp_path: Path):
-    """M16③: build_tool_schemas 必须剔除 side_effect 键，宿主元数据不得泄入 LLM payload (Spec §5.1 M16)。"""
-    for scope in ["creative", "pipeline"]:
-        schemas = build_tool_schemas(scope)
-        serialized = json.dumps(schemas, ensure_ascii=False)
-        assert "side_effect" not in serialized
+    """M16③: build_tool_schemas 必须剔除 side_effect 键，宿主元数据不得泄入 LLM payload (Spec §5.1 M16)。
+    D43 后 build_tool_schemas 不再收 scope，全模式同一张表。"""
+    schemas = build_tool_schemas()
+    serialized = json.dumps(schemas, ensure_ascii=False)
+    assert "side_effect" not in serialized
 
 
 # ===========================================================================

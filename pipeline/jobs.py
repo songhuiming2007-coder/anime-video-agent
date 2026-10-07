@@ -394,7 +394,7 @@ def create_job(
     job_id = f"job_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}"
     created_at = _utc_now_iso()
 
-    valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=ep_path)
+    valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path)
 
     job = Job(
         job_id=job_id,

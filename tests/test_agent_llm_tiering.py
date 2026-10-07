@@ -66,7 +66,12 @@ def _make_root(dirpath: Path, *, model: str = "mock-model", models=None) -> Path
         data["models"] = models
     (dirpath / "config" / "agent.json").write_text(json.dumps(data), encoding="utf-8")
     (cfg_dir / "tools.json").write_text(
-        json.dumps({"creative": ["read_artifact"], "pipeline": ["read_artifact"], "idea": [], "asset": []}),
+        # D43 / Spec 17：单表（恰为注册全集，否则反向分叉检查报错）
+        json.dumps({"tools": [
+            "read_artifact", "write_episode_file", "list_episodes", "read_status",
+            "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
+            "crawl", "browser", "write_memory", "cover_edit",
+        ]}),
         encoding="utf-8",
     )
     return dirpath
@@ -99,10 +104,11 @@ def _reset_latch(monkeypatch: pytest.MonkeyPatch):
 
 def test_no_models_section_is_byte_identical_to_golden(tmp_path, monkeypatch, llm_capture):
     root = _make_root(tmp_path)
-    # 工具表冻结成 golden 里生成时刻的快照：Spec 4/5/6/7 加工具不波及这条回归
+    # 工具表冻结成 golden 里生成时刻的快照：Spec 4/5/6/7 加工具不波及这条回归。
+    # D43 / Spec 17：build_tool_schemas 不再收 scope，golden 已重生成（四 scope 同一张冻结表）。
     monkeypatch.setattr(
         "pipeline.agent.llm.build_tool_schemas",
-        lambda scope, root=None: GOLDEN["frozen_tools"][scope],
+        lambda root=None: GOLDEN["frozen_tools"],
     )
     cfg = load_llm_config(root)
     assert cfg is not None

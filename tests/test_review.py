@@ -273,7 +273,6 @@ class TestApproveExpectFingerprint:
         self._make_clips_episode(tmp_path)
         ok, msg, argv = validate_pipeline_command(
             ["review", "--approve", "--expect-size=100", "--expect-mtime-ns=200"],
-            scope="pipeline",
             ep_dir=tmp_path,
         )
         assert ok, msg
@@ -285,7 +284,6 @@ class TestApproveExpectFingerprint:
         # 空格形式的对照：值被当成位置参数，期目录不再被注入（等号形式的理由）
         ok2, _msg2, argv2 = validate_pipeline_command(
             ["review", "--approve", "--expect-size", "100"],
-            scope="pipeline",
             ep_dir=tmp_path,
         )
         assert ok2
