@@ -43,7 +43,7 @@ uv venv && uv pip install -e ".[apple,dev]"
 
 ./pipeline/preflight.sh --init          # 建数据目录；放外置盘就在后面加盘上的路径
 ./pipeline/preflight.sh                 # 环境自检
-pytest                                  # 纯函数测试，约 1.5 分钟
+pytest                                  # 纯函数测试，约 2 分钟
 ```
 
 联网抓取的 `crawl` / `browser` 两组可选依赖见 `pyproject.toml` 注释。

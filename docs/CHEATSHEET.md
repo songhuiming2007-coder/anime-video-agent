@@ -76,7 +76,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/voice` | pipeline | 进入配音顺听纠错台 | 03 配音完成后，戴耳机极简挑错字、改读音、钉种子 |
 | `/chat` | creative | 聚焦选题发散（独立子会话） | 01 阶段梳理核心张力、人物弧光与矛盾 |
 | `/script` | creative | 聚焦写稿（独立子会话） | 02 阶段自动调阅选题与资料库笔记，产出 `02-script.draft.md` |
-| `/asset` | 特殊 | 切入 Phase 0 资产与云端调度模式 | 放行 `faces`, `shots`, `vindex`, `cloud`, `ingest` 命令 |
+| `/asset` | 特殊 | 切入 Phase 0 资产与云端调度模式 | 放行 `faces`, `shots`, `vindex`, `cloud`, `ingest`, `acquire` 命令 |
 | `/pipeline` | 特殊 | 退出 asset，切回自动工序模式 | 完成底层资产维护后切回常规制片 |
 | `/scout` | pipeline | 生成 pi 侦察派工单 | 缺料/缺笔记/标题候选时生成自包含工单交给 pi 采掘 |
 | `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
