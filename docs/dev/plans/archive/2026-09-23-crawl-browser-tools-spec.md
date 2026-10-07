@@ -2,12 +2,12 @@
 
 日期：2026-09-23（**v0.5**，红队三轮收口 + 终局微轮全验通过；状态：**🟢 可动工**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§2 Spec 5，§4 施工红线八条，§5 明确排除），`docs/dev/adr/0021-network-and-asset-tools-internalization.md`（全文，含升级链条款与「不做的事」），`docs/dev/adr/0020-harness-eventization-and-electron-desktop.md`（「不做的事」：不引入 guardian LLM）  
-格式与契约范本：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
+格式与契约范本：`docs/dev/plans/archive/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/archive/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
 红队一轮报告：用户粘贴（2026-09-23，未落盘；2🔴 + 7🟡 + 9🔵，总裁决「🔴 修订后复审（diff-only）」）  
 红队二轮报告：用户粘贴（2026-09-23，未落盘；diff-only 复审：一轮 18 项中 16 项完整落地 + 🔵-3 不完整 + ToolContext 部分采纳认可（红队主动认错括注偏一行）；修订新引入 3🟡 + 3🔵，总裁决「🟡 修订后复审（限定范围，diff-only）」）  
 红队三轮报告：用户粘贴（2026-09-23，未落盘；限定四项全验通过；🔵-R3 新增自愈分流段复审发现 2🟡 + 2🔵，总裁决「🟡 修订后复审（终局微轮，限定范围：§4.2 自愈分流段 + §2.3 补句 + MUT-16/T11 各补半句，diff-only）」）  
 红队终局报告：用户粘贴（2026-09-23，未落盘；diff-only 单段落复审：三轮 4 项全验通过、零新增发现，变异矩阵 18 条终态推演成立，总裁决「🟢 可动工」）  
-直接前置：`docs/dev/plans/2026-09-23-network-tools-spec.md`（Spec 4 v0.3，可动工）——scope 分组授权机制、egress 双闸、`_scrub` 清洗、`web.json` 配置纪律均以其为准复用  
+直接前置：`docs/dev/plans/archive/2026-09-23-network-tools-spec.md`（Spec 4 v0.3，可动工）——scope 分组授权机制、egress 双闸、`_scrub` 清洗、`web.json` 配置纪律均以其为准复用  
 **施工状态声明（如实，2026-09-23 核实）**：Spec 2 / Spec 3 / Spec 4 均为「可动工未施工」——`pipeline/jobs.py`、`pipeline/approvals.py`、`pipeline/agent/web.py`、`config/agent/web.json` **均不存在**（`pipeline/`、`pipeline/agent/`、`config/agent/` 目录实测）。本 spec 的施工依赖与降级口径见 §6。
 
 ---

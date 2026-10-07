@@ -77,7 +77,7 @@ RVC 两段式被设想为“解耦器”——用一段发音清晰的中文 TTS
 
 ## 影响
 
-- `docs/adr/0006-tts-qwen3.md` 中“RVC 两段式是下一步杠杆”的表述已过期，
+- `docs/dev/adr/0006-tts-qwen3.md` 中“RVC 两段式是下一步杠杆”的表述已过期，
   应以本 ADR 为准。
 - `data/voice/README.md` 增加 RVC pilot 失败记录，避免未来重复尝试。
 - `tools/rvc/` 目录进入“归档/不再维护”状态；若后续清理，需单独评估是否删除

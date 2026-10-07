@@ -1,10 +1,10 @@
 # Implementation Spec：approval 对象化（Spec 3 / ADR-0020 §3）
 
 日期：2026-09-22（**v0.7**，2026-09-24 跨 Spec 修订第五批：v0.3 并入 S3-R1/R2/R5（§1.3），v0.4 并入 S3-R6/R7（§1.4），v0.5 并入 Spec 8 红队二轮提出的 S3-R9/R10/R11（§1.5，含经用户授权的 `pipeline/review.py` 改动），v0.6 按 Spec 8 红队三轮 R3-M1 在 S3-R9 授权范围内收紧 §4.5（§1.6），v0.7 并入 S8 review 的用户裁决 A1/A2、红队定向复核 R-1~R-5 与 C.1~C.10（§1.7，含 M4 施工登记与经用户 2026-09-24 裁决的 R-1 交互收紧）；v0.2 红队两轮收口；状态：**v0.7；PR3 待 S8 定向核对**）  
-跨 Spec 修订来源：`docs/dev/plans/2026-09-23-electron-desktop-spec.md`（Spec 8）§6.2；S3-R6/R7 出自 Spec 8 v0.1 红队一轮 B1/B2（裁决见 Spec 8 §1.1）；S3-R9/R10/R11 出自 Spec 8 v0.2 红队二轮 R2-B1/R2-M7/R2-M8（裁决见 Spec 8 §1.1）；v0.7 的 A1/A2 与 R-1~R-5 出自 S8 review 实测与红队对 §1.3–§1.6 + M4 代码的定向复核（C.1~C.10 为同批建议，逐行证据见 §1.7）  
+跨 Spec 修订来源：`docs/dev/plans/archive/2026-09-23-electron-desktop-spec.md`（Spec 8）§6.2；S3-R6/R7 出自 Spec 8 v0.1 红队一轮 B1/B2（裁决见 Spec 8 §1.1）；S3-R9/R10/R11 出自 Spec 8 v0.2 红队二轮 R2-B1/R2-M7/R2-M8（裁决见 Spec 8 §1.1）；v0.7 的 A1/A2 与 R-1~R-5 出自 S8 review 实测与红队对 §1.3–§1.6 + M4 代码的定向复核（C.1~C.10 为同批建议，逐行证据见 §1.7）  
 
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§2 Spec 3，§4 施工红线八条），`docs/dev/adr/0020-harness-eventization-and-electron-desktop.md`（§3 停机点升格为 approval 对象，§5 Session 恢复，「不做的事」）  
-格式与契约范本：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口）  
+格式与契约范本：`docs/dev/plans/archive/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口）  
 红队一轮、二轮报告：终端输出，未落盘（本项目红队报告不存档，§1 裁决表即唯一存档）；二轮结论 🟢 可动工  
 文档更正（2026-09-23，不改版本号与状态）：① 原第 6、7 行及 §1.2 引用的 `…-redteam-r1.md` / `…-redteam-r2.md` 从未存在，已改为如实说明；② `build_status_card` 的行号原写 62 有误，实为 65（`status_card.py` 自 `7866ded`（2026-09-21）起未改动，属原始引用错误，不是行号漂移），正文与自查表共 5 处已更正。二轮「附录 28 处行号全部复核通过」的结论因此不准确，**施工前需把全部行号重核一遍**。
 

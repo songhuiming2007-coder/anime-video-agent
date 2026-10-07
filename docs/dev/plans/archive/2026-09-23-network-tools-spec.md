@@ -2,11 +2,11 @@
 
 日期：2026-09-23（**v0.4**，红队三轮收口 + S12 验收增补 fake-ip 放行；状态：**可动工**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§2 Spec 4，§4 施工红线八条），`docs/dev/adr/0021-network-and-asset-tools-internalization.md`（全文）  
-格式与契约范本：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
+格式与契约范本：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/archive/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
 红队一轮报告：终端输出（2026-09-23，未落盘；9🟡 + 8🔵，总裁决「🟡 修订后复审」）  
 红队二轮报告：终端输出（2026-09-23，未落盘；一轮收口全验 + 1🟡 + 5🔵，总裁决「🟡 修订后复审（限定范围：🟡-10 铁律句 + 🔵-9 五行端点 + fake req 建议，diff-only）」）  
 红队三轮报告：终端输出（2026-09-23，未落盘；diff-only 复审三项全验通过，总裁决「🟢 可动工」）  
-依赖前置：`docs/dev/plans/2026-09-22-context-assembly-spec.md`（Spec 1，scope 概念）；Spec 2（jobs/events）**仅作施工状态声明，本 spec 不消费其任何接口**（见 §6.2）
+依赖前置：`docs/dev/plans/archive/2026-09-22-context-assembly-spec.md`（Spec 1，scope 概念）；Spec 2（jobs/events）**仅作施工状态声明，本 spec 不消费其任何接口**（见 §6.2）
 
 ---
 

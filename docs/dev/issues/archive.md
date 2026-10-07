@@ -369,7 +369,7 @@
 
 ### [D20] 排片机制重构：笔记 Ground Truth 锚点直通排片
 - 状态：**已解决**（2026-08-27，ADR-0008 定案并实现落地）
-- 关联：`docs/adr/0008-ground-truth-anchor-clips.md`
+- 关联：`docs/dev/adr/0008-ground-truth-anchor-clips.md`
 - 要点：02 写稿强制 `锚点:` 字段（check_script 机检）；clips.py 锚点通道起点吸附
   镜头切点、一等公民先占位；双塔检索降级为 `锚点: 无` 氛围段的补位。
   注意：08-26 期 clips.json 与 approved 逐字节相同（diff 通道污染），不作验证样本；
@@ -400,28 +400,28 @@
 
 ### [D3] 缩段不注水拍板落地
 - 状态：**已解决**（2026-08-14，P4 E1 落地）
-- 关联：`docs/plans/2026-08-14-p4-script-pipeline.md`
+- 关联：`docs/dev/plans/2026-08-14-p4-script-pipeline.md`
 - 要点：`01-topic.md` 加 `缩段不注水: 是` 字段，字数下限 × shrink_factor；
   允许承认这段没料而缩短，不许注水凑数。
 
 ### [D14] TTS CPM 单源化
 - 状态：**已解决**（2026-08-14，P3 解决删除）
-- 关联：`docs/plans/2026-08-14-p3-doc-debt.md`
+- 关联：`docs/dev/plans/archive/2026-08-14-p3-doc-debt.md`
 - 要点：CPM 取值口径统一，消除多文件默认值漂移。
 
 ### [D15] BGM 例外规则同步
 - 状态：**已解决**（2026-08-14，BGM 例外规则同步）
-- 关联：`docs/adr/0007-no-japanese-subs-support.md` 背景中提及
+- 关联：`docs/dev/adr/0007-no-japanese-subs-support.md` 背景中提及
 - 要点：例外曲目来源与理由在 config 与文档间同步完成。
 
 ### [D16] 人类介入点口径统一
 - 状态：**已解决**（2026-08-14，P3 解决删除）
-- 关联：`docs/plans/2026-08-14-p3-doc-debt.md`
+- 关联：`docs/dev/plans/archive/2026-08-14-p3-doc-debt.md`
 - 要点：02.5 / 03.5 / 05 / 09 四处人类介入点在 CLAUDE.md / WORKFLOW.md / STANDARD.md 口径统一。
 
 ### [D17] 测试数清算
 - 状态：**已解决**（2026-08-14，P3 解决删除）
-- 关联：`docs/plans/2026-08-14-p3-doc-debt.md`
+- 关联：`docs/dev/plans/archive/2026-08-14-p3-doc-debt.md`
 - 要点：测试断言与变异检验覆盖范围厘清并补全。
 
 ### [N3] shots calibrate 多参数支持
