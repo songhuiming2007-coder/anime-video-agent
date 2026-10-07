@@ -12,9 +12,9 @@ import { DESKTOP, moduleSpecifiers, parse, sourceFiles, type SourceFile } from "
 const RENDERER = join(DESKTOP, "src/renderer");
 const read = (rel: string) => readFileSync(rel, "utf-8");
 const TOKENS = read(join(RENDERER, "tokens.css"));
-/** 拍板基准 sha256（Spec 14 头部；改取值就得回到人面前重看 mock） */
+/** 拍板基准 sha256（Spec 14 头部；改取值就得回到人面前重看 mock）。2026-10-08 人看真实窗口截图后裁决浅色焦点环改中性中灰 */
 const BASELINE_SHA256 = {
-  "tokens.css": "3d62bafad38d4ff8d7f04161bfa2652ce8d2935674e5b061c0cc64218cb1a382",
+  "tokens.css": "58030f116d18795958980da7ea7ccbbe6214667302a4f78cbaa43dcd23b4891e",
   "ui.css": "9c123bc33c84962e2a5ad6c989f6d71151713fc42f4c56632f3d02ca5fd7d67b",
 };
 /** 只改手动深色块 / 只改跟随系统块（自测用，与 §7.2 的变异同形） */
@@ -158,7 +158,7 @@ const MINS: Record<string, [number, number]> = {
   主按钮文字: [9.98, 9.78],
   主按钮悬停文字: [8.68, 11.25],
   "粉色文字/链接": [5.16, 6.76],
-  "焦点环对各面（offset 2px，环只压在面上）": [5.16, 6.23],
+  "焦点环对各面（offset 2px，环只压在面上）": [3.74, 6.23], // 浅色 2026-10-08 改 #7a7a83（原 #c2185b 为 5.16）
   "主按钮边界（非文本 3:1）": [3.7, 8.76],
   "输入框边界（非文本 3:1，含侧栏搜索框）": [3.4, 3.17],
   "状态点与未知圆环（非文本）": [4.95, 5.56],
