@@ -41,7 +41,7 @@ status: provisional
 画面随之随缘；3-4 个勉强相关，余下才真正切中剧情。这是 05 人工审核的累积印象，**当时不是测量值**。
 
 **2026-08-14 已量化**（`python -m pipeline.recheck diff --all`，工具见
-`docs/plans/2026-08-14-p1-recheck-probe.md`）：8 期里机器基线只有东京喰种一期保住
+`docs/dev/plans/2026-08-14-p1-recheck-probe.md`）：8 期里机器基线只有东京喰种一期保住
 （18/20 段 differ：6 content_changed + 2 start_shifted + 1 dur_changed + 9 count_changed，
 2 段 unchanged）；楪祈一基线丢失（`04-clips.json` 与 approved 逐位相同、`_manual_fix`
 注记也已不在文件里，工具扫描确认零注记残留），5 处人工修正只剩本 ADR 开头这段文字记载；

@@ -1,7 +1,7 @@
 # AI-Native 制片总监重构 Spec：从斜杠功能机到对话驱动制片
 
 日期：2026-09-20（**v1.5，四轮红队终审通过 + PR7 终审收口**）
-上位文档：`docs/dev/plans/2026-09-18-ava-agent-harness.md`（施工图）、
+上位文档：`docs/dev/plans/archive/2026-09-18-ava-agent-harness.md`（施工图）、
 `docs/dev/plans/2026-09-18-ava-agent-impl-spec.md`（v1.20，本 Spec 不改写它，落定后以其修订注记收口）
 状态：**已实施（PR5–PR7 均已落地）；v1.5 为终审收口修订**
 

@@ -2,7 +2,7 @@
 
 日期：2026-09-23（**v0.3**，红队三轮收口（一轮 6🔴+7🟡+5🔵、二轮 4🔴+2🟡+2🔵 全收，三轮确认通过）；状态：**可动工**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§2 Spec 6，§4 施工红线八条），`docs/dev/adr/0021-network-and-asset-tools-internalization.md`（§3 素材获取三层分工，§「不做的事」）  
-格式与契约范本：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
+格式与契约范本：`docs/dev/plans/archive/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4，红队四轮收口），`docs/dev/plans/archive/2026-09-22-approval-objectification-spec.md`（Spec 3 v0.2，红队两轮收口）  
 `why` 判据真源：`skills/acquire-assets/SKILL.md` §一（交接契约，全文已精读）  
 红队一轮报告：会话内下达（2026-09-23，未落盘；6🔴 + 7🟡 + 5🔵，总裁决「打回，v0.2 修订后再审」）  
 红队二轮报告：会话内下达（2026-09-23，未落盘；4🔴 + 2🟡 + 2🔵，总裁决「打回 v0.3 轻修，预期第三轮为确认轮」）  

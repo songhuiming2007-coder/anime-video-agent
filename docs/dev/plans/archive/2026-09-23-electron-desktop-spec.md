@@ -2,7 +2,7 @@
 
 日期：2026-09-23（**v0.5**，红队一轮修订（5🔴 + 8🟡 + 11🔵 全收）+ 二轮复审修订（1🔴 + 8🟡 + 10🔵 全收）+ 三轮定向复审修订（1🔴 + 1🟡 + 6🔵 全收，另作者自查 1 项）+ 定向核对 🟢（4🔵 全收，红队明示无需再审）；状态：**PR0–PR3 可动工**；PR4 阻塞于 Spec 3 v0.6 PR3 施工（§6.2），Spec 3 §1.3–§1.6 的定向复核**尚未进行**）  
 上位文档：`docs/dev/plans/2026-09-22-harness-evolution-direction.md`（§2 Spec 8 范围全文、§4 施工红线八条、§5 明确排除），`docs/dev/adr/0020-harness-eventization-and-electron-desktop.md`（§4 桌面端、§5 Context 纪律、「不做的事」、推翻条件）  
-契约依赖：`docs/dev/plans/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4）、`docs/dev/plans/2026-09-22-approval-objectification-spec.md`（**Spec 3 v0.6**，已并入本 spec 提出的 S3-R1/R2/R5/R6/R7/R9/R10/R11，v0.6 按本 spec 红队三轮 R3-M1 在 S3-R9 授权范围内收紧 §4.5；其中 S3-R9 改 `pipeline/review.py`，经用户单独授权）——**两者均未施工**（撰写时 `pipeline/jobs.py`、`pipeline/approvals.py` 不存在，已核实），本 spec 以其文档契约为准，缺口见 §6  
+契约依赖：`docs/dev/plans/archive/2026-09-22-jobs-and-events-spec.md`（Spec 2 v0.4）、`docs/dev/plans/archive/2026-09-22-approval-objectification-spec.md`（**Spec 3 v0.6**，已并入本 spec 提出的 S3-R1/R2/R5/R6/R7/R9/R10/R11，v0.6 按本 spec 红队三轮 R3-M1 在 S3-R9 授权范围内收紧 §4.5；其中 S3-R9 改 `pipeline/review.py`，经用户单独授权）——**两者均未施工**（撰写时 `pipeline/jobs.py`、`pipeline/approvals.py` 不存在，已核实），本 spec 以其文档契约为准，缺口见 §6  
 格式范本：Spec 2 v0.4、Spec 3 v0.2  
 性质：**架构冻结稿**（direction：「最后做，可先只写架构 spec」）。冻结进程模型、通信协议、读写边界、契约与验收门禁；不细化 React 组件实现。
 
