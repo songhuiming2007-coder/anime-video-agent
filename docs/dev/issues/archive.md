@@ -45,6 +45,8 @@
 - 状态：**已解决**（施工 `ae0b142`；D29-B 打回一处，复修 `a1125fa`；2026-10-06 定向复核 🟢 通过；仅 ① 部分）
 - 关联：`pipeline/agent/web.py`（`SEARCH_DEFAULT_LIMIT` / `SEARCH_MAX_LIMIT` / `_Provider.max_count`）、`pipeline/agent/tools.py`（`web_search` 的 `limit` 描述）；Spec 15 §13 / §14 / §15 / §16，Spec 4 §3.2 修订注记
 - 原记录：D29 门禁 7 人审「5 条远远不够；人物介绍还可以，人物剖析有问题」→ 人 2026-10-06 裁决默认与上限都改为 20，调研策略交给模型、不写进 harness。
+- 取证（2026-10-06 终端，真实配置、limit=10、两家各单独查）：「一色彩羽 人物分析 性格 成长」「春物 一色彩羽 角色剖析 长评」两条查询两家全部 `truncated=true`；10 条里约一半仍是百科（维基 / 百度 / 游民 / bangumi 角色页），剖析类来源（豆瓣长评、bgm 日志、B站专栏、巴哈、个人博客、reddit 分析帖、知乎话题）只占另一半；查询词带「长评 / 剖析」时评论类明显上浮；两家结果重叠不到一半（如 B站专栏只出现在 Tavily），而现设计主家答了就不问备家。
+- 候选方向与代价（③ 搁置的决策依据）：① 提高 `SEARCH_MAX_LIMIT`（每条 snippet 500 字，20 条一次约 1 万字进上下文且每轮重发）——已做；② 调研策略写进 scope / runbook——人裁决不写（原话见 Spec 15 §13）；③ 「两家都查、合并去重」——推翻 Spec 15「每家至多 1 次、不并发」与省额度取舍，Tavily 用量随之翻倍（见 N58）。
 - 评审：D29-B 打回 🟡 B-1（默认 limit=20 时请求 Tavily `max_results = 21`，超出文档范围 `0 <= x <= 20`），另 🔵 B-2（带内错误先截后脱敏）、🔵 B-3（用例补丁打全局 `os.environ.get`，junit 下假绿）。复修后定向复核 ✅：tavily 单次上限 20、截住时以「返回数 == 请求数」判 `truncated`，真网请求体 `max_results = 20`；B-2 改为先脱敏后截断；B-3 只替换 `web` 模块的 `os`。6 条变异在 junit 口径下全杀（2 条自设），全量 pytest 2061 passed。遗留 🔵 C-1：T-P16 `exact` 腿删了一条长度断言，下次顺手补（Spec 15 §16）。
 
 ### [D29] web_search 默认端点（DuckDuckGo html）被盾，工具实际不可用
