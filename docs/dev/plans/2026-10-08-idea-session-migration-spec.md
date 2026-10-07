@@ -322,3 +322,33 @@ scratchpad `d42b/shots/`：1280×800 与 1440×900 各 4 张（选题聊一轮 /
 
 **读数**：`npx tsc --noEmit` 绿；`npx vitest run` 436（432 + 4）；e2e TX-7 两版回归绿（只有 `createEpisode` 未带入分支的行为变化，假进程版 TX-7 走这一支）。core 零改动，pytest 不受影响。
 **写用例时踩到一次 stale .pyc**：⑨ 两次写入的假 `cli.py` 恰好同长、同秒，Python 用了旧字节码、第二次仍打 `migrated=true`；给第二版多打一行使长度不同即可（与 `verify_mutations.py` 文档里的事故同型，属测试夹具问题，非产品缺陷）。
+
+## N60 定向复核（2026-10-08；复核人 = D42-C 评审 session，未参与 `f485764`；只读代码、亲跑变异与测试，未改 `desktop/src/`）
+
+**裁决：🟡 打回（一处补用例即可，不动产品代码）**。§10 所列四条全部属实：TH-D42 ⑥～⑨ 断言的都是 spawn 模板序列本身；V3 / V4 / V5 / V6 亲跑各由对应用例的序列断言杀死；C-2(b) 只加了 `else` 分支、`migrated=true` 路径一字未动；Spec 10 §2.1 第 2 条与 §3.1 三行注记与实现一致；vitest 436、tsc 绿、e2e `-g "TX-7"` 两版 2 passed。阻塞项只有一条：**本次新加的那一行 `carried.delete(name)` 自身没有被钉住「只删这一期」**——自设变异 V8 把它换成 `carried.clear()`，全量 vitest 436 仍绿。
+
+**逐项核验**：
+
+1. **⑥～⑨ 断言的是模板序列**：四条的终判都是 `expect(sessionSpawns()).toEqual([...])`（L856 / L869 / L880 / L893），不是「没报错」。⑥ 的首发失败原因亲测：临时把 `rejects.toBeDefined()` 换成必不相符的 `toMatchObject({ code: "__PROBE__" })` 跑 `-t "⑥"`，实际拒因为 `E_SESSION`「会话进程已退出（code=0 signal=-）」——空剧本让假进程 `sys.exit(0)`（`tests/fixtures/session.ts` 剧本循环为空即退出），确是 ready 前退出；探针后原样写回，md5 一致。⑦ 断言 `changed === true`，确实走完了切仓。
+2. **变异亲跑**（scratchpad `d42c/n60mut.py`：施加 → `vitest run tests/host/sessions.test.ts -t TH-D42` → 写回 → md5 对拍；6 条 md5 全部一致，跑后工作树干净）：
+
+   | 编号 | 变异 | 结果 | 杀手（失败行） |
+   |---|---|---|---|
+   | V3 | 发送前就消费标记 | KILLED | ⑥ L856：`['SESSION_CONTINUE','SESSION_NEW']` ≠ 两次 CONTINUE |
+   | V4 | 切仓不清标记 | KILLED | ⑦ L869：`['SESSION_CONTINUE']` ≠ `['SESSION_NEW']` |
+   | V5 | 未带入不删旧标记 | KILLED | ⑨ L893：`['SESSION_CONTINUE']` ≠ `['SESSION_NEW']` |
+   | V6 | `conv.resume` 成功不消费 | KILLED | ⑧ L880：第二次仍 `SESSION_CONTINUE` |
+   | V7（自设） | `migrated=true` 时也走 delete | KILLED | ① L790：`['SESSION_NEW']` ≠ `['SESSION_CONTINUE']`；⑥ 同时红 |
+   | V8（自设） | `migrated=false` 时 `carried.clear()`（清掉所有期的标记） | **SURVIVED** | TH-D42 9 条全绿；另跑全量 vitest 436 全绿 |
+
+3. **C-2(b) 与注记**：`f485764` 对 `service.ts` 只在 `if (created.migrated) {…}` 后加 `else { this.carried.delete(name); }`，带入路径（`add` + `resetAfterMigration`）不变，V7 证明该路径有用例守。Spec 10 §2.1 第 2 条注记（首发 `continue`、发送 / resume 成功才消费、切仓清空、同名重建未带入作废；idea 的 resume 以 `SESSION_IDEA` 起）与 §3.1 `conv.send` / `conv.resume` / `episode.create` 三行注记，逐条对得上 `service.ts::convSend` / `convResume` / `createEpisode` 与 `sessions.ts::resume`。
+4. **读数**：`npx vitest run` 38 files / 436 passed；`npx tsc --noEmit` 绿；`npx playwright test --workers=2 -g "TX-7"` 2 passed（假进程版未带入腿、真实 core 版带入全链）。
+
+**发现表**：
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🟡 R-1 | ⑨ 分不清 `delete(name)` 与 `clear()`：标记是「按期」的，但没有用例钉住「一期未带入不影响别的期的标记」。可达路径很平常：带入建期 A → 不在 A 发消息、紧接着建期 B——B 这时**必然** `migrated=false`（`_idea` 刚被 A 清空）——若实现退化成 `clear()`，A 的首发静默变 `SESSION_NEW`，模型看不到带入的讨论，而 A 的 idea-note 仍写着「已带入」 | 自设变异 V8 在 TH-D42 与全量 vitest 下均存活；今天代码是对的（`delete(name)`） | 补一条用例（扩 ⑨ 或新增 ⑩）：A 带入（marker true）→ B 建期未带入（marker false）→ A 首发断言 `SESSION_CONTINUE`、B 首发 `SESSION_NEW`；以 V8 复跑验证杀死。不动 `desktop/src/` |
+| 🔵 R-2 | ⑥ 对首发失败只断言 `rejects.toBeDefined()`，拒因换成别的（如 `E_UNREACHABLE`）也会过；目前由其后的序列断言兜住（若失败发生在 spawn 之前，序列只剩一个 CONTINUE，照样红），所以不构成漏网 | 上文探针：实际拒因 `E_SESSION`「会话进程已退出」 | 顺手收紧为 `rejects.toMatchObject({ code: "E_SESSION" })`，让用例名里的「ready 前退出」有断言背书；不阻断 |
+
+R-1 补完后由非施工 session 只复跑 V8（+ V5 回归）即可关闭 N60，无需整轮复核。
