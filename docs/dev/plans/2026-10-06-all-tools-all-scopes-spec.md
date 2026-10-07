@@ -1,6 +1,6 @@
 # Spec 17：工具不再按模式（scope）分配，所有模式开放全部工具（D43）
 
-> **状态：已施工·待评审（D43-B 2026-10-08 完成，见 §11 施工回填；待 D43-C 独立评审）**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)；同日 D43-R2 定向复审 🟢，13 条全部核销，另 6🔵 由施工吸收，见「定向复审」）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
+> **状态：✅ 已通过（2026-10-08 D43-C 独立评审通过，D43 迁 issues archive、ADR-0027 转「已通过」）**（沿革：2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)；同日 D43-R2 定向复审 🟢，13 条全部核销，另 6🔵 由施工吸收，见「定向复审」；D43-B 2026-10-08 施工，见 §11；独立评审见「独立评审」）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
 > 对应 issues：**D43**（主）；与 **D42** 交叉（D42 方案 (a) 的「idea 补联网工具」被本 spec 覆盖，见 §6）。
 > 相关：ADR-0021（网络工具内化，「网络工具只对 asset / creative 可见」）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、Spec 10（`archive/2026-09-25-desktop-conversation-panel-spec.md`）§2.5（idea 会话零写权限）、impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.4 / §2.5 B3-r6（scope 白名单）；新提 **ADR-0027**（`docs/dev/adr/0027-tools-not-gated-by-scope.md`，提议中）。
 
@@ -91,6 +91,27 @@
 | 🔵 R2-6 | 拦截顺序没写死：`review_tool_call` 里的「先建期」reject 必须排在 `run_pipeline` dry-run 之前，否则 idea 下一条本身非法的命令（如 `faces unknown`）拿到的是白名单拒因，不是统一文案。TA-6 用合法命令测不出这个差别 | `session.py::review_tool_call` 现在的顺序：未注册 → 越 scope → run_pipeline dry-run → write_memory dry-run | §3.4 拦截机制段补「排在未注册检查之后、一切 dry-run 之前」；TA-6 的 run_pipeline 腿加一个非法命令样例 |
 
 **原型与探针**（都在 scratchpad 的 `d43r2/`，未进仓库）：`base/` 是 HEAD 导出的副本，相关的 22 份测试文件基线为 4 红（`test_agent_assembly_integration` 2 条、`test_golden_terminal` 2 条，副本缺 `data/` 等本机文件，与本 spec 无关）；`proto/` 按 v0.2 意图做最小改动：单表、反向检查、删越 scope 与三处实现内检查、合表、`NEEDS_EPISODE_TOOLS` 两层拦截。为了把语义失败和改名引起的 collection 错误分开，原型保留了旧名 `tool_names_for_scope` 作为别名。`test_d43r2_proto.py` 是 TA-3b / TA-6 / TA-6b 的原型，`d43r2_mut.py` 负责植入并还原 MUT-A8～A11、做 md5 对拍。逐文件实跑时 `test_agent_protocol` 的子进程因夹具 KeyError 逐条等超时（🔵-1 已知面），跑到该文件即中止，没有跑完全量。
+
+## 独立评审（2026-10-08，D43-C；评审人未参与立文、两轮审查与施工；读码 + 亲跑变异与全量测试）
+
+**结论：✅ 通过。** 施工忠实于 v0.2 + `81598a8` 与 6🔵 吸收要求；证据链（测试、变异、冒烟帧、文档修订面）逐项复核属实。
+
+**逐项核验**：
+
+1. **施工忠实度（§3.1–§3.5 逐条读码）**：① `tools.json` 单表 13 件恰为注册集；`build_tool_schemas(root)` 正向（B3-r6）与反向分叉检查同点同形态（都在函数内当场 `KeyError`），缺失/损坏/旧四键三态经 TA-2 覆盖。② `execute_tool` 第 ② 层与 `review_tool_call` 越 scope 拒绝已删，`pipeline/agent/` 全仓 grep 无「越 scope / 按 scope 白名单」残留。③ 「先建期」reject 在 `session.py:268` 排在未注册检查之后、一切 dry-run 之前（R2-6）；`NEEDS_EPISODE_TOOLS` 恰为 4 个（frozenset），review 层 import 与实现层 4 处 `raise PermissionError(NO_EPISODE_MESSAGE)` 共用同一常量与文案。④ `run_pipeline` 函数本体不拦（dry-run / confirmed 两支均无 ep None 拦截）；`_tool_run_pipeline` 等 4 个包装层双保险在。⑤ 合表两条语义在代码里成立：`in_asset` 分支的子命令校验在补位分支之前且无条件执行（语义 a）；补位只在 `in_pipeline` 分支内（语义 b）；`--force` 前缀禁令与 `cloud exec` 禁令仍在白名单分派之前。⑥ `memory.apply_op` creative-only 闸已删，scope 仅入日志行；`memory.scopes` 仍 `{creative, asset, idea}`（Q3 不破）。⑦ 文案面（status_card / cli 三处 / protocol 注释 / 三份 scope 提示 / tools.json）与 §3.5 一致。
+2. **6🔵 处置复核**：R2-1 ✅（T17 退役换等强断言「memory.scopes 恰为 {creative, asset, idea}」，`test_agent_tools.py:697`；未往 memory.scopes 加 pipeline）；R2-2 ✅（§7 三处注记逐条 grep 命中；D42 选型稿 browser 句已更正并注明与代码不符的原因）；R2-3 ✅（TA-1 在请求层断言四 scope 请求体 tools 逐字节相等；MUT-A1 植在 `llm.py:576` 调用点）；R2-4 ✅（T13② 实调腿补 `episode_dir`，「按需加载 candidates、不拉 acquire」原断言一字未动）；R2-5 ✅（§3.4「接受」后两种不留痕情况已写明，未改代码）；R2-6 ✅（顺序见上；TA-6 含 `faces unknown` 样例断言拿到统一文案而非白名单拒因）。
+3. **变异亲跑**（`uv run python scripts/verify_mutations.py --only`，harness 自带 PYTHONDONTWRITEBYTECODE=1 与逐字节复原断言，跑后 `git status` 干净）：MUT-A1（red=9，杀手 TA-1 在红单内）、MUT-A8（red=9，杀手 TA-6b 在红单内）、MUT-A9（red=7，杀手 TA-3b 在红单内）、MUT-A10（red=8，TA-6 与改写后 M20 均在红单内）——四条全部 KILLED、无中止轮，指定杀手逐条指认成立。另自设矩阵外变异一条（对应 🔵-3(a)）：人为把 `tts` 塞进 `ASSET_COMMANDS` 制造与 `PIPELINE_MODULES` 的重名，`validate_pipeline_command("tts run --redo 3")` 被拒（asset 侧子命令限制压倒不限子命令侧），TK-9 `test_tk9_force_prefix_variants_are_rejected` 变红 = 杀死；还原后 md5 对拍一致、测试复绿。
+4. **全量复跑**：`uv run pytest` = `6 failed, 2060 passed, 5 skipped`，6 红与 §11 基线同一集合（数据盘未挂载：test_agent_assembly_integration ×2、test_cloud、test_corrections、test_golden_terminal G-P1/G-P2），无新红。
+5. **改写抽查（9 行）**：T17 → 等强断言（见上）；M20 out-of-scope → idea 先建期版（断言不弹卡 + 拒因回喂，有牙：MUT-A10 实测被它与 TA-6 杀）；M20 unregistered 原样保留；TK-4 → 断言 `acquire fetch 1` 在 pipeline scope 下 `action == "ask"`（合表坏掉即红，有牙）；T13②（R2-4，见上）；TA-4 改写（pipeline/asset 写白名单文件真落盘 + 白名单外/越界/未确认三拒）；T6 → 全量表 + 四需期工具统一文案 + NEEDS_EPISODE_TOOLS 精确集合断言；M11 → scope 热推导成立且工具表逐回合相同；T3/T4 → 单表 = 注册集 ∩ extras 可用集。均非只删。
+6. **文档面（≥5 处抽查）**：ADR-0021 L39、ADR-0023 L76 整行、ADR-0025 四处、CHEATSHEET 两处、Spec 7 archive 四处（含 T17 退役注）、acquire-propose spec L119、web-fetch-links spec L145、impl spec 五处、Spec 10 §2.5——修订注记逐处在位且措辞与现状一致（「先建期」四工具清单、单表、注入范围不变均准确）。ADR-0027 评审前保持「提议中」，本次评审通过后转「已通过」。
+7. **冒烟证据**：scratchpad `d43b/smoke-frames-final.jsonl` 37 帧逐帧读：腿 1 `web_search` ok=true（答出 MADHOUSE / 2023）；受限串轮 `stopped:"blocked"`、`llm_calls:0`（整轮拦在请求层）；腿 2 `write_episode_file` 与 `acquire_propose` 均 ok=false、observation 为「先建期」统一文案原文；模型首轮两次主动拒绝调用与偏差②的描述一致。证据链可信，不重跑真网冒烟。
+8. **diff 边界**：PR1 `45fc26b` 31 文件全部落在 §10 PR1 范围（core 9 份 + 测试/夹具/金样本 + tools.json + 三份 scope 提示 + verify_mutations.py + desktop 一处纯注释，已核该 hunk 只改注释行）；PR2 `e03e373` 18 文件全为 docs/。
+
+**发现表**（无阻断项）：
+
+| 编号 | 指控 | 证据 | 建议 |
+|---|---|---|---|
+| 🔵 C-1 | §10 PR1 的文件清单未列 `llm.py` 与 `jobs.py`，但 §3.1/§3.3 的签名删除（`build_tool_schemas` 去 scope、`validate_pipeline_command` 去 scope）必然牵连这两个调用点；§11 已如实记录，属清单不精确而非越界 | `git show --stat 45fc26b`；`llm.py:576`、`jobs.py:397` | 不改；今后 spec 的 PR 文件清单注明「签名变更的调用点随行」即可 |
 
 ## 0. 一句话
 
