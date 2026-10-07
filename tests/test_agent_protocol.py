@@ -1128,10 +1128,13 @@ def _tree(root: Path) -> list[tuple[str, int]]:
 
 
 def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path) -> None:
-    """TP-16：`--idea` 会话照常开回合（scope 固定 idea、无期目录、不落盘；D43 后工具表为全量）。
+    """TP-16：`--idea` 会话照常开回合（scope 固定 idea、无期目录；D43 后工具表为全量）。
 
     M9 真实联调实测：此前 core 对无期目录的 user_message 回 E_NO_EPISODE，§3.1 的错误表里没有它，
     桌面端「选题」对话（Spec 10 §2.5）因此一轮都开不了；终端 `ava idea` 走 cli.py 的另一条路，从未暴露。
+
+    D42 / Spec 18 改写：「不落盘」→「只写库级 `data/_idea/session.jsonl`、期目录零产出」
+    （MUT-62 的 error vs turn_started 之别不动）。
     """
     root, _episode = world
     endpoint.replies = [{"role": "assistant", "content": "先聊聊"}, {"role": "assistant", "content": "接着聊"}]
@@ -1158,4 +1161,13 @@ def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path)
         proto_proc.shutdown()
     finally:
         assert proto_proc.finish() == 0
-    assert _tree(root) == before  # 不落盘、不建任何文件
+    # 唯一新增的文件就是库级选题记录；期目录与其余一切零产出（Spec 18 §3.1）
+    log = root / "data" / "_idea" / "session.jsonl"
+    after = _tree(root)
+    assert [path for path, _size in after if (path, _size) not in before] == [
+        str(log.relative_to(root))
+    ]
+    assert [item for item in after if item[0] != str(log.relative_to(root))] == before
+    users = [json.loads(line)["message"]["content"] for line in log.read_text(encoding="utf-8").splitlines()
+             if json.loads(line).get("origin") == "user"]
+    assert users == ["想做一期杂谈", "换个角度"]

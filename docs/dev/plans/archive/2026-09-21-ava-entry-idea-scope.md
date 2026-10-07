@@ -218,6 +218,8 @@ tty                → run_repl(<新期目录>)
 
 **裁决：选题讨论内容不落盘，不新建 `idea/` 目录、不进 `data/library/`。**
 
+> **2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：本条已被取代——选题讨论落盘到库级 `data/_idea/session.jsonl`（不在 `data/library/`、不在 `data/episodes/`，`_` 前缀不进任何期枚举），启动即恒恢复最近段；建期时 `ava new <名> --from-idea`（桌面端「＋ 新建一期」恒带）把整段记录迁入新期并清空 `_idea`。下文「新增写权限概念」的顾虑由「会话记录 ≠ 产物写目标」化解：`ep_dir` 仍为 `None`，需期工具照报「先建期」。见 `plans/2026-10-08-idea-session-migration-spec.md`。
+
 1. 选题会话的法定产出物形态已经明确 = 人定的期名 + `01-topic.md` 内容，它的
    落盘点是新期的 `01-topic.md`（经 `write_episode_file` + 人显式确认），
    不是任何「讨论记录」文件；

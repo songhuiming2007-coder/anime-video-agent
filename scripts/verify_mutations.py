@@ -234,31 +234,31 @@ MUTATIONS: list[dict] = [
              '            return 0\n'
              '        return run_agent_loop(None, scope_mode="idea")\n'),
      "new": '    pass\n'},
+    # M23 / M25a 于 D42（Spec 18 PR1，2026-10-08）随 `ava new --from-idea` 改锚，守护语义不变
     {"id": "M23", "guard": "ava new 建完直接进对话", "file": CLI,
-     "old": ('    # 子命令 1: ava new <期名>\n'
+     "old": ('    # 子命令 1: ava new <期名> [--from-idea]\n'
              '    if args and args[0] == "new":\n'
-             '        if len(args) != 2:\n'
-             '            print("[ERROR] 用法: ava new <期名>（期名恰好一个）", file=sys.stderr)\n'
+             '        from_idea = len(args) == 3 and args[2] == "--from-idea"\n'
+             '        if len(args) != 2 and not from_idea:\n'
+             '            print("[ERROR] 用法: ava new <期名> [--from-idea]（期名恰好一个）", file=sys.stderr)\n'
              '            return 2\n'
              '        rc = create_new_episode(args[1])\n'
              '        if rc != 0:\n'
-             '            return rc\n'
-             '        if not sys.stdin.isatty():\n'
-             '            return 0\n'
-             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]\n'
-             '        return run_repl(new_ep_dir)\n'),
-     "new": ('    # 子命令 1: ava new <期名>\n'
+             '            return rc\n'),
+     "new": ('    # 子命令 1: ava new <期名> [--from-idea]\n'
              '    if args and args[0] == "new":\n'
-             '        return create_new_episode(args[1])\n')},
+             '        return create_new_episode(args[1])\n'
+             '        if rc != 0:\n'
+             '            return rc\n')},
     # ---- M24 已退役（D43 / Spec 17 废除其守护的语义「idea scope 工具表零写权限（四键表）」：
     #      tools.json 收为单表，四键段不复存在）----
     {"id": "M25a", "guard": "ava new 非 tty 闸门", "file": CLI,
      "old": ('        if not sys.stdin.isatty():\n'
              '            return 0\n'
-             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]'),
+             '        if migrated:\n'),
      "new": ('        if sys.stdin.isatty():\n'
              '            return 0\n'
-             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]')},
+             '        if migrated:\n')},
     {"id": "M25b", "guard": "ava idea 非 tty 闸门", "file": CLI,
      "old": ('        if not sys.stdin.isatty():\n'
              '            _print_idea_non_tty_help()\n'
@@ -336,6 +336,7 @@ MUTATIONS: list[dict] = [
     {"id": "M28", "guard": "config/agent/scopes/idea.md 保留期名由人拍板条款", "file": IDEA_DOC,
      "old": '**期名由人拍板，模型只出候选**',
      "new": '模型代为敲定期名'},
+    # M29 于 D42（Spec 18 §3.5）随「产出落盘」行文案改锚，守护语义不变
     {"id": "M29", "guard": "build_idea_card 纯静态卡（不注入期名或外来状态卡）", "file": CARD,
      "old": ('def build_idea_card() -> str:\n'
              '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'
@@ -343,7 +344,7 @@ MUTATIONS: list[dict] = [
              '        "[状态卡]\\n"\n'
              '        "模式: 选题会话（无期） | scope: idea | 期目录: 无（写期文件前须先建期）\\n"\n'
              '        "读域: data/library/ 与跨期 read_status\\n"\n'
-             '        "产出落盘: 讨论定稿后运行 ava new <名>，在新期会话中完成写入"\n'
+             '        "产出落盘: 定稿后点『＋ 新建一期』，选题讨论自动带入新期"\n'
              '    )'),
      "new": ('def build_idea_card() -> str:\n'
              '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'
@@ -454,13 +455,15 @@ MUTATIONS: list[dict] = [
              '            self.messages.append(message)\n'),
      "new": ('        self._record(record, origin)  # MUT-37：两步既不同在延迟区，也不补齐\n'
              '        self.messages.append(message)\n')},
+    # S9-MUT-50 于 D42（Spec 18 §3.1）随 idea 同闸取租约改锚，守护语义不变
     {"id": "S9-MUT-50", "guard": "协议启动/--continue 一律读文件前取租约", "file": PROTO,
      "old": ('    lease = None\n'
-             '    if ep_dir is not None:\n'
-             '        try:\n'
-             '            lease = EpisodeLease.acquire(ep_dir)\n'
-             '        except (SessionLocked, SessionLogBroken) as exc:\n'
-             '            return fail("E_SESSION_LOCKED", str(exc), 3)\n'),
+             '    try:\n'
+             '        lease = EpisodeLease.acquire(ep_dir) if ep_dir is not None else acquire_idea_lease(paths.ROOT)\n'
+             '    except DataUnreachable as exc:\n'
+             '        return fail("E_DATA_UNREACHABLE", str(exc), 4)\n'
+             '    except (SessionLocked, SessionLogBroken) as exc:\n'
+             '        return fail("E_SESSION_LOCKED", str(exc), 3)\n'),
      "new": '    lease = None  # MUT-50：改为懒取（dispatch 里 ensure_lease）\n'},
 
     # ---- Spec 12 PR1：导入与确定性渲染（MUT-1~6、12~14）----
@@ -922,6 +925,46 @@ MUTATIONS: list[dict] = [
      "new": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
              '    {"write_episode_file", "cover_edit", "run_pipeline"}  # MUT-A11\n'
              ')\n')},
+
+    # ---- MUT-D42-a～h：D42 / Spec 18（选题会话落盘与建期迁移，2026-10-08 施工登记）----
+    # 指定杀手均在 tests/test_d42_idea_migration.py；逐条复跑见 Spec 18 §9 回填表。
+    {"id": "MUT-D42-a", "guard": "迁移把选题记录整段复制进新期（T-D42-2）", "file": CLI,
+     "old": '            _write_new_log(target_dir / LOG_NAME, raw)\n',
+     "new": '            pass  # MUT-D42-a：只建期不复制\n'},
+    {"id": "MUT-D42-b", "guard": "复制成功后清空 _idea（T-D42-2）", "file": CLI,
+     "old": '            lease.clear()\n',
+     "new": '            pass  # MUT-D42-b：复制后不清空\n'},
+    {"id": "MUT-D42-c", "guard": "复制失败不回滚建期（T-D42-3）", "file": CLI,
+     "old": ('        except OSError as exc:\n'
+             '            print(f"[ERROR] 建期成功、迁移失败：写入新期会话记录出错：{exc}"\n'),
+     "new": ('        except OSError as exc:\n'
+             '            shutil.rmtree(target_dir, ignore_errors=True)  # MUT-D42-c：回滚建期\n'
+             '            print(f"[ERROR] 建期成功、迁移失败：写入新期会话记录出错：{exc}"\n'),
+     "also": [{"file": CLI, "old": "import shlex\n", "new": "import shlex\nimport shutil\n"}]},
+    {"id": "MUT-D42-d", "guard": "data/_idea 不进期列表（T-D42-5）", "file": CLI,
+     "old": ('    visible.sort(key=lambda p: p.stat().st_mtime, reverse=True)\n'
+             '    return visible, hidden_underscore\n'),
+     "new": ('    if (ep_root.parent / "_idea").is_dir():\n'
+             '        visible.append(ep_root.parent / "_idea")  # MUT-D42-d\n'
+             '    visible.sort(key=lambda p: p.stat().st_mtime, reverse=True)\n'
+             '    return visible, hidden_underscore\n')},
+    {"id": "MUT-D42-e", "guard": "--idea 启动即恒恢复最近段（T-D42-1）", "file": SESSION,
+     "old": '    target, _candidates = resume_target(list_sessions(host.lease.read()))\n',
+     "new": ('    return None  # MUT-D42-e：恒开新段\n'
+             '    target, _candidates = resume_target(list_sessions(host.lease.read()))\n')},
+    {"id": "MUT-D42-f", "guard": "idea 租约失败显式报错、不静默非持久（T-D42-8 ③）", "file": PROTO,
+     "old": '        return fail("E_SESSION_LOCKED", str(exc), 3)\n',
+     "new": ('        if ep_dir is not None:  # MUT-D42-f：idea 静默吞掉租约失败\n'
+             '            return fail("E_SESSION_LOCKED", str(exc), 3)\n')},
+    {"id": "MUT-D42-g", "guard": "plan_repairs 认既有 repair_tool_results（T-D42-9）", "file": SESSION_LOG,
+     "old": ('    for record in records:\n'
+             '        if record.get("k") == "repair_tool_results":\n'
+             '            for item in record.get("results") or []:\n'
+             '                satisfied[str(item.get("tool_call_id"))] = True\n'),
+     "new": '    pass  # MUT-D42-g：退回 HEAD 既有缺陷\n'},
+    {"id": "MUT-D42-h", "guard": "清空失败诚实报错非零（T-D42-3b）", "file": CLI,
+     "old": '            return RC_CLEAR_FAILED, False\n',
+     "new": '            return 0, True  # MUT-D42-h：清空失败静默成功\n'},
 ]
 
 

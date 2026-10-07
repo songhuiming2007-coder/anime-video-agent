@@ -2,7 +2,7 @@
 
 > **状态：v0.2 + 定向复审（D42-R2，2026-10-08）🟢 可动工**——8 条全部核销，2 条非阻断残余（见「定向复审」）。2026-10-08 立文（D42-A 第二步）。
 > 对应 issues：**D42**。前置：选型稿 `2026-10-06-idea-to-episode-options.md`（人 2026-10-06 裁决：方案 (a)、联网三件含 `crawl`、同一时刻只留一个选题会话）；**D43 / Spec 17 已施工（2026-10-08）**——方案 (a) 的「idea 补联网三件」已被覆盖且更宽（单表全开），本 spec 只剩「建期把选题会话记录带进新期」一半。
-> 触及冻结面：Spec 9（`archive/2026-09-25-agent-session-protocol-spec.md`，`--idea` 不落盘 → 落盘 + 恢复）、Spec 10 §2.5（建期流程与 `idea-note`）、ADR-0018（idea 条款）、Spec 10 §2.5 第 5 条（idea 会话保留后台 → 建期即结束）。
+> 触及冻结面：Spec 9（`archive/2026-09-25-agent-session-protocol-spec.md`，`--idea` 不落盘 → 落盘 + 恢复）、Spec 10 §2.5（建期流程与 `idea-note`）、D27 spec（`archive/2026-09-21-ava-entry-idea-scope.md` §3.1，idea 的立规文件；D42-R2 余-1 更正——此前误指 ADR-0018，后者全文无 idea 条款）、Spec 10 §2.5 第 5 条（idea 会话保留后台 → 建期即结束）。
 
 ## 红队一轮裁决（2026-10-08，D42-R，独立 session 未参与立文；只审文稿，未改仓库代码）
 
@@ -119,7 +119,7 @@ for record in records:
     if record.get("k") == "repair_tool_results":
         for item in record.get("results") or []:
             satisfied[str(item.get("tool_call_id"))] = True
-`）。改动局部、不动 `rebuild_messages`；Spec 9 §2.8 的修复语义注记同步（§4）。这条修复对「同一期崩溃后多次 `--continue`」的既有路径同样生效（不限于迁移链）。
+`）。改动局部、不动 `rebuild_messages`；Spec 9 §2.8 的修复语义注记同步（§4）。satisfied 为 id 级口径；同 session tool_call_id 复用属病态历史，不在本修复范围（D42-R2 余-2）。这条修复对「同一期崩溃后多次 `--continue`」的既有路径同样生效（不限于迁移链）。
 
 ### 3.3 桌面端
 

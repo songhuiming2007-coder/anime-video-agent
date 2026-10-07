@@ -1165,8 +1165,12 @@ def test_idea_scope_full_table_and_needs_episode_message(tmp_path: Path):
     assert ok["ok"] is True
 
 
-def test_idea_turn_context_and_system_prompt(monkeypatch):
-    """T7: idea 回合 ToolContext.episode_dir 为 None 且 scope == 'idea'；assemble_system_prompt 含 director 人格与 idea 卡。"""
+def test_idea_turn_context_and_system_prompt(monkeypatch, tmp_path):
+    """T7: idea 回合 ToolContext.episode_dir 为 None 且 scope == 'idea'；assemble_system_prompt 含 director 人格与 idea 卡。
+
+    D42 / Spec 18 改写：idea 会话落库级 `data/_idea/session.jsonl`，不能再对真实仓库根跑
+    （数据盘不在时拒启动，在时会写进真 data/）——改在临时根上跑，`config/` 软链真仓库的配置。
+    """
     from unittest.mock import patch
     from pipeline.agent.cli import assemble_system_prompt, run_agent_loop
 
@@ -1186,8 +1190,11 @@ def test_idea_turn_context_and_system_prompt(monkeypatch):
     monkeypatch.setattr(llm_mod, "run_tool_loop", fake_run_tool_loop)
 
     # 通过 run_agent_loop(None, scope_mode="idea") 驱动单轮回合，严格验证端到端接线传入 ep_dir=None (M26)
+    root = tmp_path / "repo"
+    (root / "data").mkdir(parents=True)
+    (root / "config").symlink_to(Path(__file__).resolve().parent.parent / "config")
     with patch("builtins.input", side_effect=["hello", "/quit"]):
-        run_agent_loop(None, scope_mode="idea")
+        assert run_agent_loop(None, scope_mode="idea", root=root) == 0
 
     assert len(captured_ctx) == 1
     assert captured_ctx[0].episode_dir is None
