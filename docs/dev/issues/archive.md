@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-08：D43 评审通过归档
+
+### [D43] 工具按模式（scope）授权 → 所有模式开放全部工具
+- 状态：**已解决**（Spec 17 / ADR-0027；施工 `45fc26b` PR1 core+测试、`e03e373` PR2 文档；2026-10-08 D43-C 独立评审通过）
+- 关联：`config/agent/tools.json`、`pipeline/agent/tools.py`（`tool_names`、`build_tool_schemas`、`execute_tool`、`write_episode_file`、`validate_pipeline_command`、`NEEDS_EPISODE_TOOLS`）、`pipeline/agent/memory.py::apply_op`、`pipeline/agent/session.py::review_tool_call`、`config/agent/scopes/*.md`；Spec 17（`plans/2026-10-06-all-tools-all-scopes-spec.md`）、ADR-0027（已通过）、ADR-0021、ADR-0023、ADR-0025、Spec 10 §2.5、D42
+- 原记录（活跃表原文）：问题「工具按模式（scope）授权：各模式只见部分工具，且 `write_episode_file` / `write_memory` / `run_pipeline` 在实现里再按模式拒绝一次。人裁决改为**所有模式开放全部工具**」；位置「`config/agent/tools.json`、`pipeline/agent/tools.py`（`tool_names_for_scope`、`execute_tool`、`write_episode_file`、`validate_pipeline_command`）、`pipeline/agent/memory.py::apply_op`、`pipeline/agent/session.py::review_tool_call`、`config/agent/scopes/*.md`」；备注「**人原话（2026-10-06）**：「我建议不论什么模式，都开放所有 tool，具体原因我先不展开，这是我深思后的考虑」；同日确认 ① 实现里的模式检查一起去掉 ② 人审卡全部照旧。设计见 `plans/2026-10-06-all-tools-all-scopes-spec.md`（Spec 17）：`tools.json` 收单表、删越 scope 拒绝与三处实现内检查、`run_pipeline` 合表、与模式无关的护栏全留、无期会话统一报「先建期」。§8 Q1–Q3 人 2026-10-06 裁决全部按建议（单表 / idea 下 `run_pipeline` 报先建期 / pipeline 不加记忆注入）。**2026-10-06 D43-R 红队一轮 🟡 修订后复审**：方向与机制主干成立（无第四处模式闸、护栏与模式无关、R1 探针 14 例全拦、R2/R3/R5 成立），阻塞项 5🟡——🟡-1 §3.4 放行 idea `acquire_propose` 与抓取卡链矛盾（批准后必报「先建期」，**需人裁决**三选一）、🟡-2 TA-6 杀不死 MUT-A8（弹卡≠落盘）、🟡-3 review 层越 scope 拒绝残留无杀手、🟡-4 §7 修订面漏 CHEATSHEET/D27 spec/Spec 9/Spec 1/impl spec §2.3 五处、🟡-5 shipped 变异矩阵 M20/M24/M29 锚点被拆除且 MUT-A1~A8 未要求登记；另 8🔵（含原型实跑失败清单 ≥14 份文件、合表语义写死、R4 批准记录落点实测等）。详见 Spec 17 文首。**2026-10-07**：人裁决 🟡-1 选 (A)（idea 下 `acquire_propose` 也报「先建期」）；人指定由立文人做作者修订，Spec 17 v0.2：12 条采纳、🟡-5 部分采纳（M24 退役、M29 改锚、M20 改锚不退役——「未注册名字拒绝」仍是现役护栏）。**2026-10-07 D43-R2 定向复审 🟢 可动工**（由 D43-R 红队 session 做）：13 条全部核销，🟡-5 中「M20 改锚不退役」的理由成立；原型实测 MUT-A8～A11 都被指定用例杀死；§3.4 拦截无缺口。另 6🔵 由施工吸收：R2-1 T17 不变量与 Q3 冲突，须按 Q3 退役并换等强断言，不许往 `memory.scopes` 加 pipeline；R2-2 §7 再补三处；R2-3 TA-1/MUT-A1 改在请求层；R2-4 T13② 补期目录；R2-5 §3.4 补两个边界；R2-6 先建期 reject 排在 dry-run 之前。人 2026-10-07 确认 🟢。下一步：D43-B 施工（人定 2026-10-08；提示词见桌面提示词文件「D43-B」块）→ D43-C 评审（红队 session 可做，不能是施工方）。**先于 D42-B 施工**（D42 方案 (a) 的「idea 补联网工具」被本条覆盖）」
+- 评审：✅ 通过（2026-10-08 D43-C，评审人未参与立文、D43-R / D43-R2 两轮审查与 D43-B 施工；详见 Spec 17 文首「独立评审」）。① §3.1–§3.5 逐条读码核对：单表恰为注册集、反向分叉检查与 B3-r6 同点同形态、「先建期」reject 排在未注册之后 dry-run 之前（R2-6）、NEEDS_EPISODE_TOOLS 恰 4 个且两层共用同一常量与文案、`run_pipeline` 函数本体不拦、合表两条语义成立、`memory.scopes` 未加 pipeline；6🔵（R2-1～R2-6）全部核销。② 变异亲跑 5 条：MUT-A1 / A8 / A9 / A10 全杀、指定杀手逐条在红单内、无中止轮；自设矩阵外变异（PIPELINE_MODULES × ASSET_COMMANDS 人为重名）被 TK-9 杀死，还原 md5 对拍一致。③ 全量 pytest 复跑 `6 failed, 2060 passed`，6 红与基线同一集合（数据盘未挂载），无新红。④ 改写对照抽 9 行全部属实且有牙（M20 先建期版与 TK-4 均经变异实证）。⑤ 文档修订面抽 ≥5 处（三份 ADR、CHEATSHEET、Spec 7 四处、acquire-propose / web-fetch-links / impl spec / Spec 10），注记在位且措辞与现状一致。⑥ 门禁③冒烟帧证据（scratchpad `d43b/smoke-frames-final.jsonl`）逐帧核对：web_search ok=true、两个需期工具 ok=false 且文案逐字相符、受限串整轮 blocked（llm_calls=0）。⑦ diff 边界：PR1 31 文件全在 §10 PR1 范围、PR2 18 文件全为 docs/。
+- 发现（无阻断，🔵）：C-1 §10 PR1 文件清单未列 `llm.py` / `jobs.py`（签名删除的必然调用点，§11 已如实记录；建议今后清单注明「签名变更的调用点随行」），见 Spec 17 文首发现表。
+
+---
+
 ## 2026-10-06：桌面端可用性收口（续）
 
 ### [N59①] web_search 条数默认 / 上限改为 20（N59 的 ②③ 仍在活跃表：② 不做，③ 搁置）
