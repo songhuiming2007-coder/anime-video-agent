@@ -29,8 +29,8 @@ direction §6 Spec 12 需要一个确定性封面编辑工具（`cover_edit`：a
 - **不是 16 或「取消封顶」**：封顶防的是工具表蔓延——schema 全量进系统提示（token 成本与模型选择困难随数量增长），且每个工具都是新的攻击面与维护面。二期四份 spec 的工具需求已可穷尽枚举：Spec 9/10/11 全部走裸形态子命令（人令通道，不进 LLM 工具表，Spec 11 §2.1 已冻结此分工），LLM 工具净增只有 `cover_edit` 一个。留 1 槽后仍无余粮，正好维持「再要就立 ADR」的压力。
 - **为什么 `cover_edit` 必须是 LLM 工具而不是别的形态**：
   - **不是裸形态子命令**：裸形态是人令通道（UI 按钮 → host spawn），agent 无法经它发起调用；而封面编辑的发起者恰恰是 agent（人提要求，agent 出参数）。
-  - **不是 `PIPELINE_MODULES` 白名单模块**：该白名单的 scope 语义是「制片期可执行的 pipeline 工序」，`cover_edit` 只对 creative scope 可见（pipeline scope 永不见它是 scope 分组授权的既有纪律）；且 `run_pipeline` 的参数是自由命令串，校验力弱于工具 JSON schema（每个字段的取值域可在 schema 层钉死）。
-- **scope 归属**：`cover_edit` 仅 creative scope 可见（`config/agent/tools.json` 的 creative 清单增至 11），asset/pipeline/idea 不见。
+  - **不是 `PIPELINE_MODULES` 白名单模块**：该白名单的 scope 语义是「制片期可执行的 pipeline 工序」，`cover_edit` 只对 creative scope 可见（pipeline scope 永不见它是 scope 分组授权的既有纪律）；且 `run_pipeline` 的参数是自由命令串，校验力弱于工具 JSON schema（每个字段的取值域可在 schema 层钉死）。（**2026-10-08 注（D43 / Spec 17 / ADR-0027）**：「`cover_edit` 只对 creative 可见」的 scope 归属纪律已被取代——所有模式开放全部工具；scope 语义已从 `PIPELINE_MODULES` 移除（合表，见 Spec 17 §3.3）。封顶 14 与 schema 钉死的论证不受影响。）
+- **scope 归属**：`cover_edit` 仅 creative scope 可见（`config/agent/tools.json` 的 creative 清单增至 11），asset/pipeline/idea 不见。（**2026-10-08 注（D43 / ADR-0027）**：scope 归属纪律已被取代，`tools.json` 收为单表，全模式可见。）
 
 ### 3. 接受时的同步动作（一次性，随接受落盘）
 
@@ -42,9 +42,9 @@ direction §6 Spec 12 需要一个确定性封面编辑工具（`cover_edit`：a
 
 - 不取消封顶、不设「软上限」；数字的意义就是被撞到时必须停下来论证。
 - 不为「以后可能要的工具」预留超过 1 槽。
-- 不改动任何既有工具的语义与 scope 归属。
+- 不改动任何既有工具的语义与 scope 归属。（**2026-10-08 注（D43 / ADR-0027）**：「scope 归属」一项已被 D43 取代。）
 
 ## 推翻条件
 
-- 若第 14 槽被占且仍有新工具需求，推翻本 ADR 时须同时回答「scope 分组（mask-don't-remove）是否已让单会话可见工具数足够小」——若各 scope 可见工具都 ≤ 8，可论证按 scope 分别设封顶替代全局封顶。
+- 若第 14 槽被占且仍有新工具需求，推翻本 ADR 时须同时回答「scope 分组（mask-don't-remove）是否已让单会话可见工具数足够小」——若各 scope 可见工具都 ≤ 8，可论证按 scope 分别设封顶替代全局封顶。（**2026-10-08 注（D43 / ADR-0027）**：「按 scope 分组授权」已被 D43 废除，这条依赖 scope 分组的论证路径随之消失；全局封顶 14 不受影响。）
 - 若实践证明「每工具一份 ADR」的论证成本高于其防蔓延收益（如连续三份 ADR 都是例行上调且无实质讨论），允许改为「工具表变更须过红队评审」的等效门禁，但封顶数字本身不得因此取消。

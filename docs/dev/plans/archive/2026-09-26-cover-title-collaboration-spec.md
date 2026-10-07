@@ -95,7 +95,7 @@
 ### 2.2 决策 2：`cover_edit`——第 13 个 LLM 工具，agent 出参数、Pillow 渲染、字节级可复现（正面回答设计问题 2）
 
 - **为什么是 LLM 工具**（ADR-0025 决策 2 的论证全文见该 ADR）：发起者是 agent（人提「把标题压在左上、白字黑边」，agent 出参数）；裸形态子命令是人令通道 agent 够不到；`run_pipeline` 白名单模块会把工具暴露给 pipeline scope 且参数校验力弱。ADR-0025 已被接受（2026-09-26，封顶 12 → 14）。
-- **scope 归属**：仅 creative（`config/agent/tools.json` 的 creative 清单 10 → 11）；asset/pipeline/idea 不见（mask-don't-remove，ADR-0021 §2）。
+- **scope 归属**：仅 creative（`config/agent/tools.json` 的 creative 清单 10 → 11）；asset/pipeline/idea 不见（mask-don't-remove，ADR-0021 §2）。（**2026-10-08 注（D43 / ADR-0027）**：scope 归属纪律已被取代——单表全开，所有模式可见；每次渲染弹人审卡不变。）
 - **每次渲染弹人审卡**（2026-09-26 用户裁决）：schema 不标 `side_effect`，沿用 `_default_approve` 的 fail-closed 默认 True（`cli.py:800-802`，write_episode_file/acquire_propose 同款）。卡片展示全部参数（源图、输出名、每行文字/锚点/字号/描边）——人审的是「agent 打算把什么字叠到哪张图上」。
 - **渲染纪律（可复现的四根桩）**：
   1. **字体文件钉死**：`config/project.json` 新增 `cover.font_file`（仓库相对路径，默认 `data/fonts/SourceHanSansSC-Bold.otf`，待人放置后回填，A1）与 `cover.font_index`（ttc 取第几个字模，默认 0——实测同 ttc 不同 index 是不同家族，不钉会静默换字）；字体文件缺席 → 工具如实报错（含 config 键与期望路径），**不 fallback 系统字体**（fallback 会让同参数在不同机器产出不同字节，且「渲染成功了」掩盖字体缺席）。

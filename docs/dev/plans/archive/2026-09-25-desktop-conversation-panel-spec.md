@@ -280,7 +280,7 @@ Spec 8 三个闭集与两条不变量的修订全部列在这里，编号对应 
 
 **流程**（用户裁决）：
 
-1. 左栏顶部「选题」入口 = idea 会话键。未选任何期时中栏即为 idea 视图；人在输入框打字，第一条消息懒启动 `SESSION_IDEA`（Spec 9 `--idea`：无期目录、零写权限、不落盘）。
+1. 左栏顶部「选题」入口 = idea 会话键。未选任何期时中栏即为 idea 视图；人在输入框打字，第一条消息懒启动 `SESSION_IDEA`（Spec 9 `--idea`：无期目录、不落盘。（**2026-10-08 修订（D43 / Spec 17 / ADR-0027），经用户裁决**：「零写权限」改为「无期目录，写期文件前须先建期」——所有模式开放全部工具，`write_episode_file` / `cover_edit` / `run_pipeline` / `acquire_propose` 四个需期工具在无期会话统一报「先建期」，不藏工具、不弹卡。））。
 2. idea 视图的会话头部常驻「建期…」按钮；左栏「＋ 新建一期」= 切到 idea 视图并展开同一个表单。表单只有一个输入「期名」，**初始为空、不从对话内容预填**（模型在对话里提议的名字只是文字，人自己决定抄不抄；direction §5）。
 3. 人点「建期」→ `episode.create{name}` → host spawn `NEW_EPISODE`：`[py, "-m", "pipeline.agent.cli", "new", name]`。**校验全部在 core**（C10-R1，§3.7）；host 只做 exact-keys 与「是字符串」检查，名字作为单个 argv 元素传入（`shell: false`）。失败 → `E_CORE`，UI 原样显示 core 的 stderr 尾部。
 4. 成功 → host 刷新期列表，返回 `{ epKey: name }`；renderer `episode.activate` 该期（触发 H1）、切到该期视图、焦点落在输入框（人刚点过按钮，移焦是对人操作的直接响应，不属于 §2.7 的「抢焦点」）。对话区空白，首行一条本地提示「选题会话的讨论不会带入本期；需要的要点请在这里重述」（纯文本，不是消息）：带入需要 host 代发一条人没打过的 `user_message`，违反 H-8。**新期停在 01**（C10-R3，§3.8：模板里「类型」为空即 01 未完成）；scope 为 creative（`resolver.py:23`），`01-topic.md` 在写白名单（`tools.py:26-29`），01 工序的规程被注入，agent 据人的描述推断类型与模式，经写入卡写 `01-topic.md`，人批准后 status 才前进到 02。

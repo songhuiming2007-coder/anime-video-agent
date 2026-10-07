@@ -7,9 +7,9 @@
 
 > **启动入口改造注记（2026-09-21，v1.21）**：根据
 > [`archive/2026-09-21-ava-entry-idea-scope.md`](archive/2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
-> ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零）；
+> ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零（**2026-10-08 注（D43 / ADR-0027）**：已改为「无期目录，写期文件前须先建期」））；
 > ② `ava new <名>` 建完目录后直接以新期目录进入对话（tty 下）；
-> ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。
+> ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。（**2026-10-08 注（D43 / ADR-0027）**：三键形态已废除，tools.json 收为单表，不再按 scope 分键。）
 
 > **后继扩展注记（2026-09-20）**：本 Spec 的默认交互层（原将 AI 约束于 `/chat`、`/script` 子循环）
 > 已由后继 Spec [`archive/2026-09-20-ava-ai-native-director-spec.md`](archive/2026-09-20-ava-ai-native-director-spec.md)（v1.4）
@@ -321,7 +321,7 @@ ava                       # 根目录看板：各期 current_step + advisories�
 ava <期目录|期号>
 ava <期> /voice           # 直达指定模式
 ava new <期号>            # 创建新期目录与 01-topic.md，tty 下直接进该期对话（D27）
-ava idea                  # 无期选题会话（idea scope，只读 4 工具，写权限为零，D27）
+ava idea                  # 无期选题会话（idea scope，D27；2026-10-08 注（D43 / ADR-0027）：不再是「只读 4 工具、写权限为零」——单表全开，写期文件前须先建期）
 ```
 
 **非 tty 降级** (B2-r5)：看板/REPL 的 `input()` 在非 tty（tmux detached、脚本调用、
@@ -343,8 +343,7 @@ ava idea                  # 无期选题会话（idea scope，只读 4 工具，
 
 硬纪律（代码强制，非 prompt 约定）：
 1. **Code Freeze**：唯一书写工具 `write_episode_file` 校验路径必须 resolve 到当期
-   目录内且文件名在 scope 白名单（creative: `{01-topic.md, 02-script.draft.md}`；
-   pipeline: `{}` 零写权限），**且落盘必须走 `paths.atomic_write`**（B3-r8——
+   目录内且文件名在写入白名单（`{01-topic.md, 02-script.draft.md}`；**2026-10-08 注（D43 / ADR-0027）**：白名单不再按 scope 收窄（原「creative 可写 / pipeline 零写权限」的分组已废除），后增 `07-titles.md` 见 Spec 12），**且落盘必须走 `paths.atomic_write`**（B3-r8——
    §0 的「原子落盘」不能只是口号，唯一书写工具的契约里要有它）。**resolve 判定两端同做** (B1-r5)：data/ 是指向外置盘的
    symlink，只 resolve 一边，合法写入被误杀或越界写被放行，二者必居其一。
    Code Freeze 的判据工具自身失败时（git 缺失/非零退出）必须 WARN 横幅，
@@ -409,7 +408,8 @@ stdlib `urllib` POST `{base_url}/chat/completions`（OpenAI 兼容端点）。
 **为什么不用官方 SDK**（面试题，先写在这）：零新依赖是红线，而我们只用
 chat/completions + tools 两个端点；代价是自己追协议变化——接受，因为工具表
 只有 5-8 个、字段用量是协议的最小公约数 (Y11)。**工具清单不现场发明** (B3-r6)，
-tools.json 的最小形态：
+tools.json 的最小形态（**2026-10-08 注（D43 / ADR-0027）**：已收为单表 `{"tools": [13 个工具名]}`，
+不再按 scope 分键；`build_tool_schemas` 不再收 scope，反向分叉检查要求单表恰等于注册集）：
 ```json
 {
   "creative": ["read_artifact", "write_episode_file", "list_episodes", "read_status", "search_notes"],

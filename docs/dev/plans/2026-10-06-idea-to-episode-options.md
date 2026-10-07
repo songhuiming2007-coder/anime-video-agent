@@ -21,7 +21,7 @@
 ## 3. 方案 (a)：选题转正、无缝继承（推荐）
 
 **做法**：
-1. `tools.json` 的 `idea` 增加只读联网三件：`web_search`、`web_fetch`、`crawl`。`browser` **不加**（它要期目录挂登录态 profile、逐调用过人审卡，选题阶段用不上，加了反而扩大面）。出网仍过同一套 egress 断言、`_guard_url`、`_scrub`。
+1. `tools.json` 的 `idea` 增加只读联网三件：`web_search`、`web_fetch`、`crawl`。`browser` **不加**（它逐调用过人审卡且默认走独立 profile（`web.json` 的 `browser.profile_dir`，与期目录无关——`episode_dir` 只用于事件落点，见 `web_browser.py`；本句 2026-10-08 更正，原文「要期目录挂登录态 profile」与代码不符，D43-R2 🔵 R2-2 指出），选题阶段用不上，加了反而扩大面）。出网仍过同一套 egress 断言、`_guard_url`、`_scrub`。（**2026-10-08 注（D43 / Spec 17 / ADR-0027）**：本步已被 D43 覆盖且更宽——单表全开后 idea 可见全部 13 个工具（含 `browser`）；D42 完整 spec 只剩「建期迁会话」一半。）
 2. idea 会话**改为落盘**到 `data/_idea/session.jsonl`（`_` 前缀不进期列表；与期会话同一格式、同一租约机制）。
 3. 人在 idea 视图点「建期」→ 照旧 `NEW_EPISODE`（core 建目录、名字仍由人填）；成功后 core 把**当前 idea 会话**的记录复制进新期 `session.jsonl`（新期刚建、文件为空，不存在合并冲突），并结束 idea 会话进程。
 4. 桌面端切到新期，**以 `--continue <该 sid>` 起新期会话**（这是起进程，不是代发消息，不碰 H-8）；`idea-note` 改为「已带入选题会话记录」。人下一句直接说「把刚才的草案写进 01-topic.md」，模型调 `write_episode_file` → 写入卡 → 人批准落盘。

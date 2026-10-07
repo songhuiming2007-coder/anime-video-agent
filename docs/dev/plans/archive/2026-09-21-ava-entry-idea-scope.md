@@ -86,7 +86,7 @@ run_agent_loop(ep_dir=None, scope_mode="idea")
   **措辞改实（v1.1 B3）**：聚焦循环体每轮 `inspect_episode(ep_dir)` 与 `ep_dir.name`
   两处对 None 裸崩，无法原样复用——idea 子循环是聚焦循环的**近拷贝**（差 3 行：
   不 `inspect_episode`、scope 恒定 `"idea"` 不热推导、提示行 `ava [选题] (idea) > `），
-  外加开场打一段会话说明（这是什么、写权限为零、产出如何落盘）。**共享的是回合
+  外加开场打一段会话说明（这是什么、写权限为零（**2026-10-08 注（D43 / ADR-0027）**：已改为「无期目录，写期文件前须先建期」）、产出如何落盘）。**共享的是回合
   机身 `_dispatch_agent_turn`**——降级、LLMError/PermissionError 回滚、审批回调的
   唯一实现长在它里面，v1.5 §1.1「全仓库一份聊天循环」铁律的实体在此，不动；
   idea 子循环**不做** `check_code_freeze`（v1.1 🔵-9：随聚焦模式——idea 工具表连
@@ -116,7 +116,7 @@ LLMError/PermissionError 回滚、审批回调仍然全仓库一份实现（v1.5
 
 - 4 个工具全部已声明 `side_effect: false`——idea 会话里**一张审批卡都不会弹**，
   审批疲劳面为零新增；
-- 写权限为零不靠 prompt 劝导：`write_episode_file` 不在表内（schema 层不可见）
+- 写权限为零不靠 prompt 劝导：`write_episode_file` 不在表内（schema 层不可见）（**2026-10-08 注（D43 / ADR-0027）**：机制已废除——单表全开，`write_episode_file` 可见；无期会话的防线改为「先建期」统一拒（review 层弹卡前 reject + 实现层双保险））
   + 执行层 `execute_tool` 按 scope 白名单拦截 + `_tool_write_episode_file` 对
   `episode_dir=None` 抛 `PermissionError`——三层都是既有机制，本 Spec 零新增护栏；
 - 新 scope 名的合法先例是 `asset` 空表（`load_scope` 对缺省 scope 文件回退
@@ -144,9 +144,9 @@ scope 键，属**扩展而非改动**。需求交接 §7.3 已核完表内容并
 - **段 1（人格）**：`director.md` 原样。人格与边界分离，人格无期目录假设。
 - **段 2（边界）**：**新写 `config/agent/scopes/idea.md`，不复用 `creative.md`**。
   理由：`creative.md` 写死了「只允许产出 `01-topic.md` 与 `02-script.draft.md`」
-  的**写权限声明**——对 idea scope 这是一句假话（idea 零写权限），边界段必须
+  的**写权限声明**——对 idea scope 这是一句假话（idea 零写权限（**2026-10-08 注（D43 / ADR-0027）**：已废，见上两条）），边界段必须
   说真话，否则 prompt 层自己先教模型一个错误的心智模型。`idea.md` 成稿大纲：
-  ① 定位：立项前选题会话，当前没有期目录，写权限为零（机制保证，不是纪律）；
+  ① 定位：立项前选题会话，当前没有期目录，写权限为零（机制保证，不是纪律）（**2026-10-08 注（D43 / ADR-0027）**：已改为「无期目录，写期文件前须先建期」）；
   ② 能做什么：读 `data/library/notes/` 番剧笔记、`read_status(episode=...)`
   跨期读旧期状态做参照、比较候选张力与锚点；
   ③ 产出与落盘：产出 = 期名候选 + `01-topic.md` 内容草案；**期名由人拍板，

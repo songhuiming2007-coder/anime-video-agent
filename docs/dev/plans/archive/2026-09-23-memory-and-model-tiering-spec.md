@@ -59,7 +59,7 @@
 | 事项 | 人的决定 | 修订动作 |
 |---|---|---|
 | ADR-0023 补记（一轮 🟡-11；二轮红队倾向同意） | **同意** | 已写入 `docs/dev/adr/0023-cross-episode-memory-and-model-tiering.md` 末尾的「补记」节，第 1 条即 §2.2 拟文原文；§1.1 🟡-11、§1.0 P1、§2.2 中的「待人批准」均改为「已写入」 |
-| idea scope 是否注入记忆（§1.0 P6；二轮红队倾向放开） | **放开** | ADR-0023 补记第 2 条把注入范围扩为 asset / creative / idea。`assembly.json` 的 `memory.scopes` 加上 `"idea"`（§2.6、§3.6）。写工具仍只挂 creative，所以 T17 不变量「挂写工具的 scope ⊂ 注入 scope」照样成立。§2.6 补 idea 首轮开销核算，改写 T12 的 ①③，新增 MUT-47。上位需求 direction §2 Spec 7 写的「asset/creative」以 ADR 补记为准，已冻结的上位文档不回改 |
+| idea scope 是否注入记忆（§1.0 P6；二轮红队倾向放开） | **放开** | ADR-0023 补记第 2 条把注入范围扩为 asset / creative / idea。`assembly.json` 的 `memory.scopes` 加上 `"idea"`（§2.6、§3.6）。写工具仍只挂 creative，所以 T17 不变量「挂写工具的 scope ⊂ 注入 scope」照样成立。（**2026-10-08 注（D43 / ADR-0027）**：「写工具仍只挂 creative」已废——单表全开；T17 不变量按 Q3 退役，换成等强断言「`memory.scopes` 恰为 {creative, asset, idea}，不含 pipeline」，见 §9 改写。注入范围不变。）§2.6 补 idea 首轮开销核算，改写 T12 的 ①③，新增 MUT-47。上位需求 direction §2 Spec 7 写的「asset/creative」以 ADR 补记为准，已冻结的上位文档不回改 |
 
 ### 1.2 第二轮红队复审裁决与修订纪要（v0.2 → v0.3；原裁决「🟡 限定范围修订后再审」，3🟡 + 11🔵）
 
@@ -388,13 +388,13 @@ v0.2 对全部词统一去空白，造成跨词误伤：实测 `over the shoulde
 ### 2.8 决策 8：`write_memory` 的位次、scope 与 ADR 登记
 
 - **工具表台账**：6 → 8（Spec 4）→ 10（Spec 5）→ 11（Spec 6）→ **12（本 spec 占用 ADR-0021 的预留位，工具表到顶）**。该工具登记 `adr = "ADR-0023"`。
-- **只挂 creative 的理由（🔵-9 改写）**：
+- **只挂 creative 的理由（🔵-9 改写）**：（**2026-10-08 注（D43 / ADR-0027）**：本三点前提已随 D43 失效——所有模式都可调 `write_memory`；注入范围仍不变）
   1. creative 是唯一已有写权限的 scope（`tools.py:78-79`）；
   2. pipeline 是执行面，idea 的写权限为零（机制保证，`cli.py:742`）；
   3. 暴露面最小：asset 已经挂了 `acquire_propose`（Spec 6），不再叠加第二个写工具。「asset 无写工具」这一前提已由 Spec 6 §2.5/§6.1 正式登记为过时，本 spec 不再引用它。
-- `tools.json` 只在 creative 键的尾部追加这一项，其余三个键一字不动。
+- `tools.json` 只在 creative 键的尾部追加这一项，其余三个键一字不动。（**2026-10-08 注（D43）**：tools.json 已收为单表。）
 - **登记时机是 PR4（Spec 1 注入就位之后），不是 PR3（二轮 🟡-A）**。PR3 只把工具注册进 `TOOL_SCHEMAS` 和 `_TOOL_IMPLS`，此时它不在任何 scope 的白名单里，模型看不到。
-- **不变量（T17）**：`tools.json` 里挂了 `write_memory` 的每个 scope，都必须出现在 `assembly.json` 的 `memory.scopes` 里，否则就会出现「能写但看不见」。
+- **不变量（T17）**：`tools.json` 里挂了 `write_memory` 的每个 scope，都必须出现在 `assembly.json` 的 `memory.scopes` 里，否则就会出现「能写但看不见」。（**2026-10-08 退役（D43 / Spec 17，Q3 人裁决 pipeline 不注入）**：单表后每个 scope 都挂了 `write_memory`，本不变量与 Q3 直接冲突，按 Q3 退役；等强替代断言为「`memory.scopes` 恰为 {creative, asset, idea}，不含 pipeline」（D43-R2 🔵 R2-1，见 `test_write_memory_registered_with_adr_and_memory_scopes`）。）
 - 注入 fail-closed（文件不合法或来源未确认）时，`plan_op` 同样拒绝一切写入。再配合 §2.6 的「告警不占正文名额」与 §2.9 的读者共享锁：状态在会话中途变化时，下一轮就会补注正文。「能写但看不见」还剩两处残余（四轮 🔵-4 修正「只剩一处」的说法）：① **同一轮工具循环之内**状态恰好翻转，例如另一个终端在这一轮进行中完成了 ack（RF-24）；② **正文已经注入之后**发生外部改动，人在会话中途 ack，写入随即放开，但本会话不会再注入，模型手里仍是旧快照、看不到新加的条目。第②处按「会话内快照过时」处理（RF-13）：写入仍要过人审卡，卡面展示全文；R7 撞到重复时会给出冲突 id。v0.3/v0.4 所说的「始终同步」过头了，已撤回（三轮 🟡-D）。
 
 ### 2.9 决策 9：审计日志、并发、路径与存储红线
@@ -831,7 +831,7 @@ if MEMORY_REL_PATH not in tracker.injected_paths:
 | **T14** | `test_models_tier_mapping_and_fallback` | PR1 | ① 两档都配：creative / idea / asset 用 reasoning，pipeline 用 light；② 只配 reasoning，或 light 为 `"  "`：pipeline 回落到 `model`；③ `{"reasoning": "a", "reasonning": "b"}`、list、int 三种情形都整段作废，4 个 scope 全部用 `model`，且**连续 3 次 `load_llm_config` 只打一次 WARN**；④ local 带 models 时取 local；⑤ agent.json 有 models 而 local 没有时打一次 WARN |
 | **T15** | `test_tier_is_static_per_scope_not_content_routed` | PR1 | **前置条件：reasoning 与 light 必须配成不同的值**（否则全部回落到同一模型，内容路由的变异无从发现）。① `SCOPE_PURPOSE` 与冻结字面值全等；② 每个 scope 用 50 条随机内容（包括「写稿」「我卡在哪」、英文、空串），请求体的 `model` 恒等于该 scope 对应的档位；③ spy `chat_complete`，每次收到的 `purpose` 都等于 `SCOPE_PURPOSE[scope]`；④ 一次 `run_tool_loop` 的 3 轮迭代用的是同一个 model |
 | **T16** | `test_memory_module_pure_and_leaf` | PR2 | 子进程探针：没有重依赖，没有 `pipeline.agent.tools`，没有 `pipeline.agent.cli` |
-| **T17** | `test_write_memory_registered_creative_only_with_adr` | PR4 | `adr == "ADR-0023"`，且按 Spec 4 T12 口径 glob 恰好匹配一个文件；payload 中没有 `adr` 与 `side_effect`；只有 creative 挂了该工具，其余三个键与施工前逐字相等；工具总数 ≤12；非 creative 执行时被白名单拒绝；**不变量**：`tools.json` 中挂了 `write_memory` 的每个 scope 都在 `assembly.json` 的 `memory.scopes` 里（二轮 🟡-A） |
+| **T17** | `test_write_memory_registered_creative_only_with_adr` | PR4 | `adr == "ADR-0023"`，且按 Spec 4 T12 口径 glob 恰好匹配一个文件；payload 中没有 `adr` 与 `side_effect`；只有 creative 挂了该工具，其余三个键与施工前逐字相等；工具总数 ≤12；非 creative 执行时被白名单拒绝；**不变量**：`tools.json` 中挂了 `write_memory` 的每个 scope 都在 `assembly.json` 的 `memory.scopes` 里（二轮 🟡-A）（**2026-10-08 注（D43）**：用例已改名为 `test_write_memory_registered_with_adr_and_memory_scopes`；「只有 creative 挂」「白名单拒绝」「其余三键逐字」断言随单表化删除，不变量按 Q3 换等强断言，见 §2.8 修订注） |
 | **T18** | `test_digest_explicit_absence_isolation_and_cap` | PR5 | ① 缺 Spec 3 → 报「数据源缺席」，零 LLM、零写盘；② 模块存在但无反馈 → 报「0 期（可见 N / 归档 M）」；③ fixture 为 2 个可见期加 1 个 `_` 前缀的归档期，拼接结果包含三期原文，恰好调用 1 次 `_dispatch_agent_turn`（scope="creative"），子会话的 messages 里含记忆页眉（自建 tracker，二轮 🟡-A），日志多一条 digest 行，`memory.md` 不变；④ 超过 8000 字符时按期截断，并列出被略去的期；⑤ **主 REPL 的 `messages` 长度在 digest 前后不变**（🟡-10） |
 | **T19** | `test_invalid_or_unacked_file_blocks_all_writes` | PR2 | 在坏文件上，五种 op 全部被拒，文件字节不变 |
 | **T20** | `test_cross_tier_history_sanitized_only_when_tiering_active` | PR1 | ① 两档不同时：一条标记为 reasoning、带 `reasoning_content` 的 assistant 消息，用 light 发送时该字段被剥掉，用 reasoning 发送时保留；② 请求体中永远不出现 `_ava_tier`；③ 两档相同或未配置时，`_wire_messages` 返回同一个列表对象（`is`），且不打标记 |
