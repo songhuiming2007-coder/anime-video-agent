@@ -1,6 +1,6 @@
 ---
 related-issues: D43, D42
-related-plans: 2026-10-06-all-tools-all-scopes-spec
+related-plans: archive/2026-10-06-all-tools-all-scopes-spec
 status: accepted
 ---
 
