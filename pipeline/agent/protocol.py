@@ -522,16 +522,18 @@ def main(argv: list[str] | None = None) -> int:
     from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
     from pipeline.agent.cli import check_code_freeze, resolve_episode_target
     from pipeline.agent.llm import load_llm_config
-    from pipeline.agent.session import SessionHost, prepare_resume
+    from pipeline.agent.session import SessionHost, prepare_resume, resume_idea
     from pipeline.agent.session_log import (
+        DataUnreachable,
         EpisodeLease,
         SessionLocked,
         SessionLogBroken,
+        acquire_idea_lease,
         list_sessions,
         read_log,
         resume_target,
     )
-    from pipeline.agent.status_card import build_status_card
+    from pipeline.agent.status_card import build_idea_card, build_status_card
     from pipeline.status import inspect_episode
 
     def fail(code: str, message: str, rc: int) -> int:
@@ -563,18 +565,24 @@ def main(argv: list[str] | None = None) -> int:
         ep_dir = resolve_episode_target(rest[0])
         if ep_dir is None:
             return fail("E_NO_EPISODE", f"期目录不存在：{rest[0]}", 4)
-    if ep_dir is not None and not (paths.ROOT / "data").is_dir():
+    # idea 与期会话同一道闸（Spec 18 §3.1：idea 也落盘了，data/ 不可达就无处可写）
+    if not (paths.ROOT / "data").is_dir():
         return fail("E_DATA_UNREACHABLE", f"data/ 不可达：{paths.ROOT / 'data'}", 4)
 
-    # ⑤ 协议进程一律在读文件之前取租约（§2.5）
+    # ⑤ 协议进程一律在读文件之前取租约（§2.5）；idea 取库级 `data/_idea` 的租约，
+    # 取不到一律报错退出——不许静默退回「退出即丢」（Spec 18 §3.1 🟡-1）
     lease = None
-    if ep_dir is not None:
-        try:
-            lease = EpisodeLease.acquire(ep_dir)
-        except (SessionLocked, SessionLogBroken) as exc:
-            return fail("E_SESSION_LOCKED", str(exc), 3)
+    try:
+        lease = EpisodeLease.acquire(ep_dir) if ep_dir is not None else acquire_idea_lease(paths.ROOT)
+    except DataUnreachable as exc:
+        return fail("E_DATA_UNREACHABLE", str(exc), 4)
+    except (SessionLocked, SessionLogBroken) as exc:
+        return fail("E_SESSION_LOCKED", str(exc), 3)
 
-    host = SessionHost(ep_dir, root=paths.ROOT, channel=ProtocolChannel(writer, slots))
+    host = SessionHost(
+        ep_dir, root=paths.ROOT, channel=ProtocolChannel(writer, slots),
+        log_dir=lease.ep_dir if lease is not None else None,
+    )
     host.lease = lease
     slots["interrupt"] = host.interrupt
 
@@ -602,6 +610,14 @@ def main(argv: list[str] | None = None) -> int:
                 if state["status"] == "resumed":
                     resume_state = state
                     host.sid = target.sid
+    else:
+        # idea：恒恢复最近的可恢复段，不需要 --continue（Spec 18 §3.1）
+        state = resume_idea(host)
+        if state is not None:
+            continue_status = state["status"]
+            if state["status"] == "resumed":
+                resume_state = state
+                host.sid = state["sid"]
     writer.sid = host.sid
 
     # ⑦ ready
@@ -620,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
         "degrade_reason": None if config is not None else "缺少 config/agent.json 或环境变量密钥",
         "code_freeze_ok": bool(freeze_ok),
         "history_count": len(resume_state["messages"]) if resume_state else 0,
-        "session_bytes": len(read_log(ep_dir)) if ep_dir is not None else 0,
+        "session_bytes": len(lease.read()) if lease is not None else 0,
         "other_sessions": others,
     })
     if not freeze_ok:
@@ -631,9 +647,18 @@ def main(argv: list[str] | None = None) -> int:
     tracker = SessionContextTracker()
     messages: list[dict[str, Any]] = []
     if ep_dir is None:
-        # idea：与终端 `ava idea` 同一语义（cli.py 的 idea 分支）——messages 不绑到 host，因此不落盘
+        # idea：与终端 `ava idea` 同一语义——落 `data/_idea/session.jsonl`，启动即恢复最近段；
+        # 常驻层按 idea.md 现装（messages[0] 不取旧的，与期会话 --continue 同一机制）
+        host.bind_main(messages)
         tracker.resident_prompt = assemble_resident_prompt("idea", root=paths.ROOT).content
         tracker.active_scope = "idea"
+        if resume_state:
+            messages.append({
+                "role": "system",
+                "content": tracker.get_initial_system_prompt(build_idea_card()),
+            })
+            messages.extend(resume_state["messages"])
+            _send_history(writer, resume_state["records"])
     else:
         host.bind_main(messages)
         scope = _scope_of(status)
@@ -703,7 +728,7 @@ def main(argv: list[str] | None = None) -> int:
                 writer.send({"t": "bye", "reason": "eof"})
                 break
             if kind == "user_message":
-                # idea 会话（--idea）照样开回合：scope 固定 idea、无期目录（写期文件前须先建期）、不落盘（§2.5 / Spec 10 §2.5）。
+                # idea 会话（--idea）照样开回合：scope 固定 idea、无期目录（写期文件前须先建期）、落库级 data/_idea（Spec 18 §3.1）。
                 # M9 真实联调前这里回 E_NO_EPISODE——§3.1 的 user_message 错误表里没有它，桌面端「选题」对话因此开不了回合。
                 exit_code = _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid)
                 if slots["eof"]:
@@ -772,7 +797,8 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     scope = "idea" if idea else (override or scope_of(status))
     writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
 
-    session = host.session(persist=not idea, scope_mode=scope)
+    # idea 也是主会话、落盘（Spec 18 §3.1）；落盘与否只看 host 有没有租约
+    session = host.session(persist=True, scope_mode=scope)
     outcome: dict[str, Any] = {}
     try:
         outcome = session.run_turn(

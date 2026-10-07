@@ -69,7 +69,7 @@
 
 **裁决：一个会话进程 = 一期（或一个 idea 会话）的长驻子进程。** 否决每轮 spawn 的原因不是启动耗时，而是中途人审：进程要么在等人时一直活着（那就是长驻），要么把「循环走到一半」的状态序列化出去再续跑。本地 socket/HTTP 违反红线 2。
 
-- **入口**：`python -m pipeline.agent.protocol <期目录> [--continue [<会话号前缀>]]` 或 `--idea`。stdin 是 TTY → 退出 2。
+- **入口**：`python -m pipeline.agent.protocol <期目录> [--continue [<会话号前缀>]]` 或 `--idea`。stdin 是 TTY → 退出 2。（**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：`--idea` 启动即恒恢复 `data/_idea/session.jsonl` 里最近的可恢复段，无需显式 `--continue`；`data/` 不可达同样回 `E_DATA_UNREACHABLE`。）
 - **fd 隔离**（E1），在 **import 任何 `pipeline.*` 之前**完成（🔵-11）：
   1. `proto_out = os.dup(1)`、`proto_in = os.dup(0)`（`os.dup` 得到的 fd 默认不可继承，子进程拿不到协议通道）；
   2. `os.dup2(2, 1)`：C 层写 fd 1、继承 fd 1 的子进程全部进 stderr；
@@ -223,14 +223,14 @@ E2 实测：`pthread_kill` 与进程级 `kill` 在「等子进程 / 等 HTTP / �
 
   内核照旧经既有路径发事件，**不新增 EventType**。桌面端的对话与工具轨迹来自协议帧，这是对 ADR-0020 §4「事件流直接镜像 events.jsonl」的修订（ADR20-R1，用户已认可）。
 - **多期并行**：一期一进程、一期一租约；进程绑定期目录，没有切换命令。跨期共享的资源只有 browser profile（RF-8）。
-- **idea 会话不落盘**：无期目录可挂，零写权限（**2026-10-08 注（D43 / ADR-0027）**：「零写权限」已废——无期会话调需期工具统一报「先建期」；不落盘不变）。
+- **idea 会话不落盘**：无期目录可挂，零写权限（**2026-10-08 注（D43 / ADR-0027）**：「零写权限」已废——无期会话调需期工具统一报「先建期」；不落盘不变）。（**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：「不落盘」已废——idea 会话落到库级 `data/_idea/session.jsonl`，同一格式、同一租约；`ep_dir` 仍为 `None`（日志目录与期目录解耦），启动即恒恢复最近段；`data/_idea` 缺失由 core 自建，租约拿不到一律报错退出、禁止静默非持久；`ava new <名> --from-idea` 先建期、后整段迁入新期并清空 `_idea`。详见 `plans/2026-10-08-idea-session-migration-spec.md` §3.1–§3.2。）
 
 ### 2.6 决策 6：终端零回归（问题 4）
 
 **切分点：人机 I/O 与回合编排分离。**
 - 内核（`session.py`，无 I/O）：上下文装配（`cli.py:887-976` 整段搬入，逻辑不改）、`run_tool_loop`、工具审查策略（原 `_default_approve` 的预校验、side_effect 分流、卡片内容，不含 `print`/`input`）、判重、检查点、抓取钩子、提交、中断控制。
 - 通道：`TtyChannel`（`cli.py`，打印 + `input()`，EOF 视为否，与现状同一段代码搬家）；`ProtocolChannel`（`protocol.py`）。
-- **子会话全部经内核**（🔴-2）：进程内一个 `SessionHost` 持有租约、中断控制与检查点配置；主会话与 `/chat`、`/script`、`/memory digest`、idea 各为一个 `AgentSession`，只有主会话 `persist=True`（子会话维持现状「独立 messages、退出即丢」，`cli.py:1038-1125`、`1237-1246`）。四个调用点（`cli.py:1070`、`1114`、`1243`、`1510`）**保留**经模块属性调用 `cli._dispatch_agent_turn`，参数与签名不变（三轮 🟡-1：12 处现有替身按固定签名拦截这里）；由这个薄包装在内部交给 `SessionHost`。主会话的 `messages` 仍归 `_run_repl_body` 持有、原地修改；`_run_repl_body` 启动时以 `host.bind_main(messages)` 登记该列表对象，包装据 `messages is host.main_messages` 决定是否落盘——**不新增任何参数**。子会话回合同样有 Ctrl-C 收尾与检查点（I-1、I-2 对子会话同样成立）。
+- **子会话全部经内核**（🔴-2）：进程内一个 `SessionHost` 持有租约、中断控制与检查点配置；主会话与 `/chat`、`/script`、`/memory digest`、idea 各为一个 `AgentSession`，只有主会话 `persist=True`（子会话维持现状「独立 messages、退出即丢」，`cli.py:1038-1125`、`1237-1246`；**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：idea 例外——它是自己那个进程的主会话，落 `data/_idea/session.jsonl`）。四个调用点（`cli.py:1070`、`1114`、`1243`、`1510`）**保留**经模块属性调用 `cli._dispatch_agent_turn`，参数与签名不变（三轮 🟡-1：12 处现有替身按固定签名拦截这里）；由这个薄包装在内部交给 `SessionHost`。主会话的 `messages` 仍归 `_run_repl_body` 持有、原地修改；`_run_repl_body` 启动时以 `host.bind_main(messages)` 登记该列表对象，包装据 `messages is host.main_messages` 决定是否落盘——**不新增任何参数**。子会话回合同样有 Ctrl-C 收尾与检查点（I-1、I-2 对子会话同样成立）。
 - **登记的生命期**（四轮 🟡）：登记是上下文管理器 `activate_host(ep_dir, *, root, channel)`，范围正好覆盖 `run_repl`/`_run_repl_body`、`run_agent_loop` 的执行期，`finally` 里注销并释放租约，任何异常路径都不会把登记留在进程里。`SessionHost` 绑定自己的 `ep_dir`（resolve 后比较），包装收到的 `ep_dir` 不一致 → 按「没有登记」处理。登记可重入：`/chat`、`/script` 在 `_run_repl_body` 内再调 `run_agent_loop`（`cli.py:1433-1444`）时，已有同一 `ep_dir` 的活动登记只计数、不替换，只有最外层登记与注销；`ep_dir` 不同的嵌套进入视为错误（现有代码中不存在）。**工具上下文的期目录一律取自包装收到的 `ep_dir` 参数，从不取自 `SessionHost`**（五轮自查）。
 - **直接调用包装的契约**（测试里 21 处）：进程里没有登记 `SessionHost` 时，包装原地修改调用方传入的 `messages` 与 `tracker`，`persist=False`，**不取租约、不写 `session.jsonl`**；有 `SessionHost` 但传入的不是主会话列表（子会话）时，`persist=False`，共用进程租约（TK-10、TK-11）。
 - `_default_approve`、`_dispatch_agent_turn` 保留签名作薄包装。`run_tool_loop` 保留 `messages, *, ctx, approve` 的调用形态，新增 `control` 关键字参数；`tests/test_agent_director.py:729`、`751`、`773` 的打桩签名补 `**_`。其中 729、751 两处直接抛 `PermissionError`、`LLMError`：内核在 `run_tool_loop` **外层**继续捕获这两类异常，按回滚处理，与现状 `cli.py:994-1002` 相同（🔵-10）。
@@ -277,10 +277,10 @@ Spec 1 实际保证的是：常驻层会话内字节级恒定（只在 scope 变
 | SIGKILL、断电、终端窗口关闭 | 立即死亡 | — | 恢复时修复；job 在独立进程组，会自己跑完或失败（Spec 2 RF-7），结果只能从产物与 `events.jsonl` 看到 |
 
 **恢复（`--continue`）的修复算法**：已提交的整行一字不改（TS-4 断言原前缀字节不变）；修复一律写成**追加记录**，由 `rebuild_messages` 在重建时插回正确位置（🟡-1）。
-1. **撕裂尾巴**：末尾没有换行的残行是未提交记录，持锁后截断到最后一个换行符。这是整个算法里唯一的截断。
+1. **撕裂尾巴**：末尾没有换行的残行是未提交记录，持锁后截断到最后一个换行符。这是整个算法里唯一的截断。（**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：恢复算法里仍是唯一的截断；模块里另有第二截断点——`--from-idea` 整段复制成功之后、持租约把 `_idea/session.jsonl` 清空，不属于恢复算法。）
 2. **坏行**：目标会话的 `session_start` 之后出现无法解析的完整行（无法判断归属，保守处理）→ 拒绝恢复该会话（`continue_status: "corrupt"`），开新会话。
 3. **未知 schema** → 拒绝恢复，开新会话。
-4. **全历史配对校验**：遍历目标会话重建出的全部消息，对每条带 `tool_calls` 的 assistant，检查「紧随其后的连续 `tool` 消息恰好覆盖它的全部 id」。缺失的 id 追加一条 `repair_tool_results{after_seq, results}` 记录，重建时插在该 assistant 之后、其已有 tool 消息之后。内容：有 `tool_exec_started` 的写「执行已开始、结果未知：会话在执行期间中断。若是 run_pipeline，请用 read_status 核实产物」，否则写「未执行：会话中断（人审未答复或尚未开始）」。
+4. **全历史配对校验**：遍历目标会话重建出的全部消息，对每条带 `tool_calls` 的 assistant，检查「紧随其后的连续 `tool` 消息恰好覆盖它的全部 id」。缺失的 id 追加一条 `repair_tool_results{after_seq, results}` 记录，重建时插在该 assistant 之后、其已有 tool 消息之后。（**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**，🟡-2 人裁决 (A)：「缺失」的判定把既有 `repair_tool_results` 覆盖的 `tool_call_id` 一并计入已满足——否则同一段每恢复一次就再补一份，重建出两条同 id 的 tool 消息；「修复一律以追加记录完成」不变，补上的是「不重」一侧。id 级口径：同 session 内 `tool_call_id` 复用属病态历史，不在本修复范围。T-D42-9 / MUT-D42-g。）内容：有 `tool_exec_started` 的写「执行已开始、结果未知：会话在执行期间中断。若是 run_pipeline，请用 read_status 核实产物」，否则写「未执行：会话中断（人审未答复或尚未开始）」。
 5. 未关闭的人审请求 → 追加 `request_closed{reason:"voided", cause:"session_ended"}`；从不重新展示，从不带入新进程。
 6. 没有 `turn_end` 的回合（`turn_start` 已先于装配写入，任何消息都有归属回合，🟡-6）→ 追加 `turn_end{stopped:"crashed", recovered:true}`，并经 `commit()` 追加一条恢复说明 user 消息（A3 已有旁证）。
 7. 停机点对象在 `approvals_store.json` 里，恢复后照常由 `ensure_pending` 列出。
@@ -779,7 +779,7 @@ ADR-0018 保留条款：不引入 agent 框架；Code Freeze 横幅不变，协�
 | TP-14 | 读端慢速读取时发大帧（≥ 400 KB），写出途中 `interrupt` | host 收到的每一行都能解析；没有残帧 |
 | TP-14b（2026-09-27 M3 收口补） | `os.write` 观察者：往满 pipe 发帧时的**写者身份** | 全部写出调用来自 `proto-writer` 线程（主线程只入队）；MUT-38 的**确定性**杀手——TP-14 结构上杀不掉它（kicker 在 `send()` 返回之后才启动，同步写下无并发写者，实测 0/3 红） |
 | TP-6b（2026-09-27 M9 补） | 入站帧缺 `v`、`v:2`、`v:true` | 一律 `E_BAD_REQUEST` 且带回 `rid`、不开回合；同一帧带 `v:1` 正常开回合。M9 真实联调实测：core 曾把 host 按 §3.1 带上的 `v` 当多余键拒收，两侧测试各写各的期望、各自全绿（MUT-61） |
-| TP-16（2026-09-27 M9 补） | `--idea` 会话发 `user_message` | 照常开回合：scope 固定 `idea`、不写 `session.jsonl`；回合末照发 `stop_points{items:[]}`（**2026-10-08 注（D43 / ADR-0027）**：「零写权限」一語已废，改为「无期目录，写期文件须先建期」；TP-16 表断言已同步改写为全量工具表）。此前 core 回 §3.1 错误表里没有的 `E_NO_EPISODE`，桌面端选题对话一轮都开不了（MUT-62） |
+| TP-16（2026-09-27 M9 补） | `--idea` 会话发 `user_message` | 照常开回合：scope 固定 `idea`、不写 `session.jsonl`（**2026-10-08 修订注记（D42 / Spec 18，人 2026-10-06 裁决「方案 (a) 转正继承、同一时刻只留一个选题会话」）**：改写为「只写库级 `data/_idea/session.jsonl`、期目录零产出」；MUT-62 锚点与 error/turn_started 之别不动，复核仍杀）；回合末照发 `stop_points{items:[]}`（**2026-10-08 注（D43 / ADR-0027）**：「零写权限」一語已废，改为「无期目录，写期文件须先建期」；TP-16 表断言已同步改写为全量工具表）。此前 core 回 §3.1 错误表里没有的 `E_NO_EPISODE`，桌面端选题对话一轮都开不了（MUT-62） |
 
 **终端（PR0/PR2）**
 

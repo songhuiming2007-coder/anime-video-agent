@@ -15,8 +15,9 @@
 ## 子会话
 
 `AgentSession` 由 `SessionHost` 持有：主会话 `persist=True`（落 `session.jsonl`），
-子会话与 idea 会话 `persist=False`（独立 messages、退出即丢，与现状一致），但共享
-进程级的期租约、中断控制与检查点配置。
+子会话 `persist=False`（独立 messages、退出即丢），但共享进程级的期租约、中断控制与检查点配置。
+idea 会话也是主会话（Spec 18 §3.1）：落库级 `data/_idea/session.jsonl`——`SessionHost` 的
+「日志目录」与「期目录」解耦，idea 的 `ep_dir` 恒为 `None`（工具语义照旧无期），日志目录是 `_idea`。
 """
 
 from __future__ import annotations
@@ -42,9 +43,11 @@ from pipeline.agent.session_log import (
     EpisodeLease,
     SessionLocked,
     SessionLogBroken,
+    list_sessions,
     load_session,
     plan_repairs,
     rebuild_messages,
+    resume_target,
 )
 
 REQUEST_ID_BYTES = 16
@@ -449,7 +452,11 @@ def _jsonable(value: Any) -> Any:
 
 
 class SessionHost:
-    """进程内每期一个：持有租约、中断控制、主会话对象与其 messages 列表对象（§2.6）。"""
+    """进程内每期一个：持有租约、中断控制、主会话对象与其 messages 列表对象（§2.6）。
+
+    `log_dir`（Spec 18 §3.1）：会话记录所在目录，缺省即期目录；idea 会话传 `data/_idea`，
+    `ep_dir` 保持 `None`——日志的家不是期目录，需期工具照报「先建期」。
+    """
 
     def __init__(
         self,
@@ -458,8 +465,10 @@ class SessionHost:
         root: Path | None = None,
         channel: HumanChannel,
         ephemeral: bool = False,
+        log_dir: Path | str | None = None,
     ) -> None:
         self.ep_dir = Path(ep_dir).resolve() if ep_dir is not None else None
+        self.log_dir = Path(log_dir).resolve() if log_dir is not None else self.ep_dir
         self.root = root
         self.channel = channel
         self.ephemeral = ephemeral
@@ -489,13 +498,17 @@ class SessionHost:
         self.main_messages = messages
 
     def ensure_lease(self) -> EpisodeLease | None:
-        """懒取租约（§2.5）：首个 agent 回合取，进程生命期持有。失败只记原因，不抛。"""
-        if self.ephemeral or self.ep_dir is None:
+        """懒取租约（§2.5）：首个 agent 回合取，进程生命期持有。失败只记原因，不抛。
+
+        只服务期会话。idea 会话的租约在启动时由 `acquire_idea_lease` 当场取、取不到就退出
+        （Spec 18 §3.1：不许走这里的静默路径退回非持久）。
+        """
+        if self.ephemeral or self.log_dir is None:
             return None
         if self.lease is not None or self.lease_error is not None:
             return self.lease
         try:
-            self.lease = EpisodeLease.acquire(self.ep_dir)
+            self.lease = EpisodeLease.acquire(self.log_dir)
         except (SessionLocked, SessionLogBroken) as exc:
             self.lease_error = str(exc)
         return self.lease
@@ -1328,6 +1341,24 @@ def _fetch_card(no: int, candidate: dict[str, Any]) -> str:
         f"│ why: {_clean(candidate.get('why'))}\n"
         f"│ 预计时长: {dur_text}"
     )
+
+
+def resume_idea(host: "SessionHost") -> dict[str, Any] | None:
+    """idea 会话启动即恒恢复（Spec 18 §3.1）：持锁后取 `_idea` 里最近的可恢复段。
+
+    无需 `--continue` 与 sid——逻辑上只有一个选题会话。没有可恢复段返回 `None`（全新会话）；
+    段损坏等返回非 `resumed` 的状态，调用方照期会话的口径开新会话。`host.sid` 由调用方按
+    各自入口的既有口径处理（协议置 sid、终端留空写 `segment_start`），与期会话 `--continue` 一致。
+    """
+    if host.lease is None:
+        return None
+    target, _candidates = resume_target(list_sessions(host.lease.read()))
+    if target is None:
+        return None
+    state = prepare_resume(host, target.sid)
+    if state["status"] != "resumed":
+        host.resume_state = None
+    return state
 
 
 def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:

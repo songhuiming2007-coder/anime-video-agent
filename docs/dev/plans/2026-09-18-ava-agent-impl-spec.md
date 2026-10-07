@@ -7,7 +7,7 @@
 
 > **启动入口改造注记（2026-09-21，v1.21）**：根据
 > [`archive/2026-09-21-ava-entry-idea-scope.md`](archive/2026-09-21-ava-entry-idea-scope.md)（D27）扩展启动形态：
-> ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零（**2026-10-08 注（D43 / ADR-0027）**：已改为「无期目录，写期文件前须先建期」））；
+> ① 新增 `ava idea` 子命令与选期提示 `idea=选题会话` 关键词，进入无期选题会话（idea scope，写权限为零（**2026-10-08 注（D43 / ADR-0027）**：已改为「无期目录，写期文件前须先建期」）；**2026-10-08 注（D42 / Spec 18）**：会话记录落库级 `data/_idea/`、退出后再进可继续，`ava new <名> --from-idea` 建期可带入）；
 > ② `ava new <名>` 建完目录后直接以新期目录进入对话（tty 下）；
 > ③ §2.5 的 tools.json 最小形态示例仍保持三键（其语境是 PR4 工具面冻结），idea 表（只读 4 工具）见本扩展 Spec §2.2。（**2026-10-08 注（D43 / ADR-0027）**：三键形态已废除，tools.json 收为单表，不再按 scope 分键。）
 
@@ -321,7 +321,7 @@ ava                       # 根目录看板：各期 current_step + advisories�
 ava <期目录|期号>
 ava <期> /voice           # 直达指定模式
 ava new <期号>            # 创建新期目录与 01-topic.md，tty 下直接进该期对话（D27）
-ava idea                  # 无期选题会话（idea scope，D27；2026-10-08 注（D43 / ADR-0027）：不再是「只读 4 工具、写权限为零」——单表全开，写期文件前须先建期）
+ava idea                  # 无期选题会话（idea scope，D27；2026-10-08 注（D43 / ADR-0027）：不再是「只读 4 工具、写权限为零」——单表全开，写期文件前须先建期；2026-10-08 注（D42 / Spec 18）：落盘到库级 data/_idea/、恒恢复，建期 ava new <名> --from-idea 带入）
 ```
 
 **非 tty 降级** (B2-r5)：看板/REPL 的 `input()` 在非 tty（tmux detached、脚本调用、

@@ -1,10 +1,14 @@
 """会话日志 `data/episodes/<期>/session.jsonl` 的纯函数与期租约（Spec 9 §2.5、§2.8、§3.3、§4.2）。
 
+选题会话（idea）的日志落在库级 `data/_idea/session.jsonl`（Spec 18 §3.1）：同一格式、同一租约，
+`EpisodeLease` 管的是「日志目录」，不要求它是期目录（`acquire_idea_lease`）。
+
 三条纪律：
 
 1. **append-only**：已提交的整行一字不改；修复一律写成**追加记录**，由 `rebuild_messages`
-   在重建时插回正确位置。整个模块里唯一的截断是 `truncate_torn_tail()`（末尾没换行的残行
-   = 未提交记录）。
+   在重建时插回正确位置。截断只有两处：`truncate_torn_tail()`（末尾没换行的残行 = 未提交
+   记录）；以及 `clear()`——`ava new --from-idea` 把 `_idea` 记录整段复制进新期**成功之后**、
+   持租约把 `_idea/session.jsonl` 截为空文件（Spec 18 §3.2 d，2026-10-08 D42 修订注记）。
 2. **单写者**：一个文件多段会话，靠进程级 `flock(LOCK_EX|LOCK_NB)`；每进程每期至多打开一次
    （同进程第二个 fd 会被 flock 拒掉——R3 实测 Errno 35——所以要在进程内先做单例）。
 3. **零重依赖**：只用 stdlib（§5）。
@@ -25,6 +29,9 @@ from typing import Any
 
 SCHEMA = 1
 LOG_NAME = "session.jsonl"
+#: 选题会话的库级日志目录名（`data/_idea/`）。`_` 前缀：`_episode_name_problem` 禁止这样的期名，
+#: 而且它在 `data/` 下、不在 `data/episodes/` 下，任何期枚举都够不着（Spec 18 §3.1 / R4）。
+IDEA_DIR = "_idea"
 
 # 无法判断归属时的保守取舍：坏行出现在目标会话的 `session_start` 之后 → 拒绝恢复。
 _STATUS_OK = "ok"
@@ -45,6 +52,10 @@ class SessionLocked(RuntimeError):
 
 class SessionLogBroken(RuntimeError):
     """会话记录写盘失败：本回合按 error 停止，此后不再写盘（§2.5）。"""
+
+
+class DataUnreachable(RuntimeError):
+    """`data/` 不可达（盘没挂 / 悬空链接）：选题会话与期会话同一道闸，拒绝启动（Spec 18 §3.1）。"""
 
 
 def _now_iso() -> str:
@@ -207,6 +218,13 @@ def plan_repairs(session: LoadedSession) -> list[dict[str, Any]]:
         if message.get("role") != "tool":
             continue
         satisfied[str(message.get("tool_call_id"))] = True
+    # 已追加过的修复同样算「已有结果」（Spec 18 §3.2 第 6 条，人 2026-10-08 裁决 (A)）：
+    # 不认它，同一段每恢复一次就再补一份，重建出两条同 tool_call_id 的 tool 消息（API 直接 400）。
+    # id 级口径：同 session 内 tool_call_id 复用属病态历史，不在本修复范围。
+    for record in records:
+        if record.get("k") == "repair_tool_results":
+            for item in record.get("results") or []:
+                satisfied[str(item.get("tool_call_id"))] = True
 
     for index, record in enumerate(records):
         if record.get("k") != "msg":
@@ -427,8 +445,15 @@ class EpisodeLease:
             except OSError:
                 pass
 
+    def clear(self) -> None:
+        """把整个日志截为空文件（第二个截断点，Spec 18 §3.2 d）：只用于 `_idea`，且只在
+        整段复制进新期**成功之后**、持租约时调用。失败照抛 `OSError`，由调用方如实报错。"""
+        with self._lock:
+            os.ftruncate(self._fd, 0)
+            os.fsync(self._fd)
+
     def truncate_torn_tail(self) -> int:
-        """截断末尾残行（唯一的截断动作，只在持锁后调用）。返回被丢弃的字节数。"""
+        """截断末尾残行（只在持锁后调用；另一处截断见 `clear`）。返回被丢弃的字节数。"""
         with self._lock:
             raw = self.read()
             if not raw or raw.endswith(b"\n"):
@@ -440,6 +465,29 @@ class EpisodeLease:
             except OSError:
                 pass
             return len(raw) - cut
+
+
+def acquire_idea_lease(root: Path) -> EpisodeLease:
+    """取选题会话的库级租约（Spec 18 §3.1「启动与降级路径」，终端与协议同口径）。
+
+    - `data/` 不可达 → `DataUnreachable`（与期会话同闸；**绝不**创建 `data/`）；
+    - `data/` 可达而 `_idea/` 不存在 → 由这里创建（先例：`log_approval_decision` 自建 `_agent/`）；
+    - 建不了目录 / 拿不到锁 → 抛出，调用方**必须**报错退出：选题会话不许静默退回「退出即丢」。
+    """
+    data = Path(root) / "data"
+    if not data.is_dir():
+        raise DataUnreachable(f"data/ 不可达：{data}")
+    log_dir = data / IDEA_DIR
+    try:
+        log_dir.mkdir(exist_ok=True)
+    except OSError as exc:
+        raise SessionLogBroken(f"无法建立选题会话记录目录 {log_dir}: {exc}") from None
+    try:
+        return EpisodeLease.acquire(log_dir)
+    except SessionLocked:
+        raise SessionLocked(
+            f"另一个选题会话进行中（{log_dir / LOG_NAME} 被另一个进程持有），请先退出它"
+        ) from None
 
 
 def read_log(ep_dir: Path | str) -> bytes:

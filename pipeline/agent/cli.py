@@ -28,18 +28,23 @@ from pipeline.agent.session import (
     SessionHost,
     prepare_resume,
     prompt_for,
+    resume_idea,
     review_tool_call,
 )
 from pipeline.agent.session_log import (
+    IDEA_DIR,
     LOG_NAME,
+    DataUnreachable,
     EpisodeLease,
     SessionLocked,
     SessionLogBroken,
+    acquire_idea_lease,
     list_sessions,
     read_log,
     resume_target,
 )
 from pipeline.agent.status_card import (
+    build_idea_card,
     build_status_card,
     log_approval_decision,
     render_approval_card,
@@ -558,6 +563,97 @@ def create_new_episode(ep_name: str) -> int:
     print(f"[OK] 已立项新期：{target_dir}")
     print(f"     已生成初始选题模板：{topic_file}")
     return 0
+
+
+#: `ava new --from-idea` 的机器可读标注（Spec 18 §3.2，🔵-2）：stdout **恰好一行**，stderr 不掺；
+#: host 只认这一行（缺失或不合式按 migrated=false 处理）。
+FROM_IDEA_MARKER = "[from-idea] migrated={migrated} sid={sid} messages={messages}"
+
+# migrate_idea_session 的退出码（0 = 成功，含「无记录可迁」）
+RC_IDEA_BUSY = 3
+RC_MIGRATE_FAILED = 4
+RC_CLEAR_FAILED = 5
+
+
+def _print_from_idea_marker(migrated: bool, sid: str = "-", messages: int = 0) -> None:
+    print(FROM_IDEA_MARKER.format(
+        migrated="true" if migrated else "false", sid=sid if migrated else "-",
+        messages=messages if migrated else 0,
+    ))
+
+
+def _write_new_log(dest: Path, raw: bytes) -> None:
+    """整段落盘到新期的 `session.jsonl`：先写同目录临时文件、fsync，再 `os.replace` 到位——
+    任何时刻 `dest` 要么不存在、要么是完整副本，不出现半份（Spec 18 §3.2 原子性约定）。
+    `dest` 已存在一律拒绝：新期刚建好，那里本不该有任何会话记录。"""
+    if dest.exists() or dest.is_symlink():
+        raise FileExistsError(f"{dest} 已存在，拒绝覆盖")
+    tmp = dest.with_name(f".{dest.name}.from-idea.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        try:
+            view = memoryview(raw)
+            written = 0
+            while written < len(raw):
+                written += os.write(fd, view[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # 只清本函数自己建的临时文件
+        raise
+
+
+def migrate_idea_session(target_dir: Path) -> tuple[int, bool]:
+    """建期成功之后把选题会话记录带进新期（Spec 18 §3.2 第 2–3 步）。返回 (退出码, 是否带入)。
+
+    顺序写死：先建期（调用方已完成）、后迁移——任何失败都留下一个合法空期，**不回滚建期**。
+    a 取 `_idea` 租约（拿不到 = 选题会话进行中）→ b 读全部字节 → c 整段落进新期（sid/seq/ts
+    一字不改；源文件的撕裂残行随之带入，由新期首次恢复的 `truncate_torn_tail` 吸收）→
+    d 持租约清空 `_idea`。退出码：0 / 3 选题会话进行中 / 4 迁移失败 / 5 清空失败。
+    """
+    source = paths.ROOT / "data" / IDEA_DIR / LOG_NAME
+    if not source.is_file():
+        _print_from_idea_marker(False)
+        return 0, False
+    try:
+        lease = acquire_idea_lease(paths.ROOT)
+    except SessionLocked:
+        print("[ERROR] 选题会话进行中，请先退出它再建期带入"
+              f"（新期 {target_dir.name} 已建为空期，选题记录未动）", file=sys.stderr)
+        return RC_IDEA_BUSY, False
+    except (DataUnreachable, SessionLogBroken) as exc:
+        print(f"[ERROR] 建期成功、迁移失败：{exc}", file=sys.stderr)
+        return RC_MIGRATE_FAILED, False
+    try:
+        try:
+            with open(lease.path, "rb") as handle:
+                raw = handle.read()
+        except OSError as exc:
+            print(f"[ERROR] 建期成功、迁移失败：读取选题会话记录出错：{exc}"
+                  f"（新期 {target_dir.name} 为空期，选题记录未动）", file=sys.stderr)
+            return RC_MIGRATE_FAILED, False
+        target, _candidates = resume_target(list_sessions(raw))
+        if target is None:
+            _print_from_idea_marker(False)
+            return 0, False
+        try:
+            _write_new_log(target_dir / LOG_NAME, raw)
+        except OSError as exc:
+            print(f"[ERROR] 建期成功、迁移失败：写入新期会话记录出错：{exc}"
+                  f"（新期 {target_dir.name} 为空期，选题记录未动）", file=sys.stderr)
+            return RC_MIGRATE_FAILED, False
+        try:
+            lease.clear()
+        except OSError as exc:
+            print("[ERROR] 建期成功、迁移成功、清空失败：_idea 记录未清，下次 --from-idea 会重复带入，"
+                  f"请手动清空 data/{IDEA_DIR}/{LOG_NAME}（{exc}）", file=sys.stderr)
+            return RC_CLEAR_FAILED, False
+        _print_from_idea_marker(True, target.sid, target.messages)
+        return 0, True
+    finally:
+        lease.close()
 
 
 # /voice 顺听指令表（全部 fullmatch，认小数段号，Spec §3.1）
@@ -1548,11 +1644,31 @@ def _run_agent_loop_body(
             print(local_directive_message("idea", "缺少 config/agent.json 或环境变量密钥")["content"])
             return 0
 
+        # Spec 18 §3.1：落库级 data/_idea/session.jsonl；data/ 不可达或租约拿不到一律报错退出，
+        # 不许静默退回「退出即丢」
+        try:
+            lease = acquire_idea_lease(root or paths.ROOT)
+        except DataUnreachable as exc:
+            print(f"[ERROR] {exc}（选题会话记录要落在 data/{IDEA_DIR}/；请挂载硬盘或先跑 "
+                  "./pipeline/preflight.sh --init）", file=sys.stderr)
+            return 2
+        except (SessionLocked, SessionLogBroken) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 3
+        host = _SESSION_HOST
+        if host is None:
+            # 只有绕开 run_agent_loop 直调本函数才会到这里；没有登记就没人负责释放租约
+            lease.close()
+            raise RuntimeError("idea 会话必须经 run_agent_loop 登记 SessionHost")
+        host.lease = lease
+        host.log_dir = lease.ep_dir
+
         print("\n" + "=" * 68)
         print("  ava 选题会话（idea scope · 无期目录）")
         print("  - 无期目录：写期文件前请先运行 'ava new <期名>' 建期")
         print("  - 可通过 read_status 查看既有期状态，或通过 search_notes 查阅番剧笔记")
-        print("  - 讨论定稿后退出本会话，运行 'ava new <期名>' 创建新期")
+        print("  - 会话记录保存在库级（data/_idea/），退出后再进可继续")
+        print("  - 讨论定稿后退出本会话，运行 'ava new <期名> --from-idea' 建期并带入本次讨论")
         print("=" * 68)
 
         from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
@@ -1561,6 +1677,18 @@ def _run_agent_loop_body(
         tracker.resident_prompt = assemble_resident_prompt("idea", root=root).content
 
         sub_messages: list[dict[str, Any]] = []
+        host.bind_main(sub_messages)
+        state = resume_idea(host)
+        if state is not None and state["status"] == "resumed":
+            sub_messages.append({
+                "role": "system",
+                "content": tracker.get_initial_system_prompt(build_idea_card()),
+            })
+            sub_messages.extend(state.get("messages") or [])
+            print(f"[会话] 已恢复选题会话 {str(state.get('sid', ''))[:8]}，"
+                  f"重放 {len(state.get('messages') or [])} 条消息。")
+        elif state is not None:
+            print(f"[会话] 选题会话记录无法恢复（{state['status']}），本次开新会话。")
         while True:
             try:
                 line = input("\nava [选题] (idea) > ").strip()
@@ -2164,6 +2292,7 @@ def _print_idea_non_tty_help() -> None:
     print(
         "ava idea: 无期选题会话（idea scope）\n"
         "说明: 该模式为交互式选题与立项讨论，无期目录（写期文件前须先建期），需在交互终端（TTY）中运行。\n"
+        "会话记录保存在库级 data/_idea/，建期时可用 'ava new <期名> --from-idea' 带入新期。\n"
         "等价手动路径: 人工阅读 data/library/notes/ 中的番剧笔记，确定选题与张力后，运行 'ava new <期名>' 创建新期。"
     )
 
@@ -2193,17 +2322,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[会话] 最近写入的期：{ep_dir.name}")
         return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
 
-    # 子命令 1: ava new <期名>
+    # 子命令 1: ava new <期名> [--from-idea]
     if args and args[0] == "new":
-        if len(args) != 2:
-            print("[ERROR] 用法: ava new <期名>（期名恰好一个）", file=sys.stderr)
+        from_idea = len(args) == 3 and args[2] == "--from-idea"
+        if len(args) != 2 and not from_idea:
+            print("[ERROR] 用法: ava new <期名> [--from-idea]（期名恰好一个）", file=sys.stderr)
             return 2
         rc = create_new_episode(args[1])
         if rc != 0:
             return rc
+        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]
+        migrated = False
+        if from_idea:
+            # Spec 18 §3.2：先建期、后迁移；迁移失败不回滚建期
+            rc, migrated = migrate_idea_session(new_ep_dir)
+            if rc != 0:
+                return rc
         if not sys.stdin.isatty():
             return 0
-        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]
+        if migrated:
+            # 迁入段是新期里唯一的会话段：直接接着它聊（§3.4「建期后直接进对话即带着选题记录」）
+            return _continue_repl(new_ep_dir, None)
         return run_repl(new_ep_dir)
 
     # 无参数：看板模式
