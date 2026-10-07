@@ -117,7 +117,7 @@
 - ffmpeg 必须带 libass（`preflight.sh` 查）。中文字幕字体 `Hiragino Sans GB`（`config/project.json` 里配置）。
 
 ```bash
-pytest                                          # 纯函数测试，约 30 秒（1700+ 条），改完代码先跑
+pytest                                          # 纯函数测试，约 2 分钟（2000+ 条），改完代码先跑
 ./pipeline/preflight.sh                         # 环境自检：data 可达 + ffmpeg 带 libass
 python -m pipeline.check_script <02-script.md>  # 稿件机检
 python -m pipeline.vindex status --anime <番>   # 七条数字对不对得上（v2 起含 captions）
