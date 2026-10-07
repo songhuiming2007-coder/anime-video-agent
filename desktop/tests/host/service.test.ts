@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Envelope, EpisodeDelta, EpisodeSnapshot, EpisodesList, SnapshotStatus } from "../../src/shared/protocol";
+import { parseFromIdeaMarker, type Envelope, type EpisodeDelta, type EpisodeSnapshot, type EpisodesList, type SnapshotStatus } from "../../src/shared/protocol";
 import { parseEventLine } from "../../src/shared/fold";
 import { toWireApproval, toWireEvent } from "../../src/shared/losslessJson";
 import { realFs } from "../../src/host/fsio";
@@ -455,7 +455,7 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
       expect(spawnTotal()).toBe(before + 1);
       const rec = spawnLog.at(-1)!;
       expect(rec.template).toBe("NEW_EPISODE");
-      expect(rec.argv).toEqual([join(r, ".venv/bin/python"), "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试"]);
+      expect(rec.argv).toEqual([join(r, ".venv/bin/python"), "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试", "--from-idea"]);
       const list = (await svc.dispatch("episodes.list", {})) as { episodes: { epKey: string }[] };
       expect(list.episodes.map((e) => e.epKey)).toContain("2026-09-26-建期测试");
     } finally {
@@ -495,6 +495,27 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
     }
   });
 });
+describe("TH-D42-M 选题带入 marker 单行解析（Spec 18 §3.2 / §3.3，🔵-2）", () => {
+  it("恰好一行合式 → 取出 migrated / sid / messages；前后夹着别的输出不影响", () => {
+    const out = "[OK] 已立项新期：/r/data/episodes/x\n     已生成初始选题模板：/r/x/01-topic.md\n[from-idea] migrated=true sid=0123abcd89ef4567 messages=7\n";
+    expect(parseFromIdeaMarker(out)).toEqual({ migrated: true, sid: "0123abcd89ef4567", messages: 7 });
+    expect(parseFromIdeaMarker("[from-idea] migrated=false sid=- messages=0\r\n")).toEqual({ migrated: false, sid: null, messages: 0 });
+  });
+
+  it("缺失 / 两行 / 不合式 → null（调用方按 migrated=false + notice）", () => {
+    expect(parseFromIdeaMarker("[OK] 已立项新期\n")).toBeNull();
+    expect(parseFromIdeaMarker("")).toBeNull();
+    const one = "[from-idea] migrated=true sid=ab messages=1";
+    expect(parseFromIdeaMarker(`${one}\n${one}\n`)).toBeNull(); // 不是「恰好一行」
+    expect(parseFromIdeaMarker("[from-idea] migrated=true sid=- messages=3\n")).toBeNull(); // 带入却没有 sid
+    expect(parseFromIdeaMarker("[from-idea] migrated=false sid=ab messages=0\n")).toBeNull(); // 未带入却给了 sid
+    expect(parseFromIdeaMarker("[from-idea] migrated=false sid=- messages=2\n")).toBeNull();
+    expect(parseFromIdeaMarker("[from-idea] migrated=yes sid=ab messages=1\n")).toBeNull();
+    expect(parseFromIdeaMarker("[from-idea] migrated=true sid=AB! messages=1\n")).toBeNull();
+    expect(parseFromIdeaMarker(" [from-idea] migrated=true sid=ab messages=1\n")).toBeNull(); // 行首不许有东西
+  });
+});
+
 // ---------------- N37 ----------------
 describe("N37 脱盘时期列表保留（Spec 8 §2.8「保留最后快照并标陈旧」）", () => {
   it("数据根不可达、reach 尚未轮询到时的活跃期 tick → 不清空期列表；随后 reach 翻红、列表仍在", async () => {

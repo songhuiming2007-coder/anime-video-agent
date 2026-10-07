@@ -2,10 +2,11 @@
 // 期名初值恒为空串字面量、不从对话内容预填（TG-15，direction §5）；校验与建目录全在 core（C10-R1）。
 // 该字面量的调用点只在「建期」按钮的 onClick 里（TG-10）。
 import { useState } from "react";
+import type { CreatedEpisode } from "../shared/protocol";
 import type { RpcClient } from "./rpc";
 import { errText } from "./rpc";
 
-export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: (epKey: string) => void }) {
+export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: (created: CreatedEpisode) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,12 +30,12 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               if (!e.nativeEvent.isTrusted) return;
               setBusy(true);
               setProblem(null);
-              rpc.call<{ epKey: string }>("episode.create", { name }).then(
+              rpc.call<CreatedEpisode>("episode.create", { name }).then(
                 (r) => {
                   setBusy(false);
                   setName("");
                   setOpen(false);
-                  onCreated(r.epKey);
+                  onCreated(r);
                 },
                 (err) => {
                   setBusy(false);

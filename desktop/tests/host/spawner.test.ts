@@ -120,10 +120,10 @@ describe("Spec 10 S8-R2 / Spec 12 S8-R19：NEW_EPISODE 与 09 定稿的 argv 形
   it("NEW_EPISODE：期名单个 argv 元素，不经 shell", () => {
     const pyPath = join("/repo", ".venv/bin/python");
     expect(buildArgv("NEW_EPISODE", { name: "2026-09-26-建期测试" }, "/repo").argv).toEqual([
-      pyPath, "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试",
+      pyPath, "-m", "pipeline.agent.cli", "new", "2026-09-26-建期测试", "--from-idea",
     ]);
-    // 名字里的空格 / 怪字符都是一个 argv 元素（无 shell，逐字节到达 core）
-    expect(buildArgv("NEW_EPISODE", { name: "a b;$(x)" }, "/repo").argv.at(-1)).toBe("a b;$(x)");
+    // 名字里的空格 / 怪字符都是一个 argv 元素（无 shell，逐字节到达 core）；Spec 18 §3.3：恒带 --from-idea
+    expect(buildArgv("NEW_EPISODE", { name: "a b;$(x)" }, "/repo").argv.slice(-2)).toEqual(["a b;$(x)", "--from-idea"]);
   });
 
   it("APPROVE 09 变体：四个额外元素 --cover <路径> --title <标题>；其余停机点只有五元素形态", () => {
