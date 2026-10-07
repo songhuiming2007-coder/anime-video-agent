@@ -162,7 +162,7 @@ host 新增 `sessions.ts`：每个会话键（`ep:<epKey>` 或 `idea`）至多�
 **裁决**：
 
 1. **会话键**：`ConvKey = "idea" | "ep:<epKey>"`。每个键至多一个活进程；idea 全局至多一个。进程在 spawn 时绑定该期当时的绝对路径（Spec 9：进程绑定期目录，无切换命令）。
-2. **懒启动**（用户裁决）：`episode.activate`、`episode.subscribe`、`episode.refresh`、切期、窗口聚焦**一律不 spawn 会话**。只有两种人的操作会起进程：`conv.send`（该键无活进程时以 `new` 模式起）与 `conv.resume`（`--continue`）。理由：Spec 9 规定协议进程**启动即取期租约**（Spec 9 §2.5），打开 app 看一眼就占租约会让同期的终端 REPL 发不了 agent 消息（Spec 9 I-10）。
+2. **懒启动**（用户裁决）：`episode.activate`、`episode.subscribe`、`episode.refresh`、切期、窗口聚焦**一律不 spawn 会话**。只有两种人的操作会起进程：`conv.send`（该键无活进程时以 `new` 模式起）与 `conv.resume`（`--continue`）。（**2026-10-08 修订注记（D42 / Spec 18；N60，D42-C 🔵 C-3 补列）**：仍只有这两种人的操作起进程，但模板有两处变化——① `episode.create` 带入了选题记录（`migrated:true`）的期，首次 `conv.send` 以 `continue` 模式（`SESSION_CONTINUE`）起，接着迁入段聊；host 侧一次性标记，发送 / resume 成功才消费，切仓清空，同名重建未带入作废（人 2026-10-08 裁决，Spec 18 §9.6 偏差 1）；② `conv.resume` 对 idea 以 `SESSION_IDEA` 起，core 启动即恒恢复。）理由：Spec 9 规定协议进程**启动即取期租约**（Spec 9 §2.5），打开 app 看一眼就占租约会让同期的终端 REPL 发不了 agent 消息（Spec 9 I-10）。
 3. **后台常驻**（用户裁决）：切到别的期不影响原会话；回合继续跑，卡片挂着等人切回来。进程只在四种情况下结束：人点「结束会话」；退出 app（§2.10）；进程自己退出（崩溃、协议错误）；host 死亡导致 stdin EOF（A3）。
 4. **只读 stdout（H-9）**：stdout 按 `\n` 切行（复用 `shared/jsonl.ts` 的 `LineSplitter`，上限 `SESSION_FRAME_MAX_BYTES`），每行经 `shared/convFrames.ts` 校验（§3.2）后才进入会话状态；stderr 只进一个 8 KiB 尾部环形缓冲，显示在诊断面板与「会话已退出」条目里，**从不解析**。
 5. **写 stdin 的入口闭集**：`conv.send`（`user_message`）、`conv.interrupt`、`conv.answer`、`conv.command`、结束序列（`shutdown`）。这五处是 host 里仅有的写会话 stdin 的调用点（TG-11）。host **从不**自行生成 `user_message`（H-8）。
@@ -404,13 +404,17 @@ export type ConvKey = "idea" | `ep:${string}`;
 // 新增方法（exact-keys；除 feedback 外全部参数为字符串；无任何路径字段）
 | "conv.send"        // { convKey, text } → { turnId }：无活进程则先起 new 会话、等 ready；写 user_message，
                      //   以同 rid 的 turn_started 解析、以同 rid 的 error 拒绝（S9-R2）；写入前预检整帧 ≤ 1 048 576 字节
+                     //   （2026-10-08 D42 注：带入了选题记录的期，首次无活进程时以 continue 模式起，见 §2.1 第 2 条注记）
 | "conv.resume"      // { convKey } → ConvSnapshot：仅 ep:*；以 --continue 起会话；已有活进程 → E_BUSY
+                     //   （2026-10-08 D42 注：idea 也可，以 --idea 起、core 恒恢复；ep:* 成功后消费该期的带入标记）
 | "conv.interrupt"   // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
 | "conv.answer"      // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层；§4.2 冻结顺序
 | "conv.command"     // { convKey, name, arg? }：name ∈ {memory_ack, scope}；scope 时 arg ∈ {asset, auto}，否则不许带 arg
 | "conv.end"         // { convKey } → { code, signal }：§2.10 结束序列
 | "conv.snapshot"    // { convKey } → ConvSnapshot
 | "episode.create"   // { name } → { epKey }：spawn NEW_EPISODE；校验在 core
+                     //   （2026-10-08 D42 注：返回 { epKey, migrated, sid, messages }；argv 恒带 --from-idea；
+                     //    选题会话活着先按 §2.10 结束、结束不了 E_BUSY 不建期；marker 缺失按未带入 + diag）
 
 export type PushTopic = /* 现有 5 个 */ | "conv.snapshot" | "conv.delta";
 export type ErrCode = /* 现有 9 个 */ | "E_SESSION" | "E_SESSION_LOCKED";
