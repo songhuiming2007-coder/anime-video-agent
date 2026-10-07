@@ -205,6 +205,7 @@ def test_t_d42_2_migration_full_chain(world, endpoint, tmp_path, monkeypatch, ca
     assert markers[0].group(1) == "true" and markers[0].group(2) == sid
     assert int(markers[0].group(3)) == list_sessions(source)[-1].messages
     new_ep = root / "data" / "episodes" / "02-x"
+    assert (new_ep / LOG_NAME).is_file(), "新期没有会话记录：迁移只建了期、没复制"
     assert (new_ep / LOG_NAME).read_bytes() == source
     assert _idea_log(root).is_file() and _idea_log(root).stat().st_size == 0
 
@@ -456,6 +457,23 @@ def test_t_d42_8a_missing_idea_dir_is_created(world, endpoint, tmp_path) -> None
             if r.get("k") == "msg" and r.get("origin") == "user"] == ["开个头"]
 
 
+def _first_of(proc: Protocol, kinds: set[str], timeout: float = 30.0) -> dict:
+    """读帧直到出现 kinds 里的任一类，返回那一帧——「先到 ready 还是先到 error」当场判，不靠等超时。"""
+    import queue
+    import time
+
+    end = time.time() + timeout
+    while time.time() < end:
+        for frame in proc.frames:
+            if frame.get("t") in kinds:
+                return frame
+        try:
+            proc.next_frame(timeout=max(0.1, end - time.time()))
+        except queue.Empty:
+            break
+    raise AssertionError(f"{timeout}s 内既没有 {sorted(kinds)}；已收到 {proc.kinds()}")
+
+
 def _make_data_dangling(root: Path, tmp_path: Path) -> None:
     shutil.move(str(root / "data"), str(tmp_path / "data-away"))
     (root / "data").symlink_to(tmp_path / "unmounted-volume" / "data")
@@ -493,7 +511,8 @@ def test_t_d42_8c_lease_failure_refuses_idea(world, endpoint, tmp_path, monkeypa
     (root / "data" / "_idea").write_text("占位", encoding="utf-8")
     proc = Protocol(root, endpoint, episode="--idea", tmp=tmp_path / "p")
     try:
-        error = proc.wait_for("error")
+        error = _first_of(proc, {"error", "ready"})
+        assert error["t"] == "error", f"租约失败却发了 ready（静默非持久运行）：{proc.kinds()}"
         assert error["code"] == "E_SESSION_LOCKED"
         assert "选题会话记录目录" in error["message"]
         assert proc.finish() == 3
