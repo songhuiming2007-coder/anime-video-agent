@@ -1,6 +1,6 @@
 # Spec 18：建期迁会话——选题会话（idea）落盘与转正继承（D42）
 
-> **状态：v0.1 + 红队一轮（D42-R，2026-10-08）🟡 修订后复审**——🟡-2 需人裁决，作者修订后另开 session 定向复审。2026-10-08 立文（D42-A 第二步）。
+> **状态：v0.2，待红队定向复审（D42-R2）**——2026-10-08 作者修订（回应 D42-R 的 3🟡 + 5🔵，见「作者修订回应」；🟡-2 人同日裁决 **(A)**：本 spec 顺手修 `plan_repairs`）。2026-10-08 立文（D42-A 第二步）。
 > 对应 issues：**D42**。前置：选型稿 `2026-10-06-idea-to-episode-options.md`（人 2026-10-06 裁决：方案 (a)、联网三件含 `crawl`、同一时刻只留一个选题会话）；**D43 / Spec 17 已施工（2026-10-08）**——方案 (a) 的「idea 补联网三件」已被覆盖且更宽（单表全开），本 spec 只剩「建期把选题会话记录带进新期」一半。
 > 触及冻结面：Spec 9（`archive/2026-09-25-agent-session-protocol-spec.md`，`--idea` 不落盘 → 落盘 + 恢复）、Spec 10 §2.5（建期流程与 `idea-note`）、ADR-0018（idea 条款）、Spec 10 §2.5 第 5 条（idea 会话保留后台 → 建期即结束）。
 
@@ -32,6 +32,23 @@
 
 **探针**（全部在 scratchpad，未进仓库）：`d42r/probe_migrate.py`（③ 迁移回放全链）、`d42r/probe_double_resume.py`（🟡-2 隔离复现：纯单期两次恢复，与迁移无关的 HEAD 既有行为）。
 
+## 作者修订回应（v0.2，2026-10-08；修订人 = 立文 session，人明示准许；🟡-2 人同日裁决 (A)）
+
+逐条核过证据再改：🟡-1（`EpisodeLease.acquire` 对不存在目录抛 `SessionLogBroken`、协议 ④⑤ 全包在 `ep_dir is not None` 里、`ensure_lease` 吞异常 + `_record` 静默 return——探针核实属实）、🟡-2（复跑红队探针 `d42r/probe_double_resume.py`：HEAD 上两次恢复后 repair 记录 1→2 条、重建 tool 消息 1→2 条，属实）、🟡-3（`session_log` docstring「唯一截断」原文属实；shipped 矩阵无清空失败变异，属实）、🔵-1（ADR-0018 grep 零命中属实；三处漏项逐行核对命中）、🔵-4（`_LEASES` 进程内单例属实）。
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| 🟡-1 | **采纳**：启动降级路径写死——① idea 启动（终端与协议同口径）先查 `data/` 可达（不可达 → 终端报错退出非零 / 协议 `E_DATA_UNREACHABLE`，与期会话同闸）；可达而 `_idea` 不存在则由 core 创建（先例：`log_approval_decision` mkdir `_agent/`；这不是「自动创建 data/」）；② 租约拿不到一律显式报错退出，**禁止静默非持久运行**；③ 补 T-D42-8（`_idea` 缺失首启自建 + data/ 不可达拒启动）与变异 MUT-D42-f | §3.1 新增「启动与降级」段、§6 |
+| 🟡-2 | **采纳，人 2026-10-08 裁决 (A)**：本 spec 顺手修 `plan_repairs`——把既有 `repair_tool_results` 覆盖的 `tool_call_id` 计入 `satisfied`（改动局部在 `session_log.py`，配变异 MUT-D42-g）；T-D42 清单加 T-D42-9（含既有 repair 记录的 idea 段迁移后 `--continue`，重建的 tool 消息不重复），修后该用例落地即绿 | §3.2 新增第 6 条、§6 |
+| 🟡-3 | **采纳**：d（清空）失败形态写死——退出非零 + stderr 明示「建期成功、迁移成功、清空失败：`_idea` 记录未清，下次 `--from-idea` 会重复带入，请手动清空 `data/_idea/session.jsonl`」（诚实失败，不许静默 0）；`session_log` docstring 加第二截断点注记（时机：持租约、整段复制成功之后）；新增 T-D42-3b（注入截断失败）与变异 MUT-D42-h | §3.2 d、§3.2 原子性约定、§4、§6 |
+| 🔵-1 | **采纳**：§4 的 ADR-0018 行改为 D27 spec（`archive/2026-09-21-ava-entry-idea-scope.md` §3.1「v1 不落盘」）；补列 ADR-0023 补记第 2 条（「idea 历史独立」措辞注记）与 Spec 10 风险表 RF-10 行 | §4 |
+| 🔵-2 | **采纳**：标注格式钉死为单行机器可读 `[from-idea] migrated=<true|false> sid=<hex|-> messages=<n>`（恰好一行、stdout、stderr 不掺）；marker 缺失/不合式 → host 按 `migrated: false` 处理并发 notice（建期已成功，不许因解析失败把期卡死）；③c 字段清单补 `messages` | §3.2 ③c、§3.3 |
+| 🔵-3 | **采纳**：§3.3 ② 机制写死——`episode.create` 返回 `migrated: true` 后 renderer 记 `justCreatedMigrated`，该期首发走「先 `conv.resume` 后 `conv.send`」两段（`conv.resume` 对无会话记录期回 `no_session` 是既有良行为；resume 只是起进程，H-8 不碰）；两段中途失败面写明；附带：idea 进程结束失败/超时 → **不建期，如实报错**（E_BUSY 类，期未建） | §3.3 |
+| 🔵-4 | **采纳**：T-D42-7 写明用真子进程（`python -m pipeline.agent.protocol --idea` ×2），断言第二个拿到锁冲突错误；不许进程内双 acquire（`_LEASES` 单例会假绿） | §6 |
+| 🔵-5 | **采纳**：(a) §3.2 c 加注「残行随复制带入、由新期恢复时的撕裂尾巴截断吸收」；(b) §3.3 补「建期成功后 host 清 idea 会话的条目缓冲，并显示『已带入 <期名>』本地提示」 | §3.2 c、§3.3 |
+
+另吸收红队攻击面 ⑤ 的一句补充（不编号）：桌面端「重试建同名期撞『期目录已存在』」的恢复指引写进 §3.3（期已建为空期时，重试需换名或进该期继续，文案由 host 原样透传 core 的 `E_CORE` + stderr 尾部，不另造恢复通道）。
+
 ## 1. 痛点（人 2026-09-29 指出；D43 后仍成立的部分）
 
 人在左栏「选题」（idea 会话）里与模型聊透张力、锚点与 `01-topic.md` 草案后，点「＋ 新建一期」只建空目录、切到全新的 creative 会话，并显示「选题会话的讨论不会带入本期；需要的要点请在这里重述」（`App.tsx` `idea-note`）。上下文彻底断裂，模型无法直接把刚聊好的内容写进 `01-topic.md`，逼人充当复读机。
@@ -56,6 +73,11 @@
 - **恢复**：`--idea` 恒恢复 `data/_idea/session.jsonl` 里最近的可恢复段（无需 `--continue` 与 sid——逻辑上只有一个选题会话）；`messages[0]` 常驻层按 `idea.md` 现装（既有「不落盘、恢复时按当前 scope 重建」机制原样适用）。无可恢复段 = 全新选题会话。
 - 批准记录落点不变（D43 §3.4 已接受的口径）：库级 `data/_events.jsonl`，期级 `approvals.jsonl` 不产生。
 
+**启动与降级路径（v0.2，🟡-1，写死）**：
+- idea 启动（终端 `ava idea` 与协议 `--idea` 同口径）**先查 `data/` 可达**：不可达 → 终端报错退出非零 / 协议回 `E_DATA_UNREACHABLE`——与期会话同一道闸（`protocol.py` ④ 的检查从「`ep_dir is not None` 才查」扩为无条件查）。
+- `data/` 可达而 `data/_idea/` 不存在 → **由 core 创建**（先例：`log_approval_decision` 自建 `_agent/`；这不是「自动创建 data/」——data/ 不可达仍然拒启动）。
+- 租约拿不到（锁冲突 / 其他错误）一律**显式报错退出**（终端非零 / 协议 `E_SESSION_LOCKED` 或同等错误帧），**禁止静默非持久运行**——`ensure_lease` 的懒取静默路径对 idea 不适用；idea 会话若不能落盘就必须当场说，不许退回「退出即丢」（那是本 spec 要消灭的行为）。
+
 ### 3.2 建期迁移：`ava new <名> --from-idea`
 
 core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不带时行为一字不变）：
@@ -63,19 +85,28 @@ core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不�
 1. 先照旧 `create_new_episode`（失败即原样返回，零新增行为）。
 2. 建期成功后迁移（**顺序写死：先建期、后迁移**，保证任何失败都留下一个合法空期）：
    a. 取 `data/_idea` 租约（独占，含读与清空）——**拿不到（另一选题会话进行中）→ 报错退出非零**：新期保留为干净空期，`data/_idea/session.jsonl` 一字不动，错误文案明示「选题会话进行中，请先退出它再建期带入」；
-   b. 读 `data/_idea/session.jsonl` 全部字节；**无可迁移记录**（文件不存在 / 无任何含 assistant 消息的会话段）→ 不算失败：stdout 标注 `migrated: false`，新期为空期，正常返回 0；
-   c. 整段**追加写入**新期的 `session.jsonl`（新期该文件尚不存在 → 等同复制；sid、seq、ts 一字不改，append-only 语义不破）；写完后 stdout 标注 `migrated: true` 与迁移的会话段 sid；
-   d. 迁移成功后**清空** `data/_idea/session.jsonl`（截断为空文件，保留文件与锁语义；「建期即转正并结束」的落盘点）。
+   b. 读 `data/_idea/session.jsonl` 全部字节；**无可迁移记录**（文件不存在 / 无任何含 assistant 消息的会话段）→ 不算失败：stdout 标注 `migrated: false`（格式见下），新期为空期，正常返回 0；
+   c. 整段**追加写入**新期的 `session.jsonl`（新期该文件尚不存在 → 等同复制；sid、seq、ts 一字不改，append-only 语义不破）；（v0.2，🔵-5a 注：源文件的撕裂残行随复制一并带入，行为正确——新期首次 `--continue` 的 `prepare_resume` 持租约截掉它，`truncate_torn_tail` 是既有机制）；
+   d. 迁移成功后**清空** `data/_idea/session.jsonl`（持租约在已持有的 fd 上 `ftruncate(0)`，截断为空文件，保留文件与锁语义；「建期即转正并结束」的落盘点）。**d 失败 → 退出非零 + stderr 明示**「建期成功、迁移成功、清空失败：`_idea` 记录未清，下次 `--from-idea` 会重复带入，请手动清空 `data/_idea/session.jsonl`」（诚实失败，不许静默返回 0；v0.2，🟡-3）。
+   `session_log.py` 的模块纪律同步修订（§4）：「整个模块里唯一的截断是 `truncate_torn_tail()`」加注第二截断点——`_idea` 清空，时机：持租约、整段复制成功之后。
+
+   **机器可读标注（v0.2，🔵-2，写死）**：core 在 stdout 输出**恰好一行** `[from-idea] migrated=<true|false> sid=<hex|-> messages=<n>`（migrated=false 时 sid 为 `-`、messages 为 0）；stderr 不掺。host 只认这一行；marker 缺失或不合式 → 按 `migrated: false` 处理并发 host 侧 notice（建期本身已成功，不许因解析失败把期卡死）。
 3. **原子性约定**（选型稿既定）：b 的读取失败或 c 的写入失败 → 新期保持干净空期（**不回滚建期**）、idea 记录原样保留、报错退出非零并在 stderr 写明「建期成功、迁移失败」。c 的写入走「先写临时文件再 `os.replace`」级别的原子落盘（复用 `paths.atomic_write` 对临时副本操作后改名到位，或直接整段一次性 `os.write` 后 fsync——实现二选一，验收看效果：任何时刻 `session.jsonl` 要么是空/不存在、要么是完整副本，不许出现半份）。
 4. 迁出的段在新期里就是一段普通会话记录：`--continue`（无前缀）即可恢复它——`resume_target` 既有规则「最新且含 ≥1 条 assistant 消息」天然命中。**常驻层按新期当前 scope（creative）现装、01 工序规程注入**，都是 `--continue` 的既有机制，零新代码路径。
 5. 历史回放安全：idea 段里的工具调用记录（`read_status` / `web_search` / 被拒的 `write_episode_file`（「先建期」回执）等）作为消息原样回放；D43 后工具表全模式全量，不存在「当前 scope 工具表里没有的工具」的悬空调用。`rebuild_messages` 对回滚回合的丢弃逻辑对 idea 段同样成立（idea 会话也可能有回滚回合）。
+6. **顺手修 `plan_repairs` 的重复修复（v0.2，🟡-2，人 2026-10-08 裁决 (A)）**：`session_log.py::plan_repairs` 的 `satisfied` 只数 `msg{role:tool}`，不认已追加的 `repair_tool_results`——含既有修复记录的段每恢复一次就重复追加一份修复、重建出两条同 `tool_call_id` 的 tool 消息（多数 API 直接 400；HEAD 既有缺陷，红队探针 `d42r/probe_double_resume.py` 实测，本 session 复跑核实：两次恢复后盘上 repair 记录 1→2 条、重建 tool 消息 1→2 条）。修法写死：`plan_repairs` 统计 `satisfied` 时，**把既有 `repair_tool_results` 记录的 `results[].tool_call_id` 一并计入**（追加遍历：`
+for record in records:
+    if record.get("k") == "repair_tool_results":
+        for item in record.get("results") or []:
+            satisfied[str(item.get("tool_call_id"))] = True
+`）。改动局部、不动 `rebuild_messages`；Spec 9 §2.8 的修复语义注记同步（§4）。这条修复对「同一期崩溃后多次 `--continue`」的既有路径同样生效（不限于迁移链）。
 
 ### 3.3 桌面端
 
-- `episode.create`：host 的 `NEW_EPISODE` 模板 argv 恒加 `--from-idea`（无记录时 core 返回 `migrated: false`，语义等价于现状，零分叉）；core 的 stdout 末行解析出 `migrated` 与 `sid`，经 `episode.create` 的返回值带给 renderer。
-- `migrated: true` 时：① renderer 的 `idea-note` 文案改为「已带入选题会话记录（N 条消息）」（N 取自 core 返回；**migrated: false 时旧文案不变**——idea 没东西可带，提示照旧成立）；② 该期的**首个**会话用 `SESSION_CONTINUE` 起（迁入段是新期里唯一会话段，`--continue` 无前缀必中）；③ 若 idea 会话进程活着（`SESSION_IDEA` 在跑），host 先结束它再建期——否则 core 拿不到 `_idea` 租约必报「进行中」。**结束顺序**：host 结束 idea 进程 → `NEW_EPISODE --from-idea` → 切期 → `SESSION_CONTINUE`。
+- `episode.create`：host 的 `NEW_EPISODE` 模板 argv 恒加 `--from-idea`（无记录时 core 返回 `migrated: false`，语义等价于现状，零分叉）；core 的 stdout 按 §3.2 的单行 marker（`[from-idea] migrated=<true|false> sid=<hex|-> messages=<n>`）解析，经 `episode.create` 的返回值带 `{ migrated, sid, messages }` 给 renderer；**marker 缺失或不合式按 `migrated: false` + host notice**（🔵-2）。core 非零 → 照旧 `E_CORE` + stderr 尾部原样显示，期已建为空期（原子性约定保证）；此时**重试建同名期会撞「期目录已存在」**——恢复指引：换个期名重试，或直接进入已建的那个空期继续（host 不另造恢复通道，文案原样透传）。
+- `migrated: true` 时：① renderer 的 `idea-note` 文案改为「已带入选题会话记录（N 条消息）」（N 取自 marker 的 `messages` 字段；**migrated: false 时旧文案不变**——idea 没东西可带，提示照旧成立）；② 该期的**首个**会话有记录可续：机制写死（v0.2，🔵-3）——renderer 记 `justCreatedMigrated=<epKey>`，该期首发走**「先 `conv.resume` 再 `conv.send`」两段**（`conv.resume` 让 host 以 `SESSION_CONTINUE` 起进程——迁入段是新期里唯一会话段，`--continue` 无前缀必中；resume 只是起进程，不是代发消息，H-8 不碰）。中途失败面：resume 失败（如 `no_session`）→ 如实显示、不代发，`conv.send` 仍可走 `SESSION_NEW` 兜底；send 段失败照旧有既有重试；③ 若 idea 会话进程活着（`SESSION_IDEA` 在跑），host 先结束它再建期——否则 core 拿不到 `_idea` 租约必报「进行中」。**结束顺序**：host 结束 idea 进程 → `NEW_EPISODE --from-idea` → 切期 → 首发「先 resume 后 send」。**idea 进程结束失败/超时 → 不建期，如实报错**（E_BUSY 类，期未建、idea 记录不动；v0.2，🔵-3 附带）。④ 建期成功后 host 清 idea 会话的条目缓冲，并在选题视图显示「已带入 <期名>」本地提示（v0.2，🔵-5b）。
 - 「再点『选题』开新的」：`SESSION_IDEA` 照旧懒启动；`data/_idea/session.jsonl` 已是空文件 → 全新会话。app 重启后点「选题」→ core 恢复最近的选题段（3.1 的恒恢复）。
-- `sessions.ts` 的「idea 会话不支持『继续上次会话』」报错（`convTarget`）随落盘删除：idea 会话的「继续」= 恒恢复最近段，由 core 在 `--idea` 启动时完成，不需要独立的 resume 指令。
+- `sessions.ts` 的「idea 会话不支持『继续上次会话』」报错（`convTarget`）随落盘删除：idea 会话的「继续」= 恒恢复最近段，由 core 在 `--idea` 启动时完成，不需要独立的 resume 指令（红队核实：该报错是 UI 死代码，`SessionHeader` 的「继续上次会话」按钮 `!isIdea` 才渲染，删除安全）。
 
 ### 3.4 终端
 
@@ -91,9 +122,12 @@ core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不�
 ## 4. 冻结面影响与文档修订清单（施工同一 PR 内完成，archive 原文加修订注记：日期、D42、人裁决原话）
 
 - **Spec 9**（`archive/2026-09-25-agent-session-protocol-spec.md`）：§2「idea 会话不落盘：无期目录可挂」一条改为「落盘到 `data/_idea/session.jsonl`、恒恢复最近段」（该条已有 D43 注记，本 spec 再改「不落盘」半句）；「只有主会话落盘 / 子会话退出即丢」（§2.5 附近）加 idea 例外的注记；入口行（§2 「`--continue` 或 `--idea`」）注记 `--idea` 启动即恒恢复、无需显式 `--continue`；TP-16 行加注（「不写 session.jsonl」已改，用例改写）。MUT-62 锚点与断言复核。
-- **Spec 10 §2.5**：第 1 条（`SESSION_IDEA` 语义：无期目录、**落盘到库级、可恢复**）；第 4 条（`idea-note` 两态文案 + 迁移成功后的 `SESSION_CONTINUE`）；第 5 条（「idea 会话保留在后台，可切回继续聊或再建一期」→「建期即转正并结束；同一时刻只保留一个选题会话」人 2026-10-06 裁决原话）。
-- **ADR-0018**：idea 条款中「不落盘」修订为落盘（库级），「零写权限」按 ADR-0027 已废的口径引用。
+- **Spec 9 §2.8 修复语义注记**（v0.2，🟡-2 人裁决 (A)）：`plan_repairs` 的 `satisfied` 计入既有 `repair_tool_results` 所覆盖的 `tool_call_id`——「修复一律以追加记录完成」不变，追加的「不重不漏」口径补上「漏了会重复追加」一侧。
+- **Spec 10 §2.5**：第 1 条（`SESSION_IDEA` 语义：无期目录、**落盘到库级、可恢复**）；第 4 条（`idea-note` 两态文案 + 迁移成功后首发「先 resume 后 send」）；第 5 条（「idea 会话保留在后台，可切回继续聊或再建一期」→「建期即转正并结束；同一时刻只保留一个选题会话」人 2026-10-06 裁决原话）。**风险表 RF-10 行**（「不会带入本期」措辞）同步加注（v0.2，🔵-1）。
+- **D27 spec**（`archive/2026-09-21-ava-entry-idea-scope.md`，idea 的立规文件；v0.2 🔵-1 更正——v0.1 误指 ADR-0018，后者全文无 idea 条款）：§3.1「讨论内容落点——v1 不落盘……不新建 idea/ 目录」加修订注记（落盘到 `data/_idea/`，库级、恒恢复、建期可带入）。
+- **ADR-0023 补记第 2 条**（v0.2，🔵-1 补列）：「idea 会话的历史独立，不与制片会话共用」加注——建期迁移后 idea 段整体成为新期会话历史的一部分（一次性、人点建期触发），注入范围不受影响。
 - **impl spec**（`2026-09-18-ava-agent-impl-spec.md`）文首 ① 与 §2.3 的 `ava idea` 行：补「落盘到库级、建期可带入」注记。
+- **`session_log.py` 模块 docstring**（v0.2，🟡-3）：「整个模块里唯一的截断是 `truncate_torn_tail()`」加注第二截断点——`_idea` 清空（时机：持租约、整段复制成功之后）。
 - **README**「已知限制」：D42 行随施工删除（评审通过后）。
 
 ## 5. 风险与攻击面（给红队）
@@ -102,7 +136,7 @@ core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不�
 |---|---|---|---|
 | R1 | 迁移把 idea 段塞进新期后，`rebuild_messages` 回放破坏协议不变量（工具调用与 tool 结果配对、回滚回合、修复记录） | 整段字节级复制，sid/seq 不动；`load_session` 的坏行归属与 `rebuild_messages` 对跨段文件本就成立（一个文件多段会话是既有形态） | 构造含回滚回合与 repair_tool_results 的 idea 段，迁移后 `--continue` 重建，逐条核对消息序 |
 | R2 | 迁移竞态：选题会话进行中另开终端 `--from-idea` | `_idea` 租约独占，拿不到即报错退出非零、新期留空期、idea 记录不动 | 核租约的持有者存活判定（Stale 锁、进程死而未释） |
-| R3 | 「清空 `_idea/session.jsonl`」是删除类动作 | 只截断为**空文件**，不删目录不删文件；且发生在整段复制**成功之后**；这是人裁决 Q3「建期即转正并结束」的直接落地，在 spec 里显式声明 | 判截断时机与失败面（复制成功但截断失败 → 会重复带入——是否接受） |
+| R3 | 「清空 `_idea/session.jsonl`」是删除类动作 | 只截断为**空文件**，不删目录不删文件；且发生在整段复制**成功之后**；这是人裁决 Q3「建期即转正并结束」的直接落地，在 spec 里显式声明。v0.2（🟡-3）：截断失败形态已写死——退出非零 + stderr 明示手动清理指引（诚实失败，不静默 0），§3.2 d | 判截断时机与失败面（复制成功但截断失败 → 会重复带入——v0.2 已定：不静默，报错并给手动指引） |
 | R4 | `data/_idea` 被当期的误处理：`status`、`resolver`、备份、桌面端期列表 | `_` 前缀既有隐藏机制；spec 写死「status/resolver 不触碰」并配用例 | 全仓 grep 还有没有按 `data/episodes/*` 通配的新消费者会被 `_idea` 混进（注意：`_idea` 在 `data/` 下不在 `data/episodes/` 下——期目录枚举天然够不着它；核桌面端 `episodes` 列表来源） |
 | R5 | 迁入的 idea 段里可能含选题阶段的敏感探索（被否掉的选题） | 期内容本来就给人看；不处理 | 无（列出即可） |
 | R6 | `migrated: false` 被桌面端误当成功带入 | core 的标注是结构化输出的唯一来源；renderer 只认它，不做字符串猜 | 核 `episode.create` 返回链路exactly-once 与解析失败形态 |
@@ -116,8 +150,12 @@ core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不�
 - T-D42-4（无记录）：`--from-idea` 在 `_idea/session.jsonl` 不存在与「只有 user 无 assistant 的段」两种形态下都 `migrated: false`、返回 0、新期为空。
 - T-D42-5（隐藏）：`list_episodes`、桌面端期列表源、`ava`（无参选期列表）都不出现 `_idea`；`inspect_episode`/`status` 不读 `data/_idea`。
 - T-D42-6（转正后可写）：迁移后新期会话里模型调 `write_episode_file("01-topic.md")` → 正常弹人审卡（不再是「先建期」），批准后落盘。
-- T-D42-7（单一选题会话）：第二个 `--idea` 进程在第一个存活时启动 → 报「另一个选题会话进行中」类错误，不开第二份。
+- T-D42-7（单一选题会话）：第二个 `--idea` 进程在第一个存活时启动 → 报「另一个选题会话进行中」类错误，不开第二份。（v0.2，🔵-4）**必须真子进程**（`python -m pipeline.agent.protocol --idea` ×2 / 终端两进程），断言第二个拿到锁冲突错误；不许进程内双 `acquire`——`_LEASES` 进程内单例会假绿。
+- T-D42-8（v0.2，🟡-1③）：`_idea` 缺失首启自建——删掉 `data/_idea/` 后起 `--idea` → core 创建目录、会话正常落盘；`data/` 不可达（悬空链接）时 idea 拒启动——终端退出非零 / 协议 `E_DATA_UNREACHABLE`，与期会话同闸。夹具**不许**预先 mkdir `_idea`（否则永远测不到自建路径）。
+- T-D42-9（v0.2，🟡-2 人裁决 (A)）：含既有 `repair_tool_results` 记录的会话段——纯单期两次 `--continue`（红队探针的回归化）与「idea 段迁移后新期 `--continue`」两腿，重建的 tool 消息**不重复**、盘上 repair 记录不新增。修 `plan_repairs` 后该用例落地即绿。
+- T-D42-3b（v0.2，🟡-3）：注入清空步骤（`ftruncate`）失败 → 退出非零、stderr 明示「建期成功、迁移成功、清空失败……请手动清空」、新期完整、`_idea` 记录逐字节不动。
 - 桌面端 e2e（临时副本）：idea 聊一轮 → 建期 → 新期首会话带历史（assistant 原文可见）、`idea-note` 显示「已带入」、再点「选题」是全新空会话；`migrated: false` 路径（idea 没聊过就建期）→ 旧文案照旧。
+- marker 解析（v0.2，🔵-2）：host 单测——`[from-idea] migrated=true sid=<hex> messages=<n>` 恰好一行的解析；marker 缺失 / 不合式 → `migrated: false` + host notice，期不卡死。
 - TP-16 改写：「不写 session.jsonl」→「写 `data/_idea/session.jsonl`、期目录零产出」。
 
 **变异**（指定杀手；登记进 `scripts/verify_mutations.py` shipped 矩阵）：
@@ -126,13 +164,16 @@ core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不�
 - MUT-D42-c：复制失败时回滚建期（删新期，违反原子性约定）→ T-D42-3 杀。
 - MUT-D42-d：`_idea` 进期列表 → T-D42-5 杀。
 - MUT-D42-e：`--idea` 不恢复历史（恒开新段）→ T-D42-1 杀。
+- MUT-D42-f（v0.2，🟡-1③）：`_idea` 租约失败被静默吞（idea 退回非持久运行）→ T-D42-8 杀。
+- MUT-D42-g（v0.2，🟡-2）：`plan_repairs` 不把既有 `repair_tool_results` 计入 `satisfied`（即退回 HEAD 既有缺陷）→ T-D42-9 杀。
+- MUT-D42-h（v0.2，🟡-3）：清空失败静默返回 0 → T-D42-3b 杀。
 
 ## 7. PR 划分、验证与门禁
 
-- PR1（core）：`session_log`/`session.py` 的日志目录解耦、`--idea` 落盘与恒恢复、`new --from-idea`、cli/protocol 接线、测试与变异、Spec 9 / impl spec / ADR-0018 修订注记。
-- PR2（desktop）：`NEW_EPISODE` 模板加 `--from-idea`、`episode.create` 返回 `migrated`/`sid`、idea 进程先结束再建期、首会话 `SESSION_CONTINUE`、`idea-note` 两态、`convTarget` 的 idea resume 报错删除、e2e。
+- PR1（core）：`session_log`/`session.py` 的日志目录解耦、`--idea` 落盘与恒恢复（含启动降级路径 §3.1）、`new --from-idea`（含 marker 输出与 d 失败形态）、**`plan_repairs` 重复修复修复（🟡-2 (A)，含 Spec 9 §2.8 注记）**、cli/protocol 接线、测试与变异、Spec 9 / impl spec / D27 spec / ADR-0023 补记修订注记、`session_log` docstring 第二截断点注记。
+- PR2（desktop）：`NEW_EPISODE` 模板加 `--from-idea`、`episode.create` 返回 `migrated`/`sid`/`messages`（marker 单行解析 + 缺失兜底 notice）、idea 进程先结束再建期（结束失败不建期）、首发「先 resume 后 send」、`idea-note` 两态、`convTarget` 的 idea resume 报错删除、建期后清 idea 条目缓冲 + 「已带入」本地提示、e2e。
 - 验证：全量 `uv run pytest` 全绿；`cd desktop && npx vitest run`、`npx tsc --noEmit`、全量 `npx playwright test`（workers 2，临时副本）全绿；变异逐条回填。
-- 门禁：① 新增与改写用例全绿、改写逐条可追溯；② MUT-D42-a~e 全杀并登记 shipped 矩阵；③ 真会话冒烟（临时仓库副本、真 LLM）：idea 里聊一轮选题 → 退出 → 再进（历史在）→ `ava new --from-idea` → 新期会话里直接「把刚才的草案写进 01-topic.md」→ 弹卡批准落盘；④ §4 文档修订面完整；⑤ 桌面端门禁走 Spec 10 门禁 12 的更新版（「idea 聊一轮 → 建期 → 新期不重述直接写」），打包版真机手验并入 ACC。
+- 门禁：① 新增与改写用例全绿、改写逐条可追溯；② MUT-D42-a~h 全杀并登记 shipped 矩阵；③ 真会话冒烟（临时仓库副本、真 LLM）：idea 里聊一轮选题 → 退出 → 再进（历史在）→ `ava new --from-idea` → 新期会话里直接「把刚才的草案写进 01-topic.md」→ 弹卡批准落盘；④ §4 文档修订面完整；⑤ 桌面端门禁走 Spec 10 门禁 12 的更新版（「idea 聊一轮 → 建期 → 新期不重述直接写」），打包版真机手验并入 ACC。
 
 ## 8. 与既有 spec/ADR 的关系速查
 
