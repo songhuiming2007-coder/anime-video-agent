@@ -573,7 +573,7 @@ def run_tool_loop(
         final = local_directive_message(context.scope, "缺少 config/agent.json 或环境变量密钥")
         return _loop_result(list(messages), final=final, stopped="degraded")
 
-    tools = build_tool_schemas(context.scope, effective_root)
+    tools = build_tool_schemas(effective_root)
     # 同一次工具循环的所有迭代用同一档（Spec 7 §2.7 决策 7a）
     purpose = purpose_for_scope(context.scope)
 

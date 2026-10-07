@@ -148,23 +148,17 @@ def test_tk1_plain_review_still_reaches_the_card(episode: Path) -> None:
 
     from pipeline.agent.tools import validate_pipeline_command
 
-    ok, _msg, argv = validate_pipeline_command("review --approve", scope="pipeline", ep_dir=episode)
+    ok, _msg, argv = validate_pipeline_command("review --approve", ep_dir=episode)
     assert ok is True and "--approve" in argv, "人经 /run 的路径不变（只拦模型）"
 
 
-def test_tk4_model_and_asset_scope_cannot_reach_acquire_fetch(episode: Path) -> None:
-    """TK-4：pipeline scope 的 `acquire fetch 1` 校验拒收；asset scope 工具表没有 run_pipeline。"""
-    from pipeline.agent.tools import TOOL_SCHEMAS, build_tool_schemas, tool_names_for_scope
-
+def test_tk4_acquire_fetch_reachable_after_d43(episode: Path) -> None:
+    """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`（弹人审卡）；
+    原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。"""
     verdict = review_tool_call(
         "run_pipeline", {"command": "acquire fetch 1"}, ep_dir=episode, scope="pipeline", root=None
     )
-    assert verdict.action == "reject"
-    assert "not" not in verdict.reason  # 中文拒因，只断言是拒收
-    names = [schema["function"]["name"] for schema in build_tool_schemas("asset", root=None)]
-    assert "run_pipeline" not in names
-    assert "run_pipeline" in TOOL_SCHEMAS
-    assert "acquire" in tool_names_for_scope("asset", None) or True  # 表本身不含它
+    assert verdict.action == "ask"  # 合表后合法 → 过人审卡，不再按 scope 拒
 
 
 def test_tk9_force_prefix_variants_are_rejected() -> None:
@@ -172,16 +166,15 @@ def test_tk9_force_prefix_variants_are_rejected() -> None:
     from pipeline.agent.tools import validate_pipeline_command
 
     for bad in ("tts run --force-a", "tts run --forc", "tts run --force-al=1", "cloud down --forc"):
-        ok, msg, _argv = validate_pipeline_command(bad, scope="pipeline")
+        ok, msg, _argv = validate_pipeline_command(bad)
         assert ok is False, bad
         assert "全量覆盖" in msg or "强行销毁" in msg
     for good in ("tts run --redo 3", "vindex captions --frames-dir /tmp/x"):
-        scope = "pipeline" if good.startswith("tts") else "asset"
-        ok, _msg, _argv = validate_pipeline_command(good, scope=scope)
+        ok, _msg, _argv = validate_pipeline_command(good)
         assert ok is True, good
     # `--f...` 开头但**不是** force 的选项不误伤（前缀判定只认 force/force-all 的前缀）
     ok, msg, _argv = validate_pipeline_command(
-        "vindex captions --frames-dir /tmp/x", scope="asset"
+        "vindex captions --frames-dir /tmp/x"
     )
     assert ok is True and "全量覆盖" not in msg
 

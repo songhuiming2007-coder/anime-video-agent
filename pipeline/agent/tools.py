@@ -22,10 +22,11 @@ from typing import Any, Callable, Sequence
 from pipeline import paths
 from pipeline.cloud import validate_extra_args
 
-# Creative Scope 允许写入的文件白名单（§2.4）
+# 期文件写入白名单（§2.4）。D43 / Spec 17（ADR-0027）：所有模式开放全部工具，
+# 白名单不再按 scope 收窄——任何模式可写这三份，但仍全部过人审卡。
 # Spec 12 C12-R1：扩入 `07-titles.md`——标题候选的落盘点（07-titles.md 从来就是
 # 「agent 写候选、人定稿」的文件，不是 02-script.md 那种定稿物；写仍弹人审卡）。
-CREATIVE_WRITABLE_FILES: set[str] = {
+EPISODE_WRITABLE_FILES: set[str] = {
     "01-topic.md",
     "02-script.draft.md",
     "07-titles.md",
@@ -95,28 +96,23 @@ def write_episode_file(
     episode_dir: Path | str,
     filename: str,
     content: str,
-    scope: str = "creative",
     confirmed: bool = False,
     root: Path | None = None,
 ) -> Path:
     """受控期文件写入工具（Spec §2.4 Code Freeze 护栏）。
 
     纪律：
-    1. 仅限 creative scope 且文件名在白名单：{01-topic.md, 02-script.draft.md, 07-titles.md}；
-    2. pipeline / asset scope 零写权限；
-    3. 双端 resolve 防 symlink 穿透；
-    4. 三种越界拦截：写 pipeline/、写父级/祖先目录、写白名单外文件；
-    5. 写 01-topic.md 强制人类确认；
-    6. 落盘必须走 paths.atomic_write。
+    1. 文件名在白名单：{01-topic.md, 02-script.draft.md, 07-titles.md}（D43 起不再按 scope 收窄）；
+    2. 双端 resolve 防 symlink 穿透；
+    3. 三种越界拦截：写 pipeline/、写父级/祖先目录、写白名单外文件；
+    4. 写 01-topic.md 强制人类确认；
+    5. 落盘必须走 paths.atomic_write。
     """
-    if scope != "creative":
-        raise PermissionError(f"Scope '{scope}' 拥有零写权限，严禁写入任何期产物文件")
-
     # 文件名白名单检查
     clean_name = Path(filename).name
-    if clean_name not in CREATIVE_WRITABLE_FILES or filename != clean_name:
+    if clean_name not in EPISODE_WRITABLE_FILES or filename != clean_name:
         raise PermissionError(
-            f"文件 '{filename}' 不在 creative 写入白名单内（仅放行: {sorted(CREATIVE_WRITABLE_FILES)}）"
+            f"文件 '{filename}' 不在期文件写入白名单内（仅放行: {sorted(EPISODE_WRITABLE_FILES)}）"
         )
 
     # 路径解析与双端 resolve 校验（期目录级检查见 resolve_episode_dir）
@@ -175,10 +171,15 @@ def _extract_positional_args(args: list[str]) -> list[str]:
 
 def validate_pipeline_command(
     cmd_tokens: list[str] | str,
-    scope: str = "pipeline",
     ep_dir: Path | str | None = None,
 ) -> tuple[bool, str, list[str]]:
-    """白名单子命令校验执行器（Spec §2.4 Y1-r8, Y1-r11, R1-r10, B1-r10）。
+    """白名单子命令校验执行器（Spec §2.4 Y1-r8, Y1-r11, R1-r10, B1-r10；D43 / Spec 17 合表）。
+
+    D43 / Spec 17 §3.3：不再按 scope 分派，合成一份放行表——
+    `PIPELINE_MODULES` 的 9 个模块（不限子命令）∪ `ASSET_COMMANDS` 的 6 个模块与各自子命令清单。
+    两条写死的合表语义：
+    (a) 模块属于 `ASSET_COMMANDS` 时子命令校验**永远生效**（将来两表若出现重名模块，以子命令限制为准）；
+    (b) 当期目录自动补位只对原 `PIPELINE_MODULES` 侧的 8 个模块生效，asset 侧 6 个模块不补位（维持现状）。
 
     返回: (is_valid, message, normalized_argv)
     """
@@ -238,15 +239,38 @@ def validate_pipeline_command(
             [],
         )
 
-    # 3. 按 scope 分派白名单检查
-    if scope in ("creative", "pipeline"):
-        if module not in PIPELINE_MODULES:
+    # 3. 合表白名单检查（D43 / Spec 17 §3.3：不再按 scope 分派）
+    in_pipeline = module in PIPELINE_MODULES
+    in_asset = module in ASSET_COMMANDS
+    if not in_pipeline and not in_asset:
+        return (
+            False,
+            f"模块 'pipeline.{module}' 不在白名单内（放行: {sorted(PIPELINE_MODULES)} ∪ {sorted(ASSET_COMMANDS)}）",
+            [],
+        )
+
+    # (a) 模块属于 ASSET_COMMANDS 时，子命令校验永远生效（防未来重名模块被「不限子命令」侧吞掉）
+    if in_asset:
+        allowed_subs = ASSET_COMMANDS[module]
+        if not args or args[0] not in allowed_subs:
             return (
                 False,
-                f"模块 'pipeline.{module}' 不在 {scope} 允许的白名单内（当前放行: {sorted(PIPELINE_MODULES)}）",
+                f"子命令 '{args[0] if args else ''}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
                 [],
             )
 
+        # 对 cloud run 校验 extra_args（直接传 token 列表，🔵 2 优化）
+        if module == "cloud" and args[0] == "run":
+            if len(args) >= 3:
+                extra_tokens = args[3:]
+                if extra_tokens:
+                    try:
+                        validate_extra_args(extra_tokens)
+                    except ValueError as exc:
+                        return False, f"cloud run 参数非法: {exc}", []
+
+    # (b) 自动补位只对原 PIPELINE_MODULES 侧模块生效，asset 侧不补位
+    if in_pipeline:
         # 自动补位当前期目录参数（🔴 1 修复）
         if ep_dir:
             ep_path = Path(ep_dir).resolve()
@@ -270,38 +294,8 @@ def validate_pipeline_command(
                         pos_idx = args.index(first_pos)
                         args[pos_idx] = str(ep_path / first_path)
 
-        normalized = [sys_python(), "-m", f"pipeline.{module}"] + args
-        return True, "校验通过", normalized
-
-    elif scope == "asset":
-        if module not in ASSET_COMMANDS:
-            return (
-                False,
-                f"模块 'pipeline.{module}' 不在 asset scope 白名单内（当前放行: {sorted(ASSET_COMMANDS)}）",
-                [],
-            )
-        allowed_subs = ASSET_COMMANDS[module]
-        if not args or args[0] not in allowed_subs:
-            return (
-                False,
-                f"子命令 '{args[0] if args else ''}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
-                [],
-            )
-
-        # 对 cloud run 校验 extra_args（直接传 token 列表，🔵 2 优化）
-        if module == "cloud" and args[0] == "run":
-            if len(args) >= 3:
-                extra_tokens = args[3:]
-                if extra_tokens:
-                    try:
-                        validate_extra_args(extra_tokens)
-                    except ValueError as exc:
-                        return False, f"cloud run 参数非法: {exc}", []
-
-        normalized = [sys_python(), "-m", f"pipeline.{module}"] + args
-        return True, "校验通过", normalized
-
-    return False, f"未知的 Scope: {scope}", []
+    normalized = [sys_python(), "-m", f"pipeline.{module}"] + args
+    return True, "校验通过", normalized
 
 
 # 可信文本的长度门槛（Spec 16 §5.1 第 3 步，🔵-1）：短于此的可信文本一律忽略——
@@ -383,8 +377,8 @@ NOTE_SUFFIXES = {".md", ".txt"}
 class ToolContext:
     """一次工具执行的会话上下文。
 
-    scope 决定白名单；episode_dir 决定读/写边界。**读域与写域都从上下文绑定，
-    不取 LLM 传来的参数**——参数由模型填，边界由人定。
+    scope 只作记录（D43 / Spec 17：不参与任何放行判断）；episode_dir 决定读/写边界。
+    **读域与写域都从上下文绑定，不取 LLM 传来的参数**——参数由模型填，边界由人定。
     """
     scope: str = "creative"
     episode_dir: Path | None = None
@@ -430,7 +424,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "properties": {
                 "filename": {
                     "type": "string",
-                    "enum": sorted(CREATIVE_WRITABLE_FILES),
+                    "enum": sorted(EPISODE_WRITABLE_FILES),
                     "description": "白名单内的文件名",
                 },
                 "content": {"type": "string", "description": "完整文件内容"},
@@ -695,28 +689,50 @@ def _extra_available(dist: str) -> bool:
     return importlib.util.find_spec(dist) is not None
 
 
-def tool_names_for_scope(scope: str, root: Path | None = None) -> list[str]:
-    """读 config/agent/tools.json 里该 scope 的能力表。
+def tool_names(root: Path | None = None) -> list[str]:
+    """读 config/agent/tools.json 的单表（D43 / Spec 17 §3.1：不再按 scope 分表）。
 
-    缺键 = 空表（asset scope 的显式空表语义）；读取失败也不静默扩张，一样是空表。
+    缺失 / 损坏 / 残留旧四键格式 = 空表；读取失败也不静默扩张，一样是空表——
+    空表随即被 `build_tool_schemas` 的反向分叉检查挡下（fail-closed）。
     """
-    from pipeline.agent.scopes import load_scope
-    return list(load_scope(scope, root).tools)
+    from pipeline.agent.scopes import get_tools_json_path
+
+    tools_file = get_tools_json_path(root)
+    if not tools_file.exists():
+        return []
+    try:
+        data = json.loads(tools_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    names = data.get("tools", [])
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return []
+    return list(names)
 
 
-def build_tool_schemas(scope: str, root: Path | None = None) -> list[dict[str, Any]]:
-    """把 scope 白名单翻译成 OpenAI tools 参数。
+def build_tool_schemas(root: Path | None = None) -> list[dict[str, Any]]:
+    """把 tools.json 单表翻译成 OpenAI tools 参数（D43 / Spec 17 §3.1：不再收 scope）。
 
     tools.json 里出现未注册的名字 = 配置与实现分叉，当场报错而不是静默跳过
-    （静默跳过会让护栏看起来还在，实际已经漏了）。
+    （静默跳过会让护栏看起来还在，实际已经漏了）。反向同样当场报错：已注册但
+    tools.json 没列 = 分叉（全开之后两边应恰好相等）。正向与反向同点同形态。
     """
-    schemas: list[dict[str, Any]] = []
-    for name in tool_names_for_scope(scope, root):
+    names = tool_names(root)
+    for name in names:
         if name not in TOOL_SCHEMAS:
             raise KeyError(
                 f"tools.json 声明了未注册的工具 '{name}'；工具清单不现场发明（Spec §2.5 B3-r6），"
                 f"已注册: {sorted(TOOL_SCHEMAS)}"
             )
+    missing = sorted(set(TOOL_SCHEMAS) - set(names))
+    if missing:
+        raise KeyError(
+            f"tools.json 未列出已注册的工具 {missing}；单表须恰好等于注册集（D43 反向分叉检查）"
+        )
+    schemas: list[dict[str, Any]] = []
+    for name in names:
         req_extra = TOOL_SCHEMAS[name].get("requires_extra")
         if req_extra and not _extra_available(str(req_extra)):
             continue
@@ -813,14 +829,14 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
 
 def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not ctx.episode_dir:
-        raise PermissionError("未绑定当期目录，拒绝写入")
+        raise PermissionError(NO_EPISODE_MESSAGE)
     content = args.get("content", "")
     if not isinstance(content, str):
         raise ValueError("content 必须是字符串")
     filename = str(args.get("filename", "")).strip()
     confirmed = bool(args.get("confirmed", False)) or ctx.confirmed
     target = write_episode_file(
-        ctx.episode_dir, filename, content, scope=ctx.scope, confirmed=confirmed, root=ctx.root
+        ctx.episode_dir, filename, content, confirmed=confirmed, root=ctx.root
     )
     return {"written": str(target), "bytes": len(content.encode("utf-8"))}
 
@@ -871,6 +887,9 @@ def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if not ctx.episode_dir:
+        # 实现层双保险（D43 / Spec 17 §3.4）：裸循环等绕过 review 层的路径也拿到同一文案。
+        raise PermissionError(NO_EPISODE_MESSAGE)
     outcome = run_pipeline(
         str(args.get("command", "")),
         episode_dir=ctx.episode_dir,
@@ -955,6 +974,10 @@ def _tool_web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if not ctx.episode_dir:
+        # D43 / Spec 17 §3.4（人裁决 (A)）：idea 下提候选也报「先建期」——否则提案成功后
+        # 内核会无条件弹抓取卡，而抓取卡执行器以 episode_dir=None 调 run_pipeline，自相矛盾。
+        raise PermissionError(NO_EPISODE_MESSAGE)
     from pipeline.candidates import propose_candidates
 
     raw = args.get("candidates")
@@ -1020,7 +1043,7 @@ def _tool_cover_edit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     由 execute_tool 的统一闸转成结构化错误回喂 LLM（不裸抛 RuntimeException）。
     """
     if not ctx.episode_dir:
-        raise PermissionError("未绑定当期目录，拒绝渲染")
+        raise PermissionError(NO_EPISODE_MESSAGE)
     from pipeline import cover_edit
 
     try:
@@ -1046,19 +1069,22 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
 }
 
 
-def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
-    """按 scope 白名单执行一个工具，返回可 JSON 化的结果（错误也当数据回喂 LLM）。
+# 需要期目录的工具集合（D43 / Spec 17 §3.4）：无期会话（idea）里调用这四个工具，
+# review 层在弹卡之前 reject、实现层拋同一文案（双保险），两层共用这一份集合与文案。
+NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(
+    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}
+)
+NO_EPISODE_MESSAGE = "当前没有期目录：这一步要先建期（桌面端「＋ 新建一期」/ 终端 `ava new <名>`）"
 
-    四层闸：① 名字已注册；② 在当前 scope 白名单内；③ 可选依赖已安装；④ 实现层自身边界。
+
+def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
+    """执行一个工具，返回可 JSON 化的结果（错误也当数据回喂 LLM）。
+
+    三层闸（D43 / Spec 17 §3.2：原第 ② 层「越 scope 白名单」已删）：
+    ① 名字已注册；② 可选依赖已安装；③ 实现层自身边界。
     """
     if name not in TOOL_SCHEMAS:
         return {"ok": False, "error": f"未注册的工具 '{name}'（工具清单不现场发明）"}
-    allowed = tool_names_for_scope(ctx.scope, ctx.root)
-    if name not in allowed:
-        return {
-            "ok": False,
-            "error": f"工具 '{name}' 不在 {ctx.scope} scope 白名单内（当前放行: {allowed}）",
-        }
     req_extra = TOOL_SCHEMAS[name].get("requires_extra")
     if req_extra and not _extra_available(str(req_extra)):
         return {
@@ -1121,7 +1147,7 @@ def run_pipeline(
 
     # 阶段一：未确认状态，做纯 dry-run 校验，零事件发射，零幽灵对象
     if not confirmed:
-        valid, msg, argv = validate_pipeline_command(command, scope=scope, ep_dir=ep_path)
+        valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path)
         if not valid:
             return {
                 "ok": False,

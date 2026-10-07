@@ -65,6 +65,8 @@ SESSION_LOG = "pipeline/agent/session_log.py"
 PROTO = "pipeline/agent/protocol.py"
 COVER_EDIT = "pipeline/cover_edit.py"
 APPROVALS = "pipeline/approvals.py"
+MEMORY = "pipeline/agent/memory.py"
+WEB = "pipeline/agent/web.py"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -190,16 +192,11 @@ MUTATIONS: list[dict] = [
      "new": ('            if line == "/chat":\n'
              '                messages.append({"role": "user", "content": "子循环污染"})\n'
              '                run_agent_loop(ep_dir, scope_mode="creative", extra_prompt="", root=root)')},
-    # ---- M20: 未注册/超 scope 预校验 ----
-    {"id": "M20", "guard": "未注册/超 scope 工具预校验", "file": SESSION,
+    # ---- M20: 未注册工具预校验（D43 / Spec 17 改锚：原「未注册/超 scope」两半中的「超 scope」
+    #      拒绝已随 D43 废除；「未注册名字在弹卡前拒绝」仍是现役护栏，锚缩到剩下的这段）----
+    {"id": "M20", "guard": "未注册工具预校验", "file": SESSION,
      "old": ('    if name not in TOOL_SCHEMAS:\n'
-             '        return ToolVerdict("reject", reason=f"未注册的工具 \'{name}\'（工具清单不现场发明）")\n'
-             '\n'
-             '    allowed = tool_names_for_scope(scope, root)\n'
-             '    if name not in allowed:\n'
-             '        return ToolVerdict(\n'
-             '            "reject", reason=f"工具 \'{name}\' 不在 {scope} scope 白名单内（当前放行: {allowed}）"\n'
-             '        )'),
+             '        return ToolVerdict("reject", reason=f"未注册的工具 \'{name}\'（工具清单不现场发明）")\n'),
      "new": '    pass'},
     # ---- M21: Ctrl-C 中断杀子进程 + 排水线程 daemon（PR6 Popen 化回归 + N28 进程组强杀） ----
     {"id": "M21a", "guard": "Ctrl-C / SIGINT 中断时 kill 子进程组", "file": JOBS,
@@ -253,20 +250,8 @@ MUTATIONS: list[dict] = [
      "new": ('    # 子命令 1: ava new <期名>\n'
              '    if args and args[0] == "new":\n'
              '        return create_new_episode(args[1])\n')},
-    {"id": "M24", "guard": "idea scope 工具表零写权限（纯只读）", "file": TOOLS_JSON,
-     "old": ('  "idea": [\n'
-             '    "read_artifact",\n'
-             '    "list_episodes",\n'
-             '    "read_status",\n'
-             '    "search_notes"\n'
-             '  ]'),
-     "new": ('  "idea": [\n'
-             '    "read_artifact",\n'
-             '    "write_episode_file",\n'
-             '    "list_episodes",\n'
-             '    "read_status",\n'
-             '    "search_notes"\n'
-             '  ]')},
+    # ---- M24 已退役（D43 / Spec 17 废除其守护的语义「idea scope 工具表零写权限（四键表）」：
+    #      tools.json 收为单表，四键段不复存在）----
     {"id": "M25a", "guard": "ava new 非 tty 闸门", "file": CLI,
      "old": ('        if not sys.stdin.isatty():\n'
              '            return 0\n'
@@ -356,7 +341,7 @@ MUTATIONS: list[dict] = [
              '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'
              '    return (\n'
              '        "[状态卡]\\n"\n'
-             '        "模式: 选题会话（无期） | scope: idea | 写权限: 无（机制保证）\\n"\n'
+             '        "模式: 选题会话（无期） | scope: idea | 期目录: 无（写期文件前须先建期）\\n"\n'
              '        "读域: data/library/ 与跨期 read_status\\n"\n'
              '        "产出落盘: 讨论定稿后运行 ava new <名>，在新期会话中完成写入"\n'
              '    )'),
@@ -858,6 +843,85 @@ MUTATIONS: list[dict] = [
              '                    writer.send({"t": "error", "code": "E_NO_EPISODE", "message": "本会话没有期目录，不能开对话轮", "rid": rid})\n'
              '                    continue\n'
              '                # idea 会话（--idea）照样开回合')},
+
+    # ---- MUT-A1～A11：D43 / Spec 17（所有模式开放全部工具，2026-10-08 施工登记）----
+    # 指定杀手均指 tests/test_d43_all_scopes.py 及改写后的既有用例；逐条复跑见 Spec 17 §11 回填表。
+    {"id": "MUT-A1", "guard": "请求层工具表不按 scope 过滤（植在 llm.py 调用点）", "file": LLM,
+     "old": '    tools = build_tool_schemas(effective_root)\n',
+     "new": ('    tools = build_tool_schemas(effective_root)\n'
+             '    if context.scope == "idea":  # MUT-A1\n'
+             '        tools = [t for t in tools if t["function"]["name"] in ("read_artifact", "list_episodes", "read_status", "search_notes")]\n')},
+    {"id": "MUT-A2", "guard": "反向分叉检查（已注册但未列出 → 报错）", "file": TOOLS,
+     "old": ('    missing = sorted(set(TOOL_SCHEMAS) - set(names))\n'
+             '    if missing:\n'
+             '        raise KeyError(\n'
+             '            f"tools.json 未列出已注册的工具 {missing}；单表须恰好等于注册集（D43 反向分叉检查）"\n'
+             '        )\n'),
+     "new": '    missing = sorted(set(TOOL_SCHEMAS) - set(names))\n'},
+    {"id": "MUT-A3", "guard": "write_episode_file 不按 scope 拒绝（恢复 creative-only）", "file": TOOLS,
+     "old": ('def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:\n'
+             '    if not ctx.episode_dir:\n'
+             '        raise PermissionError(NO_EPISODE_MESSAGE)\n'),
+     "new": ('def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:\n'
+             '    if not ctx.episode_dir:\n'
+             '        raise PermissionError(NO_EPISODE_MESSAGE)\n'
+             '    if ctx.scope != "creative":  # MUT-A3\n'
+             '        raise PermissionError(f"Scope \'{ctx.scope}\' 拥有零写权限，严禁写入任何期产物文件")\n')},
+    {"id": "MUT-A4", "guard": "合表漏掉 ASSET_COMMANDS", "file": TOOLS,
+     "old": '    in_asset = module in ASSET_COMMANDS\n',
+     "new": '    in_asset = False  # MUT-A4\n'},
+    {"id": "MUT-A5", "guard": "cloud exec 永久禁令不丢", "file": TOOLS,
+     "old": ('    # 2. 绝对拒收 cloud exec（R1-r10）\n'
+             '    if module == "cloud" and args and args[0] == "exec":\n'
+             '        return (\n'
+             '            False,\n'
+             '            "拒绝执行：cloud exec 绕过安全白名单直接执行任意远端命令，已被护栏永久禁用。",\n'
+             '            [],\n'
+             '        )\n'),
+     "new": ''},
+    {"id": "MUT-A6", "guard": "idea 下 run_pipeline 在 review 层必拒", "file": TOOLS,
+     "old": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}\n'
+             ')\n'),
+     "new": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
+             '    {"write_episode_file", "cover_edit", "acquire_propose"}  # MUT-A6\n'
+             ')\n')},
+    {"id": "MUT-A7", "guard": "web_fetch 出网断言不跳过", "file": WEB,
+     "old": '    assert_egress_boundary(url, {"url": _normalized_for_assert(url)})\n',
+     "new": '    pass  # MUT-A7\n'},
+    {"id": "MUT-A8", "guard": "memory.apply_op 不恢复 creative-only 闸", "file": MEMORY,
+     "old": (') -> MemoryPlan:\n'
+             '    """唯一写入口：持锁 → 锁内重读重规划 → 卡闸 → 追加日志 → 原子写。\n'
+             '\n'
+             '    D43 / Spec 17（ADR-0027）：不再有 scope 闸——所有模式可写记忆，scope 只作日志记录字段。\n'
+             '    """\n'),
+     "new": (') -> MemoryPlan:\n'
+             '    """唯一写入口。"""\n'
+             '    if scope != "creative":  # MUT-A8\n'
+             '        raise PermissionError(f"scope \'{scope}\' 没有记忆写权限（只有 creative 挂了 write_memory）")\n')},
+    {"id": "MUT-A9", "guard": "review 层不残留越 scope 拒绝", "file": SESSION,
+     "old": ('    if name not in TOOL_SCHEMAS:\n'
+             '        return ToolVerdict("reject", reason=f"未注册的工具 \'{name}\'（工具清单不现场发明）")\n'
+             '\n'
+             '    # D43 / Spec 17 §3.4：无期会话（idea）调需期工具，在弹卡之前统一报「先建期」。\n'),
+     "new": ('    if name not in TOOL_SCHEMAS:\n'
+             '        return ToolVerdict("reject", reason=f"未注册的工具 \'{name}\'（工具清单不现场发明）")\n'
+             '\n'
+             '    if scope == "pipeline" and name in ("web_search", "web_fetch", "crawl", "browser"):  # MUT-A9\n'
+             '        return ToolVerdict("reject", reason="pipeline scope 永不见网络工具")\n'
+             '\n'
+             '    # D43 / Spec 17 §3.4：无期会话（idea）调需期工具，在弹卡之前统一报「先建期」。\n')},
+    {"id": "MUT-A10", "guard": "review 层「先建期」拒绝不删（不只剩实现层）", "file": SESSION,
+     "old": ('    if ep_dir is None and name in NEEDS_EPISODE_TOOLS:\n'
+             '        return ToolVerdict("reject", reason=NO_EPISODE_MESSAGE)\n'),
+     "new": ''},
+    {"id": "MUT-A11", "guard": "acquire_propose 在需期工具集合内", "file": TOOLS,
+     "old": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}\n'
+             ')\n'),
+     "new": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline"}  # MUT-A11\n'
+             ')\n')},
 ]
 
 

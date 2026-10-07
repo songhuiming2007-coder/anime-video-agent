@@ -869,9 +869,10 @@ def apply_op(
     scope: str,
     today: datetime.date | None = None,
 ) -> MemoryPlan:
-    """唯一写入口：scope 闸 → 持锁 → 锁内重读重规划 → 卡闸 → 追加日志 → 原子写。"""
-    if scope != "creative":
-        raise PermissionError(f"scope '{scope}' 没有记忆写权限（只有 creative 挂了 write_memory）")
+    """唯一写入口：持锁 → 锁内重读重规划 → 卡闸 → 追加日志 → 原子写。
+
+    D43 / Spec 17（ADR-0027）：不再有 scope 闸——所有模式可写记忆，scope 只作日志记录字段。
+    """
     lib, mem, log, _lock = _require_lib(root)
     stamp = today or datetime.date.today()
     with _PROCESS_LOCK, _locked(lib, exclusive=True):

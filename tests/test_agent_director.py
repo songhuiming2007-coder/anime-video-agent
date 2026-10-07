@@ -452,8 +452,9 @@ def test_m7_creative_loop_degrades_and_exits(tmp_path: Path, monkeypatch, capsys
 # ===========================================================================
 
 
-def test_m11_scope_hot_derivation_from_creative_to_pipeline(tmp_path: Path, monkeypatch):
-    """M11: scope 由 creative 热切到 pipeline 后，write_episode_file 从工具表消失 (Spec §5.1 M11)。"""
+def test_m11_scope_hot_derivation_tool_table_constant(tmp_path: Path, monkeypatch):
+    """M11 按 D43 / Spec 17 改写：scope 由 creative 热切到 pipeline 后，工具表**不变**
+    （逐回合相同）；scope 热推导本身仍成立（决定注入哪份提示，不再决定工具表）。"""
     root = make_agent_root(tmp_path, "http://127.0.0.1:9/v1")
     ep = root / "data" / "episodes" / "01-hot"
     ep.mkdir(parents=True)
@@ -470,8 +471,8 @@ def test_m11_scope_hot_derivation_from_creative_to_pipeline(tmp_path: Path, monk
 
     # 模拟两轮对话：第一轮 creative 后产生 02-diff.patch 进入 03；第二轮自动变 pipeline
     def fake_dispatch_hot(line, messages, ep_dir, scope, status, extra_prompt="", root=None, tracker=None):
-        from pipeline.agent.tools import tool_names_for_scope
-        sent_tools_per_turn.append(tool_names_for_scope(scope, root=root))
+        from pipeline.agent.tools import tool_names
+        sent_tools_per_turn.append((scope, tool_names(root=root)))
         (ep / "02-diff.patch").write_text("diff", encoding="utf-8")
         return {"stopped": "done", "messages": messages, "final": {"content": "ok"}}
 
@@ -481,11 +482,13 @@ def test_m11_scope_hot_derivation_from_creative_to_pipeline(tmp_path: Path, monk
         assert cli.run_agent_loop(ep, scope_mode="auto", root=root) == 0
 
     assert len(sent_tools_per_turn) == 2
-    # 第一轮 creative 包含 write_episode_file
-    assert "write_episode_file" in sent_tools_per_turn[0]
-    # 第二轮 pipeline 不含 write_episode_file，但包含 run_pipeline
-    assert "write_episode_file" not in sent_tools_per_turn[1]
-    assert "run_pipeline" in sent_tools_per_turn[1]
+    # 第一轮 creative、第二轮 pipeline：scope 热推导成立
+    assert sent_tools_per_turn[0][0] == "creative"
+    assert sent_tools_per_turn[1][0] == "pipeline"
+    # 但工具表逐回合相同（D43：模式不再决定工具表）
+    assert sent_tools_per_turn[0][1] == sent_tools_per_turn[1][1]
+    assert "write_episode_file" in sent_tools_per_turn[1][1]
+    assert "run_pipeline" in sent_tools_per_turn[1][1]
 
 
 def test_scope_asset_manual_override_and_return(tmp_path: Path, monkeypatch, capsys):

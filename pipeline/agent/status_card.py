@@ -146,7 +146,7 @@ def build_idea_card() -> str:
     """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""
     return (
         "[状态卡]\n"
-        "模式: 选题会话（无期） | scope: idea | 写权限: 无（机制保证）\n"
+        "模式: 选题会话（无期） | scope: idea | 期目录: 无（写期文件前须先建期）\n"
         "读域: data/library/ 与跨期 read_status\n"
         "产出落盘: 讨论定稿后运行 ava new <名>，在新期会话中完成写入"
     )

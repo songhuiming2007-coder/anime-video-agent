@@ -1,34 +1,17 @@
 {
-  "creative": [
+  "tools": [
     "read_artifact",
     "write_episode_file",
     "list_episodes",
     "read_status",
+    "run_pipeline",
     "search_notes",
-    "web_search",
-    "web_fetch",
-    "crawl",
-    "browser",
-    "write_memory",
-    "cover_edit"
-  ],
-  "pipeline": [
-    "read_artifact",
-    "read_status",
-    "list_episodes",
-    "run_pipeline"
-  ],
-  "asset": [
     "web_search",
     "web_fetch",
     "acquire_propose",
     "crawl",
-    "browser"
-  ],
-  "idea": [
-    "read_artifact",
-    "list_episodes",
-    "read_status",
-    "search_notes"
+    "browser",
+    "write_memory",
+    "cover_edit"
   ]
 }

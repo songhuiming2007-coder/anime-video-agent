@@ -126,7 +126,7 @@ def _world(
     *,
     config: bool = True,
     memory: bool = False,
-    tools: dict | None = None,
+    tools: list | None = None,
 ) -> tuple[Path, Path]:
     root = tmp_path / "repo"
     ep = root / "data" / "episodes" / "01-smoke"
@@ -221,12 +221,9 @@ def _g4_side_effect_card_no(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def _g5_precheck_reject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """预校验（dry-run）拒收：`--force` 在弹卡之前被拦下。
 
-    夹具给 creative 表临时放行 `run_pipeline`（真实配置里它在 pipeline scope）：否则先撞
-    scope 白名单，走不到 `--force` 这一道闸，这条金样本就名不副实。
+    D43 / Spec 17 后所有模式同一张全量表，不再需要给 creative 表临时放行 `run_pipeline`。
     """
-    tools = {k: list(v) for k, v in SPEC_TOOLS.items()}
-    tools["creative"] = [*tools["creative"], "run_pipeline"]
-    root, ep = _world(tmp_path, tools=tools)
+    root, ep = _world(tmp_path)
     _ready(root, monkeypatch)
     _stub_llm(monkeypatch, [
         tool_call("run_pipeline", {"command": "tts --force"}),

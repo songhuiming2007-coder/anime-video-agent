@@ -248,19 +248,25 @@ def review_tool_call(
 ) -> ToolVerdict:
     """工具审查（原 `cli._default_approve` 的确定性部分，Spec 9 §2.4.2/§2.6）。
 
-    顺序与现状一致：未注册/越 scope → run_pipeline dry-run → write_memory dry-run →
-    fail-closed `side_effect` 分流 → 弹卡。
+    顺序（D43 / Spec 17 §3.2/§3.4）：未注册 → 无期会话的需期工具「先建期」→
+    run_pipeline dry-run → write_memory dry-run → fail-closed `side_effect` 分流 → 弹卡。
+    「越 scope」拒绝已随 D43 删除（所有模式开放全部工具）。
     """
-    from pipeline.agent.tools import TOOL_SCHEMAS, run_pipeline, tool_names_for_scope
+    from pipeline.agent.tools import (
+        NEEDS_EPISODE_TOOLS,
+        NO_EPISODE_MESSAGE,
+        TOOL_SCHEMAS,
+        run_pipeline,
+    )
 
     if name not in TOOL_SCHEMAS:
         return ToolVerdict("reject", reason=f"未注册的工具 '{name}'（工具清单不现场发明）")
 
-    allowed = tool_names_for_scope(scope, root)
-    if name not in allowed:
-        return ToolVerdict(
-            "reject", reason=f"工具 '{name}' 不在 {scope} scope 白名单内（当前放行: {allowed}）"
-        )
+    # D43 / Spec 17 §3.4：无期会话（idea）调需期工具，在弹卡之前统一报「先建期」。
+    # 位置写死（D43-R2 🔵 R2-6）：排在未注册检查之后、一切 dry-run 之前——否则一条本身
+    # 非法的命令（如 faces unknown）拿到的是白名单拒因，不是统一文案。
+    if ep_dir is None and name in NEEDS_EPISODE_TOOLS:
+        return ToolVerdict("reject", reason=NO_EPISODE_MESSAGE)
 
     argv: list[str] | None = None
     if name == "run_pipeline":
