@@ -850,7 +850,7 @@ describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
     fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
     await b.svc.dispatch("episode.create", { name: "新期-首发失败" });
     sessionScript(b.repo, "新期-首发失败", []); // 剧本为空：假进程 ready 之前就退出
-    await expect(b.svc.dispatch("conv.send", { convKey: "ep:新期-首发失败", text: "第一次" })).rejects.toBeDefined();
+    await expect(b.svc.dispatch("conv.send", { convKey: "ep:新期-首发失败", text: "第一次" })).rejects.toMatchObject({ code: "E_SESSION" }); // ready 前退出（N60 复核 R-2）
     sessionScript(b.repo, "新期-首发失败", [READY("新期-首发失败"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
     await b.svc.dispatch("conv.send", { convKey: "ep:新期-首发失败", text: "第二次" });
     expect(sessionSpawns()).toEqual(["SESSION_CONTINUE", "SESSION_CONTINUE"]);
@@ -891,6 +891,20 @@ describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
     sessionScript(b.repo, "新期-重建", [READY("新期-重建"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
     await b.svc.dispatch("conv.send", { convKey: "ep:新期-重建", text: "hi" });
     expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+  });
+
+  it("⑩ 带入建期 A 后紧接着建 B（_idea 刚清空，B 必未带入）→ 只作废 B 的标记：A 首发仍 SESSION_CONTINUE、B 首发 SESSION_NEW", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    await b.svc.dispatch("episode.create", { name: "新期-A" });
+    // 多打一行让文件长度不同（stale .pyc，见 ⑨）
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[OK] 第二期", "[from-idea] migrated=false sid=- messages=0"]));
+    await b.svc.dispatch("episode.create", { name: "新期-B" });
+    sessionScript(b.repo, "新期-A", [READY("新期-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    sessionScript(b.repo, "新期-B", [READY("新期-B"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-A", text: "接着刚才的选题写" });
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-B", text: "hi" });
+    expect(sessionSpawns()).toEqual(["SESSION_CONTINUE", "SESSION_NEW"]);
   });
 
   it("⑤ conv.resume 对 idea 不再报错：以 SESSION_IDEA 起（core 启动即恒恢复）", async () => {

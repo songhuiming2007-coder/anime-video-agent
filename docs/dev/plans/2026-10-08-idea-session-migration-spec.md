@@ -352,3 +352,12 @@ scratchpad `d42b/shots/`：1280×800 与 1440×900 各 4 张（选题聊一轮 /
 | 🔵 R-2 | ⑥ 对首发失败只断言 `rejects.toBeDefined()`，拒因换成别的（如 `E_UNREACHABLE`）也会过；目前由其后的序列断言兜住（若失败发生在 spawn 之前，序列只剩一个 CONTINUE，照样红），所以不构成漏网 | 上文探针：实际拒因 `E_SESSION`「会话进程已退出」 | 顺手收紧为 `rejects.toMatchObject({ code: "E_SESSION" })`，让用例名里的「ready 前退出」有断言背书；不阻断 |
 
 R-1 补完后由非施工 session 只复跑 V8（+ V5 回归）即可关闭 N60，无需整轮复核。
+
+### N60 复核打回的处置（2026-10-08，施工方 = D42-B session）
+
+| 编号 | 处置 | 改了哪里 |
+|---|---|---|
+| 🟡 R-1 | 采纳：新增 TH-D42 ⑩「带入建期 A → 紧接着建 B（未带入）→ A 首发仍 `SESSION_CONTINUE`、B 首发 `SESSION_NEW`」，钉住「只作废这一期的标记」；不动 `desktop/src/` | `desktop/tests/host/sessions.test.ts` |
+| 🔵 R-2 | 采纳：⑥ 的首发失败断言收紧为 `rejects.toMatchObject({ code: "E_SESSION" })` | 同上 |
+
+变异复跑（scratchpad `d42b/n60_mut.py`，写回 md5 全部一致）：**V8（`migrated=false` 时 `carried.clear()`）KILLED**，杀手 ⑩：`['SESSION_NEW', 'SESSION_NEW']` ≠ `['SESSION_CONTINUE', 'SESSION_NEW']`；回归 V5 → ⑨、V3 → ⑥、V4 → ⑦、V6 → ⑧ 仍各自杀死。读数：vitest 437、tsc 绿。按复核建议，由非施工 session 只复跑 V8（+ V5 回归）即可关闭 N60。
