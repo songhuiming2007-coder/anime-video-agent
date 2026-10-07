@@ -1,7 +1,7 @@
 // Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、继续上次会话、建期…。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 import { useEffect, useState } from "react";
-import type { ConvEntry, ConvKey, ConvPhase } from "../shared/protocol";
+import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
 import { charsText } from "../shared/convFold";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
@@ -58,7 +58,7 @@ export function SessionHeader({
   isIdea: boolean;
   /** D41：最近一次回合结束时的 prompt_chars（`lastPromptChars`）；null = 本会话还没有回合结束过，不显示 */
   contextChars: number | null;
-  onCreated: (epKey: string) => void;
+  onCreated: (created: CreatedEpisode) => void;
   onResumed: () => void;
   onEnded: () => void;
 }) {

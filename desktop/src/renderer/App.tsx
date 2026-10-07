@@ -7,7 +7,7 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastPromptChars } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
@@ -85,7 +85,9 @@ function Main() {
   /** 左栏「选题」入口：未选期时中栏即为 idea 视图；不结束任何会话（后台期照常跑） */
   const [showIdea, setShowIdea] = useState(true);
   /** 刚建好的期：对话区首行本地提示（不是消息，H-8） */
-  const [justCreated, setJustCreated] = useState<string | null>(null);
+  const [justCreated, setJustCreated] = useState<CreatedEpisode | null>(null);
+  /** Spec 18 §3.3 ④：选题讨论刚被带进哪一期（选题视图在新会话起来之前显示「已带入 <期名>」） */
+  const [ideaCarriedTo, setIdeaCarriedTo] = useState<string | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = active;
@@ -215,6 +217,14 @@ function Main() {
       setLoading((n) => n - 1);
     }
   }, []);
+
+  /** 建期成功（两处「＋ 新建一期」共用）：记下带入结果给 idea-note 两态与选题视图的「已带入」提示 */
+  const onCreatedEp = useCallback((created: CreatedEpisode) => {
+    setJustCreated(created);
+    setIdeaCarriedTo(created.migrated ? created.epKey : null);
+    setShowIdea(false);
+    void open(created.epKey);
+  }, [open]);
 
   const refresh = useCallback(async () => {
     if (!active) return;
@@ -365,7 +375,7 @@ function Main() {
       )}
       <div className={`main ${reachOk ? "" : "stale"}`} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
         <nav className="left" id="ava-left" hidden={!layout.leftOpen}>
-          <NewEpisodeForm rpc={rpc} onCreated={(k) => { setJustCreated(k); setShowIdea(false); void open(k); }} />
+          <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} />
           <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} stale={!reachOk} />
           {ep && !showIdea && (
             <div className="files">
@@ -412,18 +422,19 @@ function Main() {
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
             contextChars={lastPromptChars(conv?.entries ?? [])}
-            onCreated={(k) => {
-              setJustCreated(k);
-              setShowIdea(false);
-              void open(k);
-            }}
+            onCreated={onCreatedEp}
             onResumed={() => fetchConvRef.current(convKey, true)}
             onEnded={() => fetchConvRef.current(convKey, true)}
           />
           <div className="conv">
-            {justCreated !== null && justCreated === active && (
-              <div className="conv-note" data-testid="idea-note">
-                选题会话的讨论不会带入本期；需要的要点请在这里重述
+            {justCreated !== null && justCreated.epKey === active && !showIdea && (
+              <div className="conv-note" data-testid="idea-note" data-migrated={justCreated.migrated ? "1" : "0"}>
+                {justCreated.migrated ? `已带入选题会话记录（${justCreated.messages} 条消息）` : "选题会话的讨论不会带入本期；需要的要点请在这里重述"}
+              </div>
+            )}
+            {showIdea && ideaCarriedTo !== null && (conv?.phase ?? "none") === "none" && (
+              <div className="conv-note" data-testid="idea-carried">
+                已带入 {ideaCarriedTo}
               </div>
             )}
             <ConversationPane key={convKey} rows={rows} lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />} />

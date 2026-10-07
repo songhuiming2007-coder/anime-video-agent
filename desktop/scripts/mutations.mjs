@@ -104,8 +104,9 @@ export const MUTATIONS = [
   { id: "MUT-34", guard: "建期表单初值为空串字面量", expect: ["TG-15"], targets: [ALL], file: "src/renderer/NewEpisodeForm.tsx",
     old: "useState(\"\")", new: "useState(String(\"\")) /* MUT-34 */" },
   { id: "MUT-35", guard: "建期后不把 idea 讨论发给新期", expect: ["TX-7"], targets: [real("TX-7 ")], file: SVC,
-    old: "    this.refreshEpisodes();\n    this.push({ v: 1, kind: \"push\", topic: \"episodes.summary\", data: this.episodesList() });\n    return { epKey: name };",
-    new: "    this.refreshEpisodes();\n    this.push({ v: 1, kind: \"push\", topic: \"episodes.summary\", data: this.episodesList() });\n    void this.sessions.send(`ep:${name}` as never, this.convTarget(`ep:${name}`, \"new\"), \"（选题讨论）\").catch(() => undefined); // MUT-35\n    return { epKey: name };" },
+    // D42 / Spec 18 PR2（2026-10-08）随 createEpisode 解析 marker 改锚，守护语义不变
+    old: "    this.refreshEpisodes();\n    this.push({ v: 1, kind: \"push\", topic: \"episodes.summary\", data: this.episodesList() });\n    const marker = parseFromIdeaMarker(r.stdoutTail);",
+    new: "    this.refreshEpisodes();\n    this.push({ v: 1, kind: \"push\", topic: \"episodes.summary\", data: this.episodesList() });\n    void this.sessions.send(`ep:${name}` as never, this.convTarget(`ep:${name}`, \"new\"), \"（选题讨论）\").catch(() => undefined); // MUT-35\n    const marker = parseFromIdeaMarker(r.stdoutTail);" },
   { id: "MUT-36", guard: "host 写帧用无损序列化", expect: ["TG-9"], targets: [ALL], file: SESS,
     old: "    s.proc.write(`${stringifyLossless(frame)}\\n`);", new: "    s.proc.write(`${JSON.stringify(frame)}\\n`); // MUT-36" },
   { id: "MUT-37", guard: "error 帧按 rid 归属", expect: ["TH-17"], targets: [ALL], file: SESS,

@@ -17,10 +17,10 @@ export type Method =
   | "tree.list" // { epKey, relDir } → TreeEntry[]
   | "shots.list" // 无参数 → ShotsEntry[]：data/library/shots 顶层的 *.html（S21 修订）
   | "approval.decide" // §3.2.1（PR4）；09 定稿另带 cover/title（Spec 12 S8-R19）
-  | "episode.create" // { name } → { epKey }：spawn NEW_EPISODE；校验全在 core（Spec 10 S8-R2）
+  | "episode.create" // { name } → { epKey, migrated, sid, messages }：spawn NEW_EPISODE（恒带 --from-idea，Spec 18 §3.3）；校验全在 core（Spec 10 S8-R2）
   // ---- Spec 10 S8-R2：会话方法（§3.1）----
   | "conv.send" // { convKey, text } → { turnId }：无活进程则先起 new 会话、等 ready
-  | "conv.resume" // { convKey } → ConvSnapshot：仅 ep:*；以 --continue 起会话；已有活进程 → E_BUSY
+  | "conv.resume" // { convKey } → ConvSnapshot：ep:* 以 --continue 起会话（idea 以 --idea 起，core 启动即恒恢复，Spec 18 §3.3）；已有活进程 → E_BUSY
   | "conv.interrupt" // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
   | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层
   | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope}
@@ -202,6 +202,35 @@ export interface EpisodeDelta {
 // ---- 期列表、产物树、健康数据 ----
 /** 会话键（Spec 10 §2.1）：idea 全局至多一个；ep:<期名> 每期至多一个进程 */
 export type ConvKey = "idea" | `ep:${string}`;
+
+/** `episode.create` 的结果（Spec 18 §3.3）：migrated 只认 core 的单行 marker，缺失/不合式按 false。 */
+export interface CreatedEpisode {
+  epKey: string;
+  migrated: boolean;
+  /** 迁入段的会话号；未带入为 null */
+  sid: string | null;
+  /** 迁入段的消息数（core 的 SessionSummary.messages）；未带入为 0 */
+  messages: number;
+}
+
+/** core `ava new --from-idea` 的机器可读标注（Spec 18 §3.2 🔵-2）：stdout 恰好一行。 */
+const FROM_IDEA_MARKER_RE = /^\[from-idea\] migrated=(true|false) sid=([0-9a-f]+|-) messages=(\d+)$/;
+
+/**
+ * 从 core stdout 里取 marker：以 `[from-idea]` 开头的行必须恰好一行且合式，否则 null（调用方按
+ * migrated=false 处理并发 notice——建期本身已成功，不许因解析失败把期卡死）。
+ * migrated=false 时 sid 须为 `-`、messages 须为 0；migrated=true 时 sid 须为十六进制。
+ */
+export function parseFromIdeaMarker(stdout: string): Omit<CreatedEpisode, "epKey"> | null {
+  const lines = stdout.split(/\r?\n/).filter((l) => l.startsWith("[from-idea]"));
+  if (lines.length !== 1) return null;
+  const m = FROM_IDEA_MARKER_RE.exec(lines[0]);
+  if (!m) return null;
+  const migrated = m[1] === "true";
+  const messages = Number(m[3]);
+  if (migrated ? m[2] === "-" : m[2] !== "-" || messages !== 0) return null;
+  return { migrated, sid: migrated ? m[2] : null, messages };
+}
 
 /** 会话徽标（Spec 10 §2.6）：由 host 从帧折叠得出，随 episodes.summary 下发 */
 export interface ConvSummary {

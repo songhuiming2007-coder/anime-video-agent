@@ -181,9 +181,10 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       };
     }
     case "NEW_EPISODE": {
-      // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core
+      // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core。
+      // 恒带 --from-idea（Spec 18 §3.3）：选题会话没有记录时 core 回 migrated=false，语义等价于不带，零分叉
       const { name } = args as TemplateArgs["NEW_EPISODE"];
-      return { argv: [py, "-m", "pipeline.agent.cli", "new", name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+      return { argv: [py, "-m", "pipeline.agent.cli", "new", name, "--from-idea"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
     case "PROBE_KEY_ENV":
       // 只读配置、不读环境变量（C10-R2）；stdout 就是变量名，缺失为空串

@@ -274,7 +274,7 @@ test("TX-6 真实 core：A 挂卡时切到 B 对话 → A 显示运行中；B �
   );
 });
 
-test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原文；合法名建成并激活，工序条 01）；idea 会话仍在", async () => {
+test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原文；合法名建成并激活，工序条 01）→ 选题记录带入新期（Spec 18）", async () => {
   await withRealCore(async ({ L, llm }) => {
     llm.push(assistant("先聊聊这期想做什么"));
     await send(L.page, "想做一期杂谈");
@@ -287,13 +287,27 @@ test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原�
     await L.page.getByTestId("episode-create").click();
     await expect(L.page.locator("[data-testid=episode]", { hasText: "2026-09-26-e2e-新期" })).toBeVisible({ timeout: 20_000 });
     await expect(L.page.getByTestId("current-step")).toContainText("01");
-    // spec：新期对话区只有本地提示行——host 不把 idea 讨论代发给新期（M9：此前没查，MUT-35 因此存活）
+    // Spec 18 §3.3 ①：idea-note 两态——带入了就说带入了几条
+    await expect(L.page.getByTestId("idea-note")).toHaveAttribute("data-migrated", "1");
+    await expect(L.page.getByTestId("idea-note")).toContainText(/已带入选题会话记录（\d+ 条消息）/);
+    // 带入 = 复制记录，不是代发消息（H-8；MUT-35 的杀手）：新期没有任何回合，LLM 只收到 idea 那一轮
     await L.page.waitForTimeout(1_500);
     const fresh = await convSnapshot(L, "ep:2026-09-26-e2e-新期");
     expect(fresh.entries.filter((e) => e.k === "user" || (e.k === "frame" && e.frame?.t === "turn_started"))).toEqual([]);
-    expect(llm.requests.length).toBe(1); // 只有 idea 那一轮
-    await L.page.getByTestId("idea").click();
+    expect(llm.requests.length).toBe(1);
+    // 新期首发不重述：模型直接看得到选题讨论（SESSION_CONTINUE 接着迁入段聊），对话区回放出 assistant 原文
+    llm.push(assistant("好，按刚才的草案写"));
+    await send(L.page, "把刚才的草案写进 01-topic.md");
+    await waitTurns(L, "ep:2026-09-26-e2e-新期", 1);
+    const contents = (llm.requests.at(-1)!.messages as { content?: unknown }[]).map((m) => String(m.content ?? ""));
+    expect(contents).toContain("想做一期杂谈");
+    expect(contents).toContain("先聊聊这期想做什么");
     await expect(L.page.getByTestId("conv-stream")).toContainText("先聊聊这期想做什么");
+    expect((await snapFrames(L, "ep:2026-09-26-e2e-新期")).find((f) => f.t === "ready")?.continue_status).toBe("resumed");
+    // 再点「选题」：旧讨论已带走，显示「已带入 <期名>」，是全新空会话
+    await L.page.getByTestId("idea").click();
+    await expect(L.page.getByTestId("idea-carried")).toContainText("已带入 2026-09-26-e2e-新期");
+    await expect(L.page.getByTestId("conv-stream")).not.toContainText("先聊聊这期想做什么");
   });
 });
 

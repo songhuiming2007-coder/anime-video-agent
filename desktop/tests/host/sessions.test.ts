@@ -749,7 +749,7 @@ describe("TH-14 建期", () => {
     const r = (await b.svc.dispatch("episode.create", { name: "新期-x" })) as { epKey: string };
     expect(r.epKey).toBe("新期-x");
     const rec = spawnLog.find((e) => e.template === "NEW_EPISODE")!;
-    expect(rec.argv.slice(1)).toEqual(["-m", "pipeline.agent.cli", "new", "新期-x"]);
+    expect(rec.argv.slice(1)).toEqual(["-m", "pipeline.agent.cli", "new", "新期-x", "--from-idea"]);
     expect(treeManifest(b.repo.root).filter((l) => !l.includes("__pycache__"))).toEqual(before);
   });
 
@@ -759,6 +759,95 @@ describe("TH-14 建期", () => {
     const err = await b.svc.dispatch("episode.create", { name: "bad" }).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "E_CORE" });
     expect(((err as { tails: { stderrTail: string } }).tails.stderrTail)).toContain("FAIL 名字不合规");
+  });
+});
+
+/** 假 core 的 cli.py：按 argv 建出期目录（让 host 的期列表认得它），stdout 打给定的若干行后退 0。 */
+function fakeNewEpisodeCli(stdoutLines: string[]): string {
+  return [
+    "import os, sys",
+    "root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))",
+    "d = os.path.join(root, 'data', 'episodes', sys.argv[2])",
+    "os.makedirs(d)",
+    "open(os.path.join(d, '01-topic.md'), 'w').write('# t\\n')",
+    ...stdoutLines.map((l) => `print(${JSON.stringify(l)})`),
+    "sys.exit(0)",
+    "",
+  ].join("\n");
+}
+
+const IDEA_READY = { op: "emit", frame: { t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] } };
+
+describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
+  it("① marker migrated=true → episode.create 返回带入结果；该期首次 conv.send 以 SESSION_CONTINUE 起，标记随即消费", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[OK] 已立项新期", "[from-idea] migrated=true sid=00ab12cd messages=4"]));
+    const r = await b.svc.dispatch("episode.create", { name: "新期-带入" });
+    expect(r).toEqual({ epKey: "新期-带入", migrated: true, sid: "00ab12cd", messages: 4 });
+    sessionScript(b.repo, "新期-带入", [READY("新期-带入"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-带入", text: "把草案写进 01-topic.md" });
+    expect(sessionSpawns()).toEqual(["SESSION_CONTINUE"]);
+    // 人发的那一条原样到达（host 不代发、不改写，H-8）
+    expect(stdinLines(b.repo, "新期-带入").map((l) => JSON.parse(l) as Record<string, unknown>).filter((f) => f.t === "user_message").map((f) => f.text)).toEqual(["把草案写进 01-topic.md"]);
+    // 一次性：进程结束后再发，回到 SESSION_NEW
+    await b.svc.dispatch("conv.end", { convKey: "ep:新期-带入" });
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-带入", text: "再来" });
+    expect(sessionSpawns()).toEqual(["SESSION_CONTINUE", "SESSION_NEW"]);
+  });
+
+  it("② marker 缺失 → migrated=false + host diag，期照常建好；首发照旧 SESSION_NEW", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[OK] 已立项新期"]));
+    const r = await b.svc.dispatch("episode.create", { name: "新期-无标注" });
+    expect(r).toEqual({ epKey: "新期-无标注", migrated: false, sid: null, messages: 0 });
+    expect(b.pushes.some((e) => e.kind === "push" && e.topic === "diag" && String(e.data).includes("没有合式的选题带入标注"))).toBe(true);
+    sessionScript(b.repo, "新期-无标注", [READY("新期-无标注"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await b.svc.dispatch("conv.send", { convKey: "ep:新期-无标注", text: "hi" });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+  });
+
+  it("③ 选题会话活着 → 先结束它再 spawn NEW_EPISODE；带入成功后选题会话缓冲清空（phase none、零条目）", async () => {
+    let svcRef: HostService | null = null;
+    const ideaPhaseAtCreate: string[] = [];
+    const b = await boot({
+      realCore: true,
+      overrides: {
+        runCore: (async (t: Parameters<typeof runCore>[0], ...rest: unknown[]) => {
+          if (t === "NEW_EPISODE" && svcRef) ideaPhaseAtCreate.push((await snapOf(svcRef, "idea")).phase);
+          return (runCore as (...a: unknown[]) => unknown)(t, ...rest);
+        }) as unknown as HostDeps["runCore"],
+      },
+    });
+    svcRef = b.svc;
+    sessionScript(b.repo, "idea", [IDEA_READY, { op: "serve", on_turn: [TURN_STARTED, { t: "assistant", turn_id: "$turn", kind: "answer", text: "草案在此" }, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: "idea", text: "定个选题" });
+    await waitFor(async () => (await snapOf(b.svc, "idea")).phase === "idle");
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=true sid=ab messages=2"]));
+    const r = (await b.svc.dispatch("episode.create", { name: "新期-结束选题" })) as { migrated: boolean };
+    expect(r.migrated).toBe(true);
+    expect(ideaPhaseAtCreate).toEqual(["exited"]); // 建期时选题进程已确实退出
+    expect(stdinLines(b.repo, "idea").map((l) => (JSON.parse(l) as { t: string }).t)).toEqual(["user_message", "shutdown"]);
+    const idea = await snapOf(b.svc, "idea");
+    expect(idea.phase).toBe("none");
+    expect(idea.entries).toEqual([]);
+  });
+
+  it("④ 未带入（migrated=false）→ 选题会话缓冲保留（旧讨论仍可见，与改造前一致）", async () => {
+    const b = await boot({ realCore: true });
+    sessionScript(b.repo, "idea", [IDEA_READY, { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: "idea", text: "随便聊聊" });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=false sid=- messages=0"]));
+    await b.svc.dispatch("episode.create", { name: "新期-未带入" });
+    const idea = await snapOf(b.svc, "idea");
+    expect(idea.phase).toBe("exited");
+    expect(idea.entries.some((e) => e.k === "user")).toBe(true);
+  });
+
+  it("⑤ conv.resume 对 idea 不再报错：以 SESSION_IDEA 起（core 启动即恒恢复）", async () => {
+    const b = await boot();
+    sessionScript(b.repo, "idea", [IDEA_READY, { op: "serve", on_turn: [], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.resume", { convKey: "idea" });
+    expect(sessionSpawns()).toEqual(["SESSION_IDEA"]);
   });
 });
 

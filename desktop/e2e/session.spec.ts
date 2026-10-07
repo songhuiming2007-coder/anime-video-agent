@@ -203,9 +203,10 @@ test("TX-6 后台会话与隔离：运行中徽标、B 的待答区不含 A 的�
   );
 });
 
-test("TX-7 建期：core 拒绝显示原文；成功后激活新期且工序条为 01；idea 会话仍在", async () => {
+test("TX-7 建期：core 拒绝显示原文；成功后激活新期且工序条为 01；未带入（选题没落盘）→ 旧文案、idea 原对话仍可见", async () => {
   await withSession(async ({ repo, L }) => {
-    sessionScript(repo, "idea", [READY("idea"), { op: "serve", on_turn: [TURN_STARTED, { t: "assistant", turn_id: "$turn", kind: "answer", text: "先聊聊这期想做什么" }, TURN_ENDED, STOP_POINTS] }]);
+    // 假进程不写选题记录 → core 的 --from-idea 回 migrated=false（Spec 18 §3.2 b）；建期前 host 先结束它（§3.3 ③）
+    sessionScript(repo, "idea", [READY("idea"), { op: "serve", on_turn: [TURN_STARTED, { t: "assistant", turn_id: "$turn", kind: "answer", text: "先聊聊这期想做什么" }, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
     await send(L.page, "想做一期杂谈");
     await expect(L.page.getByTestId("conv-stream")).toContainText("先聊聊这期想做什么");
     await L.page.locator(".left [data-testid=new-episode-toggle]").click();
@@ -216,9 +217,12 @@ test("TX-7 建期：core 拒绝显示原文；成功后激活新期且工序条�
     await L.page.getByTestId("episode-create").click();
     await expect(L.page.locator("[data-testid=episode]", { hasText: "2026-09-26-e2e-新期" })).toBeVisible({ timeout: 20_000 });
     await expect(L.page.getByTestId("current-step")).toContainText("01");
-    // idea 会话仍在（切回可见原对话）
+    await expect(L.page.getByTestId("idea-note")).toHaveAttribute("data-migrated", "0");
+    await expect(L.page.getByTestId("idea-note")).toContainText("选题会话的讨论不会带入本期");
+    // 没带走任何东西：切回选题可见原对话，也没有「已带入」提示
     await L.page.getByTestId("idea").click();
     await expect(L.page.getByTestId("conv-stream")).toContainText("先聊聊这期想做什么");
+    await expect(L.page.getByTestId("idea-carried")).toHaveCount(0);
   });
 });
 

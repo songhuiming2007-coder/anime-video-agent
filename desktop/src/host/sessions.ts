@@ -288,7 +288,8 @@ export class SessionManager {
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
     const cur = this.states.get(key);
     if (cur && cur.phase !== "exited") this.fail("E_BUSY", "该会话已有活进程");
-    await this.ensure(key, { ...target, mode: "continue" });
+    // idea 没有独立的 continue 模板：--idea 启动即恒恢复（Spec 18 §3.3）
+    await this.ensure(key, { ...target, mode: target.mode === "idea" ? "idea" : "continue" });
     return this.snapshot(key);
   }
 
@@ -362,6 +363,29 @@ export class SessionManager {
     if (grace) return grace;
     if (s.pid !== null) this.deps.killGroup(s.pid);
     return { code: null, signal: "SIGKILL" };
+  }
+
+  /**
+   * Spec 18 §3.3 ③：建期带入前结束会话（core 要拿选题记录的租约）。走 §2.10 同一结束序列，
+   * 之后再等进程真正退出（SIGKILL 整组后 onExit 稍后才到）。返回 false = 宽限内仍未退出，调用方不许建期。
+   */
+  async endForMigration(key: ConvKey): Promise<boolean> {
+    const s = this.states.get(key);
+    if (!s || s.phase === "exited") return true;
+    await this.end(key);
+    if ((s.phase as ConvPhase) === "exited") return true; // end() 期间 onExit 已把它改成 exited（TS 的收窄看不到）
+    return (await this.waitEnd(s, this.timing.killGraceMs)) !== null;
+  }
+
+  /**
+   * Spec 18 §3.3 ④：选题记录已带进新期 → 清掉该会话已退出进程的条目缓冲（重推空快照）；
+   * 下一次发消息懒启动全新进程。活进程不动（正常流程里此刻它已被 endForMigration 结束）。
+   */
+  resetAfterMigration(key: ConvKey): void {
+    const s = this.states.get(key);
+    if (!s || s.phase !== "exited") return;
+    this.states.delete(key);
+    this.pushSnapshot(key);
   }
 
   /** §2.10 退出第 5 步：空闲 shutdown、忙 SIGTERM、宽限后 SIGKILL 整组；此后拒绝新请求。 */

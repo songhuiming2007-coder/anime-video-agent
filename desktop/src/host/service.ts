@@ -45,6 +45,8 @@ import {
   type TreeEntry,
   type ConvKey,
   type ConvSnapshot,
+  type CreatedEpisode,
+  parseFromIdeaMarker,
   type FingerJson,
   type ImportedCoverJson,
   type SavedFingerprintJson,
@@ -201,6 +203,12 @@ export class HostService {
   episodes = new Map<string, EpisodeEntry>();
   hiddenUnderscore = 0;
   summaries = new Map<string, Omit<EpisodeSummary, "conv">>();
+  /**
+   * 刚建好、带入了选题记录、尚未起过会话的期（Spec 18 §3.3 ②，人 2026-10-08 裁决「host 侧一次性标记」）：
+   * 该期首次 conv.send 以 SESSION_CONTINUE 起进程，接着迁入段聊——语义等同「先 resume 后 send」，
+   * renderer 仍只发一次 conv.send（TG-10 不动），host 不代发任何消息（H-8 不动）。
+   */
+  private carried = new Set<string>();
   subs = new Map<string, EpisodeRuntime>();
   active: string | null = null;
   /** repoRoot 代号：每次确认切换 +1；只读 spawn 的结果若代号已过期则丢弃（§2.10，红队 R3 m4） */
@@ -1095,6 +1103,7 @@ export class HostService {
       this.subs.clear();
       this.active = null;
       this.summaries.clear();
+      this.carried.clear();
       this.episodes.clear();
       this.resolveRepoRoot();
       this.onDataRoot(this.dataRoot);
@@ -1114,27 +1123,39 @@ export class HostService {
    * 建期：**校验与写入全在 core**（C10-R1），host 只做 exact-keys 与「是字符串」检查，
    * 期名作为单个 argv 元素传入（`shell:false`，无路径字段）；UI 绝不 mkdir（TG-2）。
    * spawn 计入在途（S8-R10）：切仓等它结束。失败原样回 core 的 stderr 尾部。
+   *
+   * Spec 18 §3.3：core 恒带 --from-idea。选题会话进程活着就先结束它（否则 core 拿不到选题记录的
+   * 租约，必报「进行中」）；结束不了 → 不建期、如实报错。core 非零时期可能已建为空期（core 的原子性
+   * 约定），重试同名会撞「期目录已存在」——换名或进那个空期继续，原文透传，不另造恢复通道。
    */
-  private async createEpisode(name: string): Promise<{ epKey: string }> {
+  private async createEpisode(name: string): Promise<CreatedEpisode> {
     if (this.sessionQuitting) throw new RpcFail("E_BUSY", "正在退出");
     if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
     if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
+    if (!(await this.sessions.endForMigration("idea"))) {
+      throw new RpcFail("E_BUSY", "选题会话未能结束，未建期（选题记录未动）；请稍后重试");
+    }
     const r = await this.core("NEW_EPISODE", { name });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
     if (r.code !== 0) throw new RpcFail("E_CORE", `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     this.refreshEpisodes();
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
-    return { epKey: name };
+    const marker = parseFromIdeaMarker(r.stdoutTail);
+    if (marker === null) this.diag(`建期成功，但 core 输出里没有合式的选题带入标注，按「未带入」处理（${name}）`);
+    const created: CreatedEpisode = { epKey: name, ...(marker ?? { migrated: false, sid: null, messages: 0 }) };
+    if (created.migrated) {
+      this.carried.add(name);
+      this.sessions.resetAfterMigration("idea"); // §3.3 ④：选题视图不再显示已带走的旧讨论
+    }
+    return created;
   }
 
   // ---------------- 会话（Spec 10 §2.1、§3.1） ----------------
 
   private convTarget(convKey: string, mode: "new" | "continue"): SessionTarget {
-    if (convKey === "idea") {
-      if (mode === "continue") throw new RpcFail("E_BAD_REQUEST", "idea 会话不支持「继续上次会话」");
-      return { key: "idea", epKey: null, abs: null, mode: "idea" };
-    }
+    // idea 的「继续」= core 在 --idea 启动时恒恢复最近段（Spec 18 §3.3），不需要独立的 resume 模板
+    if (convKey === "idea") return { key: "idea", epKey: null, abs: null, mode: "idea" };
     if (!convKey.startsWith("ep:")) throw new RpcFail("E_BAD_REQUEST", `未知会话键 ${convKey}`);
     const epKey = convKey.slice(3);
     const e = this.episodes.get(epKey);
@@ -1145,14 +1166,19 @@ export class HostService {
   /** §2.1 第 8 条：可达性不 ok 时 conv.send / conv.resume 得 E_UNREACHABLE（已在跑的会话不杀）。 */
   private async convSend(convKey: string, text: string): Promise<{ turnId: string }> {
     if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
-    const target = this.convTarget(convKey, "new");
-    return this.sessions.send(target.key, target, text);
+    const carried = convKey.startsWith("ep:") && this.carried.has(convKey.slice(3));
+    const target = this.convTarget(convKey, carried ? "continue" : "new");
+    const r = await this.sessions.send(target.key, target, text);
+    if (carried) this.carried.delete(convKey.slice(3)); // 失败不消费：下一次发送仍接着迁入段起
+    return r;
   }
 
   private async convResume(convKey: string): Promise<ConvSnapshot> {
     if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
     const target = this.convTarget(convKey, "continue");
-    return this.sessions.resume(target.key, target);
+    const snap = await this.sessions.resume(target.key, target);
+    if (convKey.startsWith("ep:")) this.carried.delete(convKey.slice(3));
+    return snap;
   }
 
   // ---------------- 退出（Spec 10 §2.10） ----------------
