@@ -142,7 +142,7 @@
   | 证据期号（ADR-0023 §1） | 「证据: <番>第N期」天然适配——站点经验恰好在某期调研中实测获得 |
 
   **结论：R1–R9 能容纳，不提修订请求。** 唯一的措辞注意点：条目写「bgm 搜索页游客返回空」而非「bgm 搜索页不可用」——后者带判断强度、前者是观测事实，这个写法纪律进 spec 示例，不进词表。
-- **写入回路的 scope 边界（v0.2 据 🟡-2 新增，有意设计登记）**：`write_memory` 只挂 creative scope（`config/agent/tools.json` 实测：asset 段 = web_search / web_fetch / acquire_propose / crawl / browser），而动机场景发生在 asset 会话——asset 会话实测获得的站点经验**不能当场发起写入**，只能切 creative 会话或由人手写入。这是有意设计不是漏洞，理由直接引用 Spec 7 §2.8「只挂 creative 的理由」第 3 条原文：「暴露面最小：asset 已经挂了 `acquire_propose`（Spec 6），不再叠加第二个写工具」。读侧无此问题：`assembly.json` 的 `memory.scopes` 含 asset，注入照常；Spec 7 T17 不变量（挂了 write_memory 的 scope 必须在 memory.scopes）不受影响——asset 不挂写工具，不在该不变量的约束面内。**若未来实践证明「切 scope 才能记经验」的摩擦真实吃掉人时（≥2 期观测到该记没记），再提 Spec 7 修订请求给 asset 挂 write_memory，本 spec 不预埋。**
+- **写入回路的 scope 边界（v0.2 据 🟡-2 新增，有意设计登记）**：`write_memory` 只挂 creative scope（`config/agent/tools.json` 实测：asset 段 = web_search / web_fetch / acquire_propose / crawl / browser），而动机场景发生在 asset 会话——asset 会话实测获得的站点经验**不能当场发起写入**，只能切 creative 会话或由人手写入。（**2026-10-08 注（D43 / Spec 17 / ADR-0027）**：本句的 scope 边界已随 D43 废除——所有模式都可调 `write_memory`，asset 会话可当场写入、过人审卡；`memory.scopes` 注入范围不变（不含 pipeline）。）这是有意设计不是漏洞，理由直接引用 Spec 7 §2.8「只挂 creative 的理由」第 3 条原文：「暴露面最小：asset 已经挂了 `acquire_propose`（Spec 6），不再叠加第二个写工具」。读侧无此问题：`assembly.json` 的 `memory.scopes` 含 asset，注入照常；Spec 7 T17 不变量（挂了 write_memory 的 scope 必须在 memory.scopes）不受影响——asset 不挂写工具，不在该不变量的约束面内。**若未来实践证明「切 scope 才能记经验」的摩擦真实吃掉人时（≥2 期观测到该记没记），再提 Spec 7 修订请求给 asset 挂 write_memory，本 spec 不预埋。**
 - **示例条目**（供门禁 8 冒烟后人确认写入，仅供说明分工，本 spec 不预写）：`模式: bangumi 角色简介页路径形态 /character/<id>，搜索页游客返回空，公开 API api.bgm.tv 全 GET 可用 | 证据: <番>第N期 | 边界: 仅游客视角实测，登录后形态未验证`。
 
 ### 2.6 决策 6：工具 schema 描述同步——模型经描述发现新字段

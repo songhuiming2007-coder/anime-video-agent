@@ -96,7 +96,9 @@
 | `pipeline` | 现有 4，**不变** | **永不可见** | ADR-0021 §2（渲染/质检等确定性工序） |
 | `idea` | 现有 4，**不变** | **不可见** | ADR-0021 §2 只点名 asset/creative；idea 是写权限为零的选题会话（`cli.py:725`），保持最小面，扩可见性须另立 ADR |
 
-- **mask-don't-remove 的机械化定义（本 spec 的验收口径）**：`TOOL_SCHEMAS` 注册表（`tools.py:334-428`）常驻全部 8 个条目；`build_tool_schemas("pipeline")` 输出中**不含** `web_search`/`web_fetch`；`execute_tool("web_search", ..., ToolContext(scope="pipeline"))` 返回白名单拒绝数据。**三层证据缺一不可**（§7.1 T3），防止「注册表里删了装没这回事」或「schema 掩了但执行层裸奔」两种假合规。
+> **2026-10-08 修订（D43 / Spec 17 / ADR-0027），经用户裁决**：上表及本节「按 scope 可见/不可见」的掩码语义已全部废除——所有模式开放全部工具，`tools.json` 收为单表；下文「mask-don't-remove 的机械化定义」中的 schema 层掩码与执行层 scope 闸均已删除（验收口径 T3 已按 Spec 17 §9 改写为「单表全量可见」），注册表常驻与协议键零泄漏两层不变。出网断言、`_guard_url`、`_scrub`、人审卡照旧。
+
+- **mask-don't-remove 的机械化定义（本 spec 的验收口径）**：`TOOL_SCHEMAS` 注册表（`tools.py:334-428`）常驻全部 8 个条目；`build_tool_schemas("pipeline")` 输出中**不含** `web_search`/`web_fetch`；`execute_tool("web_search", ..., ToolContext(scope="pipeline"))` 返回白名单拒绝数据。**三层证据缺一不可**（§7.1 T3），防止「注册表里删了装没这回事」或「schema 掩了但执行层裸奔」两种假合规。（**2026-10-08 注（D43 / ADR-0027）**：mask 两层已随 D43 删除；注册表常驻一层不变，见上条修订注。）
 - **配置即护栏纪律沿用**：tools.json 注释已写死「工具清单不现场发明……改这张表 = 改护栏，不是普通配置」（`tools.py:300-302` 注释），本 spec 的 tools.json 变更按护栏变更对待，随 PR 评审。
 
 ### 2.3 决策 3：provider 配置与凭据隔离——镜像 load_llm_config 纪律（正面回答预审问题 2）

@@ -116,7 +116,7 @@
   1. **写域归属**：candidates.json 在 `data/library/incoming/`（素材池交接区），不在任何期目录。creative scope 的写权限被 `CREATIVE_WRITABLE_FILES`（`tools.py:24-27`）写死为**期产物两个文件**（`01-topic.md` / `02-script.draft.md`），把 library 级写塞进 creative 会模糊「期写域 vs 库写域」的既有边界；
   2. **工序归属**：`ASSET_COMMANDS`（`tools.py:43-49`）就是 Phase 0 素材工序白名单（`ingest.phase0` / `shots` / `vindex` / `faces`），素材提案是它的天然上游；ADR-0021 §2 把网络工具给 asset scope 的理由（「Phase 0 素材扩充」）原样适用于提案工具——检索（web_search/web_fetch，Spec 4）与提案（acquire_propose）在同一 scope 闭环，模型不用跨 scope 搬 URL；
   3. **pipeline scope 永不可见**：ADR-0021 §2 明文网络工具对 pipeline 不可见（渲染/质检是确定性工序）；提案工具同理——pipeline scope 会话没有素材判断业务；
-  4. **idea scope 不加**：idea 是写权限为零的选题会话（`cli.py:725`，Spec 4 §2.2 同款论证），扩可见性须另立 ADR。
+  4. **idea scope 不加**：idea 是写权限为零的选题会话（`cli.py:725`，Spec 4 §2.2 同款论证），扩可见性须另立 ADR。（**2026-10-08 注（D43 / Spec 17 / ADR-0027）**：本条已被 D43 取代——单表全开，idea 亦可见 `acquire_propose`；但无期会话调它统一报「先建期」（人裁决 (A)），抓取卡链在 idea 下不会出现。）
 - **asset scope 现状（核实）**：`config/agent/tools.json` 中 `"asset": []`（显式空表语义，`tools.py:431-437 tool_names_for_scope` docstring）；`config/agent/scopes/` 下**无 asset.md**（仅 creative/director/idea/pipeline 四个，`load_scope` `scopes.py:31-49` 回落默认提示）。本 spec 不补 asset.md（提示词工程超出范围，RF-6 登记）。
 - **与 Spec 4 RF-2 表述的冲突处理**：Spec 4 §2.5（注入安全决策，`2026-09-23-network-tools-spec.md:136`）论证防线时写过「asset scope 会话里模型连写工具都看不到」。本 spec 落地后该句过时——但 Spec 4 同段已写明**真实防线是「全部副作用工具都在人审卡之后」**：`acquire_propose` 不标 `side_effect=False`，`cli.py:591-592` fail-closed 默认 True，**每次调用必弹人审卡**，防线不削弱。Spec 4 已冻结文本不回改，此处正式登记该表述的演进（§6.1）。
 - **每次一卡是否扰民**：工具参数是**数组**（一批候选一次调用），一张卡审一整批；且这张卡是写盘护栏，**不是**人审闸门本身——闸门是 fetch 的逐条批准（§2.6），两层不混淆。
@@ -146,7 +146,7 @@
 | 纪律 | `write_episode_file` 先例 | `propose_candidates` 落法 |
 |---|---|---|
 | 写目标白名单 | `CREATIVE_WRITABLE_FILES` 两文件（常量本体 `tools.py:24-27`，检查 `tools.py:83-86`） | 写目标**更窄**：固定为 `incoming/candidates.json` 一个文件，路径不从模型参数取（模型只给候选数组，不给路径） |
-| scope 闸 | 非 creative 零写权限（`tools.py:78-79`） | 经 `execute_tool` 既有三层闸（`tools.py:653-670`）：注册表 → tools.json scope 白名单 → 实现层边界 |
+| scope 闸 | 非 creative 零写权限（`tools.py:78-79`） | 经 `execute_tool` 既有三层闸（`tools.py:653-670`）：注册表 → tools.json scope 白名单 → 实现层边界（**2026-10-08 注（D43 / ADR-0027）**：「非 creative 零写权限」与「tools.json scope 白名单」两道闸已随 D43 删除；无期会话由「先建期」拦截替代） |
 | 双端 resolve 防 symlink | 期目录与目标各自 resolve（`tools.py:91-92`），父级比对（`tools.py:114-115`） | `incoming/` 与 `candidates.json` 各自 resolve；`target.parent != incoming_resolved` 或 target 逃逸 `data/library` 即 `PermissionError`（T5 双场景） |
 | 原子落盘 | `paths.atomic_write`（`tools.py:122`） | 同款，锁内调用 |
 | 存储红线 | `data/episodes` 不可达即拒（`tools.py:106-107`） | `data/` 悬空（符号链接不可达）或 `data/library` 不在 → `PermissionError`，**零 mkdir**；`incoming/` 子目录在 data 可达前提下 `mkdir(parents=True, exist_ok=True)`（沿用 `acquire.incoming()` `acquire.py:66-76` 先例，**不**走 `require_data()`——它 raise `SystemExit`（`paths.py:144/149/154`，函数体 131-158），工具层必须回 `PermissionError` 喂模型） |

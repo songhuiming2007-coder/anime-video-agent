@@ -1,6 +1,6 @@
 # Spec 17：工具不再按模式（scope）分配，所有模式开放全部工具（D43）
 
-> **状态：v0.2，定向复审 🟢 可动工，人 2026-10-07 已确认，待施工 D43-B（人定 2026-10-08 施工）**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)；同日 D43-R2 定向复审 🟢，13 条全部核销，另 6🔵 由施工吸收，见「定向复审」）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
+> **状态：已施工·待评审（D43-B 2026-10-08 完成，见 §11 施工回填；待 D43-C 独立评审）**（2026-10-07 作者修订，回应 D43-R 的 5🟡 + 8🔵，见「作者修订回应」；🟡-1 人 2026-10-07 裁决 (A)；同日 D43-R2 定向复审 🟢，13 条全部核销，另 6🔵 由施工吸收，见「定向复审」）。沿革：v0.1 草案 2026-10-06 立文；§8 Q1–Q3 人同日裁决全部按建议；同日红队一轮 D43-R 🟡 修订后复审。本文件不改代码；作者修订并经红队复审 🟢、人确认后才施工（D43-B），施工后另开 session 独立评审（D43-C）。
 > 对应 issues：**D43**（主）；与 **D42** 交叉（D42 方案 (a) 的「idea 补联网工具」被本 spec 覆盖，见 §6）。
 > 相关：ADR-0021（网络工具内化，「网络工具只对 asset / creative 可见」）、ADR-0025（工具表封顶 14，`cover_edit` 只对 creative 可见）、ADR-0023（跨期记忆，`write_memory` 只挂 creative）、Spec 10（`archive/2026-09-25-desktop-conversation-panel-spec.md`）§2.5（idea 会话零写权限）、impl spec（`2026-09-18-ava-agent-impl-spec.md`）§2.4 / §2.5 B3-r6（scope 白名单）；新提 **ADR-0027**（`docs/dev/adr/0027-tools-not-gated-by-scope.md`，提议中）。
 
@@ -156,7 +156,7 @@ idea 会话没有期目录。工具全部可见，但凡需要期目录的调用
 - 双保险在实现层：`_tool_write_episode_file`、`_tool_cover_edit`、`_tool_run_pipeline`、`_tool_acquire_propose` 在 `ctx.episode_dir is None` 时抛同一文案。
 - `run_pipeline` **函数本体不拦**：终端 `/run` 与既有用例（如 `run_pipeline("check_script", scope="pipeline", confirmed=True)` 无期调用）的语义不动；内核 `_fetch_executor` 也不改。idea 下抓取卡不会出现，因为它的唯一来源 `acquire_propose` 已被拦。
 
-**批准记录落点（v0.2，🔵-6，红队探针实测，接受）**：idea 下仍会弹的**工具批准卡**只有 `write_memory` 与 `browser` 两种（检查点卡等非工具卡照旧，不在本表范围）。`ep_dir is None` 时 `log_approval_decision` 把 `approval_resolved` 事件写到库级 `data/_events.jsonl`，期级 `approvals.jsonl` 不产生；idea 会话本身不落盘（`persist=False`）。库级事件比期级记录少 latency / channel / request_id 字段，**接受**：idea 的批准不静默丢，追溯靠库级事件已够；补齐另立文。
+**批准记录落点（v0.2，🔵-6，红队探针实测，接受）**：idea 下仍会弹的**工具批准卡**只有 `write_memory` 与 `browser` 两种（检查点卡等非工具卡照旧，不在本表范围）。`ep_dir is None` 时 `log_approval_decision` 把 `approval_resolved` 事件写到库级 `data/_events.jsonl`，期级 `approvals.jsonl` 不产生；idea 会话本身不落盘（`persist=False`）。库级事件比期级记录少 latency / channel / request_id 字段，**接受**：idea 的批准不静默丢，追溯靠库级事件已够；补齐另立文。两种不留痕情况一并写明（D43-R2 🔵 R2-5，不改代码）：① idea 下卡被中断作废时只有 `_record`，而 `persist=False` 时它不写任何东西，作废无记录（作废的卡没执行任何操作，不丢证据）；② 库级事件写入包在 `except Exception: pass` 里，写失败（如外置盘掉线）则 y/n 都不留痕（与期级共用同一个吞异常点，属既有行为）。
 
 ### 3.5 文案同步
 
@@ -263,3 +263,90 @@ D42 人选方案 (a) 含两半：① idea 补联网三件（`web_search` / `web_
 - 验证：全量 `uv run pytest` 全绿；`cd desktop && npx vitest run`、全量 `npx playwright test`（`workers: 2`，临时副本）全绿；§9 变异逐条回填。
 - 门禁：① §9 新增用例与改写用例全绿，改写逐条可追溯；② 变异 MUT-A1～A11 共 11 条全杀，且已登记进 shipped 矩阵、`verify_mutations.py --only` 逐条可复跑；③ 真会话冒烟（临时仓库副本、真 LLM）：pipeline 模式会话里让模型查一条网页资料，确认 `web_search` 可用且出网断言照常；idea 会话里让模型写 `01-topic.md`，确认返回「先建期」而不是白名单错误；同一会话里让模型提一条素材候选，确认 `acquire_propose` 同样返回「先建期」、`incoming` 池不变；④ §7 文档修订面完整。
 - 施工回填（D43-B 写）：测试失败清单与改写对照、变异回填表、偏差。
+
+## 11. 施工回填（D43-B，2026-10-08，施工 session 非 D43-R/R2）
+
+PR 划分：PR1 = core + 测试（`45fc26b`）；PR2 = §7 全部修订面 + §3.4 R2-5 补半句 + 本回填（本次提交）。ADR-0027 保持「提议中」（评审通过后才改「已通过」）。
+
+### diff 摘要（PR1，`45fc26b`，31 文件，+1265/−935）
+
+- `config/agent/tools.json`：四键 → 单表 `{"tools": [13]}`（注册顺序）。
+- `pipeline/agent/tools.py`：`CREATIVE_WRITABLE_FILES` → `EPISODE_WRITABLE_FILES`；`write_episode_file` 删 `scope != "creative"` 检查且 `scope` 形参一并删除；`validate_pipeline_command` 删 `scope` 形参、合表（§3.3 两条合表语义写死在 docstring 与分支结构里：asset 侧子命令校验永远生效、当期目录补位只对原 PIPELINE_MODULES 侧）；`tool_names_for_scope` → `tool_names(root)` 直读单表；`build_tool_schemas(root)` 不再收 scope，正向（B3-r6）与反向分叉检查同点同形态当场 `KeyError`；`execute_tool` 删第 ② 层；新增 `NEEDS_EPISODE_TOOLS`（frozenset，4 个需期工具）与 `NO_EPISODE_MESSAGE`（统一文案），review 层与实现层共用；`_tool_write_episode_file` / `_tool_cover_edit` / `_tool_run_pipeline` / `_tool_acquire_propose` 实现层双保险；`ToolContext` docstring 改「scope 只作记录」。
+- `pipeline/agent/scopes.py`：`load_scope` 不再读工具表（`ScopeConfig.tools` 字段删除）；`get_tools_json_path` 保留。
+- `pipeline/agent/memory.py::apply_op`：删 creative-only 闸（scope 降为日志记录字段，docstring 注明 D43）。
+- `pipeline/agent/session.py::review_tool_call`：删越 scope 拒绝；加「先建期」reject（`ep_dir is None` 且 ∈ `NEEDS_EPISODE_TOOLS`），**排在未注册检查之后、一切 dry-run 之前**（R2-6）。
+- `pipeline/agent/llm.py`：`build_tool_schemas(context.scope, root)` → `build_tool_schemas(root)`；`pipeline/jobs.py::create_job`：`validate_pipeline_command` 调用点去 scope 形参（`Job.scope` 记录字段照旧）。
+- 文案：`status_card.py` idea 卡「期目录: 无（写期文件前须先建期）」；`cli.py` 三处（docstring / idea 横幅 / 非 TTY 帮助）；`protocol.py` 注释；`config/agent/scopes/{idea,asset,pipeline}.md`（§3.5）。
+- `desktop/e2e/sessionReal.spec.ts`：过期注释更新（🔵-8，只改注释，e2e 实测全绿）。
+- `scripts/verify_mutations.py`：M24 退役（注释注明 D43 废除）；M20 改锚不退役（锚缩到「未注册」两行，guard 改「未注册工具预校验」）；M29 锚随 idea 卡新文案更新；新增 `MEMORY` / `WEB` 文件常量；MUT-A1～A11 登记。
+
+### 测试
+
+- 基线（施工前 HEAD）：`6 failed, 2050 passed, 5 skipped`（94.40s）。6 条红全部因外置数据盘未挂载（`data` 是悬空符号链接）：`test_agent_assembly_integration` ×2（跨期记忆注入校验 WARN 多一条消息）、`test_cloud`（SystemExit 悬空盘）、`test_corrections`（同）、`test_golden_terminal` G-P1/G-P2（pty 输出多一行记忆 WARN）。
+- 最终（PR1 后）：`6 failed, 2060 passed, 5 skipped`（95.28s）——红的与基线**同一集合**，净增 10 条绿（新增 TA 9 条 + 改写净增）。
+- 桌面端：`npx vitest run` 422 passed；`npx tsc --noEmit` 绿；`npx playwright test`（workers 2）115 passed / 2 skipped，「真实数据零污染」检查通过。
+
+### 改写对照（旧断言 → 新断言，逐条可追溯）
+
+| 原用例 | 处置 |
+|---|---|
+| `test_write_episode_file_rejects_non_creative_scope`（零写权限两条） | → `test_write_episode_file_all_scopes_write_whitelist_only`（TA-4：pipeline/asset 写白名单文件成功、写白名单外仍拒、`../x` 仍拒、01-topic.md 未确认仍拒） |
+| `test_llm_scope_tool_filtering_isolation` | → `test_llm_tool_table_is_single_and_matches_registry`（单表恰等于注册集；search_notes 在 pipeline 执行不再拿「白名单」拒因；仓库真配置是单表） |
+| T17 `test_write_memory_registered_creative_only_with_adr` | → `test_write_memory_registered_with_adr_and_memory_scopes`（R2-1：单表内含 write_memory + ADR 登记 + 协议键零泄漏不变；不变量换等强断言「memory.scopes 恰为 {creative, asset, idea}，不含 pipeline」） |
+| T6 `test_idea_scope_tools_readonly_and_no_write` | → `test_idea_scope_full_table_and_needs_episode_message`（全量表 + 四个需期工具在 idea 拿「先建期」统一文案 + 只读工具不受影响 + NEEDS_EPISODE_TOOLS 精确集合） |
+| T8 `test_build_idea_card_invariants` | 「写权限」标记 → 「期目录」标记（随 §3.5 新文案） |
+| M11 `test_m11_scope_hot_derivation_from_creative_to_pipeline` | → `test_m11_scope_hot_derivation_tool_table_constant`（scope 热推导成立且工具表逐回合相同） |
+| M20 `test_m20_out_of_scope_tool_rejected_no_card` | → `test_m20_needs_episode_tool_rejected_no_card_in_idea`（idea 会话需期工具预校验拦截、不弹卡、拒因回喂）；`test_m20_unregistered_tool_rejected_no_card` 不动（M20 改锚后的杀手） |
+| TK-4 `test_tk4_model_and_asset_scope_cannot_reach_acquire_fetch` | → `test_tk4_acquire_fetch_reachable_after_d43`（合表后任意 scope 可提议 `acquire fetch 1` → 弹人审卡） |
+| T3 `test_pipeline_scope_masks_web_tools` | → `test_web_tools_visible_in_all_scopes`（注册表常驻 + 单表全量可见 + 执行层不再按 scope 拒） |
+| T4 `test_idea_and_pipeline_tables_unchanged` | → `test_all_scope_tables_equal_full_set`（单表 = 注册集 ∩ extras 可用集；请求层逐字节相等见 TA-1） |
+| T11 `test_tool_schemas_protocol_keys_whitelist` | 逐 scope 循环 → 单表一次（断言不变） |
+| `test_acquire_propose_scope_mask`（T9 三层掩码） | → 注册表常驻 + 单表含 acquire_propose + 执行层不再按 scope 拒（无期才报「先建期」） |
+| `test_tools_import_does_not_pull_candidates`（T13②） | R2-4：实调腿补 `episode_dir`（实现层双保险会拦无期调用），原断言（实调后按需加载 candidates、不拉 acquire）一字未动 |
+| `test_write_memory_tool_uses_ctx_confirmed_only` 末段 | 「非 creative 白名单外调不到」→ TA-6 全回环腿（idea 过卡落盘、日志 scope=idea、episode 为 null） |
+| TP-16（`test_tp16_idea_session_runs_turns_without_writing`） | 工具表断言从 `{read_artifact}` 改为全量（含子进程注册的 4 个测试工具） |
+| `test_golden_terminal` G5 夹具 | 「给 creative 表临时放行 run_pipeline」的绕行删除（单表后不需要） |
+| `test_golden_terminal` G12 金样本 | 手改一行（idea 横幅文案随 §3.5）；**未重录**——重录会把数据盘不在的记忆 WARN 烙进金样本 |
+| `tests/golden/llm_request_no_models.json`（T13） | 按 D43 语义重生成：`frozen_tools` 取旧 creative 表一份，四 scope 请求体的 tools 统一为它（冻结快照机制不变） |
+| 共享夹具 | `SPEC_TOOLS` 四键 dict → 13 名单表 list；`make_agent_root` / `_make_web_root`（注释）/ `_make_full_web_root` / `test_agent_memory._agent_root` / `test_agent_llm_tiering._make_root` / `test_agent_protocol.world`（🔵-2：单表含子进程注册的 test_ping/test_slow/test_stdin_child/test_writer，否则反向检查在会话第一轮炸）全部改写单表 |
+| `validate_pipeline_command` 各调用点（test_agent_tools / test_agent_session / test_review） | 去 `scope=` 实参；「不在 pipeline 允许的白名单内」→「不在白名单内」；新增 asset 侧不补位用例（合表语义 b） |
+
+### 变异回填表（MUT-A1～A11 全杀；每轮含基线 6 红，指定杀手逐条指认；无中止轮；还原由 harness 逐字节断言 + git status 干净复核）
+
+| 变异 | 指定杀手（实测在变红清单内） | 红数 |
+|---|---|---|
+| MUT-A1（llm.py 调用点对 idea 过滤） | TA-1 `test_ta1_request_tools_byte_identical_across_scopes` | 9 |
+| MUT-A2（删反向分叉检查） | TA-2 `test_ta2_single_table_divergence_fails_loudly` | 7 |
+| MUT-A3（`_tool_write_episode_file` 恢复 creative-only） | TA-4 `test_write_episode_file_all_scopes_write_whitelist_only` | 8 |
+| MUT-A4（合表漏 ASSET_COMMANDS） | TA-5 `test_ta5_merged_table_semantics`（+TK-4/TK-9 等） | 12 |
+| MUT-A5（cloud exec 禁令丢失） | TA-5（+`test_validate_pipeline_command_rejects_cloud_exec`） | 8 |
+| MUT-A6（NEEDS_EPISODE_TOOLS 漏 run_pipeline） | TA-6 `test_ta6_idea_needs_episode_tools_rejected_before_card` | 8 |
+| MUT-A7（web.py fetch 腿删出网断言） | TA-7 `test_ta7_web_fetch_egress_assert_still_holds_in_pipeline`（+T5a/T5b） | 9 |
+| MUT-A8（apply_op 恢复 creative-only） | TA-6b `test_ta6b_apply_op_succeeds_outside_creative` | 9 |
+| MUT-A9（review 层残留越 scope 拒绝） | TA-3b `test_ta3b_review_layer_has_no_scope_reject` | 7 |
+| MUT-A10（删 review 层「先建期」） | TA-6（不弹卡断言；+改写后 M20） | 8 |
+| MUT-A11（NEEDS_EPISODE_TOOLS 漏 acquire_propose） | TA-6 acquire_propose 腿 | 8 |
+
+### D43-R2 六条 🔵 处置
+
+- R2-1 ✅：T17 不变量退役，换等强断言「memory.scopes 恰为 {creative, asset, idea}，不含 pipeline」；未往 memory.scopes 加 pipeline；Spec 7 archive 四处加修订注记（§1.3 裁决表、§2.8 理由、T17 不变量行、§7 用例表）。
+- R2-2 ✅：§7 补列三处（acquire-propose spec 的「idea scope 不加」与 scope 闸表行；web-fetch-links spec 的 write_memory 只挂 creative 段）；D42 选型稿 §3 第 1 条 browser 句更正（profile 来自 `web.json` 的 `browser.profile_dir`，与期目录无关）并加注 D43 覆盖。
+- R2-3 ✅：TA-1 改在请求层断言（四个 scope 的 ToolContext 各跑一次 run_tool_loop，假 LLM，请求体 tools 逐字节相等 + 名字集合 == 注册集 ∩ extras 可用集）；MUT-A1 植在 `llm.py::run_tool_loop` 调用点。
+- R2-4 ✅：T13② 补 `episode_dir`，原断言保留。
+- R2-5 ✅：§3.4「接受」后补半句（两种不留痕情况：卡作废无记录、库级事件写失败被吞），不改代码。
+- R2-6 ✅：「先建期」reject 排在未注册检查之后、一切 dry-run 之前（代码顺序 + docstring 写死）；TA-6 的 run_pipeline 腿含非法命令样例 `faces unknown`，断言拿到统一文案而非白名单拒因。
+
+### 门禁③ 真会话冒烟（2026-10-08，临时仓库根 + 真 LLM + 真网；驱动脚本与帧证据在 scratchpad `d43b/smoke.py`、`d43b/smoke-frames-final.jsonl`）
+
+- 腿 1（pipeline 模式，期停在 03）：模型调 `web_search` 查《葬送的芙莉莲》→ **ok=True**，答出 MADHOUSE / 2023（真网，exa_mcp 链）；下一轮请它查含 `agent.local.json` 的 query → **整轮 `blocked`**（受限字面量进了请求体，出网断言在请求层照常拦）。
+- 腿 2（idea 会话）：模型先以提示层纪律解释「应先建期」（拒绝直接调用）；经人坚持演示后实际调用——`write_episode_file` → **ok=False，统一文案「当前没有期目录：这一步要先建期（桌面端「＋ 新建一期」/ 终端 `ava new <名>`）」**；`acquire_propose` → **ok=False，同一文案**；fake root 的 incoming 候选池零写入（前后目录树一致）；idea 会话不落盘照旧。
+- 环境备注：fake root 非 git 仓库，冒烟期间协议照常发 `code_freeze` WARN（「git 检查异常」分支）——冒烟环境所致，非生产路径问题。
+
+### 偏差与未实测项（如实）
+
+1. **真机打包版端到端未跑**（ACC 范畴，需数据盘）：D43 后桌面端打人工期的全流程（含 idea 视图的工具行为）只过了 e2e/playwright 与单/集成测试，没过打包版人手验收。
+2. 冒烟腿 2 的第一轮模型**两次主动拒绝**调用需期工具（提示层指引生效的正面证据），机制层的「先建期」是在人坚持演示后实际调到的；若验收口径要求「模型首轮就调」，那取决于模型取舍，不可强制。
+3. 冒烟期间上游 LLM 出过一次 HTTP 500（代理转发 EOF），重试后过；与 D43 无关。
+4. `run_pipeline` 函数本体按 v0.2 不拦无期调用（终端 `/run` 既有语义不动）；`test_run_pipeline_pinning` 零改动全绿。
+5. 基线 6 红全部为数据盘未挂载所致，与 D43 无关；修前修后同一集合，未掩盖。
+6. idea 会话的批准落点维持「库级 `_events.jsonl` 少字段 + 两种不留痕情况」（§3.4，接受）。

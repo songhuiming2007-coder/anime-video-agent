@@ -36,7 +36,7 @@ Hermes 调研给出可抄的现成范式：toolsets 分组授权（webhook 面�
 
 ### 2. Scope 分组授权（借 Hermes toolsets 模式）
 
-- **网络工具只对 asset scope 与 creative scope 可见**；pipeline scope（渲染/质检等确定性工序）维持只读本地产物，永不见网络工具。
+- **网络工具只对 asset scope 与 creative scope 可见**；pipeline scope（渲染/质检等确定性工序）维持只读本地产物，永不见网络工具。（**2026-10-08 修订（D43 / Spec 17 / ADR-0027），经用户裁决**：本条的「按 scope 可见 / 永不见」已被取代——所有模式开放全部工具，`tools.json` 收为单表、不再按 scope 过滤；出网断言、`_guard_url`、人审卡等与模式无关的护栏全部照旧。）
 - `browser` 是全表最重工具：execution 前必须过 approval 门（借 Hermes 审批分层：确定性规则，不引入 guardian LLM），且 profile 路径写死在 config、不接受运行时参数覆盖。
 - 出网边界沿用 `assert_egress_boundary`（ADR-0018 §2.5），四个新工具全部纳入同一边界检查；密钥/登录态 cookie 属出网敏感物，沿用 RESTRICTED_EGRESS_PATTERNS 机制。
 
