@@ -361,3 +361,14 @@ R-1 补完后由非施工 session 只复跑 V8（+ V5 回归）即可关闭 N60�
 | 🔵 R-2 | 采纳：⑥ 的首发失败断言收紧为 `rejects.toMatchObject({ code: "E_SESSION" })` | 同上 |
 
 变异复跑（scratchpad `d42b/n60_mut.py`，写回 md5 全部一致）：**V8（`migrated=false` 时 `carried.clear()`）KILLED**，杀手 ⑩：`['SESSION_NEW', 'SESSION_NEW']` ≠ `['SESSION_CONTINUE', 'SESSION_NEW']`；回归 V5 → ⑨、V3 → ⑥、V4 → ⑦、V6 → ⑧ 仍各自杀死。读数：vitest 437、tsc 绿。按复核建议，由非施工 session 只复跑 V8（+ V5 回归）即可关闭 N60。
+
+### N60 收尾复跑（2026-10-08；复跑人 = D42-C 评审 session，未参与 `f485764` / `dee2fde`；只跑两条变异 + 读数）
+
+**结论：🟢 N60 关闭，迁 issues archive。** HEAD = `dee2fde`。亲手施加、跑 `vitest run tests/host/sessions.test.ts -t TH-D42`、写回、md5 对拍（scratchpad `d42c/n60mut.py`，`PYTHONDONTWRITEBYTECODE=1`；两条 md5 均一致，跑后工作树干净）：
+
+| 编号 | 变异 | 结果 | 杀手（失败行） |
+|---|---|---|---|
+| V8 | `migrated=false` 分支 `carried.delete(name)` → `carried.clear()` | KILLED | ⑩ L907：`['SESSION_NEW', 'SESSION_NEW']` ≠ `['SESSION_CONTINUE', 'SESSION_NEW']` |
+| V5 | 删掉 `carried.delete(name)` 那一行（不替换） | KILLED | ⑨ L893：`['SESSION_CONTINUE']` ≠ `['SESSION_NEW']` |
+
+还原后读数：`npx vitest run` 38 files / 437 passed；`npx tsc --noEmit` 绿。R-2 已落地（⑥ 为 `rejects.toMatchObject({ code: "E_SESSION" })`）。R-1 / R-2 均核销。

@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-08：N60 复核通过归档
+
+### [N60] 桌面端「建期带入」host 侧一次性标记（`carried`）的不变量零用例守
+- 状态：**已解决**（✅ 2026-10-08；施工 `f485764` TH-D42 ⑥～⑨ + C-2(b) + C-3 注记、`dee2fde` TH-D42 ⑩ + ⑥ 拒因收紧；定向复核 🟡 `eb0851c` → 收尾复跑 🟢）
+- 关联：`desktop/src/host/service.ts`（`carried`、`convSend`、`convResume`、`createEpisode`、确认切仓处 `carried.clear()`）；Spec 18 §9.6 偏差 1、「独立评审」🔵 C-1 / C-2，D42；Spec 18 §10、「N60 定向复核」与「N60 收尾复跑」
+- 原记录（活跃表原文）：问题「桌面端「建期带入」的 host 侧一次性标记（`carried`）有两条不变量零用例守：发送失败不消费、切仓清空」；推进「D42-C 自设变异 V3（发送前就消费）、V4（切仓不清标记）全量 vitest 432 仍绿，e2e 只有两版 TX-7 走建期且都是成功路径。今天代码读下来是对的：失败不消费、切仓清空、resume 成功即消费。补法：TH-D42 ⑥「marker true → 首发失败 → 再发仍 `SESSION_CONTINUE`」、⑦「marker true → 切仓 → 同名期首发 `SESSION_NEW`」，可顺带 ⑧ ep 的 resume 消费；顺手可把 `createEpisode` 在 `migrated=false` 时 `carried.delete(name)`（C-2(b)，只在期目录被 app 外删除后同名重建时可达）。不阻断，碰 desktop 时一起做」
+- 活跃表最后状态：**定向复核 🟡 打回（2026-10-08，D42-C 评审 session；见 Spec 18「N60 定向复核」）**：V3～V7 全杀、注记与实现一致，但自设变异 V8（未带入时 `carried.clear()` 清掉所有期的标记）全量 vitest 存活——补一条「A 带入 → B 未带入 → A 首发仍 CONTINUE」用例（R-1），另顺手收紧 ⑥ 拒因断言（🔵 R-2）；补完只需复跑 V8 + V5。**此前**：已修·待定向复核（施工方 D42-B session；记录见 Spec 18 §10）：补 TH-D42 ⑥～⑨，V3 / V4 / V5 / V6 均由对应用例断言杀死；顺手采纳 C-2(b)、补 C-3 注记。复核不能是本 session（D42-C 评审 session 可做）。原级别：备忘·用例缺口（D42-C 评审副产物，2026-10-08）
+- 评审：D42-C 评审 session 定向复核——⑥～⑨ 断言的都是 spawn 模板序列、⑥ 拒因实测为 ready 前退出（`E_SESSION`）、C-2(b) 不动带入路径、Spec 10 §2.1 / §3.1 注记与实现一致；V3～V7 全杀，自设 V8（未带入时 `carried.clear()`）存活 → 🟡 R-1。补 ⑩ 后收尾复跑：V8 由 ⑩ L907 杀死、V5（删行）由 ⑨ L893 杀死，md5 一致；vitest 437、tsc 绿。产品代码只有 C-2(b) 一行 `else { carried.delete(name) }`。
+
+---
+
 ## 2026-10-08：D42 评审通过归档
 
 ### [D42] 选题会话（idea）与建期写 `01-topic.md` 交互断层
