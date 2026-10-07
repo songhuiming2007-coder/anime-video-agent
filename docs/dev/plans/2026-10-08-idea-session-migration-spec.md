@@ -1,6 +1,6 @@
 # Spec 18：建期迁会话——选题会话（idea）落盘与转正继承（D42）
 
-> **状态：v0.2 + 定向复审（D42-R2，2026-10-08）🟢 可动工**——8 条全部核销，2 条非阻断残余（见「定向复审」）。2026-10-08 立文（D42-A 第二步）。
+> **状态：已施工·待评审（D42-B，2026-10-08；回填见 §9）**；此前 v0.2 + 定向复审（D42-R2，2026-10-08）🟢 可动工——8 条全部核销，2 条非阻断残余（见「定向复审」）。2026-10-08 立文（D42-A 第二步）。
 > 对应 issues：**D42**。前置：选型稿 `2026-10-06-idea-to-episode-options.md`（人 2026-10-06 裁决：方案 (a)、联网三件含 `crawl`、同一时刻只留一个选题会话）；**D43 / Spec 17 已施工（2026-10-08）**——方案 (a) 的「idea 补联网三件」已被覆盖且更宽（单表全开），本 spec 只剩「建期把选题会话记录带进新期」一半。
 > 触及冻结面：Spec 9（`archive/2026-09-25-agent-session-protocol-spec.md`，`--idea` 不落盘 → 落盘 + 恢复）、Spec 10 §2.5（建期流程与 `idea-note`）、D27 spec（`archive/2026-09-21-ava-entry-idea-scope.md` §3.1，idea 的立规文件；D42-R2 余-1 更正——此前误指 ADR-0018，后者全文无 idea 条款）、Spec 10 §2.5 第 5 条（idea 会话保留后台 → 建期即结束）。
 
@@ -200,3 +200,62 @@ for record in records:
 - D43 / ADR-0027 已废「按 scope 分工具」；本 spec 不动工具表。
 - 本 spec 不改 `--continue` 的选择规则、不改 `session.jsonl` 格式、不改 H-8（host 不代发消息）、不改人审卡链。
 - 「期名由人拍板」「建目录由人点按钮」不动；模型自始至终没有建期工具（选型稿已否决 `propose_new_episode` 子变体）。
+
+## 9. 施工回填（D42-B，2026-10-08；施工方 = 独立 session，未参与立文 / v0.2 修订 / 红队）
+
+**提交**：`d1baacf` PR1（core + 测试 + 变异登记 + core 侧文档注记）、`907d280`（PR1 补：收紧两条杀手断言）、`a7501d2` PR2（desktop + Spec 10 注记）、本提交 PR3（回填）。未 push。
+
+### 9.1 diff 摘要
+
+- **core**：`session_log.py`——`IDEA_DIR`、`DataUnreachable`、`acquire_idea_lease`（data/ 不可达拒、`_idea` 缺失自建、建不了目录 / 拿不到锁一律抛，锁冲突文案「另一个选题会话进行中」）、`EpisodeLease.clear`（第二截断点，docstring 注记）、`plan_repairs` 按 §3.2 第 6 条原文把既有 `repair_tool_results` 的 id 计入 `satisfied`；`session.py`——`SessionHost(log_dir=…)`（缺省 = 期目录；idea 的 `ep_dir` 恒 `None`）、`ensure_lease` 改取 `log_dir`、新增 `resume_idea`；`protocol.py`——data/ 闸无条件、idea 取 `_idea` 租约（`DataUnreachable` → `E_DATA_UNREACHABLE` 退 4，其余 → `E_SESSION_LOCKED` 退 3）、idea 启动恒恢复并回放 history、idea 回合 `persist=True`；`cli.py`——终端 `ava idea` 同口径（data 不可达退 2、租约失败退 3）、恒恢复；`new <名> --from-idea`（`migrate_idea_session`：a 取租约 → b 读全部字节 → c 临时文件 + fsync + `os.replace` → d `clear`；退出码 0 / 3 进行中 / 4 迁移失败 / 5 清空失败；stdout 恰好一行 marker）；TTY 下带入后直接 `_continue_repl`；§3.5 文案（`idea.md`、idea 状态卡、终端横幅、非 TTY 说明）。
+- **desktop**：见 §9.6 偏差 1；其余按 §3.3 落地（`NEW_EPISODE` 恒带 `--from-idea`；`parseFromIdeaMarker`；先结束选题会话再建期、结束不了 `E_BUSY` 不建期；带入后清选题缓冲；`idea-note` 两态；选题视图「已带入 <期名>」；`convTarget` 的 idea 继续报错删除，`conv.resume` 对 idea 以 `SESSION_IDEA` 起）。
+- **余-1**：Spec 18 文首「触及冻结面」行已改 D27 spec（PR1）；plans/README 与 issues D42 行「相关」列随本提交改。**余-2**：§3.2 第 6 条补 id 级口径半句（PR1），实现保持 id 级。
+
+### 9.2 测试读数
+
+| 项 | 基线（施工前 `98bf8cc`） | 施工后 |
+|---|---|---|
+| `uv run pytest` 全量 | 2060 passed / 6 failed / 5 skipped | 2075 passed / 6 failed / 5 skipped |
+| `npx vitest run` | 422 | 432 |
+| `npx tsc --noEmit` | 绿 | 绿 |
+| `npx playwright test`（workers 2，临时副本） | 115 passed / 2 skipped | 115 passed / 2 skipped（跳过的是环境变量门控的截图用例；L-3 在内） |
+
+6 红前后同一集合，均为数据盘未挂载（`test_agent_assembly_integration` ×2、`test_cloud`、`test_corrections`、`test_golden_terminal` pty ×2）。
+
+**新增**：`tests/test_d42_idea_migration.py` 15 例（T-D42-1、2、3×2、3b、4×2、5、6、7、8a/8b/8c、9a/9b）；desktop `TH-D42 ①~⑤`（sessions.test）、`TH-D42-M`（marker 解析，service.test）、`TH-D42-E`（SessionManager 单元，ideaMigration.test）。
+**改写（逐条可追溯）**：TP-16（「不写」→「只写 `data/_idea/session.jsonl`、期目录零产出」）；`test_agent_tools.py` T7（idea 会话落盘后不能再对真仓库根跑，改临时根 + 软链 config）；G12 金样本重录（只多横幅两行）；desktop TH-14 三处 argv 断言补 `--from-idea`；e2e TX-7 真实 core 版改为带入全链（含 MUT-35 的「不代发」断言原样保留）、假进程版改为未带入腿（`idea-note` 旧文案、idea 原对话仍可见）。
+
+### 9.3 变异回填
+
+全量套件口径（`verify_mutations.py --only …`，commit `d1baacf`），再以「只跑指定杀手」逐条复核断言级失败并 md5 对拍（scratchpad `d42b/killcheck.py`）：
+
+| 编号 | 指定杀手 | 全量红数（含基线 6） | 复核：杀手的失败行 | md5 还原 |
+|---|---|---|---|---|
+| MUT-D42-a | T-D42-2 | 12 | 「新期没有会话记录：迁移只建了期、没复制」（`907d280` 收紧前是 FileNotFoundError） | ✓ |
+| MUT-D42-b | T-D42-2 | 8 | `assert (True and 19767 == 0)`（`_idea` 不是空文件） | ✓ |
+| MUT-D42-c | T-D42-3[dir_at_log_path] | 7 | `assert (False)`（新期目录不在了）；只读目录腿杀不死——该变异的 `rmtree` 删不动只读目录里的文件，属变异自身受限，不是护栏缺口 | ✓ |
+| MUT-D42-d | T-D42-5 | 8 | `['_idea', '01-a'] == ['01-a']` | ✓ |
+| MUT-D42-e | T-D42-1 | 7 | `'new' == 'resumed'` | ✓ |
+| MUT-D42-f | T-D42-8c | 8 | 「租约失败却发了 ready（静默非持久运行）」（`907d280` 收紧前靠 60 s 等待超时） | ✓ |
+| MUT-D42-g | T-D42-9a / 9b | 8 | 「同一 tool_call_id 重建出了两条 tool 消息」 | ✓ |
+| MUT-D42-h | T-D42-3b | 7 | `assert 0 == 5` | ✓ |
+
+改锚复跑（守护语义不变）：M23（17，含 `test_main_new_enters_repl_in_tty`）、M25a（13，含 `test_non_tty_dual_gates_for_new_and_idea`）、M29（9，含 `test_build_idea_card_invariants`）、S9-MUT-50（19，含 TP-9 / TP-8）、S9-MUT-62（14，含 TP-16 改写后仍杀）全部 KILLED；desktop MUT-35（`a7501d2`，`verify-mutations.mjs --only MUT-35`）由 TX-7 在 5 s 内杀死。
+
+### 9.4 门禁 ③ 真会话冒烟（临时仓库根 + 真 LLM `CPA_API_KEY`，钥匙串只读进子进程环境；驱动与帧证据：scratchpad `d42b/smoke.py`、`d42b/smoke-frames.jsonl` 35 帧）
+
+① `--idea` 聊一轮（ready `continue_status: new`），退 0，`_idea` 记录 22349 字节；② 再起 `--idea`：`continue_status: resumed`、`history_count 3`、回放 3 帧 history（旧常驻层 system_note / 用户原文 / assistant 原文）；③ `ava new 2026-10-08-冒烟带入 --from-idea`：退 0、marker `[from-idea] migrated=true sid=5bd2c0c0eaf6515d messages=3`、新期记录 22349 字节、`_idea` 0 字节；④ 新期 `--continue`（resumed，history 3）里只说「把刚才的草案写进 01-topic.md」→ 模型 `read_artifact` 后调 `write_episode_file` 弹一张卡 → 批准 → `01-topic.md` 写成草案内容（番 / 类型 / 模式 / 张力 / 锚点），回合内再 `read_status` 自查。人没有重述任何内容。
+
+### 9.5 截图（UI 纪律）
+
+scratchpad `d42b/shots/`：1280×800 与 1440×900 各 4 张（选题聊一轮 / 新期首行「已带入选题会话记录（3 条消息）」/ 回选题视图「已带入 <期名>」/ 没聊过就建期时的旧文案）。人 2026-10-08 看后确认按现状提交（含「N 条消息」沿用 core 计数口径，系统消息也计入）。
+
+### 9.6 偏差与未实测项
+
+1. **首发机制（人 2026-10-08 裁决）**：§3.3 ② 原写「renderer 记 `justCreatedMigrated`，首发先 `conv.resume` 再 `conv.send`」，与冻结静态门禁 TG-10（`conv.resume` 只许在 SessionHeader.tsx、`conv.send` 只许在 Composer.tsx、每个点击处理器至多一处、调用点最近外层函数须是原生元素事件处理器）冲突。人选「host 侧一次性标记」：`createEpisode` 拿到 `migrated:true` 记下该期，首次 `conv.send` 以 `SESSION_CONTINUE` 起进程，发送成功才消费（失败不消费，下一次仍接着迁入段起）；`conv.resume` 成功同样消费；切仓清空。语义等同「先 resume 后 send」，TG-10 与 H-8 不动。
+2. **终端带入后直接续聊**：§3.4 写「随后 `ava <名>`（或建期后直接进对话的既有行为）即带着选题记录继续」——普通 `ava <名>` 开新会话、只打一行可恢复提示，所以 TTY 下 `--from-idea` 带入成功后改走 `_continue_repl`（等同 `ava <名> --continue`）；未带入照旧 `run_repl`。
+3. **marker 的 `messages` 口径**：取 core `SessionSummary.messages`（全部 `msg` 记录，含常驻层与注入），与终端「[会话] 上次会话 … N 条消息」同口径；人已确认。
+4. **协议对 idea 的 `ready.other_sessions` 恒为空、`session_bytes` 取 `_idea` 记录长度**：spec 未写，按「逻辑上只有一个选题会话」处理。
+5. **未带入时选题缓冲保留**：§3.3 ④ 只规定带入成功后清缓冲；未带入（选题没聊过 / 只有 user）时不清，与改造前一致（假进程版 TX-7 钉住）。
+6. **未实测**：打包版真机（Spec 10 门禁 12 更新版，并入 ACC，需硬盘）；`endForMigration` 返回假 → 服务层 `E_BUSY` 不建期这一支只在 SessionManager 单元层测到（集成层的真进程挨 SIGKILL 必死，造不出）；`ava new --from-idea` 的 TTY 续聊分支未做 pty 测试（逻辑是既有 `_continue_repl`，`test_main_new_enters_repl_in_tty` 覆盖的是未带入分支）。
+7. **旁见（非本 spec 引入，未修）**：desktop 变异矩阵 MUT-7 / MUT-24 / MUT-64 的锚点在 HEAD（施工前）即已命中 0 / 0 / 2 次，未登记；恢复后的历史把旧常驻层作为 system_note 回放是 `--continue` 既有行为（D42-R 已记）。
