@@ -449,7 +449,7 @@ def test_tk6_request_id_never_enters_the_tool_result(episode: Path, root: Path) 
         "write_episode_file", {"filename": "07-titles.md", "content": "x"},
         ep_dir=episode, scope="creative", root=root,
     )
-    decision = session._review("write_episode_file", {}, "t1", None, root, None)
+    decision = session._review("write_episode_file", {"filename": "07-titles.md", "content": "x"}, "t1", None, root, None)
     assert decision.ok is False
     assert verdict.request is not None
     assert channel.requests and channel.requests[0].request_id not in json.dumps(
@@ -1524,3 +1524,30 @@ def test_d47_review_rejects_before_card(episode: Path, root: Path) -> None:
     v = review_tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "x"},
                          ep_dir=episode, scope="creative", root=root, draft_writes_this_turn=0)
     assert v.action == "reject" and "基线" in v.reason
+
+
+# ---------------------------------------------------------------------------
+# D48：edits 不成立在弹卡前拒；工具行摘要不再是截断的 JSON
+# ---------------------------------------------------------------------------
+
+
+def test_d48_bad_edits_rejected_before_card(episode: Path, root: Path) -> None:
+    (episode / "02-script.md").write_text("配音：甲。\n配音：甲。\n", encoding="utf-8")
+    v = review_tool_call("write_episode_file",
+                         {"filename": "02-script.md", "edits": [{"old": "配音：甲。", "new": "x"}]},
+                         ep_dir=episode, scope="creative", root=root)
+    assert v.action == "reject" and "出现了 2 次" in v.reason
+    v = review_tool_call("write_episode_file",
+                         {"filename": "02-script.md", "edits": [{"old": "配音：甲。\n配音：甲。", "new": "x"}]},
+                         ep_dir=episode, scope="creative", root=root)
+    assert v.action == "ask"
+
+
+def test_d48_tool_summary_for_writes_and_pipeline() -> None:
+    from pipeline.agent.session import tool_summary
+
+    assert tool_summary("write_episode_file", {"filename": "02-script.md", "edits": [{}, {}]}) == "02-script.md · 局部 2 处"
+    assert tool_summary("write_episode_file", {"filename": "02-script.draft.md", "content": "字" * 2600}) == (
+        "02-script.draft.md · 整篇 7.6 KB"  # 2600 × 3 字节 = 7800 B ÷ 1024 = 7.62
+    )
+    assert tool_summary("run_pipeline", {"command": "check_script 02-script.draft.md"}) == "check_script 02-script.draft.md"

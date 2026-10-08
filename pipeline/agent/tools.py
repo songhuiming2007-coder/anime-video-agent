@@ -484,7 +484,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "写入当期稿件文件（白名单见 filename）。写 01-topic.md 必须 confirmed=true 且需人显式确认。"
             "02-script.md 还不存在时写 02-script.draft.md；02-script.md 存在后只改 02-script.md（草稿冻结），"
-            "每次写都会弹卡给人看 diff。"
+            "每次写都会弹卡给人看 diff。改已有文件的一两段时用 edits 只传改动的片段，不要整篇重写。"
         ),
         "parameters": {
             "type": "object",
@@ -494,13 +494,29 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "enum": sorted(EPISODE_WRITABLE_FILES),
                     "description": "白名单内的文件名",
                 },
-                "content": {"type": "string", "description": "完整文件内容"},
+                "content": {"type": "string", "description": "完整文件内容（新建或整篇重写；与 edits 二选一）"},
+                "edits": {
+                    "type": "array",
+                    "description": (
+                        "局部替换（与 content 二选一）：按顺序把 old 换成 new；每个 old 必须在文件中恰好出现一次，"
+                        "带上足够的上下文保证唯一"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old": {"type": "string", "description": "要替换的原文片段（逐字）"},
+                            "new": {"type": "string", "description": "替换后的文字"},
+                        },
+                        "required": ["old", "new"],
+                        "additionalProperties": False,
+                    },
+                },
                 "confirmed": {
                     "type": "boolean",
                     "description": "写 01-topic.md 时必须为 true（人类已确认）",
                 },
             },
-            "required": ["filename", "content"],
+            "required": ["filename"],
             "additionalProperties": False,
         },
     },
@@ -902,12 +918,43 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     raise FileNotFoundError(f"文件不存在或不在读域内: {raw}（只读期目录内与 data/library/）")
 
 
+def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> str:
+    """D48：write_episode_file 写入后的全文。`content` 原样返回；`edits` 在磁盘现版上逐条唯一替换。
+
+    三处共用（落盘、写稿卡 diff、弹卡前校验），保证人在卡上看到的就是将要落盘的。
+    任何一条 old 不唯一或找不到就 ValueError，一字不写——宁可让模型重给，也不猜它想换哪一处。
+    """
+    content, edits = args.get("content"), args.get("edits")
+    if (content is None) == (edits is None):
+        raise ValueError("content 与 edits 必须且只能给一个")
+    if content is not None:
+        if not isinstance(content, str):
+            raise ValueError("content 必须是字符串")
+        return content
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("edits 必须是非空数组")
+    if ep_dir is None:
+        raise PermissionError(NO_EPISODE_MESSAGE)
+    target = Path(ep_dir) / Path(str(args.get("filename", ""))).name
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ValueError(f"{target.name} 不存在，edits 只能改已有文件；新建请用 content") from None
+    for i, e in enumerate(edits, 1):
+        if not isinstance(e, dict) or not isinstance(e.get("old"), str) or not isinstance(e.get("new"), str):
+            raise ValueError(f"edits 第 {i} 条必须是 {{old, new}} 两个字符串")
+        n = text.count(e["old"]) if e["old"] else 0
+        if n != 1:
+            why = "old 为空" if not e["old"] else ("找不到" if n == 0 else f"出现了 {n} 次，带更多上下文使它唯一")
+            raise ValueError(f"edits 第 {i} 条 {why}（按顺序替换，前面各条已生效后再找）")
+        text = text.replace(e["old"], e["new"], 1)
+    return text
+
+
 def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not ctx.episode_dir:
         raise PermissionError(NO_EPISODE_MESSAGE)
-    content = args.get("content", "")
-    if not isinstance(content, str):
-        raise ValueError("content 必须是字符串")
+    content = resolve_write_content(ctx.episode_dir, args)
     filename = str(args.get("filename", "")).strip()
     confirmed = bool(args.get("confirmed", False)) or ctx.confirmed
     target = write_episode_file(

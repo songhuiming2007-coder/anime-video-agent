@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import re
@@ -311,6 +312,8 @@ def _handle_repl_approve(
         )
         return 2
 
+    if _seal_before_approve(ep_dir, stop) != 0:
+        return 1
     try:
         target_id = _resolve_repl_approval_id(stop, explicit_id, displayed_ids)
         res = approvals.approve(
@@ -1171,6 +1174,26 @@ def _cmd_seal_script(ep_dir: Path | str) -> int:
     paths.atomic_write(script.parent / "02-diff.patch", proc.stdout.decode("utf-8"))
     print(len(proc.stdout))
     return 0
+
+
+def _seal_before_approve(ep_dir: Path | str, stop: str) -> int:
+    """D48：批准 02.5 时，封板缺失或已过期就先封板（与「封板」按钮、终端 `/seal-script` 同一条 `git diff`）。
+
+    封板是确定性步骤，人点「批准」本身就是 02.5 的人审动作，不该再要人先去敲一条命令。
+    返回 0 = 可以继续批准；非 0 = 封板失败（如零改动），原样报错、不批准。
+    """
+    if stop != "02.5":
+        return 0
+    from pipeline.approvals import _gate_valid
+
+    if _gate_valid(Path(ep_dir), "02.5"):
+        return 0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _cmd_seal_script(ep_dir)
+    if rc == 0:
+        print(f"[OK] 已封板 02-diff.patch（{buf.getvalue().strip()} 字节）")
+    return rc
 
 
 def voice_info_payload(ep_dir: Path | str) -> dict:
@@ -2517,6 +2540,8 @@ def main(argv: list[str] | None = None) -> int:
             from pipeline import approvals
             from pipeline.approvals import ApprovalError
 
+            if _seal_before_approve(ep_dir, args[2]) != 0:
+                return 1
             try:
                 res = approvals.approve(
                     ep_dir,

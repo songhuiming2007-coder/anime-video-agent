@@ -266,6 +266,7 @@ def review_tool_call(
         NO_EPISODE_MESSAGE,
         READONLY_PIPELINE_MODULES,
         TOOL_SCHEMAS,
+        resolve_write_content,
         run_pipeline,
         script_write_refusal,
     )
@@ -321,6 +322,11 @@ def review_tool_call(
         refusal = script_write_refusal(ep_dir, str(args.get("filename", "")))
         if refusal:
             return ToolVerdict("reject", reason=refusal)
+        # D48：content / edits 不成立（edits 找不到或不唯一）在弹卡前拒，人不必为必然失败的写入点卡
+        try:
+            resolve_write_content(ep_dir, args)
+        except (ValueError, PermissionError) as exc:
+            return ToolVerdict("reject", reason=f"{type(exc).__name__}: {exc}")
     if name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME:
         if draft_writes_this_turn < DRAFT_FREE_WRITES_PER_TURN:
             return ToolVerdict("allow", echo=_echo_line(name, args))
@@ -376,7 +382,20 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
         "crawl": "url",
         "list_episodes": None,
     }
-    if name == "search_notes" and args.get("source") == "subs":
+    if name == "write_episode_file":
+        # D48：不再显示截断的 JSON（`{"confirmed": false, "content": "# …`）
+        fn = str(args.get("filename", "")).strip()
+        edits, content = args.get("edits"), args.get("content")
+        if isinstance(edits, list):
+            how = f"局部 {len(edits)} 处"
+        elif isinstance(content, str):
+            how = f"整篇 {len(content.encode('utf-8')) / 1024:.1f} KB"
+        else:
+            how = ""
+        summary = " · ".join(p for p in (fn, how) if p)
+    elif name == "run_pipeline":
+        summary = str(args.get("command", "")).strip()
+    elif name == "search_notes" and args.get("source") == "subs":
         parts = ["[字幕]", str(args.get("episode", "")).strip(), str(args.get("query", "")).strip()]
         summary = " ".join(p for p in parts if p)
     elif name in listed:

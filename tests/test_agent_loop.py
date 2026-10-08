@@ -424,6 +424,49 @@ def test_tl4b_card_free_write_does_not_clear_dedup(root: Path, monkeypatch) -> N
     assert outcome["duplicates_rejected"] == 1
 
 
+def test_d48_card_free_draft_write_clears_dedup(root: Path, monkeypatch) -> None:
+    """D48（修 D44 回归）：免卡的草稿写入成功后清空判重表 → 改完再跑同一条 check_script 照常执行。"""
+    check = {"command": "check_script 02-script.draft.md"}
+    script = Script([
+        tool_call("run_pipeline", check, call_id="k1"),
+        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "x"}, call_id="w1"),
+        tool_call("run_pipeline", check, call_id="k2"),
+        {"role": "assistant", "content": "好"},
+    ])
+    monkeypatch.setattr(llm_mod, "chat_complete", script)
+    executed = patch_execute(monkeypatch)
+
+    messages = [{"role": "user", "content": "查→免卡写→再查"}]
+    outcome = run(messages, root, build_control(messages))
+
+    assert [name for name, _args, _c in executed] == ["run_pipeline", "write_episode_file", "run_pipeline"]
+    assert outcome["duplicates_rejected"] == 0
+
+
+def test_d48_failed_write_or_readonly_check_does_not_clear_dedup(root: Path, monkeypatch) -> None:
+    """D48：只在写入**成功**后清。写入失败、或中间只跑了只读检查，原地重跑同一条检查仍判重（防打转不变）。"""
+    check = {"command": "check_script 02-script.draft.md"}
+    script = Script([
+        tool_call("run_pipeline", check, call_id="k1"),
+        tool_call("write_episode_file", {"filename": "02-script.md", "content": "x"}, call_id="w1"),
+        tool_call("run_pipeline", {"command": "status"}, call_id="s1"),
+        tool_call("run_pipeline", check, call_id="k2"),
+        {"role": "assistant", "content": "好"},
+    ])
+    monkeypatch.setattr(llm_mod, "chat_complete", script)
+    executed = patch_execute(
+        monkeypatch,
+        lambda name, args, ctx: {"ok": False, "error": "PermissionError: x"} if name == "write_episode_file"
+        else {"ok": True, "result": {"echo": name}},
+    )
+
+    messages = [{"role": "user", "content": "查→写失败→查别的→再查"}]
+    outcome = run(messages, root, build_control(messages))
+
+    assert [name for name, _args, _c in executed] == ["run_pipeline", "write_episode_file", "run_pipeline"]
+    assert outcome["duplicates_rejected"] == 1
+
+
 def test_tl5_human_rejection_is_recorded_and_reason_fed_back(root: Path, monkeypatch) -> None:
     """TL-5：人拒绝后原样再请求 → 人审回调只 1 次；拒因**具体**回喂（M15b）。"""
     script = Script([
