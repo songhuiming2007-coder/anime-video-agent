@@ -27,7 +27,9 @@ const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
  * `onReady(ok)`：面板装载结果（D49-A / D50-A S1）。App 据此决定要不要再叠一份纯播放队列——
  * 面板正常时只留面板一套播放器；面板取不到数据（core 出错）时退回原来的队列，人不至于什么都听不了。
  */
-export function VoicePanel({ epKey, rpc, onReady }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void }) {
+const LIVE_POLL_MS = 5000;
+
+export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void; live?: boolean }) {
   const [info, setInfo] = useState<VoiceInfoJson | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [raw, setRaw] = useState("");
@@ -52,6 +54,14 @@ export function VoicePanel({ epKey, rpc, onReady }: { epKey: string; rpc: RpcCli
   useEffect(() => {
     void load();
   }, [load]);
+
+  // D49-A S5：配音作业在跑时每 5 s 重读一次——新出的 wav 立刻可播，出一段听一段。
+  // 5 s：voice.info 每次起一个 core 进程（约 0.3 s），一段配音通常远长于 5 s，再密没有意义
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => void load(), LIVE_POLL_MS);
+    return () => clearInterval(t);
+  }, [live, load]);
 
   useEffect(() => {
     if (err !== null) onReady?.(false);
