@@ -25,8 +25,10 @@ export function Composer({ rpc, convKey, running, turnId, disabled, placeholder 
         onKeyDown={(e) => {
           if (!e.nativeEvent.isTrusted) return;
           if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-          if (running || disabled || value.trim() === "") return;
+          // N51：Enter 只用来发送，换行走 Shift+Enter。运行中 / 空白时不发，也不能放行默认动作——
+          // 否则 textarea 插进一个换行，随下一次发送带出（实测 '你好\n'）
           e.preventDefault();
+          if (running || disabled || value.trim() === "") return;
           const text = value;
           setValue("");
           setError(null);

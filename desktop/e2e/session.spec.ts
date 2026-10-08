@@ -503,6 +503,31 @@ test("N54 退出确认框抛异常：按「取消」回落，app 不退、会话
   }
 });
 
+test("N51 回合运行中按 Enter：不发送、也不往输入框插换行；回合结束后再按 Enter 发出的正文不带尾随换行", async () => {
+  const fx = sessionFixture();
+  const L = await launchSession(fx.repo);
+  try {
+    sessionScript(fx.repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED] }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "跑着");
+    await expect(L.page.getByTestId("session-running")).toBeVisible();
+    const input = L.page.getByTestId("composer-input");
+    await input.fill("你好");
+    await input.press("Enter"); // 运行中：被拒收
+    await input.press("Enter"); // 空白输入同理（先清空再按一次）
+    await expect(input).toHaveValue("你好");
+    const userLines = () => sessionRecords(fx.repo, "SESS-A").filter((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "user_message").map((r) => JSON.parse(r.line!).text as string);
+    expect(userLines()).toEqual(["跑着"]);
+    await input.fill("");
+    await input.press("Enter");
+    await expect(input).toHaveValue("");
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
+
 test("N32 无会话时点「素材模式」：零 conv.command、出现可读提示；会话起来后照常发命令", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
