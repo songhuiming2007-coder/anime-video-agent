@@ -7,7 +7,7 @@ import { defineConfig } from "../../../../desktop/node_modules/@playwright/test"
 const D = join(__dirname, "../../../../desktop");
 export default defineConfig({
   testDir: __dirname,
-  testMatch: /(baseline|options)\.spec\.ts$/,
+  testMatch: /(baseline|options|steps)\.spec\.ts$/,
   outputDir: join(D, "out/d49-playwright"),
   globalSetup: join(D, "e2e/global-setup.ts"),
   globalTeardown: join(D, "e2e/global-teardown.ts"),

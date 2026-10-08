@@ -43,11 +43,31 @@ export type Template =
   | "VOICE_RETRACT"
   | "RECORD_TIME"
   | "RUN_TTS_APPLY_PATCH"
+  // D50-A S6：读音核对 / 全局读音表写入 / 按全局表普通重跑
+  | "VOICE_CHECK"
+  | "VOICE_GLOBAL"
+  | "RUN_TTS"
   // Spec 12 S8-R18：封面导入（字节走 stdin）
   | "IMPORT_COVER"
   // D45：会话列表 / 删除（移进回收站）
   | "LIST_SESSIONS"
   | "DELETE_SESSION";
+
+/** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
+export interface VoiceReadingArgs {
+  word: string;
+  pinyin?: string;
+  homophone?: string;
+  expect?: string;
+}
+
+function readingFlags(a: VoiceReadingArgs): string[] {
+  const out = [`--word=${a.word}`];
+  if (a.pinyin !== undefined) out.push(`--pinyin=${a.pinyin}`);
+  if (a.homophone !== undefined) out.push(`--homophone=${a.homophone}`);
+  if (a.expect !== undefined) out.push(`--expect=${a.expect}`);
+  return out;
+}
 
 /** 长驻会话进程模板（Spec 10 S8-R3）；不经 runCore（stdin pipe、无超时），只用 sessionArgv。 */
 export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA";
@@ -84,6 +104,11 @@ export interface TemplateArgs {
   RECORD_TIME: { ep: string; stop: string; entered: string; left: string };
   /** 长任务：无超时、app 退出不发信号（S8-R17） */
   RUN_TTS_APPLY_PATCH: { ep: string };
+  /** 用户输入的词与读音一律 `--flag=value` 单个 argv 元素：值以 `-` 开头也不会被当成选项 */
+  VOICE_CHECK: VoiceReadingArgs;
+  VOICE_GLOBAL: VoiceReadingArgs & { ep: string; supersede: boolean };
+  /** 长任务：同 RUN_TTS_APPLY_PATCH（无超时、退出不发信号） */
+  RUN_TTS: { ep: string };
   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
   IMPORT_COVER: { ep: string; name: string };
   LIST_SESSIONS: { ep: string };
@@ -256,6 +281,21 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep } = args as TemplateArgs["RUN_TTS_APPLY_PATCH"];
       // 无超时（长任务；S8-R17）；tts/ffprobe 在 PATH 白名单之外，须显式开口
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts", "--apply-patch"], timeoutMs: null, homebrewPath: true };
+    }
+    case "VOICE_CHECK": {
+      const a = args as TemplateArgs["VOICE_CHECK"];
+      return { argv: [py, "-m", "pipeline.corrections", "check", ...readingFlags(a)], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "VOICE_GLOBAL": {
+      const a = args as TemplateArgs["VOICE_GLOBAL"];
+      return {
+        argv: [py, "-m", "pipeline.corrections", "global", a.ep, ...readingFlags(a), ...(a.supersede ? ["--supersede"] : [])],
+        timeoutMs: SPAWN_TIMEOUT_ACK_MS,
+      };
+    }
+    case "RUN_TTS": {
+      const { ep } = args as TemplateArgs["RUN_TTS"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts"], timeoutMs: null, homebrewPath: true };
     }
     case "IMPORT_COVER": {
       const { ep, name } = args as TemplateArgs["IMPORT_COVER"];
@@ -456,7 +496,8 @@ export function runArgv(
  * 这里只提供一个「是否长任务」的判定，宿主退出路径据此跳过收尾。
  */
 export function isLongRunning(t: Template): boolean {
-  return t === "RUN_TTS_APPLY_PATCH";
+  // D50-A S6：RUN_TTS（按全局读音表普通重跑）同为配音长任务，同一例外
+  return t === "RUN_TTS_APPLY_PATCH" || t === "RUN_TTS";
 }
 
 export function runCore<T extends Template>(

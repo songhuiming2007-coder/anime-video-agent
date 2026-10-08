@@ -28,6 +28,7 @@ import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT
 import { Splitter } from "./Splitter";
 import { SessionList } from "./SessionList";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
+import { PreviewSwitcher } from "./PreviewSwitcher";
 import { errText, RpcClient } from "./rpc";
 import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
@@ -362,6 +363,9 @@ function Main() {
   /** Spec 11 的深度组件按预览目标长出：02.5 编辑器长在 02-script.md 的 .md 预览旁；03.5 顺听面板替下 03-audio 队列 */
   const editorTarget = preview?.kind === "file" && preview.root === "episodes" && preview.rel === `${active}/02-script.md`;
   // 03-audio 目标有两个来源：自动呼出（STOP_PREVIEW 的 rel 不带期名前缀）与产物树行（带期名前缀）
+  // 顺听面板装载成功的那一期（null = 未成功 / 出错）：只有成功时才收起纯播放队列
+  const [voiceOk, setVoiceOk] = useState<string | null>(null);
+  const onVoiceReady = useCallback((ok: boolean) => setVoiceOk(ok ? activeRef.current : null), []);
   const voiceTarget = preview?.kind === "dir" && preview.root === "episodes" && (preview.rel === "03-audio" || preview.rel === `${active}/03-audio`);
 
   return (
@@ -479,6 +483,16 @@ function Main() {
         )}
         {!layout.previewOpen && <PreviewRail target={preview} attention={previewUnseen || strip !== null} onOpen={() => setPreviewOpen(true)} />}
         <section className="preview" id="ava-preview" hidden={!layout.previewOpen} data-auto-open-approval-id={autoOpened.id ?? ""} data-auto-open-count={autoOpened.count}>
+          {/* D49-A S4：预览区顶部的文件切换器——侧栏收起时也能选本期任何产物 */}
+          {ep && !showIdea && active !== null && (
+            <PreviewSwitcher
+              epKey={active}
+              rpc={rpc}
+              current={preview}
+              running={ep.jobs.filter((j) => j.state === "running" || j.state === "pending").map((j) => j.command)}
+              onPick={pickHuman}
+            />
+          )}
           {strip && (
             <button className="strip" data-testid="auto-open-strip" onClick={() => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }))}>
               <Icon name="info" size="sm" />
@@ -489,9 +503,9 @@ function Main() {
             <ScriptEditor key={`script:${active}`} epKey={active} rpc={rpc} />
           ) : (
             <>
-              {/* Spec 11 §2.3：03.5 的顺听面板与既有音频队列并存（队列是 Spec 8 的原位预览，不被替下） */}
-              {active !== null && voiceTarget && <VoicePanel key={`voice:${active}`} epKey={active} rpc={rpc} />}
-              <PreviewPane key={active ?? "-"} target={preview} />
+              {/* D50-A S1：03-audio 只留顺听面板一套播放器；面板取不到数据时退回 Spec 8 的纯播放队列 */}
+              {active !== null && voiceTarget && <VoicePanel key={`voice:${active}`} epKey={active} rpc={rpc} onReady={onVoiceReady} />}
+              {!(voiceTarget && voiceOk === active) && <PreviewPane key={active ?? "-"} target={preview} head={!(ep && !showIdea && active !== null)} />}
             </>
           )}
           {ep && <Timeline key={ep.epKey} ep={ep} />}

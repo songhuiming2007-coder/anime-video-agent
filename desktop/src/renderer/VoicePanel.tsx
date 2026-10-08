@@ -6,11 +6,11 @@
 // 播放器从 afplay/QuickTime 改为原位 <audio>（direction §0.2 第 3 条：全要素应用内原位审计）。
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { encodeMediaUrl } from "../shared/mediaUrl";
-import type { VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
+import type { VoiceCheckJson, VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
 import { lockState } from "../shared/voiceInfo";
 import { Icon } from "./icons";
 import { errText, type RpcClient } from "./rpc";
-import { StateView } from "./ui";
+import { Badge, StateView } from "./ui";
 
 const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
   ["segment", "段落"],
@@ -23,7 +23,11 @@ const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
   ["scope", "范围"],
 ];
 
-export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
+/**
+ * `onReady(ok)`：面板装载结果（D49-A / D50-A S1）。App 据此决定要不要再叠一份纯播放队列——
+ * 面板正常时只留面板一套播放器；面板取不到数据（core 出错）时退回原来的队列，人不至于什么都听不了。
+ */
+export function VoicePanel({ epKey, rpc, onReady }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void }) {
   const [info, setInfo] = useState<VoiceInfoJson | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [raw, setRaw] = useState("");
@@ -31,6 +35,9 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<{ wav: string; label: string }[]>([]);
+  // D50-A S6：在段落文字上选中的词 → 就地纠错小卡；全局表改过、本期待按全局表重配的段
+  const [fix, setFix] = useState<{ label: string; word: string } | null>(null);
+  const [globalTouched, setGlobalTouched] = useState<string[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const load = useCallback(async () => {
@@ -45,6 +52,11 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (err !== null) onReady?.(false);
+    else if (info !== null) onReady?.(true);
+  }, [err, info, onReady]);
 
   // 人时：顺听面板**装载成功**才计时（Spec 11 §2.4）；错误态不计（红队 ④）
   const surfaceUp = err === null && info !== null;
@@ -150,9 +162,21 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
   const lockStale = lockKind === "stale";
   const lockBusy = lockKind === "busy";
   const doneDisabled = busy || pending.length === 0 || info.engine_cloud;
+  const pendingSegs = [...new Set(pending.map((c) => String(c.segment)))];
+  const marksOf = (label: string): string[] =>
+    pending
+      .filter((c) => typeof c.word === "string" && c.word !== "" && (String(c.segment) === label || c.scope === "global"))
+      .map((c) => String(c.word));
+
+  // 选中即弹卡（打开小卡不是写操作，不要求可信事件；写在小卡的「记下」上才要）
+  const onSelectText = (label: string) => {
+    const word = (window.getSelection()?.toString() ?? "").trim();
+    if (word === "" || word.length > 12) return;
+    setFix({ label, word });
+  };
 
   return (
-    <div className="seg-panel" data-testid="voice-panel">
+    <div className="seg-panel voice-panel" data-testid="voice-panel">
       <div className="toolbar" data-testid="voice-toolbar">
         <button className="ui-btn" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
           顺序播放
@@ -163,25 +187,16 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
         <button className="ui-btn" data-testid="voice-refresh" disabled={busy} onClick={() => void load()}>
           刷新
         </button>
-        <span className="muted" data-testid="voice-engine">{info.engine === "" ? "引擎未记录" : info.engine}</span>
-        <button
-          className="ui-btn"
-          data-testid="voice-done"
-          disabled={doneDisabled}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void doDone(rpc.call("voice.applyPatch", { epKey }));
-          }}
-        >
-          完成并应用补丁
-        </button>
+        <span className="muted voice-engine" data-testid="voice-engine">
+          {info.engine === "" ? "引擎未记录" : `${info.engine}${info.engine_cloud ? " · 云端" : " · 本地"}`}
+        </span>
       </div>
+      <div className="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
 
-      {pending.length === 0 && <div className="muted" data-testid="voice-no-pending">当前没有待应用的纠错条目</div>}
       {info.engine_cloud && (
         <div className="notice" data-testid="voice-cloud">
           <Icon name="info" size="sm" />
-          本期配音引擎为云端引擎（{info.engine}），请去云端执行 apply-patch。
+          本期配音引擎为云端引擎（{info.engine}），重配请去云端执行 apply-patch。
         </div>
       )}
       {lockBusy && (
@@ -201,45 +216,84 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
         </div>
       )}
 
-      <div className="seg-list" data-testid="voice-segments">
+      <div className="voice-list" data-testid="voice-segments">
         {info.segments.map((s) => (
-          <div className="seg-row" key={s.label} data-testid="seg-row" data-label={s.label}>
-            <button className="ui-btn ui-btn--sm" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
+          <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={current?.label === s.label ? "true" : undefined}>
+            <button className="ui-btn ui-btn--sm ui-btn--icon" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
               ▶
             </button>
-            <span className="ui-row-title">段 {s.label}</span>
-            <span className="ui-row-meta">
-              {s.text}
-              {!s.wav_exists && <span className="muted">（音频缺席）</span>}
-            </span>
-            <span className="seg-actions">
-              {s.has_attic && (
-                <button
-                  className="ui-btn ui-btn--sm"
-                  data-testid="seg-revert"
-                  disabled={busy}
-                  onClick={(e) => {
-                    if (!e.nativeEvent.isTrusted) return;
-                    void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`);
+            <div className="voice-row-main">
+              <div className="voice-row-head">
+                <span>段 {s.label}</span>
+                {current?.label === s.label && <Badge tone="accent">播放中</Badge>}
+                {pendingSegs.includes(s.label) && <Badge tone="warn">待重配</Badge>}
+                {globalTouched.includes(s.label) && <Badge tone="warn">全局表已改</Badge>}
+                {!s.wav_exists && <span className="muted">（音频缺席）</span>}
+                <span className="seg-actions">
+                  <button
+                    className="ui-btn ui-btn--ghost ui-btn--sm"
+                    data-testid="seg-reseed"
+                    disabled={busy}
+                    title="听感不对（发飘、断层、吞字…）：换一个种子重配这一段"
+                    onClick={(e) => {
+                      if (!e.nativeEvent.isTrusted) return;
+                      void doAdd(rpc.call("voice.add", { epKey, text: `段${s.label} 换种子` }));
+                    }}
+                  >
+                    换种子
+                  </button>
+                  {s.has_attic && (
+                    <button
+                      className="ui-btn ui-btn--ghost ui-btn--sm"
+                      data-testid="seg-revert"
+                      disabled={busy}
+                      onClick={(e) => {
+                        if (!e.nativeEvent.isTrusted) return;
+                        void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`);
+                      }}
+                    >
+                      回滚
+                    </button>
+                  )}
+                </span>
+              </div>
+              <div className="voice-row-text" data-testid="seg-text" onMouseUp={() => onSelectText(s.label)}>
+                <Marked text={s.text} marks={marksOf(s.label)} />
+              </div>
+              {fix !== null && fix.label === s.label && (
+                <FixCard
+                  key={`${fix.label}:${fix.word}`}
+                  epKey={epKey}
+                  rpc={rpc}
+                  label={fix.label}
+                  word={fix.word}
+                  busy={busy}
+                  onCancel={() => setFix(null)}
+                  onAdd={(call) => {
+                    setFix(null);
+                    void doAdd(call);
                   }}
-                >
-                  回滚
-                </button>
+                  onGlobalDone={(labels, line) => {
+                    setFix(null);
+                    setGlobalTouched((g) => [...new Set([...g, ...labels])]);
+                    setMsg(line);
+                  }}
+                />
               )}
-            </span>
+            </div>
           </div>
         ))}
       </div>
 
       {pending.length > 0 && (
-        <div className="pending" data-testid="voice-pending">
-          <div className="ui-section">待应用纠错条目（{pending.length}）</div>
+        <details className="pending" data-testid="voice-pending" open>
+          <summary className="ui-section">待应用纠错条目（{pending.length}）</summary>
           {pending.map((c) => (
             <div className="seg-row" key={String(c.id)} data-testid="pending-row" data-id={String(c.id)}>
               <span className="ui-row-meta">#{String(c.id)}</span>
               <span className="ui-row-title">段{String(c.segment)}</span>
               <span className="ui-row-meta">
-                {String(c.kind)} · {String(c.scope)}
+                {c.word ? `「${String(c.word)}」→ ${String(c.target_tone3)}` : String(c.issue ?? c.kind)} · {c.scope === "global" ? "本期所有段" : "本段"}
               </span>
               <span className="seg-actions">
                 <button
@@ -256,57 +310,72 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
               </span>
             </div>
           ))}
-        </div>
+        </details>
       )}
 
-      <div className="voice-input" data-testid="voice-input">
-        <label className="ui-field">
-          纠错（终端同一文法：如「听成 雪之下，改成 xue3」/「段 5 语速太快」）
-          <input className="ui-input" data-testid="voice-raw" value={raw} onChange={(e) => setRaw(e.target.value)} />
-        </label>
-        <button
-          className="ui-btn"
-          data-testid="voice-parse"
-          disabled={busy || raw.trim() === ""}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void doParse(rpc.call("voice.parse", { epKey, text: raw }));
-          }}
-        >
-          解析
-        </button>
-      </div>
-
-      {card !== null && (
-        <div className="voice-card" data-testid="voice-card">
-          <div className="ui-section">确认卡（与终端同语义）</div>
-          <dl className="ui-kv">
-            {PATCH_FIELDS.map(([k, label]) => (
-              <Fragment key={k}>
-                <dt>{label}</dt>
-                <dd>{card[k] === null || card[k] === undefined ? "（未指定）" : String(card[k])}</dd>
-              </Fragment>
-            ))}
-          </dl>
-          {card.scope === "global" && (
-            <div className="notice notice--warn" data-testid="voice-global">
-              <Icon name="alert" size="sm" />
-              【全局生效】该拼音注入将影响全期所有包含该词的段落！
-            </div>
-          )}
+      <details className="voice-grammar">
+        <summary className="ui-section" data-testid="voice-grammar">按文法录入（终端 /voice 同一文法）</summary>
+        <div className="voice-input" data-testid="voice-input">
+          <label className="ui-field">
+            如「1段 雪乃 改成 xuě nǎi」「2段 语气发飘 换种子」
+            <input className="ui-input" data-testid="voice-raw" value={raw} onChange={(e) => setRaw(e.target.value)} />
+          </label>
           <button
             className="ui-btn"
-            data-testid="voice-add"
-            disabled={busy}
+            data-testid="voice-parse"
+            disabled={busy || raw.trim() === ""}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
-              // 传原文而非解析结果：core 重新解析并落盘（不信任跨进程往返的解析结果）
-              void doAdd(rpc.call("voice.add", { epKey, text: raw }));
+              void doParse(rpc.call("voice.parse", { epKey, text: raw }));
             }}
           >
-            确认落盘
+            解析
           </button>
         </div>
+        {card !== null && (
+          <div className="voice-card" data-testid="voice-card">
+            <div className="ui-section">确认卡（与终端同语义）</div>
+            <dl className="ui-kv">
+              {PATCH_FIELDS.map(([k, label]) => (
+                <Fragment key={k}>
+                  <dt>{label}</dt>
+                  <dd>{card[k] === null || card[k] === undefined ? "（未指定）" : String(card[k])}</dd>
+                </Fragment>
+              ))}
+            </dl>
+            {card.scope === "global" && (
+              <div className="notice notice--warn" data-testid="voice-global">
+                <Icon name="alert" size="sm" />
+                该拼音注入影响本期所有包含该词的段落。
+              </div>
+            )}
+            <button
+              className="ui-btn"
+              data-testid="voice-add"
+              disabled={busy}
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                // 传原文而非解析结果：core 重新解析并落盘（不信任跨进程往返的解析结果）
+                void doAdd(rpc.call("voice.add", { epKey, text: raw }));
+              }}
+            >
+              确认落盘
+            </button>
+          </div>
+        )}
+      </details>
+
+      {info.heteronyms.length > 0 && (
+        <details className="hetero" data-testid="voice-heteronyms">
+          <summary className="ui-section">多音字预检（{info.heteronyms.length} 个字，只读，仅供关注）</summary>
+          <div className="voice-chips">
+            {info.heteronyms.map((h) => (
+              <span key={h.char} className="ui-badge">
+                {h.char} {h.readings.join("/")}
+              </span>
+            ))}
+          </div>
+        </details>
       )}
 
       {msg !== null && (
@@ -316,26 +385,230 @@ export function VoicePanel({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
         </div>
       )}
 
-      {info.heteronyms.length > 0 && (
-        <div className="hetero" data-testid="voice-heteronyms">
-          <div className="ui-section">多音字预检（只读；仅供关注，非错误）</div>
-          <ul className="ui-row-meta">
-            {info.heteronyms.map((h) => (
-              <li key={h.char}>
-                · 字「{h.char}」候选：{h.readings.join(", ")}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="muted" data-testid="voice-review-note">
-        结构化打点（manifest human_review 五项）须在终端
-        <code>{` python -m pipeline.tts ${epKey} --review `}</code>
-        完成。
+      <div className="voice-foot" data-testid="voice-foot">
+        {pending.length === 0 && globalTouched.length === 0 ? (
+          <span className="muted" data-testid="voice-no-pending">
+            当前没有待重配的段
+          </span>
+        ) : (
+          <span>
+            {pendingSegs.length > 0 && <Badge tone="warn">待重配 {pendingSegs.length} 段</Badge>} {pendingSegs.length > 0 && `段 ${pendingSegs.join("、")}`}
+          </span>
+        )}
+        <span className="voice-foot-sp" />
+        {globalTouched.length > 0 && (
+          <button
+            className="ui-btn"
+            data-testid="voice-retts"
+            disabled={busy || info.engine_cloud}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void doDone(rpc.call("voice.retts", { epKey }));
+            }}
+          >
+            按全局表重配（段 {globalTouched.join("、")}）
+          </button>
+        )}
+        <button
+          className="ui-btn ui-btn--primary"
+          data-testid="voice-done"
+          disabled={doneDisabled}
+          onClick={(e) => {
+            if (!e.nativeEvent.isTrusted) return;
+            void doDone(rpc.call("voice.applyPatch", { epKey }));
+          }}
+        >
+          只重配这 {pendingSegs.length} 段
+        </button>
       </div>
-
       {current !== null && <audio ref={audioRef} src={urlOf(current.wav)} data-testid="voice-audio" onEnded={() => setQueue((q) => q.slice(1))} />}
+    </div>
+  );
+}
+
+/** 段落文字里标出已录、待重配的词 */
+function Marked({ text, marks }: { text: string; marks: string[] }) {
+  if (marks.length === 0) return <>{text}</>;
+  const re = new RegExp(`(${marks.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+  return (
+    <>
+      {text.split(re).map((part, i) =>
+        marks.includes(part) ? (
+          <mark key={i} className="voice-mark">
+            {part}
+          </mark>
+        ) : (
+          <Fragment key={i}>{part}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
+type Method = "pinyin" | "homophone";
+type Scope = "seg" | "ep" | "global";
+
+/**
+ * D50-A S6：「这里读错了」小卡。读音先经 core 的 `corrections check` 核对（只读），通过了才能记下。
+ * 本段 / 本期 = 期级拼音直注（`voice.add` 的文法串）；全局 = `voice.global`（写 config/voice.json，宿主再弹一次确认框）。
+ * 同音字只能写全局表（2026-10-08 人裁决：期级不加同音字）。
+ */
+function FixCard({
+  epKey,
+  rpc,
+  label,
+  word,
+  busy,
+  onCancel,
+  onAdd,
+  onGlobalDone,
+}: {
+  epKey: string;
+  rpc: RpcClient;
+  label: string;
+  word: string;
+  busy: boolean;
+  onCancel: () => void;
+  /** 期级写入的 Promise 交给面板（与文法录入同一个 doAdd：落盘提示、刷新） */
+  onAdd: (call: Promise<unknown>) => void;
+  onGlobalDone: (labels: string[], line: string) => void;
+}) {
+  const [pinyin, setPinyin] = useState("");
+  const [method, setMethod] = useState<Method>("pinyin");
+  const [homophone, setHomophone] = useState("");
+  const [scope, setScope] = useState<Scope>("seg");
+  const [check, setCheck] = useState<VoiceCheckJson | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [result, setResult] = useState<VoiceCheckJson | null>(null);
+  const effScope: Scope = method === "homophone" ? "global" : scope;
+  const reading = method === "pinyin" ? { word, pinyin } : { word, homophone, expect: pinyin };
+  const ready = pinyin.trim() !== "" && (method === "pinyin" || homophone.trim() !== "");
+
+  // 读音核对：停手 400 ms 后跑一次（只读，core 打印的原文行照传）
+  useEffect(() => {
+    setCheck(null);
+    if (!ready) return;
+    const t = setTimeout(() => {
+      void rpc.call<VoiceCheckJson>("voice.check", { epKey, ...reading }).then(setCheck, (e) => setCheck({ ok: false, lines: [errText(e)] }));
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epKey, rpc, word, pinyin, homophone, method, ready]);
+
+  const finishGlobal = async (call: Promise<VoiceCheckJson>) => {
+    setWriting(true);
+    try {
+      const r = await call;
+      setResult(r);
+      if (r.ok) {
+        const segLine = r.lines.find((l) => l.startsWith("本期含该词的段："));
+        const labels = segLine ? segLine.replace("本期含该词的段：", "").split("。")[0].split("、").filter((x) => x !== "") : [label];
+        onGlobalDone(labels, r.lines.find((l) => l.startsWith("[OK]")) ?? "已写入全局读音表");
+      }
+    } catch (e) {
+      setResult({ ok: false, lines: [errText(e)] });
+    } finally {
+      setWriting(false);
+    }
+  };
+  const needSupersede = result !== null && !result.ok && result.lines.some((l) => l.includes("--supersede"));
+
+  return (
+    <div className="ui-popover voice-fix" data-testid="voice-fix">
+      <span>「{word}」应读</span>
+      <span>
+        <input className="ui-input voice-fix-input" data-testid="fix-pinyin" placeholder="如 jie3 di4" value={pinyin} onChange={(e) => setPinyin(e.target.value)} />
+      </span>
+      <span>改法</span>
+      <span className="ui-seg">
+        <button aria-pressed={method === "pinyin"} data-testid="fix-method-pinyin" onClick={() => setMethod("pinyin")}>
+          拼音直注
+        </button>
+        <button aria-pressed={method === "homophone"} data-testid="fix-method-homophone" onClick={() => setMethod("homophone")}>
+          同音字
+        </button>
+      </span>
+      {method === "homophone" && (
+        <>
+          <span>同音字</span>
+          <span>
+            <input className="ui-input voice-fix-input" data-testid="fix-homophone" placeholder="读音唯一的字" value={homophone} onChange={(e) => setHomophone(e.target.value)} />
+          </span>
+        </>
+      )}
+      <span>范围</span>
+      <span className="ui-seg">
+        <button aria-pressed={effScope === "seg"} disabled={method === "homophone"} data-testid="fix-scope-seg" onClick={() => setScope("seg")}>
+          本段 {label}
+        </button>
+        <button aria-pressed={effScope === "ep"} disabled={method === "homophone"} data-testid="fix-scope-ep" onClick={() => setScope("ep")}>
+          本期
+        </button>
+        <button aria-pressed={effScope === "global"} data-testid="fix-scope-global" onClick={() => setScope("global")}>
+          全局
+        </button>
+      </span>
+      {method === "homophone" && (
+        <>
+          <span />
+          <span className="muted">同音字只写全局表（所有番、所有期）</span>
+        </>
+      )}
+      <span>核对</span>
+      <span className={check === null ? "muted" : check.ok ? "voice-ok" : "voice-bad"} data-testid="fix-check">
+        {!ready ? "填好读音后自动核对" : check === null ? "核对中…" : check.lines.join("；")}
+      </span>
+      {result !== null && !result.ok && (
+        <>
+          <span />
+          <span className="voice-bad" data-testid="fix-result">
+            {result.lines.join("；")}
+          </span>
+        </>
+      )}
+      <span />
+      <span className="voice-fix-actions">
+        {needSupersede ? (
+          <button
+            className="ui-btn ui-btn--sm"
+            data-testid="fix-supersede"
+            disabled={busy || writing}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "true" }));
+            }}
+          >
+            替换另一张表的同名条目并写入
+          </button>
+        ) : effScope === "global" ? (
+          <button
+            className="ui-btn ui-btn--sm ui-btn--primary"
+            data-testid="fix-save"
+            disabled={busy || writing || check === null || !check.ok}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "false" }));
+            }}
+          >
+            记下（写全局表）
+          </button>
+        ) : (
+          <button
+            className="ui-btn ui-btn--sm ui-btn--primary"
+            data-testid="fix-save"
+            disabled={busy || writing || check === null || !check.ok}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              onAdd(rpc.call("voice.add", { epKey, text: `段${label} ${word} 改成 ${pinyin.trim()}${effScope === "ep" ? " 所有段" : ""}` }));
+            }}
+          >
+            记下
+          </button>
+        )}
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="fix-cancel" onClick={onCancel}>
+          取消
+        </button>
+      </span>
     </div>
   );
 }

@@ -42,6 +42,10 @@ export type Method =
   | "voice.revert" // { epKey, label }（spawn VOICE_REVERT）
   | "voice.retract" // { epKey, id }（spawn VOICE_RETRACT）
   | "voice.applyPatch" // { epKey }：长任务（RUN_TTS_APPLY_PATCH，无超时、退出不发信号）
+  // D50-A S6：段落表就地纠错（plans/2026-10-08-preview-voice-build-spec.md）
+  | "voice.check" // { epKey, word, pinyin? | homophone?+expect? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
+  | "voice.global" // { epKey, word, pinyin? | homophone?+expect?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
+  | "voice.retts" // { epKey }：长任务，原生确认框后 spawn RUN_TTS（普通重跑，只重配念法变了的段）
   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
   | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
   | "cover.import"; // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
@@ -111,6 +115,9 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "voice.revert": { required: ["epKey", "label"], optional: [] },
   "voice.retract": { required: ["epKey", "id"], optional: [] },
   "voice.applyPatch": { required: ["epKey"], optional: [] },
+  "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect"] },
+  "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "supersede"] },
+  "voice.retts": { required: ["epKey"], optional: [] },
   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
   "time.read": { required: ["epKey"], optional: [] },
   "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },
@@ -333,6 +340,12 @@ export interface VoiceInfoJson {
   /** 条目 dict 原样透传（消费方忽略未知键，Spec 11 §3.3） */
   pending_corrections: Record<string, unknown>[];
   apply_patch_lock: ApplyPatchLockJson;
+}
+
+/** D50-A S6：`pipeline.corrections check|global` 的结果——ok 与 core 打印的原文行（UI 照传，不解析判定） */
+export interface VoiceCheckJson {
+  ok: boolean;
+  lines: string[];
 }
 
 /** `/voice-parse` 输出 = Patch 的 8 个字段（不含 raw / seed_pin，Spec 11 §3.3）。 */

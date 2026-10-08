@@ -148,7 +148,8 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   await panel.getByTestId("seg-play").first().click();
   await expect(panel.getByTestId("voice-audio")).toHaveAttribute("src", /^ava-media:\/\/episodes\/.*seg-01\.wav$/);
 
-  // 解析 → 确认卡 → 确认落盘
+  // 解析 → 确认卡 → 确认落盘（D50-A S6：文法录入收进「按文法录入」折叠区）
+  await panel.getByTestId("voice-grammar").click();
   await panel.getByTestId("voice-raw").fill("1段 雪乃 改成 xuě nǎi");
   await panel.getByTestId("voice-parse").click();
   await expect(panel.getByTestId("voice-card")).toBeVisible();
@@ -196,6 +197,47 @@ test("TE-4 人时：打开 02.5 编辑器 → 停留 → 关闭 → human_time.j
   // 期视图读数
   await openEp(L.page, "SP11-TE4");
   await expect(L.page.getByTestId("human-time")).toContainText("02.5");
+});
+
+test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记下（期级）→ 待重配条与标黄；同音字锁定全局", async () => {
+  const ctx = epAt035("SP11-S6");
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-S6");
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  const panel = L.page.getByTestId("voice-panel");
+  await panel.waitFor({ timeout: 15_000 });
+  // 选中段 1 里的「雪乃」（程序化选区 + mouseup：打开小卡不是写操作）
+  await panel.locator("[data-testid=seg-row][data-label='1'] [data-testid=seg-text]").evaluate((el) => {
+    const node = el.firstChild as Text;
+    const at = node.data.indexOf("雪乃");
+    const r = document.createRange();
+    r.setStart(node, at);
+    r.setEnd(node, at + 2);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(r);
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+  const fix = panel.getByTestId("voice-fix");
+  await expect(fix).toContainText("「雪乃」应读");
+  // 同音字 → 范围锁定全局（期级不加同音字）
+  await fix.getByTestId("fix-method-homophone").click();
+  await expect(fix.getByTestId("fix-scope-seg")).toBeDisabled();
+  await expect(fix.getByTestId("fix-scope-global")).toHaveAttribute("aria-pressed", "true");
+  await fix.getByTestId("fix-method-pinyin").click();
+  // 音节数不对 → 核对不过、记下禁用；改对 → 通过
+  await fix.getByTestId("fix-pinyin").fill("xue3");
+  await expect(fix.getByTestId("fix-check")).toContainText("2 个字", { timeout: 15_000 });
+  await expect(fix.getByTestId("fix-save")).toBeDisabled();
+  await fix.getByTestId("fix-pinyin").fill("xue3 nai3");
+  await expect(fix.getByTestId("fix-check")).toContainText("通过", { timeout: 15_000 });
+  await fix.getByTestId("fix-save").click();
+  await expect(panel.getByTestId("voice-msg")).toContainText("已落盘");
+  const corrections = JSON.parse(readFileSync(join(ctx.ep, "03-audio/corrections.json"), "utf-8")) as { word: string; target_tone3: string; scope: string }[];
+  expect(corrections.map((c) => [c.word, c.target_tone3, c.scope])).toEqual([["雪乃", "xue3nai3", "segment"]]);
+  await expect(panel.locator("[data-testid=seg-row][data-label='1'] mark")).toHaveText("雪乃");
+  await expect(panel.getByTestId("voice-done")).toContainText("只重配这 1 段");
+  await expect(panel.getByTestId("voice-done")).toBeEnabled();
 });
 
 test("TE-5 错误态不计时（红队 ④）：审阅面装载失败时人时计时不得开始", async () => {

@@ -54,6 +54,7 @@ import {
   type SavedFingerprintJson,
   type ScriptStatJson,
   type TimeReadJson,
+  type VoiceCheckJson,
   type VoiceInfoJson,
   type VoicePatchJson,
 } from "../shared/protocol";
@@ -63,7 +64,7 @@ import { listEpisodes, type EpisodeEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
-import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs } from "./spawner";
+import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs } from "./spawner";
 import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
 import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
@@ -647,6 +648,12 @@ export class HostService {
         return this.voiceRetract(this.epForIo(p.epKey), p.id);
       case "voice.applyPatch":
         return this.voiceApplyPatch(this.epForIo(p.epKey));
+      case "voice.check":
+        return this.voiceCheck(this.epForIo(p.epKey), readingOf(p));
+      case "voice.global":
+        return this.voiceGlobal(this.epForIo(p.epKey), readingOf(p), p.supersede === "true");
+      case "voice.retts":
+        return this.voiceReTts(this.epForIo(p.epKey));
       case "time.surface":
         return this.timeSurface(this.epForIo(p.epKey), p.stop, p.visible === "true");
       case "time.read":
@@ -1513,6 +1520,34 @@ export class HostService {
     return { started: true };
   }
 
+  /** D50-A S6：读音核对（只读）。core 退出码 1 = 核对不通过——这是结果不是故障，原文行照传 */
+  private async voiceCheck(e: EpisodeEntry, a: VoiceReadingArgs): Promise<VoiceCheckJson> {
+    void e;
+    const r = await this.core("VOICE_CHECK", a);
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "读音核对超时", { stderrTail: r.stderrTail });
+    if (r.code !== 0 && r.code !== 1) throw new RpcFail("E_CORE", r.stderrTail.trim() || "读音核对失败", { stderrTail: r.stderrTail });
+    return { ok: r.code === 0, lines: linesOf(r.stdoutTail, r.stderrTail) };
+  }
+
+  /** D50-A S6：写全局读音表一个键。人点了「记下」还要过一道原生确认框：它影响所有番、所有期 */
+  private async voiceGlobal(e: EpisodeEntry, a: VoiceReadingArgs, supersede: boolean): Promise<VoiceCheckJson> {
+    const what = a.pinyin !== undefined ? `拼音直注 ${a.word} → ${a.pinyin}` : `同音字 ${a.word} → ${a.homophone ?? ""}`;
+    if (!(await this.deps.confirm("写入全局读音表？", `config/voice.json：${what}${supersede ? "（并删除另一张表的同名条目）" : ""}。影响所有番、所有期。`))) {
+      return { ok: false, lines: ["已取消，未写入"] };
+    }
+    const r = await this.core("VOICE_GLOBAL", { ...a, ep: e.abs, supersede });
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "写全局读音表超时", { stderrTail: r.stderrTail });
+    return { ok: r.code === 0, lines: linesOf(r.stdoutTail, r.stderrTail) };
+  }
+
+  private async voiceReTts(e: EpisodeEntry): Promise<{ started: boolean }> {
+    if (!(await this.deps.confirm("按全局读音表重配？", "普通重跑 tts（不带 --force）：只重配念法变了的段。"))) return { started: false };
+    const r = await this.core("RUN_TTS", { ep: e.abs });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `重配失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    return { started: true };
+  }
+
   private timeSurface(e: EpisodeEntry, stop: string, visible: boolean): null {
     this.humanTimers.noteReviewSurface(e.epKey, stop, visible, "close");
     return null;
@@ -1560,4 +1595,17 @@ export class HostService {
       throw new RpcFail("E_CORE", "core 的 /import-cover 输出不是合法 JSON", tails);
     }
   }
+}
+
+/** D50-A S6：RPC 参数 → 读音参数（只取声明过的键；core 再校验二选一） */
+function readingOf(p: Record<string, string | undefined>): VoiceReadingArgs {
+  const a: VoiceReadingArgs = { word: p.word ?? "" };
+  if (p.pinyin !== undefined) a.pinyin = p.pinyin;
+  if (p.homophone !== undefined) a.homophone = p.homophone;
+  if (p.expect !== undefined) a.expect = p.expect;
+  return a;
+}
+
+function linesOf(stdout: string, stderr: string): string[] {
+  return `${stdout}\n${stderr}`.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "");
 }

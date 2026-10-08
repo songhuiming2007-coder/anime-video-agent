@@ -233,6 +233,48 @@ describe("Spec 11 TD-4：done 的确认框与长任务模板", () => {
   });
 });
 
+describe("D50-A S6：读音核对 / 全局读音表 / 按全局表重配", () => {
+  const result = (code: number, stdoutTail: string, stderrTail = "") => ({ code, signal: null, stdoutTail, stderrTail, timedOut: false, stdoutFull: null, stdoutOverflow: false });
+
+  it("voice.check：core 退出码 1 是「核对不过」的结果，返回 ok:false 与原文行，不报错", async () => {
+    const fakeRun: HostDeps["runCore"] = async () => result(1, "读音核对：「肉体」应读 rou4 ti3\n  ✗ 同音字「肉惕」读作 rou4 ti4\n");
+    const { svc } = await startService({ runCore: fakeRun });
+    const r = (await svc.dispatch("voice.check", { epKey: "SP11", word: "肉体", homophone: "肉惕", expect: "rou4ti3" })) as { ok: boolean; lines: string[] };
+    expect(r.ok).toBe(false);
+    expect(r.lines).toEqual(["读音核对：「肉体」应读 rou4 ti3", "✗ 同音字「肉惕」读作 rou4 ti4"].map((l, i) => (i === 0 ? l : `  ${l}`)));
+  });
+
+  it("voice.global：确认框取消 → 不 spawn；确认 → spawn VOICE_GLOBAL 且参数原样带上 supersede", async () => {
+    const calls: { t: string; a: Record<string, unknown> }[] = [];
+    const fakeRun: HostDeps["runCore"] = async (t, a) => {
+      calls.push({ t: t as string, a: a as Record<string, unknown> });
+      return result(0, "[OK] config/voice.json readings：「绚都」→ 炫嘟\n");
+    };
+    let answer = false;
+    const { svc } = await startService({ runCore: fakeRun, confirm: async () => answer });
+    const params = { epKey: "SP11", word: "绚都", homophone: "炫嘟", expect: "xuan4du1", supersede: "true" };
+    const r1 = (await svc.dispatch("voice.global", params)) as { ok: boolean };
+    expect(r1.ok).toBe(false);
+    expect(calls.map((c) => c.t)).not.toContain("VOICE_GLOBAL");
+    answer = true;
+    const r2 = (await svc.dispatch("voice.global", params)) as { ok: boolean; lines: string[] };
+    expect(r2.ok).toBe(true);
+    const g = calls.find((c) => c.t === "VOICE_GLOBAL");
+    expect(g?.a).toMatchObject({ word: "绚都", homophone: "炫嘟", expect: "xuan4du1", supersede: true });
+  });
+
+  it("voice.retts：确认框取消 → 不 spawn RUN_TTS", async () => {
+    const calls: string[] = [];
+    const fakeRun: HostDeps["runCore"] = async (t) => {
+      calls.push(t as string);
+      return result(0, "");
+    };
+    const { svc } = await startService({ runCore: fakeRun, confirm: async () => false });
+    expect(((await svc.dispatch("voice.retts", { epKey: "SP11" })) as { started: boolean }).started).toBe(false);
+    expect(calls).not.toContain("RUN_TTS");
+  });
+});
+
 describe("Spec 12 TD-1/TD-2：封面导入（IMPORT_COVER，字节走 stdin）", () => {
   it("合法 PNG → 落 07-cover/import/，字节与输入全同（不重编码）；同名二次导入得 -2", async () => {
     const { svc } = await startService();
