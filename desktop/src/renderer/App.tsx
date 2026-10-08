@@ -29,6 +29,7 @@ import { Splitter } from "./Splitter";
 import { SessionList } from "./SessionList";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { PreviewSwitcher } from "./PreviewSwitcher";
+import { generatingOf } from "../shared/artifactGroups";
 import { errText, RpcClient } from "./rpc";
 import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
@@ -504,7 +505,13 @@ function Main() {
           ) : (
             <>
               {/* D50-A S1：03-audio 只留顺听面板一套播放器；面板取不到数据时退回 Spec 8 的纯播放队列 */}
-              {active !== null && voiceTarget && <VoicePanel key={`voice:${active}`} epKey={active} rpc={rpc} onReady={onVoiceReady} />}
+              {active !== null && voiceTarget && <VoicePanel
+                  key={`voice:${active}`}
+                  epKey={active}
+                  rpc={rpc}
+                  onReady={onVoiceReady}
+                  live={!!ep && ep.jobs.some((j) => j.state === "running" && generatingOf([j.command]).has("03-audio"))}
+                />}
               {!(voiceTarget && voiceOk === active) && <PreviewPane key={active ?? "-"} target={preview} head={!(ep && !showIdea && active !== null)} />}
             </>
           )}
