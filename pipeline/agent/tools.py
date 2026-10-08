@@ -23,7 +23,8 @@ from pipeline import paths
 from pipeline.cloud import validate_extra_args
 
 # 期文件写入白名单（§2.4）。D43 / Spec 17（ADR-0027）：所有模式开放全部工具，
-# 白名单不再按 scope 收窄——任何模式可写这三份，但仍全部过人审卡。
+# 白名单不再按 scope 收窄——任何模式可写这三份。审卡：01-topic.md、07-titles.md 每次弹卡；
+# 02-script.draft.md 每轮前 DRAFT_FREE_WRITES_PER_TURN 次免卡（2026-10-08 spec §A）。
 # Spec 12 C12-R1：扩入 `07-titles.md`——标题候选的落盘点（07-titles.md 从来就是
 # 「agent 写候选、人定稿」的文件，不是 02-script.md 那种定稿物；写仍弹人审卡）。
 EPISODE_WRITABLE_FILES: set[str] = {
@@ -31,6 +32,15 @@ EPISODE_WRITABLE_FILES: set[str] = {
     "02-script.draft.md",
     "07-titles.md",
 }
+
+# 草稿是模型自己的工作稿（定稿 02-script.md 永远是人在 02.5 写，ADR-0024 决策 1），
+# 每次覆盖前留底（DRAFT_HISTORY_KEEP 份），所以写入可回退，每轮前几次免卡。
+# 3 = 写一次 + 修两次，与 creative.md「同一项连修两次仍没过就停下来问人」同一个数；
+# 超过即恢复弹卡，作为原地打转的刹车（2026-10-08 董香二期段落 3 连写十余轮）。
+DRAFT_FILENAME = "02-script.draft.md"
+DRAFT_FREE_WRITES_PER_TURN = 3
+DRAFT_HISTORY_DIR = ("_agent", "draft-history")
+DRAFT_HISTORY_KEEP = 20
 
 # 制片期（creative / pipeline）允许执行的 pipeline 模块白名单（§2.4）
 PIPELINE_MODULES: set[str] = {
@@ -44,6 +54,10 @@ PIPELINE_MODULES: set[str] = {
     "bgm",
     "status",
 }
+
+# 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
+# status 只读期目录；两者都不落盘（入选前已 grep 过无写调用）。新增成员前必须同样核实。
+READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status"})
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
 # Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
@@ -136,9 +150,25 @@ def write_episode_file(
     if clean_name == "01-topic.md" and not confirmed:
         raise PermissionError("写入 01-topic.md 是关键立项操作，必须获得人类显式确认")
 
-    # 4. 原子落盘
+    # 4. 草稿覆盖前留底：免卡写入必须可回退
+    if clean_name == DRAFT_FILENAME and target_resolved.exists():
+        _keep_draft_history(resolved_ep, target_resolved)
+
+    # 5. 原子落盘
     paths.atomic_write(target_resolved, content)
     return target_resolved
+
+
+def _keep_draft_history(ep_dir: Path, draft: Path) -> None:
+    """把即将被覆盖的草稿存进 `_agent/draft-history/`，只留最近 DRAFT_HISTORY_KEEP 份。"""
+    hist = ep_dir.joinpath(*DRAFT_HISTORY_DIR)
+    hist.mkdir(parents=True, exist_ok=True)
+    ns = time.time_ns()  # 一次取时：秒与纳秒同源，文件名字典序 = 时间序
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(ns // 1_000_000_000)) + f"{ns % 1_000_000_000:09d}"
+    paths.atomic_write(hist / f"{stamp}-{DRAFT_FILENAME}", draft.read_text(encoding="utf-8"))
+    olds = sorted(p for p in hist.iterdir() if p.name.endswith(f"-{DRAFT_FILENAME}"))
+    for old in olds[:-DRAFT_HISTORY_KEEP]:
+        old.unlink()
 
 
 def _extract_positional_args(args: list[str]) -> list[str]:
@@ -479,14 +509,22 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "name": "search_notes",
         "side_effect": False,
         "adr": "ADR-0018",
-        "description": "在 data/library/ 只读笔记里做大小写不敏感的子串检索，返回命中片段。",
+        "description": (
+            "只读检索。source=notes（默认）：在 data/library/ 笔记里做大小写不敏感的子串检索，返回命中片段。"
+            "source=subs：检索字幕台词，命中返回集号、时间码、本句与前后句；只给 episode 不给 query 则返回整集台词。"
+            "剧情断言（某集某时间码发生了什么）先用 subs 查。字幕只有台词，没有说话人和画面；"
+            "无台词的戏查不到，查不到不等于没有这场戏。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "检索词"},
+                "query": {"type": "string", "description": "检索词（source=subs 且给了 episode 时可省略）"},
                 "limit": {"type": "integer", "description": "最多返回几条（默认 5，上限 20）"},
+                "source": {"type": "string", "enum": ["notes", "subs"], "description": "检索笔记还是字幕，默认 notes"},
+                "episode": {"type": "string", "description": "仅 subs：限定一集，如 S01E09"},
+                "anime": {"type": "string", "description": "仅 subs：番名短名；省略则取本期 01-topic.md 的素材番"},
             },
-            "required": ["query"],
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -907,6 +945,11 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
 
 
 def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    source = str(args.get("source", "notes") or "notes")
+    if source == "subs":
+        return _search_subs(args, ctx)
+    if source != "notes":
+        raise ValueError(f"source 只能是 notes 或 subs，收到 {source!r}")
     query = str(args.get("query", "")).strip()
     if not query:
         raise ValueError("query 不能为空")
@@ -948,6 +991,102 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     result: dict[str, Any] = {"query": query, "hits": hits, "truncated": len(hits) >= limit}
     if excluded:
         result["excluded"] = sorted(set(excluded))
+    return result
+
+
+SUBS_TRANSCRIPT_MAX_CHARS = 20_000  # 整集台词上限；一集约 6–8k 字，余量两倍多
+_EP_CODE = re.compile(r"^S\d+E\d+$")
+
+
+def _subtitle_lines(units: list[dict[str, Any]], source: Path) -> list[tuple[float, str]]:
+    """把 WINDOW=2 滑窗单元还原成单句（`subindex.py` 的拼接：unit_i = line_i + " " + line_{i+1}，
+    末单元只有一句）。从末尾往前剥后缀即可精确还原；结构对不上就报错，不静默给半截台词。"""
+    if not units:
+        return []
+    lines: list[str] = [""] * len(units)
+    lines[-1] = str(units[-1]["text"])
+    for i in range(len(units) - 2, -1, -1):
+        text, suffix = str(units[i]["text"]), " " + lines[i + 1]
+        if not (text.endswith(suffix) and len(text) > len(suffix)):
+            raise ValueError(f"{source.name} 第 {i} 个单元不是 WINDOW=2 滑窗结构，无法还原单句")
+        lines[i] = text[: -len(suffix)]
+    return [(float(u["start"]), line) for u, line in zip(units, lines)]
+
+
+def _mmss(seconds: float) -> str:
+    total = int(seconds)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _search_subs(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """字幕检索（2026-10-08 spec §C）。只读 data/library/index/<番>_SxxEyy.json，纯 stdlib。"""
+    query = str(args.get("query", "") or "").strip()
+    episode = str(args.get("episode", "") or "").strip().upper()
+    if episode and not _EP_CODE.match(episode):
+        raise ValueError(f"episode 格式应为 S01E09 这种，收到 {episode!r}")
+    if not query and not episode:
+        raise ValueError("source=subs 时 query 与 episode 至少给一个")
+    try:
+        limit = int(args.get("limit", 5))
+    except (TypeError, ValueError):
+        raise ValueError("limit 必须是整数") from None
+    limit = max(1, min(limit, MAX_NOTE_LIMIT))
+
+    anime_arg = str(args.get("anime", "") or "").strip()
+    if anime_arg:
+        animes = [anime_arg]
+    elif ctx.episode_dir is not None:
+        from pipeline.bgm import animes_of
+
+        animes = animes_of(Path(ctx.episode_dir))
+        if not animes:
+            raise ValueError("本期 01-topic.md 没写「番:」，读不到番名；请显式传 anime")
+    else:
+        raise ValueError("无期会话检索字幕必须显式传 anime")
+
+    index_dir = ctx.base / "data" / "library" / "index"
+    if not index_dir.exists():
+        return {"source": "subs", "query": query, "hits": [], "note": "data/library/index/ 不可达（外置盘未挂载？）"}
+
+    files: list[tuple[str, Path]] = []
+    for anime in animes:
+        # 文件名整串匹配：番名前缀相同的另一部番（跨番命中是静默失败）不得混入
+        pat = re.compile(rf"^{re.escape(anime)}_(S\d+E\d+)\.json$")
+        for path in sorted(index_dir.iterdir()):
+            m = pat.match(path.name)
+            if m and (not episode or m.group(1) == episode):
+                files.append((m.group(1), path))
+    result: dict[str, Any] = {"source": "subs", "animes": animes, "query": query}
+    if not files:
+        result.update(hits=[], note=f"index/ 下没有《{'、'.join(animes)}》{episode}的字幕索引")
+        return result
+
+    if not query:  # 整集台词
+        ep_code, path = files[0]
+        lines = _subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
+        out, used, truncated = [], 0, False
+        for start, line in lines:
+            row = f"{_mmss(start)} {line}"
+            if used + len(row) > SUBS_TRANSCRIPT_MAX_CHARS:
+                truncated = True
+                break
+            out.append(row)
+            used += len(row)
+        result.update(episode=ep_code, transcript="\n".join(out), truncated=truncated)
+        return result
+
+    needle = query.lower()
+    hits: list[dict[str, Any]] = []
+    for ep_code, path in files:
+        lines = _subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
+        for i, (start, line) in enumerate(lines):
+            if needle in line.lower():
+                ctx_lines = [lines[j][1] for j in (i - 1, i + 1) if 0 <= j < len(lines)]
+                hits.append({"ep": ep_code, "time": _mmss(start), "text": line, "context": ctx_lines})
+                if len(hits) >= limit:
+                    result.update(hits=hits, truncated=True)
+                    return result
+    result.update(hits=hits, truncated=False)
     return result
 
 

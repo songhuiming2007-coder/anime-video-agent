@@ -248,16 +248,23 @@ def review_tool_call(
     root: Path | None = None,
     origin: str = "model",
     turn_id: str | None = None,
+    draft_writes_this_turn: int = 0,
 ) -> ToolVerdict:
     """工具审查（原 `cli._default_approve` 的确定性部分，Spec 9 §2.4.2/§2.6）。
 
     顺序（D43 / Spec 17 §3.2/§3.4）：未注册 → 无期会话的需期工具「先建期」→
-    run_pipeline dry-run → write_memory dry-run → fail-closed `side_effect` 分流 → 弹卡。
+    run_pipeline dry-run → write_memory dry-run → 参数级免卡（只读 pipeline 模块、
+    限次的草稿写入，2026-10-08 spec）→ fail-closed `side_effect` 分流 → 弹卡。
     「越 scope」拒绝已随 D43 删除（所有模式开放全部工具）。
+
+    `draft_writes_this_turn`：本轮已放行的 02-script.draft.md 写入次数，由 Session 计数传入。
     """
     from pipeline.agent.tools import (
+        DRAFT_FILENAME,
+        DRAFT_FREE_WRITES_PER_TURN,
         NEEDS_EPISODE_TOOLS,
         NO_EPISODE_MESSAGE,
+        READONLY_PIPELINE_MODULES,
         TOOL_SCHEMAS,
         run_pipeline,
     )
@@ -303,13 +310,37 @@ def review_tool_call(
         if not memory_plan.requires_card:
             return ToolVerdict("allow", echo=f"[memory] {memory_plan.summary}")
 
+    # 参数级免卡（2026-10-08 spec §A）。只认规范化 argv 里的模块名，不认模型写的原始串。
+    if argv is not None and _pipeline_module_of(argv) in READONLY_PIPELINE_MODULES:
+        return ToolVerdict("allow", echo=_echo_line(name, args))
+
+    loop_label = None
+    if name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME:
+        if draft_writes_this_turn < DRAFT_FREE_WRITES_PER_TURN:
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+        # 超限恢复弹卡：这是防打转的刹车，卡上写明第几次，人一眼看出它在原地转
+        loop_label = f"本轮第 {draft_writes_this_turn + 1} 次重写草稿"
+
     side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
     if not side_effect:
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
     return ToolVerdict(
-        "ask", request=_tool_request(name, args, argv, ep_dir, status, memory_plan, turn_id)
+        "ask",
+        request=_tool_request(
+            name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label
+        ),
     )
+
+
+def _pipeline_module_of(argv: list[str]) -> str | None:
+    """规范化 argv（`python -m pipeline.<模块> ...`）里的模块短名；形状不符返回 None。"""
+    if "-m" not in argv:
+        return None
+    module_at = argv.index("-m") + 1
+    if module_at >= len(argv) or not argv[module_at].startswith("pipeline."):
+        return None
+    return argv[module_at].removeprefix("pipeline.")
 
 
 def _model_argv_has_options(argv: list[str], ep_dir: Path | None) -> bool:
@@ -339,7 +370,10 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
         "crawl": "url",
         "list_episodes": None,
     }
-    if name in listed:
+    if name == "search_notes" and args.get("source") == "subs":
+        parts = ["[字幕]", str(args.get("episode", "")).strip(), str(args.get("query", "")).strip()]
+        summary = " ".join(p for p in parts if p)
+    elif name in listed:
         key = listed[name]
         summary = "" if key is None else str(args.get(key, "")).strip()
     else:
@@ -395,6 +429,8 @@ def _tool_request(
     status: Any,
     memory_plan: Any,
     turn_id: str | None = None,
+    *,
+    loop_label: str | None = None,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -407,6 +443,8 @@ def _tool_request(
             m in argv or f"pipeline.{m}" in argv for m in ("tts", "clips", "render")
         ):
             stop_label = f"[{stop}] 当前处于停机点 {status.current_step}"
+    if loop_label:
+        stop_label = loop_label if stop_label is None else f"{stop_label}；{loop_label}"
 
     card = render_approval_card(
         name,
@@ -585,6 +623,7 @@ class AgentSession:
         self._scope_override = host._scope_override
         self.messages: list[dict[str, Any]] = []
         self._turn_id = ""
+        self._draft_writes = 0  # 本轮已放行的草稿写入次数（2026-10-08 spec §A：免卡限次）
         self._scope = scope_mode
         self._log_broken = False
         self._last_records: list[dict[str, Any]] = []
@@ -700,6 +739,7 @@ class AgentSession:
 
         self.messages = messages
         self._turn_id = turn_id or secrets.token_hex(8)
+        self._draft_writes = 0
         self._ep_dir = self.host.ep_dir if ep_dir is _HOST_EP else (
             Path(ep_dir).resolve() if ep_dir is not None else None  # type: ignore[arg-type]
         )
@@ -1052,14 +1092,22 @@ class AgentSession:
                 ok=bool(ok), reason="" if ok else str(reason), provenance="auto" if ok else "human"
             )
 
+        from pipeline.agent.tools import DRAFT_FILENAME
+
         verdict = review_tool_call(
             name, args, ep_dir=self.host.ep_dir, scope=self._scope,
             status=status, root=root, origin="model", turn_id=turn_id,
+            draft_writes_this_turn=self._draft_writes,
+        )
+        is_draft_write = (
+            name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME
         )
         if verdict.action == "reject":
             self.channel.show("stdout", {"text": f"[REJECT] {verdict.reason}"})
             return Decision(ok=False, reason=verdict.reason, provenance="precheck")
         if verdict.action == "allow":
+            if is_draft_write:
+                self._draft_writes += 1
             if verdict.echo:
                 # 终端回显走 kind="echo"（协议下由 tool 帧的 summary 承担，不再重复一份）
                 self.channel.show("echo", {"text": verdict.echo})
@@ -1085,6 +1133,8 @@ class AgentSession:
         self._close_request(request, reason="answered", decision=answer.decision,
                             latency_s=answer.latency_s, cause=None)
         if approved:
+            if is_draft_write:
+                self._draft_writes = 0  # 人看过超限卡并放行：再给一个免卡额度
             return Decision(ok=True, provenance="human")
         self.channel.show("stdout", {"text": "[CANCEL] 已取消执行"})
         return Decision(
