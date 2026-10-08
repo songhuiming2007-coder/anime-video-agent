@@ -64,7 +64,7 @@ import { listEpisodes, type EpisodeEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
-import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs } from "./spawner";
+import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
 import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
 import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
@@ -654,6 +654,8 @@ export class HostService {
         return this.voiceGlobal(this.epForIo(p.epKey), readingOf(p), p.supersede === "true");
       case "voice.retts":
         return this.voiceReTts(this.epForIo(p.epKey));
+      case "voice.review":
+        return this.voiceReview(this.epForIo(p.epKey), p.review);
       case "time.surface":
         return this.timeSurface(this.epForIo(p.epKey), p.stop, p.visible === "true");
       case "time.read":
@@ -1538,6 +1540,15 @@ export class HostService {
     const r = await this.core("VOICE_GLOBAL", { ...a, ep: e.abs, supersede });
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "写全局读音表超时", { stderrTail: r.stderrTail });
     return { ok: r.code === 0, lines: linesOf(r.stdoutTail, r.stderrTail) };
+  }
+
+  /** D50-A S7：03.5 卡内打点 → manifest 的 human_review（合并写，不重合成） */
+  private async voiceReview(e: EpisodeEntry, review: string): Promise<VoiceCheckJson> {
+    if (!REVIEW_RE.test(review)) throw new RpcFail("E_BAD_REQUEST", `打点格式不对：${review}`);
+    const r = await this.core("TTS_REVIEW", { ep: e.abs, review });
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "打点超时", { stderrTail: r.stderrTail });
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "打点失败", { stderrTail: r.stderrTail });
+    return { ok: true, lines: linesOf(r.stdoutTail, "") };
   }
 
   private async voiceReTts(e: EpisodeEntry): Promise<{ started: boolean }> {

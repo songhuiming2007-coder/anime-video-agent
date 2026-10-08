@@ -219,6 +219,15 @@ describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超�
     expect(isLongRunning("RUN_TTS")).toBe(true);
   });
 
+  it("D50-A S7：TTS_REVIEW 只收三维 1–5，单个 --review= 元素；格式不对不 spawn", () => {
+    expect(buildArgv("TTS_REVIEW", { ep: "/ep", review: "voice=4,prosody=3,misread=5" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.tts", "/ep", "--review=voice=4,prosody=3,misread=5",
+    ]);
+    for (const bad of ["voice=6,prosody=3,misread=5", "voice=4,prosody=3", "voice=4,prosody=3,misread=5,rhythm=2", "voice=4,prosody=3,misread=5 --force-all"]) {
+      expect(() => buildArgv("TTS_REVIEW", { ep: "/ep", review: bad }, "/repo")).toThrow(/打点格式不对/);
+    }
+  });
+
   it("IMPORT_COVER：--name 为单个 argv 元素、stdin pipe（S8-R18）", () => {
     const b = buildArgv("IMPORT_COVER", { ep: "/ep", name: "我的图 名.png" }, "/repo");
     expect(b.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/import-cover", "--name=我的图 名.png"]);

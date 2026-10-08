@@ -255,4 +255,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .voice-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) 0; }
 .voice-foot { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm); }
 .voice-foot-sp { flex: 1; }
+/* D50-A S7：03.5 卡内打点 */
+.review-rating { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
+.review-dim { display: inline-flex; align-items: center; gap: var(--space-1); }
+.review-rating .ui-seg > button { white-space: nowrap; }
 

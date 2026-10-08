@@ -15,6 +15,7 @@ import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
 import { Icon } from "./icons";
+import { ReviewRating } from "./ReviewRating";
 import { approvalsOf, type EpisodeState } from "./store";
 
 const STOP_NAMES: Record<StopType, string> = { "02.5": "人审改稿", "03.5": "配音顺听", "05": "审时间码", "09": "人工发布" };
@@ -171,7 +172,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
         >
           批准
         </button>
-        {stop === "03.5" && <span className="muted">结构化打点（manifest human_review）须在终端 <code>{`python -m pipeline.tts ${ep.epKey} --review`}</code> 完成</span>}
+        {stop === "03.5" && <ReviewRating epKey={ep.epKey} rpc={rpc} disabled={off} />}
         {!aligned && (
           <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
             打回…
