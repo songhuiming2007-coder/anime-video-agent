@@ -18,7 +18,12 @@ import re
 from pathlib import Path
 
 from pipeline.agent.resolver import scope_of
-from pipeline.agent.tools import DRAFT_FILENAME, RESTRICTED_EGRESS_PATTERNS, SCRIPT_FILENAME
+from pipeline.agent.tools import (
+    DRAFT_FILENAME,
+    RESTRICTED_EGRESS_PATTERNS,
+    SCRIPT_FILENAME,
+    resolve_write_content,
+)
 from pipeline.status import EpisodeStatus, inspect_episode
 
 
@@ -234,7 +239,12 @@ def render_approval_card(
         raw_filename = str(args.get("filename", "")).strip()
         first_line = raw_filename.splitlines()[0] if raw_filename else ""
         filename = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", first_line).strip()
-        content = args.get("content", "")
+        ep = episode_dir or args.get("episode_dir")
+        # D48：edits 写法在磁盘现版上算出全文，卡上的 diff 就是将要落盘的内容；算不出时 review 已在弹卡前拒
+        try:
+            content = resolve_write_content(ep, args)
+        except (ValueError, PermissionError):
+            content = args.get("content", "")
         content_bytes = len(content.encode("utf-8")) if isinstance(content, str) else 0
         size_kb = content_bytes / 1024
         size_str = f"{size_kb:.1f} KB" if size_kb >= 0.1 else f"{content_bytes} B"
@@ -260,7 +270,6 @@ def render_approval_card(
             status_str = "新建文件"
             danger_str = "无"
 
-        ep = episode_dir or args.get("episode_dir")
         if filename == SCRIPT_FILENAME and ep:
             # D47：定稿被改之后，已有的封板与配音都可能过期——只提示，不拒
             if (Path(ep) / "02-diff.patch").exists():

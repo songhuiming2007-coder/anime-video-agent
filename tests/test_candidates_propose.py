@@ -526,7 +526,7 @@ def test_approval_card_and_ledger_target(tmp_path: Path, monkeypatch: pytest.Mon
     # 验证 url 段在无 filename/command 时也能落入 target（幂等覆盖 Spec 5 §4.5②）
     _default_approve(
         "write_episode_file",
-        {"url": "https://example.com/only-url"},
+        {"url": "https://example.com/only-url", "content": "x"},  # D48：无 content/edits 的写入弹卡前即拒
         ep_dir=ep_dir,
         scope="creative",
     )

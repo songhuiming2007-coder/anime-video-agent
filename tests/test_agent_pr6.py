@@ -730,7 +730,7 @@ def test_m17_latency_records_card_to_keypress_delay(tmp_path: Path, monkeypatch)
     ep2 = tmp_path / "data" / "episodes" / "01-latency"
     ep2.mkdir(parents=True)
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    cli._default_approve("write_episode_file", {"filename": "01-topic.md"}, ep_dir=ep2, scope="creative")
+    cli._default_approve("write_episode_file", {"filename": "01-topic.md", "content": "x"}, ep_dir=ep2, scope="creative")
     rec2 = json.loads((ep2 / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").strip())
     assert isinstance(rec2["decision_latency_s"], float)
     assert rec2["decision_latency_s"] >= 0.0

@@ -649,15 +649,11 @@ MUTATIONS: list[dict] = [
      "old": "json.dumps(normalized, sort_keys=True,",
      "new": "json.dumps(normalized, sort_keys=False,"},
     {"id": "S9-MUT-7", "guard": "人批准的副作用执行后清空判重表", "file": LLM,
-     "old": ('                if decision.provenance == "human":\n'
-             '                    dedup.clear()'),
-     "new": ('                if decision.provenance == "human":\n'
-             '                    pass  # MUT-7')},
+     "old": '                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):',
+     "new": '                if False:  # MUT-7'},
     {"id": "S9-MUT-8", "guard": "只有人批准的执行才清空判重表（只读执行不清）", "file": LLM,
-     "old": ('                if decision.provenance == "human":\n'
-             '                    dedup.clear()'),
-     "new": ('                if True:  # MUT-8\n'
-             '                    dedup.clear()')},
+     "old": '                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):',
+     "new": '                if True:  # MUT-8'},
     {"id": "S9-MUT-9", "guard": "人拒过的调用也记入判重", "file": LLM,
      "old": "                    rejected = _reject_outcome(decision)\n",
      "new": ("                    rejected = _reject_outcome(decision)\n"
@@ -753,10 +749,24 @@ MUTATIONS: list[dict] = [
              "            if False:  # MUT-39\n"
              "                return existing\n")},
     {"id": "S9-MUT-40", "guard": "免卡写入不清空判重表", "file": LLM,
-     "old": ('                if decision.provenance == "human":\n'
-             '                    dedup.clear()'),
-     "new": ('                if decision.provenance in ("human", "card_free"):  # MUT-40\n'
-             '                    dedup.clear()')},
+     "old": '                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):',
+     "new": '                if decision.provenance in ("human", "card_free") or (name == "write_episode_file" and outcome.get("ok")):  # MUT-40'},
+    # ---- D48（2026-10-08）：成功写期文件后清判重（修 D44 回归）、edits 唯一替换、批准 02.5 时自动封板 ----
+    {"id": "D48-MUT-1", "guard": "成功写期文件后清空判重表", "file": LLM,
+     "old": '                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):',
+     "new": '                if decision.provenance == "human":  # D48-MUT-1'},
+    {"id": "D48-MUT-2", "guard": "只有写入成功才清空判重表", "file": LLM,
+     "old": '                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):',
+     "new": '                if decision.provenance == "human" or name == "write_episode_file":  # D48-MUT-2'},
+    {"id": "D48-MUT-3", "guard": "edits 的 old 必须恰好出现一次", "file": TOOLS,
+     "old": "        if n != 1:\n",
+     "new": "        if n == 0:\n"},
+    {"id": "D48-MUT-4", "guard": "批准 02.5 时封板缺失就先封板", "file": CLI,
+     "old": '    if stop != "02.5":\n        return 0\n',
+     "new": '    if True:\n        return 0\n'},
+    {"id": "D48-MUT-5", "guard": "封板失败不批准", "file": CLI,
+     "old": '        print(f"[OK] 已封板 02-diff.patch（{buf.getvalue().strip()} 字节）")\n    return rc\n',
+     "new": '        print(f"[OK] 已封板 02-diff.patch（{buf.getvalue().strip()} 字节）")\n    return 0\n'},
     {"id": "S9-MUT-41", "guard": "检查点同时数工具执行（不只数回复）", "file": LLM,
      "old": "                execs_since_cp += 1\n",
      "new": "                pass  # MUT-41\n"},

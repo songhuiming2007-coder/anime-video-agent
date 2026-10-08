@@ -803,8 +803,11 @@ def run_tool_loop(
                         raise
                     live["stage"] = "tool"
                 _trace(control, index, name, args, content=outcome)
-                if decision.provenance == "human":
-                    dedup.clear()  # 只在一个经人批准的执行完成后清空（§2.3 第 5 条）
+                if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):
+                    # 经人批准的执行完成后清空（§2.3 第 5 条）。D48：成功写期文件后也清——D44 让草稿写入免卡后，
+                    # 「改完再跑同一条 check_script」被判重复，模型换着写路径绕过去。只清写入后：只读检查免卡执行不清，
+                    # 原地反复跑同一条检查仍判重
+                    dedup.clear()
                 control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
 
     except KeyboardInterrupt:

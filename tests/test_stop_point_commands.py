@@ -537,3 +537,68 @@ def test_停机点子命令在最小_PATH_下行为不变(tmp_path):
     sealed = _cleanenv_cli(tmp_path, str(ep), "/seal-script", path="/usr/bin:/bin:/usr/sbin:/sbin")
     assert sealed.returncode == 0, sealed.stderr
     assert (ep / "02-diff.patch").exists()
+
+
+# ---------------------------------------------------------------------------
+# D48：批准 02.5 时自动封板（封板缺失或过期才封；零改动拒且不批准）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ep_025(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ep = tmp_path / "data" / "episodes" / "ep-025"
+    ep.mkdir(parents=True)
+    (ep / "01-topic.md").write_text("# 选题\n类型：杂谈\n", encoding="utf-8")
+    (ep / "02-script.draft.md").write_text(DRAFT, encoding="utf-8")
+    (ep / "02-script.md").write_text(SCRIPT, encoding="utf-8")
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    return ep
+
+
+def _pending_025(ep: Path) -> str:
+    from pipeline import approvals
+
+    item = approvals.ensure_pending(ep)
+    assert item is not None and item.type == "02.5", item
+    return item.approval_id
+
+
+def _status_of(ep: Path, approval_id: str) -> str:
+    from pipeline import approvals
+
+    return str(approvals.get(approval_id, ep).status)
+
+
+class TestD48ApproveSeals:
+    def test_裸形态批准时自动封板(self, ep_025, capsys):
+        aid = _pending_025(ep_025)
+        assert not (ep_025 / "02-diff.patch").exists()
+        assert run_cli(ep_025, "/approve", "02.5", "--id", aid) == 0
+        expected = subprocess.run(
+            ["git", "diff", "--no-index", "02-script.draft.md", "02-script.md"], cwd=ep_025, capture_output=True,
+        ).stdout
+        assert (ep_025 / "02-diff.patch").read_bytes() == expected
+        assert "已封板" in capsys.readouterr().out
+        assert _status_of(ep_025, aid).endswith("APPROVED")
+
+    def test_REPL批准时自动封板(self, ep_025):
+        aid = _pending_025(ep_025)
+        assert cli._handle_repl_approve(ep_025, f"/approve 02.5 --id {aid}", {}) == 0
+        assert (ep_025 / "02-diff.patch").stat().st_size > 0
+
+    def test_零改动拒封且不批准(self, ep_025, capsys):
+        (ep_025 / "02-script.draft.md").write_text(SCRIPT, encoding="utf-8")
+        aid = _pending_025(ep_025)
+        assert run_cli(ep_025, "/approve", "02.5", "--id", aid) == 1
+        assert "未做任何修改" in capsys.readouterr().err
+        assert not (ep_025 / "02-diff.patch").exists()
+        assert not _status_of(ep_025, aid).endswith("APPROVED")
+
+    def test_封板新鲜时不重封(self, ep_025):
+        aid = _pending_025(ep_025)  # 先有待审项（封板后状态就越过 02.5 了）
+        assert run_cli(ep_025, "/seal-script") == 0
+        patch = ep_025 / "02-diff.patch"
+        patch.write_text(patch.read_text(encoding="utf-8") + "# 人手工加的一行\n", encoding="utf-8")
+        before = patch.read_bytes()
+        assert run_cli(ep_025, "/approve", "02.5", "--id", aid) == 0
+        assert patch.read_bytes() == before, "新鲜的封板不该被覆盖"

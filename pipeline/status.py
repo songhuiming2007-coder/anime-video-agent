@@ -334,8 +334,8 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 is_blocked=True,
                 block_reason="🛑 处于人工停机点 1（02.5 人审改稿）！未见 02-diff.patch 封板确认。",
                 completed_steps=completed,
-                next_action="必须由人类总监通读 02-script.md，精修事实与张力，并提取 diff 封板：\n"
-                f"  git diff --no-index {d}/02-script.draft.md {d}/02-script.md > {d}/02-diff.patch",
+                next_action="必须由人类总监通读 02-script.md，精修事实与张力，然后批准 02.5（批准时自动封板，D48）：\n"
+                "  桌面端在待答区点 02.5「批准」；终端 `/approve 02.5`",
                 next_command=f"python -m pipeline.tts {d} (人审确认后方可执行)",
                 docs_ref="docs/runbook/02.5-human-review.md",
             )

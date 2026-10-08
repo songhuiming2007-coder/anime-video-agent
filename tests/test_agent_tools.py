@@ -1632,3 +1632,63 @@ def test_d47_agent_write_makes_sealed_gate_stale(tmp_path: Path) -> None:
     write_episode_file(ep, "02-script.md", "c\n", root=root)
     os.utime(ep / "02-script.md", ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000))  # 防同一时钟刻度
     assert not _gate_valid(ep, "02.5"), "agent 改了定稿，旧封板必须失效、人重新封板"
+
+
+# ---------------------------------------------------------------------------
+# D48：write_episode_file 的局部替换写法（edits）
+# ---------------------------------------------------------------------------
+
+_D48_SCRIPT = "## 段落 1\n\n配音：甲。\n\n## 段落 2\n\n配音：乙。\n\n## 段落 3\n\n配音：乙。丙。\n"
+
+
+def _d48_ep(tmp_path: Path) -> tuple[Path, Path]:
+    root, ep = _d47_ep(tmp_path)
+    (ep / "02-script.md").write_text(_D48_SCRIPT, encoding="utf-8")
+    return root, ep
+
+
+def test_d48_edits_replace_unique_fragments_in_order(tmp_path: Path) -> None:
+    root, ep = _d48_ep(tmp_path)
+    ctx = ToolContext(scope="creative", episode_dir=ep, root=root, confirmed=True)
+    out = execute_tool("write_episode_file", {"filename": "02-script.md", "edits": [
+        {"old": "配音：甲。", "new": "配音：甲改。"},
+        {"old": "配音：乙。丙。", "new": "配音：丙。"},  # 带上下文才唯一
+    ]}, ctx)
+    assert out["ok"] is True, out
+    assert (ep / "02-script.md").read_text(encoding="utf-8") == (
+        "## 段落 1\n\n配音：甲改。\n\n## 段落 2\n\n配音：乙。\n\n## 段落 3\n\n配音：丙。\n"
+    )
+    assert len(list((ep / "_agent" / "script-history").iterdir())) == 1, "edits 写入同样留底"
+
+
+@pytest.mark.parametrize("args, why", [
+    ({"edits": [{"old": "配音：乙。", "new": "x"}]}, "出现了 2 次"),
+    ({"edits": [{"old": "配音：丁。", "new": "x"}]}, "找不到"),
+    # 顺序语义：第 1 条把「甲」换掉后，第 2 条再找「甲」就找不到了
+    ({"edits": [{"old": "配音：甲。", "new": "配音：丁。"}, {"old": "配音：甲。", "new": "y"}]}, "第 2 条 找不到"),
+    ({"edits": [{"old": "", "new": "x"}]}, "old 为空"),
+    ({"edits": []}, "非空数组"),
+    ({"edits": [{"old": "配音：甲。"}]}, "两个字符串"),
+    ({"content": "x", "edits": [{"old": "配音：甲。", "new": "x"}]}, "只能给一个"),
+    ({}, "只能给一个"),
+])
+def test_d48_bad_edits_write_nothing(tmp_path: Path, args: dict, why: str) -> None:
+    root, ep = _d48_ep(tmp_path)
+    ctx = ToolContext(scope="creative", episode_dir=ep, root=root, confirmed=True)
+    out = execute_tool("write_episode_file", {"filename": "02-script.md", **args}, ctx)
+    assert out["ok"] is False and why in out["error"], out
+    assert (ep / "02-script.md").read_text(encoding="utf-8") == _D48_SCRIPT
+    assert not (ep / "_agent").exists()
+
+
+def test_d48_edits_card_diff_is_what_will_be_written(tmp_path: Path) -> None:
+    from pipeline.agent.status_card import render_approval_card
+
+    _, ep = _d48_ep(tmp_path)
+    card = render_approval_card(
+        "write_episode_file",
+        {"filename": "02-script.md", "edits": [{"old": "配音：甲。", "new": "配音：甲改。"}]},
+        episode_dir=ep,
+    )
+    assert "│ 改动: +1 / -1 行" in card
+    assert "│ -配音：甲。" in card and "│ +配音：甲改。" in card
