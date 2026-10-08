@@ -104,6 +104,17 @@ RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
 )
 
 
+def scrub_restricted(text: str) -> str:
+    """受限字样替换为 [已脱敏]（re.IGNORECASE）。状态卡、抓回网页、工具结果三处共用（D52）。
+
+    只换字样不判内容：出网断言比的也只是文件名（ADR-0026）。`re.IGNORECASE` 与断言的
+    casefold 口径不同，漏掉的变体由断言照拦——脱敏是减少误拦，不是第二道闸。
+    """
+    for pattern in RESTRICTED_EGRESS_PATTERNS:
+        text = re.sub(re.escape(pattern), "[已脱敏]", text, flags=re.IGNORECASE)
+    return text
+
+
 def resolve_episode_dir(episode_dir: Path | str, root: Path | None = None) -> Path:
     """期目录双端 resolve 校验（fail-closed）：返回解析后的绝对期目录路径。
 

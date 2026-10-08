@@ -101,7 +101,7 @@ MUTATIONS: list[dict] = [
      "new": "            pass"},
     # ---- M5: 状态卡受限标记清洗 ----
     {"id": "M5", "guard": "状态卡 advisory 脱敏", "file": CARD,
-     "old": '    for pattern in RESTRICTED_EGRESS_PATTERNS:\n        escaped = re.escape(pattern)\n        card = re.sub(escaped, "[已脱敏]", card, flags=re.IGNORECASE)\n',
+     "old": '    card = scrub_restricted(card)\n',
      "new": '    pass\n'},
     # ---- M6: next_command 剥期路径前缀 ----
     {"id": "M6", "guard": "状态卡剥路径前缀", "file": CARD,
@@ -767,6 +767,23 @@ MUTATIONS: list[dict] = [
     {"id": "D48-MUT-5", "guard": "封板失败不批准", "file": CLI,
      "old": '        print(f"[OK] 已封板 02-diff.patch（{buf.getvalue().strip()} 字节）")\n    return rc\n',
      "new": '        print(f"[OK] 已封板 02-diff.patch（{buf.getvalue().strip()} 字节）")\n    return 0\n'},
+    # ---- D52（2026-10-08）：工具结果进会话前脱敏受限字样；被拦回合发带模式名的 notice ----
+    {"id": "D52-MUT-1", "guard": "工具结果脱敏受限字样", "file": LLM,
+     "old": '        "content": scrub_restricted(json.dumps(outcome, ensure_ascii=False)),\n',
+     "new": '        "content": json.dumps(outcome, ensure_ascii=False),\n'},
+    {"id": "D52-MUT-2", "guard": "脱敏大小写不敏感", "file": TOOLS,
+     "old": '        text = re.sub(re.escape(pattern), "[已脱敏]", text, flags=re.IGNORECASE)\n',
+     "new": '        text = re.sub(re.escape(pattern), "[已脱敏]", text)\n'},
+    {"id": "D52-MUT-3", "guard": "只脱敏工具结果，不脱敏 assistant 的工具参数（双保险）", "file": LLM,
+     "old": '        "content": scrub_restricted(json.dumps(outcome, ensure_ascii=False)),\n',
+     "new": '        "content": json.dumps(outcome, ensure_ascii=False),\n',
+     "also": [{"file": LLM,
+               "old": "    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):\n        return messages\n",
+               "new": ("    messages = json.loads(scrub_restricted(json.dumps(messages, ensure_ascii=False)))\n"
+                       "    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):\n        return messages\n")}]},
+    {"id": "D52-MUT-4", "guard": "被拦回合发 egress_blocked notice", "file": PROTO,
+     "old": '    if outcome.get("stopped") == "blocked":\n        # N52/D52',
+     "new": '    if False:\n        # N52/D52'},
     {"id": "S9-MUT-41", "guard": "检查点同时数工具执行（不只数回复）", "file": LLM,
      "old": "                execs_since_cp += 1\n",
      "new": "                pass  # MUT-41\n"},

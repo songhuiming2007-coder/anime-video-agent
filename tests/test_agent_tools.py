@@ -1085,6 +1085,58 @@ def test_case_variant_read_of_unpatterned_audio_file_never_leaves(tmp_path: Path
             )
 
 
+# D52：董香二期 session.jsonl 第 288 行的真实尾行（期目录名换成夹具）
+_D52_TTS_TAIL = (
+    "[OK] 22 段，总时长 5.5 分钟，耗时 1500s → "
+    "/Volumes/X/episodes/T1/03-audio/manifest.json\n"
+    "[OK] 打点已写入 /Volumes/X/episodes/T1/03-AUDIO/Manifest.JSON\n"
+)
+
+
+def test_d52_tool_result_path_is_scrubbed_not_blocking(tmp_path: Path, monkeypatch):
+    """D52 TS-1：作业输出里的受限路径进会话前脱敏，下一次请求照常发出，不整轮回滚。
+
+    改前：第二次请求被断言拦下 → stopped=blocked、rollback，25 分钟配音结果模型看不到。
+    """
+    from pipeline.agent import llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "execute_tool", lambda name, args, ctx: {
+        "ok": True, "exit_code": 0, "stdout_tail": _D52_TTS_TAIL, "stderr_tail": "",
+    })
+    with mock_llm_server([
+        tool_call("run_pipeline", {"command": "tts"}),
+        {"role": "assistant", "content": "配好了"},
+    ]) as (url, state):
+        root = make_agent_root(tmp_path, url + "/v1")
+        monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
+        ep = root / "data" / "episodes" / "T1"
+        ep.mkdir(parents=True)
+        outcome = run_tool_loop(
+            [{"role": "user", "content": "配音"}],
+            ctx=ToolContext(scope="creative", episode_dir=ep, root=root),
+        )
+
+    assert outcome["stopped"] == "done", outcome.get("error")
+    assert not outcome.get("rollback")
+    assert state["calls"] == 2
+    tool_msgs = [m for m in state["requests"][1]["body"]["messages"] if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    content = tool_msgs[0]["content"]
+    # 两行各一处（第二处是大小写变体）
+    assert content.count("[已脱敏]") == 2
+    assert "manifest.json" not in content.casefold()
+    assert json.loads(content)["stdout_tail"].startswith("[OK] 22 段")
+
+
+def test_d52_tool_message_scrubs_synthetic_results():
+    """D52 TS-2：合成结果（拒绝 / 中断文案）同样经 `_tool_message` 脱敏，且仍是合法 JSON。"""
+    from pipeline.agent.llm import _tool_message
+
+    msg = _tool_message({"id": "c9"}, {"ok": False, "error": "读不到 03-Audio/Voice.json 与 cloud.local.json"})
+    assert msg["tool_call_id"] == "c9"
+    assert json.loads(msg["content"]) == {"ok": False, "error": "读不到 [已脱敏] 与 [已脱敏]"}
+
+
 def test_llm_config_prefers_agent_local_json_override(tmp_path: Path, monkeypatch):
     """config/agent.local.json 优先于 agent.json（仿照 cloud.local.json 惯例）。"""
     cfg_dir = tmp_path / "config"

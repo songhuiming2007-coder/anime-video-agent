@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pipeline import paths
-from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS, assert_egress_boundary
+from pipeline.agent.tools import assert_egress_boundary, scrub_restricted
 
 # N59（人 2026-10-06 裁决）：默认 = 上限 = 20。原 5 / 10（Spec 4 §3.2）对人物剖析、伏笔考据这类调研
 # 远远不够（剖析类查询 limit=10 时两家全部截断、约一半仍是百科）；查什么、查几次由模型决定，
@@ -267,10 +267,7 @@ def _scrub(text: str) -> str:
 
     模式常量从 tools.py import 复用，严禁复制第二份清单（§2.4③）。
     """
-    out = text
-    for pattern in RESTRICTED_EGRESS_PATTERNS:
-        out = re.sub(re.escape(pattern), "[已脱敏]", out, flags=re.IGNORECASE)
-    return out
+    return scrub_restricted(text)
 
 
 def _redact_secret(text: str, api_key: str) -> str:

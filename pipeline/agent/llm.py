@@ -30,6 +30,7 @@ from pipeline.agent.tools import (
     assert_egress_boundary,
     build_tool_schemas,
     execute_tool,
+    scrub_restricted,
 )
 
 REQUEST_TIMEOUT = 60
@@ -457,10 +458,14 @@ def _bare_review(
 
 
 def _tool_message(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
+    """工具结果进会话的唯一序列化点。受限字样先脱敏（D52）：作业输出常带
+    `…/03-audio/manifest.json` 这类路径，不脱敏的话下一次请求整轮被出网断言拦下回滚。
+    人看的工具帧走 `_trace`，是原始结果；assistant 的 tool_calls 参数不脱敏（双保险，ADR-0026）。
+    """
     return {
         "role": "tool",
         "tool_call_id": str(call.get("id", "")),
-        "content": json.dumps(outcome, ensure_ascii=False),
+        "content": scrub_restricted(json.dumps(outcome, ensure_ascii=False)),
     }
 
 
