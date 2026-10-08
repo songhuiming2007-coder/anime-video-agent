@@ -240,6 +240,31 @@ test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记�
   await expect(panel.getByTestId("voice-done")).toBeEnabled();
 });
 
+test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ 已知问题：第一次批准 E_STALE，新卡上再批准成功", async () => {
+  const ctx = epAt035("SP11-S7");
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-S7");
+  const c = card(L.page, "03.5");
+  await c.waitFor({ timeout: 15_000 });
+  const firstId = await c.getAttribute("data-approval-id");
+  await expect(c.getByTestId("review-save")).toBeDisabled(); // 三维没打全不能记
+  for (const id of ["review-voice-4", "review-prosody-3", "review-misread-5"]) await c.getByTestId(id).click();
+  await c.getByTestId("review-save").click();
+  await expect.poll(() => (JSON.parse(readFileSync(join(ctx.ep, "03-audio/manifest.json"), "utf-8")) as { human_review?: Record<string, number> }).human_review, { timeout: 15_000 })
+    .toEqual({ voice_stability: 4, prosody: 3, misread: 5 });
+  expect(spawnNames(L, "TTS_REVIEW")).toHaveLength(1);
+  expect(spawnNames(L, "RUN_TTS_APPLY_PATCH")).toHaveLength(0);
+  // 已知问题（施工 spec S7 节）：打点改写了 03.5 对象钉住的 manifest，宿主没有自动重钉（H5 未触发），
+  // 第一次点批准撞 E_STALE、core 同时换上新对象；在新卡上再点一次才成功。用例钉住这一现状，修好后改为一次通过
+  await c.getByTestId("approve").click();
+  await expect(L.page.getByText(/E_STALE/)).toBeVisible({ timeout: 15_000 });
+  const fresh = L.page.locator(`[data-testid=decision][data-stop="03.5"]:not([data-approval-id="${firstId}"])`);
+  await expect(fresh.getByTestId("approve")).toBeEnabled({ timeout: 20_000 });
+  await fresh.getByTestId("approve").click();
+  await expect(L.page.getByTestId("decision-ok")).toContainText(/已批准|已确认批准/);
+  expect(readStore(ctx.ep).find((o) => o.approval_id === firstId)?.status).toBe("superseded");
+});
+
 test("TE-5 错误态不计时（红队 ④）：审阅面装载失败时人时计时不得开始", async () => {
   const ctx = epAt035("SP11-TE5");
   rmSync(join(ctx.ep, "02-script.md")); // core /voice-info 的前置缺失 → RPC 失败 → 面板停在错误态

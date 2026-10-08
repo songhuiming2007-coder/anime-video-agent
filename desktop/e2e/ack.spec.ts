@@ -661,7 +661,9 @@ test("门禁 14 已退役（Spec 11 S8-R15）：03.5/05 决策条不再常驻「
   const c35 = card(L.page, "03.5");
   await expect(c35).toBeVisible();
   await expect(c35.getByTestId("no-human-time")).toHaveCount(0); // 横幅退役
-  await expect(c35).toContainText("结构化打点（manifest human_review）须在终端 python -m pipeline.tts"); // S8-R15 措辞修订
+  // D50-A S7：终端打点提示（S8-R15 措辞）换成卡内打点，不再出现「须在终端」
+  await expect(c35.getByTestId("review-rating")).toBeVisible();
+  await expect(c35).not.toContainText("须在终端");
   await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-retired-0305.png") });
   await openEp(L.page, "G14-05");
   const c05 = card(L.page, "05");

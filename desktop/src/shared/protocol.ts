@@ -46,6 +46,7 @@ export type Method =
   | "voice.check" // { epKey, word, pinyin? | homophone?+expect? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
   | "voice.global" // { epKey, word, pinyin? | homophone?+expect?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
   | "voice.retts" // { epKey }：长任务，原生确认框后 spawn RUN_TTS（普通重跑，只重配念法变了的段）
+  | "voice.review" // { epKey, review: "voice=N,prosody=N,misread=N" } → { lines }（spawn TTS_REVIEW；D50-A S7：03.5 卡内打点）
   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
   | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
   | "cover.import"; // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
@@ -118,6 +119,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect"] },
   "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "supersede"] },
   "voice.retts": { required: ["epKey"], optional: [] },
+  "voice.review": { required: ["epKey", "review"], optional: [] },
   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
   "time.read": { required: ["epKey"], optional: [] },
   "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },

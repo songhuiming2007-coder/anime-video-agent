@@ -47,6 +47,8 @@ export type Template =
   | "VOICE_CHECK"
   | "VOICE_GLOBAL"
   | "RUN_TTS"
+  // D50-A S7：03.5 卡内结构化打点（只写 manifest 的 human_review，不重合成）
+  | "TTS_REVIEW"
   // Spec 12 S8-R18：封面导入（字节走 stdin）
   | "IMPORT_COVER"
   // D45：会话列表 / 删除（移进回收站）
@@ -60,6 +62,9 @@ export interface VoiceReadingArgs {
   homophone?: string;
   expect?: string;
 }
+
+/** 03.5 打点只许这三维、各 1–5（core 的 parse_review_arg 再校验一遍；05 的两维不在这张卡上） */
+export const REVIEW_RE = /^voice=[1-5],prosody=[1-5],misread=[1-5]$/;
 
 function readingFlags(a: VoiceReadingArgs): string[] {
   const out = [`--word=${a.word}`];
@@ -109,6 +114,8 @@ export interface TemplateArgs {
   VOICE_GLOBAL: VoiceReadingArgs & { ep: string; supersede: boolean };
   /** 长任务：同 RUN_TTS_APPLY_PATCH（无超时、退出不发信号） */
   RUN_TTS: { ep: string };
+  /** review 在宿主侧先过 REVIEW_RE（只许三维 1–5），作为单个 argv 元素 */
+  TTS_REVIEW: { ep: string; review: string };
   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
   IMPORT_COVER: { ep: string; name: string };
   LIST_SESSIONS: { ep: string };
@@ -296,6 +303,11 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "RUN_TTS": {
       const { ep } = args as TemplateArgs["RUN_TTS"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts"], timeoutMs: null, homebrewPath: true };
+    }
+    case "TTS_REVIEW": {
+      const { ep, review } = args as TemplateArgs["TTS_REVIEW"];
+      if (!REVIEW_RE.test(review)) throw new Error(`打点格式不对：「${review}」`);
+      return { argv: [py, "-m", "pipeline.tts", ep, `--review=${review}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
     case "IMPORT_COVER": {
       const { ep, name } = args as TemplateArgs["IMPORT_COVER"];
