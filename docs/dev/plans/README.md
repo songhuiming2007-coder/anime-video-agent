@@ -18,6 +18,7 @@
 | [v2 云端 GPU 重构](2026-09-08-v2-cloud-gpu-reconstruction.md) | B1, B2, D1, D2, D4, D5, D6, D22, D23, D25 | ADR-0014, ADR-0003, ADR-0005, ADR-0006 | **全局收束施工图**，M1/M2a/M2b/M2.5 已交付，进至 M3 |
 | [v2 系统架构设计](2026-09-10-v2-architecture-design.md) | B1, B2, B3, D1, D2, D4, D5, D6, D22, D23, D24, D25 | ADR-0014, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0010~0013 | v2 架构落地层（7 大子系统设计），核心能力已在 M1~M2.5 交付落地 |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
+| [D45 桌面端会话管理](2026-10-08-session-management-spec.md) | D45 | ADR-0024 | 已施工（人选方案 B、删除进回收站）；pytest / vitest / e2e 通过，变异 6/6 被抓；待真实一期手验 |
 | [D44 审批按参数分级 + 字幕可检索](2026-10-08-approval-tiering-subs-search-spec.md) | D44 | ADR-0018, ADR-0025 | 已施工、机检通过（pytest 2106 / vitest 437，变异 6/6 被抓）；待真实窗口手验 |
 | [D39 桌面端布局：现状实测与方案候选](2026-09-29-desktop-layout-options.md) | D39 | — | 人选 **B**（预览默认收起）；S1–S4 已施工、每步人看过真实窗口截图（S1/S2 人确认满意），机检通过；**2026-09-29 人在打包版体验「整体很舒适」**，真实一期验收待硬盘到手（UI 规则 2 未勾，不归档） |
 

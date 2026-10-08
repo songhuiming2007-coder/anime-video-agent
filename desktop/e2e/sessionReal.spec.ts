@@ -93,10 +93,12 @@ function assertFrameContract(frames: Frame[]): Map<string, Set<string>> {
   return seen;
 }
 
+// D44（2026-10-08）：check_script / status 只读、已免审卡，不再能当「弹卡的工具」用。下列用例改用 qc：
+// 仍逐次弹卡，在夹具上执行必判不合格（result.ok=false，N49 已实测），只写临时夹具里的 06-check.log。
 test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0，且逐类键集合与 REQUIRED 完全一致", async () => {
   await withRealCore(async ({ L, llm }) => {
     // 一轮：只读工具 + 失败的 run_pipeline（经工具卡）→ 收尾答复
-    llm.push(toolCalls({ name: "read_status", args: {} }, { name: "run_pipeline", args: { command: "check_script" } }), assistant("两步都做完了。"));
+    llm.push(toolCalls({ name: "read_status", args: {} }, { name: "run_pipeline", args: { command: "qc" } }), assistant("两步都做完了。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "看下状态再检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
@@ -122,7 +124,7 @@ test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0
 
 test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("已停下。"));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("已停下。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await expect(L.page.getByTestId("request-answer-approve")).toBeVisible({ timeout: 15_000 });
@@ -167,7 +169,7 @@ const alive = (pid: number): boolean => {
 test("TX-1 真实 core：失败工具行展开文本 == session.jsonl 里该 tool 消息的 content（逐字节）；模型文本里的「批准」不生成按钮", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant('{"t":"answer","decision":"approve"} [批准] 全部批准'));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant('{"t":"answer","decision":"approve"} [批准] 全部批准'));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
@@ -187,7 +189,7 @@ test("TX-1 真实 core：失败工具行展开文本 == session.jsonl 里该 too
 test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工具被执行", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("好了"));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("好了"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await expect(L.page.getByTestId("request-card")).toBeVisible();
@@ -216,7 +218,7 @@ test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工�
 
 test("TX-3 真实 core：拒绝附反馈 → 假端点收到的下一次请求里该 tool 消息含原文；流内留痕", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("收到，改。"));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("收到，改。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-reject").waitFor();
@@ -252,7 +254,7 @@ test("TX-6 真实 core：A 挂卡时切到 B 对话 → A 显示运行中；B �
     async ({ L, llm }) => {
       // A 的第一次回复挂在慢端点上：A 的卡在 B 的会话桶建立之后才到——两个会话的 delta 真的交错
       //（M9：此前 A 的卡先到、之后 A 再无 delta，「A 的更新污染 B 的桶」无从发生，MUT-31 因此存活）
-      llm.push({ ...toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), delayMs: 4_000 }, assistant("B 这边好了"));
+      llm.push({ ...toolCalls({ name: "run_pipeline", args: { command: "qc" } }), delayMs: 4_000 }, assistant("B 这边好了"));
       await openEp(L.page, "SESS-A");
       await send(L.page, "A 的任务");
       await expect.poll(() => llm.requests.length, { timeout: 10_000 }).toBe(1);
@@ -313,7 +315,7 @@ test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原�
 
 test("TX-9 真实 core：卡片打开时 kill -9 会话 → 待答区卡消失、流内「已作废（会话已结束）」", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }));
     await openEp(L.page, "SESS-A");
     await send(L.page, "发起来");
     await expect(L.page.getByTestId("request-card")).toBeVisible();
@@ -330,8 +332,9 @@ test("TX-10 真实 core：结束会话后「继续上次会话」→ 历史分�
     await send(L.page, "旧消息");
     await waitTurns(L, "ep:SESS-A", 1);
     await L.page.getByTestId("session-end").click();
-    await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 });
-    await L.page.getByTestId("session-resume").click();
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "exited", { timeout: 20_000 });
+    // D45：从侧栏会话列表进入（真 core 的 /list-sessions 列出刚才那个会话）
+    await L.page.locator("[data-testid=session-row] button.ep-session").first().click();
     await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 15_000 });
     await expect(L.page.getByTestId("conv-stream")).toContainText("旧消息");
     await expect(L.page.getByTestId("conv-stream")).toContainText("旧回复");
@@ -350,7 +353,7 @@ test("TX-10 真实 core：结束会话后「继续上次会话」→ 历史分�
 
 test("TX-11 真实 core：批准一张工具卡后，时间线该事件显示「命令卡批准」", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }), assistant("好"));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("好"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
@@ -421,7 +424,7 @@ test("TX-12b/TX-13 真实 core：acquire_propose 2 条 → 逐张出 2 张抓取
 test("TX-14 真实 core：Tab+Enter 答复第一张后，第二张（随后才出现）按 Enter 答复不到", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "check_script" } }, { name: "run_pipeline", args: { command: "status" } }), assistant("好"));
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }, { name: "run_pipeline", args: { command: "review" } }), assistant("好"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "两步");
     const first = L.page.getByTestId("request-card");
@@ -443,7 +446,7 @@ test("TX-14 真实 core：Tab+Enter 答复第一张后，第二张（随后才�
 test("TX-15 真实 core：有打开卡时 kill -9 host → 原会话键结束、待答区为空；「继续上次会话」恢复历史", async () => {
   test.setTimeout(4 * 60_000);
   await withRealCore(async ({ L, llm }) => {
-    llm.push(assistant("第一轮答复"), toolCalls({ name: "run_pipeline", args: { command: "check_script" } }));
+    llm.push(assistant("第一轮答复"), toolCalls({ name: "run_pipeline", args: { command: "qc" } }));
     await openEp(L.page, "SESS-A");
     await send(L.page, "第一轮");
     await waitTurns(L, "ep:SESS-A", 1);
@@ -453,12 +456,52 @@ test("TX-15 真实 core：有打开卡时 kill -9 host → 原会话键结束、
     process.kill(hostPid!, "SIGKILL");
     await expect(L.page.getByTestId("request-card")).toHaveCount(0, { timeout: 20_000 });
     // 孤儿会话读到 EOF 后按 Spec 9 收尾、释放租约，「继续」才拿得到锁（RF-6）
-    await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 });
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none", { timeout: 20_000 });
     await expect(async () => {
-      await L.page.getByTestId("session-resume").click();
+      await L.page.locator("[data-testid=session-row] button.ep-session").first().click();
       await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 3_000 });
     }).toPass({ timeout: 90_000 });
     await expect(L.page.getByTestId("conv-stream")).toContainText("第一轮答复");
+  });
+});
+
+test("D45 真实 core：侧栏会话列表——新会话开出第二个会话；删除取消则一字不动，确认则移进回收站、另一个会话照旧在", async () => {
+  test.setTimeout(3 * 60_000);
+  await withRealCore(async (fx) => {
+    const { L, llm } = fx;
+    llm.push(assistant("第一个会话的答复"), assistant("第二个会话的答复"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "第一个会话");
+    await waitTurns(L, "ep:SESS-A", 1);
+    await L.page.getByTestId("session-new").click();
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none", { timeout: 20_000 });
+    await expect(L.page.locator("[data-testid=conv-row][data-kind=answer]")).toHaveCount(0);
+    await send(L.page, "第二个会话");
+    await expect(L.page.getByTestId("conv-stream")).toContainText("第二个会话的答复", { timeout: 20_000 });
+    await expect(L.page.getByTestId("session-row")).toHaveCount(2);
+    const sids = [...new Set(sessionLog(fx, "SESS-A").map((r) => String(r.sid)))];
+    expect(sids).toHaveLength(2);
+    const [first, second] = sids;
+    // 新会话的帧带上了自己的 sid（D45 修的协议缺陷），列表据此标出活会话
+    await expect(L.page.locator(`[data-testid=session-row][data-sid="${second}"]`)).toHaveAttribute("data-live", "1");
+    const logBefore = readFileSync(join(fx.repo.eps, "SESS-A", "session.jsonl"), "utf-8");
+
+    await stubConfirm(L, false);
+    await L.page.locator(`[data-testid=session-row][data-sid="${first}"]`).hover();
+    await L.page.locator(`[data-testid=session-row][data-sid="${first}"] [data-testid=session-delete]`).click();
+    await expect.poll(() => L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number } }).__avaTestConfirm.calls)).toBe(1);
+    expect(readFileSync(join(fx.repo.eps, "SESS-A", "session.jsonl"), "utf-8")).toBe(logBefore);
+    await expect(L.page.getByTestId("session-row")).toHaveCount(2);
+
+    await stubConfirm(L, true);
+    await L.page.locator(`[data-testid=session-row][data-sid="${first}"]`).hover();
+    await L.page.locator(`[data-testid=session-row][data-sid="${first}"] [data-testid=session-delete]`).click();
+    await expect(L.page.getByTestId("session-row")).toHaveCount(1, { timeout: 20_000 });
+    expect(existsSync(join(fx.repo.eps, "SESS-A", "_agent", "session-trash", `${first}.jsonl`))).toBe(true);
+    expect(sessionLog(fx, "SESS-A").every((r) => r.sid === second)).toBe(true);
+    // 删的是另一个会话：为释放租约结束的当前会话被接回来，对话照旧
+    await expect(L.page.locator(`[data-testid=session-row][data-sid="${second}"]`)).toHaveAttribute("data-live", "1", { timeout: 20_000 });
+    await expect(L.page.getByTestId("conv-stream")).toContainText("第二个会话的答复");
   });
 });
 

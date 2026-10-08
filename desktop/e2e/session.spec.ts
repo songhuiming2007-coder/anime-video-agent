@@ -239,12 +239,16 @@ test("TX-9 会话崩溃作废：待答区卡消失、流内显示已作废", asy
   });
 });
 
-test("TX-10 继续上次会话：出现历史分隔条与历史条目", async () => {
+test("TX-10 继续上次会话（D45：点侧栏会话行）：出现历史分隔条与历史条目", async () => {
   await withSession(async ({ repo, L }) => {
+    // 会话列表由真 core 的 /list-sessions 读 session.jsonl：放一个旧会话进去，侧栏才有行可点
+    const sid = "aaaaaaaaaaaaaaa1";
+    fixtureWrite(repo.root, "data/episodes/SESS-A/session.jsonl",
+      [{ k: "session_start", sid, seq: 0, ts: "2026-10-01T10:00:00Z", schema: 1 }, { k: "msg", sid, seq: 1, ts: "2026-10-01T10:00:01Z", origin: "user", message: { role: "user", content: "旧消息" } }]
+        .map((r) => JSON.stringify(r)).join("\n") + "\n");
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "emit", frame: { t: "history", index: 0, role: "user", text: "旧消息", name: null } }, { op: "emit", frame: { t: "history", index: 1, role: "assistant", text: "旧回复", name: null } }, { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
     await openEp(L.page, "SESS-A");
-    await expect(L.page.getByTestId("session-resume")).toBeVisible();
-    await L.page.getByTestId("session-resume").click();
+    await L.page.locator(`[data-testid=session-row][data-sid=${sid}] button.ep-session`).click();
     await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史");
     await expect(L.page.getByTestId("conv-stream")).toContainText("旧消息");
   });
@@ -482,7 +486,7 @@ test("TX-15 host 重启：原会话键显示已结束、待答区为空、可继
     process.kill(hostPid!, "SIGKILL");
     // 新 host 起来：桶清空 → 该会话键回到「无会话」，待答区为空
     await expect(L.page.getByTestId("request-card")).toHaveCount(0, { timeout: 20_000 });
-    await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 });
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none", { timeout: 20_000 });
   });
 });
 
@@ -502,7 +506,7 @@ test("TX-15b host 重启跨越回合：等待从新 snapshot 重建，重连后�
     await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "running"); // awaiting = 该回合
     const hostPid = await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid());
     process.kill(hostPid!, "SIGKILL");
-    await expect(L.page.getByTestId("session-resume")).toBeVisible({ timeout: 20_000 }); // 新 host：该会话键回到「无会话」
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none", { timeout: 20_000 }); // 新 host：该会话键回到「无会话」
     await L.page.waitForTimeout(3000); // 新 host 激活（含 H1 自愈）落定：现有 03.5 对象仍有效，计数不变
     expect(await count()).toBe(base);
     // 追加而非整表替换（替换会删掉 H1 建出的 03.5 pending，触发再次自愈）

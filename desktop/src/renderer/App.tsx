@@ -26,6 +26,7 @@ import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
 import { Splitter } from "./Splitter";
+import { SessionList } from "./SessionList";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { errText, RpcClient } from "./rpc";
 import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
@@ -376,7 +377,16 @@ function Main() {
       <div className={`main ${reachOk ? "" : "stale"}`} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
         <nav className="left" id="ava-left" hidden={!layout.leftOpen}>
           <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} />
-          <EpisodeList list={list} active={active} showIdea={showIdea} onOpen={open} onIdea={() => { setShowIdea(true); setJustCreated(null); }} stale={!reachOk} />
+          <EpisodeList
+            list={list}
+            active={active}
+            showIdea={showIdea}
+            onOpen={open}
+            onIdea={() => { setShowIdea(true); setJustCreated(null); }}
+            stale={!reachOk}
+            convPhase={conv?.phase ?? "none"}
+            onConvChanged={() => fetchConvRef.current(convKey, true)}
+          />
           {ep && !showIdea && (
             <div className="files">
               <button className="ui-section" aria-expanded={filesOpen} aria-controls="ava-files" onClick={() => setFilesOpen((o) => !o)} data-testid="files-toggle">
@@ -423,7 +433,6 @@ function Main() {
             isIdea={convKey === "idea"}
             contextChars={lastPromptChars(conv?.entries ?? [])}
             onCreated={onCreatedEp}
-            onResumed={() => fetchConvRef.current(convKey, true)}
             onEnded={() => fetchConvRef.current(convKey, true)}
           />
           <div className="conv">
@@ -661,7 +670,7 @@ function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | nu
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean }) {
+function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; onConvChanged: () => void }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
@@ -682,9 +691,15 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale }: { list: 
     saveEpisodeView(v);
   };
   const eps = list ? filterEpisodes(list.episodes, query) : [];
+  // D45：当前期下面展开它的会话子列表（人 2026-10-08 选方案 B）
   const row = (e: EpisodeSummary) => (
+    <div key={e.epKey}>
+      {epRow(e)}
+      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} onChanged={onConvChanged} />}
+    </div>
+  );
+  const epRow = (e: EpisodeSummary) => (
     <button
-      key={e.epKey}
       className="ui-row ep"
       aria-current={!showIdea && e.epKey === active ? "true" : undefined}
       onClick={() => onOpen(e.epKey)}

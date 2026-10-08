@@ -45,6 +45,18 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .ep-step { display: flex; align-items: center; gap: var(--space-2); min-width: 0; color: var(--fg-muted); font-size: var(--text-sm); }
 .ep-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ep-time { flex: none; color: var(--fg-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+/* D45：当前期下的会话子列表（方案 B）。删除按钮平时隐藏，悬停或键盘聚焦到这一行时出现 */
+.ep-sessions { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 var(--space-2) var(--space-4); padding-left: var(--space-2); border-left: 1px solid var(--border); }
+.ep-session-wrap { display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-lg); }
+.ep-session-wrap:hover { background: var(--bg-hover); }
+.ep-session { min-height: 30px; font-size: var(--text-sm); }
+.ep-session-wrap .ep-session { flex: 1; min-width: 0; }
+.ep-session-wrap .ep-session:hover, .ep-session-wrap .ep-session[aria-current="true"] { background: transparent; }
+.ep-session-wrap[data-live="1"] { background: var(--bg-selected); }
+.ep-session[data-empty] .ui-row-title { color: var(--fg-muted); }
+.ep-session-del { flex: none; visibility: hidden; color: var(--fg-muted); }
+.ep-session-wrap:hover .ep-session-del, .ep-session-wrap:focus-within .ep-session-del { visibility: visible; }
+.ep-session-err { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .tree-list { list-style: none; margin: 0; padding: 0; }
 .tree-row { min-height: 26px; gap: var(--space-1); font-size: var(--text-base); }
 .tree-row.dir { color: var(--fg); }

@@ -3,7 +3,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { KEYCHAIN_SERVICE, SPAWN_LOG_MAX, SPAWN_TIMEOUT_SHORT_MS, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
-import { __avaTestSetKeychainExec, buildArgv, childEnv, keychainExecPath, recordSpawn, runArgv, runCore, spawnLog, spawnTotal } from "../../src/host/spawner";
+import { __avaTestSetKeychainExec, buildArgv, childEnv, keychainExecPath, recordSpawn, runArgv, runCore, sessionArgv, spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fetchStatus } from "../../src/host/status";
 import { cleanup, PY, shellScript, tmp } from "../helpers";
 
@@ -222,5 +222,25 @@ describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超�
   it("无 stdin 数据时仍为 ignore（既有闭集不变）", async () => {
     const r = await runArgv(["/bin/sh", "-c", "read -r x; echo got=[$x]"], 30_000, root, childEnv(process.env));
     expect(r.stdoutTail).toBe("got=[]\n");
+  });
+});
+
+describe("D45 会话管理模板的 argv 形状", () => {
+  const pyPath = "/repo/.venv/bin/python";
+  it("LIST_SESSIONS 完整读入 stdout；DELETE_SESSION 等号形式带会话号", () => {
+    const list = buildArgv("LIST_SESSIONS", { ep: "/ep" }, "/repo");
+    expect(list.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/list-sessions"]);
+    expect(list.stdoutMax).toBeGreaterThan(0);
+    expect(buildArgv("DELETE_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/delete-session", "--sid=aaaaaaaaaaaaaaa1",
+    ]);
+  });
+  it("SESSION_CONTINUE 带 sid → --continue <sid>；不带 → 恢复最近会话（原形态不变）", () => {
+    expect(sessionArgv("SESSION_CONTINUE", "/ep", "/repo", "bbbbbbbbbbbbbbb2")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "/ep", "--continue", "bbbbbbbbbbbbbbb2"]);
+    expect(sessionArgv("SESSION_CONTINUE", "/ep", "/repo")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "/ep", "--continue"]);
+  });
+  it.each(["", "AAAAAAAAAAAAAAA1", "aaaa", "aaaaaaaaaaaaaaa1 ", "--force", "../aaaaaaaaaaaa"])("非法会话号 %j 抛错、不生成 argv", (sid) => {
+    expect(() => buildArgv("DELETE_SESSION", { ep: "/ep", sid }, "/repo")).toThrow();
+    expect(() => sessionArgv("SESSION_CONTINUE", "/ep", "/repo", sid)).toThrow();
   });
 });

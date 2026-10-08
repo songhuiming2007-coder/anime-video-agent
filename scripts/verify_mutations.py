@@ -404,9 +404,9 @@ MUTATIONS: list[dict] = [
      "old": '            reason="人类拒绝执行该工具调用",\n',
      "new": '            reason=f"人类拒绝执行该工具调用（请求 {request.request_id}）",  # MUT-33\n'},
     {"id": "S9-MUT-38", "guard": "帧由写线程整帧写出（主线程只入队）", "file": PROTO,
-     "old": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
+     "old": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": sid, **frame}\n'
              '        self._queue.put(payload)\n'),
-     "new": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}\n'
+     "new": ('        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": sid, **frame}\n'
              '        data = _dump(payload)  # MUT-38：主线程直接写，去掉写线程\n'
              '        written = 0\n'
              '        while written < len(data):\n'
