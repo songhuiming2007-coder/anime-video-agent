@@ -954,7 +954,7 @@ class AgentSession:
                 injection = render_step_injection(
                     step_docs, step_name=status.current_step if status else None
                 )
-                self._commit({"role": "user", "content": injection}, "injection")
+                self._commit({"role": "user", "content": injection}, "injection", docs=_doc_shas(step_docs))
                 tracker.injected_paths.update(d.rel_path for d in step_docs)
                 tracker.trust(trusted_texts_of_docs(step_docs, root))  # 可信集 (a) 工序层
             tracker.active_step_key = step_key
@@ -965,7 +965,7 @@ class AgentSession:
                     injection = render_step_injection(
                         new_docs, step_name=status.current_step if status else None
                     )
-                    self._commit({"role": "user", "content": injection}, "injection")
+                    self._commit({"role": "user", "content": injection}, "injection", docs=_doc_shas(new_docs))
                     tracker.injected_paths.update(d.rel_path for d in new_docs)
                     tracker.trust(trusted_texts_of_docs(new_docs, root))  # 可信集 (a) 工序层
                 tracker.active_step_key = step_key
@@ -1001,7 +1001,8 @@ class AgentSession:
             return
         doc, is_warning = resolved
         if not is_warning:
-            self._commit({"role": "user", "content": doc.content}, "memory")
+            # 告警正文不记 sha：记了会让恢复后把真正的记忆当成「已注入」而不再注入（N56）
+            self._commit({"role": "user", "content": doc.content}, "memory", docs=_doc_shas([doc]))
             tracker.injected_paths.add(doc.rel_path)
         elif not tracker.memory_warn_injected:
             self._commit({"role": "user", "content": doc.content}, "memory")
@@ -1034,7 +1035,7 @@ class AgentSession:
             if doc is not None:
                 candidates.append((doc, True))
         memory_doc = resolve_memory_injection(scope, root=root)
-        if memory_doc is not None:
+        if memory_doc is not None and not memory_doc[1]:  # 记忆此刻只剩告警：不当作「已修订」重注入
             candidates.append((memory_doc[0], False))
         for doc, trustable in candidates:
             recorded = self._injected_docs.get(doc.rel_path)
@@ -1451,6 +1452,16 @@ def resume_idea(host: "SessionHost") -> dict[str, Any] | None:
     if state["status"] != "resumed":
         host.resume_state = None
     return state
+
+
+def _doc_shas(docs: list[Any]) -> list[dict[str, str]]:
+    """注入时记下每份文档的路径与正文 sha（N56）：恢复后 `_reinject_changed` 据此比对、重注入改过的。
+
+    sha 的算法必须与 `_reinject_changed` 比对时一致（`doc.content` 的 UTF-8 sha256）。
+    """
+    import hashlib
+
+    return [{"path": d.rel_path, "sha256": hashlib.sha256(d.content.encode("utf-8")).hexdigest()} for d in docs]
 
 
 def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:

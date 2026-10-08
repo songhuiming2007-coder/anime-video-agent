@@ -150,7 +150,7 @@ def load_injected_doc(
     rel_path: str,
     root: Path | None = None,
 ) -> InjectedDoc | None:
-    """读取文档。三层防御：
+    """读取文档。读域之外（`is_trusted_doc_path` 不过）一律拒载并告警（N55）；其余三层防御：
     1. 循环软链 → OSError 族捕获（实测 macOS/Python 3.12 自指软链 read_text 抛 OSError 子类，非 RuntimeError），返回 None；
     2. 文件不存在 → FileNotFoundError 捕获，返回 None；
     3. 编码异常 → errors='replace' 降级，打印警告。
@@ -158,6 +158,8 @@ def load_injected_doc(
     base_root = root or paths.ROOT
     p = Path(rel_path)
     target = p if p.is_absolute() else (base_root / p)
+    if not _readable_doc(base_root, rel_path, target):
+        return None
 
     try:
         raw_bytes = target.read_bytes()
@@ -254,7 +256,7 @@ def assemble_resident_prompt(
 
     # 1. Director
     director_p = base_root / resident_map["director"]
-    if director_p.exists():
+    if director_p.exists() and _readable_doc(base_root, resident_map["director"], director_p):
         director_text = read_resident_file(director_p)
         doc_texts.append((resident_map["director"], director_text.strip()))
     else:
@@ -262,7 +264,7 @@ def assemble_resident_prompt(
 
     # 2. Scope
     scope_p = base_root / resident_map["scope"]
-    if scope_p.exists():
+    if scope_p.exists() and _readable_doc(base_root, resident_map["scope"], scope_p):
         scope_text = read_resident_file(scope_p)
         doc_texts.append((resident_map["scope"], scope_text.strip()))
     else:
@@ -273,7 +275,7 @@ def assemble_resident_prompt(
 
     # 3. AGENTS.md
     agents_p = base_root / resident_map["agents"]
-    if agents_p.exists():
+    if agents_p.exists() and _readable_doc(base_root, resident_map["agents"], agents_p):
         agents_text = read_resident_file(agents_p)
         doc_texts.append((resident_map["agents"], agents_text.strip()))
     else:
@@ -285,6 +287,22 @@ def assemble_resident_prompt(
     return AssembledResident(
         scope=scope, content=content, token_estimate=token_estimate, doc_texts=tuple(doc_texts)
     )
+
+
+def _readable_doc(root: Path, rel_path: str, target: Path) -> bool:
+    """装配器的读域（N55）：与出网可信集同一份规则 `is_trusted_doc_path`，不另写第二份。
+
+    `assembly.json` 误配到凭据、软链出根、仓库外文件时拒载；文件确实在而被拒才告警（缺文件照旧静默）。
+    """
+    if is_trusted_doc_path(root, rel_path):
+        return True
+    if target.exists():
+        print(
+            f"[WARN] 规程路径不在读域内，已拒载: {rel_path}"
+            "（只读仓库内 docs/、skills/、config/agent/scopes/ 下的 .md 与 AGENTS.md）",
+            file=sys.stderr,
+        )
+    return False
 
 
 def read_resident_file(path: Path) -> str:
