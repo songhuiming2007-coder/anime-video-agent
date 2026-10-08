@@ -203,6 +203,74 @@ def test_validate_pipeline_command_injects_episode_dir(tmp_path: Path):
     assert norm == [sys.executable, "-m", "pipeline.check_script", str(script_file.resolve())]
 
 
+@pytest.mark.parametrize("command, fixed", [
+    ("tts --redo 2 4 5 8 9 10", "tts --redo 2,4,5,8,9,10"),  # TA-1：董香二期 session.jsonl 第 305 行
+    ("tts --redo 2 4", "tts --redo 2,4"),                     # TA-2：只多一个，规则 1 拦不住
+    ("tts --redo=2 4", "tts --redo 2,4"),
+    ("tts --redo 11,12.3 13", "tts --redo 11,12.3,13"),
+])
+def test_d53_redo_with_space_separated_labels_rejected(tmp_path: Path, command: str, fixed: str):
+    """D53 ② 规则 2：`--redo` 值后紧跟裸段号 → 拒，给出拼好的逗号写法。"""
+    ep_dir = tmp_path / "data" / "episodes" / "01"
+    ep_dir.mkdir(parents=True)
+    ok, msg, norm = validate_pipeline_command(command, ep_dir=ep_dir)
+    assert not ok and norm == []
+    assert f"正确写法：{fixed}" in msg
+
+
+@pytest.mark.parametrize("command, tail", [
+    ("tts --redo 2,4,5", ["--redo", "2,4,5"]),                  # TA-3
+    ("tts --redo stale", ["--redo", "stale"]),
+    ("tts --redo 2,4 --allow-engine-mix", ["--redo", "2,4", "--allow-engine-mix"]),
+    ("tts --redo '2 4'", ["--redo", "2 4"]),                     # 引号包住是一个 token，tts 自己按空白拆
+    ("cover --pick 3", ["--pick", "3"]),                         # TA-5：旧债，--pick 原先没登记
+    ("clips --index-dir x", ["--index-dir", "x"]),
+])
+def test_d53_valid_valued_flags_pass_and_get_episode(tmp_path: Path, command: str, tail: list):
+    """D53 TA-3/TA-5：合法写法放行，期目录照常补在模块名之后。"""
+    ep_dir = tmp_path / "data" / "episodes" / "01"
+    ep_dir.mkdir(parents=True)
+    ok, msg, norm = validate_pipeline_command(command, ep_dir=ep_dir)
+    assert ok, msg
+    module = command.split()[0]
+    assert norm == [sys.executable, "-m", f"pipeline.{module}", str(ep_dir.resolve()), *tail]
+
+
+def test_d53_subcommand_words_and_extra_positionals(tmp_path: Path):
+    """D53 TA-4/TA-6：tts 的 run / probe 不计入位置参数；其余模块多一个就拒。"""
+    ep_dir = tmp_path / "data" / "episodes" / "01"
+    ep_dir.mkdir(parents=True)
+    ok, msg, _ = validate_pipeline_command(f"tts run {ep_dir} --redo 3", ep_dir=ep_dir)
+    assert ok, msg
+    ok, msg, _ = validate_pipeline_command("tts probe 你好 --seed 3", ep_dir=ep_dir)
+    assert ok, msg
+    ok, msg, norm = validate_pipeline_command("clips a b", ep_dir=ep_dir)
+    assert not ok and norm == []
+    assert "多出了 b" in msg
+
+
+def test_d53_valued_flags_registry_covers_autofill_modules():
+    """D53 TA-8：自动补位模块的带值旗标必须全部登记，否则值被当成位置参数（补位失效 / 误拒）。"""
+    import ast
+
+    from pipeline.agent.tools import PIPELINE_VALUED_FLAGS
+
+    boolean = {"store_true", "store_false", "count", "store_const", "version", "help"}
+    missing = []
+    for module in ("tts", "clips", "review", "render", "qc", "cover", "status", "check_script"):
+        tree = ast.parse((Path(__file__).resolve().parent.parent / "pipeline" / f"{module}.py").read_text("utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument"):
+                continue
+            opts = [a.value for a in node.args
+                    if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.startswith("--")]
+            action = next((k.value.value for k in node.keywords
+                           if k.arg == "action" and isinstance(k.value, ast.Constant)), None)
+            if opts and action not in boolean and not any(o in PIPELINE_VALUED_FLAGS for o in opts):
+                missing.append(f"{module}: {opts}")
+    assert missing == [], f"带值旗标未登记到 PIPELINE_VALUED_FLAGS: {missing}"
+
+
 def test_validate_pipeline_command_rejects_unauthorized_module():
     """拒收非白名单外部命令或任意 bash。"""
     ok, msg, _ = validate_pipeline_command("rm -rf data/")

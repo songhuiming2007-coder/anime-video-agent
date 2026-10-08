@@ -281,13 +281,17 @@ class TestApproveExpectFingerprint:
             "--approve", "--expect-size=100", "--expect-mtime-ns=200",
         ]
 
-        # 空格形式的对照：值被当成位置参数，期目录不再被注入（等号形式的理由）
+        # 空格形式：D53 起 --expect-size 已登记为带值旗标（PIPELINE_VALUED_FLAGS），值不再被当成
+        # 位置参数，期目录照样注入。改前这里断言「不注入」，记录的正是那笔漏登记的旧债
         ok2, _msg2, argv2 = validate_pipeline_command(
             ["review", "--approve", "--expect-size", "100"],
             ep_dir=tmp_path,
         )
         assert ok2
-        assert str(tmp_path.resolve()) not in argv2
+        assert argv2 == [
+            sys_python(), "-m", "pipeline.review", str(tmp_path.resolve()),
+            "--approve", "--expect-size", "100",
+        ]
 
     def test_同长度原地覆写被二次_fstat_拦下(self, tmp_path, monkeypatch):
         """⑥（MUT-24）：同长度原地覆写为段级对齐的 F2 → 退出 1、不写文件。"""

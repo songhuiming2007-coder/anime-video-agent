@@ -218,25 +218,30 @@ def _keep_history(ep_dir: Path, target: Path, sub: tuple[str, ...], keep: int | 
         old.unlink()
 
 
-def _extract_positional_args(args: list[str]) -> list[str]:
-    """提取真正的命令行位置参数，跳过旗标及其参数值。
+# 自动补位模块的带值旗标（非布尔 flag）。漏登记 → 旗标的值被当成位置参数 → 期目录不补位、
+# 位置参数计数误拒。`tests/test_agent_tools.py` 用 ast 扫各模块的 add_argument 守这张表（D53）。
+PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
+    "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
+    "--pattern", "--episode", "--note", "--target", "--session", "--floor",
+    "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
+})
 
-    注意（债务记账）：模块若新增带值旗标（非布尔 flag），须同步登记到 valued_flags；
-    否则该旗标的值会被误判为位置参数，导致自动注入当前期目录失效。
-    """
+# 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
+_AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status")
+_SEGMENT_LABEL_RE = re.compile(r"^\d+(\.\d+)?$")
+
+
+def _extract_positional_args(args: list[str]) -> list[str]:
+    """提取真正的命令行位置参数，跳过旗标及其参数值（带值旗标见 PIPELINE_VALUED_FLAGS）。"""
     pos: list[str] = []
     i = 0
-    valued_flags = {
-        "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
-        "--pattern", "--episode", "--note", "--target", "--session", "--floor",
-    }
     while i < len(args):
         a = args[i]
         if a.startswith("-"):
             flag = a.split("=")[0]
             if "=" in a:
                 i += 1
-            elif flag in valued_flags:
+            elif flag in PIPELINE_VALUED_FLAGS:
                 i += 2
             else:
                 i += 1
@@ -244,6 +249,35 @@ def _extract_positional_args(args: list[str]) -> list[str]:
             pos.append(a)
             i += 1
     return pos
+
+
+def _positional_refusal(module: str, args: list[str]) -> str | None:
+    """自动补位模块的位置参数结构检查（D53 ②）。段号是否存在由 tts 运行时对照稿件判，这里只拦结构错。"""
+    # 规则 2：`--redo` 的值后紧跟裸段号（`--redo 2 4 5`）——tts 只吃第一个，其余被当成期目录 / 多余参数
+    for i, a in enumerate(args):
+        if a == "--redo" and i + 1 < len(args):
+            labels, rest = [args[i + 1]], args[i + 2:]
+        elif a.startswith("--redo="):
+            labels, rest = [a.split("=", 1)[1]], args[i + 1:]
+        else:
+            continue
+        for tok in rest:
+            if not _SEGMENT_LABEL_RE.match(tok):
+                break
+            labels.append(tok)
+        if len(labels) > 1:
+            fixed = ",".join(labels)
+            return f"拒绝执行：--redo 只接一个值，段号要用逗号连写。正确写法：{module} --redo {fixed}"
+    # 规则 1：位置参数最多 1 个（tts 打头的子命令词不计）
+    pos = _extract_positional_args(args)
+    if module == "tts" and pos and pos[0] in ("run", "probe"):
+        pos = pos[1:]
+    if len(pos) > 1:
+        return (
+            f"拒绝执行：pipeline.{module} 只接一个位置参数（期目录，可省略、由 ava 自动补上），"
+            f"多出了 {' '.join(pos[1:])}。带值的选项要紧跟它的值，多个值用逗号连写。"
+        )
+    return None
 
 
 def validate_pipeline_command(
@@ -345,6 +379,12 @@ def validate_pipeline_command(
                         validate_extra_args(extra_tokens)
                     except ValueError as exc:
                         return False, f"cloud run 参数非法: {exc}", []
+
+    # (b0) D53：格式错的命令在弹卡前拒（人批准后才 0.2 s 退出码 2 = 白审一次）
+    if in_pipeline and module in _AUTOFILL_MODULES:
+        refusal = _positional_refusal(module, args)
+        if refusal:
+            return False, refusal, []
 
     # (b) 自动补位只对原 PIPELINE_MODULES 侧模块生效，asset 侧不补位
     if in_pipeline:
@@ -555,7 +595,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "name": "run_pipeline",
         "adr": "ADR-0018",
         "description": (
-            "校验白名单内的 pipeline 子命令（如 tts --redo 3）并返回规范化 argv。"
+            "校验白名单内的 pipeline 子命令（如 tts --redo 2,4,5，段号逗号分隔）并返回规范化 argv。"
             "**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，"
             "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
@@ -563,7 +603,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "如 'tts --redo 3' 或 'clips'"},
+                "command": {"type": "string", "description": "如 'tts --redo 2,4,5'（段号逗号分隔）或 'clips'"},
             },
             "required": ["command"],
             "additionalProperties": False,

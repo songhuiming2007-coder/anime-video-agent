@@ -152,6 +152,17 @@ def test_tk1_plain_review_still_reaches_the_card(episode: Path) -> None:
     assert ok is True and "--approve" in argv, "人经 /run 的路径不变（只拦模型）"
 
 
+def test_d53_ta7_redo_with_spaces_rejected_before_card(episode: Path) -> None:
+    """D53 TA-7：董香二期那条 `tts --redo 2 4 5 8 9 10` 在弹卡前就拒，并给出逗号写法。"""
+    verdict = review_tool_call(
+        "run_pipeline", {"command": "tts --redo 2 4 5 8 9 10"}, ep_dir=episode,
+        scope="pipeline", root=None,
+    )
+    assert verdict.action == "reject"
+    assert verdict.request is None, "不许弹卡让人白批一次"
+    assert "tts --redo 2,4,5,8,9,10" in verdict.reason
+
+
 def test_tk4_acquire_fetch_reachable_after_d43(episode: Path) -> None:
     """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`（弹人审卡）；
     原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。"""
