@@ -163,6 +163,8 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     await L.page.keyboard.press("Escape");
     // ② markdown 预览
     await pick(L.page, "02-script.md");
+    // D49-A S2：编辑器窄态一次一栏，渲染出来的 Markdown 在「渲染」栏
+    await L.page.locator("[data-testid=editor-pane-switch] button[data-pane=render]").click();
     await L.page.getByTestId("markdown").waitFor();
     await audit(L.page, "markdown");
     // ③ JSON 预览（含折叠三角）

@@ -14,7 +14,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { EDITOR_PREVIEW_DEBOUNCE_MS, SAVE_SCRIPT_MAX_BYTES } from "../shared/constants";
-import { canCreateFromDraft, canSeal, emptyEditor, expectOf, reduceEditor, type ScriptEditorState } from "../shared/editorState";
+import { canCreateFromDraft, canSeal, diskVerdict, emptyEditor, expectOf, reduceEditor, type ScriptEditorState } from "../shared/editorState";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { SavedFingerprintJson, ScriptStatJson } from "../shared/protocol";
 import { Icon } from "./icons";
@@ -89,6 +89,17 @@ function takeStash(epKey: string): string | null {
   }
 }
 
+/** 宽态门槛：两栏各约 380px 时一行能放下二十来个汉字，低于它并排就退化成基线那种每栏一百来像素的窄条 */
+const EDITOR_WIDE_MIN_PX = 760;
+/** 跟随磁盘的轮询间隔（D49-A S3）：`script.stat` 是宿主本地 stat、不起进程；2 s 内看到 agent 的改稿够用 */
+const DISK_POLL_MS = 2000;
+type EditorPane = "src" | "render" | "tips";
+const PANES: readonly [EditorPane, string][] = [
+  ["src", "源码"],
+  ["render", "渲染"],
+  ["tips", "要点"],
+];
+
 export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
   const [stat, setStat] = useState<ScriptStatJson | null>(null);
   const [ed, setEd] = useState<ScriptEditorState>(emptyEditor);
@@ -98,12 +109,26 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
   const [checkOut, setCheckOut] = useState<{ code: number | null; stdoutTail: string; stderrTail: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadArm, setReloadArm] = useState(false);
+  const [diskChanged, setDiskChanged] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [stashOffer, setStashOffer] = useState<string | null>(null);
   const [preview, setPreview] = useState("");
   const edRef = useRef(ed);
   edRef.current = ed;
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // D49-A S2：按编辑器自身宽度分窄 / 宽两态。窄态一次只显示一栏（源码 / 渲染 / 要点），宽态源码与渲染并排、
+  // 要点按需开合。CodeMirror 宿主始终挂载，只用 CSS 隐藏——编辑器只在挂载时建一次，不能随布局重建。
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [wide, setWide] = useState(false);
+  const [pane, setPane] = useState<EditorPane>("src");
+  const [tipsOpen, setTipsOpen] = useState(false);
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= EDITOR_WIDE_MIN_PX));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const viewRef = useRef<EditorView | null>(null);
   const suppress = useRef(false);
 
@@ -123,6 +148,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
     setSealMsg(null);
     setCheckOut(null);
     setReloadArm(false);
+    setDiskChanged(false);
     try {
       const s = await rpc.call<ScriptStatJson>("script.stat", { epKey });
       setStat(s);
@@ -192,6 +218,30 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // D49-A S3：跟随磁盘。没有未保存改动 → 自动载入新版本；有 → 只亮提示条，不覆盖人的改动
+  useEffect(() => {
+    if (!loaded) return;
+    let stopped = false;
+    const t = setInterval(() => {
+      void rpc.call<ScriptStatJson>("script.stat", { epKey }).then(
+        (st) => {
+          if (stopped || !st.script) return;
+          const v = diskVerdict(edRef.current, { size: String(st.script.size), mtimeNs: st.script.mtimeNs });
+          if (v === "reload") {
+            void load().then(() => setSaveMsg("已载入磁盘上的新版本（agent 或别处改过）"));
+          } else if (v === "warn") {
+            setDiskChanged(true);
+          }
+        },
+        () => undefined,
+      );
+    }, DISK_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [epKey, rpc, load, loaded]);
 
   // 人时：审阅面**装载成功**才计时（Spec 11 §2.4）——错误态下人没在审阅，不计（红队 ④）。
   // `loaded` 而不是 `stat`：`script.stat` 只看得到文件存在与指纹，正文还要经 ava-media:// 取一次，
@@ -280,8 +330,21 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
   const saveParams = () => ({ epKey, text: edRef.current.text, ...expectOf(edRef.current) });
 
   return (
-    <div className="editor-shell" data-testid="script-editor" data-dirty={dirty ? "1" : "0"}>
+    <div className="editor-shell" ref={shellRef} data-testid="script-editor" data-dirty={dirty ? "1" : "0"} data-layout={wide ? "wide" : "narrow"}>
       <div className="toolbar" data-testid="editor-toolbar">
+        {wide ? (
+          <button className="ui-btn" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
+            要点
+          </button>
+        ) : (
+          <span className="ui-seg" data-testid="editor-pane-switch">
+            {PANES.map(([k, label]) => (
+              <button key={k} aria-pressed={pane === k} data-pane={k} onClick={() => setPane(k)}>
+                {label}
+              </button>
+            ))}
+          </span>
+        )}
         <button
           className="ui-btn"
           data-testid="save-script"
@@ -338,7 +401,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
       {loadErr !== null ? (
         <StateView kind="error" title={loadErr} />
       ) : (
-        <div className="editor-split">
+        <div className="editor-split" data-layout={wide ? "wide" : "narrow"} data-pane={wide ? (tipsOpen ? "all" : "two") : pane}>
           <div
             className="editor-src"
             ref={hostRef}
@@ -371,10 +434,10 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           {saveMsg}
         </div>
       )}
-      {ed.conflict && (
+      {(ed.conflict || diskChanged) && (
         <div className="notice notice--warn" data-testid="save-conflict">
           <Icon name="alert" size="sm" />
-          <span>磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。</span>
+          <span>{ed.conflict ? "磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。" : "磁盘上的版本已变（agent 或别处改过）。你有未保存改动，没有自动载入。"}</span>
           <button
             className="ui-btn"
             data-testid="reload-script"
