@@ -15,6 +15,13 @@ export type PreviewTarget =
   | { kind: "dir"; root: MediaRoot; rel: string; entries: string[] };
 
 const md = new MarkdownIt({ html: false, linkify: false });
+/** D46：助手回复用的渲染器，比 md 再收一档——链接、自动链接、引用式链接定义、图片四条规则关掉，
+ *  输出里不可能出现 <a> 与 <img>（不可点、不加载外部资源），这是放开 Spec 10 H-3 的前提（RF-13）。 */
+const chatMd = new MarkdownIt({ html: false, linkify: false }).disable(["link", "autolink", "reference", "image"]);
+
+export function renderChatMarkdown(text: string): string {
+  return chatMd.render(text);
+}
 
 /** 类型徽标的文案（Spec 14 §2.8 的 N2；目录另算） */
 const KIND_LABEL: Record<PreviewKind | "dir", string> = {
@@ -232,6 +239,12 @@ export function MarkdownBody({ text }: { text: string }) {
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
+}
+
+/** D46：对话区的助手回复（answer / wrapup）。卡片、本地说明、工具原文仍是纯文本。 */
+export function ChatMarkdown({ text }: { text: string }) {
+  const html = useMemo(() => renderChatMarkdown(text), [text]);
+  return <div className="markdown chat-md" data-testid="chat-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 // ---- 文本：md 渲染（html:false）、json 折叠树、其余纯文本；超 5 MiB 截断 ----
