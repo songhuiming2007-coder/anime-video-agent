@@ -55,7 +55,7 @@
 3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿并在当期目录生成 `02-diff.patch`（`git diff --no-index 02-script.draft.md 02-script.md > 02-diff.patch`；或在 app 内 02.5 编辑器点「封板」，等价）。
 4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：跑 `ava <期> /run tts`（底层等价 `python -m pipeline.tts <期>`）。
    - **红线**：此后一律只补点名段，**严禁擅自 `--force` 全量重配**（ava 层直接拒收该旗标并指引 `--redo`）；错字走 `g2p.py` 注入，换引擎前必须报备影响段数。
-5. **[03.5 顺听](runbook/03.5-voice-check.md)**（人）：`ava <期> /voice` 顺听 + 纠错（可选深挖；三项抽检为主，corrections.json / --apply-patch）。
+5. **[03.5 顺听](runbook/03.5-voice-check.md)**（人）：桌面端在预览区 `03-audio` 的顺听面板（终端备用 `ava <期> /voice`）顺听 + 纠错（可选深挖；三项抽检为主，corrections.json / --apply-patch）。
 6. **[04 排片](runbook/04-clips.md)**（Agent/机器）：跑 `ava <期> /run clips`，全局贪心分派。通道互斥（锚点直通 / 台词 / 画面 VLM），不跨通道比分。
 7. **[05 审片](runbook/05-timecode.md)**（人）：浏览器看 `04-review.html`，通过后执行 `ava <期> /run review --approve` 产出 `04-clips.approved.json`。
 8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：跑 `ava <期> /run render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
