@@ -407,6 +407,40 @@ describe("heal 触发闭集（服务层；TA-11 的端到端版本属 PR4）", (
   });
 });
 
+describe("N61 H5 基线在激活时取", () => {
+  it("激活后、第一次 tick 之前产物漂移 → 仍触发 H5 恰一次（不被吞进基线）", async () => {
+    const ep = mkEpisode(repo, "H5-EARLY", { "04-clips.json": '{"segments":[]}\n' });
+    mkdirSync(join(ep, "_agent"));
+    py(
+      `import json, sys
+from pathlib import Path
+from pipeline import approvals
+ep = Path(sys.argv[1])
+fp = approvals._fingerprint(ep, ("04-clips.json",))
+a = approvals.Approval(approval_id="appr_1790171112636_cd34", episode="H5-EARLY", type="05", artifacts=fp)
+(ep / "_agent" / "approvals_store.json").write_text(json.dumps([a.to_dict()], ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")`,
+      [ep],
+    );
+    let clock = 1_000_000;
+    const calls: string[] = [];
+    const { svc } = await startService({
+      fetchStatus: fakeStatus(() => "05 审时间码"),
+      now: () => clock,
+      healExecutor: async (e, t) => {
+        calls.push(`${e}:${t}`);
+        return { ok: true, stderrTail: "" };
+      },
+    });
+    await svc.dispatch("episode.activate", { epKey: "H5-EARLY" });
+    writeFileSync(join(ep, "04-clips.json"), '{"segments":[{"index":1}]}\n'); // 激活后立刻改：第一次 tick 之前
+    for (let i = 0; i < 3; i++) {
+      clock += 1000;
+      await svc.tickActive();
+    }
+    expect(calls).toEqual(["H5-EARLY:H1-activated", "H5-EARLY:H5-artifact-drift"]);
+  });
+});
+
 describe("TI-3a I1：关闭 heal（能力缺席）后，对只读夹具树执行全部读功能 → 功能正常、树清单不变", () => {
   let ro: string;
   beforeAll(() => {
