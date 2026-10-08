@@ -3,7 +3,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { KEYCHAIN_SERVICE, SPAWN_LOG_MAX, SPAWN_TIMEOUT_SHORT_MS, STATUS_STDOUT_MAX_BYTES } from "../../src/shared/constants";
-import { __avaTestSetKeychainExec, buildArgv, childEnv, keychainExecPath, recordSpawn, runArgv, runCore, sessionArgv, spawnLog, spawnTotal } from "../../src/host/spawner";
+import { __avaTestSetKeychainExec, buildArgv, childEnv, isLongRunning, keychainExecPath, recordSpawn, runArgv, runCore, sessionArgv, spawnLog, spawnTotal } from "../../src/host/spawner";
 import { fetchStatus } from "../../src/host/status";
 import { cleanup, PY, shellScript, tmp } from "../helpers";
 
@@ -203,6 +203,20 @@ describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超�
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/record-time", "02.5", "--entered=1000.000", "--left=1060.000",
     ]);
     expect(buildArgv("CHECK_SCRIPT", { scriptAbs: "/ep/02-script.md" }, "/repo").argv).toEqual([pyPath, "-m", "pipeline.check_script", "/ep/02-script.md"]);
+  });
+
+  it("D50-A S6：VOICE_CHECK / VOICE_GLOBAL / RUN_TTS 的 argv 形状；用户输入一律 --flag=value 单元素", () => {
+    expect(buildArgv("VOICE_CHECK", { word: "-x", pinyin: "jie3 di4" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.corrections", "check", "--word=-x", "--pinyin=jie3 di4",
+    ]);
+    expect(buildArgv("VOICE_GLOBAL", { ep: "/ep", word: "绚都", homophone: "炫嘟", expect: "xuan4du1", supersede: true }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.corrections", "global", "/ep", "--word=绚都", "--homophone=炫嘟", "--expect=xuan4du1", "--supersede",
+    ]);
+    expect(buildArgv("VOICE_GLOBAL", { ep: "/ep", word: "绚都", pinyin: "xuan4du1", supersede: false }, "/repo").argv.at(-1)).toBe("--pinyin=xuan4du1");
+    const tts = buildArgv("RUN_TTS", { ep: "/ep" }, "/repo");
+    expect(tts.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/run", "tts"]);
+    expect(tts.timeoutMs).toBeNull();
+    expect(isLongRunning("RUN_TTS")).toBe(true);
   });
 
   it("IMPORT_COVER：--name 为单个 argv 元素、stdin pipe（S8-R18）", () => {

@@ -62,7 +62,8 @@ function Head({ rel, kind }: { rel: string; kind: PreviewKind | "dir" }) {
   );
 }
 
-export function PreviewPane({ target }: { target: PreviewTarget | null }) {
+/** `head=false`：外面已有文件切换器当标题（D49-A S4），不再重复一行文件名 */
+export function PreviewPane({ target, head = true }: { target: PreviewTarget | null; head?: boolean }) {
   if (!target) {
     return (
       <div className="preview-body">
@@ -75,7 +76,7 @@ export function PreviewPane({ target }: { target: PreviewTarget | null }) {
     const body = queue.length === 0 ? <DirMeta rel={target.rel} entries={target.entries} /> : <AudioQueue key={target.rel} root={target.root} dir={target.rel} files={queue} />;
     return (
       <>
-        <Head rel={target.rel || "（期目录）"} kind={queue.length === 0 ? "dir" : "audio"} />
+        {head && <Head rel={target.rel || "（期目录）"} kind={queue.length === 0 ? "dir" : "audio"} />}
         <div className="preview-body">{body}</div>
       </>
     );
@@ -109,7 +110,7 @@ export function PreviewPane({ target }: { target: PreviewTarget | null }) {
   }
   return (
     <>
-      <Head rel={target.rel} kind={kind} />
+      {head && <Head rel={target.rel} kind={kind} />}
       <div className="preview-body">{body}</div>
     </>
   );

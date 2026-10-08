@@ -185,6 +185,9 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   "voice.revert": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
   "voice.retract": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
   "voice.applyPatch": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  // D50-A S6：段落表就地纠错的两条写路径（全局读音表、按全局表重配）
+  "voice.global": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.retts": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
   // Spec 12 S8-R18：导入由拖放 / 选择器 / 点击三种显式动作发起
   "cover.import": { file: "renderer/CoverImport.tsx", attrs: ["onClick", "onDrop", "onChange"] },
 };
