@@ -81,6 +81,10 @@ export const RECORD_TIME_CLOCK_TOLERANCE_S = 60;
 export const IMPORT_COVER_MAX_BYTES = 32 * 1024 * 1024;
 /** `/voice-info` stdout 完整读入上限：段表 + 待应用纠错条目（每条约 200 B）逐字节完整，超出按错误处理。 */
 export const VOICE_INFO_STDOUT_MAX_BYTES = 1024 * 1024;
+/** D45：`/list-sessions` 的 JSON 完整读入上限（每条约 200 字节，余量够上千个会话） */
+export const SESSIONS_STDOUT_MAX_BYTES = 1024 * 1024;
+/** D45：会话号形状（core `secrets.token_hex(8)`；与 cli.SESSION_ID 同一规则），不合格不 spawn */
+export const SESSION_ID_RE = /^[0-9a-f]{16}$/;
 
 // ---------------- Spec 10 §3.5：会话常量（全部为初值，PR2/PR4 实测回填） ----------------
 

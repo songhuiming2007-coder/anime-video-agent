@@ -8,7 +8,9 @@
 1. **append-only**：已提交的整行一字不改；修复一律写成**追加记录**，由 `rebuild_messages`
    在重建时插回正确位置。截断只有两处：`truncate_torn_tail()`（末尾没换行的残行 = 未提交
    记录）；以及 `clear()`——`ava new --from-idea` 把 `_idea` 记录整段复制进新期**成功之后**、
-   持租约把 `_idea/session.jsonl` 截为空文件（Spec 18 §3.2 d，2026-10-08 D42 修订注记）。
+   持租约把 `_idea/session.jsonl` 截为空文件（Spec 18 §3.2 d，2026-10-08 D42 修订注记）；
+   以及 `move_session_to_trash()`——人在桌面端点「删除会话」并过确认框后，持租约把该 sid 的
+   整行搬进 `_agent/session-trash/`、其余行逐字节写回（D45，2026-10-08）。
 2. **单写者**：一个文件多段会话，靠进程级 `flock(LOCK_EX|LOCK_NB)`；每进程每期至多打开一次
    （同进程第二个 fd 会被 flock 拒掉——R3 实测 Errno 35——所以要在进程内先做单例）。
 3. **零重依赖**：只用 stdlib（§5）。
@@ -29,6 +31,7 @@ from typing import Any
 
 SCHEMA = 1
 LOG_NAME = "session.jsonl"
+FIRST_USER_CHARS = 60
 #: 选题会话的库级日志目录名（`data/_idea/`）。`_` 前缀：`_episode_name_problem` 禁止这样的期名，
 #: 而且它在 `data/` 下、不在 `data/episodes/` 下，任何期枚举都够不着（Spec 18 §3.1 / R4）。
 IDEA_DIR = "_idea"
@@ -102,6 +105,7 @@ class SessionSummary:
     assistants: int = 0
     last_activity: str = ""
     segments: int = 0
+    first_user: str = ""   # 首条 user 消息（截 FIRST_USER_CHARS 字），会话列表的标题
 
     @property
     def resumable(self) -> bool:
@@ -134,7 +138,7 @@ def list_sessions(raw: bytes) -> list[SessionSummary]:
         if not isinstance(sid, str) or not sid:
             continue
         if sid not in counters:
-            counters[sid] = {"messages": 0, "assistants": 0, "last": "", "segments": 0}
+            counters[sid] = {"messages": 0, "assistants": 0, "last": "", "segments": 0, "first_user": ""}
             order.append(sid)
         bucket = counters[sid]
         ts = str(record.get("ts") or "")
@@ -143,8 +147,12 @@ def list_sessions(raw: bytes) -> list[SessionSummary]:
         kind = record.get("k")
         if kind == "msg":
             bucket["messages"] += 1
-            if (record.get("message") or {}).get("role") == "assistant":
+            message = record.get("message") or {}
+            if message.get("role") == "assistant":
                 bucket["assistants"] += 1
+            elif message.get("role") == "user" and not bucket["first_user"]:
+                text = " ".join(str(message.get("content") or "").split())
+                bucket["first_user"] = text[:FIRST_USER_CHARS]
         elif kind == "session_start":
             bucket["segments"] += 1
     return [
@@ -154,9 +162,43 @@ def list_sessions(raw: bytes) -> list[SessionSummary]:
             assistants=counters[sid]["assistants"],
             last_activity=counters[sid]["last"],
             segments=counters[sid]["segments"],
+            first_user=counters[sid]["first_user"],
         )
         for sid in order
     ]
+
+
+def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
+    """把会话 `sid` 的整行搬进 `<日志目录>/_agent/session-trash/`，其余行逐字节写回（D45）。
+
+    只在持租约时调用（没有别的写者）。顺序：先截末尾残行 → 回收站文件落盘成功 → 再原子替换日志。
+    解析不了的坏行无法归属，一律留在原文件。**调用后租约即作废并关闭**：日志已换成新文件，
+    旧 fd 指向的是被替换掉的那份，继续 append 会写进孤儿文件。返回（搬走的行数，回收站文件）。
+    """
+    from pipeline.paths import atomic_write
+
+    lease.truncate_torn_tail()
+    raw = lease.read()
+    kept: list[bytes] = []
+    moved: list[bytes] = []
+    for line in raw.split(b"\n")[:-1] if raw else []:
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            record = None
+        owner = record.get("sid") if isinstance(record, dict) else None
+        (moved if owner == sid else kept).append(line + b"\n")
+    if not moved:
+        raise ValueError(f"会话 {sid} 不存在")
+    trash_dir = lease.ep_dir / "_agent" / "session-trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = trash_dir / f"{sid}.jsonl"
+    if dest.exists():
+        dest = trash_dir / f"{sid}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}.jsonl"
+    atomic_write(dest, b"".join(moved))
+    atomic_write(lease.path, b"".join(kept))
+    lease.close()
+    return len(moved), dest
 
 
 def load_session(raw: bytes, sid: str) -> LoadedSession:

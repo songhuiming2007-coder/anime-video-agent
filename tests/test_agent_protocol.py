@@ -1171,3 +1171,34 @@ def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path)
     users = [json.loads(line)["message"]["content"] for line in log.read_text(encoding="utf-8").splitlines()
              if json.loads(line).get("origin") == "user"]
     assert users == ["想做一期杂谈", "换个角度"]
+
+
+def test_d45_continue_with_sid_resumes_non_latest_session(world, endpoint, tmp_path) -> None:
+    """D45：桌面端会话列表「进入」= `--continue <完整 sid>`，可以回到不是最近的那个会话。"""
+    root, episode = world
+    endpoint.replies = [{"role": "assistant", "content": "好"}]
+    sids = []
+    for i, text in enumerate(["第一个会话", "第二个会话"]):
+        proc = Protocol(root, endpoint, tmp=tmp_path / f"s{i}")
+        try:
+            proc.wait_for_ready()
+            proc.send({"t": "user_message", "text": text})
+            done = proc.wait_for("turn_finished", timeout=60)
+            sids.append(done["sid"])
+            proc.shutdown()
+            assert proc.finish() == 0
+        finally:
+            proc.proc.kill()
+    assert len(set(sids)) == 2
+
+    third = Protocol(root, endpoint, extra=["--continue", sids[0]], tmp=tmp_path / "s2")
+    try:
+        ready = third.wait_for_ready()
+        assert ready["continue_status"] == "resumed"
+        assert ready["sid"] == sids[0]
+        texts = [f["text"] for f in third.frames if f.get("t") == "history" and f["role"] == "user"]
+        assert texts == ["第一个会话"]
+        third.shutdown()
+        assert third.finish() == 0
+    finally:
+        third.proc.kill()

@@ -40,6 +40,7 @@ from pipeline.agent.session_log import (
     SessionLogBroken,
     acquire_idea_lease,
     list_sessions,
+    move_session_to_trash,
     read_log,
     resume_target,
 )
@@ -1021,6 +1022,62 @@ def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -
     except _UsageError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 2
+
+
+# 会话管理（D45）：桌面端会话列表的两个裸形态人令。同族于 /import-cover：argv 按位置取参、
+# 不进 LLM 工具表、不进 Spec 11 的八命令表。删除 = 移进 `_agent/session-trash/`（人选的语义）。
+SESSION_ID = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
+    """`/list-sessions` 与 `/delete-session --sid=<sid>`。非本族命令返回 None。
+
+    退出码：0 成；1 败（sid 不存在、写盘失败）；2 用法错；3 该期有活会话（租约被占）。
+    """
+    if not argv or argv[0] not in ("/list-sessions", "/delete-session"):
+        return None
+    rest = argv[1:]
+    try:
+        resolved = resolve_episode_dir(ep_dir)
+    except PermissionError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    if argv[0] == "/list-sessions":
+        if rest:
+            print("[ERROR] 用法: ava <期> /list-sessions", file=sys.stderr)
+            return 2
+        rows = [
+            {"sid": s.sid, "messages": s.messages, "assistants": s.assistants,
+             "last_activity": s.last_activity, "first_user": s.first_user,
+             "resumable": s.resumable}
+            for s in list_sessions(read_log(resolved))
+        ]
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    try:
+        sid = _valued_flags(rest, ("--sid",))["--sid"]
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    if not SESSION_ID.match(sid):
+        print(f"[ERROR] 会话号应为 16 位小写十六进制，收到 {sid!r}", file=sys.stderr)
+        return 2
+    try:
+        lease = EpisodeLease.acquire(resolved)
+    except SessionLocked as exc:
+        print(f"[ERROR] {exc}（先结束该期的会话再删除）", file=sys.stderr)
+        return 3
+    except (SessionLogBroken, DataUnreachable) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    try:
+        moved, dest = move_session_to_trash(lease, sid)
+    except (ValueError, OSError) as exc:
+        lease.close()
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({"moved": moved, "trash": str(dest)}, ensure_ascii=False))
+    return 0
 
 
 def _episode_file(ep_dir: Path | str, name: str, root: Path | None = None) -> Path:
@@ -2398,6 +2455,11 @@ def main(argv: list[str] | None = None) -> int:
 
         # Spec 12 §3.1：图片导入（裸形态：图片字节走 stdin；不进 Spec 11 的八命令表）
         rc = _dispatch_import_cover(ep_dir, args[1:], from_stdin=True)
+        if rc is not None:
+            return rc
+
+        # D45：桌面端会话列表的两个人令
+        rc = _dispatch_session_admin(ep_dir, args[1:])
         if rc is not None:
             return rc
 

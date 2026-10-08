@@ -1,4 +1,4 @@
-// Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、继续上次会话、建期…。
+// Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、建期…（D45：继续会话移到侧栏会话列表）。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 import { useEffect, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
@@ -36,7 +36,7 @@ export function readyInfo(entries: readonly ConvEntry[]): ReadyInfo {
 /** D41：读数的悬停说明——如实标口径，并给出现成的绕法（不做压缩，压缩另立 spec） */
 export const CONTEXT_READOUT_TITLE =
   "最近一次请求模型时，对话里全部消息正文的字符数（不含工具调用参数与工具定义）。是字符数，不是 token，也没有上限刻度。" +
-  "嫌长可以「结束会话」后再发新消息开新会话：期的进度在产物里，不靠对话记忆。";
+  "嫌长可以点侧栏本期下面的「＋ 新会话」从空白上下文开始：期的进度在产物里，不靠对话记忆。";
 
 export function SessionHeader({
   rpc,
@@ -47,7 +47,6 @@ export function SessionHeader({
   isIdea,
   contextChars,
   onCreated,
-  onResumed,
   onEnded,
 }: {
   rpc: RpcClient;
@@ -59,7 +58,6 @@ export function SessionHeader({
   /** D41：最近一次回合结束时的 prompt_chars（`lastPromptChars`）；null = 本会话还没有回合结束过，不显示 */
   contextChars: number | null;
   onCreated: (created: CreatedEpisode) => void;
-  onResumed: () => void;
   onEnded: () => void;
 }) {
   const live = phase === "starting" || phase === "idle" || phase === "running" || phase === "ending";
@@ -141,18 +139,7 @@ export function SessionHeader({
           结束会话
         </button>
       )}
-      {!isIdea && !live && (
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="session-resume"
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void rpc.call("conv.resume", { convKey }).then(() => onResumed(), () => undefined);
-          }}
-        >
-          继续上次会话
-        </button>
-      )}
+      {/* D45：「继续上次会话」由侧栏会话子列表取代（点哪个进哪个，人 2026-10-08 裁决去掉此按钮） */}
       {running && <span className="ui-spinner" data-testid="session-running" />}
       {info.llm === null && <Icon name="info" size="sm" />}
     </div>

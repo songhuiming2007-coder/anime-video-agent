@@ -28,7 +28,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 PROTOCOL_VERSION = 1
 MAX_INBOUND_LINE_BYTES = 1_048_576
@@ -61,6 +61,9 @@ class FrameWriter:
         self._seq = 0
         self.host_gone = False
         self.sid: str | None = None
+        # D45：新会话的 sid 在首回合 `_open_session` 才生成；启动时取一次值会让该会话此后
+        # 每一帧的 sid 都是 null（host 因此认不出活会话是哪个）。给了来源就按帧实时取。
+        self.sid_source: Callable[[], str | None] | None = None
         self._thread = threading.Thread(target=self._run, name="proto-writer", daemon=True)
         self._thread.start()
 
@@ -70,7 +73,8 @@ class FrameWriter:
         with self._lock:
             self._seq += 1
             seq = self._seq
-        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": self.sid, **frame}
+        sid = self.sid_source() if self.sid_source is not None else self.sid
+        payload = {"v": PROTOCOL_VERSION, "seq": seq, "sid": sid, **frame}
         self._queue.put(payload)
 
     def _run(self) -> None:
@@ -619,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
                 resume_state = state
                 host.sid = state["sid"]
     writer.sid = host.sid
+    writer.sid_source = lambda: host.sid
 
     # ⑦ ready
     config = load_llm_config(paths.ROOT)

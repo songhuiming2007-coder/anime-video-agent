@@ -41,6 +41,7 @@ Spec 11 需要三类新写入，全部是人（不是模型）在停机点上的
 
 - **I1（host 零写入）**：原文不变。host 进程自身对 `data/` 零写入、零 mkdir；新增子命令全部以 spawn 执行。
 - **I2（桌面端引发的 core 写入闭集）**：在原两类上扩展「显式点击」类的清单——新增：`02-script.md`（保存/从草稿新建）；`02-diff.patch`（封板）；`03-audio/corrections.json`（落盘、撤回、done 的 applied 回写）；`03-audio/attic/**`（回滚的恢复读来源；done 经 `corrections.backup_segments` **新建**快照并修剪旧快照）；`03-audio/seg-*.wav` 与 `03-audio/manifest.json`（done 的增量重配重生成本体与清单）；`03-audio/.apply_patch.lock` 的创建与删除；`human_time.json`（人时条目）；及对应 `events.jsonl` 事件行（`job_*`、`human_time_recorded` 等）。「自愈簿记」类不变。闭集之外一律禁止；Spec 8 TI-3b 的清单相应扩展（修订请求见 Spec 11 §6.1）。（v0.3 补全：初版枚举遗漏 done 的直接产物，红队一轮 🟡-3 抓出、二轮 🟡-1 确认 v0.2 漏落后落入）
+  - **2026-10-08 增补（D45 会话管理，人在桌面端点「删除会话」并过原生确认框）**：`session.jsonl` 的移出重写（持期租约，被删 sid 的整行搬走、其余行逐字节写回，经 `atomic_write`；`session_log.move_session_to_trash`）与 `_agent/session-trash/<sid>.jsonl`（回收站，新建不覆盖）。走同一条路径：人令 → host spawn core 裸形态 `/delete-session --sid=<sid>`；该期有活会话时 core 拿不到租约、退出 3，一字不写。会话列表 `/list-sessions` 只读。
 
 ### 4. 封板是 core 命令，不是 shell 重定向
 

@@ -10,6 +10,8 @@ import {
   SPAWN_TIMEOUT_SHORT_MS,
   STATUS_STDOUT_MAX_BYTES,
   VOICE_INFO_STDOUT_MAX_BYTES,
+  SESSIONS_STDOUT_MAX_BYTES,
+  SESSION_ID_RE,
   KEYCHAIN_SERVICE,
 } from "../shared/constants";
 import type { StopType } from "../shared/contracts";
@@ -42,7 +44,10 @@ export type Template =
   | "RECORD_TIME"
   | "RUN_TTS_APPLY_PATCH"
   // Spec 12 S8-R18：封面导入（字节走 stdin）
-  | "IMPORT_COVER";
+  | "IMPORT_COVER"
+  // D45：会话列表 / 删除（移进回收站）
+  | "LIST_SESSIONS"
+  | "DELETE_SESSION";
 
 /** 长驻会话进程模板（Spec 10 S8-R3）；不经 runCore（stdin pipe、无超时），只用 sessionArgv。 */
 export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA";
@@ -81,6 +86,9 @@ export interface TemplateArgs {
   RUN_TTS_APPLY_PATCH: { ep: string };
   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
   IMPORT_COVER: { ep: string; name: string };
+  LIST_SESSIONS: { ep: string };
+  /** sid 先过 SESSION_ID_RE，不合格抛错不 spawn */
+  DELETE_SESSION: { ep: string; sid: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -253,19 +261,35 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep, name } = args as TemplateArgs["IMPORT_COVER"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/import-cover", `--name=${name}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdinPipe: true };
     }
+    case "LIST_SESSIONS": {
+      const { ep } = args as TemplateArgs["LIST_SESSIONS"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/list-sessions"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    }
+    case "DELETE_SESSION": {
+      const { ep, sid } = args as TemplateArgs["DELETE_SESSION"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
   }
 }
 
-/** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。 */
-export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string): string[] {
+function checkedSid(sid: string): string {
+  if (!SESSION_ID_RE.test(sid)) throw new Error(`会话号形状不对：「${sid}」`);
+  return sid;
+}
+
+/** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。
+ * D45：SESSION_CONTINUE 带 `sid` 时恢复指定会话（`--continue <sid>`），不带时恢复最近的可恢复会话。 */
+export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string, sid?: string): string[] {
   const py = pythonOf(repoRoot);
   switch (t) {
     case "SESSION_NEW":
       return [py, "-m", "pipeline.agent.protocol", ep as string];
     case "SESSION_CONTINUE":
-      return [py, "-m", "pipeline.agent.protocol", ep as string, "--continue"];
+      return sid === undefined
+        ? [py, "-m", "pipeline.agent.protocol", ep as string, "--continue"]
+        : [py, "-m", "pipeline.agent.protocol", ep as string, "--continue", checkedSid(sid)];
     case "SESSION_IDEA":
       return [py, "-m", "pipeline.agent.protocol", "--idea"];
   }
@@ -461,8 +485,8 @@ export interface SessionProc {
   signal(sig: NodeJS.Signals, group: boolean): void;
 }
 
-export function spawnSession(t: SessionTemplate, args: { ep?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
-  const argv = sessionArgv(t, args.ep, ctx.repoRoot);
+export function spawnSession(t: SessionTemplate, args: { ep?: string; sid?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
+  const argv = sessionArgv(t, args.ep, ctx.repoRoot, args.sid);
   // spawn 日志只记模板名与 argv，不记环境（§3.4）；密钥值绝不进任何日志（TH-6）
   recordSpawn({ template: t, argv, at: Date.now() });
   const child = spawn(argv[0], argv.slice(1), {

@@ -38,6 +38,8 @@ export interface SessionTarget {
   epKey: string | null;
   abs: string | null;
   mode: "new" | "continue" | "idea";
+  /** D45：mode "continue" 时指定恢复哪个会话；不给 = 最近的可恢复会话 */
+  sid?: string;
 }
 
 export interface QuitBusy {
@@ -68,7 +70,7 @@ const DEFAULT_TIMING: SessionTiming = {
 };
 
 export interface SessionDeps {
-  spawnSession: (t: SessionTemplate, args: { ep?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
+  spawnSession: (t: SessionTemplate, args: { ep?: string; sid?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
   /** 每次 spawn SESSION_* 前执行一次（§2.9）；失败给 problem 文案，照常 spawn、如实降级 */
   resolveKey: () => Promise<{ name: string; value: string } | { problem: string }>;
   /** Spec 15 §2.7：web 检索链上声明的密钥（LLM 名字之后执行）；自身兜住一切失败，只返回读成功的 */
@@ -122,6 +124,8 @@ interface SessionState {
   settle: SettleSlot | null;
   settleTimer: NodeJS.Timeout | null;
   keyProblem: string | null;
+  /** D45：最近一帧携带的会话号（新会话首回合前为 null）；会话列表据此标出活会话 */
+  sid: string | null;
   proc: SessionProc | null;
   pid: number | null;
   splitter: LineSplitter;
@@ -370,6 +374,23 @@ export class SessionManager {
    * 之后再等进程真正退出（SIGKILL 整组后 onExit 稍后才到）。返回 false = 宽限内仍未退出，调用方不许建期。
    */
   async endForMigration(key: ConvKey): Promise<boolean> {
+    return this.endAndWait(key);
+  }
+
+  /** D45：活会话的会话号（没有活进程、或新会话首回合前为 null）。 */
+  liveSid(key: ConvKey): string | null {
+    const s = this.activeOf(key);
+    return s ? s.sid : null;
+  }
+
+  /** 有回合在跑（或正在启动/收尾）时为真：会话管理操作一律拒绝，不打断人正在看的回合。 */
+  isBusy(key: ConvKey): boolean {
+    const s = this.activeOf(key);
+    return s !== null && s.phase !== "idle";
+  }
+
+  /** 结束会话并等进程真正退出（§2.10 同一结束序列）。false = 宽限内仍未退出。 */
+  async endAndWait(key: ConvKey): Promise<boolean> {
     const s = this.states.get(key);
     if (!s || s.phase === "exited") return true;
     await this.end(key);
@@ -382,6 +403,11 @@ export class SessionManager {
    * 下一次发消息懒启动全新进程。活进程不动（正常流程里此刻它已被 endForMigration 结束）。
    */
   resetAfterMigration(key: ConvKey): void {
+    this.reset(key);
+  }
+
+  /** 清掉已退出进程的条目缓冲（重推空快照）；下一次发消息懒启动全新进程（D45「开新会话」同此）。 */
+  reset(key: ConvKey): void {
     const s = this.states.get(key);
     if (!s || s.phase !== "exited") return;
     this.states.delete(key);
@@ -455,6 +481,7 @@ export class SessionManager {
       settle: null,
       settleTimer: null,
       keyProblem: null,
+      sid: null,
       proc: null,
       pid: null,
       splitter: new LineSplitter(SESSION_FRAME_MAX_BYTES),
@@ -485,7 +512,7 @@ export class SessionManager {
     const webEnv = await this.deps.resolveWebKeys("problem" in keyInfo ? null : keyInfo.name);
     for (const [name, value] of Object.entries(webEnv)) if (!(name in extraEnv)) extraEnv[name] = value;
     if (s.phase === "exited") this.fail("E_SESSION", "会话进程已退出");
-    const proc = this.deps.spawnSession(t, { ep: target.abs ?? undefined }, { repoRoot }, extraEnv);
+    const proc = this.deps.spawnSession(t, { ep: target.abs ?? undefined, ...(target.sid !== undefined ? { sid: target.sid } : {}) }, { repoRoot }, extraEnv);
     const gen = (s.procGen += 1);
     s.proc = proc;
     s.pid = proc.pid ?? null;
@@ -542,6 +569,7 @@ export class SessionManager {
 
   private onFrame(s: SessionState, f: OutFrame): void {
     this.append(s, { k: "frame", at: this.deps.now(), frame: f });
+    if (typeof f.sid === "string") s.sid = f.sid;
     switch (f.t) {
       case "ready":
         s.readySeen = true;

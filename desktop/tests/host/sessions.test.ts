@@ -1187,3 +1187,149 @@ describe("TH-20 服务侧结算与 episode.delta 顺序（§2.7 第 3 条）", (
 
 // bootWithRepo 用于 TH-6 的「其余模板」一例。
 void bootWithRepo;
+
+// ---------------------------------------------------------------------------
+// D45：会话管理（conv.sessions / conv.enter / conv.fresh / conv.delete）
+// ---------------------------------------------------------------------------
+
+const SID_A = "aaaaaaaaaaaaaaa1";
+const SID_B = "bbbbbbbbbbbbbbb2";
+
+/** 假 core：LIST_SESSIONS 回两行，DELETE_SESSION 按给定退出码；记录每次调用的模板与参数。 */
+function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: { deleteCode?: number; listJson?: string } = {}): HostDeps["runCore"] {
+  const rows = [
+    { sid: SID_A, messages: 4, assistants: 2, last_activity: "2026-10-08T08:00:00Z", first_user: "改段落三", resumable: true },
+    { sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-09-26T11:00:00Z", first_user: "董香第二期做到哪了", resumable: true },
+  ];
+  return (async (t: string, args: Record<string, unknown>) => {
+    calls.push({ t, args });
+    const base = { signal: null, stderrTail: "", timedOut: false, stdoutOverflow: false };
+    if (t === "LIST_SESSIONS") {
+      const out = opts.listJson ?? JSON.stringify(rows);
+      return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
+    }
+    if (t === "DELETE_SESSION") {
+      const code = opts.deleteCode ?? 0;
+      return { ...base, code, stdoutTail: code === 0 ? '{"moved": 4, "trash": "/x"}' : "", stderrTail: code === 3 ? "该期已有活跃会话" : "", stdoutFull: null };
+    }
+    return { ...base, code: t === "GIT_HEAD" ? 128 : 0, stdoutTail: "", stdoutFull: null };
+  }) as unknown as HostDeps["runCore"];
+}
+
+/** 剧本：ready 帧带指定 sid（假进程按帧覆盖公共键），shutdown 即退。 */
+function scriptWithSid(repo: SessionRepo, epKey: string, sid: string): void {
+  sessionScript(repo, epKey, [
+    { op: "emit", frame: { ...READY(epKey).frame, sid } },
+    { op: "serve", on_turn: [{ ...TURN_STARTED, sid }, { ...TURN_ENDED, sid }, { ...STOP_POINTS, sid }], on_shutdown: "exit" },
+  ]);
+}
+
+function sessionArgvs(): string[][] {
+  return spawnLog.filter((e) => String(e.template).startsWith("SESSION")).map((e) => (e.argv as string[]).slice(3));
+}
+
+describe("D45 会话管理", () => {
+  it("conv.sessions：字段改名 + 标出活会话；core 输出不合约定 → E_CORE", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    const rows = (await svc.dispatch("conv.sessions", { convKey: key })) as Array<Record<string, unknown>>;
+    expect(rows.map((r) => [r.sid, r.live, r.firstUser, r.lastActivity])).toEqual([
+      [SID_A, true, "改段落三", "2026-10-08T08:00:00Z"],
+      [SID_B, false, "董香第二期做到哪了", "2026-09-26T11:00:00Z"],
+    ]);
+    await expect(svc.dispatch("conv.sessions", { convKey: "idea" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+
+    const bad = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson: '[{"sid": "../x"}]' }) } });
+    await expect(bad.svc.dispatch("conv.sessions", { convKey: bad.key })).rejects.toMatchObject({ code: "E_CORE" });
+  });
+
+  it("conv.enter：先结束空闲活会话，再 --continue <sid>；进的就是当前会话则不动；非法 sid 不 spawn", async () => {
+    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+
+    await svc.dispatch("conv.enter", { convKey: key, sid: SID_A });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+
+    scriptWithSid(repo, epKey, SID_B);
+    await svc.dispatch("conv.enter", { convKey: key, sid: SID_B });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW", "SESSION_CONTINUE"]);
+    expect(sessionArgvs()[1].slice(-2)).toEqual(["--continue", SID_B]);
+    expect(stdinLines(repo, epKey).some((l) => (JSON.parse(l) as { t: string }).t === "user_message")).toBe(false); // 新进程的记录：没有替人发消息（H-8）
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    const rows = (await svc.dispatch("conv.sessions", { convKey: key })) as Array<{ sid: string; live: boolean }>;
+    expect(rows.find((r) => r.live)?.sid).toBe(SID_B);
+
+    await expect(svc.dispatch("conv.enter", { convKey: key, sid: "BBBB" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    expect(sessionSpawns()).toHaveLength(2);
+  });
+
+  it("conv.enter / conv.fresh / conv.delete：有回合在跑 → E_BUSY，且不弹确认框", async () => {
+    const { repo, svc, epKey, key, stub } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
+    sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_turn: [TURN_STARTED] }]); // 回合开始后不结束
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "running");
+    await expect(svc.dispatch("conv.enter", { convKey: key, sid: SID_B })).rejects.toMatchObject({ code: "E_BUSY" });
+    await expect(svc.dispatch("conv.fresh", { convKey: key })).rejects.toMatchObject({ code: "E_BUSY" });
+    await expect(svc.dispatch("conv.delete", { convKey: key, sid: SID_B })).rejects.toMatchObject({ code: "E_BUSY" });
+    expect(stub.calls).toBe(0);
+    expect((await snapOf(svc, key)).phase).toBe("running");
+  });
+
+  it("conv.fresh：结束活会话、清空对话区；下一条消息走 SESSION_NEW", async () => {
+    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    const snap = (await svc.dispatch("conv.fresh", { convKey: key })) as ConvSnapshot;
+    expect(snap.phase).toBe("none");
+    expect(snap.entries).toEqual([]);
+    await svc.dispatch("conv.send", { convKey: key, text: "从头来" });
+    expect(sessionSpawns()).toEqual(["SESSION_NEW", "SESSION_NEW"]);
+  });
+
+  it("conv.delete：确认框取消 → 一字不删、会话照旧；确认后删活会话 → 先结束再删，对话区清空", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { repo, svc, epKey, key, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+
+    stub.respond = false;
+    expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_A })).toEqual({ deleted: false, moved: 0 });
+    expect(stub.last?.detail).toContain("改段落三");
+    expect(stub.last?.detail).toContain("当前打开的会话会先结束");
+    expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
+    expect((await snapOf(svc, key)).phase).toBe("idle");
+
+    stub.respond = true;
+    expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_A })).toEqual({ deleted: true, moved: 4 });
+    expect(calls.filter((c) => c.t === "DELETE_SESSION").map((c) => c.args.sid)).toEqual([SID_A]);
+    expect((await snapOf(svc, key)).phase).toBe("none");
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]); // 删的就是活会话：不接回
+  });
+
+  it("conv.delete：删别的会话 → 先结束活会话释放租约，删完把它接回来", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    await svc.dispatch("conv.delete", { convKey: key, sid: SID_B });
+    expect(calls.filter((c) => c.t === "DELETE_SESSION").map((c) => c.args.sid)).toEqual([SID_B]);
+    expect(sessionSpawns()).toEqual(["SESSION_NEW", "SESSION_CONTINUE"]);
+    expect(sessionArgvs()[1].slice(-2)).toEqual(["--continue", SID_A]);
+  });
+
+  it("conv.delete：core 报租约被占（退出 3）→ E_SESSION_LOCKED；会话已不在列表 → E_STALE 且不弹框", async () => {
+    const locked = await boot({ realCore: true, overrides: { runCore: adminCore([], { deleteCode: 3 }) } });
+    await expect(locked.svc.dispatch("conv.delete", { convKey: locked.key, sid: SID_B })).rejects.toMatchObject({ code: "E_SESSION_LOCKED" });
+    const gone = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
+    await expect(gone.svc.dispatch("conv.delete", { convKey: gone.key, sid: "ccccccccccccccc3" })).rejects.toMatchObject({ code: "E_STALE" });
+    expect(gone.stub.calls).toBe(0);
+  });
+});
