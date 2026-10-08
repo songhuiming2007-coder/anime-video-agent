@@ -20,9 +20,9 @@ from pathlib import Path
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.tools import (
     DRAFT_FILENAME,
-    RESTRICTED_EGRESS_PATTERNS,
     SCRIPT_FILENAME,
     resolve_write_content,
+    scrub_restricted,
 )
 from pipeline.status import EpisodeStatus, inspect_episode
 
@@ -141,9 +141,7 @@ def build_status_card(
         pass
 
     # 返回前对整串做一次 RESTRICTED_EGRESS_PATTERNS 清洗（casefold 判定，命中替换为 [已脱敏]）
-    for pattern in RESTRICTED_EGRESS_PATTERNS:
-        escaped = re.escape(pattern)
-        card = re.sub(escaped, "[已脱敏]", card, flags=re.IGNORECASE)
+    card = scrub_restricted(card)
 
     return card
 

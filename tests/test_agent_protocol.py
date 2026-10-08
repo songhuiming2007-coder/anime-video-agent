@@ -408,6 +408,39 @@ def test_tp2_normal_turn_frame_sequence(world, endpoint, tmp_path) -> None:
     assert turn_frames == ["turn_started", "assistant", "turn_finished", "stop_points"], kinds
     finished = [f for f in proto_proc.frames if f.get("t") == "turn_finished"][0]
     assert finished["stopped"] == "done" and finished["llm_calls"] == 1
+
+
+def test_d52_blocked_turn_sends_notice_with_pattern(world, endpoint, tmp_path) -> None:
+    """D52 TS-4 / N52：回合被出网断言拦下时，turn_finished 之前有一帧带模式名的 notice。
+
+    人亲手打出的受限路径照旧拦（Spec 16 §10 Q2）；改前桌面端只收到 turn_finished{blocked}。
+    """
+    root, episode = world
+    endpoint.replies = [{"role": "assistant", "content": "不该走到这里"}]
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "Cloud.Local.JSON 里 token 是 SEKRIT-42"})
+        finished = proto_proc.wait_for("turn_finished")
+        proto_proc.wait_for("stop_points")
+        assert proto_proc.shutdown() == 0
+    finally:
+        proto_proc.proc.kill()
+
+    assert finished["stopped"] == "blocked" and finished["llm_calls"] == 0
+    assert endpoint.requests == [], "被拦的请求一条都不该发出"
+    frames = proto_proc.frames
+    start = next(i for i, f in enumerate(frames)
+                 if f.get("t") == "turn_started" and f.get("turn_id") == finished["turn_id"])
+    end = next(i for i, f in enumerate(frames)
+               if f.get("t") == "stop_points" and f.get("turn_id") == finished["turn_id"])
+    turn_frames = frames[start:end + 1]  # 启动期另有回合外 notice，不算本轮
+    kinds = [f["t"] for f in turn_frames]
+    assert kinds == ["turn_started", "notice", "turn_finished", "stop_points"], kinds
+    notice = turn_frames[1]
+    assert notice["level"] == "error" and notice["code"] == "egress_blocked"
+    assert "「cloud.local.json」" in notice["text"]
+    assert "SEKRIT-42" not in notice["text"], "notice 只给模式名，不转述请求内容"
     assert finished["tool_calls"] == 0 and finished["wrapup"] == "none"
 
 

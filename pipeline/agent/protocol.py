@@ -784,6 +784,18 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
         index += 1
 
 
+def _egress_blocked_text(error: str) -> str:
+    """`egress_blocked` notice 正文：模式名只从模式表里认，不转述报错原文（不让请求内容借道出现）。"""
+    from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
+
+    hits = [p for p in RESTRICTED_EGRESS_PATTERNS if f"'{p}'" in error]
+    what = f"受限路径「{hits[0]}」" if hits else "受限路径"
+    return (
+        f"本轮被出网护栏拦下并已回滚，请求没有发出：对话里出现了{what}。"
+        "常见来源：对话里打出了该路径，或模型在工具参数里写了该路径。换个说法重问即可。"
+    )
+
+
 def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int:
     """跑一轮（§4.7）：turn_started → run_turn → turn_finished → stop_points 恰好一帧。"""
     import secrets
@@ -822,6 +834,10 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     if outcome.get("local_note"):
         writer.send({"t": "assistant", "turn_id": turn_id, "kind": "local_note",
                      "text": str(outcome["local_note"])})
+    if outcome.get("stopped") == "blocked":
+        # N52/D52：桌面端原先只收到 turn_finished{blocked}，看不到原因。只给模式名，不给请求体
+        writer.send({"t": "notice", "level": "error", "code": "egress_blocked",
+                     "text": _egress_blocked_text(str(outcome.get("error") or ""))})
     writer.send({
         "t": "turn_finished",
         "turn_id": turn_id,
