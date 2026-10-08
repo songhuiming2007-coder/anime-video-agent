@@ -78,6 +78,8 @@ PIPELINE_MODULES: set[str] = {
     "cover",
     "bgm",
     "status",
+    # D51：读音纠错录入（期级 corrections.json / 全局 config/voice.json）。会写盘，所以不进只读集合、一律弹卡
+    "corrections",
 }
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
@@ -224,10 +226,16 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
     "--pattern", "--episode", "--note", "--target", "--session", "--floor",
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
+    "--text", "--word", "--pinyin", "--homophone", "--expect",
 })
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
-_AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status")
+_AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections")
+# 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
+_SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
+    "tts": ("run", "probe"),
+    "corrections": ("add", "global", "check"),
+}
 _SEGMENT_LABEL_RE = re.compile(r"^\d+(\.\d+)?$")
 
 
@@ -270,7 +278,7 @@ def _positional_refusal(module: str, args: list[str]) -> str | None:
             return f"拒绝执行：--redo 只接一个值，段号要用逗号连写。正确写法：{module} --redo {fixed}"
     # 规则 1：位置参数最多 1 个（tts 打头的子命令词不计）
     pos = _extract_positional_args(args)
-    if module == "tts" and pos and pos[0] in ("run", "probe"):
+    if pos and pos[0] in _SUBCOMMAND_WORDS.get(module, ()):
         pos = pos[1:]
     if len(pos) > 1:
         return (
@@ -392,7 +400,11 @@ def validate_pipeline_command(
         if ep_dir:
             ep_path = Path(ep_dir).resolve()
             pos_args = _extract_positional_args(args)
-            if module in ("tts", "clips", "review", "render", "qc", "cover", "status"):
+            if module == "corrections":
+                if len(pos_args) == 1 and pos_args[0] in _SUBCOMMAND_WORDS["corrections"]:
+                    sub_idx = args.index(pos_args[0])
+                    args = args[:sub_idx + 1] + [str(ep_path)] + args[sub_idx + 1:]
+            elif module in ("tts", "clips", "review", "render", "qc", "cover", "status"):
                 if not pos_args:
                     args = [str(ep_path)] + args
                 elif module == "tts" and pos_args == ["run"]:

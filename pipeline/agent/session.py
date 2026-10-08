@@ -316,6 +316,19 @@ def review_tool_call(
     if argv is not None and _pipeline_module_of(argv) in READONLY_PIPELINE_MODULES:
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
+    # D51：读音纠错录入。check 只读、免卡；add / global 在弹卡前跑同一组校验，不成立不弹卡，
+    # 成立则把「写什么、读音核对、本期受影响段」放上卡面
+    command_preview: list[str] | None = None
+    if argv is not None and _pipeline_module_of(argv) == "corrections":
+        from pipeline import corrections
+
+        rest = argv[argv.index("-m") + 2:]
+        if rest[:1] == ["check"]:
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+        ok, command_preview = corrections.preview(rest)
+        if not ok:
+            return ToolVerdict("reject", reason="\n".join(command_preview))
+
     loop_label = None
     if name == "write_episode_file":
         # D47：定稿只能改不能新建；定稿存在后草稿冻结。在弹卡之前拒，人不必为必然失败的写入点卡
@@ -340,7 +353,8 @@ def review_tool_call(
     return ToolVerdict(
         "ask",
         request=_tool_request(
-            name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label
+            name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label,
+            command_preview=command_preview,
         ),
     )
 
@@ -456,6 +470,7 @@ def _tool_request(
     turn_id: str | None = None,
     *,
     loop_label: str | None = None,
+    command_preview: list[str] | None = None,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -478,6 +493,7 @@ def _tool_request(
         stop_label=stop_label,
         episode_dir=ep_dir,
         memory_preview=render_plan_preview(memory_plan) if memory_plan else None,
+        command_preview=command_preview,
     )
     body = card.split("\n")
     if body and body[-1].strip().startswith("└─"):

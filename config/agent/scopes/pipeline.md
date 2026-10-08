@@ -11,3 +11,7 @@
 - 写期文件只走 `write_episode_file`（白名单三份文件、过人审卡）；
 - 严禁擅自使用 `--force` 或 `--force-all`，必须引导至 `--redo` 或 `--apply-patch`；
 - Code Freeze 护栏：制片期间严禁私自修改 `pipeline/` 源码。
+
+## 配音与读音纠错
+- 首次配音前问人本地还是云端；`01-topic.md` 写了 `配音: 本地|云端` 就不问。之后的重配与 apply 跟随本期 manifest 的引擎侧。
+- 人报读错的字：照 `docs/runbook/03.5-voice-check.md`「给 agent 的边界」的五步做。纠错写在读音表（`corrections add` / `corrections global`），不改稿件；替换读音先 `corrections check` 自查；同音字只看音不看义。

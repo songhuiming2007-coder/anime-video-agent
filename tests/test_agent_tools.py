@@ -249,6 +249,18 @@ def test_d53_subcommand_words_and_extra_positionals(tmp_path: Path):
     assert "多出了 b" in msg
 
 
+def test_d51_tv10_corrections_episode_inserted_after_subcommand(tmp_path: Path):
+    """D51 TV-10：`corrections add --text …` 期目录补在子命令之后；子命令词不计入位置参数。"""
+    ep_dir = tmp_path / "data" / "episodes" / "01"
+    ep_dir.mkdir(parents=True)
+    ok, msg, norm = validate_pipeline_command('corrections add --text "3段 绚都 改成 xuan4du1"', ep_dir=ep_dir)
+    assert ok, msg
+    assert norm == [sys.executable, "-m", "pipeline.corrections", "add", str(ep_dir.resolve()),
+                    "--text", "3段 绚都 改成 xuan4du1"]
+    ok, msg, norm = validate_pipeline_command("corrections global --word 绚都 --pinyin xuan4du1", ep_dir=ep_dir)
+    assert ok and norm[3:5] == ["global", str(ep_dir.resolve())]
+
+
 def test_d53_valued_flags_registry_covers_autofill_modules():
     """D53 TA-8：自动补位模块的带值旗标必须全部登记，否则值被当成位置参数（补位失效 / 误拒）。"""
     import ast
@@ -257,7 +269,7 @@ def test_d53_valued_flags_registry_covers_autofill_modules():
 
     boolean = {"store_true", "store_false", "count", "store_const", "version", "help"}
     missing = []
-    for module in ("tts", "clips", "review", "render", "qc", "cover", "status", "check_script"):
+    for module in ("tts", "clips", "review", "render", "qc", "cover", "status", "check_script", "corrections"):
         tree = ast.parse((Path(__file__).resolve().parent.parent / "pipeline" / f"{module}.py").read_text("utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument"):

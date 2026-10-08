@@ -208,6 +208,7 @@ def render_approval_card(
     target_exists: bool | None = None,
     episode_dir: Path | str | None = None,
     memory_preview: list[str] | None = None,
+    command_preview: list[str] | None = None,
 ) -> str:
     """标准化人机审批卡片渲染纯函数（Spec §3.2, §6 PR6）。
 
@@ -371,8 +372,16 @@ def render_approval_card(
         "review" in cmd_str or any("review" in t for t in argv_list)
     )
 
+    is_corrections = "pipeline.corrections" in argv_list
+    is_global_voice = is_corrections and "global" in argv_list
+    if is_global_voice:
+        danger_tags.append("[全局] 改 config/voice.json 的读音表，影响所有番、所有期")
+        danger_str = " ".join(danger_tags)
+
     if is_cloud:
         nature = "☁ 云端计费动作（计费审批）"
+    elif is_corrections:
+        nature = "写读音表（" + ("全局 config/voice.json" if is_global_voice else "本期 03-audio/corrections.json") + "）"
     elif is_render:
         nature = "本地成片渲染 | 预计耗时较长（分钟级）"
     elif is_review_approve:
@@ -386,8 +395,9 @@ def render_approval_card(
         f"│ 命令: {cmd_str}",
         f"│ 性质: {nature}",
         f"│ 危险标记: {danger_str}",
-        "└─ 执行? [y/N]: ",
     ]
+    lines += [f"│ {piece}" for raw in command_preview or [] for piece in str(raw).split("\n")]
+    lines.append("└─ 执行? [y/N]: ")
     return "\n".join(lines)
 
 

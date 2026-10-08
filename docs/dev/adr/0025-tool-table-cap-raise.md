@@ -9,6 +9,8 @@ status: accepted
 日期：2026-09-26
 状态：**已通过**（2026-09-26 用户接受；同步动作三条已随接受落盘：ADR-0021 口径、direction §4 红线 6、本状态行）
 前置：ADR-0021（工具表封顶 ~12 的立法者）
+
+> **修订注（2026-10-08，D51）**：agent 录读音纠错不加工具，复用 `run_pipeline`，白名单 `PIPELINE_MODULES` 增 `corrections` 一个模块（`plans/2026-10-08-agent-voice-corrections-spec.md`）。工具数不变。
 依据：direction §6 Spec 12（2026-09-23 用户裁决「提高上限」；新上限数值与理由由本 ADR 论证）
 
 ## 背景

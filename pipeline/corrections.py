@@ -7,6 +7,8 @@
   - 期级 overlay 加载与生效表生成 load_overlay / effective_injections
   - 增量重配计划 plan_apply
   - 快照备份与按段回滚 backup_segments / revert_segment / retract_correction
+  - agent 经人审卡录纠错（D51）：读音校验 check_reading、全局读音表写入 write_global_entry、
+    CLI `python -m pipeline.corrections add|global|check`
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from pypinyin import Style, pinyin
 from pypinyin.contrib.tone_convert import to_tone3
 from pypinyin.pinyin_dict import pinyin_dict
 
@@ -839,3 +842,316 @@ def retract_correction(episode: Path, item_id: int) -> dict:
         f"     提示: 撤回按条目 id（如: 撤回 {item_id}），回滚按段号（如: 回滚 {target.get('segment')}）。"
     )
     return target
+
+
+# ---------------------------------------------------------------------------
+# agent 经人审卡录纠错（D51，plans/2026-10-08-agent-voice-corrections-spec.md）
+#
+# 入口是 `run_pipeline` → `python -m pipeline.corrections …`（不加工具，ADR-0025），
+# 经人审卡批准才执行；弹卡前 `agent/session.py` 用 `preview()` 跑同一组校验，不成立不弹卡。
+# ---------------------------------------------------------------------------
+
+# 全局读音表的唯一位置。CLI 不接受路径参数：否则等于给 agent 一个任意 JSON 写入口。
+VOICE_CONFIG = paths.CONFIG / "voice.json"
+GLOBAL_TABLES = ("pinyin_injections", "readings")
+
+_HAN_RUN = re.compile(r"[一-鿿]+")
+# 合法音节（去声调）：由 pypinyin 词典的全部带调读音转出，`abc1` 这类形似 TONE3 的串在这里拦下
+_VALID_BASES = {re.sub(r"[1-5]$", "", to_tone3(s)) for s in _SYLLABLES_TONED}
+
+
+def _tone3_list(raw: str) -> list[str]:
+    """期望读音 → TONE3 音节列表：`xuan4du1` / `xuan4 du1` / `xuān dū` 同值。非法音节 → PatchError。"""
+    out: list[str] = []
+    for syl in split_pinyin_syllables(raw):
+        t = to_tone3(syl.lower()).replace("ü", "v")
+        if re.sub(r"[1-5]$", "", t) not in _VALID_BASES:
+            raise PatchError(f"'{syl}' 不是有效的拼音音节。")
+        out.append(t)
+    return out
+
+
+def homophone_tone3(text: str) -> list[str]:
+    """同音字替换串 → TONE3 音节列表。汉字段走 pypinyin（词内语境定多音字），
+    拉丁段按拼音音节解析——全局 readings 里有 `ròu体` 这种拼音汉字混写的条目。"""
+    out: list[str] = []
+    pos = 0
+    for m in _HAN_RUN.finditer(text):
+        latin = text[pos:m.start()].strip()
+        if latin:
+            out += _tone3_list(latin)
+        out += [g[0].replace("ü", "v") for g in pinyin(m.group(0), style=Style.TONE3, neutral_tone_with_five=True)]
+        pos = m.end()
+    tail = text[pos:].strip()
+    if tail:
+        out += _tone3_list(tail)
+    return out
+
+
+@dataclass
+class ReadingCheck:
+    word: str
+    expect: list[str]
+    homophone: str | None
+    got: list[str] | None
+    errors: list[str]
+    warnings: list[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def lines(self) -> list[str]:
+        head = f"读音核对：「{self.word}」应读 {' '.join(self.expect) or '（未解析）'}"
+        if self.homophone is not None and self.got is not None:
+            head += f"；同音字「{self.homophone}」读 {' '.join(self.got)}"
+        out = [head]
+        out += [f"  ✗ {e}" for e in self.errors]
+        out += [f"  ! {w}" for w in self.warnings]
+        if self.ok:
+            out.append("  ✓ 通过")
+        return out
+
+
+def check_reading(word: str, expect_raw: str, homophone: str | None = None) -> ReadingCheck:
+    """读音校验（spec §C）。errors 拒写入；warnings 只提示（判据 4：拿不到证伪信息不定罪）。
+
+    1. 拼音合法、音节数 = 字数（词全是汉字时）；
+    2. 同音字逐音节等于期望读音——同义词替换必然在这里被拒；
+    3. 期望读音不在原词各字的词典候选里 → 警告（专名读法可能不在词典里）。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    try:
+        expect = _tone3_list(expect_raw)
+    except PatchError as exc:
+        return ReadingCheck(word, [], homophone, None, [f"期望读音无法解析：{exc}"], [])
+    all_han = bool(_HAN_RUN.fullmatch(word))
+    if all_han and len(expect) != len(word):
+        errors.append(f"「{word}」有 {len(word)} 个字，读音给了 {len(expect)} 个音节")
+    got: list[str] | None = None
+    if homophone is not None:
+        try:
+            got = homophone_tone3(homophone)
+        except PatchError as exc:
+            errors.append(f"同音字「{homophone}」里的拼音无法解析：{exc}")
+        else:
+            if not got:
+                errors.append("同音字为空")
+            elif got != expect:
+                errors.append(
+                    f"同音字「{homophone}」读作 {' '.join(got)}，不是 {' '.join(expect)}"
+                    "（同音字只看音不看义）"
+                )
+    if all_han and len(expect) == len(word):
+        cands = pinyin(word, style=Style.TONE3, heteronym=True, neutral_tone_with_five=True)
+        for ch, syl, cs in zip(word, expect, cands):
+            cs = [c.replace("ü", "v") for c in cs]
+            if syl not in cs:
+                warnings.append(f"「{ch}」的词典读音是 {'/'.join(cs)}，不含 {syl}（专名读法可能不在词典里，仅提示）")
+    return ReadingCheck(word, expect, homophone, got, errors, warnings)
+
+
+def _digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def plan_global_write(
+    cfg: dict, word: str, *, pinyin_raw: str | None = None, homophone: str | None = None,
+    supersede: bool = False,
+) -> dict:
+    """全局写入计划（纯函数）：写哪张表、写什么、覆盖了什么、`--supersede` 删了什么。
+
+    两张表同键时拼音优先、readings 那条被跳过（tts.speakable_traced）。所以同键冲突一律拒：
+    不加 --supersede 就会留下一条永远不生效的死条目。
+    """
+    if (pinyin_raw is None) == (homophone is None):
+        raise PatchError("--pinyin 与 --homophone 必须二选一。")
+    if not word.strip():
+        raise PatchError("--word 不能为空。")
+    table = "pinyin_injections" if pinyin_raw is not None else "readings"
+    other = "readings" if table == "pinyin_injections" else "pinyin_injections"
+    value = "".join(_tone3_list(pinyin_raw)) if pinyin_raw is not None else str(homophone)
+    other_tab = cfg.get(other) or {}
+    removed = None
+    if word in other_tab:
+        if not supersede:
+            effect = ("新加的同音字会被跳过" if table == "readings"
+                      else "那条同音字从此被跳过")
+            raise PatchError(
+                f"{other} 里已有「{word}」→ {other_tab[word]}：同键时拼音优先，{effect}。"
+                "确认要换路线就加 --supersede（同时删掉那一条）。"
+            )
+        removed = {"table": other, "value": other_tab[word]}
+    return {
+        "table": table, "key": word, "value": value,
+        "old": (cfg.get(table) or {}).get(word), "removed": removed,
+    }
+
+
+def _load_voice_config() -> tuple[dict, bytes]:
+    path = VOICE_CONFIG
+    raw = path.read_bytes()
+    cfg = json.loads(raw.decode("utf-8"))
+    return cfg, raw
+
+
+def _dump_voice_config(cfg: dict, original: bytes) -> str:
+    text = json.dumps(cfg, ensure_ascii=False, indent=2)
+    return text + "\n" if original.endswith(b"\n") else text
+
+
+def write_global_entry(
+    word: str, *, pinyin_raw: str | None = None, homophone: str | None = None,
+    supersede: bool = False,
+) -> dict:
+    """改 `config/voice.json` 的一个读音键（spec §A）：其余字节不变、写前防并发、原子替换。"""
+    cfg, raw = _load_voice_config()
+    if _dump_voice_config(cfg, raw).encode("utf-8") != raw:
+        # 往返不等 = 文件不是本函数会写出的格式（人手改过缩进 / 转义），写回会动到别的字节
+        raise PatchError("config/voice.json 的排版与标准 JSON 输出不一致，自动写入会改动其他行；请人手改。")
+    plan = plan_global_write(cfg, word, pinyin_raw=pinyin_raw, homophone=homophone, supersede=supersede)
+    cfg.setdefault(plan["table"], {})[word] = plan["value"]
+    if plan["removed"]:
+        del cfg[plan["removed"]["table"]][word]
+    text = _dump_voice_config(cfg, raw)
+    path = VOICE_CONFIG
+    if _digest(path.read_bytes()) != _digest(raw):
+        raise PatchError("config/voice.json 在读取之后被改过（有人在手改？），本次未写入；重新提议即可。")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+    return plan
+
+
+def segments_with_word(episode: Path | None, word: str) -> list[str]:
+    """本期配音文本里含该词的段号（全局改动后只重配这些段的依据）。缺稿件返回空表。"""
+    if episode is None:
+        return []
+    script = Path(episode) / "02-script.md"
+    if not script.exists():
+        return []
+    from . import tts
+
+    return [s.label for s in tts.parse_script(script) if word in s.text]
+
+
+def _build_parser():
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="python -m pipeline.corrections",
+                                 description="读音纠错录入（D51）：期级 corrections.json / 全局 config/voice.json")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add", help="期级：按 /voice 同一文法追加一条到 03-audio/corrections.json")
+    a.add_argument("episode", type=Path)
+    a.add_argument("--text", required=True, help="如「5段 绚都 改成 xuan4du1」「7段 换种子」")
+    for name, desc in (("global", "全局：写 config/voice.json 的一个读音键"), ("check", "只核对读音，不写")):
+        g = sub.add_parser(name, help=desc)
+        g.add_argument("episode", type=Path, nargs="?", default=None)
+        g.add_argument("--word", required=True)
+        g.add_argument("--pinyin", help="拼音直注（首选），如 xuan4du1")
+        g.add_argument("--homophone", help="同音字替换（拼音直注实测不灵时），需同时给 --expect")
+        g.add_argument("--expect", help="同音字应读的拼音，如 xuan4du1")
+        if name == "global":
+            g.add_argument("--supersede", action="store_true",
+                           help="另一张表有同键时一并删除（否则拒：同键会留下死条目）")
+    return ap
+
+
+def _reading_check_of(ns) -> ReadingCheck:
+    if (ns.pinyin is None) == (ns.homophone is None):
+        raise PatchError("--pinyin 与 --homophone 必须二选一。")
+    if ns.homophone is not None:
+        if not ns.expect:
+            raise PatchError("--homophone 必须同时给 --expect（这个词应读的拼音）。")
+        return check_reading(ns.word, ns.expect, ns.homophone)
+    return check_reading(ns.word, ns.pinyin)
+
+
+def _parse_add(ns):
+    from . import tts
+
+    script = Path(ns.episode) / "02-script.md"
+    if not script.exists():
+        raise PatchError(f"找不到 {script}。")
+    patch = parse_correction(ns.text, tts.parse_script(script))
+    check = None
+    if patch.kind == "pronunciation" and patch.word and patch.target_tone3:
+        check = check_reading(patch.word, patch.target_tone3)
+    return patch, check
+
+
+def preview(argv: list[str]) -> tuple[bool, list[str]]:
+    """弹卡前预检（不落盘）：(能否写入, 卡面行)。`argv` 为模块名之后的参数（期目录已补位）。"""
+    try:
+        ns = _build_parser().parse_args(argv)
+    except SystemExit:
+        return False, [f"参数不合用法：{' '.join(argv)}（见 python -m pipeline.corrections -h）"]
+    try:
+        if ns.cmd == "add":
+            patch, check = _parse_add(ns)
+            lines = [f"写入：{Path(ns.episode).name}/03-audio/corrections.json（期级）",
+                     f"条目：段 {patch.segment} · {patch.kind} · 范围 {patch.scope}"
+                     + (f" · 「{patch.word}」→ {patch.target_tone3}" if patch.word else "")
+                     + (f" · {patch.issue}" if patch.issue else "")]
+            if check is not None:
+                lines += check.lines()
+                if not check.ok:
+                    return False, lines
+            return True, lines
+        check = _reading_check_of(ns)
+        lines = check.lines()
+        if not check.ok:
+            return False, lines
+        if ns.cmd == "global":
+            cfg, _raw = _load_voice_config()
+            plan = plan_global_write(cfg, ns.word, pinyin_raw=ns.pinyin, homophone=ns.homophone,
+                                     supersede=ns.supersede)
+            lines.insert(0, f"写入：config/voice.json 的 {plan['table']}（全局：所有番、所有期）")
+            lines.insert(1, f"「{ns.word}」→ {plan['value']}" + (f"（覆盖旧值 {plan['old']}）" if plan["old"] else ""))
+            if plan["removed"]:
+                lines.insert(2, f"同时删除 {plan['removed']['table']} 里的「{ns.word}」→ {plan['removed']['value']}")
+            segs = segments_with_word(ns.episode, ns.word)
+            lines.append(f"本期含该词的段：{'、'.join(segs) if segs else '无'}")
+        return True, lines
+    except (PatchError, OSError, ValueError) as exc:
+        return False, [str(exc)]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ns = _build_parser().parse_args(argv)
+    try:
+        if ns.cmd == "add":
+            patch, check = _parse_add(ns)
+            if check is not None:
+                print("\n".join(check.lines()))
+                if not check.ok:
+                    return 1
+            entry = append_correction(Path(ns.episode), patch)
+            print(json.dumps(entry, ensure_ascii=False))
+            print(f"[OK] 已录入 #{entry['id']}（待应用）。下一步只重配受影响的段：本地 `tts --apply-patch`；"
+                  "云端期 cloud push → cloud run <期号> tts -- --apply-patch → cloud pull。")
+            return 0
+        check = _reading_check_of(ns)
+        print("\n".join(check.lines()))
+        if not check.ok:
+            return 1
+        if ns.cmd == "check":
+            return 0
+        plan = write_global_entry(ns.word, pinyin_raw=ns.pinyin, homophone=ns.homophone,
+                                  supersede=ns.supersede)
+        print(f"[OK] config/voice.json {plan['table']}：「{ns.word}」→ {plan['value']}"
+              + (f"（原值 {plan['old']}）" if plan["old"] else ""))
+        if plan["removed"]:
+            print(f"[OK] 已删除 {plan['removed']['table']} 里的同键条目「{ns.word}」→ {plan['removed']['value']}")
+        segs = segments_with_word(ns.episode, ns.word)
+        if segs:
+            print(f"本期含该词的段：{'、'.join(segs)}。下一步：普通重跑 `tts`（不带 --force）只重配念法变了的段。")
+        return 0
+    except PatchError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

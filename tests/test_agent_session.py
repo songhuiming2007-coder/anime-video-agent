@@ -163,6 +163,49 @@ def test_d53_ta7_redo_with_spaces_rejected_before_card(episode: Path) -> None:
     assert "tts --redo 2,4,5,8,9,10" in verdict.reason
 
 
+_D51_SCRIPT = "## 段落 1\n\n配音：她强忍着肉体的排斥。\n\n画面：\n  查询: 便当\n"
+
+
+def test_d51_tv9_bad_reading_rejected_before_card(episode: Path) -> None:
+    """D51 TV-9：读音不成立的纠错（「肉惕」读 rou4 ti4）在弹卡前就拒，人不必为必然被拒的写入点卡。"""
+    (episode / "02-script.md").write_text(_D51_SCRIPT, encoding="utf-8")
+    verdict = review_tool_call(
+        "run_pipeline",
+        {"command": "corrections global --word 肉体 --homophone 肉惕 --expect rou4ti3"},
+        ep_dir=episode, scope="pipeline", root=None,
+    )
+    assert verdict.action == "reject" and verdict.request is None
+    assert "rou4 ti4" in verdict.reason
+
+
+def test_d51_tv9_good_reading_card_shows_plan(episode: Path, tmp_path: Path, monkeypatch) -> None:
+    """D51 TV-9：成立的全局写入照常弹卡，卡面带写入位置、全局标记、读音核对与本期受影响段。"""
+    from pipeline import corrections
+
+    voice = tmp_path / "voice.json"
+    voice.write_text(json.dumps({"readings": {}, "pinyin_injections": {}}, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+    monkeypatch.setattr(corrections, "VOICE_CONFIG", voice)
+    (episode / "02-script.md").write_text(_D51_SCRIPT, encoding="utf-8")
+    verdict = review_tool_call(
+        "run_pipeline", {"command": "corrections global --word 肉体 --pinyin rou4ti3"},
+        ep_dir=episode, scope="pipeline", root=None,
+    )
+    assert verdict.action == "ask"
+    card = verdict.request.card_text
+    assert "[全局]" in card and "写读音表（全局 config/voice.json）" in card
+    assert "「肉体」→ rou4ti3" in card and "✓ 通过" in card and "本期含该词的段：1" in card
+
+
+def test_d51_check_subcommand_is_card_free(episode: Path) -> None:
+    """`corrections check` 只读（不落盘），免卡；add / global 不免。"""
+    verdict = review_tool_call(
+        "run_pipeline", {"command": "corrections check --word 绚都 --pinyin xuan4du1"},
+        ep_dir=episode, scope="pipeline", root=None,
+    )
+    assert verdict.action == "allow"
+
+
 def test_tk4_acquire_fetch_reachable_after_d43(episode: Path) -> None:
     """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`（弹人审卡）；
     原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。"""
