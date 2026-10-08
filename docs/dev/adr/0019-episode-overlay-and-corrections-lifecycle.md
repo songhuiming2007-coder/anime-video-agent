@@ -10,6 +10,8 @@ status: accepted
 状态：**已通过**
 前置：ADR-0006, ADR-0016, ADR-0017, ADR-0018
 
+> **修订注（2026-10-08，D53 ①）**：正文两处 `config/voice_readings.json` 从未存在过。全局层实为 `config/voice.json` 的 `pinyin_injections`（拼音直注）与 `readings`（同音字替换），见 `pipeline/g2p.py`、`pipeline/tts.py::speakable_traced`。决策本身不变；历史正文不改。
+
 ## 背景
 
 在 03.5 配音顺听阶段，人耳听出错读音或语气发飘时，若直接改动全局 `config/voice_readings.json` 拼音表，会污染全局番剧资产并可能导致其他已通过审听的段落被意外改动；若手动删除 `seg-XX.wav`，则缺乏审计轨迹且容易引发全量重新合成。
