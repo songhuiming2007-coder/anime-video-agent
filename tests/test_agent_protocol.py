@@ -204,6 +204,7 @@ class Protocol:
         # 按**类型**各记一个已返回计数：帧流里不同帧会交错（assistant 与 turn_finished 同时到），
         # 全局游标要么吞掉前一类、要么回头取到启动期那帧；按类型计数才是稳的。
         self._seen: dict[str, int] = {}
+        self._user_sent = 0  # 已发出的 user_message 数：协议里只有它开回合，且每回合恰好一个 turn_finished
         self.stderr_lines: list[str] = []
         self._frames: queue.Queue = queue.Queue()
         threading.Thread(target=self._pump_stdout, daemon=True).start()
@@ -226,6 +227,8 @@ class Protocol:
     def send(self, frame: dict) -> None:
         """发一条入站帧：公共键 `v` 在这里统一补上（§3.1；测试体只写类型相关的键）。"""
         assert self.proc.stdin is not None
+        if frame.get("t") == "user_message":
+            self._user_sent += 1
         self.proc.stdin.write(json.dumps({"v": 1, **frame}, ensure_ascii=False) + "\n")
         self.proc.stdin.flush()
 
@@ -251,6 +254,11 @@ class Protocol:
                 self._seen[kind] = want + 1
                 return matches[want]
             if time.time() >= end:
+                break
+            # 审批卡只在回合内出现：发出的回合全部结束仍没等到，就不会再来了——立即失败，
+            # 不干等 60 s（变异 M16-1 / S9-MUT-51 跳过审批卡时，原先每条用例白等到超时，整轮被记 ABORTED）
+            finished = sum(1 for f in self.frames if f.get("t") == "turn_finished")
+            if kind == "request" and self._user_sent and finished >= self._user_sent:
                 break
             try:
                 self.next_frame(timeout=max(0.1, end - time.time()))
