@@ -240,7 +240,7 @@ test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记�
   await expect(panel.getByTestId("voice-done")).toBeEnabled();
 });
 
-test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ 已知问题：第一次批准 E_STALE，新卡上再批准成功", async () => {
+test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ H5 重钉新卡 → 一次批准通过（N61）", async () => {
   const ctx = epAt035("SP11-S7");
   const L = await start(ctx);
   await openEp(L.page, "SP11-S7");
@@ -254,14 +254,14 @@ test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写�
     .toEqual({ voice_stability: 4, prosody: 3, misread: 5 });
   expect(spawnNames(L, "TTS_REVIEW")).toHaveLength(1);
   expect(spawnNames(L, "RUN_TTS_APPLY_PATCH")).toHaveLength(0);
-  // 已知问题（施工 spec S7 节）：打点改写了 03.5 对象钉住的 manifest，宿主没有自动重钉（H5 未触发），
-  // 第一次点批准撞 E_STALE、core 同时换上新对象；在新卡上再点一次才成功。用例钉住这一现状，修好后改为一次通过
-  await c.getByTestId("approve").click();
-  await expect(L.page.getByText(/E_STALE/)).toBeVisible({ timeout: 15_000 });
+  // 打点改写了 03.5 对象钉住的 manifest：宿主 H5 自愈换上新对象（N61：基线在激活时取，打点再快也不被吞进基线），
+  // 人只在新卡上点一次批准；全程不出 E_STALE
   const fresh = L.page.locator(`[data-testid=decision][data-stop="03.5"]:not([data-approval-id="${firstId}"])`);
   await expect(fresh.getByTestId("approve")).toBeEnabled({ timeout: 20_000 });
+  expect(spawns(L).filter((s) => s.template === "HEAL" && s.trigger === "H5-artifact-drift")).toHaveLength(1);
   await fresh.getByTestId("approve").click();
   await expect(L.page.getByTestId("decision-ok")).toContainText(/已批准|已确认批准/);
+  await expect(L.page.getByText(/E_STALE/)).toHaveCount(0);
   expect(readStore(ctx.ep).find((o) => o.approval_id === firstId)?.status).toBe("superseded");
 });
 

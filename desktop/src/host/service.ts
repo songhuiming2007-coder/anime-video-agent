@@ -748,6 +748,9 @@ export class HostService {
       await this.healAndReload(rt, "H1-activated");
       await this.loadAll(rt);
       this.checkH2(rt); // 这次 status 采样即 H2 基线，不触发
+      // N61：H5 基线也在这里取（紧跟 H1 heal 之后），不等第一次 tick——否则激活后 1 s 内人做的改动
+      // （如 03.5 卡内打点改写 manifest）会被吞进基线，永不触发重钉
+      await this.checkH5(rt);
       return this.snapshotOf(rt);
     });
   }
