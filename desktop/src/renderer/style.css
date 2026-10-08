@@ -210,3 +210,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-obs-wrap summary { cursor: pointer; }
 .conv-activity { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); }
 .conv-activity-secs { font-variant-numeric: tabular-nums; }
+
+/* ---- D47 请求卡：正文按原样换行（写稿卡含 diff），参数原文默认收起 ---- */
+.request-card-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
+.request-card-fields summary { cursor: pointer; font-size: var(--text-sm); }

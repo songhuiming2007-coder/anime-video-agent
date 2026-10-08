@@ -1680,10 +1680,11 @@ def test_tc10_09_cli_surfaces_are_lossless(tmp_path: Path) -> None:
 
 
 def test_tc11_episode_writable_files_exact_set() -> None:
-    """TC-11a（C12-R1；D43 改名 EPISODE_WRITABLE_FILES）：白名单精确集合——扩入 07-titles.md 且不多不少。"""
+    """TC-11a（C12-R1；D43 改名 EPISODE_WRITABLE_FILES）：白名单精确集合——扩入 07-titles.md 且不多不少。
+    D47（2026-10-08 人裁决）扩入 02-script.md（只能改不能新建，见 tools.script_write_refusal）。"""
     from pipeline.agent.tools import EPISODE_WRITABLE_FILES
 
-    assert EPISODE_WRITABLE_FILES == {"01-topic.md", "02-script.draft.md", "07-titles.md"}
+    assert EPISODE_WRITABLE_FILES == {"01-topic.md", "02-script.draft.md", "02-script.md", "07-titles.md"}
 
 
 def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(

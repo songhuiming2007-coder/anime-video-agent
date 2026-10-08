@@ -314,16 +314,21 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
       testId="request-card"
       attrs={{ "data-kind": kind, "data-request-id": requestId }}
       title={`${KIND_LABEL[kind] ?? "请求卡"}${tool ? ` · ${tool}` : ""}${req.title ? ` · ${String(req.title)}` : ""}`}
-      sub={<>{String(req.card_text)}</>}
+      // card_text 是 core 确定性渲染的多行纯文本（D47 起写稿卡含 diff）：按原样换行、等宽，不解释任何标记（H-3）
+      sub={<pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>}
     >
-      <ul className="fingerprints ui-kv">
-        {Object.entries(fields).map(([k, v]) => (
-          <li key={k}>
-            <span className="muted">{k}</span>
-            <code>{fieldText(v)}</code>
-          </li>
-        ))}
-      </ul>
+      {/* 参数原文默认收起：卡片正文已列出目标与危险标记，写稿时 args.content 是整篇原文，铺开会把按钮挤出视野（D47） */}
+      <details className="request-card-fields" data-testid="request-card-fields">
+        <summary className="muted">参数原文</summary>
+        <ul className="fingerprints ui-kv">
+          {Object.entries(fields).map(([k, v]) => (
+            <li key={k}>
+              <span className="muted">{k}</span>
+              <code>{fieldText(v)}</code>
+            </li>
+          ))}
+        </ul>
+      </details>
       {feedbackAllowed && (
         <label className="ui-field">
           告诉它怎么改

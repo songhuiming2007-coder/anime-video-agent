@@ -267,6 +267,7 @@ def review_tool_call(
         READONLY_PIPELINE_MODULES,
         TOOL_SCHEMAS,
         run_pipeline,
+        script_write_refusal,
     )
 
     if name not in TOOL_SCHEMAS:
@@ -315,6 +316,11 @@ def review_tool_call(
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
     loop_label = None
+    if name == "write_episode_file":
+        # D47：定稿只能改不能新建；定稿存在后草稿冻结。在弹卡之前拒，人不必为必然失败的写入点卡
+        refusal = script_write_refusal(ep_dir, str(args.get("filename", "")))
+        if refusal:
+            return ToolVerdict("reject", reason=refusal)
     if name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME:
         if draft_writes_this_turn < DRAFT_FREE_WRITES_PER_TURN:
             return ToolVerdict("allow", echo=_echo_line(name, args))
@@ -457,7 +463,8 @@ def _tool_request(
     body = card.split("\n")
     if body and body[-1].strip().startswith("└─"):
         body.pop()  # 终端提示符行：协议下由 options 承担
-    # §3.2 的 danger = 卡片「危险标记」那一行的值（M9 实测此前取的是末行的终端提示符）
+    # §3.2 的 danger = 卡片「危险标记」那一行的值（M9 实测此前取的是末行的终端提示符）。
+    # 取第一行：真标记行总在正文之前，其后的记忆全文、写稿 diff（D47）可能含模型写的「危险标记:」字样
     marks = [ln.split("危险标记:", 1)[1].strip() for ln in body if "危险标记:" in ln]
     fields = {
         "tool": name,
@@ -465,7 +472,7 @@ def _tool_request(
         "argv": argv or [],
         "target": _target_of(memory_plan, argv, args),
         "stop_label": stop_label,
-        "danger": _clean(marks[-1] if marks else "无"),
+        "danger": _clean(marks[0] if marks else "无"),
         "memory_preview": list(render_plan_preview(memory_plan)) if memory_plan else [],
     }
     return HumanRequest(

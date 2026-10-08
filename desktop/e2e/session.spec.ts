@@ -123,6 +123,24 @@ test("TX-D46b 工具执行中：工具行转圈、末尾「工具运行中」；
   });
 });
 
+test("TX-D47 请求卡正文按原样换行（写稿 diff 可读）；参数原文默认收起", async () => {
+  await withSession(async ({ repo, L }) => {
+    const cardText = "┌─ 写入审批\n│ 目标: 02-script.md\n│ @@ -1,3 +1,3 @@\n│  ## 段落 3\n│ -配音：旧\n│ +配音：新";
+    sessionScript(repo, "SESS-A", [
+      READY("SESS-A"),
+      { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "qd", kind: "tool_call", turn_id: "$turn", title: "写稿", card_text: cardText, fields: { tool: "write_episode_file", args: { filename: "02-script.md", content: "整篇原文" } }, options: ["approve", "reject"], feedback_allowed: true }] },
+    ]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "改第 3 段");
+    const text = L.page.getByTestId("request-card-text");
+    await expect(text).toHaveText(cardText);
+    expect(await text.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe("pre-wrap");
+    const fields = L.page.getByTestId("request-card-fields");
+    expect(await fields.evaluate((d) => (d as HTMLDetailsElement).open)).toBe(false);
+    await expect(fields.getByText("整篇原文")).toBeHidden();
+  });
+});
+
 test("TX-2 合成点击无效、真实点击恰一条 answer；打开/切期/重载不产生写入", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [
