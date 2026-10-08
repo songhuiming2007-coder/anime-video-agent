@@ -1,0 +1,265 @@
+diff --git a/desktop/e2e/stopPoint.spec.ts b/desktop/e2e/stopPoint.spec.ts
+index 6d5e1bf..98be22a 100644
+--- a/desktop/e2e/stopPoint.spec.ts
++++ b/desktop/e2e/stopPoint.spec.ts
+@@ -240,6 +240,32 @@ test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记
+   await expect(panel.getByTestId("voice-done")).toBeEnabled();
+ });
+ 
++test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ 指纹漂移后新对象照常可批准", async () => {
++  const ctx = epAt035("SP11-S7");
++  const L = await start(ctx);
++  await openEp(L.page, "SP11-S7");
++  const c = card(L.page, "03.5");
++  await c.waitFor({ timeout: 15_000 });
++  const firstId = await c.getAttribute("data-approval-id");
++  await expect(c.getByTestId("review-save")).toBeDisabled(); // 三维没打全不能记
++  for (const id of ["review-voice-4", "review-prosody-3", "review-misread-5"]) await c.getByTestId(id).click();
++  await c.getByTestId("review-save").click();
++  await expect.poll(() => (JSON.parse(readFileSync(join(ctx.ep, "03-audio/manifest.json"), "utf-8")) as { human_review?: Record<string, number> }).human_review, { timeout: 15_000 })
++    .toEqual({ voice_stability: 4, prosody: 3, misread: 5 });
++  expect(spawnNames(L, "TTS_REVIEW")).toHaveLength(1);
++  expect(spawnNames(L, "RUN_TTS_APPLY_PATCH")).toHaveLength(0);
++  // 打点改写了 03.5 对象钉住的 manifest → 自愈把旧对象替换成新对象（与 02.5 保存后同一机制，实测：
++  // 在旧卡上点批准得 E_STALE「请以刷新后的卡片为准」）。等新对象的卡出现，在它上面批准
++  await L.page.waitForTimeout(6000);
++  console.log("PROBE spawns", JSON.stringify(spawns(L).slice(-8)));
++  console.log("PROBE store", JSON.stringify(readStore(ctx.ep).map((o) => [o.approval_id, o.type, o.status])));
++  const fresh = L.page.locator(`[data-testid=decision][data-stop="03.5"]:not([data-approval-id="${firstId}"])`);
++  await expect(fresh.getByTestId("approve")).toBeEnabled({ timeout: 20_000 });
++  await fresh.getByTestId("approve").click();
++  await expect(L.page.getByTestId("decision-ok")).toContainText(/已批准|已确认批准/);
++  expect(readStore(ctx.ep).find((o) => o.approval_id === firstId)?.status).toBe("superseded");
++});
++
+ test("TE-5 错误态不计时（红队 ④）：审阅面装载失败时人时计时不得开始", async () => {
+   const ctx = epAt035("SP11-TE5");
+   rmSync(join(ctx.ep, "02-script.md")); // core /voice-info 的前置缺失 → RPC 失败 → 面板停在错误态
+diff --git a/desktop/src/host/service.ts b/desktop/src/host/service.ts
+index cba8b47..96d10ac 100644
+--- a/desktop/src/host/service.ts
++++ b/desktop/src/host/service.ts
+@@ -64,7 +64,7 @@ import { listEpisodes, type EpisodeEntry } from "./episodes";
+ import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
+ import { diagnoseDataRoot } from "./reach";
+ import { loadSettings, saveSettings } from "./settings";
+-import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs } from "./spawner";
++import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
+ import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
+ import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
+ import { fetchStatus } from "./status";
+@@ -654,6 +654,8 @@ export class HostService {
+         return this.voiceGlobal(this.epForIo(p.epKey), readingOf(p), p.supersede === "true");
+       case "voice.retts":
+         return this.voiceReTts(this.epForIo(p.epKey));
++      case "voice.review":
++        return this.voiceReview(this.epForIo(p.epKey), p.review);
+       case "time.surface":
+         return this.timeSurface(this.epForIo(p.epKey), p.stop, p.visible === "true");
+       case "time.read":
+@@ -1540,6 +1542,15 @@ export class HostService {
+     return { ok: r.code === 0, lines: linesOf(r.stdoutTail, r.stderrTail) };
+   }
+ 
++  /** D50-A S7：03.5 卡内打点 → manifest 的 human_review（合并写，不重合成） */
++  private async voiceReview(e: EpisodeEntry, review: string): Promise<VoiceCheckJson> {
++    if (!REVIEW_RE.test(review)) throw new RpcFail("E_BAD_REQUEST", `打点格式不对：${review}`);
++    const r = await this.core("TTS_REVIEW", { ep: e.abs, review });
++    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "打点超时", { stderrTail: r.stderrTail });
++    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "打点失败", { stderrTail: r.stderrTail });
++    return { ok: true, lines: linesOf(r.stdoutTail, "") };
++  }
++
+   private async voiceReTts(e: EpisodeEntry): Promise<{ started: boolean }> {
+     if (!(await this.deps.confirm("按全局读音表重配？", "普通重跑 tts（不带 --force）：只重配念法变了的段。"))) return { started: false };
+     const r = await this.core("RUN_TTS", { ep: e.abs });
+diff --git a/desktop/src/host/spawner.ts b/desktop/src/host/spawner.ts
+index 9b5cb58..c6a3e9e 100644
+--- a/desktop/src/host/spawner.ts
++++ b/desktop/src/host/spawner.ts
+@@ -47,6 +47,8 @@ export type Template =
+   | "VOICE_CHECK"
+   | "VOICE_GLOBAL"
+   | "RUN_TTS"
++  // D50-A S7：03.5 卡内结构化打点（只写 manifest 的 human_review，不重合成）
++  | "TTS_REVIEW"
+   // Spec 12 S8-R18：封面导入（字节走 stdin）
+   | "IMPORT_COVER"
+   // D45：会话列表 / 删除（移进回收站）
+@@ -61,6 +63,9 @@ export interface VoiceReadingArgs {
+   expect?: string;
+ }
+ 
++/** 03.5 打点只许这三维、各 1–5（core 的 parse_review_arg 再校验一遍；05 的两维不在这张卡上） */
++export const REVIEW_RE = /^voice=[1-5],prosody=[1-5],misread=[1-5]$/;
++
+ function readingFlags(a: VoiceReadingArgs): string[] {
+   const out = [`--word=${a.word}`];
+   if (a.pinyin !== undefined) out.push(`--pinyin=${a.pinyin}`);
+@@ -109,6 +114,8 @@ export interface TemplateArgs {
+   VOICE_GLOBAL: VoiceReadingArgs & { ep: string; supersede: boolean };
+   /** 长任务：同 RUN_TTS_APPLY_PATCH（无超时、退出不发信号） */
+   RUN_TTS: { ep: string };
++  /** review 在宿主侧先过 REVIEW_RE（只许三维 1–5），作为单个 argv 元素 */
++  TTS_REVIEW: { ep: string; review: string };
+   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
+   IMPORT_COVER: { ep: string; name: string };
+   LIST_SESSIONS: { ep: string };
+@@ -297,6 +304,11 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
+       const { ep } = args as TemplateArgs["RUN_TTS"];
+       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts"], timeoutMs: null, homebrewPath: true };
+     }
++    case "TTS_REVIEW": {
++      const { ep, review } = args as TemplateArgs["TTS_REVIEW"];
++      if (!REVIEW_RE.test(review)) throw new Error(`打点格式不对：「${review}」`);
++      return { argv: [py, "-m", "pipeline.tts", ep, `--review=${review}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
++    }
+     case "IMPORT_COVER": {
+       const { ep, name } = args as TemplateArgs["IMPORT_COVER"];
+       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/import-cover", `--name=${name}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdinPipe: true };
+diff --git a/desktop/src/renderer/HumanCards.tsx b/desktop/src/renderer/HumanCards.tsx
+index d5e5ea8..903d5da 100644
+--- a/desktop/src/renderer/HumanCards.tsx
++++ b/desktop/src/renderer/HumanCards.tsx
+@@ -171,7 +171,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
+         >
+           批准
+         </button>
+-        {stop === "03.5" && <span className="muted">结构化打点（manifest human_review）须在终端 <code>{`python -m pipeline.tts ${ep.epKey} --review`}</code> 完成</span>}
++        {stop === "03.5" && <ReviewRating epKey={ep.epKey} rpc={rpc} disabled={off} />}
+         {!aligned && (
+           <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
+             打回…
+@@ -369,3 +369,67 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
+     </CardFrame>
+   );
+ }
++
++const REVIEW_DIMS: readonly [string, string][] = [
++  ["voice", "音色"],
++  ["prosody", "韵律"],
++  ["misread", "错读"],
++];
++
++/**
++ * D50-A S7：03.5 卡内结构化打点（原先只能在终端 `tts --review`）。三维各 1–5，写进 manifest 的 human_review，
++ * 不重合成。写 manifest 会改动 03.5 对象钉住的指纹：宿主的自愈会重钉，卡随之刷新（e2e 钉住这一点）。
++ */
++function ReviewRating({ epKey, rpc, disabled }: { epKey: string; rpc: RpcClient; disabled: boolean }) {
++  const [score, setScore] = useState<Record<string, number>>({});
++  const [msg, setMsg] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const full = REVIEW_DIMS.every(([k]) => score[k] !== undefined);
++  const review = REVIEW_DIMS.map(([k]) => `${k}=${score[k] ?? 0}`).join(",");
++  const finish = async (call: Promise<unknown>) => {
++    setBusy(true);
++    setMsg(null);
++    try {
++      await call;
++      setMsg("已记下打点");
++    } catch (e) {
++      setMsg(errText(e));
++    } finally {
++      setBusy(false);
++    }
++  };
++  return (
++    <div className="review-rating" data-testid="review-rating">
++      <span className="muted">顺听打点</span>
++      {REVIEW_DIMS.map(([k, label]) => (
++        <span key={k} className="review-dim">
++          {label}
++          <span className="ui-seg">
++            {[1, 2, 3, 4, 5].map((n) => (
++              <button key={n} aria-pressed={score[k] === n} data-testid={`review-${k}-${n}`} onClick={() => setScore((s) => ({ ...s, [k]: n }))}>
++                {n}
++              </button>
++            ))}
++          </span>
++        </span>
++      ))}
++      <button
++        className="ui-btn ui-btn--sm"
++        data-testid="review-save"
++        disabled={disabled || busy || !full}
++        onClick={(e) => {
++          if (!e.nativeEvent.isTrusted) return;
++          void finish(rpc.call("voice.review", { epKey, review }));
++        }}
++      >
++        记下打点
++      </button>
++      {msg !== null && (
++        <span className="muted" data-testid="review-msg">
++          {msg}
++        </span>
++      )}
++    </div>
++  );
++}
++
+diff --git a/desktop/src/renderer/style.css b/desktop/src/renderer/style.css
+index 5e35703..fe4f755 100644
+--- a/desktop/src/renderer/style.css
++++ b/desktop/src/renderer/style.css
+@@ -255,4 +255,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
+ .voice-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) 0; }
+ .voice-foot { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm); }
+ .voice-foot-sp { flex: 1; }
++/* D50-A S7：03.5 卡内打点 */
++.review-rating { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
++.review-dim { display: inline-flex; align-items: center; gap: var(--space-1); }
++.review-rating .ui-seg > button { white-space: nowrap; }
+ 
+diff --git a/desktop/src/shared/protocol.ts b/desktop/src/shared/protocol.ts
+index 2e054ef..9f3ff59 100644
+--- a/desktop/src/shared/protocol.ts
++++ b/desktop/src/shared/protocol.ts
+@@ -46,6 +46,7 @@ export type Method =
+   | "voice.check" // { epKey, word, pinyin? | homophone?+expect? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
+   | "voice.global" // { epKey, word, pinyin? | homophone?+expect?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
+   | "voice.retts" // { epKey }：长任务，原生确认框后 spawn RUN_TTS（普通重跑，只重配念法变了的段）
++  | "voice.review" // { epKey, review: "voice=N,prosody=N,misread=N" } → { lines }（spawn TTS_REVIEW；D50-A S7：03.5 卡内打点）
+   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
+   | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
+   | "cover.import"; // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
+@@ -118,6 +119,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
+   "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect"] },
+   "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "supersede"] },
+   "voice.retts": { required: ["epKey"], optional: [] },
++  "voice.review": { required: ["epKey", "review"], optional: [] },
+   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
+   "time.read": { required: ["epKey"], optional: [] },
+   "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },
+diff --git a/desktop/tests/host/spawner.test.ts b/desktop/tests/host/spawner.test.ts
+index c1ed1cf..e914706 100644
+--- a/desktop/tests/host/spawner.test.ts
++++ b/desktop/tests/host/spawner.test.ts
+@@ -219,6 +219,15 @@ describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超
+     expect(isLongRunning("RUN_TTS")).toBe(true);
+   });
+ 
++  it("D50-A S7：TTS_REVIEW 只收三维 1–5，单个 --review= 元素；格式不对不 spawn", () => {
++    expect(buildArgv("TTS_REVIEW", { ep: "/ep", review: "voice=4,prosody=3,misread=5" }, "/repo").argv).toEqual([
++      pyPath, "-m", "pipeline.tts", "/ep", "--review=voice=4,prosody=3,misread=5",
++    ]);
++    for (const bad of ["voice=6,prosody=3,misread=5", "voice=4,prosody=3", "voice=4,prosody=3,misread=5,rhythm=2", "voice=4,prosody=3,misread=5 --force-all"]) {
++      expect(() => buildArgv("TTS_REVIEW", { ep: "/ep", review: bad }, "/repo")).toThrow(/打点格式不对/);
++    }
++  });
++
+   it("IMPORT_COVER：--name 为单个 argv 元素、stdin pipe（S8-R18）", () => {
+     const b = buildArgv("IMPORT_COVER", { ep: "/ep", name: "我的图 名.png" }, "/repo");
+     expect(b.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/import-cover", "--name=我的图 名.png"]);
+diff --git a/desktop/tests/static/scan.ts b/desktop/tests/static/scan.ts
+index 9d39430..8bec3f6 100644
+--- a/desktop/tests/static/scan.ts
++++ b/desktop/tests/static/scan.ts
+@@ -188,6 +188,7 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
+   // D50-A S6：段落表就地纠错的两条写路径（全局读音表、按全局表重配）
+   "voice.global": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+   "voice.retts": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
++  "voice.review": { file: "renderer/HumanCards.tsx", attrs: ["onClick"] },
+   // Spec 12 S8-R18：导入由拖放 / 选择器 / 点击三种显式动作发起
+   "cover.import": { file: "renderer/CoverImport.tsx", attrs: ["onClick", "onDrop", "onChange"] },
+ };
