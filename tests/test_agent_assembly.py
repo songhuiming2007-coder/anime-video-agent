@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -68,7 +69,8 @@ def test_load_injected_doc_symlink_loop(tmp_path):
 
 def test_load_injected_doc_encoding_fallback(tmp_path):
     """非 UTF-8 字符降级替换，不抛出 UnicodeDecodeError（Spec 1 §6.3）。"""
-    doc = tmp_path / "doc.md"
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "doc.md"  # 读域内（N55）
     doc.write_bytes(b"\xff\xfe\x00\x01")  # 非法 UTF-8
     result = load_injected_doc(str(doc.relative_to(tmp_path)), root=tmp_path)
     assert result is not None
@@ -162,3 +164,44 @@ def test_render_step_injection():
 
     # 空列表返回空字符串
     assert render_step_injection([]) == ""
+
+
+def _n55_repo(tmp_path):
+    """读域夹具：读域内一份正常规程 + 四种读域外的文件，正文都带可辨认的暗号。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "config" / "agent" / "scopes").mkdir(parents=True)
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "docs" / "ok.md").write_text("OK-DOC", encoding="utf-8")
+    (tmp_path / "config" / "cloud.local.json").write_text('{"key": "SECRET-CLOUD"}', encoding="utf-8")
+    (tmp_path / "notes" / "private.md").write_text("SECRET-NOTES", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.md"
+    outside.write_text("SECRET-OUTSIDE", encoding="utf-8")
+    (tmp_path / "docs" / "link.md").symlink_to(outside)
+    return outside
+
+
+def test_n55_load_injected_doc_refuses_outside_read_domain(tmp_path, capsys):
+    """N55：路由误配到凭据、读域外文件、软链出根、仓库外绝对路径 → 拒载并告警；读域内照常。"""
+    outside = _n55_repo(tmp_path)
+    assert load_injected_doc("docs/ok.md", root=tmp_path).content == "OK-DOC"
+    for rel in ("config/cloud.local.json", "notes/private.md", "docs/link.md", str(outside)):
+        assert load_injected_doc(rel, root=tmp_path) is None, rel
+    err = capsys.readouterr().err
+    assert err.count("不在读域内") == 4
+    assert load_injected_doc("docs/missing.md", root=tmp_path) is None
+    assert "不在读域内" not in capsys.readouterr().err  # 缺文件照旧静默
+
+
+def test_n55_resident_refuses_outside_read_domain(tmp_path, capsys):
+    """N55：assembly.json 的 resident 误配到凭据与软链出根 → 常驻层不读入其正文。"""
+    _n55_repo(tmp_path)
+    cfg = tmp_path / "config" / "agent" / "assembly.json"
+    cfg.write_text(
+        json.dumps({"resident": {"director": "config/cloud.local.json", "scope": "docs/link.md", "agents": "docs/ok.md"}}),
+        encoding="utf-8",
+    )
+    resident = assemble_resident_prompt("creative", root=tmp_path)
+    assert "SECRET" not in resident.content
+    assert "OK-DOC" in resident.content
+    assert [rel for rel, _ in resident.doc_texts] == ["docs/ok.md"]
+    assert capsys.readouterr().err.count("不在读域内") == 2

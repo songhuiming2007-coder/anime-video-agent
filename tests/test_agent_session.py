@@ -830,6 +830,51 @@ def test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs(root: Path,
     assert "segment_start" in kinds
 
 
+def test_n56_resume_reinjects_docs_changed_since_natural_injection(root: Path, episode: Path) -> None:
+    """N56：生产路径首轮注入就记下 {path, sha256}；恢复后改过的那份追加「规程已修订」，没改的不追加。
+
+    与 TS-6 的区别：会话记录全由生产代码写出，不手写带 docs 的记录。
+    """
+    from pipeline.agent.assembly import SessionContextTracker
+
+    (root / "config" / "agent" / "assembly.json").write_text(
+        json.dumps({"routes": {"creative": {"default": ["docs/steps/01.md", "docs/steps/02.md"]}}}), encoding="utf-8"
+    )
+    (root / "docs" / "steps").mkdir(parents=True)
+    (root / "docs" / "steps" / "01.md").write_text("规程一·旧\n", encoding="utf-8")
+    (root / "docs" / "steps" / "02.md").write_text("规程二·不变\n", encoding="utf-8")
+
+    lease = EpisodeLease.acquire(episode)
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host.lease = lease
+    first = AgentSession(host, scope_mode="creative", persist=True)
+    tracker = SessionContextTracker()
+    messages: list[dict] = []
+    first.messages = messages
+    first._open_session("creative", tracker, root)
+    first._assemble(messages, tracker, cli.inspect_episode(episode), "creative", "第一句", root=root)
+    sid = host.sid
+
+    (root / "docs" / "steps" / "01.md").write_text("规程一·新\n", encoding="utf-8")
+
+    host2 = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host2.lease = lease
+    state = prepare_resume(host2, sid)
+    assert state["status"] == "resumed"
+    assert sorted(state["docs"]) == ["docs/steps/01.md", "docs/steps/02.md"]
+    second = AgentSession(host2, scope_mode="creative", persist=True)
+    tracker2 = SessionContextTracker()
+    tracker2.injected_paths = set(state["docs"])  # 与 protocol.py / cli.py 恢复时同一口径
+    tracker2.active_step_key = state["step_key"]
+    messages2 = list(state["messages"])
+    second.messages = messages2
+    second._open_session("creative", tracker2, root)
+    second._assemble(messages2, tracker2, cli.inspect_episode(episode), "creative", "下一句", root=root)
+
+    appended = [m["content"] for m in messages2 if "[系统提示更新] 规程已修订" in str(m.get("content"))]
+    assert appended == ["[系统提示更新] 规程已修订：docs/steps/01.md\n\n规程一·新\n"]
+
+
 # ---------------------------------------------------------------------------
 # TL-9b / TL-9d / TL-17：延迟区与四状态表（§2.2）——PR3 补，用真 TurnInterrupt
 #
@@ -1269,18 +1314,37 @@ def _resume_session(root: Path, episode: Path, history: list[dict]) -> tuple[Age
 
 
 def _injection_record(root: Path, rel: str, step: str) -> dict:
-    """生产路径写下的注入记录：正文由 render_step_injection 渲染，**不带 docs**（见 N56）。"""
+    """生产路径写下的注入记录：正文由 render_step_injection 渲染，带 docs（N56 起）。"""
     from pipeline.agent.assembly import load_injected_doc, render_step_injection
+    from pipeline.agent.session import _doc_shas
 
     doc = load_injected_doc(rel, root=root)
     assert doc is not None
-    return {"origin": "injection",
+    return {"origin": "injection", "docs": _doc_shas([doc]),
             "message": {"role": "user", "content": render_step_injection([doc], step_name=step)}}
 
 
 def _chat_pair(text: str) -> list[dict]:
     return [{"origin": "user", "message": {"role": "user", "content": text}},
             {"origin": "assistant", "message": {"role": "assistant", "content": "好"}}]
+
+
+def test_n57_preset_resident_with_restricted_literal_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
+    """N57：常驻层在会话外预置（protocol.py / cli.py 的做法），`_assemble` 不再 trust 常驻三件；
+    常驻文档含受限字面量时首轮照常发出——这一路只靠可信集 (b) 收常驻三件（杀 D30-C 的 V4）。"""
+    from pipeline.agent.assembly import assemble_resident_prompt
+
+    agents = root / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8") + f"\n- 配音清单在 `{_HIT}`。\n", encoding="utf-8")
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = assemble_resident_prompt("creative", root=root).content
+    tracker.active_scope = "creative"
+    assert _HIT in tracker.resident_prompt
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    _not_blocked(_turn(session, [], tracker, root, _STEP_03))
+    assert len(egress_env) == 1
+    assert f"配音清单在 `{_HIT}`" in _payload_text(egress_env[0])
 
 
 def test_td1c_resumed_history_with_old_injections_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
