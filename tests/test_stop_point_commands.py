@@ -590,7 +590,10 @@ class TestD48ApproveSeals:
         (ep_025 / "02-script.draft.md").write_text(SCRIPT, encoding="utf-8")
         aid = _pending_025(ep_025)
         assert run_cli(ep_025, "/approve", "02.5", "--id", aid) == 1
-        assert "未做任何修改" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "未做任何修改" in err
+        # 封板失败就停：不再去调批准（否则人还会看到一条「解封物缺失」，两条原因叠在一起）
+        assert "解封物缺失" not in err
         assert not (ep_025 / "02-diff.patch").exists()
         assert not _status_of(ep_025, aid).endswith("APPROVED")
 
