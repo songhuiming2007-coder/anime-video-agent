@@ -1412,3 +1412,120 @@ def test_td8_short_trusted_text_gets_no_exemption() -> None:
                 assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])
         else:
             assert_egress_boundary(_ENDPOINT, _payload(("user", trusted)), trusted_texts=[trusted])
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-08 spec §B/§C：草稿写入留底；search_notes 检索字幕
+# ---------------------------------------------------------------------------
+
+
+def _subs_root(tmp_path: Path, episodes: dict[str, list[tuple[float, str]]], topic: str = "番: 东京喰种\n") -> tuple[Path, Path]:
+    """按 subindex 的 WINDOW=2 拼接规则造索引（unit_i = line_i + " " + line_{i+1}，末单元单句）。"""
+    root = tmp_path
+    ep = root / "data" / "episodes" / "01-subs"
+    ep.mkdir(parents=True)
+    (ep / "01-topic.md").write_text(topic, encoding="utf-8")
+    index = root / "data" / "library" / "index"
+    index.mkdir(parents=True)
+    for name, lines in episodes.items():
+        units = []
+        for i in range(len(lines)):
+            chunk = lines[i:i + 2]
+            units.append({"anime": name.split("_")[0], "start": chunk[0][0], "end": chunk[-1][0] + 1,
+                          "text": " ".join(t for _s, t in chunk)})
+        (index / f"{name}.json").write_text(
+            json.dumps({"meta": {"kind": "subtitle", "window": 2}, "units": units}, ensure_ascii=False),
+            encoding="utf-8")
+    return root, ep
+
+
+def test_search_subs_restores_single_lines_and_context(tmp_path: Path) -> None:
+    root, ep = _subs_root(tmp_path, {
+        "东京喰种_S01E05": [(170.0, "说吧 你来干什么"), (173.0, "听说你身体不舒服 我来探病"), (176.0, "哼 两手空空？")],
+        "东京喰种_S01E09": [(505.0, "从那之后雏实就和董香一起住了"), (511.0, "渐渐地 恢复了以前的开朗")],
+    })
+    ctx = ToolContext(episode_dir=ep, root=root)
+    out = execute_tool("search_notes", {"source": "subs", "query": "探病"}, ctx)
+    assert out["ok"], out
+    assert out["result"]["hits"] == [{"ep": "S01E05", "time": "02:53", "text": "听说你身体不舒服 我来探病",
+                                       "context": ["说吧 你来干什么", "哼 两手空空？"]}]
+    # 每句只命中一次（滑窗里同一句出现两次，还原后不重复）
+    assert len(execute_tool("search_notes", {"source": "subs", "query": "雏实"}, ctx)["result"]["hits"]) == 1
+    # 限定集号后查不到别集的戏
+    assert execute_tool("search_notes", {"source": "subs", "query": "探病", "episode": "S01E09"}, ctx)["result"]["hits"] == []
+
+
+def test_search_subs_transcript_mode(tmp_path: Path) -> None:
+    root, ep = _subs_root(tmp_path, {"东京喰种_S01E09": [(505.0, "甲 乙"), (511.0, "丙"), (600.0, "丁")]})
+    out = execute_tool("search_notes", {"source": "subs", "episode": "s01e09"}, ToolContext(episode_dir=ep, root=root))
+    assert out["ok"], out
+    assert out["result"]["transcript"] == "08:25 甲 乙\n08:31 丙\n10:00 丁"
+    assert out["result"]["truncated"] is False
+
+
+def test_search_subs_anime_isolation_and_errors(tmp_path: Path) -> None:
+    root, ep = _subs_root(tmp_path, {
+        "东京喰种_S01E01": [(1.0, "金木")],
+        "东京喰种re_S01E01": [(1.0, "金木 佐佐木")],  # 番名前缀相同的另一部番，不得混入
+    })
+    ctx = ToolContext(episode_dir=ep, root=root)
+    hits = execute_tool("search_notes", {"source": "subs", "query": "金木"}, ctx)["result"]["hits"]
+    assert [h["text"] for h in hits] == ["金木"]
+    # 无期会话必须显式给番名
+    assert execute_tool("search_notes", {"source": "subs", "query": "金木"}, ToolContext(root=root))["ok"] is False
+    no_ep = execute_tool("search_notes", {"source": "subs", "query": "金木", "anime": "东京喰种re"}, ToolContext(root=root))
+    assert [h["text"] for h in no_ep["result"]["hits"]] == ["金木 佐佐木"]
+    # query 与 episode 都没有、集号格式不对、source 非法 → 报错不静默
+    for bad in ({"source": "subs"}, {"source": "subs", "episode": "第九集"}, {"source": "video", "query": "x"}):
+        assert execute_tool("search_notes", bad, ctx)["ok"] is False, bad
+
+
+def test_search_subs_rejects_non_window_structure(tmp_path: Path) -> None:
+    root, ep = _subs_root(tmp_path, {})
+    (root / "data" / "library" / "index" / "东京喰种_S01E02.json").write_text(json.dumps({
+        "meta": {}, "units": [{"start": 1.0, "text": "甲"}, {"start": 2.0, "text": "乙"}]}), encoding="utf-8")
+    out = execute_tool("search_notes", {"source": "subs", "query": "甲"}, ToolContext(episode_dir=ep, root=root))
+    assert out["ok"] is False and "滑窗" in out["error"]
+
+
+def test_search_subs_on_real_index_if_mounted() -> None:
+    """真实对拍（盘在才跑）：董香二期选题表写的「S01E09 依子送便当」在字幕里不存在，探病在 S01E05。"""
+    from pipeline import paths
+
+    if not (paths.DATA / "library" / "index" / "东京喰种_S01E09.json").exists():
+        pytest.skip("外置盘未挂载")
+    ctx = ToolContext(root=paths.ROOT)
+    look = lambda **a: execute_tool("search_notes", {"source": "subs", "anime": "东京喰种", **a}, ctx)["result"]
+    assert look(query="依子", episode="S01E09")["hits"] == []
+    assert ("S01E05", "02:53") in {(h["ep"], h["time"]) for h in look(query="探病", limit=20)["hits"]}
+    assert "08:27 从那之后雏实就和董香一起住了" in look(episode="S01E09")["transcript"]
+
+
+def test_draft_history_keeps_previous_versions(tmp_path: Path) -> None:
+    from pipeline.agent.tools import DRAFT_HISTORY_KEEP
+
+    root = tmp_path
+    ep = root / "data" / "episodes" / "01-hist"
+    ep.mkdir(parents=True)
+    hist = ep / "_agent" / "draft-history"
+    write_episode_file(ep, "02-script.draft.md", "v0", root=root)
+    assert not hist.exists(), "首次写入没有旧版可留"
+    for i in range(1, DRAFT_HISTORY_KEEP + 3):
+        write_episode_file(ep, "02-script.draft.md", f"v{i}", root=root)
+    kept = sorted(hist.iterdir())
+    assert len(kept) == DRAFT_HISTORY_KEEP
+    assert kept[-1].read_text(encoding="utf-8") == f"v{DRAFT_HISTORY_KEEP + 1}"
+    assert kept[0].read_text(encoding="utf-8") == "v2", "最旧的两份应被删"
+    # 其它白名单文件不留底
+    write_episode_file(ep, "07-titles.md", "a", root=root)
+    write_episode_file(ep, "07-titles.md", "b", root=root)
+    assert len(list(hist.iterdir())) == DRAFT_HISTORY_KEEP
+
+
+def test_tools_import_stays_free_of_ml_deps() -> None:
+    probe = (
+        "import pipeline.agent.tools, sys; "
+        "bad = [m for m in ('numpy', 'torch', 'sentence_transformers', 'pipeline.subindex') if m in sys.modules]; "
+        "assert not bad, bad"
+    )
+    subprocess.run([sys.executable, "-c", probe], check=True)

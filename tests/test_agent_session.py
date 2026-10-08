@@ -445,8 +445,8 @@ def test_tk6_request_id_never_enters_the_tool_result(episode: Path, root: Path) 
     channel = FakeChannel(["reject"])
     host = SessionHost(episode, root=root, channel=channel, ephemeral=True)
     session = AgentSession(host, scope_mode="creative", persist=False)
-    verdict = review_tool_call(
-        "write_episode_file", {"filename": "02-script.draft.md", "content": "x"},
+    verdict = review_tool_call(  # 07-titles.md 仍逐次弹卡（草稿前几次免卡，2026-10-08 spec §A）
+        "write_episode_file", {"filename": "07-titles.md", "content": "x"},
         ep_dir=episode, scope="creative", root=root,
     )
     decision = session._review("write_episode_file", {}, "t1", None, root, None)
@@ -467,7 +467,7 @@ def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -
     session._turn_id = "t1"
 
     session._review(
-        "write_episode_file", {"filename": "02-script.draft.md", "content": "x"},
+        "write_episode_file", {"filename": "07-titles.md", "content": "x"},
         "t1", None, root, None,
     )
     with patch("builtins.input", side_effect=[]):
@@ -490,7 +490,7 @@ def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -
     session2 = AgentSession(host2, scope_mode="creative", persist=False)
     with pytest.raises(KeyboardInterrupt):
         session2._review(
-            "write_episode_file", {"filename": "02-script.draft.md", "content": "x"},
+            "write_episode_file", {"filename": "07-titles.md", "content": "x"},
             "t1", None, root, None,
         )
     after = (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
@@ -1404,3 +1404,97 @@ def test_td5_trusted_set_excludes_non_whitelisted_docs(root: Path, tmp_path: Pat
     for marker in set(cases.values()):
         assert marker not in joined, f"{marker} 混进了可信集"
     assert (root / "docs" / "runbook" / "03-tts.md").read_text(encoding="utf-8").strip() in texts
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-08 spec §A：按参数分级的工具审查（只读 pipeline 模块免卡、草稿写入限次免卡）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["check_script", "status", "check_script 02-script.draft.md"])
+def test_readonly_pipeline_modules_are_card_free(episode: Path, root: Path, command: str) -> None:
+    (episode / "02-script.draft.md").write_text("草稿", encoding="utf-8")
+    verdict = review_tool_call(
+        "run_pipeline", {"command": command}, ep_dir=episode, scope="creative", root=root,
+    )
+    assert verdict.action == "allow", verdict
+
+
+@pytest.mark.parametrize("command", ["tts run", "clips", "render", "qc", "cover"])
+def test_writing_pipeline_modules_still_ask(episode: Path, root: Path, command: str) -> None:
+    verdict = review_tool_call(
+        "run_pipeline", {"command": command}, ep_dir=episode, scope="creative", root=root,
+    )
+    assert verdict.action == "ask", verdict
+
+
+def test_pipeline_module_is_read_from_normalized_argv() -> None:
+    """只读判定看规范化 argv 的模块位，不看原始串（`pipeline.check_script` 写法同样识别）。"""
+    assert session_mod._pipeline_module_of(["py", "-m", "pipeline.check_script", "x"]) == "check_script"
+    assert session_mod._pipeline_module_of(["py", "-m", "pipeline.tts", "check_script"]) == "tts"
+    assert session_mod._pipeline_module_of(["py", "check_script"]) is None
+
+
+def test_draft_writes_free_up_to_limit_then_ask(episode: Path, root: Path) -> None:
+    from pipeline.agent.tools import DRAFT_FREE_WRITES_PER_TURN
+
+    args = {"filename": "02-script.draft.md", "content": "x"}
+    for used in range(DRAFT_FREE_WRITES_PER_TURN):
+        v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative",
+                             root=root, draft_writes_this_turn=used)
+        assert v.action == "allow", used
+    v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative",
+                         root=root, draft_writes_this_turn=DRAFT_FREE_WRITES_PER_TURN)
+    assert v.action == "ask"
+    assert f"本轮第 {DRAFT_FREE_WRITES_PER_TURN + 1} 次重写草稿" in str(v.request.fields["stop_label"])
+
+
+@pytest.mark.parametrize("filename", ["01-topic.md", "07-titles.md"])
+def test_other_episode_files_ask_from_first_write(episode: Path, root: Path, filename: str) -> None:
+    v = review_tool_call("write_episode_file", {"filename": filename, "content": "x", "confirmed": True},
+                         ep_dir=episode, scope="creative", root=root)
+    assert v.action == "ask"
+
+
+def test_draft_write_counter_through_real_turns(
+    episode: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端到端：一轮里连写 5 次草稿 → 第 4 次弹卡（人批准后清零）→ 第 5 次免卡；下一轮重新计数。"""
+    from pipeline.agent import llm as llm_mod
+
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    state = {"n": 0, "writes": 0}
+    per_turn = {1: 5, 2: 3}
+
+    def scripted(messages, tools=None, **kw):
+        state["n"] += 1
+        if state["n"] > 30:
+            raise AssertionError("模型请求超过 30 次：脚本没有停下")
+        turn = 1 if state["n"] <= per_turn[1] + 1 else 2
+        done = state["writes"] - (0 if turn == 1 else per_turn[1])
+        if done < per_turn[turn]:
+            state["writes"] += 1
+            return {"role": "assistant", "content": None, "tool_calls": [{
+                "id": f"c{state['n']}", "type": "function", "function": {
+                    "name": "write_episode_file",
+                    "arguments": json.dumps({"filename": "02-script.draft.md",
+                                             "content": f"第 {state['writes']} 版"}, ensure_ascii=False)}}]}
+        return {"role": "assistant", "content": "写完了"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", scripted)
+    channel = FakeChannel(["approve"])
+    host = SessionHost(episode, root=root, channel=channel)
+    host.ensure_lease().begin("sid-draft-limit")
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    messages = _seed_messages()
+    tracker = SessionContextTracker()
+
+    session.run_turn("改段落三", messages=messages, scope="creative", status=None, tracker=tracker, root=root)
+    cards = [r for r in channel.requests if r.kind == "tool_call"]
+    assert len(cards) == 1, "一轮 5 次写草稿只该在第 4 次弹一张卡"
+    assert "本轮第 4 次重写草稿" in str(cards[0].fields["stop_label"])
+    assert (episode / "02-script.draft.md").read_text(encoding="utf-8") == "第 5 版"
+
+    session.run_turn("再改一下", messages=messages, scope="creative", status=None, tracker=tracker, root=root)
+    assert len([r for r in channel.requests if r.kind == "tool_call"]) == 1, "新一轮计数应归零"
+    assert (episode / "02-script.draft.md").read_text(encoding="utf-8") == "第 8 版"

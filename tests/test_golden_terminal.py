@@ -198,7 +198,7 @@ def _g3_side_effect_card_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     root, ep = _world(tmp_path)
     _ready(root, monkeypatch)
     _stub_llm(monkeypatch, [
-        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "第一段。"}),
+        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
         {"role": "assistant", "content": "草稿已落盘。"},
     ])
     with patch_inputs(["写个草稿", "y", "/quit"]):
@@ -210,7 +210,7 @@ def _g4_side_effect_card_no(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     root, ep = _world(tmp_path)
     _ready(root, monkeypatch)
     _stub_llm(monkeypatch, [
-        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "第一段。"}),
+        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
         {"role": "assistant", "content": "那我不写了。"},
     ])
     with patch_inputs(["写个草稿", "n", "/quit"]):
@@ -496,7 +496,7 @@ def test_golden_pty_tool_card(tmp_path, monkeypatch) -> None:
     root, ep = _world(tmp_path)
     _no_freeze(monkeypatch)
     replies = [
-        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "第一段。"}),
+        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
         {"role": "assistant", "content": "草稿已落盘。"},
     ]
     driver = _write_driver(tmp_path, replies=replies, block_at=None, ep=ep)

@@ -150,7 +150,8 @@ def test_review_approve_nature_row_says_unlock_artifact():
 def test_m3_reject_on_n_produces_no_file_and_no_popen(tmp_path: Path, monkeypatch):
     """M3: 弹卡后按 N 时既不产生子进程也不落盘 (Spec §5.1 M3)。"""
     with mock_llm_server([
-        tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "草稿内容"}),
+        # 02-script.draft.md 每轮前几次免卡（2026-10-08 spec §A），弹卡机制改用仍逐次弹卡的 07-titles.md 测
+        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "草稿内容"}),
         {"role": "assistant", "content": "已取消写入"},
     ]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
@@ -175,7 +176,7 @@ def test_m3_reject_on_n_produces_no_file_and_no_popen(tmp_path: Path, monkeypatc
         )
 
         assert mock_popen.call_count == 0
-        assert not (ep_dir / "02-script.draft.md").exists()
+        assert not (ep_dir / "07-titles.md").exists()
         # 回喂给模型的 tool 消息应记录拒绝
         fed_back = json.loads(state["requests"][1]["body"]["messages"][-1]["content"])
         assert fed_back["ok"] is False
