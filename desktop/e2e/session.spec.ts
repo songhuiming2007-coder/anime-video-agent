@@ -476,6 +476,33 @@ test("TX-8h 有回合在跑时退出：弹确认框（列出该期）、取消�
   }
 });
 
+test("N54 退出确认框抛异常：按「取消」回落，app 不退、会话零写入；之后再退出照常弹框并能退", async () => {
+  const fx = sessionFixture();
+  const L = await launchSession(fx.repo);
+  try {
+    sessionScript(fx.repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED] }]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "跑着");
+    await expect(L.page.getByTestId("session-running")).toBeVisible();
+    await stubQuit(L, "throw");
+    void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+    await expect.poll(() => quitStubCalls(L)).toBe(1);
+    await L.page.waitForTimeout(400);
+    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid())).toBeGreaterThan(0);
+    const recs = sessionRecords(fx.repo, "SESS-A");
+    expect(recs.some((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "shutdown")).toBe(false);
+    // 回落到 idle：第二次退出照常进确认框（修前 quitPhase 卡在 confirming，before-quit 直接拦下、桩不再被调用）
+    await stubQuit(L, "quit");
+    const closed = L.app.waitForEvent("close", { timeout: 15_000 });
+    void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+    await closed;
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
+
 test("N32 无会话时点「素材模式」：零 conv.command、出现可读提示；会话起来后照常发命令", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);

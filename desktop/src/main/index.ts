@@ -59,7 +59,7 @@ type TestGlobals = typeof globalThis & {
   __avaTestHookHits?: string[];
   __avaTestHostPid?: () => number | null;
   /** Spec 10 §2.10 退出确认桩（仅未打包构建） */
-  __avaTestQuit?: { calls: number; lists: string[][]; respond: "quit" | "cancel"; hold?: boolean };
+  __avaTestQuit?: { calls: number; lists: string[][]; respond: "quit" | "cancel" | "throw"; hold?: boolean };
   __avaTestQuitRelease?: (respond: "quit" | "cancel") => void;
   /** Spec 10 §3.3 原生确认框桩（仅未打包构建） */
   __avaTestConfirm?: { calls: number; respond: boolean; last: { title: string; detail: string } | null };
@@ -107,6 +107,8 @@ function boot(): void {
   let quitStopTimer: NodeJS.Timeout | null = null;
   /** 桩把确认框「挂住」时，放行它的入口（TX-8c 重入） */
   let pendingQuitConfirm: ((ok: boolean) => void) | null = null;
+  /** N54：每次弹退出确认框换一个代号；窗口销毁时作废，迟到的应答不再生效 */
+  let quitConfirmSeq = 0;
   let restartState = initialRestartState(Date.now());
   let hostStderr = Buffer.alloc(0);
   let handshake = 0; // 每次撮合单调 +1，随端口一起投递；renderer 每个握手号至多采纳一次（§4.4）
@@ -265,23 +267,30 @@ function boot(): void {
           return;
         }
         quitPhase = "confirming";
+        const seq = ++quitConfirmSeq;
+        // N54：应答、抛异常一律回落（异常按「取消」）；代号已作废（窗口已销毁）或已不在 confirming 的迟到应答忽略
+        const settle = (ok: boolean) => {
+          if (seq !== quitConfirmSeq || quitPhase !== "confirming") return;
+          completeQuitConfirm(ok);
+        };
         const lists = m.busy.map((b) => `${b.label} · ${b.running ? "运行中" : "空闲"}${b.openRequests > 0 ? ` · ${b.openRequests} 张卡未答` : ""}`);
         const stub = !app.isPackaged ? testGlobals.__avaTestQuit : undefined;
         if (stub) {
           stub.calls += 1;
           stub.lists.push(lists);
           if (stub.hold) {
-            pendingQuitConfirm = completeQuitConfirm; // 挂住：模拟确认框已打开（TX-8c）
+            pendingQuitConfirm = settle; // 挂住：模拟确认框已打开（TX-8c）
             return;
           }
-          completeQuitConfirm(stub.respond === "quit");
+          const answer = stub.respond === "throw" ? Promise.reject(new Error("stub")) : Promise.resolve(stub.respond === "quit");
+          void answer.then(settle, () => settle(false));
           return;
         }
         const box: Electron.MessageBoxOptions = quitBoxOptions(lists);
-        void (win ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).then((r) => {
-          if (r.response === APPROVE_BUTTON) proceedQuit();
-          else quitPhase = "idle";
-        });
+        void (win ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).then(
+          (r) => settle(r.response === APPROVE_BUTTON),
+          () => settle(false),
+        );
       } else if (m.type === "sessions-down") {
         if (quitPhase === "stopping") finishQuit();
       } else if (m.type === "confirm-query") {
@@ -380,6 +389,12 @@ function boot(): void {
     win.on("closed", () => {
       win = null;
       mainConfirm.windowGone(); // D40：挂在已销毁窗口上的确认框永不 resolve，主动回 ok:false
+      if (quitPhase === "confirming") {
+        // N54：退出确认框挂在已销毁的窗口上同样永不 resolve；作废它并回落，否则此后 Cmd+Q 全被拦下
+        quitConfirmSeq += 1;
+        pendingQuitConfirm = null;
+        quitPhase = "idle";
+      }
     });
     loadRenderer();
   };
