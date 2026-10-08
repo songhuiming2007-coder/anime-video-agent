@@ -49,7 +49,7 @@ export async function launchSession(repo: SessionRepo, extra: string[] = [], opt
 }
 
 /** Spec 10 §2.10 退出确认桩（仅未打包构建）；hold=true 时挂住不回答（TX-8c 重入） */
-export async function stubQuit(L: Launched, respond: "quit" | "cancel", hold = false): Promise<void> {
+export async function stubQuit(L: Launched, respond: "quit" | "cancel" | "throw", hold = false): Promise<void> {
   await L.app.evaluate((_e, r) => {
     (globalThis as unknown as { __avaTestQuit: unknown }).__avaTestQuit = { calls: 0, lists: [], respond: r.respond, hold: r.hold };
   }, { respond, hold });
