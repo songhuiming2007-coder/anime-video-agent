@@ -30,6 +30,7 @@ Spec 11 需要三类新写入，全部是人（不是模型）在停机点上的
 - UI（renderer/host）对 `data/` 的直写禁令 **I1 不变**；新增写入全部经 host spawn core 的**非交互裸形态子命令**完成（`ava <期> /save-script`、`/seal-script`、`/voice-revert` 等，全集见 Spec 11 §3.4）。
 - core 侧落盘纪律与 `write_episode_file`（`pipeline/agent/tools.py:62-125`）同款：期目录必须在 `data/episodes` 之下（双端 resolve 防 symlink 穿透）、目标文件名闭集、落盘必须 `paths.atomic_write`（`paths.py:118-128`）。
 - **不进 LLM 工具表**：这些子命令是 UI 的人令通道，不是模型工具。`write_episode_file` 的白名单（`{01-topic.md, 02-script.draft.md}`，tools.py:26-28）**不扩入** `02-script.md`——模型的写通道与人的写通道分开，前者保持现状（creative scope 只写草稿，落定为 `02-script.md` 永远是人的动作），工具表总数不变（红线 6 不受影响，无需 ADR-0025 口径调整）。
+  - **2026-10-08 修订（D47，人裁决）**：白名单扩入 `02-script.md`，模型可在人审批下改定稿（只能改、不能新建；02-script.md 存在后 draft 冻结；每次写都弹卡并附 diff；写前留底 `_agent/script-history/`）。人审闸门由 02.5 批准与封板新鲜度承担，不靠「谁写的文件」；标注数据的出处由留底保住。详见 [D47 spec](../plans/2026-10-08-agent-edits-final-script-spec.md)。本 ADR 其余条目中「agent 永远不写 `02-script.md`」的表述按此修订理解；人的写通道（裸形态子命令）不变。
 
 ### 2. 正文经 stdin 传递，指纹不符即拒存
 

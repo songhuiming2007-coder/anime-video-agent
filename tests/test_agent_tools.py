@@ -51,10 +51,10 @@ def test_write_episode_file_rejects_topic_without_confirmation(fake_repo):
 
 
 def test_write_episode_file_rejects_out_of_whitelist_files(fake_repo):
-    """拦截白名单外文件的写入（如 02-script.md、04-clips.json 等）。"""
+    """拦截白名单外文件的写入（如 04-clips.json、notes.txt）。02-script.md 自 D47 起在白名单内，另测。"""
     _, ep_dir = fake_repo
     with pytest.raises(PermissionError, match="白名单"):
-        write_episode_file(ep_dir, "02-script.md", "# Final")
+        write_episode_file(ep_dir, "04-clips.json", "{}")
 
     with pytest.raises(PermissionError, match="白名单"):
         write_episode_file(ep_dir, "notes.txt", "abc")
@@ -108,7 +108,7 @@ def test_write_episode_file_all_scopes_write_whitelist_only(fake_repo):
         assert (ep_dir / "02-script.draft.md").read_text(encoding="utf-8") == f"# {scope} 草稿"
 
         denied = execute_tool(
-            "write_episode_file", {"filename": "02-script.md", "content": "x"}, ctx
+            "write_episode_file", {"filename": "04-clips.json", "content": "x"}, ctx
         )
         assert denied["ok"] is False and "白名单" in denied["error"]
 
@@ -1529,3 +1529,106 @@ def test_tools_import_stays_free_of_ml_deps() -> None:
         "assert not bad, bad"
     )
     subprocess.run([sys.executable, "-c", probe], check=True)
+
+
+# ---------------------------------------------------------------------------
+# D47：agent 在人审批下改 02-script.md（只能改不能新建、草稿冻结、全量留底、卡上带 diff）
+# ---------------------------------------------------------------------------
+
+
+def _d47_ep(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path
+    ep = root / "data" / "episodes" / "01-d47"
+    ep.mkdir(parents=True)
+    return root, ep
+
+
+def test_d47_script_cannot_be_created_by_agent(tmp_path: Path) -> None:
+    root, ep = _d47_ep(tmp_path)
+    with pytest.raises(PermissionError, match="还不存在"):
+        write_episode_file(ep, "02-script.md", "# x", root=root)
+    assert not (ep / "02-script.md").exists()
+
+
+def test_d47_script_edit_keeps_every_previous_version(tmp_path: Path) -> None:
+    from pipeline.agent.tools import DRAFT_HISTORY_KEEP
+
+    root, ep = _d47_ep(tmp_path)
+    (ep / "02-script.md").write_text("v0", encoding="utf-8")
+    n = DRAFT_HISTORY_KEEP + 5  # 超过草稿的保留份数：定稿不修剪
+    for i in range(1, n + 1):
+        write_episode_file(ep, "02-script.md", f"v{i}", root=root)
+    assert (ep / "02-script.md").read_text(encoding="utf-8") == f"v{n}"
+    kept = sorted((ep / "_agent" / "script-history").iterdir())
+    assert [k.read_text(encoding="utf-8") for k in kept] == [f"v{i}" for i in range(n)]
+    assert all(k.name.endswith("-02-script.md") for k in kept)
+    assert not (ep / "_agent" / "draft-history").exists()
+
+
+def test_d47_draft_frozen_once_script_exists(tmp_path: Path) -> None:
+    root, ep = _d47_ep(tmp_path)
+    write_episode_file(ep, "02-script.draft.md", "机器初稿", root=root)
+    (ep / "02-script.md").write_text("机器初稿", encoding="utf-8")
+    with pytest.raises(PermissionError, match="基线"):
+        write_episode_file(ep, "02-script.draft.md", "又改了", root=root)
+    assert (ep / "02-script.draft.md").read_text(encoding="utf-8") == "机器初稿"
+
+
+def test_d47_write_card_shows_diff_against_disk(tmp_path: Path) -> None:
+    from pipeline.agent.status_card import render_approval_card
+
+    _, ep = _d47_ep(tmp_path)
+    # 与真实稿件同形：段落标题与配音行之间隔一个空行，上下文 2 行才带得出「改的是哪一段」
+    (ep / "02-script.md").write_text("## 段落 1\n\n配音：旧句\n\n## 段落 2\n\n配音：不动\n", encoding="utf-8")
+    card = render_approval_card(
+        "write_episode_file",
+        {"filename": "02-script.md", "content": "## 段落 1\n\n配音：新句\n\n## 段落 2\n\n配音：不动\n"},
+        episode_dir=ep,
+    )
+    assert "│ 改动: +1 / -1 行" in card
+    assert "│ -配音：旧句" in card and "│ +配音：新句" in card
+    assert "│  ## 段落 1" in card
+    assert "不动" not in card, "上下文只留 2 行，没改的段落正文不该铺进卡里"
+    assert "改后封板失效" not in card and "已配音" not in card
+    same = render_approval_card(
+        "write_episode_file", {"filename": "02-script.md", "content": (ep / "02-script.md").read_text(encoding="utf-8")},
+        episode_dir=ep,
+    )
+    assert "│ 改动: 与磁盘现版逐字相同" in same
+
+
+def test_d47_write_card_truncates_long_diff_and_marks_stale_gates(tmp_path: Path) -> None:
+    from pipeline.agent.status_card import CARD_DIFF_MAX_LINES, render_approval_card
+
+    _, ep = _d47_ep(tmp_path)
+    (ep / "02-script.md").write_text("\n".join(f"旧{i}" for i in range(100)) + "\n", encoding="utf-8")
+    (ep / "02-diff.patch").write_text("x", encoding="utf-8")
+    (ep / "03-audio").mkdir()
+    (ep / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+    card = render_approval_card(
+        "write_episode_file",
+        {"filename": "02-script.md", "content": "\n".join(f"新{i}" for i in range(100)) + "\n"},
+        episode_dir=ep,
+    )
+    # 整篇替换：hunk 头 1 行 + 删 100 + 加 100 = 201 行 diff 正文
+    assert f"另有 {201 - CARD_DIFF_MAX_LINES} 行 diff 未显示" in card
+    assert "│ 改动: +100 / -100 行" in card
+    danger = [ln for ln in card.splitlines() if "危险标记:" in ln][0]
+    assert "改后封板失效，需重新封板" in danger and "已配音，改动段落需 tts --redo" in danger
+
+
+def test_d47_agent_write_makes_sealed_gate_stale(tmp_path: Path) -> None:
+    import os
+
+    from pipeline.approvals import _gate_valid
+
+    root, ep = _d47_ep(tmp_path)
+    (ep / "02-script.draft.md").write_text("a\n", encoding="utf-8")
+    (ep / "02-script.md").write_text("b\n", encoding="utf-8")
+    (ep / "02-diff.patch").write_text("-a\n+b\n", encoding="utf-8")
+    st = (ep / "02-script.md").stat()
+    os.utime(ep / "02-diff.patch", ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert _gate_valid(ep, "02.5")
+    write_episode_file(ep, "02-script.md", "c\n", root=root)
+    os.utime(ep / "02-script.md", ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000))  # 防同一时钟刻度
+    assert not _gate_valid(ep, "02.5"), "agent 改了定稿，旧封板必须失效、人重新封板"

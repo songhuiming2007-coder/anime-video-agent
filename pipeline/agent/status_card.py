@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import datetime
+import difflib
 import json
 import re
 from pathlib import Path
 
 from pipeline.agent.resolver import scope_of
-from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
+from pipeline.agent.tools import DRAFT_FILENAME, RESTRICTED_EGRESS_PATTERNS, SCRIPT_FILENAME
 from pipeline.status import EpisodeStatus, inspect_episode
 
 
@@ -169,6 +170,32 @@ def _sanitize_card_field(val: Any) -> str:
     return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", no_ansi).strip()
 
 
+# D47：写稿卡上的 diff 上限。80 行约一屏，够看清一两段的改动；整篇重写时看头部 + 剩余行数，
+# 人一眼知道「它改了全篇」，这本身就是该拒的信号。
+CARD_DIFF_MAX_LINES = 80
+
+
+def _script_diff(target: Path, new: str) -> list[str]:
+    """写稿卡的改动预览：与磁盘现版的 unified diff（上下文 2 行：稿件里段落标题与配音行隔一个空行，2 行才看得到改的是哪一段），剥控制字符，超出上限截断并注明。"""
+    try:
+        old = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ["改动: 新建文件，无现版可比"]
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"改动: 读不了磁盘现版（{type(exc).__name__}），无法给出 diff"]
+    diff = list(difflib.unified_diff(old.splitlines(), new.splitlines(), "磁盘现版", "写入后", lineterm="", n=2))
+    if not diff:
+        return ["改动: 与磁盘现版逐字相同"]
+    added = sum(1 for d in diff if d.startswith("+") and not d.startswith("+++"))
+    removed = sum(1 for d in diff if d.startswith("-") and not d.startswith("---"))
+    body = [re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", d) for d in diff[2:]]
+    out = [f"改动: +{added} / -{removed} 行"]
+    out.extend(body[:CARD_DIFF_MAX_LINES])
+    if len(body) > CARD_DIFF_MAX_LINES:
+        out.append(f"……另有 {len(body) - CARD_DIFF_MAX_LINES} 行 diff 未显示")
+    return out
+
+
 def render_approval_card(
     name: str,
     args: dict[str, Any],
@@ -233,14 +260,24 @@ def render_approval_card(
             status_str = "新建文件"
             danger_str = "无"
 
+        ep = episode_dir or args.get("episode_dir")
+        if filename == SCRIPT_FILENAME and ep:
+            # D47：定稿被改之后，已有的封板与配音都可能过期——只提示，不拒
+            if (Path(ep) / "02-diff.patch").exists():
+                danger_str += "；改后封板失效，需重新封板"
+            if (Path(ep) / "03-audio" / "manifest.json").exists():
+                danger_str += "；已配音，改动段落需 tts --redo"
+
         target_str = f"{filename}（{size_str}，{status_str}）" if filename else size_str
         lines = [
             "┌─ 写入审批 ──────────────────────────────────────────",
             f"│ 工具: {name}",
             f"│ 目标: {target_str}",
             f"│ 危险标记: {danger_str}",
-            "└─ 执行? [y/N]: ",
         ]
+        if filename in (SCRIPT_FILENAME, DRAFT_FILENAME) and ep and isinstance(content, str):
+            lines.extend(f"│ {ln}" for ln in _script_diff(Path(ep) / filename, content))
+        lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 
     if name == "acquire_propose":

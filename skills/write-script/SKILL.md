@@ -257,7 +257,7 @@ CLANNAD（blog/375742）、知乎「哆啦A梦·大雄奶奶」（zhihu.com/ques
 （2026-08-24 与 08-26 连续两期全部漏掉，流程静默退化两期无人发现）：
 
 - [ ] `02-script.draft.md`——机器初稿原样落盘（中间缓存，定稿后问过就删）
-- [ ] `02-script.md`——初稿原样拷贝而来，02.5 起人改这份
+- [ ] `02-script.md`——初稿原样拷贝而来（人拷），02.5 起改这份：人改，或人让 agent 经审批卡改（D47，旧版留底 `_agent/script-history/`）；草稿从此冻结
 - [ ] `02-diff.patch`——02.5 人审改完**当场**跑
   `git diff --no-index --stat 02-script.draft.md 02-script.md > 02-diff.patch`，
   并向用户报一句 diff 规模（增/删行数、改动段数），供 B2 人时计时用

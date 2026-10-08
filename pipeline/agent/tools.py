@@ -27,20 +27,45 @@ from pipeline.cloud import validate_extra_args
 # 02-script.draft.md 每轮前 DRAFT_FREE_WRITES_PER_TURN 次免卡（2026-10-08 spec §A）。
 # Spec 12 C12-R1：扩入 `07-titles.md`——标题候选的落盘点（07-titles.md 从来就是
 # 「agent 写候选、人定稿」的文件，不是 02-script.md 那种定稿物；写仍弹人审卡）。
+# D47（2026-10-08 人裁决，修订 ADR-0024 决策 1）：扩入 02-script.md——只能改不能新建、每次弹卡带 diff、
+# 写前全量留底；02-script.md 存在后草稿冻结（它是 02-diff.patch 的基线）。
 EPISODE_WRITABLE_FILES: set[str] = {
     "01-topic.md",
     "02-script.draft.md",
+    "02-script.md",
     "07-titles.md",
 }
 
-# 草稿是模型自己的工作稿（定稿 02-script.md 永远是人在 02.5 写，ADR-0024 决策 1），
-# 每次覆盖前留底（DRAFT_HISTORY_KEEP 份），所以写入可回退，每轮前几次免卡。
+# 草稿是模型自己的工作稿，每次覆盖前留底（DRAFT_HISTORY_KEEP 份），所以写入可回退，每轮前几次免卡。
 # 3 = 写一次 + 修两次，与 creative.md「同一项连修两次仍没过就停下来问人」同一个数；
 # 超过即恢复弹卡，作为原地打转的刹车（2026-10-08 董香二期段落 3 连写十余轮）。
 DRAFT_FILENAME = "02-script.draft.md"
 DRAFT_FREE_WRITES_PER_TURN = 3
 DRAFT_HISTORY_DIR = ("_agent", "draft-history")
 DRAFT_HISTORY_KEEP = 20
+
+# D47：定稿的留底不修剪——02-diff.patch 是「机器初稿 vs 人定稿」的标注数据，agent 代笔混进来的措辞
+# 要靠这些快照才能在分析时剔出去；每份 KB 级，一期至多几十份。
+SCRIPT_FILENAME = "02-script.md"
+SCRIPT_HISTORY_DIR = ("_agent", "script-history")
+
+
+def script_write_refusal(ep_dir: Path | str | None, filename: str) -> str | None:
+    """D47 两条写入前提，弹卡前（review_tool_call）与落盘前（write_episode_file）各查一次；None = 放行。"""
+    if ep_dir is None:
+        return None
+    script = Path(ep_dir) / SCRIPT_FILENAME
+    if filename == SCRIPT_FILENAME and not script.exists():
+        return (
+            f"{SCRIPT_FILENAME} 还不存在：从草稿新建定稿是人的动作（桌面端 02.5「从草稿新建」或终端 cp），"
+            "建好之后才能改它"
+        )
+    if filename == DRAFT_FILENAME and script.exists():
+        return (
+            f"已进入 02.5（{SCRIPT_FILENAME} 已存在）：草稿是 02-diff.patch 的基线，不再改；"
+            f"要改稿请写 {SCRIPT_FILENAME}"
+        )
+    return None
 
 # 制片期（creative / pipeline）允许执行的 pipeline 模块白名单（§2.4）
 PIPELINE_MODULES: set[str] = {
@@ -120,7 +145,9 @@ def write_episode_file(
     2. 双端 resolve 防 symlink 穿透；
     3. 三种越界拦截：写 pipeline/、写父级/祖先目录、写白名单外文件；
     4. 写 01-topic.md 强制人类确认；
-    5. 落盘必须走 paths.atomic_write。
+    5. D47：02-script.md 只能改不能新建，它存在后草稿冻结（script_write_refusal）；
+    6. 覆盖草稿 / 定稿前留底；
+    7. 落盘必须走 paths.atomic_write。
     """
     # 文件名白名单检查
     clean_name = Path(filename).name
@@ -150,24 +177,33 @@ def write_episode_file(
     if clean_name == "01-topic.md" and not confirmed:
         raise PermissionError("写入 01-topic.md 是关键立项操作，必须获得人类显式确认")
 
-    # 4. 草稿覆盖前留底：免卡写入必须可回退
-    if clean_name == DRAFT_FILENAME and target_resolved.exists():
-        _keep_draft_history(resolved_ep, target_resolved)
+    # 4. D47 写入前提（弹卡前已查过一次；这里防绕过 review 的直接调用）
+    refusal = script_write_refusal(resolved_ep, clean_name)
+    if refusal:
+        raise PermissionError(refusal)
 
-    # 5. 原子落盘
+    # 5. 覆盖前留底：草稿保留最近 DRAFT_HISTORY_KEEP 份，定稿全量保留
+    if clean_name == DRAFT_FILENAME and target_resolved.exists():
+        _keep_history(resolved_ep, target_resolved, DRAFT_HISTORY_DIR, DRAFT_HISTORY_KEEP)
+    elif clean_name == SCRIPT_FILENAME and target_resolved.exists():
+        _keep_history(resolved_ep, target_resolved, SCRIPT_HISTORY_DIR, None)
+
+    # 6. 原子落盘
     paths.atomic_write(target_resolved, content)
     return target_resolved
 
 
-def _keep_draft_history(ep_dir: Path, draft: Path) -> None:
-    """把即将被覆盖的草稿存进 `_agent/draft-history/`，只留最近 DRAFT_HISTORY_KEEP 份。"""
-    hist = ep_dir.joinpath(*DRAFT_HISTORY_DIR)
+def _keep_history(ep_dir: Path, target: Path, sub: tuple[str, ...], keep: int | None) -> None:
+    """把即将被覆盖的文件存进 `<期>/<sub>/<UTC 纳秒>-<文件名>`；keep=None 不修剪，否则只留最近 keep 份。"""
+    hist = ep_dir.joinpath(*sub)
     hist.mkdir(parents=True, exist_ok=True)
     ns = time.time_ns()  # 一次取时：秒与纳秒同源，文件名字典序 = 时间序
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(ns // 1_000_000_000)) + f"{ns % 1_000_000_000:09d}"
-    paths.atomic_write(hist / f"{stamp}-{DRAFT_FILENAME}", draft.read_text(encoding="utf-8"))
-    olds = sorted(p for p in hist.iterdir() if p.name.endswith(f"-{DRAFT_FILENAME}"))
-    for old in olds[:-DRAFT_HISTORY_KEEP]:
+    paths.atomic_write(hist / f"{stamp}-{target.name}", target.read_text(encoding="utf-8"))
+    if keep is None:
+        return
+    olds = sorted(p for p in hist.iterdir() if p.name.endswith(f"-{target.name}"))
+    for old in olds[:-keep]:
         old.unlink()
 
 
@@ -446,8 +482,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "name": "write_episode_file",
         "adr": "ADR-0018",
         "description": (
-            "写入当期稿件文件。仅限 01-topic.md 与 02-script.draft.md；"
-            "写 01-topic.md 必须 confirmed=true 且需人在 REPL 显式确认。"
+            "写入当期稿件文件（白名单见 filename）。写 01-topic.md 必须 confirmed=true 且需人显式确认。"
+            "02-script.md 还不存在时写 02-script.draft.md；02-script.md 存在后只改 02-script.md（草稿冻结），"
+            "每次写都会弹卡给人看 diff。"
         ),
         "parameters": {
             "type": "object",

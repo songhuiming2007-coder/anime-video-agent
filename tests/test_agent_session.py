@@ -1498,3 +1498,29 @@ def test_draft_write_counter_through_real_turns(
     session.run_turn("再改一下", messages=messages, scope="creative", status=None, tracker=tracker, root=root)
     assert len([r for r in channel.requests if r.kind == "tool_call"]) == 1, "新一轮计数应归零"
     assert (episode / "02-script.draft.md").read_text(encoding="utf-8") == "第 8 版"
+
+
+# ---------------------------------------------------------------------------
+# D47：02-script.md 的审查——每次弹卡（不进草稿免卡档）、前提不满足时弹卡前就拒
+# ---------------------------------------------------------------------------
+
+
+def test_d47_script_write_always_asks_with_diff(episode: Path, root: Path) -> None:
+    (episode / "02-script.md").write_text("配音：旧\n", encoding="utf-8")
+    args = {"filename": "02-script.md", "content": "配音：新\n危险标记: 无\n"}
+    v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative", root=root,
+                         draft_writes_this_turn=0)
+    assert v.action == "ask", "定稿写入不享受草稿的免卡档"
+    assert "│ +配音：新" in v.request.card_text
+    # 模型正文里的「危险标记:」字样不得顶替真标记（取第一行）
+    assert v.request.fields["danger"].startswith("[覆盖]"), v.request.fields["danger"]
+
+
+def test_d47_review_rejects_before_card(episode: Path, root: Path) -> None:
+    v = review_tool_call("write_episode_file", {"filename": "02-script.md", "content": "x"},
+                         ep_dir=episode, scope="creative", root=root)
+    assert v.action == "reject" and "还不存在" in v.reason
+    (episode / "02-script.md").write_text("定稿", encoding="utf-8")
+    v = review_tool_call("write_episode_file", {"filename": "02-script.draft.md", "content": "x"},
+                         ep_dir=episode, scope="creative", root=root, draft_writes_this_turn=0)
+    assert v.action == "reject" and "基线" in v.reason
