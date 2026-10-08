@@ -18,6 +18,7 @@
 | [v2 云端 GPU 重构](2026-09-08-v2-cloud-gpu-reconstruction.md) | B1, B2, D1, D2, D4, D5, D6, D22, D23, D25 | ADR-0014, ADR-0003, ADR-0005, ADR-0006 | **全局收束施工图**，M1/M2a/M2b/M2.5 已交付，进至 M3 |
 | [v2 系统架构设计](2026-09-10-v2-architecture-design.md) | B1, B2, B3, D1, D2, D4, D5, D6, D22, D23, D24, D25 | ADR-0014, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0010~0013 | v2 架构落地层（7 大子系统设计），核心能力已在 M1~M2.5 交付落地 |
 | [ava Harness 演进方向（上位需求）](2026-09-22-harness-evolution-direction.md) | B2 / D23 | ADR-0020~0025 | 上位需求文档；一期 8 份 spec（2026-09-25 S25）与**二期 Spec 9–14（2026-09-29 S21）均已完工并归档**，§6 二期需求标注完成；后续独立立项见 issues D29 / D30 |
+| [D49-A / D50-A 预览区与顺听纠错施工](2026-10-08-preview-voice-build-spec.md) | D49, D50 | — | 施工中（S1–S7） |
 | [D51 agent 经人审卡录读音纠错](2026-10-08-agent-voice-corrections-spec.md) | D51, D53 | ADR-0019, ADR-0025 | 已施工（`pipeline.corrections add/global/check` 经 run_pipeline 弹卡、弹卡前读音校验、全局表同键冲突与防并发）；pytest / vitest / e2e 通过；待手验 |
 | [D53 ② run_pipeline 预检查拒多余位置参数](2026-10-08-run-pipeline-argv-precheck-spec.md) | D53 | ADR-0025 | 已施工（拒多余位置参数、`--redo` 空格段号给出逗号写法、带值旗标补齐并用 ast 守住）；pytest / vitest / e2e 通过 |
 | [D52 工具结果脱敏受限路径 + 被拦 notice](2026-10-08-tool-result-egress-scrub-spec.md) | D52, N52, N53 | ADR-0026 | 已施工（工具结果脱敏、被拦发 egress_blocked notice）；pytest / vitest / e2e 通过；待真实一期手验 |
