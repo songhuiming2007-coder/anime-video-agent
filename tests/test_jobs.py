@@ -321,10 +321,14 @@ def test_child_process_killed_by_signal(tmp_path: Path) -> None:
     pub = EventPublisher(queue_capacity=64, data_root=tmp_path)
     pub.start()
 
+    # 子进程打印并 flush 之后才落就绪标记，killer 等标记再杀：原先拿到 pid 就杀，子进程常常还没
+    # 打出 CHILD_READY（负载高时全量里偶发红，单跑必绿），断言测的是竞态而不是捕获逻辑
+    ready = tmp_path / "child.ready"
     kill_script = (
         "import os, sys, time\n"
         "sys.stdout.write('CHILD_READY\\n')\n"
         "sys.stdout.flush()\n"
+        f"open({str(ready)!r}, 'w').close()\n"
         "time.sleep(10)\n"
     )
     from unittest.mock import patch
@@ -335,8 +339,8 @@ def test_child_process_killed_by_signal(tmp_path: Path) -> None:
         import signal
         import threading
         def killer():
-            for _ in range(50):
-                if job.pid is not None:
+            for _ in range(200):
+                if job.pid is not None and ready.exists():
                     break
                 time.sleep(0.05)
             if job.pid is not None:
