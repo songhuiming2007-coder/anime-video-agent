@@ -446,7 +446,13 @@ function Main() {
                 已带入 {ideaCarriedTo}
               </div>
             )}
-            <ConversationPane key={convKey} rows={rows} lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />} />
+            <ConversationPane
+              key={convKey}
+              rows={rows}
+              running={conv?.phase === "running"}
+              awaiting={(conv?.open.length ?? 0) > 0}
+              lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />}
+            />
             <AnswerDock conv={conv} ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
             <Composer
               rpc={rpc}
