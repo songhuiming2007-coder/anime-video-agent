@@ -97,6 +97,15 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .error { color: var(--danger); padding: var(--space-2) var(--space-3); }
 .preview-head { flex: none; display: flex; align-items: center; gap: var(--space-2); height: 36px; padding: 0 var(--space-3); border-bottom: 1px solid var(--border); color: var(--fg-muted); font-size: var(--text-sm); }
 .preview-head .ui-row-title { font-family: var(--font-mono); color: var(--fg); }
+/* D49-A S4：预览区文件切换器 */
+.preview-switch { position: relative; flex: none; display: flex; align-items: center; height: 40px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border); }
+.preview-switch-btn { max-width: 100%; gap: var(--space-1); font-weight: var(--weight-semibold); }
+.preview-switch-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.preview-switch-pop { position: absolute; top: calc(100% + 4px); left: var(--space-2); z-index: 5; width: min(360px, calc(100% - var(--space-4))); max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.preview-switch-gtitle { padding: var(--space-1) var(--space-2) 2px; color: var(--fg-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.preview-switch-row { width: 100%; min-height: 30px; gap: var(--space-2); }
+.preview-switch-row:disabled { color: var(--fg-subtle); cursor: default; }
+.preview-switch-meta { margin-left: auto; color: var(--fg-muted); font-size: var(--text-sm); white-space: nowrap; }
 .preview-body { flex: 1; min-height: 0; overflow: auto; }
 .html-frame { width: 100%; height: 100%; border: 0; background: var(--bg-frame); }
 .video-wrap { position: relative; background: var(--bg-media); }
@@ -180,6 +189,15 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .editor-src { min-width: 0; overflow: auto; }
 .editor-preview { min-width: 0; overflow: auto; padding: var(--space-3); background: var(--bg); }
 .editor-preview > .markdown { max-width: none; }
+/* D49-A S2：窄态一次一栏、宽态源码与渲染并排（要点按需开合）。覆盖 ui.css 的三栏定宽（ui.css 冻结，覆盖写这里） */
+.editor-split[data-layout="narrow"] { grid-template-columns: minmax(0, 1fr); }
+.editor-split[data-pane="src"] > :not(.editor-src),
+.editor-split[data-pane="render"] > :not(.editor-preview),
+.editor-split[data-pane="tips"] > :not(.checklist),
+.editor-split[data-pane="two"] > .checklist { display: none; }
+.editor-split[data-pane="two"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.editor-split[data-pane="tips"] > .checklist { border-left: 0; }
+.editor-shell .ui-seg > button { white-space: nowrap; }
 .seg-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--space-3); }
 .seg-list, .pending, .voice-input, .voice-card, .hetero { padding: 0 var(--space-3); }
 .seg-actions { display: flex; gap: var(--space-1); justify-self: end; }
@@ -214,3 +232,27 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 /* ---- D47 请求卡：正文按原样换行（写稿卡含 diff），参数原文默认收起 ---- */
 .request-card-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
 .request-card-fields summary { cursor: pointer; font-size: var(--text-sm); }
+
+/* D50-A S6：顺听面板段落表与就地纠错（只用 token；ui.css 冻结） */
+.voice-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.voice-engine { margin-left: auto; white-space: nowrap; }
+.voice-hint { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); border-bottom: 1px solid var(--border); }
+.voice-list { flex: 1; min-height: 0; overflow: auto; }
+.voice-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.voice-row[aria-current="true"] { background: var(--bg-selected); }
+.voice-row-head { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); min-height: 24px; }
+.voice-row-head .seg-actions { margin-left: auto; display: flex; gap: var(--space-1); }
+.voice-row-text { margin-top: 2px; line-height: var(--leading-normal); cursor: text; user-select: text; }
+.voice-mark { background: var(--warn-surface); color: inherit; box-shadow: inset 0 -2px 0 var(--warn); border-radius: var(--radius-sm); }
+.voice-fix { position: static; margin-top: var(--space-2); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+.voice-fix .ui-seg > button { white-space: nowrap; }
+.voice-fix-input { width: 160px; }
+.voice-fix-actions { display: flex; gap: var(--space-2); }
+.voice-ok { color: var(--ok); }
+.voice-bad { color: var(--danger); }
+.voice-grammar, .voice-panel .pending, .voice-panel .hetero { padding: var(--space-1) var(--space-3); border-top: 1px solid var(--border); }
+.voice-grammar > summary, .voice-panel .pending > summary, .voice-panel .hetero > summary { cursor: pointer; }
+.voice-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) 0; }
+.voice-foot { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm); }
+.voice-foot-sp { flex: 1; }
+

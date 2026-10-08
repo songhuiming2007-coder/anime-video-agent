@@ -1,7 +1,7 @@
 // TD-3 编辑器状态机（Spec 11 §4.2，纯 reducer 半边）：保存成功更新基线；冲突不丢本地内容；
 // dirty-seal 规则（红队 🔴-2）：dirty 时「封板」与「从草稿新建」禁用。
 import { describe, expect, it } from "vitest";
-import { canCreateFromDraft, canSeal, emptyEditor, expectOf, reduceEditor, type ScriptEditorState } from "../../src/shared/editorState";
+import { canCreateFromDraft, canSeal, emptyEditor, expectOf, reduceEditor, type ScriptEditorState, diskVerdict } from "../../src/shared/editorState";
 
 const FP = { size: "1200", mtimeNs: "1790171112636927676" };
 
@@ -65,5 +65,30 @@ describe("TD-3 编辑器状态机", () => {
     expect(expectOf(loaded())).toEqual({ expectSize: "1200", expectMtimeNs: "1790171112636927676" });
     const draftNew = reduceEditor(emptyEditor, { type: "loaded", text: "", baselineFp: null });
     expect(expectOf(draftNew)).toEqual({ expectSize: "-1", expectMtimeNs: "-1" });
+  });
+});
+
+describe("D49-A S3 diskVerdict：编辑器跟随磁盘", () => {
+  const fp = (size: string, mtimeNs: string) => ({ size, mtimeNs });
+  const loaded = reduceEditor(emptyEditor, { type: "loaded", text: "a", baselineFp: fp("1", "100") });
+
+  it("指纹一致 → same", () => {
+    expect(diskVerdict(loaded, fp("1", "100"))).toBe("same");
+  });
+  it("磁盘变了、没有未保存改动 → reload（agent 改稿后自动载入）", () => {
+    expect(diskVerdict(loaded, fp("1", "200"))).toBe("reload");
+    expect(diskVerdict(loaded, fp("2", "100"))).toBe("reload");
+  });
+  it("磁盘变了、人有未保存改动 → warn（绝不覆盖）", () => {
+    const dirty = reduceEditor(loaded, { type: "edit", text: "ab" });
+    expect(diskVerdict(dirty, fp("1", "200"))).toBe("warn");
+  });
+  it("保存中 / 磁盘上没有定稿 → same", () => {
+    expect(diskVerdict(reduceEditor(loaded, { type: "saving" }), fp("9", "9"))).toBe("same");
+    expect(diskVerdict(loaded, null)).toBe("same");
+  });
+  it("从草稿新建形态（基线为空）时定稿出现 → reload", () => {
+    const fromDraft = reduceEditor(emptyEditor, { type: "loaded", text: "d", baselineFp: null });
+    expect(diskVerdict(fromDraft, fp("3", "300"))).toBe("reload");
   });
 });

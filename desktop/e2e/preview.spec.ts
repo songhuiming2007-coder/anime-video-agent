@@ -91,6 +91,8 @@ test("TP-3 点 03-audio/ → 队列为自然序，首段 ended 后自动接第�
 
 test("TP-4 .md 中的 <script> 按文本显示不执行；链接不导航；.json 折叠/展开且大数按原文；超 5 MiB 标注截断", async () => {
   await pick(L.page, "02-script.md");
+  // D49-A S2：编辑器窄态一次一栏，渲染出来的 Markdown 在「渲染」栏
+  await L.page.locator("[data-testid=editor-pane-switch] button[data-pane=render]").click();
   const mdBox = L.page.getByTestId("markdown");
   await expect(mdBox).toContainText("<script>window.__pwned = 1</script>");
   expect(await L.page.evaluate(() => (window as { __pwned?: number }).__pwned)).toBeUndefined();
