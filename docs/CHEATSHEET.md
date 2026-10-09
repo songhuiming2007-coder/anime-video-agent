@@ -107,6 +107,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `[跳过人工闸]` | 命令含 `--confirm-patch`（或缩写 `--conf`），补丁段二次确认将被跳过 |
 | `[覆盖]` | `write_episode_file` 目标文件已存在 |
 | `[跨期记忆]` | `write_memory`：按 y 即确认全文进入之后所有 creative/asset/idea 会话 |
+| `[素材库·所有期共用]` | `write_note`：写番剧笔记或笔记审查报告的终审表（卡上带 diff，旧版留底 `notes/_history/`） |
 
 **按键纪律**：
 
@@ -129,6 +130,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
     `subindex` **search** / build；`vprobe` tagger / presence / scene / captions；
     `faces` detect / cluster / sheet / name / presence；
     `calibration` **show** / set（写 config 标定值，D60，卡上标 `[全局配置]`）；
+  - 整模块不补期目录：`notes_review <番>`（笔记对抗审查，每集一次模型调用，D61）；
     `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames（`exec` 永久禁用）；
 - **参数自动补齐**：敲 `/run clips` 会自动注入当前期的完整路径；敲 `/run tts --redo 3` 也会自动注入当期路径；
 - **坚决拒收**：`--force` 与 `--force-all` 会被当场拦截，并指引你使用增量参数 `--redo <段号>` 或 `--apply-patch`。
