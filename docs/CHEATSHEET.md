@@ -128,6 +128,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
     `vindex` **who** / **status** / **search** / captions / embed / presence；
     `subindex` **search** / build；`vprobe` tagger / presence / scene / captions；
     `faces` detect / cluster / sheet / name / presence；
+    `calibration` **show** / set（写 config 标定值，D60，卡上标 `[全局配置]`）；
     `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames（`exec` 永久禁用）；
 - **参数自动补齐**：敲 `/run clips` 会自动注入当前期的完整路径；敲 `/run tts --redo 3` 也会自动注入当期路径；
 - **坚决拒收**：`--force` 与 `--force-all` 会被当场拦截，并指引你使用增量参数 `--redo <段号>` 或 `--apply-patch`。
