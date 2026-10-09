@@ -6,7 +6,7 @@ import type { ApprovalJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
-import { lastPromptChars } from "../shared/convFold";
+import { lastContextReading } from "../shared/convFold";
 import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
@@ -436,7 +436,7 @@ function Main() {
             info={readyInfo(conv?.entries ?? [])}
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
-            contextChars={lastPromptChars(conv?.entries ?? [])}
+            context={lastContextReading(conv?.entries ?? [])}
             onCreated={onCreatedEp}
             onEnded={() => fetchConvRef.current(convKey, true)}
           />

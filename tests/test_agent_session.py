@@ -1286,6 +1286,37 @@ def test_td1_runbook_literal_no_longer_blocks_first_turn(root: Path, episode: Pa
     assert first_line in body
 
 
+@pytest.mark.parametrize("usage, want", [
+    ({"prompt_tokens": 12345, "completion_tokens": 7, "total_tokens": 12352}, 12345),
+    (None, None),                                  # 服务商不给 usage → 回落字数口径
+    ({"prompt_tokens": "12345"}, None),            # 形状不对一律不收
+    ({"prompt_tokens": -1}, None),
+    ({"prompt_tokens": True}, None),
+])
+def test_d56_prompt_tokens_from_provider_usage(root: Path, episode: Path, egress_env: list[dict],
+                                               monkeypatch: pytest.MonkeyPatch, usage, want) -> None:
+    """D56：上下文读数取服务商响应里的 `usage.prompt_tokens`，随 outcome 与 turn_end 记录带出；拿不到为 None。"""
+    from pipeline.agent import llm as llm_mod
+
+    def fake_urlopen(request, timeout=None):
+        egress_env.append(json.loads(request.data.decode("utf-8")))
+        body = {"choices": [{"message": {"role": "assistant", "content": "好"}}]}
+        if usage is not None:
+            body["usage"] = usage
+        return _LLMResp(body)
+
+    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", fake_urlopen)
+    host = SessionHost(episode, root=root, channel=FakeChannel())
+    host.lease = EpisodeLease.acquire(episode)
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    outcome = _turn(session, [], SessionContextTracker(), root, _STEP_03)
+    _not_blocked(outcome)
+    assert outcome["prompt_tokens"] == want
+    assert outcome["prompt_chars"] > 0, "字数口径照旧算（回落用）"
+    ends = [json.loads(line) for line in host.lease.read().decode("utf-8").splitlines()]
+    assert [r["prompt_tokens"] for r in ends if r.get("k") == "turn_end"] == [want]
+
+
 def _runbook_line(root: Path, name: str, contains: str) -> str:
     """取 runbook 里含某子串的那一行（用来在请求体里认出整份规程确实还在）。"""
     text = (root / "docs" / "runbook" / name).read_text(encoding="utf-8")

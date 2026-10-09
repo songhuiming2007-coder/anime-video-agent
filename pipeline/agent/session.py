@@ -891,6 +891,7 @@ class AgentSession:
                 "wrapup": outcome.get("wrapup", "none"),
                 "duration_s": round(float(outcome.get("elapsed_s", 0.0)), 3),
                 "prompt_chars": outcome.get("prompt_chars", 0),
+                "prompt_tokens": outcome.get("prompt_tokens"),  # D56：服务商给的输入 token；拿不到为 None
                 "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
                 "recovered": False,
             })

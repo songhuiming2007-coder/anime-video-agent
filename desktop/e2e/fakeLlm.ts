@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 export type WireMessage = { role: string; content?: unknown; tool_calls?: { id: string; function: { name: string; arguments: string } }[]; tool_call_id?: string };
 export type ChatRequest = { model: string; messages: WireMessage[]; tools?: unknown[]; tool_choice?: string };
 /** 一次回复：助手消息本体；`delayMs` 让这一次响应延迟（TX-4/TX-8 需要「回合在跑」的窗口）。 */
-export type Reply = { message: WireMessage; delayMs?: number };
+export type Reply = { message: WireMessage; delayMs?: number; usage?: Record<string, unknown> };
 
 export interface FakeLlm {
   url: string;
@@ -93,7 +93,7 @@ export async function startFakeLlm(): Promise<FakeLlm> {
         return;
       }
       const reply = replies.length ? replies[Math.min(index, replies.length - 1)] : assistant("好");
-      const send = (): void => answer(200, { choices: [{ message: reply.message }] });
+      const send = (): void => answer(200, { choices: [{ message: reply.message }], ...(reply.usage ? { usage: reply.usage } : {}) });
       if (reply.delayMs) setTimeout(send, reply.delayMs);
       else send();
     });

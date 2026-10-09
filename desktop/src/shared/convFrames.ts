@@ -81,6 +81,7 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     wrapup: ["string"],
     duration_s: ["number"],
     prompt_chars: ["number"],
+    prompt_tokens: ["number", "null"], // D56：服务商响应 usage.prompt_tokens；不给为 null
     lookups: ["object", "null"], // D48 ①：本回合查证调用按类计数（subs/presence/notes/web）；无模型回合为 null
   },
   log: { stream: ["string"], text: ["string"] },

@@ -125,7 +125,7 @@ test("L-3 底线：1280×800 / 1440×900 × 预览收起 / 展开，关键元素
         { t: "tool", turn_id: "$turn", phase: "start", index: 0, name: "run_pipeline", summary: "clips SESS-A", ok: null, observation: null, duplicate: false },
         { t: "tool", turn_id: "$turn", phase: "end", index: 0, name: "run_pipeline", summary: "", ok: false, observation: obs, duplicate: false },
         { t: "assistant", turn_id: "$turn", kind: "answer", text: "第 3 段的「集」字段缺失，排片回退到了全季检索。建议先补上 `集: S01E07` 再重跑 clips。".repeat(3) },
-        { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 3, prompt_chars: 1, lookups: null },
+        { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 3, prompt_chars: 1, lookups: null, prompt_tokens: null },
         { t: "stop_points", items: [], turn_id: "$turn" },
       ],
     },

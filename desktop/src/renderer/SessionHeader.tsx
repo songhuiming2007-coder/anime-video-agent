@@ -2,7 +2,7 @@
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 import { useEffect, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
-import { charsText } from "../shared/convFold";
+import { contextText, type ContextReading } from "../shared/convFold";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
 import { Icon } from "./icons";
@@ -35,7 +35,8 @@ export function readyInfo(entries: readonly ConvEntry[]): ReadyInfo {
 
 /** D41：读数的悬停说明——如实标口径，并给出现成的绕法（不做压缩，压缩另立 spec） */
 export const CONTEXT_READOUT_TITLE =
-  "最近一次请求模型时，对话里全部消息正文的字符数（不含工具调用参数与工具定义）。是字符数，不是 token，也没有上限刻度。" +
+  "最近一次请求模型时的输入 token 数，由模型服务商返回，含系统提示、工具定义与全部历史，就是上下文窗口的实际占用；" +
+  "服务商没给 token 数时退回显示消息正文的字数（带「约」）。" +
   "嫌长可以点侧栏本期下面的「＋ 新会话」从空白上下文开始：期的进度在产物里，不靠对话记忆。";
 
 export function SessionHeader({
@@ -45,7 +46,7 @@ export function SessionHeader({
   info,
   memoryAsk,
   isIdea,
-  contextChars,
+  context,
   onCreated,
   onEnded,
 }: {
@@ -55,14 +56,15 @@ export function SessionHeader({
   info: ReadyInfo;
   memoryAsk: boolean;
   isIdea: boolean;
-  /** D41：最近一次回合结束时的 prompt_chars（`lastPromptChars`）；null = 本会话还没有回合结束过，不显示 */
-  contextChars: number | null;
+  /** D41 / D56：最近一次回合结束时的上下文读数（`lastContextReading`）；null = 本会话还没有回合结束过，不显示 */
+  context: ContextReading | null;
   onCreated: (created: CreatedEpisode) => void;
   onEnded: () => void;
 }) {
   const live = phase === "starting" || phase === "idle" || phase === "running" || phase === "ending";
   const running = phase === "running";
   const asset = info.scope === "asset";
+  const contextReadout = context === null ? null : contextText(context);
   // N32：无活会话时 scope 命令无处可发——点击不发任何 RPC，只给一行可读提示（换期即清）
   const [needSession, setNeedSession] = useState(false);
   useEffect(() => setNeedSession(false), [convKey]);
@@ -83,9 +85,9 @@ export function SessionHeader({
           LLM 未就绪
         </span>
       )}
-      {contextChars !== null && (
+      {contextReadout !== null && (
         <span className="muted" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
-          上下文约 {charsText(contextChars)}
+          {contextReadout}
         </span>
       )}
       <span className="spacer" />

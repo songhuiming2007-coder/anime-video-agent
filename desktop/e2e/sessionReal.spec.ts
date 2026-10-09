@@ -186,6 +186,20 @@ test("TX-1 真实 core：失败工具行展开文本 == session.jsonl 里该 too
   });
 });
 
+test("D56 真实 core：服务商给了 usage.prompt_tokens → 会话头与脚注显示 token；下一回合没给 → 回落「上下文约 N 字」", async () => {
+  await withRealCore(async ({ L, llm }) => {
+    llm.push({ ...assistant("好"), usage: { prompt_tokens: 12_345, completion_tokens: 3, total_tokens: 12_348 } }, assistant("又好"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "第一句");
+    await waitTurns(L, "ep:SESS-A", 1);
+    await expect(L.page.getByTestId("context-readout")).toHaveText("上下文 12.3k token");
+    await expect(L.page.getByText(/· 查证 字幕 0 · 在场 0 · 笔记 0 · 网页 0 · 上下文 12\.3k token$/)).toBeVisible();
+    await send(L.page, "第二句");
+    await waitTurns(L, "ep:SESS-A", 2);
+    await expect(L.page.getByTestId("context-readout")).toHaveText(/^上下文约 [\d,]+ 字$/);
+  });
+});
+
 test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工具被执行", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;

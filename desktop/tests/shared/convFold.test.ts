@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { charsText, foldConv, lastPromptChars, lookupsText } from "../../src/shared/convFold";
+import { charsText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -18,7 +18,7 @@ const request = (id: string, seq: number) =>
   F("request", { request_id: id, kind: "tool_call", turn_id: "t1", title: "写稿", card_text: "…", fields: { tool: "write_episode_file" }, options: ["approve", "reject"], feedback_allowed: true }, seq);
 
 const TURN_FINISHED = () =>
-  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100, lookups: null }, 9);
+  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100, lookups: null, prompt_tokens: null }, 9);
 
 describe("TV-2 foldConv 一回合", () => {
   const entries: ConvEntry[] = [
@@ -126,22 +126,20 @@ describe("D48 ① 查证计数", () => {
   };
 
   it("四类按 字幕 · 在场 · 笔记 · 网页 列出，0 也列，排在上下文读数之前", () => {
-    expect(foot({ subs: 0, presence: 1, notes: 2, web: 0 }).endsWith(" · done · none · 查证 字幕 0 · 在场 1 · 笔记 2 · 网页 0 · 上下文 9,192 字")).toBe(true);
+    expect(foot({ subs: 0, presence: 1, notes: 2, web: 0 }).endsWith(" · done · none · 查证 字幕 0 · 在场 1 · 笔记 2 · 网页 0 · 上下文约 9,192 字")).toBe(true);
   });
 
   it("旧 core（null / 缺键）或形状不对：不显示，也不影响其余脚注", () => {
     for (const bad of [null, undefined, [], "x", { subs: 1 }, { subs: -1, presence: 0, notes: 0, web: 0 }, { subs: 1.5, presence: 0, notes: 0, web: 0 }]) {
       expect(lookupsText(bad)).toBeNull();
       expect(foot(bad)).not.toContain("查证");
-      expect(foot(bad)).toContain("上下文 9,192 字");
+      expect(foot(bad)).toContain("上下文约 9,192 字");
     }
   });
 });
 
-// D41：上下文用量读数（只显示，不压缩）。口径 = 最后一次请求模型时全部消息正文的字符数，不是 token。
-describe("D41 上下文用量读数", () => {
-  const fin = (chars: unknown, seq: number) =>
-    F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: chars }, seq);
+// D41 → D56：上下文用量读数（只显示，不压缩）。口径 = 服务商返回的输入 token；拿不到回落消息正文字数。
+describe("D41 / D56 上下文用量读数", () => {
   const ready = (seq: number) => F("ready", { episode: "E", scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null }, seq);
 
   it("charsText：万以下千分位整数，万及以上一位小数的「万字」", () => {
@@ -154,28 +152,44 @@ describe("D41 上下文用量读数", () => {
     expect(charsText(123_456)).toBe("12.3 万字");
   });
 
-  it("回合脚注末尾追加「上下文 N」，缺值或非法值不追加", () => {
-    const foot = (chars: unknown) => {
-      const r = foldConv([{ k: "frame", at: 1, frame: fin(chars, 1) }]).rows.at(-1)!;
-      return r.k === "footer" ? r.text : "";
-    };
-    expect(foot(14_031).endsWith(" · done · none · 上下文 1.4 万字")).toBe(true);
-    expect(foot(9192).endsWith(" · 上下文 9,192 字")).toBe(true);
-    for (const bad of [undefined, null, -1, 1.5, "100", Number.MAX_SAFE_INTEGER + 2]) expect(foot(bad)).not.toContain("上下文");
+  it("D56 tokensText：<1000 整数，其余一位小数的 k", () => {
+    expect(tokensText(0)).toBe("0 token");
+    expect(tokensText(999)).toBe("999 token");
+    expect(tokensText(1000)).toBe("1.0k token");
+    expect(tokensText(12_345)).toBe("12.3k token");
+    expect(tokensText(128_000)).toBe("128.0k token");
   });
 
-  it("lastPromptChars：取当前会话最近一次回合结束的值；新 ready 之后清零重计", () => {
-    expect(lastPromptChars([])).toBeNull();
+  // D56：服务商给了 prompt_tokens 就显示 token；没给（null / 旧 core 缺键）回落「约 N 字」
+  const finT = (tokens: unknown, chars: unknown, seq: number) =>
+    F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: chars, prompt_tokens: tokens }, seq);
+
+  it("回合脚注：有 token 显示「上下文 12.3k token」，没有回落「上下文约 N 字」，都没有不追加", () => {
+    const foot = (tokens: unknown, chars: unknown) => {
+      const r = foldConv([{ k: "frame", at: 1, frame: finT(tokens, chars, 1) }]).rows.at(-1)!;
+      return r.k === "footer" ? r.text : "";
+    };
+    expect(foot(12_345, 14_031).endsWith(" · done · none · 上下文 12.3k token")).toBe(true);
+    expect(foot(null, 14_031).endsWith(" · done · none · 上下文约 1.4 万字")).toBe(true);
+    expect(foot(undefined, 9192).endsWith(" · 上下文约 9,192 字")).toBe(true);
+    for (const bad of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 2]) expect(foot(bad, 9192).endsWith(" · 上下文约 9,192 字")).toBe(true);
+    for (const bad of [undefined, null, -1, 1.5, "100"]) expect(foot(bad, bad)).not.toContain("上下文");
+  });
+
+  it("lastContextReading：取当前会话最近一次回合结束的读数；新 ready 之后清零重计", () => {
+    expect(lastContextReading([])).toBeNull();
     const a: ConvEntry[] = [
       { k: "frame", at: 1, frame: ready(1) },
-      { k: "frame", at: 2, frame: fin(3000, 2) },
-      { k: "frame", at: 3, frame: fin(5000, 3) },
+      { k: "frame", at: 2, frame: finT(2000, 3000, 2) },
+      { k: "frame", at: 3, frame: finT(4000, 5000, 3) },
     ];
-    expect(lastPromptChars(a)).toBe(5000);
-    // 非法值不覆盖上一次的合法读数
-    expect(lastPromptChars([...a, { k: "frame", at: 4, frame: fin("x", 4) }])).toBe(5000);
+    expect(lastContextReading(a)).toEqual({ tokens: 4000, chars: 5000 });
+    // 两样都不合法的帧不覆盖上一次的读数
+    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT("x", "x", 4) }])).toEqual({ tokens: 4000, chars: 5000 });
+    // 服务商这回没给 token：读数跟着最近一回合，回落字数
+    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT(null, 6000, 4) }])).toEqual({ tokens: null, chars: 6000 });
     // 结束会话后起的新会话：还没有回合结束 → null，不沿用旧会话的读数
-    expect(lastPromptChars([...a, { k: "frame", at: 5, frame: ready(1) }])).toBeNull();
-    expect(lastPromptChars([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: fin(800, 2) }])).toBe(800);
+    expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }])).toBeNull();
+    expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: finT(700, 800, 2) }])).toEqual({ tokens: 700, chars: 800 });
   });
 });

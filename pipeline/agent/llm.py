@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import os
 import sys
@@ -36,6 +37,11 @@ from pipeline.agent.tools import (
 )
 
 REQUEST_TIMEOUT = 60
+
+# D56：最近一次 chat_complete 响应里的 `usage`（服务商按自己的分词器算的 token 数）。
+# 走 ContextVar 而不是改返回值：chat_complete 有约 60 处测试替身按固定签名拦截，替身不写它，
+# 读出来就是 None，调用方回落到字数口径。
+_LAST_USAGE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("ava_llm_last_usage", default=None)
 
 # 检查点间隔（Spec 9 §2.3 第 6 条）：本轮自上次检查点起，模型回复满 CHECKPOINT_EVERY 条
 # **或**工具执行满 CHECKPOINT_EVERY 次（先到先停）就问一次人。防失控靠「人中断 + 本轮判重
@@ -343,6 +349,8 @@ def chat_complete(
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 响应非 JSON: {exc}") from None
 
+    usage = body.get("usage") if isinstance(body, dict) else None
+    _LAST_USAGE.set(usage if isinstance(usage, dict) else None)
     try:
         return body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -530,6 +538,7 @@ def _loop_result(
     prompt_chars: int = 0,
     elapsed_s: float = 0.0,
     lookups: dict[str, int] | None = None,
+    prompt_tokens: int | None = None,
 ) -> dict[str, Any]:
     """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。"""
     return {
@@ -549,7 +558,14 @@ def _loop_result(
         "prompt_chars": prompt_chars,
         "elapsed_s": elapsed_s,
         "lookups": dict(lookups) if lookups else _zero_lookups(),
+        "prompt_tokens": prompt_tokens,
     }
+
+
+def _prompt_tokens_of(usage: dict[str, Any] | None) -> int | None:
+    """`usage.prompt_tokens` 是非负整数才收（bool 不算整数）；其余一律 None。"""
+    v = usage.get("prompt_tokens") if usage else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
 
 def _zero_lookups() -> dict[str, int]:
@@ -608,6 +624,7 @@ def run_tool_loop(
     llm_calls = tool_calls_made = tool_executions = duplicates_rejected = checkpoints = 0
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
+    prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
     lookups = _zero_lookups()  # D48 ①：本回合实际执行的查证调用，按类计数
     started = time.monotonic()
     # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
@@ -616,11 +633,12 @@ def run_tool_loop(
     }
 
     def _chat(tool_choice: str | None = None) -> dict[str, Any]:
-        nonlocal prompt_chars
+        nonlocal prompt_chars, prompt_tokens
         prompt_chars = sum(
             len(str(m.get("content") or "")) for m in convo if isinstance(m, dict)
         )
-        return chat_complete(
+        _LAST_USAGE.set(None)
+        reply = chat_complete(
             convo,
             tools=tools or None,
             config=cfg,
@@ -629,6 +647,8 @@ def run_tool_loop(
             tool_choice=tool_choice,
             egress_trusted=egress_trusted,
         )
+        prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
+        return reply
 
     def _checkpoint_snapshot(trigger: str) -> dict[str, Any]:
         return {
@@ -697,14 +717,14 @@ def run_tool_loop(
                 convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                 tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                 checkpoints=checkpoints, wrapup="skipped", error=error,
-                prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
+                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
             )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
                 tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                error=error, prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
+                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
             )
         state, final, note, wrapup_error = _wrapup(reason)
         return _loop_result(
@@ -712,7 +732,7 @@ def run_tool_loop(
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
             wrapup=state, error=error or wrapup_error,
-            prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
         )
 
     try:
@@ -740,7 +760,7 @@ def run_tool_loop(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                     duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                    prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
+                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
                 )
 
             live["calls"] = calls
@@ -861,7 +881,7 @@ def run_tool_loop(
             convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
-            prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
         return _stop("error", error=str(exc))
