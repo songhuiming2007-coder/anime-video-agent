@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
+from pipeline.agent.compact import COMPACT_KEY
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
     ToolContext,
@@ -80,6 +81,8 @@ SCOPE_PURPOSE: dict[str, str] = {
 
 # 宿主内部档位标记：只进会话史，进请求体前由 _wire_messages 一律删除。
 _TIER_KEY = "_ava_tier"
+# 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）
+_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY})
 
 # 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
 _WARN_LATCH: set[tuple[str, str]] = set()
@@ -283,9 +286,10 @@ def _standard_message(message: dict[str, Any]) -> dict[str, Any]:
 def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[dict[str, Any]]:
     """请求体用的消息序列（Spec 7 §2.7 决策 7b）。
 
-    没有任何消息带档位标记（= 未分档）→ **原样返回同一个列表对象**：请求体与现状字节一致。
+    没有任何消息带宿主内部标记（档位 / D62 压缩标记）→ **原样返回同一个列表对象**：请求体与现状字节一致。
+    压缩标记只删不改：摘要与重注入卡对模型就是普通 user 消息，模型看不见标记、也仿写不出（D62 §4.4）。
     """
-    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):
+    if not any(isinstance(m, dict) and not _INTERNAL_KEYS.isdisjoint(m) for m in messages):
         return messages
     wired: list[dict[str, Any]] = []
     for message in messages:
@@ -293,7 +297,7 @@ def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[
             wired.append(message)
             continue
         tier = message.get(_TIER_KEY)
-        clean = {k: v for k, v in message.items() if k != _TIER_KEY}
+        clean = {k: v for k, v in message.items() if k not in _INTERNAL_KEYS}
         if tier is not None and tier != purpose:
             clean = _standard_message(clean)
         wired.append(clean)

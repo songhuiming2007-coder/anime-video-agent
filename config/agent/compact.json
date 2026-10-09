@@ -1,0 +1,18 @@
+{
+  "_note": "上下文压缩（D62，docs/dev/plans/2026-10-09-context-compaction-spec.md §4.1–4.2）。触发点 = window × reliable_ratio × trigger_ratio；尾部预算 = window × reliable_ratio × tail_ratio（token），条数 ≤ tail_max_messages 为次级约束。trigger_ratio 0.6 是施工默认值，理由只挂「标称窗口 ≠ 可靠窗口」，生产值等 §五④ 的代理实测；tail_ratio 0.15 在 gpt-4o 下 ≈19k，对齐 Codex 的 20k 实证值（人裁决①）。表里没有的模型：不自动压缩、读数不显示分母，不猜窗口（人裁决⑤）。",
+  "trigger_ratio": 0.6,
+  "tail_ratio": 0.15,
+  "tail_max_messages": 20,
+  "models": {
+    "gpt-4o": {
+      "window": 128000,
+      "reliable_ratio": 1.0,
+      "_source": "OpenAI 模型文档：gpt-4o 上下文 128,000。reliable_ratio 未标定，1.0 = 不另打折（可靠性余量目前全由 trigger_ratio 承担）。"
+    },
+    "gemini-3.8-flash-high": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576（2026-10-09 查）；-high 是本机代理（agent.local.json）的模型名。代理是否另行截断窗口未实测，挂 spec §五④；reliable_ratio 同上未标定。"
+    }
+  }
+}
