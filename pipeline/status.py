@@ -157,6 +157,14 @@ def _detect_advisories(d: Path) -> list[str]:
         except Exception as e:
             advisories.append(f"human_time.json 不可读：{e}")
 
+    # 7. 02.8 对抗审查还没跑（D48 ②，2026-10-09 人裁决：只提示、不拦）。只在有稿件、还没配音时提示
+    try:
+        has_script = (d / "02-script.draft.md").exists() or (d / "02-script.md").exists()
+        if has_script and not (d / "02-adversarial.md").exists() and not (d / "03-audio" / "manifest.json").exists():
+            advisories.append("02.8 对抗审查还没跑：`adversarial`（审事实、衔接、语言；只提示不拦）")
+    except OSError as e:
+        advisories.append(f"02.8 报告检查失败：{e}")
+
     # 5 & 6. 排片缺口与素材番笔记检测（Spec §4 / scout.probe 单次探测，消灭重复 WARN）
     try:
         from . import scout
