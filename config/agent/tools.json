@@ -12,6 +12,7 @@
     "crawl",
     "browser",
     "write_memory",
-    "cover_edit"
+    "cover_edit",
+    "write_note"
   ]
 }

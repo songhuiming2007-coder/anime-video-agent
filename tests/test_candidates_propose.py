@@ -441,7 +441,7 @@ def test_tools_import_does_not_pull_candidates() -> None:
 def test_acquire_propose_scope_mask(tmp_path: Path) -> None:
     # ① 注册表常驻
     assert "acquire_propose" in TOOL_SCHEMAS
-    assert len(TOOL_SCHEMAS) == 13     # Spec 12 登记 cover_edit（ADR-0025 封顶上调至 14）
+    assert len(TOOL_SCHEMAS) == 14     # ADR-0028 write_note 占第 14 槽（ADR-0025 封顶 14）
 
     # ② build_tool_schemas 单表全量含 acquire_propose（D43：不再按 scope 过滤）
     names = [s["function"]["name"] for s in build_tool_schemas()]

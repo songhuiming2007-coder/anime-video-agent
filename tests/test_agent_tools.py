@@ -434,6 +434,7 @@ SPEC_TOOLS = [
     "browser",
     "write_memory",
     "cover_edit",
+    "write_note",
 ]
 
 
@@ -756,7 +757,7 @@ def test_write_memory_registered_with_adr_and_memory_scopes(tmp_path: Path):
         (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
     )
     assert "write_memory" in repo_tools["tools"]
-    assert len(repo_tools["tools"]) == 13
+    assert len(repo_tools["tools"]) == 14
 
     # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
     schema = TOOL_SCHEMAS["write_memory"]

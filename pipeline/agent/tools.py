@@ -51,6 +51,13 @@ DRAFT_HISTORY_KEEP = 20
 SCRIPT_FILENAME = "02-script.md"
 SCRIPT_HISTORY_DIR = ("_agent", "script-history")
 
+# D61 / ADR-0028：write_note 的目标与留底目录
+NOTE_TARGETS = ("notes", "review")
+NOTES_HISTORY_DIR = "_history"
+REVIEW_REPORT_MARK = "-对抗审查报告"
+# 番名：不许空、不许带路径分隔符 / 控制字符、不许以 . 或 _ 开头（_history 等是保留目录）
+_ANIME_NAME = re.compile(r"^[^/\\\x00-\x1f._][^/\\\x00-\x1f]*$")
+
 
 def script_write_refusal(ep_dir: Path | str | None, filename: str) -> str | None:
     """D47 两条写入前提，弹卡前（review_tool_call）与落盘前（write_episode_file）各查一次；None = 放行。"""
@@ -748,6 +755,43 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "write_note": {
+        "name": "write_note",
+        "adr": "ADR-0028",
+        # 不标 side_effect：fail-closed 默认 True，每次写都弹人审卡（卡上带 diff）
+        "description": (
+            "写番剧笔记 data/library/notes/<番>.md（target=notes），或填已有笔记对抗审查报告的终审表"
+            "（target=review，report 给报告文件名）。笔记是所有期共用的剧情事实源：按 workflow-history"
+            "「番剧笔记」节写厚（每集独立小节、4–8 个场景、带行级时间码的逐字台词与说话人、多源交叉、"
+            "分歧存档），在单独的会话里写，不在写稿时顺带改。改已有笔记用 edits 只传改动片段；"
+            "采纳对抗审查的更正时同时在笔记「已知更正记录」节记一笔。不需要期目录。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "anime": {"type": "string", "description": "番名（与 sources.json / 笔记文件名一致）"},
+                "target": {"type": "string", "enum": list(NOTE_TARGETS), "description": "notes=笔记本体；review=审查报告终审表"},
+                "report": {"type": "string", "description": "target=review 时：报告文件名，如 罪恶王冠-对抗审查报告-2026-10-09.md"},
+                "content": {"type": "string", "description": "完整内容（新建或整篇重写；与 edits 二选一）"},
+                "edits": {
+                    "type": "array",
+                    "description": "局部替换（与 content 二选一）：按顺序把 old 换成 new；每个 old 必须恰好出现一次",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old": {"type": "string", "description": "要替换的原文片段（逐字）"},
+                            "new": {"type": "string", "description": "替换后的文字"},
+                        },
+                        "required": ["old", "new"],
+                        "additionalProperties": False,
+                    },
+                },
+                "reason": {"type": "string", "description": "这次改什么、依据是什么（卡上给人看）"},
+            },
+            "required": ["anime", "target", "reason"],
+            "additionalProperties": False,
+        },
+    },
     "acquire_propose": {
         "name": "acquire_propose",
         "adr": "ADR-0021",
@@ -1065,6 +1109,11 @@ def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> st
     if ep_dir is None:
         raise PermissionError(NO_EPISODE_MESSAGE)
     target = Path(ep_dir) / Path(str(args.get("filename", ""))).name
+    return _apply_edits(target, edits)
+
+
+def _apply_edits(target: Path, edits: list) -> str:
+    """D48 的局部替换语义（写稿与写笔记共用）：每条 old 在当时的文本里恰好出现一次，按顺序替换。"""
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1078,6 +1127,96 @@ def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> st
             raise ValueError(f"edits 第 {i} 条 {why}（按顺序替换，前面各条已生效后再找）")
         text = text.replace(e["old"], e["new"], 1)
     return text
+
+
+# ---------- D61 / ADR-0028：write_note（番剧笔记与笔记对抗审查报告的终审表） ----------
+
+def notes_dir(root: Path | None = None) -> Path:
+    return Path(root or paths.ROOT) / "data" / "library" / "notes"
+
+
+def _registered_animes(root: Path | None = None) -> set[str]:
+    """已登记的番：sources.json 与 config/characters.json 的顶层键（下划线开头的是注释）。"""
+    base = Path(root or paths.ROOT)
+    names: set[str] = set()
+    for f in (base / "data" / "library" / "sources.json", base / "config" / "characters.json"):
+        try:
+            names |= {k for k in json.loads(f.read_text(encoding="utf-8")) if not k.startswith("_")}
+        except (OSError, ValueError, AttributeError):
+            continue
+    return names
+
+
+def note_target(args: dict[str, Any], root: Path | None = None) -> Path:
+    """write_note 的落点（校验番名、目标类型与报告文件名；不判断写不写得）。"""
+    anime = str(args.get("anime", "")).strip()
+    if not _ANIME_NAME.match(anime) or ".." in anime:
+        raise PermissionError(f"番名「{anime}」不合用：不能空、不能含 / \\ 或控制字符、不能以 . 或 _ 开头")
+    target = str(args.get("target", "notes")).strip()
+    if target not in NOTE_TARGETS:
+        raise ValueError(f"target 只能是 {NOTE_TARGETS}，收到 {target!r}")
+    base = notes_dir(root)
+    if not base.is_dir():
+        raise PermissionError(f"笔记目录不可达（外置盘未挂载？）：{base}")
+    if target == "notes":
+        name = f"{anime}.md"
+    else:
+        name = str(args.get("report", "")).strip()
+        if not (name.startswith(anime + REVIEW_REPORT_MARK) and name.endswith(".md")) or "/" in name or "\\" in name:
+            raise PermissionError(f"report 必须是本番的对抗审查报告文件名（{anime}{REVIEW_REPORT_MARK}….md），收到 {name!r}")
+    dest = (base / name).resolve()
+    if dest.parent != base.resolve():
+        raise PermissionError(f"目标越界：{dest} 不在 {base} 下")
+    return dest
+
+
+def note_write_refusal(args: dict[str, Any], root: Path | None = None) -> str | None:
+    """弹卡前与落盘前各查一次；None = 放行。"""
+    try:
+        dest = note_target(args, root)
+    except (PermissionError, ValueError) as exc:
+        return str(exc)
+    if dest.exists():
+        return None
+    if str(args.get("target", "notes")) == "review":
+        return f"{dest.name} 不存在：审查报告由 notes_review 生成，write_note 只填它的终审表"
+    anime = str(args.get("anime", "")).strip()
+    if anime not in _registered_animes(root):
+        return (f"《{anime}》还没有笔记，也不在 sources.json / config/characters.json 里："
+                "新建笔记前先确认番名写法（防手误造出孤立文件）")
+    return None
+
+
+def resolve_note_content(args: dict[str, Any], root: Path | None = None) -> str:
+    """write_note 写入后的全文（落盘、卡面 diff、弹卡前校验三处共用）。"""
+    content, edits = args.get("content"), args.get("edits")
+    if (content is None) == (edits is None):
+        raise ValueError("content 与 edits 必须且只能给一个")
+    if content is not None:
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content 必须是非空字符串")
+        return content
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("edits 必须是非空数组")
+    return _apply_edits(note_target(args, root), edits)
+
+
+def _tool_write_note(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    root = ctx.base
+    refusal = note_write_refusal(args, root)
+    if refusal:
+        raise PermissionError(refusal)
+    dest = note_target(args, root)
+    content = resolve_note_content(args, root)
+    if dest.exists():
+        # 覆盖前全量留底（不修剪）：笔记是所有期共用的事实源，改错了要能逐版追回
+        hist = dest.parent / NOTES_HISTORY_DIR / str(args.get("anime")).strip()
+        hist.mkdir(parents=True, exist_ok=True)
+        ns = time.time_ns()
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(ns // 1_000_000_000)) + f"{ns % 1_000_000_000:09d}"
+        paths.atomic_write(hist / f"{stamp}-{dest.name}", dest.read_text(encoding="utf-8"))
+    paths.atomic_write(dest, content)
+    return {"written": str(dest), "bytes": len(content.encode("utf-8"))}
 
 
 def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1418,6 +1557,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "browser": _tool_browser,
     "write_memory": _tool_write_memory,
     "cover_edit": _tool_cover_edit,
+    "write_note": _tool_write_note,
 }
 
 
