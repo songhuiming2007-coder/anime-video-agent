@@ -328,7 +328,7 @@ def test_status_advisories_no_fork(tmp_path: Path):
     ep_notes.mkdir()
     _create_topic(ep_notes, "番: 葬送的芙莉莲, 迷宫饭\n")
     adv3 = _detect_advisories(ep_notes)
-    assert "缺《葬送的芙莉莲》等 2 部番剧笔记（agent 跑 scout --type notes 出工单；ava 还不能写 data/library/notes/，笔记仍交 pi，见 D59 待人定）" in adv3
+    assert "缺《葬送的芙莉莲》等 2 部番剧笔记（agent 自己研究写厚、用 write_note 落盘，再 notes_review 审；ava 三级网络工具都查不到时才用 scout --type notes 出工单交外部 agent）" in adv3
 
     # 5. 异常容错（坏 04-clips.json 按 S4 优雅跳过，绝不抛出异常）
     ep_corrupt = tmp_path / "ep_corrupt"

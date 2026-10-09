@@ -29,6 +29,38 @@ class EpisodeStatus:
     advisories: list[str] = field(default_factory=list)
 
 
+def notes_review_advisories(d: Path) -> list[str]:
+    """D61：本期涉及的番的笔记审查状态（只读）。报告按文件名排序取最新（日期在名里，-n 递增）。"""
+    import re
+
+    from . import paths
+    from .bgm import animes_of
+
+    notes = paths.DATA / "library" / "notes"
+    out = []
+    for anime in animes_of(d) if (d / "01-topic.md").exists() else []:
+        if not (notes / f"{anime}.md").exists():
+            continue
+        def _order(f: Path) -> tuple[str, int]:
+            # notes_review 的命名：<番>-对抗审查报告-<日期>[-n].md；pi 时代的旧名不带日期，排最前
+            m = re.search(r"-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.md$", f.name)
+            return (m.group(1), int(m.group(2) or 1)) if m else ("", 0)
+
+        reports = sorted(notes.glob(f"{anime}-对抗审查报告*.md"), key=_order)
+        if not reports:
+            out.append(f"《{anime}》笔记还没有对抗审查报告：`notes_review {anime}`（每集一次模型调用；只提示不拦）")
+            continue
+        text = reports[-1].read_text(encoding="utf-8")
+        if "## 终审裁决" not in text:
+            continue  # pi 时代的旧报告，格式不同，不判
+        table = text.split("## 终审裁决", 1)[1]
+        open_rows = [ln for ln in table.splitlines() if re.match(r"^\|\s*[QF]\d+\s*\|", ln) and ln.rstrip().endswith("|  |")]
+        if open_rows:
+            out.append(f"《{anime}》笔记审查报告 {reports[-1].name} 还有 {len(open_rows)} 条未终审"
+                       "（逐条裁决，采纳的用 write_note 改笔记）")
+    return out
+
+
 def _detect_advisories(d: Path) -> list[str]:
     """常驻检测六条 advisory（Spec §2.2 + §2.6 + scout §4）。
 
@@ -165,6 +197,12 @@ def _detect_advisories(d: Path) -> list[str]:
     except OSError as e:
         advisories.append(f"02.8 报告检查失败：{e}")
 
+    # 8. 番剧笔记对抗审查（D61：只提示、不拦）。本期涉及的番有笔记却从没审过，或最新报告终审表还有空行
+    try:
+        advisories.extend(notes_review_advisories(d))
+    except (OSError, ValueError, SystemExit) as e:
+        advisories.append(f"笔记审查报告检查失败：{e}")
+
     # 5 & 6. 排片缺口与素材番笔记检测（Spec §4 / scout.probe 单次探测，消灭重复 WARN）
     try:
         from . import scout
@@ -184,7 +222,7 @@ def _detect_advisories(d: Path) -> list[str]:
         if missing_notes:
             first = missing_notes[0]
             advisories.append(
-                f"缺《{first}》等 {len(missing_notes)} 部番剧笔记（agent 跑 scout --type notes 出工单；ava 还不能写 data/library/notes/，笔记仍交 pi，见 D59 待人定）"
+                f"缺《{first}》等 {len(missing_notes)} 部番剧笔记（agent 自己研究写厚、用 write_note 落盘，再 notes_review 审；ava 三级网络工具都查不到时才用 scout --type notes 出工单交外部 agent）"
             )
     except Exception:
         pass

@@ -434,6 +434,8 @@ def render_approval_card(
         nature = "把 incoming/ 里的文件挪进本期 patch_assets/（期内补料）"
     elif module == "calibration":
         nature = "写全局配置（标定值，AGENTS.md Code Freeze 例外 D60）"
+    elif module == "notes_review":
+        nature = "番剧笔记对抗审查（每集一次模型调用，出网；写新报告，不覆盖旧报告）"
     elif module in LIBRARY_WRITE_MODULES:
         nature = "写素材库 data/library/（所有期共用）"
     else:
