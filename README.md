@@ -67,14 +67,16 @@ ava idea                # 不建期，先聊选题
 
 ### 新番入库（每部番一次）
 
-开第一期之前，这部番的素材要先入库：
+开第一期之前，这部番的素材要先入库。片源文件由人放进 `data/library/raw/<番>/`；之后的步骤都由 agent 在期会话里经审批卡跑（只读的免卡，写盘的弹卡；人只批卡、看密度表和抽检表拍板），不用在终端敲：
 
-1. 验片：确认片源能完整解复用（`python -m pipeline.ingest intact ...`）
-2. 入库：对轴并建字幕索引（`python -m pipeline.ingest phase0 ...`）
-3. 视觉索引：镜头切分、人脸聚类、给角色贴名（`pipeline.shots`、`pipeline.faces`）
-4. 核对：`python -m pipeline.vindex status --anime <番>` 各项数字对得上
-5. 音色：试音并选定口播参考音（`pipeline.tts probe`）
-6. BGM：建曲库并测响度（`pipeline.bgm`）
+1. 验片：确认片源能完整解复用（`ingest intact`，免卡）
+2. 入库：对轴并建字幕索引（`ingest phase0`）
+3. 视觉索引：定阈值、镜头切分、人脸聚类、给角色贴名（`shots calibrate` / `build`、`faces`）
+4. 核对：`vindex status --anime <番>` 各项数字对得上（免卡）
+5. 音色：试音并选定口播参考音（`tts probe`）
+6. BGM：建曲库并测响度（`bgm`）
+
+命令与 `python -m pipeline.<模块> …` 等价，后者只作排查参考。
 
 完整参数见 [`docs/dev/postmortems/workflow-history.md`](docs/dev/postmortems/workflow-history.md) 的 Phase 0 章节。
 

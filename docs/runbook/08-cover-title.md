@@ -2,10 +2,8 @@
 
 全自动提取高质量封面帧候选池并生成标题候选，严禁机器代人定稿。
 
-## 执行命令
-```bash
-python -m pipeline.cover data/episodes/<期号>
-```
+## 执行
+agent 跑 `cover`（弹卡，期目录自动补上）。底层排查参考：`python -m pipeline.cover data/episodes/<期号>`。
 
 ## 产物与位置
 - `data/episodes/<期号>/07-cover/`（候选帧与 6×5 联系表）

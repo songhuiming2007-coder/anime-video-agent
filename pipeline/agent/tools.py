@@ -120,7 +120,7 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "subindex": {"build", "search"},
     "vprobe": {"tagger", "presence", "scene", "captions"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
-    "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames"},
+    "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
     "acquire": {"fetch", "gate", "register", "forget"},

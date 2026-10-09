@@ -9,10 +9,7 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
 ## 执行步骤
 1. **调用技能写稿**：调用 `skills/write-script`，参考 `01-topic.md` 与题材骨架，写出 8–20 个微单元段落。
 2. **段落规范**：每段必须明确包含配音文本、`查询:`（台词语义）或 `锚点:`（具体时间码）。
-3. **运行机检**：
-   ```bash
-   python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md
-   ```
+3. **运行机检**：agent 跑 `check_script`（免卡，期目录与稿件自动补上）。底层排查参考：`python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md`。
 
 ## 核心规程与铁律
 1. **查询是机器接口不是构图备注**：`查询` 文本会原样进入字幕向量检索，写“角色承认逃避”有效，写“中景逆光”必落空。

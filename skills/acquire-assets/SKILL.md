@@ -102,5 +102,5 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 池子现状与缺口清单是**一时一池**的数据，不是规程，放在各自的计划文件里：
 
 - EGOIST：[`docs/dev/plans/archive/2026-09-11-egoist-pool-notes.md`](../../docs/dev/plans/archive/2026-09-11-egoist-pool-notes.md)
-  （2026-09-11 快照：SP01–SP18、缺口清单、别做的事）。检索前先用 `vindex status <池>` 和
+  （2026-09-11 快照：SP01–SP18、缺口清单、别做的事）。检索前先用 `vindex status --anime <池>` 和
   `sources.json` 核对池子现在到几号，不要信快照里的号。

@@ -39,7 +39,7 @@ agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底�
 当人审片（`04-review.html`）想精确指定补丁池里的某个镜头时，走「出画廊 → 人指镜头 → agent 改稿 → 重跑」的闭环：
 
 1. **出补丁画廊**：agent 跑 `shots gallery --patch <期目录> SPxx`（弹卡），产物 `04-patch/shots/<池名>_SPxx_gallery.html`，在桌面端预览区打开。画廊在期目录下，预览区不放行脚本，「复制锚点」按钮点不了——人直接告诉 agent「用 #12」或报时间码即可。
-2. **agent 写补丁锚点**：在 `02-script.md` 里写 `锚点: <池名> SPxx mm:ss`（写稿卡带 diff，人批）。池名以 `04-patch/pool.json` 的 `pool` 字段为准（如期目录「EGOIST-三期」净化后是 `EGOIST--patch`，B2）。
+2. **agent 写补丁锚点**：在 `02-script.md` 里写 `锚点: <池名> SPxx mm:ss`（写稿卡带 diff，人批），示例：`锚点: EGOIST--patch SP03 1:20`。池名以 `04-patch/pool.json` 的 `pool` 字段为准（期目录「EGOIST-三期」净化后含双横线 `EGOIST--patch`；不带方括号，B2）。
 3. **改稿校验与重排**：agent 跑 `check_script`（免卡）→ `clips`（弹卡）。
    - `compute_script_vo_hash` 只提取 `配音：` 行（B6），改画面行（`锚点:` / `查询:` / `场景:`）不改配音哈希，已合成音频免重跑；
    - 与 `03-audio/corrections.json` 互不干扰，不用 `--apply-patch` 重配；

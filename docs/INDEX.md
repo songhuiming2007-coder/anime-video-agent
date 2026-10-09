@@ -8,7 +8,7 @@
 
 | 我要查 | 主文件 | 说明 |
 |---|---|---|
-| **生产开工状态诊断与路由** | 运行 `python -m pipeline.status <期目录>` | 自动判断当前卡点，输出唯一命令与对应的 SOP |
+| **生产开工状态诊断与路由** | 问 agent「现在到哪了」（它读 `read_status`；底层 `python -m pipeline.status <期目录>`） | 自动判断当前卡点，输出唯一命令与对应的 SOP |
 | **每期作业总纲速查（≤100 行）** | [`WORKFLOW.md`](WORKFLOW.md) | 四阶段工序卡、4 处人工停机点与四大物理红线 |
 | **ava 终端交互极简速查** | [`CHEATSHEET.md`](CHEATSHEET.md) | 看板、REPL 路由、顺听纠错白话口诀与全流程命令速查 |
 | 01 选题与张力 | [`runbook/01-topic.md`](runbook/01-topic.md) | 选题字段、体裁选择与编辑判断约束 |

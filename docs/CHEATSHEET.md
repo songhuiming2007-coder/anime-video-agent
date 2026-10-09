@@ -1,7 +1,7 @@
 # ava 终端交互与作业极简速查 (CHEATSHEET)
 
 本文档是操作员（Operator）使用 `ava` 宿主进行全流程视频制作的日常速查手册。
-最后按实际行为校对：2026-09-25（S25 全局校对）。
+最后按实际行为校对：2026-09-25（S25 全局校对）；2026-10-09 D59 改为「命令由总监发、你只批卡」。
 
 ---
 
@@ -76,7 +76,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/voice` | pipeline | 进入配音顺听纠错台 | 03 配音完成后，戴耳机极简挑错字、改读音、钉种子 |
 | `/chat` | creative | 聚焦选题发散（独立子会话） | 01 阶段梳理核心张力、人物弧光与矛盾 |
 | `/script` | creative | 聚焦写稿（独立子会话） | 02 阶段自动调阅选题与资料库笔记，产出 `02-script.draft.md` |
-| `/asset` | 特殊 | 切入 Phase 0 资产与云端调度模式 | 放行 `faces`, `shots`, `vindex`, `cloud`, `ingest`, `acquire` 命令 |
+| `/asset` | 特殊 | 切入 Phase 0 资产与云端调度模式 | 注入素材规程（D43 起各模式工具相同；asset 侧命令见下文放行表） |
 | `/pipeline` | 特殊 | 退出 asset，切回自动工序模式 | 完成底层资产维护后切回常规制片 |
 | `/scout` | pipeline | 生成 pi 侦察派工单 | 缺料/缺笔记/标题候选时生成自包含工单交给 pi 采掘 |
 | `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
@@ -100,7 +100,8 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 
 | 危险标记 | 什么时候出现 |
 |---|---|
-| `[计费] ☁计费` | `cloud up/run/push/pull`（云端实例开机烧钱） |
+| `[计费] ☁计费` | `cloud up/run/push/pull`（云端实例开机烧钱）；其余 `cloud` 子命令性质栏写「云端计费动作」 |
+| `[门禁豁免]` | `acquire register --waive 理由`：素材门禁没过、人同意照样登记 |
 | `[长任务]` | `render` 渲染（分钟级） |
 | `[停机点]` | 命令含 `--approve`（或它的 argparse 缩写，如 `--app`），或停机点未过时推进 `tts`/`clips`/`render` |
 | `[跳过人工闸]` | 命令含 `--confirm-patch`（或缩写 `--conf`），补丁段二次确认将被跳过 |
@@ -110,13 +111,24 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 **按键纪律**：
 
 - **默认 N**：回车、EOF、任何非 `y` 输入一律不执行——注意只有单个 `y` 算批准，敲 `yes` 不算。
-- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` 七个只读工具不弹卡，只回显一行 `[tool] read_artifact 01-topic.md`，让你看见模型在读什么。
+- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` 七个只读工具不弹卡，只回显一行 `[tool] read_artifact 01-topic.md`，让你看见模型在读什么。`run_pipeline` 里的只读命令（下面放行表的粗体项）同样免卡。
 - **拒收不弹卡**：`--force`、白名单外、未注册的工具、无期会话里需要期目录的工具在弹卡**之前**就被拦下，直接 `[REJECT] <具体拒因>` 回喂模型（它分得清「护栏拒的」和「你拒的」）。（2026-10-08 修订（D43 / Spec 17）：原「未注册/超 scope」——「超 scope」拒绝已随 D43 废除，所有模式开放全部工具。）
 - **留痕**：每次按键都追加一行到 `data/episodes/<期>/_agent/approvals.jsonl`（时间、工具、规范化命令、y/n、决策耗时秒数）——这是审批疲劳的唯一读数来源。
 
 ### 4. `/run` 的核心纪律与放行表
 
-- **放行模块**：`check_script`, `tts`, `clips`, `review`, `render`, `qc`, `cover`, `bgm`, `status`；
+**日常不用你敲**（2026-10-09 D59）：下表的命令都由总监经 `run_pipeline` 发，只读的免卡、写盘的弹卡，你只按 `y` / `N`。`/run` 是你想亲手跑时的同一张表。
+
+- **放行模块**（与 `pipeline/agent/tools.py` 同步，2026-10-09）：
+  - 整模块（期目录自动补上）：`check_script`、`status`（这两个免卡）、`tts`、`clips`、`review`、`render`、`qc`、`cover`、`corrections`（`check` 免卡）、`adversarial`、`scout`、`ingest_patch`；不补期目录：`bgm`、`timeline`；
+  - 按子命令（不补期目录，路径要写全；**粗体**免卡）：
+    `acquire` **gate** / fetch / register / forget；
+    `ingest` **probe** / **intact** / **verify** / subs / run / sources / phase0；
+    `shots` build / frames / caption-frames / calibrate / rebuild / gallery；
+    `vindex` **who** / **status** / **search** / captions / embed / presence；
+    `subindex` **search** / build；`vprobe` tagger / presence / scene / captions；
+    `faces` detect / cluster / sheet / name / presence；
+    `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames（`exec` 永久禁用）；
 - **参数自动补齐**：敲 `/run clips` 会自动注入当前期的完整路径；敲 `/run tts --redo 3` 也会自动注入当期路径；
 - **坚决拒收**：`--force` 与 `--force-all` 会被当场拦截，并指引你使用增量参数 `--redo <段号>` 或 `--apply-patch`。
 
@@ -169,15 +181,15 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 | 步骤 | 阶段 | 你在 ava 终端做什么 | 产物 | 🛑 停机卡点规程 |
 |---|---|---|---|---|
 | **01** | 选题 | `ava new <期名>`，人填 `01-topic.md` | `01-topic.md` | 张力由人脑判定，严禁机器代填 |
-| **02** | 写稿 | 敲 `/script` 或直接说「根据选题出草稿」，跑 `/run check_script` | `02-script.draft.md` | 机检全绿方可进入下一阶段（条数随判据迭代，以 `check_script` 实际输出为准，不写死） |
-| **02.5** | **改稿** | 人工精修事实，另存为 `02-script.md` 并打 patch | `02-script.md`<br>`02-diff.patch` | **🛑 停机点 1**：必须通读改稿，无 patch 渲染器拒绝启动 |
-| **03** | 配音 | 敲 `/run tts` | `03-audio/seg-*.wav` | 首次全量合成；后续一律只补点名段 |
+| **02** | 写稿 | 直接说「根据选题出草稿」，总监自己跑 `check_script`（免卡） | `02-script.draft.md` | 机检全绿方可进入下一阶段（条数随判据迭代，以 `check_script` 实际输出为准，不写死） |
+| **02.5** | **改稿** | 精修事实（或让总监改，卡上看 diff），`/approve 02.5` 时自动封板 | `02-script.md`<br>`02-diff.patch` | **🛑 停机点 1**：必须通读改稿，无 patch 渲染器拒绝启动 |
+| **03** | 配音 | 说「开配」，总监提议 `tts`，按 `y` | `03-audio/seg-*.wav` | 首次全量合成；后续一律只补点名段 |
 | **03.5** | **顺听** | 敲 `/voice` 顺听抽检，白话纠错，敲 `done` | `03-audio/corrections.json` | **🛑 停机点 2**：抽检开头与最长段，用 `--apply-patch` 重配 |
-| **04** | 排片 | 敲 `/run clips` | `04-clips.json`<br>`04-review.html` | 三通道自动贪心占坑；有缺口敲 `/scout`（或 `/patch`）生成工单交由 pi 采掘补料 |
-| **05** | **审片** | 浏览器审 `04-review.html`，敲 `/run review --approve` | `04-clips.approved.json` | **🛑 停机点 3**：确认无声画错位后显式 approve 封板。卡片会打 `[停机点]`，**那一眼就是全部防线** |
-| **06** | 渲染 | 敲 `/run render` | `05-final.mp4` | 自动执行双重切片校验、字幕折行、BGM 侧链闪避 |
-| **07** | 质检 | 敲 `/run qc` | `06-check.log` | 11 项机器硬门禁自动化检验（音画同步、黑帧等），以日志实际输出为准 |
-| **08** | 封面 | 敲 `/run cover` | `07-cover/`<br>`07-titles.md` | 自动提取候选池与 5 条标题建议（严禁机器定稿） |
+| **04** | 排片 | 说「排片」，总监提议 `clips`，按 `y` | `04-clips.json`<br>`04-review.html` | 三通道自动贪心占坑；有缺口由总监跑 `scout` 看缺口、自己查证补料（runbook 04.5），人只批卡 |
+| **05** | **审片** | 看 `04-review.html`，敲 `/approve 05` | `04-clips.approved.json` | **🛑 停机点 3**：确认无声画错位后显式 approve 封板（总监不能 approve），**那一眼就是全部防线** |
+| **06** | 渲染 | 总监提议 `render`（`[长任务]`），按 `y` | `05-final.mp4` | 自动执行双重切片校验、字幕折行、BGM 侧链闪避 |
+| **07** | 质检 | 总监提议 `qc`，按 `y` | `06-check.log` | 11 项机器硬门禁自动化检验（音画同步、黑帧等），以日志实际输出为准 |
+| **08** | 封面 | 总监提议 `cover`，按 `y` | `07-cover/`<br>`07-titles.md` | 自动提取候选池与 5 条标题建议（严禁机器定稿） |
 | **09** | **发布** | 人类挑选标题与封面，手动上传平台 | 各平台稿件 | **🛑 停机点 4**：人类拍板发布，归档本期 |
 
 ---
@@ -207,7 +219,7 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 1. **报 `[REJECT] 禁止在 ava 中使用 --force`**：
    - 永远不要在 ava 中强制全量重配。单段重配用 `/run tts --redo <段号>`；纠错重配用 `/voice` 敲 `done`（走 `--apply-patch`）。
 2. **看板出现 `⚠️ approved 已过期，必须重走 05`**：
-   - 说明 05 封板后，上游的脚本或配音又发生了改动，时间码已漂移。必须重新在浏览器审查 `04-review.html` 并重新执行 `/run review --approve`。
+   - 说明 05 封板后，上游的脚本或配音又发生了改动，时间码已漂移。让总监重跑 `review`，重新审 `04-review.html` 后 `/approve 05`。
 3. **报 `🛑 [CODE FREEZE WARN] pipeline/ 源码存在未提交改动`**：
    - 制片期间严禁修改 `pipeline/` 源代码。请通过 `git status` 撤销对流水线代码的偶发修改。
 4. **报 `data/episodes 不可达`**：

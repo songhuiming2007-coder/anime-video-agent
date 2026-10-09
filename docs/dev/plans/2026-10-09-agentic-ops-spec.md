@@ -1,6 +1,6 @@
 # 「人在终端跑」全部收进 agent：人只批卡，不敲命令（D59）
 
-日期：2026-10-09　状态：**施工中**
+日期：2026-10-09　状态：**已施工·机检通过（2026-10-09）**；两项待人定见文末
 关联：D59、ADR-0021 §3（fetch/gate/register 走白名单——施工时只接了 fetch）、ADR-0025（工具数上限）、ADR-0020（停机点由人）、Spec 9（审卡）、`skills/acquire-assets/SKILL.md`
 
 ## 起因
@@ -48,6 +48,8 @@
 | 远端 `mv data` + `ln -s`（WORKFLOW 阶段 0） | `cloud relocate-data`：已经是软链就报 OK 退出；远端有任务在跑、或数据盘上已有 `data/` 就拒；否则挪过去并软链（弹卡，云端动作） |
 | 余量闸报错里的 `cloud exec --fg "rm -rf …/*_cap"`（agent 永远不许用 `exec`） | `cloud clean-frames`：清远端上一轮打标帧（本地可秒级重抽），有任务在跑就拒（弹卡） |
 | 03.5 结构化打点 `tts --review …` 只写在「终端备用」里 | 改写为 agent 跑（弹卡）；本来就在白名单里，只是文档没说 |
+| `cloud doctor` 修法里的 `cloud exec 'git clone …'` 与 `cloud exec '…snapshot_download…'` | `cloud fix-env`：按 doctor 同一判据，仓库缺了就克隆、模型缺失 / 体积不足 / 结构校验不过就从镜像重下（模型 id 只来自 `config/cloud.json` 的 `models`）；有任务在跑就拒（弹卡） |
+| 02.5 未封板时报错让人敲 `git diff --no-index …` | 改指桌面端「封板」/ `/seal-script`（批准 02.5 时本来就会自动封板） |
 | `register --as SPnn` 要人去数池子里最后一个号 | 不给 `--as` 时自动取最后一个号 +1，打印出来 |
 
 ### C. 已有桌面端入口，只是文档过期 → 只改文档
@@ -65,6 +67,8 @@
 | 正片片源文件放进 `raw/` | 由人提供文件 |
 | 封面字体 `cover.font_file` | 一次性配置，在 Code Freeze 范围内 |
 | `eval` / `recheck` / `verify_mutations` | 开发评估工具，不在生产流程里 |
+| 远端装 PyTorch 等环境依赖（doctor [TORCH] 修法） | 属于装全局依赖（红线 5），交人 |
+| 远端数据盘「清理无用的大文件」（doctor [DISK] 修法） | 删什么是判断；可确定可删的打标帧由 `cloud clean-frames` 处理 |
 
 ## 施工批次
 
