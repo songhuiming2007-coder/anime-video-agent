@@ -365,6 +365,49 @@ test("TX-10 真实 core：结束会话后「继续上次会话」→ 历史分�
   });
 });
 
+test("D57 真实 core：选题聊过 → 退出 app 再打开 → 会话头「继续上次的选题对话」→ 点了接上历史，可以接着聊", async () => {
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, ["SESS-A"], {});
+  let L = await launchSession(fx.repo);
+  try {
+    llm.push(assistant("选题旧回复"), assistant("选题新回复"));
+    await L.page.getByTestId("idea").click();
+    await expect(L.page.getByTestId("composer-input")).toBeVisible();
+    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0); // 还没聊过：没有可接上的
+    await send(L.page, "选题旧消息");
+    await waitTurns(L, "idea", 1);
+    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0); // 活会话里不显示
+    await stubQuit(L, "quit");
+    await L.app.close();
+
+    L = await launchSession(fx.repo);
+    await L.page.getByTestId("idea").click();
+    const resume = L.page.getByTestId("idea-resume");
+    await expect(resume).toBeVisible({ timeout: 20_000 });
+    await expect(resume).toHaveText(/^继续上次的选题对话（最后 \d\d-\d\d \d\d:\d\d）$/);
+    await expect(L.page.getByTestId("conv-stream")).not.toContainText("选题旧消息"); // 修前就是这样：空白
+    await resume.click();
+    await expect(L.page.getByTestId("conv-stream")).toContainText("选题旧消息", { timeout: 15_000 });
+    await expect(L.page.getByTestId("conv-stream")).toContainText("选题旧回复");
+    // 恢复出的系统注入（常驻提示等）折叠成一行，正文默认不展开（Spec 10 §2.3；D57 前是整段平铺）
+    const inj = L.page.locator("[data-testid=conv-row][data-kind=injection]").first();
+    await expect(inj).toContainText(/^系统注入（\d+ 字/);
+    await expect(inj.locator("pre")).toBeHidden();
+    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0);
+    await send(L.page, "接着聊");
+    await expect(L.page.getByTestId("conv-stream")).toContainText("选题新回复", { timeout: 15_000 });
+    expect(llm.badPairings).toBe(0);
+  } catch (e) {
+    await dumpScene(L, llm, ["SESS-A"]);
+    throw e;
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});
+
 test("TX-11 真实 core：批准一张工具卡后，时间线该事件显示「命令卡批准」", async () => {
   await withRealCore(async ({ L, llm }) => {
     llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("好"));

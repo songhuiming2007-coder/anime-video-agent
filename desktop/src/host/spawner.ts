@@ -53,6 +53,8 @@ export type Template =
   | "IMPORT_COVER"
   // D45：会话列表 / 删除（移进回收站）
   | "LIST_SESSIONS"
+  // D57：选题会话的只读列表（`ava idea /list-sessions`）
+  | "LIST_IDEA_SESSIONS"
   | "DELETE_SESSION";
 
 /** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
@@ -119,6 +121,7 @@ export interface TemplateArgs {
   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
   IMPORT_COVER: { ep: string; name: string };
   LIST_SESSIONS: { ep: string };
+  LIST_IDEA_SESSIONS: Record<string, never>;
   /** sid 先过 SESSION_ID_RE，不合格抛错不 spawn */
   DELETE_SESSION: { ep: string; sid: string };
 }
@@ -317,6 +320,8 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep } = args as TemplateArgs["LIST_SESSIONS"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/list-sessions"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
     }
+    case "LIST_IDEA_SESSIONS":
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/list-sessions"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
     case "DELETE_SESSION": {
       const { ep, sid } = args as TemplateArgs["DELETE_SESSION"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };

@@ -1032,6 +1032,16 @@ def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -
 SESSION_ID = re.compile(r"^[0-9a-f]{16}$")
 
 
+def _session_rows(raw: bytes) -> list[dict[str, Any]]:
+    """`/list-sessions` 的行（期会话与选题会话同一形状）。"""
+    return [
+        {"sid": s.sid, "messages": s.messages, "assistants": s.assistants,
+         "last_activity": s.last_activity, "first_user": s.first_user,
+         "resumable": s.resumable}
+        for s in list_sessions(raw)
+    ]
+
+
 def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
     """`/list-sessions` 与 `/delete-session --sid=<sid>`。非本族命令返回 None。
 
@@ -1049,13 +1059,7 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
         if rest:
             print("[ERROR] 用法: ava <期> /list-sessions", file=sys.stderr)
             return 2
-        rows = [
-            {"sid": s.sid, "messages": s.messages, "assistants": s.assistants,
-             "last_activity": s.last_activity, "first_user": s.first_user,
-             "resumable": s.resumable}
-            for s in list_sessions(read_log(resolved))
-        ]
-        print(json.dumps(rows, ensure_ascii=False))
+        print(json.dumps(_session_rows(read_log(resolved)), ensure_ascii=False))
         return 0
     try:
         sid = _valued_flags(rest, ("--sid",))["--sid"]
@@ -2450,6 +2454,12 @@ def main(argv: list[str] | None = None) -> int:
         if not target:
             return 0
         return run_repl(target)
+
+    # D57：选题会话的只读列表（桌面端据此显示「继续上次的选题对话」；红线 3：桌面端不自己读会话记录）。
+    # 放在 idea 分派块之前：那一块对多余参数一律报错，且它的原文被变异矩阵 M22b / M27a3 钉住
+    if args == [IDEA_KEYWORD, "/list-sessions"]:
+        print(json.dumps(_session_rows(read_log(paths.ROOT / "data" / IDEA_DIR)), ensure_ascii=False))
+        return 0
 
     # 子命令 2: ava idea (无期选题会话)
     if args[0] == IDEA_KEYWORD:

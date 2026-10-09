@@ -7,7 +7,7 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastContextReading } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, SessionRow, ShotsEntry, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
@@ -265,6 +265,26 @@ function Main() {
   const conv = convs.convs[convKey];
   const rows = foldOf(conv).rows;
 
+  // D57：选题视图没有活会话时问 core 有没有可接上的选题对话（重开 app 后靠它显示「继续上次的选题对话」）
+  const [ideaLast, setIdeaLast] = useState<string | null>(null);
+  const ideaPhase = convKey === "idea" ? (conv?.phase ?? "none") : null;
+  const ideaIdle = ideaPhase === "none" || ideaPhase === "exited";
+  useEffect(() => {
+    setIdeaLast(null);
+    if (!ideaIdle) return;
+    let alive = true;
+    rpc.call<SessionRow[]>("conv.sessions", { convKey: "idea" }).then(
+      (rows) => {
+        const last = [...rows].reverse().find((r) => r.resumable);
+        if (alive) setIdeaLast(last ? last.lastActivity : null);
+      },
+      () => undefined, // 查不到就不显示入口：发消息照样会接上（core 启动即恒恢复）
+    );
+    return () => {
+      alive = false;
+    };
+  }, [ideaIdle, rpc]);
+
   /** 打开停机点的预览目标（沿用 Spec 8 §2.5 的映射；这里只决定「看哪份文件」） */
   const showStopPreview = useCallback((epKey: string, a: ApprovalJson) => {
     if (!isStopType(a.type)) return;
@@ -437,6 +457,7 @@ function Main() {
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
             context={lastContextReading(conv?.entries ?? [])}
+            ideaLastActivity={ideaLast}
             onCreated={onCreatedEp}
             onEnded={() => fetchConvRef.current(convKey, true)}
           />

@@ -105,6 +105,13 @@ function Row({ row, running }: { row: ConvRow; running: boolean }) {
           )}
         </div>
       );
+    case "injection":
+      return (
+        <details data-testid="conv-row" data-kind="injection">
+          <summary className="conv-note">系统注入（{row.text.length} 字：提示词、规程或记忆，模型当时看到的原文）</summary>
+          <pre className="conv-obs">{row.text}</pre>
+        </details>
+      );
     case "log":
       return (
         <details data-testid="conv-row" data-kind="log">

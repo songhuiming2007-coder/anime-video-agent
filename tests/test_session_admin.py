@@ -169,3 +169,22 @@ def test_lease_released_after_delete(ep: Path) -> None:
     lease = EpisodeLease.acquire(ep)  # 删除进程不得残留租约
     lease.append({"k": "msg", "message": {"role": "user", "content": "新"}})
     assert b'"content": "\xe6\x96\xb0"' in (ep / "session.jsonl").read_bytes()
+
+
+def test_d57_idea_list_sessions(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """D57：`ava idea /list-sessions` 只读列出选题会话（同一行形状），不需要期目录；没有记录 → []。"""
+    assert cli.main(["idea", "/list-sessions"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    idea = ep.parents[1] / "_idea"
+    idea.mkdir()
+    raw = b"".join([
+        dumps({"k": "session_start", "sid": C, "seq": 0, "ts": "2026-10-09T06:32:52Z", "schema": 1}),
+        _msg(C, 1, "user", "我需要尼古喵喵的素材", "2026-10-09T06:32:53Z"),
+        _msg(C, 2, "assistant", "本地资料库没有", "2026-10-09T06:34:57Z"),
+    ])
+    (idea / "session.jsonl").write_bytes(raw)
+    assert cli.main(["idea", "/list-sessions"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [(r["sid"], r["first_user"], r["last_activity"], r["resumable"]) for r in rows] == [
+        (C, "我需要尼古喵喵的素材", "2026-10-09T06:34:57Z", True)]
+    assert (idea / "session.jsonl").read_bytes() == raw, "只读：不取租约、不截断、不改一个字节"
