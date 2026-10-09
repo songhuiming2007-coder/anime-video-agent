@@ -813,7 +813,7 @@ def main() -> int:
         print("-" * 60)
         print("动画单镜头通常 2–5 秒。中位数明显低于 2 秒说明切碎了（转场被当成切点），"
               "明显高于 5 秒说明漏切。\n"
-              "定下来写进 config/project.json 的 visual.scene_threshold.<番名>（按番分键），再跑 build。")
+              "人看表拍板后，agent 提议 calibration set visual.scene_threshold.<番名> <值> --evidence \"<实录>\"（弹卡写进 config），再跑 build。")
         return 0
 
     if a.cmd == "build":

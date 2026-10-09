@@ -331,6 +331,15 @@ def review_tool_call(
         if not ok:
             return ToolVerdict("reject", reason="\n".join(command_preview))
 
+    # D60：标定值写入。键不在白名单 / 越界 / 实录太短在弹卡前拒；成立则把旧值 → 新值、实录与影响面放上卡面
+    if argv is not None and _pipeline_module_of(argv) == "calibration":
+        from pipeline import calibration
+
+        ok, calib_preview = calibration.preview(argv[argv.index("-m") + 2:])
+        if not ok:
+            return ToolVerdict("reject", reason="\n".join(calib_preview))
+        command_preview = calib_preview
+
     loop_label = None
     if name == "write_episode_file":
         # D47：定稿只能改不能新建；定稿存在后草稿冻结。在弹卡之前拒，人不必为必然失败的写入点卡

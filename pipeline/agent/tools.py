@@ -107,6 +107,7 @@ READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
     "acquire": frozenset({"gate"}),
     "ingest": frozenset({"probe", "intact", "verify"}),
     "subindex": frozenset({"search"}),
+    "calibration": frozenset({"show"}),
 }
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
@@ -120,6 +121,8 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "subindex": {"build", "search"},
     "vprobe": {"tagger", "presence", "scene", "captions"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
+    # D60：标定值写入 config（AGENTS.md Code Freeze 第二个例外）；set 弹卡前预检，show 只读
+    "calibration": {"set", "show"},
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。

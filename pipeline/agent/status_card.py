@@ -376,6 +376,9 @@ def render_approval_card(
     ):
         danger_tags.append("[门禁豁免] 素材门禁没过，按命令里的理由照样登记")
 
+    if module == "calibration":
+        danger_tags.append("[全局配置] 改 config 里的标定值，所有期生效")
+
     danger_str = " ".join(danger_tags) if danger_tags else "无"
 
     # 解封物判定（🔵 终审：review --approve 产出 04-clips.approved.json，非「只读产物」）
@@ -399,6 +402,8 @@ def render_approval_card(
         nature = "产生解封物（推进工序，不可回退）"
     elif module == "acquire" and _matches_flag_prefix(all_tokens, "--to-patch"):
         nature = "把 incoming/ 里的文件挪进本期 patch_assets/（期内补料）"
+    elif module == "calibration":
+        nature = "写全局配置（标定值，AGENTS.md Code Freeze 例外 D60）"
     elif module in LIBRARY_WRITE_MODULES:
         nature = "写素材库 data/library/（所有期共用）"
     else:
