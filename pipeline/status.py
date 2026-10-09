@@ -173,7 +173,7 @@ def _detect_advisories(d: Path) -> list[str]:
         unrescuable = probe_data.get("unrescuable", [])
         if patchable:
             advisories.append(
-                f"{len(patchable)} 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）"
+                f"{len(patchable)} 段排片落空可补料（agent 跑 scout 看缺口，自己查证 → acquire_propose → 抓取 → register --to-patch → ingest_patch）"
             )
         elif unrescuable:
             advisories.append(
@@ -184,7 +184,7 @@ def _detect_advisories(d: Path) -> list[str]:
         if missing_notes:
             first = missing_notes[0]
             advisories.append(
-                f"缺《{first}》等 {len(missing_notes)} 部番剧笔记（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> --type notes）"
+                f"缺《{first}》等 {len(missing_notes)} 部番剧笔记（agent 跑 scout --type notes 出工单；ava 还不能写 data/library/notes/，笔记仍交 pi，见 D59 待人定）"
             )
     except Exception:
         pass

@@ -86,6 +86,10 @@ PIPELINE_MODULES: set[str] = {
     "adversarial",
     # D59：番剧笔记的时间网格（写 data/library/timeline/），无子命令，弹卡
     "timeline",
+    # D59：期内补料——scout 出缺口清单（写 scout-ticket-*.md），ingest_patch 建本期补丁池（含 --reset）。
+    # 两者都只接期目录一个位置参数，自动补位
+    "scout",
+    "ingest_patch",
 }
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
@@ -280,11 +284,12 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--pattern", "--episode", "--note", "--target", "--session", "--floor",
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
     "--text", "--word", "--pinyin", "--homophone", "--expect", "--script",
+    "--type", "--batch",  # D59：scout --type、ingest_patch --batch
 })
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
 _AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
-                                      "adversarial")
+                                      "adversarial", "scout", "ingest_patch")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
@@ -458,7 +463,8 @@ def validate_pipeline_command(
                 if len(pos_args) == 1 and pos_args[0] in _SUBCOMMAND_WORDS["corrections"]:
                     sub_idx = args.index(pos_args[0])
                     args = args[:sub_idx + 1] + [str(ep_path)] + args[sub_idx + 1:]
-            elif module in ("tts", "clips", "review", "render", "qc", "cover", "status", "adversarial"):
+            elif module in ("tts", "clips", "review", "render", "qc", "cover", "status", "adversarial",
+                            "scout", "ingest_patch"):
                 if not pos_args:
                     args = [str(ep_path)] + args
                 elif module == "tts" and pos_args == ["run"]:

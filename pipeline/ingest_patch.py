@@ -1,7 +1,8 @@
 """临时补料与联合检索补丁池编排（Spec §4）。
 
 零新依赖，纯标准库 + 项目既有 shots/vindex/cloud 模块。
-视频 only，图片资产直接拦截并提示转码命令（R5）。
+补丁池只收视频；图片资产入库前自动转 6 s 微动视频（D59，与 `acquire register` 同一条转码，原图保留）。
+`--reset` 把旧 04-patch/ 挪进 04-patch.attic/<时间>/ 后重建（D59，取代「删 04-patch 目录」）。
 两段式执行：本地切镜头/抽帧 → 云端 VLM captions → 本地 embed 向量化。
 """
 
@@ -45,10 +46,48 @@ def sanitize_pool_name(name: str, existing_pools: set[str] | None = None) -> str
     return f"{candidate}-{i}"
 
 
+def convert_stills(episode: Path) -> list[Path]:
+    """把 patch_assets/ 里还没转过的图片转成 `<名>-still.mp4`（D59，原图保留）。
+
+    补丁池只收视频（R5）；原先遇到图片就报错、让人去终端敲 ffmpeg。转过的（同名 `-still.mp4`
+    已在）跳过，所以重跑幂等。返回本次新转出的文件。
+    """
+    from .acquire import still_to_clip
+
+    assets_dir = episode / "patch_assets"
+    if not assets_dir.is_dir():
+        return []
+    made = []
+    for f in sorted(assets_dir.iterdir()):
+        if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in IMAGE_EXTS:
+            clip = f.with_name(f"{f.stem}-still.mp4")
+            if not clip.exists():
+                made.append(still_to_clip(f, clip))
+                print(f"[*] 图片转 6s 微动视频: {f.name} -> {clip.name}（原图保留）")
+    return made
+
+
+def reset_pool(episode: Path) -> Path | None:
+    """把现有 04-patch/ 整个挪进 `04-patch.attic/<时间>/`，好从 patch_assets/ 重建（D59，不删）。"""
+    import datetime
+
+    patch_dir = episode / "04-patch"
+    if not patch_dir.exists():
+        return None
+    dest = episode / "04-patch.attic" / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if dest.exists():
+        raise SystemExit(f"FAIL {dest} 已存在（同一秒内重复 --reset？），稍后重跑")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(patch_dir, dest)
+    print(f"[*] 旧补丁池挪走: 04-patch/ -> {dest.relative_to(episode)}/")
+    return dest
+
+
 def pending_assets(episode: Path) -> list[Path]:
     """检测 patch_assets/ 下未在 04-patch/pool.json 登记的视频文件。
 
-    严格视频-only：遇到图片资产立即报错并给出 ffmpeg 转换命令（R5）。
+    只收视频：图片由 `convert_stills` 先转好（`ingest` 里先调它）；没转的图片在这里报错，
+    指向 ingest_patch 本身（它会自动转），不再让人敲 ffmpeg。
     """
     assets_dir = episode / "patch_assets"
     if not assets_dir.is_dir():
@@ -60,14 +99,14 @@ def pending_assets(episode: Path) -> list[Path]:
         if f.is_file() and not f.name.startswith(".")
     ])
 
-    # 图片类型守卫 (R5)
+    # 图片类型守卫 (R5)：已转出 -still.mp4 的图片不进候选；没转的报错
     for f in files:
-        if f.suffix.lower() in IMAGE_EXTS:
+        if f.suffix.lower() in IMAGE_EXTS and not f.with_name(f"{f.stem}-still.mp4").exists():
             raise SystemExit(
-                f"FAIL 检测到图片资产 {f.name}。当前补料链路仅支持视频资产。\n"
-                f"     请使用 ffmpeg 将其转为微动视频后重新放入 patch_assets/：\n"
-                f"     ffmpeg -loop 1 -t 8 -i {f.name} -pix_fmt yuv420p {f.stem}.mp4"
+                f"FAIL 检测到未转码的图片资产 {f.name}。补丁池只收视频——\n"
+                f"     重跑 ingest_patch 会先把它转成 {f.stem}-still.mp4（原图保留）"
             )
+    files = [f for f in files if f.suffix.lower() not in IMAGE_EXTS]
 
     pool_path = episode / "04-patch" / "pool.json"
     registered_paths: set[str] = set()
@@ -136,7 +175,7 @@ def load_pool(episode: Path) -> dict | None:
     if not pool_path.exists():
         raise SystemExit(
             f"FAIL 04-patch/ 目录存在但缺少 pool.json。\n"
-            f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+            f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
         )
 
     try:
@@ -144,14 +183,14 @@ def load_pool(episode: Path) -> dict | None:
     except Exception as exc:
         raise SystemExit(
             f"FAIL 补丁池登记表 pool.json 损坏无法读取: {exc}\n"
-            f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+            f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
         ) from exc
 
     pool = data.get("pool")
     if not pool:
         raise SystemExit(
             f"FAIL pool.json 缺少 pool 字段。\n"
-            f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+            f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
         )
 
     floor = data["floor"] if "floor" in data else data.get("no_match", 0.60)
@@ -169,7 +208,7 @@ def load_pool(episode: Path) -> dict | None:
     if not shots_dir.is_dir() or not vindex_dir.is_dir():
         raise SystemExit(
             f"FAIL 04-patch 目录不完整（缺少 shots/ 或 vindex/ 目录）。\n"
-            f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+            f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
         )
 
     sources: dict = {}
@@ -198,7 +237,7 @@ def load_pool(episode: Path) -> dict | None:
         if not shot_file.exists() or not scene_npy.exists() or not scene_json.exists():
             raise SystemExit(
                 f"FAIL 补丁池 {pool} {key} 索引缺失或半建。\n"
-                f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+                f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
             )
 
         try:
@@ -208,7 +247,7 @@ def load_pool(episode: Path) -> dict | None:
         except Exception as exc:
             raise SystemExit(
                 f"FAIL 补丁池 {pool} {key} 索引文件损坏: {exc}\n"
-                f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+                f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
             ) from exc
 
         sh_list = sh_data.get("shots", [])
@@ -218,7 +257,7 @@ def load_pool(episode: Path) -> dict | None:
         if len(sc_shots) != len(sh_list) or vecs.shape[0] != len(sh_list):
             raise SystemExit(
                 f"FAIL 补丁池 {pool} {key} scene 行数与镜头表不一致（{len(sc_shots)} vs {len(sh_list)}）。\n"
-                f"     删 04-patch 目录，或重跑 `python -m pipeline.ingest_patch {episode}`"
+                f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
             )
 
         # 登记 sources 与 shots
@@ -322,7 +361,8 @@ def ingest(
     else:
         thr_floor, floor_source, calibrated = resolve_patch_floor(main_anime, floor)
 
-    # 1. 扫描待处理资产
+    # 1. 扫描待处理资产（图片先转成微动视频，D59）
+    convert_stills(episode)
     unregistered = pending_assets(episode)
 
     # 2. 本地准备：镜头切分与抽帧
@@ -495,8 +535,12 @@ def main() -> int:
     ap.add_argument("--local", action="store_true", help="本地执行 VLM captions（不走云端）")
     ap.add_argument("--batch", type=int, default=vindex.CAPTION_BATCH)
     ap.add_argument("--confirm-cost", action="store_true")
+    ap.add_argument("--reset", action="store_true",
+                    help="旧 04-patch/ 挪进 04-patch.attic/<时间>/ 后从 patch_assets/ 重建（不删）")
     a = ap.parse_args()
     paths.require_data()
+    if a.reset:
+        reset_pool(a.episode)
     return ingest(a.episode, floor=a.floor, local=a.local, batch=a.batch, confirm_cost=a.confirm_cost)
 
 

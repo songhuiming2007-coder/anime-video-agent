@@ -324,3 +324,75 @@ def test_ao_frames_残留帧自己清掉(repo: Path):
     (fd / "P_SP01" / "00009.jpg").write_bytes(b"old")  # 上一次跑剩下的
     out = shots.frames("P", "SP01", out_dir=sd, dest_dir=fd, check_config=False)
     assert [f.name for f in out.glob("*.jpg")] == ["00001.jpg"]
+
+
+# ---------- 批 3：期内补料 ----------
+
+
+def test_ao6_reset_旧补丁池进attic_逐字节在(repo: Path):
+    from pipeline import ingest_patch
+
+    ep = _episode(repo)
+    (ep / "04-patch" / "shots").mkdir(parents=True)
+    (ep / "04-patch" / "pool.json").write_text('{"pool": "p"}', encoding="utf-8")
+    (ep / "04-patch" / "shots" / "p_SP01.json").write_bytes(b"\x00table")
+    dest = ingest_patch.reset_pool(ep)
+    assert not (ep / "04-patch").exists()
+    assert dest.parent == ep / "04-patch.attic"
+    assert (dest / "pool.json").read_text(encoding="utf-8") == '{"pool": "p"}'
+    assert (dest / "shots" / "p_SP01.json").read_bytes() == b"\x00table"
+
+
+def test_ao6_reset_没有补丁池什么也不做(repo: Path):
+    from pipeline import ingest_patch
+
+    assert ingest_patch.reset_pool(_episode(repo)) is None
+
+
+@needs_ffmpeg
+def test_ao3_补丁池图片自动转码_幂等(repo: Path):
+    from pipeline import ingest_patch
+
+    ep = _episode(repo)
+    (ep / "patch_assets").mkdir()
+    _png(ep / "patch_assets" / "物证.png", 1800, 1800)
+    made = ingest_patch.convert_stills(ep)
+    assert [f.name for f in made] == ["物证-still.mp4"]
+    assert ingest_patch.convert_stills(ep) == []  # 重跑不重转
+    assert [f.name for f in ingest_patch.pending_assets(ep)] == ["物证-still.mp4"]
+
+
+@pytest.mark.parametrize("module", ["scout", "ingest_patch"])
+def test_ao9_自动补期目录(repo: Path, module: str):
+    ep = _episode(repo)
+    ok, msg, argv = validate_pipeline_command(module, ep_dir=ep)
+    assert ok, msg
+    assert argv[3] == str(ep.resolve())
+
+
+def test_ao9_scout_type值不被当成期目录(repo: Path):
+    ep = _episode(repo)
+    ok, msg, argv = validate_pipeline_command("scout --type patch", ep_dir=ep)
+    assert ok, msg
+    assert argv[3:] == [str(ep.resolve()), "--type", "patch"]
+
+
+def test_ao2_补料命令弹卡(repo: Path):
+    ep = _episode(repo)
+    assert _review("ingest_patch --reset", ep).action == "ask"
+    assert _review("scout", ep).action == "ask"
+
+
+@needs_ffmpeg
+def test_ao3_ingest_patch入口先转码再扫描(repo: Path):
+    """经 ingest 主入口：图片先被转成 -still.mp4，再进候选（借 99 上限报错观察候选名，不跑云端）。"""
+    from pipeline import ingest_patch
+
+    ep = _episode(repo)
+    (ep / "04-patch").mkdir()
+    assets = {f"SP{i:02d}": {"path": f"/tmp/{i}.mp4", "duration": 1.0} for i in range(1, 100)}
+    (ep / "04-patch" / "pool.json").write_text(json.dumps({"pool": "p", "assets": assets}), encoding="utf-8")
+    (ep / "patch_assets").mkdir()
+    _png(ep / "patch_assets" / "scan.png", 1800, 1800)
+    with pytest.raises(SystemExit, match=r"尝试添加 scan-still\.mp4"):
+        ingest_patch.ingest(ep, floor=0.60, local=True)
