@@ -218,13 +218,14 @@ def test_d54_vindex_who_is_allowed_and_card_free(command: str, episode: Path) ->
 
 
 def test_d54_other_vindex_subcommands_unchanged(episode: Path) -> None:
-    """放行 `who` 不连带别的：`captions`（云端花钱）照旧弹卡，`search` 照旧不在放行集。"""
+    """放行 `who` 不连带别的：`captions`（云端花钱）照旧弹卡；已删除的 `scene` 照旧不在放行集。
+    （D59 起 `search` 只读放行免卡，见 tests/test_agentic_ops.py。）"""
     verdict = review_tool_call(
         "run_pipeline", {"command": "vindex captions 东京喰种 S02E07"}, ep_dir=episode, scope="pipeline", root=None
     )
     assert verdict.action == "ask"
     verdict = review_tool_call(
-        "run_pipeline", {"command": "vindex search 便当"}, ep_dir=episode, scope="pipeline", root=None
+        "run_pipeline", {"command": "vindex scene 东京喰种 S02E07"}, ep_dir=episode, scope="pipeline", root=None
     )
     assert verdict.action == "reject" and "放行清单" in verdict.reason
 

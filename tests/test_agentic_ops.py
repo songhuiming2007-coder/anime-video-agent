@@ -246,3 +246,81 @@ def test_ao2_to_patch卡上写挪进补丁池(repo: Path):
     ep = _episode(repo)
     v = _review(f"acquire register data/library/incoming/x.mp4 --to-patch {ep}", ep)
     assert v.action == "ask" and "patch_assets/" in v.request.card_text
+
+
+# ---------- 批 2：Phase 0 资产链 ----------
+
+
+@pytest.mark.parametrize("command", [
+    "ingest probe a.mkv", "ingest intact a.mkv b.mkv", "ingest verify a.mkv a.ass",
+    "vindex status 东京喰种", "vindex search 雨中 --anime 东京喰种", "subindex search 便当",
+])
+def test_ao2_phase0只读子命令免卡(repo: Path, command: str):
+    assert _review(command, _episode(repo)).action == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "ingest subs a.mkv -o a.srt", "ingest run a.mkv --anime X --episode 1",
+    "ingest sources a.mkv --anime X --season 1 --episode 1",
+    "shots calibrate a.mkv", "shots calibrate a.mkv --sheet 10", "shots rebuild --anime X --episode S01E01",
+    "shots gallery X S01E01", "vindex presence X S01E01", "subindex build a.srt --anime X --episode 1",
+    "vprobe tagger X", "timeline 东京喰种",
+])
+def test_ao2_phase0写盘子命令弹卡(repo: Path, command: str):
+    v = _review(command, _episode(repo))
+    assert v.action == "ask", v
+    if not command.startswith(("vprobe", "timeline")):
+        assert "写素材库 data/library/" in v.request.card_text
+
+
+@pytest.mark.parametrize("command", ["vindex scene X S01E01", "ingest phase1 a.mkv", "eval report x"])
+def test_ao1b_白名单外照拒(command: str):
+    ok, _msg, _ = validate_pipeline_command(command)
+    assert not ok
+
+
+@needs_ffmpeg
+def test_ao_patch_gallery_代表帧单抽_画廊落盘(repo: Path):
+    from pipeline import shots
+
+    ep = _episode(repo)
+    patch = ep / "04-patch"
+    (patch / "shots").mkdir(parents=True)
+    video = _mp4(ep / "clip.mp4", 640, 360, seconds=3)
+    (patch / "pool.json").write_text(json.dumps({"pool": "01-smoke-patch", "assets": {}}), encoding="utf-8")
+    table = {"meta": {"scene_threshold": 12.0, "min_shot": 0.5, "fps": "24000/1001", "duration": 3.0,
+                      "source": str(video)},
+             "shots": [{"i": 0, "start": 0.0, "end": 1.5, "rep": 0.75},
+                       {"i": 1, "start": 1.5, "end": 3.0, "rep": 2.25}]}
+    (patch / "shots" / "01-smoke-patch_SP01.json").write_text(json.dumps(table), encoding="utf-8")
+    # 打标帧目录里张数与镜头数不等（长镜头三帧），画廊不许拿它
+    (patch / "frames" / "01-smoke-patch_SP01").mkdir(parents=True)
+    out = shots.patch_gallery(ep, "SP01")
+    assert out == patch / "shots" / "01-smoke-patch_SP01_gallery.html"
+    assert len(list((patch / "rep-frames" / "01-smoke-patch_SP01").glob("*.jpg"))) == 2
+    assert "锚点: 01-smoke-patch SP01 00:00.00" in out.read_text(encoding="utf-8")
+
+
+def test_ao_patch_gallery_没有补丁池报错(repo: Path):
+    from pipeline import shots
+
+    with pytest.raises(SystemExit, match="ingest_patch"):
+        shots.patch_gallery(_episode(repo), "SP01")
+
+
+@needs_ffmpeg
+def test_ao_frames_残留帧自己清掉(repo: Path):
+    from pipeline import shots
+
+    ep = _episode(repo)
+    sd, fd = repo / "s", repo / "f"
+    sd.mkdir()
+    video = _mp4(ep / "clip.mp4", 640, 360, seconds=2)
+    table = {"meta": {"scene_threshold": 12.0, "min_shot": 0.5, "fps": "24000/1001", "duration": 2.0,
+                      "source": str(video)},
+             "shots": [{"i": 0, "start": 0.0, "end": 2.0, "rep": 1.0}]}
+    (sd / "P_SP01.json").write_text(json.dumps(table), encoding="utf-8")
+    (fd / "P_SP01").mkdir(parents=True)
+    (fd / "P_SP01" / "00009.jpg").write_bytes(b"old")  # 上一次跑剩下的
+    out = shots.frames("P", "SP01", out_dir=sd, dest_dir=fd, check_config=False)
+    assert [f.name for f in out.glob("*.jpg")] == ["00001.jpg"]

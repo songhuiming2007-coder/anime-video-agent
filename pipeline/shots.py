@@ -361,7 +361,7 @@ def _frame_no(t: float, fps: str) -> int:
 
 
 def frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
-           dest_dir: Path = FRAMES_DIR) -> Path:
+           dest_dir: Path = FRAMES_DIR, check_config: bool = True) -> Path:
     """一趟解码抽出全部代表帧。
 
     **不要逐个 `-ss` 抽。** 一集五百个镜头就是五百次 ffmpeg 调用，41 集两万次，
@@ -374,9 +374,13 @@ def frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     少抽一张，后面每一张都会错位一个镜头，而这种错位不会报错——
     它表现为「角色过滤偶尔选错镜头」，查起来极难。
     """
-    d = load(anime, key, out_dir)
+    d = load(anime, key, out_dir, check_config=check_config)
     shots, m = d["shots"], d["meta"]
     out = dest_dir / f"{anime}_{key}"
+    # 上一次跑剩下的帧先清掉（D59：原先报错让人去终端 rm）。只清本集目录里的 *.jpg——
+    # 都是从片源重抽得出的派生物；清完再对不上张数，只剩「非恒定帧率」一种成因，照旧报错。
+    for stale in out.glob("*.jpg") if out.is_dir() else ():
+        stale.unlink()
 
     _extract(_resolve_source(m["source"]), [_frame_no(s["rep"], m["fps"]) for s in shots],
              out, "%05d.jpg")
@@ -388,7 +392,7 @@ def frames(anime: str, key: str, out_dir: Path = SHOTS_DIR,
         raise SystemExit(
             f"FAIL {key} 应抽 {len(shots)} 张代表帧，实得 {len(got)} 张。"
             f"张数对不上就会整体错位一个镜头且不报错，不许继续。\n"
-            f"     删掉 {out} 重跑；仍不对说明该集不是恒定帧率，要改用逐帧号定位")
+            f"     旧帧已在抽帧前清掉，仍对不上说明该集不是恒定帧率，要改用逐帧号定位")
     return out
 
 
@@ -541,6 +545,25 @@ def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     dest = out_dir / f"{anime}_{key}_gallery.html"
     paths.atomic_write(dest, page_html)
     return dest
+
+
+def patch_gallery(episode: Path, key: str) -> Path:
+    """本期补丁池（`04-patch/`）里某个 SPxx 的画廊（D59，取代 runbook 里的 `python -c` 片段）。
+
+    补丁池的镜头表用主番阈值切、池名不在 config 里，所以不对账配置（check_config=False）；
+    代表帧单独抽进 `04-patch/rep-frames/`——`04-patch/frames/` 是 VLM 打标帧（长镜头三帧），
+    张数与镜头数不等，画廊拿它会被「张数 = 镜头数」的不变量拒掉。
+    """
+    patch = Path(episode) / "04-patch"
+    pool_file = patch / "pool.json"
+    if not pool_file.exists():
+        raise SystemExit(f"FAIL {episode} 还没有补丁池（缺 04-patch/pool.json），先跑 ingest_patch")
+    pool = json.loads(pool_file.read_text(encoding="utf-8")).get("pool")
+    if not pool:
+        raise SystemExit(f"FAIL {pool_file} 缺 pool 字段，重建补丁池：ingest_patch --reset")
+    shots_dir, rep_dir = patch / "shots", patch / "rep-frames"
+    frames(pool, key, out_dir=shots_dir, dest_dir=rep_dir, check_config=False)
+    return gallery(pool, key, out_dir=shots_dir, dest_dir=rep_dir, check_config=False)
 
 
 # 画廊模板。零依赖单文件：内联 CSS/JS，无框架无外部字体。
@@ -756,8 +779,10 @@ def main() -> int:
     cf.add_argument("episode", help="SxxEyy 或 SPxx")
 
     g = sub.add_parser("gallery", help="出镜头画廊 HTML（看图选镜头，一键复制锚点）")
-    g.add_argument("anime")
-    g.add_argument("episode", help="SxxEyy 或 SPxx")
+    g.add_argument("anime", help="番名 / 池名；带 --patch 时省略")
+    g.add_argument("episode", nargs="?", help="SxxEyy 或 SPxx")
+    g.add_argument("--patch", type=Path, metavar="期目录",
+                   help="本期补丁池（04-patch/）的某个 SPxx：`gallery --patch <期目录> SPxx`")
 
     a = ap.parse_args()
     if a.cmd in ("build", "rebuild") and not a.anime:
@@ -820,7 +845,14 @@ def main() -> int:
         print(f"   云端打标：vindex captions 按同一套计划取帧，别手动改文件名")
         return 0
 
-    out = gallery(a.anime, a.episode)
+    if a.patch is not None:
+        if a.episode is not None:
+            raise SystemExit("FAIL --patch 只接一个集键：gallery --patch <期目录> SPxx")
+        out = patch_gallery(a.patch, a.anime)
+    else:
+        if a.episode is None:
+            raise SystemExit("FAIL 缺集键：gallery <番> <SxxEyy|SPxx>")
+        out = gallery(a.anime, a.episode)
     print(f"OK 画廊 → {out}")
     return 0
 
