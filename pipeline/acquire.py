@@ -238,18 +238,138 @@ def pick_fetcher(url: str) -> str:
     return "curl" if ext in DIRECT_EXT else "yt-dlp"
 
 
-def fetch_argv(url: str, dest_dir: Path, slug: str, *, yt_dlp: list[str] | None = None) -> list[str]:
-    """要执行的抓取命令（`--dry-run` 打印的就是它）。"""
+def fetch_argv(url: str, dest_dir: Path, slug: str, *, yt_dlp: list[str] | None = None,
+               cookies: str | None = None) -> list[str]:
+    """要执行的抓取命令（`--dry-run` 打印的就是它）。
+
+    cookies 是 yt-dlp 的 `--cookies-from-browser` 规格（如 `chromium:data/browser-profile`），
+    来自 `cookies_spec_for`：域在 web.json browser.cookies_for 里才挂。ava 不碰 cookie 本体，
+    profile 目录交给 yt-dlp 自己读（ADR-0021）。
+    """
     if pick_fetcher(url) == "curl":
         return ["curl", "-L", "-C", "-", "--fail", "-o", str(dest_dir / f"{slug}{Path(urlparse(url).path).suffix.lower()}"), url]
     cmd = (yt_dlp or ["yt-dlp"])
     return cmd + [
+        *(["--cookies-from-browser", cookies] if cookies else []),
         "--no-playlist", "--newline", "--continue",
         "-f", "bv*+ba/b",
         "--merge-output-format", "mp4",
         "-o", str(dest_dir / f"{slug}.%(ext)s"),
         url,
     ]
+
+
+# ---------- 可得性探针（只解析不下载，弹卡；B2，2026-10-10） ----------
+
+PROBE_TIMEOUT_S = 150   # yt-dlp -J 解析大站慢一点正常；curl HEAD 由 --max-time 30 自控
+# 登录态缺失的 stderr 特征：命中只改提示语，stderr 原文永远照打（S9）
+_LOGIN_HINTS = ("sign in", "log in", "login", "ログイン", "members", "会员", "付费")
+
+
+def parse_nos(text: str, total: int) -> list[int]:
+    """「3」/「1,3,5」/「all」→ 候选号列表（保序去重）；越界、空、非数字都 SystemExit。"""
+    t = str(text).strip().lower()
+    if t == "all":
+        return list(range(1, total + 1))
+    out: list[int] = []
+    for part in t.split(","):
+        part = part.strip()
+        if not part.isdigit():
+            raise SystemExit(f"FAIL 候选号只认 数字/逗号/all，收到 {part!r}")
+        n = int(part)
+        if not 1 <= n <= total:
+            raise SystemExit(f"FAIL 候选号 {n} 超出范围（1–{total}）")
+        if n not in out:
+            out.append(n)
+    if not out:
+        raise SystemExit("FAIL 没给候选号")
+    return out
+
+
+def probe_argv(url: str, *, yt_dlp: list[str] | None = None, cookies: str | None = None) -> list[str]:
+    """解析不下载：直链 curl HEAD（跟随重定向）；页面 yt-dlp -s -J（--no-cache-dir，零落盘）。"""
+    if pick_fetcher(url) == "curl":
+        return ["curl", "-sSIL", "--max-time", "30", url]
+    cmd = (yt_dlp or ["yt-dlp"])
+    return cmd + [*(["--cookies-from-browser", cookies] if cookies else []),
+                  "-s", "-J", "--no-playlist", "--no-cache-dir", url]
+
+
+def _probe_curl_report(proc) -> bool:
+    """curl -sSIL 的输出：末次状态码 + 类型 + 长度。2xx/3xx 收尾才算可解析。"""
+    out = proc.stdout or ""
+    status = re.findall(r"^HTTP/\S+\s+(\d+)", out, re.M)
+    if proc.returncode != 0 or not status:
+        tail = (proc.stderr or out).strip().splitlines()[-5:]
+        print(f"  → 失败（curl 退出码 {proc.returncode}）：" + " / ".join(tail))
+        return False
+    ctype = re.findall(r"(?im)^content-type:\s*(\S+)", out)
+    clen = re.findall(r"(?im)^content-length:\s*(\d+)", out)
+    size = f"，{int(clen[-1]) / 1048576:.1f} MB" if clen else ""
+    ok = status[-1][0] in "23"
+    print(f"  → {'可解析' if ok else '失败'}：HTTP {status[-1]}"
+          f"{('，' + ctype[-1]) if ctype else ''}{size}")
+    return ok
+
+
+def _probe_ytdlp_report(proc, c: dict) -> bool:
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        tail = " / ".join(err.splitlines()[-5:])
+        hint = "（疑似需要登录态：先把该站域加进 web.json browser.cookies_for 并 browser 登录）" \
+            if any(m in err.casefold() for m in _LOGIN_HINTS) else ""
+        print(f"  → 失败（yt-dlp 退出码 {proc.returncode}）{hint}：{tail}")
+        return False
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        print(f"  → 失败：输出不是 JSON：{(proc.stdout or '')[:200]}")
+        return False
+    fmts = doc.get("formats") or []
+    heights = [f.get("height") for f in fmts if isinstance(f, dict) and isinstance(f.get("height"), (int, float))]
+    dur = doc.get("duration")
+    line = f"  → 可解析：《{doc.get('title', '—')}》，时长 {int(dur)}s" if isinstance(dur, (int, float)) \
+        else f"  → 可解析：《{doc.get('title', '—')}》，时长未报"
+    exp = c.get("expected_dur")
+    if isinstance(dur, (int, float)) and isinstance(exp, (int, float)) and exp:
+        delta = abs(dur - exp) / exp * 100
+        line += f"（声明 {exp}s，偏差 {delta:.1f}%）" + (" ⚠ 超 5%，gate 会 WARN" if delta > 5 else "")
+    line += f"；{len(fmts)} 种格式" + (f"、最高 {int(max(heights))}p" if heights else "")
+    print(line)
+    return True
+
+
+def _probe_one(c: dict) -> bool:
+    url = c["url"]
+    yt_dlp = yt_dlp_argv() if pick_fetcher(url) == "yt-dlp" else None
+    cookies = None
+    if yt_dlp:
+        from pipeline.agent.web_browser import cookies_spec_for
+        cookies = cookies_spec_for(url)
+    argv = probe_argv(url, yt_dlp=yt_dlp, cookies=cookies)
+    print("  执行：" + " ".join(argv))
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"  → 失败：{PROBE_TIMEOUT_S}s 超时")
+        return False
+    return _probe_curl_report(proc) if pick_fetcher(url) == "curl" else _probe_ytdlp_report(proc, c)
+
+
+def cmd_probe(no: str) -> int:
+    """可得性探针：提案后、fetch 前先探一遍（死链/要登录/画质/时长偏差提前曝光）。"""
+    cp = candidates_path()
+    if not cp.exists():
+        raise SystemExit(f"FAIL 没有候选清单 {cp}——先按 skills/acquire-assets/SKILL.md 检索并写出它")
+    cands = load_candidates(cp.read_text(encoding="utf-8"))
+    idxs = parse_nos(no, len(cands))
+    fails = 0
+    for i in idxs:
+        c = cands[i - 1]
+        print(f"\n候选 #{i} {c['title']}\n  {c['url']}")
+        fails += 0 if _probe_one(c) else 1
+    print(f"\n探针整批：{len(idxs) - fails}/{len(idxs)} 可解析" + (f"，{fails} 失败" if fails else ""))
+    return 1 if fails else 0
 
 
 def register_key(text: str) -> int:
@@ -434,7 +554,11 @@ def cmd_fetch(no: int, *, dry_run: bool = False) -> int:
 
     # 只有页面那一支才找 yt-dlp：直链走 curl，本机没装 yt-dlp 不该连累它（N35）
     yt_dlp = yt_dlp_argv() if pick_fetcher(c["url"]) == "yt-dlp" else None
-    argv = fetch_argv(c["url"], dest, slug, yt_dlp=yt_dlp)
+    cookies = None
+    if yt_dlp:
+        from pipeline.agent.web_browser import cookies_spec_for
+        cookies = cookies_spec_for(c["url"])
+    argv = fetch_argv(c["url"], dest, slug, yt_dlp=yt_dlp, cookies=cookies)
     print("  执行：" + " ".join(argv))
     if dry_run:
         return 0
@@ -649,6 +773,9 @@ def main() -> None:
     f.add_argument("no", type=int, help="候选号（1 起，candidates.json 里的顺序）")
     f.add_argument("--dry-run", action="store_true", help="只打印将执行的命令")
 
+    p = sub.add_parser("probe", help="可得性探针：只解析不下载，fetch 前先探（死链/要登录/画质/时长）")
+    p.add_argument("no", help="候选号：1 / 1,3,5 / all")
+
     r = sub.add_parser("register", help="登记进 sources.json（走 ingest 既有登记）；或 --to-patch 挪进某期补丁池")
     r.add_argument("file", type=Path)
     # 池名不给默认值：它是登记写操作的目标（R6），写死单企划名会让忘了带 --pool
@@ -669,6 +796,8 @@ def main() -> None:
         raise SystemExit(cmd_gate(a.target, expected_dur=a.expected_dur))
     if a.cmd == "fetch":
         raise SystemExit(cmd_fetch(a.no, dry_run=a.dry_run))
+    if a.cmd == "probe":
+        raise SystemExit(cmd_probe(a.no))
     if a.cmd == "forget":
         raise SystemExit(cmd_forget(a.no))
     if a.cmd == "register":

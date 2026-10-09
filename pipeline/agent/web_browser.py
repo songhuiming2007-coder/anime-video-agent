@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from pipeline import paths
 from pipeline.agent.tools import assert_egress_boundary
@@ -43,6 +44,9 @@ class BrowserSection:
     timeout_s: float
     max_chars: int = 30000
     trusted_fake_ip_ranges: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+    # 需要登录态下载的域名清单（如 youtube.com / nicovideo.jp）：acquire fetch/probe 命中时
+    # 给 yt-dlp 挂本 profile 的 --cookies-from-browser。默认空 = 任何站都不挂（未实测不写判断）
+    cookies_for: tuple[str, ...] = ()
 
 
 def _is_number(val: Any) -> bool:
@@ -129,13 +133,41 @@ def load_browser_section(root: Path | None = None) -> BrowserSection | None:
         return None
 
     trusted_ranges = _parse_trusted_ranges(data.get("trusted_fake_ip_ranges", []))
+    cookies_for_raw = browser.get("cookies_for", [])
+    cookies_for = (
+        tuple(d.strip().lower() for d in cookies_for_raw if isinstance(d, str) and d.strip())
+        if isinstance(cookies_for_raw, list) else ()
+    )
     return BrowserSection(
         profile_dir=profile_dir.strip(),
         headed=headed,
         timeout_s=float(timeout_s),
         max_chars=int(max_chars_raw),
         trusted_fake_ip_ranges=trusted_ranges,
+        cookies_for=cookies_for,
     )
+
+
+def cookies_spec_for(url: str, *, root: Path | None = None) -> str | None:
+    """该 URL 的 yt-dlp `--cookies-from-browser` 规格；域不在 cookies_for 里返回 None。
+
+    纪律：ava 代码不触碰 cookie 本体（ADR-0021：登录态 cookie 属出网敏感物；本模块连
+    探活都禁用 context.cookies()）——profile 目录路径整体交给 yt-dlp 自己去读。命中
+    cookies_for 但 profile 还没有 Cookies 库 = 流程错了（还没登录就跑下载），响出来。
+    """
+    cfg = load_browser_section(root)
+    if cfg is None or not cfg.cookies_for:
+        return None
+    host = urlparse(str(url)).netloc.lower().split("@")[-1].split(":")[0]
+    if not any(host == d or host.endswith("." + d) for d in cfg.cookies_for):
+        return None
+    profile = _assert_profile_isolation(cfg.profile_dir, Path(root or paths.ROOT))
+    if not (profile / "Default" / "Cookies").is_file():
+        raise PermissionError(
+            f"{host} 在 cookies_for 里，但 browser profile 还没有 Cookies 库（{profile}）——\n"
+            "先用 browser 工具（headed）登录该站一次，再重跑"
+        )
+    return f"chromium:{profile}"
 
 
 def _pw_error_types() -> tuple[type[BaseException], ...]:

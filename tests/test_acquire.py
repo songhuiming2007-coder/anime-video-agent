@@ -316,3 +316,108 @@ class TestRegisterKey:
         # 集键写死两位 SP（ADR-0010 决策二）：让手输自由发挥，迟早出现 SP9 与 SP09 两份
         with pytest.raises(SystemExit, match="SP19"):
             A.register_key(bad)
+
+
+# ---------- 候选号解析 / 探针 / cookies 桥（2026-10-10，B2+B1） ----------
+
+
+class TestParseNos:
+    def test_单号与逗号列表保序去重(self):
+        assert A.parse_nos("3", 5) == [3]
+        assert A.parse_nos(" 1, 3,3,5 ", 5) == [1, 3, 5]
+
+    def test_all展开(self):
+        assert A.parse_nos("ALL", 3) == [1, 2, 3]
+
+    def test_越界空串垃圾都拒(self):
+        for bad in ("6", "0", "x", "", "1,,2"):
+            with pytest.raises(SystemExit):
+                A.parse_nos(bad, 5)
+
+
+class TestProbeArgv:
+    PAGE = "https://www.youtube.com/watch?v=x"
+
+    def test_直链走HEAD且带超时(self):
+        argv = A.probe_argv("https://example.com/a.mp4")
+        assert argv[:3] == ["curl", "-sSIL", "--max-time"] and argv[-1].endswith("a.mp4")
+
+    def test_页面只解析不落盘(self):
+        argv = A.probe_argv(self.PAGE, yt_dlp=["yt-dlp"])
+        assert "-s" in argv and "-J" in argv and "--no-cache-dir" in argv
+        assert "--cookies-from-browser" not in argv
+
+    def test_cookies旗只在该挂时挂(self):
+        from pathlib import Path
+        argv = A.probe_argv(self.PAGE, yt_dlp=["yt-dlp"], cookies="chromium:/p")
+        assert argv[1:3] == ["--cookies-from-browser", "chromium:/p"]
+        fargv = A.fetch_argv(self.PAGE, Path("/tmp/in"), "s", yt_dlp=["yt-dlp"], cookies="chromium:/p")
+        assert fargv[1:3] == ["--cookies-from-browser", "chromium:/p"]
+        fargv0 = A.fetch_argv(self.PAGE, Path("/tmp/in"), "s", yt_dlp=["yt-dlp"])
+        assert "--cookies-from-browser" not in fargv0
+
+
+class TestCmdProbe:
+    @pytest.fixture
+    def repo(self, tmp_path, monkeypatch):
+        import json as J
+        from pipeline import paths
+        data = tmp_path / "data"
+        inc = data / "library" / "incoming"
+        inc.mkdir(parents=True)
+        cands = [
+            {"title": "直链素材", "url": "https://cdn.example.com/a.mp4", "type": "live",
+             "source": "测试", "why": "直链支路"},
+            {"title": "页面素材", "url": "https://www.youtube.com/watch?v=x", "type": "mv",
+             "source": "测试", "why": "页面支路", "expected_dur": 360},
+        ]
+        (inc / "candidates.json").write_text(J.dumps(cands, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(paths, "DATA", data)
+        monkeypatch.setattr(A, "yt_dlp_argv", lambda: ["yt-dlp"])
+        return inc
+
+    def _fake_run(self, ytdlp_rc=0, ytdlp_out="{}", ytdlp_err=""):
+        import subprocess
+
+        def fake(argv, *a, **k):
+            if argv[0] == "curl":
+                return subprocess.CompletedProcess(argv, 0,
+                    stdout="HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 1048576\r\n",
+                    stderr="")
+            return subprocess.CompletedProcess(argv, ytdlp_rc, stdout=ytdlp_out, stderr=ytdlp_err)
+        return fake
+
+    def test_直链可解析(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run())
+        assert A.cmd_probe("1") == 0
+        assert "HTTP 200" in capsys.readouterr().out
+
+    def test_页面可解析且时长对上(self, repo, monkeypatch, capsys):
+        import json as J
+        doc = {"title": "某MV", "duration": 360,
+               "formats": [{"height": 1080}, {"height": 720}, {"vcodec": "none"}]}
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(ytdlp_out=J.dumps(doc)))
+        assert A.cmd_probe("2") == 0
+        out = capsys.readouterr().out
+        assert "某MV" in out and "偏差 0.0%" in out and "最高 1080p" in out
+        assert "⚠" not in out
+
+    def test_时长偏差超5给警告但不判死(self, repo, monkeypatch, capsys):
+        import json as J
+        doc = {"title": "剪辑版", "duration": 300, "formats": []}
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(ytdlp_out=J.dumps(doc)))
+        assert A.cmd_probe("2") == 0          # WARN 不判死：探针是报告，判决在 gate
+        assert "⚠" in capsys.readouterr().out
+
+    def test_要登录的给提示且整批退1(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run",
+                            self._fake_run(ytdlp_rc=1, ytdlp_err="ERROR: Sign in to confirm"))
+        assert A.cmd_probe("2") == 1
+        assert "登录态" in capsys.readouterr().out
+
+    def test_all一批全探失败不遮成功(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run",
+                            self._fake_run(ytdlp_rc=1, ytdlp_err="boom"))
+        assert A.cmd_probe("all") == 1        # 1 成 1 败 → 退 1
+        out = capsys.readouterr().out
+        assert "HTTP 200" in out and "1/2 可解析" in out

@@ -18,7 +18,8 @@
   "browser": {
     "profile_dir": "data/browser-profile",
     "headed": true,
-    "timeout_s": 60
+    "timeout_s": 60,
+    "cookies_for": []
   },
   "trusted_fake_ip_ranges": []
 }

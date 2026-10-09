@@ -47,6 +47,11 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 
 1. **检索 → 提议**：写好候选，调 `acquire_propose`（一张卡审整批）。批准后内核逐条弹「素材抓取」卡，
    批一条抓一条（`acquire fetch <号>`，不许批量抢跑）。抓大文件（>2GB）在提议的 `why` 里先写明体积。
+1.5 **探针预检（弹卡，2026-10-10 增）**：提议获批后先 `acquire probe all`——只解析不下载，死链、
+   要登录的、画质/时长对不上的在抓取前就曝光，失败条目换源重提，别拿废 URL 去撞抓取卡。
+   报「疑似需要登录态」的站：让人用 `browser` 工具登录一次（headed，profile 独立持久化），把该域加进
+   `config/agent/web.json` 的 `browser.cookies_for`，之后 fetch/probe 会自动挂 `--cookies-from-browser`
+   （ava 不碰 cookie 本体，profile 交给 yt-dlp 自己读）。
 2. **门禁（免卡）**：抓完立刻跑 `acquire gate <文件>`，把判据表原样给人看。
 3. **登记（弹卡）**：gate 没有 FAIL 才提议 `acquire register <文件> --pool <池>`。
    - 不给 `--as`：自动取池里最后一个号 +1，卡上的命令里会写出算好的号；要指定就写 `--as SPnn`。
