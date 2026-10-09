@@ -44,6 +44,7 @@ from pipeline.agent.session_log import (
     SessionLocked,
     SessionLogBroken,
     list_sessions,
+    last_context_reading,
     load_session,
     plan_repairs,
     rebuild_messages,
@@ -1503,7 +1504,7 @@ def _doc_shas(docs: list[Any]) -> list[dict[str, str]]:
 def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
     """`--continue` 启动时（**持锁之后**）读日志、跑修复、重建历史（§2.8）。
 
-    返回 `{status, sid, messages, docs, step_key, resident_sha256, last_seq}`；状态非
+    返回 `{status, sid, messages, docs, step_key, resident_sha256, last_seq, last_reading}`；状态非
     `resumed` 时历史为空，调用方按 `corrupt` / `schema_unknown` 开新会话。
     已提交的整行一字不改：截断只发生在末尾残行，修复全是追加。
     """
@@ -1548,6 +1549,7 @@ def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
         "step_key": step_key,
         "resident_sha256": resident_sha,
         "last_seq": loaded.last_seq,
+        "last_reading": last_context_reading(loaded),  # D64：(prompt_tokens, prompt_chars)，随 ready 帧下发
     }
     host.resume_state = state
     return state

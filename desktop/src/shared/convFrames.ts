@@ -43,6 +43,8 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     history_count: ["number"],
     session_bytes: ["number"],
     other_sessions: ["array"],
+    resume_prompt_tokens: ["number", "null"], // D64：继续会话带回上次 turn_end 的 prompt_tokens；新会话 / 没测到为 null
+    resume_prompt_chars: ["number", "null"], // D64：同上，prompt_chars（服务商不给 token 时的回落口径）
   },
   history: { index: ["number"], role: ["string"], text: ["string"], name: ["string", "null"] },
   turn_started: { turn_id: ["string"] },

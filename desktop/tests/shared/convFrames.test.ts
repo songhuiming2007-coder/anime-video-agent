@@ -4,7 +4,7 @@ import { OUT_TYPES, parseOutFrame } from "../../src/shared/convFrames";
 
 const base = { v: 1, seq: 1, sid: "s1" };
 const valid: Record<string, Record<string, unknown>> = {
-  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] },
+  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null },
   history: { index: 0, role: "user", text: "hi", name: null },
   turn_started: { turn_id: "t1" },
   assistant: { turn_id: "t1", kind: "answer", text: "ok" },

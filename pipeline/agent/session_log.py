@@ -383,6 +383,30 @@ def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
     return rebuilt
 
 
+def last_context_reading(session: LoadedSession) -> tuple[int | None, int | None]:
+    """恢复时带回的上下文读数（D64）：最后一个**测到过**读数的 `turn_end` 的 `(prompt_tokens, prompt_chars)`。
+
+    继续会话后新回合跑完之前，桌面端会话头原本是空的；这里把上次测得的值带回去，标「上次」显示。
+    跳过：回滚回合（它的消息已不在重建的历史里，读数偏大）；两项都没有的 `turn_end`
+    （崩溃修复补写的、度数前就失败的）——取不到不等于是 0，往前找上一次真测到的。
+    `prompt_chars` 为 0 视同没有：D41 的缺省值，不是测出来的空上下文。
+    """
+    def count(v: Any, *, positive: bool = False) -> int | None:
+        if isinstance(v, bool) or not isinstance(v, int) or v < (1 if positive else 0):
+            return None
+        return v
+
+    rolled_back = {str(r.get("turn_id")) for r in session.records if r.get("k") == "turn_rollback"}
+    out: tuple[int | None, int | None] = (None, None)
+    for record in session.records:
+        if record.get("k") != "turn_end" or str(record.get("turn_id")) in rolled_back:
+            continue
+        reading = (count(record.get("prompt_tokens")), count(record.get("prompt_chars"), positive=True))
+        if reading != (None, None):
+            out = reading
+    return out
+
+
 def resume_target(
     summaries: list[SessionSummary], prefix: str | None = None
 ) -> tuple[SessionSummary | None, list[SessionSummary]]:

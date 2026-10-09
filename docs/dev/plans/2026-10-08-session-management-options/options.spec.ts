@@ -18,7 +18,7 @@ const ANSWER =
   "S01E09 里董香的戏按字幕查到这几处：08:27 雏实搬来同住、09:24「董香时不时会发呆」、17:31 去看鹦鹉后闪回父亲（19:11「董香你是姐姐 要好好教导弟弟」）、20:00 雏实说头发是董香剪的。依子的便当在 S01E04 03:52，不在本期范围。";
 const READY = (ep: string) => ({
   op: "emit",
-  frame: { t: "ready", episode: ep, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] },
+  frame: { t: "ready", episode: ep, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null },
 });
 const TURN = [
   { t: "turn_started", turn_id: "$turn", rid: "$rid" },

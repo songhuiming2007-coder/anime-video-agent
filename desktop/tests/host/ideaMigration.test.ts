@@ -38,7 +38,7 @@ function harness(exitOnShutdown: boolean) {
     spawnSession: (t) => {
       templates.push(t);
       const p = new FakeProc(exitOnShutdown);
-      queueMicrotask(() => p.feed({ t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] }));
+      queueMicrotask(() => p.feed({ t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null }));
       return p;
     },
     resolveKey: async () => ({ name: "K", value: "V" }),

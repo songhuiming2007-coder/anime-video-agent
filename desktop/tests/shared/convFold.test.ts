@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { charsText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
+import { charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -183,13 +183,38 @@ describe("D41 / D56 上下文用量读数", () => {
       { k: "frame", at: 2, frame: finT(2000, 3000, 2) },
       { k: "frame", at: 3, frame: finT(4000, 5000, 3) },
     ];
-    expect(lastContextReading(a)).toEqual({ tokens: 4000, chars: 5000 });
+    expect(lastContextReading(a)).toEqual({ tokens: 4000, chars: 5000, previous: false });
     // 两样都不合法的帧不覆盖上一次的读数
-    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT("x", "x", 4) }])).toEqual({ tokens: 4000, chars: 5000 });
+    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT("x", "x", 4) }])).toEqual({ tokens: 4000, chars: 5000, previous: false });
     // 服务商这回没给 token：读数跟着最近一回合，回落字数
-    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT(null, 6000, 4) }])).toEqual({ tokens: null, chars: 6000 });
+    expect(lastContextReading([...a, { k: "frame", at: 4, frame: finT(null, 6000, 4) }])).toEqual({ tokens: null, chars: 6000, previous: false });
     // 结束会话后起的新会话：还没有回合结束 → null，不沿用旧会话的读数
     expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }])).toBeNull();
-    expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: finT(700, 800, 2) }])).toEqual({ tokens: 700, chars: 800 });
+    expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: finT(700, 800, 2) }])).toEqual({ tokens: 700, chars: 800, previous: false });
+  });
+
+  // D64：继续会话的 ready 带回上次测得的读数，新回合跑完前标「上次」
+  const resumed = (tokens: unknown, chars: unknown, seq: number) =>
+    F("ready", { episode: "E", scope: "creative", continue_status: "resumed", llm: "ok", degrade_reason: null, resume_prompt_tokens: tokens, resume_prompt_chars: chars }, seq);
+
+  it("D64 lastContextReading：继续会话先显示上次读数，新回合跑完后换成实时值", () => {
+    const a: ConvEntry[] = [{ k: "frame", at: 1, frame: resumed(102_000, 90_000, 1) }];
+    expect(lastContextReading(a)).toEqual({ tokens: 102_000, chars: 90_000, previous: true });
+    expect(lastContextReading([...a, { k: "frame", at: 2, frame: finT(103_500, 91_000, 2) }])).toEqual({ tokens: 103_500, chars: 91_000, previous: false });
+    // 新回合两样都没测到：保留上次读数，仍标「上次」
+    expect(lastContextReading([...a, { k: "frame", at: 2, frame: finT(null, null, 2) }])).toEqual({ tokens: 102_000, chars: 90_000, previous: true });
+    // 服务商历来不给 token：带回字数
+    expect(lastContextReading([{ k: "frame", at: 1, frame: resumed(null, 9192, 1) }])).toEqual({ tokens: null, chars: 9192, previous: true });
+    // 新会话（两项 null）与旧 core（缺键）：不显示
+    expect(lastContextReading([{ k: "frame", at: 1, frame: resumed(null, null, 1) }])).toBeNull();
+    expect(lastContextReading([{ k: "frame", at: 1, frame: ready(1) }])).toBeNull();
+    // 一个会话的读数不跨到下一个：上次值只认最近的 ready
+    expect(lastContextReading([...a, { k: "frame", at: 2, frame: finT(5000, 6000, 2) }, { k: "frame", at: 3, frame: resumed(7000, 8000, 1) }])).toEqual({ tokens: 7000, chars: 8000, previous: true });
+  });
+
+  it("D64 contextText：上次读数后缀「（上次）」，实时读数不带", () => {
+    expect(contextText({ tokens: 102_000, chars: 1, previous: true })).toBe("上下文 102.0k token（上次）");
+    expect(contextText({ tokens: null, chars: 9192, previous: true })).toBe("上下文约 9,192 字（上次）");
+    expect(contextText({ tokens: 12_345, chars: 1, previous: false })).toBe("上下文 12.3k token");
   });
 });

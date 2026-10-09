@@ -53,7 +53,7 @@ const STARTED = { t: "turn_started", turn_id: "$turn", rid: "$rid" };
 const toolStart = (i: number, name: string, summary: string) => ({ t: "tool", turn_id: "$turn", phase: "start", index: i, name, summary, ok: null, observation: null, duplicate: false });
 const toolEnd = (i: number, name: string, ok: boolean, observation: string | null) => ({ t: "tool", turn_id: "$turn", phase: "end", index: i, name, summary: "", ok, observation, duplicate: false });
 const FINISHED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 3, tool_calls: 2, tool_executions: 2, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 9, prompt_chars: 48213 };
-const READY = { op: "emit", frame: { t: "ready", episode: EP, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] } };
+const READY = { op: "emit", frame: { t: "ready", episode: EP, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } };
 
 async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(OUT, { recursive: true });

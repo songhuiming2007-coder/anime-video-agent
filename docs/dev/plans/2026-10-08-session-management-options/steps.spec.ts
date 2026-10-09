@@ -41,7 +41,7 @@ function sessionLog(): string {
 const ANSWER = "S01E09 里董香的戏按字幕查到这几处：08:27 雏实搬来同住、09:24「董香时不时会发呆」、17:31 去看鹦鹉后闪回父亲、20:00 雏实说头发是董香剪的。";
 function script(sid: string): unknown[] {
   return [
-    { op: "emit", frame: { t: "ready", sid, episode: EP, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] } },
+    { op: "emit", frame: { t: "ready", sid, episode: EP, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } },
     {
       op: "serve",
       on_shutdown: "exit",
