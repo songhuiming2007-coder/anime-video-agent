@@ -1,4 +1,10 @@
 """ava 统一 CLI 宿主、REPL 交互与工序调度器（Spec §2.3, §2.4, §2.6）。
+
+注意（2026-10-10）：本模块不止是人的终端入口——desktop 的 spawner 直接 spawn 裸形态
+子命令（`python -m pipeline.agent.cli <期> /approvals` 等），protocol/tools/session 也从这里
+import 共享函数（resolve_episode_target / get_episodes_list / check_code_freeze 等）。
+删除前先查 import 面；整洁方向是把共享函数下移进零依赖叶子模块（先例：candidates.py），
+挪完本模块自然只剩 CLI 壳、名字就对了。
 """
 
 from __future__ import annotations
