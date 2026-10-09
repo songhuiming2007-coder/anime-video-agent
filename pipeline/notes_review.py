@@ -8,7 +8,9 @@
 - 第零层 厚度准入（机械）：按 `### SxxEyy` 切集，每集编号场景 ≥ 4、带时间码的逐字台词 ≥ 2；
   总行数 ≥ 集数 × 30。不达标 = 写薄（致命）。
 - 第二层 引用核销（机械）：「台词」+ 紧跟的 h:mm:ss[-h:mm:ss]，到该集字幕 [t−3 s, t_end+5 s]
-  里找归一化原文：通过 / 时间码错（给实际位置）/ 全集找不到（待复核：简繁或转述）。
+  里找归一化原文：通过 / 时间码错（给实际位置）/ 简繁差异（原样找不到、繁简折叠后找到，
+  给实际位置与原字形——引文规范要求字幕原字形，折叠命中不判过，判据 S5）/
+  全集找不到（待复核：转述或省略号拼接）。
 - 第一层 剧情 diff（LLM）：每集一次零上下文调用，只拿该集笔记节与整集字幕；只报与字幕矛盾、
   说话人 / 顺序存疑、字幕无据三类。每条逐字引用笔记原文、给字幕 mm:ss，机械自校，核不上标 ⚠。
 - 第三层 元层 / 网源：不在这里做，留给终审（ava 用 web 工具核「某源如此说」）。
@@ -29,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import paths
+
+import zhconv
 
 MIN_SCENES = 4
 MIN_TC_QUOTES = 2
@@ -57,6 +61,12 @@ class NotesReviewError(Exception):
 
 def norm(s: str) -> str:
     return _NORM.sub("", s)
+
+
+def t2s(s: str) -> str:
+    """繁→简折叠。只用于「原样找不到之后再找一次」：折叠命中单独报「简繁差异」，不判通过——
+    引文规范要求字幕原字形，被归一化掉的字形差本身就是要报出来的缺陷（判据 S5）。"""
+    return zhconv.convert(s, "zh-hans")
 
 
 def tc_seconds(tc: str) -> float:
@@ -203,7 +213,14 @@ def check_quote(q: Quote, lines: list[tuple[float, str]] | None) -> Check:
         return Check(q, "通过")
     if hits:
         return Check(q, "时间码错", "字幕里在 " + "、".join(_mmss(at) for at in hits[:3]))
-    return Check(q, "字幕里找不到", "可能是简繁差异、转述或省略号拼接，待复核")
+    # 原样找不到，折叠简繁再找一次：命中单独报「简繁差异」，不判通过（判据 S5）
+    fhits = _find_all([(t, t2s(s)) for t, s in lines], norm(t2s(q.text)))
+    if fhits:
+        orig = next((s for t, s in lines if t == fhits[0]), "")
+        return Check(q, "简繁差异",
+                     "字幕里在 " + "、".join(_mmss(at) for at in fhits[:3])
+                     + f"（原字形：{orig[:20]}），引文改回字幕原字形")
+    return Check(q, "字幕里找不到", "可能是转述或省略号拼接，待复核")
 
 
 # ---------- 第一层：LLM 剧情 diff ----------
@@ -300,6 +317,7 @@ def render(r: Result, now: datetime, model: str | None) -> str:
     L.append(f"- 分集小节 {len(r.sections)} 个，本次审查 {len(r.reviewed)} 集：{'、'.join(r.reviewed) or '无'}")
     L.append(f"- 引用核销：带时间码的台词 {len(r.checks)} 条，通过 {n_pass}，"
              f"时间码错 {sum(c.verdict == '时间码错' for c in r.checks)}，"
+             f"简繁差异 {sum(c.verdict == '简繁差异' for c in r.checks)}，"
              f"找不到 {sum(c.verdict == '字幕里找不到' for c in r.checks)}，"
              f"无字幕索引 {sum(c.verdict == '该集无字幕索引' for c in r.checks)}")
     if not r.mechanical_only:

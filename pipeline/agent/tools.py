@@ -100,11 +100,13 @@ PIPELINE_MODULES: set[str] = {
     # D61：番剧笔记零上下文对抗审查（每集一次 LLM 调用 + 机械核销，写新报告、不覆盖旧的）。出网 + 写盘，弹卡；
     # 按番不按期，不补期目录
     "notes_review",
+    # D61 终审辅助：字幕逐字查询（子串/时间窗），只读索引后打印——进只读集合
+    "subgrep",
 }
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
-# status 只读期目录；两者都不落盘（入选前已 grep 过无写调用）。新增成员前必须同样核实。
-READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status"})
+# status 只读期目录，subgrep 只读字幕索引后打印；都不落盘（入选前已 grep 过无写调用）。新增成员前必须同样核实。
+READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status", "subgrep"})
 
 # asset 侧纯只读、免审卡的子命令（2026-10-09，D54 ③）：`vindex who` 只读在场索引与镜头表后打印，
 # 全链（load_presence / shots.load / display_names）无写调用。新增成员前必须同样核实。

@@ -172,6 +172,7 @@ dependencies = [
     { name = "pypinyin" },
     { name = "pysubs2" },
     { name = "sentence-transformers" },
+    { name = "zhconv" },
 ]
 
 [package.optional-dependencies]
@@ -206,6 +207,7 @@ requires-dist = [
     { name = "pysubs2", specifier = ">=1.8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "sentence-transformers", specifier = ">=5.0" },
+    { name = "zhconv", specifier = ">=1.4.3" },
 ]
 provides-extras = ["apple", "crawl", "browser", "dev"]
 
@@ -3402,6 +3404,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/99/f6431c8968e89be608d74b28ae2d024521b2953f27dd44e0dece5e04f67a/yarl-1.25.1-cp314-cp314t-win_arm64.whl", hash = "sha256:287e99ff5aa4dc1c7630bfc683ded6f106d756c99dec432a2d7f197a784f51c6", size = 102094, upload-time = "2026-09-15T19:33:31.151Z" },
     { url = "https://files.pythonhosted.org/packages/54/22/318c7980066769c6bcd9221ed2248294f5698811da099013098c670565ed/yarl-1.25.1-py3-none-any.whl", hash = "sha256:681c758b0490f9e96b78e5fa8e8dc6e648e9185bb6eaebe73183c33ea0c445f3", size = 63617, upload-time = "2026-09-15T19:34:59.616Z" },
 ]
+
+[[package]]
+name = "zhconv"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/47/c8ae2d5d4025e253211ff3d8c163f457db1da94976cb582337a5ab76cb87/zhconv-1.4.3.tar.gz", hash = "sha256:ad42d9057ca0605f8e41d62b67ca797f879f58193ee6840562c51459b2698c45", size = 211571, upload-time = "2021-10-31T05:59:44.096Z" }
 
 [[package]]
 name = "zipp"

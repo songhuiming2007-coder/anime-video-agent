@@ -103,6 +103,17 @@ def test_同一句全片多处_任一处对上就通过():
     assert N.check_quote(q, SUBS).verdict == "通过"
 
 
+def test_简繁差异_折叠命中单独一态_不判过():
+    # SUBS 是繁体；引文写简体——哪怕时间码正好对上，也只能报「简繁差异」，不能判过（判据 S5）
+    q = lambda text, tc: N.quotes_of(N.Section("S01E01", "", 1, f"「{text}」{tc}\n"))[0]
+    hit = N.check_quote(q("拜托了 Fyu-Neru 把这个交给涯", "0:02:40"), SUBS)
+    assert hit.verdict == "简繁差异" and "0:02:40" in hit.detail and "拜託了" in hit.detail
+    wrong_tc = N.check_quote(q("把这个交给涯", "0:01:00"), SUBS)   # 时间码也不对：仍先报简繁（两处命中）
+    assert wrong_tc.verdict == "简繁差异" and "0:02:41" in wrong_tc.detail
+    gone = N.check_quote(q("字幕里根本没有这一句", "0:01:00"), SUBS)
+    assert gone.verdict == "字幕里找不到" and "简繁" not in gone.detail
+
+
 def test_窗口缓冲_前3秒后5秒():
     mk = lambda tc: N.quotes_of(N.Section("S01E01", "", 1, f"「恐怖分子的新聞」{tc}\n"))[0]
     assert N.check_quote(mk("0:04:28"), SUBS).verdict == "通过"      # 字幕 271 s，笔记早 3 s 内
