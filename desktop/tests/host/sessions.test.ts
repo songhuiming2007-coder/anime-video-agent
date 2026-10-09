@@ -1212,7 +1212,7 @@ function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: 
       const out = JSON.stringify([{ sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-10-09T06:34:57Z", first_user: "尼古喵喵的素材", resumable: true }]);
       return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
     }
-    if (t === "DELETE_SESSION") {
+    if (t === "DELETE_SESSION" || t === "DELETE_IDEA_SESSION") {
       const code = opts.deleteCode ?? 0;
       return { ...base, code, stdoutTail: code === 0 ? '{"moved": 4, "trash": "/x"}' : "", stderrTail: code === 3 ? "该期已有活跃会话" : "", stdoutFull: null };
     }
@@ -1244,15 +1244,12 @@ describe("D45 会话管理", () => {
       [SID_A, true, "改段落三", "2026-10-08T08:00:00Z"],
       [SID_B, false, "董香第二期做到哪了", "2026-09-26T11:00:00Z"],
     ]);
-    // D57：选题会话也能列（经 core `ava idea /list-sessions`，不带期目录），供「继续上次的选题对话」；
-    // 进入指定会话、删除仍只对期会话开放（选题会话是单一滚动段，D42）
+    // D57 / D58：选题会话也能列（经 core `ava idea /list-sessions`，不带期目录）
     const ideaRows = (await svc.dispatch("conv.sessions", { convKey: "idea" })) as Array<Record<string, unknown>>;
     expect(ideaRows.map((r) => [r.sid, r.live, r.firstUser, r.lastActivity, r.resumable])).toEqual([
       [SID_B, false, "尼古喵喵的素材", "2026-10-09T06:34:57Z", true],
     ]);
     expect(calls.filter((c) => c.t === "LIST_IDEA_SESSIONS").map((c) => c.args)).toEqual([{}]);
-    await expect(svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
-    await expect(svc.dispatch("conv.enter", { convKey: "idea", sid: SID_B })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
 
     const bad = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson: '[{"sid": "../x"}]' }) } });
     await expect(bad.svc.dispatch("conv.sessions", { convKey: bad.key })).rejects.toMatchObject({ code: "E_CORE" });
@@ -1343,5 +1340,83 @@ describe("D45 会话管理", () => {
     const gone = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
     await expect(gone.svc.dispatch("conv.delete", { convKey: gone.key, sid: "ccccccccccccccc3" })).rejects.toMatchObject({ code: "E_STALE" });
     expect(gone.stub.calls).toBe(0);
+  });
+});
+
+
+// D58：选题会话与期会话同一套会话管理（看 / 进 / 新开 / 删），建期只带当前这段
+function ideaScriptWithSid(repo: SessionRepo, sid: string): void {
+  sessionScript(repo, "idea", [
+    { op: "emit", frame: { ...IDEA_READY.frame, sid } },
+    { op: "serve", on_turn: [{ ...TURN_STARTED, sid }, { ...TURN_ENDED, sid }, { ...STOP_POINTS, sid }], on_shutdown: "exit" },
+  ]);
+}
+const ideaArgvs = (): string[][] => sessionArgvs().filter((a) => a.includes("--idea"));
+
+describe("D58 选题会话的会话管理", () => {
+  it("conv.enter → --idea --continue <sid>；conv.fresh → 下一次拉起 --idea --fresh，拉起后标记即清", async () => {
+    const { repo, svc } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
+    ideaScriptWithSid(repo, SID_A);
+    await svc.dispatch("conv.send", { convKey: "idea", text: "选题甲" });
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
+    expect(ideaArgvs().at(-1)?.slice(-1)).toEqual(["--idea"]);
+
+    ideaScriptWithSid(repo, SID_B);
+    await svc.dispatch("conv.enter", { convKey: "idea", sid: SID_B });
+    expect(ideaArgvs().at(-1)?.slice(-3)).toEqual(["--idea", "--continue", SID_B]);
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
+
+    const snap = (await svc.dispatch("conv.fresh", { convKey: "idea" })) as ConvSnapshot;
+    expect(snap.phase).toBe("none");
+    ideaScriptWithSid(repo, SID_A);
+    await svc.dispatch("conv.send", { convKey: "idea", text: "新的选题" });
+    expect(ideaArgvs().at(-1)?.slice(-2)).toEqual(["--idea", "--fresh"]);
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
+
+    await svc.dispatch("conv.end", { convKey: "idea" });
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "exited");
+    await svc.dispatch("conv.send", { convKey: "idea", text: "再来" });
+    expect(ideaArgvs().at(-1)?.slice(-1)).toEqual(["--idea"]); // 标记已消费：裸 --idea 恢复最近段
+  });
+
+  it("conv.delete：确认文案指向 data/_idea 回收站；取消不调用；确认后 DELETE_IDEA_SESSION 带 sid", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { repo, svc, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    ideaScriptWithSid(repo, SID_A);
+    await svc.dispatch("conv.send", { convKey: "idea", text: "选题甲" });
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
+    stub.respond = false;
+    expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: false, moved: 0 });
+    expect(stub.last?.detail).toContain("data/_idea/_agent/session-trash/");
+    expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION")).toEqual([]);
+    stub.respond = true;
+    expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: true, moved: 4 });
+    expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION").map((c) => c.args)).toEqual([{ sid: SID_B }]);
+    expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
+    // 删的是别的段：把刚才为释放租约而结束的活会话按原段接回来
+    expect(ideaArgvs().at(-1)?.slice(-3)).toEqual(["--idea", "--continue", SID_A]);
+  });
+
+  it("建期：选题活会话号合规 → NEW_EPISODE 带 ideaSid（只带当前这段）；没有活会话不带", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const base = adminCore(calls);
+    const runCoreStub = (async (t: string, args: Record<string, unknown>, ...rest: unknown[]) => {
+      if (t === "NEW_EPISODE") {
+        calls.push({ t, args });
+        const out = "[from-idea] migrated=false sid=- messages=0\n";
+        return { code: 0, signal: null, stdoutTail: out, stderrTail: "", timedOut: false, stdoutOverflow: false, stdoutFull: null };
+      }
+      return (base as (...a: unknown[]) => unknown)(t, args, ...rest);
+    }) as unknown as HostDeps["runCore"];
+    const { repo, svc } = await boot({ realCore: true, overrides: { runCore: runCoreStub } });
+    ideaScriptWithSid(repo, SID_A);
+    await svc.dispatch("conv.send", { convKey: "idea", text: "选题甲" });
+    await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
+    await svc.dispatch("episode.create", { name: "D58-当前段" });
+    await svc.dispatch("episode.create", { name: "D58-无活会话" });
+    expect(calls.filter((c) => c.t === "NEW_EPISODE").map((c) => c.args)).toEqual([
+      { name: "D58-当前段", ideaSid: SID_A },
+      { name: "D58-无活会话" },
+    ]);
   });
 });

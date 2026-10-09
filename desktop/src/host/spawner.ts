@@ -55,6 +55,8 @@ export type Template =
   | "LIST_SESSIONS"
   // D57：选题会话的只读列表（`ava idea /list-sessions`）
   | "LIST_IDEA_SESSIONS"
+  // D58：删除一段选题对话（`ava idea /delete-session --sid=`）
+  | "DELETE_IDEA_SESSION"
   | "DELETE_SESSION";
 
 /** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
@@ -92,7 +94,7 @@ export interface TemplateArgs {
   /** size / mtimeNs 取自对象钉住的 04-clips.json 指纹；mtimeNs 为 bigint，argv 里写 String(bigint)（§3.1 规则 8） */
   REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
   /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
-  NEW_EPISODE: { name: string };
+  NEW_EPISODE: { name: string; ideaSid?: string };
   PROBE_KEY_ENV: Record<string, never>;
   /** Spec 10 §2.9：账户名 = core 回答的变量名 */
   KEYCHAIN_READ: { envName: string };
@@ -122,6 +124,7 @@ export interface TemplateArgs {
   IMPORT_COVER: { ep: string; name: string };
   LIST_SESSIONS: { ep: string };
   LIST_IDEA_SESSIONS: Record<string, never>;
+  DELETE_IDEA_SESSION: { sid: string };
   /** sid 先过 SESSION_ID_RE，不合格抛错不 spawn */
   DELETE_SESSION: { ep: string; sid: string };
 }
@@ -226,8 +229,10 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "NEW_EPISODE": {
       // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core。
       // 恒带 --from-idea（Spec 18 §3.3）：选题会话没有记录时 core 回 migrated=false，语义等价于不带，零分叉
-      const { name } = args as TemplateArgs["NEW_EPISODE"];
-      return { argv: [py, "-m", "pipeline.agent.cli", "new", name, "--from-idea"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+      // D58：ideaSid = 建期那一刻选题活会话的会话号，只带这一段（人裁决「只带当前这段」）；没有就带最近段
+      const { name, ideaSid } = args as TemplateArgs["NEW_EPISODE"];
+      const flag = ideaSid === undefined ? "--from-idea" : `--from-idea=${checkedSid(ideaSid)}`;
+      return { argv: [py, "-m", "pipeline.agent.cli", "new", name, flag], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
     case "PROBE_KEY_ENV":
       // 只读配置、不读环境变量（C10-R2）；stdout 就是变量名，缺失为空串
@@ -322,6 +327,10 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     }
     case "LIST_IDEA_SESSIONS":
       return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/list-sessions"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    case "DELETE_IDEA_SESSION": {
+      const { sid } = args as TemplateArgs["DELETE_IDEA_SESSION"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
     case "DELETE_SESSION": {
       const { ep, sid } = args as TemplateArgs["DELETE_SESSION"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
@@ -338,7 +347,7 @@ function checkedSid(sid: string): string {
 
 /** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。
  * D45：SESSION_CONTINUE 带 `sid` 时恢复指定会话（`--continue <sid>`），不带时恢复最近的可恢复会话。 */
-export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string, sid?: string): string[] {
+export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string, sid?: string, fresh = false): string[] {
   const py = pythonOf(repoRoot);
   switch (t) {
     case "SESSION_NEW":
@@ -348,7 +357,9 @@ export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot
         ? [py, "-m", "pipeline.agent.protocol", ep as string, "--continue"]
         : [py, "-m", "pipeline.agent.protocol", ep as string, "--continue", checkedSid(sid)];
     case "SESSION_IDEA":
-      return [py, "-m", "pipeline.agent.protocol", "--idea"];
+      // D58：选题会话可存多段——给 sid 恢复指定段，fresh 开新段，都不给恢复最近段（Spec 18 §3.1 原形态）
+      if (sid !== undefined) return [py, "-m", "pipeline.agent.protocol", "--idea", "--continue", checkedSid(sid)];
+      return fresh ? [py, "-m", "pipeline.agent.protocol", "--idea", "--fresh"] : [py, "-m", "pipeline.agent.protocol", "--idea"];
   }
 }
 
@@ -543,8 +554,8 @@ export interface SessionProc {
   signal(sig: NodeJS.Signals, group: boolean): void;
 }
 
-export function spawnSession(t: SessionTemplate, args: { ep?: string; sid?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
-  const argv = sessionArgv(t, args.ep, ctx.repoRoot, args.sid);
+export function spawnSession(t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
+  const argv = sessionArgv(t, args.ep, ctx.repoRoot, args.sid, args.fresh === true);
   // spawn 日志只记模板名与 argv，不记环境（§3.4）；密钥值绝不进任何日志（TH-6）
   recordSpawn({ template: t, argv, at: Date.now() });
   const child = spawn(argv[0], argv.slice(1), {

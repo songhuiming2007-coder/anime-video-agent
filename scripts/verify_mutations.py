@@ -246,20 +246,15 @@ MUTATIONS: list[dict] = [
      "new": '    pass\n'},
     # M23 / M25a 于 D42（Spec 18 PR1，2026-10-08）随 `ava new --from-idea` 改锚，守护语义不变
     {"id": "M23", "guard": "ava new 建完直接进对话", "file": CLI,
-     "old": ('    # 子命令 1: ava new <期名> [--from-idea]\n'
-             '    if args and args[0] == "new":\n'
-             '        from_idea = len(args) == 3 and args[2] == "--from-idea"\n'
-             '        if len(args) != 2 and not from_idea:\n'
-             '            print("[ERROR] 用法: ava new <期名> [--from-idea]（期名恰好一个）", file=sys.stderr)\n'
-             '            return 2\n'
-             '        rc = create_new_episode(args[1])\n'
+     # D58（2026-10-09）锚点随 `--from-idea[=<sid>]` 解析改写更新；守的语义不变：建期成功后不就此返回
+     "old": ('        rc = create_new_episode(args[1])\n'
              '        if rc != 0:\n'
-             '            return rc\n'),
-     "new": ('    # 子命令 1: ava new <期名> [--from-idea]\n'
-             '    if args and args[0] == "new":\n'
-             '        return create_new_episode(args[1])\n'
+             '            return rc\n'
+             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]\n'),
+     "new": ('        return create_new_episode(args[1])\n'
              '        if rc != 0:\n'
-             '            return rc\n')},
+             '            return rc\n'
+             '        new_ep_dir = paths.ROOT / "data" / "episodes" / args[1]\n')},
     # ---- M24 已退役（D43 / Spec 17 废除其守护的语义「idea scope 工具表零写权限（四键表）」：
     #      tools.json 收为单表，四键段不复存在）----
     {"id": "M25a", "guard": "ava new 非 tty 闸门", "file": CLI,
@@ -870,6 +865,15 @@ MUTATIONS: list[dict] = [
     {"id": "D57-MUT-1", "guard": "ava idea /list-sessions 列出选题会话", "file": "pipeline/agent/cli.py",
      "old": '    if args == [IDEA_KEYWORD, "/list-sessions"]:\n',
      "new": '    if False:\n'},
+    {"id": "D58-MUT-1", "guard": "建期只带当前这段（迁移按 sid 过滤）", "file": "pipeline/agent/cli.py",
+     "old": "            _write_new_log(target_dir / LOG_NAME, b\"\".join(moved))\n",
+     "new": "            _write_new_log(target_dir / LOG_NAME, raw)\n"},
+    {"id": "D58-MUT-2", "guard": "--idea --fresh 开新段（不恢复最近段）", "file": "pipeline/agent/protocol.py",
+     "old": "    elif not fresh:\n",
+     "new": "    else:\n"},
+    {"id": "D58-MUT-3", "guard": "指定段不可恢复时不退回带最近段", "file": "pipeline/agent/cli.py",
+     "old": "            target = next((s for s in summaries if s.sid == sid and s.resumable), None)\n",
+     "new": "            target = next((s for s in summaries if s.sid == sid and s.resumable), None) or resume_target(summaries)[0]\n"},
     {"id": "S9-MUT-41", "guard": "检查点同时数工具执行（不只数回复）", "file": LLM,
      "old": "                execs_since_cp += 1\n",
      "new": "                pass  # MUT-41\n"},
@@ -1051,8 +1055,8 @@ MUTATIONS: list[dict] = [
 
     # ---- MUT-D42-a～h：D42 / Spec 18（选题会话落盘与建期迁移，2026-10-08 施工登记）----
     # 指定杀手均在 tests/test_d42_idea_migration.py；逐条复跑见 Spec 18 §9 回填表。
-    {"id": "MUT-D42-a", "guard": "迁移把选题记录整段复制进新期（T-D42-2）", "file": CLI,
-     "old": '            _write_new_log(target_dir / LOG_NAME, raw)\n',
+    {"id": "MUT-D42-a", "guard": "迁移把选中的那段选题记录复制进新期（T-D42-2；D58 起只带一段）", "file": CLI,
+     "old": '            _write_new_log(target_dir / LOG_NAME, b"".join(moved))\n',
      "new": '            pass  # MUT-D42-a：只建期不复制\n'},
     {"id": "MUT-D42-b", "guard": "复制成功后清空 _idea（T-D42-2）", "file": CLI,
      "old": '            lease.clear()\n',

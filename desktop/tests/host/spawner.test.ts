@@ -258,9 +258,22 @@ describe("D45 会话管理模板的 argv 形状", () => {
     const idea = buildArgv("LIST_IDEA_SESSIONS", {}, "/repo");
     expect(idea.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "idea", "/list-sessions"]);
     expect(idea.stdoutMax).toBe(list.stdoutMax);
+    // D58：删除一段选题对话；建期只带指定段
+    expect(buildArgv("DELETE_IDEA_SESSION", { sid: "aaaaaaaaaaaaaaa1" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "idea", "/delete-session", "--sid=aaaaaaaaaaaaaaa1",
+    ]);
+    expect(buildArgv("NEW_EPISODE", { name: "期", ideaSid: "aaaaaaaaaaaaaaa1" }, "/repo").argv.slice(-1)).toEqual(["--from-idea=aaaaaaaaaaaaaaa1"]);
+    expect(buildArgv("NEW_EPISODE", { name: "期" }, "/repo").argv.slice(-1)).toEqual(["--from-idea"]);
+    expect(() => buildArgv("NEW_EPISODE", { name: "期", ideaSid: "../x" }, "/repo")).toThrow();
     expect(buildArgv("DELETE_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1" }, "/repo").argv).toEqual([
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/delete-session", "--sid=aaaaaaaaaaaaaaa1",
     ]);
+  });
+  it("D58 SESSION_IDEA：带 sid → --idea --continue <sid>；fresh → --idea --fresh；都不带 → --idea（原形态）", () => {
+    expect(sessionArgv("SESSION_IDEA", undefined, "/repo")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea"]);
+    expect(sessionArgv("SESSION_IDEA", undefined, "/repo", "bbbbbbbbbbbbbbb2")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea", "--continue", "bbbbbbbbbbbbbbb2"]);
+    expect(sessionArgv("SESSION_IDEA", undefined, "/repo", undefined, true)).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea", "--fresh"]);
+    expect(() => sessionArgv("SESSION_IDEA", undefined, "/repo", "x")).toThrow();
   });
   it("SESSION_CONTINUE 带 sid → --continue <sid>；不带 → 恢复最近会话（原形态不变）", () => {
     expect(sessionArgv("SESSION_CONTINUE", "/ep", "/repo", "bbbbbbbbbbbbbbb2")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "/ep", "--continue", "bbbbbbbbbbbbbbb2"]);

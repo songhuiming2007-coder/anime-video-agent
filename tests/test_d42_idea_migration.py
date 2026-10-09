@@ -593,3 +593,130 @@ def test_t_d42_9b_migrated_idea_with_repair_not_repeated(tmp_path, monkeypatch, 
     # 盘上读回与内存一致（rebuild 走的是同一套记录）
     assert len(_tool_messages(rebuild_messages(load_session((new_log / LOG_NAME).read_bytes(), sid)),
                               "call-x")) == 1
+
+
+# ---------------------------------------------------------------------------
+# D58（2026-10-09）：选题会话可存多段——指定段恢复 / 新开 / 删除 / 建期只带一段
+# ---------------------------------------------------------------------------
+
+SID_OLD, SID_NEW, SID_BARE = "a" * 16, "b" * 16, "c" * 16
+
+
+def _two_idea_sessions(root: Path) -> tuple[bytes, bytes]:
+    """`_idea` 里先后两段（旧：甲，新：乙）；返回各自的整行字节（按 sid 拆，顺序同文件）。"""
+    from pipeline.agent.session_log import split_by_sid
+
+    _seed_log(root / "data" / "_idea", SID_OLD, [
+        {"role": "user", "content": "选题甲"}, {"role": "assistant", "content": "草案甲"}])
+    _seed_log(root / "data" / "_idea", SID_NEW, [
+        {"role": "user", "content": "选题乙"}, {"role": "assistant", "content": "草案乙"}])
+    raw = _idea_log(root).read_bytes()
+    old, _ = split_by_sid(raw, SID_OLD)
+    new, _ = split_by_sid(raw, SID_NEW)
+    return b"".join(old), b"".join(new)
+
+
+def test_d58_protocol_idea_continue_sid_and_fresh(world, endpoint, tmp_path) -> None:
+    """`--idea --continue <前缀>` 恢复指定段；`--idea --fresh` 开新段不回放；裸 `--idea` 照旧恢复最近段。"""
+    root, _episode = world
+    _two_idea_sessions(root)
+
+    def history_of(extra: list[str], tag: str) -> tuple[str, list[str]]:
+        proc = Protocol(root, endpoint, episode="--idea", extra=extra, tmp=tmp_path / tag)
+        try:
+            ready = proc.wait_for_ready()
+            texts = [f["text"] for f in proc.frames if f.get("t") == "history"]
+            proc.shutdown()
+        finally:
+            assert proc.finish() == 0
+        return ready["continue_status"], texts
+
+    status, texts = history_of(["--continue", SID_OLD[:8]], "old")
+    assert status == "resumed" and "选题甲" in texts and "选题乙" not in texts
+    status, texts = history_of(["--fresh"], "fresh")
+    assert status == "new" and texts == []
+    status, texts = history_of([], "bare")
+    assert status == "resumed" and "选题乙" in texts and "选题甲" not in texts
+
+
+def test_d58_protocol_idea_bad_flag_combos(world, endpoint, tmp_path) -> None:
+    root, _episode = world
+    for i, extra in enumerate((["--continue"], ["--fresh", "--continue", "aaaa"])):
+        proc = Protocol(root, endpoint, episode="--idea", extra=extra, tmp=tmp_path / f"bad{i}")
+        assert proc.finish() == 2, extra
+
+
+def test_d58_from_idea_sid_moves_only_that_session(tmp_path, monkeypatch, capsys) -> None:
+    """人裁决「只带当前这段」：`--from-idea=<旧段>` → 新期只有旧段，`_idea` 只剩新段（逐字节）。"""
+    root = _bare_root(tmp_path)
+    old, new = _two_idea_sessions(root)
+    monkeypatch.setattr(paths, "ROOT", root)
+    assert cli.main(["new", "02-x", f"--from-idea={SID_OLD}"]) == 0
+    out = capsys.readouterr().out
+    assert [m.group(0) for m in _markers(out)] == [f"[from-idea] migrated=true sid={SID_OLD} messages=2"]
+    assert (root / "data" / "episodes" / "02-x" / LOG_NAME).read_bytes() == old
+    assert _idea_log(root).read_bytes() == new
+
+
+def test_d58_from_idea_without_sid_takes_latest(tmp_path, monkeypatch, capsys) -> None:
+    root = _bare_root(tmp_path)
+    old, new = _two_idea_sessions(root)
+    rc, out, _err = _new_from_idea(root, monkeypatch, capsys)
+    assert rc == 0 and f"sid={SID_NEW}" in out
+    assert (root / "data" / "episodes" / "02-x" / LOG_NAME).read_bytes() == new
+    assert _idea_log(root).read_bytes() == old
+
+
+def test_d58_from_idea_unresumable_sid_does_not_fall_back(tmp_path, monkeypatch, capsys) -> None:
+    """指定段还没有回复（不可恢复）→ 不带，也不退回去带最近的别的段；`_idea` 一字不动。"""
+    root = _bare_root(tmp_path)
+    _two_idea_sessions(root)
+    _seed_log(root / "data" / "_idea", SID_BARE, [{"role": "user", "content": "只说了一句"}])
+    before = _idea_log(root).read_bytes()
+    monkeypatch.setattr(paths, "ROOT", root)
+    assert cli.main(["new", "02-x", f"--from-idea={SID_BARE}"]) == 0
+    assert [m.group(0) for m in _markers(capsys.readouterr().out)] == ["[from-idea] migrated=false sid=- messages=0"]
+    assert not (root / "data" / "episodes" / "02-x" / LOG_NAME).exists()
+    assert _idea_log(root).read_bytes() == before
+
+
+def test_d58_from_idea_rejects_malformed_sid(tmp_path, monkeypatch) -> None:
+    root = _bare_root(tmp_path)
+    monkeypatch.setattr(paths, "ROOT", root)
+    assert cli.main(["new", "02-x", "--from-idea=../x"]) == 2
+    assert not (root / "data" / "episodes" / "02-x").exists()
+
+
+def test_d58_idea_delete_session_moves_to_trash(tmp_path, monkeypatch, capsys) -> None:
+    """`ava idea /delete-session --sid=` → 该段整行进 `_idea/_agent/session-trash/`，其余逐字节不变；租约被占 → 3。"""
+    root = _bare_root(tmp_path)
+    old, new = _two_idea_sessions(root)
+    monkeypatch.setattr(paths, "ROOT", root)
+    import subprocess
+    import sys
+    import textwrap
+
+    # 另一个进程持 `_idea` 租约（选题会话正在进行）→ 拒删、一字不动（同进程重复取租约是可重入的，造不出冲突）
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import time
+            from pipeline.agent.session_log import EpisodeLease
+            EpisodeLease.acquire({str(root / "data" / "_idea")!r}); print('held', flush=True); time.sleep(30)
+        """)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        assert cli.main(["idea", "/delete-session", f"--sid={SID_OLD}"]) == 3
+        assert _idea_log(root).read_bytes() == old + new
+    finally:
+        holder.kill()
+        holder.wait()
+    capsys.readouterr()
+    assert cli.main(["idea", "/delete-session", f"--sid={SID_OLD}"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["moved"] == old.count(b"\n")
+    assert Path(out["trash"]).read_bytes() == old
+    assert Path(out["trash"]).parent == root / "data" / "_idea" / "_agent" / "session-trash"
+    assert _idea_log(root).read_bytes() == new
+    assert cli.main(["idea", "/delete-session", "--sid=bad"]) == 2

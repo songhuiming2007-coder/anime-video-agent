@@ -127,6 +127,8 @@
 
 ### 3.1 idea 会话落盘：`data/_idea/session.jsonl`
 
+> **2026-10-09 修订注（D58，人裁决）**：「逻辑上只有一个选题会话」作废——`_idea` 可存多段，桌面端与期会话同一套会话列表（看 / 进 / 新开 / 删）；**同一时刻仍只一个活会话**（租约机制不变）。协议增 `--idea --continue <sid前缀>`（恢复指定段）与 `--idea --fresh`（开新段）；裸 `--idea` 照旧恢复最近段。删除走 `ava idea /delete-session --sid=`，回收站 `data/_idea/_agent/session-trash/`。见 `plans/2026-10-09-idea-session-list-spec.md`。
+
 - idea 会话从「不落盘」改为落盘到 **库级** `data/_idea/session.jsonl`，与期会话**同一格式、同一租约机制**（`session_log.py` 的 append-only / flock / `rebuild_messages` 全部复用，零新格式）。
 - `_` 前缀不进期列表（`cli.py` 的 `hidden_underscore` 既有机制，`list_episodes` 与桌面端期列表都不见它）；`status` / `resolver` / `inspect_episode` 一律不触碰 `data/_idea/`。
 - **工具语义不变**：idea 会话的 `ep_dir` 仍是 `None`（需期工具照报「先建期」；读域仍只有 `data/library/`）。落盘目录只是「日志的家」，不是期目录——实现上把「日志目录」从「期目录」解耦：`SessionHost` 增加日志目录概念，idea 的日志目录固定为 `data/_idea/`，租约取在该目录上。
@@ -140,6 +142,8 @@
 - 租约拿不到（锁冲突 / 其他错误）一律**显式报错退出**（终端非零 / 协议 `E_SESSION_LOCKED` 或同等错误帧），**禁止静默非持久运行**——`ensure_lease` 的懒取静默路径对 idea 不适用；idea 会话若不能落盘就必须当场说，不许退回「退出即丢」（那是本 spec 要消灭的行为）。
 
 ### 3.2 建期迁移：`ava new <名> --from-idea`
+
+> **2026-10-09 修订注（D58，人裁决「只带当前这段」）**：`--from-idea[=<sid>]` 只迁一段——给了 sid 迁该段，没给迁最近可恢复段；新期只写这段的行，`_idea` 持租约原子写回其余各段（第 d 步的「整份清空」改为「只移出该段」）。宿主在结束选题活会话之前记下它的 sid 传入。
 
 core 侧 `pipeline.agent.cli` 的 `new` 子命令加 `--from-idea` 旗标（不带时行为一字不变）：
 
@@ -163,6 +167,8 @@ for record in records:
 `）。改动局部、不动 `rebuild_messages`；Spec 9 §2.8 的修复语义注记同步（§4）。satisfied 为 id 级口径；同 session tool_call_id 复用属病态历史，不在本修复范围（D42-R2 余-2）。这条修复对「同一期崩溃后多次 `--continue`」的既有路径同样生效（不限于迁移链）。
 
 ### 3.3 桌面端
+
+> **2026-10-09 修订注（D58）**：侧栏「选题」行下挂与期会话同一个会话列表；D57 的会话头「继续上次的选题对话」按钮由列表取代。下文「idea 会话的『继续』= 恒恢复最近段」对裸 `--idea` 仍成立，桌面端进指定段走 `--continue <sid>`。
 
 - `episode.create`：host 的 `NEW_EPISODE` 模板 argv 恒加 `--from-idea`（无记录时 core 返回 `migrated: false`，语义等价于现状，零分叉）；core 的 stdout 按 §3.2 的单行 marker（`[from-idea] migrated=<true|false> sid=<hex|-> messages=<n>`）解析，经 `episode.create` 的返回值带 `{ migrated, sid, messages }` 给 renderer；**marker 缺失或不合式按 `migrated: false` + host notice**（🔵-2）。core 非零 → 照旧 `E_CORE` + stderr 尾部原样显示，期已建为空期（原子性约定保证）；此时**重试建同名期会撞「期目录已存在」**——恢复指引：换个期名重试，或直接进入已建的那个空期继续（host 不另造恢复通道，文案原样透传）。
 - `migrated: true` 时：① renderer 的 `idea-note` 文案改为「已带入选题会话记录（N 条消息）」（N 取自 marker 的 `messages` 字段；**migrated: false 时旧文案不变**——idea 没东西可带，提示照旧成立）；② 该期的**首个**会话有记录可续：机制写死（v0.2，🔵-3）——renderer 记 `justCreatedMigrated=<epKey>`，该期首发走**「先 `conv.resume` 再 `conv.send`」两段**（`conv.resume` 让 host 以 `SESSION_CONTINUE` 起进程——迁入段是新期里唯一会话段，`--continue` 无前缀必中；resume 只是起进程，不是代发消息，H-8 不碰）。中途失败面：resume 失败（如 `no_session`）→ 如实显示、不代发，`conv.send` 仍可走 `SESSION_NEW` 兜底；send 段失败照旧有既有重试；③ 若 idea 会话进程活着（`SESSION_IDEA` 在跑），host 先结束它再建期——否则 core 拿不到 `_idea` 租约必报「进行中」。**结束顺序**：host 结束 idea 进程 → `NEW_EPISODE --from-idea` → 切期 → 首发「先 resume 后 send」。**idea 进程结束失败/超时 → 不建期，如实报错**（E_BUSY 类，期未建、idea 记录不动；v0.2，🔵-3 附带）。④ 建期成功后 host 清 idea 会话的条目缓冲，并在选题视图显示「已带入 <期名>」本地提示（v0.2，🔵-5b）。

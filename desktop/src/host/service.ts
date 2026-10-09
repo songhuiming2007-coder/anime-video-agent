@@ -212,6 +212,8 @@ export class HostService {
    * renderer 仍只发一次 conv.send（TG-10 不动），host 不代发任何消息（H-8 不动）。
    */
   private carried = new Set<string>();
+  /** D58：选题「＋ 新会话」之后、下一次拉起选题会话之前为 true（拉起带 --fresh，成功即清；建期、进入指定段也清） */
+  private ideaFresh = false;
   subs = new Map<string, EpisodeRuntime>();
   active: string | null = null;
   /** repoRoot 代号：每次确认切换 +1；只读 spawn 的结果若代号已过期则丢弃（§2.10，红队 R3 m4） */
@@ -1126,6 +1128,7 @@ export class HostService {
       this.active = null;
       this.summaries.clear();
       this.carried.clear();
+      this.ideaFresh = false;
       this.episodes.clear();
       this.resolveRepoRoot();
       this.onDataRoot(this.dataRoot);
@@ -1154,10 +1157,15 @@ export class HostService {
     if (this.sessionQuitting) throw new RpcFail("E_BUSY", "正在退出");
     if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
     if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
+    // D58：只带当前这段（人裁决）——结束选题活会话之前记下它的会话号；没有活会话就让 core 带最近段
+    const liveIdea = this.sessions.liveSid("idea");
+    const ideaSid = liveIdea !== null && SESSION_ID_RE.test(liveIdea) ? liveIdea : null;
+    if (liveIdea !== null && ideaSid === null) this.diag(`选题活会话号形状不对（${liveIdea}），建期改带最近段`);
     if (!(await this.sessions.endForMigration("idea"))) {
       throw new RpcFail("E_BUSY", "选题会话未能结束，未建期（选题记录未动）；请稍后重试");
     }
-    const r = await this.core("NEW_EPISODE", { name });
+    this.ideaFresh = false;
+    const r = await this.core("NEW_EPISODE", ideaSid !== null ? { name, ideaSid } : { name });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
     if (r.code !== 0) throw new RpcFail("E_CORE", `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
@@ -1179,8 +1187,8 @@ export class HostService {
   // ---------------- 会话（Spec 10 §2.1、§3.1） ----------------
 
   private convTarget(convKey: string, mode: "new" | "continue"): SessionTarget {
-    // idea 的「继续」= core 在 --idea 启动时恒恢复最近段（Spec 18 §3.3），不需要独立的 resume 模板
-    if (convKey === "idea") return { key: "idea", epKey: null, abs: null, mode: "idea" };
+    // idea 的「继续」= core 在 --idea 启动时恒恢复最近段（Spec 18 §3.3）；D58：「＋ 新会话」之后的下一次拉起带 --fresh
+    if (convKey === "idea") return { key: "idea", epKey: null, abs: null, mode: "idea", ...(this.ideaFresh ? { fresh: true } : {}) };
     if (!convKey.startsWith("ep:")) throw new RpcFail("E_BAD_REQUEST", `未知会话键 ${convKey}`);
     const epKey = convKey.slice(3);
     const e = this.episodes.get(epKey);
@@ -1195,6 +1203,7 @@ export class HostService {
     const target = this.convTarget(convKey, carried ? "continue" : "new");
     const r = await this.sessions.send(target.key, target, text);
     if (carried) this.carried.delete(convKey.slice(3)); // 失败不消费：下一次发送仍接着迁入段起
+    if (convKey === "idea") this.ideaFresh = false; // D58：新段已拉起；失败不消费，下一次仍开新段
     return r;
   }
 
@@ -1208,7 +1217,7 @@ export class HostService {
 
   // ---------------- 会话管理（D45） ----------------
 
-  /** 会话管理只对期会话开放：idea 是单一滚动段（Spec 18 §3.3），没有「哪一个」可选。 */
+  /** 期会话的会话管理目标（要期目录）。选题会话走 `adminConv`（D58）。 */
   private epConv(convKey: string): SessionTarget & { abs: string } {
     const target = this.convTarget(convKey, "continue");
     if (target.abs === null) throw new RpcFail("E_BAD_REQUEST", "选题会话没有会话列表");
@@ -1264,38 +1273,47 @@ export class HostService {
     });
   }
 
+  /** D58：会话管理（进 / 新开 / 删）的目标——期会话要期目录；选题会话没有期目录，日志在 data/_idea。 */
+  private adminConv(convKey: string): SessionTarget {
+    return convKey === "idea" ? { key: "idea", epKey: null, abs: null, mode: "idea" } : this.epConv(convKey);
+  }
+
   private async convEnter(convKey: string, sid: string): Promise<ConvSnapshot> {
     if (this.reach !== "ok") throw new RpcFail("E_UNREACHABLE", this.reachDetail);
     this.checkSid(sid);
-    const target = this.epConv(convKey);
+    const target = this.adminConv(convKey);
     this.refuseIfBusy(target.key);
     if (this.sessions.liveSid(target.key) === sid) return this.sessions.snapshot(target.key);
     await this.endLive(target.key);
-    const snap = await this.sessions.resume(target.key, { ...target, mode: "continue", sid });
-    this.carried.delete(convKey.slice(3));
+    // 选题会话：sessions.resume 保持 mode "idea"，带 sid → `--idea --continue <sid>`
+    const snap = await this.sessions.resume(target.key, { ...target, mode: target.mode === "idea" ? "idea" : "continue", sid });
+    if (target.key === "idea") this.ideaFresh = false;
+    else this.carried.delete(convKey.slice(3));
     return snap;
   }
 
   private async convFresh(convKey: string): Promise<ConvSnapshot> {
-    const target = this.epConv(convKey);
+    const target = this.adminConv(convKey);
     this.refuseIfBusy(target.key);
     await this.endLive(target.key);
     this.sessions.reset(target.key);
-    this.carried.delete(convKey.slice(3)); // 迁入标记会让下一条消息走 continue，开新会话时必须清掉
+    if (target.key === "idea") this.ideaFresh = true; // 选题会话下一次拉起开新段（否则 --idea 会恢复最近段）
+    else this.carried.delete(convKey.slice(3)); // 迁入标记会让下一条消息走 continue，开新会话时必须清掉
     return this.sessions.snapshot(target.key);
   }
 
   /** 删除 = 移进 `_agent/session-trash/`（人选的语义，可手工找回）。先原生确认，取消则一字不动。 */
   private async convDelete(convKey: string, sid: string): Promise<{ deleted: boolean; moved: number }> {
     this.checkSid(sid);
-    const target = this.epConv(convKey);
+    const target = this.adminConv(convKey);
+    const idea = target.key === "idea";
     this.refuseIfBusy(target.key);
     const row = (await this.convSessions(convKey)).find((r) => r.sid === sid);
     if (!row) throw new RpcFail("E_STALE", "该会话已不存在");
     const detail = [
       row.firstUser || "（没有用户消息）",
       `${row.messages} 条消息 · 最后活动 ${row.lastActivity}`,
-      "将移到本期 _agent/session-trash/，需要时可以手工找回。",
+      idea ? "将移到 data/_idea/_agent/session-trash/，需要时可以手工找回。" : "将移到本期 _agent/session-trash/，需要时可以手工找回。",
       ...(this.sessions.liveSid(target.key) !== null ? ["当前打开的会话会先结束。"] : []),
     ].join("\n");
     if (!(await this.deps.confirm("把这个会话移到回收站？", detail))) return { deleted: false, moved: 0 };
@@ -1303,10 +1321,10 @@ export class HostService {
     const wasLive = this.sessions.liveSid(target.key);
     await this.endLive(target.key); // 活会话占着期租约，core 拿不到锁就删不了
     if (wasLive === sid) this.sessions.reset(target.key);
-    const r = await this.core("DELETE_SESSION", { ep: target.abs, sid });
+    const r = idea ? await this.core("DELETE_IDEA_SESSION", { sid }) : await this.core("DELETE_SESSION", { ep: target.abs as string, sid });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "删除会话超时", tails);
-    if (r.code === 3) throw new RpcFail("E_SESSION_LOCKED", r.stderrTail.trim() || "该期仍有活会话", tails);
+    if (r.code === 3) throw new RpcFail("E_SESSION_LOCKED", r.stderrTail.trim() || (idea ? "选题会话仍在进行" : "该期仍有活会话"), tails);
     if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `删除会话失败（core 退出码 ${r.code}）`, tails);
     let moved = 0;
     try {
@@ -1315,7 +1333,7 @@ export class HostService {
       throw new RpcFail("E_CORE", "core 的 /delete-session 输出不是 JSON", tails);
     }
     // 删的是别的会话：把刚才为释放租约而结束的那个接回来，人看到的对话不变
-    if (wasLive !== null && wasLive !== sid) await this.sessions.resume(target.key, { ...target, mode: "continue", sid: wasLive });
+    if (wasLive !== null && wasLive !== sid) await this.sessions.resume(target.key, { ...target, mode: idea ? "idea" : "continue", sid: wasLive });
     return { deleted: true, moved };
   }
 

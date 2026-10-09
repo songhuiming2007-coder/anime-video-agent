@@ -168,6 +168,24 @@ def list_sessions(raw: bytes) -> list[SessionSummary]:
     ]
 
 
+def split_by_sid(raw: bytes, sid: str) -> tuple[list[bytes], list[bytes]]:
+    """日志整行按会话拆成 (属于 sid 的行, 其余行)，每行带回换行，各自保持原顺序（D45 / D58）。
+
+    只看完整行（末尾不带换行的残行由调用方先截掉）；解析不了的坏行无法归属，一律算「其余」留在原处。
+    回收站与选题建期迁移共用这一份拆法。
+    """
+    moved: list[bytes] = []
+    kept: list[bytes] = []
+    for line in raw.split(b"\n")[:-1] if raw else []:
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            record = None
+        owner = record.get("sid") if isinstance(record, dict) else None
+        (moved if owner == sid else kept).append(line + b"\n")
+    return moved, kept
+
+
 def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
     """把会话 `sid` 的整行搬进 `<日志目录>/_agent/session-trash/`，其余行逐字节写回（D45）。
 
@@ -178,16 +196,7 @@ def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
     from pipeline.paths import atomic_write
 
     lease.truncate_torn_tail()
-    raw = lease.read()
-    kept: list[bytes] = []
-    moved: list[bytes] = []
-    for line in raw.split(b"\n")[:-1] if raw else []:
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            record = None
-        owner = record.get("sid") if isinstance(record, dict) else None
-        (moved if owner == sid else kept).append(line + b"\n")
+    moved, kept = split_by_sid(lease.read(), sid)
     if not moved:
         raise ValueError(f"会话 {sid} 不存在")
     trash_dir = lease.ep_dir / "_agent" / "session-trash"

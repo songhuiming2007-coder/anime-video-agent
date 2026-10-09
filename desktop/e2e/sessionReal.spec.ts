@@ -5,7 +5,7 @@
 // - 失败原文：界面文本与真实 `session.jsonl` 里对应 tool 消息的 content 逐字节比对（TX-1）；
 // - 配对：假端点对配对不齐的历史回 400，`badPairings == 0` 由真实请求体证明。
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
@@ -365,37 +365,52 @@ test("TX-10 真实 core：结束会话后「继续上次会话」→ 历史分�
   });
 });
 
-test("D57 真实 core：选题聊过 → 退出 app 再打开 → 会话头「继续上次的选题对话」→ 点了接上历史，可以接着聊", async () => {
+test("D57 / D58 真实 core：选题会话列表——两段对话 → 退出 app 再打开 → 列表两条 → 点旧段接上旧历史（注入收起）→ 删另一段进回收站", async () => {
   const llm = await startFakeLlm();
   const fx = realCoreFixture(llm.url, ["SESS-A"], {});
   let L = await launchSession(fx.repo);
+  const rows = () => L.page.locator("[data-testid=session-list] [data-testid=session-row]");
   try {
-    llm.push(assistant("选题旧回复"), assistant("选题新回复"));
+    llm.push(assistant("甲的回复"), assistant("乙的回复"), assistant("甲又回复"));
     await L.page.getByTestId("idea").click();
-    await expect(L.page.getByTestId("composer-input")).toBeVisible();
-    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0); // 还没聊过：没有可接上的
-    await send(L.page, "选题旧消息");
+    await expect(L.page.getByTestId("session-list")).toBeVisible();
+    await expect(rows()).toHaveCount(0); // 还没聊过
+    await send(L.page, "选题甲旧消息");
     await waitTurns(L, "idea", 1);
-    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0); // 活会话里不显示
+    await expect(rows()).toHaveCount(1);
+    // ＋ 新会话：结束当前段，下一条消息开新段（不恢复甲）
+    await L.page.getByTestId("session-new").click();
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none");
+    await send(L.page, "选题乙消息");
+    await waitTurns(L, "idea", 1);
+    await expect(L.page.getByTestId("conv-stream")).not.toContainText("选题甲旧消息");
+    await expect(rows()).toHaveCount(2);
     await stubQuit(L, "quit");
     await L.app.close();
 
     L = await launchSession(fx.repo);
     await L.page.getByTestId("idea").click();
-    const resume = L.page.getByTestId("idea-resume");
-    await expect(resume).toBeVisible({ timeout: 20_000 });
-    await expect(resume).toHaveText(/^继续上次的选题对话（最后 \d\d-\d\d \d\d:\d\d）$/);
-    await expect(L.page.getByTestId("conv-stream")).not.toContainText("选题旧消息"); // 修前就是这样：空白
-    await resume.click();
-    await expect(L.page.getByTestId("conv-stream")).toContainText("选题旧消息", { timeout: 15_000 });
-    await expect(L.page.getByTestId("conv-stream")).toContainText("选题旧回复");
-    // 恢复出的系统注入（常驻提示等）折叠成一行，正文默认不展开（Spec 10 §2.3；D57 前是整段平铺）
+    await expect(rows()).toHaveCount(2, { timeout: 20_000 });
+    await rows().filter({ hasText: "选题甲旧消息" }).locator("button.ep-session").click();
+    await expect(L.page.getByTestId("conv-stream")).toContainText("选题甲旧消息", { timeout: 15_000 });
+    await expect(L.page.getByTestId("conv-stream")).toContainText("甲的回复");
+    await expect(L.page.getByTestId("conv-stream")).not.toContainText("选题乙消息");
+    // 恢复出的系统注入折叠成一行，正文默认不展开（Spec 10 §2.3；D57 前是整段平铺）
     const inj = L.page.locator("[data-testid=conv-row][data-kind=injection]").first();
     await expect(inj).toContainText(/^系统注入（\d+ 字/);
     await expect(inj.locator("pre")).toBeHidden();
-    await expect(L.page.getByTestId("idea-resume")).toHaveCount(0);
-    await send(L.page, "接着聊");
-    await expect(L.page.getByTestId("conv-stream")).toContainText("选题新回复", { timeout: 15_000 });
+    await send(L.page, "接着聊甲");
+    await expect(L.page.getByTestId("conv-stream")).toContainText("甲又回复", { timeout: 15_000 });
+    // 删乙：原生确认框桩答「确认」→ 乙进 data/_idea/_agent/session-trash/，列表只剩甲，当前对话不受影响
+    await stubConfirm(L, true);
+    const rowB = rows().filter({ hasText: "选题乙消息" });
+    await rowB.hover(); // 删除按钮悬停才显示（D45 同款）
+    await rowB.getByTestId("session-delete").click();
+    await expect(rows()).toHaveCount(1, { timeout: 15_000 });
+    await expect(rows().first()).toContainText("选题甲旧消息");
+    await expect(L.page.getByTestId("conv-stream")).toContainText("甲又回复");
+    const trash = join(fx.repo.root, "data/_idea/_agent/session-trash");
+    expect(existsSync(trash) && readdirSync(trash).length).toBe(1);
     expect(llm.badPairings).toBe(0);
   } catch (e) {
     await dumpScene(L, llm, ["SESS-A"]);
