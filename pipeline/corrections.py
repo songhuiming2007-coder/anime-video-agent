@@ -853,6 +853,10 @@ def retract_correction(episode: Path, item_id: int) -> dict:
 
 # 全局读音表的唯一位置。CLI 不接受路径参数：否则等于给 agent 一个任意 JSON 写入口。
 VOICE_CONFIG = paths.CONFIG / "voice.json"
+# N12（2026-10-09）：每条经本命令写入的全局读音，记下它在哪一期、哪部番、哪个引擎与音色上实测成立。
+# 换音色 / 换引擎时据此挑出要重测的条目。只记往后的；旧条目不回填（凭 _note 推断会编出假来历）。
+# tts 的复用指纹只看两张表的内容（tts._voice_fingerprint），这个键不触发重配。
+PROVENANCE_KEY = "readings_provenance"
 GLOBAL_TABLES = ("pinyin_injections", "readings")
 
 _HAN_RUN = re.compile(r"[一-鿿]+")
@@ -1001,9 +1005,43 @@ def _dump_voice_config(cfg: dict, original: bytes) -> str:
     return text + "\n" if original.endswith(b"\n") else text
 
 
+def _today() -> str:
+    return datetime.now().date().isoformat()
+
+
+def provenance_of(episode: Path | None, table: str) -> dict:
+    """一条全局读音的来历（N12）。拿不到的字段不写，不猜。"""
+    rec: dict = {"table": table, "date": _today()}
+    if episode is None:
+        return rec
+    ep = Path(episode)
+    rec["episode"] = ep.name
+    from .bgm import animes_of
+
+    animes = animes_of(ep)
+    if animes:
+        rec["anime"] = "、".join(animes)
+    try:
+        manifest = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return rec
+    if isinstance(manifest, dict):
+        if isinstance(manifest.get("engine"), str) and manifest["engine"]:
+            rec["engine"] = manifest["engine"]
+        if isinstance(manifest.get("ref_audio"), str) and manifest["ref_audio"]:
+            rec["voice"] = Path(manifest["ref_audio"]).name
+    return rec
+
+
+def provenance_text(rec: dict) -> str:
+    parts = [f"{label} {rec[k]}" for k, label in (("episode", "期"), ("anime", "番"), ("engine", "引擎"), ("voice", "音色"))
+             if rec.get(k)]
+    return "、".join(parts + [rec["date"]]) if parts else f"{rec['date']}（没给期目录，只记日期）"
+
+
 def write_global_entry(
     word: str, *, pinyin_raw: str | None = None, homophone: str | None = None,
-    supersede: bool = False,
+    supersede: bool = False, episode: Path | None = None,
 ) -> dict:
     """改 `config/voice.json` 的一个读音键（spec §A）：其余字节不变、写前防并发、原子替换。"""
     cfg, raw = _load_voice_config()
@@ -1014,6 +1052,7 @@ def write_global_entry(
     cfg.setdefault(plan["table"], {})[word] = plan["value"]
     if plan["removed"]:
         del cfg[plan["removed"]["table"]][word]
+    cfg.setdefault(PROVENANCE_KEY, {})[word] = provenance_of(episode, plan["table"])
     text = _dump_voice_config(cfg, raw)
     path = VOICE_CONFIG
     if _digest(path.read_bytes()) != _digest(raw):
@@ -1113,6 +1152,7 @@ def preview(argv: list[str]) -> tuple[bool, list[str]]:
                 lines.insert(2, f"同时删除 {plan['removed']['table']} 里的「{ns.word}」→ {plan['removed']['value']}")
             segs = segments_with_word(ns.episode, ns.word)
             lines.append(f"本期含该词的段：{'、'.join(segs) if segs else '无'}")
+            lines.append(f"来历记录：{provenance_text(provenance_of(ns.episode, plan['table']))}")
         return True, lines
     except (PatchError, OSError, ValueError) as exc:
         return False, [str(exc)]
@@ -1139,7 +1179,8 @@ def main(argv: list[str] | None = None) -> int:
         if ns.cmd == "check":
             return 0
         plan = write_global_entry(ns.word, pinyin_raw=ns.pinyin, homophone=ns.homophone,
-                                  supersede=ns.supersede)
+                                  supersede=ns.supersede,
+                                  episode=Path(ns.episode) if ns.episode else None)
         print(f"[OK] config/voice.json {plan['table']}：「{ns.word}」→ {plan['value']}"
               + (f"（原值 {plan['old']}）" if plan["old"] else ""))
         if plan["removed"]:
