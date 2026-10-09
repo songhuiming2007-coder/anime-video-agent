@@ -46,7 +46,7 @@ Hermes 调研给出可抄的现成范式：toolsets 分组授权（webhook 面�
 
 - agent 新增 `acquire_propose`（受控写入 `data/library/incoming/candidates.json`，白名单文件，同 `write_episode_file` 的纪律：双端 resolve 防穿透、atomic_write）；
 - **人审闸门不变**：candidates.json 必须人逐条批准后才允许 fetch（版权与带宽风险由人的显式动作承担，acquire-assets skill 已立）；
-- fetch/gate/register 走现有 `pipeline.acquire` 白名单命令，不新增 LLM 工具。
+- fetch/gate/register 走现有 `pipeline.acquire` 白名单命令，不新增 LLM 工具。（**2026-10-09 修订（D59）**：S6-R1 施工时只接了 `fetch`，`gate` / `register` 漏在白名单外，变成人在终端手敲——补接：`gate` 只读免卡、`register` 弹卡。并立为原则：**人批准用审批卡，不用人亲手敲命令**；生产流程里凡要人在终端跑的操作一律收进 `run_pipeline` 白名单（只读免卡、写盘弹卡），停机点（05 / 09）仍归人。见 [`2026-10-09-agentic-ops-spec`](../plans/2026-10-09-agentic-ops-spec.md)。）
 
 ### 4. scout 派工单降级为升级通道，不废弃
 
