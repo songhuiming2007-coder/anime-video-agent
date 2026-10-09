@@ -44,6 +44,7 @@ from pipeline.agent.session_log import (
     move_session_to_trash,
     read_log,
     resume_target,
+    split_by_sid,
 )
 from pipeline.agent.status_card import (
     build_idea_card,
@@ -609,13 +610,17 @@ def _write_new_log(dest: Path, raw: bytes) -> None:
         raise
 
 
-def migrate_idea_session(target_dir: Path) -> tuple[int, bool]:
-    """建期成功之后把选题会话记录带进新期（Spec 18 §3.2 第 2–3 步）。返回 (退出码, 是否带入)。
+def migrate_idea_session(target_dir: Path, sid: str | None = None) -> tuple[int, bool]:
+    """建期成功之后把**一段**选题会话带进新期（Spec 18 §3.2；D58 改为只带一段）。返回 (退出码, 是否带入)。
+
+    D58（人裁决「只带当前这段」）：给了 `sid` 只迁这一段——它不可恢复（还没有回复）或已不在就不带，
+    **不退回**带最近的别的段（那会把另一个选题的讨论带进来）；没给 `sid` 迁最近可恢复段。新期只写这段的行，
+    `_idea` 持租约原子写回其余各段（不再整份清空）。
 
     顺序写死：先建期（调用方已完成）、后迁移——任何失败都留下一个合法空期，**不回滚建期**。
-    a 取 `_idea` 租约（拿不到 = 选题会话进行中）→ b 读全部字节 → c 整段落进新期（sid/seq/ts
-    一字不改；源文件的撕裂残行随之带入，由新期首次恢复的 `truncate_torn_tail` 吸收）→
-    d 持租约清空 `_idea`。退出码：0 / 3 选题会话进行中 / 4 迁移失败 / 5 清空失败。
+    a 取 `_idea` 租约（拿不到 = 选题会话进行中）→ b 先截掉末尾残行（租约既有的截断点；按行拆分
+    会丢它，不如显式截）再读全部字节 → c 该段的行落进新期（sid/seq/ts 一字不改）→ d 持租约把其余
+    各段原子写回 `_idea`（没有其余段则清空）。退出码：0 / 3 选题会话进行中 / 4 迁移失败 / 5 移出失败。
     """
     source = paths.ROOT / "data" / IDEA_DIR / LOG_NAME
     if not source.is_file():
@@ -632,27 +637,40 @@ def migrate_idea_session(target_dir: Path) -> tuple[int, bool]:
         return RC_MIGRATE_FAILED, False
     try:
         try:
+            lease.truncate_torn_tail()
             with open(lease.path, "rb") as handle:
                 raw = handle.read()
         except OSError as exc:
             print(f"[ERROR] 建期成功、迁移失败：读取选题会话记录出错：{exc}"
                   f"（新期 {target_dir.name} 为空期，选题记录未动）", file=sys.stderr)
             return RC_MIGRATE_FAILED, False
-        target, _candidates = resume_target(list_sessions(raw))
+        summaries = list_sessions(raw)
+        if sid is None:
+            target, _candidates = resume_target(summaries)
+        else:
+            target = next((s for s in summaries if s.sid == sid and s.resumable), None)
         if target is None:
             _print_from_idea_marker(False)
             return 0, False
+        moved, kept = split_by_sid(raw, target.sid)
         try:
-            _write_new_log(target_dir / LOG_NAME, raw)
+            _write_new_log(target_dir / LOG_NAME, b"".join(moved))
         except OSError as exc:
             print(f"[ERROR] 建期成功、迁移失败：写入新期会话记录出错：{exc}"
                   f"（新期 {target_dir.name} 为空期，选题记录未动）", file=sys.stderr)
             return RC_MIGRATE_FAILED, False
         try:
-            lease.clear()
+            if kept:
+                paths.atomic_write(lease.path, b"".join(kept))
+            else:
+                lease.clear()
         except OSError as exc:
-            print("[ERROR] 建期成功、迁移成功、清空失败：_idea 记录未清，下次 --from-idea 会重复带入，"
-                  f"请手动清空 data/{IDEA_DIR}/{LOG_NAME}（{exc}）", file=sys.stderr)
+            if kept:
+                print("[ERROR] 建期成功、迁移成功、移出失败：该段仍留在 _idea，下次 --from-idea 会重复带入，"
+                      f"请在桌面端选题会话列表里删掉它（会话号 {target.sid}；{exc}）", file=sys.stderr)
+            else:
+                print("[ERROR] 建期成功、迁移成功、清空失败：_idea 记录未清，下次 --from-idea 会重复带入，"
+                      f"请手动清空 data/{IDEA_DIR}/{LOG_NAME}（{exc}）", file=sys.stderr)
             return RC_CLEAR_FAILED, False
         _print_from_idea_marker(True, target.sid, target.messages)
         return 0, True
@@ -1061,6 +1079,11 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
             return 2
         print(json.dumps(_session_rows(read_log(resolved)), ensure_ascii=False))
         return 0
+    return _delete_session(lambda: EpisodeLease.acquire(resolved), rest, "先结束该期的会话再删除")
+
+
+def _delete_session(acquire: Callable[[], EpisodeLease], rest: list[str], busy_hint: str) -> int:
+    """`/delete-session --sid=<sid>` 的公共部分（期会话与选题会话共用，D58）：取租约 → 移进回收站。"""
     try:
         sid = _valued_flags(rest, ("--sid",))["--sid"]
     except _UsageError as exc:
@@ -1070,9 +1093,9 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
         print(f"[ERROR] 会话号应为 16 位小写十六进制，收到 {sid!r}", file=sys.stderr)
         return 2
     try:
-        lease = EpisodeLease.acquire(resolved)
+        lease = acquire()
     except SessionLocked as exc:
-        print(f"[ERROR] {exc}（先结束该期的会话再删除）", file=sys.stderr)
+        print(f"[ERROR] {exc}（{busy_hint}）", file=sys.stderr)
         return 3
     except (SessionLogBroken, DataUnreachable) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
@@ -2406,11 +2429,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[会话] 最近写入的期：{ep_dir.name}")
         return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
 
-    # 子命令 1: ava new <期名> [--from-idea]
+    # 子命令 1: ava new <期名> [--from-idea[=<会话号>]]
     if args and args[0] == "new":
-        from_idea = len(args) == 3 and args[2] == "--from-idea"
-        if len(args) != 2 and not from_idea:
-            print("[ERROR] 用法: ava new <期名> [--from-idea]（期名恰好一个）", file=sys.stderr)
+        # D58：`--from-idea=<会话号>` 只带这一段选题对话；不带会话号带最近可恢复段
+        flag = args[2] if len(args) == 3 else None
+        from_idea = flag == "--from-idea" or (flag is not None and flag.startswith("--from-idea="))
+        idea_sid = flag.split("=", 1)[1] if from_idea and flag is not None and "=" in flag else None
+        if (len(args) != 2 and not from_idea) or (idea_sid is not None and not SESSION_ID.match(idea_sid)):
+            print("[ERROR] 用法: ava new <期名> [--from-idea[=<16 位会话号>]]（期名恰好一个）", file=sys.stderr)
             return 2
         rc = create_new_episode(args[1])
         if rc != 0:
@@ -2419,7 +2445,7 @@ def main(argv: list[str] | None = None) -> int:
         migrated = False
         if from_idea:
             # Spec 18 §3.2：先建期、后迁移；迁移失败不回滚建期
-            rc, migrated = migrate_idea_session(new_ep_dir)
+            rc, migrated = migrate_idea_session(new_ep_dir, idea_sid)
             if rc != 0:
                 return rc
         if not sys.stdin.isatty():
@@ -2460,6 +2486,9 @@ def main(argv: list[str] | None = None) -> int:
     if args == [IDEA_KEYWORD, "/list-sessions"]:
         print(json.dumps(_session_rows(read_log(paths.ROOT / "data" / IDEA_DIR)), ensure_ascii=False))
         return 0
+    # D58：删除一段选题对话 → data/_idea/_agent/session-trash/（同期会话版的退出码）
+    if args[:2] == [IDEA_KEYWORD, "/delete-session"]:
+        return _delete_session(lambda: acquire_idea_lease(paths.ROOT), args[2:], "先结束选题会话再删除")
 
     # 子命令 2: ava idea (无期选题会话)
     if args[0] == IDEA_KEYWORD:

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
 import { contextText, type ContextReading } from "../shared/convFold";
 import { NewEpisodeForm } from "./NewEpisodeForm";
-import { errText, type RpcClient } from "./rpc";
+import type { RpcClient } from "./rpc";
 import { Icon } from "./icons";
 
 export interface ReadyInfo {
@@ -47,7 +47,6 @@ export function SessionHeader({
   memoryAsk,
   isIdea,
   context,
-  ideaLastActivity,
   onCreated,
   onEnded,
 }: {
@@ -59,8 +58,6 @@ export function SessionHeader({
   isIdea: boolean;
   /** D41 / D56：最近一次回合结束时的上下文读数（`lastContextReading`）；null = 本会话还没有回合结束过，不显示 */
   context: ContextReading | null;
-  /** D57：最近一段可恢复选题对话的最后活动时间（core `ava idea /list-sessions`）；null = 没有可接上的 */
-  ideaLastActivity: string | null;
   onCreated: (created: CreatedEpisode) => void;
   onEnded: () => void;
 }) {
@@ -71,8 +68,6 @@ export function SessionHeader({
   // N32：无活会话时 scope 命令无处可发——点击不发任何 RPC，只给一行可读提示（换期即清）
   const [needSession, setNeedSession] = useState(false);
   useEffect(() => setNeedSession(false), [convKey]);
-  const [resumeError, setResumeError] = useState<string | null>(null);
-  useEffect(() => setResumeError(null), [convKey, phase]);
   return (
     <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
       <span className="ui-badge" data-testid="session-scope">
@@ -146,37 +141,11 @@ export function SessionHeader({
           结束会话
         </button>
       )}
-      {/* D45：期会话的「继续上次会话」由侧栏会话子列表取代（点哪个进哪个，人 2026-10-08 裁决去掉此按钮） */}
-      {/* D57：选题会话是单一滚动段、没有会话列表——重开 app 后靠这个按钮接上（显式点击才拉起进程） */}
-      {isIdea && !live && ideaLastActivity !== null && (
-        <button
-          className="ui-btn ui-btn--sm"
-          data-testid="idea-resume"
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void rpc.call("conv.resume", { convKey }).then(() => onEnded(), (err) => setResumeError(errText(err)));
-          }}
-        >
-          继续上次的选题对话（最后 {stamp(ideaLastActivity)}）
-        </button>
-      )}
-      {resumeError !== null && (
-        <span className="error" role="status" data-testid="idea-resume-error">
-          {resumeError}
-        </span>
-      )}
+      {/* D45 / D58：「继续上次会话」由侧栏会话子列表取代（期会话与选题会话同一套；点哪个进哪个） */}
       {running && <span className="ui-spinner" data-testid="session-running" />}
       {info.llm === null && <Icon name="info" size="sm" />}
     </div>
   );
-}
-
-/** D57：ISO 时间 → 本地 MM-DD HH:MM；解析不了原样显示 */
-function stamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const two = (n: number) => String(n).padStart(2, "0");
-  return `${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
 /**

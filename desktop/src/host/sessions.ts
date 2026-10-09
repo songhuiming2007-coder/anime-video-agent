@@ -38,8 +38,10 @@ export interface SessionTarget {
   epKey: string | null;
   abs: string | null;
   mode: "new" | "continue" | "idea";
-  /** D45：mode "continue" 时指定恢复哪个会话；不给 = 最近的可恢复会话 */
+  /** D45：mode "continue" 时指定恢复哪个会话；不给 = 最近的可恢复会话。D58：mode "idea" 同理（恢复指定选题段） */
   sid?: string;
+  /** D58：mode "idea" 时开新段（`--idea --fresh`），不恢复任何段 */
+  fresh?: boolean;
 }
 
 export interface QuitBusy {
@@ -70,7 +72,7 @@ const DEFAULT_TIMING: SessionTiming = {
 };
 
 export interface SessionDeps {
-  spawnSession: (t: SessionTemplate, args: { ep?: string; sid?: string }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
+  spawnSession: (t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
   /** 每次 spawn SESSION_* 前执行一次（§2.9）；失败给 problem 文案，照常 spawn、如实降级 */
   resolveKey: () => Promise<{ name: string; value: string } | { problem: string }>;
   /** Spec 15 §2.7：web 检索链上声明的密钥（LLM 名字之后执行）；自身兜住一切失败，只返回读成功的 */
@@ -512,7 +514,12 @@ export class SessionManager {
     const webEnv = await this.deps.resolveWebKeys("problem" in keyInfo ? null : keyInfo.name);
     for (const [name, value] of Object.entries(webEnv)) if (!(name in extraEnv)) extraEnv[name] = value;
     if (s.phase === "exited") this.fail("E_SESSION", "会话进程已退出");
-    const proc = this.deps.spawnSession(t, { ep: target.abs ?? undefined, ...(target.sid !== undefined ? { sid: target.sid } : {}) }, { repoRoot }, extraEnv);
+    const proc = this.deps.spawnSession(
+      t,
+      { ep: target.abs ?? undefined, ...(target.sid !== undefined ? { sid: target.sid } : {}), ...(target.fresh === true ? { fresh: true } : {}) },
+      { repoRoot },
+      extraEnv,
+    );
     const gen = (s.procGen += 1);
     s.proc = proc;
     s.pid = proc.pid ?? null;

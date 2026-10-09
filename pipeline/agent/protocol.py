@@ -546,9 +546,11 @@ def main(argv: list[str] | None = None) -> int:
         writer.close()
         return rc
 
-    # ④ 解析参数：<期目录> [--continue [<前缀>]] 或 --idea
+    # ④ 解析参数：<期目录> [--continue [<前缀>]] 或 --idea [--continue <前缀> | --fresh]
+    # D58：选题会话可存多段——`--continue <前缀>` 恢复指定段，`--fresh` 开新段，裸 `--idea` 恢复最近段（不变）
     idea = "--idea" in args
-    rest = [a for a in args if a != "--idea"]
+    fresh = "--fresh" in args
+    rest = [a for a in args if a not in ("--idea", "--fresh")]
     resume_prefix: str | None = None
     want_continue = False
     if "--continue" in rest:
@@ -559,9 +561,13 @@ def main(argv: list[str] | None = None) -> int:
         if len(tail) > 1:
             return fail("E_BAD_REQUEST", "用法: <期目录> --continue [<会话号前缀>]", 2)
         resume_prefix = tail[0] if tail else None
+    if fresh and (not idea or want_continue):
+        return fail("E_BAD_REQUEST", "--fresh 只用于 --idea，且不与 --continue 同用", 2)
     if idea:
         if rest:
             return fail("E_BAD_REQUEST", "--idea 不接受期目录", 2)
+        if want_continue and resume_prefix is None:
+            return fail("E_BAD_REQUEST", "用法: --idea --continue <会话号前缀>（不带 --continue 即恢复最近段）", 2)
         ep_dir = None
     else:
         if len(rest) != 1:
@@ -614,8 +620,22 @@ def main(argv: list[str] | None = None) -> int:
                 if state["status"] == "resumed":
                     resume_state = state
                     host.sid = target.sid
-    else:
-        # idea：恒恢复最近的可恢复段，不需要 --continue（Spec 18 §3.1）
+    elif want_continue:
+        # D58：恢复指定的选题段（与期会话 --continue <前缀> 同一套选择与恢复）
+        target, candidates = resume_target(list_sessions(lease.read() if lease is not None else b""), resume_prefix)
+        if candidates:
+            return fail("E_BAD_REQUEST",
+                        "会话号前缀不唯一：" + ", ".join(c.sid[:8] for c in candidates), 2)
+        if target is None:
+            continue_status = "no_session"
+        else:
+            state = prepare_resume(host, target.sid)
+            continue_status = state["status"]
+            if state["status"] == "resumed":
+                resume_state = state
+                host.sid = target.sid
+    elif not fresh:
+        # idea：裸 --idea 恒恢复最近的可恢复段（Spec 18 §3.1）；--fresh 跳过，开新段（D58）
         state = resume_idea(host)
         if state is not None:
             continue_status = state["status"]
