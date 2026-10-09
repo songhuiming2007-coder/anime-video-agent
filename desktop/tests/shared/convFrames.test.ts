@@ -13,7 +13,7 @@ const valid: Record<string, Record<string, unknown>> = {
   request_closed: { request_id: "q1", reason: "answered", decision: "approve" },
   command_result: { name: "scope", ok: true, text: "asset" },
   stop_points: { items: [], turn_id: "t1" },
-  turn_finished: { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 10, lookups: null },
+  turn_finished: { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 10, lookups: null, prompt_tokens: null },
   log: { stream: "stdout", text: "x" },
   notice: { level: "warn", code: "code_freeze", text: "n" },
   error: { code: "E_BUSY", message: "busy" },

@@ -55,26 +55,46 @@ function cardText(label: string, status: "open" | "approved" | "rejected" | "voi
 }
 
 /**
- * D41：上下文用量读数。口径（读码确认，`llm.py::run_tool_loop::_chat`）：本回合最后一次请求模型时，
- * 全部消息正文的**字符数**（不含工具调用参数与工具定义）——不是 token，也没有上限刻度，所以只给数、不画进度条。
+ * D41 回落口径：本回合最后一次请求模型时，全部消息正文的**字符数**（不含工具调用参数与工具定义）。
+ * 只在服务商没给 token 数时用（D56），显示时带「约」。
  */
 export function charsText(n: number): string {
   if (n < 10_000) return `${String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} 字`;
   return `${(n / 10_000).toFixed(1)} 万字`;
 }
 
-function promptChars(f: OutFrame): number | null {
-  const v = f.prompt_chars;
-  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+/** D56：`<1000` 写整数，其余一位小数的 k。 */
+export function tokensText(n: number): string {
+  return n < 1000 ? `${String(n)} token` : `${(n / 1000).toFixed(1)}k token`;
 }
 
-/** D41：当前会话（最后一个 `ready` 之后）最近一次 `turn_finished` 的 `prompt_chars`；还没有回合结束过则为 null。 */
-export function lastPromptChars(entries: readonly ConvEntry[]): number | null {
-  let out: number | null = null;
+const countOf = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/**
+ * 上下文读数（D41 → D56）。`tokens` = 服务商响应里的 `usage.prompt_tokens`：最近一次请求模型时的输入 token，
+ * 含系统提示、工具定义与全部历史，就是上下文窗口的实际占用；服务商不给时为 null，回落到 `chars`（字数）。
+ */
+export type ContextReading = { tokens: number | null; chars: number | null };
+
+function readingOf(f: OutFrame): ContextReading | null {
+  const r = { tokens: countOf(f.prompt_tokens), chars: countOf(f.prompt_chars) };
+  return r.tokens === null && r.chars === null ? null : r;
+}
+
+/** 「上下文 12.3k token」；没有 token 数时「上下文约 9,192 字」。 */
+export function contextText(r: ContextReading): string | null {
+  if (r.tokens !== null) return `上下文 ${tokensText(r.tokens)}`;
+  if (r.chars !== null) return `上下文约 ${charsText(r.chars)}`;
+  return null;
+}
+
+/** 当前会话（最后一个 `ready` 之后）最近一次 `turn_finished` 的读数；还没有回合结束过则为 null。 */
+export function lastContextReading(entries: readonly ConvEntry[]): ContextReading | null {
+  let out: ContextReading | null = null;
   for (const e of entries) {
     if (e.k !== "frame") continue;
     if (e.frame.t === "ready") out = null; // 新会话（含「继续上次会话」）从头算，不沿用上一个会话的读数
-    else if (e.frame.t === "turn_finished") out = promptChars(e.frame) ?? out;
+    else if (e.frame.t === "turn_finished") out = readingOf(e.frame) ?? out;
   }
   return out;
 }
@@ -103,13 +123,14 @@ export function lookupsText(v: unknown): string | null {
 }
 
 function footerText(f: OutFrame): string {
-  const chars = promptChars(f);
+  const reading = readingOf(f);
+  const ctx = reading === null ? null : contextText(reading);
   const lookups = lookupsText(f.lookups);
   return (
     `模型调用 ${String(f.llm_calls)} · 工具 ${String(f.tool_calls)}（执行 ${String(f.tool_executions)}、重复拒绝 ${String(f.duplicates_rejected)}）` +
     ` · 检查点 ${String(f.checkpoints)} · 用时 ${String(f.duration_s)} s · ${String(f.stopped)} · ${String(f.wrapup)}` +
     (lookups === null ? "" : ` · ${lookups}`) +
-    (chars === null ? "" : ` · 上下文 ${charsText(chars)}`)
+    (ctx === null ? "" : ` · ${ctx}`)
   );
 }
 
