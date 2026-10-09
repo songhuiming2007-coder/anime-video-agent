@@ -34,6 +34,8 @@ EPISODE_WRITABLE_FILES: set[str] = {
     "02-script.draft.md",
     "02-script.md",
     "07-titles.md",
+    # D48 ②（2026-10-09）：02.8 报告的终审表由写稿会话填（采纳 / 驳回 + 理由），每次弹卡带 diff
+    "02-adversarial.md",
 }
 
 # 草稿是模型自己的工作稿，每次覆盖前留底（DRAFT_HISTORY_KEEP 份），所以写入可回退，每轮前几次免卡。
@@ -80,6 +82,8 @@ PIPELINE_MODULES: set[str] = {
     "status",
     # D51：读音纠错录入（期级 corrections.json / 全局 config/voice.json）。会写盘，所以不进只读集合、一律弹卡
     "corrections",
+    # D48 ②：02.8 零上下文对抗审查（一次 LLM 调用，写 02-adversarial.md）。出网 + 写盘，弹卡
+    "adversarial",
 }
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
@@ -258,11 +262,12 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
     "--pattern", "--episode", "--note", "--target", "--session", "--floor",
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
-    "--text", "--word", "--pinyin", "--homophone", "--expect",
+    "--text", "--word", "--pinyin", "--homophone", "--expect", "--script",
 })
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
-_AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections")
+_AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
+                                      "adversarial")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
@@ -327,10 +332,10 @@ def validate_pipeline_command(
     """白名单子命令校验执行器（Spec §2.4 Y1-r8, Y1-r11, R1-r10, B1-r10；D43 / Spec 17 合表）。
 
     D43 / Spec 17 §3.3：不再按 scope 分派，合成一份放行表——
-    `PIPELINE_MODULES` 的 9 个模块（不限子命令）∪ `ASSET_COMMANDS` 的 6 个模块与各自子命令清单。
+    `PIPELINE_MODULES` 的模块（不限子命令）∪ `ASSET_COMMANDS` 的模块与各自子命令清单。
     两条写死的合表语义：
     (a) 模块属于 `ASSET_COMMANDS` 时子命令校验**永远生效**（将来两表若出现重名模块，以子命令限制为准）；
-    (b) 当期目录自动补位只对原 `PIPELINE_MODULES` 侧的 8 个模块生效，asset 侧 6 个模块不补位（维持现状）。
+    (b) 当期目录自动补位只对 `PIPELINE_MODULES` 侧的模块生效，asset 侧模块不补位（维持现状）。
 
     返回: (is_valid, message, normalized_argv)
     """
@@ -436,7 +441,7 @@ def validate_pipeline_command(
                 if len(pos_args) == 1 and pos_args[0] in _SUBCOMMAND_WORDS["corrections"]:
                     sub_idx = args.index(pos_args[0])
                     args = args[:sub_idx + 1] + [str(ep_path)] + args[sub_idx + 1:]
-            elif module in ("tts", "clips", "review", "render", "qc", "cover", "status"):
+            elif module in ("tts", "clips", "review", "render", "qc", "cover", "status", "adversarial"):
                 if not pos_args:
                     args = [str(ep_path)] + args
                 elif module == "tts" and pos_args == ["run"]:
@@ -1180,7 +1185,7 @@ SUBS_TRANSCRIPT_MAX_CHARS = 20_000  # 整集台词上限；一集约 6–8k 字�
 _EP_CODE = re.compile(r"^S\d+E\d+$")
 
 
-def _subtitle_lines(units: list[dict[str, Any]], source: Path) -> list[tuple[float, str]]:
+def subtitle_lines(units: list[dict[str, Any]], source: Path) -> list[tuple[float, str]]:
     """把 WINDOW=2 滑窗单元还原成单句（`subindex.py` 的拼接：unit_i = line_i + " " + line_{i+1}，
     末单元只有一句）。从末尾往前剥后缀即可精确还原；结构对不上就报错，不静默给半截台词。"""
     if not units:
@@ -1245,7 +1250,7 @@ def _search_subs(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
     if not query:  # 整集台词
         ep_code, path = files[0]
-        lines = _subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
+        lines = subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
         out, used, truncated = [], 0, False
         for start, line in lines:
             row = f"{_mmss(start)} {line}"
@@ -1260,7 +1265,7 @@ def _search_subs(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     needle = query.lower()
     hits: list[dict[str, Any]] = []
     for ep_code, path in files:
-        lines = _subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
+        lines = subtitle_lines(json.loads(path.read_text(encoding="utf-8"))["units"], path)
         for i, (start, line) in enumerate(lines):
             if needle in line.lower():
                 ctx_lines = [lines[j][1] for j in (i - 1, i + 1) if 0 <= j < len(lines)]
