@@ -48,7 +48,13 @@ NOTES = Path("data/library/notes")
 @pytest.mark.parametrize("anime", ["../x", "a/b", "_history", ".hidden", "", "a\\b"])
 def test_番名穿越或保留名拒(root: Path, anime: str):
     v = _review({"anime": anime, "target": "notes", "content": "x", "reason": "r"}, root)
-    assert v.action == "reject" and "番名" in v.reason
+    assert v.action == "reject" and "不合用" in v.reason   # 番名校验自己的拒因，不靠后面几道闸碰巧拦住
+
+
+def test_隐藏文件名已存在也拒_只有番名校验拦得住(root: Path):
+    (root / NOTES / ".hidden.md").write_text("x", encoding="utf-8")
+    v = _review({"anime": ".hidden", "target": "notes", "content": "y", "reason": "r"}, root)
+    assert v.action == "reject" and "不合用" in v.reason
 
 
 def test_未登记的番不许新建(root: Path):
