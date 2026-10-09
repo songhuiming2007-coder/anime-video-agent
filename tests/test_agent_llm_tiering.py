@@ -70,7 +70,7 @@ def _make_root(dirpath: Path, *, model: str = "mock-model", models=None) -> Path
         json.dumps({"tools": [
             "read_artifact", "write_episode_file", "list_episodes", "read_status",
             "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
-            "crawl", "browser", "write_memory", "cover_edit",
+            "crawl", "browser", "write_memory", "cover_edit", "write_note",
         ]}),
         encoding="utf-8",
     )

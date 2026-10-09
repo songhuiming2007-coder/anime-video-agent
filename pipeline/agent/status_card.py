@@ -292,6 +292,36 @@ def render_approval_card(
         lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 
+    if name == "write_note":
+        # D61 / ADR-0028：笔记是所有期共用的事实源——卡上给目标、理由与 diff（新建给开头若干行）
+        from pipeline.agent.tools import note_target, resolve_note_content
+
+        try:
+            dest = note_target(args)
+            content = resolve_note_content(args)
+        except (ValueError, PermissionError, OSError):
+            dest, content = None, args.get("content") if isinstance(args.get("content"), str) else ""
+        content_bytes = len(content.encode("utf-8"))
+        size_str = f"{content_bytes / 1024:.1f} KB" if content_bytes >= 100 else f"{content_bytes} B"
+        exists = bool(dest and dest.exists())
+        kind = "终审表" if str(args.get("target")) == "review" else "笔记"
+        lines = [
+            "┌─ 笔记写入审批 ──────────────────────────────────────",
+            f"│ 工具: {name}",
+            f"│ 目标: data/library/notes/{dest.name if dest else '?'}（{kind}，{size_str}，"
+            f"{'覆盖现有文件，旧版留底 notes/_history/' if exists else '新建文件'}）",
+            "│ 危险标记: [素材库·所有期共用] 写稿 agent 照着笔记写，笔记错会传给之后每一期",
+            f"│ 理由: {_sanitize_card_field(args.get('reason', '')) or '（未给）'}",
+        ]
+        if exists:
+            lines.extend(f"│ {ln}" for ln in _script_diff(dest, content))
+        else:
+            head = content.splitlines()
+            lines.append(f"│ 新建 {len(head)} 行，开头：")
+            lines.extend(f"│ + {_sanitize_card_field(ln)}" for ln in head[:CARD_DIFF_MAX_LINES // 2])
+        lines.append("└─ 执行? [y/N]: ")
+        return "\n".join(lines)
+
     if name == "acquire_propose":
         raw_cands = args.get("candidates")
         items = [c for c in raw_cands if isinstance(c, dict)] if isinstance(raw_cands, list) else []

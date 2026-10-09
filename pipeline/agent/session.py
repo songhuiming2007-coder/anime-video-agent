@@ -53,9 +53,9 @@ from pipeline.agent.session_log import (
 REQUEST_ID_BYTES = 16
 
 # 临界区工具（§2.2 第 3 条）：显式字面量，TG-5 比对它与「side_effect 为真的工具 − run_pipeline」。
-# Spec 12：cover_edit 不标 side_effect（fail-closed 弹卡）→ 必须同步进临界区。
+# Spec 12：cover_edit 不标 side_effect（fail-closed 弹卡）→ 必须同步进临界区。ADR-0028：write_note 同理。
 CRITICAL_TOOLS = frozenset(
-    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit"}
+    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit", "write_note"}
 )
 
 # 终端卡片的末行提示（§3.2 的两种文案 + 工具卡的既有文案）
@@ -339,6 +339,18 @@ def review_tool_call(
         if not ok:
             return ToolVerdict("reject", reason="\n".join(calib_preview))
         command_preview = calib_preview
+
+    # D61 / ADR-0028：write_note 的番名 / 目标 / 新建前提与 edits 成立性，在弹卡前拒
+    if name == "write_note":
+        from pipeline.agent.tools import note_write_refusal, resolve_note_content
+
+        refusal = note_write_refusal(args, root)
+        if refusal:
+            return ToolVerdict("reject", reason=refusal)
+        try:
+            resolve_note_content(args, root)
+        except (ValueError, PermissionError) as exc:
+            return ToolVerdict("reject", reason=f"{type(exc).__name__}: {exc}")
 
     loop_label = None
     if name == "write_episode_file":

@@ -325,7 +325,7 @@ def world(tmp_path: Path, endpoint: FakeEndpoint):
         json.dumps({"tools": [
             "read_artifact", "write_episode_file", "list_episodes", "read_status",
             "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
-            "crawl", "browser", "write_memory", "cover_edit",
+            "crawl", "browser", "write_memory", "cover_edit", "write_note",
             "test_ping", "test_writer", "test_slow", "test_stdin_child",
         ]}),
         encoding="utf-8",
