@@ -37,7 +37,8 @@ class TestPendingAssets:
         with pytest.raises(SystemExit, match="补丁池资产数超过上限 99 个"):
             ingest_patch.ingest(ep, floor=0.60, local=True)
 
-    def test_图片资产立即拦截并给出转换命令(self, tmp_path):
+    def test_未转码图片拦截_指向ingest_patch自转(self, tmp_path):
+        """D59：不再给人 ffmpeg 命令；指向 ingest_patch 自己（它先 convert_stills）。"""
         ep = tmp_path / "ep"
         patch_assets = ep / "patch_assets"
         patch_assets.mkdir(parents=True)
@@ -46,7 +47,15 @@ class TestPendingAssets:
         with pytest.raises(SystemExit) as exc:
             ingest_patch.pending_assets(ep)
         msg = str(exc.value)
-        assert "ffmpeg -loop 1 -t 8 -i photo.jpg -pix_fmt yuv420p photo.mp4" in msg
+        assert "photo-still.mp4" in msg and "ffmpeg" not in msg
+
+    def test_已转码图片不进候选_转出的视频进(self, tmp_path):
+        ep = tmp_path / "ep"
+        patch_assets = ep / "patch_assets"
+        patch_assets.mkdir(parents=True)
+        (patch_assets / "photo.jpg").write_bytes(b"fake_jpg")
+        (patch_assets / "photo-still.mp4").write_bytes(b"x")
+        assert [f.name for f in ingest_patch.pending_assets(ep)] == ["photo-still.mp4"]
 
     def test_无资产返回空列表(self, tmp_path):
         ep = tmp_path / "ep"
@@ -139,7 +148,7 @@ class TestLoadPool:
         (ep / "04-patch").mkdir(parents=True)
         with pytest.raises(SystemExit) as exc:
             ingest_patch.load_pool(ep)
-        assert "删 04-patch 目录，或重跑" in str(exc.value)
+        assert "ingest_patch --reset" in str(exc.value)
 
     def test_索引半建指路(self, tmp_path):
         ep = tmp_path / "ep"
@@ -153,7 +162,7 @@ class TestLoadPool:
         # 缺少具体索引文件
         with pytest.raises(SystemExit) as exc:
             ingest_patch.load_pool(ep)
-        assert "删 04-patch 目录，或重跑" in str(exc.value)
+        assert "ingest_patch --reset" in str(exc.value)
 
     def test_行数不一致报错指路(self, tmp_path):
         ep = tmp_path / "ep"
@@ -167,7 +176,7 @@ class TestLoadPool:
         with pytest.raises(SystemExit) as exc:
             ingest_patch.load_pool(ep)
         assert "scene 行数与镜头表不一致" in str(exc.value)
-        assert "删 04-patch 目录，或重跑" in str(exc.value)
+        assert "ingest_patch --reset" in str(exc.value)
 
     def test_零向量占比过高打印WARN(self, tmp_path, capsys):
         ep = tmp_path / "ep"

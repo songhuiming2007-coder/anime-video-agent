@@ -298,7 +298,7 @@ def test_status_advisories_no_fork(tmp_path: Path):
         {"index": 2, "channel": "scene", "status": "short", "duration": 6.0, "clips": [{"dur": 3.0}]},  # residual 3.0 >= 2.5
     ])
     adv1 = _detect_advisories(ep_patchable)
-    assert "2 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）" in adv1
+    assert "2 段排片落空可补料（agent 跑 scout 看缺口，自己查证 → acquire_propose → 抓取 → register --to-patch → ingest_patch）" in adv1
     assert not any("补丁池救不了" in a for a in adv1)
 
     # 2. 混合情况（有 patchable 也有 unrescuable）：优先提示可补料，不报救不了
@@ -309,7 +309,7 @@ def test_status_advisories_no_fork(tmp_path: Path):
         {"index": 2, "channel": "anchor", "status": "short", "duration": 5.0, "clips": [{"dur": 2.0}]},  # anchor 不可救
     ])
     adv_mixed = _detect_advisories(ep_mixed)
-    assert "1 段排片落空可补料（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> 生成派工单）" in adv_mixed
+    assert "1 段排片落空可补料（agent 跑 scout 看缺口，自己查证 → acquire_propose → 抓取 → register --to-patch → ingest_patch）" in adv_mixed
     assert not any("补丁池救不了" in a for a in adv_mixed)
 
     # 3. 纯不可救段（unrescuable 非空但 patchable 为空）：提示 N 段失败且补丁池救不了
@@ -328,7 +328,7 @@ def test_status_advisories_no_fork(tmp_path: Path):
     ep_notes.mkdir()
     _create_topic(ep_notes, "番: 葬送的芙莉莲, 迷宫饭\n")
     adv3 = _detect_advisories(ep_notes)
-    assert "缺《葬送的芙莉莲》等 2 部番剧笔记（REPL 内敲 /scout，或命令行 python -m pipeline.scout <期> --type notes）" in adv3
+    assert "缺《葬送的芙莉莲》等 2 部番剧笔记（agent 跑 scout --type notes 出工单；ava 还不能写 data/library/notes/，笔记仍交 pi，见 D59 待人定）" in adv3
 
     # 5. 异常容错（坏 04-clips.json 按 S4 优雅跳过，绝不抛出异常）
     ep_corrupt = tmp_path / "ep_corrupt"

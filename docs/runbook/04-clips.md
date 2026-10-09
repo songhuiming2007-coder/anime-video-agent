@@ -2,10 +2,8 @@
 
 依据配音的真实物理时长，进行三通道素材匹配与全局贪心分派。
 
-## 执行命令
-```bash
-python -m pipeline.clips data/episodes/<期号>
-```
+## 执行
+agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底层排查参考：`python -m pipeline.clips data/episodes/<期号>`。
 
 ## 产物与位置
 - `data/episodes/<期号>/04-clips.json`（片段计划）
@@ -22,53 +20,32 @@ python -m pipeline.clips data/episodes/<期号>
 
 ## 04.5 临时补料挂起与恢复流程
 
-排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，无需中断全番或重走全量 Phase 0。排片落空时，优先在交互 REPL 内运行 `/scout`（或命令行 `python -m pipeline.scout <期>`）生成派工单交由 pi 采掘，通过临时补料通道热插拔解决：
+排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，不必中断全番或重走 Phase 0：走期内临时补料通道。**全程 agent 跑，人只批卡、只做取舍**（2026-10-09 D59；以下命令都是 agent 经 `run_pipeline` 发的，期目录自动补上）：
 
-1. **准备补料素材**：
-   - 将视频素材放入 `data/episodes/<期号>/patch_assets/`；
-   - 资产限制：仅支持视频文件（mp4/mkv 等）。若有静态图片/截图，必须先用 ffmpeg 转为带时长的视频：
-     ```bash
-     ffmpeg -loop 1 -t 8 -i in.jpg -pix_fmt yuv420p out.mp4
-     ```
-2. **轻量增量入库**：
-   ```bash
-   python -m pipeline.ingest_patch data/episodes/<期号>
-   ```
-   - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号编为 `SP01…SP99`；
-   - 进行秒级切镜头、关键帧抽取、密集意象打标与向量化，产物写入当期 `04-patch/`，绝不污染全局 `data/library/`。
-3. **重新排片与自动救援**：
-   ```bash
-   python -m pipeline.clips data/episodes/<期号>
-   ```
+1. **看缺口**：`scout`（弹卡，写 `scout-ticket-patch.md`）列出可救的段和缺什么画面。不可救的段（锚点重叠、缺口太短）按它给的指引改稿。
+2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、调 `acquire_propose`。人在提议卡和逐条抓取卡上批。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
+3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>`（弹卡）挪进本期 `patch_assets/`。图片照收，下一步会自动转成 6 s 微动视频（原图保留）。
+4. **轻量增量入库**：`ingest_patch`（弹卡）。
+   - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号 `SP01…SP99`；
+   - 秒级切镜头、抽帧、密集意象打标（云端 VLM，实例没开时 agent 先提议 `cloud up`，计费卡）与向量化，产物写入当期 `04-patch/`，不污染全局 `data/library/`；
+   - 补丁池损坏或半建：`ingest_patch --reset`（弹卡），旧 `04-patch/` 挪进 `04-patch.attic/<时间>/` 后重建，不删。
+5. **重新排片与自动救援**：`clips`（弹卡）。
    - clips 自动检测并加载当期补丁池；
    - **rescue-A（检索失败救援）**：主池检索落空的段落，以「场景 > 查询 > 配音原文」自动在补丁池中进行意象检索补位；
    - **rescue-B（分派失败救援）**：对 `no_source` 段落重置并在补丁池中重新分配；对 `short` 段落保留已选主池高质量片段，仅在尾部用补丁镜头安全拼接延长，绝不暴力抹除主池结果。
 
 ## 05 人审改稿写补丁锚点规范
 
-当人类审片（`04-review.html`）发现需要手动精准指定补丁池中的特定镜头时，走「改稿 → 重跑 check_script → 重跑 clips」的闭环：
+当人审片（`04-review.html`）想精确指定补丁池里的某个镜头时，走「出画廊 → 人指镜头 → agent 改稿 → 重跑」的闭环：
 
-1. **先出补丁画廊再写锚点**（`shots.gallery` 已全部参数化可直接复用，B8-r5）：
-   手写锚点前人需要先看镜头联系表，不然锚点直通的工作流不闭环：
-   ```bash
-   python -c "from pathlib import Path; from pipeline.shots import gallery; gallery('<净化后池名>', 'SP01', Path('data/episodes/<期号>/04-patch/shots'), Path('data/episodes/<期号>/04-patch/frames'))"
-   ```
-   双击打开生成的 HTML 画廊，看图选镜头，一键复制时间码。
-
-2. **在 02-script.md 中书写补丁锚点**：
-   - 格式：`锚点: <净化后池名> SPxx mm:ss`；
-   - 示例：`锚点: EGOIST--patch SP03 1:20`（期目录名如「EGOIST-三期」经净化后可能含双横线 `EGOIST--patch`，手写请以 `04-patch/pool.json` 里的 `pool` 字段为准，示例比正则更直观，B2）。
-
-3. **改稿校验与重排闭环**：
-   ```bash
-   python -m pipeline.check_script data/episodes/<期号>/02-script.md
-   python -m pipeline.clips data/episodes/<期号>
-   ```
-   - `compute_script_vo_hash` 只提取 `配音：`行（B6），修改画面行（`锚点:`/`查询:`/`场景:`）不改变配音哈希，已合成音频 100% 免重跑；
-   - 与 `03-audio/corrections.json` 沉淀互不干扰，无需通过 `--apply-patch` 重新配音；
-   - 重跑 clips 后，补丁锚点直接生效直通出片。
+1. **出补丁画廊**：agent 跑 `shots gallery --patch <期目录> SPxx`（弹卡），产物 `04-patch/shots/<池名>_SPxx_gallery.html`，在桌面端预览区打开。画廊在期目录下，预览区不放行脚本，「复制锚点」按钮点不了——人直接告诉 agent「用 #12」或报时间码即可。
+2. **agent 写补丁锚点**：在 `02-script.md` 里写 `锚点: <池名> SPxx mm:ss`（写稿卡带 diff，人批）。池名以 `04-patch/pool.json` 的 `pool` 字段为准（如期目录「EGOIST-三期」净化后是 `EGOIST--patch`，B2）。
+3. **改稿校验与重排**：agent 跑 `check_script`（免卡）→ `clips`（弹卡）。
+   - `compute_script_vo_hash` 只提取 `配音：` 行（B6），改画面行（`锚点:` / `查询:` / `场景:`）不改配音哈希，已合成音频免重跑；
+   - 与 `03-audio/corrections.json` 互不干扰，不用 `--apply-patch` 重配；
+   - 重跑 clips 后补丁锚点直接生效。
 
 ## 04.6 SP 素材基础规则
 - **异构素材与跨番支持**：除标准番剧 `SxxEyy` 外，原生支持特典集 `SPxx`（`season=None`，素材池 MV/Live/物证等）；支持跨番前缀 `锚点: [番名] SxxEyy 12:30` 或 `[企划名] SPxx mm:ss` 及多锚点蒙太奇。
 - **确定性直通排片**：SP 素材无字幕索引，**严禁写查询/人物/场景，必须走确定性锚点直通**；素材自然时长不够填满口播时，系统自动尾帧安全定格延展（`ok_extended`，上限 8.0s，超额诚实判 short）。
-- **审帧与音轨隔离**：无字幕素材禁止人工拖进度条，跑 `shots frames` 与 `shots gallery` 选锚点；切片默认强制 `-an` 剔除原生音轨；质检对带 `sp: true` 片段放宽至 1.5s 艺术暗场豁免。
+- **审帧与音轨隔离**：无字幕素材禁止人工拖进度条，由 agent 跑 `shots frames` 与 `shots gallery` 出画廊、人看图指镜头；切片默认强制 `-an` 剔除原生音轨；质检对带 `sp: true` 片段放宽至 1.5s 艺术暗场豁免。
