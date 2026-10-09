@@ -773,9 +773,9 @@ MUTATIONS: list[dict] = [
      "old": '        "content": scrub_restricted(json.dumps(outcome, ensure_ascii=False)),\n',
      "new": '        "content": json.dumps(outcome, ensure_ascii=False),\n',
      "also": [{"file": LLM,
-               "old": "    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):\n        return messages\n",
+               "old": "    if not any(isinstance(m, dict) and not _INTERNAL_KEYS.isdisjoint(m) for m in messages):\n        return messages\n",
                "new": ("    messages = json.loads(scrub_restricted(json.dumps(messages, ensure_ascii=False)))\n"
-                       "    if not any(isinstance(m, dict) and _TIER_KEY in m for m in messages):\n        return messages\n")}]},
+                       "    if not any(isinstance(m, dict) and not _INTERNAL_KEYS.isdisjoint(m) for m in messages):\n        return messages\n")}]},
     {"id": "D52-MUT-4", "guard": "被拦回合发 egress_blocked notice", "file": PROTO,
      "old": '    if outcome.get("stopped") == "blocked":\n        # N52/D52',
      "new": '    if False:\n        # N52/D52'},

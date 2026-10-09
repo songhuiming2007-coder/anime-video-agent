@@ -1,6 +1,6 @@
 # 上下文压缩（D62）：长会话的 compact 机制
 
-日期：2026-10-09　状态：**已裁决·待施工**（一轮对抗审查 15 条全吸收，裁决见 §八；人定四项 2026-10-09 拍板，见 §五）
+日期：2026-10-09　状态：**PR1 已施工**（2026-10-09，见 §九；PR2–4 待施工）（一轮对抗审查 15 条全吸收，裁决见 §八；人定四项 2026-10-09 拍板，见 §五）
 关联：D28（取消固定轮数硬上限，2026-09-24 人裁决）、D56（服务商实测 token 读数）、D54（诚实性纪律：事实带出处）、ADR-0018（出网断言）、ADR-0025（工具封顶）、AGENTS.md「产物即状态」「诚实失败」
 
 ## 一、问题
@@ -33,13 +33,13 @@ D28 取消固定轮数上限后，主会话上下文**只涨不缩**。现有三
 
 ### 4.1 触发
 
-- 数据：D56 的服务商实测 `prompt_tokens` 为准（opencode 路线）。**usage=None 的回落口径（审查 #5）**：按字符数 ÷ 4 估算 token（中文保守口径），估算也不可得时（两者皆缺）不触发并 notice 人——不静默。
+- 数据：D56 的服务商实测 `prompt_tokens` 为准（opencode 路线）。**usage=None 的回落口径（审查 #5）**：按字符数 ÷ `CHARS_PER_TOKEN` 估算 token（原写 ÷4，施工时实测推翻、改 ÷1，见 §九 偏离 1），估算也不可得时（两者皆缺）不触发并 notice 人——不静默。
 - 基数：**窗口进 config 的 per-model 表**（审查 #6：生效两配置标称差 8 倍，gpt-4o 128k vs gemini flash 1M；且按「标称≠可靠」配打折系数）。`agent.compact.models.<模型>: {window, reliable_ratio}`，`trigger = window × reliable_ratio × trigger_ratio`；`trigger_ratio` 默认 0.6 草案。
 - 双触发（Codex 路线）：回合开始前；工具循环中段——**触发点 = 当前 reply 的全部工具结果闭环写史后、下一次模型调用前**（审查 #4a）。
 
 ### 4.2 切片：tool_call 组对齐（审查 #4，致命洞）
 
-切口只许落在**完整闭环边界**：assistant 无 tool_calls，或其全部 tool 结果都已写史之后。尾部预算**按 token 计**（人裁决 ①）：目标 ≈ 0.15×可靠窗口（gpt-4o 下 ≈19k，正好落回 Codex 的 20k 实证值），条数 ≤20 作次级约束——从最新消息往前累加（token 按字符 ÷4 估算），撞任一预算即停，再回退到最近闭环边界。仓里已有「tool_calls 未配对 → 服务商 400」的病态记录（session_log 注释、plan_repairs 整段），切片对齐是对它的正面防御。
+切口只许落在**完整闭环边界**：assistant 无 tool_calls，或其全部 tool 结果都已写史之后。尾部预算**按 token 计**（人裁决 ①）：目标 ≈ 0.15×可靠窗口（gpt-4o 下 ≈19k，正好落回 Codex 的 20k 实证值），条数 ≤20 作次级约束——从最新消息往前累加（token 按字符 ÷ `CHARS_PER_TOKEN` 估算，见 §九 偏离 1），撞任一预算即停，再回退到最近闭环边界。仓里已有「tool_calls 未配对 → 服务商 400」的病态记录（session_log 注释、plan_repairs 整段），切片对齐是对它的正面防御。
 
 ### 4.3 实现落点：loop 内原地改写（审查 #12、#13）
 
@@ -50,7 +50,7 @@ D28 取消固定轮数上限后，主会话上下文**只涨不缩**。现有三
 
 - 同模型（主会话档）。prompt = Codex 最小 handoff 骨架 + ava 专属段：当前期与步骤（从磁盘读入 prompt，摘要器只许引用不许转述）、被驳回的判断及理由、事实-出处对照（D54：事实必须带出处锚点，无法锚定标「未证实」）、下一步。
 - 落史：user-role 消息 + **宿主内部字段标记**（`_ava_compact: true`，对齐 `_TIER_KEY` 先例——进请求体前由 `_wire_messages` 删除，模型不可见、不可仿写）；多轮压缩按字段滤旧摘要。不用文本前缀。
-- scrub 口径：压缩调用的**输入与输出两侧**都过 `_scrub`（审查 #7：历史可合法含未脱敏受限串，只扫输出等于让救命索撞闸）。命中处在摘要里显式注记「此处有受限文件名，用工具切片查 session.jsonl」——不放任空锚让模型补编（审查 #14）。
+- scrub 口径：压缩调用的**输入与输出两侧**都过 `_scrub`（审查 #7：历史可合法含未脱敏受限串，只扫输出等于让救命索撞闸）。命中处在摘要里显式注记（原文「用工具切片查 session.jsonl」做不到，改写见 §九 偏离 2）——不放任空锚让模型补编（审查 #14）。
 
 ### 4.5 压缩调用本身（审查 #7）
 
@@ -127,3 +127,25 @@ D28 取消固定轮数上限后，主会话上下文**只涨不缩**。现有三
 - kangwooklee《Investigating How Codex Context Compaction Works》（Codex 双路径与 prompt 实证）
 - Claude Cookbook：Automatic context compaction；Claude Code 阈值讨论（GitHub issue #23711、#17428）
 - Codex PR #6692（多轮压缩滤旧摘要）、Issue #8573（DSC RFC）
+
+## 九、施工记录
+
+### PR1（2026-10-09）：纯函数层
+
+落点：`pipeline/agent/compact.py`（新文件）、`config/agent/compact.json`（窗口表）、`llm._wire_messages` 删压缩标记、`tests/test_agent_compact.py`（35 条，13 个变异全红）；`scripts/verify_mutations.py` 的 D52-MUT-3 锚点随 `_wire_messages` 首行同步。全量 pytest 2476 条绿。
+
+覆盖 §六 判据 1、2、3、4、5 全部，7、9 的纯函数部分（膨胀判定、双侧脱敏+注记）；其余判据属 PR2–4。
+
+**偏离 spec 三处（施工中发现，已按证据定，人可推翻）：**
+
+1. **字数折 token 用 ÷1，不用 ÷4。** ÷4 是英文口径。实测伪恋期 `session.jsonl` 8 个 `turn_end`（gemini-3.8-flash-high）：content 字符 ÷ 服务商 `prompt_tokens` = 1.32–1.39。÷4 低估约 3 倍——gpt-4o 下 usage=None 的回落触发要到真实 ≈225k token 才响，早已越过 128k 窗口，等于回落口径不存在。估算只许偏大，取 1.0（实测下限 1.32 之下再留余量，给没实测过的分词器兜底）。代价：尾部实际比 0.15 目标短约 25%，回落触发偏早。估算同时计入 tool_calls 的参数串（写稿工具的参数就是整篇稿子）。
+2. **脱敏注记改写。** 原文让模型「用工具切片查 session.jsonl」：`read_artifact` 只放行 .md/.txt/.json/.patch/.log，读不到 `.jsonl`，受限文件名本身也一律不出网——写一句做不到的指示等于让模型去撞墙。现文：「[已脱敏] 原是受限文件名，不要猜测或补写原文；需要核对相关产物时用 read_status，或直接问人」。
+3. **标记值是种类串不是 `true`**：`_ava_compact: "summary" | "card"`。摘要和一次性重注入卡下一次压缩都要滤掉，但 resume 投影（PR3）要分得清谁是谁。
+
+**配置位**：窗口表放 `config/agent/compact.json` 而不是 `agent.json`——`agent.local.json` 整文件取代 `agent.json`，窗口表写在后者会被本机配置静默埋掉。两个生效模型都已入表：gpt-4o 128,000（OpenAI 文档）、gemini-3.8-flash-high 1,048,576（Vertex AI 文档 gemini-3.8-flash）；`reliable_ratio` 均 1.0 未标定，代理是否另行截断窗口挂 §五④ 实测。
+
+**留给后续 PR 的施工发现：**
+
+- **工序层文档会随压缩丢失**：`messages[1:]` 里的 runbook 注入、记忆注入是普通 user 消息，会被压进摘要；而 `tracker.injected_paths` 仍记着「已注入」，下一轮不会再注。PR2 落史时须同步清掉被压区间对应的 `injected_paths`（或重注入），否则压缩后模型手里没有当前工序的 runbook。
+- 人裁决⑤的分母：`CompactConfig.window_for(model)` 已可用，desktop 显示形式仍待截图方案人选。
+
