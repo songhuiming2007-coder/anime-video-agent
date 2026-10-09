@@ -296,12 +296,13 @@ class TestCmdFetchWithoutYtDlp:
         ledger = json.loads((repo / "fetched.json").read_text(encoding="utf-8"))
         assert [e["url"] for e in ledger] == [self.DIRECT]
 
-    def test_页面URL仍报原错且文案逐字(self, repo):
-        with pytest.raises(SystemExit) as ei:
-            A.cmd_fetch(2, dry_run=True)
-        assert str(ei.value) == ("FAIL 找不到 yt-dlp。二选一：\n"
-                                 "     uv add yt-dlp        # 进项目虚拟环境（推荐，E6）\n"
-                                 "     brew install yt-dlp  # 系统级")
+    def test_页面URL仍报原错且文案逐字(self, repo, capsys):
+        # 批量语义（2026-10-10 B3）：单条失败不再抛 SystemExit，打印原文、退 1；文案逐字不变
+        assert A.cmd_fetch(2, dry_run=True) == 1
+        out = capsys.readouterr().out
+        assert ("FAIL 找不到 yt-dlp。二选一：\n"
+                "     uv add yt-dlp        # 进项目虚拟环境（推荐，E6）\n"
+                "     brew install yt-dlp  # 系统级") in out
 
 # ---------- 集键 ----------
 
@@ -421,3 +422,91 @@ class TestCmdProbe:
         assert A.cmd_probe("all") == 1        # 1 成 1 败 → 退 1
         out = capsys.readouterr().out
         assert "HTTP 200" in out and "1/2 可解析" in out
+
+
+# ---------- 批量抓取 + also 备选源（2026-10-10，B3+B4） ----------
+
+
+class TestFetchBatch:
+    @pytest.fixture
+    def repo(self, tmp_path, monkeypatch):
+        import json as J
+        from pipeline import paths
+        data = tmp_path / "data"
+        inc = data / "library" / "incoming"
+        inc.mkdir(parents=True)
+        cands = [
+            {"title": "直链甲", "url": "https://cdn.example.com/a.mp4", "type": "live",
+             "source": "测试", "why": "批量支路甲"},
+            {"title": "直链乙", "url": "https://cdn.example.com/b.mp4", "type": "live",
+             "source": "测试", "why": "批量支路乙"},
+            {"title": "带备选", "url": "https://dead.example.com/c.mp4",
+             "also": ["https://cdn.example.com/c-backup.mp4"], "type": "mv",
+             "source": "测试", "why": "备选源支路"},
+        ]
+        (inc / "candidates.json").write_text(J.dumps(cands, ensure_ascii=False), encoding="utf-8")
+        (inc / "fetched.json").write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(paths, "DATA", data)
+        return inc
+
+    def _fake_run(self, fail_hosts=()):
+        import subprocess
+        from pathlib import Path
+
+        def fake(argv, *a, **k):
+            url = argv[-1]
+            if any(h in url for h in fail_hosts):
+                return subprocess.CompletedProcess(argv, 1)
+            # curl 支路：-o 后就是完整落盘路径（dest/slug.mp4），照写
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"\0")
+            return subprocess.CompletedProcess(argv, 0)
+        return fake
+
+    def test_批量单条失败不阻塞整批(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(fail_hosts=("b.mp4",)))
+        assert A.cmd_fetch("1,2") == 1
+        import json as J
+        ledger = J.loads((repo / "fetched.json").read_text(encoding="utf-8"))
+        assert [e["url"] for e in ledger] == ["https://cdn.example.com/a.mp4"]
+        assert "1/2 成功" in capsys.readouterr().out
+
+    def test_all全成功(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run())
+        assert A.cmd_fetch("all") == 0
+        assert "3/3 成功" in capsys.readouterr().out
+
+    def test_dry_run打印全部命令不抓(self, repo, monkeypatch, capsys):
+        import subprocess
+        monkeypatch.setattr(A.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("不许真跑")))
+        assert A.cmd_fetch("1,3", dry_run=True) == 0
+        out = capsys.readouterr().out
+        assert out.count("  执行：") == 2 and out.count("换备选源执行：") == 1
+
+    def test_主源死了自动换备选且台账记实际源(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(fail_hosts=("dead.example.com",)))
+        assert A.cmd_fetch("3") == 0
+        import json as J
+        ledger = J.loads((repo / "fetched.json").read_text(encoding="utf-8"))
+        assert ledger[0]["url"] == "https://cdn.example.com/c-backup.mp4"
+        assert "换备选源执行" in capsys.readouterr().out
+
+    def test_备选源也抓过照样查重拒(self, repo, capsys):
+        import json as J
+        (repo / "fetched.json").write_text(J.dumps(
+            [{"url": "https://cdn.example.com/c-backup.mp4"}]), encoding="utf-8")
+        assert A.cmd_fetch("3") == 1
+        assert "查重没过" in capsys.readouterr().out
+
+
+class TestAlsoSchema:
+    def test_合法备选源收进清单(self):
+        raw = """[{"title": "t", "url": "https://a.com/x", "type": "mv", "source": "s",
+                   "why": "w", "also": ["https://b.com/y"]}]"""
+        assert A.load_candidates(raw)[0]["also"] == ["https://b.com/y"]
+
+    def test_坏备选源一次报全(self):
+        raw = """[{"title": "t", "url": "https://a.com/x", "type": "mv", "source": "s",
+                   "why": "w", "also": ["magnet:?xt=bad"]}]"""
+        with pytest.raises(SystemExit, match="also"):
+            A.load_candidates(raw)

@@ -89,6 +89,10 @@ def load_candidates(raw: str) -> list[dict]:
             bad.append(f"  {where}（{c.get('title')}）：url 不可解析 {c['url']!r}")
         if c.get("expected_dur") is not None and not isinstance(c["expected_dur"], (int, float)):
             bad.append(f"  {where}（{c.get('title')}）：expected_dur 须为秒数或 null")
+        also = c.get("also")
+        if also is not None and (not isinstance(also, list) or any(
+                not isinstance(u, str) or urlparse(u).scheme not in ("http", "https") for u in also)):
+            bad.append(f"  {where}（{c.get('title')}）：also 必须是 http(s) URL 数组（备选源）")
     if bad:
         raise SystemExit("FAIL candidates.json 有问题的条目（修好再跑 fetch）：\n" + "\n".join(bad))
     return data

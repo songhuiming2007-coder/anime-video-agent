@@ -532,50 +532,73 @@ def cmd_gate(target: Path, *, expected_dur: float | None = None) -> int:
     return 1 if worst == "FAIL" else 0
 
 
-def cmd_fetch(no: int, *, dry_run: bool = False) -> int:
+def _fetch_one(no: int, c: dict, *, dry_run: bool) -> None:
+    """抓一条候选：主源失败按 `also` 顺次换源，台账记实际命中的 URL。失败抛 SystemExit，由 cmd_fetch 收口。"""
+    dest = incoming()
+    slug = slugify(c["title"])
+    entries = ledger_load()
+    urls = [c["url"], *[u for u in c.get("also") or [] if isinstance(u, str)]]
+    seen = ledger_seen_urls(entries)
+    names = {f.stem for f in dest.iterdir()}
+    # 主源与备选源都要过 URL 查重；同名查重只验一次（第二个起传空集，不重复报）
+    dvs = [v for j, u in enumerate(urls)
+           for v in dup_verdicts(url=u, slug=slug, seen_urls=seen,
+                                 existing_names=names if j == 0 else set())]
+    print(f"候选 #{no} {c['title']}\n  {urls[0]}"
+          + (f"（备选 {len(urls) - 1} 个）" if len(urls) > 1 else "") + f"\n  why: {c['why']}")
+    for v in dvs:
+        print("  " + v.line(width=0))
+    if overall(dvs) == "FAIL":
+        raise SystemExit("查重没过，没抓。确认要重抓：acquire forget <候选号>（弹卡）把旧记录移走再抓")
+
+    last_err = ""
+    for url in urls:
+        # 只有页面那一支才找 yt-dlp：直链走 curl，本机没装 yt-dlp 不该连累它（N35）
+        yt_dlp = yt_dlp_argv() if pick_fetcher(url) == "yt-dlp" else None
+        cookies = None
+        if yt_dlp:
+            from pipeline.agent.web_browser import cookies_spec_for
+            cookies = cookies_spec_for(url)
+        argv = fetch_argv(url, dest, slug, yt_dlp=yt_dlp, cookies=cookies)
+        print(("  执行：" if url == urls[0] else "  换备选源执行：") + " ".join(argv))
+        if dry_run:
+            continue
+        proc = subprocess.run(argv)
+        if proc.returncode == 0:
+            made = [f for f in dest.iterdir() if f.stem.startswith(slug) and f.suffix.lower() in VIDEO_EXT + IMAGE_EXT]
+            rel = str(made[0]) if made else str(dest)
+            entries.append({"url": url, "title": c["title"], "type": c["type"],
+                            "source": c["source"], "candidate": no, "file": rel,
+                            "as": None, "why": c["why"],
+                            "expected_dur": c.get("expected_dur")})
+            ledger_save(entries)
+            print(f"  → 落盘 {rel}；台账 +1（下一步：acquire gate {rel}，免卡）")
+            return
+        # S9：工具原文照抄，不压成一句「下载失败」；换源信息是给人看的证据
+        last_err = f"{pick_fetcher(url)} 退出码 {proc.returncode}"
+        print(f"  该源失败（{last_err}）" + ("，换备选源" if url != urls[-1] else ""))
+    if dry_run:
+        return
+    raise SystemExit(f"全部 {len(urls)} 个源都没抓成（最后：{last_err}）；修好或换源后重跑同一条命令即可续传")
+
+
+def cmd_fetch(no, *, dry_run: bool = False) -> int:
+    """抓候选：单号「3」、逗号批「1,3,5」或「all」。单条失败不阻塞整批，成功逐条记台账。"""
     cp = candidates_path()
     if not cp.exists():
         raise SystemExit(f"FAIL 没有候选清单 {cp}——先按 skills/acquire-assets/SKILL.md 检索并写出它")
     cands = load_candidates(cp.read_text(encoding="utf-8"))
-    if not 1 <= no <= len(cands):
-        raise SystemExit(f"FAIL 候选号 {no} 超出范围（1–{len(cands)}）")
-    c = cands[no - 1]
-    dest = incoming()
-    slug = slugify(c["title"])
-    entries = ledger_load()
-    dvs = dup_verdicts(url=c["url"], slug=slug,
-                       seen_urls=ledger_seen_urls(entries),
-                       existing_names={f.stem for f in dest.iterdir()})
-    print(f"候选 #{no} {c['title']}\n  {c['url']}\n  why: {c['why']}")
-    for v in dvs:
-        print("  " + v.line(width=0))
-    if overall(dvs) == "FAIL":
-        raise SystemExit("FAIL 查重没过，没抓。确认要重抓：acquire forget <候选号>（弹卡）把旧记录移走再抓")
-
-    # 只有页面那一支才找 yt-dlp：直链走 curl，本机没装 yt-dlp 不该连累它（N35）
-    yt_dlp = yt_dlp_argv() if pick_fetcher(c["url"]) == "yt-dlp" else None
-    cookies = None
-    if yt_dlp:
-        from pipeline.agent.web_browser import cookies_spec_for
-        cookies = cookies_spec_for(c["url"])
-    argv = fetch_argv(c["url"], dest, slug, yt_dlp=yt_dlp, cookies=cookies)
-    print("  执行：" + " ".join(argv))
-    if dry_run:
-        return 0
-    proc = subprocess.run(argv)
-    if proc.returncode != 0:
-        # S9：工具原文照抄，不自己压成一句「下载失败」——错误信息是给人看的证据
-        raise SystemExit(f"FAIL 抓取失败（{pick_fetcher(c['url'])} 退出码 {proc.returncode}），"
-                         f"续传重跑同一条命令即可；原始输出见上方")
-    made = [f for f in dest.iterdir() if f.stem.startswith(slug) and f.suffix.lower() in VIDEO_EXT + IMAGE_EXT]
-    rel = str(made[0]) if made else str(dest)
-    entries.append({"url": c["url"], "title": c["title"], "type": c["type"],
-                    "source": c["source"], "candidate": no, "file": rel,
-                    "as": None, "why": c["why"],
-                    "expected_dur": c.get("expected_dur")})
-    ledger_save(entries)
-    print(f"  → 落盘 {rel}；台账 +1（下一步：acquire gate {rel}，免卡）")
-    return 0
+    idxs = parse_nos(str(no), len(cands))
+    fails = 0
+    for i in idxs:
+        try:
+            _fetch_one(i, cands[i - 1], dry_run=dry_run)
+        except SystemExit as e:
+            fails += 1
+            print(f"  候选 #{i} 未抓成：{e.code}")
+    if len(idxs) > 1 or fails:
+        print(f"\n抓取整批：{len(idxs) - fails}/{len(idxs)} 成功" + (f"，{fails} 失败" if fails else ""))
+    return 1 if fails else 0
 
 
 def _gate_failed(vs: list[Verdict], *, waive: str | None, force: bool) -> None:
@@ -769,8 +792,8 @@ def main() -> None:
     g.add_argument("target", type=Path, help="文件或目录")
     g.add_argument("--expected-dur", type=float, help="声明时长（秒），用来算时长偏差")
 
-    f = sub.add_parser("fetch", help="从 candidates.json 抓一条到 incoming/")
-    f.add_argument("no", type=int, help="候选号（1 起，candidates.json 里的顺序）")
+    f = sub.add_parser("fetch", help="从 candidates.json 抓候选到 incoming/（单条失败不阻塞整批）")
+    f.add_argument("no", help="候选号：1 / 1,3,5 / all")
     f.add_argument("--dry-run", action="store_true", help="只打印将执行的命令")
 
     p = sub.add_parser("probe", help="可得性探针：只解析不下载，fetch 前先探（死链/要登录/画质/时长）")

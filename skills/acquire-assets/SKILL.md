@@ -46,7 +46,9 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 写盘的弹卡，人在卡上批或驳。
 
 1. **检索 → 提议**：写好候选，调 `acquire_propose`（一张卡审整批）。批准后内核逐条弹「素材抓取」卡，
-   批一条抓一条（`acquire fetch <号>`，不许批量抢跑）。抓大文件（>2GB）在提议的 `why` 里先写明体积。
+   人逐条批或驳（可挑着收）。素材量大的期也可以走 `acquire fetch 1,3,5` / `acquire fetch all`
+   （经 run_pipeline 一张卡批全批，候选细节人已经在提议卡上看过）；**不许绕开卡自己抓**。
+   抓大文件（>2GB）在提议的 `why` 里先写明体积。
 1.5 **探针预检（弹卡，2026-10-10 增）**：提议获批后先 `acquire probe all`——只解析不下载，死链、
    要登录的、画质/时长对不上的在抓取前就曝光，失败条目换源重提，别拿废 URL 去撞抓取卡。
    报「疑似需要登录态」的站：让人用 `browser` 工具登录一次（headed，profile 独立持久化），把该域加进
@@ -64,6 +66,8 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
    `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`（都弹卡）。
 5. **要重抓**：`acquire forget <候选号>`（弹卡）把那条从抓取台账 `incoming/fetched.json` 移走（留痕进
    `incoming/forgotten.json`，没登记的下载文件挪进 `incoming/attic/`，不删），再走抓取卡。已登记的拒。
+6. **备选源**：候选可带 `also: [备选URL...]`（2026-10-10 增）——主源死了自动顺次换源，台账记实际命中的
+   URL。老物（niconico 初投稿这类）提案时就该多源。
 
 规矩不变：
 
