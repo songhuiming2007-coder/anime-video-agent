@@ -106,9 +106,9 @@ describe("TV-3 foldConv 缺口与作废", () => {
       { k: "frame", at: 5, frame: F("history", { index: 4, role: "tool", text: "", name: "read_episode_file", ok: true }, 5) },
     ];
     const { rows } = foldConv(entries);
-    expect(rows.map((r) => r.k)).toEqual(["historySeparator", "user", "assistant", "assistant", "tool", "tool"]);
-    const note = rows[3];
-    if (note.k === "assistant") expect(note.label).toBe("系统注入");
+    expect(rows.map((r) => r.k)).toEqual(["historySeparator", "user", "assistant", "injection", "tool", "tool"]);
+    // D57：系统注入单独成行（渲染为默认收起的 <details>），不再混进 assistant 平铺正文
+    expect(rows[3]).toEqual({ k: "injection", at: 3, text: "注入" });
     const failed = rows[4];
     if (failed.k === "tool") expect(failed.observation).toBe("失败原文");
     const okTool = rows[5];

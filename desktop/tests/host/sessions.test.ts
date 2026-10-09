@@ -1208,6 +1208,10 @@ function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: 
       const out = opts.listJson ?? JSON.stringify(rows);
       return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
     }
+    if (t === "LIST_IDEA_SESSIONS") {
+      const out = JSON.stringify([{ sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-10-09T06:34:57Z", first_user: "尼古喵喵的素材", resumable: true }]);
+      return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
+    }
     if (t === "DELETE_SESSION") {
       const code = opts.deleteCode ?? 0;
       return { ...base, code, stdoutTail: code === 0 ? '{"moved": 4, "trash": "/x"}' : "", stderrTail: code === 3 ? "该期已有活跃会话" : "", stdoutFull: null };
@@ -1240,7 +1244,15 @@ describe("D45 会话管理", () => {
       [SID_A, true, "改段落三", "2026-10-08T08:00:00Z"],
       [SID_B, false, "董香第二期做到哪了", "2026-09-26T11:00:00Z"],
     ]);
-    await expect(svc.dispatch("conv.sessions", { convKey: "idea" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    // D57：选题会话也能列（经 core `ava idea /list-sessions`，不带期目录），供「继续上次的选题对话」；
+    // 进入指定会话、删除仍只对期会话开放（选题会话是单一滚动段，D42）
+    const ideaRows = (await svc.dispatch("conv.sessions", { convKey: "idea" })) as Array<Record<string, unknown>>;
+    expect(ideaRows.map((r) => [r.sid, r.live, r.firstUser, r.lastActivity, r.resumable])).toEqual([
+      [SID_B, false, "尼古喵喵的素材", "2026-10-09T06:34:57Z", true],
+    ]);
+    expect(calls.filter((c) => c.t === "LIST_IDEA_SESSIONS").map((c) => c.args)).toEqual([{}]);
+    await expect(svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    await expect(svc.dispatch("conv.enter", { convKey: "idea", sid: SID_B })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
 
     const bad = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson: '[{"sid": "../x"}]' }) } });
     await expect(bad.svc.dispatch("conv.sessions", { convKey: bad.key })).rejects.toMatchObject({ code: "E_CORE" });

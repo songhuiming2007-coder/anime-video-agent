@@ -1231,8 +1231,18 @@ export class HostService {
   }
 
   private async convSessions(convKey: string): Promise<SessionRow[]> {
-    const target = this.epConv(convKey);
-    const r = await this.core("LIST_SESSIONS", { ep: target.abs });
+    // D57：选题会话没有「选哪一个」，但要知道有没有可接上的段（重开 app 后的「继续上次的选题对话」）。
+    // 会话记录一律经 core 读（红线 3：桌面端不读会话记录）
+    let key: ConvKey;
+    let r: CoreResult;
+    if (convKey === "idea") {
+      key = this.convTarget(convKey, "continue").key;
+      r = await this.core("LIST_IDEA_SESSIONS", {});
+    } else {
+      const target = this.epConv(convKey);
+      key = target.key;
+      r = await this.core("LIST_SESSIONS", { ep: target.abs });
+    }
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "读取会话列表超时", tails);
     if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "读取会话列表失败", tails);
@@ -1243,7 +1253,7 @@ export class HostService {
       throw new RpcFail("E_CORE", "core 的 /list-sessions 输出不是 JSON", tails);
     }
     if (!Array.isArray(raw)) throw new RpcFail("E_CORE", "core 的 /list-sessions 输出不是列表", tails);
-    const live = this.sessions.liveSid(target.key);
+    const live = this.sessions.liveSid(key);
     return raw.map((row) => {
       const o = row as Record<string, unknown>;
       if (typeof o.sid !== "string" || !SESSION_ID_RE.test(o.sid) || typeof o.messages !== "number" || typeof o.assistants !== "number"

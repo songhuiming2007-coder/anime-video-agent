@@ -29,6 +29,8 @@ export type ConvRow =
   | { k: "notice"; at: number; level: string; code: string; text: string }
   | { k: "footer"; at: number; text: string }
   | { k: "historySeparator"; at: number }
+  /** 恢复历史里的系统注入（常驻提示、规程、记忆）：Spec 10 §2.3「折叠为『系统注入』」——D57 补落实，默认收起 */
+  | { k: "injection"; at: number; text: string }
   | { k: "exited"; at: number; code: number | null; signal: string | null; stderrTail: string }
   | { k: "framesLost"; at: number; count: number; reason: "oversize" | "malformed" };
 
@@ -279,7 +281,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
             } else if (role === "assistant") {
               rows.push({ k: "assistant", at: e.at, kind: "answer", text: String(f.text), label: null });
             } else {
-              rows.push({ k: "assistant", at: e.at, kind: "local_note", text: String(f.text), label: "系统注入" });
+              rows.push({ k: "injection", at: e.at, text: String(f.text) });
             }
             break;
           }

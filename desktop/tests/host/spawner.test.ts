@@ -254,6 +254,10 @@ describe("D45 会话管理模板的 argv 形状", () => {
     const list = buildArgv("LIST_SESSIONS", { ep: "/ep" }, "/repo");
     expect(list.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/list-sessions"]);
     expect(list.stdoutMax).toBeGreaterThan(0);
+    // D57：选题会话的只读列表，不带期目录
+    const idea = buildArgv("LIST_IDEA_SESSIONS", {}, "/repo");
+    expect(idea.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "idea", "/list-sessions"]);
+    expect(idea.stdoutMax).toBe(list.stdoutMax);
     expect(buildArgv("DELETE_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1" }, "/repo").argv).toEqual([
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/delete-session", "--sid=aaaaaaaaaaaaaaa1",
     ]);
