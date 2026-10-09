@@ -79,11 +79,36 @@ export function lastPromptChars(entries: readonly ConvEntry[]): number | null {
   return out;
 }
 
+const LOOKUP_LABELS: readonly (readonly [string, string])[] = [
+  ["subs", "字幕"],
+  ["presence", "在场"],
+  ["notes", "笔记"],
+  ["web", "网页"],
+];
+
+/**
+ * D48 ①：本回合实际执行的查证调用，按类照实列出（0 也列——人要看的正是「说核对过、字幕却是 0」）。
+ * 帧里没有或形状不对（旧 core、无模型回合）则不显示。
+ */
+export function lookupsText(v: unknown): string | null {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const [k, label] of LOOKUP_LABELS) {
+    const n = o[k];
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) return null;
+    parts.push(`${label} ${String(n)}`);
+  }
+  return `查证 ${parts.join(" · ")}`;
+}
+
 function footerText(f: OutFrame): string {
   const chars = promptChars(f);
+  const lookups = lookupsText(f.lookups);
   return (
     `模型调用 ${String(f.llm_calls)} · 工具 ${String(f.tool_calls)}（执行 ${String(f.tool_executions)}、重复拒绝 ${String(f.duplicates_rejected)}）` +
     ` · 检查点 ${String(f.checkpoints)} · 用时 ${String(f.duration_s)} s · ${String(f.stopped)} · ${String(f.wrapup)}` +
+    (lookups === null ? "" : ` · ${lookups}`) +
     (chars === null ? "" : ` · 上下文 ${charsText(chars)}`)
   );
 }

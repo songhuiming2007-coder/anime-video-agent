@@ -570,7 +570,7 @@ def build_presence(anime: str, progress=None) -> dict[str, int]:
                                        round(1.0 - float(best), 4))
         sh = shots.load(anime, key)["shots"]
         vindex.write_presence(anime, key, [
-            {"i": s["i"], "char": per_shot.get(s["i"], {}), "gen": {}} for s in sh],
+            {"i": s["i"], "char": per_shot.get(s["i"], {})} for s in sh],
             producer="ccip", extra={
                 "detector": FACE_REPO + "/" + FACE_MODEL,
                 "model_id": CCIP_REPO + "/" + CCIP_MODEL,

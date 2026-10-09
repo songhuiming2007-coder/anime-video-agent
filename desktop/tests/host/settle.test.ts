@@ -31,7 +31,7 @@ class FakeProc implements SessionProc {
   }
 }
 
-const TAG = { t: "turn_finished", turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1 };
+const TAG = { t: "turn_finished", turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null };
 
 function harness(opts: { active?: boolean; canRead?: boolean; settleMs?: number } = {}) {
   const clock = { t: 1000 };

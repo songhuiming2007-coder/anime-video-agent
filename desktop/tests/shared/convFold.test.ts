@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { charsText, foldConv, lastPromptChars } from "../../src/shared/convFold";
+import { charsText, foldConv, lastPromptChars, lookupsText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -18,7 +18,7 @@ const request = (id: string, seq: number) =>
   F("request", { request_id: id, kind: "tool_call", turn_id: "t1", title: "写稿", card_text: "…", fields: { tool: "write_episode_file" }, options: ["approve", "reject"], feedback_allowed: true }, seq);
 
 const TURN_FINISHED = () =>
-  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100 }, 9);
+  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100, lookups: null }, 9);
 
 describe("TV-2 foldConv 一回合", () => {
   const entries: ConvEntry[] = [
@@ -113,6 +113,28 @@ describe("TV-3 foldConv 缺口与作废", () => {
     if (failed.k === "tool") expect(failed.observation).toBe("失败原文");
     const okTool = rows[5];
     if (okTool.k === "tool") expect(okTool.observation).toBeNull();
+  });
+});
+
+// D48 ①：回合脚注照实列出本回合查证调用（0 也列），不判断模型编没编
+describe("D48 ① 查证计数", () => {
+  const fin = (lookups: unknown) =>
+    F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 9192, lookups }, 1);
+  const foot = (lookups: unknown) => {
+    const r = foldConv([{ k: "frame", at: 1, frame: fin(lookups) }]).rows.at(-1)!;
+    return r.k === "footer" ? r.text : "";
+  };
+
+  it("四类按 字幕 · 在场 · 笔记 · 网页 列出，0 也列，排在上下文读数之前", () => {
+    expect(foot({ subs: 0, presence: 1, notes: 2, web: 0 }).endsWith(" · done · none · 查证 字幕 0 · 在场 1 · 笔记 2 · 网页 0 · 上下文 9,192 字")).toBe(true);
+  });
+
+  it("旧 core（null / 缺键）或形状不对：不显示，也不影响其余脚注", () => {
+    for (const bad of [null, undefined, [], "x", { subs: 1 }, { subs: -1, presence: 0, notes: 0, web: 0 }, { subs: 1.5, presence: 0, notes: 0, web: 0 }]) {
+      expect(lookupsText(bad)).toBeNull();
+      expect(foot(bad)).not.toContain("查证");
+      expect(foot(bad)).toContain("上下文 9,192 字");
+    }
   });
 });
 

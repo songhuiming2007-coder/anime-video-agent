@@ -206,6 +206,29 @@ def test_d51_check_subcommand_is_card_free(episode: Path) -> None:
     assert verdict.action == "allow"
 
 
+@pytest.mark.parametrize("command", [
+    "vindex who 东京喰种 S02E07 --start 19:40 --end 20:05",
+    "python -m pipeline.vindex who 东京喰种 S02E07",
+])
+def test_d54_vindex_who_is_allowed_and_card_free(command: str, episode: Path) -> None:
+    """D54 ③（2026-10-09 TP-3/TP-4）：`vindex who` 只读在场索引，放行且免卡（任意 scope）。"""
+    for scope in ("creative", "pipeline"):
+        verdict = review_tool_call("run_pipeline", {"command": command}, ep_dir=episode, scope=scope, root=None)
+        assert verdict.action == "allow", scope
+
+
+def test_d54_other_vindex_subcommands_unchanged(episode: Path) -> None:
+    """放行 `who` 不连带别的：`captions`（云端花钱）照旧弹卡，`search` 照旧不在放行集。"""
+    verdict = review_tool_call(
+        "run_pipeline", {"command": "vindex captions 东京喰种 S02E07"}, ep_dir=episode, scope="pipeline", root=None
+    )
+    assert verdict.action == "ask"
+    verdict = review_tool_call(
+        "run_pipeline", {"command": "vindex search 便当"}, ep_dir=episode, scope="pipeline", root=None
+    )
+    assert verdict.action == "reject" and "放行清单" in verdict.reason
+
+
 def test_tk4_acquire_fetch_reachable_after_d43(episode: Path) -> None:
     """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`（弹人审卡）；
     原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。"""

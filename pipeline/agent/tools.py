@@ -86,12 +86,16 @@ PIPELINE_MODULES: set[str] = {
 # status 只读期目录；两者都不落盘（入选前已 grep 过无写调用）。新增成员前必须同样核实。
 READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status"})
 
+# asset 侧纯只读、免审卡的子命令（2026-10-09，D54 ③）：`vindex who` 只读在场索引与镜头表后打印，
+# 全链（load_presence / shots.load / display_names）无写调用。新增成员前必须同样核实。
+READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {"vindex": frozenset({"who"})}
+
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
 # Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
 ASSET_COMMANDS: dict[str, set[str]] = {
     "ingest": {"phase0"},
     "shots": {"build", "frames", "caption-frames"},
-    "vindex": {"captions", "embed"},
+    "vindex": {"captions", "embed", "who"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull"},
     "acquire": {"fetch"},
@@ -104,6 +108,34 @@ RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
     "03-audio/manifest.json",
     "03-audio/voice.json",
 )
+
+
+# 回合脚注的查证计数（2026-10-09，D48 ①）：四类，桌面端照实显示，不判断模型编没编
+LOOKUP_KINDS: tuple[str, ...] = ("subs", "presence", "notes", "web")
+_WEB_TOOLS = frozenset({"web_search", "web_fetch", "crawl", "browser"})
+
+
+def lookup_kind(name: str, args: dict[str, Any]) -> str | None:
+    """一次已执行的工具调用算哪类查证；不是查证返回 None。
+
+    字幕 / 笔记按 `search_notes` 的 `source` 分（缺省是笔记）；在场 = `run_pipeline` 的 `vindex who`。
+    """
+    if name == "search_notes":
+        return "subs" if str(args.get("source") or "notes").strip() == "subs" else "notes"
+    if name in _WEB_TOOLS:
+        return "web"
+    if name == "run_pipeline":
+        try:
+            tokens = shlex.split(str(args.get("command") or ""))
+        except ValueError:
+            return None
+        if tokens[:1] and tokens[0] in ("python", "python3", sys_python()):
+            tokens = tokens[1:]
+            if tokens[:1] == ["-m"]:
+                tokens = tokens[1:]
+        if len(tokens) >= 2 and tokens[0].removeprefix("pipeline.") == "vindex" and tokens[1] == "who":
+            return "presence"
+    return None
 
 
 def scrub_restricted(text: str) -> str:
@@ -611,6 +643,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，"
             "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
+            "只读命令免卡：check_script、status、corrections check、"
+            "vindex who <番> <集> --start mm:ss --end mm:ss（列该时段画面里已识别的角色；没列出不等于不在场）。"
         ),
         "parameters": {
             "type": "object",
@@ -630,6 +664,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "source=subs：检索字幕台词，命中返回集号、时间码、本句与前后句；只给 episode 不给 query 则返回整集台词。"
             "剧情断言（某集某时间码发生了什么）先用 subs 查。字幕只有台词，没有说话人和画面；"
             "无台词的戏查不到，查不到不等于没有这场戏。"
+            "画面里有谁用 run_pipeline 的 vindex who 查。"
         ),
         "parameters": {
             "type": "object",

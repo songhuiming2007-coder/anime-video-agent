@@ -315,6 +315,8 @@ def review_tool_call(
     # 参数级免卡（2026-10-08 spec §A）。只认规范化 argv 里的模块名，不认模型写的原始串。
     if argv is not None and _pipeline_module_of(argv) in READONLY_PIPELINE_MODULES:
         return ToolVerdict("allow", echo=_echo_line(name, args))
+    if argv is not None and _readonly_asset_subcommand(argv):
+        return ToolVerdict("allow", echo=_echo_line(name, args))
 
     # D51：读音纠错录入。check 只读、免卡；add / global 在弹卡前跑同一组校验，不成立不弹卡，
     # 成立则把「写什么、读音核对、本期受影响段」放上卡面
@@ -367,6 +369,17 @@ def _pipeline_module_of(argv: list[str]) -> str | None:
     if module_at >= len(argv) or not argv[module_at].startswith("pipeline."):
         return None
     return argv[module_at].removeprefix("pipeline.")
+
+
+def _readonly_asset_subcommand(argv: list[str]) -> bool:
+    """规范化 argv 是否 asset 侧的只读子命令（D54 ③：`vindex who`）。子命令取模块名后第一个参数。"""
+    from pipeline.agent.tools import READONLY_ASSET_SUBCOMMANDS
+
+    module = _pipeline_module_of(argv)
+    if module not in READONLY_ASSET_SUBCOMMANDS:
+        return False
+    rest = argv[argv.index("-m") + 2:]
+    return bool(rest) and rest[0] in READONLY_ASSET_SUBCOMMANDS[module]
 
 
 def _model_argv_has_options(argv: list[str], ep_dir: Path | None) -> bool:
@@ -878,6 +891,7 @@ class AgentSession:
                 "wrapup": outcome.get("wrapup", "none"),
                 "duration_s": round(float(outcome.get("elapsed_s", 0.0)), 3),
                 "prompt_chars": outcome.get("prompt_chars", 0),
+                "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
                 "recovered": False,
             })
             if self._log_broken:
