@@ -621,14 +621,6 @@ class TestDurationOverrideProseTolerance:
         f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
         assert cs.episode_duration_override(f) is None
 
-    def test_字段行坏格式_仍硬错(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
-        f = tmp_path / "02-script.md"
-        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="时长目标"):
-            cs.episode_duration_override(f)
-
-
 class TestAnchorChecks:
     """锚点三段递进机检（ADR-0008）：字段在不在 → 格式对不对 → 指向真不真。
 

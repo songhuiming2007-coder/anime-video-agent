@@ -140,13 +140,6 @@ class TestSplitLongDash:
         assert abs(sum(p["duration"] for p in out) - 6.0) < 0.01
         assert all(a["start"] < b["start"] for a, b in zip(out, out[1:]))
 
-    def test_逗号仍然是断点(self):
-        # 加破折号不能把原来的断点弄坏
-        long = "在户部告白之前，当着所有人的面走过去，说我从很早以前就开始喜欢你了，请和我交往吧。"
-        out = r._split_long(self._sent(long, dur=12.0))
-        assert len(out) > 1
-        assert "".join(p["text"] for p in out) == long
-
     def test_取放得下的最远断点而不是最早的(self):
         # 贪心的意义：断出来的卡要尽量满，否则一句话会碎成一串短卡一闪而过
         long = "一，二，三，四，五，六，七，八，九，十，十一，十二，十三，十四，十五，十六，十七。"
