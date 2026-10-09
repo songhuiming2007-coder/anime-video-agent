@@ -115,6 +115,28 @@ BAD_NAMES = [
     "含\x07控制符",
     "含\x00NUL",
     "长" * 86,  # 3 字节 × 86 = 258 > 255
+    # 末尾句读：从 agent 回复整句复制带进来的（2026-10-10 伪恋一期，D63）
+    "2026-10-10-伪恋-橘万里花的进攻哲学。",
+    "x，",
+    "x、",
+    "x；",
+    "x：",
+    "x．",
+    "x.",
+    "x,",
+    "x;",
+    "x:",
+]
+
+#: 末尾标点规则不许误伤的期名：括号结尾是真实存量期名，问句/感叹/省略号是正当标题。
+OK_TRAILING_NAMES = [
+    "2026-08-13-罪恶王冠-函数的终途（void）",
+    "x「终」",
+    "她为什么要逃？",
+    "x！",
+    "x?",
+    "x…",
+    "中间的。句号不算",
 ]
 
 
@@ -128,6 +150,19 @@ def test_ty2_bad_names(tmp_path, monkeypatch, capsys, name):
     assert _tree(tmp_path) == before
     assert not (tmp_path / "x").exists() and not (tmp_path / "escape").exists()
     assert list(ep_root.iterdir()) == []
+
+
+def test_ty2_trailing_punct_reason(tmp_path, monkeypatch, capsys):
+    _scaffold(tmp_path, monkeypatch)
+    assert create_new_episode("2026-10-10-伪恋-橘万里花的进攻哲学。") == 2
+    assert "不许以 '。' 结尾" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("name", OK_TRAILING_NAMES)
+def test_ty3_trailing_chars_not_overblocked(tmp_path, monkeypatch, name):
+    _scaffold(tmp_path, monkeypatch)
+    assert create_new_episode(name) == 0, name
+    assert (tmp_path / "data" / "episodes" / name / "01-topic.md").is_file()
 
 
 def test_ty2_absolute_path_rejected(tmp_path, monkeypatch, capsys):

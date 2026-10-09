@@ -498,13 +498,20 @@ def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
 
 _RE_EP_NAME_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
+#: 期名末尾不许出现的句读。期名常从 agent 回复里整句复制，句末标点跟着进了目录名
+#: （2026-10-10 伪恋一期建成 `…进攻哲学。`）；期目录又没有改名入口（D63），只能拒在建期前。
+#: 只收标题不会拿来收尾的句读。不收括号引号（已有期名 `…函数的终途（void）`），
+#: 也不收 `？！…`（「她为什么要逃？」是正当的问句标题）。
+_EP_NAME_TRAILING_PUNCT = "。，、；：．.,;:"
+
 
 def _episode_name_problem(ep_name: str) -> str | None:
     r"""期名不合规的具体原因，合规返回 None（Spec 10 C10-R1 §3.7 第 2 步）。
 
     每条都有来历：`.`/`_` 前缀会被 `get_episodes_list` 藏起来（建了看不见）；
     `-` 开头会与 `ava --continue` 这类开关歧义；`/`、`\`、NUL 与控制字符
-    会让 `mkdir` 建到期根之外或不存在的路径；255 字节是 APFS 单段名上限。
+    会让 `mkdir` 建到期根之外或不存在的路径；255 字节是 APFS 单段名上限；
+    末尾句读多半是整句复制带进来的（见 `_EP_NAME_TRAILING_PUNCT`）。
     """
     if not ep_name or ep_name != ep_name.strip():
         return "不许为空或首尾带空白"
@@ -514,6 +521,8 @@ def _episode_name_problem(ep_name: str) -> str | None:
         return f"不许以 {ep_name[0]!r} 开头（期列表会把它藏起来）"
     if ep_name.startswith("-"):
         return "不许以 '-' 开头（会与命令行开关混淆）"
+    if ep_name[-1] in _EP_NAME_TRAILING_PUNCT:
+        return f"不许以 {ep_name[-1]!r} 结尾（多半是从句子里连句末标点一起复制的）"
     if any(ch in ep_name for ch in ("/", "\\", "\0")):
         return "不许含 '/'、'\\' 或 NUL"
     ctrl = _RE_EP_NAME_CTRL.search(ep_name)
