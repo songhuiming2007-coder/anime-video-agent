@@ -74,6 +74,12 @@ export function SessionHeader({
       <span className="ui-badge" data-testid="session-scope">
         {info.scope === "asset" ? "素材模式" : info.scope === "pipeline" ? "流水线模式" : info.scope === "creative" ? "创作模式" : "—"}
       </span>
+      {/* D64 余项②（2026-10-09 人选方案 B）：读数做成徽章、紧跟模式徽章，正文色——灰字夹在「LLM 已连接」后面不显眼 */}
+      {contextReadout !== null && (
+        <span className="ui-badge session-head-readout" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
+          {contextReadout}
+        </span>
+      )}
       {info.llm === "ok" && (
         <>
           <span className="ui-dot ui-dot--ok" data-testid="llm-ok" />
@@ -84,11 +90,6 @@ export function SessionHeader({
       {info.llm === "degraded" && (
         <span className="warn" data-testid="llm-degraded-mark">
           LLM 未就绪
-        </span>
-      )}
-      {contextReadout !== null && (
-        <span className="muted" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
-          {contextReadout}
         </span>
       )}
       <span className="spacer" />
