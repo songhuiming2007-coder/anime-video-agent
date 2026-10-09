@@ -1,5 +1,6 @@
-// D64 余项②：会话头上下文读数「不显眼」的三个方案，真实窗口截图（未打包构建 × 临时夹具仓，绝不指向真实 data/）。
-// A 是现状；B / C 是在真实窗口上改 DOM 的原型，只为让人比较位置与样式，不是实现。
+// D64 余项②：会话头上下文读数「不显眼」的方案截图（未打包构建 × 临时夹具仓，绝不指向真实 data/）。
+// 2026-10-09 选型时出了 A 现状（灰字跟在「LLM 已连接」后）/ B 头部徽章 / C 输入框状态行三张，人选 B 并已实现（SessionHeader.tsx）。
+// 现在「B-已实现」不改 DOM，拍的就是真实实现；C 留作对照，是在真实窗口上改 DOM 的原型。
 // 用法（在 desktop/ 下）：PYTHONDONTWRITEBYTECODE=1 npx playwright test -c ../docs/dev/plans/2026-10-09-context-readout-shots/shots.config.ts
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -24,16 +25,10 @@ const FINISHED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_ca
 const READY = { op: "emit", frame: { t: "ready", episode: EP, scope: "creative", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } };
 
 /** 三个方案：A 现状；B 头部徽章（正文色、等宽数字，挪到模式徽章旁）；C 输入框状态行（打字时视线所在处）。 */
+/** B 已实现（不改 DOM）；C 未选，留作对照（输入框状态行：打字时视线所在处）。 */
 const VARIANTS: Record<string, (doc: Document) => void> = {
-  "A-现状": () => undefined,
-  "B-头部徽章": (doc) => {
-    const r = doc.querySelector<HTMLElement>("[data-testid=context-readout]")!;
-    r.className = "ui-badge";
-    r.style.color = "var(--fg)";
-    r.style.fontVariantNumeric = "tabular-nums";
-    doc.querySelector("[data-testid=session-scope]")!.after(r);
-  },
-  "C-输入框状态行": (doc) => {
+  "B-已实现": () => undefined,
+  "C-输入框状态行-未选": (doc) => {
     const r = doc.querySelector<HTMLElement>("[data-testid=context-readout]")!;
     const c = r.cloneNode(true) as HTMLElement;
     r.style.display = "none";
@@ -55,7 +50,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: join(OUT, `${name}.png`) });
 }
 
-test("D64 余项②：上下文读数显眼度三方案", async () => {
+test("D64 余项②：上下文读数显眼度（B 已实现 / C 对照）", async () => {
   const fx = sessionFixture([EP]);
   const repo = fx.repo;
   sessionKey(repo, "sk-ava-test-key");
