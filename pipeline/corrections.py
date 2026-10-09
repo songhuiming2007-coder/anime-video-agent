@@ -453,6 +453,32 @@ def apply_patch_lock(episode: Path):
                 pass
 
 
+def clear_stale_apply_lock(episode: Path) -> int:
+    """清 03.5 残留的 `.apply_patch.lock`（D59：原先要人去终端 rm）。
+
+    锁里写着持锁进程的 pid（`apply_patch_lock`）。pid 还活着就拒——可能真有 apply-patch 在跑，
+    也可能 pid 被别的进程复用，两种都不该清，交人看；pid 已不存在才清。锁内容读不出 pid 也拒。
+    """
+    lock_file = episode / "03-audio" / ".apply_patch.lock"
+    if not lock_file.exists():
+        print("OK 没有残留锁（03-audio/.apply_patch.lock 不存在），无需清理")
+        return 0
+    raw = lock_file.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw.isdigit():
+        raise SystemExit(f"FAIL 锁文件里不是 pid（{raw[:40]!r}），无法判断有没有进程在用——交人看")
+    pid = int(raw)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        lock_file.unlink()
+        print(f"OK 持锁进程 {pid} 已不存在，残留锁已清；可以继续录纠错 / --apply-patch")
+        return 0
+    except PermissionError:
+        pass  # 进程在、属于别的用户：同样算活着
+    raise SystemExit(f"FAIL 持锁进程 {pid} 还在运行，不清锁：可能 apply-patch 正在跑（也可能 pid 被复用）——"
+                     f"等它结束，或请人确认后再处理")
+
+
 def append_correction(episode: Path, patch: Patch) -> dict:
     """将 Patch 条目安全追加至 corrections.json。"""
     # 单写者纪律检查

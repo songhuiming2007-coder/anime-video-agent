@@ -45,7 +45,9 @@
 | 补丁素材要人手放进 `patch_assets/` | `acquire register <文件> --to-patch <期目录>`：把 `incoming/` 里的文件挪进本期 `patch_assets/`（弹卡） |
 | 「删 04-patch 目录，或重跑」（`ingest_patch.py` 七处报错） | `ingest_patch --reset`：旧 `04-patch/` 挪到 `04-patch.attic/<时间戳>/` 后重建；不真删 |
 | `rm 03-audio/.apply_patch.lock`（03.5「锁残留」） | `tts --clear-stale-lock`：锁里记录的 pid 还活着就拒，死了才清（弹卡） |
-| 远端 `mv data` + `ln -s`（WORKFLOW 阶段 0） | `cloud relocate-data`：已经是软链就报 OK 退出；否则打印步骤后执行（弹卡，带计费标记） |
+| 远端 `mv data` + `ln -s`（WORKFLOW 阶段 0） | `cloud relocate-data`：已经是软链就报 OK 退出；远端有任务在跑、或数据盘上已有 `data/` 就拒；否则挪过去并软链（弹卡，云端动作） |
+| 余量闸报错里的 `cloud exec --fg "rm -rf …/*_cap"`（agent 永远不许用 `exec`） | `cloud clean-frames`：清远端上一轮打标帧（本地可秒级重抽），有任务在跑就拒（弹卡） |
+| 03.5 结构化打点 `tts --review …` 只写在「终端备用」里 | 改写为 agent 跑（弹卡）；本来就在白名单里，只是文档没说 |
 | `register --as SPnn` 要人去数池子里最后一个号 | 不给 `--as` 时自动取最后一个号 +1，打印出来 |
 
 ### C. 已有桌面端入口，只是文档过期 → 只改文档
