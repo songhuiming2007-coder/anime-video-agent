@@ -138,7 +138,8 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
-    "acquire": {"fetch", "gate", "register", "forget"},
+    # D61 后续（2026-10-10）：probe 可得性探针——出网只解析不下载，URL 清单经人卡，弹卡
+    "acquire": {"fetch", "gate", "register", "forget", "probe"},
 }
 
 # 出网敏感目录与关键词（§2.5 Y2-r19）

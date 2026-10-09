@@ -1206,3 +1206,44 @@ def test_missing_data_dir_is_explicit_error(
     with pytest.raises(ValueError, match="data/ 不可达"):
         _default_crawl_fn("https://example.com", stealth=False, timeout_s=10.0)
     assert not (root / "data").exists()
+
+
+# ---------- cookies 桥（2026-10-10，B1）：域命中给 yt-dlp 规格，ava 不碰 cookie 本体 ----------
+
+
+def _cookies_root(tmp_path: Path, cookies_for: list[str], with_db: bool = True) -> Path:
+    cfg_dir = tmp_path / "config" / "agent"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "web.json").write_text(json.dumps({"browser": {
+        "profile_dir": "data/browser-profile", "headed": True, "timeout_s": 60,
+        "cookies_for": cookies_for}}), encoding="utf-8")
+    prof = tmp_path / "data" / "browser-profile"
+    if with_db:
+        (prof / "Default").mkdir(parents=True)
+        (prof / "Default" / "Cookies").write_bytes(b"")
+    else:
+        prof.mkdir(parents=True)
+    return tmp_path
+
+
+def test_cookies_spec_命中域名给规格_子域名也算(tmp_path: Path) -> None:
+    from pipeline.agent import web_browser as wb
+    root = _cookies_root(tmp_path, ["youtube.com"])
+    spec = wb.cookies_spec_for("https://www.youtube.com/watch?v=x", root=root)
+    assert spec is not None and spec.startswith("chromium:")
+    assert "browser-profile" in spec
+    assert wb.cookies_spec_for("https://youtu.be/x", root=root) is None          # 不在清单
+    assert wb.cookies_spec_for("https://notyoutube.com/x", root=root) is None    # 后缀撞名不算
+
+
+def test_cookies_spec_空清单一律不挂(tmp_path: Path) -> None:
+    from pipeline.agent import web_browser as wb
+    root = _cookies_root(tmp_path, [])
+    assert wb.cookies_spec_for("https://www.youtube.com/watch?v=x", root=root) is None
+
+
+def test_cookies_spec_命中但没登录过要响(tmp_path: Path) -> None:
+    from pipeline.agent import web_browser as wb
+    root = _cookies_root(tmp_path, ["nicovideo.jp"], with_db=False)
+    with pytest.raises(PermissionError, match="登录"):
+        wb.cookies_spec_for("https://www.nicovideo.jp/watch/sm9", root=root)
