@@ -396,3 +396,97 @@ def test_ao3_ingest_patch入口先转码再扫描(repo: Path):
     _png(ep / "patch_assets" / "scan.png", 1800, 1800)
     with pytest.raises(SystemExit, match=r"尝试添加 scan-still\.mp4"):
         ingest_patch.ingest(ep, floor=0.60, local=True)
+
+
+# ---------- 批 4：运维 ----------
+
+
+def _lock(ep: Path, content: str) -> Path:
+    f = ep / "03-audio" / ".apply_patch.lock"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content, encoding="utf-8")
+    return f
+
+
+def test_ao7_持锁进程活着不清(repo: Path):
+    import os
+
+    from pipeline import corrections
+
+    lock = _lock(_episode(repo), str(os.getpid()))  # 本进程必然活着
+    with pytest.raises(SystemExit, match="还在运行"):
+        corrections.clear_stale_apply_lock(lock.parent.parent)
+    assert lock.exists()
+
+
+def test_ao7_持锁进程已死才清(repo: Path):
+    from pipeline import corrections
+
+    dead = subprocess.Popen(["true"])  # 跑完即退并回收：拿一个确定已不存在的 pid
+    dead.wait()
+    lock = _lock(_episode(repo), str(dead.pid))
+    assert corrections.clear_stale_apply_lock(lock.parent.parent) == 0
+    assert not lock.exists()
+
+
+def test_ao7_没锁报无锁_内容不是pid拒(repo: Path, capsys):
+    from pipeline import corrections
+
+    ep = _episode(repo)
+    assert corrections.clear_stale_apply_lock(ep) == 0
+    assert "没有残留锁" in capsys.readouterr().out
+    lock = _lock(ep, "garbage")
+    with pytest.raises(SystemExit, match="不是 pid"):
+        corrections.clear_stale_apply_lock(ep)
+    assert lock.exists()
+
+
+def test_ao7_清锁命令自动补期目录且弹卡(repo: Path):
+    ep = _episode(repo)
+    ok, msg, argv = validate_pipeline_command("tts --clear-stale-lock", ep_dir=ep)
+    assert ok, msg
+    assert argv[3:] == [str(ep.resolve()), "--clear-stale-lock"]
+    assert _review("tts --clear-stale-lock", ep).action == "ask"
+
+
+def test_ao8_改道脚本_先判软链再动_幂等():
+    from pipeline import cloud
+
+    s = cloud.relocate_data_script("/root/anime-video-agent")
+    assert s.index("[ -L /root/anime-video-agent/data ]") < s.index("mv ")
+    assert "exit 0" in s.split("mv ")[0]  # 已是软链：在任何写命令之前退出
+    assert "CONFLICT" in s and "ln -s /root/autodl-tmp/data /root/anime-video-agent/data" in s
+
+
+@pytest.mark.parametrize("sub,script_marker", [("relocate-data", "ln -s"), ("clean-frames", "*_cap")])
+def test_ao8_远端维护_有任务在跑就拒_否则发脚本(monkeypatch, sub: str, script_marker: str):
+    import argparse
+
+    from pipeline import cloud
+
+    sent: list[str] = []
+
+    class _Res:
+        returncode, stdout, stderr = 0, "MOVED", ""
+
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda: ({"remote_root": "/root/r"}, {}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: (sent.append(cmd), _Res())[1])
+    fn = cloud.cmd_relocate_data if sub == "relocate-data" else cloud.cmd_clean_frames
+
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host: ["ava-tts"])
+    with pytest.raises(SystemExit, match="还有任务在跑"):
+        fn(argparse.Namespace())
+    assert sent == []
+
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host: [])
+    assert fn(argparse.Namespace()) == 0
+    assert len(sent) == 1 and script_marker in sent[0]
+
+
+def test_ao8_远端维护命令放行且弹卡(repo: Path):
+    ep = _episode(repo)
+    for sub in ("relocate-data", "clean-frames"):
+        v = _review(f"cloud {sub}", ep)
+        assert v.action == "ask" and "云端" in v.request.card_text
+    assert not validate_pipeline_command("cloud exec --fg ls")[0]

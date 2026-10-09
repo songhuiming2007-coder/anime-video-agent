@@ -2127,6 +2127,9 @@ def main() -> int:
                         "旧引擎复用（接受一期里混两个引擎的成片；否则换引擎只能全量重配）。"
                         "混的段号会写进 manifest 的 _mixed_engine")
 
+    r.add_argument("--clear-stale-lock", action="store_true",
+                   help="只清 03-audio/.apply_patch.lock：锁里的 pid 已不存在才清，还活着就拒（不配音）")
+
     p = sub.add_parser("probe", help="单句试音")
     p.add_argument("text")
     p.add_argument("--config", type=Path, default=CONFIG)
@@ -2143,6 +2146,12 @@ def main() -> int:
 
     if a.cmd == "probe":
         probe(a.text, a.config, a.out, a.ref, a.seed)
+    elif a.clear_stale_lock:
+        if a.force or a.force_all or a.review or a.redo or a.apply_patch:
+            raise SystemExit("FAIL --clear-stale-lock 只清锁，不与 --redo / --apply-patch / --review 等同用")
+        from . import corrections
+
+        return corrections.clear_stale_apply_lock(a.episode)
     else:
         run(a.episode, a.force, a.config,
             parse_review_arg(a.review) if a.review else None,

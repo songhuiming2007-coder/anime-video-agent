@@ -1332,19 +1332,75 @@ def _preflight_remote_capacity(host: str, remote_root: str, remote_ep_dir: str,
     if verdict == "unknown":
         print(f"WARN 无法确认远端余量（{detail}），继续上行", file=sys.stderr)
         return
-    cleanup_cmd = (
-        f"python -m pipeline.cloud exec --fg "
-        f"\"rm -rf {remote_root}/data/library/shots/frames/*_cap\""
-    )
+    cleanup_cmd = "cloud clean-frames（弹卡；清的是可秒级重抽的 *_cap 打标帧）"
     raise SystemExit(
         f"FAIL 远端目标盘余量不足，拒绝上行：{detail}\n"
         f"     上行落在 {remote_ep_dir}，而远端 data/ 在**系统盘**上\n"
         f"     （config/cloud.json 的 remote_data 有意未接线）。两条修法任选：\n"
         f"       ① 清掉上一轮打标帧（本地 shots caption-frames 可秒级重抽）：\n"
         f"          {cleanup_cmd}\n"
-        f"       ② 全季打标前按 docs/WORKFLOW.md「阶段 0 前置」改道数据盘（一次性）\n"
+        f"       ② 全季打标前把远端 data/ 改道数据盘（一次性）：cloud relocate-data（弹卡，幂等）\n"
         f"     详情：docs/dev/postmortems/workflow-history.md「云端中间物」"
     )
+
+
+#: 远端数据盘挂载点（AutoDL 约定；doctor / status 查的就是它）。
+REMOTE_DATA_DISK = "/root/autodl-tmp"
+
+
+def relocate_data_script(remote_root: str, data_disk: str = REMOTE_DATA_DISK) -> str:
+    """把远端 `<仓库>/data` 改道到数据盘并软链回来的 shell 脚本（纯函数，D59）。
+
+    取代 WORKFLOW「阶段 0 前置」里要人登远端手敲的 mv + ln -s。幂等：已经是软链直接报
+    ALREADY 退出 0；数据盘上已有同名目录（上次挪到一半？）拒，交人看，不覆盖不合并。
+    """
+    src, dst = shlex.quote(f"{remote_root}/data"), shlex.quote(f"{data_disk}/data")
+    return (
+        f"set -e; "
+        f"if [ -L {src} ]; then echo ALREADY $(readlink {src}); exit 0; fi; "
+        f"if [ -e {dst} ]; then echo CONFLICT; exit 3; fi; "
+        f"if [ -e {src} ]; then mv {src} {dst}; else mkdir -p {dst}; fi; "
+        f"ln -s {dst} {src}; echo MOVED; df -BG / | tail -1"
+    )
+
+
+def clean_frames_script(remote_root: str) -> str:
+    """清远端上一轮 VLM 打标帧（`*_cap`，本地 `shots caption-frames` 可秒级重抽）的脚本（D59）。
+
+    取代余量闸报错里让人敲的 `cloud exec --fg "rm -rf …"`（agent 不许用 exec）。
+    """
+    frames = shlex.quote(f"{remote_root}/data/library/shots/frames")
+    return f"cd {frames} 2>/dev/null || {{ echo NONE; exit 0; }}; du -sh -- *_cap 2>/dev/null | tail -5; rm -rf -- *_cap; echo CLEANED"
+
+
+def _remote_maintenance(args: argparse.Namespace, script_of, label: str) -> int:
+    """relocate-data / clean-frames 共用的前置：实例可达、没有活跃任务，再执行脚本。"""
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
+    active = remote_active_tasks(host)
+    if active:
+        raise SystemExit(f"FAIL 远端还有任务在跑（{', '.join(active)}），{label}会动到它在用的数据——等它结束再来")
+    script = script_of(remote_root)
+    print(f"[*] {label}：{host}\n    {script}")
+    res = _ssh(script, host=host, check=False, timeout=600)
+    out = (res.stdout or "").strip()
+    print(out)
+    if res.returncode == 3 and "CONFLICT" in out:
+        raise SystemExit(f"FAIL 数据盘上已有 {REMOTE_DATA_DISK}/data（上次挪到一半？），不覆盖不合并——交人看")
+    if res.returncode != 0:
+        raise SystemExit(f"FAIL {label}失败（退出码 {res.returncode}）：{(res.stderr or '').strip()[:300]}")
+    return 0
+
+
+def cmd_relocate_data(args: argparse.Namespace) -> int:
+    return _remote_maintenance(args, relocate_data_script, "远端 data/ 改道数据盘")
+
+
+def cmd_clean_frames(args: argparse.Namespace) -> int:
+    return _remote_maintenance(args, clean_frames_script, "清远端打标帧")
 
 
 def cmd_push(args: argparse.Namespace) -> int:
@@ -1634,6 +1690,10 @@ def main() -> int:
     p_pull = sub.add_parser("pull", help="拉取云端产物回本地")
     p_pull.add_argument("target", type=Path, help="本期目录路径")
 
+    # D59：远端一次性维护，原先要人登远端手敲
+    sub.add_parser("relocate-data", help="远端 data/ 改道数据盘并软链回来（幂等；有任务在跑就拒）")
+    sub.add_parser("clean-frames", help="清远端上一轮 VLM 打标帧 *_cap（本地可秒级重抽）")
+
     # attach
     p_attach = sub.add_parser("attach", help="终端接驳远端 tmux 会话")
     p_attach.add_argument("--session", type=str, default="ava-tts", help="tmux 会话名")
@@ -1651,6 +1711,8 @@ def main() -> int:
         "run": cmd_run,
         "pull": cmd_pull,
         "attach": cmd_attach,
+        "relocate-data": cmd_relocate_data,
+        "clean-frames": cmd_clean_frames,
     }
 
     fn = dispatch.get(args.cmd)
