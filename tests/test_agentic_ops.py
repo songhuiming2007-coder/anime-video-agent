@@ -253,7 +253,7 @@ def test_ao2_to_patch卡上写挪进补丁池(repo: Path):
 
 @pytest.mark.parametrize("command", [
     "ingest probe a.mkv", "ingest intact a.mkv b.mkv", "ingest verify a.mkv a.ass",
-    "vindex status 东京喰种", "vindex search 雨中 --anime 东京喰种", "subindex search 便当",
+    "vindex status --anime 东京喰种", "vindex search 雨中 --anime 东京喰种", "subindex search 便当",
 ])
 def test_ao2_phase0只读子命令免卡(repo: Path, command: str):
     assert _review(command, _episode(repo)).action == "allow"
@@ -490,3 +490,48 @@ def test_ao8_远端维护命令放行且弹卡(repo: Path):
         v = _review(f"cloud {sub}", ep)
         assert v.action == "ask" and "云端" in v.request.card_text
     assert not validate_pipeline_command("cloud exec --fg ls")[0]
+
+
+def test_ao8_fix_env命令_模型只来自配置清单():
+    from pipeline import cloud
+
+    cmds = cloud.fix_env_commands(remote_root="/root/r", models_root="/root/m", repo_missing=True,
+                                  bad_models=[("BAAI/bge-m3", "bge-m3")])
+    assert cmds[0].endswith("git clone " + cloud.REMOTE_REPO_URL + " /root/r")
+    assert cmds[1].endswith("""-c 'from huggingface_hub import snapshot_download; """
+                            """snapshot_download("BAAI/bge-m3", local_dir="/root/m/bge-m3")'""")
+    assert cloud.fix_env_commands(remote_root="/r", models_root="/m", repo_missing=False, bad_models=[]) == []
+
+
+def test_ao8_fix_env_只重下缺的(monkeypatch):
+    import argparse
+
+    from pipeline import cloud
+
+    sent: list[str] = []
+
+    class _Res:
+        def __init__(self, rc=0, out=""):
+            self.returncode, self.stdout, self.stderr = rc, out, ""
+
+    def fake_ssh(cmd, **kw):
+        sent.append(cmd)
+        if cmd.startswith("test -d"):
+            return _Res(0)                       # 仓库在
+        if cmd.startswith("du -s") and "good" in cmd:
+            return _Res(0, "9")
+        if cmd.startswith("du -s"):
+            return _Res(0, "")                   # 缺失
+        return _Res(0, "OK")
+
+    cfg = {"remote_root": "/root/r", "remote_models": "/root/m",
+           "models": {"org/good": {"dir": "good", "min_gb": 1}, "org/miss": {"dir": "miss", "min_gb": 1}}}
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda: (cfg, {}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host: [])
+    monkeypatch.setattr(cloud, "_ssh", fake_ssh)
+    monkeypatch.setattr(cloud, "parse_model_structure_result", lambda out, rc: ("OK", ""))
+    assert cloud.cmd_fix_env(argparse.Namespace()) == 0
+    downloads = [c for c in sent if "snapshot_download" in c]
+    assert len(downloads) == 1 and "org/miss" in downloads[0]
+    assert not any("git clone" in c for c in sent)

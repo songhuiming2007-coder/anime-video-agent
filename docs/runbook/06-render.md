@@ -6,10 +6,8 @@
 - 必须存在 `04-clips.approved.json`
 - `ffmpeg` 必须支持 `libass` 滤镜
 
-## 执行命令
-```bash
-python -m pipeline.render data/episodes/<期号>
-```
+## 执行
+agent 跑 `render`（弹卡，标 `[长任务]`；期目录自动补上）。底层排查参考：`python -m pipeline.render data/episodes/<期号>`。
 
 ## 产物与位置
 - `data/episodes/<期号>/05-final.mp4`（1080p 成片）
@@ -24,7 +22,7 @@ python -m pipeline.render data/episodes/<期号>
 ## 06.2 截取守卫与渲染门禁参数
 
 - **截取守卫（渲染强制，缺一不可）**：切前校验 `seek + duration <= 源时长`；切后复核实际时长与请求之差 ≤ 1 帧。ffmpeg 在请求超出片尾时**静默截断且不报错**，检索命中集尾时必然踩到，一踩整条音画错位。「1 帧」按 `ffprobe` 的 `r_frame_rate` 现算，不许写死（23.976fps 一帧 0.0417s）。
-- **段级不变量**：每段 Σclip.dur == manifest 段时长（±0.05s），approve 与 render 双重拦截；05 人审改画面只改 start/source，改完跑 `python -m pipeline.clips <本期> --refit` 重排版。
+- **段级不变量**：每段 Σclip.dur == manifest 段时长（±0.05s），approve 与 render 双重拦截；05 人审改画面只改 start/source，改完让 agent 跑 `clips --refit` 重排版（弹卡）。
 
 ## 06.3 双模态片段协议（ADR-0013）
 

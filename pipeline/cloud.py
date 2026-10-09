@@ -947,7 +947,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         all_passed = False
         print(f"FAIL  [REPO] 远端仓库不存在或未完成初始化: {remote_root}")
-        print(f"      修法: python -m pipeline.cloud exec 'source /etc/network_turbo && git clone https://github.com/songhuiming2007-coder/anime-video-agent.git {remote_root}'")
+        print("      修法: cloud fix-env（弹卡；克隆仓库到远端，已在就跳过）")
 
     # 4. PyTorch 与 CUDA 可用性
     torch_cmd = (
@@ -1004,20 +1004,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
                     if st_tag == "FAIL":
                         all_passed = False
-                        print("      修法: 重新下载该模型（权重截断/损坏，体积判据抓不到）")
+                        print("      修法: cloud fix-env（弹卡；重新下载结构校验不过的模型）")
                 else:
                     all_passed = False
                     print(f"FAIL  [MODEL] {m_id:<30} 体积不足 ({sz_gb:.1f}GB < {min_gb}GB) - {desc}")
-                    print(f"      下载修复命令:")
-                    print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"{models_root}/{m_dir}\\\")\"'")
+                    print("      修法: cloud fix-env（弹卡；补下体积不足的模型）")
             except ValueError:
                 all_passed = False
                 print(f"FAIL  [MODEL] {m_id:<30} 状态异常 - {desc}")
         else:
             all_passed = False
             print(f"FAIL  [MODEL] {m_id:<30} 缺失 - {desc}")
-            print(f"      下载修复命令:")
-            print(f"        python -m pipeline.cloud exec 'export HF_ENDPOINT=https://hf-mirror.com && python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(\\\"{m_id}\\\", local_dir=\\\"{models_root}/{m_dir}\\\")\"'")
+            print("      修法: cloud fix-env（弹卡；下载缺失的模型）")
 
     print("=" * 65)
     if all_passed:
@@ -1395,6 +1393,71 @@ def _remote_maintenance(args: argparse.Namespace, script_of, label: str) -> int:
     return 0
 
 
+#: 远端代码仓库来源（doctor 修法原先让人经 `cloud exec` 手敲 git clone）。
+REMOTE_REPO_URL = "https://github.com/songhuiming2007-coder/anime-video-agent.git"
+HF_MIRROR = "https://hf-mirror.com"
+
+
+def fix_env_commands(*, remote_root: str, models_root: str, repo_missing: bool,
+                     bad_models: list[tuple[str, str]], repo_url: str = REMOTE_REPO_URL) -> list[str]:
+    """`cloud fix-env` 要在远端执行的命令（纯函数，D59）。
+
+    只做 doctor 能判定、且修法确定的两件事：克隆缺失的仓库、按 config/cloud.json 的 `models`
+    清单重下缺失 / 体积不足 / 结构校验不过的模型。模型 id 只来自配置清单，不接受运行时参数。
+    装 PyTorch 等环境依赖不在此列（属于装全局依赖，交人）。
+    """
+    cmds = []
+    if repo_missing:
+        cmds.append(f"source /etc/network_turbo && git clone {shlex.quote(repo_url)} {shlex.quote(remote_root)}")
+    for m_id, m_dir in bad_models:
+        py = (f"from huggingface_hub import snapshot_download; "
+              f"snapshot_download({json.dumps(m_id)}, local_dir={json.dumps(models_root + '/' + m_dir)})")
+        cmds.append(f"export HF_ENDPOINT={HF_MIRROR} && python3 -c {shlex.quote(py)}")
+    return cmds
+
+
+def cmd_fix_env(args: argparse.Namespace) -> int:
+    """按 doctor 的判据修远端环境：仓库缺了就克隆、模型缺 / 小 / 坏就重下（D59，弹卡）。"""
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    models_root = cfg_global.get("remote_models", "/root/autodl-tmp/models")
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
+    active = remote_active_tasks(host)
+    if active:
+        raise SystemExit(f"FAIL 远端还有任务在跑（{', '.join(active)}），等它结束再修环境")
+    repo_missing = _ssh(f"test -d {shlex.quote(remote_root)}/.git", host=host, check=False).returncode != 0
+    bad: list[tuple[str, str]] = []
+    for m_id, spec in cfg_global.get("models", {}).items():
+        m_dir = spec.get("dir", m_id)
+        min_gb = float(spec.get("min_gb", 1.0))
+        res = _ssh(f"du -s -BG {shlex.quote(models_root + '/' + m_dir)} 2>/dev/null | awk '{{print $1}}' | tr -d 'G'",
+                   host=host, check=False)
+        try:
+            ok = float(res.stdout.strip()) >= min_gb
+        except ValueError:
+            ok = False
+        if ok:
+            st = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=remote_python(cfg_global)),
+                      host=host, check=False, timeout=90)
+            ok = parse_model_structure_result(st.stdout, st.returncode)[0] != "FAIL"
+        if not ok:
+            bad.append((m_id, m_dir))
+    cmds = fix_env_commands(remote_root=remote_root, models_root=models_root,
+                            repo_missing=repo_missing, bad_models=bad)
+    if not cmds:
+        print("OK 仓库与模型都在位，无需修复")
+        return 0
+    for cmd in cmds:
+        print(f"[*] {cmd}")
+        res = _ssh(cmd, host=host, check=False, timeout=3 * 3600, capture_output=False)
+        if res.returncode != 0:
+            raise SystemExit(f"FAIL 远端修复失败（退出码 {res.returncode}）：{cmd}")
+    print("OK 修复完成；再跑一次 cloud doctor 确认")
+    return 0
+
+
 def cmd_relocate_data(args: argparse.Namespace) -> int:
     return _remote_maintenance(args, relocate_data_script, "远端 data/ 改道数据盘")
 
@@ -1693,6 +1756,7 @@ def main() -> int:
     # D59：远端一次性维护，原先要人登远端手敲
     sub.add_parser("relocate-data", help="远端 data/ 改道数据盘并软链回来（幂等；有任务在跑就拒）")
     sub.add_parser("clean-frames", help="清远端上一轮 VLM 打标帧 *_cap（本地可秒级重抽）")
+    sub.add_parser("fix-env", help="按 doctor 判据修远端：克隆缺失的仓库、重下缺失/残缺的模型（清单来自 config）")
 
     # attach
     p_attach = sub.add_parser("attach", help="终端接驳远端 tmux 会话")
@@ -1713,6 +1777,7 @@ def main() -> int:
         "attach": cmd_attach,
         "relocate-data": cmd_relocate_data,
         "clean-frames": cmd_clean_frames,
+        "fix-env": cmd_fix_env,
     }
 
     fn = dispatch.get(args.cmd)

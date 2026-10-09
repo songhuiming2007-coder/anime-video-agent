@@ -753,7 +753,7 @@ def _gate_error_message(ep_dir: Path, stop: ApprovalType) -> str:
     if stop == "02.5":
         return (
             f"02.5 解封物缺失或已过期（需存在非空且新于 02-script.md 的 02-diff.patch）。"
-            f"请先执行封板命令：git diff --no-index {ep_dir}/02-script.draft.md {ep_dir}/02-script.md > {ep_dir}/02-diff.patch"
+            f"先封板：桌面端 02.5 编辑器点「封板」，或终端 `/seal-script`（批准 02.5 时缺失或过期也会自动封板）"
         )
     if stop == "05":
         return (

@@ -2,7 +2,8 @@
 
 产物即状态，落盘于 `data/episodes/<期号>/`。无数据库与外部队列，任何步骤中断，解决后从断点继续跑。
 
-> **开工第一指令（自然语言优先）**：
+> **开工第一指令（自然语言优先）**：主入口是桌面端 AVA（侧栏选期 / 选题，直接说白话）；终端等价入口如下。
+> **命令由 agent 发，人只批卡**（D59）：流水线命令都由 agent 经 `run_pipeline` 发——只读的免卡、写盘的弹卡，人在卡上批或驳，不在终端手敲；停机点的批准仍只能由人做。下文的 `python -m …` 只作底层排查参考。
 > ```bash
 > ava <期号>                                      # 宿主入口：与 AI 制片总监连续对话（ava idea 选题发散）
 > ava <期号> --continue [<会话号前缀>]             # 接着本期上一段会话继续（ava <期号> --sessions 列出全部会话）
@@ -20,10 +21,10 @@
 
 - **单一事实来源（SSOT）**：解说词、微单元分镜、音乐试听段（`## 音乐段`）、音画同源开关，**唯一法定载体是 `02-script.md`**。严禁维护外置文件造成认知分叉；中间草稿隔离，生产目录只留唯一生效文件。
 - **离散工序铁律**：流水线严格遵循四阶段离散工序，遇停机点必须立即停下交卷：
-  - **工序 A【脚本与分镜】**：维护 `02-script.md` ──→ 跑 `check_script` 全绿 ──→ 🛑 **【停机点 1】**：人类阅读审稿确认（02.5），封板！
-  - **工序 B【云端配音与顺听】**：`cloud push` ──→ `cloud run <期> tts`（TTS+g2p+回读）──→ `cloud pull` 拉回 ──→ 🛑 **【停机点 2】**：顺听（03.5）打点，错字处置走 `/voice` → `corrections.json` → `--apply-patch`，定死时长！
-  - **工序 C【排片与审片】**：跑 `clips` 产出 `04-review.html` ──→ 🛑 **【停机点 3】**：浏览器审看（05），显式执行 `review --approve` 产出 `04-clips.approved.json`！
-  - **工序 D【确定性渲染与质检】**：读取 `approved.json` ──→ 跑 `render` 与 `qc`，一趟出片！
+  - **工序 A【脚本与分镜】**：agent 维护 `02-script.md` ──→ 跑 `check_script` 全绿 ──→ 🛑 **【停机点 1】**：人类阅读审稿确认（02.5），批准即封板！
+  - **工序 B【配音与顺听】**：agent 提议 `tts`（本地）或 `cloud push` → `cloud run <期> tts` → `cloud pull`（计费卡）──→ 🛑 **【停机点 2】**：顺听（03.5）打点，错字处置走顺听面板 / `/voice` → `corrections.json` → `--apply-patch`，定死时长！
+  - **工序 C【排片与审片】**：agent 跑 `clips`、`review` 产出 `04-review.html` ──→ 🛑 **【停机点 3】**：桌面端预览区审看（05），人在决策条批准，产出 `04-clips.approved.json`！
+  - **工序 D【确定性渲染与质检】**：读取 `approved.json` ──→ agent 跑 `render` 与 `qc`，一趟出片！
 
 > **阶段 0 前置（每部番一次，不在 01–09 里）**：素材入库与全季打标。
 > 全季 `vindex captions` 要上行几百 MB 帧，而远端 `data/` 在**系统盘**
@@ -34,33 +35,33 @@
 > 或 `cloud relocate-data`），不会传到一半才爆。单集补料切片（~14MB/集）量级可忽略，但改道仍建议先做好。
 > 详见 [`dev/postmortems/workflow-history.md`](dev/postmortems/workflow-history.md)「云端中间物」。
 
-| 工序阶段 | 包含步骤 | 核心命令（ava 宿主入口） | 底层排查参考 | 🛑 人工停机点与硬门禁 |
+| 工序阶段 | 包含步骤 | agent 发的命令（人批卡；终端 REPL 里人亲手敲 `/run` 等价） | 底层排查参考 | 🛑 人工停机点与硬门禁 |
 |---|---|---|---|---|
-| **A. 脚本与分镜** | 01 选题 → 02 写稿 | `ava <期> /chat`（选题发散）<br>`ava <期> /script`（写稿）<br>`ava <期> /run check_script` | `python -m pipeline.check_script <期>/02-script.md` | **02.5 人审改稿**：人工精修事实与张力，产出 `02-diff.patch` 后封板，严禁跳过。 |
-| **B. 配音与顺听** | 03 语音合成 | `ava <期> /run tts`<br>`ava <期> /voice`（顺听纠错） | `python -m pipeline.tts <期>` | **03.5 配音顺听**：顺听 + /voice 纠错（可选深挖，corrections.json 永久资产，--apply-patch 靶向重配）。 |
-| **C. 排片与审片** | 04 画面排片 → 05 审时间码 | `ava <期> /run clips`<br>`ava <期> /run review` | `python -m pipeline.clips <期>`<br>`python -m pipeline.review <期>` | **05 审时间码**：浏览器打开 `04-review.html` 确认无画外音错配，显式执行 `--approve`。无此文件渲染器拒绝启动。 |
-| **D. 渲染与发布** | 06 渲染 → 07 质检 → 08 封面标题 → 09 发布 | `ava <期> /run render`<br>`ava <期> /run qc`<br>`ava <期> /run cover` | `python -m pipeline.render <期>`<br>`python -m pipeline.qc <期>`<br>`python -m pipeline.cover <期>` | **09 标题与封面拍板**：Agent 仅出 5 条标题候选与封面池，**严禁自行定稿**，必须由人类挑选并手动上传。 |
-| **补料通道**（04 之后可选） | 04 缺口段 → 补料入池 → 重排 | `ava <期> /scout`（缺料时生成 pi 派工单） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
+| **A. 脚本与分镜** | 01 选题 → 02 写稿 | 写稿（选题会话 / 期会话里说白话）<br>`check_script`（免卡）<br>`adversarial`（02.8，弹卡） | `python -m pipeline.check_script <期>/02-script.md` | **02.5 人审改稿**：人精修事实与张力，批准时自动封板（`02-diff.patch`），严禁跳过。 |
+| **B. 配音与顺听** | 03 语音合成 | `tts`（弹卡）<br>`corrections add/global`（弹卡）→ `tts --apply-patch` | `python -m pipeline.tts <期>` | **03.5 配音顺听**：顺听面板（终端备用 /voice）纠错（corrections.json 永久资产，--apply-patch 靶向重配）。 |
+| **C. 排片与审片** | 04 画面排片 → 05 审时间码 | `clips`、`review`（弹卡） | `python -m pipeline.clips <期>`<br>`python -m pipeline.review <期>` | **05 审时间码**：预览区看 `04-review.html` 确认无画外音错配，人在决策条批准（agent 不能 approve）。无 approved 文件渲染器拒绝启动。 |
+| **D. 渲染与发布** | 06 渲染 → 07 质检 → 08 封面标题 → 09 发布 | `render`、`qc`、`cover`（弹卡） | `python -m pipeline.render <期>`<br>`python -m pipeline.qc <期>`<br>`python -m pipeline.cover <期>` | **09 标题与封面拍板**：Agent 仅出 5 条标题候选与封面池，**严禁自行定稿**，必须由人类挑选并手动上传。 |
+| **补料通道**（04 之后可选） | 04 缺口段 → 补料入池 → 重排 | `scout` → 检索 + `acquire_propose` → 抓取卡 → `acquire register --to-patch` → `ingest_patch` → `clips`（见 runbook 04.5） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
 
 ---
 
 ## 二、标准执行速查（01 – 09 步）
 
 1. **[01 选题](runbook/01-topic.md)**（人）：填 `01-topic.md`（番、类型、锚点、张力）。张力是整条流水线唯一编辑判断，定死后不许 agent 篡改。
-2. **[02 写稿](runbook/02-script.md)**（Agent）：`ava <期> /script`（creative scope，LLM 在场；无 LLM 时降级为「打开文件 + 打印 checklist」）或调 `skills/write-script` 写 `02-script.md`。跑 `ava <期> /run check_script` 机检全绿。
-3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿并在当期目录生成 `02-diff.patch`（`git diff --no-index 02-script.draft.md 02-script.md > 02-diff.patch`；或在 app 内 02.5 编辑器点「封板」，等价）。
-4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：跑 `ava <期> /run tts`（底层等价 `python -m pipeline.tts <期>`）。
+2. **[02 写稿](runbook/02-script.md)**（Agent）：按 `skills/write-script` 写 `02-script.draft.md`，自己跑 `check_script`（免卡）到全绿，再跑 02.8 `adversarial`（弹卡）。
+3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：改稿（或让 agent 改，每次弹卡带 diff），批准 02.5 时自动封板生成 `02-diff.patch`（也可在 app 内 02.5 编辑器点「封板」）。
+4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：agent 提议 `tts`（弹卡；云端走 `cloud push/run/pull` 计费卡）。
    - **红线**：此后一律只补点名段，**严禁擅自 `--force` 全量重配**（ava 层直接拒收该旗标并指引 `--redo`）；错字走 `g2p.py` 注入，换引擎前必须报备影响段数。
 5. **[03.5 顺听](runbook/03.5-voice-check.md)**（人）：桌面端在预览区 `03-audio` 的顺听面板（终端备用 `ava <期> /voice`）顺听 + 纠错（可选深挖；三项抽检为主，corrections.json / --apply-patch）。
-6. **[04 排片](runbook/04-clips.md)**（Agent/机器）：跑 `ava <期> /run clips`，全局贪心分派。通道互斥（锚点直通 / 台词 / 画面 VLM），不跨通道比分。
-7. **[05 审片](runbook/05-timecode.md)**（人）：浏览器看 `04-review.html`，通过后执行 `ava <期> /run review --approve` 产出 `04-clips.approved.json`。
-8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：跑 `ava <期> /run render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
-9. **[07 质检](runbook/07-qc.md)**（机器）：跑 `ava <期> /run qc`，11 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
-10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：跑 `ava <期> /run cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`），叠字排版由 agent 调 `cover_edit`，每次渲染弹人审卡。
+6. **[04 排片](runbook/04-clips.md)**（Agent/机器）：agent 跑 `clips`（弹卡），全局贪心分派。通道互斥（锚点直通 / 台词 / 画面 VLM），不跨通道比分。
+7. **[05 审片](runbook/05-timecode.md)**（人）：预览区看 `04-review.html`，通过后在决策条批准 05（终端 `/approve 05`），产出 `04-clips.approved.json`。
+8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：agent 跑 `render`（弹卡），产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
+9. **[07 质检](runbook/07-qc.md)**（机器）：agent 跑 `qc`（弹卡），11 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
+10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：agent 跑 `cover`（弹卡）。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`），叠字排版由 agent 调 `cover_edit`，每次渲染弹人审卡。
 11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面路径与标题原文（app 内两个输入；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
 
-> `ava <期> /run X` 与 `python -m pipeline.X <期>` 等价：宿主只多做白名单校验（REPL 内另有命令回显与二次确认）。
-> 要接管道、脚本化或复现问题时用 `python -m` 形式。
+> agent 发的命令、终端 `ava <期> /run X` 与 `python -m pipeline.X <期>` 三者等价：宿主只多做白名单校验与审批卡。
+> 日常不需要人敲任何一种；要复现问题、排查时才用 `python -m` 形式。
 
 ---
 
