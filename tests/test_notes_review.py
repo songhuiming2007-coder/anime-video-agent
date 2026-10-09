@@ -212,3 +212,12 @@ def test_状态卡提示_没审过与未终审(data: Path):
         "## 终审裁决\n| # | 集 | 问题 | 摘要 | 裁决 |\n|---|---|---|---|---|\n"
         "| Q1 | S01E01 | 时间码错 | x |  |\n| F1 | S01E01 | 字幕无据 | y | 采纳 |\n", encoding="utf-8")
     assert notes_review_advisories(ep) == ["《番》笔记审查报告 番-对抗审查报告-2026-10-09.md 还有 1 条未终审（逐条裁决，采纳的用 write_note 改笔记）"]
+
+
+def test_合写的类别取第一个认得的():
+    sec = N.Section("S01E01", "", 1, SCENES_OK)
+    it = N.verify_llm_item({"类别": "说话人存疑 / 顺序存疑", "原文": "祈激将「連嘗試都不敢的話", "字幕": "0:08:54",
+                            "说明": "x"}, sec, SUBS)
+    assert it["类别"] == "说话人存疑"
+    it = N.verify_llm_item({"类别": "胡写", "原文": "祈激将「連嘗試都不敢的話", "字幕": "0:08:54", "说明": "x"}, sec, SUBS)
+    assert it["类别"] == "胡写（类别不认识）"

@@ -210,9 +210,10 @@ def check_quote(q: Quote, lines: list[tuple[float, str]] | None) -> Check:
 
 SYSTEM_PROMPT = """你是零上下文的番剧笔记审查者。你没看过写笔记的过程，只拿到某一集的笔记小节和这一集的整集字幕（带时间码，只有台词、不带说话人）。
 
-只找三类问题，没有问题的不要列：
-- 与字幕矛盾：笔记写的台词、事件、先后与字幕对不上；
-- 说话人存疑 / 顺序存疑：笔记把台词归给某人、或写的先后顺序，字幕里的语境不支持；
+只找下面四类问题，没有问题的不要列。「类别」只能是这四个词之一，一条只填一个：
+- 与字幕矛盾：笔记写的台词、事件与字幕对不上；
+- 说话人存疑：笔记把台词归给某人，字幕里的语境不支持；
+- 顺序存疑：笔记写的先后顺序与字幕不符；
 - 字幕无据：笔记写的关键剧情事实在字幕里找不到任何对应（可能来自网源，需要核实，不等于错）。
 
 每条必须：
@@ -229,6 +230,9 @@ def build_user_prompt(anime: str, sec: Section, lines: list[tuple[float, str]]) 
 
 def verify_llm_item(item: dict, sec: Section, lines: list[tuple[float, str]]) -> dict:
     cat = str(item.get("类别", "")).strip()
+    if cat not in CATEGORIES:
+        # 模型偶尔把两类合写（「说话人存疑 / 顺序存疑」，罪恶王冠实跑 11 条）：取第一个认得的
+        cat = next((c for c in re.split(r"\s*[/／、,，]\s*", cat) if c in CATEGORIES), cat)
     quote = str(item.get("原文", "")).strip()
     cite = str(item.get("字幕", "")).strip()
     out = {"类别": cat if cat in CATEGORIES else f"{cat}（类别不认识）", "原文": quote, "字幕": cite,
