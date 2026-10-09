@@ -34,6 +34,7 @@ dependencies = [
     # **只用 CPUExecutionProvider**——2026-08-03 实测 CoreML 那条路在这些图上跑不通
     # （onnxruntime 把节点切成几百个 CoreML 分区，其中一个运行时直接报错）。
     "onnxruntime>=1.28.0",
+    "zhconv>=1.4.3",
 ]
 
 [project.optional-dependencies]
