@@ -895,3 +895,54 @@ def test_tl9b_two_interrupts_before_surfacing_merge(root: Path, monkeypatch) -> 
     assert outcome["final"] is not None
     assert interrupt._pending == 0, "合并之后不许再留一次待处理中断"
     assert_paired(messages)
+
+
+def test_d48_lookups_count_executed_lookups_by_kind(root: Path, monkeypatch) -> None:
+    """D48 ①（2026-10-09 TP-5）：outcome 的 lookups 按实际执行的查证调用分类；判重拒掉的不算，非查证工具不算。"""
+    subs = {"source": "subs", "episode": "S02E07"}
+    script = Script([
+        tool_call("search_notes", subs, call_id="s1"),
+        tool_call("search_notes", subs, call_id="s2"),  # 同参重复 → 判重拒，不计
+        tool_call("search_notes", {"query": "董香"}, call_id="n1"),
+        tool_call("run_pipeline", {"command": "vindex who 东京喰种 S02E07 --start 19:40"}, call_id="p1"),
+        tool_call("web_search", {"query": "东京喰种 第二季 第七集"}, call_id="w1"),
+        tool_call("read_status", {"episode": "01-smoke"}, call_id="r1"),
+        {"role": "assistant", "content": "好"},
+    ])
+    monkeypatch.setattr(llm_mod, "chat_complete", script)
+    patch_execute(monkeypatch)
+
+    messages = [{"role": "user", "content": "查一下"}]
+    outcome = run(messages, root, build_control(messages))
+
+    assert outcome["duplicates_rejected"] == 1
+    assert outcome["lookups"] == {"subs": 1, "presence": 1, "notes": 1, "web": 1}
+
+
+def test_d48_lookups_zero_when_no_tools(root: Path, monkeypatch) -> None:
+    """没调任何查证：四类都是 0（脚注照实显示 0）。"""
+    monkeypatch.setattr(llm_mod, "chat_complete", Script([{"role": "assistant", "content": "好"}]))
+    patch_execute(monkeypatch)
+    messages = [{"role": "user", "content": "你好"}]
+    assert run(messages, root, build_control(messages))["lookups"] == {"subs": 0, "presence": 0, "notes": 0, "web": 0}
+
+
+@pytest.mark.parametrize("name, args, want", [
+    ("search_notes", {"source": "subs"}, "subs"),
+    ("search_notes", {"source": " subs "}, "subs"),
+    ("search_notes", {}, "notes"),
+    ("search_notes", {"source": "notes"}, "notes"),
+    ("run_pipeline", {"command": "vindex who 东京喰种 S02E07"}, "presence"),
+    ("run_pipeline", {"command": "python -m pipeline.vindex who 东京喰种 S02E07"}, "presence"),
+    ("run_pipeline", {"command": "vindex captions 东京喰种 S02E07"}, None),
+    ("run_pipeline", {"command": "check_script"}, None),
+    ("run_pipeline", {"command": "vindex 'who"}, None),
+    ("web_fetch", {"url": "https://x"}, "web"),
+    ("crawl", {}, "web"),
+    ("browser", {}, "web"),
+    ("read_status", {}, None),
+])
+def test_d48_lookup_kind(name: str, args: dict, want) -> None:
+    from pipeline.agent.tools import lookup_kind
+
+    assert lookup_kind(name, args) == want

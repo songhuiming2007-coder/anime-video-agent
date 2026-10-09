@@ -850,6 +850,7 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         "wrapup": outcome.get("wrapup", "none"),
         "duration_s": round(float(outcome.get("elapsed_s", 0.0)), 3),
         "prompt_chars": outcome.get("prompt_chars", 0),
+        "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():

@@ -26,10 +26,12 @@ from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
 from pipeline.agent.tools import (
+    LOOKUP_KINDS,
     ToolContext,
     assert_egress_boundary,
     build_tool_schemas,
     execute_tool,
+    lookup_kind,
     scrub_restricted,
 )
 
@@ -527,6 +529,7 @@ def _loop_result(
     error: str | None = None,
     prompt_chars: int = 0,
     elapsed_s: float = 0.0,
+    lookups: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。"""
     return {
@@ -545,7 +548,12 @@ def _loop_result(
         "error": error,
         "prompt_chars": prompt_chars,
         "elapsed_s": elapsed_s,
+        "lookups": dict(lookups) if lookups else _zero_lookups(),
     }
+
+
+def _zero_lookups() -> dict[str, int]:
+    return {k: 0 for k in LOOKUP_KINDS}
 
 
 def run_tool_loop(
@@ -600,6 +608,7 @@ def run_tool_loop(
     llm_calls = tool_calls_made = tool_executions = duplicates_rejected = checkpoints = 0
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
+    lookups = _zero_lookups()  # D48 ①：本回合实际执行的查证调用，按类计数
     started = time.monotonic()
     # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
     live: dict[str, Any] = {
@@ -688,14 +697,14 @@ def run_tool_loop(
                 convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                 tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                 checkpoints=checkpoints, wrapup="skipped", error=error,
-                prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+                prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
             )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
                 tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                error=error, prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+                error=error, prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
             )
         state, final, note, wrapup_error = _wrapup(reason)
         return _loop_result(
@@ -703,7 +712,7 @@ def run_tool_loop(
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
             wrapup=state, error=error or wrapup_error,
-            prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
         )
 
     try:
@@ -731,7 +740,7 @@ def run_tool_loop(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                     duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                    prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+                    prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
                 )
 
             live["calls"] = calls
@@ -797,6 +806,9 @@ def run_tool_loop(
                 live["outcome"] = None
                 tool_executions += 1
                 execs_since_cp += 1
+                kind = lookup_kind(name, args)
+                if kind is not None:
+                    lookups[kind] += 1
 
                 if name == "acquire_propose" and outcome.get("ok") and control.post_execute is not None:  # type: ignore[union-attr]
                     live["stage"] = "hook"
@@ -849,7 +861,7 @@ def run_tool_loop(
             convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
-            prompt_chars=prompt_chars, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
         return _stop("error", error=str(exc))

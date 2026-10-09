@@ -313,8 +313,9 @@ def write_presence(anime: str, key: str, rows: list[dict], producer: str,
                    extra: dict, out_dir: Path = VINDEX_DIR) -> Path:
     """落一集的角色在场索引。**两个 producer 共用这一个写入口，格式只有一份。**
 
-    `rows` 每行 `{"i": 镜头号, "char": {角色: 分数}, "gen": {通用标签: 分数}}`，
-    下标即镜头号。
+    `rows` 每行 `{"i": 镜头号, "char": {角色: 分数}}`，下标即镜头号。
+    （2026-10-09 N2：不再落 general 标签——备用料从未真实存在（ccip 不产），
+    它预留的画面语义层已由 ADR-0015 取代；旧文件里的空 `gen` 字段无害，加载侧不读。）
 
     `extra` 里必须带 `decision_threshold`——**判定阈值随 producer 走**，
     加载时按它把分数折成布尔。写进文件而不是读配置，是因为文件里的分数是当时那个
@@ -331,10 +332,6 @@ def write_presence(anime: str, key: str, rows: list[dict], producer: str,
             "built_at": date.today().isoformat(),
             **extra,
         },
-        # **general 标签一并落盘但当前没有任何检索路径读它**——它是第 2 层探针
-        # 万一不过时的备用料（booru 标签里有 rain / night / indoors），
-        # 顺手存下来是因为推理这一步的钱已经花了，将来要用不必再跑几小时。
-        # 它不是一条通道：没有路由指向它，也不许有。
         "shots": rows,
     }, ensure_ascii=False), encoding="utf-8")
     return dest
@@ -365,7 +362,7 @@ def build_presence(anime: str, key: str, out_dir: Path = VINDEX_DIR,
 
     recs = tag(files, batch, prof, progress)
     write_presence(anime, key,
-                   [{"i": s["i"], "char": r["char"], "gen": r["gen"]}
+                   [{"i": s["i"], "char": r["char"]}
                     for s, r in zip(d["shots"], recs)],
                    producer="tagger", extra={
                        "tagger": prof["name"],
@@ -1426,6 +1423,44 @@ def _fmt(t: float) -> str:
     return f"{int(m):02d}:{s:05.2f}"
 
 
+def time_arg(text: str) -> float:
+    """`who` 的时间参数：秒数，或 `mm:ss` / `hh:mm:ss`（秒可带小数）。agent 手里的时间码多是后两种。"""
+    parts = str(text).strip().split(":")
+    try:
+        if len(parts) > 3 or any(not p.strip() for p in parts):
+            raise ValueError
+        nums = [float(p) for p in parts]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"时间写成秒数或 mm:ss / hh:mm:ss，收到 {text!r}") from None
+    if any(n < 0 for n in nums) or any(n >= 60 for n in nums[1:]):
+        raise argparse.ArgumentTypeError(f"时间写成秒数或 mm:ss / hh:mm:ss，收到 {text!r}")
+    total = 0.0
+    for n in nums:
+        total = total * 60 + n
+    return total
+
+
+def who_lines(rows: list[dict] | None, names: dict[str, str], start: float, end: float) -> list[str]:
+    """`vindex who` 的输出（D54 ③：给 agent 查「这一刻画面里有谁」）。
+
+    索引只认得**已贴名、脸被检出**的角色：背影、远景、只有声音的人都不会出现。
+    这条免责连同本集覆盖率每次都印，否则「没列出」会被当成「不在场」的证据。
+    """
+    if not rows:
+        return ["没有本集的在场索引（集号写错，或这一集还没建索引）。"]
+    out = []
+    for s in rows:
+        if s["start"] < end and start < s["end"]:
+            who = "、".join(names.get(t, t) for t in sorted(s["tags"]))
+            if who:
+                out.append(f"  {_fmt(s['start'])}-{_fmt(s['end'])}  {who}")
+    if not out:
+        out.append("该时段没有已识别角色（不等于没人）。")
+    named = sum(1 for s in rows if s["tags"])
+    out.append(f"本集 {len(rows)} 个镜头，{named} 个有已识别角色；只列已贴名、脸被检出的角色——没列出不等于不在场。")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1469,8 +1504,8 @@ def main() -> int:
     w = sub.add_parser("who", help="某段时间里有谁（查角色索引）")
     w.add_argument("anime")
     w.add_argument("episode")
-    w.add_argument("--start", type=float, default=0.0)
-    w.add_argument("--end", type=float, default=1e9)
+    w.add_argument("--start", type=time_arg, default=0.0, help="秒数或 mm:ss / hh:mm:ss")
+    w.add_argument("--end", type=time_arg, default=1e9, help="秒数或 mm:ss / hh:mm:ss")
 
     st = sub.add_parser("status", help="七条数字对不对得上")
     st.add_argument("--anime", default=paths.conf("anime.default"))
@@ -1523,13 +1558,10 @@ def main() -> int:
     if a.cmd == "who":
         pres = load_presence(a.anime)
         names = display_names(a.anime)
-        season, episode = _parse_key(a.episode)
-        rows = pres.by_ep.get(a.episode, [])
-        for s in rows:
-            if s["start"] < a.end and a.start < s["end"]:
-                who = "、".join(names.get(t, t) for t in sorted(s["tags"]))
-                if who:
-                    print(f"  {_fmt(s['start'])}-{_fmt(s['end'])}  {who}")
+        key = a.episode.strip().upper()
+        _parse_key(key)
+        for line in who_lines(pres.by_ep.get(key), names, a.start, a.end):
+            print(line)
         return 0
 
     if a.cmd == "captions":

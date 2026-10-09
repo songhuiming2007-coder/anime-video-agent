@@ -334,7 +334,7 @@ Spec 1 实际保证的是：常驻层会话内字节级恒定（只在 scope 变
 | `request_closed` | `request_id`、`reason ∈ {answered, voided}`、`decision` |
 | `command_result` | `name`、`ok`、`text`（`memory_ack` 时为 `ack_external` 本次打印的原文，🟡-12） |
 | `stop_points` | `items: [{approval_id, type, created_at, artifacts: [path], options, note, answer_via: "decision_bar"}]`、`turn_id`（本回合的 `turn_id`；回合外（`ready` 时）发出的那帧为 `null`）（S9-R4，v0.8 并入） |
-| `turn_finished` | `turn_id`、`stopped`、`llm_calls`、`tool_calls`、`tool_executions`、`duplicates_rejected`、`checkpoints`、`wrapup`、`duration_s`、`prompt_chars` |
+| `turn_finished` | `turn_id`、`stopped`、`llm_calls`、`tool_calls`、`tool_executions`、`duplicates_rejected`、`checkpoints`、`wrapup`、`duration_s`、`prompt_chars`、`lookups`（**2026-10-09 修订注，D48 ①**：本回合实际执行的查证调用按类计数 `{subs, presence, notes, web}`，无模型回合为 null；`turn_end` 记录同带） |
 | `log` | `stream: "stdout"`、`text` |
 | `notice` | `level`、`code`、`text`（〔修订注 2026-10-08，D52/N52〕新增 code `egress_blocked`：回合被出网断言拦下时在 `turn_finished` 之前发，正文只含命中模式名，见 `plans/2026-10-08-tool-result-egress-scrub-spec.md` §B） |
 | `error` | `code`、`message` |

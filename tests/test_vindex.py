@@ -303,7 +303,7 @@ class TestPresenceLoadHardCheck:
         d = {"meta": {"kind": "presence", "producer": "ccip", "anime": "春物",
                       "episode": ep, "shots": self.FP, "model_id": model_id,
                       "revision": None, "decision_threshold": thr},
-             "shots": [{"i": 0, "char": {"x": 0.97}, "gen": {}}]}
+             "shots": [{"i": 0, "char": {"x": 0.97}}]}
         p = tmp_path / name
         p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
         return p
@@ -888,3 +888,70 @@ class TestHitLine:
     def test_番剧命中仍是_SxxEyy(self):
         u = vindex.Shot("春物", 1, 3, 12.0, 14.0, "镜头 00:12.00")
         assert vindex.hit_line(0.61, u).startswith("0.610  S01E03 00:12.00-00:14.00")
+
+
+# ---- D54 ③：vindex who 给 agent 查「这一刻画面里有谁」（2026-10-09 spec TP-1/TP-2）----
+
+_WHO_ROWS = [
+    {"i": 0, "start": 0.0, "end": 5.0, "tags": {"touka"}},
+    {"i": 1, "start": 5.0, "end": 9.5, "tags": set()},
+    {"i": 2, "start": 9.5, "end": 14.0, "tags": {"touka", "hinami"}},
+    {"i": 3, "start": 70.0, "end": 75.0, "tags": set()},
+]
+_WHO_NAMES = {"touka": "董香", "hinami": "雏实"}
+_WHO_TAIL = "本集 4 个镜头，2 个有已识别角色；只列已贴名、脸被检出的角色——没列出不等于不在场。"
+
+
+def test_who_lines_lists_named_shots_in_window_with_coverage_tail():
+    assert vindex.who_lines(_WHO_ROWS, _WHO_NAMES, 4.0, 10.0) == [
+        "  00:00.00-00:05.00  董香",
+        "  00:09.50-00:14.00  雏实、董香",
+        _WHO_TAIL,
+    ]
+
+
+def test_who_lines_empty_window_says_not_nobody():
+    assert vindex.who_lines(_WHO_ROWS, _WHO_NAMES, 60.0, 80.0) == [
+        "该时段没有已识别角色（不等于没人）。", _WHO_TAIL]
+
+
+def test_who_lines_episode_without_index():
+    for rows in (None, []):
+        assert vindex.who_lines(rows, _WHO_NAMES, 0.0, 1e9) == [
+            "没有本集的在场索引（集号写错，或这一集还没建索引）。"]
+
+
+@pytest.mark.parametrize("text, want", [
+    ("95", 95.0), ("95.5", 95.5), ("1:35", 95.0), ("01:35.5", 95.5), ("0:01:35", 95.0), ("1:00:00", 3600.0),
+])
+def test_time_arg_accepts_seconds_and_clock(text, want):
+    assert vindex.time_arg(text) == want
+
+
+@pytest.mark.parametrize("text", ["", "1:70", "1:-5", "a:10", "1:2:3:4", "1::2", "-3"])
+def test_time_arg_rejects_bad(text):
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        vindex.time_arg(text)
+
+
+# ---- N2：presence 文件不再落 general 标签（2026-10-09 spec TP-7）----
+
+def test_build_presence_does_not_persist_general_tags(tmp_path, monkeypatch):
+    fp = {"detector": "ffmpeg-scdet", "scene_threshold": 10.0, "min_shot": 0.5, "duration": 10.0}
+    frames = tmp_path / "frames" / "番_S01E01"
+    frames.mkdir(parents=True)
+    (frames / "0.jpg").write_bytes(b"x")
+    monkeypatch.setattr(vindex, "profile", lambda: {
+        "name": "wd", "repo": "r/wd", "onnx": "m.onnx", "size": 448, "char_threshold": 0.85})
+    monkeypatch.setattr(vindex.shots, "load", lambda anime, key: {
+        "meta": fp, "shots": [{"i": 0, "start": 0.0, "end": 10.0}]})
+    monkeypatch.setattr(vindex.shots, "FRAMES_DIR", tmp_path / "frames")
+    monkeypatch.setattr(vindex.shots, "frame_path", lambda anime, key, i: frames / f"{i}.jpg")
+    monkeypatch.setattr(vindex.paths, "model_revision", lambda repo: None)
+    monkeypatch.setattr(vindex, "tag", lambda files, batch, prof, progress: [
+        {"char": {"x": 0.9}, "gen": {"rain": 0.8}}])
+    assert vindex.build_presence("番", "S01E01", out_dir=tmp_path) == 1
+    rows = json.loads((tmp_path / "番_S01E01.presence.json").read_text(encoding="utf-8"))["shots"]
+    assert rows == [{"i": 0, "char": {"x": 0.9}}]

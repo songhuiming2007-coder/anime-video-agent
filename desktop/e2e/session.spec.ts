@@ -12,7 +12,7 @@ import { sessionRecords, sessionScript, stdinLines } from "../tests/fixtures/ses
 
 const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] } });
 const TURN_STARTED = { t: "turn_started", turn_id: "$turn", rid: "$rid" };
-const TURN_ENDED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1 };
+const TURN_ENDED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null };
 const STOP_POINTS = { t: "stop_points", items: [], turn_id: "$turn" };
 
 async function withSession(fn: (ctx: SessionFixture & { L: Launched }) => Promise<void>, eps: string[] = ["SESS-A"]): Promise<void> {
