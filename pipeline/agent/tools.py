@@ -92,7 +92,11 @@ READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status"}
 
 # asset 侧纯只读、免审卡的子命令（2026-10-09，D54 ③）：`vindex who` 只读在场索引与镜头表后打印，
 # 全链（load_presence / shots.load / display_names）无写调用。新增成员前必须同样核实。
-READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {"vindex": frozenset({"who"})}
+# D59（2026-10-09）：`acquire gate` 只 ffprobe / Pillow 读文件后打印判据表，全链无写调用。
+READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
+    "vindex": frozenset({"who"}),
+    "acquire": frozenset({"gate"}),
+}
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
 # Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
@@ -102,7 +106,9 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "vindex": {"captions", "embed", "who"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull"},
-    "acquire": {"fetch"},
+    # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
+    # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
+    "acquire": {"fetch", "gate", "register", "forget"},
 }
 
 # 出网敏感目录与关键词（§2.5 Y2-r19）
