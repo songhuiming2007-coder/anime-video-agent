@@ -56,6 +56,8 @@
 
 下面这些量都是**在某个条件下标定的**，条件一换就要重测。不许抄别番/别引擎的数；测不了就标「未测」，别沿用旧值冒充。
 
+**测量由 agent 跑，人只看结果拍板**（2026-10-09 D59）：表里的测量命令（`shots calibrate`、`vprobe *`、`tts probe`、`vindex status` 等）都由 agent 经 `run_pipeline` 发——只读的免卡，写抽检表 / 联系表的弹卡；agent 把密度表、抽检表交给人，人拍板取值。取定的值写进 `config/project.json` 目前仍由人改（AGENTS.md Code Freeze：`config/` 只读，例外只有读音表）；是否像读音表那样开一条「人审卡批准后由 agent 写标定值」的口子，见 D59 待人定。
+
 | 触发事件 | 要重测的量 | 配置位置 | 方法指针 |
 |---|---|---|---|
 | 开新番 | `scene_threshold`（镜头切分） | `config/project.json` 的 `visual.scene_threshold.<番>` | `_scene_threshold_note`；ADR-0003 |

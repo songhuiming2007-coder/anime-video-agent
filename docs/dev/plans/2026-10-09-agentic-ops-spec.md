@@ -102,3 +102,9 @@
 | AO-MUT-4 | 清锁不判 pid |
 | AO-MUT-5 | `--reset` 改成 `rmtree` |
 | AO-MUT-6 | `scout` 不补位 |
+
+## 施工中发现、待人定
+
+| 项 | 现状 | 选项 | 我的建议 |
+|---|---|---|---|
+| 标定值写进 `config/project.json`（`visual.scene_threshold.<番>`、`ccip_*`、`face_expand`；01.4 换条件重测与开新番时） | `shots calibrate` 打印「定下来写进 config/project.json …」，由人手改 JSON。AGENTS.md Code Freeze 规定 `config/` 只读，例外只有读音表（D51） | (a) 维持人改；(b) 仿 `corrections global` 开窄口子：`shots set-threshold <番> <值> --evidence "<标定实录>"`，弹卡，只写这几个按番分键的值并把实录追加进对应 `_note` | (b)：标定判断仍归人（人看密度表 / 抽检表拍板），agent 只负责把拍板的数和证据落盘；改的是 AGENTS.md 硬约束，必须人定 |

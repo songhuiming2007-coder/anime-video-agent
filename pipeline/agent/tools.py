@@ -84,6 +84,8 @@ PIPELINE_MODULES: set[str] = {
     "corrections",
     # D48 ②：02.8 零上下文对抗审查（一次 LLM 调用，写 02-adversarial.md）。出网 + 写盘，弹卡
     "adversarial",
+    # D59：番剧笔记的时间网格（写 data/library/timeline/），无子命令，弹卡
+    "timeline",
 }
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
@@ -92,18 +94,27 @@ READONLY_PIPELINE_MODULES: frozenset[str] = frozenset({"check_script", "status"}
 
 # asset 侧纯只读、免审卡的子命令（2026-10-09，D54 ③）：`vindex who` 只读在场索引与镜头表后打印，
 # 全链（load_presence / shots.load / display_names）无写调用。新增成员前必须同样核实。
-# D59（2026-10-09）：`acquire gate` 只 ffprobe / Pillow 读文件后打印判据表，全链无写调用。
+# D59（2026-10-09）读码核实：`acquire gate` 只 ffprobe / Pillow 读文件后打印判据表；`ingest probe/intact`
+# 只跑 ffprobe / ffmpeg -f null；`ingest verify` 抽音频进 tempfile.mkdtemp、finally 里 rmtree；
+# `vindex status/search`、`subindex search` 只读索引与本地嵌入模型后打印。全链无写调用。
+# `shots calibrate` 不在此列：带 --sheet / --long 会写联系表。
 READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
-    "vindex": frozenset({"who"}),
+    "vindex": frozenset({"who", "status", "search"}),
     "acquire": frozenset({"gate"}),
+    "ingest": frozenset({"probe", "intact", "verify"}),
+    "subindex": frozenset({"search"}),
 }
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
 # Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
+# D59（2026-10-09）：Phase 0 与换条件重测里原本要人在终端跑的子命令全部收进来（只读的进
+# READONLY_ASSET_SUBCOMMANDS 免卡，其余弹卡）。`vindex scene` 是已删除的旧通道，不放。
 ASSET_COMMANDS: dict[str, set[str]] = {
-    "ingest": {"phase0"},
-    "shots": {"build", "frames", "caption-frames"},
-    "vindex": {"captions", "embed", "who"},
+    "ingest": {"phase0", "probe", "intact", "verify", "subs", "run", "sources"},
+    "shots": {"build", "frames", "caption-frames", "calibrate", "rebuild", "gallery"},
+    "vindex": {"captions", "embed", "who", "presence", "search", "status"},
+    "subindex": {"build", "search"},
+    "vprobe": {"tagger", "presence", "scene", "captions"},
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
