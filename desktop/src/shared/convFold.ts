@@ -75,28 +75,34 @@ const countOf = (v: unknown): number | null => (typeof v === "number" && Number.
 /**
  * 上下文读数（D41 → D56）。`tokens` = 服务商响应里的 `usage.prompt_tokens`：最近一次请求模型时的输入 token，
  * 含系统提示、工具定义与全部历史，就是上下文窗口的实际占用；服务商不给时为 null，回落到 `chars`（字数）。
+ * `previous`（D64）：继续会话后、新回合跑完前，读数取自 `ready` 帧带回的上次测得值，显示时标「上次」。
  */
-export type ContextReading = { tokens: number | null; chars: number | null };
+export type ContextReading = { tokens: number | null; chars: number | null; previous: boolean };
 
-function readingOf(f: OutFrame): ContextReading | null {
-  const r = { tokens: countOf(f.prompt_tokens), chars: countOf(f.prompt_chars) };
+function readingOf(tokens: unknown, chars: unknown, previous: boolean): ContextReading | null {
+  const r = { tokens: countOf(tokens), chars: countOf(chars), previous };
   return r.tokens === null && r.chars === null ? null : r;
 }
 
-/** 「上下文 12.3k token」；没有 token 数时「上下文约 9,192 字」。 */
+/** 「上下文 12.3k token」；没有 token 数时「上下文约 9,192 字」；上次测得的值后缀「（上次）」。 */
 export function contextText(r: ContextReading): string | null {
-  if (r.tokens !== null) return `上下文 ${tokensText(r.tokens)}`;
-  if (r.chars !== null) return `上下文约 ${charsText(r.chars)}`;
+  const tail = r.previous ? "（上次）" : "";
+  if (r.tokens !== null) return `上下文 ${tokensText(r.tokens)}${tail}`;
+  if (r.chars !== null) return `上下文约 ${charsText(r.chars)}${tail}`;
   return null;
 }
 
-/** 当前会话（最后一个 `ready` 之后）最近一次 `turn_finished` 的读数；还没有回合结束过则为 null。 */
+/**
+ * 当前会话（最后一个 `ready` 之后）最近一次 `turn_finished` 的读数。还没有回合结束过时：
+ * 继续会话取 `ready` 带回的上次读数（D64，`previous`），新会话为 null，不沿用上一个会话的读数。
+ */
 export function lastContextReading(entries: readonly ConvEntry[]): ContextReading | null {
   let out: ContextReading | null = null;
   for (const e of entries) {
     if (e.k !== "frame") continue;
-    if (e.frame.t === "ready") out = null; // 新会话（含「继续上次会话」）从头算，不沿用上一个会话的读数
-    else if (e.frame.t === "turn_finished") out = readingOf(e.frame) ?? out;
+    const f = e.frame;
+    if (f.t === "ready") out = readingOf(f.resume_prompt_tokens, f.resume_prompt_chars, true);
+    else if (f.t === "turn_finished") out = readingOf(f.prompt_tokens, f.prompt_chars, false) ?? out;
   }
   return out;
 }
@@ -125,7 +131,7 @@ export function lookupsText(v: unknown): string | null {
 }
 
 function footerText(f: OutFrame): string {
-  const reading = readingOf(f);
+  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false);
   const ctx = reading === null ? null : contextText(reading);
   const lookups = lookupsText(f.lookups);
   return (

@@ -43,7 +43,7 @@ function harness(opts: { active?: boolean; canRead?: boolean; settleMs?: number 
     spawnSession: () => {
       const p = new FakeProc();
       procs.push(p);
-      queueMicrotask(() => p.feed({ t: "ready", episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [] }));
+      queueMicrotask(() => p.feed({ t: "ready", episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null }));
       return p;
     },
     resolveKey: async () => ({ name: "K", value: "V" }),

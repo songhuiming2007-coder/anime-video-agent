@@ -348,3 +348,37 @@ def test_ts9_status_json_does_not_read_the_session_log(ep: Path) -> None:
     assert before.strip().startswith(b"{"), f"输出不是 JSON（这条断言会空转）：{before[:120]!r}"
     log.unlink()
     assert status_json() == before, "status --json 的输出不许因为会话日志的有无而改变（MUT-26）"
+
+
+# ---------------------------------------------------------------------------
+# D64：恢复时带回的上下文读数
+# ---------------------------------------------------------------------------
+
+
+def _end(turn: str, tokens, chars) -> dict:
+    return {"k": "turn_end", "turn_id": turn, "stopped": "done", "prompt_tokens": tokens, "prompt_chars": chars}
+
+
+@pytest.mark.parametrize(("ends", "want"), [
+    ([], (None, None)),
+    ([_end("t1", 100, 50), _end("t2", 900, 400)], (900, 400)),          # 取最后一次
+    ([_end("t1", 900, 400), _end("t2", None, 0)], (900, 400)),          # 没测到的回合不覆盖
+    ([_end("t1", None, 400)], (None, 400)),                             # 服务商不给 token：只带字数
+    ([_end("t1", 0, 400)], (0, 400)),                                    # 0 token 是测出来的值
+    ([_end("t1", True, 400)], (None, 400)),                              # bool 不是计数
+    ([_end("t1", -1, -5)], (None, None)),
+])
+def test_d64_last_context_reading(ep: Path, ends, want) -> None:
+    _write(ep, [_start("sid-a"), _user("t1", "甲"), _assistant("t1", "乙"), *ends])
+    loaded = slog.load_session(slog.read_log(ep), "sid-a")
+    assert slog.last_context_reading(loaded) == want
+
+
+def test_d64_last_context_reading_skips_rolled_back_turn(ep: Path) -> None:
+    """回滚回合的消息不在重建历史里，它的读数偏大，不能带回。"""
+    _write(ep, [
+        _start("sid-a"), _user("t1", "甲"), _assistant("t1", "乙"), _end("t1", 900, 400),
+        _user("t2", "丙"), {"k": "turn_rollback", "turn_id": "t2"}, _end("t2", 5000, 2000),
+    ])
+    loaded = slog.load_session(slog.read_log(ep), "sid-a")
+    assert slog.last_context_reading(loaded) == (900, 400)

@@ -663,6 +663,9 @@ def main(argv: list[str] | None = None) -> int:
         "history_count": len(resume_state["messages"]) if resume_state else 0,
         "session_bytes": len(lease.read()) if lease is not None else 0,
         "other_sessions": others,
+        # D64：继续会话时带回上次测得的上下文读数，新回合跑完前会话头标「上次」显示；新会话两项为 None
+        "resume_prompt_tokens": resume_state["last_reading"][0] if resume_state else None,
+        "resume_prompt_chars": resume_state["last_reading"][1] if resume_state else None,
     })
     if not freeze_ok:
         writer.send({"t": "notice", "level": "warn", "code": "code_freeze",

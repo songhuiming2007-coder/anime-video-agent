@@ -109,6 +109,7 @@ class FakeEndpoint:
         self.requests: list[dict] = []
         self.replies: list[dict] = []
         self.bad_pairings = 0
+        self.usage: dict | None = None  # D64：设了就随响应带 usage（真实服务商的 prompt_tokens 形态）
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -128,7 +129,10 @@ class FakeEndpoint:
                 else:
                     index = min(len(endpoint.requests) - 1, max(0, len(endpoint.replies) - 1))
                     message = endpoint.replies[index] if endpoint.replies else {"role": "assistant", "content": "好"}
-                    payload = json.dumps({"choices": [{"message": message}]}).encode()
+                    reply: dict = {"choices": [{"message": message}]}
+                    if endpoint.usage is not None:
+                        reply["usage"] = endpoint.usage
+                    payload = json.dumps(reply).encode()
                     self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -890,6 +894,7 @@ def test_tp12_tp15_stop_points_frames(world, endpoint, tmp_path) -> None:
         assert set(ready) == {
             "v", "seq", "sid", "t", "episode", "scope", "continue_status", "llm", "degrade_reason",
             "code_freeze_ok", "history_count", "session_bytes", "other_sessions",
+            "resume_prompt_tokens", "resume_prompt_chars",
         }
         first = [f for f in proto_proc.frames if f.get("t") == "stop_points" and not f.get("turn_id")][0]
         assert len(first["items"]) == 1, "世界里必须有挂起停机点，否则下面的键集合断言是空转"
@@ -945,6 +950,32 @@ def test_tp8_sigkill_then_continue_resumes_with_history(world, endpoint, tmp_pat
     finally:
         second.proc.kill()
     assert endpoint.bad_pairings == 0, "修复后的历史必须过配对校验（不是 400）"
+
+
+def test_d64_continue_carries_last_context_reading(world, endpoint, tmp_path) -> None:
+    """D64：继续会话的 ready 帧带回上次 turn_end 测得的读数；新会话两项为 None。"""
+    root, _episode = world
+    endpoint.usage = {"prompt_tokens": 4321, "completion_tokens": 5, "total_tokens": 4326}
+    first = Protocol(root, endpoint, tmp=tmp_path / "a")
+    try:
+        ready = first.wait_for_ready()
+        assert ready["resume_prompt_tokens"] is None and ready["resume_prompt_chars"] is None
+        first.send({"t": "user_message", "text": "在吗"})
+        finished = first.wait_for("turn_finished", timeout=60)
+        assert finished["prompt_tokens"] == 4321
+        first.shutdown()
+    finally:
+        first.proc.kill()
+
+    second = Protocol(root, endpoint, extra=["--continue"], tmp=tmp_path / "b")
+    try:
+        ready = second.wait_for_ready()
+        assert ready["continue_status"] == "resumed"
+        assert ready["resume_prompt_tokens"] == 4321
+        assert ready["resume_prompt_chars"] == finished["prompt_chars"] > 0
+        second.shutdown()
+    finally:
+        second.proc.kill()
 
 
 def test_tp8b_continue_replays_tool_records(world, endpoint, tmp_path) -> None:
