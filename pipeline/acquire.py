@@ -6,8 +6,13 @@
 
     python -m pipeline.acquire gate <文件或目录>              # 质量门禁 → 逐项判据
     python -m pipeline.acquire fetch <候选号> [--dry-run]     # 从 candidates.json 抓 → incoming/
-    python -m pipeline.acquire register <文件> --pool EGOIST --as SP19
-        → 复用 `ingest.register`（登记前强制过 intact）+ 落到 sources.json
+    python -m pipeline.acquire register <文件> --pool EGOIST [--as SP19] [--waive 理由]
+        → 复用 `ingest.register`（登记前强制过 intact）+ 落到 sources.json；
+          不给 --as 自动取池里下一个号，图片自动转 6 s 微动视频（D59）
+    python -m pipeline.acquire register <文件> --to-patch <期目录>   # 挪进本期 patch_assets/
+    python -m pipeline.acquire forget <候选号>                       # 台账移走一条，好重抓
+
+这些命令由 agent 经 `run_pipeline` 发：gate 只读免卡，其余弹卡，人只批卡不敲命令（D59）。
 
 自动化的是**抓取与初筛**，入库的最后一公里仍是显式动作（对齐「05 显式 approve」的
 人机边界哲学）。`fetch` 只认人/agent 判断过并写进 `candidates.json` 的 URL，
@@ -255,6 +260,55 @@ def register_key(text: str) -> int:
     return int(m.group(1))
 
 
+_SP_PREFIX = re.compile(r"^SP(\d{2})(?!\d)")
+
+
+def next_key(registered: set[str], raw_names: list[str]) -> int:
+    """池里下一个空号：已登记集键与 `raw/<池>/` 里文件名前缀的最大号 +1（D59）。
+
+    两处都看：只看 sources.json 会撞上「文件挪进来了、登记失败」留下的同号文件。
+    空池从 1 起；到 99 就报错——集键写死两位（ADR-0010 决策二），不自动扩成三位。
+    """
+    nums = [int(m.group(1)) for k in registered if (m := re.fullmatch(r"SP(\d{2})", k))]
+    nums += [int(m.group(1)) for n in raw_names if (m := _SP_PREFIX.match(n))]
+    nxt = max(nums, default=0) + 1
+    if nxt > 99:
+        raise SystemExit("FAIL 池里已到 SP99，集键只有两位（ADR-0010 决策二）——换一个池名或人定怎么扩")
+    return nxt
+
+
+#: 扫图转 6 s 微动视频（`01-assets-video.md` 铁律三：1920×1080 / yuv420p / 帧率 / 无音轨，四样锁死，
+#: 否则 concat 时 `parameters do not match` 整片崩）。帧率与成片同源（render.FPS 的同一个配置键）。
+STILL_SECONDS = 6.0
+STILL_FPS = paths.conf("video.fps", "24000/1001")
+
+
+def still_argv(src: Path, dest: Path) -> list[str]:
+    """图片 → 6 s 缓推视频的 ffmpeg 命令（纯函数，测试与 `--dry-run` 看的就是它）。
+
+    放大铺满再居中裁（不留黑边）+ 缓推 1.0→1.15；`-n` 不覆盖已有文件。
+    单张输入不加 `-loop`：zoompan 对一帧输入恰好产出 `d` 帧，再用 `-frames:v` 钉死帧数。
+    """
+    num, _, den = STILL_FPS.partition("/")
+    frames = round(STILL_SECONDS * int(num) / int(den or 1))
+    vf = ("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
+          f"zoompan=z='min(zoom+0.0015,1.15)':d={frames}:x='iw/2-(iw/zoom/2)':"
+          f"y='ih/2-(ih/zoom/2)':s=1920x1080:fps={STILL_FPS}")
+    return ["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(src),
+            "-vf", vf, "-frames:v", str(frames), "-r", STILL_FPS,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(dest)]
+
+
+def still_to_clip(src: Path, dest: Path) -> Path:
+    """执行 `still_argv`；失败把 ffmpeg 原文抛出（S9），不留半截文件。"""
+    proc = subprocess.run(still_argv(src, dest), capture_output=True, text=True)
+    if proc.returncode != 0:
+        dest.unlink(missing_ok=True)
+        raise SystemExit(f"FAIL 图片转视频失败（ffmpeg 退出码 {proc.returncode}）：{src.name}\n"
+                         f"     {proc.stderr.strip()[:300]}")
+    return dest
+
+
 # ---------- 执行层：ffprobe ----------
 
 
@@ -376,7 +430,7 @@ def cmd_fetch(no: int, *, dry_run: bool = False) -> int:
     for v in dvs:
         print("  " + v.line(width=0))
     if overall(dvs) == "FAIL":
-        raise SystemExit("FAIL 查重没过，没抓。确认要重抓就先清台账/改文件名（人显式动作）")
+        raise SystemExit("FAIL 查重没过，没抓。确认要重抓：acquire forget <候选号>（弹卡）把旧记录移走再抓")
 
     # 只有页面那一支才找 yt-dlp：直链走 curl，本机没装 yt-dlp 不该连累它（N35）
     yt_dlp = yt_dlp_argv() if pick_fetcher(c["url"]) == "yt-dlp" else None
@@ -396,38 +450,64 @@ def cmd_fetch(no: int, *, dry_run: bool = False) -> int:
                     "as": None, "why": c["why"],
                     "expected_dur": c.get("expected_dur")})
     ledger_save(entries)
-    print(f"  → 落盘 {rel}；台账 +1（下一步：acquire gate {rel}）")
+    print(f"  → 落盘 {rel}；台账 +1（下一步：acquire gate {rel}，免卡）")
     return 0
 
 
-def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int:
+def _gate_failed(vs: list[Verdict], *, waive: str | None, force: bool) -> None:
+    """门禁 FAIL 时的出口：有豁免理由就放行并把理由打进输出，否则拒。"""
+    if overall(vs) != "FAIL":
+        return
+    if waive:
+        print(f"  [门禁豁免] 理由：{waive}")
+        return
+    if force:  # 终端旧口径；agent 路径上 run_pipeline 拒收 --force，只能走 --waive
+        print("  [门禁豁免] --force（终端）")
+        return
+    raise SystemExit("FAIL 门禁没过，没登记。先修素材；人同意收就带 --waive \"理由\" 重跑（卡上会标 [门禁豁免]）")
+
+
+def cmd_register(file: Path, *, pool: str, key: int | None = None, force: bool = False,
+                 waive: str | None = None) -> int:
     """登记进 sources.json。**复用 `ingest.register`**（登记前强制过 intact），
-    另做三件它不管的事：集键冲突、门禁复核、落到池的 raw 目录。
+    另做几件它不管的事：集键冲突、自动取号、门禁复核、图片转码、落到池的 raw 目录。
 
     为什么要挪文件：池素材全在 `data/library/raw/<池>/`，**集键与文件名同号**（可加语义
     后缀，如 SP41-Aimer_ninelie_MV.mp4）是这套目录能看懂的约定（E1 产物即状态）。
     放进来的东西留在 incoming/ 会让池分叉两处。
     """
-    sources = paths.DATA / "library" / "sources.json"
+    from . import ingest
+
+    sources = ingest.SOURCES
     db = json.loads(sources.read_text(encoding="utf-8")) if sources.exists() else {}
     have = db.get(pool, {})
+    raw_dir = paths.DATA / "library" / "raw" / pool
+    if key is None:
+        key = next_key(set(have), sorted(f.name for f in raw_dir.iterdir()) if raw_dir.is_dir() else [])
+        print(f"  自动取号：{pool}/SP{key:02d}（池里最后一个号 +1）")
     k = f"SP{key:02d}"
     if k in have:
         raise SystemExit(f"FAIL {pool}/{k} 已登记（{have[k]['path']}）。"
                          f"换一个集键，或先想清楚要不要覆盖——覆盖是人的显式决定")
 
-    if kind_of(file.name) != "video":
-        raise SystemExit(
-            f"FAIL {file.name} 不是视频，register 只收视频（渲染要 mp4）。\n"
-            f"     扫图先按 01-assets-video.md 铁律三转 6s 微动再登记：\n"
-            f"     ffmpeg -loop 1 -i {file} -c:v libx264 -t 6.0 -vf "
-            f"\"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
-            f"zoompan=z='min(zoom+0.0015,1.15)':d=144:x='iw/2-(iw/zoom/2)':"
-            f"y='ih/2-(ih/zoom/2)':s=1920x1080:fps=23.976\" "
-            f"-pix_fmt yuv420p -r 23.976 -an data/library/raw/{pool}/{k}.mp4")
-
     led = next((e for e in ledger_load() if Path(e.get("file", "")).name == file.name), None)
-    if not force:
+    original = file
+    kind = kind_of(file.name)
+    if kind == "scan":
+        # 扫图：先按图片判据过门禁，再转 6 s 微动视频（register 只收视频，渲染要 mp4）。原图留在原处
+        p = probe_image(file)
+        vs = check_image(decoded=p["decoded"], decode_detail=p["detail"],
+                         width=p["width"], height=p["height"])
+        print(TABLE_HEAD)
+        for v in vs:
+            print("  " + v.line())
+        _gate_failed(vs, waive=waive, force=force)
+        clip = file.with_name(f"{file.stem}-still.mp4")
+        if clip.exists():
+            raise SystemExit(f"FAIL 转码目标已存在 {clip}——先人看一眼是不是上次转过")
+        file = still_to_clip(file, clip)
+        print(f"  图片转 {STILL_SECONDS:g}s 微动视频：{original.name} → {file.name}（原图保留）")
+    elif kind == "video":
         p = probe_media(file)
         if "error" in p:
             raise SystemExit(f"FAIL ffprobe 打不开：{p['error']}")
@@ -440,11 +520,12 @@ def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int
         print(TABLE_HEAD)
         for v in vs:
             print("  " + v.line())
-        if overall(vs) == "FAIL":
-            raise SystemExit("FAIL 门禁没过，没登记。先修素材；确实要收就 --force 并写理由给人看")
+        _gate_failed(vs, waive=waive, force=force)
+    else:
+        raise SystemExit(f"FAIL 认不出素材类型（后缀 {file.suffix}），register 只收视频或图片")
 
-    slug = slugify((led or {}).get("title") or file.stem)
-    dest = paths.DATA / "library" / "raw" / pool / f"{k}-{slug}{file.suffix.lower()}"
+    slug = slugify((led or {}).get("title") or original.stem)
+    dest = raw_dir / f"{k}-{slug}{file.suffix.lower()}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if file.resolve() != dest.resolve():
         if dest.exists():
@@ -454,16 +535,88 @@ def cmd_register(file: Path, *, pool: str, key: int, force: bool = False) -> int
     # 登记表里存**相对仓库根**的路径（E4）；ingest 存的就是传进去的那个字符串
     if Path.cwd() != paths.ROOT:
         os.chdir(paths.ROOT)
-    entry = ingest_register(dest.relative_to(paths.ROOT), anime=pool, season=1,
-                            episode=0, sp=key, title=(led or {}).get("title"))
+    rel = dest.relative_to(paths.ROOT) if dest.is_relative_to(paths.ROOT) else dest
+    entry = ingest_register(rel, anime=pool, season=1, episode=0, sp=key,
+                            title=(led or {}).get("title"), path=sources)
     print(f"  已登记 {pool}/{k}：{entry['width']}×{entry['height']} "
           f"{entry['duration']:.1f}s fps={entry['fps']}")
     entries = ledger_load()
     for e in entries:
-        if Path(e.get("file", "")).name == file.name:
+        if Path(e.get("file", "")).name == original.name:
             e["file"], e["as"] = str(dest), k
+            if file is not original:
+                e["still_from"] = original.name
+            if waive:
+                e["waived"] = waive
     ledger_save(entries)
-    print(f"  下一步：shots calibrate {dest} → 定阈值 → shots build / gallery")
+    print(f"  下一步：shots calibrate {dest} → 人定阈值 → shots build / gallery")
+    return 0
+
+
+def cmd_to_patch(file: Path, episode: Path) -> int:
+    """把 incoming/ 里抓到的文件挪进某期的 `patch_assets/`（期内补料，不进 sources.json）。
+
+    只收 incoming/ 里的文件：池里已登记的素材挪走会让 sources.json 指向空路径。
+    图片照收——`ingest_patch` 自己会转码（D59）。
+    """
+    ep = episode.resolve()
+    if ep.parent != (paths.DATA / "episodes").resolve() or not ep.is_dir():
+        raise SystemExit(f"FAIL {episode} 不是 data/episodes/ 下的期目录")
+    if not file.is_file():
+        raise SystemExit(f"FAIL 找不到文件 {file}")
+    if file.resolve().parent != incoming().resolve():
+        raise SystemExit(f"FAIL 只挪 data/library/incoming/ 里抓到的文件，收到 {file}")
+    if kind_of(file.name) not in ("video", "scan"):
+        raise SystemExit(f"FAIL 认不出素材类型（后缀 {file.suffix}），补丁池只收视频或图片")
+    dest = ep / "patch_assets" / file.name
+    if dest.exists():
+        raise SystemExit(f"FAIL {dest} 已存在——同名不同文件，先人看一眼再决定")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(file), str(dest))
+    entries = ledger_load()
+    for e in entries:
+        if Path(e.get("file", "")).name == file.name:
+            e["file"], e["to_patch"] = str(dest), ep.name
+    ledger_save(entries)
+    print(f"  挪入补丁池素材：{file.name} → {ep.name}/patch_assets/")
+    print("  下一步：ingest_patch（本期补丁池入库）")
+    return 0
+
+
+def cmd_forget(no: int) -> int:
+    """从抓取台账移走候选 #no 的记录，好让同一条重抓（`fetch` 按台账与文件名查重）。
+
+    不删任何东西：记录追加进 `incoming/forgotten.json`，没登记的下载文件挪进
+    `incoming/attic/<时间>/`。已登记进池或已挪进补丁池的拒——那份文件还在用。
+    """
+    import datetime
+
+    entries = ledger_load()
+    hits = [e for e in entries if e.get("candidate") == no]
+    if not hits:
+        raise SystemExit(f"FAIL 台账里没有候选 #{no} 的抓取记录")
+    used = [e for e in hits if e.get("as") or e.get("to_patch")]
+    if used:
+        e = used[0]
+        raise SystemExit(f"FAIL 候选 #{no} 已{'登记为 ' + e['as'] if e.get('as') else '挪进 ' + e['to_patch'] + ' 的补丁池'}，"
+                         f"文件还在用；重抓前人先决定怎么处理那一份")
+    inc = incoming()
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = inc / "forgotten.json"
+    log = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else []
+    for e in hits:
+        f = Path(e.get("file", ""))
+        moved = None
+        if f.is_file() and f.resolve().parent == inc.resolve():
+            attic = inc / "attic" / stamp
+            attic.mkdir(parents=True, exist_ok=True)
+            moved = str(attic / f.name)
+            shutil.move(str(f), moved)
+            print(f"  下载文件挪走：{f.name} → attic/{stamp}/")
+        log.append({**e, "forgotten_at": stamp, "moved_to": moved})
+    paths.atomic_write(log_path, json.dumps(log, ensure_ascii=False, indent=2))
+    ledger_save([e for e in entries if e.get("candidate") != no])
+    print(f"  台账移走候选 #{no}（{len(hits)} 条，留痕 incoming/forgotten.json）；可以重新走抓取卡")
     return 0
 
 
@@ -496,22 +649,36 @@ def main() -> None:
     f.add_argument("no", type=int, help="候选号（1 起，candidates.json 里的顺序）")
     f.add_argument("--dry-run", action="store_true", help="只打印将执行的命令")
 
-    r = sub.add_parser("register", help="登记进 sources.json（走 ingest 既有登记）")
+    r = sub.add_parser("register", help="登记进 sources.json（走 ingest 既有登记）；或 --to-patch 挪进某期补丁池")
     r.add_argument("file", type=Path)
     # 池名不给默认值：它是登记写操作的目标（R6），写死单企划名会让忘了带 --pool
     # 的素材静默进错池子
-    r.add_argument("--pool", required=True, help="素材池名（挂企划名下）")
-    r.add_argument("--as", dest="key", required=True, metavar="SPxx")
-    r.add_argument("--force", action="store_true", help="门禁不过也登记（会写进交回材料）")
+    dest = r.add_mutually_exclusive_group(required=True)
+    dest.add_argument("--pool", help="素材池名（挂企划名下）")
+    dest.add_argument("--to-patch", type=Path, metavar="期目录",
+                      help="不登记，挪进该期 patch_assets/（期内补料，接 ingest_patch）")
+    r.add_argument("--as", dest="key", metavar="SPxx", help="不给就取池里下一个号")
+    r.add_argument("--waive", metavar="理由", help="门禁不过也登记：人同意后写明理由（卡上标 [门禁豁免]）")
+    r.add_argument("--force", action="store_true", help="终端旧口径，同 --waive 但不留理由；agent 路径拒收")
+
+    fg = sub.add_parser("forget", help="台账移走一条抓取记录，好重抓（不删文件，挪进 attic）")
+    fg.add_argument("no", type=int, help="候选号")
 
     a = ap.parse_args()
     if a.cmd == "gate":
         raise SystemExit(cmd_gate(a.target, expected_dur=a.expected_dur))
     if a.cmd == "fetch":
         raise SystemExit(cmd_fetch(a.no, dry_run=a.dry_run))
+    if a.cmd == "forget":
+        raise SystemExit(cmd_forget(a.no))
     if a.cmd == "register":
-        raise SystemExit(cmd_register(a.file, pool=a.pool, key=register_key(a.key),
-                                      force=a.force))
+        if a.to_patch is not None:
+            if a.key or a.waive or a.force:
+                raise SystemExit("FAIL --to-patch 只挪文件，不接 --as / --waive / --force")
+            raise SystemExit(cmd_to_patch(a.file, a.to_patch))
+        raise SystemExit(cmd_register(a.file, pool=a.pool,
+                                      key=register_key(a.key) if a.key else None,
+                                      force=a.force, waive=a.waive))
 
 
 if __name__ == "__main__":

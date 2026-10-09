@@ -40,29 +40,33 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 写完之后自查一遍：**每条 `why` 是不是都在回答「现有池子里缺什么、这条怎么补上」？**
 答不上来的那条要么删掉，要么说明你还没查到它值得下的理由。
 
-## 二、衔接顺序
+## 二、衔接顺序（全程你跑，人只批卡）
 
-```bash
-# 1. 检索（你）→ 写 candidates.json，然后交人过目
-# 2. 人逐条批准后，一条一条抓（不要批量抢跑）
-python -m pipeline.acquire fetch 3 --dry-run     # 先看要执行什么
-python -m pipeline.acquire fetch 3               # 抓 → data/library/incoming/
-python -m pipeline.acquire gate data/library/incoming/xxx.mp4   # 门禁四项
-python -m pipeline.acquire register data/library/incoming/xxx.mp4 --pool EGOIST --as SP19
-# 3. 入库后才有素材意义：切镜头 → 标定阈值 → 出画廊
-python -m pipeline.shots calibrate data/library/raw/EGOIST/SP19.mp4   # 看密度表，人拍板阈值
-python -m pipeline.shots build EGOIST SP19 && python -m pipeline.shots gallery EGOIST SP19
-```
+**人不在终端敲任何命令**（2026-10-09 D59）。下面每一步都是你经 `run_pipeline` 发的命令：只读的免卡，
+写盘的弹卡，人在卡上批或驳。
 
-- `register` **只收视频**（渲染要 mp4）。扫图先转 6s 微动再登记——命令在 `acquire register` 的报错里
-  直接给出（`01-assets-video.md` 铁律三：1920×1080 / yuv420p / 23.976fps / `-an`，四样锁死，
-  否则 concat 时报 `parameters do not match` 整片崩）。
-- `register` 会把文件挪进 `data/library/raw/<池>/SPxx.mp4` 并**强制过完整性校验**（`ingest.intact`）：
+1. **检索 → 提议**：写好候选，调 `acquire_propose`（一张卡审整批）。批准后内核逐条弹「素材抓取」卡，
+   批一条抓一条（`acquire fetch <号>`，不许批量抢跑）。抓大文件（>2GB）在提议的 `why` 里先写明体积。
+2. **门禁（免卡）**：抓完立刻跑 `acquire gate <文件>`，把判据表原样给人看。
+3. **登记（弹卡）**：gate 没有 FAIL 才提议 `acquire register <文件> --pool <池>`。
+   - 不给 `--as`：自动取池里最后一个号 +1，卡上的命令里会写出算好的号；要指定就写 `--as SPnn`。
+   - **扫图直接登记**：register 遇到图片自动按 `01-assets-video.md` 铁律三转 6 s 微动视频
+     （1920×1080 / yuv420p / 23.976 fps / `-an`，四样锁死），原图留在 `incoming/`。
+   - **期内补料**：`acquire register <文件> --to-patch <期目录>` 把文件挪进本期 `patch_assets/`
+     （不进 `sources.json`），接着跑 `ingest_patch`（见 runbook 04.5）。
+   - gate FAIL 但人坚持要收：`--waive "<理由>"`（卡上标 `[门禁豁免]`，理由写进登记输出）。不许自己决定豁免。
+4. **入库后切镜头**：`shots calibrate <文件>`（弹卡）→ 把密度表给人，人拍板阈值 →
+   `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`（都弹卡）。
+5. **要重抓**：`acquire forget <候选号>`（弹卡）把那条从抓取台账 `incoming/fetched.json` 移走（留痕进
+   `incoming/forgotten.json`，没登记的下载文件挪进 `incoming/attic/`，不删），再走抓取卡。已登记的拒。
+
+规矩不变：
+
+- `register` **只收视频**（渲染要 mp4）——图片由它自己转码，你不用手写 ffmpeg。
+- `register` 把文件挪进 `data/library/raw/<池>/SPxx-<名>.mp4` 并**强制过完整性校验**（`ingest.intact`）：
   集键与文件名同号，池里十几条素材靠这个约定才看得懂。
-- 新集键从池的最后一个号往后接。EGOIST 池现在到 **SP18**，新素材从 **SP19** 起。
-- **不要重复跑 `fetch`**：URL 抓过、文件名撞了，`fetch` 会拒（查重台账在
-  `incoming/fetched.json`）。要重抓先在台账里删掉那条记录——那是人的显式动作。
-- 抓大文件（>2GB）**先报体积等人确认**。
+- **不要重复 `fetch` 同一条**：URL 抓过、文件名撞了，`fetch` 会拒。
+- 底层排查参考：上面每条命令都等价于 `python -m pipeline.<模块> …`，人要复现问题时才用。
 
 ## 三、渠道清单（按素材类型）
 
@@ -80,55 +84,23 @@ python -m pipeline.shots build EGOIST SP19 && python -m pipeline.shots gallery E
 ## 四、反爬升级链
 
 **不许静默降级。** 403 / Cloudflare 是常态，抓不到就升级工具，不许退回「水百科凑一段」交差
-（STANDARD §五）。
+（STANDARD §五）。ava 里的三级对应三个工具（ADR-0021 §1）：
 
-1. **静态抓取**（`acquire fetch` 的 curl / yt-dlp）：覆盖九成。
-2. **`agent_crawl`（无头静默，优先）**：Crawl4AI + Camoufox，0 弹窗不抢焦点、不碰你的浏览器。
-   内置 `fit_markdown` 过滤广告，Token 省 85–90%；严格反爬 / Cloudflare 盾时开 `stealth`。
-   **长文考据与图片直链嗅探首选它。**
-3. **`agent_browser` + 独立持久化 profile**：需要登录态（B站收藏夹、微博、Discord）时才上：
-   ```bash
-   # 独立 profile，拉起可见窗口，由人扫码/登录一次，后续会话复用
-   --headed --profile ~/.config/pi-browser-profile
-   ```
-   ⚠️ **严禁 `--profile Default`**：主力 Chrome 运行时存在 SingletonLock 与 macOS Keychain
-   加密阻断，会抢焦点、会把你的登录态写坏。（`STANDARD.md` §五 里「`agent_browser` 带
-   `--profile Default`」那句是 2026-09-03 的旧写法，已被全局 `AGENTS.md` 的红线推翻。）
+1. **`web_fetch`（静态抓取）**：覆盖九成；看返回的 `links` 做站内导航，不猜 URL。
+2. **`crawl`（无头静默，优先）**：被盾或 `links` 截断时升级；严格反爬开 `stealth`。
+   长文考据与图片直链嗅探首选它。
+3. **`browser`（登录态，逐调用过卡）**：需要登录态（B站收藏夹、微博、Discord）时才上；profile 只来自
+   配置（`web.json` / `web.local.json` 的 `browser.profile_dir`，必须在 `data/` 之下），**永不接主力 Chrome 的 Default 配置**
+   （SingletonLock 与 Keychain 阻断，会抢焦点、写坏登录态）。
+
+每升一级在 `reason` 里写明下一级为何不够。下载本身仍走 `acquire fetch`（curl / yt-dlp），不是这三个工具。
 
 **反爬失败的正确结局是「停下来说抓不到」**，不是换一个质量更低的源顶上。
 
-## 五、EGOIST 首期应用笔记
+## 五、各池的应用笔记
 
-### 池子现状（2026-09-11，共 18 条）
+池子现状与缺口清单是**一时一池**的数据，不是规程，放在各自的计划文件里：
 
-| 集键 | 是什么 | 时长 |
-|---|---|---|
-| SP01–SP03 | 官方 MV《名前のない怪物》《当事者》《咲かせや咲かせ》 | 6/4/3 分钟 |
-| SP04 | 2020.08.09「LIVE on www 2020」线上 Live | 7.5 分钟 |
-| SP05 | 2023.10.09 横滨终场（**精华版**） | 19 分钟 |
-| SP06–SP17 | 6s 微动物证（选秀公告、reche 出道视觉图、活动终了公告、三张专辑原画等） | 6s×12 |
-| SP18 | 一条 2 小时 720p 长片（**还没切镜头表**） | 122 分钟 |
-
-**素材总量是 v1 成片的死因之一**：18 条里 12 条是 6 秒微动，真正能动用的连续画面只有
-SP04/SP05 两段 Live + 三条 MV。
-
-### 缺口清单（`01-assets-video.md` 已明确标「缺」的）
-
-| 缺口 | 为什么关键 | 检索起点 |
-|---|---|---|
-| **2023 横滨终场 Live 全场** | 现有 SP05 是 19 分钟精华版，缺「深鞠躬→碎光消散→观众席亮灯」的完整过程；三部曲终局的最高潮 | 「EGOIST Resonant Indigo Echoes of Everlasting」「EGOIST 横滨 1009 全场」「EGOIST LIVE 2023 パシフィコ横浜」；Nyaa 搜演唱会碟 rip |
-| **动捕幕后 / making-of** | 「台前完美 3D 全息 vs 台后 20 岁女孩戴反光球汗流浃背」是全片最震撼的对比，**现有 18 条里一张幕后画面都没有** | 官方 YouTube「EGOIST メイキング」「EGOIST ムービー」；2015–2017 全息巡演的纪录片特典；B站搜「EGOIST 幕后」 |
-| **ryo / chelly / reche 访谈** | 隐线的直接证词（选秀细节、皮套下的处境、2021 独立） | 「ryo supercell インタビュー EGOIST」「chelly インタビュー」「reche インタビュー 2021」；音乐ナタリー / リアルサウンド / CINRA 的文字访谈页 |
-| **场刊 / 演唱会小册子扫图** | 排版的实物物证（与 6s 微动物证同类，但清晰的原图才有排版价值） | 「EGOIST 場刊 スキャン」「EGOIST パンフレット」「EGOIST 会場限定」；煤炉/雅虎拍卖的商品图（**原图**） |
-| 门票票根 / 场馆外排队实录 | D 类物证里唯一还空着的一条（`01-assets-video.md` D 类第 7 条） | 微博/B站终场 repo、推特 #EGOIST 标签的当日实拍 |
-
-### 顺手能补的小件
-
-- **《Departures》《The Everlasting Guilty Crown》的 NCOP/NCED**：BDRip 特典里有，目前只有 CD 原画扫图，没有纯净动画画面。
-- **伊藤计划三部曲 / Fate / 甲铁城**的 OP/ED 视频：三期分别要用，池子里现在一条都没有。
-
-### 别做的事
-
-- **别下「EGOIST 全曲合集」「12 年合集」这类大包**：几十 G 里能用的往往只有几分钟，带宽和时间都贵。
-- **别用带电视台角标（右上角）的广播录像**当 MV/试听段素材——铁律四要求纯净画面。
-- **别把「已经入库的」当候选**：SP01–SP18 的清单在上面，先看一遍再检索。
+- EGOIST：[`docs/dev/plans/archive/2026-09-11-egoist-pool-notes.md`](../../docs/dev/plans/archive/2026-09-11-egoist-pool-notes.md)
+  （2026-09-11 快照：SP01–SP18、缺口清单、别做的事）。检索前先用 `vindex status <池>` 和
+  `sources.json` 核对池子现在到几号，不要信快照里的号。

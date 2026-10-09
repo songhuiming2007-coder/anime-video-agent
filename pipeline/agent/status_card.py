@@ -157,6 +157,10 @@ def build_idea_card() -> str:
 
 
 
+# D59：会写 data/library/ 的 asset 侧模块（只读子命令在弹卡前已免卡，到这里的都是写）。
+LIBRARY_WRITE_MODULES = frozenset({"acquire", "ingest", "shots", "vindex", "subindex", "faces", "vprobe", "timeline"})
+
+
 def _matches_flag_prefix(tokens: list[str], full_flag: str) -> bool:
     """匹配完整旗标或其 argparse 缩写前缀（如 --app 匹配 --approve）。"""
     for t in tokens:
@@ -365,6 +369,13 @@ def render_approval_card(
     if _matches_flag_prefix(all_tokens, "--confirm-patch"):
         danger_tags.append("[跳过人工闸] 补丁段二次确认将被跳过")
 
+    # D59：素材登记的门禁豁免（`acquire register --waive 理由`，含 argparse 前缀缩写与 `=` 写法）
+    module = next((tok.removeprefix("pipeline.") for tok in argv_list if tok.startswith("pipeline.")), None)
+    if module == "acquire" and any(
+        tok.startswith("--w") and "--waive".startswith(tok.split("=", 1)[0]) for tok in all_tokens
+    ):
+        danger_tags.append("[门禁豁免] 素材门禁没过，按命令里的理由照样登记")
+
     danger_str = " ".join(danger_tags) if danger_tags else "无"
 
     # 解封物判定（🔵 终审：review --approve 产出 04-clips.approved.json，非「只读产物」）
@@ -386,6 +397,10 @@ def render_approval_card(
         nature = "本地成片渲染 | 预计耗时较长（分钟级）"
     elif is_review_approve:
         nature = "产生解封物（推进工序，不可回退）"
+    elif module == "acquire" and _matches_flag_prefix(all_tokens, "--to-patch"):
+        nature = "把 incoming/ 里的文件挪进本期 patch_assets/（期内补料）"
+    elif module in LIBRARY_WRITE_MODULES:
+        nature = "写素材库 data/library/（所有期共用）"
     else:
         nature = "本地只读产物生成 | 预计分钟级"
 
