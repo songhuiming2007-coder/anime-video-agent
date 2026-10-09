@@ -35,7 +35,7 @@
 
 - **生产期代码写保护（Code Freeze，严禁不声不响改代码）**：
   在进行做视频（写稿、配音、排片、渲染、封面等）任务期间，`pipeline/`、`config/`、`tests/` 下的代码与配置视为**绝对只读（Read-Only）**。
-  **唯一例外（2026-10-08，D51）**：`config/voice.json` 的 `readings` / `pinyin_injections` 两张读音表，可经 `python -m pipeline.corrections global` 在人审卡批准后逐条新增、覆盖或删除同键；该文件其余字段与 `config/` 其他文件照旧只读。
+  **唯一例外（2026-10-08，D51）**：`config/voice.json` 的 `readings` / `pinyin_injections` 两张读音表，可经 `python -m pipeline.corrections global` 在人审卡批准后逐条新增、覆盖或删除同键，同一命令顺带写 `readings_provenance`（每条的来历：表、日期、期、番、引擎、音色；2026-10-09 N12）；该文件其余字段与 `config/` 其他文件照旧只读。
   遇到任何异常，99% 是由于当期 `01-topic.md` 或 `02-script.md` 字段格式错误、语法不符或素材缺失引起的，**只允许排查和修改当期目录下的输入文件**。
   严禁 Agent 私自修改 `pipeline/` 源码添加单期特判造屎山。若确信为通用流水线代码 Bug 必须修改，**必须立即停机向人类出示三项汇报**：
   1. 原始报错堆栈；

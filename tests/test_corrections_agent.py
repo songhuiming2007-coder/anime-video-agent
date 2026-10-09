@@ -127,15 +127,43 @@ def test_tv5b_add_rejects_bad_reading_without_writing(episode: Path):
 # ---- TV-6～8：全局写入 ----
 
 
-def test_tv6_global_pinyin_changes_one_key_only(voice: Path):
+def test_tv6_global_pinyin_changes_one_key_only(voice: Path, monkeypatch):
+    monkeypatch.setattr(corrections, "_today", lambda: "2026-10-09")
     before = voice.read_text(encoding="utf-8")
     assert corrections.main(["global", "--word", "肉体", "--pinyin", "rou4 ti3"]) == 0
     after = json.loads(voice.read_text(encoding="utf-8"))
     expected = json.loads(before)
     expected["pinyin_injections"]["肉体"] = "rou4ti3"
+    # N12：同一次写入在文件末尾的来历表里记一条（没给期目录：只记表与日期）
+    expected["readings_provenance"] = {"肉体": {"table": "pinyin_injections", "date": "2026-10-09"}}
     assert after == expected
-    # 其余字节不变：新文本 = 旧文本只多出这一个键（格式与原文件同为 indent=2、无尾换行）
+    # 其余字节不变：新文本 = 旧文本只多出这个键与它的来历（格式与原文件同为 indent=2、无尾换行）
     assert voice.read_text(encoding="utf-8") == json.dumps(expected, ensure_ascii=False, indent=2)
+
+
+def test_n12_provenance_from_episode_manifest_and_topic(voice: Path, episode: Path, monkeypatch):
+    """N12：给了期目录 → 来历带期号、番名（01-topic.md）、引擎与音色（本期配音清单）；supersede 后来历换成新条目的。"""
+    monkeypatch.setattr(corrections, "_today", lambda: "2026-10-09")
+    (episode / "01-topic.md").write_text("# 选题\n番: 东京喰种\n", encoding="utf-8")
+    (episode / "03-audio" / "manifest.json").write_text(
+        json.dumps({"engine": "qwen3_tts_cuda", "ref_audio": "assets/voice/seg6.wav", "segments": []}), encoding="utf-8")
+    assert corrections.main(["global", str(episode), "--word", "绚都", "--homophone", "炫嘟",
+                             "--expect", "xuan4du1", "--supersede"]) == 0
+    cfg = json.loads(voice.read_text(encoding="utf-8"))
+    assert cfg["readings_provenance"]["绚都"] == {
+        "table": "readings", "date": "2026-10-09", "episode": "T1", "anime": "东京喰种",
+        "engine": "qwen3_tts_cuda", "voice": "seg6.wav"}
+    ok, lines = corrections.preview(["global", str(episode), "--word", "肉体", "--pinyin", "rou4ti3"])
+    assert ok and lines[-1] == "来历记录：期 T1、番 东京喰种、引擎 qwen3_tts_cuda、音色 seg6.wav、2026-10-09"
+
+
+def test_n12_provenance_skips_what_it_cannot_read(voice: Path, episode: Path, monkeypatch):
+    """没有 01-topic.md、配音清单坏掉：只记拿得到的（期号），不猜。"""
+    monkeypatch.setattr(corrections, "_today", lambda: "2026-10-09")
+    (episode / "03-audio" / "manifest.json").write_text("{坏", encoding="utf-8")
+    assert corrections.main(["global", str(episode), "--word", "肉体", "--pinyin", "rou4ti3"]) == 0
+    cfg = json.loads(voice.read_text(encoding="utf-8"))
+    assert cfg["readings_provenance"]["肉体"] == {"table": "pinyin_injections", "date": "2026-10-09", "episode": "T1"}
 
 
 def test_tv7_same_key_conflict_needs_supersede(voice: Path):
