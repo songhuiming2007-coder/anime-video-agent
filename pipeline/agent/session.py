@@ -1851,11 +1851,24 @@ def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
             for item in record.get("docs") or []:
                 if item.get("path"):
                     docs[str(item["path"])] = str(item.get("sha256", ""))
+    # D67：存量日志（D52 之前写入）里受限字面量未脱敏，恢复即撞出网断言回滚（董香二期实证：
+    # tool 正文与两条 user 规程注入都有，只 scrub tool 是假修复）。恢复时全 role 过一道投影，
+    # **不动盘**（append-only 不破）；对干净文本幂等。scrub 就在构造 state["messages"] 这一步
+    # 发生、下游不再复制——_auto_compact 认 `convo is main_messages` 的对象同一性。
+    from pipeline.agent.tools import scrub_restricted
+
+    messages = [
+        ({**m, "content": scrubbed} if scrubbed != m["content"] else m)
+        if isinstance(m, dict) and isinstance(m.get("content"), str)
+        and (scrubbed := scrub_restricted(m["content"])) != m["content"]
+        else m
+        for m in rebuild_messages(loaded)
+    ]
     state = {
         "status": "resumed",
         "sid": sid,
         "records": loaded.records,
-        "messages": rebuild_messages(loaded),
+        "messages": messages,
         "docs": docs,
         "step_key": step_key,
         "resident_sha256": resident_sha,

@@ -75,8 +75,10 @@ uv run pytest                                   # 全量回归（贴结果）
 
 ## 七、完成判定（逐项打勾）
 
-- [ ] `prepare_resume` 重建输出全 role 过 `scrub_restricted`，落盘零改动
-- [ ] §四 4 条用例全绿；3 条变异全被杀
-- [ ] `uv run pytest` 全量绿
-- [ ] **终验（人勾）**：CLI 恢复董香二期会话，发出首轮请求且回合正常结束（前置：无桌面会话持有该期租约；若 D65 已先落地，首轮请求量应明显小于 101k）
-- [ ] issues 表 D67 行更新施工状态
+- [x] `prepare_resume` 重建输出全 role 过 `scrub_restricted`，落盘零改动
+- [x] §四 4 条用例全绿；3 条变异全被杀
+- [x] `uv run pytest` 全量绿
+- [x] **终验通过（2026-10-10 实测，pi 代跑人在场）**：钥匙串取 `CPA_API_KEY` 注入环境（桌面同款读取路径，密钥不进 argv/日志），CLI 恢复董香二期 `294d0a7ea4b3a71e`（重放 210 条），首轮真实请求成功发出、模型正常作答（正确回忆上次讨论到段落 21 的事实核查）、无 turn_rollback、回合正常结束。前置条件均已满足：无桌面会话持租约；D65 已先落地
+- [x] issues 表 D67 行更新施工状态
+
+**施工实录（2026-10-10）**：`session.py::prepare_resume` 在构造 `state["messages"]` 那一步全 role 投影（函数内 import `tools.scrub_restricted`，循 `assert_egress_boundary` 先例；只动字符串 content，干净消息复用原对象保同一性）。测试进 `tests/test_agent_session.py`（4 条，真实回放用例数据盘缺席自动 skip；假租约 append/truncate 挂 AssertionError，对真实日志零写入）。变异 3 条均被对应用例杀死。连带改写：`test_td1c` 两条断言——恢复后历史副本里的受限字面量已被投影为 [已脱敏]（回合不被拦的语义不变，可信集 (b) 仍管装配器当前注入）。全量 2523 绿。董香二期实测：唯一 sid `294d0a7ea4b3a71e`、352 行、plan_repairs=0、无残行；不 scrub 必拦、全 role scrub 过生产口径断言（可信集 16 份）。**终验留给人的前置已具备：D65 已先落地。**

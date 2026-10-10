@@ -1403,7 +1403,11 @@ def test_n57_preset_resident_with_restricted_literal_keeps_sending(root: Path, e
 
 
 def test_td1c_resumed_history_with_old_injections_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
-    """TD-1c（🟡-1）：新进程 `--continue` 恢复到 05，历史含 03 与 03.5 注入：首轮照常发出（tracker 为空，只靠 (b)）。"""
+    """TD-1c（🟡-1）：新进程 `--continue` 恢复到 05，历史含 03 与 03.5 注入：首轮照常发出（tracker 为空，只靠 (b)）。
+
+    D67（2026-10-10 人拍板）：恢复时历史消息全 role 过脱敏投影——历史副本里的受限字面量
+    已换成 [已脱敏]，不再依赖可信集豁免也能发出；可信集 (b) 仍管「装配器当前注入的正文」。
+    """
     history = [
         _injection_record(root, "docs/runbook/03-tts.md", _STEP_03), *_chat_pair("合成吧"),
         _injection_record(root, "docs/runbook/03.5-voice-check.md", _STEP_035), *_chat_pair("顺听"),
@@ -1413,8 +1417,8 @@ def test_td1c_resumed_history_with_old_injections_keeps_sending(root: Path, epis
     _not_blocked(_turn(session, messages, tracker, root, _STEP_05))
     assert len(egress_env) == 1
     body = _payload_text(egress_env[0])
-    assert _runbook_line(root, "03-tts.md", _HIT) in body
-    assert _runbook_line(root, "03.5-voice-check.md", _HIT) in body
+    assert _runbook_line(root, "03-tts.md", _HIT).replace(_HIT, "[已脱敏]") in body
+    assert _runbook_line(root, "03.5-voice-check.md", _HIT).replace(_HIT, "[已脱敏]") in body
 
 
 def test_td1d_crlf_routed_doc_matches_with_same_reader(root: Path, episode: Path, egress_env: list[dict]) -> None:
@@ -1724,3 +1728,133 @@ def test_d48_tool_summary_for_writes_and_pipeline() -> None:
         "02-script.draft.md · 整篇 7.6 KB"  # 2600 × 3 字节 = 7800 B ÷ 1024 = 7.62
     )
     assert tool_summary("run_pipeline", {"command": "check_script 02-script.draft.md"}) == "check_script 02-script.draft.md"
+
+
+# ---------------------------------------------------------------------------
+# D67：恢复时对历史消息做全 role 脱敏投影（spec 2026-10-10-resume-scrub-spec.md）
+# ---------------------------------------------------------------------------
+
+_D67_DIRTY = "03-audio/manifest.json"
+
+
+def _d67_log(episode: Path, sid: str, messages: list[dict]) -> "EpisodeLease":
+    """把给定消息逐条写进日志（user/assistant/tool 混合），返回租约。"""
+    lease = EpisodeLease.acquire(episode)
+    lease.begin(sid, resumed_from_seq=0)
+    lease.append({"k": "session_start", "schema": 1, "sid": sid, "seq": 1,
+                  "episode": episode.name, "scope_mode": "auto",
+                  "resident_sha256": "0" * 64, "pid": 1})
+    for seq, message in enumerate(messages, start=2):
+        lease.append({"k": "msg", "sid": sid, "seq": seq, "turn_id": "t1",
+                      "origin": "user" if message["role"] == "user" else message["role"],
+                      "message": message})
+    return lease
+
+
+def test_d67_resume_scrubs_all_roles(root: Path, episode: Path) -> None:
+    """用例 1：user / assistant / tool 三 role 的受限字面量恢复后全部为 [已脱敏]；
+    assistant 的 tool_calls 参数不动（ADR-0026 双保险）。（锁「只 scrub tool 是假修复」）"""
+    sid = "sid-d67"
+    dirty_args = json.dumps({"path": _D67_DIRTY}, ensure_ascii=False)
+    lease = _d67_log(episode, sid, [
+        {"role": "user", "content": f"规程旧版提到了 {_D67_DIRTY} 这个文件"},
+        {"role": "assistant", "content": f"我去读 {_D67_DIRTY}"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "read_artifact", "arguments": dirty_args}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": f'{{"ok":true,"path":"{_D67_DIRTY}"}}'},
+    ])
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host.lease = lease
+    state = prepare_resume(host, sid)
+    assert state["status"] == "resumed"
+    for m in state["messages"]:
+        if isinstance(m.get("content"), str):
+            assert _D67_DIRTY not in m["content"], f"{m['role']} 角色的受限字面量没脱敏"
+            assert "[已脱敏]" in m["content"]
+    call = next(m for m in state["messages"] if m.get("tool_calls"))
+    assert call["tool_calls"][0]["function"]["arguments"] == dirty_args, "tool_calls 参数不脱敏（双保险）"
+
+
+def test_d67_resume_does_not_touch_log(root: Path, episode: Path) -> None:
+    """用例 2：投影不动盘——恢复前后 session.jsonl 逐字节一致。"""
+    import hashlib
+
+    sid = "sid-d67-clean-log"
+    lease = _d67_log(episode, sid, [
+        {"role": "user", "content": f"历史里的 {_D67_DIRTY}"},
+        {"role": "assistant", "content": "好的"},
+    ])
+    before = hashlib.sha256((episode / "session.jsonl").read_bytes()).hexdigest()
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host.lease = lease
+    state = prepare_resume(host, sid)
+    assert state["status"] == "resumed"
+    after = hashlib.sha256((episode / "session.jsonl").read_bytes()).hexdigest()
+    assert before == after, "prepare_resume 对日志零写入"
+
+
+def test_d67_scrub_is_idempotent_on_clean_history(root: Path, episode: Path) -> None:
+    """用例 3：无受限字面量的消息重建后逐字节不变（幂等）。"""
+    sid = "sid-d67-clean"
+    original = [
+        {"role": "user", "content": "干净的问题"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "read_artifact", "arguments": '{"path":"01-topic.md"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": '{"ok":true}'},
+        {"role": "assistant", "content": "干净的回答"},
+    ]
+    lease = _d67_log(episode, sid, original)
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host.lease = lease
+    state = prepare_resume(host, sid)
+    assert [m.get("content") for m in state["messages"]] == [m.get("content") for m in original]
+    assert state["messages"][1]["content"] is None, "非字符串 content 不动、不报错"
+
+
+@pytest.mark.skipif(
+    not (REPO / "data/episodes/2026-09-21-东京喰种-雾岛董香人物志-二/session.jsonl").exists(),
+    reason="数据盘未挂载（真实回放需要董香二期日志）",
+)
+def test_d67_real_toukai2_log_passes_egress_after_resume() -> None:
+    """用例 4（真实回放）：董香二期日志走 prepare_resume → 过生产口径出网断言 → 不抛。
+
+    复现人实验（2026-10-10）的「全 role scrub → 通过」行。只读：该日志 plan_repairs=0、
+    无残行（施工时已核），假租约的 append/truncate 挂上AssertionError，写入即炸。
+    """
+    from pipeline.agent.assembly import route_trusted_texts
+    from pipeline.agent.tools import assert_egress_boundary
+
+    ep = REPO / "data/episodes/2026-09-21-东京喰种-雾岛董香人物志-二"
+    raw = (ep / "session.jsonl").read_bytes()
+    sid = "294d0a7ea4b3a71e"  # 该日志唯一 sid（施工时实测）
+
+    class ReadOnlyLease:
+        def __init__(self) -> None:
+            self.sid: str | None = None
+            self.seq = 0
+
+        def read(self) -> bytes:
+            return raw
+
+        def begin(self, sid_: str, *, resumed_from_seq: int = 0) -> None:
+            self.sid, self.seq = sid_, resumed_from_seq
+
+        def truncate_torn_tail(self) -> None:
+            raise AssertionError("真实日志出现残行，不许在测试里截断它")
+
+        def append(self, record: dict) -> None:
+            raise AssertionError(f"真实回放不许写盘: {record!r}")
+
+    host = SessionHost(ep, root=None, channel=FakeChannel([]))
+    host.lease = ReadOnlyLease()  # type: ignore[assignment]
+    state = prepare_resume(host, sid)
+    assert state["status"] == "resumed"
+    assert any("[已脱敏]" in str(m.get("content")) for m in state["messages"]), "投影确实发生了"
+    trusted = route_trusted_texts("creative")   # 生产装配口径（真仓库根）
+    assert_egress_boundary(
+        "https://api.openai.com/v1/chat/completions",
+        {"messages": [{"role": "system", "content": "常驻层"}, *state["messages"]]},
+        trusted_texts=trusted,
+    )
