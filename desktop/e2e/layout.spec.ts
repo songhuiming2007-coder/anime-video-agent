@@ -117,7 +117,7 @@ test("L-3 底线：1280×800 / 1440×900 × 预览收起 / 展开，关键元素
   const reason = "钥匙串里没有该密钥；配置指名的环境变量 AVA_TEST_KEY 在本次 spawn 中缺失，已按 Spec 9 如实降级（无模型可用）";
   const obs = "退出码 1：python -m pipeline.clips /private/var/folders/8f/_04djfns4_l70r2r7pgy4ghm0000gn/T/ava-desktop-repo-Hw3ak8/data/episodes/SESS-A/02-script.md\nKeyError: '集' 字段缺失（第 3 段）";
   sessionScript(repo, "SESS-A", [
-    { op: "emit", frame: { t: "ready", episode: "SESS-A", scope: "pipeline", continue_status: "new", llm: "degraded", degrade_reason: reason, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } },
+    { op: "emit", frame: { t: "ready", episode: "SESS-A", scope: "pipeline", continue_status: "new", llm: "degraded", degrade_reason: reason, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null } },
     {
       op: "serve",
       on_turn: [
@@ -125,7 +125,7 @@ test("L-3 底线：1280×800 / 1440×900 × 预览收起 / 展开，关键元素
         { t: "tool", turn_id: "$turn", phase: "start", index: 0, name: "run_pipeline", summary: "clips SESS-A", ok: null, observation: null, duplicate: false },
         { t: "tool", turn_id: "$turn", phase: "end", index: 0, name: "run_pipeline", summary: "", ok: false, observation: obs, duplicate: false },
         { t: "assistant", turn_id: "$turn", kind: "answer", text: "第 3 段的「集」字段缺失，排片回退到了全季检索。建议先补上 `集: S01E07` 再重跑 clips。".repeat(3) },
-        { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 3, prompt_chars: 1, lookups: null, prompt_tokens: null },
+        { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 3, prompt_chars: 1, lookups: null, prompt_tokens: null, compacted: false, tokens_before: null, tokens_after: null, context_window: null },
         { t: "stop_points", items: [], turn_id: "$turn" },
       ],
     },

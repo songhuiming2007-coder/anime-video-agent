@@ -212,6 +212,21 @@ describe("D41 / D56 上下文用量读数", () => {
     expect(lastContextReading([...a, { k: "frame", at: 2, frame: finT(5000, 6000, 2) }, { k: "frame", at: 3, frame: resumed(7000, 8000, 1) }])).toEqual({ tokens: 7000, chars: 8000, previous: true });
   });
 
+  it("D62 读数分母：同帧带 context_window 就写「102.0k / 128k」，字数口径与缺窗口都不配分母", () => {
+    expect(contextText({ tokens: 102_000, chars: 1, previous: false, ctxWindow: 128_000 })).toBe("上下文 102.0k / 128k token");
+    expect(contextText({ tokens: 512, chars: 1, previous: true, ctxWindow: 1_048_576 })).toBe("上下文 512 / 1.0M token（上次）");
+    expect(contextText({ tokens: null, chars: 9192, previous: false, ctxWindow: 128_000 })).toBe("上下文约 9,192 字");
+    expect(contextText({ tokens: 102_000, chars: 1, previous: false })).toBe("上下文 102.0k token");
+    const withWin = (frame: Record<string, unknown>) => ({ k: "frame" as const, at: 1, frame: frame as never });
+    expect(lastContextReading([withWin({ v: 1, seq: 1, sid: "s", t: "turn_finished", turn_id: "x", prompt_tokens: 4000, prompt_chars: 5000, context_window: 128_000 })]))
+      .toEqual({ tokens: 4000, chars: 5000, previous: false, ctxWindow: 128_000 });
+    expect(lastContextReading([withWin({ v: 1, seq: 1, sid: "s", t: "ready", resume_prompt_tokens: 7000, resume_prompt_chars: 8000, context_window: 1_048_576 })]))
+      .toEqual({ tokens: 7000, chars: 8000, previous: true, ctxWindow: 1_048_576 });
+    for (const bad of [null, 0, -1, 1.5, "128000"])
+      expect(lastContextReading([withWin({ v: 1, seq: 1, sid: "s", t: "turn_finished", turn_id: "x", prompt_tokens: 4000, prompt_chars: 5000, context_window: bad })]))
+        .toEqual({ tokens: 4000, chars: 5000, previous: false });
+  });
+
   it("D64 contextText：上次读数后缀「（上次）」，实时读数不带", () => {
     expect(contextText({ tokens: 102_000, chars: 1, previous: true })).toBe("上下文 102.0k token（上次）");
     expect(contextText({ tokens: null, chars: 9192, previous: true })).toBe("上下文约 9,192 字（上次）");

@@ -44,6 +44,7 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     session_bytes: ["number"],
     other_sessions: ["array"],
     resume_prompt_tokens: ["number", "null"], // D64：继续会话带回上次 turn_end 的 prompt_tokens；新会话 / 没测到为 null
+    context_window: ["number", "null"], // D62 人裁决⑤：读数分母 = 当前模型标称窗口；窗口表里没有该模型为 null
     resume_prompt_chars: ["number", "null"], // D64：同上，prompt_chars（服务商不给 token 时的回落口径）
   },
   history: { index: ["number"], role: ["string"], text: ["string"], name: ["string", "null"] },
@@ -85,6 +86,10 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     prompt_chars: ["number"],
     prompt_tokens: ["number", "null"], // D56：服务商响应 usage.prompt_tokens；不给为 null
     lookups: ["object", "null"], // D48 ①：本回合查证调用按类计数（subs/presence/notes/web）；无模型回合为 null
+    compacted: ["boolean"], // D62 人裁决②：本回合压缩过上下文（含对话框 /compact 的压缩回合）
+    tokens_before: ["number", "null"], // D62：本回合首次压缩前的读数；没压缩为 null
+    tokens_after: ["number", "null"], // D62：本回合末次压缩后的读数；没压缩为 null
+    context_window: ["number", "null"], // D62 人裁决⑤：本回合所用模型的标称窗口；表里没有为 null
   },
   log: { stream: ["string"], text: ["string"] },
   notice: { level: ["string"], code: ["string"], text: ["string"] },

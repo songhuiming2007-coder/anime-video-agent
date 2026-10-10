@@ -67,7 +67,16 @@ export function charsText(n: number): string {
 
 /** D56：`<1000` 写整数，其余一位小数的 k。 */
 export function tokensText(n: number): string {
-  return n < 1000 ? `${String(n)} token` : `${(n / 1000).toFixed(1)}k token`;
+  return `${tokensNum(n)} token`;
+}
+
+function tokensNum(n: number): string {
+  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
+}
+
+/** D62 人裁决⑤：分母 = 模型标称窗口，整数 k（128000 → 128k）；百万级写 M（1048576 → 1.0M）。 */
+export function windowText(n: number): string {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${String(Math.round(n / 1000))}k`;
 }
 
 const countOf = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -77,16 +86,23 @@ const countOf = (v: unknown): number | null => (typeof v === "number" && Number.
  * 含系统提示、工具定义与全部历史，就是上下文窗口的实际占用；服务商不给时为 null，回落到 `chars`（字数）。
  * `previous`（D64）：继续会话后、新回合跑完前，读数取自 `ready` 帧带回的上次测得值，显示时标「上次」。
  */
-export type ContextReading = { tokens: number | null; chars: number | null; previous: boolean };
+export type ContextReading = { tokens: number | null; chars: number | null; previous: boolean; ctxWindow?: number };
 
-function readingOf(tokens: unknown, chars: unknown, previous: boolean): ContextReading | null {
-  const r = { tokens: countOf(tokens), chars: countOf(chars), previous };
+/** `ctxWindow`（D62 人裁决⑤）：同一帧带来的当前模型标称窗口；core 窗口表里没有该模型时不带，读数不显示分母。 */
+function readingOf(tokens: unknown, chars: unknown, previous: boolean, ctxWindow?: unknown): ContextReading | null {
+  const r: ContextReading = { tokens: countOf(tokens), chars: countOf(chars), previous };
+  const w = countOf(ctxWindow);
+  if (w !== null && w > 0) r.ctxWindow = w;
   return r.tokens === null && r.chars === null ? null : r;
 }
 
-/** 「上下文 12.3k token」；没有 token 数时「上下文约 9,192 字」；上次测得的值后缀「（上次）」。 */
+/**
+ * 「上下文 12.3k token」；知道窗口时带分母「上下文 102.0k / 128k token」（D62 人裁决⑤：标称窗口）；
+ * 没有 token 数时「上下文约 9,192 字」——字数与窗口不是同一把尺，不配分母；上次测得的值后缀「（上次）」。
+ */
 export function contextText(r: ContextReading): string | null {
   const tail = r.previous ? "（上次）" : "";
+  if (r.tokens !== null && r.ctxWindow !== undefined) return `上下文 ${tokensNum(r.tokens)} / ${windowText(r.ctxWindow)} token${tail}`;
   if (r.tokens !== null) return `上下文 ${tokensText(r.tokens)}${tail}`;
   if (r.chars !== null) return `上下文约 ${charsText(r.chars)}${tail}`;
   return null;
@@ -101,8 +117,8 @@ export function lastContextReading(entries: readonly ConvEntry[]): ContextReadin
   for (const e of entries) {
     if (e.k !== "frame") continue;
     const f = e.frame;
-    if (f.t === "ready") out = readingOf(f.resume_prompt_tokens, f.resume_prompt_chars, true);
-    else if (f.t === "turn_finished") out = readingOf(f.prompt_tokens, f.prompt_chars, false) ?? out;
+    if (f.t === "ready") out = readingOf(f.resume_prompt_tokens, f.resume_prompt_chars, true, f.context_window);
+    else if (f.t === "turn_finished") out = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window) ?? out;
   }
   return out;
 }
@@ -131,7 +147,7 @@ export function lookupsText(v: unknown): string | null {
 }
 
 function footerText(f: OutFrame): string {
-  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false);
+  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
   const ctx = reading === null ? null : contextText(reading);
   const lookups = lookupsText(f.lookups);
   return (

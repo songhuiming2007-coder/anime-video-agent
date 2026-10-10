@@ -1,7 +1,7 @@
 {
   "_note": "上下文压缩（D62，docs/dev/plans/2026-10-09-context-compaction-spec.md §4.1–4.2）。触发点 = window × reliable_ratio × trigger_ratio；尾部预算 = window × reliable_ratio × tail_ratio（token），条数 ≤ tail_max_messages 为次级约束。trigger_ratio 0.6 是施工默认值，理由只挂「标称窗口 ≠ 可靠窗口」，生产值等 §五④ 的代理实测；tail_ratio 0.15 在 gpt-4o 下 ≈19k，对齐 Codex 的 20k 实证值（人裁决①）。表里没有的模型：不自动压缩、读数不显示分母，不猜窗口（人裁决⑤）。",
   "auto_trigger": false,
-  "_auto_trigger_note": "自动双触发（回合前 + 工具循环中段）默认关：人裁决④ 挂 CPA 代理三探针（usage 透传 / 缓存命中 / 上游形态）实测结果，实测前只开手动 /compact。实测后由人改为 true。",
+  "_auto_trigger_note": "自动双触发（回合前 + 工具循环中段）默认关：人裁决④ 挂 CPA 代理三探针。2026-10-10 三探针已测完（结果见 spec §五④）：usage 透传、隐式缓存命中且透传、上游为 OAuth 订阅额度（非按量计费）。是否打开由人定。",
   "trigger_ratio": 0.6,
   "tail_ratio": 0.15,
   "tail_max_messages": 20,
@@ -14,7 +14,12 @@
     "gemini-3.8-flash-high": {
       "window": 1048576,
       "reliable_ratio": 1.0,
-      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576（2026-10-09 查）；-high 是本机代理（agent.local.json）的模型名。代理是否另行截断窗口未实测，挂 spec §五④；reliable_ratio 同上未标定。"
+      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576；2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：98.9 万 token 请求照收、开头埋的暗号答对，超限返回 400「exceeds the maximum number of tokens allowed 1048576」——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+    },
+    "gemini-3.7-flash-high": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "本机 agent.local.json 的 light 档（pipeline scope）。2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：超限请求返回 400「maximum number of tokens allowed 1048576」。reliable_ratio 同上。"
     }
   }
 }

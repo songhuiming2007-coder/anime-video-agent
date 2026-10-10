@@ -1,6 +1,6 @@
 # 上下文压缩（D62）：长会话的 compact 机制
 
-日期：2026-10-09　状态：**PR1–4 已施工**（2026-10-09，见 §九；自动触发默认关、等 §五④ 实测；desktop 视觉待人选）（一轮对抗审查 15 条全吸收，裁决见 §八；人定四项 2026-10-09 拍板，见 §五）
+日期：2026-10-09　状态：**PR1–4 + 收尾已施工**（2026-10-10，见 §九；§五④ 三探针已测完；自动触发默认关，开不开待人定）（一轮对抗审查 15 条全吸收，裁决见 §八；人定四项 2026-10-09 拍板，见 §五）
 关联：D28（取消固定轮数硬上限，2026-09-24 人裁决）、D56（服务商实测 token 读数）、D54（诚实性纪律：事实带出处）、ADR-0018（出网断言）、ADR-0025（工具封顶）、AGENTS.md「产物即状态」「诚实失败」
 
 ## 一、问题
@@ -89,6 +89,21 @@ D28 取消固定轮数上限后，主会话上下文**只涨不缩**。现有三
 4. **CPA 代理实测**：三条探针（① usage 透传：普通请求看 `usage.prompt_tokens` 在不在——这是触发器数据源是否存在的第二个 None 来源；② 缓存命中：同一 ≥1k token 长前缀连发两次，比 `prompt_tokens_details.cached_tokens` 有无 + 第二次延迟，字段缺席但延迟显著下降也算间接证据；③ 上游形态：翻代理配置/日志确认 OAuth 订阅配额还是 API key 计费——配额制则轴一顾虑解散、§4.0 账本作废，计费制则按 §4.0 复核阈值）。**PR2（手动 /compact）不等实测直接上**——手动场景下人就是触发判据，阈值错误伤不到它；**PR3 的自动双触发挂实测结果**。
 5. **读数要带分母**（2026-10-09，人裁决；起因见 D64）：会话头只显示「上下文 102.0k token」，人看不出离上限多远，读数等于没给。分母取 §4.1 的 per-model 窗口表，随 PR1 落地后 desktop 改显示；表里没有当前模型时照旧只显示分子，不猜窗口。**待定（施工时出截图方案给人选）**：分母用标称 `window` 还是 `window × reliable_ratio`；写成「102k / 128k」还是百分比；与压缩后「压缩后 token（压缩前峰值）」口径（§4.6）怎么并排。
 
+### 2026-10-10 人的裁决与实测
+
+6. **施工偏离 1–3 通过**（÷1 折算、脱敏注记改写、标记种类串）；偏离 10「回滚到压缩点」通过。
+7. **读数分母**：用标称 `window`（不乘 `reliable_ratio`），写成「102.0k / 128k token」；**不显示压缩状态**（压缩是人做的，人记得）；字数口径不配分母。
+8. **/compact 入口**：对话框直接输入 `/compact` 发送即压缩（同 Claude Code / pi），不另做按钮。
+9. **回合起点估算偏早**：接受。
+10. **`--continue` 双 system**：修（`rebuild_messages` 不再重建落盘的 system）。
+
+**§五④ 三探针结果（2026-10-10，经本机 CPA = CLIProxyAPI 反代实测）：**
+
+- ① usage 透传：gemini-3.8-flash-high / gemini-3.7-flash-high 都返回 `usage.prompt_tokens`（触发器数据源存在）。
+- ② 缓存命中：6,306 token 的固定前缀连发三次，第二、三次 `prompt_tokens_details.cached_tokens = 4267`（隐式缓存生效且透传）；延迟未见下降（3.4 → 3.8 → 4.2 s）。
+- ③ 上游形态：CPA 配置里 `codex-api-key` / `claude-api-key` / `openai-compatibility` 全空，凭据走 OAuth 目录（antigravity / claude 通道），`quota-exceeded` 为免费层额度轮换——**配额制，非按量计费**。按 §二，轴一成本顾虑解散、§4.0 账本作废。
+- 附加·窗口截断：开头埋暗号 + 填充，30 万字（16.96 万 token）、90 万字（50.87 万 token）、175 万字（98.92 万 token）三档都照收且暗号答对；200 万字返回 400「exceeds the maximum number of tokens allowed 1048576」。两个 gemini 档上限都是 1,048,576，**代理不截断**（不同于 Cursor 客户端的 200k 工作窗口）。`reliable_ratio` 维持 1.0，依据是单点召回；长上下文推理质量的衰减没测，余量由 `trigger_ratio` 承担。
+
 ## 六、验收判据（每条配「它会失败」的变异）
 
 1. 触发：mock usage 超阈值 → 压缩；未到 → 不压；usage=None → 按字数 ÷4 估算触发（变异：None 直接不触发 → 红）。
@@ -175,5 +190,13 @@ D28 取消固定轮数上限后，主会话上下文**只涨不缩**。现有三
 - desktop：读数改显示「压缩后（压缩前峰值）」、手动压缩后即时更新读数（审查 #7）与分母（人裁决⑤ 形式待截图人选）、/compact 入口按钮。core 侧数据已齐：`turn_finished.{compacted, tokens_before, tokens_after}`、`command{compact}` → `command_result{name: compact}`；host `sessions.ts` 的命令白名单尚未加 `compact`。
 - §五④ 三探针实测。
 
-**施工中发现的既有问题（未修，不在本 spec 施工面）：** `--continue` 后历史里有**两条** system——`rebuild_messages` 把首轮落盘的 system 消息（旧状态卡）也重建出来，调用方再在前面放一条现建的。docstring 写「不含 system」，实现没滤。旧卡与新卡并存会给模型两份互相矛盾的期状态。压缩后旧卡会随区间被压掉，但不压缩的会话一直带着。
+**施工中发现的既有问题（2026-10-10 人裁决修，已修）：** `--continue` 后历史里有**两条** system——`rebuild_messages` 把首轮落盘的 system 消息（旧状态卡）也重建出来，调用方再在前面放一条现建的。docstring 写「不含 system」，实现没滤。旧卡与新卡并存会给模型两份互相矛盾的期状态。压缩后旧卡会随区间被压掉，但不压缩的会话一直带着。
+
+### 收尾（2026-10-10，人裁决 6–10 落地）
+
+- **双 system 修复**：`rebuild_messages` 跳过落盘的 system 消息；伪恋期真实日志重建 47 → 46 条、0 条 system。
+- **读数分母**：core 新增 `compact.context_window(scope)`（当前 scope 所用模型的标称窗口，表里没有为 None），随 `ready` 与 `turn_finished` 帧下发 `context_window`；desktop `convFold.contextText` 有实测 token 且有窗口时写「上下文 102.0k / 128k token」（百万级写 1.0M），字数口径与缺窗口不配分母；会话头读数与回合脚注同口径。悬停说明补分母口径与 /compact。真实窗口截图脚本 `docs/dev/plans/2026-10-10-context-window-shots/`。
+- **对话框 /compact**：协议进程把正文恰为 `/compact` 的 `user_message` 当「压缩回合」处理——`turn_started` → 压缩（notice）→ `turn_finished{stopped: compacted | not_compacted}` → `stop_points`；不进模型、不落 user 消息；停止按钮可中断摘要器调用（历史不动）。`turn_finished.prompt_tokens` 为 None、`prompt_chars` 给压缩后字数，读数如实退回「约 N 字」直到下一回合拿到实测。终端 REPL 的 /compact 早已在。
+- **窗口表补 light 档**：本机 `agent.local.json` 的 `models.light = gemini-3.7-flash-high`（pipeline scope）原先不在表里——流水线模式既无分母、也压不了。实测上限后补入。
+- **补登帧契约（昨晚 `3feb84e` 的漏洞）**：`turn_finished` 新增的 `compacted / tokens_before / tokens_after` 与本次的 `context_window` 没登记进 desktop `convFrames.ts` 的 `REQUIRED`。`parseOutFrame` 容忍多余键，所以 vitest 全绿；但 e2e TX-0 / TX-0b 要求真实 core 每类帧的键集合与 `REQUIRED` **完全一致**，`3feb84e` 上这两条就是红的——当时只跑了 pytest 与 vitest，子代理审查也只核了解析器。现已登记，夹具同步补键；desktop vitest 493 / e2e 125（2 skip）全绿。教训：改协议帧必须跑 desktop e2e。
 

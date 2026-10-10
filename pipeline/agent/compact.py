@@ -419,3 +419,21 @@ def kept_doc_paths(injected: dict[str, str], tail: list[Any]) -> set[str]:
         path for path, content in injected.items()
         if content.strip() and any(content.strip() in t for t in texts)
     }
+
+
+def context_window(scope: str, root: Path | None = None) -> int | None:
+    """当前 scope 所用模型的**标称**窗口（读数分母，人裁决⑤ 2026-10-10：标称、写成「102k / 128k」）。
+
+    表里没有、LLM 未配置、compact.json 损坏 → None：不显示分母，不猜。
+    """
+    from pipeline.agent import llm  # llm 反向依赖本模块（COMPACT_KEY），只能在函数内取
+
+    cfg = llm.load_llm_config(root)
+    if cfg is None:
+        return None
+    try:
+        table = load_compact_config(root)
+    except CompactConfigError:
+        return None
+    window = table.window_for(cfg.model_for(llm.purpose_for_scope(scope)))
+    return None if window is None else window.window
