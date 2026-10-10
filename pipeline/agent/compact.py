@@ -74,6 +74,8 @@ class CompactConfig:
     tail_ratio: float = 0.15
     tail_max_messages: int = 20
     models: dict[str, ModelWindow] = field(default_factory=dict)
+    # 自动双触发（PR3）默认关：人裁决④「自动触发挂 CPA 代理三探针实测」。手动 /compact 不看它
+    auto_trigger: bool = False
 
     def window_for(self, model: str) -> ModelWindow | None:
         """表里没有 → None：不自动压缩、不显示分母，**不猜窗口**（人裁决⑤）。"""
@@ -110,6 +112,9 @@ def parse_compact_config(data: Any) -> CompactConfig:
     max_messages = data.get("tail_max_messages", defaults.tail_max_messages)
     if isinstance(max_messages, bool) or not isinstance(max_messages, int) or max_messages < 1:
         raise CompactConfigError(f"tail_max_messages 必须是正整数: {max_messages!r}")
+    auto = data.get("auto_trigger", defaults.auto_trigger)
+    if not isinstance(auto, bool):
+        raise CompactConfigError(f"auto_trigger 必须是 true/false: {auto!r}")
     raw_models = data.get("models", {})
     if not isinstance(raw_models, dict):
         raise CompactConfigError("models 必须是对象（模型名 → {window, reliable_ratio}）")
@@ -125,7 +130,8 @@ def parse_compact_config(data: Any) -> CompactConfig:
             reliable_ratio=_ratio(entry.get("reliable_ratio", 1.0), f"models.{name}.reliable_ratio"),
         )
     return CompactConfig(
-        trigger_ratio=trigger, tail_ratio=tail, tail_max_messages=max_messages, models=models
+        trigger_ratio=trigger, tail_ratio=tail, tail_max_messages=max_messages, models=models,
+        auto_trigger=auto,
     )
 
 
@@ -249,7 +255,8 @@ def choose_cut(messages: list[Any], *, token_budget: int, max_messages: int) -> 
         tokens += cost
         start -= 1
     flags = valid_cuts(messages)
-    return next(i for i in range(max(start, 1), len(messages) + 1) if flags[i])
+    # 空历史没有可落的切口：返回 1（= 没东西可压），不让 next() 抛 StopIteration（审查 #4）
+    return next((i for i in range(max(start, 1), len(messages) + 1) if flags[i]), 1)
 
 
 # ---- 落史标记 ----
@@ -322,3 +329,93 @@ def is_bloated(summary_text: str, region: list[Any]) -> bool:
     region_tokens = estimate_tokens(region)
     summary_tokens = math.ceil(len(summary_text) / CHARS_PER_TOKEN)
     return summary_tokens >= region_tokens * BLOAT_RATIO
+
+
+# ---- 摘要器请求（PR2，§4.4–4.5） ----
+
+# 独立超时（§4.5，审查 #7）：全文进摘要器，60 s 的 REQUEST_TIMEOUT 对几十万字必撞墙。
+# 240 沿用 notes_review.LLM_TIMEOUT_S 的先例（同为「长输入、单次、无工具」的 LLM 调用）。
+COMPACT_TIMEOUT_S = 240
+
+# Codex 最小 handoff 骨架 + ava 专属段（§4.4）。第 2、4 段是 D54 诚实性纪律：事实必须带出处锚点。
+SUMMARIZER_INSTRUCTION = """你在为一段长对话做上下文压缩：下面「被压缩区间」的原文将移出上下文，只留你写的摘要。
+接手的是同一个模型，它只能看到你的摘要、此后保留的近期原文和磁盘上的期状态。写一份交接摘要，让它无缝接着干。
+
+按下面五节写，没有内容的节写「无」：
+
+## 1. 人的目标与要求
+人要做成什么、提过哪些硬要求与偏好。关键处引人的原话（加引号）。
+
+## 2. 已完成的工作与关键决定
+每条带出处锚点：工具名与关键参数、文件路径、或人的原话。锚定不了的写「（未证实）」，不许补编出处。
+
+## 3. 被驳回的判断及理由
+人拒绝过的工具调用、否定过的方案、纠正过的事实，各附理由。接手者最容易重犯的就是这些。
+
+## 4. 事实-出处对照
+后续还要用到的事实（台词、集数、时间码、数字、文件名），一条一行：事实 —— 出处。
+
+## 5. 进行中与下一步
+做到哪一步、下一步具体做什么、有没有在等人答复。
+
+纪律：
+- 期状态与当前步骤以磁盘为准，已附在本请求末尾；不要复述或改写它，需要时原样引用其中的句子。
+- 原文中的「[已脱敏]」是受限文件名，原样保留，不许猜测原文。
+- 只写区间里真实出现过的内容；不评价、不建议、不寒暄。"""
+
+
+def render_transcript(region: list[Any]) -> str:
+    """被压缩区间 → 纯文本（送摘要器）。工具调用写出名字与参数，工具结果按 tool_call_id 标注。"""
+    blocks: list[str] = []
+    for index, message in enumerate(region, start=1):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "?")
+        if is_marked(message, MARK_SUMMARY):
+            head = f"[{index}] 更早的压缩摘要"
+        elif is_marked(message, MARK_CARD):
+            head = f"[{index}] 当时的期状态卡（已过时）"
+        elif role == "tool":
+            head = f"[{index}] 工具结果（{message.get('tool_call_id', '')}）"
+        else:
+            head = f"[{index}] {role}"
+        parts = [head]
+        content = str(message.get("content") or "")
+        if content:
+            parts.append(content)
+        for call in message.get("tool_calls") or []:
+            function = (call or {}).get("function") or {}
+            parts.append(
+                f"→ 调用 {function.get('name', '')}（{(call or {}).get('id', '')}）：{function.get('arguments', '')}"
+            )
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
+
+
+def build_summary_request(
+    region: list[Any], *, status_card: str | None = None
+) -> tuple[list[dict[str, Any]], int]:
+    """摘要器的请求消息与输入侧脱敏命中数（§4.4：输入、输出两侧都过脱敏）。"""
+    transcript, hits = scrub_counted(render_transcript(region))
+    body = f"# 被压缩区间（共 {len(region)} 条）\n\n{transcript}"
+    if status_card:
+        card, card_hits = scrub_counted(status_card)
+        hits += card_hits
+        body += f"\n\n# 磁盘上的期状态（只许引用，不许转述）\n\n{card}"
+    return [
+        {"role": "system", "content": SUMMARIZER_INSTRUCTION},
+        {"role": "user", "content": body},
+    ], hits
+
+
+def kept_doc_paths(injected: dict[str, str], tail: list[Any]) -> set[str]:
+    """压缩后仍留在上下文里的已注入文档（`{路径: 正文}` → 路径集）。
+
+    runbook / 记忆是普通 user 消息，压进摘要就没了；而装配器靠 `injected_paths` 判「已注入」，
+    不清掉就再也不会注。判据是正文逐字出现在保留的某条消息里——注入消息就是正文原样拼的。
+    """
+    texts = [str(m.get("content") or "") for m in tail if isinstance(m, dict)]
+    return {
+        path for path, content in injected.items()
+        if content.strip() and any(content.strip() in t for t in texts)
+    }

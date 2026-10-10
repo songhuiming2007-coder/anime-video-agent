@@ -2003,6 +2003,29 @@ def run_memory_digest(ep_dir: Path | None, *, root: Path | None = None) -> None:
     )
 
 
+def run_compact_command(
+    messages: list[dict[str, Any]],
+    tracker: SessionContextTracker,
+    ep_dir: Path | None,
+    scope: str,
+    *,
+    root: Path | None = None,
+) -> dict[str, Any] | None:
+    """REPL /compact（D62 PR2）：回合之间手动压缩。人就是触发判据，不看 auto_trigger 与阈值。"""
+    host = _SESSION_HOST
+    if host is None or messages is not host.main_messages:
+        print("[ERROR] /compact 只对本期主会话可用。")
+        return None
+    host.ensure_lease()
+    session = host.session(persist=True, scope_mode=scope)
+    card = build_status_card(ep_dir, inspect_episode(ep_dir), scope=scope) if ep_dir is not None else None
+    print("[*] 正在生成摘要（可能要一两分钟，Ctrl-C 取消）...")
+    result = session.compact(messages, tracker=tracker, root=root, scope=scope, status_card=card)
+    if not result.get("ok"):
+        print(f"[压缩未执行] {result.get('text', '')}")
+    return result
+
+
 def run_memory_command(line: str, ep_dir: Path | None, *, root: Path | None = None) -> None:
     """`/memory` 四个子命令的路由（Spec 7 §4.4）。"""
     from pipeline.agent import memory
@@ -2158,6 +2181,7 @@ def _run_repl_body(
                 print("  /memory check 记忆自检（退出码 0 合法 / 1 不合法 / 2 不可达 / 3 合法但来源未确认）")
                 print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
                 print("  /memory digest 聚合各期驳回反馈，在独立子会话里提议记忆条目")
+                print("  /compact     压缩上下文：较早的对话并成一条摘要，保留近期原文（D62）")
                 print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
                 print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
@@ -2200,6 +2224,10 @@ def _run_repl_body(
 
             if line == "/memory" or line.startswith("/memory "):
                 run_memory_command(line, ep_dir, root=root)
+                continue
+
+            if line == "/compact":
+                run_compact_command(messages, tracker, ep_dir, scope, root=root)
                 continue
 
             if line == "/patch" or line.startswith("/patch "):
