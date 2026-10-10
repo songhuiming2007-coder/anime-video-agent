@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
+from pipeline.agent.aging import age_tool_results
 from pipeline.agent.compact import COMPACT_KEY, estimate_tokens
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
@@ -82,8 +83,11 @@ SCOPE_PURPOSE: dict[str, str] = {
 
 # 宿主内部档位标记：只进会话史，进请求体前由 _wire_messages 一律删除。
 _TIER_KEY = "_ava_tier"
-# 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）
-_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY})
+# D65（§3.4，红队 F1）：收尾指令消息的内部标记——老化的边界扫描跳过它，否则收尾总结会在
+# 「刚拿到的大结果」被老化、且 tool_choice=none 禁止重读的双重 degradation 下生成。
+_WRAPUP_KEY = "_ava_wrapup"
+# 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）+ D65 收尾标记
+_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY})
 
 # 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
 _WARN_LATCH: set[tuple[str, str]] = set()
@@ -654,13 +658,16 @@ def run_tool_loop(
 
     def _chat(tool_choice: str | None = None) -> dict[str, Any]:
         nonlocal prompt_chars, prompt_tokens, usage_anchor
+        # D65：发送与字符统计都走老化投影（上一回合及更早的大工具结果换占位串）；
+        # convo 与 session.jsonl 一字不动（纯函数投影，日志即事实）
+        aged = age_tool_results(convo)
         prompt_chars = sum(
-            len(str(m.get("content") or "")) for m in convo if isinstance(m, dict)
+            len(str(m.get("content") or "")) for m in aged if isinstance(m, dict)
         )
         requested_len = len(convo)
         _LAST_USAGE.set(None)
         reply = chat_complete(
-            convo,
+            aged,
             tools=tools or None,
             config=cfg,
             scope=context.scope,
@@ -708,6 +715,7 @@ def run_tool_loop(
                 "content": WRAPUP_INSTRUCTION.replace(
                     "{reason}", _STOP_REASON_TEXT.get(reason, reason)
                 ),
+                _WRAPUP_KEY: True,  # D65 §3.4：老化的边界扫描跳过收尾指令（红队 F1）
             },
             "wrapup_instruction",
         )

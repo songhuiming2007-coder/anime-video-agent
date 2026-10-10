@@ -40,7 +40,7 @@
 2. 起点**之后**的所有消息原样保留（当前回合内的工具结果模型正在用）；
 3. 起点**之前**的每条 `role == "tool"` 消息：若 `len(content) > AGED_TOOL_MAX_CHARS`，替换 `content` 为占位串（§3.2）；其余消息原样；
 4. 纯函数：返回新列表，只复制被替换的消息，**不 mutate 入参**；同一输入恒得同一输出；
-5. 函数签名带 `exempt_last_turn: bool = True`；摘要器路径（§四 compact 改动）传 `False`——被压缩的 region 全是旧历史，没有「当前回合」可豁免。
+5. 函数签名带 `exempt_last_turn: bool = True`；发送路径（`_chat`）与摘要器路径共用同一次投影（compact() 开头一次投影三处共用，§四），均用默认 `True`——正常形态下被压缩的 region 全在最后一条 user 之前，等效全老化；差异只在「当前回合被 max_messages 劈开」的边角，此时当回合大结果留尾部按原列表全文保留，与发送口径一致（施工实录有记录）。
 
 **wrapup 边界（红队 F1）**：`_wrapup` 提交的收尾指令是 `role == "user"` 且紧跟 `_chat(tool_choice="none")`——若不豁免，收尾总结会在「刚拿到的大结果」被老化、且禁止重读工具的双重degradation下生成。修法和标记先例对齐（`_TIER_KEY` / `COMPACT_KEY`）：收尾指令消息带 `_WRAPUP_KEY` 内部字段，进请求体前由既有 `_INTERNAL_KEYS` 剥离机制删除；老化的边界扫描跳过带此标记的消息。
 
@@ -172,12 +172,14 @@ EOF
 
 ## 九、完成判定（逐项打勾）
 
-- [ ] `age_tool_results` 纯函数按 §3.1–3.3 实现，常量注释带实测依据（口径：排除回滚消息）
-- [ ] `_WRAPUP_KEY` 入 `_INTERNAL_KEYS`，wrapup 消息带标记，边界扫描跳过（§3.4）
-- [ ] `_chat` 唯一会话发送点接上（红队 Q12 已核实：`chat_complete` 全仓 4 个调用点，其余 3 个——压缩摘要器、adversarial、notes_review——不走 run_tool_loop，行为不变或恒等），`prompt_chars` 口径同步（投影后）
-- [ ] compact 三处口径改完（choose_cut 切口、摘要器 region、is_bloated 尺子均按老化后；放置 = session.py `compact()` 开头一次投影），bloated fail 文案含老化口径说明；compact.py、压缩触发与摘要格式未动
-- [ ] §六 14 条用例全绿；9 条变异全被杀
-- [ ] `uv run pytest` 全量绿
-- [ ] 伪恋期真实日志回放 `saved ≥ 90,000`，且日志文件本身零改动（投影不动盘）
-- [ ] 待人定 ①②③ 三项已拍板回填（2026-10-10 全采纳）
-- [ ] issues 表 D65 行更新施工状态
+- [x] `age_tool_results` 纯函数按 §3.1–3.3 实现，常量注释带实测依据（口径：排除回滚消息）
+- [x] `_WRAPUP_KEY` 入 `_INTERNAL_KEYS`，wrapup 消息带标记，边界扫描跳过（§3.4）
+- [x] `_chat` 唯一会话发送点接上（红队 Q12 已核实：`chat_complete` 全仓 4 个调用点，其余 3 个——压缩摘要器、adversarial、notes_review——不走 run_tool_loop，行为不变或恒等），`prompt_chars` 口径同步（投影后）
+- [x] compact 三处口径改完（choose_cut 切口、摘要器 region、is_bloated 尺子均按老化后；放置 = session.py `compact()` 开头一次投影），bloated fail 文案含老化口径说明；compact.py、压缩触发与摘要格式未动
+- [x] §六 14 条用例全绿；9 条变异全被杀
+- [x] `uv run pytest` 全量绿
+- [x] 伪恋期真实日志回放 `saved ≥ 90,000`，且日志文件本身零改动（投影不动盘）
+- [x] 待人定 ①②③ 三项已拍板回填（2026-10-10 全采纳）
+- [x] issues 表 D65 行更新施工状态
+
+**施工实录（2026-10-10）**：`pipeline/agent/aging.py` 新建；`llm.py` 三处（`_WRAPUP_KEY` 入 `_INTERNAL_KEYS`、`_chat` 接投影、`prompt_chars` 投影后口径、wrapup 消息带标记）；`session.py::compact()` 开头一次投影三处共用 + bloated 文案改老化口径。测试 `tests/test_agent_aging.py` 14 条（spec 清单 13 项 + F2b 正对用例 11b）。变异 9 条逐条注坏均被对应用例杀死（M7 由 11 杀、M8 由 11b 杀、M9 由 13 杀）。全量 2519 绿。伪恋期回放 before=142,553 after=44,461 **saved=98,092**（≥90,000 达标；红队预测 98,122，差 30 字符为占位文案字面差）。§3.1 规则 5 与 §四 的张力按 §四 拍板代码落地：compact() 一次投影用默认 `exempt_last_turn=True`（region 即 `aged[1:cut]`，正常形态下 region 全在最后 user 之前，等效全老化；当回合大结果留尾部按原列表全文保留，与 `_chat` 发送口径一致）。
