@@ -95,12 +95,14 @@ cd desktop && npx playwright test               # e2e（含新增回收站用例
 ## 九、完成判定（逐项打勾）
 
 - [ ] **验收第 1 条（UI 规则 2，人勾）**：人在真实打包版、1280×800 与 1440×900 下完整做完「查看回收站 → 认出目标段 → 逐段彻底清空」全流程，别扭之处记回本节
-- [ ] 视觉取舍两张真实窗口截图给人选过（UI 规则 4）
-- [ ] core 两个命令按 §三 实现；共用锁按 §五.3 实现且未用 `EpisodeLease.acquire`；§五.2 校验有对应用例
-- [ ] §七 用例全绿，6 条变异全被杀
-- [ ] `uv run pytest` / vitest / e2e 全量绿（贴结果）
-- [ ] 两个命令未出现在任何 LLM 工具表与白名单（grep 验证）；`desktop/src` 无 `session.jsonl` 字面量（TG-14 静态守卫绿）
-- [ ] issues 表 D66 行更新施工状态
+- [x] 视觉取舍两张真实窗口截图给人选过（UI 规则 4）——**2026-10-10 人选 A（侧栏列表底部，即当前实现）**，B 会话头入口被否；无需改动
+- [x] core 两个命令按 §三 实现；共用锁按 §五.3 实现且未用 `EpisodeLease.acquire`；§五.2 校验有对应用例
+- [x] §七 用例全绿，6 条变异全被杀
+- [x] `uv run pytest` / vitest / e2e 全量绿（贴结果）
+- [x] 两个命令未出现在任何 LLM 工具表与白名单（grep 验证）；`desktop/src` 无 `session.jsonl` 字面量（TG-14 静态守卫绿）
+- [x] issues 表 D66 行更新施工状态
+
+**施工实录（2026-10-10）**：core——`session_log.py` 新增 `_trash_lock`（`_agent/session-trash.lock` fcntl 共用锁）与 `purge_trash_file`（basename 主校验 + 双侧 resolve 纵深），`move_session_to_trash` 两次写纳入同一锁；`cli.py` 加 `/list-trash`、`/purge-trash --file=`（期与选题两叉，退出码 0/1/2/3）。桌面——spawner 四模板（LIST_TRASH/LIST_IDEA_TRASH 带 `stdoutMax: SESSIONS_STDOUT_MAX_BYTES`）、service `conv.trashList`/`conv.purgeTrash`（确认框在 spawn 之前、退出码 3 → E_SESSION_LOCKED）、protocol 两个消息类型 + `TrashRow`、SessionList 底部可折叠分组（键用 `file`、同 sid 显示时间戳后缀、空回收站不渲染）。测试：pytest +10（`tests/test_session_admin.py`，含锁被占退 3、主日志零创建回归、半残两形态）；vitest +12（spawner 模板/宿主/格式化）；e2e +1（删除→出现→逐段清空全链）。变异 6 条全被杀（② 的正确杀法是「未 resolve 的字符串 startswith」放跑软链逃逸——第一次写成双侧 resolve 的 startswith 没死，夹具路径在 macOS 已全 resolve，换对变体后由软链用例杀死）。e2e 修过一处 flake：trashList 多一次往返导致悬停按钮在重渲间不可见，hover+click 改 `toPass` 整体重试。验证：pytest 2537 绿 / vitest 504 绿 / playwright 126 绿 2  skipped（环境变量门控）。
 
 ## 十、与 D65 / D67 的关系
 

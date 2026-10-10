@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -27,7 +28,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 SCHEMA = 1
 LOG_NAME = "session.jsonl"
@@ -192,6 +193,10 @@ def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
     只在持租约时调用（没有别的写者）。顺序：先截末尾残行 → 回收站文件落盘成功 → 再原子替换日志。
     解析不了的坏行无法归属，一律留在原文件。**调用后租约即作废并关闭**：日志已换成新文件，
     旧 fd 指向的是被替换掉的那份，继续 append 会写进孤儿文件。返回（搬走的行数，回收站文件）。
+
+    D66（红队发现 1）：两次写持 `_agent/session-trash.lock` 共用锁——否则 purge 可插进
+    「回收站落盘」与「主日志替换」之间，段从两个位置同时消失且双向报成功（静默永失）。
+    取锁顺序恒为「期租约 → trash 锁」，无反向（purge 只取 trash 锁），无 AB-BA 面。
     """
     from pipeline.paths import atomic_write
 
@@ -204,10 +209,56 @@ def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
     dest = trash_dir / f"{sid}.jsonl"
     if dest.exists():
         dest = trash_dir / f"{sid}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}.jsonl"
-    atomic_write(dest, b"".join(moved))
-    atomic_write(lease.path, b"".join(kept))
+    with _trash_lock(trash_dir.parent):
+        atomic_write(dest, b"".join(moved))
+        atomic_write(lease.path, b"".join(kept))
     lease.close()
     return len(moved), dest
+
+
+@contextlib.contextmanager
+def _trash_lock(agent_dir: Path) -> "Iterator[None]":
+    """`_agent/session-trash.lock` 的 fcntl 文件锁（D66 §五.3）：move 与 purge 共用。
+
+    不许用 `EpisodeLease.acquire` 当这把锁——它 `O_RDWR|O_CREAT` 会在没有主日志时
+    创建主日志，直接打破 purge 的「主日志零接触」。锁文件落在 `_agent/` 而非
+    `session-trash/` 内：不会被 `*.jsonl` 枚举、也不会被 purge 的后缀校验误纳。
+    非阻塞：被占即 `SessionLocked`（调用方映射退出码 3，与期租约被占同码）。
+    """
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(agent_dir / "session-trash.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise SessionLocked("回收站锁被占：另一个进程正在删除或彻底清空会话") from None
+    try:
+        yield
+    finally:
+        os.close(fd)
+
+
+def purge_trash_file(trash_dir: Path | str, name: str) -> Path:
+    """彻底删除回收站里的一段（D66，不可恢复）：持 `_trash_lock` 跨 `unlink`。**主日志零接触。**
+
+    校验（§五.2）：主校验是 basename——拒分隔符、`..`、非 `.jsonl` 后缀（`unlink` 不跟随
+    符号链接，「软链逃逸删外部文件」本不成立；resolve 是纵深：双侧 resolve 后父目录精确等值，
+    软链指向回收站外 → 拒；`data/` 可以是符号链接，单侧 resolve 会误伤，故双侧都 resolve）。
+    异常即退出码：`ValueError` → 2（参数非法）；`FileNotFoundError` → 1（不存在，如实报错，
+    不幂等——重复删是 bug 信号）；`SessionLocked` → 3（锁被占）。
+    """
+    trash_dir = Path(trash_dir)
+    if Path(name).name != name or name == ".." or not name.endswith(".jsonl"):
+        raise ValueError(f"非法回收站文件名: {name!r}")
+    target = trash_dir / name
+    if not target.exists() and not target.is_symlink():
+        raise FileNotFoundError(f"回收站里没有这个文件: {name}")
+    with _trash_lock(trash_dir.parent):
+        resolved = target.resolve()
+        if resolved.parent != trash_dir.resolve():
+            raise ValueError(f"目标路径越界：{resolved} 不在回收站 {trash_dir.resolve()} 内")
+        target.unlink()
+    return target
 
 
 def load_session(raw: bytes, sid: str) -> LoadedSession:

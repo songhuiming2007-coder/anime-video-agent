@@ -57,7 +57,12 @@ export type Template =
   | "LIST_IDEA_SESSIONS"
   // D58：删除一段选题对话（`ava idea /delete-session --sid=`）
   | "DELETE_IDEA_SESSION"
-  | "DELETE_SESSION";
+  | "DELETE_SESSION"
+  // D66：回收站查看与彻底清空（`ava <期> /list-trash`、`/purge-trash --file=`；idea 两叉不带期目录）
+  | "LIST_TRASH"
+  | "LIST_IDEA_TRASH"
+  | "PURGE_TRASH"
+  | "PURGE_IDEA_TRASH";
 
 /** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
 export interface VoiceReadingArgs {
@@ -127,6 +132,11 @@ export interface TemplateArgs {
   DELETE_IDEA_SESSION: { sid: string };
   /** sid 先过 SESSION_ID_RE，不合格抛错不 spawn */
   DELETE_SESSION: { ep: string; sid: string };
+  LIST_TRASH: { ep: string };
+  LIST_IDEA_TRASH: Record<string, never>;
+  /** file 先过 checkedTrashFile（basename 校验），不合格抛错不 spawn */
+  PURGE_TRASH: { ep: string; file: string };
+  PURGE_IDEA_TRASH: { file: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -335,6 +345,21 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep, sid } = args as TemplateArgs["DELETE_SESSION"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
+    case "LIST_TRASH": {
+      const { ep } = args as TemplateArgs["LIST_TRASH"];
+      // stdoutMax 沿用 LIST_SESSIONS 先例（D66 红队发现 3）：无 stdoutMax 只有 8 KB 尾部，清单超长 JSON.parse 炸 E_CORE
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/list-trash"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    }
+    case "LIST_IDEA_TRASH":
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/list-trash"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    case "PURGE_TRASH": {
+      const { ep, file } = args as TemplateArgs["PURGE_TRASH"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/purge-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "PURGE_IDEA_TRASH": {
+      const { file } = args as TemplateArgs["PURGE_IDEA_TRASH"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/purge-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
   }
@@ -343,6 +368,13 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
 function checkedSid(sid: string): string {
   if (!SESSION_ID_RE.test(sid)) throw new Error(`会话号形状不对：「${sid}」`);
   return sid;
+}
+
+/** D66 §五.2：basename 主校验（拒分隔符、`..`、非 .jsonl 后缀）；core 侧同规则再校验一遍。 */
+function checkedTrashFile(file: string): string {
+  const base = file.split("/").pop() ?? "";
+  if (base !== file || file === ".." || !file.endsWith(".jsonl")) throw new Error(`回收站文件名形状不对：「${file}」`);
+  return file;
 }
 
 /** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。

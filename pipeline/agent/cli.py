@@ -45,9 +45,11 @@ from pipeline.agent.session_log import (
     EpisodeLease,
     SessionLocked,
     SessionLogBroken,
+    _parse_lines,
     acquire_idea_lease,
     list_sessions,
     move_session_to_trash,
+    purge_trash_file,
     read_log,
     resume_target,
     split_by_sid,
@@ -1079,8 +1081,9 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
     """`/list-sessions` 与 `/delete-session --sid=<sid>`。非本族命令返回 None。
 
     退出码：0 成；1 败（sid 不存在、写盘失败）；2 用法错；3 该期有活会话（租约被占）。
+    D66：同区块加 `/list-trash`（只读）与 `/purge-trash --file=`（彻底删除，不可恢复）。
     """
-    if not argv or argv[0] not in ("/list-sessions", "/delete-session"):
+    if not argv or argv[0] not in ("/list-sessions", "/delete-session", "/list-trash", "/purge-trash"):
         return None
     rest = argv[1:]
     try:
@@ -1094,7 +1097,69 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
             return 2
         print(json.dumps(_session_rows(read_log(resolved)), ensure_ascii=False))
         return 0
+    if argv[0] == "/list-trash":
+        if rest:
+            print("[ERROR] 用法: ava <期> /list-trash", file=sys.stderr)
+            return 2
+        print(json.dumps(_trash_rows(resolved / "_agent" / "session-trash"), ensure_ascii=False))
+        return 0
+    if argv[0] == "/purge-trash":
+        return _purge_trash(resolved / "_agent" / "session-trash", rest)
     return _delete_session(lambda: EpisodeLease.acquire(resolved), rest, "先结束该期的会话再删除")
+
+
+def _trash_rows(trash_dir: Path) -> list[dict[str, Any]]:
+    """`/list-trash` 的行（D66 §三）：回收站一段一文件，逐文件摘要。目录不存在或为空 → `[]`。
+
+    逐文件状态判据（解析器对任何字节都不抛错，判据必须写明）：`st_size == 0` → `empty`；
+    `st_size > 0` 且 `list_sessions` 为空 → `parse_error`；`_parse_lines` 的残行计数 > 0
+    或存在无法解析的完整行（条目里的 None）→ 附加 `partial`（末尾残行与中间坏行两种半残都盖）。
+    """
+    if not trash_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for file in sorted(p for p in trash_dir.glob("*.jsonl") if not p.is_dir()):
+        size = file.stat().st_size
+        row: dict[str, Any] = {"file": file.name, "sid": None, "last_ts": "", "message_count": 0, "bytes": size}
+        if size == 0:
+            row["empty"] = True
+        else:
+            raw = file.read_bytes()
+            entries, torn = _parse_lines(raw)
+            summaries = list_sessions(raw)
+            if not summaries:
+                row["parse_error"] = True
+            else:
+                sids = {s.sid for s in summaries}
+                row["sid"] = sids.pop() if len(sids) == 1 else None
+                row["last_ts"] = max(s.last_activity for s in summaries)
+                row["message_count"] = sum(s.messages for s in summaries)
+            if torn > 0 or any(record is None for _index, record in entries):
+                row["partial"] = True
+        rows.append(row)
+    return rows
+
+
+def _purge_trash(trash_dir: Path, rest: list[str]) -> int:
+    """`/purge-trash --file=<回收站文件名>`：彻底删除（不可恢复）。终端直跑也过全量校验（§五.5）。"""
+    try:
+        name = _valued_flags(rest, ("--file",))["--file"]
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    try:
+        dest = purge_trash_file(trash_dir, name)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    except SessionLocked as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 3
+    print(json.dumps({"purged": dest.name}, ensure_ascii=False))
+    return 0
 
 
 def _delete_session(acquire: Callable[[], EpisodeLease], rest: list[str], busy_hint: str) -> int:
@@ -2532,6 +2597,13 @@ def main(argv: list[str] | None = None) -> int:
     # D58：删除一段选题对话 → data/_idea/_agent/session-trash/（同期会话版的退出码）
     if args[:2] == [IDEA_KEYWORD, "/delete-session"]:
         return _delete_session(lambda: acquire_idea_lease(paths.ROOT), args[2:], "先结束选题会话再删除")
+    # D66：选题回收站的查看与彻底清空（与期会话同一形状；插在「多余参数报错」之前）
+    if args == [IDEA_KEYWORD, "/list-trash"]:
+        print(json.dumps(_trash_rows(paths.ROOT / "data" / IDEA_DIR / "_agent" / "session-trash"),
+                         ensure_ascii=False))
+        return 0
+    if args[:2] == [IDEA_KEYWORD, "/purge-trash"]:
+        return _purge_trash(paths.ROOT / "data" / IDEA_DIR / "_agent" / "session-trash", args[2:])
 
     # 子命令 2: ava idea (无期选题会话)
     if args[0] == IDEA_KEYWORD:

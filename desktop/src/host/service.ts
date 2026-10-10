@@ -41,6 +41,7 @@ import {
   type Provenance,
   type RpcError,
   type SessionRow,
+  type TrashRow,
   type SnapshotApprovals,
   type ShotsEntry,
   type SnapshotStatus,
@@ -629,6 +630,10 @@ export class HostService {
         return this.convFresh(p.convKey);
       case "conv.delete":
         return this.convDelete(p.convKey, p.sid);
+      case "conv.trashList":
+        return this.convTrashList(p.convKey);
+      case "conv.purgeTrash":
+        return this.convPurgeTrash(p.convKey, p.file);
       // ---- Spec 11 §4.3/§4.4 + Spec 12 §4.2 ----
       case "script.stat":
         return this.scriptStat(this.epForIo(p.epKey));
@@ -1335,6 +1340,56 @@ export class HostService {
     // 删的是别的会话：把刚才为释放租约而结束的那个接回来，人看到的对话不变
     if (wasLive !== null && wasLive !== sid) await this.sessions.resume(target.key, { ...target, mode: idea ? "idea" : "continue", sid: wasLive });
     return { deleted: true, moved };
+  }
+
+  /** D66：回收站列表（纯读，经 core `/list-trash`；红线 3：桌面端不读会话记录）。 */
+  private async convTrashList(convKey: string): Promise<TrashRow[]> {
+    const target = this.adminConv(convKey);
+    const idea = target.key === "idea";
+    const r = idea ? await this.core("LIST_IDEA_TRASH", {}) : await this.core("LIST_TRASH", { ep: target.abs as string });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "读取回收站超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "读取回收站失败", tails);
+    let raw: unknown;
+    try {
+      raw = JSON.parse((r.stdoutFull ?? r.stdoutTail).trim());
+    } catch {
+      throw new RpcFail("E_CORE", "core 的 /list-trash 输出不是 JSON", tails);
+    }
+    if (!Array.isArray(raw)) throw new RpcFail("E_CORE", "core 的 /list-trash 输出不是列表", tails);
+    return raw.map((row) => {
+      const o = row as Record<string, unknown>;
+      if (typeof o.file !== "string" || (o.sid !== null && typeof o.sid !== "string")
+        || typeof o.last_ts !== "string" || typeof o.message_count !== "number" || typeof o.bytes !== "number") {
+        throw new RpcFail("E_CORE", "core 的 /list-trash 行不符合约定", tails);
+      }
+      return {
+        file: o.file, sid: o.sid as string | null, lastTs: o.last_ts, messageCount: o.message_count, bytes: o.bytes,
+        empty: o.empty === true, parseError: o.parse_error === true, partial: o.partial === true,
+      };
+    });
+  }
+
+  /** D66：彻底删除回收站里的一段（不可恢复）。确认框在 spawn core **之前**（同 convDelete 落位，红队发现 2）。 */
+  private async convPurgeTrash(convKey: string, file: string): Promise<{ purged: boolean }> {
+    const base = file.split("/").pop() ?? "";
+    if (base !== file || file === ".." || !file.endsWith(".jsonl")) throw new RpcFail("E_BAD_REQUEST", `回收站文件名形状不对：「${file}」`);
+    const target = this.adminConv(convKey);
+    const idea = target.key === "idea";
+    const row = (await this.convTrashList(convKey)).find((r) => r.file === file);
+    if (!row) throw new RpcFail("E_STALE", "该回收站条目已不存在");
+    const detail = [
+      row.sid ? `会话 ${row.sid.slice(0, 8)}…` : "（无法辨认所属会话）",
+      `${row.messageCount} 条消息 · ${Math.round(row.bytes / 1024)} KB${row.lastTs ? ` · 最后活动 ${row.lastTs}` : ""}`,
+      "彻底删除，不可恢复。",
+    ].join("\n");
+    if (!(await this.deps.confirm("彻底删除这段会话？", detail))) return { purged: false };
+    const r = idea ? await this.core("PURGE_IDEA_TRASH", { file }) : await this.core("PURGE_TRASH", { ep: target.abs as string, file });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "彻底删除超时", tails);
+    if (r.code === 3) throw new RpcFail("E_SESSION_LOCKED", r.stderrTail.trim() || "另一个会话管理操作进行中", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `彻底删除失败（core 退出码 ${r.code}）`, tails);
+    return { purged: true };
   }
 
   // ---------------- 退出（Spec 10 §2.10） ----------------

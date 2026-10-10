@@ -31,6 +31,9 @@ export type Method =
   | "conv.enter" // { convKey, sid } → ConvSnapshot：有回合在跑 E_BUSY；先结束空闲活会话，再 --continue <sid>
   | "conv.fresh" // { convKey } → ConvSnapshot：结束活会话并清空对话区；下一条消息开新会话
   | "conv.delete" // { convKey, sid } → { deleted, moved }：原生确认框后 spawn DELETE_SESSION（移进 _agent/session-trash/）
+  // ---- D66：回收站查看与选择性彻底清空（人裁决：恢复不做 / 逐段确认 / 仅人手动）----
+  | "conv.trashList" // { convKey } → TrashRow[]（spawn LIST_TRASH，纯读）
+  | "conv.purgeTrash" // { convKey, file } → { purged }：原生确认框（写明不可恢复）后 spawn PURGE_TRASH
   // ---- Spec 11 §4.3/§4.4：02.5 编辑器 / 03.5 顺听 / 人时；Spec 12 §4.2：封面导入 ----
   | "script.stat" // { epKey } → ScriptStatJson：打开编辑器时的基线指纹（只读）
   | "script.save" // { epKey, text, expectSize, expectMtimeNs } → SavedFingerprintJson（spawn SAVE_SCRIPT）
@@ -106,6 +109,8 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "conv.enter": { required: ["convKey", "sid"], optional: [] },
   "conv.fresh": { required: ["convKey"], optional: [] },
   "conv.delete": { required: ["convKey", "sid"], optional: [] },
+  "conv.trashList": { required: ["convKey"], optional: [] },
+  "conv.purgeTrash": { required: ["convKey", "file"], optional: [] },
   "script.stat": { required: ["epKey"], optional: [] },
   "script.save": { required: ["epKey", "text", "expectSize", "expectMtimeNs"], optional: [] },
   "script.seal": { required: ["epKey"], optional: [] },
@@ -454,4 +459,16 @@ export interface SessionRow {
   firstUser: string;
   resumable: boolean;
   live: boolean;
+}
+
+/** D66：回收站一行（core `/list-trash` 的字段改名；empty/parseError/partial 见 core `_trash_rows` 判据）。 */
+export interface TrashRow {
+  file: string;
+  sid: string | null;
+  lastTs: string;
+  messageCount: number;
+  bytes: number;
+  empty: boolean;
+  parseError: boolean;
+  partial: boolean;
 }
