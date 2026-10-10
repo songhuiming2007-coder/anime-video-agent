@@ -247,13 +247,21 @@ def _assistant_index(records: list[dict[str, Any]]) -> dict[str, int]:
     return owner
 
 
+def _last_compaction(records: list[dict[str, Any]]) -> int:
+    """最后一个压缩事件的位置（D62）；没有为 -1。"""
+    return max((i for i, r in enumerate(records) if r.get("k") == "compaction"), default=-1)
+
+
 def plan_repairs(session: LoadedSession) -> list[dict[str, Any]]:
     """崩溃恢复要追加的记录（§2.8 第 4–6 步）。返回的记录**不含** sid/seq/ts，由租约补。
 
     已提交的整行一字不改——修复全部是追加，由 `rebuild_messages` 插回正确位置。
+    D62：工具结果的修复只看最后一次压缩**之后**的 assistant——之前的要么已被压进摘要
+    （补了也插不回去），要么随压缩事件的 tail 原样保留（压缩只在全部闭环时发生，不缺结果）。
     """
     records = session.records
     repairs: list[dict[str, Any]] = []
+    compacted_at = _last_compaction(records)
 
     owner = _assistant_index(records)
     started = {
@@ -278,7 +286,7 @@ def plan_repairs(session: LoadedSession) -> list[dict[str, Any]]:
                 satisfied[str(item.get("tool_call_id"))] = True
 
     for index, record in enumerate(records):
-        if record.get("k") != "msg":
+        if record.get("k") != "msg" or index < compacted_at:
             continue
         message = record.get("message") or {}
         calls = message.get("tool_calls") or []
@@ -350,8 +358,16 @@ def plan_repairs(session: LoadedSession) -> list[dict[str, Any]]:
     return repairs
 
 
+def _copy(message: Any) -> Any:
+    return json.loads(json.dumps(message, ensure_ascii=False))
+
+
 def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
-    """按记录重建 `messages[1:]`（不含 system）：丢弃回滚回合，按 after_seq 插回修复结果。"""
+    """按记录重建 `messages[1:]`（不含 system）：丢弃回滚回合，按 after_seq 插回修复结果。
+
+    D62 压缩投影：遇到 `compaction` 事件，此前重建的全部丢掉，换成事件里的摘要 +（一次性重注入卡）+ 保留尾部
+    （事件自带两者的完整消息，不靠序号对位）；此前的修复锚点随之失效，跳过。
+    """
     rolled_back = {str(r.get("turn_id")) for r in session.records if r.get("k") == "turn_rollback"}
     rebuilt: list[dict[str, Any]] = []
     positions: dict[int, int] = {}   # seq → rebuilt 下标
@@ -361,7 +377,11 @@ def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
             if str(record.get("turn_id")) in rolled_back:
                 continue
             positions[int(record.get("seq", 0))] = len(rebuilt)
-            rebuilt.append(json.loads(json.dumps(record.get("message"), ensure_ascii=False)))
+            rebuilt.append(_copy(record.get("message")))
+        elif kind == "compaction":
+            card = [_copy(record["card"])] if record.get("card") else []
+            rebuilt = [_copy(record.get("summary")), *card, *(_copy(m) for m in record.get("tail") or [])]
+            positions = {}
     # 修复结果插在所属 assistant 之后、其已有 tool 消息之后（§2.8 第 4 步）
     for record in session.records:
         if record.get("k") != "repair_tool_results":

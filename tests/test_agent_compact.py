@@ -80,6 +80,8 @@ def test_repo_config_parses_and_covers_both_effective_models():
     # spec §4.0：gpt-4o 的触发点 76.8k、尾部 ≈19k
     assert cfg.trigger_tokens("gpt-4o") == 76800
     assert cfg.tail_budget_tokens("gpt-4o") == 19200
+    # 人裁决④：自动触发挂代理实测，实测前仓里必须是关的
+    assert cfg.auto_trigger is False
 
 
 def test_missing_config_means_no_window(tmp_path):

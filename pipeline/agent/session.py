@@ -680,6 +680,33 @@ class SessionHost:
 _HOST_EP = object()
 
 
+@contextlib.contextmanager
+def _sigint_blocked() -> Iterator[None]:
+    """临界区内把 SIGINT 推迟到区段结束（D62 压缩落盘 + 原地改写）。
+
+    不用 `pthread_sigmask`：它只屏蔽主线程，终端 Ctrl-C 发给整个进程，内核会交给任何没屏蔽的
+    线程（REPL 里常驻着事件发布守护线程），CPython 照样在主线程下一条字节码抛出（复核 A 实测）。
+    Python 层处理器**总在主线程**执行、与哪个线程收到信号无关——区内换成「只记一笔」，
+    退出时恢复原处理器，记过就交给原处理器补一次（缺省处理器 = 抛 KeyboardInterrupt）。
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    hits: list[int] = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: hits.append(signum))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        if hits and callable(previous):
+            previous(signal.SIGINT, None)
+
+
+def _k(tokens: int | None) -> str:
+    """notice 用的 token 读数：12345 → 12.3k；None → ?。"""
+    return "?" if tokens is None else f"{tokens / 1000:.1f}k"
+
+
 class AgentSession:
     """一条会话线（主会话或子会话）。"""
 
@@ -706,6 +733,16 @@ class AgentSession:
         self._last_records: list[dict[str, Any]] = []
         self._injected_docs: dict[str, str] = {}
         self._tool_summaries: dict[int, str] = {}  # 本条回复内 index → start 帧的 summary（end 帧复用）
+        # D62 上下文压缩：摘要器失败 / 膨胀 / 压不了之后本会话不再自动压缩（spec §4.5）
+        self.auto_compact_disabled = False
+        self._compact_warned: set[str] = set()   # 「自动压缩不可用」只提示一次
+        # 本回合最近一次压缩点：(压缩后长度, tracker 快照)。回合要回滚时只回到这里（spec §九 偏离 10）
+        self._rollback_mark: tuple[int, Any] | None = None
+        self._turn_compaction: dict[str, Any] | None = None  # 本回合压缩记账：首次压缩前、末次压缩后
+        self._tracker: Any = None
+        self._egress_trusted: list[str] = []
+        self._egress_skip_turn = ""   # 本回合已提示过「预检不过、这次不压」
+        self._root: Path | None = None
 
     # ---- 会话记录 ----
 
@@ -817,6 +854,10 @@ class AgentSession:
         self.messages = messages
         self._turn_id = turn_id or secrets.token_hex(8)
         self._draft_writes = 0
+        self._tracker = tracker
+        self._root = root
+        self._rollback_mark = None
+        self._turn_compaction = None
         self._ep_dir = self.host.ep_dir if ep_dir is _HOST_EP else (
             Path(ep_dir).resolve() if ep_dir is not None else None  # type: ignore[arg-type]
         )
@@ -851,6 +892,7 @@ class AgentSession:
                 egress_trusted = [
                     *tracker.trusted_doc_texts, *route_trusted_texts(effective_scope, root=root)
                 ]
+                self._egress_trusted = egress_trusted  # D62：自动压缩改写前用同一可信集预检
                 outcome = llm_module.run_tool_loop(
                     messages,
                     ctx=self._tool_context(effective_scope, root),
@@ -901,6 +943,11 @@ class AgentSession:
             return
         if outcome.get("rollback"):
             self._rollback(messages, snapshot, tracker)
+        # 压缩记账以会话层为准：压缩落完后才浮出的中断，工具循环那边记不上（审查 #3）
+        compaction = self._turn_compaction or {}
+        outcome["compacted"] = bool(compaction)
+        outcome["tokens_before"] = compaction.get("tokens_before")
+        outcome["tokens_after"] = compaction.get("tokens_after")
         with self.interrupt.absorbed():
             self._record({
                 "k": "turn_end",
@@ -916,6 +963,10 @@ class AgentSession:
                 "prompt_tokens": outcome.get("prompt_tokens"),  # D56：服务商给的输入 token；拿不到为 None
                 "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
                 "recovered": False,
+                # D62 人裁决②：压缩改写了工作前提，turn_end 如实带出（desktop 读数「压缩后（压缩前峰值）」用）
+                "compacted": outcome["compacted"],
+                "tokens_before": outcome["tokens_before"],
+                "tokens_after": outcome["tokens_after"],
             })
             if self._log_broken:
                 self.channel.show("notice", {
@@ -924,8 +975,22 @@ class AgentSession:
                 })
 
     def _rollback(self, messages: list[dict[str, Any]], snapshot: tuple, tracker: Any) -> None:
-        """回滚 = 恢复到回合开始时的快照（§2.3 第 3 条）。"""
-        length, saved_tracker = snapshot
+        """回滚 = 恢复到回合开始时的快照（§2.3 第 3 条）。
+
+        D62：本回合压缩过 → 回合起点的快照水位已失效（压缩把历史缩到它之下，`del` 成空操作 = 假回滚），
+        改为回到**最近一次压缩点**。这与日志投影一致：压缩事件自带保留尾部，`turn_rollback` 只滤掉
+        本回合在压缩点之后提交的消息。压缩本身不撤销（spec §九 偏离 10）。
+        """
+        mark = self._rollback_mark
+        length, saved_tracker = mark if mark is not None else snapshot
+        if mark is not None:
+            self.channel.show("notice", {
+                "level": "warn", "code": "rollback_to_compaction",
+                "text": (
+                    "本回合压缩过上下文：只回滚到压缩点，压缩本身保留（较早的对话已是摘要）；"
+                    "压缩点之前本轮已提交的内容（含本轮的提问）仍在上下文里。"
+                ),
+            })
         del messages[length:]
         # §2.3 第 3 条 / 🔵-1 / 🟡-6：**只有**显示锁存不回退（`memory_warn_printed`，
         # 免得终端重复打印同一条告警）；告警消息本身随回滚出历史，下一轮重新注入。
@@ -1094,6 +1159,238 @@ class AgentSession:
                 tracker.trust(trusted_texts_of_docs([doc], root))  # 可信集 (a) 修订重注入
         self._injected_docs = {}
 
+    # ---- 上下文压缩（D62） ----
+
+    def compact(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tracker: Any,
+        root: Path | None = None,
+        scope: str | None = None,
+        trigger: str = "manual",
+        status_card: str | None = None,
+        reinject_card: str | None = None,
+        reading: Any = None,
+    ) -> dict[str, Any]:
+        """把 `messages[1:cut]` 换成一条摘要（spec §4.2–4.8）。手动 `/compact` 与自动触发共用。
+
+        失败一律历史不动、如实返回原因；摘要器失败 / 膨胀 / 配置坏 → 本会话禁用自动压缩。
+        成功时**先写盘再原地改写**（与 `_commit` 同一纪律），并清掉被压掉的已注入文档登记，
+        让下一轮装配器重注当前工序的规程（压缩发现 #1，spec §九）。
+        中断：手动时吞掉并报「历史未改动」；自动（回合内）时照抛，交给工具循环的落点表。
+        """
+        import hashlib
+
+        from pipeline.agent import compact as cp
+
+        manual = trigger == "manual"
+
+        def fail(reason: str, text: str, *, disable: bool = False) -> dict[str, Any]:
+            if disable:
+                self.auto_compact_disabled = True
+            return {"ok": False, "reason": reason, "text": text}
+
+        if not self.persist or messages is not self.host.main_messages:
+            return fail("not_main", "只有主会话可以压缩（子会话短且单次，不压）")
+        if len(messages) < 2:
+            return fail("nothing", "没有可压缩的内容：会话还没有对话")
+        self.host.ensure_lease()
+        effective_scope = scope or self._scope
+        cfg = llm_module.load_llm_config(root)
+        if cfg is None:
+            return fail("no_llm", "LLM 不可用（缺配置或密钥），无法生成摘要")
+        try:
+            ccfg = cp.load_compact_config(root)
+        except cp.CompactConfigError as exc:
+            return fail("bad_config", f"config/agent/compact.json 不合法：{exc}", disable=True)
+        purpose = llm_module.purpose_for_scope(effective_scope)
+        model = cfg.model_for(purpose)
+        budget = ccfg.tail_budget_tokens(model)
+        if budget is None:
+            return fail(
+                "no_window",
+                f"窗口表里没有当前模型 {model}：先在 config/agent/compact.json 登记它的窗口（不猜）",
+            )
+        if not cp.is_closed(messages):
+            return fail("open_calls", "历史里有还没配上结果的工具调用，现在压缩会切坏配对")
+        cut = cp.choose_cut(messages, token_budget=budget, max_messages=ccfg.tail_max_messages)
+        region = messages[1:cut] if cut > 1 else []
+        if not cp.strip_marked(region):
+            return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
+
+        # 读数连同口径一起传进来（审查 #5）：自动触发的读数可能是估算，不许记成实测
+        before = reading if reading is not None else cp.context_reading(None, messages)
+        card = cp.card_message(reinject_card) if reinject_card else None
+        tail = cp.strip_marked(messages[cut:])
+        if not manual:
+            # 自动压缩后回合还要接着发请求：先用本回合的可信集把「压缩后会留下的原文」过一遍出网断言，
+            # 过不了就不压——否则压缩后撞断言只能回到压缩点，脏串仍在尾部里，一轮轮卡死（审查 #2）。
+            # 摘要不用查：它是输出侧脱敏后的文本。查在调摘要器之前，省一次注定白费的长调用
+            from pipeline.agent.tools import assert_egress_boundary
+
+            kept_wire = llm_module._wire_messages([messages[0], *([card] if card else []), *tail], purpose)
+            try:
+                assert_egress_boundary(cfg.endpoint, {"messages": kept_wire}, trusted_texts=self._egress_trusted)
+            except PermissionError as exc:
+                return fail("egress", f"压缩后留下的原文过不了出网断言（{exc}），不压")
+        request, input_hits = cp.build_summary_request(region, status_card=status_card)
+        try:
+            reply = llm_module.chat_complete(
+                request, None, config=cfg, root=root, timeout=cp.COMPACT_TIMEOUT_S,
+                scope=effective_scope, purpose=purpose,
+            )
+        except KeyboardInterrupt:
+            if not manual:
+                raise
+            return fail("interrupted", "压缩被中断，历史未改动")
+        except (llm_module.LLMError, PermissionError) as exc:
+            return fail("error", f"摘要器调用失败，历史未改动：{exc}", disable=True)
+        text = str(reply.get("content") or "").strip()
+        if reply.get("degraded") or not text:
+            return fail("empty", "摘要器没有返回可用摘要，历史未改动", disable=True)
+        if cp.is_bloated(text, region):
+            return fail(
+                "bloated",
+                f"摘要不比原文短多少（≥ {cp.BLOAT_RATIO:.0%}），压缩没有意义，历史未改动",
+                disable=True,
+            )
+
+        summary = cp.summary_message(cp.annotate_redactions(text, input_hits))
+        after = cp.compacted_history(messages, cut, summary, card)
+        chars_before = sum(cp.message_chars(m) for m in messages)
+        chars_after = sum(cp.message_chars(m) for m in after)
+        if before.source == "usage" and before.tokens is not None and chars_before:
+            # 同一把尺：压缩前是服务商实测，压缩后按字数比例折算，不拿实测去比估算
+            tokens_after, after_source = round(before.tokens * chars_after / chars_before), "scaled"
+        else:
+            tokens_after, after_source = cp.estimate_tokens(after), "estimate"
+        kept_docs = self._kept_injected(tracker, tail, effective_scope, root)
+        info = {
+            "ok": True,
+            "trigger": trigger,
+            "compacted": len(region),
+            "kept": len(tail),
+            "tokens_before": before.tokens,
+            "tokens_before_source": before.source,
+            "tokens_after": tokens_after,
+            "tokens_after_source": after_source,
+        }
+        record = {
+            "k": "compaction",
+            **{k: v for k, v in info.items() if k != "ok"},
+            "summary": summary,
+            "card": card,
+            "tail": tail,
+            # 压缩后仍在上下文里的已注入文档：--continue 据此重置「已注入」登记（审查 #1）
+            "docs_kept": sorted(kept_docs),
+            "summary_sha256": hashlib.sha256(summary["content"].encode("utf-8")).hexdigest(),
+            # 手动压缩不属于任何回合：给自己的 id，免得挂在上一回合名下、跟着它的回滚记录走
+            "turn_id": f"compact-{secrets.token_hex(4)}" if manual or not self._turn_id else self._turn_id,
+        }
+        try:
+            # 写盘、原地改写、登记与记账必须一起成立（审查 #3）。`defer()` 只在 yield 处接住异常，
+            # 挡不住信号打断区内语句（见 _commit 注释）；所以这段在主线程上**屏蔽 SIGINT**，
+            # 信号挂起到区段做完才浮出，再由 defer 接住、退出时抛出
+            with self.interrupt.defer(), _sigint_blocked():
+                self._open_session(effective_scope, tracker, root)  # 恢复后还没跑过回合：先写 segment_start
+                self._record(record)
+                cp.apply_compaction(messages, cut, summary, card)
+                tracker.injected_paths = kept_docs
+                tracker.active_step_key = None  # 下一轮装配按当前工序重注被压掉的规程
+                tracker.memory_warn_injected = False
+                if not manual:
+                    self._rollback_mark = (len(messages), copy.deepcopy(tracker))
+                    first = self._turn_compaction or {"tokens_before": before.tokens}
+                    self._turn_compaction = {**first, "tokens_after": tokens_after}
+                self.channel.show("notice", {
+                    "level": "info", "code": "compacted",
+                    "text": (
+                        f"上下文已压缩（{'手动' if manual else '自动'}）：{len(region)} 条较早消息并成一条摘要，"
+                        f"保留近期 {len(tail)} 条；约 {_k(before.tokens)} → 约 {_k(tokens_after)} token。"
+                    ),
+                })
+        except KeyboardInterrupt:
+            if not manual:
+                raise
+        return info
+
+    def _kept_injected(self, tracker: Any, tail: list[dict[str, Any]], scope: str, root: Path | None) -> set[str]:
+        """已注入文档里正文仍逐字留在保留尾部的那些；其余的压缩后要让装配器重注。"""
+        from pipeline.agent import compact as cp
+        from pipeline.agent.assembly import load_injected_doc, resolve_memory_injection
+        from pipeline.agent.memory import MEMORY_REL_PATH
+
+        contents: dict[str, str] = {}
+        for path in tracker.injected_paths:
+            if path == MEMORY_REL_PATH:
+                resolved = resolve_memory_injection(scope, root=root)
+                doc = resolved[0] if resolved is not None and not resolved[1] else None
+            else:
+                doc = load_injected_doc(path, root=root)
+            if doc is not None:
+                contents[path] = doc.content
+        return cp.kept_doc_paths(contents, tail)
+
+    def _auto_compact(self, convo: list[dict[str, Any]], tokens_hint: int | None) -> dict[str, Any] | None:
+        """工具循环的自动触发点（PR3，spec §4.1 双触发）。返回 None = 没压；`{"ok": False, "abort": True}` = 中止回合交人。"""
+        from pipeline.agent import compact as cp
+
+        if not self.persist or self.auto_compact_disabled or convo is not self.host.main_messages:
+            return None
+        try:
+            ccfg = cp.load_compact_config(self._root)
+        except cp.CompactConfigError as exc:
+            self.auto_compact_disabled = True
+            self.channel.show("notice", {"level": "error", "code": "compact_config",
+                                         "text": f"config/agent/compact.json 不合法，本会话不自动压缩：{exc}"})
+            return None
+        if not ccfg.auto_trigger:
+            return None
+        cfg = llm_module.load_llm_config(self._root)
+        if cfg is None:
+            return None
+        model = cfg.model_for(llm_module.purpose_for_scope(self._scope))
+        decision = cp.decide_trigger(ccfg, model, tokens_hint, convo)
+        if decision.reason in ("no_window", "no_reading"):
+            if decision.reason not in self._compact_warned:
+                self._compact_warned.add(decision.reason)
+                why = (f"窗口表里没有当前模型 {model}" if decision.reason == "no_window"
+                       else "服务商没给 token 读数、字数也估不出")
+                self.channel.show("notice", {"level": "warn", "code": "compact_unavailable",
+                                             "text": f"自动压缩不可用：{why}。上下文会一直涨，必要时手动 /compact。"})
+            return None
+        if not decision.fire:
+            return None
+        card = None
+        if self.host.ep_dir is not None:  # idea 会话：静态卡本就在 messages[0]，跳过重注入（人裁决③）
+            from pipeline.status import inspect_episode
+
+            card = self._status_card(self._scope, inspect_episode(self.host.ep_dir))
+        result = self.compact(
+            convo, tracker=self._tracker, root=self._root, scope=self._scope, trigger="auto",
+            status_card=card, reinject_card=card, reading=decision.reading,
+        )
+        if result["ok"]:
+            return result
+        if result["reason"] == "egress":
+            # 只跳过这一次（复核 B）：脏消息会随本回合撞断言后的整回合回滚出历史，没理由连带关掉自动压缩。
+            # 同一回合只提示一次——预检在摘要器之前、代价小，循环每轮重试也不白花长调用
+            if self._egress_skip_turn != self._turn_id:
+                self._egress_skip_turn = self._turn_id
+                self.channel.show("notice", {"level": "warn", "code": "compact_skipped",
+                                             "text": f"已到压缩线，这次不压：{result['text']}。"})
+            return None
+        if result["reason"] in ("nothing", "no_window", "open_calls", "not_main", "no_llm"):
+            # 不是摘要器失败：压不了就照常跑（撞窗口时服务商报错如实交人），本会话不再反复尝试
+            self.auto_compact_disabled = True
+            self.channel.show("notice", {"level": "warn", "code": "compact_skipped",
+                                         "text": f"已到压缩线但压不了：{result['text']}。本会话不再自动压缩。"})
+            return None
+        self.channel.show("notice", {"level": "error", "code": "compact_failed",
+                                     "text": f"自动压缩失败：{result['text']}。本回合停止，本会话不再自动压缩。"})
+        return {"ok": False, "abort": True, "text": result["text"]}
+
     def _tool_context(self, scope: str, root: Path | None):
         from pipeline.agent.tools import ToolContext
 
@@ -1121,6 +1418,8 @@ class AgentSession:
                 "k": "tool_exec_started", "tool_call_id": call_id, "name": name, "turn_id": turn_id,
             }),
             critical_tools=CRITICAL_TOOLS,
+            # D62：子会话（persist=False）不自动压缩（spec §4.8，审查 #15）
+            compact=self._auto_compact if self.persist else None,
         )
 
     def _on_trace(self, payload: dict[str, Any]) -> None:
@@ -1536,6 +1835,11 @@ def prepare_resume(host: "SessionHost", sid: str) -> dict[str, Any]:
             resident_sha = str(record["resident_sha256"])
         elif record.get("k") == "turn_start" and record.get("step_key"):
             step_key = str(record["step_key"])
+        elif record.get("k") == "compaction":
+            # 压掉的规程不再算「已注入」（审查 #1）：只留事件记下的、正文仍在保留尾部里的那些
+            kept = set(record.get("docs_kept") or [])
+            docs = {path: sha for path, sha in docs.items() if path in kept}
+            step_key = None
         elif record.get("k") == "msg":
             for item in record.get("docs") or []:
                 if item.get("path"):

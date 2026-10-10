@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
-from pipeline.agent.compact import COMPACT_KEY
+from pipeline.agent.compact import COMPACT_KEY, estimate_tokens
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
     ToolContext,
@@ -61,6 +61,7 @@ _STOP_REASON_TEXT = {
     "interrupted": "人类中断",
     "error": "出错",
     "checkpoint_stop": "检查点停止",
+    "compact_failed": "上下文压缩失败",
 }
 
 # 合成工具结果（Spec 9 §2.2.4 表，逐字）。
@@ -425,6 +426,10 @@ class LoopControl:
     on_trace: Callable[[dict[str, Any]], None] | None = None
     on_exec_started: Callable[[str, str], None] | None = None
     critical_tools: frozenset[str] = frozenset()
+    compact: Callable[[list[dict[str, Any]], int | None], dict[str, Any] | None] | None = None
+    """D62 自动压缩触发点：`(messages, token 读数提示)` → None（没压）/ `{"ok": True, ...}`（已原地压缩）/
+    `{"ok": False, "abort": True, "text": …}`（失败，中止回合交人）。读数提示 = 上一次请求的服务商实测
+    + 其后新增消息的字数估算；拿不到实测为 None（回调自己回落估算）。"""
 
 
 def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
@@ -543,8 +548,13 @@ def _loop_result(
     elapsed_s: float = 0.0,
     lookups: dict[str, int] | None = None,
     prompt_tokens: int | None = None,
+    compaction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。"""
+    """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。
+
+    D62：本回合压缩过时 `rollback` 照报——回滚到哪由会话层决定（最近一次压缩点，spec §九 偏离 10）。
+    """
+    comp = compaction or {}
     return {
         "messages": convo,
         "final": final,
@@ -563,6 +573,9 @@ def _loop_result(
         "elapsed_s": elapsed_s,
         "lookups": dict(lookups) if lookups else _zero_lookups(),
         "prompt_tokens": prompt_tokens,
+        "compacted": bool(comp.get("compacted")),
+        "tokens_before": comp.get("tokens_before"),   # 本回合第一次压缩前（峰值）
+        "tokens_after": comp.get("tokens_after"),     # 本回合最后一次压缩后
     }
 
 
@@ -629,6 +642,9 @@ def run_tool_loop(
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
     prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
+    # D62：触发读数提示的基准——最近一次请求时的实测 token 与当时的历史长度；压缩后作废
+    usage_anchor: tuple[int, int] | None = None
+    comp: dict[str, Any] = {"compacted": False, "tokens_before": None, "tokens_after": None}
     lookups = _zero_lookups()  # D48 ①：本回合实际执行的查证调用，按类计数
     started = time.monotonic()
     # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
@@ -637,10 +653,11 @@ def run_tool_loop(
     }
 
     def _chat(tool_choice: str | None = None) -> dict[str, Any]:
-        nonlocal prompt_chars, prompt_tokens
+        nonlocal prompt_chars, prompt_tokens, usage_anchor
         prompt_chars = sum(
             len(str(m.get("content") or "")) for m in convo if isinstance(m, dict)
         )
+        requested_len = len(convo)
         _LAST_USAGE.set(None)
         reply = chat_complete(
             convo,
@@ -652,6 +669,7 @@ def run_tool_loop(
             egress_trusted=egress_trusted,
         )
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
+        usage_anchor = None if prompt_tokens is None else (prompt_tokens, requested_len)
         return reply
 
     def _checkpoint_snapshot(trigger: str) -> dict[str, Any]:
@@ -721,14 +739,14 @@ def run_tool_loop(
                 convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                 tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                 checkpoints=checkpoints, wrapup="skipped", error=error,
-                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
+                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
             )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
                 tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
+                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
             )
         state, final, note, wrapup_error = _wrapup(reason)
         return _loop_result(
@@ -736,7 +754,7 @@ def run_tool_loop(
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
             wrapup=state, error=error or wrapup_error,
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
         )
 
     try:
@@ -752,6 +770,34 @@ def run_tool_loop(
             live["call"] = None
             live["calls"] = []
             live["index"] = 0
+            # D62 双触发（spec §4.1）：回合首次请求前 + 每批工具结果全部写史之后、下一次请求前。
+            # 这里 live["call"] 已清空：压缩中途被中断，落点表不会给已配对的调用再补一条合成结果
+            if control.compact is not None:  # type: ignore[union-attr]
+                live["stage"] = "compact"
+                hint = None
+                if usage_anchor is not None and usage_anchor[1] <= len(convo):
+                    hint = usage_anchor[0] + estimate_tokens(convo[usage_anchor[1]:])
+                compacted = control.compact(convo, hint)  # type: ignore[union-attr]
+                if compacted is not None and compacted.get("ok"):
+                    usage_anchor = None  # 历史已缩：旧实测不再对得上
+                    if not comp["compacted"]:
+                        comp["tokens_before"] = compacted.get("tokens_before")
+                    comp["compacted"] = True
+                    comp["tokens_after"] = compacted.get("tokens_after")
+                elif compacted is not None and compacted.get("abort"):
+                    # 失败中止交人（spec §4.5）：不做收尾——收尾请求带的正是那份压不下去的上下文
+                    note = (
+                        f"[压缩失败] {compacted.get('text', '')}。本回合停止，本会话不再自动压缩；"
+                        "可手动 /compact 重试，或开新会话。"
+                    )
+                    return _loop_result(
+                        convo, local_note=note, stopped="compact_failed", rollback=llm_calls == 0,
+                        llm_calls=llm_calls, tool_calls_made=tool_calls_made,
+                        tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
+                        checkpoints=checkpoints, wrapup="skipped", error=str(compacted.get("text", "")),
+                        prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp,
+                        elapsed_s=time.monotonic() - started,
+                    )
             live["stage"] = "model"
             reply = _chat()
             control.commit(reply, "assistant")  # type: ignore[union-attr]
@@ -764,7 +810,7 @@ def run_tool_loop(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                     duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
+                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
                 )
 
             live["calls"] = calls
@@ -885,7 +931,7 @@ def run_tool_loop(
             convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
         return _stop("error", error=str(exc))

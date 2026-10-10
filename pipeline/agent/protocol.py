@@ -44,7 +44,7 @@ _INBOUND_KEYS: dict[str, frozenset[str]] = {
     "command": frozenset({"name", "arg"}),
     "shutdown": frozenset(),
 }
-_COMMANDS = frozenset({"memory_ack", "scope"})
+_COMMANDS = frozenset({"memory_ack", "scope", "compact"})
 
 
 def _dump(frame: dict[str, Any]) -> bytes:
@@ -765,7 +765,8 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if kind == "command":
                 try:
-                    _run_command(host, writer, slots, frame, rid)
+                    _run_command(host, writer, slots, frame, rid,
+                                 messages=messages, tracker=tracker, ep_dir=ep_dir)
                 finally:
                     slots["in_flight"] = False
     finally:
@@ -875,6 +876,10 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         "prompt_chars": outcome.get("prompt_chars", 0),
         "prompt_tokens": outcome.get("prompt_tokens"),  # D56：服务商给的输入 token；拿不到为 None
         "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
+        # D62 人裁决②：本回合自动压缩过 → desktop 读数改显示「压缩后（压缩前峰值）」
+        "compacted": bool(outcome.get("compacted")),
+        "tokens_before": outcome.get("tokens_before"),
+        "tokens_after": outcome.get("tokens_after"),
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():
@@ -890,8 +895,14 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     return 0
 
 
-def _run_command(host, writer, slots, frame: dict[str, Any], rid: str | None) -> None:
+def _run_command(
+    host, writer, slots, frame: dict[str, Any], rid: str | None,
+    *, messages=None, tracker=None, ep_dir=None,
+) -> None:
     name = frame["name"]
+    if name == "compact":
+        _run_compact(host, writer, slots, rid, messages, tracker, ep_dir)
+        return
     if name == "scope":
         value = None if frame.get("arg") in (None, "auto") else frame.get("arg")
         slots["scope_override"] = value
@@ -909,6 +920,35 @@ def _run_command(host, writer, slots, frame: dict[str, Any], rid: str | None) ->
         return
     writer.send({"t": "command_result", "name": "memory_ack", "ok": bool(ok), "text": text,
                  **({"rid": rid} if rid else {})})
+
+
+def _run_compact(host, writer, slots, rid, messages, tracker, ep_dir) -> None:
+    """command{compact}（D62 PR2）：回合之间手动压缩主会话。结果走 command_result，过程走 notice。"""
+    from pipeline.agent.status_card import build_status_card
+    from pipeline.status import inspect_episode
+
+    tail = {"rid": rid} if rid else {}
+    if messages is None or tracker is None:
+        writer.send({"t": "command_result", "name": "compact", "ok": False,
+                     "text": "主会话尚未就绪", **tail})
+        return
+    idea = ep_dir is None
+    status = None if idea else inspect_episode(ep_dir)
+    override = None if idea else slots.get("scope_override")
+    scope = "idea" if idea else (override or _scope_of(status))
+    card = None if idea else build_status_card(ep_dir, status, scope=scope)
+    session = host.session(persist=True, scope_mode=scope)
+    try:
+        result = session.compact(messages, tracker=tracker, root=host.root, scope=scope, status_card=card)
+    except Exception as exc:  # 任何失败都如实回传，不假装压过
+        writer.send({"t": "command_result", "name": "compact", "ok": False,
+                     "text": f"{type(exc).__name__}: {exc}", **tail})
+        return
+    text = result.get("text") or (
+        f"已压缩 {result.get('compacted')} 条，保留近期 {result.get('kept')} 条"
+        if result.get("ok") else "压缩未执行"
+    )
+    writer.send({"t": "command_result", "name": "compact", "ok": bool(result.get("ok")), "text": text, **tail})
 
 
 if __name__ == "__main__":
