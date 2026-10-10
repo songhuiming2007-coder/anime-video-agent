@@ -5,6 +5,127 @@
 
 ---
 
+## 2026-10-10：人口头确认验收归档（3 条；UI 规则 2 的验收人即人本身，董香二期（完整真实一期）与伪恋期的日常使用即手验）
+
+### [D39] 桌面端（美化后）界面不适合人类工作：对话区极小、不能自由收起、文件区/预览区宽度不可调、多处 UI 重叠
+- 状态：**已解决·真实一期验收通过**（2026-10-10 人口头确认：董香二期为横跨 09-21→10-08 用打包版完成的完整一期，布局 S1–S4 全程在其中使用，「整体很舒适」（2026-09-29）+ 完整一期双验证）
+- 关联（原表）：`desktop/src/renderer`（布局与 `ui.tsx`、`style.css`/`ui.css`）、Spec 14 视觉设计；Spec 14（视觉，已归档）、Spec 10（会话面板）、D40
+- 原记录（活跃表原文）：现状实测与方案 A/B 见 [`plans/2026-09-29-desktop-layout-options.md`](../plans/2026-09-29-desktop-layout-options.md)；人选 B（预览默认收起），S1–S4 已施工（`79b83cd` `e5734f9` `0ae1c0c` + S4）；**2026-09-29 人在打包版体验「整体很舒适」**。真实一期验收待硬盘到手（plans/README UI 规则 2 未勾），通过即归档本条并恢复被本条暂停的打包手验；「上下文用量不可见」另立 D41。
+
+### [D41] 桌面端看不到上下文用量，也没有 `/compact` 一类压缩历史的手段：长会话越聊越大，人不知道离上限多远，也没法主动瘦身
+- 状态：**已解决·真实生产验证**（2026-10-10 人口头确认：上下文读数从字符版（D41-A）用到 token 版（D56），伪恋期 8 回合实测读数；「看不到用量」的原始问题已不存在）
+- 关联（原表）：`desktop/src/renderer`（会话头/回合脚注）、`pipeline/agent/session.py`（`self.messages`）、`llm.py`（`prompt_chars`）；D39, Spec 9, Spec 10
+- 原记录（活跃表原文）：人原话：「我们没有显示 context window，没有 /compact，这个可能会带来一些困扰」。**现状（2026-09-29 只读核实）**：① core 每回合已算 `prompt_chars` 并随 `turn_finished` 帧下发（Spec 9 §2.3 第 7 条观测量），但桌面端回合脚注 `shared/convFold.ts::footerText` 不显示它；② 会话历史在一个会话内只增不减（Spec 9 §2.3「唯一天然上限是上下文窗口」），全仓无压缩 / 摘要机制；「继续上次会话」按 `session.jsonl` 全量重建，同样不缩；③ 现成的绕法：「结束会话」后发新消息 = 新会话、历史为空，期的进度在产物里（产物即状态），不靠对话记忆。**待定**：只显示用量（改动小，纯 UI，字符数不等于 token，需如实标注口径）还是另做压缩（牵涉 core、摘要可能丢判断依据，需立 spec 并问人）。 **2026-10-06 D41-A 施工**：口径读码确认（`llm.py::run_tool_loop::_chat`：本回合最后一次请求模型时全部消息正文的字符数，不含工具调用参数与工具定义，发送前计算）。① 回合脚注末尾追加「· 上下文 N」；② 会话头「上下文约 N」（最后一个 `ready` 之后最近一次 `turn_finished` 的值；新会话、继续上次会话都从头算；还没有回合结束不显示）；③ 悬停说明如实标口径（字符数不是 token、无上限刻度）并给出「结束会话后发新消息开新会话」的绕法。读数格式：万以下千分位整数（`9,192 字`），万及以上一位小数（`1.4 万字`）。不画百分比条：配置里拿不到确定的窗口大小。`tokens.css` / `ui.css` 未改。验证：vitest 410、tsc、L-3 底线、全量 e2e 115 passed / 2 skipped（两个跳过是 `AVA_VE0_OUT` / `AVA_SHOTS` 环境变量门控的截图用例）。新增可见字符串：`上下文约 {N}`、`· 上下文 {N}`、悬停说明一段（`SessionHeader.tsx::CONTEXT_READOUT_TITLE`）。。**2026-10-09 修订（D56）**：读数口径由字符数改为服务商返回的 `usage.prompt_tokens`（「上下文 12.3k token」），拿不到时回落字数。
+
+### [D46] 对话区难读：助手回复不渲染 Markdown；失败的工具原文默认整段展开占满版面；模型生成、工具执行期间对话区静止，看不出动没动
+- 状态：**已解决·真实生产验证**（2026-10-10 人口头确认：Markdown 渲染 / 工具原文默认收起 / 运行中指示，自 2026-10-08 晚起每个桌面会话日常使用）
+- 关联（原表）：`desktop/src/renderer/ConversationPane.tsx`、`PreviewPane.tsx::ChatMarkdown`、`style.css`；[plans/2026-10-08-conv-readability-spec.md](../plans/2026-10-08-conv-readability-spec.md), Spec 10 H-3 / RF-13（修订）, Spec 9 H-3（修订）
+- 原记录（活跃表原文）：人原话：「很显然没有渲染，让人看着很费劲」「工具调用结果不要自动展开，占空间太大了」「模型思考、调用工具的时候UI没有动感，让人不知道到底动没动」。H-3 按 RF-13 留的口子修订：渲染器关掉链接与图片，测试证明输出里没有可点控件与资源加载；卡片仍纯文本。失败原文改默认收起（推翻 Spec 10 当时的用户裁决，人新裁决）。运行中：执行中的工具行转圈，末尾「模型思考中 / 工具运行中 · N 秒」。
+
+
+---
+
+## 2026-10-10：生产证据核销归档（4 条；董香二期/伪恋期的真实使用痕迹——回收站文件 mtime、回合记录的 prompt_tokens——证实修复后的构建已被生产使用，替代「待真实手验」）
+
+### [D45] 一期只能用一个对话：上下文被污染后没法丢掉重开，看不到有哪些会话、不能选、不能删，界面上只有「继续上次会话」
+- 状态：**已解决·真实生产验证**（2026-10-08 施工，当日 18:25 即在真实客户端删三段会话——董香二期回收站 3 文件 mtime 为证；列表/进入/新开日常使用）
+- 关联（原表）：`desktop/src/renderer/SessionList.tsx`、`desktop/src/host/service.ts`（conv.sessions/enter/fresh/delete）、`pipeline/agent/session_log.py`（`move_session_to_trash`）、`pipeline/agent/cli.py`（`/list-sessions`、`/delete-session`）；[plans/2026-10-08-session-management-spec.md](../plans/2026-10-08-session-management-spec.md), ADR-0024 §3 I2（2026-10-08 增补）, Spec 9 §2.5
+- 原记录（活跃表原文）：人原话：「一期视频只能建一次对话……不能直接删除那个对话，只能去选择：继续上次对话」「还需要：看到有哪些会话，可以选择进去，可以删除」。人裁决：删除 = 移到回收站；界面选方案 B（侧栏子列表）；去掉「继续上次会话」按钮；空会话灰显可删。顺带修了协议原有缺陷：新会话的输出帧 sid 恒为 null（只在启动时取一次）。手验清单见 spec 末节。
+
+### [D56] 会话上下文读数显示「多少万字」，人要的是 token：上下文窗口按 token 计，字数既不能和模型上限比，也随中英文比例漂移
+- 状态：**已解决·真实生产验证**（2026-10-09 施工，当天伪恋期 8 个真实回合全部带服务商 `prompt_tokens` 实测读数 68k→111k；人正是看该读数发现 D65）
+- 关联（原表）：`pipeline/agent/llm.py`（`chat_complete` 只取 `choices[0].message`，丢了响应里的 `usage`；`_chat` 只算 `prompt_chars`）、`desktop/src/shared/convFold.ts`（`charsText`）、`SessionHeader.tsx`；D41, Spec 9 §3
+- 原记录（活跃表原文）：人原话：「目前显示上下文是"多少万字"，这不太合理，不应该是多少k token吗？」。成因：D41 施工时 core 只有字符数，为不谎报口径照实写「字」；真正的 token 数现成就有——OpenAI 兼容接口非流式响应都带 `usage.prompt_tokens`（服务商按自己的分词器算、含系统提示与工具定义，即真实上下文占用），只是没读。方向：`chat_complete` 把 `usage` 存进 ContextVar（不改签名，约 60 处测试替身不动），`_chat` 取 `prompt_tokens` 随 `turn_finished` 下发；桌面端显示「上下文 12.3k token」，服务商不给 usage 时回落「上下文约 N 字」。。**2026-10-09 施工**：`chat_complete` 把响应 `usage` 存进 ContextVar（不改签名），`_chat` 取非负整数 `prompt_tokens`，随 outcome、`turn_finished` 帧、`turn_end` 记录下发；桌面端会话头与脚注「上下文 12.3k token」，服务商不给时回落「上下文约 N 字」（悬停说明改口径）。用例：core 五种 usage 形态、vitest 读数与回落、真实 core e2e（假 LLM 带 usage → 头部与脚注显示 token，下一回合不带 → 回落）；变异 D56-MUT-1..3 + 桌面端手工变异。真实服务商是否返回 usage 待手验：不返回就会一直显示「约 N 字」。
+
+### [D57] 选题会话退出再打开后对话区是空的，人以为聊天丢了、不知道存在哪：记录其实完整在 `data/_idea/session.jsonl`，只是没有入口把它接上
+- 状态：**已解决·真实生产验证**（恢复入口当日由 D58 侧栏列表取代并经真实使用覆盖；「系统注入默认收起」在 2026-10-10 真实会话截图中可见）
+- 关联（原表）：`desktop/src/renderer/SessionHeader.tsx`、`App.tsx`、`desktop/src/host/service.ts::episodesList`、`shared/protocol.ts::EpisodesList`；D42, D45, Spec 18 §3.3, Spec 10（懒启动）
+- 原记录（活跃表原文）：成因：桌面端会话进程懒启动（人发第一条消息才拉起，Spec 10）；期会话有 D45 的侧栏会话列表可点进，选题会话是单一滚动段、没有列表，D45 又去掉了「继续上次会话」按钮——重开后选题视图一片空白，要随手发一句话才会恢复出历史。实测：14:32–14:34 那段两轮对话完整在日志里，之后进程没再启动过。**修（2026-10-09）**：起初在宿主里直接 stat 选题日志，被静态守卫 TG-14（Spec 10 红线 3：桌面端不读会话记录）拦下，改为经 core——新增只读 `ava idea /list-sessions`（与期会话 `/list-sessions` 同一行形状），宿主 `conv.sessions` 对选题会话改调它（spawner 模板 `LIST_IDEA_SESSIONS`；进入指定会话 / 删除仍只对期会话开放）；选题视图无活会话时查一次，有可恢复段就在会话头显示「继续上次的选题对话（最后 MM-DD HH:MM）」，点了走既有 `conv.resume`（显式点击纪律：不自动拉起）。**顺带修**：恢复历史里的系统注入（常驻提示、规程、记忆）原先整段平铺（截图实测一屏规程），Spec 10 §2.3 要求的「折叠为『系统注入』」从没落实——改为单独的行类型、默认收起的「系统注入（N 字…）」。用例：core `test_d57_idea_list_sessions`（只读、不改字节）；vitest 模板 argv、宿主列表与拒绝项、折叠行；真实 core e2e「选题聊过 → 退出 app 再打开 → 按钮 → 接上历史、注入收起 → 接着聊」。多开不改（D42 人裁决：同一时刻一个选题会话）。。**2026-10-09 后续（D58）**：会话头「继续上次的选题对话」按钮由侧栏选题会话列表取代；`ava idea /list-sessions` 与「系统注入默认收起」保留。
+
+### [D58] 选题会话看不到有哪些、删不掉：D57 只能接上最近一段，人要的是和期会话（D45）一样的列表——看、进任意一段、新开、删
+- 状态：**已解决·真实生产验证**（2026-10-09 施工，当晚 22:28 真实删除一段选题会话——`_idea/_agent/session-trash/` 文件 mtime 为证；伪恋期建期只带当前段实证生效）
+- 关联（原表）：`desktop/src/renderer/SessionList.tsx`、`App.tsx`、`desktop/src/host/service.ts`（`epConv` 对 idea 一律拒绝）、`pipeline/agent/protocol.py`（`--idea` 恒恢复最近段）、`cli.py`（`/delete-session` 只认期目录、`migrate_idea_session` 整份迁移）；D57, D45, D42, Spec 18
+- 原记录（活跃表原文）：人原话：「但是无法看到有哪些选题回话、无法删除选题回话」。推翻 Spec 18「选题会话是单一滚动段」（同一时刻仍只一个活会话）。人裁决：建期只带当前这段，其余留在选题列表。[spec](../plans/2026-10-09-idea-session-list-spec.md)。。**2026-10-09 施工**：core——`session_log.split_by_sid`（回收站与迁移共用）；`protocol --idea --continue <前缀>` 恢复指定段、`--idea --fresh` 开新段（裸 `--idea` 不变）；`ava idea /delete-session --sid=`（回收站 `data/_idea/_agent/session-trash/`）；`ava new <名> --from-idea[=<sid>]` 只迁一段、`_idea` 原子写回其余段，指定段不可恢复时不退回带别的段。宿主——`conv.enter / fresh / delete` 对选题放行（新开后下一次拉起带 `--fresh`，拉起成功即清）；建期在结束选题活会话前记下它的会话号传给 core（形状不合规就退回带最近段并记诊断）。渲染层——侧栏「选题」下挂同一个会话列表；D57 的会话头按钮撤掉。用例：core 7 条（指定段 / 新开 / 裸恢复、只迁一段逐字节、不可恢复不退回、坏 sid、删除与租约冲突）；vitest（argv、宿主进 / 新开 / 删、建期传 sid）；真实 core e2e（两段 → 退出重开 → 进旧段 → 删另一段进回收站）。变异 D58-MUT-1..3 + 宿主手工变异。
+
+
+---
+
+## 2026-10-10：清账归档（机检全绿、无任何待办项的 14 条；由 pi 逐条核对 spec 完成判定与人裁决后迁移）
+
+### [N2] tagger general 标签落盘但无检索路径读它
+- 状态：**已解决**（2026-10-09 施工：presence 不再落 `gen` 字段；用例 `test_build_presence_does_not_persist_general_tags`）
+- 关联（原表）：`pipeline/vindex.py:321-324`；ADR-0003
+- 原记录（活跃表原文）：为第 2 层万一复活留的备用料。**2026-09-28 复核：备用料已被取代，建议删除（报人，未动）**（只读）。① 读路径：落盘的 `gen` 字段**没有任何读者**——`pipeline/`、`tests/`、`desktop/src` 全仓 grep，只有 `vprobe.py:74` 读 `tag()` 的**即时输出**做探针展示（不读落盘文件）；`vindex status` 不读它。② 真实数据：`data/library/vindex/` 下 151 个 `*.presence.json` 全部 `producer=ccip`、`gen` 全空——「推理钱已花、顺手存下」这笔备用料在任何一部番上都**从未真实存在**（ccip 不产 general）。③ 价值：它为之预留的第 2 层（画面语义）已由 ADR-0003「第 2 层之死」+ **ADR-0015 改走 VLM 打标→文-文检索**取代，booru general 标签（rain/night/indoors）不再是复活候选。最小删除清单（须人拍板后另开施工 session）：`vindex.py` 的 `tag()` 不再收集 `gen`（约 272/293 行）、`write_presence` 行结构与注释去掉 `gen`（约 316、334–337 行）、`build_presence` 写行去掉 `gen`（约 368 行）、`faces.py:573` 的 `"gen": {}`、`tests/test_vindex.py:306` 夹具；`vprobe.py` 的 tagger 探针展示可保留（读即时输出）或一并去掉。影响面：已落盘文件多一个空字段无害，加载侧不读它，无需迁移。N1（WD 条目保留）不受影响。**2026-10-09 施工**：presence 文件不再落 `gen`（`vindex.build_presence` / `write_presence` 文档与注释、`faces.py`、测试夹具）；`vindex.tag()` 的即时输出保留 `gen` 供 `vprobe` 探针展示（清单里的可保留项）。旧文件里的空字段无害，不迁移。用例 `test_build_presence_does_not_persist_general_tags`。
+
+### [N12] BGM 素材缺口 + voice readings 换番要清
+- 状态：**已解决**（2026-10-09 施工：`readings_provenance` 来历记录，人同意只做往后一半；BGM 半条定性为选曲丰富度问题、需要时按番补料，非阻塞）
+- 关联（原表）：`config/bgm.json`（原行号已漂移）、`config/voice.json` 的 `readings`、`pipeline/tts.py::speakable`；—
+- 原记录（活跃表原文）：伴奏单曲缺；readings 表每番积累需清理。**2026-09-28 复核（只读）**：① BGM：脚本逐条核对 `bgm.json` 9 部番共 241 首登记曲目，**文件全部存在、零缺失**。「伴奏单曲缺」今天的真实含义是：东京喰种/天气之子/你的名字/EGOIST/PSYCHO-PASS 没有 OP/ED 伴奏版（春物 3、罪恶王冠 1、夏隧 1、伪恋 19），只影响「结尾换伴奏」槽位；按 `_slots`「结尾留空即全程一首」，**不会让任何一期 03/06 走不下去**，降为选曲丰富度问题，需要时按番补料（找各番 OP/ED 单曲 CD 的 Instrumental 轨，同春物做法）。② readings：一张**全局表**（121 条，不分番），`speakable` 对每段合成文本全局 `str.replace`，manifest 记整表指纹、改表后只重做受影响段。串番风险低（替换均为同音字，设计上对字幕与回读 CER 透明）；**真实风险是来历缺失**：每条成立的前提（哪番、哪个音色 seg6/seg7、哪个引擎 Qwen3/IndexTTS）只写在 `_note` 散文里，换音色/换引擎时无法机械找出「该重测哪些条」（2026-09-12「乐迷」即过度治理造新错的实例）。g2p 拼音直注层（D25）已在机械转录其中 61 条。可执行做法（报人，不擅自改表）：给每条补结构化来历（`{src, rep, anime, voice, engine, date}`，或按 voice/engine 分节），换音色/引擎时按字段筛出重测清单；「换番清空」不必做——同音替换在别番无害，清掉反而丢实证。**2026-10-09 施工**：`corrections global` 写入时同步写 `config/voice.json` 顶层 `readings_provenance[词] = {table, date, episode, anime, engine, voice}`（引擎、音色取本期配音清单，番名取 `01-topic.md`，没给期目录只记表与日期）；卡面多一行「来历记录」。先核实过：tts 复用指纹只看 engine/model/ref_audio 与两张表内容，加顶层键不触发重配。旧 121 条不回填。AGENTS.md Code Freeze 例外扩到这个键。
+
+### [N51] 桌面端发出的用户消息偶带尾随换行（`'你好\n'`）
+- 状态：**已解决**（2026-10-08 夜：Enter 一律 `preventDefault` 再判断；e2e 复现并用例守）
+- 关联（原表）：`desktop/src/renderer/Composer.tsx`（onKeyDown：`running`/`disabled` 时 `return` 在 `preventDefault` 之前）；Spec 10 门禁 12、A2
+- 原记录（活跃表原文）：D37-A 打包版实测：同一人两次发「你好」，07:41:12 为 `'你好'`，07:58:27 为 `'你好\n'`（人自述：拼音 nihao 选「你好」后按 Enter 发送）。**机理猜测（未证实）**：此前某次 Enter 落在回合运行中，`running` 分支在 `preventDefault` 之前 `return`，textarea 自行插入换行，随下一次发送带出；也可能与输入法上屏时序有关。后果仅为消息多一个换行，模型可读。待人手复现确认触发条件后再定是否修。。**复现与修（2026-10-08 夜）**：机理猜测成立——e2e 用真实按键在回合运行中按两次 Enter，旧代码输入框变成 `你好\n\n`（`running` 分支在 `preventDefault` 之前 return，textarea 自行插入换行）。修：Enter（非 Shift、非输入法选词）一律 `preventDefault`，再判断能不能发。用例 `N51 回合运行中按 Enter`（旧代码红、新代码绿）。
+
+### [N54] 退出确认框的非人手结束路径不回落：对话框抛异常或父窗口被销毁时 `quitPhase` 永久停在 `confirming`，此后 Cmd+Q 全被拦下
+- 状态：**已解决**（2026-10-08：退出确认框异常/窗口销毁统一回落 idle；e2e 守）
+- 关联（原表）：`desktop/src/main/index.ts`（`quit-state` 分支 `dialog.showMessageBox(...).then(...)` 无 reject 分支；`before-quit` 对 `quitPhase !== "idle"` 一律 `preventDefault`）；Spec 10 §2.10 第 4 步、D37、D40
+- 原记录（活跃表原文）：2026-10-06 D37-C 读码（未实测）：D37-B 给抓取/browser 确认框补了「异常 → ok:false」与 `windowGone()`（D40），退出确认框走的是另一条代码路径，两者都没补。后果方向安全（不会误退出），但 app 只能强退。触发面比 D40 更窄：退出框是窗口模态，正常操作关不掉父窗口；`showMessageBox` 抛异常在 Electron 44.4.5 上未见过。修法候选：`.then` 加 reject 分支回 `quitPhase = "idle"`，`closed` 时若 `quitPhase === "confirming"` 一并复位。不阻断 D37/D40 归档。。**修（2026-10-08）**：退出确认框的应答与异常统一走 `settle`（异常按「取消」回落 idle），每次弹框带代号；窗口 `closed` 时若在 `confirming` 则作废代号并回落，迟到应答被忽略。测试桩加 `respond:"throw"`；e2e「N54 退出确认框抛异常」：抛异常后 app 不退、会话零写入，第二次退出照常弹框并能退（去掉异常分支即红）。窗口销毁那一支只读码验证（正常操作关不掉模态框的父窗口，e2e 造不出来）。
+
+### [N55] `assembly.py::load_injected_doc` 不设读域：`assembly.json` 的路由（及 resident）可让装配器读入任意文件（含 `config/*.local.json` 凭据、软链、仓库外绝对路径），并作为规程正文发给 LLM
+- 状态：**已解决**（2026-10-08：装配器读域收敛到 `is_trusted_doc_path` 唯一规则）
+- 关联（原表）：`pipeline/agent/assembly.py::load_injected_doc`（`target = p if p.is_absolute() else root / p`，不判 resolve 后位置）、`assemble_resident_prompt`（`resident_map` 同样照配置读）；D30、Spec 16 §3 / §5.2.3、ADR-0022、ADR-0026
+- 原记录（活跃表原文）：证据：D30-R 读码（Spec 16 文首 🟡-3）。出网断言只比对四个文件名、不看内容，所以凭据**内容**被误路由进消息时修前修后都不响；触发前提是 `assembly.json` 被人误配（模型没有写 `config/` 的工具），故列备忘。修法方向：在 `load_injected_doc`（与常驻层读函数）层按白名单根 + resolve 后判定拒载并告警，**与 Spec 16 §5.2.3 共用同一个 `is_trusted_doc_path` 规则函数**，不另写第二份；建议在 D30-B 落地之后做，直接复用。不在 Spec 16 修。。**修（2026-10-08）**：`assembly._readable_doc` 包一层 `is_trusted_doc_path`（唯一规则，不另写），`load_injected_doc` 与 `assemble_resident_prompt` 三件读入前都过；读域外（凭据、`docs/` 外的 .md、软链出根、仓库外绝对路径）拒载并在 stderr 告警，缺文件照旧静默。现有路由与常驻三件全在白名单根内，无误伤。用例 `test_n55_*` 两条；变异 N55-MUT-1/2。Spec 16 §3 加修订注。
+
+### [N56] `--continue` 恢复后「规程已修订」重注入在生产路径上永不触发
+- 状态：**已解决**（2026-10-08：注入提交带 docs sha，`--continue` 后规程修订重注入链路打通）
+- 关联（原表）：`pipeline/agent/session.py`：`_assemble` 首轮 / 换工序两处注入与 `_inject_memory` 调 `_commit` 都不传 `docs`；`prepare_resume` 只从带 `docs` 的 msg 记录汇总；`_reinject_changed` 见 `_injected_docs` 为空即 return；Spec 9 §2.7 第 3 条、Spec 16 TD-2f、`tests/test_agent_session.py::test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs`
+- 原记录（活跃表原文）：唯一写 `docs=` 的调用点是 `_reinject_changed` 自己，形成循环依赖：首次注入不记 sha → 恢复后不知道注入过哪些文档 → 不比对、不重注入。后果：规程或记忆在两次会话之间改了，恢复后模型仍按历史里的旧版工作（新版只在换工序重注入时才出现）。TS-6 能绿，是因为它手写了一条生产代码从不产出的带 `docs` 记录。修法候选：`_assemble` 两处与 `_inject_memory` 提交时带上 `docs=[{path, sha256}]`。修之前要想清楚：修好以后，记忆会经 `_reinject_changed` 以 origin=`injection` 重注入，Spec 16 的 MUT-D11 守的正是这条路径。。**修（2026-10-08）**：`_assemble` 首轮与换工序注入、`_inject_memory` 都带 `docs=_doc_shas(...)` 提交；记忆告警不记 sha；`_reinject_changed` 记忆此刻只剩告警时不重注入。MUT-D11 守的「重注入记忆不进可信集」不变（候选仍标不可信）。用例 `test_n56_resume_reinjects_docs_changed_since_natural_injection` 全由生产代码写记录（不手写 docs）；变异 N56-MUT-1。`_injection_record` 测试助手同步带 docs。Spec 9 §2.7 加修订注。
+
+### [N57] 生产入口的常驻层出网豁免只靠「路由表当前正文」(b)，这一路零用例守
+- 状态：**已解决**（2026-10-08：补常驻层豁免用例 `test_n57_*`，杀变异 V4）
+- 关联（原表）：`pipeline/agent/protocol.py`、`cli.py` 在会话外预置 `tracker.resident_prompt` / `active_scope`（`protocol.py:640`、`cli.py:1799` 等 6 处）；`session.py::_assemble` 的常驻层 `trust(...)` 只在 scope 热切换时执行；`assembly.py::route_trusted_texts` 的常驻部分；Spec 16 §12 偏差 1、§13 🔵-C1，D30
+- 原记录（活跃表原文）：D30-C 变异 V4（`route_trusted_texts` 不收常驻三件）全部用例仍绿。今天三份常驻文档都不含受限字面量，所以无可见后果；方向是 fail-closed（将来写进字面量会被拦，不会漏）。补法：加一条用例——常驻文档（如临时仓库的 `AGENTS.md`）含 `03-audio/manifest.json`，tracker 按 `protocol.py` 的方式预置，首轮应照常发出，用来杀 V4；视情况让那 6 处也走 `tracker.trust(trusted_texts_of_resident(...))`。。**补（2026-10-08）**：`test_n57_preset_resident_with_restricted_literal_keeps_sending`——AGENTS.md 含 `03-audio/manifest.json`，常驻层照 protocol.py 在会话外预置，首轮照常发出；V4（可信集 (b) 不收常驻三件）下该用例红，登记为 N57-MUT-1。生产那 6 处预置不加 (a) 的 trust：加了 V4 又成等价变异，(b) 已足够且有用例守。
+
+### [N59] `web_search` 单次条数与调研深度：人物介绍够用，人物剖析类不够
+- 状态：**已裁决完毕**（① 条数 20 已施工，见 `[N59①]`；② 人裁决不做；③ 合并模式搁置、将来另立文）
+- 关联（原表）：`pipeline/agent/web.py`（`SEARCH_DEFAULT_LIMIT` / `SEARCH_MAX_LIMIT`，Spec 4 §3.2 冻结面）；D29、Spec 15、Spec 4、Spec 13
+- 原记录（活跃表原文）：① 条数默认/上限 20 已施工并复核通过（2026-10-06，人裁决与复修见 archive `[N59①]` 与 Spec 15 §13–§16）；② 人裁决不写调研策略文案；③ 两家合并模式搁置，终端取证与候选代价见 archive `[N59①]`。
+
+### [D23②] 配音顺听人机摩擦力大
+- 状态：**已解决**（M2a 落地：云端 Qwen3-TTS + SenseVoice/Whisper 仲裁入库（ADR-0017）、结构化打点机制就绪；S25 八份 spec 全部完工归档。agent 时代的顺听摩擦为后续 D50/D51/D53 另案处理）
+- 注：（编号撞号：archive 内 2026-09-02 已有一条 [D23]「clips 检索及格 ≠ 可分派」——编号复用的历史遗留，本条是后登记者，故带 ② 后缀）
+- 关联（原表）：`pipeline/tts.py`；四阶段工序卡, ADR-0006, ADR-0016, ADR-0017
+- 原记录（活跃表原文）：云端 Qwen3-TTS + SenseVoice/Whisper 仲裁已入库（ADR-0017）；结构化打点机制就绪。2026-09-25 S25：一期 8 份 spec 全部完工并移入 `docs/dev/plans/archive/`
+
+### [D55] 段落 3 画面落在便当戏之后的「金木撞见西尾挨打」：锚点 `S01E05 06:12` 是首稿凭空写的，便当戏实际在 04:31–04:41；模型后来查到并在草稿里改成 04:33，但没告诉人，改动没进定稿
+- 状态：**已解决**（2026-10-08 夜规程部分施工：锚点只写查过的时间码、改了锚点/查询须在回复里逐条写旧→新；2026-10-09 人裁决：锚点机械核对不做——全分支关闭，无待办）
+- 关联（原表）：`data/…/04-clips.json` 段 3（`channel:"anchor"`，直取锚点、不检索不评分）、`pipeline/check_script.py`、`pipeline/clips.py`（锚点不核对）、草稿/定稿双文件流程；D47、D54、判据 4、判据 8
+- 原记录（活跃表原文）：证据：① 首稿 L70 写下 06:12 时本会话还没查过 S01E05 字幕（S01E05 的检索在 L117–L140）；② L141 模型查到「吃掉啊 依子好不容易做出来的」04:33、「我开动了」04:41，回复里只贴了配音改法；L145 起草稿锚点为 04:33（`_agent/draft-history` 10:43:50 起全部 04:33）；③ 会话进程 18:26 启动，D47（agent 可改定稿）18:59 才提交，进程不热加载，所以模型只能写草稿，人按回复手工同步定稿（L112–L113 人问「为什么不同步修改 02-script.md」）——锚点改动不在回复里，于是丢了；`02-diff.patch` 段 3 正是 `-04:33 / +06:12`。机器侧没有一道检查能拦：锚点通道不比对锚点处字幕与「查询 / 备选」。段 21 的「备选」恰是字幕原句（19:54），可以机械核对；段 3 的「查询」是描述句，核不了。方向（待定）：① 锚点核对——「查询 / 备选」里凡是字幕原句的，检查它的时间码是否落在 [锚点, 锚点+段时长] 内，不在就报；不是字幕原句的跳过、不定罪（判据 4）；② agent 改了配音以外的字段（锚点、查询）必须在回复里说出来（D47 的写稿卡 diff 已覆盖新会话，旧进程不覆盖）；③ 锚点须来自查过的字幕，查不到就不写锚点走检索。。**2026-10-08 夜施工**：方向 ③ 写进 `creative.md`（锚点只写查过的时间码，查不到写「无（字幕里查不到，待人看片）」走检索）；方向 ② 写进同节（改了锚点/查询/备选须在回复里逐条写「旧 → 新」）。方向 ① 对全部现存稿件只读实跑：可核对 73 条，窗口外 12 条（16%），抽看多为有意为之（画面取 A 处、台词引 B 处），且本条事故（段 3 的查询/备选都是描述句）根本抓不到——未施工，建议不做，交人定。。**人裁决（2026-10-09）**：锚点机械核对不做。
+
+### [D61] ava 不能写番剧笔记：缺笔记只能出 scout 工单交 pi、人搬运；笔记三步流水线（写厚 → 零上下文对抗审查 → 终审回写）在 ava 里没有对应物
+- 状态：**已解决**（2026-10-09：《罪恶王冠》实跑 46 条剧情 diff，54 条终审全裁决，回写后 180 条时间码引文机械复核全过）
+- 关联（原表）：`pipeline/agent/tools.py`（无写 data/library/ 的工具）、`pipeline/scout.py`、`docs/dev/postmortems/workflow-history.md` 番剧笔记节；D59、D13、ADR-0028、ADR-0025、D47 / D48
+- 原记录（活跃表原文）：人裁决：「必须要」。新工具 `write_note`（第 14 槽，ADR-0028）；`pipeline.notes_review`（机械厚度门槛 + 引用核销 + 每集一次零上下文 LLM 剧情 diff）；终审由 ava 回写。[spec](../plans/2026-10-09-calibration-and-notes-spec.md)
+
+### [D62] 上下文只涨不缩：D28 取消轮数硬上限后，长会话以服务商 context-length 报错告终、会话实质变砖；没有压缩机制
+- 状态：**已解决**（2026-10-10：手动 /compact、读数分母、双 system 修复、三探针实测完毕；自动压缩代码保留但人裁决关闭；spec「留人」项已全部施工或被裁决否决）
+- 关联（原表）：`pipeline/agent/llm.py`（D56 只有读数无动作）、`pipeline/agent/session.py`；D28、D56、D54、ADR-0018
+- 原记录（活跃表原文）：裁决：尾部预算改 token 制（≈0.15×可靠窗口 + ≤20 条次级约束）；可见形态 = 当场 notice + turn_end 带压缩字段；idea 会话同一套、重注入降级；PR2 手动 /compact 不等实测，PR3 自动双触发挂 CPA 代理三探针（usage 透传/缓存命中/上游形态）结果。[spec](../plans/2026-10-09-context-compaction-spec.md) **2026-10-09 补人裁决 ⑤**：读数要带分母（窗口表随 PR1），形式施工时出截图方案人选；起因 D64。
+
+### [D64] 继续会话后会话头的上下文读数消失，要等新一回合跑完才出现——而 `--continue` 正是长会话的常态入口，最该看读数的时候看不到
+- 状态：**已解决**（2026-10-09：恢复带读数 + 显眼度人选 B 头部徽章施工完；余项①分母随 D62 落地）
+- 关联（原表）：`desktop/src/shared/convFold.ts::lastContextReading`（遇 `ready` 清零）、`pipeline/agent/protocol.py` 的 `ready` 帧（不带上次读数）；D56、D62（人裁决 ⑤ 读数要带分母）、D41
+- 原记录（活跃表原文）：人原话：「我在期内会话比较难找到明确的 context token 数量」。上次的值一直在：每个 `turn_end` 记录都写了 `prompt_tokens`（D56），恢复时没读。**施工**：`session_log.last_context_reading` 取最后一个测到过读数的 `turn_end`（跳过回滚回合与两项皆缺的修复记录；`prompt_chars` 为 0 视同没测），`prepare_resume` 带出、`ready` 帧新增 `resume_prompt_tokens` / `resume_prompt_chars`（新会话为 null），桌面端在新回合跑完前显示「上下文 110.8k token（上次）」，悬停说明同步。伪恋 `2026-10-10-…` 那期真实记录核对：带回 110977，与对话脚注「110.8k」一致。用例：core 参数化 7 形态 + 回滚 + 真实协议进程 `--continue`；vitest 读数与后缀；变异 5 条全红。**余项**：① 分母并入 D62 裁决 ⑤；② 读数是灰色小字、不显眼——出 A 现状 / B 头部徽章 / C 输入框状态行三张真实窗口截图，**人选 B（2026-10-09）**：读数改为紧跟模式徽章的 `.ui-badge`，正文色、等宽数字（`style.css` 的 `.session-head-readout`；`ui.css` 冻结不动）。截图脚本 `docs/dev/plans/2026-10-09-context-readout-shots/`。
+
+### [D67] D52 之前写入的存量会话日志里 tool 正文未脱敏、含受限字面量：这类会话今天**恢复即死**——每轮请求撞出网断言回滚，无客户端入口可修
+- 状态：**已解决**（2026-10-10：prepare_resume 全 role 脱敏投影；终验通过——CLI 恢复真实董香二期发首轮请求成功、无回滚）
+- 关联（原表）：`data/episodes/2026-09-21-东京喰种-雾岛董香人物志-二/session.jsonl` seq=288（红队实测：rebuild 后过 assert_egress_boundary 必拦）、D52 修复提交 `15d8d61`；D52, D65, Spec 16
+- 原记录（活跃表原文）：红队实测：全量 grep 受限字面量在日志中共 3 处，其中 1 处在 tool 消息正文；该会话已无法恢复。D52 前的既有伤、非 D65 引入。**人裁决（2026-10-10）：① 采纳，带实测修正**——人直接跑实验：不 scrub 被拦、只 scrub tool 仍被拦、全 role scrub 通过；机理是受限字面量还在两条 user 角色历史规程注入（seq=282/292）里，可信集只含当前磁盘正文盖不住历史副本，故必须全 role。② 破坏 append-only 被否，③ 弃疗被否。[spec](../plans/2026-10-10-resume-scrub-spec.md)。频率观察：目前仅确认 1 例。 **2026-10-10 施工**：prepare_resume 重建输出全 role 过 `scrub_restricted`（不动盘、幂等、保对象同一性）；测试 4 条全绿、变异 3 条全被杀、全量 2523 绿；真实日志只读回放复现「不 scrub 必拦 / 全 role scrub 通过」（连带改写 test_td1c 两条断言：历史副本的受限字面量恢复后即被投影为 [已脱敏]）。**终验通过（2026-10-10）**：CLI 恢复真实董香二期（重放 210 条），首轮真实请求成功发出、模型正确回忆上下文、无 turn_rollback、回合正常结束。
+
+
+---
+
 ## 2026-10-08：N60 复核通过归档
 
 ### [N60] 桌面端「建期带入」host 侧一次性标记（`carried`）的不变量零用例守
