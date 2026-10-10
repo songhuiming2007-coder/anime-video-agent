@@ -4,7 +4,7 @@ import { OUT_TYPES, parseOutFrame } from "../../src/shared/convFrames";
 
 const base = { v: 1, seq: 1, sid: "s1" };
 const valid: Record<string, Record<string, unknown>> = {
-  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null },
+  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null },
   history: { index: 0, role: "user", text: "hi", name: null },
   turn_started: { turn_id: "t1" },
   assistant: { turn_id: "t1", kind: "answer", text: "ok" },
@@ -13,7 +13,7 @@ const valid: Record<string, Record<string, unknown>> = {
   request_closed: { request_id: "q1", reason: "answered", decision: "approve" },
   command_result: { name: "scope", ok: true, text: "asset" },
   stop_points: { items: [], turn_id: "t1" },
-  turn_finished: { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 10, lookups: null, prompt_tokens: null },
+  turn_finished: { turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 1, tool_executions: 1, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 10, lookups: null, prompt_tokens: null, compacted: false, tokens_before: null, tokens_after: null, context_window: null },
   log: { stream: "stdout", text: "x" },
   notice: { level: "warn", code: "code_freeze", text: "n" },
   error: { code: "E_BUSY", message: "busy" },

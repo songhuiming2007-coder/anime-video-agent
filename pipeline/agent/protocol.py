@@ -666,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
         # D64：继续会话时带回上次测得的上下文读数，新回合跑完前会话头标「上次」显示；新会话两项为 None
         "resume_prompt_tokens": resume_state["last_reading"][0] if resume_state else None,
         "resume_prompt_chars": resume_state["last_reading"][1] if resume_state else None,
+        # D62 人裁决⑤：读数分母 = 当前模型标称窗口；表里没有为 None（不显示分母）
+        "context_window": _context_window(ep_dir, status),
     })
     if not freeze_ok:
         writer.send({"t": "notice", "level": "warn", "code": "code_freeze",
@@ -755,6 +757,10 @@ def main(argv: list[str] | None = None) -> int:
             if slots["eof"]:
                 writer.send({"t": "bye", "reason": "eof"})
                 break
+            if kind == "user_message" and frame["text"].strip() == COMPACT_COMMAND:
+                # D62（人 2026-10-10）：对话框里发 /compact 即压缩，同 Claude Code / pi——不进模型、不落 user 消息
+                exit_code = _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid)
+                continue
             if kind == "user_message":
                 # idea 会话（--idea）照样开回合：scope 固定 idea、无期目录（写期文件前须先建期）、落库级 data/_idea（Spec 18 §3.1）。
                 # M9 真实联调前这里回 E_NO_EPISODE——§3.1 的 user_message 错误表里没有它，桌面端「选题」对话因此开不了回合。
@@ -880,6 +886,7 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         "compacted": bool(outcome.get("compacted")),
         "tokens_before": outcome.get("tokens_before"),
         "tokens_after": outcome.get("tokens_after"),
+        "context_window": _context_window(ep_dir, status, scope),
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():
@@ -920,6 +927,82 @@ def _run_command(
         return
     writer.send({"t": "command_result", "name": "memory_ack", "ok": bool(ok), "text": text,
                  **({"rid": rid} if rid else {})})
+
+
+COMPACT_COMMAND = "/compact"
+
+
+def _context_window(ep_dir, status, scope: str | None = None) -> int | None:
+    # 延迟 import：协议进程 fd 隔离（main ②）必须先于任何 pipeline.* import（同 _send_history）
+    from pipeline import paths
+    from pipeline.agent.compact import context_window
+
+    if scope is None:
+        scope = "idea" if ep_dir is None else _scope_of(status)
+    try:
+        return context_window(scope, paths.ROOT)
+    except Exception:  # 读数分母是显示用的旁路：取不到就不显示，不许拖垮回合
+        return None
+
+
+def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> int:
+    """对话框发 `/compact`：走一个「压缩回合」——turn_started → 压缩（notice）→ turn_finished → stop_points。
+
+    这样 host 的发送确认、运行态、停止按钮全部照旧可用：停止 = interrupt → 摘要器调用被中断 → 历史不动。
+    turn_finished 的 `prompt_tokens` 为 None（回合之间没有服务商实测）、`prompt_chars` 给压缩后的正文字数，
+    读数如实退回「约 N 字」口径，直到下一回合拿到实测。
+    """
+    import secrets
+    import time
+
+    from pipeline.agent.status_card import build_status_card
+    from pipeline.status import inspect_episode
+
+    turn_id = secrets.token_hex(8)
+    slots["turn_id"] = turn_id
+    writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
+    started = time.monotonic()
+    idea = ep_dir is None
+    status = None if idea else inspect_episode(ep_dir)
+    override = None if idea else slots.get("scope_override")
+    scope = "idea" if idea else (override or _scope_of(status))
+    try:
+        card = None if idea else build_status_card(ep_dir, status, scope=scope)
+        session = host.session(persist=True, scope_mode=scope)
+        result = session.compact(messages, tracker=tracker, root=host.root, scope=scope, status_card=card)
+    except Exception as exc:  # 任何失败都如实告诉人，不假装压过
+        result = {"ok": False, "text": f"{type(exc).__name__}: {exc}"}
+    finally:
+        slots["in_flight"] = False
+        slots["turn_id"] = None
+    ok = bool(result.get("ok"))
+    if not ok:
+        writer.send({"t": "notice", "level": "warn", "code": "compact_skipped",
+                     "text": f"压缩未执行：{result.get('text', '')}"})
+    writer.send({
+        "t": "turn_finished",
+        "turn_id": turn_id,
+        "stopped": "compacted" if ok else "not_compacted",
+        "llm_calls": 1 if ok else 0,
+        "tool_calls": 0, "tool_executions": 0, "duplicates_rejected": 0, "checkpoints": 0,
+        "wrapup": "none",
+        "duration_s": round(time.monotonic() - started, 3),
+        "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict)),
+        "prompt_tokens": None,
+        "lookups": None,
+        "compacted": ok,
+        "tokens_before": result.get("tokens_before"),
+        "tokens_after": result.get("tokens_after"),
+        "context_window": _context_window(ep_dir, status, scope),
+    })
+    with host.interrupt.absorbed():
+        if idea:
+            writer.send({"t": "stop_points", "items": [], "turn_id": turn_id})
+        else:
+            _ensure_pending(ep_dir, status)
+            _send_stop_points(writer, ep_dir, turn_id)
+    host.interrupt.clear_dropped()
+    return 0
 
 
 def _run_compact(host, writer, slots, rid, messages, tracker, ep_dir) -> None:

@@ -376,6 +376,10 @@ def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
         if kind == "msg":
             if str(record.get("turn_id")) in rolled_back:
                 continue
+            if (record.get("message") or {}).get("role") == "system":
+                # 首轮落盘的 system（当时的常驻层 + 状态卡）不重建：调用方会按**当前**文件现建
+                # messages[0]，再留旧的就是两张互相矛盾的状态卡并存（D62 施工发现，人 2026-10-10 裁决修）
+                continue
             positions[int(record.get("seq", 0))] = len(rebuilt)
             rebuilt.append(_copy(record.get("message")))
         elif kind == "compaction":

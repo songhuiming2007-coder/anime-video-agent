@@ -31,7 +31,7 @@ class FakeProc implements SessionProc {
   }
 }
 
-const TAG = { t: "turn_finished", turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null, prompt_tokens: null };
+const TAG = { t: "turn_finished", turn_id: "t1", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null, prompt_tokens: null, compacted: false, tokens_before: null, tokens_after: null, context_window: null };
 
 function harness(opts: { active?: boolean; canRead?: boolean; settleMs?: number } = {}) {
   const clock = { t: 1000 };
@@ -43,7 +43,7 @@ function harness(opts: { active?: boolean; canRead?: boolean; settleMs?: number 
     spawnSession: () => {
       const p = new FakeProc();
       procs.push(p);
-      queueMicrotask(() => p.feed({ t: "ready", episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null }));
+      queueMicrotask(() => p.feed({ t: "ready", episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null }));
       return p;
     },
     resolveKey: async () => ({ name: "K", value: "V" }),

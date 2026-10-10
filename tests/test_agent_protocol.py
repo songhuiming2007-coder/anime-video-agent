@@ -894,7 +894,7 @@ def test_tp12_tp15_stop_points_frames(world, endpoint, tmp_path) -> None:
         assert set(ready) == {
             "v", "seq", "sid", "t", "episode", "scope", "continue_status", "llm", "degrade_reason",
             "code_freeze_ok", "history_count", "session_bytes", "other_sessions",
-            "resume_prompt_tokens", "resume_prompt_chars",
+            "resume_prompt_tokens", "resume_prompt_chars", "context_window",
         }
         first = [f for f in proto_proc.frames if f.get("t") == "stop_points" and not f.get("turn_id")][0]
         assert len(first["items"]) == 1, "世界里必须有挂起停机点，否则下面的键集合断言是空转"
@@ -1274,3 +1274,33 @@ def test_d45_continue_with_sid_resumes_non_latest_session(world, endpoint, tmp_p
         assert third.finish() == 0
     finally:
         third.proc.kill()
+
+
+def test_d62_compact_typed_in_composer_runs_as_a_turn(world, endpoint, tmp_path) -> None:
+    """D62（人 2026-10-10）：对话框发 /compact 即压缩——走 turn_started → turn_finished{stopped: compacted}，
+    「/compact」本身不进模型；ready 带读数分母 context_window（标称窗口）。真进程、真摘要器请求。"""
+    root, episode = world
+    (root / "config" / "agent" / "compact.json").write_text(json.dumps({
+        "models": {"mock": {"window": 1000, "reliable_ratio": 1.0}},
+    }), encoding="utf-8")
+    endpoint.replies = [{"role": "assistant", "content": "答" * 100}] * 4 + [{"role": "assistant", "content": "摘要"}]
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        ready = proto_proc.wait_for_ready()
+        assert ready["context_window"] == 1000
+        for i in range(4):
+            proto_proc.send({"t": "user_message", "text": f"问题{i}"})
+            proto_proc.wait_for("turn_finished", timeout=60)
+        proto_proc.send({"t": "user_message", "text": "/compact"})
+        finished = proto_proc.wait_for("turn_finished", timeout=60)
+        assert finished["stopped"] == "compacted" and finished["compacted"] is True
+        assert finished["context_window"] == 1000 and finished["prompt_tokens"] is None
+        summarizer = endpoint.requests[-1]
+        assert "上下文压缩" in summarizer["messages"][0]["content"] and "tools" not in summarizer
+        assert not any("/compact" in str(m.get("content")) for r in endpoint.requests for m in r["messages"])
+        records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert any(r.get("k") == "compaction" for r in records)
+        assert not any((r.get("message") or {}).get("content") == "/compact" for r in records)
+        proto_proc.shutdown()
+    finally:
+        proto_proc.proc.kill()

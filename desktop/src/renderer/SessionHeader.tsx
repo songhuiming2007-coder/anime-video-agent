@@ -33,12 +33,14 @@ export function readyInfo(entries: readonly ConvEntry[]): ReadyInfo {
   return out;
 }
 
-/** D41：读数的悬停说明——如实标口径，并给出现成的绕法（不做压缩，压缩另立 spec） */
+/** D41：读数的悬停说明——如实标口径，并给出现成的绕法（D62 起多一条：/compact 压缩） */
 export const CONTEXT_READOUT_TITLE =
   "最近一次请求模型时的输入 token 数，由模型服务商返回，含系统提示、工具定义与全部历史，就是上下文窗口的实际占用；" +
+  "斜杠后是当前模型的标称上下文窗口（config/agent/compact.json 的窗口表，表里没有该模型就不显示）。" +
   "服务商没给 token 数时退回显示消息正文的字数（带「约」）。" +
   "继续会话后、新一轮跑完前显示的是上次测得的值（带「上次」）。" +
-  "嫌长可以点侧栏本期下面的「＋ 新会话」从空白上下文开始：期的进度在产物里，不靠对话记忆。";
+  "嫌长可以在对话框发 /compact，把较早的对话压成一条摘要、保留近期原文；" +
+  "或点侧栏本期下面的「＋ 新会话」从空白上下文开始：期的进度在产物里，不靠对话记忆。";
 
 export function SessionHeader({
   rpc,

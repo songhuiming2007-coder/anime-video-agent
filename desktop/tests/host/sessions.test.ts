@@ -29,9 +29,9 @@ function fakeRunCore(): HostDeps["runCore"] {
   return (async (t: string) => ({ code: t === "GIT_HEAD" ? 128 : 0, signal: null, stdoutTail: "", stderrTail: "", timedOut: false, stdoutFull: null, stdoutOverflow: false })) as unknown as HostDeps["runCore"];
 }
 
-const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } });
+const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null } });
 const TURN_STARTED = { t: "turn_started", turn_id: "$turn", rid: "$rid" };
-const TURN_ENDED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null, prompt_tokens: null };
+const TURN_ENDED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null, prompt_tokens: null, compacted: false, tokens_before: null, tokens_after: null, context_window: null };
 const STOP_POINTS = { t: "stop_points", items: [], turn_id: "$turn" };
 
 async function boot(
@@ -222,7 +222,7 @@ describe("TH-5 不代发（H-8）", () => {
       READY(epKey),
       {
         op: "serve",
-        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS, { t: "notice", level: "info", code: "x", text: "n" }, { t: "ready", episode: epKey, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null }],
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS, { t: "notice", level: "info", code: "x", text: "n" }, { t: "ready", episode: epKey, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null }],
       },
     ]);
     for (let i = 0; i < 10; i += 1) {
@@ -777,7 +777,7 @@ function fakeNewEpisodeCli(stdoutLines: string[]): string {
   ].join("\n");
 }
 
-const IDEA_READY = { op: "emit", frame: { t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null } };
+const IDEA_READY = { op: "emit", frame: { t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null } };
 
 describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
   it("① marker migrated=true → episode.create 返回带入结果；该期首次 conv.send 以 SESSION_CONTINUE 起，标记随即消费", async () => {

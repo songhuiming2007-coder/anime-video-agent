@@ -382,3 +382,15 @@ def test_d64_last_context_reading_skips_rolled_back_turn(ep: Path) -> None:
     ])
     loaded = slog.load_session(slog.read_log(ep), "sid-a")
     assert slog.last_context_reading(loaded) == (900, 400)
+
+
+def test_rebuild_drops_logged_system_message():
+    """恢复时不重建旧 system：调用方现建 messages[0]，留旧的 = 两张状态卡并存（变异：不滤 → 红）。"""
+    records = [
+        {"sid": "s", "seq": 1, "k": "session_start", "schema": slog.SCHEMA},
+        {"sid": "s", "seq": 2, "k": "msg", "turn_id": "t1", "origin": "injection",
+         "message": {"role": "system", "content": "旧常驻层 + 旧状态卡"}},
+        {"sid": "s", "seq": 3, "k": "msg", "turn_id": "t1", "origin": "user",
+         "message": {"role": "user", "content": "甲"}},
+    ]
+    assert slog.rebuild_messages(slog.LoadedSession("s", records)) == [{"role": "user", "content": "甲"}]
