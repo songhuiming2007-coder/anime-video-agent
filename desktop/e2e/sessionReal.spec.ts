@@ -5,7 +5,7 @@
 // - 失败原文：界面文本与真实 `session.jsonl` 里对应 tool 消息的 content 逐字节比对（TX-1）；
 // - 配对：假端点对配对不齐的历史回 400，`badPairings == 0` 由真实请求体证明。
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
@@ -958,5 +958,84 @@ test("A5 实测：SESSION_NEW spawn → ready 的延迟（真实 core，空会�
     const user = snap.entries.find((e) => e.k === "user") as unknown as { at: number } | undefined;
     console.log(`A5 ${JSON.stringify({ spawnToReadyMs: ready.at - spawned.at, readyToTurnStartedMs: started.at - ready.at, userAt: user ? user.at - ready.at : null })}`);
     expect(ready.at).toBeGreaterThanOrEqual(spawned.at);
+  });
+});
+
+test("D66 真实 core：删除进回收站 → 分组出现（折叠/标记文案/同 sid 两文件）→ 逐段彻底清空、主日志其余段还在", async () => {
+  test.setTimeout(3 * 60_000);
+  await withRealCore(async (fx) => {
+    const { L, llm } = fx;
+    const confirmCalls = () => L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number } }).__avaTestConfirm.calls);
+    llm.push(assistant("第一个会话的答复"), assistant("第二个会话的答复"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "第一个会话");
+    await waitTurns(L, "ep:SESS-A", 1);
+    await L.page.getByTestId("session-new").click();
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none", { timeout: 20_000 });
+    await send(L.page, "第二个会话");
+    await expect(L.page.getByTestId("conv-stream")).toContainText("第二个会话的答复", { timeout: 20_000 });
+    const sids = [...new Set(sessionLog(fx, "SESS-A").map((r) => String(r.sid)))];
+    expect(sids).toHaveLength(2);
+    const [first, second] = sids;
+    const trashDir = join(fx.repo.eps, "SESS-A", "_agent", "session-trash");
+
+    // 空回收站不渲染分组
+    await expect(L.page.getByTestId("trash-group")).toHaveCount(0);
+
+    // 删第一个会话 → 分组出现；默认折叠；展开看到该行（sid 前缀 + 大小）
+    await stubConfirm(L, true);
+    const rowA = L.page.locator(`[data-testid=session-row][data-sid="${first}"]`);
+    // 悬停才显示的按钮 + 列表重取会重渲（D66 多了一次 trashList 往返）：hover+click 整体重试
+    await expect(async () => {
+      await rowA.hover();
+      await rowA.getByTestId("session-delete").click({ timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+    await expect(L.page.getByTestId("session-row")).toHaveCount(1, { timeout: 20_000 });
+    await expect(L.page.getByTestId("trash-group")).toHaveCount(1, { timeout: 20_000 });
+    await expect(L.page.getByTestId("trash-row")).toHaveCount(0);
+    await L.page.getByTestId("trash-toggle").click();
+    await expect(L.page.getByTestId("trash-row")).toHaveCount(1);
+    await expect(L.page.getByTestId("trash-row").first()).toContainText(first.slice(0, 8));
+    expect(await L.page.getByTestId("trash-row").first().locator(".ep-trash-row").getAttribute("title")).toContain("KB");
+
+    // 手造四种形态（同 sid 时间戳副本 = 手动搬回再删；空文件；无法解析；末尾残行）
+    copyFileSync(join(trashDir, `${first}.jsonl`), join(trashDir, `${first}-20261010T010203000000.jsonl`));
+    writeFileSync(join(trashDir, "eeeeeeeeeeeeeee5.jsonl"), "");
+    writeFileSync(join(trashDir, "fffffffffffffff6.jsonl"), "这不是会话记录\n");
+    writeFileSync(join(trashDir, "9999999999999997.jsonl"), readFileSync(join(trashDir, `${first}.jsonl`)) + '{"k": "msg", "sid": "999');
+
+    // 确认取消 → 一字不动（确认框在宿主层）；act 结束照常重取，手造文件随这次重取进列表
+    await stubConfirm(L, false);
+    const before = await confirmCalls();
+    await expect(async () => {
+      await L.page.getByTestId("trash-row").first().hover();
+      await L.page.getByTestId("trash-row").first().getByTestId("trash-purge").click({ timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+    await expect.poll(confirmCalls, { timeout: 10_000 }).toBe(before + 1);
+    await expect(L.page.getByTestId("trash-row")).toHaveCount(5, { timeout: 20_000 });
+    expect(readdirSync(trashDir).filter((f) => f.endsWith(".jsonl"))).toHaveLength(5);
+    expect(existsSync(join(trashDir, `${first}.jsonl`))).toBe(true);
+
+    // 标记文案与同 sid 区分
+    await expect(L.page.locator('[data-testid=trash-row][data-file="eeeeeeeeeeeeeee5.jsonl"]')).toContainText("空文件");
+    await expect(L.page.locator('[data-testid=trash-row][data-file="fffffffffffffff6.jsonl"]')).toContainText("无法解析");
+    await expect(L.page.locator('[data-testid=trash-row][data-file="9999999999999997.jsonl"]')).toContainText("记录不全");
+    await expect(L.page.locator(`[data-testid=trash-row][data-file="${first}-20261010T010203000000.jsonl"]`)).toContainText("20261010T010203000000");
+
+    // 逐段彻底清空：每段一次确认；删完分组消失；主日志只剩第二段；文件系统上 .jsonl 不存在
+    await stubConfirm(L, true);
+    for (const f of [`${first}.jsonl`, `${first}-20261010T010203000000.jsonl`, "eeeeeeeeeeeeeee5.jsonl", "fffffffffffffff6.jsonl", "9999999999999997.jsonl"]) {
+      const row = L.page.locator(`[data-testid=trash-row][data-file="${f}"]`);
+      await expect(async () => {
+        await row.hover();
+        await row.getByTestId("trash-purge").click({ timeout: 2_000 });
+      }).toPass({ timeout: 30_000 });
+      await expect(L.page.locator(`[data-testid=trash-row][data-file="${f}"]`)).toHaveCount(0, { timeout: 20_000 });
+      expect(existsSync(join(trashDir, f))).toBe(false);
+    }
+    await expect(L.page.getByTestId("trash-group")).toHaveCount(0, { timeout: 20_000 });
+    expect(sessionLog(fx, "SESS-A").every((r) => r.sid === second)).toBe(true);
+    await expect(L.page.getByTestId("session-row")).toHaveCount(1);
+    expect(llm.badPairings).toBe(0);
   });
 });

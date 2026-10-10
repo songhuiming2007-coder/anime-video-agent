@@ -269,6 +269,25 @@ describe("D45 会话管理模板的 argv 形状", () => {
       pyPath, "-m", "pipeline.agent.cli", "/ep", "/delete-session", "--sid=aaaaaaaaaaaaaaa1",
     ]);
   });
+  it("D66 回收站模板：LIST_TRASH 完整读入 stdout（沿用 SESSIONS_STDOUT_MAX_BYTES）；PURGE_TRASH 等号形式带文件名", () => {
+    const list = buildArgv("LIST_TRASH", { ep: "/ep" }, "/repo");
+    expect(list.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/ep", "/list-trash"]);
+    // 红队发现 3：无 stdoutMax 只有 8 KB 尾部，清单超长时 JSON.parse 炸 E_CORE——必须存在且沿用先例
+    expect(list.stdoutMax).toBeGreaterThan(0);
+    expect(list.stdoutMax).toBe(buildArgv("LIST_SESSIONS", { ep: "/ep" }, "/repo").stdoutMax);
+    expect(buildArgv("LIST_IDEA_TRASH", {}, "/repo").argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "idea", "/list-trash"]);
+    expect(buildArgv("LIST_IDEA_TRASH", {}, "/repo").stdoutMax).toBe(list.stdoutMax);
+    expect(buildArgv("PURGE_TRASH", { ep: "/ep", file: "aaaaaaaaaaaaaaa1.jsonl" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/purge-trash", "--file=aaaaaaaaaaaaaaa1.jsonl",
+    ]);
+    expect(buildArgv("PURGE_IDEA_TRASH", { file: "aaaaaaaaaaaaaaa1-20261010T010203000000.jsonl" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "idea", "/purge-trash", "--file=aaaaaaaaaaaaaaa1-20261010T010203000000.jsonl",
+    ]);
+  });
+  it.each(["../x.jsonl", "/etc/passwd", "a/b.jsonl", "..", "x.txt", ""])("非法回收站文件名 %j 抛错、不生成 argv", (file) => {
+    expect(() => buildArgv("PURGE_TRASH", { ep: "/ep", file }, "/repo")).toThrow();
+    expect(() => buildArgv("PURGE_IDEA_TRASH", { file }, "/repo")).toThrow();
+  });
   it("D58 SESSION_IDEA：带 sid → --idea --continue <sid>；fresh → --idea --fresh；都不带 → --idea（原形态）", () => {
     expect(sessionArgv("SESSION_IDEA", undefined, "/repo")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea"]);
     expect(sessionArgv("SESSION_IDEA", undefined, "/repo", "bbbbbbbbbbbbbbb2")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea", "--continue", "bbbbbbbbbbbbbbb2"]);

@@ -1420,3 +1420,84 @@ describe("D58 选题会话的会话管理", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D66：回收站查看与选择性彻底清空（conv.trashList / conv.purgeTrash）
+// ---------------------------------------------------------------------------
+
+const TRASH_ROWS = [
+  { file: `${SID_A}.jsonl`, sid: SID_A, last_ts: "2026-10-09T08:00:00Z", message_count: 4, bytes: 2048 },
+  { file: `${SID_A}-20261010T010203000000.jsonl`, sid: SID_A, last_ts: "2026-10-10T01:02:03Z", message_count: 2, bytes: 1536 },
+  { file: "fffffffffffffff6.jsonl", sid: null, last_ts: "", message_count: 0, bytes: 0, empty: true },
+];
+
+/** 假 core：LIST_TRASH 回三行（含同 sid 两文件与空文件）；PURGE_* 按给定退出码。 */
+function trashCore(calls: { t: string; args: Record<string, unknown> }[], opts: { purgeCode?: number; listJson?: string } = {}): HostDeps["runCore"] {
+  return (async (t: string, args: Record<string, unknown>) => {
+    calls.push({ t, args });
+    const base = { signal: null, stderrTail: "", timedOut: false, stdoutOverflow: false };
+    if (t === "LIST_TRASH" || t === "LIST_IDEA_TRASH") {
+      const out = opts.listJson ?? JSON.stringify(TRASH_ROWS);
+      return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
+    }
+    if (t === "PURGE_TRASH" || t === "PURGE_IDEA_TRASH") {
+      const code = opts.purgeCode ?? 0;
+      return { ...base, code, stdoutTail: code === 0 ? '{"purged": "x.jsonl"}' : "", stderrTail: code === 3 ? "回收站锁被占" : "", stdoutFull: null };
+    }
+    return { ...base, code: t === "GIT_HEAD" ? 128 : 0, stdoutTail: "", stdoutFull: null };
+  }) as unknown as HostDeps["runCore"];
+}
+
+describe("D66 回收站", () => {
+  it("conv.trashList：字段改名 + 缺省标记补 false；期 / 选题两叉；core 输出不合约定 → E_CORE", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { svc, key } = await boot({ realCore: true, overrides: { runCore: trashCore(calls) } });
+    const rows = (await svc.dispatch("conv.trashList", { convKey: key })) as Array<Record<string, unknown>>;
+    expect(rows.map((r) => [r.file, r.sid, r.messageCount, r.bytes, r.empty, r.parseError, r.partial])).toEqual([
+      [`${SID_A}.jsonl`, SID_A, 4, 2048, false, false, false],
+      [`${SID_A}-20261010T010203000000.jsonl`, SID_A, 2, 1536, false, false, false],
+      ["fffffffffffffff6.jsonl", null, 0, 0, true, false, false],
+    ]);
+    expect(calls.filter((c) => c.t === "LIST_TRASH").map((c) => c.args)).toEqual([{ ep: expect.any(String) }]);
+
+    await svc.dispatch("conv.trashList", { convKey: "idea" });
+    expect(calls.filter((c) => c.t === "LIST_IDEA_TRASH").map((c) => c.args)).toEqual([{}]);
+
+    const bad = await boot({ realCore: true, overrides: { runCore: trashCore([], { listJson: '[{"file": 1}]' }) } });
+    await expect(bad.svc.dispatch("conv.trashList", { convKey: bad.key })).rejects.toMatchObject({ code: "E_CORE" });
+  });
+
+  it("conv.purgeTrash：确认框在 spawn 之前（取消则一字不动）；确认后按文件删；文案写明「不可恢复」", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { svc, key, stub } = await boot({ realCore: true, overrides: { runCore: trashCore(calls) } });
+
+    stub.respond = false;
+    expect(await svc.dispatch("conv.purgeTrash", { convKey: key, file: `${SID_A}.jsonl` })).toEqual({ purged: false });
+    expect(stub.last?.detail).toContain("不可恢复");
+    expect(stub.last?.detail).toContain("aaaaaaaa");
+    expect(calls.filter((c) => c.t.startsWith("PURGE"))).toEqual([]);
+
+    stub.respond = true;
+    expect(await svc.dispatch("conv.purgeTrash", { convKey: key, file: `${SID_A}.jsonl` })).toEqual({ purged: true });
+    expect(calls.filter((c) => c.t === "PURGE_TRASH").map((c) => c.args.file)).toEqual([`${SID_A}.jsonl`]);
+    // 选题叉：不带期目录
+    await svc.dispatch("conv.purgeTrash", { convKey: "idea", file: `${SID_A}.jsonl` });
+    expect(calls.filter((c) => c.t === "PURGE_IDEA_TRASH").map((c) => c.args)).toEqual([{ file: `${SID_A}.jsonl` }]);
+  });
+
+  it("conv.purgeTrash：退出码 3 → E_SESSION_LOCKED；条目不在列表 → E_STALE 不弹框；坏文件名 → E_BAD_REQUEST 不 spawn", async () => {
+    const locked = await boot({ realCore: true, overrides: { runCore: trashCore([], { purgeCode: 3 }) } });
+    await expect(locked.svc.dispatch("conv.purgeTrash", { convKey: locked.key, file: `${SID_A}.jsonl` }))
+      .rejects.toMatchObject({ code: "E_SESSION_LOCKED" });
+
+    const gone = await boot({ realCore: true, overrides: { runCore: trashCore([]) } });
+    await expect(gone.svc.dispatch("conv.purgeTrash", { convKey: gone.key, file: "9999999999999999.jsonl" }))
+      .rejects.toMatchObject({ code: "E_STALE" });
+    expect(gone.stub.calls).toBe(0);
+
+    const bad = await boot({ realCore: true, overrides: { runCore: trashCore([]) } });
+    await expect(bad.svc.dispatch("conv.purgeTrash", { convKey: bad.key, file: "../x.jsonl" }))
+      .rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    expect(bad.stub.calls).toBe(0);
+  });
+});

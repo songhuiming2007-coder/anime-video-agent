@@ -188,3 +188,159 @@ def test_d57_idea_list_sessions(ep: Path, capsys: pytest.CaptureFixture[str]) ->
     assert [(r["sid"], r["first_user"], r["last_activity"], r["resumable"]) for r in rows] == [
         (C, "我需要尼古喵喵的素材", "2026-10-09T06:34:57Z", True)]
     assert (idea / "session.jsonl").read_bytes() == raw, "只读：不取租约、不截断、不改一个字节"
+
+
+# ---------------------------------------------------------------------------
+# D66：回收站查看（/list-trash）与选择性彻底清空（/purge-trash）
+# ---------------------------------------------------------------------------
+
+D = "ddddddddddddddd4"
+E = "eeeeeeeeeeeeeee5"
+
+
+def _trash_dir(ep: Path) -> Path:
+    return ep / "_agent" / "session-trash"
+
+
+def _trash_file(ep: Path, name: str, raw: bytes) -> Path:
+    d = _trash_dir(ep)
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_bytes(raw)
+    return f
+
+
+def _seg(sid: str, user: str = "问题", ts: str = "2026-10-10T01:00:00Z") -> bytes:
+    return b"".join([
+        dumps({"k": "session_start", "sid": sid, "seq": 0, "ts": ts, "schema": 1}),
+        _msg(sid, 1, "user", user, ts),
+        _msg(sid, 2, "assistant", "答", ts),
+    ])
+
+
+def test_list_trash_empty_dir_or_missing(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main([str(ep), "/list-trash"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    _trash_dir(ep).mkdir(parents=True)
+    assert cli.main([str(ep), "/list-trash"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert cli.main([str(ep), "/list-trash", "x"]) == 2
+
+
+def test_list_trash_two_segments(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    f1 = _trash_file(ep, f"{D}.jsonl", _seg(D, "第一段", "2026-10-09T08:00:00Z"))
+    f2 = _trash_file(ep, f"{E}-20261010T010203000000.jsonl", _seg(E, "第二段", "2026-10-10T02:00:00Z"))
+    assert cli.main([str(ep), "/list-trash"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [r["file"] for r in rows] == sorted([f1.name, f2.name])
+    by_file = {r["file"]: r for r in rows}
+    assert by_file[f1.name]["sid"] == D and by_file[f1.name]["message_count"] == 2
+    assert by_file[f1.name]["last_ts"] == "2026-10-09T08:00:00Z"
+    assert by_file[f1.name]["bytes"] == f1.stat().st_size
+    assert by_file[f2.name]["sid"] == E, "带时间戳后缀的同名段照常聚合出 sid"
+    assert "empty" not in by_file[f1.name] and "parse_error" not in by_file[f1.name]
+    assert "partial" not in by_file[f1.name]
+
+
+def test_list_trash_empty_and_parse_error(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _trash_file(ep, f"{D}.jsonl", b"")
+    _trash_file(ep, f"{E}.jsonl", b"\xe4\xbd\xa0\xe5\xa5\xbd this is not jsonl at all\n")
+    assert cli.main([str(ep), "/list-trash"]) == 0
+    rows = {r["file"]: r for r in json.loads(capsys.readouterr().out)}
+    assert rows[f"{D}.jsonl"]["empty"] is True and rows[f"{D}.jsonl"]["sid"] is None
+    assert rows[f"{E}.jsonl"]["parse_error"] is True and rows[f"{E}.jsonl"]["sid"] is None
+
+
+def test_list_trash_partial_two_forms(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """半残两种形态（红队发现 4 + 二轮 R1）：末尾残行、中间坏行——都出摘要且带 partial。"""
+    good = _seg(D)
+    _trash_file(ep, f"{D}.jsonl", good + b'{"k": "msg", "sid": "ddd')          # 末尾残行
+    mid_bad = _seg(E, "前", "2026-10-10T01:00:00Z") + b"{not json\n" + _msg(E, 9, "user", "后", "2026-10-10T03:00:00Z")
+    _trash_file(ep, f"{E}.jsonl", mid_bad)                                        # 中间坏行
+    assert cli.main([str(ep), "/list-trash"]) == 0
+    rows = {r["file"]: r for r in json.loads(capsys.readouterr().out)}
+    assert rows[f"{D}.jsonl"]["partial"] is True and rows[f"{D}.jsonl"]["sid"] == D
+    assert rows[f"{E}.jsonl"]["partial"] is True and rows[f"{E}.jsonl"]["sid"] == E
+    assert rows[f"{E}.jsonl"]["message_count"] == 3, "中间坏行不吞条数"
+
+
+def test_purge_trash_happy_path(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import hashlib
+
+    raw = _write_log(ep)
+    before = hashlib.sha256((ep / "session.jsonl").read_bytes()).hexdigest()
+    f = _trash_file(ep, f"{D}.jsonl", _seg(D))
+    assert cli.main([str(ep), "/purge-trash", f"--file={f.name}"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"purged": f.name}
+    assert not f.exists()
+    assert hashlib.sha256((ep / "session.jsonl").read_bytes()).hexdigest() == before, "主日志零接触"
+    assert cli.main([str(ep), "/purge-trash", f"--file={f.name}"]) == 1, "重复删如实报错，不幂等"
+
+
+@pytest.mark.parametrize("name", ["../../x.jsonl", "/etc/passwd", "x.txt", "..", "a/b.jsonl"])
+def test_purge_trash_rejects_bad_names(ep: Path, name: str) -> None:
+    f = _trash_file(ep, f"{D}.jsonl", _seg(D))
+    assert cli.main([str(ep), "/purge-trash", f"--file={name}"]) == 2
+    assert f.exists(), "参数非法：一字不动"
+
+
+def test_purge_trash_rejects_symlink_escape(ep: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(_seg(D))
+    link = _trash_dir(ep)
+    link.mkdir(parents=True, exist_ok=True)
+    (link / f"{E}.jsonl").symlink_to(outside)
+    assert cli.main([str(ep), "/purge-trash", f"--file={E}.jsonl"]) == 2
+    assert outside.exists(), "软链指向回收站外：拒删，目标毫发无伤"
+
+
+def test_purge_trash_lock_held_exits_3(ep: Path) -> None:
+    """红队发现 1 用例：另一进程持 session-trash.lock 时 purge 退出码 3（与 /delete-session 同码）。"""
+    import subprocess
+    import sys
+    import textwrap
+
+    f = _trash_file(ep, f"{D}.jsonl", _seg(D))
+    lock = _trash_dir(ep).parent / "session-trash.lock"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import fcntl, os, time
+            fd = os.open({str(lock)!r}, os.O_RDWR | os.O_CREAT)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            print('held', flush=True); time.sleep(30)
+        """)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        assert cli.main([str(ep), "/purge-trash", f"--file={f.name}"]) == 3
+        assert f.exists(), "锁被占：拒删"
+    finally:
+        holder.kill()
+        holder.wait()
+    assert cli.main([str(ep), "/purge-trash", f"--file={f.name}"]) == 0, "锁释放后正常删"
+
+
+def test_purge_trash_never_creates_main_log(ep: Path) -> None:
+    """回归：该期原本没有主日志时，purge 任何路径都不得创建它（EpisodeLease 的 O_CREAT 陷阱）。"""
+    f = _trash_file(ep, f"{D}.jsonl", _seg(D))
+    assert not (ep / "session.jsonl").exists()
+    assert cli.main([str(ep), "/purge-trash", f"--file={f.name}"]) == 0
+    assert not (ep / "session.jsonl").exists()
+    assert cli.main([str(ep), "/purge-trash", "--file=nope.jsonl"]) == 1
+    assert not (ep / "session.jsonl").exists()
+
+
+def test_d66_idea_list_and_purge_trash(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """选题回收站：data/_idea/_agent/session-trash/，同期会话同一形状与退出码。"""
+    idea_trash = ep.parents[1] / "_idea" / "_agent" / "session-trash"
+    idea_trash.mkdir(parents=True)
+    (idea_trash / f"{D}.jsonl").write_bytes(_seg(D, "选题段"))
+    assert cli.main(["idea", "/list-trash"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [(r["file"], r["sid"], r["message_count"]) for r in rows] == [(f"{D}.jsonl", D, 2)]
+    assert cli.main(["idea", "/purge-trash", f"--file={D}.jsonl"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"purged": f"{D}.jsonl"}
+    assert not (idea_trash / f"{D}.jsonl").exists()
+    assert cli.main(["idea", "/list-trash"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
