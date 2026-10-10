@@ -1214,8 +1214,14 @@ class AgentSession:
             )
         if not cp.is_closed(messages):
             return fail("open_calls", "历史里有还没配上结果的工具调用，现在压缩会切坏配对")
-        cut = cp.choose_cut(messages, token_budget=budget, max_messages=ccfg.tail_max_messages)
-        region = messages[1:cut] if cut > 1 else []
+        # D65（红队 F2，人拍板 2026-10-10）：压缩三处口径全按老化后（= 实际发送口径）——
+        # 投影保序保长，切口下标回原列表取 tail / 写史；落盘与出网断言对象不变。
+        # 放这里一次投影三处共用，不进 compact.py（它的生产调用方只有本函数）。
+        from pipeline.agent import aging
+
+        aged = aging.age_tool_results(messages)
+        cut = cp.choose_cut(aged, token_budget=budget, max_messages=ccfg.tail_max_messages)
+        region = aged[1:cut] if cut > 1 else []
         if not cp.strip_marked(region):
             return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
 
@@ -1252,7 +1258,8 @@ class AgentSession:
         if cp.is_bloated(text, region):
             return fail(
                 "bloated",
-                f"摘要不比原文短多少（≥ {cp.BLOAT_RATIO:.0%}），压缩没有意义，历史未改动",
+                f"按实际发送口径（大体积工具结果已老化占位），摘要省不出更多"
+                f"（≥ 发送口径原文的 {cp.BLOAT_RATIO:.0%}），历史未改动",
                 disable=True,
             )
 
