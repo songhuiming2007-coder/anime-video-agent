@@ -5,7 +5,7 @@ import type { ApprovalJson, EventJson } from "../../src/shared/contracts";
 import type { EpisodeDelta, EpisodeSnapshot, JobView } from "../../src/shared/protocol";
 
 const ev = (id: string, ep: string): EventJson => ({ event_id: id, timestamp: "t", episode: ep, type: "job_created", kind: "job_created", payload: { job_id: `job_${id}` } });
-const job = (id: string): JobView => ({ jobId: id, command: null, state: "pending", lastEventAt: "t", pid: null, returncode: null, durationS: null, stderrTail: null, message: null, noFollowupEvents: false, finishedEventMissing: false });
+const job = (id: string): JobView => ({ jobId: id, command: null, state: "pending", lastEventAt: "t", startedAt: null, pid: null, returncode: null, durationS: null, stderrTail: null, message: null, noFollowupEvents: false, finishedEventMissing: false });
 const appr = (id: string): ApprovalJson => ({ approval_id: id, episode: "x", type: "05", status: "pending", artifacts: [], options: [], created_at: "t", resolved_at: null, resolved_by: null, confirmed_by: null, confirmed_at: null, feedback: null, note: "" });
 
 function snap(epKey: string, generation: number, ids: string[]): EpisodeSnapshot {

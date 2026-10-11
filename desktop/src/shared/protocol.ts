@@ -178,6 +178,8 @@ export interface JobView {
   command: string | null;
   state: "pending" | "running" | "succeeded" | "failed" | "blocked";
   lastEventAt: string;
+  /** D71：job_started 事件的时间戳（作业条算已运行时长）；没见过 started 为 null */
+  startedAt: string | null;
   pid: number | null;
   returncode: number | null;
   durationS: number | null;

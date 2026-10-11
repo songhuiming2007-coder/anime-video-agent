@@ -35,6 +35,8 @@ import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, sa
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
 import { CrashProbe, installTestHooks } from "./testHooks";
 import { PaneBoundary } from "./PaneBoundary";
+import { JobBar } from "./JobBar";
+import { isCheckNotPassed } from "../shared/jobBar";
 import { Badge, StateView, StatusDot } from "./ui";
 
 const rpc = new RpcClient(window);
@@ -263,6 +265,14 @@ function Main() {
   }, [loadHealth]);
 
   const ep = select(store, active);
+  // D71：时间线展开状态提到这里——作业条的「看进度」要从预览区之外把它展开（切期即收起，同原先按期重挂载）
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  useEffect(() => setTimelineOpen(false), [active]);
+  const showProgress = useCallback(() => {
+    setPreviewOpen(true);
+    setTimelineOpen(true);
+    requestAnimationFrame(() => document.querySelector("[data-testid=timeline]")?.scrollIntoView({ block: "nearest" }));
+  }, [setPreviewOpen]);
   const conv = convs.convs[convKey];
   const rows = foldOf(conv).rows;
 
@@ -373,6 +383,7 @@ function Main() {
   return (
     <div className="app">
       <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} onChangeRepo={changeRepo} layout={layout} onToggleLeft={() => setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }))} onTogglePreview={() => setPreviewOpen(!layout.previewOpen)} />
+      {ep && <JobBar jobs={ep.jobs} onShowProgress={showProgress} />}
       {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} />}
       {error && (
         <div className="banner banner-red" data-testid="error">
@@ -519,7 +530,7 @@ function Main() {
               </>
             )}
           </PaneBoundary>
-          {ep && <Timeline key={ep.epKey} ep={ep} />}
+          {ep && <Timeline key={ep.epKey} ep={ep} open={timelineOpen} onToggle={() => setTimelineOpen((o) => !o)} />}
         </section>
       </div>
     </div>
@@ -972,15 +983,15 @@ const JOB_TONE: Record<string, "ok" | "danger" | "warn" | "wait" | undefined> = 
  * D39 C4：时间线收成预览列底部的一行摘要（作业 / 失败 / 事件计数），点开才展开（上限 40vh）。
  * 收起时正文仍在 DOM 里（`hidden`），「观测层有损」声明原样留在正文顶部。
  */
-function Timeline({ ep }: { ep: EpisodeState }) {
-  const [open, setOpen] = useState(false);
+function Timeline({ ep, open, onToggle }: { ep: EpisodeState; open: boolean; onToggle: () => void }) {
   const nonJob = ep.events.filter((e) => e.kind.startsWith("approval_") || e.kind === "unknown" || e.kind === "human_time_recorded");
-  const failed = ep.jobs.filter((j) => j.state === "failed").length;
+  // D71：机检退出码 1 是「稿件没过」，不是作业故障，不计入失败
+  const failed = ep.jobs.filter((j) => j.state === "failed" && !isCheckNotPassed(j)).length;
   const bodyId = `timeline-body-${ep.epKey}`;
   return (
     <footer className="timeline" data-testid="timeline">
       <div className="timeline-head">
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)} data-testid="timeline-toggle">
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={bodyId} onClick={onToggle} data-testid="timeline-toggle">
           <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
           时间线
         </button>
@@ -1004,7 +1015,7 @@ function Timeline({ ep }: { ep: EpisodeState }) {
           {ep.jobs.map((j) => (
             <li key={j.jobId} className={`job ${j.state}`} data-testid="job">
               <span className="job-state">
-                <Badge tone={JOB_TONE[j.state]}>{j.state}</Badge>
+                {isCheckNotPassed(j) ? <Badge tone="warn">未通过</Badge> : <Badge tone={JOB_TONE[j.state]}>{j.state}</Badge>}
               </span>
               <code>{j.command ?? j.jobId}</code>
               {j.returncode !== null && <span className="muted">rc={j.returncode}</span>}

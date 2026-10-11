@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { cleanup, makeFixtureRepo, py } from "../tests/helpers";
 import { execFileSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { spawns, openEp, card, readStore, type SpawnRec } from "./ackFixtures";
 import { launch, type Launched } from "./fixtures";
 import { stubConfirm } from "./sessionFixtures";
@@ -353,6 +354,65 @@ test("D73 预览区渲染异常被错误边界兜住：报错可见、侧栏照�
   await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
   await expect(L.page.getByTestId("voice-panel")).toBeVisible();
   await expect(L.page.getByTestId("seg-row")).toHaveCount(2);
+});
+
+/** D71：按 events.jsonl 契约手写一行事件（字段与 pipeline.jobs.Event 一致；折叠只看 type/payload/timestamp） */
+function evJson(ep: string, i: number, type: string, payload: object, at: Date): string {
+  const ts = at.toISOString().replace(/\.(\d{3})Z$/, ".$1000Z");
+  return `${JSON.stringify({ episode: ep, event_id: `evt_17900000000${String(i).padStart(2, "0")}_d71a`, payload, timestamp: ts, type })}\n`;
+}
+
+test("D71 全局作业条：运行中可见、时长在走、不压别的区域 → 看进度展开时间线 → 机检 rc=1 记「未通过」→ 作业结束即消失", async () => {
+  const ctx = epAt035("SP11-D71");
+  const ep = "SP11-D71";
+  const now = Date.now();
+  const ago = (s: number) => new Date(now - s * 1000);
+  writeFileSync(
+    join(ctx.ep, "events.jsonl"),
+    [
+      evJson(ep, 1, "job_created", { job_id: "job_chk", command: "check_script" }, ago(600)),
+      evJson(ep, 2, "job_started", { job_id: "job_chk", pid: 1, started_at: ago(600).toISOString() }, ago(600)),
+      evJson(ep, 3, "job_finished", { job_id: "job_chk", status: "failed", returncode: 1, duration_s: 2.7, stderr_tail: "" }, ago(597)),
+      evJson(ep, 4, "job_created", { job_id: "job_tts", command: "tts --apply-patch" }, ago(113)),
+      // pid 用测试进程自己：宿主按 pid 存活判 running（否则标「进程已不在」）
+      evJson(ep, 5, "job_started", { job_id: "job_tts", pid: process.pid, started_at: ago(112).toISOString() }, ago(112)),
+    ].join(""),
+  );
+  const L = await launch(ctx.repo, [], undefined, { previewOpen: false });
+  opened.push({ L, repo: ctx.repo });
+  await openEp(L.page, ep);
+  const bar = L.page.getByTestId("jobbar");
+  await expect(bar).toBeVisible({ timeout: 15_000 });
+  await expect(L.page.getByTestId("jobbar-cmd")).toHaveText("tts --apply-patch");
+  await expect(L.page.getByTestId("jobbar-elapsed")).toHaveText(/^已运行 (1:5\d|2:\d\d)$/);
+  const first = await L.page.getByTestId("jobbar-elapsed").textContent();
+  await expect.poll(() => L.page.getByTestId("jobbar-elapsed").textContent(), { timeout: 5_000 }).not.toBe(first); // 每秒走表
+  // UI 规则 5 底线：两种窗口尺寸下不与顶栏 / 侧栏 / 对话区相交，页面不横滚
+  for (const [w, h] of [[1280, 800], [1440, 900]] as const) {
+    await L.page.setViewportSize({ width: w, height: h });
+    const boxes = await L.page.evaluate(() => {
+      const r = (sel: string) => {
+        const b = document.querySelector(sel)?.getBoundingClientRect();
+        return b ? { x: b.x, y: b.y, w: b.width, h: b.height } : null;
+      };
+      return { bar: r("[data-testid=jobbar]"), top: r(".topbar"), left: r("#ava-left"), center: r("[data-testid=center]"), sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
+    });
+    const hit = (a: { x: number; y: number; w: number; h: number } | null, b: typeof a) => !!a && !!b && b.w > 0 && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    expect(boxes.bar).not.toBeNull();
+    for (const k of ["top", "left", "center"] as const) expect(hit(boxes.bar, boxes[k]), `${w}×${h} 作业条与 ${k} 相交`).toBe(false);
+    expect(boxes.sw).toBeLessThanOrEqual(boxes.cw);
+  }
+  // 看进度：预览区收着也要展开，时间线展开
+  await expect(L.page.locator("#ava-preview")).toBeHidden();
+  await L.page.getByTestId("jobbar-progress").click();
+  await expect(L.page.locator("#ava-preview")).toBeVisible();
+  await expect(L.page.getByTestId("timeline-toggle")).toHaveAttribute("aria-expanded", "true");
+  const tl = L.page.getByTestId("timeline");
+  await expect(tl.locator("[data-testid=job]").filter({ hasText: "check_script" })).toContainText("未通过");
+  await expect(tl.locator(".timeline-head")).not.toContainText("失败");
+  // 作业结束 → 作业条消失
+  appendFileSync(join(ctx.ep, "events.jsonl"), evJson(ep, 6, "job_finished", { job_id: "job_tts", status: "succeeded", returncode: 0, duration_s: 120 }, new Date()));
+  await expect(bar).toHaveCount(0, { timeout: 15_000 });
 });
 
 test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ H5 重钉新卡 → 一次批准通过（N61）", async () => {
