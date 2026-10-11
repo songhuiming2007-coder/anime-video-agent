@@ -651,7 +651,7 @@ class Engine:
         # 任何无条件 import 都会让 qwen3_tts_cuda 直接 ImportError——而它正是云端
         # 唯一的引擎。2026-09-11 由 TestQwen3CudaLoader 抓出，故拆成两条独立分支。
         if self.kind == "qwen3_tts_cuda":
-            audio, rate = self._synthesize_cuda(text, seed)
+            audio, rate = self._synthesize_cuda(text, attempt, seed)
         else:
             audio, rate = self._synthesize_mlx(text, attempt, seed)
 
@@ -663,10 +663,10 @@ class Engine:
         wavfile.write(dest, rate, (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
         return rate
 
-    def _synthesize_cuda(self, text: str, seed: int):
+    def _synthesize_cuda(self, text: str, attempt: int, seed: int):
         """云端 CUDA 通道（Qwen3-TTS PyTorch 版）。**不碰 mlx。**
 
-        三件事缺一不可，每一件都对应一次实测故障：
+        四件事缺一不可，前三件各对应一次实测故障，第四件是两条路径的对齐：
 
         1. `x_vector_only_mode=True`：ICL 路径（传 ref_text）会把参考转录当正文
            念出来（ADR-0006 实测）；x-vector 是纯说话人嵌入路径，只传 ref_audio。
@@ -675,6 +675,11 @@ class Engine:
         3. `torch.manual_seed`：mlx 版一直有 `mx.random.seed`，云端版最初漏了，
            于是默认采样每句随机起步——这是段内语气/语速突变的另一半原因。
            云端比本地明显，正是因为本地有种子、云端没有。
+        4. 采样参数照 `Engine.SAMPLING[attempt-1]` 显式传（D68，2026-10-10）：不传
+           就吃 qwen-tts 包默认 temperature 0.9 / top_k 50，比本地首试 0.8 / 30 更热，
+           同一段文本云端与本地的随机性不一样、重试也不降温。主解码与子解码
+           （subtalker，逐码本预测）同传一组：mlx 版的 code_predictor 就是复用
+           主解码的 temperature / top_k，不同传就仍不对齐。
         """
         import numpy as np
         import torch
@@ -683,11 +688,16 @@ class Engine:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+        temp, top_k = sampling_for(attempt)
         wavs, rate = self.model.generate_voice_clone(
             text=text,
             language=qwen3_language_name(self.lang_code),
             voice_clone_prompt=self.voice_prompt,
             x_vector_only_mode=True,
+            temperature=temp,
+            top_k=top_k,
+            subtalker_temperature=temp,
+            subtalker_top_k=top_k,
         )
         return np.asarray(wavs[0]).reshape(-1), rate
 
@@ -697,7 +707,7 @@ class Engine:
         import mlx.core as mx
 
         mx.random.seed(seed)
-        temp, top_k = self.SAMPLING[min(attempt, len(self.SAMPLING)) - 1]
+        temp, top_k = sampling_for(attempt)
 
         if self.kind == "indextts":
             audio, rate = _indextts_audio(
@@ -743,6 +753,16 @@ class Engine:
             audio = np.concatenate(chunks)
 
         return audio, rate
+
+
+def sampling_for(attempt: int) -> tuple[float, int]:
+    """第 attempt 次（从 1 起）合成的 (temperature, top_k)。本地 mlx 与云端 CUDA 共用。
+
+    超出阶梯长度的重试停在最冷一档，不越界。
+    """
+    if attempt < 1:
+        raise ValueError(f"attempt 从 1 起，收到 {attempt}")
+    return Engine.SAMPLING[min(attempt, len(Engine.SAMPLING)) - 1]
 
 
 @lru_cache(maxsize=1)
