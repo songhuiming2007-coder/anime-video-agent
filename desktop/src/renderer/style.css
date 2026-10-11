@@ -227,8 +227,12 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-md .markdown li > p { margin-bottom: var(--space-1); }
 .conv-md .markdown blockquote { margin: 0 0 var(--space-3); padding-left: var(--space-3); border-left: 3px solid var(--border-strong); color: var(--fg-muted); }
 .conv-md .markdown hr { margin: var(--space-4) 0; border: 0; border-top: 1px solid var(--border); }
-.conv-md .markdown pre { margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--bg-subtle); overflow-x: auto; font-size: var(--text-sm); }
-.conv-md .markdown pre code { padding: 0; background: none; }
+/* D76（人选方案 C）：长命令折行显示（整条可见），右上角常驻「复制」；复制出来仍是原文一行 */
+.conv-md .markdown pre { position: relative; margin: 0 0 var(--space-3); padding: var(--space-2) 84px var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--bg-subtle); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.conv-md .markdown pre code { padding: 0; background: none; white-space: inherit; }
+.conv-md .markdown pre > .code-copy { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--bg); }
+.copy-btn--done { color: var(--ok); border-color: var(--ok); }
+.request-card-copy { display: flex; justify-content: flex-end; margin-top: var(--space-2); }
 .conv-md .markdown table { margin: 0 0 var(--space-3); border-collapse: collapse; font-size: var(--text-sm); }
 .conv-md .markdown th, .conv-md .markdown td { padding: var(--space-1) var(--space-2); border: 1px solid var(--border); text-align: left; vertical-align: top; }
 .conv-md .markdown th { background: var(--bg-subtle); font-weight: var(--weight-semibold); }

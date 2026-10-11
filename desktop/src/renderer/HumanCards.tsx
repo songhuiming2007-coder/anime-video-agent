@@ -14,6 +14,7 @@ import type { ConvState } from "./convStore";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
+import { CopyButton } from "./copy";
 import { Icon } from "./icons";
 import { ReviewRating } from "./ReviewRating";
 import { approvalsOf, type EpisodeState } from "./store";
@@ -307,6 +308,9 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
+  // D76：bash 卡上的命令每行带「│」前缀，手选会连前缀一起复制；按钮复制的是请求参数里的命令原文
+  const args = (fields.args ?? {}) as Record<string, unknown>;
+  const bashCommand = tool === "bash" && typeof args.command === "string" ? args.command : null;
   const feedbackAllowed = kind === "tool_call" && req.feedback_allowed === true && options.includes("reject");
   const off = disabled || busy;
   return (
@@ -316,7 +320,16 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
       attrs={{ "data-kind": kind, "data-request-id": requestId }}
       title={`${KIND_LABEL[kind] ?? "请求卡"}${tool ? ` · ${tool}` : ""}${req.title ? ` · ${String(req.title)}` : ""}`}
       // card_text 是 core 确定性渲染的多行纯文本（D47 起写稿卡含 diff）：按原样换行、等宽，不解释任何标记（H-3）
-      sub={<pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>}
+      sub={
+        <>
+          <pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>
+          {bashCommand !== null && (
+            <div className="request-card-copy">
+              <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
+            </div>
+          )}
+        </>
+      }
     >
       {/* 参数原文默认收起：卡片正文已列出目标与危险标记，写稿时 args.content 是整篇原文，铺开会把按钮挤出视野（D47） */}
       <details className="request-card-fields" data-testid="request-card-fields">

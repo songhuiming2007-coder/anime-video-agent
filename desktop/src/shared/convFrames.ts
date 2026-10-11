@@ -97,9 +97,12 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   bye: { reason: ["string"] },
 };
 
-/** history 的 tool 条目多一个必需键 ok（S9-R1）。 */
+/** history 的 tool 条目多一个必需键 ok（S9-R1）；bash 的 tool 帧与 history 的 bash 条目多一个必需键 command
+ *  （D76：完整命令，工具行复制用；继续会话后的旧工具行同样能复制）。 */
 export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) => Record<string, readonly Kind[]> | null>> = {
-  history: (f) => (f.role === "tool" ? { ok: ["boolean"] } : null),
+  history: (f): Record<string, readonly Kind[]> | null =>
+    f.role !== "tool" ? null : f.name === "bash" ? { ok: ["boolean"], command: ["string"] } : { ok: ["boolean"] },
+  tool: (f) => (f.name === "bash" ? { command: ["string"] } : null),
 };
 
 function kindOf(v: unknown): Kind {

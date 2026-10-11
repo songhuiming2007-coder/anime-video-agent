@@ -17,6 +17,8 @@ export type ToolRow = {
   /** 非成功调用逐字保留的原文（H-2/判据 4），成功为 null */
   observation: string | null;
   logs: string[];
+  /** D76：bash 的完整命令（帧的条件键；summary 只有前 80 字）。其余工具、历史重建的行为 null */
+  command: string | null;
 };
 
 export type ConvRow =
@@ -162,6 +164,19 @@ function logText(text: string): string[] {
   return text.split("\n").slice(-LOG_TAIL_LINES);
 }
 
+/** D76：帧里的完整命令（只有 bash 带）；空串不给复制按钮 */
+function commandOf(f: OutFrame): string | null {
+  return typeof f.command === "string" && f.command !== "" ? f.command : null;
+}
+
+/** 与 core `session.tool_summary` 的 bash 分支同一规则：首行，超 80 字或多行加「…」（历史帧不带 summary，在这里补） */
+export function bashSummary(command: string | null): string {
+  if (command === null) return "";
+  const lines = command.trim().split("\n");
+  const first = lines[0] ?? "";
+  return first.length > 80 || lines.length > 1 ? `${first.slice(0, 80)}…` : first;
+}
+
 /** 把一条已校验的帧折进行序列；`lastTool` 是当前回合里最近一个尚未结束的工具行下标（-1 = 无）。 */
 function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number }): void {
   switch (f.t) {
@@ -170,14 +185,14 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     case "tool": {
       if (f.phase === "start") {
-        rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [] });
+        rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f) });
         lastTool.idx = rows.length - 1;
       } else {
         const idx = lastTool.idx;
         const row = idx >= 0 ? rows[idx] : undefined;
         if (!row || row.k !== "tool" || row.ok !== null) {
           // 孤立 tool{end}（缓冲截头后会遇到）：显式成行，不崩、不吞
-          rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [] });
+          rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f) });
         } else {
           row.ok = f.ok as boolean | null;
           row.duplicate = f.duplicate === true;
@@ -291,12 +306,14 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
                 k: "tool",
                 at: e.at,
                 name: String(f.name ?? "tool"),
-                summary: String(f.name ?? ""),
+                // 历史帧只带工具名（D76 起 bash 另带命令）：摘要只给 bash 补，其余保持空——工具名已在行首
+                summary: bashSummary(commandOf(f)),
                 ok: f.ok === true,
                 duplicate: false,
                 durationMs: null,
                 observation: f.ok === true ? null : String(f.text ?? ""),
                 logs: [],
+                command: commandOf(f),
               });
             } else if (role === "user") {
               rows.push({ k: "user", at: e.at, text: String(f.text) });

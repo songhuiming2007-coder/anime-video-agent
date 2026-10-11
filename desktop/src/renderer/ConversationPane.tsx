@@ -3,6 +3,7 @@
 // 卡片、本地说明、工具原文仍是纯文本。失败调用的 observation 逐字、不截断，但默认收起。
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ConvRow } from "../shared/convFold";
+import { CopyButton } from "./copy";
 import { Icon } from "./icons";
 import { ChatMarkdown } from "./PreviewPane";
 
@@ -88,6 +89,8 @@ function Row({ row, running }: { row: ConvRow; running: boolean }) {
             <span>{row.summary}</span>
             {row.duplicate && <span className="ui-badge ui-badge--warn">重复调用</span>}
             <span className="spacer" />
+            {/* D76：摘要只显示前 80 字；复制的是完整命令原文 */}
+            {row.command !== null && <CopyButton text={row.command} label="复制命令" testId="tool-copy" />}
             {row.durationMs !== null && <span>{Math.round(row.durationMs / 100) / 10}s</span>}
           </div>
           {row.observation !== null && (

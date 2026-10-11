@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, 
 import { TEXT_PREVIEW_MAX_BYTES } from "../shared/constants";
 import { encodeMediaUrl, type MediaRoot } from "../shared/mediaUrl";
 import { formatMediaTime, naturalAudioQueue, previewKind, type PreviewKind } from "../shared/previewKind";
+import { useCodeCopyButtons } from "./copy";
 import { Icon, type IconName } from "./icons";
 import { Badge, StateView } from "./ui";
 
@@ -286,10 +287,12 @@ export function MarkdownBody({ text }: { text: string }) {
   );
 }
 
-/** D46：对话区的助手回复（answer / wrapup）。卡片、本地说明、工具原文仍是纯文本。 */
+/** D46：对话区的助手回复（answer / wrapup）。卡片、本地说明、工具原文仍是纯文本。
+ *  D76：代码块的「复制」按钮由宿主在渲染后挂上（useCodeCopyButtons），不进 renderChatMarkdown 的输出。 */
 export function ChatMarkdown({ text }: { text: string }) {
   const html = useMemo(() => renderChatMarkdown(text), [text]);
-  return <div className="markdown chat-md" data-testid="chat-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+  const ref = useCodeCopyButtons(html);
+  return <div ref={ref} className="markdown chat-md" data-testid="chat-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 // ---- 文本：md 渲染（html:false）、json 折叠树、其余纯文本；超 5 MiB 截断 ----

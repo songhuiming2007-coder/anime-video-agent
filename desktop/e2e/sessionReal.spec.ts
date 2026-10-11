@@ -610,16 +610,23 @@ test("N49 真实 core：会话里批准 run_pipeline qc → 作业能按名字�
 
 // D77 / ADR-0029：bash 工具的原病例——人给一张期目录之外的图，ava 自己拷进封面目录并改名，人只批卡。
 // 第二条只读命令（ls）免卡直接跑；会话注入的 LLM 密钥变量（AVA_TEST_KEY）不传给 bash 子进程。
-test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标记在命令前）→ 批准后文件落地；只读 ls 免卡；子进程无密钥变量", async () => {
+// D76（人选方案 C）：同一场景里三处「复制」各点一次，系统剪贴板读回的必须是原文（不带卡面「│」前缀、不是截断的摘要）。
+// 剪贴板是人的：测试前存、测试后还原。
+const clipboardText = (L: Launched): Promise<string> => L.app.evaluate(({ clipboard }) => clipboard.readText());
+/** 每次点复制前先写哨兵：否则上一处复制留下的同一段原文会让「这一处根本没写进去」的情况照样通过 */
+const armClipboard = (L: Launched): Promise<void> => L.app.evaluate(({ clipboard }) => clipboard.writeText("<D76 哨兵>"));
+
+test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标记在命令前）→ 批准后文件落地；只读 ls 免卡；子进程无密钥变量；D76 三处复制得原文", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
+    const savedClipboard = await clipboardText(L);
     const src = join(fx.repo.root, "Weixin Image 1.jpg");
     writeFileSync(src, Buffer.from([0xff, 0xd8, 0x66, 0x61, 0x6b, 0x65]));
     const cmd = `mkdir -p 07-cover/import && cp '${src}' 07-cover/import/marika-h.jpg && echo "[$AVA_TEST_KEY]"`;
     llm.push(
       toolCalls({ name: "bash", args: { command: cmd, description: "把人给的图拷进封面目录并改名" } }),
       toolCalls({ name: "bash", args: { command: "ls 07-cover/import", description: "确认文件在" } }),
-      assistant("放好了。"),
+      assistant(`放好了。要再看一眼可以跑：\n\n\`\`\`bash\nls -la 07-cover/import && ffprobe -v error 07-cover/import/marika-h.jpg\n\`\`\``),
     );
     await openEp(L.page, "SESS-A");
     await send(L.page, "把这张图放进本期封面目录");
@@ -629,8 +636,31 @@ test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标�
     await expect(cardText).toContainText("07-cover/import/marika-h.jpg");
     const text = (await cardText.textContent()) ?? "";
     expect(text.indexOf("危险标记:")).toBeLessThan(text.indexOf("命令:"));
-    await L.page.getByTestId("request-answer-approve").click();
-    await waitTurns(L, "ep:SESS-A", 1);
+    try {
+      // D76 ①审批卡：复制的是请求参数里的命令原文
+      await armClipboard(L);
+      await L.page.getByTestId("card-copy").click();
+      await expect(L.page.getByTestId("card-copy")).toHaveText("✓ 已复制");
+      expect(await clipboardText(L)).toBe(cmd);
+      await L.page.getByTestId("request-answer-approve").click();
+      await waitTurns(L, "ep:SESS-A", 1);
+      // 帧契约：bash 的 tool 帧带 command，键集合与 TS 表（REQUIRED + CONDITIONAL）两个方向都一致
+      assertFrameContract(framesOf(await convSnapshot(L, "ep:SESS-A")));
+      // D76 ②工具行：两条 bash 行各有「复制命令」，第一条复制出来是完整命令（摘要截在 80 字）
+      const toolCopies = L.page.getByTestId("tool-copy");
+      await expect(toolCopies).toHaveCount(2);
+      await armClipboard(L);
+      await toolCopies.first().click();
+      await expect(toolCopies.first()).toHaveText("✓ 已复制");
+      expect(await clipboardText(L)).toBe(cmd);
+      // D76 ③助手回复的代码块：复制出来是块内原文，不带末尾换行
+      await armClipboard(L);
+      await L.page.getByTestId("code-copy").click();
+      await expect(L.page.getByTestId("code-copy")).toHaveText("✓ 已复制");
+      expect(await clipboardText(L)).toBe("ls -la 07-cover/import && ffprobe -v error 07-cover/import/marika-h.jpg");
+    } finally {
+      await L.app.evaluate(({ clipboard }, t) => clipboard.writeText(t), savedClipboard);
+    }
 
     const epDir = join(fx.repo.eps, "SESS-A");
     expect([...readFileSync(join(epDir, "07-cover/import/marika-h.jpg"))]).toEqual([0xff, 0xd8, 0x66, 0x61, 0x6b, 0x65]);
@@ -642,6 +672,36 @@ test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标�
     expect(results[0].result.stdout_tail.trim()).toBe("[]"); // 密钥变量没传给子进程
     expect(results[1].result.stdout_tail.trim()).toBe("marika-h.jpg"); // ls 跑了，且没再弹卡（只批过一张）
     await expect(L.page.getByTestId("request-answer-approve")).toHaveCount(0);
+  });
+});
+
+test("D76 真实 core：继续上次会话 → 恢复出来的 bash 旧工具行显示工具名与命令摘要，「复制命令」得完整原文", async () => {
+  await withRealCore(async ({ L, llm }) => {
+    const cmd = `ls -la . && echo "${"一段很长的说明文字".repeat(12)}"`; // 只读之外的命令要弹卡；这里用 echo 串联，批一次卡
+    llm.push(toolCalls({ name: "bash", args: { command: cmd, description: "看一眼目录" } }), assistant("看完了。"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "看看目录");
+    await L.page.getByTestId("request-answer-approve").click();
+    await waitTurns(L, "ep:SESS-A", 1);
+    await L.page.getByTestId("session-end").click();
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "exited", { timeout: 20_000 });
+    await L.page.locator("[data-testid=session-row] button.ep-session").first().click();
+    await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 15_000 });
+    // history 帧键集合两个方向都与 TS 表一致（bash 条目带 command）
+    assertFrameContract(framesOf(await convSnapshot(L, "ep:SESS-A")).filter((f) => f.t === "history"));
+    const row = L.page.locator("[data-testid=conv-row][data-kind=tool]").filter({ has: L.page.getByTestId("tool-copy") });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("bash");
+    await expect(row).toContainText("ls -la . && echo");
+    const saved = await clipboardText(L);
+    try {
+      await armClipboard(L);
+      await row.getByTestId("tool-copy").click();
+      await expect(row.getByTestId("tool-copy")).toHaveText("✓ 已复制");
+      expect(await clipboardText(L)).toBe(cmd);
+    } finally {
+      await L.app.evaluate(({ clipboard }, t) => clipboard.writeText(t), saved);
+    }
   });
 });
 
