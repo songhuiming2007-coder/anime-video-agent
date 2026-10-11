@@ -608,6 +608,43 @@ test("N49 真实 core：会话里批准 run_pipeline qc → 作业能按名字�
   });
 });
 
+// D77 / ADR-0029：bash 工具的原病例——人给一张期目录之外的图，ava 自己拷进封面目录并改名，人只批卡。
+// 第二条只读命令（ls）免卡直接跑；会话注入的 LLM 密钥变量（AVA_TEST_KEY）不传给 bash 子进程。
+test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标记在命令前）→ 批准后文件落地；只读 ls 免卡；子进程无密钥变量", async () => {
+  await withRealCore(async (fx) => {
+    const { L, llm } = fx;
+    const src = join(fx.repo.root, "Weixin Image 1.jpg");
+    writeFileSync(src, Buffer.from([0xff, 0xd8, 0x66, 0x61, 0x6b, 0x65]));
+    const cmd = `mkdir -p 07-cover/import && cp '${src}' 07-cover/import/marika-h.jpg && echo "[$AVA_TEST_KEY]"`;
+    llm.push(
+      toolCalls({ name: "bash", args: { command: cmd, description: "把人给的图拷进封面目录并改名" } }),
+      toolCalls({ name: "bash", args: { command: "ls 07-cover/import", description: "确认文件在" } }),
+      assistant("放好了。"),
+    );
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "把这张图放进本期封面目录");
+    const cardText = L.page.getByTestId("request-card-text");
+    await expect(cardText).toContainText("命令审批", { timeout: 15_000 });
+    await expect(cardText).toContainText("把人给的图拷进封面目录并改名");
+    await expect(cardText).toContainText("07-cover/import/marika-h.jpg");
+    const text = (await cardText.textContent()) ?? "";
+    expect(text.indexOf("危险标记:")).toBeLessThan(text.indexOf("命令:"));
+    await L.page.getByTestId("request-answer-approve").click();
+    await waitTurns(L, "ep:SESS-A", 1);
+
+    const epDir = join(fx.repo.eps, "SESS-A");
+    expect([...readFileSync(join(epDir, "07-cover/import/marika-h.jpg"))]).toEqual([0xff, 0xd8, 0x66, 0x61, 0x6b, 0x65]);
+    const results = sessionLog(fx, "SESS-A")
+      .filter((r) => r.k === "msg" && (r.message as { role: string }).role === "tool")
+      .map((r) => JSON.parse((r.message as { content: string }).content) as { ok: boolean; result: { returncode: number; stdout_tail: string } });
+    expect(results).toHaveLength(2);
+    expect(results[0].result.returncode).toBe(0);
+    expect(results[0].result.stdout_tail.trim()).toBe("[]"); // 密钥变量没传给子进程
+    expect(results[1].result.stdout_tail.trim()).toBe("marika-h.jpg"); // ls 跑了，且没再弹卡（只批过一张）
+    await expect(L.page.getByTestId("request-answer-approve")).toHaveCount(0);
+  });
+});
+
 test("TX-8 真实 core：回合在跑时退出 → 确认框列出该期；确认 → 会话收 SIGTERM（turn_end.wrapup == skipped），8 s 内进程消失", async () => {
   const llm = await startFakeLlm();
   const fx = realCoreFixture(llm.url);

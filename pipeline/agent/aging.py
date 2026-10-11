@@ -53,6 +53,13 @@ def _placeholder(tool_name: str | None, content: str) -> str:
         return (
             f"[工具结果已老化｜原 {n} 字符｜该结果来自 run_pipeline，需要最新状态请调 read_status]\n{head}"
         )
+    if tool_name == "bash":
+        # 同为执行型（D77 / ADR-0029）：原命令可能是 cp / rm / sips 改盘，重放 = 再改一遍。
+        # 只指向「用只读命令重新查看」（ls / cat / ffprobe 免卡），不指引重调原命令
+        return (
+            f"[工具结果已老化｜原 {n} 字符｜该结果来自 bash，不要重放原命令；"
+            f"需要现状请用只读命令（ls / cat / ffprobe 等）重新查看]\n{head}"
+        )
     if tool_name:
         return f"[工具结果已老化｜原 {n} 字符｜需要全文请重新调用 {tool_name}]\n{head}"
     # 查不到名字（修复插入的合成结果等）→ 通用文案

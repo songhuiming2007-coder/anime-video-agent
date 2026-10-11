@@ -203,6 +203,23 @@ def _script_diff(target: Path, new: str) -> list[str]:
     return out
 
 
+# D77 / ADR-0029：bash 命令审批卡的危险标记（宿主静态规则，只提示不拦；判不到不等于安全）
+_BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(^|[\s;&|(])(rm|rmdir)\s"), "[删除]"),
+    (re.compile(r"(^|[\s;&|(])mv\s|\s-delete\b"), "[移动/覆盖]"),
+    (re.compile(r"(^|[\s;&|(])(sudo|su|chmod|chown)\s"), "[提权]"),
+    (re.compile(r"\bgit\s+(push|reset|rebase|commit|checkout|clean)\b"), "[git 写操作]"),
+    (re.compile(r"(^|[\s;&|(])(curl|wget|pip|pip3|uv|brew|npm|npx)\s"), "[联网/装依赖]"),
+    (re.compile(r"(^|[\s'\"/])(pipeline|config)/"), "[碰源码/配置] Code Freeze 范围"),
+    (re.compile(r"02-diff\.patch|04-clips\.approved\.json|07-cover/selected"), "[停机点解封物] 批准只能由人做"),
+)
+
+
+def bash_danger_tags(command: str) -> list[str]:
+    """bash 命令命中的危险标记（按规则表顺序，去重）。"""
+    return [tag for pat, tag in _BASH_DANGER_RULES if pat.search(command)]
+
+
 def render_approval_card(
     name: str,
     args: dict[str, Any],
@@ -319,6 +336,28 @@ def render_approval_card(
             head = content.splitlines()
             lines.append(f"│ 新建 {len(head)} 行，开头：")
             lines.extend(f"│ + {_sanitize_card_field(ln)}" for ln in head[:CARD_DIFF_MAX_LINES // 2])
+        lines.append("└─ 执行? [y/N]: ")
+        return "\n".join(lines)
+
+    if name == "bash":
+        command = str(args.get("command", ""))
+        purpose = _sanitize_card_field(args.get("description")) or "（未说明）"
+        tags = bash_danger_tags(command)
+        lines = [
+            "┌─ 命令审批 ──────────────────────────────────────",
+            f"│ 工具: {name}",
+            # 危险标记行必须排在一切模型可控字段（用途、命令原文）之前：session 取卡面第一处
+            # 「危险标记:」，用途或命令里夹带的同样字样骗不过
+            f"│ 危险标记: {' '.join(tags) if tags else '无'}",
+            f"│ 用途: {purpose}",
+            f"│ 目录: {episode_dir or '仓库根'}",
+            "│ 命令:",
+        ]
+        cmd_lines = command.splitlines() or [""]
+        for raw in cmd_lines[:CARD_DIFF_MAX_LINES]:
+            lines.append("│   " + re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", raw))
+        if len(cmd_lines) > CARD_DIFF_MAX_LINES:
+            lines.append(f"│   ……另有 {len(cmd_lines) - CARD_DIFF_MAX_LINES} 行未显示")
         lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 

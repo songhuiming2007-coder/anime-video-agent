@@ -76,6 +76,11 @@ class Job:
     stdout_tail: str = ""
     stderr_tail: str = ""
     truncated: bool = False
+    # D77 bash 作业才改这四项；默认值即 pipeline 作业的既有行为（cwd=仓库根、继承 stdin、尾部 4 KB、全量环境）
+    cwd: Path | None = None
+    stdin_devnull: bool = False
+    tail_bytes: int = 4096
+    env_drop: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, JobStatus):
@@ -427,6 +432,48 @@ def create_job(
     return job, valid, msg
 
 
+SHELL_TAIL_BYTES = 16384   # bash 输出尾部各 16 KB：ls / ffprobe 的输出常超 4 KB；更大的结果由 D65 老化投影兜
+
+
+def create_shell_job(
+    command: str,
+    episode_dir: Path | str | None = None,
+    *,
+    scope: str = "pipeline",
+    env_drop: tuple[str, ...] = (),
+    publisher: EventPublisher | None = None,
+) -> Job:
+    """D77 / ADR-0029：bash 工具的作业。不过白名单（人裁决方案 B），其余与 pipeline 作业同一套：
+    同样立项发 job_created（作业条 / 时间线照常显示），同样由 execute_job 排水、强杀、发事件。
+
+    三处与能力无关的差别：cwd = 当期目录（无期为仓库根）；stdin 接 /dev/null——协议模式下
+    父进程 stdin 是桌面端协议管道，读 stdin 的命令会吃掉协议帧；`env_drop` 里的密钥变量不传给子进程。
+    """
+    ep_path = Path(episode_dir).resolve() if episode_dir else None
+    first = command.strip().splitlines()[0] if command.strip() else ""
+    job = Job(
+        job_id=f"job_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}",
+        command=f"bash: {first}",
+        scope=scope,
+        episode_dir=ep_path,
+        argv=["/bin/bash", "-c", command],
+        status=JobStatus.PENDING,
+        created_at=_utc_now_iso(),
+        message="",
+        cwd=ep_path or paths.ROOT,
+        stdin_devnull=True,
+        tail_bytes=SHELL_TAIL_BYTES,
+        env_drop=tuple(env_drop),
+    )
+    (publisher or get_publisher()).emit(
+        EventType.JOB_CREATED,
+        {"job_id": job.job_id, "command": job.command, "scope": job.scope, "argv": job.argv},
+        episode_dir=ep_path,
+    )
+    _register_job(job)
+    return job
+
+
 def cancel_job(
     job: Job,
     reason: str = "human_rejected",
@@ -528,15 +575,17 @@ def execute_job(
         job.started_at = _utc_now_iso()
 
         try:
-            env = dict(os.environ)
+            env = {k: v for k, v in os.environ.items() if k not in job.env_drop}
             env["PYTHONUNBUFFERED"] = "1"
+            extra: dict[str, Any] = {"stdin": subprocess.DEVNULL} if job.stdin_devnull else {}
             proc = popen_factory(
                 job.argv,
-                cwd=paths.ROOT,
+                cwd=job.cwd or paths.ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
                 start_new_session=True,
+                **extra,
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
             job.status = JobStatus.FAILED
@@ -550,8 +599,8 @@ def execute_job(
             )
             return job
 
-        stdout_buf = _LockedTailBuffer(4096)
-        stderr_buf = _LockedTailBuffer(4096)
+        stdout_buf = _LockedTailBuffer(job.tail_bytes)
+        stderr_buf = _LockedTailBuffer(job.tail_bytes)
 
         def _drain(pipe: Any, buf: _LockedTailBuffer, is_stderr: bool) -> None:
             target_stream = sys.stderr if is_stderr else sys.stdout

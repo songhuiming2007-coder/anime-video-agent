@@ -950,6 +950,35 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "bash": {
+        "name": "bash",
+        "adr": "ADR-0029",
+        # 不标 side_effect：fail-closed 默认 True——每次执行弹命令审批卡（ADR-0029 决策 4）
+        "description": (
+            "在本机执行一段 bash 命令（/bin/bash -c）。工作目录是当期目录（无期时为仓库根），"
+            "stdin 为空，stdout / stderr 各回传尾部 16 KB，输出里的已知密钥值会被替换为 [已脱敏]。"
+            "用于白名单之外的文件与媒体操作：把期目录外的文件拷进来、改名、ffmpeg / sips 裁图转码、查看文件。"
+            "**每次执行都弹卡给人看命令原文**；不要叫人去终端敲命令。"
+            "流水线工序（tts / clips / render / check_script…）仍走 run_pipeline。"
+            "遵守 AGENTS.md Code Freeze：不改 pipeline/ 源码与 config/，"
+            "不写停机点解封物（02-diff.patch、04-clips.approved.json、封面定稿）——批准只能由人做。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "要执行的 bash 命令，可多行；相对路径相对当期目录",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "一句话说明这条命令要做什么（上审批卡给人看）",
+                },
+            },
+            "required": ["command", "description"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -1549,6 +1578,129 @@ def _tool_cover_edit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         raise ValueError(str(exc)) from exc
 
 
+# ---------------------------------------------------------------------------
+# bash（第 15 个工具，D77 / ADR-0029：人选方案 B，不加沙箱）
+# ---------------------------------------------------------------------------
+
+# 只读判定：首词在此集合、且整条命令不含任何 shell 元字符才算只读。判不准一律当写（弹卡）。
+_BASH_READONLY_HEADS = frozenset({
+    "ls", "pwd", "cat", "head", "tail", "wc", "file", "stat", "du", "find",
+    "ffprobe", "mdls", "which", "echo", "sips",
+})
+# 重定向、管道、串联、命令替换、变量展开、换行、转义、子 shell / 花括号：出现任意一个就不再是「单条只读命令」
+_BASH_META = re.compile(r"[><|;&`$\n\\(){}]")
+_FIND_WRITE_FLAGS = frozenset({
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+})
+
+
+def bash_readonly(command: str) -> bool:
+    """保守判定一条 bash 命令是否只读（ADR-0029 决策 4）。宁可误判为写，不可误判为读。"""
+    text = command.strip()
+    if not text or _BASH_META.search(text):
+        return False
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return False
+    if not words or words[0] not in _BASH_READONLY_HEADS:
+        return False
+    if words[0] == "find" and any(w in _FIND_WRITE_FLAGS for w in words[1:]):
+        return False
+    if words[0] == "sips":
+        # sips 只有 -g / --getProperty 是查询；-s / -z / -c / --out 等都会写文件
+        flags = [w for w in words[1:] if w.startswith("-")]
+        if not flags or any(f not in ("-g", "--getProperty") for f in flags):
+            return False
+    return True
+
+
+# 密钥变量名（N50 同一组）：名字像密钥的环境变量，外加 LLM / web 配置指名的密钥变量
+_SECRET_ENV_NAME = re.compile(r"(?i)(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$|^AVA_.*KEY")
+# config/*.local.json 里键名含这些词的字符串值视为密钥
+_SECRET_FIELD_NAME = re.compile(r"(?i)(key|token|secret|password)")
+SECRET_MIN_LEN = 8   # 短于 8 的值不当密钥替换：「true」「cn」这类短值替换会把正常输出改得面目全非
+
+
+def secret_env_names(root: Path | None = None) -> tuple[str, ...]:
+    """不传给 bash 子进程的环境变量名。"""
+    names = {k for k in os.environ if _SECRET_ENV_NAME.search(k)}
+    try:
+        from pipeline.agent.llm import api_key_env_name
+
+        llm_name = api_key_env_name(root)
+        if llm_name:
+            names.add(llm_name)
+    except Exception:  # noqa: BLE001 —— 配置坏了不影响剥名字：正则那一组照剥
+        pass
+    try:
+        from pipeline.agent.web import web_key_env_names
+
+        names.update(web_key_env_names(root))
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(sorted(names))
+
+
+def _collect_secret_fields(node: Any, out: set[str]) -> None:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str) and _SECRET_FIELD_NAME.search(str(k)):
+                out.add(v)
+            else:
+                _collect_secret_fields(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _collect_secret_fields(v, out)
+
+
+def _secret_values(root: Path | None = None) -> list[str]:
+    """已知密钥值：密钥环境变量的值 + config/*.local.json 里键名像密钥的值。长的排前（先换长值）。"""
+    values: set[str] = set()
+    for name in secret_env_names(root):
+        v = os.environ.get(name)
+        if v:
+            values.add(v)
+    config_dir = Path(root or paths.ROOT) / "config"
+    for path in sorted(config_dir.glob("*.local.json")):
+        try:
+            _collect_secret_fields(json.loads(path.read_text(encoding="utf-8")), values)
+        except (OSError, ValueError):
+            continue
+    return sorted((v for v in values if len(v) >= SECRET_MIN_LEN), key=len, reverse=True)
+
+
+def scrub_secrets(text: str, root: Path | None = None) -> str:
+    """把已知密钥值换成 [已脱敏]（ADR-0029 决策 5：出网断言只比文件名不看内容，bash 输出要自己脱）。"""
+    for v in _secret_values(root):
+        text = text.replace(v, "[已脱敏]")
+    return text
+
+
+def _tool_bash(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    command = str(args.get("command", ""))
+    if not command.strip():
+        raise ValueError("command 不能为空")
+    if not ctx.confirmed and not bash_readonly(command):
+        # 实现层双保险：绕过 review 层的裸调用只放只读命令
+        raise PermissionError("需人类确认：这条 bash 命令会写盘或无法判定为只读，须经审批卡批准后执行")
+    from pipeline.jobs import create_shell_job, execute_job
+
+    job = create_shell_job(
+        command, ctx.episode_dir, scope=ctx.scope, env_drop=secret_env_names(ctx.root),
+    )
+    done = execute_job(job)
+    return {
+        "ok": done.returncode == 0,
+        "cwd": str(done.cwd),
+        "returncode": done.returncode,
+        "duration_s": done.duration_s,
+        "stdout_tail": scrub_secrets(done.stdout_tail, ctx.root),
+        "stderr_tail": scrub_secrets(done.stderr_tail, ctx.root),
+        "truncated": done.truncated,
+    }
+
+
 _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "read_artifact": _tool_read_artifact,
     "write_episode_file": _tool_write_episode_file,
@@ -1564,6 +1716,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "write_memory": _tool_write_memory,
     "cover_edit": _tool_cover_edit,
     "write_note": _tool_write_note,
+    "bash": _tool_bash,
 }
 
 
