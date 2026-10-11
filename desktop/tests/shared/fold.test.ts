@@ -35,9 +35,9 @@ describe("TE-9 foldEvents", () => {
     const jobs = foldEvents(records(SPEC2_EXAMPLES), NOW, alive, new Set());
     expect(jobs).toEqual([
       { jobId: "job_1790089200100_01a2", command: "tts --redo 3", state: "succeeded", lastEventAt: "2026-09-22T14:30:30.000000Z",
-        pid: 48102, returncode: 0, durationS: 5.3, stderrTail: "", message: "退出码 0", noFollowupEvents: false, finishedEventMissing: false },
+        startedAt: "2026-09-22T14:30:00.198000Z", pid: 48102, returncode: 0, durationS: 5.3, stderrTail: "", message: "退出码 0", noFollowupEvents: false, finishedEventMissing: false },
       { jobId: "job_1790089210000_01b3", command: "render --force", state: "blocked", lastEventAt: "2026-09-22T14:30:10.000000Z",
-        pid: null, returncode: null, durationS: null, stderrTail: null, message: "拒绝执行：禁止在 ava 中使用 --force 全量覆盖！",
+        startedAt: null, pid: null, returncode: null, durationS: null, stderrTail: null, message: "拒绝执行：禁止在 ava 中使用 --force 全量覆盖！",
         noFollowupEvents: false, finishedEventMissing: false },
     ]);
   });
@@ -74,6 +74,13 @@ describe("TE-9 foldEvents", () => {
     ]);
     const jobs = foldEvents(evs, NOW, alive, new Set());
     expect(jobs.map((j) => [j.jobId, j.state])).toEqual([["job_1790089200100_01a2", "running"]]);
+  });
+  it("D71 startedAt：优先 job_started 载荷的 started_at，缺了退回事件时间戳", () => {
+    const withField = foldEvents(records([SPEC2_EXAMPLES[1]]), NOW, alive, new Set());
+    expect(withField[0].startedAt).toBe("2026-09-22T14:30:00.198000Z");
+    const bare = { ...SPEC2_EXAMPLES[1], payload: { job_id: "job_1790089200100_01a2", pid: 48102 } };
+    expect(foldEvents(records([bare]), NOW, alive, new Set())[0].startedAt).toBe("2026-09-22T14:30:00.200000Z");
+    expect(foldEvents(records([SPEC2_EXAMPLES[0]]), NOW, alive, new Set())[0].startedAt).toBeNull();
   });
 });
 

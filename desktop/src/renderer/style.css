@@ -136,6 +136,12 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .meta { padding: var(--space-4); }
 .meta-title { font-family: var(--font-mono); font-weight: var(--weight-semibold); }
 /* D39 C4：时间线在预览列底部，默认一行摘要；展开上限 40vh（不再横跨对话列，也不再依赖 --sidebar-w） */
+/* D71：顶栏下的全局常驻作业条（人选方案 A） */
+.jobbar { flex: none; display: flex; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-1) var(--space-3); background: var(--wait-surface); border-bottom: 1px solid var(--border); font-size: var(--text-sm); color: var(--fg); }
+.jobbar--warn { background: var(--warn-surface); }
+.jobbar-state { flex: none; font-weight: var(--weight-semibold); }
+.jobbar-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.jobbar-sp { flex: 1; }
 .timeline { flex: none; margin-top: auto; border-top: 1px solid var(--border); font-size: var(--text-sm); }
 .timeline-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-height: 32px; padding: 0 var(--space-2); }
 .timeline-body { max-height: 40vh; overflow: auto; padding: 0 var(--space-3) var(--space-2); }

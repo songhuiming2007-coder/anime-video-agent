@@ -27,6 +27,7 @@
 | [D46 对话区可读性](2026-10-08-conv-readability-spec.md) | D46 | — | 已施工（回复渲染 Markdown、工具原文默认收起、运行中指示行）；vitest / e2e 通过，变异 2/2 被抓；待人看截图 |
 | [D45 桌面端会话管理](2026-10-08-session-management-spec.md) | D45 | ADR-0024 | 已施工（人选方案 B、删除进回收站）；pytest / vitest / e2e 通过，变异 6/6 被抓；待真实一期手验 |
 | [D44 审批按参数分级 + 字幕可检索](2026-10-08-approval-tiering-subs-search-spec.md) | D44 | ADR-0018, ADR-0025 | 已施工、机检通过（pytest 2106 / vitest 437，变异 6/6 被抓）；待真实窗口手验 |
+| [D71 全局常驻作业条](2026-10-11-job-status-bar-spec.md) | D71 | D46, D50 | 人选 A（[三方案截图脚本](2026-10-11-job-status-shots/shots.spec.ts)）；已施工，vitest / e2e 通过、变异 3/3 被抓；**待人验收**（UI 规则 2，真实一期手验） |
 | [D66 回收站查看与选择性彻底清空](2026-10-10-trash-manage-spec.md) | D66 | Spec 10, D45, D58 | 待施工（裁决三项 + 红队 10 条全吸收；UI 规则 2/4 的人验收未开始） |
 | [D65 工具结果老化](2026-10-10-tool-result-aging-spec.md) | D65 | ADR-0022, Spec 16, Spec 18, D62 | 待施工（红队 F1–F4 + 人拍板 ①②③ 全部回填，含 is_bloated 第三处与放置裁决） |
 | [D67 恢复时全 role 脱敏投影](2026-10-10-resume-scrub-spec.md) | D67 | D52, Spec 16 | 待施工（人裁决①+实测修正：必须全 role，只 scrub tool 是假修复） |

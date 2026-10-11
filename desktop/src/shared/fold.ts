@@ -68,6 +68,7 @@ export function foldEvents(
         command: null,
         state: "pending",
         lastEventAt: ev.timestamp,
+        startedAt: null,
         pid: null,
         returncode: null,
         durationS: null,
@@ -87,6 +88,7 @@ export function foldEvents(
       case "job_started":
         j.state = "running";
         j.pid = num(p.pid);
+        j.startedAt = str(p.started_at) ?? ev.timestamp; // jobs.py 写的真实开始时间优先，缺了退回事件时间
         break;
       case "job_finished": {
         const st = str(p.status);

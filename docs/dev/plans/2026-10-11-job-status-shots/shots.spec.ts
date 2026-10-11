@@ -1,6 +1,7 @@
 // D71：「做任务的时候 UI 不告诉用户在干什么」三方案的真实窗口截图（未打包构建 × 临时夹具仓，绝不指向真实 data/）。
 // 场景照 2026-10-10 伪恋期 03.5：人在顺听面板点了重配，`tts --apply-patch` 正在跑；此前一次机检 rc=1 被时间线记成「failed」。
-// 「现状」不改 DOM；A / B / C 是在真实窗口上改 DOM 的原型（只为选型，选中后再按 spec 施工）。
+// 「现状」与「A-已实现」不改 DOM；B / C 是在真实窗口上改 DOM 的原型（选型用，人选了 A）。
+// 注意：A 实现之后「现状」图里也会出现作业条（它就是现在的真实界面），选型时的现状见 git 历史里的本脚本。
 // 用法（在 desktop/ 下）：PYTHONDONTWRITEBYTECODE=1 npx playwright test -c ../docs/dev/plans/2026-10-11-job-status-shots/shots.config.ts
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -29,13 +30,8 @@ const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().replac
 /** 原型共用：作业条文案（与真实时间线同源字段：命令、期、已运行时长） */
 const VARIANTS: Record<string, (doc: Document, a: { ep: string; secs: number }) => void> = {
   "0-现状": () => undefined,
-  "A-全局常驻作业条": (doc, a) => {
-    const bar = doc.createElement("div");
-    bar.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--wait-surface);border-bottom:1px solid var(--border);font-size:var(--text-sm);color:var(--fg)";
-    const mm = `${Math.floor(a.secs / 60)}:${String(a.secs % 60).padStart(2, "0")}`;
-    bar.innerHTML = `<span class="ui-spinner"></span><b>正在运行</b><code style="font-family:var(--font-mono)">tts --apply-patch</code><span class="muted">· ${a.ep} · 已运行 ${mm}</span><span style="flex:1"></span><button class="ui-btn ui-btn--ghost ui-btn--sm">看进度</button>`;
-    doc.querySelector(".topbar")!.after(bar);
-  },
+  // 人选 A（2026-10-11）并已实现（JobBar.tsx）：不改 DOM，拍真实实现；B / C 留作对照
+  "A-已实现": () => undefined,
   "B-时间线按钮醒目态": (doc, a) => {
     const head = doc.querySelector<HTMLElement>("[data-testid=timeline] .timeline-head")!;
     head.style.background = "var(--wait-surface)";
@@ -62,9 +58,9 @@ const VARIANTS: Record<string, (doc: Document, a: { ep: string; secs: number }) 
   },
 };
 
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(page: Page, name: string, size: [number, number] = [1280, 800]): Promise<void> {
   mkdirSync(OUT, { recursive: true });
-  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.setViewportSize({ width: size[0], height: size[1] });
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(OUT, `${name}.png`) });
 }
@@ -113,6 +109,7 @@ test("D71 作业状态提示：现状 / A 全局作业条 / B 时间线醒目态
       await p.evaluate(() => document.querySelectorAll<HTMLElement>(".banner").forEach((b) => { if (b.textContent?.includes("Code Freeze")) b.style.display = "none"; }));
       await p.evaluate(`(${apply.toString()})(document, ${JSON.stringify({ ep: EP, secs: RUNNING_S })})`);
       await shoot(p, name);
+      if (name === "A-已实现") await shoot(p, "A-已实现-1440x900", [1440, 900]);
     }
   } finally {
     await L.app.close().catch(() => undefined);
