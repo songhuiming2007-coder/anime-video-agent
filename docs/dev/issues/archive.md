@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-10-11：伪恋期 06 渲染配乐（1 条，立案即修）
+
+### [D75] `bgm register` 把外置盘绝对路径写进 config/bgm.json；曲名带曲序时 agent 误以为没登记去重登
+- 状态：**已解决**（2026-10-11；pytest 2548 通过，变异 3/3 被抓）
+- 关联：`pipeline/bgm.py`（`_rel_repo_path`、`resolve`、`_resolve_rec`）、AGENTS.md Code Freeze、D59（agent 可调 `bgm register`）
+- 经过（伪恋期 events.jsonl）：10:12 `render` 失败「曲目表里没有「09. 恋人」，检查01-topic.md 的 BGM正文 字段」——表里早有键「恋人」（register 用 `clean_track_title` 去掉曲序前缀），错在 01-topic.md 写了文件名；agent 却经人审卡跑 `bgm register --anime 伪恋 "/Volumes/Samsung T7/…/09. 恋人.flac"` 重登（多余），真正解围的是 10:17:32 改 01-topic.md。重登把「恋人」的 path 从 `data/library/bgm/伪恋/09. 恋人.flac` 改成了卷绝对路径（违反「路径一律相对仓库根」，换盘即废）。人原话：「bgm.json不改的话没办法配乐啊」——登记本身是正规流程，Claude 先前称其「越权」是错的，错在 AGENTS.md 的 Code Freeze 例外没列它。
+- 修：① `_rel_repo_path` 在仓库根之外再按 `data` 符号链接的真实位置折回 `data/…`；② `resolve` 找不到曲名时若去掉曲序前缀能命中，报错直接指出表里的键并写明「改 01-topic.md，不用重新登记」；③ `_resolve_rec` 返回值原为 `{"name", "path": p, **rec}`，`**rec` 把组装好的绝对路径覆盖回相对串（文档写「绝对路径组装」），只在 cwd=仓库根（jobs 作业恰是）时 ffmpeg 找得到——改为 rec 在前；④ AGENTS.md Code Freeze 例外加第三条「曲库登记」；⑤ config/bgm.json 那一行改回相对路径（与已提交版本一致）。
+- 附带教训：变异与原文件同字节数、同一秒内改回时，`__pycache__` 的 pyc（按秒级 mtime + size 判失效）会继续用变异版，表现为「还原后测试仍红」。做 Python 变异后要清对应 pyc。
+
 ## 2026-10-11：规则补进 AGENTS.md 归档（1 条）
 
 ### [N23] 严禁在仓库根目录落地临时脚本
