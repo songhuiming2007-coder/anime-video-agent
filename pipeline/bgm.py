@@ -217,11 +217,23 @@ def infer_slot(stem: str) -> str:
 
 
 def _rel_repo_path(path: Path) -> str:
-    """转为相对于 paths.ROOT 的统一相对路径字符串。"""
+    """转为相对于 paths.ROOT 的统一相对路径字符串。
+
+    `data` 通常是指向外置盘的符号链接：外置盘上的绝对路径（`/Volumes/<卷>/…/library/…`）
+    resolve 之后不在仓库根下，必须再按 `data` 的真实位置折回 `data/…`——否则写进
+    bgm.json 的是卷路径，换盘即废（2026-10-11 伪恋期 `bgm register` 实录：「恋人」的
+    path 被写成 `/Volumes/Samsung T7/…`）。
+    """
     try:
         rel = path.resolve().relative_to(paths.ROOT.resolve())
         return str(rel).replace("\\", "/")
     except ValueError:
+        pass
+    data = paths.ROOT / "data"
+    try:
+        rel = path.resolve().relative_to(data.resolve())
+        return ("data/" + str(rel)).replace("\\", "/")
+    except (ValueError, OSError):
         pass
     try:
         rel = path.relative_to(paths.ROOT)
@@ -376,9 +388,15 @@ def resolve(anime: str | list[str], slot: str, override: str | None = None) -> d
     if rec is None:
         src = (f"01-topic.md 的 BGM{slot} 字段" if override
                else f"config/bgm.json 的 {pools[0]}.use.{slot}")
+        # 曲目键是去掉曲序前缀的曲名（register 用 clean_track_title 登记）；写成文件名
+        # 「09. 恋人」时直接指出表里的键，别让人 / agent 以为没登记而去重登（2026-10-11 伪恋期）
+        cleaned = clean_track_title(name)
+        hint = ""
+        if cleaned != name and any(cleaned in load(pool).get("tracks", {}) for pool in pools):
+            hint = f"\n     表里有「{cleaned}」——曲名不带文件名的曲序前缀，{src}改写「{cleaned}」即可，不用重新登记"
         raise SystemExit(
             f"FAIL 曲目表里没有「{name}」，检查{src}"
-            + (f"（已查池：{'、'.join(pools)}）" if len(pools) > 1 else ""))
+            + (f"（已查池：{'、'.join(pools)}）" if len(pools) > 1 else "") + hint)
     return _resolve_rec(name, rec)
 
 
@@ -392,7 +410,8 @@ def _resolve_rec(name: str, rec: dict) -> dict:
         raise SystemExit(
             f"FAIL 「{name}」没有实测响度，闪避参数会失准。\n"
             f"     跑 `python -m pipeline.bgm measure {rec['path']}` 补进 config/bgm.json")
-    return {"name": name, "path": p, **rec}
+    # rec 在后会把组装好的绝对路径覆盖回表里的相对串——ffmpeg 就只在 cwd=仓库根时找得到文件
+    return {**rec, "name": name, "path": p}
 
 
 def episode_choice(episode: Path, slot: str) -> str | None:

@@ -142,6 +142,7 @@ class TestResolveOverride:
         (tmp_path / "data/library/bgm/x/曲A.flac").write_bytes(b"x")
         got = bgm.resolve("x", "正文")
         assert got["name"] == "曲A"
+        assert got["path"] == tmp_path / "data/library/bgm/x/曲A.flac", "返回绝对路径，不依赖调用方 cwd"
 
     def test_给了override就不看use(self, monkeypatch, tmp_path):
         monkeypatch.setattr(bgm, "load", lambda anime: self.FAKE_TABLE)
@@ -155,6 +156,16 @@ class TestResolveOverride:
         monkeypatch.setattr(bgm, "load", lambda anime: self.FAKE_TABLE)
         with pytest.raises(SystemExit, match="01-topic.md 的 BGM正文 字段"):
             bgm.resolve("x", "正文", override="不存在的曲")
+
+    def test_写成带曲序的文件名时报错指出表里的键(self, monkeypatch):
+        """2026-10-11 伪恋期：01-topic.md 写「09. 恋人」，表里键是「恋人」；agent 以为没登记去重登。"""
+        table = {"tracks": {"恋人": {"path": "data/library/bgm/x/09. 恋人.flac", "lufs": -12.0}}}
+        monkeypatch.setattr(bgm, "load", lambda anime: table)
+        with pytest.raises(SystemExit, match="表里有「恋人」.*不用重新登记"):
+            bgm.resolve("x", "正文", override="09. 恋人")
+        with pytest.raises(SystemExit) as e:   # 真没有的曲名不给假提示
+            bgm.resolve("x", "正文", override="10. 不存在")
+        assert "表里有" not in str(e.value)
 
     def test_use指到曲库里没有的名字报错信息不同(self, monkeypatch, tmp_path):
         bad_table = {"use": {"正文": "不存在的曲"}, "tracks": {}}
@@ -208,6 +219,24 @@ class TestInferSlot:
 
 
 class TestRegister:
+    def test_外置盘绝对路径折回data相对路径(self, monkeypatch, tmp_path):
+        """data 是指向外置盘的符号链接时，传入卷上的绝对路径也必须登记成 data/…（2026-10-11 伪恋期实录）。"""
+        import json
+        repo, ext = tmp_path / "repo", tmp_path / "Volumes" / "T7" / "anime-video-data"
+        (repo / "config").mkdir(parents=True)
+        (repo / "config" / "bgm.json").write_text("{}", encoding="utf-8")
+        song = ext / "library/bgm/伪恋/09. 恋人.flac"
+        song.parent.mkdir(parents=True)
+        song.write_bytes(b"x")
+        (repo / "data").symlink_to(ext)
+        monkeypatch.setattr(bgm.paths, "CONFIG", repo / "config")
+        monkeypatch.setattr(bgm.paths, "ROOT", repo)
+        monkeypatch.setattr(bgm, "measure", lambda p: {"duration": 94.9, "lufs": -9.46, "onset": 0.1})
+        assert bgm.register([song], anime="伪恋") == 1
+        rec = json.loads((repo / "config" / "bgm.json").read_text(encoding="utf-8"))["伪恋"]["tracks"]["恋人"]
+        assert rec["path"] == "data/library/bgm/伪恋/09. 恋人.flac"
+        assert (repo / rec["path"]).exists(), "登记的相对路径要能从仓库根解析回文件"
+
     def test_批量登记与增量合并(self, monkeypatch, tmp_path):
         import json
         config_dir = tmp_path / "config"
