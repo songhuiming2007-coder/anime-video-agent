@@ -26,7 +26,8 @@ export interface SwitchGroup {
 const GROUPS: readonly { title: string; prefix: RegExp; expected: readonly string[] }[] = [
   { title: "稿件", prefix: /^0[12]-/, expected: ["01-topic.md", "02-script.md"] },
   { title: "配音", prefix: /^03-/, expected: ["03-audio"] },
-  { title: "排片与成片", prefix: /^0[4-9]-/, expected: ["04-clips.json", "05-final.mp4"] },
+  // 04-review.html 是 05 停机点人要看的那一页（D74：缺了人在哪都找不到它，得灰着列出来）
+  { title: "排片与成片", prefix: /^0[4-9]-/, expected: ["04-clips.json", "04-review.html", "05-final.mp4"] },
 ];
 
 /** 作业命令首词 → 它产出的顶层产物（只列会「边跑边出文件」的） */

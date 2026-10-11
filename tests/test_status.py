@@ -54,10 +54,45 @@ def test_status_clips_unapproved(tmp_path: Path):
     audio_dir.mkdir()
     (audio_dir / "manifest.json").write_text("{}", encoding="utf-8")
     (tmp_path / "04-clips.json").write_text("[]", encoding="utf-8")
+    # 审看页就绪（不早于排片）才给批准命令
+    (tmp_path / "04-review.html").write_text("<html></html>", encoding="utf-8")
     status = inspect_episode(tmp_path)
     assert status.current_step == "05 审时间码"
     assert status.is_blocked is True
     assert "--approve" in status.next_command
+
+
+def _at05(tmp_path: Path) -> None:
+    (tmp_path / "01-topic.md").write_text("# Topic", encoding="utf-8")
+    (tmp_path / "02-script.md").write_text("# Script", encoding="utf-8")
+    (tmp_path / "03-audio").mkdir()
+    (tmp_path / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "04-clips.json").write_text("[]", encoding="utf-8")
+
+
+def test_status_05_审看页缺失先出页不给批准(tmp_path: Path):
+    """D74（2026-10-11 伪恋期）：agent 只跑 clips 不跑 review，照 status 说「去看 04-review.html」，页面根本不存在。"""
+    _at05(tmp_path)
+    status = inspect_episode(tmp_path)
+    assert status.current_step == "05 审时间码", "工序路由与停机点按这个串走，不能变"
+    assert status.is_blocked is True
+    assert status.next_command.split()[:3] == ["python", "-m", "pipeline.review"]
+    assert "--approve" not in status.next_command
+    assert "还没生成" in status.next_action
+
+
+def test_status_05_审看页比排片旧也要重出(tmp_path: Path):
+    import os
+
+    _at05(tmp_path)
+    page = tmp_path / "04-review.html"
+    page.write_text("<html></html>", encoding="utf-8")
+    clips = tmp_path / "04-clips.json"
+    st = clips.stat()
+    os.utime(page, ns=(st.st_atime_ns, st.st_mtime_ns - 1_000_000_000))  # 页面早于排片 1 s：排片重跑过
+    status = inspect_episode(tmp_path)
+    assert "--approve" not in status.next_command
+    assert "比 04-clips.json 旧" in status.next_action
 
 
 def test_status_clips_approved(tmp_path: Path):
