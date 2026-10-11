@@ -12,7 +12,8 @@ describe("groupArtifacts", () => {
     expect(g[0].items.map((i) => i.name)).toEqual(["01-topic.md", "02-script.md"]);
     const clips = g[2].items.find((i) => i.name === "04-clips.json");
     expect(clips?.missing).toBe(true);
-    expect(g[2].items.map((i) => i.name)).toEqual(["04-clips.json", "05-final.mp4"]);
+    expect(g[2].items.map((i) => i.name)).toEqual(["04-clips.json", "04-review.html", "05-final.mp4"]);
+    expect(g[2].items.find((i) => i.name === "04-review.html")?.missing).toBe(true); // D74：05 审看页缺了也要灰着列出
     expect(g[3].items.map((i) => i.name)).toEqual(["events.jsonl", "_agent"]);
   });
 

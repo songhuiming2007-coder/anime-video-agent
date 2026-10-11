@@ -127,7 +127,51 @@ function DirMeta({ rel, entries, note }: { rel: string; entries: string[]; note?
 }
 
 // ---- html：沙箱 iframe，绝不加 allow-same-origin ----
+/** 缺文件时复查间隔：HEAD 走本地媒体协议、不起进程；页面通常几秒内由 agent 的 `review` 生成 */
+const HTML_MISSING_RECHECK_MS = 2000;
+
 function HtmlFrame({ url, root }: { url: string; root: MediaRoot }) {
+  // D74：文件不在时 iframe 只会显示一块白（媒体协议回 404）。先 HEAD 探一下，缺了就明说、并定时复查，
+  // 生成出来（agent 跑完 review）即自动换成页面
+  const [state, setState] = useState<"probing" | "ok" | "missing">("probing");
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const probe = () => {
+      fetch(url, { method: "HEAD" }).then(
+        (r) => {
+          if (!alive) return;
+          // 只有 404 算「还不存在」；403/415 等是路径守卫的拒绝，照旧交给 iframe（行为同改前）
+          if (r.status !== 404) setState("ok");
+          else {
+            setState("missing");
+            timer = setTimeout(probe, HTML_MISSING_RECHECK_MS);
+          }
+        },
+        () => {
+          if (alive) setState("ok"); // 探测本身出错（非 404）不拦：照旧交给 iframe，别把能看的页挡住
+        },
+      );
+    };
+    probe();
+    return () => {
+      alive = false;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [url]);
+  if (state === "probing") return <StateView kind="loading" title="打开页面…" />;
+  if (state === "missing") {
+    const isReview = url.endsWith("/04-review.html");
+    return (
+      <div data-testid="html-missing">
+        <StateView
+          kind="empty"
+          title={isReview ? "审看页 04-review.html 还没生成" : "这个文件还不存在"}
+          detail={isReview ? "让 ava 跑 review（只抽帧出页，不会批准）；生成后这里会自动显示。" : "生成后这里会自动显示。"}
+        />
+      </div>
+    );
+  }
   // episodes 根下的 04-review.html 不含 <script>（review.py 生成）→ sandbox=""；shots 根的 gallery 有内联脚本 → allow-scripts
   const sandbox = root === "shots" ? "allow-scripts" : "";
   return <iframe className="html-frame" title="html 预览" src={url} sandbox={sandbox} data-testid="html-frame" />;

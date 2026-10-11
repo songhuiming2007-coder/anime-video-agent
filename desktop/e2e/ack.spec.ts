@@ -1,7 +1,7 @@
 // PR4 ack 链路端到端（Spec 8 §7.1 TA 系列 + TI-3b/6/8/9/10）：UI 按钮 → host spawn → core 对象库。
 // 每条用例一个临时 repo 副本（假设 5：.venv 软链后 import 的是副本里的 pipeline）；未打包构建。
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -674,4 +674,28 @@ test("门禁 14 已退役（Spec 11 S8-R15）：03.5/05 决策条不再常驻「
   await expect(L.page.locator(".advisories li", { hasText: "人类耗时：本期已记" })).toHaveCount(1);
   await L.page.screenshot({ path: join(DESKTOP, "out/gate-evidence/gate14-retired-05.png") });
   void e35;
+});
+
+test("D74 05 审看页缺失：停机点自动呼出时预览区明说「还没生成」（不留白）、切换器灰着列出；页面生成后自动换成审看页", async () => {
+  const R = ackRepo();
+  const ep = epAt05(R.repo, R.eps, "D74");
+  rmSync(join(ep, "04-review.html")); // 伪恋期实况：agent 只跑了 clips、没跑 review
+  const L = await start(R);
+  await openEp(L.page, "D74");
+  await expect(card(L.page, "05")).toBeVisible({ timeout: 15_000 });
+  const missing = L.page.getByTestId("html-missing");
+  await expect(missing).toBeVisible({ timeout: 15_000 });
+  await expect(missing).toContainText("审看页 04-review.html 还没生成");
+  await expect(missing).toContainText("review");
+  await expect(L.page.getByTestId("html-frame")).toHaveCount(0);
+  // 切换器：排片组里灰着列出 04-review.html（未生成）
+  await L.page.getByTestId("preview-switch-btn").click();
+  const row = L.page.locator("[data-testid=preview-switch-row][data-rel='04-review.html']");
+  await expect(row).toBeDisabled();
+  await expect(row).toContainText("未生成");
+  await L.page.keyboard.press("Escape");
+  // agent 跑完 review → 页面出现，无需人点
+  writeFileSync(join(ep, "04-review.html"), "<!doctype html><meta charset=utf-8><title>审片</title><p>审片页</p>");
+  await expect(L.page.getByTestId("html-frame")).toBeVisible({ timeout: 10_000 });
+  await expect(missing).toHaveCount(0);
 });

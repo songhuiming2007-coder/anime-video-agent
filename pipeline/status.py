@@ -255,6 +255,18 @@ def _topic_type_unfilled(topic: Path) -> bool:
     return seen
 
 
+def _review_page_fresh(d: Path) -> bool:
+    """05 审看页可用：`04-review.html` 存在且不早于 `04-clips.json`（mtime_ns）。
+
+    review 总在 clips 之后跑；页面比排片旧 = 排片重跑过、页面没重出，看的是上一版画面。
+    """
+    page, clips = d / "04-review.html", d / "04-clips.json"
+    try:
+        return page.stat().st_mtime_ns >= clips.stat().st_mtime_ns
+    except OSError:
+        return False
+
+
 def inspect_episode(ep_dir: Path) -> EpisodeStatus:
     d = ep_dir.resolve()
     status = _inspect_episode_core(d)
@@ -416,6 +428,24 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
         )
 
     # 5. 排片已出，待审时间码 (05 停机点)
+    # D74（2026-10-11 伪恋期）：05 要人看的是 04-review.html，它由单独的 `review` 生成。
+    # 只看 04-clips.json 就报「去看审看页 / 直接批准」，agent 照着说、人在哪都找不到那页。
+    # 审看页缺失，或比 04-clips.json 旧（重排过片没重出页）→ 下一步先出页，不给批准命令。
+    if not has_approved and not _review_page_fresh(d):
+        review_page = d / "04-review.html"
+        why = "比 04-clips.json 旧（排片重跑过，页面还是上一版）" if review_page.exists() else "还没生成"
+        return EpisodeStatus(
+            episode_dir=str(d),
+            episode_name=name,
+            current_step="05 审时间码",
+            is_blocked=True,
+            block_reason=f"🛑 处于人工停机点 3（05 审时间码），但审看页 04-review.html {why}，人无从审看。",
+            completed_steps=completed,
+            next_action=f"审看页 04-review.html {why}。agent 先跑 `review`（不带任何选项，只抽帧出页）生成它，\n"
+            "  再请人在桌面端预览区打开 04-review.html 审看；页面生成之前严禁提批准、严禁说「可以查看审看页」。",
+            next_command=f"python -m pipeline.review {d}",
+            docs_ref="docs/runbook/05-timecode.md",
+        )
     if not has_approved:
         return EpisodeStatus(
             episode_dir=str(d),
