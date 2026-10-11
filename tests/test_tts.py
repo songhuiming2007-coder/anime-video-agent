@@ -1468,7 +1468,7 @@ class TestQwen3CudaLoader:
 
         eng = FakeEngine()
         for text in ("第一句。", "第二句。", "第三句。"):
-            eng._synthesize_cuda(text, seed=7)
+            eng._synthesize_cuda(text, attempt=1, seed=7)
         assert seen_seeds == [7, 7, 7], f"每句都要用同一 seed，实际 {seen_seeds}"
 
     def test_cuda必须复用同一个voice_prompt(self, tmp_path):
@@ -1492,8 +1492,43 @@ class TestQwen3CudaLoader:
             lang_code = "zh"
             _synthesize_cuda = t.Engine._synthesize_cuda
 
-        t.Engine._synthesize_cuda(FakeEngine(), "世界", seed=1)
+        t.Engine._synthesize_cuda(FakeEngine(), "世界", attempt=1, seed=1)
         assert captured["voice_clone_prompt"] == {"cached": True}, "必须传缓存的 prompt"
+
+    def test_cuda采样参数与mlx同一阶梯(self):
+        """D68（2026-10-10 EGOIST V2 复盘）：云端不传采样参数就吃 qwen-tts 默认
+        0.9 / 50，比本地首试 0.8 / 30 更热，重试也不降温。
+
+        逐次断言与 `sampling_for` 同表，且子解码（subtalker）同传——mlx 版的
+        code_predictor 复用主解码的 temperature / top_k，只传主解码仍不对齐。
+        期望值先在实现上核过：SAMPLING = [(0.8, 30), (0.7, 20), (0.5, 10)]，第 4 次停在最冷档。
+        """
+        calls: list[dict] = []
+
+        class FakeModel:
+            def generate_voice_clone(self, **kw):
+                calls.append(kw)
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+        class FakeEngine:
+            kind = "qwen3_tts_cuda"
+            model = FakeModel()
+            voice_prompt = {"fake": "prompt"}
+            lang_code = "zh"
+            _synthesize_cuda = t.Engine._synthesize_cuda
+
+        for attempt in (1, 2, 3, 4):
+            t.Engine._synthesize_cuda(FakeEngine(), "世界", attempt=attempt, seed=1)
+        got = [(c["temperature"], c["top_k"], c["subtalker_temperature"], c["subtalker_top_k"])
+               for c in calls]
+        assert got == [(0.8, 30, 0.8, 30), (0.7, 20, 0.7, 20),
+                       (0.5, 10, 0.5, 10), (0.5, 10, 0.5, 10)]
+        assert t.sampling_for(1) == (0.8, 30), "云端首试必须与本地 mlx 首试同档"
+
+    def test_sampling_for拒绝attempt0(self):
+        """attempt 从 1 起；0 若静默取 SAMPLING[-1] 会拿到最冷档，属于静默错。"""
+        with pytest.raises(ValueError):
+            t.sampling_for(0)
 
     def test_云端配置的模型路径是数据盘绝对路径(self):
         """云端模型在数据盘、不在仓库内，必须是绝对路径（否则 _resolve_model 会拼到仓库根）。"""
