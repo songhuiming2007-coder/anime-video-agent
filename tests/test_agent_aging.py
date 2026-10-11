@@ -158,6 +158,15 @@ def test_6_placeholder_copy_per_tool() -> None:
         assert aged[i]["content"].endswith(_big(5_000)[:AGE_HEAD_CHARS]), "占位必须保留原文前 300 字符"
 
 
+def test_6b_bash_placeholder_never_invites_replay() -> None:
+    """D77：bash 与 run_pipeline 同为执行型——占位不许出现「重新调用」，指向只读命令重新查看。"""
+    msgs = [_user("回合一"), _call("c1", "bash"), _tool("c1", _big(5_000)), _user("回合二")]
+    content = age_tool_results(msgs)[2]["content"]
+    assert "该结果来自 bash，不要重放原命令" in content
+    assert "重新调用" not in content
+    assert "原 5000 字符" in content and content.endswith(_big(5_000)[:AGE_HEAD_CHARS])
+
+
 # ---- §六.7 非 tool 消息免疫 ----
 
 def test_7_non_tool_messages_immune() -> None:

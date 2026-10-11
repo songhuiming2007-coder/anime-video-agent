@@ -118,10 +118,12 @@ def test_tg5_critical_tools_is_exactly_the_side_effect_set_minus_run_pipeline() 
     from pipeline.agent.session import CRITICAL_TOOLS
     from pipeline.agent.tools import TOOL_SCHEMAS
 
+    # run_pipeline 与 bash（D77 / ADR-0029）都跑 jobs 子进程作业：人点停止时必须能经
+    # execute_job 的 BaseException 分支整组强杀（长 ffmpeg 不能停是更坏的事），所以不进临界区
     derived = {
         name for name, schema in TOOL_SCHEMAS.items()
         if schema.get("side_effect", True)
-    } - {"run_pipeline"}
+    } - {"run_pipeline", "bash"}
     assert set(CRITICAL_TOOLS) == derived
     assert isinstance(CRITICAL_TOOLS, frozenset)
 

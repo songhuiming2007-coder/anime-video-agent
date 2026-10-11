@@ -13,6 +13,7 @@
     "browser",
     "write_memory",
     "cover_edit",
-    "write_note"
+    "write_note",
+    "bash"
   ]
 }

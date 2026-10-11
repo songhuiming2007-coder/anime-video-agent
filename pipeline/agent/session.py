@@ -370,6 +370,13 @@ def review_tool_call(
         # 超限恢复弹卡：这是防打转的刹车，卡上写明第几次，人一眼看出它在原地转
         loop_label = f"本轮第 {draft_writes_this_turn + 1} 次重写草稿"
 
+    # ADR-0029 决策 4：单条只读 bash 命令（首词在只读集、无任何 shell 元字符）免卡，其余每次弹卡
+    if name == "bash":
+        from pipeline.agent.tools import bash_readonly
+
+        if bash_readonly(str(args.get("command", ""))):
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+
     side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
     if not side_effect:
         return ToolVerdict("allow", echo=_echo_line(name, args))
@@ -444,6 +451,10 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
         summary = " · ".join(p for p in (fn, how) if p)
     elif name == "run_pipeline":
         summary = str(args.get("command", "")).strip()
+    elif name == "bash":
+        lines = str(args.get("command", "")).strip().splitlines()
+        first = lines[0] if lines else ""
+        summary = (first[:80] + "…") if len(first) > 80 or len(lines) > 1 else first
     elif name == "search_notes" and args.get("source") == "subs":
         parts = ["[字幕]", str(args.get("episode", "")).strip(), str(args.get("query", "")).strip()]
         summary = " ".join(p for p in parts if p)
