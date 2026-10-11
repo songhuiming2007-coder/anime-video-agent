@@ -13,6 +13,8 @@ export interface SwitchItem {
   editable: boolean;
   /** 有运行中的作业正在产出它 */
   generating: boolean;
+  /** D70：定稿还没有、草稿已在——可点开编辑器「从草稿新建」（唯一一个「未生成却可点」的条目） */
+  fromDraft: boolean;
 }
 
 export interface SwitchGroup {
@@ -50,13 +52,16 @@ export function groupArtifacts(entries: readonly TreeEntry[], runningCommands: r
   const byName = new Map(entries.map((e) => [e.name, e]));
   const gen = generatingOf(runningCommands);
   const used = new Set<string>();
+  // D70：02-script.md 不存在时编辑器的「从草稿新建」原本无路可达（切换器把它灰掉，02.5 停机点又要它已存在才就绪）
+  const hasDraft = byName.get("02-script.draft.md")?.kind === "file";
   const item = (name: string, e: TreeEntry | undefined): SwitchItem => ({
     name,
     rel: e?.rel ?? name,
     kind: e?.kind ?? (name.includes(".") ? "file" : "dir"),
     missing: e === undefined,
-    editable: name === "02-script.md" && e !== undefined,
+    editable: name === "02-script.md" && (e !== undefined || hasDraft),
     generating: gen.has(name),
+    fromDraft: name === "02-script.md" && e === undefined && hasDraft,
   });
   const groups: SwitchGroup[] = GROUPS.map((g) => {
     const names = new Set([...g.expected, ...entries.filter((e) => g.prefix.test(e.name)).map((e) => e.name)]);

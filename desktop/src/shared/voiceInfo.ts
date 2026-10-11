@@ -48,6 +48,9 @@ export function parseVoiceInfo(text: string): VoiceInfoParse {
   if (heteronyms.some((h) => h === null)) return { ok: false };
   const lock = parseLock(raw.apply_patch_lock);
   if (lock === null) return { ok: false };
+  // D72 新增字段：缺席按「判不了」（null）处理；在场就必须是字符串数组或 null
+  const rerun = raw.rerun_segments;
+  if (rerun !== undefined && rerun !== null && !(Array.isArray(rerun) && rerun.every(str))) return { ok: false };
   return {
     ok: true,
     info: {
@@ -57,6 +60,7 @@ export function parseVoiceInfo(text: string): VoiceInfoParse {
       segments: segments as VoiceSegmentJson[],
       heteronyms: heteronyms as VoiceHeteronymJson[],
       pending_corrections: raw.pending_corrections,
+      rerun_segments: rerun === undefined || rerun === null ? null : (rerun as string[]),
       apply_patch_lock: lock,
     },
   };

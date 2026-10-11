@@ -346,6 +346,8 @@ export interface VoiceInfoJson {
   heteronyms: VoiceHeteronymJson[];
   /** 条目 dict 原样透传（消费方忽略未知键，Spec 11 §3.3） */
   pending_corrections: Record<string, unknown>[];
+  /** D72：普通重跑会重配的已配段（全局读音表 / 文本 / 钉种子变了），core 从盘上现算；null = 判不了（无清单、引擎与当前配置不符） */
+  rerun_segments: string[] | null;
   apply_patch_lock: ApplyPatchLockJson;
 }
 

@@ -29,23 +29,32 @@ const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
  */
 const LIVE_POLL_MS = 5000;
 
+/** D73：每期最近一次读到的配音信息。面板切走即卸载、切回重新挂载——没有它，切回那一刻只有空白等待，
+ *  重配进行中一次读取失败还会把整块换成错误态。只作首屏占位，挂载后照样立刻重读。 */
+const lastInfo = new Map<string, VoiceInfoJson>();
+
 export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void; live?: boolean }) {
-  const [info, setInfo] = useState<VoiceInfoJson | null>(null);
+  const [info, setInfo] = useState<VoiceInfoJson | null>(() => lastInfo.get(epKey) ?? null);
   const [err, setErr] = useState<string | null>(null);
+  /** 本次挂载至少成功读到一次（缓存占位不算）：人时只在读到真数据后计（红队 ④ 的同一纪律） */
+  const [fresh, setFresh] = useState(false);
   const [raw, setRaw] = useState("");
   const [card, setCard] = useState<VoicePatchJson | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<{ wav: string; label: string }[]>([]);
-  // D50-A S6：在段落文字上选中的词 → 就地纠错小卡；全局表改过、本期待按全局表重配的段
+  // D50-A S6：在段落文字上选中的词 → 就地纠错小卡。
+  // 「全局表改过、待重配的段」不在这里记：D72 起由 core 的 `rerun_segments` 从盘上现算（切走、刷新都不丢）
   const [fix, setFix] = useState<{ label: string; word: string } | null>(null);
-  const [globalTouched, setGlobalTouched] = useState<string[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const load = useCallback(async () => {
     setErr(null);
     try {
-      setInfo(await rpc.call<VoiceInfoJson>("voice.info", { epKey }));
+      const v = await rpc.call<VoiceInfoJson>("voice.info", { epKey });
+      lastInfo.set(epKey, v);
+      setInfo(v);
+      setFresh(true);
     } catch (e) {
       setErr(errText(e));
     }
@@ -63,13 +72,14 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     return () => clearInterval(t);
   }, [live, load]);
 
+  // 手上有数据（哪怕是上次的）就算面板可用：一次读取失败不该把面板换成纯播放队列（D73）
   useEffect(() => {
-    if (err !== null) onReady?.(false);
-    else if (info !== null) onReady?.(true);
+    if (info !== null) onReady?.(true);
+    else if (err !== null) onReady?.(false);
   }, [err, info, onReady]);
 
   // 人时：顺听面板**装载成功**才计时（Spec 11 §2.4）；错误态不计（红队 ④）
-  const surfaceUp = err === null && info !== null;
+  const surfaceUp = err === null && info !== null && fresh;
   useEffect(() => {
     if (!surfaceUp) return;
     void rpc.call("time.surface", { epKey, stop: "03.5", visible: "true" }).catch(() => undefined);
@@ -164,15 +174,19 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     [load],
   );
 
-  if (err !== null) return <StateView kind="error" title={err} />;
-  if (info === null) return <StateView kind="loading" title="读取配音信息…" />;
+  if (info === null) return err !== null ? <StateView kind="error" title={err} /> : <StateView kind="loading" title="读取配音信息…" />;
   const pending = info.pending_corrections;
   const lock = info.apply_patch_lock;
   const lockKind = lockState(lock);
   const lockStale = lockKind === "stale";
   const lockBusy = lockKind === "busy";
-  const doneDisabled = busy || pending.length === 0 || info.engine_cloud;
   const pendingSegs = [...new Set(pending.map((c) => String(c.segment)))];
+  // D72：一个按钮管两层。有期级待应用条目 → --apply-patch（它的复用判据同样会重配全局表改过的段）；
+  // 只有全局表 / 文本 / 钉种子变了 → 普通重跑 tts。人不必知道读音存在哪张表
+  const rerunSegs = info.rerun_segments ?? [];
+  const redoSegs = info.segments.map((s) => s.label).filter((l) => pendingSegs.includes(l) || rerunSegs.includes(l));
+  // 重配正在跑（锁在、pid 活着）时不许再起一次：第二个进程只会撞锁失败（D71 截图时发现）
+  const doneDisabled = busy || lockBusy || redoSegs.length === 0 || info.engine_cloud;
   const marksOf = (label: string): string[] =>
     pending
       .filter((c) => typeof c.word === "string" && c.word !== "" && (String(c.segment) === label || c.scope === "global"))
@@ -202,6 +216,12 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         </span>
       </div>
       <div className="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
+      {err !== null && (
+        <div className="notice notice--warn" data-testid="voice-stale">
+          <Icon name="alert" size="sm" />
+          刷新失败：{err}（下面是上次读到的内容；点「刷新」重试）
+        </div>
+      )}
 
       {info.engine_cloud && (
         <div className="notice" data-testid="voice-cloud">
@@ -236,8 +256,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               <div className="voice-row-head">
                 <span>段 {s.label}</span>
                 {current?.label === s.label && <Badge tone="accent">播放中</Badge>}
-                {pendingSegs.includes(s.label) && <Badge tone="warn">待重配</Badge>}
-                {globalTouched.includes(s.label) && <Badge tone="warn">全局表已改</Badge>}
+                {redoSegs.includes(s.label) && <Badge tone="warn">待重配</Badge>}
                 {!s.wav_exists && <span className="muted">（音频缺席）</span>}
                 <span className="seg-actions">
                   <button
@@ -283,10 +302,10 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                     setFix(null);
                     void doAdd(call);
                   }}
-                  onGlobalDone={(labels, line) => {
+                  onGlobalDone={(line) => {
                     setFix(null);
-                    setGlobalTouched((g) => [...new Set([...g, ...labels])]);
                     setMsg(line);
+                    void load(); // 待重配段由 core 从盘上重算（D72）
                   }}
                 />
               )}
@@ -396,40 +415,44 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       )}
 
       <div className="voice-foot" data-testid="voice-foot">
-        {pending.length === 0 && globalTouched.length === 0 ? (
+        {redoSegs.length === 0 ? (
           <span className="muted" data-testid="voice-no-pending">
             当前没有待重配的段
           </span>
         ) : (
-          <span>
-            {pendingSegs.length > 0 && <Badge tone="warn">待重配 {pendingSegs.length} 段</Badge>} {pendingSegs.length > 0 && `段 ${pendingSegs.join("、")}`}
+          <span data-testid="voice-redo-segs">
+            <Badge tone="warn">待重配 {redoSegs.length} 段</Badge> 段 {redoSegs.join("、")}
           </span>
         )}
         <span className="voice-foot-sp" />
-        {globalTouched.length > 0 && (
+        {/* 同一个位置、同一个按钮名，只按有无期级条目换写路径（每个处理器只许一处闭集调用，TG-4′） */}
+        {pending.length > 0 ? (
           <button
-            className="ui-btn"
-            data-testid="voice-retts"
-            disabled={busy || info.engine_cloud}
+            className="ui-btn ui-btn--primary"
+            data-testid="voice-done"
+            data-mode="apply-patch"
+            disabled={doneDisabled}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void doDone(rpc.call("voice.applyPatch", { epKey }));
+            }}
+          >
+            只重配这 {redoSegs.length} 段
+          </button>
+        ) : (
+          <button
+            className="ui-btn ui-btn--primary"
+            data-testid="voice-done"
+            data-mode="retts"
+            disabled={doneDisabled}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
               void doDone(rpc.call("voice.retts", { epKey }));
             }}
           >
-            按全局表重配（段 {globalTouched.join("、")}）
+            只重配这 {redoSegs.length} 段
           </button>
         )}
-        <button
-          className="ui-btn ui-btn--primary"
-          data-testid="voice-done"
-          disabled={doneDisabled}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void doDone(rpc.call("voice.applyPatch", { epKey }));
-          }}
-        >
-          只重配这 {pendingSegs.length} 段
-        </button>
       </div>
       {current !== null && <audio ref={audioRef} src={urlOf(current.wav)} data-testid="voice-audio" onEnded={() => setQueue((q) => q.slice(1))} />}
     </div>
@@ -481,7 +504,7 @@ function FixCard({
   onCancel: () => void;
   /** 期级写入的 Promise 交给面板（与文法录入同一个 doAdd：落盘提示、刷新） */
   onAdd: (call: Promise<unknown>) => void;
-  onGlobalDone: (labels: string[], line: string) => void;
+  onGlobalDone: (line: string) => void;
 }) {
   const [pinyin, setPinyin] = useState("");
   const [method, setMethod] = useState<Method>("pinyin");
@@ -510,11 +533,7 @@ function FixCard({
     try {
       const r = await call;
       setResult(r);
-      if (r.ok) {
-        const segLine = r.lines.find((l) => l.startsWith("本期含该词的段："));
-        const labels = segLine ? segLine.replace("本期含该词的段：", "").split("。")[0].split("、").filter((x) => x !== "") : [label];
-        onGlobalDone(labels, r.lines.find((l) => l.startsWith("[OK]")) ?? "已写入全局读音表");
-      }
+      if (r.ok) onGlobalDone(r.lines.find((l) => l.startsWith("[OK]")) ?? "已写入全局读音表");
     } catch (e) {
       setResult({ ok: false, lines: [errText(e)] });
     } finally {

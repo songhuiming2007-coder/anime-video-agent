@@ -33,7 +33,8 @@ import { generatingOf } from "../shared/artifactGroups";
 import { errText, RpcClient } from "./rpc";
 import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
-import { installTestHooks } from "./testHooks";
+import { CrashProbe, installTestHooks } from "./testHooks";
+import { PaneBoundary } from "./PaneBoundary";
 import { Badge, StateView, StatusDot } from "./ui";
 
 const rpc = new RpcClient(window);
@@ -500,21 +501,24 @@ function Main() {
               停机点 {strip.type} 已就绪 · 查看
             </button>
           )}
-          {active !== null && editorTarget ? (
-            <ScriptEditor key={`script:${active}`} epKey={active} rpc={rpc} />
-          ) : (
-            <>
-              {/* D50-A S1：03-audio 只留顺听面板一套播放器；面板取不到数据时退回 Spec 8 的纯播放队列 */}
-              {active !== null && voiceTarget && <VoicePanel
-                  key={`voice:${active}`}
-                  epKey={active}
-                  rpc={rpc}
-                  onReady={onVoiceReady}
-                  live={!!ep && ep.jobs.some((j) => j.state === "running" && generatingOf([j.command]).has("03-audio"))}
-                />}
-              {!(voiceTarget && voiceOk === active) && <PreviewPane key={active ?? "-"} target={preview} head={!(ep && !showIdea && active !== null)} />}
-            </>
-          )}
+          <PaneBoundary resetKey={`${active ?? "-"}|${preview?.kind ?? ""}|${preview?.rel ?? ""}`}>
+            <CrashProbe isPackaged={health?.isPackaged ?? true} />
+            {active !== null && editorTarget ? (
+              <ScriptEditor key={`script:${active}`} epKey={active} rpc={rpc} />
+            ) : (
+              <>
+                {/* D50-A S1：03-audio 只留顺听面板一套播放器；面板取不到数据时退回 Spec 8 的纯播放队列 */}
+                {active !== null && voiceTarget && <VoicePanel
+                    key={`voice:${active}`}
+                    epKey={active}
+                    rpc={rpc}
+                    onReady={onVoiceReady}
+                    live={!!ep && ep.jobs.some((j) => j.state === "running" && generatingOf([j.command]).has("03-audio"))}
+                  />}
+                {!(voiceTarget && voiceOk === active) && <PreviewPane key={active ?? "-"} target={preview} head={!(ep && !showIdea && active !== null)} />}
+              </>
+            )}
+          </PaneBoundary>
           {ep && <Timeline key={ep.epKey} ep={ep} />}
         </section>
       </div>

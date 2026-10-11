@@ -7,6 +7,8 @@ type HookWindow = Window & {
   __avaTestHandshake?: () => number;
   __avaTestHealth?: () => Promise<unknown>;
   __avaTestCall?: (method: Method, params?: Record<string, unknown>) => Promise<unknown>;
+  /** D73：置真后预览区下一次渲染抛错（验证错误边界兜住、不整窗白屏） */
+  __avaTestCrashPreview?: boolean;
 };
 
 export function installTestHooks(isPackaged: boolean, rpc: RpcClient): void {
@@ -15,4 +17,11 @@ export function installTestHooks(isPackaged: boolean, rpc: RpcClient): void {
   w.__avaTestHandshake = () => rpc.handshake;
   w.__avaTestHealth = () => rpc.call("app.health");
   w.__avaTestCall = (method, params) => rpc.call(method, params);
+}
+
+/** D73：放在预览区错误边界之内的探针（仅未打包构建；TG-6）。健康信息未到时按打包版处理。 */
+export function CrashProbe({ isPackaged }: { isPackaged: boolean }): null {
+  if (isPackaged) return null;
+  if ((window as HookWindow).__avaTestCrashPreview === true) throw new Error("测试钩子触发的渲染异常");
+  return null;
 }

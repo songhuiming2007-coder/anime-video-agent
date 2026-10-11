@@ -24,6 +24,8 @@ export function PreviewSwitcher({
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<TreeEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  /** 上一次选目录失败的原因（与列表加载错误分开：重新展开会清掉 err，这条要留到下一次选择） */
+  const [pickErr, setPickErr] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -48,12 +50,17 @@ export function PreviewSwitcher({
   const label = curRel === null || curRel === "" ? "选择本期文件" : curRel;
 
   const pick = (it: SwitchItem) => {
-    if (it.missing) return;
+    if (it.missing && !it.fromDraft) return;
+    setPickErr(null);
     setOpen(false);
     if (it.kind === "dir") {
+      // 列目录失败要说出来：静默吞掉时人只看到「点了没反应 / 预览没切过去」（D73 ③）
       rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: it.rel }).then(
         (sub) => onPick({ kind: "dir", root: "episodes", rel: `${epKey}/${it.rel}`, entries: sub.filter((x) => x.kind === "file").map((x) => x.name) }),
-        () => undefined,
+        (e) => {
+          setPickErr(`打不开 ${it.rel}：${errText(e)}`);
+          setOpen(true);
+        },
       );
     } else if (it.kind === "file") {
       const size = entries?.find((x) => x.rel === it.rel)?.size ?? null;
@@ -71,6 +78,7 @@ export function PreviewSwitcher({
       {open && (
         <div className="ui-popover preview-switch-pop" data-testid="preview-switch-pop">
           <div className="ui-popover-title">本期文件</div>
+          {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
           {err !== null && <div className="muted">{err}</div>}
           {entries === null && err === null && <div className="muted">…</div>}
           {entries !== null &&
@@ -82,7 +90,7 @@ export function PreviewSwitcher({
                     key={it.rel}
                     className="ui-row preview-switch-row"
                     aria-current={curRel === it.rel ? "true" : undefined}
-                    disabled={it.missing}
+                    disabled={it.missing && !it.fromDraft}
                     data-testid="preview-switch-row"
                     data-rel={it.rel}
                     onClick={() => pick(it)}
@@ -90,7 +98,7 @@ export function PreviewSwitcher({
                     <Icon name={it.kind === "dir" ? "folder" : "file"} size="sm" />
                     <span className="ui-row-title">{it.name}</span>
                     <span className="preview-switch-meta">
-                      {it.missing ? "未生成" : it.generating ? <Badge tone="wait">生成中</Badge> : it.editable ? "✎ 可在此编辑" : ""}
+                      {it.fromDraft ? "✎ 从草稿新建" : it.missing ? "未生成" : it.generating ? <Badge tone="wait">生成中</Badge> : it.editable ? "✎ 可在此编辑" : ""}
                     </span>
                   </button>
                 ))}

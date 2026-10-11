@@ -242,6 +242,61 @@ class TestVoiceInfo:
         assert run_cli(repo, "/voice-info") == 1
 
 
+def _dubbed_manifest(ep: Path, labels: tuple[str, ...] = ("1", "2")) -> None:
+    """按**当前**真实 voice.json 与当前读音表写一份「已配过」的清单：每段 speakable、钉种子、wav 齐全。"""
+    cfg = tts.load_config(tts.CONFIG)
+    segs = [s for s in tts.parse_script(ep / "02-script.md") if str(s.label) in labels]
+    takes = []
+    for s in segs:
+        wav = f"seg-{s.index:02d}.wav"
+        (ep / "03-audio" / wav).write_bytes(b"RIFF-fake")
+        takes.append({
+            "index": s.index, "label": str(s.label), "text": s.text, "file": wav,
+            "duration": 1.0, "cer": 0.0, "attempts": 1,
+            "speakable": tts.speakable(s.text, cfg["engine"], label=str(s.label)),
+            "seed_pins": list(tts._seed_pins(s, cfg.get("segment_seeds"))),
+        })
+    (ep / "03-audio" / "manifest.json").write_text(json.dumps(
+        {**tts._voice_fingerprint(cfg), "segments": takes},
+        ensure_ascii=False), encoding="utf-8")
+
+
+class TestRerunSegments:
+    """D72：「全局读音表改了 → 哪些段待重配」从盘上现算，不靠桌面端组件内存。"""
+
+    def test_全部与当前读音一致则无待重配(self, repo):
+        _dubbed_manifest(repo)
+        assert tts.rerun_labels(repo) == []
+
+    def test_全局读音表改了只报含该词的段(self, repo, monkeypatch):
+        _dubbed_manifest(repo)
+        # 配完之后全局表新增「团子」（只在段 2）：等价于顺听面板「记下（写全局表）」
+        real = tts._readings()
+        monkeypatch.setattr(tts, "_readings", lambda: {**real, "团子": "丸子"})
+        assert tts.rerun_labels(repo) == ["2"]
+
+    def test_配音进行中未轮到的段不算待重配(self, repo):
+        _dubbed_manifest(repo, labels=("1",))
+        assert tts.rerun_labels(repo) == []
+
+    def test_无清单或引擎不符判不了(self, repo):
+        assert tts.rerun_labels(repo) is None
+        _dubbed_manifest(repo)
+        mf = repo / "03-audio" / "manifest.json"
+        data = json.loads(mf.read_text(encoding="utf-8"))
+        mf.write_text(json.dumps({**data, "engine": "qwen3_tts_cuda"}), encoding="utf-8")
+        assert tts.rerun_labels(repo) is None, "云端配的期拿本地配置比 = 拿不到可证伪信息"
+
+    def test_voice_info下发且纯读(self, repo, capsys, monkeypatch):
+        _dubbed_manifest(repo)
+        real = tts._readings()
+        monkeypatch.setattr(tts, "_readings", lambda: {**real, "团子": "丸子"})
+        before = tree_snapshot(repo)
+        assert run_cli(repo, "/voice-info") == 0
+        assert tree_snapshot(repo) == before
+        assert json.loads(capsys.readouterr().out.strip())["rerun_segments"] == ["2"]
+
+
 # ---------------------------------------------------------------------------
 # TC-8 /voice-parse（纯算）+ /voice-add 契约断言
 # ---------------------------------------------------------------------------

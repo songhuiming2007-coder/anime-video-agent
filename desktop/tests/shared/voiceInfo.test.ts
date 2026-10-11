@@ -23,6 +23,17 @@ describe("parseVoiceInfo 容错", () => {
     expect(r.info.apply_patch_lock).toEqual({ exists: false, pid: null, pid_alive: null });
   });
 
+  it("D72 rerun_segments：数组原样读出；null 与缺席都按「判不了」；类型不符 malformed", () => {
+    const withRerun = parseVoiceInfo(JSON.stringify({ ...GOOD, rerun_segments: ["2", "5"] }));
+    expect(withRerun.ok && withRerun.info.rerun_segments).toEqual(["2", "5"]);
+    const nul = parseVoiceInfo(JSON.stringify({ ...GOOD, rerun_segments: null }));
+    expect(nul.ok && nul.info.rerun_segments).toBeNull();
+    const absent = parseVoiceInfo(JSON.stringify(GOOD));
+    expect(absent.ok && absent.info.rerun_segments).toBeNull();
+    expect(parseVoiceInfo(JSON.stringify({ ...GOOD, rerun_segments: [2] })).ok).toBe(false);
+    expect(parseVoiceInfo(JSON.stringify({ ...GOOD, rerun_segments: "2" })).ok).toBe(false);
+  });
+
   it("未知字段忽略（核心不枚举全量条目字段：seed_pin/applied_at 等原样透传）", () => {
     const withExtras = {
       ...GOOD,

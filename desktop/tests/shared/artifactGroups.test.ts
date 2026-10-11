@@ -23,6 +23,16 @@ describe("groupArtifacts", () => {
     expect(names).toEqual({ "01-topic.md": false, "02-script.draft.md": false, "02-script.md": true });
   });
 
+  it("D70：定稿缺、草稿在 → 02-script.md 仍 missing 但 fromDraft 可点；草稿也没有就照旧灰掉", () => {
+    const withDraft = groupArtifacts([e("01-topic.md"), e("02-script.draft.md")]);
+    const script = withDraft[0].items.find((i) => i.name === "02-script.md");
+    expect(script).toMatchObject({ missing: true, fromDraft: true, editable: true, kind: "file" });
+    const noDraft = groupArtifacts([e("01-topic.md")]).at(0)?.items.find((i) => i.name === "02-script.md");
+    expect(noDraft).toMatchObject({ missing: true, fromDraft: false, editable: false });
+    const both = groupArtifacts([e("02-script.md"), e("02-script.draft.md")]).at(0)?.items.find((i) => i.name === "02-script.md");
+    expect(both).toMatchObject({ missing: false, fromDraft: false, editable: true });
+  });
+
   it("运行中作业标出正在产出的产物（命令可带参数、可带 pipeline. 前缀）", () => {
     expect([...generatingOf(["tts --redo 2,4", null, "pipeline.clips", "check_script"])].sort()).toEqual(["03-audio", "04-clips.json"]);
     const g = groupArtifacts([e("03-audio")], ["tts"]);

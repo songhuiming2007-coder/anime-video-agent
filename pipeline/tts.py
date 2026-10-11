@@ -1639,6 +1639,53 @@ def _reusable(
     return done
 
 
+def _cfg_with_overlay(cfg: dict, overlay: dict) -> dict:
+    """把期级纠错 overlay（钉种子、拼音注入）并进配置。run() 与 rerun_labels() 共用一份。"""
+    if overlay.get("segment_seeds"):
+        cfg = {
+            **cfg,
+            "segment_seeds": {**cfg.get("segment_seeds", {}), **overlay["segment_seeds"]},
+        }
+    if overlay.get("injections"):
+        all_inj = dict(cfg.get("pinyin_injections") or g2p.load_injections(cfg))
+        for k, v in overlay["injections"].items():
+            all_inj.update(v)
+        cfg = {**cfg, "pinyin_injections": all_inj}
+    return {**cfg, "overlay": overlay}
+
+
+def rerun_labels(episode: Path, cfg_path: Path = CONFIG) -> list[str] | None:
+    """普通重跑 `tts`（不带 --force/--redo）会重配哪些**已配过**的段。纯读，零写入。
+
+    D72（2026-10-10 伪恋期）：全局读音表改了之后，「哪些段要重配」只记在桌面端组件内存里，
+    切走即丢、重配入口随之消失。这里从盘上算：判据就是 run() 自己的 `_reusable`
+    （speakable 段级比对 + 钉种子 + 文本 + wav 在盘），不另写一份会漂移的判断。
+
+    只报 manifest 里已有 take 的段：配音进行中还没轮到的段是「未配」，不是「待重配」。
+    返回 None = 判不了（无 manifest / 清单不可读 / 本期引擎与当前配置不是同一个，
+    例如云端配的期拿本地配置比）——拿不到可证伪信息就不定罪（判据 4）。
+    """
+    import contextlib
+    import io
+
+    from . import corrections
+
+    mf_path = episode / "03-audio" / "manifest.json"
+    try:
+        old = json.loads(mf_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    cfg = load_config(cfg_path)
+    if (old.get("engine"), old.get("model")) != (cfg["engine"], cfg["model"]):
+        return None
+    segs = parse_script(episode / "02-script.md")
+    cfg = _cfg_with_overlay(cfg, corrections.load_overlay(episode, include_pending=False))
+    with contextlib.redirect_stdout(io.StringIO()):   # _reusable 的进度行是给终端看的
+        done = _reusable(old, segs, episode / "03-audio", cfg)
+    had_take = {int(t["index"]) for t in old.get("segments", []) if "index" in t}
+    return [str(s.label) for s in segs if s.index in had_take and s.index not in done]
+
+
 def _stale_downstream(episode: Path, audio: list[dict]) -> list[str]:
     """级联校验（2026-08-18 复盘①）：本次重跑改了段时长后，下游 04-clips*.json
     里哪些段级时长已经不对齐。
@@ -1895,18 +1942,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         overlay = _overlay
     else:
         overlay = corrections.load_overlay(episode, include_pending=False)
-
-    if overlay.get("segment_seeds"):
-        cfg = {
-            **cfg,
-            "segment_seeds": {**cfg.get("segment_seeds", {}), **overlay["segment_seeds"]},
-        }
-    if overlay.get("injections"):
-        all_inj = dict(cfg.get("pinyin_injections") or g2p.load_injections(cfg))
-        for k, v in overlay["injections"].items():
-            all_inj.update(v)
-        cfg = {**cfg, "pinyin_injections": all_inj}
-    cfg["overlay"] = overlay
+    cfg = _cfg_with_overlay(cfg, overlay)
 
     # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
     # 人工评审结果抹掉（而打点是有人时成本的动作）
