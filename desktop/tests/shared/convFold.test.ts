@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
+import { bashSummary, charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -231,5 +231,42 @@ describe("D41 / D56 上下文用量读数", () => {
     expect(contextText({ tokens: 102_000, chars: 1, previous: true })).toBe("上下文 102.0k token（上次）");
     expect(contextText({ tokens: null, chars: 9192, previous: true })).toBe("上下文约 9,192 字（上次）");
     expect(contextText({ tokens: 12_345, chars: 1, previous: false })).toBe("上下文 12.3k token");
+  });
+});
+
+describe("D76 bash 工具行带完整命令", () => {
+  const long = `mkdir -p 07-cover/import && cp "${"/很长的路径".repeat(20)}/a.jpg" 07-cover/import/a.jpg`;
+  it("start 帧的 command 原样进行，摘要照旧截断；其余工具为 null", () => {
+    const { rows } = foldConv([
+      { k: "frame", at: 1, frame: F("tool", { turn_id: "t1", phase: "start", index: 0, name: "bash", summary: "mkdir -p …", ok: null, observation: null, duplicate: false, command: long }, 1) },
+      { k: "frame", at: 2, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "bash", summary: "mkdir -p …", ok: true, observation: null, duplicate: false, command: long }, 2) },
+      { k: "frame", at: 3, frame: toolStart("read_episode_file", "02-script.md", 1, 3) },
+    ]);
+    const tools = rows.filter((r) => r.k === "tool");
+    expect(tools.map((r) => (r.k === "tool" ? [r.summary, r.command] : null))).toEqual([["mkdir -p …", long], ["02-script.md", null]]);
+  });
+  it("孤立 end 帧（缓冲截头）也带上 command", () => {
+    const { rows } = foldConv([{ k: "frame", at: 1, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "bash", summary: "", ok: true, observation: null, duplicate: false, command: "ls" }, 1) }]);
+    expect(rows[0].k === "tool" && rows[0].command).toBe("ls");
+  });
+});
+
+describe("D76 继续会话：历史里的 bash 工具行也带完整命令", () => {
+  const long = `cp "${"/很长的路径".repeat(20)}/a.jpg" 07-cover/import/a.jpg`;
+  const H = (index: number, o: Record<string, unknown>) => ({ k: "frame" as const, at: index + 1, frame: F("history", { index, role: "tool", text: "", ok: true, ...o }, index + 1) });
+  it("bash 条目：command 原样、摘要按 core 同一规则补（首行截 80 字加…）；其余工具无命令、摘要为空", () => {
+    const { rows } = foldConv([H(0, { name: "bash", command: long }), H(1, { name: "bash", command: "ls\npwd" }), H(2, { name: "read_artifact" }), H(3, { name: "bash", command: "" })]);
+    const tools = rows.filter((r) => r.k === "tool").map((r) => (r.k === "tool" ? [r.name, r.summary, r.command] : null));
+    expect(tools).toEqual([
+      ["bash", `${long.slice(0, 80)}…`, long],
+      ["bash", "ls…", "ls\npwd"],
+      ["read_artifact", "", null],
+      ["bash", "", null],
+    ]);
+  });
+  it("bashSummary 与 core tool_summary 同口径：≤80 字单行原样", () => {
+    expect(bashSummary("ls -la")).toBe("ls -la");
+    expect(bashSummary("x".repeat(80))).toBe("x".repeat(80));
+    expect(bashSummary("x".repeat(81))).toBe(`${"x".repeat(80)}…`);
   });
 });

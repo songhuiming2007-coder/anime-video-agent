@@ -182,3 +182,49 @@ class TestCard:
 
         assert "bash" in tools.TOOL_SCHEMAS and "bash" in tools.tool_names()
         assert "bash" not in CRITICAL_TOOLS and "bash" not in tools.NEEDS_EPISODE_TOOLS
+
+
+class _Frames:
+    """FrameWriter 替身：只收帧（_send_history 只调 send）。"""
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    def send(self, frame: dict) -> None:
+        self.frames.append(frame)
+
+
+def _call(call_id: str, name: str, arguments: str) -> dict:
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+
+
+class TestHistory:
+    """D76：继续会话时重放的 history 帧——tool 条目按 tool_call_id 回查工具名，bash 带完整命令。"""
+
+    def test_旧工具行回查工具名_bash带完整命令(self) -> None:
+        from pipeline.agent.protocol import _send_history
+
+        long_cmd = "mkdir -p 07-cover/import && cp '/Users/x/Desktop/Weixin Image 1.jpg' 07-cover/import/marika-h.jpg"
+        ok_content = json.dumps({"ok": True, "result": {"ok": True}})
+        records = [
+            {"k": "msg", "origin": "user", "message": {"role": "user", "content": "放图"}},
+            {"k": "msg", "origin": "assistant", "message": {"role": "assistant", "content": None, "tool_calls": [
+                _call("c1", "bash", json.dumps({"command": long_cmd, "description": "拷图"})),
+                _call("c2", "read_artifact", json.dumps({"path": "01-topic.md"})),
+                _call("c3", "bash", "{坏掉的 JSON"),
+            ]}},
+            {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c1", "content": ok_content}},
+            {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c2", "content": ok_content}},
+            {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c3", "content": ok_content}},
+            {"k": "msg", "origin": "synthetic_tool", "message": {"role": "tool", "tool_call_id": "gone", "content": ok_content}},
+        ]
+        w = _Frames()
+        _send_history(w, records)  # type: ignore[arg-type]
+        tools = [f for f in w.frames if f["role"] == "tool"]
+        assert [(f["name"], f.get("command")) for f in tools] == [
+            ("bash", long_cmd),           # 完整原文，不是 80 字摘要
+            ("read_artifact", None),      # 非 bash 不带 command 键
+            ("bash", ""),                 # 参数坏了：键照样在（TS 侧 bash 条目必带 command），空串不给复制
+            (None, None),                 # 查不到调用（修复插入的合成结果）：名字为 None
+        ]
+        assert "command" not in tools[1] and "command" not in tools[3]

@@ -744,6 +744,7 @@ class AgentSession:
         self._last_records: list[dict[str, Any]] = []
         self._injected_docs: dict[str, str] = {}
         self._tool_summaries: dict[int, str] = {}  # 本条回复内 index → start 帧的 summary（end 帧复用）
+        self._tool_commands: dict[int, str] = {}   # D76：bash 调用 index → 完整命令（摘要只有 80 字，复制要原文）
         # D62 上下文压缩：摘要器失败 / 膨胀 / 压不了之后本会话不再自动压缩（spec §4.5）
         self.auto_compact_disabled = False
         self._compact_warned: set[str] = set()   # 「自动压缩不可用」只提示一次
@@ -1448,17 +1449,21 @@ class AgentSession:
         start 的 ok/observation 为 null；end 的 summary 复用同一调用 start 时算出的值。
         M9 真实联调实测：此前只「添加」判定结果，start 缺 ok/observation、end 缺 summary，
         host 按 §3.2 整帧判 malformed 丢弃——界面上一条工具行都没有。
+        唯一的条件键（D76）：`name == "bash"` 的两个阶段都多一个 `command`（完整命令原文，工具行「复制命令」用；
+        摘要截在 80 字）。它是模型发出的参数、不是工具结果，TS 侧 `convFrames.CONDITIONAL` 同步登记。
         """
         name = str(payload.get("name", ""))
         index = int(payload.get("index", 0))
         if payload.get("phase") == "start":
             summary = tool_summary(name, payload.get("args") or {})
             self._tool_summaries[index] = summary
+            if name == "bash":
+                self._tool_commands[index] = str((payload.get("args") or {}).get("command", ""))
             ok, observation = None, None
         else:
             summary = self._tool_summaries.get(index, "")
             ok, observation = tool_flags(payload.get("content"))
-        self.channel.show("tool", {
+        frame = {
             "turn_id": self._turn_id,
             "phase": payload.get("phase"),
             "index": index,
@@ -1467,7 +1472,10 @@ class AgentSession:
             "ok": ok,
             "observation": observation,
             "duplicate": bool(payload.get("duplicate", False)),
-        })
+        }
+        if name == "bash":
+            frame["command"] = self._tool_commands.get(index, "")
+        self.channel.show("tool", frame)
 
     def _review(
         self,

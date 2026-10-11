@@ -790,12 +790,28 @@ def _scope_of(status) -> str:
     return scope_of(status) if status is not None else "creative"
 
 
+def _history_calls(message: dict[str, Any], calls: dict[str, tuple[str, Any]]) -> None:
+    """登记 assistant 消息里的 tool_calls：`tool_call_id → (工具名, 参数)`，供随后的 tool 记录回查（D76）。"""
+    for call in message.get("tool_calls") or []:
+        fn = (call or {}).get("function") or {}
+        call_id, name = str((call or {}).get("id") or ""), fn.get("name")
+        if not call_id or not isinstance(name, str):
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (TypeError, ValueError):
+            args = {}
+        calls[call_id] = (name, args)
+
+
 def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
     index = 0
+    calls: dict[str, tuple[str, Any]] = {}
     for record in records:
         if record.get("k") != "msg":
             continue
         message = record.get("message") or {}
+        _history_calls(message, calls)
         role = _role_of(str(record.get("origin", "")))
         frame: dict[str, Any] = {
             "t": "history", "index": index, "role": role,
@@ -809,7 +825,13 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
             ok, text = tool_flags(message.get("content"))
             frame["ok"] = ok
             frame["text"] = "" if ok else (text or "")
-            frame["name"] = None
+            # D76：按 tool_call_id 回查当时的调用——工具名照实给（查不到为 None，如修复插入的合成结果）；
+            # bash 再带完整命令（与 tool 帧同一条件键），继续会话后的旧工具行也能复制
+            name, args = calls.get(str(message.get("tool_call_id") or ""), (None, {}))
+            frame["name"] = name
+            if name == "bash":
+                command = args.get("command") if isinstance(args, dict) else None
+                frame["command"] = command if isinstance(command, str) else ""
         writer.send(frame)
         index += 1
 

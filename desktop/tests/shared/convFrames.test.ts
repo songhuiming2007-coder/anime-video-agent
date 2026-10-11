@@ -35,6 +35,22 @@ describe("TV-1 parseOutFrame", () => {
     expect(parseOutFrame(JSON.stringify({ ...base, t: "history", index: 0, role: "user", text: "x", name: null })).ok).toBe(true);
   });
 
+  it("D76：bash 的 tool 帧要求 command（字符串）；其余工具不要求", () => {
+    const bash = { ...base, t: "tool", ...valid.tool, name: "bash", summary: "ls" };
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify(bash)).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: null })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...base, t: "tool", ...valid.tool })).ok).toBe(true);
+  });
+
+  it("D76：history 的 bash 条目要求 command；其余工具条目与非 tool 角色不要求", () => {
+    const h = { ...base, t: "history", index: 0, role: "tool", text: "", ok: true };
+    expect(parseOutFrame(JSON.stringify({ ...h, name: "bash", command: "ls" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...h, name: "bash" })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...h, name: "read_artifact" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...h, name: null })).ok).toBe(true);
+  });
+
   it("缺必需键、类型不符、v: 2、未知 t、非对象 → malformed", () => {
     expect(parseOutFrame(JSON.stringify({ ...base, t: "turn_started" }))).toEqual({ ok: false, reason: "malformed" });
     expect(parseOutFrame(JSON.stringify({ ...base, t: "turn_started", turn_id: 7 }))).toEqual({ ok: false, reason: "malformed" });
