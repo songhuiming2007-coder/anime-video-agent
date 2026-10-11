@@ -1339,6 +1339,12 @@ def voice_info_payload(ep_dir: Path | str) -> dict:
         })
 
     hetero = g2p.scan_heteronyms("\n".join(s.text for s in segs))
+    # D72：普通重跑会重配的已配段（全局读音表/注入表改过、文本改过、钉种子改过）。
+    # 从盘上现算，不靠桌面端内存记「改过哪些」；判不了是 null，面板据此不显示重配入口。
+    try:
+        rerun = tts.rerun_labels(from_ep)
+    except (Exception, SystemExit):     # 配置坏不归本命令管：面板照常装载，只是不给这项判断
+        rerun = None
     pid: int | None = None
     pid_alive: bool | None = None
     lock = audio_dir / ".apply_patch.lock"
@@ -1359,6 +1365,7 @@ def voice_info_payload(ep_dir: Path | str) -> dict:
             for h in hetero[:10]        # 条数与 readings 截断同终端（cli.py 异读预检）
         ],
         "pending_corrections": [c for c in entries if not c.get("applied", False)],
+        "rerun_segments": rerun,
         "apply_patch_lock": {
             "exists": lock.exists(),
             "pid": pid,

@@ -1638,7 +1638,7 @@ export class HostService {
   }
 
   private async voiceReTts(e: EpisodeEntry): Promise<{ started: boolean }> {
-    if (!(await this.deps.confirm("按全局读音表重配？", "普通重跑 tts（不带 --force）：只重配念法变了的段。"))) return { started: false };
+    if (!(await this.deps.confirm("重配受影响的段？", "普通重跑 tts（不带 --force）：只重配念法、文本或钉种子变了的段，其余段原样复用。"))) return { started: false };
     const r = await this.core("RUN_TTS", { ep: e.abs });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `重配失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);

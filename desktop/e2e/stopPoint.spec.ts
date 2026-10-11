@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, write
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { cleanup, makeFixtureRepo, py } from "../tests/helpers";
+import { execFileSync } from "node:child_process";
 import { spawns, openEp, card, readStore, type SpawnRec } from "./ackFixtures";
 import { launch, type Launched } from "./fixtures";
 import { stubConfirm } from "./sessionFixtures";
@@ -238,6 +239,120 @@ test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记�
   await expect(panel.locator("[data-testid=seg-row][data-label='1'] mark")).toHaveText("雪乃");
   await expect(panel.getByTestId("voice-done")).toContainText("只重配这 1 段");
   await expect(panel.getByTestId("voice-done")).toBeEnabled();
+});
+
+/** D72：按夹具副本里**当前**的 voice.json 写一份「已配过」的清单（音色指纹、每段 speakable、钉种子齐全），
+ *  普通重跑此刻判定「全部可复用」——之后全局表一改，core 就能从盘上算出受影响的段 */
+function dubbedManifest(ctx: Ctx): void {
+  const code = [
+    "import json, sys",
+    "from pathlib import Path",
+    "from pipeline import tts",
+    "ep = Path(sys.argv[1]); cfg = tts.load_config(tts.CONFIG)",
+    "takes = [dict(index=s.index, label=str(s.label), text=s.text, file=f'seg-{s.index:02d}.wav', duration=2.0, cer=0.0, attempts=1,",
+    "              speakable=tts.speakable(s.text, cfg['engine'], label=str(s.label)), seed_pins=list(tts._seed_pins(s, cfg.get('segment_seeds'))))",
+    "         for s in tts.parse_script(ep / '02-script.md')]",
+    "(ep / '03-audio' / 'manifest.json').write_text(json.dumps({**tts._voice_fingerprint(cfg), 'segments': takes}, ensure_ascii=False), encoding='utf-8')",
+  ].join("\n");
+  execFileSync(join(ctx.repo, ".venv/bin/python"), ["-c", code, ctx.ep], { cwd: ctx.repo, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PYTHONUTF8: "1" } });
+}
+
+test("D72 全局读音纠错后重配入口不丢：记下（写全局表）→ 只重配受影响段 → 切走再切回仍在 → 走普通重跑", async () => {
+  const ctx = epAt035("SP11-D72");
+  dubbedManifest(ctx);
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-D72");
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  const panel = L.page.getByTestId("voice-panel");
+  await panel.waitFor({ timeout: 15_000 });
+  await expect(panel.getByTestId("voice-no-pending")).toBeVisible();
+  await expect(panel.getByTestId("voice-done")).toBeDisabled();
+  // 选中段 2 的「团子」→ 拼音直注 → 范围全局 → 记下（宿主确认框放行）
+  await panel.locator("[data-testid=seg-row][data-label='2'] [data-testid=seg-text]").evaluate((el) => {
+    const node = el.firstChild as Text;
+    const at = node.data.indexOf("团子");
+    const r = document.createRange();
+    r.setStart(node, at);
+    r.setEnd(node, at + 2);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(r);
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+  const fix = panel.getByTestId("voice-fix");
+  await fix.getByTestId("fix-pinyin").fill("tuan2 zi5");
+  await fix.getByTestId("fix-scope-global").click();
+  await expect(fix.getByTestId("fix-check")).toContainText("通过", { timeout: 15_000 });
+  await stubConfirm(L, true);
+  await fix.getByTestId("fix-save").click();
+  // 只有含「团子」的段 2 待重配；主按钮可点、走普通重跑（没有期级条目）
+  const done = panel.getByTestId("voice-done");
+  await expect(done).toContainText("只重配这 1 段", { timeout: 15_000 });
+  await expect(done).toBeEnabled();
+  await expect(done).toHaveAttribute("data-mode", "retts");
+  await expect(panel.getByTestId("voice-redo-segs")).toContainText("段 2");
+  // 原病例：切走再切回，入口不能消失（待重配段由 core 从盘上现算，不在组件内存里）
+  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click();
+  await expect(L.page.getByTestId("voice-panel")).toHaveCount(0);
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await expect(L.page.getByTestId("voice-done")).toContainText("只重配这 1 段", { timeout: 15_000 });
+  // 确认框取消 → 不起长任务
+  await stubConfirm(L, false);
+  await L.page.getByTestId("voice-done").click();
+  await expect(L.page.getByTestId("voice-msg")).toContainText("已取消");
+  expect(spawnNames(L, "RUN_TTS")).toHaveLength(0);
+  expect(spawnNames(L, "VOICE_GLOBAL")).toHaveLength(1);
+  // 重配进行中（锁在、pid 活着）→ 主按钮禁用，不许再起第二个
+  writeFileSync(join(ctx.ep, "03-audio/.apply_patch.lock"), String(process.pid));
+  await L.page.getByTestId("voice-refresh").click();
+  await expect(L.page.getByTestId("voice-lock-busy")).toBeVisible();
+  await expect(L.page.getByTestId("voice-done")).toBeDisabled();
+});
+
+test("D70 从草稿新建可达：只有草稿时切换器列出「02-script.md · 从草稿新建」→ 编辑器 → 新建定稿（内容 = 草稿）", async () => {
+  const ctx = newCtx("SP11-D70");
+  writeFileSync(join(ctx.ep, "01-topic.md"), "# 选题\n类型：杂谈\n");
+  writeFileSync(join(ctx.ep, "02-script.draft.md"), SCRIPT_V1);
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-D70");
+  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click(); // 展开预览区
+  await L.page.getByTestId("preview-switch-btn").click();
+  const row = L.page.locator("[data-testid=preview-switch-row][data-rel='02-script.md']");
+  await expect(row).toBeEnabled();
+  await expect(row).toContainText("从草稿新建");
+  await row.click();
+  await L.page.getByTestId("script-editor").waitFor({ timeout: 15_000 });
+  await expect(L.page.getByTestId("editor-src")).toContainText("雪乃和大老师都没想到。");
+  const fromDraft = L.page.getByTestId("from-draft");
+  await expect(fromDraft).toBeEnabled({ timeout: 15_000 });
+  expect(existsSync(join(ctx.ep, "02-script.md"))).toBe(false);
+  await fromDraft.click();
+  await expect.poll(() => existsSync(join(ctx.ep, "02-script.md")), { timeout: 15_000 }).toBe(true);
+  expect(readFileSync(join(ctx.ep, "02-script.md"), "utf-8")).toBe(SCRIPT_V1);
+  await expect(L.page.getByTestId("from-draft")).toHaveCount(0, { timeout: 15_000 }); // 定稿已在：按钮退场
+});
+
+test("D73 预览区渲染异常被错误边界兜住：报错可见、侧栏照常，换文件 / 重试即恢复（不整窗白屏）", async () => {
+  const ctx = epAt035("SP11-D73");
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-D73");
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await L.page.getByTestId("voice-panel").waitFor({ timeout: 15_000 });
+  await L.page.evaluate(() => {
+    (window as unknown as { __avaTestCrashPreview: boolean }).__avaTestCrashPreview = true;
+  });
+  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click(); // 换目标 → 重渲染 → 探针抛错
+  await expect(L.page.getByTestId("pane-crash")).toContainText("测试钩子触发的渲染异常");
+  await expect(L.page.locator("[data-testid=tree-row][data-rel='03-audio']")).toBeVisible(); // 边界之外照常
+  await L.page.evaluate(() => {
+    (window as unknown as { __avaTestCrashPreview: boolean }).__avaTestCrashPreview = false;
+  });
+  await L.page.getByTestId("pane-crash-retry").click();
+  await expect(L.page.getByTestId("pane-crash")).toHaveCount(0);
+  // 切回 03-audio：上次读到的配音信息立刻占位（D73 ①），不经空白等待
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await expect(L.page.getByTestId("voice-panel")).toBeVisible();
+  await expect(L.page.getByTestId("seg-row")).toHaveCount(2);
 });
 
 test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写入（不重合成）→ H5 重钉新卡 → 一次批准通过（N61）", async () => {
