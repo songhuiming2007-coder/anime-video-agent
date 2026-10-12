@@ -141,9 +141,31 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
 
     // R6.3 / R7.2：要批的卡——时间线卡片行「等待批准」、侧栏活会话挂「待答」；批准后结局写回
     llm.push(toolCalls(bash("rm stale.tmp", "清理临时文件")), assistant("清理完了。"));
+    await p.setViewportSize({ width: 1280, height: 800 }); // 较窄的一档：卡片要装进更矮的对话流
     await send(p, "把临时文件清掉");
     const cardRow = p.locator("[data-testid=conv-row][data-kind=card]");
     await expect(cardRow.locator(".conv-card-phrase")).toHaveText("等待批准", { timeout: 20_000 });
+    // R6（人选方案 C）：请求卡在对话流末尾、不在待答区；卡片弹出、自动聚焦「批准」后（组件自己的滚动，不在测试里补），
+    // 卡面文本（危险标记、命令）与批准按钮都在对话流可见范围内。窗口在弹卡前已切到较窄的 1280×800（见上）
+    await expect(p.locator("[data-testid=conv-stream] [data-testid=request-card]")).toHaveCount(1);
+    await expect(p.locator("[data-testid=decisions] [data-testid=request-card]")).toHaveCount(0);
+    await expect(p.getByTestId("request-answer-approve")).toBeFocused();
+    const cardVisible = () => p.evaluate(() => {
+      const box = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!.getBoundingClientRect();
+      const inside = (q: string) => {
+        const r = document.querySelector<HTMLElement>(q)!.getBoundingClientRect();
+        return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5;
+      };
+      return { text: inside("[data-testid=request-card-text]"), approve: inside("[data-testid=request-answer-approve]") };
+    });
+    await expect.poll(cardVisible, { message: "1280×800" }).toEqual({ text: true, approve: true });
+    await expect(p.getByTestId("request-card-text")).toContainText("危险标记: [删除]");
+    await expect(p.getByTestId("request-card-text")).toContainText("rm stale.tmp");
+    await p.setViewportSize({ width: 1440, height: 900 });
+    await expect.poll(cardVisible, { message: "1440×900" }).toEqual({ text: true, approve: true });
+    await p.setViewportSize({ width: 1440, height: 900 });
+    await expect(p.getByTestId("request-feedback")).toHaveCount(0);
+    await expect(p.getByTestId("request-feedback-toggle")).toBeVisible();
     await expect(cardRow.locator(".conv-tool-cat")).toHaveText("工具卡");
     await expect(p.getByTestId("session-open")).toHaveText("待答");
     await p.getByTestId("request-answer-approve").click();
@@ -158,6 +180,35 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await expect(p.getByTestId("conv-turn")).toHaveCount(4);
     await expect(p.locator("[data-testid=conv-stream] [data-enter]")).toHaveCount(0);
     await expect(p.locator("[data-testid=conv-stream] .conv-enter")).toHaveCount(0);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});
+
+test("D80 R6 真实 core：卡片比对话流还高（多行命令）→ 弹出后危险标记与命令开头仍在可见区内（不因贴底被裁）", async () => {
+  test.setTimeout(60_000);
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, [EP]);
+  const L = await launchSession(fx.repo, [], { previewOpen: false });
+  const p = L.page;
+  try {
+    await p.setViewportSize({ width: 1280, height: 800 });
+    await openEp(p, EP);
+    const command = ["rm -f a.tmp", ...Array.from({ length: 9 }, (_, i) => `rm -f b${String(i)}.tmp`)].join(" && \\\n  ");
+    llm.push(toolCalls(bash(command, "清理一批临时文件")), assistant("清理完了。"));
+    await send(p, "把临时文件都清掉");
+    await expect(p.getByTestId("request-answer-approve")).toBeFocused({ timeout: 20_000 });
+    const m = await p.evaluate(() => {
+      const box = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!;
+      const text = document.querySelector<HTMLElement>("[data-testid=request-card-text]")!.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      return { taller: document.querySelector<HTMLElement>("[data-testid=request-card]")!.offsetHeight > box.clientHeight, textTop: text.top >= b.top - 0.5 && text.top + 60 <= b.bottom };
+    });
+    expect(m).toEqual({ taller: true, textTop: true }); // 前提：卡片确实比可见区高；卡面文本开头（含危险标记行）在视野内
+    await expect(p.getByTestId("request-card-text")).toContainText("危险标记: [删除]");
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

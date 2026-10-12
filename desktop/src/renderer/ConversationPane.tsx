@@ -48,7 +48,8 @@ type Opens = { get: (key: string, dflt: boolean) => boolean; toggle: (key: strin
  * running：回合在跑；awaiting：有待人答复的卡（这时该看的是待答区，末尾不放指示行）。
  * 执行中的工具行只在所属回合运行时扫光：回合已结束却没收到结束帧的行（中断、进程退出）是「已停止」。
  */
-export function ConversationPane({ rows, lead, running = false, awaiting = false }: { rows: ConvRow[]; lead?: ReactNode; running?: boolean; awaiting?: boolean }) {
+/** `cards`：D80 R6（人选方案 C）待答的请求卡，挂在对话流末尾（由 App 传入——本组件不含任何答复方法，TG-4′） */
+export function ConversationPane({ rows, lead, cards, running = false, awaiting = false }: { rows: ConvRow[]; lead?: ReactNode; cards?: ReactNode; running?: boolean; awaiting?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
   // D80（R3 ④）：只有本次挂载之后才到达的行播入场；历史恢复、切会话重挂时已在的行不播（App 以 convKey 为 key 重挂）
@@ -58,10 +59,12 @@ export function ConversationPane({ rows, lead, running = false, awaiting = false
     get: (key, dflt) => opened[key] ?? dflt,
     toggle: (key, current) => setOpened((o) => ({ ...o, [key]: !current })),
   };
-  // 每次渲染后（新帧、卡片进出、窗口变化引起的重排）若人在底部就跟到底；App 以 convKey 为 key 重挂，切会话即从底部开始
+  // 每次渲染后（新帧、卡片进出、窗口变化引起的重排）若人在底部就跟到底；App 以 convKey 为 key 重挂，切会话即从底部开始。
+  // D80 R6：有卡片待答时不跟——卡片自己负责进视野（比可见区高时让卡面文本顶到上沿）；运行中每秒的重渲染若照跟到底，
+  // 会把刚滚好的卡头又滚走（滚动事件异步，stick 标记来不及更新）。回合停在等人答，这期间本就没有新行
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && stick.current && !awaiting) el.scrollTop = el.scrollHeight;
   });
   const fresh = (r: ConvRow) => !("hist" in r && r.hist) && r.at >= mountedAt.current;
   const segments = turnSegments(rows, running);
@@ -86,6 +89,7 @@ export function ConversationPane({ rows, lead, running = false, awaiting = false
         ),
       )}
       {showActivity && !activityPlaced && <Activity rows={rows} />}
+      {cards}
     </div>
   );
 }

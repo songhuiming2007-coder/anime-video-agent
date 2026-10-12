@@ -138,3 +138,42 @@ test("PR-A 实现截图：侧栏会话标题（兜底 → 生成名）与改名"
     fx.cleanup();
   }
 });
+
+test("PR-D R6 实现截图：工具卡进对话流（人选方案 C）", async () => {
+  test.setTimeout(120_000);
+  const out = join(__dirname, "../../../../desktop/out/d80-shots/r6-impl");
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, [EP]);
+  const L = await launchSession(fx.repo, [], { previewOpen: false });
+  const p = L.page;
+  const send = async (t: string) => { await p.getByTestId("composer-input").fill(t); await p.getByTestId("composer-input").press("Enter"); };
+  try {
+    await p.setViewportSize({ width: 1280, height: 800 });
+    await p.locator("[data-testid=episode]").first().click();
+    await p.evaluate(() => document.querySelectorAll<HTMLElement>(".banner").forEach((b) => { if (b.textContent?.includes("Code Freeze")) b.hidden = true; }));
+    llm.push(toolCalls({ name: "read_status", args: {} }), assistant("停在 05。"));
+    await send("这期走到哪了");
+    await expect.poll(async () => (await convSnapshot(L, `ep:${EP}`)).entries.filter((e) => e.k === "frame" && e.frame?.t === "turn_finished").length, { timeout: 30_000 }).toBe(1);
+    llm.push(toolCalls(bash("rm stale.tmp", "清理临时文件")), { ...assistant("清理完了。"), delayMs: 600_000 });
+    await send("把临时文件清掉");
+    await expect(p.getByTestId("request-answer-approve")).toBeFocused({ timeout: 20_000 });
+    await p.waitForTimeout(400);
+    await p.getByTestId("center").screenshot({ path: join(out, "1280.png") });
+    await p.setViewportSize({ width: 1440, height: 900 });
+    await p.locator("[data-testid=request-card]").evaluate((el) => el.scrollIntoView({ block: "nearest" }));
+    await p.waitForTimeout(300);
+    await p.getByTestId("center").screenshot({ path: join(out, "1440.png") });
+    await p.getByTestId("request-feedback-toggle").click();
+    await p.getByTestId("request-feedback").fill("先列出来给我看，别直接删");
+    await p.locator("[data-testid=request-card]").evaluate((el) => el.scrollIntoView({ block: "nearest" }));
+    await p.waitForTimeout(300);
+    await p.getByTestId("center").screenshot({ path: join(out, "1440-feedback.png") });
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});

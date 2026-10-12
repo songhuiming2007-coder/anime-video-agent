@@ -14,7 +14,7 @@ import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
 import { formatRelTime } from "../shared/relTime";
 import { filterEpisodes, groupByStep } from "../shared/episodeView";
-import { AnswerDock } from "./HumanCards";
+import { AnswerDock, RequestCards } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane } from "./ConversationPane";
 import { CoverImport } from "./CoverImport";
@@ -472,8 +472,9 @@ function Main() {
               running={conv?.phase === "running"}
               awaiting={(conv?.open.length ?? 0) > 0}
               lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />}
+              cards={<RequestCards conv={conv} rpc={rpc} />}
             />
-            <AnswerDock conv={conv} ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
+            <AnswerDock ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
             <Composer
               rpc={rpc}
               convKey={convKey}

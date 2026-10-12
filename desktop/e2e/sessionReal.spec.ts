@@ -241,6 +241,7 @@ test("TX-3 真实 core：拒绝附反馈 → 假端点收到的下一次请求�
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-reject").waitFor();
+    await L.page.getByTestId("request-feedback-toggle").click(); // D80 R6.2：反馈框默认收起
     await L.page.getByTestId("request-feedback").fill("改成第三人称");
     await L.page.getByTestId("request-answer-reject").click();
     await waitTurns(L, "ep:SESS-A", 1);
