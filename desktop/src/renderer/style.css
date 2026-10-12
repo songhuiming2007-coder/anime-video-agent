@@ -325,6 +325,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-tool-lead .ui-icon { color: var(--fg-muted); }
 .conv-card-phrase { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conv-tool-status[data-st="wait"] { color: var(--wait); }
+/* R6（人选方案 C）：请求卡挂在对话流末尾——流是 flex 列，卡片不许被压扁 */
+.conv-stream > .request-card { flex: none; }
 /* R5：回合末遥测的短摘要行 */
 .conv-foot-line { display: flex; align-items: center; gap: var(--space-1); }
 .conv-foot-more { display: inline-flex; color: var(--fg-subtle); }

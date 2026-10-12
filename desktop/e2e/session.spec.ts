@@ -70,7 +70,7 @@ test("TX-1 失败原文逐字保留、默认收起（D46）；模型文本里的
     await expect(L.page.locator("[data-testid=conv-stream] a, [data-testid=conv-stream] img, [data-testid=conv-row][data-kind=answer] button")).toHaveCount(0);
     // H-2：助手文本里的「批准」不生成可点击控件；待答区此时没有任何卡
     await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(0);
-    await expect(L.page.locator(".decisions button[data-testid^=request-answer]")).toHaveCount(0);
+    await expect(L.page.locator("button[data-testid^=request-answer]")).toHaveCount(0); // D80 R6：卡片在对话流里，全页查
   });
 });
 
@@ -187,6 +187,9 @@ test("TX-3 拒绝附反馈：answer 帧带 feedback；流内留痕显示「已�
     await openEp(L.page, "SESS-A");
     await send(L.page, "写一下");
     await L.page.getByTestId("request-answer-reject").waitFor();
+    // D80 R6.2：反馈框默认收起，点「附说明…」才出现
+    await expect(L.page.getByTestId("request-feedback")).toHaveCount(0);
+    await L.page.getByTestId("request-feedback-toggle").click();
     await L.page.getByTestId("request-feedback").fill("改成第三人称");
     await L.page.getByTestId("request-answer-reject").click();
     await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(1);
@@ -393,11 +396,12 @@ test("TX-14b 卡片身份按 request_id：第一张卡上写的反馈不串到�
     await send(L.page, "两张卡");
     await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(2);
     const q = (id: string) => L.page.locator(`[data-testid=request-card][data-request-id='${id}']`);
+    await q("q1").getByTestId("request-feedback-toggle").click();
     await q("q1").getByTestId("request-feedback").fill("只改第一段");
     await q("q1").getByTestId("request-answer-reject").click();
     await expect(q("q1")).toHaveCount(0);
-    await expect(q("q2").getByTestId("request-feedback")).toHaveValue("");
-    await q("q2").getByTestId("request-answer-reject").click();
+    await expect(q("q2").getByTestId("request-feedback")).toHaveCount(0); // 别的卡的说明不串过来、也没展开
+    await q("q2").getByTestId("request-answer-reject").click(); // 拒绝仍一键（不带说明）
     await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(2);
     const answers = stdinLines(repo, "SESS-A").map((l) => JSON.parse(l)).filter((f) => f.t === "answer").map((f) => [f.request_id, f.feedback]);
     expect(answers).toEqual([["q1", "只改第一段"], ["q2", null]]);

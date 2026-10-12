@@ -43,12 +43,13 @@ export function CardFrame({ className, testId, attrs, title, sub, children }: { 
 type Outcome = { approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
 
 /** 待答区（用户裁决：输入框上方常驻；停机点对象 + Spec 9 的四种请求卡，PR3 起并入）。 */
-export function AnswerDock({ ep, conv, health, rpc }: { ep?: EpisodeState; conv?: ConvState; health: Health | null; rpc: RpcClient }) {
+export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Health | null; rpc: RpcClient }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
   const items = ep ? approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type)) : [];
   const a = ep?.approvals;
-  const requests = conv?.open ?? [];
+  // D80 R6（人选方案 C）：请求卡挪进对话流末尾（RequestCards，由 App 交给 ConversationPane 的 cards 槽），
+  // 待答区只剩停机点——此前卡片与停机点挤在 40% 高的待答区里，聚焦「批准」把命令与危险标记滚出视野（P13 实测）
 
   const run = async (obj: ApprovalJson, call: Promise<unknown>, okText: string) => {
     const head = { approvalId: obj.approval_id, stop: obj.type as StopType };
@@ -78,14 +79,11 @@ export function AnswerDock({ ep, conv, health, rpc }: { ep?: EpisodeState; conv?
       </div>
     );
   }
-  if (items.length === 0 && requests.length === 0 && a?.state !== "error" && !outcome) return null;
+  if (items.length === 0 && a?.state !== "error" && !outcome) return null;
   const disabled = a?.state !== "ok" || health?.reach !== "ok" || busy;
   return (
     <div className="decisions dock" data-testid="decisions">
       {a?.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
-      {requests.map((req, i) => (
-        <RequestCard key={String(req.request_id)} convKey={conv!.convKey} req={req} rpc={rpc} disabled={busy} focusApprove={i === 0} />
-      ))}
       {items.map((obj) => (
         <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} run={run} />
       ))}
@@ -304,12 +302,27 @@ function fieldText(v: unknown): string {
  * ADR-0030 决策 6（回车批准）：第一张卡出现时，若人没在输入框里打字，焦点落到「批准」按钮——原生按钮收到回车
  * 派发的是 isTrusted 的 click，走下面同一个 onClick（TG-4′ 不变：effect 里只 focus，不调答复方法）。
  */
+/** D80 R6（方案 C）：本会话的待答请求卡，挂在对话流末尾（正在跑的回合下面）；第一张自动聚焦「批准」 */
+export function RequestCards({ conv, rpc }: { conv?: ConvState; rpc: RpcClient }) {
+  const requests = conv?.open ?? [];
+  if (!conv || requests.length === 0) return null;
+  return (
+    <>
+      {requests.map((req, i) => (
+        <RequestCard key={String(req.request_id)} convKey={conv.convKey} req={req} rpc={rpc} disabled={false} focusApprove={i === 0} />
+      ))}
+    </>
+  );
+}
+
 export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean; focusApprove?: boolean }) {
   const requestId = String(req.request_id);
   const kind = String(req.kind);
   const options = Array.isArray(req.options) ? (req.options as unknown[]).map(String) : [];
   const fields = (req.fields ?? {}) as Record<string, unknown>;
   const [feedback, setFeedback] = useState("");
+  // D80 R6.2（人选方案 C，反馈照 A）：「告诉它怎么改」默认收起，点「附说明…」才展开；「拒绝」仍一键（有说明就带上）
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
@@ -326,7 +339,11 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
     const active = document.activeElement;
     // 人正在输入框里写东西（有内容）就不抢焦点：回车应当发送他的消息，而不是批准
     if (active instanceof HTMLTextAreaElement && active.value.trim() !== "") return;
-    approveRef.current?.focus();
+    // D80 R6：卡片在对话流末尾——聚焦不让浏览器按按钮位置滚动（会把卡头滚出视野），改为把整张卡带进视野
+    // 卡片比可见区还高时（多行命令、写稿 diff），nearest 对齐的是卡头——R6.1 要的正是危险标记与命令，按钮往下滚即见、焦点仍在它上面。
+    // 前提是对话流此时不贴底（ConversationPane 待答时不跟到底），否则卡头会被每秒的重渲染滚走
+    approveRef.current?.focus({ preventScroll: true });
+    approveRef.current?.closest(".request-card")?.scrollIntoView({ block: "nearest" });
     focusedAt.current = performance.now();
   }, [focusApprove, requestId]);
   return (
@@ -359,10 +376,10 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
           ))}
         </ul>
       </details>
-      {feedbackAllowed && (
+      {feedbackAllowed && feedbackOpen && (
         <label className="ui-field">
           告诉它怎么改
-          <textarea className="ui-textarea" data-testid="request-feedback" rows={2} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          <textarea className="ui-textarea" data-testid="request-feedback" rows={2} autoFocus value={feedback} onChange={(e) => setFeedback(e.target.value)} />
         </label>
       )}
       <div className="ui-card-actions">
@@ -398,6 +415,12 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
         {focusApprove && options.length > 0 && !busy && (
           // 提示放在按钮外：按钮文字只取 options 的标签（H-4），不混入提示
           <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>
+        )}
+        {/* 「附说明…」不是答复：只展开说明框。与闸门按钮同一变体（VS-12）、小号，放在动作行省一行高度（1280×800 下卡片要装进对话流可见区） */}
+        {feedbackAllowed && !feedbackOpen && !busy && (
+          <button type="button" className="ui-btn ui-btn--sm request-feedback-toggle" data-testid="request-feedback-toggle" disabled={off} onClick={() => setFeedbackOpen(true)}>
+            附说明…
+          </button>
         )}
         {busy && <span className="muted">处理中…</span>}
       </div>
