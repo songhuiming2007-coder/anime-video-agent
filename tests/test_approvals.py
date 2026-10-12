@@ -415,12 +415,8 @@ def test_pending_survives_process_restart(tmp_path: Path, monkeypatch: pytest.Mo
 
     # 子场景（Gate 1 B2）：从未进过 REPL 的期上运行裸形态 `ava <期> /approvals` 自愈并列出 pending
     ep_bare = _make_episode_at_05(tmp_path, "ep-bare-approvals")
-    proc_cli = subprocess.run(
-        [sys.executable, "-m", "pipeline.agent.cli", str(ep_bare), "/approvals"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    proc_cli = _run_cli(ep_bare, "/approvals", stdin_devnull=False)
+    assert proc_cli.returncode == 0, proc_cli.stderr
     assert "[pending]" in proc_cli.stdout
     assert "停机点: 05" in proc_cli.stdout
 
@@ -938,11 +934,16 @@ def _sha(p: Path) -> str:
 
 
 def _run_cli(ep: Path, *argv: str, stdin_devnull: bool = True) -> subprocess.CompletedProcess[str]:
+    # D81：`ava <期>` 只认期根下的期目录——经根目录替身把 tmp 期目录挂进临时根的 data/episodes（tests/root_shim.py）
+    from tests.root_shim import shim_env, shim_episode
+
+    shimmed = shim_episode(ep.parent, ep)
     return subprocess.run(
-        [sys.executable, "-m", "pipeline.agent.cli", str(ep), *argv],
+        [sys.executable, "-m", "pipeline.agent.cli", str(shimmed), *argv],
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL if stdin_devnull else None,
+        env=shim_env(ep.parent, shimmed.parent.parent.parent),
     )
 
 
@@ -1262,9 +1263,15 @@ def test_unknown_subcommand_non_tty_exits_2(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(cli.sys, "stdin", _FakeStdin())
     monkeypatch.setattr(cli, "run_repl", lambda d: (calls.append(d), 0)[1])
-    rc_tty = cli.main([str(ep), "/nonexistent"])
+    # D81：进程内同样经根目录替身（期目录要落在 paths.ROOT/data/episodes 下）
+    from pipeline import paths
+    from tests.root_shim import shim_episode
+
+    shimmed = shim_episode(ep.parent, ep)
+    monkeypatch.setattr(paths, "ROOT", shimmed.parent.parent.parent)
+    rc_tty = cli.main([str(shimmed), "/nonexistent"])
     assert rc_tty == 0
-    assert calls == [cli.resolve_episode_target(str(ep))]
+    assert calls == [cli.resolve_episode_target(str(shimmed))]
 
 
 def test_bare_ack_requires_id_and_never_acks_substitute(tmp_path: Path) -> None:

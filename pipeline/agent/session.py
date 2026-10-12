@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import re
@@ -242,6 +243,8 @@ class ToolVerdict:
     request: HumanRequest | None = None
     # ADR-0030 决策 5：「本会话都批准」的同类键（工具 + 危险标记组合）；None = 该卡不开放此选项
     allow_key: str | None = None
+    # D81 §4.4 卡上绑定：弹卡时写入卡面所依据的状态（00-project.md 的 base_sha）；只在人批那一支带进 Decision
+    bind: dict | None = None
 
 
 # ADR-0030 决策 3/4（D78）：可回退的写入与抓取类工具免卡。回退靠写前留底（草稿 / 定稿 / 笔记 /
@@ -267,6 +270,8 @@ def review_tool_call(
     origin: str = "model",
     turn_id: str | None = None,
     draft_writes_this_turn: int = 0,
+    session_kind: str = "episode",
+    project_dir: Path | None = None,
 ) -> ToolVerdict:
     """工具审查（原 `cli._default_approve` 的确定性部分，Spec 9 §2.4.2/§2.6）。
 
@@ -276,14 +281,22 @@ def review_tool_call(
     「越 scope」拒绝已随 D43 删除（所有模式开放全部工具）。
 
     `draft_writes_this_turn`：本轮已放行的 02-script.draft.md 写入次数，由 Session 计数传入。
+    `session_kind` / `project_dir`（D81）：宿主绑定的会话类型与所属企划；企划会话的需期工具逐个定口径（§4.2）。
     """
     from pipeline.agent.tools import (
         DRAFT_FILENAME,
         DRAFT_FREE_WRITES_PER_TURN,
         NEEDS_EPISODE_TOOLS,
         NO_EPISODE_MESSAGE,
+        PROJECT_FILE,
+        PROJECT_VOLUME_ONLY_MESSAGE,
+        PROJECT_VOLUME_ONLY_TOOLS,
         READONLY_PIPELINE_MODULES,
         TOOL_SCHEMAS,
+        memory_store_for,
+        plan_project_write,
+        project_module_refusal,
+        project_write_preview,
         resolve_write_content,
         run_pipeline,
         script_write_refusal,
@@ -297,6 +310,9 @@ def review_tool_call(
     # 非法的命令（如 faces unknown）拿到的是白名单拒因，不是统一文案。
     if ep_dir is None and name in NEEDS_EPISODE_TOOLS:
         return ToolVerdict("reject", reason=NO_EPISODE_MESSAGE)
+    # D81 §4.2（红队 R-3）：企划会话的期目录绑定是企划目录，卷级操作不落到默认分支（封面 / 抓取提案不写进母目录）
+    if session_kind == "project" and name in PROJECT_VOLUME_ONLY_TOOLS:
+        return ToolVerdict("reject", reason=PROJECT_VOLUME_ONLY_MESSAGE.format(tool=name))
 
     argv: list[str] | None = None
     if name == "run_pipeline":
@@ -306,6 +322,10 @@ def review_tool_call(
             # 先走既有的白名单/dry-run 拒因（--force 全量覆盖等），文案不许被下面的模型规则截走
             return ToolVerdict("reject", reason=outcome["message"])
         argv = list(outcome["argv"])
+        # D81 §4.2（Q2）：企划会话只跑企划级模块；企划级专属模块只在企划会话里跑
+        refusal = project_module_refusal(argv, session_kind, project_dir)
+        if refusal:
+            return ToolVerdict("reject", reason=refusal)
         if origin == "model" and _model_argv_has_options(argv, ep_dir):
             # §2.4.3（🔴-1）：模型发起的 review 只能生成审片页，任何以 `-` 开头的 token 一律拒。
             # 前缀缩写（--a/--ap/--appr）与 `pipeline.review` 写法一并在规范化 argv 上拦。
@@ -322,8 +342,10 @@ def review_tool_call(
         from pipeline.agent import memory
 
         try:
+            # D81 §4.5：target=project 写企划记忆（企划目录取自宿主绑定）；去掉 target 再交给记忆层
+            store, mem_args = memory_store_for(args, session_kind, project_dir, root)
             memory_plan = memory.plan_op(
-                str(args.get("op", "")), args, root=root, episode_dir=ep_dir
+                str(mem_args.get("op", "")), mem_args, root=root, episode_dir=ep_dir, store=store
             )
         except (ValueError, PermissionError, OSError) as exc:
             return ToolVerdict("reject", reason=f"{type(exc).__name__}: {exc}")
@@ -371,6 +393,26 @@ def review_tool_call(
             return ToolVerdict("reject", reason=f"{type(exc).__name__}: {exc}")
 
     loop_label = None
+    if name == "write_episode_file" and session_kind == "project":
+        # D81 §4.4（Q4）：企划会话只写 00-project.md。写后解析不了 → 弹卡前拒；机读字段（企划名 / 合集 / 卷表）
+        # 有变 → 弹卡带 diff、不开放「本会话都批准」，卡上绑定盘上 base_sha；只改散文 → 免卡（写前留底）
+        try:
+            plan = plan_project_write(project_dir or ep_dir, args, root)  # type: ignore[arg-type]
+        except (ValueError, PermissionError, OSError) as exc:
+            return ToolVerdict("reject", reason=f"{type(exc).__name__}: {exc}")
+        if not plan.machine_diff:
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+        return ToolVerdict(
+            "ask",
+            request=_tool_request(
+                name, args, None, ep_dir, status, None, turn_id, command_preview=project_write_preview(plan),
+            ),
+            bind={"base_sha": plan.base_sha},
+        )
+    if name == "write_episode_file" and str(args.get("filename", "")).strip() == PROJECT_FILE:
+        return ToolVerdict(
+            "reject", reason=f"{PROJECT_FILE} 只在企划会话里写（卷会话的写域是本卷目录，企划级改动回企划会话做）",
+        )
     if name == "write_episode_file":
         # D47：定稿只能改不能新建；定稿存在后草稿冻结。在弹卡之前拒，人不必为必然失败的写入点卡
         refusal = script_write_refusal(ep_dir, str(args.get("filename", "")))
@@ -653,6 +695,21 @@ class SessionHost:
     ) -> None:
         self.ep_dir = Path(ep_dir).resolve() if ep_dir is not None else None
         self.log_dir = Path(log_dir).resolve() if log_dir is not None else self.ep_dir
+        # D81 §4.2：会话类型由树规则在**字面路径**上得出（软链卷的企划归属按字面，红队 R-5）；
+        # 企划目录本身作期目录绑定时是企划会话。project_dir 保持字面路径（注入、读域、记忆都从它取）
+        from pipeline import project as project_mod
+
+        self.session_kind = "idea"
+        self.project_dir: Path | None = None
+        if ep_dir is not None:
+            literal = project_mod.literal_episode_path(ep_dir, root)
+            kind = project_mod.classify_dir(literal, root) if literal is not None else None
+            if kind == "project":
+                self.session_kind, self.project_dir = "project", literal
+            elif kind == "volume":
+                self.session_kind, self.project_dir = "volume", project_mod.project_of(literal, root)
+            else:
+                self.session_kind = "episode"
         self.root = root
         self.channel = channel
         self.ephemeral = ephemeral
@@ -1156,6 +1213,7 @@ class AgentSession:
 
         self._inject_memory(messages, tracker, scope, root=root)
         self._reinject_changed(messages, tracker, scope, status, root=root)
+        self._inject_project(tracker, root=root)
 
         if load_llm_config(root) is None:
             return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
@@ -1163,9 +1221,14 @@ class AgentSession:
         return None
 
     def _status_card(self, scope: str, status: Any) -> str:
-        from pipeline.agent.status_card import build_status_card
+        from pipeline.agent.status_card import build_project_card, build_status_card
 
-        return build_status_card(self.host.ep_dir, status, scope=scope)
+        if self.host.session_kind == "project" and self.host.project_dir is not None:
+            return build_project_card(self.host.project_dir)
+        return build_status_card(
+            self.host.ep_dir, status, scope=scope,
+            project_dir=self.host.project_dir if self.host.session_kind == "volume" else None,
+        )
 
     def _inject_memory(
         self, messages: list[dict[str, Any]], tracker: Any, scope: str, *, root: Path | None
@@ -1189,6 +1252,30 @@ class AgentSession:
             if not tracker.memory_warn_printed:
                 self.channel.show("stderr", {"text": f"[WARN] {doc.content}"})
                 tracker.memory_warn_printed = True
+
+    def _inject_project(self, tracker: Any, *, root: Path | None) -> None:
+        """D81 §4.6：卷 / 企划会话注入「企划文件」与「企划记忆」各一条，每轮比 sha、变了再注「（已更新）」。
+
+        企划记忆不看 `memory.scopes`（人裁决 Q6）：卷 / 企划会话一律注入。注入文本过 scrub_restricted。
+        """
+        if self.host.session_kind not in ("volume", "project") or self.host.project_dir is None:
+            return
+        for path, text, warning in project_injections(self.host.project_dir, root):
+            sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if tracker.project_injected.get(path) == sha:
+                continue
+            updated = path in tracker.project_injected
+            content = text.replace("]", "]（已更新）", 1) if updated else text
+            self._commit({"role": "user", "content": content}, "injection",
+                         docs=[{"path": path, "sha256": sha}])
+            tracker.project_injected[path] = sha
+            tracker.project_texts[path] = content
+            if warning == "unconfirmed" and not tracker.project_memory_notice_sent:
+                tracker.project_memory_notice_sent = True
+                self.channel.show("notice", {
+                    "level": "warn", "code": "project_memory_unconfirmed",
+                    "text": "企划记忆 00-memory.md 有 ava 之外的改动，本会话未注入；请人运行 /memory --project ack 看 diff 后对账。",
+                })
 
     def _reinject_changed(
         self, messages: list[dict[str, Any]], tracker: Any, scope: str, status: Any, *, root: Path | None
@@ -1350,6 +1437,8 @@ class AgentSession:
         else:
             tokens_after, after_source = cp.estimate_tokens(after), "estimate"
         kept_docs = self._kept_injected(tracker, tail, effective_scope, root)
+        # D81：企划注入的正文没留在尾部 → 下一轮重注（与规程同一判据）
+        kept_project = cp.kept_doc_paths(tracker.project_texts, tail)
         info = {
             "ok": True,
             "trigger": trigger,
@@ -1367,7 +1456,7 @@ class AgentSession:
             "card": card,
             "tail": tail,
             # 压缩后仍在上下文里的已注入文档：--continue 据此重置「已注入」登记（审查 #1）
-            "docs_kept": sorted(kept_docs),
+            "docs_kept": sorted(kept_docs | kept_project),
             "summary_sha256": hashlib.sha256(summary["content"].encode("utf-8")).hexdigest(),
             # 手动压缩不属于任何回合：给自己的 id，免得挂在上一回合名下、跟着它的回滚记录走
             "turn_id": f"compact-{secrets.token_hex(4)}" if manual or not self._turn_id else self._turn_id,
@@ -1381,6 +1470,8 @@ class AgentSession:
                 self._record(record)
                 cp.apply_compaction(messages, cut, summary, card)
                 tracker.injected_paths = kept_docs
+                tracker.project_injected = {k: v for k, v in tracker.project_injected.items() if k in kept_project}
+                tracker.project_texts = {k: v for k, v in tracker.project_texts.items() if k in kept_project}
                 tracker.active_step_key = None  # 下一轮装配按当前工序重注被压掉的规程
                 tracker.memory_warn_injected = False
                 if not manual:
@@ -1479,7 +1570,11 @@ class AgentSession:
         from pipeline.agent.tools import ToolContext
 
         # 期目录一律取自**包装收到的参数**，从不取自 SessionHost（五轮自查 / MUT-60）
-        return ToolContext(scope=scope, episode_dir=self._ep_dir, root=root)
+        # D81：会话类型与所属企划取自宿主绑定（树规则得出），不取模型参数
+        return ToolContext(
+            scope=scope, episode_dir=self._ep_dir, root=root,
+            session_kind=self.host.session_kind, project_dir=self.host.project_dir,
+        )
 
     # ---- 控制面 ----
 
@@ -1581,6 +1676,7 @@ class AgentSession:
             name, args, ep_dir=self.host.ep_dir, scope=self._scope,
             status=status, root=root, origin="model", turn_id=turn_id,
             draft_writes_this_turn=self._draft_writes,
+            session_kind=self.host.session_kind, project_dir=self.host.project_dir,
         )
         is_draft_write = (
             name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME
@@ -1628,7 +1724,8 @@ class AgentSession:
         if approved:
             if is_draft_write:
                 self._draft_writes = 0  # 人看过超限卡并放行：再给一个免卡额度
-            return Decision(ok=True, provenance="human")
+            # D81 §4.4：卡上绑定只走人在卡上批准的这一支（session_allow / card_free / approve_cb 一律不带）
+            return Decision(ok=True, provenance="human", bind=verdict.bind)
         self.channel.show("stdout", {"text": "[CANCEL] 已取消执行"})
         return Decision(
             ok=False, provenance="human",
@@ -1790,9 +1887,18 @@ class AgentSession:
 
     # ---- 恢复 ----
 
-    def memory_ack(self) -> tuple[bool, str]:
-        """`/memory ack` 与协议 `command{memory_ack}` 共用（Spec 7 §6.6 / S7-R1）。"""
+    def memory_ack(self, target: str = "global") -> tuple[bool, str]:
+        """`/memory ack` 与协议 `command{memory_ack}` 共用（Spec 7 §6.6 / S7-R1）。
+
+        D81：`target="project"` 对账本企划的企划记忆（企划目录取自宿主绑定）。
+        """
         from pipeline.agent import memory
+
+        store = None
+        if target == "project":
+            if self.host.session_kind not in ("volume", "project") or self.host.project_dir is None:
+                return False, "当前会话不属于任何企划，没有企划记忆可对账"
+            store = memory.project_store(self.host.project_dir, self.host.root)
 
         captured: list[str] = []
         state: dict[str, float] = {"latency": 0.0}
@@ -1811,6 +1917,7 @@ class AgentSession:
 
         ok = memory.ack_external(
             root=self.host.root,
+            store=store,
             confirm=confirm,
             # 终端如实报 isatty；协议通道是 S7-R1 明确承认的部分反转（只能由人点击触发）
             is_tty=lambda: bool(getattr(self.channel, "is_tty", lambda: True)()),
@@ -1819,7 +1926,7 @@ class AgentSession:
             from pipeline.agent.status_card import log_approval_decision
 
             log_approval_decision(
-                self.host.ep_dir, "memory_ack", "memory.md", "y",
+                self.host.ep_dir, "memory_ack", store.body if store is not None else "memory.md", "y",
                 latency_s=state["latency"], emit_event=False, channel=self.channel.name,
             )
         return ok, (captured[0] if captured else "")
@@ -1849,6 +1956,63 @@ def resume_idea(host: "SessionHost") -> dict[str, Any] | None:
     if state["status"] != "resumed":
         host.resume_state = None
     return state
+
+
+# D81 §6.4：企划文件全文注入上限。依据同 memory.DIGEST_MAX_CHARS = 8000（不大于仓库里最重的单篇注入文档）；
+# EGOIST 总纲原稿 5455 字走全文分支，踩坑全录 10075 字若并进来就走「机读部分 + 章节目录」分支
+PROJECT_DOC_INJECT_MAX_CHARS = 8000
+
+
+def render_project_doc(project_dir: Path, text: str) -> str:
+    """`00-project.md` 的注入正文（§4.6）：≤ 上限注全文；超了注机读头 + 卷表 + 章节标题 + 读全文的指路，
+    **不从中间截断**；解析失败注前 N 字原文 + 一行解析错误（人要看到问题，模型也要知道卷表不可信）。"""
+    from pipeline import project as project_mod
+
+    try:
+        doc = project_mod.parse(text)
+    except project_mod.ParseError as exc:
+        return (f"[企划 · {project_dir.name}] 00-project.md 解析失败，卷表不可信：{exc}\n\n"
+                f"{text[:PROJECT_DOC_INJECT_MAX_CHARS]}")
+    head = f"[企划 · {doc.name}] 本企划的立项文件 00-project.md（卷表即分卷边界）"
+    if len(text) <= PROJECT_DOC_INJECT_MAX_CHARS:
+        return f"{head}\n\n{text}"
+    lines = text.split("\n")
+    first_h2 = next((i for i, ln in enumerate(lines) if ln.startswith("## ")), len(lines))
+    at = next(i for i, ln in enumerate(lines) if ln.startswith("## ") and ln[3:].strip() == project_mod.VOLUME_TABLE_HEADING)
+    end = next((i for i in range(at + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    parts = [*lines[:first_h2], *lines[at:end], "章节: " + " / ".join(doc.sections),
+             '全文：read_artifact(path="00-project.md", area="project")']
+    return f"{head}（全文超 {PROJECT_DOC_INJECT_MAX_CHARS} 字，只注机读部分与章节目录）\n\n" + "\n".join(parts)
+
+
+def project_injections(project_dir: Path, root: Path | None) -> list[tuple[str, str, str | None]]:
+    """[(相对仓库根的路径, 注入正文, 告警类别)]：企划文件、企划记忆（告警类别 unconfirmed / invalid / None）。"""
+    from pipeline import project as project_mod
+    from pipeline.agent import memory
+    from pipeline.agent.tools import scrub_restricted
+
+    key = project_mod.episode_key(project_dir, root)
+    if key is None or len(key) != 1:
+        return []
+    rel = f"data/episodes/{key[0]}"
+    out: list[tuple[str, str, str | None]] = []
+    try:
+        text = (Path(project_dir) / project_mod.PROJECT_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = None
+    if text is not None:
+        out.append((f"{rel}/{project_mod.PROJECT_FILE}", scrub_restricted(render_project_doc(Path(project_dir), text)), None))
+    try:
+        store = memory.project_store(project_dir, root)
+    except PermissionError:
+        return out
+    mem = memory.render_injection(root, store=store)
+    if mem is not None:
+        warning = None
+        if mem.startswith(memory.PROJECT_WARNING_PREFIX):
+            warning = "unconfirmed" if "之外的改动" in mem else "invalid"
+        out.append((f"{rel}/{memory.PROJECT_MEMORY_FILE}", scrub_restricted(mem), warning))
+    return out
 
 
 def _doc_shas(docs: list[Any]) -> list[dict[str, str]]:

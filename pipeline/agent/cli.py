@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from pipeline import paths
+from pipeline import project as project_mod
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.scopes import get_scopes_dir, load_scope
 from pipeline.agent.session import (
@@ -63,6 +64,7 @@ from pipeline.agent.status_card import (
 )
 from pipeline.agent.tools import resolve_episode_dir, run_pipeline
 from pipeline.approvals import HUMAN_STOPS, human_stop_of
+from pipeline.project import EpisodeTree, ProjectEntry, classify_dir, get_episode_tree  # noqa: F401  （D81：以原名再导出）
 from pipeline.status import EpisodeStatus, format_status, inspect_episode
 
 # 选期与子命令共用的关键词唯一真源（Spec §2.4）
@@ -385,42 +387,16 @@ def run_voice_session(ep_dir: Path) -> int:
 
 
 def get_episodes_list(root: Path | None = None) -> tuple[list[Path], int]:
-    """获取所有期目录，排除 '.' 与 '_' 前缀，按 mtime 降序排列（Spec §2.3）。
+    """获取所有期目录（企划成员平铺），排除 '.' 与 '_' 前缀，按 mtime 降序排列（Spec §2.3）。
 
+    D81：由 `get_episode_tree`（`pipeline.project`，单一规则源）推导，返回值形状不变——
+    普通期与各企划的成员（卷 / 合集期）平铺，供 `print_board`、交互选期等既有调用。
     root 可注入，便于测试与 LLM 工具（list_episodes）复用同一份扫描逻辑。
     """
-    ep_root = (root or paths.ROOT) / "data" / "episodes"
-    if not ep_root.exists():
-        return [], 0
-
-    visible: list[Path] = []
-    hidden_underscore = 0
-
-    for d in ep_root.iterdir():
-        if not d.is_dir():
-            continue
-        if d.name.startswith("."):
-            continue
-        if d.name.startswith("_"):
-            hidden_underscore += 1
-            continue
-
-        # 若子目录包含子期目录（如 EGOIST-传奇企划志-V2/03-终局葬礼），展平纳入
-        sub_eps = [
-            sd for sd in d.iterdir()
-            if sd.is_dir() and not sd.name.startswith((".", "_")) and (sd / "01-topic.md").exists()
-        ]
-        if sub_eps:
-            visible.extend(sub_eps)
-            hidden_underscore += len([
-                sd for sd in d.iterdir()
-                if sd.is_dir() and sd.name.startswith("_")
-            ])
-        else:
-            visible.append(d)
-
+    tree = get_episode_tree(root)
+    visible = [*tree.plain, *(m for proj in tree.projects for m in proj.members)]
     visible.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return visible, hidden_underscore
+    return visible, tree.hidden_underscore
 
 
 def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
@@ -499,44 +475,12 @@ def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
         print(f"[ERROR] 未找到匹配 '{choice}' 的期，请重新输入。")
 
 
-_RE_EP_NAME_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
-#: 期名末尾不许出现的句读。期名常从 agent 回复里整句复制，句末标点跟着进了目录名
-#: （2026-10-09 伪恋那期建成 `…进攻哲学。`）；期目录又没有改名入口（D63），只能拒在建期前。
-#: 只收标题不会拿来收尾的句读。不收括号引号（已有期名 `…函数的终途（void）`），
-#: 也不收 `？！…`（「她为什么要逃？」是正当的问句标题）。
-_EP_NAME_TRAILING_PUNCT = "。，、；：．.,;:"
+# 期名合规：规则搬到叶子模块 pipeline.project（企划卷表的「目录 / 合集」列用同一条），这里保留原名
+_EP_NAME_TRAILING_PUNCT = project_mod.EP_NAME_TRAILING_PUNCT
+_episode_name_problem = project_mod.episode_name_problem
 
 
-def _episode_name_problem(ep_name: str) -> str | None:
-    r"""期名不合规的具体原因，合规返回 None（Spec 10 C10-R1 §3.7 第 2 步）。
-
-    每条都有来历：`.`/`_` 前缀会被 `get_episodes_list` 藏起来（建了看不见）；
-    `-` 开头会与 `ava --continue` 这类开关歧义；`/`、`\`、NUL 与控制字符
-    会让 `mkdir` 建到期根之外或不存在的路径；255 字节是 APFS 单段名上限；
-    末尾句读多半是整句复制带进来的（见 `_EP_NAME_TRAILING_PUNCT`）。
-    """
-    if not ep_name or ep_name != ep_name.strip():
-        return "不许为空或首尾带空白"
-    if ep_name in (".", ".."):
-        return f"不许是 {ep_name!r}"
-    if ep_name[0] in "._":
-        return f"不许以 {ep_name[0]!r} 开头（期列表会把它藏起来）"
-    if ep_name.startswith("-"):
-        return "不许以 '-' 开头（会与命令行开关混淆）"
-    if ep_name[-1] in _EP_NAME_TRAILING_PUNCT:
-        return f"不许以 {ep_name[-1]!r} 结尾（多半是从句子里连句末标点一起复制的）"
-    if any(ch in ep_name for ch in ("/", "\\", "\0")):
-        return "不许含 '/'、'\\' 或 NUL"
-    ctrl = _RE_EP_NAME_CTRL.search(ep_name)
-    if ctrl:
-        return f"不许含控制字符（U+{ord(ctrl.group()):04X}）"
-    if len(ep_name.encode("utf-8")) > 255:
-        return "过长（UTF-8 超过 255 字节，APFS 单段名上限）"
-    return None
-
-
-def create_new_episode(ep_name: str) -> int:
+def create_new_episode(ep_name: str, project: str | None = None) -> int:
     """创建新期目录与 01-topic.md 模板（Spec 10 C10-R1 §3.7；Spec §5 PR0/PR1 B3-r9）。
 
     **检查与写入同源**：`data` 在调用时取 `paths.ROOT / "data"`，所以检查落在
@@ -544,6 +488,9 @@ def create_new_episode(ep_name: str) -> int:
     `paths.ROOT` 后检查跑到真实盘、写入落在临时根，甚至建到期根之外）。
     `data/` 不可达或 `data/episodes/` 缺席一律退 2、**绝不创建**
     （AGENTS.md 五：脚本绝不自动创建 `data/`）。退出码：0 成功 / 1 已存在 / 2 不合规。
+
+    D81：`project` 给定时在该企划下建卷（`ava new --project <企划> <卷名>`）——企划必须已存在且
+    `classify_dir` 判为企划（对普通期拒：否则会把一个期悄悄变成「自己也有 01-topic.md 的企划」，红队 R-13）。
     """
     data = paths.ROOT / "data"
     try:
@@ -561,16 +508,27 @@ def create_new_episode(ep_name: str) -> int:
         print(f"[ERROR] 期名不合规：{problem}", file=sys.stderr)
         return 2
 
-    target_dir = ep_root / ep_name
+    parent = ep_root
+    if project is not None:
+        pproblem = _episode_name_problem(project) if not project.startswith("_") else _episode_name_problem(project[1:])
+        if pproblem is not None:
+            print(f"[ERROR] 企划名不合规：{pproblem}", file=sys.stderr)
+            return 2
+        parent = ep_root / project
+        if classify_dir(parent) != "project":
+            print(f"[ERROR] 不是企划目录：{parent}（先 `ava new-project <企划名>`；普通期不能在下面建卷）", file=sys.stderr)
+            return 2
+
+    target_dir = parent / ep_name
     if target_dir.exists():
         print(f"[ERROR] 期目录已存在：{target_dir}，拒绝覆盖！", file=sys.stderr)
         return 1
 
     target_dir.mkdir(parents=False, exist_ok=False)
-    if target_dir.resolve().parent != ep_root.resolve():
+    if target_dir.resolve().parent != parent.resolve():
         # 纵深防御：名字规则已挡住分隔符与符号链接，正常不可达
         target_dir.rmdir()
-        print(f"[ERROR] 期目录会落在 {ep_root} 之外，已删除：{target_dir}", file=sys.stderr)
+        print(f"[ERROR] 期目录会落在 {parent} 之外，已删除：{target_dir}", file=sys.stderr)
         return 2
 
     topic_content = (
@@ -586,6 +544,73 @@ def create_new_episode(ep_name: str) -> int:
     print(f"[OK] 已立项新期：{target_dir}")
     print(f"     已生成初始选题模板：{topic_file}")
     return 0
+
+
+PROJECT_SKELETON = (
+    "# 00 企划\n\n"
+    "企划: {name}\n\n"
+    "## 卷表\n\n"
+    "| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n"
+    "|---|---|---|---|---|\n\n"
+    "## 总纲\n\n"
+)
+
+
+def create_new_project(name: str) -> int:
+    """`ava new-project <企划名>`（D81 §6.3 ⑱）：建 `data/episodes/<企划>/` + 骨架 `00-project.md`。
+
+    机读头只有 `企划:`，卷表只有表头（空卷表合法；总装拒）。与 `create_new_episode` 同纪律：
+    名字过 `_episode_name_problem`、`data/` 不可达退 2 且绝不创建、已存在退 1。
+    """
+    data = paths.ROOT / "data"
+    try:
+        paths.require_data_at(data)
+    except SystemExit as exc:
+        print(exc.code if isinstance(exc.code, str) else str(exc), file=sys.stderr)
+        return 2
+    ep_root = data / "episodes"
+    if not ep_root.is_dir():
+        print(f"FAIL {ep_root} 不存在：先跑 ./pipeline/preflight.sh --init", file=sys.stderr)
+        return 2
+    problem = _episode_name_problem(name)
+    if problem is not None:
+        print(f"[ERROR] 企划名不合规：{problem}", file=sys.stderr)
+        return 2
+    skeleton = PROJECT_SKELETON.format(name=name)
+    try:
+        project_mod.parse(skeleton)
+    except project_mod.ParseError as exc:   # 企划名超长 / 带控制字符：写进去就是一份不可解析的立项文件
+        print(f"[ERROR] 企划名不合规：{exc}", file=sys.stderr)
+        return 2
+    target = ep_root / name
+    if target.exists():
+        print(f"[ERROR] 目录已存在：{target}，拒绝覆盖！", file=sys.stderr)
+        return 1
+    target.mkdir(parents=False, exist_ok=False)
+    if target.resolve().parent != ep_root.resolve():
+        target.rmdir()
+        print(f"[ERROR] 企划目录会落在 {ep_root} 之外，已删除：{target}", file=sys.stderr)
+        return 2
+    paths.atomic_write(target / project_mod.PROJECT_FILE, skeleton)
+    print(f"[OK] 已立项新企划：{target}")
+    return 0
+
+
+def project_meta_payload(project_dir: Path) -> dict[str, Any]:
+    """`/project-meta --dir=<企划>`：宿主取 `00-project.md` 的解析结果（TS 不另写解析器，§4.7）。"""
+    doc = project_mod.load(project_dir)
+    if doc is None:
+        return {"ok": True, "has_project_file": False, "name": None, "collection": None,
+                "volumes": [], "error": None, "hints": []}
+    if isinstance(doc, project_mod.ParseError):
+        return {"ok": False, "has_project_file": True, "name": None, "collection": None,
+                "volumes": [], "error": str(doc), "hints": []}
+    return {
+        "ok": True, "has_project_file": True, "name": doc.name, "collection": doc.collection,
+        "volumes": [{"seq": v.seq, "dir": v.dir, "years": v.years, "budget": v.budget, "tail": v.tail}
+                    for v in doc.volumes],
+        "error": None, "hints": project_mod.members_vs_table(project_dir, doc),
+    }
 
 
 #: `ava new --from-idea` 的机器可读标注（Spec 18 §3.2，🔵-2）：stdout **恰好一行**，stderr 不掺；
@@ -2081,7 +2106,7 @@ MEMORY_DIGEST_PROMPT = (
 )
 
 
-def run_memory_ack(ep_dir: Path | None, *, root: Path | None = None) -> bool:
+def run_memory_ack(ep_dir: Path | None, *, root: Path | None = None, store: Any = None) -> bool:
     """REPL /memory ack：展示「上次确认版本 → 当前文件」的 diff 与全文，按 y 才对账（Spec 7 §2.4）。"""
     from pipeline.agent import memory
 
@@ -2098,11 +2123,12 @@ def run_memory_ack(ep_dir: Path | None, *, root: Path | None = None) -> bool:
         state["latency"] = time.time() - started
         return (answer == "y", state["latency"])
 
-    ok = memory.ack_external(root=root, confirm=confirm)
+    ok = memory.ack_external(root=root, confirm=confirm, store=store)
     if ok:
         # 记账只为审批疲劳观测；记忆 ack 不是 approval 对象，不发 APPROVAL_RESOLVED（Spec 7 §6.2）
         log_approval_decision(
-            ep_dir, "memory_ack", "memory.md", "y", latency_s=state["latency"], emit_event=False
+            ep_dir, "memory_ack", store.body if store is not None else "memory.md", "y",
+            latency_s=state["latency"], emit_event=False,
         )
     return ok
 
@@ -2170,6 +2196,27 @@ def run_memory_command(line: str, ep_dir: Path | None, *, root: Path | None = No
     from pipeline.agent import memory
 
     sub = line[len("/memory"):].strip()
+    if sub == "--project" or sub.startswith("--project "):
+        # D81 §4.5：企划记忆的 show / check / ack（企划目录取自当前卷 / 企划会话所属企划，不取参数）
+        from pipeline import project as project_mod
+
+        literal = project_mod.literal_episode_path(ep_dir, root) if ep_dir is not None else None
+        kind = project_mod.classify_dir(literal, root) if literal is not None else None
+        pdir = literal if kind == "project" else (project_mod.project_of(literal, root) if kind == "volume" else None)
+        if pdir is None:
+            print("[ERROR] /memory --project 只在卷会话与企划会话里可用", file=sys.stderr)
+            return
+        store = memory.project_store(pdir, root)
+        psub = sub[len("--project"):].strip() or "show"
+        if psub == "show":
+            memory._cmd_show(root, store)
+        elif psub == "check":
+            memory._cmd_check(root, store)
+        elif psub == "ack":
+            run_memory_ack(ep_dir, root=root, store=store)
+        else:
+            print(f"[ERROR] 未知的 /memory --project 子命令: '{psub}'。可用: show|check|ack", file=sys.stderr)
+        return
     if sub in ("", "show"):
         memory.main(["show"], root=root)
         return
@@ -2553,27 +2600,67 @@ def _continue_repl(ep_dir: Path, prefix: str | None) -> int:
         return _run_repl_body(ep_dir)
 
 
-def resolve_episode_target(target: str) -> Path | None:
-    """将参数解析为期目录。"""
-    p = Path(target)
-    if p.exists() and p.is_dir():
-        return p.resolve()
+def resolve_episode_candidates(target: str, *, project: Path | None = None) -> list[Path]:
+    """期名 → 候选期 / 卷目录（字面路径，D81 §4.1）。0 个 = 不存在或不合形状，>1 个 = 裸卷名歧义。
 
-    candidate = paths.ROOT / "data" / "episodes" / target
-    if candidate.exists() and candidate.is_dir():
-        return candidate.resolve()
-
-    # 尝试在两级子目录下寻找（如 EGOIST 企划子期）
+    只接受两种形状：`data/episodes/<名>`、`data/episodes/<企划>/<卷>`（可省略 `data/episodes/` 前缀），
+    以及落在这两种位置上的绝对路径（字面或期根 resolve 后的形态）。删掉了旧的 `rglob` 回退
+    （给 `03-audio` 曾解析到某期的 `03-audio/`）与「工作目录下任何目录」（`pipeline` 曾被当成期）。
+    企划目录本身不是期。裸卷名：先在 `project`（卷 / 企划会话所属企划）内解析，再看顶层，
+    最后在各企划下找；多个企划下同名 → 全部返回，调用方不取第一个（V1 / V2 三卷同名）。
+    """
     ep_root = paths.ROOT / "data" / "episodes"
-    if ep_root.exists():
-        for matched in ep_root.glob(f"*/{target}"):
-            if matched.is_dir():
-                return matched.resolve()
-        for matched in ep_root.rglob(target):
-            if matched.is_dir():
-                return matched.resolve()
+    raw = str(target).strip()
+    if not raw:
+        return []
+    if Path(raw).is_absolute():
+        lit = project_mod.literal_episode_path(raw)
+        return [lit] if lit is not None and classify_dir(lit) in ("episode", "volume") else []
+    rel = raw.removeprefix("data/episodes/")
+    parts = Path(rel).parts
+    if not parts or len(parts) > 2 or any(p in (".", "..") for p in parts) or "\\" in rel:
+        return []
+    if len(parts) == 2:
+        cand = ep_root.joinpath(*parts)
+        return [cand] if classify_dir(cand) == "volume" else []
+    name = parts[0]
+    if project is not None:
+        proj_lit = project_mod.literal_episode_path(project)
+        if proj_lit is not None and classify_dir(proj_lit / name) == "volume":
+            return [proj_lit / name]
+    top = ep_root / name
+    if classify_dir(top) == "episode":
+        return [top]
+    if not ep_root.is_dir():
+        return []
+    found = []
+    for d in sorted(ep_root.iterdir(), key=lambda p: p.name):
+        if d.name.startswith(".") or not d.is_dir():
+            continue
+        if classify_dir(d / name) == "volume":
+            found.append(d / name)
+    return found
 
-    return None
+
+def explain_episode_target(target: str, *, project: Path | None = None) -> tuple[Path | None, str]:
+    """(期目录或 None, 拒因)。拒因区分「企划目录」「歧义」「不存在」三种，供 CLI / 协议 / 工具报错。"""
+    cands = resolve_episode_candidates(target, project=project)
+    if len(cands) == 1:
+        return cands[0], ""
+    if len(cands) > 1:
+        keys = ", ".join(c.relative_to(paths.ROOT / "data" / "episodes").as_posix() for c in cands)
+        return None, f"「{target}」在多个企划下同名，请带企划前缀：{keys}"
+    raw = str(target).strip()
+    lit = project_mod.literal_episode_path(raw) if Path(raw).is_absolute() else (
+        paths.ROOT / "data" / "episodes" / raw.removeprefix("data/episodes/") if raw else None)
+    if lit is not None and ".." not in Path(raw).parts and classify_dir(lit) == "project":
+        return None, f"「{target}」是企划目录，不是期：用企划会话（protocol --project）"
+    return None, f"期目录不存在：{target}"
+
+
+def resolve_episode_target(target: str, *, project: Path | None = None) -> Path | None:
+    """将参数解析为期 / 卷目录（字面路径；歧义、企划目录、不合形状一律 None）。"""
+    return explain_episode_target(target, project=project)[0]
 
 
 def _print_idea_non_tty_help() -> None:
@@ -2610,6 +2697,33 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"[会话] 最近写入的期：{ep_dir.name}")
         return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
+
+    # D81：ava new-project <企划名>
+    if args and args[0] == "new-project":
+        if len(args) != 2:
+            print("[ERROR] 用法: ava new-project <企划名>", file=sys.stderr)
+            return 2
+        return create_new_project(args[1])
+
+    # D81：ava new --project <企划> <卷名>
+    if args and args[0] == "new" and len(args) >= 2 and args[1] == "--project":
+        if len(args) != 4:
+            print("[ERROR] 用法: ava new --project <企划> <卷名>", file=sys.stderr)
+            return 2
+        return create_new_episode(args[3], project=args[2])
+
+    # D81：/project-meta --dir=<企划目录>（宿主取 00-project.md 解析结果；只读）
+    if args and args[0] == "/project-meta":
+        flags = [a for a in args[1:] if a.startswith("--dir=")]
+        if len(args) != 2 or len(flags) != 1:
+            print("[ERROR] 用法: ava /project-meta --dir=<企划目录>", file=sys.stderr)
+            return 2
+        pdir = project_mod.literal_episode_path(flags[0].split("=", 1)[1])
+        if pdir is None or classify_dir(pdir) != "project":
+            print(f"[ERROR] 不是企划目录：{flags[0].split('=', 1)[1]}", file=sys.stderr)
+            return 2
+        print(json.dumps(project_meta_payload(pdir), ensure_ascii=False))
+        return 0
 
     # 子命令 1: ava new <期名> [--from-idea[=<会话号>]]
     if args and args[0] == "new":
@@ -2695,9 +2809,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # 传了期目录或期号
     target_arg = args[0]
-    ep_dir = resolve_episode_target(target_arg)
+    ep_dir, why = explain_episode_target(target_arg)
     if not ep_dir:
-        print(f"[ERROR] 目标期目录不存在：{target_arg}", file=sys.stderr)
+        # D81：企划会话的会话管理（列表 / 改名 / 删除 / 回收站）认企划目录；其余期级命令照拒
+        proj = project_mod.literal_episode_path(target_arg) if Path(target_arg).is_absolute() else None
+        if proj is not None and classify_dir(proj) == "project" and len(args) > 1:
+            rc = _dispatch_session_admin(proj, args[1:])
+            if rc is not None:
+                return rc
+        print(f"[ERROR] {why}", file=sys.stderr)
         return 1
 
     # 带子命令，例如 `ava <期> /voice` 或 `ava <期> /run tts`

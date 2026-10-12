@@ -4,7 +4,7 @@ import { OUT_TYPES, parseOutFrame } from "../../src/shared/convFrames";
 
 const base = { v: 1, seq: 1, sid: "s1" };
 const valid: Record<string, Record<string, unknown>> = {
-  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null },
+  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "volume", project: "P" },
   history: { index: 0, role: "user", text: "hi", name: null },
   turn_started: { turn_id: "t1" },
   assistant: { turn_id: "t1", kind: "answer", text: "ok" },
@@ -25,6 +25,12 @@ const valid: Record<string, Record<string, unknown>> = {
 };
 
 describe("TV-1 parseOutFrame", () => {
+  it("D81：ready 缺 session_kind → malformed；project 为 null 合法、为数字 malformed", () => {
+    const { session_kind: _drop, ...noKind } = valid.ready;
+    expect(parseOutFrame(JSON.stringify({ ...base, t: "ready", ...noKind })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...base, t: "ready", ...valid.ready, project: null })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...base, t: "ready", ...valid.ready, project: 3 })).ok).toBe(false);
+  });
   it("出站闭集每种各一个合法样例通过", () => {
     expect(Object.keys(valid).sort()).toEqual([...OUT_TYPES].sort());
     for (const t of OUT_TYPES) {

@@ -394,6 +394,8 @@ class Decision:
     reason: str = ""
     provenance: Literal["human", "auto", "card_free", "precheck", "voided"] = "auto"
     feedback: str | None = None
+    # D81 §4.4 卡上绑定：只在人在卡上批准时带卡面所依据的状态（如 00-project.md 的 base_sha）；其余路径一律 None
+    bind: dict | None = None
 
 
 @contextlib.contextmanager
@@ -902,7 +904,12 @@ def run_tool_loop(
                     control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
                 live["outcome"] = None
                 exec_ctx = (
-                    replace(context, confirmed=True) if (approve is not None or not bare) else context
+                    replace(
+                        context, confirmed=True,
+                        # D81 §4.4：执行层据此分辨「人在卡上批了」与免卡 / 本会话已批（后两者 confirmed 也为真）
+                        human_approved=bool(decision.ok and decision.provenance == "human"),
+                        bound=decision.bind if decision.ok and decision.provenance == "human" else None,
+                    ) if (approve is not None or not bare) else context
                 )
                 if control.interrupt is not None and name in control.critical_tools:  # type: ignore[union-attr]
                     with control.interrupt.defer():  # type: ignore[union-attr]

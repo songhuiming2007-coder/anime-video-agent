@@ -201,6 +201,8 @@ class _Host:
         self.root = None
         self.sid = None      # D80：没有会话号 → 回合后不起标题（本组用例只测排队）
         self.log_dir = None
+        self.session_kind = "episode"  # D81：普通期会话（_run_turn 据此分辨企划会话）
+        self.project_dir = None
         self._outcome = outcome
         self._during = during
         from pipeline.agent.session import TurnInterrupt

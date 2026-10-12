@@ -72,8 +72,12 @@ def build_status_card(
     ep_dir: Path | str,
     status: EpisodeStatus | None = None,
     scope: str | None = None,
+    project_dir: Path | str | None = None,
 ) -> str:
-    """构建注入 system prompt 的紧凑状态卡（目标 ≤ 400 字符）。"""
+    """构建注入 system prompt 的紧凑状态卡（目标 ≤ 400 字符）。
+
+    D81 §6.3 ⑨：卷会话（`project_dir` 由宿主按树规则给出）首行加「企划 <企划> · 第 N 卷」，N 取卷表。
+    """
     d = Path(ep_dir).resolve()
     if status is None:
         status = inspect_episode(d)
@@ -108,8 +112,19 @@ def build_status_card(
     ht_min = _read_human_time_minutes(d)
     advisories_str = "；".join(status.advisories) if status.advisories else "无"
 
+    volume_line = ""
+    if project_dir is not None:
+        from pipeline import project as project_mod
+
+        pdir = Path(project_dir)
+        doc = project_mod.load(pdir)
+        pname = doc.name if isinstance(doc, project_mod.ProjectDoc) else pdir.name
+        seq = project_mod.volume_seq(pdir, Path(ep_dir).name)
+        volume_line = f"企划 {pname} · {f'第 {seq} 卷' if seq is not None else '不在卷表'}\n"
+
     card = (
         f"[状态卡]\n"
+        f"{volume_line}"
         f"期名: {name} | 工序: {step} | 阻塞: {blocked_str} | scope: {effective_scope} | 人时: {ht_min:.1f}m\n"
         f"推荐命令: {next_cmd}\n"
         f"产物: {checklist}\n"
@@ -144,6 +159,42 @@ def build_status_card(
     card = scrub_restricted(card)
 
     return card
+
+
+def build_project_card(project_dir: Path | str) -> str:
+    """企划会话的状态卡（D81 §6.3 ⑨）：企划名、卷表（每卷当前工序）、合集期是否有成片、解析错误与对表提示。"""
+    from pipeline import project as project_mod
+
+    pdir = Path(project_dir)
+    doc = project_mod.load(pdir)
+    members = {project_mod.name_key(m.name): m for m in project_mod.project_members(pdir)}
+    lines = ["[状态卡]"]
+    if doc is None:
+        lines.append(f"模式: 企划会话 | 企划目录: {pdir.name} | scope: project")
+        lines.append("立项文件: 00-project.md 未立项（写好机读头与卷表后人在卡上批）")
+    elif isinstance(doc, project_mod.ParseError):
+        lines.append(f"模式: 企划会话 | 企划目录: {pdir.name} | scope: project")
+        lines.append(f"立项文件: 00-project.md 解析失败（卷表不可信）：{doc}")
+    else:
+        lines.append(f"模式: 企划会话 | 企划: {doc.name}（目录 {pdir.name}） | scope: project")
+        vols = []
+        for v in doc.volumes:
+            m = members.get(project_mod.name_key(v.dir))
+            if m is None:
+                vols.append(f"{v.seq} {v.dir}：目录不存在")
+                continue
+            st = inspect_episode(m)
+            vols.append(f"{v.seq} {v.dir}：{st.current_step}{'（停机点）' if st.is_blocked else ''}")
+        lines.append("卷表: " + ("；".join(vols) if vols else "空（先定卷表）"))
+        if doc.collection is not None:
+            m = members.get(project_mod.name_key(doc.collection))
+            has_final = m is not None and (m / "05-final.mp4").exists()
+            lines.append(f"合集: {doc.collection}：{'成片 ✓' if has_final else ('成片 ✗' if m is not None else '目录未建')}")
+        hints = project_mod.members_vs_table(pdir, doc)
+        if hints:
+            lines.append("提示: " + "；".join(hints))
+    lines.append("企划会话只做规划、跨卷审查与总装；卷级工序到卷的会话里跑")
+    return scrub_restricted("\n".join(lines))
 
 
 def build_idea_card() -> str:
@@ -324,6 +375,9 @@ def render_approval_card(
         ]
         if filename in (SCRIPT_FILENAME, DRAFT_FILENAME) and ep and isinstance(content, str):
             lines.extend(f"│ {ln}" for ln in _script_diff(Path(ep) / filename, content))
+        if command_preview:
+            # D81 §4.4：企划立项文件——机读字段逐行 diff + 全文 diff（审查层算好，人看到的就是将要落盘的）
+            lines.extend(f"│ {_sanitize_card_field(ln)}" for ln in command_preview)
         lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 

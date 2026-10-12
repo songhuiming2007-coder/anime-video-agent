@@ -771,12 +771,13 @@ def test_write_memory_registered_with_adr_and_memory_scopes(tmp_path: Path):
     payload = json.dumps(build_tool_schemas(), ensure_ascii=False)
     assert '"adr"' not in payload and '"side_effect"' not in payload
 
-    # 不变量（D43-R2 🔵 R2-1）：memory.scopes 恰为 {creative, asset, idea}，不含 pipeline
+    # 不变量（D43-R2 🔵 R2-1）：memory.scopes 恰为 {creative, asset, idea, project}，不含 pipeline
+    # （D81 §6.3 ㉒：加 project——只管企划会话里的**全局**记忆；企划记忆不受这张表门控，Q6）
     assembly = json.loads(
         (paths.ROOT / "config" / "agent" / "assembly.json").read_text(encoding="utf-8")
     )
     inject_scopes = set(assembly.get("memory", {}).get("scopes", []))
-    assert inject_scopes == {"creative", "asset", "idea"}, inject_scopes
+    assert inject_scopes == {"creative", "asset", "idea", "project"}, inject_scopes
 
 
 def test_llm_unregistered_tool_in_config_fails_loudly(tmp_path: Path):
@@ -1376,8 +1377,8 @@ def test_list_episodes_tool_detail_keys(tmp_path: Path):
     details = res["episodes_detail"]
     assert len(details) == 2
     for d in details:
-        # 红队 🔴-1：键集必须精确等于这三个键，不能多也不能少
-        assert set(d.keys()) == {"name", "current_step", "is_blocked"}
+        # 红队 🔴-1：键集必须精确，不能多也不能少（D81 §6.3 ⑮ 加 project：所属企划名或 null）
+        assert set(d.keys()) == {"name", "project", "current_step", "is_blocked"}
 
 
 def test_idea_degrade_directive_message():

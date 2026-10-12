@@ -52,6 +52,8 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     resume_prompt_tokens: ["number", "null"], // D64：继续会话带回上次 turn_end 的 prompt_tokens；新会话 / 没测到为 null
     context_window: ["number", "null"], // D62 人裁决⑤：读数分母 = 当前模型标称窗口；窗口表里没有该模型为 null
     resume_prompt_chars: ["number", "null"], // D64：同上，prompt_chars（服务商不给 token 时的回落口径）
+    session_kind: ["string"], // D81：episode | volume | project | idea
+    project: ["string", "null"], // D81：卷 / 企划会话所属企划目录名；普通期与选题为 null
   },
   history: { index: ["number"], role: ["string"], text: ["string"], name: ["string", "null"] },
   turn_started: { turn_id: ["string"] },

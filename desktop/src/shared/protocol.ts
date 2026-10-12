@@ -229,7 +229,8 @@ export interface EpisodeDelta {
 
 // ---- 期列表、产物树、健康数据 ----
 /** 会话键（Spec 10 §2.1）：idea 全局至多一个；ep:<期名> 每期至多一个进程 */
-export type ConvKey = "idea" | `ep:${string}`;
+/** 会话键：选题 / 期或卷（`ep:<epKey>`，卷的 epKey 带企划前缀）/ 企划会话（`proj:<企划目录名>`，D81） */
+export type ConvKey = "idea" | `ep:${string}` | `proj:${string}`;
 
 /** `episode.create` 的结果（Spec 18 §3.3）：migrated 只认 core 的单行 marker，缺失/不合式按 false。 */
 export interface CreatedEpisode {
@@ -277,10 +278,25 @@ export interface EpisodeSummary {
   conv: ConvSummary | null;
 }
 
+/** D81：企划（多卷系列）。成员仍同时出现在 `EpisodesList.episodes` 的平铺列表里（旧侧栏照用） */
+export interface ProjectSummary {
+  /** 企划目录名（相对 episodes 根，一段） */
+  projKey: string;
+  mtimeMs: number;
+  /** 有 `00-project.md`（否则侧栏标「未立项」） */
+  hasProjectFile: boolean;
+  /** 成员（卷与合集期），按卷目录名码点序；卷表顺序另经 /project-meta 取 */
+  members: EpisodeSummary[];
+  /** 企划会话徽标；无活会话为 null */
+  conv: ConvSummary | null;
+}
+
 export interface EpisodesList {
   reach: Reach;
   reachDetail: string;
   episodes: EpisodeSummary[];
+  /** D81：企划分组（树形）；普通期不在这里 */
+  projects: ProjectSummary[];
   hiddenUnderscore: number;
   /** Spec 10 S8-R8：选题（idea）会话徽标；无活会话为 null */
   idea: ConvSummary | null;
