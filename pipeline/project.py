@@ -354,7 +354,12 @@ def parse(text: str) -> ProjectDoc:
         m = _DURATION.match(budget)
         if not m:
             raise ParseError(f"第 {no} 行：时长预算须形如 `14-16分钟`，实为 {budget!r}")
-        a, b = float(m.group(1)), float(m.group(2))
+        try:
+            a, b = float(m.group(1)), float(m.group(2))
+        except ValueError:
+            # `[\d.]+` 放进来的多位小数（`1.2.3-4分钟`）：解析错误的契约是 ParseError，
+            # 裸 ValueError 会漏过 load() 与注入层的 ParseError 捕获，把每个回合炸掉（D81 审查）
+            raise ParseError(f"第 {no} 行：时长预算的数字不成立，实为 {budget!r}") from None
         if not 0 < a <= b:
             raise ParseError(f"第 {no} 行：时长预算须 0 < A ≤ B，实为 {budget!r}")
         if tail == TAIL_KEEP:
