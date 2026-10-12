@@ -268,6 +268,21 @@ class TestParse:
         with pytest.raises(project.ParseError, match=needle):
             project.parse(mutate(SAMPLE))
 
+    def test_多位小数的时长预算是解析错不是崩溃(self, tmp_path: Path) -> None:
+        """D81 审查发现（2026-10-13）：`1.2.3-4分钟` 这类单元格曾让 float() 的裸 ValueError 漏出
+        parse/load——render_project_doc 只捕 ParseError，于是每轮注入都炸掉整个回合
+        （坏文件只能经 bash / 手改落盘，而那正是「解析失败要给人看」分支存在的理由）。"""
+        bad = SAMPLE.replace("14-16分钟", "1.2.3-4分钟", 1)
+        with pytest.raises(project.ParseError, match="数字不成立"):
+            project.parse(bad)
+        proj = tmp_path / "P"
+        proj.mkdir()
+        (proj / "00-project.md").write_text(bad, encoding="utf-8")
+        assert isinstance(project.load(proj), project.ParseError)   # load 返回错误实例，不抛
+        from pipeline.agent.session import render_project_doc
+        text = render_project_doc(proj, bad)
+        assert "解析失败" in text and "卷表不可信" in text   # 注入降级为原文 + 错误行，不炸回合
+
     def test_目录大小写不同算重复(self) -> None:
         """红队 R-19：APFS 大小写不敏感，`01-A` 与 `01-a` 是同一个目录。"""
         text = SAMPLE.replace("01-借躯降生", "01-A").replace("02-皮套囚徒", "01-a")
