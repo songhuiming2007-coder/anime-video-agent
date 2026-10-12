@@ -2,11 +2,19 @@
 // 进入 = conv.enter（先结束空闲活会话，再 --continue <sid>）；「＋ 新会话」= conv.fresh；删除 = conv.delete（host 先弹原生确认框，移进回收站）。
 // D66：列表底部可折叠分组「回收站（N）」——按文件聚合（键用 file 不用 sid：同名冲突时同一 sid 可对应多个回收站文件）；
 // 彻底删除 = conv.purgeTrash，确认框在宿主层（与 conv.delete 同一落位，渲染层不新造组件）。空回收站不渲染分组。
-// 列表只在：换期、会话阶段变化（起停、回合结束）、自己做完操作后重取；不轮询。
-import { useCallback, useEffect, useState } from "react";
-import type { ConvKey, ConvSnapshot, SessionRow, TrashRow } from "../shared/protocol";
+// 列表只在：换期、会话阶段变化（起停、回合结束）、自己做完操作后、收到 session_title 帧（D80）时重取；不轮询。
+// D80 R1：行标题 = core 给的 title（生成名 / 人改名，缺省首条消息）；「改名」= conv.rename（行内编辑，回车存、Esc 或失焦取消）。
+// 不用双击进编辑：单击本行就是 conv.enter（会结束空闲活会话再接上），双击必然先触发两次单击。
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ConvEntry, ConvKey, ConvSnapshot, SessionRow, TrashRow } from "../shared/protocol";
 import { formatRelTime } from "../shared/relTime";
+import { titleProblem } from "../shared/sessionTitle";
 import { errText, type RpcClient } from "./rpc";
+
+/** D80：本会话键收到过几帧 session_title——变了就重取会话列表（标题在回合结束之后才异步到达，阶段早已变完） */
+export function titleTick(entries: readonly ConvEntry[]): number {
+  return entries.reduce((n, e) => (e.k === "frame" && e.frame.t === "session_title" ? n + 1 : n), 0);
+}
 
 /** 回收站文件大小：KB/MB 一位小数（D66 §四）。 */
 export function formatTrashSize(bytes: number): string {
@@ -14,8 +22,11 @@ export function formatTrashSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; onChanged: () => void }) {
+export function SessionList({ rpc, convKey, phase, titles = 0, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; titles?: number; onChanged: () => void }) {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
+  const [editing, setEditing] = useState<{ sid: string; text: string } | null>(null);
+  // R1.5：标题换了（兜底 → 生成名 / 改名）的行淡入切换；首次载入不播
+  const seen = useRef<Map<string, string>>(new Map());
   const [trash, setTrash] = useState<TrashRow[] | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -34,7 +45,7 @@ export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient
   useEffect(() => {
     setError(null);
     reload();
-  }, [reload, phase]);
+  }, [reload, phase, titles]);
 
   /** 方法名在调用点写成字面量（TG-16：rpc.call 首参必须是方法闭集里的字面量） */
   const act = (call: () => Promise<unknown>) => {
@@ -56,6 +67,16 @@ export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient
 
   const running = phase === "running" || phase === "starting" || phase === "ending";
   const off = busy || running;
+  const saveTitle = (sid: string, text: string) => {
+    const problem = titleProblem(text);
+    if (problem !== null) {
+      setError(problem);
+      return;
+    }
+    setEditing(null);
+    // 改名不结束活会话、回合在跑时也能改（core 侧标题文件自带锁）：只受本列表自己的 busy 约束
+    act(() => rpc.call("conv.rename", { convKey, sid, title: text.trim() }));
+  };
   const anyLive = rows?.some((r) => r.live) ?? false;
   const now = Date.now();
   return (
@@ -75,7 +96,35 @@ export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient
         <span className="ui-row-title">＋ 新会话</span>
       </button>
       {rows?.map((r) => {
-        const title = r.firstUser || "（没有用户消息）";
+        const title = r.title || "（没有用户消息）";
+        const prev = seen.current.get(r.sid);
+        const swapped = prev !== undefined && prev !== title;
+        seen.current.set(r.sid, title);
+        if (editing?.sid === r.sid) {
+          return (
+            <div key={r.sid} className="ep-session-wrap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
+              <input
+                className="ui-input ep-session-edit"
+                data-testid="session-rename-input"
+                aria-label="会话标题"
+                autoFocus
+                value={editing.text}
+                onChange={(e) => setEditing({ sid: r.sid, text: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    if (editing.text.trim() === "" || editing.text.trim() === title) setEditing(null); // 空串 / 没改 = 取消
+                    else saveTitle(r.sid, editing.text);
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setEditing(null);
+                  }
+                }}
+                onBlur={() => setEditing(null)}
+              />
+            </div>
+          );
+        }
         const when = Number.isNaN(Date.parse(r.lastActivity)) ? r.lastActivity : formatRelTime(Date.parse(r.lastActivity), now);
         return (
           <div key={r.sid} className="ep-session-wrap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
@@ -91,7 +140,22 @@ export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient
                 act(() => rpc.call("conv.enter", { convKey, sid: r.sid }));
               }}
             >
-              <span className="ui-row-title">{title}</span>
+              <span key={title} className={`ui-row-title${swapped ? " ep-title-swap" : ""}`} data-testid="session-title" data-source={r.titleSource}>
+                {title}
+              </span>
+            </button>
+            <button
+              className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
+              data-testid="session-rename"
+              aria-label={`改名：${title}`}
+              disabled={busy}
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                setError(null);
+                setEditing({ sid: r.sid, text: r.titleSource === "first_input" ? "" : title });
+              }}
+            >
+              改名
             </button>
             <button
               className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
@@ -135,7 +199,7 @@ export function SessionList({ rpc, convKey, phase, onChanged }: { rpc: RpcClient
                 ? "空文件"
                 : t.parseError
                   ? "无法解析"
-                  : `${t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话"} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
+                  : `${t.title ?? (t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话")} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
               return (
                 <div key={t.file} className="ep-session-wrap" data-testid="trash-row" data-file={t.file}>
                   <span className="ui-row ep-session ep-trash-row" title={`${t.file}\n${formatTrashSize(t.bytes)}`}>

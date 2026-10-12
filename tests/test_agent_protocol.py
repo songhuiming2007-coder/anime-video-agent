@@ -110,6 +110,10 @@ class FakeEndpoint:
         self.replies: list[dict] = []
         self.bad_pairings = 0
         self.usage: dict | None = None  # D64：设了就随响应带 usage（真实服务商的 prompt_tokens 形态）
+        # D80：会话首轮结束后 core 后台起名的请求另记一处、另行回复——不占剧本序号，也不进 requests
+        # （各用例按「第 n 次主循环请求取第 n 条回复」写剧本，标题请求混进来会让后面每一轮都错位）
+        self.title_requests: list[dict] = []
+        self.title_reply = "测试会话"
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -121,6 +125,15 @@ class FakeEndpoint:
             def do_POST(self) -> None:  # noqa: N802
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 body = json.loads(raw.decode("utf-8"))
+                if _is_title_request(body):
+                    endpoint.title_requests.append(body)
+                    payload = json.dumps({"choices": [{"message": {"role": "assistant", "content": endpoint.title_reply}}]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 endpoint.requests.append(body)
                 if not _pairing_ok(body.get("messages") or []):
                     endpoint.bad_pairings += 1
@@ -147,6 +160,14 @@ class FakeEndpoint:
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+
+
+def _is_title_request(body: dict) -> bool:
+    """D80：core 的起名请求 = 首条是 `session_titles.PROMPT` 的系统消息（不带 tools）。"""
+    from pipeline.agent.session_titles import PROMPT
+
+    messages = body.get("messages") or []
+    return bool(messages) and messages[0].get("role") == "system" and messages[0].get("content") == PROMPT
 
 
 def _pairing_ok(messages: list[dict]) -> bool:
@@ -605,6 +626,36 @@ def test_tp4b_idle_interrupt_is_notice_not_exit(world, endpoint, tmp_path) -> No
         proto_proc.proc.kill()
 
 
+def test_d80_首轮正常结束后后台起名_发帧落盘_请求不带工具_不进会话记录(world, endpoint, tmp_path) -> None:
+    """D80 R1：真实协议进程。首轮 done → 后台起名请求（无 tools、系统提示是起名提示）→ session_title 帧 + 标题文件；
+    第二轮不再起名；起名请求不占主循环的请求序号（假端点另记），会话记录里也没有它。"""
+    root, episode = world
+    endpoint.replies = [{"role": "assistant", "content": "先聊聊"}, {"role": "assistant", "content": "再聊聊"}]
+    endpoint.title_reply = "「聊杂谈选题」"
+    proto_proc = Protocol(root, endpoint, episode=str(episode), tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "想做一期杂谈"})
+        proto_proc.wait_for("turn_finished")
+        frame = proto_proc.wait_for("session_title", timeout=20)
+        assert (frame["title"], frame["source"], frame["sid"]) == ("聊杂谈选题", "generated", frame["sid"])
+        proto_proc.send({"t": "user_message", "text": "换个角度"})
+        proto_proc.wait_for("turn_finished")
+        proto_proc.shutdown()
+    finally:
+        proto_proc.proc.kill()
+    assert len(endpoint.title_requests) == 1
+    req = endpoint.title_requests[0]
+    assert "tools" not in req and req["model"] == "mock"  # 没配轻档：light 回落主模型（Q1）
+    assert "想做一期杂谈" in req["messages"][1]["content"] and "先聊聊" in req["messages"][1]["content"]
+    assert len(endpoint.requests) == 2  # 主循环两轮各一次，起名请求不混进来
+    from pipeline.agent import session_titles
+
+    assert session_titles.load(episode)[frame["sid"]]["title"] == "聊杂谈选题"
+    assert "聊杂谈选题" not in (episode / "session.jsonl").read_text(encoding="utf-8")
+    assert [f for f in proto_proc.frames if f["t"] == "session_title"] == [frame]
+
+
 @pytest.mark.parametrize("how", ["sigterm", "shutdown"])
 def test_tp4c_idle_shutdown_sends_no_interrupt_notice(world, endpoint, tmp_path, how) -> None:
     """TP-4c（N33）：跑过一轮后空闲关停 → 关停段只有 bye、退 0，不冒「空闲态收到中断」notice。
@@ -628,7 +679,9 @@ def test_tp4c_idle_shutdown_sends_no_interrupt_notice(world, endpoint, tmp_path,
             proto_proc.send({"t": "shutdown"})
         assert proto_proc.finish() == 0
         proto_proc.drain(1.0)
-        assert [(f["t"], f.get("reason")) for f in proto_proc.frames[mark:]] == [("bye", "shutdown")]
+        # D80：首轮结束后的后台起名可能晚到（session_title 帧异步、时刻不定），不属本用例所测，过滤掉
+        tail = [f for f in proto_proc.frames[mark:] if f["t"] != "session_title"]
+        assert [(f["t"], f.get("reason")) for f in tail] == [("bye", "shutdown")]
     finally:
         proto_proc.proc.kill()
 
@@ -1245,13 +1298,14 @@ def test_tp16_idea_session_runs_turns_without_writing(world, endpoint, tmp_path)
         proto_proc.shutdown()
     finally:
         assert proto_proc.finish() == 0
-    # 唯一新增的文件就是库级选题记录；期目录与其余一切零产出（Spec 18 §3.1）
+    # 唯一新增的就是库级选题记录（D80 起另可有同目录 _agent/ 下的会话标题与其锁——后台线程，写没写完时刻不定）；
+    # 期目录与其余一切零产出（Spec 18 §3.1）
     log = root / "data" / "_idea" / "session.jsonl"
+    titles = {str((root / "data" / "_idea" / "_agent" / n).relative_to(root)) for n in ("session-titles.json", "session-titles.lock")}
     after = _tree(root)
-    assert [path for path, _size in after if (path, _size) not in before] == [
-        str(log.relative_to(root))
-    ]
-    assert [item for item in after if item[0] != str(log.relative_to(root))] == before
+    added = [path for path, _size in after if (path, _size) not in before]
+    assert str(log.relative_to(root)) in added and set(added) <= {str(log.relative_to(root))} | titles
+    assert [item for item in after if item[0] != str(log.relative_to(root)) and item[0] not in titles] == before
     users = [json.loads(line)["message"]["content"] for line in log.read_text(encoding="utf-8").splitlines()
              if json.loads(line).get("origin") == "user"]
     assert users == ["想做一期杂谈", "换个角度"]

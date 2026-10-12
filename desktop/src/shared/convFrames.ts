@@ -22,6 +22,8 @@ export const OUT_TYPES = [
   "queued",
   "steer_delivered",
   "steer_returned",
+  // D80 R1：会话首轮结束后后台起好的标题（帧级 sid 即该会话）；侧栏据此重取会话列表
+  "session_title",
 ] as const;
 
 export type OutType = (typeof OUT_TYPES)[number];
@@ -102,6 +104,7 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   queued: { id: ["string"], text: ["string"] },
   steer_delivered: { turn_id: ["string"], ids: ["array"] },
   steer_returned: { items: ["array"] },
+  session_title: { title: ["string"], source: ["string"] },
 };
 
 /** history 的 tool 条目多一个必需键 ok（S9-R1）；bash 的 tool 帧与 history 的 bash 条目多一个必需键 command

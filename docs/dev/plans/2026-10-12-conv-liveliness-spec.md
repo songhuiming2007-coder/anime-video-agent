@@ -171,7 +171,7 @@ R1 单独成 PR 的理由：它是本 spec 唯一动 core 会话层、写盘、�
 
 ## 十、完成判定
 
-- [ ] PR-A：R1 ①–⑦ 落地，§七 R1 相关测试与变异通过
+- [x] PR-A：R1 ①–⑦ 落地，§七 R1 相关测试与变异通过（2026-10-12，机检通过，**待人验收**，见 §十二）
 - [x] PR-B：方案截图交付，人已选 A（2026-10-12），已写回 §二
 - [x] PR-C：R2 / R3 / R4 按人选施工，底线断言通过（2026-10-12，机检通过，**待人验收**，见 §十一）
 - [ ] PR-D：R5 / R6 / R7 落地，R6 可见性断言通过
@@ -204,3 +204,31 @@ R1 单独成 PR 的理由：它是本 spec 唯一动 core 会话层、写盘、�
 **变异 7/7 被抓**：失败回合也自动折叠、展开区原文被截断、减弱动效下扫光没停、重挂后仍播入场、core 不发 description、终端组阈值改 3、history 帧丢 description。
 
 **待人**：§九 第 1 条真实一期手验（打包版）；看 `pr-c/` 截图确认与选型时的 A 一致。
+
+## 十二、PR-A 施工记录（2026-10-12）
+
+**落地**：R1 ①–⑦。侧栏截图（真实组件）：附件 [`impl.shots.spec.ts`](2026-10-12-conv-liveliness-shots/impl.shots.spec.ts) 的「PR-A」用例，产物 `desktop/out/d80-shots/pr-a/`（兜底名 → 生成名 → 悬停 → 编辑中 → 改名后）。
+
+| 文件 | 改了什么 |
+|---|---|
+| `pipeline/agent/session_titles.py`（新） | 标题文件读写（fcntl 锁 + `atomic_write`，CAS：`generated` 不覆盖 `custom`；文件坏了拒写不覆盖）、`validate`、`generate`（`purpose="light"`、无 tools、首问首答各截 500 字、任何失败 None）、`copy_entry` |
+| `pipeline/agent/protocol.py` | `_maybe_title`：首个 `stopped == "done"` 的回合之后起守护线程；本进程按 sid 只起一次；标题文件已有该 sid 不起；成功写盘后发 `session_title` 帧 |
+| `pipeline/agent/cli.py` | `/list-sessions` 行带 `title` / `title_source`；`/rename-session --sid= --title=`（期 / 选题两叉，不取期租约）；`/list-trash` 行带 `title`；建期迁会话带走该段标题 |
+| `desktop/src/shared/{convFrames,protocol,sessionTitle}.ts` | 新帧 `session_title`；`SessionRow.title / titleSource`、`TrashRow.title`；`conv.rename` 方法；标题形状规则（宿主、spawner、侧栏共用） |
+| `desktop/src/host/{spawner,service}.ts` | `RENAME_SESSION` / `RENAME_IDEA_SESSION` 模板；`conv.rename`（spawn 前校验；退出码 2 → E_BAD_REQUEST、1 → E_CORE；不结束活会话）；会话行缺标题键时回落首条消息（旧 core 兼容）；删除 / 彻底删除确认框显示标题 |
+| `desktop/src/renderer/{SessionList,App}.tsx`、`style.css` | 行标题取 `title`；「改名」按钮 + 行内编辑（回车存、Esc / 失焦 / 空串 / 没改 = 取消）；收到 `session_title` 帧重取列表；标题换了淡入（`--dur-base`，减弱动效下不播）；回收站行显示标题 |
+| `desktop/e2e/fakeLlm.ts`、`tests/test_agent_protocol.py` 的假端点 | 认出起名请求（首条系统消息 = `session_titles.PROMPT`），另记 `titleRequests`、另行回复，不占剧本序号、不进 `requests`。TS 版默认回 500（既有用例按首条消息认会话行），可设 `titleReply` / `titleDelayMs` |
+
+**与 §五 的偏差**
+
+1. **Q1 用 `light` 档**（§二已注）：仓库本来就有 `models.light`，没配时回落主模型，仍不新增配置项。
+2. **删除 / 彻底删除不动标题文件**（原 R1 ⑥ 要「随之移出、写旁注」）：sid 是 16 位随机串不复用，残留条目无害；手工从回收站找回时名字跟着回来；也不给 D66 的「彻底删除主日志零接触」添风险面。回收站列表按 sid 查回标题显示。
+3. **改名入口是行尾「改名」按钮**（原 R1.3 写「双击行或右键」）：单击会话行就是 `conv.enter`（结束空闲活会话再接上），双击必然先触发两次单击。按钮与「删除」同为悬停才出现，R7 再一起改成图标。
+4. **改名在回合运行中也能用**：只受列表自身 busy 约束（core 侧不取期租约）。
+5. **既有测试的三处调整**：`test_tp4c` 关停段过滤异步的 `session_title` 帧；`test_tp16` 的「选题会话只写 `session.jsonl`」放宽到允许 `_agent/` 下的标题文件与锁（守护线程写没写完时刻不定，断言为子集）；`test_agent_steer` 的 `_Host` 替身补 `sid` / `log_dir`。
+
+**验证**：`uv run pytest` 2686 passed（新增 `tests/test_session_titles.py` 34 条 + 协议进程集成 1 条）；`vitest` 536 passed（宿主 `conv.rename` / 标题解析、spawner 改名模板）；e2e 全量 134 passed（新增 `e2e/sessionTitle.spec.ts` 2 条：兜底 → 生成名、改名回车存 / Esc 取消、重启仍在、已有名不再起名、起名失败主回合照常且无提示）。
+
+**变异 7/7 被抓**：生成名覆盖人改名、标题请求同步跑在主线程（usage 串到主回合）、非正常结束也起名、列表不读标题文件、改名要取期租约、侧栏收到标题帧不重取、超长标题截断而非拒收。其中两条首轮漏网后补强了测试：改名测试改由**另一个进程**持期租约（同进程重复取租约测不出来）；侧栏用例让假模型起名晚 1.5 s 到达（否则标题碰巧赶上回合结束那次重取）。
+
+**待人**：真实一期里看起名质量（用的是本机 `light` 档或主模型）；看 `pr-a/` 截图。

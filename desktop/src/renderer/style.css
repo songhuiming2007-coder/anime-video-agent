@@ -56,6 +56,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .ep-session[data-empty] .ui-row-title { color: var(--fg-muted); }
 .ep-session-del { flex: none; visibility: hidden; color: var(--fg-muted); }
 .ep-session-wrap:hover .ep-session-del, .ep-session-wrap:focus-within .ep-session-del { visibility: visible; }
+/* D80 R1：会话改名的行内编辑框；标题换了（兜底 → 生成名 / 改名）淡入切换（R1.5，≤ --dur-base） */
+.ep-session-edit { flex: 1; min-width: 0; height: 30px; font-size: var(--text-sm); }
+.ep-title-swap { animation: ep-title-swap var(--dur-base) var(--ease) both; }
+@keyframes ep-title-swap { from { opacity: 0; } }
 .ep-session-err { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .tree-list { list-style: none; margin: 0; padding: 0; }
 .tree-row { min-height: 26px; gap: var(--space-1); font-size: var(--text-base); }
@@ -333,5 +337,5 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 @media (prefers-reduced-motion: reduce) {
   .conv-shimmer { animation: none; background: none; color: inherit; }
   .conv-progress > span { animation: none; width: 100%; }
-  .conv-enter, .conv-ticker { animation: none; }
+  .conv-enter, .conv-ticker, .ep-title-swap { animation: none; }
 }

@@ -19,6 +19,13 @@ export interface FakeLlm {
   badPairings: number;
   /** 追加剧本：第 n 次请求取第 n 条；用完后重复最后一条。 */
   push(...replies: Reply[]): void;
+  /** D80：core 后台起名的请求另记、另回，不占剧本序号、不进 requests（各用例按「第 n 次主循环请求」写剧本） */
+  titleRequests: ChatRequest[];
+  /** 起名请求的回复正文；null = 回 500（起名失败 → 侧栏保留首条消息兜底名）。默认 null：既有用例按首条消息认会话行，
+   *  不受起名影响；测起名的用例显式设值 */
+  titleReply: string | null;
+  /** 起名请求的回复延迟（毫秒）：真实模型起名要几秒，标题晚于回合结束到达——测「收到标题帧才重取侧栏」要用它排除碰巧赶上 */
+  titleDelayMs: number;
   close(): Promise<void>;
 }
 
@@ -71,22 +78,37 @@ export function pairingOk(messages: WireMessage[]): boolean {
   return true;
 }
 
+/** D80：起名请求 = 首条系统消息是 core `session_titles.PROMPT`（以这句开头；改提示词时两处一起改） */
+const TITLE_PROMPT_HEAD = "给下面这段对话起一个会话标题";
+const isTitleRequest = (b: ChatRequest): boolean => {
+  const first = b.messages?.[0];
+  return first?.role === "system" && typeof first.content === "string" && first.content.startsWith(TITLE_PROMPT_HEAD);
+};
+
 export async function startFakeLlm(): Promise<FakeLlm> {
   const replies: Reply[] = [];
-  const state = { requests: [] as ChatRequest[], badPairings: 0 };
+  const state = { requests: [] as ChatRequest[], badPairings: 0, titleRequests: [] as ChatRequest[], titleReply: null as string | null, titleDelayMs: 0 };
   const sockets = new Set<import("node:net").Socket>();
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as ChatRequest;
-      state.requests.push(body);
-      const index = state.requests.length - 1;
       const answer = (status: number, payload: unknown): void => {
         const data = Buffer.from(JSON.stringify(payload), "utf-8");
         res.writeHead(status, { "Content-Type": "application/json", "Content-Length": data.length });
         res.end(data);
       };
+      if (isTitleRequest(body)) {
+        state.titleRequests.push(body);
+        const reply = state.titleReply;
+        const go = (): void => (reply === null ? answer(500, { error: { message: "title boom" } }) : answer(200, { choices: [{ message: { role: "assistant", content: reply } }] }));
+        if (state.titleDelayMs > 0) setTimeout(go, state.titleDelayMs);
+        else go();
+        return;
+      }
+      state.requests.push(body);
+      const index = state.requests.length - 1;
       if (!pairingOk(body.messages ?? [])) {
         state.badPairings++;
         answer(400, { error: { message: "tool messages not paired" } });
@@ -111,6 +133,21 @@ export async function startFakeLlm(): Promise<FakeLlm> {
     },
     get badPairings() {
       return state.badPairings;
+    },
+    get titleRequests() {
+      return state.titleRequests;
+    },
+    get titleReply() {
+      return state.titleReply;
+    },
+    set titleReply(v: string | null) {
+      state.titleReply = v;
+    },
+    get titleDelayMs() {
+      return state.titleDelayMs;
+    },
+    set titleDelayMs(v: number) {
+      state.titleDelayMs = v;
     },
     push: (...r: Reply[]) => void replies.push(...r),
     close: () =>

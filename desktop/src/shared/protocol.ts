@@ -34,6 +34,8 @@ export type Method =
   // ---- D66：回收站查看与选择性彻底清空（人裁决：恢复不做 / 逐段确认 / 仅人手动）----
   | "conv.trashList" // { convKey } → TrashRow[]（spawn LIST_TRASH，纯读）
   | "conv.purgeTrash" // { convKey, file } → { purged }：原生确认框（写明不可恢复）后 spawn PURGE_TRASH
+  // ---- D80 R1：会话改名（custom 标题，迟到的生成名不覆盖；不结束活会话）----
+  | "conv.rename" // { convKey, sid, title } → { title, source }：spawn RENAME_SESSION
   // ---- Spec 11 §4.3/§4.4：02.5 编辑器 / 03.5 顺听 / 人时；Spec 12 §4.2：封面导入 ----
   | "script.stat" // { epKey } → ScriptStatJson：打开编辑器时的基线指纹（只读）
   | "script.save" // { epKey, text, expectSize, expectMtimeNs } → SavedFingerprintJson（spawn SAVE_SCRIPT）
@@ -111,6 +113,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "conv.delete": { required: ["convKey", "sid"], optional: [] },
   "conv.trashList": { required: ["convKey"], optional: [] },
   "conv.purgeTrash": { required: ["convKey", "file"], optional: [] },
+  "conv.rename": { required: ["convKey", "sid", "title"], optional: [] },
   "script.stat": { required: ["epKey"], optional: [] },
   "script.save": { required: ["epKey", "text", "expectSize", "expectMtimeNs"], optional: [] },
   "script.seal": { required: ["epKey"], optional: [] },
@@ -461,6 +464,9 @@ export interface SessionRow {
   assistants: number;
   lastActivity: string;
   firstUser: string;
+  /** D80 R1：显示用标题；没有生成名 / 人改名时等于 firstUser（titleSource = first_input） */
+  title: string;
+  titleSource: "first_input" | "generated" | "custom";
   resumable: boolean;
   live: boolean;
 }
@@ -475,4 +481,6 @@ export interface TrashRow {
   empty: boolean;
   parseError: boolean;
   partial: boolean;
+  /** D80：该段的会话标题（标题文件里按 sid 查回；没有为 null） */
+  title: string | null;
 }

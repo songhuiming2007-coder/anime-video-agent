@@ -26,7 +26,7 @@ import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
 import { Splitter } from "./Splitter";
-import { SessionList } from "./SessionList";
+import { SessionList, titleTick } from "./SessionList";
 import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { PreviewSwitcher } from "./PreviewSwitcher";
 import { generatingOf } from "../shared/artifactGroups";
@@ -403,6 +403,7 @@ function Main() {
             onIdea={() => { setShowIdea(true); setJustCreated(null); }}
             stale={!reachOk}
             convPhase={conv?.phase ?? "none"}
+            titles={titleTick(conv?.entries ?? [])}
             onConvChanged={() => fetchConvRef.current(convKey, true)}
           />
           {ep && !showIdea && (
@@ -715,7 +716,7 @@ function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | nu
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; onConvChanged: () => void }) {
+function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, titles, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; onConvChanged: () => void }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
@@ -740,7 +741,7 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
   const row = (e: EpisodeSummary) => (
     <div key={e.epKey}>
       {epRow(e)}
-      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} onChanged={onConvChanged} />}
+      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} onChanged={onConvChanged} />}
     </div>
   );
   const epRow = (e: EpisodeSummary) => (
@@ -816,7 +817,7 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
         </span>
       </button>
       {/* D58：选题会话与期会话同一个会话列表（看 / 进 / 新开 / 删），选中「选题」时展开 */}
-      {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} onChanged={onConvChanged} />}
+      {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} onChanged={onConvChanged} />}
       {!list && <div className="muted">加载中…</div>}
       {list && query.trim() !== "" && eps.length === 0 && <div className="muted">没有匹配的期</div>}
       {view === "time" && eps.map(row)}

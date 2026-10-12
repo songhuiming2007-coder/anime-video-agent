@@ -284,6 +284,21 @@ describe("D45 会话管理模板的 argv 形状", () => {
       pyPath, "-m", "pipeline.agent.cli", "idea", "/purge-trash", "--file=aaaaaaaaaaaaaaa1-20261010T010203000000.jsonl",
     ]);
   });
+  it("D80 改名模板：等号形式带会话号与标题（标题是单个 argv 元素，去首尾空白）；idea 两叉不带期目录", () => {
+    expect(buildArgv("RENAME_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1", title: " 修稿 那次 " }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "/ep", "/rename-session", "--sid=aaaaaaaaaaaaaaa1", "--title=修稿 那次",
+    ]);
+    expect(buildArgv("RENAME_IDEA_SESSION", { sid: "aaaaaaaaaaaaaaa1", title: "--force" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "idea", "/rename-session", "--sid=aaaaaaaaaaaaaaa1", "--title=--force",
+    ]);
+  });
+  it.each(["", "   ", "两行\n标题", "带\u0007控制符", "长".repeat(21)])("D80 不合格标题 %j 抛错、不生成 argv", (title) => {
+    expect(() => buildArgv("RENAME_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1", title }, "/repo")).toThrow();
+    expect(() => buildArgv("RENAME_IDEA_SESSION", { sid: "aaaaaaaaaaaaaaa1", title }, "/repo")).toThrow();
+  });
+  it("D80 标题按码点计字：20 个表情（40 个 UTF-16 码元）照样合格", () => {
+    expect(() => buildArgv("RENAME_SESSION", { ep: "/ep", sid: "aaaaaaaaaaaaaaa1", title: "😀".repeat(20) }, "/repo")).not.toThrow();
+  });
   it.each(["../x.jsonl", "/etc/passwd", "a/b.jsonl", "..", "x.txt", ""])("非法回收站文件名 %j 抛错、不生成 argv", (file) => {
     expect(() => buildArgv("PURGE_TRASH", { ep: "/ep", file }, "/repo")).toThrow();
     expect(() => buildArgv("PURGE_IDEA_TRASH", { file }, "/repo")).toThrow();

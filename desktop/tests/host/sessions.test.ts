@@ -1074,7 +1074,7 @@ const SID_A = "aaaaaaaaaaaaaaa1";
 const SID_B = "bbbbbbbbbbbbbbb2";
 
 /** 假 core：LIST_SESSIONS 回两行，DELETE_SESSION 按给定退出码；记录每次调用的模板与参数。 */
-function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: { deleteCode?: number; listJson?: string } = {}): HostDeps["runCore"] {
+function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: { deleteCode?: number; listJson?: string; renameCode?: number; renameOut?: string } = {}): HostDeps["runCore"] {
   const rows = [
     { sid: SID_A, messages: 4, assistants: 2, last_activity: "2026-10-08T08:00:00Z", first_user: "改段落三", resumable: true },
     { sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-09-26T11:00:00Z", first_user: "董香第二期做到哪了", resumable: true },
@@ -1089,6 +1089,11 @@ function adminCore(calls: { t: string; args: Record<string, unknown> }[], opts: 
     if (t === "LIST_IDEA_SESSIONS") {
       const out = JSON.stringify([{ sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-10-09T06:34:57Z", first_user: "尼古喵喵的素材", resumable: true }]);
       return { ...base, code: 0, stdoutTail: out, stdoutFull: out };
+    }
+    if (t === "RENAME_SESSION" || t === "RENAME_IDEA_SESSION") {
+      const code = opts.renameCode ?? 0;
+      const out = opts.renameOut ?? JSON.stringify({ title: String(args.title), source: "custom" });
+      return { ...base, code, stdoutTail: code === 0 ? out : "", stderrTail: code === 2 ? "标题需为 1–20 字的单行文本" : code === 1 ? "会话 x 不存在" : "", stdoutFull: null };
     }
     if (t === "DELETE_SESSION" || t === "DELETE_IDEA_SESSION") {
       const code = opts.deleteCode ?? 0;
@@ -1131,6 +1136,51 @@ describe("D45 会话管理", () => {
 
     const bad = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson: '[{"sid": "../x"}]' }) } });
     await expect(bad.svc.dispatch("conv.sessions", { convKey: bad.key })).rejects.toMatchObject({ code: "E_CORE" });
+  });
+
+  it("D80 conv.sessions：带 title / title_source 照收；不带（旧 core）回落首条消息 + first_input；形状不对 → E_CORE", async () => {
+    const withTitles = JSON.stringify([
+      { sid: SID_A, messages: 4, assistants: 2, last_activity: "2026-10-08T08:00:00Z", first_user: "改段落三", resumable: true, title: "修稿那次", title_source: "custom" },
+      { sid: SID_B, messages: 2, assistants: 1, last_activity: "2026-09-26T11:00:00Z", first_user: "董香第二期做到哪了", resumable: true },
+    ]);
+    const { svc, key } = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson: withTitles }) } });
+    const rows = (await svc.dispatch("conv.sessions", { convKey: key })) as Array<Record<string, unknown>>;
+    expect(rows.map((r) => [r.sid, r.title, r.titleSource])).toEqual([
+      [SID_A, "修稿那次", "custom"],
+      [SID_B, "董香第二期做到哪了", "first_input"],
+    ]);
+    for (const bad of [{ title: 7 }, { title_source: "magic" }]) {
+      const listJson = JSON.stringify([{ sid: SID_A, messages: 1, assistants: 0, last_activity: "x", first_user: "u", resumable: true, ...bad }]);
+      const b = await boot({ realCore: true, overrides: { runCore: adminCore([], { listJson }) } });
+      await expect(b.svc.dispatch("conv.sessions", { convKey: b.key })).rejects.toMatchObject({ code: "E_CORE" });
+    }
+  });
+
+  it("D80 conv.rename：活会话照常在跑、不结束它；期 / 选题两叉；不合格标题与非法 sid 不 spawn；退出码 2 → E_BAD_REQUEST、1 → E_CORE", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    scriptWithSid(repo, epKey, SID_A);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    const before = sessionArgvs().length;
+    expect(await svc.dispatch("conv.rename", { convKey: key, sid: SID_A, title: "修稿那次" })).toEqual({ title: "修稿那次", source: "custom" });
+    expect(calls.filter((c) => c.t === "RENAME_SESSION").map((c) => [c.args.sid, c.args.title])).toEqual([[SID_A, "修稿那次"]]);
+    expect((await snapOf(svc, key)).phase).toBe("idle"); // 没结束活会话
+    expect(sessionArgvs().length).toBe(before); // 也没重拉
+    await svc.dispatch("conv.rename", { convKey: "idea", sid: SID_B, title: "挑选题" });
+    expect(calls.filter((c) => c.t === "RENAME_IDEA_SESSION").map((c) => c.args)).toEqual([{ sid: SID_B, title: "挑选题" }]);
+
+    const n = calls.length;
+    await expect(svc.dispatch("conv.rename", { convKey: key, sid: SID_A, title: "两行\n标题" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    await expect(svc.dispatch("conv.rename", { convKey: key, sid: "../x", title: "x" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    expect(calls.length).toBe(n); // 都没 spawn
+
+    const c2 = await boot({ realCore: true, overrides: { runCore: adminCore([], { renameCode: 2 }) } });
+    await expect(c2.svc.dispatch("conv.rename", { convKey: c2.key, sid: SID_A, title: "x" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    const c1 = await boot({ realCore: true, overrides: { runCore: adminCore([], { renameCode: 1 }) } });
+    await expect(c1.svc.dispatch("conv.rename", { convKey: c1.key, sid: SID_A, title: "x" })).rejects.toMatchObject({ code: "E_CORE" });
+    const cx = await boot({ realCore: true, overrides: { runCore: adminCore([], { renameOut: "not json" }) } });
+    await expect(cx.svc.dispatch("conv.rename", { convKey: cx.key, sid: SID_A, title: "x" })).rejects.toMatchObject({ code: "E_CORE" });
   });
 
   it("conv.enter：先结束空闲活会话，再 --continue <sid>；进的就是当前会话则不动；非法 sid 不 spawn", async () => {

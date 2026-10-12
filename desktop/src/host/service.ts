@@ -71,6 +71,7 @@ import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type S
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
 import { pollOnce, resyncState, type TailState } from "./tailer";
+import { titleProblem } from "../shared/sessionTitle";
 
 export interface HostConfig {
   userData: string;
@@ -633,6 +634,8 @@ export class HostService {
         return this.convTrashList(p.convKey);
       case "conv.purgeTrash":
         return this.convPurgeTrash(p.convKey, p.file);
+      case "conv.rename":
+        return this.convRename(p.convKey, p.sid, p.title);
       // ---- Spec 11 §4.3/§4.4 + Spec 12 §4.2 ----
       case "script.stat":
         return this.scriptStat(this.epForIo(p.epKey));
@@ -1244,6 +1247,7 @@ export class HostService {
   }
 
   private async convSessions(convKey: string): Promise<SessionRow[]> {
+    const TITLE_SOURCES: readonly SessionRow["titleSource"][] = ["first_input", "generated", "custom"];
     // D57：选题会话没有「选哪一个」，但要知道有没有可接上的段（重开 app 后的「继续上次的选题对话」）。
     // 会话记录一律经 core 读（红线 3：桌面端不读会话记录）
     let key: ConvKey;
@@ -1273,7 +1277,13 @@ export class HostService {
         || typeof o.last_activity !== "string" || typeof o.first_user !== "string" || typeof o.resumable !== "boolean") {
         throw new RpcFail("E_CORE", "core 的 /list-sessions 行不符合约定", tails);
       }
-      return { sid: o.sid, messages: o.messages, assistants: o.assistants, lastActivity: o.last_activity, firstUser: o.first_user, resumable: o.resumable, live: o.sid === live };
+      // D80：title / title_source 缺省 = 首条消息兜底（旧 core 不带这两键）；带了就必须合约定
+      if ((o.title !== undefined && typeof o.title !== "string") || (o.title_source !== undefined && !TITLE_SOURCES.includes(o.title_source as SessionRow["titleSource"]))) {
+        throw new RpcFail("E_CORE", "core 的 /list-sessions 行不符合约定", tails);
+      }
+      const title = typeof o.title === "string" ? o.title : o.first_user;
+      const titleSource = (o.title_source as SessionRow["titleSource"] | undefined) ?? "first_input";
+      return { sid: o.sid, messages: o.messages, assistants: o.assistants, lastActivity: o.last_activity, firstUser: o.first_user, title, titleSource, resumable: o.resumable, live: o.sid === live };
     });
   }
 
@@ -1315,7 +1325,7 @@ export class HostService {
     const row = (await this.convSessions(convKey)).find((r) => r.sid === sid);
     if (!row) throw new RpcFail("E_STALE", "该会话已不存在");
     const detail = [
-      row.firstUser || "（没有用户消息）",
+      row.title || "（没有用户消息）",
       `${row.messages} 条消息 · 最后活动 ${row.lastActivity}`,
       idea ? "将移到 data/_idea/_agent/session-trash/，需要时可以手工找回。" : "将移到本期 _agent/session-trash/，需要时可以手工找回。",
       ...(this.sessions.liveSid(target.key) !== null ? ["当前打开的会话会先结束。"] : []),
@@ -1365,8 +1375,29 @@ export class HostService {
       return {
         file: o.file, sid: o.sid as string | null, lastTs: o.last_ts, messageCount: o.message_count, bytes: o.bytes,
         empty: o.empty === true, parseError: o.parse_error === true, partial: o.partial === true,
+        title: typeof o.title === "string" ? o.title : null,
       };
     });
+  }
+
+  /** D80 R1.3：改名 = custom 标题。不结束活会话、不取期租约（core 侧标题文件自带锁），回合在跑时也能改。 */
+  private async convRename(convKey: string, sid: string, title: string): Promise<{ title: string; source: string }> {
+    this.checkSid(sid);
+    const target = this.adminConv(convKey);
+    const problem = titleProblem(title);
+    if (problem !== null) throw new RpcFail("E_BAD_REQUEST", problem);
+    const r = target.key === "idea" ? await this.core("RENAME_IDEA_SESSION", { sid, title }) : await this.core("RENAME_SESSION", { ep: target.abs as string, sid, title });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "改名超时", tails);
+    if (r.code === 2) throw new RpcFail("E_BAD_REQUEST", r.stderrTail.trim() || "标题不合格", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `改名失败（core 退出码 ${r.code}）`, tails);
+    try {
+      const o = JSON.parse(r.stdoutTail.trim()) as { title: unknown; source: unknown };
+      if (typeof o.title !== "string" || typeof o.source !== "string") throw new Error("shape");
+      return { title: o.title, source: o.source };
+    } catch {
+      throw new RpcFail("E_CORE", "core 的 /rename-session 输出不符合约定", tails);
+    }
   }
 
   /** D66：彻底删除回收站里的一段（不可恢复）。确认框在 spawn core **之前**（同 convDelete 落位，红队发现 2）。 */
@@ -1378,7 +1409,7 @@ export class HostService {
     const row = (await this.convTrashList(convKey)).find((r) => r.file === file);
     if (!row) throw new RpcFail("E_STALE", "该回收站条目已不存在");
     const detail = [
-      row.sid ? `会话 ${row.sid.slice(0, 8)}…` : "（无法辨认所属会话）",
+      row.title ?? (row.sid ? `会话 ${row.sid.slice(0, 8)}…` : "（无法辨认所属会话）"),
       `${row.messageCount} 条消息 · ${Math.round(row.bytes / 1024)} KB${row.lastTs ? ` · 最后活动 ${row.lastTs}` : ""}`,
       "彻底删除，不可恢复。",
     ].join("\n");
