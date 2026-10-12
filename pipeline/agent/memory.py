@@ -898,7 +898,8 @@ def apply_op(
             "after": [entry.serialize() for entry in plan.after],
             "folded_refs": list(plan.folded_refs),
             "cited_ref": plan.cited_ref,
-            "confirm": "card" if plan.requires_card else "card_free",
+            # ADR-0030 决策 3：write_memory 不再出卡——原需卡的写入如实记 auto（不冒充「人按过 y」）
+            "confirm": "auto" if plan.requires_card else "card_free",
             "scope": scope,
             "episode": episode,
             "base_sha": plan.base_sha,

@@ -174,15 +174,11 @@ MUTATIONS: list[dict] = [
      "new": '    return {"ok": False, "error": "人类拒绝执行该工具调用"}\n'},
     # ---- M16: side_effect fail-closed 三层 ----
     {"id": "M16-1", "guard": "审批分流从注册表读（非枚举拒绝名单，fail-open）", "file": SESSION,
-     "old": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)\n'
-             '    if not side_effect:'),
-     "new": ('    _needs_approval = ("run_pipeline", "write_episode_file")\n'
-             '    if name not in _needs_approval:')},
+     "old": '    elif not TOOL_SCHEMAS[name].get("side_effect", True):\n',
+     "new": '    elif name not in ("run_pipeline", "write_episode_file"):  # MUT\n'},
     {"id": "M16-2", "guard": "未声明 side_effect 默认弹卡", "file": SESSION,
-     "old": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)\n'
-             '    if not side_effect:'),
-     "new": ('    side_effect = TOOL_SCHEMAS[name].get("side_effect", False)\n'
-             '    if not side_effect:')},
+     "old": '    elif not TOOL_SCHEMAS[name].get("side_effect", True):\n',
+     "new": '    elif not TOOL_SCHEMAS[name].get("side_effect", False):\n'},
     {"id": "M16-3", "guard": "side_effect 不泄进 LLM payload", "file": TOOLS,
      "old": ('        _PROTOCOL_KEYS = ("name", "description", "parameters")\n'
              '        fn_schema = {k: v for k, v in TOOL_SCHEMAS[name].items() if k in _PROTOCOL_KEYS}'),
@@ -671,17 +667,16 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-14", "guard": "批准抓取前复核序号仍指向该 URL", "file": SESSION,
      "old": '        aligned = 0 < no <= len(current) and str(current[no - 1].get("url") or "") == url\n',
      "new": '        aligned = True  # MUT-14\n'},
-    {"id": "S9-MUT-15", "guard": "抓取卡逐条问人（不跳过人审）", "file": SESSION,
-     "old": ('            answer = self.channel.ask(request)\n'
-             '        except KeyboardInterrupt:\n'
-             '            self._close_request(request, reason="voided", decision=None, latency_s=None,\n'
-             '                                cause="interrupted")\n'
-             '            record.update({"decision": "voided"'),
-     "new": ('            answer = HumanAnswer(request.request_id, "approve", None, self.channel.name, 0.0)  # MUT-15\n'
-             '        except KeyboardInterrupt:\n'
-             '            self._close_request(request, reason="voided", decision=None, latency_s=None,\n'
-             '                                cause="interrupted")\n'
-             '            record.update({"decision": "voided"')},
+    # S9-MUT-15（抓取卡逐条问人）随 ADR-0030 撤销：抓取不再出卡。换成 ADR-0030 新边界的三条护栏
+    {"id": "D78-1", "guard": "bash 命中硬危险才弹卡（未命中免卡、命中不免）", "file": SESSION,
+     "old": "        if not tags:\n            return ToolVerdict(\"allow\", echo=_echo_line(name, args))\n",
+     "new": "        if True:  # MUT D78-1\n            return ToolVerdict(\"allow\", echo=_echo_line(name, args))\n"},
+    {"id": "D78-2", "guard": "「本会话都批准」只放行同类（allow_key 相同）", "file": SESSION,
+     "old": "        if verdict.allow_key is not None and verdict.allow_key in self.host.session_allow:\n",
+     "new": "        if verdict.allow_key is not None and self.host.session_allow:  # MUT D78-2\n"},
+    {"id": "D78-3", "guard": "写 config/ 的三条 run_pipeline 命令照旧弹卡（Code Freeze 例外须人审）", "file": SESSION,
+     "old": "        elif (module, rest[0] if rest else None) in CONFIG_WRITE_COMMANDS:\n",
+     "new": "        elif False:  # MUT D78-3\n"},
     {"id": "S9-MUT-22", "guard": "恢复时截断末尾撕裂残行", "file": SESSION_LOG,
      "old": "            os.ftruncate(self._fd, cut)\n",
      "new": "            pass  # MUT-22\n"},

@@ -760,7 +760,8 @@ def test_tp5b_eof_while_idle_exits_zero(world, endpoint, tmp_path) -> None:
 
 
 def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
-    """TP-6：回合中再发 user_message → E_BUSY；多键帧 → E_BAD_REQUEST；进程存活。
+    """TP-6：回合中再发 user_message → 排队回 queued（D79 起不再 E_BUSY），这批工具跑完后作为 user 消息送达
+    下一次请求；回合中的命令仍 E_BUSY；多键帧 → E_BAD_REQUEST；进程存活。
 
     D31：「回合中」必须由条件保证，不能赌时序。旧写法连发「甲」「乙」两条，假端点秒回，
     测试进程若在两次 send 之间被抢占（全量负载下），「甲」已跑完、「乙」开了第二轮，
@@ -775,6 +776,9 @@ def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
         proto_proc.wait_for("turn_started")
         request = proto_proc.wait_for("request")  # 回合停在卡上：此刻必在进行中
         proto_proc.send({"t": "user_message", "text": "乙"})
+        queued = proto_proc.wait_for("queued")
+        assert queued["text"] == "乙", queued
+        proto_proc.send({"t": "command", "name": "compact", "arg": None})
         busy = proto_proc.wait_for("error")
         assert busy["code"] == "E_BUSY", busy
         proto_proc.send({"t": "user_message", "text": "丙", "extra": 1})
@@ -783,7 +787,12 @@ def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
         assert codes == ["E_BAD_REQUEST", "E_BAD_REQUEST"], codes
         proto_proc.send({"t": "answer", "request_id": request["request_id"],
                          "decision": "approve", "feedback": None})
+        delivered = proto_proc.wait_for("steer_delivered")
+        assert delivered["ids"] == [queued["id"]], delivered
         proto_proc.wait_for("turn_finished")
+        last = endpoint.requests[-1]["messages"][-1]
+        assert last["role"] == "user" and last["content"] == "乙", "排队消息排在工具结果之后送达"
+        assert "_ava_steer" not in last, "内部标记不进请求体"
         proto_proc.send({"t": "user_message", "text": "丁"})
         proto_proc.wait_for("turn_started")  # 第二个 turn_started：进程存活、能开新回合
         proto_proc.shutdown()
@@ -791,7 +800,8 @@ def test_tp6_busy_and_bad_frames(world, endpoint, tmp_path) -> None:
         assert proto_proc.finish() == 0
     user_texts = [m.get("content") for req in endpoint.requests for m in req.get("messages", [])
                   if m.get("role") == "user"]
-    assert "乙" not in user_texts and "丙" not in user_texts, "被拒的帧不得进入对话"
+    assert "乙" in user_texts, "排队消息进入对话（D79）"
+    assert "丙" not in user_texts, "被拒的帧不得进入对话"
 
 
 def test_tp6b_inbound_frames_require_v_1(world, endpoint, tmp_path) -> None:
@@ -1069,7 +1079,7 @@ def test_tp11_sigterm_skips_wrapup_and_exits_zero(world, endpoint, tmp_path) -> 
 
 
 def test_tp13_job_child_gets_eof_and_frames_still_processed(world, endpoint, tmp_path) -> None:
-    """TP-13：真子进程读 stdin 得 EOF（fd 0 已换成 /dev/null）；同时 host 的帧照常被处理（E_BUSY）。
+    """TP-13：真子进程读 stdin 得 EOF（fd 0 已换成 /dev/null）；同时 host 的帧照常被处理（D79 起回 queued）。
 
     不能用进程内的假工具：那样根本没有读 stdin 的子进程，fd 0 一个字都没测到（MUT-17 漏网）。
     """
@@ -1083,8 +1093,10 @@ def test_tp13_job_child_gets_eof_and_frames_still_processed(world, endpoint, tmp
         proto_proc.send({"t": "answer", "request_id": request["request_id"],
                          "decision": "approve", "feedback": None})
         proto_proc.send({"t": "user_message", "text": "抢话"})
-        busy = proto_proc.wait_for("error", timeout=20)
-        assert busy["code"] == "E_BUSY"
+        # D79：在途消息排队回 queued（此前是 E_BUSY）——子进程还在跑时回执就到，同样证明帧照常被处理
+        queued = proto_proc.wait_for("queued", timeout=20)
+        assert queued["text"] == "抢话"
+        assert proto_proc.wait_for("steer_delivered", timeout=60)["ids"] == [queued["id"]]
         proto_proc.wait_for("turn_finished", timeout=60)
         proto_proc.shutdown()
     finally:

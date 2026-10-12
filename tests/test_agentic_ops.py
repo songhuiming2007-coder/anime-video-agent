@@ -227,25 +227,32 @@ def _review(command: str, ep: Path):
     return review_tool_call("run_pipeline", {"command": command}, ep_dir=ep, scope="asset", root=None)
 
 
-def test_ao2_gate免卡_register与forget弹卡(repo: Path):
+def test_ao2_gate_register_forget免卡(repo: Path):
+    """ADR-0030 决策 2：素材库登记 / 台账移走免卡；带 --waive 的照旧弹卡（见下一条）。"""
     ep = _episode(repo)
     assert _review("acquire gate data/library/incoming/x.mp4", ep).action == "allow"
-    v = _review("acquire register data/library/incoming/x.mp4 --pool P", ep)
-    assert v.action == "ask" and "写素材库 data/library/" in v.request.card_text
-    assert "[门禁豁免]" not in v.request.card_text
-    assert _review("acquire forget 2", ep).action == "ask"
+    assert _review("acquire register data/library/incoming/x.mp4 --pool P", ep).action == "allow"
+    assert _review("acquire forget 2", ep).action == "allow"
 
 
 @pytest.mark.parametrize("flag", ['--waive "人看过"', "--waive=人看过", '--wai "人看过"'])
 def test_ao2_waive卡上标门禁豁免(repo: Path, flag: str):
+    """门禁豁免 = 越过人工关卡：ADR-0030 决策 2 逐条弹卡，卡上标明。"""
     v = _review(f"acquire register x.mp4 --pool P {flag}", _episode(repo))
     assert v.action == "ask" and "[门禁豁免]" in v.request.card_text
+    assert "写素材库 data/library/" in v.request.card_text
 
 
-def test_ao2_to_patch卡上写挪进补丁池(repo: Path):
+def test_ao2_to_patch卡面写挪进补丁池(repo: Path):
+    """--to-patch 本身免卡（ADR-0030）；卡面渲染仍对（带 --waive 时会出卡）。"""
+    from pipeline.agent.status_card import render_approval_card
+
     ep = _episode(repo)
     v = _review(f"acquire register data/library/incoming/x.mp4 --to-patch {ep}", ep)
-    assert v.action == "ask" and "patch_assets/" in v.request.card_text
+    assert v.action == "allow"
+    ok, _msg, argv = validate_pipeline_command(f"acquire register data/library/incoming/x.mp4 --to-patch {ep}", ep_dir=ep)
+    card = render_approval_card("run_pipeline", {"command": "acquire register x --to-patch"}, argv=argv)
+    assert ok and "patch_assets/" in card
 
 
 # ---------- 批 2：Phase 0 资产链 ----------
@@ -266,11 +273,10 @@ def test_ao2_phase0只读子命令免卡(repo: Path, command: str):
     "shots gallery X S01E01", "vindex presence X S01E01", "subindex build a.srt --anime X --episode 1",
     "vprobe tagger X", "timeline 东京喰种",
 ])
-def test_ao2_phase0写盘子命令弹卡(repo: Path, command: str):
+def test_ao2_phase0写盘子命令免卡(repo: Path, command: str):
+    """ADR-0030 决策 2：Phase 0 写素材库的子命令免卡（产物即状态、可重跑）。"""
     v = _review(command, _episode(repo))
-    assert v.action == "ask", v
-    if not command.startswith(("vprobe", "timeline")):
-        assert "写素材库 data/library/" in v.request.card_text
+    assert v.action == "allow", v
 
 
 @pytest.mark.parametrize("command", ["vindex scene X S01E01", "ingest phase1 a.mkv", "eval report x"])
@@ -377,10 +383,10 @@ def test_ao9_scout_type值不被当成期目录(repo: Path):
     assert argv[3:] == [str(ep.resolve()), "--type", "patch"]
 
 
-def test_ao2_补料命令弹卡(repo: Path):
+def test_ao2_补料命令免卡(repo: Path):
     ep = _episode(repo)
-    assert _review("ingest_patch --reset", ep).action == "ask"
-    assert _review("scout", ep).action == "ask"
+    assert _review("ingest_patch --reset", ep).action == "allow"
+    assert _review("scout", ep).action == "allow"
 
 
 @needs_ffmpeg
@@ -441,12 +447,12 @@ def test_ao7_没锁报无锁_内容不是pid拒(repo: Path, capsys):
     assert lock.exists()
 
 
-def test_ao7_清锁命令自动补期目录且弹卡(repo: Path):
+def test_ao7_清锁命令自动补期目录_免卡(repo: Path):
     ep = _episode(repo)
     ok, msg, argv = validate_pipeline_command("tts --clear-stale-lock", ep_dir=ep)
     assert ok, msg
     assert argv[3:] == [str(ep.resolve()), "--clear-stale-lock"]
-    assert _review("tts --clear-stale-lock", ep).action == "ask"
+    assert _review("tts --clear-stale-lock", ep).action == "allow"  # ADR-0030：清锁前已核实持锁进程已死
 
 
 def test_ao8_改道脚本_先判软链再动_幂等():

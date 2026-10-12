@@ -93,12 +93,13 @@ function assertFrameContract(frames: Frame[]): Map<string, Set<string>> {
   return seen;
 }
 
-// D44（2026-10-08）：check_script / status 只读、已免审卡，不再能当「弹卡的工具」用。下列用例改用 qc：
-// 仍逐次弹卡，在夹具上执行必判不合格（result.ok=false，N49 已实测），只写临时夹具里的 06-check.log。
+// ADR-0030（2026-10-12）：run_pipeline 白名单内免卡，不再能当「弹卡的工具」用。测卡片机制的用例改用 bash 硬危险
+// `rm stale.tmp`：仍逐次弹卡；夹具里没有这个文件，执行必失败（result.ok=false），零副作用。
+const CARD_RM = { name: "bash", args: { command: "rm stale.tmp", description: "清理临时文件" } };
 test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0，且逐类键集合与 REQUIRED 完全一致", async () => {
   await withRealCore(async ({ L, llm }) => {
-    // 一轮：只读工具 + 失败的 run_pipeline（经工具卡）→ 收尾答复
-    llm.push(toolCalls({ name: "read_status", args: {} }, { name: "run_pipeline", args: { command: "qc" } }), assistant("两步都做完了。"));
+    // 一轮：只读工具 + 失败的 bash rm（经工具卡）→ 收尾答复
+    llm.push(toolCalls({ name: "read_status", args: {} }, CARD_RM), assistant("两步都做完了。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "看下状态再检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
@@ -113,18 +114,18 @@ test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0
     for (const t of ["ready", "turn_started", "tool", "request", "request_closed", "assistant", "turn_finished", "stop_points"]) {
       expect(seen.has(t), `本轮没有出现 ${t} 帧`).toBe(true);
     }
-    // 失败的 run_pipeline 确实判为非成功（S9-R1：顶层 ok:true、result.ok:false）
+    // 失败的 bash 确实判为非成功（S9-R1：顶层 ok:true、result.ok:false）
     const ends = frames.filter((f) => f.t === "tool" && f.phase === "end");
     expect(ends.map((f) => [f.name, f.ok])).toEqual([
       ["read_status", true],
-      ["run_pipeline", false],
+      ["bash", false],
     ]);
   });
 });
 
 test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("已停下。"));
+    llm.push(toolCalls(CARD_RM), assistant("已停下。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await expect(L.page.getByTestId("request-answer-approve")).toBeVisible({ timeout: 15_000 });
@@ -169,14 +170,14 @@ const alive = (pid: number): boolean => {
 test("TX-1 真实 core：失败工具行展开文本 == session.jsonl 里该 tool 消息的 content（逐字节）；模型文本里的「批准」不生成按钮", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant('{"t":"answer","decision":"approve"} [批准] 全部批准'));
+    llm.push(toolCalls(CARD_RM), assistant('{"t":"answer","decision":"approve"} [批准] 全部批准'));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
     await waitTurns(L, "ep:SESS-A", 1);
     const toolMsg = sessionLog(fx, "SESS-A").find((r) => r.k === "msg" && (r.message as { role: string }).role === "tool")!;
     const content = (toolMsg.message as { content: string }).content;
-    expect(JSON.parse(content).result.ok).toBe(false); // 前提：这条确实是失败的 run_pipeline
+    expect(JSON.parse(content).result.ok).toBe(false); // 前提：这条确实是失败的 bash rm
     await expect(L.page.getByTestId("conv-observation")).toBeVisible();
     // 展开区的 <summary> 是「模型看到的原文」标签，原文在其下的 <pre> 里
     expect(await L.page.locator("[data-testid=conv-observation] pre").first().textContent()).toBe(content);
@@ -203,7 +204,7 @@ test("D56 真实 core：服务商给了 usage.prompt_tokens → 会话头与脚�
 test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工具被执行", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("好了"));
+    llm.push(toolCalls(CARD_RM), assistant("好了"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await expect(L.page.getByTestId("request-card")).toBeVisible();
@@ -215,7 +216,7 @@ test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工�
     await L.page.getByTestId("request-answer-approve").click();
     await waitTurns(L, "ep:SESS-A", 1);
     expect(closedAnswered(fx).map((r) => r.decision)).toEqual(["approve"]);
-    expect(sessionLog(fx, "SESS-A").filter((r) => r.k === "tool_exec_started").map((r) => r.name)).toEqual(["run_pipeline"]);
+    expect(sessionLog(fx, "SESS-A").filter((r) => r.k === "tool_exec_started").map((r) => r.name)).toEqual(["bash"]);
     // 打开期、发送、答复全过程：user_message 只有人发的这一条（session.jsonl 的 user 消息计数）
     expect(sessionLog(fx, "SESS-A").filter((r) => r.k === "msg" && r.origin === "user")).toHaveLength(1);
     // spec TX-2 的另一半：停机点卡「批准」同样合成点击 → 零 ack spawn、对象仍 pending
@@ -232,7 +233,7 @@ test("TX-2 真实 core：合成点击无效；真实点击恰一次答复、工�
 
 test("TX-3 真实 core：拒绝附反馈 → 假端点收到的下一次请求里该 tool 消息含原文；流内留痕", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("收到，改。"));
+    llm.push(toolCalls(CARD_RM), assistant("收到，改。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-reject").waitFor();
@@ -268,7 +269,7 @@ test("TX-6 真实 core：A 挂卡时切到 B 对话 → A 显示运行中；B �
     async ({ L, llm }) => {
       // A 的第一次回复挂在慢端点上：A 的卡在 B 的会话桶建立之后才到——两个会话的 delta 真的交错
       //（M9：此前 A 的卡先到、之后 A 再无 delta，「A 的更新污染 B 的桶」无从发生，MUT-31 因此存活）
-      llm.push({ ...toolCalls({ name: "run_pipeline", args: { command: "qc" } }), delayMs: 4_000 }, assistant("B 这边好了"));
+      llm.push({ ...toolCalls(CARD_RM), delayMs: 4_000 }, assistant("B 这边好了"));
       await openEp(L.page, "SESS-A");
       await send(L.page, "A 的任务");
       await expect.poll(() => llm.requests.length, { timeout: 10_000 }).toBe(1);
@@ -329,7 +330,7 @@ test("TX-7 真实 core：idea 会话聊一轮 → 建期（core 拒绝显示原�
 
 test("TX-9 真实 core：卡片打开时 kill -9 会话 → 待答区卡消失、流内「已作废（会话已结束）」", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }));
+    llm.push(toolCalls(CARD_RM));
     await openEp(L.page, "SESS-A");
     await send(L.page, "发起来");
     await expect(L.page.getByTestId("request-card")).toBeVisible();
@@ -425,7 +426,7 @@ test("D57 / D58 真实 core：选题会话列表——两段对话 → 退出 ap
 
 test("TX-11 真实 core：批准一张工具卡后，时间线该事件显示「命令卡批准」", async () => {
   await withRealCore(async ({ L, llm }) => {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("好"));
+    llm.push(toolCalls(CARD_RM), assistant("好"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查稿件");
     await L.page.getByTestId("request-answer-approve").click();
@@ -452,73 +453,53 @@ test("TX-12 真实 core：检查点卡恰「继续」「停止」两个按钮（
   });
 });
 
-test("TX-12b/TX-13 真实 core：acquire_propose 2 条 → 逐张出 2 张抓取卡（无批量按钮）；批准须过原生确认框，取消不答复", async () => {
-  await withRealCore(async (fx) => {
-    const { L, llm } = fx;
-    const cand = (n: number) => ({ title: `候选${n}`, url: `http://127.0.0.1:9/cand-${n}`, type: "mv", source: "local", why: `第 ${n} 条候选的理由写够二十个字以免触发提示`, expected_dur: 30 });
-    llm.push(assistant("在。"), toolCalls({ name: "acquire_propose", args: { candidates: [cand(1), cand(2)] } }), assistant("两条都处理了。"));
-    await openEp(L.page, "SESS-A");
-    // conv.command 要有活会话：先聊一轮把会话起来，再切到 asset（D43 后 acquire_propose 全模式可见，切 asset 仅为沿用原测试路径）
-    await send(L.page, "在吗");
-    await waitTurns(L, "ep:SESS-A", 1);
-    await L.page.getByTestId("scope-toggle").click();
-    await expect.poll(async () => (await snapFrames(L)).some((f) => f.t === "command_result" && f.name === "scope")).toBe(true);
-    await send(L.page, "提两条候选");
-    await L.page.getByTestId("request-answer-approve").click(); // 工具卡：acquire_propose 本身
-    const fetchCard = L.page.locator("[data-testid=request-card][data-kind='fetch']");
-    await expect(fetchCard).toHaveCount(1, { timeout: 15_000 });
-    await expect(L.page.locator("button", { hasText: /全部批准|以后不再询问/ })).toHaveCount(0);
-    // TX-13：原生确认框取消 → 不答复、卡仍在
-    await stubConfirm(L, false);
-    const fetch1 = await fetchCard.getAttribute("data-request-id");
-    await fetchCard.getByTestId("request-answer-approve").click();
-    await L.page.waitForTimeout(500);
-    expect(closedAnswered(fx).filter((r) => r.request_id === fetch1)).toEqual([]);
-    await expect(fetchCard).toHaveCount(1);
-    // 拒第一张 → 第二张出现（真实 core 逐张出卡）
-    await fetchCard.getByTestId("request-answer-reject").click();
-    await expect.poll(async () => (await snapFrames(L)).filter((f) => f.t === "request" && f.kind === "fetch").length, { timeout: 10_000 }).toBe(2);
-    const fetch2 = (await snapFrames(L)).filter((f) => f.t === "request" && f.kind === "fetch")[1].request_id as string;
-    expect(fetch2).not.toBe(fetch1);
-    // 第二张批准：过确认框（桩返回 true）→ 恰一条答复。按 request_id 定位：第一张关、第二张开几乎同一毫秒，
-    // 泛指的 locator 可能落在正在消失的第一张上
-    await stubConfirm(L, true);
-    const card2 = L.page.locator(`[data-testid=request-card][data-request-id='${fetch2}']`);
-    await expect(card2).toBeVisible();
-    await card2.getByTestId("request-answer-approve").click();
-    await waitTurns(L, "ep:SESS-A", 2, 60_000);
-    const fetchCloses = closedAnswered(fx).filter((r) => r.decision !== undefined).map((r) => r.decision);
-    expect(fetchCloses).toEqual(["approve", "reject", "approve"]); // 工具卡、抓取 #1 拒、抓取 #2 批
-    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number } }).__avaTestConfirm.calls)).toBe(1);
-  });
-});
+// TX-12b/TX-13（抓取卡逐张出、批准须过原生确认框）随 ADR-0030 删除：抓取不再出卡、会话卡的原生确认框已撤。
+// 抓取本身的语义（只抓本次输入、去重、序号错位不抓、中断）由 tests/test_agent_session.py TK-2/TK-3 守。
 
-test("TX-14 真实 core：Tab+Enter 答复第一张后，第二张（随后才出现）按 Enter 答复不到", async () => {
+test("TX-14 / ADR-0030 回车批准：卡出现即聚焦「批准」、回车即批；第二张同样；输入框里有字时不抢焦点，回车发的是消息", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }, { name: "run_pipeline", args: { command: "review" } }), assistant("好"));
+    const rmA = { name: "bash", args: { command: "rm a.tmp", description: "清 a" } };
+    const rmB = { name: "bash", args: { command: "rm b.tmp", description: "清 b" } };
+    const rmC = { name: "bash", args: { command: "rm c.tmp", description: "清 c" } };
+    llm.push(toolCalls(rmA), toolCalls(rmB), toolCalls(rmC), assistant("好"));
     await openEp(L.page, "SESS-A");
-    await send(L.page, "两步");
-    const first = L.page.getByTestId("request-card");
-    await expect(first).toHaveCount(1);
-    const firstId = await first.getAttribute("data-request-id");
-    await first.getByTestId("request-answer-approve").focus();
-    await L.page.keyboard.press("Enter");
+    await send(L.page, "三步");
+    const card = L.page.getByTestId("request-card");
+    await expect(card).toHaveCount(1);
+    const firstId = await card.getAttribute("data-request-id");
+    await expect(card.getByTestId("request-answer-approve")).toBeFocused();
+    await L.page.waitForTimeout(500); // 过了防连按窗口
+    await L.page.keyboard.press("Enter"); // 真实按键：原生按钮派发 isTrusted 的 click
+    await expect.poll(() => closedAnswered(fx).map((r) => r.request_id), { timeout: 15_000 }).toEqual([firstId]);
+
+    // 第二张：随后才出现，同样聚焦、回车即批
     await expect.poll(async () => (await snapFrames(L)).filter((f) => f.t === "request").length, { timeout: 15_000 }).toBe(2);
-    const second = L.page.getByTestId("request-card");
-    await expect(second).toHaveCount(1);
-    expect(await second.getAttribute("data-request-id")).not.toBe(firstId);
+    const secondId = await card.getAttribute("data-request-id");
+    expect(secondId).not.toBe(firstId);
+    await expect(card.getByTestId("request-answer-approve")).toBeFocused();
+    await L.page.waitForTimeout(500); // 过了防连按窗口
     await L.page.keyboard.press("Enter");
-    await L.page.waitForTimeout(500);
-    expect(closedAnswered(fx).map((r) => r.request_id)).toEqual([firstId]);
-    await expect(second).toBeVisible();
+    await expect.poll(() => closedAnswered(fx).length, { timeout: 15_000 }).toBe(2);
+
+    // 第三张出现前人已在输入框里打字：不抢焦点，回车发出的是排队消息，卡不被批
+    const input = L.page.getByTestId("composer-input");
+    await input.click();
+    await input.fill("先别删 c");
+    await expect.poll(async () => (await snapFrames(L)).filter((f) => f.t === "request").length, { timeout: 15_000 }).toBe(3);
+    await expect(input).toBeFocused();
+    await input.press("Enter");
+    await expect(L.page.getByTestId("composer-queued")).toContainText("先别删 c");
+    await L.page.waitForTimeout(300);
+    expect(closedAnswered(fx)).toHaveLength(2);
+    await expect(card).toBeVisible();
   });
 });
 
 test("TX-15 真实 core：有打开卡时 kill -9 host → 原会话键结束、待答区为空；「继续上次会话」恢复历史", async () => {
   test.setTimeout(4 * 60_000);
   await withRealCore(async ({ L, llm }) => {
-    llm.push(assistant("第一轮答复"), toolCalls({ name: "run_pipeline", args: { command: "qc" } }));
+    llm.push(assistant("第一轮答复"), toolCalls(CARD_RM));
     await openEp(L.page, "SESS-A");
     await send(L.page, "第一轮");
     await waitTurns(L, "ep:SESS-A", 1);
@@ -583,7 +564,7 @@ test("D45 真实 core：侧栏会话列表——新会话开出第二个会话�
 // qc 在 5 s 夹具上本身判不合格（片长、响度），作业退出码必非 0——断言落在「ffmpeg/ffprobe 真的跑了」，不在作业成败。
 const HOMEBREW_FFMPEG = "/opt/homebrew/bin/ffmpeg";
 
-test("N49 真实 core：会话里批准 run_pipeline qc → 作业能按名字找到 ffprobe/ffmpeg（06-check.log 有实测的音画时长与响度）", async () => {
+test("N49 真实 core：会话里跑 run_pipeline qc → 作业能按名字找到 ffprobe/ffmpeg（06-check.log 有实测的音画时长与响度）", async () => {
   // 修法假定 ffmpeg 在 /opt/homebrew/bin（Apple Silicon Homebrew）；不在就不是这条用例能证明的环境
   expect(existsSync(HOMEBREW_FFMPEG), `${HOMEBREW_FFMPEG} 不存在`).toBe(true);
   await withRealCore(async (fx) => {
@@ -592,8 +573,7 @@ test("N49 真实 core：会话里批准 run_pipeline qc → 作业能按名字�
     execFileSync(HOMEBREW_FFMPEG, ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(epDir, "05-final.mp4")]);
     llm.push(toolCalls({ name: "run_pipeline", args: { command: "qc" } }), assistant("质检跑完了。"));
     await openEp(L.page, "SESS-A");
-    await send(L.page, "跑一下质检");
-    await L.page.getByTestId("request-answer-approve").click();
+    await send(L.page, "跑一下质检"); // ADR-0030：qc 免卡，直接跑
     await waitTurns(L, "ep:SESS-A", 1);
 
     const toolMsg = sessionLog(fx, "SESS-A").find((r) => r.k === "msg" && (r.message as { role: string }).role === "tool")!;
@@ -616,13 +596,14 @@ const clipboardText = (L: Launched): Promise<string> => L.app.evaluate(({ clipbo
 /** 每次点复制前先写哨兵：否则上一处复制留下的同一段原文会让「这一处根本没写进去」的情况照样通过 */
 const armClipboard = (L: Launched): Promise<void> => L.app.evaluate(({ clipboard }) => clipboard.writeText("<D76 哨兵>"));
 
-test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标记在命令前）→ 批准后文件落地；只读 ls 免卡；子进程无密钥变量；D76 三处复制得原文", async () => {
+test("D77 / ADR-0030 真实 core：bash 清旧图并拷图进期目录 → 硬危险命令卡（危险标记在命令前）→ 批准后文件落地；只读 ls 免卡；子进程无密钥变量；D76 三处复制得原文", async () => {
   await withRealCore(async (fx) => {
     const { L, llm } = fx;
     const savedClipboard = await clipboardText(L);
     const src = join(fx.repo.root, "Weixin Image 1.jpg");
     writeFileSync(src, Buffer.from([0xff, 0xd8, 0x66, 0x61, 0x6b, 0x65]));
-    const cmd = `mkdir -p 07-cover/import && cp '${src}' 07-cover/import/marika-h.jpg && echo "[$AVA_TEST_KEY]"`;
+    // ADR-0030：mkdir / cp 已免卡；前面带一个 rm -f（清旧图）使它仍是硬危险命令卡，D76 ①卡上复制照测
+    const cmd = `rm -f 07-cover/import/old.jpg; mkdir -p 07-cover/import && cp '${src}' 07-cover/import/marika-h.jpg && echo "[$AVA_TEST_KEY]"`;
     llm.push(
       toolCalls({ name: "bash", args: { command: cmd, description: "把人给的图拷进封面目录并改名" } }),
       toolCalls({ name: "bash", args: { command: "ls 07-cover/import", description: "确认文件在" } }),
@@ -636,6 +617,7 @@ test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标�
     await expect(cardText).toContainText("07-cover/import/marika-h.jpg");
     const text = (await cardText.textContent()) ?? "";
     expect(text.indexOf("危险标记:")).toBeLessThan(text.indexOf("命令:"));
+    expect(text).toContain("[删除]");
     try {
       // D76 ①审批卡：复制的是请求参数里的命令原文
       await armClipboard(L);
@@ -677,11 +659,10 @@ test("D77 真实 core：bash 拷图进期目录 → 命令审批卡（危险标�
 
 test("D76 真实 core：继续上次会话 → 恢复出来的 bash 旧工具行显示工具名与命令摘要，「复制命令」得完整原文", async () => {
   await withRealCore(async ({ L, llm }) => {
-    const cmd = `ls -la . && echo "${"一段很长的说明文字".repeat(12)}"`; // 只读之外的命令要弹卡；这里用 echo 串联，批一次卡
+    const cmd = `ls -la . && echo "${"一段很长的说明文字".repeat(12)}"`; // 超 80 字：摘要截断、复制得原文（ADR-0030 起免卡）
     llm.push(toolCalls({ name: "bash", args: { command: cmd, description: "看一眼目录" } }), assistant("看完了。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "看看目录");
-    await L.page.getByTestId("request-answer-approve").click();
     await waitTurns(L, "ep:SESS-A", 1);
     await L.page.getByTestId("session-end").click();
     await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "exited", { timeout: 20_000 });
@@ -941,12 +922,13 @@ async function tx5v(round: number): Promise<void> {
   approve035(fx, "SESS-A");
   const L = await launchSession(fx.repo);
   try {
-    llm.push(toolCalls({ name: "run_pipeline", args: { command: "clips" } }), toolCalls({ name: "run_pipeline", args: { command: "clips" } }), assistant("两版都排好了"));
+    // ADR-0030：clips 免卡；两版之间插一张仍弹卡的 CARD_RM 当「回合还在进行」的同步闸门（原来由第二张 clips 卡承担）
+    llm.push(toolCalls({ name: "run_pipeline", args: { command: "clips" } }), toolCalls(CARD_RM), toolCalls({ name: "run_pipeline", args: { command: "clips" } }), assistant("两版都排好了"));
     await openEp(L.page, "SESS-A");
     await expect(L.page.getByTestId("current-step")).toContainText("04");
     const count0 = Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"));
     await send(L.page, "排两版");
-    await L.page.getByTestId("request-answer-approve").click();
+    await expect(L.page.getByTestId("request-card")).toBeVisible({ timeout: 20_000 });
     // 同步点（四轮 🔵-4）：第一版的 05 pending 确实在回合中被建出，且未被呼出
     let v1: string | null = null;
     await expect.poll(() => (v1 = pending05For(fx, "SESS-A")), { timeout: 20_000, message: `round ${round}: 第一版 pending 未建出` }).not.toBeNull();
@@ -1010,9 +992,8 @@ test("A8 实测：2 万行 job 日志经真实 core → log 帧洪峰期间 rend
       };
       requestAnimationFrame(tick);
     });
-    await send(L.page, "跑质检");
-    await L.page.getByTestId("request-answer-approve").click();
     const t0 = Date.now();
+    await send(L.page, "跑质检"); // ADR-0030：qc 免卡，发出即跑
     await waitTurns(L, "ep:SESS-A", 1, 120_000);
     const wall = Date.now() - t0;
     const ts = await L.page.evaluate(() => {

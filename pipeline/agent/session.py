@@ -59,6 +59,9 @@ CRITICAL_TOOLS = frozenset(
     {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit", "write_note"}
 )
 
+# ADR-0030 决策 5：卡片答复「本会话都批准」——批准本次，并让本会话进程内同类（同 allow_key）此后免卡
+SESSION_ALLOW_DECISION = "approve_session"
+
 # 终端卡片的末行提示（§3.2 的两种文案 + 工具卡的既有文案）
 _PROMPTS = {
     "tool_call": "└─ 执行? [y/N]: ",
@@ -237,6 +240,20 @@ class ToolVerdict:
     reason: str = ""
     echo: str | None = None
     request: HumanRequest | None = None
+    # ADR-0030 决策 5：「本会话都批准」的同类键（工具 + 危险标记组合）；None = 该卡不开放此选项
+    allow_key: str | None = None
+
+
+# ADR-0030 决策 3/4（D78）：可回退的写入与抓取类工具免卡。回退靠写前留底（草稿 / 定稿 / 笔记 /
+# 其余期文件）与记忆日志的 before/after；browser 用独立 profile。未登记的新工具照旧按 side_effect fail-closed
+AUTO_APPROVED_TOOLS = frozenset(
+    {"write_episode_file", "write_note", "write_memory", "cover_edit", "acquire_propose", "browser"}
+)
+# ADR-0030 决策 2：run_pipeline 只有这些 cloud 子命令弹卡——开机 / 跑任务花钱，down / 清理销毁云端东西
+CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data"})
+# AGENTS.md Code Freeze 的三条例外（读音表 / 标定值 / 曲库登记）写 config/，规定「人审卡批准后」才写：
+# 与 bash「写 config/ 算硬危险」同一口径，逐条弹卡
+CONFIG_WRITE_COMMANDS = frozenset({("corrections", "global"), ("calibration", "set"), ("bgm", "register")})
 
 
 def review_tool_call(
@@ -367,27 +384,66 @@ def review_tool_call(
     if name == "write_episode_file" and str(args.get("filename", "")) == DRAFT_FILENAME:
         if draft_writes_this_turn < DRAFT_FREE_WRITES_PER_TURN:
             return ToolVerdict("allow", echo=_echo_line(name, args))
-        # 超限恢复弹卡：这是防打转的刹车，卡上写明第几次，人一眼看出它在原地转
+        # 超限恢复弹卡：这是防打转的刹车，卡上写明第几次，人一眼看出它在原地转（ADR-0030 保留）
         loop_label = f"本轮第 {draft_writes_this_turn + 1} 次重写草稿"
+        return ToolVerdict(
+            "ask",
+            request=_tool_request(
+                name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label,
+                command_preview=command_preview,
+            ),
+        )
 
-    # ADR-0029 决策 4：单条只读 bash 命令（首词在只读集、无任何 shell 元字符）免卡，其余每次弹卡
+    # ADR-0030 决策 1（取代 ADR-0029 决策 4）：bash 只在命中硬危险时弹卡，其余免卡
+    allow_key: str | None = None
     if name == "bash":
-        from pipeline.agent.tools import bash_readonly
+        from pipeline.agent.status_card import bash_danger_tags
 
-        if bash_readonly(str(args.get("command", ""))):
+        tags = bash_danger_tags(str(args.get("command", "")))
+        if not tags:
             return ToolVerdict("allow", echo=_echo_line(name, args))
-
-    side_effect = TOOL_SCHEMAS[name].get("side_effect", True)
-    if not side_effect:
+        allow_key = "bash:" + "".join(sorted(set(tags)))
+    elif name == "run_pipeline":
+        # ADR-0030 决策 2：白名单内全部免卡，只有 cloud 花钱 / 销毁子命令弹卡
+        rest = argv[argv.index("-m") + 2:] if argv and "-m" in argv else []
+        module = _pipeline_module_of(argv or [])
+        if module == "cloud" and rest[:1] and rest[0] in CLOUD_CARD_SUBCOMMANDS:
+            allow_key = f"run_pipeline:cloud {rest[0]}"
+        elif (module, rest[0] if rest else None) in CONFIG_WRITE_COMMANDS:
+            # AGENTS.md Code Freeze 三条例外写明「人审卡批准后」写 config/：照旧逐条弹卡，不开放「本会话都批准」
+            pass
+        elif _skips_human_gate(rest):
+            # 越过人工关卡（ADR-0030 决策 7 同一口径）：--confirm-patch 跳过 03.5 补丁段二次确认、
+            # --waive 豁免素材门禁。逐条弹卡，不开放「本会话都批准」
+            pass
+        else:
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+    elif name in AUTO_APPROVED_TOOLS:
+        if memory_plan is not None:  # 与 cite 免卡同一回显：写了什么一眼可见，不是截断的参数 JSON
+            return ToolVerdict("allow", echo=f"[memory] {memory_plan.summary}")
+        return ToolVerdict("allow", echo=_echo_line(name, args))
+    elif not TOOL_SCHEMAS[name].get("side_effect", True):
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
     return ToolVerdict(
         "ask",
         request=_tool_request(
             name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label,
-            command_preview=command_preview,
+            command_preview=command_preview, session_allow=allow_key is not None,
         ),
+        allow_key=allow_key,
     )
+
+
+def _skips_human_gate(tokens: list[str]) -> bool:
+    """规范化 argv 里是否带越过人工关卡的旗标（含 argparse 前缀缩写与 `=` 写法）。"""
+    for tok in tokens:
+        flag = tok.split("=", 1)[0]
+        if len(flag) > 2 and flag.startswith("--") and (
+            "--confirm-patch".startswith(flag) or "--waive".startswith(flag)
+        ):
+            return True
+    return False
 
 
 def _pipeline_module_of(argv: list[str]) -> str | None:
@@ -517,6 +573,7 @@ def _tool_request(
     *,
     loop_label: str | None = None,
     command_preview: list[str] | None = None,
+    session_allow: bool = False,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -564,7 +621,8 @@ def _tool_request(
         title=f"工具审查: {name}",
         card_text="\n".join(body),
         fields=fields,
-        options=("approve", "reject"),
+        # ADR-0030 决策 5：bash 硬危险 / cloud 卡多一个「本会话都批准」（排在中间：终端 y 取首项、其余取末项）
+        options=("approve", SESSION_ALLOW_DECISION, "reject") if session_allow else ("approve", "reject"),
         feedback_allowed=True,
     )
 
@@ -608,6 +666,12 @@ class SessionHost:
         self._main: AgentSession | None = None
         self._scope_override: str | None = None
         self.resume_state: dict[str, Any] | None = None
+        # ADR-0030 决策 5：「本会话都批准」过的同类键。只在进程内存，换会话 / 重启即失效
+        self.session_allow: set[str] = set()
+        # D79 排队消息（照 Pi 的 steering）：协议进程注入取队列函数，返回 [{id, text}]；
+        # 终端没有排队，保持 None。送达通知同理（协议下发 steer_delivered 帧）
+        self.steer_source: Callable[[], list[dict[str, str]]] | None = None
+        self.on_steer_delivered: Callable[[list[str]], None] | None = None
 
     # ---- 登记 ----
 
@@ -1439,7 +1503,17 @@ class AgentSession:
             critical_tools=CRITICAL_TOOLS,
             # D62：子会话（persist=False）不自动压缩（spec §4.8，审查 #15）
             compact=self._auto_compact if self.persist else None,
+            # D79：排队消息只属于主会话（子会话没有人在对面打字）
+            drain_steer=self.host.steer_source if self.persist else None,
+            on_steer=self._on_steer,
         )
+
+    def _on_steer(self, ids: list[str], answered: str | None) -> None:
+        """D79：排队消息已送达。被续上的答复先上屏，再报送达（协议下发 steer_delivered）。"""
+        if answered:
+            self.channel.show("interim_answer", {"turn_id": self._turn_id, "text": answered})
+        if self.host.on_steer_delivered is not None:
+            self.host.on_steer_delivered(ids)
 
     def _on_trace(self, payload: dict[str, Any]) -> None:
         """工具帧（§3.1 的 `tool`）：判定在这里做一次，terminal 忽略，协议通道转成帧。
@@ -1520,6 +1594,14 @@ class AgentSession:
 
         request = verdict.request
         assert request is not None
+        if verdict.allow_key is not None and verdict.allow_key in self.host.session_allow:
+            # ADR-0030 决策 5：本会话已「都批准」过同类：不出卡，审批日志照记一行（可追溯谁放的行）
+            log_approval_decision(
+                self.host.ep_dir, name, str(request.fields.get("target", "")), "y",
+                latency_s=None, channel="session_allow",
+            )
+            self.channel.show("echo", {"text": f"[本会话已批准同类] {verdict.allow_key}"})
+            return Decision(ok=True, provenance="session_allow")
         self._record({
             "k": "request_opened", "request_id": request.request_id,
             "kind": request.kind, "title": request.title, "turn_id": turn_id,
@@ -1530,7 +1612,9 @@ class AgentSession:
             self._close_request(request, reason="voided", decision=None, latency_s=None,
                                 cause="interrupted")
             raise
-        approved = answer.decision == "approve"
+        approved = answer.decision in ("approve", SESSION_ALLOW_DECISION)
+        if answer.decision == SESSION_ALLOW_DECISION and verdict.allow_key is not None:
+            self.host.session_allow.add(verdict.allow_key)
         log_approval_decision(
             self.host.ep_dir, name, str(request.fields.get("target", "")),
             "y" if approved else "n", latency_s=answer.latency_s, channel=answer.channel,
@@ -1615,19 +1699,19 @@ class AgentSession:
         return outcome
 
     def _fetch_cards(self, outcome: dict[str, Any], urls: list[str]) -> list[dict[str, Any]]:
-        """§2.4.4 第 2 条：只对**本次输入**的 URL 出卡（在清单中、不在台账；序号取清单里的 1-based N）。"""
+        """§2.4.4 第 2 条：只抓**本次输入**的 URL（在清单中、不在台账；序号取清单里的 1-based N）。ADR-0030 起不出卡。"""
         data_root = Path(paths.DATA)
         base_data = Path(self.host.root or paths.ROOT) / "data"
         if not data_root.exists():
             self.channel.show("notice", {
                 "level": "warn", "code": "fetch_disabled_data_unreachable",
-                "text": f"素材目录不可达（{data_root}），本轮不出抓取卡；提案结果照常。",
+                "text": f"素材目录不可达（{data_root}），本轮不抓取；提案结果照常。",
             })
             return []
         if os.path.realpath(data_root) != os.path.realpath(base_data):
             self.channel.show("notice", {
                 "level": "warn", "code": "fetch_disabled_root_mismatch",
-                "text": "会话根目录与素材目录不同源，本轮不出抓取卡（避免写错台帐）。",
+                "text": "会话根目录与素材目录不同源，本轮不抓取（避免写错台帐）。",
             })
             return []
 
@@ -1646,33 +1730,15 @@ class AgentSession:
             index = position.get(url)
             if not url or index is None or url in fetched_urls:
                 continue
-            candidate = candidates[index - 1]
             if stopped:
-                # §2.2：中断之后其余候选的卡一律 voided（不再出卡，只记账）
+                # §2.2：中断之后其余候选一律 voided（不再抓，只记账）
                 fetches.append({"no": index, "url": url, "decision": "voided", "ok": False,
-                                "returncode": None, "message": "人类中断，未出卡未抓取",
+                                "returncode": None, "message": "人类中断，未抓取",
                                 "stdout_tail": ""})
                 continue
-            request = HumanRequest(
-                request_id=new_request_id(),
-                kind="fetch",
-                turn_id=self._turn_id,
-                title=f"素材抓取候选 #{index}",
-                card_text=_fetch_card(index, candidate),
-                fields={
-                    "no": index,
-                    "title": _clean(candidate.get("title")),
-                    "url": url,
-                    "type": _clean(candidate.get("type")),
-                    "source": _clean(candidate.get("source")),
-                    "why": _clean(candidate.get("why")),
-                    "expected_dur": candidate.get("expected_dur"),
-                },
-                options=("approve", "reject"),
-                feedback_allowed=False,
-            )
             try:
-                fetches.append(self._ask_fetch(request, index, url))
+                # ADR-0030 决策 4（D78）：抓取不再逐条出卡，本次提案里未抓的候选直接抓（审批日志记 channel=auto）
+                fetches.append(self._auto_fetch(index, url))
             except _FetchStopped as stop:
                 fetches.append(stop.record)
                 stopped = True
@@ -1680,36 +1746,14 @@ class AgentSession:
             raise FetchHookInterrupted({"fetch": fetches})
         return fetches
 
-    def _ask_fetch(self, request: HumanRequest, no: int, url: str) -> dict[str, Any]:
+    def _auto_fetch(self, no: int, url: str) -> dict[str, Any]:
         from pipeline.agent.status_card import log_approval_decision
 
         record: dict[str, Any] = {"no": no, "url": url}
-        self._record({
-            "k": "request_opened", "request_id": request.request_id, "kind": "fetch",
-            "title": request.title, "turn_id": self._turn_id,
-        })
-        try:
-            answer = self.channel.ask(request)
-        except KeyboardInterrupt:
-            self._close_request(request, reason="voided", decision=None, latency_s=None,
-                                cause="interrupted")
-            record.update({"decision": "voided", "ok": False, "returncode": None,
-                           "message": "人类中断，未抓取", "stdout_tail": ""})
-            # D35：此前 `return record`，`_fetch_cards` 接着问下一张——中断停不下回合
-            raise _FetchStopped(record) from None
-        self._close_request(request, reason="answered", decision=answer.decision,
-                            latency_s=answer.latency_s, cause=None)
-        if not answer.decision == "approve":
-            log_approval_decision(self.host.ep_dir, "acquire_fetch", f"#{no} {url}", "n",
-                                  latency_s=answer.latency_s, channel=answer.channel)
-            record.update({"decision": "rejected", "ok": False, "returncode": None,
-                           "message": "人类拒绝抓取", "stdout_tail": ""})
-            return record
-
         current = _read_json_list(Path(paths.DATA) / "library" / "incoming" / "candidates.json")
         aligned = 0 < no <= len(current) and str(current[no - 1].get("url") or "") == url
         log_approval_decision(self.host.ep_dir, "acquire_fetch", f"#{no} {url}", "y",
-                              latency_s=answer.latency_s, channel=answer.channel)
+                              latency_s=None, channel="auto")
         if not aligned:
             record.update({"decision": "misaligned", "ok": False, "returncode": None,
                            "message": "清单已变，序号不再指向该 URL，未抓取", "stdout_tail": ""})
@@ -1783,19 +1827,6 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         return []
     return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
-
-
-def _fetch_card(no: int, candidate: dict[str, Any]) -> str:
-    """§3.2 的抓取卡文案（每字段一行，无「全部批准」）。"""
-    dur = candidate.get("expected_dur")
-    dur_text = f"{dur}s" if isinstance(dur, (int, float)) else "未知"
-    return (
-        f"┌─ [素材抓取] 候选 #{no}（逐条人审，ADR-0021 / Spec 6）\n"
-        f"│ 标题: {_clean(candidate.get('title'))} │ URL: {_clean(candidate.get('url'))}\n"
-        f"│ 类型: {_clean(candidate.get('type'))} | 来源: {_clean(candidate.get('source'))}\n"
-        f"│ why: {_clean(candidate.get('why'))}\n"
-        f"│ 预计时长: {dur_text}"
-    )
 
 
 def resume_idea(host: "SessionHost") -> dict[str, Any] | None:

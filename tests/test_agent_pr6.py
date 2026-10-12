@@ -148,16 +148,16 @@ def test_review_approve_nature_row_says_unlock_artifact():
 
 
 def test_m3_reject_on_n_produces_no_file_and_no_popen(tmp_path: Path, monkeypatch):
-    """M3: 弹卡后按 N 时既不产生子进程也不落盘 (Spec §5.1 M3)。"""
+    """M3: 弹卡后按 N 时既不产生子进程也不改盘 (Spec §5.1 M3)。ADR-0030 起写入类免卡，改用仍弹卡的 bash `rm`。"""
     with mock_llm_server([
-        # 02-script.draft.md 每轮前几次免卡（2026-10-08 spec §A），弹卡机制改用仍逐次弹卡的 07-titles.md 测
-        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "草稿内容"}),
-        {"role": "assistant", "content": "已取消写入"},
+        tool_call("bash", {"command": "rm 07-titles.md", "description": "清掉旧标题"}),
+        {"role": "assistant", "content": "已取消删除"},
     ]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
         monkeypatch.setenv("AVA_TEST_KEY", "test-key-mock")
         ep_dir = root / "data" / "episodes" / "01-test-m3"
         ep_dir.mkdir(parents=True)
+        (ep_dir / "07-titles.md").write_text("旧标题", encoding="utf-8")
 
         # 模拟人类在终端敲 'n'
         monkeypatch.setattr("builtins.input", lambda *args: "n")
@@ -176,7 +176,7 @@ def test_m3_reject_on_n_produces_no_file_and_no_popen(tmp_path: Path, monkeypatc
         )
 
         assert mock_popen.call_count == 0
-        assert not (ep_dir / "07-titles.md").exists()
+        assert (ep_dir / "07-titles.md").read_text(encoding="utf-8") == "旧标题"
         # 回喂给模型的 tool 消息应记录拒绝
         fed_back = json.loads(state["requests"][1]["body"]["messages"][-1]["content"])
         assert fed_back["ok"] is False
@@ -730,7 +730,7 @@ def test_m17_latency_records_card_to_keypress_delay(tmp_path: Path, monkeypatch)
     ep2 = tmp_path / "data" / "episodes" / "01-latency"
     ep2.mkdir(parents=True)
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    cli._default_approve("write_episode_file", {"filename": "01-topic.md", "content": "x"}, ep_dir=ep2, scope="creative")
+    cli._default_approve("bash", {"command": "rm x", "description": "x"}, ep_dir=ep2, scope="creative")
     rec2 = json.loads((ep2 / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").strip())
     assert isinstance(rec2["decision_latency_s"], float)
     assert rec2["decision_latency_s"] >= 0.0

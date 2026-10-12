@@ -6,8 +6,6 @@ import type { ConvSnapshot, Envelope, SnapshotStatus } from "../../src/shared/pr
 import { HostService, type HostDeps } from "../../src/host/service";
 import { childEnv, runCore, spawnLog } from "../../src/host/spawner";
 import { cleanup, mkEpisode, treeManifest } from "../helpers";
-import { createConfirmBroker } from "../../src/host/confirm";
-import { createMainConfirmBroker } from "../../src/main/confirm";
 import { childSignals, fixtureWrite, sessionKey, sessionKeyFor, sessionRepo, sessionRecords, sessionScript, stdinLines, type SessionRepo } from "../fixtures/session";
 
 const roots: string[] = [];
@@ -232,13 +230,16 @@ describe("TH-5 不代发（H-8）", () => {
     expect(stdinLines(repo, epKey).filter((l) => JSON.parse(l).t === "user_message")).toHaveLength(10);
   });
 
-  it("回合运行中 conv.send → E_BUSY、零写入", async () => {
+  it("回合运行中 conv.send → 照写一条 user_message 交 core 排队（D79，不再 E_BUSY）", async () => {
     const { repo, svc, epKey, key } = await boot();
     sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_turn: [TURN_STARTED] }]);
     await svc.dispatch("conv.send", { convKey: key, text: "hi" });
     const before = stdinLines(repo, epKey).length;
-    await expect(svc.dispatch("conv.send", { convKey: key, text: "again" })).rejects.toMatchObject({ code: "E_BUSY" });
-    expect(stdinLines(repo, epKey).length).toBe(before);
+    // 本脚本不回 queued 帧：只验 host 放行并原样写出，回执超时与本条无关
+    void svc.dispatch("conv.send", { convKey: key, text: "again" }).catch(() => undefined);
+    await waitFor(() => stdinLines(repo, epKey).length === before + 1);
+    const last = JSON.parse(stdinLines(repo, epKey).at(-1)!);
+    expect(last).toMatchObject({ t: "user_message", text: "again" });
   });
 });
 
@@ -991,141 +992,18 @@ describe("TH-17 rid 关联（S9-R2）", () => {
   });
 });
 
-describe("TH-18 原生确认框（§2.4 第 5 层）", () => {
-  const BROWSER = (url: string, reason: string) => ({ t: "request", request_id: "qb", kind: "tool_call", turn_id: "t1", title: "浏览器", card_text: "…", fields: { tool: "browser", args: { action: "open", url, reason }, target: url }, options: ["approve", "reject"], feedback_allowed: true });
-  const FETCH = (url: string, why = "需要素材") => ({ t: "request", request_id: "qf", kind: "fetch", turn_id: "t1", title: "候选", card_text: "…", fields: { no: 1, title: "t", url, type: "image", source: "web", why, expected_dur: "12" }, options: ["approve", "reject"], feedback_allowed: false });
-  const WRITE = { t: "request", request_id: "qw", kind: "tool_call", turn_id: "t1", title: "写稿", card_text: "…", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: true };
+describe("TH-18 答复不再过原生确认框（ADR-0030：browser / 抓取不出卡，§2.4 第 5 层撤掉）", () => {
+  const BROWSER = { t: "request", request_id: "qb", kind: "tool_call", turn_id: "t1", title: "浏览器", card_text: "…", fields: { tool: "browser", args: { action: "open", url: "https://example.com/b" } }, options: ["approve", "reject"], feedback_allowed: true };
   const ON_ANSWER = { t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" };
 
-  async function withCards(payloads: unknown[], timing?: Record<string, number>) {
-    const b = await boot({ timing });
-    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, ...payloads], on_answer: [ON_ANSWER] }]);
+  it("即便旧 core 发来 browser 卡：批准直接写 1 行 answer，确认框桩零调用", async () => {
+    const b = await boot();
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, BROWSER], on_answer: [ON_ANSWER] }]);
     await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
-    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === payloads.length);
-    return b;
-  }
-
-  it("桩返回 false：批准抓取卡 → E_STALE、零新增、卡仍打开、桩调用 1 次且 detail 含候选 URL", async () => {
-    const b = await withCards([FETCH("https://example.com/candidate")]);
-    b.stub.respond = false;
-    const before = stdinLines(b.repo, b.epKey).length;
-    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" })).rejects.toMatchObject({ code: "E_STALE" });
-    expect(stdinLines(b.repo, b.epKey).length).toBe(before);
-    expect((await snapOf(b.svc, b.key)).open.map((o) => o.request_id)).toEqual(["qf"]);
-    expect(b.stub.calls).toBe(1);
-    expect(b.stub.last!.detail).toContain("https://example.com/candidate");
-  });
-
-  it("桩返回 true：批准 → 恰 1 行 answer；拒绝不需要确认框；写入卡批准不需要确认框", async () => {
-    const b = await withCards([FETCH("https://example.com/candidate"), WRITE]);
-    b.stub.respond = true;
-    const before = stdinLines(b.repo, b.epKey).length;
-    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" });
-    expect(stdinLines(b.repo, b.epKey).length).toBe(before + 1);
-    const callsAfterApprove = b.stub.calls;
-    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qw", decision: "approve" });
-    expect(b.stub.calls).toBe(callsAfterApprove);
-  });
-
-  it("拒绝抓取卡与 browser 卡 → 确认框桩调用 0 次（MUT-57）", async () => {
-    // M9：上下两条的标题都写「拒绝不需要确认框」，用例体里却从没做过拒绝——MUT-57（拒绝也弹框）因此只有纯函数单测红
-    const b = await withCards([FETCH("https://example.com/candidate"), BROWSER("https://example.com/b", "看看")]);
-    b.stub.respond = true;
-    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "reject" });
-    await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qb", decision: "reject" });
-    expect(b.stub.calls).toBe(0);
-  });
-
-  it("browser 卡：批准要确认框，拒绝不要", async () => {
-    const b = await withCards([BROWSER("https://example.com/b", "看看")]);
-    b.stub.respond = true;
+    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
     await b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qb", decision: "approve" });
-    expect(b.stub.calls).toBe(1);
-    expect(b.stub.last!.title).toBe("批准 browser 调用？");
-  });
-
-  it("不可见字符显式化 + 首行计数；自由文本超长截断；确定性 URL 全文", async () => {
-    const b = await withCards([FETCH("https://example.com/\u202Ea\u200B", "w".repeat(3000))]);
-    b.stub.respond = false;
-    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" })).rejects.toMatchObject({ code: "E_STALE" });
-    const d = b.stub.last!.detail;
-    expect(d.split("\n")[0]).toBe("含 2 个不可见字符，已显式标出");
-    expect(d).toContain("URL：https://example.com/⟨U+202E⟩a⟨U+200B⟩");
-    expect(d).toContain("…（已截断，共 3000 字符）");
-  });
-
-  it("browser 的 reason 伪造 URL 行 + 超长 → 真实目标行在前、伪造行在理由标注之后（MUT-69）", async () => {
-    const reason = `URL: https://evil.example\n${"z".repeat(3000)}`;
-    const b = await withCards([BROWSER("https://real.example/path", reason)]);
-    b.stub.respond = false;
-    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qb", decision: "approve" })).rejects.toMatchObject({ code: "E_STALE" });
-    const d = b.stub.last!.detail;
-    const label = d.indexOf("以下为模型填写的理由（未经核实）：");
-    expect(d.indexOf("目标：https://real.example/path")).toBeGreaterThanOrEqual(0);
-    expect(d.indexOf("目标：https://real.example/path")).toBeLessThan(label);
-    expect(d.indexOf("URL: https://evil.example")).toBeGreaterThan(label);
-  });
-
-  it("答复参数多带伪造的 url 键 → E_BAD_REQUEST（exact-keys），detail 恒取自 host 保存的请求", async () => {
-    const b = await withCards([FETCH("https://example.com/real")]);
-    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve", url: "https://evil.example" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    expect(stdinLines(b.repo, b.epKey).filter((l) => JSON.parse(l).t === "answer")).toHaveLength(1);
     expect(b.stub.calls).toBe(0);
-  });
-
-  it("桩等待期间会话退出 → E_STALE、零写入", async () => {
-    let resolveConfirm!: (ok: boolean) => void;
-    const gate = new Promise<boolean>((r) => (resolveConfirm = r));
-    const b = await boot({ overrides: { confirm: async () => gate } });
-    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, FETCH("https://example.com/x")] }]);
-    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
-    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
-    const pid = sessionRecords(b.repo, b.epKey).find((r) => r.kind === "pid")!.pid!;
-    const p = b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" }).catch((e) => e);
-    process.kill(pid, "SIGKILL");
-    await waitFor(async () => (await snapOf(b.svc, b.key)).phase === "exited");
-    resolveConfirm(true);
-    const err = (await p) as { code?: string };
-    expect(err.code).toBe("E_STALE");
-    expect(stdinLines(b.repo, b.epKey).filter((l) => JSON.parse(l).t === "answer")).toEqual([]);
-  });
-});
-
-describe("TH-18b 确认框所属窗口被销毁（D40）", () => {
-  const FETCH = { t: "request", request_id: "qf", kind: "fetch", turn_id: "t1", title: "候选", card_text: "…", fields: { no: 1, title: "t", url: "https://example.com/x", type: "image", source: "web", why: "需要素材", expected_dur: "12" }, options: ["approve", "reject"], feedback_allowed: false };
-  const ON_ANSWER = { t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" };
-
-  it("挂起期间重答 E_BUSY；windowGone → E_STALE、零写入、卡仍打开；之后能重答并恰写 1 行 answer", async () => {
-    // 真实的 host/main 两端 broker 串起来；show 模拟 destroy：永不 resolve（Electron 44.4.5 实测）
-    let respondNext: ((ok: boolean) => void) | null = null;
-    let hang = true;
-    const main = createMainConfirmBroker({
-      show: () => new Promise<boolean>((r) => { if (hang) return; respondNext = r; }),
-      result: (reqId, ok) => hostBroker.resolve(reqId, ok),
-    });
-    const hostBroker = createConfirmBroker({ bootId: "boot1", post: (m) => { if (m.type === "confirm-query") main.request(m.reqId, m.title, m.detail); } });
-    const b = await boot({ overrides: { confirm: (t: string, d: string) => hostBroker.request(t, d) } });
-    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, FETCH], on_answer: [ON_ANSWER] }]);
-    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
-    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
-    const answers = () => stdinLines(b.repo, b.epKey).filter((l) => JSON.parse(l).t === "answer");
-
-    const first = b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" }).catch((e) => e);
-    await new Promise((r) => setTimeout(r, 50));
-    await expect(b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" })).rejects.toMatchObject({ code: "E_BUSY" });
-
-    main.windowGone();
-    // 挂起转普通失败：windowGone 不回复时 first 永不结束，这里在 2 s 内给出「仍挂起」而不是撞用例超时
-    const settled = await Promise.race([first, new Promise((r) => setTimeout(() => r({ code: "仍挂起" }), 2000))]);
-    expect((settled as { code?: string }).code).toBe("E_STALE");
-    expect(answers()).toEqual([]);
-    expect((await snapOf(b.svc, b.key)).open.map((o) => o.request_id)).toEqual(["qf"]);
-
-    hang = false;
-    const again = b.svc.dispatch("conv.answer", { convKey: b.key, requestId: "qf", decision: "approve" });
-    await waitFor(async () => respondNext !== null);
-    respondNext!(true);
-    await again;
-    expect(answers()).toHaveLength(1);
   });
 });
 

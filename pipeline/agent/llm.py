@@ -86,8 +86,11 @@ _TIER_KEY = "_ava_tier"
 # D65（§3.4，红队 F1）：收尾指令消息的内部标记——老化的边界扫描跳过它，否则收尾总结会在
 # 「刚拿到的大结果」被老化、且 tool_choice=none 禁止重读的双重 degradation 下生成。
 _WRAPUP_KEY = "_ava_wrapup"
-# 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）+ D65 收尾标记
-_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY})
+# D79：回合中途送达的排队消息（照 Pi 的 steering）的内部标记——老化边界扫描跳过它，否则回合中途
+# 插一条用户消息会把本回合前半段、模型正在用的工具结果当成旧回合换成占位串
+STEER_KEY = "_ava_steer"
+# 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）+ D65 收尾标记 + D79 排队标记
+_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY, STEER_KEY})
 
 # 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
 _WARN_LATCH: set[tuple[str, str]] = set()
@@ -434,6 +437,14 @@ class LoopControl:
     """D62 自动压缩触发点：`(messages, token 读数提示)` → None（没压）/ `{"ok": True, ...}`（已原地压缩）/
     `{"ok": False, "abort": True, "text": …}`（失败，中止回合交人）。读数提示 = 上一次请求的服务商实测
     + 其后新增消息的字数估算；拿不到实测为 None（回调自己回落估算）。"""
+    drain_steer: Callable[[], list[dict[str, str]]] | None = None
+    """D79 排队消息（照 Pi 的 steering）：取走回合在途期间人发来的消息 `[{id, text}]`。
+    只在一批工具结果全部写史之后、下一次请求之前调用（assistant.tool_calls 之后必须先接齐 tool 消息）；
+    模型给出最终答复时再调一次，非空则不收工、继续一轮。收尾调用期间不调。None = 没有排队（终端）。"""
+    on_steer: Callable[[list[str], str | None], None] | None = None
+    """D79：排队消息已写史（送达模型）后的通知：(送达的 id 列表, 被续上的那条答复正文)。
+    第二个参数只在「模型已给最终答复、因排队而继续」时非 None——这条答复不再是回合终稿，
+    协议层要先把它推上屏，否则人看不到。"""
 
 
 def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
@@ -693,6 +704,21 @@ def run_tool_loop(
                 _tool_message(rest, {"ok": False, "error": text}), "synthetic_tool"
             )
 
+    def _deliver_steer(answered: str | None = None) -> bool:
+        """D79：把排队消息逐条写史（user 消息带 STEER_KEY）。返回是否送达了任何消息。"""
+        if control.drain_steer is None:  # type: ignore[union-attr]
+            return False
+        items = control.drain_steer()  # type: ignore[union-attr]
+        if not items:
+            return False
+        for item in items:
+            control.commit(  # type: ignore[union-attr]
+                {"role": "user", "content": str(item.get("text", "")), STEER_KEY: True}, "user_steer"
+            )
+        if control.on_steer is not None:  # type: ignore[union-attr]
+            control.on_steer([str(item.get("id", "")) for item in items], answered)  # type: ignore[union-attr]
+        return True
+
     def _local_note(reason: str, wrapup_error: str | None) -> str:
         # 本轮**全部**调用（跨回复累计）：只看最后一条回复会在多轮后写成「（无）」
         detail = "、".join(f"{name}×{count}" for name, count in turn_tally.items()) or "无"
@@ -814,6 +840,9 @@ def run_tool_loop(
 
             calls = reply.get("tool_calls") or []
             if not calls:
+                # D79（Pi 的「有排队就不收工」）：人在模型作答期间发来的消息，送达后继续一轮
+                if _deliver_steer(str(reply.get("content") or "")):
+                    continue
                 return _loop_result(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
@@ -904,6 +933,10 @@ def run_tool_loop(
                     # 原地反复跑同一条检查仍判重
                     dedup.clear()
                 control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+
+            # D79：这批工具结果已全部写史，下一次请求之前送达排队消息（Pi 的 steering 落点）
+            live["call"] = None
+            _deliver_steer()
 
     except KeyboardInterrupt:
         # 落点表（§2.2 第 4 条）：补合成结果 → 收尾或回滚。

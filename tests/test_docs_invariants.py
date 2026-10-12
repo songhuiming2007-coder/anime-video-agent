@@ -38,9 +38,9 @@ OPERATIONAL_DOCS = [
 ]
 
 # 涉及配音规程与工序导航的核心操作文档（必须包含新路锚点）
+# README.md 不在列：2026-10-12 人重写 README（403f66f）为面向新读者的介绍，有意不再承载操作锚点
 VOICE_DOCS = [
     "AGENTS.md",
-    "README.md",
     "docs/INDEX.md",
     "docs/WORKFLOW.md",
     "docs/dev/STANDARD.md",
@@ -162,10 +162,7 @@ def test_adrs_0018_0019_exist_with_reversal_conditions():
     for adr_path in [adr18[0], adr19[0]]:
         content = adr_path.read_text(encoding="utf-8")
         assert "推翻" in content, f"{adr_path.name} 缺少推翻条件小节"
-
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "ADR-0018" in readme, "README.md 缺少 ADR-0018 引用"
-    assert "ADR-0019" in readme, "README.md 缺少 ADR-0019 引用"
+    # README 的 ADR 引用要求已撤（2026-10-12 人重写 README，403f66f）：ADR 由 docs/INDEX.md 导航
 
 
 def test_discredited_budget_not_active_rule():

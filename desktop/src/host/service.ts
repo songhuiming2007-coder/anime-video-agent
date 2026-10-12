@@ -273,7 +273,6 @@ export class HostService {
       spawnSession,
       resolveKey: () => this.deps.resolveSessionKey(this.repoRoot ?? ""),
       resolveWebKeys: (llmName) => this.deps.resolveSessionWebKeys(this.repoRoot ?? "", llmName),
-      confirm: (title, detail) => this.deps.confirm(title, detail),
       now: () => this.deps.now(),
       bootId: this.deps.bootId,
       push: (env) => this.push(env),

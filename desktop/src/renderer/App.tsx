@@ -274,7 +274,8 @@ function Main() {
     requestAnimationFrame(() => document.querySelector("[data-testid=timeline]")?.scrollIntoView({ block: "nearest" }));
   }, [setPreviewOpen]);
   const conv = convs.convs[convKey];
-  const rows = foldOf(conv).rows;
+  const folded = foldOf(conv);
+  const rows = folded.rows;
 
   /** 打开停机点的预览目标（沿用 Spec 8 §2.5 的映射；这里只决定「看哪份文件」） */
   const showStopPreview = useCallback((epKey: string, a: ApprovalJson) => {
@@ -476,6 +477,8 @@ function Main() {
               convKey={convKey}
               running={conv?.phase === "running"}
               turnId={conv?.turnId ?? null}
+              queued={folded.queued}
+              returned={folded.returned}
               disabled={health?.reach !== "ok"}
               placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
             />
