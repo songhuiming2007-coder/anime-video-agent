@@ -178,8 +178,9 @@ test("TX-1 真实 core：失败工具行展开文本 == session.jsonl 里该 too
     const toolMsg = sessionLog(fx, "SESS-A").find((r) => r.k === "msg" && (r.message as { role: string }).role === "tool")!;
     const content = (toolMsg.message as { content: string }).content;
     expect(JSON.parse(content).result.ok).toBe(false); // 前提：这条确实是失败的 bash rm
+    // D80：失败工具行展开后，「模型看到的原文」标签下的 <pre> 是原文
+    await L.page.getByTestId("tool-toggle").click();
     await expect(L.page.getByTestId("conv-observation")).toBeVisible();
-    // 展开区的 <summary> 是「模型看到的原文」标签，原文在其下的 <pre> 里
     expect(await L.page.locator("[data-testid=conv-observation] pre").first().textContent()).toBe(content);
     await expect(L.page.getByTestId("conv-stream")).toContainText("[批准] 全部批准");
     await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(0);
@@ -628,7 +629,10 @@ test("D77 / ADR-0030 真实 core：bash 清旧图并拷图进期目录 → 硬�
       await waitTurns(L, "ep:SESS-A", 1);
       // 帧契约：bash 的 tool 帧带 command，键集合与 TS 表（REQUIRED + CONDITIONAL）两个方向都一致
       assertFrameContract(framesOf(await convSnapshot(L, "ep:SESS-A")));
-      // D76 ②工具行：两条 bash 行各有「复制命令」，第一条复制出来是完整命令（摘要截在 80 字）
+      // D76 ②工具行：两条 bash 行各有「复制命令」，第一条复制出来是完整命令（摘要截在 80 字）。
+      // D80：这一轮全成功 → 回合已收起、两条 bash 折成终端组也收起，先依次展开
+      await L.page.getByTestId("turn-fold").click();
+      await L.page.getByTestId("group-toggle").click();
       const toolCopies = L.page.getByTestId("tool-copy");
       await expect(toolCopies).toHaveCount(2);
       await armClipboard(L);
@@ -670,9 +674,12 @@ test("D76 真实 core：继续上次会话 → 恢复出来的 bash 旧工具行
     await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 15_000 });
     // history 帧键集合两个方向都与 TS 表一致（bash 条目带 command）
     assertFrameContract(framesOf(await convSnapshot(L, "ep:SESS-A")).filter((f) => f.t === "history"));
+    // D80：恢复出来的一轮视为已结束 → 收起；展开后工具行显示类别词、用途（history 帧带 description）与命令摘要
+    await L.page.getByTestId("turn-fold").last().click();
     const row = L.page.locator("[data-testid=conv-row][data-kind=tool]").filter({ has: L.page.getByTestId("tool-copy") });
     await expect(row).toHaveCount(1);
-    await expect(row).toContainText("bash");
+    await expect(row).toContainText("终端");
+    await expect(row).toContainText("看一眼目录");
     await expect(row).toContainText("ls -la . && echo");
     const saved = await clipboardText(L);
     try {

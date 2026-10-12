@@ -1850,3 +1850,27 @@ def test_future_tool_without_side_effect_is_fail_closed(episode: Path, root: Pat
     assert v.action == "ask"
     monkeypatch.setitem(tools_mod.TOOL_SCHEMAS, "future_tool", {"name": "future_tool", "parameters": {}, "side_effect": False})
     assert review_tool_call("future_tool", {}, ep_dir=episode, scope="creative", root=root).action == "allow"
+
+
+# ---------------------------------------------------------------------------
+# D80（R2 ①）：bash 的 tool 帧带 description（工具行主文本）
+# ---------------------------------------------------------------------------
+
+
+def test_d80_bash工具帧两阶段都带用途_剥控制字符_非bash不带(episode: Path) -> None:
+    channel = FakeChannel()
+    host = SessionHost(episode, root=None, channel=channel)
+    session = AgentSession(host, scope_mode="creative", persist=False)
+    ok = json.dumps({"ok": True, "result": {"ok": True}})
+    session._on_trace({"phase": "start", "index": 0, "name": "bash", "args": {"command": "ls -la", "description": " 列出\x07期目录\n"}})
+    session._on_trace({"phase": "end", "index": 0, "name": "bash", "content": ok})
+    session._on_trace({"phase": "start", "index": 1, "name": "bash", "args": {"command": "pwd"}})
+    session._on_trace({"phase": "start", "index": 2, "name": "read_artifact", "args": {"path": "01-topic.md", "description": "x"}})
+    frames = [payload for kind, payload in channel.shown if kind == "tool"]
+    assert [(f["index"], f["phase"], f.get("description")) for f in frames] == [
+        (0, "start", "列出期目录"),   # 控制字符剥掉、首尾空白去掉
+        (0, "end", "列出期目录"),     # end 复用 start 时的值
+        (1, "start", ""),             # 模型没给：键照样在（TS 侧 bash 帧必带），空串
+        (2, "start", None),           # 非 bash 不带
+    ]
+    assert "description" not in frames[3]

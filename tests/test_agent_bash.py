@@ -264,3 +264,5 @@ class TestHistory:
             (None, None),                 # 查不到调用（修复插入的合成结果）：名字为 None
         ]
         assert "command" not in tools[1] and "command" not in tools[3]
+        # D80：bash 条目另带用途（同 tool 帧的条件键）；参数坏了也带空串，非 bash 不带
+        assert [f.get("description") for f in tools] == ["拷图", None, "", None]

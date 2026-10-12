@@ -55,24 +55,26 @@ test("TX-1 失败原文逐字保留、默认收起（D46）；模型文本里的
     ]);
     await openEp(L.page, "SESS-A");
     await send(L.page, "跑一下");
-    // D46：失败原文默认收起，点开后逐字一致
+    // D46 → D80：失败原文默认收起（展开区未挂载），点工具行展开后逐字一致；有失败的回合不自动折叠，工具行直接可见
+    await expect(L.page.getByTestId("conv-turn")).toHaveAttribute("data-outcome", "fail");
+    await expect(L.page.getByTestId("conv-observation")).toHaveCount(0);
+    await expect(L.page.getByTestId("tool-status")).toHaveText("执行失败");
+    await L.page.getByTestId("tool-toggle").click();
     const det = L.page.getByTestId("conv-observation");
-    await expect(det).toBeVisible();
-    expect(await det.evaluate((d) => (d as HTMLDetailsElement).open)).toBe(false);
-    await det.locator("summary").click();
     await expect(det.locator("pre")).toHaveText(obs);
     // D46：回复渲染 Markdown 后，链接、图片、HTML 仍不成为可点控件或资源加载
     const answer = L.page.locator("[data-testid=conv-row][data-kind=answer]");
     await expect(answer).toContainText("[批准](https://evil.example/a)");
     await expect(answer).toContainText("<button>批准</button>");
-    await expect(L.page.locator("[data-testid=conv-stream] a, [data-testid=conv-stream] img, [data-testid=conv-stream] button")).toHaveCount(0);
+    // D80：对话流里有宿主自己的折叠 / 展开按钮，「渲染不出可点控件」的断言收窄到答复行（链接、图片仍查整条对话流）
+    await expect(L.page.locator("[data-testid=conv-stream] a, [data-testid=conv-stream] img, [data-testid=conv-row][data-kind=answer] button")).toHaveCount(0);
     // H-2：助手文本里的「批准」不生成可点击控件；待答区此时没有任何卡
     await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(0);
     await expect(L.page.locator(".decisions button[data-testid^=request-answer]")).toHaveCount(0);
   });
 });
 
-test("TX-D46a 模型生成期间末尾有「模型思考中 · N 秒」且秒数在走；回复到达后消失、Markdown 已渲染", async () => {
+test("TX-D46a 模型生成期间末尾有「正在思考 · N 秒」（D80 扫光）且秒数在走；回复到达后消失、Markdown 已渲染", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [
       READY("SESS-A"),
@@ -87,8 +89,8 @@ test("TX-D46a 模型生成期间末尾有「模型思考中 · N 秒」且秒数
     await send(L.page, "查一下");
     const act = L.page.getByTestId("conv-activity");
     await expect(act).toHaveAttribute("data-what", "model");
-    await expect(act).toContainText("模型思考中");
-    await expect(act.locator(".ui-spinner")).toHaveCount(1);
+    await expect(act).toContainText("正在思考");
+    await expect(act.locator(".conv-shimmer")).toHaveCount(1);
     await expect(act).toContainText(/· [12] 秒/); // 秒数在走（不是停在 0）
     await expect(L.page.locator("[data-testid=conv-row][data-kind=answer] strong")).toHaveText("真实剧情");
     await expect(act).toHaveCount(0);
@@ -97,7 +99,7 @@ test("TX-D46a 模型生成期间末尾有「模型思考中 · N 秒」且秒数
   });
 });
 
-test("TX-D46b 工具执行中：工具行转圈、末尾「工具运行中」；工具结束、回合结束后都不再转", async () => {
+test("TX-D46b 工具执行中：工具行类别词扫光（D80 取代转圈）、末尾「正在执行」；工具结束、回合结束后都不再扫", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [
       READY("SESS-A"),
@@ -113,13 +115,17 @@ test("TX-D46b 工具执行中：工具行转圈、末尾「工具运行中」；
     await openEp(L.page, "SESS-A");
     await send(L.page, "检查");
     await expect(L.page.getByTestId("conv-activity")).toHaveAttribute("data-what", "tool");
-    await expect(L.page.getByTestId("conv-tool-spinner")).toHaveCount(1);
+    await expect(L.page.getByTestId("conv-tool-shimmer")).toHaveCount(1);
+    await expect(L.page.getByTestId("tool-status")).toHaveText("执行中");
     // 工具结束后转为「模型思考中」，秒数从工具结束起算（不把 1.5 秒工具耗时算进去）
     await expect(L.page.getByTestId("conv-activity")).toHaveAttribute("data-what", "model");
     await expect(L.page.getByTestId("conv-activity")).toContainText("· 0 秒");
     await expect(L.page.locator("[data-testid=conv-row][data-kind=answer]")).toHaveText("过了");
-    await expect(L.page.getByTestId("conv-tool-spinner")).toHaveCount(0);
+    await expect(L.page.getByTestId("conv-tool-shimmer")).toHaveCount(0);
     await expect(L.page.getByTestId("conv-activity")).toHaveCount(0);
+    // D80 R4 ②：正常结束的回合自动收起成一行
+    await expect(L.page.getByTestId("conv-turn")).toHaveAttribute("data-open", "0");
+    await expect(L.page.getByTestId("turn-fold")).toContainText("1 个工具");
   });
 });
 

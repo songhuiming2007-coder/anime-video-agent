@@ -842,7 +842,7 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
         if role == "tool":
             # 延迟 import：协议进程 fd 隔离（main ②）必须先于任何 pipeline.* import，
             # 本函数是模块级的，拿不到 main() 里的局部 import（N48 实测 NameError）
-            from pipeline.agent.session import tool_flags
+            from pipeline.agent.session import _clean, tool_flags
 
             ok, text = tool_flags(message.get("content"))
             frame["ok"] = ok
@@ -854,6 +854,9 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
             if name == "bash":
                 command = args.get("command") if isinstance(args, dict) else None
                 frame["command"] = command if isinstance(command, str) else ""
+                # D80：用途同 tool 帧的条件键（工具行主文本），剥控制字符
+                description = args.get("description") if isinstance(args, dict) else None
+                frame["description"] = _clean(description).strip() if isinstance(description, str) else ""
         writer.send(frame)
         index += 1
 
