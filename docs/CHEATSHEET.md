@@ -27,13 +27,17 @@ ava <期名或期号>
 # 示例：
 ava 2026-07-30-春物-雪乃适合大老师
 
-# 3. 立项新一期（原子创建期目录并生成 01-topic.md 模板，tty 下直接进入该期对话，重名必拒）
-ava new 2026-xx-xx-番名-主题标题
+# 3. 立项新一期（原子创建期目录并生成 01-topic.md 模板，重名必拒；支持带入选题对话）
+ava new 2026-xx-xx-番名-主题标题 [--from-idea[=<会话号>]]
 
-# 4. 无期选题会话（idea scope，写期文件前须先建期——D43 后不再零写权限，用于发散选题、读番剧笔记与比较张力）
+# 4. 恢复会话
+ava <期号> --continue [<会话号前缀>]   # 接着本期上一段会话（ava <期号> --sessions 列出会话）
+ava --continue                        # 直达最近写入的期并继续会话
+
+# 5. 无期选题会话（idea scope，用于发散选题、读番剧笔记与比较张力）
 ava idea
 
-# 5. 一次性子命令（跑完即退，适合脚本化）
+# 6. 一次性子命令（跑完即退，适合脚本化）
 ava <期号> /status    # 打印当期诊断卡后退出
 ava <期号> /voice     # 直达顺听配音纠错台
 ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡，直接执行
@@ -81,6 +85,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/scout` | pipeline | 生成 pi 侦察派工单 | 缺料/缺笔记/标题候选时生成自包含工单交给 pi 采掘 |
 | `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
 | `/memory` | 全阶段 | 跨期记忆：`show`（默认）/ `check` / `ack` / `digest` | 查看记忆全文；外部改动后 ack 对齐；聚合驳回反馈提议新条目 |
+| `/compact` | 全阶段 | 手动压缩当前会话上下文 | 长会话泄压，保留尾部预算与关键决策，读数带分母 |
 | `/help` | 全阶段 | 查看命令列表 | 随时查看帮助提示 |
 | `/quit` `/exit` | 全阶段 | 退出 ava 交互终端 | 进度 100% 依赖落盘文件，随时安全退出 |
 
@@ -112,7 +117,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 **按键纪律**：
 
 - **默认 N**：回车、EOF、任何非 `y` 输入一律不执行——注意只有单个 `y` 算批准，敲 `yes` 不算。
-- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` 七个只读工具不弹卡，只回显一行 `[tool] read_artifact 01-topic.md`，让你看见模型在读什么。`run_pipeline` 里的只读命令（下面放行表的粗体项）同样免卡。
+- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` / `browser` 及单条只读 `bash` 命令免卡；`run_pipeline` 里的只读命令（下表粗体项）同样免卡。其余写盘、出网、改配置或调流水线的工具一律弹审批卡。
 - **拒收不弹卡**：`--force`、白名单外、未注册的工具、无期会话里需要期目录的工具在弹卡**之前**就被拦下，直接 `[REJECT] <具体拒因>` 回喂模型（它分得清「护栏拒的」和「你拒的」）。（2026-10-08 修订（D43 / Spec 17）：原「未注册/超 scope」——「超 scope」拒绝已随 D43 废除，所有模式开放全部工具。）
 - **留痕**：每次按键都追加一行到 `data/episodes/<期>/_agent/approvals.jsonl`（时间、工具、规范化命令、y/n、决策耗时秒数）——这是审批疲劳的唯一读数来源。
 
@@ -120,10 +125,10 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 
 **日常不用你敲**（2026-10-09 D59）：下表的命令都由总监经 `run_pipeline` 发，只读的免卡、写盘的弹卡，你只按 `y` / `N`。`/run` 是你想亲手跑时的同一张表。
 
-- **放行模块**（与 `pipeline/agent/tools.py` 同步，2026-10-09）：
-  - 整模块（期目录自动补上）：`check_script`、`status`（这两个免卡）、`tts`、`clips`、`review`、`render`、`qc`、`cover`、`corrections`（`check` 免卡）、`adversarial`、`scout`、`ingest_patch`；不补期目录：`bgm`、`timeline`；
+- **放行模块**（与 `pipeline/agent/tools.py` 同步）：
+  - 整模块（期目录自动补上）：`check_script`、`status`、`subgrep`（这三个免卡）、`tts`、`clips`、`review`、`render`、`qc`、`cover`、`corrections`（`check` 免卡）、`adversarial`、`scout`、`ingest_patch`；不补期目录：`bgm`、`timeline`；
   - 按子命令（不补期目录，路径要写全；**粗体**免卡）：
-    `acquire` **gate** / fetch / register / forget；
+    `acquire` **gate** / fetch / register / forget / probe；
     `ingest` **probe** / **intact** / **verify** / subs / run / sources / phase0；
     `shots` build / frames / caption-frames / calibrate / rebuild / gallery；
     `vindex` **who** / **status** / **search** / captions / embed / presence；
@@ -131,7 +136,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
     `faces` detect / cluster / sheet / name / presence；
     `calibration` **show** / set（写 config 标定值，D60，卡上标 `[全局配置]`）；
   - 整模块不补期目录：`notes_review <番>`（笔记对抗审查，每集一次模型调用，D61）；
-    `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames（`exec` 永久禁用）；
+    `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames / fix-env（`exec` 永久禁用）；
 - **参数自动补齐**：敲 `/run clips` 会自动注入当前期的完整路径；敲 `/run tts --redo 3` 也会自动注入当期路径；
 - **坚决拒收**：`--force` 与 `--force-all` 会被当场拦截，并指引你使用增量参数 `--redo <段号>` 或 `--apply-patch`。
 
@@ -185,11 +190,11 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 |---|---|---|---|---|
 | **01** | 选题 | `ava new <期名>`，人填 `01-topic.md` | `01-topic.md` | 张力由人脑判定，严禁机器代填 |
 | **02** | 写稿 | 直接说「根据选题出草稿」，总监自己跑 `check_script`（免卡） | `02-script.draft.md` | 机检全绿方可进入下一阶段（条数随判据迭代，以 `check_script` 实际输出为准，不写死） |
-| **02.5** | **改稿** | 精修事实（或让总监改，卡上看 diff），`/approve 02.5` 时自动封板 | `02-script.md`<br>`02-diff.patch` | **🛑 停机点 1**：必须通读改稿，无 patch 渲染器拒绝启动 |
+| **02.5** | **改稿** | 精修事实（或让总监改，卡上看 diff），`/approve 02.5` 自动封板 `02-diff.patch` | `02-script.md`<br>`02-diff.patch` | **🛑 停机点 1**：必须通读改稿，无 patch 渲染器拒绝启动 |
 | **03** | 配音 | 说「开配」，总监提议 `tts`，按 `y` | `03-audio/seg-*.wav` | 首次全量合成；后续一律只补点名段 |
-| **03.5** | **顺听** | 敲 `/voice` 顺听抽检，白话纠错，敲 `done` | `03-audio/corrections.json` | **🛑 停机点 2**：抽检开头与最长段，用 `--apply-patch` 重配 |
+| **03.5** | **顺听** | 顺听面板或 `/voice` 顺听抽检，白话纠错，敲 `done` | `03-audio/corrections.json` | **🛑 停机点 2**：抽检开头与最长段，用 `--apply-patch` 重配 |
 | **04** | 排片 | 说「排片」，总监提议 `clips`，按 `y` | `04-clips.json`<br>`04-review.html` | 三通道自动贪心占坑；有缺口由总监跑 `scout` 看缺口、自己查证补料（runbook 04.5），人只批卡 |
-| **05** | **审片** | 看 `04-review.html`，敲 `/approve 05` | `04-clips.approved.json` | **🛑 停机点 3**：确认无声画错位后显式 approve 封板（总监不能 approve），**那一眼就是全部防线** |
+| **05** | **审片** | 看 `04-review.html` 抽帧，敲 `/approve 05` | `04-clips.approved.json` | **🛑 停机点 3**：确认无声画错位后显式 approve 封板（总监不能 approve），审看页缺失前严禁批准 |
 | **06** | 渲染 | 总监提议 `render`（`[长任务]`），按 `y` | `05-final.mp4` | 自动执行双重切片校验、字幕折行、BGM 侧链闪避 |
 | **07** | 质检 | 总监提议 `qc`，按 `y` | `06-check.log` | 11 项机器硬门禁自动化检验（音画同步、黑帧等），以日志实际输出为准 |
 | **08** | 封面 | 总监提议 `cover`，按 `y` | `07-cover/`<br>`07-titles.md` | 自动提取候选池与 5 条标题建议（严禁机器定稿） |
