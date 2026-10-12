@@ -38,18 +38,22 @@ describe("TV-1 parseOutFrame", () => {
     expect(parseOutFrame(JSON.stringify({ ...base, t: "history", index: 0, role: "user", text: "x", name: null })).ok).toBe(true);
   });
 
-  it("D76：bash 的 tool 帧要求 command（字符串）；其余工具不要求", () => {
+  it("D76 / D80：bash 的 tool 帧要求 command 与 description（字符串）；其余工具不要求", () => {
     const bash = { ...base, t: "tool", ...valid.tool, name: "bash", summary: "ls" };
-    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la", description: "列目录" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la", description: "" })).ok).toBe(true);
     expect(parseOutFrame(JSON.stringify(bash)).ok).toBe(false);
-    expect(parseOutFrame(JSON.stringify({ ...bash, command: null })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: null, description: "" })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la" })).ok).toBe(false); // D80：缺 description
+    expect(parseOutFrame(JSON.stringify({ ...bash, command: "ls -la", description: null })).ok).toBe(false);
     expect(parseOutFrame(JSON.stringify({ ...base, t: "tool", ...valid.tool })).ok).toBe(true);
   });
 
-  it("D76：history 的 bash 条目要求 command；其余工具条目与非 tool 角色不要求", () => {
+  it("D76 / D80：history 的 bash 条目要求 command 与 description；其余工具条目与非 tool 角色不要求", () => {
     const h = { ...base, t: "history", index: 0, role: "tool", text: "", ok: true };
-    expect(parseOutFrame(JSON.stringify({ ...h, name: "bash", command: "ls" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...h, name: "bash", command: "ls", description: "" })).ok).toBe(true);
     expect(parseOutFrame(JSON.stringify({ ...h, name: "bash" })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...h, name: "bash", command: "ls" })).ok).toBe(false); // D80：缺 description
     expect(parseOutFrame(JSON.stringify({ ...h, name: "read_artifact" })).ok).toBe(true);
     expect(parseOutFrame(JSON.stringify({ ...h, name: null })).ok).toBe(true);
   });

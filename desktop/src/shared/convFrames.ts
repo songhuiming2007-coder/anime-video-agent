@@ -108,8 +108,9 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
  *  （D76：完整命令，工具行复制用；继续会话后的旧工具行同样能复制）。 */
 export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) => Record<string, readonly Kind[]> | null>> = {
   history: (f): Record<string, readonly Kind[]> | null =>
-    f.role !== "tool" ? null : f.name === "bash" ? { ok: ["boolean"], command: ["string"] } : { ok: ["boolean"] },
-  tool: (f) => (f.name === "bash" ? { command: ["string"] } : null),
+    f.role !== "tool" ? null : f.name === "bash" ? { ok: ["boolean"], command: ["string"], description: ["string"] } : { ok: ["boolean"] },
+  // D80：bash 另带 description（模型给的用途，工具行主文本）；与 command 同为模型参数、不是工具结果
+  tool: (f) => (f.name === "bash" ? { command: ["string"], description: ["string"] } : null),
 };
 
 function kindOf(v: unknown): Kind {

@@ -114,6 +114,9 @@
   /* ---- 动效：快、克制；prefers-reduced-motion 下归零（components.css） ---- */
   --dur-fast: 120ms;
   --dur-base: 180ms;
+  /* D80（2026-10-12 人裁决 Q3）：展开收起照 ZCode Collapsible 300ms；入场 240ms——答复整段到达，ZCode 配流式的 900ms 会显得迟钝 */
+  --dur-slow: 300ms;
+  --dur-enter: 240ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }
 

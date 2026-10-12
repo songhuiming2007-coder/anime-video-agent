@@ -12,9 +12,10 @@ import { DESKTOP, moduleSpecifiers, parse, sourceFiles, type SourceFile } from "
 const RENDERER = join(DESKTOP, "src/renderer");
 const read = (rel: string) => readFileSync(rel, "utf-8");
 const TOKENS = read(join(RENDERER, "tokens.css"));
-/** 拍板基准 sha256（Spec 14 头部；改取值就得回到人面前重看 mock）。2026-10-08 人看真实窗口截图后裁决浅色焦点环改中性中灰 */
+/** 拍板基准 sha256（Spec 14 头部；改取值就得回到人面前重看 mock）。2026-10-08 人看真实窗口截图后裁决浅色焦点环改中性中灰；
+ *  2026-10-12 D80 人裁决 Q3 新增 --dur-slow / --dur-enter 两个动效 token（不改任何既有取值） */
 const BASELINE_SHA256 = {
-  "tokens.css": "58030f116d18795958980da7ea7ccbbe6214667302a4f78cbaa43dcd23b4891e",
+  "tokens.css": "ce1f0522c6283e6cba34d89266c2554d7746bd27a71f9405801c44c86c4a7e4f",
   "ui.css": "9c123bc33c84962e2a5ad6c989f6d71151713fc42f4c56632f3d02ca5fd7d67b",
 };
 /** 只改手动深色块 / 只改跟随系统块（自测用，与 §7.2 的变异同形） */
@@ -331,9 +332,9 @@ describe("VS-1 token 格式、覆盖与两块深色一致", () => {
     const bad = Object.entries({ ...t.light, ...t.forcedDark }).filter(([k, v]) => COLOR_KEY.test(k) && !COLOR.test(v));
     expect(bad.map(([k]) => k)).toEqual([]);
   });
-  it("浅色恰 79 个 token、其中 40 个颜色 token，且手动深色块全部覆盖", () => {
+  it("浅色恰 81 个 token（D80 加两个动效 token）、其中 40 个颜色 token，且手动深色块全部覆盖", () => {
     const t = parseTokens(TOKENS);
-    expect(Object.keys(t.light)).toHaveLength(79);
+    expect(Object.keys(t.light)).toHaveLength(81);
     expect(colorKeys(t.light)).toHaveLength(40);
     expect(checkPairs(TOKENS).missing).toEqual([]);
   });

@@ -9,6 +9,8 @@ import { LOG_TAIL_LINES } from "./constants";
 export type ToolRow = {
   k: "tool";
   at: number;
+  /** D80：稳定标识（实时 = `turn_id:index`，历史 = `h:index`），展开状态与 React key 用 */
+  id: string;
   name: string;
   summary: string;
   ok: boolean | null; // null = 尚未结束
@@ -19,17 +21,22 @@ export type ToolRow = {
   logs: string[];
   /** D76：bash 的完整命令（帧的条件键；summary 只有前 80 字）。其余工具、历史重建的行为 null */
   command: string | null;
+  /** D80：bash 的用途（帧的条件键，工具行主文本）；其余工具或模型没给为 null */
+  description: string | null;
+  /** D80：继续会话时从历史重建的行——不播入场动画 */
+  hist?: true;
 };
 
 export type ConvRow =
-  | { k: "user"; at: number; text: string }
-  | { k: "assistant"; at: number; kind: "answer" | "wrapup" | "local_note"; text: string; label: string | null }
+  | { k: "user"; at: number; text: string; hist?: true }
+  | { k: "assistant"; at: number; kind: "answer" | "wrapup" | "local_note"; text: string; label: string | null; hist?: true }
   | ToolRow
   | { k: "log"; at: number; lines: string[] }
   | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided" }
   | { k: "stop"; at: number; text: string }
   | { k: "notice"; at: number; level: string; code: string; text: string }
-  | { k: "footer"; at: number; text: string }
+  /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text） */
+  | { k: "footer"; at: number; text: string; stopped: string }
   | { k: "historySeparator"; at: number }
   /** 恢复历史里的系统注入（常驻提示、规程、记忆）：Spec 10 §2.3「折叠为『系统注入』」——D57 补落实，默认收起 */
   | { k: "injection"; at: number; text: string }
@@ -183,6 +190,11 @@ function commandOf(f: OutFrame): string | null {
   return typeof f.command === "string" && f.command !== "" ? f.command : null;
 }
 
+/** D80：帧里的用途（只有 bash 带）；空串视同没给 */
+function descriptionOf(f: OutFrame): string | null {
+  return typeof f.description === "string" && f.description.trim() !== "" ? f.description.trim() : null;
+}
+
 /** 与 core `session.tool_summary` 的 bash 分支同一规则：首行，超 80 字或多行加「…」（历史帧不带 summary，在这里补） */
 export function bashSummary(command: string | null): string {
   if (command === null) return "";
@@ -199,14 +211,14 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     case "tool": {
       if (f.phase === "start") {
-        rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f) });
+        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f) });
         lastTool.idx = rows.length - 1;
       } else {
         const idx = lastTool.idx;
         const row = idx >= 0 ? rows[idx] : undefined;
         if (!row || row.k !== "tool" || row.ok !== null) {
           // 孤立 tool{end}（缓冲截头后会遇到）：显式成行，不崩、不吞
-          rows.push({ k: "tool", at, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f) });
+          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f) });
         } else {
           row.ok = f.ok as boolean | null;
           row.duplicate = f.duplicate === true;
@@ -252,7 +264,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       rows.push({ k: "notice", at, level: "error", code: String(f.code), text: String(f.message) });
       break;
     case "turn_finished":
-      rows.push({ k: "footer", at, text: footerText(f) });
+      rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped) });
       break;
     default:
       break; // ready / turn_started / bye / history 由 foldConv 主循环处理
@@ -327,6 +339,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
               rows.push({
                 k: "tool",
                 at: e.at,
+                id: `h:${String(f.index)}@${String(rows.length)}`,
                 name: String(f.name ?? "tool"),
                 // 历史帧只带工具名（D76 起 bash 另带命令）：摘要只给 bash 补，其余保持空——工具名已在行首
                 summary: bashSummary(commandOf(f)),
@@ -336,11 +349,13 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
                 observation: f.ok === true ? null : String(f.text ?? ""),
                 logs: [],
                 command: commandOf(f),
+                description: descriptionOf(f),
+                hist: true,
               });
             } else if (role === "user") {
-              rows.push({ k: "user", at: e.at, text: String(f.text) });
+              rows.push({ k: "user", at: e.at, text: String(f.text), hist: true });
             } else if (role === "assistant") {
-              rows.push({ k: "assistant", at: e.at, kind: "answer", text: String(f.text), label: null });
+              rows.push({ k: "assistant", at: e.at, kind: "answer", text: String(f.text), label: null, hist: true });
             } else {
               rows.push({ k: "injection", at: e.at, text: String(f.text) });
             }

@@ -277,3 +277,61 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .composer-queue { display: flex; flex-direction: column; gap: var(--space-1); }
 .composer-queued { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-2); background: var(--bg-subtle); border: 1px dashed var(--border-strong); border-radius: var(--radius-xl); }
 .composer-queued-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); }
+
+/* ---- D80：对话流工具行 / 终端组 / 回合折叠 / 运行动感（人选方案 A，2026-10-12；ui.css 冻结，新样式只写这里）----
+ * 语义色只给状态词（Spec 14「语义色只给真实状态」）：正文一律中性色，失败只染「执行失败」并加虚线下划线（悬停看错误首行）。 */
+.conv-turn { display: flex; flex-direction: column; }
+.conv-fold { display: inline-flex; align-self: flex-start; align-items: center; gap: var(--space-2); min-height: 24px; padding: 0; border: 0; background: none; color: var(--fg-muted); font-size: var(--text-sm); cursor: pointer; }
+.conv-fold-meta { color: var(--fg-subtle); }
+.conv-fold-fail { color: var(--danger); }
+.conv-chev { display: inline-flex; flex: none; color: var(--fg-subtle); transition: transform var(--dur-base) var(--ease); }
+.conv-chev-btn { padding: 0; border: 0; background: none; cursor: pointer; }
+.conv-turn[data-open="1"] > .conv-fold .conv-chev, .conv-chev-btn[data-open="1"] { transform: rotate(90deg); }
+.conv-turn-body { display: flex; flex-direction: column; margin: var(--space-1) 0 0 var(--space-2); padding-left: var(--space-3); border-left: 1px solid var(--border); }
+.conv-tool-row, .conv-group { display: flex; flex-direction: column; min-width: 0; }
+.conv-tool { min-height: 26px; min-width: 0; }
+.conv-tool-row > .conv-tool:hover, .conv-group > .conv-tool:hover { background: var(--bg-hover); border-radius: var(--radius-sm); }
+.conv-tool-head { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: var(--space-2); padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.conv-tool-head .ui-icon { color: var(--fg-muted); }
+.conv-tool-cat { flex: none; color: var(--fg); font-weight: var(--weight-medium); }
+.conv-tool-main { flex: 0 1 auto; min-width: 0; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-tool-sub { flex: 1 1 0; min-width: 0; color: var(--fg-subtle); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-tool-dur { flex: none; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.conv-tool-status { flex: none; color: var(--fg-subtle); }
+.conv-tool-status[data-st="fail"] { color: var(--danger); text-decoration: underline dashed; text-underline-offset: 3px; cursor: help; }
+.conv-tool-status[data-st="run"] { color: var(--fg); }
+/* R2 ④：复制只在悬停 / 键盘聚焦到这一行时出现；刚复制完的「✓ 已复制」留着让人看见 */
+.conv-tool-copy { flex: none; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.conv-tool:hover .conv-tool-copy, .conv-tool:focus-within .conv-tool-copy, .conv-tool-copy[data-state="done"], .conv-tool-copy[data-state="failed"] { opacity: 1; }
+.conv-group-body { display: flex; flex-direction: column; margin-left: var(--space-2); padding-left: var(--space-3); border-left: 1px solid var(--border); }
+.conv-tool-detail { display: flex; flex-direction: column; gap: var(--space-1); margin: var(--space-1) 0 var(--space-2) var(--space-6); }
+.conv-tool-cmd { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.conv-tool-cmd code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.conv-tool-lbl { color: var(--fg-subtle); font-size: var(--text-sm); }
+.conv-tool-out { margin: 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); }
+
+/* R2 ③ / R4 ④：高度过渡（grid-template-rows 0fr ↔ 1fr），收起后由 Collapse 延迟卸载内容；clip 留出焦点环的余量 */
+.conv-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease); }
+.conv-collapse[data-open="1"] { grid-template-rows: 1fr; }
+.conv-collapse-inner { min-height: 0; overflow: clip; overflow-clip-margin: var(--space-1); }
+
+/* R3 ①②：文字扫光（照 ZCode animated-gradient-text）。2s 一周、强调色高光 = 人选方案 A（B 的 4s 灰阶落选）；
+ * 图标不转圈——工具一多，每行一个转圈会长期占渲染（ZCode ToolLayout 注释同理） */
+.conv-shimmer { background: linear-gradient(90deg, var(--fg-muted) 0%, var(--fg-muted) 35%, var(--accent) 50%, var(--fg-muted) 65%, var(--fg-muted) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: conv-shimmer 2s linear infinite; }
+@keyframes conv-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* R3 ③：流水线作业的细进度条。core 不发进度（D71：job_heartbeat 从未发出），只来回扫，不编造百分比；64px / 1.2s 照 ZCode ToolCallProgressIndicator */
+.conv-progress { position: relative; flex: none; width: 64px; height: 2px; border-radius: var(--radius-pill); background: var(--border); overflow: hidden; }
+.conv-progress > span { position: absolute; top: 0; bottom: 0; left: 0; width: 40%; border-radius: inherit; background: var(--accent); animation: conv-progress 1.2s ease-in-out infinite alternate; }
+@keyframes conv-progress { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+/* R3 ③：最新一行作业输出换上来时自下而上滑入 */
+.conv-ticker { animation: conv-ticker var(--dur-slow) var(--ease) both; }
+@keyframes conv-ticker { from { opacity: 0; transform: translateY(50%); } }
+/* R3 ④：实时到达的行淡入 + 上移 4px；历史恢复、切会话重挂时已在的行不挂 conv-enter */
+.conv-enter { animation: conv-enter var(--dur-enter) var(--ease) both; }
+@keyframes conv-enter { from { opacity: 0; transform: translateY(var(--space-1)); } }
+/* R3 ⑤：ui.css 的全局归零块只把时长压到 0，扫光是无限循环、且文字靠渐变着色——这里显式停掉并还原文字颜色 */
+@media (prefers-reduced-motion: reduce) {
+  .conv-shimmer { animation: none; background: none; color: inherit; }
+  .conv-progress > span { animation: none; width: 100%; }
+  .conv-enter, .conv-ticker { animation: none; }
+}

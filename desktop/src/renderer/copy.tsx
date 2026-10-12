@@ -1,6 +1,6 @@
 // D76（人选方案 C）：长命令一键复制。三处共用：助手回复的代码块、bash 工具行、bash 命令审批卡。
 // 复制的永远是原文（代码块的 textContent / 帧与请求里的命令字段），不是屏幕上折行后的样子，也不带卡面的「│」前缀。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 const DONE_MS = 1500; // 「✓ 已复制」停留时长：够人看见，又不至于下一次点击时还挂着旧状态
 
@@ -31,7 +31,8 @@ type CopyState = "idle" | "done" | "failed";
 const LABEL_DONE = "✓ 已复制";
 const LABEL_FAILED = "复制失败";
 
-export function CopyButton({ text, label = "复制", testId = "copy-btn" }: { text: string; label?: string; testId?: string }) {
+/** `label` 可以是图标（D80 工具行悬停复制）：此时必须给 `ariaLabel`，读屏念它；复制后照旧显示「✓ 已复制」文字 */
+export function CopyButton({ text, label = "复制", testId = "copy-btn", ariaLabel, className = "" }: { text: string; label?: ReactNode; testId?: string; ariaLabel?: string; className?: string }) {
   const [state, setState] = useState<CopyState>("idle");
   useEffect(() => {
     if (state === "idle") return;
@@ -41,8 +42,10 @@ export function CopyButton({ text, label = "复制", testId = "copy-btn" }: { te
   return (
     <button
       type="button"
-      className={`ui-btn ui-btn--ghost ui-btn--sm copy-btn${state === "done" ? " copy-btn--done" : ""}`}
+      className={`ui-btn ui-btn--ghost ui-btn--sm copy-btn${state === "done" ? " copy-btn--done" : ""}${className ? ` ${className}` : ""}`}
       data-testid={testId}
+      aria-label={state === "idle" ? ariaLabel : undefined}
+      title={ariaLabel}
       data-state={state}
       onClick={() => void copyText(text).then((ok) => setState(ok ? "done" : "failed"))}
     >

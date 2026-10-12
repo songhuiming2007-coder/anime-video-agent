@@ -809,6 +809,7 @@ class AgentSession:
         self._injected_docs: dict[str, str] = {}
         self._tool_summaries: dict[int, str] = {}  # 本条回复内 index → start 帧的 summary（end 帧复用）
         self._tool_commands: dict[int, str] = {}   # D76：bash 调用 index → 完整命令（摘要只有 80 字，复制要原文）
+        self._tool_descriptions: dict[int, str] = {}  # D80：bash 调用 index → 模型给的用途（工具行主文本）
         # D62 上下文压缩：摘要器失败 / 膨胀 / 压不了之后本会话不再自动压缩（spec §4.5）
         self.auto_compact_disabled = False
         self._compact_warned: set[str] = set()   # 「自动压缩不可用」只提示一次
@@ -1525,6 +1526,7 @@ class AgentSession:
         host 按 §3.2 整帧判 malformed 丢弃——界面上一条工具行都没有。
         唯一的条件键（D76）：`name == "bash"` 的两个阶段都多一个 `command`（完整命令原文，工具行「复制命令」用；
         摘要截在 80 字）。它是模型发出的参数、不是工具结果，TS 侧 `convFrames.CONDITIONAL` 同步登记。
+        D80（R2 ①）：同一条件下再多一个 `description`（模型给的用途，剥控制字符，可为空串），工具行拿它当主文本。
         """
         name = str(payload.get("name", ""))
         index = int(payload.get("index", 0))
@@ -1533,6 +1535,7 @@ class AgentSession:
             self._tool_summaries[index] = summary
             if name == "bash":
                 self._tool_commands[index] = str((payload.get("args") or {}).get("command", ""))
+                self._tool_descriptions[index] = _clean((payload.get("args") or {}).get("description", "")).strip()
             ok, observation = None, None
         else:
             summary = self._tool_summaries.get(index, "")
@@ -1549,6 +1552,7 @@ class AgentSession:
         }
         if name == "bash":
             frame["command"] = self._tool_commands.get(index, "")
+            frame["description"] = self._tool_descriptions.get(index, "")
         self.channel.show("tool", frame)
 
     def _review(
