@@ -15,6 +15,7 @@ import {
   KEYCHAIN_SERVICE,
 } from "../shared/constants";
 import type { StopType } from "../shared/contracts";
+import { titleProblem } from "../shared/sessionTitle";
 
 export type Template =
   | "PROBE_APPROVALS"
@@ -62,7 +63,10 @@ export type Template =
   | "LIST_TRASH"
   | "LIST_IDEA_TRASH"
   | "PURGE_TRASH"
-  | "PURGE_IDEA_TRASH";
+  | "PURGE_IDEA_TRASH"
+  // D80：会话改名（`ava <期> /rename-session --sid= --title=`；idea 两叉不带期目录）
+  | "RENAME_SESSION"
+  | "RENAME_IDEA_SESSION";
 
 /** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
 export interface VoiceReadingArgs {
@@ -136,6 +140,8 @@ export interface TemplateArgs {
   LIST_IDEA_TRASH: Record<string, never>;
   /** file 先过 checkedTrashFile（basename 校验），不合格抛错不 spawn */
   PURGE_TRASH: { ep: string; file: string };
+  RENAME_SESSION: { ep: string; sid: string; title: string };
+  RENAME_IDEA_SESSION: { sid: string; title: string };
   PURGE_IDEA_TRASH: { file: string };
 }
 
@@ -341,6 +347,14 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { sid } = args as TemplateArgs["DELETE_IDEA_SESSION"];
       return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
+    case "RENAME_SESSION": {
+      const { ep, sid, title } = args as TemplateArgs["RENAME_SESSION"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/rename-session", `--sid=${checkedSid(sid)}`, `--title=${checkedTitle(title)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "RENAME_IDEA_SESSION": {
+      const { sid, title } = args as TemplateArgs["RENAME_IDEA_SESSION"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/rename-session", `--sid=${checkedSid(sid)}`, `--title=${checkedTitle(title)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
     case "DELETE_SESSION": {
       const { ep, sid } = args as TemplateArgs["DELETE_SESSION"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/delete-session", `--sid=${checkedSid(sid)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
@@ -363,6 +377,13 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
   }
+}
+
+/** D80：标题作为单个 argv 元素（等号形式）传给 core；不合格抛错不 spawn（core 再按同规则校验） */
+function checkedTitle(title: string): string {
+  const problem = titleProblem(title);
+  if (problem !== null) throw new Error(problem);
+  return title.trim();
 }
 
 function checkedSid(sid: string): string {

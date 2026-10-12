@@ -21,6 +21,7 @@ const valid: Record<string, Record<string, unknown>> = {
   queued: { id: "q1", text: "改成 X" },
   steer_delivered: { turn_id: "t1", ids: ["q1"] },
   steer_returned: { items: [{ id: "q1", text: "改成 X" }] },
+  session_title: { title: "检查稿件字数", source: "generated" },
 };
 
 describe("TV-1 parseOutFrame", () => {

@@ -963,6 +963,7 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         else:
             _ensure_pending(ep_dir, status)
             _send_stop_points(writer, ep_dir, turn_id)
+    _maybe_title(host, writer, slots, str(frame.get("text") or ""), text, outcome.get("stopped"), scope)
     if host.interrupt.clear_dropped():
         writer.send({"t": "notice", "level": "info", "code": "interrupt_dropped",
                      "text": "回合已结束，这次中断被丢弃（未带进空闲态）。"})
@@ -971,6 +972,41 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         writer.send({"t": "steer_delivered", "turn_id": turn_id, "ids": [i["id"] for i in carry]})
         slots["out"].put(("user_message", {"text": "\n\n".join(i["text"] for i in carry)}, None))
     return 0
+
+
+def _maybe_title(host, writer: FrameWriter, slots: dict[str, Any], user_text: str, answer: str, stopped: Any, scope: str) -> None:
+    """D80 R1：会话首个正常结束的回合之后，后台线程请模型起名，成功则落盘并发 `session_title` 帧。
+
+    只起一次（本进程按 sid 记）；标题文件里已有该 sid 的记录（起过名或人改过名）就不起。线程不碰会话记录、
+    不进 messages、不计模型调用与检查点；新线程的 contextvars 是空上下文，`llm._LAST_USAGE` 不会串到主回合读数。
+    任何失败静默：侧栏保留首条消息兜底名（R1.2）。继续会话时同理——旧会话还没名字，接上后的首个回合给它补一个。
+    """
+    if stopped != "done" or not answer.strip() or not user_text.strip() or host.sid is None or host.log_dir is None:
+        return
+    sid = str(host.sid)
+    tried: set[str] = slots.setdefault("titled", set())
+    if sid in tried:
+        return
+    tried.add(sid)
+    from pipeline.agent import session_titles
+
+    if sid in session_titles.load(host.log_dir):
+        return
+    log_dir, root = host.log_dir, host.root
+
+    def work() -> None:
+        title = session_titles.generate(user_text, answer, root, scope)
+        if title is None:
+            return
+        try:
+            if session_titles.write(log_dir, sid, title, "generated"):
+                writer.send({"t": "session_title", "sid": sid, "title": title, "source": "generated"})
+        except (OSError, session_titles.TitlesBroken, ValueError):
+            return  # 落不了盘 / 管道已关（进程在退出）：没有新名而已
+
+    thread = threading.Thread(target=work, name="ava-session-title", daemon=True)
+    slots["title_thread"] = thread  # 测试据此等线程跑完；生产不 join（守护线程，进程退出即弃）
+    thread.start()
 
 
 def _take_steer_unlocked(slots: dict[str, Any]) -> list[dict[str, str]]:

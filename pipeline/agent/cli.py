@@ -690,6 +690,13 @@ def migrate_idea_session(target_dir: Path, sid: str | None = None) -> tuple[int,
                 print("[ERROR] 建期成功、迁移成功、清空失败：_idea 记录未清，下次 --from-idea 会重复带入，"
                       f"请手动清空 data/{IDEA_DIR}/{LOG_NAME}（{exc}）", file=sys.stderr)
             return RC_CLEAR_FAILED, False
+        # D80：这段的标题跟着进新期（尽力而为：失败只是新期里显示首条消息兜底名，不算迁移失败）
+        try:
+            from pipeline.agent import session_titles
+
+            session_titles.copy_entry(paths.ROOT / "data" / IDEA_DIR, target_dir, target.sid)
+        except (OSError, ValueError, RuntimeError):
+            pass
         _print_from_idea_marker(True, target.sid, target.messages)
         return 0, True
     finally:
@@ -1068,14 +1075,59 @@ def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -
 SESSION_ID = re.compile(r"^[0-9a-f]{16}$")
 
 
-def _session_rows(raw: bytes) -> list[dict[str, Any]]:
-    """`/list-sessions` 的行（期会话与选题会话同一形状）。"""
-    return [
-        {"sid": s.sid, "messages": s.messages, "assistants": s.assistants,
-         "last_activity": s.last_activity, "first_user": s.first_user,
-         "resumable": s.resumable}
-        for s in list_sessions(raw)
-    ]
+def _session_rows(raw: bytes, log_dir: Path) -> list[dict[str, Any]]:
+    """`/list-sessions` 的行（期会话与选题会话同一形状）。
+
+    D80 R1：每行带 `title` / `title_source`——标题文件里有记录取记录（generated / custom），
+    没有则 `title = first_user`、`title_source = "first_input"`（兜底，不落盘）。
+    """
+    from pipeline.agent import session_titles
+
+    titles = session_titles.load(log_dir)
+    rows: list[dict[str, Any]] = []
+    for s in list_sessions(raw):
+        entry = titles.get(s.sid)
+        rows.append({
+            "sid": s.sid, "messages": s.messages, "assistants": s.assistants,
+            "last_activity": s.last_activity, "first_user": s.first_user,
+            "resumable": s.resumable,
+            "title": str(entry["title"]) if entry else s.first_user,
+            "title_source": str(entry["source"]) if entry else "first_input",
+        })
+    return rows
+
+
+def _rename_session(log_dir: Path, rest: list[str]) -> int:
+    """`/rename-session --sid=<sid> --title=<标题>`（D80 R1.3，期会话与选题会话共用）：写 `custom` 标题。
+
+    **不取期租约**：标题文件有自己的锁，会话在跑时也能改名；迟到的 generated 不会覆盖它（CAS）。
+    退出码：0 成（stdout 回 {"title","source"}）；1 败（会话不存在、标题文件损坏、写盘失败）；2 用法错 / 标题不合格。
+    """
+    from pipeline.agent import session_titles
+
+    try:
+        flags = _valued_flags(rest, ("--sid", "--title"))
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    sid = flags["--sid"]
+    if not SESSION_ID.match(sid):
+        print(f"[ERROR] 会话号应为 16 位小写十六进制，收到 {sid!r}", file=sys.stderr)
+        return 2
+    title = session_titles.validate(flags["--title"])
+    if title is None:
+        print(f"[ERROR] 标题需为 1–{session_titles.TITLE_MAX_CHARS} 字的单行文本", file=sys.stderr)
+        return 2
+    if not any(x.sid == sid for x in list_sessions(read_log(log_dir))):
+        print(f"[ERROR] 会话 {sid} 不存在", file=sys.stderr)
+        return 1
+    try:
+        session_titles.write(log_dir, sid, title, "custom")
+    except (OSError, session_titles.TitlesBroken) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({"title": title, "source": "custom"}, ensure_ascii=False))
+    return 0
 
 
 def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
@@ -1083,8 +1135,9 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
 
     退出码：0 成；1 败（sid 不存在、写盘失败）；2 用法错；3 该期有活会话（租约被占）。
     D66：同区块加 `/list-trash`（只读）与 `/purge-trash --file=`（彻底删除，不可恢复）。
+    D80：同区块加 `/rename-session --sid= --title=`（改会话标题，不取租约）。
     """
-    if not argv or argv[0] not in ("/list-sessions", "/delete-session", "/list-trash", "/purge-trash"):
+    if not argv or argv[0] not in ("/list-sessions", "/delete-session", "/list-trash", "/purge-trash", "/rename-session"):
         return None
     rest = argv[1:]
     try:
@@ -1096,8 +1149,10 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
         if rest:
             print("[ERROR] 用法: ava <期> /list-sessions", file=sys.stderr)
             return 2
-        print(json.dumps(_session_rows(read_log(resolved)), ensure_ascii=False))
+        print(json.dumps(_session_rows(read_log(resolved), resolved), ensure_ascii=False))
         return 0
+    if argv[0] == "/rename-session":
+        return _rename_session(resolved, rest)
     if argv[0] == "/list-trash":
         if rest:
             print("[ERROR] 用法: ava <期> /list-trash", file=sys.stderr)
@@ -1118,10 +1173,14 @@ def _trash_rows(trash_dir: Path) -> list[dict[str, Any]]:
     """
     if not trash_dir.is_dir():
         return []
+    from pipeline.agent import session_titles
+
+    # D80：删会话不动标题文件（sid 不复用、手工找回时名字跟着回来），回收站行按 sid 查回标题显示
+    titles = session_titles.load(trash_dir.parent.parent)
     rows: list[dict[str, Any]] = []
     for file in sorted(p for p in trash_dir.glob("*.jsonl") if not p.is_dir()):
         size = file.stat().st_size
-        row: dict[str, Any] = {"file": file.name, "sid": None, "last_ts": "", "message_count": 0, "bytes": size}
+        row: dict[str, Any] = {"file": file.name, "sid": None, "last_ts": "", "message_count": 0, "bytes": size, "title": None}
         if size == 0:
             row["empty"] = True
         else:
@@ -1133,6 +1192,8 @@ def _trash_rows(trash_dir: Path) -> list[dict[str, Any]]:
             else:
                 sids = {s.sid for s in summaries}
                 row["sid"] = sids.pop() if len(sids) == 1 else None
+                entry = titles.get(row["sid"]) if row["sid"] else None
+                row["title"] = str(entry["title"]) if entry else None
                 row["last_ts"] = max(s.last_activity for s in summaries)
                 row["message_count"] = sum(s.messages for s in summaries)
             if torn > 0 or any(record is None for _index, record in entries):
@@ -2605,8 +2666,12 @@ def main(argv: list[str] | None = None) -> int:
     # D57：选题会话的只读列表（桌面端据此显示「继续上次的选题对话」；红线 3：桌面端不自己读会话记录）。
     # 放在 idea 分派块之前：那一块对多余参数一律报错，且它的原文被变异矩阵 M22b / M27a3 钉住
     if args == [IDEA_KEYWORD, "/list-sessions"]:
-        print(json.dumps(_session_rows(read_log(paths.ROOT / "data" / IDEA_DIR)), ensure_ascii=False))
+        idea_dir = paths.ROOT / "data" / IDEA_DIR
+        print(json.dumps(_session_rows(read_log(idea_dir), idea_dir), ensure_ascii=False))
         return 0
+    # D80：选题对话改名（同期会话版，不取租约）
+    if args[:2] == [IDEA_KEYWORD, "/rename-session"]:
+        return _rename_session(paths.ROOT / "data" / IDEA_DIR, args[2:])
     # D58：删除一段选题对话 → data/_idea/_agent/session-trash/（同期会话版的退出码）
     if args[:2] == [IDEA_KEYWORD, "/delete-session"]:
         return _delete_session(lambda: acquire_idea_lease(paths.ROOT), args[2:], "先结束选题会话再删除")

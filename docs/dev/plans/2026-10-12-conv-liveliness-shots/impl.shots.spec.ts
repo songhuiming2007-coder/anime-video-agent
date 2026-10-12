@@ -2,7 +2,7 @@
 // 便于和人选型时看过的 A 原型逐张对照。
 // 用法（在 desktop/ 下）：
 //   PYTHONDONTWRITEBYTECODE=1 npx playwright test -c ../docs/dev/plans/2026-10-12-conv-liveliness-shots/shots.config.ts -g "PR-C"
-// 产物：desktop/out/d80-shots/pr-c/
+// 产物：desktop/out/d80-shots/pr-c/（工具行 / 折叠 / 动感）与 pr-a/（侧栏会话标题与改名，-g "PR-A"）
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -89,6 +89,48 @@ test("PR-C 实现截图：方案 A 落地后的真实窗口", async () => {
     await expect(p.getByTestId("conv-tool-shimmer")).toHaveCount(1, { timeout: 20_000 });
     await shot(p, "s3-running-1440");
     await gif(p, "s3-running-1440");
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});
+
+test("PR-A 实现截图：侧栏会话标题（兜底 → 生成名）与改名", async () => {
+  test.setTimeout(120_000);
+  const out = join(__dirname, "../../../../desktop/out/d80-shots/pr-a");
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  const llm = await startFakeLlm();
+  llm.titleReply = "检查稿件字数";
+  llm.titleDelayMs = 2500;
+  const fx = realCoreFixture(llm.url, [EP]);
+  const L = await launchSession(fx.repo, [], { previewOpen: false });
+  const p = L.page;
+  const send = async (t: string) => { await p.getByTestId("composer-input").fill(t); await p.getByTestId("composer-input").press("Enter"); };
+  try {
+    await p.setViewportSize({ width: 1440, height: 900 });
+    await p.locator("[data-testid=episode]").first().click();
+    await p.evaluate(() => document.querySelectorAll<HTMLElement>(".banner").forEach((b) => { if (b.textContent?.includes("Code Freeze")) b.hidden = true; }));
+    llm.push(assistant("字数正常。"), assistant("好的。"));
+    await send("帮我看一下这期现在走到哪一步了，顺便检查一下稿件字数是不是超了");
+    await expect(p.locator("[data-testid=session-title]")).toHaveAttribute("data-source", "first_input", { timeout: 20_000 });
+    await p.screenshot({ path: join(out, "1-fallback.png"), clip: { x: 0, y: 0, width: 480, height: 420 } });
+    await expect(p.locator("[data-testid=session-title]")).toHaveText("检查稿件字数", { timeout: 20_000 });
+    await p.waitForTimeout(300);
+    await p.screenshot({ path: join(out, "2-generated.png"), clip: { x: 0, y: 0, width: 480, height: 420 } });
+    const row = p.locator("[data-testid=session-row]").first();
+    await row.hover();
+    await p.screenshot({ path: join(out, "3-hover.png"), clip: { x: 0, y: 0, width: 480, height: 420 } });
+    await row.getByTestId("session-rename").click();
+    await p.getByTestId("session-rename-input").fill("修稿那次");
+    await p.screenshot({ path: join(out, "4-editing.png"), clip: { x: 0, y: 0, width: 480, height: 420 } });
+    await p.getByTestId("session-rename-input").press("Enter");
+    await expect(p.locator("[data-testid=session-title]")).toHaveText("修稿那次");
+    await p.mouse.move(900, 600);
+    await p.waitForTimeout(300);
+    await p.screenshot({ path: join(out, "5-renamed.png"), clip: { x: 0, y: 0, width: 480, height: 420 } });
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

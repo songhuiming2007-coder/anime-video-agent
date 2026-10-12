@@ -199,6 +199,8 @@ class _Host:
         self.steer_source = None
         self.on_steer_delivered = None
         self.root = None
+        self.sid = None      # D80：没有会话号 → 回合后不起标题（本组用例只测排队）
+        self.log_dir = None
         self._outcome = outcome
         self._during = during
         from pipeline.agent.session import TurnInterrupt
