@@ -35,6 +35,13 @@ from pipeline import paths
 paths.ROOT = __import__("pathlib").Path(os.environ["AVA_PROTO_ROOT"])
 paths.DATA = paths.ROOT / "data"
 
+if os.environ.get("AVA_PROTO_PKG_EXT"):
+    # D83：测试替身模块（如 pipeline.leak_probe）从这个目录导入；协议进程与它拉起的作业子进程
+    # 都经 PYTHONPATH 载入本钩子，所以两边都认得。白名单另由 AVA_PROTO_EXTRA_MODULES 追加。
+    import pipeline
+
+    pipeline.__path__.append(os.environ["AVA_PROTO_PKG_EXT"])
+
 
 def _install():
     from pipeline.agent.tools import TOOL_SCHEMAS, _TOOL_IMPLS
@@ -75,6 +82,11 @@ def _install():
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         }
         _TOOL_IMPLS[name] = impl
+
+    from pipeline.agent import tools as _tools
+
+    for _module in filter(None, os.environ.get("AVA_PROTO_EXTRA_MODULES", "").split(",")):
+        _tools.PIPELINE_MODULES.add(_module)
 
     if os.environ.get("AVA_PROTO_STOP_POINT"):
         # TP-12：造一个挂起的停机点，否则 `stop_points.items` 恒为空集，
