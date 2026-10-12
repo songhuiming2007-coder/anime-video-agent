@@ -23,7 +23,7 @@ const tool = (name: string, ok: boolean | null, o: Partial<ToolRow> = {}): ToolR
 });
 const user = (text: string, at = 0): ConvRow => ({ k: "user", at, text });
 const answer = (text: string, at = 0): ConvRow => ({ k: "assistant", at, kind: "answer", text, label: null });
-const footer = (stopped = "done", at = 0): ConvRow => ({ k: "footer", at, text: "…", stopped });
+const footer = (stopped = "done", at = 0): ConvRow => ({ k: "footer", at, text: "…", stopped, brief: "1 次模型调用" });
 const turns = (segs: Segment[]) => segs.filter((s): s is Extract<Segment, { k: "turn" }> => s.k === "turn");
 
 describe("R2 ② 类别词", () => {

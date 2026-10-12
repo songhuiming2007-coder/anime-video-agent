@@ -195,6 +195,9 @@ test("D56 真实 core：服务商给了 usage.prompt_tokens → 会话头与脚�
     await send(L.page, "第一句");
     await waitTurns(L, "ep:SESS-A", 1);
     await expect(L.page.getByTestId("context-readout")).toHaveText("上下文 12.3k token");
+    // D80 R5：脚注默认只显示短摘要，完整遥测点 ⓘ 展开
+    await expect(L.page.getByTestId("footer-brief")).toHaveText("1 次模型调用 · 上下文 12.3k token");
+    await L.page.getByTestId("footer-more").click();
     await expect(L.page.getByText(/· 查证 字幕 0 · 在场 0 · 笔记 0 · 网页 0 · 上下文 12\.3k token$/)).toBeVisible();
     await send(L.page, "第二句");
     await waitTurns(L, "ep:SESS-A", 2);
