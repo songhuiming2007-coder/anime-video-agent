@@ -34,8 +34,10 @@
 | [D65 工具结果老化](2026-10-10-tool-result-aging-spec.md) | D65 | ADR-0022, Spec 16, Spec 18, D62 | 待施工（红队 F1–F4 + 人拍板 ①②③ 全部回填，含 is_bloated 第三处与放置裁决） |
 | [D67 恢复时全 role 脱敏投影](2026-10-10-resume-scrub-spec.md) | D67 | D52, Spec 16 | 待施工（人裁决①+实测修正：必须全 role，只 scrub tool 是假修复） |
 | [D39 桌面端布局：现状实测与方案候选](2026-09-29-desktop-layout-options.md) | D39 | — | 人选 **B**（预览默认收起）；S1–S4 已施工、每步人看过真实窗口截图（S1/S2 人确认满意），机检通过；**2026-09-29 人在打包版体验「整体很舒适」**，真实一期验收待硬盘到手（UI 规则 2 未勾，不归档） |
-| [企划层（多卷系列成为一等实体）](2026-10-12-project-layer-direction.md) | D81 | ADR-0023 | 上位需求文档（2026-10-12）；未动工，待人裁决 §5 四条后拆 spec；第一个使用者 supercell 编年史 |
-| [生产中撞 bug → ava 开工单](2026-10-12-bug-ticket-direction.md) | D82 | ADR-0029, ADR-0030 | 上位需求文档（2026-10-12）；未动工，待人裁决 §3 两条后拆 spec |
+| [企划层（多卷系列成为一等实体）](2026-10-12-project-layer-direction.md) | D81 | ADR-0023 | 上位需求文档（2026-10-12）；§5 非界面三条已裁决（2026-10-12），施工图见下行 spec；第一个使用者 supercell 编年史 |
+| [D81 企划层施工 spec](2026-10-12-project-layer-spec.md) | D81 | ADR-0023, ADR-0025, ADR-0030 | **spec 已写，待审**（2026-10-12；裁决 Q1–Q5 已录；分 PR-1 core / PR-2 UI 含 E / PR-3 C-3 / PR-4 C-1·C-2 / PR-5 总装；PR-2 截图选型未开始，UI 规则 2/4 的人验收未开始） |
+| [生产中撞 bug → ava 开工单](2026-10-12-bug-ticket-direction.md) | D82 | ADR-0029, ADR-0030 | 上位需求文档（2026-10-12）；§3-1 已裁决（2026-10-12），施工图见下行 spec |
+| [D82 撞 bug 开工单施工 spec](2026-10-12-bug-ticket-spec.md) | D82 | ADR-0025, ADR-0029, ADR-0030 | **spec 已写，待审**（2026-10-12；工单存仓库内 gitignore 的 `tickets/`；走 `run_pipeline tickets` 不新增工具；顺带堵 bash 跑写 `config/` 命令不弹卡的现有缺口，合并前需人确认；按钮截图选型未开始） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
