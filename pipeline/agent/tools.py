@@ -38,6 +38,10 @@ EPISODE_WRITABLE_FILES: set[str] = {
     "02-adversarial.md",
 }
 
+# D81：企划会话的写入白名单（Q4：机读字段变了才弹卡，散文免卡）。卷 / 普通期会话不含它
+PROJECT_FILE = "00-project.md"
+PROJECT_WRITABLE_FILES: frozenset[str] = frozenset({PROJECT_FILE})
+
 # 草稿是模型自己的工作稿，每次覆盖前留底（DRAFT_HISTORY_KEEP 份），所以写入可回退，每轮前几次免卡。
 # 3 = 写一次 + 修两次，与 creative.md「同一项连修两次仍没过就停下来问人」同一个数；
 # 超过即恢复弹卡，作为原地打转的刹车（2026-10-08 董香二期段落 3 连写十余轮）。
@@ -106,6 +110,13 @@ PIPELINE_MODULES: set[str] = {
     # D61 终审辅助：字幕逐字查询（子串/时间窗），只读索引后打印——进只读集合
     "subgrep",
 }
+
+# D81（人裁决 Q2：企划会话只做规划、跨卷审查、总装）：企划会话的 run_pipeline 只放行这几个企划级模块，
+# 外加不绑期目录的只读模块 subgrep 与 D82 的 tickets（PROJECT_SESSION_EXTRA；tickets 落地前白名单本就拒）
+PROJECT_PIPELINE_MODULES: frozenset[str] = frozenset({"assemble", "crosscheck"})
+PROJECT_SESSION_EXTRA: frozenset[str] = frozenset({"subgrep", "tickets"})
+# 只在企划会话里放行的模块（卷 / 普通期会话拒并指路）
+PROJECT_ONLY_MODULES: frozenset[str] = frozenset({"assemble"})
 
 # 其中纯只读、免审卡的模块（2026-10-08 spec §A）：check_script 只读稿件与索引后打印报告，
 # status 只读期目录，subgrep 只读字幕索引后打印；都不落盘（入选前已 grep 过无写调用）。新增成员前必须同样核实。
@@ -217,7 +228,35 @@ def resolve_episode_dir(episode_dir: Path | str, root: Path | None = None) -> Pa
     if resolved_ep == episodes_root or episodes_root not in resolved_ep.parents:
         raise PermissionError(f"期目录必须位于 {episodes_root} 之下: {resolved_ep}")
 
+    # 4. D81 §4.1：企划目录本身不是期（母目录 README 写着严禁在母目录写 01-topic.md，§三 #2）
+    from pipeline.project import classify_dir
+
+    if classify_dir(episode_dir, root=base) == "project":
+        raise PermissionError(f"这是企划目录，不是期：{episode_dir}（企划级改动用企划会话）")
+
     return resolved_ep
+
+
+def resolve_project_dir(project_dir: Path | str, root: Path | None = None) -> Path:
+    """企划目录校验（D81 §4.4 第 4 条）：与 resolve_episode_dir 同样的三种越界检查，再加 classify == project。
+
+    不经 resolve_episode_dir——后者对企划目录一律拒（红队 R-3）。返回 resolve 后的企划目录。
+    """
+    from pipeline.project import classify_dir
+
+    base = Path(root or paths.ROOT)
+    resolved = Path(project_dir).resolve()
+    repo_pipeline = (base / "pipeline").resolve()
+    if repo_pipeline in resolved.parents or resolved == repo_pipeline:
+        raise PermissionError("禁止修改 pipeline/ 源码目录文件，触发 Code Freeze 护栏")
+    episodes_root = (base / "data" / "episodes").resolve()
+    if not episodes_root.exists():
+        raise PermissionError(f"data/episodes 不可达（外置盘未挂载？），拒绝写入: {episodes_root}")
+    if resolved == episodes_root or episodes_root not in resolved.parents:
+        raise PermissionError(f"企划目录必须位于 {episodes_root} 之下: {resolved}")
+    if classify_dir(project_dir, root=base) != "project":
+        raise PermissionError(f"不是企划目录：{project_dir}")
+    return resolved
 
 
 def write_episode_file(
@@ -594,6 +633,13 @@ class ToolContext:
     episode_dir: Path | None = None
     root: Path | None = None
     confirmed: bool = False
+    # D81（§4.2 / §4.4）：四项都由宿主填，**不取模型参数**。
+    # session_kind ∈ episode | volume | project | idea；project_dir = 卷所属企划 / 企划会话自身（字面路径）。
+    # human_approved / bound：只在人在卡上批准时为真 / 带卡面所依据的状态（卡上绑定，§4.4）。
+    project_dir: Path | None = None
+    session_kind: str = "episode"
+    human_approved: bool = False
+    bound: dict | None = None
 
     @property
     def base(self) -> Path:
@@ -617,6 +663,14 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "type": "string",
                     "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
                 },
+                "area": {
+                    "type": "string",
+                    "enum": ["episode", "project", "library"],
+                    "description": (
+                        "可选，读哪个区：episode=当期 / 当卷目录；project=所属企划（卷会话只能读企划顶层的单个文件，"
+                        "如 00-project.md；企划会话可读各卷）；library=data/library。省略则按 期 → library → 企划顶层 的顺序找"
+                    ),
+                },
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -635,8 +689,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "properties": {
                 "filename": {
                     "type": "string",
-                    "enum": sorted(EPISODE_WRITABLE_FILES),
-                    "description": "白名单内的文件名",
+                    "enum": sorted(EPISODE_WRITABLE_FILES | PROJECT_WRITABLE_FILES),
+                    "description": "白名单内的文件名；00-project.md 只在企划会话里可写（改卷表 / 企划名 / 合集会弹卡）",
                 },
                 "content": {"type": "string", "description": "完整文件内容（新建或整篇重写；与 edits 二选一）"},
                 "edits": {
@@ -888,11 +942,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "写经验不写规则、不写流水账。op=add/revise/merge/retire 弹人审卡，人看全文按 y 才落盘；"
             "op=cite 把当期记为某条的证据（免卡）。禁用「可能」类措辞、规则强度词与审批行为词。"
             "全文 4000 字符预算，超限被拒时按返回的腾位候选序先 merge 或 retire 首位。"
+            "卷会话 / 企划会话里 target=project 写本企划的企划记忆（<企划>/00-memory.md，3000 字符，"
+            "证据只认本企划的卷）：只属于这个系列的经验进企划记忆，跨系列通用的进全局记忆。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "op": {"type": "string", "enum": ["add", "revise", "merge", "cite", "retire"]},
+                "target": {"type": "string", "enum": ["global", "project"],
+                           "description": "写哪份记忆：global（默认，跨期记忆）/ project（本企划记忆，只在卷 / 企划会话有效）"},
                 "ids": {"type": "array", "items": {"type": "string"}},
                 "pattern": {"type": "string"},
                 "evidence": {"type": "array", "items": {"type": "string"}},
@@ -1047,13 +1105,27 @@ def build_tool_schemas(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
+    """读域的根（全部 resolve）。D81 §4.3：企划会话 = 企划目录 + 各成员的 resolve()（成员可以是软链卷）+ library；
+    卷会话 = 卷目录 + library（企划顶层文件另由 `_project_top_ok` 单独放行）；普通期不变。"""
     roots: list[Path] = []
-    if ctx.episode_dir:
+    if ctx.session_kind == "project" and ctx.project_dir is not None:
+        from pipeline.project import project_members
+
+        roots.append(Path(ctx.project_dir).resolve())
+        roots.extend(m.resolve() for m in project_members(Path(ctx.project_dir)))
+    elif ctx.episode_dir:
         roots.append(Path(ctx.episode_dir).resolve())
     library = (ctx.base / "data" / "library").resolve()
     if library.exists():
         roots.append(library)
     return roots
+
+
+def _project_top_ok(rel: Path, target: Path, ctx: ToolContext) -> bool:
+    """卷会话读企划顶层：`rel` 只有一段，且 resolve 后的 target 的父目录就是企划目录（软链指出去不算）。"""
+    if ctx.session_kind != "volume" or ctx.project_dir is None or len(rel.parts) != 1:
+        return False
+    return target.parent == Path(ctx.project_dir).resolve()
 
 
 def deny_dir_hit(path: Path) -> str | None:
@@ -1070,21 +1142,42 @@ def deny_dir_hit(path: Path) -> str | None:
     return None
 
 
+# D81 §4.3 第 4 条：企划记忆按 basename 判（经软链读到的 target basename 仍是它）；日志带 result_text（全文），同样不可读
+_MEMORY_BASENAMES = frozenset({"00-memory.md", "00-memory.log.jsonl"})
+
+
 def _is_memory_file(target: Path, ctx: ToolContext) -> bool:
-    """是否命中 data/library/memory.md（resolve + casefold，Spec 7 §4.3②）。
+    """是否命中记忆正文或审计日志（resolve + casefold，Spec 7 §4.3②；D81 扩到企划记忆与日志）。
 
-    记忆只经装配器校验后注入；读工具留口子，校验层就有了旁路。
+    记忆只经装配器校验后注入；读工具留口子，校验层就有了旁路。日志的状态行带 result_text（记忆全文），
+    读它等于绕过来源确认读记忆。
     """
-    from pipeline.agent.memory import MEMORY_REL_PATH   # 函数内延迟 import（叶子性）
+    from pipeline.agent.memory import LOG_REL_PATH, MEMORY_REL_PATH   # 函数内延迟 import（叶子性）
 
-    return str(Path(target).resolve()).casefold() == str((ctx.base / MEMORY_REL_PATH).resolve()).casefold()
+    resolved = Path(target).resolve()
+    folded = str(resolved).casefold()
+    if resolved.name.casefold() in _MEMORY_BASENAMES or Path(target).name.casefold() in _MEMORY_BASENAMES:
+        return True
+    return folded in {
+        str((ctx.base / MEMORY_REL_PATH).resolve()).casefold(),
+        str((ctx.base / LOG_REL_PATH).resolve()).casefold(),
+    }
 
 
 def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。"""
+    """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。
+
+    D81 §4.3：`area` 选区；卷会话另可读企划顶层的单个文件（如 00-project.md）、不能借读兄弟卷；
+    企划会话可读整个企划（含软链卷）。后缀、硬排除、记忆文件三条都对 `rel` 与 resolve 后的 target 各判一次。
+    """
     raw = str(args.get("path", "")).strip()
     if not raw:
         raise ValueError("path 不能为空")
+    area = args.get("area")
+    if area is not None and area not in ("episode", "project", "library"):
+        raise ValueError(f"area 只能是 episode / project / library，收到 {area!r}")
+    if area == "project" and ctx.session_kind not in ("volume", "project"):
+        raise PermissionError("area=project 只在卷会话与企划会话里可用（当前会话不属于任何企划）")
     rel = Path(raw)
     if rel.is_absolute() or ".." in rel.parts:
         raise PermissionError(f"越界读被拒（只读期目录内与 data/library/）: {raw}")
@@ -1098,26 +1191,35 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
             f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
         )
 
+    library = ctx.base / "data" / "library"
     candidates: list[Path] = []
-    if ctx.episode_dir:
+    if area in (None, "episode") and ctx.episode_dir and ctx.session_kind != "project":
         candidates.append(Path(ctx.episode_dir) / rel)
-    candidates.append(ctx.base / "data" / "library" / rel)
-    candidates.append(ctx.base / "data" / "library" / "notes" / rel)
+    if area in (None, "project") and ctx.session_kind == "project" and ctx.project_dir is not None:
+        candidates.append(Path(ctx.project_dir) / rel)
+    if area in (None, "library"):
+        candidates.append(library / rel)
+        candidates.append(library / "notes" / rel)
+    if area in (None, "project") and ctx.session_kind == "volume" and ctx.project_dir is not None and len(rel.parts) == 1:
+        candidates.append(Path(ctx.project_dir) / rel)   # 企划顶层候选排在最后（同名时当卷文件优先）
 
     roots = _allowed_read_roots(ctx)
     for cand in candidates:
         target = cand.resolve()
+        if target.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
+            # 红队 R-15：软链 `x.json -> 00-memory.log.jsonl` 以 .json 的名义读 .jsonl——后缀对 resolve 后再判一次
+            raise PermissionError(f"只读文本类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}")
         # 判 resolve 后的绝对路径：软链接绕进 03-audio 同样拦下
         hit = deny_dir_hit(target)
         if hit:
             raise PermissionError(
                 f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
             )
-        if _is_memory_file(target, ctx):
+        if _is_memory_file(target, ctx) or _is_memory_file(cand, ctx):
             raise PermissionError(
                 "memory.md 只经装配器校验后注入，模型不可直读；人请用 /memory"
             )
-        if not any(target == r or r in target.parents for r in roots):
+        if not (any(target == r or r in target.parents for r in roots) or _project_top_ok(rel, target, ctx)):
             continue
         if target.is_file():
             size = target.stat().st_size
@@ -1259,9 +1361,96 @@ def _tool_write_note(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return {"written": str(dest), "bytes": len(content.encode("utf-8"))}
 
 
+@dataclass(frozen=True)
+class ProjectWritePlan:
+    """写 `00-project.md` 的一次规划（审查层与执行层各算一次，D81 §4.4）。"""
+
+    project_dir: Path          # resolve 后的企划目录
+    target: Path               # resolve 后的 00-project.md
+    before: str | None
+    after: str
+    base_sha: str              # 盘上 before 的 sha256（不存在为 "absent"）
+    machine_diff: list[str]    # 机读字段逐行 diff；空 = 只改散文
+
+
+def project_file_sha(target: Path) -> str:
+    import hashlib
+
+    try:
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return "absent"
+
+
+def plan_project_write(project_dir: Path | str, args: dict[str, Any], root: Path | None = None) -> ProjectWritePlan:
+    """解析 → 机读 diff。`after` 解析不了在弹卡前拒（ValueError）；`before` 不存在或不可解析都算机读字段有变（R-16）。"""
+    from pipeline import project as project_mod
+
+    filename = str(args.get("filename", "")).strip()
+    if filename != PROJECT_FILE:
+        raise PermissionError(f"企划会话里 write_episode_file 只认 {PROJECT_FILE}，收到 {filename!r}（卷级文件到卷会话里写）")
+    pdir = resolve_project_dir(project_dir, root=root)
+    target = (Path(project_dir) / PROJECT_FILE).resolve()
+    if target.parent != pdir:
+        raise PermissionError(f"{PROJECT_FILE} 指向企划目录之外（软链？），拒绝写入: {target}")
+    after = resolve_write_content(project_dir, args)
+    try:
+        after_doc = project_mod.parse(after)
+    except project_mod.ParseError as exc:
+        raise ValueError(f"{PROJECT_FILE} 写后不可解析：{exc}") from None
+    try:
+        before = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        before = None
+    before_doc = None
+    if before is not None:
+        try:
+            before_doc = project_mod.parse(before)
+        except project_mod.ParseError:
+            before_doc = None
+    return ProjectWritePlan(
+        project_dir=pdir, target=target, before=before, after=after,
+        base_sha=project_file_sha(target),
+        machine_diff=project_mod.diff_machine(before_doc, after_doc),
+    )
+
+
+def project_write_preview(plan: ProjectWritePlan) -> list[str]:
+    """卡面：机读字段逐行 diff + 全文 diff（D81 §4.4 第 2 条）。"""
+    import difflib
+
+    lines = ["[企划立项文件] 机读字段（企划名 / 合集 / 卷表）有变化：", *plan.machine_diff, "", "全文 diff："]
+    lines.extend(difflib.unified_diff(
+        (plan.before or "").split("\n"), plan.after.split("\n"),
+        fromfile=f"{PROJECT_FILE}（现版）" if plan.before is not None else "（新建）",
+        tofile=f"{PROJECT_FILE}（写后）", lineterm="",
+    ))
+    return lines
+
+
+def _write_project_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """企划会话写 `00-project.md`：执行层重算机读 diff；有变则要人在卡上批 + 卡面所依据的 base_sha 仍是盘上的。
+
+    确认只从宿主来：只看 `ctx.human_approved` 与 `ctx.bound`，不读 args 里任何同名键（§4.4 第 5 条）。
+    """
+    plan = plan_project_write(ctx.project_dir or ctx.episode_dir, args, root=ctx.root)  # type: ignore[arg-type]
+    if plan.machine_diff:
+        if not ctx.human_approved:
+            raise PermissionError(f"{PROJECT_FILE} 的机读字段（企划名 / 合集 / 卷表）有变，必须由人在卡上批准")
+        if not isinstance(ctx.bound, dict) or ctx.bound.get("base_sha") != plan.base_sha:
+            raise PermissionError(f"{PROJECT_FILE} 在你看卡之后变了，重新提交")
+    if plan.before is not None:
+        _keep_history(plan.project_dir, plan.target, FILE_HISTORY_DIR, None)
+    paths.atomic_write(plan.target, plan.after)
+    return {"written": str(plan.target), "bytes": len(plan.after.encode("utf-8")),
+            "machine_fields_changed": bool(plan.machine_diff)}
+
+
 def _tool_write_episode_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not ctx.episode_dir:
         raise PermissionError(NO_EPISODE_MESSAGE)
+    if ctx.session_kind == "project":
+        return _write_project_file(args, ctx)
     content = resolve_write_content(ctx.episode_dir, args)
     filename = str(args.get("filename", "")).strip()
     confirmed = bool(args.get("confirmed", False)) or ctx.confirmed
@@ -1275,18 +1464,34 @@ def _tool_list_episodes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     from pipeline.agent.cli import get_episodes_list
     from pipeline.status import inspect_episode
 
+    from pipeline.project import episodes_root, get_episode_tree
+
+    ep_root = episodes_root(ctx.root)
     episodes, hidden = get_episodes_list(root=ctx.root)
-    episodes_detail = [
-        {
-            "name": ep.name,
-            "current_step": inspect_episode(ep).current_step,
-            "is_blocked": inspect_episode(ep).is_blocked,
-        }
-        for ep in episodes
-    ]
+    tree = get_episode_tree(ctx.root)
+
+    def key(p: Path) -> str:
+        # D81 §6.3 ⑮：name 是相对 data/episodes/ 的键（V1 / V2 同名卷给出两个不同的 name）
+        return p.relative_to(ep_root).as_posix()
+
+    episodes_detail = []
+    for ep in episodes:
+        status = inspect_episode(ep)
+        parts = key(ep).split("/")
+        episodes_detail.append({
+            "name": key(ep),
+            "project": parts[0] if len(parts) == 2 else None,
+            "current_step": status.current_step,
+            "is_blocked": status.is_blocked,
+        })
     return {
-        "episodes": [ep.name for ep in episodes],
+        "episodes": [key(ep) for ep in episodes],
         "episodes_detail": episodes_detail,
+        "projects": [
+            {"name": key(proj.dir), "has_project_file": proj.has_project_file,
+             "members": [key(m) for m in proj.members]}
+            for proj in tree.projects
+        ],
         "hidden_underscore": hidden,
     }
 
@@ -1296,10 +1501,14 @@ def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
     target = str(args.get("episode", "")).strip()
     if target:
-        from pipeline.agent.cli import resolve_episode_target
-        ep_dir = resolve_episode_target(target)
+        from pipeline.agent.cli import explain_episode_target
+
+        # D81：卷 / 企划会话里裸卷名先在本企划内解析；歧义时返回候选，不猜
+        ep_dir, why = explain_episode_target(target, project=ctx.project_dir)
         if ep_dir is None:
-            raise FileNotFoundError(f"期目录不存在: {target}")
+            raise FileNotFoundError(why)
+    elif ctx.session_kind == "project":
+        raise ValueError("企划会话没有「当期」：给 episode=<卷名> 看某一卷的进度")
     elif ctx.episode_dir:
         ep_dir = Path(ctx.episode_dir).resolve()
     else:
@@ -1316,10 +1525,37 @@ def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+def project_module_refusal(argv: list[str], session_kind: str, project_dir: Path | None) -> str | None:
+    """D81 §4.2（人裁决 Q2）：企划会话的 run_pipeline 只放行企划级模块 + subgrep / tickets；
+    企划级专属模块（assemble）只在企划会话里放行。审查层与实现层共用；None = 放行。"""
+    if "-m" not in argv:
+        return None
+    at = argv.index("-m") + 1
+    module = argv[at].removeprefix("pipeline.") if at < len(argv) else ""
+    if session_kind == "project":
+        if module in PROJECT_PIPELINE_MODULES or module in PROJECT_SESSION_EXTRA:
+            return None
+        if module in ("status", "check_script"):
+            return (f"企划会话不跑 {module}：它要一个期目录。看某一卷的进度用 read_status(episode=<卷名>)，"
+                    "跑卷级检查到卷的会话里做")
+        from pipeline.project import project_members
+
+        vols = "、".join(m.name for m in project_members(project_dir)) if project_dir is not None else ""
+        return (f"这是卷级工序（pipeline.{module}），企划会话只做规划、跨卷审查与总装；"
+                f"到对应卷的会话里跑{f'（本企划的卷：{vols}）' if vols else ''}")
+    if module in PROJECT_ONLY_MODULES:
+        return f"pipeline.{module} 是企划级工序，只在企划会话里跑（侧栏点企划本身开企划会话）"
+    return None
+
+
 def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not ctx.episode_dir:
         # 实现层双保险（D43 / Spec 17 §3.4）：裸循环等绕过 review 层的路径也拿到同一文案。
         raise PermissionError(NO_EPISODE_MESSAGE)
+    dry = run_pipeline(str(args.get("command", "")), episode_dir=ctx.episode_dir, scope=ctx.scope, confirmed=False)
+    refusal = project_module_refusal(list(dry.get("argv") or []), ctx.session_kind, ctx.project_dir)
+    if refusal:
+        raise PermissionError(refusal)
     outcome = run_pipeline(
         str(args.get("command", "")),
         episode_dir=ctx.episode_dir,
@@ -1514,6 +1750,8 @@ def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
         # D43 / Spec 17 §3.4（人裁决 (A)）：idea 下提候选也报「先建期」——否则提案成功后
         # 内核会无条件弹抓取卡，而抓取卡执行器以 episode_dir=None 调 run_pipeline，自相矛盾。
         raise PermissionError(NO_EPISODE_MESSAGE)
+    if ctx.session_kind == "project":
+        raise PermissionError(PROJECT_VOLUME_ONLY_MESSAGE.format(tool="acquire_propose"))
     from pipeline.candidates import propose_candidates
 
     raw = args.get("candidates")
@@ -1552,17 +1790,39 @@ def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     )
 
 
+def memory_store_for(
+    args: dict[str, Any], session_kind: str, project_dir: Path | None, root: Path | None
+) -> tuple[Any, dict[str, Any]]:
+    """D81 §4.5：`target` 选记忆（global 默认 / project）。企划目录取自宿主绑定，不取模型参数。
+
+    返回 (store 或 None=全局, 去掉 target 键的参数)。普通期 / 选题会话给 project → PermissionError。
+    """
+    from pipeline.agent import memory
+
+    rest = {k: v for k, v in args.items() if k != "target"}
+    target = args.get("target", "global")
+    if target in (None, "", "global"):
+        return None, rest
+    if target != "project":
+        raise ValueError(f"target 只能是 global 或 project，收到 {target!r}")
+    if session_kind not in ("volume", "project") or project_dir is None:
+        raise PermissionError("target=project 只在卷会话与企划会话里有效（当前会话不属于任何企划）")
+    return memory.project_store(project_dir, root), rest
+
+
 def _tool_write_memory(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """唯一的记忆写入口。confirmed 只取 ctx.confirmed，**不读 args["confirmed"]**（Spec 7 §2.2）。"""
     from pipeline.agent import memory
 
+    store, rest = memory_store_for(args, ctx.session_kind, ctx.project_dir, ctx.root)
     plan = memory.apply_op(
-        str(args.get("op", "")),
-        args,
+        str(rest.get("op", "")),
+        rest,
         root=ctx.root,
         episode_dir=ctx.episode_dir,
         confirmed=ctx.confirmed,
         scope=ctx.scope,
+        store=store,
     )
     return {
         "op": plan.op,
@@ -1580,6 +1840,8 @@ def _tool_cover_edit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """
     if not ctx.episode_dir:
         raise PermissionError(NO_EPISODE_MESSAGE)
+    if ctx.session_kind == "project":
+        raise PermissionError(PROJECT_VOLUME_ONLY_MESSAGE.format(tool="cover_edit"))
     from pipeline import cover_edit
 
     try:
@@ -1736,6 +1998,9 @@ NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(
     {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}
 )
 NO_EPISODE_MESSAGE = "当前没有期目录：这一步要先建期（桌面端「＋ 新建一期」/ 终端 `ava new <名>`）"
+# D81 §4.2（红队 R-3）：企划会话的期目录绑定是企划目录，卷级操作不许落到默认分支写进母目录
+PROJECT_VOLUME_ONLY_TOOLS: frozenset[str] = frozenset({"cover_edit", "acquire_propose"})
+PROJECT_VOLUME_ONLY_MESSAGE = "{tool} 是卷级操作，企划会话里不做：到对应卷的会话里做（封面与抓取提案不写进企划母目录）"
 
 
 def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:

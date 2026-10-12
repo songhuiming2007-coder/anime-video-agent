@@ -7,6 +7,10 @@
 3. 超预算即拒，绝不截断、绝不自动淘汰；
 4. 绝不 mkdir；三路径双端 resolve；
 5. 顶层仅 stdlib + pipeline.paths；pipeline.agent.tools 函数内延迟 import（叶子性）。
+
+D81（企划记忆）：以上纪律参数化为 `MemoryStore`（目录、正文 / 日志 / 锁文件名、预算、注入头、告警前缀、
+证据引用范围）。`store=None` 一律是全局实例（`data/library/memory.md`，行为逐字节不变）；企划实例由
+`project_store(<企划目录>)` 给出，三件套落在企划目录（`00-memory.md` 等），预算 3000（人裁决 Q3）。
 """
 
 from __future__ import annotations
@@ -38,6 +42,12 @@ BUDGET_CHARS = 4000
 ENTRY_MAX_CHARS = 400
 EVIDENCE_MAX_CHARS = 100
 PRESSURE_THRESHOLD = BUDGET_CHARS - (ENTRY_MAX_CHARS + len(SEP))  # 3597
+# D81：企划记忆预算（人裁决 Q3，2026-10-12）；压力线按同一公式 3000 − (400 + 3) = 2597
+PROJECT_MEMORY_BUDGET_CHARS = 3000
+PROJECT_MEMORY_FILE = "00-memory.md"
+PROJECT_MEMORY_LOG = "00-memory.log.jsonl"
+PROJECT_MEMORY_LOCK = "00-memory.lock"
+PROJECT_WARNING_PREFIX = "[企划记忆未注入]"
 DIGEST_MAX_CHARS = 8000          # 不大于仓库里最重的单篇注入文档（Spec 7 §2.10）
 FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"})
 CARD_FREE_OPS = frozenset({"cite"})
@@ -100,6 +110,63 @@ _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 _PROCESS_LOCK = threading.Lock()
 
 
+def pressure_threshold(budget: int) -> int:
+    return budget - (ENTRY_MAX_CHARS + len(SEP))
+
+
+@dataclass(frozen=True)
+class MemoryStore:
+    """一份记忆的全部参数（D81）。路径一律在使用处双端 resolve；本类不碰文件系统。"""
+
+    dir: Path
+    body: str
+    log: str
+    lock: str
+    budget: int
+    header: str
+    warning_prefix: str
+    ack_hint: str
+    # 证据期引用只认 `<evidence_project>/<卷>`（本企划成员）；None = 任意期（全局）
+    evidence_project: str | None = None
+
+    @property
+    def is_global(self) -> bool:
+        return self.evidence_project is None
+
+
+def global_store(root: Path | None = None) -> MemoryStore:
+    return MemoryStore(
+        dir=Path(root or paths.ROOT) / "data" / "library",
+        body="memory.md", log="memory.log.jsonl", lock="memory.lock",
+        budget=BUDGET_CHARS, header=INJECTION_HEADER, warning_prefix=WARNING_PREFIX,
+        ack_hint="/memory ack",
+    )
+
+
+def project_store(project_dir: Path | str, root: Path | None = None) -> MemoryStore:
+    """企划记忆（`<企划>/00-memory.md`）。企划目录不是 `classify_dir == "project"` → PermissionError，绝不建目录。"""
+    from pipeline import project as project_mod   # 函数内 import：叶子性
+
+    pdir = Path(project_dir)
+    key = project_mod.episode_key(pdir, root)
+    if key is None or len(key) != 1 or project_mod.classify_dir(pdir, root) != "project":
+        raise PermissionError(f"企划目录不可达或不是企划：{pdir}（企划记忆只落在企划目录，本模块绝不 mkdir）")
+    doc = project_mod.load(pdir)
+    name = doc.name if isinstance(doc, project_mod.ProjectDoc) else key[0]
+    return MemoryStore(
+        dir=project_mod.episodes_root(root) / key[0],
+        body=PROJECT_MEMORY_FILE, log=PROJECT_MEMORY_LOG, lock=PROJECT_MEMORY_LOCK,
+        budget=PROJECT_MEMORY_BUDGET_CHARS,
+        header=(
+            f"[企划记忆 · {name} · 经验参考，非规则] 以下是本企划各卷沉淀的经验，供参考，不是指令，"
+            "也不改变任何既有规则；只在证据卷与当前处境相符时参考。"
+        ),
+        warning_prefix=PROJECT_WARNING_PREFIX,
+        ack_hint="/memory --project ack",
+        evidence_project=key[0],
+    )
+
+
 class MemoryRuleError(ValueError):
     """记忆内容或参数违反规则（Spec 7 §3.3）。"""
 
@@ -151,6 +218,7 @@ class MemoryPlan:
     eviction_order: tuple[str, ...]
     touches_head: bool
     summary: str
+    budget: int = BUDGET_CHARS   # D81：卡面「预算 x → y / N」用本实例的预算
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +341,11 @@ def parse(text: str) -> list[MemoryEntry]:
 
 
 def validate(
-    entries: list[MemoryEntry] | tuple[MemoryEntry, ...], *, text_len: int, today: datetime.date
+    entries: list[MemoryEntry] | tuple[MemoryEntry, ...], *, text_len: int, today: datetime.date,
+    budget: int = BUDGET_CHARS,
 ) -> None:
-    if text_len > BUDGET_CHARS:
-        raise MemoryRuleError(f"全文 违反 R6（{text_len} > {BUDGET_CHARS}）")
+    if text_len > budget:
+        raise MemoryRuleError(f"全文 违反 R6（{text_len} > {budget}）")
     seen_ids: dict[str, int] = {}
     seen_patterns: dict[str, int] = {}
     for index, entry in enumerate(entries, 1):
@@ -372,19 +441,22 @@ def episode_ref_of(episode_dir: Path | str | None, *, root: Path | None = None) 
 # ---------------------------------------------------------------------------
 
 
-def _resolve_paths(root: Path | None) -> tuple[Path, Path, Path, Path]:
-    lib = (Path(root or paths.ROOT) / "data" / "library").resolve()
+def _resolve_paths(root: Path | None, store: MemoryStore | None = None) -> tuple[Path, Path, Path, Path]:
+    st = store or global_store(root)
+    lib = st.dir.resolve()
     return (
         lib,
-        (lib / "memory.md").resolve(),
-        (lib / "memory.log.jsonl").resolve(),
-        (lib / "memory.lock").resolve(),
+        (lib / st.body).resolve(),
+        (lib / st.log).resolve(),
+        (lib / st.lock).resolve(),
     )
 
 
-def _require_lib(root: Path | None) -> tuple[Path, Path, Path, Path]:
-    lib, mem, log, lock = _resolve_paths(root)
+def _require_lib(root: Path | None, store: MemoryStore | None = None) -> tuple[Path, Path, Path, Path]:
+    lib, mem, log, lock = _resolve_paths(root, store)
     if not lib.is_dir():
+        if store is not None and not store.is_global:
+            raise PermissionError(f"企划目录不可达：{lib}；本模块绝不 mkdir")
         raise PermissionError(
             f"data/library 不可达（外置盘未挂载？）：{lib}。先跑 ./pipeline/preflight.sh --init；本模块绝不 mkdir"
         )
@@ -395,8 +467,8 @@ def _require_lib(root: Path | None) -> tuple[Path, Path, Path, Path]:
 
 
 @contextlib.contextmanager
-def _locked(lib: Path, *, exclusive: bool) -> Iterator[None]:
-    fd = os.open(str(lib / "memory.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+def _locked(lib: Path, *, exclusive: bool, lock_name: str = "memory.lock") -> Iterator[None]:
+    fd = os.open(str(lib / lock_name), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         yield
@@ -452,9 +524,9 @@ def _status_text(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
-def provenance_ok(*, root: Path | None = None) -> tuple[bool, str, str]:
+def provenance_ok(*, root: Path | None = None, store: MemoryStore | None = None) -> tuple[bool, str, str]:
     """(来源是否确认, 当前 sha, 日志状态行 sha)。不加锁（锁内调用者自己持锁）。"""
-    _lib, mem, log, _lock = _require_lib(root)
+    _lib, mem, log, _lock = _require_lib(root, store)
     current = _sha(_read_bytes(mem))
     status = _status_sha(_read_log_rows(log))
     return (current == status, current, status)
@@ -480,7 +552,7 @@ class _Snapshot:
         return self.sha == self.status_sha
 
 
-def _snapshot(mem: Path, log: Path, today: datetime.date) -> _Snapshot:
+def _snapshot(mem: Path, log: Path, today: datetime.date, budget: int = BUDGET_CHARS) -> _Snapshot:
     blob = _read_bytes(mem)
     current = _sha(blob)
     rows = tuple(_read_log_rows(log))
@@ -492,7 +564,7 @@ def _snapshot(mem: Path, log: Path, today: datetime.date) -> _Snapshot:
                          "全文 违反 R5（不是合法 UTF-8 文本）")
     try:
         entries = tuple(parse(text))
-        validate(list(entries), text_len=len(text), today=today)
+        validate(list(entries), text_len=len(text), today=today, budget=budget)
     except MemoryRuleError as exc:
         return _Snapshot(text, current, status, rows, None, str(exc))
     return _Snapshot(text, current, status, rows, entries, None)
@@ -647,18 +719,21 @@ def _plan_unlocked(
     root: Path | None,
     episode_dir: Path | None,
     today: datetime.date,
+    store: MemoryStore | None = None,
 ) -> MemoryPlan:
+    st = store or global_store(root)
+    budget = st.budget
     cleaned = _clean_args(args)
     if "op" in cleaned and cleaned["op"] != op:
         raise MemoryRuleError(f"参数 op={cleaned['op']} 与调用的 op={op} 不一致")
     if op not in WRITE_OPS:
         raise MemoryRuleError(f"未知 op '{op}'；合法值: {list(WRITE_OPS)}")
 
-    snap = _snapshot(mem, log, today)
+    snap = _snapshot(mem, log, today, budget)
     if not snap.confirmed:
         raise PermissionError(
-            "来源未确认：memory.md 与审计日志状态行 sha 不一致（疑似 ava 之外的改动）。"
-            "请人在终端运行 /memory ack 查看全文并确认"
+            f"来源未确认：{st.body} 与审计日志状态行 sha 不一致（疑似 ava 之外的改动）。"
+            f"请人在终端运行 {st.ack_hint} 查看全文并确认"
         )
     if snap.error:
         raise MemoryRuleError(snap.error)
@@ -689,6 +764,7 @@ def _plan_unlocked(
         missing = [ref for ref in refs if resolve_ref(ref, episodes_root=episodes_root) is None]
         if missing:
             raise MemoryRuleError(f"add 的证据期不可解析（期不存在或缺少 01-topic.md）: {missing}")
+        _check_evidence_scope(refs, st)
         new_id = _alloc_id(entries, rows)
         entry = MemoryEntry(new_id, pattern, tuple(refs), boundary, today_str)
         for existing in entries:
@@ -754,6 +830,7 @@ def _plan_unlocked(
             raise MemoryRuleError("cite 不接受 pattern / boundary / evidence / reason")
         old = _pick(entries, ids[0])
         cited_ref = episode_ref_of(episode_dir, root=root)
+        _check_evidence_scope([cited_ref], st)
         if cited_ref in _full_set(old, latest):
             raise MemoryRuleError(f"cite 被拒：{old.id} 的证据里已有当期 {cited_ref}")
         proposed = [*old.evidence, cited_ref]
@@ -777,23 +854,24 @@ def _plan_unlocked(
         affected_ids = (old.id,)
 
     result_text = serialize(after)
-    if len(result_text) > BUDGET_CHARS:
+    if len(result_text) > budget:
         counts = evidence_counts(entries, rows)
         order = eviction_order(entries, counts)
         raise MemoryBudgetError(
-            f"超预算：写后 {len(result_text)} > {BUDGET_CHARS}，超出 {len(result_text) - BUDGET_CHARS} 字符；"
+            f"超预算：写后 {len(result_text)} > {budget}，超出 {len(result_text) - budget} 字符；"
             f"先按候选序 merge 或 retire：{list(order)}",
-            need=len(result_text) - BUDGET_CHARS,
+            need=len(result_text) - budget,
             candidates=order,
         )
-    validate(after, text_len=len(result_text), today=today)
+    validate(after, text_len=len(result_text), today=today, budget=budget)
     counts = evidence_counts(entries, rows)
     order = eviction_order(entries, counts)
     touches_head = bool(order) and order[0] in affected_ids
-    if op in ("merge", "retire") and len(text) > PRESSURE_THRESHOLD:
+    pressure = pressure_threshold(budget)
+    if op in ("merge", "retire") and len(text) > pressure:
         if order and order[0] not in affected_ids:
             raise MemoryRuleError(
-                f"违反压力区首位约束（R6）：当前 {len(text)} > {PRESSURE_THRESHOLD}，"
+                f"违反压力区首位约束（R6）：当前 {len(text)} > {pressure}，"
                 f"{op} 的对象必须包含腾位候选序首位 {order[0]}（候选序: {list(order)}）"
             )
 
@@ -820,7 +898,19 @@ def _plan_unlocked(
         eviction_order=order,
         touches_head=touches_head,
         summary=_summarize(op, ids, new_id, cited_ref, reason),
+        budget=budget,
     )
+
+
+def _check_evidence_scope(refs: list[str], st: MemoryStore) -> None:
+    """D81：企划记忆的证据期只认本企划的成员（`<企划>/<卷>`）；全局记忆不限。"""
+    if st.evidence_project is None:
+        return
+    outside = [ref for ref in refs if ref.split("/")[0] != st.evidence_project or len(ref.split("/")) != 2]
+    if outside:
+        raise MemoryRuleError(
+            f"企划记忆的证据只认本企划 {st.evidence_project} 的卷（<企划>/<卷>），这些引用不在本企划：{outside}"
+        )
 
 
 def _summarize(
@@ -844,18 +934,21 @@ def plan_op(
     root: Path | None = None,
     episode_dir: Path | None = None,
     today: datetime.date | None = None,
+    store: MemoryStore | None = None,
 ) -> MemoryPlan:
-    """纯 dry-run，不写文件，持 memory.lock 的 LOCK_SH 读取。"""
-    lib, _mem, log, _lock = _require_lib(root)
-    with _locked(lib, exclusive=False):
+    """纯 dry-run，不写文件，持锁文件的 LOCK_SH 读取。"""
+    st = store or global_store(root)
+    lib, _mem, log, _lock = _require_lib(root, st)
+    with _locked(lib, exclusive=False, lock_name=st.lock):
         return _plan_unlocked(
             op,
             args,
-            mem=(lib / "memory.md"),
+            mem=(lib / st.body),
             log=log,
             root=root,
             episode_dir=episode_dir,
             today=today or datetime.date.today(),
+            store=st,
         )
 
 
@@ -868,16 +961,18 @@ def apply_op(
     confirmed: bool,
     scope: str,
     today: datetime.date | None = None,
+    store: MemoryStore | None = None,
 ) -> MemoryPlan:
     """唯一写入口：持锁 → 锁内重读重规划 → 卡闸 → 追加日志 → 原子写。
 
     D43 / Spec 17（ADR-0027）：不再有 scope 闸——所有模式可写记忆，scope 只作日志记录字段。
     """
-    lib, mem, log, _lock = _require_lib(root)
+    st = store or global_store(root)
+    lib, mem, log, _lock = _require_lib(root, st)
     stamp = today or datetime.date.today()
-    with _PROCESS_LOCK, _locked(lib, exclusive=True):
+    with _PROCESS_LOCK, _locked(lib, exclusive=True, lock_name=st.lock):
         plan = _plan_unlocked(
-            op, args, mem=mem, log=log, root=root, episode_dir=episode_dir, today=stamp
+            op, args, mem=mem, log=log, root=root, episode_dir=episode_dir, today=stamp, store=st
         )
         if plan.requires_card and not confirmed:
             raise PermissionError(
@@ -966,13 +1061,20 @@ def _utc_now() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _warning_invalid(detail: str) -> str:
+def _warning_invalid(detail: str, store: MemoryStore | None = None) -> str:
     """§3.7 的不合法告警：文案与 spec 逐字一致（括号里的定位细节只留给 /memory check）。"""
     core = detail.split("（", 1)[0].strip()
+    if store is not None and not store.is_global:
+        return f"{store.warning_prefix} 校验失败：{core}。请人在终端运行 /memory --project check 定位修复。"
     return f"{WARNING_PREFIX} 校验失败：{core}。请人在终端运行 /memory check 定位修复。"
 
 
-def _warning_unconfirmed() -> str:
+def _warning_unconfirmed(store: MemoryStore | None = None) -> str:
+    if store is not None and not store.is_global:
+        return (
+            f"{store.warning_prefix} 检测到 ava 之外的改动（未经 {store.ack_hint}）。"
+            f"请人在终端运行 {store.ack_hint} 查看全文并确认。"
+        )
     return (
         f"{WARNING_PREFIX} 检测到 ava 之外的改动（未经 /memory ack）。"
         "请人在终端运行 /memory ack 查看全文并确认。"
@@ -980,36 +1082,37 @@ def _warning_unconfirmed() -> str:
 
 
 def render_injection(
-    root: Path | None = None, *, today: datetime.date | None = None
+    root: Path | None = None, *, today: datetime.date | None = None, store: MemoryStore | None = None
 ) -> str | None:
     """持 LOCK_SH 读取。缺失或零条目且来源一致 → None；否则正文或告警。
 
     本函数不打 stderr：告警态下它每轮都被调用，stderr 由装配器按 tracker 只打一次。
     """
+    st = store or global_store(root)
     try:
-        lib, mem, log, _lock = _require_lib(root)
+        lib, mem, log, _lock = _require_lib(root, st)
     except PermissionError:
-        return _warning_invalid("路径不可达或 resolve 越界（memory.md 指向库外？）")
+        return _warning_invalid(f"路径不可达或 resolve 越界（{st.body} 指向库外？）", store)
     try:
-        with _locked(lib, exclusive=False):
-            snap = _snapshot(mem, log, today or datetime.date.today())
+        with _locked(lib, exclusive=False, lock_name=st.lock):
+            snap = _snapshot(mem, log, today or datetime.date.today(), st.budget)
     except PermissionError:
         # 读盘失败也要 fail-closed 成告警：注入契约是「正文或告警」，不允许整轮对话被炸掉
-        return _warning_invalid("文件不可读")    # 不回显路径
+        return _warning_invalid("文件不可读", store)    # 不回显路径
     if snap.error:
-        return _warning_invalid(snap.error)
+        return _warning_invalid(snap.error, store)
     if not snap.confirmed:
-        return _warning_unconfirmed()
+        return _warning_unconfirmed(store)
     if not snap.entries:
         return None
-    return f"{INJECTION_HEADER}\n\n{snap.text.rstrip(chr(10))}"
+    return f"{st.header}\n\n{snap.text.rstrip(chr(10))}"
 
 
 def render_plan_preview(plan: MemoryPlan) -> list[str]:
     """卡面行：原文展示，不剔除、不截断（违禁字符已被 R5 拒收）。"""
     lines = [
         f"[记忆写入] {plan.summary}",
-        f"预算: {plan.before_len} → {plan.after_len} / {BUDGET_CHARS}",
+        f"预算: {plan.before_len} → {plan.after_len} / {plan.budget}",
         f"人审: {'需按 y 确认全文' if plan.requires_card else '免卡（cite 只追加当期证据）'}",
     ]
     if plan.cited_ref:
@@ -1059,18 +1162,20 @@ def ack_external(
     root: Path | None = None,
     confirm: Callable[[str], tuple[bool, float]],
     is_tty: Callable[[], bool] = lambda: sys.stdin.isatty(),
+    store: MemoryStore | None = None,
 ) -> bool:
     """人在交互终端确认外部改动。命令行版已删（`echo y |` 拦不住，且记不了审批账）。"""
+    st = store or global_store(root)
     if not is_tty():
-        print("[memory] 拒绝：/memory ack 只在交互终端可用（本项目不支持管道驱动 ack）")
+        print(f"[memory] 拒绝：{st.ack_hint} 只在交互终端可用（本项目不支持管道驱动 ack）")
         return False
     try:
-        lib, mem, log, _lock = _require_lib(root)
+        lib, mem, log, _lock = _require_lib(root, st)
     except PermissionError as exc:
         print(f"[memory] 拒绝：{exc}")
         return False
-    with _locked(lib, exclusive=False):
-        snap = _snapshot(mem, log, datetime.date.today())
+    with _locked(lib, exclusive=False, lock_name=st.lock):
+        snap = _snapshot(mem, log, datetime.date.today(), st.budget)
         if snap.error:
             print(f"[memory] 拒绝 ack：文件不合法 → {snap.error}")
             return False
@@ -1093,10 +1198,10 @@ def ack_external(
     shown, latency = confirm(f"{diff}\n\n{text}")
     if not shown:
         return False
-    with _PROCESS_LOCK, _locked(lib, exclusive=True):
+    with _PROCESS_LOCK, _locked(lib, exclusive=True, lock_name=st.lock):
         current = _sha(_read_bytes(mem))
         if current != shown_sha:
-            print("[memory] 中止：展示之后文件被改动，请重新 /memory ack")
+            print(f"[memory] 中止：展示之后文件被改动，请重新 {st.ack_hint}")
             return False
         rows = _read_log_rows(log)
         _append_log(
@@ -1243,11 +1348,12 @@ def _log_digest(root: Path | None, result: DigestResult) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cmd_check(root: Path | None = None) -> int:
+def _cmd_check(root: Path | None = None, store: MemoryStore | None = None) -> int:
+    st = store or global_store(root)
     try:
-        lib, mem, log, _lock = _require_lib(root)
-        with _locked(lib, exclusive=False):
-            snap = _snapshot(mem, log, datetime.date.today())
+        lib, mem, log, _lock = _require_lib(root, st)
+        with _locked(lib, exclusive=False, lock_name=st.lock):
+            snap = _snapshot(mem, log, datetime.date.today(), st.budget)
     except PermissionError as exc:
         print(f"[memory] 不可达：{exc}", file=sys.stderr)
         return 2
@@ -1257,7 +1363,7 @@ def _cmd_check(root: Path | None = None) -> int:
     if not snap.confirmed:
         print(
             f"[memory] 合法但来源未确认（当前 {snap.sha[:12]} ≠ 日志状态行 {snap.status_sha[:12]}）；"
-            "请人在 REPL 运行 /memory ack",
+            f"请人在 REPL 运行 {st.ack_hint}",
             file=sys.stderr,
         )
         return 3
@@ -1265,11 +1371,12 @@ def _cmd_check(root: Path | None = None) -> int:
     return 0
 
 
-def _cmd_show(root: Path | None = None) -> int:
+def _cmd_show(root: Path | None = None, store: MemoryStore | None = None) -> int:
+    st = store or global_store(root)
     try:
-        lib, mem, log, _lock = _require_lib(root)
-        with _locked(lib, exclusive=False):
-            snap = _snapshot(mem, log, datetime.date.today())
+        lib, mem, log, _lock = _require_lib(root, st)
+        with _locked(lib, exclusive=False, lock_name=st.lock):
+            snap = _snapshot(mem, log, datetime.date.today(), st.budget)
     except PermissionError as exc:
         print(f"[memory] 不可达：{exc}", file=sys.stderr)
         return 2
@@ -1279,7 +1386,7 @@ def _cmd_show(root: Path | None = None) -> int:
     print(snap.text if snap.text else "[memory] 零条目")
     print(
         f"[memory] {len(snap.entries or ())} 条 / {len(snap.text)} 字符 / "
-        f"来源{'已确认' if snap.confirmed else '未确认（需 /memory ack）'}"
+        f"来源{'已确认' if snap.confirmed else f'未确认（需 {st.ack_hint}）'}"
     )
     return 0
 

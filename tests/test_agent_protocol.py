@@ -970,6 +970,7 @@ def test_tp12_tp15_stop_points_frames(world, endpoint, tmp_path) -> None:
             "v", "seq", "sid", "t", "episode", "scope", "continue_status", "llm", "degrade_reason",
             "code_freeze_ok", "history_count", "session_bytes", "other_sessions",
             "resume_prompt_tokens", "resume_prompt_chars", "context_window",
+            "session_kind", "project",  # D81：会话类型与所属企划
         }
         first = [f for f in proto_proc.frames if f.get("t") == "stop_points" and not f.get("turn_id")][0]
         assert len(first["items"]) == 1, "世界里必须有挂起停机点，否则下面的键集合断言是空转"

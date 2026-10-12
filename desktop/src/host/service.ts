@@ -61,7 +61,7 @@ import {
 } from "../shared/protocol";
 import { decide, DecideFail, parseDecideParams } from "./decide";
 import { errnoOf, realFs, type FsRead } from "./fsio";
-import { listEpisodes, type EpisodeEntry } from "./episodes";
+import { listEpisodeTree, listEpisodes, type EpisodeEntry, type ProjectEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
@@ -206,6 +206,8 @@ export class HostService {
   reachDetail = "";
   diagnostics: string[] = [];
   episodes = new Map<string, EpisodeEntry>();
+  /** D81：企划（projKey → 企划目录与成员）。成员同时在 `episodes` 里（键带企划前缀），旧路径照用 */
+  projects = new Map<string, ProjectEntry>();
   hiddenUnderscore = 0;
   summaries = new Map<string, Omit<EpisodeSummary, "conv">>();
   /**
@@ -479,8 +481,10 @@ export class HostService {
   refreshEpisodes(): void {
     if (!this.dataRoot || this.reach !== "ok") return;
     try {
-      const { visible, hiddenUnderscore } = listEpisodes(join(this.dataRoot, "episodes"), this.deps.fs);
+      const root = join(this.dataRoot, "episodes");
+      const { visible, hiddenUnderscore } = listEpisodes(root, this.deps.fs);
       this.episodes = new Map(visible.map((e) => [e.epKey, e]));
+      this.projects = new Map(listEpisodeTree(root, this.deps.fs).projects.map((p) => [p.projKey, p]));
       this.hiddenUnderscore = hiddenUnderscore;
     } catch (e) {
       this.diag(`期列表读取失败：${errnoOf(e) ?? String(e)}`);
@@ -513,13 +517,21 @@ export class HostService {
 
   episodesList(): EpisodesList {
     const convs = this.sessions.summaries();
+    const summaryOf = (e: EpisodeEntry): EpisodesList["episodes"][number] => ({
+      ...(this.summaries.get(e.epKey) ?? { epKey: e.epKey, mtimeMs: e.mtimeMs, currentStep: null, isBlocked: null }),
+      conv: convs.get(`ep:${e.epKey}` as ConvKey) ?? null,
+    });
     return {
       reach: this.reach,
       reachDetail: this.reachDetail,
       hiddenUnderscore: this.hiddenUnderscore,
-      episodes: [...this.episodes.values()].map((e) => ({
-        ...(this.summaries.get(e.epKey) ?? { epKey: e.epKey, mtimeMs: e.mtimeMs, currentStep: null, isBlocked: null }),
-        conv: convs.get(`ep:${e.epKey}` as ConvKey) ?? null,
+      episodes: [...this.episodes.values()].map((e) => summaryOf(e)),
+      projects: [...this.projects.values()].map((p) => ({
+        projKey: p.projKey,
+        mtimeMs: p.mtimeMs,
+        hasProjectFile: p.hasProjectFile,
+        members: p.members.map((m) => summaryOf(m)),
+        conv: convs.get(`proj:${p.projKey}` as ConvKey) ?? null,
       })),
       idea: convs.get("idea") ?? null,
     };
@@ -1196,6 +1208,12 @@ export class HostService {
   private convTarget(convKey: string, mode: "new" | "continue"): SessionTarget {
     // idea 的「继续」= core 在 --idea 启动时恒恢复最近段（Spec 18 §3.3）；D58：「＋ 新会话」之后的下一次拉起带 --fresh
     if (convKey === "idea") return { key: "idea", epKey: null, abs: null, mode: "idea", ...(this.ideaFresh ? { fresh: true } : {}) };
+    if (convKey.startsWith("proj:")) {
+      // D81：企划会话。abs 只取宿主自己扫出来的企划目录（不取渲染层给的路径）
+      const p = this.projects.get(convKey.slice(5));
+      if (!p) throw new RpcFail("E_BAD_REQUEST", `未知企划 ${convKey.slice(5)}`);
+      return { key: convKey as ConvKey, epKey: null, abs: p.abs, mode };
+    }
     if (!convKey.startsWith("ep:")) throw new RpcFail("E_BAD_REQUEST", `未知会话键 ${convKey}`);
     const epKey = convKey.slice(3);
     const e = this.episodes.get(epKey);

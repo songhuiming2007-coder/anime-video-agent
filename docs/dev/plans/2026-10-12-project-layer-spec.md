@@ -799,3 +799,57 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
 **上位需求本身**：没有发现新的错误。§三 已列的两处（「照 `01-topic.md` 的纪律弹卡」前提失效、写工具白名单已是 5 个）由原稿处理，人已裁决 Q4。
 
 **改完复核**：本节新增与改写的锚点（`_tool_cover_edit`、`_tool_acquire_propose`、`if ep_dir is None and name in NEEDS_EPISODE_TOOLS:`、协议里 idea 那一支的空 `stop_points`、`raw = ep.joinpath(*RAW_REPLY)`、`DETAIL=$(ffmpeg -v error -i "$OUT" -f null - 2>&1 || true)`、`App.tsx` 的 `convKey`、`apply_op` 注释原文）已重新 grep，全部命中。
+
+---
+
+## 十五、施工记录
+
+> 分支 `d81-d82-project-layer`（从 `main` 的 `c99a6fa` 切出）。开工 2026-10-12 20:40。基线：pytest 2686 / vitest 539 / playwright 135（2 跳过）。
+> 同一分支先落了 D83（`e0ca1fb`，见 issues D83 行），之后按本 spec 的 PR 顺序施工。
+
+### PR-1（2026-10-12 / 13）
+
+**落地**：§6.3 ①–㉕ 全部落地。与清单字面不同之处（都不改设计，逐条写明）：
+
+1. **树规则、期名合规、解析器放在新文件 `pipeline/project.py`**（清单 ④ 的那个文件），`cli` 以原名再导出 `classify_dir` / `get_episode_tree` / `_episode_name_problem`。理由：`adversarial` / `crosscheck` / `assemble` 也要认企划，import `cli.py` 会拖进整个 agent 栈（`cli.py` 文件头已写明共享函数要下沉到叶子模块）。
+2. **期根以上经软链的路径**：宿主可能给 `/var/folders/…` 而 `paths.ROOT` 是 resolve 后的 `/private/var/…`（外置盘软链同理）。`episode_key` 先比字面，再只 resolve「期根那一段」，期 / 企划 / 卷各段仍按字面取（§4.1 末条不变，`test_期根以上经软链_末段仍按字面` 锁住）。
+3. **期根之外的绝对路径 → None**（§4.1 / §6.5 原文）使 13 条既有测试变红（它们在子进程里用真实仓库根跑 `ava <tmp_path/期>`）。停下问人，**人裁决（2026-10-12，选项原文）：「照 spec 拒，改这 13 条测试 (Recommended)」**。做法：测试侧根目录替身 `tests/root_shim.py`（临时根复制 config/docs/skills/AGENTS.md、软链 pipeline/、`data/episodes` 软链到测试原来的期根，子进程经 sitecustomize 改 `paths.ROOT`）；只换夹具、断言一条不动，golden 金样本 G-P1 / G-P2 逐字不变。
+4. **`creative.md` 没有「记忆段」**（清单 ㉒ 的锚点不存在）：在文末新开一小节「记忆两层（D81）」写那一句。
+5. **协议入站帧**：`command` 加可选键 `target`（只用于 `memory_ack`，取值 global / project）；入站键检查由「恰为必需键」改为「必需键 + 可选键」，`rid` 之外只放行这一个。
+6. **卡上绑定多一层防御**：`llm.py` 组装 `exec_ctx` 时只在 `provenance == "human"` 时传 `bound`（spec 原文是 `bound = decision.bind`，由 `_review` 保证只有人批那支带）。因此 M9（`_review` 的 session_allow 分支带 bind）在集成测试里观察不到，另加 `test_review_本会话已批的同类卡不带绑定` 直接测 `_review` 返回的 `Decision`。集成测试用进程内真实 `_review`（`AgentSession` + 假通道）走人批 / card_free / 「本会话都批准」/ session_allow 四条路径，不是协议子进程。
+7. **写入卡面**：`render_approval_card` 的写入分支也渲染 `command_preview`（00-project.md 的机读逐行 diff + 全文 diff）。
+8. **企划会话 `--fresh`**：接受，等同开新会话（与不带 `--continue` 相同），对齐 spec 的入口写法。
+9. **会话管理认企划目录**：`ava <企划目录绝对路径> /list-sessions` 等会话管理命令放行企划目录（宿主的 `proj:` 会话列表要用），其余期级子命令照拒。
+10. **既有契约随之更新**（都是 spec 要求的变化）：`ready` 键集合 +`session_kind` / `project`、`memory.scopes` +`project`、`list_episodes` 明细 +`project`；vitest / e2e 里手写的假 `ready` 帧补两键；`scripts/verify_mutations.py` 中因代码搬家失效的 6 条锚点改到新位置（S10-MUT-18/19/20、MUT-D42-d、M27c、S9-MUT-60）。
+
+**测试**：新增 `tests/test_project_layer.py`（树规则、判定、期名解析、解析器，51 条）、`tests/test_project_session.py`（读域、写企划文件、卡上绑定、企划会话工具、判定一致、CLI、企划记忆、注入、协议，46 条）、`tests/test_d83_run_pipeline_scrub.py` 之外的既有文件按上条更新；vitest +4（树形对拍含 `（终）` / `😀-x` 码点序对、`ready` 缺键、`SESSION_PROJECT` argv、`proj:` 路由）；e2e +1（TX-0c：卷 / 企划会话帧过契约、企划会话读两卷定稿、卷会话首轮含卷表）。期望值均先在实现上跑出、核对来由后写入。
+
+**变异 24/24 被抓**（脚本在 scratchpad，跑完 `git diff` 只剩真实改动）：
+
+| # | 红的测试 |
+|---|---|
+| M1 | `test_卷会话不能借读兄弟卷_四条路径` |
+| M2 / M3 | `test_硬排除_大小写与目录软链[volume]` |
+| M4 | `test_企划候选只认一段_多段经软链落回企划顶层也拒`（新增：父目录检查会兜住原来那条用例） |
+| M5 / M22 | `test_记忆文件与日志不可读[volume]`（M22 由 `z.md -> session.jsonl` 抓） |
+| M6 / M7 / M8 | `test_执行层_裸调用与卡后被改与伪造参数` |
+| M9 | `test_review_本会话已批的同类卡不带绑定` |
+| M10 | `test_只改散文免卡且留底` |
+| M11 / M12 | `test_超3000拒且字节不变` / `test_证据引用另一企划拒` |
+| M13 / M14 / M23 | `TestInjection` 的脱敏、「（已更新）」、停在 03 三条 |
+| M15 | vitest「D81 树形对拍」（`（终）` 与 `😀-x` 次序颠倒） |
+| M16 / M17 | `test_同名卷歧义_返回None并列出两个候选` / `test_拒[03-audio]` |
+| M18 / M19 | `test_run_pipeline分流` / `test_封面与抓取提案拒_母目录不被写` |
+| M20 | `test_协议_企划会话与期目录守卫`（真实 core 子进程，回合与 /compact 回合各恰一帧空 stop_points） |
+| M21 | `test_软链卷的企划归属按字面路径` |
+| M24 | `test_判定一致`（`ava new --project <普通期>` 拒） |
+
+**既有变异矩阵复核**：锚点搬家的 6 条经 `scripts/verify_mutations.py --only … --dirty-ok`（全量套件）重跑，6/6 被抓：S10-MUT-18（`test_ty1_*` 4 条）、S10-MUT-19（含 `test_ty2_bad_names[a/b]` 与本 PR 的解析器用例）、S10-MUT-20（`test_ty2_bad_names[_x]` 等）、MUT-D42-d（`test_t_d42_*` 2 条）、M27c（`test_list_episodes_tool_detail_keys`）、S9-MUT-60（`test_tk12_registration_lifetime_and_episode_dir`）。
+
+**真实数据只读验收**（§6.9 第 4 条）：
+- `get_episode_tree` 在真实 `data/episodes` 上：23 个顶层条目 → 21 个普通期 + 2 个企划（`EGOIST-传奇企划志` 三卷、`EGOIST-传奇企划志-V2` 三卷 + 典藏版，均无 `00-project.md`），隐藏 2。spec 写 22 时只有 19 个普通期，之后又新建过期，不是偏差。
+- 镜像企划**放在 scratchpad 的临时仓库根里**（不在 `data/episodes/` 下建 `_d81-mirror`：本次施工不往 `data/` 写任何东西），三卷软链到 EGOIST V2，`00-project.md` 用 §4.7 样例。经真实协议进程开企划会话（假模型）：`ready.session_kind == "project"`，`read_artifact(area="project")` 读到三卷 `02-script.md`（14082 / 12954 / 11535 字）。
+- `find data/episodes/EGOIST-传奇企划志-V2 -newer <镜像验收开始>`：**空**。
+- 另记一件事：以开工时间 20:40 为界，EGOIST V2 有 20:58:56–20:59:04 的写入（`03-终局葬礼/_agent/approvals_store.*`、`events.jsonl` 一条 09 停机点建档与一条 `human_time_recorded` 0.08 分钟、典藏版与 01 卷的 `_agent/approvals_store.lock`）和 22:39 的 `.DS_Store`。形态是桌面端宿主在人点开这几期时的行为（建停机点对象、记停机点人时），当时本机的打包版 `AVA.app`（真实 userData）在运行；本次施工的测试一律用临时 userData 与夹具仓。**待人确认当时是否在用桌面端。**
+
+**验证**：pytest 2786/ typecheck 通过 / vitest 543 / playwright 136（2 跳过）。

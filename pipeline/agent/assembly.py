@@ -62,6 +62,11 @@ class SessionContextTracker:
     # 出网断言可信集 (a)（Spec 16 §5.2.1）：本进程装配器实际拼进消息的规程正文，只增不减。
     # **不进** `_rollback` 的恢复清单——可信集是超集无害，豁免只认逐字字节。
     trusted_doc_texts: list[str] = field(default_factory=list)
+    # D81 §4.6：卷 / 企划会话已注入的企划文本。path（相对仓库根）→ 源文本 sha / 注入消息正文。
+    # 每轮比 sha，变了再注一条「（已更新）」；压缩后正文没留在尾部的条目清掉（下一轮重注）
+    project_injected: dict[str, str] = field(default_factory=dict)
+    project_texts: dict[str, str] = field(default_factory=dict)
+    project_memory_notice_sent: bool = False
 
     def trust(self, texts: list[str]) -> None:
         for text in texts:

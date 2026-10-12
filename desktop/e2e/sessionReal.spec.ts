@@ -123,6 +123,40 @@ test("TX-0 契约：真实 core 的每一帧都过 parseOutFrame、framesLost==0
   });
 });
 
+test("TX-0c 契约（D81）：卷会话与企划会话的帧过契约；企划会话 read_artifact 读到两卷定稿；卷会话首轮请求含卷表", async () => {
+  await withRealCore(async ({ L, llm, repo }) => {
+    fixtureWrite(repo.root, "data/episodes/P/00-project.md", [
+      "# 00 企划", "", "企划: 测试编年史", "", "## 卷表", "",
+      "| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |", "|---|---|---|---|---|",
+      "| 1 | 01-a | 2011–2014 | 14-16分钟 | 余韵18秒 |", "| 2 | 02-b | 2015–2019 | 18-20分钟 | 完整保留 |", "",
+    ].join("\n"));
+    const call = (m: string, p: unknown) =>
+      L.page.evaluate(([mm, pp]) => (window as unknown as { __avaTestCall: (m: string, p: unknown) => Promise<unknown> }).__avaTestCall(mm as string, pp), [m, p] as const);
+
+    // 企划会话：上位需求 A 验收口径的机检版——不切会话就能读两卷的 02-script.md
+    llm.push(toolCalls({ name: "read_artifact", args: { path: "01-a/02-script.md" } }, { name: "read_artifact", args: { path: "02-b/02-script.md", area: "project" } }), assistant("两卷都读到了。"));
+    await call("conv.send", { convKey: "proj:P", text: "读两卷定稿" });
+    const pf = await waitTurns(L, "proj:P", 1);
+    assertFrameContract(pf);
+    const pReady = pf.find((f) => f.t === "ready")!;
+    expect([pReady.session_kind, pReady.project]).toEqual(["project", "P"]);
+    expect(pf.filter((f) => f.t === "tool" && f.phase === "end").map((f) => [f.name, f.ok])).toEqual([["read_artifact", true], ["read_artifact", true]]);
+    expect(pf.filter((f) => f.t === "stop_points").map((f) => f.items)).toEqual([[], []]); // 启动一帧 + 回合一帧，都为空
+
+    // 卷会话：首轮请求就带卷表（分卷边界不用人复述）
+    llm.push(assistant("知道分卷了。"));
+    const before = llm.requests.length;
+    await call("conv.send", { convKey: "ep:P/01-a", text: "开写第一卷" });
+    const vf = await waitTurns(L, "ep:P/01-a", 1);
+    assertFrameContract(vf);
+    const vReady = vf.find((f) => f.t === "ready")!;
+    expect([vReady.session_kind, vReady.project]).toEqual(["volume", "P"]);
+    const firstVolReq = JSON.stringify(llm.requests[before]);
+    expect(firstVolReq).toContain("| 2 | 02-b | 2015–2019 | 18-20分钟 | 完整保留 |");
+    expect(firstVolReq).toContain("企划 测试编年史 · 第 1 卷");
+  }, ["P/01-a", "P/02-b"]);
+});
+
 test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
   await withRealCore(async ({ L, llm }) => {
     llm.push(toolCalls(CARD_RM), assistant("已停下。"));

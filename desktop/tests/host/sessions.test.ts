@@ -27,7 +27,7 @@ function fakeRunCore(): HostDeps["runCore"] {
   return (async (t: string) => ({ code: t === "GIT_HEAD" ? 128 : 0, signal: null, stdoutTail: "", stderrTail: "", timedOut: false, stdoutFull: null, stdoutOverflow: false })) as unknown as HostDeps["runCore"];
 }
 
-const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null } });
+const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "episode", project: null } });
 const TURN_STARTED = { t: "turn_started", turn_id: "$turn", rid: "$rid" };
 const TURN_ENDED = { t: "turn_finished", turn_id: "$turn", stopped: "done", llm_calls: 1, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 1, lookups: null, prompt_tokens: null, compacted: false, tokens_before: null, tokens_after: null, context_window: null };
 const STOP_POINTS = { t: "stop_points", items: [], turn_id: "$turn" };
@@ -99,6 +99,25 @@ describe("TH-1 懒启动", () => {
     const r2 = (await svc.dispatch("conv.send", { convKey: key, text: "again" })) as { turnId: string };
     expect(r2.turnId).toBe("t2");
     expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+  });
+});
+
+describe("D81 企划会话键", () => {
+  it("proj: 键 → SESSION_PROJECT（--project <宿主扫出的企划目录>）；未知企划拒；episodesList 带 projects", async () => {
+    const { repo, svc } = await boot();
+    mkEpisode(repo.root, "P/01-a", { "01-topic.md": "# t\n" });
+    fixtureWrite(repo.root, "data/episodes/P/00-project.md", "企划: P\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n");
+    svc.refreshEpisodes();
+    sessionScript(repo, "idea", [READY("P"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await svc.dispatch("conv.send", { convKey: "proj:P", text: "定卷表" });
+    expect(sessionSpawns()).toEqual(["SESSION_PROJECT"]);
+    const argv = (spawnLog.at(-1) as unknown as { argv: string[] }).argv;
+    expect(argv.slice(-2)[0]).toBe("--project");
+    expect(argv.slice(-1)[0].endsWith("data/episodes/P")).toBe(true);
+    await expect(svc.dispatch("conv.send", { convKey: "proj:NOPE", text: "x" })).rejects.toThrow(/未知企划/);
+    const list = svc.episodesList();
+    expect(list.projects.map((p) => [p.projKey, p.hasProjectFile, p.members.map((m) => m.epKey)])).toEqual([["P", true, ["P/01-a"]]]);
+    expect(list.projects[0].conv).not.toBeNull();
   });
 });
 
@@ -220,7 +239,7 @@ describe("TH-5 不代发（H-8）", () => {
       READY(epKey),
       {
         op: "serve",
-        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS, { t: "notice", level: "info", code: "x", text: "n" }, { t: "ready", episode: epKey, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null }],
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS, { t: "notice", level: "info", code: "x", text: "n" }, { t: "ready", episode: epKey, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "episode", project: null }],
       },
     ]);
     for (let i = 0; i < 10; i += 1) {
@@ -778,7 +797,7 @@ function fakeNewEpisodeCli(stdoutLines: string[]): string {
   ].join("\n");
 }
 
-const IDEA_READY = { op: "emit", frame: { t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null } };
+const IDEA_READY = { op: "emit", frame: { t: "ready", episode: null, scope: "auto", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "idea", project: null } };
 
 describe("TH-D42 建期带入选题记录（Spec 18 §3.3）", () => {
   it("① marker migrated=true → episode.create 返回带入结果；该期首次 conv.send 以 SESSION_CONTINUE 起，标记随即消费", async () => {

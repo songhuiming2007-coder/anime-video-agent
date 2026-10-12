@@ -71,7 +71,7 @@ const DEFAULT_TIMING: SessionTiming = {
 };
 
 export interface SessionDeps {
-  spawnSession: (t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
+  spawnSession: (t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean; cont?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>) => SessionProc;
   /** 每次 spawn SESSION_* 前执行一次（§2.9）；失败给 problem 文案，照常 spawn、如实降级 */
   resolveKey: () => Promise<{ name: string; value: string } | { problem: string }>;
   /** Spec 15 §2.7：web 检索链上声明的密钥（LLM 名字之后执行）；自身兜住一切失败，只返回读成功的 */
@@ -256,7 +256,7 @@ export class SessionManager {
     const out: QuitBusy[] = [];
     for (const s of this.states.values()) {
       if (s.phase === "exited" || s.phase === "none" || !isBusyForQuit(s)) continue;
-      out.push({ convKey: s.key, label: s.key === "idea" ? "选题会话" : s.key.slice(3), running: s.phase === "running", openRequests: s.open.length });
+      out.push({ convKey: s.key, label: s.key === "idea" ? "选题会话" : s.key.startsWith("proj:") ? `企划 ${s.key.slice(5)}` : s.key.slice(3), running: s.phase === "running", openRequests: s.open.length });
     }
     return out;
   }
@@ -457,7 +457,9 @@ export class SessionManager {
   private async ensure(key: ConvKey, target: SessionTarget): Promise<SessionState> {
     const existing = this.states.get(key);
     if (existing && existing.phase !== "exited") return existing;
-    const t: SessionTemplate = target.mode === "idea" ? "SESSION_IDEA" : target.mode === "continue" ? "SESSION_CONTINUE" : "SESSION_NEW";
+    // D81：`proj:` 键一律走企划会话模板（新开 / 继续由 cont 决定），不按 mode 落到期会话模板
+    const t: SessionTemplate = key.startsWith("proj:") ? "SESSION_PROJECT"
+      : target.mode === "idea" ? "SESSION_IDEA" : target.mode === "continue" ? "SESSION_CONTINUE" : "SESSION_NEW";
     if (t !== "SESSION_IDEA" && !target.abs) this.fail("E_BAD_REQUEST", "缺少期目录");
     const repoRoot = this.deps.repoRoot();
     if (!repoRoot) this.fail("E_UNREACHABLE", "仓库未就绪");
@@ -509,7 +511,12 @@ export class SessionManager {
     if (s.phase === "exited") this.fail("E_SESSION", "会话进程已退出");
     const proc = this.deps.spawnSession(
       t,
-      { ep: target.abs ?? undefined, ...(target.sid !== undefined ? { sid: target.sid } : {}), ...(target.fresh === true ? { fresh: true } : {}) },
+      {
+        ep: target.abs ?? undefined,
+        ...(target.sid !== undefined ? { sid: target.sid } : {}),
+        ...(target.fresh === true ? { fresh: true } : {}),
+        ...(t === "SESSION_PROJECT" && target.mode === "continue" ? { cont: true } : {}),
+      },
       { repoRoot },
       extraEnv,
     );

@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from pathlib import Path
 import queue
 import re
 import signal
@@ -44,6 +45,8 @@ _INBOUND_KEYS: dict[str, frozenset[str]] = {
     "command": frozenset({"name", "arg"}),
     "shutdown": frozenset(),
 }
+# 入站帧的可选键（除 rid 外）：D81 §4.5 memory_ack 的 target（企划记忆对账）
+_INBOUND_OPTIONAL: dict[str, frozenset[str]] = {"command": frozenset({"target"})}
 _COMMANDS = frozenset({"memory_ack", "scope", "compact"})
 
 
@@ -184,7 +187,7 @@ class FrameReader(threading.Thread):
         if frame.get("v") != PROTOCOL_VERSION or isinstance(frame.get("v"), bool):
             self._error("E_BAD_REQUEST", f"入站帧必须带 \"v\": {PROTOCOL_VERSION}", rid)
             return
-        keys = set(frame) - {"v", "t", "rid"}
+        keys = set(frame) - {"v", "t", "rid"} - _INBOUND_OPTIONAL.get(kind, frozenset())
         if keys != required:
             self._error(
                 "E_BAD_REQUEST",
@@ -226,6 +229,10 @@ class FrameReader(threading.Thread):
                     raise ProtocolError("E_BAD_REQUEST", "command{scope} 的 arg ∈ {asset, auto}")
             elif arg is not None:
                 raise ProtocolError("E_BAD_REQUEST", f"command{{{name}}} 不接受 arg")
+            # D81 §4.5：memory_ack 可带 target（global 默认 / project = 本企划的企划记忆）
+            target = frame.get("target")
+            if target is not None and (name != "memory_ack" or target not in ("global", "project")):
+                raise ProtocolError("E_BAD_REQUEST", "target 只用于 command{memory_ack}，取值 global / project")
 
     # ---- 分派 ----
 
@@ -546,7 +553,8 @@ def main(argv: list[str] | None = None) -> int:
     from pipeline import paths
     from pipeline.agent import status_card
     from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
-    from pipeline.agent.cli import check_code_freeze, resolve_episode_target
+    from pipeline import project as project_mod
+    from pipeline.agent.cli import check_code_freeze, explain_episode_target
     from pipeline.agent.llm import load_llm_config
     from pipeline.agent.session import SessionHost, prepare_resume, resume_idea
     from pipeline.agent.session_log import (
@@ -559,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         read_log,
         resume_target,
     )
-    from pipeline.agent.status_card import build_idea_card, build_status_card
+    from pipeline.agent.status_card import build_idea_card, build_project_card, build_status_card
     from pipeline.status import inspect_episode
 
     def fail(code: str, message: str, rc: int) -> int:
@@ -572,6 +580,14 @@ def main(argv: list[str] | None = None) -> int:
     # D58：选题会话可存多段——`--continue <前缀>` 恢复指定段，`--fresh` 开新段，裸 `--idea` 恢复最近段（不变）
     idea = "--idea" in args
     fresh = "--fresh" in args
+    # D81：--project <企划目录>（与 --idea、期目录互斥）；--fresh 对企划会话即「开新会话」（与不带 --continue 相同）
+    project_arg: str | None = None
+    if "--project" in args:
+        at = args.index("--project")
+        if at + 1 >= len(args) or args[at + 1].startswith("--"):
+            return fail("E_BAD_REQUEST", "用法: --project <企划目录> [--continue [<前缀>] | --fresh]", 2)
+        project_arg = args[at + 1]
+        args = args[:at] + args[at + 2:]
     rest = [a for a in args if a not in ("--idea", "--fresh")]
     resume_prefix: str | None = None
     want_continue = False
@@ -583,9 +599,17 @@ def main(argv: list[str] | None = None) -> int:
         if len(tail) > 1:
             return fail("E_BAD_REQUEST", "用法: <期目录> --continue [<会话号前缀>]", 2)
         resume_prefix = tail[0] if tail else None
-    if fresh and (not idea or want_continue):
-        return fail("E_BAD_REQUEST", "--fresh 只用于 --idea，且不与 --continue 同用", 2)
-    if idea:
+    if fresh and ((not idea and project_arg is None) or want_continue):
+        return fail("E_BAD_REQUEST", "--fresh 只用于 --idea / --project，且不与 --continue 同用", 2)
+    if project_arg is not None:
+        if idea or rest:
+            return fail("E_BAD_REQUEST", "--project 不与 --idea、期目录同用", 2)
+        literal = project_mod.literal_episode_path(project_arg) if Path(project_arg).is_absolute() else (
+            paths.ROOT / "data" / "episodes" / project_arg)
+        if literal is None or project_mod.classify_dir(literal) != "project":
+            return fail("E_BAD_REQUEST", f"不是企划目录：{project_arg}", 2)
+        ep_dir = literal
+    elif idea:
         if rest:
             return fail("E_BAD_REQUEST", "--idea 不接受期目录", 2)
         if want_continue and resume_prefix is None:
@@ -594,9 +618,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if len(rest) != 1:
             return fail("E_BAD_REQUEST", "用法: <期目录> [--continue [<前缀>]] 或 --idea", 2)
-        ep_dir = resolve_episode_target(rest[0])
+        ep_dir, why = explain_episode_target(rest[0])
         if ep_dir is None:
-            return fail("E_NO_EPISODE", f"期目录不存在：{rest[0]}", 4)
+            # D81 §4.1：企划目录不再能作为期目录打开（母目录曾被当成期开会话，§三 #2）
+            if "企划目录" in why:
+                return fail("E_BAD_REQUEST", why, 2)
+            return fail("E_NO_EPISODE", why, 4)
     # idea 与期会话同一道闸（Spec 18 §3.1：idea 也落盘了，data/ 不可达就无处可写）
     if not (paths.ROOT / "data").is_dir():
         return fail("E_DATA_UNREACHABLE", f"data/ 不可达：{paths.ROOT / 'data'}", 4)
@@ -669,7 +696,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # ⑦ ready
     config = load_llm_config(paths.ROOT)
-    status = inspect_episode(ep_dir) if ep_dir is not None else None
+    is_project = host.session_kind == "project"
+    status = inspect_episode(ep_dir) if ep_dir is not None and not is_project else None
     freeze_ok = check_code_freeze()
     # 先置 ready 再发帧：host 的契约是「收到 ready 就开始发消息」，反过来会必踩
     # 「帧已发出、旗标未置」的几毫秒窗口 → 首条消息被 E_NOT_READY 丢掉（真机冒烟实测）。
@@ -689,7 +717,10 @@ def main(argv: list[str] | None = None) -> int:
         "resume_prompt_tokens": resume_state["last_reading"][0] if resume_state else None,
         "resume_prompt_chars": resume_state["last_reading"][1] if resume_state else None,
         # D62 人裁决⑤：读数分母 = 当前模型标称窗口；表里没有为 None（不显示分母）
-        "context_window": _context_window(ep_dir, status),
+        "context_window": _context_window(ep_dir, status, "project" if is_project else None),
+        # D81：会话类型与所属企划（卷 / 企划会话为企划目录名；普通期与选题为 null）
+        "session_kind": host.session_kind,
+        "project": host.project_dir.name if host.project_dir is not None else None,
     })
     if not freeze_ok:
         writer.send({"t": "notice", "level": "warn", "code": "code_freeze",
@@ -713,22 +744,28 @@ def main(argv: list[str] | None = None) -> int:
             _send_history(writer, resume_state["records"])
     else:
         host.bind_main(messages)
-        scope = _scope_of(status)
+        scope = "project" if is_project else _scope_of(status)
         tracker.resident_prompt = assemble_resident_prompt(scope, root=paths.ROOT).content
         tracker.active_scope = scope
         if resume_state:
-            tracker.injected_paths = set((resume_state.get("docs") or {}).keys())
+            docs = dict(resume_state.get("docs") or {})
+            # D81：企划注入（企划文件 / 企划记忆）另记在 project_injected，不进规程的 injected_paths
+            proj_prefix = f"data/episodes/{host.project_dir.name}/" if host.project_dir is not None else None
+            tracker.project_injected = {k: v for k, v in docs.items() if proj_prefix and k.startswith(proj_prefix)}
+            tracker.injected_paths = {k for k in docs if k not in tracker.project_injected}
             tracker.active_step_key = resume_state.get("step_key")
+            card = (build_project_card(ep_dir) if is_project else build_status_card(
+                ep_dir, status, scope=scope,
+                project_dir=host.project_dir if host.session_kind == "volume" else None,
+            ))
             messages.append({
                 "role": "system",
-                "content": tracker.get_initial_system_prompt(
-                    build_status_card(ep_dir, status, scope=scope)
-                ),
+                "content": tracker.get_initial_system_prompt(card),
             })
             messages.extend(resume_state["messages"])
             _send_history(writer, resume_state["records"])
     def _startup_tail() -> None:
-        if ep_dir is not None:
+        if ep_dir is not None and not is_project:
             _ensure_pending(ep_dir, status)
             _send_stop_points(writer, ep_dir, None)
         else:
@@ -804,6 +841,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.flush()
         writer.close()
     return exit_code
+
+
+def _session_card(host, ep_dir, status, scope) -> str:
+    """压缩回合要带的状态卡：企划会话用企划卡，卷会话带企划首行（D81 §6.3 ⑨）。"""
+    from pipeline.agent.status_card import build_project_card, build_status_card
+
+    if host.session_kind == "project":
+        return build_project_card(ep_dir)
+    return build_status_card(ep_dir, status, scope=scope,
+                             project_dir=host.project_dir if host.session_kind == "volume" else None)
 
 
 def _scope_of(status) -> str:
@@ -884,11 +931,13 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     slots["turn_id"] = turn_id
     slots["closed_requests"] = set()  # 「已关闭请求号」每回合清零，不让它无限长
     idea = ep_dir is None
-    status = None if idea else inspect_episode(ep_dir)
-    override = None if idea else slots.get("scope_override")
+    # D81：企划会话没有期状态、没有停机点（与 idea 同口径发空 stop_points，S9-R4），scope 固定 project
+    proj = host.session_kind == "project"
+    status = None if idea or proj else inspect_episode(ep_dir)
+    override = None if idea or proj else slots.get("scope_override")
     if override:
         host.set_scope_override(override)
-    scope = "idea" if idea else (override or scope_of(status))
+    scope = "idea" if idea else "project" if proj else (override or scope_of(status))
     writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
 
     # idea 也是主会话、落盘（Spec 18 §3.1）；落盘与否只看 host 有没有租约
@@ -957,8 +1006,8 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():
-        if idea:
-            # S9-R4：每回合恰好一帧 stop_points、带本回合 turn_id；idea 没有期目录，也就没有停机点
+        if idea or proj:
+            # S9-R4：每回合恰好一帧 stop_points、带本回合 turn_id；idea 没有期目录、企划会话不处理停机点
             writer.send({"t": "stop_points", "items": [], "turn_id": turn_id})
         else:
             _ensure_pending(ep_dir, status)
@@ -1053,7 +1102,7 @@ def _run_command(
         return
     session = host.session(persist=False, scope_mode="creative")
     try:
-        ok, text = session.memory_ack()
+        ok, text = session.memory_ack(str(frame.get("target") or "global"))
     except Exception as exc:  # 记忆层任何失败都如实回传，不假装成功
         writer.send({"t": "command_result", "name": "memory_ack", "ok": False,
                      "text": f"{type(exc).__name__}: {exc}", **({"rid": rid} if rid else {})})
@@ -1096,11 +1145,12 @@ def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> in
     writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
     started = time.monotonic()
     idea = ep_dir is None
-    status = None if idea else inspect_episode(ep_dir)
-    override = None if idea else slots.get("scope_override")
-    scope = "idea" if idea else (override or _scope_of(status))
+    proj = host.session_kind == "project"
+    status = None if idea or proj else inspect_episode(ep_dir)
+    override = None if idea or proj else slots.get("scope_override")
+    scope = "idea" if idea else "project" if proj else (override or _scope_of(status))
     try:
-        card = None if idea else build_status_card(ep_dir, status, scope=scope)
+        card = None if idea else _session_card(host, ep_dir, status, scope)
         session = host.session(persist=True, scope_mode=scope)
         result = session.compact(messages, tracker=tracker, root=host.root, scope=scope, status_card=card)
     except Exception as exc:  # 任何失败都如实告诉人，不假装压过
@@ -1129,7 +1179,7 @@ def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> in
         "context_window": _context_window(ep_dir, status, scope),
     })
     with host.interrupt.absorbed():
-        if idea:
+        if idea or proj:
             writer.send({"t": "stop_points", "items": [], "turn_id": turn_id})
         else:
             _ensure_pending(ep_dir, status)
@@ -1149,10 +1199,11 @@ def _run_compact(host, writer, slots, rid, messages, tracker, ep_dir) -> None:
                      "text": "主会话尚未就绪", **tail})
         return
     idea = ep_dir is None
-    status = None if idea else inspect_episode(ep_dir)
-    override = None if idea else slots.get("scope_override")
-    scope = "idea" if idea else (override or _scope_of(status))
-    card = None if idea else build_status_card(ep_dir, status, scope=scope)
+    proj = host.session_kind == "project"
+    status = None if idea or proj else inspect_episode(ep_dir)
+    override = None if idea or proj else slots.get("scope_override")
+    scope = "idea" if idea else "project" if proj else (override or _scope_of(status))
+    card = None if idea else _session_card(host, ep_dir, status, scope)
     session = host.session(persist=True, scope_mode=scope)
     try:
         result = session.compact(messages, tracker=tracker, root=host.root, scope=scope, status_card=card)

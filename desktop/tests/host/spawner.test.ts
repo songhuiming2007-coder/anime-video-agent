@@ -309,6 +309,12 @@ describe("D45 会话管理模板的 argv 形状", () => {
     expect(sessionArgv("SESSION_IDEA", undefined, "/repo", undefined, true)).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--idea", "--fresh"]);
     expect(() => sessionArgv("SESSION_IDEA", undefined, "/repo", "x")).toThrow();
   });
+  it("D81 SESSION_PROJECT：--project <企划>；继续时带 --continue [sid]；非法 sid 抛错", () => {
+    expect(sessionArgv("SESSION_PROJECT", "/eps/P", "/repo")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--project", "/eps/P"]);
+    expect(sessionArgv("SESSION_PROJECT", "/eps/P", "/repo", undefined, false, true)).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--project", "/eps/P", "--continue"]);
+    expect(sessionArgv("SESSION_PROJECT", "/eps/P", "/repo", "bbbbbbbbbbbbbbb2", false, true)).toEqual([pyPath, "-m", "pipeline.agent.protocol", "--project", "/eps/P", "--continue", "bbbbbbbbbbbbbbb2"]);
+    expect(() => sessionArgv("SESSION_PROJECT", "/eps/P", "/repo", "x", false, true)).toThrow();
+  });
   it("SESSION_CONTINUE 带 sid → --continue <sid>；不带 → 恢复最近会话（原形态不变）", () => {
     expect(sessionArgv("SESSION_CONTINUE", "/ep", "/repo", "bbbbbbbbbbbbbbb2")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "/ep", "--continue", "bbbbbbbbbbbbbbb2"]);
     expect(sessionArgv("SESSION_CONTINUE", "/ep", "/repo")).toEqual([pyPath, "-m", "pipeline.agent.protocol", "/ep", "--continue"]);

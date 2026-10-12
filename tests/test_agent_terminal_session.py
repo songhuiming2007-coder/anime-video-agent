@@ -210,6 +210,14 @@ fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 
 import json
 
+from pathlib import Path as _Path
+
+from pipeline import paths as _paths
+
+# D81：`ava <期>` 只认期根下的期目录——根目录替身（tests/root_shim.py）挂进临时根
+_paths.ROOT = _Path(%(shim_root)r)
+_paths.DATA = _paths.ROOT / "data"
+
 import pipeline.agent.cli as cli
 import pipeline.agent.llm as llm
 
@@ -259,9 +267,13 @@ sys.exit(_rc)
 
 
 def _write_driver(tmp_path: Path, *, episode: Path, block_at: int, feed: dict, extra: str = "") -> Path:
+    from tests.root_shim import shim_episode
+
+    shimmed = shim_episode(tmp_path, episode)
     path = tmp_path / "pty_driver.py"
     path.write_text(
-        _PTY_DRIVER % {"block_at": block_at, "feed": feed, "ep": str(episode), "extra": extra},
+        _PTY_DRIVER % {"block_at": block_at, "feed": feed, "ep": str(shimmed), "extra": extra,
+                       "shim_root": str(shimmed.parent.parent.parent)},
         encoding="utf-8",
     )
     return path

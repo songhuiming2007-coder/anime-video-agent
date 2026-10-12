@@ -53,6 +53,7 @@ DEFAULT_REPO = Path(__file__).resolve().parent.parent
 SUITE_TIMEOUT_S = 900
 
 CLI = "pipeline/agent/cli.py"
+PROJECT = "pipeline/project.py"  # D81：期名合规与树规则搬到这里（cli 以原名再导出）
 LLM = "pipeline/agent/llm.py"
 TOOLS = "pipeline/agent/tools.py"
 JOBS = "pipeline/jobs.py"
@@ -316,24 +317,14 @@ MUTATIONS: list[dict] = [
              '        if not target:\n'
              '            return 0\n'
              '        return run_repl(target)')},
-    {"id": "M27c", "guard": "list_episodes episodes_detail 键集精确等于 {name, current_step, is_blocked}", "file": TOOLS,
-     "old": ('    episodes_detail = [\n'
-             '        {\n'
-             '            "name": ep.name,\n'
-             '            "current_step": inspect_episode(ep).current_step,\n'
-             '            "is_blocked": inspect_episode(ep).is_blocked,\n'
-             '        }\n'
-             '        for ep in episodes\n'
-             '    ]'),
-     "new": ('    episodes_detail = [\n'
-             '        {\n'
-             '            "name": ep.name,\n'
-             '            "current_step": inspect_episode(ep).current_step,\n'
-             '            "is_blocked": inspect_episode(ep).is_blocked,\n'
-             '            "advisories": inspect_episode(ep).advisories,\n'
-             '        }\n'
-             '        for ep in episodes\n'
-             '    ]')},
+    {"id": "M27c", "guard": "list_episodes episodes_detail 键集精确等于 {name, project, current_step, is_blocked}", "file": TOOLS,
+     "old": ('            "current_step": status.current_step,\n'
+             '            "is_blocked": status.is_blocked,\n'
+             '        })\n'),
+     "new": ('            "current_step": status.current_step,\n'
+             '            "is_blocked": status.is_blocked,\n'
+             '            "advisories": status.advisories,  # M27c\n'
+             '        })\n')},
     {"id": "M28", "guard": "config/agent/scopes/idea.md 保留期名由人拍板条款", "file": IDEA_DOC,
      "old": '**期名由人拍板，模型只出候选**',
      "new": '模型代为敲定期名'},
@@ -554,12 +545,12 @@ MUTATIONS: list[dict] = [
              '        return 2\n'),
      "new": '    pass  # MUT-18\n'},
     {"id": "S10-MUT-19", "guard": "期名禁 `/`、`\\`、NUL（Spec 10 MUT-19）",
-     "file": CLI,
+     "file": PROJECT,
      "old": ('    if any(ch in ep_name for ch in ("/", "\\\\", "\\0")):\n'
              '        return "不许含 \'/\'、\'\\\\\' 或 NUL"\n'),
      "new": '    if False:\n        return "MUT-19"\n'},
     {"id": "S10-MUT-20", "guard": "期名禁 `.` / `_` / `-` 前缀（Spec 10 MUT-20）",
-     "file": CLI,
+     "file": PROJECT,
      "old": ('    if ep_name in (".", ".."):\n'
              '        return f"不许是 {ep_name!r}"\n'
              '    if ep_name[0] in "._":\n'
@@ -992,8 +983,8 @@ MUTATIONS: list[dict] = [
      "old": "    if host is None or not host.matches(ep_dir):\n",
      "new": "    if host is None:  # MUT-60（含 MUT-57）\n",
      "also": [{"file": "pipeline/agent/session.py",
-               "old": "        return ToolContext(scope=scope, episode_dir=self._ep_dir, root=root)\n",
-               "new": "        return ToolContext(scope=scope, episode_dir=self.host.ep_dir, root=root)  # MUT-60\n"}]},
+               "old": "            scope=scope, episode_dir=self._ep_dir, root=root,\n",
+               "new": "            scope=scope, episode_dir=self.host.ep_dir, root=root,  # MUT-60\n"}]},
     {"id": "S9-MUT-58", "guard": "activate_host 可重入（嵌套退出不注销外层登记）", "file": CLI,
      "old": ("            yield _SESSION_HOST  # type: ignore[misc]\n"
              "        finally:\n"
@@ -1125,11 +1116,11 @@ MUTATIONS: list[dict] = [
      "also": [{"file": CLI, "old": "import shlex\n", "new": "import shlex\nimport shutil\n"}]},
     {"id": "MUT-D42-d", "guard": "data/_idea 不进期列表（T-D42-5）", "file": CLI,
      "old": ('    visible.sort(key=lambda p: p.stat().st_mtime, reverse=True)\n'
-             '    return visible, hidden_underscore\n'),
-     "new": ('    if (ep_root.parent / "_idea").is_dir():\n'
-             '        visible.append(ep_root.parent / "_idea")  # MUT-D42-d\n'
+             '    return visible, tree.hidden_underscore\n'),
+     "new": ('    if (Path(root or paths.ROOT) / "data" / "_idea").is_dir():\n'
+             '        visible.append(Path(root or paths.ROOT) / "data" / "_idea")  # MUT-D42-d\n'
              '    visible.sort(key=lambda p: p.stat().st_mtime, reverse=True)\n'
-             '    return visible, hidden_underscore\n')},
+             '    return visible, tree.hidden_underscore\n')},
     {"id": "MUT-D42-e", "guard": "--idea 启动即恒恢复最近段（T-D42-1）", "file": SESSION,
      "old": '    target, _candidates = resume_target(list_sessions(host.lease.read()))\n',
      "new": ('    return None  # MUT-D42-e：恒开新段\n'

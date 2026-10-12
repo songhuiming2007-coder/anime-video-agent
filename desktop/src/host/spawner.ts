@@ -88,7 +88,7 @@ function readingFlags(a: VoiceReadingArgs): string[] {
 }
 
 /** 长驻会话进程模板（Spec 10 S8-R3）；不经 runCore（stdin pipe、无超时），只用 sessionArgv。 */
-export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA";
+export type SessionTemplate = "SESSION_NEW" | "SESSION_CONTINUE" | "SESSION_IDEA" | "SESSION_PROJECT";
 
 export interface TemplateArgs {
   PROBE_APPROVALS: Record<string, never>;
@@ -400,7 +400,7 @@ function checkedTrashFile(file: string): string {
 
 /** SESSION_* 的 argv（Spec 10 §3.4）：`ep` 为 host 映射且刚 stat 过的绝对路径。
  * D45：SESSION_CONTINUE 带 `sid` 时恢复指定会话（`--continue <sid>`），不带时恢复最近的可恢复会话。 */
-export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string, sid?: string, fresh = false): string[] {
+export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot: string, sid?: string, fresh = false, cont = false): string[] {
   const py = pythonOf(repoRoot);
   switch (t) {
     case "SESSION_NEW":
@@ -413,6 +413,12 @@ export function sessionArgv(t: SessionTemplate, ep: string | undefined, repoRoot
       // D58：选题会话可存多段——给 sid 恢复指定段，fresh 开新段，都不给恢复最近段（Spec 18 §3.1 原形态）
       if (sid !== undefined) return [py, "-m", "pipeline.agent.protocol", "--idea", "--continue", checkedSid(sid)];
       return fresh ? [py, "-m", "pipeline.agent.protocol", "--idea", "--fresh"] : [py, "-m", "pipeline.agent.protocol", "--idea"];
+    case "SESSION_PROJECT": {
+      // D81：企划会话。`ep` 是 host 映射且刚 stat 过的企划目录绝对路径（同 SESSION_NEW 纪律）；cont 时同期会话的 --continue
+      const base = [py, "-m", "pipeline.agent.protocol", "--project", ep as string];
+      if (!cont) return base;
+      return sid === undefined ? [...base, "--continue"] : [...base, "--continue", checkedSid(sid)];
+    }
   }
 }
 
@@ -607,8 +613,8 @@ export interface SessionProc {
   signal(sig: NodeJS.Signals, group: boolean): void;
 }
 
-export function spawnSession(t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
-  const argv = sessionArgv(t, args.ep, ctx.repoRoot, args.sid, args.fresh === true);
+export function spawnSession(t: SessionTemplate, args: { ep?: string; sid?: string; fresh?: boolean; cont?: boolean }, ctx: { repoRoot: string }, extraEnv: Record<string, string>): SessionProc {
+  const argv = sessionArgv(t, args.ep, ctx.repoRoot, args.sid, args.fresh === true, args.cont === true);
   // spawn 日志只记模板名与 argv，不记环境（§3.4）；密钥值绝不进任何日志（TH-6）
   recordSpawn({ template: t, argv, at: Date.now() });
   const child = spawn(argv[0], argv.slice(1), {
