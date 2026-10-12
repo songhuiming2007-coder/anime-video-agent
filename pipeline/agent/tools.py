@@ -1333,6 +1333,11 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
             "error": "需人类确认：本工具只校验并回显 argv，执行请由人在宿主 REPL 用 /run 确认",
             "argv": outcome["argv"],
         }
+    # D83：与 bash 对齐，模块输出出网前过密钥脱敏（_tool_message 只过 scrub_restricted，
+    # 模块若把密钥值打进 stdout / stderr，原样进会话日志并发给模型服务商）。
+    for key in ("stdout_tail", "stderr_tail", "message", "error"):
+        if isinstance(outcome.get(key), str):
+            outcome[key] = scrub_secrets(outcome[key], ctx.root)
     return outcome
 
 
