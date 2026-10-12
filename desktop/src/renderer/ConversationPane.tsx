@@ -4,7 +4,7 @@
 // D80（人选方案 A，2026-10-12）：工具行「图标 类别词 主文本 次文本 … 状态词 ›」、只有状态词带语义色；连续 bash 折成终端组；
 // 一轮过程折成「已工作 … · N 个工具」，答复留在外面；运行中类别词扫光；新到的行淡入。只改怎么显示，行数据一条不删。
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import type { ConvRow, ToolRow } from "../shared/convFold";
+import { cardParts, cardPhrase, type ConvRow, type ToolRow } from "../shared/convFold";
 import {
   durText,
   firstLine,
@@ -325,6 +325,25 @@ function RowView({ rows, index, running, fresh, opens, inGroup = false }: { rows
   return <Row row={row} fresh={fresh(row)} />;
 }
 
+/** D80 R6.3：卡片结局的状态色——待批准用等待色、被拒用危险色，其余中性（语义色只给真实状态） */
+const CARD_TONE: Readonly<Record<string, string>> = { open: "wait", approved: "ok-muted", rejected: "fail", voided: "ok-muted" };
+
+/** D80 R5：回合末遥测默认只显示短摘要；ⓘ 展开完整原文（字段一个不删，仍可选中复制） */
+function Footer({ text, brief }: { text: string; brief: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="conv-foot" data-testid="conv-row" data-kind="footer">
+      <div className="conv-foot-line">
+        <span data-testid="footer-brief">{brief}</span>
+        <button type="button" className="conv-chev-btn conv-foot-more" data-testid="footer-more" aria-expanded={open} aria-label="完整遥测" title={text} onClick={() => setOpen((o) => !o)}>
+          <Icon name="info" size="sm" />
+        </button>
+      </div>
+      {open && <div data-testid="footer-full">{text}</div>}
+    </div>
+  );
+}
+
 /** 非工具行。D80：只有实时到达的用户消息与答复挂入场标记（R3 ④）；工具行在 ToolLine */
 function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean }) {
   const enter = fresh ? " conv-enter" : "";
@@ -363,12 +382,25 @@ function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean })
           <pre className="conv-obs">{row.lines.join("\n")}</pre>
         </details>
       );
-    case "card":
+    case "card": {
+      // D80 R6.3：与工具行同结构（方案 A）——类别词是卡类，主文本是工具名，状态词是卡的结局（被拒附反馈原文、作废附原因）
+      const { kind, tool } = cardParts(row.label);
+      const phrase = cardPhrase(row);
       return (
-        <div className="conv-note" data-testid="conv-row" data-kind="card" data-request-id={row.requestId} data-status={row.status}>
-          {row.text}
+        <div className="conv-tool-row conv-card" data-testid="conv-row" data-kind="card" data-request-id={row.requestId} data-status={row.status}>
+          <div className="conv-tool" title={row.text}>
+            <span className="conv-tool-lead">
+              <Icon name="alert" size="sm" />
+              <span className="conv-tool-cat">{kind}</span>
+              {tool !== "" && <span className="conv-tool-main">{tool}</span>}
+            </span>
+            <span className="conv-tool-status conv-card-phrase" data-st={CARD_TONE[row.status]}>
+              {phrase}
+            </span>
+          </div>
         </div>
       );
+    }
     case "stop":
       return (
         <div className="conv-note" data-testid="conv-row" data-kind="stop">
@@ -384,11 +416,7 @@ function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean })
         </div>
       );
     case "footer":
-      return (
-        <div className="conv-foot" data-testid="conv-row" data-kind="footer">
-          {row.text}
-        </div>
-      );
+      return <Footer text={row.text} brief={row.brief} />;
     case "historySeparator":
       // 文案与 Spec 10 §2.3 一致；红线 3 / TG-14 禁止 desktop/src 出现「会话记录文件名」字面量，故拆开拼接
       return (

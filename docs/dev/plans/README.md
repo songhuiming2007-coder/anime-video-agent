@@ -29,7 +29,7 @@
 | [D44 审批按参数分级 + 字幕可检索](2026-10-08-approval-tiering-subs-search-spec.md) | D44 | ADR-0018, ADR-0025 | 已施工、机检通过（pytest 2106 / vitest 437，变异 6/6 被抓）；待真实窗口手验 |
 | [D71 全局常驻作业条](2026-10-11-job-status-bar-spec.md) | D71 | D46, D50 | 人选 A（[三方案截图脚本](2026-10-11-job-status-shots/shots.spec.ts)）；已施工，vitest / e2e 通过、变异 3/3 被抓；**待人验收**（UI 规则 2，真实一期手验） |
 | [D78 审批减负 + D79 运行中排队发消息](2026-10-12-steer-queue-and-approval-spec.md) | D78, D79 | ADR-0030 | 均已施工、机检通过；待真实一期手验（§五四项）；插盘后复核金样本 G-P1 |
-| [D80 对话区第二轮打磨](2026-10-12-conv-liveliness-spec.md) | D80 | Spec 14, D46, D78, D79, ADR-0030 | 待施工（Q1–Q5 已裁决；PR-B 人选 A；PR-C、PR-A 已施工、机检通过（变异各 7/7），待人看截图与真实一期手验；PR-D 未动工；UI 规则 2 的人验收未开始） |
+| [D80 对话区第二轮打磨](2026-10-12-conv-liveliness-spec.md) | D80 | Spec 14, D46, D78, D79, ADR-0030 | 待施工（Q1–Q5 已裁决；PR-B 人选 A；PR-C、PR-A 已施工、机检通过（变异各 7/7）；PR-D 的 R5 / R6.3 / R7 已施工（变异 4/4），R6.1 / R6.2 人选 C、施工中；待真实一期手验；UI 规则 2 的人验收未开始） |
 | [D66 回收站查看与选择性彻底清空](2026-10-10-trash-manage-spec.md) | D66 | Spec 10, D45, D58 | 待施工（裁决三项 + 红队 10 条全吸收；UI 规则 2/4 的人验收未开始） |
 | [D65 工具结果老化](2026-10-10-tool-result-aging-spec.md) | D65 | ADR-0022, Spec 16, Spec 18, D62 | 待施工（红队 F1–F4 + 人拍板 ①②③ 全部回填，含 is_bloated 第三处与放置裁决） |
 | [D67 恢复时全 role 脱敏投影](2026-10-10-resume-scrub-spec.md) | D67 | D52, Spec 16 | 待施工（人裁决①+实测修正：必须全 role，只 scrub tool 是假修复） |

@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { bashSummary, charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
+import { bashSummary, cardParts, cardPhrase, charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -330,5 +330,37 @@ describe("ADR-0030 本会话都批准", () => {
       { k: "answered_local", at: 2, requestId: "q9", decision: "approve_session", feedback: null },
     ]);
     expect(rows.find((r) => r.k === "card")).toMatchObject({ status: "approved" });
+  });
+});
+
+describe("D80 R5 / R6.3：短摘要、停机点去重、卡片短语", () => {
+  const stops = (types: string[], seq: number) => F("stop_points", { items: types.map((type) => ({ type })), turn_id: "t1" }, seq);
+  it("回合末短摘要：调用次数 + 上下文读数；完整遥测仍在 text", () => {
+    const { rows } = foldConv([{ k: "frame", at: 1, frame: TURN_FINISHED() }]);
+    const foot = rows[0];
+    expect(foot.k === "footer" && [foot.brief, foot.stopped]).toEqual(["2 次模型调用 · 上下文约 100 字", "done"]);
+    expect(foot.k === "footer" && foot.text).toContain("检查点 0");
+  });
+  it("停机点：内容不变的逐轮 stop_points 不再成行；变了（解决 / 新出现）才成行", () => {
+    const { rows } = foldConv([
+      { k: "frame", at: 1, frame: stops(["05"], 1) },
+      { k: "frame", at: 2, frame: stops(["05"], 2) },
+      { k: "frame", at: 3, frame: stops(["05"], 3) },
+      { k: "frame", at: 4, frame: stops([], 4) },
+      { k: "frame", at: 5, frame: stops(["05"], 5) },
+      { k: "frame", at: 6, frame: stops(["05", "09"], 6) },
+    ]);
+    expect(rows.map((r) => (r.k === "stop" ? [r.at, r.text] : null))).toEqual([
+      [1, "停机点 05 待审（在待答区处理）"],
+      [5, "停机点 05 待审（在待答区处理）"],
+      [6, "停机点 05 待审（在待答区处理）"],
+      [6, "停机点 09 待审（在待答区处理）"],
+    ]);
+  });
+  it("卡片短语与卡类 / 工具名", () => {
+    expect(cardParts("[工具卡] bash")).toEqual({ kind: "工具卡", tool: "bash" });
+    expect(cardParts("[检查点]")).toEqual({ kind: "检查点", tool: "" });
+    expect(cardPhrase({ label: "[工具卡] bash", text: "[工具卡] bash · 待答", status: "open" })).toBe("等待批准");
+    expect(cardPhrase({ label: "[工具卡] bash", text: "[工具卡] bash · 已拒绝（附反馈：改成第三人称）", status: "rejected" })).toBe("已拒绝（附反馈：改成第三人称）");
   });
 });

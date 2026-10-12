@@ -404,6 +404,7 @@ function Main() {
             stale={!reachOk}
             convPhase={conv?.phase ?? "none"}
             titles={titleTick(conv?.entries ?? [])}
+            openCards={conv?.open.length ?? 0}
             onConvChanged={() => fetchConvRef.current(convKey, true)}
           />
           {ep && !showIdea && (
@@ -716,7 +717,7 @@ function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | nu
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, titles, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; onConvChanged: () => void }) {
+function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, titles, openCards, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; openCards: number; onConvChanged: () => void }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
@@ -741,7 +742,7 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
   const row = (e: EpisodeSummary) => (
     <div key={e.epKey}>
       {epRow(e)}
-      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} onChanged={onConvChanged} />}
+      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
     </div>
   );
   const epRow = (e: EpisodeSummary) => (
@@ -817,7 +818,7 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
         </span>
       </button>
       {/* D58：选题会话与期会话同一个会话列表（看 / 进 / 新开 / 删），选中「选题」时展开 */}
-      {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} onChanged={onConvChanged} />}
+      {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
       {!list && <div className="muted">加载中…</div>}
       {list && query.trim() !== "" && eps.length === 0 && <div className="muted">没有匹配的期</div>}
       {view === "time" && eps.map(row)}

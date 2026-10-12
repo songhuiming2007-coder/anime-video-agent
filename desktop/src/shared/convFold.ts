@@ -35,8 +35,9 @@ export type ConvRow =
   | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided" }
   | { k: "stop"; at: number; text: string }
   | { k: "notice"; at: number; level: string; code: string; text: string }
-  /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text） */
-  | { k: "footer"; at: number; text: string; stopped: string }
+  /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text）；
+   *  brief：D80 R5 默认显示的短摘要（「N 次模型调用 · 上下文 …」），完整遥测仍在 text、展开可见 */
+  | { k: "footer"; at: number; text: string; stopped: string; brief: string }
   | { k: "historySeparator"; at: number }
   /** 恢复历史里的系统注入（常驻提示、规程、记忆）：Spec 10 §2.3「折叠为『系统注入』」——D57 补落实，默认收起 */
   | { k: "injection"; at: number; text: string }
@@ -69,6 +70,19 @@ function cardLabel(f: OutFrame): string {
   const base = CARD_LABEL[String(f.kind)] ?? "请求卡";
   const tool = f.kind === "tool_call" && f.fields && typeof (f.fields as Record<string, unknown>).tool === "string" ? ` ${String((f.fields as Record<string, unknown>).tool)}` : "";
   return `[${base}]${tool}`;
+}
+
+/** D80 R6.3：卡片行的状态短语（`text` 去掉「[卡类] 工具 · 」前缀）；待答显示为「等待批准」 */
+export function cardPhrase(row: { label: string; text: string; status: string }): string {
+  if (row.status === "open") return "等待批准";
+  const head = `${row.label} · `;
+  return row.text.startsWith(head) ? row.text.slice(head.length) : row.text;
+}
+
+/** D80 R6.3：「[工具卡] bash」→ { kind: "工具卡", tool: "bash" } */
+export function cardParts(label: string): { kind: string; tool: string } {
+  const m = /^\[(.+?)\](?: (.+))?$/.exec(label);
+  return m ? { kind: m[1], tool: m[2] ?? "" } : { kind: label, tool: "" };
 }
 
 function cardText(label: string, status: "open" | "approved" | "rejected" | "voided", feedback: string | null, voidedCause: string | null): string {
@@ -169,6 +183,13 @@ export function lookupsText(v: unknown): string | null {
   return `查证 ${parts.join(" · ")}`;
 }
 
+/** D80 R5：回合末默认只显示调用次数与上下文读数——工具数与用时已在回合折叠行上，其余遥测展开看 */
+function footerBrief(f: OutFrame): string {
+  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
+  const ctx = reading === null ? null : contextText(reading);
+  return `${String(f.llm_calls)} 次模型调用${ctx === null ? "" : ` · ${ctx}`}`;
+}
+
 function footerText(f: OutFrame): string {
   const reading = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
   const ctx = reading === null ? null : contextText(reading);
@@ -203,8 +224,11 @@ export function bashSummary(command: string | null): string {
   return first.length > 80 || lines.length > 1 ? `${first.slice(0, 80)}…` : first;
 }
 
-/** 把一条已校验的帧折进行序列；`lastTool` 是当前回合里最近一个尚未结束的工具行下标（-1 = 无）。 */
-function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number }): void {
+/**
+ * 把一条已校验的帧折进行序列；`lastTool` 是当前回合里最近一个尚未结束的工具行下标（-1 = 无）；
+ * `lastStops` 是上一帧 stop_points 的内容（D80 R5：同一会话里停机点没变化就不再重复成行）。
+ */
+function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number; lastStops?: string }): void {
   switch (f.t) {
     case "assistant":
       rows.push({ k: "assistant", at, kind: String(f.kind) as "answer" | "wrapup" | "local_note", text: f.text as string, label: null });
@@ -249,11 +273,15 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       }
       break;
     }
-    case "stop_points":
-      for (const item of (f.items as Record<string, unknown>[]) ?? []) {
-        rows.push({ k: "stop", at, text: `停机点 ${String(item.type)} 待审（在待答区处理）` });
-      }
+    case "stop_points": {
+      // D80 R5：每回合恰好一帧 stop_points（S9-R4），停机点不变时逐轮重复同一行是噪声——只在内容变化时成行
+      const texts = ((f.items as Record<string, unknown>[]) ?? []).map((item) => `停机点 ${String(item.type)} 待审（在待答区处理）`);
+      const key = texts.join("\n");
+      if (key === lastTool.lastStops) break;
+      lastTool.lastStops = key;
+      for (const text of texts) rows.push({ k: "stop", at, text });
       break;
+    }
     case "command_result":
       rows.push({ k: "notice", at, level: f.ok ? "info" : "warn", code: `command:${String(f.name)}`, text: String(f.text) });
       break;
@@ -264,7 +292,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       rows.push({ k: "notice", at, level: "error", code: String(f.code), text: String(f.message) });
       break;
     case "turn_finished":
-      rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped) });
+      rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped), brief: footerBrief(f) });
       break;
     default:
       break; // ready / turn_started / bye / history 由 foldConv 主循环处理

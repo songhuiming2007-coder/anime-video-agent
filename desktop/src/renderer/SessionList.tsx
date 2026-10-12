@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConvEntry, ConvKey, ConvSnapshot, SessionRow, TrashRow } from "../shared/protocol";
 import { formatRelTime } from "../shared/relTime";
 import { titleProblem } from "../shared/sessionTitle";
+import { Icon } from "./icons";
 import { errText, type RpcClient } from "./rpc";
 
 /** D80：本会话键收到过几帧 session_title——变了就重取会话列表（标题在回合结束之后才异步到达，阶段早已变完） */
@@ -22,7 +23,8 @@ export function formatTrashSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function SessionList({ rpc, convKey, phase, titles = 0, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; titles?: number; onChanged: () => void }) {
+/** D80 R7：`openCards` = 活会话的待答卡数（只有活会话能有卡，口径同期行的「N 张卡待答」） */
+export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; titles?: number; openCards?: number; onChanged: () => void }) {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [editing, setEditing] = useState<{ sid: string; text: string } | null>(null);
   // R1.5：标题换了（兜底 → 生成名 / 改名）的行淡入切换；首次载入不播
@@ -140,14 +142,31 @@ export function SessionList({ rpc, convKey, phase, titles = 0, onChanged }: { rp
                 act(() => rpc.call("conv.enter", { convKey, sid: r.sid }));
               }}
             >
-              <span key={title} className={`ui-row-title${swapped ? " ep-title-swap" : ""}`} data-testid="session-title" data-source={r.titleSource}>
+              {/* R7.2：正在跑的会话标题扫光（与对话区同一套语言）；有待答卡用期行同口径的徽标 */}
+              <span
+                key={title}
+                className={`ui-row-title${swapped ? " ep-title-swap" : ""}${r.live && running ? " conv-shimmer" : ""}`}
+                data-testid="session-title"
+                data-source={r.titleSource}
+                data-running={r.live && running ? "1" : undefined}
+              >
                 {title}
               </span>
+              {r.live && openCards > 0 && (
+                <span className="ui-badge ui-badge--wait" data-testid="session-open">
+                  待答
+                </span>
+              )}
             </button>
+            {/* R7.1：相对时间平时显示；悬停 / 键盘进入本行时换成改名、删除两个图标（R7.3） */}
+            <span className="ep-session-when" data-testid="session-when">
+              {when}
+            </span>
             <button
               className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
               data-testid="session-rename"
               aria-label={`改名：${title}`}
+              title="改名"
               disabled={busy}
               onClick={(e) => {
                 if (!e.nativeEvent.isTrusted) return;
@@ -155,19 +174,20 @@ export function SessionList({ rpc, convKey, phase, titles = 0, onChanged }: { rp
                 setEditing({ sid: r.sid, text: r.titleSource === "first_input" ? "" : title });
               }}
             >
-              改名
+              <Icon name="pen" size="sm" />
             </button>
             <button
               className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
               data-testid="session-delete"
               aria-label={`删除会话：${title}`}
+              title="删除（移到回收站）"
               disabled={off}
               onClick={(e) => {
                 if (!e.nativeEvent.isTrusted) return;
                 act(() => rpc.call("conv.delete", { convKey, sid: r.sid }));
               }}
             >
-              删除
+              <Icon name="trash" size="sm" />
             </button>
           </div>
         );

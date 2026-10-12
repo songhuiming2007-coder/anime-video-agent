@@ -61,6 +61,15 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await expect(p.locator("[data-testid=conv-row][data-kind=user][data-enter='1']")).toHaveCount(1);
     await expect(p.locator("[data-testid=conv-row][data-kind=answer][data-enter='1']")).toHaveCount(1);
 
+    // R5：回合末脚注默认短摘要，ⓘ 展开完整遥测
+    const foot = p.locator("[data-testid=conv-row][data-kind=footer]").first();
+    await expect(foot.getByTestId("footer-brief")).toHaveText(/^\d+ 次模型调用 · 上下文/);
+    await expect(foot.getByTestId("footer-full")).toHaveCount(0);
+    await foot.getByTestId("footer-more").click();
+    await expect(foot.getByTestId("footer-full")).toContainText("检查点");
+    // R7：会话行右侧相对时间
+    await expect(p.getByTestId("session-when").first()).toHaveText("刚刚");
+
     // 回合 2：有失败 → 不折；三条 bash 折成一组，组内有失败 → 组默认展开
     llm.push(toolCalls(bash("ls _agent", "列出留底目录"), bash("cat 旧稿-v1.md", "读取旧稿"), bash("head -3 01-topic.md", "看选题开头")), assistant("旧稿不在。"));
     await send(p, "把旧稿找出来");
@@ -113,6 +122,8 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await send(p, "跑一下机检");
     const shimmer = p.getByTestId("conv-tool-shimmer");
     await expect(shimmer).toHaveCount(1);
+    // R7.2：正在跑的会话，侧栏标题扫光
+    await expect(p.locator("[data-testid=session-row][data-live='1'] [data-testid=session-title]")).toHaveAttribute("data-running", "1");
     await expect(p.getByTestId("conv-activity")).toContainText("正在执行");
     await expect(p.getByTestId("conv-turn").nth(2)).toHaveAttribute("data-outcome", "running");
     await expect(p.getByTestId("conv-turn").nth(2).getByTestId("turn-fold")).toContainText("工作中");
@@ -123,12 +134,28 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await p.emulateMedia({ reducedMotion: "no-preference" });
     await turnsDone(3);
     await expect(shimmer).toHaveCount(0);
+    // R5：三轮下来停机点没变，「停机点 … 待审」只有一行（此前每轮一行）
+    await expect(p.locator("[data-testid=conv-row][data-kind=stop]")).toHaveCount(1);
+    await expect(p.locator("[data-testid=session-title][data-running]")).toHaveCount(0);
     await expect(p.getByTestId("conv-turn").nth(2)).toHaveAttribute("data-open", "0"); // 运行 → 结束的边沿自动收起
+
+    // R6.3 / R7.2：要批的卡——时间线卡片行「等待批准」、侧栏活会话挂「待答」；批准后结局写回
+    llm.push(toolCalls(bash("rm stale.tmp", "清理临时文件")), assistant("清理完了。"));
+    await send(p, "把临时文件清掉");
+    const cardRow = p.locator("[data-testid=conv-row][data-kind=card]");
+    await expect(cardRow.locator(".conv-card-phrase")).toHaveText("等待批准", { timeout: 20_000 });
+    await expect(cardRow.locator(".conv-tool-cat")).toHaveText("工具卡");
+    await expect(p.getByTestId("session-open")).toHaveText("待答");
+    await p.getByTestId("request-answer-approve").click();
+    await turnsDone(4);
+    await expect(p.getByTestId("session-open")).toHaveCount(0);
+    await p.getByTestId("conv-turn").nth(3).getByTestId("turn-fold").click(); // 正常结束已收起，展开看卡片结局
+    await expect(p.getByTestId("conv-turn").nth(3).locator("[data-kind=card] .conv-card-phrase")).toHaveText("已批准");
 
     // 切走再切回（App 以会话键重挂对话流）：已在的行一律不带入场标记
     await openEp(p, OTHER);
     await openEp(p, EP);
-    await expect(p.getByTestId("conv-turn")).toHaveCount(3);
+    await expect(p.getByTestId("conv-turn")).toHaveCount(4);
     await expect(p.locator("[data-testid=conv-stream] [data-enter]")).toHaveCount(0);
     await expect(p.locator("[data-testid=conv-stream] .conv-enter")).toHaveCount(0);
   } finally {

@@ -56,6 +56,12 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .ep-session[data-empty] .ui-row-title { color: var(--fg-muted); }
 .ep-session-del { flex: none; visibility: hidden; color: var(--fg-muted); }
 .ep-session-wrap:hover .ep-session-del, .ep-session-wrap:focus-within .ep-session-del { visibility: visible; }
+/* D80 R7：会话行右侧平时是相对时间，悬停 / 键盘进入本行换成改名、删除图标（占同一位置，不挤标题） */
+.ep-session-when { flex: none; padding-right: var(--space-2); color: var(--fg-subtle); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ep-session-wrap .ep-session-del:has(.ui-icon) { display: none; }
+.ep-session-wrap:hover .ep-session-del:has(.ui-icon), .ep-session-wrap:focus-within .ep-session-del:has(.ui-icon) { display: inline-flex; }
+.ep-session-wrap:hover .ep-session-when, .ep-session-wrap:focus-within .ep-session-when { display: none; }
+.ep-session .ui-badge { flex: none; }
 /* D80 R1：会话改名的行内编辑框；标题换了（兜底 → 生成名 / 改名）淡入切换（R1.5，≤ --dur-base） */
 .ep-session-edit { flex: 1; min-width: 0; height: 30px; font-size: var(--text-sm); }
 .ep-title-swap { animation: ep-title-swap var(--dur-base) var(--ease) both; }
@@ -313,6 +319,15 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-tool-cmd code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 .conv-tool-lbl { color: var(--fg-subtle); font-size: var(--text-sm); }
 .conv-tool-out { margin: 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); }
+
+/* R6.3：时间线里的卡片行（与工具行同结构，无展开）；状态短语过长时省略，悬停看全文 */
+.conv-tool-lead { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: var(--space-2); }
+.conv-tool-lead .ui-icon { color: var(--fg-muted); }
+.conv-card-phrase { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-tool-status[data-st="wait"] { color: var(--wait); }
+/* R5：回合末遥测的短摘要行 */
+.conv-foot-line { display: flex; align-items: center; gap: var(--space-1); }
+.conv-foot-more { display: inline-flex; color: var(--fg-subtle); }
 
 /* R2 ③ / R4 ④：高度过渡（grid-template-rows 0fr ↔ 1fr），收起后由 Collapse 延迟卸载内容；clip 留出焦点环的余量 */
 .conv-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease); }
