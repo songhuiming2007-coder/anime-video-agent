@@ -20,7 +20,6 @@ import { convSummary } from "../shared/convFold";
 import { parseOutFrame, type OutFrame } from "../shared/convFrames";
 import { LineSplitter } from "../shared/jsonl";
 import { stringifyLossless } from "../shared/losslessJson";
-import { needsNativeConfirm, renderConfirmDetail } from "../shared/nativeConfirm";
 import type { ConvEntry, ConvKey, ConvPhase, ConvSnapshot, Envelope, ErrCode } from "../shared/protocol";
 import type { SessionProc, SessionTemplate } from "./spawner";
 
@@ -77,8 +76,6 @@ export interface SessionDeps {
   resolveKey: () => Promise<{ name: string; value: string } | { problem: string }>;
   /** Spec 15 §2.7：web 检索链上声明的密钥（LLM 名字之后执行）；自身兜住一切失败，只返回读成功的 */
   resolveWebKeys: (llmName: string | null) => Promise<Record<string, string>>;
-  /** → main 的 confirm-query（§2.4 第 5 层） */
-  confirm: (title: string, detail: string) => Promise<boolean>;
   now: () => number;
   bootId: string;
   push: (env: Envelope) => void;
@@ -108,7 +105,7 @@ interface SettleSlot {
   after: number;
 }
 
-interface SendWaiter extends Pending<{ turnId: string }> {
+interface SendWaiter extends Pending<{ turnId: string; queued?: boolean }> {
   text: string;
 }
 
@@ -274,17 +271,18 @@ export class SessionManager {
 
   // ---------------- 对外方法 ----------------
 
-  async send(key: ConvKey, target: SessionTarget, text: string): Promise<{ turnId: string }> {
+  async send(key: ConvKey, target: SessionTarget, text: string): Promise<{ turnId: string; queued?: boolean }> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
     if (text === "") this.fail("E_BAD_REQUEST", "消息为空");
     const s = await this.ensure(key, target);
     if (s.phase === "starting") await this.waitReady(s);
-    if (s.phase !== "idle") this.fail("E_BUSY", "该会话有回合在跑");
+    // D79（照 Pi 的 steering）：回合在跑时照写 user_message，core 排队并回 queued；工具批之后送达模型
+    if (s.phase !== "idle" && s.phase !== "running") this.fail("E_BUSY", "该会话正在启动或收尾");
     const rid = this.rid();
     const framed = { v: 1, t: "user_message", text, rid };
     this.precheck(framed);
-    const p = new Promise<{ turnId: string }>((resolve, reject) => s.sendWaiters.set(rid, { resolve, reject, text }));
+    const p = new Promise<{ turnId: string; queued?: boolean }>((resolve, reject) => s.sendWaiters.set(rid, { resolve, reject, text }));
     this.writeFrame(s, framed);
     return this.race(p, this.timing.sendAckMs, "发送结果未知（超时）");
   }
@@ -308,7 +306,8 @@ export class SessionManager {
 
   async answer(key: ConvKey, requestId: string, decision: string, feedback: string | null): Promise<{ decision: string }> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
-    // 冻结顺序（§4.2）：打开集合 → 在途 → 参数校验 → 原生确认 → 复查打开集合 → 活进程 → 写
+    // 冻结顺序（§4.2）：打开集合 → 在途 → 参数校验 → 活进程 → 写。
+    // ADR-0030：browser / 抓取不再出卡，会话卡上的原生确认框（§2.4 第 5 层）随之撤掉
     const s = this.states.get(key);
     const req = s?.openIds.get(requestId);
     if (!s || !req) this.fail("E_STALE", "该请求已关闭或不存在");
@@ -318,12 +317,6 @@ export class SessionManager {
     const resolved = this.checkFeedback(req, decision, feedback);
     s.answering.add(requestId);
     try {
-      if (needsNativeConfirm(req, decision)) {
-        const { title, detail } = renderConfirmDetail(req);
-        const ok = await this.deps.confirm(title, detail);
-        if (!ok) this.fail("E_STALE", "已在确认框取消");
-        if (!s.openIds.has(requestId)) this.fail("E_STALE", "该请求已关闭或不存在"); // 等待期间进程退出（打开集合已清空）
-      }
       if (!s.proc || s.phase === "exited") this.fail("E_SESSION", "会话进程未就绪或已退出");
       const rid = this.rid();
       const framed = { v: 1, t: "answer", request_id: requestId, decision, feedback: resolved, rid };
@@ -594,6 +587,16 @@ export class SessionManager {
           s.sendWaiters.delete(rid);
           this.append(s, { k: "user", at: this.deps.now(), text: w.text });
           w.resolve({ turnId: s.turnId });
+        }
+        break;
+      }
+      case "queued": {
+        // D79：入队回执。用户行不在这里追加——送达模型时由 steer_delivered 帧折进时间线（convFold）
+        const rid = ridOf(f);
+        const w = rid ? s.sendWaiters.get(rid) : undefined;
+        if (rid && w) {
+          s.sendWaiters.delete(rid);
+          w.resolve({ turnId: s.turnId ?? "", queued: true });
         }
         break;
       }

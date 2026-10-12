@@ -1705,7 +1705,7 @@ def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(
     item = ensure_pending(ep)
     assert item is not None and item.type == "09"
 
-    # 写仍弹卡：schema 不标 side_effect → fail-closed 走人审（root 传真仓库根，拿真配置）
+    # ADR-0030 决策 3：期文件写入免卡（覆盖前留底）；root 传真仓库根，拿真配置
     verdict = review_tool_call(
         "write_episode_file",
         {"filename": "07-titles.md", "content": "x"},
@@ -1713,7 +1713,7 @@ def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(
         scope="creative",
         root=real_root,
     )
-    assert verdict.action == "ask", verdict
+    assert verdict.action == "allow", verdict
 
     ctx = ToolContext(scope="creative", episode_dir=ep, root=tmp_path)
     content = "# 标题与简介候选\n\n| # | 路子 | 标题 |\n|---|---|---|\n| 1 | 反常识 | 候选一 |\n"

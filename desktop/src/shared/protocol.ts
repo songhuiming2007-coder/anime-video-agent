@@ -19,7 +19,7 @@ export type Method =
   | "approval.decide" // §3.2.1（PR4）；09 定稿另带 cover/title（Spec 12 S8-R19）
   | "episode.create" // { name } → { epKey, migrated, sid, messages }：spawn NEW_EPISODE（恒带 --from-idea，Spec 18 §3.3）；校验全在 core（Spec 10 S8-R2）
   // ---- Spec 10 S8-R2：会话方法（§3.1）----
-  | "conv.send" // { convKey, text } → { turnId }：无活进程则先起 new 会话、等 ready
+  | "conv.send" // { convKey, text } → { turnId, queued? }：无活进程则先起 new 会话、等 ready；回合在跑时排队（D79，queued: true）
   | "conv.resume" // { convKey } → ConvSnapshot：ep:* 以 --continue 起会话（idea 以 --idea 起，core 启动即恒恢复，Spec 18 §3.3）；已有活进程 → E_BUSY
   | "conv.interrupt" // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
   | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层

@@ -272,3 +272,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .review-dim { display: inline-flex; align-items: center; gap: var(--space-1); }
 .review-rating .ui-seg > button { white-space: nowrap; }
 
+
+/* D79：排队中的消息（回合在跑时发出、尚未送达模型）。ui.css 冻结（视觉门禁 1），放这里 */
+.composer-queue { display: flex; flex-direction: column; gap: var(--space-1); }
+.composer-queued { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-2); background: var(--bg-subtle); border: 1px dashed var(--border-strong); border-radius: var(--radius-xl); }
+.composer-queued-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); }

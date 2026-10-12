@@ -43,7 +43,6 @@ function harness(exitOnShutdown: boolean) {
     },
     resolveKey: async () => ({ name: "K", value: "V" }),
     resolveWebKeys: async () => ({}),
-    confirm: async () => true,
     now: () => 1,
     bootId: "boot1",
     push: (e) => pushes.push(e),

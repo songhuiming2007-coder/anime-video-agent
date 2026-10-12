@@ -537,7 +537,7 @@ def test_audit_log_and_id_allocation(root):
     assert plan.after[-1].id == "M002"
     text = lib_path(root, "memory.md").read_text(encoding="utf-8")
     rows = log_rows(root)
-    assert rows[-1]["op"] == "add" and rows[-1]["confirm"] == "card"
+    assert rows[-1]["op"] == "add" and rows[-1]["confirm"] == "auto"  # ADR-0030：不出卡，如实记 auto
     assert rows[-1]["ids"] == []
     assert rows[-1]["before"] == [base[0].serialize()]
     assert rows[-1]["after"] == [base[0].serialize(), plan.after[-1].serialize()]
@@ -1140,7 +1140,8 @@ def _approve(name: str, args: dict, root: Path, ep_dir: Path | None = None):
     return _default_approve(name, args, ep_dir=ep_dir, scope="creative", root=root)
 
 
-def test_first_write_requires_human_card(root, monkeypatch):
+def test_first_write_card_free_but_implementation_still_needs_confirmed(root, monkeypatch):
+    """ADR-0030 决策 3：write_memory 审查层免卡；实现层「confirmed 只由宿主注入」的护栏不动。"""
     make_episode(root, REF_A)
     episode = make_episode(root, "番A/03-z")
     _agent_root(root)
@@ -1158,22 +1159,13 @@ def test_first_write_requires_human_card(root, monkeypatch):
             plan_op("add", {**add_args("新模式文本", [REF_A]), **extra}, root=root,
                     episode_dir=episode, today=TODAY)
 
-    # ③ 人按 n → 零写入，approvals.jsonl 记为 n
-    monkeypatch.setattr("builtins.input", lambda: "n")
-    ok, reason = _approve("write_memory", add_args("新模式文本", [REF_A]), root, episode)
-    assert ok is False and reason
-    assert not lib_path(root, "memory.md").exists()
-    decisions = [json.loads(line) for line in
-                 (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert decisions[-1]["tool"] == "write_memory" and decisions[-1]["decision"] == "n"
-
-    # 人按 y → 放行，落盘后日志 confirm == "card"
-    monkeypatch.setattr("builtins.input", lambda: "y")
+    # ③ 审查层不出卡直接放行（不读终端）；宿主执行时注入 confirmed，落盘后日志 confirm == "auto"
+    monkeypatch.setattr("builtins.input", lambda: pytest.fail("write_memory 不该再弹卡"))
     ok, _ = _approve("write_memory", add_args("新模式文本", [REF_A]), root, episode)
     assert ok is True
     apply_op("add", add_args("新模式文本", [REF_A]), root=root, episode_dir=episode,
              confirmed=True, scope="creative", today=TODAY)
-    assert log_rows(root)[-1]["confirm"] == "card"
+    assert log_rows(root)[-1]["confirm"] == "auto"
     assert "新模式文本" in lib_path(root, "memory.md").read_text(encoding="utf-8")
 
 
@@ -1183,8 +1175,12 @@ def test_card_shows_full_text_and_refs(root, monkeypatch, capsys):
     _agent_root(root)
     write_state(root, [])
     args = add_args("卡面要显示的模式原文", [REF_A, "番A/03-z"], "卡面要显示的边界原文")
-    monkeypatch.setattr("builtins.input", lambda: "n")
-    _approve("write_memory", args, root, episode)
+    # ADR-0030 起 write_memory 不出卡；卡面渲染保留（推翻条件触发时直接恢复），这里直接渲染验它
+    from pipeline.agent.memory import render_plan_preview
+    from pipeline.agent.status_card import render_approval_card
+
+    plan = plan_op("add", args, root=root, episode_dir=episode, today=TODAY)
+    print(render_approval_card("write_memory", args, memory_preview=render_plan_preview(plan)))
     out = capsys.readouterr().out
     assert "记忆写入审批" in out
     assert "卡面要显示的模式原文" in out
@@ -1195,13 +1191,14 @@ def test_card_shows_full_text_and_refs(root, monkeypatch, capsys):
     assert "确认下方全文" in out          # 2026-09-24 人裁决：标记在全文上方，文案说「下方」
 
 
-def test_revise_merge_retire_all_need_a_card(root, monkeypatch):
+def test_revise_merge_retire_card_free_but_need_confirmed(root, monkeypatch):
+    """ADR-0030：审查层免卡；实现层未注入 confirmed 照旧 PermissionError、零落盘。"""
     make_episode(root, REF_A)
     episode = make_episode(root, "番A/03-z")
     _agent_root(root)
     write_state(root, [entry("M001", "模式一", (REF_A,), "边界一", "2026-01-01"),
                        entry("M002", "模式二", (REF_A,), "边界二", "2026-02-01")])
-    monkeypatch.setattr("builtins.input", lambda: "n")
+    monkeypatch.setattr("builtins.input", lambda: pytest.fail("write_memory 不该再弹卡"))
     cases = [
         {"op": "revise", "ids": ["M001"], "pattern": "改后的模式文本"},
         {"op": "merge", "ids": ["M001", "M002"], "pattern": "合并模式", "boundary": "合并边界"},
@@ -1209,7 +1206,7 @@ def test_revise_merge_retire_all_need_a_card(root, monkeypatch):
     ]
     for args in cases:
         ok, _ = _approve("write_memory", args, root, episode)
-        assert ok is False, args
+        assert ok is True, args
         with pytest.raises(PermissionError):
             apply_op(args["op"], args, root=root, episode_dir=episode, confirmed=False,
                      scope="creative", today=TODAY)

@@ -50,6 +50,9 @@ DRAFT_HISTORY_KEEP = 20
 # 要靠这些快照才能在分析时剔出去；每份 KB 级，一期至多几十份。
 SCRIPT_FILENAME = "02-script.md"
 SCRIPT_HISTORY_DIR = ("_agent", "script-history")
+# ADR-0030（D78）：写期文件全部免卡后，其余白名单文件（01-topic.md、07-titles.md、02-adversarial.md）
+# 覆盖前同样留底，人要回退直接从这里拿；不修剪（KB 级纯文本，一期至多几十份）
+FILE_HISTORY_DIR = ("_agent", "file-history")
 
 # D61 / ADR-0028：write_note 的目标与留底目录
 NOTE_TARGETS = ("notes", "review")
@@ -232,7 +235,7 @@ def write_episode_file(
     3. 三种越界拦截：写 pipeline/、写父级/祖先目录、写白名单外文件；
     4. 写 01-topic.md 强制人类确认；
     5. D47：02-script.md 只能改不能新建，它存在后草稿冻结（script_write_refusal）；
-    6. 覆盖草稿 / 定稿前留底；
+    6. 覆盖任何白名单文件前留底（草稿限份数，其余不修剪；ADR-0030）；
     7. 落盘必须走 paths.atomic_write。
     """
     # 文件名白名单检查
@@ -273,6 +276,8 @@ def write_episode_file(
         _keep_history(resolved_ep, target_resolved, DRAFT_HISTORY_DIR, DRAFT_HISTORY_KEEP)
     elif clean_name == SCRIPT_FILENAME and target_resolved.exists():
         _keep_history(resolved_ep, target_resolved, SCRIPT_HISTORY_DIR, None)
+    elif target_resolved.exists():
+        _keep_history(resolved_ep, target_resolved, FILE_HISTORY_DIR, None)
 
     # 6. 原子落盘
     paths.atomic_write(target_resolved, content)

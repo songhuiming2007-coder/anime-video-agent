@@ -18,6 +18,10 @@ export const OUT_TYPES = [
   "notice",
   "error",
   "bye",
+  // D79：回合在途时发来的消息排队（照 Pi 的 steering）：入队回执 / 送达模型 / 回合非正常结束退回输入框
+  "queued",
+  "steer_delivered",
+  "steer_returned",
 ] as const;
 
 export type OutType = (typeof OUT_TYPES)[number];
@@ -95,6 +99,9 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   notice: { level: ["string"], code: ["string"], text: ["string"] },
   error: { code: ["string"], message: ["string"] },
   bye: { reason: ["string"] },
+  queued: { id: ["string"], text: ["string"] },
+  steer_delivered: { turn_id: ["string"], ids: ["array"] },
+  steer_returned: { items: ["array"] },
 };
 
 /** history 的 tool 条目多一个必需键 ok（S9-R1）；bash 的 tool 帧与 history 的 bash 条目多一个必需键 command

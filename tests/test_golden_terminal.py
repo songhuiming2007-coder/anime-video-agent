@@ -195,13 +195,15 @@ def _g2_readonly_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _g3_side_effect_card_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """ADR-0030 起写入类免卡：弹卡场景改用仍弹卡的 bash 硬危险（删除）。"""
     root, ep = _world(tmp_path)
     _ready(root, monkeypatch)
+    (ep / "old-cover.jpg").write_bytes(b"x")
     _stub_llm(monkeypatch, [
-        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
-        {"role": "assistant", "content": "草稿已落盘。"},
+        tool_call("bash", {"command": "rm old-cover.jpg", "description": "删掉旧封面"}),
+        {"role": "assistant", "content": "旧封面已删。"},
     ])
-    with patch_inputs(["写个草稿", "y", "/quit"]):
+    with patch_inputs(["删掉旧封面", "y", "/quit"]):
         run_agent_loop(ep, scope_mode="auto", root=root)
     return root
 
@@ -209,11 +211,12 @@ def _g3_side_effect_card_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 def _g4_side_effect_card_no(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root, ep = _world(tmp_path)
     _ready(root, monkeypatch)
+    (ep / "old-cover.jpg").write_bytes(b"x")
     _stub_llm(monkeypatch, [
-        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
-        {"role": "assistant", "content": "那我不写了。"},
+        tool_call("bash", {"command": "rm old-cover.jpg", "description": "删掉旧封面"}),
+        {"role": "assistant", "content": "那我不删了。"},
     ])
-    with patch_inputs(["写个草稿", "n", "/quit"]):
+    with patch_inputs(["删掉旧封面", "n", "/quit"]):
         run_agent_loop(ep, scope_mode="auto", root=root)
     return root
 
@@ -265,7 +268,7 @@ def _g6_memory_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         }),
         {"role": "assistant", "content": "记下了。"},
     ])
-    with patch_inputs(["记住这条", "y", "/quit"]):
+    with patch_inputs(["记住这条", "/quit"]):  # ADR-0030 起记忆写入免卡：不再读 y
         run_agent_loop(ep, scope_mode="auto", root=root)
     return root
 
@@ -492,15 +495,17 @@ def _record_pty(gid: str, text: str, rc: int, root: Path | None = None) -> None:
 
 @pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
 def test_golden_pty_tool_card(tmp_path, monkeypatch) -> None:
-    """TT-1（pty）G-P1：真 TTY 下副作用卡按 y —— 提示符、卡片、回显路径全真。"""
+    """TT-1（pty）G-P1：真 TTY 下副作用卡按 y —— 提示符、卡片、回显路径全真。
+    ADR-0030 起写入类免卡，卡改用仍弹卡的 bash 硬危险（删除）。"""
     root, ep = _world(tmp_path)
     _no_freeze(monkeypatch)
+    (ep / "old-cover.jpg").write_bytes(b"x")
     replies = [
-        tool_call("write_episode_file", {"filename": "07-titles.md", "content": "第一段。"}),
-        {"role": "assistant", "content": "草稿已落盘。"},
+        tool_call("bash", {"command": "rm old-cover.jpg", "description": "删掉旧封面"}),
+        {"role": "assistant", "content": "旧封面已删。"},
     ]
     driver = _write_driver(tmp_path, replies=replies, block_at=None, ep=ep)
-    rc, text = _run_pty(driver, [(0.5, "写个草稿\n".encode()), (1.5, b"y\n"), (2.5, b"/quit\n")])
+    rc, text = _run_pty(driver, [(0.5, "删掉旧封面\n".encode()), (1.5, b"y\n"), (2.5, b"/quit\n")])
     _record_pty("G-P1", text, rc, root)
 
 

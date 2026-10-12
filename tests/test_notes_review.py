@@ -194,7 +194,7 @@ def test_没有笔记报错(data: Path):
 # ---------- 接入 ----------
 
 
-def test_白名单放行且弹卡(data: Path, tmp_path: Path):
+def test_白名单放行且免卡(data: Path, tmp_path: Path):
     from pipeline.agent.session import review_tool_call
     from pipeline.agent.tools import validate_pipeline_command
 
@@ -204,7 +204,7 @@ def test_白名单放行且弹卡(data: Path, tmp_path: Path):
     ep = tmp_path / "ep"
     ep.mkdir()
     v = review_tool_call("run_pipeline", {"command": "notes_review 罪恶王冠"}, ep_dir=ep, scope="idea", root=None)
-    assert v.action == "ask"
+    assert v.action == "allow"  # ADR-0030 决策 2：白名单内免卡（写新报告、不覆盖旧的）
 
 
 def test_状态卡提示_没审过与未终审(data: Path):

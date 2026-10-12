@@ -252,12 +252,26 @@ class FrameReader(threading.Thread):
         if not slots["ready"]:
             self._error("E_NOT_READY", "会话尚未 ready", rid)
             return
-        if slots["in_flight"]:
-            self._error("E_BUSY", "上一轮还在进行中", rid)
-            return
-        # 旗标由读者置、主循环清：否则「帧已入队、主循环还没开始跑」的那几毫秒里，
-        # 第二条消息会被当成新回合排进去（真机手验实测）。
-        slots["in_flight"] = True
+        with slots["steer_lock"]:
+            if slots["in_flight"]:
+                if (
+                    kind != "user_message" or slots["shutdown"] or slots["eof"]
+                    or frame["text"].strip() == COMPACT_COMMAND  # /compact 是命令，不当排队消息送给模型
+                ):
+                    self._error("E_BUSY", "上一轮还在进行中", rid)
+                    return
+                # D79（照 Pi 的 steering）：回合在途时的消息排队，这批工具跑完、下一次请求前送达
+                slots["steer_seq"] += 1
+                item = {"id": f"q{slots['steer_seq']}", "text": frame["text"]}
+                slots["steer"].append(item)
+                queued: dict[str, Any] = {"t": "queued", "id": item["id"], "text": item["text"]}
+                if rid:
+                    queued["rid"] = rid
+                self._writer.send(queued)
+                return
+            # 旗标由读者置、主循环清：否则「帧已入队、主循环还没开始跑」的那几毫秒里，
+            # 第二条消息会被当成新回合排进去（真机手验实测）。
+            slots["in_flight"] = True
         slots["out"].put((kind, frame, rid))
 
 
@@ -352,6 +366,12 @@ class ProtocolChannel:
             self.writer.send({
                 "t": "notice", "level": str(payload.get("level", "info")),
                 "code": str(payload.get("code", "")), "text": str(payload.get("text", "")),
+            })
+        elif kind == "interim_answer":
+            # D79：模型本已作答、因排队消息而续了一轮——这条答复不再是回合终稿，先推上屏
+            self.writer.send({
+                "t": "assistant", "turn_id": str(payload.get("turn_id") or self.slots.get("turn_id") or ""),
+                "kind": "answer", "text": str(payload.get("text", "")),
             })
         # "echo" / "card"：终端专用，协议下由 tool 帧的 summary 与 request 帧承担
 
@@ -478,7 +498,7 @@ def _ensure_pending(ep_dir, status) -> None:
 
 
 def _role_of(origin: str) -> str:
-    if origin == "user":
+    if origin in ("user", "user_steer"):  # D79：回合中途送达的排队消息在历史里照常是用户消息
         return "user"
     if origin == "assistant":
         return "assistant"
@@ -516,6 +536,8 @@ def main(argv: list[str] | None = None) -> int:
         "writer": writer, "pending": {}, "in_flight": False, "ready": False, "eof": False,
         "shutdown": False, "turn_id": None, "terminating": False,
         "out": queue.Queue(), "interrupt": None,
+        # D79：回合在途时到达的用户消息（[{id, text}]）；读者线程追加、主线程取走，同一把锁护着 in_flight
+        "steer": [], "steer_seq": 0, "steer_lock": threading.Lock(),
     }
     reader = FrameReader(proto_in, writer, slots)
     reader.start()
@@ -774,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
                     _run_command(host, writer, slots, frame, rid,
                                  messages=messages, tracker=tracker, ep_dir=ep_dir)
                 finally:
-                    slots["in_flight"] = False
+                    _release_in_flight(slots, writer)
     finally:
         slots["ready"] = False
         if lease is not None:
@@ -868,15 +890,35 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
 
     # idea 也是主会话、落盘（Spec 18 §3.1）；落盘与否只看 host 有没有租约
     session = host.session(persist=True, scope_mode=scope)
+    # D79：本回合的排队消息出口（工具循环在工具批之后取）与送达通知
+    host.steer_source = lambda: _take_steer(slots)
+    host.on_steer_delivered = lambda ids: writer.send(
+        {"t": "steer_delivered", "turn_id": turn_id, "ids": list(ids)}
+    )
     outcome: dict[str, Any] = {}
+    carry: list[dict[str, str]] = []
     try:
         outcome = session.run_turn(
             frame["text"], messages=messages, scope=scope, status=status,
             tracker=tracker, root=host.root, turn_id=turn_id,
         )
     finally:
-        slots["in_flight"] = False
-        slots["turn_id"] = None
+        host.steer_source = None
+        host.on_steer_delivered = None
+        # 锁内取走剩余排队并决定 in_flight：放开锁之后到达的消息走正常的新回合路径，不会两头落空
+        with slots.get("steer_lock") or contextlib.nullcontext():
+            leftovers = _take_steer_unlocked(slots)
+            if (
+                leftovers and outcome.get("stopped") == "done"
+                and not slots.get("shutdown") and not slots.get("eof")
+            ):
+                carry = leftovers  # 正常收工：剩余排队合成下一回合，in_flight 保持为真
+            else:
+                slots["in_flight"] = False
+            slots["turn_id"] = None
+        if leftovers and not carry:
+            # 中断 / 出错 / 检查点停：没送出去的消息退回输入框（Pi：abort 把排队还给编辑器）
+            writer.send({"t": "steer_returned", "items": leftovers})
 
     final = outcome.get("final") or {}
     text = str(final.get("content") or "")
@@ -921,7 +963,37 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
     if host.interrupt.clear_dropped():
         writer.send({"t": "notice", "level": "info", "code": "interrupt_dropped",
                      "text": "回合已结束，这次中断被丢弃（未带进空闲态）。"})
+    if carry:
+        # D79：模型收工那一刻才到的排队消息（工具循环最后一次 drain 之后）——立即作为下一回合的用户消息开跑
+        writer.send({"t": "steer_delivered", "turn_id": turn_id, "ids": [i["id"] for i in carry]})
+        slots["out"].put(("user_message", {"text": "\n\n".join(i["text"] for i in carry)}, None))
     return 0
+
+
+def _take_steer_unlocked(slots: dict[str, Any]) -> list[dict[str, str]]:
+    items = list(slots.get("steer") or [])
+    if items:
+        slots["steer"].clear()
+    return items
+
+
+def _release_in_flight(slots: dict[str, Any], writer: FrameWriter) -> None:
+    """命令 / 压缩回合结束（D79）：期间排进来的消息没有工具循环可送达，合成一条新回合消息开跑。"""
+    with slots.get("steer_lock") or contextlib.nullcontext():
+        leftovers = _take_steer_unlocked(slots)
+        if not leftovers or slots.get("shutdown") or slots.get("eof"):
+            slots["in_flight"] = False
+    if leftovers and not slots.get("shutdown") and not slots.get("eof"):
+        writer.send({"t": "steer_delivered", "turn_id": "", "ids": [i["id"] for i in leftovers]})
+        slots["out"].put(("user_message", {"text": "\n\n".join(i["text"] for i in leftovers)}, None))
+    elif leftovers:
+        writer.send({"t": "steer_returned", "items": leftovers})
+
+
+def _take_steer(slots: dict[str, Any]) -> list[dict[str, str]]:
+    """D79：取走全部排队消息（Pi 的 steeringMode="all"：一次全部送达）。"""
+    with slots.get("steer_lock") or contextlib.nullcontext():
+        return _take_steer_unlocked(slots)
 
 
 def _run_command(
@@ -995,7 +1067,7 @@ def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> in
     except Exception as exc:  # 任何失败都如实告诉人，不假装压过
         result = {"ok": False, "text": f"{type(exc).__name__}: {exc}"}
     finally:
-        slots["in_flight"] = False
+        _release_in_flight(slots, writer)
         slots["turn_id"] = None
     ok = bool(result.get("ok"))
     if not ok:

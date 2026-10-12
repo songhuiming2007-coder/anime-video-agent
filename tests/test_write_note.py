@@ -65,7 +65,7 @@ def test_未登记的番不许新建(root: Path):
 @pytest.mark.parametrize("anime", ["新番", "另一部"])
 def test_已登记的番可以新建_无期会话也行(root: Path, anime: str):
     args = {"anime": anime, "target": "notes", "content": f"# {anime}\n", "reason": "新番起笔记"}
-    assert _review(args, root).action == "ask"
+    assert _review(args, root).action == "allow"  # ADR-0030 决策 3：笔记写入免卡，回退靠 _history 留底
     out = execute_tool("write_note", args, _ctx(root))
     assert out.get("ok", True) is not False, out
     assert (root / NOTES / f"{anime}.md").read_text(encoding="utf-8") == f"# {anime}\n"
@@ -86,7 +86,7 @@ def test_review不能新建报告_报告名必须属于本番(root: Path):
 def test_edits改已有笔记_旧版留底(root: Path):
     args = {"anime": "罪恶王冠", "target": "notes", "reason": "更正说话人",
             "edits": [{"old": "1. 旧句子", "new": "1. 新句子（0:02:41）"}]}
-    assert _review(args, root).action == "ask"
+    assert _review(args, root).action == "allow"
     execute_tool("write_note", args, _ctx(root))
     note = root / NOTES / "罪恶王冠.md"
     assert "1. 新句子（0:02:41）" in note.read_text(encoding="utf-8")
@@ -103,7 +103,7 @@ def test_edits找不到在弹卡前拒(root: Path):
 def test_review填终审表(root: Path):
     args = {"anime": "罪恶王冠", "target": "review", "report": "罪恶王冠-对抗审查报告-2026-10-09.md",
             "reason": "终审", "edits": [{"old": "| F1 |  |", "new": "| F1 | 采纳：字幕 0:02:41 实证 |"}]}
-    assert _review(args, root).action == "ask"
+    assert _review(args, root).action == "allow"
     execute_tool("write_note", args, _ctx(root))
     assert "采纳：字幕" in (root / NOTES / "罪恶王冠-对抗审查报告-2026-10-09.md").read_text(encoding="utf-8")
 

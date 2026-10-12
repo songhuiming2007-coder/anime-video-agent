@@ -31,6 +31,7 @@ from pipeline.agent.session import (
     CRITICAL_TOOLS,
     AgentSession,
     HumanAnswer,
+    SESSION_ALLOW_DECISION,
     HumanRequest,
     SessionHost,
     prepare_resume,
@@ -1643,7 +1644,10 @@ class TtyChannel:
             print(request.card_text)
             print("\n以上是「上次确认版本 → 当前文件」的改动与当前全文。按 y 确认，其它任意键取消（默认 N）：")
         else:
-            self.show("card", {"text": f"{request.card_text}\n{prompt_for(request.kind)}"})
+            prompt = prompt_for(request.kind)
+            if SESSION_ALLOW_DECISION in request.options:
+                prompt = "└─ 执行? [y=批准 / a=本会话同类都批准 / N]: "
+            self.show("card", {"text": f"{request.card_text}\n{prompt}"})
         started = time.time()
         try:
             answer = input().strip().lower()
@@ -1651,6 +1655,8 @@ class TtyChannel:
             answer = "n"
         latency = time.time() - started
         decision = request.options[0] if answer == "y" else request.options[-1]
+        if answer == "a" and SESSION_ALLOW_DECISION in request.options:
+            decision = SESSION_ALLOW_DECISION  # ADR-0030 决策 5：本会话同类都批准
         return HumanAnswer(request.request_id, decision, None, "tty", latency)
 
 

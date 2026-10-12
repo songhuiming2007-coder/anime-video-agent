@@ -368,8 +368,8 @@ def test_t_d42_5_idea_dir_never_listed_as_episode(tmp_path, monkeypatch, capsys)
 
 
 def test_t_d42_6_migrated_session_can_write_topic(world, endpoint, tmp_path, monkeypatch, capsys) -> None:
-    """T-D42-6：迁移后新期会话里模型调 write_episode_file("01-topic.md") → 弹人审卡（不再是
-    「先建期」），批准后落盘。"""
+    """T-D42-6：迁移后新期会话里模型调 write_episode_file("01-topic.md") → 不再是「先建期」，
+    直接落盘（ADR-0030 起期文件写入免卡）。"""
     root, _episode = world
     _seed_log(root / "data" / "_idea", "e" * 16, [
         {"role": "user", "content": "选题"}, {"role": "assistant", "content": "草案：番：X"},
@@ -385,10 +385,6 @@ def test_t_d42_6_migrated_session_can_write_topic(world, endpoint, tmp_path, mon
     try:
         assert proc.wait_for_ready()["continue_status"] == "resumed"
         proc.send({"t": "user_message", "text": "把刚才的草案写进 01-topic.md"})
-        request = proc.wait_for("request")
-        assert request["kind"] == "tool_call"
-        proc.send({"t": "answer", "request_id": request["request_id"], "decision": "approve",
-                   "feedback": None})
         proc.wait_for("turn_finished")
         proc.shutdown()
     finally:

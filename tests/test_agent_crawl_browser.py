@@ -474,10 +474,10 @@ def test_browser_launch_uses_pinned_profile_and_emits_event(
     assert stat.S_IMODE(expected_profile.stat().st_mode) == 0o700
 
 
-def test_browser_card_per_call_and_reject_blocks_launch(
+def test_browser_card_free_launches_directly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """T10 (PR2): 核心验收 4——live-loop 下逐调用过 _default_approve 人审卡，拒绝则零启动零事件，target 含所批 URL。"""
+    """T10（ADR-0030 改写）：live-loop 下 browser 不再过人审卡，直接启动、发一次 browser_session_started。"""
     _pin_public_dns(monkeypatch)
     monkeypatch.setattr(tools, "_extra_available", lambda dist: True)
 
@@ -555,35 +555,11 @@ def test_browser_card_per_call_and_reject_blocks_launch(
         ],
     }
 
-    # 第一轮：人输入 "n" 拒绝
-    replies[:] = [tc_msg, {"role": "assistant", "content": "已收到拒绝"}]
-    call_idx = 0
-    monkeypatch.setattr("builtins.input", lambda: "n")
-
-    ctx = ToolContext(scope="creative", episode_dir=ep_dir, root=root)
-    outcome_reject = llm.run_tool_loop(
-        [{"role": "user", "content": "打开登录页"}],
-        ctx=ctx,
-        approve=lambda n, a: cli._default_approve(n, a, ep_dir=ep_dir, scope="creative", root=root),
-        root=root,
-    )
-    assert len(launch_calls) == 0
-    jobs.get_publisher().close()
-    ep_events_file = ep_dir / "events.jsonl"
-    if ep_events_file.exists():
-        evts = [json.loads(l) for l in ep_events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-        assert [e for e in evts if e["type"] == "browser_session_started"] == []
-    tool_msgs = [m for m in outcome_reject["messages"] if m.get("role") == "tool"]
-    assert len(tool_msgs) == 1
-    assert json.loads(tool_msgs[0]["content"])["ok"] is False
-    assert "拒绝" in json.loads(tool_msgs[0]["content"])["error"]
-
-    # 第二轮：人输入 "y" 批准
-    jobs._reset_global_publisher_for_testing()
+    # ADR-0030 决策 4：browser 免卡——不读终端、直接启动；审批日志不记（没有人的决定可记）
     replies[:] = [tc_msg, {"role": "assistant", "content": "已完成导航"}]
     call_idx = 0
-    monkeypatch.setattr("builtins.input", lambda: "y")
-
+    monkeypatch.setattr("builtins.input", lambda: pytest.fail("browser 不该再弹卡"))
+    ctx = ToolContext(scope="creative", episode_dir=ep_dir, root=root)
     llm.run_tool_loop(
         [{"role": "user", "content": "打开登录页"}],
         ctx=ctx,
@@ -592,18 +568,10 @@ def test_browser_card_per_call_and_reject_blocks_launch(
     )
     assert len(launch_calls) == 1
     jobs.get_publisher().close()
-    assert ep_events_file.exists()
-    evts2 = [json.loads(l) for l in ep_events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert len([e for e in evts2 if e["type"] == "browser_session_started"]) == 1
-
-    # approvals.jsonl 含两条记录且 target 含所批 URL
-    ledger = ep_dir / "_agent" / "approvals.jsonl"
-    assert ledger.exists()
-    rows = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert len(rows) == 2
-    assert [r["decision"] for r in rows] == ["n", "y"]
-    for r in rows:
-        assert "https://example.com/login" in r["target"]
+    ep_events_file = ep_dir / "events.jsonl"
+    evts = [json.loads(l) for l in ep_events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len([e for e in evts if e["type"] == "browser_session_started"]) == 1
+    assert not (ep_dir / "_agent" / "approvals.jsonl").exists()
 
 
 def test_browser_session_reuse_no_duplicate_event(

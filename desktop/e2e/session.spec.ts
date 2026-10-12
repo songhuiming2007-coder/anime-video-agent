@@ -6,7 +6,7 @@ import { fixtureWrite } from "../tests/fixtures/session";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { Launched } from "./fixtures";
-import { fingerprintOf, launchSession, pendingObj, quitStubCalls, releaseQuit, sessionFixture, stubConfirm, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
+import { fingerprintOf, launchSession, pendingObj, quitStubCalls, releaseQuit, sessionFixture, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
 import { spawns } from "./ackFixtures";
 import { sessionRecords, sessionScript, stdinLines } from "../tests/fixtures/session";
 
@@ -348,27 +348,9 @@ test("TX-12 卡片按钮：检查点卡恰两个；两张抓取卡、无批量�
   });
 });
 
-test("TX-13 原生确认框：抓取卡批准要过桩；取消不写 answer，批准恰一条", async () => {
-  await withSession(async ({ repo, L }) => {
-    sessionScript(repo, "SESS-A", [
-      READY("SESS-A"),
-      { op: "serve", on_turn: [TURN_STARTED, { t: "request", request_id: "f1", kind: "fetch", turn_id: "$turn", title: "候选", card_text: "…", fields: { no: 1, title: "t", url: "http://127.0.0.1:9/a", type: "image", source: "web", why: "w", expected_dur: "1" }, options: ["approve", "reject"], feedback_allowed: false }], on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }] },
-    ]);
-    await openEp(L.page, "SESS-A");
-    await send(L.page, "抓素材");
-    await expect(L.page.getByTestId("request-card")).toBeVisible();
-    await stubConfirm(L, false);
-    await L.page.getByTestId("request-answer-approve").click();
-    await L.page.waitForTimeout(400);
-    expect(stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer")).toEqual([]);
-    await expect(L.page.getByTestId("request-card")).toBeVisible();
-    await stubConfirm(L, true);
-    await L.page.getByTestId("request-answer-approve").click();
-    await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(1);
-  });
-});
+// TX-13（抓取卡批准要过原生确认框）随 ADR-0030 删除：会话卡的原生确认框已撤（host 单测 TH-18 守「答复不再弹框」）。
 
-test("TX-14 Tab + Enter 答复第一张后，再按 Enter 答复不到第二张", async () => {
+test("TX-14 / ADR-0030 回车答复第一张后：紧跟的连按答不到第二张（防连按）；停一下再回车即批第二张", async () => {
   await withSession(async ({ repo, L }) => {
     const card = (id: string) => ({ t: "request", request_id: id, kind: "tool_call", turn_id: "$turn", title: id, card_text: "…", fields: { tool: "write_episode_file", args: {} }, options: ["approve", "reject"], feedback_allowed: false });
     sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, card("q1"), card("q2")], on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }] }]);
@@ -376,13 +358,21 @@ test("TX-14 Tab + Enter 答复第一张后，再按 Enter 答复不到第二张"
     await send(L.page, "两张卡");
     await expect(L.page.locator("[data-testid=request-card]")).toHaveCount(2);
     await L.page.locator("[data-testid=request-card][data-request-id='q1'] [data-testid=request-answer-approve]").focus();
+    await L.page.waitForTimeout(500); // 过了防连按窗口（自动聚焦后 400 ms 内的回车不算数）
     await L.page.keyboard.press("Enter");
     await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(1);
+    const answers = () => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").map((l) => JSON.parse(l).request_id);
+    const q2 = L.page.locator("[data-testid=request-card][data-request-id='q2']");
+    // q2 接过焦点的那一刻紧跟一下回车（模拟连按 / 按键重复）：防连按窗口内不生效
+    await expect(q2.getByTestId("request-answer-approve")).toBeFocused();
     await L.page.keyboard.press("Enter");
-    await L.page.waitForTimeout(300);
-    const answers = stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").map((l) => JSON.parse(l).request_id);
-    expect(answers).toEqual(["q1"]);
-    await expect(L.page.locator("[data-testid=request-card][data-request-id='q2']")).toBeVisible();
+    await L.page.waitForTimeout(150);
+    expect(answers()).toEqual(["q1"]);
+    await expect(q2).toBeVisible();
+    // ADR-0030 决策 6：过了窗口再回车即批 q2
+    await L.page.waitForTimeout(500);
+    await L.page.keyboard.press("Enter");
+    await expect.poll(answers).toEqual(["q1", "q2"]);
   });
 });
 
@@ -503,7 +493,7 @@ test("N54 退出确认框抛异常：按「取消」回落，app 不退、会话
   }
 });
 
-test("N51 回合运行中按 Enter：不发送、也不往输入框插换行；回合结束后再按 Enter 发出的正文不带尾随换行", async () => {
+test("N51 / D79 回合运行中按 Enter：照常发出（core 排队）、不往输入框插换行、正文不带尾随换行；空白不发", async () => {
   const fx = sessionFixture();
   const L = await launchSession(fx.repo);
   try {
@@ -512,15 +502,15 @@ test("N51 回合运行中按 Enter：不发送、也不往输入框插换行；�
     await send(L.page, "跑着");
     await expect(L.page.getByTestId("session-running")).toBeVisible();
     const input = L.page.getByTestId("composer-input");
-    await input.fill("你好");
-    await input.press("Enter"); // 运行中：被拒收
-    await input.press("Enter"); // 空白输入同理（先清空再按一次）
-    await expect(input).toHaveValue("你好");
     const userLines = () => sessionRecords(fx.repo, "SESS-A").filter((r) => r.kind === "stdin" && JSON.parse(r.line!).t === "user_message").map((r) => JSON.parse(r.line!).text as string);
-    expect(userLines()).toEqual(["跑着"]);
-    await input.fill("");
-    await input.press("Enter");
+    await input.fill("你好");
+    await input.press("Enter"); // D79：运行中也发出，由 core 排队到这批工具之后
     await expect(input).toHaveValue("");
+    await expect.poll(userLines).toEqual(["跑着", "你好"]);
+    await input.press("Enter"); // 空白：不发、也不插换行
+    await expect(input).toHaveValue("");
+    await L.page.waitForTimeout(300);
+    expect(userLines()).toEqual(["跑着", "你好"]);
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

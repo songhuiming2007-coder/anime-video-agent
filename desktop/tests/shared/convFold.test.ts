@@ -270,3 +270,65 @@ describe("D76 继续会话：历史里的 bash 工具行也带完整命令", () 
     expect(bashSummary("x".repeat(81))).toBe(`${"x".repeat(80)}…`);
   });
 });
+
+describe("D79 排队消息：入队 → 送达进时间线 / 退回输入框", () => {
+  const started = F("turn_started", { turn_id: "t1" }, 1);
+  const queued = (id: string, text: string, seq: number) => F("queued", { id, text }, seq);
+
+  it("入队只出气泡不进时间线；送达那一刻按帧位置插用户行、气泡消失", () => {
+    const entries: ConvEntry[] = [
+      { k: "user", at: 1, text: "读两份" },
+      { k: "frame", at: 2, frame: started },
+      { k: "frame", at: 3, frame: toolStart("read_artifact", "a.md", 0, 2) },
+      { k: "frame", at: 4, frame: queued("q1", "改成只读 a", 3) },
+      { k: "frame", at: 5, frame: toolEnd("read_artifact", 0, true, 4) },
+    ];
+    const before = foldConv(entries);
+    expect(before.queued).toEqual([{ id: "q1", text: "改成只读 a" }]);
+    expect(before.rows.filter((r) => r.k === "user")).toHaveLength(1);
+
+    const after = foldConv([...entries, { k: "frame", at: 6, frame: F("steer_delivered", { turn_id: "t1", ids: ["q1"] }, 5) }]);
+    expect(after.queued).toEqual([]);
+    expect(after.rows.map((r) => r.k)).toEqual(["user", "tool", "user"]);
+    expect(after.rows.at(-1)).toMatchObject({ k: "user", text: "改成只读 a" });
+  });
+
+  it("退回：气泡清掉、returned 带原文；同一退回 key 稳定，新退回 key 不同", () => {
+    const entries: ConvEntry[] = [
+      { k: "frame", at: 2, frame: started },
+      { k: "frame", at: 3, frame: queued("q1", "甲", 2) },
+      { k: "frame", at: 4, frame: queued("q2", "乙", 3) },
+      { k: "frame", at: 5, frame: F("steer_returned", { items: [{ id: "q1", text: "甲" }, { id: "q2", text: "乙" }] }, 4) },
+    ];
+    const r1 = foldConv(entries);
+    expect(r1.queued).toEqual([]);
+    expect(r1.returned?.text).toBe("甲\n乙");
+    expect(foldConv(entries).returned?.key).toBe(r1.returned?.key);
+    const r2 = foldConv([
+      ...entries,
+      { k: "frame", at: 6, frame: queued("q3", "丙", 5) },
+      { k: "frame", at: 7, frame: F("steer_returned", { items: [{ id: "q3", text: "丙" }] }, 6) },
+    ]);
+    expect(r2.returned?.key).not.toBe(r1.returned?.key);
+  });
+
+  it("进程退出：未送达的排队随之清空（没有回执可等）", () => {
+    const r = foldConv([
+      { k: "frame", at: 2, frame: started },
+      { k: "frame", at: 3, frame: queued("q1", "甲", 2) },
+      { k: "exited", at: 4, code: 1, signal: null, stderrTail: "" },
+    ]);
+    expect(r.queued).toEqual([]);
+  });
+});
+
+describe("ADR-0030 本会话都批准", () => {
+  it("答 approve_session 的卡显示为已批准（不是已拒绝）", () => {
+    const { rows } = foldConv([
+      { k: "frame", at: 1, frame: request("q9", 1) },
+      { k: "frame", at: 2, frame: F("request_closed", { request_id: "q9", reason: "answered", decision: "approve_session" }, 2) },
+      { k: "answered_local", at: 2, requestId: "q9", decision: "approve_session", feedback: null },
+    ]);
+    expect(rows.find((r) => r.k === "card")).toMatchObject({ status: "approved" });
+  });
+});

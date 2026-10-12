@@ -29,6 +29,13 @@ def _wrapup_key() -> str:
     return llm._WRAPUP_KEY
 
 
+def _steer_key() -> str:
+    """D79 排队消息的内部标记（同上，权威定义在 llm.py）。"""
+    from pipeline.agent import llm
+
+    return llm.STEER_KEY
+
+
 def _tool_names(messages: list[Any]) -> dict[str, str]:
     """`tool_call_id → 工具名`：扫描 assistant 消息的 tool_calls 建映射（spec §3.2）。"""
     names: dict[str, str] = {}
@@ -71,12 +78,13 @@ def age_tool_results(
 ) -> list[Any]:
     """老化投影（spec §3.1）：纯函数，返回新列表，只复制被替换的消息，不 mutate 入参。
 
-    边界 = 最后一条不带 wrapup 标记的 user 消息；边界之后的全部原样（当前回合的工具结果
+    边界 = 最后一条不带 wrapup / steer（D79 回合中途送达的排队消息）标记的 user 消息；边界之后的全部原样（当前回合的工具结果
     模型正在用）；边界之前的 tool 消息超过 `AGED_TOOL_MAX_CHARS` 就换占位串。
     没有 user 消息 → 整条列表视为「当前回合之前」，全部按规则处理（防御分支）。
     `exempt_last_turn=False`（摘要器路径）：被压缩的 region 全是旧历史，没有当前回合可豁免。
     """
     wrapup_key = _wrapup_key()
+    steer_key = _steer_key()
     boundary: int | None = None
     if exempt_last_turn:
         for i in range(len(messages) - 1, -1, -1):
@@ -85,6 +93,7 @@ def age_tool_results(
                 isinstance(message, dict)
                 and message.get("role") == "user"
                 and wrapup_key not in message
+                and steer_key not in message
             ):
                 boundary = i
                 break

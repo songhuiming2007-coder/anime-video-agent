@@ -203,21 +203,39 @@ def _script_diff(target: Path, new: str) -> list[str]:
     return out
 
 
-# D77 / ADR-0029：bash 命令审批卡的危险标记（宿主静态规则，只提示不拦；判不到不等于安全）
+# ADR-0030（D78）：bash 的「硬危险」——命中即弹卡，未命中免卡。只收不可逆或越过人工关卡的操作；
+# 宿主静态规则，判不到不等于安全（`python -c "shutil.rmtree(…)"` 这类绕法由 ADR-0030 写明、人已接受）。
+# D77 原表里的 mv / chmod / curl / git commit / 项目内 uv、pip 已按人裁决「再减少一些弹框」移出。
 _BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(^|[\s;&|(])(rm|rmdir)\s"), "[删除]"),
-    (re.compile(r"(^|[\s;&|(])mv\s|\s-delete\b"), "[移动/覆盖]"),
-    (re.compile(r"(^|[\s;&|(])(sudo|su|chmod|chown)\s"), "[提权]"),
-    (re.compile(r"\bgit\s+(push|reset|rebase|commit|checkout|clean)\b"), "[git 写操作]"),
-    (re.compile(r"(^|[\s;&|(])(curl|wget|pip|pip3|uv|brew|npm|npx)\s"), "[联网/装依赖]"),
-    (re.compile(r"(^|[\s'\"/])(pipeline|config)/"), "[碰源码/配置] Code Freeze 范围"),
+    (re.compile(r"(^|[\s;&|(])(rm|rmdir|unlink)(\s|$)|\s-delete\b"), "[删除]"),
+    (re.compile(r"\bgit\s+(push|reset|rebase|clean)\b"), "[git 改历史/推远端]"),
+    (re.compile(r"(^|[\s;&|(])(sudo|su)\s"), "[提权]"),
+    (
+        re.compile(
+            r"\bbrew\s+(install|reinstall|upgrade|uninstall)\b|\bnpm\s+(\S+\s+)*(-g|--global)\b"
+            r"|\buv\s+tool\s+install\b|\bpipx\s+install\b"
+        ),
+        "[全局装依赖]",
+    ),
     (re.compile(r"02-diff\.patch|04-clips\.approved\.json|07-cover/selected"), "[停机点解封物] 批准只能由人做"),
 )
+# Code Freeze 只认「写入」：读 pipeline/ config/（cat、grep、ls）不拦。写法 = 重定向、tee、原地编辑、
+# 拷贝 / 移动 / 链接 / 新建；先剥掉 `2>&1`、`>/dev/null` 这类不写文件的重定向
+_FREEZE_PATH = re.compile(r"(^|[\s'\"/=])(pipeline|config)/")
+_HARMLESS_REDIRECT = re.compile(r"\d?>&\d|&?\d?>{1,2}\s*/dev/null")
+_WRITE_FORM = re.compile(
+    r">|\btee\b|\bsed\s+(\S+\s+)*-i|\bperl\s+(\S+\s+)*-i|(^|[\s;&|(])(cp|mv|ln|touch|truncate|install|rsync|dd)\s"
+)
+_FREEZE_TAG = "[写源码/配置] Code Freeze 范围"
 
 
 def bash_danger_tags(command: str) -> list[str]:
-    """bash 命令命中的危险标记（按规则表顺序，去重）。"""
-    return [tag for pat, tag in _BASH_DANGER_RULES if pat.search(command)]
+    """bash 命令命中的硬危险标记（按规则表顺序，去重）。非空即弹卡（ADR-0030 决策 1）。"""
+    tags = [tag for pat, tag in _BASH_DANGER_RULES if pat.search(command)]
+    stripped = _HARMLESS_REDIRECT.sub(" ", command)
+    if _FREEZE_PATH.search(stripped) and _WRITE_FORM.search(stripped):
+        tags.append(_FREEZE_TAG)
+    return tags
 
 
 def render_approval_card(

@@ -139,12 +139,11 @@ def test_tk1_model_initiated_review_with_options_is_rejected(command: str, episo
 
 
 def test_tk1_plain_review_still_reaches_the_card(episode: Path) -> None:
-    """TK-1（另一半）：`review` 本身照常放行进卡；人的路径不受模型规则影响。"""
+    """TK-1（另一半）：`review` 本身照常放行（ADR-0030 起免卡）；人的路径不受模型规则影响。"""
     verdict = review_tool_call(
         "run_pipeline", {"command": "review"}, ep_dir=episode, scope="pipeline", root=None
     )
-    assert verdict.action == "ask"
-    assert verdict.request is not None
+    assert verdict.action == "allow"
 
     from pipeline.agent.tools import validate_pipeline_command
 
@@ -218,12 +217,12 @@ def test_d54_vindex_who_is_allowed_and_card_free(command: str, episode: Path) ->
 
 
 def test_d54_other_vindex_subcommands_unchanged(episode: Path) -> None:
-    """放行 `who` 不连带别的：`captions`（云端花钱）照旧弹卡；已删除的 `scene` 照旧不在放行集。
-    （D59 起 `search` 只读放行免卡，见 tests/test_agentic_ops.py。）"""
+    """已删除的 `scene` 照旧不在放行集。`captions` 跑在云端实例上：ADR-0030 起计费关口在 `cloud up / run`，
+    captions 本身免卡。（D59 起 `search` 只读放行免卡，见 tests/test_agentic_ops.py。）"""
     verdict = review_tool_call(
         "run_pipeline", {"command": "vindex captions 东京喰种 S02E07"}, ep_dir=episode, scope="pipeline", root=None
     )
-    assert verdict.action == "ask"
+    assert verdict.action == "allow"
     verdict = review_tool_call(
         "run_pipeline", {"command": "vindex scene 东京喰种 S02E07"}, ep_dir=episode, scope="pipeline", root=None
     )
@@ -231,12 +230,12 @@ def test_d54_other_vindex_subcommands_unchanged(episode: Path) -> None:
 
 
 def test_tk4_acquire_fetch_reachable_after_d43(episode: Path) -> None:
-    """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`（弹人审卡）；
-    原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。"""
+    """TK-4 按 D43 / Spec 17 改写：合表后任意 scope 可提议 `acquire fetch 1`；
+    原「pipeline scope 拒收、asset 工具表没有 run_pipeline」语义已废除。ADR-0030 起抓取免卡。"""
     verdict = review_tool_call(
         "run_pipeline", {"command": "acquire fetch 1"}, ep_dir=episode, scope="pipeline", root=None
     )
-    assert verdict.action == "ask"  # 合表后合法 → 过人审卡，不再按 scope 拒
+    assert verdict.action == "allow"  # 合表后合法，不按 scope 拒；ADR-0030 决策 4 抓取免卡
 
 
 def test_tk9_force_prefix_variants_are_rejected() -> None:
@@ -282,7 +281,7 @@ def test_tk5_no_channel_refuses_to_run_the_tool_loop(episode: Path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# TK-2 / TK-3 / TK-3b / TK-3c：抓取卡
+# TK-2 / TK-3 / TK-3b / TK-3c：抓取（ADR-0030 起不出卡，直接抓）
 # ---------------------------------------------------------------------------
 
 
@@ -314,64 +313,55 @@ def _fetch_scenario(root: Path, episode: Path, answers: list[str]):
 _ALL_FOUR = {"candidates": [_candidate("x", f"https://a.example/{n}") for n in (1, 2, 3, 4)]}
 
 
-def test_tk2_fetch_cards_are_one_per_unfetched_candidate(root: Path, episode: Path) -> None:
-    """TK-2：清单 4 条（2 新增、1 以前未抓、1 已在台账）→ 恰 3 张卡，序号与顺序正确。"""
-    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(
-        root, episode, ["approve", "reject", "reject"]
-    )
+def test_tk2_fetch_runs_once_per_unfetched_candidate(root: Path, episode: Path) -> None:
+    """TK-2（ADR-0030 改写）：清单 4 条（2 新增、1 以前未抓、1 已在台账）→ 不出卡，恰抓 3 条，序号与顺序正确。"""
+    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
     result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
-    assert len(channel.requests) == 3
-    assert [r.fields["no"] for r in channel.requests] == [1, 3, 4]
-    assert [r.kind for r in channel.requests] == ["fetch", "fetch", "fetch"]
+    assert channel.requests == [], "抓取不再出卡"
     fetch = result["result"]["fetch"]
-    assert [item["decision"] for item in fetch] == ["approved", "rejected", "rejected"]
-    assert fetched == [1], "只批准第 1 张 → 执行器只收到 1"
+    assert [(item["no"], item["decision"]) for item in fetch] == [(1, "approved"), (3, "approved"), (4, "approved")]
+    assert fetched == [1, 3, 4]
+    rows = [json.loads(x) for x in (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["channel"] for r in rows if r["tool"] == "acquire_fetch"] == ["auto"] * 3, "审批日志照记、标明自动"
 
 
-def test_tk2b_only_this_calls_urls_get_cards(root: Path, episode: Path) -> None:
-    """TK-2b（D34）：清单里有历史未抓候选，本轮只提案一条 → 只出这一张卡，序号取清单位置。
+def test_tk2b_only_this_calls_urls_are_fetched(root: Path, episode: Path) -> None:
+    """TK-2b（D34）：清单里有历史未抓候选，本轮只提案一条 → 只抓这一条，序号取清单位置。
 
     M9 实测：本轮只提案清单第 7 条，弹出来的却是第 3 条（真人 YouTube 候选），批准即真抓。
     """
-    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, ["approve"])
+    session, _host, _channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
     only_new = {"candidates": [_candidate("新增乙", " https://a.example/4 ")]}  # propose 会 strip
     result = session._post_execute("acquire_propose", only_new, outcome)
 
-    assert [r.fields["no"] for r in channel.requests] == [4]
     assert [item["no"] for item in result["result"]["fetch"]] == [4]
     assert fetched == [4]
 
 
-def test_tk2c_same_url_twice_in_one_call_is_one_card(root: Path, episode: Path) -> None:
-    """TK-2c（D34）：同一 URL 在本次输入里出现两次 → 只一张卡；输入顺序决定出卡顺序。"""
-    session, _host, channel, _fetched, _incoming, outcome = _fetch_scenario(
-        root, episode, ["reject", "reject"])
+def test_tk2c_same_url_twice_in_one_call_is_fetched_once(root: Path, episode: Path) -> None:
+    """TK-2c（D34）：同一 URL 在本次输入里出现两次 → 只抓一次；输入顺序决定抓取顺序。"""
+    session, _host, _channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
     twice = {"candidates": [_candidate("乙", "https://a.example/4"), _candidate("甲", "https://a.example/1"),
                             _candidate("乙again", "https://a.example/4")]}
     session._post_execute("acquire_propose", twice, outcome)
-    assert [r.fields["no"] for r in channel.requests] == [4, 1]
+    assert fetched == [4, 1]
 
 
 def test_tk3_misaligned_candidate_index_is_not_fetched(root: Path, episode: Path) -> None:
-    """TK-3：出卡之后改写清单使序号错位 → `misaligned`，执行器未被调用。"""
-    session, _host, channel, fetched, incoming, outcome = _fetch_scenario(root, episode, ["approve"])
-    channel.answers = ["approve", "reject", "reject"]
+    """TK-3：抓第一条时清单被改写、序号错位 → 后面那条 `misaligned`，执行器不为它调用。"""
+    session, host, _channel, fetched, incoming, outcome = _fetch_scenario(root, episode, [])
 
-    def rewrite_then_fetch(request):
-        # 第一张卡批下去之前把清单换掉：卡上写的 #1 不再指向同一 URL
-        if not incoming.joinpath("rewritten").exists():
-            incoming.joinpath("rewritten").touch()
-            (incoming / "candidates.json").write_text(
-                json.dumps([_candidate("插队", "https://a.example/9")], ensure_ascii=False),
-                encoding="utf-8",
-            )
-        return HumanAnswer(request.request_id, "approve", None, "tty", 0.1)
+    def rewrite_then_fetch(no):
+        fetched.append(no)
+        (incoming / "candidates.json").write_text(
+            json.dumps([_candidate("插队", "https://a.example/9")], ensure_ascii=False), encoding="utf-8")
+        return {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": ""}
 
-    channel.ask = rewrite_then_fetch
+    host.fetch_executor = rewrite_then_fetch
     result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
-    assert result["result"]["fetch"][0]["decision"] == "misaligned"
-    assert fetched == []
+    assert [item["decision"] for item in result["result"]["fetch"]] == ["approved", "misaligned", "misaligned"]
+    assert fetched == [1]
 
 
 def test_tk3b_root_mismatch_disables_fetch_cards(root: Path, episode: Path, monkeypatch) -> None:
@@ -438,76 +428,20 @@ def _fetch_turn(root: Path, episode: Path, monkeypatch, channel, *, parallel: bo
     return outcome, messages, records, fetched, requests
 
 
-class _InterruptOnFetch(FakeChannel):
-    """批准提案卡；第 `at` 张抓取卡上「人按停止」（中断在等答复时浮出）。"""
-
-    def __init__(self, at: int = 1) -> None:
-        super().__init__(["approve"])
-        self.at = at
-
-    def ask(self, request):
-        if request.kind == "fetch" and sum(r.kind == "fetch" for r in self.requests) + 1 == self.at:
-            self.requests.append(request)
-            raise KeyboardInterrupt
-        if request.kind == "fetch":
-            self.requests.append(request)
-            return HumanAnswer(request.request_id, "reject", None, "tty", 0.1)
-        return super().ask(request)
-
-
-def test_tk3d_interrupt_on_fetch_card_stops_the_turn(root: Path, episode: Path, monkeypatch) -> None:
-    """TK-3d（D35）：抓取卡上中断 → 整轮停：当前卡与余卡全 voided、不再出第二张卡、
-    提案结果照常、并行的后续调用补「未执行」、收尾后恰一条 turn_end{interrupted}。
-
-    M9 实测：此前 `_ask_fetch` 吃掉中断后 `return record`，循环接着弹下一张卡，回合停不下。
-    """
-    channel = _InterruptOnFetch(at=1)
-    outcome, messages, records, fetched, requests = _fetch_turn(root, episode, monkeypatch, channel)
-
-    assert [r.kind for r in channel.requests].count("fetch") == 1, "中断后不许再出卡"
-    assert outcome["stopped"] == "interrupted"
-    assert fetched == []
-    tools = {m["tool_call_id"]: json.loads(m["content"]) for m in messages if m.get("role") == "tool"}
-    fetch = tools["c1"]["result"]["fetch"]
-    assert [(f["no"], f["decision"]) for f in fetch] == [(1, "voided"), (2, "voided"), (3, "voided")]
-    assert tools["c1"]["ok"] is True, "提案本身已执行，结果照常"
-    assert "未执行" in tools["c2"]["error"], "同一回复里其后的调用补合成结果"
-    assert len(requests) == 2, "中断后走收尾（第 2 次请求是收尾），不再继续工具循环"
-    opened = [r for r in records if r.get("k") == "request_opened" and r.get("kind") == "fetch"]
-    closed = [r for r in records if r.get("k") == "request_closed"
-              and r.get("request_id") == opened[0]["request_id"]]
-    assert len(opened) == 1 and [c["reason"] for c in closed] == ["voided"]
-    assert [r["stopped"] for r in records if r.get("k") == "turn_end"] == ["interrupted"]
-
-
-def test_tk3e_interrupt_on_later_fetch_card_keeps_earlier_answers(
-    root: Path, episode: Path, monkeypatch
-) -> None:
-    """TK-3e（D35）：第 1 张已答（拒），第 2 张上中断 → 第 1 张记录保留，只 void 当前与其后。"""
-    channel = _InterruptOnFetch(at=2)
-    outcome, messages, _records, fetched, _requests = _fetch_turn(
-        root, episode, monkeypatch, channel, parallel=False)
-    assert outcome["stopped"] == "interrupted"
-    assert [r.kind for r in channel.requests].count("fetch") == 2
-    tool = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
-    assert [(f["no"], f["decision"]) for f in tool["result"]["fetch"]] == [
-        (1, "rejected"), (2, "voided"), (3, "voided")]
-    assert fetched == []
-
-
 def test_tk3f_interrupt_during_fetch_job_marks_interrupted(root: Path, episode: Path, monkeypatch) -> None:
-    """TK-3f（D35 / §2.2「抓取 job 中」）：批准后抓取 job 被中断 → 该候选 interrupted、余卡 voided、整轮停。"""
+    """TK-3f（D35 / §2.2「抓取 job 中」）：抓取 job 被中断 → 该候选 interrupted、其余 voided、整轮停。
+    （D35 的「抓取卡上中断」两条随 ADR-0030 抓取不出卡删除。）"""
     from pipeline.agent import session as session_mod_
 
     def killed(self, no):
         raise KeyboardInterrupt  # jobs.py 杀组后原样重抛
 
     monkeypatch.setattr(session_mod_.AgentSession, "_fetch_executor", killed)
-    channel = FakeChannel(["approve", "approve"])
+    channel = FakeChannel([])
     outcome, messages, _records, _fetched, _requests = _fetch_turn(
         root, episode, monkeypatch, channel, parallel=False)
     assert outcome["stopped"] == "interrupted"
-    assert [r.kind for r in channel.requests].count("fetch") == 1
+    assert channel.requests == [], "提案与抓取都不出卡（ADR-0030）"
     tool = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
     assert [(f["no"], f["decision"]) for f in tool["result"]["fetch"]] == [
         (1, "interrupted"), (2, "voided"), (3, "voided")]
@@ -523,11 +457,11 @@ def test_tk6_request_id_never_enters_the_tool_result(episode: Path, root: Path) 
     channel = FakeChannel(["reject"])
     host = SessionHost(episode, root=root, channel=channel, ephemeral=True)
     session = AgentSession(host, scope_mode="creative", persist=False)
-    verdict = review_tool_call(  # 07-titles.md 仍逐次弹卡（草稿前几次免卡，2026-10-08 spec §A）
-        "write_episode_file", {"filename": "07-titles.md", "content": "x"},
+    verdict = review_tool_call(  # bash 硬危险仍弹卡（ADR-0030 决策 1）
+        "bash", {"command": "rm x", "description": "x"},
         ep_dir=episode, scope="creative", root=root,
     )
-    decision = session._review("write_episode_file", {"filename": "07-titles.md", "content": "x"}, "t1", None, root, None)
+    decision = session._review("bash", {"command": "rm x", "description": "x"}, "t1", None, root, None)
     assert decision.ok is False
     assert verdict.request is not None
     assert channel.requests and channel.requests[0].request_id not in json.dumps(
@@ -544,10 +478,7 @@ def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -
     session = AgentSession(host, scope_mode="creative", persist=False)
     session._turn_id = "t1"
 
-    session._review(
-        "write_episode_file", {"filename": "07-titles.md", "content": "x"},
-        "t1", None, root, None,
-    )
+    session._review("bash", {"command": "rm x", "description": "x"}, "t1", None, root, None)
     with patch("builtins.input", side_effect=[]):
         assert session._ask_checkpoint(
             {"llm_calls": 50, "tool_executions": 0, "elapsed_s": 1.0, "trigger": "replies"}, "t1"
@@ -567,10 +498,7 @@ def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -
     host2 = SessionHost(episode, root=root, channel=channel2, ephemeral=True)
     session2 = AgentSession(host2, scope_mode="creative", persist=False)
     with pytest.raises(KeyboardInterrupt):
-        session2._review(
-            "write_episode_file", {"filename": "07-titles.md", "content": "x"},
-            "t1", None, root, None,
-        )
+        session2._review("bash", {"command": "rm x", "description": "x"}, "t1", None, root, None)
     after = (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(after) == len(rows)
 
@@ -1597,12 +1525,54 @@ def test_readonly_pipeline_modules_are_card_free(episode: Path, root: Path, comm
     assert verdict.action == "allow", verdict
 
 
-@pytest.mark.parametrize("command", ["tts run", "clips", "render", "qc", "cover"])
-def test_writing_pipeline_modules_still_ask(episode: Path, root: Path, command: str) -> None:
+@pytest.mark.parametrize("command", ["tts run", "clips", "render", "qc", "cover", "cloud status"])
+def test_writing_pipeline_modules_are_card_free(episode: Path, root: Path, command: str) -> None:
+    """ADR-0030 决策 2：白名单内写期目录的模块免卡（回退靠产物即状态、可重跑）。"""
+    verdict = review_tool_call(
+        "run_pipeline", {"command": command}, ep_dir=episode, scope="creative", root=root,
+    )
+    assert verdict.action == "allow", verdict
+
+
+@pytest.mark.parametrize("command", ["cloud up", "cloud down", "cloud clean-frames"])
+def test_cloud_billing_or_destroy_asks_with_session_allow(episode: Path, root: Path, command: str) -> None:
+    """ADR-0030 决策 2：花钱 / 销毁云端东西的 cloud 子命令弹卡，开放「本会话都批准」，键按子命令区分。"""
     verdict = review_tool_call(
         "run_pipeline", {"command": command}, ep_dir=episode, scope="creative", root=root,
     )
     assert verdict.action == "ask", verdict
+    assert verdict.request.options == ("approve", session_mod.SESSION_ALLOW_DECISION, "reject")
+    assert verdict.allow_key == f"run_pipeline:{command}"
+
+
+@pytest.mark.parametrize("command", [
+    "tts run --confirm-patch", "tts run --confirm-p", "acquire register 3 --waive 人看过", "acquire register 3 --waive=人看过",
+])
+def test_human_gate_flags_still_ask_without_session_allow(episode: Path, root: Path, command: str) -> None:
+    """ADR-0030 决策 2：越过人工关卡的旗标（含前缀缩写与 = 写法）逐条弹卡，不开放「本会话都批准」。"""
+    verdict = review_tool_call(
+        "run_pipeline", {"command": command}, ep_dir=episode, scope="creative", root=root,
+    )
+    if verdict.action == "reject":
+        pytest.skip(f"白名单在弹卡前已拒（与本条无关）：{verdict.reason}")
+    assert verdict.action == "ask", verdict
+    assert verdict.allow_key is None and verdict.request.options == ("approve", "reject")
+
+
+def test_session_allow_skips_same_kind_only(episode: Path, root: Path) -> None:
+    """ADR-0030 决策 5：答「本会话都批准」后同类（同危险标记组合）免卡、不同类照弹；换一个 host（新会话）失效。"""
+    channel = FakeChannel([session_mod.SESSION_ALLOW_DECISION, "reject"])
+    host = SessionHost(episode, root=root, channel=channel, ephemeral=True)
+    session = AgentSession(host, scope_mode="creative", persist=False)
+    rm = {"command": "rm a.jpg", "description": "x"}
+    assert session._review("bash", rm, "t1", None, root, None).ok is True
+    assert session._review("bash", {"command": "rm -rf b", "description": "y"}, "t1", None, root, None).provenance == "session_allow"
+    assert len(channel.requests) == 1, "同类第二次不出卡"
+    assert session._review("bash", {"command": "git push", "description": "x"}, "t1", None, root, None).ok is False
+    assert len(channel.requests) == 2, "不同类照弹"
+    fresh = AgentSession(SessionHost(episode, root=root, channel=FakeChannel(["reject"]), ephemeral=True),
+                         scope_mode="creative", persist=False)
+    assert fresh._review("bash", rm, "t1", None, root, None).ok is False, "新会话不继承"
 
 
 def test_pipeline_module_is_read_from_normalized_argv() -> None:
@@ -1627,10 +1597,18 @@ def test_draft_writes_free_up_to_limit_then_ask(episode: Path, root: Path) -> No
 
 
 @pytest.mark.parametrize("filename", ["01-topic.md", "07-titles.md"])
-def test_other_episode_files_ask_from_first_write(episode: Path, root: Path, filename: str) -> None:
+def test_other_episode_files_card_free_with_history(episode: Path, root: Path, filename: str) -> None:
+    """ADR-0030 决策 3：其余期文件免卡；覆盖前留底到 _agent/file-history/（内容为旧版）。"""
+    from pipeline.agent.tools import write_episode_file
+
     v = review_tool_call("write_episode_file", {"filename": filename, "content": "x", "confirmed": True},
                          ep_dir=episode, scope="creative", root=root)
-    assert v.action == "ask"
+    assert v.action == "allow"
+    (episode / filename).write_text("旧版", encoding="utf-8")
+    write_episode_file(episode, filename, "新版", confirmed=True, root=root)
+    hist = list((episode / "_agent" / "file-history").glob(f"*-{filename}"))
+    assert [h.read_text(encoding="utf-8") for h in hist] == ["旧版"]
+    assert (episode / filename).read_text(encoding="utf-8") == "新版"
 
 
 def test_draft_write_counter_through_real_turns(
@@ -1678,19 +1656,22 @@ def test_draft_write_counter_through_real_turns(
 
 
 # ---------------------------------------------------------------------------
-# D47：02-script.md 的审查——每次弹卡（不进草稿免卡档）、前提不满足时弹卡前就拒
+# D47：02-script.md 的审查——前提不满足时弹卡前就拒（ADR-0030 起成立的写入免卡）
 # ---------------------------------------------------------------------------
 
 
-def test_d47_script_write_always_asks_with_diff(episode: Path, root: Path) -> None:
+def test_d47_script_write_card_free_and_kept_in_history(episode: Path, root: Path) -> None:
+    """ADR-0030 决策 3（取代 D47 的「每次弹卡带 diff」）：定稿写入免卡，回退靠 script-history 全量留底。"""
+    from pipeline.agent.tools import write_episode_file
+
     (episode / "02-script.md").write_text("配音：旧\n", encoding="utf-8")
-    args = {"filename": "02-script.md", "content": "配音：新\n危险标记: 无\n"}
+    args = {"filename": "02-script.md", "content": "配音：新\n"}
     v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative", root=root,
                          draft_writes_this_turn=0)
-    assert v.action == "ask", "定稿写入不享受草稿的免卡档"
-    assert "│ +配音：新" in v.request.card_text
-    # 模型正文里的「危险标记:」字样不得顶替真标记（取第一行）
-    assert v.request.fields["danger"].startswith("[覆盖]"), v.request.fields["danger"]
+    assert v.action == "allow"
+    write_episode_file(episode, "02-script.md", "配音：新\n", confirmed=True, root=root)
+    hist = list((episode / "_agent" / "script-history").glob("*-02-script.md"))
+    assert [h.read_text(encoding="utf-8") for h in hist] == ["配音：旧\n"]
 
 
 def test_d47_review_rejects_before_card(episode: Path, root: Path) -> None:
@@ -1717,7 +1698,7 @@ def test_d48_bad_edits_rejected_before_card(episode: Path, root: Path) -> None:
     v = review_tool_call("write_episode_file",
                          {"filename": "02-script.md", "edits": [{"old": "配音：甲。\n配音：甲。", "new": "x"}]},
                          ep_dir=episode, scope="creative", root=root)
-    assert v.action == "ask"
+    assert v.action == "allow"  # 成立的 edits 照常放行（ADR-0030 起免卡）
 
 
 def test_d48_tool_summary_for_writes_and_pipeline() -> None:
@@ -1858,3 +1839,14 @@ def test_d67_real_toukai2_log_passes_egress_after_resume() -> None:
         {"messages": [{"role": "system", "content": "常驻层"}, *state["messages"]]},
         trusted_texts=trusted,
     )
+
+
+def test_future_tool_without_side_effect_is_fail_closed(episode: Path, root: Path, monkeypatch) -> None:
+    """ADR-0030 决策 5：未登记进免卡表、也没声明 side_effect 的新工具一律弹卡；声明 side_effect=False 才免卡。"""
+    from pipeline.agent import tools as tools_mod
+
+    monkeypatch.setitem(tools_mod.TOOL_SCHEMAS, "future_tool", {"name": "future_tool", "parameters": {}})
+    v = review_tool_call("future_tool", {}, ep_dir=episode, scope="creative", root=root)
+    assert v.action == "ask"
+    monkeypatch.setitem(tools_mod.TOOL_SCHEMAS, "future_tool", {"name": "future_tool", "parameters": {}, "side_effect": False})
+    assert review_tool_call("future_tool", {}, ep_dir=episode, scope="creative", root=root).action == "allow"

@@ -264,14 +264,14 @@ def test_ta6_idea_needs_episode_tools_rejected_before_card(tmp_path):
 
 
 def test_ta6_idea_write_memory_full_loop(tmp_path):
-    """弹卡 → 人按 y → memory.md 真落盘、memory.log.jsonl 新增一行且 episode 为 null。"""
+    """免卡（ADR-0030）→ 宿主注入 confirmed → memory.md 真落盘、memory.log.jsonl 新增一行且 episode 为 null。"""
     root = _mem_root(tmp_path)
     args = _add_args("idea 全回环写入的模式")
 
     v = review_tool_call("write_memory", args, ep_dir=None, scope="idea", root=root)
-    assert v.action == "ask" and v.request is not None  # 弹卡
+    assert v.action == "allow"
 
-    # 人按 y（confirmed 只由宿主注入）
+    # 工具循环执行时由宿主注入 confirmed
     out = execute_tool(
         "write_memory", args, ToolContext(scope="idea", episode_dir=None, root=root, confirmed=True)
     )
@@ -284,6 +284,7 @@ def test_ta6_idea_write_memory_full_loop(tmp_path):
     ]
     assert rows[-1]["scope"] == "idea"
     assert rows[-1]["episode"] is None
+    assert rows[-1]["confirm"] == "auto", "没出卡就不记成 card"
 
 
 # ---------------------------------------------------------------------------

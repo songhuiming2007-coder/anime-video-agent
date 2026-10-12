@@ -137,10 +137,31 @@ class TestScrub:
 class TestCard:
     def test_危险标记(self) -> None:
         assert bash_danger_tags("cp a b") == []
-        tags = bash_danger_tags("rm -rf x && git push && curl http://x && sed -i '' x pipeline/a.py")
-        assert "[删除]" in tags and "[git 写操作]" in tags and "[联网/装依赖]" in tags
+        tags = bash_danger_tags("rm -rf x && git push && sudo ls && sed -i '' x pipeline/a.py")
+        assert "[删除]" in tags and "[git 改历史/推远端]" in tags and "[提权]" in tags
         assert any("Code Freeze" in t for t in tags)
         assert bash_danger_tags("cp a 04-clips.approved.json") == ["[停机点解封物] 批准只能由人做"]
+
+    @pytest.mark.parametrize("cmd", [
+        "find . -name '*.tmp' -delete", "ls | xargs rm", "unlink a", "git reset --hard HEAD",
+        "git clean -fd", "git rebase main", "brew install ffmpeg", "npm install -g x", "npm i --global x",
+        "uv tool install ruff", "echo 1 > config/project.json", "cat x | tee pipeline/a.py",
+        "cp a.py pipeline/a.py", "perl -pi -i -e 's/a/b/' config/voice.json", "mv x 02-diff.patch",
+    ])
+    def test_硬危险_命中即弹卡(self, cmd: str) -> None:
+        """ADR-0030 决策 1：不可逆 / 越过人工关卡的操作命中硬危险。"""
+        assert bash_danger_tags(cmd) != []
+
+    @pytest.mark.parametrize("cmd", [
+        "ls -la | head", "cd 07-cover && sips -z 100 100 a.jpg", "mv a.jpg 07-cover/b.jpg", "chmod +x x.sh",
+        "curl -sL https://example.com | head", "git commit -m x", "git checkout -b x", "uv run pytest -q",
+        "pip install pillow", "cat pipeline/render.py | grep x", "ls config/ 2>/dev/null",
+        "grep -rn x pipeline/ 2>&1 | head", "wc -l config/voice.json >/dev/null",
+        "for f in *.wav; do ffprobe -v error \"$f\"; done",
+    ])
+    def test_非硬危险_免卡(self, cmd: str) -> None:
+        """ADR-0030（人裁决「再减少一些弹框」）：读源码 / 配置、项目内装依赖、mv、chmod、curl、git commit 都不算危险。"""
+        assert bash_danger_tags(cmd) == []
 
     def test_命令里夹带的危险标记字样骗不过卡面(self, repo: Path) -> None:
         """session 取卡面第一处「危险标记:」：真标记行必须在模型写的命令原文之前。"""
@@ -163,17 +184,32 @@ class TestCard:
     @pytest.mark.parametrize("cmd,action", [
         ("ls 07-cover/import", "allow"),
         ("sips -g pixelWidth a.jpg", "allow"),
-        ("cp a b", "ask"),
-        ("ls > out.txt", "ask"),
-        ("sips -z 100 100 a.jpg", "ask"),
+        ("cp a b", "allow"),
+        ("ls > out.txt", "allow"),
+        ("cd 07-cover && sips -z 100 100 a.jpg | tail -1", "allow"),
+        ("rm a.jpg", "ask"),
+        ("echo x > config/project.json", "ask"),
     ])
-    def test_审批层只读免卡_其余弹卡(self, repo: Path, cmd: str, action: str) -> None:
+    def test_审批层只拦硬危险(self, repo: Path, cmd: str, action: str) -> None:
+        """ADR-0030 决策 1（取代 ADR-0029 决策 4 的只读白名单）。"""
         verdict = review_tool_call("bash", {"command": cmd, "description": "x"},
                                    ep_dir=repo / "data/episodes/ep", scope="creative", root=repo)
         assert verdict.action == action
 
+    def test_硬危险卡开放本会话都批准_键按危险标记组合(self, repo: Path) -> None:
+        from pipeline.agent.session import SESSION_ALLOW_DECISION
+
+        a = review_tool_call("bash", {"command": "rm a", "description": "x"},
+                             ep_dir=repo / "data/episodes/ep", scope="creative", root=repo)
+        b = review_tool_call("bash", {"command": "rm -rf b c", "description": "y"},
+                             ep_dir=repo / "data/episodes/ep", scope="creative", root=repo)
+        c = review_tool_call("bash", {"command": "git push", "description": "x"},
+                             ep_dir=repo / "data/episodes/ep", scope="creative", root=repo)
+        assert a.request.options == ("approve", SESSION_ALLOW_DECISION, "reject")
+        assert a.allow_key == b.allow_key != c.allow_key
+
     def test_无期会话也能用(self, repo: Path) -> None:
-        verdict = review_tool_call("bash", {"command": "cp a b", "description": "x"},
+        verdict = review_tool_call("bash", {"command": "rm a", "description": "x"},
                                    ep_dir=None, scope="idea", root=repo)
         assert verdict.action == "ask"
 

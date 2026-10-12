@@ -40,6 +40,20 @@ export interface FoldedConv {
   rows: ConvRow[];
   running: boolean;
   turnId: string | null;
+  /** D79：已入队、尚未送达模型的消息（输入框上方的「排队中」气泡） */
+  queued: QueuedMsg[];
+  /** D79：最近一次被退回输入框的排队消息（回合非正常结束）；key 每次退回唯一，供输入框只回填一次 */
+  returned: { key: string; text: string } | null;
+}
+
+export type QueuedMsg = { id: string; text: string };
+
+function itemsOf(v: unknown): QueuedMsg[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((x) => {
+    const o = x as Record<string, unknown> | null;
+    return o && typeof o.id === "string" && typeof o.text === "string" ? [{ id: o.id, text: o.text }] : [];
+  });
 }
 
 const CARD_LABEL: Record<string, string> = { tool_call: "工具卡", fetch: "抓取卡", checkpoint: "检查点", memory_ack: "记忆确认" };
@@ -218,7 +232,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
     case "request_closed": {
       const row = findCard(rows, String(f.request_id));
       if (row) {
-        row.status = f.reason === "answered" ? (f.decision === "approve" ? "approved" : "rejected") : "voided";
+        row.status = f.reason === "answered" ? (isApprove(f.decision) ? "approved" : "rejected") : "voided";
         row.text = cardText(row.label, row.status, null, null);
       }
       break;
@@ -245,6 +259,11 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
   }
 }
 
+/** ADR-0030：「本会话都批准」也是批准 */
+function isApprove(decision: unknown): boolean {
+  return decision === "approve" || decision === "approve_session";
+}
+
 function findCard(rows: ConvRow[], requestId: string): Extract<ConvRow, { k: "card" }> | undefined {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const r = rows[i];
@@ -259,6 +278,8 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
   let running = false;
   let turnId: string | null = null;
   let historySeen = false;
+  let queued: QueuedMsg[] = [];
+  let returned: FoldedConv["returned"] = null;
 
   for (const e of entries) {
     switch (e.k) {
@@ -268,7 +289,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
       case "answered_local": {
         const row = findCard(rows, e.requestId);
         if (row) {
-          row.status = e.decision === "approve" ? "approved" : "rejected";
+          row.status = isApprove(e.decision) ? "approved" : "rejected";
           row.text = cardText(row.label, row.status, e.feedback, null);
         }
         break;
@@ -288,6 +309,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
         break;
       case "exited":
         rows.push({ k: "exited", at: e.at, code: e.code, signal: e.signal, stderrTail: e.stderrTail });
+        queued = []; // 进程没了：排队消息随之丢失（没有送达，也没有可退回的进程回执）
         break;
       case "settled":
       case "spawned":
@@ -324,6 +346,26 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
             }
             break;
           }
+          case "queued":
+            queued = [...queued, { id: String(f.id), text: String(f.text) }];
+            break;
+          case "steer_delivered": {
+            // 送达模型的那一刻才进时间线（位置 = 这批工具结果之后），气泡随之消失
+            const ids = new Set(Array.isArray(f.ids) ? (f.ids as unknown[]).map(String) : []);
+            for (const q of queued) if (ids.has(q.id)) rows.push({ k: "user", at: e.at, text: q.text });
+            queued = queued.filter((q) => !ids.has(q.id));
+            break;
+          }
+          case "steer_returned": {
+            const items = itemsOf(f.items);
+            const ids = new Set(items.map((i) => i.id));
+            queued = queued.filter((q) => !ids.has(q.id));
+            if (items.length > 0) returned = { key: `${String(f.seq)}:${items.map((i) => i.id).join(",")}`, text: items.map((i) => i.text).join("\n") };
+            break;
+          }
+          case "ready":
+            queued = []; // 新进程：旧进程的排队不会再有回执
+            break;
           case "turn_started":
             running = true;
             turnId = String(f.turn_id);
@@ -343,7 +385,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
       }
     }
   }
-  return { rows, running, turnId };
+  return { rows, running, turnId, queued, returned };
 }
 
 /** §2.6：徽标值由 host 从帧折叠得出，随 episodes.summary 下发。 */

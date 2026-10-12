@@ -493,45 +493,23 @@ def test_approval_card_and_ledger_target(tmp_path: Path, monkeypatch: pytest.Mon
     assert "https://example.com/v/11" not in card_11
     assert "…共 11 条" in card_11
 
-    # ② ep_dir 前置：在绑定期目录的上下文下经 _default_approve 按 y 后 approvals.jsonl 该条 target 含 title 摘要且不含 URL
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("builtins.input", lambda: "y")
+    # ② 审批日志的 target 摘要（ADR-0030 起 acquire_propose 免卡；摘要规则仍服务于仍出卡的工具，直接验它）：
+    # 含 title 摘要、不含 URL 与 token、≤120 字
+    from pipeline.agent.session import _target_of
 
     batch_2 = [
         _valid_entry(1, title="横滨终场全场", url="https://secret.example.com/watch?token=abc123"),
         _valid_entry(2, title="reche真名访谈", url="https://secret.example.com/interview?token=xyz999"),
     ]
-    approved, msg = _default_approve(
-        "acquire_propose",
-        {"candidates": batch_2},
-        ep_dir=ep_dir,
-        scope="asset",
-    )
-    assert approved is True
-    assert msg == ""
-
-    ledger_path = ep_dir / "_agent" / "approvals.jsonl"
-    assert ledger_path.exists()
-    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(records) == 1
-    target_val = records[0]["target"]
+    target_val = _target_of(None, None, {"candidates": batch_2})
     assert "横滨终场全场" in target_val
     assert "reche真名访谈" in target_val
     assert len(target_val) <= 120
     assert "https://" not in target_val
     assert "token=" not in target_val
 
-    # ③ 四段链验证（filename / command / url / candidates）
-    # 验证 url 段在无 filename/command 时也能落入 target（幂等覆盖 Spec 5 §4.5②）
-    _default_approve(
-        "write_episode_file",
-        {"url": "https://example.com/only-url", "content": "x"},  # D48：无 content/edits 的写入弹卡前即拒
-        ep_dir=ep_dir,
-        scope="creative",
-    )
-    records_after = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert records_after[-1]["target"] == "https://example.com/only-url"
+    # ③ url 段在无 filename/command 时也能落入 target（Spec 5 §4.5②）
+    assert _target_of(None, None, {"url": "https://example.com/only-url", "content": "x"}) == "https://example.com/only-url"
 
     # ④ 清洗断言（🟡-r5）：title / type / url 含 \n 伪造行与 ANSI escape 时，卡面单行且控制字符已剥离
     forged_entry = _valid_entry(

@@ -241,14 +241,14 @@ def test_egress_block_is_reported(ep: Path, monkeypatch, capsys):
 # ---- agent 接入与状态提示 ----
 
 
-def test_run_pipeline_adversarial_needs_card_and_autofills_episode(ep: Path):
+def test_run_pipeline_adversarial_card_free_and_autofills_episode(ep: Path):
     from pipeline.agent.session import review_tool_call
     from pipeline.agent.tools import validate_pipeline_command
 
     ok, _msg, argv = validate_pipeline_command("adversarial --script 02-script.draft.md", ep_dir=ep)
     assert ok and argv[-3:] == [str(ep.resolve()), "--script", "02-script.draft.md"]
     verdict = review_tool_call("run_pipeline", {"command": "adversarial"}, ep_dir=ep, scope="creative", root=None)
-    assert verdict.action == "ask"
+    assert verdict.action == "allow"  # ADR-0030 决策 2：白名单内免卡
 
 
 def test_status_hints_until_report_exists(ep: Path):

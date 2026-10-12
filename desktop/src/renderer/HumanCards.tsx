@@ -5,7 +5,7 @@
 // 处理器首句检查第一个形参的 nativeEvent.isTrusted、体内不许有循环与迭代方法、每个处理器至多一处此类调用。
 // 只呈现确定性事实（停机点类型、对象创建时间、关联产物指纹、note、审片页时间先后），UI 自身零判定、不做 LLM 推荐（direction §5）。
 // 失败时 stdout 与 stderr 尾部都原样显示（补丁段号在 stdout，红队 B3）；不提供任何重试按钮（RF-18）。
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ApprovalJson, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import type { OutFrame } from "../shared/convFrames";
@@ -83,8 +83,8 @@ export function AnswerDock({ ep, conv, health, rpc }: { ep?: EpisodeState; conv?
   return (
     <div className="decisions dock" data-testid="decisions">
       {a?.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
-      {requests.map((req) => (
-        <RequestCard key={String(req.request_id)} convKey={conv!.convKey} req={req} rpc={rpc} disabled={busy} />
+      {requests.map((req, i) => (
+        <RequestCard key={String(req.request_id)} convKey={conv!.convKey} req={req} rpc={rpc} disabled={busy} focusApprove={i === 0} />
       ))}
       {items.map((obj) => (
         <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} run={run} />
@@ -287,7 +287,11 @@ function ReviewPageAge({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
 
 // ---------------- Spec 9 的四种人审请求卡（Spec 10 §2.4；PR3） ----------------
 
-const DECISION_LABEL: Record<string, string> = { approve: "批准", reject: "拒绝", continue: "继续", stop: "停止" };
+/** ADR-0030 决策 6：自动聚焦「批准」后这么久之内的回车不算数（人反应时间 > 400 ms；键盘自动重复首延迟 ≈ 500 ms 内的连发也挡住） */
+const ENTER_GUARD_MS = 400;
+
+// ADR-0030 决策 5：approve_session = 批准本次，且本会话同类此后免卡（只出现在 bash 硬危险 / cloud 卡上）
+const DECISION_LABEL: Record<string, string> = { approve: "批准", approve_session: "本会话都批准", reject: "拒绝", continue: "继续", stop: "停止" };
 const KIND_LABEL: Record<string, string> = { tool_call: "工具卡", fetch: "抓取卡", checkpoint: "检查点", memory_ack: "记忆确认" };
 
 function fieldText(v: unknown): string {
@@ -297,9 +301,10 @@ function fieldText(v: unknown): string {
 
 /**
  * 会话请求卡：按钮只取 `request.options`（H-4：UI 不增不减），没有批量、没有默认高亮。
- * browser 卡与抓取卡的「批准」由 host 请 main 弹原生确认框后才写 answer（§2.4 第 5 层），UI 不感知。
+ * ADR-0030 决策 6（回车批准）：第一张卡出现时，若人没在输入框里打字，焦点落到「批准」按钮——原生按钮收到回车
+ * 派发的是 isTrusted 的 click，走下面同一个 onClick（TG-4′ 不变：effect 里只 focus，不调答复方法）。
  */
-export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean }) {
+export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean; focusApprove?: boolean }) {
   const requestId = String(req.request_id);
   const kind = String(req.kind);
   const options = Array.isArray(req.options) ? (req.options as unknown[]).map(String) : [];
@@ -313,6 +318,17 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
   const bashCommand = tool === "bash" && typeof args.command === "string" ? args.command : null;
   const feedbackAllowed = kind === "tool_call" && req.feedback_allowed === true && options.includes("reject");
   const off = disabled || busy;
+  const approveRef = useRef<HTMLButtonElement | null>(null);
+  // 自动聚焦后 ENTER_GUARD_MS 内的回车不生效：连按两下 / 按键自动重复不会顺手批掉紧接着出现的下一张卡（原 TX-14 守的事）
+  const focusedAt = useRef<number>(-Infinity);
+  useEffect(() => {
+    if (!focusApprove) return;
+    const active = document.activeElement;
+    // 人正在输入框里写东西（有内容）就不抢焦点：回车应当发送他的消息，而不是批准
+    if (active instanceof HTMLTextAreaElement && active.value.trim() !== "") return;
+    approveRef.current?.focus();
+    focusedAt.current = performance.now();
+  }, [focusApprove, requestId]);
   return (
     <CardFrame
       className="decision request-card"
@@ -353,8 +369,14 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
         {options.map((decision) => (
           <button
             key={decision}
+            ref={decision === options[0] ? approveRef : undefined}
+            onKeyDown={(e) => {
+              // 只拦不答：preventDefault 使这次回车不派发 click；答复照旧只在 onClick 里（TG-4′）
+              if (e.key === "Enter" && performance.now() - focusedAt.current < ENTER_GUARD_MS) e.preventDefault();
+            }}
             className="ui-btn"
             data-testid={`request-answer-${decision}`}
+            title={decision === options[0] ? "按回车即可（焦点在此按钮时）" : undefined}
             disabled={off}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
@@ -373,6 +395,10 @@ export function RequestCard({ convKey, req, rpc, disabled }: { convKey: ConvKey;
             {DECISION_LABEL[decision] ?? decision}
           </button>
         ))}
+        {focusApprove && options.length > 0 && !busy && (
+          // 提示放在按钮外：按钮文字只取 options 的标签（H-4），不混入提示
+          <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>
+        )}
         {busy && <span className="muted">处理中…</span>}
       </div>
       {error && (

@@ -18,6 +18,9 @@ const valid: Record<string, Record<string, unknown>> = {
   notice: { level: "warn", code: "code_freeze", text: "n" },
   error: { code: "E_BUSY", message: "busy" },
   bye: { reason: "eof" },
+  queued: { id: "q1", text: "改成 X" },
+  steer_delivered: { turn_id: "t1", ids: ["q1"] },
+  steer_returned: { items: [{ id: "q1", text: "改成 X" }] },
 };
 
 describe("TV-1 parseOutFrame", () => {
