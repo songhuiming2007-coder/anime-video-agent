@@ -115,6 +115,9 @@ PIPELINE_MODULES: set[str] = {
     # 所以不整模块进 READONLY_PIPELINE_MODULES（只读判定按参数级做：crosscheck_writes）。
     # 位置参数是企划目录：企划会话补企划目录，卷会话补所属企划目录（validate_pipeline_command 的 project_dir）
     "crosscheck",
+    # D81 PR-5：企划总装（各卷成片 → 合集成片）。只在企划会话放行（PROJECT_ONLY_MODULES）；
+    # 每次逐条人审、不开放「本会话都批准」（HUMAN_GATED_COMMANDS），卡面是 assemble.preview
+    "assemble",
 }
 
 # D81（人裁决 Q2：企划会话只做规划、跨卷审查、总装）：企划会话的 run_pipeline 只放行这几个企划级模块，
@@ -150,6 +153,8 @@ READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
 HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
     ("corrections", "global"), ("calibration", "set"), ("bgm", "register"),
     ("tickets", "open"),
+    # D81 §4.8（人裁决 Q5）：每次总装都弹卡，--replace 覆盖已有成片同样逐条人审
+    ("assemble", None),
 })
 
 # D82 §4.7：交接文本由 core 模板生成，不取模块输出里的任意文字
@@ -406,7 +411,7 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
 _AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
-                                      "adversarial", "scout", "ingest_patch", "tickets", "crosscheck")
+                                      "adversarial", "scout", "ingest_patch", "tickets", "crosscheck", "assemble")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
@@ -577,7 +582,7 @@ def validate_pipeline_command(
 
     # (b) 自动补位只对原 PIPELINE_MODULES 侧模块生效，asset 侧不补位
     if in_pipeline:
-        if module == "crosscheck":
+        if module in ("crosscheck", "assemble"):
             # 补企划目录（字面路径：企划目录的身份按字面判，§4.1）；普通期会话没有企划，不补
             if project_dir and not _extract_positional_args(args):
                 args = [os.path.abspath(str(project_dir))] + args

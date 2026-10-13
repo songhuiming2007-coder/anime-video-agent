@@ -696,7 +696,7 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
 
 ### 10.9 完成判定
 
-- [ ] §10.3 ①–⑮（含 ⑩′ ⑩″）落地；§10.5 测试与 §10.6 M1–M14 通过；§10.7 全绿
+- [x] §10.3 ①–⑮（含 ⑩′ ⑩″）落地；§10.5 测试与 §10.6 M1–M14 通过；§10.7 全绿（2026-10-13，见 §十五）
 - [ ] **真实数据验收（需 T7，人批卡执行；EGOIST V2 只读）**：
   1. 按 §4.9 建镜像企划；从典藏版**复制**（只读源）`01-topic.md` 进 `data/episodes/_d81-out/`（qc 读 `时长目标`）。
   2. 跑 `python -m pipeline.assemble data/episodes/_d81-mirror --out data/episodes/_d81-out`。
@@ -974,3 +974,43 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
   2. **配乐 0 条是真结果，不是没查**：三卷 `02-script.md` 都解析成功（7 / 10 / 11 个音乐段）。唯一跨卷同名的 `Departures ～あなたにおくるアイの歌～` 第 1 卷是前景（M0、M3），第 3 卷是铺底（M4.5），按 §9.3 ④ 一前景一铺底不算命中。
 - **验证**：pytest 2895 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。
 - 施工中另记：全量 pytest 第一次跑了 11 分钟、红 11 条，查明是 `test_n28_non_terminal_sigint_kills_grandchild_process_group` 偶发挂住（SIGINT 发给自己的竞态），其后的中断类用例连带假红；另有一个 2026-10-12 14:08 起的旧 pytest 同样挂在这一条上 20 小时，孙进程持续往 pytest 临时目录写，`pytest-147/test_n28_…/05-final.mp4` 已 4.97 GB。两组挂住的测试进程已杀（只杀进程，没删文件）；静默环境重跑全量 2895 全绿、中断类 219 条单独跑也全绿。这条用例的偶发挂起是既有问题，本次未修。
+
+### PR-5（2026-10-13）
+
+**已施工·机检通过**（core + 卡面文字，无界面改动）；真实数据比对全部一致，**待人听三处章节交界**（§10.9 第 2 条第 6 步）。
+
+- §10.3 ①–⑮ 落地，新文件 `pipeline/assemble.py`：
+  - ② 部件从卷表读，成员认定走 `classify_dir == "volume"`；`05-final.mp4` / `08-cover.jpg`（余韵卷另加 `02-script.md` / `03-audio/manifest.json`）必须存在且 resolve 后落在成员目录的 resolve() 之内（软链卷照用、软链出成员目录的部件拒）。③ 截断点 = `build_timeline` 旁白终点 + 余韵，按 `assemble.sh` 的 `printf "%.2f"` 取两位小数字符串，淡出起点由它减 1.0 再取两位。④ 基准 = 第一卷 `05-final.mp4` 的 ffprobe（分辨率、帧率、像素格式、声道数与布局、采样率），过场卡静音轨的 `cl=` 取探出的声道布局。⑤ 六个部件逐项比签名（`assemble.sh` 的 `stream_sig` 同一组字段），不等打印 `-`/`+` 两组后退 1、不拼接。⑥ concat 行 `'` → `'\''`，换行 / 控制字符退 2（在任何文件创建之前先验一遍）。⑦ 一律 argv（runner 参数化，测试替身只套外壳，ffmpeg 是真的）。⑧ 输出：默认合集成员；`--out` 须已存在、不是企划目录、有 `01-topic.md`；输出目录落在任何卷里拒；`05-final.mp4` 是软链拒；已有且没带 `--replace` 退 2。⑨ 指纹 = 各卷 `05-final.mp4` 与 `08-cover.jpg` 的 `(size, mtime_ns)`，`os.replace` 前复核。⑩ 账本形状照现账本：过场卡没有 `src` 键（与盘上一致），`kind=part` 一律写 `src` = 成员目录（resolve 后）。⑩′ 自证两项都做，临时成片 `.05-final.assembling.mp4` 写在输出目录、自证过了才 `os.replace`，没过就删掉这个临时文件（旧成片不动）。⑩″ `_agent/assemble.lock` 非阻塞 fcntl，拿不到退 3。⑪ qc 走 `sys.executable -m pipeline.qc <输出目录>`，退出码透传。⑫ 空间预检在建锁之前。
+  - ⑬ `PIPELINE_MODULES` +`assemble`，进 `_AUTOFILL_MODULES`，与 crosscheck 同一处补位（补宿主绑定的企划目录）；企划会话外由 PR-1 的 `PROJECT_ONLY_MODULES` 拒。⑭ `HUMAN_GATED_COMMANDS` +`("assemble", None)`；审查层调 `assemble.preview`（参数错——含 `--rep`——与前置检查不过都在弹卡前拒），卡面列部件、每卷截断点与旁白终点、输出位置，带 `--replace` 且已有成片时首行「⚠ 将覆盖已有 05-final.mp4（不留底）」。bash 的 `[须人审的流水线命令]` 规则由 D82 从这张表生成，不另写。⑮ 新 `docs/runbook/10-assemble.md`、`docs/INDEX.md` 一行、`config/agent/scopes/project.md` 写 crosscheck 与 assemble（含 `--replace` 不留底）。
+  - 与 `assemble.sh` 的一处次序不同：脚本先生成三张卡再截两卷，这里按卷交替（卡 1 → 截 1 → 卡 2 → …）。每条命令的 argv 不变，产物与账本次序不变。
+- PR-1 的 `test_企划级模块分流用替身模块`（那时 assemble 还不在白名单，用替身登记）改为真模块：企划会话过了分流、停在总装自己的前置检查；卷会话照拒。
+- 测试 `tests/test_assemble.py` 32 条（含参数化）：黄金（过场卡、两次截尾、concat 的 argv 逐 token；期望值是把 `assemble.sh` 的 `gen_card` / `trim_tail` 原文抽出来、ffmpeg 换成逐参数打印的桩跑出来的，与手工展开一致）；末卷不裁（卷表末行规则）；截断点（`tests/test_music.py` 的三段稿，`build_timeline` 旁白终点 128 → 146.00，时长预算写 1-2 分钟）；截断点 ≥ 成片总长退 2；立体声企划（卡与截尾按基准生成立体声、拼接成功）；端到端小样（两卷 + 合集、真 ffmpeg，`name` 序列 `card_part1, part1_trimmed, card_part2, 02-b`、`offset` 连续、时长差 < 0.1 s，qc 进程内跑出「总装账本 4 部件之和」）；目录名带 `'`（真 ffmpeg 解析拼接清单）；卷表 `../x`、`/abs`、`a/b` 解析期拒；非成员 / 缺成片 / 缺封面 / 缺 manifest / 缺稿件各退 2（零调用、输出目录逐文件不变）；部件软链出成员目录退 2；软链卷照用（被指向的企划逐文件不变）；`--out` 四种不合规；已有成片不带 `--replace`；`--replace` 自证失败（外壳给临时成片多报 0.2 s）旧字节不变；`--replace` 通过；解码自证（末卷截掉 300 字节，时长差 0.021 s 过了第一项、解码报错）；途中改某卷 mtime；过场卡探成 `yuvj420p` + 立体声；锁被占退 3；`--rep` 退 2；静态无 `shell=` / `os.system` / `os.popen` / `subprocess.getoutput`；审查层（ask、无 `allow_key`、无「本会话都批准」、卡面、`--replace` 首行、`--rep` 拒、卷会话拒）；bash 两种写法都打 `[须人审的流水线命令]`。小样片 320×180、同一组 x264 参数（`-movflags +faststart`），整文件 11 s 内跑完。
+- 变异 15/15 被抓（scratchpad `d81pr5_mut.json`，跑完 `git diff` 只剩真实改动）：
+
+| # | 变异 | 抓到它的测试 |
+|---|---|---|
+| M1 | 不查已有成片 | `test_已有成片不带replace_退2_字节不变` |
+| M2 | 先删旧成片再拼 | `test_replace_自证失败_旧成片不变` |
+| M3 | 去掉签名比对 | `test_签名不一致_退1_不拼接` |
+| M4 | 截断点用卷表时长预算 | `test_截断点_旁白终点加余韵_不看时长预算` |
+| M5 | 末卷（完整保留）也裁 | 同上（`02-b` 的截断点不再是 None） |
+| M6 | concat 清单不转义 | `test_concat清单转义_目录名带单引号` |
+| M7 | 部件不做 resolve 包含检查 | `test_部件软链指出成员目录_退2_零ffmpeg` |
+| M8 | 不复核输入指纹 | `test_输入指纹_总装途中某卷被改_退1` |
+| M9 | `allow_abbrev` 默认 | `test_缩写不被认作replace` |
+| M10 | 卡片开放「本会话都批准」 | `test_审查层_企划会话弹卡无allow_key_卡面是预览` |
+| M11 | 流参数写死为 mono | `test_流参数跟随基准_立体声企划` |
+| M12 | 去掉解码自证 | `test_解码自证_部件尾部截掉若干字节_退1` |
+| M13 | 不取输出目录锁 | `test_并发_锁被占_退3_先到者产物不变` |
+| M14 | 账本命名不照 `card_part{i}` | `test_端到端_账本连续_命名_qc读到账本` |
+| X1 | `HUMAN_GATED_COMMANDS` 漏 assemble（补充） | 审查层那条 |
+
+- **真实数据验收**（§10.9 第 2 条 1–5 步；输出一律在 scratchpad）：PR-1 的 scratchpad 镜像根（`_d81-mirror` 三卷软链到 EGOIST V2，卷表照 §4.7 样例），镜像根下 `data/library/bgm` 软链到真实曲库（截断点要核曲目文件存在，只读）；输出目录 `mirror-root/data/episodes/_d81-out/`，`01-topic.md` 从典藏版复制。进程经 sitecustomize 把 `paths.ROOT` / `DATA` / `CONFIG` 指向镜像根（镜像根的 `config/bgm.json`、`project.json` 与仓库逐字节相同），qc 子进程同样经它。命令 `python -m pipeline.assemble <镜像根>/data/episodes/_d81-mirror --out <镜像根>/data/episodes/_d81-out`，退出码 0。
+  1. 截断点 **889.53 / 866.74**（旁白终点 871.53 / 848.74 + 18），与典藏版一致。
+  2. 成片 format duration：典藏版 2915.617542，新 2915.617542，**差 0**。
+  3. 新旧 `04-assembly.json`：6 个部件，`name` 序列 `card_part1, part1_trimmed, card_part2, part2_trimmed, card_part3, 03-终局葬礼` 相同，`kind` 相同，每个 `offset` / `duration` **逐项相等**（差 0.000），`total_duration` 相同。
+  4. 新 `06-check.log` **11/11 通过，与典藏版逐行相同**（成片时长 2915.57 s、音画差 47 ms、总装账本 6 部件之和差 47 ms、-15.98 LUFS、-1.18 dBTP、继承黑场 23 处、章节卡静音桥接豁免 3 处、字幕 410 张卡最宽 30.5 格）。
+  5. 6 个部件的流签名逐项相同：均为 `h264,High,1920×1080,yuv420p,level 40,24000/1001 | aac,LC,48000,1,mono`。
+  6. `find "data/episodes/EGOIST-传奇企划志-V2" -newer <开跑前的标记>`：**空**。
+  7. **待人**：听一遍合集的三处章节交界（判据：成片交人前至少听开头与最长一段）。新成片在 scratchpad 的 `mirror-root/data/episodes/_d81-out/05-final.mp4`；它与典藏版的时长、账本与质检逐项相同，听哪一份由人定。镜像根与输出目录的去留由人定（§4.9 第 5 步）。
+- **验证**：pytest 2927 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。

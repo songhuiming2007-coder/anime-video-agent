@@ -435,13 +435,11 @@ class TestProjectSessionTools:
             assert out["ok"] is False and "只读的 crosscheck" in out["error"], cmd
         assert not (P / "00-crosscheck.md").exists()
 
-    def test_企划级模块分流用替身模块(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
-        """assemble 在 PR-5 才进白名单：用替身登记它，验证分流（企划会话放行、卷会话拒）。"""
+    def test_企划级模块分流(self, world) -> None:
+        """assemble（PR-5 进白名单）：企划会话过了分流、停在总装自己的前置检查（夹具卷没有成片）；卷会话被分流拒。"""
         root, P, _Q, _E = world
-        from pipeline.agent import tools
-
-        monkeypatch.setattr(tools, "PIPELINE_MODULES", tools.PIPELINE_MODULES | {"assemble"})
-        assert review("run_pipeline", {"command": "assemble"}, kind="project", ep=P, P=P, root=root).action != "reject"
+        v = review("run_pipeline", {"command": "assemble"}, kind="project", ep=P, P=P, root=root)
+        assert v.action == "reject" and v.reason.startswith("assemble 前置检查不过")
         v = review("run_pipeline", {"command": "assemble"}, kind="volume", ep=P / "01-a", P=P, root=root)
         assert v.action == "reject" and "企划会话" in v.reason
 
