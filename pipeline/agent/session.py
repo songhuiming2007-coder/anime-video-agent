@@ -399,6 +399,15 @@ def review_tool_call(
             command_preview = ticket_preview
             card_summary = tickets.preview_summary(rest, bound_dir=ep_dir, root=root)
 
+    # D81 §10.3 ⑭：总装。卷表错、缺部件、已有成片未带 --replace、参数不成立 → 弹卡前拒；成立则卡面是部件与截断点
+    if argv is not None and _pipeline_module_of(argv) == "assemble":
+        from pipeline import assemble
+
+        ok, assemble_preview = assemble.preview(argv[argv.index("-m") + 2:])
+        if not ok:
+            return ToolVerdict("reject", reason="\n".join(assemble_preview))
+        command_preview = assemble_preview
+
     # D61 / ADR-0028：write_note 的番名 / 目标 / 新建前提与 edits 成立性，在弹卡前拒
     if name == "write_note":
         from pipeline.agent.tools import note_write_refusal, resolve_note_content

@@ -22,6 +22,7 @@
 | 07 质量门禁 | [`runbook/07-qc.md`](runbook/07-qc.md) | 11 项机器硬指标自动化检测 |
 | 08 封面与标题候选 | [`runbook/08-cover-title.md`](runbook/08-cover-title.md) | 候选帧去重过滤与 5 条标题生成（严禁机器定稿） |
 | **09 人工发布（停机点 4）** | [`runbook/09-publish.md`](runbook/09-publish.md) | 人选封面标题与手动平台上传 |
+| 10 企划总装（多卷 → 合集） | [`runbook/10-assemble.md`](runbook/10-assemble.md) | 企划会话里每次弹卡；部件从卷表读、截断点从时间轴算、自证后才替换 |
 
 ---
 
