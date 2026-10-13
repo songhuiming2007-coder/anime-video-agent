@@ -1708,3 +1708,26 @@ class TestAnchorOnlyPatchPool:
         assert round(sum(x["dur"] for x in seg["clips"]), 3) == 9.0
         err = capsys.readouterr().err
         assert "1 个资产只登记未打标" in err and "救援检索不可用" in err
+
+
+def test_main_坏段时把期目录交给_scout_probe(tmp_path, monkeypatch, capsys):
+    """clips.main 摘要里的 scout 提示写成了 `scout.probe(episode)`，main 里没有这个名字，
+    NameError 被外面的 `except Exception: pass` 吞掉——有坏段时「/scout 派工单」提示一次都没打出来过。
+    变异：改回 `scout.probe(episode)` → 本条红。"""
+    from pipeline import scout
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    dest = ep / "04-clips.json"
+    dest.write_text(json.dumps({
+        "anime": "番", "total_duration": 5.0,
+        "segments": [{"index": 1, "duration": 5.0, "status": "no_match", "channel": "scene",
+                      "top_score": 0.1, "clips": [{"season": 1, "episode": 1}]}],
+    }), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(sys, "argv", ["clips", str(ep)])
+    monkeypatch.setattr(c.paths, "require_data", lambda *a, **k: None)
+    monkeypatch.setattr(c, "run", lambda *a, **k: dest)
+    monkeypatch.setattr(scout, "probe", lambda p: (seen.append(p), {"patchable": True})[1])
+    c.main()
+    assert seen == [ep]
+    assert "/scout" in capsys.readouterr().out

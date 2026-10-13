@@ -1362,7 +1362,7 @@ def main() -> int:
         print(f"★ {bad} 段不是 ok，渲染前必须处理")
         try:
             from . import scout
-            p_res = scout.probe(episode)
+            p_res = scout.probe(a.episode)
             if p_res.get("patchable"):
                 print("  → 存在可补料缺口，REPL 内敲 /scout 生成派工单")
             elif p_res.get("unrescuable"):

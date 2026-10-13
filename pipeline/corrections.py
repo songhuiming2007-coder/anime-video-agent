@@ -705,6 +705,33 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
     }
 
 
+def mark_segment_done(episode: Path, label: str) -> None:
+    """tts 每合成成功一段就调一次：把 label 追加进相关条目的 done_segments 并原子写盘；
+    仅当 set(done_segments) >= set(affected) 时置 applied=true。
+
+    每段一次整份重写是刻意的（B3-r16）：40 段 = 40 次全文件写，看着 wasteful，
+    但「窗口归零 > IO 成本」（文件小）；免得将来为了省 IO 改回批量写重新打开假完成状态窗口。
+    """
+    entries, fp = load_corrections_raw(episode)
+    if not entries:
+        return
+    modified = False
+    now_iso = datetime.now().isoformat()
+    for c in entries:
+        aff = c.get("affected") or [str(c.get("segment"))]
+        if label in aff:
+            done_segs = c.setdefault("done_segments", [])
+            if label not in done_segs:
+                done_segs.append(label)
+                modified = True
+            if not c.get("applied", False) and set(c["done_segments"]) >= set(aff):
+                c["applied"] = True
+                c["applied_at"] = now_iso
+                modified = True
+    if modified:
+        save_corrections_raw(episode, entries, expected_fp=fp)
+
+
 def backup_segments(episode: Path, labels: list[str]) -> Path:
     """受影响段的 seg-NN.wav + manifest.json 拷入 03-audio/attic/<YYYYMMDD-HHMMSS>/ 并修剪旧快照。"""
     attic_dir = episode / "03-audio" / "attic"
