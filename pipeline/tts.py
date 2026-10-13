@@ -2081,27 +2081,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         take = render_segment(engine, seg, dest)
         takes.append(take)
         _save_manifest()
-        # 每次成功完成一段合成，立即将 label 追加到 corrections 条目的 done_segments 并原子写盘；
-        # 仅当 set(done_segments) >= set(affected) 时置 applied=true
-        entries, fp = corrections.load_corrections_raw(episode)
-        if entries:
-            modified = False
-            now_iso = datetime.now().isoformat()
-            for c in entries:
-                aff = c.get("affected") or [str(c.get("segment"))]
-                if str(seg.label) in aff:
-                    done_segs = c.setdefault("done_segments", [])
-                    if str(seg.label) not in done_segs:
-                        done_segs.append(str(seg.label))
-                        modified = True
-                    if not c.get("applied", False) and set(c["done_segments"]) >= set(aff):
-                        c["applied"] = True
-                        c["applied_at"] = now_iso
-                        modified = True
-            if modified:
-                # 每段一次整份重写是刻意的（B3-r16）：40 段 = 40 次全文件写，看着 wasteful，
-                # 但「窗口归零 > IO 成本」（文件小）；免得将来为了省 IO 改回批量写重新打开假完成状态窗口。
-                corrections.save_corrections_raw(episode, entries, expected_fp=fp)
+        corrections.mark_segment_done(episode, str(seg.label))
         print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
               f"{take.attempts} 次  {seg.text[:20]}…")
 

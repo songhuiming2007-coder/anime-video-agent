@@ -1980,6 +1980,34 @@ class TestFullRerunGuard:
         t.run(ep, cfg_path=cfgp, force_all=True)     # 配置、引擎、文本什么都没变
         assert calls == [1], f"--force-all 必须每段都重合成，实际只合成了 {calls}"
 
+    def test_有纠错条目时合成一段_记账不崩且收口(self, tmp_path, monkeypatch):
+        """2026-10-13《束胸力学》现场：本期 03-audio/corrections.json 有条目时，
+        `--redo` 每合成完一段写回 done_segments，tts.py 用了没导入的 datetime → NameError，
+        任何一段都写不完。之前没有测试同时走「run() 合成一段 + 存在纠错条目」这条路。
+        变异：把记账逻辑放回 tts.run 且不导入 datetime → 本条红。"""
+        from pipeline import corrections
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        corrections.save_corrections_raw(ep, [{
+            "id": 1, "segment": "1", "kind": "pronunciation", "scope": "segment",
+            "word": "第一", "target_tone3": "di4yi1", "action": "inject",
+            "applied": False, "applied_at": None, "affected": ["1"], "done_segments": [],
+        }])
+
+        class _E:
+            kind = "qwen3_tts"
+            seed_offset = 7
+            segment_seeds: dict = {}
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: _E())
+        monkeypatch.setattr(t, "render_segment", lambda eng, seg, dest: t.Take(
+            seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1))
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+        t.run(ep, cfg_path=cfgp, redo=["1"])
+        (c,), _ = corrections.load_corrections_raw(ep)
+        assert c["done_segments"] == ["1"] and c["applied"] is True, c
+        assert c["applied_at"], c
+
     def test_force_all_与_redo_互斥(self, tmp_path):
         """全量与点名是两个意思，同给必须报错而不是默默选一个（F1 归一后覆盖）。"""
         with pytest.raises(SystemExit) as e:
