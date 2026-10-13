@@ -4,7 +4,7 @@ import { OUT_TYPES, parseOutFrame } from "../../src/shared/convFrames";
 
 const base = { v: 1, seq: 1, sid: "s1" };
 const valid: Record<string, Record<string, unknown>> = {
-  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "volume", project: "P" },
+  ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "volume", project: "P", model: "fake", reasoning_effort: null, model_source: "default", effort_source: "default" },
   history: { index: 0, role: "user", text: "hi", name: null },
   turn_started: { turn_id: "t1" },
   assistant: { turn_id: "t1", kind: "answer", text: "ok" },
@@ -22,6 +22,7 @@ const valid: Record<string, Record<string, unknown>> = {
   steer_delivered: { turn_id: "t1", ids: ["q1"] },
   steer_returned: { items: [{ id: "q1", text: "改成 X" }] },
   session_title: { title: "检查稿件字数", source: "generated" },
+  model_config: { model: "kimi-k3", reasoning_effort: null, model_source: "session", effort_source: "default" },
 };
 
 describe("TV-1 parseOutFrame", () => {

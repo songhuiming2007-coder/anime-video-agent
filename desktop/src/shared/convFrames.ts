@@ -24,6 +24,8 @@ export const OUT_TYPES = [
   "steer_returned",
   // D80 R1：会话首轮结束后后台起好的标题（帧级 sid 即该会话）；侧栏据此重取会话列表
   "session_title",
+  // D91：本会话实际模型与推理强度（ready 之后一帧、每次切换后一帧）；输入框下的模型 / 推理按钮据此显示
+  "model_config",
 ] as const;
 
 export type OutType = (typeof OUT_TYPES)[number];
@@ -54,6 +56,11 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
     resume_prompt_chars: ["number", "null"], // D64：同上，prompt_chars（服务商不给 token 时的回落口径）
     session_kind: ["string"], // D81：episode | volume | project | idea
     project: ["string", "null"], // D81：卷 / 企划会话所属企划目录名；普通期与选题为 null
+    // D91：本会话实际模型与推理强度（同 model_config 帧）
+    model: ["string", "null"],
+    reasoning_effort: ["string", "null"],
+    model_source: ["string"],
+    effort_source: ["string"],
   },
   history: { index: ["number"], role: ["string"], text: ["string"], name: ["string", "null"] },
   turn_started: { turn_id: ["string"] },
@@ -107,6 +114,12 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   steer_delivered: { turn_id: ["string"], ids: ["array"] },
   steer_returned: { items: ["array"] },
   session_title: { title: ["string"], source: ["string"] },
+  model_config: {
+    model: ["string", "null"], // 缺配置时为 null
+    reasoning_effort: ["string", "null"], // null = 不发推理参数（模型默认）
+    model_source: ["string"], // "session" = 本会话设置；"default" = 默认配置
+    effort_source: ["string"],
+  },
 };
 
 /** history 的 tool 条目多一个必需键 ok（S9-R1）；bash 的 tool 帧与 history 的 bash 条目多一个必需键 command

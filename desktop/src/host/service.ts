@@ -68,7 +68,7 @@ import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
 import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
 import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
-import { SessionError, SessionManager, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
+import { SessionError, SessionManager, type CommandName, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
 import { pollOnce, resyncState, type TailState } from "./tailer";
@@ -641,7 +641,7 @@ export class HostService {
       case "conv.answer":
         return this.sessions.answer(p.convKey as ConvKey, p.requestId, p.decision, p.feedback ?? null);
       case "conv.command":
-        return this.sessions.command(p.convKey as ConvKey, p.name as "memory_ack" | "scope", (p.arg as "asset" | "auto" | undefined) ?? null);
+        return this.sessions.command(p.convKey as ConvKey, p.name as CommandName, typeof p.arg === "string" ? p.arg : null);
       case "conv.end":
         return this.sessions.end(p.convKey as ConvKey);
       case "conv.snapshot":

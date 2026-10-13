@@ -405,3 +405,21 @@ describe("D80 R5 / R6.3：短摘要、停机点去重、卡片短语", () => {
     expect(cardPhrase({ label: "[工具卡] bash", text: "[工具卡] bash · 已拒绝（附反馈：改成第三人称）", status: "rejected" })).toBe("已拒绝（附反馈：改成第三人称）");
   });
 });
+
+describe("D91 模型按钮的回执与命令回合", () => {
+  it("models / model / thinking 的 command_result 不成行，scope 照旧成行；命令回合没有脚注，notice 照常", () => {
+    const entries: ConvEntry[] = [
+      { k: "frame", at: 1, frame: F("command_result", { name: "models", ok: true, text: "4 个模型", items: ["a"] }, 1) },
+      { k: "frame", at: 2, frame: F("command_result", { name: "model", ok: true, text: "已切换" }, 2) },
+      { k: "frame", at: 3, frame: F("command_result", { name: "thinking", ok: false, text: "不合法" }, 3) },
+      { k: "frame", at: 4, frame: F("command_result", { name: "scope", ok: true, text: "已切换到 asset scope" }, 4) },
+      { k: "user", at: 5, text: "/model kimi-k3" },
+      { k: "frame", at: 6, frame: F("turn_started", { turn_id: "t2" }, 5) },
+      { k: "frame", at: 7, frame: F("notice", { level: "info", code: "model", text: "本会话已切换到 kimi-k3" }, 6) },
+      { k: "frame", at: 8, frame: F("turn_finished", { turn_id: "t2", stopped: "command", llm_calls: 0, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0, prompt_chars: 0, lookups: null, prompt_tokens: null }, 7) },
+    ];
+    const { rows, running } = foldConv(entries);
+    expect(rows.map((r) => (r.k === "notice" ? `notice:${r.code}` : r.k))).toEqual(["notice:command:scope", "user", "notice:model"]);
+    expect(running).toBe(false);
+  });
+});

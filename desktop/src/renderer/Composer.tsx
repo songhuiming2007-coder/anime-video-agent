@@ -5,7 +5,7 @@
 // Enter 发送、Shift+Enter 换行、输入法选词中的 Enter 不发送（isComposing 或 keyCode 229，A2）。
 // D79（照 Pi 的 steering）：回合在跑时也能发——消息先排队，这批工具跑完后送达模型；
 // 排队中的消息显示在输入框上方，回合非正常结束（停止 / 出错）时退回输入框。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { QueuedMsg } from "../shared/convFold";
 import type { ConvKey } from "../shared/protocol";
 import { errText, type RpcClient } from "./rpc";
@@ -20,6 +20,7 @@ export function Composer({
   placeholder,
   queued = [],
   returned = null,
+  toolbar = null,
 }: {
   rpc: RpcClient;
   convKey: ConvKey;
@@ -29,6 +30,8 @@ export function Composer({
   placeholder: string;
   queued?: QueuedMsg[];
   returned?: { key: string; text: string } | null;
+  /** D91：输入框下一行的左侧控件（模型 / 推理强度按钮，照 ZCode 工具栏）；由 App 传入 */
+  toolbar?: ReactNode;
 }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +83,7 @@ export function Composer({
         <span className="muted" data-testid="composer-target">
           {convKey === "idea" ? "选题会话" : convKey.startsWith("proj:") ? `企划会话 · ${convKey.slice(5)}` : convKey.slice(3)}
         </span>
+        {toolbar}
         <span className="spacer" />
         {error && (
           <span className="error" data-testid="composer-error">

@@ -148,7 +148,8 @@ def _run_title(ep: Path, monkeypatch: pytest.MonkeyPatch, *, reply: Any = "检�
         return {"role": "assistant", "content": reply}
 
     monkeypatch.setattr(llm_mod, "chat_complete", fake)
-    host = SimpleNamespace(sid=A, log_dir=ep, root=None)
+    host = SimpleNamespace(sid=A, log_dir=ep, root=None,
+                           effective_llm_config=lambda root=None: llm_mod.load_llm_config(root))  # D91
     writer = _Writer()
     slots = {} if slots is None else slots
     _maybe_title(host, writer, slots, "帮我看下字数", "字数正常", stopped, "creative")

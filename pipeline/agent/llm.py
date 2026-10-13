@@ -127,6 +127,8 @@ class LLMConfig:
     model: str
     api_key: str
     models: dict[str, str] = field(default_factory=dict)
+    # D91：请求体 `reasoning_effort`；None = 不发（请求体与加这个字段之前逐字节相同）
+    reasoning_effort: str | None = None
 
     @property
     def endpoint(self) -> str:
@@ -242,8 +244,23 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
             )
 
     return LLMConfig(
-        base_url=base_url, model=model, api_key=api_key, models=_parse_models(data, cfg_file)
+        base_url=base_url, model=model, api_key=api_key, models=_parse_models(data, cfg_file),
+        reasoning_effort=_parse_effort(data, cfg_file),
     )
+
+
+def _parse_effort(data: dict[str, Any], cfg_file: Path) -> str | None:
+    """D91：配置里可选的默认推理强度。不合法 → 警告一次、当没配（不猜成别的档）。"""
+    from pipeline.agent.model_switch import EFFORTS
+
+    raw = data.get("reasoning_effort")
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value not in EFFORTS:
+        _warn_once(cfg_file, "effort", f"reasoning_effort={raw!r} 不在 {list(EFFORTS)} 里，已忽略")
+        return None
+    return value
 
 
 def local_directive_message(scope: str, reason: str) -> dict[str, Any]:
@@ -346,6 +363,8 @@ def chat_complete(
         payload["tools"] = tools
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
+    if cfg.reasoning_effort is not None:
+        payload["reasoning_effort"] = cfg.reasoning_effort  # D91：不设就不带这个键
     assert_egress_boundary(cfg.endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
 
     request = urllib.request.Request(

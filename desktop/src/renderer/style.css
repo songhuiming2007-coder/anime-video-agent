@@ -416,3 +416,20 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
   .conv-progress > span { animation: none; width: 100%; }
   .conv-enter, .conv-ticker, .ep-title-swap { animation: none; }
 }
+
+/* D91：输入框工具栏的模型 / 推理按钮（照 ZCode V4ComposerToolbar：常驻显示、点开下拉、当前项打勾）。浮层向上展开：输入框贴着窗口底边 */
+.model-controls { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.model-ctl { position: relative; min-width: 0; }
+.model-ctl-btn { gap: var(--space-1); max-width: 280px; color: var(--fg-muted); }
+.model-ctl-btn[data-source="session"] { color: var(--fg); }
+.model-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); }
+.model-pop { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 6; width: max-content; min-width: 220px; max-width: 360px; max-height: 50vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.model-pop-row { width: 100%; min-height: 28px; gap: var(--space-2); }
+.model-pop-row .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); }
+.effort-pop .model-pop-row .ui-row-title { font-family: inherit; }
+.model-pop-check { flex: none; display: inline-flex; width: 16px; color: var(--fg); }
+.model-pop-meta { margin-left: auto; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); }
+.model-pop-reset { border-top: 1px solid var(--border); margin-top: 2px; padding-top: 2px; }
+.model-pop-reset .ui-row-title { font-family: inherit; color: var(--fg-muted); }
+.model-pop-err, .model-pop-wait { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
+.model-ctl-err { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }

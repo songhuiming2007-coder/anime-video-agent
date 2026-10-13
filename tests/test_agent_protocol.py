@@ -128,6 +128,8 @@ class FakeEndpoint:
         self.title_reply = "测试会话"
         # 设了 (HTTP 状态, 报错原文) 就让主循环请求全部失败（2026-10-13：代理侧模型名失效，请求一到即 400）
         self.fail: tuple[int, str] | None = None
+        # D91：GET /models 的列表（/model 命令与桌面端按钮校验模型名用）
+        self.models: list[str] = ["mock", "kimi-k3", "gemini-x"]
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -135,6 +137,19 @@ class FakeEndpoint:
 
             def log_message(self, *args):  # 静音
                 return
+
+            def do_GET(self) -> None:  # noqa: N802
+                if not self.path.rstrip("/").endswith("/models"):
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                payload = json.dumps({"object": "list", "data": [{"id": m} for m in endpoint.models]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
 
             def do_POST(self) -> None:  # noqa: N802
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -422,7 +437,8 @@ def test_tp1_fd_isolation_and_forged_frames(world, endpoint, tmp_path) -> None:
     assert all(f["stream"] in ("stdout", "stderr") for f in logs)
     # 每一行都能解析且 t 属于出站闭集
     outbound = {"ready", "history", "turn_started", "assistant", "tool", "request", "request_closed",
-                "command_result", "stop_points", "turn_finished", "log", "notice", "error", "bye"}
+                "command_result", "stop_points", "turn_finished", "log", "notice", "error", "bye",
+                "model_config"}   # D91：ready 之后报本会话模型
     assert set(proto_proc.kinds()) <= outbound
 
 
@@ -1009,6 +1025,7 @@ def test_tp12_tp15_stop_points_frames(world, endpoint, tmp_path) -> None:
             "code_freeze_ok", "history_count", "session_bytes", "other_sessions",
             "resume_prompt_tokens", "resume_prompt_chars", "context_window",
             "session_kind", "project",  # D81：会话类型与所属企划
+            "model", "reasoning_effort", "model_source", "effort_source",  # D91：本会话模型
         }
         first = [f for f in proto_proc.frames if f.get("t") == "stop_points" and not f.get("turn_id")][0]
         assert len(first["items"]) == 1, "世界里必须有挂起停机点，否则下面的键集合断言是空转"

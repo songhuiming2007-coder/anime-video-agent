@@ -47,7 +47,7 @@ _INBOUND_KEYS: dict[str, frozenset[str]] = {
 }
 # 入站帧的可选键（除 rid 外）：D81 §4.5 memory_ack 的 target（企划记忆对账）
 _INBOUND_OPTIONAL: dict[str, frozenset[str]] = {"command": frozenset({"target"})}
-_COMMANDS = frozenset({"memory_ack", "scope", "compact"})
+_COMMANDS = frozenset({"memory_ack", "scope", "compact", "models", "model", "thinking"})  # D91 加后三个
 
 
 def _dump(frame: dict[str, Any]) -> bytes:
@@ -227,6 +227,10 @@ class FrameReader(threading.Thread):
             if name == "scope":
                 if arg not in ("asset", "auto"):
                     raise ProtocolError("E_BAD_REQUEST", "command{scope} 的 arg ∈ {asset, auto}")
+            elif name in ("model", "thinking"):
+                # D91：arg = 模型名 / 档位 / default；合法性由 model_switch 判（模型名要对照代理列表）
+                if not isinstance(arg, str) or not arg.strip() or len(arg) > 200:
+                    raise ProtocolError("E_BAD_REQUEST", f"command{{{name}}} 需要非空字符串 arg")
             elif arg is not None:
                 raise ProtocolError("E_BAD_REQUEST", f"command{{{name}}} 不接受 arg")
             # D81 §4.5：memory_ack 可带 target（global 默认 / project = 本企划的企划记忆）
@@ -264,6 +268,7 @@ class FrameReader(threading.Thread):
                 if (
                     kind != "user_message" or slots["shutdown"] or slots["eof"]
                     or frame["text"].strip() == COMPACT_COMMAND  # /compact 是命令，不当排队消息送给模型
+                    or _is_model_command(frame["text"])  # D91：/model、/thinking 同理
                 ):
                     self._error("E_BUSY", "上一轮还在进行中", rid)
                     return
@@ -719,11 +724,14 @@ def main(argv: list[str] | None = None) -> int:
         "resume_prompt_tokens": resume_state["last_reading"][0] if resume_state else None,
         "resume_prompt_chars": resume_state["last_reading"][1] if resume_state else None,
         # D62 人裁决⑤：读数分母 = 当前模型标称窗口；表里没有为 None（不显示分母）
-        "context_window": _context_window(ep_dir, status, "project" if is_project else None),
+        "context_window": _context_window(host, ep_dir, status, "project" if is_project else None),
         # D81：会话类型与所属企划（卷 / 企划会话为企划目录名；普通期与选题为 null）
         "session_kind": host.session_kind,
         "project": host.project_dir.name if host.project_dir is not None else None,
+        # D91：本会话实际模型与推理强度（界面常驻显示）
+        **_model_info(host, ep_dir, status),
     })
+    _send_model_config(writer, host, ep_dir, status)
     if not freeze_ok:
         writer.send({"t": "notice", "level": "warn", "code": "code_freeze",
                      "text": "pipeline/ 源码存在未提交改动，Code Freeze 护栏生效"})
@@ -820,6 +828,10 @@ def main(argv: list[str] | None = None) -> int:
             if slots["eof"]:
                 writer.send({"t": "bye", "reason": "eof"})
                 break
+            if kind == "user_message" and _is_model_command(frame["text"]):
+                # D91：对话框里发 /model、/thinking 即切换（同 /compact：不进模型、不落 user 消息）
+                exit_code = _run_model_command_turn(host, writer, slots, messages, ep_dir, frame["text"], rid)
+                continue
             if kind == "user_message" and frame["text"].strip() == COMPACT_COMMAND:
                 # D62（人 2026-10-10）：对话框里发 /compact 即压缩，同 Claude Code / pi——不进模型、不落 user 消息
                 exit_code = _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid)
@@ -1039,7 +1051,7 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         "compacted": bool(outcome.get("compacted")),
         "tokens_before": outcome.get("tokens_before"),
         "tokens_after": outcome.get("tokens_after"),
-        "context_window": _context_window(ep_dir, status, scope),
+        "context_window": _context_window(host, ep_dir, status, scope),
     })
     # 「收尾后」区（§2.2 状态表）：中断落在这里只置标志、不抛（回合内已无事可中断）。
     with host.interrupt.absorbed():
@@ -1079,9 +1091,10 @@ def _maybe_title(host, writer: FrameWriter, slots: dict[str, Any], user_text: st
     if sid in session_titles.load(host.log_dir):
         return
     log_dir, root = host.log_dir, host.root
+    config = host.effective_llm_config(root)   # D91：起标题也用本会话的模型
 
     def work() -> None:
-        title = session_titles.generate(user_text, answer, root, scope)
+        title = session_titles.generate(user_text, answer, root, scope, config=config)
         if title is None:
             return
         try:
@@ -1129,6 +1142,9 @@ def _run_command(
     if name == "compact":
         _run_compact(host, writer, slots, rid, messages, tracker, ep_dir)
         return
+    if name in MODEL_COMMANDS:
+        _run_model_command(host, writer, frame, rid)
+        return
     if name == "scope":
         value = None if frame.get("arg") in (None, "auto") else frame.get("arg")
         slots["scope_override"] = value
@@ -1151,7 +1167,7 @@ def _run_command(
 COMPACT_COMMAND = "/compact"
 
 
-def _context_window(ep_dir, status, scope: str | None = None) -> int | None:
+def _context_window(host, ep_dir, status, scope: str | None = None) -> int | None:
     # 延迟 import：协议进程 fd 隔离（main ②）必须先于任何 pipeline.* import（同 _send_history）
     from pipeline import paths
     from pipeline.agent.compact import context_window
@@ -1159,9 +1175,159 @@ def _context_window(ep_dir, status, scope: str | None = None) -> int | None:
     if scope is None:
         scope = "idea" if ep_dir is None else _scope_of(status)
     try:
-        return context_window(scope, paths.ROOT)
+        # D91：分母按本会话实际模型查（换过模型就换窗口；表里没有就不显示）
+        return context_window(scope, paths.ROOT, config=host.effective_llm_config(paths.ROOT))
     except Exception:  # 读数分母是显示用的旁路：取不到就不显示，不许拖垮回合
         return None
+
+
+# ---- D91：/model、/thinking ----
+
+MODEL_COMMANDS = frozenset({"models", "model", "thinking"})
+
+
+def _is_model_command(text: str) -> bool:
+    from pipeline.agent.model_switch import is_command
+
+    return is_command(text)
+
+
+def _session_scope(host, ep_dir, status) -> str:
+    if ep_dir is None:
+        return "idea"
+    if host.session_kind == "project":
+        return "project"
+    return _scope_of(status) if status is not None else "creative"
+
+
+def _model_info(host, ep_dir, status) -> dict[str, Any]:
+    """`{model, reasoning_effort, model_source, effort_source}`：本会话实际用的（默认配置叠本会话设置）。"""
+    from pipeline import paths
+    from pipeline.agent import llm, model_switch
+
+    purpose = llm.purpose_for_scope(_session_scope(host, ep_dir, status))
+    try:
+        return model_switch.describe(llm.load_llm_config(paths.ROOT), host.model_override, purpose)
+    except Exception:  # 显示用的旁路：取不到就如实给空
+        return {"model": None, "reasoning_effort": None, "model_source": "default", "effort_source": "default"}
+
+
+def _send_model_config(writer, host, ep_dir, status) -> None:
+    writer.send({"t": "model_config", **_model_info(host, ep_dir, status)})
+    if host.model_override_warning:
+        writer.send({"t": "notice", "level": "warn", "code": "model_override",
+                     "text": host.model_override_warning})
+        host.model_override_warning = None
+
+
+def _apply_model_line(host, ep_dir, status, line: str) -> tuple[bool, str]:
+    """跑一条 `/model …` / `/thinking …`：成功则改本会话设置。返回 (ok, 回显文字)。"""
+    from pipeline import paths
+    from pipeline.agent import compact as cp
+    from pipeline.agent import llm, model_switch
+
+    scope = _session_scope(host, ep_dir, status)
+    purpose = llm.purpose_for_scope(scope)
+    cfg = llm.load_llm_config(paths.ROOT)
+    try:
+        new, text = model_switch.run_command(line, cfg, host.model_override, purpose)
+    except model_switch.ModelSwitchError as exc:
+        return False, str(exc)
+    if new != host.model_override:
+        host.set_model_override(new)
+        model = model_switch.describe(cfg, new, purpose)["model"]
+        try:
+            known = cp.load_compact_config(paths.ROOT).window_for(model) is not None
+        except cp.CompactConfigError:
+            known = True   # 窗口表坏了另有提示，这里不重复
+        if not known:
+            text += f"\n注意：config/agent/compact.json 的窗口表里没有 {model}，读数不显示分母、自动压缩不可用（不猜窗口）。"
+    return True, text
+
+
+def _run_model_command_turn(host, writer, slots, messages, ep_dir, text: str, rid) -> int:
+    """对话框发 `/model…` / `/thinking…`：照压缩回合发 turn_started → notice → turn_finished，
+    host 的发送确认与运行态照旧可用。不进模型、不落 user 消息。"""
+    import secrets
+    import time
+
+    from pipeline.status import inspect_episode
+
+    turn_id = secrets.token_hex(8)
+    slots["turn_id"] = turn_id
+    writer.send({"t": "turn_started", "turn_id": turn_id, **({"rid": rid} if rid else {})})
+    started = time.monotonic()
+    status = None if ep_dir is None or host.session_kind == "project" else inspect_episode(ep_dir)
+    try:
+        ok, reply = _apply_model_line(host, ep_dir, status, text)
+    except Exception as exc:  # 任何失败都如实告诉人，不假装换过
+        ok, reply = False, f"{type(exc).__name__}: {exc}"
+    finally:
+        _release_in_flight(slots, writer)
+        slots["turn_id"] = None
+    writer.send({"t": "notice", "level": "info" if ok else "warn",
+                 "code": "model" if ok else "model_err", "text": reply})   # 代号短：对话流的代号列窄
+    _send_model_config(writer, host, ep_dir, status)
+    scope = _session_scope(host, ep_dir, status)
+    writer.send({
+        "t": "turn_finished",
+        "turn_id": turn_id,
+        "stopped": "command",
+        "llm_calls": 0, "tool_calls": 0, "tool_executions": 0, "duplicates_rejected": 0, "checkpoints": 0,
+        "wrapup": "none",
+        "duration_s": round(time.monotonic() - started, 3),
+        "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict)),
+        "prompt_tokens": None,
+        "lookups": None,
+        "compacted": False,
+        "tokens_before": None,
+        "tokens_after": None,
+        "context_window": _context_window(host, ep_dir, status, scope),
+    })
+    with host.interrupt.absorbed():
+        if ep_dir is None or host.session_kind == "project":
+            writer.send({"t": "stop_points", "items": [], "turn_id": turn_id})
+        else:
+            _ensure_pending(ep_dir, status)
+            _send_stop_points(writer, ep_dir, turn_id)
+    host.interrupt.clear_dropped()
+    return 0
+
+
+def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
+    """command{models | model | thinking}（D91，桌面端按钮）：结果走 command_result。
+
+    `models` 额外带 `items`（代理的模型列表）与 `current`；切换成功后补一帧 model_config。
+    """
+    from pipeline import paths
+    from pipeline.agent import llm, model_switch
+    from pipeline.status import inspect_episode
+
+    tail = {"rid": rid} if rid else {}
+    name = frame["name"]
+    ep_dir = host.ep_dir
+    status = None if ep_dir is None or host.session_kind == "project" else inspect_episode(ep_dir)
+    if name == "models":
+        cfg = llm.load_llm_config(paths.ROOT)
+        try:
+            if cfg is None:
+                raise model_switch.ModelSwitchError("LLM 不可用（缺配置或密钥）")
+            items = model_switch.list_models(cfg)
+        except model_switch.ModelSwitchError as exc:
+            writer.send({"t": "command_result", "name": name, "ok": False, "text": str(exc), **tail})
+            return
+        writer.send({"t": "command_result", "name": name, "ok": True, "text": f"{len(items)} 个模型",
+                     "items": items, "efforts": list(model_switch.EFFORTS),
+                     **_model_info(host, ep_dir, status), **tail})
+        return
+    arg = str(frame.get("arg") or "").strip()
+    if not arg:
+        writer.send({"t": "command_result", "name": name, "ok": False, "text": f"{name} 需要 arg", **tail})
+        return
+    ok, text = _apply_model_line(host, ep_dir, status, f"/{name} {arg}")
+    writer.send({"t": "command_result", "name": name, "ok": ok, "text": text, **tail})
+    if ok:
+        _send_model_config(writer, host, ep_dir, status)
 
 
 def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> int:
@@ -1213,7 +1379,7 @@ def _run_compact_turn(host, writer, slots, messages, tracker, ep_dir, rid) -> in
         "compacted": ok,
         "tokens_before": result.get("tokens_before"),
         "tokens_after": result.get("tokens_after"),
-        "context_window": _context_window(ep_dir, status, scope),
+        "context_window": _context_window(host, ep_dir, status, scope),
     })
     with host.interrupt.absorbed():
         if idea or proj:

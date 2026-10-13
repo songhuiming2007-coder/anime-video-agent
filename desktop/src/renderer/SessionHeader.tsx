@@ -1,6 +1,7 @@
 // Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、建期…（D45：继续会话移到侧栏会话列表）。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
-import { useEffect, useState } from "react";
+// D91：输入框下的模型 / 推理按钮（ModelControls）也因此写在这里，由 App 塞进 Composer 的工具栏。
+import { useEffect, useRef, useState } from "react";
 import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
 import { contextText, type ContextReading } from "../shared/convFold";
 import { NewEpisodeForm } from "./NewEpisodeForm";
@@ -175,6 +176,221 @@ export function SessionNotes({ info, keyProblem }: { info: ReadyInfo; keyProblem
         <div className="muted" data-testid="other-sessions">
           该期还有 {info.otherSessions} 个更早的会话{info.otherLatest ? `；最近一个 ${info.otherLatest}` : ""}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- D91：本会话模型与推理强度（照 ZCode 输入框工具栏） ----------------
+
+export interface ModelInfo {
+  model: string | null;
+  effort: string | null;
+  modelSource: "session" | "default";
+  effortSource: "session" | "default";
+}
+
+/** 最近一帧 model_config（ready 也带同样字段，取后到的）；会话没起过为 null */
+export function modelInfo(entries: readonly ConvEntry[]): ModelInfo | null {
+  let out: ModelInfo | null = null;
+  for (const e of entries) {
+    if (e.k !== "frame" || (e.frame.t !== "model_config" && e.frame.t !== "ready")) continue;
+    const f = e.frame;
+    if (!("model" in f)) continue; // 旧 core 的 ready 不带这几个键
+    out = {
+      model: typeof f.model === "string" ? f.model : null,
+      effort: typeof f.reasoning_effort === "string" ? f.reasoning_effort : null,
+      modelSource: f.model_source === "session" ? "session" : "default",
+      effortSource: f.effort_source === "session" ? "session" : "default",
+    };
+  }
+  return out;
+}
+
+/** 档位 → 中文词（与 pipeline/agent/model_switch.py 的 EFFORT_LABELS 同表） */
+export const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: "关", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "超高", auto: "自动",
+};
+const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "auto"] as const;
+
+export function effortText(effort: string | null): string {
+  return effort === null ? "默认" : EFFORT_LABELS[effort] ?? effort;
+}
+
+function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivElement | null>] {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (ev: MouseEvent) => {
+      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
+    };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return [open, setOpen, ref];
+}
+
+/**
+ * 输入框工具栏上的两个按钮：模型（点开列出代理的模型）、推理强度（点开选档位）。只改本会话。
+ * 会话还没起（还没发过消息）时显示「—」并提示：先发一条消息，或直接发 /model。回合在跑时置灰。
+ */
+export function ModelControls({ rpc, convKey, phase, info }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null }) {
+  const live = phase === "idle" || phase === "running";
+  const busy = phase === "running" || phase === "starting" || phase === "ending";
+  const [modelOpen, setModelOpen, modelRef] = usePopover();
+  const [effortOpen, setEffortOpen, effortRef] = usePopover();
+  const [models, setModels] = useState<string[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    setModels(null);
+    setErr(null);
+    setModelOpen(false);
+    setEffortOpen(false);
+  }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hint = busy ? "回合结束后可切换" : !live ? "会话开始后可切换（先发一条消息，或直接发 /model）" : undefined;
+  const after = (r: unknown) => {
+    const res = r as { ok?: boolean; text?: string } | null;
+    if (res && res.ok === false) setErr(res.text ?? "切换失败");
+    else setErr(null);
+  };
+  return (
+    <div className="model-controls" data-testid="model-controls">
+      <div className="model-ctl" ref={modelRef}>
+        <button
+          className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
+          data-testid="model-btn"
+          data-source={info?.modelSource ?? ""}
+          aria-expanded={modelOpen}
+          disabled={!live || busy}
+          title={hint ?? (info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）")}
+          onClick={(e) => {
+            if (!e.nativeEvent.isTrusted) return;
+            if (modelOpen) {
+              setModelOpen(false);
+              return;
+            }
+            setEffortOpen(false);
+            setModelOpen(true);
+            void rpc.call("conv.command", { convKey, name: "models" }).then(
+              (r) => {
+                const res = r as { ok?: boolean; text?: string; items?: string[] };
+                setModels(res.ok ? res.items ?? [] : []);
+                setErr(res.ok ? null : res.text ?? "取模型列表失败");
+              },
+              (e2) => setErr(String((e2 as Error).message ?? e2)),
+            );
+          }}
+        >
+          <Icon name="chip" size="sm" />
+          <span className="model-ctl-label" data-testid="model-label">{info?.model ?? "—"}</span>
+          <Icon name="chevron-down" size="sm" />
+        </button>
+        {modelOpen && (
+          <div className="ui-popover model-pop" data-testid="model-pop">
+            <div className="ui-popover-title">本会话模型</div>
+            {err !== null && <div className="warn model-pop-err" data-testid="model-pop-err">{err}</div>}
+            {models === null && err === null && <div className="muted model-pop-wait">…</div>}
+            {models?.map((m) => (
+              <button
+                key={m}
+                className="ui-row model-pop-row"
+                aria-current={info?.model === m ? "true" : undefined}
+                data-testid="model-row"
+                data-model={m}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setModelOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                }}
+              >
+                <span className="model-pop-check">{info?.model === m ? <Icon name="check" size="sm" /> : null}</span>
+                <span className="ui-row-title">{m}</span>
+              </button>
+            ))}
+            {info?.modelSource === "session" && (
+              <button
+                className="ui-row model-pop-row model-pop-reset"
+                data-testid="model-reset"
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setModelOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                }}
+              >
+                <span className="model-pop-check" />
+                <span className="ui-row-title">恢复默认模型</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="model-ctl" ref={effortRef}>
+        <button
+          className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
+          data-testid="effort-btn"
+          data-source={info?.effortSource ?? ""}
+          aria-expanded={effortOpen}
+          disabled={!live || busy}
+          title={hint ?? "推理强度（只影响本会话；「默认」= 不发推理参数，由模型自己定）"}
+          onClick={(e) => {
+            if (!e.nativeEvent.isTrusted) return;
+            setModelOpen(false);
+            setEffortOpen(!effortOpen);
+          }}
+        >
+          <Icon name="gauge" size="sm" />
+          <span data-testid="effort-label">{info ? effortText(info.effort) : "—"}</span>
+          <Icon name="chevron-down" size="sm" />
+        </button>
+        {effortOpen && (
+          <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
+            <div className="ui-popover-title">推理强度</div>
+            {EFFORTS.map((v) => (
+              <button
+                key={v}
+                className="ui-row model-pop-row"
+                aria-current={info?.effort === v ? "true" : undefined}
+                data-testid="effort-row"
+                data-effort={v}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setEffortOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                }}
+              >
+                <span className="model-pop-check">{info?.effort === v ? <Icon name="check" size="sm" /> : null}</span>
+                <span className="ui-row-title">{EFFORT_LABELS[v]}</span>
+                <span className="model-pop-meta">{v}</span>
+              </button>
+            ))}
+            <button
+              className="ui-row model-pop-row model-pop-reset"
+              aria-current={info !== null && info.effort === null ? "true" : undefined}
+              data-testid="effort-reset"
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                setEffortOpen(false);
+                void rpc.call("conv.command", { convKey, name: "thinking", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+              }}
+            >
+              <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
+              <span className="ui-row-title">默认（不发推理参数）</span>
+            </button>
+          </div>
+        )}
+      </div>
+      {err !== null && !modelOpen && (
+        <span className="warn model-ctl-err" data-testid="model-ctl-err" title={err}>
+          {err}
+        </span>
       )}
     </div>
   );

@@ -22,7 +22,7 @@ import { CoverImport } from "./CoverImport";
 import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
-import { readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
+import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
@@ -503,6 +503,7 @@ function Main() {
               turnId={conv?.turnId ?? null}
               queued={folded.queued}
               returned={folded.returned}
+              toolbar={<ModelControls rpc={rpc} convKey={convKey} phase={conv?.phase ?? "none"} info={modelInfo(conv?.entries ?? [])} />}
               disabled={health?.reach !== "ok"}
               placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : convKey.startsWith("proj:") ? "和 ava 定总纲与卷表、跨卷审查、总装（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
             />

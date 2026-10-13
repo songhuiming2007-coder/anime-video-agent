@@ -24,7 +24,7 @@ export type Method =
   | "conv.resume" // { convKey } → ConvSnapshot：ep:* 以 --continue 起会话（idea 以 --idea 起，core 启动即恒恢复，Spec 18 §3.3）；已有活进程 → E_BUSY
   | "conv.interrupt" // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
   | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层
-  | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope}
+  | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope, models, model, thinking}（D91：后三个切本会话模型 / 推理强度）
   | "conv.end" // { convKey } → { code, signal }：§2.10 结束序列
   | "conv.snapshot" // { convKey } → ConvSnapshot
   // ---- D45：会话管理（仅 ep:*；idea 是单一滚动段，E_BAD_REQUEST）----
