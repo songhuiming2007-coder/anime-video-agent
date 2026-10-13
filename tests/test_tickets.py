@@ -291,9 +291,13 @@ def test_list与show不出正文(repo: Path, capsys) -> None:
         assert meta["id"] in shown and "已修" in shown and "tts --redo 5" in shown
 
 
-# ---------------------------------------------------------------------------
-# 审查层与 bash 规则（§4.4）
-# ---------------------------------------------------------------------------
+def test_show工单号形状不对拒(repo: Path, capsys) -> None:
+    """D82 审查发现（2026-10-13）：`show <工单号>` 的 `_TICKET_ID` 形状闸此前没有任何测试（变异删掉它全绿）。
+    闸还在，行为也安全（外头的文件解析不成工单只会报「没有」），但护栏要有测试钉住。"""
+    for bad in ("../memory", "..\\x", "T-x 空格", "not-a-ticket"):
+        assert tickets.main(["show", bad], root=repo) == 2, bad
+        assert "形状不对" in capsys.readouterr().err
+
 
 
 class TestReview:
