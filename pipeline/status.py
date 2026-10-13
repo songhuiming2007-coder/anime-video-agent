@@ -134,7 +134,11 @@ def _detect_advisories(d: Path) -> list[str]:
                                 registered_names.add(Path(a["path"]).name)
                     except Exception:
                         pass
-                unregistered = [f for f in patch_files if f.name not in registered_names]
+                # 图片入库时转成 `<名>-still.mp4` 登记、原图保留在 patch_assets/（ingest_patch.convert_stills）：
+                # 它的 -still.mp4 已登记就不算挂起，否则每补一张图这里就永远误报一条（D84）
+                unregistered = [f for f in patch_files
+                                if f.name not in registered_names
+                                and f"{f.stem}-still.mp4" not in registered_names]
                 if unregistered:
                     advisories.append(f"补料挂起：{len(unregistered)} 个文件待入库")
         except Exception as e:

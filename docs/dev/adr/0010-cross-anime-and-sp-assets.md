@@ -89,3 +89,11 @@ informed: [WORKFLOW.md, STANDARD.md]
    - 想切动漫写 `锚点: 罪恶王冠 S01E01 18:40`；
    - 想切演唱会写 `锚点: EGOIST SP01 14:20`；
    - 全流程走统一的排片、抽检（`04-review.html`）与质检（`06-check.log`）。
+
+---
+
+## 补记（2026-10-13，D84）：微动时长与「物证不只属于纪录片」
+
+- 决策二写的「Ken Burns 慢缩放 5 秒」在实现里一直是 6 s（`acquire.STILL_SECONDS`），D84 改为 **12 s**（微单元上限），缓推按帧号匀速推到末帧。旧写法每帧 +0.0015 在第 100 帧就到顶，6 s 里后 1.8 s 不动（实测相邻帧差均值 0.001）。已转出的旧文件不重做。
+- 转图入库登记显式 `still: true`（`sources.json` 与补丁池 `pool.json`），排片的「同一物证可跨段复用」豁免先读这个标；没有标的老池仍按「SP 且 ≤8 s」代理，零漂移。
+- D 类物证不再是纪录片专属：图表、示意图、实物照进期内补丁池（`acquire register --to-patch` → `ingest_patch --anchor-only`），任何题材写 `锚点: <补丁池名> SPxx 0:00`。施工记录见 `docs/dev/plans/2026-10-13-external-stills-microunit-spec.md`。

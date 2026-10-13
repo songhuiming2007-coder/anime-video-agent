@@ -356,6 +356,35 @@ def _anchor_items(raw_field: str) -> list[str]:
             if x.strip()]
 
 
+def _patch_pool_name(episode: Path) -> str | None:
+    """本期补丁池名（`04-patch/pool.json` 的 `pool` 字段），没有补丁池返回 None（D84 PR-B）。
+
+    只读名字、不做完整性自校验：前缀校验只需要知道「这个名字是不是本期补丁池」，
+    池子坏没坏由「锚点指向素材」那一项经 `ingest_patch.load_pool` 判（坏了就报跳过不可判定）。
+    """
+    try:
+        return json.loads((episode / "04-patch" / "pool.json").read_text(encoding="utf-8")).get("pool")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _patch_sources(episode: Path) -> dict:
+    """补丁池的 `{SPxx: {path, duration, …}}`；池坏了照 `load_pool` 原样 SystemExit。
+
+    与 clips 同一入口（`ingest_patch.load_pool`），两边对「补丁池里有什么」口径一致。
+    """
+    from . import ingest_patch  # 延迟 import：只在锚点真指向补丁池时才需要（它拖 numpy）
+    pool = ingest_patch.load_pool(episode)
+    if pool is None:
+        raise SystemExit(f"FAIL {episode.name} 没有补丁池（缺 04-patch/）")
+    return {k: v for k, v in pool["sources"].items() if isinstance(k, str)}
+
+
+#: 补丁池名的后缀（`ingest_patch.sanitize_pool_name`：`<净化期名>-patch`，撞名再加 `-N`）。
+#: 前缀长这样、却不是本期补丁池时，报错指路。
+PATCH_NAME = re.compile(r"-patch(?:-\d+)?$")
+
+
 def _has_visual_source(block: str) -> bool:
     """段落块有没有画面来源：`查询`（检索通道）或可解析的时间码 `锚点`（ADR-0008）。
 
@@ -498,9 +527,11 @@ def run(path: Path) -> list[Check]:
 
 
     tail = "（另有片尾 1 段，不计入）" if outro else ""
-    # 视听微单元模式（2026-09-07 变革）：长视频允许 8-12 秒一个微单元分镜，
-    # 避免长段落单画面拖沓。默认上限 20，有时长目标时长自适应放宽（按 8s/段）。
-    max_segs = max(paths.conf("script.max_segs", 20), int(dur_hi * 60 / 8.0)) if override else paths.conf("script.max_segs", 20)
+    # 视听微单元模式（2026-09-07 变革）：允许 8-12 秒一个微单元分镜，避免长段落单画面拖沓。
+    # 上限 = 时长上界 ÷ 8 s（skill §8.1 微单元下限，两边同一个数），不低于 script.max_segs。
+    # D84：原先只在有时长目标时才这么算，默认带下固定 20——1300 字 ≈ 303 s 按 10 s 一段要 30 段，
+    # 照 skill 写反而过不了机检，写稿侧只好憋大长段。
+    max_segs = max(paths.conf("script.max_segs", 20), int(dur_hi * 60 / 8.0))
     add(f"段落数 8–{max_segs}", 8 <= len(vo) <= max_segs, f"{len(vo)} 段{tail}")
     add(f"字数 {min_chars}–{max_chars}", min_chars <= chars <= max_chars, f"{chars} 字{tail}"
         + ("　（01-topic.md 时长目标覆盖）" if override else ""))
@@ -552,6 +583,8 @@ def run(path: Path) -> list[Check]:
     animes = bgm.animes_of(path.parent)
     anime_main = animes[0] if animes else None
     main_plan = bgm.anime_of(path.parent)      # 企划名（番: 行第一个）；单番期 = anime_main
+    # 期内补丁池（D84 PR-B）：只收 SP 键，锚点写 `<池名> SPxx mm:ss`，与 clips 的 extra_pools 同口径
+    patch_name = _patch_pool_name(path.parent)
     # 多锚点（2026-09-07）：段的锚点字段可写逗号/续行列表，逐条校验
     anc_match = {label: [(x, ANCHOR_TC.fullmatch(x)) for x in _anchor_items(raw)]
                  for label, raw in parse_anchors(text)
@@ -573,7 +606,8 @@ def run(path: Path) -> list[Check]:
 
             def _sources(a: str) -> dict:
                 if a not in cache:
-                    cache[a] = ingest.load_sources(a)
+                    cache[a] = (_patch_sources(path.parent) if patch_name and a == patch_name
+                                else ingest.load_sources(a))
                 return cache[a]
 
             unavailable = []
@@ -654,9 +688,19 @@ def run(path: Path) -> list[Check]:
             prefix = m.group("anime")
             is_sp = m.group("sp") is not None
             if prefix and animes and prefix.strip() not in animes:
-                if not (is_sp and main_plan and prefix.strip() == main_plan):
-                    bad_fmt.append((label, f"{item}（《{prefix.strip()}》不在 01-topic.md 番表："
-                                           f"{'、'.join(animes)}）"))
+                pre = prefix.strip()
+                if patch_name and pre == patch_name:
+                    if not is_sp:
+                        bad_fmt.append((label, f"{item}（补丁池 {pre} 只有 SPxx 键，没有季集）"))
+                        continue
+                elif not (is_sp and main_plan and pre == main_plan):
+                    hint = ""
+                    if PATCH_NAME.search(pre):
+                        hint = (f"；本期补丁池是 {patch_name}" if patch_name else
+                                "；本期还没有补丁池：先 `acquire register <图> --to-patch`，"
+                                "再 `ingest_patch --anchor-only`")
+                    bad_fmt.append((label, f"{item}（《{pre}》不在 01-topic.md 番表："
+                                           f"{'、'.join(animes)}{hint}）"))
                     continue
             t0 = int(m.group("m0")) * 60 + float(m.group("s0"))
             t1 = (int(m.group("m1")) * 60 + float(m.group("s1"))) if m.group("m1") else None
@@ -690,7 +734,8 @@ def run(path: Path) -> list[Check]:
                 pool = a or ((main_plan or anime_main) if sp else anime_main)
                 try:
                     if pool not in cache:
-                        cache[pool] = ingest.load_sources(pool)
+                        cache[pool] = (_patch_sources(path.parent) if patch_name and pool == patch_name
+                                       else ingest.load_sources(pool))
                     sources = cache[pool]
                 except SystemExit as e:
                     unavailable.append(str(e))

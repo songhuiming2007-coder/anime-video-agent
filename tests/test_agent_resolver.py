@@ -109,6 +109,23 @@ def test_advisories_patch_assets_unregistered(tmp_path: Path):
     assert any("补料挂起：1 个文件待入库" in a for a in adv)
 
 
+def test_advisories_converted_still_not_pending(tmp_path: Path):
+    """图片转出的 `<名>-still.mp4` 已登记时，留在 patch_assets/ 的原图不算挂起（D84）。"""
+    patch_dir = tmp_path / "patch_assets"
+    patch_dir.mkdir(parents=True)
+    (patch_dir / "chart.png").write_bytes(b"png")
+    (patch_dir / "chart-still.mp4").write_bytes(b"mp4")
+    (patch_dir / "photo.jpg").write_bytes(b"jpg")      # 还没转、没登记：照报
+    patch_out = tmp_path / "04-patch"
+    patch_out.mkdir(parents=True)
+    (patch_out / "pool.json").write_text(json.dumps({
+        "assets": {"SP01": {"path": "patch_assets/chart-still.mp4", "indexed": False}}
+    }), encoding="utf-8")
+
+    adv = _detect_advisories(tmp_path)
+    assert any("补料挂起：1 个文件待入库" in a for a in adv)
+
+
 def test_advisories_clips_approved_diff_expired(tmp_path: Path):
     """04-clips.json 与 04-clips.approved.json 内容不一致时报过期 (Spec §2.2, R6)。"""
     (tmp_path / "04-clips.json").write_text(json.dumps({"segments": [{"id": 1, "clip": "A"}]}), encoding="utf-8")

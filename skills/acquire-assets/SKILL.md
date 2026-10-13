@@ -24,7 +24,7 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 |---|---|---|
 | `title` | ✅ | 人一眼能认出是哪个素材的名字，**别用网站原标题原文**（含站点广告词） |
 | `url` | ✅ | 可解析的 http(s) 直链或视频页 |
-| `type` | ✅ | `live` / `mv` / `scan` / `interview` 之一 |
+| `type` | ✅ | `live` / `mv` / `scan` / `interview` 之一；`scan` = 任何静态图片（扫图、图表、示意图、实物照，D84） |
 | `source` | ✅ | 从哪儿来的：站点名 + 大致检索路径（如「B站搜『EGOIST 横滨』，UP 主 xxx 投稿」） |
 | `why` | ✅ | **为什么值得下**（见下） |
 | `expected_dur` | 可空 | 秒数。有考据页面写着时长就填——门禁拿它算时长偏差（>5% 报 WARN），也是「下成了剪辑版」的唯一自动哨兵 |
@@ -57,10 +57,11 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 2. **门禁（免卡）**：抓完立刻跑 `acquire gate <文件>`，把判据表原样给人看。
 3. **登记（弹卡）**：gate 没有 FAIL 才提议 `acquire register <文件> --pool <池>`。
    - 不给 `--as`：自动取池里最后一个号 +1，卡上的命令里会写出算好的号；要指定就写 `--as SPnn`。
-   - **扫图直接登记**：register 遇到图片自动按 `01-assets-video.md` 铁律三转 6 s 微动视频
+   - **扫图直接登记**：register 遇到图片自动按 `01-assets-video.md` 铁律三转 12 s 微动视频
      （1920×1080 / yuv420p / 23.976 fps / `-an`，四样锁死），原图留在 `incoming/`。
    - **期内补料**：`acquire register <文件> --to-patch <期目录>` 把文件挪进本期 `patch_assets/`
-     （不进 `sources.json`），接着跑 `ingest_patch`（见 runbook 04.5）。
+     （不进 `sources.json`），接着跑 `ingest_patch`（见 runbook 04.5）。写稿期只为写锚点就加 `--anchor-only`
+     （只切镜头登记，不打标、不碰云端）。**一次性的图（生活照、本期图表）走补丁池；别的期也会用的走番池。**
    - gate FAIL 但人坚持要收：`--waive "<理由>"`（卡上标 `[门禁豁免]`，理由写进登记输出）。不许自己决定豁免。
 4. **入库后切镜头**：`shots calibrate <文件>`（弹卡）→ 把密度表给人，人拍板阈值 →
    `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`（都弹卡）。
@@ -86,6 +87,7 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 | `live`（Live 全场/片段） | YouTube、B站、N站（ニコニコ） | 官方频道常有全场回放；B站中文搬运多但常有台标/水印，优先无台标版 |
 | `mv`（官方 MV / NCOP/NCED） | YouTube 官方频道、BDRip 特典原盘（NCOP/NCED） | **纯净画面优先**：前景试听段（`music.py`）必须无台标，广播录像过不了铁律四 |
 | `scan`（扫图/场刊/CD 原画） | 知乎/微博/B站专栏的考据长文、贴吧、Discord 图源频道、曲子实体附赠 booklet | 图源网站常压缩到 1200px 宽，**短边 <1600 直接被门禁拒**（放大到 1080p 会糊）——找原图，别存缩略图 |
+| `scan`（图表 / 示意图 / 实物照，D84） | Wikimedia Commons（文件页写着授权，`links` 里的「原始文件」是原图直链）、维基条目配图、论文与科普文章原图、官方资料页 | `web_fetch` / `crawl` 返回的 `images` 是页面图片直链（og:image 在前、`<img>` 取 srcset 最大档）。维基缩略图 URL 带 `/thumb/…/NNNpx-`，要换成原始文件。**`register` 不收 `.svg`**（只收 jpg/png/webp/bmp/tif）：Commons 上的 SVG 示意图用它的 PNG 渲染 `…/thumb/<路径>/<文件>.svg/3840px-<文件>.svg.png`（2026-10-13 实测：3840 可取；2400 这类非标准宽度返回 400）。`why` 写清授权（CC BY-SA 等要署名的在 `source` 里记作者） |
 | `interview` | YouTube（官方/杂志频道）、音乐媒体的文字访谈网页、电视台节目 | **必须有音轨**，没音轨的访谈是死素材（门禁硬拒） |
 | 种子/生肉 | Nyaa、nyaa.si 镜像、动漫花园 | 找 BDRip 特典（NCOP/NCED）、演唱会碟。**别下「合集」包**：几十 G 里只有一段有用，`fetch` 也不给你挑 |
 | 官方付费 | Sony Music / EGOIST 官方商店、场刊代购、iTunes/OTOTOY | **只列清单，不下单**，写进候选让人去买 |

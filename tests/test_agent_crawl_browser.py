@@ -170,6 +170,22 @@ def test_crawl_returns_scrubbed_capped_markdown(monkeypatch: pytest.MonkeyPatch)
     assert len(res["markdown"]) == 1200
     assert res["truncated"] is True
     assert res["stealth"] is True
+    assert res["images"] == [] and res["images_truncated"] is False   # 没有 html 时空清单
+
+
+def test_crawl_returns_images_from_rendered_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D84 PR-E：渲染后的 HTML 抽图片直链，相对路径按 final_url 绝对化，与 web_fetch 同口径。"""
+    _pin_public_dns(monkeypatch)
+    sec = CrawlSection(timeout_s=30.0, max_chars=1200)
+
+    def fake_crawl(url: str, *, stealth: bool, timeout_s: float) -> dict[str, str]:
+        return {"final_url": "https://example.com/post/1", "markdown": "正文",
+                "html": '<meta property="og:image" content="/og.jpg"><img src="fig.png" alt="受力图">'}
+
+    res = crawl_page("https://example.com/article", "web_fetch 被盾", section=sec, crawl_fn=fake_crawl)
+    assert res["images"] == [{"url": "https://example.com/og.jpg", "alt": ""},
+                             {"url": "https://example.com/post/fig.png", "alt": "受力图"}]
+    assert "html" not in res
 
     # reason 为空 → ValueError
     with pytest.raises(ValueError, match="reason"):
@@ -1092,7 +1108,8 @@ def test_default_crawl_fn_runs_coroutine_in_worker_thread(
         asyncio._set_running_loop(None)
         loop.close()
 
-    assert out == {"final_url": "https://example.com/final", "markdown": "# fit 正文"}
+    # html：渲染后的 HTML，crawl_page 只拿它抽图片直链（D84 PR-E）；替身结果没有 html 属性 → 空串
+    assert out == {"final_url": "https://example.com/final", "markdown": "# fit 正文", "html": ""}
 
 
 def test_default_crawl_fn_forces_base_dir_env_before_import(

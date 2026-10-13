@@ -1415,3 +1415,42 @@ def test_fetch_links_base_is_final_url(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch=monkeypatch,
     )
     assert [item["url"] for item in out["links"]] == ["https://tb.example/deep/next"]
+
+
+# ---------- D84 PR-E：图片直链清单 images ----------
+
+IMAGES_FIXTURE_HTML = """<html><head>
+<meta property="og:image" content="/media/hero-original.jpg">
+<script>var x = '<img src="/in-script.png">';</script>
+</head><body>
+<img src="/thumb/small.jpg" srcset="/a-640.jpg 640w, /a-2400.jpg 2400w, /a-1280.jpg 1280w" alt="受力 图解" width="640" height="480">
+<img src="data:image/gif;base64,R0lGOD" data-src="//cdn.example/lazy.png" alt="">
+<img src="/a-2400.jpg#frag" alt="同一张图的重复引用">
+<img src="javascript:void(0)">
+<img src="/retina.png" srcset="/retina.png 1x, /retina@2x.png 2x" width="100%">
+</body></html>"""
+
+
+def test_fetch_images_meta_first_srcset_lazy_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """og:image 排最前；srcset 取最大档；data: 占位退 data-src；去 fragment 去重并回填 alt；
+    script 内与非 http(s) 丢弃；width/height 只收纯数字属性。"""
+    out = _fetch_fixture(IMAGES_FIXTURE_HTML, monkeypatch=monkeypatch)
+    assert out["images_truncated"] is False
+    assert out["images"] == [
+        {"url": "https://ta.example/media/hero-original.jpg", "alt": ""},
+        {"url": "https://ta.example/a-2400.jpg", "alt": "受力 图解", "width": "640", "height": "480"},
+        {"url": "https://cdn.example/lazy.png", "alt": ""},
+        {"url": "https://ta.example/retina@2x.png", "alt": ""},
+    ]
+
+
+def test_fetch_images_cap_and_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """条数帽截断置 images_truncated；url / alt 与正文同纪律脱敏。"""
+    many = "".join(f'<img src="/i{n}.jpg">' for n in range(web.IMAGES_MAX_COUNT + 5))
+    out = _fetch_fixture(f"<html><body>{many}</body></html>", monkeypatch=monkeypatch)
+    assert len(out["images"]) == web.IMAGES_MAX_COUNT and out["images_truncated"] is True
+
+    secret = "sk-test-SECRET-1234567890"
+    html = f'<html><body><img src="/x.jpg?key={secret}" alt="{secret}"></body></html>'
+    out = _fetch_fixture(html, monkeypatch=monkeypatch, cfg=_make_config(secret_values=(secret,)))
+    assert secret not in json.dumps(out["images"], ensure_ascii=False)

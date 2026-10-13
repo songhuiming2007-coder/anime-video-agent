@@ -23,6 +23,8 @@ from typing import Any, Callable
 from pipeline import paths
 from pipeline.agent.tools import assert_egress_boundary
 from pipeline.agent.web import (
+    _cap_images,
+    _extract_images,
     _guard_url,
     _normalized_for_assert,
     _scrub,
@@ -180,7 +182,8 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
             else:
                 md_text = str(md_obj or "")
             final_u = str(getattr(res, "redirected_url", None) or getattr(res, "url", None) or url)
-            return {"final_url": final_u, "markdown": md_text}
+            # 渲染后的 HTML 只用来抽图片直链（D84 PR-E），不进返回值
+            return {"final_url": final_u, "markdown": md_text, "html": str(getattr(res, "html", "") or "")}
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -261,10 +264,15 @@ def crawl_page(
     truncated = len(scrubbed_md) > cfg.max_chars
     capped_md = scrubbed_md[: cfg.max_chars] if truncated else scrubbed_md
 
+    # 图片直链（D84 PR-E）：与 web_fetch 同一套提取与双帽截断；crawl 段不带密钥表，与正文同样只过 _scrub
+    images, images_truncated = _cap_images(_extract_images(str(raw.get("html") or ""), final_url), ())
+
     return {
         "url": clean_url,
         "final_url": _scrub(final_url),
         "markdown": capped_md,
         "truncated": truncated,
         "stealth": bool(stealth),
+        "images": images,
+        "images_truncated": images_truncated,
     }

@@ -36,6 +36,9 @@ EPISODE_WRITABLE_FILES: set[str] = {
     "07-titles.md",
     # D48 ②（2026-10-09）：02.8 报告的终审表由写稿会话填（采纳 / 驳回 + 理由），每次弹卡带 diff
     "02-adversarial.md",
+    # D84（2026-10-13 人裁决）：写稿期缺画面的登记处（段号 / 要什么画面 / 原片为何给不了 / 补料进度）。
+    # 没有代码读它，纯给人和后续回合看；写入免卡、覆盖前留底，与其余期文件同一纪律
+    "02-asset-requests.json",
 }
 
 # D81：企划会话的写入白名单（Q4：机读字段变了才弹卡，散文免卡）。卷 / 普通期会话不含它
@@ -886,6 +889,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "限 http/https，拒连内网与二进制内容；失败如实报错并提示升级 crawl。"
             "返回含 `links`（本页可跟进链接清单，同站优先，去重，≤200 条）与"
             " `links_truncated`；清单被截断或静态被挡时升级 crawl。"
+            "另含 `images`（图片直链：og:image 在前，<img> 取 srcset 最大档，≤80 条）与 `images_truncated`；"
+            "补料要用的图交 acquire_propose（type scan）由人审，不许自己下载。"
         ),
         "parameters": {
             "type": "object",
@@ -977,6 +982,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "无头渲染抓取单个 URL（只读，升级链第二级）。仅在 web_fetch 失败后使用，"
             "reason 必填说明下级为何不够；stealth 仅在普通无头被盾时显式开启。"
             "失败如实报错并提示升级 browser，严禁静默降级为水百科。"
+            "返回含 `images`（渲染后页面的图片直链，口径同 web_fetch）；补料用图交 acquire_propose 由人审。"
         ),
         "parameters": {
             "type": "object",

@@ -379,7 +379,7 @@ def _sha256(path: Path) -> str:
 def register(video: Path, anime: str, season: int, episode: int,
              path: Path | None = None, sp: int | None = None,
              title: str | None = None,
-             sub_path: Path | None = None) -> dict:
+             sub_path: Path | None = None, still: bool = False) -> dict:
     """把一集片源登记进 sources.json，登记前强制过完整性校验。
 
     渲染阶段要从 (season, episode) 找到 mkv，而索引里只有集号没有路径——
@@ -392,6 +392,10 @@ def register(video: Path, anime: str, season: int, episode: int,
 
     `sp`（ADR-0010 决策二，2026-09-07）：给值就登记为 SP 特典集（`SP01`…），
     season/episode 忽略。MV/Live/物证都走这里，挂企划名（`--anime EGOIST`）下。
+
+    `still`（D84）：这条是图片转出的微动视频（`acquire.still_to_clip`），登记 `"still": true`。
+    排片的微动物证豁免（`clips._is_micro`）认这个标——原先只能拿「片长 ≤ 8 s」代理，
+    微动改成 12 s 后代理失效。
 
     合并写入，不覆盖其他集。
     """
@@ -410,6 +414,8 @@ def register(video: Path, anime: str, season: int, episode: int,
         entry["sub_sha256"] = _sha256(sub_path)
     if title:
         entry["title"] = title
+    if still:
+        entry["still"] = True
     db.setdefault(anime, {})[key] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     paths.atomic_write(path, json.dumps(db, ensure_ascii=False, indent=2))

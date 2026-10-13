@@ -44,6 +44,12 @@ SEARCH_MAX_LIMIT = 20
 ANCHOR_MAX_CHARS = 60
 LINKS_MAX_COUNT = 200
 LINKS_MAX_CHARS = 12000  # JSON 计长口径（json.dumps(entry, ensure_ascii=False)）
+# D84 图片直链清单（`images`）：同上定法——2026-10-13 实测六类公开页（Commons 文件页 / 媒体搜索、
+# 中英维基「压强」条目、少数派长文、IT 之家），最多 68 条 / 累计 11412 字符（英文维基），
+# 取覆盖全部样本的最小整十 / 整千值。实测表在 D84 spec 施工记录 PR-E。调大常量须附新实测表。
+IMAGES_MAX_COUNT = 80
+IMAGES_MAX_CHARS = 12000  # 同 LINKS_MAX_CHARS 的 JSON 计长口径
+_IMAGE_SIZE_ATTR = re.compile(r"^\d{1,5}$")
 _TEXT_CONTENT_TYPES = (
     "text/html",
     "text/plain",
@@ -499,6 +505,113 @@ class _LinkExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._skip_depth == 0 and self._in_anchor and data:
             self._parts.append(data)
+
+
+class _ImageExtractor(HTMLParser):
+    """图片直链提取（D84 PR-E）：`og:image` / `twitter:image` meta 与 `<img>`。
+
+    `<img>` 取 srcset 里最大的一档（w 描述符取最大宽，x 描述符取最大倍率），没有 srcset 用 src；
+    src 是 data: 占位（懒加载）时退到 data-src / data-original。script/style/noscript 内跳过。
+    """
+
+    _SKIP_TAGS = _TextExtractor._SKIP_TAGS
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self.meta: list[str] = []
+        self.imgs: list[dict[str, str]] = []
+
+    @staticmethod
+    def _best_srcset(srcset: str) -> str:
+        best, best_score = "", -1.0
+        for part in srcset.split(","):
+            bits = part.strip().split()
+            if not bits:
+                continue
+            score = 1.0
+            if len(bits) > 1:
+                m = re.fullmatch(r"(\d+(?:\.\d+)?)([wx])", bits[1].lower())
+                if m:
+                    score = float(m.group(1))
+            if score > best_score:
+                best, best_score = bits[0], score
+        return best
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        a = {k.lower(): (v or "").strip() for k, v in attrs}
+        if tag == "meta":
+            key = (a.get("property") or a.get("name") or "").lower()
+            if key in ("og:image", "og:image:url", "og:image:secure_url", "twitter:image") and a.get("content"):
+                self.meta.append(a["content"])
+            return
+        if tag != "img":
+            return
+        src = self._best_srcset(a.get("srcset", "")) if a.get("srcset") else ""
+        if not src:
+            src = a.get("src", "")
+            if not src or src.lower().startswith("data:"):
+                src = a.get("data-src") or a.get("data-original") or ""
+        if src:
+            self.imgs.append({"src": src, "alt": re.sub(r"\s+", " ", a.get("alt", "")).strip(),
+                              "width": a.get("width", ""), "height": a.get("height", "")})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._SKIP_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+
+
+def _extract_images(html: str, base_url: str) -> list[dict[str, str]]:
+    """HTML → [{"url", "alt"[, "width", "height"]}]，未 scrub、未截断（D84 PR-E）。
+
+    给写稿期补料用：agent 读页面后拿到图片直链，交 `acquire_propose`（type `scan`）由人审，
+    自己不下载。og:image 等 meta 图排最前（站点自己选的代表图，通常是原图或大图），
+    其后 `<img>` 按文档序；urljoin(base_url) 绝对化，只留 http(s)，去 fragment 去重；
+    width/height 只在 HTML 属性是纯数字时带上（是页面声明的显示尺寸，不是原图实测——
+    原图够不够大由 `acquire gate` 量，短边 <1600 照拒）。
+    """
+    parser = _ImageExtractor()
+    parser.feed(html)
+    seen: dict[str, dict[str, str]] = {}
+    items = [{"src": m, "alt": "", "width": "", "height": ""} for m in parser.meta] + parser.imgs
+    for it in items:
+        absolute = urllib.parse.urljoin(base_url, it["src"])
+        parts = urllib.parse.urlsplit(absolute)
+        if (parts.scheme or "").lower() not in ("http", "https"):
+            continue
+        url = urllib.parse.urlunsplit(parts._replace(fragment=""))
+        entry = seen.get(url)
+        if entry is None:
+            entry = seen[url] = {"url": url, "alt": it["alt"][:ANCHOR_MAX_CHARS]}
+        elif not entry["alt"] and it["alt"]:
+            entry["alt"] = it["alt"][:ANCHOR_MAX_CHARS]
+        for k in ("width", "height"):
+            if k not in entry and _IMAGE_SIZE_ATTR.match(it[k]):
+                entry[k] = it[k]
+    return list(seen.values())
+
+
+def _cap_images(
+    entries: list[dict[str, str]], secrets: tuple[str, ...]
+) -> tuple[list[dict[str, str]], bool]:
+    """同 _cap_links：url 与 alt 逐条 _scrub + _redact_all，再按条数帽 / JSON 字符帽截断。"""
+    images: list[dict[str, str]] = []
+    used_chars = 0
+    for entry in entries:
+        cleaned = {k: (_redact_all(_scrub(v), secrets) if k in ("url", "alt") else v)
+                   for k, v in entry.items()}
+        size = len(json.dumps(cleaned, ensure_ascii=False))
+        if len(images) >= IMAGES_MAX_COUNT or used_chars + size > IMAGES_MAX_CHARS:
+            return images, True
+        used_chars += size
+        images.append(cleaned)
+    return images, False
 
 
 def _extract_links(html: str, base_url: str) -> list[dict[str, str]]:
@@ -1020,6 +1133,9 @@ def fetch_web(
     links, links_truncated = _cap_links(
         _extract_links(decoded, raw_final_url), cfg.secret_values
     )
+    images, images_truncated = _cap_images(
+        _extract_images(decoded, raw_final_url), cfg.secret_values
+    )
 
     return {
         "url": _redact_all(url, cfg.secret_values),
@@ -1031,4 +1147,6 @@ def fetch_web(
         "fetched_bytes": fetched_bytes,
         "links": links,
         "links_truncated": links_truncated,
+        "images": images,
+        "images_truncated": images_truncated,
     }

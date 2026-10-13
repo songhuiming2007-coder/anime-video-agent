@@ -290,3 +290,89 @@ class TestConcurrencyGuard:
 
         with pytest.raises(SystemExit, match="pool.json 在本次执行期间被外部修改"):
             ingest_patch.ingest(ep, floor=0.60, local=True)
+
+
+class TestAnchorOnly:
+    """`--anchor-only`（D84 PR-C）：切完镜头就登记，不打标、不碰云端、不要 floor。
+
+    写稿期补一张图表就要能立刻写锚点；原先 pool.json 要等云端打标 + 向量化都完成才写，
+    只为锚点一张图也得开计费 GPU。
+    """
+
+    def _stub_stage1(self, ep, monkeypatch, n_files=1):
+        patch_assets = ep / "patch_assets"
+        patch_assets.mkdir(parents=True)
+        for i in range(n_files):
+            (patch_assets / f"chart{i}.mp4").write_bytes(b"dummy")
+        monkeypatch.setattr(ingest_patch.bgm, "anime_of", lambda p: "未标定的番")
+        monkeypatch.setattr(ingest_patch, "intact", lambda p: None)
+        monkeypatch.setattr(ingest_patch, "probe_video", lambda p: {"duration": 12.0, "fps": 23.976})
+        monkeypatch.setattr(ingest_patch.shots, "scan", lambda p: [])
+        monkeypatch.setattr(ingest_patch.shots, "cut", lambda c, t, d, m: [{"start": 0.0, "end": 12.0}])
+        monkeypatch.setattr(ingest_patch.shots, "caption_frames", lambda *a, **kw: None)
+
+        def no_cloud(*a, **kw):
+            raise AssertionError("anchor-only 不许碰云端 / 打标 / 向量化")
+        for name in ("load_cloud_config", "cmd_push", "cmd_run", "cmd_pull"):
+            monkeypatch.setattr(ingest_patch.cloud, name, no_cloud)
+        monkeypatch.setattr(ingest_patch.vindex, "build_captions", no_cloud)
+        monkeypatch.setattr(ingest_patch.vindex, "build_embed", no_cloud)
+
+    def test_只登记不打标_锚点可解析(self, tmp_path, monkeypatch):
+        ep = tmp_path / "ep"
+        self._stub_stage1(ep, monkeypatch)
+        # 主番没标定、也没给 --floor：完整 ingest 会 FAIL，anchor-only 不该被拦
+        assert ingest_patch.ingest(ep, anchor_only=True) == 0
+        meta = json.loads((ep / "04-patch" / "pool.json").read_text(encoding="utf-8"))
+        assert meta["assets"]["SP01"]["indexed"] is False
+        assert "floor" not in meta and meta["no_match_source"] == "anchor-only"
+        pool = ingest_patch.load_pool(ep)
+        assert pool["sources"]["SP01"]["duration"] == 12.0
+        assert pool["shots"][1] == pool["shots"]["SP01"] and len(pool["shots"]["SP01"]) == 1
+        assert pool["vecs"].shape[0] == 0 and pool["units"] == []
+        assert pool["unindexed"] == ["SP01"]
+
+    def test_再跑完整ingest_编号不变且翻成已打标(self, tmp_path, monkeypatch):
+        ep = tmp_path / "ep"
+        self._stub_stage1(ep, monkeypatch)
+        ingest_patch.ingest(ep, anchor_only=True)
+        pool_name = ingest_patch.sanitize_pool_name(ep.name)
+
+        def fake_captions(pool, key, out_dir, **kw):
+            (out_dir / f"{pool}_{key}.captions.json").write_text(json.dumps(
+                {"captions": [{"shot": 0, "status": "ok", "caption": "受力图"}]}))
+
+        def fake_embed(pool, out_dir, **kw):
+            np.save(out_dir / f"{pool}_SP01.scene.npy", np.ones((1, vindex.EMBED_DIM), dtype=np.float32))
+            (out_dir / f"{pool}_SP01.scene.json").write_text(json.dumps(
+                {"shots": [{"start": 0.0, "end": 12.0, "label": "受力图"}]}))
+        monkeypatch.setattr(ingest_patch.vindex, "build_captions", fake_captions)
+        monkeypatch.setattr(ingest_patch.vindex, "build_embed", fake_embed)
+
+        assert ingest_patch.ingest(ep, floor=0.6, local=True) == 0
+        meta = json.loads((ep / "04-patch" / "pool.json").read_text(encoding="utf-8"))
+        assert list(meta["assets"]) == ["SP01"]            # 没有被当成新资产重编成 SP02
+        assert meta["assets"]["SP01"]["indexed"] is True and meta["floor"] == 0.6
+        pool = ingest_patch.load_pool(ep)
+        assert pool["unindexed"] == [] and pool["vecs"].shape[0] == 1
+        assert (ep / "04-patch" / "vindex" / f"{pool_name}_SP01.captions.json").exists()
+
+    def test_转图产物登记still标并带进sources(self, tmp_path, monkeypatch):
+        ep = tmp_path / "ep"
+        self._stub_stage1(ep, monkeypatch)
+        (ep / "patch_assets" / "chart0.mp4").rename(ep / "patch_assets" / "chart0-still.mp4")
+        ingest_patch.ingest(ep, anchor_only=True)
+        meta = json.loads((ep / "04-patch" / "pool.json").read_text(encoding="utf-8"))
+        assert meta["assets"]["SP01"]["still"] is True
+        assert ingest_patch.load_pool(ep)["sources"]["SP01"]["still"] is True
+
+    def test_旧池没有indexed键按已打标读(self, tmp_path):
+        # D84 之前建的池只有打完标才登记；没有 indexed 键必须照旧要求完整索引，缺了照样 FAIL
+        ep = tmp_path / "ep"
+        (ep / "04-patch" / "shots").mkdir(parents=True)
+        (ep / "04-patch" / "vindex").mkdir()
+        (ep / "04-patch" / "pool.json").write_text(json.dumps({"pool": "p", "floor": 0.6, "assets": {
+            "SP01": {"path": str(ep / "a.mp4"), "duration": 5.0, "size": 1, "mtime": 0.0}}}))
+        (ep / "04-patch" / "shots" / "p_SP01.json").write_text(json.dumps({"shots": [{"start": 0, "end": 5}]}))
+        with pytest.raises(SystemExit, match="索引缺失或半建"):
+            ingest_patch.load_pool(ep)

@@ -7,8 +7,9 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
 - `data/episodes/<期号>/02-script.md`（机检与待审终稿）
 
 ## 执行步骤
-1. **调用技能写稿**：调用 `skills/write-script`，参考 `01-topic.md` 与题材骨架，写出 8–20 个微单元段落。
+1. **调用技能写稿**：调用 `skills/write-script`，参考 `01-topic.md` 与题材骨架，按 8–12 秒一个微单元切段（段落数上限 = 时长上界 ÷ 8 秒，`check_script` 的「段落数」项会打出本期上限）。
 2. **段落规范**：每段必须明确包含配音文本、`查询:`（台词语义）或 `锚点:`（具体时间码）。
+2.5 **写稿期补料（所有题材，D84）**：写到原片拍不出来的东西（受力图、数据图、实物对比），按 `skills/write-script/SKILL.md` 8.5 节补：缺口登记进 `02-asset-requests.json`（`write_episode_file`，免卡）→ `web_fetch` / `crawl` 返回的 `images` 写候选（`why` 写明补哪段的缺口）、`acquire_propose`（人批卡）→ `acquire gate` → `acquire register <文件> --to-patch`（弹卡）→ `ingest_patch --anchor-only`（弹卡；只切镜头登记，不打标、不碰云端）→ 写 `锚点: <补丁池名> SPxx 0:00`。不许拿角色镜头硬凑。
 3. **运行机检**：agent 跑 `check_script`（免卡，期目录与稿件自动补上）。底层排查参考：`python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md`。
 
 ## 核心规程与铁律

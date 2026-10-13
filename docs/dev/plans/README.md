@@ -38,6 +38,7 @@
 | [D81 企划层施工 spec](2026-10-12-project-layer-spec.md) | D81 | ADR-0023, ADR-0025, ADR-0030 | **PR-2 机检通过，待人验收；PR-1 / 3 / 4 / 5 已施工·机检通过**（2026-10-13，分支 `d81-d82-project-layer`，施工记录见 spec §十五）。PR-2a 人选 B 分组卡片；变异 PR-1 24/24、PR-2b 19/19、PR-3 8/8、PR-4 11/11、PR-5 15/15。待人：§十三 第 1 条真实任务（UI 规则 2）；PR-3 出网真实审查待批；PR-4 镜像跑出的 19 条跨卷镜头命中逐条判；PR-5 镜像总装与典藏版逐项一致，待人听三处章节交界 |
 | [生产中撞 bug → ava 开工单](2026-10-12-bug-ticket-direction.md) | D82 | ADR-0029, ADR-0030 | 上位需求文档（2026-10-12）；§3-1 已裁决（2026-10-12），施工图见下行 spec |
 | [D82 撞 bug 开工单施工 spec](2026-10-12-bug-ticket-spec.md) | D82 | ADR-0025, ADR-0029, ADR-0030 | **PR-B / C 机检通过，待人验收；PR-A 已施工·机检通过**（2026-10-13，分支 `d81-d82-project-layer`，施工记录见 spec §十三）。按钮人选 C、卡面 K1；变异 PR-A 26/26、PR-C 12/12。待人：§九 第 1 条真实任务（UI 规则 2）。D81 PR-5 已往 `HUMAN_GATED_COMMANDS` 加 `("assemble", None)`；红队 R-9 上报的 D83 已在同一分支修（`e0ca1fb`，见 issues D83） |
+| [D84 外部真实素材常规化 + 微单元短段落](2026-10-13-external-stills-microunit-spec.md) | D84 | ADR-0010, ADR-0011, D59 | **已施工·机检与端到端通过**（2026-10-13，已合 main）；pytest 2950，变异 9 处全抓；`02-asset-requests.json` 经人裁决扩入期文件白名单；待人：真实一期使用 |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 

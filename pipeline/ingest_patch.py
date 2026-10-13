@@ -1,7 +1,7 @@
 """临时补料与联合检索补丁池编排（Spec §4）。
 
 零新依赖，纯标准库 + 项目既有 shots/vindex/cloud 模块。
-补丁池只收视频；图片资产入库前自动转 6 s 微动视频（D59，与 `acquire register` 同一条转码，原图保留）。
+补丁池只收视频；图片资产入库前自动转微动视频（D59，与 `acquire register` 同一条转码、同一时长 `acquire.STILL_SECONDS`，原图保留）。
 `--reset` 把旧 04-patch/ 挪进 04-patch.attic/<时间>/ 后重建（D59，取代「删 04-patch 目录」）。
 两段式执行：本地切镜头/抽帧 → 云端 VLM captions → 本地 embed 向量化。
 """
@@ -52,7 +52,7 @@ def convert_stills(episode: Path) -> list[Path]:
     补丁池只收视频（R5）；原先遇到图片就报错、让人去终端敲 ffmpeg。转过的（同名 `-still.mp4`
     已在）跳过，所以重跑幂等。返回本次新转出的文件。
     """
-    from .acquire import still_to_clip
+    from .acquire import STILL_SECONDS, still_to_clip
 
     assets_dir = episode / "patch_assets"
     if not assets_dir.is_dir():
@@ -63,7 +63,7 @@ def convert_stills(episode: Path) -> list[Path]:
             clip = f.with_name(f"{f.stem}-still.mp4")
             if not clip.exists():
                 made.append(still_to_clip(f, clip))
-                print(f"[*] 图片转 6s 微动视频: {f.name} -> {clip.name}（原图保留）")
+                print(f"[*] 图片转 {STILL_SECONDS:g}s 微动视频: {f.name} -> {clip.name}（原图保留）")
     return made
 
 
@@ -200,7 +200,7 @@ def load_pool(episode: Path) -> dict | None:
         return {
             "pool": pool, "floor": floor, "no_match": floor,
             "sources": {}, "shots": {}, "vecs": np.zeros((0, vindex.EMBED_DIM), dtype=np.float32),
-            "units": [], "pool_meta": data,
+            "units": [], "unindexed": [], "pool_meta": data,
         }
 
     shots_dir = patch_dir / "shots"
@@ -216,7 +216,10 @@ def load_pool(episode: Path) -> dict | None:
     vec_list: list[np.ndarray] = []
     unit_list: list[vindex.Shot] = []
 
+    unindexed: list[str] = []
     for key, asset in sorted(assets.items()):
+        # 没有 indexed 键的是 D84 之前建的池，那时只有打完标才登记，按已打标读（旧池零漂移）
+        indexed = asset.get("indexed", True) is not False
         # 1. 源文件漂移检测 (B4)
         asset_path = Path(asset["path"])
         if not asset_path.exists():
@@ -233,6 +236,30 @@ def load_pool(episode: Path) -> dict | None:
         shot_file = shots_dir / f"{pool}_{key}.json"
         scene_npy = vindex_dir / f"{pool}_{key}.scene.npy"
         scene_json = vindex_dir / f"{pool}_{key}.scene.json"
+
+        if not indexed:
+            # anchor-only 登记（D84 PR-C）：只有镜头表，锚点解析够用；不进向量，救援检索搜不到它
+            if not shot_file.exists():
+                raise SystemExit(
+                    f"FAIL 补丁池 {pool} {key} 镜头表缺失（只登记未打标的资产也必须有镜头表）。\n"
+                    f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
+                )
+            try:
+                sh_list = json.loads(shot_file.read_text(encoding="utf-8")).get("shots", [])
+            except Exception as exc:
+                raise SystemExit(
+                    f"FAIL 补丁池 {pool} {key} 镜头表损坏: {exc}\n"
+                    f"     重建补丁池：ingest_patch --reset（旧目录挪进 04-patch.attic/，不删）"
+                ) from exc
+            sources[(pool, key)] = {"path": str(asset_path), "duration": asset["duration"],
+                                    "fps": asset.get("fps", 24.0),
+                                    **({"still": True} if asset.get("still") else {})}
+            sources[key] = sources[(pool, key)]
+            shots_table[key] = sh_list
+            if key.startswith("SP") and key[2:].isdigit():
+                shots_table[int(key[2:])] = sh_list
+            unindexed.append(key)
+            continue
 
         if not shot_file.exists() or not scene_npy.exists() or not scene_json.exists():
             raise SystemExit(
@@ -265,6 +292,7 @@ def load_pool(episode: Path) -> dict | None:
             "path": str(asset_path),
             "duration": asset["duration"],
             "fps": asset.get("fps", 24.0),
+            **({"still": True} if asset.get("still") else {}),
         }
         sources[key] = sources[(pool, key)]
 
@@ -306,8 +334,21 @@ def load_pool(episode: Path) -> dict | None:
         "shots": shots_table,
         "vecs": all_vecs,
         "units": unit_list,
+        "unindexed": unindexed,
         "pool_meta": data,
     }
+
+
+def _write_pool(pool_path: Path, pool_data: dict, initial_mtime: float | None, initial_sha: str | None) -> None:
+    """写回 pool.json，写前并发保护 (B1-r16)：本次执行期间被别人建了 / 改了就放弃写入。"""
+    if pool_path.exists():
+        if initial_mtime is None:
+            raise SystemExit("FAIL pool.json 在本次执行期间被其他进程创建，放弃写入以防覆盖：请重跑命令")
+        st = pool_path.stat()
+        cur_sha = hashlib.sha256(pool_path.read_bytes()).hexdigest()
+        if st.st_mtime != initial_mtime or cur_sha != initial_sha:
+            raise SystemExit("FAIL pool.json 在本次执行期间被外部修改（mtime/sha 变更），放弃写入以防覆盖：请重跑命令")
+    paths.atomic_write(pool_path, json.dumps(pool_data, ensure_ascii=False, indent=2))
 
 
 def ingest(
@@ -316,8 +357,15 @@ def ingest(
     local: bool = False,
     batch: int = vindex.CAPTION_BATCH,
     confirm_cost: bool = False,
+    anchor_only: bool = False,
 ) -> int:
-    """单期补料编排流程（Spec §4.3 两段式）。"""
+    """单期补料编排流程（Spec §4.3 两段式）。
+
+    `anchor_only`（D84 PR-C）：转图、切镜头、抽帧做完就登记 pool.json，资产标 `indexed: false`，
+    不打标、不向量化、不碰云端、不要 floor。这样写稿期补一张图表就能立刻写 `锚点: <池名> SPxx`，
+    不必为一张图开计费 GPU；代价是这些资产救援检索搜不到（rescue 只看已打标的）。
+    之后不带此旗标重跑，沿用已登记的编号与镜头表补齐打标，资产翻成 `indexed: true`。
+    """
     episode = Path(episode)
     if not episode.is_dir():
         raise SystemExit(f"FAIL 期目录不存在: {episode}")
@@ -353,8 +401,10 @@ def ingest(
     next_number = (max(used_numbers) + 1) if used_numbers else 1
 
     main_anime = bgm.anime_of(episode)
-    # 门槛计算
-    if "floor" in pool_data and floor is None:
+    # 门槛计算（anchor_only 不检索，用不到门槛：主番没标定也不该拦住登记）
+    if anchor_only:
+        thr_floor = floor_source = calibrated = None
+    elif "floor" in pool_data and floor is None:
         thr_floor = float(pool_data["floor"])
         floor_source = pool_data.get("no_match_source", "pool-existing")
         calibrated = pool_data.get("calibrated", False)
@@ -420,8 +470,23 @@ def ingest(
             "size": asset.stat().st_size,
             "mtime": asset.stat().st_mtime,
             "fps": fps,
+            # convert_stills 转出的微动视频：排片的微动物证豁免认这个标（D84，同 sources.json 的 still）
+            **({"still": True} if asset.name.endswith("-still.mp4") else {}),
         }
         new_keys.append(key)
+
+    if anchor_only:
+        for k in new_keys:
+            registered_assets[k]["indexed"] = False
+        pool_data["pool"] = pool_name
+        if "floor" not in pool_data:
+            pool_data["no_match_source"] = "anchor-only"
+        _write_pool(pool_path, pool_data, initial_mtime, initial_sha)
+        pending = sorted(k for k, v in registered_assets.items() if v.get("indexed", True) is False)
+        print(f"[OK] 补料登记完成（只登记不打标）: {pool_name} (新增 {len(new_keys)} 个；"
+              f"未打标 {len(pending)} 个：{', '.join(pending) or '无'}) → {pool_path}\n"
+              f"     锚点写法：`锚点: {pool_name} SPxx 0:00`；救援检索要用这些资产时不带 --anchor-only 重跑")
+        return 0
 
     # 收集全部需打标的 key（新资产 + 旧资产中未完成者）
     all_keys = sorted(registered_assets.keys())
@@ -509,21 +574,11 @@ def ingest(
     pool_data["no_match"] = thr_floor
     pool_data["no_match_source"] = floor_source
     pool_data["calibrated"] = calibrated
+    for v in registered_assets.values():
+        v["indexed"] = True                     # 打标与向量化都已覆盖全部资产（上面 all_keys）
     pool_data["assets"] = registered_assets
 
-    # 写回前并发保护 (B1-r16)
-    if pool_path.exists():
-        if initial_mtime is None:
-            raise SystemExit("FAIL pool.json 在本次执行期间被其他进程创建，放弃写入以防覆盖：请重跑命令")
-        st = pool_path.stat()
-        cur_sha = hashlib.sha256(pool_path.read_bytes()).hexdigest()
-        if st.st_mtime != initial_mtime or cur_sha != initial_sha:
-            raise SystemExit("FAIL pool.json 在本次执行期间被外部修改（mtime/sha 变更），放弃写入以防覆盖：请重跑命令")
-
-    paths.atomic_write(
-        pool_path,
-        json.dumps(pool_data, ensure_ascii=False, indent=2),
-    )
+    _write_pool(pool_path, pool_data, initial_mtime, initial_sha)
     print(f"[OK] 补料入库完成: {pool_name} (已登记 {len(registered_assets)} 个资产) → {pool_path}")
     return 0
 
@@ -535,13 +590,16 @@ def main() -> int:
     ap.add_argument("--local", action="store_true", help="本地执行 VLM captions（不走云端）")
     ap.add_argument("--batch", type=int, default=vindex.CAPTION_BATCH)
     ap.add_argument("--confirm-cost", action="store_true")
+    ap.add_argument("--anchor-only", action="store_true",
+                    help="只登记不打标：切镜头后就写 pool.json（可写锚点），不打标、不碰云端（D84）")
     ap.add_argument("--reset", action="store_true",
                     help="旧 04-patch/ 挪进 04-patch.attic/<时间>/ 后从 patch_assets/ 重建（不删）")
     a = ap.parse_args()
     paths.require_data()
     if a.reset:
         reset_pool(a.episode)
-    return ingest(a.episode, floor=a.floor, local=a.local, batch=a.batch, confirm_cost=a.confirm_cost)
+    return ingest(a.episode, floor=a.floor, local=a.local, batch=a.batch, confirm_cost=a.confirm_cost,
+                  anchor_only=a.anchor_only)
 
 
 if __name__ == "__main__":
