@@ -128,6 +128,8 @@ export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) =
     };
     return Object.keys(extra).length > 0 ? extra : null;
   },
+  // D82 Q5（人选 K1）：开单卡带卡面摘要；有键才查，必须是字符串（其余卡不带）
+  request: (f) => ("card_summary" in f ? { card_summary: ["string"] } : null),
 };
 
 function kindOf(v: unknown): Kind {

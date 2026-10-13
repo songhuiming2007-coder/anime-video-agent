@@ -17,7 +17,7 @@ import { filterEpisodes, groupByStep } from "../shared/episodeView";
 import { filterProject, plainEpisodes, progressSegments, projectBadges, projectTitle, timeline, volumeRows } from "../shared/projectView";
 import { AnswerDock, RequestCards } from "./HumanCards";
 import { Composer } from "./Composer";
-import { ConversationPane } from "./ConversationPane";
+import { ConversationPane, HandoffStrip } from "./ConversationPane";
 import { CoverImport } from "./CoverImport";
 import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
@@ -495,6 +495,7 @@ function Main() {
               cards={<RequestCards conv={conv} rpc={rpc} />}
             />
             <AnswerDock ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
+            <HandoffStrip rows={rows} />
             <Composer
               rpc={rpc}
               convKey={convKey}

@@ -181,6 +181,129 @@ test("D82 开工单：bash 真失败 → run_pipeline tickets open 弹卡（卡�
   });
 });
 
+/**
+ * D82 PR-C 底线（UI 规则 5）：工单工具行里的元素与输入框上方提示条两两不相交、都不越出对话流右缘。
+ * 只量本 PR 加的这两处：预览展开时中栏 605 px，回合展开区里的工具行（不论有没有本按钮）比对话流宽 2 px、
+ * 对话流出现 2 px 横向滚动——D80 既有问题，不在这里判（已记入 D82 施工记录的遗留项）。
+ */
+async function handoffFloor(page: Page): Promise<{ overlap: number; xOverflow: boolean; n: number }> {
+  return page.evaluate(() => {
+    const row = document.querySelector("[data-testid=tool-handoff]")?.closest("[data-testid=conv-row]");
+    const els = [...(row?.querySelectorAll(".conv-tool > *") ?? []), ...document.querySelectorAll(".conv-handoff-row > *, .conv-handoff, .composer")];
+    const boxes = els.map((e) => e.getBoundingClientRect()).filter((b) => b.width > 0 && b.height > 0);
+    const contains = (x: DOMRect, y: DOMRect) => x.left <= y.left + 0.5 && x.right >= y.right - 0.5 && x.top <= y.top + 0.5 && x.bottom >= y.bottom - 0.5;
+    let overlap = 0;
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (contains(a, b) || contains(b, a)) continue;
+      if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) overlap++;
+    }
+    // 按钮不越出所在工具行、提示条不越出对话流（工具行本身在回合展开区里比对话流宽 2 px，是 D80 既有问题，见注释）
+    const right = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!.getBoundingClientRect().right;
+    const btn = row?.querySelector("[data-testid=tool-handoff]")?.getBoundingClientRect();
+    const toolRight = row?.querySelector(".conv-tool")?.getBoundingClientRect().right ?? 0;
+    const stripOut = [...document.querySelectorAll(".conv-handoff-row")].some((e) => e.getBoundingClientRect().right > right + 0.5);
+    return { overlap, xOverflow: stripOut || btn === undefined || btn.right > toolRight + 0.5, n: boxes.length };
+  });
+}
+
+test("D82 PR-C（人选按钮 C、卡面 K1）：开单卡先给摘要且 1280×800 下卡头与批准同时可见 → 批准后提示条与工具行两处复制得 handoff 原文 → 无工单的工具行没有按钮 → 重启 app 后历史里仍在", async () => {
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, ["SESS-A"]);
+  execFileSync("git", ["init", "-q", fx.repo.root]);
+  fixtureWrite(fx.repo.root, ".gitignore", "/tickets/\n");
+  let L = await launchSession(fx.repo);
+  const saved = await clipboardText(L);
+  try {
+    const page = () => L.page;
+    await page().setViewportSize({ width: 1280, height: 800 });
+    const bashFail = { message: { role: "assistant" as const, content: null, tool_calls: [{ id: "call_bug2", type: "function" as const, function: { name: "bash", arguments: JSON.stringify({ command: "echo 'Traceback' >&2; echo 'KeyError: BGM' >&2; exit 1", description: "复现报错" }) } }] } };
+    const why = "同一参数在上一期能跑通，这一期报 KeyError，01-topic.md 字段已逐项核对";
+    const open = `tickets open --call call_bug2 --blocked 03 --symptom 配音失败 --expected 配音成功 --repro 'tts --redo 5' --why '${why}'`;
+    llm.push(bashFail as never, toolCalls({ name: "run_pipeline", args: { command: open } }), assistant("已开单。"));
+    await openEp(page(), "SESS-A");
+    await send(page(), "跑一下配音");
+    const card = page().getByTestId("request-card");
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    // K1：卡面是摘要（命令 / 退出码 / 报错末行 / why），全文在折叠里；卡头与批准按钮同时在对话流可见区内
+    const face = page().getByTestId("request-card-text");
+    await expect(face).toContainText("将新开一张工单");
+    await expect(face).toContainText("命令: echo 'Traceback'");
+    await expect(face).toContainText("退出码: 1");
+    await expect(face).toContainText("报错末行: KeyError: BGM");
+    await expect(face).toContainText(why);
+    await expect(face).not.toContainText("## 现场");
+    await expect(page().getByTestId("request-card-full")).not.toHaveAttribute("open", "");
+    await expect(page().getByTestId("request-card-full")).toContainText("## 现场（系统采集，勿改）");
+    await page().waitForTimeout(400);
+    const vis = await page().evaluate(() => {
+      const c = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!.getBoundingClientRect();
+      const card = document.querySelector<HTMLElement>("[data-testid=request-card]")!;
+      const inside = (e: Element) => { const r = e.getBoundingClientRect(); return r.top >= c.top - 0.5 && r.bottom <= c.bottom + 0.5; };
+      return { head: inside(card.firstElementChild!), approve: inside(card.querySelector("[data-testid=request-answer-approve]")!) };
+    });
+    expect(vis).toEqual({ head: true, approve: true });
+
+    await page().getByTestId("request-answer-approve").click();
+    const frames = await waitTurns(L, "ep:SESS-A", 1);
+    assertFrameContract(frames);
+    const handoff = String(frames.filter((f) => f.t === "tool" && f.phase === "end" && f.name === "run_pipeline")[0].handoff);
+    const id = /T-\d{8}T\d{6}Z-[0-9a-f]{6}/.exec(handoff)![0];
+    // 提示条：回合已折叠，工单工具行收起，提示条仍在
+    const strip = page().getByTestId("handoff-strip");
+    await expect(strip).toContainText(`本会话开了工单${id}（待修）`);
+    await armClipboard(L);
+    await page().getByTestId("handoff-strip-copy").click();
+    await expect(page().getByTestId("handoff-strip-copy")).toHaveText("✓ 已复制");
+    expect(await clipboardText(L)).toBe(handoff);
+    // 工具行：展开回合，工单那条主文本是「已开工单 T-…」、行尾按钮复制同一段原文；失败的 bash 行没有这个按钮
+    // 这一回合含失败的 bash，默认就是展开的（toolView.turnDefaultOpen）；没展开才点，免得把它点收起
+    const expand = async (pg: Page) => {
+      const fold = pg.getByTestId("turn-fold").last();
+      if ((await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
+      await expect(fold).toHaveAttribute("aria-expanded", "true");
+    };
+    await expand(page());
+    const rowBtn = page().getByTestId("tool-handoff");
+    await expect(rowBtn).toHaveCount(1);
+    await expect(rowBtn.locator("xpath=ancestor::*[@data-kind='tool'][1]")).toContainText(`已开工单 ${id}`);
+    await armClipboard(L);
+    await rowBtn.click();
+    await expect(rowBtn).toHaveText("✓ 已复制");
+    expect(await clipboardText(L)).toBe(handoff);
+    for (const [w, h] of [[1280, 800], [1440, 900]] as const) {
+      await page().setViewportSize({ width: w, height: h });
+      await page().waitForTimeout(300);
+      const f = await handoffFloor(page());
+      expect(f.n, `${w} 比较集为空`).toBeGreaterThan(5);
+      expect([f.overlap, f.xOverflow], `${w}×${h}`).toEqual([0, false]);
+    }
+
+    // 重启 app → 进上次的会话 → 历史帧带 handoff：提示条与工具行按钮都还在
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    L = await launchSession(fx.repo);
+    await openEp(L.page, "SESS-A");
+    await L.page.locator("[data-testid=session-row] button.ep-session").first().click();
+    await expect(L.page.getByTestId("conv-stream")).toContainText("以下为恢复的历史", { timeout: 15_000 });
+    await expect(L.page.getByTestId("handoff-strip")).toContainText(id);
+    const hist = framesOf(await convSnapshot(L, "ep:SESS-A")).filter((f) => f.t === "history" && f.role === "tool");
+    expect(hist.filter((f) => f.handoff === handoff).length).toBe(1);
+    await expand(L.page);
+    await expect(L.page.getByTestId("tool-handoff")).toHaveCount(1);
+    await armClipboard(L);
+    await L.page.getByTestId("tool-handoff").click();
+    await expect(L.page.getByTestId("tool-handoff")).toHaveText("✓ 已复制");
+    expect(await clipboardText(L)).toBe(handoff);
+  } finally {
+    await L.app.evaluate(({ clipboard }, t) => clipboard.writeText(t), saved).catch(() => undefined);
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});
+
 test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
   await withRealCore(async ({ L, llm }) => {
     llm.push(toolCalls(CARD_RM), assistant("已停下。"));

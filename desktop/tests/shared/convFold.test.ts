@@ -271,6 +271,26 @@ describe("D76 继续会话：历史里的 bash 工具行也带完整命令", () 
   });
 });
 
+describe("D82 PR-C 工单工具行带 handoff（实时帧在 end 阶段、历史帧同样取）", () => {
+  const H = "请处理工单 `/r/tickets/T-20261013T012328Z-854dd1.md`：先读工单……";
+  it("实时：start 不带、end 带 → 行上是 end 的 handoff；没有键的工具为 null；孤立 end 也取", () => {
+    const { rows } = foldConv([
+      { k: "frame", at: 1, frame: toolStart("run_pipeline", "tickets open …", 0, 1) },
+      { k: "frame", at: 2, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "run_pipeline", summary: "", ok: true, observation: null, duplicate: false, handoff: H }, 2) },
+      { k: "frame", at: 3, frame: toolStart("run_pipeline", "tts --redo 5", 1, 3) },
+      { k: "frame", at: 4, frame: toolEnd("run_pipeline", 1, true, 4) },
+    ]);
+    expect(rows.filter((r) => r.k === "tool").map((r) => (r.k === "tool" ? r.handoff : undefined))).toEqual([H, null]);
+    const orphan = foldConv([{ k: "frame", at: 1, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "run_pipeline", summary: "", ok: true, observation: null, duplicate: false, handoff: H }, 1) }]);
+    expect(orphan.rows[0].k === "tool" && orphan.rows[0].handoff).toBe(H);
+  });
+  it("历史：tool 条目带 handoff 原样进行；空串视同没有", () => {
+    const Hf = (index: number, o: Record<string, unknown>) => ({ k: "frame" as const, at: index + 1, frame: F("history", { index, role: "tool", text: "", ok: true, name: "run_pipeline", ...o }, index + 1) });
+    const { rows } = foldConv([Hf(0, { handoff: H }), Hf(1, {}), Hf(2, { handoff: "" })]);
+    expect(rows.filter((r) => r.k === "tool").map((r) => (r.k === "tool" ? r.handoff : undefined))).toEqual([H, null, null]);
+  });
+});
+
 describe("D79 排队消息：入队 → 送达进时间线 / 退回输入框", () => {
   const started = F("turn_started", { turn_id: "t1" }, 1);
   const queued = (id: string, text: string, seq: number) => F("queued", { id, text }, seq);

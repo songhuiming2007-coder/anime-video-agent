@@ -23,6 +23,8 @@ export type ToolRow = {
   command: string | null;
   /** D80：bash 的用途（帧的条件键，工具行主文本）；其余工具或模型没给为 null */
   description: string | null;
+  /** D82：成功的 tickets open 带的交接文本（帧的条件键，core 模板生成）；实时帧在 end 阶段取，历史帧同样取。其余为 null */
+  handoff: string | null;
   /** D80：继续会话时从历史重建的行——不播入场动画 */
   hist?: true;
 };
@@ -211,6 +213,11 @@ function commandOf(f: OutFrame): string | null {
   return typeof f.command === "string" && f.command !== "" ? f.command : null;
 }
 
+/** D82：帧里的交接文本（只有成功的 tickets open 带）；空串视同没给 */
+function handoffOf(f: OutFrame): string | null {
+  return typeof f.handoff === "string" && f.handoff !== "" ? f.handoff : null;
+}
+
 /** D80：帧里的用途（只有 bash 带）；空串视同没给 */
 function descriptionOf(f: OutFrame): string | null {
   return typeof f.description === "string" && f.description.trim() !== "" ? f.description.trim() : null;
@@ -235,19 +242,20 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     case "tool": {
       if (f.phase === "start") {
-        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f) });
+        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: null });
         lastTool.idx = rows.length - 1;
       } else {
         const idx = lastTool.idx;
         const row = idx >= 0 ? rows[idx] : undefined;
         if (!row || row.k !== "tool" || row.ok !== null) {
           // 孤立 tool{end}（缓冲截头后会遇到）：显式成行，不崩、不吞
-          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f) });
+          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: handoffOf(f) });
         } else {
           row.ok = f.ok as boolean | null;
           row.duplicate = f.duplicate === true;
           row.durationMs = at - row.at;
           row.observation = (f.observation as string | null) ?? null;
+          row.handoff = handoffOf(f);
           lastTool.idx = -1;
         }
       }
@@ -378,6 +386,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
                 logs: [],
                 command: commandOf(f),
                 description: descriptionOf(f),
+                handoff: handoffOf(f),
                 hist: true,
               });
             } else if (role === "user") {

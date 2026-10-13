@@ -355,7 +355,18 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
       // card_text 是 core 确定性渲染的多行纯文本（D47 起写稿卡含 diff）：按原样换行、等宽，不解释任何标记（H-3）
       sub={
         <>
-          <pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>
+          {typeof req.card_summary === "string" ? (
+            // D82 Q5（人选 K1）：开单卡卡面先给摘要，工单全文（card_text 原文，含执行审批头）收进折叠——整份工单约 50 行，平铺时批准按钮被挤出视野
+            <>
+              <pre className="request-card-text" data-testid="request-card-text">{req.card_summary}</pre>
+              <details className="request-card-full" data-testid="request-card-full">
+                <summary className="muted">工单全文（{String(req.card_text).split("\n").length} 行）</summary>
+                <pre className="request-card-text">{String(req.card_text)}</pre>
+              </details>
+            </>
+          ) : (
+            <pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>
+          )}
           {bashCommand !== null && (
             <div className="request-card-copy">
               <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />

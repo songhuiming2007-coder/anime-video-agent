@@ -10,6 +10,7 @@ import {
   firstLine,
   foldLabel,
   groupDefaultOpen,
+  handoffTickets,
   mainText,
   STATUS_WORD,
   subText,
@@ -49,6 +50,28 @@ type Opens = { get: (key: string, dflt: boolean) => boolean; toggle: (key: strin
  * 执行中的工具行只在所属回合运行时扫光：回合已结束却没收到结束帧的行（中断、进程退出）是「已停止」。
  */
 /** `cards`：D80 R6（人选方案 C）待答的请求卡，挂在对话流末尾（由 App 传入——本组件不含任何答复方法，TG-4′） */
+/**
+ * D82（人选 C）：输入框上方的工单提示条。回合跑完默认折叠（D80），工单那条工具行随之收起；
+ * 提示条在折叠之外，本会话开过的每张工单一条，一步复制交接文本。只取本会话的工具行（帧里的 handoff），不读工单文件。
+ */
+export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
+  const tickets = handoffTickets(rows);
+  if (tickets.length === 0) return null;
+  return (
+    <div className="conv-handoff" data-testid="handoff-strip">
+      {tickets.map((t) => (
+        <div key={t.id} className="conv-handoff-row" data-ticket={t.id}>
+          <span>本会话开了工单</span>
+          <span className="conv-handoff-id">{t.id}</span>
+          <span>（待修）</span>
+          <span className="spacer" />
+          <CopyButton text={t.handoff} label="复制给 coding agent" testId="handoff-strip-copy" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ConversationPane({ rows, lead, cards, running = false, awaiting = false }: { rows: ConvRow[]; lead?: ReactNode; cards?: ReactNode; running?: boolean; awaiting?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
@@ -265,6 +288,8 @@ function ToolLine({ row, turnRunning, fresh, opens, inGroup }: { row: ToolRow; t
         {row.command !== null && !open && (
           <CopyButton text={row.command} label={<Icon name="copy" size="sm" />} ariaLabel="复制命令" testId="tool-copy" className="conv-tool-copy" />
         )}
+        {/* D82（人选 C）：已开工单的工具行行尾「复制给 coding agent」，复制的是帧里的交接文本原文（core 模板生成） */}
+        {row.handoff !== null && <CopyButton text={row.handoff} label="复制给 coding agent" testId="tool-handoff" className="conv-tool-handoff" />}
         {dur !== "" && <span className="conv-tool-dur">{dur}</span>}
         {row.duplicate && <span className="ui-badge">重复调用</span>}
         <span className="conv-tool-status" data-st={status} title={fail !== "" ? fail : undefined} data-testid="tool-status">

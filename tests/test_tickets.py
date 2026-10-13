@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -307,6 +308,24 @@ class TestReview:
         assert v.action == "ask" and v.allow_key is None, v
         assert "将新开一张工单" in v.request.card_text and "KeyError: 'BGM'" in v.request.card_text
 
+    def test_卡面摘要_K1_全文仍在card_text(self, repo: Path) -> None:
+        """D82 Q5（人选 K1）：卡面摘要给 新开 / 命令 / 退出码 / 报错末行 / why；全文（含「## 现场」）仍是 card_text；摘要同样脱敏。"""
+        seed(ep(repo), bash_fail(stderr=f"Traceback\nKeyError: 'BGM' {SECRET}\n"))
+        v = review_tool_call("run_pipeline", {"command": self._cmd(ep(repo))}, ep_dir=ep(repo), scope="creative", root=repo)
+        summary = v.request.card_summary
+        assert summary is not None and summary.splitlines() == [
+            "将新开一张工单（批准后生成工单号）",
+            "命令: python -m pipeline.tts . --redo 5",
+            "退出码: 1",
+            "报错末行: KeyError: 'BGM' [已脱敏]",
+            "为什么是代码 bug 而不是用法错误:",
+            f"  {WHY}",
+        ]
+        assert "## 现场（系统采集，勿改）" in v.request.card_text and "## 现场" not in summary
+        assert tickets.preview_summary(["list"], bound_dir=ep(repo), root=repo) is None
+        v = review_tool_call("bash", {"command": "rm x", "description": "清理"}, ep_dir=ep(repo), scope="creative", root=repo)
+        assert v.request.card_summary is None   # 其余卡不带摘要
+
     def test_不成立弹卡前拒_list免卡(self, repo: Path) -> None:
         v = review_tool_call("run_pipeline", {"command": self._cmd(ep(repo), "nope")}, ep_dir=ep(repo), scope="creative", root=repo)
         assert v.action == "reject" and "开不了单" in v.reason
@@ -531,6 +550,9 @@ def test_tickets模块只调git() -> None:
 def test_桌面端交接相关代码不spawn() -> None:
     hits = [p for p in (REPO / "desktop" / "src").rglob("*.ts*") if "handoff" in p.read_text(encoding="utf-8")]
     assert hits, "前提：桌面端确有处理 handoff 的代码"
+    # 拉起外部进程的写法：引 child_process，或裸调 spawn / exec / execFile（含 Sync 版）。`.exec(` 是正则方法，不算
+    launch = re.compile(r"child_process|(?<![.\w])(?:spawn|exec|execFile)(?:Sync)?\s*\(")
     for p in hits:
-        text = p.read_text(encoding="utf-8")
-        assert "spawn(" not in text and "execFile" not in text and "exec(" not in text, p
+        assert not launch.search(p.read_text(encoding="utf-8")), p
+    assert launch.search('import { spawn } from "node:child_process"') and launch.search("exec(cmd)")
+    assert not launch.search("/x/.exec(label)")

@@ -88,6 +88,8 @@ class HumanRequest:
     fields: dict[str, Any]
     options: tuple[str, ...]
     feedback_allowed: bool
+    # D82 Q5（人选 K1）：卡面摘要。给了的话渲染端卡面显示它、card_text 收进「工单全文」折叠；终端通道照旧显示 card_text
+    card_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -361,6 +363,7 @@ def review_tool_call(
     # D51：读音纠错录入。check 只读、免卡；add / global 在弹卡前跑同一组校验，不成立不弹卡，
     # 成立则把「写什么、读音核对、本期受影响段」放上卡面
     command_preview: list[str] | None = None
+    card_summary: list[str] | None = None
     if argv is not None and _pipeline_module_of(argv) == "corrections":
         from pipeline import corrections
 
@@ -390,6 +393,7 @@ def review_tool_call(
             if not ok:
                 return ToolVerdict("reject", reason="\n".join(ticket_preview))
             command_preview = ticket_preview
+            card_summary = tickets.preview_summary(rest, bound_dir=ep_dir, root=root)
 
     # D61 / ADR-0028：write_note 的番名 / 目标 / 新建前提与 edits 成立性，在弹卡前拒
     if name == "write_note":
@@ -482,7 +486,7 @@ def review_tool_call(
         "ask",
         request=_tool_request(
             name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label,
-            command_preview=command_preview, session_allow=allow_key is not None,
+            command_preview=command_preview, session_allow=allow_key is not None, card_summary=card_summary,
         ),
         allow_key=allow_key,
     )
@@ -634,6 +638,7 @@ def _tool_request(
     loop_label: str | None = None,
     command_preview: list[str] | None = None,
     session_allow: bool = False,
+    card_summary: list[str] | None = None,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -684,6 +689,7 @@ def _tool_request(
         # ADR-0030 决策 5：bash 硬危险 / cloud 卡多一个「本会话都批准」（排在中间：终端 y 取首项、其余取末项）
         options=("approve", SESSION_ALLOW_DECISION, "reject") if session_allow else ("approve", "reject"),
         feedback_allowed=True,
+        card_summary="\n".join(_clean(ln) for ln in card_summary) if card_summary else None,
     )
 
 

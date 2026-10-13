@@ -407,6 +407,8 @@ class ProtocolChannel:
             "fields": request.fields,
             "options": list(request.options),
             "feedback_allowed": bool(request.feedback_allowed),
+            # D82 Q5：条件键（TS 侧 convFrames.CONDITIONAL.request 登记）；没有摘要的卡不带这个键
+            **({"card_summary": request.card_summary} if request.card_summary is not None else {}),
         })
         try:
             while not entry["event"].wait(0.2):

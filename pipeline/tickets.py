@@ -419,6 +419,37 @@ def preview(argv: list[str], *, bound_dir: Path | None = None, root: Path | None
     return True, lines
 
 
+def summary_lines(plan: OpenPlan, root: Path) -> list[str]:
+    """开单卡的卡面摘要（人选 K1，2026-10-13）：不点开就看到 新开 / 追加、命令、退出码、报错末行与「为什么不是用法错误」。
+
+    工单全文（含通用的执行审批头与完整 argv）仍是卡的 card_text，渲染端收进「工单全文」折叠；终端通道照旧显示全文。
+    全部文本过同一套脱敏。
+    """
+    s = lambda t: scrub(t, root)  # noqa: E731
+    head = (f"将追加到 {plan.append_to.id}（同命令同报错末行、仍待修）" if plan.append_to is not None
+            else "将新开一张工单（批准后生成工单号）")
+    lines = [head]
+    if plan.warn:
+        lines.append(plan.warn)
+    if plan.first_line:
+        lines.append(f"> {plan.first_line}")
+    lines += [f"命令: {s(plan.scene.command)}", f"退出码: {plan.scene.returncode}", f"报错末行: {s(error_line(plan.scene))}",
+              "为什么是代码 bug 而不是用法错误:", *[f"  {ln}" for ln in s(plan.fields['why']).splitlines()]]
+    return lines
+
+
+def preview_summary(argv: list[str], *, bound_dir: Path | None = None, root: Path | None = None) -> list[str] | None:
+    """`open` 成立时的卡面摘要；其余（不是 open、不成立）→ None。与 preview 同一份规划（同一会话日志）。"""
+    base = Path(root or paths.ROOT)
+    try:
+        ns = _parse(argv)
+        if ns.cmd != "open":
+            return None
+        return summary_lines(plan_open(ns, base, bound_dir=bound_dir), base)
+    except (_ParseFail, TicketError):
+        return None
+
+
 def _stamp() -> str:
     """工单号里的 UTC 秒级时间（文件名不含期名：期名可能带任意字符）。"""
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")

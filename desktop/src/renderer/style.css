@@ -351,6 +351,17 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-enter { animation: conv-enter var(--dur-enter) var(--ease) both; }
 @keyframes conv-enter { from { opacity: 0; transform: translateY(var(--space-1)); } }
 /* R3 ⑤：ui.css 的全局归零块只把时长压到 0，扫光是无限循环、且文字靠渐变着色——这里显式停掉并还原文字颜色 */
+/* D82 PR-C（人选：按钮 C、卡面 K1，2026-10-13，附件 2026-10-12-bug-ticket-spec/）。只用既有 token。
+ * 工单工具行行尾「复制给 coding agent」常驻可见（不同于悬停才出的「复制命令」）；输入框上方提示条与输入框同一列（同 .conv-shell .composer 的 margin-inline）。 */
+.conv-tool-handoff { flex: none; }
+.conv-handoff { flex: none; display: flex; flex-direction: column; gap: var(--space-1); margin: var(--space-2) max(var(--space-3), calc((100% - 880px) / 2)) 0; }
+.conv-handoff-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-1) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-subtle); color: var(--fg-muted); font-size: var(--text-sm); }
+.conv-handoff-row > span { flex: none; }
+.conv-handoff-row > .conv-handoff-id { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--fg); }
+.conv-handoff-row > .spacer { flex: 1; }
+.conv-handoff-row .copy-btn { flex: none; }
+.request-card-full > summary { cursor: pointer; font-size: var(--text-sm); }
+.request-card-full > .request-card-text { margin-top: var(--space-1); max-height: 320px; overflow: auto; }
 /* D81 PR-2b：侧栏企划卡片（人 2026-10-13 选方案 B「分组卡片」，附件 2026-10-12-project-layer-spec/）。只用既有 token，不加新 token。
  * 进度条每卷一段：--ok = 走到 09、--warn = 停在人审、--wait = 进行中、--border-strong = 未取到（取值同截图方案 B）。 */
 .proj-card { display: flex; flex-direction: column; margin: var(--space-1) 0; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); overflow: hidden; }
