@@ -41,6 +41,11 @@ MAX_INPUT_CHARS = 150_000    # 一次审查的输入上限：防一份超长笔�
 CITE_TOL_S = 1.5             # 引用时间码写到秒（mm:ss），比对允许的取整误差
 
 CATEGORIES = ("事实", "衔接", "语言")
+# D81 C-3：企划内的卷带上前卷定稿时多两类（只在本次输入里有前卷时成立）
+PRIOR_CATEGORIES = ("前卷冲突", "前卷重复")
+# 前卷只给旁白。EGOIST V2 三卷实测 3465 / 3196 / 2503 字；supercell 每卷 ≤ 5500 字、最多带 3 卷约 1.7 万字，取两倍余量，
+# 且远低于 MAX_INPUT_CHARS。超了报错停、不截断：截掉的那部分恰好可能是冲突所在（判据 5 的同一类问题）
+PRIOR_NARRATION_MAX_CHARS = 40000
 FACT_VERDICTS = ("与证据矛盾", "无出处", "表述模糊")
 SOURCE_TYPES = ("字幕", "在场索引", "笔记", "无")
 NOTES_EXCERPT_MIN = 6
@@ -61,12 +66,21 @@ class SegEvidence:
 
 
 @dataclass
+class PriorVolume:
+    """D81 C-3：本企划卷表里卷序更小的一卷，只带 02-script.md 的旁白（段号, 文本）。"""
+    seq: int
+    name: str
+    segments: list[tuple[str, str]]
+
+
+@dataclass
 class Evidence:
     script_name: str
     script_text: str
     segments: list[SegEvidence]
     notes: dict[str, str]
     gaps: list[str]
+    prior: list[PriorVolume] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 证据预取
@@ -159,7 +173,45 @@ def gather_evidence(ep: Path, script_name: str) -> Evidence:
                 except AdversarialError as exc:
                     se.gaps.append(f"在场索引不可用：{exc}")
         out.append(se)
-    return Evidence(script_name=script_name, script_text=text, segments=out, notes=notes, gaps=gaps)
+    prior = prior_volumes(ep, gaps)
+    return Evidence(script_name=script_name, script_text=text, segments=out, notes=notes, gaps=gaps, prior=prior)
+
+
+def prior_volumes(ep: Path, gaps: list[str]) -> list[PriorVolume]:
+    """D81 C-3：本期是企划的卷时，按卷表取卷序更小、已有 02-script.md 的各卷旁白（不取草稿）。
+
+    企划归属按传入路径的**字面父目录**判（project_of 不先 resolve：镜像企划里指向成品的软链卷仍认作镜像企划的卷）。
+    普通期返回空、不加任何缺口说明（输入与改动前逐字节相同）。缺 02-script.md 的前卷、本卷不在卷表、
+    企划文件缺失或不可解析都写进 gaps（判据 9：跳过要显式列出）。前卷旁白合计超 PRIOR_NARRATION_MAX_CHARS → 报错停。
+    """
+    from . import project as project_mod
+    from . import tts
+
+    proj = project_mod.project_of(ep)
+    if proj is None:
+        return []
+    doc = project_mod.load(proj)
+    if doc is None:
+        gaps.append(f"企划 {proj.name} 没有 {project_mod.PROJECT_FILE}：不带前卷定稿")
+        return []
+    if not isinstance(doc, project_mod.ProjectDoc):
+        gaps.append(f"企划 {proj.name} 的 {project_mod.PROJECT_FILE} 解析失败（{doc}）：不带前卷定稿")
+        return []
+    me = next((v for v in doc.volumes if project_mod.name_key(v.dir) == project_mod.name_key(ep.name)), None)
+    if me is None:
+        gaps.append(f"本卷 {ep.name} 不在企划 {proj.name} 的卷表里：不带前卷定稿")
+        return []
+    out: list[PriorVolume] = []
+    for v in sorted((v for v in doc.volumes if v.seq < me.seq), key=lambda v: v.seq):
+        script = proj / v.dir / "02-script.md"
+        if not script.is_file():
+            gaps.append(f"前卷 第 {v.seq} 卷 {v.dir} 没有 02-script.md（草稿不算定稿）：这一卷没给审查者")
+            continue
+        out.append(PriorVolume(seq=v.seq, name=v.dir, segments=[(s.label, s.text) for s in tts.parse_script(script)]))
+    total = sum(len(t) for pv in out for _l, t in pv.segments)
+    if total > PRIOR_NARRATION_MAX_CHARS:
+        raise AdversarialError(f"前卷旁白合计 {total} 字，超过上限 {PRIOR_NARRATION_MAX_CHARS}；未调用模型（不截断：截掉的部分可能正是冲突所在）")
+    return out
 
 
 # ---------------------------------------------------------------- 提示词
@@ -206,7 +258,24 @@ def build_user_prompt(ev: Evidence) -> str:
             body.append("证据缺口：" + "；".join(s.gaps))
         seg_parts.append(head + ("\n" + "\n".join(body) if body else "\n（只有稿件与笔记）"))
     parts.append("## 逐段证据\n\n" + "\n\n".join(seg_parts))
+    if ev.prior:
+        parts.append(_prior_block(ev.prior))
     return "\n\n".join(parts)
+
+
+PRIOR_INSTRUCTIONS = """另查本稿与上面前卷之间的两类问题（只在这里列，不算进事实 / 衔接 / 语言）：
+- 前卷冲突：日期、成员变动、事件说法与前卷矛盾；
+- 前卷重复：同一件事前卷已经讲过，本稿又讲一遍。
+这两类条目的「类」写「前卷冲突」或「前卷重复」，并且必须带三个键：
+"prior_volume"（前卷目录名，照上面「### 第 N 卷 · 目录名」里的目录名写）、"prior_segment"（前卷段号）、
+"prior_quote"（从该前卷段逐字复制的一小段）；「原文」照旧从本稿逐字复制，「问题」写冲突或重复在哪。"""
+
+
+def _prior_block(prior: list[PriorVolume]) -> str:
+    vols = []
+    for pv in prior:
+        vols.append(f"### 第 {pv.seq} 卷 · {pv.name}\n\n" + "\n".join(f"段 {label}：{text}" for label, text in pv.segments))
+    return "## 前卷定稿（本企划卷表中卷序在本卷之前的各卷，只含旁白）\n\n" + "\n\n".join(vols) + "\n\n" + PRIOR_INSTRUCTIONS
 
 
 # ---------------------------------------------------------------- 回复解析与引用自校
@@ -251,21 +320,42 @@ def verify_item(item: dict, ev: Evidence) -> dict:
         "出处": item.get("出处") if isinstance(item.get("出处"), dict) else {},
         "核对": "",
     }
+    if out["类"] in PRIOR_CATEGORIES:
+        out.update({k: str(item.get(k, "")).strip() for k in ("prior_volume", "prior_segment", "prior_quote")})
     seg = next((s for s in ev.segments if s.label == out["段"]), None)
     problems: list[str] = []
     if seg is None:
         problems.append(f"稿件里没有段 {out['段'] or '（空）'}")
-    if out["类"] not in CATEGORIES:
-        problems.append(f"类别「{out['类']}」不在 事实/衔接/语言 之内")
+    if out["类"] not in CATEGORIES + PRIOR_CATEGORIES or (out["类"] in PRIOR_CATEGORIES and not ev.prior):
+        problems.append(f"类别「{out['类']}」不在 事实/衔接/语言 之内" + ("（本次没有前卷输入）" if out["类"] in PRIOR_CATEGORIES else ""))
     if len(_squash(out["原文"])) < 2 or _squash(out["原文"]) not in _squash(ev.script_text):
         problems.append("原文不在稿件里")
     if out["类"] == "事实":
         problems += _verify_fact(out, seg, ev)
+    elif out["类"] in PRIOR_CATEGORIES:
+        out["判定"] = ""
+        out["出处"] = {}
+        if ev.prior:
+            problems += _verify_prior(out, ev)
     else:
         out["判定"] = "请人看"
         out["出处"] = {}
     out["核对"] = "；".join(problems)
     return out
+
+
+def _verify_prior(out: dict, ev: Evidence) -> list[str]:
+    """前卷两类的机械核销：该前卷在本次输入里、段号存在、前卷引文（_squash 后）是该段旁白的子串。"""
+    pv = next((p for p in ev.prior if p.name == out["prior_volume"]), None)
+    if pv is None:
+        return [f"前卷「{out['prior_volume'] or '（空）'}」不在本次输入里"]
+    seg = next((t for label, t in pv.segments if label == out["prior_segment"]), None)
+    if seg is None:
+        return [f"前卷 {pv.name} 没有段 {out['prior_segment'] or '（空）'}"]
+    quote = _squash(out["prior_quote"])
+    if len(quote) < 2 or quote not in _squash(seg):
+        return [f"前卷引文不在 {pv.name} 段 {out['prior_segment']} 的旁白里"]
+    return []
 
 
 def _verify_fact(out: dict, seg: SegEvidence | None, ev: Evidence) -> list[str]:
@@ -317,9 +407,10 @@ def render_report(ev: Evidence, items: list[dict], model: str, now: datetime) ->
     facts = [it for it in items if it["类"] == "事实"]
     flows = [it for it in items if it["类"] == "衔接"]
     langs = [it for it in items if it["类"] == "语言"]
-    others = [it for it in items if it["类"] not in CATEGORIES]
+    priors = [it for it in items if it["类"] in PRIOR_CATEGORIES]
+    others = [it for it in items if it["类"] not in CATEGORIES + PRIOR_CATEGORIES]
     ids: list[tuple[str, dict]] = []
-    for prefix, group in (("F", facts), ("C", flows), ("L", langs), ("X", others)):
+    for prefix, group in (("F", facts), ("C", flows), ("L", langs), ("V", priors), ("X", others)):
         ids += [(f"{prefix}{i}", it) for i, it in enumerate(group, 1)]
     by_id = {id(it): code for code, it in ids}
     bad = sum(1 for it in items if it["核对"])
@@ -330,8 +421,11 @@ def render_report(ev: Evidence, items: list[dict], model: str, now: datetime) ->
         "",
         f"审查对象：`{ev.script_name}`（{now.strftime('%Y-%m-%d %H:%M')}，模型 {model}）  ",
         f"审查者看到的：稿件、番剧笔记{'《' + '》《'.join(ev.notes) + '》' if ev.notes else '（无）'}、"
-        f"{anchored} 个锚点段窗口内的字幕与在场索引；**看不到写稿对话**。  ",
+        f"{anchored} 个锚点段窗口内的字幕与在场索引"
+        + (f"、前卷定稿旁白（{'、'.join(f'第 {p.seq} 卷 {p.name}' for p in ev.prior)}）" if ev.prior else "")
+        + "；**看不到写稿对话**。  ",
         f"结果：事实 {len(facts)} 条、衔接 {len(flows)} 条、语言 {len(langs)} 条"
+        + (f"、与前卷 {len(priors)} 条" if ev.prior or priors else "")
         + (f"；**审查者引用核不上 {bad} 条**（标 ⚠，先别信）" if bad else "") + "。",
     ]
     seg_gaps = [f"段 {s.label}：{'；'.join(s.gaps)}" for s in ev.segments if s.gaps]
@@ -362,6 +456,17 @@ def render_report(ev: Evidence, items: list[dict], model: str, now: datetime) ->
     table("事实：错误与模糊", facts, True)
     table("衔接：转折不畅", flows, False)
     table("语言：明显不正常", langs, False)
+    if ev.prior or priors:
+        lines.extend(["", f"## 与前卷（{len(priors)} 条）", ""])
+        if not priors:
+            lines.append("无。")
+        else:
+            lines.extend(["| 编号 | 段 | 类 | 原文 | 前卷 · 段 | 前卷原文 | 问题 |", "|---|---|---|---|---|---|---|"])
+            for it in priors:
+                flag = f"<br>⚠ 审查者引用不存在（{it['核对']}）" if it["核对"] else ""
+                where = f"{it.get('prior_volume', '')} · 段 {it.get('prior_segment', '')}"
+                lines.append(f"| {by_id[id(it)]} | {_cell(it['段'])} | {_cell(it['类'])} | {_cell(it['原文'])} | {_cell(where)} | "
+                             f"{_cell(it.get('prior_quote', ''))} | {_cell(it['问题'] + flag)} |")
     if others:
         table("其他（类别不认得）", others, False)
 
@@ -394,8 +499,11 @@ def pick_script(ep: Path, name: str | None) -> str:
     raise AdversarialError("本期没有 02-script.md 或 02-script.draft.md")
 
 
-def review(ep: Path, script_name: str, *, now: datetime | None = None) -> tuple[str, list[dict]]:
-    """跑一次审查：预取证据 → 一次 LLM 调用 → 解析 → 引用自校 → 渲染。返回 (报告正文, 条目)。"""
+def review(ep: Path, script_name: str, *, now: datetime | None = None, out_dir: Path | None = None) -> tuple[str, list[dict]]:
+    """跑一次审查：预取证据 → 一次 LLM 调用 → 解析 → 引用自校 → 渲染。返回 (报告正文, 条目)。
+
+    `out_dir`（D81 `--out`）：回复解析失败时的原文留档也落这里，不碰期目录。
+    """
     from pipeline.agent.llm import LLMError, chat_complete, load_llm_config
 
     ev = gather_evidence(ep, script_name)
@@ -417,7 +525,7 @@ def review(ep: Path, script_name: str, *, now: datetime | None = None) -> tuple[
     try:
         raw_items = parse_reply(content)
     except AdversarialError:
-        raw = ep.joinpath(*RAW_REPLY)
+        raw = (out_dir or ep).joinpath(*RAW_REPLY)
         raw.parent.mkdir(parents=True, exist_ok=True)
         raw.write_text(content, encoding="utf-8")
         raise
@@ -426,7 +534,10 @@ def review(ep: Path, script_name: str, *, now: datetime | None = None) -> tuple[
 
 
 def write_report(ep: Path, text: str, now: datetime) -> Path:
-    """重跑会覆盖：旧报告（可能已填了终审）先留底到 `_agent/adversarial-history/`。"""
+    """重跑会覆盖：旧报告（可能已填了终审）先留底到 `_agent/adversarial-history/`。
+
+    `ep` 是写入目录：默认是期目录；`--out` 给定时是那个目录（报告与留底都落它下面）。
+    """
     dest = ep / REPORT
     if dest.exists():
         hist = ep.joinpath(*HISTORY_DIR)
@@ -443,22 +554,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--script", choices=SCRIPT_NAMES, default=None,
                     help="审哪份稿件（默认：有定稿审定稿，否则审草稿）")
+    # D81 §4.9：镜像企划里的卷是指向成品目录的软链；--out 让报告、留底与原文留档全落这个目录（必须已存在，不建）
+    ap.add_argument("--out", type=Path, default=None, help="写入目录（默认期目录；必须已存在）")
     a = ap.parse_args(argv)
     ep = a.episode
+    if a.out is not None and not a.out.is_dir():
+        print(f"FAIL --out 目录不存在（不自动建）：{a.out}", file=sys.stderr)
+        return 1
+    dest_dir = a.out or ep
     now = datetime.now()
     try:
         name = pick_script(ep, a.script)
-        text, items = review(ep, name, now=now)
+        text, items = review(ep, name, now=now, out_dir=a.out)
     except AdversarialError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
-    write_report(ep, text, now)
-    count = {c: sum(1 for it in items if it["类"] == c) for c in CATEGORIES}
+    write_report(dest_dir, text, now)
+    count = {c: sum(1 for it in items if it["类"] == c) for c in CATEGORIES + PRIOR_CATEGORIES}
     facts = [it for it in items if it["类"] == "事实"]
     by_verdict = "、".join(f"{v} {n}" for v in FACT_VERDICTS if (n := sum(1 for it in facts if it["判定"] == v)))
     bad = sum(1 for it in items if it["核对"])
     print(f"[OK] 已写 {REPORT}（审 {name}）：事实 {count['事实']} 条" + (f"（{by_verdict}）" if by_verdict else "")
           + f"、衔接 {count['衔接']} 条、语言 {count['语言']} 条"
+          + (f"、与前卷 {count['前卷冲突'] + count['前卷重复']} 条" if count['前卷冲突'] + count['前卷重复'] else "")
           + (f"；审查者引用核不上 {bad} 条（报告里标 ⚠）" if bad else ""))
     print("下一步：事实类逐条查证后改稿并在终审表填「采纳 / 驳回 + 理由」；衔接与语言类原样转给人，不自行改写。")
     return 0

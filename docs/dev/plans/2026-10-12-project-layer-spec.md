@@ -545,7 +545,7 @@ PR-1（卷 ↔ 企划绑定、`00-project.md` 解析）。
 
 ### 8.8 完成判定
 
-- [ ] §8.3 ①–⑥ 落地；§8.5 测试与变异通过（另加：`--out` 给定时期目录前后 `find -newer` 为空）；§8.6 全绿
+- [x] §8.3 ①–⑥ 落地；§8.5 测试与变异通过（另加：`--out` 给定时期目录前后 `find -newer` 为空）；§8.6 全绿（2026-10-13，见 §十五）
 - [ ] 真实数据验收（§4.9 镜像，需 T7，**会出网调用模型一次**，由人批）：在镜像企划第 3 卷上跑 `python -m pipeline.adversarial data/episodes/_d81-mirror/03-终局葬礼 --script 02-script.md --out data/episodes/_d81-out/`；「与前卷」一节交人逐条判断真冲突 / 误报，结论写进施工记录；`find … -newer` 为空
 
 ---
@@ -905,3 +905,15 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
 - 实现截图（UI 规则 4 收尾）：附件 `impl.shots.spec.ts`，产物 `desktop/out/d81-shots/pr-2b/`（`index.html` 对照页）：i1 1440 企划会话、i2 1280 卷会话、i3 1440 全折叠、i4 / i5 1440 / 1280 按工序、i6 1280 新建企划 + 建卷表单。侧栏与中栏全是真实渲染，每帧过同一套底线断言。
 - EGOIST V2 只读核对：`find … -newermt "2026-10-12 20:40:00"` 的命中与 PR-1 记录的完全相同（20:58:56–20:59:04 与 22:39 `.DS_Store`），本 PR 无新增写入。
 - **验证**：pytest 2788 / typecheck 通过 / vitest 561 / playwright 141（2 跳过）。
+
+### PR-3（2026-10-13）
+
+**已施工·机检通过**（纯 core）；真实数据验收的出网那半（§8.8 第 2 条）按本次施工规则没跑，待人批。
+
+- §8.3 ①–⑥ 落地（`pipeline/adversarial.py`）：`prior_volumes(ep, gaps)` 按**字面父目录**（`project.project_of`，不先 resolve）认企划，按卷表取卷序更小、已有 `02-script.md` 的各卷旁白（`tts.parse_script` 的段号与文本，不取草稿）；缺定稿的前卷、本卷不在卷表、企划文件缺失 / 不可解析都写进 `gaps`；前卷旁白合计超 `PRIOR_NARRATION_MAX_CHARS = 40000` → `AdversarialError`、不调模型。`build_user_prompt` 只在有前卷时追加「前卷定稿」区块与审查要求（写在 user 提示里，不改 `SYSTEM_PROMPT`——普通期输入逐字节不变）。新类别 `前卷冲突` / `前卷重复`，条目带 `prior_volume` / `prior_segment` / `prior_quote`，`verify_item` 机械核销（前卷在本次输入里、段号存在、引文 `_squash` 后是该段旁白的子串），没有前卷输入时这两类判「类别不认」。报告新增「与前卷」一节（编号 V），终审表照旧。`--out <目录>`（必须已存在、不建）：报告、覆盖前留底、回复解析失败的原文留档三处写入全落该目录。`creative.md` 与 `docs/runbook/02-script.md` 各加一句。
+- 普通期不变的基准：改动前的实现（提交 `fee56c3`）在 `tests/test_adversarial.py` 的夹具上跑出 system + user 提示的 sha256 `6136017376ce…dfec`，写成 `test_plain_episode_prompt_unchanged_by_project_layer`。
+- 测试：`tests/test_adversarial_prior.py` 15 条（第 3 卷带第 1、2 卷、不带第 4 卷与草稿；前卷缺定稿列缺口；本卷不在卷表；企划文件不可解析；第 1 卷无前卷；前卷引用核对 5 例；无前卷时前卷类别不认；报告「与前卷」一节与终审表；超限报错不调模型；软链卷 + `--out`：解析不了的回复 → 原文留档在 `--out`、认作镜像企划的第 2 卷（输入含镜像第 1 卷旁白），再正常跑两次 → 报告与留底都在 `--out`，被软链指向的成品目录逐文件 mtime / 大小不变；`--out` 不存在拒且不建）+ 基准 1 条。
+- 变异 8/8 被抓（scratchpad `d81pr3_mut.json`）：R1 带上草稿、R2 带上卷序更大的卷（第 3 卷用例）；R3 超限截断（超限用例）；R4 不核前卷引文（引用核对）；R5 普通期输入被改动（基准用例）；R6 原文留档仍写期目录、R7 企划归属用 resolve 后的父目录、R8 报告与留底仍写期目录（软链 + `--out` 用例）。
+- 真实数据只读核对（不出网）：在 PR-1 的 scratchpad 镜像（三卷软链到 EGOIST V2）上只调 `prior_volumes`：第 3 卷带第 1 卷 49 段 3465 字、第 2 卷 43 段 3196 字，缺口为空，前卷区块 7526 字——与 §8.4 的实测值一致。前后 `find data/episodes/EGOIST-传奇企划志-V2 -newer <标记>` 为空。
+- **未做（待人）**：§8.8 第 2 条的真实审查要调一次模型（出网、计费），本次施工规则是不跑真实 LLM、不出网；人批后照 §8.8 的命令跑，把「与前卷」一节逐条判真冲突 / 误报写进这里。命令里 `--out` 必须给，且镜像放 `data/episodes/_d81-mirror/`（§4.9）或照本次做法放 scratchpad 临时根。
+- **验证**：pytest 2876 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。
