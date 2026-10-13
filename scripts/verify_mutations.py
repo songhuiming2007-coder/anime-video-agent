@@ -1057,10 +1057,10 @@ MUTATIONS: list[dict] = [
      "new": ''},
     {"id": "MUT-A6", "guard": "idea 下 run_pipeline 在 review 层必拒", "file": TOOLS,
      "old": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
-             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose", "view_image"}\n'
              ')\n'),
      "new": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
-             '    {"write_episode_file", "cover_edit", "acquire_propose"}  # MUT-A6\n'
+             '    {"write_episode_file", "cover_edit", "acquire_propose", "view_image"}  # MUT-A6\n'
              ')\n')},
     {"id": "MUT-A7", "guard": "web_fetch 出网断言不跳过", "file": WEB,
      "old": '    assert_egress_boundary(url, {"url": _normalized_for_assert(url)})\n',
@@ -1093,10 +1093,10 @@ MUTATIONS: list[dict] = [
      "new": ''},
     {"id": "MUT-A11", "guard": "acquire_propose 在需期工具集合内", "file": TOOLS,
      "old": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
-             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose", "view_image"}\n'
              ')\n'),
      "new": ('NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(\n'
-             '    {"write_episode_file", "cover_edit", "run_pipeline"}  # MUT-A11\n'
+             '    {"write_episode_file", "cover_edit", "run_pipeline", "view_image"}  # MUT-A11\n'
              ')\n')},
 
     # ---- MUT-D42-a～h：D42 / Spec 18（选题会话落盘与建期迁移，2026-10-08 施工登记）----

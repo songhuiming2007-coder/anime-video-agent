@@ -979,8 +979,8 @@ def test_every_tool_has_existing_adr() -> None:
     from pipeline import paths
     from pipeline.agent.tools import TOOL_SCHEMAS
 
-    assert len(TOOL_SCHEMAS) == 15     # ADR-0029 bash 占第 15 位（ADR-0025 要求第 15 个立 ADR）
-    assert len(TOOL_SCHEMAS) <= 15     # 上限断言：ADR-0029 口径，第 16 个须再立 ADR
+    assert len(TOOL_SCHEMAS) == 16     # ADR-0031 view_image 占第 16 位（ADR-0029 要求第 16 个立 ADR）
+    assert len(TOOL_SCHEMAS) <= 16     # 上限断言：ADR-0031 口径，第 17 个须再立 ADR
 
     adr_dir = paths.ROOT / "docs" / "dev" / "adr"
     for name, schema in TOOL_SCHEMAS.items():
@@ -1076,7 +1076,7 @@ def test_egress_hit_aborts_turn_blocked(
         json.dumps({"tools": [
             "read_artifact", "write_episode_file", "list_episodes", "read_status",
             "run_pipeline", "search_notes", "web_search", "web_fetch", "acquire_propose",
-            "crawl", "browser", "write_memory", "cover_edit", "write_note", "bash",
+            "crawl", "browser", "write_memory", "cover_edit", "write_note", "bash", "view_image",
         ]}),
         encoding="utf-8",
     )

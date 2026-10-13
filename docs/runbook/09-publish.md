@@ -4,15 +4,16 @@
 
 ## 输入物
 - 最终成片：`data/episodes/<期号>/05-final.mp4`
-- 封面图库：`data/episodes/<期号>/07-cover/`
-- 标题候选：`data/episodes/<期号>/07-titles.md`
+- 定稿封面：期目录顶层 `08-cover.jpg`（横版）与 `08-cover-vertical.jpg`（竖版），来源是 `07-cover/` 里人点名的那一版
+- 标题、简介、标签：`data/episodes/<期号>/07-titles.md` 的 `## 定稿标题` / `## 简介` / `## 标签`
+- 上面缺哪项，`read_status` 的 09 会列出来（D90）；见 [08 交付物](08-cover-title.md#交付物09-前必须齐read_status-逐项核对)
 
 ## 人工操作（耗时约 3 分钟）
 1. 从 07-cover/ 中挑选 1 张视觉冲击力最强的封面图（可加微标/主标字样）；
 2. 从 07-titles.md 挑选（或微调）1 条最契合本期分发的标题；
 3. 手动上传至目标视频平台（Bilibili、YouTube 等）。
 
-> **ack 携带定稿（Spec 12）**：第 09 停机点的批准必须给出封面路径与标题原文（app 的 09 卡两个输入；终端 `ava <期> /approve 09 --id <id> --cover <路径> --title <标题>`），core 会在批准时刻自填文件大小与 `mtime_ns` 供事后审计——发布动作仍在 ava 之外。
+> **ack 携带定稿（Spec 12）**：第 09 停机点的批准必须给出封面路径与标题原文（app 的 09 卡两个输入；**封面填 `07-cover/` 下的那一版，如 `07-cover/edit-6.png`，填顶层 `08-cover.jpg` 会被拒**；终端 `ava <期> /approve 09 --id <id> --cover <路径> --title <标题>`），core 会在批准时刻自填文件大小与 `mtime_ns` 供事后审计——发布动作仍在 ava 之外。
 
 ## 核心规程与铁律
 - **坚决不做自动上传**：省下两分钟不值得拿核心账号安全与平台风控冒险。

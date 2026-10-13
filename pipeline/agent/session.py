@@ -564,6 +564,7 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
     """`tool{phase:"start"}.summary` 与终端 `[tool]` 回显共用同一规则（§3.1，剥控制字符）。"""
     listed = {
         "read_artifact": "path",
+        "view_image": "path",
         "read_status": "episode",
         "search_notes": "query",
         "web_search": "query",

@@ -35,4 +35,7 @@ status: accepted
 
 ## 推翻条件
 
+> **修订注（2026-10-13，D90，人裁决）**：顶层定稿封面 `08-cover.jpg` / `08-cover-vertical.jpg` 不再算解封物——09 的真正解封是人在 09 卡上的批准（封面路径在 `07-cover/` 下，`approvals.py` 校验）。人点名用哪一版之后 ava 可以用 bash 转过去；人没点名就写，仍算越过停机点。
+
+
 出现**一次**经 bash 越过停机点（写出 `02-diff.patch` / `04-clips.approved.json` / 定稿封面等解封物）、改动 `pipeline/` 源码或 `config/` 只读字段、或执行了网页内容诱导的命令的实例，即复议方案 A（系统沙箱）。

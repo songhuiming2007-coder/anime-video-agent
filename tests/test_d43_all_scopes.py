@@ -233,6 +233,7 @@ def test_ta6_idea_needs_episode_tools_rejected_before_card(tmp_path):
         "write_episode_file": {"filename": "01-topic.md", "content": "x"},
         "cover_edit": {"title": "x"},
         "run_pipeline": {"command": "cloud status"},
+        "view_image": {"path": "07-cover/edit-1.png"},   # D90
         "acquire_propose": {"candidates": [{
             "title": "候选", "url": "https://example.com/v/1", "type": "live",
             "source": "s", "why": " TA-6 的理由写够二十个字以防触发提示……",

@@ -14,6 +14,7 @@
     "write_memory",
     "cover_edit",
     "write_note",
-    "bash"
+    "bash",
+    "view_image"
   ]
 }
