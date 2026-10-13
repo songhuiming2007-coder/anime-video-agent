@@ -78,7 +78,7 @@ export function Composer({
       />
       <div className="composer-row">
         <span className="muted" data-testid="composer-target">
-          {convKey === "idea" ? "选题会话" : convKey.slice(3)}
+          {convKey === "idea" ? "选题会话" : convKey.startsWith("proj:") ? `企划会话 · ${convKey.slice(5)}` : convKey.slice(3)}
         </span>
         <span className="spacer" />
         {error && (

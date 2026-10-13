@@ -32,6 +32,7 @@ import {
   type EpisodeDelta,
   type EpisodeSnapshot,
   type EpisodeSummary,
+  type ProjectMeta,
   type EpisodesList,
   type Envelope,
   type ErrCode,
@@ -208,6 +209,8 @@ export class HostService {
   episodes = new Map<string, EpisodeEntry>();
   /** D81：企划（projKey → 企划目录与成员）。成员同时在 `episodes` 里（键带企划前缀），旧路径照用 */
   projects = new Map<string, ProjectEntry>();
+  /** D81：各企划的卷表（core /project-meta，随期状态一起刷新）；取不到不报错，侧栏按目录名码点序排 */
+  projectMeta = new Map<string, ProjectMeta>();
   hiddenUnderscore = 0;
   summaries = new Map<string, Omit<EpisodeSummary, "conv">>();
   /**
@@ -512,6 +515,12 @@ export class HostService {
     };
     await Promise.all(Array.from({ length: EPISODE_STATUS_CONCURRENCY }, worker));
     if (gen !== this.repoGen) return;
+    for (const p of [...this.projects.values()]) {
+      const meta = await this.fetchProjectMeta(p.abs);
+      if (gen !== this.repoGen) return;
+      if (meta) this.projectMeta.set(p.projKey, meta);
+      else this.projectMeta.delete(p.projKey);
+    }
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
   }
 
@@ -532,6 +541,7 @@ export class HostService {
         hasProjectFile: p.hasProjectFile,
         members: p.members.map((m) => summaryOf(m)),
         conv: convs.get(`proj:${p.projKey}` as ConvKey) ?? null,
+        meta: this.projectMeta.get(p.projKey) ?? null,
       })),
       idea: convs.get("idea") ?? null,
     };
@@ -618,7 +628,9 @@ export class HostService {
       case "approval.decide":
         return this.decide(parseDecideParams(params as Record<string, unknown>));
       case "episode.create":
-        return this.createEpisode(p.name);
+        return p.project === undefined ? this.createEpisode(p.name) : this.createVolume(p.project, p.name);
+      case "project.create":
+        return this.createProject(p.name);
       case "conv.send":
         return this.convSend(p.convKey, p.text);
       case "conv.resume":
@@ -1159,6 +1171,62 @@ export class HostService {
     }
     void this.refreshEpisodeStatuses();
     return { changed: true, repoRoot: this.repoRoot, problem: this.repoRootProblem };
+  }
+
+  // ---------------- D81：企划（建企划、在企划下建卷、卷表） ----------------
+
+  /** core `/project-meta` → ProjectMeta；失败（超时、非零、JSON 不合式）返回 null，侧栏退回按目录名排卷 */
+  private async fetchProjectMeta(abs: string): Promise<ProjectMeta | null> {
+    if (!this.repoRoot) return null;
+    const r = await this.track(this.core("PROJECT_META", { proj: abs }));
+    if (r.timedOut || r.code !== 0) return null;
+    try {
+      const o = JSON.parse((r.stdoutFull ?? r.stdoutTail).trim()) as Record<string, unknown>;
+      const vols = Array.isArray(o.volumes) ? (o.volumes as Record<string, unknown>[]) : [];
+      return {
+        hasProjectFile: o.has_project_file === true,
+        name: typeof o.name === "string" ? o.name : null,
+        collection: typeof o.collection === "string" ? o.collection : null,
+        volumes: vols.filter((v) => typeof v.seq === "number" && typeof v.dir === "string").map((v) => ({ seq: v.seq as number, dir: v.dir as string })),
+        error: typeof o.error === "string" ? o.error : null,
+        hints: Array.isArray(o.hints) ? (o.hints as unknown[]).filter((h): h is string => typeof h === "string") : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private checkCreatable(): void {
+    if (this.sessionQuitting) throw new RpcFail("E_BUSY", "正在退出");
+    if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
+    if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
+  }
+
+  /** 建企划：名字单个 argv 元素，校验与写入全在 core（同建期纪律）；UI 绝不 mkdir */
+  private async createProject(name: string): Promise<{ projKey: string }> {
+    this.checkCreatable();
+    const r = await this.core("NEW_PROJECT", { name });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建企划超时，请手动确认企划目录", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", `建企划失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    this.refreshEpisodes();
+    this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
+    void this.refreshEpisodeStatuses();
+    return { projKey: name };
+  }
+
+  /** 在企划下建卷：企划只认宿主自己扫出来的（不取渲染层给的路径）；不带选题记录（卷不是从选题会话转正的） */
+  private async createVolume(project: string, name: string): Promise<CreatedEpisode> {
+    this.checkCreatable();
+    if (!this.projects.has(project)) throw new RpcFail("E_BAD_REQUEST", `未知企划 ${project}`);
+    const r = await this.core("NEW_VOLUME", { project, name });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建卷超时，请手动确认卷目录", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", `建卷失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    this.refreshEpisodes();
+    this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
+    void this.refreshEpisodeStatuses();
+    return { epKey: `${project}/${name}`, migrated: false, sid: null, messages: 0 };
   }
 
   // ---------------- 建期（S8-R2 / Spec 10 §2.5、§3.7） ----------------

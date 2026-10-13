@@ -74,7 +74,7 @@ export function SessionHeader({
   return (
     <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
       <span className="ui-badge" data-testid="session-scope">
-        {info.scope === "asset" ? "素材模式" : info.scope === "pipeline" ? "流水线模式" : info.scope === "creative" ? "创作模式" : "—"}
+        {info.scope === "asset" ? "素材模式" : info.scope === "pipeline" ? "流水线模式" : info.scope === "creative" ? "创作模式" : info.scope === "project" ? "企划模式" : "—"}
       </span>
       {/* D64 余项②（2026-10-09 人选方案 B）：读数做成徽章、紧跟模式徽章，正文色——灰字夹在「LLM 已连接」后面不显眼 */}
       {contextReadout !== null && (
@@ -95,7 +95,8 @@ export function SessionHeader({
         </span>
       )}
       <span className="spacer" />
-      {!isIdea && (
+      {/* D81：企划会话没有素材模式（企划级只做规划、跨卷审查、总装） */}
+      {!isIdea && !convKey.startsWith("proj:") && (
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="scope-toggle"

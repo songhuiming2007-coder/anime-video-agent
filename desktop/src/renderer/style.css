@@ -351,6 +351,37 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-enter { animation: conv-enter var(--dur-enter) var(--ease) both; }
 @keyframes conv-enter { from { opacity: 0; transform: translateY(var(--space-1)); } }
 /* R3 ⑤：ui.css 的全局归零块只把时长压到 0，扫光是无限循环、且文字靠渐变着色——这里显式停掉并还原文字颜色 */
+/* D81 PR-2b：侧栏企划卡片（人 2026-10-13 选方案 B「分组卡片」，附件 2026-10-12-project-layer-spec/）。只用既有 token，不加新 token。
+ * 进度条每卷一段：--ok = 走到 09、--warn = 停在人审、--wait = 进行中、--border-strong = 未取到（取值同截图方案 B）。 */
+.proj-card { display: flex; flex-direction: column; margin: var(--space-1) 0; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); overflow: hidden; }
+.proj-head { display: flex; align-items: center; gap: var(--space-1); min-width: 0; padding: var(--space-1) var(--space-2) 0 var(--space-1); }
+.proj-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); min-height: var(--control-h-sm); padding: 0 var(--space-1); border: none; border-radius: var(--radius-md); background: transparent; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.proj-toggle:hover { background: var(--bg-hover); }
+.proj-toggle .ui-icon { flex: none; color: var(--fg-muted); }
+.proj-toggle .ui-badge { flex: none; }
+.proj-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-semibold); }
+.proj-sess { flex: none; min-height: var(--control-h-sm); padding: 0 var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--fg); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.proj-sess:hover { background: var(--bg-hover); }
+.proj-sess[aria-current="true"] { background: var(--bg-selected); border-color: var(--accent-border); font-weight: var(--weight-semibold); }
+.proj-sub { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; padding: 2px var(--space-2) 0 var(--space-6); }
+.proj-bar { display: flex; gap: 2px; padding: var(--space-1) var(--space-2) var(--space-2) var(--space-6); }
+.proj-seg { flex: 1; min-width: 0; height: 6px; border-radius: var(--radius-pill); background: var(--border-strong); }
+.proj-seg.seg-done { background: var(--ok); }
+.proj-seg.seg-stop { background: var(--warn); }
+.proj-seg.seg-mid { background: var(--wait); }
+.proj-empty { padding: 2px var(--space-2) var(--space-2) var(--space-6); font-size: var(--text-sm); }
+.proj-vols { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.proj-card .ui-row { border-radius: 0; }
+.proj-card .ep-sessions { margin-right: var(--space-2); }
+.new-project, .new-volume { display: flex; flex-direction: column; gap: var(--space-2); }
+.new-project .new-episode-form, .new-volume .new-episode-form { padding: 0 var(--space-2) var(--space-2); }
+.proj-new { color: var(--fg-muted); font-size: var(--text-sm); }
+/* 企划会话的中栏头部：卷表各行与工序 */
+.proj-status-coll { flex: none; color: var(--fg-muted); font-size: var(--text-sm); font-weight: var(--weight-regular); }
+.proj-status-vols { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: var(--text-sm); }
+.proj-status-vols li { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.proj-status-vol { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-status-vols .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) {
   .conv-shimmer { animation: none; background: none; color: inherit; }
   .conv-progress > span { animation: none; width: 100%; }

@@ -493,6 +493,21 @@ class TestCliCreate:
         assert cli.main(["/project-meta", f"--dir={E}"]) == 2
 
 
+    def test_企划会话的会话管理命令认企划目录(self, world, capsys) -> None:
+        """D81 PR-2b 施工中发现：`ava <企划> /list-sessions` 等经 resolve_episode_dir 一律被拒，侧栏企划会话列表报 E_CORE。"""
+        _root, P, _Q, _E = world
+        capsys.readouterr()
+        assert cli.main([str(P), "/list-sessions"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+        assert cli.main([str(P), "/list-trash"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+        assert cli.main([str(P), "/rename-session", "--sid=aaaaaaaaaaaaaaa1", "--title=x"]) == 1
+        assert "会话 aaaaaaaaaaaaaaa1 不存在" in capsys.readouterr().err   # 过了目录校验，败在 sid 上
+        assert cli.main([str(P / "01-a"), "/list-sessions"]) == 0         # 卷照旧
+        capsys.readouterr()
+        assert cli.main([str(P), "/status"]) != 0                         # 其余期级命令照拒
+
+
 # ---------------------------------------------------------------------------
 # 企划记忆（§4.5）
 # ---------------------------------------------------------------------------

@@ -529,6 +529,75 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
     }
   });
 });
+describe("D81 PR-2b 建企划 / 在企划下建卷 / 卷表（project.create、episode.create{project}、/project-meta）", () => {
+  const TABLE = "企划: 测试编年史\n合集: 00-合集\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n| 1 | 02-b | 2011 | 14-16分钟 | 余韵18秒 |\n| 2 | 01-a | 2012 | 14-16分钟 | 完整保留 |\n";
+  type L = EpisodesList & { projects: { projKey: string; hasProjectFile: boolean; members: { epKey: string }[]; meta: { name: string | null; collection: string | null; volumes: { seq: number; dir: string }[]; error: string | null; hints: string[] } | null }[] };
+
+  it("project.create：argv 等于 NEW_PROJECT 模板；真 core 建目录 + 骨架 00-project.md → 列表出现该企划（有立项文件、零成员）", async () => {
+    const r = makeFixtureRepo();
+    try {
+      const { svc } = await startService({}, r);
+      const res = (await svc.dispatch("project.create", { name: "测试企划" })) as { projKey: string };
+      expect(res.projKey).toBe("测试企划");
+      const rec = spawnLog.filter((x) => x.template === "NEW_PROJECT").at(-1)!;
+      expect(rec.argv).toEqual([join(r, ".venv/bin/python"), "-m", "pipeline.agent.cli", "new-project", "测试企划"]);
+      await svc.refreshEpisodeStatuses();
+      const p = ((await svc.dispatch("episodes.list", {})) as L).projects.find((x) => x.projKey === "测试企划")!;
+      expect([p.hasProjectFile, p.members.length, p.meta?.name, p.meta?.volumes]).toEqual([true, 0, "测试企划", []]);
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("episode.create 带 project：argv 等于 NEW_VOLUME 模板；卷出现在该企划成员里、不在普通期之外另立；未知企划 → E_BAD_REQUEST 零 spawn", async () => {
+    const r = makeFixtureRepo();
+    try {
+      mkdirSync(join(r, "data/episodes/P"), { recursive: true });
+      writeFileSync(join(r, "data/episodes/P/00-project.md"), TABLE);
+      const { svc } = await startService({}, r);
+      const res = (await svc.dispatch("episode.create", { name: "01-a", project: "P" })) as { epKey: string; migrated: boolean };
+      expect([res.epKey, res.migrated]).toEqual(["P/01-a", false]);
+      const rec = spawnLog.filter((x) => x.template === "NEW_VOLUME").at(-1)!;
+      expect(rec.argv).toEqual([join(r, ".venv/bin/python"), "-m", "pipeline.agent.cli", "new", "--project", "P", "01-a"]);
+      const l = (await svc.dispatch("episodes.list", {})) as L;
+      expect(l.projects.find((x) => x.projKey === "P")!.members.map((m) => m.epKey)).toEqual(["P/01-a"]);
+      const before = spawnTotal();
+      const err = await svc.dispatch("episode.create", { name: "01-a", project: "不存在" }).catch((e: unknown) => e);
+      expect((err as RpcFail).code).toBe("E_BAD_REQUEST");
+      expect(spawnTotal()).toBe(before);
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("卷表经真实 core /project-meta：卷序、合集、目录对不上的提示；解析失败给 error 原文；core 输出不合式 → meta 为 null（侧栏按目录名排，不报错）", async () => {
+    const r = makeFixtureRepo();
+    try {
+      mkdirSync(join(r, "data/episodes/P/01-a"), { recursive: true });
+      writeFileSync(join(r, "data/episodes/P/01-a/01-topic.md"), "# x\n");
+      writeFileSync(join(r, "data/episodes/P/00-project.md"), TABLE);
+      mkdirSync(join(r, "data/episodes/Q/01-a"), { recursive: true });
+      writeFileSync(join(r, "data/episodes/Q/01-a/01-topic.md"), "# x\n");
+      writeFileSync(join(r, "data/episodes/Q/00-project.md"), "企划: Q\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n| x | 01-a | 2011 | 14-16分钟 | 余韵18秒 |\n");
+      const { svc } = await startService({}, r);
+      await svc.refreshEpisodeStatuses();
+      const l = (await svc.dispatch("episodes.list", {})) as L;
+      const P = l.projects.find((x) => x.projKey === "P")!.meta!;
+      expect([P.name, P.collection, P.volumes, P.error]).toEqual(["测试编年史", "00-合集", [{ seq: 1, dir: "02-b" }, { seq: 2, dir: "01-a" }], null]);
+      expect(P.hints).toEqual(["卷表列了 `02-b` 但目录不存在", "卷表列了 `00-合集` 但目录不存在"]);
+      const Q = l.projects.find((x) => x.projKey === "Q")!.meta!;
+      expect([Q.volumes, typeof Q.error]).toEqual([[], "string"]);
+
+      const garbage = (async () => ({ code: 0, signal: null, stdoutTail: "not json", stderrTail: "", timedOut: false, stdoutFull: "not json", stdoutOverflow: false })) as unknown as HostDeps["runCore"];
+      const g = await startService({ runCore: garbage }, r);
+      await g.svc.refreshEpisodeStatuses();
+      expect(((await g.svc.dispatch("episodes.list", {})) as L).projects.map((x) => x.meta)).toEqual([null, null]);
+    } finally {
+      cleanup(r);
+    }
+  });
+});
+
 describe("TH-D42-M 选题带入 marker 单行解析（Spec 18 §3.2 / §3.3，🔵-2）", () => {
   it("恰好一行合式 → 取出 migrated / sid / messages；前后夹着别的输出不影响", () => {
     const out = "[OK] 已立项新期：/r/data/episodes/x\n     已生成初始选题模板：/r/x/01-topic.md\n[from-idea] migrated=true sid=0123abcd89ef4567 messages=7\n";

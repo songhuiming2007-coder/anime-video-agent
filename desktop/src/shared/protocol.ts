@@ -17,7 +17,8 @@ export type Method =
   | "tree.list" // { epKey, relDir } → TreeEntry[]
   | "shots.list" // 无参数 → ShotsEntry[]：data/library/shots 顶层的 *.html（S21 修订）
   | "approval.decide" // §3.2.1（PR4）；09 定稿另带 cover/title（Spec 12 S8-R19）
-  | "episode.create" // { name } → { epKey, migrated, sid, messages }：spawn NEW_EPISODE（恒带 --from-idea，Spec 18 §3.3）；校验全在 core（Spec 10 S8-R2）
+  | "episode.create" // { name, project? } → { epKey, migrated, sid, messages }：spawn NEW_EPISODE（恒带 --from-idea，Spec 18 §3.3）；带 project（企划目录名）时 spawn NEW_VOLUME 在企划下建卷（D81）；校验全在 core（Spec 10 S8-R2）
+  | "project.create" // { name } → { projKey }：spawn NEW_PROJECT（D81：建企划目录 + 骨架 00-project.md）；校验全在 core
   // ---- Spec 10 S8-R2：会话方法（§3.1）----
   | "conv.send" // { convKey, text } → { turnId, queued? }：无活进程则先起 new 会话、等 ready；回合在跑时排队（D79，queued: true）
   | "conv.resume" // { convKey } → ConvSnapshot：ep:* 以 --continue 起会话（idea 以 --idea 起，core 启动即恒恢复，Spec 18 §3.3）；已有活进程 → E_BUSY
@@ -98,7 +99,8 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "tree.list": { required: ["epKey", "relDir"], optional: [] },
   "shots.list": { required: [], optional: [] },
   "approval.decide": { required: ["epKey", "approvalId", "stop", "decision"], optional: ["feedback", "cover", "title"] },
-  "episode.create": { required: ["name"], optional: [] },
+  "episode.create": { required: ["name"], optional: ["project"] },
+  "project.create": { required: ["name"], optional: [] },
   "conv.send": { required: ["convKey", "text"], optional: [] },
   "conv.resume": { required: ["convKey"], optional: [] },
   "conv.interrupt": { required: ["convKey", "turnId"], optional: [] },
@@ -278,6 +280,19 @@ export interface EpisodeSummary {
   conv: ConvSummary | null;
 }
 
+/** D81：core `/project-meta` 的解析结果（00-project.md 的唯一解析器在 core）。取不到为 null */
+export interface ProjectMeta {
+  hasProjectFile: boolean;
+  name: string | null;
+  collection: string | null;
+  /** 卷表各行（卷序、目录）；不可解析或未立项为空 */
+  volumes: { seq: number; dir: string }[];
+  /** 解析错误原文；可解析为 null */
+  error: string | null;
+  /** 卷表与目录对不上的提示（只提示、不拦） */
+  hints: string[];
+}
+
 /** D81：企划（多卷系列）。成员仍同时出现在 `EpisodesList.episodes` 的平铺列表里（旧侧栏照用） */
 export interface ProjectSummary {
   /** 企划目录名（相对 episodes 根，一段） */
@@ -289,6 +304,8 @@ export interface ProjectSummary {
   members: EpisodeSummary[];
   /** 企划会话徽标；无活会话为 null */
   conv: ConvSummary | null;
+  /** 卷表（经 core /project-meta）；尚未取到为 null（侧栏按目录名码点序排卷，不报错） */
+  meta: ProjectMeta | null;
 }
 
 export interface EpisodesList {
