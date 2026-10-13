@@ -367,6 +367,9 @@ PR-A 已合、PR-B 人已选。
 | ① | `desktop/src/shared/convFold.ts` | `ToolRow` 的字段（D80 加了 `id`、`description`） | 加 `handoff: string \| null`，实时帧与历史帧都取 |
 | ② | `desktop/src/renderer/ConversationPane.tsx` | `function ToolLine({ row, turnRunning, fresh, opens, inGroup }`（原稿写 `case "tool":`，那一处在 `shared/convFold.ts` 的帧折叠里，渲染端是 `if (row.k === "tool") return <ToolLine …`，红队 R-16） | 有 `handoff` 的工具行按人选方案显示「复制给 coding agent」（复用 `CopyButton`，复制的是 `handoff` 原文）。按钮是原生 `<button>`（静态门禁 VS-8）；样式只进 `style.css`，不加 token（门禁 1、VS-1） |
 | ③ | `style.css` | — | 人选方案的样式；`ui.css` 冻结不动 |
+| ④ | `pipeline/tickets.py`、`pipeline/agent/session.py`、`protocol.py` | `HumanRequest`、`_tool_request`、请求帧 `"card_text": request.card_text,` | **人选 K1 后补（Q5）**：`tickets.preview_summary` 给开单卡卡面摘要（新开 / 追加、命令、退出码、报错末行、为什么不是用法错误，同一套脱敏）；`HumanRequest.card_summary`（默认 None）；请求帧条件键 `card_summary`（没有摘要的卡不带）。`card_text` 不变（终端通道照旧显示全文） |
+| ⑤ | `desktop/src/shared/convFrames.ts`、`HumanCards.tsx` | `CONDITIONAL`、`<pre className="request-card-text"` | `request` 登记 `card_summary: ["string"]`（有键才查）；有摘要的卡卡面显示摘要，`card_text` 收进「工单全文（N 行）」折叠 |
+| ⑥ | `ConversationPane.tsx`、`App.tsx`、`shared/toolView.ts` | `<AnswerDock …/>` 与 `<Composer` 之间 | **人选 C**：`HandoffStrip`（输入框上方，本会话每张工单一条「本会话开了工单 T-…（待修）· 复制给 coding agent」）；`toolView.ticketIdOf` / `handoffTickets`；带 `handoff` 的工具行主文本「已开工单 T-…」 |
 
 ### 8.4 新常量
 
@@ -390,8 +393,8 @@ PR-A 已合、PR-B 人已选。
 
 ### 8.8 完成判定
 
-- [ ] §8.3 落地，§8.5 测试与变异通过，§8.6 全绿
-- [ ] 1280×800 与 1440×900 各一张实现截图给人看
+- [x] §8.3 落地，§8.5 测试与变异通过，§8.6 全绿（2026-10-13，见 §十三）
+- [x] 1280×800 与 1440×900 各一张实现截图给人看（`desktop/out/d82-shots/pr-c/`）
 - [ ] §九 第 1 条（人勾）
 
 ---
@@ -424,7 +427,7 @@ PR-A 已合、PR-B 人已选。
 
 - [x] PR-A 完成（§6.9）
 - [x] PR-B 完成（§7.9）
-- [ ] PR-C 完成（§8.8），**待人验收**
+- [x] PR-C 完成（§8.8），**待人验收**（机检通过；§九 第 1 条待人勾）
 - [ ] §九 第 1、2 条人已勾
 - [x] §十「行为变化」一行人已确认（2026-10-12，§二 Q3）
 
@@ -508,3 +511,15 @@ PR-A 已合、PR-B 人已选。
 - **实测发现**：① 回合跑完默认折叠（D80 R4，`turnDefaultOpen`），工单那条工具行随之收起——A / B 的按钮在默认状态下看不见，若选它们 PR-C 要另改折叠规则；② PR-A 的开单卡卡面是整份工单，卡高 1167 px，对话流可见区 444 px（1280×800）/ 544 px（1440×900），两档都只见卡头、不见「批准」，不满足 §一 第 2 步。为此加了卡面两种原型：K1 摘要在前（卡高 249 px，两档卡头与批准同时可见，不点开就看到命令 / 退出码 / 报错末行 / why）、K2 全文限高 200 px 内部滚动（两档同时可见，但前 200 px 被 `run_pipeline` 的完整 argv 回显占掉，why 要滚动才见）。
 - 夹具注意：`realCoreFixture` 默认给每期配 `03-audio` 与 `04-clips.json`（停在 05）；场景要「02.5 已批、停在 03」，所以删这两项并放 `02-diff.patch`（02.5 的封板产物）。工单阻塞 03 的提醒只在还没走过 03 时出现，停在 05 时不出提醒是正确行为。
 - **人选**：按钮 **C 工具行 + 提示条**、卡面 **K1 摘要在前、全文收起**（2026-10-13），已写回 §二 Q2 / Q5。
+
+### PR-C（2026-10-13）
+
+按人选（按钮 C、卡面 K1）施工。**机检通过，待人验收。**
+
+- §8.3 ①–③ 照原稿，④–⑥ 为人选 K1 / C 后补（已写进 §8.3 表）：`ToolRow.handoff`（实时帧 end 阶段与历史帧都取）；工具行行尾 `CopyButton`「复制给 coding agent」（复制 `handoff` 原文，常驻可见）；输入框上方 `HandoffStrip`；带 `handoff` 的行主文本「已开工单 T-…」；开单卡卡面 K1：core 新增 `tickets.preview_summary`、`HumanRequest.card_summary`、请求帧条件键 `card_summary`，渲染端有摘要就把 `card_text` 收进「工单全文」折叠（其余卡与终端通道不变）。样式只进 `style.css`，`tokens.css` / `ui.css` 零改动。
+- 实测（`impl.shots.spec.ts`，产物 `desktop/out/d82-shots/pr-c/`）：开单卡卡高 249 px，1280×800（可见区 444 px）与 1440×900（544 px）下卡头与「批准」同时可见；回合跑完折叠后提示条仍在；展开回合后工具行行尾按钮可见；第 5 步 `ticket_fixed` 提醒照旧。
+- 测试：vitest `convFold`（实时 / 孤立 end / 历史取 `handoff`，空串视同没有）、`toolView`（`ticketIdOf` 含 `-2`、主文本、提示条去重取最后一次）、`convFrames`（`card_summary` 有键才查）；pytest `test_卡面摘要_K1_全文仍在card_text`（摘要逐行、末行密钥脱敏、其余卡无摘要）；e2e「D82 PR-C」（真实 core + 假模型：1280×800 下卡面是摘要、全文在折叠里、卡头与批准同时在对话流可见区；批准后提示条复制、展开回合后工具行复制，系统剪贴板读回都等于帧里的 `handoff`；失败的 bash 行没有按钮；1280 / 1440 下按钮与工具行其他元素、提示条各元素两两不相交，按钮不越出所在工具行、提示条不越出对话流；退出并重启 app → 进上次的会话 → 历史帧带 `handoff`、提示条与工具行按钮都在、复制得原文）。
+- `test_桌面端交接相关代码不spawn` 的静态扫描原用子串 `exec(`，会误中正则的 `.exec(`（`convFold.ts` 因出现 `handoff` 字样新进扫描范围）；改为只认引 `child_process` 或裸调 `spawn` / `exec` / `execFile`（含 Sync），并带正反例自测。
+- 变异 12/12 被抓（scratchpad `d82c_mut.json`）：P1 工具行按钮复制摘要（e2e）、P2 / P2b 历史行丢 `handoff`（vitest / e2e 重启后）、P3 提示条取第一次的交接文本（vitest）、P4 渲染端无视 `card_summary`（e2e）、P5 摘要漏 why、P6 摘要不脱敏（pytest）、P7 协议不发 `card_summary`（e2e）、P8 不渲染提示条（e2e）、P9 每条工具行都给按钮（e2e）、P10 主文本不改（vitest）、P11「工单全文」默认展开挤掉批准按钮（e2e）。
+- **遗留（既有问题，未修）**：预览展开时（1280×800 中栏约 605 px），回合展开区里的工具行比对话流宽 2 px，对话流出现 2 px 横向滚动——带不带本按钮都一样（失败的 bash 行同样），是 D80 工具行版面的既有问题；预览收起时（§一 场景）不出现。
+- **验证**：pytest 2860 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。

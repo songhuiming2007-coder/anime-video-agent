@@ -12,6 +12,8 @@ import {
   subText,
   TOOL_CATEGORY,
   toolCategory,
+  handoffTickets,
+  ticketIdOf,
   toolStatus,
   turnDefaultOpen,
   turnSegments,
@@ -19,7 +21,7 @@ import {
 } from "../../src/shared/toolView";
 
 const tool = (name: string, ok: boolean | null, o: Partial<ToolRow> = {}): ToolRow => ({
-  k: "tool", at: 0, id: `${name}-${String(Math.random())}`, name, summary: "", ok, duplicate: false, durationMs: null, observation: null, logs: [], command: null, description: null, ...o,
+  k: "tool", at: 0, id: `${name}-${String(Math.random())}`, name, summary: "", ok, duplicate: false, durationMs: null, observation: null, logs: [], command: null, description: null, handoff: null, ...o,
 });
 const user = (text: string, at = 0): ConvRow => ({ k: "user", at, text });
 const answer = (text: string, at = 0): ConvRow => ({ k: "assistant", at, kind: "answer", text, label: null });
@@ -158,5 +160,27 @@ describe("R4 ① 回合切段", () => {
   it("纯聊天一轮：过程为空", () => {
     const [t] = turns(turnSegments([user("你好"), answer("在"), footer()], false));
     expect([t.process, t.tail, t.tools]).toEqual([[], [1, 2], 0]);
+  });
+});
+
+describe("D82 PR-C 工单号、主文本与提示条", () => {
+  const h = (id: string) => `请处理工单 \`/r/tickets/${id}.md\`：先读工单……`;
+  it("ticketIdOf：取路径里的工单号（含 -2 后缀）；不是交接文本为 null", () => {
+    expect(ticketIdOf(h("T-20261013T012328Z-854dd1"))).toBe("T-20261013T012328Z-854dd1");
+    expect(ticketIdOf(h("T-20261013T012328Z-854dd1-2"))).toBe("T-20261013T012328Z-854dd1-2");
+    expect(ticketIdOf(null)).toBeNull();
+    expect(ticketIdOf("随便一段话")).toBeNull();
+  });
+  it("mainText：带 handoff 的行是「已开工单 T-…」，其余照旧", () => {
+    expect(mainText(tool("run_pipeline", true, { summary: "tickets open …", handoff: h("T-20261013T012328Z-854dd1") }))).toBe("已开工单 T-20261013T012328Z-854dd1");
+    expect(mainText(tool("run_pipeline", true, { summary: "tts --redo 5" }))).toBe("tts --redo 5");
+  });
+  it("handoffTickets：每张工单一条、按首次出现排；同一张被追加取最后一次的交接文本；没有工单为空", () => {
+    const a1 = h("T-20261013T012328Z-aaaaaa");
+    const b = h("T-20261013T012400Z-bbbbbb");
+    const a2 = `${a1}（第二次）`;
+    const rows: ConvRow[] = [tool("run_pipeline", true, { handoff: a1 }), tool("bash", false), tool("run_pipeline", true, { handoff: b }), tool("run_pipeline", true, { handoff: a2 })];
+    expect(handoffTickets(rows)).toEqual([{ id: "T-20261013T012328Z-aaaaaa", handoff: a2 }, { id: "T-20261013T012400Z-bbbbbb", handoff: b }]);
+    expect(handoffTickets([tool("bash", true)])).toEqual([]);
   });
 });

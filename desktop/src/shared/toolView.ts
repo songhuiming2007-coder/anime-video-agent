@@ -41,7 +41,25 @@ export function toolStatus(row: ToolRow, turnRunning: boolean): ToolStatus {
 }
 
 /** 主文本：bash 用模型给的用途，没有时用命令摘要；其余用 core 给的摘要 */
+/** D82：交接文本里的工单号（路径的文件名部分；core 模板生成，形状同 pipeline.tickets._TICKET_ID）。取不到为 null */
+export function ticketIdOf(handoff: string | null): string | null {
+  return handoff === null ? null : (/T-\d{8}T\d{6}Z-[0-9a-f]{6}(?:-\d+)?/.exec(handoff)?.[0] ?? null);
+}
+
+/** D82（人选 C）：本会话开过的工单（按首次出现的顺序；同一张单被追加时取最后一次的交接文本），输入框上方提示条用 */
+export function handoffTickets(rows: readonly ConvRow[]): { id: string; handoff: string }[] {
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (r.k !== "tool" || r.handoff === null) continue;
+    const id = ticketIdOf(r.handoff);
+    if (id !== null) out.set(id, r.handoff);
+  }
+  return [...out].map(([id, handoff]) => ({ id, handoff }));
+}
+
 export function mainText(row: ToolRow): string {
+  const ticket = ticketIdOf(row.handoff);
+  if (ticket !== null) return `已开工单 ${ticket}`;
   if (row.name === "bash") return row.description ?? row.summary;
   return row.summary !== "" ? row.summary : (MAIN_FALLBACK[row.name] ?? "");
 }

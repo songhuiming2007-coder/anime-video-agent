@@ -25,6 +25,13 @@ const valid: Record<string, Record<string, unknown>> = {
 };
 
 describe("TV-1 parseOutFrame", () => {
+  it("D82 PR-C：request 帧的 card_summary 有键才查，必须是字符串", () => {
+    const req = { ...base, t: "request", request_id: "r1", kind: "tool_call", turn_id: "t1", title: "x", card_text: "全文", fields: {}, options: ["approve", "reject"], feedback_allowed: true };
+    expect(parseOutFrame(JSON.stringify(req)).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...req, card_summary: "摘要" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...req, card_summary: ["摘要"] })).ok).toBe(false);
+    expect(parseOutFrame(JSON.stringify({ ...req, card_summary: null })).ok).toBe(false);
+  });
   it("D82：tool / history 帧的 handoff 有键才查，必须是字符串", () => {
     const tool = { ...base, t: "tool", ...valid.tool, name: "run_pipeline", phase: "end", ok: true };
     expect(parseOutFrame(JSON.stringify(tool)).ok).toBe(true);
