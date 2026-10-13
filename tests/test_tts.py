@@ -11,6 +11,7 @@
 """
 
 import json
+import os
 import numpy as np
 import re
 import struct
@@ -2008,6 +2009,60 @@ class TestFullRerunGuard:
         assert c["done_segments"] == ["1"] and c["applied"] is True, c
         assert c["applied_at"], c
 
+    def _fake_synth(self, monkeypatch, render):
+        class _E:
+            kind = "qwen3_tts"
+            seed_offset = 7
+            segment_seeds: dict = {}
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+        monkeypatch.setattr(t, "Engine", lambda *a, **k: _E())
+        monkeypatch.setattr(t, "render_segment", render)
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+
+    def _progress(self, ep):
+        return json.loads((ep / "03-audio" / t.PROGRESS_FILE).read_text(encoding="utf-8"))
+
+    def test_进度落盘_合成中可见_完成后记ok(self, tmp_path, monkeypatch):
+        """D87：面板只能从盘上读进度（重配可能是 AVA 在 bash 里跑的）。
+        合成那一刻 current 指向在合的段、重试原因写进 note；结束后 state=ok、done 带完成时刻。"""
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        seen = {}
+
+        def render(eng, seg, dest):
+            t._progress_note("第 2 句第 1 次不过：句内静音 5.8s")
+            seen.update(self._progress(ep))
+            return t.Take(seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1)
+        self._fake_synth(monkeypatch, render)
+        t.run(ep, cfg_path=cfgp, redo=["1"])
+        assert seen["state"] == "running" and seen["current"] == "1" and seen["queue"] == ["1"]
+        assert "句内静音" in seen["note"] and seen["pid"] == os.getpid()
+        pr = self._progress(ep)
+        assert pr["state"] == "ok" and list(pr["done"]) == ["1"] and pr["current"] is None
+        assert pr["finished_at"] and pr["error"] is None
+        assert t._ACTIVE_PROGRESS is None, "跑完要摘掉钩子，别让后续调用往旧文件里写"
+
+    def test_进度落盘_失败记failed与原因并照常抛出(self, tmp_path, monkeypatch):
+        """变异：去掉 except 分支里的 prog.end(ex) → state 停在 running，面板会一直显示合成中。"""
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+
+        def render(eng, seg, dest):
+            raise SystemExit("FAIL 段落 1 重试 3 次仍不达标（句内静音 5.8s）")
+        self._fake_synth(monkeypatch, render)
+        with pytest.raises(SystemExit):
+            t.run(ep, cfg_path=cfgp, redo=["1"])
+        pr = self._progress(ep)
+        assert pr["state"] == "failed" and pr["current"] == "1" and "句内静音" in pr["error"]
+        assert t._ACTIVE_PROGRESS is None
+
+    def test_一段都不合成时不写进度_不冲掉上一轮(self, tmp_path, monkeypatch):
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        self._fake_synth(monkeypatch, lambda *a: pytest.fail("全部复用时不该合成"))
+        t.run(ep, cfg_path=cfgp)
+        assert not (ep / "03-audio" / t.PROGRESS_FILE).exists()
+
     def test_force_all_与_redo_互斥(self, tmp_path):
         """全量与点名是两个意思，同给必须报错而不是默默选一个（F1 归一后覆盖）。"""
         with pytest.raises(SystemExit) as e:
@@ -2151,3 +2206,93 @@ class TestProbeSpeakable:
         monkeypatch.setattr(t, "transcribe", lambda p: "世界")
         t.probe("世界", cfg, tmp_path / "out.wav")
         assert captured["text"] == t.speakable("世界", "indextts2") == "SHI4JIE4"
+
+
+# ---------------------------------------------------------------------------
+# D87：句内死寂门禁 + 重配进度落盘
+# ---------------------------------------------------------------------------
+
+
+def _write_wav(path, parts, sr=24000):
+    """parts = [(秒, 振幅)]；振幅 0 是静音段，3000 约 -20 dB 当「有声」。"""
+    frames = []
+    for secs, amp in parts:
+        frames += [amp] * int(sr * secs)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{len(frames)}h", *frames))
+
+
+GAP = [(0.5, 3000), (3.0, 0), (0.2, 3000)]      # 念完 → 3 s 死寂 → 一声杂音（段 6 的形状）
+CLEAN = [(1.2, 3000)]
+
+
+class _GapEngine:
+    """按 (文本, 种子) 决定出不出死寂：bad(text, seed) 为真就产出 GAP 形状。"""
+
+    kind = "qwen3_tts"
+    cfg = _FakeEngine.cfg
+    seed_offset = 7
+    segment_seeds: dict = {}
+
+    def __init__(self, bad):
+        self.bad = bad
+        self.calls: list[tuple[str, int]] = []
+
+    def synthesize(self, text, dest, attempt, seed=0, emo_params=None):
+        self.calls.append((text, seed))
+        _write_wav(dest, GAP if self.bad(text, seed) else CLEAN)
+
+
+class TestInnerGapGate:
+    def test_longest_gap_量句内最长静音(self, tmp_path):
+        p = tmp_path / "a.wav"
+        _write_wav(p, [(1.0, 3000), (2.5, 0), (1.0, 3000)])
+        assert t._longest_gap(p) == pytest.approx(2.5, abs=0.06)
+        _write_wav(p, [(2.0, 3000)])
+        assert t._longest_gap(p) == 0.0
+        # -55 dB 左右的底噪也算静音：段 6 那条尾巴正是这种「不是零」的静音
+        _write_wav(p, [(0.5, 3000), (2.5, 50), (0.5, 3000)])
+        assert t._longest_gap(p) >= 2.4
+
+    def _quiet_qc(self, monkeypatch, text):
+        monkeypatch.setattr(t, "transcribe", lambda _p: text)
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+
+    def test_死寂判不过并重试(self, tmp_path, monkeypatch):
+        """回读、时长都过，只有句内死寂——必须判不过、换种子重试。
+        变异：去掉 ok_gap → 第 1 次就收下，attempts == 1。"""
+        text = "第一句话。"
+        self._quiet_qc(monkeypatch, text)
+        eng = _GapEngine(lambda _t, seed: seed == 7)
+        take = t._render_one(eng, t.Segment(1, "1", text), tmp_path / "s.wav")
+        assert take.attempts == 2 and eng.calls[1][1] != 7
+        assert t._longest_gap(tmp_path / "s.wav") < t.MAX_INNER_GAP
+
+    def test_三次都死寂不许经盲区豁免交出(self, tmp_path, monkeypatch):
+        """时长达标会让 _best_take 当 ASR 盲区豁免挑一次交出去——死寂不是盲区。
+        变异：去掉 _best_take 里的死寂排除 → 不抛错、交出 qc_skip 段。"""
+        text = "第一句话。"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "完全不对的回读")
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        with pytest.raises(SystemExit, match="句内静音"):
+            t._render_one(_GapEngine(lambda *_: True), t.Segment(1, "1", text), tmp_path / "s.wav")
+
+    def test_基准种子必出死寂时整段统一改用替代种子(self, tmp_path, monkeypatch):
+        """第 2 句在基准种子 7 下死寂、换种子才过 → 回基准整段重排必然复现 →
+        退到第一遍撞出来的替代种子，整段统一。变异：去掉兜底 → SystemExit。"""
+        text = "第一句话。第二句话。"
+        eng = _GapEngine(lambda txt, seed: "二" in txt and seed == 7)
+        # 两句等长 → 同一估算时长；回读 = 引擎刚念的那句（只让死寂这一个判据起作用）
+        monkeypatch.setattr(t, "transcribe", lambda _p: eng.calls[-1][0])
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration("第一句话。"))
+        monkeypatch.setattr(t, "_pad_tail", lambda *a, **k: None)
+        notes: list[str] = []
+        monkeypatch.setattr(t, "_progress_note", notes.append)
+        take = t.render_segment(eng, t.Segment(1, "1", text), tmp_path / "seg-01.wav")
+        alt = take.seeds_used[0]
+        # 进度备注不带段号（读取方给），拆句段标出第几句
+        assert notes[0].startswith("第 2 句第 1 次不过：句内静音"), notes
+        assert notes[-1] == f"基准种子 7 不达标，整段改用种子 {alt}", notes
+        assert alt != 7 and take.seeds_used == [alt, alt], take.seeds_used
+        assert [seed for _, seed in eng.calls[-2:]] == [alt, alt], "最后一遍整段都用替代种子"

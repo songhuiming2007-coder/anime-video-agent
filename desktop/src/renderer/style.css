@@ -181,6 +181,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .center.conv-shell { display: flex; flex-direction: column; overflow: auto; }
 .conv-shell .conv { flex: 1; min-height: 0; height: auto; }
 .conv-shell .conv-stream { min-height: 160px; }
+/* D87：对话流里任何一个超宽元素（无空格的长路径 / URL / 哈希、宽表格）都会让整个流能两指横划。
+ * overflow-wrap 会继承：一条规则管住所有行类型（含以后新增的）。用 anywhere 不用 break-word——只有前者
+ * 会缩小 min-content，flex 子项与表格列才收得回来。中文本来逐字可断，不受影响。 */
+.conv-shell .conv-stream { overflow-wrap: anywhere; }
 /* 对话列很宽时（预览收起）限制阅读行宽 880px 并居中；窄时退回原内边距。padding 的百分比按中栏宽度算 */
 .conv-shell .status, .conv-shell .session-head, .conv-shell .conv-stream { padding-inline: max(var(--space-4), calc((100% - 880px) / 2)); }
 .conv-shell .dock { padding-inline: max(var(--space-3), calc((100% - 880px) / 2)); }
@@ -243,7 +247,11 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-md .markdown pre > .code-copy { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--bg); }
 .copy-btn--done { color: var(--ok); border-color: var(--ok); }
 .request-card-copy { display: flex; justify-content: flex-end; margin-top: var(--space-2); }
-.conv-md .markdown table { margin: 0 0 var(--space-3); border-collapse: collapse; font-size: var(--text-sm); }
+.conv-md .markdown table { display: block; max-width: 100%; overflow-x: auto; margin: 0 0 var(--space-3); border-collapse: collapse; font-size: var(--text-sm); }
+.conv-md .markdown img { max-width: 100%; }
+/* 表格单元格退回 break-word：anywhere 会把每列最小宽度压到一个字，自动表格布局就去挤短列（「CER」竖成三行）。
+ * 短内容保持完整；真放不下的长串（哈希）让表格自己横滚，对话流不动 */
+.conv-md .markdown th, .conv-md .markdown td { overflow-wrap: break-word; }
 .conv-md .markdown th, .conv-md .markdown td { padding: var(--space-1) var(--space-2); border: 1px solid var(--border); text-align: left; vertical-align: top; }
 .conv-md .markdown th { background: var(--bg-subtle); font-weight: var(--weight-semibold); }
 .conv-md .markdown h1, .conv-md .markdown h2 { font-size: var(--text-lg); margin: var(--space-4) 0 var(--space-2); }
@@ -270,6 +278,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .voice-fix .ui-seg > button { white-space: nowrap; }
 .voice-fix-input { width: 160px; }
 .voice-fix-actions { display: flex; gap: var(--space-2); }
+/* D87：重配进度摘要（盘上 .tts_progress.json）；行内状态徽标沿用 ui-badge 色调 */
+.voice-synth { padding: var(--space-1) var(--space-3); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.voice-synth--wait { background: var(--wait-surface); color: var(--wait); }
+.voice-synth--ok { color: var(--ok); }
+.voice-synth--warn { background: var(--warn-surface); color: var(--warn); }
+.voice-synth--danger { background: var(--danger-surface); color: var(--danger); }
+.voice-status { display: inline-flex; }
 .voice-ok { color: var(--ok); }
 .voice-bad { color: var(--danger); }
 .voice-grammar, .voice-panel .pending, .voice-panel .hetero { padding: var(--space-1) var(--space-3); border-top: 1px solid var(--border); }

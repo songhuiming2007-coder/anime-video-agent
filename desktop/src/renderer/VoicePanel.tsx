@@ -7,7 +7,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { VoiceCheckJson, VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
-import { lockState } from "../shared/voiceInfo";
+import { heardKey, lockState, redoSegments, segStatus, synthSummary, type SegStatusKind } from "../shared/voiceInfo";
 import { Icon } from "./icons";
 import { errText, type RpcClient } from "./rpc";
 import { Badge, StateView } from "./ui";
@@ -33,6 +33,30 @@ const LIVE_POLL_MS = 5000;
  *  重配进行中一次读取失败还会把整块换成错误态。只作首屏占位，挂载后照样立刻重读。 */
 const lastInfo = new Map<string, VoiceInfoJson>();
 
+/** D87：每期在面板里放过的「重配后版本」（键 = 段号@完成时刻）。与 lastInfo 同法：切走、切回不丢，重启 app 才清 */
+const heardLog = new Map<string, Set<string>>();
+const heardOf = (epKey: string): Set<string> => {
+  let s = heardLog.get(epKey);
+  if (s === undefined) heardLog.set(epKey, (s = new Set()));
+  return s;
+};
+
+const STATUS_TONE: Record<SegStatusKind, "wait" | "warn" | "danger" | "ok" | undefined> = {
+  running: "wait",
+  queued: undefined,
+  failed: "danger",
+  interrupted: "warn",
+  unfinished: "warn",
+  redo: "warn",
+  redone: "ok",
+  heard: undefined,
+};
+
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
 export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void; live?: boolean }) {
   const [info, setInfo] = useState<VoiceInfoJson | null>(() => lastInfo.get(epKey) ?? null);
   const [err, setErr] = useState<string | null>(null);
@@ -42,7 +66,9 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const [card, setCard] = useState<VoicePatchJson | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [queue, setQueue] = useState<{ wav: string; label: string }[]>([]);
+  const [queue, setQueue] = useState<{ wav: string; label: string; mtime: number | null }[]>([]);
+  /** 复听记账变了要重渲染（Set 本身在模块级 Map 里） */
+  const [, setHeardTick] = useState(0);
   // D50-A S6：在段落文字上选中的词 → 就地纠错小卡。
   // 「全局表改过、待重配的段」不在这里记：D72 起由 core 的 `rerun_segments` 从盘上现算（切走、刷新都不丢）
   const [fix, setFix] = useState<{ label: string; word: string } | null>(null);
@@ -66,11 +92,13 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
 
   // D49-A S5：配音作业在跑时每 5 s 重读一次——新出的 wav 立刻可播，出一段听一段。
   // 5 s：voice.info 每次起一个 core 进程（约 0.3 s），一段配音通常远长于 5 s，再密没有意义
+  // D87：盘上进度显示「在跑」也轮询——AVA 在 bash 里跑的 `--redo`、终端跑的重配不一定挂在作业表上
+  const synthRunning = info?.synth?.state === "running";
   useEffect(() => {
-    if (!live) return;
+    if (!live && !synthRunning) return;
     const t = setInterval(() => void load(), LIVE_POLL_MS);
     return () => clearInterval(t);
-  }, [live, load]);
+  }, [live, synthRunning, load]);
 
   // 手上有数据（哪怕是上次的）就算面板可用：一次读取失败不该把面板换成纯播放队列（D73）
   useEffect(() => {
@@ -91,6 +119,18 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const urlOf = (wav: string) => encodeMediaUrl("episodes", `${epKey}/03-audio/${wav}`);
   const current = queue[0] ?? null;
 
+  // D87：放到哪段就把那段「这一版重配」记为已复听（开播即算：要的是「这版听过没有」，不是听完没有）
+  const curLabel = current?.label ?? null;
+  const curDoneAt = curLabel === null ? undefined : info?.synth?.done[curLabel];
+  useEffect(() => {
+    if (curLabel === null || curDoneAt === undefined) return;
+    const set = heardOf(epKey);
+    const k = heardKey(curLabel, curDoneAt);
+    if (set.has(k)) return;
+    set.add(k);
+    setHeardTick((n) => n + 1);
+  }, [epKey, curLabel, curDoneAt]);
+
   // 队列推进：src 变化后自动开播；`ended` 由元素事件接下一条（Spec 8 §2.7 音频队列同款）
   useEffect(() => {
     const a = audioRef.current;
@@ -98,8 +138,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     void a.play().catch(() => undefined);
   }, [current]);
 
-  const playOne = (seg: VoiceSegmentJson) => setQueue([{ wav: seg.wav, label: seg.label }]);
-  const playAll = () => setQueue((info?.segments ?? []).filter((s) => s.wav_exists).map((s) => ({ wav: s.wav, label: s.label })));
+  const playOne = (seg: VoiceSegmentJson) => setQueue([{ wav: seg.wav, label: seg.label, mtime: seg.mtime }]);
+  const playAll = () => setQueue((info?.segments ?? []).filter((s) => s.wav_exists).map((s) => ({ wav: s.wav, label: s.label, mtime: s.mtime })));
   const stop = () => {
     setQueue([]);
     audioRef.current?.pause();
@@ -180,13 +220,14 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const lockKind = lockState(lock);
   const lockStale = lockKind === "stale";
   const lockBusy = lockKind === "busy";
-  const pendingSegs = [...new Set(pending.map((c) => String(c.segment)))];
   // D72：一个按钮管两层。有期级待应用条目 → --apply-patch（它的复用判据同样会重配全局表改过的段）；
   // 只有全局表 / 文本 / 钉种子变了 → 普通重跑 tts。人不必知道读音存在哪张表
-  const rerunSegs = info.rerun_segments ?? [];
-  const redoSegs = info.segments.map((s) => s.label).filter((l) => pendingSegs.includes(l) || rerunSegs.includes(l));
+  const redoSegs = redoSegments(info);
+  const heard = heardOf(epKey);
+  const today = todayIso();
+  const summary = synthSummary(info, heard, today);
   // 重配正在跑（锁在、pid 活着）时不许再起一次：第二个进程只会撞锁失败（D71 截图时发现）
-  const doneDisabled = busy || lockBusy || redoSegs.length === 0 || info.engine_cloud;
+  const doneDisabled = busy || lockBusy || synthRunning || redoSegs.length === 0 || info.engine_cloud;
   const marksOf = (label: string): string[] =>
     pending
       .filter((c) => typeof c.word === "string" && c.word !== "" && (String(c.segment) === label || c.scope === "global"))
@@ -246,8 +287,17 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         </div>
       )}
 
+      {summary !== null && (
+        <div className={`notice voice-synth voice-synth--${summary.tone}`} data-testid="voice-synth" data-state={info.synth?.state} title={summary.title}>
+          <Icon name={summary.tone === "danger" || summary.tone === "warn" ? "alert" : "info"} size="sm" />
+          <span>{summary.text}</span>
+        </div>
+      )}
+
       <div className="voice-list" data-testid="voice-segments">
-        {info.segments.map((s) => (
+        {info.segments.map((s) => {
+          const st = segStatus(info, s.label, heard, today);
+          return (
           <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={current?.label === s.label ? "true" : undefined}>
             <button className="ui-btn ui-btn--sm ui-btn--icon" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
               ▶
@@ -256,7 +306,11 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               <div className="voice-row-head">
                 <span>段 {s.label}</span>
                 {current?.label === s.label && <Badge tone="accent">播放中</Badge>}
-                {redoSegs.includes(s.label) && <Badge tone="warn">待重配</Badge>}
+                {st !== null && (
+                  <span className="voice-status" data-testid="seg-status" data-kind={st.kind} title={st.title}>
+                    <Badge tone={STATUS_TONE[st.kind]}>{st.text}</Badge>
+                  </span>
+                )}
                 {!s.wav_exists && <span className="muted">（音频缺席）</span>}
                 <span className="seg-actions">
                   <button
@@ -311,7 +365,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {pending.length > 0 && (
@@ -454,7 +509,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           </button>
         )}
       </div>
-      {current !== null && <audio ref={audioRef} src={urlOf(current.wav)} data-testid="voice-audio" onEnded={() => setQueue((q) => q.slice(1))} />}
+      {/* key 带 mtime：重配后同名 wav 换了内容，强制换一个元素重新取，不播旧缓冲（D87） */}
+      {current !== null && <audio key={`${current.wav}@${current.mtime ?? ""}`} ref={audioRef} src={urlOf(current.wav)} data-testid="voice-audio" onEnded={() => setQueue((q) => q.slice(1))} />}
     </div>
   );
 }

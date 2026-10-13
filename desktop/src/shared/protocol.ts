@@ -363,6 +363,26 @@ export interface VoiceSegmentJson {
   wav_exists: boolean;
   text: string;
   has_attic: boolean;
+  /** D87：wav 修改时间（秒）；重配后同名 wav 换了内容，播放器据此换源。缺席 = null */
+  mtime: number | null;
+}
+
+/**
+ * D87：本期最近一轮配音合成的进度（core 读 `03-audio/.tts_progress.json`）。重配可能来自面板按钮、
+ * AVA 在 bash 里跑的 `--redo` 或终端，所以只信盘上这份。`interrupted` = 文件停在 running 但进程已不在。
+ */
+export interface SynthProgressJson {
+  state: "running" | "ok" | "failed" | "interrupted";
+  started_at: string | null;
+  finished_at: string | null;
+  /** 这一轮要合成的段号（顺序即合成顺序） */
+  queue: string[];
+  /** 段号 → 合成完成时刻（本地时间 ISO，无时区） */
+  done: Record<string, string>;
+  current: string | null;
+  /** 当前段最近一次「第 k 次不过」的原因 */
+  note: string | null;
+  error: string | null;
 }
 
 export interface VoiceHeteronymJson {
@@ -386,6 +406,8 @@ export interface VoiceInfoJson {
   pending_corrections: Record<string, unknown>[];
   /** D72：普通重跑会重配的已配段（全局读音表 / 文本 / 钉种子变了），core 从盘上现算；null = 判不了（无清单、引擎与当前配置不符） */
   rerun_segments: string[] | null;
+  /** D87：最近一轮合成进度；null = 从没跑过 / 文件缺席或损坏 */
+  synth: SynthProgressJson | null;
   apply_patch_lock: ApplyPatchLockJson;
 }
 

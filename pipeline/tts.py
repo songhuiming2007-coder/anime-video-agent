@@ -1098,6 +1098,42 @@ def _trim_silence(path: Path, check_tail: bool = True) -> None:
         w.writeframes(struct.pack(f"<{hi - lo}h", *a[lo:hi]))
 
 
+# **句内死寂门禁（D87）。** 2026-10-13《束胸力学》段 6 第 2 句：语音 4.6 s 就念完，引擎又吐出
+# 5.8 s 近静音尾巴（-55~-72 dB，中间夹一声 -34 dB 杂音），成片里就是「念到一半愣住」。
+# `_trim_silence` 按单个采样 > -60 dBFS 算有声，底噪和那声杂音都够得着，一点没裁；
+# 回读 CER 与时长带也都放行了——这类坏样本只能直接量静音。
+#
+# 门槛取实测：全库 296 段的句内最长静音（50 ms 窗 RMS < -45 dB），正常段 ≤1.75 s
+# （多数 ≤1.25 s，逗号气口），段 6 是 4.35 s + 1.75 s 的孤立异常。2.0 s 离正常段有余量。
+MAX_INNER_GAP = 2.0
+GAP_DB = -45.0
+_GAP_WIN = 0.05
+
+
+def _longest_gap(path: Path) -> float:
+    """一个合成单元里最长连续静音的秒数（50 ms 窗 RMS 低于 GAP_DB 记为静音）。
+
+    在 `_trim_silence` 之后量，首尾静音已经裁掉，量到的就是句内停顿。
+    """
+    import wave
+    import numpy as np
+
+    with wave.open(str(path)) as w:
+        sr = w.getframerate()
+        a = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float64) / 32768
+    win = max(1, int(sr * _GAP_WIN))
+    n = len(a) // win
+    if n == 0:
+        return 0.0
+    rms = np.sqrt((a[: n * win].reshape(n, win) ** 2).mean(axis=1))
+    quiet = 20 * np.log10(rms + 1e-12) < GAP_DB
+    best = run = 0
+    for q in quiet:
+        run = run + 1 if q else 0
+        best = max(best, run)
+    return round(best * _GAP_WIN, 2)
+
+
 def _seed_pins(seg: Segment, seeds: dict | None) -> tuple[int | None, ...]:
     """该段每个合成单元会用的**钉种子**（None = 没钉，走派生式 attempt*1000+index+offset）。
 
@@ -1183,18 +1219,35 @@ def render_segment(engine: Engine, seg: Segment, dest: Path) -> Take:
             # 段22 第一句 4208、其余四句 7，人耳听出来的正是「段内音色偏移」）。
             # 质检判据本来就是段级的（过不过看整段），执行也得段级：整段**回基准种子**
             # 重排（不是用那句撞出来的派生种子——7 是人耳盲评选定的基准，整段认它），
-            # 那一声过不了质检就按 ASR 盲区豁免交人耳，不自作主张换采样。
+            # 那一声过不了质检就按 ASR 盲区豁免交人耳。基准种子整段都过不了（豁免也救不了，
+            # 如句内死寂）时才退到第一遍撞出来的那个替代种子，仍是整段统一（D87）。
             base = _seed_for(engine, seg, None, 1)
             print(f"  段内种子不一致 {[s for s, _ in seeds]} → 整段回基准种子 {base} 重排",
                   file=sys.stderr)
+            alts = sorted({s for s, _ in seeds if s is not None and s != base})
+            fail: SystemExit | None = None
             try:
                 parts, meta, seeds, worst_cer, tries, skipped = render_pass(base)
             except SystemExit as ex:
+                fail = ex
+            if fail is not None and len(alts) == 1:
+                # 基准种子在某句上就是坏的（D87：句内死寂这类坏样本，换回同一种子必然原样复现）。
+                # 第一遍撞出来的替代种子只有一个时，整段统一换它重排——段内仍然一致。
+                print(f"  WARN 段落 {seg.label} 按基准种子 {base} 整段重排不达标（{fail}），"
+                      f"整段改用种子 {alts[0]} 重排", file=sys.stderr)
+                _progress_note(f"基准种子 {base} 不达标，整段改用种子 {alts[0]}")
+                try:
+                    parts, meta, seeds, worst_cer, tries, skipped = render_pass(alts[0])
+                    fail = None
+                except SystemExit as ex:
+                    fail = ex
+            if fail is not None:
                 # 不回退到第一遍：那会拼出「一半基准种子、一半派生种子」的音频，
                 # 比两种都差。诚实失败 + 给出退路（单段钉种子是既有机制）。
                 raise SystemExit(
-                    f"{ex}\n"
-                    f"     ↑ 这段是「某句靠重试换种子才过」的段，按基准种子 {base} 整段重排后"
+                    f"{fail}\n"
+                    f"     ↑ 这段是「某句靠重试换种子才过」的段，按基准种子 {base}"
+                    f"{'、替代种子 ' + str(alts[0]) if len(alts) == 1 else ''} 整段重排后"
                     f"仍不达标。\n"
                     f"       退路：给这一段钉另一个种子"
                     f"（config/voice.json 的 segment_seeds，键 \"{seg.label}\"）。")
@@ -1324,6 +1377,9 @@ def _best_take(dest: Path, want: float) -> tuple[int, float] | None:
         ratio = d / want if want else 0.0
         if not (DUR_BAND[0] <= ratio <= DUR_BAND[1]):
             continue
+        # 句内死寂不是 ASR 盲区，人耳一听就是坏的——不许经豁免交出去（D87）
+        if _longest_gap(p) >= MAX_INNER_GAP:
+            continue
         if best is None or abs(d - want) < abs(best[1] - want):
             best = (i, d)
     return best
@@ -1421,12 +1477,14 @@ def _render_one(
         _trim_silence(tmp, check_tail=(engine.kind == "indextts"))
         dur = probe_duration(tmp)
         ratio = dur / want if want else 0.0
+        gap = _longest_gap(tmp)
         heard = transcribe(tmp)
         edits, err = cer(seg.text, heard)
         heard_all.append(heard)
 
         ok_dur = DUR_BAND[0] <= ratio <= DUR_BAND[1]
         ok_cer = readback_passes(edits, err)
+        ok_gap = gap < MAX_INNER_GAP
 
         # 级联仲裁（架构设计三.5）：**主读不过才请仲裁**，不是分数融合——
         # 两个 ASR 的 CER 不可比，混合分数等于把两把不同的尺子接起来量。
@@ -1449,7 +1507,7 @@ def _render_one(
                     # 若不说清楚，人看到的现象是「质检莫名变严」
                     print(f"    WARN 仲裁后端 {arbiter} 执行失败: {type(ex).__name__}: {ex}",
                           file=sys.stderr)
-        if ok_dur and ok_cer:
+        if ok_dur and ok_cer and ok_gap:
             os.replace(tmp, dest)
             _cleanup_takes(dest, ATTEMPTS)
             return Take(seg.index, seg.label, seg.text, dest.name,
@@ -1460,12 +1518,17 @@ def _render_one(
                         seeds_used=[seed], seed_base=getattr(engine, "seed_offset", 0))
 
         why = []
+        if not ok_gap:
+            why.append(f"句内静音 {gap:.1f}s（门槛 {MAX_INNER_GAP:.1f}s）")
         if not ok_dur:
             why.append(f"时长 {dur:.1f}s / 估算 {want:.1f}s = {ratio:.2f}×")
         if not ok_cer:
             why.append(f"回读差 {edits} 音节（CER {err:.0%}）「{heard[:40]}」")
         last = "；".join(why)
         print(f"  第 {attempt} 次不过：{last}", file=sys.stderr)
+        # 段号由读取方给（摘要「段 X 合成中」、该段徽标），这里只说句与次：拆句段的单元 label 是「段号.句号」
+        sent = (f"第 {seg.label[len(overlay_label) + 1:]} 句" if overlay_label and seg.label != overlay_label else "")
+        _progress_note(f"{sent}第 {attempt} 次不过：{last}")
 
     # 3 次重试都用尽且全不达标。判是否 ASR 盲区：时长达标即豁免，不要求
     # 回读文本两两相似（2026-08-16 段落 5.1：三次回读 CER 60/60/30%、
@@ -1864,6 +1927,66 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
     return targets
 
 
+PROGRESS_FILE = ".tts_progress.json"
+
+
+class _Progress:
+    """`03-audio/.tts_progress.json`：这一轮配音合成到哪了（D87）。
+
+    重配有三个入口——顺听面板按钮、AVA 在 bash 里跑 `--redo`、终端——面板只能从盘上读状态。
+    每次状态变化整份原子重写（文件很小）。SIGKILL/断电会让 state 停在 running，
+    由读取方用 pid 判成「中断」（同 `.apply_patch.lock` 的口径）。
+    """
+
+    def __init__(self, path: Path, queue: list[str]):
+        self.path = path
+        self.data: dict = {
+            "v": 1, "pid": os.getpid(), "started_at": _now_iso(), "state": "running",
+            "queue": queue, "done": {}, "current": None, "note": None,
+            "finished_at": None, "error": None,
+        }
+        self._write()
+
+    def _write(self) -> None:
+        paths.atomic_write(self.path, json.dumps(self.data, ensure_ascii=False, indent=2))
+
+    def begin(self, label: str) -> None:
+        self.data.update(current=label, note=None)
+        self._write()
+
+    def note(self, msg: str) -> None:
+        self.data["note"] = msg
+        self._write()
+
+    def finish(self, label: str) -> None:
+        self.data["done"][label] = _now_iso()
+        self.data.update(current=None, note=None)
+        self._write()
+
+    def end(self, error: BaseException | None = None) -> None:
+        self.data["finished_at"] = _now_iso()
+        if error is None:
+            self.data["state"] = "ok"
+        else:
+            self.data["state"] = "failed"
+            text = str(error) if not isinstance(error, KeyboardInterrupt) else "被中断（Ctrl-C / SIGINT）"
+            self.data["error"] = (text or type(error).__name__)[:300]
+        self._write()
+
+
+#: 正在跑的那一轮（`_render_one` 的「第 k 次不过」经 `_progress_note` 写进去）；非 run 调用时为 None
+_ACTIVE_PROGRESS: _Progress | None = None
+
+
+def _progress_note(msg: str) -> None:
+    if _ACTIVE_PROGRESS is not None:
+        _ACTIVE_PROGRESS.note(msg)
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         review: dict[str, int] | None = None, redo: list[str] | None = None,
         force_all: bool = False, allow_engine_mix: bool = False,
@@ -2064,26 +2187,42 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
             ),
         )
 
-    for seg in segs:
-        if seg.index in done:
-            t = done[seg.index]
-            # 陈旧段也照旧复用，但跳过这一行必须把「这是旧逻辑产物」写在脸上——
-            # 2026-09-11 那次事故的现场日志就是一堆毫无区别的「skip 段落 N（已有 x 秒）」。
-            tag = ("，**旧合成逻辑产物 v%s**" % t.synth_logic
-                   if t.synth_logic != SYNTH_LOGIC_VERSION else "")
-            takes.append(t)
-            print(f"skip 段落 {seg.label}（已有 {t.duration:.1f}s{tag}）")
-            continue
-        if engine is None:
-            print(f"载入 {cfg['model']} …")
-            engine = Engine(cfg)
-        dest = out_dir / f"seg-{seg.index:02d}.wav"
-        take = render_segment(engine, seg, dest)
-        takes.append(take)
-        _save_manifest()
-        corrections.mark_segment_done(episode, str(seg.label))
-        print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
-              f"{take.attempts} 次  {seg.text[:20]}…")
+    # 这一轮要真合成的段（D87 进度落盘）。一段都不合成就不写——别把上一轮的「已重配」冲掉
+    global _ACTIVE_PROGRESS
+    queue = [str(s.label) for s in segs if s.index not in done]
+    prog = _Progress(out_dir / PROGRESS_FILE, queue) if queue else None
+    _ACTIVE_PROGRESS = prog
+    try:
+        for seg in segs:
+            if seg.index in done:
+                t = done[seg.index]
+                # 陈旧段也照旧复用，但跳过这一行必须把「这是旧逻辑产物」写在脸上——
+                # 2026-09-11 那次事故的现场日志就是一堆毫无区别的「skip 段落 N（已有 x 秒）」。
+                tag = ("，**旧合成逻辑产物 v%s**" % t.synth_logic
+                       if t.synth_logic != SYNTH_LOGIC_VERSION else "")
+                takes.append(t)
+                print(f"skip 段落 {seg.label}（已有 {t.duration:.1f}s{tag}）")
+                continue
+            if engine is None:
+                print(f"载入 {cfg['model']} …")
+                engine = Engine(cfg)
+            dest = out_dir / f"seg-{seg.index:02d}.wav"
+            prog.begin(str(seg.label))
+            take = render_segment(engine, seg, dest)
+            takes.append(take)
+            _save_manifest()
+            corrections.mark_segment_done(episode, str(seg.label))
+            prog.finish(str(seg.label))
+            print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
+                  f"{take.attempts} 次  {seg.text[:20]}…")
+    except BaseException as ex:
+        if prog is not None:
+            prog.end(ex)
+        raise
+    finally:
+        _ACTIVE_PROGRESS = None
+    if prog is not None:
+        prog.end()
 
     total = sum(t.duration for t in takes)
     _save_manifest()
