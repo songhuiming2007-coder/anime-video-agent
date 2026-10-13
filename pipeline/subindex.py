@@ -369,7 +369,14 @@ def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.
         if allow is not None and (not rows_peek or rows_peek[0].get("anime") not in allow):
             continue
         rows = _check(d, meta_path)
-        vecs.append(np.load(vec_path))
+        v = np.load(vec_path)
+        if v.shape[0] != len(rows):
+            # 多半是重建时在 .npy 与 .json 两步写之间被打断：两份文件都在、成对判据放行，而下标从这一集起整体错位，检索命中会静默指向别的台词 / 镜头
+            raise SystemExit(
+                f"FAIL {vec_path.name} 有 {v.shape[0]} 条向量，{meta_path.name} 有 {len(rows)} 条台词，对不上。\n"
+                f"     多半是重建这一集时在两步写之间被打断。重建这一集：\n"
+                f"     python -m pipeline.ingest phase0 <该集 mkv> --anime <番> --season <N> --reindex")
+        vecs.append(v)
         units.extend(Unit(**r) for r in rows)
     if not vecs:
         if isinstance(anime, list):

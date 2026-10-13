@@ -486,6 +486,16 @@ class TestLoadAllFilterBeforeCheck:
         vecs, units = subindex.load_all(tmp_path, "春物")
         assert len(units) == 1 and units[0].anime == "春物"
 
+    def test_向量与台词条数对不上当场失败(self, tmp_path):
+        """重建一集时在 .npy 与 .json 两步写之间被打断：新向量配旧台词，两份文件都在，
+        成对判据放行，而从这一集起 vecs 与 units 下标整体错位、命中静默指向别的台词。
+        变异：去掉 load_all 的条数核对 → 照常加载，本条红。"""
+        import numpy as np
+        self._ep_file(tmp_path, "春物_S01E01", 1, "春物")
+        np.save(tmp_path / "春物_S01E01.npy", np.zeros((2, 4), dtype=np.float32))   # 新向量 2 条，旧台词 1 条
+        with pytest.raises(SystemExit, match="对不上"):
+            subindex.load_all(tmp_path, "春物")
+
     def test_当前番自己的坏索引仍然拦(self, tmp_path):
         # 反向护栏：先过滤≠不校验——当前番的旧格式文件照样当场失败
         (tmp_path / "春物_S01E01.json").write_text(

@@ -232,3 +232,18 @@ class TestEvalRemoved:
         src = _Path(faces.__file__).read_text(encoding="utf-8")
         assert not _re.search(r"(?<![_\w])eval\(", src)   # 不对下载来的元数据求值
         assert "import ast" not in src                      # 死导入不回流
+
+
+def test_load_faces_嵌入与人脸条数对不上当场失败(tmp_path, monkeypatch):
+    """detect 重跑时在 .npy 与 .json 两步写之间被打断：嵌入与人脸记录下标错位，
+    聚类 / 在场判定静默算到别的脸上。变异：去掉 load_faces 的条数核对 → 本条红。"""
+    monkeypatch.setattr(faces.vindex, "VINDEX_DIR", tmp_path)
+    monkeypatch.setattr(faces.vindex, "_check_meta_shots", lambda m, p: None)
+    p = faces.faces_path("番", "S01E01")
+    p.write_text(json.dumps({"meta": {}, "faces": [{"shot": 0}]}), encoding="utf-8")
+    np.save(p.with_suffix(".npy"), np.zeros((3, 768), dtype=np.float32))
+    with pytest.raises(SystemExit, match="对不上"):
+        faces.load_faces("番", "S01E01")
+    np.save(p.with_suffix(".npy"), np.zeros((1, 768), dtype=np.float32))
+    recs, v = faces.load_faces("番", "S01E01")
+    assert len(recs) == 1 and v.shape == (1, 768)

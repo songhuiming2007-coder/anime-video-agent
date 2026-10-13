@@ -22,7 +22,10 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
+
+if TYPE_CHECKING:   # 只给类型注解用；运行时仍在用到处局部 import，行为不变
+    from pipeline.agent.assembly import SessionContextTracker
 
 from pipeline import paths
 from pipeline import project as project_mod

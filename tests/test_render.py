@@ -517,3 +517,39 @@ class TestAvsyncSubs:
         assert "\nStyle: SRC," in text
         assert "Dialogue: 0,0:01:01.00,0:01:03.50,SRC,,0,0,0,,第一句｛x｝" in text
         assert text.replace(render.SRC_STYLE_LINE, "").startswith(plain.split("[Events]")[0])
+
+
+class TestWriteFinalAtomic:
+    """最终合成先写临时文件再原子替换（2026-10-13 中断审计）。此前 ffmpeg 直写 05-final.mp4：
+    中途被打断，上一版成片已被覆盖成半截，而 status 只看文件在不在，报「渲染完成，待质检」。
+    变异：_write_final 改回直写 05-final.mp4 → 第一条红（旧成片被半截覆盖后又被删）。"""
+
+    def _fake_ffmpeg(self, monkeypatch, fail):
+        def run(cmd, **kw):
+            Path(cmd[-1]).write_bytes(b"half-written")       # ffmpeg 已经写了一半
+            if fail is not None:
+                raise fail
+        monkeypatch.setattr(render.subprocess, "run", run)
+
+    def test_被打断_旧成片原样_临时文件清掉(self, tmp_path, monkeypatch):
+        (tmp_path / render.FINAL).write_bytes(b"previous good render")
+        self._fake_ffmpeg(monkeypatch, KeyboardInterrupt())
+        with pytest.raises(KeyboardInterrupt):
+            render._write_final(tmp_path, tmp_path, ["ffmpeg"])
+        assert (tmp_path / render.FINAL).read_bytes() == b"previous good render"
+        assert not (tmp_path / render.FINAL_PART).exists()
+
+    def test_ffmpeg失败_首次渲染不留下冒充成片的文件(self, tmp_path, monkeypatch):
+        import subprocess
+        self._fake_ffmpeg(monkeypatch, subprocess.CalledProcessError(1, "ffmpeg"))
+        with pytest.raises(subprocess.CalledProcessError):
+            render._write_final(tmp_path, tmp_path, ["ffmpeg"])
+        assert not (tmp_path / render.FINAL).exists(), "status 靠它判渲染完成"
+        assert not (tmp_path / render.FINAL_PART).exists()
+
+    def test_成功_替换成新成片(self, tmp_path, monkeypatch):
+        (tmp_path / render.FINAL).write_bytes(b"previous good render")
+        self._fake_ffmpeg(monkeypatch, None)
+        out = render._write_final(tmp_path, tmp_path, ["ffmpeg"])
+        assert out == tmp_path / render.FINAL and out.read_bytes() == b"half-written"
+        assert not (tmp_path / render.FINAL_PART).exists()

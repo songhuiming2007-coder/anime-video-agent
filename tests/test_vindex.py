@@ -550,6 +550,15 @@ class TestPoolScope:
             (tmp_path / f"EGOIST_{k}.captions.json").write_text("{}", encoding="utf-8")
         return tmp_path
 
+    def test_向量与镜头条数对不上当场失败(self, tmp_path, monkeypatch):
+        """embed 重建时在两步写之间被打断：下标从这一集起整体错位，命中静默指向别的镜头。
+        变异：去掉 load_scene 的条数核对 → 照常加载，本条红。"""
+        import numpy as np
+        d = self._env(tmp_path, monkeypatch, indexed=("SP01", "SP02", "SP03"))
+        np.save(d / "EGOIST_SP02.scene.npy", np.ones((2, vindex.EMBED_DIM), dtype="float32"))
+        with pytest.raises(SystemExit, match="对不上"):
+            vindex.load_scene("EGOIST", d)
+
     def test_池索引只打了一部分时检索默认拒绝加载(self, tmp_path, monkeypatch):
         # 拿半份索引去检索排片＝静默的池缩水：Top-K 照常返回、分数照常过阈值
         d = self._env(tmp_path, monkeypatch)
@@ -955,3 +964,20 @@ def test_build_presence_does_not_persist_general_tags(tmp_path, monkeypatch):
     assert vindex.build_presence("番", "S01E01", out_dir=tmp_path) == 1
     rows = json.loads((tmp_path / "番_S01E01.presence.json").read_text(encoding="utf-8"))["shots"]
     assert rows == [{"i": 0, "char": {"x": 0.9}}]
+
+
+def test_write_presence_写到一半失败_旧索引原样(tmp_path, monkeypatch):
+    """2026-10-13 中断审计：write_presence 曾直写（同文件其余产物都走原子写），
+    写一半被打断留下截断 JSON，下次加载在 json.loads 上裸抛。
+    变异：改回 dest.write_text → 旧文件被截断，本条红。"""
+    monkeypatch.setattr(vindex.shots, "load", lambda a, k, **kw: {"meta": {}, "shots": []})
+    monkeypatch.setattr(vindex, "_shots_fingerprint", lambda m: "fp")
+    dest = vindex.presence_path("番", "S01E01", tmp_path)
+    dest.write_text('{"old": true}', encoding="utf-8")
+
+    def boom(src, dst):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(vindex.paths.os, "replace", boom)
+    with pytest.raises(KeyboardInterrupt):
+        vindex.write_presence("番", "S01E01", [{"i": 0}], "test", {"decision_threshold": 0.5}, out_dir=tmp_path)
+    assert json.loads(dest.read_text(encoding="utf-8")) == {"old": True}

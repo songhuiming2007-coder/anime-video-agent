@@ -1103,6 +1103,29 @@ def _hhmmss_to_sec(s: str) -> float:
     return sec
 
 
+FINAL = "05-final.mp4"
+FINAL_PART = ".05-final.partial.mp4"
+
+
+def _write_final(episode: Path, work: Path, cmd: list[str]) -> Path:
+    """最终合成：先写同目录的 `.05-final.partial.mp4`，ffmpeg 成功后原子替换成 `05-final.mp4`。
+
+    此前 ffmpeg 直接写 `05-final.mp4`（这一步 5–10 分钟）：中途被打断（AVA 的作业被停是整组
+    SIGKILL）留下半截文件——上一版好的成片已被 `-y` 覆盖没了，而 status 只看文件在不在，
+    把这一期报成「渲染完成，待质检」。临时名放同目录（同一文件系统，os.replace 才是原子的），
+    后缀仍是 .mp4，ffmpeg 按它推断封装格式。失败 / 中断就删掉临时文件，旧成片原样不动。
+    """
+    out = episode / FINAL
+    part = episode / FINAL_PART
+    try:
+        subprocess.run([*cmd, str(part.resolve())], check=True, capture_output=True, cwd=work)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    os.replace(part, out)
+    return out
+
+
 def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
     plan_path = episode / "04-clips.approved.json"
     if not plan_path.exists():
@@ -1330,9 +1353,8 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
         # linear=true + measured_* 保证段落间相对响度与混音时一致。
         loud = _measure_loudnorm(voice)
-        out = episode / "05-final.mp4"
-        subprocess.run(
-            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+        return _write_final(episode, work, [
+             "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
              "-i", str(video), "-i", str(voice),
              # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
              "-vf", f"ass={ass.name}",
@@ -1345,10 +1367,7 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
              "-c:v", "libx264", "-preset", PRESET, "-crf", CRF, "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
              "-map", "0:v:0", "-map", "1:a:0", "-shortest",
-             "-movflags", "+faststart", str(out.resolve())],
-            check=True, capture_output=True, cwd=work,
-        )
-        return out
+             "-movflags", "+faststart"])
     finally:
         if keep:
             print(f"  中间文件留在 {work}")

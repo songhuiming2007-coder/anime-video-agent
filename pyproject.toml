@@ -62,7 +62,11 @@ browser = [
 ]
 # 测试只覆盖纯函数，**不需要片源、模型、外置盘**——clone 下来装完就能跑。
 # 涉及媒体的部分靠 pipeline 自己的守卫（截取守卫、质检门禁）在真跑时兜。
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    # 只用于 tests/test_static.py 的静态门禁（未定义名、语法错误这类运行到就崩的问题），不管风格
+    "ruff>=0.15",
+]
 
 [project.scripts]
 ava = "pipeline.agent.cli:main"
