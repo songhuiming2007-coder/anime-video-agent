@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import BinaryIO
@@ -361,10 +362,15 @@ def approve(
 
     # 补丁段二次确认闸（Spec §4.4 闸 3 & §5）：
     # 仅当存在补丁段（via="patch-rescue" ∪ 任一 clip 的 anime == 补丁池名）才触发
-    patch_pool = get_patch_pool(episode)
-    patch_segs = [s for s in data["segments"] if is_patch_segment(s, patch_pool)]
+    patch_segs = patch_segment_indices(episode, data)
     if patch_segs and not confirm_patch:
-        seg_nums = ", ".join(str(s["index"]) for s in patch_segs)
+        seg_nums = ", ".join(str(i) for i in patch_segs)
+        if not _interactive():
+            # 没有终端可作答（桌面端按钮、agent 作业）：此前照样调 input()，读到 EOF 裸抛 EOFError
+            #（2026-10-13《束胸力学》桌面端批准 05 时崩）。说清楚这一关怎么过，不替人确认。
+            raise SystemExit(
+                f"FAIL 本期有 {len(patch_segs)} 个补丁段（段号：{seg_nums}），批准前需人逐段核对后确认。\n"
+                f"     桌面端点「批准」时会弹确认框；终端里核对完加 --confirm-patch 再批准")
         prompt = (
             f"[*] 本期包含 {len(patch_segs)} 个补丁段（段号：{seg_nums}），"
             f"确认已人工核对完毕并批准？[y/N]: "
@@ -390,6 +396,22 @@ def approve(
     return dest
 
 
+def _interactive() -> bool:
+    """有没有人在终端前可以回答 y/N（测试缝）。"""
+    return sys.stdin.isatty()
+
+
+def patch_segment_indices(episode: Path, data: dict | None = None) -> list[int]:
+    """本期排片里的补丁段段号（Spec §4.4 闸 3 的判据）。`data` 不给就读 04-clips.json（纯读）。"""
+    if data is None:
+        src = episode / "04-clips.json"
+        if not src.exists():
+            raise SystemExit(f"FAIL 缺 {src}")
+        data = json.loads(src.read_text(encoding="utf-8"))
+    pool = get_patch_pool(episode)
+    return [int(s["index"]) for s in data["segments"] if is_patch_segment(s, pool)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="第 05 步：出抽检页 / 批准排片")
     ap.add_argument("episode", type=Path)
@@ -397,10 +419,18 @@ def main() -> int:
     ap.add_argument("--confirm-patch", action="store_true", help="显式确认并跳过补丁段人工二次确认提示")
     ap.add_argument("--expect-size", type=int, default=None, help="期望的 04-clips.json 字节数（须与 --expect-mtime-ns 同时给）")
     ap.add_argument("--expect-mtime-ns", type=int, default=None, help="期望的 04-clips.json mtime_ns（须与 --expect-size 同时给）")
+    ap.add_argument("--patch-segments", action="store_true",
+                    help="只读：打印本期补丁段段号 JSON（桌面端批准前据此弹确认框），不写任何文件")
     a = ap.parse_args()
     if (a.expect_size is None) != (a.expect_mtime_ns is None):
         ap.error("--expect-size 与 --expect-mtime-ns 必须同时提供或同时省略")
     paths.require_data()
+
+    if a.patch_segments:
+        if a.approve:
+            ap.error("--patch-segments 是只读查询，不能与 --approve 同用")
+        print(json.dumps({"patch_segments": patch_segment_indices(a.episode)}))
+        return 0
 
     if a.approve:
         expect_pair = (

@@ -130,6 +130,55 @@ def test_ao3_still_to_clip_真转码(tmp_path: Path):
     assert abs(float(probe["format"]["duration"]) - A.STILL_SECONDS) < 0.1
 
 
+class TestStillFit:
+    """D89：非 16:9 的图（图表 / 方图 / 扁长图）完整放进安全框，补边色取四角（人选 C）。
+    《束胸力学》1:1 的环向应力图、2.5:1 的肺容量图被「铺满 + 裁」切掉四边的标注。"""
+
+    def test_宽高比分流(self):
+        assert A.still_fills((1920, 1080)) and A.still_fills((1280, 720)) and A.still_fills(None)
+        assert A.still_fills((1920, 1040))                       # 差 4%：仍算横屏截图
+        assert not A.still_fills((2048, 2048)) and not A.still_fills((1940, 781))
+
+    def test_图表走安全框补边_截图照旧铺满(self):
+        vf = lambda size: (lambda a: a[a.index("-vf") + 1])(A.still_argv(Path("i.png"), Path("o.mp4"), size=size, pad="0x123456"))
+        sq = vf((2048, 2048))
+        assert f"scale={A.STILL_SAFE_W}:{A.STILL_SAFE_H}:force_original_aspect_ratio=decrease" in sq
+        assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:0x123456" in sq and "crop" not in sq
+        assert vf((1920, 1080)) == vf(None), "横屏截图与旧行为逐字节一致"
+        # 安全框 × 推镜终点不超出画面：推到顶时内容仍完整
+        assert A.STILL_SAFE_W * A.STILL_ZOOM_END <= 1920 and A.STILL_SAFE_H * A.STILL_ZOOM_END <= 1080
+
+    def test_补边色取四角平均(self, tmp_path):
+        from PIL import Image
+        im = Image.new("RGB", (100, 60), (255, 255, 255))
+        im.putpixel((2, 2), (0, 0, 0))                           # 一角黑，其余三角白 → 平均偏白
+        im.save(tmp_path / "x.png")
+        size, pad = A.still_look(tmp_path / "x.png")
+        assert size == (100, 60) and pad == "0xbfbfbf"
+
+    @needs_ffmpeg
+    def test_真转码_方图推到顶时四边标注仍在(self, tmp_path):
+        """白底 1:1 图画一圈红边：转出视频的末帧（推得最近）四边都还看得到红边。
+        变异：图表也走「铺满 + 裁」→ 上下红边被裁掉，本条红。"""
+        from PIL import Image, ImageDraw
+        src = tmp_path / "sq.png"
+        im = Image.new("RGB", (1000, 1000), (255, 255, 255))
+        # 红框往里收 30 px：四角留白（真实图表的四角是底色，补边色就取它）
+        ImageDraw.Draw(im).rectangle([30, 30, 969, 969], outline=(255, 0, 0), width=24)
+        im.save(src)
+        out = A.still_to_clip(src, tmp_path / "sq.mp4")
+        last = tmp_path / "last.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-sseof", "-0.2", "-i", str(out), "-frames:v", "1",
+                        "-update", "1", str(last)], check=True)
+        f = Image.open(last).convert("RGB")
+        red = lambda x, y: (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(f.getpixel((x, y)))
+        rows = [y for y in range(1080) if red(960, y)]
+        cols = [x for x in range(1920) if red(x, 540)]
+        assert rows and rows[0] > 0 and rows[-1] < 1079, "上下红边都在画面内"
+        assert cols and min(cols) > 0 and max(cols) < 1919, "左右红边都在画面内"
+        assert not red(5, 540) and f.getpixel((5, 540))[0] > 200, "补边是白色（取自四角）"
+
+
 # ---------- register：自动取号 / 扫图 / 豁免 ----------
 
 

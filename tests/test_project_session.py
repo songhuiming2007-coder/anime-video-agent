@@ -681,12 +681,12 @@ class TestInjection:
 
     def test_受限字样脱敏_请求不被拦(self, world, monkeypatch) -> None:
         root, P, _Q, _E = world
-        (P / "00-project.md").write_text(PROJECT_DOC.replace("总纲散文第一版。", "参考 03-audio/manifest.json 的时长。"),
+        (P / "00-project.md").write_text(PROJECT_DOC.replace("总纲散文第一版。", "参考 config/cloud.local.json 的配置。"),
                                          encoding="utf-8")
         requests, outcome = _turns(root, P / "01-a", monkeypatch, ["开写"])
         assert outcome["stopped"] == "done"
         text = _text(requests[0])
-        assert "[已脱敏]" in text and "manifest.json" not in text
+        assert "[已脱敏]" in text and "cloud.local.json" not in text
 
     def test_企划记忆被外部改动_注告警发notice(self, world, monkeypatch) -> None:
         root, P, _Q, _E = world

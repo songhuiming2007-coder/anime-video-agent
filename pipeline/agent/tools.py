@@ -220,12 +220,16 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "acquire": {"fetch", "gate", "register", "forget", "probe"},
 }
 
-# 出网敏感目录与关键词（§2.5 Y2-r19）
+# 出网敏感目录与关键词（§2.5 Y2-r19）：只剩凭据文件。
+#
+# D89（2026-10-13）去掉 `03-audio/manifest.json` 与 `03-audio/voice.json`。当初列它们的理由是
+# 「没给 LLM 读它们的工具，碰不到就不会发」；bash 落地后这个前提没了——`cat 03-audio/*.json`
+# 不含这串字面量照样读得到（子串比对拦不住内容），而老实写出完整路径的正常提问整轮回滚
+# （《束胸力学》「配音总长多少？」）。两份文件里没有凭据：引擎名、读音表、参考音频路径、
+# 各段文本 / 时长 / CER / 种子，文本与稿件本就出网的部分重合。凭据两条照旧拦（含大小写变体）。
 RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
     "cloud.local.json",
     "agent.local.json",
-    "03-audio/manifest.json",
-    "03-audio/voice.json",
 )
 
 

@@ -104,6 +104,11 @@ export function writeClips(repo: string, ep: string, opts: EpOpts = {}, start = 
 export function epAt05(repo: string, eps: string, name: string, opts: EpOpts = {}): string {
   const ep = epAt035(eps, name);
   writeClips(repo, ep, opts);
+  // 补丁段只可能来自本期补丁池（clips 经 ingest_patch.load_pool 读 04-patch/）——夹具与真实形态一致（D89）
+  if (opts.patch) {
+    mkdirSync(join(ep, "04-patch"), { recursive: true });
+    writeFileSync(join(ep, "04-patch/pool.json"), JSON.stringify({ pool: `${name}-patch`, assets: {} }));
+  }
   writeFileSync(join(ep, "04-review.html"), "<!doctype html><meta charset=utf-8><title>审片</title><p>审片页</p>");
   return ep;
 }

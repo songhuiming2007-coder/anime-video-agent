@@ -1082,8 +1082,9 @@ export class HostService {
   async decide(p: DecideParams): Promise<unknown> {
     try {
       const r = await this.decideOnce(p);
-      // ack 成功：该停机点区间立即关闭（Spec 11 §2.4「区间结束于 ack 点击」）
-      this.humanTimers.closeStop(p.epKey, p.stop, "ack");
+      // ack 成功：该停机点区间立即关闭（Spec 11 §2.4「区间结束于 ack 点击」）。
+      // D89：人在补丁段确认框里取消 = 卡还在、人还在审，区间不关
+      if (!(r as { cancelled?: true }).cancelled) this.humanTimers.closeStop(p.epKey, p.stop, "ack");
       return r;
     } catch (e) {
       if (e instanceof DecideFail) throw new RpcFail(e.error.code, e.error.message, { stdoutTail: e.error.stdoutTail, stderrTail: e.error.stderrTail });
@@ -1115,6 +1116,7 @@ export class HostService {
         readStore: (e) => readApprovalRecords(`${e.abs}/_agent/approvals_store.json`, this.deps.fs),
         fs: this.deps.fs,
         run: (t, args, tag) => this.core(t, args, tag),
+        confirm: (title, detail) => this.deps.confirm(title, detail),
         resnapshot: (k) => this.resnapshot(k),
       },
       p,

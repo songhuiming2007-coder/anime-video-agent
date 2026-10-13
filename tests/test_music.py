@@ -545,3 +545,57 @@ class TestAvsyncLetsWayNotBoundary:
             "\n## 段落 2\n\n配音：第二段。\n")
         with pytest.raises(SystemExit, match="自然收尾区间"):
             m.build_timeline(tmp_path, self._manifest(10.0, 10.0), _bgm())
+
+
+# ---------------------------------------------------------------------------
+# D89：BGM 出处——稿件有音乐段时 01 的 `BGM:` 列表不生效，此前静默、渲到最后一步才报
+# ---------------------------------------------------------------------------
+
+from pipeline.music import MusicBlock, bgm_source_issue  # noqa: E402
+
+_AVSYNC = MusicBlock("M1", "更衣室试看", 883.0, 908.0, "fade", None, avsync="伪恋 S01E07")
+_BED = MusicBlock("M0", "Heart Pattern", 0.0, None, "bgm", None, bgm_only=True)
+_TOPIC = [("Heart Pattern -instrumental-", None, 0.0), ("STEP -Instrumental-", None, 9.0)]
+
+
+class TestBgmSourceIssue:
+    def test_普通期不管(self):
+        assert bgm_source_issue([], _TOPIC) is None
+
+    def test_只有试看段_01有列表_FAIL并给出照抄的铺底块(self):
+        """《束胸力学》原样：一个更衣室试看段 + 01 两首 BGM → 全片无 BGM。
+        变异：让「没有产 BGM 的块」也返回 None → 本条红。"""
+        level, text = bgm_source_issue([_AVSYNC], _TOPIC)
+        assert level == "FAIL"
+        assert "音乐: `Heart Pattern -instrumental-` 完整版 00:00" in text
+        assert "音乐: `STEP -Instrumental-` 完整版 00:09" in text          # +9秒 曲内偏移照搬
+        assert text.count("状态: 背景铺底") == 2 and "`## 段落 1` 之前" in text
+
+    def test_有铺底块_01还留着列表_WARN(self):
+        level, text = bgm_source_issue([_BED, _AVSYNC], _TOPIC)
+        assert level == "WARN" and "M0" in text
+
+    def test_写法一致不出声(self):
+        assert bgm_source_issue([_BED, _AVSYNC], None) is None
+        assert bgm_source_issue([_AVSYNC], None) is None           # 有意不配 BGM 的试听期
+
+    def test_同源块的降为BGM不算铺底(self):
+        weird = MusicBlock("M1", "x", 0.0, 10.0, "bgm", None, avsync="伪恋 S01E07")
+        assert bgm_source_issue([weird], _TOPIC)[0] == "FAIL"
+
+
+def test_render入口就拦_不等到最后一步(tmp_path, monkeypatch):
+    """变异：去掉 render.run 入口的 BGM 出处检查 → 走到 _ffprobe / 切片才炸，本条红。"""
+    import json
+    from pipeline import music, render
+    ep = tmp_path
+    (ep / "03-audio").mkdir()
+    (ep / "03-audio" / "manifest.json").write_text(json.dumps({"segments": [{"index": 1, "duration": 4.0}]}), encoding="utf-8")
+    (ep / "04-clips.approved.json").write_text(json.dumps({"segments": [
+        {"index": 1, "status": "ok", "duration": 4.0, "clips": [{"season": 1, "episode": 1, "start": 0.0, "dur": 4.0}]}]}), encoding="utf-8")
+    monkeypatch.setattr(render, "_maybe_music_plan", lambda e, m: {"segments": [], "total_duration": 4.0})
+    monkeypatch.setattr(music, "parse_script_music", lambda p: [_AVSYNC])
+    monkeypatch.setattr(render, "_bgm_list", lambda e: _TOPIC)
+    monkeypatch.setattr(render, "_bgm_plan", lambda *a: pytest.fail("应在入口就拦下"))
+    with pytest.raises(SystemExit, match="背景铺底"):
+        render.run(ep, force=True)

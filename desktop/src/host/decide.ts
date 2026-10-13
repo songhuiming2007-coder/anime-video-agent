@@ -68,7 +68,7 @@ export function verified(obj: ApprovalRecord | undefined, p: DecideParams): bool
 export type Step = { [T in Template]: { t: T; args: TemplateArgs[T] } }[Template];
 
 /** §2.6 表：05 PENDING = [REVIEW_APPROVE, APPROVE]；05 已对齐待确认 = [APPROVE]；其余停机点一步。 */
-export function plan(p: DecideParams, obj: ApprovalRecord, ep: string): Step[] {
+export function plan(p: DecideParams, obj: ApprovalRecord, ep: string, confirmPatch = false): Step[] {
   if (p.decision === "reject") {
     return [{ t: "REJECT", args: { ep, stop: p.stop, approvalId: p.approvalId, target: p.feedback.target, problem: p.feedback.problem } }];
   }
@@ -79,7 +79,8 @@ export function plan(p: DecideParams, obj: ApprovalRecord, ep: string): Step[] {
   if (p.stop === "05" && obj.status === "pending") {
     const clips = obj.artifacts.find((a) => a.path === "04-clips.json");
     if (!clips) fail("E_STALE", "对象未钉住 04-clips.json 的指纹，无法核验审阅版本，请刷新");
-    return [{ t: "REVIEW_APPROVE", args: { ep, size: clips!.size, mtimeNs: clips!.mtime_ns } }, approve];
+    const review: Step = { t: "REVIEW_APPROVE", args: { ep, size: clips!.size, mtimeNs: clips!.mtime_ns, ...(confirmPatch ? { confirmPatch: true } : {}) } };
+    return [review, approve];
   }
   return [approve];
 }
@@ -102,6 +103,8 @@ export interface DecideCtx {
   readStore: (ep: EpisodeEntry) => StoreRead;
   fs: FsProbe;
   run: <T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag) => Promise<CoreResult>;
+  /** D89：原生确认框（同 apply-patch 那套）；补丁段二次确认用 */
+  confirm: (title: string, detail: string) => Promise<boolean>;
   resnapshot: (epKey: string) => Promise<void>;
 }
 
@@ -111,7 +114,23 @@ function findById(r: StoreRead, id: string): ApprovalRecord | undefined {
   return r.state === "ok" ? r.items.find((o) => o.approval_id === id) : undefined;
 }
 
-export async function decide(ctx: DecideCtx, p: DecideParams, decideId: number): Promise<{ approvalId: string; decision: DecideParams["decision"] }> {
+/** `review --patch-segments` 的 stdout → 段号列表；形状不对返回 null（当 core 出错处理，不猜） */
+export function parsePatchSegs(stdout: string): number[] | null {
+  try {
+    const v: unknown = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+    if (typeof v !== "object" || v === null || !Array.isArray((v as { patch_segments?: unknown }).patch_segments)) return null;
+    const segs = (v as { patch_segments: unknown[] }).patch_segments;
+    return segs.every((n) => Number.isInteger(n)) ? (segs as number[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function decide(
+  ctx: DecideCtx,
+  p: DecideParams,
+  decideId: number,
+): Promise<{ approvalId: string; decision: DecideParams["decision"]; cancelled?: true }> {
   if (!ctx.capApprovals()) fail("E_CAPABILITY", ctx.capDetail()); // 闸 1
   const ep = ctx.episode(p.epKey);
   if (!ep) fail("E_BAD_REQUEST", `未知期 ${p.epKey}`);
@@ -134,7 +153,25 @@ export async function decide(ctx: DecideCtx, p: DecideParams, decideId: number):
       fail("E_GATE_MISMATCH", "批准文件对应的不是你审阅的版本"); // 已对齐待确认：先核验再只做确认
     }
     if (!ctx.isPackaged) await ctx.testHook("after-fingerprint-check"); // 全部 host 侧校验之后、第一个 spawn 之前
-    for (const s of plan(p, obj!, ep!.abs)) {
+    // D89：05 补丁段二次确认（Spec §4.4 闸 3）。此前按钮不带 --confirm-patch、core 去读终端 → EOFError。
+    // 补丁段只可能来自本期补丁池（04-patch/）：没有这个目录就不查，普通期 spawn 序列与 D89 前一致。
+    let confirmPatch = false;
+    if (p.decision === "approve" && p.stop === "05" && obj!.status === "pending" && ctx.existsDir(`${ep!.abs}/04-patch`)) {
+      const q = await ctx.run("REVIEW_PATCH_SEGS", { ep: ep!.abs }, { decide: decideId });
+      if (q.timedOut) fail("E_TIMEOUT", "补丁段查询超时，未批准", tailsOf(q));
+      if (q.code !== 0) fail("E_CORE", `补丁段查询失败：core 退出码 ${q.code ?? `信号 ${q.signal}`}`, tailsOf(q));
+      const segs = parsePatchSegs(q.stdoutTail);
+      if (segs === null) fail("E_CORE", "补丁段查询输出无法解析，未批准", tailsOf(q));
+      if (segs!.length > 0) {
+        const ok = await ctx.confirm(
+          `本期有 ${segs!.length} 个补丁段，确认已逐段看过？`,
+          `段 ${segs!.join("、")} 用的是本期补丁池里的外部素材 / 补丁画面，不是正片检索出来的。确认每一段画面都核对过再批准。`,
+        );
+        if (!ok) return { approvalId: p.approvalId, decision: p.decision, cancelled: true }; // 人取消：不 spawn、不写
+        confirmPatch = true;
+      }
+    }
+    for (const s of plan(p, obj!, ep!.abs, confirmPatch)) {
       const r = await ctx.run(s.t, s.args, { decide: decideId });
       if (r.timedOut) fail("E_TIMEOUT", "结果未知，请以稍后刷新为准", tailsOf(r));
       if (r.code !== 0) fail("E_CORE", `core 退出码 ${r.code ?? `信号 ${r.signal}`}`, tailsOf(r));

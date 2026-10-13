@@ -568,3 +568,43 @@ def natural_outro_tail(episode: Path, blocks: list[MusicBlock]) -> float:
     played = max((b.t1 for b in blocks if b.title == title and b.t1 is not None),
                  default=0.0)
     return max(0.0, float(rec["dur"]) - played)
+
+
+def bgm_source_issue(blocks: list[MusicBlock],
+                     topic_list: list[tuple[str, float | None, float]] | None) -> tuple[str, str] | None:
+    """BGM 出处对不对得上（D89）。返回 `("FAIL"|"WARN", 说明)`，没问题返回 None。纯函数。
+
+    稿件一旦有 `## 音乐段`，渲染就走试听型时间轴（`render._maybe_music_plan`），BGM 只认稿件里
+    「背景铺底」与「降为 BGM」的块，01-topic.md 的 `BGM:` 列表**整个不生效**。此前这件事是静默的：
+    《束胸力学》只插了一个更衣室试看段，全片 BGM 就没了，直到渲染最后一步才报「音乐床时长
+    91.8s != 应达 296.4s——有轨没接时间轴」，AVA 试了 29 次工具才查到原因。
+
+    - 没有音乐段：普通期，01 的列表照常生效 → None
+    - 有音乐段、没有任何块产 BGM、01 写了列表 → FAIL，并给出照抄即可的铺底块
+    - 有铺底 / 降为 BGM 块、01 还留着列表 → WARN（两处说法打架，改错地方的概率很高）
+    """
+    if not blocks:
+        return None
+    beds = [b for b in blocks if b.after == "bgm" and not b.avsync]   # 铺底块的 after 也是 bgm
+    if beds:
+        if topic_list:
+            return ("WARN", "01-topic.md 的 `BGM:` 列表在本期不生效：稿件有音乐段，BGM 以稿件里的"
+                            f"铺底 / 降为 BGM 块为准（{'、'.join(b.label for b in beds)}）。"
+                            "建议删掉 01 里的列表，免得以后改错地方")
+        return None
+    if not topic_list:
+        return None
+    lines = []
+    for i, (title, at, offset) in enumerate(topic_list, 1):
+        where = ("放在 `## 段落 1` 之前" if i == 1 and at in (None, 0)
+                 else f"放在原定 @{at:g} 秒处对应的段落之前" if at is not None
+                 else "放在要换曲的那一段之前")
+        mm, ss = divmod(int(offset), 60)
+        lines.append(f"     ## 音乐段 B{i} · 背景铺底      ← {where}\n"
+                     f"     音乐: `{title}` 完整版 {mm:02d}:{ss:02d}\n"
+                     f"     状态: 背景铺底")
+    return ("FAIL",
+            "稿件有音乐段（试听型时间轴），01-topic.md 的 `BGM:` 列表不会被拿来铺底——"
+            "照现在的写法全片没有 BGM，渲染到最后一步才会报「音乐床时长不对」。\n"
+            "     把 BGM 写成稿件里的背景铺底块（试看 / 音画同源段期间 BGM 自动暂停，结束后接着放）：\n"
+            + "\n\n".join(lines))

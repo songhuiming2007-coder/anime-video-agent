@@ -273,8 +273,8 @@ def test_bloat_guard():
 # ---- 判据 9（纯函数部分）：双侧脱敏 + 注记 ----
 
 def test_scrub_counts_hits_case_insensitive():
-    text, hits = scrub_counted("读 03-audio/manifest.json 和 03-AUDIO/Manifest.JSON")
-    assert hits == 2 and "manifest" not in text.casefold()
+    text, hits = scrub_counted("读 config/cloud.local.json 和 CONFIG/Cloud.Local.JSON")   # D89：受限只剩凭据
+    assert hits == 2 and "cloud.local" not in text.casefold()
 
 
 def test_annotation_when_input_had_restricted_names():

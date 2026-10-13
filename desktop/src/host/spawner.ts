@@ -27,6 +27,8 @@ export type Template =
   | "APPROVE"
   | "REJECT"
   | "REVIEW_APPROVE"
+  // D89：05 批准前查本期补丁段（只读）；非空则宿主弹确认框，确认后 REVIEW_APPROVE 带 --confirm-patch
+  | "REVIEW_PATCH_SEGS"
   | "NEW_EPISODE"
   | "NEW_PROJECT"
   | "NEW_VOLUME"
@@ -104,7 +106,8 @@ export interface TemplateArgs {
   APPROVE: { ep: string; stop: StopType; approvalId: string; cover?: string; title?: string };
   REJECT: { ep: string; stop: StopType; approvalId: string; target: string; problem: string };
   /** size / mtimeNs 取自对象钉住的 04-clips.json 指纹；mtimeNs 为 bigint，argv 里写 String(bigint)（§3.1 规则 8） */
-  REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
+  REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint; confirmPatch?: boolean };
+  REVIEW_PATCH_SEGS: { ep: string };
   /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
   NEW_EPISODE: { name: string; ideaSid?: string };
   /** D81：建企划（`ava new-project <名>`）与在企划下建卷（`ava new --project <企划> <卷名>`）；名字单个 argv 元素，校验全在 core */
@@ -244,11 +247,17 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "REVIEW_APPROVE": {
       // 必须用等号形式：tools.py _extract_positional_args 的 valued_flags 不含这两个旗标，
       // 空格形式会把值当成位置参数，validate_pipeline_command 随之不注入期目录（Spec 3 v0.6 §4.5）
-      const { ep, size, mtimeNs } = args as TemplateArgs["REVIEW_APPROVE"];
+      const { ep, size, mtimeNs, confirmPatch } = args as TemplateArgs["REVIEW_APPROVE"];
+      // --confirm-patch 只在人刚在宿主确认框里确认过补丁段时追加（decide.ts）；不带时 argv 与 D89 前逐字节一致
       return {
-        argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "review", "--approve", `--expect-size=${size}`, `--expect-mtime-ns=${String(mtimeNs)}`],
+        argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "review", "--approve", `--expect-size=${size}`, `--expect-mtime-ns=${String(mtimeNs)}`, ...(confirmPatch ? ["--confirm-patch"] : [])],
         timeoutMs: SPAWN_TIMEOUT_REVIEW_MS,
       };
+    }
+    case "REVIEW_PATCH_SEGS": {
+      // 只读：stdout 单行 JSON {"patch_segments": [7, 10]}
+      const { ep } = args as TemplateArgs["REVIEW_PATCH_SEGS"];
+      return { argv: [py, "-m", "pipeline.review", ep, "--patch-segments"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
     case "NEW_PROJECT": {
       const { name } = args as TemplateArgs["NEW_PROJECT"];

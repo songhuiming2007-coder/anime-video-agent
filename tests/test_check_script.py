@@ -1258,3 +1258,15 @@ class TestAvsyncSubsCheck:
 
     def test_SP素材不出这一项(self, tmp_path, monkeypatch):
         assert self._run(tmp_path, monkeypatch, tag="EGOIST SP04") == []
+
+
+def test_bgm出处_真实解析_铺底块与01列表并存给警告不拦(tmp_path):
+    """D89：判据在 music.bgm_source_issue（纯函数另测），这里只验 check_script 真的把它接上了。
+    变异：去掉 run() 里的 _check_bgm_source 调用 → 本条红。"""
+    from pipeline import check_script as cs
+    (tmp_path / "01-topic.md").write_text("番: 伪恋\nBGM:\n  - Heart Pattern\n---\n", encoding="utf-8")
+    body = "".join(f"## 段落 {i}\n\n配音：第{i}段的口播，写得足够长一些好让句长统计有分母。\n\n画面：\n  查询: 查询{i}\n\n" for i in range(1, 4))
+    (tmp_path / "02-script.md").write_text(
+        "## 音乐段 M0 · 片头铺底\n\n音乐: `Heart Pattern` 完整版 00:00\n状态: 背景铺底\n\n" + body, encoding="utf-8")
+    item = next(c for c in cs.run(tmp_path / "02-script.md") if c.name == "BGM 出处")
+    assert item.ok and item.detail.startswith("⚠") and "M0" in item.detail

@@ -1133,6 +1133,8 @@ _STEP_03 = "03 语音合成"
 _STEP_035 = "03.5 配音顺听 / 04 排片"
 _STEP_05 = "05 审时间码"
 _HIT = "03-audio/manifest.json"
+#: D89 起 `_HIT`（runbook 里的产物路径）不再是受限字面量；需要「确实会被拦」的样例用凭据名
+_SECRET_HIT = "cloud.local.json"
 
 
 class _Step:
@@ -1345,8 +1347,9 @@ def test_td1c_resumed_history_with_old_injections_keeps_sending(root: Path, epis
     _not_blocked(_turn(session, messages, tracker, root, _STEP_05))
     assert len(egress_env) == 1
     body = _payload_text(egress_env[0])
-    assert _runbook_line(root, "03-tts.md", _HIT).replace(_HIT, "[已脱敏]") in body
-    assert _runbook_line(root, "03.5-voice-check.md", _HIT).replace(_HIT, "[已脱敏]") in body
+    # D89：manifest 路径不再受限，历史副本里的 runbook 原文不必脱敏、原样发出
+    assert _runbook_line(root, "03-tts.md", _HIT) in body
+    assert _runbook_line(root, "03.5-voice-check.md", _HIT) in body
 
 
 def test_td1d_crlf_routed_doc_matches_with_same_reader(root: Path, episode: Path, egress_env: list[dict]) -> None:
@@ -1479,7 +1482,7 @@ def test_td5_trusted_set_excludes_non_whitelisted_docs(root: Path, tmp_path: Pat
 
     cases: dict[str, str] = {}
     cases["docs/notes.txt"] = put("docs/notes.txt", "①非md")
-    cases[f"docs/{_HIT}.md"] = put(f"docs/{_HIT}.md", "②路径含受限模式")
+    cases[f"docs/{_SECRET_HIT}.md"] = put(f"docs/{_SECRET_HIT}.md", "②路径含受限模式")
     outside = tmp_path / "outside" / "rules.md"
     outside.parent.mkdir(parents=True)
     outside.write_text(f"③仓库外\n{filler}", encoding="utf-8")
@@ -1715,7 +1718,7 @@ def test_d48_tool_summary_for_writes_and_pipeline() -> None:
 # D67：恢复时对历史消息做全 role 脱敏投影（spec 2026-10-10-resume-scrub-spec.md）
 # ---------------------------------------------------------------------------
 
-_D67_DIRTY = "03-audio/manifest.json"
+_D67_DIRTY = "config/cloud.local.json"   # D89 前是 03-audio/manifest.json（已不受限）
 
 
 def _d67_log(episode: Path, sid: str, messages: list[dict]) -> "EpisodeLease":
@@ -1832,7 +1835,9 @@ def test_d67_real_toukai2_log_passes_egress_after_resume() -> None:
     host.lease = ReadOnlyLease()  # type: ignore[assignment]
     state = prepare_resume(host, sid)
     assert state["status"] == "resumed"
-    assert any("[已脱敏]" in str(m.get("content")) for m in state["messages"]), "投影确实发生了"
+    # D89：这份日志里的受限字面量全是 03-audio/manifest.json（作业打印的产物路径），现在它不受限，
+    # 不靠投影也能发出——这正是 D89 要的：旧日志续跑不会再被路径字面量拦下
+    assert "03-audio/manifest.json" in raw.decode("utf-8"), "日志里确实还留着当年的触发字面量"
     trusted = route_trusted_texts("creative")   # 生产装配口径（真仓库根）
     assert_egress_boundary(
         "https://api.openai.com/v1/chat/completions",

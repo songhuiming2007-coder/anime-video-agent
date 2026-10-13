@@ -749,7 +749,7 @@ def test_browser_extract_text_scrubbed_and_capped(
     root = _make_full_web_root(tmp_path)
     sec = BrowserSection(profile_dir="data/browser-profile", headed=True, timeout_s=30.0, max_chars=1000)
 
-    dirty_text = "发现敏感词 cloud.local.json 以及 03-audio/manifest.json " + ("长文本填充" * 300)
+    dirty_text = "发现敏感词 cloud.local.json 以及 config/cloud.local.json " + ("长文本填充" * 300)
     sess = _FakeBrowserSession(final_url="https://example.com/post", text=dirty_text)
 
     browser_action(

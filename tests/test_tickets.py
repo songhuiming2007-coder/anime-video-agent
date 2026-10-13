@@ -168,10 +168,10 @@ class TestSystemFields:
 
 class TestScrub:
     def test_run_pipeline尾部与模型字段里的密钥(self, repo: Path, capsys) -> None:
-        seed(ep(repo), rp_fail("c1", ep(repo), stderr=f"auth {SECRET} failed\n03-audio/manifest.json 缺\nRuntimeError: boom\n"))
+        seed(ep(repo), rp_fail("c1", ep(repo), stderr=f"auth {SECRET} failed\nconfig/cloud.local.json 缺\nRuntimeError: boom\n"))
         run_open(repo, open_argv(ep(repo), repro=f"带上 {SECRET} 再跑"), capsys)
         text = ticket_files(repo)[0].read_text(encoding="utf-8")
-        assert SECRET not in text and text.count("[已脱敏]") >= 3 and "manifest.json" not in text
+        assert SECRET not in text and text.count("[已脱敏]") >= 3 and "cloud.local.json" not in text
 
     def test_密钥在报错末行_去重键卡面与stdout都脱敏(self, repo: Path, capsys) -> None:
         seed(ep(repo), bash_fail(stderr=f"RuntimeError: bad key {SECRET}\n"))
