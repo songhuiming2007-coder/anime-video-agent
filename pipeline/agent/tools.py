@@ -111,6 +111,10 @@ PIPELINE_MODULES: set[str] = {
     "subgrep",
     # D82：撞 bug 开工单。open 一律逐条人审（HUMAN_GATED_COMMANDS）；list / show 只读免卡（只打系统解析字段）
     "tickets",
+    # D81 PR-4：跨卷镜头 / 配乐重复检查（警告不拦）。默认只读、--write 才写 <企划>/00-crosscheck.md，
+    # 所以不整模块进 READONLY_PIPELINE_MODULES（只读判定按参数级做：crosscheck_writes）。
+    # 位置参数是企划目录：企划会话补企划目录，卷会话补所属企划目录（validate_pipeline_command 的 project_dir）
+    "crosscheck",
 }
 
 # D81（人裁决 Q2：企划会话只做规划、跨卷审查、总装）：企划会话的 run_pipeline 只放行这几个企划级模块，
@@ -402,7 +406,7 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
 _AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
-                                      "adversarial", "scout", "ingest_patch", "tickets")
+                                      "adversarial", "scout", "ingest_patch", "tickets", "crosscheck")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
@@ -464,6 +468,7 @@ def _positional_refusal(module: str, args: list[str]) -> str | None:
 def validate_pipeline_command(
     cmd_tokens: list[str] | str,
     ep_dir: Path | str | None = None,
+    project_dir: Path | str | None = None,
 ) -> tuple[bool, str, list[str]]:
     """白名单子命令校验执行器（Spec §2.4 Y1-r8, Y1-r11, R1-r10, B1-r10；D43 / Spec 17 合表）。
 
@@ -472,6 +477,9 @@ def validate_pipeline_command(
     两条写死的合表语义：
     (a) 模块属于 `ASSET_COMMANDS` 时子命令校验**永远生效**（将来两表若出现重名模块，以子命令限制为准）；
     (b) 当期目录自动补位只对 `PIPELINE_MODULES` 侧的模块生效，asset 侧模块不补位（维持现状）。
+
+    D81 §9.3 ⑥：`project_dir` 是卷 / 企划会话绑定的企划目录（取自 ToolContext，宿主绑定，不取模型参数），
+    只用于给 `crosscheck` 补位——卷会话补的是所属企划目录，不是卷目录。
 
     返回: (is_valid, message, normalized_argv)
     """
@@ -569,8 +577,12 @@ def validate_pipeline_command(
 
     # (b) 自动补位只对原 PIPELINE_MODULES 侧模块生效，asset 侧不补位
     if in_pipeline:
+        if module == "crosscheck":
+            # 补企划目录（字面路径：企划目录的身份按字面判，§4.1）；普通期会话没有企划，不补
+            if project_dir and not _extract_positional_args(args):
+                args = [os.path.abspath(str(project_dir))] + args
         # 自动补位当前期目录参数（🔴 1 修复）
-        if ep_dir:
+        elif ep_dir:
             ep_path = Path(ep_dir).resolve()
             pos_args = _extract_positional_args(args)
             if module == "corrections":
@@ -1584,13 +1596,26 @@ def _tool_read_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+def crosscheck_writes(argv: list[str]) -> bool:
+    """规范化 argv 的 `crosscheck` 是否带 `--write`（含前缀缩写与 `=` 写法，按写判；argparse 本身不认缩写）。"""
+    at = argv.index("-m") + 2 if "-m" in argv else len(argv)
+    for tok in argv[at:]:
+        flag = tok.split("=", 1)[0]
+        if len(flag) > 2 and flag.startswith("--") and "--write".startswith(flag):
+            return True
+    return False
+
+
 def project_module_refusal(argv: list[str], session_kind: str, project_dir: Path | None) -> str | None:
     """D81 §4.2（人裁决 Q2）：企划会话的 run_pipeline 只放行企划级模块 + subgrep / tickets；
-    企划级专属模块（assemble）只在企划会话里放行。审查层与实现层共用；None = 放行。"""
+    企划级专属模块（assemble）只在企划会话里放行；卷会话只放行只读的 crosscheck（带 --write 拒）。
+    审查层与实现层共用；None = 放行。"""
     if "-m" not in argv:
         return None
     at = argv.index("-m") + 1
     module = argv[at].removeprefix("pipeline.") if at < len(argv) else ""
+    if session_kind == "volume" and module == "crosscheck" and crosscheck_writes(argv):
+        return "卷会话只跑只读的 crosscheck（不带 --write）；要把报告写进企划目录，到企划会话里跑"
     if session_kind == "project":
         if module in PROJECT_PIPELINE_MODULES or module in PROJECT_SESSION_EXTRA:
             return None
@@ -1611,7 +1636,8 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     if not ctx.episode_dir:
         # 实现层双保险（D43 / Spec 17 §3.4）：裸循环等绕过 review 层的路径也拿到同一文案。
         raise PermissionError(NO_EPISODE_MESSAGE)
-    dry = run_pipeline(str(args.get("command", "")), episode_dir=ctx.episode_dir, scope=ctx.scope, confirmed=False)
+    dry = run_pipeline(str(args.get("command", "")), episode_dir=ctx.episode_dir, scope=ctx.scope, confirmed=False,
+                       project_dir=ctx.project_dir)
     refusal = project_module_refusal(list(dry.get("argv") or []), ctx.session_kind, ctx.project_dir)
     if refusal:
         raise PermissionError(refusal)
@@ -1620,6 +1646,7 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
         episode_dir=ctx.episode_dir,
         scope=ctx.scope,
         confirmed=ctx.confirmed,
+        project_dir=ctx.project_dir,
     )
     if outcome["ok"] and outcome["returncode"] is None and not ctx.confirmed:
         # 只校验未执行：显式报「需人类确认」，不假装跑过了（静默 fallback 是家规禁项）。
@@ -2118,8 +2145,11 @@ def run_pipeline(
     *,
     scope: str = "pipeline",
     confirmed: bool = False,
+    project_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """白名单执行器入口（向后兼容适配器，底层由 pipeline.jobs 全权驱动）。
+
+    `project_dir`：卷 / 企划会话绑定的企划目录（D81 §9.3 ⑥，crosscheck 补位用），校验与立项两处同传。
 
     纪律：
     1. confirmed=False 时为纯 dry-run 校验，不持久化 Job，不发 job_created，不留幽灵；
@@ -2132,7 +2162,7 @@ def run_pipeline(
 
     # 阶段一：未确认状态，做纯 dry-run 校验，零事件发射，零幽灵对象
     if not confirmed:
-        valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path)
+        valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path, project_dir=project_dir)
         if not valid:
             return {
                 "ok": False,
@@ -2158,7 +2188,7 @@ def run_pipeline(
         }
 
     # 阶段二：已确认状态，正式立项并流转状态机
-    job, valid, msg = create_job(command, episode_dir=ep_path, scope=scope)
+    job, valid, msg = create_job(command, episode_dir=ep_path, scope=scope, project_dir=project_dir)
     if not valid:
         return {
             "ok": False,

@@ -295,6 +295,7 @@ def review_tool_call(
         PROJECT_VOLUME_ONLY_TOOLS,
         READONLY_PIPELINE_MODULES,
         TOOL_SCHEMAS,
+        crosscheck_writes,
         memory_store_for,
         plan_project_write,
         project_module_refusal,
@@ -319,7 +320,7 @@ def review_tool_call(
     argv: list[str] | None = None
     if name == "run_pipeline":
         cmd_str = str(args.get("command", ""))
-        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)
+        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False, project_dir=project_dir)
         if not outcome["ok"]:
             # 先走既有的白名单/dry-run 拒因（--force 全量覆盖等），文案不许被下面的模型规则截走
             return ToolVerdict("reject", reason=outcome["message"])
@@ -358,6 +359,9 @@ def review_tool_call(
     if argv is not None and _pipeline_module_of(argv) in READONLY_PIPELINE_MODULES:
         return ToolVerdict("allow", echo=_echo_line(name, args))
     if argv is not None and _readonly_asset_subcommand(argv):
+        return ToolVerdict("allow", echo=_echo_line(name, args))
+    # D81 §4.8：crosscheck 不带 --write 才算只读（整模块不进只读集合：--write 会落盘）
+    if argv is not None and _pipeline_module_of(argv) == "crosscheck" and not crosscheck_writes(argv):
         return ToolVerdict("allow", echo=_echo_line(name, args))
 
     # D51：读音纠错录入。check 只读、免卡；add / global 在弹卡前跑同一组校验，不成立不弹卡，

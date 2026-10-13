@@ -401,6 +401,40 @@ class TestProjectSessionTools:
         out = execute_tool("run_pipeline", {"command": "tts"}, proj_ctx(root, P, confirmed=True))
         assert out["ok"] is False and "卷级工序" in out["error"]
 
+    def test_crosscheck补位_企划会话补企划_卷会话补所属企划(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D81 §9.3 ⑥：补位取宿主绑定的企划目录，卷会话补的不是卷目录；校验与立项（执行前再校一次）同口径。"""
+        root, P, _Q, _E = world
+        from pipeline import jobs
+
+        tail = ["-m", "pipeline.crosscheck", str(P)]
+        for ctx in (proj_ctx(root, P), vol_ctx(root, P)):
+            out = execute_tool("run_pipeline", {"command": "crosscheck"}, ctx)
+            assert out["result"]["argv"][1:] == tail, ctx.session_kind
+        ran: list[list[str]] = []
+
+        def fake_execute(job):
+            ran.append(list(job.argv))
+            job.status, job.returncode = jobs.JobStatus.SUCCEEDED, 0
+            return job
+
+        monkeypatch.setattr(jobs, "execute_job", fake_execute)
+        out = execute_tool("run_pipeline", {"command": "crosscheck --json"}, vol_ctx(root, P, confirmed=True))
+        assert out["result"]["ok"] is True and ran == [[ran[0][0], *tail, "--json"]]
+
+    def test_crosscheck只读免卡_卷会话带write拒(self, world) -> None:
+        root, P, _Q, _E = world
+        for kind, ep in (("project", P), ("volume", P / "01-a")):
+            v = review("run_pipeline", {"command": "crosscheck"}, kind=kind, ep=ep, P=P, root=root)
+            assert v.action == "allow", kind
+        v = review("run_pipeline", {"command": "crosscheck --write"}, kind="project", ep=P, P=P, root=root)
+        assert v.action == "allow"   # ADR-0030：白名单写命令同样免卡
+        for cmd in ("crosscheck --write", "crosscheck --wr", "crosscheck --write=1"):
+            v = review("run_pipeline", {"command": cmd}, kind="volume", ep=P / "01-a", P=P, root=root)
+            assert v.action == "reject" and "企划会话" in v.reason, cmd
+            out = execute_tool("run_pipeline", {"command": cmd}, vol_ctx(root, P, confirmed=True))
+            assert out["ok"] is False and "只读的 crosscheck" in out["error"], cmd
+        assert not (P / "00-crosscheck.md").exists()
+
     def test_企划级模块分流用替身模块(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
         """assemble 在 PR-5 才进白名单：用替身登记它，验证分流（企划会话放行、卷会话拒）。"""
         root, P, _Q, _E = world
