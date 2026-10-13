@@ -324,7 +324,9 @@ def write_presence(anime: str, key: str, rows: list[dict], producer: str,
     d = shots.load(anime, key)
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = presence_path(anime, key, out_dir)
-    dest.write_text(json.dumps({
+    # 原子写（2026-10-13 中断审计）：同文件其余产物都走 _atomic_write，唯独这里直写，
+    # 写一半被打断会留下截断的 JSON，下次加载在 json.loads 上裸抛
+    _atomic_write(dest, json.dumps({
         "meta": {
             "kind": "presence", "producer": producer,
             "anime": anime, "episode": key,
@@ -333,7 +335,7 @@ def write_presence(anime: str, key: str, rows: list[dict], producer: str,
             **extra,
         },
         "shots": rows,
-    }, ensure_ascii=False), encoding="utf-8")
+    }, ensure_ascii=False))
     return dest
 
 
@@ -618,6 +620,11 @@ def load_scene(anime: str, out_dir: Path = VINDEX_DIR,
                 f"     旧的 CLIP 图文索引不可用（ADR-0015）：重建走 "
                 f"`vindex embed {anime}`")
         v = np.load(npy)
+        if v.shape[0] != len(d["shots"]):
+            # 多半是重建时在 .npy 与 .json 两步写之间被打断：两份文件都在、成对判据放行，而下标从这一集起整体错位，检索命中会静默指向别的台词 / 镜头
+            raise SystemExit(
+                f"FAIL {npy.name} 有 {v.shape[0]} 条向量，{p.name} 有 {len(d['shots'])} 个镜头，对不上。\n"
+                f"     多半是重建时在两步写之间被打断。重建：`vindex embed {anime}`")
         if v.shape[1] != m["dim"] or m["dim"] != EMBED_DIM:
             raise SystemExit(
                 f"FAIL {npy.name} 的维度 {v.shape[1]} / 元信息 {m['dim']} / 当前 "

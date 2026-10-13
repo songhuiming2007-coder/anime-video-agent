@@ -338,7 +338,13 @@ def load_faces(anime: str, key: str) -> tuple[list[dict], np.ndarray]:
         raise SystemExit(f"FAIL 没有 {p.name}，先跑 `python -m pipeline.faces detect {anime} {key}`")
     d = json.loads(p.read_text(encoding="utf-8"))
     vindex._check_meta_shots(d["meta"], p)
-    return d["faces"], np.load(p.with_suffix(".npy"))
+    v = np.load(p.with_suffix(".npy"))
+    if v.shape[0] != len(d["faces"]):
+        # 多半是重建时在 .npy 与 .json 两步写之间被打断：两份文件都在、成对判据放行，而下标从这一集起整体错位，检索命中会静默指向别的台词 / 镜头
+        raise SystemExit(
+            f"FAIL {p.with_suffix('.npy').name} 有 {v.shape[0]} 条嵌入，{p.name} 有 {len(d['faces'])} 张脸，对不上。\n"
+            f"     多半是重跑时在两步写之间被打断。重跑：`python -m pipeline.faces detect {anime} {key}`")
+    return d["faces"], v
 
 
 def episodes(anime: str) -> list[str]:

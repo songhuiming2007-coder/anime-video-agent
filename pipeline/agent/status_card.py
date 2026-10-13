@@ -16,6 +16,7 @@ import difflib
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from pipeline.agent.resolver import scope_of
 from pipeline.agent.tools import (
