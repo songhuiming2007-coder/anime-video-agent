@@ -1014,3 +1014,12 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
   6. `find "data/episodes/EGOIST-传奇企划志-V2" -newer <开跑前的标记>`：**空**。
   7. **待人**：听一遍合集的三处章节交界（判据：成片交人前至少听开头与最长一段）。新成片在 scratchpad 的 `mirror-root/data/episodes/_d81-out/05-final.mp4`；它与典藏版的时长、账本与质检逐项相同，听哪一份由人定。镜像根与输出目录的去留由人定（§4.9 第 5 步）。
 - **验证**：pytest 2927 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。
+
+### 收尾核对（2026-10-13，D81 / D82 / D83 全部 PR 之后）
+
+`find "data/episodes/EGOIST-传奇企划志-V2" -newermt "2026-10-12 20:40:00"`（分支开工时刻）命中 13 项，**与 PR-1 记录的完全相同，没有新增**：
+
+- 2026-10-12 20:58:56–20:59:04：`03-终局葬礼/_agent/approvals_store.json`、`03-终局葬礼/_agent/approvals_store.lock`、`03-终局葬礼/events.jsonl`、`03-终局葬礼/human_time.json`、`00-全一期-典藏版/_agent/approvals_store.lock`、`01-借躯降生/_agent/approvals_store.lock`，以及这几处的父目录（`03-终局葬礼/`、`03-终局葬礼/_agent/`、`00-全一期-典藏版/`、`00-全一期-典藏版/_agent/`、`01-借躯降生/`、`01-借躯降生/_agent/`）；
+- 2026-10-12 22:39:33：`EGOIST-传奇企划志-V2/.DS_Store`（Finder）。
+
+形态是桌面端宿主在人点开这几期时的行为（建停机点对象、记停机点人时），当时本机打包版 AVA.app 在运行；本分支各 PR 的测试一律用临时 userData 与夹具仓，PR-1 / 3 / 4 / 5 的镜像验收各自用标记做了 `find -newer`，均为空。**待人确认 20:58–20:59 那次是不是自己在用桌面端。**
