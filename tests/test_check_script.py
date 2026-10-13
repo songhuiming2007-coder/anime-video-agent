@@ -91,6 +91,21 @@ class TestOutro:
         assert "另有片尾" not in get(cs.run(f), "段落数").detail
 
 
+class TestMicroUnitSegCap:
+    """段落数上限 = 时长上界 ÷ 8 s，默认带也一样（D84 PR-A）。
+
+    默认带 MAX_CHARS=1300、CPM=257 → 1300/257 分钟 ≈ 303.5 s，÷8 = 37.9 → 上限 37。
+    原先默认带固定 20：按 skill §8.1 的 10 s 微单元写出 30 段，机检判不过。
+    """
+
+    def test_默认带下30段微单元能过(self, tmp_path):
+        c = get(cs.run(script(tmp_path, [BODY] * 30)), "段落数")
+        assert c.name == "段落数 8–37" and c.ok
+
+    def test_默认带下超过上限照样拦(self, tmp_path):
+        assert not get(cs.run(script(tmp_path, [BODY] * 38)), "段落数").ok
+
+
 class TestShrinkNoPadding:
     """`01-topic.md` 的 `缩段不注水: 是`：字数下限 × SHRINK_FACTOR，上界不动（E1）。
 
@@ -696,6 +711,91 @@ class TestAnchorChecks:
         f = script(tmp_path, [BODY], anchors=["S01E01 17:50"])
         chk = get(cs.run(f), "锚点指向素材")
         assert not chk.ok and "跳过不可判定" in chk.detail
+
+
+def make_patch_pool(ep, pool="ep-patch", key="SP01", duration=12.0, indexed=True):
+    """最小期内补丁池：pool.json + 镜头表（+ indexed 时的 scene 索引），形状照 ingest_patch 的产物。"""
+    import numpy as np
+    from pipeline import vindex
+    patch = ep / "04-patch"
+    (patch / "shots").mkdir(parents=True)
+    (patch / "vindex").mkdir()
+    asset = ep / "patch_assets" / "chart-still.mp4"
+    asset.parent.mkdir()
+    asset.write_bytes(b"x")
+    entry = {"path": str(asset), "duration": duration, "size": 1,
+             "mtime": asset.stat().st_mtime, "fps": 23.976}
+    if not indexed:
+        entry["indexed"] = False
+    (patch / "pool.json").write_text(json.dumps(
+        {"pool": pool, "floor": 0.6, "no_match": 0.6, "assets": {key: entry}}), encoding="utf-8")
+    sh = [{"i": 0, "start": 0.0, "end": duration, "rep": duration / 2}]
+    (patch / "shots" / f"{pool}_{key}.json").write_text(json.dumps({"shots": sh}), encoding="utf-8")
+    if indexed:
+        (patch / "vindex" / f"{pool}_{key}.scene.json").write_text(json.dumps({"shots": sh}), encoding="utf-8")
+        np.save(patch / "vindex" / f"{pool}_{key}.scene.npy", np.ones((1, vindex.EMBED_DIM), dtype=np.float32))
+
+
+class TestPatchPoolAnchors:
+    """锚点指向期内补丁池（D84 PR-B）：`<池名> SPxx mm:ss`，与 clips 的 extra_pools 同口径。
+
+    原先前缀只认番表与企划名，补丁池锚点在 check_script 必报「不在番表」，
+    而 clips 那边是认的——runbook 04「05 人审改稿写补丁锚点」那一步机检永远过不去。
+    """
+
+    def _ep(self, tmp_path, monkeypatch, anchor, **pool_kw):
+        from pipeline import ingest
+
+        def only_main(anime):
+            assert anime == "天气之子", f"补丁池不该去全局 sources.json 查：{anime}"
+            return {"S01E01": {"path": "/x/e01.mkv", "duration": 6733.0}}
+        monkeypatch.setattr(ingest, "load_sources", only_main)
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        if pool_kw is not None:
+            make_patch_pool(tmp_path, **pool_kw)
+        return cs.run(script(tmp_path, [BODY] * 2, anchors=[anchor, "S01E01 17:50"]))
+
+    def test_补丁池锚点格式与指向都过(self, tmp_path, monkeypatch):
+        checks = self._ep(tmp_path, monkeypatch, "ep-patch SP01 0:00")
+        assert get(checks, "锚点格式").ok
+        chk = get(checks, "锚点指向素材")
+        assert chk.ok, chk.detail
+
+    def test_只登记未打标的补丁资产也能锚(self, tmp_path, monkeypatch):
+        # ingest_patch --anchor-only 的产物：只有镜头表、没有 scene 索引（D84 PR-C）
+        chk = get(self._ep(tmp_path, monkeypatch, "ep-patch SP01 0:00", indexed=False), "锚点指向素材")
+        assert chk.ok, chk.detail
+
+    def test_补丁池里没有这个号_FAIL(self, tmp_path, monkeypatch):
+        chk = get(self._ep(tmp_path, monkeypatch, "ep-patch SP02 0:00"), "锚点指向素材")
+        assert not chk.ok and "集未入库" in chk.detail
+
+    def test_超出补丁资产片长_FAIL(self, tmp_path, monkeypatch):
+        chk = get(self._ep(tmp_path, monkeypatch, "ep-patch SP01 0:13"), "锚点指向素材")
+        assert not chk.ok and "超出片长" in chk.detail
+
+    def test_补丁池不许写季集(self, tmp_path, monkeypatch):
+        chk = get(self._ep(tmp_path, monkeypatch, "ep-patch S01E01 0:00"), "锚点格式")
+        assert not chk.ok and "只有 SPxx" in chk.detail
+
+    def test_没建补丁池时报错指路(self, tmp_path, monkeypatch):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda a: {})
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        chk = get(cs.run(script(tmp_path, [BODY], anchors=["ep-patch SP01 0:00"])), "锚点格式")
+        assert not chk.ok and "--anchor-only" in chk.detail
+
+    def test_补丁池名写错时给出真名(self, tmp_path, monkeypatch):
+        chk = get(self._ep(tmp_path, monkeypatch, "old-patch SP01 0:00"), "锚点格式")
+        assert not chk.ok and "本期补丁池是 ep-patch" in chk.detail
+
+    def test_集号字段指向补丁池(self, tmp_path, monkeypatch):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda a: {})
+        (tmp_path / "01-topic.md").write_text("番: 天气之子\n", encoding="utf-8")
+        make_patch_pool(tmp_path)
+        f = script(tmp_path, [BODY], eps=["SP01"], anchors=["ep-patch SP01 0:00"])
+        assert get(cs.run(f), "集号在素材库").ok
 
 
 # ---------------------------------------------------------------------------

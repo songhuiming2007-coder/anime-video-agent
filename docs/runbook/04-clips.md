@@ -24,8 +24,9 @@ agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底�
 
 1. **看缺口**：`scout`（弹卡，写 `scout-ticket-patch.md`）列出可救的段和缺什么画面。不可救的段（锚点重叠、缺口太短）按它给的指引改稿。
 2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、调 `acquire_propose`。人在提议卡和逐条抓取卡上批。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
-3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>`（弹卡）挪进本期 `patch_assets/`。图片照收，下一步会自动转成 6 s 微动视频（原图保留）。
+3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>`（弹卡）挪进本期 `patch_assets/`。图片照收，下一步会自动转成 12 s 微动视频（1.0→1.15 匀速缓推到末帧，原图保留）。
 4. **轻量增量入库**：`ingest_patch`（弹卡）。
+   - **只为写锚点**（写稿期补图、人指定镜头）：`ingest_patch --anchor-only`——切镜头、抽帧、登记就停，资产标 `indexed: false`，不打标、不碰云端、不要 `--floor`。这些资产只能被锚点引用，rescue-A/B 搜不到它们（clips 会打印提示）；要让救援也能用，不带旗标重跑一次，编号不变。
    - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号 `SP01…SP99`；
    - 秒级切镜头、抽帧、密集意象打标（云端 VLM，实例没开时 agent 先提议 `cloud up`，计费卡）与向量化，产物写入当期 `04-patch/`，不污染全局 `data/library/`；
    - 补丁池损坏或半建：`ingest_patch --reset`（弹卡），旧 `04-patch/` 挪进 `04-patch.attic/<时间>/` 后重建，不删。

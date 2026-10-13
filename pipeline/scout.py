@@ -214,7 +214,7 @@ def render_patch_ticket(ep_dir: Path, probe_data: dict, floor: float | None = No
         f"- 入库规格与流程：`{paths.ROOT / 'docs' / 'runbook' / '04-clips.md'}` 04.5 节",
         "",
         "## 硬约束（违反即返工）",
-        "- 视频或图片都可直接放进 `patch_assets/`：`ingest_patch` 会把图片自动转成 6 秒微动视频（原图保留）；",
+        "- 视频或图片都可直接放进 `patch_assets/`：`ingest_patch` 会把图片自动转成 12 秒微动视频（原图保留；只为写锚点可加 `--anchor-only`，不打标、不碰云端）；",
         f"- 素材采掘纪律逐条遵守 `{paths.ROOT / 'skills' / 'acquire-assets' / 'SKILL.md'}`（渠道选择、无台标/水印、原图分辨率）；",
         f"- 入库规格与流程逐条遵守 `{paths.ROOT / 'docs' / 'runbook' / '04-clips.md'}` 04.5 节。边界声明：补丁通道不走 acquire-assets 的 candidates.json 人审流程——那是 Phase 0 池扩充的闸门；补丁素材直落 patch_assets/，由 ingest 门禁与 05 人审把关；",
         "- 按 Mode 1（纯净画面）采集即可，渲染强制 `-an` 剥音轨（ADR-0013），素材有无音轨皆可；音画同源（Mode 2）缺口的派工不在本协议覆盖范围；",

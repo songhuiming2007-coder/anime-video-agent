@@ -18,13 +18,15 @@ from pipeline import clips as c, ingest_patch, vindex
 
 
 def mk(start, dur, limit, *, span=None, floor=None, season=2, episode=2,
-       sp=False, score=None, anime=None):
+       sp=False, score=None, anime=None, still=False):
     d = {"start": start, "dur": dur, "limit": limit, "span": span or dur,
          "season": season, "episode": episode, "score": score}
     if floor is not None:
         d["floor"] = floor
     if sp:
         d["sp"] = True
+    if still:
+        d["still"] = True
     if anime is not None:
         d["anime"] = anime
     return d
@@ -443,6 +445,15 @@ class TestOverlapsStaticEvidenceAndSeams:
         a = mk(0.0, 12.0, 12.0, sp=True, season=None, episode=6)
         b = mk(0.0, 12.0, 12.0, sp=True, season=None, episode=6)
         assert c._overlaps(b, [a])
+
+    def test_显式still标的12s微动照样豁免(self):
+        """D84：转图入库登记 `still`，判据先读标。12 s 微动（新默认时长）过不了 ≤8s 代理，
+        没有这个标同一张图表在两段里引用就会判 anchor_overlap。"""
+        a = mk(0.0, 12.0, 12.012, sp=True, season=None, episode=6, still=True)
+        b = mk(0.0, 12.0, 12.012, sp=True, season=None, episode=6, still=True)
+        assert not c._overlaps(b, [a])
+        # still 标只在 SP 片段上生效：普通季集带了也不豁免
+        assert c._overlaps(mk(0.0, 12.0, 12.012, still=True), [mk(0.0, 12.0, 12.012, still=True)])
 
     def test_只有一边是sp不算豁免(self):
         a = mk(0.0, 6.006, 6.006, sp=True, season=None, episode=6)
@@ -1655,3 +1666,45 @@ class TestPoolsAssemblySkipsPatch:
         assert seg["status"] == "ok"
         assert seg["clips"][0]["anime"] == "my-ep-patch"
 
+
+
+class TestAnchorOnlyPatchPool:
+    """D84 PR-C：只登记未打标的补丁资产（`ingest_patch --anchor-only`）能被锚点引用，救援检索如实跳过。"""
+
+    def test_未打标补丁资产走锚点_并提示救援不可用(self, tmp_path, monkeypatch, capsys):
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：一公斤矿泉水压在胸口。\n\n画面：\n  锚点: ep-patch SP01 00:00\n\n"
+            "## 段落 2\n\n配音：难命中的查询。\n\n画面：\n  查询: 失败词\n",
+            encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 9.0}, {"index": 2, "duration": 5.0}]}),
+            encoding="utf-8")
+        patch = ep / "04-patch"
+        (patch / "shots").mkdir(parents=True)
+        (patch / "vindex").mkdir()
+        asset = ep / "patch_assets" / "chart-still.mp4"
+        asset.parent.mkdir()
+        asset.write_bytes(b"x")
+        (patch / "pool.json").write_text(json.dumps({"pool": "ep-patch", "no_match_source": "anchor-only",
+            "assets": {"SP01": {"path": str(asset), "duration": 12.0, "size": 1,
+                                "mtime": asset.stat().st_mtime, "fps": 23.976, "indexed": False}}}),
+            encoding="utf-8")
+        (patch / "shots" / "ep-patch_SP01.json").write_text(
+            json.dumps({"shots": [{"i": 0, "start": 0.0, "end": 12.0, "rep": 6.0}]}), encoding="utf-8")
+
+        def no_search(*a, **kw):
+            raise AssertionError("补丁池没有已打标镜头时不该跑救援检索")
+        monkeypatch.setattr(c.vindex, "search_scene", no_search)
+        monkeypatch.setattr(c, "load_sources", lambda anime: {"S01E01": {"path": "main.mp4", "duration": 100.0}})
+        monkeypatch.setattr(c, "load_all", lambda d, a: (None, None))
+        monkeypatch.setattr(c, "search", lambda q, vecs, units, k, **kw: [])
+
+        data = json.loads(c.run(ep, anime="主番").read_text(encoding="utf-8"))
+        assert data["segments"][1]["status"] == "no_match"   # 检索段照旧落空交人，不当成救过了
+        seg = data["segments"][0]
+        assert seg["status"] == "ok" and seg["clips"][0]["anime"] == "ep-patch"
+        assert round(sum(x["dur"] for x in seg["clips"]), 3) == 9.0
+        err = capsys.readouterr().err
+        assert "1 个资产只登记未打标" in err and "救援检索不可用" in err

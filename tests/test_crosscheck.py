@@ -255,3 +255,15 @@ def test_状态卡显示上次检查(proj: Path) -> None:
     assert line.startswith("上次跨卷检查: 4 条命中（镜头 2 · 微动物证 1 · 配乐 1）/ 未检查 0 卷（")
     (proj / "00-crosscheck.md").write_text("被手改了\n", encoding="utf-8")
     assert "找不到汇总行" in build_project_card(proj)
+
+
+def test_is_micro_认显式still标():
+    """D84：12 s 微动（新默认）过不了 ≤8 s 代理，靠 `still` 标；口径与 clips._is_micro 一致。"""
+    from pipeline.clips import _is_micro
+    for c in (clip("P", None, 3, 0.0, 12.0, sp=True, still=True),
+              clip("P", None, 3, 0.0, 6.0, sp=True, limit=6.006),
+              clip("P", None, 3, 0.0, 12.0, sp=True, limit=12.012),
+              clip("P", 1, 3, 0.0, 12.0, still=True)):
+        assert cc._is_micro(c) == _is_micro(c)
+    assert cc._is_micro(clip("P", None, 3, 0.0, 12.0, sp=True, still=True))
+    assert not cc._is_micro(clip("P", None, 3, 0.0, 12.0, sp=True, limit=12.012))

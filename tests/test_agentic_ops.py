@@ -98,6 +98,25 @@ def test_ao3_still_argv_四样锁死():
     assert "-n" in argv  # 不覆盖已有文件
 
 
+def test_ao3_still_微动推满全片():
+    """D84：12 s（微单元上限）、缓推到末帧才到顶。
+
+    旧写法 `min(zoom+0.0015,1.15)` 在第 100 帧就到顶，6 s（144 帧）里最后 44 帧不动
+    （实测相邻帧差均值：第 100–109 帧 0.001，新写法首尾都 ≈0.8）。
+    """
+    import re
+    assert A.STILL_SECONDS == 12.0
+    frames = round(12.0 * 24000 / 1001)                 # 288（成片帧率 24000/1001）
+    vf = A.still_argv(Path("in.png"), Path("out.mp4"))
+    vf = vf[vf.index("-vf") + 1]
+    m = re.search(r"zoompan=z='1\+([0-9.]+)\*on':d=(\d+):", vf)
+    assert m, vf
+    step, d = float(m.group(1)), int(m.group(2))
+    assert d == frames
+    assert abs(1 + step * (frames - 1) - A.STILL_ZOOM_END) < 1e-6    # 末帧刚好到顶
+    assert 1 + step * (frames - 2) < A.STILL_ZOOM_END                 # 倒数第二帧还在推
+
+
 @needs_ffmpeg
 def test_ao3_still_to_clip_真转码(tmp_path: Path):
     out = A.still_to_clip(_png(tmp_path / "a.png", 2400, 1700), tmp_path / "a.mp4")
@@ -125,6 +144,7 @@ def test_ao4_扫图登记_自动取号_转码_原图保留(repo: Path):
     assert [p.name.split("-", 1)[0] for p in made] == ["SP01"] and made[0].suffix == ".mp4"
     db = json.loads((repo / "data/library/sources.json").read_text(encoding="utf-8"))
     assert list(db["POOL"]) == ["SP01"]
+    assert db["POOL"]["SP01"]["still"] is True  # D84：排片的微动物证豁免认这个标
     assert img.exists()  # 原图保留
     led = _ledger(repo)[0]
     assert led["as"] == "SP01" and led["still_from"] == "booklet.png"

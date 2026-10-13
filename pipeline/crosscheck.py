@@ -105,7 +105,8 @@ def _span(c: dict) -> tuple[float, float]:
 
 def _is_micro(c: dict) -> bool:
     # clips._overlaps 的微动物证豁免条件原样照抄（spec §9.3 ②：豁免不进 same_footage 谓词）
-    return bool(c.get("sp")) and c.get("limit", 999) <= 8.0
+    # D84 起微动素材带显式 `still` 标（12 s 微动过不了 ≤8 s 代理），同 clips._is_micro
+    return bool(c.get("sp")) and (bool(c.get("still")) or c.get("limit", 999) <= 8.0)
 
 
 def load_clips(vol: Path) -> tuple[str, list[tuple[object, dict]]]:

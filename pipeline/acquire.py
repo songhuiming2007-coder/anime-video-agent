@@ -8,7 +8,7 @@
     python -m pipeline.acquire fetch <候选号> [--dry-run]     # 从 candidates.json 抓 → incoming/
     python -m pipeline.acquire register <文件> --pool EGOIST [--as SP19] [--waive 理由]
         → 复用 `ingest.register`（登记前强制过 intact）+ 落到 sources.json；
-          不给 --as 自动取池里下一个号，图片自动转 6 s 微动视频（D59）
+          不给 --as 自动取池里下一个号，图片自动转 12 s 微动视频（D59；D84 由 6 s 改 12 s）
     python -m pipeline.acquire register <文件> --to-patch <期目录>   # 挪进本期 patch_assets/
     python -m pipeline.acquire forget <候选号>                       # 台账移走一条，好重抓
 
@@ -397,22 +397,29 @@ def next_key(registered: set[str], raw_names: list[str]) -> int:
     return nxt
 
 
-#: 扫图转 6 s 微动视频（`01-assets-video.md` 铁律三：1920×1080 / yuv420p / 帧率 / 无音轨，四样锁死，
+#: 扫图转微动视频（`01-assets-video.md` 铁律三：1920×1080 / yuv420p / 帧率 / 无音轨，四样锁死，
 #: 否则 concat 时 `parameters do not match` 整片崩）。帧率与成片同源（render.FPS 的同一个配置键）。
-STILL_SECONDS = 6.0
+#: 12 s = 微单元上限（skill §8.1 的 8–12 s）：一张图撑满一个微单元全程在动；更长的段由锚点段
+#: 尾帧定格补（`ok_extended`，≤8 s，ADR-0011 决策 4）。D84 前是 6 s，放进 8–12 s 的段后半截定格。
+STILL_SECONDS = 12.0
 STILL_FPS = paths.conf("video.fps", "24000/1001")
+#: 缓推终点：1.0 → 1.15 匀速推满全片。步长按帧数算（`0.15 / (帧数-1)`），不写死——
+#: 旧写法每帧 +0.0015 在第 100 帧（≈4.2 s）就到顶，6 s 里最后 1.8 s 已经不动了。
+STILL_ZOOM_END = 1.15
 
 
 def still_argv(src: Path, dest: Path) -> list[str]:
-    """图片 → 6 s 缓推视频的 ffmpeg 命令（纯函数，测试与 `--dry-run` 看的就是它）。
+    """图片 → STILL_SECONDS 秒缓推视频的 ffmpeg 命令（纯函数，测试与 `--dry-run` 看的就是它）。
 
-    放大铺满再居中裁（不留黑边）+ 缓推 1.0→1.15；`-n` 不覆盖已有文件。
+    放大铺满再居中裁（不留黑边）+ 缓推 1.0→STILL_ZOOM_END、末帧刚好到顶；`-n` 不覆盖已有文件。
     单张输入不加 `-loop`：zoompan 对一帧输入恰好产出 `d` 帧，再用 `-frames:v` 钉死帧数。
     """
     num, _, den = STILL_FPS.partition("/")
     frames = round(STILL_SECONDS * int(num) / int(den or 1))
+    # 按输出帧号 `on`（0 起）算缩放，不靠上一帧 zoom 累加：第 0 帧 1.0，第 frames-1 帧刚好 STILL_ZOOM_END
+    step = (STILL_ZOOM_END - 1.0) / max(frames - 1, 1)
     vf = ("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
-          f"zoompan=z='min(zoom+0.0015,1.15)':d={frames}:x='iw/2-(iw/zoom/2)':"
+          f"zoompan=z='1+{step:.8f}*on':d={frames}:x='iw/2-(iw/zoom/2)':"
           f"y='ih/2-(ih/zoom/2)':s=1920x1080:fps={STILL_FPS}")
     return ["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(src),
             "-vf", vf, "-frames:v", str(frames), "-r", STILL_FPS,
@@ -641,7 +648,7 @@ def cmd_register(file: Path, *, pool: str, key: int | None = None, force: bool =
     original = file
     kind = kind_of(file.name)
     if kind == "scan":
-        # 扫图：先按图片判据过门禁，再转 6 s 微动视频（register 只收视频，渲染要 mp4）。原图留在原处
+        # 扫图：先按图片判据过门禁，再转微动视频（STILL_SECONDS；register 只收视频，渲染要 mp4）。原图留在原处
         p = probe_image(file)
         vs = check_image(decoded=p["decoded"], decode_detail=p["detail"],
                          width=p["width"], height=p["height"])
@@ -684,7 +691,8 @@ def cmd_register(file: Path, *, pool: str, key: int | None = None, force: bool =
         os.chdir(paths.ROOT)
     rel = dest.relative_to(paths.ROOT) if dest.is_relative_to(paths.ROOT) else dest
     entry = ingest_register(rel, anime=pool, season=1, episode=0, sp=key,
-                            title=(led or {}).get("title"), path=sources)
+                            title=(led or {}).get("title"), path=sources,
+                            still=file is not original)
     print(f"  已登记 {pool}/{k}：{entry['width']}×{entry['height']} "
           f"{entry['duration']:.1f}s fps={entry['fps']}")
     entries = ledger_load()

@@ -294,6 +294,15 @@ def same_footage(a: dict, b: dict) -> bool:
     return (a["season"], a["episode"]) == (b["season"], b["episode"])
 
 
+def _is_micro(c: dict) -> bool:
+    """静态微动物证（扫图/图表/公告转出的单镜头微动视频）：同一物证可在不同段重复引用。
+
+    显式标 `still`（D84：`acquire register` / `ingest_patch` 转图时登记）优先；
+    没有标的老池仍按「SP 且片长 ≤ 8 s」代理（EGOIST 池 19 条微动全是 6.006 s，零漂移）。
+    """
+    return bool(c.get("sp")) and (bool(c.get("still")) or c.get("limit", 999) <= 8.0)
+
+
 def _overlaps(cand, chosen) -> bool:
     """候选与已选片段是否指向同一处画面（同一集判定见 same_footage）。"""
     for c in chosen:
@@ -304,10 +313,9 @@ def _overlaps(cand, chosen) -> bool:
         #
         # **≤ 8s 是代理判据，它实际读的是片子时长。** EGOIST 池里 19 个微动素材
         # 恰好全是 6.006006s，今天等价；换番/换素材时一个 12s 循环卡或静态图混进
-        # 长片源，豁免会静默失效、伪重叠原样回来。**换番必须重新核对池内微动素材
-        # 的时长。** 中期方案是给池条目加显式 static 标，判据读它。
-        if (cand.get("sp") and c.get("sp")
-                and cand.get("limit", 999) <= 8.0 and c.get("limit", 999) <= 8.0):
+        # 长片源，豁免会静默失效、伪重叠原样回来。D84 起转图入库时登记显式 `still` 标
+        # （微动改 12 s 后代理必然失效），判据先读标、没有标的老池才退回代理（`_is_micro`）。
+        if _is_micro(cand) and _is_micro(c):
             continue
         a_span = cand.get("span", cand.get("dur", 0.0))
         b_span = c.get("span", c.get("dur", 0.0))
@@ -338,7 +346,7 @@ def _tighten_by_episode(used: list[dict]) -> None:
         # (anime, season, episode)，而 sp 只在 season is None 时打标——人审手补
         # 的缺 season 片段会落进同一组，此时「是否收紧」会取决于 used 里谁先出现，
         # 是个顺序依赖的静默开关。
-        if cs and all(c.get("sp") and c.get("limit", 999) <= 8.0 for c in cs):
+        if cs and all(_is_micro(c) for c in cs):
             continue
         cs.sort(key=lambda c: c["start"])
         for a, b in zip(cs, cs[1:]):
@@ -441,7 +449,8 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None,
             "line": f"锚点 {anchor['raw']}", "presence": None,
             # SP 特典片段显式打标（season=None 与人审手补的「缺 season 键」分得开）：
             # qc 的艺术暗场豁免只认这个标，不认 season 猜测
-            **({"sp": True} if anchor["season"] is None else {})}
+            **({"sp": True} if anchor["season"] is None else {}),
+            **({"still": True} if anchor["season"] is None and src.get("still") else {})}
 
 
 # 尾帧定格延展的上限。锚点段的画面不可替代（名场面/指定镜头），素材自然
@@ -830,6 +839,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
 
     patch = ingest_patch.load_pool(episode)
     patch_pool = patch["pool"] if patch else None
+    # 救援只在补丁池有已打标镜头时才跑（D84 PR-C）：anchor-only 登记的资产只能被锚点引用，
+    # 没有向量可搜；空跑 search_scene 还要白加载一次 bge-m3。跳过时下面如实打印，不当成救过了。
+    rescuable = bool(patch and patch["units"])
+    if patch and patch.get("unindexed"):
+        print(f"[*] 补丁池 {patch_pool} 有 {len(patch['unindexed'])} 个资产只登记未打标"
+              f"（{', '.join(patch['unindexed'])}）：锚点可用，救援检索搜不到它们"
+              + ("" if rescuable else "；本池没有已打标资产，救援检索不可用"), file=sys.stderr)
     extra_pools = [patch_pool] if patch_pool else []
     shots = parse_shots(script, animes, extra_pools=extra_pools)
 
@@ -1001,7 +1017,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         else:
             placed.extend(cands)
 
-    if patch:
+    if rescuable:
         # rescue-A：只救检索失败段（Spec §4.4，必须在 live 计算之前）
         for p in prep:
             if p.get("channel") == "anchor":
@@ -1080,7 +1096,7 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
             continue
         p["clips"], p["status"] = size(p["clips"], p["duration"])
 
-    if patch:
+    if rescuable:
         # rescue-B：救分派失败段（Spec §4.4 Y5, R1）
         # 1. no_source 段：重置无损
         starved = [p for p in prep if p.get("status") == "no_source" and p.get("channel") != "anchor"]

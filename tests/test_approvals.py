@@ -1692,8 +1692,9 @@ def test_tc11_episode_writable_files_exact_set() -> None:
     from pipeline.agent.tools import EPISODE_WRITABLE_FILES
 
     # D48 ②（2026-10-09 人裁决恢复 02.8）扩入 02-adversarial.md：写稿会话填终审表，每次弹卡
+    # D84（2026-10-13 人裁决）扩入 02-asset-requests.json：写稿期缺画面登记，无代码消费
     assert EPISODE_WRITABLE_FILES == {"01-topic.md", "02-script.draft.md", "02-script.md", "07-titles.md",
-                                      "02-adversarial.md"}
+                                      "02-adversarial.md", "02-asset-requests.json"}
 
 
 def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(

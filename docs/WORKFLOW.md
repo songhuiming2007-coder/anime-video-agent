@@ -42,7 +42,7 @@
 | **B. 配音与顺听** | 03 语音合成 | `tts`（弹卡）<br>`corrections add/global`（弹卡）→ `tts --apply-patch` | `python -m pipeline.tts <期>` | **03.5 配音顺听**：顺听面板（终端备用 /voice）纠错（corrections.json 永久资产，--apply-patch 靶向重配）。 |
 | **C. 排片与审片** | 04 画面排片 → 05 审时间码 | `clips`、`review`（弹卡） | `python -m pipeline.clips <期>`<br>`python -m pipeline.review <期>` | **05 审时间码**：预览区看 `04-review.html` 确认无画外音错配，人在决策条批准（agent 不能 approve）。无 approved 文件渲染器拒绝启动。 |
 | **D. 渲染与发布** | 06 渲染 → 07 质检 → 08 封面标题 → 09 发布 | `render`、`qc`、`cover`（弹卡） | `python -m pipeline.render <期>`<br>`python -m pipeline.qc <期>`<br>`python -m pipeline.cover <期>` | **09 标题与封面拍板**：Agent 仅出 5 条标题候选与封面池，**严禁自行定稿**，必须由人类挑选并手动上传。 |
-| **补料通道**（04 之后可选） | 04 缺口段 → 补料入池 → 重排 | `scout` → 检索 + `acquire_propose` → 抓取卡 → `acquire register --to-patch` → `ingest_patch` → `clips`（见 runbook 04.5） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
+| **补料通道**（02 写稿期或 04 之后，所有题材） | 缺画面 → 补料入池 → 写锚点 / 重排 | 检索（`images` 直链）+ `acquire_propose` → 抓取卡 → `acquire register --to-patch` → `ingest_patch`（写稿期只为锚点加 `--anchor-only`）→ `clips`（见 runbook 02 第 2.5 步、04.5） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
 
 ---
 
