@@ -436,6 +436,7 @@ SPEC_TOOLS = [
     "cover_edit",
     "write_note",
     "bash",
+    "view_image",
 ]
 
 
@@ -758,7 +759,7 @@ def test_write_memory_registered_with_adr_and_memory_scopes(tmp_path: Path):
         (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
     )
     assert "write_memory" in repo_tools["tools"]
-    assert len(repo_tools["tools"]) == 15   # ADR-0029 bash 占第 15 位
+    assert len(repo_tools["tools"]) == 16   # ADR-0031 view_image 占第 16 位
 
     # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
     schema = TOOL_SCHEMAS["write_memory"]
@@ -1286,7 +1287,9 @@ def test_idea_scope_full_table_and_needs_episode_message(tmp_path: Path):
     assert names == _expected_schema_names()
 
     from pipeline.agent.tools import NEEDS_EPISODE_TOOLS, NO_EPISODE_MESSAGE, TOOL_SCHEMAS
-    assert NEEDS_EPISODE_TOOLS == {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}
+    assert NEEDS_EPISODE_TOOLS == {
+        "write_episode_file", "cover_edit", "run_pipeline", "acquire_propose", "view_image",
+    }
 
     ctx_idea = ToolContext(scope="idea", episode_dir=None, root=root)
     for name in ("write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"):

@@ -2,10 +2,11 @@
 // 人选方案 A（2026-10-12，plans/2026-10-12-conv-liveliness-shots/options.shots.spec.ts）。
 import type { ConvRow, ToolRow } from "./convFold";
 
-/** 工具名 → 中文类别词（R2 ②）。15 个名字与 config/agent/tools.json 逐一核对（2026-10-12）；未登记的原样显示 */
+/** 工具名 → 中文类别词（R2 ②）。16 个名字与 config/agent/tools.json 逐一核对（2026-10-13，D90 加 view_image）；未登记的原样显示 */
 export const TOOL_CATEGORY: Readonly<Record<string, string>> = {
   bash: "终端",
   read_artifact: "读取",
+  view_image: "读取",
   read_status: "读取",
   list_episodes: "读取",
   write_episode_file: "写入",

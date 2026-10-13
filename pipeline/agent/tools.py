@@ -1057,6 +1057,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "**只产候选、定稿权在人**：本工具不排名、不推荐，也不存在任何「定稿/选最终版」动作，"
             "唯一写入点是人自己的 09 ack。不同缩放/裁剪/滤镜/多图合成；同参数同字节，"
             "output 目标已存在则拒收（换名迭代 edit-1、edit-2…）。每次调用弹人审卡。"
+            "渲染后先用 view_image 看一眼（挡没挡脸、字在手机上看不看得清），再把结果交给人。"
         ),
         "parameters": {
             "type": "object",
@@ -1127,6 +1128,28 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["command", "description"],
+            "additionalProperties": False,
+        },
+    },
+    "view_image": {
+        "name": "view_image",
+        "side_effect": False,
+        "adr": "ADR-0031",
+        "description": (
+            "看期目录里的一张图（.png/.jpg/.jpeg/.webp，只读、免卡）：封面候选、cover_edit 的渲染结果、"
+            "裁出的竖版底图、联系表、用 bash 抽出的视频帧都行。结果只回尺寸，图本身附在这批工具结果之后的"
+            "宿主消息里，**只在本回合附**；下一回合要看现状请重新调用。硬排除 03-audio/ 与 04-patch/。"
+            "视觉类工作（叠字、裁图、挑帧）交给人之前先自己看；没看过的图不要描述效果。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "期目录相对路径，如 07-cover/edit-6.png、07-cover/import/cover-1-vertical.png",
+                },
+            },
+            "required": ["path"],
             "additionalProperties": False,
         },
     },
@@ -1946,6 +1969,13 @@ def _tool_cover_edit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         raise ValueError(str(exc)) from exc
 
 
+def _tool_view_image(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """第 16 个工具（D90 / ADR-0031）：实现在 `agent/vision.py`（附图投影与工具同一处）。"""
+    from pipeline.agent import vision
+
+    return vision.view_image(args, ctx)
+
+
 # ---------------------------------------------------------------------------
 # bash（第 15 个工具，D77 / ADR-0029：人选方案 B，不加沙箱）
 # ---------------------------------------------------------------------------
@@ -2098,17 +2128,18 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "cover_edit": _tool_cover_edit,
     "write_note": _tool_write_note,
     "bash": _tool_bash,
+    "view_image": _tool_view_image,
 }
 
 
-# 需要期目录的工具集合（D43 / Spec 17 §3.4）：无期会话（idea）里调用这四个工具，
+# 需要期目录的工具集合（D43 / Spec 17 §3.4）：无期会话（idea）里调用这几个工具，
 # review 层在弹卡之前 reject、实现层拋同一文案（双保险），两层共用这一份集合与文案。
 NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(
-    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose"}
+    {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose", "view_image"}
 )
 NO_EPISODE_MESSAGE = "当前没有期目录：这一步要先建期（桌面端「＋ 新建一期」/ 终端 `ava new <名>`）"
 # D81 §4.2（红队 R-3）：企划会话的期目录绑定是企划目录，卷级操作不许落到默认分支写进母目录
-PROJECT_VOLUME_ONLY_TOOLS: frozenset[str] = frozenset({"cover_edit", "acquire_propose"})
+PROJECT_VOLUME_ONLY_TOOLS: frozenset[str] = frozenset({"cover_edit", "acquire_propose", "view_image"})
 PROJECT_VOLUME_ONLY_MESSAGE = "{tool} 是卷级操作，企划会话里不做：到对应卷的会话里做（封面与抓取提案不写进企划母目录）"
 
 

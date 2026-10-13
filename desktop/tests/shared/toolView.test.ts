@@ -1,4 +1,6 @@
 // D80（R2 / R4）：工具行显示规则与回合切段。期望值先在实现上跑通，再逐条核对 spec 的规则后写死。
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ConvRow, ToolRow } from "../../src/shared/convFold";
 import {
@@ -29,10 +31,12 @@ const footer = (stopped = "done", at = 0): ConvRow => ({ k: "footer", at, text: 
 const turns = (segs: Segment[]) => segs.filter((s): s is Extract<Segment, { k: "turn" }> => s.k === "turn");
 
 describe("R2 ② 类别词", () => {
-  it("15 个工具全部有类别词（与 config/agent/tools.json 一致），未登记的原样", () => {
-    expect(Object.keys(TOOL_CATEGORY).sort()).toEqual(
-      ["acquire_propose", "bash", "browser", "cover_edit", "crawl", "list_episodes", "read_artifact", "read_status", "run_pipeline", "search_notes", "web_fetch", "web_search", "write_episode_file", "write_memory", "write_note"].sort(),
-    );
+  it("工具全部有类别词（直接读 config/agent/tools.json 比对，加工具漏登记就红），未登记的原样", () => {
+    const repoTools = JSON.parse(
+      readFileSync(resolve(__dirname, "../../../config/agent/tools.json"), "utf-8"),
+    ) as { tools: string[] };
+    expect(Object.keys(TOOL_CATEGORY).sort()).toEqual([...repoTools.tools].sort());
+    expect(toolCategory("view_image")).toBe("读取");
     expect(toolCategory("bash")).toBe("终端");
     expect(toolCategory("read_status")).toBe("读取");
     expect(toolCategory("cover_edit")).toBe("写入");

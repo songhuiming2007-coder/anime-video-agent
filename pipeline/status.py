@@ -518,18 +518,58 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             docs_ref="docs/runbook/08-cover-title.md",
         )
 
-    # 9. 所有机器步骤完成，待人工发布 (09 停机点)
+    # 9. 所有机器步骤完成，待人工发布 (09 停机点)。D90：交付物没齐不许说「齐备」
+    gaps = publish_gaps(d)
+    card_hint = "09 卡的封面填 07-cover/ 下的文件（如 07-cover/edit-6.png），不是顶层的 08-cover.jpg。"
+    if gaps:
+        block_reason = (
+            f"🛑 处于人工停机点 4（09 人工发布），但交付物还缺 {len(gaps)} 项：" + "；".join(gaps) + "。"
+        )
+        next_action = (
+            "先补齐：\n  " + "\n  ".join(gaps)
+            + "\n  （定稿封面由人点名用哪一版后再转成顶层 jpg；简介 / 标签写进 07-titles.md）\n  "
+            + card_hint
+        )
+    else:
+        block_reason = "🛑 处于人工停机点 4（09 人工发布）！交付物已齐备，待人类拍板发布。"
+        next_action = (
+            "人类核对 08-cover.jpg / 08-cover-vertical.jpg 与 07-titles.md 的标题、简介、标签，"
+            "在 09 卡填定稿封面与标题后手动上传发布各平台。" + card_hint
+        )
     return EpisodeStatus(
         episode_dir=str(d),
         episode_name=name,
         current_step="09 人工发布",
         is_blocked=True,
-        block_reason="🛑 处于人工停机点 4（09 人工发布）！所有产物已齐备，待人类拍板发布。",
+        block_reason=block_reason,
         completed_steps=completed,
-        next_action="人类从 07-cover/ 中挑选 1 张封面，从 07-titles.md 中挑选 1 条标题，手动上传发布各平台。",
+        next_action=next_action,
         next_command=None,
         docs_ref="docs/runbook/09-publish.md",
     )
+
+
+# D90：09 交付物（往期惯例，2026-10-13 起写进 runbook 08 / 09）。竖版人裁决为必备
+_COVER_EXTS = (".jpg", ".jpeg", ".png")
+
+
+def publish_gaps(d: Path) -> list[str]:
+    """09 发布前还缺的交付物（只读）。顺序固定：横版、竖版、简介、标签。"""
+    import re
+
+    gaps: list[str] = []
+    for stem, label in (("08-cover", "横版定稿封面"), ("08-cover-vertical", "竖版定稿封面")):
+        if not any((d / f"{stem}{ext}").is_file() for ext in _COVER_EXTS):
+            gaps.append(f"{label} {stem}.jpg（顶层）")
+    titles = d / "07-titles.md"
+    text = titles.read_text(encoding="utf-8", errors="replace") if titles.is_file() else ""
+    # 往期写法不一（`## 简介`、`## 视频简介`、`## 简介（长视频 / B 站版）`、`## 平台标签 / Tags`）：
+    # 认「二级标题里含这个词」，不认正文里顺嘴提到的
+    if not re.search(r"^##[^#\n]*简介", text, re.M):
+        gaps.append("07-titles.md 的「## 简介」节")
+    if not re.search(r"^##[^#\n]*(标签|tags)", text, re.M | re.I):
+        gaps.append("07-titles.md 的「## 标签」节")
+    return gaps
 
 
 def format_status(status: EpisodeStatus) -> str:

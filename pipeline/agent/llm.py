@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterator, Literal, Sequence
 
 from pipeline import paths
 from pipeline.agent.aging import age_tool_results
+from pipeline.agent import vision
 from pipeline.agent.compact import COMPACT_KEY, estimate_tokens
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
@@ -89,8 +90,11 @@ _WRAPUP_KEY = "_ava_wrapup"
 # D79：回合中途送达的排队消息（照 Pi 的 steering）的内部标记——老化边界扫描跳过它，否则回合中途
 # 插一条用户消息会把本回合前半段、模型正在用的工具结果当成旧回合换成占位串
 STEER_KEY = "_ava_steer"
+# D90：view_image 结果消息上的图片引用（路径 + sha），附图由 vision.attach_images 在请求时投影
+_IMAGE_KEY = vision.IMAGE_KEY
 # 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）+ D65 收尾标记 + D79 排队标记
-_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY, STEER_KEY})
+# + D90 图片引用
+_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY, STEER_KEY, _IMAGE_KEY})
 
 # 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
 _WARN_LATCH: set[tuple[str, str]] = set()
@@ -497,12 +501,17 @@ def _tool_message(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, An
     """工具结果进会话的唯一序列化点。受限字样先脱敏（D52）：作业输出常带
     `…/03-audio/manifest.json` 这类路径，不脱敏的话下一次请求整轮被出网断言拦下回滚。
     人看的工具帧走 `_trace`，是原始结果；assistant 的 tool_calls 参数不脱敏（双保险，ADR-0026）。
+    D90：view_image 结果里的私有图片键不进正文，挪到消息内部键上（附图在请求时投影）。
     """
-    return {
+    outcome, image = vision.split_outcome(outcome)
+    message: dict[str, Any] = {
         "role": "tool",
         "tool_call_id": str(call.get("id", "")),
         "content": scrub_restricted(json.dumps(outcome, ensure_ascii=False)),
     }
+    if image is not None:
+        message[_IMAGE_KEY] = {**image, "path": str((outcome.get("result") or {}).get("path", ""))}
+    return message
 
 
 def _reject_outcome(decision: Decision) -> dict[str, Any]:
@@ -680,7 +689,8 @@ def run_tool_loop(
         requested_len = len(convo)
         _LAST_USAGE.set(None)
         reply = chat_complete(
-            aged,
+            # D90：本回合 view_image 的图附在各批工具结果之后（同为请求时投影；字符统计在附图之前算）
+            vision.attach_images(aged),
             tools=tools or None,
             config=cfg,
             scope=context.scope,
@@ -933,7 +943,8 @@ def run_tool_loop(
                         live["outcome"] = getattr(exc, "outcome", None) or outcome
                         raise
                     live["stage"] = "tool"
-                _trace(control, index, name, args, content=outcome)
+                # 人看的工具帧同样不带 view_image 的私有图片键（本机绝对路径 + sha，对人无用）
+                _trace(control, index, name, args, content=vision.split_outcome(outcome)[0])
                 if decision.provenance == "human" or (name == "write_episode_file" and outcome.get("ok")):
                     # 经人批准的执行完成后清空（§2.3 第 5 条）。D48：成功写期文件后也清——D44 让草稿写入免卡后，
                     # 「改完再跑同一条 check_script」被判重复，模型换着写路径绕过去。只清写入后：只读检查免卡执行不清，

@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from pipeline.status import inspect_episode, format_status
 
@@ -216,3 +217,78 @@ def test_status_035_is_advisory_not_blocked(tmp_path: Path):
     assert status.is_blocked is False
     assert status.block_reason is None          # 建议不是阻塞，别往 block_reason 塞 🛑
     assert "03.5" in status.next_action
+
+
+# ---------------------------------------------------------------------------
+# D90：09 交付清单——没齐不许说「齐备」
+# ---------------------------------------------------------------------------
+
+FULL_TITLES = "# 标题与简介候选\n\n## 定稿标题\n\nX\n\n## 简介（长视频 / B 站版）\n\n正文\n\n## 标签\n\n伪恋\n"
+
+
+def _stage_09(tmp_path: Path, titles: str = FULL_TITLES, covers=("08-cover.jpg", "08-cover-vertical.jpg")) -> Path:
+    (tmp_path / "01-topic.md").write_text("# Topic", encoding="utf-8")
+    (tmp_path / "02-script.md").write_text("# Script", encoding="utf-8")
+    (tmp_path / "03-audio").mkdir()
+    (tmp_path / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "04-clips.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "04-clips.approved.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "05-final.mp4").write_text("video", encoding="utf-8")
+    (tmp_path / "06-check.log").write_text("PASS", encoding="utf-8")
+    (tmp_path / "07-titles.md").write_text(titles, encoding="utf-8")
+    for name in covers:
+        (tmp_path / name).write_bytes(b"jpg")
+    return tmp_path
+
+
+def test_publish_gaps_none_when_complete(tmp_path: Path):
+    from pipeline.status import publish_gaps
+    d = _stage_09(tmp_path)
+    assert publish_gaps(d) == []
+    status = inspect_episode(d)
+    assert status.current_step == "09 人工发布" and status.is_blocked
+    assert "交付物已齐备" in status.block_reason
+    assert "07-cover/" in status.next_action, "提醒 09 卡的封面路径在 07-cover/ 下"
+
+
+@pytest.mark.parametrize("missing, expect", [
+    ("08-cover.jpg", "横版定稿封面"),
+    ("08-cover-vertical.jpg", "竖版定稿封面"),
+])
+def test_publish_gaps_missing_cover(tmp_path: Path, missing: str, expect: str):
+    from pipeline.status import publish_gaps
+    covers = [c for c in ("08-cover.jpg", "08-cover-vertical.jpg") if c != missing]
+    d = _stage_09(tmp_path, covers=covers)
+    gaps = publish_gaps(d)
+    assert len(gaps) == 1 and expect in gaps[0]
+    status = inspect_episode(d)
+    assert "齐备" not in status.block_reason and "还缺 1 项" in status.block_reason
+    assert expect in status.next_action
+
+
+def test_publish_gaps_accepts_jpeg_and_png(tmp_path: Path):
+    from pipeline.status import publish_gaps
+    d = _stage_09(tmp_path, covers=("08-cover.jpeg", "08-cover-vertical.png"))
+    assert publish_gaps(d) == []
+
+
+@pytest.mark.parametrize("titles, expect", [
+    ("# T\n\n## 定稿标题\n\nX\n\n## 标签\n\nY\n", "简介"),
+    ("# T\n\n## 定稿标题\n\nX\n\n## 简介\n\n正文里提到标签两个字\n", "标签"),
+    ("# T\n\n正文里写了简介和标签，但没有对应的节\n", "简介"),
+])
+def test_publish_gaps_titles_sections(tmp_path: Path, titles: str, expect: str):
+    from pipeline.status import publish_gaps
+    gaps = publish_gaps(_stage_09(tmp_path, titles=titles))
+    assert any(expect in g for g in gaps), gaps
+
+
+@pytest.mark.parametrize("titles", [
+    "## 简介\n\nA\n\n## 标签\n\nB\n",                       # 7 月写法
+    "## 视频简介\n\nA\n\n## 平台标签 / Tags\n\nB\n",        # 8 月中下旬写法
+    "## 简介（长视频 / B 站版）\n\nA\n\n## 标签\n\nB\n",   # 10 月写法
+    "## 简介\n\nA\n\n## Tags\n\nB\n",                     # 只写英文 Tags
+])
+def test_publish_gaps_accepts_past_heading_styles(tmp_path: Path, titles: str):
+    from pipeline.status import publish_gaps
+    assert publish_gaps(_stage_09(tmp_path, titles=titles)) == []
