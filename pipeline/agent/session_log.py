@@ -298,6 +298,37 @@ def _assistant_index(records: list[dict[str, Any]]) -> dict[str, int]:
     return owner
 
 
+def find_tool_exchange(
+    records: list[dict[str, Any]], call_id: str
+) -> tuple[str, dict[str, Any], dict[str, Any]] | str:
+    """D82：按 tool_call_id 找配对 → (工具名, 调用参数, 结果记录)；不成立返回原因（纯函数，不改写日志）。
+
+    只数 `k == "msg"` 的记录（与 `_assistant_index` 同口径）：压缩事件的 `tail` 是同一批消息的副本，
+    数进去的话压缩过的会话里任何调用都「出现两次」（红队 R-12）。要求**恰好**一个调用与一个结果。
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+    results: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("k") != "msg":
+            continue
+        message = record.get("message") or {}
+        for call in message.get("tool_calls") or []:
+            if str((call or {}).get("id")) == call_id:
+                fn = (call or {}).get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (TypeError, ValueError):
+                    args = {}
+                calls.append((str(fn.get("name") or ""), args if isinstance(args, dict) else {}))
+        if message.get("role") == "tool" and str(message.get("tool_call_id")) == call_id:
+            results.append(record)
+    if len(calls) != 1:
+        return f"会话日志里 {call_id} 的调用有 {len(calls)} 个（要恰好一个）"
+    if len(results) != 1:
+        return f"会话日志里 {call_id} 的结果有 {len(results)} 个（要恰好一个）"
+    return calls[0][0], calls[0][1], results[0]
+
+
 def _last_compaction(records: list[dict[str, Any]]) -> int:
     """最后一个压缩事件的位置（D62）；没有为 -1。"""
     return max((i for i, r in enumerate(records) if r.get("k") == "compaction"), default=-1)

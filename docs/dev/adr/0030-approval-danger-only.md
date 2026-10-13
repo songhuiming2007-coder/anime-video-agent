@@ -49,6 +49,11 @@ status: accepted
 - 取代 ADR-0021「fetch 永远由人逐条批准」（人 2026-10-12 确认抓取直接执行）。
 - 修订 D47「02-script.md 每次弹卡带 diff」：改为免卡，回退靠 `_agent/script-history/` 全量留底。
 - D44 的「参数级免卡」被本 ADR 的更宽口径吸收。
+- **修订（2026-10-12，D82，[spec](../plans/2026-10-12-bug-ticket-spec.md)）**：决策 1 的危险清单扩入三条——
+  「须人审的流水线命令」（`tools.HUMAN_GATED_COMMANDS` 里的模块命令经 bash 直接跑也弹卡：`corrections global` /
+  `calibration set` / `bgm register` 经 bash 不弹卡是现有缺口，人 2026-10-12 确认堵上；另含 `tickets open`）、
+  「写工单目录」（bash 写 `tickets/`）、「拉起 coding agent」（命令词是 claude / codex / opencode / pi / aider / gemini /
+  cursor-agent）。静态规则可被 `python -c` 一类写法绕过，与本 ADR 已接受的同类风险相同。
 
 ## 推翻条件
 

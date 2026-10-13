@@ -41,5 +41,11 @@
 - `links` 被截断（`links_truncated`）或静态抓取被盾时，按升级链升级 `crawl`（无头渲染，返回的 markdown 内嵌链接）；crawl 也不够或需登录态时升级 `browser`（逐调用过人审卡）。
 - 严禁因抓取不顺就退回简略百科交差（AGENTS.md 四节既有纪律）；每升一级在 reason 里写明下级为何不够。
 
+## 撞到流水线 bug（D82）
+- 先排查当期输入（`01-topic.md` / `02-script.md` 的字段格式、素材缺失）。确信是引擎缺陷（AGENTS.md Code Freeze 的「三项汇报」）时，
+  用 `run_pipeline tickets open --call <失败那次调用的 id> --blocked <被卡住的工序> --symptom … --expected … --repro … --why …`
+  开单代替在对话里复述：现场（命令、退出码、输出尾部、代码版本）系统从会话日志取，你只填这四段；`--why` 必填且要具体
+  （同一参数在别处能跑、这里报什么、输入格式已核对）。开单一律弹卡由人批；不要自己去改 `pipeline/`，也不要拉起 coding agent。
+
 ## 记忆两层（D81）
 - 卷会话里写记忆分两层：跨系列通用的教训进全局记忆（`write_memory` 默认）或 `config/voice.json`；只属于本系列的（本系列的读音取舍、封面参数、各卷之间的约定）用 `target="project"` 进企划记忆。

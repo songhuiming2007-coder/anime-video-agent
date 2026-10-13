@@ -29,6 +29,10 @@ __pycache__/
 # JetBrains IDE
 .idea/
 
+# D82：撞 bug 开的工单（含输出原文、本机路径、期名）。仓库公开，工单原文永不进 commit；
+# 静态测试 tests/test_tickets_static.py 守这一行，pipeline.tickets 写盘前另跑 git check-ignore
+/tickets/
+
 # 桌面端（Spec 8）：依赖与构建产物不进库
 desktop/node_modules/
 desktop/out/

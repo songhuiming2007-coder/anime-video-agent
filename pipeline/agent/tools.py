@@ -109,6 +109,8 @@ PIPELINE_MODULES: set[str] = {
     "notes_review",
     # D61 终审辅助：字幕逐字查询（子串/时间窗），只读索引后打印——进只读集合
     "subgrep",
+    # D82：撞 bug 开工单。open 一律逐条人审（HUMAN_GATED_COMMANDS）；list / show 只读免卡（只打系统解析字段）
+    "tickets",
 }
 
 # D81（人裁决 Q2：企划会话只做规划、跨卷审查、总装）：企划会话的 run_pipeline 只放行这几个企划级模块，
@@ -134,7 +136,57 @@ READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
     "ingest": frozenset({"probe", "intact", "verify"}),
     "subindex": frozenset({"search"}),
     "calibration": frozenset({"show"}),
+    # D82：tickets list / show 只读 tickets/*.md 后打印系统解析出的字段（读码核实：全链无写调用、不出正文）
+    "tickets": frozenset({"list", "show"}),
 }
+
+# 逐条人审的模块命令（D82 §4.4）：run_pipeline 命中 → 每次弹卡、不开放「本会话都批准」；bash 直接跑也弹卡
+# （status_card 的 `[须人审的流水线命令]` 规则由本表生成）。子命令为 None = 该模块任何调用。
+# 前三条是 AGENTS.md Code Freeze 三条例外（写 config/，ADR-0030 决策 2）；`session.CONFIG_WRITE_COMMANDS` 是它的子集。
+HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
+    ("corrections", "global"), ("calibration", "set"), ("bgm", "register"),
+    ("tickets", "open"),
+})
+
+# D82 §4.7：交接文本由 core 模板生成，不取模块输出里的任意文字
+TICKET_HANDOFF_TEMPLATE = (
+    "请处理工单 `{path}`：先读工单，按仓库 AGENTS.md 出修复方案等我批准，不要直接改；"
+    "修完在工单「处理结果」写状态、提交号与续跑命令，并把它整理成 docs/dev/issues/README.md 的正式条目"
+    "（工单原文不进 commit）。"
+)
+
+
+def ticket_handoff(content: Any, root: Path | None = None) -> str | None:
+    """成功的 `tickets open` 工具结果 → 交接文本；其余（失败、不是 tickets open、路径不在 tickets/ 内）→ None。
+
+    严格解析 stdout 末行 `TICKET_JSON {…}`，只取 `path`，且 resolve 后必须在 `<仓库根>/tickets/` 内；
+    `TICKET_JSON` 里多塞的键（如伪造的 handoff）一律忽略。
+    """
+    try:
+        outer = json.loads(content) if isinstance(content, str) else content
+    except (TypeError, ValueError):
+        return None
+    result = outer.get("result") if isinstance(outer, dict) else None
+    if not isinstance(result, dict) or result.get("returncode") != 0:
+        return None
+    argv = [str(a) for a in result.get("argv") or []]
+    at = argv.index("-m") + 1 if "-m" in argv else len(argv)
+    if argv[at:at + 2] != ["pipeline.tickets", "open"]:
+        return None
+    lines = [ln for ln in str(result.get("stdout_tail") or "").splitlines() if ln.strip()]
+    if not lines or not lines[-1].startswith("TICKET_JSON "):
+        return None
+    try:
+        meta = json.loads(lines[-1][len("TICKET_JSON "):])
+    except ValueError:
+        return None
+    if not isinstance(meta, dict) or not isinstance(meta.get("path"), str):
+        return None
+    target = Path(meta["path"]).resolve()
+    tickets_root = (Path(root or paths.ROOT) / "tickets").resolve()
+    if tickets_root not in target.parents or target.suffix != ".md":
+        return None
+    return TICKET_HANDOFF_TEMPLATE.format(path=str(target))
 
 # Asset Scope 允许执行的 Phase 0 子命令白名单（§2.4 Y1-r8, Y2-r10）
 # Spec 9 S6-R1：增 `acquire: {fetch}`——抓取卡批准后由内核经注入的执行器跑（工具实现与 schema 零改动）。
@@ -345,15 +397,17 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
     "--text", "--word", "--pinyin", "--homophone", "--expect", "--script",
     "--type", "--batch",  # D59：scout --type、ingest_patch --batch
+    "--call", "--blocked", "--symptom", "--expected", "--repro", "--why",  # D82：tickets open
 })
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
 _AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
-                                      "adversarial", "scout", "ingest_patch")
+                                      "adversarial", "scout", "ingest_patch", "tickets")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
     "corrections": ("add", "global", "check"),
+    "tickets": ("open", "list", "show"),
 }
 _SEGMENT_LABEL_RE = re.compile(r"^\d+(\.\d+)?$")
 
@@ -530,6 +584,11 @@ def validate_pipeline_command(
                 elif module == "tts" and pos_args == ["run"]:
                     run_idx = args.index("run")
                     args = args[:run_idx + 1] + [str(ep_path)] + args[run_idx + 1:]
+            elif module == "tickets":
+                # D82 §4.1：只给 open 与不带位置参数的 list 补期目录；show <工单号> 不补（补了多一个位置参数被 D53 预检拒）
+                if pos_args in (["open"], ["list"]):
+                    sub_idx = args.index(pos_args[0])
+                    args = args[:sub_idx + 1] + [str(ep_path)] + args[sub_idx + 1:]
             elif module == "check_script":
                 if not pos_args:
                     script_file = ep_path / "02-script.md"

@@ -255,7 +255,7 @@ AUTO_APPROVED_TOOLS = frozenset(
 # ADR-0030 决策 2：run_pipeline 只有这些 cloud 子命令弹卡——开机 / 跑任务花钱，down / 清理销毁云端东西
 CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data"})
 # AGENTS.md Code Freeze 的三条例外（读音表 / 标定值 / 曲库登记）写 config/，规定「人审卡批准后」才写：
-# 与 bash「写 config/ 算硬危险」同一口径，逐条弹卡
+# 与 bash「写 config/ 算硬危险」同一口径，逐条弹卡。D82：它是 tools.HUMAN_GATED_COMMANDS 的子集（审查走后者）
 CONFIG_WRITE_COMMANDS = frozenset({("corrections", "global"), ("calibration", "set"), ("bgm", "register")})
 
 
@@ -380,6 +380,17 @@ def review_tool_call(
             return ToolVerdict("reject", reason="\n".join(calib_preview))
         command_preview = calib_preview
 
+    # D82：开工单。现场取不到 / 参数不合规 / 期目录不是本会话绑定的目录 → 弹卡前拒；成立则卡面是工单全文
+    if argv is not None and _pipeline_module_of(argv) == "tickets":
+        from pipeline import tickets
+
+        rest = argv[argv.index("-m") + 2:]
+        if rest[:1] == ["open"]:
+            ok, ticket_preview = tickets.preview(rest, bound_dir=ep_dir, root=root)
+            if not ok:
+                return ToolVerdict("reject", reason="\n".join(ticket_preview))
+            command_preview = ticket_preview
+
     # D61 / ADR-0028：write_note 的番名 / 目标 / 新建前提与 edits 成立性，在弹卡前拒
     if name == "write_note":
         from pipeline.agent.tools import note_write_refusal, resolve_note_content
@@ -451,8 +462,8 @@ def review_tool_call(
         module = _pipeline_module_of(argv or [])
         if module == "cloud" and rest[:1] and rest[0] in CLOUD_CARD_SUBCOMMANDS:
             allow_key = f"run_pipeline:cloud {rest[0]}"
-        elif (module, rest[0] if rest else None) in CONFIG_WRITE_COMMANDS:
-            # AGENTS.md Code Freeze 三条例外写明「人审卡批准后」写 config/：照旧逐条弹卡，不开放「本会话都批准」
+        elif _human_gated(module, rest):
+            # D82 §4.4：逐条人审的模块命令（Code Freeze 三条例外写 config/ + tickets open）：每次弹卡，不开放「本会话都批准」
             pass
         elif _skips_human_gate(rest):
             # 越过人工关卡（ADR-0030 决策 7 同一口径）：--confirm-patch 跳过 03.5 补丁段二次确认、
@@ -475,6 +486,13 @@ def review_tool_call(
         ),
         allow_key=allow_key,
     )
+
+
+def _human_gated(module: str | None, rest: list[str]) -> bool:
+    from pipeline.agent.tools import HUMAN_GATED_COMMANDS
+
+    sub = rest[0] if rest else None
+    return (module, sub) in HUMAN_GATED_COMMANDS or (module, None) in HUMAN_GATED_COMMANDS
 
 
 def _skips_human_gate(tokens: list[str]) -> bool:
@@ -1648,6 +1666,13 @@ class AgentSession:
         if name == "bash":
             frame["command"] = self._tool_commands.get(index, "")
             frame["description"] = self._tool_descriptions.get(index, "")
+        if name == "run_pipeline" and payload.get("phase") != "start":
+            # D82 §4.7：成功的 tickets open 带交接文本（core 模板生成；条件键，TS 侧 CONDITIONAL 登记）
+            from pipeline.agent.tools import ticket_handoff
+
+            handoff = ticket_handoff(payload.get("content"), self.host.root)
+            if handoff is not None:
+                frame["handoff"] = handoff
         self.channel.show("tool", frame)
 
     def _review(

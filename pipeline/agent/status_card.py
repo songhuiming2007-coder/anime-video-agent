@@ -279,6 +279,34 @@ _WRITE_FORM = re.compile(
 )
 _FREEZE_TAG = "[写源码/配置] Code Freeze 范围"
 
+# D82 §4.4（ADR-0030 危险清单扩充，人裁决 Q3 / Q4，2026-10-12）
+_GATED_TAG = "[须人审的流水线命令]"
+_TICKETS_PATH = re.compile(r"(^|[\s'\"/=])tickets/")
+_TICKETS_TAG = "[写工单目录]"
+# 命令词（行首或 ; & | ( 之后，允许前置 env X=1 / X=1 / nohup / exec）。名单 = 本机已装（claude、pi，2026-10-12
+# `command -v` 实测）+ 常见 coding agent CLI；静态名单绕得过（python -c 一类），ADR-0030 已接受这一类
+CODING_AGENT_COMMANDS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "aider", "gemini", "cursor-agent")
+_CODING_AGENT = re.compile(
+    r"(?:^|[;&|(])\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|exec)\s+)?"
+    r"(" + "|".join(re.escape(c) for c in CODING_AGENT_COMMANDS) + r")(?=$|[\s;&|)])"
+)
+_AGENT_TAG = "[拉起 coding agent]"
+
+
+def _gated_pipeline_hit(command: str) -> bool:
+    """命令里出现 `pipeline.<模块>` / `pipeline/<模块>.py`，且其后**任意位置**出现该模块须人审的子命令词。
+
+    不要求紧挨着（红队 R-6）：`python -m pipeline.corrections -- global …`、`-m 'pipeline.corrections'` 都能跑。
+    规则从 tools.HUMAN_GATED_COMMANDS 生成，不另写清单。
+    """
+    from pipeline.agent.tools import HUMAN_GATED_COMMANDS
+
+    for module, sub in HUMAN_GATED_COMMANDS:
+        for m in re.finditer(rf"pipeline(?:\.{re.escape(module)}\b|/{re.escape(module)}\.py\b)", command):
+            if sub is None or re.search(rf"(^|[\s'\"=]){re.escape(sub)}($|[\s'\"])", command[m.end():]):
+                return True
+    return False
+
 
 def bash_danger_tags(command: str) -> list[str]:
     """bash 命令命中的硬危险标记（按规则表顺序，去重）。非空即弹卡（ADR-0030 决策 1）。"""
@@ -286,6 +314,12 @@ def bash_danger_tags(command: str) -> list[str]:
     stripped = _HARMLESS_REDIRECT.sub(" ", command)
     if _FREEZE_PATH.search(stripped) and _WRITE_FORM.search(stripped):
         tags.append(_FREEZE_TAG)
+    if _gated_pipeline_hit(command):
+        tags.append(_GATED_TAG)
+    if _TICKETS_PATH.search(stripped) and _WRITE_FORM.search(stripped):
+        tags.append(_TICKETS_TAG)
+    if _CODING_AGENT.search(command):
+        tags.append(_AGENT_TAG)
     return tags
 
 
