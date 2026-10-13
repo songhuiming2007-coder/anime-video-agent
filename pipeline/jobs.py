@@ -387,8 +387,11 @@ def create_job(
     *,
     scope: str = "pipeline",
     publisher: EventPublisher | None = None,
+    project_dir: Path | str | None = None,
 ) -> tuple[Job, bool, str]:
     """显式立项创建一个 Job 对象。通过校验则进入 PENDING，未通过进入 BLOCKED。
+
+    `project_dir` 原样交给 validate_pipeline_command（D81：crosscheck 补企划目录）。
 
     返回: (job, is_valid, validation_message)
     """
@@ -399,7 +402,7 @@ def create_job(
     job_id = f"job_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}"
     created_at = _utc_now_iso()
 
-    valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path)
+    valid, msg, argv = validate_pipeline_command(command, ep_dir=ep_path, project_dir=project_dir)
 
     job = Job(
         job_id=job_id,

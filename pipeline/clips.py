@@ -279,19 +279,25 @@ def parse_shots(path: Path, animes: list[str] | None = None,
     return out
 
 
-def _overlaps(cand, chosen) -> bool:
-    """候选与已选片段是否指向同一处画面。
+def same_footage(a: dict, b: dict) -> bool:
+    """两段素材是不是同一集（同一份片源）。`_overlaps` 与 `pipeline.crosscheck` 共用这一条规则。
 
     键是 (anime, season, episode) 三元组（2026-09-06 跨番改造）：跨番期两部番
     各自有 S01E01，按 (season, episode) 判会把不同番的画面误判撞车。
     anime 为 None 是旧产物/手写片段的「未知番」形态——单番期语义上跟谁都同番，
     按同一处画面判；run() 产出的 clip 必带 anime，None 只来自外部输入。
+    所以不能做成元组键直接比相等（会丢掉 None 通配）。SP 的 season 为 None。
     """
+    if (a.get("anime") is not None and b.get("anime") is not None
+            and a["anime"] != b["anime"]):
+        return False
+    return (a["season"], a["episode"]) == (b["season"], b["episode"])
+
+
+def _overlaps(cand, chosen) -> bool:
+    """候选与已选片段是否指向同一处画面（同一集判定见 same_footage）。"""
     for c in chosen:
-        if (c.get("anime") is not None and cand.get("anime") is not None
-                and c["anime"] != cand["anime"]):
-            continue
-        if (c["season"], c["episode"]) != (cand["season"], cand["episode"]):
+        if not same_footage(c, cand):
             continue
         # 静态微动物证（时长 ≤ 8s 的单镜头扫图/公信榜/公告）：纪录片在不同章节
         # 客观引用同一物证是正常合法的，不进排他去重。

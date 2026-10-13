@@ -193,6 +193,12 @@ def build_project_card(project_dir: Path | str) -> str:
         hints = project_mod.members_vs_table(pdir, doc)
         if hints:
             lines.append("提示: " + "；".join(hints))
+    # D81 §9.3 ⑦：上次 `crosscheck --write` 的汇总（没写过报告则不显示）
+    from pipeline import crosscheck
+
+    last = crosscheck.read_summary(pdir)
+    if last is not None:
+        lines.append(f"上次跨卷检查: {last}")
     lines.append("企划会话只做规划、跨卷审查与总装；卷级工序到卷的会话里跑")
     return scrub_restricted("\n".join(lines))
 

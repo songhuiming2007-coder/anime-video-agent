@@ -164,7 +164,7 @@ MUTATIONS: list[dict] = [
     # ---- M15: 预校验优先 + 具体拒因 ----
     {"id": "M15a", "guard": "run_pipeline 预校验先于弹卡", "file": SESSION,
      # Spec 9 §6.1 重锚：确定性审查搬进 session.review_tool_call（打印/记账在调用方）
-     "old": ('        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False)\n'
+     "old": ('        outcome = run_pipeline(cmd_str, episode_dir=ep_dir, scope=scope, confirmed=False, project_dir=project_dir)\n'
              '        if not outcome["ok"]:\n'
              '            # 先走既有的白名单/dry-run 拒因（--force 全量覆盖等），文案不许被下面的模型规则截走\n'
              '            return ToolVerdict("reject", reason=outcome["message"])\n'

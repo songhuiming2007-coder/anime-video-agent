@@ -596,7 +596,7 @@ PR-1。
 
 ### 9.8 完成判定
 
-- [ ] §9.3 ①–⑦ 落地；§9.5 测试与变异通过；§9.6 全绿
+- [x] §9.3 ①–⑦ 落地；§9.5 测试与变异通过；§9.6 全绿（2026-10-13，见 §十五）
 - [ ] 真实数据验收（§4.9 镜像，需 T7）：在镜像企划上跑 `python -m pipeline.crosscheck data/episodes/_d81-mirror`（不带 `--write`），全部命中项贴进施工记录，**交人逐条判断「真重复 / 有意呼应 / 误报」**，人的判断原话写回本节；`find … -newer` 为空
 
 ---
@@ -917,3 +917,60 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
 - 真实数据只读核对（不出网）：在 PR-1 的 scratchpad 镜像（三卷软链到 EGOIST V2）上只调 `prior_volumes`：第 3 卷带第 1 卷 49 段 3465 字、第 2 卷 43 段 3196 字，缺口为空，前卷区块 7526 字——与 §8.4 的实测值一致。前后 `find data/episodes/EGOIST-传奇企划志-V2 -newer <标记>` 为空。
 - **未做（待人）**：§8.8 第 2 条的真实审查要调一次模型（出网、计费），本次施工规则是不跑真实 LLM、不出网；人批后照 §8.8 的命令跑，把「与前卷」一节逐条判真冲突 / 误报写进这里。命令里 `--out` 必须给，且镜像放 `data/episodes/_d81-mirror/`（§4.9）或照本次做法放 scratchpad 临时根。
 - **验证**：pytest 2876 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。
+
+### PR-4（2026-10-13）
+
+**已施工·机检通过**（纯 core）；真实数据命中清单已出，**待人逐条判断**（§9.8 第 2 条）。
+
+- §9.3 ①–⑦ 落地：
+  - ① ③ ④ ⑤ 新文件 `pipeline/crosscheck.py`：`python -m pipeline.crosscheck <企划目录> [--json] [--write]`，`argparse(allow_abbrev=False)`（`--wr` 不被认作 `--write`）。卷按卷表顺序取，合集期不参与；企划目录按字面路径判（`project.classify_dir`），镜像企划的软链卷照读。`--write` 写 `00-crosscheck.md`，已存在的先留底到 `_agent/file-history/<UTC 纳秒>-00-crosscheck.md`（与 `tools._keep_history` 同目录同命名；没 import agent 栈）。退出码 0 / 2 照 ⑤。
+  - ② `clips.same_footage(a, b)`：`_overlaps` 改为调它，`anime=None` 通配原样保住，≤ 8 s 微动豁免与 `OVERLAP_GAP` 仍留在 `_overlaps`。crosscheck 的微动物证条件照抄 `_overlaps` 那一行（spec 要求豁免不进谓词）。
+  - ⑥ `PIPELINE_MODULES` +`crosscheck`、进 `_AUTOFILL_MODULES`（位置参数至多 1 个）。`validate_pipeline_command` / `run_pipeline` / `jobs.create_job` 多收 `project_dir`（工具层取 `ctx.project_dir`，审查层取 `review_tool_call` 的 `project_dir`，都是宿主绑定）；crosscheck 只用它补位，企划会话补企划目录、卷会话补所属企划目录，普通期会话不补。立项时（`create_job` 再校一次）同传，否则执行的 argv 会丢补位。只读判定按参数级：`crosscheck_writes(argv)`（`--write` 及其前缀、`=` 写法都算写），不带写的在审查层走只读免卡；卷会话带写 → `project_module_refusal` 拒（审查层与实现层共用）。企划会话带 `--write` 照 ADR-0030 白名单免卡。
+  - ⑦ `status_card.build_project_card` 加一行「上次跨卷检查: N 条命中（镜头 a · 微动物证 b · 配乐 c）/ 未检查 M 卷（生成时间）」，读 `00-crosscheck.md` 的汇总行；没有报告不显示，汇总行被手改掉时显示「找不到汇总行」而不是静默不显示。「未检查 M 卷」按卷计（一卷只要有一项没查到就算）。
+- `scripts/verify_mutations.py` 的 M15a 锚点随审查层那一行（多了 `project_dir=project_dir`）重锚；用 `mut.py` 单条复核仍被 `test_tk1_model_initiated_review_with_options_is_rejected` 抓到。
+- 测试：`tests/test_crosscheck.py` 17 条（`same_footage` 通配 / 跨番 / SP；`_overlaps` 的 `None` 与具名番同集重叠算撞车；三卷夹具里同集同区间命中、相邻不命中、跨番同 `S01E03` 不命中、`None` 通配命中、两段微动 SP 进「微动物证」、`extend` 不计、只有 `04-clips.json` 的卷注明来源、两份都没有列「未检查」；配乐前景两卷命中、一前景一铺底不命中、全角半角经 NFKC 相同、音乐段格式错的卷「未检查」其余照查；默认运行与 `--json` 前后企划目录逐文件 size / mtime 不变；`--write` 只多出报告，第二次只多出一份留底；`--wr` 退 2；企划文件缺失 / 不可解析 / 卷表为空 / 给的是卷 → 退 2；软链卷照读且被指向的目录不变；状态卡一行）+ `tests/test_project_session.py` 2 条（补位：企划会话与卷会话的 dry-run argv 都补企划目录，卷会话执行时 `create_job` 立项的 argv 同样补企划目录；只读免卡：企划 / 卷会话不带写都放行，卷会话 `--write` / `--wr` / `--write=1` 审查层与实现层都拒，企划会话带写放行）。`tests/test_clips.py`、`tests/test_cross_anime.py` 既有 `_overlaps` 用例一条未改、全绿。
+- 变异 11/11 被抓（scratchpad `d81pr4_mut.json`，跑完 `git diff` 只剩真实改动）：
+
+| # | 变异 | 抓到它的测试 |
+|---|---|---|
+| M1 | 区间判定改成 `≥ 0`（相邻也报） | `test_镜头命中与不命中` |
+| M2 | 铺底块算进 C-2 | `test_报告分节_注明来源`（配乐计数） |
+| M3 | 格式错的卷让整个命令失败 | `test_配乐_格式错的卷未检查_其余照查` |
+| M4 | 默认路径也写报告 | `test_默认只读_企划目录无写入` |
+| M5 | `same_footage` 只比 `(season, episode)` | `test_same_footage_None通配_跨番不同集` |
+| M6 | `same_footage` 改成元组相等（丢 `None` 通配） | 同上 |
+| M7 | 区间把 `extend` 算进去 | `test_镜头命中与不命中` |
+| M8 | 卷会话补位成卷目录 | `test_crosscheck补位_企划会话补企划_卷会话补所属企划` |
+| X1 | 卷会话带 `--write` 不拒（补充） | `test_crosscheck只读免卡_卷会话带write拒` |
+| X2 | 立项（`create_job`）不传 `project_dir`（补充） | `test_crosscheck补位_…`（执行 argv） |
+| X3 | 状态卡不显示上次检查（补充） | `test_状态卡显示上次检查` |
+
+- **真实数据只读验收**（§9.8 第 2 条的机器那一半）：PR-1 的 scratchpad 镜像（`mirror-root/data/episodes/_d81-mirror`，三卷软链到 EGOIST V2，`paths.ROOT` 指 mirror-root，进程内调 `crosscheck.main`，不带 `--write`）。跑前 touch 标记，跑后 `find data/episodes/EGOIST-传奇企划志-V2 -newer <标记>`：**空**。三卷都用 `04-clips.approved.json`，未检查 0 卷。汇总：**镜头 19 条、微动物证 0、配乐 0**。命中清单（区间是源片内秒数）：
+
+| # | 素材 | 卷 · 段 [区间) | ↔ 卷 · 段 [区间) | 交集 s | 人的判断 |
+|---|---|---|---|---|---|
+| 1 | EGOIST SP35 | 01 · 3 [0.00, 5.34) | 02 · 2 [0.00, 5.34) | 5.34 | 待判 |
+| 2 | EGOIST SP56 | 01 · 18 [0.00, 5.74) | 02 · 9 [0.00, 6.01) | 5.74 | 待判 |
+| 3 | EGOIST SP35 | 01 · 29 [0.00, 5.34) | 02 · 2 [0.00, 5.34) | 5.34 | 待判 |
+| 4 | EGOIST SP04 | 01 · 40 [0.00, 29.52) | 02 · 18 [21.56, 29.26) | 7.70 | 待判 |
+| 5 | EGOIST SP04 | 01 · 43 [145.81, 157.31) | 02 · 38 [145.81, 157.80) | 11.50 | 待判 |
+| 6 | EGOIST SP04 | 01 · 47 [219.76, 228.54) | 02 · 17 [224.64, 235.07) | 3.90 | 待判 |
+| 7 | EGOIST SP06 | 01 · 2 [0.00, 6.01) | 03 · 12 [0.00, 5.87) | 5.87 | 待判 |
+| 8 | EGOIST SP06 | 01 · 3 [0.00, 6.01) | 03 · 12 [0.00, 5.87) | 5.87 | 待判 |
+| 9 | EGOIST SP06 | 01 · 5 [0.00, 6.01) | 03 · 12 [0.00, 5.87) | 5.87 | 待判 |
+| 10 | EGOIST SP19 | 01 · 9 [0.00, 19.20) | 03 · 32 [0.00, 7.56) | 7.56 | 待判 |
+| 11 | EGOIST SP56 | 01 · 18 [0.00, 5.74) | 03 · 19 [0.00, 6.01) | 5.74 | 待判 |
+| 12 | PSYCHO-PASS S01E01 | 01 · 34 [1269.89, 1285.12) | 03 · 16 [1269.89, 1282.66) | 12.77 | 待判 |
+| 13 | EGOIST SP04 | 01 · 42 [180.81, 192.42) | 03 · 11 [180.81, 206.94) | 11.61 | 待判 |
+| 14 | EGOIST SP02 | 02 · 3 [23.16, 36.20) | 03 · 13 [26.53, 43.61) | 9.68 | 待判 |
+| 15 | EGOIST SP56 | 02 · 9 [0.00, 6.01) | 03 · 19 [0.00, 6.01) | 6.01 | 待判 |
+| 16 | EGOIST SP02 | 02 · 9 [36.70, 42.70) | 03 · 13 [26.53, 43.61) | 6.00 | 待判 |
+| 17 | EGOIST SP40 | 02 · 23 [0.00, 9.40) | 03 · 14 [0.00, 8.33) | 8.33 | 待判 |
+| 18 | EGOIST SP04 | 02 · 25 [330.12, 355.02) | 03 · 29 [334.79, 343.62) | 8.83 | 待判 |
+| 19 | EGOIST SP47 | 02 · 32 [0.00, 16.71) | 03 · 4 [0.00, 13.47) | 13.47 | 待判 |
+
+  两处与 spec 预期不同，照规则施工、交人看：
+  1. **「微动物证」一节在真实数据上恒为空**：条件照 `_overlaps` 读 `limit`，但 `04-clips.approved.json` 的片段不带 `limit`（三卷 155 个片段键集只有 `anime / season / episode / source / start / dur / score / line / presence / sp / extend`；`limit` 只在排片时的候选上有）。所以 SP06（`…_微动.mp4`，6.006 s）这类微动物证落在「镜头」一节（#7–#9）。没有改判据（换成读 `dur` 是设计变化）；要不要改由人定。
+  2. **配乐 0 条是真结果，不是没查**：三卷 `02-script.md` 都解析成功（7 / 10 / 11 个音乐段）。唯一跨卷同名的 `Departures ～あなたにおくるアイの歌～` 第 1 卷是前景（M0、M3），第 3 卷是铺底（M4.5），按 §9.3 ④ 一前景一铺底不算命中。
+- **验证**：pytest 2895 / typecheck 通过 / vitest 568 / playwright 143（2 跳过）。
+- 施工中另记：全量 pytest 第一次跑了 11 分钟、红 11 条，查明是 `test_n28_non_terminal_sigint_kills_grandchild_process_group` 偶发挂住（SIGINT 发给自己的竞态），其后的中断类用例连带假红；另有一个 2026-10-12 14:08 起的旧 pytest 同样挂在这一条上 20 小时，孙进程持续往 pytest 临时目录写，`pytest-147/test_n28_…/05-final.mp4` 已 4.97 GB。两组挂住的测试进程已杀（只杀进程，没删文件）；静默环境重跑全量 2895 全绿、中断类 219 条单独跑也全绿。这条用例的偶发挂起是既有问题，本次未修。
