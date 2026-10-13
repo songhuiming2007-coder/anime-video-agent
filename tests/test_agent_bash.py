@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import subprocess
 from pathlib import Path
 
@@ -110,6 +111,16 @@ class TestExecute:
         assert SECRET not in text and "[已脱敏]" in text
         assert "cn-east" in text, "非密钥字段照常可见"
         assert "[][]" in text, "密钥变量不传给子进程"
+
+    def test_AVA_ROOT与python可用(self, repo: Path) -> None:
+        """2026-10-13：cwd 是期目录、系统没有 python，模型写 `ls skills/…`、`python -c` 一试一个失败。
+        子进程拿到 `$AVA_ROOT` = 仓库根，`python` = 当前（项目）解释器。"""
+        out = run(repo, 'echo "root=$AVA_ROOT"; python -c "import sys; print(sys.executable)"; pwd')
+        text = out["result"]["stdout_tail"]
+        assert out["result"]["returncode"] == 0, out["result"]["stderr_tail"]
+        assert f"root={repo}" in text
+        assert str(Path(sys.executable).parent) in text, "python 应解析到当前解释器所在目录"
+        assert text.strip().endswith("data/episodes/ep"), "工作目录照旧是期目录"
 
     def test_作业事件记为bash命令(self, repo: Path) -> None:
         run(repo, "echo hi")

@@ -53,6 +53,9 @@ _OUTRO_VISUAL = re.compile(r"^收尾画面[：:]\s*(.+)$", re.M)
 _AVSYNC = re.compile(
     r"^源片原声[：:]\s*`(.+?)`\s*(\d+):(\d{2}(?:\.\d+)?)-(\d+):(\d{2}(?:\.\d+)?)", re.M)
 _AVSYNC_FLAG = re.compile(r"^音画同源[：:]\s*是\s*$", re.M)
+# D86：同源块切自番剧集（SxxEyy）时，渲染默认把该集字幕索引里落在窗口内的中文台词烧进去；
+# `原声字幕: 关` 关掉（例如截一段 OP 原曲不想要歌词字幕）。只认「开 / 关」，只许出现在同源块里。
+_SRC_SUBS = re.compile(r"^原声字幕[：:]\s*(.*?)\s*$", re.M)
 # 背景铺底块（2026-09-08 皮套囚徒期，对齐 archive/03-music-cues.md 的乐章设计）：
 # 「无前景试听、纯 BGM 铺底」的声明——既有的「前景试听后降为 BGM」表达不了
 # 「段 1–4 片头前奏铺底」「段 17–20 英雄前奏铺底」这类没有前景的段落，
@@ -75,6 +78,7 @@ class MusicBlock:
     visual: str | None      # `画面:` 行（如 "S01E01 0:00"）；None = 上一段定格
     avsync: str | None = None  # 形态 2 源片标签（如 "EGOIST SP04"）；None = 形态 1 CD 试听
     bgm_only: bool = False     # True = 背景铺底块（零时长，只产 BGM 事件与边界）
+    src_subs: bool = True      # D86：同源块是否配原片字幕（`原声字幕: 关` → False；SP 源片渲染时本来就不配）
 
 
 def _to_sec(m: int, s: str) -> float:
@@ -178,6 +182,11 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
         visual = vis.group(1).strip() if vis else None
 
         av = _AVSYNC.search(body)
+        subs_m = _SRC_SUBS.search(body)
+        if subs_m and not av:
+            raise SystemExit(
+                f"FAIL 音乐段 {m.group(1)} 写了 `原声字幕:`，但它不是音画同源块——"
+                f"这一行只对 `源片原声:` + `音画同源: 是` 的试看块有意义（D86）")
         if av:
             # 形态 2（音画同源，ADR-0013）：源片原声与画面切自同一源片同一时间码。
             # 三条硬校验全是「声明不完整/自相矛盾就当场报」，不许静默当形态 1 跑：
@@ -199,9 +208,16 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
                 raise SystemExit(
                     f"FAIL 音乐段 {m.group(1)} 源片原声时间区间为空："
                     f"{t0:.2f}-{t1:.2f}s")
+            src_subs = True
+            if subs_m:
+                val = subs_m.group(1)
+                if val not in ("开", "关"):
+                    raise SystemExit(
+                        f"FAIL 音乐段 {m.group(1)} 的 `原声字幕:` 只认「开 / 关」（当前：{val or '空'}）")
+                src_subs = val == "开"
             blocks.append(MusicBlock(m.group(1), av.group(1).strip(),
                                      t0, t1, after, None,
-                                     avsync=av.group(1).strip()))
+                                     avsync=av.group(1).strip(), src_subs=src_subs))
             continue
 
         title_m = _TITLE_ONLY.search(body)
@@ -330,7 +346,7 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                                  "title": b.title, "t0": b.t0, "t1": b.t1,
                                  "dur": b.t1 - b.t0,
                                  "after": b.after, "visual": b.visual,
-                                 "avsync": b.avsync,
+                                 "avsync": b.avsync, "src_subs": b.src_subs,
                                  "start": t})
                 t += b.t1 - b.t0
                 continue
@@ -503,7 +519,10 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
                     "vol": "foreground",
                     "visual": it["visual"],
                     **({"avsync": it["avsync"], "t0": it["t0"]}
-                       if it.get("avsync") else {})}
+                       if it.get("avsync") else {}),
+                    # D86：只在关掉时带键——默认开，旧期的计划字典逐键不变
+                    **({"src_subs": False}
+                       if it.get("avsync") and not it.get("src_subs", True) else {})}
                    for it in timeline if it["kind"] == "music"
                    and not it.get("bgm_only")],
         "tracks": tracks,

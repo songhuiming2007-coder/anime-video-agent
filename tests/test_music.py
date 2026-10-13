@@ -291,6 +291,20 @@ class TestAvsyncBlock:
         assert blk.t0 == 21.6 and blk.t1 == 41.6
         assert blk.after == "fade" and blk.visual is None
 
+    def test_原声字幕_默认开_可关_只认开关(self, tmp_path: Path):
+        """D86：番剧集试看默认配原片字幕；`原声字幕: 关` 关掉；别的值与非同源块里写都当场报。"""
+        base = ("## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"
+                "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n")
+        (blk,) = [b for b in m.parse_script_music(self._write(tmp_path, base)) if b.label == "M5"]
+        assert blk.src_subs is True
+        (blk,) = [b for b in m.parse_script_music(self._write(tmp_path, base + "原声字幕: 关\n")) if b.label == "M5"]
+        assert blk.src_subs is False
+        with pytest.raises(SystemExit, match="开 / 关"):
+            m.parse_script_music(self._write(tmp_path, base + "原声字幕: 不要\n"))
+        with pytest.raises(SystemExit, match="不是音画同源块"):
+            m.parse_script_music(self._write(tmp_path,
+                "## 音乐段 M1\n\n音乐: `曲` 0:00-0:20\n过渡: 淡出\n原声字幕: 关\n"))
+
     def test_缺音画同源声明当场失败(self, tmp_path: Path):
         script = self._write(tmp_path,
             "## 音乐段 M5\n\n源片原声: `测试企划 SP04` 00:21.60-00:41.60\n"

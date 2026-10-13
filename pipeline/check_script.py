@@ -861,7 +861,45 @@ def run(path: Path) -> list[Check]:
 
     add("备选覆盖（允许留空）", True, f"{len(alts)}/{len(vo)}")
 
+    _check_avsync_subs(path, add)
+
     return checks
+
+
+def _check_avsync_subs(path: Path, add) -> None:
+    """D86「试看字幕」：切自番剧集的试看块，窗口里有几句原片台词会上屏。
+
+    写稿时就让人看到：0 句（多半是纯画面，或窗口写错了）、缺该集字幕索引（渲出来是
+    无字幕的日语对白），不必等到 06 渲染才炸。SP 素材（Live / MV）不配字幕、不计入；
+    全篇没有番剧集试看块时这一项不出现。
+    """
+    from . import music, subcues
+    from .render import _resolve_tag
+
+    rows, bad = [], []
+    for b in music.parse_script_music(path):
+        if not b.avsync or re.search(r"(?:^|\s)SP\d", b.avsync, re.I):
+            continue                      # SP 素材不配字幕：这一项对它无话可说（归属错由渲染的切片守卫报）
+        try:
+            anime, key = _resolve_tag(path.parent, b.avsync)
+        except SystemExit as e:
+            bad.append(f"{b.label}：{str(e).removeprefix('FAIL ')}")
+            continue
+        if not b.src_subs:
+            rows.append(f"{b.label}：已关（原声字幕: 关）")
+            continue
+        all_cues = subcues.load_cues(anime, key)
+        if all_cues is None:
+            bad.append(f"{b.label}：《{anime}》{key} 没有字幕索引——先建这一集的索引，或写 `原声字幕: 关`")
+            continue
+        n = len(subcues.window(all_cues, b.t0, b.t1))
+        if n == 0:
+            bad.append(f"{b.label}：窗口 {b.t0:.1f}-{b.t1:.1f}s 里一句台词都没有——"
+                       f"纯画面就写 `原声字幕: 关`，否则多半是窗口写错了")
+        else:
+            rows.append(f"{b.label}：{n} 句")
+    if rows or bad:
+        add("试看字幕", not bad, "；".join(bad + rows))
 
 
 # ---------- D18 人物提示（INFO，只报不拦）----------

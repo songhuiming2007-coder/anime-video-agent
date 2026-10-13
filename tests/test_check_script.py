@@ -1222,3 +1222,38 @@ class TestFacelessCharacterHints:
         vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9}})
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：阳乃出场。\n")
         assert cs.faceless_character_hints(f, vindex_dir=vdir) == []
+
+
+class TestAvsyncSubsCheck:
+    """D86「试看字幕」：写稿时就看到番剧集试看窗口里有几句原片台词会上屏。"""
+
+    def _run(self, tmp_path, monkeypatch, block_extra="", tag="S01E07", cues=None):
+        from pipeline import subcues
+        monkeypatch.setattr(subcues, "load_cues", lambda anime, key: (cues or {}).get((anime, key)))
+        (tmp_path / "01-topic.md").write_text("番: 伪恋\n", encoding="utf-8")
+        f = tmp_path / "02-script.md"
+        f.write_text(
+            build([BODY] * 8)
+            + f"\n## 音乐段 M3 · 试看\n\n源片原声: `{tag}` 17:11.00-17:41.50\n"
+              f"状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n{block_extra}",
+            encoding="utf-8")
+        return [c for c in cs.run(f) if c.name == "试看字幕"]
+
+    def test_窗口里有几句(self, tmp_path, monkeypatch):
+        (c,) = self._run(tmp_path, monkeypatch, cues={("伪恋", "S01E07"): [(1035.0, 1037.0, "一"), (1040.0, 1042.0, "二")]})
+        assert c.ok and c.detail == "M3：2 句"
+
+    def test_一句都没有要人确认(self, tmp_path, monkeypatch):
+        (c,) = self._run(tmp_path, monkeypatch, cues={("伪恋", "S01E07"): [(10.0, 12.0, "远处")]})
+        assert not c.ok and "一句台词都没有" in c.detail
+
+    def test_缺索引给出两条出路(self, tmp_path, monkeypatch):
+        (c,) = self._run(tmp_path, monkeypatch, cues={})
+        assert not c.ok and "没有字幕索引" in c.detail and "原声字幕: 关" in c.detail
+
+    def test_关掉的照列不拦(self, tmp_path, monkeypatch):
+        (c,) = self._run(tmp_path, monkeypatch, block_extra="原声字幕: 关\n", cues={})
+        assert c.ok and "已关" in c.detail
+
+    def test_SP素材不出这一项(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, tag="EGOIST SP04") == []
