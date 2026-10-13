@@ -126,6 +126,8 @@ class FakeEndpoint:
         # （各用例按「第 n 次主循环请求取第 n 条回复」写剧本，标题请求混进来会让后面每一轮都错位）
         self.title_requests: list[dict] = []
         self.title_reply = "测试会话"
+        # 设了 (HTTP 状态, 报错原文) 就让主循环请求全部失败（2026-10-13：代理侧模型名失效，请求一到即 400）
+        self.fail: tuple[int, str] | None = None
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -147,7 +149,10 @@ class FakeEndpoint:
                     self.wfile.write(payload)
                     return
                 endpoint.requests.append(body)
-                if not _pairing_ok(body.get("messages") or []):
+                if endpoint.fail is not None:
+                    payload = json.dumps({"error": {"message": endpoint.fail[1]}}).encode()
+                    self.send_response(endpoint.fail[0])
+                elif not _pairing_ok(body.get("messages") or []):
                     endpoint.bad_pairings += 1
                     payload = json.dumps({"error": {"message": "tool messages not paired"}}).encode()
                     self.send_response(400)
@@ -487,6 +492,39 @@ def test_d52_blocked_turn_sends_notice_with_pattern(world, endpoint, tmp_path) -
     assert "「cloud.local.json」" in notice["text"]
     assert "SEKRIT-42" not in notice["text"], "notice 只给模式名，不转述请求内容"
     assert finished["tool_calls"] == 0 and finished["wrapup"] == "none"
+
+
+def test_failed_turn_sends_error_notice_and_logs_error(world, endpoint, tmp_path) -> None:
+    """2026-10-13：请求一到就被拒（代理侧模型名失效）的回合，原先桌面端只收到 turn_finished{error, llm_calls 0}，
+    看不到原因、会话日志也不记。现在 turn_finished 之前有一帧 turn_failed notice 带报错原文，turn_end 记 error。"""
+    root, episode = world
+    endpoint.fail = (400, "unknown provider for model gemini-3.7-flash-high")
+    proto_proc = Protocol(root, endpoint, tmp=tmp_path)
+    try:
+        proto_proc.wait_for_ready()
+        proto_proc.send({"t": "user_message", "text": "好了"})
+        finished = proto_proc.wait_for("turn_finished")
+        proto_proc.wait_for("stop_points")
+        assert proto_proc.shutdown() == 0
+    finally:
+        proto_proc.proc.kill()
+
+    assert finished["stopped"] == "error" and finished["llm_calls"] == 0
+    frames = proto_proc.frames
+    start = next(i for i, f in enumerate(frames)
+                 if f.get("t") == "turn_started" and f.get("turn_id") == finished["turn_id"])
+    end = next(i for i, f in enumerate(frames)
+               if f.get("t") == "stop_points" and f.get("turn_id") == finished["turn_id"])
+    turn_frames = frames[start:end + 1]
+    assert [f["t"] for f in turn_frames] == ["turn_started", "notice", "turn_finished", "stop_points"]
+    notice = turn_frames[1]
+    assert notice["level"] == "error" and notice["code"] == "turn_failed"
+    assert "gemini-3.7-flash-high" in notice["text"] and "400" in notice["text"]
+    assert "已回滚" in notice["text"] and "重发" in notice["text"]
+
+    ends = [json.loads(line) for p in (episode).glob("**/session*.jsonl")
+            for line in p.read_text(encoding="utf-8").splitlines() if '"turn_end"' in line]
+    assert ends and "gemini-3.7-flash-high" in (ends[-1].get("error") or "")
 
 
 def test_tp3_tool_card_approve_and_reject_with_feedback(world, endpoint, tmp_path) -> None:

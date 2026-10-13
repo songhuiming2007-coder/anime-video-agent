@@ -193,6 +193,27 @@ describe("D41 / D56 上下文用量读数", () => {
     expect(lastContextReading([...a, { k: "frame", at: 5, frame: ready(1) }, { k: "frame", at: 6, frame: finT(700, 800, 2) }])).toEqual({ tokens: 700, chars: 800, previous: false });
   });
 
+  it("0 次模型调用的回合不覆盖上一读数（2026-10-13：模型名失效连败三轮，token 读数被换成「约 20.1 万字」）", () => {
+    const failed = (seq: number) =>
+      F("turn_finished", { turn_id: "t2", stopped: "error", llm_calls: 0, tool_calls: 0, tool_executions: 0, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 0.02, prompt_chars: 201_413, prompt_tokens: null }, seq);
+    const a: ConvEntry[] = [
+      { k: "frame", at: 1, frame: ready(1) },
+      { k: "frame", at: 2, frame: finT(149_872, 202_593, 2) },
+    ];
+    const kept = { tokens: 149_872, chars: 202_593, previous: false };
+    expect(lastContextReading([...a, { k: "frame", at: 3, frame: failed(3) }])).toEqual(kept);
+    expect(lastContextReading([...a, { k: "frame", at: 3, frame: failed(3) }, { k: "frame", at: 4, frame: failed(4) }])).toEqual(kept);
+    // 之后真跑了一轮：换成新读数
+    expect(lastContextReading([...a, { k: "frame", at: 3, frame: failed(3) }, { k: "frame", at: 4, frame: finT(150_100, 203_000, 4) }]))
+      .toEqual({ tokens: 150_100, chars: 203_000, previous: false });
+    // 新会话第一轮就失败：没有可沿用的读数 → 不显示，不拿本地字数充数
+    expect(lastContextReading([{ k: "frame", at: 1, frame: ready(1) }, { k: "frame", at: 2, frame: failed(2) }])).toBeNull();
+    // 这一回合自己的脚注：只写「0 次模型调用」，不写本地字数
+    const row = foldConv([{ k: "frame", at: 1, frame: failed(1) }]).rows.at(-1)!;
+    expect(row.k === "footer" && row.brief).toBe("0 次模型调用");
+    expect(row.k === "footer" && row.text).not.toContain("上下文");
+  });
+
   // D64：继续会话的 ready 带回上次测得的读数，新回合跑完前标「上次」
   const resumed = (tokens: unknown, chars: unknown, seq: number) =>
     F("ready", { episode: "E", scope: "creative", continue_status: "resumed", llm: "ok", degrade_reason: null, resume_prompt_tokens: tokens, resume_prompt_chars: chars }, seq);

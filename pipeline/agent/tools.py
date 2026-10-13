@@ -2046,6 +2046,19 @@ def scrub_secrets(text: str, root: Path | None = None) -> str:
     return text
 
 
+#: 回合报错原文落盘 / 下发桌面端的长度上限：够放服务商的一句错误说明（模型名不存在、额度用尽、HTTP 状态），
+#: 不够塞进整段响应体——那是排查要的「哪一类错」，不是转储。
+TURN_ERROR_MAX_CHARS = 300
+
+
+def turn_error_text(error: Any, root: Path | None = None) -> str | None:
+    """回合报错原文 → 可落盘、可给人看的一行：脱敏密钥值、压空白、截断。没有报错返回 None。"""
+    if not error:
+        return None
+    text = " ".join(scrub_secrets(str(error), root).split())
+    return text if len(text) <= TURN_ERROR_MAX_CHARS else text[: TURN_ERROR_MAX_CHARS - 1] + "…"
+
+
 def _tool_bash(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     command = str(args.get("command", ""))
     if not command.strip():

@@ -1013,6 +1013,14 @@ def _run_turn(host, writer, slots, messages, tracker, ep_dir, frame, rid) -> int
         # N52/D52：桌面端原先只收到 turn_finished{blocked}，看不到原因。只给模式名，不给请求体
         writer.send({"t": "notice", "level": "error", "code": "egress_blocked",
                      "text": _egress_blocked_text(str(outcome.get("error") or ""))})
+    elif outcome.get("stopped") == "error" and outcome.get("error"):
+        # 原先只发 turn_finished{stopped: error}，桌面端只看得到「0 次模型调用」看不到原因（2026-10-13：
+        # 模型名在代理侧失效，连败三轮无从排查）。报错原文脱敏、截断后照给
+        from pipeline.agent.tools import turn_error_text
+
+        rolled = "本轮已回滚，消息没有送到模型，修好后重发即可" if outcome.get("rollback") else "本轮已停止"
+        writer.send({"t": "notice", "level": "error", "code": "turn_failed",
+                     "text": f"{rolled}。报错：{turn_error_text(outcome.get('error'), host.root)}"})
     writer.send({
         "t": "turn_finished",
         "turn_id": turn_id,
