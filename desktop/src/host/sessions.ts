@@ -139,13 +139,24 @@ interface SessionState {
   flushTimer: NodeJS.Timeout | null;
   readyWaiters: Pending<void>[];
   sendWaiters: Map<string, SendWaiter>;
-  commandWaiters: Map<string, Pending<{ ok: boolean; text: string }>>;
+  commandWaiters: Map<string, Pending<CommandResult>>;
   answerWaiters: Map<string, Pending<{ decision: string }>>;
   /** 同一 request_id 同时只允许一个在途答复 */
   answering: Set<string>;
   /** 在途答复对应的 feedback（写 answered_local 用） */
   answerFeedback: Map<string, string | null>;
   endWaiters: Pending<{ code: number | null; signal: string | null }>[];
+}
+
+/** core 会话命令闭集（`pipeline/agent/protocol.py::_COMMANDS` 里 renderer 能发的那几个；compact 只走对话框 /compact） */
+export const COMMAND_NAMES = ["memory_ack", "scope", "models", "model", "thinking"] as const;
+export type CommandName = (typeof COMMAND_NAMES)[number];
+/** command_result：`models` 另带代理的模型列表与可选档位（D91） */
+export interface CommandResult {
+  ok: boolean;
+  text: string;
+  items?: string[];
+  efforts?: string[];
 }
 
 const STDERR_TAIL_BYTES = 8 * 1024;
@@ -330,20 +341,23 @@ export class SessionManager {
     }
   }
 
-  async command(key: ConvKey, name: "memory_ack" | "scope", arg: "asset" | "auto" | null): Promise<{ ok: boolean; text: string }> {
+  async command(key: ConvKey, name: CommandName, arg: string | null): Promise<CommandResult> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
-    if (name !== "memory_ack" && name !== "scope") this.fail("E_BAD_REQUEST", `未知命令 ${String(name)}`);
+    if (!(COMMAND_NAMES as readonly string[]).includes(name)) this.fail("E_BAD_REQUEST", `未知命令 ${String(name)}`);
     if (name === "scope") {
       if (arg !== "asset" && arg !== "auto") this.fail("E_BAD_REQUEST", "scope 命令需要 arg ∈ {asset, auto}");
+    } else if (name === "model" || name === "thinking") {
+      // D91：arg = 模型名 / 档位 / default；合法性由 core 判（模型名要对照代理列表）
+      if (typeof arg !== "string" || arg.trim() === "" || arg.length > 200) this.fail("E_BAD_REQUEST", `${name} 命令需要非空 arg`);
     } else if (arg !== null) {
-      this.fail("E_BAD_REQUEST", "memory_ack 不许带 arg");
+      this.fail("E_BAD_REQUEST", `${name} 不许带 arg`);
     }
     const s = this.activeOf(key);
     if (!s || !s.proc) this.fail("E_SESSION", "该会话没有活进程");
     const rid = this.rid();
-    const framed = { v: 1, t: "command", name, arg: name === "scope" ? arg : null, rid };
+    const framed = { v: 1, t: "command", name, arg: name === "scope" || name === "model" || name === "thinking" ? arg : null, rid };
     this.precheck(framed);
-    const p = new Promise<{ ok: boolean; text: string }>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
+    const p = new Promise<CommandResult>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
     this.writeFrame(s, framed);
     return this.race(p, this.timing.sendAckMs, "命令结果未知（超时）");
   }
@@ -646,7 +660,9 @@ export class SessionManager {
         const w = rid ? s.commandWaiters.get(rid) : undefined;
         if (rid && w) {
           s.commandWaiters.delete(rid);
-          w.resolve({ ok: f.ok === true, text: String(f.text ?? "") });
+          const items = Array.isArray(f.items) ? f.items.filter((x): x is string => typeof x === "string") : undefined;
+          const efforts = Array.isArray(f.efforts) ? f.efforts.filter((x): x is string => typeof x === "string") : undefined;
+          w.resolve({ ok: f.ok === true, text: String(f.text ?? ""), ...(items ? { items } : {}), ...(efforts ? { efforts } : {}) });
         }
         break;
       }

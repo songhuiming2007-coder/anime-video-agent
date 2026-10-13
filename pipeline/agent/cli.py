@@ -2227,6 +2227,30 @@ def run_compact_command(
     return result
 
 
+def run_model_command(line: str, scope: str, *, root: Path | None = None) -> None:
+    """REPL /model、/thinking（D91）：只改本会话，默认配置（agent.local.json）不动。"""
+    from pipeline.agent import model_switch
+    from pipeline.agent.llm import load_llm_config, purpose_for_scope
+
+    host = _SESSION_HOST
+    if host is None:
+        print("[ERROR] /model、/thinking 只在会话里可用。")
+        return
+    try:
+        new, text = model_switch.run_command(
+            line, load_llm_config(root), host.model_override, purpose_for_scope(scope)
+        )
+    except model_switch.ModelSwitchError as exc:
+        print(f"[ERROR] {exc}")
+        return
+    if new != host.model_override:
+        host.set_model_override(new)
+    print(text)
+    if host.model_override_warning:
+        print(f"[WARN] {host.model_override_warning}")
+        host.model_override_warning = None
+
+
 def run_memory_command(line: str, ep_dir: Path | None, *, root: Path | None = None) -> None:
     """`/memory` 四个子命令的路由（Spec 7 §4.4）。"""
     from pipeline.agent import memory
@@ -2404,6 +2428,8 @@ def _run_repl_body(
                 print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
                 print("  /memory digest 聚合各期驳回反馈，在独立子会话里提议记忆条目")
                 print("  /compact     压缩上下文：较早的对话并成一条摘要，保留近期原文（D62）")
+                print("  /model       看 / 切换本会话模型：/model、/model <名>、/model default（D91）")
+                print("  /thinking    看 / 切换本会话推理强度：/thinking、/thinking <none|low|medium|high|…>、/thinking default")
                 print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
                 print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
@@ -2450,6 +2476,10 @@ def _run_repl_body(
 
             if line == "/compact":
                 run_compact_command(messages, tracker, ep_dir, scope, root=root)
+                continue
+
+            if line.split(maxsplit=1)[0] in ("/model", "/thinking"):
+                run_model_command(line, scope, root=root)
                 continue
 
             if line == "/patch" or line.startswith("/patch "):

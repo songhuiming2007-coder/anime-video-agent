@@ -300,6 +300,9 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     }
     case "command_result":
+      // D91：输入框模型 / 推理按钮的回执不进对话流——结果就显示在按钮上（失败在按钮旁一行），每点开一次下拉
+      // 就多一行「4 个模型」是噪声。对话框里手打的 /model、/thinking 走 notice，照常成行
+      if (MODEL_BUTTON_COMMANDS.has(String(f.name))) break;
       rows.push({ k: "notice", at, level: f.ok ? "info" : "warn", code: `command:${String(f.name)}`, text: String(f.text) });
       break;
     case "notice":
@@ -309,12 +312,16 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       rows.push({ k: "notice", at, level: "error", code: String(f.code), text: String(f.message) });
       break;
     case "turn_finished":
+      // D91：/model、/thinking 的命令回合不进模型，「0 次模型调用」脚注是噪声
+      if (f.stopped === "command") break;
       rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped), brief: footerBrief(f) });
       break;
     default:
       break; // ready / turn_started / bye / history 由 foldConv 主循环处理
   }
 }
+
+const MODEL_BUTTON_COMMANDS: ReadonlySet<string> = new Set(["models", "model", "thinking"]);
 
 /** ADR-0030：「本会话都批准」也是批准 */
 function isApprove(decision: unknown): boolean {

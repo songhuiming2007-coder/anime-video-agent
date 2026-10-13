@@ -38,6 +38,7 @@ from typing import Any, Callable, Iterator, Literal, Protocol
 
 from pipeline import paths
 from pipeline.agent import llm as llm_module  # 晚绑定：测试打桩 pipeline.agent.llm.run_tool_loop 要生效
+from pipeline.agent import model_switch
 from pipeline.agent.llm import Decision, LoopControl, dedup_key
 from pipeline.agent.session_log import (
     SCHEMA as SCHEMA_NAME,
@@ -755,7 +756,11 @@ class SessionHost:
         self.lease: EpisodeLease | None = None
         self.lease_error: str | None = None
         self.main_messages: list[dict[str, Any]] | None = None
-        self.sid: str | None = None
+        # D91：本会话的模型 / 推理强度设置（按 sid 落盘，见 sid 的 setter）。先于 sid 赋值初始化
+        self.model_override = model_switch.Override()
+        self.model_override_warning: str | None = None
+        self._sid: str | None = None
+        self.sid = None
         # 抓取执行器注入点（§2.4.4 第 4 条）：生产默认走 run_pipeline，测试注入替身
         self.fetch_executor: Callable[[int], dict[str, Any]] | None = None
         self._main: AgentSession | None = None
@@ -767,6 +772,49 @@ class SessionHost:
         # 终端没有排队，保持 None。送达通知同理（协议下发 steer_delivered 帧）
         self.steer_source: Callable[[], list[dict[str, str]]] | None = None
         self.on_steer_delivered: Callable[[list[str]], None] | None = None
+
+    # ---- D91：会话级模型设置 ----
+
+    @property
+    def sid(self) -> str | None:
+        return self._sid
+
+    @sid.setter
+    def sid(self, value: str | None) -> None:
+        """sid 一确定就对齐本会话的模型设置：盘上有 → 读回（重开旧会话）；盘上没有而内存里有
+        （新会话发第一条消息之前就 /model 过）→ 写下去。sid 只在会话开头赋一次。"""
+        self._sid = value
+        if value is None or self._persist_dir() is None:
+            return
+        stored, warning = model_switch.load(self._persist_dir(), value)
+        self.model_override_warning = warning
+        if not stored.empty:
+            self.model_override = stored
+        elif not self.model_override.empty and warning is None:
+            self._save_override()
+
+    def _persist_dir(self) -> Path | None:
+        return None if self.ephemeral else self.log_dir
+
+    def _save_override(self) -> None:
+        d = self._persist_dir()
+        if d is None or self._sid is None:
+            return
+        try:
+            model_switch.save(d, self._sid, self.model_override)
+        except (OSError, model_switch.ModelSwitchError) as exc:
+            self.model_override_warning = f"本会话模型设置没能落盘（{exc}），重开会话后会回到默认"
+
+    def set_model_override(self, override: "model_switch.Override") -> None:
+        """改本会话设置：内存立即生效（下一轮起），有 sid 就落盘；没有 sid 等 sid 确定时再写。"""
+        self.model_override = override
+        self._save_override()
+
+    def effective_llm_config(self, root: Path | None = None) -> Any:
+        """默认配置叠本会话设置——回合、压缩、起标题、读数分母都取这一份（D91）。"""
+        return model_switch.effective_config(
+            llm_module.load_llm_config(root or self.root), self.model_override  # 晚绑定：测试可打桩
+        )
 
     # ---- 登记 ----
 
@@ -1068,6 +1116,8 @@ class AgentSession:
                 outcome = llm_module.run_tool_loop(
                     messages,
                     ctx=self._tool_context(effective_scope, root),
+                    # D91：本会话的模型 / 推理强度（没设过就是默认配置；缺配置时为 None → 循环自己降级）
+                    config=self.host.effective_llm_config(root),
                     egress_trusted=egress_trusted,
                     # approve 显式传 None（裸循环适配器不用），control 才是生产路径。
                     # 现有多处打桩的签名带位置参数 approve，不传就当场 TypeError。
@@ -1403,7 +1453,7 @@ class AgentSession:
             return fail("nothing", "没有可压缩的内容：会话还没有对话")
         self.host.ensure_lease()
         effective_scope = scope or self._scope
-        cfg = llm_module.load_llm_config(root)
+        cfg = self.host.effective_llm_config(root)   # D91：摘要器与本会话用同一个模型
         if cfg is None:
             return fail("no_llm", "LLM 不可用（缺配置或密钥），无法生成摘要")
         try:
@@ -1564,7 +1614,7 @@ class AgentSession:
             return None
         if not ccfg.auto_trigger:
             return None
-        cfg = llm_module.load_llm_config(self._root)
+        cfg = self.host.effective_llm_config(self._root)   # D91：触发判据按本会话实际模型的窗口
         if cfg is None:
             return None
         model = cfg.model_for(llm_module.purpose_for_scope(self._scope))

@@ -9,7 +9,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 export type WireMessage = { role: string; content?: unknown; tool_calls?: { id: string; function: { name: string; arguments: string } }[]; tool_call_id?: string };
-export type ChatRequest = { model: string; messages: WireMessage[]; tools?: unknown[]; tool_choice?: string };
+export type ChatRequest = { model: string; messages: WireMessage[]; tools?: unknown[]; tool_choice?: string; reasoning_effort?: string };
 /** 一次回复：助手消息本体；`delayMs` 让这一次响应延迟（TX-4/TX-8 需要「回合在跑」的窗口）。 */
 export type Reply = { message: WireMessage; delayMs?: number; usage?: Record<string, unknown> };
 
@@ -85,11 +85,21 @@ const isTitleRequest = (b: ChatRequest): boolean => {
   return first?.role === "system" && typeof first.content === "string" && first.content.startsWith(TITLE_PROMPT_HEAD);
 };
 
+export const FAKE_MODELS = ["fake", "gemini-3.8-flash-high", "kimi-k3", "kimi-k2.8"];
+
 export async function startFakeLlm(): Promise<FakeLlm> {
   const replies: Reply[] = [];
   const state = { requests: [] as ChatRequest[], badPairings: 0, titleRequests: [] as ChatRequest[], titleReply: null as string | null, titleDelayMs: 0 };
   const sockets = new Set<import("node:net").Socket>();
   const server: Server = createServer((req, res) => {
+    // D91：GET /v1/models（/model 命令与输入框模型按钮取列表）；夹具默认模型是 fake
+    if (req.method === "GET") {
+      const ok = (req.url ?? "").replace(/\/+$/, "").endsWith("/models");
+      const data = Buffer.from(JSON.stringify(ok ? { object: "list", data: FAKE_MODELS.map((id) => ({ id })) } : { error: "not found" }), "utf-8");
+      res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json", "Content-Length": data.length });
+      res.end(data);
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {

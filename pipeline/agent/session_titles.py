@@ -136,12 +136,13 @@ def copy_entry(src_dir: Path, dst_dir: Path, sid: str) -> None:
         write(dst_dir, sid, str(entry["title"]), str(entry["source"]))
 
 
-def generate(first_user: str, answer: str, root: Path | None, scope: str) -> str | None:
+def generate(first_user: str, answer: str, root: Path | None, scope: str, config=None) -> str | None:
     """请模型起名。任何失败（没配模型、网络 / HTTP、出网断言、超时、返回不合格）一律 None——
     调用方静默保留兜底名，不发 notice、不影响主回合（R1.2）。走 `light` 档：配了轻档用轻档，没配回落主模型（Q1）。"""
     from pipeline.agent import llm as llm_mod
 
-    cfg = llm_mod.load_llm_config(root)
+    # D91：会话换过模型就用会话的（`config` 由协议进程按本会话设置给出）；不给读默认
+    cfg = config if config is not None else llm_mod.load_llm_config(root)
     if cfg is None:
         return None
     messages = [
