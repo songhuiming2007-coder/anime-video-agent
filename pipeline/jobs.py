@@ -81,6 +81,8 @@ class Job:
     stdin_devnull: bool = False
     tail_bytes: int = 4096
     env_drop: tuple[str, ...] = ()
+    # bash 作业专用（2026-10-13）：额外注入的环境变量。默认空 = pipeline 作业的既有行为
+    env_extra: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, JobStatus):
@@ -451,7 +453,16 @@ def create_shell_job(
 
     三处与能力无关的差别：cwd = 当期目录（无期为仓库根）；stdin 接 /dev/null——协议模式下
     父进程 stdin 是桌面端协议管道，读 stdin 的命令会吃掉协议帧；`env_drop` 里的密钥变量不传给子进程。
+
+    另注入两样（2026-10-13）：`AVA_ROOT` = 仓库根；`PATH` 前置当前解释器所在目录（项目 .venv/bin），
+    `python` 即项目解释器。此前 cwd 是期目录、系统里没有 `python`，模型写 `ls skills/…`、`python -c …`
+    一试一个失败（《束胸力学》插试看段一轮 6 次失败里占 4 次）。
     """
+    bin_dir = str(Path(sys.executable).parent)
+    env_extra = (
+        ("AVA_ROOT", str(paths.ROOT)),
+        ("PATH", bin_dir + os.pathsep + os.environ.get("PATH", "")),
+    )
     ep_path = Path(episode_dir).resolve() if episode_dir else None
     first = command.strip().splitlines()[0] if command.strip() else ""
     job = Job(
@@ -467,6 +478,7 @@ def create_shell_job(
         stdin_devnull=True,
         tail_bytes=SHELL_TAIL_BYTES,
         env_drop=tuple(env_drop),
+        env_extra=env_extra,
     )
     (publisher or get_publisher()).emit(
         EventType.JOB_CREATED,
@@ -579,6 +591,7 @@ def execute_job(
 
         try:
             env = {k: v for k, v in os.environ.items() if k not in job.env_drop}
+            env.update(dict(job.env_extra))
             env["PYTHONUNBUFFERED"] = "1"
             extra: dict[str, Any] = {"stdin": subprocess.DEVNULL} if job.stdin_devnull else {}
             proc = popen_factory(

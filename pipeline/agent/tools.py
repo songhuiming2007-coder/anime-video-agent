@@ -1100,7 +1100,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "adr": "ADR-0029",
         # 不标 side_effect：fail-closed 默认 True——每次执行弹命令审批卡（ADR-0029 决策 4）
         "description": (
-            "在本机执行一段 bash 命令（/bin/bash -c）。工作目录是当期目录（无期时为仓库根），"
+            "在本机执行一段 bash 命令（/bin/bash -c）。工作目录是当期目录（无期时为仓库根）；"
+            "仓库根在环境变量 `$AVA_ROOT`（读 skills/、docs/ 写 `\"$AVA_ROOT/skills/…\"`，不要写相对路径）；"
+            "`python` 就是项目解释器（已带 pipeline 依赖）。查写法先读 skills/ 与 docs/runbook/，别靠猜函数名翻源码。"
             "stdin 为空，stdout / stderr 各回传尾部 16 KB，输出里的已知密钥值会被替换为 [已脱敏]。"
             "用于白名单之外的文件与媒体操作：把期目录外的文件拷进来、改名、ffmpeg / sips 裁图转码、查看文件。"
             "**每次执行都弹卡给人看命令原文**；不要叫人去终端敲命令。"
@@ -1730,17 +1732,10 @@ _EP_CODE = re.compile(r"^S\d+E\d+$")
 
 def subtitle_lines(units: list[dict[str, Any]], source: Path) -> list[tuple[float, str]]:
     """把 WINDOW=2 滑窗单元还原成单句（`subindex.py` 的拼接：unit_i = line_i + " " + line_{i+1}，
-    末单元只有一句）。从末尾往前剥后缀即可精确还原；结构对不上就报错，不静默给半截台词。"""
-    if not units:
-        return []
-    lines: list[str] = [""] * len(units)
-    lines[-1] = str(units[-1]["text"])
-    for i in range(len(units) - 2, -1, -1):
-        text, suffix = str(units[i]["text"]), " " + lines[i + 1]
-        if not (text.endswith(suffix) and len(text) > len(suffix)):
-            raise ValueError(f"{source.name} 第 {i} 个单元不是 WINDOW=2 滑窗结构，无法还原单句")
-        lines[i] = text[: -len(suffix)]
-    return [(float(u["start"]), line) for u, line in zip(units, lines)]
+    末单元只有一句）。还原算法在 `pipeline/subcues.py`（D86：试看字幕同用一份）；结构对不上就报错。"""
+    from pipeline.subcues import lines
+
+    return [(float(u["start"]), line) for u, line in zip(units, lines(units, source))]
 
 
 def _mmss(seconds: float) -> str:

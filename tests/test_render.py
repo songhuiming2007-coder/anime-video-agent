@@ -470,3 +470,50 @@ class TestRenderApprovedDiffHardGate:
         assert "04-clips.approved.json 已过期" not in str(exc.value)
         assert "状态不是 ok" in str(exc.value)
 
+
+
+class TestAvsyncSubs:
+    """D86：试看块（音画同源）切自番剧集时，窗口内的原片中文台词按成片时间上屏。"""
+
+    CUES = [(100.0, 102.0, "窗口前"), (110.0, 112.5, "第一句"), (113.0, 115.0, "第二句"), (139.9, 141.0, "压线")]
+
+    def _plan(self, *blocks):
+        return {"blocks": list(blocks)}
+
+    def _setup(self, monkeypatch, cues):
+        from pipeline import subcues
+        monkeypatch.setattr(render.bgm, "anime_of", lambda ep: "伪恋")
+        monkeypatch.setattr(render.bgm, "animes_of", lambda ep: ["伪恋"])
+        monkeypatch.setattr(subcues, "load_cues", lambda anime, key: cues.get((anime, key)))
+
+    def test_番剧集窗口内台词映射到成片时间(self, tmp_path, monkeypatch):
+        self._setup(monkeypatch, {("伪恋", "S01E07"): self.CUES})
+        blk = {"label": "M3", "avsync": "伪恋 S01E07", "t0": 109.0, "dur": 31.0, "start": 60.0}
+        # 第一句：60 + (110-109) = 61 起；压线那句只剩 0.1 s（< 0.3）丢掉；窗口前的不进
+        assert render._avsync_cues(tmp_path, self._plan(blk)) == [
+            (61.0, 63.5, "第一句"), (64.0, 66.0, "第二句")]
+
+    def test_SP素材与关掉的块不配字幕(self, tmp_path, monkeypatch):
+        self._setup(monkeypatch, {})
+        sp = {"label": "M5", "avsync": "伪恋 SP04", "t0": 0.0, "dur": 20.0, "start": 0.0}
+        off = {"label": "M6", "avsync": "S01E07", "t0": 0.0, "dur": 20.0, "start": 30.0, "src_subs": False}
+        assert render._avsync_cues(tmp_path, self._plan(sp, off, {"label": "M1", "start": 0, "dur": 9})) == []
+
+    def test_番剧集缺字幕索引当场报错(self, tmp_path, monkeypatch):
+        self._setup(monkeypatch, {})
+        blk = {"label": "M3", "avsync": "S01E07", "t0": 0.0, "dur": 20.0, "start": 0.0}
+        with pytest.raises(SystemExit, match="原声字幕: 关"):
+            render._avsync_cues(tmp_path, self._plan(blk))
+
+    def test_build_ass_extra出SRC行_不给extra逐字节不变(self, tmp_path):
+        from pipeline.render import build_ass
+        segments = [{"index": 1, "duration": 5.0}]
+        audio = [{"text": "旁白一句。", "sentences": None}]
+        plain = build_ass(segments, audio, tmp_path / "a.ass").read_text(encoding="utf-8")
+        again = build_ass(segments, audio, tmp_path / "b.ass", extra=[]).read_text(encoding="utf-8")
+        assert again == plain and "SRC" not in plain
+        text = build_ass(segments, audio, tmp_path / "c.ass",
+                         extra=[(61.0, 63.5, "第一句{x}")]).read_text(encoding="utf-8")
+        assert "\nStyle: SRC," in text
+        assert "Dialogue: 0,0:01:01.00,0:01:03.50,SRC,,0,0,0,,第一句｛x｝" in text
+        assert text.replace(render.SRC_STYLE_LINE, "").startswith(plain.split("[Events]")[0])

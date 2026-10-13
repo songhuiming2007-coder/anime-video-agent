@@ -39,6 +39,7 @@
 | [生产中撞 bug → ava 开工单](2026-10-12-bug-ticket-direction.md) | D82 | ADR-0029, ADR-0030 | 上位需求文档（2026-10-12）；§3-1 已裁决（2026-10-12），施工图见下行 spec |
 | [D82 撞 bug 开工单施工 spec](2026-10-12-bug-ticket-spec.md) | D82 | ADR-0025, ADR-0029, ADR-0030 | **PR-B / C 机检通过，待人验收；PR-A 已施工·机检通过**（2026-10-13，分支 `d81-d82-project-layer`，施工记录见 spec §十三）。按钮人选 C、卡面 K1；变异 PR-A 26/26、PR-C 12/12。待人：§九 第 1 条真实任务（UI 规则 2）。D81 PR-5 已往 `HUMAN_GATED_COMMANDS` 加 `("assemble", None)`；红队 R-9 上报的 D83 已在同一分支修（`e0ca1fb`，见 issues D83） |
 | [D84 外部真实素材常规化 + 微单元短段落](2026-10-13-external-stills-microunit-spec.md) | D84 | ADR-0010, ADR-0011, D59 | **已施工·机检与端到端通过**（2026-10-13，已合 main）；pytest 2950，变异 9 处全抓；`02-asset-requests.json` 经人裁决扩入期文件白名单；待人：真实一期使用 |
+| [D86 试看片段配原片中文字幕](2026-10-13-avsync-subs-spec.md) | D86 | ADR-0013 | **已施工·机检与端到端通过**（2026-10-13）；字幕样式人选 A；待真实一期渲染验收 |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 

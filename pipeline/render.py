@@ -44,6 +44,12 @@ FONT = paths.conf("subtitle.font", "Hiragino Sans GB")
 FONT_SIZE = paths.conf("subtitle.size", 54)
 MARGIN_V = paths.conf("subtitle.margin_v", 90)
 MARGIN_LR = paths.conf("subtitle.margin_lr", 120)
+# D86：试看块的原片台词样式（`SRC`）。只在有原片台词时才写进样式表，旁白期的 vo.ass 逐字节不变。
+# 与旁白同款：2026-10-13 人在《伪恋》S01E07 真实帧上比过 A（同款）/ B（46px 淡黄），选 A。
+SRC_STYLE_LINE = (
+    f"Style: SRC,{FONT},{FONT_SIZE},&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,"
+    f"{MARGIN_LR},{MARGIN_LR},{MARGIN_V},1\n"
+)
 
 # 响度目标，见 CLAUDE.md「质检门禁」
 LUFS = paths.conf("audio.lufs", -16)
@@ -379,11 +385,14 @@ def _ass_escape(text: str) -> str:
 
 
 def build_ass(segments: list[dict], audio: list[dict], dest: Path,
-              starts: dict[int, float] | None = None) -> Path:
+              starts: dict[int, float] | None = None,
+              extra: list[tuple[float, float, str]] | None = None) -> Path:
     """口播原文按句上屏。时间轴取自配音每句的真实时长，天然严丝合缝。
 
     试听型的段落起点带音乐段偏移（`starts`：段落号 → 成片起点）；
     `starts` 为 None 时段落连续累计（普通期，行为不变）。
+    `extra`（D86）：试看块的原片台词（成片起、止、文本），用 `SRC` 样式上屏；
+    None / 空 = 不加，旁白行与样式表逐字节不变。
 
     用 ASS 而不是 SRT：SRT 没有样式，字号边距要在滤镜里另外传，
     而 `force_style` 对中文字体名的转义在不同 ffmpeg 构建上表现不一致。
@@ -398,7 +407,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
 Style: VO,{FONT},{FONT_SIZE},&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,{MARGIN_LR},{MARGIN_LR},{MARGIN_V},1
-
+{SRC_STYLE_LINE if extra else ""}
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
@@ -418,6 +427,11 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
                 f"VO,,0,0,0,,{body}"
             )
         t += s["duration"]
+    for start, end, text in extra or []:
+        if not text.strip():
+            continue
+        body = r"\N".join(wrap(_ass_escape(text.strip()), per_line()))
+        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},SRC,,0,0,0,,{body}")
     dest.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
     return dest
 
@@ -1013,11 +1027,11 @@ def _still_frames(episode: Path, plan: dict,
     return out
 
 
-def _source_path(episode: Path, ep_tag: str) -> Path:
-    """`S01E01` / `罪恶王冠 S01E01` → 该集片源路径（data/library/sources.json）。
+def _resolve_tag(episode: Path, ep_tag: str) -> tuple[str, str]:
+    """`S01E01` / `罪恶王冠 S01E01` / `EGOIST SP04` → (番, 规范集键)。
 
-    番名前缀（跨番混剪，2026-09-06）：`画面:` 行写了番名就用该番的片源表，
-    没写归主番；写了番表里没有的名字当场报错，不静默落到主番同季同集上。
+    番名前缀（跨番混剪，2026-09-06）：写了番名就归该番，没写归主番；写了番表里没有的
+    名字当场报错，不静默落到主番同季同集上。D86 从 `_source_path` 抽出：试看字幕要同一份归属。
     """
     anime = bgm.anime_of(episode)
     if anime is None:
@@ -1035,6 +1049,12 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
     sp_m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", ep_tag, re.I)
     if sp_m:
         ep_tag = f"SP{int(sp_m.group(1)):02d}"
+    return anime, ep_tag
+
+
+def _source_path(episode: Path, ep_tag: str) -> Path:
+    """`S01E01` / `罪恶王冠 S01E01` → 该集片源路径（data/library/sources.json）。归属规则见 `_resolve_tag`。"""
+    anime, ep_tag = _resolve_tag(episode, ep_tag)
     # 不走 ingest.load_sources：它会连带 subindex 的 ML 栈，渲染刻意不背；
     # 表的结构就是 {番: {集键: 记录}}，这里只做查 key 这一件事
     sources = json.loads((paths.DATA / "library" / "sources.json")
@@ -1043,6 +1063,34 @@ def _source_path(episode: Path, ep_tag: str) -> Path:
     if not rec:
         raise SystemExit(f"FAIL sources.json 里没有 {anime}/{ep_tag} 的片源")
     return paths.ROOT / rec["path"]
+
+
+def _avsync_cues(episode: Path, plan: dict) -> list[tuple[float, float, str]]:
+    """试看块（音画同源）窗口内的原片台词 → [(成片起, 成片止, 台词)]（D86）。
+
+    只管切自番剧集（SxxEyy）的块：SP 素材（Live / MV）没有字幕索引，本来就不配；
+    写了 `原声字幕: 关` 的块跳过。番剧集却没有该集字幕索引 → 当场报错（判据 9：
+    跳过不是通过——静默出一段没字幕的日语对白，正是 D86 要堵的事）。
+    """
+    from . import subcues
+
+    out: list[tuple[float, float, str]] = []
+    for b in plan.get("blocks", []):
+        tag = b.get("avsync")
+        if not tag or b.get("src_subs") is False:
+            continue
+        anime, key = _resolve_tag(episode, tag)
+        if key.startswith("SP"):
+            continue
+        all_cues = subcues.load_cues(anime, key)
+        if all_cues is None:
+            raise SystemExit(
+                f"FAIL 音乐段 {b['label']} 试看切自《{anime}》{key}，但没有这一集的字幕索引"
+                f"（{subcues.index_path(anime, key).name}），渲出来是没有中文字幕的原声对白。\n"
+                f"     要么先给这一集建字幕索引，要么在块里写 `原声字幕: 关`")
+        for a, z, text in subcues.window(all_cues, b["t0"], b["t0"] + b["dur"]):
+            out.append((round(b["start"] + a, 3), round(b["start"] + z, 3), text))
+    return out
 
 
 def _hhmmss_to_sec(s: str) -> float:
@@ -1274,7 +1322,9 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             seg_starts = {s["index"]: s["start"]
                           for s in music_plan["segments"]}
         ass = build_ass(segments, manifest["segments"], work / "vo.ass",
-                        starts=seg_starts)
+                        starts=seg_starts,
+                        # D86：试看块（音画同源）切自番剧集时，窗口内的原片中文台词一并上屏
+                        extra=_avsync_cues(episode, music_plan) if music_plan is not None else None)
         print(f"  最终合成（13 分钟重编码，约 5-10 分钟）…", file=sys.stderr)
         # 响度归一两遍（2026-08-16 改）：先量整条音频，再线性增益重放——
         # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
