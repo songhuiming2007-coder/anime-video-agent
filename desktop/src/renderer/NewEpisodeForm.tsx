@@ -57,3 +57,110 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
     </div>
   );
 }
+
+// ---------------- D81：建企划、在企划下建卷（同一文件：TG-10 建期类方法只在本文件的点击处理器里） ----------------
+// 企划名 / 卷名初值同样是空串字面量、不从对话预填（TG-15 的同一纪律）；目标企划是宿主扫出来的对象（不是可预填的名字）。
+
+export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: (projKey: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <div className="new-project" data-testid="new-project">
+      <button className="ui-row proj-new" data-testid="new-project-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        ＋ 新建企划
+      </button>
+      {open && (
+        <div className="new-episode-form">
+          <label className="ui-field">
+            企划名
+            <input className="ui-input" data-testid="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 supercell-编年史" />
+          </label>
+          <button
+            className="ui-btn"
+            data-testid="project-create"
+            disabled={busy || name.trim() === ""}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              setBusy(true);
+              setProblem(null);
+              rpc.call<{ projKey: string }>("project.create", { name }).then(
+                (r) => {
+                  setBusy(false);
+                  setName("");
+                  setOpen(false);
+                  onCreated(r.projKey);
+                },
+                (err) => {
+                  setBusy(false);
+                  setProblem(errText(err));
+                },
+              );
+            }}
+          >
+            建企划
+          </button>
+          {busy && <span className="muted">建企划中…</span>}
+          {problem && (
+            <div className="error" data-testid="new-project-error">
+              {problem}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; target: { projKey: string }; onCreated: (created: CreatedEpisode) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <div className="new-volume" data-testid="new-volume">
+      <button className="ui-row proj-new" data-testid="new-volume-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        ＋ 新建卷
+      </button>
+      {open && (
+        <div className="new-episode-form">
+          <label className="ui-field">
+            卷名
+            <input className="ui-input" data-testid="volume-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 01-…" />
+          </label>
+          <button
+            className="ui-btn"
+            data-testid="volume-create"
+            disabled={busy || name.trim() === ""}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              setBusy(true);
+              setProblem(null);
+              rpc.call<CreatedEpisode>("episode.create", { name, project: target.projKey }).then(
+                (r) => {
+                  setBusy(false);
+                  setName("");
+                  setOpen(false);
+                  onCreated(r);
+                },
+                (err) => {
+                  setBusy(false);
+                  setProblem(errText(err));
+                },
+              );
+            }}
+          >
+            建卷
+          </button>
+          {busy && <span className="muted">建卷中…</span>}
+          {problem && (
+            <div className="error" data-testid="new-volume-error">
+              {problem}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

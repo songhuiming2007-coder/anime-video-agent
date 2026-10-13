@@ -62,7 +62,7 @@ from pipeline.agent.status_card import (
     log_approval_decision,
     render_approval_card,
 )
-from pipeline.agent.tools import resolve_episode_dir, run_pipeline
+from pipeline.agent.tools import resolve_episode_dir, resolve_project_dir, run_pipeline
 from pipeline.approvals import HUMAN_STOPS, human_stop_of
 from pipeline.project import EpisodeTree, ProjectEntry, classify_dir, get_episode_tree  # noqa: F401  （D81：以原名再导出）
 from pipeline.status import EpisodeStatus, format_status, inspect_episode
@@ -1166,7 +1166,8 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
         return None
     rest = argv[1:]
     try:
-        resolved = resolve_episode_dir(ep_dir)
+        # D81：企划会话的会话记录在企划目录里；resolve_episode_dir 对企划目录一律拒（红队 R-3），企划走自己的校验
+        resolved = resolve_project_dir(ep_dir) if classify_dir(ep_dir) == "project" else resolve_episode_dir(ep_dir)
     except PermissionError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1

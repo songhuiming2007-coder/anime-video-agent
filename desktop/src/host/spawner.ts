@@ -28,6 +28,9 @@ export type Template =
   | "REJECT"
   | "REVIEW_APPROVE"
   | "NEW_EPISODE"
+  | "NEW_PROJECT"
+  | "NEW_VOLUME"
+  | "PROJECT_META"
   // Spec 10 S8-R3：密钥探测与钥匙串读取（短命令，规则同现状）
   | "PROBE_KEY_ENV"
   | "KEYCHAIN_READ"
@@ -104,6 +107,11 @@ export interface TemplateArgs {
   REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint };
   /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
   NEW_EPISODE: { name: string; ideaSid?: string };
+  /** D81：建企划（`ava new-project <名>`）与在企划下建卷（`ava new --project <企划> <卷名>`）；名字单个 argv 元素，校验全在 core */
+  NEW_PROJECT: { name: string };
+  NEW_VOLUME: { project: string; name: string };
+  /** D81：`/project-meta --dir=<企划绝对路径>`（只读；00-project.md 的解析只在 core，TS 不另写解析器） */
+  PROJECT_META: { proj: string };
   PROBE_KEY_ENV: Record<string, never>;
   /** Spec 10 §2.9：账户名 = core 回答的变量名 */
   KEYCHAIN_READ: { envName: string };
@@ -241,6 +249,19 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
         argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "review", "--approve", `--expect-size=${size}`, `--expect-mtime-ns=${String(mtimeNs)}`],
         timeoutMs: SPAWN_TIMEOUT_REVIEW_MS,
       };
+    }
+    case "NEW_PROJECT": {
+      const { name } = args as TemplateArgs["NEW_PROJECT"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "new-project", name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    }
+    case "NEW_VOLUME": {
+      const { project, name } = args as TemplateArgs["NEW_VOLUME"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "new", "--project", project, name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    }
+    case "PROJECT_META": {
+      // 等号形式单个 argv 元素：企划目录名可能以 - 开头之外的任意字符，--dir= 之后逐字节到达 core
+      const { proj } = args as TemplateArgs["PROJECT_META"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "/project-meta", `--dir=${proj}`], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: STATUS_STDOUT_MAX_BYTES };
     }
     case "NEW_EPISODE": {
       // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core。

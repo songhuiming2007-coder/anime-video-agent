@@ -126,6 +126,15 @@ describe("Spec 10 S8-R2 / Spec 12 S8-R19：NEW_EPISODE 与 09 定稿的 argv 形
     expect(buildArgv("NEW_EPISODE", { name: "a b;$(x)" }, "/repo").argv.slice(-2)).toEqual(["a b;$(x)", "--from-idea"]);
   });
 
+  it("D81 PR-2b：NEW_PROJECT / NEW_VOLUME 名字单个 argv 元素；PROJECT_META 等号形式、完整读入 stdout", () => {
+    const pyPath = join("/repo", ".venv/bin/python");
+    expect(buildArgv("NEW_PROJECT", { name: "supercell 编年史;$(x)" }, "/repo").argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "new-project", "supercell 编年史;$(x)"]);
+    expect(buildArgv("NEW_VOLUME", { project: "P", name: "01 a b" }, "/repo").argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "new", "--project", "P", "01 a b"]);
+    const meta = buildArgv("PROJECT_META", { proj: "/eps/-P x" }, "/repo");
+    expect(meta.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "/project-meta", "--dir=/eps/-P x"]);
+    expect(meta.stdoutMax).toBeGreaterThan(0);
+  });
+
   it("APPROVE 09 变体：四个额外元素 --cover <路径> --title <标题>；其余停机点只有五元素形态", () => {
     const pyPath = join("/repo", ".venv/bin/python");
     expect(buildArgv("APPROVE", { ep: "/ep", stop: "09", approvalId: "appr_1", cover: "07-cover/a.png", title: "标题 带空格" }, "/repo").argv).toEqual([

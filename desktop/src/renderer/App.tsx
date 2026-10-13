@@ -7,13 +7,14 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastContextReading } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, ShotsEntry, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
 import { formatRelTime } from "../shared/relTime";
 import { filterEpisodes, groupByStep } from "../shared/episodeView";
+import { filterProject, plainEpisodes, progressSegments, projectBadges, projectTitle, timeline, volumeRows } from "../shared/projectView";
 import { AnswerDock, RequestCards } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane } from "./ConversationPane";
@@ -23,7 +24,7 @@ import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
 import { readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
-import { NewEpisodeForm } from "./NewEpisodeForm";
+import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
 import { Splitter } from "./Splitter";
 import { SessionList, titleTick } from "./SessionList";
@@ -97,6 +98,8 @@ function Main() {
   const [active, setActive] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = active;
+  /** D81：正在企划会话里的企划（projKey）；与 active（某卷 / 普通期）、showIdea 三者互斥——打开任一处即清另两处 */
+  const [activeProject, setActiveProject] = useState<string | null>(null);
   const [linked, setLinked] = useState(false);
   /** 激活 / 刷新在途（载入含 heal 与 status），供界面与 e2e 判断载入是否结束 */
   const [loading, setLoading] = useState(0);
@@ -137,8 +140,7 @@ function Main() {
 
   const loadHealth = useCallback(() => rpc.call<Health>("app.health").then(setHealth, (e) => setError(errText(e))), []);
 
-  const convKeyOf = (epKey: string | null): ConvKey => (showIdea || !epKey ? "idea" : `ep:${epKey}`);
-  const convKey = convKeyOf(active);
+  const convKey: ConvKey = showIdea ? "idea" : activeProject !== null ? `proj:${activeProject}` : active ? `ep:${active}` : "idea";
   const convKeyRef = useRef<ConvKey>(convKey);
   convKeyRef.current = convKey;
   /** autoOpen 的 reset 事件只接受 none/idle/running/exited；starting/ending 视为 idle */
@@ -189,6 +191,7 @@ function Main() {
           // 按新 host 认识的活会话取 snapshot（本 spec 只有「当前视图」与「活会话」两类）
           const keys: ConvKey[] = [convKeyRef.current];
           for (const e of l.episodes) if (e.conv?.live) keys.push(`ep:${e.epKey}`);
+          for (const p of l.projects) if (p.conv?.live) keys.push(`proj:${p.projKey}`);
           if (l.idea?.live) keys.push("idea");
           const unique = [...new Set(keys)];
           unique.forEach((k) => fetchConvRef.current(k, k === convKeyRef.current));
@@ -212,6 +215,7 @@ function Main() {
     setPreview(null);
     setPreviewUnseen(false);
     setShowIdea(false);
+    setActiveProject(null);
     setActive(epKey);
     setLoading((n) => n + 1);
     try {
@@ -222,6 +226,17 @@ function Main() {
     } finally {
       setLoading((n) => n - 1);
     }
+  }, []);
+
+  /** D81：进企划会话。不激活任何期（中栏不显示工序卡，显示企划头部）；预览清空同切期 */
+  const openProject = useCallback((projKey: string) => {
+    if (!confirmDiscardDirty()) return;
+    setError(null);
+    setPreview(null);
+    setPreviewUnseen(false);
+    setShowIdea(false);
+    setActive(null);
+    setActiveProject(projKey);
   }, []);
 
   /** 建期成功（两处「＋ 新建一期」共用）：记下带入结果给 idea-note 两态与选题视图的「已带入」提示 */
@@ -253,6 +268,7 @@ function Main() {
       if (r.problem) setError(`仓库未切换：${r.problem}`);
       if (!r.changed) return;
       setActive(null);
+      setActiveProject(null);
       setPreview(null);
       dispatch({ type: "reset" });
       autoRef.current = initialAutoOpen;
@@ -398,9 +414,12 @@ function Main() {
           <EpisodeList
             list={list}
             active={active}
+            activeProject={activeProject}
             showIdea={showIdea}
             onOpen={open}
-            onIdea={() => { setShowIdea(true); setJustCreated(null); }}
+            onOpenProject={openProject}
+            onCreatedVolume={onCreatedEp}
+            onIdea={() => { setShowIdea(true); setActiveProject(null); setJustCreated(null); }}
             stale={!reachOk}
             convPhase={conv?.phase ?? "none"}
             titles={titleTick(conv?.entries ?? [])}
@@ -434,7 +453,7 @@ function Main() {
             testId="split-left"
           />
         )}
-        <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
+        <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-proj={showIdea ? "" : activeProject ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
           {/* S8-R23：与 .main.stale 同一条件（不引入新判定），与 reach-banner 分工不同——横幅说原因，这里标出哪些区域是旧数据 */}
           {!reachOk && (
             <div className="stale-note">
@@ -443,6 +462,7 @@ function Main() {
               </span>
             </div>
           )}
+          {!showIdea && activeProject !== null && <ProjectHeader p={list?.projects.find((x) => x.projKey === activeProject) ?? null} projKey={activeProject} />}
           {ep && !showIdea && <StatusCard key={ep.epKey} ep={ep} extra={<HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />} />}
           <SessionHeader
             rpc={rpc}
@@ -483,7 +503,7 @@ function Main() {
               queued={folded.queued}
               returned={folded.returned}
               disabled={health?.reach !== "ok"}
-              placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
+              placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : convKey.startsWith("proj:") ? "和 ava 定总纲与卷表、跨卷审查、总装（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
             />
           </div>
         </section>
@@ -718,11 +738,13 @@ function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | nu
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase, titles, openCards, onConvChanged }: { list: EpisodesList | null; active: string | null; showIdea: boolean; onOpen: (k: string) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; openCards: number; onConvChanged: () => void }) {
+function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProject, onCreatedVolume, onIdea, stale, convPhase, titles, openCards, onConvChanged }: { list: EpisodesList | null; active: string | null; activeProject: string | null; showIdea: boolean; onOpen: (k: string) => void; onOpenProject: (projKey: string) => void; onCreatedVolume: (created: CreatedEpisode) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; openCards: number; onConvChanged: () => void }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  /** D81：企划卡展开状态（人点过的才记；没点过的按「含当前卷 / 当前企划」决定） */
+  const [projOpen, setProjOpen] = useState<Record<string, boolean>>({});
   /** 相对时间每 60 s 与回到前台时重算（RF-11） */
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -739,22 +761,27 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
     saveEpisodeView(v);
   };
   const eps = list ? filterEpisodes(list.episodes, query) : [];
+  // D81（人 2026-10-13 选方案 B「分组卡片」）：企划成员不进平铺列表，归到企划卡里；搜索命中卷名时企划连带显示、只列命中的卷
+  const projects = list ? list.projects.map((p) => filterProject(p, query)).filter((p): p is ProjectSummary => p !== null) : [];
+  const plain = list ? plainEpisodes(filterEpisodes(list.episodes, query), list.projects) : [];
   // D45：当前期下面展开它的会话子列表（人 2026-10-08 选方案 B）
-  const row = (e: EpisodeSummary) => (
+  const row = (e: EpisodeSummary, label: string = e.epKey) => (
     <div key={e.epKey}>
-      {epRow(e)}
+      {epRow(e, label)}
       {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
     </div>
   );
-  const epRow = (e: EpisodeSummary) => (
+  const epRow = (e: EpisodeSummary, label: string) => (
     <button
       className="ui-row ep"
       aria-current={!showIdea && e.epKey === active ? "true" : undefined}
       onClick={() => onOpen(e.epKey)}
+      title={label !== e.epKey ? e.epKey : undefined}
       data-testid="episode"
+      data-ep={e.epKey}
     >
       <span className="ep-line">
-        <span className="ep-name">{e.epKey}</span>
+        <span className="ep-name">{label}</span>
         <span className="ep-time" title="期目录顶层最近变动">
           {formatRelTime(e.mtimeMs, now)}
         </span>
@@ -776,6 +803,73 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
       </span>
     </button>
   );
+  const isOpen = (p: ProjectSummary): boolean =>
+    query.trim() !== "" || (projOpen[p.projKey] ?? (activeProject === p.projKey || p.members.some((m) => m.epKey === active)));
+  const card = (p: ProjectSummary) => {
+    const opened = isOpen(p);
+    const b = projectBadges(p);
+    const segs = progressSegments(p);
+    const sessCur = !showIdea && activeProject === p.projKey;
+    return (
+      <div key={`proj:${p.projKey}`} className="proj-card" data-testid="project" data-proj={p.projKey}>
+        <div className="proj-head">
+          <button className="proj-toggle" aria-expanded={opened} onClick={() => setProjOpen((o) => ({ ...o, [p.projKey]: !opened }))} title={p.projKey} data-testid="project-toggle">
+            <Icon name={opened ? "chevron-down" : "chevron-right"} size="sm" />
+            <span className="proj-name">{projectTitle(p)}</span>
+            {!p.hasProjectFile && (
+              <span className="ui-badge" data-testid="project-unplanned">
+                未立项
+              </span>
+            )}
+          </button>
+          <button className="proj-sess" aria-current={sessCur ? "true" : undefined} onClick={() => onOpenProject(p.projKey)} data-testid="project-session">
+            企划会话
+          </button>
+        </div>
+        {(b.running || b.cards > 0 || b.stops > 0) && (
+          <div className="proj-sub">
+            {b.running && (
+              <span className="ui-badge ui-badge--wait" data-testid="conv-running">
+                运行中
+              </span>
+            )}
+            {b.cards > 0 && (
+              <span className="ui-badge ui-badge--wait" data-testid="project-cards">
+                {b.cards} 张卡待答
+              </span>
+            )}
+            {b.stops > 0 && (
+              <span className="ui-badge stop-mark" data-testid="project-stops">
+                停机 {b.stops}
+              </span>
+            )}
+          </div>
+        )}
+        {segs.length > 0 ? (
+          <div className="proj-bar" title="每卷一段：绿 = 走到 09、橙 = 停在人审、灰蓝 = 进行中" data-testid="project-bar">
+            {segs.map((s) => (
+              <span key={s.label} className={`proj-seg seg-${s.stage}`} title={s.title} data-stage={s.stage} />
+            ))}
+          </div>
+        ) : (
+          <div className="proj-empty muted">还没有卷</div>
+        )}
+        {sessCur && !stale && <SessionList rpc={rpc} convKey={`proj:${p.projKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
+        {opened && (
+          <div className="proj-vols" data-testid="project-volumes">
+            {volumeRows(p).map((r) => row(r.e, r.label))}
+            <NewVolumeForm rpc={rpc} target={{ projKey: p.projKey }} onCreated={onCreatedVolume} />
+          </div>
+        )}
+      </div>
+    );
+  };
+  /** 「按工序」（方案 B 散开）：各卷按自身 is_blocked 进停机点 / 非停机点组，行文字带企划名与卷序 */
+  const stepItems = [
+    ...plain.map((e) => ({ e, label: e.epKey, isBlocked: e.isBlocked })),
+    ...projects.flatMap((p) => volumeRows(p).map((r) => ({ e: r.e, label: `${projectTitle(p)} · ${r.label}`, isBlocked: r.e.isBlocked }))),
+  ];
+  const nothing = plain.length === 0 && projects.length === 0;
   return (
     <div className="episodes" data-testid="episodes">
       <div className="side-head">
@@ -820,21 +914,63 @@ function EpisodeList({ list, active, showIdea, onOpen, onIdea, stale, convPhase,
       </button>
       {/* D58：选题会话与期会话同一个会话列表（看 / 进 / 新开 / 删），选中「选题」时展开 */}
       {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
+      <NewProjectForm rpc={rpc} onCreated={onOpenProject} />
       {!list && <div className="muted">加载中…</div>}
-      {list && query.trim() !== "" && eps.length === 0 && <div className="muted">没有匹配的期</div>}
-      {view === "time" && eps.map(row)}
+      {list && query.trim() !== "" && nothing && <div className="muted">没有匹配的期</div>}
+      {view === "time" && timeline(plain, projects).map((i) => (i.kind === "episode" ? row(i.e) : card(i.p)))}
       {view === "step" &&
-        groupByStep(eps).map((g) => (
+        groupByStep(stepItems).map((g) => (
           <div key={g.key}>
             <button className="ui-section" aria-expanded={!collapsed[g.key]} onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}>
               <Icon name={collapsed[g.key] ? "chevron-right" : "chevron-down"} size="sm" />
               {g.label}
               <span className="ui-count">{g.items.length}</span>
             </button>
-            {!collapsed[g.key] && g.items.map(row)}
+            {!collapsed[g.key] && g.items.map((x) => row(x.e, x.label))}
           </div>
         ))}
       {list && list.hiddenUnderscore > 0 && <div className="muted">另有 {list.hiddenUnderscore} 个 _ 前缀目录未显示</div>}
+    </div>
+  );
+}
+
+// ---------------- D81：企划会话的中栏头部（卷表经 core /project-meta；侧栏与这里都不解析 00-project.md） ----------------
+
+function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: string }) {
+  const m = p?.meta ?? null;
+  const rows = p ? volumeRows(p) : [];
+  return (
+    <div className="status proj-status" role="group" aria-label="企划" data-testid="project-head" data-proj={projKey}>
+      <div className="status-step">
+        <strong data-testid="project-title">{p ? projectTitle(p) : projKey}</strong>
+        <span className="ui-badge">企划会话</span>
+        {p && !p.hasProjectFile && <span className="ui-badge">未立项</span>}
+        <span className="spacer" />
+        {m?.collection && <span className="proj-status-coll">合集 · {m.collection}</span>}
+      </div>
+      {p && !p.hasProjectFile && <div className="muted">还没有 00-project.md：在这里和 ava 定总纲与卷表，写入前会弹卡给你看 diff。</div>}
+      {m?.error && (
+        <div className="error" data-testid="project-meta-error">
+          卷表解析失败：{m.error}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <ul className="proj-status-vols" data-testid="project-head-volumes">
+          {rows.map((r) => (
+            <li key={r.e.epKey} title={r.e.epKey}>
+              <span className="proj-status-vol">{r.label}</span>
+              {r.e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
+              <span className="muted">{r.e.currentStep ?? "…"}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {m?.hints.map((h) => (
+        <div className="muted" key={h} data-testid="project-hint">
+          <Icon name="info" size="sm" />
+          {h}
+        </div>
+      ))}
     </div>
   );
 }
