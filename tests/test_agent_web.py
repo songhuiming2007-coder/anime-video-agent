@@ -381,10 +381,10 @@ def test_egress_blocks_before_send_direct(monkeypatch: pytest.MonkeyPatch) -> No
             search_web(bad_query, config=cfg, opener=fake_opener)
 
     for bad_url in (
-        "https://example.org/03-audio/manifest.json",
-        "https://example.org/03-audio%2Fmanifest.json",
-        "https://example.org/03-audio%252Fmanifest.json",
-        "https://example.org/03-AUDIO/Manifest.JSON",
+        "https://example.org/config/cloud.local.json",
+        "https://example.org/config%2Fcloud.local%2Ejson",
+        "https://example.org/config%252Fcloud%252Elocal%252Ejson",
+        "https://example.org/CONFIG/Cloud.Local.JSON",
     ):
         with pytest.raises(PermissionError, match="拦截出网请求"):
             fetch_web(bad_url, config=cfg, opener=fake_opener)
@@ -424,7 +424,7 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config()
 
     dirty_html = (
-        "<html><body>请检查 cloud.local.json 以及 03-audio/manifest.json 的内容</body></html>"
+        "<html><body>请检查 cloud.local.json 以及 config/cloud.local.json 的内容</body></html>"
     )
     f_out = fetch_web(
         "https://example.org/doc",
@@ -432,7 +432,7 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
         opener=lambda req, timeout=30.0: _FakeResponse(dirty_html.encode("utf-8")),
     )
     assert "cloud.local.json" not in f_out["text"]
-    assert "03-audio/manifest.json" not in f_out["text"]
+    assert "config/cloud.local.json" not in f_out["text"]
     assert f_out["text"].count("[已脱敏]") == 2
 
     dirty_search_sse = _exa_sse(
@@ -440,7 +440,7 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
             (
                 "引用 agent.local.json 的文章",
                 "https://example.org/1",
-                "文中提到了 cloud.local.json 和 03-audio/voice.json",
+                "文中提到了 cloud.local.json 和 config/agent.local.json",
             )
         ]
     )
@@ -452,7 +452,7 @@ def test_fetched_content_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
     item = s_out["results"][0]
     assert "agent.local.json" not in item["title"]
     assert "cloud.local.json" not in item["snippet"]
-    assert "03-audio/voice.json" not in item["snippet"]
+    assert "config/agent.local.json" not in item["snippet"]
     assert "[已脱敏]" in item["title"]
     assert item["snippet"].count("[已脱敏]") == 2
 
@@ -898,7 +898,7 @@ def test_egress_blocks_via_execute_tool(
     assert "拦截出网请求" in res_s["error"]
 
     res_f = execute_tool(
-        "web_fetch", {"url": "https://example.org/03-audio/manifest.json"}, ctx
+        "web_fetch", {"url": "https://example.org/config/cloud.local.json"}, ctx
     )
     assert res_f["ok"] is False
     assert "拦截出网请求" in res_f["error"]
@@ -1264,7 +1264,7 @@ LONG_URL_FIXTURE_HTML = (
 
 DIRTY_LINKS_FIXTURE_HTML = """<!DOCTYPE html>
 <html><body>
-  <a href="https://ta.example/03-audio/manifest.json">受限路径</a>
+  <a href="https://ta.example/config/cloud.local.json">受限路径</a>
   <a href="/safe">引用 Cloud.Local.JSON 与 agent.local.json 的锚</a>
 </body></html>
 """
@@ -1376,7 +1376,7 @@ def test_fetch_links_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
     """T8 (门禁 4): 链接 URL/锚文本同过 _scrub，受限字样不进上下文（会话不炸）。"""
     out = _fetch_fixture(DIRTY_LINKS_FIXTURE_HTML, monkeypatch=monkeypatch)
     dumped = json.dumps(out["links"], ensure_ascii=False)
-    assert "03-audio/manifest.json" not in dumped
+    assert "config/cloud.local.json" not in dumped
     assert "Cloud.Local.JSON" not in dumped
     assert "agent.local.json" not in dumped
     assert "[已脱敏]" in dumped

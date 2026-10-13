@@ -862,6 +862,7 @@ def run(path: Path) -> list[Check]:
     add("备选覆盖（允许留空）", True, f"{len(alts)}/{len(vo)}")
 
     _check_avsync_subs(path, add)
+    _check_bgm_source(path, add)
 
     return checks
 
@@ -900,6 +901,20 @@ def _check_avsync_subs(path: Path, add) -> None:
             rows.append(f"{b.label}：{n} 句")
     if rows or bad:
         add("试看字幕", not bad, "；".join(bad + rows))
+
+
+def _check_bgm_source(path: Path, add) -> None:
+    """D89「BGM 出处」：稿件有音乐段时 BGM 只认稿件里的铺底块，01 的 `BGM:` 列表不生效。
+
+    判据在 `music.bgm_source_issue`（渲染入口同一份）。普通期、写法一致时这一项不出现；
+    WARN 记成通过并在说明里带 ⚠（两处说法打架，不拦）。
+    """
+    from . import music
+
+    issue = music.bgm_source_issue(music.parse_script_music(path), bgm.topic_bgm_list(path.parent))
+    if issue is not None:
+        level, text = issue
+        add("BGM 出处", level != "FAIL", text if level == "FAIL" else f"⚠ {text}")
 
 
 # ---------- D18 人物提示（INFO，只报不拦）----------

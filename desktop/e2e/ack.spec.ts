@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { stubConfirm } from "./sessionFixtures";
 import { cleanup, treeManifest } from "../tests/helpers";
 import {
   ACK_TEMPLATES,
@@ -127,7 +128,8 @@ test("TA-2b 05 已在终端批准后确认：序列恰为 [HEAL, APPROVE]，无 
   const ep = epAt05(R.repo, R.eps, "TA2B", { patch: true });
   // 真实流程：桌面端（或终端 /approvals）先建出 05 pending，人再去终端批准含补丁段的排片；否则工序已到 06，自愈不会补建 05 对象
   expect(ava(R.repo, [ep, "/approvals"]).code).toBe(0);
-  const t = spawnSync(py(R), ["-m", "pipeline.review", ep, "--approve"], { cwd: R.repo, input: "y\n", encoding: "utf-8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  // D89：管道喂 "y" 不再算人在终端作答（stdin 不是 tty 就拒），终端批准补丁段的写法是显式 --confirm-patch
+  const t = spawnSync(py(R), ["-m", "pipeline.review", ep, "--approve", "--confirm-patch"], { cwd: R.repo, encoding: "utf-8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   expect(t.status, t.stderr).toBe(0);
   const L = await start(R);
   await openEp(L.page, "TA2B"); // H1 自愈把对象对齐为 APPROVED(artifact)
@@ -149,7 +151,8 @@ test("TA-2c 05 已对齐待确认后解封物被改动 → E_GATE_MISMATCH，零
   const R = ackRepo();
   const ep = epAt05(R.repo, R.eps, "TA2C", { patch: true });
   expect(ava(R.repo, [ep, "/approvals"]).code).toBe(0);
-  const t = spawnSync(py(R), ["-m", "pipeline.review", ep, "--approve"], { cwd: R.repo, input: "y\n", encoding: "utf-8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  // D89：管道喂 "y" 不再算人在终端作答（stdin 不是 tty 就拒），终端批准补丁段的写法是显式 --confirm-patch
+  const t = spawnSync(py(R), ["-m", "pipeline.review", ep, "--approve", "--confirm-patch"], { cwd: R.repo, encoding: "utf-8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   expect(t.status, t.stderr).toBe(0);
   const L = await start(R);
   await openEp(L.page, "TA2C");
@@ -169,28 +172,50 @@ test("TA-2c 05 已对齐待确认后解封物被改动 → E_GATE_MISMATCH，零
   expect(existsSync(gate)).toBe(true);
 });
 
-test("TA-3 05 批准失败原样呈现：段级不对齐与补丁段两种情况 stdout/stderr 尾部原文；无任何重试按钮；对象仍 pending", async () => {
+test("TA-3 05 批准失败原样呈现：段级不对齐的 stderr 尾部原文；无任何重试按钮；对象仍 pending", async () => {
   const R = ackRepo();
-  const e1 = epAt05(R.repo, R.eps, "TA3-MIS", { clipDur: 3.0 });
-  const e2 = epAt05(R.repo, R.eps, "TA3-PATCH", { patch: true });
+  const ep = epAt05(R.repo, R.eps, "TA3-MIS", { clipDur: 3.0 });
   const L = await start(R);
-  for (const [name, ep, needle, pane] of [
-    ["TA3-MIS", e1, "段级时长不对齐", "err-stderr"],
-    ["TA3-PATCH", e2, "补丁段（段号：1）", "err-stdout"],
-  ] as const) {
-    await openEp(L.page, name);
-    const c = card(L.page, "05");
-    const A = (await c.getAttribute("data-approval-id"))!;
-    await c.getByTestId("approve").click();
-    await expect(errOf(L)).toHaveAttribute("data-code", "E_CORE");
-    await expect(L.page.getByTestId(pane)).toContainText(needle);
-    await expect(L.page.getByTestId("err-stdout").or(L.page.getByTestId("err-stderr")).first()).toBeVisible();
-    expect(await L.page.getByRole("button", { name: /重试|confirm-patch|仍然批准/ }).count()).toBe(0);
-    expect(readStore(ep).find((o) => o.approval_id === A)!.status).toBe("pending");
-    expect(existsSync(join(ep, "04-clips.approved.json"))).toBe(false);
-  }
-  // 两种情况都在 stdout 与 stderr 各显示了什么：原样记录，供门禁复核
-  console.log("TA-3 两种失败的尾部已原样显示（段级不对齐 → stderr；补丁段号 → stdout）");
+  await openEp(L.page, "TA3-MIS");
+  const c = card(L.page, "05");
+  const A = (await c.getAttribute("data-approval-id"))!;
+  await c.getByTestId("approve").click();
+  await expect(errOf(L)).toHaveAttribute("data-code", "E_CORE");
+  await expect(L.page.getByTestId("err-stderr")).toContainText("段级时长不对齐");
+  expect(await L.page.getByRole("button", { name: /重试|confirm-patch|仍然批准/ }).count()).toBe(0);
+  expect(readStore(ep).find((o) => o.approval_id === A)!.status).toBe("pending");
+  expect(existsSync(join(ep, "04-clips.approved.json"))).toBe(false);
+});
+
+test("TA-3p 05 有补丁段（D89）：宿主确认框列出段号；取消 → 零写入、卡片仍在；确认 → REVIEW_APPROVE 带 --confirm-patch 批准成功；界面上没有绕过按钮", async () => {
+  // D89 前：按钮不带 --confirm-patch，core 去读终端 → EOFError（2026-10-13《束胸力学》）。旧 TA-3 把这个失败当成了预期
+  const R = ackRepo();
+  const ep = epAt05(R.repo, R.eps, "TA3-PATCH", { patch: true });
+  const L = await start(R);
+  await openEp(L.page, "TA3-PATCH");
+  const c = card(L.page, "05");
+  const A = (await c.getAttribute("data-approval-id"))!;
+  const lastConfirm = () => L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number; last: { title: string; detail: string } | null } }).__avaTestConfirm);
+
+  await stubConfirm(L, false);
+  await c.getByTestId("approve").click();
+  await expect(L.page.getByTestId("decision-ok")).toContainText("已取消（补丁段未确认，未批准）");
+  const asked = await lastConfirm();
+  expect(asked.calls).toBe(1);
+  expect(asked.last!.title).toContain("1 个补丁段");
+  expect(asked.last!.detail).toContain("段 1");
+  expect(lastDecideSpawns(L).map((x) => x.template)).toEqual(["HEAL", "REVIEW_PATCH_SEGS"]);
+  expect(readStore(ep).find((o) => o.approval_id === A)!.status).toBe("pending");
+  expect(existsSync(join(ep, "04-clips.approved.json"))).toBe(false);
+  expect(await L.page.getByRole("button", { name: /重试|confirm-patch|仍然批准/ }).count()).toBe(0); // 确认只在原生对话框里
+
+  await stubConfirm(L, true);
+  await card(L.page, "05").getByTestId("approve").click();
+  await expect(L.page.getByTestId("decision-ok")).toContainText("已批准");
+  const seq = lastDecideSpawns(L);
+  expect(seq.map((x) => x.template)).toEqual(["HEAL", "REVIEW_PATCH_SEGS", "REVIEW_APPROVE", "APPROVE"]);
+  expect(seq[2].argv).toContain("--confirm-patch");
+  expect(readFileSync(join(ep, "04-clips.approved.json"))).toEqual(readFileSync(join(ep, "04-clips.json")));
 });
 
 test("TA-4 陈旧卡：UI 显示 pending 后终端先行 /approve → 再点按钮 → E_STALE，零 ack spawn", async () => {

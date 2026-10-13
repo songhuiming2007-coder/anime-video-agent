@@ -408,27 +408,66 @@ STILL_FPS = paths.conf("video.fps", "24000/1001")
 STILL_ZOOM_END = 1.15
 
 
-def still_argv(src: Path, dest: Path) -> list[str]:
+#: 宽高比与 16:9 相差在这个比例以内算「横屏截图」，照旧铺满裁边（动漫截图不留边）；超出算图表 / 方图 /
+#: 扁长图，完整放进安全框（D89：《束胸力学》1:1 的环向应力图、2.5:1 的肺容量图被裁掉四边的字）。
+STILL_FILL_TOL = 0.05
+#: 安全框：缩到这里以内，缓推到 STILL_ZOOM_END 时四边仍完整可见（直接缩到 1920×1080 再推 1.15 倍会再裁 7%）。
+#: 再留 STILL_MARGIN 的余量：只除以推镜倍数时，推到顶正好贴满画面边缘（实测 938×1.15≈1079），
+#: 标注顶着画框不好看，舍入还会吃掉一像素。取偶数，yuv420p 要求宽高为偶数。
+STILL_MARGIN = 1.04
+STILL_SAFE_W = int(1920 / (STILL_ZOOM_END * STILL_MARGIN)) // 2 * 2
+STILL_SAFE_H = int(1080 / (STILL_ZOOM_END * STILL_MARGIN)) // 2 * 2
+
+
+def still_fills(size: tuple[int, int] | None) -> bool:
+    """这张图走「铺满裁边」（True）还是「完整放进安全框」（False）。尺寸未知按旧行为铺满。"""
+    if size is None or not size[0] or not size[1]:
+        return True
+    return abs((size[0] / size[1]) / (16 / 9) - 1) <= STILL_FILL_TOL
+
+
+def still_argv(src: Path, dest: Path, size: tuple[int, int] | None = None,
+               pad: str = "0xffffff") -> list[str]:
     """图片 → STILL_SECONDS 秒缓推视频的 ffmpeg 命令（纯函数，测试与 `--dry-run` 看的就是它）。
 
-    放大铺满再居中裁（不留黑边）+ 缓推 1.0→STILL_ZOOM_END、末帧刚好到顶；`-n` 不覆盖已有文件。
+    横屏截图（`still_fills`）：放大铺满再居中裁（不留黑边）。其余（图表、方图、扁长图）：缩进安全框、
+    用 `pad` 色补边到 1920×1080——底色由 `still_to_clip` 取图片四角颜色（人选 C：白底图表补出来是白边，
+    看不出接缝）。两种都缓推 1.0→STILL_ZOOM_END、末帧刚好到顶；`-n` 不覆盖已有文件。
     单张输入不加 `-loop`：zoompan 对一帧输入恰好产出 `d` 帧，再用 `-frames:v` 钉死帧数。
     """
     num, _, den = STILL_FPS.partition("/")
     frames = round(STILL_SECONDS * int(num) / int(den or 1))
     # 按输出帧号 `on`（0 起）算缩放，不靠上一帧 zoom 累加：第 0 帧 1.0，第 frames-1 帧刚好 STILL_ZOOM_END
     step = (STILL_ZOOM_END - 1.0) / max(frames - 1, 1)
-    vf = ("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
-          f"zoompan=z='1+{step:.8f}*on':d={frames}:x='iw/2-(iw/zoom/2)':"
+    if still_fills(size):
+        fit = "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
+    else:
+        fit = (f"scale={STILL_SAFE_W}:{STILL_SAFE_H}:force_original_aspect_ratio=decrease,"
+               f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:{pad},setsar=1,")
+    vf = (fit + f"zoompan=z='1+{step:.8f}*on':d={frames}:x='iw/2-(iw/zoom/2)':"
           f"y='ih/2-(ih/zoom/2)':s=1920x1080:fps={STILL_FPS}")
     return ["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(src),
             "-vf", vf, "-frames:v", str(frames), "-r", STILL_FPS,
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(dest)]
 
 
+def still_look(src: Path) -> tuple[tuple[int, int], str]:
+    """图片尺寸与补边色（四角像素取平均，`0xRRGGBB`）。读不了图就让 PIL 的报错原样抛出——不猜。"""
+    from PIL import Image
+
+    with Image.open(src) as im:
+        rgb = im.convert("RGB")
+        w, h = rgb.size
+        inset = max(0, min(2, w - 1, h - 1))
+        corners = [rgb.getpixel((x, y)) for x in (inset, w - 1 - inset) for y in (inset, h - 1 - inset)]
+    avg = tuple(round(sum(c[i] for c in corners) / 4) for i in range(3))
+    return (w, h), "0x%02x%02x%02x" % avg
+
+
 def still_to_clip(src: Path, dest: Path) -> Path:
     """执行 `still_argv`；失败把 ffmpeg 原文抛出（S9），不留半截文件。"""
-    proc = subprocess.run(still_argv(src, dest), capture_output=True, text=True)
+    size, pad = still_look(src)
+    proc = subprocess.run(still_argv(src, dest, size=size, pad=pad), capture_output=True, text=True)
     if proc.returncode != 0:
         dest.unlink(missing_ok=True)
         raise SystemExit(f"FAIL 图片转视频失败（ffmpeg 退出码 {proc.returncode}）：{src.name}\n"

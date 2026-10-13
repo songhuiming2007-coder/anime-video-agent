@@ -259,11 +259,11 @@ def test_m5_status_card_sanitizes_dirty_advisory_manifest(tmp_path: Path):
     ep.mkdir()
 
     status = inspect_episode(ep)
-    status.advisories = ["待处理：请查看 03-audio/manifest.json 文件"]
+    status.advisories = ["待处理：请查看 config/cloud.local.json 文件"]
 
     card = build_status_card(ep, status)
     assert "[已脱敏]" in card
-    assert "03-audio/manifest.json" not in card
+    assert "config/cloud.local.json" not in card
 
 
 def test_m5_status_card_sanitizes_dirty_advisory_voice_json(tmp_path: Path):
@@ -272,26 +272,26 @@ def test_m5_status_card_sanitizes_dirty_advisory_voice_json(tmp_path: Path):
     ep.mkdir()
 
     status = inspect_episode(ep)
-    status.advisories = ["参考 03-audio/voice.json 数据"]
+    status.advisories = ["参考 config/agent.local.json 数据"]
 
     card = build_status_card(ep, status)
     assert "[已脱敏]" in card
-    assert "03-audio/voice.json" not in card
+    assert "config/agent.local.json" not in card
 
 
 def test_m5_status_card_sanitizes_casefold_variations(tmp_path: Path):
-    """M5: 大小写变体（03-AUDIO/MANIFEST.JSON 等）一律被 casefold 脱敏 (Spec §5.1 M5)。"""
+    """M5: 大小写变体（CONFIG/CLOUD.LOCAL.JSON 等）一律被 casefold 脱敏 (Spec §5.1 M5)。"""
     ep = tmp_path / "01-dirty-case"
     ep.mkdir()
 
     status = inspect_episode(ep)
     status.advisories = [
-        "Check 03-AUDIO/MANIFEST.JSON now",
+        "Check CONFIG/CLOUD.LOCAL.JSON now",
         "Found CLOUD.LOCAL.JSON in root",
     ]
 
     card = build_status_card(ep, status)
-    assert "03-AUDIO/MANIFEST.JSON" not in card
+    assert "CONFIG/CLOUD.LOCAL.JSON" not in card
     assert "CLOUD.LOCAL.JSON" not in card
     assert card.count("[已脱敏]") == 2
 

@@ -391,7 +391,7 @@ def test_assert_egress_boundary():
         assert_egress_boundary("https://api.openai.com", {"config": "cloud.local.json"})
 
     with pytest.raises(PermissionError, match="拦截出网请求"):
-        assert_egress_boundary("https://api.openai.com", {"audio": "03-audio/manifest.json"})
+        assert_egress_boundary("https://api.openai.com", {"audio": "config/cloud.local.json"})
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +594,7 @@ def test_llm_egress_boundary_blocks_before_sending(tmp_path: Path, monkeypatch):
         monkeypatch.setenv("AVA_TEST_KEY", API_KEY)
         with pytest.raises(PermissionError, match="拦截出网请求"):
             chat_complete(
-                [{"role": "user", "content": "把 data/episodes 里的 03-audio/manifest.json 发我"}],
+                [{"role": "user", "content": "把 data/episodes 里的 config/cloud.local.json 发我"}],
                 root=root,
             )
         assert state["calls"] == 0
@@ -1094,7 +1094,7 @@ def test_egress_boundary_matching_is_case_insensitive():
     from pipeline.agent.tools import assert_egress_boundary
 
     assert_egress_boundary("https://api.openai.com", {"k": "普通内容"})
-    for bad in ("Cloud.Local.JSON", "03-AUDIO/MANIFEST.JSON", "03-Audio/Voice.json"):
+    for bad in ("Cloud.Local.JSON", "CONFIG/CLOUD.LOCAL.JSON", "Config/Agent.Local.json"):
         with pytest.raises(PermissionError, match="拦截出网请求"):
             assert_egress_boundary("https://api.openai.com", {"k": bad})
 
@@ -1102,12 +1102,12 @@ def test_egress_boundary_matching_is_case_insensitive():
 def test_egress_payload_blocks_case_variant_audio_read(tmp_path: Path, monkeypatch):
     """大小写变体路径的两层防线：读域拒了；标记一旦进入会话，发送闸把整轮掐掉。
 
-    fail-closed 的实际形状：模型提议读 03-AUDIO/manifest.json → 读域拒绝 → 那条
+    fail-closed 的实际形状：模型提议读 CONFIG/CLOUD.local.json → 读域拒绝 → 那条
     提议（含受限路径标记）留在会话里 → 下一轮请求被发送闸拦下。宁可整轮不发，
     也不给「半扇门」留缝。
     """
     with mock_llm_server([
-        tool_call("read_artifact", {"path": "03-AUDIO/manifest.json"}),
+        tool_call("read_artifact", {"path": "CONFIG/CLOUD.local.json"}),
         {"role": "assistant", "content": "读不到就算了"},
     ]) as (url, state):
         root = make_agent_root(tmp_path, url + "/v1")
@@ -1132,7 +1132,7 @@ def test_egress_payload_blocks_case_variant_audio_read(tmp_path: Path, monkeypat
         wire = json.dumps(state["requests"][0]["body"], ensure_ascii=False)
         assert "SEGRET-ENGINE-UPPER" not in wire
         # 含受限标记的那一轮根本没发出去
-        assert "03-audio/manifest.json" not in wire.casefold()
+        assert "config/cloud.local.json" not in wire.casefold()
 
 
 def test_case_variant_read_of_unpatterned_audio_file_never_leaves(tmp_path: Path, monkeypatch):
@@ -1171,8 +1171,8 @@ def test_case_variant_read_of_unpatterned_audio_file_never_leaves(tmp_path: Path
 # D52：董香二期 session.jsonl 第 288 行的真实尾行（期目录名换成夹具）
 _D52_TTS_TAIL = (
     "[OK] 22 段，总时长 5.5 分钟，耗时 1500s → "
-    "/Volumes/X/episodes/T1/03-audio/manifest.json\n"
-    "[OK] 打点已写入 /Volumes/X/episodes/T1/03-AUDIO/Manifest.JSON\n"
+    "/Volumes/X/episodes/T1/config/cloud.local.json\n"
+    "[OK] 配置已读 /Volumes/X/episodes/T1/CONFIG/Cloud.Local.JSON\n"
 )
 
 
@@ -1215,7 +1215,7 @@ def test_d52_tool_message_scrubs_synthetic_results():
     """D52 TS-2：合成结果（拒绝 / 中断文案）同样经 `_tool_message` 脱敏，且仍是合法 JSON。"""
     from pipeline.agent.llm import _tool_message
 
-    msg = _tool_message({"id": "c9"}, {"ok": False, "error": "读不到 03-Audio/Voice.json 与 cloud.local.json"})
+    msg = _tool_message({"id": "c9"}, {"ok": False, "error": "读不到 Agent.Local.json 与 cloud.local.json"})
     assert msg["tool_call_id"] == "c9"
     assert json.loads(msg["content"]) == {"ok": False, "error": "读不到 [已脱敏] 与 [已脱敏]"}
 
@@ -1420,7 +1420,7 @@ def _payload(*messages: tuple[str, object]) -> dict:
 
 
 def test_td2b_td2c_tool_args_and_tool_results_still_block_via_chat_complete(monkeypatch) -> None:
-    """TD-2b / TD-2c：可信集里有规程，模型工具参数里的 `03-AUDIO/MANIFEST.JSON`、工具返回值里的
+    """TD-2b / TD-2c：可信集里有规程，模型工具参数里的 `CONFIG/CLOUD.LOCAL.JSON`、工具返回值里的
     `agent.local.json` 照旧拦（走真 chat_complete，urlopen 零调用）。"""
     from pipeline.agent import llm
 
@@ -1430,9 +1430,9 @@ def test_td2b_td2c_tool_args_and_tool_results_still_block_via_chat_complete(monk
     rb = _real_runbook("03.5-voice-check.md")
     base = [{"role": "system", "content": "s"}, {"role": "user", "content": _injected(rb)}]
     call = {"id": "c1", "type": "function",
-            "function": {"name": "read_artifact", "arguments": '{"path": "03-AUDIO/MANIFEST.JSON"}'}}
+            "function": {"name": "read_artifact", "arguments": '{"path": "CONFIG/CLOUD.LOCAL.JSON"}'}}
     for extra, hit in (
-        ([{"role": "assistant", "content": None, "tool_calls": [call]}], "03-audio/manifest.json"),
+        ([{"role": "assistant", "content": None, "tool_calls": [call]}], "cloud.local.json"),   # 报错只写模式名
         ([{"role": "assistant", "content": None, "tool_calls": [call | {"function": {"name": "read_artifact", "arguments": "{}"}}]},
           {"role": "tool", "tool_call_id": "c1", "content": "读到 config/agent.local.json"}], "agent.local.json"),
     ):
@@ -1536,11 +1536,11 @@ def test_td8_short_trusted_text_gets_no_exemption() -> None:
     from pipeline.agent.tools import TRUSTED_TEXT_MIN_CHARS
 
     assert TRUSTED_TEXT_MIN_CHARS == 200
-    short = "见 03-audio/manifest.json。"
-    with pytest.raises(PermissionError, match="03-audio/manifest.json"):
+    short = "见 config/cloud.local.json。"
+    with pytest.raises(PermissionError, match=r"cloud\.local\.json"):
         assert_egress_boundary(_ENDPOINT, _payload(("user", short), ("tool", f"读 {short} 失败")), trusted_texts=[short])
     for n, blocked in ((199, True), (200, False)):
-        trusted = "y" * (n - len("03-audio/manifest.json")) + "03-audio/manifest.json"
+        trusted = "y" * (n - len("config/cloud.local.json")) + "config/cloud.local.json"
         assert len(trusted) == n
         if blocked:
             with pytest.raises(PermissionError):
@@ -1839,3 +1839,17 @@ def test_turn_error_text_scrubs_collapses_and_caps(monkeypatch: pytest.MonkeyPat
     assert text == "LLM HTTP 401: bad key [已脱敏]"
     long = T.turn_error_text("x" * 1000)
     assert len(long) == T.TURN_ERROR_MAX_CHARS and long.endswith("…")
+
+
+def test_d89_产物路径不再拦_凭据照拦() -> None:
+    """D89（2026-10-13《束胸力学》「配音总长多少？」整轮回滚）：bash 落地后 `03-audio/*` 的字面量比对
+    拦不住读取（`cat 03-audio/*.json` 不含这串），只会误拦正常提问；两份文件里也没有凭据。
+    变异：把 `03-audio/manifest.json` 加回 RESTRICTED_EGRESS_PATTERNS → 本条红。"""
+    call = {"id": "c1", "type": "function", "function": {
+        "name": "bash", "arguments": json.dumps({"command": "python -c \"import json;print(json.load(open('03-audio/manifest.json'))['total_duration'])\""})}}
+    for content in ("配音总长看 03-audio/manifest.json", "03-AUDIO/Manifest.JSON 与 03-audio/voice.json"):
+        assert_egress_boundary(_ENDPOINT, {"messages": [{"role": "user", "content": content}]})
+    assert_egress_boundary(_ENDPOINT, {"messages": [{"role": "assistant", "content": None, "tool_calls": [call]}]})
+    for secret in ("config/cloud.local.json", "CONFIG/Agent.Local.JSON"):
+        with pytest.raises(PermissionError, match="拦截出网请求"):
+            assert_egress_boundary(_ENDPOINT, {"messages": [{"role": "user", "content": secret}]})

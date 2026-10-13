@@ -158,12 +158,14 @@ class TestPatchApproveGate:
 
     def test_存在补丁段且未确认时提示并可拒绝(self, tmp_path, monkeypatch):
         self._write_patch_episode(tmp_path, is_anchor=False)
+        monkeypatch.setattr(review, "_interactive", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
         with pytest.raises(SystemExit, match="存在未人工核对的补丁段"):
             approve(tmp_path)
 
     def test_存在补丁段且确认后批准(self, tmp_path, monkeypatch):
         self._write_patch_episode(tmp_path, is_anchor=False)
+        monkeypatch.setattr(review, "_interactive", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "y")
         dest = approve(tmp_path)
         assert dest.exists()
@@ -171,9 +173,27 @@ class TestPatchApproveGate:
     def test_锚点补丁段无via也触发二次确认(self, tmp_path, monkeypatch):
         # 闸 3 核心用例：锚点补丁段无 via，必须由 anime == 补丁池名 捕获
         self._write_patch_episode(tmp_path, is_anchor=True)
+        monkeypatch.setattr(review, "_interactive", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
         with pytest.raises(SystemExit, match="存在未人工核对的补丁段"):
             approve(tmp_path)
+
+    def test_没有终端可作答时说清楚怎么过_不再EOFError(self, tmp_path, monkeypatch):
+        """2026-10-13 桌面端批准 05 崩在 input() 的 EOFError：按钮没带 --confirm-patch、也没有终端。
+        变异：去掉 _interactive 分支 → input() 在 pytest 的 stdin 上抛 OSError/EOFError，本条红。"""
+        self._write_patch_episode(tmp_path, is_anchor=False)
+        monkeypatch.setattr(review, "_interactive", lambda: False)
+        with pytest.raises(SystemExit, match=r"(?s)补丁段（段号：1）.*--confirm-patch") as e:
+            approve(tmp_path)
+        assert "桌面端" in str(e.value)
+        assert not (tmp_path / "04-clips.approved.json").exists()
+
+    def test_patch_segments只读查询(self, tmp_path):
+        self._write_patch_episode(tmp_path, is_anchor=True)
+        before = (tmp_path / "04-clips.json").read_bytes()
+        assert review.patch_segment_indices(tmp_path) == [1]
+        assert (tmp_path / "04-clips.json").read_bytes() == before
+        assert not (tmp_path / "04-clips.approved.json").exists()
 
     def test_confirm_patch参数可免确认(self, tmp_path):
         self._write_patch_episode(tmp_path, is_anchor=True)

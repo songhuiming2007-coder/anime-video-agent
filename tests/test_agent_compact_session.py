@@ -301,15 +301,15 @@ def test_input_side_scrub_lets_real_egress_assert_pass(root, episode, monkeypatc
     host.ensure_lease().begin("sid-scrub")
     host.sid = "sid-scrub"
     messages = [{"role": "system", "content": "常驻层"},
-                {"role": "user", "content": "看看 03-audio/manifest.json 里第三句" + "字" * 300},
+                {"role": "user", "content": "看看 config/cloud.local.json 里第三行" + "字" * 300},
                 _say("好" * 300), {"role": "user", "content": "继续"}, _say("嗯")]
     host.bind_main(messages)
     session = host.session(persist=True, scope_mode="creative")
     result = session.compact(messages, tracker=SessionContextTracker(), root=root, scope="creative")
     assert result["ok"], result
-    assert "manifest.json" not in json.dumps(sent[0]["body"], ensure_ascii=False)
+    assert "cloud.local.json" not in json.dumps(sent[0]["body"], ensure_ascii=False)
     assert sent[0]["timeout"] == 240
-    assert "[注]" in messages[1]["content"] and "manifest.json" not in messages[1]["content"]
+    assert "[注]" in messages[1]["content"] and "cloud.local.json" not in messages[1]["content"]
 
 
 # ---- PR3：自动双触发 ----
@@ -429,7 +429,7 @@ def test_auto_compaction_refused_when_result_would_fail_egress(root, episode, mo
     _cfg(root, **MID)
     dirty = {"role": "assistant", "content": None, "tool_calls": [{
         "id": "c1", "type": "function",
-        "function": {"name": "read_artifact", "arguments": json.dumps({"path": "03-audio/manifest.json"})},
+        "function": {"name": "read_artifact", "arguments": json.dumps({"path": "config/cloud.local.json"})},
     }]}
     replies = [_say("答" * 150) for _ in range(3)] + [dirty, PermissionError("拦截出网请求")]
     usage = [{"prompt_tokens": 100}] * 3 + [HIGH]

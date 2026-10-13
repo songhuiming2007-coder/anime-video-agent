@@ -499,64 +499,13 @@ def _body_entry_delay(episode: Path) -> float:
     return 0.0
 
 
-BGM_LIST_HEAD = re.compile(r"^\s*BGM\s*[:：]\s*$")
-BGM_ITEM = re.compile(r"^-\s*(.+?)\s*$")
-BGM_ITEM_AT = re.compile(r"^(.+?)\s*@\s*([\d.]+)\s*秒$")
-BGM_ITEM_OFFSET = re.compile(r"^(.*?)\s*\+\s*([\d.]+)\s*秒$")
 BGM_MID_ENTRY = re.compile(r"^\s*BGM中段切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
 BGM_OUTRO_ENTRY = re.compile(r"^\s*BGM结尾切入点\s*[:：]\s*([\d.]+)\s*秒", re.M)
 
 
-def _bgm_list(episode: Path) -> list[tuple[str, float | None, float]] | None:
-    """读 `01-topic.md` 的 `BGM:` 列表——通用 N 首拼接格式。
-
-    ```
-    BGM:
-      - Departures ～あなたにおくるアイの歌～ @36秒
-      - 想いを巡らす100の事象
-      - Planetes @470秒 +9秒
-    ```
-    每行一首；`@N秒` = 绝对起点，不写 = 自动接上一首自然结尾（第一首自动 = 0）。
-    `+M秒` = 曲内偏移，从曲内第 M 秒放起（跳片头引子），不写 = 0（从头放）；
-    与 @ 并用时 @ 在前。返回 (曲名, 起点|None, 偏移) 三元组。
-    行里带了 `@`/`+` 但格式不对直接报错——静默当自动接等于写错了却不报。
-    代价：曲名本身含 @ 或 + 的（罪恶王冠 美♂-K+…、fUE+p@D…）进不了列表语法，
-    那两首走老槽位格式（`BGM正文:`），需要时再说（YAGNI）。
-    没 `BGM:` 块返回 None，退回命名槽位（`BGM正文`/`BGM中段`/`BGM结尾`，老格式）。
-    """
-    topic = episode / "01-topic.md"
-    if not topic.exists():
-        return None
-    lines = topic.read_text(encoding="utf-8").splitlines()
-    for idx, line in enumerate(lines):
-        if not BGM_LIST_HEAD.match(line):
-            continue
-        seq: list[tuple[str, float | None, float]] = []
-        for ln in lines[idx + 1:]:
-            s = ln.strip()
-            if not s:
-                continue
-            m = BGM_ITEM.match(s)
-            if not m:
-                break  # 非 `- ` 行 = 块结束
-            item = m.group(1).strip()
-            offset = 0.0
-            if mo := BGM_ITEM_OFFSET.match(item):
-                item, offset = mo.group(1).strip(), float(mo.group(2))
-            elif "+" in item:
-                raise SystemExit(
-                    f"FAIL `BGM:` 列表行 + 曲内偏移格式不对：{item}\n"
-                    f"     应为 `- 曲名 +N秒`（与起点并用时 @ 在前：`- 曲名 @N秒 +M秒`）")
-            if mm := BGM_ITEM_AT.match(item):
-                seq.append((mm.group(1).strip(), float(mm.group(2)), offset))
-            elif "@" in item:
-                raise SystemExit(
-                    f"FAIL `BGM:` 列表行 @ 起点格式不对：{item}\n"
-                    f"     应为 `- 曲名 @N秒`")
-            else:
-                seq.append((item, None, offset))
-        return seq
-    return None
+# `BGM:` 列表解析在 bgm.py（D89：check_script 也要读，它不能 import render）；名字照旧导出，既有调用方不改
+from .bgm import BGM_ITEM, BGM_ITEM_AT, BGM_ITEM_OFFSET, BGM_LIST_HEAD  # noqa: E402,F401
+from .bgm import topic_bgm_list as _bgm_list  # noqa: E402
 
 
 def _seg_entry(episode: Path, slot: str, pattern: re.Pattern) -> float | None:
@@ -1170,6 +1119,16 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         starts.append(acc)
         acc += s["duration"]
     music_plan = _maybe_music_plan(episode, manifest)
+    if music_plan is not None:
+        # D89：BGM 出处在入口就核——01 的 `BGM:` 列表在试听型时间轴里不生效，此前要等到最后一步
+        # 才以「音乐床时长不对——有轨没接时间轴」报出来（判据与 check_script「BGM 出处」同一份）
+        from . import music as music_mod
+        issue = music_mod.bgm_source_issue(music_mod.parse_script_music(episode / "02-script.md"),
+                                           _bgm_list(episode))
+        if issue is not None and issue[0] == "FAIL":
+            raise SystemExit(f"FAIL {issue[1]}")
+        if issue is not None:
+            print(f"WARN {issue[1]}", file=sys.stderr)
     bgm_plan = None if music_plan is not None else _bgm_plan(episode, acc, starts)
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))

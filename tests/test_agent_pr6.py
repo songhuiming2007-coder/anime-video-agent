@@ -879,6 +879,7 @@ def test_red_2_review_patch_prompt_flushed_before_input(tmp_path: Path, monkeypa
     monkeypatch.setattr("builtins.input", mock_input)
     monkeypatch.setattr(review, "get_patch_pool", lambda ep: "mock_pool")
     monkeypatch.setattr(review.paths, "require_data", lambda: None)
+    monkeypatch.setattr(review, "_interactive", lambda: True)   # D89：终端交互路径（非终端另有测试）
 
     review.approve(ep)
     assert prompt_seen_in_stdout is True

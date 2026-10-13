@@ -56,8 +56,9 @@ export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Hea
     setBusy(true);
     setOutcome(null);
     try {
-      await call;
-      setOutcome({ ...head, kind: "ok", text: okText });
+      const r = (await call) as { cancelled?: true } | undefined;
+      // D89：补丁段确认框里点了取消——什么都没写，卡片原样留着
+      setOutcome({ ...head, kind: "ok", text: r?.cancelled ? "已取消（补丁段未确认，未批准）" : okText });
     } catch (e) {
       const error: RpcError =
         e instanceof RpcFailure
