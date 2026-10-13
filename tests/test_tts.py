@@ -2056,6 +2056,63 @@ class TestFullRerunGuard:
         assert pr["state"] == "failed" and pr["current"] == "1" and "句内静音" in pr["error"]
         assert t._ACTIVE_PROGRESS is None
 
+    def test_中途被中断_manifest不截断_没点名的段仍可复用(self, tmp_path, monkeypatch):
+        """2026-10-13《束胸力学》：每段合成完写一次 manifest，只写已处理的段——在第 k 段被中断，
+        k 之后完好的段丢了记录，下一轮全被当缺席重配（面板排队里冒出没点名的 13–17）。
+        变异：_save_manifest 改回只写 takes → 段 3 从 manifest 消失、本条红。"""
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        cfg = json.loads(cfgp.read_text(encoding="utf-8"))
+        ep = tmp_path / "ep3"
+        (ep / "03-audio").mkdir(parents=True)
+        texts = ["第一段。", "第二段。", "第三段。"]
+        (ep / "02-script.md").write_text(
+            "".join(f"## 段落 {i}\n\n配音：{x}\n\n" for i, x in enumerate(texts, 1)), encoding="utf-8")
+        segs = []
+        for i, x in enumerate(texts, 1):
+            (ep / "03-audio" / f"seg-{i:02d}.wav").write_bytes(b"RIFF fake")
+            segs.append({"index": i, "label": str(i), "text": x, "file": f"seg-{i:02d}.wav",
+                         "duration": 2.0, "cer": 0.0, "attempts": 1, "speakable": t.speakable(x),
+                         "synth_logic": t.SYNTH_LOGIC_VERSION, "seed_base": 7})
+        (ep / "03-audio" / "manifest.json").write_text(json.dumps(
+            {**t._voice_fingerprint(cfg), "segments": segs}, ensure_ascii=False), encoding="utf-8")
+
+        def render(eng, seg, dest):
+            if seg.label == "2":
+                raise KeyboardInterrupt
+            return t.Take(seg.index, seg.label, seg.text, dest.name, 3.0, 0.0, 1)
+        self._fake_synth(monkeypatch, render)
+        with pytest.raises(KeyboardInterrupt):
+            t.run(ep, cfg_path=cfgp, redo=["1", "2"])
+        mf = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+        assert [s["label"] for s in mf["segments"]] == ["1", "3"], "段 3 没被点名、wav 完好，记录不能丢"
+        assert mf["segments"][0]["duration"] == 3.0, "段 1 是这一轮新配的"
+        # 下一轮：没点名时段 3 照常复用，不会被当缺席重配
+        old = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+        assert 3 in t._reusable(old, t.parse_script(ep / "02-script.md"), ep / "03-audio", cfg)
+
+    def test_同一期已有配音进程在跑_第二个拒绝且一段不合成(self, tmp_path, monkeypatch):
+        """2026-10-13：面板 apply-patch 与 AVA 的 --redo 两度同时配同一期，交替重写同一份 manifest。
+        变异：run() 不拿 _synth_lock → 第二个照常合成，本条红。"""
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        self._fake_synth(monkeypatch, lambda *a: pytest.fail("锁被占时不该合成"))
+        (ep / "03-audio" / t.SYNTH_LOCK).write_text(str(os.getppid()), encoding="utf-8")   # 活着的进程
+        with pytest.raises(SystemExit, match="已有一个配音进程在跑"):
+            t.run(ep, cfg_path=cfgp, redo=["1"])
+        assert (ep / "03-audio" / t.SYNTH_LOCK).read_text(encoding="utf-8") == str(os.getppid()), "别人的锁不许动"
+
+    def test_残留配音锁_持锁进程已不在_接管并跑完释放(self, tmp_path, monkeypatch, capsys):
+        """AVA 的作业被停时整组 SIGKILL，锁来不及删——不接管的话下一次重配就被一把死锁挡住。"""
+        cfgp = self._cfg(tmp_path, "qwen3_tts")
+        ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))
+        calls = []
+        self._fake_synth(monkeypatch, lambda eng, seg, dest: (
+            calls.append(seg.label), t.Take(seg.index, seg.label, seg.text, dest.name, 2.0, 0.0, 1))[1])
+        (ep / "03-audio" / t.SYNTH_LOCK).write_text("999999999", encoding="utf-8")
+        t.run(ep, cfg_path=cfgp, redo=["1"])
+        assert calls == ["1"] and "接管残留的配音锁" in capsys.readouterr().err
+        assert not (ep / "03-audio" / t.SYNTH_LOCK).exists(), "跑完要释放"
+
     def test_一段都不合成时不写进度_不冲掉上一轮(self, tmp_path, monkeypatch):
         cfgp = self._cfg(tmp_path, "qwen3_tts")
         ep = self._episode(tmp_path, json.loads(cfgp.read_text(encoding="utf-8")))

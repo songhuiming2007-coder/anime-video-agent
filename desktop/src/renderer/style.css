@@ -347,7 +347,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-foot-more { display: inline-flex; color: var(--fg-subtle); }
 
 /* R2 ③ / R4 ④：高度过渡（grid-template-rows 0fr ↔ 1fr），收起后由 Collapse 延迟卸载内容；clip 留出焦点环的余量 */
-.conv-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease); }
+/* 列必须写 minmax(0, 1fr)：默认 auto 列按内容最小宽度撑开，而 .conv-collapse-inner 的 overflow: clip 不像 hidden 那样
+ * 取消 grid 子项的自动最小宽度——执行中工具行那条不折行的作业输出（本该省略号）会把整个对话流撑宽（D87 补，
+ * 2026-10-13 实测 tts 的模型路径把 900 宽的流撑到 1669） */
+.conv-collapse { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease); }
 .conv-collapse[data-open="1"] { grid-template-rows: 1fr; }
 .conv-collapse-inner { min-height: 0; overflow: clip; overflow-clip-margin: var(--space-1); }
 

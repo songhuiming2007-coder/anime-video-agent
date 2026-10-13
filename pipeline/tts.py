@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from functools import lru_cache
 from pathlib import Path
@@ -1927,6 +1928,59 @@ def _apply_redo(done: dict[int, Take], segs: list[Segment], spec: list[str],
     return targets
 
 
+SYNTH_LOCK = ".tts.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True              # 进程在、属于别的用户：同样算活着
+    return True
+
+
+@contextmanager
+def _synth_lock(out_dir: Path):
+    """同一期同时只许一个 tts 在合成（2026-10-13《束胸力学》实测补）。
+
+    此前只有 `--apply-patch` 拿锁（`.apply_patch.lock`），普通 `tts` / `--redo` 不拿：面板的 apply-patch
+    与 AVA 在 bash 里跑的 `--redo` 两度同时配同一期，两个进程交替整份重写同一份 manifest、同一批 wav。
+    这把锁与 `.apply_patch.lock` 分开：后者还管「应用期间不许录新纠错」，普通重配时人照样可以边听边标；
+    apply-patch 外层持纠错锁、内层递归的 run 持这把，两把不嵌套同一文件。
+
+    锁里写持锁 pid。pid 已不在（AVA 的作业被停时整组 SIGKILL，锁来不及删）就接管并说一句——
+    判据与 `corrections clear-stale-lock` 相同；pid 还活着就拒。
+    """
+    lock = out_dir / SYNTH_LOCK
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            break
+        except FileExistsError:
+            raw = lock.read_text(encoding="utf-8", errors="replace").strip()
+            if raw.isdigit() and _pid_alive(int(raw)):
+                raise SystemExit(
+                    f"FAIL 本期已有一个配音进程在跑（pid {raw}，{lock.name}）。等它结束再重配——"
+                    f"进度看 03.5 预览栏；两个进程同时配同一期会互相覆盖 manifest 与音频")
+            print(f"WARN 接管残留的配音锁（持锁进程 {raw or '?'} 已不在，多半是被强停的作业）",
+                  file=sys.stderr)
+            lock.unlink(missing_ok=True)
+    else:
+        raise SystemExit(f"FAIL 拿不到配音锁 {lock}（反复被占），稍后再试")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    try:
+        yield
+    finally:
+        try:
+            if lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                lock.unlink()
+        except OSError:
+            pass
+
+
 PROGRESS_FILE = ".tts_progress.json"
 
 
@@ -2061,195 +2115,204 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
 
     from . import corrections
 
-    if _overlay is not None:
-        overlay = _overlay
-    else:
-        overlay = corrections.load_overlay(episode, include_pending=False)
-    cfg = _cfg_with_overlay(cfg, overlay)
+    # 读 manifest → 合成 → 整份重写 manifest 是一次读改写：同一期同时只许一个进程做（_synth_lock）
+    with _synth_lock(out_dir):
+        if _overlay is not None:
+            overlay = _overlay
+        else:
+            overlay = corrections.load_overlay(episode, include_pending=False)
+        cfg = _cfg_with_overlay(cfg, overlay)
 
-    # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
-    # 人工评审结果抹掉（而打点是有人时成本的动作）
-    existing_review = None
-    old_mf = None
-    if manifest_path.exists():
+        # 重跑合成必须保住已有打点：manifest 是整份重写的，不先取出就会把
+        # 人工评审结果抹掉（而打点是有人时成本的动作）
+        existing_review = None
+        old_mf = None
+        if manifest_path.exists():
+            try:
+                old_mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+                existing_review = old_mf.get("human_review")
+            except Exception as e:
+                print(f"WARN 旧 manifest 不可读，human_review 将丢失: {e}", file=sys.stderr)
+
+        # **全量重配的摩擦**（2026-09-13 事故沉淀）。`--force` 顺手一敲就把用户已逐段
+        # 审听的 40 段全部重配（本地 36 分钟 + 云端 ¥0.847），32 段「确认无问题」作废。
+        # 规则早就写在 WORKFLOW §03 与 SYNTH_LOGIC_VERSION 注释里，而工具零摩擦——
+        # 所以把摩擦补在工具里：全量重配得另写一个名字很长的开关。
+        if force and not force_all:
+            raise SystemExit(
+                "FAIL `--force` 不再直接全量重配，全量请用 `--force-all`。\n"
+                "     为什么加这道摩擦：全量重配 = 本期每一段都重合成 = 人耳逐段审听全部作废\n"
+                "     （2026-09-13 事故：一个顺手的 --force 废掉 40 段审听）。\n"
+                "     只想补点名的段：`--redo 3,7`；旧逻辑产物：`--redo stale`。")
+
+        # 换引擎比 --force 更险：engine/model 在复用指纹里，所以**任何**跑法（连 `--redo 3,7`
+        # 也一样）都会把本期旧产物全部重配——工具层没有「只换一部分引擎」的路。
+        # 不能让调用方在不知情下走进去：报清楚后果，给出两条正路。
+        #
+        # 2026-09-13 补第三条路（三期实例）：稿子只改了一段，而改它的那天本地只有 mlx——
+        # 前两条路一条要求开云端 GPU、一条要求把已审听的 39 段全部重配（人耳是最贵的资源）。
+        # 缺的不是答案而是这条路本身，所以把它修成显式开关：点名段用新引擎、其余段按
+        # **产出它们的那份引擎**判复用，并把混引擎事实按段序号写在 manifest 里（不静默）。
+        mixing = False
+        if old_mf is not None and not force_all:
+            old_pair = (old_mf.get("engine"), old_mf.get("model"))
+            new_pair = (cfg["engine"], cfg["model"])
+            if old_pair != new_pair:
+                if _overlay is not None:
+                    raise SystemExit(
+                        f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                        f"     当前处于纠错 apply-patch 流程，但本期旧配音由 {old_pair[0]} 产出。\n"
+                        f"     同一期音频的 apply 与产出该期的引擎必须同侧（Spec §3.6 侧别纪律）。\n"
+                        f"     若本期为云端配音，请在云端执行：\n"
+                        f"       python -m pipeline.cloud push\n"
+                        f"       python -m pipeline.cloud run <期号> tts -- --apply-patch\n"
+                        f"       python -m pipeline.cloud pull")
+                if not (allow_engine_mix and redo):
+                    raise SystemExit(
+                        f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
+                        f"     engine/model 在复用指纹里 → 本期旧产物会**全部**重配\n"
+                        f"     （连 `--redo 3,7` 也一样，只换一部分引擎在本工具里没有路）。\n"
+                        f"     这意味着人耳审听整期作废。三条正路，由人定：\n"
+                        f"       ① 换回产出本期音频的那份 config → 只补点名的段：`--redo 3,7`\n"
+                        f"       ② 确认全量重配、接受全部重听 → `--force-all`\n"
+                        f"       ③ 只把点名的段换引擎，接受混引擎成片（其余段原样复用、不废审听）\n"
+                        f"          → `--redo 3,7 --allow-engine-mix`")
+                mixing = True
+                print(f"WARN 混引擎点名重做：{old_pair[0]} → {new_pair[0]}，"
+                      f"只重做点名的段，其余段按 {old_pair[0]} 的指纹复用", file=sys.stderr)
+
+        done: dict[int, Take] = {}
+        if manifest_path.exists() and not force:
+            old = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # 混引擎时复用判据要退回**旧引擎**的指纹，否则新引擎把整期判成陈旧，
+            # 点名重做就变成全量重做（那正是这道开关要避的）。只回退配置指纹这一层，
+            # 段级的文本/读音表/钉种子比对一字不动。
+            reuse_cfg = ({**cfg, "engine": old.get("engine"), "model": old.get("model")}
+                         if mixing else cfg)
+            done = _reusable(old, segs, out_dir, reuse_cfg, overlay=overlay)
+        if redo:
+            named = _apply_redo(done, segs, redo, cfg)
+            print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
+        mixed_from = sorted(set(range(1, len(segs) + 1)) - set(done)) if mixing else []
+
+        miss = _unmeasured_titles([s.text for s in segs])
+        if miss:
+            print(f"WARN 歌名 {'、'.join(miss)} 在 voice.json 的 titles 里没有实测时长"
+                  f"（值为 null），按 cpm 估算——cpm 估英日歌名会高估 1.5-2 倍，"
+                  f"可能触发时长门禁误杀。试音补测："
+                  f"python -m pipeline.tts probe \"{' '.join(miss)}\"", file=sys.stderr)
+
+        engine: Engine | None = None
+        takes: list[Take] = []
+        t0 = time.perf_counter()
+        vo_hash = compute_script_vo_hash(script)
+
+        def _mixed_note() -> dict:
+            """混引擎成片的按段报账（不静默）。
+
+            两边都要写：没有它，顶层 engine 就变成一个会把读者骗到的数字——它只代表
+            「最后一次写入这份 manifest 的引擎」，而那一期里其实混着两个引擎。
+            """
+            if not mixing:
+                return {}
+            return {"_mixed_engine": {
+                old_mf.get("engine"): sorted(set(done)),
+                cfg["engine"]: mixed_from,
+            }}
+
+        def _save_manifest():
+            # **中途写盘也要带上还没走到的可复用段**（2026-10-13《束胸力学》实测）。此前只写已处理的
+            # `takes`：每段合成完都写一次，进程在第 k 段被中断（SIGINT/SIGKILL）时 manifest 就截断在 k-1，
+            # k 之后完好的段丢了记录，下一轮全当缺席重配——一期里连续三次中断，没点名的段 8/9/10/12
+            # 被白配（同文本同种子，产出逐毫秒一致，只是白花时间），面板排队里冒出 13–17。
+            # `done` 只装「可复用」的段（点名重做的已被 _apply_redo 摘掉），所以补进来的都是对得上现稿的。
+            seen = {t.index for t in takes}
+            rows = sorted([*takes, *(t for i, t in done.items() if i not in seen)], key=lambda t: t.index)
+            total = sum(t.duration for t in rows)
+            # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
+            # json.loads 上裸抛，比「没有 manifest」更难办
+            paths.atomic_write(
+                manifest_path,
+                json.dumps(
+                    {
+                        "script_vo_hash": vo_hash,
+                        **_voice_fingerprint(cfg),
+                        "total_duration": round(total, 3),
+                        # 03.5/05 人工打点槽位（架构设计 2.3）：eval 从这里取主观分。
+                        # 无打点时为 null——**不是 0 分**，缺失与低分必须可区分（E10）。
+                        "human_review": existing_review,
+                        **_mixed_note(),
+                        # 每段自带 synth_logic（段级）。顶层这个值只是「最后一次写入者的版本」，
+                        # **混血一期里新老交替时它一定是新的**，别拿它判混血（见 run() 结尾报账）。
+                        "segments": [asdict(t) for t in rows],
+                    },
+                    ensure_ascii=False, indent=2,
+                ),
+            )
+
+        # 这一轮要真合成的段（D87 进度落盘）。一段都不合成就不写——别把上一轮的「已重配」冲掉
+        global _ACTIVE_PROGRESS
+        queue = [str(s.label) for s in segs if s.index not in done]
+        prog = _Progress(out_dir / PROGRESS_FILE, queue) if queue else None
+        _ACTIVE_PROGRESS = prog
         try:
-            old_mf = json.loads(manifest_path.read_text(encoding="utf-8"))
-            existing_review = old_mf.get("human_review")
-        except Exception as e:
-            print(f"WARN 旧 manifest 不可读，human_review 将丢失: {e}", file=sys.stderr)
-
-    # **全量重配的摩擦**（2026-09-13 事故沉淀）。`--force` 顺手一敲就把用户已逐段
-    # 审听的 40 段全部重配（本地 36 分钟 + 云端 ¥0.847），32 段「确认无问题」作废。
-    # 规则早就写在 WORKFLOW §03 与 SYNTH_LOGIC_VERSION 注释里，而工具零摩擦——
-    # 所以把摩擦补在工具里：全量重配得另写一个名字很长的开关。
-    if force and not force_all:
-        raise SystemExit(
-            "FAIL `--force` 不再直接全量重配，全量请用 `--force-all`。\n"
-            "     为什么加这道摩擦：全量重配 = 本期每一段都重合成 = 人耳逐段审听全部作废\n"
-            "     （2026-09-13 事故：一个顺手的 --force 废掉 40 段审听）。\n"
-            "     只想补点名的段：`--redo 3,7`；旧逻辑产物：`--redo stale`。")
-
-    # 换引擎比 --force 更险：engine/model 在复用指纹里，所以**任何**跑法（连 `--redo 3,7`
-    # 也一样）都会把本期旧产物全部重配——工具层没有「只换一部分引擎」的路。
-    # 不能让调用方在不知情下走进去：报清楚后果，给出两条正路。
-    #
-    # 2026-09-13 补第三条路（三期实例）：稿子只改了一段，而改它的那天本地只有 mlx——
-    # 前两条路一条要求开云端 GPU、一条要求把已审听的 39 段全部重配（人耳是最贵的资源）。
-    # 缺的不是答案而是这条路本身，所以把它修成显式开关：点名段用新引擎、其余段按
-    # **产出它们的那份引擎**判复用，并把混引擎事实按段序号写在 manifest 里（不静默）。
-    mixing = False
-    if old_mf is not None and not force_all:
-        old_pair = (old_mf.get("engine"), old_mf.get("model"))
-        new_pair = (cfg["engine"], cfg["model"])
-        if old_pair != new_pair:
-            if _overlay is not None:
-                raise SystemExit(
-                    f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
-                    f"     当前处于纠错 apply-patch 流程，但本期旧配音由 {old_pair[0]} 产出。\n"
-                    f"     同一期音频的 apply 与产出该期的引擎必须同侧（Spec §3.6 侧别纪律）。\n"
-                    f"     若本期为云端配音，请在云端执行：\n"
-                    f"       python -m pipeline.cloud push\n"
-                    f"       python -m pipeline.cloud run <期号> tts -- --apply-patch\n"
-                    f"       python -m pipeline.cloud pull")
-            if not (allow_engine_mix and redo):
-                raise SystemExit(
-                    f"FAIL 引擎/模型变了：{old_pair[0]} → {new_pair[0]}\n"
-                    f"     engine/model 在复用指纹里 → 本期旧产物会**全部**重配\n"
-                    f"     （连 `--redo 3,7` 也一样，只换一部分引擎在本工具里没有路）。\n"
-                    f"     这意味着人耳审听整期作废。三条正路，由人定：\n"
-                    f"       ① 换回产出本期音频的那份 config → 只补点名的段：`--redo 3,7`\n"
-                    f"       ② 确认全量重配、接受全部重听 → `--force-all`\n"
-                    f"       ③ 只把点名的段换引擎，接受混引擎成片（其余段原样复用、不废审听）\n"
-                    f"          → `--redo 3,7 --allow-engine-mix`")
-            mixing = True
-            print(f"WARN 混引擎点名重做：{old_pair[0]} → {new_pair[0]}，"
-                  f"只重做点名的段，其余段按 {old_pair[0]} 的指纹复用", file=sys.stderr)
-
-    done: dict[int, Take] = {}
-    if manifest_path.exists() and not force:
-        old = json.loads(manifest_path.read_text(encoding="utf-8"))
-        # 混引擎时复用判据要退回**旧引擎**的指纹，否则新引擎把整期判成陈旧，
-        # 点名重做就变成全量重做（那正是这道开关要避的）。只回退配置指纹这一层，
-        # 段级的文本/读音表/钉种子比对一字不动。
-        reuse_cfg = ({**cfg, "engine": old.get("engine"), "model": old.get("model")}
-                     if mixing else cfg)
-        done = _reusable(old, segs, out_dir, reuse_cfg, overlay=overlay)
-    if redo:
-        named = _apply_redo(done, segs, redo, cfg)
-        print(f"点名重做 {len(named)} 段：{'、'.join(s.label for s in named)}")
-    mixed_from = sorted(set(range(1, len(segs) + 1)) - set(done)) if mixing else []
-
-    miss = _unmeasured_titles([s.text for s in segs])
-    if miss:
-        print(f"WARN 歌名 {'、'.join(miss)} 在 voice.json 的 titles 里没有实测时长"
-              f"（值为 null），按 cpm 估算——cpm 估英日歌名会高估 1.5-2 倍，"
-              f"可能触发时长门禁误杀。试音补测："
-              f"python -m pipeline.tts probe \"{' '.join(miss)}\"", file=sys.stderr)
-
-    engine: Engine | None = None
-    takes: list[Take] = []
-    t0 = time.perf_counter()
-    vo_hash = compute_script_vo_hash(script)
-
-    def _mixed_note() -> dict:
-        """混引擎成片的按段报账（不静默）。
-
-        两边都要写：没有它，顶层 engine 就变成一个会把读者骗到的数字——它只代表
-        「最后一次写入这份 manifest 的引擎」，而那一期里其实混着两个引擎。
-        """
-        if not mixing:
-            return {}
-        return {"_mixed_engine": {
-            old_mf.get("engine"): sorted(set(done)),
-            cfg["engine"]: mixed_from,
-        }}
-
-    def _save_manifest():
-        total = sum(t.duration for t in takes)
-        # 原子写（2026-08-16 审计 2-27）：写一半崩溃的 manifest 会让下次重跑在
-        # json.loads 上裸抛，比「没有 manifest」更难办
-        paths.atomic_write(
-            manifest_path,
-            json.dumps(
-                {
-                    "script_vo_hash": vo_hash,
-                    **_voice_fingerprint(cfg),
-                    "total_duration": round(total, 3),
-                    # 03.5/05 人工打点槽位（架构设计 2.3）：eval 从这里取主观分。
-                    # 无打点时为 null——**不是 0 分**，缺失与低分必须可区分（E10）。
-                    "human_review": existing_review,
-                    **_mixed_note(),
-                    # 每段自带 synth_logic（段级）。顶层这个值只是「最后一次写入者的版本」，
-                    # **混血一期里新老交替时它一定是新的**，别拿它判混血（见 run() 结尾报账）。
-                    "segments": [asdict(t) for t in takes],
-                },
-                ensure_ascii=False, indent=2,
-            ),
-        )
-
-    # 这一轮要真合成的段（D87 进度落盘）。一段都不合成就不写——别把上一轮的「已重配」冲掉
-    global _ACTIVE_PROGRESS
-    queue = [str(s.label) for s in segs if s.index not in done]
-    prog = _Progress(out_dir / PROGRESS_FILE, queue) if queue else None
-    _ACTIVE_PROGRESS = prog
-    try:
-        for seg in segs:
-            if seg.index in done:
-                t = done[seg.index]
-                # 陈旧段也照旧复用，但跳过这一行必须把「这是旧逻辑产物」写在脸上——
-                # 2026-09-11 那次事故的现场日志就是一堆毫无区别的「skip 段落 N（已有 x 秒）」。
-                tag = ("，**旧合成逻辑产物 v%s**" % t.synth_logic
-                       if t.synth_logic != SYNTH_LOGIC_VERSION else "")
-                takes.append(t)
-                print(f"skip 段落 {seg.label}（已有 {t.duration:.1f}s{tag}）")
-                continue
-            if engine is None:
-                print(f"载入 {cfg['model']} …")
-                engine = Engine(cfg)
-            dest = out_dir / f"seg-{seg.index:02d}.wav"
-            prog.begin(str(seg.label))
-            take = render_segment(engine, seg, dest)
-            takes.append(take)
-            _save_manifest()
-            corrections.mark_segment_done(episode, str(seg.label))
-            prog.finish(str(seg.label))
-            print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
-                  f"{take.attempts} 次  {seg.text[:20]}…")
-    except BaseException as ex:
+            for seg in segs:
+                if seg.index in done:
+                    t = done[seg.index]
+                    # 陈旧段也照旧复用，但跳过这一行必须把「这是旧逻辑产物」写在脸上——
+                    # 2026-09-11 那次事故的现场日志就是一堆毫无区别的「skip 段落 N（已有 x 秒）」。
+                    tag = ("，**旧合成逻辑产物 v%s**" % t.synth_logic
+                           if t.synth_logic != SYNTH_LOGIC_VERSION else "")
+                    takes.append(t)
+                    print(f"skip 段落 {seg.label}（已有 {t.duration:.1f}s{tag}）")
+                    continue
+                if engine is None:
+                    print(f"载入 {cfg['model']} …")
+                    engine = Engine(cfg)
+                dest = out_dir / f"seg-{seg.index:02d}.wav"
+                prog.begin(str(seg.label))
+                take = render_segment(engine, seg, dest)
+                takes.append(take)
+                _save_manifest()
+                corrections.mark_segment_done(episode, str(seg.label))
+                prog.finish(str(seg.label))
+                print(f"OK   段落 {seg.label}  {take.duration:5.1f}s  CER {take.cer:4.0%}  "
+                      f"{take.attempts} 次  {seg.text[:20]}…")
+        except BaseException as ex:
+            if prog is not None:
+                prog.end(ex)
+            raise
+        finally:
+            _ACTIVE_PROGRESS = None
         if prog is not None:
-            prog.end(ex)
-        raise
-    finally:
-        _ACTIVE_PROGRESS = None
-    if prog is not None:
-        prog.end()
+            prog.end()
 
-    total = sum(t.duration for t in takes)
-    _save_manifest()
-    print("-" * 60)
-    print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
-          f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")
-    stale = _stale_downstream(episode, [asdict(t) for t in takes])
-    if stale:
-        print("WARN 本次配音改了段时长，下游排片已脏：\n"
-              + "".join(f"     {s}\n" for s in stale)
-              + f"     渲染前必须清算：跑 `python -m pipeline.clips {episode} --refit`"
-                f" 把差额吸进末片（人改过的 start/source 不动）；差额过大 refit 会拒绝，"
-                f"那就整条重跑 `python -m pipeline.clips {episode}` 并重走 05。",
-              file=sys.stderr)
-    band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
-    if not band[0] <= total <= band[1]:
-        print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
-    skipped = [t for t in takes if t.qc_skip]
-    if skipped:
-        print(f"WARN {len(skipped)} 段 ASR 盲区豁免（回读稳定失真，CER 不可用）："
-              f"{', '.join(t.label for t in skipped)}。"
-              f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
-    # 混血报账（2026-09-13）：陈旧段不拦复用、也不替人花钱重做，但绝不允许静静留下。
-    has_ov = bool(overlay.get("injections") or overlay.get("segment_seeds"))
-    _report_stale(takes, has_overlay=has_ov)
-    _report_seed_drift(takes, cfg)
-    return manifest_path
+        total = sum(t.duration for t in takes)
+        _save_manifest()
+        print("-" * 60)
+        print(f"OK {len(takes)} 段，总时长 {total / 60:.1f} 分钟，"
+              f"耗时 {time.perf_counter() - t0:.0f}s → {manifest_path}")
+        stale = _stale_downstream(episode, [asdict(t) for t in takes])
+        if stale:
+            print("WARN 本次配音改了段时长，下游排片已脏：\n"
+                  + "".join(f"     {s}\n" for s in stale)
+                  + f"     渲染前必须清算：跑 `python -m pipeline.clips {episode} --refit`"
+                    f" 把差额吸进末片（人改过的 start/source 不动）；差额过大 refit 会拒绝，"
+                    f"那就整条重跑 `python -m pipeline.clips {episode}` 并重走 05。",
+                  file=sys.stderr)
+        band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
+        if not band[0] <= total <= band[1]:
+            print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
+        skipped = [t for t in takes if t.qc_skip]
+        if skipped:
+            print(f"WARN {len(skipped)} 段 ASR 盲区豁免（回读稳定失真，CER 不可用）："
+                  f"{', '.join(t.label for t in skipped)}。"
+                  f"成片交人前必须人耳听一遍这些段。", file=sys.stderr)
+        # 混血报账（2026-09-13）：陈旧段不拦复用、也不替人花钱重做，但绝不允许静静留下。
+        has_ov = bool(overlay.get("injections") or overlay.get("segment_seeds"))
+        _report_stale(takes, has_overlay=has_ov)
+        _report_seed_drift(takes, cfg)
+        return manifest_path
 
 
 def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,

@@ -156,3 +156,43 @@ test("L-3 底线：1280×800 / 1440×900 × 预览收起 / 展开，关键元素
     fx.cleanup();
   }
 });
+
+test("L-4 执行中工具行的作业输出是超长无空格串（模型路径）：省略号截断，对话流不横向溢出（D87 补）", async () => {
+  const fx = sessionFixture(["SESS-A"]);
+  const repo = fx.repo;
+  const longLine = "Loaded speech tokenizer from /Volumes/Samsung T7/anime-video-data/models/hub/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-bf16/snapshots/a6eb4f68e4b056f1215157bb696209bc82a6db48/speech_tokenizer";
+  sessionScript(repo, "SESS-A", [
+    { op: "emit", frame: { t: "ready", episode: "SESS-A", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "episode", project: null } },
+    {
+      op: "serve",
+      on_turn: [
+        { t: "turn_started", turn_id: "$turn", rid: "$rid" },
+        { t: "tool", turn_id: "$turn", phase: "start", index: 0, name: "run_pipeline", summary: "tts --redo 6,7,11", ok: null, observation: null, duplicate: false },
+        { t: "log", stream: "stdout", text: longLine },
+      ],
+    },
+  ]);
+  const L = await launchSession(repo, [], { previewOpen: false });
+  try {
+    await L.page.locator("[data-testid=episode]", { hasText: "SESS-A" }).first().click();
+    await L.page.getByTestId("composer-input").fill("好了");
+    await L.page.getByTestId("composer-send").click();
+    const sub = L.page.locator("[data-testid=conv-row][data-kind=tool] .conv-tool-sub");
+    await expect(sub).toContainText("Loaded speech tokenizer", { timeout: 15_000 });
+    for (const [w, h] of [[1280, 800], [1440, 900]] as const) {
+      await L.page.setViewportSize({ width: w, height: h });
+      await L.page.waitForTimeout(200);
+      const r = await L.page.evaluate(() => {
+        const s = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!;
+        const t = document.querySelector<HTMLElement>("[data-testid=conv-row][data-kind=tool] .conv-tool-sub")!;
+        return { over: s.scrollWidth - s.clientWidth, truncated: t.scrollWidth > t.clientWidth, w: t.clientWidth };
+      });
+      expect(r.over, `${w}×${h} 对话流横向溢出`).toBeLessThanOrEqual(0);
+      expect(r.truncated && r.w > 0, `${w}×${h} 作业输出应截断显示（宽 ${r.w}）`).toBe(true);
+    }
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    fx.cleanup();
+  }
+});
