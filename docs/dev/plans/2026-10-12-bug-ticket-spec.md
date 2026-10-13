@@ -31,7 +31,8 @@
 | # | 问题 | 人的原话（2026-10-12，AskUserQuestion 选项原文） | 施工注记 |
 |---|---|---|---|
 | Q1（上位 §3-1） | 工单存哪里 | 「仓库内 tickets/，加进 .gitignore (推荐)」 | 目录 `<仓库根>/tickets/`；`.gitignore` 加 `/tickets/`；静态测试 + 运行时 `git check-ignore` 双重把关（§4.6） |
-| Q2（上位 §3-2） | 「复制给 coding agent」按钮 | **未定**——照 UI 规则 4，PR-B 出 2–3 套真实窗口截图，人选 | 人选后写回本表 |
+| Q2（上位 §3-2） | 「复制给 coding agent」按钮 | 「C 工具行+提示条 (Recommended)」（2026-10-13，PR-B 三套方案真实窗口截图，AskUserQuestion 选项原文） | 工具行行尾文字按钮「复制给 coding agent」+ 输入框上方一条提示条「本会话开了工单 T-…（待修）· 复制给 coding agent」；工具行主文本「已开工单 T-…」。提示条在回合折叠之外（D80 回合跑完默认折叠，工单那条工具行随之收起），不改折叠规则。截图脚本 [`2026-10-12-bug-ticket-spec/options.shots.spec.ts`](2026-10-12-bug-ticket-spec/options.shots.spec.ts) |
+| Q5（PR-B 实测引出，2026-10-13） | 开单卡的卡面：PR-A 的卡面是整份工单（约 53 行、卡高 1167 px），1280×800 与 1440×900 下都看不到「批准」按钮，不满足 §一 第 2 步 | 「K1 摘要在前、全文收起 (Recommended)」 | 卡面先列 新开 / 追加、命令、退出码、报错末行、「为什么不是用法错误」，工单全文（含通用的执行审批头与完整 argv）收进「工单全文」折叠。实现见 §8.3 ④–⑥（施工时补） |
 | — | 开单走新工具还是 `run_pipeline` 模块 | **本 spec 的设计选择**（不是人裁决）；红队 2026-10-12 审过，**接受**，不立 ADR | 走 `run_pipeline tickets`，理由见 §三 #1。红队结论见 §十二 R-1：安全性质（弹卡、不开放「本会话都批准」、bash 绕不过、现场取自日志）在模块方案里都能做到且有测试；新工具多出的只有参数结构化，换来的是一份 ADR 与工具表上调 |
 | Q3（§十「行为变化」，2026-10-12 审 spec 时） | bash 直接跑 `corrections global` / `calibration set` / `bgm register` 今天不弹卡，PR-A 后弹卡；另：bash 能直接写 `tickets/`（伪造「已修」工单或绕卡落单） | 「堵口 + 写 tickets/ 也弹卡 (推荐)」 | 行为变化**人已确认**；bash 对 `tickets/` 的写形态另加一条硬危险 `[写工单目录]`（§4.4） |
 | Q4（红队 R-7 引出，2026-10-12） | bash 能免卡直接跑 coding agent CLI（本机已装 `claude`、`pi`），`claude -p "处理工单 …"` 就能改 `pipeline/`，绕过「第一阶段不自动拉起」与 Code Freeze | 「加一条硬危险 (推荐)」 | bash 命令里以命令词出现 `claude` / `codex` / `opencode` / `pi` / `aider` / `gemini` / `cursor-agent` → 标 `[拉起 coding agent]` 并弹卡（§4.4）；`python -c` 一类写法照旧绕得过，ADR-0030 已接受的同类 |
@@ -345,7 +346,7 @@ cd desktop && npx electron-vite build && npx playwright test
 
 ### 7.9 完成判定
 
-- [ ] 截图交付，人已选，写回 §二
+- [x] 截图交付，人已选，写回 §二（2026-10-13：按钮 C、卡面 K1）
 
 ---
 
@@ -422,7 +423,7 @@ PR-A 已合、PR-B 人已选。
 ## 十一、总完成判定
 
 - [x] PR-A 完成（§6.9）
-- [ ] PR-B 完成（§7.9）
+- [x] PR-B 完成（§7.9）
 - [ ] PR-C 完成（§8.8），**待人验收**
 - [ ] §九 第 1、2 条人已勾
 - [x] §十「行为变化」一行人已确认（2026-10-12，§二 Q3）
@@ -500,3 +501,10 @@ PR-A 已合、PR-B 人已选。
 
 - `git check-ignore -v tickets/x.md`：`.gitignore:34:/tickets/	tickets/x.md`；`git ls-files tickets` 为空；施工前后仓库根下没有 `tickets/` 目录（测试一律在临时仓库）。
 - **验证**：pytest 2859 / typecheck 通过 / vitest 562 / playwright 142（2 跳过）。
+
+### PR-B（2026-10-13）
+
+- 附件 `2026-10-12-bug-ticket-spec/`（`shots.config.ts` + `options.shots.spec.ts`），照 D80 先例：未打包构建 × 临时夹具仓（侧栏内容量同 D81 §一）× 真实 core × 假模型；开单是 PR-A 的真实链路（bash 真失败 → `run_pipeline tickets open` 弹卡 → 批准 → 真实 `handoff` 帧 → 临时仓库 `tickets/` 落单），第 5 步改夹具工单的「处理结果」后重开会话，拍到真实 `ticket_fixed` notice。只有工单那条工具行上的按钮 / 下一行 / 提示条与卡面 K1 / K2 是原型 DOM（`adoptedStyleSheets` 注入）。产物 `desktop/out/d82-shots/pr-b/`（对照页 `index.html`、`measures.json`）。
+- **实测发现**：① 回合跑完默认折叠（D80 R4，`turnDefaultOpen`），工单那条工具行随之收起——A / B 的按钮在默认状态下看不见，若选它们 PR-C 要另改折叠规则；② PR-A 的开单卡卡面是整份工单，卡高 1167 px，对话流可见区 444 px（1280×800）/ 544 px（1440×900），两档都只见卡头、不见「批准」，不满足 §一 第 2 步。为此加了卡面两种原型：K1 摘要在前（卡高 249 px，两档卡头与批准同时可见，不点开就看到命令 / 退出码 / 报错末行 / why）、K2 全文限高 200 px 内部滚动（两档同时可见，但前 200 px 被 `run_pipeline` 的完整 argv 回显占掉，why 要滚动才见）。
+- 夹具注意：`realCoreFixture` 默认给每期配 `03-audio` 与 `04-clips.json`（停在 05）；场景要「02.5 已批、停在 03」，所以删这两项并放 `02-diff.patch`（02.5 的封板产物）。工单阻塞 03 的提醒只在还没走过 03 时出现，停在 05 时不出提醒是正确行为。
+- **人选**：按钮 **C 工具行 + 提示条**、卡面 **K1 摘要在前、全文收起**（2026-10-13），已写回 §二 Q2 / Q5。
