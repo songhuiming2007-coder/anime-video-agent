@@ -84,6 +84,19 @@ def test_evidence_window_and_sources(ep: Path, presence_calls: list[tuple]):
     assert ev.gaps == []
 
 
+# D81 PR-3：普通期的审查输入（system + user 提示）与改动前逐字节相同。基准值用改动前的实现（提交 fee56c3）在本夹具上跑出
+PLAIN_PROMPT_SHA256 = "6136017376ce244e87955608c846007eeadda5ae972732426df2267e4385dfec"
+
+
+def test_plain_episode_prompt_unchanged_by_project_layer(ep: Path):
+    import hashlib
+
+    ev = adv.gather_evidence(ep, "02-script.draft.md")
+    assert ev.prior == []
+    blob = json.dumps([adv.SYSTEM_PROMPT, adv.build_user_prompt(ev)], ensure_ascii=False)
+    assert hashlib.sha256(blob.encode()).hexdigest() == PLAIN_PROMPT_SHA256
+
+
 def test_evidence_gaps_are_reported(ep: Path, monkeypatch):
     (adv.INDEX_DIR / "东京喰种_S02E07.json").unlink()
     (adv.NOTES_DIR / "东京喰种.md").unlink()
