@@ -1023,3 +1023,65 @@ PR-1；D82 PR 已落地「bash 跑逐条人审模块也弹卡」的规则（§4.
 - 2026-10-12 22:39:33：`EGOIST-传奇企划志-V2/.DS_Store`（Finder）。
 
 形态是桌面端宿主在人点开这几期时的行为（建停机点对象、记停机点人时），当时本机打包版 AVA.app 在运行；本分支各 PR 的测试一律用临时 userData 与夹具仓，PR-1 / 3 / 4 / 5 的镜像验收各自用标记做了 `find -newer`，均为空。**待人确认 20:58–20:59 那次是不是自己在用桌面端。**
+
+---
+
+## 十六、施工审查记录（2026-10-13，零上下文审查）
+
+> 审查人不是施工会话（施工：claude 会话；审查：pi 会话，全程只读施工产物 + 独立复跑 + 自造夹具红队）。
+> 审查脚本与探针在 `~/.pi/agent/memory/d81-d82-review/`（notes.md、mutations_pr1.py、mutations_rest.py、probe_pr1.py、probe_pr5.py、probe_d82.py）。
+> 审查中施工曾卡在 PR-2a 等人选（00:38–08:23），审查者利用这段时间把 PR-1 审完；其余 PR 在施工完成后审。
+
+### 复跑（HEAD = 5e18c96，含审查补的 1 条测试）
+
+- `uv run pytest`：**2928 通过**（= 施工末值 2927 + 审查补的 1 条）。PR-1 时点也独立复跑过 2786（与 PR-1 记录一致）。
+- `npm run typecheck && npx vitest run`：typecheck 通过；vitest **568**（与记录一致；PR-1 时点复跑过 543）。
+- `npx electron-vite build && npx playwright test`：**143 通过、2 跳过**（与记录一致；PR-1 时点复跑过 136/2）。e2e 自带「真实数据零污染」断言前后一致。
+
+### 范围闸门
+
+83 个文件的 diff 逐处对得上 spec 清单或施工记录的偏差申报（PR-1 的 10 条、PR-2b 的 2 个施工中发现、PR-A 的 M26 等）。唯一不在任何清单里的文件 `pipeline/jobs.py`，diff 是 PR-4 ⑥ 的 `project_dir` 透传（记录里写明）。无超范围改动；无二进制 / 产物进库；附件目录只含纯文本。
+
+### 发现与处置（按严重度）
+
+1. **[已修 `9ac05a0`] P1 正确性：`project.parse()` 漏裸 ValueError**。`时长预算` 单元格写 `1.2.3-4分钟`（`[\d.]+` 放行进 `float()`）→ 抛的不是 `ParseError` → `load()` / `render_project_doc` / `build_project_card` / `project_store` 的 ParseError 捕获全部落空。盘上坏文件只能经 bash / 手改落盘（工具写入有弹卡前预检），而那恰是 §4.6「解析失败 → 注入原文 + 错误行」分支要兜的情形——漏了它，卷 / 企划会话**每轮注入都炸、会话不可用**。已复现。修复：float 转换包成 ParseError（含行号与原值）；回归测试三层（parse 抛 ParseError / load 返回错误实例不抛 / render_project_doc 降级注入不炸回合）；变异（去掉 try/except）实测变红。
+2. **[已修 `5e18c96`] P3 测试缺口**：`tickets show <工单号>` 的 `_TICKET_ID` 形状闸没有测试（审查自设变异 Y1：删闸后全量测试全绿）。闸的行为本身安全（外头文件解析不成工单只会报「没有」），但护栏要有测试钉住。补 `test_show工单号形状不对拒`（4 个坏形状退 2 报「形状不对」），变异实测变红。
+3. [观察，不改] `_is_memory_file(target) or _is_memory_file(cand)`：cand 在函数内同样 resolve，两次调用的判定恒同——冗余防御，无害。
+4. [观察，不改] TS `listEpisodes` 与 Python `get_episodes_list` 预排序序不同（TS 按 readdir 交错、Py 普通期先成员后）：mtime 相同的条目次序可能分叉；夹具钉死 mtime 测不到，真实场景毫秒级同戳罕见。
+5. [观察，不改] `project._DURATION` 与 `check_script.DURATION_FIELD` 数字段语法相同但两份写法（spec 写「复用数字段」）：今天无行为差，有漂移风险。
+6. [观察，不改] `assemble.run()` 的 concat 控制字符预检只覆盖部件源路径；`--out` 目录名本身含换行时退 2 发生在 `cards/` 已建之后。失败形态仍正确（退 2、无部分输出、临时成片清掉），只是检查时机晚于 §10.3 ⑧ 的字面要求。
+7. [观察，不改] `bash -c "claude -p …"` 不在 `[拉起 coding agent]` 的命令词边界（^/;/&|/(）内——与 spec 已接受的 `python -c` 残余同类（ADR-0030 框架内）。
+
+### 变异抽查（审查者独立施加 → 红 → 还原 → `git diff` 干净）
+
+spec 清单 15 条全被抓：M2（deny 去 casefold）、M6（执行层读 args 伪造确认）、M14（注入不比 sha）、M15（TS 默认 sort）、M21（企划归属用 resolve）、PR3-R1（前卷带草稿）、PR4-M6（same_footage 元组相等丢 None 通配）、PR5-M1（不查已有成片）、PR5-M6（concat 不转义）、PR5-M13（不取输出锁）、D82-M8（运行时不查 gitignore）、D82-M12（handoff 取模块输出）、D82-M23（coding agent 按子串）、D82-M26（同签名按文件名字典序）、PR-2b 的「卷行不看卷表」（vitest，手工施加）。
+自设 3 条：X2（`_` 前缀顶层进列表）被抓；Y1（show 形状闸）**永远绿 → 已补测试（发现 2）**；Y2（concat 控制字符检查删掉）被抓（`test_concat清单转义_目录名带单引号` 的换行用例）。
+既有变异矩阵抽核：S10-MUT-19（锚点搬家 6 条之一）经 `verify_mutations.py --only` 全量重跑 KILLED（red=6）。
+「永远绿」抽查：断言期望值多为 spec 定值（3000/2597/8000、逐字 diff 串、sha 从盘上现算），未发现从实现抄值的断言。
+
+### 红队实测（在真实代码上，夹具自造）
+
+- **读域**：自设计探针 11 条全过——目录软链穿透（施工测试只测了文件软链）、NUL 字节、`03-Audio` 混写、`area` 越区与拼写错、`area=project` 读企划记忆、`..` 两种形态、借读兄弟卷四条路。
+- **`00-project.md` 字段进 shell / ffmpeg**：敌意夹具实跑（卷目录名带空格 / 单引号 / `$(touch …)` / 软链卷，真 ffmpeg 小样片）：`$()` 未执行（一律 argv，不过 shell）；带 `/` 的载荷连解析期都过不了（`_episode_name_problem`）；单引号目录名经 concat 转义由真 ffmpeg 解析出正确部件数（账本 name 序列逐字对）；软链卷照用且被指向目录零写入；已有成片不带 `--replace` 退 2、字节不变；流签名不一致（Constrained Baseline vs High）在拼接前退 1 不拼接。
+- **确认来源**：写 `00-project.md` 的执行层伪造（`args` 带 `human_approved` / 正确 `base_sha`）被拒（施工测试 + 审查 M6 变异复核）；总装逐条人审无 `allow_key`（PR5-M 变异复核）；开工单见 D82 spec §十四。
+- **一致性**：Python / TS 树规则对拍（含增补平面字符对 `（终）` vs `😀-x`）在 vitest 里且审查 M15 变异被抓；`ready` 的 `session_kind` / `project`、`tool` 的 `handoff`、`request` 的 `card_summary` 都进了 `convFrames.ts` 契约（TX-0 真实 core 比对 + vitest malformed 双测）；并发写入：tickets 锁内重查（D82-M7/M26 被抓）、assemble 输出目录锁（PR5-M13 被抓）、`00-project.md` 卡上绑定 `base_sha`（卡后被改执行层拒）。
+
+### 真实数据与公开仓库
+
+- `find "data/episodes/EGOIST-传奇企划志-V2" -newermt "2026-10-12 20:40:00"`：**13 项，与 §十五「收尾核对」逐项相同**（20:58–20:59 桌面端宿主行为 + 22:39 `.DS_Store`），施工与审查均未新增写入。**待人确认 20:58 那次是自己在用桌面端。**
+- 分支 diff 扫描：无本机绝对路径（仅 docstring 的 `/Volumes/…` 泛指）、无真实密钥（命中的 `sk-d83-SECRET` / `sk-PROBE` 都是脱敏测试假值）、无工单原文、无期内容片段。
+
+### 界面底线（UI 规则 5；不评判好不好用）
+
+- PR-2b / D82 PR-C 的底线断言在 e2e 里并随 playwright 143 通过：1280×800 与 1440×900 下关键元素两两 boundingBox 不相交、侧栏 `scrollWidth ≤ clientWidth`、中栏不压破；PR-C 系统剪贴板读回 = `handoff` 原文、重启后按钮仍在。
+- 实现与人选一致：侧栏 = **B 分组卡片**（`proj-card`）、按钮 = **C**（工具行行尾 + 输入框上方提示条）、卡面 = **K1**（`card_summary` 摘要在前、全文折叠）；§二 已写回人选（含日期与选项原文）。
+- PR-C 记录申报的「预览展开时工具行 2 px 横向滚动」是 D80 既有问题、与本按钮无关——审查抽验过记录描述与代码一致，未复测像素。
+
+### 交人事项汇总（施工的申报审查核实过事实，处置由人定）
+
+1. §一 / §7.6 的「未立项」措辞与 §6.3 ⑱ + §4.1 树规则冲突：施工按树规则落地（新建企划显示「还没有卷」，「未立项」只给有卷而无 `00-project.md` 的旧目录）——待人确认措辞。
+2. PR-4「微动物证」一节在真实数据恒为空（`04-clips.approved.json` 不带 `limit` 键）；19 条镜头命中待人逐条判断（§9.8 第 2 条）；改不改判据由人定。
+3. PR-3 真实数据验收的出网那半（调一次模型）未跑——待人批后照 §8.8 跑，结论写回。
+4. PR-5 真实数据比对全等（截断点 889.53 / 866.74、时长差 0、账本逐项相等、qc 11/11 逐行相同）；待人听三处章节交界。镜像根与 `_d81-out` 在 scratchpad，去留由人定（§4.9 第 5 步）。
+5. 镜像验收放在 scratchpad 临时根而非 §4.9 写的 `data/episodes/_d81-mirror/`：更安全（不往 `data/` 写），证据齐全——偏差已申报，待人认可。
+6. D82 §九第 1 条（打包版里真撞一次 bug 走全程）待人做。
