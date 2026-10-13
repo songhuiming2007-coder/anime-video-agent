@@ -25,6 +25,15 @@ const valid: Record<string, Record<string, unknown>> = {
 };
 
 describe("TV-1 parseOutFrame", () => {
+  it("D82：tool / history 帧的 handoff 有键才查，必须是字符串", () => {
+    const tool = { ...base, t: "tool", ...valid.tool, name: "run_pipeline", phase: "end", ok: true };
+    expect(parseOutFrame(JSON.stringify(tool)).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...tool, handoff: "请处理工单 /x/tickets/T-1.md" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...tool, handoff: 3 })).ok).toBe(false);
+    const hist = { ...base, t: "history", index: 0, role: "tool", text: "", name: "run_pipeline", ok: true };
+    expect(parseOutFrame(JSON.stringify({ ...hist, handoff: "x" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...hist, handoff: null })).ok).toBe(false);
+  });
   it("D81：ready 缺 session_kind → malformed；project 为 null 合法、为数字 malformed", () => {
     const { session_kind: _drop, ...noKind } = valid.ready;
     expect(parseOutFrame(JSON.stringify({ ...base, t: "ready", ...noKind })).ok).toBe(false);

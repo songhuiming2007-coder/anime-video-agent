@@ -157,6 +157,30 @@ test("TX-0c 契约（D81）：卷会话与企划会话的帧过契约；企划�
   }, ["P/01-a", "P/02-b"]);
 });
 
+test("D82 开工单：bash 真失败 → run_pipeline tickets open 弹卡（卡面含命令与退出码）→ 批准 → tool 帧带 handoff、tickets/ 落一份工单", async () => {
+  await withRealCore(async ({ L, llm, repo }) => {
+    execFileSync("git", ["init", "-q", repo.root]);
+    fixtureWrite(repo.root, ".gitignore", "/tickets/\n");
+    const bashFail = { message: { role: "assistant" as const, content: null, tool_calls: [{ id: "call_bug1", type: "function" as const, function: { name: "bash", arguments: JSON.stringify({ command: "echo 'KeyError: BGM' >&2; exit 1", description: "复现报错" }) } }] } };
+    const why = "同一参数在上一期能跑通，这一期报 KeyError，01-topic.md 字段已逐项核对";
+    const open = `tickets open --call call_bug1 --blocked 03 --symptom 配音失败 --expected 配音成功 --repro 'tts --redo 5' --why '${why}'`;
+    llm.push(bashFail as never, toolCalls({ name: "run_pipeline", args: { command: open } }), assistant("已开单。"));
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "跑一下配音");
+    const card = L.page.getByTestId("request-card");
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(card).toContainText("echo 'KeyError: BGM'");
+    await expect(card).toContainText("退出码: 1");
+    await L.page.getByTestId("request-answer-approve").click();
+    const frames = await waitTurns(L, "ep:SESS-A", 1);
+    assertFrameContract(frames);
+    const end = frames.filter((f) => f.t === "tool" && f.phase === "end" && f.name === "run_pipeline");
+    expect(end.length).toBe(1);
+    expect(String(end[0].handoff)).toMatch(/^请处理工单 `.*\/tickets\/T-\d{8}T\d{6}Z-[0-9a-f]{6}\.md`：/);
+    expect(readdirSync(join(repo.root, "tickets")).filter((n) => n.endsWith(".md")).length).toBe(1);
+  });
+});
+
 test("TX-0b 契约（D36）：卡片待答时点「停止」→ 作废帧同样过 parseOutFrame、零丢帧，卡与徽标立即撤下", async () => {
   await withRealCore(async ({ L, llm }) => {
     llm.push(toolCalls(CARD_RM), assistant("已停下。"));

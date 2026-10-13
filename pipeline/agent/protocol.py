@@ -765,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
             messages.extend(resume_state["messages"])
             _send_history(writer, resume_state["records"])
     def _startup_tail() -> None:
+        if ep_dir is not None:
+            _send_ticket_notices(writer, ep_dir)
         if ep_dir is not None and not is_project:
             _ensure_pending(ep_dir, status)
             _send_stop_points(writer, ep_dir, None)
@@ -843,6 +845,24 @@ def main(argv: list[str] | None = None) -> int:
     return exit_code
 
 
+def _send_ticket_notices(writer, ep_dir) -> None:
+    """D82 §4.8：本期 / 本企划有「已修」且还没走过被阻塞工序的工单 → 每张一条 `ticket_fixed` notice。
+
+    只发给人看（notice 帧），不进模型消息；文本只由系统解析出的字段组成。解析失败的工单计数，不静默。
+    """
+    from pipeline import tickets
+
+    try:
+        fixed, bad = tickets.find_fixed(Path(ep_dir))
+    except Exception:  # 提醒是旁路：读不了工单不许拖垮会话启动
+        return
+    for t in fixed:
+        writer.send({"t": "notice", "level": "info", "code": "ticket_fixed", "text": tickets.notice_text(t)})
+    if bad:
+        writer.send({"t": "notice", "level": "warn", "code": "ticket_fixed",
+                     "text": f"另有 {bad} 份工单解析失败（缺状态行等），没有参与续跑提醒"})
+
+
 def _session_card(host, ep_dir, status, scope) -> str:
     """压缩回合要带的状态卡：企划会话用企划卡，卷会话带企划首行（D81 §6.3 ⑨）。"""
     from pipeline.agent.status_card import build_project_card, build_status_card
@@ -904,6 +924,13 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
                 # D80：用途同 tool 帧的条件键（工具行主文本），剥控制字符
                 description = args.get("description") if isinstance(args, dict) else None
                 frame["description"] = _clean(description).strip() if isinstance(description, str) else ""
+            if name == "run_pipeline":
+                # D82 §4.7：历史重建的工具行同样带交接文本（从日志里的结果重算），重启后按钮还在
+                from pipeline.agent.tools import ticket_handoff
+
+                handoff = ticket_handoff(message.get("content"))
+                if handoff is not None:
+                    frame["handoff"] = handoff
         writer.send(frame)
         index += 1
 

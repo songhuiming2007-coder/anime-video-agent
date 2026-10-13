@@ -113,9 +113,21 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
  *  （D76：完整命令，工具行复制用；继续会话后的旧工具行同样能复制）。 */
 export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) => Record<string, readonly Kind[]> | null>> = {
   history: (f): Record<string, readonly Kind[]> | null =>
-    f.role !== "tool" ? null : f.name === "bash" ? { ok: ["boolean"], command: ["string"], description: ["string"] } : { ok: ["boolean"] },
+    f.role !== "tool"
+      ? null
+      : {
+          ...(f.name === "bash" ? { ok: ["boolean"], command: ["string"], description: ["string"] } : { ok: ["boolean"] }),
+          ...("handoff" in f ? { handoff: ["string"] as const } : {}),
+        },
   // D80：bash 另带 description（模型给的用途，工具行主文本）；与 command 同为模型参数、不是工具结果
-  tool: (f) => (f.name === "bash" ? { command: ["string"], description: ["string"] } : null),
+  // D82：成功的 tickets open 带 handoff（交接文本，core 模板生成）；有键才查，必须是字符串
+  tool: (f) => {
+    const extra: Record<string, readonly Kind[]> = {
+      ...(f.name === "bash" ? { command: ["string"], description: ["string"] } : {}),
+      ...("handoff" in f ? { handoff: ["string"] } : {}),
+    };
+    return Object.keys(extra).length > 0 ? extra : null;
+  },
 };
 
 function kindOf(v: unknown): Kind {

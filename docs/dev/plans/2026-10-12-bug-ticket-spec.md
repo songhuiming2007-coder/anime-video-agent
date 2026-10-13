@@ -316,10 +316,10 @@ cd desktop && npx electron-vite build && npx playwright test
 
 ### 6.9 完成判定
 
-- [ ] §6.3 ①–⑫ 落地
-- [ ] §6.5 测试全部通过，§6.6 M1–M25 每条实测变红（贴「改坏 → 红的测试名 → 恢复 → 绿」）
-- [ ] §6.7 三条命令全绿，贴输出
-- [ ] `git check-ignore -v tickets/x.md` 输出贴进施工记录（指向 `.gitignore` 的 `/tickets/` 行）
+- [x] §6.3 ①–⑫ 落地（2026-10-13，见 §十三）
+- [x] §6.5 测试全部通过，§6.6 M1–M25 每条实测变红（贴「改坏 → 红的测试名 → 恢复 → 绿」）
+- [x] §6.7 三条命令全绿，贴输出
+- [x] `git check-ignore -v tickets/x.md` 输出贴进施工记录（指向 `.gitignore` 的 `/tickets/` 行）
 
 ---
 
@@ -421,7 +421,7 @@ PR-A 已合、PR-B 人已选。
 
 ## 十一、总完成判定
 
-- [ ] PR-A 完成（§6.9）
+- [x] PR-A 完成（§6.9）
 - [ ] PR-B 完成（§7.9）
 - [ ] PR-C 完成（§8.8），**待人验收**
 - [ ] §九 第 1、2 条人已勾
@@ -459,3 +459,44 @@ PR-A 已合、PR-B 人已选。
 **上位需求本身**：「开单工具（新工具）」与 ADR-0025 封顶冲突，原稿已在 §三 #1 处理，红队接受（R-1）；「同一报错首行」在只有尾部的输出上不稳定，原稿已改末行，红队接受并补上误合并时不丢证据（R-2）。没有发现其他错误。
 
 **改完复核**：本节新增与改写的锚点（`function ToolLine(`、`if (row.k === "tool") return <ToolLine`、`_assistant_index`、`"k": "compaction"` 与 `"tail": tail`、`_AUTOFILL_MODULES`、`READONLY_ASSET_SUBCOMMANDS`、`_FREEZE_PATH`、`_WRITE_FORM`）已重新 grep，全部命中。
+
+## 十三、施工记录
+
+### PR-A（2026-10-13）
+
+**已施工·机检通过。** 分支 `d81-d82-project-layer`，排在 D81 PR-2b 之后（§五）。
+
+- §6.3 ①–⑫ 全部落地：`pipeline/tickets.py`（新）；`session_log.find_tool_exchange`；`tools.py` 加模块 `tickets`、六个带值旗标、补位分支（只给 `open` 与无位置参数的 `list`）、`READONLY_ASSET_SUBCOMMANDS["tickets"] = {list, show}`、`HUMAN_GATED_COMMANDS`、交接模板 `TICKET_HANDOFF_TEMPLATE` 与 `ticket_handoff()`；`session.review_tool_call` 改走 `HUMAN_GATED_COMMANDS`，`tickets open` 先跑 `tickets.preview(rest, bound_dir=ep_dir)`（不成立 → `reject`，成立 → 卡面是工单全文、无 `allow_key`）；`status_card` 三条新规则（`[须人审的流水线命令]` 由 `HUMAN_GATED_COMMANDS` 生成、`[写工单目录]`、`[拉起 coding agent]`）；实时 tool 帧与 history 帧的 `handoff`；`ready` 之后的 `ticket_fixed` notice；`.gitignore` 的 `/tickets/`；`tests/test_tickets_static.py`；`creative.md` 新小节与 `WORKFLOW.md` 第 5 条（⑪ 写的「`docs/runbook/`（WORKFLOW 停机规程旁）」落在 WORKFLOW 的停机规程条目下）；ADR-0030 修订注。
+- `CONFIG_WRITE_COMMANDS` 仍在 `session.py` 定义，审查不再直接用它；它是 `HUMAN_GATED_COMMANDS` 子集这件事由 `test_写config的三条是逐条人审集合的子集` 钉住。
+- `list` / `show` 的 `续跑` 行与提醒同一规则（单行、脱敏、超 200 字截断），不出正文。
+- **施工中发现并修的缺陷**：同签名取「上一次」的结论时，工单按文件名字典序排，`T-…-2.md` 排在 `T-….md` 前（'-' < '.'），取到的是更早那张。改为按工单号里的 UTC 时间、再按 `-2`、`-3` 后缀排（M26）。
+- **变异检验暴露的测试缺陷**：初版协议用例（提醒不进模型请求）的夹具把 `config/agent.local.json` 写成只有密钥（给脱敏用例用），它整文件取代 `agent.json`，模型根本没被调用，「请求里没有工单号」恒真。改为写完整的假端点配置，并加断言「端点至少收到一次请求」。另外，M13 的第一版写法（往 `_startup_tail` 的 `messages` 追加）是等价变异——新会话首轮由系统提示 + 状态卡重建消息，那份列表不会被发出；改为经状态卡进 system prompt 这条真实可能的泄漏路径后被抓。
+- 既有变异矩阵：`scripts/verify_mutations.py` 的 D78-3 锚点随 ④ 搬到 `elif _human_gated(module, rest):`，`--only D78-3 --dirty-ok` 全量重跑 KILLED（红 4 条：`test_d51_tv9_good_reading_card_shows_plan`、`test_show免卡_set弹卡且卡上有旧值新值`、两条 `TestReview`）。
+- 测试：`tests/test_tickets.py` 69 条 + `tests/test_tickets_static.py` 2 条；vitest `convFrames` +1（`handoff` 有键才查、必须是字符串，tool 与 history 两种帧）；e2e `sessionReal.spec.ts`「D82 开工单」（真实 core + 假模型：bash 真失败 → `run_pipeline tickets open` 弹卡、卡面含命令与退出码 → 批准 → tool 帧带 `handoff` 且过 TX-0 契约比对、临时仓库 `tickets/` 落一份工单）。并发用例在子进程里给 `all_tickets` 包 0.5 s 延迟，让「查重 → 写」窗口必然重叠，M7（不持锁）才稳定可杀。
+- 变异 26/26 被抓（M1–M25 照 §6.6，另加 M26；scratchpad `d82a_mut.json`，跑完 `git diff` 只剩真实改动）：
+
+| # | 抓到它的测试 |
+|---|---|
+| M1 | `test_多给系统字段参数不成立` |
+| M2 | `test_不成立[synthetic_tool …用法]` |
+| M3 / M4 | `test_run_pipeline尾部与模型字段里的密钥` |
+| M5 / M19 | `test_同命令同末行待修_追加且带第二次输出` |
+| M6 / M20 / M26 | `test_已修同签名新开写可能是回归_不是bug写上次结论` |
+| M7 | `test_两个进程同时开同签名_只有一个新文件` |
+| M8 | `test_运行时_仓库没有gitignore拒写` |
+| M9 | `test_gitignore覆盖tickets目录` |
+| M10 | `test_open弹卡_无本会话都批准_卡面是全文` |
+| M11 / M21 | `test_bash规则_须人审的流水线命令`（`pipeline/tickets.py` 写法 / `-- global`） |
+| M12 | `test_handoff文本只来自模板` |
+| M13 | `test_协议_提醒只走notice不进模型请求` |
+| M14 / M25 | `test_提醒看工序进度`（05 / `阻塞: 04`、当前 `03.5`） |
+| M15 | `test_stdout不含正文_末行是TICKET_JSON` |
+| M16 | `test_显式给别的期不成立` |
+| M17 | `test_压缩事件的tail副本不算重复` |
+| M18 | `test_密钥在报错末行_去重键卡面与stdout都脱敏` |
+| M22 | `test_bash规则_写工单目录` |
+| M23 | `test_bash规则_拉起coding_agent[claudette-False]` |
+| M24 | `test_list与show不出正文` |
+
+- `git check-ignore -v tickets/x.md`：`.gitignore:34:/tickets/	tickets/x.md`；`git ls-files tickets` 为空；施工前后仓库根下没有 `tickets/` 目录（测试一律在临时仓库）。
+- **验证**：pytest 2859 / typecheck 通过 / vitest 562 / playwright 142（2 跳过）。
