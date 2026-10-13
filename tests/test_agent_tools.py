@@ -1827,3 +1827,15 @@ def test_d48_edits_card_diff_is_what_will_be_written(tmp_path: Path) -> None:
     )
     assert "│ 改动: +1 / -1 行" in card
     assert "│ -配音：甲。" in card and "│ +配音：甲改。" in card
+
+
+def test_turn_error_text_scrubs_collapses_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回合报错原文（2026-10-13）：密钥值脱敏、空白压成一行、超长截断；没有报错给 None。"""
+    from pipeline.agent import tools as T
+
+    monkeypatch.setattr(T, "_secret_values", lambda root=None: ["sk-SEKRIT-42"])
+    assert T.turn_error_text(None) is None and T.turn_error_text("") is None
+    text = T.turn_error_text("LLM HTTP 401:\n  bad key sk-SEKRIT-42\n")
+    assert text == "LLM HTTP 401: bad key [已脱敏]"
+    long = T.turn_error_text("x" * 1000)
+    assert len(long) == T.TURN_ERROR_MAX_CHARS and long.endswith("…")

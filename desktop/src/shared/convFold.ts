@@ -148,6 +148,15 @@ export function contextText(r: ContextReading): string | null {
 }
 
 /**
+ * 一个 `turn_finished` 帧本身测到的读数。0 次模型调用的回合（请求前就失败、本地指令、压缩未执行）什么也没测到：
+ * 它带的 prompt_chars 只是本地字数，拿来显示会把上一回合服务商实测的 token 读数换成「约 N 字」
+ * （2026-10-13 模型名失效连败三轮）。这种回合视同没有读数：脚注不写上下文，会话头沿用上一读数。
+ */
+function turnReading(f: OutFrame): ContextReading | null {
+  return f.llm_calls === 0 ? null : readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
+}
+
+/**
  * 当前会话（最后一个 `ready` 之后）最近一次 `turn_finished` 的读数。还没有回合结束过时：
  * 继续会话取 `ready` 带回的上次读数（D64，`previous`），新会话为 null，不沿用上一个会话的读数。
  */
@@ -157,7 +166,7 @@ export function lastContextReading(entries: readonly ConvEntry[]): ContextReadin
     if (e.k !== "frame") continue;
     const f = e.frame;
     if (f.t === "ready") out = readingOf(f.resume_prompt_tokens, f.resume_prompt_chars, true, f.context_window);
-    else if (f.t === "turn_finished") out = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window) ?? out;
+    else if (f.t === "turn_finished") out = turnReading(f) ?? out;
   }
   return out;
 }
@@ -187,13 +196,13 @@ export function lookupsText(v: unknown): string | null {
 
 /** D80 R5：回合末默认只显示调用次数与上下文读数——工具数与用时已在回合折叠行上，其余遥测展开看 */
 function footerBrief(f: OutFrame): string {
-  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
+  const reading = turnReading(f);
   const ctx = reading === null ? null : contextText(reading);
   return `${String(f.llm_calls)} 次模型调用${ctx === null ? "" : ` · ${ctx}`}`;
 }
 
 function footerText(f: OutFrame): string {
-  const reading = readingOf(f.prompt_tokens, f.prompt_chars, false, f.context_window);
+  const reading = turnReading(f);
   const ctx = reading === null ? null : contextText(reading);
   const lookups = lookupsText(f.lookups);
   return (

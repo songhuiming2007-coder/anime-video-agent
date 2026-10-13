@@ -1119,6 +1119,8 @@ class AgentSession:
         outcome["compacted"] = bool(compaction)
         outcome["tokens_before"] = compaction.get("tokens_before")
         outcome["tokens_after"] = compaction.get("tokens_after")
+        from pipeline.agent.tools import turn_error_text  # 延迟 import：与本文件其余 tools 引用同口径（避循环）
+
         with self.interrupt.absorbed():
             self._record({
                 "k": "turn_end",
@@ -1133,6 +1135,8 @@ class AgentSession:
                 "prompt_chars": outcome.get("prompt_chars", 0),
                 "prompt_tokens": outcome.get("prompt_tokens"),  # D56：服务商给的输入 token；拿不到为 None
                 "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
+                # 报错原文（脱敏、截断）：0 次模型调用就失败的回合，事后只能靠这一行知道是哪一类错（2026-10-13）
+                "error": turn_error_text(outcome.get("error"), self._root),
                 "recovered": False,
                 # D62 人裁决②：压缩改写了工作前提，turn_end 如实带出（desktop 读数「压缩后（压缩前峰值）」用）
                 "compacted": outcome["compacted"],
