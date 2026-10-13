@@ -1417,11 +1417,14 @@ def voice_info_payload(ep_dir: Path | str) -> dict:
     segments = []
     for s in segs:
         wav = f"seg-{s.index:02d}.wav"
+        wav_path = audio_dir / wav
         segments.append({
             "label": str(s.label),
             "index": s.index,
             "wav": wav,
-            "wav_exists": (audio_dir / wav).exists(),
+            "wav_exists": wav_path.exists(),
+            # D87：重配后同名 wav 换了内容，面板拿它给 <audio> 换源（不然可能播到旧音频）
+            "mtime": wav_path.stat().st_mtime if wav_path.exists() else None,
             "text": s.text,
             "has_attic": corrections.find_attic_snapshot(from_ep, str(s.label)) is not None,
         })
@@ -1454,11 +1457,40 @@ def voice_info_payload(ep_dir: Path | str) -> dict:
         ],
         "pending_corrections": [c for c in entries if not c.get("applied", False)],
         "rerun_segments": rerun,
+        "synth": _synth_progress(audio_dir / tts.PROGRESS_FILE),
         "apply_patch_lock": {
             "exists": lock.exists(),
             "pid": pid,
             "pid_alive": pid_alive,
         },
+    }
+
+
+def _synth_progress(path: Path) -> dict | None:
+    """D87：`03-audio/.tts_progress.json`（tts.run 落盘的本轮进度）→ 面板用的状态。
+
+    缺席/损坏 → None（面板照常装载，只是没有进度可显示）。`running` 但 pid 已死
+    （SIGKILL、断电、整机重启）→ `interrupted`，口径同 `.apply_patch.lock` 的残留判定。
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("v") != 1 or raw.get("state") not in ("running", "ok", "failed"):
+        return None
+    state = raw["state"]
+    pid = raw.get("pid")
+    if state == "running" and not (isinstance(pid, int) and _pid_alive(pid)):
+        state = "interrupted"
+    return {
+        "state": state,
+        "started_at": raw.get("started_at"),
+        "finished_at": raw.get("finished_at"),
+        "queue": [str(x) for x in raw.get("queue") or []],
+        "done": {str(k): str(v) for k, v in (raw.get("done") or {}).items()},
+        "current": None if raw.get("current") is None else str(raw["current"]),
+        "note": raw.get("note"),
+        "error": raw.get("error"),
     }
 
 

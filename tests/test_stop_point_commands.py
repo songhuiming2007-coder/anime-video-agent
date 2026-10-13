@@ -241,6 +241,45 @@ class TestVoiceInfo:
         (repo / "02-script.md").unlink()
         assert run_cli(repo, "/voice-info") == 1
 
+    # ---- D87：重配进度与 wav mtime ----
+
+    def _progress(self, repo, **over):
+        rec = {"v": 1, "pid": os.getpid(), "started_at": "2026-10-13T19:00:00", "state": "running",
+               "queue": ["6", "15"], "done": {"6": "2026-10-13T19:02:00"}, "current": "15",
+               "note": "第 2 句第 1 次不过：句内静音 5.8s", "finished_at": None, "error": None, **over}
+        (repo / "03-audio" / tts.PROGRESS_FILE).write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+    def _synth(self, repo, capsys):
+        assert run_cli(repo, "/voice-info") == 0
+        return json.loads(capsys.readouterr().out.strip())["synth"]
+
+    def test_无进度文件synth为null(self, repo, capsys):
+        assert self._synth(repo, capsys) is None
+
+    def test_进度在跑原样透出(self, repo, capsys):
+        self._progress(repo)
+        sy = self._synth(repo, capsys)
+        assert sy["state"] == "running" and sy["current"] == "15"
+        assert sy["queue"] == ["6", "15"] and sy["done"] == {"6": "2026-10-13T19:02:00"}
+        assert "句内静音" in sy["note"]
+
+    def test_pid已死的running判中断(self, repo, capsys):
+        """SIGKILL/断电后文件停在 running——不判成中断，面板就永远显示「合成中」。
+        变异：删掉 interrupted 改判 → 本条红。"""
+        self._progress(repo, pid=999999999)
+        assert self._synth(repo, capsys)["state"] == "interrupted"
+
+    def test_损坏的进度文件不拖垮面板(self, repo, capsys):
+        (repo / "03-audio" / tts.PROGRESS_FILE).write_text("{半截", encoding="utf-8")
+        assert self._synth(repo, capsys) is None
+
+    def test_段带wav_mtime(self, repo, capsys):
+        (repo / "03-audio" / "seg-01.wav").write_bytes(b"RIFF-fake")
+        assert run_cli(repo, "/voice-info") == 0
+        segs = json.loads(capsys.readouterr().out.strip())["segments"]
+        assert segs[0]["mtime"] == (repo / "03-audio" / "seg-01.wav").stat().st_mtime
+        assert segs[1]["mtime"] is None
+
 
 def _dubbed_manifest(ep: Path, labels: tuple[str, ...] = ("1", "2")) -> None:
     """按**当前**真实 voice.json 与当前读音表写一份「已配过」的清单：每段 speakable、钉种子、wav 齐全。"""

@@ -593,3 +593,52 @@ test("A1 首日实测：CodeMirror 在 Electron renderer 样式真正生效（CS
   await expect(L.page.getByTestId("save-msg")).toContainText("已保存");
   expect(spawnNames(L, "SAVE_SCRIPT")).toHaveLength(1);
 });
+
+/** D87：本地时间 ISO（无时区），与 tts.py `_now_iso` 同格式 */
+function localIso(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+test("D87 03.5 预览栏逐段重配状态：合成中 / 排队 → 已重配·待复听 → 播放后已复听；失败带原因；进度只从盘上读", async () => {
+  const ctx = epAt035("D87-STATUS");
+  const progress = join(ctx.ep, "03-audio/.tts_progress.json");
+  const shots = process.env.AVA_SHOTS;
+  const t1 = localIso(new Date(Date.now() - 120_000));
+  const base = { v: 1, started_at: localIso(new Date(Date.now() - 300_000)), queue: ["1", "2"], finished_at: null, error: null };
+  // 在跑：pid 用测试进程自己（活着）；段 1 已完成，段 2 合成中且有一次重试
+  writeFileSync(progress, JSON.stringify({ ...base, pid: process.pid, state: "running", done: { "1": t1 }, current: "2", note: "第 1 次不过：句内静音 5.8s（门槛 2.0s）" }));
+  const L = await start(ctx);
+  await openEp(L.page, "D87-STATUS");
+  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  const panel = L.page.getByTestId("voice-panel");
+  await panel.waitFor({ timeout: 15_000 });
+  const status = (label: string) => panel.locator(`[data-testid=seg-row][data-label='${label}'] [data-testid=seg-status]`);
+  await expect(panel.getByTestId("voice-synth")).toHaveAttribute("data-state", "running");
+  await expect(panel.getByTestId("voice-synth")).toContainText("重配进行中 1/2 · 段 2 合成中");
+  await expect(status("2")).toHaveAttribute("data-kind", "running");
+  await expect(status("2")).toHaveAttribute("title", /句内静音 5\.8s/);
+  await expect(status("1")).toHaveAttribute("data-kind", "redone");
+  await expect(panel.getByTestId("voice-done")).toBeDisabled(); // 在跑时不许再起一轮
+  if (shots) await panel.screenshot({ path: join(shots, "d87-running.png") });
+
+  // 盘上进度变成完成：面板靠自己的轮询（不靠作业表）跟上
+  writeFileSync(progress, JSON.stringify({ ...base, pid: process.pid, state: "ok", done: { "1": t1, "2": localIso() }, current: null, note: null, finished_at: localIso() }));
+  await expect(panel.getByTestId("voice-synth")).toHaveAttribute("data-state", "ok", { timeout: 15_000 });
+  await expect(panel.getByTestId("voice-synth")).toContainText("（待复听 2 段）");
+  await expect(status("2")).toHaveAttribute("data-kind", "redone");
+  if (shots) await panel.screenshot({ path: join(shots, "d87-done.png") });
+  // 放一下段 1 → 这一版记为已复听
+  await panel.locator("[data-testid=seg-row][data-label='1'] [data-testid=seg-play]").click();
+  await expect(status("1")).toHaveAttribute("data-kind", "heard");
+  await expect(panel.getByTestId("voice-synth")).toContainText("（待复听 1 段）");
+  if (shots) await panel.screenshot({ path: join(shots, "d87-heard.png") });
+
+  // 失败：段 2 带原因，刷新后可见
+  writeFileSync(progress, JSON.stringify({ ...base, pid: process.pid, state: "failed", done: { "1": t1 }, current: "2", note: null, finished_at: localIso(), error: "FAIL 段落 2 重试 3 次仍不达标（句内静音 5.8s（门槛 2.0s））。\n     原文：团子说得对。" }));
+  await panel.getByTestId("voice-refresh").click();
+  await expect(panel.getByTestId("voice-synth")).toHaveAttribute("data-state", "failed");
+  await expect(panel.getByTestId("voice-synth")).toContainText("重配失败");
+  await expect(status("2")).toHaveAttribute("data-kind", "failed");
+  if (shots) await panel.screenshot({ path: join(shots, "d87-failed.png") });
+});
