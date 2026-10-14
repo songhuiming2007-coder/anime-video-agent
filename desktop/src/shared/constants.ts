@@ -101,7 +101,10 @@ export const SEND_ACK_TIMEOUT_MS = 10_000;
 export const ANSWER_ACK_TIMEOUT_MS = 10_000;
 /** 人手写的改法说明；远小于 1 MiB 帧上限。 */
 export const FEEDBACK_MAX_BYTES = 65_536;
-/** 收尾最长一次模型请求（REQUEST_TIMEOUT = 60 s）+ job 杀组 + 余量。 */
+/**
+ * 收尾最长一次模型请求（当时主回合超时 60 s）+ job 杀组 + 余量。D93 起主回合超时默认 300 s 且会自动重试，
+ * 这里不跟着放大：人点「结束会话」就是要走，90 s 内没收完尾即 SIGTERM（收尾记 aborted，工具结果已落盘）。
+ */
 export const SESSION_END_WAIT_MS = 90_000;
 /** 与 Spec 8 SIGTERM→SIGKILL 一致，高于 Spec 9 FRAME_DRAIN_TIMEOUT_S 2 s。 */
 export const SESSION_KILL_GRACE_MS = 5_000;
