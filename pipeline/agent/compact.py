@@ -333,7 +333,8 @@ def is_bloated(summary_text: str, region: list[Any]) -> bool:
 
 # ---- 摘要器请求（PR2，§4.4–4.5） ----
 
-# 独立超时（§4.5，审查 #7）：全文进摘要器，60 s 的 REQUEST_TIMEOUT 对几十万字必撞墙。
+# 独立超时（§4.5，审查 #7）：全文进摘要器，当时主回合 60 s 的超时对几十万字必撞墙。
+# （D93 起主回合默认 300 s 且可配；摘要器显式传自己的 240、不随配置变，也不自动重试）
 # 240 沿用 notes_review.LLM_TIMEOUT_S 的先例（同为「长输入、单次、无工具」的 LLM 调用）。
 COMPACT_TIMEOUT_S = 240
 

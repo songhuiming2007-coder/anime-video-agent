@@ -1193,6 +1193,7 @@ class AgentSession:
                 "compacted": outcome["compacted"],
                 "tokens_before": outcome["tokens_before"],
                 "tokens_after": outcome["tokens_after"],
+                "llm_retries": outcome.get("llm_retries", 0),  # D93：本回合模型请求自动重试次数
             })
             if self._log_broken:
                 self.channel.show("notice", {
@@ -1694,7 +1695,18 @@ class AgentSession:
             # D79：排队消息只属于主会话（子会话没有人在对面打字）
             drain_steer=self.host.steer_source if self.persist else None,
             on_steer=self._on_steer,
+            on_llm_retry=self._on_llm_retry,
         )
+
+    def _on_llm_retry(self, attempt: int, limit: int, delay: float, error: str) -> None:
+        """D93：模型请求遇可重试错误、即将自动重发——上屏一行，人看得到「在重试」而不是干等。"""
+        from pipeline.agent.tools import turn_error_text  # 延迟 import：与 turn_end 同口径（脱敏、截断）
+
+        self.channel.show("notice", {
+            "level": "warn", "code": "llm_retry",
+            "text": f"模型请求失败（{turn_error_text(error, self._root)}），{delay:g} 秒后自动重试"
+                    f"（{attempt}/{limit}），点停止可放弃",
+        })
 
     def _on_steer(self, ids: list[str], answered: str | None) -> None:
         """D79：排队消息已送达。被续上的答复先上屏，再报送达（协议下发 steer_delivered）。"""

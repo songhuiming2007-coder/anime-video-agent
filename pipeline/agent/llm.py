@@ -39,7 +39,23 @@ from pipeline.agent.tools import (
     scrub_restricted,
 )
 
-REQUEST_TIMEOUT = 60
+# D93：单次请求的超时（秒）——只用来判「连接已死」，不是给模型快慢设门槛。300 = Pi（`httpIdleTimeoutMs`）
+# 与 Codex CLI（`stream_idle_timeout_ms`）的默认值；实测本机代理 + gemini-3.8-flash-high 在 58–64k 上下文的
+# 健康调用最长 56 s 且随上下文增长，原先写死的 60 s 两回合连杀（2026-10-14 supercell 企划会话）。
+# 代理在模型思考期间一个字节都不发，所以这一段静默整个算在超时里。配置 `request_timeout_s` 可覆盖，0 = 不设。
+# 人随时可点停止，不靠这个数兜底。
+DEFAULT_REQUEST_TIMEOUT_S = 300
+
+# D93：可重试错误（超时、连不上、408/409/429/5xx）的自动重试：最多 3 次，等 2 / 4 / 8 s。
+# 取 Pi 的默认（`retry.maxRetries` 3、`baseDelayMs` 2000）；Codex 是 5 次。只在工具循环里重试
+# （主回合与收尾调用），标题 / 压缩 / 对抗审查保持单次。等待中点停止照常中断。
+LLM_MAX_RETRIES = 3
+LLM_RETRY_BASE_S = 2.0
+_sleep = time.sleep  # 测试替换点
+
+# HTTP 状态里属于「过一会儿再试可能就好」的：与 OpenAI / Anthropic SDK、Pi 的 provider-retry 同一口径。
+# 其余 4xx（400 模型名失效、401 密钥错，见 D85）重试只会白等。
+_RETRYABLE_HTTP = frozenset({408, 409, 429})
 
 # D56：最近一次 chat_complete 响应里的 `usage`（服务商按自己的分词器算的 token 数）。
 # 走 ContextVar 而不是改返回值：chat_complete 有约 60 处测试替身按固定签名拦截，替身不写它，
@@ -110,7 +126,14 @@ def purpose_for_scope(scope: str) -> str:
 
 
 class LLMError(RuntimeError):
-    """网络/HTTP/协议层失败（领域异常，不是裸 urllib 报错）。"""
+    """网络/HTTP/协议层失败（领域异常，不是裸 urllib 报错）。
+
+    `retryable`（D93）：超时、连不上、408/409/429/5xx 为真，工具循环据此自动重试；默认假。
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _warn_once(cfg_file: Path, kind: str, message: str) -> None:
@@ -129,6 +152,8 @@ class LLMConfig:
     models: dict[str, str] = field(default_factory=dict)
     # D91：请求体 `reasoning_effort`；None = 不发（请求体与加这个字段之前逐字节相同）
     reasoning_effort: str | None = None
+    # D93：单次请求超时（秒）；None = 不设（配置写 0）
+    request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S
 
     @property
     def endpoint(self) -> str:
@@ -246,7 +271,22 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
     return LLMConfig(
         base_url=base_url, model=model, api_key=api_key, models=_parse_models(data, cfg_file),
         reasoning_effort=_parse_effort(data, cfg_file),
+        request_timeout_s=_parse_timeout(data, cfg_file),
     )
+
+
+def _parse_timeout(data: dict[str, Any], cfg_file: Path) -> float | None:
+    """D93：可选的单次请求超时（秒）。缺省 → 默认值；0 → None（不设）；不合法 → 警告一次、回落默认。"""
+    raw = data.get("request_timeout_s")
+    if raw is None:
+        return DEFAULT_REQUEST_TIMEOUT_S
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not raw >= 0 or raw == float("inf"):
+        _warn_once(
+            cfg_file, "request-timeout",
+            f"request_timeout_s={raw!r} 不是非负秒数（0 = 不设超时），已回落默认 {DEFAULT_REQUEST_TIMEOUT_S} s",
+        )
+        return DEFAULT_REQUEST_TIMEOUT_S
+    return None if raw == 0 else raw
 
 
 def _parse_effort(data: dict[str, Any], cfg_file: Path) -> str | None:
@@ -339,7 +379,7 @@ def chat_complete(
     *,
     config: LLMConfig | None = None,
     root: Path | None = None,
-    timeout: int = REQUEST_TIMEOUT,
+    timeout: float | None = None,
     scope: str = "creative",
     purpose: str | None = None,
     tool_choice: str | None = None,
@@ -350,6 +390,7 @@ def chat_complete(
     配置缺失 → 降级消息（不抛）；网络/HTTP/协议失败 → `LLMError`。
     `tool_choice=None`（默认）时请求体**不含该键**——与加这个参数之前逐字节相同（TL-15）。
     `egress_trusted`：出网断言的可信文本集（仓库规程正文，Spec 16 §5.2），原样交给断言。
+    `timeout=None`（默认）用配置的 `request_timeout_s`（D93）；显式传值的调用方（标题、压缩、对抗审查）照旧优先。
     """
     cfg = config if config is not None else load_llm_config(root)
     if cfg is None:
@@ -374,13 +415,15 @@ def chat_complete(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        effective = timeout if timeout is not None else cfg.request_timeout_s
+        with urllib.request.urlopen(request, timeout=effective) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:200].decode("utf-8", errors="replace")
-        raise LLMError(f"LLM HTTP {exc.code}: {detail}") from None
+        retryable = exc.code in _RETRYABLE_HTTP or exc.code >= 500
+        raise LLMError(f"LLM HTTP {exc.code}: {detail}", retryable=retryable) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise LLMError(f"LLM 请求失败: {exc}") from None
+        raise LLMError(f"LLM 请求失败: {exc}", retryable=True) from None
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 响应非 JSON: {exc}") from None
 
@@ -470,6 +513,8 @@ class LoopControl:
     """D79：排队消息已写史（送达模型）后的通知：(送达的 id 列表, 被续上的那条答复正文)。
     第二个参数只在「模型已给最终答复、因排队而继续」时非 None——这条答复不再是回合终稿，
     协议层要先把它推上屏，否则人看不到。"""
+    on_llm_retry: Callable[[int, int, float, str], None] | None = None
+    """D93：模型请求遇可重试错误、即将等待重发时的通知：(第几次重试, 上限, 等几秒, 报错原文)。"""
 
 
 def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
@@ -594,6 +639,7 @@ def _loop_result(
     lookups: dict[str, int] | None = None,
     prompt_tokens: int | None = None,
     compaction: dict[str, Any] | None = None,
+    llm_retries: int = 0,
 ) -> dict[str, Any]:
     """返回契约（Spec 9 §3.4）。`iterations` 保留旧键名 = `llm_calls`。
 
@@ -621,6 +667,7 @@ def _loop_result(
         "compacted": bool(comp.get("compacted")),
         "tokens_before": comp.get("tokens_before"),   # 本回合第一次压缩前（峰值）
         "tokens_after": comp.get("tokens_after"),     # 本回合最后一次压缩后
+        "llm_retries": llm_retries,                   # D93：本回合模型请求自动重试的次数
     }
 
 
@@ -684,6 +731,7 @@ def run_tool_loop(
     dedup: dict[tuple[str, str], None] = {}
     turn_tally: dict[str, int] = {}   # 本轮调用名 → 次数（本地说明用，§2.3 第 4 条）
     llm_calls = tool_calls_made = tool_executions = duplicates_rejected = checkpoints = 0
+    llm_retries = 0  # D93：本回合自动重试次数（跨请求累计）
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
     prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
@@ -698,6 +746,28 @@ def run_tool_loop(
     }
 
     def _chat(tool_choice: str | None = None) -> dict[str, Any]:
+        """一次模型请求；可重试错误（D93）按 2 / 4 / 8 s 自动重发，用尽才抛。
+
+        等待用 `_sleep`：人点停止 → SIGINT 打断等待 → KeyboardInterrupt 走调用方现有的中断落点。
+        """
+        nonlocal llm_retries
+        attempt = 0
+        while True:
+            try:
+                return _chat_once(tool_choice)
+            except LLMError as exc:
+                if not exc.retryable:
+                    raise
+                if attempt >= LLM_MAX_RETRIES:
+                    raise LLMError(f"{exc}（已自动重试 {LLM_MAX_RETRIES} 次）") from None
+                attempt += 1
+                llm_retries += 1
+                delay = LLM_RETRY_BASE_S * 2 ** (attempt - 1)
+                if control.on_llm_retry is not None:  # type: ignore[union-attr]
+                    control.on_llm_retry(attempt, LLM_MAX_RETRIES, delay, str(exc))  # type: ignore[union-attr]
+                _sleep(delay)
+
+    def _chat_once(tool_choice: str | None) -> dict[str, Any]:
         nonlocal prompt_chars, prompt_tokens, usage_anchor
         # D65：发送与字符统计都走老化投影（上一回合及更早的大工具结果换占位串）；
         # convo 与 session.jsonl 一字不动（纯函数投影，日志即事实）
@@ -804,14 +874,14 @@ def run_tool_loop(
                 convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                 tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                 checkpoints=checkpoints, wrapup="skipped", error=error,
-                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
+                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
             )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
                 tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
+                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
             )
         state, final, note, wrapup_error = _wrapup(reason)
         return _loop_result(
@@ -819,7 +889,7 @@ def run_tool_loop(
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
             wrapup=state, error=error or wrapup_error,
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
         )
 
     try:
@@ -860,7 +930,7 @@ def run_tool_loop(
                         llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                         tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                         checkpoints=checkpoints, wrapup="skipped", error=str(compacted.get("text", "")),
-                        prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp,
+                        prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries,
                         elapsed_s=time.monotonic() - started,
                     )
             live["stage"] = "model"
@@ -878,7 +948,7 @@ def run_tool_loop(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                     duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
+                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
                 )
 
             live["calls"] = calls
@@ -1009,7 +1079,7 @@ def run_tool_loop(
             convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
         return _stop("error", error=str(exc))
