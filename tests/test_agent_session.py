@@ -1317,9 +1317,10 @@ def _chat_pair(text: str) -> list[dict]:
 def test_n57_preset_resident_with_restricted_literal_keeps_sending(root: Path, episode: Path, egress_env: list[dict]) -> None:
     """N57：常驻层在会话外预置（protocol.py / cli.py 的做法），`_assemble` 不再 trust 常驻三件；
     常驻文档含受限字面量时首轮照常发出——这一路只靠可信集 (b) 收常驻三件（杀 D30-C 的 V4）。"""
-    from pipeline.agent.assembly import assemble_resident_prompt
+    from pipeline.agent.assembly import assemble_resident_prompt, resident_paths
 
-    agents = root / "AGENTS.md"
+    # 常驻第三份按配置取（D92 起是 production.md，不再是仓库 AGENTS.md）
+    agents = root / resident_paths("creative", root=root)["agents"]
     agents.write_text(agents.read_text(encoding="utf-8") + f"\n- 配音清单在 `{_HIT}`。\n", encoding="utf-8")
     tracker = SessionContextTracker()
     tracker.resident_prompt = assemble_resident_prompt("creative", root=root).content

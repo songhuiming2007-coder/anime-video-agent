@@ -40,33 +40,33 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 写完之后自查一遍：**每条 `why` 是不是都在回答「现有池子里缺什么、这条怎么补上」？**
 答不上来的那条要么删掉，要么说明你还没查到它值得下的理由。
 
-## 二、衔接顺序（全程你跑，人只批卡）
+## 二、衔接顺序（全程你跑，人只拍板）
 
-**人不在终端敲任何命令**（2026-10-09 D59）。下面每一步都是你经 `run_pipeline` 发的命令：只读的免卡，
-写盘的弹卡，人在卡上批或驳。
+**人不在终端敲任何命令**（2026-10-09 D59）。下面每一步都是你经 `run_pipeline` 发的命令。ADR-0030 起它们都不弹卡
+（只有 `--waive` 豁免门禁会弹），所以**有副作用的先在对话里问人、人同意再发**（director.md 第 2 条）。
 
-1. **检索 → 提议**：写好候选，调 `acquire_propose`（一张卡审整批）。批准后内核逐条弹「素材抓取」卡，
-   人逐条批或驳（可挑着收）。素材量大的期也可以走 `acquire fetch 1,3,5` / `acquire fetch all`
-   （经 run_pipeline 一张卡批全批，候选细节人已经在提议卡上看过）；**不许绕开卡自己抓**。
-   抓大文件（>2GB）在提议的 `why` 里先写明体积。
-1.5 **探针预检（弹卡，2026-10-10 增）**：提议获批后先 `acquire probe all`——只解析不下载，死链、
-   要登录的、画质/时长对不上的在抓取前就曝光，失败条目换源重提，别拿废 URL 去撞抓取卡。
+1. **检索 → 列给人 → 提议**：写好候选，先在对话里列给人（链接、补哪段、为什么；大文件 >2GB 写明体积），
+   人同意（可挑着收）再调 `acquire_propose`——**它一调用就登记并直接下载本次的候选**，不再逐条出卡。
+   素材量大的期也可以先只登记、再 `acquire fetch 1,3,5` / `acquire fetch all` 抓（同样先问）。
+   **不许绕开 acquire 自己下载**（不用 bash 跑 curl / yt-dlp）。
+1.5 **探针预检（2026-10-10 增）**：心里没底的源先 `acquire probe all`——只解析不下载，死链、
+   要登录的、画质/时长对不上的在抓取前就曝光，失败条目换源重提，别拿废 URL 去抓。
    报「疑似需要登录态」的站：让人用 `browser` 工具登录一次（headed，profile 独立持久化），把该域加进
    `config/agent/web.json` 的 `browser.cookies_for`，之后 fetch/probe 会自动挂 `--cookies-from-browser`
    （ava 不碰 cookie 本体，profile 交给 yt-dlp 自己读）。
-2. **门禁（免卡）**：抓完立刻跑 `acquire gate <文件>`，把判据表原样给人看。
-3. **登记（弹卡）**：gate 没有 FAIL 才提议 `acquire register <文件> --pool <池>`。
-   - 不给 `--as`：自动取池里最后一个号 +1，卡上的命令里会写出算好的号；要指定就写 `--as SPnn`。
+2. **门禁**：抓完立刻跑 `acquire gate <文件>`，把判据表原样给人看。
+3. **登记**：gate 没有 FAIL 才提议 `acquire register <文件> --pool <池>`。
+   - 不给 `--as`：自动取池里最后一个号 +1，输出里会写出算好的号；要指定就写 `--as SPnn`。
    - **扫图直接登记**：register 遇到图片自动按 `01-assets-video.md` 铁律三转 12 s 微动视频
      （1920×1080 / yuv420p / 23.976 fps / `-an`，四样锁死），原图留在 `incoming/`。
    - **期内补料**：`acquire register <文件> --to-patch <期目录>` 把文件挪进本期 `patch_assets/`
      （不进 `sources.json`），接着跑 `ingest_patch`（见 runbook 04.5）。写稿期只为写锚点就加 `--anchor-only`
      （只切镜头登记，不打标、不碰云端）。**一次性的图（生活照、本期图表）走补丁池；别的期也会用的走番池。**
    - gate FAIL 但人坚持要收：`--waive "<理由>"`（卡上标 `[门禁豁免]`，理由写进登记输出）。不许自己决定豁免。
-4. **入库后切镜头**：`shots calibrate <文件>`（弹卡）→ 把密度表给人，人拍板阈值 →
-   `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`（都弹卡）。
-5. **要重抓**：`acquire forget <候选号>`（弹卡）把那条从抓取台账 `incoming/fetched.json` 移走（留痕进
-   `incoming/forgotten.json`，没登记的下载文件挪进 `incoming/attic/`，不删），再走抓取卡。已登记的拒。
+4. **入库后切镜头**：`shots calibrate <文件>` → 把密度表给人，人拍板阈值 →
+   `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`。
+5. **要重抓**：`acquire forget <候选号>`（先问人）把那条从抓取台账 `incoming/fetched.json` 移走（留痕进
+   `incoming/forgotten.json`，没登记的下载文件挪进 `incoming/attic/`，不删），再重新提议。已登记的拒。
 6. **备选源**：候选可带 `also: [备选URL...]`（2026-10-10 增）——主源死了自动顺次换源，台账记实际命中的
    URL。老物（niconico 初投稿这类）提案时就该多源。
 

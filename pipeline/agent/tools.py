@@ -765,7 +765,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "写入当期稿件文件（白名单见 filename）。写 01-topic.md 必须 confirmed=true 且需人显式确认。"
             "02-script.md 还不存在时写 02-script.draft.md；02-script.md 存在后只改 02-script.md（草稿冻结），"
-            "每次写都会弹卡给人看 diff。改已有文件的一两段时用 edits 只传改动的片段，不要整篇重写。"
+            "不弹卡，写前旧版自动留底；写之前先问人（人已说清怎么改的直接写）。改已有文件的一两段时用 edits 只传改动的片段，不要整篇重写。"
         ),
         "parameters": {
             "type": "object",
@@ -826,10 +826,12 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "adr": "ADR-0018",
         "description": (
             "校验白名单内的 pipeline 子命令（如 tts --redo 2,4,5，段号逗号分隔）并返回规范化 argv。"
-            "**校验通过后弹审批卡片，人类按 y 即在本对话回路内真执行**，"
+            "**校验通过即在本对话回路内真执行，大多不弹卡**（ADR-0030）：有副作用的命令先在对话里问人、人同意再调，"
+            "人已明确说了要跑的直接调；只有云端计费（cloud up/run/down 等）、写 config/ 的三条例外"
+            "（corrections global、calibration set、bgm register）、越过人工关卡的选项、tickets open、assemble 会弹审批卡。"
             "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
-            "只读命令免卡：check_script、status、corrections check、"
+            "只读命令：check_script、status、corrections check、"
             "vindex who <番> <集> --start mm:ss --end mm:ss（列该时段画面里已识别的角色；没列出不等于不在场）。"
         ),
         "parameters": {
@@ -945,11 +947,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "acquire_propose": {
         "name": "acquire_propose",
         "adr": "ADR-0021",
-        # 不标 side_effect：fail-closed 默认 True（cli.py:_default_approve），每次调用必过人审卡
+        # 不标 side_effect：fail-closed 默认 True（cli.py:_default_approve）；ADR-0030 起只读与多数工序免卡，见 session.review_tool_call
         "description": (
             "把素材候选追加到 data/library/incoming/candidates.json（人审用提案清单，"
-            "追加式、同 URL 自动跳过）。只写提案，绝不抓取——fetch 永远由人逐条批准后 "
-            "走 pipeline.acquire。每条必须含 title/url/type/source/why；"
+            "追加式、同 URL 自动跳过），**并立即抓取本次提交的候选**（ADR-0030 起不再逐条出卡，走 pipeline.acquire）。"
+            "所以调用前先在对话里把候选（链接、补哪段、为什么）列给人，人同意再调。每条必须含 title/url/type/source/why；"
             "why 要写清补哪个缺口、凭什么认为是它（skill: acquire-assets §一）。"
         ),
         "parameters": {
@@ -957,7 +959,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "properties": {
                 "candidates": {
                     "type": "array",
-                    "description": "一批候选（一次调用一张审批卡审整批）",
+                    "description": "一批候选（一次调用整批登记并抓取）",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1004,7 +1006,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "adr": "ADR-0021",
         "requires_extra": "playwright",
         "description": (
-            "登录态浏览器（升级链第三级，每次调用过人审卡，每次启动落审批事件）。"
+            "登录态浏览器（升级链第三级；ADR-0030 起不弹卡，每次启动落审批事件）。"
             "action 仅支持 navigate / extract_text；profile 独立持久化、路径由配置钉死。"
             "仅在 crawl 也不够或必须登录态时使用，reason 必填。"
         ),
@@ -1025,7 +1027,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "adr": "ADR-0023",
         "description": (
             "跨期记忆 data/library/memory.md 的唯一受控写入口。条目 = 模式 + 证据期 + 适用边界，"
-            "写经验不写规则、不写流水账。op=add/revise/merge/retire 弹人审卡，人看全文按 y 才落盘；"
+            "写经验不写规则、不写流水账。op=add/revise/merge/retire 不弹卡（ADR-0030），写前先把全文给人看、人同意再写；"
             "op=cite 把当期记为某条的证据（免卡）。禁用「可能」类措辞、规则强度词与审批行为词。"
             "全文 4000 字符预算，超限被拒时按返回的腾位候选序先 merge 或 retire 首位。"
             "卷会话 / 企划会话里 target=project 写本企划的企划记忆（<企划>/00-memory.md，3000 字符，"
@@ -1056,7 +1058,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "把标题文字确定性叠到 07-cover/ 下的一张源图上，产出候选 07-cover/edit-*.png。"
             "**只产候选、定稿权在人**：本工具不排名、不推荐，也不存在任何「定稿/选最终版」动作，"
             "唯一写入点是人自己的 09 ack。不同缩放/裁剪/滤镜/多图合成；同参数同字节，"
-            "output 目标已存在则拒收（换名迭代 edit-1、edit-2…）。每次调用弹人审卡。"
+            "output 目标已存在则拒收（换名迭代 edit-1、edit-2…）。不弹卡：写什么字先和人商量定，字定了直接出图——不先贴参数表问「如果认可我来渲染」，人说了放哪、多大就直接渲染。"
             "渲染后先用 view_image 看一眼（挡没挡脸、字在手机上看不看得清），再把结果交给人。"
         ),
         "parameters": {
@@ -1110,10 +1112,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "`python` 就是项目解释器（已带 pipeline 依赖）。查写法先读 skills/ 与 docs/runbook/，别靠猜函数名翻源码。"
             "stdin 为空，stdout / stderr 各回传尾部 16 KB，输出里的已知密钥值会被替换为 [已脱敏]。"
             "用于白名单之外的文件与媒体操作：把期目录外的文件拷进来、改名、ffmpeg / sips 裁图转码、查看文件。"
-            "**每次执行都弹卡给人看命令原文**；不要叫人去终端敲命令。"
+            "**多数命令直接执行、不弹卡**，只在删除、写 pipeline/ 或 config/、git 改历史、碰停机点解封物这类硬危险时弹卡；"
+            "有副作用的先在对话里问人。不要叫人去终端敲命令。"
             "流水线工序（tts / clips / render / check_script…）仍走 run_pipeline。"
-            "遵守 AGENTS.md Code Freeze：不改 pipeline/ 源码与 config/，"
-            "不写停机点解封物（02-diff.patch、04-clips.approved.json、封面定稿）——批准只能由人做。"
+            "遵守做片期代码只读（production.md）：不改 pipeline/ 源码与 config/，"
+            "不写停机点解封物（02-diff.patch、04-clips.approved.json）；顶层定稿封面只在人点名用哪一版之后才转——批准只能由人做。"
         ),
         "parameters": {
             "type": "object",
@@ -1124,7 +1127,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 },
                 "description": {
                     "type": "string",
-                    "description": "一句话说明这条命令要做什么（上审批卡给人看）",
+                    "description": "一句话说明这条命令要做什么（回显给人看；弹卡时印在卡上）",
                 },
             },
             "required": ["command", "description"],

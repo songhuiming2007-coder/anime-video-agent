@@ -3,7 +3,7 @@
 根据定稿脚本进行增量语音合成，确定各段真实物理时长。
 
 ## 执行
-agent 经 `run_pipeline` 跑 `tts`（弹卡，期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，每张都是计费卡；跑完提议 `cloud down`。
+agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡；跑完提议 `cloud down`（也弹卡）。
 
 底层排查参考：`python -m pipeline.tts data/episodes/<期号>`；云端 `python -m pipeline.cloud push|run|pull …`。
 
@@ -18,7 +18,7 @@ agent 经 `run_pipeline` 跑 `tts`（弹卡，期目录自动补上）。云端�
 ## 核心规程与铁律
 1. **配音只有首次是全量，后续改动一律增量**：
    - 严禁擅自使用 `--force` 或 `--force-all` 全量重配洗掉已通过音频；
-   - 点名重配：录纠错（桌面端顺听面板、终端 `/voice`，或 agent 经人审卡 `corrections add`）→ `tts --apply-patch`；或 agent 跑 `tts --redo 2,4,5`（段号逗号分隔，弹卡）。
+   - 点名重配：录纠错（桌面端顺听面板、终端 `/voice`，或 agent 跑 `corrections add`）→ `tts --apply-patch`；或 agent 跑 `tts --redo 2,4,5`（段号逗号分隔）。重配哪几段先列给人定，人同意再跑。
 2. **多音字错音修正**：改读音表，不改稿、不动音色参考干声。三层表（全局 `config/voice.json` 的 `pinyin_injections` / `readings`，期级 `03-audio/corrections.json`）的分工与写法见 `03.5-voice-check.md`。
 3. **换引擎/改全局基准必须先报影响范围**：动全局参数前必须告知用户会有多少段作废，由人类拍板。
 4. **句内死寂判不合格**（D87）：每个合成单元裁掉首尾静音后，句内连续静音（50 ms 窗 RMS < -45 dB）达到 2.0 s 就判不过，换种子重试，而且不能走 ASR 盲区豁免。拆句段如果在基准种子下必出死寂，会整段统一改用第一遍试出来的替代种子（stderr 有 WARN，`seeds_used` 有记录）；替代种子也不过才报错，提示人去钉种子。

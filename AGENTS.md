@@ -19,6 +19,7 @@
 | `docs/dev/plans/` | 【开发态】可执行施工图索引 | 要动工改代码实现时 |
 | `docs/dev/adr/` | 【开发态】难以回头的架构决策与证据 | 动某块系统架构前先读对应 ADR |
 | `skills/write-script/` | 写稿指令：五种题材骨架与判据 | 第 02 步写稿时 |
+| `config/agent/scopes/production.md` | AVA（制片 agent）的做片常驻规则；**AVA 不加载本文件**（D92），改 AVA 的行为改那边与同目录的 director / scope 文件 | 改 AVA 行为时 |
 | `README.md` | 全流程介绍与快速上手 | 给不了解项目的人 |
 
 ## 一、定位

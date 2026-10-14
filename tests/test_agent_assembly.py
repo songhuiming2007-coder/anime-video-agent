@@ -117,10 +117,10 @@ def test_assemble_resident_prompt_structure():
     assert isinstance(resident, AssembledResident)
     assert resident.scope == "creative"
     assert resident.token_estimate > 0
-    # 必须包含 director 人格、scope 边界与 AGENTS.md 核心内容
+    # 必须包含 director 人格、scope 边界与做片常驻规则（D92 起第三份是 production.md，不再是仓库 AGENTS.md）
     assert "总监" in resident.content or "Director" in resident.content
     assert "Creative Scope" in resident.content or "创意" in resident.content
-    assert "AGENTS.md" in resident.content or "常驻规则" in resident.content
+    assert "# 做片常驻规则" in resident.content
 
     # 再次组装内容完全一致（字节级恒定）
     resident_2 = assemble_resident_prompt("creative")
