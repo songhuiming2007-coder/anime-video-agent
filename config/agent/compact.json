@@ -20,6 +20,26 @@
       "window": 1048576,
       "reliable_ratio": 1.0,
       "_source": "本机 agent.local.json 的 light 档（pipeline scope）。2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：超限请求返回 400「maximum number of tokens allowed 1048576」。reliable_ratio 同上。"
+    },
+    "kimi-k3": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "2026-10-14 经本机 CPA 代理（kimi OAuth 通道）实测：150 万字请求返回 400「exceeded model token limit: 1048576」；开头埋暗号 + 117 万字填充（prompt_tokens 995,806）照收、暗号答对——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+    },
+    "kimi-k3-256k": {
+      "window": 262144,
+      "reliable_ratio": 1.0,
+      "_source": "2026-10-14 经本机 CPA 代理（kimi OAuth 通道）实测：150 万字请求返回 400「exceeded k3-256k model token limit: 262144」；开头埋暗号 + 29 万字填充（prompt_tokens 252,980）照收、暗号答对——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+    },
+    "kimi-k2.8": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "2026-10-14 经本机 CPA 代理（kimi OAuth 通道）实测：150 万字请求返回 400「exceeded model token limit: 1048576」；开头埋暗号 + 117 万字填充（prompt_tokens 995,806）照收、暗号答对——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+    },
+    "gemini-3.5-flash-lite": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "2026-10-14 经本机 CPA 代理实测：200 万字请求返回 400「exceeds the maximum number of tokens allowed 1048576」；开头埋暗号 + 99 万字填充（prompt_tokens 985,183）照收、暗号答对——代理不截断。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
     }
   }
 }
