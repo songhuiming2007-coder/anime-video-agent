@@ -21,6 +21,7 @@ export function Composer({
   queued = [],
   returned = null,
   toolbar = null,
+  onSlash,
 }: {
   rpc: RpcClient;
   convKey: ConvKey;
@@ -32,10 +33,13 @@ export function Composer({
   returned?: { key: string; text: string } | null;
   /** D91：输入框下一行的左侧控件（模型 / 推理强度按钮，照 ZCode 工具栏）；由 App 传入 */
   toolbar?: ReactNode;
+  /** D91：裸 `/model`、`/thinking` 先交给它（展开工具栏下拉）；返回 true = 已接手、不发送。会话没起时返回 false，照常发给 core 打印列表 */
+  onSlash?: (cmd: "/model" | "/thinking") => boolean;
 }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const canSend = !disabled && value.trim() !== "";
+  const target = convKey === "idea" ? "选题会话" : convKey.startsWith("proj:") ? `企划会话 · ${convKey.slice(5)}` : convKey.slice(3);
   // 退回只回填一次：挂载时已存在的退回（切会话回来、重放历史）不再回填
   const seenReturn = useRef<string | null>(returned?.key ?? null);
   useEffect(() => {
@@ -70,6 +74,12 @@ export function Composer({
           // 否则 textarea 插进一个换行，随下一次发送带出（实测 '你好\n'）
           e.preventDefault();
           if (disabled || value.trim() === "") return;
+          const bare = value.trim();
+          if ((bare === "/model" || bare === "/thinking") && onSlash?.(bare)) {
+            setValue("");
+            setError(null);
+            return;
+          }
           const text = value;
           setValue("");
           setError(null);
@@ -80,8 +90,8 @@ export function Composer({
         }}
       />
       <div className="composer-row">
-        <span className="muted" data-testid="composer-target">
-          {convKey === "idea" ? "选题会话" : convKey.startsWith("proj:") ? `企划会话 · ${convKey.slice(5)}` : convKey.slice(3)}
+        <span className="muted composer-target" data-testid="composer-target" title={target}>
+          {target}
         </span>
         {toolbar}
         <span className="spacer" />

@@ -418,8 +418,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 }
 
 /* D91：输入框工具栏的模型 / 推理按钮（照 ZCode V4ComposerToolbar：常驻显示、点开下拉、当前项打勾）。浮层向上展开：输入框贴着窗口底边 */
-.model-controls { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.model-ctl { position: relative; min-width: 0; }
+.composer-target { flex: 0 1000 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 收缩顺序：会话名（.composer-target，flex-shrink 1000）先缩到 2em，再缩模型名（省略号，全名在悬停提示）；推理按钮不缩 */
+.model-controls { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px; }
+.model-ctl { position: relative; flex: none; }
+.model-ctl--model { flex: 0 1 auto; min-width: 0; display: flex; }
+.model-ctl--model .model-ctl-btn { min-width: 0; overflow: hidden; }
+.model-ctl-btn > svg { flex: none; }
 .model-ctl-btn { gap: var(--space-1); max-width: 280px; color: var(--fg-muted); }
 .model-ctl-btn[data-source="session"] { color: var(--fg); }
 .model-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); }

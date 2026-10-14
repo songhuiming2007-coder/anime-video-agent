@@ -22,7 +22,7 @@ import { CoverImport } from "./CoverImport";
 import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
-import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes } from "./SessionHeader";
+import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
 import { Icon, type IconName } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
@@ -93,6 +93,7 @@ function Main() {
   const [showIdea, setShowIdea] = useState(true);
   /** 刚建好的期：对话区首行本地提示（不是消息，H-8） */
   const [justCreated, setJustCreated] = useState<CreatedEpisode | null>(null);
+  const [modelOpenReq, setModelOpenReq] = useState<ModelOpenReq | null>(null); // D91：输入框裸 /model、/thinking → 展开工具栏下拉
   /** Spec 18 §3.3 ④：选题讨论刚被带进哪一期（选题视图在新会话起来之前显示「已带入 <期名>」） */
   const [ideaCarriedTo, setIdeaCarriedTo] = useState<string | null>(null);
   const [active, setActive] = useState<string | null>(null);
@@ -503,7 +504,12 @@ function Main() {
               turnId={conv?.turnId ?? null}
               queued={folded.queued}
               returned={folded.returned}
-              toolbar={<ModelControls rpc={rpc} convKey={convKey} phase={conv?.phase ?? "none"} info={modelInfo(conv?.entries ?? [])} />}
+              toolbar={<ModelControls rpc={rpc} convKey={convKey} phase={conv?.phase ?? "none"} info={modelInfo(conv?.entries ?? [])} openReq={modelOpenReq} />}
+              onSlash={(cmd) => {
+                if (conv?.phase !== "idle") return false; // 没起会话 / 回合在跑：照常发，由 core 回列表或 E_BUSY
+                setModelOpenReq((r) => ({ which: cmd === "/model" ? "model" : "effort", n: (r?.n ?? 0) + 1 }));
+                return true;
+              }}
               disabled={health?.reach !== "ok"}
               placeholder={convKey === "idea" ? "描述本期想做什么（Enter 发送，Shift+Enter 换行）" : convKey.startsWith("proj:") ? "和 ava 定总纲与卷表、跨卷审查、总装（Enter 发送，Shift+Enter 换行）" : "告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"}
             />

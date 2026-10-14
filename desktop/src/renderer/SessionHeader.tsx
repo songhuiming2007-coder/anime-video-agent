@@ -242,7 +242,10 @@ function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivEl
  * 输入框工具栏上的两个按钮：模型（点开列出代理的模型）、推理强度（点开选档位）。只改本会话。
  * 会话还没起（还没发过消息）时显示「—」并提示：先发一条消息，或直接发 /model。回合在跑时置灰。
  */
-export function ModelControls({ rpc, convKey, phase, info }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null }) {
+/** 输入框发裸 `/model`、`/thinking` 时由 App 递进来：n 每次加一，展开对应下拉（只展开、不切换——切换仍要点一行） */
+export type ModelOpenReq = { which: "model" | "effort"; n: number };
+
+export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null; openReq?: ModelOpenReq | null }) {
   const live = phase === "idle" || phase === "running";
   const busy = phase === "running" || phase === "starting" || phase === "ending";
   const [modelOpen, setModelOpen, modelRef] = usePopover();
@@ -255,6 +258,26 @@ export function ModelControls({ rpc, convKey, phase, info }: { rpc: RpcClient; c
     setModelOpen(false);
     setEffortOpen(false);
   }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 取列表走纯读的 conv.models（不在点击纪律内：它不改任何设置）
+  const openModel = () => {
+    setEffortOpen(false);
+    setModelOpen(true);
+    void rpc.call<{ ok?: boolean; text?: string; items?: string[] }>("conv.models", { convKey }).then(
+      (res) => {
+        setModels(res.ok ? res.items ?? [] : []);
+        setErr(res.ok ? null : res.text ?? "取模型列表失败");
+      },
+      (e2) => setErr(String((e2 as Error).message ?? e2)),
+    );
+  };
+  useEffect(() => {
+    if (!openReq || !live || busy) return;
+    if (openReq.which === "model") openModel();
+    else {
+      setModelOpen(false);
+      setEffortOpen(true);
+    }
+  }, [openReq?.n]); // eslint-disable-line react-hooks/exhaustive-deps
   const hint = busy ? "回合结束后可切换" : !live ? "会话开始后可切换（先发一条消息，或直接发 /model）" : undefined;
   const after = (r: unknown) => {
     const res = r as { ok?: boolean; text?: string } | null;
@@ -263,30 +286,18 @@ export function ModelControls({ rpc, convKey, phase, info }: { rpc: RpcClient; c
   };
   return (
     <div className="model-controls" data-testid="model-controls">
-      <div className="model-ctl" ref={modelRef}>
+      <div className="model-ctl model-ctl--model" ref={modelRef}>
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
           data-testid="model-btn"
           data-source={info?.modelSource ?? ""}
           aria-expanded={modelOpen}
           disabled={!live || busy}
-          title={hint ?? (info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）")}
+          title={hint ?? `${info?.model ?? ""} · ${info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"}`}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
-            if (modelOpen) {
-              setModelOpen(false);
-              return;
-            }
-            setEffortOpen(false);
-            setModelOpen(true);
-            void rpc.call("conv.command", { convKey, name: "models" }).then(
-              (r) => {
-                const res = r as { ok?: boolean; text?: string; items?: string[] };
-                setModels(res.ok ? res.items ?? [] : []);
-                setErr(res.ok ? null : res.text ?? "取模型列表失败");
-              },
-              (e2) => setErr(String((e2 as Error).message ?? e2)),
-            );
+            if (modelOpen) setModelOpen(false);
+            else openModel();
           }}
         >
           <Icon name="chip" size="sm" />

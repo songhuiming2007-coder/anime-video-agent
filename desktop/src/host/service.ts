@@ -642,6 +642,8 @@ export class HostService {
         return this.sessions.answer(p.convKey as ConvKey, p.requestId, p.decision, p.feedback ?? null);
       case "conv.command":
         return this.sessions.command(p.convKey as ConvKey, p.name as CommandName, typeof p.arg === "string" ? p.arg : null);
+      case "conv.models":
+        return this.sessions.command(p.convKey as ConvKey, "models", null);
       case "conv.end":
         return this.sessions.end(p.convKey as ConvKey);
       case "conv.snapshot":
