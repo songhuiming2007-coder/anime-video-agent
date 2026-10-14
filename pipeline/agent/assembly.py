@@ -40,7 +40,7 @@ class InjectedDoc:
 @dataclass(frozen=True)
 class AssembledResident:
     scope: str
-    content: str  # director.md + scope.md + AGENTS.md 瘦身版
+    content: str  # director.md + scope.md + production.md（做片常驻规则；D92 起不再载入仓库 AGENTS.md）
     token_estimate: int
     # 三份文件各自读入后的 (配置路径, strip 原文)，scope 取拼 extra_prompt **之前**的那份；
     # 缺失文件的占位标题不在其中（Spec 16 §5.2.1：出网断言可信集的常驻层来源）
@@ -251,7 +251,9 @@ def assemble_resident_prompt(
     root: Path | None = None,
     extra_prompt: str = "",
 ) -> AssembledResident:
-    """组装常驻层：director.md + scope.md + AGENTS.md 瘦身版。
+    """组装常驻层：director.md + scope.md + production.md。
+
+    第三份的配置键沿用 `agents`（兼容旧配置）；D92 起指向做片常驻规则，仓库 `AGENTS.md` 留给 coding agent。
 
     会话内字节级恒定，任何修改都会破坏 Prompt Cache。
     """
@@ -278,7 +280,7 @@ def assemble_resident_prompt(
     if extra_prompt:
         scope_text = f"{scope_text}\n\n{extra_prompt}"
 
-    # 3. AGENTS.md
+    # 3. 做片常驻规则（配置键 agents，D92）
     agents_p = base_root / resident_map["agents"]
     if agents_p.exists() and _readable_doc(base_root, resident_map["agents"], agents_p):
         agents_text = read_resident_file(agents_p)
@@ -326,7 +328,7 @@ def resident_paths(
     resident_map = {
         "director": "config/agent/scopes/director.md",
         "scope": f"config/agent/scopes/{scope}.md",
-        "agents": "AGENTS.md",
+        "agents": "config/agent/scopes/production.md",
     }
     if cfg_file.exists():
         try:

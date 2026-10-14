@@ -7,7 +7,7 @@
   "resident": {
     "director": "config/agent/scopes/director.md",
     "scope": "config/agent/scopes/{scope}.md",
-    "agents": "AGENTS.md"
+    "agents": "config/agent/scopes/production.md"
   },
   "routes": {
     "_base": {

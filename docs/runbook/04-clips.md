@@ -3,7 +3,7 @@
 依据配音的真实物理时长，进行三通道素材匹配与全局贪心分派。
 
 ## 执行
-agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底层排查参考：`python -m pipeline.clips data/episodes/<期号>`。
+agent 经 `run_pipeline` 跑 `clips`（期目录自动补上）。底层排查参考：`python -m pipeline.clips data/episodes/<期号>`。
 
 ## 产物与位置
 - `data/episodes/<期号>/04-clips.json`（片段计划）
@@ -20,17 +20,17 @@ agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底�
 
 ## 04.5 临时补料挂起与恢复流程
 
-排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，不必中断全番或重走 Phase 0：走期内临时补料通道。**全程 agent 跑，人只批卡、只做取舍**（2026-10-09 D59；以下命令都是 agent 经 `run_pipeline` 发的，期目录自动补上）：
+排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，不必中断全番或重走 Phase 0：走期内临时补料通道。**全程 agent 跑，人只做取舍**（2026-10-09 D59；以下命令都是 agent 经 `run_pipeline` 发的，期目录自动补上；都不弹卡，有副作用的先问人）：
 
-1. **看缺口**：`scout`（弹卡，写 `scout-ticket-patch.md`）列出可救的段和缺什么画面。不可救的段（锚点重叠、缺口太短）按它给的指引改稿。
-2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、调 `acquire_propose`。人在提议卡和逐条抓取卡上批。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
-3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>`（弹卡）挪进本期 `patch_assets/`。图片照收，下一步会自动转成 12 s 微动视频（1.0→1.15 匀速缓推到末帧，原图保留）。
-4. **轻量增量入库**：`ingest_patch`（弹卡）。
+1. **看缺口**：`scout`（写 `scout-ticket-patch.md`）列出可救的段和缺什么画面。不可救的段（锚点重叠、缺口太短）按它给的指引改稿。
+2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、把候选列给人，人同意再调 `acquire_propose`（一调用就直接下载，不出卡）。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
+3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>` 挪进本期 `patch_assets/`。图片照收，下一步会自动转成 12 s 微动视频（1.0→1.15 匀速缓推到末帧，原图保留）。
+4. **轻量增量入库**：`ingest_patch`。
    - **只为写锚点**（写稿期补图、人指定镜头）：`ingest_patch --anchor-only`——切镜头、抽帧、登记就停，资产标 `indexed: false`，不打标、不碰云端、不要 `--floor`。这些资产只能被锚点引用，rescue-A/B 搜不到它们（clips 会打印提示）；要让救援也能用，不带旗标重跑一次，编号不变。
    - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号 `SP01…SP99`；
    - 秒级切镜头、抽帧、密集意象打标（云端 VLM，实例没开时 agent 先提议 `cloud up`，计费卡）与向量化，产物写入当期 `04-patch/`，不污染全局 `data/library/`；
-   - 补丁池损坏或半建：`ingest_patch --reset`（弹卡），旧 `04-patch/` 挪进 `04-patch.attic/<时间>/` 后重建，不删。
-5. **重新排片与自动救援**：`clips`（弹卡）。
+   - 补丁池损坏或半建：`ingest_patch --reset`，旧 `04-patch/` 挪进 `04-patch.attic/<时间>/` 后重建，不删。
+5. **重新排片与自动救援**：`clips`。
    - clips 自动检测并加载当期补丁池；
    - **rescue-A（检索失败救援）**：主池检索落空的段落，以「场景 > 查询 > 配音原文」自动在补丁池中进行意象检索补位；
    - **rescue-B（分派失败救援）**：对 `no_source` 段落重置并在补丁池中重新分配；对 `short` 段落保留已选主池高质量片段，仅在尾部用补丁镜头安全拼接延长，绝不暴力抹除主池结果。
@@ -39,9 +39,9 @@ agent 经 `run_pipeline` 跑 `clips`（弹卡，期目录自动补上）。底�
 
 当人审片（`04-review.html`）想精确指定补丁池里的某个镜头时，走「出画廊 → 人指镜头 → agent 改稿 → 重跑」的闭环：
 
-1. **出补丁画廊**：agent 跑 `shots gallery --patch <期目录> SPxx`（弹卡），产物 `04-patch/shots/<池名>_SPxx_gallery.html`，在桌面端预览区打开。画廊在期目录下，预览区不放行脚本，「复制锚点」按钮点不了——人直接告诉 agent「用 #12」或报时间码即可。
-2. **agent 写补丁锚点**：在 `02-script.md` 里写 `锚点: <池名> SPxx mm:ss`（写稿卡带 diff，人批），示例：`锚点: EGOIST--patch SP03 1:20`。池名以 `04-patch/pool.json` 的 `pool` 字段为准（期目录「EGOIST-三期」净化后含双横线 `EGOIST--patch`；不带方括号，B2）。
-3. **改稿校验与重排**：agent 跑 `check_script`（免卡）→ `clips`（弹卡）。
+1. **出补丁画廊**：agent 跑 `shots gallery --patch <期目录> SPxx`，产物 `04-patch/shots/<池名>_SPxx_gallery.html`，在桌面端预览区打开。画廊在期目录下，预览区不放行脚本，「复制锚点」按钮点不了——人直接告诉 agent「用 #12」或报时间码即可。
+2. **agent 写补丁锚点**：在 `02-script.md` 里写 `锚点: <池名> SPxx mm:ss`（写前留底），示例：`锚点: EGOIST--patch SP03 1:20`。池名以 `04-patch/pool.json` 的 `pool` 字段为准（期目录「EGOIST-三期」净化后含双横线 `EGOIST--patch`；不带方括号，B2）。
+3. **改稿校验与重排**：agent 跑 `check_script` → `clips`。
    - `compute_script_vo_hash` 只提取 `配音：` 行（B6），改画面行（`锚点:` / `查询:` / `场景:`）不改配音哈希，已合成音频免重跑；
    - 与 `03-audio/corrections.json` 互不干扰，不用 `--apply-patch` 重配；
    - 重跑 clips 后补丁锚点直接生效。
