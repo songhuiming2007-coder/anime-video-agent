@@ -86,7 +86,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/patch` | pipeline | 生成临时补料派工单 | `/scout --type patch` 别名（缺料段派工） |
 | `/memory` | 全阶段 | 跨期记忆：`show`（默认）/ `check` / `ack` / `digest` | 查看记忆全文；外部改动后 ack 对齐；聚合驳回反馈提议新条目 |
 | `/compact` | 全阶段 | 手动压缩当前会话上下文 | 长会话泄压，保留尾部预算与关键决策，读数带分母 |
-| `/model` | 全阶段 | 看 / 切换**本会话**模型：`/model`、`/model <名>`、`/model default` | 只影响当前会话（按会话记住，重开还在）；新会话仍用 `agent.local.json` 的默认。桌面端输入框下方的模型按钮同一条路 |
+| `/model` | 全阶段 | 看 / 切换**本会话**模型：`/model`、`/model <名>`、`/model default` | 只影响当前会话（按会话记住，重开还在）；新会话仍用 `agent.local.json` 的默认。桌面端输入框下方的模型按钮同一条路；桌面端发裸 `/model` 直接展开模型下拉（`/thinking` 同理），点一行才切换 |
 | `/thinking` | 全阶段 | 看 / 切换本会话推理强度：`/thinking <none\|minimal\|low\|medium\|high\|xhigh\|auto>`、`/thinking default` | 请求带 `reasoning_effort`；`default` = 不发，由模型自定。桌面端输入框下方的推理按钮同一条路 |
 | `/help` | 全阶段 | 查看命令列表 | 随时查看帮助提示 |
 | `/quit` `/exit` | 全阶段 | 退出 ava 交互终端 | 进度 100% 依赖落盘文件，随时安全退出 |

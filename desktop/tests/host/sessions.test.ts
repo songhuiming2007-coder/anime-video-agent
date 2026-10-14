@@ -967,6 +967,16 @@ describe("D91 模型 / 推理命令", () => {
     await expect(b.svc.dispatch("conv.command", { convKey: b.key, name: "model", arg: " " })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
     await expect(b.svc.dispatch("conv.command", { convKey: b.key, name: "models", arg: "x" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
   });
+  it("conv.models（纯读，供输入框 /model 展开下拉）= models 命令帧（arg: null）", async () => {
+    const b = await boot();
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_command: [{ t: "command_result", name: "models", ok: true, text: "1 个模型", items: ["kimi-k3"], rid: "$rid" }], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    const before = stdinLines(b.repo, b.epKey).length;
+    const r = (await b.svc.dispatch("conv.models", { convKey: b.key })) as { ok: boolean; items?: string[] };
+    expect(r).toMatchObject({ ok: true, items: ["kimi-k3"] });
+    const sent = JSON.parse(stdinLines(b.repo, b.epKey)[before]) as Record<string, unknown>;
+    expect([sent.t, sent.name, sent.arg]).toEqual(["command", "models", null]);
+  });
 });
 
 describe("TH-16 后台常驻与徽标", () => {

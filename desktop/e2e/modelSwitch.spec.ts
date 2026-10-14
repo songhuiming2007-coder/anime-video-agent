@@ -1,5 +1,6 @@
 // D91：输入框工具栏的模型 / 推理按钮（照 ZCode），真实 core + 本地假 LLM。
-// 断言：按钮跟着 model_config 帧变；切换只影响本会话下一轮请求；回合在跑时置灰；对话框 /model 同一条路。
+// 断言：按钮跟着 model_config 帧变；切换只影响本会话下一轮请求；回合在跑时置灰；对话框 /model 同一条路；
+// 裸 /model、/thinking 展开下拉；长会话名 + 窄窗时按钮不被挤没。
 // 设 AVA_SHOTS=<目录> 时另截真实窗口图（浅色 / 深色：空闲、模型下拉、推理下拉、回合进行中）给人看样子。
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -96,6 +97,72 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     await idle(page);
     expect(llm.requests.length).toBe(before);
     await shoot(page, "5-after-slash");
+
+    // 裸 /model、/thinking：展开对应下拉（不发送、不进模型），点一行才切换
+    await send(page, "/model");
+    await expect(page.getByTestId("model-pop")).toBeVisible();
+    await expect(page.getByTestId("composer-input")).toHaveValue("");
+    await expect(page.getByTestId("model-row")).toHaveCount(4);
+    await shoot(page, "6-slash-model");
+    await page.locator('[data-testid=model-row][data-model="kimi-k2.8"]').click();
+    await expect(page.getByTestId("model-label")).toHaveText("kimi-k2.8");
+    await send(page, "/thinking");
+    await expect(page.getByTestId("effort-pop")).toBeVisible();
+    await page.locator('[data-testid=effort-row][data-effort="high"]').click();
+    await expect(page.getByTestId("effort-label")).toHaveText("高");
+    await idle(page);
+    expect(llm.requests.length).toBe(before);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});
+
+test("D91 长会话名 + 窄窗：会话名截断，模型 / 推理按钮完整、不重叠", async () => {
+  test.setTimeout(120_000);
+  const LONG = "2026-10-13-伪恋-鹅诚士郎的束胸力学";
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, [LONG]);
+  const L = await launchSession(fx.repo);
+  const page = L.page;
+  try {
+    await page.setViewportSize({ width: 1000, height: 820 });
+    await page.locator("[data-testid=episode]", { hasText: LONG }).first().click();
+    llm.push(assistant("好。"));
+    await send(page, "你好");
+    await expect(page.getByTestId("model-label")).toHaveText("fake");
+    await idle(page);
+    await shoot(page, "7-long-name");
+    const box = async (id: string) => (await page.getByTestId(id).boundingBox())!;
+    const [target, model, effort, input] = [await box("composer-target"), await box("model-btn"), await box("effort-btn"), await box("composer-input")];
+    // 按钮按内容宽度完整显示（没被压扁）：按钮与标签都不溢出
+    for (const id of ["model-btn", "model-label", "effort-btn"]) {
+      expect(await page.getByTestId(id).evaluate((el) => el.scrollWidth <= el.clientWidth), id).toBe(true);
+    }
+    expect(target.x + target.width).toBeLessThanOrEqual(model.x + 0.5);
+    expect(model.x + model.width).toBeLessThanOrEqual(effort.x + 0.5);
+    expect(effort.x + effort.width).toBeLessThanOrEqual(input.x + input.width + 0.5);
+    // 会话名被截断（全名在悬停提示里）
+    await expect(page.getByTestId("composer-target")).toHaveAttribute("title", LONG);
+    expect(await page.getByTestId("composer-target").evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+    // 真实长模型名 + 更窄的栏：模型名先截断（全名在悬停提示），推理与发送按钮仍完整、都在输入框里
+    await page.getByTestId("model-btn").click();
+    await page.locator('[data-testid=model-row][data-model="gemini-3.8-flash-high"]').click();
+    await expect(page.getByTestId("model-label")).toHaveText("gemini-3.8-flash-high");
+    await page.setViewportSize({ width: 900, height: 820 }); // 对话栏约 300px，与人实际窗口相当
+    await page.waitForTimeout(200);
+    await shoot(page, "8-narrow-long-model");
+    await expect(page.getByTestId("model-btn")).toHaveAttribute("title", /^gemini-3\.8-flash-high · /);
+    const [m2, e2, send2, input2] = [await box("model-btn"), await box("effort-btn"), await box("composer-send"), await box("composer-input")];
+    expect(m2.x + m2.width).toBeLessThanOrEqual(e2.x + 0.5);
+    expect(e2.x + e2.width).toBeLessThanOrEqual(send2.x + 0.5);
+    expect(send2.x + send2.width).toBeLessThanOrEqual(input2.x + input2.width + 0.5);
+    for (const id of ["effort-btn", "composer-send"]) {
+      expect(await page.getByTestId(id).evaluate((el) => el.scrollWidth <= el.clientWidth), id).toBe(true);
+    }
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

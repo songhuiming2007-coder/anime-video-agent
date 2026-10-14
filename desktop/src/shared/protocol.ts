@@ -25,6 +25,7 @@ export type Method =
   | "conv.interrupt" // { convKey, turnId }：turnId 须等于 host 记录的当前回合，否则 E_STALE 且零写入
   | "conv.answer" // { convKey, requestId, decision, feedback? } → { decision }：§2.4 第 3、5 层
   | "conv.command" // { convKey, name, arg? }：name ∈ {memory_ack, scope, models, model, thinking}（D91：后三个切本会话模型 / 推理强度）
+  | "conv.models" // { convKey } → CommandResult（items = 代理模型列表）：纯读，不切换（D91：输入框发 /model 时展开下拉用；切换仍只走 conv.command 的点击纪律）
   | "conv.end" // { convKey } → { code, signal }：§2.10 结束序列
   | "conv.snapshot" // { convKey } → ConvSnapshot
   // ---- D45：会话管理（仅 ep:*；idea 是单一滚动段，E_BAD_REQUEST）----
@@ -107,6 +108,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   // feedback 的类型由 host 自行校验（checkParamKeys 对名为 feedback 的键跳过类型检查，§3.1 🔵-1）
   "conv.answer": { required: ["convKey", "requestId", "decision"], optional: ["feedback"] },
   "conv.command": { required: ["convKey", "name"], optional: ["arg"] },
+  "conv.models": { required: ["convKey"], optional: [] },
   "conv.end": { required: ["convKey"], optional: [] },
   "conv.snapshot": { required: ["convKey"], optional: [] },
   "conv.sessions": { required: ["convKey"], optional: [] },
