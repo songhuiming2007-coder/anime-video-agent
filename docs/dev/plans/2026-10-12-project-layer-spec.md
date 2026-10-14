@@ -105,6 +105,7 @@
 - **企划会话的期目录绑定**（红队 R-3）：`SessionHost.ep_dir` 与 `ToolContext.episode_dir` = 企划目录（租约、会话日志、审批流水、自动补位都要一个目录，沿用这一个字段）；另设 `ToolContext.session_kind = "project"` 与 `project_dir` = 同一目录。凡按 `episode_dir` 工作的工具在 `session_kind == "project"` 时逐个定口径，**不许落到默认分支**：
   - `write_episode_file`：只认 `00-project.md`，走 §4.4 的企划分支，不经 `resolve_episode_dir`（后者对企划目录一律拒）；
   - `cover_edit`、`acquire_propose`：拒，拒因「这是卷级操作，到卷 `<卷>` 的会话里做」（不拒的话封面与抓取提案会写进母目录）；
+    - **2026-10-14 修订（D95，经人同意）**：`acquire_propose` 改为放行，`run_pipeline` 在企划会话放行 `acquire`，只有 `register --to-patch` 仍拒。原拒因对抓取不成立：候选、下载、`--pool` 素材池都在全库共用的 `data/library/` 下，不写母目录；而真实流程「立项先预收集」时卷可能还没建。`cover_edit` 不变。见 [D95 施工图](2026-10-14-project-acquire-spec.md)。
   - `run_pipeline`：见上；`read_artifact`：§4.3；`write_memory`：§4.5；
   - 审查层与实现层各判一次（同 `NEEDS_EPISODE_TOOLS` 的双保险口径）。
 - 企划会话不处理停机点：不读 `_agent/approvals_store.json`（停机点状态的来源），每回合照 S9-R4 发**恰好一帧空的** `stop_points{items: []}`（与 idea 会话同口径；宿主 `sessions.ts` 靠这一帧结束回合收尾，不发会卡住排队消息）。`_agent/approvals.jsonl` 是审批流水（`log_approval_decision` 写），企划会话照写，不是停机点状态（红队 R-7 校正）。

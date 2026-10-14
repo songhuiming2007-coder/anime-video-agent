@@ -377,18 +377,95 @@ def test_review_本会话已批的同类卡不带绑定(world, monkeypatch: pyte
 # ---------------------------------------------------------------------------
 
 
+def _mv_candidate(title: str, url: str) -> dict:
+    return {"title": title, "url": url, "type": "mv", "source": "官方 YouTube 频道",
+            "why": "卷二要用的官方 MV 画面，画质有保障"}
+
+
 class TestProjectSessionTools:
-    def test_封面与抓取提案拒_母目录不被写(self, world) -> None:
+    def test_封面拒_母目录不被写(self, world) -> None:
         root, P, _Q, _E = world
         marker = time.time()
         time.sleep(0.01)
-        for name, args in (("cover_edit", {"action": "render"}), ("acquire_propose", {"candidates": [{"title": "x"}]})):
-            v = review(name, args, kind="project", ep=P, P=P, root=root)
-            assert v.action == "reject" and "卷级操作" in v.reason
-            out = execute_tool(name, args, proj_ctx(root, P, confirmed=True))
-            assert out["ok"] is False and "卷级操作" in out["error"]
+        name, args = "cover_edit", {"action": "render"}
+        v = review(name, args, kind="project", ep=P, P=P, root=root)
+        assert v.action == "reject" and "卷级操作" in v.reason
+        out = execute_tool(name, args, proj_ctx(root, P, confirmed=True))
+        assert out["ok"] is False and "卷级操作" in out["error"]
         newer = [p for p in P.rglob("*") if p.stat().st_mtime > marker]
         assert newer == []
+
+    # ---- D95：素材抓取在企划会话里放行（候选 / 下载 / 素材池全库共用），只有挪进某卷补丁池仍拒 ----
+
+    def test_D95_企划会话提候选_写进全库候选表_母目录不被写(self, world) -> None:
+        root, P, _Q, _E = world
+        args = {"candidates": [_mv_candidate("君の知らない物語", "https://www.youtube.com/watch?v=d95a")]}
+        v = review("acquire_propose", args, kind="project", ep=P, P=P, root=root)
+        assert v.action != "reject", v.reason
+        marker = time.time()
+        time.sleep(0.01)
+        out = execute_tool("acquire_propose", args, proj_ctx(root, P, confirmed=True))
+        assert out["ok"] is True, out
+        table = json.loads((root / "data" / "library" / "incoming" / "candidates.json").read_text(encoding="utf-8"))
+        assert [c["url"] for c in table] == ["https://www.youtube.com/watch?v=d95a"]
+        assert [p for p in P.rglob("*") if p.stat().st_mtime > marker] == []
+
+    @pytest.mark.parametrize("command", [
+        "acquire fetch 1", "acquire gate data/library/incoming/x.mp4",
+        "acquire register data/library/incoming/x.mp4 --pool 测试番", "acquire forget 1",
+        "acquire probe https://www.youtube.com/watch?v=d95a",
+    ])
+    def test_D95_企划会话放行acquire(self, world, command: str) -> None:
+        root, P, _Q, _E = world
+        v = review("run_pipeline", {"command": command}, kind="project", ep=P, P=P, root=root)
+        assert v.action != "reject", (command, v.reason)
+
+    @pytest.mark.parametrize("flag", ["--to-patch 01-a", "--to-p 01-a", "--t 01-a", "--to-patch=01-a"])
+    def test_D95_企划会话挪进卷补丁池仍拒(self, world, flag: str) -> None:
+        root, P, _Q, _E = world
+        command = f"acquire register data/library/incoming/x.mp4 {flag}"
+        v = review("run_pipeline", {"command": command}, kind="project", ep=P, P=P, root=root)
+        assert v.action == "reject" and "补丁池" in v.reason and "01-a" in v.reason and "02-b" in v.reason, v.reason
+        out = execute_tool("run_pipeline", {"command": command}, proj_ctx(root, P, confirmed=True))
+        assert out["ok"] is False and "补丁池" in out["error"]
+
+    def test_D95_卷会话与普通期挪进补丁池不受影响(self, world) -> None:
+        root, P, _Q, E = world
+        command = f"acquire register data/library/incoming/x.mp4 --to-patch {P / '01-a'}"
+        for kind, ep in (("volume", P / "01-a"), ("episode", E)):
+            v = review("run_pipeline", {"command": command}, kind=kind, ep=ep, P=P if kind == "volume" else None,
+                       root=root)
+            assert v.action != "reject", (kind, v.reason)
+
+    def test_D95_企划会话一回合内提候选并自动抓取(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
+        root, P, _Q, _E = world
+        from pipeline.agent import llm as llm_mod
+
+        url = "https://www.youtube.com/watch?v=d95b"
+        call = {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function", "function": {
+                "name": "acquire_propose",
+                "arguments": json.dumps({"candidates": [_mv_candidate("My Dearest", url)]}, ensure_ascii=False)}}]}
+        script = [call, {"role": "assistant", "content": "抓好了"}]
+        state = {"n": 0}
+
+        def scripted(messages, tools=None, **kw):
+            state["n"] += 1
+            return script[min(state["n"] - 1, len(script) - 1)]
+
+        monkeypatch.setattr(llm_mod, "chat_complete", scripted)
+        channel = FakeChannel()
+        sess = _session(root, P, channel)
+        fetched: list[int] = []
+        sess.host.fetch_executor = lambda no: (
+            fetched.append(no), {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": "OK"})[1]
+        messages: list[dict] = []
+        sess.run_turn("把 My Dearest 抓下来", messages=messages, scope="project", status=None,
+                      tracker=SessionContextTracker(), root=root)
+
+        assert fetched == [1]
+        tool_out = json.loads(next(m["content"] for m in messages if m.get("role") == "tool"))
+        assert tool_out["ok"] is True and tool_out["result"]["fetch"][0]["decision"] == "approved", tool_out
 
     def test_run_pipeline分流(self, world) -> None:
         root, P, _Q, _E = world

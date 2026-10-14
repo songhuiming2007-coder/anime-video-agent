@@ -127,6 +127,10 @@ PIPELINE_MODULES: set[str] = {
 # 外加不绑期目录的只读模块 subgrep 与 D82 的 tickets（PROJECT_SESSION_EXTRA；tickets 落地前白名单本就拒）
 PROJECT_PIPELINE_MODULES: frozenset[str] = frozenset({"assemble", "crosscheck"})
 PROJECT_SESSION_EXTRA: frozenset[str] = frozenset({"subgrep", "tickets"})
+# D95（2026-10-14，经人同意，修订 D81 §4.2）：素材抓取在企划会话里放行——候选（library/incoming/candidates.json）、
+# 下载（library/incoming/）、登记（--pool 进按番的素材池）都是全库共用，不写进母目录；真实流程「立项先预收集」时
+# 卷可能还没建。唯一写进某一期的 `register --to-patch` 仍拒（acquire_targets_volume）
+PROJECT_LIBRARY_MODULES: frozenset[str] = frozenset({"acquire"})
 # 只在企划会话里放行的模块（卷 / 普通期会话拒并指路）
 PROJECT_ONLY_MODULES: frozenset[str] = frozenset({"assemble"})
 
@@ -1649,6 +1653,17 @@ def crosscheck_writes(argv: list[str]) -> bool:
     return False
 
 
+def acquire_targets_volume(argv: list[str]) -> bool:
+    """规范化 argv 的 `acquire` 是否带 `--to-patch`（挪进某期补丁池）。acquire 的 argparse 认前缀缩写，`--t` 已唯一
+    指向它，所以前缀与 `=` 写法都算（register 的其余选项 --pool / --as / --waive 都不以 --t 开头）。"""
+    at = argv.index("-m") + 2 if "-m" in argv else len(argv)
+    for tok in argv[at:]:
+        flag = tok.split("=", 1)[0]
+        if len(flag) > 2 and flag.startswith("--") and "--to-patch".startswith(flag):
+            return True
+    return False
+
+
 def project_module_refusal(argv: list[str], session_kind: str, project_dir: Path | None) -> str | None:
     """D81 §4.2（人裁决 Q2）：企划会话的 run_pipeline 只放行企划级模块 + subgrep / tickets；
     企划级专属模块（assemble）只在企划会话里放行；卷会话只放行只读的 crosscheck（带 --write 拒）。
@@ -1662,6 +1677,14 @@ def project_module_refusal(argv: list[str], session_kind: str, project_dir: Path
     if session_kind == "project":
         if module in PROJECT_PIPELINE_MODULES or module in PROJECT_SESSION_EXTRA:
             return None
+        if module in PROJECT_LIBRARY_MODULES and not acquire_targets_volume(argv):
+            return None
+        if module in PROJECT_LIBRARY_MODULES:
+            from pipeline.project import project_members
+
+            vols = "、".join(m.name for m in project_members(project_dir)) if project_dir is not None else ""
+            return ("挪进某卷补丁池（register --to-patch）是卷级操作，到对应卷的会话里做"
+                    f"{f'（本企划的卷：{vols}）' if vols else ''}；抓取、gate、登记进素材池（--pool）在企划会话里照做")
         if module in ("status", "check_script"):
             return (f"企划会话不跑 {module}：它要一个期目录。看某一卷的进度用 read_status(episode=<卷名>)，"
                     "跑卷级检查到卷的会话里做")
@@ -1872,8 +1895,7 @@ def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
         # D43 / Spec 17 §3.4（人裁决 (A)）：idea 下提候选也报「先建期」——否则提案成功后
         # 内核会无条件弹抓取卡，而抓取卡执行器以 episode_dir=None 调 run_pipeline，自相矛盾。
         raise PermissionError(NO_EPISODE_MESSAGE)
-    if ctx.session_kind == "project":
-        raise PermissionError(PROJECT_VOLUME_ONLY_MESSAGE.format(tool="acquire_propose"))
+    # D95：企划会话放行——候选写进全库共用的 library/incoming/candidates.json，不写企划母目录
     from pipeline.candidates import propose_candidates
 
     raw = args.get("candidates")
@@ -2141,9 +2163,10 @@ NEEDS_EPISODE_TOOLS: frozenset[str] = frozenset(
     {"write_episode_file", "cover_edit", "run_pipeline", "acquire_propose", "view_image"}
 )
 NO_EPISODE_MESSAGE = "当前没有期目录：这一步要先建期（桌面端「＋ 新建一期」/ 终端 `ava new <名>`）"
-# D81 §4.2（红队 R-3）：企划会话的期目录绑定是企划目录，卷级操作不许落到默认分支写进母目录
-PROJECT_VOLUME_ONLY_TOOLS: frozenset[str] = frozenset({"cover_edit", "acquire_propose", "view_image"})
-PROJECT_VOLUME_ONLY_MESSAGE = "{tool} 是卷级操作，企划会话里不做：到对应卷的会话里做（封面与抓取提案不写进企划母目录）"
+# D81 §4.2（红队 R-3）：企划会话的期目录绑定是企划目录，卷级操作不许落到默认分支写进母目录。
+# D95：acquire_propose 移出（候选与素材全库共用，见 PROJECT_LIBRARY_MODULES）
+PROJECT_VOLUME_ONLY_TOOLS: frozenset[str] = frozenset({"cover_edit", "view_image"})
+PROJECT_VOLUME_ONLY_MESSAGE = "{tool} 是卷级操作，企划会话里不做：到对应卷的会话里做（封面与看图只认某一卷的期目录）"
 
 
 def execute_tool(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
