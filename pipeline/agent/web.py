@@ -1061,8 +1061,12 @@ def fetch_web(
     config: WebConfig | None = None,
     opener: Callable[..., Any] | None = None,
     root: Path | None = None,
+    keep_full: bool = False,
 ) -> dict[str, Any]:
     """单 URL 静态抓取净文（升级链第一级）。
+
+    `keep_full=True`（D99）：返回值多一个 `full_text`——脱敏后、截断前的全文，给抓取留档用；
+    调用方（tools 包装层）记完即 pop，不进 LLM。
 
     流程：load_web_config → assert_egress_boundary(url,
     {"url": _normalized_for_assert(url)}) → _guard_url(url) →
@@ -1115,6 +1119,7 @@ def fetch_web(
     extractor.feed(decoded)
     text = _redact_all(_scrub(extractor.get_text()), cfg.secret_values)
 
+    full_text = text
     truncated = False
     if len(text) > cfg.max_fetch_chars:
         text = text[: cfg.max_fetch_chars]
@@ -1149,4 +1154,5 @@ def fetch_web(
         "links_truncated": links_truncated,
         "images": images,
         "images_truncated": images_truncated,
+        **({"full_text": full_text} if keep_full else {}),
     }

@@ -727,6 +727,8 @@ class ToolContext:
     session_kind: str = "episode"
     human_approved: bool = False
     bound: dict | None = None
+    # D99：会话号，抓取留档记它作追溯（宿主填，不取模型参数）；无会话（单测、CLI 直调）为 None
+    session_id: str | None = None
 
     @property
     def base(self) -> Path:
@@ -1881,13 +1883,29 @@ def _tool_web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return search_web(query, max(1, min(limit, SEARCH_MAX_LIMIT)), root=ctx.root)
 
 
+def _keep_record(res: dict[str, Any], kind: str, url: str, ctx: ToolContext) -> dict[str, Any]:
+    """D99：抓到的全文留档，返回值换成记录号——全文不进 LLM（它看的仍是截断版 text / markdown）。"""
+    from pipeline.agent import fetch_log
+
+    full = res.pop("full_text", None)
+    if isinstance(full, str):
+        # 留档失败不连累抓取本身，但要让模型看见：之后 fact_add 会如实报「这页没有留档」
+        try:
+            res["fetch_record"] = fetch_log.record(url=url, final_url=res.get("final_url") or res.get("url"),
+                                                   kind=kind, text=full, sid=ctx.session_id, root=ctx.root)
+        except (ValueError, OSError) as exc:
+            res["fetch_record"] = None
+            res["fetch_record_error"] = f"抓取留档失败：{exc}"
+    return res
+
+
 def _tool_web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     from pipeline.agent.web import fetch_web
 
     url = str(args.get("url", "")).strip()
     if not url:
         raise ValueError("url 不能为空")
-    return fetch_web(url, root=ctx.root)
+    return _keep_record(fetch_web(url, root=ctx.root, keep_full=True), "fetch", url, ctx)
 
 
 def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1914,7 +1932,7 @@ def _tool_crawl(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not reason:
         raise ValueError("reason 不能为空")
     stealth = bool(args.get("stealth", False))
-    return crawl_page(url, reason, stealth=stealth, root=ctx.root)
+    return _keep_record(crawl_page(url, reason, stealth=stealth, root=ctx.root, keep_full=True), "crawl", url, ctx)
 
 
 def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1924,14 +1942,16 @@ def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     reason = str(args.get("reason", "")).strip()
     url_raw = args.get("url")
     url = str(url_raw).strip() if url_raw is not None else None
-    return browser_action(
+    res = browser_action(
         action,
         reason,
         url=url,
         episode_dir=ctx.episode_dir,
         scope=ctx.scope,
         root=ctx.root,
+        keep_full=True,
     )
+    return _keep_record(res, "browser", str(res.get("url") or url or ""), ctx) if "full_text" in res else res
 
 
 def memory_store_for(

@@ -1667,6 +1667,7 @@ class AgentSession:
         return ToolContext(
             scope=scope, episode_dir=self._ep_dir, root=root,
             session_kind=self.host.session_kind, project_dir=self.host.project_dir,
+            session_id=self.host.sid,
         )
 
     # ---- 控制面 ----
