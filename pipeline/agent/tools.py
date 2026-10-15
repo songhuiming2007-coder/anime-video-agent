@@ -158,9 +158,10 @@ READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
 
 # 逐条人审的模块命令（D82 §4.4）：run_pipeline 命中 → 每次弹卡、不开放「本会话都批准」；bash 直接跑也弹卡
 # （status_card 的 `[须人审的流水线命令]` 规则由本表生成）。子命令为 None = 该模块任何调用。
-# 前三条是 AGENTS.md Code Freeze 三条例外（写 config/，ADR-0030 决策 2）；`session.CONFIG_WRITE_COMMANDS` 是它的子集。
+# 前四条是 AGENTS.md Code Freeze 四条例外（写 config/，ADR-0030 决策 2；cloud connect 是 D102 加的第 ④ 条）；
+# `session.CONFIG_WRITE_COMMANDS` 是它的子集。
 HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
-    ("corrections", "global"), ("calibration", "set"), ("bgm", "register"),
+    ("corrections", "global"), ("calibration", "set"), ("bgm", "register"), ("cloud", "connect"),
     ("tickets", "open"),
     # D81 §4.8（人裁决 Q5）：每次总装都弹卡，--replace 覆盖已有成片同样逐条人审
     ("assemble", None),
@@ -221,7 +222,9 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     # D60：标定值写入 config（AGENTS.md Code Freeze 第二个例外）；set 弹卡前预检，show 只读
     "calibration": {"set", "show"},
-    "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env"},
+    # D102：connect 写 cloud.local.json 的连接三项（Code Freeze 第 ④ 条例外），逐条人审见 HUMAN_GATED_COMMANDS
+    "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env",
+              "connect"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
     # D61 后续（2026-10-10）：probe 可得性探针——出网只解析不下载，URL 清单经人卡，弹卡
@@ -838,8 +841,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "校验白名单内的 pipeline 子命令（如 tts --redo 2,4,5，段号逗号分隔）并返回规范化 argv。"
             "**校验通过即在本对话回路内真执行，大多不弹卡**（ADR-0030）：有副作用的命令先在对话里问人、人同意再调，"
-            "人已明确说了要跑的直接调；只有云端计费（cloud up/run/down 等）、写 config/ 的三条例外"
-            "（corrections global、calibration set、bgm register）、越过人工关卡的选项、tickets open、assemble 会弹审批卡。"
+            "人已明确说了要跑的直接调；只有云端计费（cloud up/run/down 等）、写 config/ 的四条例外"
+            "（corrections global、calibration set、bgm register、cloud connect）、越过人工关卡的选项、tickets open、assemble 会弹审批卡。"
             "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
             "只读命令：check_script、status、corrections check、"

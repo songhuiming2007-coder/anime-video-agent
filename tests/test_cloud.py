@@ -309,11 +309,19 @@ def test_evaluate_doctor_gpu_sufficient_vram():
 
 
 def test_evaluate_doctor_gpu_insufficient_vram():
-    """显存低于 24GB 时必须判定失败，防范消费级小显存机器导致 VLM/TTS 串行 OOM。"""
+    """显存低于 24GB 报 WARN 不判失败（D102：卡型按需租，只配音用小卡是正常选择），
+    但必须说清 VLM 打标在这张卡上跑不了。"""
     tag, desc, passed = cloud.evaluate_doctor_gpu("16384\n", returncode=0)
-    assert tag == "FAIL"
-    assert "16.0GB < 24.0GB" in desc
-    assert passed is False
+    assert tag == "WARN"
+    assert "16.0GB < 24.0GB" in desc and "VLM 打标" in desc
+    assert passed is True
+
+
+def test_evaluate_doctor_gpu_报型号():
+    """D102：doctor 的查询带上 name 列，结论里要有型号（账本与人都要知道这次租的是什么卡）。"""
+    tag, desc, passed = cloud.evaluate_doctor_gpu("NVIDIA vGPU-32GB, 32760\n", returncode=0)
+    assert (tag, passed) == ("OK", True)
+    assert desc.startswith("NVIDIA vGPU-32GB，") and "32.0GB" in desc
 
 
 def test_evaluate_doctor_disk():
@@ -647,8 +655,10 @@ import argparse
 
 
 def _no_config(monkeypatch):
-    """cmd_* 入口会读本机 config/cloud*.json——测试不许碰本机配置与凭据。"""
+    """cmd_* 入口会读本机 config/cloud*.json——测试不许碰本机配置与凭据。
+    D102 起 ssh 参数还取决于本机 data/cloud/ssh_config 在不在，一并指向不存在的路径。"""
     monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(cloud, "ssh_config_file", lambda: Path("/nonexistent/ava-test/ssh_config"))
 
 
 def test_attach_列表传参不带shell(monkeypatch):
@@ -881,3 +891,367 @@ class TestPreflightGate:
         mkdir_cmds = [c for c in seen["cmds"] if c.startswith("mkdir -p")]
         assert mkdir_cmds, "必须下发 mkdir"
         assert "'" in mkdir_cmds[0], f"含空格的路径未经 shlex.quote: {mkdir_cmds[0]}"
+
+
+# ---------------------------------------------------------------------------
+# 9. D102 实例用完即弃：connect / ssh_config / 模型软链 / 租机提示 / 按型号记账
+# ---------------------------------------------------------------------------
+
+import json
+import os
+import subprocess as _sp
+import time as _time
+
+REAL_LOGIN = "ssh -p 34557 root@connect.weste.seetacloud.com"
+REAL_CONN = {"server": "connect.weste.seetacloud.com", "port": 34557, "user": "root"}
+
+
+@pytest.mark.parametrize("text", [
+    REAL_LOGIN,
+    "  ssh   -p   34557    root@connect.weste.seetacloud.com  ",
+    "ssh -o StrictHostKeyChecking=no -p 34557 root@connect.weste.seetacloud.com",
+    "ssh -p34557 root@connect.weste.seetacloud.com",
+    "ssh -l root -p 34557 connect.weste.seetacloud.com",
+    "ssh -p 34557 -o ServerAliveInterval=30 root@connect.weste.seetacloud.com",
+])
+def test_connect解析控制台登录指令及变体(text):
+    """控制台原样格式与常见变体（多空格、夹 -o、-p 连写、-l 给用户）都解析成同一组三项。"""
+    assert cloud.parse_login_command(text) == REAL_CONN
+
+
+@pytest.mark.parametrize("text,needle", [
+    ("ssh root@connect.weste.seetacloud.com", "缺 port"),           # 缺端口：不补 22
+    ("ssh -p 34557 connect.weste.seetacloud.com", "缺 user"),
+    ("ssh -p 34557", "恰好一个"),
+    ("ssh -p 34557 root@a.com b.com", "恰好一个"),
+    ("scp -P 34557 root@a.com", "以 ssh 开头"),
+    ("ssh -p 99999 root@a.com", "端口不合法"),
+    ("ssh -p 34557 root@a.com;touch${IFS}x", "主机名"),           # 落进 ssh_config 的字符必须干净
+    ("ssh -p 34557 'ro ot'@a.com", "用户名"),
+    ("ssh -p", "缺值"),
+])
+def test_connect解析不出就报错并列出认出的部分(text, needle):
+    with pytest.raises(ValueError) as ei:
+        cloud.parse_login_command(text)
+    assert needle in str(ei.value)
+
+
+def test_connect缺端口时列出已认出的主机与用户():
+    with pytest.raises(ValueError) as ei:
+        cloud.parse_login_command("ssh root@connect.weste.seetacloud.com")
+    assert "connect.weste.seetacloud.com" in str(ei.value) and "root" in str(ei.value)
+
+
+def test_合并连接三项其余键原样保留():
+    local = {"_note": "n", "ssh_host": "autodl", "instance_id": "i-1", "server": "old",
+             "port": 1, "user": "u", "api_token": "TOKEN-xyz"}
+    out = cloud.merge_local_connection(local, REAL_CONN)
+    assert list(out) == list(local), "键顺序不许变"
+    assert out["api_token"] == "TOKEN-xyz" and out["instance_id"] == "i-1"
+    assert (out["server"], out["port"], out["user"]) == ("connect.weste.seetacloud.com", 34557, "root")
+    assert local["server"] == "old", "不许原地改入参"
+
+
+def test_ssh_config内容(tmp_path):
+    text = cloud.render_ssh_config("autodl", REAL_CONN, tmp_path / "known_hosts")
+    lines = [ln.strip() for ln in text.splitlines()]
+    assert "Host autodl" in lines and "HostName connect.weste.seetacloud.com" in lines
+    assert "Port 34557" in lines and "User root" in lines
+    assert "StrictHostKeyChecking accept-new" in lines
+    assert f'UserKnownHostsFile "{tmp_path / "known_hosts"}"' in lines
+    # Include 必须在 Match all 之后、且是最后一行：否则它落进 Host 块，或被放在前面抢走 HostName
+    assert lines[-2:] == ["Match all", "Include ~/.ssh/config"]
+
+
+def _fake_connect_env(monkeypatch, tmp_path, local: dict | None):
+    cfg = tmp_path / "config"
+    data = tmp_path / "data"
+    cfg.mkdir()
+    data.mkdir()
+    if local is not None:
+        (cfg / "cloud.local.json").write_text(json.dumps(local), encoding="utf-8")
+    (cfg / "cloud.json").write_text(json.dumps({"fs_models": "/root/autodl-fs/models"}), encoding="utf-8")
+    monkeypatch.setattr(cloud.paths, "CONFIG", cfg)
+    monkeypatch.setattr(cloud.paths, "DATA", data)
+    monkeypatch.setattr(cloud.paths, "require_data", lambda: data)
+    return cfg, data
+
+
+def test_cmd_connect写三项生成ssh_config且不回显token(monkeypatch, tmp_path, capsys):
+    local = {"ssh_host": "autodl", "server": "old.host", "port": 1, "user": "x", "api_token": "TOKEN-secret-123"}
+    cfg, data = _fake_connect_env(monkeypatch, tmp_path, local)
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        out = "LINKED\n" if "readlink" in argv[-1] else ""
+        return _sp.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(cloud.subprocess, "run", fake_run)
+    rc = cloud.cmd_connect(argparse.Namespace(login=REAL_LOGIN))
+    assert rc == 0
+    got = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))
+    assert got == {**local, **REAL_CONN}
+    conf = (data / "cloud" / "ssh_config").read_text(encoding="utf-8")
+    assert "HostName connect.weste.seetacloud.com" in conf and "Port 34557" in conf
+    # 生成之后的 ssh 调用都带 -F 指向它（验连通与建软链两次）
+    ssh_calls = [a for a in seen if a[0] == "ssh"]
+    assert len(ssh_calls) == 2 and all(a[1:3] == ["-F", str(data / "cloud" / "ssh_config")] for a in ssh_calls)
+    out = capsys.readouterr()
+    assert "TOKEN-secret-123" not in out.out + out.err
+    assert "root@connect.weste.seetacloud.com:34557" in out.out
+
+
+def test_cmd_connect解析失败不写任何文件(monkeypatch, tmp_path):
+    local = {"server": "old.host", "port": 1, "user": "x", "api_token": "T"}
+    cfg, data = _fake_connect_env(monkeypatch, tmp_path, local)
+    before = (cfg / "cloud.local.json").read_text(encoding="utf-8")
+    with pytest.raises(SystemExit) as ei:
+        cloud.cmd_connect(argparse.Namespace(login="ssh root@h.com"))
+    assert "缺 port" in str(ei.value)
+    assert (cfg / "cloud.local.json").read_text(encoding="utf-8") == before
+    assert not (data / "cloud" / "ssh_config").exists()
+
+
+def test_cmd_connect连不上返回1但连接信息已写(monkeypatch, tmp_path):
+    """实例刚开机常常还没起来：写入保留（人贴的就是这台），返回 1 让人过会儿再连。"""
+    cfg, data = _fake_connect_env(monkeypatch, tmp_path, {"api_token": "T"})
+    monkeypatch.setattr(cloud.subprocess, "run", lambda argv, **kw: _sp.CompletedProcess(argv, 255, "", ""))
+    assert cloud.cmd_connect(argparse.Namespace(login=REAL_LOGIN)) == 1
+    assert json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))["port"] == 34557
+
+
+def test_connect作废同一主机端口的旧主机密钥(monkeypatch, tmp_path):
+    """端口会被回收给别的实例：connect 时只删这个 [主机]:端口 的旧密钥，别的条目不动（真跑 ssh-keygen）。"""
+    monkeypatch.setattr(cloud, "known_hosts_file", lambda: tmp_path / "known_hosts")
+    key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+    (tmp_path / "known_hosts").write_text(
+        f"[connect.weste.seetacloud.com]:34557 {key}\n[connect.weste.seetacloud.com]:40000 {key}\n",
+        encoding="utf-8")
+    cloud.forget_known_host(REAL_CONN)
+    left = (tmp_path / "known_hosts").read_text(encoding="utf-8")
+    assert ":34557" not in left and ":40000" in left
+
+
+def test_ssh_base有配置文件才带F(monkeypatch, tmp_path):
+    f = tmp_path / "ssh_config"
+    monkeypatch.setattr(cloud, "ssh_config_file", lambda: f)
+    assert cloud.ssh_base() == ["ssh"], "文件不存在时退回旧行为（~/.ssh/config 的别名）"
+    f.write_text("Host autodl\n", encoding="utf-8")
+    assert cloud.ssh_base() == ["ssh", "-F", str(f)]
+
+
+def test_ssh与rsync与attach都带F(monkeypatch, tmp_path):
+    d = tmp_path / "with space"
+    d.mkdir()
+    f = d / "ssh_config"
+    f.write_text("Host autodl\n", encoding="utf-8")
+    monkeypatch.setattr(cloud, "ssh_config_file", lambda: f)
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({}, {}))
+    runs: list[list[str]] = []
+    monkeypatch.setattr(cloud.subprocess, "run",
+                        lambda argv, **kw: runs.append(argv) or _sp.CompletedProcess(argv, 0, "", ""))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cloud.subprocess, "call", lambda argv, **kw: calls.append(argv) or 0)
+
+    cloud._ssh("true")
+    assert runs[-1][:3] == ["ssh", "-F", str(f)]
+    cloud.run_rsync("a", "autodl:b")
+    e = runs[-1][runs[-1].index("-e") + 1]
+    assert e == f"ssh -F '{f}'", "路径带空格必须加引号，rsync 才不会拆开"
+    cloud.cmd_attach(argparse.Namespace(session="ava-tts"))
+    cloud.cmd_logs(argparse.Namespace(session="ava-tts", lines=5, follow=True))
+    assert all(c[:3] == ["ssh", "-F", str(f)] for c in calls) and len(calls) == 2
+
+
+def test_up连不上时打印租机四项(monkeypatch, capsys):
+    _no_config(monkeypatch)
+    cfg = {"region": "西北B区", "image": "ava-py312-torch28-cu128-20261015"}
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: (cfg, {}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: False)
+    with pytest.raises(SystemExit):
+        cloud.cmd_up(argparse.Namespace(mode="gpu", timeout=0, episode=None))
+    out = capsys.readouterr().out
+    assert "西北B区" in out and "显存" in out and "CUDA：≥ 12.8" in out
+    assert "ava-py312-torch28-cu128-20261015" in out and "cloud connect" in out
+
+
+def _bash(script: str) -> str:
+    return _sp.run(["bash", "-c", script], capture_output=True, text=True, check=False).stdout.strip()
+
+
+def test_模型软链脚本六种情形(tmp_path):
+    """真跑脚本：建、幂等、改指、实体目录不动、文件存储缺、同名文件。"""
+    fs = tmp_path / "autodl-fs" / "models"
+    tmp = tmp_path / "autodl-tmp" / "models"
+    fs.mkdir(parents=True)
+    script = cloud.models_link_script(str(fs), str(tmp))
+    assert _bash(script) == "LINKED" and tmp.is_symlink() and Path(os.readlink(tmp)) == fs
+    assert _bash(script) == "ALREADY"
+    tmp.unlink()
+    other = tmp_path / "other"
+    other.mkdir()
+    tmp.symlink_to(other)
+    assert _bash(script) == "RELINKED" and Path(os.readlink(tmp)) == fs
+    tmp.unlink()
+    tmp.mkdir()
+    (tmp / "keep").write_text("x")
+    assert _bash(script) == "REALDIR" and (tmp / "keep").exists() and not (tmp / "models").exists()
+    (tmp / "keep").unlink()
+    tmp.rmdir()
+    tmp.write_text("x")
+    assert _bash(script) == "CONFLICT"
+    tmp.unlink()
+    fs.rmdir()
+    assert _bash(script) == "NOFS" and not tmp.exists()
+
+
+def test_模型软链只读版不动远端(tmp_path):
+    fs = tmp_path / "fs"
+    tmp = tmp_path / "tmp" / "models"
+    fs.mkdir()
+    ro = cloud.models_link_script(str(fs), str(tmp), create=False)
+    assert _bash(ro) == "MISSING" and not tmp.exists() and not tmp.is_symlink()
+    tmp.parent.mkdir()
+    tmp.symlink_to(tmp_path)
+    assert _bash(ro) == "ELSEWHERE" and Path(os.readlink(tmp)) == tmp_path
+
+
+@pytest.mark.parametrize("word,tag,ok", [
+    ("ALREADY", "OK", True), ("LINKED", "OK", True), ("RELINKED", "OK", True),
+    ("REALDIR", "INFO", True), ("NOFS", "FAIL", False), ("CONFLICT", "FAIL", False),
+    ("MISSING", "FAIL", False), ("ELSEWHERE", "FAIL", False), ("", "FAIL", False),
+])
+def test_模型软链结论解读(word, tag, ok):
+    t, _desc, passed = cloud.evaluate_models_link(word + "\n", "/fs", "/tmp/models")
+    assert (t, passed) == (tag, ok)
+
+
+def _doctor_fake(gpu="NVIDIA vGPU-32GB, 32760", mount="MOUNTED", link="ALREADY"):
+    def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+        if cmd == "true":
+            out = ""
+        elif cmd.startswith("nvidia-smi"):
+            out = gpu
+        elif "git rev-parse" in cmd:
+            out = "abc1234"
+        elif "import torch" in cmd:
+            out = "2.8.0___True"
+        elif cmd.startswith("df "):
+            out = "40"
+        elif cmd == cloud.FS_MOUNT_CHECK_CMD:
+            out = mount
+        elif "readlink" in cmd:
+            assert "ln -s" not in cmd, "doctor 只读，不许建软链"
+            out = link
+        else:
+            raise AssertionError(f"未预期的远端命令: {cmd}")
+        return _sp.CompletedProcess(cmd, 0, out + "\n", "")
+    return fake
+
+
+@pytest.mark.parametrize("kw,rc,needle", [
+    ({}, 0, "OK    [FS]"),
+    ({"mount": "NOT_MOUNTED"}, 1, "FAIL  [FS]"),
+    ({"link": "MISSING"}, 1, "FAIL  [LINK]"),
+    ({"link": "REALDIR"}, 0, "INFO  [LINK]"),
+    ({"gpu": "NVIDIA GeForce RTX 4080, 16376"}, 0, "WARN  [GPU] NVIDIA GeForce RTX 4080"),
+])
+def test_doctor三项新检查(monkeypatch, capsys, kw, rc, needle):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"models": {}}, {}))
+    monkeypatch.setattr(cloud, "_ssh", _doctor_fake(**kw))
+    assert cloud.cmd_doctor(argparse.Namespace()) == rc
+    assert needle in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("name,rate,est", [
+    ("NVIDIA vGPU-32GB", 1.58, False),
+    ("nvidia vgpu-32gb", 1.58, False),               # 大小写不同
+    ("NVIDIA GeForce RTX 4090D", 1.9, False),        # 多个键命中取最长：4090D 不被 4090 抢走
+    ("NVIDIA GeForce RTX 4090", 1.6, False),
+    ("NVIDIA H800", 2.4, True),                      # 表里没有 → 兜底单价，标估算
+    (None, 2.4, True),
+])
+def test_按型号查单价(name, rate, est):
+    rates = {"_note": "x", "vGPU-32GB": 1.58, "RTX 4090": 1.6, "RTX 4090D": 1.9}
+    assert cloud.lookup_gpu_rate(name, rates, 2.4) == (rate, est)
+
+
+def test_会话单价分模式():
+    cfg = {"cardless_rate_cny": 0.1, "hourly_rate_cny": 2.4, "gpu_rates_cny": {"vGPU-32GB": 1.58}}
+    assert cloud.session_rate(cfg, "cardless", "NVIDIA vGPU-32GB") == (0.1, False)
+    assert cloud.session_rate(cfg, "gpu", "NVIDIA vGPU-32GB") == (1.58, False)
+    assert cloud.session_rate(cfg, "unknown", None) == (2.4, True), "模式不可知取带卡价"
+
+
+@pytest.mark.parametrize("gpu,rate,estimated", [("NVIDIA vGPU-32GB", 1.58, False), ("NVIDIA RTX 4090", 2.4, True)])
+def test_down账本记型号与单价(monkeypatch, tmp_path, capsys, gpu, rate, estimated):
+    _no_config(monkeypatch)
+    cfg = {"hourly_rate_cny": 2.4, "gpu_rates_cny": {"vGPU-32GB": 1.58}}
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: (cfg, {}))
+    sfile = tmp_path / "active_session.json"
+    sfile.write_text(json.dumps({"session": "s1", "mode": "gpu", "up": "10:00:00", "gpu": gpu,
+                                 "up_epoch": _time.time() - 3600, "tasks": ["tts"], "episode": None}),
+                     encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
+    monkeypatch.setattr(cloud, "get_ledger_file", lambda: ledger)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: False)
+    assert cloud.cmd_down(argparse.Namespace(force=False)) == 0
+    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["gpu"] == gpu and entry["rate_cny"] == rate
+    assert abs(entry["cny"] - rate) < 0.01, "一小时就是一个单价"
+    assert ("单价估算" in entry.get("note", "")) is estimated
+
+
+def test_up把型号写进会话文件并建软链(monkeypatch, tmp_path):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    sfile = tmp_path / "active_session.json"
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
+    seen: list[str] = []
+
+    def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+        seen.append(cmd)
+        if cmd == "nvidia-smi -L":
+            out = "GPU 0: NVIDIA vGPU-32GB"
+        elif cmd == cloud.GPU_QUERY_CMD:
+            out = "NVIDIA vGPU-32GB, 32760"
+        elif "readlink" in cmd:
+            out = "LINKED"
+        else:
+            out = "4321"  # watchdog 部署回 pid
+        return _sp.CompletedProcess(cmd, 0, out + "\n", "")
+
+    monkeypatch.setattr(cloud, "_ssh", fake)
+    assert cloud.cmd_up(argparse.Namespace(mode="gpu", timeout=0, episode=None)) == 0
+    data = json.loads(sfile.read_text(encoding="utf-8"))
+    assert data["gpu"] == "NVIDIA vGPU-32GB" and data["gpu_mem_mib"] == 32760
+    assert any("ln -s" in c for c in seen), "up 要建软链（connect 之外的第二个入口）"
+
+
+def test_parse_gpu_query():
+    assert cloud.parse_gpu_query("NVIDIA vGPU-32GB, 32760\n") == ("NVIDIA vGPU-32GB", 32760.0)
+    assert cloud.parse_gpu_query("49152\n") == (None, 49152.0)
+    assert cloud.parse_gpu_query("") == (None, None)
+    assert cloud.parse_gpu_query("garbage") == (None, None)
+
+
+def test_connect进白名单且逐条人审():
+    """Code Freeze 第 ④ 条例外：写 config/，每次弹卡、不开放「本会话都批准」（与另三条同一口径）。"""
+    from pipeline.agent.session import CLOUD_CARD_SUBCOMMANDS, CONFIG_WRITE_COMMANDS
+    from pipeline.agent.tools import ASSET_COMMANDS, HUMAN_GATED_COMMANDS, validate_pipeline_command
+
+    assert "connect" in ASSET_COMMANDS["cloud"]
+    assert ("cloud", "connect") in CONFIG_WRITE_COMMANDS <= HUMAN_GATED_COMMANDS
+    assert "connect" not in CLOUD_CARD_SUBCOMMANDS, "放进去就会被当成可「本会话都批准」的计费卡"
+    ok, msg, argv = validate_pipeline_command(f'python -m pipeline.cloud connect "{REAL_LOGIN}"')
+    assert ok, msg
+    assert argv[-2:] == ["connect", REAL_LOGIN]
+
+
+def test_bash跑connect也弹卡():
+    from pipeline.agent.status_card import bash_danger_tags
+
+    assert "[须人审的流水线命令]" in bash_danger_tags(f'python -m pipeline.cloud connect "{REAL_LOGIN}"')

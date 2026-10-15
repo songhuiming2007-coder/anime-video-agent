@@ -5,7 +5,16 @@
 ## 执行
 agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡；跑完提议 `cloud down`（也弹卡）。
 
-底层排查参考：`python -m pipeline.tts data/episodes/<期号>`；云端 `python -m pipeline.cloud push|run|pull …`。
+## 云端实例用完即弃（D102）
+
+实例绑定一台物理机，关机后那台的卡会被别人租走，所以不再保留固定实例。模型在西北B区的文件存储（`/root/autodl-fs/models`，全区实例开机自动挂载），环境在自定义镜像里（`config/cloud.json` 的 `image`）。
+
+1. 人租机（约 1 分钟）：算力市场选西北B区、驱动支持 CUDA ≥ 12.8、显存够本次任务的机器（VLM 打标 ≥ 24GB；只配音不需要大卡），镜像选「我的镜像」里 `config/cloud.json` 的 `image`。`cloud up` 连不上时会打印这几项。
+2. 人把控制台的 SSH 登录指令（`ssh -p 端口 root@主机`）贴给 agent，agent 提议 `cloud connect "<原文>"`（弹卡）：写连接信息、生成 `data/cloud/ssh_config`、验连通、把 `/root/autodl-tmp/models` 软链到文件存储。
+3. `cloud doctor` 看文件存储挂载、软链、显存与模型；之后照常 `up` → `push` → `run` → `pull` → `down`。账本记实际用的 GPU 型号，单价按 `gpu_rates_cny` 查，查不到标估算。
+4. 改过远端环境（装包、升级 torch）后要在控制台重新保存一次镜像，并更新 `config/cloud.json` 的 `image`；不保存的话下一台新实例还是旧环境。
+
+底层排查参考：`python -m pipeline.tts data/episodes/<期号>`；云端 `python -m pipeline.cloud connect|push|run|pull …`。
 
 ## 产物与位置
 - `data/episodes/<期号>/03-audio/seg-*.wav`（逐段音频）
