@@ -35,6 +35,11 @@ dependencies = [
     # （onnxruntime 把节点切成几百个 CoreML 分区，其中一个运行时直接报错）。
     "onnxruntime>=1.28.0",
     "zhconv>=1.4.3",
+    # D96（2026-10-15）：acquire 用项目环境里的这份 yt-dlp。[default] 带 YouTube 签名求解器
+    # yt-dlp-ejs；全局 pip 装的那份没有它，下载全靠 ~/.cache/yt-dlp 里 09-06 留下的求解脚本，
+    # 探针带 --no-cache-dir 就失败。钉 2026.8.19：10-15 实测「同版本 + yt-dlp-ejs」加
+    # --no-cache-dir 能解析 1080p 的就是这一版。升级要重测 YouTube 探针。
+    "yt-dlp[default]==2026.8.19",
 ]
 
 [project.optional-dependencies]

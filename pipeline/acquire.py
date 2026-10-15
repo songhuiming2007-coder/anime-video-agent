@@ -823,20 +823,19 @@ def cmd_forget(no: int) -> int:
 
 
 def yt_dlp_argv() -> list[str]:
-    """yt-dlp 的调用形态。
+    """yt-dlp 的调用形态：项目环境优先，找不到再退 PATH，都没有就报出修复命令。
 
-    **它不在这份仓库的依赖里**（2026-09-11 实测 `uv run python -c "import yt_dlp"` →
-    ModuleNotFoundError），系统里另有一个全局可执行文件。所以先找命令、再退回
-    `python -m yt_dlp`，都没有就报出修复命令——不许静默换一个下载器（S9）。
+    D96（2026-10-15）：yt-dlp[default] 进了项目依赖（带签名求解器 yt-dlp-ejs）。以前先找 PATH，
+    拿到的是全局 Python 3.14 pip 装的那份（没有求解器，YouTube 下载全靠 ~/.cache 里的旧脚本，
+    探针一带 --no-cache-dir 就失败）。PATH 只留作项目环境缺失时的退路；不许静默换一个下载器（S9）。
     """
+    if importlib.util.find_spec("yt_dlp"):
+        return [sys.executable, "-m", "yt_dlp"]
     exe = shutil.which("yt-dlp")
     if exe:
         return [exe]
-    if importlib.util.find_spec("yt_dlp"):
-        return [sys.executable, "-m", "yt_dlp"]
-    raise SystemExit("FAIL 找不到 yt-dlp。二选一：\n"
-                     "     uv add yt-dlp        # 进项目虚拟环境（推荐，E6）\n"
-                     "     brew install yt-dlp  # 系统级")
+    raise SystemExit("FAIL 找不到 yt-dlp。项目依赖里有它，先 `uv sync`；"
+                     "或系统级 `brew install yt-dlp`")
 
 
 def main() -> None:

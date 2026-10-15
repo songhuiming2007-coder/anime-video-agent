@@ -326,9 +326,8 @@ class TestCmdFetchWithoutYtDlp:
         # 批量语义（2026-10-10 B3）：单条失败不再抛 SystemExit，打印原文、退 1；文案逐字不变
         assert A.cmd_fetch(2, dry_run=True) == 1
         out = capsys.readouterr().out
-        assert ("FAIL 找不到 yt-dlp。二选一：\n"
-                "     uv add yt-dlp        # 进项目虚拟环境（推荐，E6）\n"
-                "     brew install yt-dlp  # 系统级") in out
+        # D96：yt-dlp 已是项目依赖，修法改为 uv sync（旧文案「uv add yt-dlp」已不成立）
+        assert "FAIL 找不到 yt-dlp。项目依赖里有它，先 `uv sync`；或系统级 `brew install yt-dlp`" in out
 
 # ---------- 集键 ----------
 
@@ -557,3 +556,48 @@ class TestAlsoSchema:
                    "why": "w", "also": ["magnet:?xt=bad"]}]"""
         with pytest.raises(SystemExit, match="also"):
             A.load_candidates(raw)
+
+
+class TestYtDlpFromProjectEnv:
+    """D96（2026-10-15）：yt-dlp[default] 进项目依赖，`yt_dlp_argv()` 先用项目环境、再退 PATH。
+
+    病根：先找 PATH 拿到的是全局 Python 3.14 pip 装的 yt-dlp（没有签名求解器 yt-dlp-ejs），
+    探针带 --no-cache-dir 就解析不了 YouTube。
+    """
+
+    def test_PATH里也有时仍用项目环境(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(A.shutil, "which", lambda n, *a, **k: "/Library/Frameworks/x/bin/yt-dlp")
+        assert A.yt_dlp_argv() == [sys.executable, "-m", "yt_dlp"]
+
+    def test_项目环境没有才退PATH(self, monkeypatch):
+        import importlib.util
+
+        real_find = importlib.util.find_spec
+        monkeypatch.setattr(A.importlib.util, "find_spec",
+                            lambda n, *a, **k: None if n == "yt_dlp" else real_find(n, *a, **k))
+        monkeypatch.setattr(A.shutil, "which", lambda n, *a, **k: "/opt/homebrew/bin/yt-dlp" if n == "yt-dlp" else None)
+        assert A.yt_dlp_argv() == ["/opt/homebrew/bin/yt-dlp"]
+
+    def test_项目环境里有签名求解器且版本对得上钉的版本(self):
+        """依赖真的装上了：yt-dlp-ejs 能导入（[default] 带来的），版本与 pyproject 钉的一致。"""
+        import importlib.util
+        import re
+
+        import yt_dlp.version
+
+        from pipeline import paths
+
+        assert importlib.util.find_spec("yt_dlp_ejs") is not None, "缺 yt-dlp-ejs：pyproject 要写 yt-dlp[default]"
+        pin = re.search(r'"yt-dlp\[default\]==([\d.]+)"', (paths.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert pin, "pyproject 里要钉 yt-dlp[default]==<版本>"
+        # yt-dlp 自报 2026.08.19，pyproject 写 2026.8.19（PEP 440 规范化后相同）
+        assert tuple(int(x) for x in yt_dlp.version.__version__.split(".")) == tuple(int(x) for x in pin.group(1).split("."))
+
+    def test_探针仍带no_cache_dir(self):
+        """人定保留 --no-cache-dir：探针零落盘，也借它证明不靠缓存里的旧求解脚本。"""
+        import sys
+
+        argv = A.probe_argv("https://www.youtube.com/watch?v=x", yt_dlp=[sys.executable, "-m", "yt_dlp"])
+        assert argv[:3] == [sys.executable, "-m", "yt_dlp"] and "--no-cache-dir" in argv

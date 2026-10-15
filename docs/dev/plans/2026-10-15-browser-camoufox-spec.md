@@ -82,7 +82,7 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 ## 八、完成判定
 
 - [x] `uv run pytest` 全绿；vitest、tsc 全绿；变异 15/16（见 §九）
-- [x] 真实冒烟：persist_check 7 站、crawl 抓页通过；YouTube probe 不再报 bot 检查，但另因 `--no-cache-dir` 失败（既有问题，见 §九，待人定）
+- [x] 真实冒烟：persist_check 7 站、crawl 抓页通过；YouTube probe 不再报 bot 检查，但另因 `--no-cache-dir` 失败（既有问题，见 §九）；10-15 晚 yt-dlp 进项目依赖后 `probe 9,13` 2/2 可解析
 - [x] ADR-0021 修订注、issues D96 行、plans/README 状态列已更新
 - [x] 人验收 `login` 入口（2026-10-15）：窗口里 YouTube 是登录状态，关窗后命令退出码 0
 - [ ] 待人：AVA 会话里 browser 打开 youtube.com 是登录状态
@@ -117,3 +117,5 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 - 顺带改两处：`login` 的提示一律 `flush=True`；终端 Ctrl-C 不再打堆栈，照常关浏览器、提示「已中断」、退出码 130（测试 +1，变异 2/2）。
 
 **YouTube 探针后续（2026-10-15 傍晚查明，人选方案 B，待施工）**：病根不在 `--no-cache-dir`，而在 acquire 用的 yt-dlp。`yt_dlp_argv()` 经 `shutil.which` 拿到全局 Python 3.14 pip 装的 yt-dlp 2026.08.19，它没有 YouTube 签名求解器 `yt-dlp-ejs`；下载能成功靠的是 `~/.cache/yt-dlp/challenge-solver/lib.json`（2026-09-06 的缓存），探针禁缓存就失败——缓存一旦被清或 YouTube 要求新版求解器，下载也会同样失败。实测：同版本 yt-dlp + yt-dlp-ejs 0.8.0 的隔离环境、以及 Homebrew 的 yt-dlp（自带 ejs，PATH 里排在全局 Python 之后没被用上），加 `--no-cache-dir` 都能解析（1080p / 480p）。人选 B：`yt-dlp[default]==2026.8.19` 进项目依赖，`yt_dlp_argv()` 优先项目环境，探针保留 `--no-cache-dir`。等 supercell 卷一补素材那一轮跑完再施工（`uv sync` 会动 AVA 正在用的环境）。
+
+**方案 B 施工（2026-10-15 晚，素材线暂停，人说直接做）**：`pyproject.toml` 加 `yt-dlp[default]==2026.8.19`（锁里新增 yt-dlp、yt-dlp-ejs 0.8.0、brotlicffi、mutagen、pycryptodomex、websockets，既有包版本不变）；`yt_dlp_argv()` 先 `find_spec("yt_dlp")` 用 `sys.executable -m yt_dlp`，找不到再退 PATH，报错文案改为「先 `uv sync`」。测试 +4、改 1 条文案断言，变异 5/5。真实冒烟 `acquire probe 9,13`：命令为 `.venv/bin/python3 -m yt_dlp … --no-cache-dir`，#9 可解析、最高 1080p，#13 可解析、最高 480p，2/2。施工中误跑了一次不带 `--extra` 的 `uv sync`，卸掉了 browser / crawl / apple / dev 四组 extras，随即按本图验证命令一节的 `uv sync --extra browser --extra crawl --extra apple --extra dev` 装回（同一份锁），前后约一分钟；装回后 crawl4ai、camoufox、mlx 均可导入。
