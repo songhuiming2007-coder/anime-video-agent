@@ -595,7 +595,15 @@ def _fetch_one(no: int, c: dict, *, dry_run: bool) -> None:
     for v in dvs:
         print("  " + v.line(width=0))
     if overall(dvs) == "FAIL":
-        raise SystemExit("查重没过，没抓。确认要重抓：acquire forget <候选号>（弹卡）把旧记录移走再抓")
+        if any(v.level == "FAIL" and v.name == "URL 查重" for v in dvs):
+            raise SystemExit("查重没过，没抓。确认要重抓：acquire forget <候选号>（弹卡）把旧记录移走再抓")
+        # 只撞名、链接没抓过 = 另一条素材恰好折成了同一个文件名（D97）。forget 移走的是那一条的台账，
+        # 照旧提示做就会弄丢别人的记录，所以这里指向改标题
+        owner = next((e for e in entries if Path(e.get("file", "")).stem == slug), None)
+        who = (f"候选 #{owner.get('candidate')}「{owner.get('title')}」" if owner
+               else "一个台账里没有记录的文件")
+        raise SystemExit(f"没抓：文件名 {slug} 已被{who}占用，但这条链接没抓过——是两条不同素材撞名。"
+                         "改 candidates.json 里这一条的 title 让它们区分开再抓；不要 forget，那会移走另一条的记录")
 
     last_err = ""
     for url in urls:

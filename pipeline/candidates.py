@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 import re
 import threading
+import unicodedata
 from typing import Any
 from urllib.parse import urlparse
 
@@ -98,10 +99,26 @@ def load_candidates(raw: str) -> list[dict]:
     return data
 
 
+# 文件名前缀按 UTF-8 字节再截一次：APFS / exFAT / ext4 单个文件名上限都是 255 字节，假名汉字一字
+# 3 字节，只按 80 字符截会到 240 字节，再接 yt-dlp 的 `.f399.webm.part`、register 的 `SP12-` /
+# `-still.mp4` 就贴着上限（最长后缀约 20 字节）。200 = 255 减去一倍多的后缀余量；纯 ASCII 标题
+# 仍先撞 80 字符那条，行为不变。
+SLUG_MAX_CHARS = 80
+SLUG_MAX_BYTES = 200
+
+
 def slugify(title: str) -> str:
-    """标题 → 安全的文件名前缀（英文/数字保留，其余折成 `_`）。"""
-    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", title).strip("_")
-    return (s or "asset")[:80]
+    """标题 → 安全的文件名前缀：任何文字系统的字母、数字（含组合附标）都保留，其余折成 `_`。
+
+    D97：旧规则只认英文、数字与 CJK 统一汉字，假名、谚文、西里尔全被折掉——「さよならメモリーズ」
+    整个消失，两首纯假名标题撞成同一前缀。先 NFKC：全角拉丁、半角片假名归一，免得同一标题因
+    来源不同落成两个名字。已落盘文件不受影响：台账按实际文件名找条目，不重算 slug。
+    """
+    t = unicodedata.normalize("NFKC", title)
+    s = "".join(ch if unicodedata.category(ch)[0] in "LNM" else "_" for ch in t)
+    s = re.sub(r"_+", "_", s).strip("_")[:SLUG_MAX_CHARS]
+    s = s.encode("utf-8")[:SLUG_MAX_BYTES].decode("utf-8", errors="ignore")
+    return s or "asset"
 
 
 def ledger_load(path: Path | None = None) -> list[dict]:
