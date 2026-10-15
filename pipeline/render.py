@@ -113,7 +113,21 @@ def _ffprobe(path: Path, entries: str, stream: str | None = None) -> str:
 
 
 def duration(path: Path) -> float:
-    return float(_ffprobe(path, "format=duration").split(",")[0])
+    """媒体时长（秒）。静态图片直接报错（N31）：ffprobe 对 jpg 报单帧 0.04 s，不拦会静默切出 0.04 s 的片段。"""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=format_name,duration", "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    fmt = json.loads(out).get("format", {})
+    name = str(fmt.get("format_name", ""))
+    if name == "image2" or name.endswith("_pipe"):
+        raise SystemExit(
+            f"FAIL {path.name} 是静态图片（ffprobe format={name}），render 只接视频："
+            "图片先经补丁池入库（ingest_patch / acquire register）转成视频"
+        )
+    if "duration" not in fmt:
+        raise SystemExit(f"FAIL {path.name} 取不到时长（ffprobe format={name}）")
+    return float(fmt["duration"])
 
 
 def _fps_to_frame_time(fps_str: str) -> float:
