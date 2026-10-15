@@ -115,3 +115,5 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 - 排查：对照两个窗口（bilibili、YouTube）时，程序内截图显示 YouTube 页面完整渲染、右上角是人的头像（已登录），页面本身没问题；`lsappinfo front` 实测我这边启动时 Camoufox 会自己成为最前应用。推断：人正在别的应用里输入时，macOS 不让新窗口抢到前面，被压在后面的窗口切过来时尚未重绘。**推断未验证**，黑屏没能复现。
 - 第二次（人先 ⌘Tab 切过去、不在别处输入）：画面正常，关窗后命令打印「已关闭」、退出码 0。
 - 顺带改两处：`login` 的提示一律 `flush=True`；终端 Ctrl-C 不再打堆栈，照常关浏览器、提示「已中断」、退出码 130（测试 +1，变异 2/2）。
+
+**YouTube 探针后续（2026-10-15 傍晚查明，人选方案 B，待施工）**：病根不在 `--no-cache-dir`，而在 acquire 用的 yt-dlp。`yt_dlp_argv()` 经 `shutil.which` 拿到全局 Python 3.14 pip 装的 yt-dlp 2026.08.19，它没有 YouTube 签名求解器 `yt-dlp-ejs`；下载能成功靠的是 `~/.cache/yt-dlp/challenge-solver/lib.json`（2026-09-06 的缓存），探针禁缓存就失败——缓存一旦被清或 YouTube 要求新版求解器，下载也会同样失败。实测：同版本 yt-dlp + yt-dlp-ejs 0.8.0 的隔离环境、以及 Homebrew 的 yt-dlp（自带 ejs，PATH 里排在全局 Python 之后没被用上），加 `--no-cache-dir` 都能解析（1080p / 480p）。人选 B：`yt-dlp[default]==2026.8.19` 进项目依赖，`yt_dlp_argv()` 优先项目环境，探针保留 `--no-cache-dir`。等 supercell 卷一补素材那一轮跑完再施工（`uv sync` 会动 AVA 正在用的环境）。
