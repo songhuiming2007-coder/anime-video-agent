@@ -379,7 +379,7 @@ def test_review_本会话已批的同类卡不带绑定(world, monkeypatch: pyte
 
 def _mv_candidate(title: str, url: str) -> dict:
     return {"title": title, "url": url, "type": "mv", "source": "官方 YouTube 频道",
-            "why": "卷二要用的官方 MV 画面，画质有保障"}
+            "why": "卷二要用的官方 MV 画面，画质有保障", "found_on": url}
 
 
 class TestProjectSessionTools:
@@ -437,7 +437,8 @@ class TestProjectSessionTools:
                        root=root)
             assert v.action != "reject", (kind, v.reason)
 
-    def test_D95_企划会话一回合内提候选并自动抓取(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_D95_企划会话一回合内提候选并自动核对(self, world, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D100 起提议后自动核对、不下载（原「自动抓取」）。"""
         root, P, _Q, _E = world
         from pipeline.agent import llm as llm_mod
 
@@ -456,16 +457,17 @@ class TestProjectSessionTools:
         monkeypatch.setattr(llm_mod, "chat_complete", scripted)
         channel = FakeChannel()
         sess = _session(root, P, channel)
-        fetched: list[int] = []
-        sess.host.fetch_executor = lambda no: (
-            fetched.append(no), {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": "OK"})[1]
+        checked: list[list[int]] = []
+        sess.host.check_executor = lambda nos: (
+            checked.append(nos), {"ok": True, "returncode": 0, "message": "", "stdout_tail": "x"})[1]
         messages: list[dict] = []
-        sess.run_turn("把 My Dearest 抓下来", messages=messages, scope="project", status=None,
+        sess.run_turn("把 My Dearest 找来看看", messages=messages, scope="project", status=None,
                       tracker=SessionContextTracker(), root=root)
 
-        assert fetched == [1]
+        assert checked == [[1]]
         tool_out = json.loads(next(m["content"] for m in messages if m.get("role") == "tool"))
-        assert tool_out["ok"] is True and tool_out["result"]["fetch"][0]["decision"] == "approved", tool_out
+        assert tool_out["ok"] is True and tool_out["result"]["review"]["nos"] == [1], tool_out
+        assert "fetch" not in tool_out["result"]
 
     def test_run_pipeline分流(self, world) -> None:
         root, P, _Q, _E = world

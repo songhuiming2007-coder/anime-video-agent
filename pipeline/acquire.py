@@ -636,8 +636,51 @@ def _fetch_one(no: int, c: dict, *, dry_run: bool) -> None:
     raise SystemExit(f"全部 {len(urls)} 个源都没抓成（最后：{last_err}）；修好或换源后重跑同一条命令即可续传")
 
 
+def checks_path() -> Path:
+    """候选核对结论（D100），按 URL 追加；fetch 只认最近一次结论为「可下载」的。"""
+    return incoming() / "checks.jsonl"
+
+
+def fetch_refusal(c: dict) -> str | None:
+    """D100：核对结论不是「可下载」就不抓，说出原因。核不上的不开豁免口子（人 10-15 定，v1）。"""
+    from .candidate_check import latest_check
+
+    r = latest_check(c["url"], checks_path())
+    if r is None:
+        return "没核对过，先 acquire check <候选号>"
+    if r.get("verdict") != "可下载":
+        return f"核对结论是「{r.get('verdict')}」（{'；'.join(r.get('reasons') or [])}），不抓；换能核上的出处或源重新提"
+    return None
+
+
+def cmd_check(no: str) -> int:
+    """逐条机器核对（D100）：出处、可得性、授权、门禁预判；结论追加进 checks.jsonl，机器表写 review-<时间>.md。
+
+    末行固定打 `REVIEW_FILE <路径>`，提议后的核对钩子按它取表。
+    """
+    from .candidate_check import append_checks, check_batch, render_table
+
+    cp = candidates_path()
+    if not cp.exists():
+        raise SystemExit(f"FAIL 没有候选清单 {cp}——先按 skills/acquire-assets/SKILL.md 检索并写出它")
+    cands = load_candidates(cp.read_text(encoding="utf-8"))
+    idxs = parse_nos(no, len(cands))
+    pairs = [(i, cands[i - 1]) for i in idxs]
+    records = check_batch(pairs, root=paths.DATA.parent)
+    append_checks(records, checks_path())
+    table = render_table([(c, r) for (_i, c), r in zip(pairs, records)])
+    review = incoming() / f"review-{records[0]['ts']}.md"
+    paths.atomic_write(review, table)
+    print(table)
+    print(f"REVIEW_FILE {review}")
+    return 0
+
+
 def cmd_fetch(no, *, dry_run: bool = False) -> int:
-    """抓候选：单号「3」、逗号批「1,3,5」或「all」。单条失败不阻塞整批，成功逐条记台账。"""
+    """抓候选：单号「3」、逗号批「1,3,5」或「all」。单条失败不阻塞整批，成功逐条记台账。
+
+    D100：只抓最近一次核对结论为「可下载」的（`acquire check`），其余拒并说原因。
+    """
     cp = candidates_path()
     if not cp.exists():
         raise SystemExit(f"FAIL 没有候选清单 {cp}——先按 skills/acquire-assets/SKILL.md 检索并写出它")
@@ -646,6 +689,9 @@ def cmd_fetch(no, *, dry_run: bool = False) -> int:
     fails = 0
     for i in idxs:
         try:
+            refusal = fetch_refusal(cands[i - 1])
+            if refusal:
+                raise SystemExit(refusal)
             _fetch_one(i, cands[i - 1], dry_run=dry_run)
         except SystemExit as e:
             fails += 1
@@ -865,6 +911,9 @@ def main() -> None:
     r.add_argument("--waive", metavar="理由", help="门禁不过也登记：人同意后写明理由（卡上标 [门禁豁免]）")
     r.add_argument("--force", action="store_true", help="终端旧口径，同 --waive 但不留理由；agent 路径拒收")
 
+    ck = sub.add_parser("check", help="逐条机器核对候选：出处、可得性、授权、门禁预判（出网只解析，D100）")
+    ck.add_argument("no", help="候选号：1 / 1,3,5 / all")
+
     fg = sub.add_parser("forget", help="台账移走一条抓取记录，好重抓（不删文件，挪进 attic）")
     fg.add_argument("no", type=int, help="候选号")
 
@@ -875,6 +924,8 @@ def main() -> None:
         raise SystemExit(cmd_fetch(a.no, dry_run=a.dry_run))
     if a.cmd == "probe":
         raise SystemExit(cmd_probe(a.no))
+    if a.cmd == "check":
+        raise SystemExit(cmd_check(a.no))
     if a.cmd == "forget":
         raise SystemExit(cmd_forget(a.no))
     if a.cmd == "register":

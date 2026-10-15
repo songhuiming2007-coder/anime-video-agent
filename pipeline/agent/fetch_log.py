@@ -44,8 +44,14 @@ def norm_url(url: str) -> str:
 
 
 def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | None,
-           root: Path | None = None) -> str:
-    """落一份全文 + index 一行，返回记录号。"""
+           root: Path | None = None, images: list[dict] | None = None,
+           links: list[dict] | None = None) -> str:
+    """落一份全文 + index 一行，返回记录号。
+
+    D100：`images` / `links` 是页面里截帽前的完整图片与链接列表（各项至少有 `url`），给了就另存
+    `<ts>-<kind>.refs.json`，sha256 记进 index 的 `refs_sha256`。素材候选核对拿它判「这条链接
+    真的出现在 found_on 那一页上」。
+    """
     if kind not in KINDS:
         raise ValueError(f"未知抓取类型 {kind!r}")
     base = log_dir(root)
@@ -60,6 +66,12 @@ def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | 
         "chars": len(text), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "file": str(file.relative_to(base)),
     }
+    if images is not None or links is not None:
+        refs_file = base / key / f"{ts}-{kind}.refs.json"
+        refs_text = json.dumps({"images": list(images or []), "links": list(links or [])}, ensure_ascii=False)
+        paths.atomic_write(refs_file, refs_text)
+        entry["refs_file"] = str(refs_file.relative_to(base))
+        entry["refs_sha256"] = hashlib.sha256(refs_text.encode("utf-8")).hexdigest()
     with (base / "index.lock").open("a", encoding="utf-8") as lock_f:
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
@@ -100,3 +112,18 @@ def read_text(entry: dict[str, Any], root: Path | None = None) -> str:
     if hashlib.sha256(text.encode("utf-8")).hexdigest() != entry.get("sha256"):
         raise ValueError(f"留档 {entry.get('id')} 的全文与登记的 sha256 不符（被改过），不能作比对依据")
     return text
+
+
+def read_refs(entry: dict[str, Any], root: Path | None = None) -> dict[str, list[dict]]:
+    """读一条记录的图片 / 链接列表；没存过（D100 之前的记录）回空列表。文件被动过就报错，口径同 read_text。"""
+    if not entry.get("refs_file"):
+        return {"images": [], "links": []}
+    base = log_dir(root)
+    file = (base / str(entry["refs_file"])).resolve()
+    if not file.is_relative_to(base.resolve()):
+        raise ValueError(f"留档路径越界：{entry['refs_file']}")
+    text = file.read_text(encoding="utf-8")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != entry.get("refs_sha256"):
+        raise ValueError(f"留档 {entry.get('id')} 的图片 / 链接列表与登记的 sha256 不符（被改过），不能作比对依据")
+    data = json.loads(text)
+    return {"images": list(data.get("images") or []), "links": list(data.get("links") or [])}

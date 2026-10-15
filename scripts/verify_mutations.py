@@ -655,9 +655,10 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-13", "guard": "模型发起的 review 带选项一律拒", "file": SESSION,
      "old": '        if origin == "model" and _model_argv_has_options(argv, ep_dir):\n',
      "new": '        if False:  # MUT-13\n'},
-    {"id": "S9-MUT-14", "guard": "批准抓取前复核序号仍指向该 URL", "file": SESSION,
-     "old": '        aligned = 0 < no <= len(current) and str(current[no - 1].get("url") or "") == url\n',
-     "new": '        aligned = True  # MUT-14\n'},
+    # S9-MUT-14（抓取前复核序号）随 D100 撤销：提议后钩子改为核对、不再抓取。换成 D100 的护栏
+    {"id": "D100-1", "guard": "提议后钩子跑 acquire check，不跑 fetch", "file": SESSION,
+     "old": '            f"acquire check {\',\'.join(str(n) for n in nos)}", episode_dir=self.host.ep_dir, scope="asset",\n',
+     "new": '            f"acquire fetch {\',\'.join(str(n) for n in nos)}", episode_dir=self.host.ep_dir, scope="asset",  # MUT D100-1\n'},
     # S9-MUT-15（抓取卡逐条问人）随 ADR-0030 撤销：抓取不再出卡。换成 ADR-0030 新边界的三条护栏
     {"id": "D78-1", "guard": "bash 命中硬危险才弹卡（未命中免卡、命中不免）", "file": SESSION,
      "old": "        if not tags:\n            return ToolVerdict(\"allow\", echo=_echo_line(name, args))\n",

@@ -255,7 +255,7 @@ CLANNAD（blog/375742）、知乎「哆啦A梦·大雄奶奶」（zhihu.com/ques
 1. **登记缺口**：`write_episode_file` 写本期 `02-asset-requests.json`（数组，一段一条：`段`、`要什么画面`、
    `原片为何给不了`、`状态`——待找 / 已提议 / 已入池 SPxx / 找不到）。补完回来改状态，人和后面的回合都靠它知道还缺什么。
 2. **找图**：按 `skills/acquire-assets/SKILL.md` 搜。`web_fetch` / `crawl` 的返回里有 `images`（页面图片直链），
-   拿它写候选（type `scan`），走 `acquire_propose`，人在卡上批。**不许自己下载。**
+   拿它写候选（type `scan`），走 `acquire_propose`（登记并核对，返回机器表给人看；人点名后 `acquire fetch`，D100）。**不许自己下载。**
    候选的 `why` 写明「补段 N 的缺口：讲的是什么、原片为什么给不了」，人在提议卡上一眼能判。
    图要原图：短边 <1600 门禁直接拒（放大到 1080p 会糊）。
 3. **入期内补丁池**：`acquire gate` 过门禁 → `acquire register <文件> --to-patch <期目录>` →

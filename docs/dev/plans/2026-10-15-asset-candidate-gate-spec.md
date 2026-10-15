@@ -1,6 +1,6 @@
 # D100 素材候选关卡：交人批的表只能由机器核过的数据生成（施工图）
 
-> 状态：**待人确认**（2026-10-15）。第五节有三个要人定的点。
+> 状态：**已施工·机检与真实冒烟通过**（2026-10-15；人定第五节 ① 不自动下载、② v1 不许豁免、③ 不做模型对比；施工记录见第十节）。
 > 关联：D99（事实关卡，本图照它的思路做到素材上）、ADR-0021、ADR-0030（`acquire_propose` 一调用就下载）、D96。
 
 ## 一、目标与对应 issue
@@ -106,7 +106,32 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run     # 动了工具表 sche
 
 ## 九、完成判定
 
-- [ ] pytest / tsc / vitest 全绿，变异结果贴出
-- [ ] 真实冒烟三项通过
-- [ ] ADR-0030 修订注、各处规程改写、issues D100 行、plans/README 状态列已更新
+- [x] pytest / tsc / vitest 全绿，变异结果贴出（见第十节）
+- [x] 真实冒烟三项通过（见第十节）
+- [x] ADR-0030 修订注、各处规程改写、issues D100 行、plans/README 状态列已更新
 - [ ] 待人：下一轮补素材时，只看工具返回的表批一次，确认表能看懂、不用再自己核来源
+
+## 十、施工记录（2026-10-15 晚）
+
+与施工图的出入（人在施工前批过）：
+
+- **核对不在 `propose_candidates` 里跑**：`candidates.py` 首条纪律是零网络能力，LLM 工具进程也要绕开 `acquire.py` 的 numpy 导入链。改为把原「提议后自动下载」钩子（`session._post_execute`）换成「提议后自动核对」：对本次输入里、在清单中且不在台账的候选跑一次 `run_pipeline("acquire check <号>")`（子进程），按末行 `REVIEW_FILE <路径>` 读回机器表，挂进工具结果 `result.review`（路径须在 incoming/、名为 review-*.md）。效果同施工图：模型拿到的工具返回就带机器表，不下载。
+- **出处比对去掉 `utm_*` 参数**（施工图写「`norm_url` 口径与 D99 一致」）：冒烟实测 Commons 文件页指向原图的链接带 `?utm_source=…&utm_campaign=…`，干净链接按 `norm_url` 比不上。只在 `candidate_check` 里多去 utm_，D99 的 `norm_url` 不动；其他查询参数照旧区分。
+- 留档里的链接保留**无锚文本**的（`_extract_links(keep_unanchored=True)`）：包着缩略图的 `<a href="原图">` 没有锚文本，正是最常用的原图链接；给模型看的链接清单照旧丢空锚。
+- 结论优先级：打不开 > 出处核不上 > 门禁会拒（文件不存在是更基本的事实）；表里列出全部不过的原因。
+- 规程改写除批过的四处外，`docs/runbook/02-script.md` 2.5 步、`04-clips.md` 找素材、`skills/write-script/SKILL.md` 8.5 节也写着「一调用就下载 / 人在卡上批」，同步改成同一句，免得说明互相矛盾。
+- `scripts/verify_mutations.py` 的 S9-MUT-14（抓取前复核序号）随钩子不再抓取撤销，换成 D100-1（钩子跑 check 不跑 fetch）。
+
+新增 `pipeline/candidate_check.py`（出处 / 可得性 / 授权 / 门禁预判，出网走注入的 runner；4 路并发）、`acquire check`（免卡，出网只解析）；`acquire fetch` 只抓最近一次结论为「可下载」的。
+
+测试：新增 `tests/test_candidate_check.py` 40 条；改写 `test_agent_session.py` TK-2/3 一组为核对、`test_project_session.py` 一条；fetch 用例的夹具补一笔「可下载」核对；`test_agent_context_claims` 改断言「不下载」。变异 18/18 被抓（施工图列的 6 类，加钩子仍抓、utm 两向、留档链接丢空锚、包装层不交列表、refs 不查 sha、钩子不校验路径、图片全量下载、取最早一次核对、crawl 不出列表、门禁 `<=`、优先级对调、工具不拦缺 found_on）。
+
+真实冒烟（10-15 晚）：
+1. web_fetch 重抓 supercell.jp、originalnews.nico/20667/2、ascii.jp 一页（ORICON 存档的 URL 不在留档里，换成 ascii.jp），留档分别存下 12 / 8 / 51 张图、13 / 74 / 169 条链接。用页上的 6 张图提候选：核对全部给出实测尺寸（1200×720、72×72、1200×800、17×18、251×251、31×10），全部「门禁会拒」（短边 < 1600），读不出尺寸 0 条。另取一张真实 Commons 原图（File:Day 3 - Big Sight at Night.jpg）：「可下载」，5056×3792，授权 CC BY-SA 2.0 与作者取自 API。
+2. 10-15 那 6 个 Commons 文件名：全部「打不开」（Commons API：没有这个文件），模型写的 CC0 没进表。
+3. `acquire fetch 46,39`：#46 下载落盘（1.4MB），#39（同一张图、found_on 填没抓过的页）被拒，原因「出处核不上」。
+
+冒烟留下的东西：candidates.json 里 14 条标题以「[D100冒烟]」开头的候选（#33–#46，清单只追加不删）、incoming/ 下一张 `D100冒烟_Commons_真实文件_Day_3_Big_Sight_at_Night.jpg` 与台账一条、checks.jsonl 与两份 review-*.md。删不删由人定。
+
+待人：下一轮补素材时只看工具返回的表批一次，确认能看懂、不用再自己核来源。
+

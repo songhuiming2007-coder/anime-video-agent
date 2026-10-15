@@ -24,7 +24,9 @@ from pipeline import paths
 from pipeline.agent.tools import assert_egress_boundary
 from pipeline.agent.web import (
     _cap_images,
+    _clean_refs,
     _extract_images,
+    _extract_links,
     _guard_url,
     _normalized_for_assert,
     _scrub,
@@ -266,7 +268,9 @@ def crawl_page(
     capped_md = scrubbed_md[: cfg.max_chars] if truncated else scrubbed_md
 
     # 图片直链（D84 PR-E）：与 web_fetch 同一套提取与双帽截断；crawl 段不带密钥表，与正文同样只过 _scrub
-    images, images_truncated = _cap_images(_extract_images(str(raw.get("html") or ""), final_url), ())
+    raw_html = str(raw.get("html") or "")
+    all_images = _extract_images(raw_html, final_url)
+    images, images_truncated = _cap_images(all_images, ())
 
     return {
         "url": clean_url,
@@ -276,6 +280,9 @@ def crawl_page(
         "stealth": bool(stealth),
         "images": images,
         "images_truncated": images_truncated,
-        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop
-        **({"full_text": scrubbed_md} if keep_full else {}),
+        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop。
+        # D100：同一份 html 的完整图片 / 链接列表一并留档（链接不给模型看，crawl 只给正文与图片）
+        **({"full_text": scrubbed_md, "full_images": _clean_refs(all_images, ()),
+            "full_links": _clean_refs(_extract_links(raw_html, final_url, keep_unanchored=True), ())}
+           if keep_full else {}),
     }

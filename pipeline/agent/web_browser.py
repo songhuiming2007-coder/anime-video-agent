@@ -27,6 +27,9 @@ from pipeline import paths
 from pipeline.agent.tools import assert_egress_boundary
 from pipeline.agent.web import (
     _TextExtractor,
+    _clean_refs,
+    _extract_images,
+    _extract_links,
     _guard_url,
     _normalized_for_assert,
     _scrub,
@@ -234,6 +237,7 @@ class _PlaywrightSessionAdapter:
         return {
             "url": str(page.url or ""),
             "text": parser.get_text(),
+            "html": html,  # D100：给留档抽图片 / 链接；只在本模块内用，不进工具返回
         }
 
     def open_tab(self, url: str, *, timeout_s: float = 60.0) -> None:
@@ -547,6 +551,12 @@ def browser_action(
         _guard_url(cur_url, trusted_ranges=cfg.trusted_fake_ip_ranges)
     raw_text = str(raw_res.get("text") or "")
     scrubbed = _scrub(raw_text)
+    refs: dict[str, Any] = {}
+    if keep_full:
+        raw_html = str(raw_res.get("html") or "")
+        base = cur_url or clean_url
+        refs = {"full_images": _clean_refs(_extract_images(raw_html, base), ()),
+                "full_links": _clean_refs(_extract_links(raw_html, base, keep_unanchored=True), ())}
     truncated = len(scrubbed) > cfg.max_chars
     capped = scrubbed[: cfg.max_chars] if truncated else scrubbed
     return {
@@ -554,8 +564,8 @@ def browser_action(
         "url": _scrub(cur_url),
         "text": capped,
         "truncated": truncated,
-        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop
-        **({"full_text": scrubbed} if keep_full else {}),
+        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop（D100 起连同图片 / 链接列表）
+        **({"full_text": scrubbed, **refs} if keep_full else {}),
     }
 
 
