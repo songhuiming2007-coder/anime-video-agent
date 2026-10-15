@@ -13,6 +13,8 @@ status: accepted
 
 > **修订注（2026-10-15，ADR-0032）**：工具表取消数量硬上限，改为软约束（每个工具的 `adr` 字段指向现存 ADR 或施工图，出处里回答「为什么不复用现有工具」）。本文中的封顶数字已失效。
 
+> **修订注（2026-10-15，D96）**：第三级浏览器由 Playwright 启动的 Chromium（`data/browser-profile`）改为 Camoufox（Firefox 内核，`data/browser-profile-firefox`）：Chromium 里 Google 拒绝登录，YouTube 不登录过不了 bot 检查；Camoufox 下 Google 等 8 个站登录、重开保持均实测通过。yt-dlp 改读配置目录下的 `cookies.sqlite`（`--cookies-from-browser firefox:<目录>`，不经钥匙串），仍是「整个目录交给 yt-dlp，AVA 不碰 cookie 本体」。人补登录走 `uv run python -m pipeline.agent.web_browser login [URL ...]`。依据见 [实测记录](../plans/2026-10-15-browser-login-options.md)、[施工图](../plans/2026-10-15-browser-camoufox-spec.md)。
+
 ## 背景
 
 ADR-0018 冻结的 6 工具表 + scout-handoff 派工单模式，在实践中暴露结构性矛盾：

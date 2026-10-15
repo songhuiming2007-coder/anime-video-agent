@@ -242,7 +242,7 @@ def fetch_argv(url: str, dest_dir: Path, slug: str, *, yt_dlp: list[str] | None 
                cookies: str | None = None) -> list[str]:
     """要执行的抓取命令（`--dry-run` 打印的就是它）。
 
-    cookies 是 yt-dlp 的 `--cookies-from-browser` 规格（如 `chromium:data/browser-profile`），
+    cookies 是 yt-dlp 的 `--cookies-from-browser` 规格（如 `firefox:data/browser-profile-firefox`），
     来自 `cookies_spec_for`：域在 web.json browser.cookies_for 里才挂。ava 不碰 cookie 本体，
     profile 目录交给 yt-dlp 自己读（ADR-0021）。
     """

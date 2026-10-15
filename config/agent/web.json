@@ -16,10 +16,10 @@
     "max_chars": 30000
   },
   "browser": {
-    "profile_dir": "data/browser-profile",
+    "profile_dir": "data/browser-profile-firefox",
     "headed": true,
     "timeout_s": 60,
-    "cookies_for": []
+    "cookies_for": ["youtube.com", "youtu.be", "bilibili.com", "x.com", "twitter.com"]
   },
   "trusted_fake_ip_ranges": []
 }

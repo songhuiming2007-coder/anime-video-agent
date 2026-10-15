@@ -1200,14 +1200,12 @@ def _cookies_root(tmp_path: Path, cookies_for: list[str], with_db: bool = True) 
     cfg_dir = tmp_path / "config" / "agent"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "web.json").write_text(json.dumps({"browser": {
-        "profile_dir": "data/browser-profile", "headed": True, "timeout_s": 60,
+        "profile_dir": "data/browser-profile-firefox", "headed": True, "timeout_s": 60,
         "cookies_for": cookies_for}}), encoding="utf-8")
-    prof = tmp_path / "data" / "browser-profile"
+    prof = tmp_path / "data" / "browser-profile-firefox"
+    prof.mkdir(parents=True)
     if with_db:
-        (prof / "Default").mkdir(parents=True)
-        (prof / "Default" / "Cookies").write_bytes(b"")
-    else:
-        prof.mkdir(parents=True)
+        (prof / "cookies.sqlite").write_bytes(b"")   # D96：Camoufox（Firefox）的 cookie 库
     return tmp_path
 
 
@@ -1215,8 +1213,7 @@ def test_cookies_spec_命中域名给规格_子域名也算(tmp_path: Path) -> N
     from pipeline.agent import web_browser as wb
     root = _cookies_root(tmp_path, ["youtube.com"])
     spec = wb.cookies_spec_for("https://www.youtube.com/watch?v=x", root=root)
-    assert spec is not None and spec.startswith("chromium:")
-    assert "browser-profile" in spec
+    assert spec == f"firefox:{root.resolve() / 'data' / 'browser-profile-firefox'}"
     assert wb.cookies_spec_for("https://youtu.be/x", root=root) is None          # 不在清单
     assert wb.cookies_spec_for("https://notyoutube.com/x", root=root) is None    # 后缀撞名不算
 
@@ -1230,8 +1227,162 @@ def test_cookies_spec_空清单一律不挂(tmp_path: Path) -> None:
 def test_cookies_spec_命中但没登录过要响(tmp_path: Path) -> None:
     from pipeline.agent import web_browser as wb
     root = _cookies_root(tmp_path, ["nicovideo.jp"], with_db=False)
-    with pytest.raises(PermissionError, match="登录"):
+    with pytest.raises(PermissionError, match="登录") as info:
         wb.cookies_spec_for("https://www.nicovideo.jp/watch/sm9", root=root)
+    assert f"{wb.LOGIN_COMMAND} https://www.nicovideo.jp/" in str(info.value)
+
+
+def test_cookies_spec_只有旧Chromium库不算登录过(tmp_path: Path) -> None:
+    # D96：换 Camoufox 后，配置目录里残留的 Chromium 库（Default/Cookies）yt-dlp 用 firefox: 读不到
+    from pipeline.agent import web_browser as wb
+    root = _cookies_root(tmp_path, ["youtube.com"], with_db=False)
+    (root / "data" / "browser-profile-firefox" / "Default").mkdir()
+    (root / "data" / "browser-profile-firefox" / "Default" / "Cookies").write_bytes(b"")
+    with pytest.raises(PermissionError, match="登录"):
+        wb.cookies_spec_for("https://www.youtube.com/watch?v=x", root=root)
+
+
+def test_真实web配置_换Camoufox配置且cookies_for逐个有依据() -> None:
+    """config/agent/web.json：cookies_for 只放实测有收益的域（施工图 2026-10-15-browser-camoufox-spec §四），
+    随手加域要先在施工图写依据再改这里。"""
+    raw = json.loads((paths.ROOT / "config" / "agent" / "web.json").read_text(encoding="utf-8"))["browser"]
+    assert raw["profile_dir"] == "data/browser-profile-firefox"
+    assert raw["cookies_for"] == ["youtube.com", "youtu.be", "bilibili.com", "x.com", "twitter.com"]
+
+
+# ---------- D96：启动器换 Camoufox ----------
+
+
+class _FakePW:
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def _fake_camoufox(monkeypatch: pytest.MonkeyPatch, *, missing: Exception | None = None,
+                   boom: Exception | None = None) -> dict[str, Any]:
+    seen: dict[str, Any] = {"pw": _FakePW()}
+
+    def camoufox_path(download_if_missing: bool = True) -> Path:
+        seen["download_if_missing"] = download_if_missing
+        if missing is not None:
+            raise missing
+        return Path("/cache/camoufox")
+
+    def new_browser(pw: Any, **kwargs: Any) -> Any:
+        seen["kwargs"] = kwargs
+        if boom is not None:
+            raise boom
+        return types.SimpleNamespace(on=lambda *a: seen.setdefault("on", a[0]), pages=[])
+
+    pkgman = types.ModuleType("camoufox.pkgman")
+    pkgman.camoufox_path = camoufox_path  # type: ignore[attr-defined]
+    sync_api = types.ModuleType("camoufox.sync_api")
+    sync_api.NewBrowser = new_browser  # type: ignore[attr-defined]
+    pw_api = types.ModuleType("playwright.sync_api")
+    pw_api.sync_playwright = lambda: types.SimpleNamespace(start=lambda: seen["pw"])  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "camoufox", types.ModuleType("camoufox"))
+    monkeypatch.setitem(sys.modules, "camoufox.pkgman", pkgman)
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", sync_api)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", pw_api)
+    return seen
+
+
+@pytest.mark.parametrize("headed", [True, False])
+def test_启动器用Camoufox持久配置(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, headed: bool) -> None:
+    seen = _fake_camoufox(monkeypatch)
+    sess = _default_launch_fn(user_data_dir=tmp_path / "prof", headed=headed)
+    assert seen["download_if_missing"] is False                 # 预检不许自动下载
+    assert seen["kwargs"] == {"persistent_context": True, "user_data_dir": str(tmp_path / "prof"),
+                              "headless": not headed, "os": "macos"}
+    assert seen["on"] == "close"                                # 死会话探活回调照旧挂上
+    assert sess.probe() is True
+
+
+def test_启动器_本体缺失提示人fetch且不启动(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 文案取自 camoufox 0.5.6 pkgman.launch_path 的原话
+    seen = _fake_camoufox(monkeypatch, missing=FileNotFoundError(
+        "Camoufox is not installed at /x. Please run `camoufox fetch` to install."))
+    with pytest.raises(ValueError, match="uv run camoufox fetch"):
+        _default_launch_fn(user_data_dir=tmp_path / "prof", headed=True)
+    assert "kwargs" not in seen                                 # 没走到启动
+
+
+def test_启动器_配置被占用给出提示并停掉playwright(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 文案取自 2026-10-15 施工实测：同一配置第二个进程启动时 Camoufox 的报错
+    seen = _fake_camoufox(monkeypatch, boom=RuntimeError(
+        "Failed to launch the browser process. A copy of Camoufox is already open. Only one copy of Camoufox can be open at a time."))
+    with pytest.raises(ValueError, match="正被另一个窗口占用"):
+        _default_launch_fn(user_data_dir=tmp_path / "prof", headed=True)
+    assert seen["pw"].stopped is True
+
+
+def test_启动器_camoufox导入失败是显式错误(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _fake_camoufox(monkeypatch)
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", None)
+    with pytest.raises(ValueError, match="导入失败"):
+        _default_launch_fn(user_data_dir=tmp_path / "prof", headed=True)
+
+
+# ---------- D96：人补登录入口 ----------
+
+
+class _FakeLoginSession:
+    def __init__(self, log: list[Any], bad: str = "") -> None:
+        self.log, self.bad = log, bad
+
+    def open_tab(self, url: str, *, timeout_s: float = 60.0) -> None:
+        if url == self.bad:
+            raise RuntimeError("net::ERR")
+        self.log.append(("open", url))
+
+    def wait_closed(self) -> None:
+        self.log.append("wait_closed")
+
+    def close(self) -> None:
+        self.log.append("close")
+
+
+def test_login_有界面开配置_逐个开网址_等关窗(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _cookies_root(tmp_path, [])
+    log: list[Any] = []
+
+    def fake_launch(*, user_data_dir: Path, headed: bool) -> Any:
+        log.append(("launch", user_data_dir, headed))
+        return _FakeLoginSession(log, bad="https://down.example/")
+
+    rc = web_browser.login_main(["login", "https://a.example/", "https://down.example/", "https://b.example/"],
+                                root=root, launch_fn=fake_launch)
+    assert rc == 0
+    assert log == [("launch", root.resolve() / "data" / "browser-profile-firefox", True),
+                   ("open", "https://a.example/"), ("open", "https://b.example/"), "wait_closed", "close"]
+    assert "打不开 https://down.example/" in capsys.readouterr().out
+
+
+def test_login_配置目录越界被守卫拦(tmp_path: Path) -> None:
+    root = _cookies_root(tmp_path, [])
+    (root / "config" / "agent" / "web.json").write_text(json.dumps({"browser": {
+        "profile_dir": "../outside", "headed": True, "timeout_s": 60}}), encoding="utf-8")
+    with pytest.raises(PermissionError):
+        web_browser.login_main(["login"], root=root, launch_fn=lambda **k: pytest.fail("不该启动"))
+
+
+def test_login_启动失败退出码非0(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _cookies_root(tmp_path, [])
+
+    def fake_launch(**_k: Any) -> Any:
+        raise ValueError("browser 操作失败（启动失败: x）（这份浏览器配置正被另一个窗口占用：先关掉它，或结束 AVA 里的浏览器会话）")
+
+    assert web_browser.login_main(["login"], root=root, launch_fn=fake_launch) == 1
+    assert "正被另一个窗口占用" in capsys.readouterr().out
+
+
+def test_login_不认识的子命令(tmp_path: Path) -> None:
+    assert web_browser.login_main([], root=tmp_path) == 2
+    assert web_browser.login_main(["logn"], root=tmp_path) == 2
 
 
 # ---------------------------------------------------------------------------

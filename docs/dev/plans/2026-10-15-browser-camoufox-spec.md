@@ -1,6 +1,6 @@
 # D96 browser 工具换 Camoufox（施工图）
 
-> 状态：**待人确认**（2026-10-15）。实测依据见 [2026-10-15-browser-login-options.md](2026-10-15-browser-login-options.md)（下称「实测记录」）。
+> 状态：**已施工·机检通过**（2026-10-15 人说开工；真实冒烟三项见 §九）；待人：AVA 会话里用一次 browser、跑一次 `login` 入口。实测依据见 [2026-10-15-browser-login-options.md](2026-10-15-browser-login-options.md)（下称「实测记录」）。
 
 ## 一、目标与对应 issue
 
@@ -81,7 +81,29 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 
 ## 八、完成判定
 
-- [ ] `uv run pytest` 全绿；vitest、tsc 全绿；变异结果贴出
-- [ ] 真实冒烟三项通过（persist_check 7 站、YouTube probe、crawl 抓页）
-- [ ] ADR-0021 修订注、issues D96 行、plans/README 状态列已更新
+- [x] `uv run pytest` 全绿；vitest、tsc 全绿；变异 15/16（见 §九）
+- [x] 真实冒烟：persist_check 7 站、crawl 抓页通过；YouTube probe 不再报 bot 检查，但另因 `--no-cache-dir` 失败（既有问题，见 §九，待人定）
+- [x] ADR-0021 修订注、issues D96 行、plans/README 状态列已更新
 - [ ] 待人：AVA 会话里 browser 打开 youtube.com 是登录状态；`login` 入口开关窗口正常
+
+## 九、施工记录（2026-10-15）
+
+**施工补记（与上文不一致处，按实测处理）**：
+
+1. **camoufox 启动时会自动下载浏览器**：`camoufox.pkgman.camoufox_path(download_if_missing=True)` 是默认值，`NewBrowser` 经 `launch_path()` 走到它，找不到本体就从 GitHub 下载。违背「浏览器二进制绝不自动下载」。改为启动前先 `camoufox_path(download_if_missing=False)` 预检，缺了抛 `ValueError` 并提示 `uv run camoufox fetch`（常量 `CAMOUFOX_FETCH_HINT`）。缺本体时的原话是「… is not installed. Please run \`camoufox fetch\` to install.」（`CamoufoxNotInstalled`，`FileNotFoundError` 子类）。
+2. **`web.local.json` 里原本没有 `cookies_for`**：local 存在时整份取代 `web.json`，只改 `profile_dir` 的话本机一个域都不挂。施工时把 5 个域一并写进 local。
+3. **配置被占用**：实测第二个进程开同一配置，Camoufox 报「A copy of Camoufox is already open. Only one copy of Camoufox can be open at a time.」。启动器按 `already open`（常量 `_PROFILE_IN_USE`）补一句「先关掉它，或结束 AVA 里的浏览器会话」；`login` 入口打印后退出码 1。
+4. `login` 用到的「新标签页打开」「等窗口关闭」做成 `_PlaywrightSessionAdapter.open_tab` / `wait_closed` 两个方法，入口不碰适配器内部的 context。
+
+**依赖**：`uv lock` 后 playwright 1.63.0 → 1.62.0，新增 camoufox 0.5.6 及其依赖（browserforge、screeninfo、ua-parser 等），没有卸掉别的包；camoufox 直接找到本机缓存的浏览器本体，没有下载。
+
+**测试**：`tests/test_agent_crawl_browser.py` 夹具改写 `cookies.sqlite`，新增 11 条（只有旧 Chromium 库不算登录过、真实 web.json、启动器 ×5、login ×4 等）。变异 15/16：去掉 `os`、`headless` 取反、去掉 `persistent_context`、预检允许下载、不预检、cookie 库改回 `Default/Cookies`、`firefox:` 改回 `chromium:`、`cookies_for` 少一个域、login 不等关窗 / 用无界面 / 一站失败就中断 / 启动失败返回 0 / 不关会话、占用判据失效、启动失败不停 playwright——全部被抓；存活 1 处是 login 里的隔离守卫：`load_browser_section` 读配置时已经守过一次，越界在那一步就抛，去掉 login 里这一次测不出差别（等价变异，保留作双保险）。
+
+**真实冒烟**：
+
+- 项目虚拟环境跑 persist_check：niconico / bilibili / X / pixiv / 知乎 / 小红书 / Bangumi 7 站仍为已登录。
+- 走 `_default_launch_fn(headed=False)`：bilibili `isLogin` 为真；YouTube 首页没有登录按钮。
+- `python -m pipeline.acquire probe 6`（bilibili）：命令行带 `firefox:…`，可解析、最高 1080p。
+- `probe 9,13`（YouTube）：**不再报 bot 检查**，但报「The page needs to be reloaded」，前面有「Signature solving failed / n challenge solving failed」。查明原因是探针命令带的 `--no-cache-dir`：同一条视频、同一份 cookie，去掉这个参数就能解析（1080p），加上就失败；yt-dlp 解 YouTube 签名要用自己缓存目录里的求解脚本（`~/.cache/yt-dlp/challenge-solver/lib.json`，2026-09-06 留下的），禁缓存就用不上。下载命令 `fetch_argv` 不带这个参数，不受影响。这是探针原有的问题，以前被 bot 检查挡在前面没露出来，**不在本图范围，未改，待人定**。
+- crawl（crawl4ai 0.9.4，playwright 1.62.0）抓萌娘百科一页正常。
+- 观察：手动连测时有一次（启动器冒烟刚打开过 youtube.com 之后）不带 `--no-cache-dir` 也失败了一轮，几分钟后同样的命令连续两轮都成功；原因未查。

@@ -48,17 +48,22 @@ apple = [
     "mlx-lm>=0.31",
 ]
 # 网络升级链第二、三级（Spec 5 / ADR-0021）：顶层只用 find_spec 探测，未安装时从工具 schema 隐藏。
-# 下界钉死依据（S16 🔵-6 / RF-1）：2026-09 实测 uv.lock 锁定 crawl4ai 0.9.4 与 playwright 1.63.0，
-# 前者 AsyncWebCrawler + BrowserConfig/CrawlerRunConfig + fit_markdown API 契约稳定，
-# 后者 launch_persistent_context + context.on("close") 死会话探活契约稳定。
+# 下界钉死依据（S16 🔵-6 / RF-1）：2026-09 实测 uv.lock 锁定 crawl4ai 0.9.4，
+# AsyncWebCrawler + BrowserConfig/CrawlerRunConfig + fit_markdown API 契约稳定。
+# browser（D96，2026-10-15）：第三级浏览器换 Camoufox（Firefox 内核）。camoufox 0.5.6 / 0.5.8 都要求
+# playwright<1.63，故 playwright 从 1.63.0 降到 1.62；persistent context + context.on("close") 探活
+# 在 1.62.0 上实测用过（docs/dev/plans/2026-10-15-browser-login-options.md）。camoufox 钉 0.5.6：
+# 实测用的就是这一版，本机缓存的浏览器本体也配它。
 # 浏览器二进制不进依赖解析，需人工一次性安装：
 #   uv run crawl4ai-setup
-#   uv run playwright install chromium
+#   uv run playwright install chromium    # crawl4ai 用
+#   uv run camoufox fetch                 # browser 工具用（已缓存则不必）
 crawl = [
     "crawl4ai>=0.9.4",
 ]
 browser = [
-    "playwright>=1.63.0",
+    "playwright>=1.62.0,<1.63",
+    "camoufox==0.5.6",
 ]
 # 测试只覆盖纯函数，**不需要片源、模型、外置盘**——clone 下来装完就能跑。
 # 涉及媒体的部分靠 pipeline 自己的守卫（截取守卫、质检门禁）在真跑时兜。
