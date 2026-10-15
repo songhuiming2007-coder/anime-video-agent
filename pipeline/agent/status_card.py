@@ -298,6 +298,9 @@ _CODING_AGENT = re.compile(
     r"(" + "|".join(re.escape(c) for c in CODING_AGENT_COMMANDS) + r")(?=$|[\s;&|)])"
 )
 _AGENT_TAG = "[拉起 coding agent]"
+# D99：事实库与抓取留档只许经 fact_add / 抓取工具写——事件起因正是 ava 用 bash heredoc 写事实文件
+_FACTS_PATH = re.compile(r"facts\.jsonl|fetch-log/")
+_FACTS_TAG = "[事实库] 绕过 fact_add / 抓取留档写入"
 
 
 def _gated_pipeline_hit(command: str) -> bool:
@@ -327,6 +330,8 @@ def bash_danger_tags(command: str) -> list[str]:
         tags.append(_TICKETS_TAG)
     if _CODING_AGENT.search(command):
         tags.append(_AGENT_TAG)
+    if _FACTS_PATH.search(stripped) and _WRITE_FORM.search(stripped):
+        tags.append(_FACTS_TAG)
     return tags
 
 

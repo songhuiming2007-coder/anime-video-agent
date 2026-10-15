@@ -437,6 +437,7 @@ SPEC_TOOLS = [
     "write_note",
     "bash",
     "view_image",
+    "fact_add",
 ]
 
 
@@ -759,7 +760,7 @@ def test_write_memory_registered_with_adr_and_memory_scopes(tmp_path: Path):
         (paths.ROOT / "config" / "agent" / "tools.json").read_text(encoding="utf-8")
     )
     assert "write_memory" in repo_tools["tools"]
-    assert len(repo_tools["tools"]) == 16   # ADR-0031 view_image 占第 16 位
+    assert sorted(repo_tools["tools"]) == sorted(TOOL_SCHEMAS)   # ADR-0032：不设数量上限，单表恰等于注册集
 
     # 宿主元数据：ADR-0023 必须指向现存且唯一的 ADR 文件
     schema = TOOL_SCHEMAS["write_memory"]

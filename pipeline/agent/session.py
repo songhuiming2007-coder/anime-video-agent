@@ -58,7 +58,7 @@ REQUEST_ID_BYTES = 16
 # 临界区工具（§2.2 第 3 条）：显式字面量，TG-5 比对它与「side_effect 为真的工具 − run_pipeline」。
 # Spec 12：cover_edit 不标 side_effect（fail-closed 弹卡）→ 必须同步进临界区。ADR-0028：write_note 同理。
 CRITICAL_TOOLS = frozenset(
-    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit", "write_note"}
+    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit", "write_note", "fact_add"}
 )
 
 # ADR-0030 决策 5：卡片答复「本会话都批准」——批准本次，并让本会话进程内同类（同 allow_key）此后免卡
@@ -253,7 +253,8 @@ class ToolVerdict:
 # ADR-0030 决策 3/4（D78）：可回退的写入与抓取类工具免卡。回退靠写前留底（草稿 / 定稿 / 笔记 /
 # 其余期文件）与记忆日志的 before/after；browser 用独立 profile。未登记的新工具照旧按 side_effect fail-closed
 AUTO_APPROVED_TOOLS = frozenset(
-    {"write_episode_file", "write_note", "write_memory", "cover_edit", "acquire_propose", "browser"}
+    {"write_episode_file", "write_note", "write_memory", "cover_edit", "acquire_propose", "browser",
+     "fact_add"}  # D99：写的是本卷事实库（锁内追加、可人工核查），拒写由校验本身完成
 )
 # ADR-0030 决策 2：run_pipeline 只有这些 cloud 子命令弹卡——开机 / 跑任务花钱，down / 清理销毁云端东西
 CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data"})
