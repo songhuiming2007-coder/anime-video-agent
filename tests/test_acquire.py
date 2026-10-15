@@ -231,6 +231,32 @@ class TestFetcher:
         assert A.slugify("EGOIST LIVE 2023 横滨终场") == "EGOIST_LIVE_2023_横滨终场"
         assert A.slugify("///") == "asset"
 
+    def test_D97_假名不丢(self):
+        # 2026-10-14 supercell 实抓的两条：旧规则落成「supercell_Official_MV_Playback_版」和「supercell_僕_…」
+        assert (A.slugify("supercell「さよならメモリーズ」Official MV（Playback 版）")
+                == "supercell_さよならメモリーズ_Official_MV_Playback_版")
+        assert (A.slugify("supercell「僕らのあしあと」Official MV（Playback 版）")
+                == "supercell_僕らのあしあと_Official_MV_Playback_版")
+
+    def test_D97_两首纯假名标题不再撞名(self):
+        assert A.slugify("「さよならメモリーズ」MV") != A.slugify("「うたかた花火」MV")
+
+    def test_D97_别的文字系统也保留(self):
+        assert A.slugify("아이유 좋은 날 MV") == "아이유_좋은_날_MV"
+        assert A.slugify("Ария — Штиль") == "Ария_Штиль"
+        # 组合附标（天城文元音符号）不是字母也不能折掉，否则一个词断成几截
+        assert A.slugify("नमस्ते") == "नमस्ते"
+
+    def test_D97_全角半角归一(self):
+        assert A.slugify("Ｐｌａｙｂａｃｋ ｶﾀｶﾅ") == "Playback_カタカナ"
+
+    def test_D97_按字节截不按字符截(self):
+        from pipeline.candidates import SLUG_MAX_BYTES
+        s = A.slugify("あ" * 100)
+        assert len(s.encode("utf-8")) <= SLUG_MAX_BYTES
+        assert s == "あ" * (SLUG_MAX_BYTES // 3)       # 截在字边界上，不留半个字
+        assert A.slugify("a" * 100) == "a" * 80           # 纯 ASCII 行为不变
+
     def test_认不出类型不猜(self):
         assert A.kind_of("x.zip") == "unknown"
         assert A.kind_of("场刊.jpg") == "scan"
@@ -497,6 +523,27 @@ class TestFetchBatch:
             [{"url": "https://cdn.example.com/c-backup.mp4"}]), encoding="utf-8")
         assert A.cmd_fetch("3") == 1
         assert "查重没过" in capsys.readouterr().out
+
+    def test_D97_链接没抓过只撞名不指向forget(self, repo, capsys):
+        # 另一条素材已占了「直链甲」这个文件名；本条链接没抓过。旧提示让人 forget，会移走别人的台账
+        import json as J
+        (repo / "直链甲.mp4").write_bytes(b"\0")
+        (repo / "fetched.json").write_text(J.dumps(
+            [{"url": "https://other.example.com/z.mp4", "title": "别的歌", "candidate": 9,
+              "file": str(repo / "直链甲.mp4")}], ensure_ascii=False), encoding="utf-8")
+        assert A.cmd_fetch("1") == 1
+        out = capsys.readouterr().out
+        assert "撞名" in out and "候选 #9「别的歌」" in out
+        assert "forget <候选号>" not in out
+
+    def test_D97_链接抓过仍指向forget(self, repo, capsys):
+        import json as J
+        (repo / "直链甲.mp4").write_bytes(b"\0")
+        (repo / "fetched.json").write_text(J.dumps(
+            [{"url": "https://cdn.example.com/a.mp4", "candidate": 1,
+              "file": str(repo / "直链甲.mp4")}]), encoding="utf-8")
+        assert A.cmd_fetch("1") == 1
+        assert "acquire forget <候选号>" in capsys.readouterr().out
 
 
 class TestAlsoSchema:
