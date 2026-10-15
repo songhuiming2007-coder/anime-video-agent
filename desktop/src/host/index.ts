@@ -80,7 +80,13 @@ parentPort.on("message", (e) => {
       }
       const svc = new HostService(
         { userData: m.userData, isPackaged: m.isPackaged, appPath: m.appPath, devRepoRoot: m.devRepoRoot },
-        { chooseRepoRoot, confirm: (t, d) => confirmBroker.request(t, d), bootId, testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()) },
+        {
+          chooseRepoRoot,
+          confirm: (t, d) => confirmBroker.request(t, d),
+          bootId,
+          testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()),
+          attention: (a) => parentPort.postMessage({ type: "attention", kind: a.kind, key: a.key }),
+        },
         (reach) => parentPort.postMessage({ type: "reach", reach }),
         (dataRoot) => parentPort.postMessage({ type: "data-root", dataRoot }),
       );

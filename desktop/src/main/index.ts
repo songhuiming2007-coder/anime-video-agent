@@ -9,6 +9,7 @@ import { MediaServer, registerMediaScheme } from "./mediaProtocol";
 import { approveBoxOptions, APPROVE_BUTTON, createMainConfirmBroker, quitBoxOptions } from "./confirm";
 import { HOST_STDERR_TAIL_BYTES, QUIT_QUERY_TIMEOUT_MS, QUIT_STOP_TIMEOUT_MS } from "../shared/constants";
 import { initialRestartState, onHostCrash, onHostStarted } from "../shared/hostRestart";
+import { DOCK_IDLE, onAttention, onFocus, type DockAction, type DockState } from "../shared/attention";
 import type { HostToMain, MainToHost } from "../shared/lifecycle";
 import { repoRootProblem } from "../shared/repoRoot";
 
@@ -65,6 +66,8 @@ type TestGlobals = typeof globalThis & {
   __avaTestConfirm?: { calls: number; respond: boolean; last: { title: string; detail: string } | null };
   /** N44：focusWindow 被调次数（仅未打包构建，TI-10 断言用；系统焦点是否授予不归 app 控制） */
   __avaTestFocusCalls?: number;
+  /** D98：Dock 动作记录（仅未打包构建；e2e 断言用，Dock 本身截不到） */
+  __avaTestDock?: DockAction[];
 };
 
 // 测试专用启动开关：只在未打包构建中解析（TG-6、TS-7）
@@ -121,6 +124,21 @@ function boot(): void {
     if (!app.isPackaged) testGlobals.__avaTestFocusCalls = (testGlobals.__avaTestFocusCalls ?? 0) + 1;
     if (win.isMinimized()) win.restore();
     win.focus();
+  };
+
+  // D98（人选方案 C）：窗口不在前台时，角标记未看事件数；等人的事件让 Dock 一直弹到人切回来
+  let dock: DockState = DOCK_IDLE;
+  let bounceId: number | null = null;
+  const applyDock = (actions: DockAction[]) => {
+    for (const a of actions) {
+      if (!app.isPackaged) (testGlobals.__avaTestDock ??= []).push(a);
+      if (a.do === "badge") app.dock?.setBadge(a.text);
+      else if (a.do === "bounce") bounceId = app.dock?.bounce("critical") ?? null;
+      else if (bounceId !== null) {
+        app.dock?.cancelBounce(bounceId);
+        bounceId = null;
+      }
+    }
   };
 
   const sendToHost = (msg: MainToHost, transfer?: Electron.MessagePortMain[]) => {
@@ -295,6 +313,10 @@ function boot(): void {
         if (quitPhase === "stopping") finishQuit();
       } else if (m.type === "confirm-query") {
         mainConfirm.request(m.reqId, m.title, m.detail);
+      } else if (m.type === "attention") {
+        const r = onAttention(dock, { kind: m.kind, key: m.key }, win !== null && win.isFocused());
+        dock = r.state;
+        applyDock(r.actions);
       }
     });
     h.on("exit", (code) => {
@@ -385,6 +407,11 @@ function boot(): void {
       rendererLoaded = true;
       sendToHost({ type: "renderer-reset" });
       matchmake();
+    });
+    win.on("focus", () => {
+      const r = onFocus(dock);
+      dock = r.state;
+      applyDock(r.actions);
     });
     win.on("closed", () => {
       win = null;

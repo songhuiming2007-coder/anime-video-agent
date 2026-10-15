@@ -73,6 +73,7 @@ import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
 import { pollOnce, resyncState, type TailState } from "./tailer";
 import { titleProblem } from "../shared/sessionTitle";
+import { jobAttentions, type Attention } from "../shared/attention";
 
 export interface HostConfig {
   userData: string;
@@ -102,6 +103,8 @@ export interface HostDeps {
   resolveSessionWebKeys: (repoRoot: string, llmName: string | null) => Promise<Record<string, string>>;
   /** 会话定时器初值（测试注入缩短） */
   sessionTiming: Partial<SessionTiming>;
+  /** D98：叫人回来看的时刻（会话事件 + 作业结束），由 host 入口转给 main 更新 Dock；缺省不报 */
+  attention?: (a: Attention) => void;
   /** 仅未打包构建（TG-6）：测试驱动在此暂停 host（§4.3 after-heal / after-fingerprint-check 等） */
   testHook: (name: string) => Promise<void>;
   /** false = 不启动定时器（测试逐次驱动 tick） */
@@ -291,6 +294,7 @@ export class HostService {
       groupAlive,
       changed: () => this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() }),
       timing: this.deps.sessionTiming,
+      attention: (a) => this.deps.attention?.(a),
     });
   }
 
@@ -892,8 +896,10 @@ export class HostService {
       if (!alive.has(pid)) alive.set(pid, this.deps.pidAlive(pid));
       return alive.get(pid)!;
     };
+    const prev = rt.jobs;
     rt.jobs = foldEvents(rt.events, this.deps.now(), pidAlive, rt.prevMissing);
     rt.prevMissing = goneRunningJobIds(rt.jobs, pidAlive);
+    for (const a of jobAttentions(rt.epKey, prev, rt.jobs)) this.deps.attention?.(a);
   }
 
   snapshotOf(rt: EpisodeRuntime): EpisodeSnapshot {

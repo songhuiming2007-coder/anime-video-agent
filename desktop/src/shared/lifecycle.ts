@@ -3,6 +3,7 @@
 // repo-root-dialog / repo-root-chosen：repoRoot 只在 main 里选（§2.10，红队 R2-M5）——host 收到 renderer 的无参请求、
 // 先查在途互斥，再请 main 弹原生对话框并二次确认；renderer 从头到尾接触不到路径。
 // test-*：仅未打包构建（TG-6）——测试驱动经 main 布置 host 侧钩子（§4.3 testHook）。
+import type { AttentionKind } from "./attention";
 import type { Reach } from "./contracts";
 
 export type MainToHost =
@@ -26,4 +27,6 @@ export type HostToMain =
   | { type: "quit-state"; busy: { convKey: string; label: string; running: boolean; openRequests: number }[] }
   | { type: "sessions-down" }
   | { type: "confirm-query"; reqId: string; title: string; detail: string }
-  | { type: "test-hook-hit"; name: string };
+  | { type: "test-hook-hit"; name: string }
+  /** D98：叫人回来看（main 在窗口不在前台时更新 Dock 角标 / 弹跳） */
+  | { type: "attention"; kind: AttentionKind; key: string };

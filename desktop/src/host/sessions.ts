@@ -16,6 +16,7 @@ import {
   SESSION_READY_TIMEOUT_MS,
   SETTLE_TIMEOUT_MS,
 } from "../shared/constants";
+import { turnAttention, type Attention } from "../shared/attention";
 import { convSummary } from "../shared/convFold";
 import { parseOutFrame, type OutFrame } from "../shared/convFrames";
 import { LineSplitter } from "../shared/jsonl";
@@ -92,6 +93,8 @@ export interface SessionDeps {
   /** 会话状态有变时通知 service 重推 episodes.summary（徽标） */
   changed: () => void;
   timing?: Partial<SessionTiming>;
+  /** D98：该叫人回来看的时刻（新审批卡、新停机点、回合结束）；main 在窗口不在前台时更新 Dock */
+  attention?: (a: Attention) => void;
 }
 
 interface Pending<T> {
@@ -205,6 +208,8 @@ function SHUTDOWN_FRAME(): Record<string, unknown> {
 export class SessionManager {
   private readonly timing: SessionTiming;
   private readonly states = new Map<ConvKey, SessionState>();
+  /** D98：每条会话上一帧 stop_points 的内容；停机点没变（每回合都会重发一帧）就不再叫人 */
+  private readonly stopKeys = new Map<ConvKey, string>();
   private n = 0;
   private ridSeq = 0;
   private quitting = false;
@@ -621,12 +626,19 @@ export class SessionManager {
         }
         break;
       }
-      case "turn_finished":
+      case "turn_finished": {
         s.phase = "idle";
         s.turnId = null;
         this.registerSettle(s, String(f.turn_id));
+        const kind = turnAttention(String(f.stopped));
+        if (kind) this.deps.attention?.({ kind, key: `turn:${s.key}:${String(f.turn_id)}` });
         break;
+      }
       case "stop_points": {
+        const items = Array.isArray(f.items) ? f.items : [];
+        const stopKey = stringifyLossless(items);
+        if (items.length > 0 && this.stopKeys.get(s.key) !== stopKey) this.deps.attention?.({ kind: "wait", key: `stop:${s.key}:${stopKey}` });
+        this.stopKeys.set(s.key, stopKey);
         const tid = f.turn_id;
         if (s.settle && tid !== null && tid === s.settle.turnId) {
           s.settle = { turnId: s.settle.turnId, stage: "await-read", after: this.deps.now() };
@@ -639,6 +651,7 @@ export class SessionManager {
         if (!s.openIds.has(id)) {
           s.open.push(f);
           s.openIds.set(id, f);
+          this.deps.attention?.({ kind: "wait", key: `req:${s.key}:${id}` });
         }
         break;
       }
