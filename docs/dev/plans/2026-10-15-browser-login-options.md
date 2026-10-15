@@ -63,6 +63,18 @@ AVA 的 `browser` 工具用 Playwright 启动隔离 Chromium（`data/browser-pro
 
 测完把结果告诉 AVA 开发会话，据此写施工图（落 `data/browser-profile-*`、改 `web_browser.py` 与 `cookies_spec_for`、ADR-0021 修订注）。测试目录用完人自己删。
 
+## 四之二、第二轮：其他站点（人回来后做）
+
+人只做一件事：在一个窗口里把要用的站点逐个登录，然后关窗。命令（同一份配置，Google 那份登录态不受影响）：
+
+```bash
+/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -I \
+  docs/dev/plans/2026-10-15-browser-login-options/multi_login.py "$PWD/data/browser-profile-firefox" /tmp/ava-login.jsonl
+# 只测几个站：在末尾加站点键，如 niconico bilibili x
+```
+
+站点键：niconico、bilibili、x、pixiv、note、zhihu、xiaohongshu、bangumi（不登的标签页直接关掉）。脚本按站记「是否出现不安全 / 机器人验证字样」和「是否登上」。之后由开发会话逐站跑：无界面重开看是否保持登录；要下载的站（niconico、bilibili、X）用 `yt-dlp --cookies-from-browser firefox:data/browser-profile-firefox` 实抓一条。全部测完再写施工图。
+
 ## 五、明确不做的事
 
 - 不碰主力 Chrome 的配置与钥匙串项。
