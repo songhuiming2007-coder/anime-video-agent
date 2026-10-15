@@ -532,6 +532,63 @@ class _LockedTailBuffer:
             return self._inner.get_tail()
 
 
+class _ScrubbingEcho:
+    """实时回显前脱敏（D83 观察项）：按行（\n 或 \r）攒齐再换密钥值，密钥不会被 4 KB 读块切成两半漏过去。
+
+    没有已知密钥时原样直通，不攒行——回显时序与改动前一致。一行攒到 ECHO_MAX_PENDING 还没换行
+    （超长无换行输出）就先写出去，这时跨块的密钥仍可能漏，是有意的上限：不为脱敏无限攒内存。
+    """
+
+    ECHO_MAX_PENDING = 65536
+
+    def __init__(self, stream: Any, secrets: list[str]) -> None:
+        self._stream = stream
+        self._secrets = secrets
+        self._pending = ""
+
+    def _out(self, text: str) -> None:
+        if not text:
+            return
+        try:
+            self._stream.write(_scrub_text(text, self._secrets))
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def write(self, text: str) -> None:
+        if not self._secrets:
+            self._out(text)
+            return
+        self._pending += text
+        cut = max(self._pending.rfind("\n"), self._pending.rfind("\r"))
+        if cut >= 0:
+            self._out(self._pending[: cut + 1])
+            self._pending = self._pending[cut + 1 :]
+        if len(self._pending) > self.ECHO_MAX_PENDING:
+            self._out(self._pending)
+            self._pending = ""
+
+    def close(self) -> None:
+        self._out(self._pending)
+        self._pending = ""
+
+
+def _scrub_text(text: str, secrets: list[str]) -> str:
+    for v in secrets:
+        text = text.replace(v, "[已脱敏]")
+    return text
+
+
+def _job_secret_values() -> list[str]:
+    """作业输出要换掉的密钥值，口径同 tools.scrub_secrets（密钥环境变量 + config/*.local.json）。"""
+    try:
+        from pipeline.agent.tools import _secret_values
+
+        return _secret_values(paths.ROOT)
+    except Exception:  # noqa: BLE001 —— 取不到密钥清单不阻断作业；tools 层出网前还有一道 scrub_secrets
+        return []
+
+
 _REAL_POPEN = subprocess.Popen
 
 
@@ -617,27 +674,18 @@ def execute_job(
 
         stdout_buf = _LockedTailBuffer(job.tail_bytes)
         stderr_buf = _LockedTailBuffer(job.tail_bytes)
+        secrets = _job_secret_values()
 
         def _drain(pipe: Any, buf: _LockedTailBuffer, is_stderr: bool) -> None:
-            target_stream = sys.stderr if is_stderr else sys.stdout
+            echo = _ScrubbingEcho(sys.stderr if is_stderr else sys.stdout, secrets)
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             try:
                 for chunk in iter(lambda: pipe.read1(4096), b""):
-                    text = decoder.decode(chunk)
-                    try:
-                        target_stream.write(text)
-                        target_stream.flush()
-                    except Exception:
-                        pass
+                    echo.write(decoder.decode(chunk))
                     buf.append(chunk)
-                final_text = decoder.decode(b"", final=True)
-                if final_text:
-                    try:
-                        target_stream.write(final_text)
-                        target_stream.flush()
-                    except Exception:
-                        pass
+                echo.write(decoder.decode(b"", final=True))
             finally:
+                echo.close()
                 try:
                     pipe.close()
                 except Exception:
@@ -681,8 +729,8 @@ def execute_job(
 
             stdout_tail, out_trunc = stdout_buf.get_tail()
             stderr_tail, err_trunc = stderr_buf.get_tail()
-            job.stdout_tail = stdout_tail
-            job.stderr_tail = stderr_tail
+            job.stdout_tail = _scrub_text(stdout_tail, secrets)
+            job.stderr_tail = _scrub_text(stderr_tail, secrets)
             job.truncated = out_trunc or err_trunc
 
             pub.emit(
@@ -712,8 +760,8 @@ def execute_job(
 
         stdout_tail, out_trunc = stdout_buf.get_tail()
         stderr_tail, err_trunc = stderr_buf.get_tail()
-        job.stdout_tail = stdout_tail
-        job.stderr_tail = stderr_tail
+        job.stdout_tail = _scrub_text(stdout_tail, secrets)
+        job.stderr_tail = _scrub_text(stderr_tail, secrets)
         job.truncated = out_trunc or err_trunc
 
         pub.emit(
