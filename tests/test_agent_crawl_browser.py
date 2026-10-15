@@ -1362,6 +1362,19 @@ def test_login_有界面开配置_逐个开网址_等关窗(tmp_path: Path, caps
     assert "打不开 https://down.example/" in capsys.readouterr().out
 
 
+def test_login_CtrlC照常关浏览器_不打堆栈(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _cookies_root(tmp_path, [])
+    log: list[Any] = []
+
+    class _Interrupted(_FakeLoginSession):
+        def wait_closed(self) -> None:
+            raise KeyboardInterrupt
+
+    rc = web_browser.login_main(["login"], root=root, launch_fn=lambda **_k: _Interrupted(log))
+    assert rc == 130 and log == ["close"]
+    assert "已中断" in capsys.readouterr().out
+
+
 def test_login_配置目录越界被守卫拦(tmp_path: Path) -> None:
     root = _cookies_root(tmp_path, [])
     (root / "config" / "agent" / "web.json").write_text(json.dumps({"browser": {
