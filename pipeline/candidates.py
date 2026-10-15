@@ -88,6 +88,12 @@ def load_candidates(raw: str) -> list[dict]:
             bad.append(f"  {where}（{c.get('title')}）：type={c['type']!r} 不在 {TYPES}")
         if c.get("url") and urlparse(str(c["url"])).scheme not in ("http", "https"):
             bad.append(f"  {where}（{c.get('title')}）：url 不可解析 {c['url']!r}")
+        # D100：found_on 新条目必填（工具 schema 卡），旧条目没有不报错，核对时判「出处未登记」
+        if c.get("found_on") is not None and (
+                not isinstance(c["found_on"], str) or urlparse(c["found_on"]).scheme not in ("http", "https")):
+            bad.append(f"  {where}（{c.get('title')}）：found_on 必须是 http(s) URL")
+        if c.get("segment") is not None and not isinstance(c["segment"], (str, int)):
+            bad.append(f"  {where}（{c.get('title')}）：segment 须为段号文字")
         if c.get("expected_dur") is not None and not isinstance(c["expected_dur"], (int, float)):
             bad.append(f"  {where}（{c.get('title')}）：expected_dur 须为秒数或 null")
         also = c.get("also")

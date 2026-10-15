@@ -207,8 +207,8 @@ class TurnInterrupt:
 
 
 class FetchHookInterrupted(KeyboardInterrupt):
-    """抓取钩子里浮出的中断（§2.2 落点表「等人答复」「抓取 job 中」两行）：整轮停，
-    但 `acquire_propose` 的结果照常，带上已答/作废的抓取记录（`outcome`）。
+    """提议后钩子里浮出的中断（§2.2 落点表「job 中」一行；D100 起钩子做核对、不下载）：整轮停，
+    但 `acquire_propose` 的结果照常，带上核对状态（`outcome`）。
 
     是 KeyboardInterrupt 的子类：不认识它的上层照旧按中断处理。
     """
@@ -226,14 +226,6 @@ def _proposed_urls(args: dict[str, Any]) -> list[str]:
         if isinstance(url, str) and url.strip() and url.strip() not in urls:
             urls.append(url.strip())
     return urls
-
-
-class _FetchStopped(Exception):
-    """`_ask_fetch` → `_fetch_cards` 的内部信号：本卡已按中断记账，余卡不再出。"""
-
-    def __init__(self, record: dict[str, Any]) -> None:
-        super().__init__()
-        self.record = record
 
 
 @dataclass(frozen=True)
@@ -764,7 +756,8 @@ class SessionHost:
         self._sid: str | None = None
         self.sid = None
         # 抓取执行器注入点（§2.4.4 第 4 条）：生产默认走 run_pipeline，测试注入替身
-        self.fetch_executor: Callable[[int], dict[str, Any]] | None = None
+        # D100：提议后核对钩子的执行器注入点（测试用）；None = 经 run_pipeline 跑 `acquire check`
+        self.check_executor: Callable[[list[int]], dict[str, Any]] | None = None
         self._main: AgentSession | None = None
         self._scope_override: str | None = None
         self.resume_state: dict[str, Any] | None = None
@@ -1893,110 +1886,82 @@ class AgentSession:
                             latency_s=answer.latency_s, cause=None)
         return answer.decision == "continue"
 
-    # ---- 抓取钩子（S6-R1 / §2.4.4） ----
+    # ---- 提议后核对钩子（S6-R1 / §2.4.4；D100 起核对、不下载） ----
 
     def _post_execute(self, name: str, args: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
         if name != "acquire_propose" or not outcome.get("ok"):
             return outcome
         try:
-            fetches = self._fetch_cards(outcome, _proposed_urls(args))
+            review = self._check_batch(_proposed_urls(args))
         except FetchHookInterrupted as stop:
-            # D35：中断即整轮停——结果照常交回（带抓取记录），中断继续往上浮给工具循环
+            # D35：中断即整轮停——提案结果照常交回（带核对状态），中断继续往上浮给工具循环
             stop.outcome = {**outcome, "result": {**(outcome.get("result") or {}),
-                                                  "fetch": stop.outcome["fetch"]}}
+                                                  "review": stop.outcome["review"]}}
             raise
         except SystemExit as exc:  # 纵深防御：钩子里的任何 SystemExit 都转成 notice
             self.channel.show("notice", {"level": "error", "code": "fetch_hook_error",
                                          "text": str(exc)})
             return outcome
-        if fetches:
-            outcome = {**outcome, "result": {**(outcome.get("result") or {}), "fetch": fetches}}
+        if review:
+            outcome = {**outcome, "result": {**(outcome.get("result") or {}), "review": review}}
         return outcome
 
-    def _fetch_cards(self, outcome: dict[str, Any], urls: list[str]) -> list[dict[str, Any]]:
-        """§2.4.4 第 2 条：只抓**本次输入**的 URL（在清单中、不在台账；序号取清单里的 1-based N）。ADR-0030 起不出卡。"""
+    def _check_batch(self, urls: list[str]) -> dict[str, Any] | None:
+        """D100：对**本次输入**里、在清单中且不在台账的候选跑一次 `acquire check`，把机器表挂进工具结果。
+
+        不下载（人 10-15 定第五节 ①）：人看过机器表点名后，由模型另发 `acquire fetch <号>`。
+        候选清单只追加，号不会漂；核对按 URL 记账。
+        """
         data_root = Path(paths.DATA)
         base_data = Path(self.host.root or paths.ROOT) / "data"
         if not data_root.exists():
             self.channel.show("notice", {
                 "level": "warn", "code": "fetch_disabled_data_unreachable",
-                "text": f"素材目录不可达（{data_root}），本轮不抓取；提案结果照常。",
+                "text": f"素材目录不可达（{data_root}），本轮不核对；提案结果照常。",
             })
-            return []
+            return None
         if os.path.realpath(data_root) != os.path.realpath(base_data):
             self.channel.show("notice", {
                 "level": "warn", "code": "fetch_disabled_root_mismatch",
-                "text": "会话根目录与素材目录不同源，本轮不抓取（避免写错台帐）。",
+                "text": "会话根目录与素材目录不同源，本轮不核对（避免记错账）。",
             })
-            return []
+            return None
 
         incoming = data_root / "library" / "incoming"
         candidates = _read_json_list(incoming / "candidates.json")
-        ledger = _read_json_list(incoming / "fetched.json")
-        fetched_urls = {str(entry.get("url")) for entry in ledger if entry.get("url")}
-
-        # D34（M9 实测）：此前遍历**整份**清单，一次提案会把全部历史未抓候选逐张推给人
+        fetched_urls = {str(entry.get("url")) for entry in _read_json_list(incoming / "fetched.json")
+                        if entry.get("url")}
+        # D34（M9 实测）：只核本次输入的 URL，不把整份清单的历史候选一起翻出来
         position: dict[str, int] = {}
         for index, candidate in enumerate(candidates, 1):
             position.setdefault(str(candidate.get("url") or ""), index)
-        fetches: list[dict[str, Any]] = []
-        stopped = False
-        for url in urls:  # 已按输入顺序去重
-            index = position.get(url)
-            if not url or index is None or url in fetched_urls:
-                continue
-            if stopped:
-                # §2.2：中断之后其余候选一律 voided（不再抓，只记账）
-                fetches.append({"no": index, "url": url, "decision": "voided", "ok": False,
-                                "returncode": None, "message": "人类中断，未抓取",
-                                "stdout_tail": ""})
-                continue
-            try:
-                # ADR-0030 决策 4（D78）：抓取不再逐条出卡，本次提案里未抓的候选直接抓（审批日志记 channel=auto）
-                fetches.append(self._auto_fetch(index, url))
-            except _FetchStopped as stop:
-                fetches.append(stop.record)
-                stopped = True
-        if stopped:
-            raise FetchHookInterrupted({"fetch": fetches})
-        return fetches
-
-    def _auto_fetch(self, no: int, url: str) -> dict[str, Any]:
-        from pipeline.agent.status_card import log_approval_decision
-
-        record: dict[str, Any] = {"no": no, "url": url}
-        current = _read_json_list(Path(paths.DATA) / "library" / "incoming" / "candidates.json")
-        aligned = 0 < no <= len(current) and str(current[no - 1].get("url") or "") == url
-        log_approval_decision(self.host.ep_dir, "acquire_fetch", f"#{no} {url}", "y",
-                              latency_s=None, channel="auto")
-        if not aligned:
-            record.update({"decision": "misaligned", "ok": False, "returncode": None,
-                           "message": "清单已变，序号不再指向该 URL，未抓取", "stdout_tail": ""})
-            return record
+        nos = [position[u] for u in urls if u in position and u not in fetched_urls]
+        if not nos:
+            return None
         try:
-            result = self._fetch_executor(no)
+            result = self._check_executor(nos)
         except KeyboardInterrupt:
-            # §2.2「抓取 job 中」：job 进程组已被杀（jobs.py），该候选 interrupted、余卡 voided
-            record.update({"decision": "interrupted", "ok": False, "returncode": None,
-                           "message": "人类中断，抓取 job 已被终止，产物可能不完整",
-                           "stdout_tail": ""})
-            raise _FetchStopped(record) from None
-        record.update({
-            "decision": "approved",
-            "ok": bool(result.get("ok")),
-            "returncode": result.get("returncode"),
-            "message": str(result.get("message", "")),
-            "stdout_tail": str(result.get("stdout_tail", ""))[-2000:],
-        })
-        return record
+            # §2.2「job 中」：job 进程组已被杀（jobs.py），核对结果不完整
+            raise FetchHookInterrupted({"review": {"nos": nos, "status": "interrupted",
+                                                   "message": "人类中断，核对 job 已被终止"}}) from None
+        review: dict[str, Any] = {"nos": nos, "ok": bool(result.get("ok")),
+                                  "returncode": result.get("returncode")}
+        table = _read_review_table(str(result.get("stdout_tail", "")), incoming)
+        if table is None:
+            review["message"] = str(result.get("message", ""))
+            review["stdout_tail"] = str(result.get("stdout_tail", ""))[-2000:]
+        else:
+            review["path"], review["table"] = table
+        return review
 
-    def _fetch_executor(self, no: int) -> dict[str, Any]:
-        if self.host.fetch_executor is not None:
-            return self.host.fetch_executor(no)
+    def _check_executor(self, nos: list[int]) -> dict[str, Any]:
+        if self.host.check_executor is not None:
+            return self.host.check_executor(nos)
         from pipeline.agent.tools import run_pipeline
 
         return run_pipeline(
-            f"acquire fetch {no}", episode_dir=self.host.ep_dir, scope="asset", confirmed=True
+            f"acquire check {','.join(str(n) for n in nos)}", episode_dir=self.host.ep_dir, scope="asset",
+            confirmed=True,
         )
 
     # ---- 恢复 ----
@@ -2044,6 +2009,22 @@ class AgentSession:
                 latency_s=state["latency"], emit_event=False, channel=self.channel.name,
             )
         return ok, (captured[0] if captured else "")
+
+
+def _read_review_table(stdout_tail: str, incoming: Path) -> tuple[str, str] | None:
+    """`acquire check` 末行 `REVIEW_FILE <路径>` → (路径, 表)。路径须在 incoming/ 内、名为 review-*.md，否则 None。"""
+    lines = [ln for ln in stdout_tail.splitlines() if ln.strip()]
+    if not lines or not lines[-1].startswith("REVIEW_FILE "):
+        return None
+    target = Path(lines[-1][len("REVIEW_FILE "):].strip())
+    try:
+        resolved = target.resolve()
+        if resolved.parent != incoming.resolve() or not (resolved.name.startswith("review-")
+                                                         and resolved.suffix == ".md"):
+            return None
+        return str(target), resolved.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]]:

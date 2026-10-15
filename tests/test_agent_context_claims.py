@@ -30,10 +30,11 @@ def test_tool_text_does_not_claim_cards(name: str) -> None:
     assert hit is None, f"{name} 的描述仍写着「{hit.group(0)}」，与审批事实不符（ADR-0030）"
 
 
-def test_acquire_propose_says_it_downloads() -> None:
-    """它一调用就抓取：描述必须说清，否则模型以为「只是提案」而不先问人。"""
+def test_acquire_propose_says_it_checks_not_downloads() -> None:
+    """D100 起它只登记并核对、不下载：描述要说清，并指明下载另走 acquire fetch、表以机器表为准。"""
     text = TOOL_SCHEMAS["acquire_propose"]["description"]
-    assert "立即抓取" in text and "绝不抓取" not in text
+    assert "不下载" in text and "立即抓取" not in text
+    assert "acquire fetch" in text and "review.table" in text
 
 
 @pytest.mark.parametrize("scope", ["creative", "pipeline", "idea", "project", "asset"])

@@ -23,7 +23,7 @@ agent 经 `run_pipeline` 跑 `clips`（期目录自动补上）。底层排查�
 排片审片（`04-review.html`）发现局部镜头缺料、画文不符或短缺（short / no_source）时，不必中断全番或重走 Phase 0：走期内临时补料通道。**全程 agent 跑，人只做取舍**（2026-10-09 D59；以下命令都是 agent 经 `run_pipeline` 发的，期目录自动补上；都不弹卡，有副作用的先问人）：
 
 1. **看缺口**：`scout`（写 `scout-ticket-patch.md`）列出可救的段和缺什么画面。不可救的段（锚点重叠、缺口太短）按它给的指引改稿。
-2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、把候选列给人，人同意再调 `acquire_propose`（一调用就直接下载，不出卡）。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
+2. **找素材**：agent 自己检索（`web_search` → `web_fetch` → `crawl` → `browser`），按 `skills/acquire-assets/SKILL.md` 写候选、调 `acquire_propose`（只登记并核对、不下载，返回机器表原样给人；人点名后 `acquire fetch <号>`，只能抓结论为「可下载」的，D100）。ava 三级工具都查不到时，才把 `scout` 工单交给外部 agent（ADR-0021 §4 的升级通道）。
 3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>` 挪进本期 `patch_assets/`。图片照收，下一步会自动转成 12 s 微动视频（1.0→1.15 匀速缓推到末帧，原图保留）。
 4. **轻量增量入库**：`ingest_patch`。
    - **只为写锚点**（写稿期补图、人指定镜头）：`ingest_patch --anchor-only`——切镜头、抽帧、登记就停，资产标 `indexed: false`，不打标、不碰云端、不要 `--floor`。这些资产只能被锚点引用，rescue-A/B 搜不到它们（clips 会打印提示）；要让救援也能用，不带旗标重跑一次，编号不变。

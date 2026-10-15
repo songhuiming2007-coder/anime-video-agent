@@ -614,8 +614,17 @@ def _cap_images(
     return images, False
 
 
-def _extract_links(html: str, base_url: str) -> list[dict[str, str]]:
+def _clean_refs(entries: list[dict[str, str]], secrets: tuple[str, ...]) -> list[dict[str, str]]:
+    """留档用：与 _cap_images / _cap_links 同样逐条 _scrub + _redact_all，但不截断（D100）。"""
+    return [{k: (_redact_all(_scrub(v), secrets) if k in ("url", "alt", "anchor") else v) for k, v in e.items()}
+            for e in entries]
+
+
+def _extract_links(html: str, base_url: str, *, keep_unanchored: bool = False) -> list[dict[str, str]]:
     """Spec 13 §3.2 七步管线 → [{"url", "anchor"}]，未 scrub、未做清单双帽截断。
+
+    `keep_unanchored=True`（D100 留档用）不做第 5 步：包着缩略图的 `<a href="原图.jpg">` 没有锚文本，
+    却正是素材候选最常用的原图链接。给模型看的清单照旧丢空锚。
 
     1 数据源是已抓取的 HTML（零新请求）；2 urljoin(base_url=final_url) 绝对化；
     3 scheme ∈ {http, https}；4 按去 fragment 的 URL 去重，锚文本回填（首个非空胜出）；
@@ -642,7 +651,7 @@ def _extract_links(html: str, base_url: str) -> list[dict[str, str]]:
     same_site: list[dict[str, str]] = []
     cross_site: list[dict[str, str]] = []
     for entry in entries.values():
-        if not entry["anchor"]:
+        if not entry["anchor"] and not keep_unanchored:
             continue
         host = (urllib.parse.urlparse(entry["url"]).hostname or "").lower()
         (same_site if host == base_host else cross_site).append(entry)
@@ -1135,12 +1144,10 @@ def fetch_web(
     final_url = _redact_all(_scrub(raw_final_url), cfg.secret_values)
     status_code = int(getattr(resp, "status", None) or getattr(resp, "code", 200))
 
-    links, links_truncated = _cap_links(
-        _extract_links(decoded, raw_final_url), cfg.secret_values
-    )
-    images, images_truncated = _cap_images(
-        _extract_images(decoded, raw_final_url), cfg.secret_values
-    )
+    all_links = _extract_links(decoded, raw_final_url, keep_unanchored=True)
+    all_images = _extract_images(decoded, raw_final_url)
+    links, links_truncated = _cap_links([e for e in all_links if e["anchor"]], cfg.secret_values)
+    images, images_truncated = _cap_images(all_images, cfg.secret_values)
 
     return {
         "url": _redact_all(url, cfg.secret_values),
@@ -1154,5 +1161,7 @@ def fetch_web(
         "links_truncated": links_truncated,
         "images": images,
         "images_truncated": images_truncated,
-        **({"full_text": full_text} if keep_full else {}),
+        # D100：截帽前的完整列表（同样过 _scrub / 密钥替换），只给抓取留档，tools 包装层记完即 pop
+        **({"full_text": full_text, "full_images": _clean_refs(all_images, cfg.secret_values),
+            "full_links": _clean_refs(all_links, cfg.secret_values)} if keep_full else {}),
     }

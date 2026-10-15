@@ -10,7 +10,7 @@
   - 跨卷审查与总装：`run_pipeline` 只放行企划级模块（`crosscheck`、`assemble`）与只读的 `subgrep`。
     - `crosscheck`：镜头与配乐跨卷重复，警告不拦；默认只打印，`--write` 才写 `00-crosscheck.md`。命中项交人判「真重复 / 有意呼应 / 误报」，不自行改任何卷。
     - `assemble`：各卷成片 → 合集成片（`docs/runbook/10-assemble.md`）。每次都弹卡给人批；已有 `05-final.mp4` 必须带 `--replace` 才覆盖，且不留底——只在人明确要重做合集时才带。
-  - 素材预收集（D95）：提候选（`acquire_propose`）、抓取、`acquire gate`、`acquire register --pool` 登记进素材池都在企划会话里做。候选、下载、素材池全库共用、不分卷，不必为抓取开卷会话。
+  - 素材预收集（D95）：提候选（`acquire_propose`，只登记并核对、不下载，返回的机器表原样给人，人点名后 `acquire fetch <号>`，只能抓结论为「可下载」的；D100）、抓取、`acquire gate`、`acquire register --pool` 登记进素材池都在企划会话里做。候选、下载、素材池全库共用、不分卷，不必为抓取开卷会话。
   - 写记忆：`write_memory` 带 `target="project"` 写本企划的企划记忆（`00-memory.md`，3000 字符，证据只认本企划的卷）。
 - **不能做什么**：卷级工序（tts / clips / render / qc / cover / status / check_script …）、封面编辑、把素材挪进某卷补丁池（`acquire register --to-patch`）一律到对应卷的会话里做；企划会话里会被拒并指路。
 - **卷表即分卷边界**：`00-project.md` 的格式见首轮注入的立项文件；卷表表头恰为 `卷序 / 目录 / 年份 / 时长预算 / 片尾`，末卷片尾必须是 `完整保留`。

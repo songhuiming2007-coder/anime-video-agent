@@ -263,6 +263,15 @@ class TestFetcher:
 
 
 
+def _mark_checked(inc, cands, verdict="可下载"):
+    """D100：fetch 只抓核对结论为「可下载」的；fetch 本身的用例先给每条记一笔核对。"""
+    import json as J
+
+    with (inc / "checks.jsonl").open("a", encoding="utf-8") as f:
+        for i, c in enumerate(cands, 1):
+            f.write(J.dumps({"no": i, "url": c["url"], "verdict": verdict, "reasons": []}, ensure_ascii=False) + "\n")
+
+
 class TestCmdFetchWithoutYtDlp:
     """N35：本机 yt-dlp 既不在 PATH 也不在虚拟环境时，直链照样走 curl，页面仍报原错。
 
@@ -289,6 +298,7 @@ class TestCmdFetchWithoutYtDlp:
                  {"title": "页面候选", "url": self.PAGE, "type": "live", "source": "测试", "why": "N35"}]
         (inc / "candidates.json").write_text(json.dumps(cands, ensure_ascii=False), encoding="utf-8")
         (inc / "fetched.json").write_text("[]", encoding="utf-8")
+        _mark_checked(inc, cands)
         monkeypatch.setattr(paths, "DATA", data)
         # yt-dlp 两条找法都落空（命令不在 PATH、模块不可导入）
         real_which, real_find = shutil.which, importlib.util.find_spec
@@ -471,6 +481,7 @@ class TestFetchBatch:
         ]
         (inc / "candidates.json").write_text(J.dumps(cands, ensure_ascii=False), encoding="utf-8")
         (inc / "fetched.json").write_text("[]", encoding="utf-8")
+        _mark_checked(inc, cands)
         monkeypatch.setattr(paths, "DATA", data)
         return inc
 

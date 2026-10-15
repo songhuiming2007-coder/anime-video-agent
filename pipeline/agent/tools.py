@@ -228,7 +228,8 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
     # D61 后续（2026-10-10）：probe 可得性探针——出网只解析不下载，URL 清单经人卡，弹卡
-    "acquire": {"fetch", "gate", "register", "forget", "probe"},
+    # D100：check 逐条机器核对候选，出网只解析不下载，与 probe 同级
+    "acquire": {"fetch", "gate", "register", "forget", "probe", "check"},
 }
 
 # 出网敏感目录与关键词（§2.5 Y2-r19）：只剩凭据文件。
@@ -963,17 +964,19 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "adr": "ADR-0021",
         # 不标 side_effect：fail-closed 默认 True（cli.py:_default_approve）；ADR-0030 起只读与多数工序免卡，见 session.review_tool_call
         "description": (
-            "把素材候选追加到 data/library/incoming/candidates.json（人审用提案清单，"
-            "追加式、同 URL 自动跳过），**并立即抓取本次提交的候选**（ADR-0030 起不再逐条出卡，走 pipeline.acquire）。"
-            "所以调用前先在对话里把候选（链接、补哪段、为什么）列给人，人同意再调。每条必须含 title/url/type/source/why；"
-            "why 要写清补哪个缺口、凭什么认为是它（skill: acquire-assets §一）。"
+            "把素材候选登记进 data/library/incoming/candidates.json（追加式、同 URL 跳过），系统随后逐条核对出处、"
+            "可得性、画质与授权，**不下载**。工具结果里的 `review.table` 是机器生成的候选表：原样给人看，不另写表，"
+            "不在对话里补分辨率、尺寸或授权。人说要哪几号，再 `acquire fetch <号>`；只有结论为「可下载」的能抓。"
+            "每条必须含 title/url/type/source/why/found_on：found_on 是你在哪一页看到这条的，那一页要已用 "
+            "web_fetch / crawl / browser 打开过；视频页或直链本身打开过时可填它自己。why 写补哪个缺口、凭什么认为是它"
+            "（skill: acquire-assets §一）（D100）。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "candidates": {
                     "type": "array",
-                    "description": "一批候选（一次调用整批登记并抓取）",
+                    "description": "一批候选（一次调用整批登记并核对，不下载）",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -983,8 +986,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                             "source": {"type": "string", "description": "站点名 + 大致检索路径"},
                             "why": {"type": "string", "description": "补哪个缺口 + 凭什么认为是它"},
                             "expected_dur": {"type": ["number", "null"], "description": "秒数，可空"},
+                            "found_on": {"type": "string", "description": "在哪个页面上找到这条（该页须已抓过）"},
+                            "segment": {"type": "string", "description": "补第几段，可空"},
                         },
-                        "required": ["title", "url", "type", "source", "why"],
+                        "required": ["title", "url", "type", "source", "why", "found_on"],
                         "additionalProperties": False,
                     },
                 },
@@ -1935,11 +1940,15 @@ def _keep_record(res: dict[str, Any], kind: str, url: str, ctx: ToolContext) -> 
     from pipeline.agent import fetch_log
 
     full = res.pop("full_text", None)
+    # D100：截帽前的完整图片 / 链接列表只进留档，不进 LLM
+    full_images = res.pop("full_images", None)
+    full_links = res.pop("full_links", None)
     if isinstance(full, str):
         # 留档失败不连累抓取本身，但要让模型看见：之后 fact_add 会如实报「这页没有留档」
         try:
             res["fetch_record"] = fetch_log.record(url=url, final_url=res.get("final_url") or res.get("url"),
-                                                   kind=kind, text=full, sid=ctx.session_id, root=ctx.root)
+                                                   kind=kind, text=full, sid=ctx.session_id, root=ctx.root,
+                                                   images=full_images, links=full_links)
         except (ValueError, OSError) as exc:
             res["fetch_record"] = None
             res["fetch_record_error"] = f"抓取留档失败：{exc}"
@@ -1979,6 +1988,10 @@ def _tool_acquire_propose(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
     raw = args.get("candidates")
     if not isinstance(raw, list) or not raw or not all(isinstance(c, dict) for c in raw):
         raise ValueError("candidates 必须是非空的对象数组")
+    # D100：found_on 必填。schema 的 required 只约束模型，这里再拦一次（旧条目在 load_candidates 里照旧放行）
+    missing = [str(c.get("title") or c.get("url") or "?") for c in raw if not str(c.get("found_on") or "").strip()]
+    if missing:
+        raise ValueError(f"每条候选都要写 found_on（在哪一页看到它，那页须已抓过）；缺：{'、'.join(missing[:5])}")
     return propose_candidates(raw, data_root=ctx.base / "data")
 
 

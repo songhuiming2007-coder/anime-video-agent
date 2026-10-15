@@ -111,7 +111,7 @@ def _write_candidates(root: Path, entries: list[dict], ledger: list[dict] | None
 
 
 def _candidate(title: str, url: str) -> dict:
-    return {"title": title, "url": url, "type": "live", "source": "b站", "why": "因为用得上"}
+    return {"title": title, "url": url, "type": "live", "source": "b站", "why": "因为用得上", "found_on": url}
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +281,11 @@ def test_tk5_no_channel_refuses_to_run_the_tool_loop(episode: Path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# TK-2 / TK-3 / TK-3b / TK-3c：抓取（ADR-0030 起不出卡，直接抓）
+# TK-2 / TK-3 / TK-3b / TK-3c：提议后核对（D100 起核对、不下载；ADR-0030 起不出卡）
 # ---------------------------------------------------------------------------
 
 
-def _fetch_scenario(root: Path, episode: Path, answers: list[str]):
+def _check_scenario(root: Path, episode: Path, answers: list[str], *, write_review: bool = True):
     incoming = _write_candidates(
         root,
         [
@@ -296,77 +296,92 @@ def _fetch_scenario(root: Path, episode: Path, answers: list[str]):
         ],
         ledger=[{"url": "https://a.example/2"}],
     )
-    fetched: list[int] = []
+    checked: list[list[int]] = []
+    review = incoming / "review-20261015T000000Z.md"
+
+    def executor(nos):
+        checked.append(nos)
+        if write_review:
+            review.write_text("| 号 | 结论 |\n|---|---|\n| 1 | 可下载 |\n", encoding="utf-8")
+        return {"ok": True, "returncode": 0, "message": "",
+                "stdout_tail": f"表略\nREVIEW_FILE {review}\n"}
+
     channel = FakeChannel(answers)
     host = SessionHost(episode, root=root, channel=channel)
-    host.fetch_executor = lambda no: (
-        fetched.append(no),
-        {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": "OK"},
-    )[1]
+    host.check_executor = executor
     session = AgentSession(host, scope_mode="asset", persist=False)
     outcome = {"ok": True, "result": {"candidates": []}}
-    return session, host, channel, fetched, incoming, outcome
+    return session, host, channel, checked, incoming, outcome
 
 
-# 本次 `acquire_propose` 的入参：4 条都在输入里（§2.4.4 第 2 条「以前提过未抓」= 本次又提了、
-# 被 propose 按同 URL 跳过的那条；已在台账那条也在输入里，但不出卡）
+# 本次 `acquire_propose` 的入参：4 条都在输入里（「以前提过未抓」= 本次又提了、被 propose 按同 URL 跳过的那条；
+# 已在台账那条也在输入里，但不核）
 _ALL_FOUR = {"candidates": [_candidate("x", f"https://a.example/{n}") for n in (1, 2, 3, 4)]}
 
 
-def test_tk2_fetch_runs_once_per_unfetched_candidate(root: Path, episode: Path) -> None:
-    """TK-2（ADR-0030 改写）：清单 4 条（2 新增、1 以前未抓、1 已在台账）→ 不出卡，恰抓 3 条，序号与顺序正确。"""
-    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
+def test_tk2_check_runs_once_for_unfetched_candidates_and_never_fetches(root: Path, episode: Path) -> None:
+    """TK-2（D100 改写）：清单 4 条（2 新增、1 以前未抓、1 已在台账）→ 不出卡，一次核 3 条，不下载，机器表挂进结果。"""
+    session, _host, channel, checked, incoming, outcome = _check_scenario(root, episode, [])
     result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
-    assert channel.requests == [], "抓取不再出卡"
-    fetch = result["result"]["fetch"]
-    assert [(item["no"], item["decision"]) for item in fetch] == [(1, "approved"), (3, "approved"), (4, "approved")]
-    assert fetched == [1, 3, 4]
-    rows = [json.loads(x) for x in (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [r["channel"] for r in rows if r["tool"] == "acquire_fetch"] == ["auto"] * 3, "审批日志照记、标明自动"
+    assert channel.requests == [], "核对不出卡"
+    assert checked == [[1, 3, 4]]
+    review = result["result"]["review"]
+    assert review["nos"] == [1, 3, 4] and review["table"].startswith("| 号 | 结论 |")
+    assert review["path"].endswith("review-20261015T000000Z.md")
+    assert "fetch" not in result["result"], "提议后不再下载（D100 第五节 ①）"
+    assert json.loads((incoming / "fetched.json").read_text(encoding="utf-8")) == [{"url": "https://a.example/2"}], \
+        "台账不动"
 
 
-def test_tk2b_only_this_calls_urls_are_fetched(root: Path, episode: Path) -> None:
-    """TK-2b（D34）：清单里有历史未抓候选，本轮只提案一条 → 只抓这一条，序号取清单位置。
+def test_tk2_default_executor_runs_acquire_check_not_fetch(root: Path, episode: Path, monkeypatch) -> None:
+    """不注入执行器时走 run_pipeline，命令是 `acquire check <号,号>`，不是 fetch。"""
+    from pipeline.agent import tools as tools_mod
 
-    M9 实测：本轮只提案清单第 7 条，弹出来的却是第 3 条（真人 YouTube 候选），批准即真抓。
-    """
-    session, _host, _channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
+    session, host, _channel, _checked, _incoming, outcome = _check_scenario(root, episode, [])
+    host.check_executor = None
+    seen: list[str] = []
+    monkeypatch.setattr(tools_mod, "run_pipeline", lambda cmd, **kw: seen.append(cmd) or {
+        "ok": True, "returncode": 0, "message": "", "stdout_tail": ""})
+    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
+    assert seen == ["acquire check 1,3,4"]
+    assert result["result"]["review"]["ok"] is True and "table" not in result["result"]["review"]
+
+
+def test_tk2b_only_this_calls_urls_are_checked(root: Path, episode: Path) -> None:
+    """TK-2b（D34）：清单里有历史未抓候选，本轮只提案一条 → 只核这一条，序号取清单位置。"""
+    session, _host, _channel, checked, _incoming, outcome = _check_scenario(root, episode, [])
     only_new = {"candidates": [_candidate("新增乙", " https://a.example/4 ")]}  # propose 会 strip
     result = session._post_execute("acquire_propose", only_new, outcome)
-
-    assert [item["no"] for item in result["result"]["fetch"]] == [4]
-    assert fetched == [4]
+    assert checked == [[4]] and result["result"]["review"]["nos"] == [4]
 
 
-def test_tk2c_same_url_twice_in_one_call_is_fetched_once(root: Path, episode: Path) -> None:
-    """TK-2c（D34）：同一 URL 在本次输入里出现两次 → 只抓一次；输入顺序决定抓取顺序。"""
-    session, _host, _channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
+def test_tk2c_same_url_twice_in_one_call_is_checked_once(root: Path, episode: Path) -> None:
+    """TK-2c（D34）：同一 URL 在本次输入里出现两次 → 只核一次；输入顺序决定表的顺序。"""
+    session, _host, _channel, checked, _incoming, outcome = _check_scenario(root, episode, [])
     twice = {"candidates": [_candidate("乙", "https://a.example/4"), _candidate("甲", "https://a.example/1"),
                             _candidate("乙again", "https://a.example/4")]}
     session._post_execute("acquire_propose", twice, outcome)
-    assert fetched == [4, 1]
+    assert checked == [[4, 1]]
 
 
-def test_tk3_misaligned_candidate_index_is_not_fetched(root: Path, episode: Path) -> None:
-    """TK-3：抓第一条时清单被改写、序号错位 → 后面那条 `misaligned`，执行器不为它调用。"""
-    session, host, _channel, fetched, incoming, outcome = _fetch_scenario(root, episode, [])
-
-    def rewrite_then_fetch(no):
-        fetched.append(no)
-        (incoming / "candidates.json").write_text(
-            json.dumps([_candidate("插队", "https://a.example/9")], ensure_ascii=False), encoding="utf-8")
-        return {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": ""}
-
-    host.fetch_executor = rewrite_then_fetch
-    result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
-    assert [item["decision"] for item in result["result"]["fetch"]] == ["approved", "misaligned", "misaligned"]
-    assert fetched == [1]
+@pytest.mark.parametrize("tail", [
+    "REVIEW_FILE /etc/passwd\n",                 # 不在 incoming/
+    "REVIEW_FILE {inc}/candidates.json\n",        # 在 incoming/ 但不是 review-*.md
+    "表\nREVIEW_FILE {inc}/review-x.md\n多一行\n",  # 不是末行
+])
+def test_tk3_review_path_must_be_a_review_file_in_incoming(root: Path, episode: Path, tail: str) -> None:
+    """钩子只认末行指向 incoming/review-*.md 的表；其余不读文件、只回原输出尾巴。"""
+    session, host, _channel, _checked, incoming, outcome = _check_scenario(root, episode, [])
+    host.check_executor = lambda nos: {"ok": True, "returncode": 0, "message": "m",
+                                       "stdout_tail": tail.format(inc=incoming)}
+    review = session._post_execute("acquire_propose", _ALL_FOUR, outcome)["result"]["review"]
+    assert "table" not in review and review["stdout_tail"]
 
 
-def test_tk3b_root_mismatch_disables_fetch_cards(root: Path, episode: Path, monkeypatch) -> None:
-    """TK-3b：会话根与素材目录不同源 → 不出抓取卡，发 `fetch_disabled_root_mismatch`。"""
-    session, host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
+def test_tk3b_root_mismatch_disables_check(root: Path, episode: Path, monkeypatch) -> None:
+    """TK-3b：会话根与素材目录不同源 → 不核对，发 `fetch_disabled_root_mismatch`。"""
+    session, host, channel, checked, _incoming, outcome = _check_scenario(root, episode, [])
     other = root / "elsewhere" / "data"
     other.mkdir(parents=True)
     monkeypatch.setattr(paths, "DATA", other)
@@ -374,23 +389,23 @@ def test_tk3b_root_mismatch_disables_fetch_cards(root: Path, episode: Path, monk
 
     assert channel.requests == []
     assert "fetch_disabled_root_mismatch" in channel.codes()
-    assert fetched == []
-    assert "fetch" not in result["result"]
+    assert checked == []
+    assert "review" not in result["result"]
 
 
 def test_tk3c_unreachable_data_dir_notices_and_continues(root: Path, episode: Path, monkeypatch) -> None:
     """TK-3c：`paths.DATA` 指向不存在的路径 → 不出卡、发 notice，提案结果照常（进程不退）。"""
-    session, _host, channel, fetched, _incoming, outcome = _fetch_scenario(root, episode, [])
+    session, _host, channel, checked, _incoming, outcome = _check_scenario(root, episode, [])
     monkeypatch.setattr(paths, "DATA", root / "unmounted" / "data")
     result = session._post_execute("acquire_propose", _ALL_FOUR, outcome)
 
     assert "fetch_disabled_data_unreachable" in channel.codes()
-    assert channel.requests == [] and fetched == []
+    assert channel.requests == [] and checked == []
     assert result["ok"] is True
-    assert "fetch" not in result["result"]
+    assert "review" not in result["result"]
 
 
-def _fetch_turn(root: Path, episode: Path, monkeypatch, channel, *, parallel: bool = True):
+def _check_turn(root: Path, episode: Path, monkeypatch, channel, *, parallel: bool = True):
     """真 `run_turn` + 真 `acquire_propose`：模型一条回复里提 3 条新候选（+ 一个并行只读调用）。"""
     from pipeline.agent import llm as llm_mod
 
@@ -414,37 +429,31 @@ def _fetch_turn(root: Path, episode: Path, monkeypatch, channel, *, parallel: bo
         return {"role": "assistant", "content": "收尾"}
 
     monkeypatch.setattr(llm_mod, "chat_complete", scripted)
-    fetched: list[int] = []
     host = SessionHost(episode, root=root, channel=channel)
-    host.fetch_executor = lambda no: (
-        fetched.append(no), {"ok": True, "returncode": 0, "message": "抓好", "stdout_tail": ""})[1]
     lease = host.ensure_lease()
     lease.begin("sid-d35")
     session = AgentSession(host, scope_mode="asset", persist=True)
     messages = _seed_messages()
     outcome = session.run_turn("找素材", messages=messages, scope="asset", status=None,
                                tracker=SessionContextTracker(), root=root)
-    records = [json.loads(line) for line in (episode / "session.jsonl").read_text(encoding="utf-8").splitlines()]
-    return outcome, messages, records, fetched, requests
+    return outcome, messages, requests
 
 
-def test_tk3f_interrupt_during_fetch_job_marks_interrupted(root: Path, episode: Path, monkeypatch) -> None:
-    """TK-3f（D35 / §2.2「抓取 job 中」）：抓取 job 被中断 → 该候选 interrupted、其余 voided、整轮停。
-    （D35 的「抓取卡上中断」两条随 ADR-0030 抓取不出卡删除。）"""
+def test_tk3f_interrupt_during_check_job_marks_interrupted(root: Path, episode: Path, monkeypatch) -> None:
+    """TK-3f（D35 / §2.2「job 中」）：核对 job 被中断 → 结果里标 interrupted，整轮停。"""
     from pipeline.agent import session as session_mod_
 
-    def killed(self, no):
+    def killed(self, nos):
         raise KeyboardInterrupt  # jobs.py 杀组后原样重抛
 
-    monkeypatch.setattr(session_mod_.AgentSession, "_fetch_executor", killed)
+    monkeypatch.setattr(session_mod_.AgentSession, "_check_executor", killed)
     channel = FakeChannel([])
-    outcome, messages, _records, _fetched, _requests = _fetch_turn(
-        root, episode, monkeypatch, channel, parallel=False)
+    outcome, messages, _requests = _check_turn(root, episode, monkeypatch, channel, parallel=False)
     assert outcome["stopped"] == "interrupted"
-    assert channel.requests == [], "提案与抓取都不出卡（ADR-0030）"
+    assert channel.requests == [], "提案与核对都不出卡"
     tool = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
-    assert [(f["no"], f["decision"]) for f in tool["result"]["fetch"]] == [
-        (1, "interrupted"), (2, "voided"), (3, "voided")]
+    assert tool["result"]["review"] == {"nos": [1, 2, 3], "status": "interrupted",
+                                        "message": "人类中断，核对 job 已被终止"}
 
 
 # ---------------------------------------------------------------------------
