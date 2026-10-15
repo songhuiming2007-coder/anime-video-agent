@@ -533,13 +533,12 @@ class _LockedTailBuffer:
 
 
 class _ScrubbingEcho:
-    """实时回显前脱敏（D83 观察项）：按行（\n 或 \r）攒齐再换密钥值，密钥不会被 4 KB 读块切成两半漏过去。
+    """实时回显前脱敏（D83 观察项）：换掉密钥值再写，密钥被 4 KB 读块切成两半也认得出。
 
-    没有已知密钥时原样直通，不攒行——回显时序与改动前一致。一行攒到 ECHO_MAX_PENDING 还没换行
-    （超长无换行输出）就先写出去，这时跨块的密钥仍可能漏，是有意的上限：不为脱敏无限攒内存。
+    每次写时只扣住末尾「恰好是某个密钥开头」的那一截（最长不到一个密钥长），其余立刻写出——
+    不按行攒：没有换行的交互提示（「…[y/N]: 」）必须即时到终端（🔴-2）。扣住的那截等下一块数据
+    或管道关闭时写出；没有已知密钥时原样直通。
     """
-
-    ECHO_MAX_PENDING = 65536
 
     def __init__(self, stream: Any, secrets: list[str]) -> None:
         self._stream = stream
@@ -550,23 +549,29 @@ class _ScrubbingEcho:
         if not text:
             return
         try:
-            self._stream.write(_scrub_text(text, self._secrets))
+            self._stream.write(text)
             self._stream.flush()
         except Exception:
             pass
+
+    def _held_suffix(self, text: str) -> int:
+        """text 末尾有多长是某个密钥的真前缀（后半截可能还在下一块里）。"""
+        longest = 0
+        for v in self._secrets:
+            for n in range(min(len(v) - 1, len(text)), longest, -1):
+                if text.endswith(v[:n]):
+                    longest = n
+                    break
+        return longest
 
     def write(self, text: str) -> None:
         if not self._secrets:
             self._out(text)
             return
-        self._pending += text
-        cut = max(self._pending.rfind("\n"), self._pending.rfind("\r"))
-        if cut >= 0:
-            self._out(self._pending[: cut + 1])
-            self._pending = self._pending[cut + 1 :]
-        if len(self._pending) > self.ECHO_MAX_PENDING:
-            self._out(self._pending)
-            self._pending = ""
+        buf = _scrub_text(self._pending + text, self._secrets)
+        held = self._held_suffix(buf)
+        self._out(buf[: len(buf) - held])
+        self._pending = buf[len(buf) - held :]
 
     def close(self) -> None:
         self._out(self._pending)
