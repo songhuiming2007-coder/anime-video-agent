@@ -162,6 +162,8 @@ HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
     ("tickets", "open"),
     # D81 §4.8（人裁决 Q5）：每次总装都弹卡，--replace 覆盖已有成片同样逐条人审
     ("assemble", None),
+    # D99：一手 / 二手只能由人定（人裁决 2026-10-15）；ava 经 bash 跑 promote 即弹卡
+    ("facts", "promote"),
 })
 
 # D82 §4.7：交接文本由 core 模板生成，不取模块输出里的任意文字
@@ -1162,6 +1164,45 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "fact_add": {
+        "name": "fact_add",
+        "side_effect": True,
+        # ADR-0032 软约束：出处是 D99 施工图，「为什么不复用 run_pipeline / write_episode_file / bash」写在其 PR-2 第 1 条
+        "adr": "plans/2026-10-15-fact-gate-spec.md",
+        "description": (
+            "往本卷 / 本期（企划会话里是企划）的事实库 facts.jsonl 写事实条目，一次可多条，逐条回执。"
+            "**写事实只用这个工具**，不要用 bash 或 write_episode_file 写事实文件；facts.md 是生成的阅读版。"
+            "每条给：claim（中文说法）、url（出处页）、excerpts（从这一页原文**逐字复制**的句子，不改写、不拼接、不加说话人冒号）、"
+            "proposed_level（一手 / 二手 / 未核实，只是提议）、topic（节名）。"
+            "系统按 url 找本机抓取留档（web_fetch / crawl / browser 打开过的页，跨会话也算）逐条比对摘录："
+            "逐字命中 → 落「待核」，一手 / 二手由人定；只在去掉标点后才对上 → 落「待核」并要你按原文重抄；"
+            "对不上或这页没抓过 → 只能落「未核实」。回执里会给原文最接近的片段，照它改。"
+            "向人汇报时如实说各条的级别，不要把「待核」说成已核实。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim": {"type": "string", "description": "这条事实的中文说法"},
+                            "url": {"type": "string", "description": "出处页 URL（必须是你打开过的那一页）；没有出处给空串"},
+                            "excerpts": {"type": "array", "items": {"type": "string"}, "description": "原文逐字摘录，一句一项"},
+                            "proposed_level": {"type": "string", "enum": ["一手", "二手", "未核实"]},
+                            "topic": {"type": "string", "description": "节名，如「成员编制」"},
+                        },
+                        "required": ["claim", "url", "excerpts", "proposed_level"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -1899,6 +1940,19 @@ def _keep_record(res: dict[str, Any], kind: str, url: str, ctx: ToolContext) -> 
     return res
 
 
+def _tool_fact_add(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """D99：事实库写入。目录取自宿主绑定（卷 / 期目录；企划会话取企划目录），不取模型参数。"""
+    from pipeline import facts
+
+    target = ctx.project_dir if ctx.session_kind == "project" else ctx.episode_dir
+    if target is None:
+        raise PermissionError(NO_EPISODE_MESSAGE)
+    entries = args.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("entries 必须是非空数组")
+    return facts.add(entries, target=Path(target), sid=ctx.session_id, root=ctx.root)
+
+
 def _tool_web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     from pipeline.agent.web import fetch_web
 
@@ -2174,6 +2228,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "write_note": _tool_write_note,
     "bash": _tool_bash,
     "view_image": _tool_view_image,
+    "fact_add": _tool_fact_add,
 }
 
 
