@@ -1,6 +1,6 @@
 # D96 浏览器登录态：实测记录与待人测项（施工图之前）
 
-日期：2026-10-15　状态：**Google / YouTube 三项已过（人登录、我测）；人要求扩到其他站点，暂停，等人回来逐站实测后再写施工图**
+日期：2026-10-15　状态：**实测完成**（Google / YouTube 午间；其他 8 站 + 两个百科 16:00 后，见 §四之三）；施工图 [2026-10-15-browser-camoufox-spec.md](2026-10-15-browser-camoufox-spec.md) 待人确认
 附件：[`2026-10-15-browser-login-options/`](2026-10-15-browser-login-options/)（`camoufox_login.py`、`cdp_probe.py`，路径全取参数）
 关联：D96、ADR-0021（独立持久 profile、「不碰 cookie 本体」）、D95
 
@@ -74,6 +74,45 @@ AVA 的 `browser` 工具用 Playwright 启动隔离 Chromium（`data/browser-pro
 ```
 
 站点键：niconico、bilibili、x、pixiv、note、zhihu、xiaohongshu、bangumi（不登的标签页直接关掉）。脚本按站记「是否出现不安全 / 机器人验证字样」和「是否登上」。之后由开发会话逐站跑：无界面重开看是否保持登录；要下载的站（niconico、bilibili、X）用 `yt-dlp --cookies-from-browser firefox:data/browser-profile-firefox` 实抓一条。全部测完再写施工图。
+
+## 四之三、第二轮结果（2026-10-15 15:50–16:40，人登录、我测）
+
+人在 `multi_login.py` 的窗口里登了 bilibili、X、pixiv、知乎、小红书、Bangumi，当场注册并登录了 niconico；note 没注册（AVA 只读公开文章，用不到账号；人试注册时 note 回「しばらくたってからもう一度お試し下さい」= 请稍后再试，原因未查）。
+
+**登录时**：8 个站都没出现「浏览器不安全」类拦截。pixiv 登录页正文里有「captcha」字样，空配置打开也有，是登录页上的 reCAPTCHA 说明，不是拦截。
+
+**`multi_login.py` 的「已登录」判断不可靠**：它按「登录 cookie 名在不在」判，pixiv（`PHPSESSID`）、note（`_note_session_v5`）、小红书（`web_session`）窗口打开 5 秒就判为已登录——访客也发同名 cookie；没注册的 note 最终也记成 true。所以持久性改为下面这种判法。
+
+**无界面重开是否保持登录**（scratch `persist_check.py`：同一配置 headless 重开，每站打开一个只有登录后才看得到的页面；同一脚本对一份空配置跑一遍作反面对照，确认每条判据在没登录时为假）：
+
+| 站 | 判据 | 登录配置 | 空配置对照 |
+|---|---|---|---|
+| niconico | `nicovideo.jp/my` 不被转到 `account.nicovideo.jp` | 保持 | 转到登录页 |
+| bilibili | `api.bilibili.com/x/web-interface/nav` 的 `isLogin` | 保持 | false |
+| X | `x.com/home` 停在 `/home` | 保持 | 转到 `/i/jf/onboarding/web` |
+| pixiv | `pixiv.net/settings/account` 停在设置页 | 保持 | 转回首页 `/en/`（初版判据「不转 accounts.pixiv.net」在这里误判为真，已改） |
+| 知乎 | `zhihu.com/api/v4/me` 有 `id` | 保持 | 无 |
+| 小红书 | `/explore` 正文没有「登录」字样 | 保持 | 有登录框（5 处「登录」）；初版判据「有作者主页链接」在这里误判为真，已改 |
+| Bangumi | 首页有 `logout` 链接 | 保持 | 无 |
+| note | `note.com/settings/account` 不转 `/login` | 未登录（与事实一致） | 未登录 |
+
+**yt-dlp 2026.08.19 用 `--cookies-from-browser firefox:data/browser-profile-firefox`**（读出 143 个 cookie；与不带 cookie 对比，只做解析不下载）：
+
+| 站 | 样本 | 不带 cookie | 带登录配置 |
+|---|---|---|---|
+| niconico | sm1715919、sm15630734（2007 / 2011） | 360p | 360p，格式完全相同 |
+| niconico | sm45961264、sm41466174（2026 / 2022） | 720p | 720p，格式完全相同（免费账号没多拿到画质；付费会员是否不同未测） |
+| bilibili | BV1gx411D7x2（老视频，2 小时） | 360p / 720p 两档 | **多出 1080p** |
+| bilibili | BV1iRrNBLEq5 | 1080p | 1080p，相同 |
+| X | mahoyo_movie 推文视频 | 540p | 540p，相同 |
+| X | oricon_anime_ 推文（视频是嵌的 YouTube） | **被 YouTube bot 检查拦** | 1080p（yt-dlp 跟到 YouTube，用的是同一条命令的 cookie） |
+| X | ryo_spcl、lobster425 推文 | 没有视频 | 同左 |
+
+没找到「必须登录才能看」的 X 推文（敏感内容 / 受保护账号），X 登录态本身的作用未测。
+
+**Cloudflare 站（不登录，只读）**：萌娘百科无界面打开直接 200、正文完整。Fandom 时好时坏：第一次无界面 403 停在「Just a moment...」，第二次无界面 5 秒通过；有界面窗口停在验证页，**人手点一次验证后**配置里留下 `fandom.com` 的 `cf_clearance`，之后无界面打开 200、正文完整。即：Cloudflare 验证可以靠「有界面窗口人点一次」解决，通过状态留在同一份配置里。
+
+**依赖实测**：camoufox 最新稳定版 0.5.8（与本机全局 0.5.6 一样）要求 `playwright<1.63`，项目 `browser` 可选依赖现钉 `playwright>=1.63.0`，二者冲突；crawl4ai 0.9.4 只要求 `playwright>=1.49`。本机 `~/Library/Caches/ms-playwright/` 里 1.62 对应的 `chromium-1234` 已在，Camoufox 浏览器本体（`152.0.4-beta.30`）也已在 `~/Library/Caches/camoufox/`。上面全部实测都跑在 playwright 1.62.0 上。
 
 ## 五、明确不做的事
 
