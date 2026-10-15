@@ -4,7 +4,7 @@
 
 ## 文档地图
 
-> **开工第一铁律**：`python -m pipeline.status data/episodes/<期号>`，依据输出只读 **≤100 行手册 `docs/WORKFLOW.md`**。
+> **开工先做**：`python -m pipeline.status data/episodes/<期号>`，依据输出只读 **≤100 行手册 `docs/WORKFLOW.md`**。
 
 | 文件 | 记什么 | 什么时候读 |
 |---|---|---|
@@ -34,21 +34,21 @@
 
 ## 二、硬约束（违反即视为系统缺陷）
 
-- **生产期代码写保护（Code Freeze，严禁不声不响改代码）**：
-  在进行做视频（写稿、配音、排片、渲染、封面等）任务期间，`pipeline/`、`config/`、`tests/` 下的代码与配置视为**绝对只读（Read-Only）**。
+- **生产期代码写保护（Code Freeze：不经人同意不改代码）**：
+  在进行做视频（写稿、配音、排片、渲染、封面等）任务期间，`pipeline/`、`config/`、`tests/` 下的代码与配置视为**只读**。
   **例外只有四条**：① 读音表（2026-10-08，D51）：`config/voice.json` 的 `readings` / `pinyin_injections`，可经 `python -m pipeline.corrections global` 在人审卡批准后逐条新增、覆盖或删除同键，同一命令顺带写 `readings_provenance`（每条的来历：表、日期、期、番、引擎、音色；2026-10-09 N12）；② 标定值（2026-10-09，D60）：`project.json` 的 `visual.scene_threshold` / `ccip_same` / `ccip_margin` / `face_expand` 按番键与 `script.cpm`、`scenes.json` 的 `<番>.no_match`、`voice.json` 的 `titles`，可经 `python -m pipeline.calibration set` 在人审卡批准后写入，标定实录同步追加进对应 `_note`（取值由人看测量结果拍板）；③ 曲库登记（2026-10-11）：`config/bgm.json` 的 `<番>.tracks`，可经 `python -m pipeline.bgm register` 在人审卡批准后新增或覆盖曲目（没登记的曲子配不了乐；路径一律存 `data/…` 相对路径）。写错曲名报「曲目表里没有」时先看报错是否已指出表里的键，**改 `01-topic.md` 的 BGM 字段，不要重新登记**；④ 云端连接（2026-10-15，D102）：`config/cloud.local.json` 的 `server` / `port` / `user`，可经 `python -m pipeline.cloud connect "<控制台登录指令>"` 在人审卡批准后写入（同时生成 `data/cloud/ssh_config`）；该文件其余键（含 `api_token`）不动。其余字段与 `config/` 其他文件照旧只读。
   **ava 的 `bash` 工具（ADR-0029）同样受本条约束**：它在技术上能写任何文件，本条是它唯一的边界。ADR-0030 起 bash 只在命中硬危险（删除、git 改历史 / 推远端、提权、全局装依赖、写 `pipeline/` `config/`、碰停机点解封物）时弹卡，其余免卡——没有卡不等于允许越界。
   遇到任何异常，99% 是由于当期 `01-topic.md` 或 `02-script.md` 字段格式错误、语法不符或素材缺失引起的，**只允许排查和修改当期目录下的输入文件**。
-  严禁 Agent 私自修改 `pipeline/` 源码添加单期特判造屎山。若确信为通用流水线代码 Bug 必须修改，**必须立即停机向人类出示三项汇报**：
+  Agent 不为单期给 `pipeline/` 源码加特判。确信是通用流水线代码 Bug、必须修改时，**先停下向人出示三项**：
   1. 原始报错堆栈；
   2. 证明为什么这是「引擎缺陷」而不是「当期输入写错」；
   3. 拟修改的最小 diff 方案与对其他番剧的影响。
-  **未获得人类明确回复「允许改代码」前，绝对禁止改动任何一行 Python 源码。**
+  **人明确回复「允许改代码」之前，不改任何 Python 源码。**
 - **每期人类投入是观测量，不设硬预算**（2026-09-23 用户裁决；`k × 片长` 旧门槛与「超预算即缺陷」「连续 3 期停产」判据均已废除，沿革见 STANDARD 第三节）：`human_time.json` 继续记录，用来找最费人的环节，再改流程或砍环节。
 - **禁止无限打磨。** 画质、转场、文案润色边际收益极低；时间只花在更自动、更可靠上。
 - 建设期止损线已满足解除，目前不设止损线。
 
-## 三、判据（本项目的灵魂，全部硬标准）
+## 三、判据（全部是硬标准）
 
 完整证据与踩坑实例见 `docs/dev/STANDARD.md` 第三、四节。核心判据：
 

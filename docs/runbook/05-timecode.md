@@ -13,6 +13,6 @@
 ## 普通期在这里定 BGM
 配音出来、画面排好之后，人听过才知道该配什么：人点名曲库里的文件和用法（循环、几首接续），agent 写进 `01-topic.md` 的 BGM 字段；稿件里有任何 `## 音乐段`（比如试看段）时，BGM 只认稿件里的块，按 `skills/write-script/SKILL.md` 8.3 写铺底块。人没点名，agent 不选曲。企划期的音乐与文案一起设计，见 `config/agent/scopes/project.md`。
 
-## 产物与铁律
+## 产物与规则
 - 产物：`data/episodes/<期号>/04-clips.approved.json`
-- **铁律**：批准必须是人看后的显式动作（决策条或 `/approve 05`）。**Agent 不能跑 approve**——`review` 带任何选项在弹卡前就被拒（ADR-0020 §3）。无 approved 文件后续渲染立即报错退出。
+- **批准只能由人做**：批准必须是人看后的显式动作（决策条或 `/approve 05`）。**Agent 不能跑 approve**——`review` 带任何选项在弹卡前就被拒（ADR-0020 §3）。无 approved 文件后续渲染立即报错退出。

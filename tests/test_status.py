@@ -292,3 +292,16 @@ def test_publish_gaps_titles_sections(tmp_path: Path, titles: str, expect: str):
 def test_publish_gaps_accepts_past_heading_styles(tmp_path: Path, titles: str):
     from pipeline.status import publish_gaps
     assert publish_gaps(_stage_09(tmp_path, titles=titles)) == []
+
+
+def test_给AVA的提示不喊口号() -> None:
+    """D101 / 1.7（2026-10-15）：status 的提示会被模型当说话样板，规则照旧、语气中性。
+    停机点仍是停机点、--force 仍拒收，只是不再写「🛑…！」「严禁…！」。"""
+    import ast
+
+    from pipeline import paths
+
+    src = (paths.ROOT / "pipeline" / "status.py").read_text(encoding="utf-8")
+    texts = [n.value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    loud = [t for t in texts if any(m in t for m in ("🛑", "严禁", "！"))]
+    assert loud == [], loud

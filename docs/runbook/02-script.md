@@ -13,7 +13,7 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
 2.5 **补料（所有题材，D84；不只在写稿期，改稿、排片、审片时也会补）**：写到原片拍不出来的东西（受力图、数据图、实物对比），按 `skills/write-script/SKILL.md` 8.5 节补：缺口登记进 `02-asset-requests.json`（`write_episode_file`，免卡）→ `web_fetch` / `crawl` 返回的 `images` 写候选（`why` 写明补哪段的缺口）、调 `acquire_propose`（只登记并核对、不下载，返回机器表原样给人）→ 人点名后 `acquire fetch <号>`（只能抓结论为「可下载」的，D100）→ `acquire gate` → `acquire register <文件> --to-patch` → `ingest_patch --anchor-only`（只切镜头登记，不打标、不碰云端）→ 写 `锚点: <补丁池名> SPxx 0:00`。不许拿角色镜头硬凑。
 3. **运行机检**：agent 跑 `check_script`（免卡，期目录与稿件自动补上）。底层排查参考：`python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md`。
 
-## 核心规程与铁律
+## 规则
 1. **查询是机器接口不是构图备注**：`查询` 文本会原样进入字幕向量检索，写“角色承认逃避”有效，写“中景逆光”必落空。
 2. **机检全绿方可交工**：必须满足单句字数、气口起伏、剧情锚点数与禁词门限（机检条数随判据迭代增减，不写死——以 `check_script` 实际输出为准）。
 3. **机检过后跑 02.8 对抗审查，每期必跑**（2026-10-09 人裁决，D48 ②；2026-10-14 人定每期必跑）：`run_pipeline adversarial`。一个看不到写稿对话的审查者，只拿稿件、番剧笔记与逐段锚点窗口内的字幕、在场索引，挑三类问题：**事实**（错误与模糊）、**衔接**（转折不畅）、**语言**（AI 味太浓、语病），写 `02-adversarial.md`。它的引用会被机械核对，核不上的标 ⚠。
