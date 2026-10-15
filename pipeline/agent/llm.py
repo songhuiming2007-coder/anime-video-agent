@@ -389,9 +389,12 @@ def _stream_error(err: Any) -> LLMError:
 def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """D94：SSE 增量块拼回与非流式同形的 `choices[0].message`，并取末块的 `usage`。
 
-    - `content` / `reasoning_content` 字符串累加；某个键出现过但全程为 null → 值为空串（非流式实测
-      就是「键在、值为空」）；`reasoning_content` 从没出现过就不带这个键。
-    - `tool_calls` 按 `index` 归并：`id` / `type` / `function.name` 取首次非空，`function.arguments` 累加，保留 `index`。
+    - `content` / `reasoning_content` 字符串累加；累加结果为空（全程 null 或只有空串）→ `None`；
+      `reasoning_content` 从没出现过就不带这个键。
+    - `tool_calls` 按 `index` 归并：`id` / `type` / `function.name` 取首次非空，`function.arguments` 累加；
+      `index` 只用来归并、不留在结果里。键出现过但全程为 null → `None`。
+    - 以上空值与键形状照 2026-10-15 探针同题非流式回复与旧会话日志（都是 `null`、调用里没有 `index`），
+      夹具 tests/fixtures/llm_stream_probe/。
     - 其余 delta 字段取最后一次非 null。
     - 既没有 `[DONE]` 也没有 `finish_reason` → 断流，可重试（不拿半截回复当结果）。
     """
@@ -401,6 +404,7 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
     role: str | None = None
     usage: dict[str, Any] | None = None
     ended = False
+    saw_calls = False
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith(":") or not line.startswith("data:"):
@@ -433,6 +437,7 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
                 if isinstance(val, str):
                     parts.append(val)
             elif key == "tool_calls":
+                saw_calls = True
                 for part in val or []:
                     idx = part.get("index", len(calls))
                     slot = calls.setdefault(idx, {"index": idx, "function": {"name": None, "arguments": ""}})
@@ -448,11 +453,13 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
                 extra[key] = val
     if not ended:
         raise LLMError("LLM 流式响应中途断开（没有 [DONE] 也没有 finish_reason）", retryable=True)
-    message: dict[str, Any] = {"role": role or "assistant", "content": "".join(text.get("content", []))}
+    message: dict[str, Any] = {"role": role or "assistant", "content": "".join(text.get("content", [])) or None}
     if "reasoning_content" in text:
-        message["reasoning_content"] = "".join(text["reasoning_content"])
+        message["reasoning_content"] = "".join(text["reasoning_content"]) or None
     if calls:
-        message["tool_calls"] = [calls[i] for i in sorted(calls)]
+        message["tool_calls"] = [{k: v for k, v in calls[i].items() if k != "index"} for i in sorted(calls)]
+    elif saw_calls:
+        message["tool_calls"] = None
     for key, val in extra.items():
         message.setdefault(key, val)
     return message, usage

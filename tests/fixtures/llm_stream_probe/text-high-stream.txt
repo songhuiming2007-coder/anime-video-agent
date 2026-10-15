@@ -1,0 +1,20 @@
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":"Hangzhou's West Lake, a renowned scenic area in China, is located in Zhejiang province and holds World Cultural Heritage status. This natural beauty encompasses iconic features such as the \"Three Pools Mirroring the Moon,\" the \"Broken Bridge,\" and picturesque weeping willows. The lake and surrounding landscapes are a quintessential example of Chinese aesthetics.\n\n\n","tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":"Drafting a concise description began by establishing the basic structure: introduction, scenery, and cultural significance. Draft 1 provides a good starting point, addressing each aspect, while Draft 2 focuses on more concise phrasing. Considering which aspects the summary is to highlight, I am now selecting the best aspects of each draft.\n\n\n","tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"1. 杭州西湖位于浙江省杭州市，是中国著名的风景名胜与","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"世界文化遗产，自古便享有“人间天堂”的美誉。\n2. 它以秀丽的湖光山色与“","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"西湖十景”著称，堤岛相连、山水相依，完美体现了中国古典美学","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"中人与自然融为一体的造园艺术。\n3. 这里不仅留下了苏轼、白居易等历","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"代文人墨客的千古诗篇，更流传着《白蛇传》等动人传说，是江南诗","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"意与东方浪漫的极致象征。","reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"probe-redacted","object":"chat.completion.chunk","created":0,"model":"gemini-3.8-flash-n","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"completion_tokens":135,"total_tokens":1041,"prompt_tokens":10,"completion_tokens_details":{"reasoning_tokens":896}}}
+
+data: [DONE]
+
