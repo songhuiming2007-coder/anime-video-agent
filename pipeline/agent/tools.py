@@ -2158,6 +2158,25 @@ def secret_env_names(root: Path | None = None) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+#: 要调模型的流水线模块（N50）：作业环境只给它们留 LLM 那一个密钥变量，web 检索变量照剥。
+#: 守卫测试扫 pipeline/*.py：调 chat_complete 的模块漏登记会变红。
+LLM_KEY_MODULES: frozenset[str] = frozenset({"adversarial", "fact_review", "notes_review"})
+
+
+def pipeline_job_env_drop(argv: Sequence[str], root: Path | None = None) -> tuple[str, ...]:
+    """run_pipeline 作业不继承的环境变量名（N50）：全部密钥变量，LLM_KEY_MODULES 的模块保留 LLM 那一个。"""
+    names = set(secret_env_names(root))
+    module = argv[2] if len(argv) > 2 and argv[1] == "-m" else ""
+    if module.removeprefix("pipeline.") in LLM_KEY_MODULES:
+        try:
+            from pipeline.agent.llm import api_key_env_name
+
+            names.discard(api_key_env_name(root) or "")
+        except Exception:  # noqa: BLE001 —— 配置坏了照剥：模块自己会报「缺密钥」，不静默放行
+            pass
+    return tuple(sorted(names))
+
+
 def _collect_secret_fields(node: Any, out: set[str]) -> None:
     if isinstance(node, dict):
         for k, v in node.items():
@@ -2376,6 +2395,7 @@ def run_pipeline(
             "job_id": job.job_id,
         }
 
+    job.env_drop = pipeline_job_env_drop(job.argv)  # N50：作业及其子孙（ffmpeg、yt-dlp 等）不带密钥变量
     executed_job = execute_job(job)
     return {
         "ok": executed_job.status == JobStatus.SUCCEEDED,

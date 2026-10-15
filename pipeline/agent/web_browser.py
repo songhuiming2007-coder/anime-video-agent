@@ -271,6 +271,14 @@ CAMOUFOX_OS = "macos"
 _PROFILE_IN_USE = "already open"
 
 
+def browser_env() -> dict[str, str]:
+    """给 Camoufox 的环境：会话进程的环境去掉密钥变量（N50）。camoufox 在 env=None 时取整份 os.environ。"""
+    from pipeline.agent.tools import secret_env_names
+
+    drop = set(secret_env_names())
+    return {k: v for k, v in os.environ.items() if k not in drop}
+
+
 def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
     """Camoufox 持久配置（D96；函数级延迟 import，基于实测版本 camoufox 0.5.6 + playwright 1.62.0 钉死）：
     sync_playwright().start() + camoufox NewBrowser(pw, persistent_context=True, user_data_dir=...,
@@ -302,6 +310,7 @@ def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
             user_data_dir=str(user_data_dir),
             headless=not bool(headed),
             os=CAMOUFOX_OS,
+            env=browser_env(),
         )
         return _PlaywrightSessionAdapter(pw, ctx)
     except Exception as exc:
