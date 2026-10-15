@@ -258,9 +258,10 @@ AUTO_APPROVED_TOOLS = frozenset(
 )
 # ADR-0030 决策 2：run_pipeline 只有这些 cloud 子命令弹卡——开机 / 跑任务花钱，down / 清理销毁云端东西
 CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data"})
-# AGENTS.md Code Freeze 的三条例外（读音表 / 标定值 / 曲库登记）写 config/，规定「人审卡批准后」才写：
+# AGENTS.md Code Freeze 的四条例外（读音表 / 标定值 / 曲库登记 / 云端连接）写 config/，规定「人审卡批准后」才写：
 # 与 bash「写 config/ 算硬危险」同一口径，逐条弹卡。D82：它是 tools.HUMAN_GATED_COMMANDS 的子集（审查走后者）
-CONFIG_WRITE_COMMANDS = frozenset({("corrections", "global"), ("calibration", "set"), ("bgm", "register")})
+CONFIG_WRITE_COMMANDS = frozenset({("corrections", "global"), ("calibration", "set"), ("bgm", "register"),
+                                   ("cloud", "connect")})
 
 
 def review_tool_call(
@@ -482,7 +483,7 @@ def review_tool_call(
         if module == "cloud" and rest[:1] and rest[0] in CLOUD_CARD_SUBCOMMANDS:
             allow_key = f"run_pipeline:cloud {rest[0]}"
         elif _human_gated(module, rest):
-            # D82 §4.4：逐条人审的模块命令（Code Freeze 三条例外写 config/ + tickets open）：每次弹卡，不开放「本会话都批准」
+            # D82 §4.4：逐条人审的模块命令（Code Freeze 四条例外写 config/ + tickets open）：每次弹卡，不开放「本会话都批准」
             pass
         elif _skips_human_gate(rest):
             # 越过人工关卡（ADR-0030 决策 7 同一口径）：--confirm-patch 跳过 03.5 补丁段二次确认、

@@ -610,3 +610,13 @@ def test_ao8_fix_env_只重下缺的(monkeypatch):
     downloads = [c for c in sent if "snapshot_download" in c]
     assert len(downloads) == 1 and "org/miss" in downloads[0]
     assert not any("git clone" in c for c in sent)
+
+
+def test_d102_cloud_connect逐条弹卡不给本会话批准(repo: Path):
+    """D102：connect 写 cloud.local.json 的连接三项（Code Freeze 第 ④ 条例外），与另三条同一口径：
+    每次弹卡，卡上不开放「本会话都批准」（allow_key 为 None）；对照 cloud up 是可「本会话都批准」的计费卡。"""
+    ep = _episode(repo)
+    v = _review('cloud connect "ssh -p 34557 root@connect.weste.seetacloud.com"', ep)
+    assert v.action == "ask" and v.allow_key is None
+    up = _review("cloud up --mode gpu", ep)
+    assert up.action == "ask" and up.allow_key == "run_pipeline:cloud up"

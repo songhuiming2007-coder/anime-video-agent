@@ -4,8 +4,9 @@
 1. exec: 远端安全执行命令——默认强制 tmux 包裹后台化 + 日志落盘（防断连 SIGHUP）；
          仅 --fg 允许直连短命令（限 <60s 探针）
 2. logs: 查看/跟踪远端任务日志
-3. doctor: 逐项核验云端环境（SSH、显卡≥24GB/无卡模式、仓库、PyTorch+CUDA、数据盘、五大模型）
-4. up/down/status: 云端实例生命周期管理与分模式成本核算（追加式账簿 data/cloud/ledger.jsonl）
+3. doctor: 逐项核验云端环境（SSH、显卡型号与显存/无卡模式、仓库、PyTorch+CUDA、数据盘、文件存储与模型软链、模型）
+4. up/down/status: 云端实例生命周期管理与分模式成本核算（追加式账簿 data/cloud/ledger.jsonl，记实际 GPU 型号）
+4b. connect: 换实例（D102）——解析控制台登录指令，写连接三项、生成 data/cloud/ssh_config
 5. push/pull/run/attach: 资产同步与主干任务调度（白名单：tts、probe）
 
 设计依据：
@@ -48,8 +49,16 @@ ALLOWED_TASKS = {
 WATCHDOG_HEARTBEAT_PATH = "/root/.ava_heartbeat"
 DEFAULT_IDLE_SHUTDOWN_SECONDS = 300  # 300s：无操作 5 分钟关机，给 pull 预留容错窗口
 
-# 工业化多模态视频流水线显存门槛
-MIN_VRAM_GB = 24.0  # 24GB：承载 8B VLM 镜头打标与 7B TTS 流匹配模型串行加载的底线显存
+# 显存提示线（D102 起不再是硬门槛）：24GB 依据 Qwen3-VL-8B bf16 权重 17.5GB 加推理开销。
+# 卡型改为按需租，只配音的任务（Qwen3-TTS 1.7B，权重约 4GB）不需要这么大的卡，所以低于它只报 WARN；
+# 各任务的实测峰值等第一台新实例测过再写进配置（D102 施工图第五节 ③）。
+MIN_VRAM_GB = 24.0
+
+# D102：模型放区级文件存储（全区实例开机自动挂载、不随实例释放），数据盘上的模型目录软链过去。
+# 可用 `config/cloud.json` 的 `fs_models` 覆盖。
+DEFAULT_FS_MODELS = "/root/autodl-fs/models"
+# 租机条件里的 CUDA 下限：镜像是 torch 2.8 + cu128，驱动支持不到 12.8 的机器起不来
+RENT_MIN_CUDA = "12.8"
 
 # 远端日志根目录
 REMOTE_LOG_DIR = "/root/autodl-tmp/logs"
@@ -116,27 +125,62 @@ def build_exec_tmux_command(
     return tmux_cmd, log_path
 
 
+def parse_gpu_query(raw: str) -> tuple[str | None, float | None]:
+    """解析 `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits` 的首行（纯函数）。
+
+    返回 (型号, 显存 MiB)；只有一列数字时当作旧格式（只查 memory.total），型号为 None。
+    解析不出返回 (None, None)。
+    """
+    lines = raw.strip().splitlines()
+    if not lines:
+        return None, None
+    cols = [c.strip() for c in lines[0].split(",")]
+    try:
+        mem = float(cols[-1])
+    except ValueError:
+        return None, None
+    name = cols[0] if len(cols) >= 2 and cols[0] else None
+    return name, mem
+
+
 def evaluate_doctor_gpu(raw_vram_output: str, returncode: int) -> tuple[str, str, bool]:
     """评估 GPU 项健康状态（纯函数）。
 
     判据：
     - 无 GPU / nvidia-smi 失败 → 判定为「无卡模式，GPU 未挂载」（状态陈述，非失败）
-    - 有 GPU → 断言显存容量 ≥ 24GB（断言容量，不断言型号名）
-    返回: (状态标签 OK/INFO/FAIL, 详情描述, 是否通过质检)
+    - 有 GPU → 报型号与显存；低于 MIN_VRAM_GB 报 WARN 并说明哪类任务受影响（D102：卡型按需租，
+      只配音的任务用小卡是正常选择，不判失败）
+    返回: (状态标签 OK/INFO/WARN/FAIL, 详情描述, 是否通过质检)
     """
     if returncode != 0 or not raw_vram_output.strip():
         return "INFO", "无卡模式，GPU 未挂载（0.10元/h 节能维护模式）", True
 
-    try:
-        first_line = raw_vram_output.strip().splitlines()[0]
-        vram_mb = float(first_line.strip())
-        vram_gb = round(vram_mb / 1024.0, 1)
-        if vram_gb >= MIN_VRAM_GB:
-            return "OK", f"显存容量: {vram_gb}GB ≥ {MIN_VRAM_GB}GB (满足多模态模型栈要求)", True
-        else:
-            return "FAIL", f"显存容量: {vram_gb}GB < {MIN_VRAM_GB}GB (不足以承载 8B VLM 与 7B TTS 串行推理)", False
-    except Exception as e:
-        return "FAIL", f"解析 nvidia-smi 显存输出失败: {e} ({raw_vram_output})", False
+    name, vram_mb = parse_gpu_query(raw_vram_output)
+    if vram_mb is None:
+        return "FAIL", f"解析 nvidia-smi 显存输出失败 ({raw_vram_output.strip()})", False
+    vram_gb = round(vram_mb / 1024.0, 1)
+    label = f"{name}，" if name else ""
+    if vram_gb >= MIN_VRAM_GB:
+        return "OK", f"{label}显存 {vram_gb}GB ≥ {MIN_VRAM_GB}GB（VLM 打标与配音都能跑）", True
+    return "WARN", (
+        f"{label}显存 {vram_gb}GB < {MIN_VRAM_GB}GB：VLM 打标（Qwen3-VL-8B，bf16 权重 17.5GB）"
+        f"在这张卡上会显存不足；只配音不受影响。各任务实测峰值待补（D102 第五节 ③）"
+    ), True
+
+
+def lookup_gpu_rate(gpu_name: str | None, rates: dict, fallback: float) -> tuple[float, bool]:
+    """按实测 GPU 型号查 `cloud.json` 的 `gpu_rates_cny`（纯函数）。返回 (元/时, 是否估算)。
+
+    表的键是算力市场的卡型名，nvidia-smi 报的名字常带厂商前缀（如 `NVIDIA GeForce RTX 4090`），
+    所以按「键是型号名的子串」匹配、忽略大小写；多个键命中取最长的（`RTX 4090D` 不被 `RTX 4090` 抢走）。
+    查不到就用 fallback，并标估算，账本照实记。
+    """
+    if gpu_name:
+        low = gpu_name.lower()
+        hits = [k for k in rates if not k.startswith("_") and k.lower() in low]
+        if hits:
+            return float(rates[max(hits, key=len)]), False
+    return float(fallback), True
 
 
 def evaluate_doctor_disk(avail_gb_str: str) -> tuple[str, str, bool]:
@@ -149,6 +193,169 @@ def evaluate_doctor_disk(avail_gb_str: str) -> tuple[str, str, bool]:
             return "FAIL", f"/root/autodl-tmp 剩余空间不足 10GB (仅剩 {val}GB)", False
     except Exception:
         return "FAIL", "数据盘 /root/autodl-tmp 未挂载或不可读", False
+
+
+# ---------------------------------------------------------------------------
+# D102：实例用完即弃——连接信息、ssh 配置、模型软链（纯函数）
+# ---------------------------------------------------------------------------
+
+# 写进 ssh_config 的三项只许这些字符：解析结果原样落进配置文件，放过空白或引号
+# 就能塞进 ProxyCommand 之类的指令
+_LOGIN_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})$")
+_LOGIN_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$")
+# ssh 里要带值的单字母选项（OpenSSH man ssh 的 SYNOPSIS），解析时跳过它们的值
+_SSH_VALUED_OPTS = set("BbcDEeFIiJLlmOoPpQRSWw")
+
+
+def parse_login_command(text: str) -> dict[str, Any]:
+    """解析控制台复制来的 SSH 登录指令（纯函数）：`ssh -p <端口> <用户>@<主机>` → {server, port, user}。
+
+    认 `-p 端口` / `-p端口`、`-l 用户`、夹在中间的 `-o 选项` 与其他带值选项；缺端口、缺主机、
+    多个主机或字符不合法一律 ValueError，消息里列出已经认出来的部分，方便人对照原文。
+    缺端口不补 22：AutoDL 的登录指令总带 `-p`，缺了说明复制不完整。
+    """
+    try:
+        tokens = shlex.split(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"登录指令无法分词：{exc}") from exc
+    found: dict[str, Any] = {}
+    targets: list[str] = []
+    if not tokens or tokens[0] != "ssh":
+        raise ValueError(f"登录指令要以 ssh 开头，实际开头是 {tokens[0] if tokens else '（空）'!r}")
+    i = 1
+    while i < len(tokens):
+        t = tokens[i]
+        if t.startswith("-") and len(t) >= 2:
+            opt, inline = t[1], t[2:]
+            if opt in _SSH_VALUED_OPTS:
+                if inline:
+                    val = inline
+                    i += 1
+                elif i + 1 < len(tokens):
+                    val = tokens[i + 1]
+                    i += 2
+                else:
+                    raise ValueError(f"选项 -{opt} 缺值；已认出：{found or '无'}")
+                if opt == "p":
+                    found["port"] = val
+                elif opt == "l":
+                    found["user"] = val
+            else:
+                i += 1
+            continue
+        targets.append(t)
+        i += 1
+    if len(targets) != 1:
+        raise ValueError(f"要恰好一个「用户@主机」，实际 {targets or '没有'}；已认出：{found or '无'}")
+    target = targets[0]
+    if "@" in target:
+        found["user"], found["server"] = target.rsplit("@", 1)
+    else:
+        found["server"] = target
+    missing = [k for k in ("server", "port", "user") if not found.get(k)]
+    if missing:
+        raise ValueError(f"登录指令缺 {'、'.join(missing)}；已认出：{found}")
+    port_s = str(found["port"])
+    if not port_s.isdigit() or not 1 <= int(port_s) <= 65535:
+        raise ValueError(f"端口不合法：{port_s!r}；已认出：{found}")
+    if not _LOGIN_HOST_RE.match(found["server"]):
+        raise ValueError(f"主机名含不允许的字符：{found['server']!r}")
+    if not _LOGIN_USER_RE.match(found["user"]):
+        raise ValueError(f"用户名含不允许的字符：{found['user']!r}")
+    return {"server": found["server"], "port": int(port_s), "user": found["user"]}
+
+
+def merge_local_connection(local: dict, conn: dict) -> dict:
+    """把连接三项并进 cloud.local.json 的内容（纯函数）：只改 server / port / user，其余键与顺序原样。"""
+    out = dict(local)
+    for k in ("server", "port", "user"):
+        out[k] = conn[k]
+    return out
+
+
+def render_ssh_config(alias: str, conn: dict, known_hosts: Path) -> str:
+    """生成 `data/cloud/ssh_config`（纯函数）。
+
+    - `StrictHostKeyChecking accept-new`：新实例第一次连接自动记下主机密钥，之后密钥变了照常拒绝；
+    - 主机密钥记在项目自己的 known_hosts，不写用户的 ~/.ssh/known_hosts；
+    - 末尾 `Match all` + `Include ~/.ssh/config`：沿用用户原有的密钥、ControlMaster 等设置。
+      ssh 对同一项取先读到的值，所以这里的 HostName / Port / User 优先于 ~/.ssh/config 里旧的 autodl 别名。
+      不加 `Match all` 的话 Include 会落进上面的 Host 块，只在主机名匹配时才生效。
+    """
+    return (
+        "# 由 python -m pipeline.cloud connect 生成（D102），换实例时重写；手改会被下次 connect 覆盖\n"
+        f"Host {alias}\n"
+        f"    HostName {conn['server']}\n"
+        f"    Port {int(conn['port'])}\n"
+        f"    User {conn['user']}\n"
+        f"    StrictHostKeyChecking accept-new\n"
+        f'    UserKnownHostsFile "{known_hosts}"\n'
+        "\n"
+        "Match all\n"
+        "Include ~/.ssh/config\n"
+    )
+
+
+def models_link_script(fs_models: str, tmp_models: str, *, create: bool = True) -> str:
+    """远端模型目录软链脚本（纯函数，D102）：`<数据盘模型目录>` → `<文件存储模型目录>`，幂等。
+
+    输出首词是结论：ALREADY（已指向文件存储）/ LINKED（新建）/ RELINKED（原软链指向别处，改指）/
+    REALDIR（已是实体目录，如 F29 那台，不动它）/ NOFS（文件存储里没有模型目录，没挂上或没拷）/
+    CONFLICT（同名普通文件，交人看）。用 `ln -sfn` 前先分情况：对实体目录用它会在目录里面再建一个链接。
+    `create=False` 是 doctor 用的只读版：该建 / 该改指的地方只报 MISSING / ELSEWHERE，不动远端。
+    """
+    fs, tmp = shlex.quote(fs_models), shlex.quote(tmp_models)
+    relink = f"ln -sfn {fs} {tmp} && echo RELINKED" if create else "echo ELSEWHERE"
+    link = f"mkdir -p \"$(dirname {tmp})\" && ln -s {fs} {tmp} && echo LINKED" if create else "echo MISSING"
+    return (
+        f"if [ -L {tmp} ]; then "
+        f"  if [ \"$(readlink {tmp})\" = {fs} ]; then echo ALREADY; "
+        f"  else {relink}; fi; "
+        f"elif [ -d {tmp} ]; then echo REALDIR; "
+        f"elif [ -e {tmp} ]; then echo CONFLICT; "
+        f"elif [ ! -d {fs} ]; then echo NOFS; "
+        f"else {link}; fi"
+    )
+
+
+def evaluate_models_link(stdout: str, fs_models: str, tmp_models: str) -> tuple[str, str, bool]:
+    """解读 models_link_script 的输出（纯函数）→ (标签, 说明, 是否通过)。
+
+    REALDIR 判通过：实体目录里的模型由 doctor 的逐模型检查核，这里只报一句。
+    """
+    word = (stdout.strip().split() or [""])[0]
+    if word in ("ALREADY", "LINKED", "RELINKED"):
+        verb = {"ALREADY": "已指向", "LINKED": "已新建软链指向", "RELINKED": "已改指"}[word]
+        return "OK", f"{tmp_models} {verb} {fs_models}", True
+    if word == "REALDIR":
+        return "INFO", f"{tmp_models} 是这台实例数据盘上的实体目录，不动它（模型完整性见下方逐模型检查）", True
+    if word == "NOFS":
+        return "FAIL", f"文件存储里没有 {fs_models}（文件存储没挂上，或模型没拷进去）", False
+    if word == "CONFLICT":
+        return "FAIL", f"{tmp_models} 是普通文件，不覆盖，交人看", False
+    if word in ("MISSING", "ELSEWHERE"):
+        what = "还没有" if word == "MISSING" else "是指向别处的软链"
+        return "FAIL", f"{tmp_models} {what}（cloud up / cloud connect 会建软链指向 {fs_models}）", False
+    return "FAIL", f"软链检查没有给出结论（输出：{stdout.strip()[:120]!r}）", False
+
+
+FS_MOUNT_CHECK_CMD = "mountpoint -q /root/autodl-fs && echo MOUNTED || echo NOT_MOUNTED"
+GPU_QUERY_CMD = "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
+
+
+def rent_instructions(cfg_global: dict) -> list[str]:
+    """`up` 连不上时打印的租机条件（纯函数，D102）：地区、显存、CUDA、镜像四项，外加下一步。"""
+    region = cfg_global.get("region", "西北B区")
+    image = cfg_global.get("image", "（cloud.json 未写 image）")
+    return [
+        "实例连不上。实例用完即弃（D102），到算力市场新租一台：",
+        f"  · 地区：{region}（模型在这个区的文件存储里，别的区挂不上）",
+        f"  · 显存：VLM 打标选 ≥ {MIN_VRAM_GB:g}GB（Qwen3-VL-8B bf16 权重 17.5GB）；只配音不需要大卡（Qwen3-TTS 1.7B 权重约 4GB）",
+        f"  · CUDA：≥ {RENT_MIN_CUDA}（镜像是 torch 2.8 + cu128）",
+        f"  · 镜像：「我的镜像」里的 {image}",
+        "  · 控制台：https://www.autodl.com/market/list",
+        "开机后把控制台的 SSH 登录指令（ssh -p … root@…）交给 AVA，走 cloud connect，再 cloud up。",
+    ]
 
 
 # 上行前的余量安全系数。为什么是 2×：
@@ -683,6 +890,8 @@ def format_ledger_entry(
     budget_cny: float,
     mode: str = "gpu",
     note: str | None = None,
+    gpu: str | None = None,
+    rate_cny: float | None = None,
 ) -> dict[str, Any]:
     """格式化账簿单行 JSON 对象（P1-2 增加 mode 字段）。
 
@@ -709,6 +918,11 @@ def format_ledger_entry(
         "over_budget": over_budget,
         "budget_scoped": budget_scoped,
     }
+    # D102：卡型不固定，记实际用的卡与按哪个单价算的（估算与否写在 note）
+    if gpu:
+        entry["gpu"] = gpu
+    if rate_cny is not None:
+        entry["rate_cny"] = rate_cny
     if note:
         entry["note"] = note
     return entry
@@ -739,8 +953,29 @@ def parse_ledger(ledger_text: str) -> tuple[float, int, list[dict]]:
 
 
 def _ssh_host(cfg_local: dict) -> str:
-    """获取 SSH 连接目标 Host 别名（走 ~/.ssh/config 的 autodl）。"""
+    """获取 SSH 连接目标 Host 别名（定义在 data/cloud/ssh_config，没有该文件时走 ~/.ssh/config）。"""
     return cfg_local.get("ssh_host", "autodl")
+
+
+def ssh_config_file() -> Path:
+    """`cloud connect` 生成的 ssh 配置（D102）。在 data/ 下：本机事实，不进 git。"""
+    return paths.DATA / "cloud" / "ssh_config"
+
+
+def known_hosts_file() -> Path:
+    return paths.DATA / "cloud" / "known_hosts"
+
+
+def ssh_base() -> list[str]:
+    """所有 ssh 调用的开头：有 `data/cloud/ssh_config` 就 `-F` 指向它，没有就退回旧行为（~/.ssh/config）。
+
+    每次调用现查文件：connect 重写之后，下一条 ssh 立刻连新实例。
+    """
+    try:
+        present = ssh_config_file().is_file()
+    except OSError:
+        present = False
+    return ["ssh", "-F", str(ssh_config_file())] if present else ["ssh"]
 
 
 def _ssh(
@@ -752,9 +987,9 @@ def _ssh(
 ) -> subprocess.CompletedProcess:
     """subprocess 封装 ssh。
 
-    Host 走 ~/.ssh/config 的 autodl 别名（ControlMaster 复用在 config 层解决，代码不重复造）。
+    Host 是 ssh_config 里的 autodl 别名（ControlMaster 复用在 config 层解决，代码不重复造）。
     """
-    ssh_args = ["ssh", "-o", "BatchMode=yes", host, cmd]
+    ssh_args = [*ssh_base(), "-o", "BatchMode=yes", host, cmd]
     res = subprocess.run(
         ssh_args,
         capture_output=capture_output,
@@ -808,7 +1043,7 @@ def run_rsync(
         "--partial",
         "--checksum",
         "-e",
-        "ssh",
+        " ".join(shlex.quote(a) for a in ssh_base()),
         *exclude_args,
         src,
         dst,
@@ -854,7 +1089,7 @@ def cmd_exec(args: argparse.Namespace) -> int:
             # BatchMode 与 _ssh 同标配（公钥失效必须立刻失败，不许挂交互）；
             # timeout 兑现上面「限 <60s」的承诺——裸 run 会把挂死的远端命令
             # 变成本地进程永久挂起（2026-09-16 审计 R2）
-            p = subprocess.run(["ssh", "-o", "BatchMode=yes", host, remote_cmd],
+            p = subprocess.run([*ssh_base(), "-o", "BatchMode=yes", host, remote_cmd],
                                timeout=60)
         except subprocess.TimeoutExpired:
             print("FAIL 前台命令 60s 未返回，已掐断——长任务去掉 --fg 走 tmux 通道",
@@ -894,7 +1129,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
     cmd = f"tail {tail_opts} {log_path}"
     if args.follow:
-        return subprocess.call(["ssh", host, cmd])
+        return subprocess.call([*ssh_base(), host, cmd])
     else:
         res = _ssh(cmd, host=host, check=False)
         if res.returncode == 0:
@@ -903,6 +1138,63 @@ def cmd_logs(args: argparse.Namespace) -> int:
         else:
             print(f"FAIL 无法读取远端日志 {log_path}: {res.stderr.strip()}", file=sys.stderr)
             return res.returncode
+
+
+def fs_models_dir(cfg_global: dict) -> str:
+    return str(cfg_global.get("fs_models") or DEFAULT_FS_MODELS)
+
+
+def ensure_models_link(host: str, cfg_global: dict) -> bool:
+    """远端建 / 核模型软链（D102 第三节 B），打印一行结论；返回是否可用。"""
+    fs = fs_models_dir(cfg_global)
+    tmp = cfg_global.get("remote_models", "/root/autodl-tmp/models")
+    res = _ssh(models_link_script(fs, tmp), host=host, check=False)
+    tag, desc, ok = evaluate_models_link(res.stdout, fs, tmp)
+    print(f"{tag:<5} [MODELS] {desc}")
+    return ok
+
+
+def forget_known_host(conn: dict) -> None:
+    """作废项目 known_hosts 里这个「主机:端口」的旧密钥。
+
+    AutoDL 各实例共用同一个 connect 主机、按端口区分，端口回收后会分给别的实例；
+    connect 本身表示人换了一台实例，旧密钥留着只会让 accept-new 当场拒连。
+    """
+    kh = known_hosts_file()
+    if not kh.is_file():
+        return
+    subprocess.run(["ssh-keygen", "-R", f"[{conn['server']}]:{int(conn['port'])}", "-f", str(kh)],
+                   capture_output=True, text=True)
+
+
+def cmd_connect(args: argparse.Namespace) -> int:
+    """换实例：解析控制台登录指令，写连接三项、生成 ssh_config、验连通、建模型软链（D102，弹卡）。
+
+    Code Freeze 第 ④ 条例外：只写 `config/cloud.local.json` 的 server / port / user，其余键原样保留。
+    输出不回显该文件的其他内容。
+    """
+    try:
+        conn = parse_login_command(args.login)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL 登录指令解析不出：{exc}") from exc
+    paths.require_data()
+    f_local = paths.CONFIG / "cloud.local.json"
+    local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
+    merged = merge_local_connection(local, conn)
+    paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+    host = _ssh_host(merged)
+    ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
+    forget_known_host(conn)
+    paths.atomic_write(ssh_config_file(), render_ssh_config(host, conn, known_hosts_file()))
+    print(f"[OK] 连接信息已更新：{conn['user']}@{conn['server']}:{conn['port']}（别名 {host}）")
+
+    if not is_ssh_reachable(host):
+        print(f"FAIL 连不上 {conn['server']}:{conn['port']}。实例刚开机可能还没起来，过半分钟再 connect 一次；"
+              "仍不通就看控制台实例状态，以及镜像里是否带着本机公钥", file=sys.stderr)
+        return 1
+    print("[OK] SSH 连通")
+    cfg_global, _ = load_cloud_config()
+    return 0 if ensure_models_link(host, cfg_global) else 1
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -925,20 +1217,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print("FAIL  [SSH] 无法通过 SSH 连接远端实例")
         print("      修法: 1. 确认控制台实例是否已开机 (https://www.autodl.com/console/instance/list);")
-        print("            2. 检查 ~/.ssh/config 中 Host autodl 的端口是否与控制台一致。")
+        print("            2. 换过实例的话，把控制台的 SSH 登录指令交给 cloud connect。")
         return 1
 
     # 2. NVIDIA GPU（断言显存容量 ≥ 24GB，允许无卡模式）
-    gpu_res = _ssh(
-        "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits",
-        host=host,
-        check=False,
-    )
+    gpu_res = _ssh(GPU_QUERY_CMD, host=host, check=False)
     status_tag, desc, passed = evaluate_doctor_gpu(gpu_res.stdout, gpu_res.returncode)
     print(f"{status_tag:<5} [GPU] {desc}")
     if not passed:
         all_passed = False
-        print("      修法: 请在控制台更换为显存 ≥ 24GB 的机型（如 RTX 4090 或 RTX 6000D）。")
 
     # 3. 远端代码仓库
     repo_res = _ssh(f"test -d {remote_root}/.git && cd {remote_root} && git rev-parse --short HEAD", host=host, check=False)
@@ -973,6 +1260,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if not d_passed:
         all_passed = False
         print("      修法: 清理 /root/autodl-tmp 中无用的大文件或临时缓存。")
+
+    # 5b. 文件存储挂载与模型软链（D102：模型在文件存储里，数据盘上只是软链）
+    fs_res = _ssh(FS_MOUNT_CHECK_CMD, host=host, check=False)
+    if fs_res.stdout.strip() == "MOUNTED":
+        print("OK    [FS] 文件存储 /root/autodl-fs 已挂载")
+    else:
+        all_passed = False
+        print("FAIL  [FS] 文件存储 /root/autodl-fs 没挂载")
+        print(f"      修法: 控制台「文件存储」页看 {cfg_global.get('region', '西北B区')} 是否已初始化；"
+              "已初始化仍没挂上就重启实例（文件存储只在开机时挂载）")
+    fs = fs_models_dir(cfg_global)
+    tmp = cfg_global.get("remote_models", "/root/autodl-tmp/models")
+    ln_res = _ssh(models_link_script(fs, tmp, create=False), host=host, check=False)
+    l_tag, l_desc, l_ok = evaluate_models_link(ln_res.stdout, fs, tmp)
+    print(f"{l_tag:<5} [LINK] {l_desc}")
+    if not l_ok:
+        all_passed = False
 
     # 6. 五大模型逐一核查
     print("-" * 65)
@@ -1034,13 +1338,10 @@ def cmd_up(args: argparse.Namespace) -> int:
 
     print(f"[*] 检查云端实例连通性 (Host: {host}, 模式: {mode})...")
     if not is_ssh_reachable(host):
-        inst_id = cfg_local.get("instance_id", "未配置")
-        region = cfg_local.get("region", "西北B区")
-        print(f"\n[!] 实例当前不可达。")
-        print(f"    请前往 AutoDL 控制台手动开机实例（模式选择：{mode}）：")
-        print(f"      实例 ID : {inst_id} ({region})")
-        print(f"      控制台  : https://www.autodl.com/console/instance/list")
-        print(f"[*] 轮询等待 SSH 可达中（超时 {args.timeout} 秒）...")
+        print()
+        for line in rent_instructions(cfg_global):
+            print(f"[!] {line}")
+        print(f"[*] 轮询等待 SSH 可达中（超时 {args.timeout} 秒；期间 connect 换了连接也会接上）...")
 
         start_wait = time.time()
         connected = False
@@ -1070,6 +1371,14 @@ def cmd_up(args: argparse.Namespace) -> int:
                   "要跑 GPU 任务请关机后在控制台按带卡模式重开。")
         mode = actual
 
+    # D102：卡型按需租，记下实际是哪张卡（账本按型号查价）；模型目录软链到文件存储
+    gpu_name, gpu_mem = (None, None)
+    if mode == "gpu":
+        gpu_name, gpu_mem = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)
+        print(f"[OK] GPU：{gpu_name or '型号未读出'}" + (f"，显存 {gpu_mem / 1024:.1f}GB" if gpu_mem else ""))
+    if not ensure_models_link(host, cfg_global):
+        print("WARN 模型目录没接上文件存储：带模型的任务会找不到权重，先看 cloud doctor", file=sys.stderr)
+
     # 部署并激活远端 watchdog（带活跃任务检测）
     idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
     watchdog_content = generate_watchdog_script(idle_sec)
@@ -1098,6 +1407,10 @@ def cmd_up(args: argparse.Namespace) -> int:
         "episode": getattr(args, "episode", None),
         "tasks": [],
     }
+    if gpu_name:
+        session_data["gpu"] = gpu_name
+    if gpu_mem:
+        session_data["gpu_mem_mib"] = gpu_mem
     if mode != getattr(args, "mode", mode):
         # 与声明不符时留痕，事后查账不用猜（带卡/无卡差 24 倍价，不是小事）
         session_data["mode_corrected"] = (
@@ -1115,6 +1428,19 @@ def detect_runtime_mode_from_gpu_probe(returncode: int) -> str:
     若实例实际是无卡就会把账目虚高 24 倍。探测比猜测便宜得多。
     """
     return "gpu" if returncode == 0 else "cardless"
+
+
+def session_rate(cfg_global: dict, mode: str | None, gpu_name: str | None) -> tuple[float, bool]:
+    """会话单价（纯函数）→ (元/时, 是否估算)。无卡按 cardless_rate_cny；带卡按型号查 gpu_rates_cny。
+
+    mode 不可知时取带卡价：宁可高估也不能低估预算风险。
+    """
+    if mode == "cardless":
+        return float(cfg_global.get("cardless_rate_cny", 0.10)), False
+    fallback = float(cfg_global.get("hourly_rate_cny", 2.40))
+    if mode != "gpu":
+        return fallback, True
+    return lookup_gpu_rate(gpu_name, cfg_global.get("gpu_rates_cny", {}) or {}, fallback)
 
 
 def cmd_down(args: argparse.Namespace) -> int:
@@ -1148,13 +1474,10 @@ def cmd_down(args: argparse.Namespace) -> int:
         else:
             mode = "unknown"
 
-    if mode == "cardless":
-        rate = float(cfg_global.get("cardless_rate_cny", 0.10))
-    elif mode == "gpu":
-        rate = float(cfg_global.get("hourly_rate_cny", 2.40))
-    else:
-        # mode 不可知时取较贵的费率：宁可高估也不能低估预算风险
-        rate = float(cfg_global.get("hourly_rate_cny", 2.40))
+    gpu_name = session_info.get("gpu")
+    if mode == "gpu" and not gpu_name and reachable:
+        gpu_name = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)[0]
+    rate, rate_estimated = session_rate(cfg_global, mode, gpu_name)
 
     budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
     up_epoch = session_info.get("up_epoch", time.time())
@@ -1170,6 +1493,9 @@ def cmd_down(args: argparse.Namespace) -> int:
         )
     if session_corrupt:
         note = (note + "；" if note else "") + "会话文件损坏，时长从 0 起算，费用严重低估"
+    if rate_estimated:
+        note = (note + "；" if note else "") + (
+            f"单价估算：gpu_rates_cny 里查不到 {gpu_name or '本次 GPU 型号'}，按 hourly_rate_cny 记")
 
     ledger_entry = format_ledger_entry(
         session_id=session_info.get("session", f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
@@ -1182,6 +1508,8 @@ def cmd_down(args: argparse.Namespace) -> int:
         budget_cny=budget,
         mode=mode,
         note=note,
+        gpu=gpu_name,
+        rate_cny=rate,
     )
     lfile = get_ledger_file()
     with lfile.open("a", encoding="utf-8") as f:
@@ -1239,12 +1567,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     """工况与账簿查询命令。"""
     cfg_global, cfg_local = load_cloud_config()
     host = _ssh_host(cfg_local)
-    rate_gpu = float(cfg_global.get("hourly_rate_cny", 2.40))
-    rate_cardless = float(cfg_global.get("cardless_rate_cny", 0.10))
     budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
 
     print("=" * 65)
-    print(f"  AutoDL 端云工况状态 ({cfg_global.get('gpu', 'RTX 6000D')})")
+    print("  AutoDL 端云工况状态")
     print("=" * 65)
 
     reachable = is_ssh_reachable(host)
@@ -1277,14 +1603,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         try:
             sdata = json.loads(sfile.read_text(encoding="utf-8"))
             mode = sdata.get("mode", "gpu")
-            rate = rate_cardless if mode == "cardless" else rate_gpu
+            rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"))
             elapsed = int(time.time() - sdata.get("up_epoch", time.time()))
             cur_cost = calculate_session_cost(elapsed, rate)
             print("-" * 65)
             print(f"当前活跃会话 : {sdata.get('session')} (开始于 {sdata.get('up')}, 模式: {mode})")
             print(f"已运行时间   : {elapsed // 60} 分 {elapsed % 60} 秒")
             cost_color = "\033[91m" if cur_cost > budget else "\033[92m"
-            print(f"已产生费用   : {cost_color}¥{cur_cost:.4f}\033[0m 元 (基准单价: ¥{rate}/小时, 限额: ¥{budget})")
+            print(f"已产生费用   : {cost_color}¥{cur_cost:.4f}\033[0m 元 (单价: ¥{rate}/小时{'，估算' if estimated else ''}, 限额: ¥{budget})")
         except Exception as e:
             print(f"WARN 会话文件损坏，无法展示当前会话: {e}", file=sys.stderr)
 
@@ -1697,7 +2023,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
     # 列表传参，不用 shell=True：本地 shell 没有要在这里展开的任何东西，
     # 引号拼接只会把合法的会话名截断（审计 R1）
     print(f"[*] 接入 tmux 会话 {session_name}...")
-    return subprocess.call(["ssh", "-t", host, f"tmux attach-session -t {session_name}"])
+    return subprocess.call([*ssh_base(), "-t", host, f"tmux attach-session -t {session_name}"])
 
 
 # ---------------------------------------------------------------------------
@@ -1725,6 +2051,10 @@ def main() -> int:
 
     # doctor
     p_doctor = sub.add_parser("doctor", help="全面诊断远端环境、显卡、数据盘与模型资产")
+
+    # connect（D102）
+    p_connect = sub.add_parser("connect", help="换实例：贴控制台的 SSH 登录指令，写连接信息并生成 ssh 配置")
+    p_connect.add_argument("login", type=str, help='控制台复制的登录指令，整段加引号，如 "ssh -p 34557 root@connect.weste.seetacloud.com"')
 
     # up
     p_up = sub.add_parser("up", help="开启实例并初始化远端守护脚本")
@@ -1768,6 +2098,7 @@ def main() -> int:
         "exec": cmd_exec,
         "logs": cmd_logs,
         "doctor": cmd_doctor,
+        "connect": cmd_connect,
         "up": cmd_up,
         "down": cmd_down,
         "status": cmd_status,

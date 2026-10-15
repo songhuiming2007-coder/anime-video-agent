@@ -1,6 +1,6 @@
 # D102 云端实例改为用完即弃：模型放文件存储，哪台有卡开哪台（施工图）
 
-> 状态：**方向已批，待施工**（2026-10-15；第五节 ①② 已定，③ 等实测、④ 未定）。
+> 状态：**已施工·机检通过，完成判定待真实实例**（2026-10-15；第五节 ①② 已定，③ 等实测、④ 未定；施工记录见第十节）。
 > 关联：ADR-0014（云端无头模型栈）、ADR-0016（渲染在本地、推理在云端）、`config/cloud.json` 的 `_instance_lifecycle_note`（9 月 11 日定的「停机保号」，本图推翻它）。
 
 ## 一、目标与对应 issue
@@ -107,3 +107,19 @@ uv run python -m pipeline.cloud run <期目录> probe                   # 测模
 ## 九、完成判定
 
 在一台**不是 F29** 的西北B区实例上，用镜像开机 → `cloud connect` → `cloud doctor` 全绿 → 跑通一期 TTS（或一次 VLM 打标）→ pull 回本地 → `cloud down`，账本记录了实际 GPU 型号。
+
+## 十、施工记录（2026-10-15）
+
+按第三节 A–G 施工，与施工图的出入：
+
+- **`config/cloud.json` 的 `models` 去掉 `IndexTeam/IndexTTS-2`、补上 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`**（第三节没列，跟着人定的第五节 ① 走）：IndexTTS-2 没拷进文件存储，留着的话新实例上 doctor 永远报缺，`fix-env` 还会往文件存储里重下 11GB；Qwen3-TTS 是 `voice.cloud.json` 实际用的模型，此前 doctor 一直没核它。`min_gb` 3.5（拷入时约 4.5GB）。
+- **connect 时作废项目 known_hosts 里同一「主机:端口」的旧密钥**（第三节没写）：AutoDL 各实例共用 connect 主机、按端口区分，端口回收后分给别的实例，`accept-new` 会当场拒连。只动 `data/cloud/known_hosts`，不碰 `~/.ssh/known_hosts`。
+- `ssh_config` 末尾写成 `Match all` + `Include ~/.ssh/config`：不加 `Match all`，Include 会落进上面的 `Host autodl` 块。已用 `ssh -G -F` 核对：HostName / Port / accept-new 取新值，ControlMaster 等沿用 `~/.ssh/config`。
+- 显存低于 24GB 从 FAIL 改为 WARN（第三节 D 的写法），门槛数值仍是 24GB，实测后再定（第五节 ③）。
+- `up` 连不上时打印租机条件后**仍按 `--timeout` 轮询**（施工图只说改打印）；轮询期间 connect 改了 ssh_config 也会接上。要不要改成打印完立即退出，待人定。
+- `gpu_rates_cny` 只填了 10-15 抄到的 `vGPU-32GB` ¥1.58；键按子串匹配 nvidia-smi 报的名字，第一台新实例上核对实测名。
+
+测试：`tests/test_cloud.py` 新增 D102 一节（解析及变体、合并保键、ssh_config、`-F` 覆盖 ssh / rsync / attach / logs、软链脚本六种情形真跑 bash、只读版不动远端、doctor 三项、按型号查价、down 账本、up 会话文件），`tests/test_agentic_ops.py` 一条（connect 逐条弹卡、不给本会话批准）。变异 21/21 被抓。pytest 3285、tsc + vitest 610 全绿。
+
+**未做（等真实实例）**：第九节完成判定；显存实测；读取速度在带卡机器上复测；`gpu_rates_cny` 键名核对。
+
