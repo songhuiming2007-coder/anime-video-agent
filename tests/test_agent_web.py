@@ -974,19 +974,26 @@ def test_tool_schemas_protocol_keys_whitelist() -> None:
 
 
 def test_every_tool_has_existing_adr() -> None:
-    """T12 (PR2): 工具表变更必须登记现存 ADR 编号（数字段 glob 恰中 1），13 <= 14。"""
+    """T12 (PR2)：每个工具都要有出处（ADR-0032 软约束，取代数量封顶）。
+
+    出处 = 现存 ADR 编号（数字段 glob 恰中 1），或现存施工图 `plans/<文件名>.md`（含 archive/）。
+    出处里写「为什么不复用现有工具」靠评审；这里只机检出处存在。
+    """
     import re
     from pipeline import paths
     from pipeline.agent.tools import TOOL_SCHEMAS
 
-    assert len(TOOL_SCHEMAS) == 16     # ADR-0031 view_image 占第 16 位（ADR-0029 要求第 16 个立 ADR）
-    assert len(TOOL_SCHEMAS) <= 16     # 上限断言：ADR-0031 口径，第 17 个须再立 ADR
-
     adr_dir = paths.ROOT / "docs" / "dev" / "adr"
+    plans_dir = paths.ROOT / "docs" / "dev" / "plans"
     for name, schema in TOOL_SCHEMAS.items():
         adr_val = str(schema.get("adr", ""))
+        plan = re.match(r"^plans/([^/]+\.md)$", adr_val)
+        if plan:
+            hits = [p for p in (plans_dir / plan.group(1), plans_dir / "archive" / plan.group(1)) if p.is_file()]
+            assert hits, f"工具 '{name}' 的出处施工图不存在: {adr_val!r}"
+            continue
         m = re.match(r"^ADR-(\d{4})$", adr_val)
-        assert m is not None, f"工具 '{name}' 缺少合法 ADR 编号: {adr_val!r}"
+        assert m is not None, f"工具 '{name}' 缺少合法出处（ADR-NNNN 或 plans/<文件>.md）: {adr_val!r}"
         num = m.group(1)
         matches = list(adr_dir.glob(f"{num}-*.md"))
         assert len(matches) == 1, (

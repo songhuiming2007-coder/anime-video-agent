@@ -441,7 +441,6 @@ def test_tools_import_does_not_pull_candidates() -> None:
 def test_acquire_propose_scope_mask(tmp_path: Path) -> None:
     # ① 注册表常驻
     assert "acquire_propose" in TOOL_SCHEMAS
-    assert len(TOOL_SCHEMAS) == 16     # ADR-0031 view_image 占第 16 位（ADR-0029 要求第 16 个立 ADR）
 
     # ② build_tool_schemas 单表全量含 acquire_propose（D43：不再按 scope 过滤）
     names = [s["function"]["name"] for s in build_tool_schemas()]
