@@ -394,7 +394,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 episode_name=name,
                 current_step="02.5 人审改稿",
                 is_blocked=True,
-                block_reason="🛑 处于人工停机点 1（02.5 人审改稿）！未见 02-diff.patch 封板确认。",
+                block_reason="停机点 1（02.5 人审改稿）：还没有 02-diff.patch，稿件未封板。",
                 completed_steps=completed,
                 next_action="必须由人类总监通读 02-script.md，精修事实与张力，然后批准 02.5（批准时自动封板，D48）：\n"
                 "  桌面端在待答区点 02.5「批准」；终端 `/approve 02.5`",
@@ -409,7 +409,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 is_blocked=False,
                 block_reason=None,
                 completed_steps=completed,
-                next_action="人审已封板。执行增量配音合成，严禁擅自使用 --force 全量覆盖！",
+                next_action="人审已封板。下一步增量配音；不用 --force 全量覆盖（ava 会拒收）。",
                 next_command=f"python -m pipeline.tts {d}",
                 docs_ref="docs/runbook/03-tts.md",
             )
@@ -443,10 +443,10 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             episode_name=name,
             current_step="05 审时间码",
             is_blocked=True,
-            block_reason=f"🛑 处于人工停机点 3（05 审时间码），但审看页 04-review.html {why}，人无从审看。",
+            block_reason=f"停机点 3（05 审时间码）：审看页 04-review.html {why}，人没法审看。",
             completed_steps=completed,
             next_action=f"审看页 04-review.html {why}。agent 先跑 `review`（不带任何选项，只抽帧出页）生成它，\n"
-            "  再请人在桌面端预览区打开 04-review.html 审看；页面生成之前严禁提批准、严禁说「可以查看审看页」。",
+            "  再请人在桌面端预览区打开 04-review.html 审看；页面生成之前不提批准，也不说「可以查看审看页」。",
             next_command=f"python -m pipeline.review {d}",
             docs_ref="docs/runbook/05-timecode.md",
         )
@@ -456,9 +456,9 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             episode_name=name,
             current_step="05 审时间码",
             is_blocked=True,
-            block_reason="🛑 处于人工停机点 3（05 审时间码）！排片已生成，未获 --approve 批准。",
+            block_reason="停机点 3（05 审时间码）：排片已生成，还没有 --approve 批准。",
             completed_steps=completed,
-            next_action="严禁直接启动渲染！请在浏览器打开 04-review.html 抽检画面与台词，确认无画外音错配后执行批准：",
+            next_action="先不渲染。请人在浏览器打开 04-review.html 抽检画面与台词，确认没有画外音错配后批准：",
             next_command=f"python -m pipeline.review {d} --approve",
             docs_ref="docs/runbook/05-timecode.md",
         )
@@ -513,7 +513,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             is_blocked=False,
             block_reason=None,
             completed_steps=completed,
-            next_action="质检已通过。生成封面候选帧联系表与 5 条标题候选（严禁自行定稿！）。",
+            next_action="质检已通过。生成封面候选帧联系表与 5 条标题候选（定稿由人做）。",
             next_command=f"python -m pipeline.cover {d}",
             docs_ref="docs/runbook/08-cover-title.md",
         )
@@ -523,7 +523,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
     card_hint = "09 卡的封面填 07-cover/ 下的文件（如 07-cover/edit-6.png），不是顶层的 08-cover.jpg。"
     if gaps:
         block_reason = (
-            f"🛑 处于人工停机点 4（09 人工发布），但交付物还缺 {len(gaps)} 项：" + "；".join(gaps) + "。"
+            f"停机点 4（09 人工发布）：交付物还缺 {len(gaps)} 项：" + "；".join(gaps) + "。"
         )
         next_action = (
             "先补齐：\n  " + "\n  ".join(gaps)
@@ -531,7 +531,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             + card_hint
         )
     else:
-        block_reason = "🛑 处于人工停机点 4（09 人工发布）！交付物已齐备，待人类拍板发布。"
+        block_reason = "停机点 4（09 人工发布）：交付物已齐备，等人拍板发布。"
         next_action = (
             "人类核对 08-cover.jpg / 08-cover-vertical.jpg 与 07-titles.md 的标题、简介、标签，"
             "在 09 卡填定稿封面与标题后手动上传发布各平台。" + card_hint
