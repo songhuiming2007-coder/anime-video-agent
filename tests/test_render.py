@@ -3,6 +3,8 @@
 
 import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -553,3 +555,58 @@ class TestWriteFinalAtomic:
         out = render._write_final(tmp_path, tmp_path, ["ffmpeg"])
         assert out == tmp_path / render.FINAL and out.read_bytes() == b"half-written"
         assert not (tmp_path / render.FINAL_PART).exists()
+
+
+# ---------------------------------------------------------------------------
+# N31：duration() 拒收静态图片（ffprobe 对 jpg 报单帧 0.04 s，不拦会静默切出 0.04 s 的片段）
+# ---------------------------------------------------------------------------
+
+
+needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+                                  reason="需要 ffmpeg / ffprobe")
+
+
+def _ff(*args: str) -> None:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("ext", ["jpg", "png", "webp"])
+def test_duration_静态图片报错(tmp_path: Path, ext: str) -> None:
+    img = tmp_path / f"still.{ext}"
+    _ff("-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", str(img))
+    with pytest.raises(SystemExit, match="静态图片"):
+        render.duration(img)
+
+
+@needs_ffmpeg
+def test_duration_大图jpg走image2也拦(tmp_path: Path) -> None:
+    """大尺寸 jpg 被 ffprobe 认成 image2、报 0.040000——就是 N31 说的静默 0.04 s；小图认成 jpeg_pipe。"""
+    from PIL import Image
+
+    img = tmp_path / "scan.jpg"
+    Image.new("RGB", (4000, 3000), "red").save(img)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=format_name",
+                            "-of", "csv=p=0", str(img)], capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == "image2", "夹具真走到了 image2 这一支"
+    with pytest.raises(SystemExit, match="静态图片"):
+        render.duration(img)
+
+
+@needs_ffmpeg
+def test_duration_视频与音频照常(tmp_path: Path) -> None:
+    mp4 = tmp_path / "v.mp4"
+    _ff("-f", "lavfi", "-i", "color=c=blue:s=64x64:r=25:d=1.2", "-pix_fmt", "yuv420p", str(mp4))
+    wav = tmp_path / "a.wav"
+    _ff("-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "0.5", str(wav))
+    assert render.duration(mp4) == pytest.approx(1.2, abs=0.05)
+    assert render.duration(wav) == pytest.approx(0.5, abs=0.01)
+
+
+@needs_ffmpeg
+def test_duration_图片改成视频扩展名也拦(tmp_path: Path) -> None:
+    """按 ffprobe 认出的格式判，不看扩展名。"""
+    fake = tmp_path / "still.mp4"
+    _ff("-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", "-f", "image2", str(fake))
+    with pytest.raises(SystemExit, match="静态图片"):
+        render.duration(fake)
