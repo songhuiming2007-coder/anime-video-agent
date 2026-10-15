@@ -1232,3 +1232,33 @@ def test_cookies_spec_命中但没登录过要响(tmp_path: Path) -> None:
     root = _cookies_root(tmp_path, ["nicovideo.jp"], with_db=False)
     with pytest.raises(PermissionError, match="登录"):
         wb.cookies_spec_for("https://www.nicovideo.jp/watch/sm9", root=root)
+
+
+# ---------------------------------------------------------------------------
+# D99 PR-1：keep_full 给截断前的全文（抓取留档用；tools 包装层记完即 pop）
+# ---------------------------------------------------------------------------
+
+
+def test_d99_crawl_keep_full给截断前全文(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pin_public_dns(monkeypatch)
+    sec = CrawlSection(timeout_s=30.0, max_chars=1200)
+
+    def fake_crawl(url: str, *, stealth: bool, timeout_s: float) -> dict[str, str]:
+        return {"final_url": url, "markdown": "机密 cloud.local.json " + "正文段落" * 400}
+
+    res = crawl_page("https://example.com/a", "web_fetch 403", section=sec, crawl_fn=fake_crawl, keep_full=True)
+    assert len(res["markdown"]) == 1200
+    assert len(res["full_text"]) > 1200 and res["full_text"].startswith(res["markdown"])
+    assert "cloud.local.json" not in res["full_text"]          # 与 LLM 所见同口径脱敏
+    assert "full_text" not in crawl_page("https://example.com/a", "web_fetch 403", section=sec, crawl_fn=fake_crawl)
+
+
+def test_d99_browser_keep_full给截断前全文(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _pin_public_dns(monkeypatch)
+    root = _make_full_web_root(tmp_path)
+    monkeypatch.setenv("AVA_EVENTS_ROOT", str(root / "data"))
+    sess = _FakeBrowserSession(text="字" * 40000, final_url="https://example.com/x")
+    browser_action("navigate", "要登录", url="https://example.com/x", launch_fn=lambda **k: sess, root=root)
+    out = browser_action("extract_text", "读正文", launch_fn=lambda **k: sess, root=root, keep_full=True)
+    assert len(out["text"]) == 30000 and out["truncated"] is True
+    assert out["full_text"] == "字" * 40000

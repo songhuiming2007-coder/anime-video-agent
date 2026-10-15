@@ -412,6 +412,7 @@ def browser_action(
     episode_dir: Path | None = None,
     scope: str = "creative",
     root: Path | None = None,
+    keep_full: bool = False,
 ) -> dict[str, Any]:
     """流程：action ∈ _ACTIONS 校验 → reason 非空 → load_browser_section →
     navigate：egress 断言 + _guard_url(url)；extract_text：要求会话存活
@@ -527,4 +528,6 @@ def browser_action(
         "url": _scrub(cur_url),
         "text": capped,
         "truncated": truncated,
+        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop
+        **({"full_text": scrubbed} if keep_full else {}),
     }

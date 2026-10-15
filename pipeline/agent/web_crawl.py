@@ -209,6 +209,7 @@ def crawl_page(
     section: CrawlSection | None = None,
     crawl_fn: Callable[..., dict[str, str]] | None = None,
     root: Path | None = None,
+    keep_full: bool = False,
 ) -> dict[str, Any]:
     """流程：reason 非空校验 → load_crawl_section（None → ValueError 显式降级）→
     assert_egress_boundary(url, {"url": _normalized_for_assert(url)}) →
@@ -275,4 +276,6 @@ def crawl_page(
         "stealth": bool(stealth),
         "images": images,
         "images_truncated": images_truncated,
+        # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop
+        **({"full_text": scrubbed_md} if keep_full else {}),
     }
