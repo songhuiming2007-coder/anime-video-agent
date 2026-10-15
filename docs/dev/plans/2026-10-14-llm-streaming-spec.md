@@ -1,6 +1,6 @@
 # D94 模型请求改流式（施工图）
 
-> 状态：**未动工**（2026-10-14 人裁决：先写施工图，这次不做）。前置 D93 已施工。
+> 状态：**已施工·机检通过**（2026-10-15 人说开工）；真实代理对照待人跑探针。前置 D93 已施工。
 
 ## 一、目标与对应 issue
 
@@ -32,6 +32,7 @@
 | `pipeline/agent/llm.py` | `def chat_complete(` 的 `payload` | 一律加 `"stream": True`、`"stream_options": {"include_usage": True}` |
 | 同上 | `with urllib.request.urlopen(` | 按 `Content-Type` 分流：`text/event-stream` 逐行读 SSE 并拼装；`application/json` 照旧整体解析（测试假端点、不支持流式的服务商） |
 | 同上 | 新函数 `_assemble_stream(lines)` | 拼装规则：`content` / `reasoning_content` 字符串累加（全为 null 时保持现有形状：键在、值为空）；`tool_calls` 按 `index` 归并，`id` / `type` / `function.name` 取首次非空，`function.arguments` 累加；保留 `index` 键；未知字段取最后一次非 null；带 `usage` 的块写 `_LAST_USAGE` |
+| 同上（施工补记） | `except (urllib.error.URLError, TimeoutError, OSError)` | 加 `http.client.HTTPException`：流读到一半连接被掐（`IncompleteRead`）不是 OSError，不加会漏成未分类异常 |
 | 同上 | 异常分支 | 流中途断开、没收到 `[DONE]` 也没有 `finish_reason` → `LLMError(retryable=True)`，不拿半截回复当结果；`data: {"error": …}` → 按其中的状态码分类；行解析失败 → 不可重试 |
 | 同上 | 超时 | 不新增常量：urllib 的 socket 超时本来就是每次读取各自计时，流式下 `request_timeout_s` 自动变成「两段数据之间的最长间隔」，首段数据之前的等待也受它约束 |
 
@@ -64,7 +65,7 @@ uv run pytest
 
 ## 八、完成判定
 
-- [ ] 拼装夹具测试与变异全过
-- [ ] `uv run pytest` 全绿
+- [x] 拼装夹具测试与变异全过（2026-10-15：`tests/test_llm_streaming.py` 20 条，变异 12/12；夹具按 §二 探针记录的结构手造——本会话拿不到钥匙串里的密钥，真实抓取待人跑探针后补进 `tests/fixtures/`）
+- [x] `uv run pytest` 全绿（3138 条；`tests/golden/llm_request_no_models.json` 四个 scope 的请求体各补 `stream` / `stream_options` 两键，其余逐字节不变）
 - [ ] 本机代理真实对照：流式拼出的回复与非流式字段一致，工具调用正常执行
 - [ ] 待人：真实会话里跑一段，会话日志里的 assistant 消息形状与改造前一致（恢复会话、跨档重放都不受影响）
