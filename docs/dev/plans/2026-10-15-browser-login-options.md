@@ -1,6 +1,6 @@
 # D96 浏览器登录态：实测记录与待人测项（施工图之前）
 
-日期：2026-10-15　状态：**无人可做的实测已完成；登录相关三项必须人在场，测完再写施工图**
+日期：2026-10-15　状态：**Google / YouTube 三项已过（人登录、我测）；人要求扩到其他站点，暂停，等人回来逐站实测后再写施工图**
 附件：[`2026-10-15-browser-login-options/`](2026-10-15-browser-login-options/)（`camoufox_login.py`、`cdp_probe.py`，路径全取参数）
 关联：D96、ADR-0021（独立持久 profile、「不碰 cookie 本体」）、D95
 
@@ -18,6 +18,16 @@ AVA 的 `browser` 工具用 Playwright 启动隔离 Chromium（`data/browser-pro
 | E3′ | 同上，但配置未登录 | 仍报 bot 检查——预期内，未登录的访客 cookie 不够，必须人登录后再测 |
 | E4 | 真 Chrome 155 以独立 `--user-data-dir` + `--remote-debugging-port` 启动，Playwright `connect_over_cdp` 接入 | 接入成功；`navigator.webdriver = false`（不是自动化启动，没有 `--enable-automation`）；Google 登录页正常 |
 | E5 | 本机 `agent-browser` 0.37.1 能力 | Chromium 自动化；登录态靠 `--restore` / `--state` 存成 cookies + localStorage 的 JSON 文件；能 `--cdp` 接已开的浏览器 |
+
+**人在场实测（2026-10-15 午间，人只输账号密码，其余由我跑）**：
+
+| # | 测什么 | 结果 |
+|---|---|---|
+| E6 | Camoufox（`os="macos"` 固定指纹系统）有界面窗口登录 Google（YouTube 服务） | **通过**：全程没有出现「This browser or app may not be secure」；12:21 打开、12:22 登录完成 |
+| E7 | 无界面重开同一配置 `data/browser-profile-firefox` | **持久**：YouTube 右上角是头像、无「登录」按钮，`LOGIN_INFO` / `SID` / `__Secure-3PSID` 都在 |
+| E8 | yt-dlp `--cookies-from-browser firefox:data/browser-profile-firefox` 解析 supercell「君の知らない物語」 | **通过 bot 检查**：拿到 27 个格式，最高 1080p（E1 同一条不带 cookies 被拒） |
+
+**人追加的范围（2026-10-15）**：「不能只考虑 Google 系，许多网站都要考虑」。施工图之前要逐站实测，候选（按本项目抓取与考据的实际来源）：ニコニコ（niconico 账号，yt-dlp `niconico`）、bilibili、X / Twitter、pixiv、note.com 付费 / 会员文、知乎、小红书、Bangumi、Fandom / 萌娘百科（Cloudflare）。每站测三件事：Camoufox 里能否登录、重开是否保持、需要下载的站 yt-dlp 能否用同一份配置。人回来后再做（人 2026-10-15 说「等我回来再做」）。
 
 **没测、为什么**：
 
