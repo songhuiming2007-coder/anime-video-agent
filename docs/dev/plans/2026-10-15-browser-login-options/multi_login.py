@@ -4,6 +4,8 @@
     /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -I multi_login.py <profile_dir> <log.jsonl> [站点键 ...]
 不给站点键 = 全部。登录完关掉整个窗口（或在终端按 Ctrl-C）。日志按站点记：是否出现「不安全 / 机器人验证」字样、关窗时有没有登录 cookie。
 登录 cookie 名单只用于事后自动判断「登上了没有」，不读取 cookie 值。
+注意：按 cookie 名判对 pixiv / note / 小红书不可靠（访客也发同名 cookie，实测记录 §四之三）。
+D96 施工后人补登录用 `uv run python -m pipeline.agent.web_browser login [URL ...]`，本脚本只作当时实测的留档。
 """
 import json
 import sys

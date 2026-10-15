@@ -1,7 +1,7 @@
 """pipeline.agent.web_browser: browser 登录态浏览器工具（Spec 5 / ADR-0021，第三级）。
 
 纪律：
-1. 顶层零重依赖：playwright 只在 _default_launch_fn / _pw_error_types 内函数级延迟 import；
+1. 顶层零重依赖：playwright / camoufox 只在 _default_launch_fn / _pw_error_types 内函数级延迟 import；
    顶层 stdlib + pipeline.agent.web（守卫/清洗复用）；
 2. profile 路径只来自 config（web.json browser.profile_dir），运行时参数
    无覆盖通道；_assert_profile_isolation 强制 data/ 严格后代（§2.2）——
@@ -162,12 +162,13 @@ def cookies_spec_for(url: str, *, root: Path | None = None) -> str | None:
     if not any(host == d or host.endswith("." + d) for d in cfg.cookies_for):
         return None
     profile = _assert_profile_isolation(cfg.profile_dir, Path(root or paths.ROOT))
-    if not (profile / "Default" / "Cookies").is_file():
+    # D96：浏览器是 Camoufox（Firefox 内核），cookie 库是配置目录下的 cookies.sqlite，不经钥匙串
+    if not (profile / "cookies.sqlite").is_file():
         raise PermissionError(
-            f"{host} 在 cookies_for 里，但 browser profile 还没有 Cookies 库（{profile}）——\n"
-            "先用 browser 工具（headed）登录该站一次，再重跑"
+            f"{host} 在 cookies_for 里，但 browser profile 还没有 cookie 库（{profile}）——\n"
+            f"先登录该站一次再重跑：{LOGIN_COMMAND} https://{host}/"
         )
-    return f"chromium:{profile}"
+    return f"firefox:{profile}"
 
 
 def _pw_error_types() -> tuple[type[BaseException], ...]:
@@ -235,6 +236,16 @@ class _PlaywrightSessionAdapter:
             "text": parser.get_text(),
         }
 
+    def open_tab(self, url: str, *, timeout_s: float = 60.0) -> None:
+        """login 入口用：每个网址开一个新标签页。"""
+        self._context.new_page().goto(url, timeout=int(timeout_s * 1000), wait_until="domcontentloaded")
+
+    def wait_closed(self) -> None:
+        """login 入口用：阻塞到人关掉整个窗口（context 的 close 事件），不设超时。"""
+        if not self._context.pages:
+            self._context.new_page()
+        self._context.wait_for_event("close", timeout=0)
+
     def close(self) -> None:
         self._dead = True
         try:
@@ -247,15 +258,25 @@ class _PlaywrightSessionAdapter:
             pass
 
 
+# D96：camoufox 0.5.6 启动时找不到浏览器本体会自己去下载（camoufox_path 默认 download_if_missing=True），
+# 违背「浏览器二进制绝不自动下载」——启动前先以 download_if_missing=False 预检，缺了就报错给人
+CAMOUFOX_FETCH_HINT = "（Camoufox 浏览器本体缺失，请人工执行一次 `uv run camoufox fetch`，严禁自动下载）"
+# 宿主是 macOS：指纹报的系统与真实字体 / 渲染一致；Google 登录不被拦（D96 实测 E6）就是在这个参数下测的
+CAMOUFOX_OS = "macos"
+# 同一配置目录已有 Camoufox 在用时，第二个进程的启动报错里的原话（D96 施工实测）
+_PROFILE_IN_USE = "already open"
+
+
 def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
-    """playwright 封装（函数级延迟 import，基于实测版本 playwright 1.63.0 钉死，S16 🔵-6）：
-    sync_playwright().start() + pw.chromium.launch_persistent_context(user_data_dir=..., headless=not headed)
-    + context.on("close") 探活回调。
+    """Camoufox 持久配置（D96；函数级延迟 import，基于实测版本 camoufox 0.5.6 + playwright 1.62.0 钉死）：
+    sync_playwright().start() + camoufox NewBrowser(pw, persistent_context=True, user_data_dir=...,
+    headless=not headed, os="macos")，返回的仍是 playwright BrowserContext，探活回调照旧。
     import 失败（部分/损坏安装，🔴-1）→ ValueError 包装，绝不放任穿透。
-    浏览器二进制缺失 → 显式 ValueError 提示人工 `uv run playwright install chromium`
-    （§10 RF-2），绝不自动下载。
+    浏览器本体缺失 → 显式 ValueError 提示人工 `uv run camoufox fetch`，绝不自动下载。
     """
     try:
+        from camoufox.pkgman import camoufox_path  # type: ignore[import-not-found]
+        from camoufox.sync_api import NewBrowser  # type: ignore[import-not-found]
         from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ValueError(
@@ -263,12 +284,20 @@ def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
             "请重装: uv sync --extra browser（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
         ) from exc
 
+    try:
+        camoufox_path(download_if_missing=False)
+    except Exception as exc:  # CamoufoxNotInstalled / UnsupportedVersion：都只能人去 fetch
+        raise ValueError(f"browser 操作失败（启动失败: {exc}）{CAMOUFOX_FETCH_HINT}") from exc
+
     pw = None
     try:
         pw = sync_playwright().start()
-        ctx = pw.chromium.launch_persistent_context(
+        ctx = NewBrowser(
+            pw,
+            persistent_context=True,
             user_data_dir=str(user_data_dir),
             headless=not bool(headed),
+            os=CAMOUFOX_OS,
         )
         return _PlaywrightSessionAdapter(pw, ctx)
     except Exception as exc:
@@ -277,11 +306,8 @@ def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
                 pw.stop()
             except Exception:
                 pass
-        raw_msg = str(exc)
-        binary_hint = ""
-        if any(k in raw_msg.lower() for k in ("executable doesn't exist", "playwright install")):
-            binary_hint = "（浏览器二进制缺失，请人工执行一次 `uv run playwright install chromium`，严禁自动下载）"
-        raise ValueError(f"browser 操作失败（启动失败: {exc}）{binary_hint}") from exc
+        hint = "（这份浏览器配置正被另一个窗口占用：先关掉它，或结束 AVA 里的浏览器会话）" if _PROFILE_IN_USE in str(exc) else ""
+        raise ValueError(f"browser 操作失败（启动失败: {exc}）{hint}") from exc
 
 
 def _reset_session_for_testing() -> None:
@@ -531,3 +557,51 @@ def browser_action(
         # D99：脱敏后、截断前的全文，给抓取留档；tools 包装层记完即 pop
         **({"full_text": scrubbed} if keep_full else {}),
     }
+
+
+# ---------- 人补登录入口（D96）：登录过期、遇到 Cloudflare 验证时，人开窗口登录 / 点验证 ----------
+
+LOGIN_COMMAND = "uv run python -m pipeline.agent.web_browser login"
+
+
+def login_main(argv: list[str], *, root: Path | None = None, launch_fn: Callable[..., Any] | None = None) -> int:
+    """`login [URL ...]`：用 browser 工具同一份配置、同一个启动器开有界面窗口，打开给定网址，
+    等人关掉窗口后返回。不读、不打印任何 cookie。"""
+    if not argv or argv[0] != "login":
+        print(f"用法：{LOGIN_COMMAND} [URL ...]")
+        return 2
+    base_root = Path(root or paths.ROOT)
+    cfg = load_browser_section(base_root)
+    if cfg is None:
+        print(f"缺少或损坏 {_active_config_path(base_root)} 的 browser 段")
+        return 1
+    profile = _assert_profile_isolation(cfg.profile_dir, base_root)
+    if not (base_root / "data").is_dir():
+        print(f"data/ 不可达（{base_root / 'data'}）：插盘或 preflight --init（严禁自动创建 data/）")
+        return 1
+    profile.mkdir(parents=True, exist_ok=True)
+    os.chmod(profile, 0o700)
+    fn = _default_launch_fn if launch_fn is None else launch_fn
+    try:
+        sess = fn(user_data_dir=profile, headed=True)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    try:
+        for url in argv[1:]:
+            try:
+                sess.open_tab(url, timeout_s=cfg.timeout_s)
+            except Exception as exc:  # 一个站打不开不影响其余站
+                print(f"打不开 {url}：{exc}")
+        print(f"窗口已打开（配置 {profile}）。登录 / 点完验证后关掉整个窗口，命令随之结束。")
+        sess.wait_closed()
+    finally:
+        sess.close()
+    print("已关闭，登录状态留在配置里。")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(login_main(sys.argv[1:]))
