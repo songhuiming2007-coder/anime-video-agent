@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import http.client
 import json
 import os
 import sys
@@ -373,6 +374,90 @@ def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[
     return wired
 
 
+def _stream_error(err: Any) -> LLMError:
+    """流里的 `data: {"error": …}`：按其中的状态码分类，与 HTTPError 同一套可重试口径（D93）。"""
+    info = err if isinstance(err, dict) else {"message": err}
+    code = info.get("code", info.get("status"))
+    try:
+        num = int(code)
+    except (TypeError, ValueError):
+        num = None
+    retryable = num is not None and (num in _RETRYABLE_HTTP or num >= 500)
+    return LLMError(f"LLM 流式响应报错 {code}: {str(info.get('message', info))[:200]}", retryable=retryable)
+
+
+def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """D94：SSE 增量块拼回与非流式同形的 `choices[0].message`，并取末块的 `usage`。
+
+    - `content` / `reasoning_content` 字符串累加；某个键出现过但全程为 null → 值为空串（非流式实测
+      就是「键在、值为空」）；`reasoning_content` 从没出现过就不带这个键。
+    - `tool_calls` 按 `index` 归并：`id` / `type` / `function.name` 取首次非空，`function.arguments` 累加，保留 `index`。
+    - 其余 delta 字段取最后一次非 null。
+    - 既没有 `[DONE]` 也没有 `finish_reason` → 断流，可重试（不拿半截回复当结果）。
+    """
+    text: dict[str, list[str]] = {}
+    calls: dict[int, dict[str, Any]] = {}
+    extra: dict[str, Any] = {}
+    role: str | None = None
+    usage: dict[str, Any] | None = None
+    ended = False
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            ended = True
+            continue
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"LLM 流式响应行非 JSON: {exc}") from None
+        if not isinstance(chunk, dict):
+            raise LLMError("LLM 流式响应行不是对象")
+        if chunk.get("error") is not None:
+            raise _stream_error(chunk["error"])
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
+        choices = chunk.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            continue
+        if choices[0].get("finish_reason") is not None:
+            ended = True
+        delta = choices[0].get("delta") or {}
+        for key, val in delta.items():
+            if key == "role":
+                role = role or val
+            elif key in ("content", "reasoning_content"):
+                parts = text.setdefault(key, [])
+                if isinstance(val, str):
+                    parts.append(val)
+            elif key == "tool_calls":
+                for part in val or []:
+                    idx = part.get("index", len(calls))
+                    slot = calls.setdefault(idx, {"index": idx, "function": {"name": None, "arguments": ""}})
+                    for k in ("id", "type"):
+                        if part.get(k) and not slot.get(k):
+                            slot[k] = part[k]
+                    fn = part.get("function") or {}
+                    if fn.get("name") and not slot["function"]["name"]:
+                        slot["function"]["name"] = fn["name"]
+                    if isinstance(fn.get("arguments"), str):
+                        slot["function"]["arguments"] += fn["arguments"]
+            elif val is not None:
+                extra[key] = val
+    if not ended:
+        raise LLMError("LLM 流式响应中途断开（没有 [DONE] 也没有 finish_reason）", retryable=True)
+    message: dict[str, Any] = {"role": role or "assistant", "content": "".join(text.get("content", []))}
+    if "reasoning_content" in text:
+        message["reasoning_content"] = "".join(text["reasoning_content"])
+    if calls:
+        message["tool_calls"] = [calls[i] for i in sorted(calls)]
+    for key, val in extra.items():
+        message.setdefault(key, val)
+    return message, usage
+
+
 def chat_complete(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -406,6 +491,10 @@ def chat_complete(
         payload["tool_choice"] = tool_choice
     if cfg.reasoning_effort is not None:
         payload["reasoning_effort"] = cfg.reasoning_effort  # D91：不设就不带这个键
+    # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
+    # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
+    payload["stream"] = True
+    payload["stream_options"] = {"include_usage": True}
     assert_egress_boundary(cfg.endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
 
     request = urllib.request.Request(
@@ -417,12 +506,19 @@ def chat_complete(
     try:
         effective = timeout if timeout is not None else cfg.request_timeout_s
         with urllib.request.urlopen(request, timeout=effective) as resp:
+            headers = getattr(resp, "headers", None)
+            ctype = str(headers.get("Content-Type", "") if headers is not None else "").lower()
+            if "text/event-stream" in ctype:
+                message, usage = _assemble_stream(raw.decode("utf-8", errors="replace") for raw in resp)
+                _LAST_USAGE.set(usage)
+                return message
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:200].decode("utf-8", errors="replace")
         retryable = exc.code in _RETRYABLE_HTTP or exc.code >= 500
         raise LLMError(f"LLM HTTP {exc.code}: {detail}", retryable=retryable) from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        # HTTPException：流读到一半连接被掐（IncompleteRead 等），与超时同属可重试
         raise LLMError(f"LLM 请求失败: {exc}", retryable=True) from None
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 响应非 JSON: {exc}") from None
