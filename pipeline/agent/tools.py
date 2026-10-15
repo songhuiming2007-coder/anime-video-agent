@@ -101,6 +101,8 @@ PIPELINE_MODULES: set[str] = {
     "corrections",
     # D48 ②：02.8 零上下文对抗审查（一次 LLM 调用，写 02-adversarial.md）。出网 + 写盘，弹卡
     "adversarial",
+    # D99 PR-3：事实库独立核对（一次 LLM 调用，写 facts-review.md，不支持的条目回落待核）
+    "fact_review",
     # D59：番剧笔记的时间网格（写 data/library/timeline/），无子命令，弹卡
     "timeline",
     # D59：期内补料——scout 出缺口清单（写 scout-ticket-*.md），ingest_patch 建本期补丁池（含 --reset）。
@@ -126,7 +128,7 @@ PIPELINE_MODULES: set[str] = {
 # D81（人裁决 Q2：企划会话只做规划、跨卷审查、总装）：企划会话的 run_pipeline 只放行这几个企划级模块，
 # 外加不绑期目录的只读模块 subgrep 与 D82 的 tickets（PROJECT_SESSION_EXTRA；tickets 落地前白名单本就拒）
 PROJECT_PIPELINE_MODULES: frozenset[str] = frozenset({"assemble", "crosscheck"})
-PROJECT_SESSION_EXTRA: frozenset[str] = frozenset({"subgrep", "tickets"})
+PROJECT_SESSION_EXTRA: frozenset[str] = frozenset({"subgrep", "tickets", "fact_review"})
 # D95（2026-10-14，经人同意，修订 D81 §4.2）：素材抓取在企划会话里放行——候选（library/incoming/candidates.json）、
 # 下载（library/incoming/）、登记（--pool 进按番的素材池）都是全库共用，不写进母目录；真实流程「立项先预收集」时
 # 卷可能还没建。唯一写进某一期的 `register --to-patch` 仍拒（acquire_targets_volume）
@@ -424,7 +426,8 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
 
 # 自动补位的模块：argparse 都只有一个位置参数（tts 另有子命令词 run / probe）
 _AUTOFILL_MODULES: tuple[str, ...] = ("tts", "clips", "review", "render", "qc", "cover", "status", "corrections",
-                                      "adversarial", "scout", "ingest_patch", "tickets", "crosscheck", "assemble")
+                                      "adversarial", "scout", "ingest_patch", "tickets", "crosscheck", "assemble",
+                                      "fact_review")
 # 带子命令的模块：子命令词不计入位置参数，期目录补在它之后
 _SUBCOMMAND_WORDS: dict[str, tuple[str, ...]] = {
     "tts": ("run", "probe"),
@@ -608,7 +611,7 @@ def validate_pipeline_command(
                     sub_idx = args.index(pos_args[0])
                     args = args[:sub_idx + 1] + [str(ep_path)] + args[sub_idx + 1:]
             elif module in ("tts", "clips", "review", "render", "qc", "cover", "status", "adversarial",
-                            "scout", "ingest_patch"):
+                            "scout", "ingest_patch", "fact_review"):
                 if not pos_args:
                     args = [str(ep_path)] + args
                 elif module == "tts" and pos_args == ["run"]:

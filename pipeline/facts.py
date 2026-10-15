@@ -256,7 +256,9 @@ def render(target: Path) -> Path:
     for topic, items in by_topic.items():
         lines += [f"## {topic}", ""]
         for e in items:
-            lines.append(f"- **{e['id']}**［{e['level']}］{e['claim']}{mark.get(e['check']['match'], '')}")
+            rv = (e.get("review") or {}).get("verdict")
+            seen = f"（独立核对：{rv}）" if rv in ("部分", "不支持") else ""
+            lines.append(f"- **{e['id']}**［{e['level']}］{e['claim']}{mark.get(e['check']['match'], '')}{seen}")
             if e.get("url"):
                 lines.append(f"  - 出处：{e['url']}")
             for ex in e.get("excerpts") or []:
