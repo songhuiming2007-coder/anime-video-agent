@@ -1,6 +1,6 @@
 # D96 browser 工具换 Camoufox（施工图）
 
-> 状态：**已施工·机检通过**（2026-10-15 人说开工；真实冒烟三项见 §九）；待人：AVA 会话里用一次 browser、跑一次 `login` 入口。实测依据见 [2026-10-15-browser-login-options.md](2026-10-15-browser-login-options.md)（下称「实测记录」）。
+> 状态：**已施工·机检通过**（2026-10-15 人说开工；真实冒烟三项见 §九）；`login` 入口人验收通过（同日）；待人：AVA 会话里用一次 browser。实测依据见 [2026-10-15-browser-login-options.md](2026-10-15-browser-login-options.md)（下称「实测记录」）。
 
 ## 一、目标与对应 issue
 
@@ -84,7 +84,8 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 - [x] `uv run pytest` 全绿；vitest、tsc 全绿；变异 15/16（见 §九）
 - [x] 真实冒烟：persist_check 7 站、crawl 抓页通过；YouTube probe 不再报 bot 检查，但另因 `--no-cache-dir` 失败（既有问题，见 §九，待人定）
 - [x] ADR-0021 修订注、issues D96 行、plans/README 状态列已更新
-- [ ] 待人：AVA 会话里 browser 打开 youtube.com 是登录状态；`login` 入口开关窗口正常
+- [x] 人验收 `login` 入口（2026-10-15）：窗口里 YouTube 是登录状态，关窗后命令退出码 0
+- [ ] 待人：AVA 会话里 browser 打开 youtube.com 是登录状态
 
 ## 九、施工记录（2026-10-15）
 
@@ -107,3 +108,10 @@ cd desktop && npx tsc --noEmit -p . && npx vitest run              # 动了 conf
 - `probe 9,13`（YouTube）：**不再报 bot 检查**，但报「The page needs to be reloaded」，前面有「Signature solving failed / n challenge solving failed」。查明原因是探针命令带的 `--no-cache-dir`：同一条视频、同一份 cookie，去掉这个参数就能解析（1080p），加上就失败；yt-dlp 解 YouTube 签名要用自己缓存目录里的求解脚本（`~/.cache/yt-dlp/challenge-solver/lib.json`，2026-09-06 留下的），禁缓存就用不上。下载命令 `fetch_argv` 不带这个参数，不受影响。这是探针原有的问题，以前被 bot 检查挡在前面没露出来，**不在本图范围，未改，待人定**。
 - crawl（crawl4ai 0.9.4，playwright 1.62.0）抓萌娘百科一页正常。
 - 观察：手动连测时有一次（启动器冒烟刚打开过 youtube.com 之后）不带 `--no-cache-dir` 也失败了一轮，几分钟后同样的命令连续两轮都成功；原因未查。
+
+**人验收 `login`（2026-10-15 17:00 前后）**：
+
+- 第一次人在 Claude Code 里用 `!` 跑：窗口没有跳到最前，人用 ⌘Tab 切过去看到黑屏；同时输出文件是空的——提示语被 Python 整块缓冲，没写出来。
+- 排查：对照两个窗口（bilibili、YouTube）时，程序内截图显示 YouTube 页面完整渲染、右上角是人的头像（已登录），页面本身没问题；`lsappinfo front` 实测我这边启动时 Camoufox 会自己成为最前应用。推断：人正在别的应用里输入时，macOS 不让新窗口抢到前面，被压在后面的窗口切过来时尚未重绘。**推断未验证**，黑屏没能复现。
+- 第二次（人先 ⌘Tab 切过去、不在别处输入）：画面正常，关窗后命令打印「已关闭」、退出码 0。
+- 顺带改两处：`login` 的提示一律 `flush=True`；终端 Ctrl-C 不再打堆栈，照常关浏览器、提示「已中断」、退出码 130（测试 +1，变异 2/2）。

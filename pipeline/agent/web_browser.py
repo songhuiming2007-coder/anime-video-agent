@@ -565,19 +565,19 @@ LOGIN_COMMAND = "uv run python -m pipeline.agent.web_browser login"
 
 
 def login_main(argv: list[str], *, root: Path | None = None, launch_fn: Callable[..., Any] | None = None) -> int:
-    """`login [URL ...]`：用 browser 工具同一份配置、同一个启动器开有界面窗口，打开给定网址，
+    """`login [URL ...]`：（提示一律 flush：人常在 Claude Code 的 `!` 里跑，stdout 接的是文件、默认整块缓冲）用 browser 工具同一份配置、同一个启动器开有界面窗口，打开给定网址，
     等人关掉窗口后返回。不读、不打印任何 cookie。"""
     if not argv or argv[0] != "login":
-        print(f"用法：{LOGIN_COMMAND} [URL ...]")
+        print(f"用法：{LOGIN_COMMAND} [URL ...]", flush=True)
         return 2
     base_root = Path(root or paths.ROOT)
     cfg = load_browser_section(base_root)
     if cfg is None:
-        print(f"缺少或损坏 {_active_config_path(base_root)} 的 browser 段")
+        print(f"缺少或损坏 {_active_config_path(base_root)} 的 browser 段", flush=True)
         return 1
     profile = _assert_profile_isolation(cfg.profile_dir, base_root)
     if not (base_root / "data").is_dir():
-        print(f"data/ 不可达（{base_root / 'data'}）：插盘或 preflight --init（严禁自动创建 data/）")
+        print(f"data/ 不可达（{base_root / 'data'}）：插盘或 preflight --init（严禁自动创建 data/）", flush=True)
         return 1
     profile.mkdir(parents=True, exist_ok=True)
     os.chmod(profile, 0o700)
@@ -585,19 +585,22 @@ def login_main(argv: list[str], *, root: Path | None = None, launch_fn: Callable
     try:
         sess = fn(user_data_dir=profile, headed=True)
     except ValueError as exc:
-        print(str(exc))
+        print(str(exc), flush=True)
         return 1
     try:
         for url in argv[1:]:
             try:
                 sess.open_tab(url, timeout_s=cfg.timeout_s)
             except Exception as exc:  # 一个站打不开不影响其余站
-                print(f"打不开 {url}：{exc}")
-        print(f"窗口已打开（配置 {profile}）。登录 / 点完验证后关掉整个窗口，命令随之结束。")
+                print(f"打不开 {url}：{exc}", flush=True)
+        print(f"窗口已打开（配置 {profile}）。登录 / 点完验证后关掉整个窗口，命令随之结束。", flush=True)
         sess.wait_closed()
+    except KeyboardInterrupt:  # 终端 Ctrl-C：照常关浏览器（finally），不打堆栈
+        print("已中断，浏览器已关闭；已完成的登录仍留在配置里。", flush=True)
+        return 130
     finally:
         sess.close()
-    print("已关闭，登录状态留在配置里。")
+    print("已关闭，登录状态留在配置里。", flush=True)
     return 0
 
 
