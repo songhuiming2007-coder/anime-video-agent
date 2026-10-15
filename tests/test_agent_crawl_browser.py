@@ -1296,8 +1296,11 @@ def test_启动器用Camoufox持久配置(monkeypatch: pytest.MonkeyPatch, tmp_p
     seen = _fake_camoufox(monkeypatch)
     sess = _default_launch_fn(user_data_dir=tmp_path / "prof", headed=headed)
     assert seen["download_if_missing"] is False                 # 预检不许自动下载
-    assert seen["kwargs"] == {"persistent_context": True, "user_data_dir": str(tmp_path / "prof"),
-                              "headless": not headed, "os": "macos"}
+    kwargs = dict(seen["kwargs"])
+    env = kwargs.pop("env")                                     # N50：去掉密钥变量的环境，细节见 test_n50_secret_env
+    assert isinstance(env, dict) and env.get("PATH") == os.environ.get("PATH")
+    assert kwargs == {"persistent_context": True, "user_data_dir": str(tmp_path / "prof"),
+                      "headless": not headed, "os": "macos"}
     assert seen["on"] == "close"                                # 死会话探活回调照旧挂上
     assert sess.probe() is True
 
