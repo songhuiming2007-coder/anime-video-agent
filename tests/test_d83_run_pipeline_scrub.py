@@ -238,12 +238,26 @@ def test_结束事件落盘的尾部已脱敏(repo: Path) -> None:
     assert SECRET not in json.dumps(events, ensure_ascii=False)
 
 
-def test_回显_超长无换行到上限先写出(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_回显_无换行的提示即时写出(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """有已知密钥时也不按行攒：「…[y/N]: 」这类半行提示到了就写（🔴-2），不等换行。"""
     spy = _Spy()
     monkeypatch.setattr(jobs.sys, "stdout", spy)
-    big = b"x" * (jobs._ScrubbingEcho.ECHO_MAX_PENDING + 1)
-    _run_fake(repo, [big, b"y"])
-    assert spy.writes == [big.decode(), "y"], "攒到上限就写出，不等管道关闭"
+    _run_fake(repo, [b"[*] \xe7\xa1\xae\xe8\xae\xa4\xef\xbc\x9f[y/N]: ", b"y\n"])
+    assert spy.writes == ["[*] 确认？[y/N]: ", "y\n"]
+
+
+def test_回显_末尾像密钥开头的一截先扣住(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """只扣住恰好是密钥开头的尾巴：后半截来了就整体换掉；没来（管道关了）就原样写出。"""
+    spy = _Spy()
+    monkeypatch.setattr(jobs.sys, "stdout", spy)
+    _run_fake(repo, [b"a " + SECRET[:5].encode(), SECRET[5:].encode() + b" b ", SECRET[:3].encode()])
+    assert spy.writes == ["a ", "[已脱敏] b ", SECRET[:3]]
+
+
+@pytest.mark.parametrize("cut", [1, len(SECRET) - 1])
+def test_回显_密钥切在第一个或最后一个字符处(repo: Path, capsys: pytest.CaptureFixture[str], cut: int) -> None:
+    _run_fake(repo, [SECRET[:cut].encode(), SECRET[cut:].encode() + b"\n"])
+    assert capsys.readouterr().out == "[已脱敏]\n"
 
 
 def test_中断路径的尾部与结束事件也脱敏(repo: Path) -> None:
