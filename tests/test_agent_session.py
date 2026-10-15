@@ -1716,7 +1716,7 @@ def test_d48_tool_summary_for_writes_and_pipeline() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D67：恢复时对历史消息做全 role 脱敏投影（spec 2026-10-10-resume-scrub-spec.md）
+# D67：恢复时对历史消息做全 role 脱敏投影（spec archive/2026-10-10-resume-scrub-spec.md）
 # ---------------------------------------------------------------------------
 
 _D67_DIRTY = "config/cloud.local.json"   # D89 前是 03-audio/manifest.json（已不受限）
