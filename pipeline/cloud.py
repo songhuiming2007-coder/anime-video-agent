@@ -354,7 +354,8 @@ def rent_instructions(cfg_global: dict) -> list[str]:
         f"  · CUDA：≥ {RENT_MIN_CUDA}（镜像是 torch 2.8 + cu128）",
         f"  · 镜像：「我的镜像」里的 {image}",
         "  · 控制台：https://www.autodl.com/market/list",
-        "开机后把控制台的 SSH 登录指令（ssh -p … root@…）交给 AVA，走 cloud connect，再 cloud up。",
+        "开机后把控制台的 SSH 登录指令（ssh -p … root@…）和这台的按量单价（元/小时）交给 AVA，"
+        "走 cloud connect，再 cloud up --rate <单价>（账本按这个数记，不报只能估算）。",
     ]
 
 
@@ -528,6 +529,91 @@ def parse_model_structure_result(stdout: str, returncode: int) -> tuple[str, str
     if unverifiable:
         desc += f"（另 {len(unverifiable)} 个 pickle 无法静态校验）"
     return "OK", desc
+
+
+# ---------------------------------------------------------------------------
+# D107：远端代码与本地是否一致（按文件内容哈希，不按 git HEAD）
+# ---------------------------------------------------------------------------
+# 为什么不比 HEAD：10-17 那台远端仓库停在 545 个 commit 前，靠 rsync 把本地代码推上去才跑通——
+# rsync 不动 HEAD，本地又常有未推送 commit 与未提交改动，HEAD 两头都说明不了「跑的是哪份代码」。
+# 只比远端任务真正会读的三类：pipeline 源码、config 下的 json（*.local.json 是本机私有，不上传不比）、
+# pyproject.toml。脚本只此一份：本地 exec 它、远端 base64 落地后跑它，两头算法不可能分叉。
+_CODE_MANIFEST_SCRIPT = r'''
+import hashlib, json, sys
+from pathlib import Path
+
+GLOBS = ("pipeline/**/*.py", "config/**/*.json", "pyproject.toml")
+
+
+def manifest(root):
+    root = Path(root)
+    out = {}
+    for pat in GLOBS:
+        for f in sorted(root.glob(pat)):
+            if f.is_file() and not f.name.endswith(".local.json") and "__pycache__" not in f.parts:
+                out[f.relative_to(root).as_posix()] = hashlib.sha256(f.read_bytes()).hexdigest()
+    return out
+
+
+if __name__ == "__main__":
+    print(json.dumps(manifest(sys.argv[1])))
+'''
+_manifest_ns: dict[str, Any] = {"__name__": "ava_code_manifest"}
+exec(compile(_CODE_MANIFEST_SCRIPT, "<code_manifest>", "exec"), _manifest_ns)
+
+
+def code_manifest(root: Path) -> dict[str, str]:
+    """本地代码清单 {相对路径: sha256}（纯函数，与远端同一段脚本）。"""
+    return _manifest_ns["manifest"](root)
+
+
+def build_code_manifest_cmd(remote_root: str, python: str = DEFAULT_REMOTE_PYTHON) -> str:
+    """远端算同一份清单的命令（base64 落地，理由同 build_model_structure_probe_cmd）。"""
+    encoded = base64.b64encode(_CODE_MANIFEST_SCRIPT.encode("utf-8")).decode("ascii")
+    return (f"echo {encoded} | base64 -d > /tmp/.ava_code_manifest.py && "
+            f"{python} /tmp/.ava_code_manifest.py {shlex.quote(remote_root)}")
+
+
+def compare_code_manifest(local: dict[str, str], remote: dict[str, str]) -> dict[str, list[str]]:
+    """→ {missing: 远端缺, differ: 内容不同, extra: 远端多出}（纯函数）。
+
+    extra 不算不一致：rsync 不删远端文件，本地删掉的旧模块会一直留在远端；它们没人 import，
+    算失败的话同步完也永远绿不了。
+    """
+    return {
+        "missing": sorted(k for k in local if k not in remote),
+        "differ": sorted(k for k in local if k in remote and remote[k] != local[k]),
+        "extra": sorted(k for k in remote if k not in local),
+    }
+
+
+def remote_code_drift(host: str, cfg_global: dict) -> dict[str, list[str]] | str:
+    """远端与本地代码比对：成功返回 compare_code_manifest 的结果；核对不了返回原因字符串。"""
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    res = _ssh(build_code_manifest_cmd(remote_root, remote_python(cfg_global)), host=host, check=False, timeout=90)
+    try:
+        remote = json.loads(res.stdout.strip().splitlines()[-1]) if res.returncode == 0 else None
+    except (ValueError, IndexError):
+        remote = None
+    if not isinstance(remote, dict):
+        return f"远端清单没算出来（returncode={res.returncode}，{(res.stderr or '').strip()[:200] or '无输出'}）"
+    if not remote:
+        return f"远端 {remote_root} 下一个代码文件都没有（仓库不在？先 cloud fix-env）"
+    return compare_code_manifest(code_manifest(paths.ROOT), remote)
+
+
+def code_drift_lines(drift: dict[str, list[str]] | str) -> tuple[bool, list[str]]:
+    """→ (是否一致, 给人看的行)。纯函数。"""
+    if isinstance(drift, str):
+        return False, [f"核对不了远端代码版本：{drift}"]
+    bad = drift["missing"] + drift["differ"]
+    extra = f"（远端另有 {len(drift['extra'])} 个本地已没有的旧文件，不影响）" if drift["extra"] else ""
+    if not bad:
+        return True, [f"远端代码与本地一致{extra}"]
+    shown = [f"缺 {k}" for k in drift["missing"]] + [f"不同 {k}" for k in drift["differ"]]
+    return False, [f"远端代码与本地不一致：缺 {len(drift['missing'])} 个、内容不同 {len(drift['differ'])} 个{extra}",
+                   *("  " + x for x in shown[:10]), *(["  ……"] if len(shown) > 10 else []),
+                   "修法: python -m pipeline.cloud sync-code（把本地 pipeline/ config/ pyproject.toml 推上去）"]
 
 
 def build_sync_up_files(
@@ -1236,6 +1322,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"FAIL  [REPO] 远端仓库不存在或未完成初始化: {remote_root}")
         print("      修法: cloud fix-env（弹卡；克隆仓库到远端，已在就跳过）")
 
+    # 3b. D107：远端代码内容与本地是否一致（仓库在 ≠ 代码对）
+    if repo_res.returncode == 0:
+        code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+        print(f"{'OK' if code_ok else 'FAIL':<5} [CODE] {code_lines[0]}")
+        for line in code_lines[1:]:
+            print(f"      {line}")
+        if not code_ok:
+            all_passed = False
+
     # 4. PyTorch 与 CUDA 可用性
     torch_cmd = (
         f"{remote_python()} -c "
@@ -1335,6 +1430,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     cfg_global, cfg_local = load_cloud_config()
     host = _ssh_host(cfg_local)
     mode = getattr(args, "mode", "gpu")
+    rate = check_rate(getattr(args, "rate", None))   # D108：先校验，别开了机才报参数错
 
     print(f"[*] 检查云端实例连通性 (Host: {host}, 模式: {mode})...")
     if not is_ssh_reachable(host):
@@ -1411,6 +1507,15 @@ def cmd_up(args: argparse.Namespace) -> int:
         session_data["gpu"] = gpu_name
     if gpu_mem:
         session_data["gpu_mem_mib"] = gpu_mem
+    if rate is not None and mode == getattr(args, "mode", mode):
+        session_data["rate_cny"] = rate
+        session_data["rate_source"] = "人报（up --rate）"
+    elif rate is not None:
+        print(f"WARN 报的单价 {rate:g} 元/h 是按 --mode {getattr(args, 'mode', None)} 报的，实测是 {mode}，"
+              "这个价不记；结算时用 down --rate 补实际单价", file=sys.stderr)
+    elif mode == "gpu":
+        print("WARN 没报单价：账本会按参考价估算。看控制台这台实例的按量单价，"
+              "结算时用 cloud down --rate <元/时> 补上", file=sys.stderr)
     if mode != getattr(args, "mode", mode):
         # 与声明不符时留痕，事后查账不用猜（带卡/无卡差 24 倍价，不是小事）
         session_data["mode_corrected"] = (
@@ -1430,17 +1535,35 @@ def detect_runtime_mode_from_gpu_probe(returncode: int) -> str:
     return "gpu" if returncode == 0 else "cardless"
 
 
-def session_rate(cfg_global: dict, mode: str | None, gpu_name: str | None) -> tuple[float, bool]:
-    """会话单价（纯函数）→ (元/时, 是否估算)。无卡按 cardless_rate_cny；带卡按型号查 gpu_rates_cny。
+def session_rate(cfg_global: dict, mode: str | None, gpu_name: str | None,
+                 reported: float | None = None) -> tuple[float, str | None]:
+    """会话单价（纯函数）→ (元/时, 估算说明)。说明为 None = 单价可信。
 
+    D108：每次租的卡不一样，同一张卡不同时候价也不同，**唯一可信的带卡单价是人租卡时在控制台上
+    看到的那个数**（`up --rate` / `down --rate`）。没报就只能估：先按型号查 gpu_rates_cny，
+    查不到用 hourly_rate_cny；两种都标估算。无卡模式是平台固定价，不算估算。
     mode 不可知时取带卡价：宁可高估也不能低估预算风险。
     """
+    if reported is not None:
+        return float(reported), None
     if mode == "cardless":
-        return float(cfg_global.get("cardless_rate_cny", 0.10)), False
+        return float(cfg_global.get("cardless_rate_cny", 0.10)), None
     fallback = float(cfg_global.get("hourly_rate_cny", 2.40))
     if mode != "gpu":
-        return fallback, True
-    return lookup_gpu_rate(gpu_name, cfg_global.get("gpu_rates_cny", {}) or {}, fallback)
+        return fallback, "单价估算：模式不可知，按 hourly_rate_cny 记"
+    rate, missed = lookup_gpu_rate(gpu_name, cfg_global.get("gpu_rates_cny", {}) or {}, fallback)
+    if missed:
+        return rate, f"单价估算：没有人报单价，gpu_rates_cny 里也查不到 {gpu_name or '本次 GPU 型号'}，按 hourly_rate_cny 记"
+    return rate, f"单价估算：没有人报单价（up / down --rate），按 gpu_rates_cny 里 {gpu_name} 的参考价记"
+
+
+def check_rate(value: float | None) -> float | None:
+    """人报单价的合理性（纯函数）：必须是正数；>50 元/时多半是把日价或总价当成了时价。"""
+    if value is None:
+        return None
+    if not (0 < value <= 50):
+        raise SystemExit(f"FAIL --rate {value:g} 不像按量时价（应为 0–50 元/小时，看控制台实例列表的「付费方式」一栏）")
+    return float(value)
 
 
 def cmd_down(args: argparse.Namespace) -> int:
@@ -1477,7 +1600,11 @@ def cmd_down(args: argparse.Namespace) -> int:
     gpu_name = session_info.get("gpu")
     if mode == "gpu" and not gpu_name and reachable:
         gpu_name = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)[0]
-    rate, rate_estimated = session_rate(cfg_global, mode, gpu_name)
+    # D108：结算时补报的单价优先于 up 时报的（人看着控制台改口，以最新为准）
+    reported = check_rate(getattr(args, "rate", None))
+    if reported is None and isinstance(session_info.get("rate_cny"), (int, float)):
+        reported = float(session_info["rate_cny"])
+    rate, rate_estimate_note = session_rate(cfg_global, mode, gpu_name, reported)
 
     budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
     up_epoch = session_info.get("up_epoch", time.time())
@@ -1493,9 +1620,8 @@ def cmd_down(args: argparse.Namespace) -> int:
         )
     if session_corrupt:
         note = (note + "；" if note else "") + "会话文件损坏，时长从 0 起算，费用严重低估"
-    if rate_estimated:
-        note = (note + "；" if note else "") + (
-            f"单价估算：gpu_rates_cny 里查不到 {gpu_name or '本次 GPU 型号'}，按 hourly_rate_cny 记")
+    if rate_estimate_note:
+        note = (note + "；" if note else "") + rate_estimate_note
 
     ledger_entry = format_ledger_entry(
         session_id=session_info.get("session", f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
@@ -1603,7 +1729,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         try:
             sdata = json.loads(sfile.read_text(encoding="utf-8"))
             mode = sdata.get("mode", "gpu")
-            rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"))
+            reported = sdata.get("rate_cny") if isinstance(sdata.get("rate_cny"), (int, float)) else None
+            rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"), reported)
             elapsed = int(time.time() - sdata.get("up_epoch", time.time()))
             cur_cost = calculate_session_cost(elapsed, rate)
             print("-" * 65)
@@ -1834,6 +1961,228 @@ def cmd_push(args: argparse.Namespace) -> int:
     return 0
 
 
+CODE_SYNC_ITEMS = ("pipeline/", "config/", "pyproject.toml")
+
+
+def cmd_sync_code(args: argparse.Namespace) -> int:
+    """D107：把本地 pipeline/ config/（不含 *.local.json）pyproject.toml 推到远端，再按哈希核对一遍。
+
+    不删远端多出的文件（见 compare_code_manifest）；远端有任务在跑就拒——中途换代码会让它半新半旧。
+    """
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
+    active = remote_active_tasks(host=host)
+    if active:
+        raise SystemExit(f"FAIL 远端有任务在跑（{', '.join(active)}），这时换代码会让它半新半旧；跑完再同步")
+    for item in CODE_SYNC_ITEMS:
+        res = run_rsync(str(paths.ROOT / item) + ("/" if item.endswith("/") else ""),
+                        f"{host}:{remote_root}/{item}")
+        if res.returncode != 0:
+            raise SystemExit(f"FAIL 同步 {item} 失败: {res.stderr.strip()}")
+        print(f"  ✓ 已同步 {item}")
+    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+    print(("[OK] " if code_ok else "FAIL ") + "\n     ".join(code_lines))
+    return 0 if code_ok else 1
+
+
+# ---------------------------------------------------------------------------
+# D103 ②：番池素材（data/library/ 下的番剧集与 SP）的云端打标
+# ---------------------------------------------------------------------------
+# push / run / pull 的 captions 分支把目录钉在 `<期>/04-patch/` 下，番池素材上不了云；cloud exec 对 AVA 永久禁用。
+# 这三条命令只搬 library 下打标要的两样输入（镜头表、打标帧）与一样产物，远端路径与本地同一相对路径，
+# 远端 `vindex captions` 不传目录参数即用默认路径（10-17 supercell 实跑核过只要这两样）。
+LIB_CAPTIONS_SESSION = "ava-lib-captions"
+_LIB_KEY = re.compile(r"SP\d{2}|S\d{2}E\d{2}")
+
+
+def lib_dirs() -> tuple[str, str, str]:
+    """(镜头表, 打标帧, 打标产物) 相对仓库根的路径：取自 shots / vindex 的常量，不另写一份。"""
+    from . import shots, vindex
+
+    def rel(p: Path) -> str:
+        return p.relative_to(paths.ROOT).as_posix()
+
+    return rel(shots.SHOTS_DIR), rel(shots.FRAMES_DIR), rel(vindex.VINDEX_DIR)
+
+
+def validate_lib_target(pool: str, keys: list[str]) -> list[str]:
+    """池名与集键校验（纯函数）→ 去重后的集键。池名允许中文；集键 `SPnn` / `SxxEyy`，可逗号分隔。"""
+    if (not pool or pool in (".", "..") or pool.startswith("-") or "/" in pool or "\\" in pool
+            or any(c.isspace() or ord(c) < 32 for c in pool)):
+        raise ValueError(f"池名不合法：{pool!r}（不能含 / 、空白或控制字符，不能以 - 开头）")
+    out: list[str] = []
+    for raw in keys:
+        for k in (x.strip() for x in raw.split(",")):
+            if not k:
+                continue
+            if not _LIB_KEY.fullmatch(k):
+                raise ValueError(f"集键不合法：{k!r}（写 SP01 或 S01E01）")
+            if k not in out:
+                out.append(k)
+    if not out:
+        raise ValueError("没有给集键：要打哪些集写在命令里（如 SP01 SP02）")
+    return out
+
+
+def lib_missing_inputs(pool: str, keys: list[str], dirs: tuple[str, str, str], root: Path) -> list[str]:
+    """本地缺的打标输入（纯函数）→ 给人看的行；空表示齐全。"""
+    shots_rel, frames_rel, _ = dirs
+    miss: list[str] = []
+    for k in keys:
+        if not (root / shots_rel / f"{pool}_{k}.json").is_file():
+            miss.append(f"{k}：没有镜头表 {shots_rel}/{pool}_{k}.json（先 shots build）")
+        cap = root / frames_rel / f"{pool}_{k}_cap"
+        if not cap.is_dir() or not any(cap.iterdir()):
+            miss.append(f"{k}：没有打标帧 {frames_rel}/{pool}_{k}_cap/（先 shots caption-frames {pool} {k}）")
+    return miss
+
+
+def build_lib_up_pairs(pool: str, keys: list[str], remote_root: str,
+                       dirs: tuple[str, str, str], root: Path) -> list[tuple[str, str]]:
+    """上行 (src, dst) 清单（纯函数）：镜头表文件 + 打标帧目录（src 带尾斜杠、dst 不带，同 build_sync_up_files）。"""
+    shots_rel, frames_rel, _ = dirs
+    pairs: list[tuple[str, str]] = []
+    for k in keys:
+        pairs.append((str(root / shots_rel / f"{pool}_{k}.json"), f"{remote_root}/{shots_rel}/{pool}_{k}.json"))
+        pairs.append((f"{root / frames_rel / f'{pool}_{k}_cap'}/", f"{remote_root}/{frames_rel}/{pool}_{k}_cap"))
+    return pairs
+
+
+def build_lib_captions_command(pool: str, keys: list[str], remote_root: str,
+                               python: str = DEFAULT_REMOTE_PYTHON, *, batch: int | None = None,
+                               limit: int | None = None, confirm_cost: bool = False) -> str:
+    """远端打标命令（纯函数）：首尾心跳，与 build_remote_run_command 同口径；目录用 vindex 默认值。"""
+    flags = ""
+    if batch is not None:
+        flags += f" --batch {int(batch)}"
+    if limit is not None:
+        flags += f" --limit {int(limit)}"
+    if confirm_cost:
+        flags += " --confirm-cost"
+    return (
+        f"cd {shlex.quote(remote_root)} && "
+        f"touch {WATCHDOG_HEARTBEAT_PATH} && "
+        f"{python} -m pipeline.vindex captions {shlex.quote(pool)} {' '.join(keys)}{flags} && "
+        f"touch {WATCHDOG_HEARTBEAT_PATH}"
+    )
+
+
+def _lib_target(args: argparse.Namespace) -> list[str]:
+    try:
+        return validate_lib_target(args.pool, list(args.keys))
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+
+
+def _note_session_task(task: str, label: str) -> None:
+    """把任务记进活跃会话文件（账本按它列本次跑过什么）；文件坏了只警告，不挡远端执行。"""
+    sfile = get_active_session_file()
+    if not sfile.exists():
+        return
+    try:
+        sdata = json.loads(sfile.read_text(encoding="utf-8"))
+        sdata.setdefault("tasks", [])
+        if task not in sdata["tasks"]:
+            sdata["tasks"].append(task)
+        sdata["episode"] = label
+        sfile.write_text(json.dumps(sdata, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"WARN 会话文件损坏，本次任务未记账（不影响远端执行）: {e}", file=sys.stderr)
+
+
+def cmd_lib_push(args: argparse.Namespace) -> int:
+    """番池素材打标输入上行：镜头表 + 打标帧。缺一样整批拒，一条 rsync 都不发。"""
+    keys = _lib_target(args)
+    paths.require_data()
+    dirs = lib_dirs()
+    shots_rel, frames_rel, _ = dirs
+    if not any((paths.ROOT / shots_rel).glob(f"{args.pool}_*.json")):
+        raise SystemExit(f"FAIL 本地 {shots_rel}/ 下没有池「{args.pool}」的任何镜头表：池名写错了？")
+    miss = lib_missing_inputs(args.pool, keys, dirs, paths.ROOT)
+    if miss:
+        raise SystemExit("FAIL 打标输入不全，整批没传：\n     " + "\n     ".join(miss))
+
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
+    remote_shots = f"{remote_root}/{shots_rel}"
+    _ssh(f"mkdir -p {shlex.quote(remote_shots)} {shlex.quote(f'{remote_root}/{frames_rel}')}", host=host)
+    pairs = build_lib_up_pairs(args.pool, keys, remote_root, dirs, paths.ROOT)
+    _preflight_remote_capacity(host, remote_root, remote_shots, pairs)
+    for src, dst in pairs:
+        res = run_rsync(src, f"{host}:{dst}")
+        if res.returncode != 0:
+            raise SystemExit(f"FAIL 上传失败 {src} -> {dst}: {res.stderr.strip()}")
+        print(f"  ✓ 已同步: {src} -> {dst}")
+    print(f"[OK] lib-push 完成：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)}（计费）")
+    return 0
+
+
+def cmd_lib_captions(args: argparse.Namespace) -> int:
+    """番池素材云端打标：先核远端代码（D107），再 tmux 后台跑 vindex captions。"""
+    keys = _lib_target(args)
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+
+    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+    if not code_ok:
+        raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
+    if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
+        # 同名 tmux 会话会被 build_tmux_launch_command 先 kill 掉：再发一次等于打断正在跑的那批
+        raise SystemExit(f"FAIL 上一批番池打标（{LIB_CAPTIONS_SESSION}）还在跑；跑完再开下一批，"
+                         f"进度看 cloud attach --session {LIB_CAPTIONS_SESSION}")
+
+    _note_session_task("captions", f"library:{args.pool}")
+    _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
+    remote_cmd = build_lib_captions_command(args.pool, keys, remote_root, remote_python(cfg_global),
+                                            batch=args.batch, limit=args.limit, confirm_cost=args.confirm_cost)
+    print(f"[*] 启动远端番池打标 (tmux: {LIB_CAPTIONS_SESSION})")
+    print(f"    远端执行: {remote_cmd}")
+    _ssh(build_tmux_launch_command(LIB_CAPTIONS_SESSION, remote_cmd, remote_root), host=host)
+    print("[OK] 已在远端后台运行。")
+    print(f"     查看进度: python -m pipeline.cloud attach --session {LIB_CAPTIONS_SESSION}")
+    print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)}，再本地 vindex embed {args.pool}")
+    return 0
+
+
+def cmd_lib_pull(args: argparse.Namespace) -> int:
+    """番池打标产物下行：只拉命令里写的集键；远端没有的列出来，退出码非 0。"""
+    keys = _lib_target(args)
+    paths.require_data()
+    _, _, vindex_rel = lib_dirs()
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
+    if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
+        raise SystemExit(f"FAIL 番池打标（{LIB_CAPTIONS_SESSION}）还在跑，跑完再拉：中途拉到的可能是半份产物")
+    local_dir = paths.ROOT / vindex_rel
+    local_dir.mkdir(parents=True, exist_ok=True)
+    missing: list[str] = []
+    for k in keys:
+        name = f"{args.pool}_{k}.captions.json"
+        dst = local_dir / name
+        existed = dst.exists()
+        res = run_rsync(f"{host}:{remote_root}/{vindex_rel}/{name}", str(dst))
+        if res.returncode == 0:
+            print(f"  ✓ 已拉取{'（覆盖本地旧文件）' if existed else ''}: {vindex_rel}/{name}")
+        else:
+            tail = (res.stderr.strip().splitlines() or [""])[-1][:120]
+            missing.append(f"{k}（rsync 退出码 {res.returncode}：{tail}）")
+    if missing:
+        print("FAIL 远端没拉到：" + "；".join(missing) + "。打标没跑完或失败，看 cloud logs / attach", file=sys.stderr)
+        return 1
+    print(f"[OK] lib-pull 完成。下一步本地 vindex embed {args.pool}，再 vindex status --anime {args.pool} 对账")
+    return 0
+
+
 def resolve_episode_rel_path(target: Any) -> tuple[Path, str]:
     """把本期目录参数解析为 (绝对路径, 相对仓库根的路径)。纯函数。
 
@@ -1869,6 +2218,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg_global, cfg_local = load_cloud_config()
     host = _ssh_host(cfg_local)
     remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+
+    # D107：旧代码打出来的产物可能过不了加载校验，也可能校验相同但口径不同（后者不报错），开跑前挡住
+    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+    if not code_ok:
+        raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
 
     sfile = get_active_session_file()
     if sfile.exists():
@@ -2058,13 +2412,17 @@ def main() -> int:
 
     # up
     p_up = sub.add_parser("up", help="开启实例并初始化远端守护脚本")
-    p_up.add_argument("--mode", choices=["cardless", "gpu"], default="cardless", help="开机模式 (cardless=无卡节能模式0.1元/h, gpu=带卡模式2.4元/h)")
+    p_up.add_argument("--mode", choices=["cardless", "gpu"], default="cardless", help="开机模式 (cardless=无卡节能模式, gpu=带卡模式)")
+    p_up.add_argument("--rate", type=float, default=None,
+                      help="这台实例的按量单价（元/小时，控制台上看到的数；D108：卡不固定、价不固定，不报则账本按参考价估算）")
     p_up.add_argument("--timeout", type=int, default=300, help="开机等待超时秒数（默认 300s）")
     p_up.add_argument("--episode", type=str, default=None, help="关联合同期号")
 
     # down
     p_down = sub.add_parser("down", help="关闭实例并完成账簿结算")
     p_down.add_argument("--force", action="store_true", help="强制下发关机指令（即使远端仍有活跃任务）")
+    p_down.add_argument("--rate", type=float, default=None,
+                        help="补报这台实例的按量单价（元/小时）；优先于 up 时报的")
 
     # status
     p_status = sub.add_parser("status", help="查询实例连通性、GPU工况与账簿明细")
@@ -2087,6 +2445,19 @@ def main() -> int:
     sub.add_parser("relocate-data", help="远端 data/ 改道数据盘并软链回来（幂等；有任务在跑就拒）")
     sub.add_parser("clean-frames", help="清远端上一轮 VLM 打标帧 *_cap（本地可秒级重抽）")
     sub.add_parser("fix-env", help="按 doctor 判据修远端：克隆缺失的仓库、重下缺失/残缺的模型（清单来自 config）")
+    sub.add_parser("sync-code", help="把本地 pipeline/ config/ pyproject.toml 推到远端并按哈希核对（D107）")
+
+    # D103 ②：番池素材（data/library/ 下的番剧集与 SP）云端打标
+    for name, help_ in (("lib-push", "番池素材打标输入（镜头表 + 打标帧）上传"),
+                        ("lib-captions", "番池素材云端打标（计费；先核远端代码）"),
+                        ("lib-pull", "番池素材打标产物拉回（只拉写明的集键）")):
+        p_lib = sub.add_parser(name, help=help_)
+        p_lib.add_argument("pool", help="池名（番名 / 企划名）")
+        p_lib.add_argument("keys", nargs="+", help="集键 SP01 / S01E01，可多个或逗号分隔")
+        if name == "lib-captions":
+            p_lib.add_argument("--batch", type=int, default=None, help="一次前向几个镜头（同 vindex captions）")
+            p_lib.add_argument("--limit", type=int, default=None, help="冒烟用：只打前 N 个镜头")
+            p_lib.add_argument("--confirm-cost", action="store_true", help="预估超预算仍继续（同 vindex captions）")
 
     # attach
     p_attach = sub.add_parser("attach", help="终端接驳远端 tmux 会话")
@@ -2109,6 +2480,10 @@ def main() -> int:
         "relocate-data": cmd_relocate_data,
         "clean-frames": cmd_clean_frames,
         "fix-env": cmd_fix_env,
+        "sync-code": cmd_sync_code,
+        "lib-push": cmd_lib_push,
+        "lib-captions": cmd_lib_captions,
+        "lib-pull": cmd_lib_pull,
     }
 
     fn = dispatch.get(args.cmd)

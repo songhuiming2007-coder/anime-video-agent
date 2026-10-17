@@ -249,7 +249,7 @@ AUTO_APPROVED_TOOLS = frozenset(
      "fact_add"}  # D99：写的是本卷事实库（锁内追加、可人工核查），拒写由校验本身完成
 )
 # ADR-0030 决策 2：run_pipeline 只有这些 cloud 子命令弹卡——开机 / 跑任务花钱，down / 清理销毁云端东西
-CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data"})
+CLOUD_CARD_SUBCOMMANDS = frozenset({"up", "run", "down", "clean-frames", "relocate-data", "sync-code", "lib-captions"})
 # AGENTS.md Code Freeze 的四条例外（读音表 / 标定值 / 曲库登记 / 云端连接）写 config/，规定「人审卡批准后」才写：
 # 与 bash「写 config/ 算硬危险」同一口径，逐条弹卡。D82：它是 tools.HUMAN_GATED_COMMANDS 的子集（审查走后者）
 CONFIG_WRITE_COMMANDS = frozenset({("corrections", "global"), ("calibration", "set"), ("bgm", "register"),
