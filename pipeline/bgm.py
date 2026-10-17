@@ -171,37 +171,43 @@ def measure(audio: Path) -> dict:
         except (ValueError, KeyError):
             pass
 
-    # 入声点：astats 逐窗给 RMS，找第一个超 -30 dBFS 的窗。
-    # 窗长要按真实采样率算——astats 的 reset=N 是「每 N 个音频帧复位」，
-    # 一帧 1024 样本，44.1k 的碟一窗 0.279s，写死 0.25s 会有 11% 误差。
-    sr_out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(audio)],
-        capture_output=True, text=True, check=True).stdout.strip()
-    # 带内嵌封面图（attached_pic）的 mp3，csv=p=0 在唯一字段后仍会拖一个逗号——
-    # 不是第二个流混进来了（-select_streams a:0 已经排除了封面那条 video 流），
-    # 是 ffprobe 自己在探测到文件里还有别的流时，CSV 逗号分隔符照样打出来。
-    # 只取逗号前的第一段，其余按原逻辑退回默认采样率。
-    sr = int(sr_out.split(",")[0] or 44100)
-    reset = 12
-    win = reset * 1024 / sr
+    # 入声点：astats 给 RMS（reset=12：每 12 个音频帧复位一次统计，起平滑作用），
+    # 找第一个超 -30 dBFS 的时刻。
     p = subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-t", "30", "-i", str(audio),
-         "-af", f"astats=metadata=1:reset={reset},"
+         "-af", "astats=metadata=1:reset=12,"
                 "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
          "-f", "null", "-"],
         capture_output=True, text=True)
-    onset = None
-    for n, line in enumerate(v for v in p.stdout.splitlines() if "=" in v):
-        try:
-            if float(line.split("=")[1]) > -30.0:
-                onset = n * win
-                break
-        except ValueError:
-            continue
 
-    return {"duration": round(dur, 1), "lufs": lufs, "onset": onset,
+    return {"duration": round(dur, 1), "lufs": lufs, "onset": onset_from_astats(p.stdout),
             "vocal": None if "instrumental" in audio.stem.lower() else "?"}
+
+
+_PTS = re.compile(r"pts_time:(\S+)")
+
+
+def onset_from_astats(out: str, floor: float = -30.0) -> float | None:
+    """从 ametadata 打印里取第一个 RMS 超 `floor` dBFS 的帧的时间戳。
+
+    **时刻取该帧的 `pts_time`，不按行号乘窗长去算。** ametadata 是逐帧打印的，
+    不是每次复位才打一行；旧版把行号乘上「12 帧一窗」的窗长，结果放大了 12 倍
+    （2026-10-17 实测：恋は戦争 真实入声 4.8s，表里记 57.4s）。帧长也不固定
+    （AAC 1024 样本、flac 常见 4096），所以要用帧自带的时间戳。
+    """
+    t = None
+    for line in out.splitlines():
+        if line.startswith("frame:"):
+            m = _PTS.search(line)
+            t = float(m.group(1)) if m else None
+        elif "RMS_level=" in line and t is not None:
+            try:
+                level = float(line.split("=", 1)[1])
+            except ValueError:
+                continue
+            if level > floor:
+                return t
+    return None
 
 
 def clean_track_title(stem: str) -> str:
