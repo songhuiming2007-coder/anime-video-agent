@@ -425,6 +425,7 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
     "--text", "--word", "--pinyin", "--homophone", "--expect", "--latin", "--script",
     "--type", "--batch",  # D59：scout --type、ingest_patch --batch
+    "--vocal",  # D113：bgm register
     "--call", "--blocked", "--symptom", "--expected", "--repro", "--why",  # D82：tickets open
 })
 

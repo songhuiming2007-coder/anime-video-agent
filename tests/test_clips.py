@@ -1113,6 +1113,37 @@ class TestAnchorIntegration:
         seg2 = data["segments"][1]
         assert seg2["status"] == "anchor_overlap" and seg2["clips"] == []
 
+    def _run_without_index(self, tmp_path, monkeypatch, script_text, durations):
+        """不替换 load_all，给一个空索引目录：企划池期（D112）的真实形态。"""
+        import json as _json
+        monkeypatch.setattr(c, "load_sources", lambda a: self.SRC)
+        from pipeline import shots as sh
+        monkeypatch.setattr(sh, "load", lambda a, k: self.TBL)
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "02-script.md").write_text(script_text, encoding="utf-8")
+        (ep / "03-audio" / "manifest.json").write_text(_json.dumps({"segments": [
+            {"index": i, "label": str(i), "text": "x", "file": f"s{i}.wav",
+             "duration": d, "cer": 0.0, "attempts": 1}
+            for i, d in enumerate(durations, 1)]}), encoding="utf-8")
+        empty = tmp_path / "index"
+        empty.mkdir()
+        return c.run(ep, empty, anime="番")
+
+    def test_全锚点期没有字幕索引照样排片(self, tmp_path, monkeypatch):
+        script = ("## 段落 1\n\n配音：一。\n\n画面：\n  锚点: S01E01 00:12\n\n"
+                  "## 段落 2\n\n配音：二。\n\n画面：\n  锚点: S01E01 01:00\n")
+        import json as _json
+        data = _json.loads(self._run_without_index(
+            tmp_path, monkeypatch, script, [8.0, 4.0]).read_text(encoding="utf-8"))
+        assert [s["status"] for s in data["segments"]] == ["ok", "ok"]
+
+    def test_有一段要检索时没有字幕索引照旧报缺(self, tmp_path, monkeypatch):
+        script = ("## 段落 1\n\n配音：一。\n\n画面：\n  锚点: S01E01 00:12\n\n"
+                  "## 段落 2\n\n配音：二。\n\n画面：\n  查询: q\n  锚点: 无（测试）\n")
+        with pytest.raises(SystemExit, match="没有《番》的索引"):
+            self._run_without_index(tmp_path, monkeypatch, script, [8.0, 4.0])
+
     def test_全角波浪号当区间分隔符(self):
         a = c._parse_anchor("S01E01 17:50～18:20", 1)
         assert (a["t0"], a["t1"]) == (1070.0, 1100.0)

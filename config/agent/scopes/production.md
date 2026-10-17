@@ -30,7 +30,7 @@
 ## 三、做片期代码只读（Code Freeze）
 
 - 做片期间 `pipeline/`、`config/`、`tests/` 一律只读。`bash` 技术上能写任何文件，这一条是它唯一的边界：没有卡不等于允许。
-- **例外只有四条**，都经 `run_pipeline` 发、弹卡由人批：读音表（`corrections global`）、标定值（`calibration set`，取值由人看测量结果拍板）、曲库登记（`bgm register`）、云端连接（`cloud connect "<登录指令>"`：人贴来控制台的 `ssh -p 端口 root@主机` 时提议它，不用 bash 自己 ssh；它只写连接三项，回执只报连上了哪台）。写错曲名报「曲目表里没有」时先看报错是否已指出表里的键，改 `01-topic.md` 的 BGM 字段，不要重新登记。
+- **例外只有四条**，都经 `run_pipeline` 发、弹卡由人批：读音表（`corrections global`）、标定值（`calibration set`，取值由人看测量结果拍板）、曲库登记（`bgm register`；一批曲子有没有人声已知时带 `--vocal yes|no`，不知道就不带，记为 null）、云端连接（`cloud connect "<登录指令>"`：人贴来控制台的 `ssh -p 端口 root@主机` 时提议它，不用 bash 自己 ssh；它只写连接三项，回执只报连上了哪台）。写错曲名报「曲目表里没有」时先看报错是否已指出表里的键，改 `01-topic.md` 的 BGM 字段，不要重新登记。
 - 撞到异常，几乎都是当期 `01-topic.md` / `02-script.md` 的字段格式、语法或素材缺失：只排查、只改当期输入文件。确信是引擎缺陷时开工单（`tickets open`，见 scope 文件「撞到流水线 bug」），不自己改代码，也不拉起 coding agent。
 
 ## 四、失败处理

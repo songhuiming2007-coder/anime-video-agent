@@ -222,6 +222,17 @@ def infer_slot(stem: str) -> str:
     return "结尾" if any(w in lower for w in INST_WORDS) else "正文"
 
 
+def infer_vocal(stem: str, given: bool | None = None) -> bool | None:
+    """登记时的 `vocal`：曲名带伴奏关键词 → False；否则用登记人给的值；都没有 → None（未知）。
+
+    不能只看曲名定 True：原声带劇伴大多是纯音乐，曲名里却没有 instrumental
+    （东京喰种 13 首都是）。不知道就写 None，等人听过再标，不替人编一个 False（D113）。
+    """
+    if any(w in stem.lower() for w in INST_WORDS):
+        return False
+    return given
+
+
 def _rel_repo_path(path: Path) -> str:
     """转为相对于 paths.ROOT 的统一相对路径字符串。
 
@@ -248,8 +259,12 @@ def _rel_repo_path(path: Path) -> str:
         return str(path).replace("\\", "/")
 
 
-def register(files: list[Path], anime: str, note: str | None = None, overwrite: bool = False) -> int:
-    """批量测量音频文件并写入 config/bgm.json，返回成功登记的曲目数。"""
+def register(files: list[Path], anime: str, note: str | None = None, overwrite: bool = False,
+             vocal: bool | None = None) -> int:
+    """批量测量音频文件并写入 config/bgm.json，返回成功登记的曲目数。
+
+    `vocal` 是登记人对这批曲子的判断（`--vocal yes|no`）；曲名带伴奏关键词的照旧记 False。
+    """
     cfg_file = paths.CONFIG / "bgm.json"
     if not cfg_file.exists():
         raise SystemExit(f"FAIL 配置文件不存在：{cfg_file}")
@@ -281,7 +296,7 @@ def register(files: list[Path], anime: str, note: str | None = None, overwrite: 
             "dur": m["duration"],
             "lufs": round(m["lufs"], 2) if m["lufs"] is not None else None,
             "onset": round(m["onset"], 3) if m["onset"] is not None else None,
-            "vocal": False,
+            "vocal": infer_vocal(f.stem, vocal),
         }
         lufs_str = f"{m['lufs']:.1f}" if m["lufs"] is not None else "—"
         onset_str = f"{m['onset']:.1f}s" if m["onset"] is not None else "—"
@@ -457,6 +472,8 @@ def main() -> None:
     p.add_argument("--anime", required=True, help="番剧名称")
     p.add_argument("--note", help="曲库备注说明")
     p.add_argument("--overwrite", action="store_true", help="是否覆盖已有曲库（默认增量更新）")
+    p.add_argument("--vocal", choices=("yes", "no"),
+                   help="这批曲子有没有人声；不给则曲名带伴奏关键词记 false，其余记 null（未知）")
 
     a = ap.parse_args()
     paths.require_data()
@@ -492,7 +509,8 @@ def main() -> None:
             print(f"{f.stem:<40s} {m['duration']:>6.1f}s {lufs:>8s}  {onset:>6s}")
 
     elif a.cmd == "register":
-        register(a.files, anime=a.anime, note=a.note, overwrite=a.overwrite)
+        register(a.files, anime=a.anime, note=a.note, overwrite=a.overwrite,
+                 vocal=None if a.vocal is None else a.vocal == "yes")
 
 
 if __name__ == "__main__":
