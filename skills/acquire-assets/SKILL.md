@@ -63,8 +63,26 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
      （不进 `sources.json`），接着跑 `ingest_patch`（见 runbook 04.5）。写稿期只为写锚点就加 `--anchor-only`
      （只切镜头登记，不打标、不碰云端）。**一次性的图（生活照、本期图表）走补丁池；别的期也会用的走番池。**
    - gate FAIL 但人坚持要收：`--waive "<理由>"`（卡上标 `[门禁豁免]`，理由写进登记输出）。不许自己决定豁免。
-4. **入库后切镜头**：`shots calibrate <文件>` → 把密度表给人，人拍板阈值 →
-   `shots build <文件> --anime <池> --sp <N>` → `shots gallery <池> SPnn`。
+4. **番池 SP 入库全链**（登记进 `--pool` 之后、写稿要能检索到这条素材之前；2026-10-17 在 supercell 池 63 件上实跑核过，D103）。
+   只登记、不往下做，这条素材只能写成时间码锚点，检索不到它：
+   1. `shots calibrate <代表样本>` → 密度表给人，人拍板阈值 → `calibration set visual.scene_threshold.<池> <值> --evidence "…"`
+      （单条要不同阈值时键写 `<池>/SPnn`）。
+   2. `shots build <文件> --anime <池> --sp <N>`。
+   3. 长镜头补刀：镜头切分对静态插画 PV、连续溶解的拼贴 MV、绘画过程认不出切点，降阈值也救不回；一个镜头只出一条描述、
+      最多抽 3 帧，长镜头里的其余画面检索不到。规则：**超过 30 s 的镜头，从镜头起点起每 15 s 注一刀**（过切无害、漏切有害）。
+      按规则算好每条要切的镜头与切点，整批列给人，人同意后逐条 `shots rebuild --anime <池> --episode SPnn --also-cut MM:SS,…`
+      （写进 `meta.manual_cuts`，之后 rebuild 自动重放）。
+   4. `shots caption-frames <池> SPnn` 抽打标帧。
+   5. 云端打标：**只能在云端跑**（VLM，本机跑不动），计费，先问人。实例开着（`cloud up`）后依次
+      `cloud lib-push <池> SPnn …`（传镜头表与打标帧）→ `cloud lib-captions <池> SPnn …`（计费卡；远端代码与本地不一致会拒跑，
+      先 `cloud sync-code`）→ 等它跑完（`cloud attach --session ava-lib-captions` 看进度）→ `cloud lib-pull <池> SPnn …`。
+      期目录的 `cloud push / run / pull` 只管 `04-patch/`，番池素材不走它们；不用 bash 自己 rsync / ssh。
+   6. `vindex embed <池>`：本机跑（16 GB Mac 上 63 件不到 1 分钟）。
+   7. `vindex status --anime <池>` 对账，七条数字对得上才算入库完成。
+
+   `shots frames` + `shots gallery <池> SPnn` 出的是给人看的联系表，不在打标链上（gallery 缺 frames 会拒）。
+   期内补丁池不走这条链：`ingest_patch` 不加 `--anchor-only` 时自己做完切镜头、打标、向量化（runbook 04-clips）。
+   访谈类素材要字幕时，`ingest subs`（只抽内嵌字幕轨）与 `subindex build` 对 SP 是否适用还没核实，用到时先在一条上试，不照搬。
 5. **要重抓**：`acquire forget <候选号>`（先问人）把那条从抓取台账 `incoming/fetched.json` 移走（留痕进
    `incoming/forgotten.json`，没登记的下载文件挪进 `incoming/attic/`，不删），再重新提议。已登记的拒。
 6. **备选源**：候选可带 `also: [备选URL...]`（2026-10-10 增）——主源死了自动顺次换源，台账记实际命中的

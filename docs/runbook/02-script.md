@@ -10,7 +10,7 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
 0. **先给设计稿**：核心立意、大概写什么、多长，人点头才动笔（选题定了、立意与时长没问人之前不起草）。写稿前先读番剧笔记 `data/library/notes/<番>.md`。
 1. **调用技能写稿**：调用 `skills/write-script`，参考 `01-topic.md` 与题材骨架，按 8–12 秒一个微单元切段（段落数上限 = 时长上界 ÷ 8 秒，`check_script` 的「段落数」项会打出本期上限）。
 2. **段落规范**：每段必须明确包含配音文本、`查询:`（台词语义）或 `锚点:`（具体时间码）。
-2.5 **补料（所有题材，D84；不只在写稿期，改稿、排片、审片时也会补）**：写到原片拍不出来的东西（受力图、数据图、实物对比），按 `skills/write-script/SKILL.md` 8.5 节补：缺口登记进 `02-asset-requests.json`（`write_episode_file`，免卡）→ `web_fetch` / `crawl` 返回的 `images` 写候选（`why` 写明补哪段的缺口）、调 `acquire_propose`（只登记并核对、不下载，返回机器表原样给人）→ 人点名后 `acquire fetch <号>`（只能抓结论为「可下载」的，D100）→ `acquire gate` → `acquire register <文件> --to-patch` → `ingest_patch --anchor-only`（只切镜头登记，不打标、不碰云端）→ 写 `锚点: <补丁池名> SPxx 0:00`。不许拿角色镜头硬凑。
+2.5 **补料（所有题材，D84；不只在写稿期，改稿、排片、审片时也会补）**：写到原片拍不出来的东西（受力图、数据图、实物对比），按 `skills/write-script/SKILL.md` 8.5 节补：缺口登记进 `02-asset-requests.json`（`write_episode_file`，免卡）→ `web_fetch` / `crawl` 返回的 `images` 写候选（`why` 写明补哪段的缺口）、调 `acquire_propose`（只登记并核对、不下载，返回机器表原样给人）→ 人点名后 `acquire fetch <号>`（只能抓结论为「可下载」的，D100）→ `acquire gate` → `acquire register <文件> --to-patch` → `ingest_patch --anchor-only`（只切镜头登记，不打标、不碰云端）→ 写 `锚点: <补丁池名> SPxx 0:00`。不许拿角色镜头硬凑。`--anchor-only` 的素材只能写锚点、检索不到；要检索得到，番池素材走 `skills/acquire-assets/SKILL.md` 第二节第 4 步的入库全链，补丁池去掉 `--anchor-only` 重跑（runbook 04-clips）（D103）。
 3. **运行机检**：agent 跑 `check_script`（免卡，期目录与稿件自动补上）。底层排查参考：`python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md`。
 
 ## 规则
