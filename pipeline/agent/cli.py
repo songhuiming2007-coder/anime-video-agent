@@ -1352,6 +1352,13 @@ def _cmd_seal_script(ep_dir: Path | str) -> int:
     if not draft.exists():
         print("[ERROR] 找不到 02-script.draft.md（早期目录可能没有草稿），无法封板。", file=sys.stderr)
         return 1
+    # D104：封板即过 02.5（status 凭 02-diff.patch 进 03），稿里还有待办标记就不封
+    from pipeline.approvals import _pending_marks_error
+
+    marks_err = _pending_marks_error(script.parent, "02.5")
+    if marks_err:
+        print(f"[ERROR] {marks_err}", file=sys.stderr)
+        return 1
 
     proc = subprocess.run(
         ["git", "diff", "--no-index", draft.name, script.name],

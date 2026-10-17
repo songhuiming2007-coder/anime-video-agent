@@ -297,6 +297,32 @@ class Check:
     detail: str
 
 
+# D104：写稿模型给拿不准的地方加的待办标记。标记加得对，但 02.5 照样能批准封板——
+# supercell 卷一第一期批准时稿里还有 5 处【待核】、1 处【待你定】，其中一处是错的。
+# 机检与 02.5 批准用同一个扫描，口径一致。
+PENDING_MARK = re.compile(r"【(?:待核|待你定)[^】\n]*】?")
+
+
+def pending_marks(text: str) -> list[tuple[str, str]]:
+    """稿里没处理完的【待核】【待你定】→ [(段落号或「段外」, 标记原文前 30 字)]。"""
+    out: list[tuple[str, str]] = []
+    label = "段外"
+    for line in text.splitlines():
+        h = re.match(r"^##\s*段落\s*(\S+)", line)
+        if h:
+            label = h.group(1)
+            continue
+        if re.match(r"^#{1,2}\s", line):   # 其他一二级标题（引用核对区等）出了段落；### 仍算段内
+            label = "段外"
+        out.extend((label, m.group(0)[:30]) for m in PENDING_MARK.finditer(line))
+    return out
+
+
+def pending_marks_summary(marks: list[tuple[str, str]], limit: int = 5) -> str:
+    shown = "；".join(f"{'段外' if l == '段外' else '段' + l}：{s}" for l, s in marks[:limit])
+    return f"{len(marks)} 处：{shown}" + ("……" if len(marks) > limit else "")
+
+
 def parse(text: str) -> tuple[list[str], list[str], list[str]]:
     vo = re.findall(r"^配音[：:]\s*(.+)$", text, re.M)
     q = re.findall(r"^\s*查询[：:]\s*(.+)$", text, re.M)
@@ -547,6 +573,11 @@ def run(path: Path) -> list[Check]:
     add("每段都有查询或锚点", not no_visual,
         f"{len(block_list) - len(no_visual)}/{len(block_list)} 段有画面来源"
         + ("，缺：" + "、".join(f"段{l}" for l in no_visual[:5]) if no_visual else ""))
+
+    marks = pending_marks(text)
+    add("无【待核】【待你定】标记", not marks,
+        pending_marks_summary(marks) + "　核掉后改正文或删掉这句，交人定的等人回话再改；标记留着不能批准 02.5"
+        if marks else "没有待办标记")
 
     # 情绪/语速字段机检（架构设计 3.3，2026-09-11 加）：表外值当场报错。
     # 受控词表的真源在 config/voice.json，不在这里硬编码——词表会随引擎实测调整，

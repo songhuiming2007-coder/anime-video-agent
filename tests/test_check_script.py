@@ -1270,3 +1270,17 @@ def test_bgm出处_真实解析_铺底块与01列表并存给警告不拦(tmp_pa
         "## 音乐段 M0 · 片头铺底\n\n音乐: `Heart Pattern` 完整版 00:00\n状态: 背景铺底\n\n" + body, encoding="utf-8")
     item = next(c for c in cs.run(tmp_path / "02-script.md") if c.name == "BGM 出处")
     assert item.ok and item.detail.startswith("⚠") and "M0" in item.detail
+
+
+def test_pending_marks_located_by_segment() -> None:
+    """D104：【待核】【待你定】按段定位；段外的也报；### 小标题不出段。"""
+    from pipeline.check_script import pending_marks
+
+    text = (
+        "# 标题【待你定：标题二选一】\n\n## 段落 3\n配音：甲。【待核：找不到出处，没有就删】\n"
+        "### 备注\n查询：乙【待核】\n\n## 段落 4\n配音：干净。\n\n## 引用核对区\n- 【待你定：x】\n"
+    )
+    got = pending_marks(text)
+    assert [lbl for lbl, _ in got] == ["段外", "3", "3", "段外"]
+    assert got[1][1].startswith("【待核：找不到出处")
+    assert pending_marks("## 段落 1\n配音：待核这个词本身不是标记。\n") == []

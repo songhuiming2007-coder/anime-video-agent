@@ -177,6 +177,15 @@ class TestSealScript:
         (repo / "02-script.md").unlink()
         assert run_cli(repo, "/seal-script") == 1
 
+    def test_有待核标记拒封(self, repo, capsys):
+        """D104：封板即过 02.5，稿里还留着【待核】就不写 02-diff.patch。"""
+        script = repo / "02-script.md"
+        script.write_text(script.read_text(encoding="utf-8") + "\n## 段落 99\n配音：尾巴。【待核：出处】\n",
+                          encoding="utf-8")
+        assert run_cli(repo, "/seal-script") == 1
+        assert not (repo / "02-diff.patch").exists()
+        assert "段99" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # TC-7 /voice-info
