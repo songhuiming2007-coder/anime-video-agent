@@ -39,7 +39,7 @@ export type ConvRow =
   | { k: "notice"; at: number; level: string; code: string; text: string }
   /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text）；
    *  brief：D80 R5 默认显示的短摘要（「N 次模型调用 · 上下文 …」），完整遥测仍在 text、展开可见 */
-  | { k: "footer"; at: number; text: string; stopped: string; brief: string }
+  | { k: "footer"; at: number; text: string; stopped: string; brief: string; claims: string[] }
   | { k: "historySeparator"; at: number }
   /** 恢复历史里的系统注入（常驻提示、规程、记忆）：Spec 10 §2.3「折叠为『系统注入』」——D57 补落实，默认收起 */
   | { k: "injection"; at: number; text: string }
@@ -194,6 +194,35 @@ export function lookupsText(v: unknown): string | null {
   return `查证 ${parts.join(" · ")}`;
 }
 
+/**
+ * D105：核查类措辞。模型在没调用任何工具的回合里写「重新调取了音频工程」「反复复核」，界面上原本看不出来，
+ * 人是看工具数少才起疑的（10-15 supercell 会话 seq 604–615）。前面是「未 / 待 / 没 / 无 / 不」的不算
+ * （「还没核实」「待核实」是如实交代，不是声称）。只提示，不拦截。
+ */
+const CLAIM_WORDS = /(?<![未待没无不])(查实|复核|核验|核实|调取|查证|一手物证|逐条核对|反复确认)/g;
+
+/** 回复里声称核查过的措辞（去重，按出现顺序） */
+export function claimWords(text: string): string[] {
+  return [...new Set(Array.from(text.matchAll(CLAIM_WORDS), (m) => m[1]))];
+}
+
+/** 本回合（上一个用户消息之后）的回复全文 */
+function turnReplyText(rows: readonly ConvRow[]): string {
+  const parts: string[] = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.k === "user" || r.k === "footer") break;
+    if (r.k === "assistant") parts.unshift(r.text);
+  }
+  return parts.join("\n");
+}
+
+/** 0 次工具调用却声称核查过 → 那些措辞；否则空。0 次模型调用的回合没有回复，不判 */
+function unbackedClaims(f: OutFrame, rows: readonly ConvRow[]): string[] {
+  if (f.tool_calls !== 0 || !(Number(f.llm_calls) > 0)) return [];
+  return claimWords(turnReplyText(rows));
+}
+
 /** D80 R5：回合末默认只显示调用次数与上下文读数——工具数与用时已在回合折叠行上，其余遥测展开看 */
 function footerBrief(f: OutFrame): string {
   const reading = turnReading(f);
@@ -314,7 +343,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
     case "turn_finished":
       // D91：/model、/thinking 的命令回合不进模型，「0 次模型调用」脚注是噪声
       if (f.stopped === "command") break;
-      rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped), brief: footerBrief(f) });
+      rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped), brief: footerBrief(f), claims: unbackedClaims(f, rows) });
       break;
     default:
       break; // ready / turn_started / bye / history 由 foldConv 主循环处理
