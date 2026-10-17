@@ -1734,3 +1734,37 @@ def test_tc11_write_titles_candidate_triggers_09_fingerprint_drift(
     assert new_item is not None and new_item.approval_id != item.approval_id
     assert new_item.type == "09" and new_item.status == ApprovalStatus.PENDING
     assert get(item.approval_id, ep).status == ApprovalStatus.SUPERSEDED
+
+
+def test_02_5_refuses_pending_marks(tmp_path: Path) -> None:
+    """D104：稿里留着【待核】【待你定】时 02.5 不许批准；删掉标记、重新封板后放行。"""
+    ep = _make_episode_at_02_5(tmp_path, "ep-marks")
+    (ep / "02-script.md").write_text(
+        "## 段落 1\n配音：测试台词。\n\n## 段落 6\n配音：前奏是钢琴滑音。【待核：人听原曲确认】\n"
+        "\n## 段落 9\n配音：交给人。【待你定：越界到卷二】\n",
+        encoding="utf-8",
+    )
+    item = ensure_pending(ep)
+    assert item is not None and item.type == "02.5"
+    patch = ep / "02-diff.patch"
+    patch.write_text("--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+    ns = (ep / "02-script.md").stat().st_mtime_ns + 5_000_000
+    os.utime(patch, ns=(ns, ns))
+    with pytest.raises(ApprovalError) as exc:
+        approve(ep, "02.5", approval_id=item.approval_id, source="cli")
+    msg = str(exc.value)
+    assert "2 处" in msg and "段6" in msg and "段9" in msg
+    # 解封物在、带标记：自愈也不许凭它把 02.5 记成已批准
+    assert get(item.approval_id, ep).status == ApprovalStatus.PENDING  # type: ignore[union-attr]
+
+    # 改掉标记 → 产物指纹变了，补建新的待批对象；重封板后放行
+    (ep / "02-script.md").write_text(
+        "## 段落 1\n配音：测试台词。\n\n## 段落 6\n配音：前奏之后才进人声。\n", encoding="utf-8")
+    patch.unlink()
+    fresh = ensure_pending(ep)
+    assert fresh is not None and fresh.approval_id != item.approval_id
+    patch.write_text("--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n", encoding="utf-8")
+    ns = (ep / "02-script.md").stat().st_mtime_ns + 5_000_000
+    os.utime(patch, ns=(ns, ns))
+    ok = approve(ep, "02.5", approval_id=fresh.approval_id, source="cli")
+    assert ok.status == ApprovalStatus.APPROVED

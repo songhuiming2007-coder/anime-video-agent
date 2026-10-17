@@ -348,7 +348,8 @@ def _gate_valid(ep_dir: Path, stop: str) -> bool:
                 return False
 
         if stop == "02.5":
-            return gate_st.st_size > 0
+            # D104：带着【待核】【待你定】的封板不算数（否则自愈会凭解封物把 02.5 记成已批准）
+            return gate_st.st_size > 0 and _pending_marks_error(ep_dir, stop) is None
         if stop == "05":
             clips_path = ep_dir / "04-clips.json"
             json.loads(clips_path.read_text(encoding="utf-8"))
@@ -357,6 +358,25 @@ def _gate_valid(ep_dir: Path, stop: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _pending_marks_error(ep_dir: Path, stop: str) -> str | None:
+    """D104：02.5 稿里还留着【待核】【待你定】就不许批准；与 check_script 同一个扫描。"""
+    if stop != "02.5":
+        return None
+    from pipeline.check_script import pending_marks, pending_marks_summary
+
+    try:
+        text = (ep_dir / "02-script.md").read_text(encoding="utf-8")
+    except OSError:
+        return None      # 缺稿由指纹 / 解封物两道闸报，这里不重复
+    marks = pending_marks(text)
+    if not marks:
+        return None
+    return (
+        f"02-script.md 还有没处理的待办标记，不能批准 02.5（{pending_marks_summary(marks)}）。"
+        "核过的改正文并删掉标记，交人定的等人回话；改完重新封板再批准"
+    )
 
 
 def _emit(event_name: str, payload: dict[str, Any], episode_dir: Path | None) -> None:
@@ -1010,6 +1030,9 @@ def approve(
                 state.dirty = True
                 raise ApprovalError("对象已被替换（关联产物已变更），请重新审阅")
 
+            marks_err = _pending_marks_error(ep_path, stop)
+            if marks_err:
+                raise ApprovalError(marks_err)
             if _STOP_GATE.get(stop) is not None and not _gate_valid(ep_path, stop):
                 raise ApprovalError(_gate_error_message(ep_path, stop))
 
@@ -1051,6 +1074,9 @@ def approve(
             and target_obj.resolved_by == "artifact"
             and target_obj.confirmed_by is None
         ):
+            marks_err = _pending_marks_error(ep_path, stop)
+            if marks_err:
+                raise ApprovalError(marks_err)
             curr_fp = _fingerprint(ep_path, _STOP_ARTIFACTS[stop])
             if not _fingerprints_equal(target_obj.artifacts, curr_fp) or (
                 _STOP_GATE.get(stop) is not None and not _gate_valid(ep_path, stop)
