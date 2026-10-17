@@ -22,6 +22,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 
 from . import paths  # 必须在 mlx_whisper 之前：把模型缓存钉到 SSD
@@ -141,6 +142,24 @@ def _backend_mlx_whisper(path: Path) -> str:
     )["text"].strip()
 
 
+#: Whisper 一次只看 30 秒（3000 帧 mel）。更长的音频 transformers 走逐窗的长音频生成，
+#: 而那条路要求模型预测时间戳：不传 `return_timestamps=True` 直接抛异常
+#: （2026-10-17 supercell 卷一段 44：主读不过、请仲裁时整轮配音因此退出）。
+WHISPER_WINDOW_S = 30.0
+
+
+def _whisper_call_kwargs(duration_s: float) -> dict:
+    """只有超过一个窗口才开时间戳：30 秒以内保持原来的解码方式，
+    回读 CER 的门槛是按不预测时间戳的解码标定的。"""
+    return {"return_timestamps": True} if duration_s > WHISPER_WINDOW_S else {}
+
+
+def _wav_seconds(path: Path) -> float:
+    """回读的输入都是 tts 写出的 16-bit PCM wav（`wavfile.write`），标准库就能读时长。"""
+    with wave.open(str(path)) as w:
+        return w.getnframes() / w.getframerate()
+
+
 def _backend_whisper_cuda(path: Path) -> str:
     """云端 Whisper Large-v3（transformers pipeline）。"""
     from transformers import pipeline
@@ -151,7 +170,7 @@ def _backend_whisper_cuda(path: Path) -> str:
         device=0,
         generate_kwargs={"language": "zh", "task": "transcribe"},
     )
-    return pipe(str(path))["text"].strip()
+    return pipe(str(path), **_whisper_call_kwargs(_wav_seconds(path)))["text"].strip()
 
 
 def _backend_sensevoice_cuda(path: Path) -> str:
