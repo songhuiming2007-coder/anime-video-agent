@@ -5,6 +5,8 @@
 整档 OP/ED 被漏掉——而每张碟都带 instrumental 轨。
 """
 
+import sys
+
 import pytest
 
 from pipeline import bgm
@@ -218,6 +220,30 @@ class TestInferSlot:
         assert bgm.infer_slot("繋ぎとめた世界") == "正文"
 
 
+class TestInferVocal:
+    """D113：register 曾把每首都写成 vocal=false，带人声的也一样。"""
+
+    def test_曲名带伴奏关键词记false_登记人说有人声也不改(self):
+        assert bgm.infer_vocal("#Love (Instrumental)", given=True) is False
+        assert bgm.infer_vocal("某曲 (Off Vocal)") is False
+
+    def test_登记人给的值照写(self):
+        assert bgm.infer_vocal("#Love (feat. Ann & Gaku)", given=True) is True
+        assert bgm.infer_vocal("回想", given=False) is False
+
+    def test_都没有记未知不编false(self):
+        assert bgm.infer_vocal("ワールドイズマイン") is None
+
+    @pytest.mark.parametrize("argv, want", [
+        (["--vocal", "yes"], True), (["--vocal", "no"], False), ([], None)])
+    def test_命令行vocal传到register(self, monkeypatch, argv, want):
+        got = {}
+        monkeypatch.setattr(bgm, "register", lambda files, **kw: got.update(kw))
+        monkeypatch.setattr(sys, "argv", ["bgm", "register", "a.flac", "--anime", "番", *argv])
+        bgm.main()
+        assert got["vocal"] is want
+
+
 class TestRegister:
     def test_外置盘绝对路径折回data相对路径(self, monkeypatch, tmp_path):
         """data 是指向外置盘的符号链接时，传入卷上的绝对路径也必须登记成 data/…（2026-10-11 伪恋期实录）。"""
@@ -283,6 +309,11 @@ class TestRegister:
         assert tracks["新曲A"]["dur"] == 120.5
         assert tracks["新曲A"]["lufs"] == -15.35
         assert tracks["主题曲 -instrumental-"]["slot"] == "结尾"
+        assert tracks["新曲A"]["vocal"] is None                 # 没给 --vocal：未知
+        assert tracks["主题曲 -instrumental-"]["vocal"] is False
+
+        count = bgm.register([f1], anime="测试番", vocal=True)
+        assert json.loads(bgm_json.read_text(encoding="utf-8"))["测试番"]["tracks"]["新曲A"]["vocal"] is True
 
         # 2. 覆盖登记
         count = bgm.register([f1], anime="测试番", note="全新备注", overwrite=True)

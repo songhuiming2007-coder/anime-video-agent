@@ -873,7 +873,13 @@ def run(episode: Path, index_dir: Path = INDEX_DIR,
         allow = set(animes) | {patch["pool"]}
     else:
         allow = set(animes)
-    vecs, units = load_all(index_dir, animes)
+    # 全锚点期不检索台词（ADR-0008），字幕索引用不上；企划池期（supercell 全是 SP）
+    # 本来就没有字幕索引，硬加载只会起步就失败（D112）。有一段要检索就照旧加载、照旧报缺。
+    if all(s["anchor"] is not None for s in shots):
+        vecs, units = None, None
+        print("[*] 全部段落都是锚点，不加载字幕索引", file=sys.stderr)
+    else:
+        vecs, units = load_all(index_dir, animes)
 
     # 两个视觉通道**按需加载**：没有段落声明 `人物` / `场景` 时，
     # 这一整套索引都不必存在，排片行为与从前一模一样。
