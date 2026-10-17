@@ -714,6 +714,74 @@ class TestAnchorChecks:
         assert not chk.ok and "跳过不可判定" in chk.detail
 
 
+class TestStillSpCap:
+    """图片微动 SP 在整个企划里至多出现 2 次（2026-10-17 人定），按片段数：同段写两遍记两次。"""
+
+    SRC = {"SP01": {"path": "/x/sp01.mp4", "duration": 12.0, "still": True},
+           "SP02": {"path": "/x/sp02.mp4", "duration": 180.0},              # 视频 SP，不受限
+           "SP03": {"path": "/x/sp03.mp4", "duration": 6.006}}              # 老池没标 still 的微动图
+    NAME = "图片微动 SP"
+
+    def _vol(self, root, name, anchors):
+        ep = root / "data" / "episodes" / "企划" / name
+        ep.mkdir(parents=True)
+        (ep / "01-topic.md").write_text("番: 企划\n", encoding="utf-8")
+        return script(ep, [BODY] * len(anchors), anchors=anchors)
+
+    @pytest.fixture
+    def root(self, tmp_path, monkeypatch):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda a: self.SRC)
+        monkeypatch.setattr(paths, "ROOT", tmp_path)
+        return tmp_path
+
+    def test_单卷段内两遍加别段一次_FAIL(self, root):
+        f = self._vol(root, "01-卷一", ["SP01 0:00, SP01 0:05", "SP01 0:00"])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "SP01 共 3 次" in chk.detail and "段1、段1、段2" in chk.detail
+
+    def test_两次_PASS(self, root):
+        f = self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00"])
+        assert get(cs.run(f), self.NAME).ok
+
+    def test_跨卷合计超限_报出别卷段号(self, root):
+        self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00"])
+        f = self._vol(root, "02-卷二", ["SP01 0:00"])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "02-卷二 段1" in chk.detail and "01-卷一 段1、段2" in chk.detail
+
+    def test_别卷用的其他图不算进本卷(self, root):
+        self._vol(root, "01-卷一", ["SP03 0:00"] * 3)
+        f = self._vol(root, "02-卷二", ["SP01 0:00"])
+        assert get(cs.run(f), self.NAME).ok
+
+    def test_没标still的8秒内SP照样计数(self, root):
+        f = self._vol(root, "01-卷一", ["SP03 0:00"] * 3)
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "SP03 共 3 次" in chk.detail
+
+    def test_视频SP不受限_不出这一项(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 1:00", "SP02 2:00"])
+        assert not [c for c in cs.run(f) if c.name.startswith(self.NAME)]
+
+    def test_不属于企划的期只数本期(self, tmp_path, monkeypatch):
+        from pipeline import ingest
+        monkeypatch.setattr(ingest, "load_sources", lambda a: self.SRC)
+        (tmp_path / "01-topic.md").write_text("番: 企划\n", encoding="utf-8")
+        f = script(tmp_path, [BODY] * 2, anchors=["SP01 0:00", "SP01 0:00"])
+        assert get(cs.run(f), self.NAME).ok
+
+    def test_池读不到_跳过不是通过(self, root, monkeypatch):
+        from pipeline import ingest
+
+        def boom(a):
+            raise SystemExit("FAIL sources.json 读不到")
+        f = self._vol(root, "01-卷一", ["SP01 0:00"])
+        monkeypatch.setattr(ingest, "load_sources", boom)
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "跳过不可判定" in chk.detail
+
+
 def make_patch_pool(ep, pool="ep-patch", key="SP01", duration=12.0, indexed=True):
     """最小期内补丁池：pool.json + 镜头表（+ indexed 时的 scene 索引），形状照 ingest_patch 的产物。"""
     import numpy as np
