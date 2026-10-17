@@ -358,9 +358,17 @@ function RowView({ rows, index, running, fresh, opens, inGroup = false }: { rows
 const CARD_TONE: Readonly<Record<string, string>> = { open: "wait", approved: "ok-muted", rejected: "fail", voided: "ok-muted" };
 
 /** D80 R5：回合末遥测默认只显示短摘要；ⓘ 展开完整原文（字段一个不删，仍可选中复制） */
-function Footer({ text, brief }: { text: string; brief: string }) {
+function Footer({ text, brief, claims }: { text: string; brief: string; claims: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return (
+    <>
+    {claims.length > 0 && (
+      // D105（人选 B）：回复下方单独一条警示，列出没有工具记录支撑的核查措辞；只提示，不拦截
+      <div className="conv-notice conv-notice--warn" data-testid="unbacked-claims" role="note">
+        <Icon name="alert" size="sm" />
+        <span>本回合没有调用任何工具。回复里说的「{claims.join("」「")}」没有本回合的工具记录：指的是前几轮的查证就往上对照，否则按未核实看待。</span>
+      </div>
+    )}
     <div className="conv-foot" data-testid="conv-row" data-kind="footer">
       <div className="conv-foot-line">
         <span data-testid="footer-brief">{brief}</span>
@@ -370,6 +378,7 @@ function Footer({ text, brief }: { text: string; brief: string }) {
       </div>
       {open && <div data-testid="footer-full">{text}</div>}
     </div>
+    </>
   );
 }
 
@@ -445,7 +454,7 @@ function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean })
         </div>
       );
     case "footer":
-      return <Footer text={row.text} brief={row.brief} />;
+      return <Footer text={row.text} brief={row.brief} claims={row.claims} />;
     case "historySeparator":
       // 文案与 Spec 10 §2.3 一致；红线 3 / TG-14 禁止 desktop/src 出现「会话记录文件名」字面量，故拆开拼接
       return (

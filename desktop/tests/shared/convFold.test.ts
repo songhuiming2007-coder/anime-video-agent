@@ -1,7 +1,7 @@
 // TV-2 / TV-3：对话流折叠（Spec 10 §2.3）。
 import { describe, expect, it } from "vitest";
 import type { OutFrame } from "../../src/shared/convFrames";
-import { bashSummary, cardParts, cardPhrase, charsText, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
+import { bashSummary, cardParts, cardPhrase, charsText, claimWords, contextText, foldConv, lastContextReading, lookupsText, tokensText } from "../../src/shared/convFold";
 import type { ConvEntry } from "../../src/shared/protocol";
 
 const F = (t: string, o: Record<string, unknown>, seq = 1): OutFrame => ({ v: 1, t: t as OutFrame["t"], seq, sid: "s1", ...o });
@@ -421,5 +421,43 @@ describe("D91 模型按钮的回执与命令回合", () => {
     const { rows, running } = foldConv(entries);
     expect(rows.map((r) => (r.k === "notice" ? `notice:${r.code}` : r.k))).toEqual(["notice:command:scope", "user", "notice:model"]);
     expect(running).toBe(false);
+  });
+});
+
+describe("D105 没调工具却声称核查过", () => {
+  const fin = (tool_calls: number, llm_calls = 1) =>
+    F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls, tool_calls, tool_executions: tool_calls, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 1, prompt_chars: 10, lookups: null, prompt_tokens: null }, 9);
+  const turn = (reply: string, tool_calls: number, llm_calls = 1): ConvEntry[] => [
+    { k: "user", at: 1, text: "段 6 再核一下" },
+    { k: "frame", at: 2, frame: F("assistant", { turn_id: "t1", kind: "answer", text: reply }, 2) },
+    { k: "frame", at: 3, frame: fin(tool_calls, llm_calls) },
+  ];
+  const claimsOf = (entries: ConvEntry[]) => {
+    const f = foldConv(entries).rows.find((r) => r.k === "footer");
+    return f?.k === "footer" ? f.claims : null;
+  };
+  // 10-15 supercell 会话 seq 604–615 的原话
+  const REAL = "我重新调取了音频工程和乐谱档案，戴上监听耳机反复复核，按一手物证时间轴查实。";
+
+  it("0 次工具 + 核查措辞 → 列出措辞", () => {
+    expect(claimsOf(turn(REAL, 0))).toEqual(["调取", "复核", "一手物证", "查实"]);
+  });
+  it("调过工具不报；0 次模型调用不报；没有核查措辞不报", () => {
+    expect(claimsOf(turn(REAL, 2))).toEqual([]);
+    expect(claimsOf(turn(REAL, 0, 0))).toEqual([]);
+    expect(claimsOf(turn("好的，我先看看稿件。", 0))).toEqual([]);
+  });
+  it("「未核实」「待核实」「没查证」是如实交代，不算声称", () => {
+    expect(claimWords("这条还未核实，出处待核实，我也没查证过")).toEqual([]);
+    expect(claimWords("已核实；另一条未核实")).toEqual(["核实"]);
+  });
+  it("只看本回合的回复，不带上一回合", () => {
+    const prev: ConvEntry[] = [
+      { k: "user", at: 0, text: "先查一下" },
+      { k: "frame", at: 0, frame: F("assistant", { turn_id: "t0", kind: "answer", text: REAL }, 1) },
+      { k: "frame", at: 0, frame: fin(3) },
+    ];
+    const rows = foldConv([...prev, ...turn("好的。", 0)]).rows.filter((r) => r.k === "footer");
+    expect(rows.map((r) => (r.k === "footer" ? r.claims : null))).toEqual([[], []]);
   });
 });
