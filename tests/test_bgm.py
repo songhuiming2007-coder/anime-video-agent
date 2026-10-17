@@ -292,3 +292,31 @@ class TestRegister:
         assert "旧曲" not in db["测试番"]["tracks"]
         assert len(db["测试番"]["tracks"]) == 1
 
+
+
+def _astats(rows: list[tuple[float, str]]) -> str:
+    """按 ffmpeg ametadata=print 的真实格式拼输出：每帧一行时间戳 + 一行 RMS。"""
+    return "".join(f"frame:{i}    pts:{int(t * 44100)}       pts_time:{t}\n"
+                   f"lavfi.astats.Overall.RMS_level={v}\n"
+                   for i, (t, v) in enumerate(rows))
+
+
+class TestOnset:
+    def test_取首个超门帧的时间戳而不是行号乘窗长(self):
+        # 2026-10-17 恋は戦争 实测：第 206 帧（AAC 每帧 1024 样本，44.1k）首次超 -30 dB。
+        # 旧算法 206 × 12 × 1024 / 44100 = 57.4s，真实是 4.78s
+        step = 1024 / 44100
+        rows = [(round(i * step, 6), "-inf") for i in range(206)] + [(round(206 * step, 6), "-29.23")]
+        assert bgm.onset_from_astats(_astats(rows)) == pytest.approx(4.783, abs=0.001)
+
+    def test_帧长不是1024也对(self):
+        # flac 解出来常见每帧 4096 样本：第 3 帧在 0.279s
+        step = 4096 / 44100
+        rows = [(round(i * step, 6), v) for i, v in enumerate(["-inf", "-60.1", "-45", "-12.5"])]
+        assert bgm.onset_from_astats(_astats(rows)) == pytest.approx(0.279, abs=0.001)
+
+    def test_全程静音返回None(self):
+        assert bgm.onset_from_astats(_astats([(0.0, "-inf"), (0.1, "-80.2")])) is None
+
+    def test_解析不了的值跳过(self):
+        assert bgm.onset_from_astats(_astats([(0.0, "nan?"), (0.5, "-10")])) == 0.5
