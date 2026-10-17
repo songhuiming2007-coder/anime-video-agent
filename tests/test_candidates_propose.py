@@ -122,6 +122,23 @@ def test_propose_invalid_batch_refused_file_untouched(tmp_path: Path) -> None:
 # ---- T3: URL 双源判重 ----
 
 
+def test_propose_dedup_same_video_other_spelling(tmp_path: Path) -> None:
+    """D109：台账记 youtu.be/<id>，提议 watch?v=<id>&si=… 也算同一条，跳过并指出登记的写法。"""
+    data_root = _make_skeleton(tmp_path)
+    inc_dir = data_root / "library" / "incoming"
+    (inc_dir / "fetched.json").write_text(
+        json.dumps([{"url": "https://youtu.be/jpV5jeFlt_E", "file": "SP01.mp4"}]), encoding="utf-8")
+    res = propose_candidates(
+        [_valid_entry(1, title="换写法", url="https://www.youtube.com/watch?v=jpV5jeFlt_E&si=abc"),
+         _valid_entry(2, title="批内首条", url="https://www.nicovideo.jp/watch/sm1715919"),
+         _valid_entry(3, title="批内短链同号", url="https://nico.ms/sm1715919")],
+        data_root=data_root,
+    )
+    assert res["added"] == ["批内首条"]
+    assert "台账" in res["skipped"][0]["reason"] and "youtu.be/jpV5jeFlt_E" in res["skipped"][0]["reason"]
+    assert "候选清单" in res["skipped"][1]["reason"] and "nicovideo.jp/watch/sm1715919" in res["skipped"][1]["reason"]
+
+
 def test_propose_dedup_candidates_and_ledger(tmp_path: Path) -> None:
     data_root = _make_skeleton(tmp_path)
     inc_dir = data_root / "library" / "incoming"

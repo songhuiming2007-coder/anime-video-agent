@@ -20,7 +20,7 @@ import re
 import threading
 import unicodedata
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from pipeline import paths
 
@@ -149,6 +149,61 @@ def ledger_seen_urls(entries: list[dict]) -> set[str]:
     return {e["url"] for e in entries if e.get("url")}
 
 
+# D109：查重按「是不是同一个视频」比，不按原始字符串比。supercell 池实例：SP01 记 youtu.be/<id>、
+# SP27 记 youtube.com/watch?v=<id>，两次查重都 PASS，同一个视频入池两遍、检索每条命中出现两次。
+# 只丢已知的跟踪参数：别的查询串可能区分不同内容（`?id=1` ≠ `?id=2`），丢多了会把两个视频并成一个。
+_TRACKING_PARAMS = frozenset({"si", "feature", "spm_id_from", "vd_source", "share_source",
+                              "share_medium", "share_plat", "from_spmid", "pp"})
+_YT_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+                       "youtube-nocookie.com", "www.youtube-nocookie.com"})
+_YT_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+_NICO_ID = re.compile(r"(?:sm|so|nm)\d+")
+_BILI_ID = re.compile(r"BV[0-9A-Za-z]{10}|av\d+", re.I)
+
+
+def canonical_media_url(url: str) -> str:
+    """查重用的规范形：YouTube / niconico / bilibili 归到视频号，其余 norm_url 后去跟踪参数。
+
+    短链（b23.tv 等）离线解析不出视频号，保持原样——宁可漏判重，不猜。
+    """
+    from pipeline.agent.fetch_log import norm_url
+
+    raw = str(url or "").strip()
+    parts = urlsplit(norm_url(raw))
+    host, path = parts.netloc, parts.path
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    q = dict(query)
+    seg = [x for x in path.split("/") if x]
+
+    if host == "youtu.be" and seg and _YT_ID.fullmatch(seg[0]):
+        return f"youtube:{seg[0]}"
+    if host in _YT_HOSTS:
+        if path == "/watch" and _YT_ID.fullmatch(q.get("v", "")):
+            return f"youtube:{q['v']}"
+        if len(seg) >= 2 and seg[0] in ("shorts", "embed", "live", "v") and _YT_ID.fullmatch(seg[1]):
+            return f"youtube:{seg[1]}"
+    if host in ("nicovideo.jp", "www.nicovideo.jp", "sp.nicovideo.jp") and len(seg) >= 2 \
+            and seg[0] == "watch" and _NICO_ID.fullmatch(seg[1]):
+        return f"niconico:{seg[1]}"
+    if host == "nico.ms" and seg and _NICO_ID.fullmatch(seg[0]):
+        return f"niconico:{seg[0]}"
+    if host in ("bilibili.com", "www.bilibili.com", "m.bilibili.com") and len(seg) >= 2 \
+            and seg[0] == "video" and _BILI_ID.fullmatch(seg[1]):
+        vid = seg[1] if seg[1][:2].upper() == "BV" else seg[1].lower()
+        p = q.get("p", "1")
+        return f"bilibili:{vid}" + (f":p{p}" if p.isdigit() and int(p) > 1 else "")   # 分 P 是不同视频
+
+    kept = [(k, v) for k, v in query
+            if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_PARAMS]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
+def first_seen_as(url: str, seen: set[str] | list[str]) -> str | None:
+    """`url` 与 `seen` 里哪一条是同一个视频（按 canonical_media_url）→ 那条的原始写法；没有返回 None。"""
+    want = canonical_media_url(url)
+    return next((u for u in seen if canonical_media_url(u) == want), None)
+
+
 _PROPOSE_LOCK = threading.Lock()
 _WHY_MIN_CHARS = 20  # skill §一 ✅ 示例均 ≥40 字、❌ 示例实测 17/4 字（len() 口径），20 是保守下界（软 WARN，不硬拒）
 
@@ -228,13 +283,15 @@ def propose_candidates(
                 ):
                     raise ValueError("FAIL 台账顶层必须是对象数组")
 
-                seen_in_candidates: set[str] = {
-                    str(c.get("url")).strip()
+                # D109：键是规范形（同一个视频的不同写法算一条），值是先登记的那条原始写法
+                seen_in_candidates: dict[str, str] = {
+                    canonical_media_url(str(c.get("url")).strip()): str(c.get("url")).strip()
                     for c in existing
                     if isinstance(c, dict) and c.get("url")
                 }
-                seen_in_ledger: set[str] = {
-                    u.strip() for u in ledger_seen_urls(ledger_entries) if isinstance(u, str) and u.strip()
+                seen_in_ledger: dict[str, str] = {
+                    canonical_media_url(u.strip()): u.strip()
+                    for u in ledger_seen_urls(ledger_entries) if isinstance(u, str) and u.strip()
                 }
 
                 added: list[str] = []
@@ -246,26 +303,31 @@ def propose_candidates(
                     title_str = str(item.get("title") or "")
                     raw_url = item.get("url")
                     url_str = raw_url.strip() if isinstance(raw_url, str) else ""
+                    canon = canonical_media_url(url_str) if url_str else ""
 
-                    if url_str and url_str in seen_in_candidates:
+                    if url_str and canon in seen_in_candidates:
+                        prev = seen_in_candidates[canon]
                         skipped.append({
                             "title": title_str,
                             "url": url_str,
-                            "reason": "url 已在候选清单（candidates.json）",
+                            "reason": "url 已在候选清单（candidates.json）"
+                                      + (f"，同一个视频登记为 {prev}" if prev != url_str else ""),
                         })
                         continue
-                    if url_str and url_str in seen_in_ledger:
+                    if url_str and canon in seen_in_ledger:
+                        prev = seen_in_ledger[canon]
                         skipped.append({
                             "title": title_str,
                             "url": url_str,
-                            "reason": "url 已在抓取台账（fetched.json）",
+                            "reason": "url 已在抓取台账（fetched.json）"
+                                      + (f"，同一个视频登记为 {prev}" if prev != url_str else ""),
                         })
                         continue
 
                     norm_item = dict(item)
                     if isinstance(raw_url, str) and url_str:
                         norm_item["url"] = url_str
-                        seen_in_candidates.add(url_str)
+                        seen_in_candidates[canon] = url_str
 
                     to_add.append(norm_item)
                     added.append(title_str)

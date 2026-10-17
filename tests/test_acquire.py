@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from pipeline import acquire as A
+from pipeline import candidates as C
 
 # ---------- 判据裁决 ----------
 
@@ -195,6 +196,41 @@ class TestDup:
         vs = A.dup_verdicts(url="https://example.com/x", slug="新素材",
                             seen_urls=set(), existing_names={"旧的"})
         assert A.overall(vs) == "PASS"
+
+    def test_同一视频换个链接写法也拒(self):
+        """D109：supercell 池 SP01/SP27、SP23/SP28 两对真实链接，各是同一个视频。"""
+        vs = A.dup_verdicts(url="https://www.youtube.com/watch?v=jpV5jeFlt_E", slug="新",
+                            seen_urls={"https://youtu.be/jpV5jeFlt_E"}, existing_names=set())
+        assert A.overall(vs) == "FAIL"
+        assert "youtu.be/jpV5jeFlt_E" in vs[0].note
+        vs = A.dup_verdicts(url="https://youtu.be/rZZzlY8vUf8?si=AbCdEf123", slug="新",
+                            seen_urls={"https://www.youtube.com/watch?v=rZZzlY8vUf8"},
+                            existing_names=set())
+        assert A.overall(vs) == "FAIL"
+
+
+class TestCanonicalUrl:
+    @pytest.mark.parametrize("a,b", [
+        ("https://youtu.be/jpV5jeFlt_E", "https://www.youtube.com/watch?v=jpV5jeFlt_E"),
+        ("https://youtu.be/rZZzlY8vUf8?si=x1", "https://m.youtube.com/watch?v=rZZzlY8vUf8&list=PL1&t=30"),
+        ("https://www.youtube.com/shorts/jpV5jeFlt_E", "https://youtube.com/embed/jpV5jeFlt_E"),
+        ("https://www.nicovideo.jp/watch/sm1715919", "https://nico.ms/sm1715919"),
+        ("https://sp.nicovideo.jp/watch/sm1715919?ref=x", "https://www.nicovideo.jp/watch/sm1715919"),
+        ("https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333", "https://m.bilibili.com/video/BV1xx411c7mD/"),
+        ("https://www.bilibili.com/video/BV1xx411c7mD?p=1", "https://www.bilibili.com/video/BV1xx411c7mD"),
+        ("https://example.com/a.mp4?utm_source=x", "https://EXAMPLE.com/a.mp4"),
+    ])
+    def test_同一个(self, a, b):
+        assert C.canonical_media_url(a) == C.canonical_media_url(b)
+
+    @pytest.mark.parametrize("a,b", [
+        ("https://www.bilibili.com/video/BV1xx411c7mD?p=2", "https://www.bilibili.com/video/BV1xx411c7mD"),
+        ("https://www.youtube.com/watch?v=jpV5jeFlt_E", "https://www.youtube.com/watch?v=rZZzlY8vUf8"),
+        ("https://example.com/f?id=1", "https://example.com/f?id=2"),
+        ("https://b23.tv/abc", "https://www.bilibili.com/video/BV1xx411c7mD"),   # 短链离线解析不出，不猜
+    ])
+    def test_不是同一个(self, a, b):
+        assert C.canonical_media_url(a) != C.canonical_media_url(b)
 
 
 # ---------- 抓取命令 ----------
