@@ -41,6 +41,7 @@ from .candidates import (
     TYPES,
     _line_of,
     candidates_path,
+    first_seen_as,
     incoming,
     ledger_load,
     ledger_path,
@@ -215,10 +216,12 @@ def dup_verdicts(*, url: str, slug: str, seen_urls: set[str],
     **跨源内容级去重不建**（「换个 rip 的同一场 Live」）：那要真撞上才知道需要什么判据，
     YAGNI；本次先挡「同一条链接」「同一个文件名」这两种真会重复下几百 M 的情况。
     """
+    prev = first_seen_as(url, seen_urls)      # D109：同一个视频换个链接写法也算抓过
     return [
         _verdict("URL 查重", url, "未抓过",
-                 "FAIL" if url in seen_urls else "PASS",
-                 "台账里已有这一条，别下第二遍" if url in seen_urls else ""),
+                 "FAIL" if prev else "PASS",
+                 ("台账里已有这一条，别下第二遍" + (f"（登记为 {prev}）" if prev != url else ""))
+                 if prev else ""),
         _verdict("同名查重", slug, "不撞名",
                  "FAIL" if slug in existing_names else "PASS",
                  "incoming/ 里已有同名前缀的文件" if slug in existing_names else ""),
