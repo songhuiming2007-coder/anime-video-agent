@@ -534,13 +534,15 @@ function Marked({ text, marks }: { text: string; marks: string[] }) {
   );
 }
 
-type Method = "pinyin" | "homophone";
+type Method = "pinyin" | "homophone" | "latin";
 type Scope = "seg" | "ep" | "global";
 
 /**
  * D50-A S6：「这里读错了」小卡。读音先经 core 的 `corrections check` 核对（只读），通过了才能记下。
  * 本段 / 本期 = 期级拼音直注（`voice.add` 的文法串）；全局 = `voice.global`（写 config/voice.json，宿主再弹一次确认框）。
  * 同音字只能写全局表（2026-10-08 人裁决：期级不加同音字）。
+ * 英文改写（2026-10-17）：英文词念错时换一种英文写法，同进全局 readings 表；英文没有拼音可核对，
+ * 「应读」框直接填写法，核对只拦数字 / 假名 / 汉字，读音靠复听。
  */
 function FixCard({
   epKey,
@@ -569,9 +571,10 @@ function FixCard({
   const [check, setCheck] = useState<VoiceCheckJson | null>(null);
   const [writing, setWriting] = useState(false);
   const [result, setResult] = useState<VoiceCheckJson | null>(null);
-  const effScope: Scope = method === "homophone" ? "global" : scope;
-  const reading = method === "pinyin" ? { word, pinyin } : { word, homophone, expect: pinyin };
-  const ready = pinyin.trim() !== "" && (method === "pinyin" || homophone.trim() !== "");
+  const effScope: Scope = method === "pinyin" ? scope : "global";
+  const reading =
+    method === "pinyin" ? { word, pinyin } : method === "latin" ? { word, latin: pinyin } : { word, homophone, expect: pinyin };
+  const ready = pinyin.trim() !== "" && (method !== "homophone" || homophone.trim() !== "");
 
   // 读音核对：停手 400 ms 后跑一次（只读，core 打印的原文行照传）
   useEffect(() => {
@@ -602,7 +605,7 @@ function FixCard({
     <div className="ui-popover voice-fix" data-testid="voice-fix">
       <span>「{word}」应读</span>
       <span>
-        <input className="ui-input voice-fix-input" data-testid="fix-pinyin" placeholder="如 jie3 di4" value={pinyin} onChange={(e) => setPinyin(e.target.value)} />
+        <input className="ui-input voice-fix-input" data-testid="fix-pinyin" placeholder={method === "latin" ? "如 Eternal Wind" : "如 jie3 di4"} value={pinyin} onChange={(e) => setPinyin(e.target.value)} />
       </span>
       <span>改法</span>
       <span className="ui-seg">
@@ -611,6 +614,9 @@ function FixCard({
         </button>
         <button aria-pressed={method === "homophone"} data-testid="fix-method-homophone" onClick={() => setMethod("homophone")}>
           同音字
+        </button>
+        <button aria-pressed={method === "latin"} data-testid="fix-method-latin" onClick={() => setMethod("latin")}>
+          英文改写
         </button>
       </span>
       {method === "homophone" && (
@@ -623,10 +629,10 @@ function FixCard({
       )}
       <span>范围</span>
       <span className="ui-seg">
-        <button aria-pressed={effScope === "seg"} disabled={method === "homophone"} data-testid="fix-scope-seg" onClick={() => setScope("seg")}>
+        <button aria-pressed={effScope === "seg"} disabled={method !== "pinyin"} data-testid="fix-scope-seg" onClick={() => setScope("seg")}>
           本段 {label}
         </button>
-        <button aria-pressed={effScope === "ep"} disabled={method === "homophone"} data-testid="fix-scope-ep" onClick={() => setScope("ep")}>
+        <button aria-pressed={effScope === "ep"} disabled={method !== "pinyin"} data-testid="fix-scope-ep" onClick={() => setScope("ep")}>
           本期
         </button>
         <button aria-pressed={effScope === "global"} data-testid="fix-scope-global" onClick={() => setScope("global")}>
@@ -637,6 +643,14 @@ function FixCard({
         <>
           <span />
           <span className="muted">同音字只写全局表（所有番、所有期）</span>
+        </>
+      )}
+      {method === "latin" && (
+        <>
+          <span />
+          <span className="muted" data-testid="fix-latin-hint">
+            全大写常被逐字母念：改成首字母大写或小写；缩写要逐字母念就用空格隔开（如 M two U）。只写全局表，写入后重配本段复听确认
+          </span>
         </>
       )}
       <span>核对</span>

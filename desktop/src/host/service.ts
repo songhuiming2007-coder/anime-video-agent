@@ -1745,7 +1745,8 @@ export class HostService {
 
   /** D50-A S6：写全局读音表一个键。人点了「记下」还要过一道原生确认框：它影响所有番、所有期 */
   private async voiceGlobal(e: EpisodeEntry, a: VoiceReadingArgs, supersede: boolean): Promise<VoiceCheckJson> {
-    const what = a.pinyin !== undefined ? `拼音直注 ${a.word} → ${a.pinyin}` : `同音字 ${a.word} → ${a.homophone ?? ""}`;
+    const what =
+      a.pinyin !== undefined ? `拼音直注 ${a.word} → ${a.pinyin}` : a.latin !== undefined ? `英文改写 ${a.word} → ${a.latin}` : `同音字 ${a.word} → ${a.homophone ?? ""}`;
     if (!(await this.deps.confirm("写入全局读音表？", `config/voice.json：${what}${supersede ? "（并删除另一张表的同名条目）" : ""}。影响所有番、所有期。`))) {
       return { ok: false, lines: ["已取消，未写入"] };
     }
@@ -1826,6 +1827,7 @@ function readingOf(p: Record<string, string | undefined>): VoiceReadingArgs {
   if (p.pinyin !== undefined) a.pinyin = p.pinyin;
   if (p.homophone !== undefined) a.homophone = p.homophone;
   if (p.expect !== undefined) a.expect = p.expect;
+  if (p.latin !== undefined) a.latin = p.latin;
   return a;
 }
 

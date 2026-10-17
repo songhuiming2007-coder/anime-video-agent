@@ -263,6 +263,20 @@ describe("D50-A S6：读音核对 / 全局读音表 / 按全局表重配", () =>
     expect(g?.a).toMatchObject({ word: "绚都", homophone: "炫嘟", expect: "xuan4du1", supersede: true });
   });
 
+  it("voice.global 英文改写：latin 原样带到 VOICE_GLOBAL，确认框写明「英文改写」", async () => {
+    const calls: { t: string; a: Record<string, unknown> }[] = [];
+    const fakeRun: HostDeps["runCore"] = async (t, a) => {
+      calls.push({ t: t as string, a: a as Record<string, unknown> });
+      return result(0, "[OK] config/voice.json readings：「ETERNAL WIND」→ Eternal Wind\n");
+    };
+    const asked: string[] = [];
+    const { svc } = await startService({ runCore: fakeRun, confirm: async (_t: string, detail: string) => (asked.push(detail), true) });
+    const r = (await svc.dispatch("voice.global", { epKey: "SP11", word: "ETERNAL WIND", latin: "Eternal Wind", supersede: "false" })) as { ok: boolean };
+    expect(r.ok).toBe(true);
+    expect(calls.find((c) => c.t === "VOICE_GLOBAL")?.a).toMatchObject({ word: "ETERNAL WIND", latin: "Eternal Wind", supersede: false });
+    expect(asked[0]).toContain("英文改写 ETERNAL WIND → Eternal Wind");
+  });
+
   it("voice.retts：确认框取消 → 不 spawn RUN_TTS", async () => {
     const calls: string[] = [];
     const fakeRun: HostDeps["runCore"] = async (t) => {

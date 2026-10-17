@@ -232,3 +232,65 @@ def test_preview_rejects_bad_homophone(voice: Path, episode: Path):
     )
     assert not ok
     assert any("rou4 ti4" in ln for ln in lines)
+
+
+# ---- 英文改写（--latin）：英文词念错时的第三条路 ----
+
+
+def test_latin_global_writes_readings(voice: Path, episode: Path, monkeypatch):
+    """2026-10-17 supercell 卷一段 12：全大写「ETERNAL WIND」→ readings 表一条英文写法，带来历。"""
+    monkeypatch.setattr(corrections, "_today", lambda: "2026-10-17")
+    assert corrections.main(["global", str(episode), "--word", "ETERNAL WIND", "--latin", " Eternal Wind "]) == 0
+    cfg = json.loads(voice.read_text(encoding="utf-8"))
+    assert cfg["readings"]["ETERNAL WIND"] == "Eternal Wind"
+    assert "ETERNAL WIND" not in cfg["pinyin_injections"]
+    assert cfg["readings_provenance"]["ETERNAL WIND"] == {"table": "readings", "date": "2026-10-17", "episode": "T1"}
+
+
+def test_latin_passes_with_listen_warning_not_reading_ok():
+    """英文没有拼音可比对：放行，但卡面写「读音待复听」，不写「通过」。"""
+    check = corrections.check_latin("redjuice", "red juice")
+    assert check.ok
+    assert check.lines()[-1] == "  ✓ 写法可用（读音待复听）"
+    assert any("复听" in w for w in check.warnings)
+
+
+@pytest.mark.parametrize("latin, why", [
+    ("エターナル", "不允许的字符"),     # 假名：码切换信号
+    ("eternal wind2", "不允许的字符"),  # 数字：check_script 拦
+    ("永恒之风", "不允许的字符"),       # 汉字走同音字
+    ("-wind", "以字母开头"),
+    ("ETERNAL WIND", "完全相同"),
+    ("   ", "为空"),
+])
+def test_latin_rejects_unsafe_spelling(latin, why):
+    check = corrections.check_latin("ETERNAL WIND", latin)
+    assert not check.ok
+    assert why in check.errors[0]
+
+
+def test_latin_word_must_be_english():
+    assert "不含英文字母" in corrections.check_latin("肉体", "rou ti").errors[0]
+
+
+def test_latin_rejected_without_writing(voice: Path):
+    before = voice.read_bytes()
+    assert corrections.main(["global", "--word", "ETERNAL WIND", "--latin", "eternal wind2"]) == 1
+    assert voice.read_bytes() == before
+
+
+def test_three_methods_are_exclusive(voice: Path):
+    before = voice.read_bytes()
+    assert corrections.main(["global", "--word", "EGOIST", "--pinyin", "a1", "--latin", "egoist"]) == 1
+    assert voice.read_bytes() == before
+    with pytest.raises(corrections.PatchError, match="三选一"):
+        corrections.plan_global_write({}, "EGOIST")
+
+
+def test_preview_latin_reports_plan(voice: Path, episode: Path):
+    before = voice.read_bytes()
+    ok, lines = corrections.preview(["global", str(episode), "--word=ETERNAL WIND", "--latin=Eternal Wind"])
+    assert ok, lines
+    text = "\n".join(lines)
+    assert "config/voice.json 的 readings" in text and "「ETERNAL WIND」→ Eternal Wind" in text
+    assert voice.read_bytes() == before

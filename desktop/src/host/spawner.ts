@@ -73,12 +73,13 @@ export type Template =
   | "RENAME_SESSION"
   | "RENAME_IDEA_SESSION";
 
-/** D50-A S6：读音参数——`pinyin` 与 `homophone + expect` 二选一（core 再校验一遍） */
+/** D50-A S6：读音参数——`pinyin`、`homophone + expect`、`latin`（英文改写）三选一（core 再校验一遍） */
 export interface VoiceReadingArgs {
   word: string;
   pinyin?: string;
   homophone?: string;
   expect?: string;
+  latin?: string;
 }
 
 /** 03.5 打点只许这三维、各 1–5（core 的 parse_review_arg 再校验一遍；05 的两维不在这张卡上） */
@@ -89,6 +90,7 @@ function readingFlags(a: VoiceReadingArgs): string[] {
   if (a.pinyin !== undefined) out.push(`--pinyin=${a.pinyin}`);
   if (a.homophone !== undefined) out.push(`--homophone=${a.homophone}`);
   if (a.expect !== undefined) out.push(`--expect=${a.expect}`);
+  if (a.latin !== undefined) out.push(`--latin=${a.latin}`);
   return out;
 }
 

@@ -50,8 +50,8 @@ export type Method =
   | "voice.retract" // { epKey, id }（spawn VOICE_RETRACT）
   | "voice.applyPatch" // { epKey }：长任务（RUN_TTS_APPLY_PATCH，无超时、退出不发信号）
   // D50-A S6：段落表就地纠错（plans/2026-10-08-preview-voice-build-spec.md）
-  | "voice.check" // { epKey, word, pinyin? | homophone?+expect? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
-  | "voice.global" // { epKey, word, pinyin? | homophone?+expect?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
+  | "voice.check" // { epKey, word, pinyin? | homophone?+expect? | latin? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
+  | "voice.global" // { epKey, word, pinyin? | homophone?+expect? | latin?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
   | "voice.retts" // { epKey }：长任务，原生确认框后 spawn RUN_TTS（普通重跑，只重配念法变了的段）
   | "voice.review" // { epKey, review: "voice=N,prosody=N,misread=N" } → { lines }（spawn TTS_REVIEW；D50-A S7：03.5 卡内打点）
   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
@@ -128,8 +128,8 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "voice.revert": { required: ["epKey", "label"], optional: [] },
   "voice.retract": { required: ["epKey", "id"], optional: [] },
   "voice.applyPatch": { required: ["epKey"], optional: [] },
-  "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect"] },
-  "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "supersede"] },
+  "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "latin"] },
+  "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "latin", "supersede"] },
   "voice.retts": { required: ["epKey"], optional: [] },
   "voice.review": { required: ["epKey", "review"], optional: [] },
   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
