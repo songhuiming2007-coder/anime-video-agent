@@ -406,6 +406,101 @@ def _patch_sources(episode: Path) -> dict:
     return {k: v for k, v in pool["sources"].items() if isinstance(k, str)}
 
 
+#: 同一张图片微动 SP 在一个企划（不属于企划的期就是本期）全部成片里最多出现几次（2026-10-17 人定）。
+STILL_SP_MAX = 2
+
+
+def _is_still(src: dict) -> bool:
+    """图片微动素材。与 `clips._is_micro` 同口径：显式 `still` 标（D84 起转图登记），
+    或没标的老池按片长 ≤ 8 s 认（EGOIST 池的微动图都没有标）。"""
+    return bool(src.get("still")) or src.get("duration", 999) <= 8.0
+
+
+def still_sp_uses(episode: Path) -> tuple[dict[tuple[str, str], list[str]], list[str]]:
+    """本期 `02-script.md` 引用图片微动 SP 的锚点条目：`{(池, SPxx): [段号, …]}`，外加读不到的池（报错原文）。
+
+    一个锚点条目排出一个片段，所以条目数就是片段数；同一段写两遍记两次。
+    格式不对、池名不在番表、未入库的条目不在这里计，它们由「锚点格式」「锚点指向素材」两项报。
+    池的归属与「锚点指向素材」一致：SP 锚点没写池名归企划池。
+    """
+    f = episode / "02-script.md"
+    if not f.exists():
+        return {}, []
+    animes = bgm.animes_of(episode)
+    if not animes:
+        return {}, []
+    anime_main, main_plan = animes[0], bgm.anime_of(episode)
+    patch_name = _patch_pool_name(episode)
+    allowed = set(animes) | {x for x in (main_plan, patch_name) if x}
+    uses: dict[tuple[str, str], list[str]] = {}
+    unavailable: list[str] = []
+    cache: dict[str, dict | None] = {}
+    for label, raw in parse_anchors(f.read_text(encoding="utf-8")):
+        if not raw or raw.startswith("无"):
+            continue
+        for item in _anchor_items(raw):
+            m = ANCHOR_TC.fullmatch(item)
+            if not m or m.group("sp") is None:
+                continue
+            pool = (m.group("anime") or "").strip() or main_plan or anime_main
+            if pool not in allowed:
+                continue
+            if pool not in cache:
+                try:
+                    if patch_name and pool == patch_name:
+                        cache[pool] = _patch_sources(episode)
+                    else:
+                        from . import ingest  # 延迟 import：与「锚点指向素材」同规矩
+                        cache[pool] = ingest.load_sources(pool)
+                except SystemExit as e:
+                    cache[pool] = None
+                    unavailable.append(f"{episode.name}：{e}")
+            src = (cache[pool] or {}).get(f"SP{int(m.group('sp')):02d}")
+            if src and _is_still(src):
+                uses.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append(label)
+    return uses, unavailable
+
+
+def _check_still_sp_cap(path: Path, add) -> None:
+    """图片微动 SP 次数上限：本期用到的每张，连同企划内其他卷的用法合计不超过 STILL_SP_MAX。
+
+    只报本期用到的那几张：别的卷自己超了，由那一卷的机检报。本期没引用图片微动 SP 就不出这一项。
+    """
+    from . import project
+    ep = path.parent
+    own, unavailable = still_sp_uses(ep)
+    if not own and not unavailable:
+        return
+    total = {k: [(ep.name, l) for l in v] for k, v in own.items()}
+    proj = project.project_of(ep)
+    for m in (project.project_members(proj) if proj else []):
+        if m.name == ep.name:
+            continue
+        uses, un = still_sp_uses(m)
+        unavailable += un
+        for k, v in uses.items():
+            if k in total:
+                total[k].extend((m.name, l) for l in v)
+    name = f"图片微动 SP 全企划至多 {STILL_SP_MAX} 次"
+    if unavailable:
+        add(name, False, f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
+        return
+    over = {k: v for k, v in total.items() if len(v) > STILL_SP_MAX}
+    if not over:
+        add(name, True, f"本期 {len(own)} 张图片微动 SP，合计都不超过 {STILL_SP_MAX} 次")
+        return
+    msgs = []
+    for (pool, key), where in sorted(over.items()):
+        by_vol: dict[str, list[str]] = {}
+        for vol, label in where:
+            by_vol.setdefault(vol, []).append(f"段{label}")
+        msgs.append(f"{pool} {key} 共 {len(where)} 次（"
+                    + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
+    add(name, False, "；".join(msgs[:4])
+        + f"　同一张图片微动素材在整个企划里最多用 {STILL_SP_MAX} 次（2026-10-17 人定），"
+          "多出来的段换别的素材")
+
+
 #: 补丁池名的后缀（`ingest_patch.sanitize_pool_name`：`<净化期名>-patch`，撞名再加 `-N`）。
 #: 前缀长这样、却不是本期补丁池时，报错指路。
 PATCH_NAME = re.compile(r"-patch(?:-\d+)?$")
@@ -783,6 +878,8 @@ def run(path: Path) -> list[Check]:
                 add("锚点指向素材", not bad_src,
                     "；".join(bad_src[:4]) if bad_src
                     else f"{len(anchors_tc)} 段锚点都落在已入库集的片长内")
+
+    _check_still_sp_cap(path, add)
 
     sents = [s.strip() for v in vo for s in re.split(r"[。？！]", v) if s.strip()]
 
