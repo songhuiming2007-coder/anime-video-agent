@@ -1127,10 +1127,20 @@ def test_模型软链结论解读(word, tag, ok):
     assert (t, passed) == (tag, ok)
 
 
-def _doctor_fake(gpu="NVIDIA vGPU-32GB, 32760", mount="MOUNTED", link="ALREADY"):
+def _remote_manifest(stale: bool = False) -> str:
+    m = cloud.code_manifest(cloud.paths.ROOT)
+    if stale:
+        m["pipeline/vindex.py"] = "0" * 64
+        m.pop("pipeline/shots.py")
+    return json.dumps(m)
+
+
+def _doctor_fake(gpu="NVIDIA vGPU-32GB, 32760", mount="MOUNTED", link="ALREADY", code_stale=False):
     def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
         if cmd == "true":
             out = ""
+        elif ".ava_code_manifest.py" in cmd:
+            out = _remote_manifest(code_stale)
         elif cmd.startswith("nvidia-smi"):
             out = gpu
         elif "git rev-parse" in cmd:
@@ -1156,6 +1166,8 @@ def _doctor_fake(gpu="NVIDIA vGPU-32GB, 32760", mount="MOUNTED", link="ALREADY")
     ({"link": "MISSING"}, 1, "FAIL  [LINK]"),
     ({"link": "REALDIR"}, 0, "INFO  [LINK]"),
     ({"gpu": "NVIDIA GeForce RTX 4080, 16376"}, 0, "WARN  [GPU] NVIDIA GeForce RTX 4080"),
+    ({}, 0, "OK    [CODE] 远端代码与本地一致"),
+    ({"code_stale": True}, 1, "FAIL  [CODE] 远端代码与本地不一致：缺 1 个、内容不同 1 个"),
 ])
 def test_doctor三项新检查(monkeypatch, capsys, kw, rc, needle):
     _no_config(monkeypatch)
@@ -1178,34 +1190,56 @@ def test_按型号查单价(name, rate, est):
     assert cloud.lookup_gpu_rate(name, rates, 2.4) == (rate, est)
 
 
-def test_会话单价分模式():
+def test_会话单价分来源():
+    """D108：只有人报的单价可信；按型号查到的参考价、兜底价都标估算。"""
     cfg = {"cardless_rate_cny": 0.1, "hourly_rate_cny": 2.4, "gpu_rates_cny": {"vGPU-32GB": 1.58}}
-    assert cloud.session_rate(cfg, "cardless", "NVIDIA vGPU-32GB") == (0.1, False)
-    assert cloud.session_rate(cfg, "gpu", "NVIDIA vGPU-32GB") == (1.58, False)
-    assert cloud.session_rate(cfg, "unknown", None) == (2.4, True), "模式不可知取带卡价"
+    assert cloud.session_rate(cfg, "cardless", "NVIDIA vGPU-32GB") == (0.1, None)
+    assert cloud.session_rate(cfg, "gpu", "NVIDIA GeForce RTX 4080 SUPER", 1.58) == (1.58, None)
+    rate, note = cloud.session_rate(cfg, "gpu", "NVIDIA vGPU-32GB")
+    assert rate == 1.58 and "单价估算" in note and "参考价" in note
+    rate, note = cloud.session_rate(cfg, "gpu", "NVIDIA GeForce RTX 4080 SUPER")
+    assert rate == 2.4 and "查不到" in note
+    rate, note = cloud.session_rate(cfg, "unknown", None)
+    assert rate == 2.4 and note, "模式不可知取带卡价"
 
 
-@pytest.mark.parametrize("gpu,rate,estimated", [("NVIDIA vGPU-32GB", 1.58, False), ("NVIDIA RTX 4090", 2.4, True)])
-def test_down账本记型号与单价(monkeypatch, tmp_path, capsys, gpu, rate, estimated):
+@pytest.mark.parametrize("v", [0, -1, 51, 158])
+def test_人报单价不合理就拒(v):
+    with pytest.raises(SystemExit, match="不像按量时价"):
+        cloud.check_rate(v)
+
+
+def _down_once(monkeypatch, tmp_path, session: dict, rate_arg=None) -> dict:
     _no_config(monkeypatch)
     cfg = {"hourly_rate_cny": 2.4, "gpu_rates_cny": {"vGPU-32GB": 1.58}}
     monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: (cfg, {}))
     sfile = tmp_path / "active_session.json"
-    sfile.write_text(json.dumps({"session": "s1", "mode": "gpu", "up": "10:00:00", "gpu": gpu,
-                                 "up_epoch": _time.time() - 3600, "tasks": ["tts"], "episode": None}),
-                     encoding="utf-8")
+    sfile.write_text(json.dumps({"session": "s1", "mode": "gpu", "up": "10:00:00",
+                                 "up_epoch": _time.time() - 3600, "tasks": ["tts"], "episode": None,
+                                 **session}), encoding="utf-8")
     ledger = tmp_path / "ledger.jsonl"
     monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
     monkeypatch.setattr(cloud, "get_ledger_file", lambda: ledger)
     monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: False)
-    assert cloud.cmd_down(argparse.Namespace(force=False)) == 0
-    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
-    assert entry["gpu"] == gpu and entry["rate_cny"] == rate
+    assert cloud.cmd_down(argparse.Namespace(force=False, rate=rate_arg)) == 0
+    return json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+
+
+@pytest.mark.parametrize("session,rate_arg,rate,estimated", [
+    ({"gpu": "NVIDIA GeForce RTX 4080 SUPER", "rate_cny": 1.58}, None, 1.58, False),   # 10-17 那台：up 时报了
+    ({"gpu": "NVIDIA GeForce RTX 4080 SUPER"}, 1.58, 1.58, False),                     # 结算时补报
+    ({"gpu": "NVIDIA GeForce RTX 4080 SUPER", "rate_cny": 2.0}, 1.58, 1.58, False),    # 补报的优先
+    ({"gpu": "NVIDIA vGPU-32GB"}, None, 1.58, True),                                   # 只查到参考价：估算
+    ({"gpu": "NVIDIA GeForce RTX 4080 SUPER"}, None, 2.4, True),                       # 什么都没有：兜底估算
+])
+def test_down账本记型号与单价(monkeypatch, tmp_path, session, rate_arg, rate, estimated):
+    entry = _down_once(monkeypatch, tmp_path, session, rate_arg)
+    assert entry["gpu"] == session["gpu"] and entry["rate_cny"] == rate
     assert abs(entry["cny"] - rate) < 0.01, "一小时就是一个单价"
     assert ("单价估算" in entry.get("note", "")) is estimated
 
 
-def test_up把型号写进会话文件并建软链(monkeypatch, tmp_path):
+def test_up把型号写进会话文件并建软链(monkeypatch, tmp_path, capsys):
     _no_config(monkeypatch)
     monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
     sfile = tmp_path / "active_session.json"
@@ -1225,10 +1259,16 @@ def test_up把型号写进会话文件并建软链(monkeypatch, tmp_path):
         return _sp.CompletedProcess(cmd, 0, out + "\n", "")
 
     monkeypatch.setattr(cloud, "_ssh", fake)
-    assert cloud.cmd_up(argparse.Namespace(mode="gpu", timeout=0, episode=None)) == 0
+    assert cloud.cmd_up(argparse.Namespace(mode="gpu", timeout=0, episode=None, rate=1.58)) == 0
     data = json.loads(sfile.read_text(encoding="utf-8"))
     assert data["gpu"] == "NVIDIA vGPU-32GB" and data["gpu_mem_mib"] == 32760
+    assert data["rate_cny"] == 1.58 and "人报" in data["rate_source"]
     assert any("ln -s" in c for c in seen), "up 要建软链（connect 之外的第二个入口）"
+
+    sfile.unlink()
+    assert cloud.cmd_up(argparse.Namespace(mode="gpu", timeout=0, episode=None, rate=None)) == 0
+    assert "rate_cny" not in json.loads(sfile.read_text(encoding="utf-8"))
+    assert "没报单价" in capsys.readouterr().err
 
 
 def test_parse_gpu_query():
@@ -1255,3 +1295,228 @@ def test_bash跑connect也弹卡():
     from pipeline.agent.status_card import bash_danger_tags
 
     assert "[须人审的流水线命令]" in bash_danger_tags(f'python -m pipeline.cloud connect "{REAL_LOGIN}"')
+
+
+# ---------- D107：远端代码一致性 ----------
+
+
+def test_代码清单本地与远端脚本同一算法(tmp_path):
+    """远端跑的是同一段脚本：真起一个子进程跑它，结果必须与本地 code_manifest 逐键相等。"""
+    root = tmp_path / "repo"
+    (root / "pipeline" / "agent").mkdir(parents=True)
+    (root / "pipeline" / "__pycache__").mkdir()
+    (root / "config" / "agent").mkdir(parents=True)
+    (root / "pipeline" / "a.py").write_text("x = 1\n")
+    (root / "pipeline" / "agent" / "b.py").write_text("y = 2\n")
+    (root / "pipeline" / "__pycache__" / "a.cpython-312.py").write_text("junk")
+    (root / "config" / "project.json").write_text("{}")
+    (root / "config" / "agent" / "web.json").write_text("{}")
+    (root / "config" / "cloud.local.json").write_text('{"api_token": "secret"}')
+    (root / "pyproject.toml").write_text("[project]\n")
+    (root / "README.md").write_text("不比")
+    script = tmp_path / "m.py"
+    script.write_text(cloud._CODE_MANIFEST_SCRIPT, encoding="utf-8")
+    remote = json.loads(_sp.run([_sys.executable, str(script), str(root)], capture_output=True,
+                                text=True, check=True).stdout)
+    local = cloud.code_manifest(root)
+    assert remote == local
+    assert sorted(local) == ["config/agent/web.json", "config/project.json", "pipeline/a.py",
+                             "pipeline/agent/b.py", "pyproject.toml"]
+
+
+def test_代码清单比对():
+    d = cloud.compare_code_manifest({"a": "1", "b": "2", "c": "3"}, {"a": "1", "b": "X", "old": "9"})
+    assert d == {"missing": ["c"], "differ": ["b"], "extra": ["old"]}
+    ok, lines = cloud.code_drift_lines({"missing": [], "differ": [], "extra": ["old"]})
+    assert ok and "旧文件" in lines[0]
+    ok, lines = cloud.code_drift_lines("远端清单没算出来")
+    assert not ok and "核对不了" in lines[0]
+
+
+def test_run远端代码旧了不开跑(monkeypatch, tmp_path):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "resolve_episode_rel_path", lambda t: (tmp_path, "data/episodes/x"))
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({}, {}))
+    launched: list[str] = []
+
+    def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+        if ".ava_code_manifest.py" in cmd:
+            return _sp.CompletedProcess(cmd, 0, _remote_manifest(stale=True) + "\n", "")
+        launched.append(cmd)
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cloud, "_ssh", fake)
+    with pytest.raises(SystemExit, match="没开跑：远端代码与本地不一致") as exc:
+        cloud.cmd_run(argparse.Namespace(task="tts", target=tmp_path, extra=[]))
+    assert "sync-code" in str(exc.value)
+    assert launched == [], "不一致时一条远端命令都不许发（心跳、tmux 都不行）"
+
+
+def test_sync_code推三项且有任务在跑就拒(monkeypatch):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"remote_root": "/r"}, {}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host: ["ava-tts"])
+    pushed: list[tuple[str, str]] = []
+    monkeypatch.setattr(cloud, "run_rsync",
+                        lambda src, dst, extra_excludes=None: pushed.append((src, dst)) or _sp.CompletedProcess([], 0, "", ""))
+    with pytest.raises(SystemExit, match="有任务在跑"):
+        cloud.cmd_sync_code(argparse.Namespace())
+    assert pushed == []
+
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host: [])
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: _sp.CompletedProcess(cmd, 0, _remote_manifest() + "\n", ""))
+    assert cloud.cmd_sync_code(argparse.Namespace()) == 0
+    assert [d.split(":", 1)[1] for _, d in pushed] == ["/r/pipeline/", "/r/config/", "/r/pyproject.toml"]
+    assert pushed[0][0].endswith("pipeline/") and pushed[2][0].endswith("pyproject.toml")
+
+
+def test_sync_code是计费卡():
+    from pipeline.agent.session import CLOUD_CARD_SUBCOMMANDS
+    from pipeline.agent.tools import validate_pipeline_command
+
+    assert "sync-code" in CLOUD_CARD_SUBCOMMANDS
+    assert validate_pipeline_command("python -m pipeline.cloud sync-code")[0]
+
+
+# ---------- D103 ②：番池素材云端打标 ----------
+
+LIB_DIRS = ("data/library/shots", "data/library/shots/frames", "data/library/vindex")
+
+
+def test_lib路径取自shots与vindex常量():
+    assert cloud.lib_dirs() == LIB_DIRS
+
+
+@pytest.mark.parametrize("pool,keys,want", [
+    ("supercell", ["SP01", "SP02,SP03", "SP01"], ["SP01", "SP02", "SP03"]),
+    ("罪恶王冠", ["S01E01"], ["S01E01"]),
+])
+def test_lib目标校验_放行(pool, keys, want):
+    assert cloud.validate_lib_target(pool, keys) == want
+
+
+@pytest.mark.parametrize("pool,keys", [
+    ("../x", ["SP01"]), ("a b", ["SP01"]), ("-rf", ["SP01"]), ("", ["SP01"]), ("..", ["SP01"]),
+    ("supercell", ["SP1"]), ("supercell", ["SP01;rm"]), ("supercell", [","]),
+])
+def test_lib目标校验_拒收(pool, keys):
+    with pytest.raises(ValueError):
+        cloud.validate_lib_target(pool, keys)
+
+
+def _lib_tree(root: Path, pool: str, keys: list[str], *, frames: bool = True) -> None:
+    for k in keys:
+        f = root / LIB_DIRS[0] / f"{pool}_{k}.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("{}")
+        if frames:
+            cap = root / LIB_DIRS[1] / f"{pool}_{k}_cap"
+            cap.mkdir(parents=True, exist_ok=True)
+            (cap / "00001_0.jpg").write_bytes(b"x")
+
+
+def test_lib上行清单与缺输入(tmp_path):
+    _lib_tree(tmp_path, "超级池", ["SP01"])
+    _lib_tree(tmp_path, "超级池", ["SP02"], frames=False)
+    assert cloud.lib_missing_inputs("超级池", ["SP01"], LIB_DIRS, tmp_path) == []
+    miss = cloud.lib_missing_inputs("超级池", ["SP01", "SP02", "SP03"], LIB_DIRS, tmp_path)
+    assert len(miss) == 3 and "SP02：没有打标帧" in miss[0] and miss[1].startswith("SP03：没有镜头表")
+    pairs = cloud.build_lib_up_pairs("超级池", ["SP01"], "/r", LIB_DIRS, tmp_path)
+    assert pairs == [
+        (str(tmp_path / "data/library/shots/超级池_SP01.json"), "/r/data/library/shots/超级池_SP01.json"),
+        (f"{tmp_path / 'data/library/shots/frames/超级池_SP01_cap'}/", "/r/data/library/shots/frames/超级池_SP01_cap"),
+    ]
+
+
+def test_lib打标命令():
+    cmd = cloud.build_lib_captions_command("超级池", ["SP01", "SP02"], "/r", "/py", batch=2, confirm_cost=True)
+    assert "/py -m pipeline.vindex captions '超级池' SP01 SP02 --batch 2 --confirm-cost" in cmd
+    assert "--shots-dir" not in cmd, "番池用 vindex 默认目录，与本地同一相对路径"
+    assert cmd.count(cloud.WATCHDOG_HEARTBEAT_PATH) == 2
+
+
+def _lib_env(monkeypatch, tmp_path, *, active=(), stale=False):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud.paths, "ROOT", tmp_path)
+    monkeypatch.setattr(cloud.paths, "require_data", lambda *a, **k: None)
+    monkeypatch.setattr(cloud, "lib_dirs", lambda: LIB_DIRS)
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"remote_root": "/r"}, {}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host="autodl": list(active))
+    monkeypatch.setattr(cloud, "remote_code_drift",
+                        lambda host, cfg: {"missing": [], "differ": ["pipeline/vindex.py"] if stale else [], "extra": []})
+    sent: list[str] = []
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: sent.append(cmd) or _sp.CompletedProcess(cmd, 0, "40\n", ""))
+    rsyncs: list[tuple[str, str]] = []
+    monkeypatch.setattr(cloud, "run_rsync",
+                        lambda src, dst, extra_excludes=None: rsyncs.append((src, dst)) or _sp.CompletedProcess([], 0, "", ""))
+    sfile = tmp_path / "active_session.json"
+    sfile.write_text(json.dumps({"session": "s", "mode": "gpu", "tasks": []}), encoding="utf-8")
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
+    return sent, rsyncs, sfile
+
+
+def test_lib_push缺输入整批拒_一条都不传(monkeypatch, tmp_path):
+    sent, rsyncs, _ = _lib_env(monkeypatch, tmp_path)
+    _lib_tree(tmp_path, "supercell", ["SP01"])
+    _lib_tree(tmp_path, "supercell", ["SP02"], frames=False)
+    with pytest.raises(SystemExit, match="SP02：没有打标帧"):
+        cloud.cmd_lib_push(argparse.Namespace(pool="supercell", keys=["SP01", "SP02"]))
+    assert rsyncs == [] and sent == []
+    with pytest.raises(SystemExit, match="池名写错了"):
+        cloud.cmd_lib_push(argparse.Namespace(pool="supercel", keys=["SP01"]))
+    assert cloud.cmd_lib_push(argparse.Namespace(pool="supercell", keys=["SP01"])) == 0
+    assert [d for _, d in rsyncs] == ["autodl:/r/data/library/shots/supercell_SP01.json",
+                                      "autodl:/r/data/library/shots/frames/supercell_SP01_cap"]
+    assert any(c.startswith("mkdir -p") for c in sent)
+
+
+def test_lib_captions代码旧了或上一批没跑完都不开跑(monkeypatch, tmp_path):
+    ns = argparse.Namespace(pool="supercell", keys=["SP01"], batch=None, limit=None, confirm_cost=False)
+    sent, _, _ = _lib_env(monkeypatch, tmp_path, stale=True)
+    with pytest.raises(SystemExit, match="没开跑：远端代码与本地不一致"):
+        cloud.cmd_lib_captions(ns)
+    assert sent == []
+    sent, _, _ = _lib_env(monkeypatch, tmp_path, active=[cloud.LIB_CAPTIONS_SESSION])
+    with pytest.raises(SystemExit, match="还在跑"):
+        cloud.cmd_lib_captions(ns)
+    assert sent == []
+    sent, _, sfile = _lib_env(monkeypatch, tmp_path)
+    assert cloud.cmd_lib_captions(ns) == 0
+    assert any("tmux new-session -d -s ava-lib-captions" in c for c in sent)
+    data = json.loads(sfile.read_text(encoding="utf-8"))
+    assert data["tasks"] == ["captions"] and data["episode"] == "library:supercell"
+
+
+def test_lib_pull只拉写明的集_缺的报错(monkeypatch, tmp_path):
+    _, rsyncs, _ = _lib_env(monkeypatch, tmp_path)
+
+    def rsync(src, dst, extra_excludes=None):
+        rsyncs.append((src, dst))
+        rc = 23 if src.endswith("SP02.captions.json") else 0
+        return _sp.CompletedProcess([], rc, "", "rsync: link_stat failed" if rc else "")
+
+    monkeypatch.setattr(cloud, "run_rsync", rsync)
+    assert cloud.cmd_lib_pull(argparse.Namespace(pool="supercell", keys=["SP01", "SP02"])) == 1
+    assert [s.split(":", 1)[1] for s, _ in rsyncs] == [
+        "/r/data/library/vindex/supercell_SP01.captions.json", "/r/data/library/vindex/supercell_SP02.captions.json"]
+    assert all("*" not in s for s, _ in rsyncs), "不按通配整池拉"
+
+
+def test_lib_pull打标还在跑就不拉(monkeypatch, tmp_path):
+    _, rsyncs, _ = _lib_env(monkeypatch, tmp_path, active=[cloud.LIB_CAPTIONS_SESSION])
+    with pytest.raises(SystemExit, match="半份产物"):
+        cloud.cmd_lib_pull(argparse.Namespace(pool="supercell", keys=["SP01"]))
+    assert rsyncs == []
+
+
+def test_lib三命令进白名单_打标是计费卡():
+    from pipeline.agent.session import CLOUD_CARD_SUBCOMMANDS
+    from pipeline.agent.tools import validate_pipeline_command
+
+    assert "lib-captions" in CLOUD_CARD_SUBCOMMANDS
+    assert not {"lib-push", "lib-pull"} & CLOUD_CARD_SUBCOMMANDS
+    for c in ("lib-push supercell SP01", "lib-captions supercell SP01 SP02 --batch 2", "lib-pull supercell SP01"):
+        ok, msg, _ = validate_pipeline_command(f"python -m pipeline.cloud {c}")
+        assert ok, msg

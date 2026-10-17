@@ -6,11 +6,11 @@
   "_image_note": "2026-10-15 在 F29 机上保存（image-e9940b7867，11.39GB，PyTorch 2.8.0 / Python 3.12 / CUDA 12.8，缓存在西北区）。此前写的 anime-video-agent-v2:py312-torch2.8-cu128 在控制台「我的镜像」里并不存在。SSH 免密靠镜像系统盘上的 /root/.ssh/authorized_keys。改过远端环境要重新保存镜像并改这里（runbook 03「云端实例用完即弃」第 4 步）",
   "gpu": "不固定（D102 起按需租卡，实际型号由 up 探测，记在会话文件与账本）；原 F29 机 RTX 6000D 实测 85651 MiB（2026-09-11 nvidia-smi）",
   "hourly_rate_cny": 2.4,
-  "_rate_note": "2.40元/小时：AutoDL 西北B区 RTX 6000D 单卡实价约 2.2~2.6 元/小时（按 2.40 元保守估算）。D102 起只在 gpu_rates_cny 查不到型号时兜底，账本标「估算」",
+  "_rate_note": "2.40元/小时：AutoDL 西北B区 RTX 6000D 单卡实价约 2.2~2.6 元/小时（按 2.40 元保守估算）。D108 起只在人没报单价（up / down --rate）、gpu_rates_cny 也查不到型号时兜底，账本标「估算」",
   "gpu_rates_cny": {
     "vGPU-32GB": 1.58
   },
-  "_gpu_rates_note": "型号 → 元/时，按子串匹配 nvidia-smi 报的名字（忽略大小写，多个命中取最长的键）。vGPU-32GB ¥1.58：2026-10-15 西北B区算力市场价（会员 9.5 折后）。键用的是算力市场的卡型名，nvidia-smi 报的实际名字在第一台新实例上核对后，键名不一致就改成实测名",
+  "_gpu_rates_note": "型号 → 元/时，按子串匹配 nvidia-smi 报的名字（忽略大小写，多个命中取最长的键）。vGPU-32GB ¥1.58：2026-10-15 西北B区算力市场价（会员 9.5 折后）。D108（2026-10-17）：卡不固定、同一张卡不同时候价也不同，本表只作人没报单价时的参考价，命中也标「估算」；账本以人租卡时看到的价为准（cloud up --rate）。另：算力市场名与 nvidia-smi 名可以不同（10-17 租的 vGPU-32GB 在机器里报 NVIDIA GeForce RTX 4080 SUPER），按市场名查不到时落到 hourly_rate_cny",
   "cardless_rate_cny": 0.1,
   "_cardless_rate_note": "0.10元/小时：AutoDL 无卡模式开机（0.5核 2GB），用于环境准备、代码同步与模型预置",
   "remote_root": "/root/anime-video-agent",
