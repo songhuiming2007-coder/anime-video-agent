@@ -1767,6 +1767,7 @@ def _tool_run_pipeline(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
         scope=ctx.scope,
         confirmed=ctx.confirmed,
         project_dir=ctx.project_dir,
+        human_card=ctx.human_approved,
     )
     if outcome["ok"] and outcome["returncode"] is None and not ctx.confirmed:
         # 只校验未执行：显式报「需人类确认」，不假装跑过了（静默 fallback 是家规禁项）。
@@ -2339,8 +2340,12 @@ def run_pipeline(
     scope: str = "pipeline",
     confirmed: bool = False,
     project_dir: Path | str | None = None,
+    human_card: bool = False,
 ) -> dict[str, Any]:
     """白名单执行器入口（向后兼容适配器，底层由 pipeline.jobs 全权驱动）。
+
+    `human_card`：这次执行是人在审批卡上批的（不是免卡 / 本会话已批）。为真时作业环境带
+    `jobs.HUMAN_CARD_ENV`，命令据此写来历（D110）。
 
     `project_dir`：卷 / 企划会话绑定的企划目录（D81 §9.3 ⑥，crosscheck 补位用），校验与立项两处同传。
 
@@ -2349,7 +2354,7 @@ def run_pipeline(
     2. confirmed=True 时真正调用 create_job 立项并 execute_job 执行。
     """
     from pipeline.agent.tools import validate_pipeline_command
-    from pipeline.jobs import JobStatus, create_job, execute_job
+    from pipeline.jobs import HUMAN_CARD_ENV, JobStatus, create_job, execute_job
 
     ep_path = Path(episode_dir).resolve() if episode_dir else None
 
@@ -2396,6 +2401,8 @@ def run_pipeline(
         }
 
     job.env_drop = pipeline_job_env_drop(job.argv)  # N50：作业及其子孙（ffmpeg、yt-dlp 等）不带密钥变量
+    if human_card:
+        job.env_extra = ((HUMAN_CARD_ENV, "1"),)
     executed_job = execute_job(job)
     return {
         "ok": executed_job.status == JobStatus.SUCCEEDED,

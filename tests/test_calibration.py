@@ -45,7 +45,7 @@ def _load(cfg: Path, name: str) -> dict:
 ])
 def test_白名单外的键拒(cfg: Path, key: str):
     with pytest.raises(C.CalibrationError):
-        C.plan(key, "10", EVID)
+        C.plan(key, "10", EVID, via_card=True)
 
 
 @pytest.mark.parametrize("key,value", [
@@ -55,7 +55,7 @@ def test_白名单外的键拒(cfg: Path, key: str):
 ])
 def test_越界或类型不对拒(cfg: Path, key: str, value: str):
     with pytest.raises(C.CalibrationError):
-        C.plan(key, value, EVID)
+        C.plan(key, value, EVID, via_card=True)
 
 
 def test_实录太短拒(cfg: Path):
@@ -68,7 +68,7 @@ def test_实录太短拒(cfg: Path):
 
 def test_新番阈值写入_实录追加_其余字节不动(cfg: Path):
     before = _load(cfg, "project.json")
-    C.write("visual.scene_threshold.新番", "9.5", EVID)
+    C.write("visual.scene_threshold.新番", "9.5", EVID, via_card=True)
     after = _load(cfg, "project.json")
     assert after["visual"]["scene_threshold"]["新番"] == 9.5
     note = after["visual"]["_scene_threshold_note"]
@@ -81,7 +81,7 @@ def test_新番阈值写入_实录追加_其余字节不动(cfg: Path):
 
 
 def test_按集键覆盖与旧值记录(cfg: Path):
-    C.write("visual.scene_threshold.EGOIST/SP04", "14", EVID)
+    C.write("visual.scene_threshold.EGOIST/SP04", "14", EVID, via_card=True)
     after = _load(cfg, "project.json")
     assert after["visual"]["scene_threshold"]["EGOIST/SP04"] == 14
     assert "旧值 15.0" in after["visual"]["_scene_threshold_note"]
@@ -95,7 +95,7 @@ def test_按集键覆盖与旧值记录(cfg: Path):
 ])
 def test_各类目标写对位置(cfg: Path, key: str, value: str, where):
     fname, vkeys, nkeys = where
-    C.write(key, value, EVID)
+    C.write(key, value, EVID, via_card=True)
     d = _load(cfg, fname)
     cur = d
     for k in vkeys:
@@ -108,7 +108,7 @@ def test_各类目标写对位置(cfg: Path, key: str, value: str, where):
 
 
 def test_没有note键的番新建note(cfg: Path):
-    C.write("scenes.春物.no_match", "0.55", EVID)
+    C.write("scenes.春物.no_match", "0.55", EVID, via_card=True)
     assert EVID in _load(cfg, "scenes.json")["春物"]["_no_match_note"]
 
 
@@ -125,14 +125,14 @@ def test_读后被人手改_拒写(cfg: Path, monkeypatch):
 
     monkeypatch.setattr(C, "_load", racing)
     with pytest.raises(C.CalibrationError, match="被改过"):
-        C.write("visual.scene_threshold.新番", "10", EVID)
+        C.write("visual.scene_threshold.新番", "10", EVID, via_card=True)
 
 
 def test_排版不标准拒写(cfg: Path):
     p = cfg / "scenes.json"
     p.write_text(json.dumps(json.loads(p.read_text(encoding="utf-8")), ensure_ascii=False, indent=4), encoding="utf-8")
     with pytest.raises(C.CalibrationError, match="排版"):
-        C.plan("scenes.春物.no_match", "0.5", EVID)
+        C.plan("scenes.春物.no_match", "0.5", EVID, via_card=True)
 
 
 def test_影响面列出要重建的集(cfg: Path, tmp_path: Path):
@@ -141,7 +141,7 @@ def test_影响面列出要重建的集(cfg: Path, tmp_path: Path):
     for key, thr in (("S01E01", 10.0), ("S01E02", 8.0)):
         (sd / f"新番_{key}.json").write_text(json.dumps({"meta": {"scene_threshold": thr}, "shots": []}),
                                              encoding="utf-8")
-    p = C.plan("visual.scene_threshold.新番", "8", EVID)
+    p = C.plan("visual.scene_threshold.新番", "8", EVID, via_card=True)
     assert "S01E01" in p["impact"][0] and "S01E02" not in p["impact"][0]
 
 
@@ -168,3 +168,54 @@ def test_set不成立在弹卡前拒(cfg: Path, tmp_path: Path):
     assert v.action == "reject" and "白名单" in v.reason
     v = _review('calibration set script.cpm 240 --evidence "短"', tmp_path)
     assert v.action == "reject" and "实录太短" in v.reason
+
+
+# ---------- D110：实录如实写来历 ----------
+
+
+def test_经卡执行写人审卡(cfg: Path, monkeypatch: pytest.MonkeyPatch):
+    from pipeline.jobs import HUMAN_CARD_ENV
+
+    monkeypatch.setenv(HUMAN_CARD_ENV, "1")
+    assert C.main(["set", "visual.scene_threshold.新番", "9", "--evidence", EVID]) == 0
+    note = _load(cfg, "project.json")["visual"]["_scene_threshold_note"]
+    assert "经 AVA `calibration set` 人审卡写入" in note.split("**新番 = 9**")[1]
+
+
+def test_命令行直调不许冒用人审卡(cfg: Path, monkeypatch: pytest.MonkeyPatch):
+    from pipeline.jobs import HUMAN_CARD_ENV
+
+    monkeypatch.delenv(HUMAN_CARD_ENV, raising=False)
+    before = (cfg / "project.json").read_bytes()
+    with pytest.raises(SystemExit, match="--approved-by"):
+        C.main(["set", "visual.scene_threshold.新番", "9", "--evidence", EVID])
+    assert (cfg / "project.json").read_bytes() == before
+
+    assert C.main(["set", "visual.scene_threshold.新番", "9", "--evidence", EVID,
+                   "--approved-by", "人 2026-10-17 对话中口头授权"]) == 0
+    tail = _load(cfg, "project.json")["visual"]["_scene_threshold_note"].split("**新番 = 9**")[1]
+    assert "命令行直调 `calibration set` 写入，批准：人 2026-10-17 对话中口头授权" in tail
+    assert "人审卡" not in tail
+
+
+def test_人审卡批准的作业环境带标记(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """run_pipeline(human_card=True) 才注入 HUMAN_CARD_ENV；免卡执行不带。"""
+    from pipeline.agent import tools
+    from pipeline.jobs import HUMAN_CARD_ENV
+
+    seen: list = []
+    monkeypatch.setattr(tools, "pipeline_job_env_drop", lambda argv: ())
+    import pipeline.jobs as J
+
+    def fake_execute(job):
+        seen.append(dict(job.env_extra))
+        job.status = J.JobStatus.SUCCEEDED
+        return job
+
+    monkeypatch.setattr(J, "execute_job", fake_execute)
+    ep = tmp_path / "data" / "episodes" / "01"
+    ep.mkdir(parents=True)
+    for card in (True, False):
+        tools.run_pipeline("calibration show script.cpm", episode_dir=ep, scope="asset",
+                           confirmed=True, human_card=card)
+    assert seen == [{HUMAN_CARD_ENV: "1"}, {}]
