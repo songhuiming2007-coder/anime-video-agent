@@ -5,6 +5,178 @@
 
 ---
 
+## 2026-10-17：真实生产期充分验证归档（34 条）
+
+### [D44] 改一个段落 ava 原地打转十余轮、人点二十多次批准：审批只按工具不按参数（只读的 check_script 也弹卡），没有防打转刹车，且模型查不了字幕、剧情时间码靠编
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/session.py::review_tool_call`、`pipeline/agent/tools.py`（search_notes / write_episode_file）、`config/agent/scopes/creative.md``；[plans/2026-10-08-approval-tiering-subs-search-spec.md](../plans/2026-10-08-approval-tiering-subs-search-spec.md), Spec 9 红线 5 / H-4, ADR-0025
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-08），待真实窗口手验」。事件：董香人物志（二）段落 3。模型为把「句长起伏 CV」0.49 提到 0.55 整篇重写，往别段塞「死斗爆发。」这类短句凑分，还把所有「画面：」改成半角冒号；它给的「S01E09 依子送便当」源自 `01-topic.md:55` 选题表，字幕实查 E09 无依子（便当在 S01E04 03:52，探病在 S01E05 02:53），段落 1、2 的锚点 03:20、10:22 也对不上。已施工：check_script/status 免卡；草稿每轮前 3 次免卡、第 4 次起弹卡；覆盖前留底 20 份；search_notes 加 source=subs。手验清单见 spec 末节。**本期 01-topic.md 第 55 行与 02-script.md 段落 1–3 的锚点仍待人改。**
+
+### [D47] 02.5 阶段 agent 改不了 02-script.md：人让它改段落，它只能改草稿再让人手工同步；且草稿在 02-script.md 建好后还被改，02-diff.patch 的基线被挪动
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py`（白名单、`script_write_refusal`、`_keep_history`）、`pipeline/agent/status_card.py`（写稿卡 diff）、`session.py::review_tool_call`、`desktop/src/renderer/HumanCards.tsx``；[plans/2026-10-08-agent-edits-final-script-spec.md](../plans/2026-10-08-agent-edits-final-script-spec.md), ADR-0024 决策 1（修订）
+- 原记录（活跃表原文）：状态栏「**已施工·机检与 e2e 通过**（2026-10-08），待真实一期手验」。人原话：「应该给 agent tool 去修改 02，因为有的时候改动挺大的」「草稿变成 02 之后，一般可以让人和 agent 直接修改 02」。施工：02-script.md 进白名单，只能改不能新建；它存在后草稿冻结；每次写弹卡带 diff；写前全量留底 `_agent/script-history/`。连带修了桌面端请求卡换行被吞、参数表铺开整篇原文。
+
+### [D48] 02.5 改稿回合又慢又绕：免卡写草稿后同一条 check_script 被判重复（D44 回归）；字数顶格时模型自己删字、改掉人认可的句子；每处修改先贴建议再问；每次整篇重写；没封板时点「批准」报错；人物志写成经历并排、缺因果
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py`（判重）、`tools.py`（`edits`、`resolve_write_content`）、`cli.py::_seal_before_approve`、`config/agent/scopes/creative.md`、`skills/write-script/SKILL.md` 4.1`；[plans/2026-10-08-edit-turn-efficiency-spec.md](../plans/2026-10-08-edit-turn-efficiency-spec.md), D44, D47, ADR-0024
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-08），待真实一期手验；① 已施工（2026-10-09）；② 02.8 已施工（2026-10-09，[spec](../plans/2026-10-09-adversarial-review-spec.md)）；③ 人裁决关闭」。人原话：「你没发现我让改的全部是因果联系不畅吗」。**待人定**：① 回合脚注标「本轮未查字幕」（段落 4、8 没查却写「核对」）；② `SKILL.md`「02.8 零上下文对抗审查」在 ava 里从未执行（判据 6：执行或删除），它最能抓「不知道为什么」；③ 董香二期 11 集塞 5–6 分钟，放宽时长还是收窄取材在 `01-topic.md` 定。。**2026-10-09**：① 回合脚注照实列出本回合查证调用「查证 字幕 N · 在场 N · 笔记 N · 网页 N」（core 按实际执行分类计数，0 也显示，[spec](../plans/2026-10-09-presence-and-lookups-spec.md)）；② 人同意恢复 02.8，先写 spec（pipeline 侧首个 LLM 调用方）；③ 人裁决关闭：二期已成片，时长本就按期在 `01-topic.md` 覆盖。。**2026-10-09 ② 施工（人裁决：02 机检过后审草稿、不拦、同意出网 +1；重点 事实 / 衔接 / 语言）**：新命令 `run_pipeline adversarial`（弹卡，补期目录）——一次 LLM 调用、不给工具，只喂稿件、番剧笔记与逐段锚点窗口内的字幕和在场索引；输出按三类分，事实类须带出处并机械自校（字幕时间码、在场镜头、笔记摘句、原文逐字都必须在喂给它的证据里，核不上标 ⚠），衔接 / 语言只诊断不改写、终审标「人定」；`write_episode_file` 白名单加 `02-adversarial.md` 供填终审；状态卡只提示不拦。董香二期只读预取实测：22 段、字幕 221 行、在场 72 行、输入 3.6 万字，段 21 窗口里字幕两句与「只认出董香」都在。
+
+### [D49] 桌面端预览区与 02.5 编辑器难用：① 02.5 停机时点右上「预览」打开的是三栏编辑器（源码 / 渲染 / 人审要点），塞进约四成宽的预览栏，每栏两百多像素，无法阅读；② 编辑器不跟随磁盘：没有未保存改动时也不自动重载，agent 改了稿预览不变，只有点「保存」才提示「磁盘版本已变」；③ 人不知道能在 ava 里直接改文案：编辑器只在 02.5 停机时经「预览」出现，无入口说明；④ 侧栏收起（做视频时的常态）就没有任何地方选文件预览，展开后文件树也压在侧栏最底；⑤ 生成中的目录不能边生成边看（配音中想先听已出的段）
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/renderer/App.tsx`（预览区分发）、`ScriptEditor.tsx`、`PreviewPane.tsx`、侧栏文件树`；D39, Spec 11, Spec 14
+- 原记录（活跃表原文）：状态栏「**人选 A，已施工**（2026-10-08，[施工 spec](../plans/2026-10-08-preview-voice-build-spec.md)；S2–S5），待真实窗口手验」。人原话：「第一张截图预览这个页面太逆天了」「稿改了预览居然不变」「我不知道怎么任意选择产物去预览……真正做视频的时候是会收起侧栏的」「侧栏选中目录的产物必须翻到侧栏最下面去找」「不能预览正在生成的目录……出一个就能听一个」。方向（待原型截图给人选）：预览栏标题做文件切换器；编辑器窄时源码 / 渲染切换、宽时并排，`02-script.md` 预览上放「编辑」入口；编辑器与预览跟随磁盘；生成中目录实时刷新。
+
+### [D50] 03.5 顺听与纠错难用：① 不能在对话里顺听，必须去侧栏 / 预览区选；② 预览区同时出现顺听面板与旧的音频队列（`seg-XX.wav` 列表 + 播放器），两套播放器重复、混乱；③ 纠错输入是面板底部一个全局自由文本框，被段落列表挤出视野；人要的是「逐段指出哪些字读错」，增量重配只配有错的段；④ 03.5 卡片写「结构化打点须在终端 `python -m pipeline.tts … --review` 完成」，又是只能在终端做的步骤（与 D48 修掉的 02.5 封板同类）
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/renderer/VoicePanel.tsx`、`App.tsx`（VoicePanel 与 PreviewPane 并存）、`HumanCards.tsx`（03.5 卡）、`pipeline/agent/cli.py`（`/voice-*`）`；Spec 11 §2.3, D49
+- 原记录（活跃表原文）：状态栏「**人选 A，S1–S7 已施工**（2026-10-08，[施工 spec](../plans/2026-10-08-preview-voice-build-spec.md) 文末）；S7 的已知问题 N61 已修（打点后一次批准通过），待真实窗口手验。① 「在对话里顺听」A 方案不覆盖」。人原话：「无法在对话内部顺听，必须去外面侧栏选中；预览音频页面非常乱；正常情况下是指出每一段有哪些字读错了，现在的页面让人不知道该怎么指出配音错误」。董香二期 `03-audio/` 至今没有 `corrections.json`：这次一条纠错都没录进去。。**人裁决（2026-10-09）**：① 「在对话里顺听」在真实窗口手验后关闭（03.5 就绪时预览区已自动打开顺听面板）；手验仍觉隔一层再加「▶ 去顺听」按钮。 **生产手验发现（2026-10-10 伪恋期 03.5）**：① 「听在面板、打点在卡」分工让第一动作（听）没有入口——卡上无播放，人要自行跳区；② R3「不抢人的预览」挡路：人手动预览过 02-script.md（上一工序产物）后，03.5 就绪不自动切顺听面板，配音进行中的逐段可听（D49-A S5）同理不可见。修法候选：手动预览内容是上一工序产物且新就绪停机点是下一工序时允许自动切换（接力不算抢）；或 03.5 卡内嵌「▶ 去顺听」直达按钮（D50 ① 留的口子）。待人定。③ **重配状态反馈三缺口（同日同会话）**：UI 不说在重配哪些段（「待重配」徽章与「进行中」行都依赖面板重载才出现）；动感只剩「进度见时间线」指向右下角角落按钮；**切走再切回 03-audio 白屏**（面板重挂载时 voice.info 撞重配中途的 manifest，疑似读到半截/失败）——疑似根因：重配期间 manifest 读写并发无保护。 **2026-10-11**：③ 中「切走再切回白屏」随 D73 加固、「不说在重配哪些段」随 D72 部分缓解（底部待重配段由盘上现算、配音进行中实时减少）；「动感只剩进度见时间线」归 D71；①②待人定照旧。
+
+### [D51] agent 在配音与纠错上不会干活：① 让它配音，它不问本地还是云端，直接跑本地 `tts`；② 人报读错的字（绚都、肉体、少年），它让人进终端 `/voice` 录纠错、再跑 `--apply-patch`——agent 没有录纠错的工具（`voice.add` 只是人的命令），也不知道桌面端面板；③ 人要求「同音字替换」，它先改成同义词（身体、年轻人），再改成同音字，且两次都改在稿件里（还是冻结前的草稿）；人指出后才知道纠读音走的是 `03-audio/corrections.json`（拼音覆盖）而不是改稿；④ 以「模型没有听觉」为由不做试错，而人要的是：它录纠错、只重配错的段，人来听
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``config/agent/scopes/creative.md`、`docs/runbook/03.5-voice-check.md`、`pipeline/agent/tools.py`（无纠错工具）、`pipeline/corrections.py``；D50, D52, ADR-0025（工具数上限）
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-08），待真实一期手验」。人原话：「我都来 ava 来了，为什么要碰终端呢，应该你去试错，看什么情况可以读对，然后重配读错的段落」「我告诉你用同音字替换，你后面 2 个为什么都用的同义词替换」「同音字替换不是在文案里进行替换的」。待定：给 agent 一条经人审卡写 `corrections.json` 并只重配对应段的路径（新工具还是复用 `run_pipeline` 子命令，受工具数上限约束）；配音前问本地 / 云端（01-topic 已写则不问）。**已施工**（2026-10-08，[spec](../plans/2026-10-08-agent-voice-corrections-spec.md)；人裁决：复用 run_pipeline、全局层可经卡写、期级不加同音字）：`python -m pipeline.corrections add
+
+### [D52] agent 跑本地配音成功后，整轮被出网护栏拦下并回滚：`tts` 的输出末行「写入 …/03-audio/manifest.json」命中受限出网词 `03-audio/manifest.json`，下一次请求模型时被拦（`stopped: blocked`），`turn_rollback`，模型看不到 25 分钟配音的结果；界面只显示「blocked」，看不到原因（N52 同类）
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py`（出网断言）、`pipeline/agent/tools.py::RESTRICTED_EGRESS_PATTERNS`、`run_pipeline` 结果的 `stdout_tail``；N52, ADR-0021
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-08），待真实一期手验」。证据：董香二期 `session.jsonl` 第 290 行 `turn_end{stopped:"blocked", duration_s:1524.382}`，前一条工具结果 2753 字符，唯一命中就是该路径。修法候选：工具结果进模型前对受限词脱敏（同状态卡的「[已脱敏]」做法），而不是拦整轮；被拦时发一条带命中模式名的 notice（N52）。**施工**（[spec](../plans/2026-10-08-tool-result-egress-scrub-spec.md)）：`llm.py::_tool_message` 对工具结果脱敏（`tools.py::scrub_restricted`，状态卡与 web 同用）；assistant 的工具参数与人的输入不脱敏（双保险保留）；协议回合被拦时发 `notice{code:"egress_blocked"}`，只含模式名。pytest 2149 / vitest 469 / e2e 119 通过。
+
+### [D53] 03.5 纠错对话暴露的其余问题（D51 之外）：① **runbook 过期且只写终端**：`docs/runbook/03.5-voice-check.md` 写全局表是 `config/voice_readings.json`，该文件不存在（全局层实为 `config/voice.json` 的 readings / pinyin 注入，见 `pipeline/g2p.py`）；整篇只教 `/voice`、afplay、QuickTime，没有桌面端路径——agent 叫人进终端是照 runbook 念的（D51 ② 的根因）；② **格式错的命令过了预检查（bug）**：模型发 `tts --redo 2 4 5 8 9 10`（正确为逗号分隔 `--redo 2,4,5`），`run_pipeline` 预检查放行、人批准后 0.2 s 退出码 2（`unrecognized arguments: 5 8 9 10`），多出的段号还让期目录没被自动补上；③ **编造界面功能**：agent 称「桌面端左侧/底部的语音纠错面板一键填入读音」，界面上没有一键填入——它对桌面端界面一无所知；④ **同音字不校验**：给出的「肉惕」是 ròu tì 不是 ròu tǐ，仓库已有 pypinyin 可以机器校验；⑤ **没提出写在全局还是本期**：「绚都」贯穿董香系列四期，应进全局层一次生效，而不是每期各录；⑥ 回复里写 LaTeX（`$\rightarrow$`），对话区不渲染公式，原样显示
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``docs/runbook/03.5-voice-check.md`、`pipeline/agent/tools.py`（`run_pipeline` 预检查、`_extract_positional_args`）、`config/agent/scopes/*.md`、`pipeline/g2p.py``；D51, D50, D46
+- 原记录（活跃表原文）：状态栏「①②③④⑤⑥ 均已施工（④⑤ 随 D51），待新会话实测；原登记（2026-10-08；人追问「这一段对话没有 issue 需要登记吗」后逐条复核）」。证据：董香二期 `session.jsonl` 第 309 行（`--redo` 退出码 2 的工具结果）。② 修法：预检查对 `--redo` 值与多余位置参数在弹卡前拒，并给出正确格式；④⑤ 归入 D51 的纠错路径设计（写入前用 pypinyin 校验替换字读音，并让人选全局 / 本期）。**② 已施工**（2026-10-08，[spec](../plans/2026-10-08-run-pipeline-argv-precheck-spec.md)）：弹卡前拒多余位置参数与 `--redo` 空格段号并给出逗号写法；顺带补齐 5 个漏登记的带值旗标并加 ast 审计。**①③⑥ 已施工**（2026-10-08）：重写 `docs/runbook/03.5-voice-check.md`（桌面端面板路径、三层读音表与放哪层、pypinyin 核对命令、给 agent 的边界）；`director.md` 回复写法加「不描述不知道的界面功能」「不写 LaTeX」；ADR-0019 加修订注。待新会话实测。
+
+### [D59] 很多操作要人自己在终端跑（素材 gate / register、Phase 0 入库与重测、补料、清锁、远端改道），一点也不 agentic
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py`（`ASSET_COMMANDS` / `PIPELINE_MODULES` 白名单）、`pipeline/acquire.py`、`ingest_patch.py`、`tts.py`、`cloud.py`、`docs/runbook/`、`skills/acquire-assets/SKILL.md`、WORKFLOW / CHEATSHEET`；ADR-0021 §3、ADR-0025、ADR-0020
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-09），两项待人定已裁决（2026-10-09：标定值落 config → D60；ava 写番剧笔记 → D61），待真实一期手验」。人原话：「我发现很多需要“我在终端跑”的操作，这一点也不agentic」；人裁决：「所有需要“我在终端跑”的操作和对应文档都需要进行agentic化的修改」。成因：把「要人批准」与「要人亲手敲」混为一谈；ADR-0021 §3 写了 fetch/gate/register 走白名单，S6-R1 只接了 fetch。原则：只读免卡、写盘弹卡、判断留在卡上与停机点，不加工具。盘点与批次见 [spec](../plans/2026-10-09-agentic-ops-spec.md)。。**2026-10-09 施工（5 批）**：① 素材：`acquire gate`（免卡）/ `register`（自动取号、扫图自动转码、`--to-patch`、`--waive 理由`）/ `forget`；② Phase 0：ingest / shots / vindex / subindex / vprobe 子命令与 timeline 入白名单，只读的免卡；`shots gallery --patch`；`shots frames` 自清残留帧；③ 补料：`scout`、`ingest_patch` 入白名单并补期目录；补丁池图片自动转码；`ingest_patch --reset`（挪进 attic 不删）；④ 运维：`tts --clear-stale-lock`（判 pid）、`cloud relocate-data` / `clean-frames` / `fix-env`（取代 `cloud exec` 修法）；⑤ 文档：WORKFLOW / CHEATSHEET / README / runbook / director.md 改为 agent 发命令、人批卡。仍归人：05 / 09 批准与上传、片源放进 raw/、字体、装远端环境依赖。用例 tests/test_agentic_ops.py；变异 AO-MUT-1..12。
+
+### [N52] 桌面端（协议路径）出网被拦时看不到原因：`turn_finished` 只有 `stopped:"blocked"`，命中串不下发
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py`（`run_tool_loop` 的 `PermissionError` 分支返回 `error`）、`pipeline/agent/session.py`（只在旧分支 `channel.show` 打 `[BLOCKED]`）、`pipeline/agent/protocol.py``；Spec 9 §2.3、D30
+- 原记录（活跃表原文）：状态栏「**随 D52 施工**（2026-10-08），待真实窗口手验」。D30-A 实测：protocol 会话首轮被拦，输出帧只有 `turn_started` / `turn_finished{stopped:"blocked"}` / `stop_points`，无任何 `log`/`notice` 带原因；终端 `ava` 有 `cli.py` 的 `[BLOCKED] 出网被拦截：…`。修法候选：blocked 时发一条 `notice`（只含命中模式名，不含请求体），属 Spec 9 协议修订。
+
+### [N53] 作业输出尾巴里若带受限路径，下一次 LLM 请求会被拦
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py::run_pipeline`（返回 stdout 尾部，未清洗）、`pipeline/tts.py`（`[OK] 打点已写入 {manifest_path}` 打印绝对路径）`；D30、Spec 16 §10 Q3
+- 原记录（活跃表原文）：状态栏「**D52 实证并一并修**（2026-10-08，工具结果进会话前脱敏），待手验」。推断链：`run_pipeline` 返回值进会话 → 含 `…/03-audio/manifest.json` → 下一次 `chat_complete` 整串断言命中 → `[BLOCKED]`。Spec 16 的豁免只覆盖仓库规程，不覆盖这里。待实测确认哪些作业在 agent 可调范围内打印该路径，再定「作业侧不打印绝对路径」还是「工具返回值进会话前清洗」。
+
+### [N61] 宿主 H5 自愈（产物指纹漂移 → 自动重钉停机对象）在真实窗口里不触发：03.5 卡内打点改写 `03-audio/manifest.json` 后 6 s 内没有 H5 的 HEAL，人第一次点批准撞 `E_STALE`、要点两次
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/host/service.ts::checkH5`、`desktop/src/host/heal.ts::h5Step``；D50, Spec 8 H5
+- 原记录（活跃表原文）：状态栏「**已修·机检与 e2e 通过**（2026-10-08），待真实窗口手验」。证据：S7 e2e 打印的 spawn 记录只有激活时 `trigger:"H1-activated"` 的 HEAL，对象库仍为旧 pending；core 的自愈本身会处理指纹漂移（`pipeline/approvals.py` 条件 2，批准时确实转 superseded 并新建）。02.5 的 TE-1 能刷新多半走的是 H2（封板后工序前进），不能当作 H5 生效的证据。修好后把 `stopPoint.spec.ts` 的 S7 用例改回「打点后一次批准通过」。。**根因（2026-10-08 插桩实测）**：H5 本身正常，错在基线取样时机——基线是「设为活跃期后的第一次采样」，而采样随 1 s 轮询 tick 才发生；e2e 里打点在激活后 1 s 内就写完 manifest，漂移被吞进基线、按设计永不触发（等 3 s 再打点则 H5 正常触发、core 重钉新对象）。真实窗口里人动作慢于 1 s，多数时候不中，但切回活跃期后立刻操作同样会中。**修**：`service.ts::activate` 在 H1 heal 与首载之后立即 `checkH5` 取基线（Spec 8 H5 行加修订注）。用例：`tests/host/service.test.ts`「N61 H5 基线在激活时取」（撤掉修复即红）；S7 e2e 改为「打点 → H5 恰一次 → 新卡一次批准、不出 E_STALE」。
+
+### [D65] 上下文 3–5 轮涨到 100k：大体积工具结果逐字永久驻留历史、每轮全量重发；建期迁移（Spec 18）把选题阶段的大结果整个背进期会话，期会话首轮即 68k
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py::_chat`（全量发送 `convo`）、`pipeline/agent/tools.py`（`MAX_READ_BYTES = 200_000`）、`pipeline/agent/cli.py::migrate_idea_session``；D62（手动 /compact 之外无泄压）、D41/D56/D64（读数已可信）、Spec 18、ADR-0022
+- 原记录（活跃表原文）：状态栏「**已施工·机检全绿**（2026-10-10）；真实会话观察待下期」。**2026-10-10 实测定案**（pi 协助读码 + 真实日志）：① 读数无错——`compact.py::context_reading` 优先用服务商 `usage.prompt_tokens`，回落口径（字符÷4）只会低估；伪恋期日志 chars/token 实测 1.32–1.39，与 compact.py 标定注释一致。② 常驻层与工序路由（ADR-0022）正常——实测 creative 常驻层 11,432 字符 + 工具 schema 9,329 字符 + 默认工序 WORKFLOW.md，首轮静态 ≈20k token，不是病根。③ 病根在工具结果：全量 `session.jsonl` 统计 92 条 tool 消息，中位数 376 字符；>4000 字符的仅 5 条（5%）却占 67% 体量，几乎全是 `read_artifact`（总量 126k 字符、单条 max 63,698）。伪恋期 turn1 即 68,089 token，主因就是选题讨论里那条 63.7k 字符的笔记被逐字读入并随 `--from-idea` 迁移背进期会话。④ 建期换 system prompt 导致的 cache 前缀作废是一次性事件（`session_log.py::rebuild_messages` 丢弃旧 system、按当前文件现建），之后前缀单调只增，不是持续破——真正贵的是被迁移进来的大结果在期会话每轮重发。施工方向：请求时纯函数「工具结果老化」投影（不动日志），[spec](../plans/2026-10-10-tool-result-aging-spec.md)。**红队复审一轮（2026-10-10，四条成立已吸收进 spec 修订版；统计口径修正为 91 条/排除回滚）**：F1 wrapup 收尾指令会被误判为回合边界、把刚拿到的大结果掏空且 tool_choice=none 禁重读（修：`_WRAPUP_KEY` 内部标记，对齐 `_TIER_KEY`/`COMPACT_KEY` 先例）；F2 D62 压缩器的 choose_cut 与摘要器输入都按未老化字符计，老化落地后「原始体量远大于发送体量」成常态会顶穿尾部预算、撞摘要器窗口（修：两处换老化后口径，范围闸门收窄）；F3「日志已过 D52 脱敏」对 pre-D52 存量日志不成立（董香二期 seq=288 实证），安全论证改写为断言兜底 + fail-closed；F4 占位文案按工具分、run_pipeline 指向 read_status。待人定三项**人拍板（2026-10-10）全采纳**；F2 修法补出第三处 is_bloated（膨胀护栏按未老化尺方向反，连带 fail 文案按老化口径），放置定 session.py compact() 开头投影一次三处共用。 **2026-10-10 施工**：aging.py 新建（请求时纯函数投影，不动盘）；llm.py `_chat` 接投影 + `_WRAPUP_KEY`；session.py compact() 三处口径换老化后 + bloated 文案按老化口径。测试 14 条全绿、变异 9 条全被杀、全量 2519 绿；伪恋期真实日志回放 saved=98,092（≥90,000）。待人定三项维持原判。
+
+### [D68] CUDA 云端配音通道不调 `generate_voice_clone` 时传 temperature/top_k，吃 qwen-tts 包默认（0.9/50，比本地 mlx 首试 0.8/30 更热、随机性更大）；两条引擎路径采样参数不对齐
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/tts.py::_synthesize_cuda` vs `_synthesize_mlx`（`Engine.SAMPLING` 阶梯只服务 mlx 分支）`；EGOIST V2 复盘（2026-10-10，manifest + git log 对时线）
+- 原记录（活跃表原文）：状态栏「**已修·机检通过**（2026-10-11），待下次启用云端配音时实听验收」。V2 三期对照实证：01（09-12 云端，「同段统一种子」修复前）最不稳；02（09-13 云端，赶上部分修复）次之；03（09-13 mlx 本地，`seeds_used=[7,7,7,7]` 同段统一实证）明显好但仍不及董香二期——它是 synth_logic 5，当前是 6（差一轮 QC/重配迭代）。修法：CUDA 分支按 `SAMPLING[attempt-1]` 传 temperature/top_k（attempt 语义与 mlx 对齐）；验收：同一段文同种子云端/本地各配一遍，音色语速人耳对照 + cer 同档。**注意**：此差异不是 EGOIST 不稳的主因（主因是 09-11/13 种子纪律三连修之前的时间窗），仅为残留差异。 **2026-10-11 施工**：`tts.sampling_for(attempt)` 收拢阶梯，mlx 与 CUDA 两条分支共用；CUDA 分支向 `generate_voice_clone` 显式传 `temperature`/`top_k`，并**同传 `subtalker_temperature`/`subtalker_top_k`**——读 qwen-tts 0.1.1 源码确认子解码默认也是 0.9/50，而 mlx 版的 code_predictor 直接复用主解码的 temperature/top_k，只传主解码仍不对齐。`attempt<1` 报错不静默取最冷档。用例 `test_cuda采样参数与mlx同一阶梯`（1–4 次逐档断言）、`test_sampling_for拒绝attempt0`；变异 2 条（删 subtalker、删主解码参数）均被杀。验收照原文：同段同种子云端/本地各配一遍人耳对照 + cer 同档。
+
+### [D69] Gemini 3.8 flash 写稿时不读笔记、只搜字幕：SKILL.md 明文「笔记是唯一主源、开写前逐段读」被持续无视——字幕搜索返回 ±1 句碎片给不了分集脉络，模型拿它一集一集探测地图，既慢又在凭记忆选集
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``skills/write-script/SKILL.md`（规则写在正文里模型不看）、`config/agent/scopes/creative.md``；伪恋期会话实证（2026-10-10，两次）；董香二期同型（人回忆：一直看字幕、看笔记很少）
+- 原记录（活跃表原文）：状态栏「**已修·待新会话验证**（2026-10-10）」。实证：两轮起笔各连发 30+/50 次 `search_notes [字幕]`、零次读 `伪恋.md`，第二轮 8.8 分钟 50 次调用撞检查点。**修法（人已选）**：规则从 SKILL 正文提到 scope 文档——creative.md 加「01 选题与开写顺序」节（先读笔记铁律 + 立意与时长没问人不许动笔）。**病例 2（同日）**：规则落盘时该会话正在运行，运行中会话不重读 creative.md（`_reinject_changed` 只在恢复后第一轮触发），照旧提示词接着探测——规则改动须「结束会话 → 恢复」才生效。**元教训**：本轮修改第一轮实际未落盘（回合在读完文件后就结束了），后续回复却声称已改——「说了≠做了」，以 mtime/grep 为准验证。
+
+### [D71] 作业执行缺乏状态提示：UI 不告诉用户「现在正在干什么」——重配/配音/排片这类长作业跑起来后，没有常驻的、一眼可见的「正在做什么、做到哪了」指示；人只能自己去右下角「时间线」里翻
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/renderer`（作业状态展示面）、`App.tsx`（时间线入口在右下角角落）、`VoicePanel.tsx`（重配反馈实例）`；D50 ③（重配三缺口）、D46（已修：对话区运行指示——但只覆盖对话侧，作业侧无对应物）、N52（被拦看不到原因，同类已修）
+- 原记录（活跃表原文）：状态栏「**人选 A，已施工·机检与 e2e 通过**（2026-10-11，[spec](../plans/2026-10-11-job-status-bar-spec.md)），待真实一期手验（UI 规则 2）」。人原话：「做任务的时候缺乏状态提示、UI不告诉用户在干什么，这是非常大的问题」。实证（2026-10-10 伪恋期）：重配触发后唯一反馈是「进度见时间线」小字，面板无进行中态、底部无作业横幅；配音 125s 期间同理。**定位**：这是作业侧（jobs）的系统性缺口，不是单个面板的问题——对话侧在 D46 修过（工具转圈、「模型思考中」），作业侧没有对应物。方向候选（待人定后出 spec）：① 全局常驻作业条（顶栏或对话区上方，列出进行中作业：命令、期、已运行时长，点击跳时间线）；② 时间线按钮在有作业运行时换醒目态（计数+动效）；③ 各面板自行加进行中态（已被实证不够—— VoicePanel 有「进行中」行但不跳眼）。实例补充（同日）：check_script 机检未过走退出码 1，时间线把它显示为「失败」作业（语义误报：机检有 FAIL 项 ≠ 作业故障）；tts 首配拆成两个作业（23:14/23:26）人无法从 UI 分辨「还在首配」还是「已在重配」。UI 规则适用：场景进 spec 第一节、截图方案人选、验收人勾。 **2026-10-11 三方案真实窗口截图**（脚本 [`plans/2026-10-11-job-status-shots/`](../plans/2026-10-11-job-status-shots/shots.spec.ts)，输出 `desktop/out/d71-shots/`；场景照伪恋期 03.5：`tts --apply-patch` 跑了 1:52、此前一次机检 rc=1 被记成 failed）：0-现状（作业侧唯一线索是面板一行「增量重配进行中（pid …）」与时间线角落计数）；A 顶栏下全宽常驻作业条（命令 · 期 · 已运行时长 · 看进度）；B 时间线头部醒目态（转圈 + 「运行中 1 · tts 1:52」脉动徽章，预览区收起时看不见）；C 顺听面板自管（「正在重配段 1、5（已完成 1/2）」+ 逐段「重配中 / 已重配」）。A/B 是作业侧通用件，C 只覆盖 03-audio 一处；三者可叠加。 **2026-10-11 人选 A 并施工**：`JobBar.tsx` 顶栏下全宽常驻条（转圈 · 正在运行 / 排队中 · 命令（超长截断）· 已运行 m:ss 每秒走 · +N · 看进度），无活动作业不渲染、进程已不在换警示样式；数据 = 活跃期 `ep.jobs`，`JobView` 新增 `startedAt`（取 `job_started` 载荷的 `started_at`，缺则事件时间）；「看进度」= 展开预览区 + 展开时间线（展开状态提到 App）。附带（方案说明里提出、人未反对）：`check_script` 退出码 1 在时间线显示「未通过」、不计「失败 N」。与原型差一处：去掉期名（只显示活跃期的作业，期名冗余）。**不做**：跨期作业（宿主只订阅活跃期；重启条件见 spec §四）。vitest `jobBar` 7 条 + `fold` startedAt 1 条；e2e「D71 全局作业条」含 1280×800 / 1440×900 不相交与不横滚底线；变异 3 条全杀。实现截图：`desktop/out/d71-shots/A-已实现*.png`。
+
+### [D72] 全局读音纠错后重配链路断裂（UI 状态易失 + 双按钮分裂）：在顺听面板划选错字并记入全局表后，受影响段落无法触发重配——主按钮（「只重配这 N 段」）只认期级补丁且在段数为 0 时置灰禁用；管全局表的按钮（「按全局表重配」）不仅是分裂的第二个按钮，且其依赖的 `globalTouched` 仅存于前端 React 组件内存，切走标签或刷新即永久丢失，重配入口彻底消失
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/renderer/VoicePanel.tsx`（`globalTouched` 状态、`voice-retts` 按钮）、`desktop/src/host/service.ts::voiceReTts`、`pipeline/agent/cli.py::/voice-info``；D50, D51, N12, D71
+- 原记录（活跃表原文）：状态栏「**已施工·机检与 e2e 通过**（2026-10-11，候选①②③全做），待真实一期手验」。实证（2026-10-10 伪恋期）：人在顺听面板划选「千」「全」并点「记下（写全局表）」，`config/voice.json` 确实于 23:24:57 成功落盘两词（`readings_provenance` 有确凿记录）；人回忆「千真万确标记了错字，点了重配」，但盘上 manifest 零重配（attempts 全为 1）。**根因深挖**：① 纠错与重配在 UI 上严重分裂：期级走 `corrections.json`（按钮 `voice-done` 调 `voice.applyPatch`），全局走 `config/voice.json`（按钮 `voice-retts` 调 `voice.retts`）；② 显眼主按钮是期级按钮，`pendingSegs` 为 0 时显示「只重配这 0 段」且 `disabled`，用户直觉被阻断；③ 致命状态易失：`globalTouched` 未持久化也未随 `voice.info` 下发，完全靠小卡回调在组件内存 `useState` 里临时记一笔！用户切走标签、刷新或重载，内存丢失重置为 `[]`，`按全局表重配` 按钮彻底永久消失。修法候选：① core 的 `/voice-info` 统一计算全局表/期级表综合的待重配段落（对比 manifest 中 readings 与当前两表），由后端统一下发 `pending_segs`；② UI 合并为一个统一的「重配受影响段落（N 段）」按钮，不让人感知底层存储分层；③ `globalTouched` 必须来自数据驱动而非 React 瞬态内存。 **2026-10-11 施工**：① core 新增 `tts.rerun_labels(ep)`（纯读）——判据直接复用 `run()` 的 `_reusable`（speakable 段级比对、钉种子、文本、wav 在盘），只报清单里已有 take 的段（配音进行中未轮到的不算），引擎与当前配置不符时返回 null（判据 4）；`/voice-info` 下发 `rerun_segments`。③ 删掉组件内存 `globalTouched`，待重配段一律来自盘。② 底部只留一个「只重配这 N 段」（N = 期级条目段 ∪ rerun 段）：有期级条目走 `--apply-patch`（读码确认其复用判据同样会重配全局表改过的段），否则走普通重跑；两个写路径分在互斥渲染的两个按钮里以守住 TG-4′「一个处理器一处闭集调用」。顺带：配音进行中面板 5 s 轮询，底部待重配段随每段完成实时减少（D50 ③「不说在重配哪些段」的一半）。用例：pytest `TestRerunSegments` 5 条（含 /voice-info 纯读）；vitest 解析器 1 条；e2e「D72 全局读音纠错后重配入口不丢」复现原病例（记下全局 → 切走切回仍在 → 走普通重跑、确认框取消不起作业）。变异 3 条均被杀。 **同日补**：D71 截图时发现重配进行中（锁在、pid 活着）主按钮仍可点、再点只会撞锁——`doneDisabled` 加 `lockBusy`，D72 e2e 补断言，变异被杀。 **2026-10-11 硬盘到手后真实数据复核（只读）**：病例的「零重配」证据读错了——`attempts` 是单次合成内的重试次数，不是重配次数。伪恋期 events.jsonl：23:14:51 首配 tts（629 s）、**23:26:47 第二次普通 tts（376 s，即「按全局表重配」）**；含「千」「全」的段 1–5、10 的 wav 均在 23:27–23:33 重写，speakable 与当前全局表逐段一致（`rerun_labels` 实测返回 `[]`，判断正确）。即当晚重配实际发生了；本行修的「状态易失 + 双按钮分裂」照样成立（切走即丢入口是读码确证的），只是不该再引用「零重配」当病例证据。
+
+### [D77] agent 做不了「把人给的本机图片放进期目录、改名、裁剪」这类简单文件操作，只能叫人进终端 `cat … \
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：`ava … /import-cover`；人提议开放 bash，而不是逐个打补丁`；`pipeline/agent/tools.py`（工具表 14 个已到顶，ADR-0025；无「从本机路径导入」通路）、`desktop` 封面导入只有人拖拽
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-11，人选方案 B，[ADR-0029](../adr/0029-bash-tool.md)），待打包版真实场景手验」。ADR-0021, ADR-0025, D59, N50
+
+### [D78] 几乎每次工具调用都要人用鼠标点「批准」；剩下的卡也不能回车批准
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/session.py::review_tool_call`、`status_card.py::_BASH_DANGER_RULES`、`desktop/src/renderer/HumanCards.tsx``；ADR-0029, ADR-0030, D44, D37, D47, ADR-0021
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-12，[ADR-0030](../adr/0030-approval-danger-only.md)，[spec](../plans/2026-10-12-steer-queue-and-approval-spec.md)），待真实一期手验」。人原话「在目前的 agent 时代，实际上尽可能减少人的审批，模型是在不断进步的」「如果点击回车就可以批准就好了」「建议再减少一些弹框」。现只剩 bash 硬危险、cloud 花钱 / 销毁、写 config/ 三命令、越过人工闸旗标、草稿打转刹车、检查点会弹卡；回车即批（400 ms 防连按），bash / cloud 卡可「本会话都批准」。施工中途安全分类器拦截，人裁决继续。待办：插盘后复核金样本 G-P1
+
+### [D79] 回合在跑时不能发消息，必须等模型做完一轮
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/{protocol,llm,aging}.py`、`desktop/src/renderer/Composer.tsx``；D78, Pi `agent-loop.js::runLoop`
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-12，[spec](../plans/2026-10-12-steer-queue-and-approval-spec.md)），待真实一期手验」。照 Pi 的 steering：在途消息排队（回 `queued`），这批工具跑完、下一次请求前作为 user 消息送达；模型已作答时有排队则续一轮；中断 / 出错退回输入框。pytest 新增 16 条 + TP-6/TP-13 改写，vitest 523 全绿，变异 12/12 被抓
+
+### [D80] 对话区不「活」：会话没名字、工具行是内部工具名加整行染色、运行中只有转圈、做完一轮过程不收起、遥测铺在聊天里；工具卡的命令和危险标记被待答区滚出视野
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``desktop/src/renderer/{ConversationPane,SessionList,HumanCards}.tsx`、`style.css`、`tokens.css`、`pipeline/agent/session.py`（标题线程、bash 帧 `description` 键）、`cli.py`（`/rename-session`）`；Spec 14, D39, D45, D46, D66, D71, D76, D78, D79, ADR-0030
+- 原记录（活跃表原文）：状态栏「**PR-C、PR-A 已施工·机检通过**（2026-10-12，[spec](../plans/2026-10-12-conv-liveliness-spec.md)；人选方案 A；会话标题后台起名 + 改名），PR-D（R5 / R6 人选 C / R7）已施工·机检通过；待真实一期手验」。第二轮学 ZCode（源码实读 `aac4755`）。分四个 PR：A 会话标题（唯一动 core 会话层）、B 截图选型、C 工具行 / 动感 / 回合折叠、D 噪声收纳 / 工具卡 / 会话行。P13 实测（附件脚本）：1440×900 待答区可见 276px、内容 538px，聚焦批准后滚 196px，`card_text` 整段在可见区之上——草案「卡片不显示命令」的诊断被推翻
+
+### [D82] 生产中撞到流水线真 bug 时，ava 受 Code Freeze 约束改不了，只能由人切到 coding agent 凭记忆复述现场；修完 ava 也不知道从哪续跑
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py`（新工具 + 读域）、`pipeline/agent/session.py`（开会话提醒）、`desktop/src/renderer/`（复制交接按钮）`；ADR-0029, ADR-0030, D53, D81
+- 原记录（活跃表原文）：状态栏「**PR-B / C 机检通过，待人验收；PR-A 已施工·机检通过**（2026-10-13，分支 `d81-d82-project-layer`，已合 main；[spec](../plans/2026-10-12-bug-ticket-spec.md) §十三施工记录；[上位需求](../plans/2026-10-12-bug-ticket-direction.md)）。待人：真实任务验收」。人提议（2026-10-12）。现场由系统采集、模型只填现象 / 预期 / 复现 / 为何不是用法错误；一律弹卡；同命令同报错去重；第一阶段只做一键复制交接、不自动拉起 coding agent；修完写回处理结果，ava 提醒续跑。仓库公开，工单原文不进 commit——2026-10-12 人裁决存仓库内 gitignore 的 `tickets/`（静态测试 + 运行时 `git check-ignore` 双守）。spec 改走 `run_pipeline tickets` 模块（工具表已到封顶 15，新工具须立 ADR）；去重报错行取末行（输出只有尾部）；顺带堵 bash 直接跑 `corrections global` 等写 `config/` 命令不弹卡的现有缺口（合并前需人确认）；「复制给 coding agent」按钮待截图选型。2026-10-12 红队审过：bash 堵口人已确认，另加 bash 写 `tickets/` 与拉起 coding agent 两条硬危险（人裁决）；另上报一条现有缺口——`run_pipeline` 结果出网前不过 `scrub_secrets`（spec §十二 R-9），待单独登记
+
+### [D84] 外部真实素材（图表 / 示意图 / 实物照）只有纪录片用得上，普通期段落又不敢拆短：默认带下段落数上限 20 与 skill §8.1 的 8–12 s 微单元矛盾；check_script 不认补丁池锚点；补丁池不打标就不能锚点；6 s 微动后段静止；agent 拿不到图片直链
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/check_script.py`、`pipeline/ingest_patch.py`、`pipeline/acquire.py`、`pipeline/agent/web.py` / `web_crawl.py`、`skills/write-script/SKILL.md`、`skills/acquire-assets/SKILL.md``；ADR-0010, ADR-0011, D59, N31
+- 原记录（活跃表原文）：状态栏「**已施工·机检与端到端通过**（2026-10-13，已合 main；`02-asset-requests.json` 经人裁决扩入期文件白名单；待人：真实一期使用），[spec](../plans/2026-10-13-external-stills-microunit-spec.md)）」。人提需求（2026-10-13，《束胸力学》期：压强 / 受力图 / 矿泉水对比原片里没有，一段 20 s 只放一个镜头）。六条缺口 A–F 见 spec。不做：段内锚点与检索混用（拆成微单元后一段一源即可，混用破「一段只走一个通道」）；图片短边 ≥1600 门禁不放宽（判据 3）
+
+### [D85] 模型请求在发出瞬间被拒的回合（`llm_calls` 0、回滚）：桌面端只显示「0 次模型调用 · 上下文约 N 字」，看不到原因；本地字数还盖掉了上一回合的 token 读数；`turn_end` 不记报错原文，事后无从查
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/protocol.py`（`turn_failed` notice）、`pipeline/agent/session.py`（`turn_end.error`）、`pipeline/agent/tools.py::turn_error_text`、`desktop/src/shared/convFold.ts::turnReading``；D56, D62, D64, D52
+- 原记录（活跃表原文）：状态栏「**已修·机检通过**（2026-10-13，`4a36078`）。待人：重新打包后在真实会话里看一次失败回合」。事件：《束胸力学》02.5 批准后进 03，`pipeline` scope 走 light 档 `gemini-3.7-flash-high`，本机代理已不再提供该模型（`/v1/models` 只剩 3.8-flash-high 等），连败三轮；creative scope 走 3.8 一直正常。本机 `config/agent.local.json` 的 light 已改为 `gemini-3.8-flash-high`（本机文件、不进 git）。修法：失败回合发 `turn_failed` notice（报错原文脱敏、截断 300 字）、`turn_end` 记 `error`；桌面端 0 次模型调用的回合不出读数（脚注不写上下文、会话头沿用上一读数）。测试：协议端到端用假端点回 400 复现，变异 2/2；桌面端读数变异 1/1
+
+### [D86] 试看片段（音画同源）切自番剧正片时，成片是没有中文字幕的日语对白：渲染只给旁白配字幕，机制原为 Live / MV 设计；写稿 skill 也没写这个写法，AVA 插试看段时搜「试看」一无所获、翻源码试错 6 次
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/subcues.py`（新）、`pipeline/render.py`（`_resolve_tag` / `_avsync_cues` / `build_ass(extra=)`）、`pipeline/music.py`（`原声字幕:`）、`pipeline/check_script.py`（「试看字幕」）、`pipeline/jobs.py`（bash 注入 `AVA_ROOT` 与 venv PATH）、`skills/write-script/``；ADR-0013, D84, D85
+- 原记录（活跃表原文）：状态栏「**已施工·机检与端到端通过**（2026-10-13，分支 `d86-avsync-subs`，已合 main，[spec](../plans/2026-10-13-avsync-subs-spec.md)）。字幕样式人选 A（与旁白同款）；待人：真实一期渲染验收」。人提出（《束胸力学》段落 5–6 间插更衣室试看）。同批修了写法缺口（skill 8.3 / SHOTLIST）与 bash 环境（`$AVA_ROOT`、`python` = 项目解释器）。不做：SP 素材配字幕（无字幕索引；Live / MV 本就不需要）
+
+### [D87] 三件事出自同一次 03.5：① 段 6 第 2 句句内 5.8 s 死寂（引擎坏样本，`_trim_silence` 按单采样 -60 dBFS 判有声没裁掉，CER / 时长带都放行）；② 预览栏只有「待重配」，重配中 / 已重配 / 失败一概看不出，一轮改不干净就成糊涂账（另：同日修掉的 datetime 崩溃让「待重配」从不消失）；③ 对话面板被长路径 / 长 URL / 宽表格撑宽，整个流能两指横划
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/tts.py`（`MAX_INNER_GAP` / `_longest_gap` / `_render_one` / `_best_take` / `render_segment` 替代种子兜底 / `_Progress` 进度落盘）、`pipeline/agent/cli.py`（`voice_info_payload.synth`、段 `mtime`）、`desktop/src/shared/voiceInfo.ts`（`segStatus` / `synthSummary`）、`desktop/src/renderer/VoicePanel.tsx`、`desktop/src/renderer/style.css``；D72, D73, D50
+- 原记录（活跃表原文）：状态栏「**已施工·机检与端到端通过**（2026-10-13，分支 `d87-voice-gap-status`，已合 main，[spec](../plans/2026-10-13-voice-gap-progress-spec.md)）。真实窗口截图已出；待人：重配《束胸力学》段 6 验收死寂消失、预览栏状态跟得上」。人提出。门槛 2.0 s 取全库实测（304 个 wav：正常 ≤1.75 s，只有段 6 超）；只改「收不收」，不 bump `SYNTH_LOGIC_VERSION`。进度文件 `03-audio/.tts_progress.json` 不论入口（面板 / AVA bash / 终端）都写，面板只信盘上。同日先修：tts 有纠错条目时合成一段即崩（缺 datetime）、clips 坏段 scout 提示被吞（`d0e7385`）。验收中补修三处（见 spec「补修」）：折叠容器 grid 列被执行中工具行的长输出撑宽；中途被中断截断 manifest，下一轮白配没点名的段；普通 `tts` / `--redo` 不拿锁，与 apply-patch 并发配同一期（新增 `03-audio/.tts.lock`）
+
+### [D93] 模型请求写死 60 s 超时：supercell 企划会话两回合在第 3 次调用（58–64k token）被判超时、直接收尾停止，同会话健康调用已到 40–56 s，超时后也不重试
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py`（`DEFAULT_REQUEST_TIMEOUT_S`、`LLMError.retryable`、`_parse_timeout`、`run_tool_loop._chat` 重试）、`pipeline/agent/session.py`（`llm_retry` notice、`turn_end.llm_retries`）`；D85, D94
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-14，main `92c06d5`）。待人：重启 AVA 在大上下文会话里用一段时间」。根因与调研见 [施工图](../plans/2026-10-14-llm-timeout-retry-spec.md)：本机代理思考期一字节不发，流式修不了；Pi / Codex 均为 300 s 空闲超时 + 自动重试。人裁决默认 300 s 可配（`request_timeout_s`，0 = 不设），超时 / 断连 / 429 / 5xx 自动重试 3 次（2/4/8 s），400/401 不重试。测试 26 条，变异 14/14；真实冒烟：本机代理 1 s 超时判为可重试
+
+### [D94] 模型请求仍是非流式：长输出只能按整体耗时判超时，桌面端也无法实时显示模型输出
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/llm.py::chat_complete``；D93
+- 原记录（活跃表原文）：状态栏「**已施工·真实代理对照通过**（2026-10-15，人说开工；同日人跑探针，四组同题流式 / 非流式逐字段一致，查出拼装空值与 `index` 形状偏差已更正；测试 27 条、变异 8/8）。待人：在真实会话里用一段」。[施工图](../plans/2026-10-14-llm-streaming-spec.md) 已记探针事实（SSE 字段、`[DONE]` + 末块 `usage`、思考期静默）与拼装 / 断流判据；明确不解决思考期静默
+
+### [D95] 企划会话里抓取提案被拒（D81 §4.2 红队 R-3），AVA 把 12 条官方 MV / 预告拆成三批、要人分开三个卷会话去抓；拒因「抓取提案会写进母目录」对抓取不成立，且与「立项先预收集」的真实流程冲突
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py`（`PROJECT_LIBRARY_MODULES`、`acquire_targets_volume`、`project_module_refusal`、`PROJECT_VOLUME_ONLY_TOOLS`）、`config/agent/scopes/project.md``；D81
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-14，main `d76d6c8`）。待人：重启 AVA，在 supercell 企划会话里一次提完、抓完、登记」。[施工图](../plans/2026-10-14-project-acquire-spec.md)：企划会话放行 `acquire_propose` 与 `acquire` 的 fetch / gate / register --pool / forget / probe；`register --to-patch`（含前缀缩写与 `=` 写法）仍拒并列出本企划的卷；`cover_edit`、`view_image` 不变。新测试 13 条，变异 7/7
+
+### [D96] AVA 的浏览器拿不到持久、方便的登录态，抓取反复失败、很耗人精力：Playwright 驱动的隔离 Chromium（`data/browser-profile`）里 Google 拒绝登录（「This browser or app may not be secure」）；出口是机房 VPS（Hostinger，单节点），YouTube 不登录就要求「Sign in to confirm you're not a bot」，两头都卡
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/web_browser.py`（`launch_persistent_context`、`cookies_spec_for` 写死 `chromium:`）、`pipeline/acquire.py::fetch_argv`、`config/agent/web*.json` 的 `browser.cookies_for``；ADR-0021, D95
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-15，人说开工；`login` 入口已人验收；待人在 AVA 里用一次 browser；YouTube 素材探针失败查明是全局 yt-dlp 缺签名求解器 yt-dlp-ejs，人选 yt-dlp 进项目依赖，10-15 晚已施工（`yt-dlp[default]==2026.8.19`，`yt_dlp_argv()` 优先项目环境，`probe 9,13` 2/2 可解析），[实测记录](../plans/2026-10-15-browser-login-options.md)、[施工图](../plans/2026-10-15-browser-camoufox-spec.md)：Camoufox 下 8 个站登录与重开均通过，yt-dlp 在 YouTube、bilibili、X 嵌 YouTube 上用登录态有实测收益）」。事件：supercell 企划会话 12 条官方 MV / 预告全部抓取失败（yt-dlp 升级到 2026.08 无效）。临时绕过：人手动跑 `XDG_CONFIG_HOME=<一次性目录> uv run python -m pipeline.acquire fetch 9,…,20`（目录里只有 yt-dlp 配置 `--cookies-from-browser chrome`），主力 Chrome 登录态只在人跑的这一条命令里用、AVA 不碰。主考查两个方向（人 2026-10-14 定）：① 给 AVA 专用的开源 agent 浏览器（专为 agent 设计、自带持久配置与登录态管理）；② 由人启动独立配置的浏览器并开调试端口，AVA 经 CDP 接上（浏览器不是自动化启动，Google 放行登录，登录态随浏览器常驻、人随时补登）。两者都要实测：Google / YouTube 能否登录并持久、yt-dlp 能否用上同一份登录态、与主力 Chrome 凭据是否隔离、人补登录是否方便；实测后再写施工图。yt-dlp 走导出 cookies 文件违背 ADR-0021「不碰 cookie 本体」，只作最后手段。**2026-10-15 实测**：不带 cookies 复现 bot 检查（出口 Hostinger）；Camoufox 0.5.6（本机已装）持久配置下 `webdriver=false`、登录页正常，yt-dlp `--cookies-from-browser firefox:<配置目录>` 能直接读出 cookies（不经钥匙串、不导出 cookie 本体、与主力 Chrome 完全隔离）；人启动的独立真 Chrome 经 CDP 接入可行（`webdriver=false`），但 yt-dlp 读它要用钥匙串「Chrome Safe Storage」，与主力 Chrome 共用密钥（按已知设计，待人确认）。推荐 Camoufox；真登录、持久性、登录后 yt-dlp 过不过 bot 检查三项必须人测，命令在实测记录 §四。**午间人在场实测**：Camoufox 登录 Google 未被拦、重开保持登录、yt-dlp 用同一配置拿到 1080p；人要求扩到 niconico / bilibili / X / pixiv 等站点后再写施工图
+
+### [D97] 抓取落盘文件名丢日文假名：`slugify` 只留英文、数字与汉字，「さよならメモリーズ」落成 `supercell_Official_MV_Playback_版`、「僕らのあしあと」只剩「僕」。文件名失去辨识度；两首纯假名标题会撞成同一个前缀，`dup_verdicts` 的「同名查重」判 FAIL、以「incoming/ 里已有同名前缀的文件」拒抓并指向 `acquire forget`——拒因误导，照做会移走另一首歌的台账记录
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/candidates.py::slugify`（`[^0-9A-Za-z\u4e00-\u9fff]+` → `_`）、`pipeline/acquire.py::dup_verdicts` 与 `_fetch_one``；D95
+- 原记录（活跃表原文）：状态栏「**已修·机检通过**（2026-10-15，main，未推送）。待人：下次抓日文 / 韩文标题时看一眼落盘名」。违反「为 1 亿部番写」：日文标题是常态，韩文等同样全丢。修法方向：保留各文字系统的字母（假名、谚文等），只折掉文件系统不安全字符；或在 slug 后带候选 URL 的稳定短标识保证唯一。改前先查 `slugify` 的全部调用方与已落盘文件的兼容（台账按文件名找条目，旧文件名不能失配）。本批（候选 9–20）已核对互不撞名。**2026-10-15 修**：`slugify` 改为保留任何文字系统的字母、数字与组合附标（Unicode 类别 L / N / M），先 NFKC 归一全角拉丁与半角假名，按 UTF-8 再截到 200 字节（假名汉字 3 字节一字，旧的 80 字符上限会到 240 字节，加 yt-dlp / register 后缀贴着 255 字节文件名上限）；纯 ASCII 行为不变。`_fetch_one` 只撞名、链接没抓过时不再指向 `acquire forget`，改报占用者（候选号与标题）并让人改 title。兼容：台账存的是实际落盘路径，gate / register 按文件名找条目、不重算 slug，incoming/ 里 12 条旧名文件不受影响（register 挪进池时按新规则起名，池里是新文件名）。测试 +7，变异 9/9
+
+### [D100] 素材候选没有任何关卡：AVA 交给人「一次性批准」的候选总表里，链接、分辨率、授权都是模型自己写的。supercell 卷一那张 53 段表点名的 6 个 Wikimedia Commons 文件经 API 查询全部不存在，「CC0」「3840×2160」等配套信息一并是编的；7 条画集扫图没有链接；段 47 凭空写「已声明授权引用」。`acquire_propose` 一调用就下载（ADR-0030），人在对话里看到的正是这张模型写的表
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/agent/tools.py`（`acquire_propose`）、`pipeline/candidates.py::propose_candidates`、`pipeline/agent/llm.py` 的提议后自动下载钩子、`pipeline/acquire.py`（`fetch` / `probe`）、`pipeline/agent/fetch_log.py``；D99, ADR-0021, ADR-0030
+- 原记录（活跃表原文）：状态栏「**已施工·机检与真实冒烟通过**（2026-10-15 晚，[施工图](../plans/2026-10-15-asset-candidate-gate-spec.md) 第十节；人定提议不再自动下载、核不上 v1 不许豁免、不做模型对比；提议后自动跑 `acquire check`，机器表挂进工具结果，`fetch` 只抓「可下载」；变异 18/18；10-15 那 6 个 Commons 名实测全部「打不开」）。待人：下一轮补素材只看机器表批一次」。照 D99 的思路做到素材上：抓取留档补存页面的图片与链接列表；候选必填 `found_on`（在哪页找到的）；新模块逐条核出处（`url` 必须在抓过的 `found_on` 页里）、实测可得性与画质、只认 Wikimedia API 返回的授权、提前判门禁；交人批的表由代码生成，模型只写 why；下载只抓核过的。与卷一事实文件第一版编造出处是同一类问题（人 2026-10-15：「编造来源这种事情很多次了」）
+
+### [D102] 10 月起每次要用卡都开不了机：「该主机空闲 GPU 不足，主机 GPU 空闲数量 0 卡」。按量实例绑死一台物理机，模型在它的数据盘上，只能等这一台（同时刻西北B区全区还有 9 张空卡）。另发现控制台「我的镜像」是空的，`cloud.json` 写的镜像并不存在
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/cloud.py`（`_ssh` / `run_rsync` / `cmd_up` / `cmd_doctor`）、`config/cloud.json`、`config/cloud.local.json`、`pipeline/agent/tools.py` 白名单`；ADR-0014, ADR-0016
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-15，[施工图](../plans/2026-10-15-cloud-disposable-instance-spec.md) 第十节；`cloud connect` + `data/cloud/ssh_config`、模型软链到文件存储、doctor 查挂载 / 软链 / 显存、账本记型号按型号查价；变异 21/21）。待人：在非 F29 实例上跑通 connect → doctor → TTS 或打标 → pull → down，实测显存门槛。**2026-10-17 非 F29 实例实跑一轮（coding agent，人授权）**：控制台新租 E70（vGPU-32GB，nvidia-smi 报 RTX 4080 SUPER 32GB，镜像 `ava-py312-torch28-cu128-20261015`）→ `cloud connect` → `cloud up --mode gpu` → `doctor` 全绿（Qwen3-VL-8B 打标 2469 镜头无 OOM，32GB 够用）→ `cloud exec` 跑 `vindex captions` → rsync 拉回 → `cloud down` 验证停止响应 → 控制台确认已关机；33 分钟。连带查出两个问题另开 D107（远端代码版本不查）、D108（账本型号查价对不上）。（`cloud.local.json` 的 `instance_id` 仍是 F29 的，但 `cloud.py` 不读这个键，up / down 全走 SSH，不构成问题。）」。模型放区级文件存储（`/root/autodl-fs`），环境存镜像，要卡时任挑一台有卡的机器开新实例，`cloud connect "<登录指令>"` 换连接，用完即弃；推翻 9-11「停机保号」
+
+### [D107] 远端代码版本与本地不一致时，`cloud doctor` 报全绿，打标照跑
+- 状态：**已解决·真实生产验证通过（2026-10-17 人确认归档，在万里花/束胸/supercell等真实期充分使用并跑通）**
+- 关联（原表）：``pipeline/cloud.py`（`cmd_doctor` 的 `[REPO]` 只查仓库在不在）、镜像 `ava-py312-torch28-cu128-20261015``；D102, ADR-0016
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-17，coding agent）。待人：下次租卡跑一次 `cloud doctor` 看 `[CODE]`，不一致时 `cloud sync-code`」。10-17 新实例 doctor 报「远端仓库就绪 commit 7e3aecd」，本地 HEAD `a5ee6d9`，相差 545 个 commit，`pipeline/vindex.py` 差 1064 行、`shots.py` 差 283 行。用旧代码打标，产物可能过不了加载时的 prompt_version / model 硬校验，也可能校验相同但内容口径不同（后者不报错）。本次做法：rsync 本地 `pipeline/` `config/`（排除 `*.local.json`）与 `pyproject.toml` 上去，md5 三文件一致、远端 `import pipeline.vindex` 通过后才开跑。另：本地比 origin 超前 20 个 commit，远端 `git pull` 也拿不到当前代码。修法候选：doctor 比对远端与本地的 HEAD 或关键文件哈希，不一致报 FAIL 并给出同步命令；或 up 后自动同步工作区代码 **2026-10-17 施工**：判据用文件内容哈希不用 HEAD（rsync 同步不动 HEAD、本地常有未推送 / 未提交改动）。`pipeline/**/*.py` + `config/**/*.json`（不含 `*.local.json`）+ `pyproject.toml` 逐文件 sha256，本地与远端跑同一段脚本（base64 落地）；doctor 新增 `[CODE]` 项，不一致 FAIL 并给修法；`cloud run` 开跑前同样核对，不一致一条远端命令都不发（ingest_patch 走的 captions 也经过这里）；新增 `cloud sync-code`（计费卡同级，远端有任务在跑就拒，推完再核一遍；不删远端多出的旧文件，只报 INFO）。测试 +7（含真起子进程跑远端脚本与本地逐键比对），变异 2/2
+
 ## 2026-10-17：已修且无需再手验 / 已验收归档（6 条）
 
 ### [D113] `bgm register` 把每首曲子都写成 `"vocal": false`，带人声的也一样
