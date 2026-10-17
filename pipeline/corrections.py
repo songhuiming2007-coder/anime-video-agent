@@ -954,20 +954,24 @@ class ReadingCheck:
     got: list[str] | None
     errors: list[str]
     warnings: list[str]
+    latin: str | None = None
 
     @property
     def ok(self) -> bool:
         return not self.errors
 
     def lines(self) -> list[str]:
-        head = f"读音核对：「{self.word}」应读 {' '.join(self.expect) or '（未解析）'}"
+        if self.latin is not None:
+            head = f"写法核对：「{self.word}」→ 英文写法「{self.latin}」"
+        else:
+            head = f"读音核对：「{self.word}」应读 {' '.join(self.expect) or '（未解析）'}"
         if self.homophone is not None and self.got is not None:
             head += f"；同音字「{self.homophone}」读 {' '.join(self.got)}"
         out = [head]
         out += [f"  ✗ {e}" for e in self.errors]
         out += [f"  ! {w}" for w in self.warnings]
         if self.ok:
-            out.append("  ✓ 通过")
+            out.append("  ✓ 写法可用（读音待复听）" if self.latin is not None else "  ✓ 通过")
         return out
 
 
@@ -1010,26 +1014,64 @@ def check_reading(word: str, expect_raw: str, homophone: str | None = None) -> R
     return ReadingCheck(word, expect, homophone, got, errors, warnings)
 
 
+_LATIN_CHAR = re.compile(r"[A-Za-z '\-.]")
+_LATIN_REWRITE = re.compile(r"[A-Za-z]+(?:[ '\-.]+[A-Za-z]+)*\.?")
+
+
+def check_latin(word: str, latin: str) -> ReadingCheck:
+    """英文改写（`--latin`）：英文词换一种写法喂给合成器，写 readings 表。
+
+    readings 里早有这类条目（EGOIST→egoist：全大写被逐字母念；redjuice→red juice；
+    M2U→M two U），但拼音直注与同音字两条路都要求「应读」能按拼音解析，英文词在卡上
+    没有合法的标法（2026-10-17 supercell 卷一段 12「ETERNAL WIND」）。
+
+    英文没有拼音可比对，这里**不核对读音**，只拦写进合成文本会出事的写法：
+    阿拉伯数字（check_script 拦）、假名（码切换信号，会把整句带进日语模式，
+    2026-09-12 koeda 实录）、汉字（那是同音字的路）。读得对不对只能靠复听，
+    所以通过时写「读音待复听」，不写「通过」。
+    """
+    latin = latin.strip()
+    errors: list[str] = []
+    if not re.search(r"[A-Za-z]", word):
+        errors.append(f"「{word}」不含英文字母：中文词用拼音直注或同音字")
+    bad = "".join(sorted({ch for ch in latin if not _LATIN_CHAR.fullmatch(ch)}))
+    if not latin:
+        errors.append("英文写法为空")
+    elif bad:
+        errors.append(f"英文写法里有不允许的字符「{bad}」：只能用英文字母、空格和 ' - ."
+                      "（数字会被 check_script 拦，假名会把整句带进日语模式，汉字请走同音字）")
+    elif not _LATIN_REWRITE.fullmatch(latin):
+        errors.append(f"英文写法「{latin}」要以字母开头、以字母结尾")
+    elif latin == word:
+        errors.append("英文写法与原词完全相同，写进去不改变任何读音")
+    warnings = ["英文读音机器核对不了：写入后重配本段并复听确认"]
+    return ReadingCheck(word, [], None, None, errors, warnings, latin=latin)
+
+
 def _digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
 def plan_global_write(
     cfg: dict, word: str, *, pinyin_raw: str | None = None, homophone: str | None = None,
-    supersede: bool = False,
+    latin: str | None = None, supersede: bool = False,
 ) -> dict:
     """全局写入计划（纯函数）：写哪张表、写什么、覆盖了什么、`--supersede` 删了什么。
 
     两张表同键时拼音优先、readings 那条被跳过（tts.speakable_traced）。所以同键冲突一律拒：
     不加 --supersede 就会留下一条永远不生效的死条目。
     """
-    if (pinyin_raw is None) == (homophone is None):
-        raise PatchError("--pinyin 与 --homophone 必须二选一。")
+    if sum(v is not None for v in (pinyin_raw, homophone, latin)) != 1:
+        raise PatchError("--pinyin、--homophone、--latin 必须三选一。")
     if not word.strip():
         raise PatchError("--word 不能为空。")
     table = "pinyin_injections" if pinyin_raw is not None else "readings"
     other = "readings" if table == "pinyin_injections" else "pinyin_injections"
-    value = "".join(_tone3_list(pinyin_raw)) if pinyin_raw is not None else str(homophone)
+    if pinyin_raw is not None:
+        value = "".join(_tone3_list(pinyin_raw))
+    else:
+        # 英文改写与同音字同进 readings：都是「在合成文本上换写法」
+        value = latin.strip() if latin is not None else str(homophone)
     other_tab = cfg.get(other) or {}
     removed = None
     if word in other_tab:
@@ -1095,14 +1137,15 @@ def provenance_text(rec: dict) -> str:
 
 def write_global_entry(
     word: str, *, pinyin_raw: str | None = None, homophone: str | None = None,
-    supersede: bool = False, episode: Path | None = None,
+    latin: str | None = None, supersede: bool = False, episode: Path | None = None,
 ) -> dict:
     """改 `config/voice.json` 的一个读音键（spec §A）：其余字节不变、写前防并发、原子替换。"""
     cfg, raw = _load_voice_config()
     if _dump_voice_config(cfg, raw).encode("utf-8") != raw:
         # 往返不等 = 文件不是本函数会写出的格式（人手改过缩进 / 转义），写回会动到别的字节
         raise PatchError("config/voice.json 的排版与标准 JSON 输出不一致，自动写入会改动其他行；请人手改。")
-    plan = plan_global_write(cfg, word, pinyin_raw=pinyin_raw, homophone=homophone, supersede=supersede)
+    plan = plan_global_write(cfg, word, pinyin_raw=pinyin_raw, homophone=homophone, latin=latin,
+                             supersede=supersede)
     cfg.setdefault(plan["table"], {})[word] = plan["value"]
     if plan["removed"]:
         del cfg[plan["removed"]["table"]][word]
@@ -1145,6 +1188,7 @@ def _build_parser():
         g.add_argument("--pinyin", help="拼音直注（首选），如 xuan4du1")
         g.add_argument("--homophone", help="同音字替换（拼音直注实测不灵时），需同时给 --expect")
         g.add_argument("--expect", help="同音字应读的拼音，如 xuan4du1")
+        g.add_argument("--latin", help="英文改写（英文词念错时），如 --word 'ETERNAL WIND' --latin 'Eternal Wind'；读音靠复听确认")
         if name == "global":
             g.add_argument("--supersede", action="store_true",
                            help="另一张表有同键时一并删除（否则拒：同键会留下死条目）")
@@ -1152,8 +1196,10 @@ def _build_parser():
 
 
 def _reading_check_of(ns) -> ReadingCheck:
-    if (ns.pinyin is None) == (ns.homophone is None):
-        raise PatchError("--pinyin 与 --homophone 必须二选一。")
+    if sum(v is not None for v in (ns.pinyin, ns.homophone, ns.latin)) != 1:
+        raise PatchError("--pinyin、--homophone、--latin 必须三选一。")
+    if ns.latin is not None:
+        return check_latin(ns.word, ns.latin)
     if ns.homophone is not None:
         if not ns.expect:
             raise PatchError("--homophone 必须同时给 --expect（这个词应读的拼音）。")
@@ -1199,7 +1245,7 @@ def preview(argv: list[str]) -> tuple[bool, list[str]]:
         if ns.cmd == "global":
             cfg, _raw = _load_voice_config()
             plan = plan_global_write(cfg, ns.word, pinyin_raw=ns.pinyin, homophone=ns.homophone,
-                                     supersede=ns.supersede)
+                                     latin=ns.latin, supersede=ns.supersede)
             lines.insert(0, f"写入：config/voice.json 的 {plan['table']}（全局：所有番、所有期）")
             lines.insert(1, f"「{ns.word}」→ {plan['value']}" + (f"（覆盖旧值 {plan['old']}）" if plan["old"] else ""))
             if plan["removed"]:
@@ -1233,7 +1279,7 @@ def main(argv: list[str] | None = None) -> int:
         if ns.cmd == "check":
             return 0
         plan = write_global_entry(ns.word, pinyin_raw=ns.pinyin, homophone=ns.homophone,
-                                  supersede=ns.supersede,
+                                  latin=ns.latin, supersede=ns.supersede,
                                   episode=Path(ns.episode) if ns.episode else None)
         print(f"[OK] config/voice.json {plan['table']}：「{ns.word}」→ {plan['value']}"
               + (f"（原值 {plan['old']}）" if plan["old"] else ""))

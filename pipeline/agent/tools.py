@@ -423,7 +423,7 @@ PIPELINE_VALUED_FLAGS: frozenset[str] = frozenset({
     "--redo", "--config", "--review", "--anime", "--out", "--ref", "--seed",
     "--pattern", "--episode", "--note", "--target", "--session", "--floor",
     "--index-dir", "--expect-size", "--expect-mtime-ns", "--pick", "--character",
-    "--text", "--word", "--pinyin", "--homophone", "--expect", "--script",
+    "--text", "--word", "--pinyin", "--homophone", "--expect", "--latin", "--script",
     "--type", "--batch",  # D59：scout --type、ingest_patch --batch
     "--call", "--blocked", "--symptom", "--expected", "--repro", "--why",  # D82：tickets open
 })

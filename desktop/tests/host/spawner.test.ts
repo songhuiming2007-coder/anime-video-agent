@@ -228,6 +228,13 @@ describe("Spec 11 §3.4 / Spec 12 §3.5：停机点模板的 argv 形状、超�
     expect(isLongRunning("RUN_TTS")).toBe(true);
   });
 
+  it("英文改写：--latin=value 单元素，带空格的写法不被拆开", () => {
+    expect(buildArgv("VOICE_GLOBAL", { ep: "/ep", word: "ETERNAL WIND", latin: "Eternal Wind", supersede: false }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.corrections", "global", "/ep", "--word=ETERNAL WIND", "--latin=Eternal Wind",
+    ]);
+    expect(buildArgv("VOICE_CHECK", { word: "ETERNAL WIND", latin: "-wind" }, "/repo").argv.at(-1)).toBe("--latin=-wind");
+  });
+
   it("D50-A S7：TTS_REVIEW 只收三维 1–5，单个 --review= 元素；格式不对不 spawn", () => {
     expect(buildArgv("TTS_REVIEW", { ep: "/ep", review: "voice=4,prosody=3,misread=5" }, "/repo").argv).toEqual([
       pyPath, "-m", "pipeline.tts", "/ep", "--review=voice=4,prosody=3,misread=5",
