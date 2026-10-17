@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-10-17：已修且无需再手验 / 已验收归档（6 条）
+
+### [D113] `bgm register` 把每首曲子都写成 `"vocal": false`，带人声的也一样
+- 状态：**已解决（2026-10-17 修复、机检通过；supercell 已登记条目的 vocal 已由 AVA / Pi 按实改过，`de152c8` 提交）**
+- 关联（原表）：`pipeline/bgm.py::register`（约 284 行写死 `False`）；—
+- 原记录（活跃表原文）：状态栏「**已修·机检通过**（2026-10-17 登记，同日人说修，coding agent）」。10-17 发现 `config/bgm.json` 有未提交的 supercell 登记（+856 行，16:46，非 coding agent 所写），共 112 首，其中 74 首名字不含 Instrumental 却标 `vocal:false`，如 `#Love (feat. Ann & Gaku)`；coding agent 在 `00a3ca4` 登记的 5 首 nico 原投稿（恋は戦争等，有人声）也是 `false`。`measure()` 本有按文件名的判断（不含 instrumental 给 `"?"`），`register` 没用它。目前 `pipeline/` 里没有代码读 `vocal`，渲染不受影响；风险在人或 AVA 读曲目表选曲时，把人声曲当成伴奏垫在旁白下。**查明**：手工登记的条目在用这个字段（HEAD 里 `vocal:true` 37 首，如 EGOIST 12 首），表示有没有人声；只看曲名定不了——原声带劇伴大多是纯音乐，曲名里却没有 instrumental（东京喰种 13 首都是）。**修法**：新增 `bgm.infer_vocal`：曲名带 `INST_WORDS` 关键词 → `false`；否则用新参数 `--vocal yes\
+
+### [D111] 云端配音回读：主读不过请 Whisper 仲裁时，段落音频超过 30 秒就抛异常，整轮配音退出
+- 状态：**已解决·云端实测通过（2026-10-17，工单 T-20261017T073904Z-155ade）**
+- 关联（原表）：`pipeline/asr.py::_backend_whisper_cuda`；ADR-0014
+- 原记录（活跃表原文）：状态栏「**已修·云端实测通过**（2026-10-17，coding agent；工单 T-20261017T073904Z-155ade）」。supercell 卷一 10-17 云端配音停在段 44：SenseVoice 主读几轮不过，请 Whisper Large-v3（transformers pipeline）仲裁，该段 >30 秒。transformers 对超过 3000 帧 mel 的输入走长音频生成，要求 `return_timestamps=True`，没传就抛 「You have passed more than 3000 mel input features」，`.tts_progress.json` 记 failed，watchdog 空闲关机。平时长段没出事是因为主读一次就过、走不到仲裁；本地 mlx-whisper 与 SenseVoice 都自带长音频处理，不受影响。**修法**：按 wav 时长（标准库 `wave`，回读输入都是 tts 写的 16-bit PCM）只在超过 `WHISPER_WINDOW_S=30.0` 时传 `return_timestamps=True`；30 秒以内调用不变，因为回读 CER 门槛是按不预测时间戳的解码标定的。**验证**：单测 +5（时长边界、读时长），变异 2/2；新卡（RTX PRO 6000，transformers 4.57.3，whisper-large-v3）实测：13.7 秒段新旧调用转写一字不差；拼接的 35.7 秒段旧调用复现原报错，新调用经 `_backend_whisper_cuda` 正常转写（4.9 秒）。长段转写不带标点、短段带，不影响判定：CER 比对前 `tts.normalize` 先去标点。**未改**：一次仲裁异常仍让整轮配音退出（诚实失败，符合 S 准则）；改成只标该段失败、其余段继续，需人另定。
+
+### [D110] `calibration set` 从命令行直接调用时，实录照样写「经人审卡写入」
+- 状态：**已解决（2026-10-17 施工、机检通过；实录来历措辞，无需人手验）**
+- 关联（原表）：`pipeline/calibration.py`（实录模板写死「人审卡写入」）；D60
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-17，coding agent）」。人审卡只在 AVA 里调用时才弹；coding agent 或人在终端直接跑 `python -m pipeline.calibration set` 不经过任何卡，实录却写成经过了。10-17 supercell 两个阈值就是这样写进去的（人当晚口头授权免拍板，evidence 里写明了，但模板那句不对）。实录是给以后判断「这个数谁拍的板」用的，来历写错会误导。修法候选：模板按调用来源写（AVA 卡批准 / 命令行直调），或命令行调用时要求 `--approved-by` **2026-10-17 施工**：两个候选合用。`run_pipeline` 执行人在卡上批准的命令时（`ctx.human_approved`，REPL `/run` 确认同理）给作业环境注入 `AVA_HUMAN_CARD=1`（`jobs.HUMAN_CARD_ENV`）；`calibration set` 有它才写「经 AVA 人审卡写入」，没有就必须带 `--approved-by "<谁、何时、怎么批的>"`，实录写「命令行直调写入，批准：…」，两者都没有拒写。10-17 supercell 两条已写入的实录未回改（config 内容，要改由人定）。`corrections global` / `bgm register` 的来历字段有没有同样问题未查。测试 +3，变异 2/2
+
+### [N50] 会话注入的 LLM 密钥变量会一路继承到作业及其子孙（ffmpeg、ffprobe、yt-dlp 等外部程序）
+- 状态：**已解决（2026-10-15 施工、机检通过；作业剥密钥变量，无界面行为需人看）**
+- 关联（原表）：`pipeline/jobs.py`（起作业 `env = dict(os.environ)` 原样继承）、`desktop/src/host/spawner.ts::spawnSession`（密钥只注入会话进程）；N49、Spec 10 §2.9、TH-6
+- 原记录（活跃表原文）：状态栏「**已施工·机检通过**（2026-10-15，[小 spec](../plans/2026-10-15-n50-secret-env-spec.md)；人裁决做、crawl 选 C2 不改）。`run_pipeline` 作业剥全部密钥变量，`adversarial` / `fact_review` / `notes_review` 只留 LLM 那一个；`browser` 起 Camoufox 传去掉密钥的环境；变异 8/8。明示残留：crawl4ai 拉起的 Chromium、playwright 的 node 驱动进程仍带密钥变量（两者都不开放 env 参数）。原状态：备忘（N49 评审副产物，2026-09-29；非 N49 引入）」。N49 独立评审用 `ps -Eww` 取证：会话 → `pipeline.qc` → `ffprobe`/`ffmpeg` 每一级的环境里都有密钥变量（夹具里是 `AVA_TEST_KEY`）。终端 `ava` 本来就是这个行为；这些程序以同一用户身份运行、不读该变量，**不构成越权**。N49 修后这些外部程序（含 `acquire` 的 `yt-dlp`）在桌面端真的会跑，拿到该变量的外部程序因此变多。若要收紧：作业起子进程时剥掉密钥变量（改 `pipeline/`，须另立文问人）。暂不修。 **2026-10-06 扩面加注（Spec 15 v0.3 §2.7，人裁决 R2-9）**：Spec 15 PR3 落地后，桌面端会话还会注入 web 检索服务的密钥（如 `TAVILY_API_KEY`，至多 4 个），同样随作业继承到外部程序。人裁决接受、PR3 不改 `jobs.py`：同用户进程本可直接经 `/usr/bin/security` 读钥匙串，浏览器与 crawl4ai 不经 `jobs.py`，只改一处会造成已收紧的错觉；要收紧须另立小 spec，同时覆盖两条拉起路径。
+
+### [D88] 有些 bug 只有生产环境能撞出来：其中可以提前发现的两类没进测试——静态可查的未定义名（tts 缺 datetime、clips 写错变量名，都在 main 上待了几周），以及长任务中途被打断后盘上状态不一致
+- 状态：**已解决（2026-10-13 修复、机检通过；改的是测试覆盖，无需人手验）**
+- 关联（原表）：`tests/test_static.py`（ruff E9/F821/F822/F823 进 pytest，ruff 入 dev 依赖）；中断审计修 4 处：`subindex.load_all` / `vindex.load_scene` / `faces.load_faces` 加载时核对 .npy 与 .json 条数（两步写之间被打断会让下标整体错位、检索静默指错）；`render._write_final` 先写 `.05-final.partial.mp4` 再原子替换（此前直写，打断即毁掉上一版成片且 status 报渲染完成）；`vindex.write_presence` 改原子写；D87
+- 原记录（活跃表原文）：状态栏「**已修·机检通过**（2026-10-13）」。人提出（「没人用永远没问题」）。审计范围：tts、render、clips、subindex / vindex / faces、shots、assemble、corrections、candidates；shots 抽帧、vindex captions 续跑、clips、assemble 本来就对。未修：`shots.caption_frames` 中断后残留 `tmp-*.jpg` 会报错要人删（响亮失败，不静默）
+
+### [D76] 对话区里 agent 给的长命令难读难复制：代码块只横向滚动、没有复制按钮，人要拖选一整行超长命令
+- 状态：**已解决·人已验收（2026-10-11 真实窗口验收「没问题」）**
+- 关联（原表）：`desktop/src/renderer/PreviewPane.tsx::renderChatMarkdown`、`style.css` 的 `.conv-md .markdown pre`（`overflow-x: auto`）；D46（对话区 Markdown 渲染）
+- 原记录（活跃表原文）：状态栏「**已施工·人已验收**（2026-10-11，人选方案 C；真实窗口验收「没问题」）」。人原话：「客户端显示bash命令之类的文本特别长，还不能一下子就复制」。修法候选：代码块右上角「复制」按钮（`navigator.clipboard`，只复制块内原文）+ 长行折行显示（复制仍是原文）。UI 规则 4：出真实窗口截图让人选。附注：本例的根因其实是 agent 让人去终端跑命令（违背 D59「不该人亲手敲」），能力补上（见 D77）后这类长命令应当很少出现在对话里。**2026-10-11 人选方案 C 并施工**（截图脚本 `docs/dev/plans/2026-10-11-copy-button-shots/`）：助手回复代码块折行显示 + 右上角常驻「复制」（宿主渲染后挂上，不进 `renderChatMarkdown` 输出，D46 不变量不动）；bash 工具行与命令审批卡各一个「复制命令」，复制的是命令原文（卡面每行带「│」前缀、工具行摘要截 80 字）。工具行的原文来自 tool 帧的条件键 `command`（仅 bash，core `session._on_trace` 发、TS `convFrames.CONDITIONAL` 登记）。机检：vitest 3 条 + 真实 core e2e（三处各点一次，系统剪贴板读回原文、每次前写哨兵），变异 5 处全杀。**同日补：继续会话也能复制**（人要求「全量可以复制」）——`protocol._send_history` 按 `tool_call_id` 回查当时的调用，tool 条目照实给工具名（原恒为 None，旧工具行只显示「tool」），bash 条目带 `command`（TS `CONDITIONAL.history` 同步登记），桌面端按 core `tool_summary` 同一规则补命令摘要。机检：pytest 1 条 + vitest 3 条 + 真实 core e2e（结束会话 → 继续 → 旧工具行复制得原文），变异 7 处全杀。
+
 ## 2026-10-11：伪恋期 06 渲染配乐（1 条，立案即修）
 
 ### [D75] `bgm register` 把外置盘绝对路径写进 config/bgm.json；曲名带曲序时 agent 误以为没登记去重登
