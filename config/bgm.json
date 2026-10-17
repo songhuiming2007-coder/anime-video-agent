@@ -2078,5 +2078,50 @@
         "vocal": false
       }
     }
+  },
+  "supercell": {
+    "_note": "supercell 企划曲库（候选池，每卷人耳现选）。nico原投稿音轨=2007–09 初音原版（自池内 SP13–17 PV 原样拷出 AAC 125–196kbps），Apple Music 日区无此批录音室版；其余来自 Apple Music 日区（gamdl，aac-web）。",
+    "tracks": {
+      "ブラック★ロックシューター (nico原投稿 sm3645817)": {
+        "path": "data/library/bgm/supercell/ブラック★ロックシューター (nico原投稿 sm3645817).m4a",
+        "slot": "正文",
+        "dur": 292.1,
+        "lufs": -5.83,
+        "onset": 2.229,
+        "vocal": false
+      },
+      "メルト (nico原投稿 sm1715919)": {
+        "path": "data/library/bgm/supercell/メルト (nico原投稿 sm1715919).m4a",
+        "slot": "正文",
+        "dur": 256.8,
+        "lufs": -6.29,
+        "onset": 0.209,
+        "vocal": false
+      },
+      "ワールドイズマイン (nico原投稿 sm3504435)": {
+        "path": "data/library/bgm/supercell/ワールドイズマイン (nico原投稿 sm3504435).m4a",
+        "slot": "正文",
+        "dur": 255.0,
+        "lufs": -5.43,
+        "onset": 1.556,
+        "vocal": false
+      },
+      "初めての恋が終わる時 (nico原投稿 sm5524166)": {
+        "path": "data/library/bgm/supercell/初めての恋が終わる時 (nico原投稿 sm5524166).m4a",
+        "slot": "正文",
+        "dur": 322.0,
+        "lufs": -7.91,
+        "onset": 5.696,
+        "vocal": false
+      },
+      "恋は戦争 (nico原投稿 sm2397344)": {
+        "path": "data/library/bgm/supercell/恋は戦争 (nico原投稿 sm2397344).m4a",
+        "slot": "正文",
+        "dur": 236.5,
+        "lufs": -8.05,
+        "onset": 4.783,
+        "vocal": false
+      }
+    }
   }
 }
