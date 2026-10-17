@@ -2,6 +2,7 @@
 
     python -m pipeline.calibration show <键路径>                         # 只读
     python -m pipeline.calibration set <键路径> <值> --evidence "<标定实录>"   # 弹卡写入
+    python -m pipeline.calibration set <键路径> <值> --evidence "…" --approved-by "<谁、何时、怎么批的>"  # 终端直调（D110）
 
 AGENTS.md Code Freeze 的第二个窄口子（第一个是读音表，D51）：只放下表这些**按番 / 按条件
 标定的数**，其余 config 照旧只读。写法同 `corrections.write_global_entry`：往返格式校验
@@ -157,25 +158,43 @@ def _set(cfg: dict, keys: tuple[str, ...], value) -> None:
     cur[keys[-1]] = value
 
 
-def _evidence_line(target: Target, value, old, evidence: str) -> str:
+def _source_text(via_card: bool, approved_by: str | None) -> str:
+    """实录里「这个数怎么批下来的」（D110）。
+
+    实录是以后判断「这个数谁拍的板」的依据：只有 AVA 里经人审卡执行时作业环境才带
+    `jobs.HUMAN_CARD_ENV`；终端直调没经过任何卡，必须由调用者写明批准来历，不许冒用「人审卡」。
+    """
+    if via_card:
+        return "经 AVA `calibration set` 人审卡写入"
+    who = (approved_by or "").strip()
+    if not who:
+        raise CalibrationError(
+            "这次是从命令行直接写入，没经过 AVA 人审卡：加 --approved-by \"<谁、何时、怎么批的>\"，"
+            "如实写进实录（例：--approved-by \"人 2026-10-17 对话中口头授权\"）")
+    return f"命令行直调 `calibration set` 写入，批准：{who}"
+
+
+def _evidence_line(target: Target, value, old, evidence: str, source: str) -> str:
     label = target.name or ".".join(target.key_path())
-    return (f"\n\n**{label} = {value:g}**（{date.today().isoformat()}，经 `calibration set` 人审卡写入；"
+    return (f"\n\n**{label} = {value:g}**（{date.today().isoformat()}，{source}；"
             f"旧值 {old if old is not None else '无'}）：{evidence.strip()}")
 
 
-def plan(key: str, raw_value: str, evidence: str) -> dict:
+def plan(key: str, raw_value: str, evidence: str, *, via_card: bool = False,
+         approved_by: str | None = None) -> dict:
     """不落盘的写入计划：旧值、新值、追加的实录、影响面。"""
     target = parse_target(key)
     value = parse_value(target, raw_value)
     if len(evidence.strip()) < EVIDENCE_MIN_CHARS:
         raise CalibrationError(f"标定实录太短（{len(evidence.strip())} 字，至少 {EVIDENCE_MIN_CHARS} 字）："
                                "写清测了什么、在哪集、看到什么、为什么取这个数")
+    source = _source_text(via_card, approved_by)
     cfg, _raw = _load(target.path)
     old = _get(cfg, target.key_path())
     if isinstance(old, dict):
         raise CalibrationError(f"{key} 现在是一个对象，不是一个数——结构不认识，请人手改")
     return {"target": target, "value": value, "old": old,
-            "note": _evidence_line(target, value, old, evidence), "impact": impact(target, value)}
+            "note": _evidence_line(target, value, old, evidence, source), "impact": impact(target, value)}
 
 
 def impact(target: Target, value) -> list[str]:
@@ -207,8 +226,9 @@ def impact(target: Target, value) -> list[str]:
     return ["影响含这个歌名的段的时长估算与回读豁免"]
 
 
-def write(key: str, raw_value: str, evidence: str) -> dict:
-    p = plan(key, raw_value, evidence)
+def write(key: str, raw_value: str, evidence: str, *, via_card: bool = False,
+          approved_by: str | None = None) -> dict:
+    p = plan(key, raw_value, evidence, via_card=via_card, approved_by=approved_by)
     target: Target = p["target"]
     cfg, raw = _load(target.path)
     _set(cfg, target.key_path(), p["value"])
@@ -232,7 +252,7 @@ def preview(argv: list[str]) -> tuple[bool, list[str]]:
     if ns.cmd != "set":
         return True, []
     try:
-        p = plan(ns.key, ns.value, ns.evidence)
+        p = plan(ns.key, ns.value, ns.evidence, via_card=True)   # 预检只在弹卡前跑：批了就是经卡执行
     except (CalibrationError, OSError, ValueError) as exc:
         return False, [str(exc)]
     t: Target = p["target"]
@@ -249,6 +269,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("key")
     s.add_argument("value")
     s.add_argument("--evidence", required=True, help="标定实录：测了什么、在哪集、看到什么、为什么取这个数")
+    s.add_argument("--approved-by", default=None,
+                   help="命令行直调时必填：谁、何时、怎么批的（AVA 经人审卡执行时不用给）")
     sh = sub.add_parser("show", help="看一个标定值与它的实录（只读）")
     sh.add_argument("key")
     return ap
@@ -264,7 +286,10 @@ def main(argv: list[str] | None = None) -> int:
             note = str(_get(cfg, target.note_path()) or "")
             print(f"实录（{'.'.join(target.note_path())}，末 400 字）：{note[-400:] if note else '无'}")
             return 0
-        p = write(ns.key, ns.value, ns.evidence)
+        from .jobs import HUMAN_CARD_ENV
+
+        p = write(ns.key, ns.value, ns.evidence, via_card=os.environ.get(HUMAN_CARD_ENV) == "1",
+                  approved_by=ns.approved_by)
     except CalibrationError as exc:
         raise SystemExit(f"FAIL {exc}") from None
     t: Target = p["target"]

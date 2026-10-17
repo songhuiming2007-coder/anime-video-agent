@@ -58,6 +58,10 @@ class EventType(str, Enum):
     BROWSER_SESSION_STARTED = "browser_session_started"  # Spec 5 browser 进程启动事件
 
 
+# D110：人在审批卡上批准过的作业，子进程环境里带这个变量（值 "1"）。命令据此如实写来历
+# （如 calibration 实录「经人审卡写入」）；没有它就是终端直调，没经过卡。
+HUMAN_CARD_ENV = "AVA_HUMAN_CARD"
+
 @dataclass
 class Job:
     job_id: str
@@ -81,7 +85,7 @@ class Job:
     stdin_devnull: bool = False
     tail_bytes: int = 4096
     env_drop: tuple[str, ...] = ()
-    # bash 作业专用（2026-10-13）：额外注入的环境变量。默认空 = pipeline 作业的既有行为
+    # 额外注入的环境变量：bash 作业（2026-10-13）；人在卡上批准过的 pipeline 作业带 HUMAN_CARD_ENV（D110）
     env_extra: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:

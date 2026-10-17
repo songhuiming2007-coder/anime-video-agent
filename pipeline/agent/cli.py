@@ -2587,7 +2587,7 @@ def _run_repl_body(
                 check_code_freeze()
                 cmd_str = " ".join(outcome["argv"])
                 print(f"[*] 正在执行: {cmd_str} ...")
-                result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True)
+                result = run_pipeline(cmd_part, episode_dir=ep_dir, scope=scope, confirmed=True, human_card=True)
                 if result["ok"]:
                     print(f"[OK] 执行完成（耗时: {result['duration_s']:.1f}s）")
                 else:
