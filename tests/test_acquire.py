@@ -648,3 +648,20 @@ class TestYtDlpFromProjectEnv:
 
         argv = A.probe_argv("https://www.youtube.com/watch?v=x", yt_dlp=[sys.executable, "-m", "yt_dlp"])
         assert argv[:3] == [sys.executable, "-m", "yt_dlp"] and "--no-cache-dir" in argv
+
+
+def test_番池入库全链写全且写稿侧有指路():
+    """D103：写稿会话（creative / project scope、runbook 02）只加载自己那几份说明，入库全链只写在
+    acquire-assets SKILL 里的话，写稿侧就只知道 `--anchor-only` 那半条。"""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    skill = (repo / "skills" / "acquire-assets" / "SKILL.md").read_text(encoding="utf-8")
+    step4 = skill[skill.index("4. **番池 SP 入库全链**"):skill.index("5. **要重抓**")]
+    chain = ["shots calibrate", "calibration set", "shots build", "--also-cut", "shots caption-frames",
+             "cloud lib-push", "cloud lib-captions", "cloud lib-pull",
+             "vindex embed", "vindex status"]
+    pos = [step4.index(c) for c in chain]
+    assert pos == sorted(pos), "全链顺序写乱了"
+    for rel in ("config/agent/scopes/creative.md", "config/agent/scopes/project.md", "docs/runbook/02-script.md"):
+        assert "acquire-assets/SKILL.md` 第二节第 4 步" in (repo / rel).read_text(encoding="utf-8"), rel
