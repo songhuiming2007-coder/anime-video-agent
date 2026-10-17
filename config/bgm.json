@@ -15,7 +15,7 @@
         "from": "S2 原声碟 SPCD01 tr.11",
         "dur": 160.3,
         "lufs": -16.9,
-        "onset": 2.0,
+        "onset": 2,
         "vocal": false
       },
       "不合理な感情": {
@@ -24,7 +24,7 @@
         "from": "S2 原声碟 SPCD01 tr.17",
         "dur": 158.5,
         "lufs": -14.4,
-        "onset": 2.0,
+        "onset": 2,
         "vocal": false
       },
       "本音、言えなくて": {
@@ -58,7 +58,7 @@
         "path": "data/library/bgm/春物/ユキハルアメ [Instrumental].flac",
         "slot": "正文",
         "from": "S3 OP 单曲 GNCA-0660 tr.05（Instrumental）",
-        "dur": 270.0,
+        "dur": 270,
         "lufs": -8.3,
         "onset": 2.8,
         "vocal": false
@@ -67,8 +67,8 @@
         "path": "data/library/bgm/春物/ユキハルアメ.flac",
         "slot": "结尾",
         "from": "S3 OP 单曲 GNCA-0660 tr.01（人声版）",
-        "dur": 270.0,
-        "lufs": -7.0,
+        "dur": 270,
+        "lufs": -7,
         "onset": 2.8,
         "vocal": true
       }
@@ -83,7 +83,7 @@
         "from": "S01 原声集 Disc1 tr.12",
         "dur": 130.2,
         "lufs": -15.5,
-        "onset": 10.0,
+        "onset": 10,
         "vocal": false
       },
       "Sorrow": {
@@ -139,7 +139,7 @@
         "from": "re 原声集 Disc2 tr.05，Symphonic Suite 第5乐章",
         "dur": 231.3,
         "lufs": -13.2,
-        "onset": 10.0,
+        "onset": 10,
         "vocal": false
       },
       "Horizon": {
@@ -187,6 +187,14 @@
   "罪恶王冠": {
     "_note": "2026-08-09 建，跟东京喰种同规则：不设 use，纯候选池，哪期用哪首记在该期 01-topic.md。素材来自 BD 附赠的《Special CD2/4/9 - OST Another Side 1/2/3》三张碟（24 轨全收，无 cue，是已经分好轨的独立 flac，不需要走 `bgm scan/extract` 的解 cue流程，直接 `bgm measure` 测量）。曲名是原盘就有的风格化乱码字符（罪恶王冠 OST 的一贯设计，跟剧中「Void/病毒侵蚀」的主题呼应，不是转码/编码问题）。同一批附赠的另外 6 张碟本次**没有**收进候选池：《Special CD1 - Theme Song Collection》是 OP/ED 人声单曲集（含 ryo(supercell) 的《Departures》等，未见 instrumental/off vocal 标注，且'04.Rё.L feat. Cyua'明确标了 feat. 歌手，按东京喰种立下的规矩人声轨不收）；《CD3/7/8 - WEB RADIO CD》是声优对谈广播，不是音乐；《CD5 - SPECIAL DRAMA CD》是广播剧；《CD10 - à la Carte》是声优小剧场段子（篇名'パラレルサイド「XXX危机一发!」'一看就是短剧不是歌）。如果以后想用 OP/ED 伴奏版（unravel 等正式单曲的 instrumental 轨），CD1 这批人声单曲不带伴奏轨，得另外找对应的 OP/ED 单曲碟（跟东京喰种那条'unravel/asphyxia 不在这批素材里'的坑是同一类）。",
     "tracks": {
+      "1616": {
+        "path": "data/library/bgm/罪恶王冠/07. 1616.flac",
+        "from": "OST Another Side 2 tr.07",
+        "dur": 202.5,
+        "lufs": -14.9,
+        "onset": 5.3,
+        "vocal": false
+      },
       "kEっ1000": {
         "path": "data/library/bgm/罪恶王冠/01. kEっ1000.flac",
         "from": "OST Another Side 1 tr.01",
@@ -246,7 +254,7 @@
       "Vぉ1℃→Ki母∪": {
         "path": "data/library/bgm/罪恶王冠/08. Vぉ1℃→Ki母∪.flac",
         "from": "OST Another Side 1 tr.08",
-        "dur": 271.0,
+        "dur": 271,
         "lufs": -11.9,
         "onset": 2.2,
         "vocal": false
@@ -294,7 +302,7 @@
       "sT+hRN+tRB+tUba": {
         "path": "data/library/bgm/罪恶王冠/05. sT+hRN+tRB+tUba.flac",
         "from": "OST Another Side 2 tr.05",
-        "dur": 373.0,
+        "dur": 373,
         "lufs": -11.7,
         "onset": 4.7,
         "vocal": false
@@ -307,28 +315,20 @@
         "onset": 1.4,
         "vocal": false
       },
-      "1616": {
-        "path": "data/library/bgm/罪恶王冠/07. 1616.flac",
-        "from": "OST Another Side 2 tr.07",
-        "dur": 202.5,
-        "lufs": -14.9,
-        "onset": 5.3,
-        "vocal": false
-      },
       "gT→sYnTH": {
         "path": "data/library/bgm/罪恶王冠/08. gT→sYnTH.flac",
         "from": "OST Another Side 2 tr.08",
         "dur": 298.9,
         "lufs": -14.8,
-        "onset": 7.0,
+        "onset": 7,
         "vocal": false
       },
       "pF-AdLibW": {
         "path": "data/library/bgm/罪恶王冠/09. pF-AdLibW.flac",
         "from": "OST Another Side 2 tr.09",
         "dur": 123.3,
-        "lufs": -19.0,
-        "onset": 7.0,
+        "lufs": -19,
+        "onset": 7,
         "vocal": false
       },
       "Egg": {
@@ -359,7 +359,7 @@
         "path": "data/library/bgm/罪恶王冠/04. Idaho Potato.flac",
         "from": "OST Another Side 3 tr.04",
         "dur": 302.8,
-        "lufs": -17.0,
+        "lufs": -17,
         "onset": 3.3,
         "vocal": false
       },
@@ -448,7 +448,7 @@
         "from": "キミソラキセキ 的派生文件：去掉前 12 秒（2026-08-31 校条祭期曲目区间 12s–4:12s；当时 render 尚不支持曲内偏移，遂物理切片实现）。2026-09-01 起 render 的 BGM 列表已支持 `+N秒` 曲内偏移，新期直接写 `キミソラキセキ +12秒`，不必再物理切片。本条目仅为重渲 2026-08-31 期保留（该期 01-topic.md 引用此名）。原曲见同名条目",
         "dur": 291.5,
         "lufs": -8.6,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": true
       }
     }
@@ -736,7 +736,7 @@
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）／Movie edit",
         "dur": 156.2,
         "lufs": -6.2,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": true
       },
       "二つの告白": {
@@ -843,7 +843,7 @@
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
         "dur": 133.6,
-        "lufs": -13.0,
+        "lufs": -13,
         "onset": 0.8,
         "vocal": false
       },
@@ -869,7 +869,7 @@
         "path": "data/library/bgm/天气之子/永遠の雲の上.flac",
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
-        "dur": 52.0,
+        "dur": 52,
         "lufs": -25.6,
         "onset": 28.1,
         "vocal": false
@@ -888,7 +888,7 @@
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
         "dur": 78.9,
-        "lufs": -16.0,
+        "lufs": -16,
         "onset": 2.2,
         "vocal": false
       },
@@ -897,15 +897,15 @@
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
         "dur": 59.7,
-        "lufs": -19.0,
-        "onset": 10.0,
+        "lufs": -19,
+        "onset": 10,
         "vocal": false
       },
       "芝公園": {
         "path": "data/library/bgm/天气之子/芝公園.flac",
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
-        "dur": 192.0,
+        "dur": 192,
         "lufs": -14.9,
         "onset": 2.8,
         "vocal": false
@@ -914,7 +914,7 @@
         "path": "data/library/bgm/天气之子/花火大会.flac",
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
-        "dur": 185.0,
+        "dur": 185,
         "lufs": -12.1,
         "onset": 8.4,
         "vocal": false
@@ -925,7 +925,7 @@
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
         "dur": 107.8,
         "lufs": -15.9,
-        "onset": 7.0,
+        "onset": 7,
         "vocal": false
       },
       "陽菜と、走る帆高": {
@@ -950,7 +950,7 @@
         "path": "data/library/bgm/天气之子/首都危機.flac",
         "slot": "正文",
         "from": "天気の子 サウンドトラック（RADWIMPS, 2019）",
-        "dur": 97.0,
+        "dur": 97,
         "lufs": -11.1,
         "onset": 1.4,
         "vocal": false
@@ -983,7 +983,7 @@
         "from": "君の名は。 English edition（RADWIMPS, 2017）",
         "dur": 409.2,
         "lufs": -8.1,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": true
       },
       "Zenzenzense (English ver.)": {
@@ -992,14 +992,14 @@
         "from": "君の名は。 English edition（RADWIMPS, 2017）",
         "dur": 277.4,
         "lufs": -6.5,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": true
       },
       "かたわれ時": {
         "path": "data/library/bgm/你的名字/かたわれ時.flac",
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
-        "dur": 170.0,
+        "dur": 170,
         "lufs": -14.6,
         "onset": 3.3,
         "vocal": false
@@ -1062,7 +1062,7 @@
         "path": "data/library/bgm/你的名字/デート2.flac",
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
-        "dur": 129.0,
+        "dur": 129,
         "lufs": -18.3,
         "onset": 0.6,
         "vocal": false
@@ -1091,7 +1091,7 @@
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
         "dur": 144.1,
         "lufs": -8.4,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": false
       },
       "前前前世 (Movie Ver.)": {
@@ -1100,7 +1100,7 @@
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
         "dur": 285.9,
         "lufs": -6.9,
-        "onset": 0.0,
+        "onset": 0,
         "vocal": true
       },
       "口噛み酒トリップ": {
@@ -1143,7 +1143,7 @@
         "path": "data/library/bgm/你的名字/御神体.flac",
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
-        "dur": 208.0,
+        "dur": 208,
         "lufs": -17.2,
         "onset": 3.3,
         "vocal": false
@@ -1197,7 +1197,7 @@
         "path": "data/library/bgm/你的名字/秋祭り.flac",
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
-        "dur": 68.0,
+        "dur": 68,
         "lufs": -13.4,
         "onset": 0.3,
         "vocal": false
@@ -1207,7 +1207,7 @@
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
         "dur": 111.6,
-        "lufs": -14.0,
+        "lufs": -14,
         "onset": 0.3,
         "vocal": false
       },
@@ -1224,7 +1224,7 @@
         "path": "data/library/bgm/你的名字/記憶を呼び起こす瀧.flac",
         "slot": "正文",
         "from": "君の名は。オリジナル・サウンドトラック（RADWIMPS, 2016）",
-        "dur": 103.0,
+        "dur": 103,
         "lufs": -10.8,
         "onset": 0.6,
         "vocal": false
@@ -1287,7 +1287,7 @@
         "path": "data/library/bgm/EGOIST/英雄 運命の詩.flac",
         "from": "VVXX-00162 单曲 tr.01 完整版（Fate/Apocrypha OP，2026-09-07 入库）",
         "dur": 282.13,
-        "lufs": -6.0,
+        "lufs": -6,
         "onset": 2.2,
         "vocal": true
       },
@@ -1368,7 +1368,7 @@
       "回想": {
         "path": "data/library/bgm/伪恋/04. 回想.flac",
         "slot": "正文",
-        "dur": 84.0,
+        "dur": 84,
         "lufs": -11.58,
         "onset": 2.786,
         "vocal": false
@@ -1520,7 +1520,7 @@
       "忖度": {
         "path": "data/library/bgm/伪恋/10. 忖度.flac",
         "slot": "正文",
-        "dur": 111.0,
+        "dur": 111,
         "lufs": -17.3,
         "onset": 0.836,
         "vocal": false
@@ -1608,7 +1608,7 @@
       "告白": {
         "path": "data/library/bgm/伪恋/14. 告白.flac",
         "slot": "正文",
-        "dur": 112.0,
+        "dur": 112,
         "lufs": -21.01,
         "onset": 0.836,
         "vocal": false
@@ -1760,7 +1760,7 @@
       "浮足": {
         "path": "data/library/bgm/伪恋/20. 浮足.flac",
         "slot": "正文",
-        "dur": 102.0,
+        "dur": 102,
         "lufs": -11.32,
         "onset": 0.836,
         "vocal": false
@@ -1824,7 +1824,7 @@
       "泰然": {
         "path": "data/library/bgm/伪恋/23. 泰然.flac",
         "slot": "正文",
-        "dur": 65.0,
+        "dur": 65,
         "lufs": -17.18,
         "onset": 0.836,
         "vocal": false
@@ -1897,7 +1897,7 @@
         "path": "data/library/bgm/伪恋/27. 懇篤.flac",
         "slot": "正文",
         "dur": 114.9,
-        "lufs": -19.0,
+        "lufs": -19,
         "onset": 0.836,
         "vocal": false
       },
@@ -1912,8 +1912,8 @@
       "追憶": {
         "path": "data/library/bgm/伪恋/29. 追憶.flac",
         "slot": "正文",
-        "dur": 108.0,
-        "lufs": -14.0,
+        "dur": 108,
+        "lufs": -14,
         "onset": 1.115,
         "vocal": false
       },
@@ -2072,7 +2072,7 @@
       "通り雨drop -Instrumental-": {
         "path": "data/library/bgm/伪恋/通り雨drop -Instrumental-.flac",
         "slot": "结尾",
-        "dur": 221.0,
+        "dur": 221,
         "lufs": -12.66,
         "onset": 0.836,
         "vocal": false
@@ -2088,7 +2088,7 @@
         "dur": 292.1,
         "lufs": -5.83,
         "onset": 2.229,
-        "vocal": false
+        "vocal": true
       },
       "メルト (nico原投稿 sm1715919)": {
         "path": "data/library/bgm/supercell/メルト (nico原投稿 sm1715919).m4a",
@@ -2096,23 +2096,23 @@
         "dur": 256.8,
         "lufs": -6.29,
         "onset": 0.209,
-        "vocal": false
+        "vocal": true
       },
       "ワールドイズマイン (nico原投稿 sm3504435)": {
         "path": "data/library/bgm/supercell/ワールドイズマイン (nico原投稿 sm3504435).m4a",
         "slot": "正文",
-        "dur": 255.0,
+        "dur": 255,
         "lufs": -5.43,
         "onset": 1.556,
-        "vocal": false
+        "vocal": true
       },
       "初めての恋が終わる時 (nico原投稿 sm5524166)": {
         "path": "data/library/bgm/supercell/初めての恋が終わる時 (nico原投稿 sm5524166).m4a",
         "slot": "正文",
-        "dur": 322.0,
+        "dur": 322,
         "lufs": -7.91,
         "onset": 5.696,
-        "vocal": false
+        "vocal": true
       },
       "恋は戦争 (nico原投稿 sm2397344)": {
         "path": "data/library/bgm/supercell/恋は戦争 (nico原投稿 sm2397344).m4a",
@@ -2120,7 +2120,863 @@
         "dur": 236.5,
         "lufs": -8.05,
         "onset": 4.783,
+        "vocal": true
+      },
+      "#Love (Instrumental)": {
+        "path": "data/library/bgm/supercell/#Love (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 261.3,
+        "lufs": -11.01,
+        "onset": 1.022,
         "vocal": false
+      },
+      "#Love (feat. Ann & Gaku)": {
+        "path": "data/library/bgm/supercell/#Love (feat. Ann & Gaku).flac",
+        "slot": "正文",
+        "dur": 262.2,
+        "lufs": -8.73,
+        "onset": 1.672,
+        "vocal": true
+      },
+      "Feel so good (Instrumental)": {
+        "path": "data/library/bgm/supercell/Feel so good (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 302,
+        "lufs": -10.31,
+        "onset": 17.833,
+        "vocal": false
+      },
+      "Feel so good": {
+        "path": "data/library/bgm/supercell/Feel so good.flac",
+        "slot": "正文",
+        "dur": 302,
+        "lufs": -8.69,
+        "onset": 17.833,
+        "vocal": true
+      },
+      "Great Distance (Instrumental)": {
+        "path": "data/library/bgm/supercell/Great Distance (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 273,
+        "lufs": -6.3,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "Great Distance (feat. chelly)": {
+        "path": "data/library/bgm/supercell/Great Distance (feat. chelly).flac",
+        "slot": "正文",
+        "dur": 273.2,
+        "lufs": -5.14,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "Journey's End": {
+        "path": "data/library/bgm/supercell/Journey's End.flac",
+        "slot": "正文",
+        "dur": 109.3,
+        "lufs": -15.32,
+        "onset": 3.808,
+        "vocal": false
+      },
+      "LOVE & ROLL (Instrumental)": {
+        "path": "data/library/bgm/supercell/LOVE & ROLL (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 293.9,
+        "lufs": -8.38,
+        "onset": 2.136,
+        "vocal": false
+      },
+      "LOVE & ROLL": {
+        "path": "data/library/bgm/supercell/LOVE & ROLL.flac",
+        "slot": "正文",
+        "dur": 294.6,
+        "lufs": -7.66,
+        "onset": 2.136,
+        "vocal": true
+      },
+      "Last Song (Instrumental)": {
+        "path": "data/library/bgm/supercell/Last Song (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 327.5,
+        "lufs": -10.38,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "Last Song (feat. chelly)": {
+        "path": "data/library/bgm/supercell/Last Song (feat. chelly).flac",
+        "slot": "正文",
+        "dur": 329.2,
+        "lufs": -8.94,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "M.K.O (Instrumental)": {
+        "path": "data/library/bgm/supercell/M.K.O (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 255.2,
+        "lufs": -8.97,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "M.K.O": {
+        "path": "data/library/bgm/supercell/M.K.O.flac",
+        "slot": "正文",
+        "dur": 255.2,
+        "lufs": -8.42,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "Mr.Downer": {
+        "path": "data/library/bgm/supercell/Mr.Downer.flac",
+        "slot": "正文",
+        "dur": 251.3,
+        "lufs": -7.45,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "My Dearest (Album Mix)": {
+        "path": "data/library/bgm/supercell/My Dearest (Album Mix).flac",
+        "slot": "正文",
+        "dur": 336.6,
+        "lufs": -8.63,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "My Dearest (Instrumental)": {
+        "path": "data/library/bgm/supercell/My Dearest (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 337.9,
+        "lufs": -6.72,
+        "onset": 0.65,
+        "vocal": false
+      },
+      "My Dearest (TV Edit Instrumental)": {
+        "path": "data/library/bgm/supercell/My Dearest (TV Edit Instrumental).flac",
+        "slot": "结尾",
+        "dur": 95.5,
+        "lufs": -7.3,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "My Dearest (TV Edit)": {
+        "path": "data/library/bgm/supercell/My Dearest (TV Edit).flac",
+        "slot": "正文",
+        "dur": 93.7,
+        "lufs": -5.94,
+        "onset": 0.65,
+        "vocal": true
+      },
+      "My Dearest": {
+        "path": "data/library/bgm/supercell/My Dearest.flac",
+        "slot": "正文",
+        "dur": 338.5,
+        "lufs": -5.71,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "Nanairo night (Instrumental)": {
+        "path": "data/library/bgm/supercell/Nanairo night (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 181.4,
+        "lufs": -9.92,
+        "onset": 2.415,
+        "vocal": false
+      },
+      "Nanairo night (feat. Ann)": {
+        "path": "data/library/bgm/supercell/Nanairo night (feat. Ann).flac",
+        "slot": "正文",
+        "dur": 181.9,
+        "lufs": -9.31,
+        "onset": 2.415,
+        "vocal": true
+      },
+      "No.525300887039": {
+        "path": "data/library/bgm/supercell/No.525300887039.flac",
+        "slot": "正文",
+        "dur": 356.9,
+        "lufs": -9.46,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "Perfect Day (Instrumental)": {
+        "path": "data/library/bgm/supercell/Perfect Day (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 286.4,
+        "lufs": -7.95,
+        "onset": 0.186,
+        "vocal": false
+      },
+      "Perfect Day": {
+        "path": "data/library/bgm/supercell/Perfect Day.flac",
+        "slot": "正文",
+        "dur": 286.4,
+        "lufs": -6.27,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "She is my senior": {
+        "path": "data/library/bgm/supercell/She is my senior.flac",
+        "slot": "正文",
+        "dur": 171.8,
+        "lufs": -8.72,
+        "onset": 1.579,
+        "vocal": true
+      },
+      "The Bravery (Album Mix)": {
+        "path": "data/library/bgm/supercell/The Bravery (Album Mix).flac",
+        "slot": "正文",
+        "dur": 364.6,
+        "lufs": -7.96,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "The Bravery (Instrumental)": {
+        "path": "data/library/bgm/supercell/The Bravery (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 367.1,
+        "lufs": -7.5,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "The Bravery (TV Edit Instrumental)": {
+        "path": "data/library/bgm/supercell/The Bravery (TV Edit Instrumental).flac",
+        "slot": "结尾",
+        "dur": 93.6,
+        "lufs": -7.89,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "The Bravery (TV Edit)": {
+        "path": "data/library/bgm/supercell/The Bravery (TV Edit).flac",
+        "slot": "正文",
+        "dur": 95.3,
+        "lufs": -6.86,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "The Bravery": {
+        "path": "data/library/bgm/supercell/The Bravery.flac",
+        "slot": "正文",
+        "dur": 366.8,
+        "lufs": -6.21,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "We're Still Here": {
+        "path": "data/library/bgm/supercell/We're Still Here.flac",
+        "slot": "正文",
+        "dur": 312,
+        "lufs": -13.83,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "Worldwide Love (Instrumental)": {
+        "path": "data/library/bgm/supercell/Worldwide Love (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 282.9,
+        "lufs": -9.61,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "Worldwide Love": {
+        "path": "data/library/bgm/supercell/Worldwide Love.flac",
+        "slot": "正文",
+        "dur": 286.6,
+        "lufs": -7.71,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "Yeah Oh Ahhh Oh !": {
+        "path": "data/library/bgm/supercell/Yeah Oh Ahhh Oh !.flac",
+        "slot": "正文",
+        "dur": 221.5,
+        "lufs": -7.45,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "theme of CENCOROLL": {
+        "path": "data/library/bgm/supercell/theme of CENCOROLL.flac",
+        "slot": "正文",
+        "dur": 85.1,
+        "lufs": -9.82,
+        "onset": 4.458,
+        "vocal": false
+      },
+      "うたかた花火 (Instrumental)": {
+        "path": "data/library/bgm/supercell/うたかた花火 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 361.5,
+        "lufs": -12.02,
+        "onset": 0.372,
+        "vocal": false
+      },
+      "うたかた花火": {
+        "path": "data/library/bgm/supercell/うたかた花火.flac",
+        "slot": "正文",
+        "dur": 361.5,
+        "lufs": -9.22,
+        "onset": 0.372,
+        "vocal": true
+      },
+      "くるくるマークのすごいやつ": {
+        "path": "data/library/bgm/supercell/くるくるマークのすごいやつ.flac",
+        "slot": "正文",
+        "dur": 223.2,
+        "lufs": -7.8,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "さよならメモリーズ (Instrumental)": {
+        "path": "data/library/bgm/supercell/さよならメモリーズ (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 366.9,
+        "lufs": -8.2,
+        "onset": 0.65,
+        "vocal": false
+      },
+      "さよならメモリーズ": {
+        "path": "data/library/bgm/supercell/さよならメモリーズ.flac",
+        "slot": "正文",
+        "dur": 366.9,
+        "lufs": -7,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "その一秒 次の瞬間": {
+        "path": "data/library/bgm/supercell/その一秒 次の瞬間.flac",
+        "slot": "正文",
+        "dur": 247.6,
+        "lufs": -7.9,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "ひねくれ者": {
+        "path": "data/library/bgm/supercell/ひねくれ者.flac",
+        "slot": "正文",
+        "dur": 253.7,
+        "lufs": -10.14,
+        "onset": 0.372,
+        "vocal": true
+      },
+      "またね": {
+        "path": "data/library/bgm/supercell/またね.flac",
+        "slot": "正文",
+        "dur": 41.8,
+        "lufs": -12.75,
+        "onset": 0.836,
+        "vocal": true
+      },
+      "カレ (Instrumental)": {
+        "path": "data/library/bgm/supercell/カレ (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 246.4,
+        "lufs": -10.79,
+        "onset": 0.743,
+        "vocal": false
+      },
+      "カレ": {
+        "path": "data/library/bgm/supercell/カレ.flac",
+        "slot": "正文",
+        "dur": 246.4,
+        "lufs": -10.02,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "ハートブレイカー": {
+        "path": "data/library/bgm/supercell/ハートブレイカー.flac",
+        "slot": "正文",
+        "dur": 260.8,
+        "lufs": -7.78,
+        "onset": 0,
+        "vocal": true
+      },
+      "ヒーロー (Instrumental)": {
+        "path": "data/library/bgm/supercell/ヒーロー (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 311.7,
+        "lufs": -6.85,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "ヒーロー": {
+        "path": "data/library/bgm/supercell/ヒーロー.flac",
+        "slot": "正文",
+        "dur": 311.7,
+        "lufs": -5.69,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "ブラック★ロックシューター (2009 supercell album ver.)": {
+        "path": "data/library/bgm/supercell/ブラック★ロックシューター (2009 supercell album ver.).flac",
+        "slot": "正文",
+        "dur": 293,
+        "lufs": -7.03,
+        "onset": 5.294,
+        "vocal": true
+      },
+      "ホワイト製薬": {
+        "path": "data/library/bgm/supercell/ホワイト製薬.flac",
+        "slot": "正文",
+        "dur": 200.1,
+        "lufs": -7.5,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "メルト (10th ANNIVERSARY MIX Instrumental)": {
+        "path": "data/library/bgm/supercell/メルト (10th ANNIVERSARY MIX Instrumental).wav",
+        "slot": "结尾",
+        "dur": 180.5,
+        "lufs": -5.88,
+        "onset": 1.024,
+        "vocal": false
+      },
+      "メルト (2009 supercell album ver.)": {
+        "path": "data/library/bgm/supercell/メルト (2009 supercell album ver.).flac",
+        "slot": "正文",
+        "dur": 257.4,
+        "lufs": -6.49,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "メルト (3M MIX カラオケ)": {
+        "path": "data/library/bgm/supercell/メルト (3M MIX カラオケ).mp3",
+        "slot": "结尾",
+        "dur": 259.8,
+        "lufs": -6.35,
+        "onset": 1.593,
+        "vocal": false
+      },
+      "ライン": {
+        "path": "data/library/bgm/supercell/ライン.flac",
+        "slot": "正文",
+        "dur": 295.4,
+        "lufs": -7.65,
+        "onset": 0.836,
+        "vocal": true
+      },
+      "リルモア (Instrumental)": {
+        "path": "data/library/bgm/supercell/リルモア (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 234.1,
+        "lufs": -13.03,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "リルモア": {
+        "path": "data/library/bgm/supercell/リルモア.flac",
+        "slot": "正文",
+        "dur": 234.8,
+        "lufs": -11.73,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "ロックンロールなんですの (Instrumental)": {
+        "path": "data/library/bgm/supercell/ロックンロールなんですの (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 216.8,
+        "lufs": -6.69,
+        "onset": 2.694,
+        "vocal": false
+      },
+      "ロックンロールなんですの": {
+        "path": "data/library/bgm/supercell/ロックンロールなんですの.flac",
+        "slot": "正文",
+        "dur": 216.8,
+        "lufs": -5.97,
+        "onset": 2.508,
+        "vocal": true
+      },
+      "ワールドイズマイン (2009 supercell album ver.)": {
+        "path": "data/library/bgm/supercell/ワールドイズマイン (2009 supercell album ver.).flac",
+        "slot": "正文",
+        "dur": 253.4,
+        "lufs": -7.02,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "僕らのあしあと (Album Mix)": {
+        "path": "data/library/bgm/supercell/僕らのあしあと (Album Mix).flac",
+        "slot": "正文",
+        "dur": 427.6,
+        "lufs": -7.48,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "僕らのあしあと (Instrumental)": {
+        "path": "data/library/bgm/supercell/僕らのあしあと (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 426.3,
+        "lufs": -9.21,
+        "onset": 0.65,
+        "vocal": false
+      },
+      "僕らのあしあと (TV Edit Instrumental)": {
+        "path": "data/library/bgm/supercell/僕らのあしあと (TV Edit Instrumental).flac",
+        "slot": "结尾",
+        "dur": 90.6,
+        "lufs": -10.74,
+        "onset": 0.65,
+        "vocal": false
+      },
+      "僕らのあしあと (TV Edit)": {
+        "path": "data/library/bgm/supercell/僕らのあしあと (TV Edit).flac",
+        "slot": "正文",
+        "dur": 91.7,
+        "lufs": -9.09,
+        "onset": 0.65,
+        "vocal": true
+      },
+      "僕らのあしあと": {
+        "path": "data/library/bgm/supercell/僕らのあしあと.flac",
+        "slot": "正文",
+        "dur": 426.3,
+        "lufs": -8.2,
+        "onset": 0.65,
+        "vocal": true
+      },
+      "初めての恋が終わる時 (2009 supercell album ver.)": {
+        "path": "data/library/bgm/supercell/初めての恋が終わる時 (2009 supercell album ver.).flac",
+        "slot": "正文",
+        "dur": 315.2,
+        "lufs": -7.95,
+        "onset": 1.3,
+        "vocal": true
+      },
+      "初めての恋が終わる時 (カラオケ)": {
+        "path": "data/library/bgm/supercell/初めての恋が終わる時 (カラオケ).mp3",
+        "slot": "结尾",
+        "dur": 312.7,
+        "lufs": -8.54,
+        "onset": 0.862,
+        "vocal": false
+      },
+      "劇場版アニメ映画「ねらわれた学園」特報用BGM": {
+        "path": "data/library/bgm/supercell/劇場版アニメ映画「ねらわれた学園」特報用BGM.flac",
+        "slot": "正文",
+        "dur": 142.8,
+        "lufs": -10.89,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "君の知らない物語 (Instrumental)": {
+        "path": "data/library/bgm/supercell/君の知らない物語 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 340.4,
+        "lufs": -7.09,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "君の知らない物語 (TV Edit)": {
+        "path": "data/library/bgm/supercell/君の知らない物語 (TV Edit).flac",
+        "slot": "正文",
+        "dur": 93.5,
+        "lufs": -5.89,
+        "onset": 0.836,
+        "vocal": true
+      },
+      "君の知らない物語": {
+        "path": "data/library/bgm/supercell/君の知らない物語.flac",
+        "slot": "正文",
+        "dur": 341.1,
+        "lufs": -5.87,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "告白 (Album Mix)": {
+        "path": "data/library/bgm/supercell/告白 (Album Mix).flac",
+        "slot": "正文",
+        "dur": 326,
+        "lufs": -8.87,
+        "onset": 2.229,
+        "vocal": true
+      },
+      "告白 (Instrumental)": {
+        "path": "data/library/bgm/supercell/告白 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 325.3,
+        "lufs": -9.27,
+        "onset": 2.229,
+        "vocal": false
+      },
+      "告白 (TV Edit Instrumental)": {
+        "path": "data/library/bgm/supercell/告白 (TV Edit Instrumental).flac",
+        "slot": "结尾",
+        "dur": 91,
+        "lufs": -9.65,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "告白 (TV Edit)": {
+        "path": "data/library/bgm/supercell/告白 (TV Edit).flac",
+        "slot": "正文",
+        "dur": 92,
+        "lufs": -8.19,
+        "onset": 1.022,
+        "vocal": true
+      },
+      "告白": {
+        "path": "data/library/bgm/supercell/告白.flac",
+        "slot": "正文",
+        "dur": 326.8,
+        "lufs": -8.1,
+        "onset": 2.229,
+        "vocal": true
+      },
+      "嘘つきのパレード": {
+        "path": "data/library/bgm/supercell/嘘つきのパレード.flac",
+        "slot": "正文",
+        "dur": 235.3,
+        "lufs": -7.96,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "夕焼けブルース (Instrumental)": {
+        "path": "data/library/bgm/supercell/夕焼けブルース (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 311.6,
+        "lufs": -12.44,
+        "onset": 2.694,
+        "vocal": false
+      },
+      "夕焼けブルース": {
+        "path": "data/library/bgm/supercell/夕焼けブルース.flac",
+        "slot": "正文",
+        "dur": 311.6,
+        "lufs": -11.38,
+        "onset": 2.694,
+        "vocal": true
+      },
+      "夜が明けるよ (Instrumental)": {
+        "path": "data/library/bgm/supercell/夜が明けるよ (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 290.6,
+        "lufs": -12.18,
+        "onset": 1.765,
+        "vocal": false
+      },
+      "夜が明けるよ": {
+        "path": "data/library/bgm/supercell/夜が明けるよ.flac",
+        "slot": "正文",
+        "dur": 290.6,
+        "lufs": -10.65,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "大貧民 (Instrumental)": {
+        "path": "data/library/bgm/supercell/大貧民 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 259.4,
+        "lufs": -6.66,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "大貧民": {
+        "path": "data/library/bgm/supercell/大貧民.flac",
+        "slot": "正文",
+        "dur": 260.7,
+        "lufs": -5.48,
+        "onset": 0.557,
+        "vocal": true
+      },
+      "従属人間": {
+        "path": "data/library/bgm/supercell/従属人間.flac",
+        "slot": "正文",
+        "dur": 214.7,
+        "lufs": -9.28,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "復讐 (Instrumental)": {
+        "path": "data/library/bgm/supercell/復讐 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 203.5,
+        "lufs": -6.74,
+        "onset": 4.458,
+        "vocal": false
+      },
+      "復讐": {
+        "path": "data/library/bgm/supercell/復讐.flac",
+        "slot": "正文",
+        "dur": 203.5,
+        "lufs": -6.03,
+        "onset": 4.458,
+        "vocal": true
+      },
+      "恋は戦争 (2009 supercell album ver.)": {
+        "path": "data/library/bgm/supercell/恋は戦争 (2009 supercell album ver.).flac",
+        "slot": "正文",
+        "dur": 237.9,
+        "lufs": -8.02,
+        "onset": 0.464,
+        "vocal": true
+      },
+      "拍手喝采歌合 (Instrumental)": {
+        "path": "data/library/bgm/supercell/拍手喝采歌合 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 236.5,
+        "lufs": -7.61,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "拍手喝采歌合 (TV Edit Instrumental)": {
+        "path": "data/library/bgm/supercell/拍手喝采歌合 (TV Edit Instrumental).flac",
+        "slot": "结尾",
+        "dur": 91.8,
+        "lufs": -7.8,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "拍手喝采歌合 (TV Edit)": {
+        "path": "data/library/bgm/supercell/拍手喝采歌合 (TV Edit).flac",
+        "slot": "正文",
+        "dur": 96.7,
+        "lufs": -7.24,
+        "onset": 1.022,
+        "vocal": true
+      },
+      "拍手喝采歌合": {
+        "path": "data/library/bgm/supercell/拍手喝采歌合.flac",
+        "slot": "正文",
+        "dur": 238.9,
+        "lufs": -6.87,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "教えてあげる (Instrumental)": {
+        "path": "data/library/bgm/supercell/教えてあげる (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 278.7,
+        "lufs": -7.81,
+        "onset": 2.136,
+        "vocal": false
+      },
+      "教えてあげる": {
+        "path": "data/library/bgm/supercell/教えてあげる.flac",
+        "slot": "正文",
+        "dur": 280.6,
+        "lufs": -6.54,
+        "onset": 2.136,
+        "vocal": true
+      },
+      "星が瞬くこんな夜に (Instrumental)": {
+        "path": "data/library/bgm/supercell/星が瞬くこんな夜に (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 269.3,
+        "lufs": -6.96,
+        "onset": 1.022,
+        "vocal": false
+      },
+      "星が瞬くこんな夜に": {
+        "path": "data/library/bgm/supercell/星が瞬くこんな夜に.flac",
+        "slot": "正文",
+        "dur": 269.3,
+        "lufs": -5.98,
+        "onset": 1.022,
+        "vocal": true
+      },
+      "時間列車": {
+        "path": "data/library/bgm/supercell/時間列車.flac",
+        "slot": "正文",
+        "dur": 236.9,
+        "lufs": -8.73,
+        "onset": 1.022,
+        "vocal": true
+      },
+      "百回目のキス": {
+        "path": "data/library/bgm/supercell/百回目のキス.flac",
+        "slot": "正文",
+        "dur": 286,
+        "lufs": -10.01,
+        "onset": 0.186,
+        "vocal": true
+      },
+      "私へ (Instrumental)": {
+        "path": "data/library/bgm/supercell/私へ (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 126.5,
+        "lufs": -15.25,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "私へ": {
+        "path": "data/library/bgm/supercell/私へ.flac",
+        "slot": "正文",
+        "dur": 126.5,
+        "lufs": -11.44,
+        "onset": 1.115,
+        "vocal": true
+      },
+      "約束をしよう": {
+        "path": "data/library/bgm/supercell/約束をしよう.flac",
+        "slot": "正文",
+        "dur": 210.3,
+        "lufs": -14.33,
+        "onset": 2.508,
+        "vocal": true
+      },
+      "終わりへ向かう始まりの歌 (Instrumental)": {
+        "path": "data/library/bgm/supercell/終わりへ向かう始まりの歌 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 130.4,
+        "lufs": -16.74,
+        "onset": 1.207,
+        "vocal": false
+      },
+      "終わりへ向かう始まりの歌": {
+        "path": "data/library/bgm/supercell/終わりへ向かう始まりの歌.flac",
+        "slot": "正文",
+        "dur": 130.4,
+        "lufs": -12.65,
+        "onset": 1.207,
+        "vocal": true
+      },
+      "罪人 (Instrumental)": {
+        "path": "data/library/bgm/supercell/罪人 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 226.7,
+        "lufs": -15.79,
+        "onset": 0.557,
+        "vocal": false
+      },
+      "罪人": {
+        "path": "data/library/bgm/supercell/罪人.flac",
+        "slot": "正文",
+        "dur": 226.7,
+        "lufs": -13.17,
+        "onset": 0.65,
+        "vocal": true
+      },
+      "銀色飛行船 (Instrumental)": {
+        "path": "data/library/bgm/supercell/銀色飛行船 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 425.3,
+        "lufs": -13.59,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "銀色飛行船": {
+        "path": "data/library/bgm/supercell/銀色飛行船.flac",
+        "slot": "正文",
+        "dur": 425.5,
+        "lufs": -10.85,
+        "onset": 0.743,
+        "vocal": true
+      },
+      "青空 (Instrumental)": {
+        "path": "data/library/bgm/supercell/青空 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 210.5,
+        "lufs": -7.22,
+        "onset": 0.464,
+        "vocal": false
+      },
+      "青空": {
+        "path": "data/library/bgm/supercell/青空.flac",
+        "slot": "正文",
+        "dur": 211.3,
+        "lufs": -6.63,
+        "onset": 1.207,
+        "vocal": true
       }
     }
   }
