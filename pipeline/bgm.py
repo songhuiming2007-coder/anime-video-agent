@@ -233,32 +233,6 @@ def infer_vocal(stem: str, given: bool | None = None) -> bool | None:
     return given
 
 
-def _rel_repo_path(path: Path) -> str:
-    """转为相对于 paths.ROOT 的统一相对路径字符串。
-
-    `data` 通常是指向外置盘的符号链接：外置盘上的绝对路径（`/Volumes/<卷>/…/library/…`）
-    resolve 之后不在仓库根下，必须再按 `data` 的真实位置折回 `data/…`——否则写进
-    bgm.json 的是卷路径，换盘即废（2026-10-11 伪恋期 `bgm register` 实录：「恋人」的
-    path 被写成 `/Volumes/Samsung T7/…`）。
-    """
-    try:
-        rel = path.resolve().relative_to(paths.ROOT.resolve())
-        return str(rel).replace("\\", "/")
-    except ValueError:
-        pass
-    data = paths.ROOT / "data"
-    try:
-        rel = path.resolve().relative_to(data.resolve())
-        return ("data/" + str(rel)).replace("\\", "/")
-    except (ValueError, OSError):
-        pass
-    try:
-        rel = path.relative_to(paths.ROOT)
-        return str(rel).replace("\\", "/")
-    except ValueError:
-        return str(path).replace("\\", "/")
-
-
 def register(files: list[Path], anime: str, note: str | None = None, overwrite: bool = False,
              vocal: bool | None = None) -> int:
     """批量测量音频文件并写入 config/bgm.json，返回成功登记的曲目数。
@@ -288,7 +262,7 @@ def register(files: list[Path], anime: str, note: str | None = None, overwrite: 
 
         title = clean_track_title(f.stem)
         m = measure(f)
-        rel_path = _rel_repo_path(f)
+        rel_path = paths.repo_rel(f)
 
         existing_tracks[title] = {
             "path": rel_path,

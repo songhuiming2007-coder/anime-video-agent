@@ -116,7 +116,8 @@ def pending_assets(episode: Path) -> list[Path]:
             assets = data.get("assets", {})
             for a in assets.values():
                 if "path" in a:
-                    registered_paths.add(str(Path(a["path"]).resolve()))
+                    # 登记的是相对仓库根的路径（N59）；按仓库根拼，不随 cwd 变。存量绝对路径拼了不变
+                    registered_paths.add(str((paths.ROOT / a["path"]).resolve()))
                     registered_paths.add(Path(a["path"]).name)
         except Exception:
             pass
@@ -222,11 +223,12 @@ def load_pool(episode: Path) -> dict | None:
         indexed = asset.get("indexed", True) is not False
         # 1. 源文件漂移检测 (B4)
         asset_path = Path(asset["path"])
-        if not asset_path.exists():
+        on_disk = paths.ROOT / asset_path      # 相对路径按仓库根找（N59）；存量绝对路径拼了不变
+        if not on_disk.exists():
             print(f"WARN 补丁资产源文件不存在: {asset_path}（入库后被删除，可能导致后续渲染失败）", file=sys.stderr)
         else:
             try:
-                st = asset_path.stat()
+                st = on_disk.stat()
                 if st.st_size != asset.get("size") or abs(st.st_mtime - asset.get("mtime", st.st_mtime)) > 1e-3:
                     print(f"WARN 补丁资产源文件发生漂移: {asset_path}（size/mtime 已变）", file=sys.stderr)
             except Exception:
@@ -442,7 +444,7 @@ def ingest(
             "min_shot": min_shot,
             "duration": duration,
             "fps": fps,
-            "source": str(asset.resolve()),
+            "source": paths.repo_rel(asset),     # N59：相对仓库根，换盘 / 换挂载点不废
         }
         shot_table = {
             "meta": meta,
@@ -465,7 +467,7 @@ def ingest(
         shots.caption_frames(pool_name, key, out_dir=patch_shots_dir, dest_dir=patch_frames_dir, check=False)
 
         registered_assets[key] = {
-            "path": str(asset.resolve()),
+            "path": paths.repo_rel(asset),
             "duration": duration,
             "size": asset.stat().st_size,
             "mtime": asset.stat().st_mtime,

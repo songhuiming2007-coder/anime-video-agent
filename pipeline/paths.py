@@ -134,6 +134,33 @@ def atomic_write(dest: Path, data: str | bytes) -> None:
     os.replace(tmp, dest)
 
 
+def repo_rel(path: Path) -> str:
+    """转为相对于 ROOT 的统一相对路径字符串。
+
+    `data` 通常是指向外置盘的符号链接：外置盘上的绝对路径（`/Volumes/<卷>/…/library/…`）
+    resolve 之后不在仓库根下，必须再按 `data` 的真实位置折回 `data/…`——否则写进
+    登记表的是卷路径，换盘即废（2026-10-11 伪恋期 `bgm register` 实录：「恋人」的
+    path 被写成 `/Volumes/Samsung T7/…`；N59 补料池 pool.json 同病）。
+    仓库根与 data 之外的路径（测试的 tmp 目录等）原样返回。
+    """
+    try:
+        rel = path.resolve().relative_to(ROOT.resolve())
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        pass
+    data = ROOT / "data"
+    try:
+        rel = path.resolve().relative_to(data.resolve())
+        return ("data/" + str(rel)).replace("\\", "/")
+    except (ValueError, OSError):
+        pass
+    try:
+        rel = path.relative_to(ROOT)
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
 def require_data_at(data: Path) -> Path:
     """`data` 不可达就立刻退出，**绝不自动创建**（CLAUDE.md「存储约定」）。
 
