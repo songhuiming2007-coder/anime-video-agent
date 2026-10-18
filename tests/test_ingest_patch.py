@@ -357,6 +357,26 @@ class TestAnchorOnly:
         assert pool["unindexed"] == [] and pool["vecs"].shape[0] == 1
         assert (ep / "04-patch" / "vindex" / f"{pool_name}_SP01.captions.json").exists()
 
+    def test_外置盘上的资产登记相对仓库根路径(self, tmp_path, monkeypatch, capsys):
+        # N59：data 是指向外置盘的符号链接，resolve 后是卷路径；登记表要存 data/…，换盘不废
+        repo, ext = tmp_path / "repo", tmp_path / "Volumes" / "T7" / "anime-video-data"
+        repo.mkdir()
+        ext.mkdir(parents=True)
+        (repo / "data").symlink_to(ext)
+        monkeypatch.setattr(ingest_patch.paths, "ROOT", repo)
+        monkeypatch.chdir(tmp_path)                       # 读取不靠 cwd 恰好是仓库根
+        ep = repo / "data" / "episodes" / "ep"
+        self._stub_stage1(ep, monkeypatch)
+        ingest_patch.ingest(ep, anchor_only=True)
+        meta = json.loads((ep / "04-patch" / "pool.json").read_text(encoding="utf-8"))
+        assert meta["assets"]["SP01"]["path"] == "data/episodes/ep/patch_assets/chart0.mp4"
+        shot = json.loads((ep / "04-patch" / "shots" / f"{meta['pool']}_SP01.json").read_text(encoding="utf-8"))
+        assert shot["meta"]["source"] == "data/episodes/ep/patch_assets/chart0.mp4"
+        capsys.readouterr()
+        assert ingest_patch.load_pool(ep)["sources"]["SP01"]["path"] == "data/episodes/ep/patch_assets/chart0.mp4"
+        assert "不存在" not in capsys.readouterr().err, "相对路径要按仓库根找到文件"
+        assert ingest_patch.pending_assets(ep) == [], "已登记的资产重跑时不能被当成新资产"
+
     def test_转图产物登记still标并带进sources(self, tmp_path, monkeypatch):
         ep = tmp_path / "ep"
         self._stub_stage1(ep, monkeypatch)
