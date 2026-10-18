@@ -58,7 +58,7 @@
 7. **[05 审片](runbook/05-timecode.md)**（人）：预览区看 `04-review.html`，通过后在决策条批准 05（终端 `/approve 05`），产出 `04-clips.approved.json`。
 8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：agent 跑 `render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
 9. **[07 质检](runbook/07-qc.md)**（机器）：agent 跑 `qc`，11 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
-10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：agent 跑 `cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`）。叠字：先和人商量写什么字，再由 agent 调 `cover_edit` 直接出图、自己先看过再交人。横版 16:9、竖版 9:14 两版都要（竖版由裁剪或 AI 扩图得到）；简介统一一份。
+10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：agent 跑 `cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`）。叠字：先和人商量写什么字，再由 agent 调 `cover_edit` 直接出图、自己先看过再交人。横版 16:9、竖版 9:14、4:3 三版都要（竖版由裁剪或 AI 扩图得到；4:3 从横版裁，字和主体要能同框）；简介统一一份。
 11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面路径与标题原文（app 内两个输入；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
 
 > **不固定的两件事**：补素材随时可能发生（写稿、改稿、排片、审片）；会话也不固定，一期可以一个会话从头到尾，也可以分几个会话。企划（多卷系列）多出来的做法见 `config/agent/scopes/project.md`「企划实际怎么做」。

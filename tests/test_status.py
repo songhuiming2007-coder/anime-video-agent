@@ -226,7 +226,10 @@ def test_status_035_is_advisory_not_blocked(tmp_path: Path):
 FULL_TITLES = "# 标题与简介候选\n\n## 定稿标题\n\nX\n\n## 简介（长视频 / B 站版）\n\n正文\n\n## 标签\n\n伪恋\n"
 
 
-def _stage_09(tmp_path: Path, titles: str = FULL_TITLES, covers=("08-cover.jpg", "08-cover-vertical.jpg")) -> Path:
+ALL_COVERS = ("08-cover.jpg", "08-cover-vertical.jpg", "08-cover-4x3.jpg")
+
+
+def _stage_09(tmp_path: Path, titles: str = FULL_TITLES, covers=ALL_COVERS) -> Path:
     (tmp_path / "01-topic.md").write_text("# Topic", encoding="utf-8")
     (tmp_path / "02-script.md").write_text("# Script", encoding="utf-8")
     (tmp_path / "03-audio").mkdir()
@@ -254,10 +257,11 @@ def test_publish_gaps_none_when_complete(tmp_path: Path):
 @pytest.mark.parametrize("missing, expect", [
     ("08-cover.jpg", "横版定稿封面"),
     ("08-cover-vertical.jpg", "竖版定稿封面"),
+    ("08-cover-4x3.jpg", "4:3 定稿封面"),
 ])
 def test_publish_gaps_missing_cover(tmp_path: Path, missing: str, expect: str):
     from pipeline.status import publish_gaps
-    covers = [c for c in ("08-cover.jpg", "08-cover-vertical.jpg") if c != missing]
+    covers = [c for c in ALL_COVERS if c != missing]
     d = _stage_09(tmp_path, covers=covers)
     gaps = publish_gaps(d)
     assert len(gaps) == 1 and expect in gaps[0]
@@ -268,7 +272,7 @@ def test_publish_gaps_missing_cover(tmp_path: Path, missing: str, expect: str):
 
 def test_publish_gaps_accepts_jpeg_and_png(tmp_path: Path):
     from pipeline.status import publish_gaps
-    d = _stage_09(tmp_path, covers=("08-cover.jpeg", "08-cover-vertical.png"))
+    d = _stage_09(tmp_path, covers=("08-cover.jpeg", "08-cover-vertical.png", "08-cover-4x3.jpeg"))
     assert publish_gaps(d) == []
 
 
