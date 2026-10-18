@@ -533,7 +533,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
     else:
         block_reason = "停机点 4（09 人工发布）：交付物已齐备，等人拍板发布。"
         next_action = (
-            "人类核对 08-cover.jpg / 08-cover-vertical.jpg 与 07-titles.md 的标题、简介、标签，"
+            "人类核对 08-cover.jpg / 08-cover-vertical.jpg / 08-cover-4x3.jpg 与 07-titles.md 的标题、简介、标签，"
             "在 09 卡填定稿封面与标题后手动上传发布各平台。" + card_hint
         )
     return EpisodeStatus(
@@ -549,16 +549,19 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
     )
 
 
-# D90：09 交付物（往期惯例，2026-10-13 起写进 runbook 08 / 09）。竖版人裁决为必备
+# D90：09 交付物（往期惯例，2026-10-13 起写进 runbook 08 / 09）。竖版人裁决为必备；
+# 4:3 版 2026-10-18 人定为必备：B站首页与抖音横封面是固定 4:3 框，16:9 图在框里只能平移，
+# 字和主体隔得远时框不全（supercell 第一期发布时撞上）
 _COVER_EXTS = (".jpg", ".jpeg", ".png")
 
 
 def publish_gaps(d: Path) -> list[str]:
-    """09 发布前还缺的交付物（只读）。顺序固定：横版、竖版、简介、标签。"""
+    """09 发布前还缺的交付物（只读）。顺序固定：横版、竖版、4:3 版、简介、标签。"""
     import re
 
     gaps: list[str] = []
-    for stem, label in (("08-cover", "横版定稿封面"), ("08-cover-vertical", "竖版定稿封面")):
+    for stem, label in (("08-cover", "横版定稿封面"), ("08-cover-vertical", "竖版定稿封面"),
+                        ("08-cover-4x3", "4:3 定稿封面")):
         if not any((d / f"{stem}{ext}").is_file() for ext in _COVER_EXTS):
             gaps.append(f"{label} {stem}.jpg（顶层）")
     titles = d / "07-titles.md"

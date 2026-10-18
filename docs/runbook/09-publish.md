@@ -4,7 +4,7 @@
 
 ## 输入物
 - 最终成片：`data/episodes/<期号>/05-final.mp4`
-- 定稿封面：期目录顶层 `08-cover.jpg`（横版）与 `08-cover-vertical.jpg`（竖版），来源是 `07-cover/` 里人点名的那一版
+- 定稿封面：期目录顶层 `08-cover.jpg`（横版，B站个人主页）、`08-cover-vertical.jpg`（竖版）与 `08-cover-4x3.jpg`（4:3，B站首页与抖音横封面），来源是 `07-cover/` 里人点名的那一版
 - 标题、简介、标签：`data/episodes/<期号>/07-titles.md` 的 `## 定稿标题` / `## 简介` / `## 标签`
 - 上面缺哪项，`read_status` 的 09 会列出来（D90）；见 [08 交付物](08-cover-title.md#交付物09-前必须齐read_status-逐项核对)
 
