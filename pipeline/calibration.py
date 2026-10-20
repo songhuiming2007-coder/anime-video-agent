@@ -31,6 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from . import paths
+from .keys import SP_NUM
 
 EVIDENCE_MIN_CHARS = 20
 
@@ -68,7 +69,7 @@ RULES: tuple[Rule, ...] = (
 
 #: 名字不许以 `_` 开头（下划线键是注释，写进去会覆盖 `_note`）、不许带换行与路径分隔符。
 _NAME = re.compile(r"^[^_./\s][^/\n\r]*$")
-_NAME_SP = re.compile(r"^([^_./\s][^/\n\r]*?)(/SP\d{2})?$")
+_NAME_SP = re.compile(rf"^([^_./\s][^/\n\r]*?)(/SP{SP_NUM})?$")
 
 
 @dataclass(frozen=True)

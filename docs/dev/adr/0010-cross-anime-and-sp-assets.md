@@ -97,3 +97,9 @@ informed: [WORKFLOW.md, STANDARD.md]
 - 决策二写的「Ken Burns 慢缩放 5 秒」在实现里一直是 6 s（`acquire.STILL_SECONDS`），D84 改为 **12 s**（微单元上限），缓推按帧号匀速推到末帧。旧写法每帧 +0.0015 在第 100 帧就到顶，6 s 里后 1.8 s 不动（实测相邻帧差均值 0.001）。已转出的旧文件不重做。
 - 转图入库登记显式 `still: true`（`sources.json` 与补丁池 `pool.json`），排片的「同一物证可跨段复用」豁免先读这个标；没有标的老池仍按「SP 且 ≤8 s」代理，零漂移。
 - D 类物证不再是纪录片专属：图表、示意图、实物照进期内补丁池（`acquire register --to-patch` → `ingest_patch --anchor-only`），任何题材写 `锚点: <补丁池名> SPxx 0:00`。施工记录见 `docs/dev/plans/2026-10-13-external-stills-microunit-spec.md`。
+
+## 补记（2026-10-20，D127）：SP 集键满 99 进三位
+
+- 决策二只写了 `SP01`, `SP02`... 编号，实现里各模块把它写死成两位（`acquire.register_key` 的报错原文是「集键写死两位」）。supercell 企划两卷就用满了 SP99，卷二还有 6 条素材迁不进来；复用撤下的空号会让老稿与台账里的旧编号悄悄指向新素材，不采用。
+- **修订**：两位补零起、满 99 进三位——`SP01`…`SP99`、`SP100`…`SP999`。同一个号只有一种规范写法（不收 `SP001`、`SP099`）；人写的锚点、`集:`、`复用:` 仍容忍 `SP1` 这类写法，归一成规范形再用。已有的 `SP01`–`SP99` 不改写。
+- 格式只在 `pipeline/keys.py` 定义一次（`SP_NUM` / `SP_NUM_LOOSE` / `sp_key` / `key_sort`），各模块引用；`tests/test_keys.py` 有静态守卫，`pipeline/` 下再出现写死位数的 SP 正则就红。施工图见 `docs/dev/plans/2026-10-20-sp-key-three-digits-spec.md`。

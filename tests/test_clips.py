@@ -1762,3 +1762,34 @@ def test_main_坏段时把期目录交给_scout_probe(tmp_path, monkeypatch, cap
     c.main()
     assert seen == [ep]
     assert "/scout" in capsys.readouterr().out
+
+
+def test_SP100锚点端到端排出_D127(tmp_path, monkeypatch, capsys):
+    """D127：池里第 100 件素材（SP100）写进锚点能排出来，不被当成 SP10 + 多余字符。"""
+    ep = tmp_path / "ep"
+    (ep / "03-audio").mkdir(parents=True)
+    (ep / "02-script.md").write_text(
+        "## 段落 1\n\n配音：第一百件素材。\n\n画面：\n  锚点: ep-patch SP100 00:02-00:08\n", encoding="utf-8")
+    (ep / "03-audio" / "manifest.json").write_text(
+        json.dumps({"segments": [{"index": 1, "duration": 6.0}]}), encoding="utf-8")
+    patch = ep / "04-patch"
+    (patch / "shots").mkdir(parents=True)
+    (patch / "vindex").mkdir()
+    assets = {}
+    for key in ("SP10", "SP100"):
+        f = ep / "patch_assets" / f"{key}.mp4"
+        f.parent.mkdir(exist_ok=True)
+        f.write_bytes(b"x")
+        assets[key] = {"path": str(f), "duration": 12.0, "size": 1, "mtime": f.stat().st_mtime,
+                       "fps": 23.976, "indexed": False}
+        (patch / "shots" / f"ep-patch_{key}.json").write_text(
+            json.dumps({"shots": [{"i": 0, "start": 0.0, "end": 12.0, "rep": 6.0}]}), encoding="utf-8")
+    (patch / "pool.json").write_text(json.dumps({"pool": "ep-patch", "no_match_source": "anchor-only",
+                                                 "assets": assets}), encoding="utf-8")
+    monkeypatch.setattr(c, "load_sources", lambda anime: {"S01E01": {"path": "main.mp4", "duration": 100.0}})
+    monkeypatch.setattr(c, "load_all", lambda d, a: (None, None))
+
+    seg = json.loads(c.run(ep, anime="主番").read_text(encoding="utf-8"))["segments"][0]
+    assert seg["status"] == "ok"
+    assert {x["anime"] for x in seg["clips"]} == {"ep-patch"}
+    assert {x["episode"] for x in seg["clips"]} == {100}, "指到 SP10 就是前缀被吃了"

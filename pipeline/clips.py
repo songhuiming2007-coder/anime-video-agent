@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import bgm, ingest_patch, paths, shots as _shots_mod, vindex
 from .ingest import load_sources, load_sources_multi, sources_get
+from .keys import SP_NUM_LOOSE, sp_key
 from .subindex import INDEX_DIR, load_all, search
 
 # 单个片段的下限。比这更短会闪，观众来不及看清画面。
@@ -63,11 +64,11 @@ PRESENCE_BAND = 0.06
 # 可选番名前缀（跨番混剪，2026-09-06）：`锚点: 罪恶王冠 S01E01 17:50`，
 # 不写番名默认主番（01-topic.md 番字段第一个 / 素材番剧块第一个）。
 # SP 特典集（ADR-0010 决策二，2026-09-07；支持语义后缀如 SP41-ninelie）：`锚点: EGOIST SP01 108:45`，
-# 集号位写 `SP(\d{1,2})` 即指向企划池里的非番剧素材（MV/Live/物证）。
+# 集号位写 `SP` + 1–3 位数字（D127：满 99 进三位）即指向企划池里的非番剧素材（MV/Live/物证）。
 # 组号全部具名：anime/season/episode/sp/m0/s0/m1/s1——sp 与 season/episode 互斥。
 _ANCHOR = re.compile(
     rf"^(?:(?P<anime>.+?)\s+)?"
-    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}})(?:[-_][^\s:]+)?)\s+"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>{SP_NUM_LOOSE})(?:[-_][^\s:]+)?)\s+"
     rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
     rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
 
@@ -218,14 +219,14 @@ def parse_shots(path: Path, animes: list[str] | None = None,
         if ep:
             raw = ep.group(1).strip()
             m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
-            sp = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", raw, re.I)
+            sp = re.fullmatch(rf"SP({SP_NUM_LOOSE})(?:[-_][^\s:]+)?", raw, re.I)
             if not m and not sp:
                 raise SystemExit(
                     f"FAIL 段落 {i} 的 `集` 写的是「{raw}」，机器认不了。\n"
                     f"     写规范形 `S01E07`（季两位、集两位都补齐）或特典 `SP01`（可带语义后缀），"
                     f"别写中文「第一季第七集」——集号是检索约束，写错 = 检索范围错了")
             ep_norm = (f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}" if m
-                       else f"SP{int(sp.group(1)):02d}")
+                       else sp_key(int(sp.group(1))))
         anchor = None
         anchors = None
         anchor_none = False

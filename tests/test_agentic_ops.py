@@ -77,12 +77,17 @@ class TestNextKey:
     def test_空池从一起(self):
         assert A.next_key(set(), []) == 1
 
-    def test_三位数前缀不算(self):
-        assert A.next_key(set(), ["SP100-x.mp4"]) == 1
+    def test_满九十九进三位_D127(self):
+        assert A.next_key({"SP99"}, []) == 100
+        assert A.next_key({"SP99", "SP100"}, ["SP101-x.mp4"]) == 102
 
-    def test_到九十九报错不扩位(self):
-        with pytest.raises(SystemExit, match="SP99"):
-            A.next_key({"SP99"}, [])
+    def test_SP10不吃SP100的前缀_D127(self):
+        assert A.next_key(set(), ["SP10-a.mp4", "SP100-b.mp4"]) == 101
+        assert A.next_key(set(), ["SP1000-x.mp4", "SP001-y.mp4"]) == 1   # 非规范形不算
+
+    def test_到SP999报错(self):
+        with pytest.raises(SystemExit, match="SP999"):
+            A.next_key({"SP999"}, [])
 
 
 # ---------- AO-3 图片转码 ----------
@@ -476,12 +481,13 @@ def test_ao2_补料命令免卡(repo: Path):
 
 @needs_ffmpeg
 def test_ao3_ingest_patch入口先转码再扫描(repo: Path):
-    """经 ingest 主入口：图片先被转成 -still.mp4，再进候选（借 99 上限报错观察候选名，不跑云端）。"""
+    """经 ingest 主入口：图片先被转成 -still.mp4，再进候选（借 SP_MAX 上限报错观察候选名，不跑云端）。"""
     from pipeline import ingest_patch
+    from pipeline.keys import SP_MAX, sp_key
 
     ep = _episode(repo)
     (ep / "04-patch").mkdir()
-    assets = {f"SP{i:02d}": {"path": f"/tmp/{i}.mp4", "duration": 1.0} for i in range(1, 100)}
+    assets = {sp_key(i): {"path": f"/tmp/{i}.mp4", "duration": 1.0} for i in range(1, SP_MAX + 1)}
     (ep / "04-patch" / "pool.json").write_text(json.dumps({"pool": "p", "assets": assets}), encoding="utf-8")
     (ep / "patch_assets").mkdir()
     _png(ep / "patch_assets" / "scan.png", 1800, 1800)

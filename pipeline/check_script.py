@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import bgm, paths
+from .keys import SP_NUM_LOOSE, key_sort, sp_key
 
 # 中文口播字/分钟，只用来粗筛。**真实时长一律以 03-audio/manifest.json 为准。**
 #
@@ -351,8 +352,8 @@ def _norm_ep(raw: str) -> str | None:
     m = re.fullmatch(r"S(\d{1,2})E(\d{1,2})", raw, re.I)
     if m:
         return f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}"
-    m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", raw, re.I)
-    return f"SP{int(m.group(1)):02d}" if m else None
+    m = re.fullmatch(rf"SP({SP_NUM_LOOSE})(?:[-_][^\s:]+)?", raw, re.I)
+    return sp_key(int(m.group(1))) if m else None
 
 
 # 锚点时间码（ADR-0008，2026-08-27 加；2026-09-06 加可选番名前缀支持跨番；
@@ -363,7 +364,7 @@ def _norm_ep(raw: str) -> str | None:
 # 改一处必须同步另一处。组号全部具名：anime/season/episode/sp/m0/s0/m1/s1。
 ANCHOR_TC = re.compile(
     rf"^(?:(?P<anime>.+?)\s+)?"
-    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>\d{{1,2}})(?:[-_][^\s:]+)?)\s+"
+    rf"(?:S(?P<season>\d{{1,2}})E(?P<episode>\d{{1,2}})|SP(?P<sp>{SP_NUM_LOOSE})(?:[-_][^\s:]+)?)\s+"
     rf"(?P<m0>\d{{1,3}}):(?P<s0>\d{{2}}(?:\.\d+)?)"
     rf"(?:\s*[-–~～]\s*(?P<m1>\d{{1,3}}):(?P<s1>\d{{2}}(?:\.\d+)?))?$", re.I)
 
@@ -414,7 +415,7 @@ STILL_SP_MAX = 2
 #: 用途是唯一物证在后续卷回扣时不必降级成更弱的画面；由人决定写，机检照样计数，只放行带声明的超出次数，
 #: 并把每处声明列在结果里给 02.5 的人看。
 _REUSE_FIELD = re.compile(r"^\s*复用[：:][ \t]*(.+)$", re.M)
-_REUSE_ITEM = re.compile(r"(?:(?P<anime>.+?)\s+)?SP(?P<sp>\d{1,2})", re.I)
+_REUSE_ITEM = re.compile(rf"(?:(?P<anime>.+?)\s+)?SP(?P<sp>{SP_NUM_LOOSE})", re.I)
 
 
 def parse_reuse(text: str) -> dict[str, list[str]]:
@@ -821,7 +822,7 @@ def run(path: Path) -> list[Check]:
                 for p, r, a, sources in missing:
                     norm = _norm_ep(r)
                     if norm.startswith("SP"):
-                        same = sorted(k for k in sources if k.startswith("SP"))
+                        same = sorted((k for k in sources if k.startswith("SP")), key=key_sort)
                         msgs.append(
                             f"段{p}「{r}」：《{a}》池里没有 {norm}"
                             + (f"（现有特典：{'、'.join(same[:4])}）" if same

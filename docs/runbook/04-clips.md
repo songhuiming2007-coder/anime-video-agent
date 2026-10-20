@@ -27,7 +27,7 @@ agent 经 `run_pipeline` 跑 `clips`（期目录自动补上）。底层排查�
 3. **进补丁池**：抓下来的文件先过 `acquire gate`（免卡），再 `acquire register <文件> --to-patch <期目录>` 挪进本期 `patch_assets/`。图片照收，下一步会自动转成 12 s 微动视频（1.0→1.15 匀速缓推到末帧，原图保留）。
 4. **轻量增量入库**：`ingest_patch`。
    - **只为写锚点**（写稿期补图、人指定镜头）：`ingest_patch --anchor-only`——切镜头、抽帧、登记就停，资产标 `indexed: false`，不打标、不碰云端、不要 `--floor`。这些资产只能被锚点引用，rescue-A/B 搜不到它们（clips 会打印提示）；要让救援也能用，不带旗标重跑一次，编号不变。
-   - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号 `SP01…SP99`；
+   - 自动在当期生成补丁池（池名按期名净化：`re.sub(r'[^A-Za-z0-9_-]+', '-', episode.name) + "-patch"`），资产编号 `SP01` 起、满 99 进三位（D127，上限 SP999）；
    - 秒级切镜头、抽帧、密集意象打标（云端 VLM，实例没开时 agent 先提议 `cloud up`，计费卡）与向量化，产物写入当期 `04-patch/`，不污染全局 `data/library/`（番池素材的云端打标走 `cloud lib-push / lib-captions / lib-pull`，见 `skills/acquire-assets/SKILL.md` 第二节第 4 步）；
    - 补丁池损坏或半建：`ingest_patch --reset`，旧 `04-patch/` 挪进 `04-patch.attic/<时间>/` 后重建，不删。
 5. **重新排片与自动救援**：`clips`。

@@ -1,6 +1,6 @@
 # D127 施工图：SP 集键放宽到 2–3 位
 
-日期：2026-10-20（v0.1）；**人 10-20 裁决：放宽到 2–3 位，先出施工图**；待人看过施工图说开工
+日期：2026-10-20（v0.1）；**人 10-20 裁决：放宽到 2–3 位，先出施工图**；人看过说开工，同日已施工·机检通过，施工记录见第七节
 关联：issues D127、D126、D129、ADR-0010 决策二
 
 ## 一、要解决什么
@@ -65,6 +65,12 @@
 - 用真实 supercell 池副本把卷二剩下 6 条登记成 SP100–SP105，切镜头、打标（云端）、锚点排片各走一遍。
 - ADR-0010 修订段落人过目。
 
-## 七、施工记录
+## 七、施工记录（2026-10-20）
 
-（未施工）
+- 新建 `pipeline/keys.py`：`SP_MAX = 999`、`SP_NUM`（规范形：两位补零或三位，不收 `SP001` / `SP099`）、`SP_NUM_LOOSE`（人写处 1–3 位）、`sp_key`、`key_sort`。只依赖标准库。
+- 17 处解析点全部改引用：`acquire`（`register_key`、`_SP_PREFIX`、`next_key` 上限）、`vindex`（`_parse_key`、`caption_keys` 按数字排）、`calibration._NAME_SP`、`render`（两处）、`check_script`（`_norm_ep`、`ANCHOR_TC`、`_REUSE_ITEM`、缺号提示里的现有特典列表按数字排）、`clips`（`_ANCHOR`、`集:` 字段）、`ingest_patch`（上限 99→999、`sorted(..., key=key_sort)`）、`cloud._LIB_KEY`。
+- 与施工图的出入：`_REUSE_ITEM` 只用 `fullmatch`，原计划加的 `(?!\d)` 多余（变异检验证实是等价变异），没加；clips 认不出 SP100 锚点是响亮失败，第二节已更正。
+- 旧用例改口径 5 条（三位前缀、到 99 报错、补丁池 99 上限两条、`SP190` 坏集键）；新增 `tests/test_keys.py` 14 条（纯函数、每处解析点、`caption_keys` 排序、静态守卫）、clips 与 check_script 端到端 SP100 各 1 条。全量 pytest 3507 通过。
+- 变异：常量改回两位（`SP_NUM` / `SP_NUM_LOOSE` 各一）、规范形放进 `SP001`、前缀去 `(?!\d)`、`key_sort` 退字典序、`caption_keys` 不按数字排，6/6 被杀。
+- ADR-0010 补记修订段；runbook 04-clips 的「资产编号 SP01…SP99」同步。
+- 真实池只读核对：supercell 现登记 86 条、最后 SP99，`next_key` = 100。**第六节第 2 条（真实登记 SP100–SP105、切镜头、云端打标、排片）没做**：会写真实台账、云端打标计费，留给人定时间。

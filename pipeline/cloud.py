@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .keys import SP_NUM
 
 # ---------------------------------------------------------------------------
 # 常量定义与判据依据（E3：每个常量后面写「为什么是这个数」）
@@ -2045,7 +2046,7 @@ def cmd_sync_code(args: argparse.Namespace) -> int:
 # 这三条命令只搬 library 下打标要的两样输入（镜头表、打标帧）与一样产物，远端路径与本地同一相对路径，
 # 远端 `vindex captions` 不传目录参数即用默认路径（10-17 supercell 实跑核过只要这两样）。
 LIB_CAPTIONS_SESSION = "ava-lib-captions"
-_LIB_KEY = re.compile(r"SP\d{2}|S\d{2}E\d{2}")
+_LIB_KEY = re.compile(rf"SP{SP_NUM}|S\d{{2}}E\d{{2}}")
 
 
 def lib_dirs() -> tuple[str, str, str]:
@@ -2069,7 +2070,7 @@ def validate_lib_target(pool: str, keys: list[str]) -> list[str]:
             if not k:
                 continue
             if not _LIB_KEY.fullmatch(k):
-                raise ValueError(f"集键不合法：{k!r}（写 SP01 或 S01E01）")
+                raise ValueError(f"集键不合法：{k!r}（写 SP01、SP100 或 S01E01）")
             if k not in out:
                 out.append(k)
     if not out:
