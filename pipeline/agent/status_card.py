@@ -275,7 +275,6 @@ _BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "[全局装依赖]",
     ),
-    (re.compile(r"02-diff\.patch|04-clips\.approved\.json|07-cover/selected"), "[停机点解封物] 批准只能由人做"),
 )
 # Code Freeze 只认「写入」：读 pipeline/ config/（cat、grep、ls）不拦。写法 = 重定向、tee、原地编辑、
 # 拷贝 / 移动 / 链接 / 新建；先剥掉 `2>&1`、`>/dev/null` 这类不写文件的重定向
@@ -285,6 +284,16 @@ _WRITE_FORM = re.compile(
     r">|\btee\b|\bsed\s+(\S+\s+)*-i|\bperl\s+(\S+\s+)*-i|(^|[\s;&|(])(cp|mv|ln|touch|truncate|install|rsync|dd)\s"
 )
 _FREEZE_TAG = "[写源码/配置] Code Freeze 范围"
+# D119：停机点解封物只拦写入，`ls -la 02-diff.patch` 这类只读不弹卡。写法在 _WRITE_FORM 之外再收解释器、
+# 下载落盘、解包、git 还原——原规则「字面出现即弹卡」顺带挡住了 `python -c "open('02-diff.patch','w')"`，
+# 放开只读不能把这些一起放掉
+_UNSEAL_PATH = re.compile(r"02-diff\.patch|04-clips\.approved\.json|07-cover/selected")
+_UNSEAL_WRITE = re.compile(
+    _WRITE_FORM.pattern
+    + r"|(^|[\s;&|(])(python3?|node|ruby|perl|bash|sh|zsh|eval|xargs|tar|unzip)(\s|$)"
+    + r"|\b(curl|wget)\b.*\s(-o|-O|--output)\b|\bgit\s+(checkout|restore|mv)\b"
+)
+_UNSEAL_TAG = "[停机点解封物] 批准只能由人做"
 
 # D82 §4.4（ADR-0030 危险清单扩充，人裁决 Q3 / Q4，2026-10-12）
 _GATED_TAG = "[须人审的流水线命令]"
@@ -322,6 +331,8 @@ def bash_danger_tags(command: str) -> list[str]:
     """bash 命令命中的硬危险标记（按规则表顺序，去重）。非空即弹卡（ADR-0030 决策 1）。"""
     tags = [tag for pat, tag in _BASH_DANGER_RULES if pat.search(command)]
     stripped = _HARMLESS_REDIRECT.sub(" ", command)
+    if _UNSEAL_PATH.search(stripped) and _UNSEAL_WRITE.search(stripped):
+        tags.append(_UNSEAL_TAG)
     if _FREEZE_PATH.search(stripped) and _WRITE_FORM.search(stripped):
         tags.append(_FREEZE_TAG)
     if _gated_pipeline_hit(command):

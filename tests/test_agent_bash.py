@@ -158,6 +158,11 @@ class TestCard:
         "git clean -fd", "git rebase main", "brew install ffmpeg", "npm install -g x", "npm i --global x",
         "uv tool install ruff", "echo 1 > config/project.json", "cat x | tee pipeline/a.py",
         "cp a.py pipeline/a.py", "perl -pi -i -e 's/a/b/' config/voice.json", "mv x 02-diff.patch",
+        # D119：解封物只拦写入，但解释器 / 下载落盘 / 解包 / git 还原都算写
+        "diff -u a b > 02-diff.patch", "python3 -c \"open('02-diff.patch','w').write('')\"",
+        "uv run python -c 'import shutil; shutil.copy(\"a\", \"04-clips.approved.json\")'",
+        "curl -sL https://x -o 04-clips.approved.json", "git checkout -- 02-diff.patch",
+        "tar xf a.tar 07-cover/selected.jpg", "touch 02-diff.patch",
     ])
     def test_硬危险_命中即弹卡(self, cmd: str) -> None:
         """ADR-0030 决策 1：不可逆 / 越过人工关卡的操作命中硬危险。"""
@@ -169,6 +174,9 @@ class TestCard:
         "pip install pillow", "cat pipeline/render.py | grep x", "ls config/ 2>/dev/null",
         "grep -rn x pipeline/ 2>&1 | head", "wc -l config/voice.json >/dev/null",
         "for f in *.wav; do ffprobe -v error \"$f\"; done",
+        # D119：只读解封物不弹卡（2026-10-19 卷二被误拦的原命令在第一条）
+        'ls -la 02-diff.patch 2>/dev/null || echo "no patch"', "cat 04-clips.approved.json | head -50",
+        "diff 04-clips.json 04-clips.approved.json", "stat -f %m 02-diff.patch", "ls 07-cover/selected*",
     ])
     def test_非硬危险_免卡(self, cmd: str) -> None:
         """ADR-0030（人裁决「再减少一些弹框」）：读源码 / 配置、项目内装依赖、mv、chmod、curl、git commit 都不算危险。"""
