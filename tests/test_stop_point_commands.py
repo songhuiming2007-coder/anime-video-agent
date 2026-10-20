@@ -143,6 +143,60 @@ class TestSaveScript:
         assert run_cli(repo, "/save-script", "--expect-size=1", monkeypatch=monkeypatch) == 2
 
 
+class _Events:
+    def __init__(self) -> None:
+        self.got: list[tuple[str, dict, Path | None]] = []
+
+    def emit(self, evt, payload, episode_dir=None):
+        self.got.append((evt.value, payload, episode_dir))
+
+
+@pytest.fixture
+def events(monkeypatch):
+    from pipeline import jobs
+
+    rec = _Events()
+    monkeypatch.setattr(jobs, "get_publisher", lambda: rec)
+    return rec
+
+
+class TestSaveScriptTrail:
+    """D116：人工保存留底 + 落事件；被拒也落事件、不留底。"""
+
+    def test_保存前留底旧版并落事件(self, repo, monkeypatch, events):
+        script = repo / "02-script.md"
+        st = script.stat()
+        rc = run_cli(repo, "/save-script", f"--expect-size={st.st_size}",
+                     f"--expect-mtime-ns={st.st_mtime_ns}", stdin="删掉了「但是，」\n", monkeypatch=monkeypatch)
+        assert rc == 0
+        hist = sorted((repo / "_agent" / "script-history").iterdir())
+        assert len(hist) == 1 and hist[0].name.endswith("-02-script.md")
+        assert hist[0].read_text(encoding="utf-8") == SCRIPT
+        [(kind, payload, ep)] = events.got
+        now = script.stat()
+        assert kind == "script_saved" and ep == repo.resolve()
+        assert payload == {"source": "desktop", "old": {"size": st.st_size, "mtime_ns": st.st_mtime_ns},
+                           "new": {"size": now.st_size, "mtime_ns": now.st_mtime_ns}, "history": hist[0].name}
+
+    def test_被拒落事件不留底(self, repo, monkeypatch, events):
+        st = (repo / "02-script.md").stat()
+        rc = run_cli(repo, "/save-script", f"--expect-size={st.st_size + 1}",
+                     f"--expect-mtime-ns={st.st_mtime_ns}", stdin="x", monkeypatch=monkeypatch)
+        assert rc == 1
+        assert not (repo / "_agent" / "script-history").exists()
+        [(kind, payload, _)] = events.got
+        assert kind == "script_save_rejected"
+        assert payload["actual"] == {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        assert payload["expect"]["size"] == st.st_size + 1
+
+    def test_从草稿新建无旧版可留(self, repo, monkeypatch, events):
+        (repo / "02-script.md").unlink()
+        assert run_cli(repo, "/save-script", "--expect-size=-1", "--expect-mtime-ns=-1",
+                       stdin="# 新稿\n", monkeypatch=monkeypatch) == 0
+        [(kind, payload, _)] = events.got
+        assert kind == "script_saved" and payload["old"] is None and payload["history"] is None
+
+
 # ---------------------------------------------------------------------------
 # TC-6 /seal-script
 # ---------------------------------------------------------------------------

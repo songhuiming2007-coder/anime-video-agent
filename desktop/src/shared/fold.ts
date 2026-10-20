@@ -142,6 +142,8 @@ export function eventLabel(e: { kind: string; type: string; payload: Record<stri
     return `停机点决策：${String(p.stop ?? "")} → ${String(p.decision ?? "")}`;
   }
   if (e.kind === "approval_requested") return `停机点待审：${String(p.stop ?? "")}`;
+  if (e.kind === "script_saved") return `02-script.md 人工保存${typeof p.history === "string" ? `（旧版留底 ${p.history}）` : "（新建）"}`;
+  if (e.kind === "script_save_rejected") return "02-script.md 人工保存被拒：磁盘版本已变，未写入";
   if (e.kind === "unknown") return `未知事件 ${e.type}`;
   return `${e.kind}${typeof p.job_id === "string" ? ` ${p.job_id}` : ""}`;
 }

@@ -1314,27 +1314,43 @@ def _cmd_save_script(ep_dir: Path | str, expect_size: int, expect_mtime_ns: int,
     指纹不符退 1 且**一字不写**：并发编辑没有安全出路，拒存让人看见冲突后自己决定。
     `--expect-size=-1 --expect-mtime-ns=-1` 表示断言文件**不存在**（「从草稿新建」）。
     """
-    target = _episode_file(ep_dir, "02-script.md")
-    want_missing = (expect_size, expect_mtime_ns) == (-1, -1)
-    if want_missing and target.exists():
-        print("[ERROR] 磁盘版本已变：02-script.md 已存在，未保存。", file=sys.stderr)
-        return 1
-    if not want_missing:
-        if not target.exists():
-            print("[ERROR] 磁盘版本已变：02-script.md 不存在，未保存。", file=sys.stderr)
-            return 1
-        st = target.stat()
-        if (st.st_size, st.st_mtime_ns) != (expect_size, expect_mtime_ns):
-            print(
-                f"[ERROR] 磁盘版本已变（实际 size={st.st_size} mtime_ns={st.st_mtime_ns}，"
-                f"期望 size={expect_size} mtime_ns={expect_mtime_ns}），未保存。",
-                file=sys.stderr,
-            )
-            return 1
+    from pipeline.agent.tools import SCRIPT_HISTORY_DIR, _keep_history
+    from pipeline.jobs import EventType, get_publisher
 
+    target = _episode_file(ep_dir, "02-script.md")
+    ep = target.parent
+    expect = {"size": expect_size, "mtime_ns": expect_mtime_ns}
+    old = {"size": target.stat().st_size, "mtime_ns": target.stat().st_mtime_ns} if target.exists() else None
+
+    def reject(msg: str) -> int:
+        # D116：被拒也落事件——人怀疑改动丢了时，能查到「那次保存其实没写进去」
+        get_publisher().emit(EventType.SCRIPT_SAVE_REJECTED, {"expect": expect, "actual": old}, episode_dir=ep)
+        print(msg, file=sys.stderr)
+        return 1
+
+    want_missing = (expect_size, expect_mtime_ns) == (-1, -1)
+    if want_missing and old is not None:
+        return reject("[ERROR] 磁盘版本已变：02-script.md 已存在，未保存。")
+    if not want_missing:
+        if old is None:
+            return reject("[ERROR] 磁盘版本已变：02-script.md 不存在，未保存。")
+        if (old["size"], old["mtime_ns"]) != (expect_size, expect_mtime_ns):
+            return reject(
+                f"[ERROR] 磁盘版本已变（实际 size={old['size']} mtime_ns={old['mtime_ns']}，"
+                f"期望 size={expect_size} mtime_ns={expect_mtime_ns}），未保存。"
+            )
+
+    # D116：与 agent 写 02-script.md 同口径，覆盖前留底到 _agent/script-history/
+    history = _keep_history(ep, target, SCRIPT_HISTORY_DIR, None) if old is not None else None
     paths.atomic_write(target, stdin_text)
     st = target.stat()
-    print(json.dumps({"size": st.st_size, "mtime_ns": st.st_mtime_ns}))
+    new = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    get_publisher().emit(
+        EventType.SCRIPT_SAVED,
+        {"source": "desktop", "old": old, "new": new, "history": history.name if history else None},
+        episode_dir=ep,
+    )
+    print(json.dumps(new))
     return 0
 
 

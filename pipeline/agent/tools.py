@@ -403,18 +403,20 @@ def write_episode_file(
     return target_resolved
 
 
-def _keep_history(ep_dir: Path, target: Path, sub: tuple[str, ...], keep: int | None) -> None:
-    """把即将被覆盖的文件存进 `<期>/<sub>/<UTC 纳秒>-<文件名>`；keep=None 不修剪，否则只留最近 keep 份。"""
+def _keep_history(ep_dir: Path, target: Path, sub: tuple[str, ...], keep: int | None) -> Path:
+    """把即将被覆盖的文件存进 `<期>/<sub>/<UTC 纳秒>-<文件名>`，返回留底路径；keep=None 不修剪，否则只留最近 keep 份。"""
     hist = ep_dir.joinpath(*sub)
     hist.mkdir(parents=True, exist_ok=True)
     ns = time.time_ns()  # 一次取时：秒与纳秒同源，文件名字典序 = 时间序
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(ns // 1_000_000_000)) + f"{ns % 1_000_000_000:09d}"
-    paths.atomic_write(hist / f"{stamp}-{target.name}", target.read_text(encoding="utf-8"))
+    saved = hist / f"{stamp}-{target.name}"
+    paths.atomic_write(saved, target.read_text(encoding="utf-8"))
     if keep is None:
-        return
+        return saved
     olds = sorted(p for p in hist.iterdir() if p.name.endswith(f"-{target.name}"))
     for old in olds[:-keep]:
         old.unlink()
+    return saved
 
 
 # 自动补位模块的带值旗标（非布尔 flag）。漏登记 → 旗标的值被当成位置参数 → 期目录不补位、
