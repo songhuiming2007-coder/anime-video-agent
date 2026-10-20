@@ -1271,6 +1271,82 @@ def test_up把型号写进会话文件并建软链(monkeypatch, tmp_path, capsys
     assert "没报单价" in capsys.readouterr().err
 
 
+def _fake_up_ssh(gpu: bool, uptime: str = "4321.0 100.0"):
+    def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+        if cmd == "nvidia-smi -L":
+            return _sp.CompletedProcess(cmd, 0 if gpu else 9, "GPU 0: NVIDIA GeForce RTX 4080\n", "")
+        if cmd == cloud.GPU_QUERY_CMD:
+            return _sp.CompletedProcess(cmd, 0, "NVIDIA GeForce RTX 4080, 32760\n", "")
+        if cmd == "cat /proc/uptime":
+            return _sp.CompletedProcess(cmd, 0, uptime + "\n", "")
+        return _sp.CompletedProcess(cmd, 0, ("LINKED" if "readlink" in cmd else "4321") + "\n", "")
+    return fake
+
+
+@pytest.mark.parametrize("declared,gpu,kept", [
+    (None, True, True),          # 2026-10-17 原样：up --rate 不带 --mode，实测带卡 → 记
+    ("gpu", True, True),
+    ("cardless", True, False),   # 明确声明了别的模式：这个价可能不是这台的，不记
+    (None, False, False),        # 无卡是平台固定价
+])
+def test_up单价跟实测模式走_D108(monkeypatch, tmp_path, capsys, declared, gpu, kept):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    sfile = tmp_path / "active_session.json"
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
+    monkeypatch.setattr(cloud, "_ssh", _fake_up_ssh(gpu))
+    args = cloud.build_parser().parse_args(["up", "--rate", "2.78"] + (["--mode", declared] if declared else []))
+    assert cloud.cmd_up(args) == 0
+    data = json.loads(sfile.read_text(encoding="utf-8"))
+    assert data["mode"] == ("gpu" if gpu else "cardless")
+    assert (data.get("rate_cny") == 2.78) is kept
+    assert ("mode_corrected" in data) is (declared is not None and declared != data["mode"])
+
+
+def test_resumable_session_D128():
+    prev = {"session": "s", "up_epoch": 1000.0, "target": "root@h:1"}
+    assert cloud.resumable_session(prev, "root@h:1", 900.0)                 # 会话开始前就开着机
+    assert cloud.resumable_session(prev, "root@h:1", 1020.0)                # ssh 往返几秒的误差
+    assert not cloud.resumable_session(prev, "root@h:1", 1400.0)            # 会话开始后重启过
+    assert not cloud.resumable_session(prev, "root@h:2", 900.0)             # 换了一台
+    assert not cloud.resumable_session(prev, "root@h:1", None)              # uptime 读不出
+    assert not cloud.resumable_session({"session": "s", "target": "root@h:1"}, "root@h:1", 900.0)
+    assert not cloud.resumable_session(None, "root@h:1", 900.0)
+    assert cloud.connection_target({"server": "h", "port": 1}) == "root@h:1"
+    assert cloud.connection_target({}) is None
+
+
+def test_同一次开机再跑up沿用会话与单价_D128(monkeypatch, tmp_path, capsys):
+    """2026-10-20：up --rate 1.58 开出 091844，一分钟后又一次不带 --rate 的 up 开出 091944，结算回退 2.4。"""
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "load_cloud_config",
+                        lambda *a, **k: ({}, {"server": "connect.westb.seetacloud.com", "port": 51175}))
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    sfile = tmp_path / "active_session.json"
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: sfile)
+    monkeypatch.setattr(cloud, "_ssh", _fake_up_ssh(True, uptime="50.0 10.0"))
+    clock = [1_000_000.0]
+    monkeypatch.setattr(cloud.time, "time", lambda: clock[0])
+    assert cloud.cmd_up(cloud.build_parser().parse_args(["up", "--rate", "1.58"])) == 0
+    first = json.loads(sfile.read_text(encoding="utf-8"))
+    sfile.write_text(json.dumps({**first, "tasks": ["captions"]}), encoding="utf-8")
+
+    clock[0] += 60
+    monkeypatch.setattr(cloud, "_ssh", _fake_up_ssh(True, uptime="110.0 10.0"))  # 同一次开机
+    assert cloud.cmd_up(cloud.build_parser().parse_args(["up"])) == 0
+    again = json.loads(sfile.read_text(encoding="utf-8"))
+    assert again["session"] == first["session"] and again["up_epoch"] == first["up_epoch"]
+    assert again["rate_cny"] == 1.58 and again["tasks"] == ["captions"]
+    assert "没报单价" not in capsys.readouterr().err
+
+    clock[0] += 600
+    monkeypatch.setattr(cloud, "_ssh", _fake_up_ssh(True, uptime="20.0 10.0"))   # 重启过
+    assert cloud.cmd_up(cloud.build_parser().parse_args(["up"])) == 0
+    fresh = json.loads(sfile.read_text(encoding="utf-8"))
+    assert fresh["up_epoch"] == clock[0] and "rate_cny" not in fresh and fresh["tasks"] == []
+    assert "没有 down 结算就被替换" in capsys.readouterr().err
+
+
 def test_parse_gpu_query():
     assert cloud.parse_gpu_query("NVIDIA vGPU-32GB, 32760\n") == ("NVIDIA vGPU-32GB", 32760.0)
     assert cloud.parse_gpu_query("49152\n") == (None, 49152.0)

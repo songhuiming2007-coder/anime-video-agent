@@ -1429,10 +1429,10 @@ def cmd_up(args: argparse.Namespace) -> int:
     """开机命令：检测状态，记录模式，激活 watchdog。"""
     cfg_global, cfg_local = load_cloud_config()
     host = _ssh_host(cfg_local)
-    mode = getattr(args, "mode", "gpu")
+    declared = getattr(args, "mode", None)   # D108：不声明 = 按探测记，单价跟实测模式走
     rate = check_rate(getattr(args, "rate", None))   # D108：先校验，别开了机才报参数错
 
-    print(f"[*] 检查云端实例连通性 (Host: {host}, 模式: {mode})...")
+    print(f"[*] 检查云端实例连通性 (Host: {host}, 模式: {declared or '开机后探测'})...")
     if not is_ssh_reachable(host):
         print()
         for line in rent_instructions(cfg_global):
@@ -1458,14 +1458,14 @@ def cmd_up(args: argparse.Namespace) -> int:
     # `down` 早就有这个探针，`up` 也该有：探测比猜测便宜得多（同一句注释的下半句）。
     actual = detect_runtime_mode_from_gpu_probe(
         _ssh("nvidia-smi -L", host=host, check=False).returncode)
-    if actual != mode:
-        print(f"WARN --mode {mode} 与实测不符：这台实例当前是【{actual}】。")
+    if declared and actual != declared:
+        print(f"WARN --mode {declared} 与实测不符：这台实例当前是【{actual}】。")
         if actual == "cardless":
             print("     → 无 GPU：带卡任务（VLM 打标/重推理）会在加载权重时被 OOM 杀掉，"
                   "而且报错只有一行 Killed。\n"
                   "     → 账簿已按实测的 cardless 记（否则虚高 24 倍）；"
                   "要跑 GPU 任务请关机后在控制台按带卡模式重开。")
-        mode = actual
+    mode = actual
 
     # D102：卡型按需租，记下实际是哪张卡（账本按型号查价）；模型目录软链到文件存储
     gpu_name, gpu_mem = (None, None)
@@ -1494,35 +1494,85 @@ def cmd_up(args: argparse.Namespace) -> int:
     print(f"[OK] 远端自动关机 Watchdog 已激活 (PID {wd_pid}，无活跃任务且空闲 {idle_sec}s 自动关机)。")
 
     sfile = get_active_session_file()
-    now_time = datetime.now().strftime("%H:%M:%S")
-    session_data = {
-        "session": f"{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        "mode": mode,
-        "up": now_time,
-        "up_epoch": time.time(),
-        "episode": getattr(args, "episode", None),
-        "tasks": [],
-    }
+    now_epoch = time.time()
+    target = connection_target(cfg_local)
+    try:
+        prev = json.loads(sfile.read_text(encoding="utf-8")) if sfile.exists() else None
+    except (OSError, ValueError):
+        prev = None
+    # D128：同一次开机里再跑 up（换了 agent、重跑一遍）沿用原会话——覆盖会丢掉报过的单价，
+    # 开机时刻也往后挪、少计一段。开机时刻 = 本地 now − 远端 uptime，不受两边时钟偏差影响
+    resumed = resumable_session(prev, target, remote_boot_epoch(host, now_epoch))
+    if resumed:
+        session_data = dict(prev)
+        session_data["mode"] = mode
+        print(f"[OK] 沿用本次开机的活跃会话 {prev.get('session')}（开始于 {prev.get('up')}），开机时刻与已报单价不变")
+    else:
+        if prev is not None:
+            print(f"WARN 上一个会话 {prev.get('session')}（开始于 {prev.get('up')}）没有 down 结算就被替换："
+                  "实例已重启或换了一台，那段费用不进账本", file=sys.stderr)
+        session_data = {
+            "session": f"{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "mode": mode,
+            "up": datetime.now().strftime("%H:%M:%S"),
+            "up_epoch": now_epoch,
+            "episode": getattr(args, "episode", None),
+            "tasks": [],
+        }
+    if target:
+        session_data["target"] = target
     if gpu_name:
         session_data["gpu"] = gpu_name
     if gpu_mem:
         session_data["gpu_mem_mib"] = gpu_mem
-    if rate is not None and mode == getattr(args, "mode", mode):
+    if rate is not None and mode == "gpu" and declared in (None, "gpu"):
         session_data["rate_cny"] = rate
         session_data["rate_source"] = "人报（up --rate）"
-    elif rate is not None:
-        print(f"WARN 报的单价 {rate:g} 元/h 是按 --mode {getattr(args, 'mode', None)} 报的，实测是 {mode}，"
+    elif rate is not None and mode == "gpu":
+        print(f"WARN 报的单价 {rate:g} 元/h 是按 --mode {declared} 报的，实测是 {mode}，"
               "这个价不记；结算时用 down --rate 补实际单价", file=sys.stderr)
-    elif mode == "gpu":
+    elif rate is not None:
+        print(f"WARN 实测是无卡模式，按平台固定价记，报的单价 {rate:g} 元/h 不记", file=sys.stderr)
+    elif mode == "gpu" and "rate_cny" not in session_data:
         print("WARN 没报单价：账本会按参考价估算。看控制台这台实例的按量单价，"
               "结算时用 cloud down --rate <元/时> 补上", file=sys.stderr)
-    if mode != getattr(args, "mode", mode):
+    if declared and mode != declared:
         # 与声明不符时留痕，事后查账不用猜（带卡/无卡差 24 倍价，不是小事）
-        session_data["mode_corrected"] = (
-            f"up 声明 --mode {getattr(args, 'mode', None)}，实测为 {mode}，按实测记账")
+        session_data["mode_corrected"] = f"up 声明 --mode {declared}，实测为 {mode}，按实测记账"
     sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[OK] 会话已开启: {session_data['session']} (模式: {mode})")
+    if not resumed:
+        print(f"[OK] 会话已开启: {session_data['session']} (模式: {mode})")
     return 0
+
+
+def connection_target(cfg_local: dict) -> str | None:
+    """`cloud connect` 记下的 user@server:port（纯函数）；没 connect 过（走 ~/.ssh/config）为 None。"""
+    if not (cfg_local.get("server") and cfg_local.get("port")):
+        return None
+    return f"{cfg_local.get('user', 'root')}@{cfg_local['server']}:{cfg_local['port']}"
+
+
+def remote_boot_epoch(host: str, now_epoch: float) -> float | None:
+    """远端本次开机的本地时刻：now − /proc/uptime。读不出为 None（调用方按「不能沿用」处理）。"""
+    res = _ssh("cat /proc/uptime", host=host, check=False)
+    try:
+        return now_epoch - float(res.stdout.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def resumable_session(prev: dict | None, target: str | None, boot_epoch: float | None,
+                      slack: float = 30.0) -> bool:
+    """上一个活跃会话能否沿用（纯函数）：同一个连接目标，且远端开机早于会话开始（没重启过）。
+
+    slack 只吸收 ssh 往返的几秒；重启过的实例开机时刻必然晚于会话开始，差距至少是关机到重开的间隔。
+    """
+    if not prev or boot_epoch is None:
+        return False
+    up = prev.get("up_epoch")
+    if not isinstance(up, (int, float)) or prev.get("target") != target:
+        return False
+    return boot_epoch <= up + slack
 
 
 def detect_runtime_mode_from_gpu_probe(returncode: int) -> str:
@@ -2385,7 +2435,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="端云协同管理系统（E9：python -m pipeline.cloud）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2412,7 +2462,8 @@ def main() -> int:
 
     # up
     p_up = sub.add_parser("up", help="开启实例并初始化远端守护脚本")
-    p_up.add_argument("--mode", choices=["cardless", "gpu"], default="cardless", help="开机模式 (cardless=无卡节能模式, gpu=带卡模式)")
+    p_up.add_argument("--mode", choices=["cardless", "gpu"], default=None,
+                      help="声明开机模式 (cardless=无卡节能模式, gpu=带卡模式)；不填按 nvidia-smi 探测记")
     p_up.add_argument("--rate", type=float, default=None,
                       help="这台实例的按量单价（元/小时，控制台上看到的数；D108：卡不固定、价不固定，不报则账本按参考价估算）")
     p_up.add_argument("--timeout", type=int, default=300, help="开机等待超时秒数（默认 300s）")
@@ -2462,8 +2513,11 @@ def main() -> int:
     # attach
     p_attach = sub.add_parser("attach", help="终端接驳远端 tmux 会话")
     p_attach.add_argument("--session", type=str, default="ava-tts", help="tmux 会话名")
+    return ap
 
-    args = ap.parse_args()
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     dispatch = {
         "exec": cmd_exec,
