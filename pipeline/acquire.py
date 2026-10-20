@@ -810,9 +810,12 @@ def cmd_to_patch(file: Path, episode: Path) -> int:
     只收 incoming/ 里的文件：池里已登记的素材挪走会让 sources.json 指向空路径。
     图片照收——`ingest_patch` 自己会转码（D59）。
     """
+    from .project import classify_dir
+
     ep = episode.resolve()
-    if ep.parent != (paths.DATA / "episodes").resolve() or not ep.is_dir():
-        raise SystemExit(f"FAIL {episode} 不是 data/episodes/ 下的期目录")
+    # D81 起期可以是企划下的卷（data/episodes/<企划>/<卷>）；期 / 卷的判定只认 classify_dir，企划目录本身拒
+    if classify_dir(episode) not in ("episode", "volume") or not ep.is_dir():
+        raise SystemExit(f"FAIL {episode} 不是期目录（data/episodes/<期> 或 <企划>/<卷>）")
     if not file.is_file():
         raise SystemExit(f"FAIL 找不到文件 {file}")
     if file.resolve().parent != incoming().resolve():

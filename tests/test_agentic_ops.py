@@ -249,6 +249,22 @@ def test_ao5_只收incoming里的文件_只认期目录(repo: Path):
     assert f.exists() and outside.exists()
 
 
+def test_ao5_企划下的卷可挪入_企划目录本身拒(repo: Path):
+    proj = repo / "data/episodes/某企划"
+    (proj / "00-project.md").parent.mkdir(parents=True, exist_ok=True)
+    (proj / "00-project.md").write_text("# 企划\n", encoding="utf-8")
+    vol = _episode(repo, "某企划/02-卷")
+    f = repo / "data/library/incoming/still.jpg"
+    f.write_bytes(b"\0")
+    _set_ledger(repo, [{"url": "u", "candidate": 1, "file": str(f), "as": None}])
+    with pytest.raises(SystemExit, match="期目录"):
+        A.cmd_to_patch(f, proj)
+    assert f.exists()
+    assert A.cmd_to_patch(f, vol) == 0
+    assert (vol / "patch_assets/still.jpg").exists() and not f.exists()
+    assert _ledger(repo)[0]["to_patch"] == "02-卷"
+
+
 # ---------- forget ----------
 
 
