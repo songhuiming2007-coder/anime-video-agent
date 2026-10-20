@@ -53,6 +53,8 @@
 | [D102 云端实例用完即弃：模型放文件存储，哪台有卡开哪台](2026-10-15-cloud-disposable-instance-spec.md) | D102 | ADR-0014, ADR-0016 | **已施工·机检通过**（2026-10-15；pytest 3285 / vitest 610，变异 21/21）；待人：租一台非 F29 的实例跑完第九节完成判定，实测显存门槛 |
 | [N50 密钥环境变量不再传给作业与浏览器](2026-10-15-n50-secret-env-spec.md) | N50 | N49, Spec 15 §2.7（R2-9）, ADR-0029 | **已施工·机检通过**（2026-10-15；人裁决做、crawl 选 C2；变异 8/8，Camoufox 真实冒烟见第八节）；残留：crawl4ai 的 Chromium、playwright node 驱动进程 |
 | [D103 ② 番池素材的云端打标命令](2026-10-17-library-captions-cloud-spec.md) | D103, D107 | ADR-0016 | **已施工·机检通过**（2026-10-17；`cloud lib-push / lib-captions / lib-pull`，变异 4/4）；待人：下次租卡真跑一次 |
+| [D127 SP 集键放宽到 2–3 位](2026-10-20-sp-key-three-digits-spec.md) | D127 | ADR-0010 | 施工图已出（2026-10-20，人选放宽到 2–3 位）；待人看过说开工 |
+| [D122 网页截图素材入库：三方案](2026-10-20-screenshot-asset-options.md) | D122 | ADR-0021, ADR-0030, ADR-0032 | 三方案待人选（推荐 A：`browser` 加 `screenshot` 动作） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
