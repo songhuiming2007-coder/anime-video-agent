@@ -38,6 +38,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import paths
+from .keys import SP_MAX, SP_NUM
 from .candidates import (
     TYPES,
     _line_of,
@@ -382,27 +383,28 @@ def cmd_probe(no: str) -> int:
 
 
 def register_key(text: str) -> int:
-    """`--as SP19` → 19。集键写死成两位 SP（ADR-0010 决策二），别让手输自由发挥。"""
-    m = re.fullmatch(r"SP(\d{2})", text.strip())
+    """`--as SP19` → 19。只收规范形（两位补零或三位，ADR-0010 决策二 / D127），别让手输自由发挥。"""
+    m = re.fullmatch(rf"SP({SP_NUM})", text.strip())
     if not m:
-        raise SystemExit(f"FAIL 集键必须形如 SP19（两位），收到 {text!r}")
+        raise SystemExit(f"FAIL 集键必须形如 SP19 或 SP100（两位补零，满 99 进三位），收到 {text!r}")
     return int(m.group(1))
 
 
-_SP_PREFIX = re.compile(r"^SP(\d{2})(?!\d)")
+#: `(?!\d)`：`SP10-a.mp4` 与 `SP100-b.mp4` 各认各的，`SP10` 不吃掉 `SP100` 的前缀
+_SP_PREFIX = re.compile(rf"^SP({SP_NUM})(?!\d)")
 
 
 def next_key(registered: set[str], raw_names: list[str]) -> int:
     """池里下一个空号：已登记集键与 `raw/<池>/` 里文件名前缀的最大号 +1（D59）。
 
     两处都看：只看 sources.json 会撞上「文件挪进来了、登记失败」留下的同号文件。
-    空池从 1 起；到 99 就报错——集键写死两位（ADR-0010 决策二），不自动扩成三位。
+    空池从 1 起；满 99 进三位（D127），到 SP_MAX 报错。
     """
-    nums = [int(m.group(1)) for k in registered if (m := re.fullmatch(r"SP(\d{2})", k))]
+    nums = [int(m.group(1)) for k in registered if (m := re.fullmatch(rf"SP({SP_NUM})", k))]
     nums += [int(m.group(1)) for n in raw_names if (m := _SP_PREFIX.match(n))]
     nxt = max(nums, default=0) + 1
-    if nxt > 99:
-        raise SystemExit("FAIL 池里已到 SP99，集键只有两位（ADR-0010 决策二）——换一个池名或人定怎么扩")
+    if nxt > SP_MAX:
+        raise SystemExit(f"FAIL 池里已到 SP{SP_MAX}，集键最多三位（ADR-0010 决策二）——换一个池名或人定怎么扩")
     return nxt
 
 

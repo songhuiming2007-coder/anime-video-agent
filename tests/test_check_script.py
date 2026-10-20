@@ -1381,3 +1381,13 @@ def test_pending_marks_located_by_segment() -> None:
     assert [lbl for lbl, _ in got] == ["段外", "3", "3", "段外"]
     assert got[1][1].startswith("【待核：找不到出处")
     assert pending_marks("## 段落 1\n配音：待核这个词本身不是标记。\n") == []
+
+
+def test_纪录片SP100锚点计入物证_D127(tmp_path, monkeypatch):
+    (tmp_path / "01-topic.md").write_text("类型: 纪录片\n番: 《supercell》\n", encoding="utf-8")
+    (tmp_path / "01-hero-shots.md").write_text("# 物证卡片表\n| H1 | SP100 | 画面 |\n", encoding="utf-8")
+    from pipeline import ingest
+    monkeypatch.setattr(ingest, "load_sources", lambda pool: {k: {"duration": 300.0} for k in ("SP99", "SP100", "SP101")})
+    f = script(tmp_path, [BODY] * 8, anchors=["SP99 01:23", "SP100 02:34", "SP101 03:45"] + [None] * 5)
+    chk = get(cs.run(f), "纪录片实证物证锚点")
+    assert chk.ok and "3 处" in chk.detail

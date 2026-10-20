@@ -45,6 +45,7 @@ from datetime import date
 from pathlib import Path
 
 from . import paths, shots          # paths 必须最先：把 HF_HOME 钉到 SSD
+from .keys import SP_NUM, key_sort
 
 import numpy as np
 
@@ -649,14 +650,14 @@ def load_scene(anime: str, out_dir: Path = VINDEX_DIR,
 
 
 def caption_keys(anime: str, out_dir: Path = VINDEX_DIR) -> list[str]:
-    """这个池里已经打过标的集键（`SP01` / `S01E01`…），按字典序。
+    """这个池里已经打过标的集键（`SP01` / `S01E01`…），按集号排（`keys.key_sort`，SP100 在 SP99 之后）。
 
     **探针要跨集抽样（池级标定与 30 镜头抽验），而抽样单位是「池」不是「集」**
     （2026-09-11 裁决：M2b 主要服务对象是素材池）。
     """
     tail = len(".captions.json")
-    return sorted(p.name[len(anime) + 1:-tail]
-                  for p in out_dir.glob(f"{anime}_*.captions.json"))
+    return sorted((p.name[len(anime) + 1:-tail]
+                   for p in out_dir.glob(f"{anime}_*.captions.json")), key=key_sort)
 
 
 def _require_full_index(anime: str, have: set[str], what: str) -> None:
@@ -689,10 +690,10 @@ def _parse_key(key: str) -> tuple[int | None, int]:
     m = re.fullmatch(r"S(\d{2})E(\d{2})", key)
     if m:
         return int(m.group(1)), int(m.group(2))
-    m = re.fullmatch(r"SP(\d{2})", key)
+    m = re.fullmatch(rf"SP({SP_NUM})", key)
     if m:
         return None, int(m.group(1))
-    raise SystemExit(f"FAIL 集键格式不对：{key}（应形如 S01E03 或 SP05）")
+    raise SystemExit(f"FAIL 集键格式不对：{key}（应形如 S01E03、SP05 或 SP100）")
 
 
 def key_of(u: "Shot") -> str:

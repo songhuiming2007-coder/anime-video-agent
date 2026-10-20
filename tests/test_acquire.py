@@ -405,10 +405,11 @@ class TestRegisterKey:
     def test_正常集键(self):
         assert A.register_key("SP19") == 19
         assert A.register_key(" SP01 ") == 1
+        assert A.register_key("SP100") == 100 and A.register_key("SP999") == 999   # D127 满 99 进三位
 
-    @pytest.mark.parametrize("bad", ["SP9", "S01E01", "19", "sp19", "SP190"])
+    @pytest.mark.parametrize("bad", ["SP9", "S01E01", "19", "sp19", "SP1900", "SP001", "SP099"])
     def test_坏集键报错(self, bad):
-        # 集键写死两位 SP（ADR-0010 决策二）：让手输自由发挥，迟早出现 SP9 与 SP09 两份
+        # 只收规范形（ADR-0010 决策二）：让手输自由发挥，迟早出现 SP9 与 SP09、SP99 与 SP099 两份
         with pytest.raises(SystemExit, match="SP19"):
             A.register_key(bad)
 

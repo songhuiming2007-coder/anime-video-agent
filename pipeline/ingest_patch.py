@@ -20,6 +20,7 @@ import numpy as np
 
 from . import bgm, cloud, paths, shots, vindex
 from .ingest import intact, probe_video
+from .keys import SP_MAX, key_sort, sp_key
 
 # 默认补丁池镜头切分阈值（当主番未标定且未指定时使用）
 DEFAULT_PATCH_THRESHOLD = 12.0
@@ -420,9 +421,9 @@ def ingest(
     # 2. 本地准备：镜头切分与抽帧
     new_keys: list[str] = []
     for asset in unregistered:
-        if next_number > 99:
-            raise SystemExit(f"FAIL 补丁池资产数超过上限 99 个（尝试添加 {asset.name}）")
-        key = f"SP{next_number:02d}"
+        if next_number > SP_MAX:
+            raise SystemExit(f"FAIL 补丁池资产数超过上限 {SP_MAX} 个（尝试添加 {asset.name}）")
+        key = sp_key(next_number)
         next_number += 1
 
         print(f"[*] 处理补丁资产: {asset.name} -> {pool_name} {key}")
@@ -491,7 +492,7 @@ def ingest(
         return 0
 
     # 收集全部需打标的 key（新资产 + 旧资产中未完成者）
-    all_keys = sorted(registered_assets.keys())
+    all_keys = sorted(registered_assets.keys(), key=key_sort)
     keys_needing_captions: list[str] = []
     for k in all_keys:
         cap_file = patch_vindex_dir / f"{pool_name}_{k}.captions.json"

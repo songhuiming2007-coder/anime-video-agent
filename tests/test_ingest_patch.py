@@ -27,14 +27,15 @@ class TestPendingAssets:
         ep = tmp_path / "ep"
         patch_dir = ep / "04-patch"
         patch_dir.mkdir(parents=True)
-        # 预置 99 个已登记资产
-        assets = {f"SP{i:02d}": {"path": f"/tmp/{i}.mp4", "duration": 1.0} for i in range(1, 100)}
+        # 预置 SP_MAX 个已登记资产（D127：上限 99 → 999）
+        from pipeline.keys import SP_MAX, sp_key
+        assets = {sp_key(i): {"path": f"/tmp/{i}.mp4", "duration": 1.0} for i in range(1, SP_MAX + 1)}
         (patch_dir / "pool.json").write_text(json.dumps({"pool": "p", "assets": assets}))
         patch_assets = ep / "patch_assets"
         patch_assets.mkdir(parents=True)
         (patch_assets / "overflow.mp4").write_bytes(b"x")
 
-        with pytest.raises(SystemExit, match="补丁池资产数超过上限 99 个"):
+        with pytest.raises(SystemExit, match="补丁池资产数超过上限 999 个"):
             ingest_patch.ingest(ep, floor=0.60, local=True)
 
     def test_未转码图片拦截_指向ingest_patch自转(self, tmp_path):

@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 from . import bgm, paths
+from .keys import SP_NUM_LOOSE, sp_key
 from .music import FOREGROUND_LUFS  # 试听型前景响度，music.py 单源
 from .align import has_clips_approved_diff, verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
@@ -999,7 +1000,7 @@ def _resolve_tag(episode: Path, ep_tag: str) -> tuple[str, str]:
     anime = bgm.anime_of(episode)
     if anime is None:
         raise SystemExit(f"FAIL 音乐段画面需要 01-topic.md 的 `番: `字段")
-    m = re.fullmatch(r"(?:(.+?)\s+)?(S\d{1,2}E\d{1,2}|SP\d{1,2}(?:[-_][^\s:]+)?)", ep_tag)
+    m = re.fullmatch(rf"(?:(.+?)\s+)?(S\d{{1,2}}E\d{{1,2}}|SP{SP_NUM_LOOSE}(?:[-_][^\s:]+)?)", ep_tag)
     if m and m.group(1):
         prefix = m.group(1).strip()
         declared = list(dict.fromkeys([anime] + bgm.animes_of(episode)))
@@ -1009,9 +1010,9 @@ def _resolve_tag(episode: Path, ep_tag: str) -> tuple[str, str]:
                 f"{'、'.join(declared)}")
         anime = prefix
         ep_tag = m.group(2)
-    sp_m = re.fullmatch(r"SP(\d{1,2})(?:[-_][^\s:]+)?", ep_tag, re.I)
+    sp_m = re.fullmatch(rf"SP({SP_NUM_LOOSE})(?:[-_][^\s:]+)?", ep_tag, re.I)
     if sp_m:
-        ep_tag = f"SP{int(sp_m.group(1)):02d}"
+        ep_tag = sp_key(int(sp_m.group(1)))
     return anime, ep_tag
 
 
