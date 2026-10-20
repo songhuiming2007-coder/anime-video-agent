@@ -106,17 +106,40 @@ class TestCheckImage:
                            width=5720, height=2837)
         assert A.overall(vs) == "PASS"
 
-    def test_短边1582差18px不过(self):
-        # BK/Back C.png 实测 1582×2860：差 18px 也是不过，阈值不因为「差得少」松口
-        vs = A.check_image(decoded=True, decode_detail="解出 PNG RGB",
-                           width=1582, height=2860)
-        assert next(v for v in vs if v.name == "短边像素").level == "FAIL"
-        assert A.overall(vs) == "FAIL"
+    def test_竖版booklet缩进安全框_不放大就过(self):
+        # BK/Back C.png 实测 1582×2860：旧判据「短边 ≥1600」差 18px 拒；实际缩进 902px 高的安全框，
+        # 峰值 0.36 倍，是缩小（D123：判据要量真实产物）
+        vs = A.check_image(decoded=True, decode_detail="解出 PNG RGB", width=1582, height=2860)
+        assert next(v for v in vs if v.name == "峰值放大").level == "PASS"
+        assert A.overall(vs) == "PASS"
 
-    def test_封面2041x1357按扫图判也不过(self):
-        # 成片封面 2041×1357（短边 1357）当扫图用会糊——两者判据同一条线
-        assert A.overall(A.check_image(decoded=True, decode_detail="解出 JPEG RGB",
-                                       width=2041, height=1357)) == "FAIL"
+    def test_宽幅截图裁到证据区域也过(self):
+        # 2026-10-19 卷二：3328×1646 整视口截图，裁到证据区域后的尺寸
+        assert A.overall(A.check_image(decoded=True, decode_detail="解出 PNG RGB",
+                                       width=2400, height=900)) == "PASS"
+
+    def test_1080p横图铺满再缓推_峰值115倍不过(self):
+        vs = A.check_image(decoded=True, decode_detail="解出 PNG RGB", width=1920, height=1080)
+        v = next(v for v in vs if v.name == "峰值放大")
+        assert v.level == "FAIL" and "1.15" in v.value and "2208×1242" in v.note
+
+    def test_16比9恰好不放大的边界(self):
+        assert A.still_peak_magnify((2208, 1242)) == pytest.approx(1.0, abs=0.001)
+        assert A.overall(A.check_image(decoded=True, decode_detail="x", width=2209, height=1243)) == "PASS"
+
+    def test_铺满按盖住整个画面的那一边算(self):
+        # 2257×1220 宽高比 1.85，仍在铺满区间：要放大到高 1080 才盖满（0.885 倍），宽那边只需 0.851
+        assert A.still_fills((2257, 1220))
+        assert A.overall(A.check_image(decoded=True, decode_detail="x", width=2257, height=1220)) == "FAIL"
+
+    def test_小图缩进安全框要放大就不过(self):
+        # 2.4:1 走安全框：1200 宽放进 1604 宽要放大 1.34 倍，再推 1.15
+        assert A.overall(A.check_image(decoded=True, decode_detail="x", width=1200, height=500)) == "FAIL"
+
+    def test_峰值算式与still_argv同一套几何(self):
+        assert A.still_fills((1920, 1080)) and not A.still_fills((1582, 2860))
+        assert A.still_peak_magnify((1582, 2860)) == pytest.approx(A.STILL_SAFE_H / 2860 * A.STILL_ZOOM_END)
+        assert A.still_peak_magnify((3840, 2160)) == pytest.approx(0.5 * A.STILL_ZOOM_END)
 
     def test_解不开就FAIL(self):
         vs = A.check_image(decoded=False, decode_detail="OSError: truncated",

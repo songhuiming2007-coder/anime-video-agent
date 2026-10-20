@@ -286,9 +286,9 @@ class TestMeasure:
     def test_Wikimedia文件名(self, url, title):
         assert CC.wiki_file_title(url) == title
 
-    def test_门禁预判_scan短边不够(self):
-        assert CC.gate_reject(_cand(), {"width": 1500, "height": 2400}) == f"短边 1500 < {A.SCAN_MIN_SIDE}"
-        assert CC.gate_reject(_cand(), {"width": 1600, "height": 2400}) is None
+    def test_门禁预判_scan转视频要放大(self):
+        assert CC.gate_reject(_cand(), {"width": 1920, "height": 1080}) == "转视频要放大 1.15 倍（上限 1.00）"
+        assert CC.gate_reject(_cand(), {"width": 1500, "height": 2400}) is None   # 竖图缩进安全框，是缩小
         assert CC.gate_reject(_cand(type_="mv"), {"width": 640, "height": 360}) is None
         assert CC.gate_reject(_cand(), {"width": None, "height": None}) is None
 
