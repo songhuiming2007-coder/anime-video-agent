@@ -1132,7 +1132,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "`python` 就是项目解释器（已带 pipeline 依赖）。查写法先读 skills/ 与 docs/runbook/，别靠猜函数名翻源码。"
             "stdin 为空，stdout / stderr 各回传尾部 16 KB，输出里的已知密钥值会被替换为 [已脱敏]。"
             "用于白名单之外的文件与媒体操作：把期目录外的文件拷进来、改名、ffmpeg / sips 裁图转码、查看文件。"
-            "**多数命令直接执行、不弹卡**，只在删除、写 pipeline/ 或 config/、git 改历史、碰停机点解封物这类硬危险时弹卡；"
+            "**多数命令直接执行、不弹卡**，只在删除、写 pipeline/ 或 config/、git 改历史、写停机点解封物这类硬危险时弹卡；"
             "有副作用的先在对话里问人。不要叫人去终端敲命令。"
             "流水线工序（tts / clips / render / check_script…）仍走 run_pipeline。"
             "遵守做片期代码只读（production.md）：不改 pipeline/ 源码与 config/，"
