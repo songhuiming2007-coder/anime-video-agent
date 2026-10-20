@@ -2979,5 +2979,570 @@
         "vocal": true
       }
     }
+  },
+  "化物语": {
+    "_note": "《化物语》TV动画原声带（神前晓 / MONACA 担当配乐，含 64 首正统剧伴）与全部 OP/ED 官方伴奏（含 supercell《君の知らない物語》伴奏与《恋爱循环》off vocal），纯候选池，每期选曲现选",
+    "tracks": {
+      "ambivalent world -Instrumental": {
+        "path": "data/library/bgm/化物语/ambivalent world -Instrumental.flac",
+        "slot": "结尾",
+        "dur": 257.4,
+        "lufs": -8.14,
+        "onset": 0.522,
+        "vocal": false
+      },
+      "staple stable -instrumental-": {
+        "path": "data/library/bgm/化物语/staple stable -instrumental-.flac",
+        "slot": "结尾",
+        "dur": 276.6,
+        "lufs": -8.69,
+        "onset": 0.627,
+        "vocal": false
+      },
+      "sugar sweet nightmare (Instrumental)": {
+        "path": "data/library/bgm/化物语/sugar sweet nightmare (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 268.0,
+        "lufs": -8.79,
+        "onset": 0.836,
+        "vocal": false
+      },
+      "「ただいまっ、帰りましたっ」": {
+        "path": "data/library/bgm/化物语/「ただいまっ、帰りましたっ」.flac",
+        "slot": "正文",
+        "dur": 91.0,
+        "lufs": -13.54,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "「戦場ヶ原、蕩れ」": {
+        "path": "data/library/bgm/化物语/「戦場ヶ原、蕩れ」.flac",
+        "slot": "正文",
+        "dur": 128.3,
+        "lufs": -13.32,
+        "onset": 0.836,
+        "vocal": null
+      },
+      "「戦場ヶ原先輩」": {
+        "path": "data/library/bgm/化物语/「戦場ヶ原先輩」.flac",
+        "slot": "正文",
+        "dur": 143.0,
+        "lufs": -12.6,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "「暦お兄ちゃん」": {
+        "path": "data/library/bgm/化物语/「暦お兄ちゃん」.flac",
+        "slot": "正文",
+        "dur": 76.8,
+        "lufs": -13.95,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "「私、嘘なんかついたことがないもの」": {
+        "path": "data/library/bgm/化物语/「私、嘘なんかついたことがないもの」.flac",
+        "slot": "正文",
+        "dur": 112.4,
+        "lufs": -15.24,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "お人よし": {
+        "path": "data/library/bgm/化物语/お人よし.flac",
+        "slot": "正文",
+        "dur": 149.1,
+        "lufs": -14.42,
+        "onset": 2.508,
+        "vocal": null
+      },
+      "けだもの": {
+        "path": "data/library/bgm/化物语/けだもの.flac",
+        "slot": "正文",
+        "dur": 98.7,
+        "lufs": -14.23,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "クラスメイト": {
+        "path": "data/library/bgm/化物语/クラスメイト.flac",
+        "slot": "正文",
+        "dur": 160.8,
+        "lufs": -14.41,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "デート": {
+        "path": "data/library/bgm/化物语/デート.flac",
+        "slot": "正文",
+        "dur": 88.8,
+        "lufs": -11.51,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "バカロリート": {
+        "path": "data/library/bgm/化物语/バカロリート.flac",
+        "slot": "正文",
+        "dur": 196.5,
+        "lufs": -10.55,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "ファーストタッチ": {
+        "path": "data/library/bgm/化物语/ファーストタッチ.flac",
+        "slot": "正文",
+        "dur": 103.9,
+        "lufs": -8.85,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "レイニー・デヴィル": {
+        "path": "data/library/bgm/化物语/レイニー・デヴィル.flac",
+        "slot": "正文",
+        "dur": 97.9,
+        "lufs": -8.75,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "人畜": {
+        "path": "data/library/bgm/化物语/人畜.flac",
+        "slot": "正文",
+        "dur": 147.1,
+        "lufs": -14.85,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "以下、回想": {
+        "path": "data/library/bgm/化物语/以下、回想.flac",
+        "slot": "正文",
+        "dur": 108.8,
+        "lufs": -11.88,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "修験道": {
+        "path": "data/library/bgm/化物语/修験道.flac",
+        "slot": "正文",
+        "dur": 112.2,
+        "lufs": -14.55,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "八九寺真宵の場合": {
+        "path": "data/library/bgm/化物语/八九寺真宵の場合.flac",
+        "slot": "正文",
+        "dur": 87.3,
+        "lufs": -14.68,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "千石撫子の場合": {
+        "path": "data/library/bgm/化物语/千石撫子の場合.flac",
+        "slot": "正文",
+        "dur": 74.4,
+        "lufs": -15.25,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "君の知らない物語 (Instrumental)": {
+        "path": "data/library/bgm/supercell/君の知らない物語 (Instrumental).flac",
+        "slot": "结尾",
+        "dur": 340.4,
+        "lufs": -7.09,
+        "onset": 1.115,
+        "vocal": false
+      },
+      "吹き溜まり": {
+        "path": "data/library/bgm/化物语/吹き溜まり.flac",
+        "slot": "正文",
+        "dur": 151.2,
+        "lufs": -13.15,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "外法": {
+        "path": "data/library/bgm/化物语/外法.flac",
+        "slot": "正文",
+        "dur": 102.9,
+        "lufs": -15.54,
+        "onset": 1.254,
+        "vocal": null
+      },
+      "帰り道 -Instrumental-": {
+        "path": "data/library/bgm/化物语/帰り道 -Instrumental-.flac",
+        "slot": "结尾",
+        "dur": 243.9,
+        "lufs": -8.89,
+        "onset": 0.522,
+        "vocal": false
+      },
+      "序章": {
+        "path": "data/library/bgm/化物语/序章.flac",
+        "slot": "正文",
+        "dur": 76.5,
+        "lufs": -9.16,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "廃墟": {
+        "path": "data/library/bgm/化物语/廃墟.flac",
+        "slot": "正文",
+        "dur": 135.1,
+        "lufs": -11.23,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "思案中": {
+        "path": "data/library/bgm/化物语/思案中.flac",
+        "slot": "正文",
+        "dur": 167.3,
+        "lufs": -13.53,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "恋爱サーキュレーション (off vocal)": {
+        "path": "data/library/bgm/化物语/恋爱サーキュレーション (off vocal).flac",
+        "slot": "结尾",
+        "dur": 251.4,
+        "lufs": -11.08,
+        "onset": 1.672,
+        "vocal": false
+      },
+      "戦争": {
+        "path": "data/library/bgm/化物语/戦争.flac",
+        "slot": "正文",
+        "dur": 102.6,
+        "lufs": -9.69,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "戦場ヶ原ひたぎの場合": {
+        "path": "data/library/bgm/化物语/戦場ヶ原ひたぎの場合.flac",
+        "slot": "正文",
+        "dur": 75.4,
+        "lufs": -12.49,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "戯言": {
+        "path": "data/library/bgm/化物语/戯言.flac",
+        "slot": "正文",
+        "dur": 154.5,
+        "lufs": -16.15,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "放浪者": {
+        "path": "data/library/bgm/化物语/放浪者.flac",
+        "slot": "正文",
+        "dur": 155.4,
+        "lufs": -11.86,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "散歩": {
+        "path": "data/library/bgm/化物语/散歩.flac",
+        "slot": "正文",
+        "dur": 142.5,
+        "lufs": -14.2,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "日曜日": {
+        "path": "data/library/bgm/化物语/日曜日.flac",
+        "slot": "正文",
+        "dur": 159.4,
+        "lufs": -15.63,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "星空": {
+        "path": "data/library/bgm/化物语/星空.flac",
+        "slot": "正文",
+        "dur": 94.0,
+        "lufs": -18.67,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "普通最高": {
+        "path": "data/library/bgm/化物语/普通最高.flac",
+        "slot": "正文",
+        "dur": 151.9,
+        "lufs": -16.16,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "次回、するがモンキー": {
+        "path": "data/library/bgm/化物语/次回、するがモンキー.flac",
+        "slot": "正文",
+        "dur": 51.7,
+        "lufs": -11.98,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "次回、つばさキャット": {
+        "path": "data/library/bgm/化物语/次回、つばさキャット.flac",
+        "slot": "正文",
+        "dur": 54.1,
+        "lufs": -15.77,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "次回、なでこスネイク": {
+        "path": "data/library/bgm/化物语/次回、なでこスネイク.flac",
+        "slot": "正文",
+        "dur": 33.3,
+        "lufs": -15.29,
+        "onset": 0.522,
+        "vocal": null
+      },
+      "次回、ひたぎクラブ": {
+        "path": "data/library/bgm/化物语/次回、ひたぎクラブ.flac",
+        "slot": "正文",
+        "dur": 53.3,
+        "lufs": -14.23,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "次回、まよいマイマイ": {
+        "path": "data/library/bgm/化物语/次回、まよいマイマイ.flac",
+        "slot": "正文",
+        "dur": 46.3,
+        "lufs": -14.89,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "殺風景": {
+        "path": "data/library/bgm/化物语/殺風景.flac",
+        "slot": "正文",
+        "dur": 155.0,
+        "lufs": -12.65,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "毒舌": {
+        "path": "data/library/bgm/化物语/毒舌.flac",
+        "slot": "正文",
+        "dur": 157.5,
+        "lufs": -14.41,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "浄化": {
+        "path": "data/library/bgm/化物语/浄化.flac",
+        "slot": "正文",
+        "dur": 110.7,
+        "lufs": -15.83,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "深窓の令嬢": {
+        "path": "data/library/bgm/化物语/深窓の令嬢.flac",
+        "slot": "正文",
+        "dur": 160.2,
+        "lufs": -17.75,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "渦": {
+        "path": "data/library/bgm/化物语/渦.flac",
+        "slot": "正文",
+        "dur": 90.2,
+        "lufs": -12.62,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "父親": {
+        "path": "data/library/bgm/化物语/父親.flac",
+        "slot": "正文",
+        "dur": 179.3,
+        "lufs": -17.23,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "神原駿河の場合～全裸": {
+        "path": "data/library/bgm/化物语/神原駿河の場合～全裸.flac",
+        "slot": "正文",
+        "dur": 58.8,
+        "lufs": -11.74,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "神原駿河の場合～着衣": {
+        "path": "data/library/bgm/化物语/神原駿河の場合～着衣.flac",
+        "slot": "正文",
+        "dur": 111.3,
+        "lufs": -10.09,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "神域": {
+        "path": "data/library/bgm/化物语/神域.flac",
+        "slot": "正文",
+        "dur": 116.4,
+        "lufs": -11.79,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "素敵滅法": {
+        "path": "data/library/bgm/化物语/素敵滅法.flac",
+        "slot": "正文",
+        "dur": 156.2,
+        "lufs": -11.1,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "結界": {
+        "path": "data/library/bgm/化物语/結界.flac",
+        "slot": "正文",
+        "dur": 96.3,
+        "lufs": -13.43,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "羽川翼の場合": {
+        "path": "data/library/bgm/化物语/羽川翼の場合.flac",
+        "slot": "正文",
+        "dur": 76.4,
+        "lufs": -13.52,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "翌朝": {
+        "path": "data/library/bgm/化物语/翌朝.flac",
+        "slot": "正文",
+        "dur": 108.0,
+        "lufs": -16.61,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "色ボケ猫": {
+        "path": "data/library/bgm/化物语/色ボケ猫.flac",
+        "slot": "正文",
+        "dur": 163.1,
+        "lufs": -9.75,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "蛇切縄": {
+        "path": "data/library/bgm/化物语/蛇切縄.flac",
+        "slot": "正文",
+        "dur": 124.7,
+        "lufs": -8.98,
+        "onset": 0.418,
+        "vocal": null
+      },
+      "街談巷説": {
+        "path": "data/library/bgm/化物语/街談巷説.flac",
+        "slot": "正文",
+        "dur": 166.9,
+        "lufs": -14.89,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "表裏": {
+        "path": "data/library/bgm/化物语/表裏.flac",
+        "slot": "正文",
+        "dur": 105.7,
+        "lufs": -13.86,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "観念": {
+        "path": "data/library/bgm/化物语/観念.flac",
+        "slot": "正文",
+        "dur": 102.9,
+        "lufs": -16.6,
+        "onset": 1.254,
+        "vocal": null
+      },
+      "言い訳": {
+        "path": "data/library/bgm/化物语/言い訳.flac",
+        "slot": "正文",
+        "dur": 123.0,
+        "lufs": -15.38,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "言葉の暴力": {
+        "path": "data/library/bgm/化物语/言葉の暴力.flac",
+        "slot": "正文",
+        "dur": 76.5,
+        "lufs": -13.17,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "豫告": {
+        "path": "data/library/bgm/化物语/豫告.flac",
+        "slot": "正文",
+        "dur": 59.4,
+        "lufs": -10.85,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "輔翼": {
+        "path": "data/library/bgm/化物语/輔翼.flac",
+        "slot": "正文",
+        "dur": 109.3,
+        "lufs": -12.44,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "迷い牛": {
+        "path": "data/library/bgm/化物语/迷い牛.flac",
+        "slot": "正文",
+        "dur": 182.7,
+        "lufs": -12.86,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "逢う魔が刻": {
+        "path": "data/library/bgm/化物语/逢う魔が刻.flac",
+        "slot": "正文",
+        "dur": 129.8,
+        "lufs": -13.25,
+        "onset": 0.627,
+        "vocal": null
+      },
+      "道徳塗説": {
+        "path": "data/library/bgm/化物语/道徳塗説.flac",
+        "slot": "正文",
+        "dur": 156.8,
+        "lufs": -17.25,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "重し蟹": {
+        "path": "data/library/bgm/化物语/重し蟹.flac",
+        "slot": "正文",
+        "dur": 132.3,
+        "lufs": -11.04,
+        "onset": 0.94,
+        "vocal": null
+      },
+      "障り猫": {
+        "path": "data/library/bgm/化物语/障り猫.flac",
+        "slot": "正文",
+        "dur": 151.2,
+        "lufs": -10.59,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "雑多坩堝": {
+        "path": "data/library/bgm/化物语/雑多坩堝.flac",
+        "slot": "正文",
+        "dur": 18.0,
+        "lufs": -9.49,
+        "onset": 0.313,
+        "vocal": null
+      },
+      "頭痛": {
+        "path": "data/library/bgm/化物语/頭痛.flac",
+        "slot": "正文",
+        "dur": 160.1,
+        "lufs": -12.93,
+        "onset": 0.313,
+        "vocal": null
+      }
+    }
   }
 }
