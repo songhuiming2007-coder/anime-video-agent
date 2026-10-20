@@ -34,12 +34,27 @@ const MAIN_FALLBACK: Readonly<Record<string, string>> = { read_status: "期状�
  * 状态词（R2 ②）。`run` 只在所属回合还在跑时成立：回合已结束却没收到结束帧的行（中断、进程退出）是「已停止」，
  * 不能假装还在动（D46 同一条）。「已拒绝」不在这里：拒绝是卡片行的状态，host 不解析工具原文去猜（S9-R1）。
  */
-export type ToolStatus = "run" | "ok" | "fail" | "stopped";
-export const STATUS_WORD: Readonly<Record<ToolStatus, string>> = { run: "执行中", ok: "已执行", fail: "执行失败", stopped: "已停止" };
+export type ToolStatus = "run" | "ok" | "fail" | "stopped" | "note";
+export const STATUS_WORD: Readonly<Record<Exclude<ToolStatus, "note">, string>> = { run: "执行中", ok: "已执行", fail: "执行失败", stopped: "已停止" };
 
+/**
+ * D118（人选 A）：`note` = 失败调用里退出码 1 属正常结果（diff 有差异、grep 无匹配、机检有 FAIL 项），状态词用 core 给的
+ * verdict，不算失败、不计入回合失败数。模型看到的结果原样不动，改的只是人看的口径。
+ */
 export function toolStatus(row: ToolRow, turnRunning: boolean): ToolStatus {
   if (row.ok === null) return turnRunning ? "run" : "stopped";
-  return row.ok ? "ok" : "fail";
+  if (row.ok) return "ok";
+  return row.verdict !== null ? "note" : "fail";
+}
+
+/** 状态词：note 用 verdict 原文，其余查表 */
+export function statusWord(row: ToolRow, status: ToolStatus): string {
+  return status === "note" ? (row.verdict ?? "") : STATUS_WORD[status];
+}
+
+/** 真失败：没结束的、成功的、带 verdict 的都不算（回合 outcome、终端组默认展开用同一口径） */
+function isFail(r: ToolRow): boolean {
+  return r.ok === false && r.verdict === null;
 }
 
 /** 主文本：bash 用模型给的用途，没有时用命令摘要；其余用 core 给的摘要 */
@@ -196,7 +211,7 @@ function finish(rows: readonly ConvRow[], t: { user: number; body: number[]; foo
     else tail.push(i);
   }
   const toolRows = process.map((i) => rows[i]).filter((r): r is ToolRow => r.k === "tool");
-  const fails = toolRows.filter((r) => r.ok === false).length;
+  const fails = toolRows.filter(isFail).length;
   const footer = t.footer === null ? null : rows[t.footer];
   const rejected = process.some((i) => {
     const r = rows[i];
@@ -231,7 +246,7 @@ export function turnDefaultOpen(seg: Extract<Segment, { k: "turn" }>): boolean {
 export function groupDefaultOpen(rows: readonly ConvRow[], indices: readonly number[], turnRunning: boolean): boolean {
   return indices.some((i) => {
     const r = rows[i];
-    return r.k === "tool" && (r.ok === false || (r.ok === null && turnRunning));
+    return r.k === "tool" && (isFail(r) || (r.ok === null && turnRunning));
   });
 }
 

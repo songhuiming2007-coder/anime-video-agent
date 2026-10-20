@@ -17,13 +17,14 @@ import {
   handoffTickets,
   ticketIdOf,
   toolStatus,
+  statusWord,
   turnDefaultOpen,
   turnSegments,
   type Segment,
 } from "../../src/shared/toolView";
 
 const tool = (name: string, ok: boolean | null, o: Partial<ToolRow> = {}): ToolRow => ({
-  k: "tool", at: 0, id: `${name}-${String(Math.random())}`, name, summary: "", ok, duplicate: false, durationMs: null, observation: null, logs: [], command: null, description: null, handoff: null, ...o,
+  k: "tool", at: 0, id: `${name}-${String(Math.random())}`, name, summary: "", ok, duplicate: false, durationMs: null, observation: null, logs: [], command: null, description: null, handoff: null, verdict: null, ...o,
 });
 const user = (text: string, at = 0): ConvRow => ({ k: "user", at, text });
 const answer = (text: string, at = 0): ConvRow => ({ k: "assistant", at, kind: "answer", text, label: null });
@@ -45,6 +46,26 @@ describe("R2 ② 类别词", () => {
     expect(toolCategory("browser")).toBe("网页");
     expect(toolCategory("acquire_propose")).toBe("素材");
     expect(toolCategory("future_tool")).toBe("future_tool");
+  });
+});
+
+describe("D118 退出码 1 属正常结果：中性状态词、不计回合失败", () => {
+  it("带 verdict 的失败显示 verdict，不是「执行失败」；没有 verdict 照旧失败", () => {
+    const diff = tool("bash", false, { verdict: "有差异" });
+    expect(toolStatus(diff, false)).toBe("note");
+    expect(statusWord(diff, toolStatus(diff, false))).toBe("有差异");
+    const cat = tool("bash", false);
+    expect(statusWord(cat, toolStatus(cat, false))).toBe("执行失败");
+  });
+  it("回合 outcome 与失败数只数真失败；终端组只为真失败展开", () => {
+    const rows: ConvRow[] = [user("看看改了什么"), tool("bash", false, { verdict: "有差异" }), tool("run_pipeline", false, { verdict: "机检未通过" }), answer("改了两处"), footer()];
+    const [seg] = turns(turnSegments(rows, false));
+    expect(seg.outcome).toBe("done");
+    expect(seg.fails).toBe(0);
+    expect(groupDefaultOpen([tool("bash", false, { verdict: "无匹配" }), tool("bash", true)], [0, 1], false)).toBe(false);
+    const real: ConvRow[] = [user("x"), tool("bash", false, { verdict: "有差异" }), tool("bash", false), answer("y"), footer()];
+    expect(turns(turnSegments(real, false))[0].fails).toBe(1);
+    expect(groupDefaultOpen([tool("bash", false, { verdict: "有差异" }), tool("bash", false)], [0, 1], false)).toBe(true);
   });
 });
 

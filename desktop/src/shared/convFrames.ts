@@ -131,13 +131,16 @@ export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) =
       : {
           ...(f.name === "bash" ? { ok: ["boolean"], command: ["string"], description: ["string"] } : { ok: ["boolean"] }),
           ...("handoff" in f ? { handoff: ["string"] as const } : {}),
+          ...("verdict" in f ? { verdict: ["string"] as const } : {}),
         },
   // D80：bash 另带 description（模型给的用途，工具行主文本）；与 command 同为模型参数、不是工具结果
   // D82：成功的 tickets open 带 handoff（交接文本，core 模板生成）；有键才查，必须是字符串
+  // D118：退出码 1 属正常结果的失败调用带 verdict（有差异 / 无匹配 / 机检未通过，core 判定）；有键才查
   tool: (f) => {
     const extra: Record<string, readonly Kind[]> = {
       ...(f.name === "bash" ? { command: ["string"], description: ["string"] } : {}),
       ...("handoff" in f ? { handoff: ["string"] } : {}),
+      ...("verdict" in f ? { verdict: ["string"] } : {}),
     };
     return Object.keys(extra).length > 0 ? extra : null;
   },

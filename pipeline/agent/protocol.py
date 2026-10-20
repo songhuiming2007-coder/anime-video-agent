@@ -938,6 +938,14 @@ def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
                 # D80：用途同 tool 帧的条件键（工具行主文本），剥控制字符
                 description = args.get("description") if isinstance(args, dict) else None
                 frame["description"] = _clean(description).strip() if isinstance(description, str) else ""
+            if ok is False and isinstance(name, str):
+                # D118：历史重建的工具行同样带中性状态词（与 tool 帧同一条件键）
+                from pipeline.agent.session import tool_verdict
+
+                command = args.get("command") if isinstance(args, dict) else None
+                verdict = tool_verdict(name, command if isinstance(command, str) else "", message.get("content"))
+                if verdict is not None:
+                    frame["verdict"] = verdict
             if name == "run_pipeline":
                 # D82 §4.7：历史重建的工具行同样带交接文本（从日志里的结果重算），重启后按钮还在
                 from pipeline.agent.tools import ticket_handoff

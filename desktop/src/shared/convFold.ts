@@ -25,6 +25,8 @@ export type ToolRow = {
   description: string | null;
   /** D82：成功的 tickets open 带的交接文本（帧的条件键，core 模板生成）；实时帧在 end 阶段取，历史帧同样取。其余为 null */
   handoff: string | null;
+  /** D118：失败调用里退出码 1 属正常结果的中性状态词（帧的条件键，core 判定）；其余为 null */
+  verdict: string | null;
   /** D80：继续会话时从历史重建的行——不播入场动画 */
   hist?: true;
 };
@@ -252,6 +254,10 @@ function commandOf(f: OutFrame): string | null {
 }
 
 /** D82：帧里的交接文本（只有成功的 tickets open 带）；空串视同没给 */
+function verdictOf(f: OutFrame): string | null {
+  return typeof f.verdict === "string" && f.verdict !== "" ? f.verdict : null;
+}
+
 function handoffOf(f: OutFrame): string | null {
   return typeof f.handoff === "string" && f.handoff !== "" ? f.handoff : null;
 }
@@ -280,20 +286,21 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     case "tool": {
       if (f.phase === "start") {
-        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: null });
+        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: null, verdict: null });
         lastTool.idx = rows.length - 1;
       } else {
         const idx = lastTool.idx;
         const row = idx >= 0 ? rows[idx] : undefined;
         if (!row || row.k !== "tool" || row.ok !== null) {
           // 孤立 tool{end}（缓冲截头后会遇到）：显式成行，不崩、不吞
-          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: handoffOf(f) });
+          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: handoffOf(f), verdict: verdictOf(f) });
         } else {
           row.ok = f.ok as boolean | null;
           row.duplicate = f.duplicate === true;
           row.durationMs = at - row.at;
           row.observation = (f.observation as string | null) ?? null;
           row.handoff = handoffOf(f);
+          row.verdict = verdictOf(f);
           lastTool.idx = -1;
         }
       }
@@ -432,6 +439,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
                 command: commandOf(f),
                 description: descriptionOf(f),
                 handoff: handoffOf(f),
+                verdict: verdictOf(f),
                 hist: true,
               });
             } else if (role === "user") {
