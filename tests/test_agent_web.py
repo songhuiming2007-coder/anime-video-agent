@@ -1461,3 +1461,31 @@ def test_fetch_images_cap_and_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     html = f'<html><body><img src="/x.jpg?key={secret}" alt="{secret}"></body></html>'
     out = _fetch_fixture(html, monkeypatch=monkeypatch, cfg=_make_config(secret_values=(secret,)))
     assert secret not in json.dumps(out["images"], ensure_ascii=False)
+
+
+def test_fetch_非ASCII_URL_请求行编码_留档存原文_D125(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D125：http.client 按 ASCII 编请求行（`_encode_request`），替身照做；没重定向时 url / final_url 都回原文。"""
+    _pin_public_dns(monkeypatch)
+    url = "https://commons.wikimedia.org/wiki/File:停電による閉鎖_(5531488699).jpg"
+    seen: list[str] = []
+
+    def opener(req, timeout=30.0):
+        req.selector.encode("ascii")          # 与 http.client 同一步：编不了就 UnicodeEncodeError
+        seen.append(req.full_url)
+        return _FakeResponse(b"<p>ok</p>", final_url=req.full_url)   # urllib 无重定向时 geturl() = 请求 URL
+
+    out = fetch_web(url, config=_make_config(), opener=opener)
+    assert seen == ["https://commons.wikimedia.org/wiki/File:%E5%81%9C%E9%9B%BB%E3%81%AB%E3%82%88%E3%82%8B"
+                    "%E9%96%89%E9%8E%96_(5531488699).jpg"]
+    assert out["url"] == url and out["final_url"] == url and out["text"] == "ok"
+
+    # 已编码的部分不重复编码；重定向后的最终地址照服务器给的记
+    out2 = fetch_web("https://example.org/a%20b/日本?q=語&x=1", config=_make_config(),
+                     opener=lambda req, timeout=30.0: (req.selector.encode("ascii"), _FakeResponse(
+                         b"<p>ok</p>", final_url="https://example.org/moved"))[1])
+    assert out2["final_url"] == "https://example.org/moved"
+    from pipeline.agent.web import _ascii_request_url
+    assert _ascii_request_url("https://example.org/a%20b/日本?q=語&x=1") == \
+        "https://example.org/a%20b/%E6%97%A5%E6%9C%AC?q=%E8%AA%9E&x=1"
+    assert _ascii_request_url("https://例え.jp/x") == "https://xn--r8jz45g.jp/x"
+    assert _ascii_request_url("https://example.org/plain?a=1") == "https://example.org/plain?a=1"

@@ -1064,6 +1064,28 @@ def search_web(
     raise ValueError(_redact_all(f"{head}：{'；'.join(failures)}", secrets))
 
 
+def _ascii_request_url(url: str) -> str:
+    """请求行用的 ASCII 形态（D125）：http.client 按 ASCII 编请求行，`File:停電….jpg` 这类 URL 直接抛
+    UnicodeEncodeError。路径 / 查询里的非 ASCII 字符百分号编码（已有的 %XX 原样保留），非 ASCII 主机名走 IDNA。
+    只给发请求用：返回值与抓取留档仍存原文——`fetch_log.norm_url` 不解码，存编码形态会和候选 `found_on` 对不上。
+    """
+    if url.isascii():
+        return url
+    parts = urllib.parse.urlsplit(url)
+    netloc = parts.netloc
+    if not netloc.isascii():
+        userinfo, _, hostport = netloc.rpartition("@")
+        host, sep, port = hostport.partition(":")
+        netloc = (f"{userinfo}@" if userinfo else "") + host.encode("idna").decode("ascii") + sep + port
+    safe = "/:@!$&'()*+,;=-._~%"
+    return urllib.parse.urlunsplit((
+        parts.scheme, netloc,
+        urllib.parse.quote(parts.path, safe=safe),
+        urllib.parse.quote(parts.query, safe=safe + "?"),
+        urllib.parse.quote(parts.fragment, safe=safe + "?"),
+    ))
+
+
 def fetch_web(
     url: str,
     *,
@@ -1104,7 +1126,8 @@ def fetch_web(
         if opener is not None
         else _default_opener(cfg.trusted_fake_ip_ranges)
     )
-    req = urllib.request.Request(url, headers={"User-Agent": "ava-agent/1.0"})
+    request_url = _ascii_request_url(url)
+    req = urllib.request.Request(request_url, headers={"User-Agent": "ava-agent/1.0"})
     try:
         resp = open_fn(req, timeout=cfg.fetch_timeout_s)
     except urllib.error.HTTPError as exc:
@@ -1137,6 +1160,8 @@ def fetch_web(
     raw_final_url = (
         resp.geturl() if hasattr(resp, "geturl") and resp.geturl() else url
     )
+    if raw_final_url == request_url:
+        raw_final_url = url   # 没重定向：留档 key 按原文算，与 crawl 抓同一页落到同一条（D125）
     final_scheme = (urllib.parse.urlparse(raw_final_url).scheme or "").lower()
     if final_scheme not in ("http", "https"):
         raise PermissionError(f"重定向最终 URL 协议非法: '{final_scheme}'")
