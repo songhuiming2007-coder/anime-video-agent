@@ -1029,15 +1029,23 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "requires_extra": "playwright",
         "description": (
             "登录态浏览器（升级链第三级；ADR-0030 起不弹卡，每次启动落审批事件）。"
-            "action 仅支持 navigate / extract_text；profile 独立持久化、路径由配置钉死。"
-            "仅在 crawl 也不够或必须登录态时使用，reason 必填。"
+            "action：navigate / extract_text / screenshot；profile 独立持久化、路径由配置钉死。"
+            "仅在 crawl 也不够、必须登录态，或要截网页物证时使用，reason 必填。"
+            "screenshot（D122）：打开 url，按 selector 或 text（页面上原样出现的一段文字）截出那一块，"
+            "PNG 存进 data/library/incoming/、写抓取留档与台账，之后照常 acquire register（企划卷进企划池）。"
+            "给了 expect_text 就核：截到的区域里没有这句话就不保存。回执报入池时要放大几倍，>1 门禁会拒；"
+            "不回图片，要看图另调 view_image。截图会临时重启浏览器，之前打开的页面不保留。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["navigate", "extract_text"]},
-                "url": {"type": "string", "description": "navigate 的目标 URL"},
-                "reason": {"type": "string", "description": "为什么 crawl 不够/为何需要登录态"},
+                "action": {"type": "string", "enum": ["navigate", "extract_text", "screenshot"]},
+                "url": {"type": "string", "description": "navigate / screenshot 的目标 URL"},
+                "reason": {"type": "string", "description": "为什么 crawl 不够/为何需要登录态/截这张图证什么"},
+                "selector": {"type": "string", "description": "screenshot：要截的元素的 CSS 选择器（与 text 二选一）"},
+                "text": {"type": "string", "description": "screenshot：页面上原样出现的一段文字，截包含它的区域（与 selector 二选一）"},
+                "expect_text": {"type": "string", "description": "screenshot 可选：截图里必须出现的话（配音要证的那句、榜单名次等）"},
+                "name": {"type": "string", "description": "screenshot 可选：文件名提示（缺省用页面标题）"},
             },
             "required": ["action", "reason"],
             "additionalProperties": False,
@@ -2023,12 +2031,57 @@ def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         action,
         reason,
         url=url,
+        selector=args.get("selector"),
+        text=args.get("text"),
+        expect_text=args.get("expect_text"),
         episode_dir=ctx.episode_dir,
         scope=ctx.scope,
         root=ctx.root,
         keep_full=True,
     )
+    if action == "screenshot":
+        return _save_screenshot(res, reason, str(args.get("name") or "").strip(), ctx)
     return _keep_record(res, "browser", str(res.get("url") or url or ""), ctx) if "full_text" in res else res
+
+
+def _save_screenshot(res: dict[str, Any], reason: str, name: str, ctx: ToolContext) -> dict[str, Any]:
+    """D122：PNG 落 incoming/、写抓取留档（页面全文，kind=browser）、台账记一条 scan，回执不带图片字节。"""
+    import datetime
+    import io
+
+    from PIL import Image
+
+    from pipeline import candidates
+    from pipeline.still_geometry import STILL_MAX_MAGNIFY, still_peak_magnify
+
+    png = res.pop("png")
+    with Image.open(io.BytesIO(png)) as im:
+        size = im.size
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = candidates.incoming() / f"shot-{candidates.slugify(name or res.get('title') or 'page')}-{stamp}.png"
+    dest.write_bytes(png)
+    page_url = str(res.get("final_url") or res.get("url") or "")
+    res = _keep_record(res, "browser", page_url, ctx)
+    entries = candidates.ledger_load()
+    entries.append({"url": page_url, "title": name or res.get("title") or dest.stem, "type": "scan",
+                    "source": "screenshot", "candidate": None, "file": str(dest), "as": None, "why": reason,
+                    "fetch_record": res.get("fetch_record"),
+                    "element_text": str(res.get("element_text") or "")[:500]})
+    candidates.ledger_save(entries)
+    mag = still_peak_magnify(size)
+    return {
+        "action": "screenshot",
+        "file": str(dest),
+        "size": list(size),
+        "css_size": res.get("css_size"),
+        "magnify": round(mag, 2),
+        "gate": "PASS" if mag <= STILL_MAX_MAGNIFY else f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）",
+        "final_url": page_url,
+        "title": res.get("title"),
+        "element_text": str(res.get("element_text") or "")[:200],
+        "fetch_record": res.get("fetch_record"),
+        **({"fetch_record_error": res["fetch_record_error"]} if "fetch_record_error" in res else {}),
+    }
 
 
 def memory_store_for(

@@ -8,8 +8,8 @@
    碰主力 Chrome Default 在构造上不可能；
 3. approval 门 = 既有逐调用人审卡（本模块不感知审批，llm.py:212-213 在
    execute 前问人）；每次进程启动落 browser_session_started 事件（§3.5）；
-4. action 面只有 navigate / extract_text（§2.5）；模块无内容写盘出口
-   （profile 目录由浏览器进程自建，ava 仅对其 chmod 0700，§2.2）。
+4. action 面：navigate / extract_text（§2.5）+ screenshot（D122）；模块无内容写盘出口——截图的 PNG
+   字节随返回值交给 tools 包装层落盘（profile 目录由浏览器进程自建，ava 仅对其 chmod 0700，§2.2）。
 """
 
 from __future__ import annotations
@@ -35,7 +35,42 @@ from pipeline.agent.web import (
     _scrub,
 )
 
-_ACTIONS = ("navigate", "extract_text")
+_ACTIONS = ("navigate", "extract_text", "screenshot")
+
+# D122 截图会话：Firefox 偏好把像素密度设成 2（2026-10-20 实测：无界面 Camoufox 默认 1，截出来就是 CSS 尺寸；
+# 透传 device_scale_factor 会被拒——Camoufox 伪装窗口尺寸时关掉了固定视口）。只在截图时临时起一个这样的
+# 会话、截完即关，平时浏览的配置与指纹不变；代价是这个会话的视口约 960 CSS 宽（窗口物理尺寸不变）。
+SHOT_PREFS = {"layout.css.devPixelsPerPx": "2.0"}
+# 按文字找元素时，命中的元素太小（一行字）就往上取，宽或高够其中一项就停，带上能看出出处的上下文（CSS 像素）。
+# 往上取不越过视口高度 SHOT_MAX_H_VIEWPORTS 倍的父元素；命中的元素本身就这么高（文字跨了元素边界，只有大容器
+# 才整段包含它）就拒——2026-10-20 实测：维基信息框只有 310 宽，「宽且高」的旧条件一路取到 4065 高的整篇正文
+SHOT_MIN_W, SHOT_MIN_H = 480, 160
+SHOT_MAX_H_VIEWPORTS = 1.5
+# 在页面里标出要截的元素：包含这段文字的最深元素，太小就往上取父元素
+_SHOT_PICK_JS = r"""([needle, minW, minH, maxVp]) => {
+  const norm = s => (s || "").replace(/\s+/g, "");
+  const n = norm(needle);
+  let best = null;
+  for (const el of document.body.querySelectorAll("*")) {
+    if (!norm(el.innerText).includes(n)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    if (!best || best.contains(el)) best = el;
+  }
+  if (!best) return {why: "missing"};
+  const maxH = innerHeight * maxVp;
+  const b = best.getBoundingClientRect();
+  if (b.height > maxH) return {why: "big", w: Math.round(b.width), h: Math.round(b.height)};
+  let el = best;
+  while (el.parentElement && el !== document.body) {
+    const r = el.getBoundingClientRect();
+    if (r.width >= minW || r.height >= minH) break;
+    if (el.parentElement.getBoundingClientRect().height > maxH) break;
+    el = el.parentElement;
+  }
+  el.setAttribute("data-ava-shot", "1");
+  return {why: null};
+}"""
 _SESSION: Any | None = None
 _ATEXIT_REGISTERED: bool = False
 
@@ -240,6 +275,36 @@ class _PlaywrightSessionAdapter:
             "html": html,  # D100：给留档抽图片 / 链接；只在本模块内用，不进工具返回
         }
 
+    def screenshot(self, url: str, *, selector: str | None, text: str | None,
+                   timeout_s: float = 60.0) -> dict[str, Any]:
+        """打开 url，按 selector 或文字定位元素，按设备像素截元素（D122）。"""
+        ms = int(timeout_s * 1000)
+        page = self._current_page()
+        page.goto(url, timeout=ms, wait_until="load")
+        if text:
+            pick = page.evaluate(_SHOT_PICK_JS, [text, SHOT_MIN_W, SHOT_MIN_H, SHOT_MAX_H_VIEWPORTS])
+            if pick.get("why"):
+                return {"final_url": str(page.url or url), "missing": pick["why"],
+                        "css_size": [pick.get("w"), pick.get("h")]}
+            loc = page.locator('[data-ava-shot="1"]').first
+        else:
+            loc = page.locator(str(selector)).first
+        loc.scroll_into_view_if_needed(timeout=ms)
+        box = loc.bounding_box(timeout=ms) or {}
+        png = loc.screenshot(scale="device", timeout=ms)
+        html = str(page.content() or "")
+        parser = _TextExtractor()
+        parser.feed(html)
+        return {
+            "final_url": str(page.url or url),
+            "title": str(page.title() or ""),
+            "png": png,
+            "element_text": str(loc.inner_text(timeout=ms) or ""),
+            "css_size": [round(box.get("width", 0)), round(box.get("height", 0))],
+            "text": parser.get_text(),
+            "html": html,
+        }
+
     def open_tab(self, url: str, *, timeout_s: float = 60.0) -> None:
         """login 入口用：每个网址开一个新标签页。"""
         self._context.new_page().goto(url, timeout=int(timeout_s * 1000), wait_until="domcontentloaded")
@@ -279,7 +344,7 @@ def browser_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in drop}
 
 
-def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
+def _default_launch_fn(*, user_data_dir: Path, headed: bool, prefs: dict[str, Any] | None = None) -> Any:
     """Camoufox 持久配置（D96；函数级延迟 import，基于实测版本 camoufox 0.5.6 + playwright 1.62.0 钉死）：
     sync_playwright().start() + camoufox NewBrowser(pw, persistent_context=True, user_data_dir=...,
     headless=not headed, os="macos")，返回的仍是 playwright BrowserContext，探活回调照旧。
@@ -311,6 +376,7 @@ def _default_launch_fn(*, user_data_dir: Path, headed: bool) -> Any:
             headless=not bool(headed),
             os=CAMOUFOX_OS,
             env=browser_env(),
+            **({"firefox_user_prefs": prefs} if prefs else {}),
         )
         return _PlaywrightSessionAdapter(pw, ctx)
     except Exception as exc:
@@ -441,11 +507,95 @@ def _exec_on_session(
     return session.extract_text(timeout_s=timeout_s)
 
 
+def _screenshot_action(
+    *,
+    url: str,
+    selector: str | None,
+    text: str | None,
+    expect_text: str | None,
+    cfg: BrowserSection,
+    base_root: Path,
+    resolved_profile_dir: Path,
+    launch_fn: Callable[..., Any] | None,
+    episode_dir: Path | None,
+    scope: str,
+    trigger: dict[str, Any],
+    keep_full: bool,
+) -> dict[str, Any]:
+    """D122：关掉当前会话，用同一份 profile（登录态在里面）按 SHOT_PREFS 临时起一个会话截图，截完即关。
+
+    下一次 navigate 自动按平时的配置重启。`expect_text` 给了就核：元素文字里没有这句话 = 截图证明不了要证的事，
+    不交 PNG（2026-10-19 卷二段 37：截图里根本没有配音引语，人复核才发现）。
+    """
+    _reset_session_for_testing()
+    fn = _default_launch_fn if launch_fn is None else launch_fn
+    pw_errs = _pw_error_types()
+    try:
+        sess = fn(user_data_dir=resolved_profile_dir, headed=cfg.headed, prefs=SHOT_PREFS)
+    except Exception as exc:
+        if pw_errs and isinstance(exc, pw_errs):
+            raise ValueError(f"browser 截图失败（启动失败: {exc}）") from exc
+        raise
+    raw_pid = getattr(sess, "pid", None)
+    _emit_browser_started(
+        profile_dir=resolved_profile_dir, headed=cfg.headed,
+        pid=raw_pid if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else None,
+        scope=scope, trigger=trigger, episode_dir=episode_dir,
+    )
+    try:
+        raw = sess.screenshot(url, selector=selector, text=text, timeout_s=cfg.timeout_s)
+    except Exception as exc:
+        if pw_errs and isinstance(exc, pw_errs):
+            raise ValueError(f"browser 截图失败: {exc}") from exc
+        raise
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass
+
+    final_url = str(raw.get("final_url") or url).strip() or url
+    _guard_url(final_url, trusted_ranges=cfg.trusted_fake_ip_ranges)
+    if raw.get("missing") == "big":
+        w, h = raw.get("css_size") or [None, None]
+        raise ValueError(f"包含「{text}」的最小元素有 {w}×{h}（CSS 像素），比一屏半还高：这段文字多半跨了几个元素，"
+                         f"换一段在同一行里原样出现的短文字，或改用 selector（{_scrub(final_url)}）")
+    if raw.get("missing"):
+        raise ValueError(f"页面上找不到包含「{text}」的元素（{_scrub(final_url)}）：换一段页面上原样出现的文字，或改用 selector")
+    element_text = _scrub(str(raw.get("element_text") or ""))
+    if expect_text:
+        from pipeline.facts import norm_exact
+
+        if norm_exact(expect_text) not in norm_exact(element_text):
+            raise ValueError(f"截到的元素里没有「{expect_text}」，截图证明不了它，没有保存。"
+                             f"元素文字开头：{element_text[:120]!r}——换 selector / text 截到真正写着这句话的区域")
+    scrubbed = _scrub(str(raw.get("text") or ""))
+    refs: dict[str, Any] = {}
+    if keep_full:
+        raw_html = str(raw.get("html") or "")
+        refs = {"full_text": scrubbed,
+                "full_images": _clean_refs(_extract_images(raw_html, final_url), ()),
+                "full_links": _clean_refs(_extract_links(raw_html, final_url, keep_unanchored=True), ())}
+    return {
+        "action": "screenshot",
+        "url": url,
+        "final_url": _scrub(final_url),
+        "title": _scrub(str(raw.get("title") or "")),
+        "png": raw["png"],          # tools 包装层落盘后 pop，不进 LLM
+        "element_text": element_text,
+        "css_size": raw.get("css_size"),
+        **refs,
+    }
+
+
 def browser_action(
     action: str,
     reason: str,
     *,
     url: str | None = None,
+    selector: str | None = None,
+    text: str | None = None,
+    expect_text: str | None = None,
     section: BrowserSection | None = None,
     launch_fn: Callable[..., Any] | None = None,
     episode_dir: Path | None = None,
@@ -486,9 +636,13 @@ def browser_action(
         )
 
     clean_url = str(url or "").strip()
-    if clean_action == "navigate":
+    if clean_action == "screenshot":
+        clean_sel, clean_text = str(selector or "").strip(), str(text or "").strip()
+        if bool(clean_sel) == bool(clean_text):
+            raise ValueError("action='screenshot' 要给 selector 或 text 其中一个（截哪个区域）")
+    if clean_action in ("navigate", "screenshot"):
         if not clean_url:
-            raise ValueError("action='navigate' 时 url 不能为空")
+            raise ValueError(f"action={clean_action!r} 时 url 不能为空")
         assert_egress_boundary(
             clean_url,
             {
@@ -504,6 +658,14 @@ def browser_action(
     trigger_info: dict[str, Any] = {"action": clean_action, "reason": clean_reason}
     if clean_url:
         trigger_info["url"] = clean_url
+
+    if clean_action == "screenshot":
+        return _screenshot_action(
+            url=clean_url, selector=clean_sel or None, text=clean_text or None,
+            expect_text=str(expect_text or "").strip() or None, cfg=cfg, base_root=base_root,
+            resolved_profile_dir=resolved_profile_dir, launch_fn=launch_fn, episode_dir=episode_dir,
+            scope=scope, trigger=trigger_info, keep_full=keep_full,
+        )
 
     if _SESSION is None:
         _start_new_session(

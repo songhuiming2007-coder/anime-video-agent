@@ -1,6 +1,6 @@
 # D122 方案：网页截图素材的正式入库路径
 
-日期：2026-10-20（v0.1，三方案待人选）
+日期：2026-10-20（v0.1）；**人 10-20 选 A、`expect_text` 可选**；同日已施工·机检通过，施工记录见第六节
 关联：issues D122、D123（已改为按放大倍数判）、D99（抓取留档）、D100（候选关卡）、ADR-0021、ADR-0030、ADR-0032
 
 ## 一、要解决什么
@@ -51,3 +51,14 @@ browser(action="screenshot", url=<已 navigate 的页面>, selector=<CSS> | text
 - 不做整页长截图：成片里也是 16:9 一帧，长截图缩进去看不清。
 - 不自动登记入池：截图只进 incoming，入池仍是单独一步。
 - 不做截图上的标注（框选、高亮）：属于画面设计，另议。
+
+## 六、施工记录（2026-10-20）
+
+- **实测先行**：无界面 Camoufox 像素密度是 1（截图 = CSS 尺寸）；透传 `device_scale_factor=2` 被拒（Camoufox 伪装窗口尺寸时关了固定视口）；Firefox 偏好 `layout.css.devPixelsPerPx=2.0` 生效，但视口跟着缩到约 960 CSS 宽；`window` 参数撑不回来（受伪装的屏幕尺寸限制）。所以**不改平时的浏览配置**：截图时关掉当前会话，用同一份 profile（登录态在里面）带这个偏好临时起一个会话，截完即关，下次 `navigate` 按原配置重启。
+- `web_browser`：`_ACTIONS` 加 `screenshot`；`_default_launch_fn` 加 `prefs`；适配器加 `screenshot(url, selector|text)`，按文字定位时取包含这段文字的最深元素，太小就往上取（宽 ≥480 或高 ≥160 CSS 像素就停，不越过 1.5 屏高的父元素），命中的元素本身就超过 1.5 屏高时拒并说明；`expect_text` 给了就用事实库同一个 `norm_exact` 核元素文字，不含就不交 PNG。
+- `tools._tool_browser`：截图结果交 `_save_screenshot`——PNG 存 `incoming/shot-<名>-<时间>.png`，页面全文写抓取留档（kind=browser），台账 `fetched.json` 记一条 `type: scan, source: screenshot`（带留档号、元素文字前 500 字）；回执报像素尺寸、CSS 尺寸、入池峰值放大倍数与门禁预判，不带图片字节。
+- 图片转视频的几何（`still_fills` / `still_peak_magnify` 等常量）拆到只依赖标准库的 `pipeline/still_geometry.py`，`acquire` 原样重新导出：工具侧要报放大倍数，而 `import pipeline.acquire` 会拖进 torch（实测 2.3 s）。
+- **真实冒烟**（临时 profile，ja.wikipedia「君の知らない物語」）：`selector=table.infobox` 截出完整信息框 620×1782；`text=週間5位` 第一版取到 4065 高的整篇正文（「宽且高」条件在 310 宽的信息框里永远不成立），改成「宽或高」+ 不越过 1.5 屏高后取到榜单那一块 274×161 CSS；按正文一句话取到整段 948×130。
+- **与 D123 相关的发现**：两倍密度下，元素要约 920 CSS 宽（差不多整个视口）才能过「峰值放大 ≤1.0」；信息框里那一小块入池要放大 3.18 倍，会被门禁拒。回执如实报出，门槛要不要为截图放宽待人定。
+- 测试：`tests/test_browser_screenshot.py` 9 条（会话切换与两倍密度、参数校验、`expect_text` 拦截与归一、找不到 / 过大、工具层落盘 / 留档 / 台账 / 回执、窄图门禁预判）；原工具表用例与 fetch_log 替身签名跟着改。变异 6/6（另 1 条等价：回执本来就逐字段拼，不 pop 也进不了回执）。全量 pytest 通过。
+- `skills/acquire-assets/SKILL.md` 渠道表加「网页截图」一行（coding agent 起草，按 D101 交人过目）。
