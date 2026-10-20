@@ -8,7 +8,7 @@
 2. 可得性：视频页走 `yt-dlp -J`（复用 `acquire.probe_argv`）；直链图片只取前 IMAGE_HEAD_BYTES 读宽高；
    其他直链看 HTTP 头。读不出尺寸写「尺寸未知」，不猜。
 3. 授权：只有 Wikimedia 走 imageinfo API；其余一律「未核实」。模型写的授权不进表。
-4. 门禁预判：scan 类短边 < `acquire.SCAN_MIN_SIDE` 判「门禁会拒」。
+4. 门禁预判：scan 类转缓推视频时峰值放大 > `acquire.STILL_MAX_MAGNIFY` 判「门禁会拒」（D123）。
 
 只被 `acquire check` 子命令调用（子进程里跑），LLM 工具进程不导入本模块：它出网，而且要用 acquire。
 所有出网走注入的 `run`，测试换替身。
@@ -235,13 +235,13 @@ def _default_cookies(url: str) -> str | None:
 
 
 def gate_reject(c: dict, m: dict) -> str | None:
-    """门禁预判：scan 类短边不够，提前曝光，不等下载完才发现。"""
-    from pipeline.acquire import SCAN_MIN_SIDE
+    """门禁预判：scan 类转成缓推视频要放大（会糊），提前曝光，不等下载完才发现。与 gate 同一个算式。"""
+    from pipeline.acquire import STILL_MAX_MAGNIFY, still_peak_magnify
 
     if c.get("type") != "scan" or not m.get("width") or not m.get("height"):
         return None
-    short = min(int(m["width"]), int(m["height"]))
-    return f"短边 {short} < {SCAN_MIN_SIDE}" if short < SCAN_MIN_SIDE else None
+    mag = still_peak_magnify((int(m["width"]), int(m["height"])))
+    return f"转视频要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:.2f}）" if mag > STILL_MAX_MAGNIFY else None
 
 
 def verdict_of(prov: dict, m: dict, gate: str | None) -> tuple[str, list[str]]:

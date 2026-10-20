@@ -211,7 +211,7 @@ def test_ao4_已有号往后接(repo: Path):
 @needs_ffmpeg
 def test_ao4_门禁不过拒_给理由才登记(repo: Path, capsys):
     inc = repo / "data/library/incoming"
-    img = _png(inc / "small.png", 1500, 1500)  # 短边 < 1600
+    img = _png(inc / "small.png", 800, 800)  # 缩进安全框要放大 1.30 倍（D123）
     _set_ledger(repo, [{"url": "u", "title": "小图", "type": "scan", "candidate": 1,
                         "file": str(img), "as": None}])
     with pytest.raises(SystemExit, match="--waive"):

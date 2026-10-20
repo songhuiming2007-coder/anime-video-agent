@@ -574,7 +574,7 @@ def _extract_images(html: str, base_url: str) -> list[dict[str, str]]:
     自己不下载。og:image 等 meta 图排最前（站点自己选的代表图，通常是原图或大图），
     其后 `<img>` 按文档序；urljoin(base_url) 绝对化，只留 http(s)，去 fragment 去重；
     width/height 只在 HTML 属性是纯数字时带上（是页面声明的显示尺寸，不是原图实测——
-    原图够不够大由 `acquire gate` 量，短边 <1600 照拒）。
+    原图够不够大由 `acquire gate` 量，转视频要放大的照拒，D123）。
     """
     parser = _ImageExtractor()
     parser.feed(html)

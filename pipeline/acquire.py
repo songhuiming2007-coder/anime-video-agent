@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -60,8 +61,11 @@ from .ingest import intact
 RES_FLOOR = (1280, 720)
 RES_TARGET = (1920, 1080)
 
-#: 扫图低于这个短边，排版放大到 1080p 时间线上会明显糊（杂志扫图常见 1600–4000px）。
-SCAN_MIN_SIDE = 1600
+#: 图片转缓推视频时的峰值放大倍数上限（D123）。图片唯一的去处是 `still_to_clip`：横屏铺满或缩进
+#: 安全框，再缓推到 STILL_ZOOM_END。峰值 >1 就是在插值放大、会糊；≤1 只是缩小，原图多大都清楚。
+#: 此前判「短边 ≥1600」：它量的不是产物——宽幅截图裁到证据区域后短边跌破 1600 被拒（实际缩小 0.5 倍），
+#: 竖版 1582×2860 的 booklet 被拒（实际缩小 0.36 倍），反倒逼人留整视口、把广告带进画面。
+STILL_MAX_MAGNIFY = 1.0
 
 #: `expected_dur` 是 agent 从考据页读来的声明时长（如官方 Live 全场 120 分钟），
 #: 只当 WARN：撞车多半是「下到了剪辑版/精华版」，那是内容判断，不是文件坏了。
@@ -173,14 +177,16 @@ def check_video(*, kind: str, intact_ok: bool, intact_detail: str, width: int, h
 
 def check_image(*, decoded: bool, decode_detail: str,
                 width: int, height: int) -> list[Verdict]:
-    """图片两判据：可解码 / 短边 ≥1600px。**别拿音轨判据去量扫图。**"""
-    short = min(width, height)
+    """图片两判据：可解码 / 转成缓推视频时峰值不放大（D123）。**别拿音轨判据去量扫图。**"""
+    mag = still_peak_magnify((width, height)) if width and height else float("inf")
+    ok = mag <= STILL_MAX_MAGNIFY
+    need = "" if ok or mag == float("inf") else \
+        f"放大 {mag:.2f} 倍会糊：原图至少要 {math.ceil(width * mag)}×{math.ceil(height * mag)}"
     return [
         _verdict("可解码", decode_detail, "能完整解码", "PASS" if decoded else "FAIL",
                  "" if decoded else "截断或非图片，重下"),
-        _verdict("短边像素", f"{short}px（{width}×{height}）", f"≥{SCAN_MIN_SIDE}",
-                 "PASS" if short >= SCAN_MIN_SIDE else "FAIL",
-                 "" if short >= SCAN_MIN_SIDE else "放大到 1080p 时间线会糊"),
+        _verdict("峰值放大", f"{mag:.2f}×（{width}×{height}）", f"≤{STILL_MAX_MAGNIFY:.2f}×",
+                 "PASS" if ok else "FAIL", need),
     ]
 
 
@@ -427,6 +433,17 @@ def still_fills(size: tuple[int, int] | None) -> bool:
     if size is None or not size[0] or not size[1]:
         return True
     return abs((size[0] / size[1]) / (16 / 9) - 1) <= STILL_FILL_TOL
+
+
+def still_peak_magnify(size: tuple[int, int]) -> float:
+    """`still_argv` 出的视频里原图像素被放大的峰值倍数（纯函数，与 still_argv 同一套几何）。
+
+    铺满：先放大到盖住 1920×1080；安全框：缩进 STILL_SAFE_W×STILL_SAFE_H（小图会被放大）。
+    再缓推到 STILL_ZOOM_END——zoompan 末帧裁出 1/z 再放回 1920×1080，所以峰值 = 首帧缩放 × z。
+    """
+    w, h = size
+    fit = max(1920 / w, 1080 / h) if still_fills(size) else min(STILL_SAFE_W / w, STILL_SAFE_H / h)
+    return fit * STILL_ZOOM_END
 
 
 def still_argv(src: Path, dest: Path, size: tuple[int, int] | None = None,
