@@ -45,3 +45,10 @@ def test_resident_is_production_rules_not_dev_agents_md(scope: str) -> None:
     # AGENTS.md 的开发段落（判据、工程约定、环境与验证）不进 AVA 的 context
     for dev_marker in ("## 七、环境与验证", "## 五、工程约定", "numpy"):
         assert dev_marker not in resident.content, f"{scope} 常驻层混进了开发段落：{dev_marker}"
+
+
+def test_resident_says_repo_paths_and_no_git_in_data() -> None:
+    """D120：卷目录深一层用 `../` 数层级会落错位置；data/ 不在 git 里，比对版本靠留底。"""
+    text = assemble_resident_prompt("creative").content
+    assert '"$AVA_ROOT/…"' in text and "不用 `../`" in text
+    assert "不在 git 里" in text and "_agent/script-history/" in text
