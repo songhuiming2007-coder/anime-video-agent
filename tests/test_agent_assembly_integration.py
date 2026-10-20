@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pipeline.agent import cli
+from pipeline.agent import cli, memory
 from pipeline.agent.assembly import (
     SessionContextTracker,
     assemble_resident_prompt,
@@ -29,6 +29,19 @@ def mock_llm_cfg(monkeypatch):
         "pipeline.agent.llm.load_llm_config",
         lambda *a, **kw: LLMConfig(base_url="http://mock/v1", model="mock-model", api_key="sk-mock"),
     )
+
+
+@pytest.fixture(autouse=True)
+def isolate_memory(monkeypatch, tmp_path):
+    """跨期记忆库指到 tmp（D114）：配置与工序文档仍读真实仓库，只有 data/library/memory.md 不读，
+    否则真实记忆库一有条目，creative / idea 首轮就多出一条记忆注入、消息条数断言变红。"""
+    (tmp_path / "data" / "library").mkdir(parents=True)   # 空库 = 零条目；memory 模块本身绝不 mkdir
+    real = memory.render_injection
+
+    def render(root=None, **kw):
+        return real(root if kw.get("store") else tmp_path, **kw)
+
+    monkeypatch.setattr(memory, "render_injection", render)
 
 
 class MockHTTPResponse:
