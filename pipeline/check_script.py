@@ -13,7 +13,7 @@ import json
 import re
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -370,7 +370,7 @@ ANCHOR_TC = re.compile(
 # 与 clips._ANCHOR_FIELD 同口径（2026-09-07 单段多锚点）：`锚点:` 行后续的
 # 缩进行都是锚点列表的一部分，直到下一个已知字段、空行或段落块尾。
 _ANCHOR_FIELD = re.compile(
-    r"^\s*锚点[：:][ \t]*([^\n]+(?:\n[ \t]+(?!\s*(?:查询|备选|人物|场景|集|画面|锚点)[：:])[^\n]*)*)",
+    r"^\s*锚点[：:][ \t]*([^\n]+(?:\n[ \t]+(?!\s*(?:查询|备选|人物|场景|集|画面|锚点|复用)[：:])[^\n]*)*)",
     re.M)
 
 
@@ -409,6 +409,23 @@ def _patch_sources(episode: Path) -> dict:
 #: 同一张图片微动 SP 在一个企划（不属于企划的期就是本期）全部成片里最多出现几次（2026-10-17 人定）。
 STILL_SP_MAX = 2
 
+#: 人定超限复用（2026-10-20 人定，D126）：段落画面块的 `复用:` 列出本段超出 STILL_SP_MAX 仍要用的
+#: 图片微动 SP，逗号分隔，括号里写理由，如 `复用: supercell SP70（人定：唯一物证）`。
+#: 用途是唯一物证在后续卷回扣时不必降级成更弱的画面；由人决定写，机检照样计数，只放行带声明的超出次数，
+#: 并把每处声明列在结果里给 02.5 的人看。
+_REUSE_FIELD = re.compile(r"^\s*复用[：:][ \t]*(.+)$", re.M)
+_REUSE_ITEM = re.compile(r"(?:(?P<anime>.+?)\s+)?SP(?P<sp>\d{1,2})", re.I)
+
+
+def parse_reuse(text: str) -> dict[str, list[str]]:
+    """每个段落块的 `复用:` 条目 → {段落号: [条目原文, …]}；括号里的理由去掉。切块口径同 parse_anchors。"""
+    out: dict[str, list[str]] = {}
+    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S):
+        for f in _REUSE_FIELD.finditer(m.group(2)):
+            raw = re.sub(r"[（(][^）)]*[）)]", "", f.group(1))
+            out.setdefault(m.group(1), []).extend(x.strip() for x in re.split(r"[,，、]", raw) if x.strip())
+    return out
+
 
 def _is_still(src: dict) -> bool:
     """图片微动素材。与 `clips._is_micro` 同口径：显式 `still` 标（D84 起转图登记），
@@ -416,26 +433,39 @@ def _is_still(src: dict) -> bool:
     return bool(src.get("still")) or src.get("duration", 999) <= 8.0
 
 
-def still_sp_uses(episode: Path) -> tuple[dict[tuple[str, str], list[str]], list[str]]:
-    """本期 `02-script.md` 引用图片微动 SP 的锚点条目：`{(池, SPxx): [段号, …]}`，外加读不到的池（报错原文）。
+@dataclass
+class StillUses:
+    """一期稿件里图片微动 SP 的用法。`uses`：{(池, SPxx): [段号, …]}；`reuse`：{(池, SPxx): {段号}}，
+    人定超限复用的声明；`bad_reuse`：本期声明写错的（格式不对，或本段没锚这张图片微动 SP）；
+    `unavailable`：读不到的池（报错原文）。"""
+    uses: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    reuse: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    bad_reuse: list[str] = field(default_factory=list)
+    unavailable: list[str] = field(default_factory=list)
+
+
+def still_sp_uses(episode: Path) -> StillUses:
+    """本期 `02-script.md` 引用图片微动 SP 的锚点条目与 `复用:` 声明。
 
     一个锚点条目排出一个片段，所以条目数就是片段数；同一段写两遍记两次。
     格式不对、池名不在番表、未入库的条目不在这里计，它们由「锚点格式」「锚点指向素材」两项报。
-    池的归属与「锚点指向素材」一致：SP 锚点没写池名归企划池。
+    池的归属与「锚点指向素材」一致：SP 锚点没写池名归企划池；`复用:` 条目同一口径。
     """
+    out = StillUses()
     f = episode / "02-script.md"
     if not f.exists():
-        return {}, []
+        return out
     animes = bgm.animes_of(episode)
     if not animes:
-        return {}, []
+        return out
     anime_main, main_plan = animes[0], bgm.anime_of(episode)
     patch_name = _patch_pool_name(episode)
     allowed = set(animes) | {x for x in (main_plan, patch_name) if x}
-    uses: dict[tuple[str, str], list[str]] = {}
-    unavailable: list[str] = []
+    uses = out.uses
+    unavailable = out.unavailable
     cache: dict[str, dict | None] = {}
-    for label, raw in parse_anchors(f.read_text(encoding="utf-8")):
+    text = f.read_text(encoding="utf-8")
+    for label, raw in parse_anchors(text):
         if not raw or raw.startswith("无"):
             continue
         for item in _anchor_items(raw):
@@ -458,47 +488,77 @@ def still_sp_uses(episode: Path) -> tuple[dict[tuple[str, str], list[str]], list
             src = (cache[pool] or {}).get(f"SP{int(m.group('sp')):02d}")
             if src and _is_still(src):
                 uses.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append(label)
-    return uses, unavailable
+    for label, items in parse_reuse(text).items():
+        for item in items:
+            m = _REUSE_ITEM.fullmatch(item)
+            if not m:
+                out.bad_reuse.append(f"段{label} 复用条目「{item}」格式不对（写 `<池> SPxx`）")
+                continue
+            key = ((m.group("anime") or "").strip() or main_plan or anime_main, f"SP{int(m.group('sp')):02d}")
+            if label not in uses.get(key, []):
+                out.bad_reuse.append(f"段{label} 复用 {key[0]} {key[1]}，但本段锚点里没有这张图片微动 SP")
+                continue
+            out.reuse.setdefault(key, set()).add(label)
+    return out
 
 
 def _check_still_sp_cap(path: Path, add) -> None:
     """图片微动 SP 次数上限：本期用到的每张，连同企划内其他卷的用法合计不超过 STILL_SP_MAX。
 
     只报本期用到的那几张：别的卷自己超了，由那一卷的机检报。本期没引用图片微动 SP 就不出这一项。
+    超出的次数落在带 `复用:` 声明的段（任何一卷）里时放行，声明逐处列在结果里（D126）。
     """
     from . import project
     ep = path.parent
-    own, unavailable = still_sp_uses(ep)
-    if not own and not unavailable:
+    own = still_sp_uses(ep)
+    if not own.uses and not own.unavailable and not own.bad_reuse:
         return
-    total = {k: [(ep.name, l) for l in v] for k, v in own.items()}
+    total = {k: [(ep.name, l) for l in v] for k, v in own.uses.items()}
+    declared = {k: {(ep.name, l) for l in v} for k, v in own.reuse.items()}
+    unavailable = list(own.unavailable)
     proj = project.project_of(ep)
     for m in (project.project_members(proj) if proj else []):
         if m.name == ep.name:
             continue
-        uses, un = still_sp_uses(m)
-        unavailable += un
-        for k, v in uses.items():
+        other = still_sp_uses(m)
+        unavailable += other.unavailable
+        for k, v in other.uses.items():
             if k in total:
                 total[k].extend((m.name, l) for l in v)
+        for k, v in other.reuse.items():
+            if k in total:
+                declared.setdefault(k, set()).update((m.name, l) for l in v)
     name = f"图片微动 SP 全企划至多 {STILL_SP_MAX} 次"
     if unavailable:
         add(name, False, f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
         return
-    over = {k: v for k, v in total.items() if len(v) > STILL_SP_MAX}
-    if not over:
-        add(name, True, f"本期 {len(own)} 张图片微动 SP，合计都不超过 {STILL_SP_MAX} 次")
+    if own.bad_reuse:
+        add(name, False, "；".join(own.bad_reuse[:4])
+            + "　`复用:` 只写本段锚点里用到、由人决定超限复用的图片微动 SP")
         return
-    msgs = []
-    for (pool, key), where in sorted(over.items()):
+
+    def where_text(key: tuple[str, str], where: list[tuple[str, str]]) -> str:
         by_vol: dict[str, list[str]] = {}
         for vol, label in where:
-            by_vol.setdefault(vol, []).append(f"段{label}")
-        msgs.append(f"{pool} {key} 共 {len(where)} 次（"
-                    + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
+            mark = "〔复用〕" if (vol, label) in declared.get(key, set()) else ""
+            by_vol.setdefault(vol, []).append(f"段{label}{mark}")
+        return (f"{key[0]} {key[1]} 共 {len(where)} 次（"
+                + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
+
+    over = {k: v for k, v in total.items() if len(v) > STILL_SP_MAX}
+    failing = {k: v for k, v in over.items()
+               if sum(w not in declared.get(k, set()) for w in v) > STILL_SP_MAX}
+    if not failing:
+        if over:
+            add(name, True, f"本期 {len(own.uses)} 张图片微动 SP；超出 {STILL_SP_MAX} 次的都有人定复用声明："
+                + "；".join(where_text(k, v) for k, v in sorted(over.items())))
+        else:
+            add(name, True, f"本期 {len(own.uses)} 张图片微动 SP，合计都不超过 {STILL_SP_MAX} 次")
+        return
+    msgs = [where_text(k, v) for k, v in sorted(failing.items())]
     add(name, False, "；".join(msgs[:4])
         + f"　同一张图片微动素材在整个企划里最多用 {STILL_SP_MAX} 次（2026-10-17 人定），"
-          "多出来的段换别的素材")
+          "多出来的段换别的素材，或由人决定后在该段画面块写 `复用: <池> SPxx（理由）`")
 
 
 #: 补丁池名的后缀（`ingest_patch.sanitize_pool_name`：`<净化期名>-patch`，撞名再加 `-N`）。

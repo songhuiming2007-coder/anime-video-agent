@@ -93,6 +93,11 @@ class TestSpEpisodeField:
         with pytest.raises(SystemExit, match="SP01"):
             self._parse(tmp_path, "  集: SP01\n  锚点: 无（测试）\n")
 
+    def test_复用字段不并进锚点续行(self, tmp_path):
+        # D126：`复用:` 是 check_script 的次数声明，排片不读它；漏进停止列表会被当成第二个锚点条目
+        out = self._parse(tmp_path, "  锚点: SP01 12:30\n  复用: SP01（人定：唯一物证）\n")
+        assert out[0]["anchor"]["raw"] == "SP01 12:30"
+
     def test_集与SP锚点写叉报错(self, tmp_path):
         with pytest.raises(SystemExit, match="不是同一集"):
             self._parse(tmp_path, "  集: SP02\n  锚点: SP01 12:30\n")

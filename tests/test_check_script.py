@@ -771,6 +771,35 @@ class TestStillSpCap:
         f = script(tmp_path, [BODY] * 2, anchors=["SP01 0:00", "SP01 0:00"])
         assert get(cs.run(f), self.NAME).ok
 
+    def test_超出的那次带复用声明_PASS并列出(self, root):
+        self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00"])
+        f = self._vol(root, "02-卷二", ["SP01 0:00\n  复用: SP01（人定：唯一物证）"])
+        checks = cs.run(f)
+        chk = get(checks, self.NAME)
+        assert chk.ok and "人定复用声明" in chk.detail and "02-卷二 段1〔复用〕" in chk.detail
+        assert get(checks, "锚点格式").ok  # 复用行不被当成锚点续行
+
+    def test_复用只放行声明的段_未声明的超出仍FAIL(self, root):
+        self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00"])
+        f = self._vol(root, "02-卷二", ["SP01 0:00\n  复用: 企划 SP01", "SP01 0:00"])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "SP01 共 4 次" in chk.detail and "复用: <池> SPxx" in chk.detail
+
+    def test_别卷的复用声明也算(self, root):
+        self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00\n  复用: SP01"])
+        f = self._vol(root, "02-卷二", ["SP01 0:00"])
+        assert get(cs.run(f), self.NAME).ok
+
+    def test_复用写了本段没锚的图_FAIL(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00\n  复用: SP01"])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "段1 复用 企划 SP01，但本段锚点里没有" in chk.detail
+
+    def test_复用条目格式不对_FAIL(self, root):
+        f = self._vol(root, "01-卷一", ["SP01 0:00\n  复用: 那张钢琴图"])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "格式不对" in chk.detail
+
     def test_池读不到_跳过不是通过(self, root, monkeypatch):
         from pipeline import ingest
 
