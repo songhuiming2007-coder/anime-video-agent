@@ -325,6 +325,15 @@ def approve(
     manifest_path = episode / "03-audio" / "manifest.json"
     if not manifest_path.exists():
         raise SystemExit(f"FAIL 缺 {manifest_path}，approve 前必须能校验段级时长不变量")
+    # D74④：没有审看页就批准 = 排片没过人眼（2026-07-29 检索直出那次的复发）。三次复现都是 agent
+    # 只跑 clips、跳过 review。只拦「不存在」；页面比排片旧只警告——人在 05 原地改完排片直接批是常态，
+    # 为此重抽帧不值得。闸放在批准动作上、不进 approvals._gate_valid：已批过的老期不翻案
+    page = episode / "04-review.html"
+    if not page.exists():
+        raise SystemExit(f"FAIL 还没有审看页 {page.name}，不许 approve：先跑 python -m pipeline.review {episode} "
+                         "出页、人看过再批")
+    if page.stat().st_mtime_ns < src.stat().st_mtime_ns:
+        print(f"WARN {page.name} 比 04-clips.json 旧：排片在出页之后改过，页上看到的不是最新画面", file=sys.stderr)
 
     raw_bytes: bytes | None = None
     st1: os.stat_result | None = None

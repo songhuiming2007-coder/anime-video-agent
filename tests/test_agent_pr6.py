@@ -866,6 +866,7 @@ def test_red_2_review_patch_prompt_flushed_before_input(tmp_path: Path, monkeypa
     audio_dir.mkdir(parents=True)
     manifest = {"segments": [{"index": 1, "duration": 2.0}]}
     (audio_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (ep / "04-review.html").write_text("<html></html>", encoding="utf-8")   # D74④
 
     # 验证在 input() 被调用前，prompt 已经写入 stdout
     prompt_seen_in_stdout = False
