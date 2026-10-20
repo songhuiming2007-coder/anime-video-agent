@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-10-20：集中处理修复、无需再手验（3 条）
+
+### [D114] 全量测试 2 条红（约自 10-16 起）：`test_agent_assembly_integration.py` 的 `test_step_switch_incremental_injection_and_deduplication`、`test_idea_scope_zero_step_injection`，消息条数比断言多 1
+- 状态：**已解决（2026-10-20 修复、全量 3479 条通过；改的是测试隔离，无需人手验）**
+- 关联（原表）：`tests/test_agent_assembly_integration.py`（两条测试没隔离仓库根）；Spec 7（跨期记忆）、Spec 1
+- 原记录（活跃表原文）：状态栏「**待修**（2026-10-17 登记，coding agent）」。多出来的是跨期记忆注入消息「[跨期记忆 · 经验参考，非规则]…id: M001」：`assemble_resident_prompt("creative"/"idea")` 与 `cli._dispatch_agent_turn(...)` 都没传 `root`，落到真实仓库，读到 `data/library/memory.md`（10-16 起有 M001 条目「状语『地』读成 dì」）。同文件首条测试传了 `root=tmp_path`，所以不红。不是产品缺陷：记忆按设计在有条目时注入。测试依赖真实 `data/` 内容，记忆库一有条目就红、清空又绿，也会把真实记忆写进测试断言的上下文。10-17 实查：撤掉当日改动后 `test_step_switch…` 照样红；手工复现 idea scope 一轮，多出的正是这条记忆注入。**修法候选**：两条测试的 `assemble_resident_prompt` 与 `_dispatch_agent_turn` 都传 `root=tmp_path`（与首条同法），只改测试。 **2026-10-20 施工**：原「修法候选」（两处都传 `root=tmp_path`）不成立——`_dispatch_agent_turn` 拿到 tmp 根后也去那里找 `config/agent/tools.json`，直接崩；首条测试绿只是因为 pipeline scope 本来就不注入跨期记忆。改为文件级 autouse fixture：只把 `memory.render_injection` 的全局库指到 tmp 下的空 `data/library/`（企划记忆走 `store=` 的不动），配置与工序文档仍读真实仓库。去掉 fixture 即回到 2 红
+
+### [D119] bash 硬危险规则「停机点解封物」只按路径字面匹配，不分读写：`ls -la 02-diff.patch` 这类只读命令也弹卡，与 ADR-0030「只拦不可逆」不一致
+- 状态：**已解决（2026-10-20 修复、机检通过，变异 4/4；无界面行为需人看）**
+- 关联（原表）：`pipeline/agent/status_card.py:278`（`02-diff\.patch\|04-clips\.approved\.json\|07-cover/selected` 任一出现即打标）；ADR-0030、D82
+- 原记录（活跃表原文）：状态栏「**待修**（2026-10-19 登记）」。2026-10-19 supercell 卷二：agent 查 `ls -la 02-diff.patch 2>/dev/null \|\| echo "no patch"` 被弹卡，人拒绝。实测 `bash_danger_tags('ls -la 02-diff.patch')` 返回 `['[停机点解封物] 批准只能由人做']`。候选改法：照 `_FREEZE_PATH` + `_WRITE_FORM` 的组合口径，路径命中**且**为写入形式（重定向、cp / mv / rm / tee / touch / ln、`python -c` 写文件等）才打标；只读的 ls / cat / diff / stat 放行。改前补变异测试：写形式必须仍弹卡 **2026-10-20 施工**：解封物规则从 `_BASH_DANGER_RULES` 挪出，改成「路径命中且为写入形式」才打标；写入形式 = Code Freeze 的 `_WRITE_FORM` + 解释器（python / node / perl / bash / sh / xargs …）+ `curl -o` / `wget -O` + `tar` / `unzip` + `git checkout / restore / mv`——原规则字面命中即弹卡，顺带挡住了 `python -c "open('02-diff.patch','w')"`，放开只读不能把这类一起放掉。bash 工具描述「碰停机点解封物」改「写」。用例：硬危险 +7（含两种 python 写法）、免卡 +5（含 10-19 原命令）
+
+### [D125] `web_fetch` 遇到含非 ASCII 字符的 URL 报 `UnicodeEncodeError: 'ascii' codec can't encode characters`，`crawl` 能抓同一 URL
+- 状态：**已解决（2026-10-20 修复、机检通过，变异 4/4；无界面行为需人看）**
+- 关联（原表）：`pipeline/agent/web.py::fetch_web`；—
+- 原记录（活跃表原文）：状态栏「**待修**（2026-10-20 登记）」。复现：`https://commons.wikimedia.org/wiki/File:停電による閉鎖_(5531488699).jpg`。修时注意：留档 `url` 若改存百分号编码形态，`fetch_log.norm_url` 不解码，会与候选 `found_on` 的原文形态对不上 **2026-10-20 施工**：`fetch_web` 发请求前把 URL 转成 ASCII 形态（路径 / 查询非 ASCII 字符百分号编码、已有 %XX 不重复编码、非 ASCII 主机名走 IDNA），只用于请求；返回的 `url` 存原文，没重定向时 `final_url` 也回原文——留档 key 按 `norm_url(final_url)` 算，存编码形态会与 crawl 抓同一页分成两条、也对不上候选 `found_on`。替身 opener 照 http.client 的 `_encode_request` 对 selector 做 ASCII 编码。变异 4/4（请求不编码、final_url 不回原文、重复编码 %、主机不走 IDNA）
+
 ## 2026-10-20：集中清账归档（7 条；人确认无待人项 3 条 + 真实期已用过 4 条）
 
 ### [N59] 补料池记的是外置盘**绝对路径**，与「路径一律相对仓库根」相抵触：`pool.json` 里 `"path": "/Volumes/Samsung T7/anime-video-data/episodes/<期>/patch_assets/xxx.mp4"`，而同仓 `sources.json` 一律 `data/library/raw/...`
