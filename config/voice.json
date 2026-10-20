@@ -274,7 +274,22 @@
     "制作组": "zhi4zuo4zu3",
     "更登顶": "geng4deng1ding3",
     "薄纱": "bo2sha1",
-    "台后": "tai2hou4"
+    "台后": "tai2hou4",
+    "阿良良木历": "a1liang2liang2mu4li4",
+    "战场原黑仪": "zhan4chang3yuan2hei1yi2",
+    "战场原": "zhan4chang3yuan2",
+    "黑仪": "hei1yi2",
+    "八九寺真宵": "ba1jiu3si4zhen1xiao1",
+    "八九寺": "ba1jiu3si4",
+    "真宵": "zhen1xiao1",
+    "神原骏河": "shen2yuan2jun4he2",
+    "千石抚子": "qian1shi2fu3zi3",
+    "忍野咩咩": "ren3ye3mie1mie1",
+    "咩咩": "mie1mie1",
+    "忍野忍": "ren3ye3ren3",
+    "重蟹": "zhong4xie4",
+    "蛇切绳": "she2qie1sheng2",
+    "障猫": "zhang4mao1"
   },
   "readings_provenance": {
     "千": {
@@ -308,6 +323,66 @@
       "anime": "supercell",
       "engine": "qwen3_tts",
       "voice": "seg6.wav"
+    },
+    "阿良良木历": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "战场原黑仪": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "战场原": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "黑仪": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "八九寺真宵": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "八九寺": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "真宵": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "神原骏河": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "千石抚子": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "忍野咩咩": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "咩咩": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "忍野忍": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "重蟹": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "蛇切绳": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
+    },
+    "障猫": {
+      "table": "pinyin_injections",
+      "date": "2026-10-20"
     }
   }
 }
