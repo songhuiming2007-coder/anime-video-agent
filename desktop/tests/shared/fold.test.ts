@@ -106,3 +106,18 @@ describe("TV-7 时间线标签（S8-R9 / H-10）", () => {
     expect(eventLabel(ev({ approval_id: "appr_1", stop: "03.5", decision: "rejected" }))).toBe("停机点决策：03.5 → rejected");
   });
 });
+
+describe("D116 02.5 人工保存事件", () => {
+  const line = (type: string, payload: Record<string, unknown>) =>
+    JSON.stringify({ event_id: "evt_1", timestamp: "2026-10-20T13:13:57Z", episode: "ep", type, payload });
+  it("登记进契约，不显示成未知事件", () => {
+    const saved = parseEventLine(line("script_saved", { source: "desktop", old: null, new: {}, history: "20261020T131357000000000-02-script.md" }));
+    const rejected = parseEventLine(line("script_save_rejected", { expect: {}, actual: {} }));
+    expect(saved.ok && saved.ev.kind).toBe("script_saved");
+    expect(rejected.ok && rejected.ev.kind).toBe("script_save_rejected");
+    if (!saved.ok || !rejected.ok) throw new Error("unreachable");
+    expect(eventLabel(saved.ev)).toBe("02-script.md 人工保存（旧版留底 20261020T131357000000000-02-script.md）");
+    expect(eventLabel({ ...saved.ev, payload: { history: null } })).toBe("02-script.md 人工保存（新建）");
+    expect(eventLabel(rejected.ev)).toBe("02-script.md 人工保存被拒：磁盘版本已变，未写入");
+  });
+});

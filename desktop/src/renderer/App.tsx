@@ -1134,7 +1134,7 @@ const JOB_TONE: Record<string, "ok" | "danger" | "warn" | "wait" | undefined> = 
  * 收起时正文仍在 DOM 里（`hidden`），「观测层有损」声明原样留在正文顶部。
  */
 function Timeline({ ep, open, onToggle }: { ep: EpisodeState; open: boolean; onToggle: () => void }) {
-  const nonJob = ep.events.filter((e) => e.kind.startsWith("approval_") || e.kind === "unknown" || e.kind === "human_time_recorded");
+  const nonJob = ep.events.filter((e) => e.kind.startsWith("approval_") || e.kind === "unknown" || e.kind === "human_time_recorded" || e.kind.startsWith("script_save"));
   // D71：机检退出码 1 是「稿件没过」，不是作业故障，不计入失败
   const failed = ep.jobs.filter((j) => j.state === "failed" && !isCheckNotPassed(j)).length;
   const bodyId = `timeline-body-${ep.epKey}`;

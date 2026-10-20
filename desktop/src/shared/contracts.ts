@@ -11,7 +11,7 @@ export function isStopType(v: unknown): v is StopType {
   return typeof v === "string" && (STOP_TYPES as readonly string[]).includes(v);
 }
 
-// pipeline/jobs.py EventType：Spec 2 的 9 个值，外加 Spec 5 增补的 browser_session_started
+// pipeline/jobs.py EventType：Spec 2 的 9 个值，外加 Spec 5 增补的 browser_session_started、D116 的两个 02.5 保存事件
 export const EVENT_TYPES = [
   "job_created",
   "job_blocked",
@@ -23,6 +23,8 @@ export const EVENT_TYPES = [
   "human_time_recorded",
   "sidecar_degraded",
   "browser_session_started",
+  "script_saved",
+  "script_save_rejected",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

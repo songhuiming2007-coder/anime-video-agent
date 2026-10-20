@@ -56,6 +56,8 @@ class EventType(str, Enum):
     HUMAN_TIME_RECORDED = "human_time_recorded"
     SIDECAR_DEGRADED = "sidecar_degraded"  # Sidecar 自愈诊断（熔断恢复后补发）
     BROWSER_SESSION_STARTED = "browser_session_started"  # Spec 5 browser 进程启动事件
+    SCRIPT_SAVED = "script_saved"                  # D116：桌面端 02.5 人工保存 02-script.md
+    SCRIPT_SAVE_REJECTED = "script_save_rejected"  # D116：指纹不符被拒
 
 
 # D110：人在审批卡上批准过的作业，子进程环境里带这个变量（值 "1"）。命令据此如实写来历
