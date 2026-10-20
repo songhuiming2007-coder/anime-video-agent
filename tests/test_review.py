@@ -77,6 +77,7 @@ class TestApprove:
         manifest = {"segments": [{"index": 1, "duration": seg_dur}]}
         (audio_dir / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        (episode / "04-review.html").write_text("<html></html>", encoding="utf-8")   # D74④
 
     def test_对齐则拷贝成功(self, tmp_path):
         self._write(tmp_path, seg_dur=6.0, clip_durs=[3.0, 3.0])
@@ -129,6 +130,38 @@ class TestClipEp:
         assert _clip_ep({}) == "?"
 
 
+class TestApproveNeedsReviewPage:
+    """D74④：没审看页不许批；页比排片旧只警告。"""
+
+    def _write(self, episode: Path) -> None:
+        (episode / "04-clips.json").write_text(json.dumps({"segments": [
+            {"index": 1, "status": "ok", "clips": [{"dur": 6.0}]}]}), encoding="utf-8")
+        (episode / "03-audio").mkdir()
+        (episode / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 6.0}]}), encoding="utf-8")
+
+    def test_没有审看页拒批且不写批准文件(self, tmp_path):
+        self._write(tmp_path)
+        with pytest.raises(SystemExit, match="还没有审看页 04-review.html"):
+            approve(tmp_path)
+        assert not (tmp_path / "04-clips.approved.json").exists()
+
+    def test_审看页过期只警告照批(self, tmp_path, capsys):
+        self._write(tmp_path)
+        page = tmp_path / "04-review.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        old = (tmp_path / "04-clips.json").stat().st_mtime_ns - 10_000_000_000
+        os.utime(page, ns=(old, old))
+        assert approve(tmp_path).exists()
+        assert "比 04-clips.json 旧" in capsys.readouterr().err
+
+    def test_审看页新于排片不警告(self, tmp_path, capsys):
+        self._write(tmp_path)
+        (tmp_path / "04-review.html").write_text("<html></html>", encoding="utf-8")
+        assert approve(tmp_path).exists()
+        assert "WARN" not in capsys.readouterr().err
+
+
 class TestPatchApproveGate:
     """Spec §4.4 闸 3 & §5：补丁段标记与 approve 二次确认。"""
 
@@ -150,6 +183,7 @@ class TestPatchApproveGate:
             json.dumps({"segments": [{"index": 1, "duration": 6.0}]}, ensure_ascii=False),
             encoding="utf-8"
         )
+        (episode / "04-review.html").write_text("<html></html>", encoding="utf-8")   # D74④
         patch_dir = episode / "04-patch"
         patch_dir.mkdir(parents=True, exist_ok=True)
         (patch_dir / "pool.json").write_text(
@@ -227,6 +261,7 @@ class TestApproveExpectFingerprint:
         (audio_dir / "manifest.json").write_text(
             json.dumps({"segments": [{"index": 1, "duration": 6.0}]}), encoding="utf-8"
         )
+        (ep / "04-review.html").write_text("<html></html>", encoding="utf-8")   # D74④
         return ep / "04-clips.json"
 
     def _fingerprint(self, src: Path) -> tuple[int, int, int]:
