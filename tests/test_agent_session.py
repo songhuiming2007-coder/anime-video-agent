@@ -1889,3 +1889,86 @@ def test_d80_bash工具帧两阶段都带用途_剥控制字符_非bash不带(ep
         (2, "start", None),           # 非 bash 不带
     ]
     assert "description" not in frames[3]
+
+
+# ---------------------------------------------------------------------------
+# D118（人选 A）：退出码 1 属正常结果的失败调用带 verdict，人看的状态不再是「执行失败」
+# ---------------------------------------------------------------------------
+
+
+def _rc(rc: int, ok: bool = False, argv: list[str] | None = None) -> str:
+    return json.dumps({"ok": True, "result": {"ok": ok, "returncode": rc, **({"argv": argv} if argv else {})}})
+
+
+@pytest.mark.parametrize("command,verdict", [
+    # 2026-10-19 supercell 卷二那一轮的原命令
+    ("diff -u _agent/script-history/20261018T023044986498000-02-script.md 02-script.md", "有差异"),
+    ("python3 -m pipeline.check_script 02-script.draft.md", "机检未通过"),
+    ("find /Volumes -name '*x*' 2>/dev/null", None),              # 遇无权限目录返回 1：不在表里，照旧失败
+    ("git diff HEAD 02-script.md", None),                           # 真失败
+    ("cat ../../config/voice.json", None),                          # 真失败
+    ("ls -la 02-diff.patch 2>/dev/null || echo \"no patch\"", None),  # 复合命令：退出码不知道是谁给的
+    ("grep -rn 但是 02-script.md", "无匹配"),
+    ("diff a b 2>&1", "有差异"),                                     # 无害重定向不算复合
+    ("diff a b | head", None),
+    ("LC_ALL=C /usr/bin/rg x .", "无匹配"),
+    ("uv run python -m pipeline.check_script 02-script.md", "机检未通过"),
+])
+def test_d118_bash语义表(command: str, verdict: str | None) -> None:
+    from pipeline.agent.session import tool_verdict
+
+    assert tool_verdict("bash", command, _rc(1)) == verdict
+
+
+def test_d118_只认退出码1的失败_run_pipeline只认check_script() -> None:
+    from pipeline.agent.session import tool_verdict
+
+    assert tool_verdict("bash", "diff a b", _rc(2)) is None          # 用法错 / 文件不存在
+    assert tool_verdict("bash", "grep x f", _rc(0, ok=True)) is None
+    assert tool_verdict("run_pipeline", "", _rc(1, argv=["py", "-m", "pipeline.check_script", "ep"])) == "机检未通过"
+    assert tool_verdict("run_pipeline", "", _rc(1, argv=["py", "-m", "pipeline.tts", "ep"])) is None
+    assert tool_verdict("read_artifact", "diff a b", _rc(1)) is None
+    assert tool_verdict("bash", "diff a b", "不是 JSON") is None
+
+
+def test_d118_工具帧end阶段带verdict_成功与真失败不带(episode: Path) -> None:
+    channel = FakeChannel()
+    session = AgentSession(SessionHost(episode, root=None, channel=channel), scope_mode="creative", persist=False)
+    session._on_trace({"phase": "start", "index": 0, "name": "bash", "args": {"command": "diff -u a b"}})
+    session._on_trace({"phase": "end", "index": 0, "name": "bash", "content": _rc(1)})
+    session._on_trace({"phase": "start", "index": 1, "name": "bash", "args": {"command": "cat ../../x"}})
+    session._on_trace({"phase": "end", "index": 1, "name": "bash", "content": _rc(1)})
+    session._on_trace({"phase": "start", "index": 2, "name": "bash", "args": {"command": "diff a a"}})
+    session._on_trace({"phase": "end", "index": 2, "name": "bash", "content": _rc(0, ok=True)})
+    ends = [p for k, p in channel.shown if k == "tool" and p["phase"] == "end"]
+    assert [(f["ok"], f.get("verdict")) for f in ends] == [(False, "有差异"), (False, None), (True, None)]
+    assert "verdict" not in ends[1] and "verdict" not in ends[2]
+    starts = [p for k, p in channel.shown if k == "tool" and p["phase"] == "start"]
+    assert all("verdict" not in f for f in starts)
+
+
+def test_d118_历史帧同样带verdict() -> None:
+    from pipeline.agent.protocol import _send_history
+
+    def call(cid: str, name: str, args: dict) -> dict:
+        return {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+    records = [
+        {"k": "msg", "origin": "assistant", "message": {"role": "assistant", "content": None, "tool_calls": [
+            call("c1", "bash", {"command": "grep 但是 02-script.md"}), call("c2", "bash", {"command": "cat x"}),
+            call("c3", "run_pipeline", {"command": "check_script"})]}},
+        {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c1", "content": _rc(1)}},
+        {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c2", "content": _rc(1)}},
+        {"k": "msg", "origin": "tool", "message": {"role": "tool", "tool_call_id": "c3",
+                                                   "content": _rc(1, argv=["py", "-m", "pipeline.check_script", "ep"])}},
+    ]
+
+    class W:
+        frames: list[dict] = []
+
+        def send(self, f: dict) -> None:
+            self.frames.append(f)
+
+    w = W()
+    _send_history(w, records)  # type: ignore[arg-type]
+    assert [f.get("verdict") for f in w.frames if f["role"] == "tool"] == ["无匹配", None, "机检未通过"]

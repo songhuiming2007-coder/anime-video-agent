@@ -42,6 +42,14 @@ describe("TV-1 parseOutFrame", () => {
     expect(parseOutFrame(JSON.stringify({ ...hist, handoff: "x" })).ok).toBe(true);
     expect(parseOutFrame(JSON.stringify({ ...hist, handoff: null })).ok).toBe(false);
   });
+  it("D118：tool / history 帧的 verdict 有键才查，必须是字符串", () => {
+    const tool = { ...base, t: "tool", ...valid.tool, name: "bash", phase: "end", ok: false, command: "diff a b", description: "" };
+    expect(parseOutFrame(JSON.stringify({ ...tool, verdict: "有差异" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...tool, verdict: 1 })).ok).toBe(false);
+    const hist = { ...base, t: "history", index: 0, role: "tool", text: "x", name: "run_pipeline", ok: false };
+    expect(parseOutFrame(JSON.stringify({ ...hist, verdict: "机检未通过" })).ok).toBe(true);
+    expect(parseOutFrame(JSON.stringify({ ...hist, verdict: null })).ok).toBe(false);
+  });
   it("D81：ready 缺 session_kind → malformed；project 为 null 合法、为数字 malformed", () => {
     const { session_kind: _drop, ...noKind } = valid.ready;
     expect(parseOutFrame(JSON.stringify({ ...base, t: "ready", ...noKind })).ok).toBe(false);

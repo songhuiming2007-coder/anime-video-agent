@@ -12,7 +12,7 @@ import {
   groupDefaultOpen,
   handoffTickets,
   mainText,
-  STATUS_WORD,
+  statusWord,
   subText,
   toolCategory,
   toolStatus,
@@ -293,7 +293,7 @@ function ToolLine({ row, turnRunning, fresh, opens, inGroup }: { row: ToolRow; t
         {dur !== "" && <span className="conv-tool-dur">{dur}</span>}
         {row.duplicate && <span className="ui-badge">重复调用</span>}
         <span className="conv-tool-status" data-st={status} title={fail !== "" ? fail : undefined} data-testid="tool-status">
-          {STATUS_WORD[status]}
+          {statusWord(row, status)}
         </span>
         <Chevron open={open} onToggle={() => opens.toggle(key, open)} />
       </div>

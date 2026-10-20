@@ -615,6 +615,49 @@ def tool_flags(content: Any) -> tuple[bool | None, str | None]:
     return ok, (None if ok else text)
 
 
+# D118（人选 A）：退出码 1 在这几个命令里是正常结果，不是执行出错——diff / cmp 有差异、grep 没匹配、机检有 FAIL 项。
+# 只改人看的状态口径（工具帧的 `verdict` 键，桌面端显示成中性词、不计回合失败）；模型看到的结果原样不动。
+# 只认「单条简单命令」：带 ; && || | 换行、反引号、$( 的复合命令，退出码不知道是谁给的，照旧算失败。
+# `2>/dev/null`、`2>&1` 这类重定向不改命令语义，也不含上面这些记号，不用特殊处理。
+_VERDICT_HEADS: dict[str, str] = {"diff": "有差异", "cmp": "有差异", "grep": "无匹配", "egrep": "无匹配",
+                                  "fgrep": "无匹配", "rg": "无匹配"}
+_CHECK_NOT_PASSED = "机检未通过"
+_COMPOUND = re.compile(r";|&&|\|\||\||\n|`|\$\(")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_CHECK_SCRIPT = re.compile(r"(?:^|\s)-m\s+pipeline\.check_script(?:\s|$)")
+
+
+def _bash_verdict(command: str) -> str | None:
+    cmd = command.strip()
+    if not cmd or _COMPOUND.search(cmd):
+        return None
+    if _CHECK_SCRIPT.search(cmd):
+        return _CHECK_NOT_PASSED
+    words = [w for w in cmd.split() if not _ENV_ASSIGN.match(w)]
+    head = words[0].rsplit("/", 1)[-1] if words else ""
+    return _VERDICT_HEADS.get(head)
+
+
+def tool_verdict(name: str, command: str, content: Any) -> str | None:
+    """D118：失败的 bash / run_pipeline 若属上面这几类退出码 1，返回中性状态词；其余（含成功）返回 None。"""
+    if name not in ("bash", "run_pipeline"):
+        return None
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    result = parsed.get("result") if isinstance(parsed, dict) else None
+    if not isinstance(result, dict) or result.get("ok") is not False or result.get("returncode") != 1:
+        return None
+    if name == "bash":
+        return _bash_verdict(command)
+    argv = result.get("argv")
+    if isinstance(argv, list) and "pipeline.check_script" in [str(a) for a in argv]:
+        return _CHECK_NOT_PASSED
+    return None
+
+
 def _echo_line(name: str, args: dict[str, Any]) -> str:
     """终端 `[tool]` 回显（与 Spec 1 cli.py:803-819 同一规则，扩展到全部工具）。"""
     return _clean(f"[tool] {name} {tool_summary(name, args)}".strip())
@@ -1755,6 +1798,11 @@ class AgentSession:
             handoff = ticket_handoff(payload.get("content"), self.host.root)
             if handoff is not None:
                 frame["handoff"] = handoff
+        if payload.get("phase") != "start" and ok is False:
+            # D118：条件键，TS 侧 CONDITIONAL 登记
+            verdict = tool_verdict(name, self._tool_commands.get(index, ""), payload.get("content"))
+            if verdict is not None:
+                frame["verdict"] = verdict
         self.channel.show("tool", frame)
 
     def _review(

@@ -312,6 +312,25 @@ describe("D82 PR-C 工单工具行带 handoff（实时帧在 end 阶段、历史
   });
 });
 
+describe("D118 工具行带 verdict（实时 end 帧、历史帧）", () => {
+  it("实时 end 帧的 verdict 进行；没有键为 null", () => {
+    const end = (index: number, o: Record<string, unknown>, seq: number) =>
+      F("tool", { turn_id: "t1", phase: "end", index, name: "run_pipeline", summary: "", ok: false, observation: "x", duplicate: false, ...o }, seq);
+    const { rows } = foldConv([
+      { k: "frame", at: 1, frame: toolStart("run_pipeline", "check_script", 0, 1) },
+      { k: "frame", at: 2, frame: end(0, { verdict: "机检未通过" }, 2) },
+      { k: "frame", at: 3, frame: toolStart("run_pipeline", "tts", 1, 3) },
+      { k: "frame", at: 4, frame: end(1, {}, 4) },
+    ]);
+    expect(rows.filter((r) => r.k === "tool").map((r) => (r.k === "tool" ? r.verdict : undefined))).toEqual(["机检未通过", null]);
+  });
+  it("历史帧的 verdict 原样进行", () => {
+    const { rows } = foldConv([{ k: "frame", at: 1, frame: F("history", { index: 0, role: "tool", text: "x", ok: false, name: "bash", command: "grep a b", description: "", verdict: "无匹配" }, 1) }]);
+    const row = rows.find((r) => r.k === "tool");   // 历史前面有一条分隔行
+    expect(row?.k === "tool" && row.verdict).toBe("无匹配");
+  });
+});
+
 describe("D79 排队消息：入队 → 送达进时间线 / 退回输入框", () => {
   const started = F("turn_started", { turn_id: "t1" }, 1);
   const queued = (id: string, text: string, seq: number) => F("queued", { id, text }, seq);
