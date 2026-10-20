@@ -314,8 +314,8 @@ def test_extras_present_exposes_tools(
     assert set(crawl_params["properties"].keys()) == {"url", "reason", "stealth"}
 
     browser_params = by_name["browser"]["parameters"]
-    assert set(browser_params["properties"].keys()) == {"action", "url", "reason"}
-    assert browser_params["properties"]["action"]["enum"] == ["navigate", "extract_text"]
+    assert set(browser_params["properties"].keys()) == {"action", "url", "reason", "selector", "text", "expect_text", "name"}
+    assert browser_params["properties"]["action"]["enum"] == ["navigate", "extract_text", "screenshot"]   # D122
     assert browser_params["required"] == ["action", "reason"]
 
 

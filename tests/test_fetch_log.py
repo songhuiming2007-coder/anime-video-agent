@@ -109,7 +109,7 @@ class TestToolWrappers:
         assert hit["kind"] == "crawl" and fetch_log.read_text(hit, root=root) == "**全文**"
 
     def test_browser_只有extract_text留档(self, root, monkeypatch):
-        def fake(action, reason, *, url=None, episode_dir=None, scope="creative", root=None, keep_full=False):
+        def fake(action, reason, *, url=None, episode_dir=None, scope="creative", root=None, keep_full=False, **_kw):
             if action == "navigate":
                 return {"action": "navigate", "url": url, "final_url": url, "title": "t"}
             return {"action": "extract_text", "url": "https://a.example/now", "text": "截断", "truncated": True,
