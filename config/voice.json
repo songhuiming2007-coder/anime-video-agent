@@ -201,7 +201,14 @@
     "千": "牵",
     "全": "权",
     "ETERNAL WIND": "eternal wind",
-    "VOC@LOID": "vocaloid"
+    "VOC@LOID": "vocaloid",
+    "疾风传": "疾风撰",
+    "中岛哲也": "中岛哲野",
+    "Koeda": "扣诶达",
+    "柳凪": "柳止",
+    "Aa": "Ah",
+    "Hajimari no Uta": "Hajimari no uta",
+    "Watashi e": "Watashi eh"
   },
   "pinyin_injections": {
     "_note": "TONE3 统一表示（如 shi4jie4），引擎语法由 pipeline/g2p.py 的 format_for_engine 按 engine 分派。本表 61 条由 readings 表机械转录，2026-09-11 生成，**待人工核对**；另有 23 条替换词非纯汉字，未纳入（见 g2p.py 模块文档）。\n2026-09-12 EGOIST 一期顺听补：① 新增 15 条手写条目（声线/同一次/十五岁/被挑中/主唱/空灵/课桌/秘密/半年后/首专/死/制作组/更登顶/薄纱/台后），都是人耳听出来的错词，TONE3 = to_tone3() 输出 + 人工复核（唯一例外见同一次：它的 yi1 是查表字调，与 一个世界 的 yi2 矛盾）。② **删除 3 条实测失效的**（全部→quánbù 听成「髋部」、二次元→èrcìyuán 听成乱码、二次审查）——同键删掉后由 readings 的同音字路线接管（权部/贰次元/贰次审查）。一条词两条路只能选一条：拼音直注是默认（物理阻断），实测念错就退回同音字。乐迷 不在本表：它走 readings 的同音字路线（乐迷→月迷），初始那条拼音版 le4mi2 已删。",
@@ -289,7 +296,10 @@
     "忍野忍": "ren3ye3ren3",
     "重蟹": "zhong4xie4",
     "蛇切绳": "she2qie1sheng2",
-    "障猫": "zhang4mao1"
+    "障猫": "zhang4mao1",
+    "彼时": "bi3shi2",
+    "前奏": "qian2zou4",
+    "初战": "chu1zhan4"
   },
   "readings_provenance": {
     "千": {
@@ -383,6 +393,86 @@
     "障猫": {
       "table": "pinyin_injections",
       "date": "2026-10-20"
+    },
+    "彼时": {
+      "table": "pinyin_injections",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "前奏": {
+      "table": "pinyin_injections",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "初战": {
+      "table": "pinyin_injections",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "疾风传": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "中岛哲也": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "Koeda": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "柳凪": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "Aa": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "Hajimari no Uta": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "Watashi e": {
+      "table": "readings",
+      "date": "2026-10-23",
+      "episode": "02-烟火绽放的至美之日",
+      "anime": "化物语、火影忍者疾风传、罪恶王冠",
+      "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
     }
   }
 }
