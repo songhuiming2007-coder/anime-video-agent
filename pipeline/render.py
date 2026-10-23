@@ -399,6 +399,63 @@ def _ass_escape(text: str) -> str:
                 .replace("\r", " ").replace("\n", " "))
 
 
+# D132 字幕显示替换表（2026-10-23 supercell 二期）：配音要中文数字与罗马字（TTS 读得准），
+# 字幕要阿拉伯数字与日文原名（观众看得快）。字幕取自 manifest 的句子原文，改稿件会让 tts
+# 判「文本变了」整段重配——所以只在上屏这一层换，配音与台词哈希都不动。
+# 键必须原样出现在某张字幕的句子里：一个都没命中的键当场报——拼错的键静默不生效，
+# 观众看到的还是旧写法，正是要防的。
+SUBTITLE_MAP = "02-subtitles.json"
+
+
+def load_subtitle_map(episode: Path) -> dict[str, str]:
+    """读本期 `02-subtitles.json`（{原文: 上屏写法}，`_` 开头的键是注释）。没有文件 = 空表。"""
+    p = episode / SUBTITLE_MAP
+    if not p.exists():
+        return {}
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise SystemExit(f"FAIL {SUBTITLE_MAP} 必须是 {{原文: 上屏写法}} 对象")
+    table = {k: v for k, v in raw.items() if not k.startswith("_")}
+    bad = [k for k, v in table.items() if not k or not isinstance(v, str) or not v.strip()]
+    if bad:
+        raise SystemExit(f"FAIL {SUBTITLE_MAP} 有空键或空值：{bad[:8]}")
+    return table
+
+
+def apply_subtitle_map(audio: list[dict], table: dict[str, str]) -> list[dict]:
+    """返回替换过上屏文本的 manifest 段副本（原 manifest 不动）。
+
+    一遍扫描、长键优先：替换结果不再参与匹配，`十一` 不会把已换好的值再换一次。
+    命中按真正上屏的单位算（有 `sentences` 就按句）——跨句的键整段文本里找得到、
+    上屏时却换不到，必须算没命中。
+    """
+    if not table:
+        return audio
+    pat = re.compile("|".join(re.escape(k) for k in sorted(table, key=len, reverse=True)))
+    hit: set[str] = set()
+
+    def sub(text: str) -> str:
+        def one(m: re.Match) -> str:
+            hit.add(m.group(0))
+            return table[m.group(0)]
+        return pat.sub(one, text)
+
+    out = []
+    for a in audio:
+        b = dict(a)
+        if a.get("sentences"):
+            b["sentences"] = [dict(s, text=sub(s["text"])) for s in a["sentences"]]
+            b["text"] = pat.sub(lambda m: table[m.group(0)], a["text"])
+        else:
+            b["text"] = sub(a["text"])
+        out.append(b)
+    miss = [k for k in table if k not in hit]
+    if miss:
+        raise SystemExit(
+            f"FAIL {SUBTITLE_MAP} 有 {len(miss)} 个键在字幕句子里找不到（拼错，或跨了句）：{miss[:8]}")
+    return out
+
+
 def build_ass(segments: list[dict], audio: list[dict], dest: Path,
               starts: dict[int, float] | None = None,
               extra: list[tuple[float, float, str]] | None = None) -> Path:
@@ -1124,6 +1181,8 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
     violations = verify_alignment(segments, manifest["segments"])
     if violations:
         raise SystemExit("FAIL 段级时长不对齐（人审改过画面没 refit？）：\n  " + "\n  ".join(violations))
+    # D132：替换表也是只读 JSON 就能判的配置，切片之前先判
+    sub_audio = apply_subtitle_map(manifest["segments"], load_subtitle_map(episode))
 
     # 配置前置校验（fail-fast，2026-08-18 复盘②）：曲名打错、曲目文件不存在、
     # 缺 lufs、音乐段越界——这些只读 JSON 就能判，而切片要几分钟。先判再切，
@@ -1318,7 +1377,7 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         if music_plan is not None:
             seg_starts = {s["index"]: s["start"]
                           for s in music_plan["segments"]}
-        ass = build_ass(segments, manifest["segments"], work / "vo.ass",
+        ass = build_ass(segments, sub_audio, work / "vo.ass",
                         starts=seg_starts,
                         # D86：试看块（音画同源）切自番剧集时，窗口内的原片中文台词一并上屏
                         extra=_avsync_cues(episode, music_plan) if music_plan is not None else None)
