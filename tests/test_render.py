@@ -610,3 +610,59 @@ def test_duration_图片改成视频扩展名也拦(tmp_path: Path) -> None:
     _ff("-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", "-f", "image2", str(fake))
     with pytest.raises(SystemExit, match="静态图片"):
         render.duration(fake)
+
+
+class TestSubtitleMap:
+    """D132 字幕显示替换表：只换上屏文本，配音与 manifest 不动；没命中的键当场报。"""
+
+    def _audio(self):
+        return [{"text": "二零零九年八月十二日，单曲《Kimi no Shiranai Monogatari》发售。",
+                 "sentences": [{"text": "二零零九年八月十二日，单曲《Kimi no Shiranai Monogatari》发售。",
+                                "start": 0.0, "duration": 4.0}]},
+                {"text": "第十一首。", "sentences": None}]
+
+    def test_没有文件是空表_原样返回(self, tmp_path: Path):
+        from pipeline.render import apply_subtitle_map, load_subtitle_map
+        audio = self._audio()
+        assert load_subtitle_map(tmp_path) == {}
+        assert apply_subtitle_map(audio, {}) is audio
+
+    def test_替换句子与整段_原manifest不动(self, tmp_path: Path):
+        from pipeline.render import apply_subtitle_map, load_subtitle_map
+        (tmp_path / "02-subtitles.json").write_text(json.dumps({
+            "_note": "注释键忽略",
+            "二零零九年八月十二日": "2009年8月12日",
+            "Kimi no Shiranai Monogatari": "君の知らない物語",
+            "十一": "11"}, ensure_ascii=False), encoding="utf-8")
+        audio = self._audio()
+        shown = apply_subtitle_map(audio, load_subtitle_map(tmp_path))
+        assert shown[0]["sentences"][0]["text"] == "2009年8月12日，单曲《君の知らない物語》发售。"
+        assert shown[0]["text"] == shown[0]["sentences"][0]["text"]
+        assert shown[1]["text"] == "第11首。"
+        assert audio[0]["sentences"][0]["text"].startswith("二零零九年")   # 副本，不改原件
+
+    def test_长键优先且结果不再参与匹配(self):
+        from pipeline.render import apply_subtitle_map
+        audio = [{"text": "三月十一日，第十一首，11人", "sentences": None}]
+        shown = apply_subtitle_map(audio, {"三月十一日": "3月11日", "十一": "11", "11": "壹壹"})
+        # 连锁替换会把刚换出的 11 再换成 壹壹
+        assert shown[0]["text"] == "3月11日，第11首，壹壹人"
+
+    def test_未命中的键报错(self):
+        from pipeline.render import apply_subtitle_map
+        with pytest.raises(SystemExit, match="找不到"):
+            apply_subtitle_map(self._audio(), {"二零一零年": "2010年"})
+
+    def test_跨句的键算未命中(self):
+        from pipeline.render import apply_subtitle_map
+        audio = [{"text": "甲。乙", "sentences": [{"text": "甲。", "start": 0, "duration": 1},
+                                                 {"text": "乙", "start": 1, "duration": 1}]}]
+        with pytest.raises(SystemExit, match="跨了句"):
+            apply_subtitle_map(audio, {"甲。乙": "丙"})
+
+    def test_成片ASS用的是替换后文本(self, tmp_path: Path):
+        from pipeline.render import apply_subtitle_map, build_ass
+        segments = [{"index": 1, "duration": 4.0}, {"index": 2, "duration": 1.0}]
+        shown = apply_subtitle_map(self._audio(), {"十一": "11"})
+        text = build_ass(segments, shown, tmp_path / "vo.ass").read_text(encoding="utf-8")
+        assert "第11首" in text and "第十一首" not in text

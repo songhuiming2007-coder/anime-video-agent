@@ -483,8 +483,11 @@ def check(video: Path, plan: dict | None = None,
     out.append(Check(f"无 >{SILENCE_MAX}s 静音", rc == 0 and not bad, sil_detail))
 
     # 字幕。烧录之后没法从成片反查，所以查它的来源。
+    # D132：查上屏的那份文本——过了本期字幕替换表之后的
+    from .render import apply_subtitle_map, load_subtitle_map
     if plan and audio:
-        out.extend(_subtitle_checks([("", s, a) for s, a in zip(plan["segments"], audio)]))
+        shown = apply_subtitle_map(audio, load_subtitle_map(video.parent))
+        out.extend(_subtitle_checks([("", s, a) for s, a in zip(plan["segments"], shown)]))
     elif asm:
         # 总装期：字幕卡由三期成片原样流拷贝带进来（未重编码，参数一致性自检与
         # 解码零报错在 assemble.sh 里），所以查它的产出方——逐期用它自己的
@@ -507,7 +510,8 @@ def check(video: Path, plan: dict | None = None,
                 continue
             items += [(ep.name, s, a) for s, a in zip(
                 json.loads(pt.read_text(encoding="utf-8"))["segments"],
-                json.loads(mt.read_text(encoding="utf-8"))["segments"])]
+                apply_subtitle_map(json.loads(mt.read_text(encoding="utf-8"))["segments"],
+                                   load_subtitle_map(ep)))]
         if missing:
             for n in ("字幕无空段", "字幕不超宽", "字幕每卡一行", "字幕不超高"):
                 out.append(Check(n, False, "跳过：缺 " + "、".join(missing), skipped=True))
