@@ -3,7 +3,13 @@
 根据定稿脚本进行增量语音合成，确定各段真实物理时长。
 
 ## 执行
-agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡；跑完提议 `cloud down`（也弹卡）。
+agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡。跑完不提议 `cloud down`，见下一节「配完不关机」。
+
+## 配完不关机（2026-10-23 人定）
+
+云端配音跑完、`cloud pull` 拉回音频后，实例保留到 03.5 顺听纠错全部做完，人明确说关再提议 `cloud down`（弹卡）。理由：读错的字每期都有，点名重配常要好几轮；实例关机后那台的卡会被别人租走，卡紧缺时再租很难，重开还要重新 connect、push。
+
+`cloud up` 启动的看门狗在远端没有 `ava-` 开头的 tmux 任务、且空闲 300 s 时会自动关机，配音一结束就会触发。所以 `cloud run … tts` 发出后，接着用 `cloud exec "sleep infinity"` 挂一个占位会话（会话名自动带 `ava-` 前缀）保活，并告诉人实例会一直计费到他说关为止。`cloud down` 不受占位会话影响，直接关机。
 
 ## 云端实例用完即弃（D102）
 
@@ -11,7 +17,7 @@ agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。�
 
 1. 人租机（约 1 分钟）：算力市场选西北B区、驱动支持 CUDA ≥ 12.8、显存够本次任务的机器（VLM 打标 ≥ 24GB；只配音不需要大卡），镜像选「我的镜像」里 `config/cloud.json` 的 `image`。`cloud up` 连不上时会打印这几项。
 2. 人把控制台的 SSH 登录指令（`ssh -p 端口 root@主机`）和这台实例的按量单价（元/小时）贴给 agent，agent 提议 `cloud connect "<原文>"`（弹卡）：写连接信息、生成 `data/cloud/ssh_config`、验连通、把 `/root/autodl-tmp/models` 软链到文件存储。
-3. `cloud doctor` 看文件存储挂载、软链、显存、模型，以及远端代码与本地是否一致（`[CODE]`；不一致先 `cloud sync-code`，否则 `run` 不开跑）；之后照常 `up --rate <单价>` → `push` → `run` → `pull` → `down`。卡和单价每次都可能不同，账本按人报的单价记；没报就按 `gpu_rates_cny` 参考价或 `hourly_rate_cny` 估算并标出，结算时可用 `down --rate` 补。
+3. `cloud doctor` 看文件存储挂载、软链、显存、模型，以及远端代码与本地是否一致（`[CODE]`；不一致先 `cloud sync-code`，否则 `run` 不开跑）；之后照常 `up --rate <单价>` → `push` → `run` → `pull`，03.5 改完、人说关再 `down`。卡和单价每次都可能不同，账本按人报的单价记；没报就按 `gpu_rates_cny` 参考价或 `hourly_rate_cny` 估算并标出，结算时可用 `down --rate` 补。
 4. 改过远端环境（装包、升级 torch）后要在控制台重新保存一次镜像，并更新 `config/cloud.json` 的 `image`；不保存的话下一台新实例还是旧环境。
 
 底层排查参考：`python -m pipeline.tts data/episodes/<期号>`；云端 `python -m pipeline.cloud connect|push|run|pull …`。
