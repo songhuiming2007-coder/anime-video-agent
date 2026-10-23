@@ -50,6 +50,15 @@ def test_write_episode_file_rejects_topic_without_confirmation(fake_repo):
         write_episode_file(ep_dir, "01-topic.md", "# Topic", confirmed=False)
 
 
+def test_write_episode_file_allows_subtitle_map_and_render_reads_it(fake_repo):
+    """D132：agent 写的 02-subtitles.json 就是渲染读的那一份（免卡写入，load_subtitle_map 原样读回）。"""
+    from pipeline.render import load_subtitle_map
+    _, ep_dir = fake_repo
+    path = write_episode_file(ep_dir, "02-subtitles.json", '{"_note": "x", "二零零九年": "2009年"}')
+    assert path == ep_dir / "02-subtitles.json"
+    assert load_subtitle_map(ep_dir) == {"二零零九年": "2009年"}
+
+
 def test_write_episode_file_rejects_out_of_whitelist_files(fake_repo):
     """拦截白名单外文件的写入（如 04-clips.json、notes.txt）。02-script.md 自 D47 起在白名单内，另测。"""
     _, ep_dir = fake_repo
