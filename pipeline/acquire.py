@@ -77,7 +77,9 @@ DUR_TOLERANCE = 0.05
 #: 「必须有音轨」当硬判据会把本池 17/18 全拦掉，是典型的「拦了不该拦的」（S3）。
 AUDIO_REQUIRED = ("interview",)
 
-VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".flv", ".ts", ".avi")
+#: `.ogv`：Wikimedia Commons 的老视频多是 Ogg Theora，ffmpeg 解得了；不在表里时直链会交给 yt-dlp，
+#: 落盘后又认不出产物（D140）
+VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".flv", ".ts", ".avi", ".ogv")
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
 
 #: 直链判定用的后缀：命中就 curl（不经 yt-dlp），否则交给 yt-dlp 解析页面。
@@ -611,7 +613,12 @@ def _fetch_one(no: int, c: dict, *, dry_run: bool) -> None:
         proc = subprocess.run(argv)
         if proc.returncode == 0:
             made = [f for f in dest.iterdir() if f.stem.startswith(slug) and f.suffix.lower() in VIDEO_EXT + IMAGE_EXT]
-            rel = str(made[0]) if made else str(dest)
+            if not made:
+                # D140：退出码 0 不等于抓成。认不出产物时曾把 incoming/ 目录本身写进台账，回执照报「落盘」
+                last_err = f"{pick_fetcher(url)} 退出码 0，但 incoming/ 里没有以「{slug}」开头的视频或图片文件"
+                print(f"  该源失败（{last_err}）" + ("，换备选源" if url != urls[-1] else ""))
+                continue
+            rel = str(made[0])
             entries.append({"url": url, "title": c["title"], "type": c["type"],
                             "source": c["source"], "candidate": no, "file": rel,
                             "as": None, "why": c["why"],

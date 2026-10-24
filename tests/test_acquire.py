@@ -616,6 +616,81 @@ class TestFetchBatch:
         assert "acquire forget <候选号>" in capsys.readouterr().out
 
 
+class TestFetchProductD140:
+    """D140：`.ogv` 直链认作视频；下载工具退出 0 却认不出产物时按该源失败，不把 incoming/ 目录写进台账。"""
+
+    @pytest.fixture
+    def repo(self, tmp_path, monkeypatch):
+        import json as J
+
+        from pipeline import paths
+
+        data = tmp_path / "data"
+        (data / "episodes").mkdir(parents=True)
+        inc = data / "library" / "incoming"
+        inc.mkdir(parents=True)
+        cands = [
+            {"title": "夕阳", "url": "https://upload.example.org/Sunset-nuages.ogv", "type": "live",
+             "source": "测试", "why": "D140"},
+            {"title": "怪产物", "url": "https://cdn.example.com/x.mp4", "type": "live",
+             "source": "测试", "why": "D140", "also": ["https://cdn2.example.com/y.mp4"]},
+            {"title": "只有怪产物", "url": "https://cdn.example.com/z.mp4", "type": "live",
+             "source": "测试", "why": "D140"},
+        ]
+        (inc / "candidates.json").write_text(J.dumps(cands, ensure_ascii=False), encoding="utf-8")
+        (inc / "fetched.json").write_text("[]", encoding="utf-8")
+        _mark_checked(inc, cands)
+        monkeypatch.setattr(paths, "DATA", data)
+        return inc
+
+    @staticmethod
+    def _fake_run(odd_hosts=()):
+        """curl 支路：-o 后是完整落盘路径；odd_hosts 命中时退出 0 但落一个认不出的后缀。"""
+        import subprocess
+        from pathlib import Path
+
+        def fake(argv, *a, **k):
+            out = Path(argv[argv.index("-o") + 1])
+            if any(h in argv[-1] for h in odd_hosts):
+                out = out.with_suffix(".part")
+            out.write_bytes(b"\0")
+            return subprocess.CompletedProcess(argv, 0)
+        return fake
+
+    def _ledger(self, repo):
+        import json as J
+
+        return J.loads((repo / "fetched.json").read_text(encoding="utf-8"))
+
+    def test_ogv直链走curl_台账记的是文件(self, repo, monkeypatch):
+        from pathlib import Path
+
+        ran: list[list[str]] = []
+        fake = self._fake_run()
+        monkeypatch.setattr(A.subprocess, "run", lambda argv, *a, **k: (ran.append(list(argv)), fake(argv))[1])
+        assert A.cmd_fetch(1) == 0
+        assert ran[0][0] == "curl"
+        f = Path(self._ledger(repo)[0]["file"])
+        assert f.is_file() and f.name == "夕阳.ogv"
+        assert A.kind_of(f.name) == "video"
+
+    def test_退出0但认不出产物_换备选源(self, repo, monkeypatch, capsys):
+        from pathlib import Path
+
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(odd_hosts=("cdn.example.com/x",)))
+        assert A.cmd_fetch(2) == 0
+        led = self._ledger(repo)
+        assert len(led) == 1 and led[0]["url"] == "https://cdn2.example.com/y.mp4"
+        assert Path(led[0]["file"]).is_file()
+        assert "没有以「怪产物」开头的视频或图片文件" in capsys.readouterr().out
+
+    def test_退出0但认不出产物_全部源如此就算没抓成_台账不加(self, repo, monkeypatch, capsys):
+        monkeypatch.setattr(A.subprocess, "run", self._fake_run(odd_hosts=("cdn.example.com/z",)))
+        assert A.cmd_fetch(3) == 1
+        assert self._ledger(repo) == []
+        assert "全部 1 个源都没抓成" in capsys.readouterr().out
+
+
 class TestAlsoSchema:
     def test_合法备选源收进清单(self):
         raw = """[{"title": "t", "url": "https://a.com/x", "type": "mv", "source": "s",
