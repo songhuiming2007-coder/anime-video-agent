@@ -1968,23 +1968,10 @@ def _tool_web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 def _keep_record(res: dict[str, Any], kind: str, url: str, ctx: ToolContext) -> dict[str, Any]:
-    """D99：抓到的全文留档，返回值换成记录号——全文不进 LLM（它看的仍是截断版 text / markdown）。"""
-    from pipeline.agent import fetch_log
+    """D99：抓到的全文留档（实现在 `pipeline.agent.fetch.keep_record`，D136 起与系统当场抓、命令行共用）。"""
+    from pipeline.agent.fetch import keep_record
 
-    full = res.pop("full_text", None)
-    # D100：截帽前的完整图片 / 链接列表只进留档，不进 LLM
-    full_images = res.pop("full_images", None)
-    full_links = res.pop("full_links", None)
-    if isinstance(full, str):
-        # 留档失败不连累抓取本身，但要让模型看见：之后 fact_add 会如实报「这页没有留档」
-        try:
-            res["fetch_record"] = fetch_log.record(url=url, final_url=res.get("final_url") or res.get("url"),
-                                                   kind=kind, text=full, sid=ctx.session_id, root=ctx.root,
-                                                   images=full_images, links=full_links)
-        except (ValueError, OSError) as exc:
-            res["fetch_record"] = None
-            res["fetch_record_error"] = f"抓取留档失败：{exc}"
-    return res
+    return keep_record(res, kind, url, sid=ctx.session_id, root=ctx.root, origin="session")
 
 
 def _tool_fact_add(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

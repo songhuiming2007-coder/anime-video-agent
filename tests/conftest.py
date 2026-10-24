@@ -68,3 +68,21 @@ if os.environ.get("AVA_KI_AS_FAILURE") == "1":
             raise AssertionError(
                 f"{item.nodeid}：测试体内逃逸了 KeyboardInterrupt（中断语义被打穿）"
             ) from exc
+
+
+@pytest.fixture(autouse=True)
+def _no_system_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """D136：出处页没留档时 `acquire check` / `fact_add` 会由系统当场抓。测试一律不出网——这里把
+    当场抓的入口换成直接失败（走「抓取也失败」分支）；要测当场抓本身的用例显式注入 fetcher，
+    测 `fetch_and_record` 的用例标 `@pytest.mark.real_fetch_and_record`（它们给的是替身 opener / crawl_fn）。"""
+    if request.node.get_closest_marker("real_fetch_and_record"):
+        return
+    from pipeline.agent import fetch as fetch_mod
+
+    def refuse(url, **kw):
+        raise ValueError("测试里不出网")
+    monkeypatch.setattr(fetch_mod, "fetch_and_record", refuse)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "real_fetch_and_record: 不替换 pipeline.agent.fetch.fetch_and_record（D136）")
