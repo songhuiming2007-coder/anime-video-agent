@@ -10,7 +10,7 @@
         → 复用 `ingest.register`（登记前强制过 intact）+ 落到 sources.json；
           不给 --as 自动取池里下一个号，图片自动转 12 s 微动视频（D59；D84 由 6 s 改 12 s）
     python -m pipeline.acquire register <文件> --to-patch <期目录>   # 挪进本期 patch_assets/
-    python -m pipeline.acquire forget <候选号>                       # 台账移走一条，好重抓
+    python -m pipeline.acquire forget <候选号|incoming 里的文件>     # 台账移走一条，好重抓
 
 这些命令由 agent 经 `run_pipeline` 发：gate 只读免卡，其余弹卡，人只批卡不敲命令（D59）。
 
@@ -825,22 +825,33 @@ def cmd_to_patch(file: Path, episode: Path) -> int:
     return 0
 
 
-def cmd_forget(no: int) -> int:
+def cmd_forget(target: int | str) -> int:
     """从抓取台账移走候选 #no 的记录，好让同一条重抓（`fetch` 按台账与文件名查重）。
 
-    不删任何东西：记录追加进 `incoming/forgotten.json`，没登记的下载文件挪进
+    `target` 是候选号，或 incoming/ 里的文件路径（D138：截图不走候选表，台账条目没有候选号，
+    截歪了只能按文件撤）。不删任何东西：记录追加进 `incoming/forgotten.json`，没登记的下载文件挪进
     `incoming/attic/<时间>/`。已登记进池或已挪进补丁池的拒——那份文件还在用。
     """
     import datetime
 
     entries = ledger_load()
-    hits = [e for e in entries if e.get("candidate") == no]
+    by_file = not (isinstance(target, int) or str(target).isdigit())
+    want = Path(target).expanduser().resolve() if by_file else None
+    no = None if by_file else int(target)
+    label = f"文件 {want.name}" if want else f"候选 #{no}"
+
+    def hit(e: dict) -> bool:
+        if want:
+            return bool(e.get("file")) and Path(e["file"]).expanduser().resolve() == want
+        return e.get("candidate") == no
+
+    hits = [e for e in entries if hit(e)]
     if not hits:
-        raise SystemExit(f"FAIL 台账里没有候选 #{no} 的抓取记录")
+        raise SystemExit(f"FAIL 台账里没有{label}的抓取记录")
     used = [e for e in hits if e.get("as") or e.get("to_patch")]
     if used:
         e = used[0]
-        raise SystemExit(f"FAIL 候选 #{no} 已{'登记为 ' + e['as'] if e.get('as') else '挪进 ' + e['to_patch'] + ' 的补丁池'}，"
+        raise SystemExit(f"FAIL {label} 已{'登记为 ' + e['as'] if e.get('as') else '挪进 ' + e['to_patch'] + ' 的补丁池'}，"
                          f"文件还在用；重抓前人先决定怎么处理那一份")
     inc = incoming()
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -857,8 +868,8 @@ def cmd_forget(no: int) -> int:
             print(f"  下载文件挪走：{f.name} → attic/{stamp}/")
         log.append({**e, "forgotten_at": stamp, "moved_to": moved})
     paths.atomic_write(log_path, json.dumps(log, ensure_ascii=False, indent=2))
-    ledger_save([e for e in entries if e.get("candidate") != no])
-    print(f"  台账移走候选 #{no}（{len(hits)} 条，留痕 incoming/forgotten.json）；可以重新走抓取卡")
+    ledger_save([e for e in entries if not hit(e)])
+    print(f"  台账移走{label}（{len(hits)} 条，留痕 incoming/forgotten.json）；可以重新走抓取卡")
     return 0
 
 
@@ -909,7 +920,7 @@ def main() -> None:
     ck.add_argument("no", help="候选号：1 / 1,3,5 / all")
 
     fg = sub.add_parser("forget", help="台账移走一条抓取记录，好重抓（不删文件，挪进 attic）")
-    fg.add_argument("no", type=int, help="候选号")
+    fg.add_argument("no", help="候选号，或 incoming/ 里的文件路径（截图条目没有候选号，按文件撤，D138）")
 
     a = ap.parse_args()
     if a.cmd == "gate":

@@ -302,6 +302,7 @@ def test_forget_已登记的拒(repo: Path):
     "acquire register data/library/incoming/x.mp4 --pool EGOIST",
     "acquire register x.png --to-patch data/episodes/01",
     "acquire forget 3",
+    "acquire forget data/library/incoming/shot-x.png",
 ])
 def test_ao1_acquire新子命令放行(command: str):
     ok, msg, _argv = validate_pipeline_command(command)
@@ -642,3 +643,36 @@ def test_d102_cloud_connect逐条弹卡不给本会话批准(repo: Path):
     assert v.action == "ask" and v.allow_key is None
     up = _review("cloud up --mode gpu", ep)
     assert up.action == "ask" and up.allow_key == "run_pipeline:cloud up"
+
+
+def test_forget_按文件撤截图条目_同一文件名不误伤候选(repo: Path):
+    """D138：截图条目没有候选号，只能按文件撤；按文件撤不碰别的条目。"""
+    inc = repo / "data/library/incoming"
+    shot, dl = inc / "shot-a.png", inc / "dl.mp4"
+    shot.write_bytes(b"png")
+    dl.write_bytes(b"mp4")
+    _set_ledger(repo, [{"url": "u1", "candidate": None, "file": str(shot), "as": None, "source": "screenshot"},
+                       {"url": "u2", "candidate": 1, "file": str(dl), "as": None},
+                       {"url": "u3", "candidate": None, "file": str(inc / "shot-b.png"), "as": None}])
+    assert A.cmd_forget(str(shot)) == 0
+    assert [e["url"] for e in _ledger(repo)] == ["u2", "u3"] and dl.exists(), "别的截图条目同样没有候选号，不能一起撤"
+    moved = list((inc / "attic").rglob("shot-a.png"))
+    assert len(moved) == 1 and not shot.exists()
+    log = json.loads((inc / "forgotten.json").read_text(encoding="utf-8"))
+    assert log[0]["url"] == "u1" and log[0]["moved_to"] == str(moved[0])
+
+
+def test_forget_按文件_没有记录或已登记都拒(repo: Path):
+    inc = repo / "data/library/incoming"
+    _set_ledger(repo, [{"url": "u", "candidate": None, "file": str(inc / "shot-b.png"), "as": "SP09"}])
+    with pytest.raises(SystemExit, match="没有文件 shot-c.png"):
+        A.cmd_forget(str(inc / "shot-c.png"))
+    with pytest.raises(SystemExit, match="SP09"):
+        A.cmd_forget(str(inc / "shot-b.png"))
+    assert len(_ledger(repo)) == 1
+
+
+def test_forget_候选号字符串与整数同义(repo: Path):
+    """命令行传进来是字符串「1」，要按候选号走，不能当成文件名。"""
+    _set_ledger(repo, [{"url": "u1", "candidate": 1, "file": "x", "as": None}])
+    assert A.cmd_forget("1") == 0 and _ledger(repo) == []
