@@ -5,6 +5,8 @@
 
 1. 出处：`found_on` 在抓取留档（`pipeline/agent/fetch_log.py`）里有记录，且 `url` 出现在那页的图片列表、
    链接列表或正文里；`url == found_on` 时只要求这页本身抓过。跨会话都算（与 D99 人定口径一致）。
+   D136：found_on 页没有留档时由系统当场抓一次（静态，失败升级无头渲染）再比对，谁提的候选都一样；
+   报告照实标出留档来源（AVA 会话里抓 / 系统当场抓 / 命令行抓）。
 2. 可得性：视频页走 `yt-dlp -J`（复用 `acquire.probe_argv`）；直链图片只取前 IMAGE_HEAD_BYTES 读宽高；
    其他直链看 HTTP 头。读不出尺寸写「尺寸未知」，不猜。
 3. 授权：只有 Wikimedia 走 imageinfo API；其余一律「未核实」。模型写的授权不进表。
@@ -71,20 +73,30 @@ def _cmp_url(url: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(q)))
 
 
-def check_provenance(c: dict, *, root: Path | None) -> dict[str, Any]:
-    """→ {ok, detail, record, ts}。只读抓取留档，不出网。"""
+def check_provenance(c: dict, *, root: Path | None,
+                     fetcher: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+    """→ {ok, detail, record, ts, origin}。found_on 页没有留档、且给了 fetcher 时先当场抓（D136），否则只读留档。
+
+    fetcher(url) → None = 已抓到并留档；字符串 = 抓不到的原因。
+    """
     from pipeline.agent import fetch_log
 
     found_on = str(c.get("found_on") or "").strip()
     if not found_on:
         return {"ok": False, "detail": "出处未登记（没有 found_on）", "record": None, "ts": None}
     entries = fetch_log.lookup(found_on, root=root)
+    fetch_error = None
+    if not entries and fetcher is not None:
+        fetch_error = fetcher(found_on)
+        entries = fetch_log.lookup(found_on, root=root)
     if not entries:
-        return {"ok": False, "detail": f"found_on 页没有抓取留档：{found_on}", "record": None, "ts": None}
+        why = f"；系统当场抓取也失败：{fetch_error}" if fetch_error else ""
+        return {"ok": False, "detail": f"found_on 页没有抓取留档：{found_on}{why}", "record": None, "ts": None}
     want = _cmp_url(c["url"])
     if want == _cmp_url(found_on):
         e = entries[0]
-        return {"ok": True, "detail": "链接本身抓过", "record": e.get("id"), "ts": e.get("ts")}
+        return {"ok": True, "detail": "链接本身抓过", "record": e.get("id"), "ts": e.get("ts"),
+                "origin": fetch_log.origin_label(e)}
     for e in entries:
         try:
             refs = fetch_log.read_refs(e, root=root)
@@ -93,9 +105,10 @@ def check_provenance(c: dict, *, root: Path | None) -> dict[str, Any]:
             continue
         urls = {_cmp_url(r.get("url", "")) for r in refs["images"] + refs["links"]}
         if want in urls or str(c["url"]).strip() in text:
-            return {"ok": True, "detail": "链接在出处页上", "record": e.get("id"), "ts": e.get("ts")}
+            return {"ok": True, "detail": "链接在出处页上", "record": e.get("id"), "ts": e.get("ts"),
+                    "origin": fetch_log.origin_label(e)}
     return {"ok": False, "detail": "url 不在 found_on 页的图片、链接或正文里", "record": entries[0].get("id"),
-            "ts": entries[0].get("ts")}
+            "ts": entries[0].get("ts"), "origin": fetch_log.origin_label(entries[0])}
 
 
 # ---------------------------------------------------------------- 可得性
@@ -259,8 +272,8 @@ def verdict_of(prov: dict, m: dict, gate: str | None) -> tuple[str, list[str]]:
 
 
 def check_one(no: int, c: dict, *, root: Path | None, run: Runner, ytdlp=None, cookies_for=None,
-              now: str | None = None) -> dict[str, Any]:
-    prov = check_provenance(c, root=root)
+              now: str | None = None, fetcher: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+    prov = check_provenance(c, root=root, fetcher=fetcher)
     m = measure(c, run, ytdlp=ytdlp, cookies_for=cookies_for)
     gate = gate_reject(c, m) if m.get("ok") else None
     verdict, reasons = verdict_of(prov, m, gate)
@@ -279,12 +292,18 @@ def _now() -> str:
 
 
 def check_batch(pairs: list[tuple[int, dict]], *, root: Path | None, run: Runner | None = None,
-                ytdlp=None, cookies_for=None, workers: int = CHECK_WORKERS) -> list[dict[str, Any]]:
-    """逐条核对，结果按输入顺序。run 缺省时现取模块级 default_run。"""
+                ytdlp=None, cookies_for=None, workers: int = CHECK_WORKERS,
+                fetcher: Callable[[str], str | None] | None = None) -> list[dict[str, Any]]:
+    """逐条核对，结果按输入顺序。run 缺省时现取模块级 default_run；fetcher 缺省时用系统当场抓取
+    （`pipeline.agent.fetch.system_fetcher`，同一页一批只抓一次）。"""
     run = run or default_run
+    if fetcher is None:
+        from pipeline.agent.fetch import system_fetcher
+        fetcher = system_fetcher(root)
     now = _now()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(check_one, no, c, root=root, run=run, ytdlp=ytdlp, cookies_for=cookies_for, now=now)
+        futs = [pool.submit(check_one, no, c, root=root, run=run, ytdlp=ytdlp, cookies_for=cookies_for, now=now,
+                            fetcher=fetcher)
                 for no, c in pairs]
         return [f.result() for f in futs]
 
@@ -366,7 +385,8 @@ def render_table(rows: list[tuple[dict, dict]]) -> str:
         lic_s = (f"{lic.get('short') or '无授权字段'}（{lic.get('artist') or '作者未列'}，Wikimedia API）"
                  if lic else "未核实")
         prov = r.get("provenance") or {}
-        prov_s = f"{prov.get('found_on') or '未登记'}" + (f"（抓取 {prov['ts']}）" if prov.get("ts") else "")
+        prov_s = f"{prov.get('found_on') or '未登记'}" + (
+            f"（{prov.get('origin') or 'AVA 会话里抓'}，抓取 {prov['ts']}）" if prov.get("ts") else "")
         # reasons 本身以结论名打头、按优先级排（verdict_of），第一条就是结论
         verdict = "；".join(r["reasons"]) if r["reasons"] else r["verdict"]
         lines.append("| " + " | ".join(_cell(x) for x in (

@@ -14,6 +14,7 @@
 用法（人用的子命令；`promote` 进人工门禁，ava 的 bash 碰它弹卡）：
     python -m pipeline.facts check <目录>                  # 按留档重做每条校验；手改过的条目在这里现形
     python -m pipeline.facts render <目录>                 # 重新生成 facts.md
+    python -m pipeline.facts add <目录> <条目.json> [--caller claude-code]   # 别的 agent 写事实（D136）
     python -m pipeline.facts promote <目录> --level 一手 (--ids F001,F003 | --url <URL>)
 """
 
@@ -28,7 +29,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from pipeline import paths
@@ -77,12 +78,23 @@ def check_excerpt(excerpt: str, text: str) -> tuple[str, str]:
 _RANK = {"exact": 0, "approx": 1, "none": 2}
 
 
-def _verify(url: str, excerpts: list[str], root: Path | None) -> dict[str, Any]:
-    """每条摘录在该 URL 任一份留档里取最好的命中；整条取最差的那条摘录。人裁决：跨会话的留档也算。"""
+def _verify(url: str, excerpts: list[str], root: Path | None,
+            fetcher: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+    """每条摘录在该 URL 任一份留档里取最好的命中；整条取最差的那条摘录。人裁决：跨会话的留档也算。
+
+    D136：给了 fetcher（写入时）且这个 URL 没有留档，先由系统当场抓一次再比对；重做校验（check / promote）
+    不给，只认已有留档。
+    """
     records = fetch_log.lookup(url, root=root) if url else []
+    fetch_error = None
+    if not records and url and fetcher is not None:
+        fetch_error = fetcher(url)
+        records = fetch_log.lookup(url, root=root)
     if not records:
-        return {"match": "none", "record": None, "excerpts": [],
-                "reason": "这个 URL 没有抓取留档：先用 web_fetch / crawl / browser 打开它，再写这条"}
+        reason = ("这个 URL 没有抓取留档，系统当场抓取也失败：" + fetch_error
+                  + "；要登录态的页先用 AVA 的 browser 或 `python -m pipeline.agent.fetch <url> --browser` 抓一次"
+                  if fetch_error else "这个 URL 没有抓取留档：先用 web_fetch / crawl / browser 打开它，再写这条")
+        return {"match": "none", "record": None, "excerpts": [], "reason": reason}
     texts = []
     for r in records:
         try:
@@ -95,9 +107,11 @@ def _verify(url: str, excerpts: list[str], root: Path | None) -> dict[str, Any]:
     for ex in excerpts:
         best = min(((check_excerpt(ex, t), r) for r, t in texts), key=lambda x: _RANK[x[0][0]])
         (match, near), rec = best
-        per.append({"match": match, "record": rec["id"], **({"near": near} if match != "exact" else {})})
+        per.append({"match": match, "record": rec["id"], "origin": fetch_log.origin_label(rec),
+                    **({"near": near} if match != "exact" else {})})
     worst = max(per, key=lambda p: _RANK[p["match"]])["match"] if per else "none"
-    return {"match": worst, "record": per[0]["record"] if per else None, "excerpts": per,
+    return {"match": worst, "record": per[0]["record"] if per else None,
+            "origin": per[0]["origin"] if per else None, "excerpts": per,
             **({} if per else {"reason": "没有原文摘录"})}
 
 
@@ -150,11 +164,18 @@ def _validate(raw: Any) -> dict[str, Any]:
             "proposed_level": proposed, "topic": str(raw.get("topic") or "").strip()}
 
 
-def add(raw_entries: list[Any], *, target: Path, sid: str | None, root: Path | None = None) -> dict[str, Any]:
-    """校验并追加事实条目；逐条回执。整批在 facts.lock 内完成（编号不撞）。"""
+def add(raw_entries: list[Any], *, target: Path, sid: str | None, root: Path | None = None,
+        fetcher: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+    """校验并追加事实条目；逐条回执。整批在 facts.lock 内完成（编号不撞）。
+
+    出处 URL 没有留档时由系统当场抓（D136，fetcher 缺省用 `pipeline.agent.fetch.system_fetcher`）。
+    """
     target = Path(target)
     if not target.is_dir():
         raise ValueError(f"事实库所在目录不存在：{target}")
+    if fetcher is None:
+        from pipeline.agent.fetch import system_fetcher
+        fetcher = system_fetcher(root)
     results: list[dict[str, Any]] = []
     lock = target / "facts.lock"
     with lock.open("a", encoding="utf-8") as lf:
@@ -168,7 +189,7 @@ def add(raw_entries: list[Any], *, target: Path, sid: str | None, root: Path | N
                 except ValueError as exc:
                     results.append({"ok": False, "error": str(exc)})
                     continue
-                check = _verify(e["url"], e["excerpts"], root)
+                check = _verify(e["url"], e["excerpts"], root, fetcher=fetcher)
                 n += 1
                 entry = {"id": f"F{n:03d}", **e, "level": _level_for(e["proposed_level"], check["match"]),
                          "level_by": "system", "check": check,
@@ -247,8 +268,8 @@ def promote(target: Path, *, level: str, ids: list[str] | None = None, url: str 
 def render(target: Path) -> Path:
     """facts.jsonl → facts.md（阅读版）。"""
     entries = load(target)
-    lines = ["# 事实库（阅读版）", "", f"> 本文件由 `{FACTS_FILE}` 生成，手改无效。写入用 AVA 的 `fact_add`；一手 / 二手由人用 "
-             "`python -m pipeline.facts promote` 定。", ""]
+    lines = ["# 事实库（阅读版）", "", f"> 本文件由 `{FACTS_FILE}` 生成，手改无效。写入用 AVA 的 `fact_add` 或 "
+             "`python -m pipeline.facts add`；一手 / 二手由人用 `python -m pipeline.facts promote` 定。", ""]
     by_topic: dict[str, list[dict[str, Any]]] = {}
     for e in entries:
         by_topic.setdefault(e.get("topic") or "（未分节）", []).append(e)
@@ -260,7 +281,8 @@ def render(target: Path) -> Path:
             seen = f"（独立核对：{rv}）" if rv in ("部分", "不支持") else ""
             lines.append(f"- **{e['id']}**［{e['level']}］{e['claim']}{mark.get(e['check']['match'], '')}{seen}")
             if e.get("url"):
-                lines.append(f"  - 出处：{e['url']}")
+                origin = (e.get("check") or {}).get("origin")
+                lines.append(f"  - 出处：{e['url']}" + (f"（留档：{origin}）" if origin else ""))
             for ex in e.get("excerpts") or []:
                 lines.append(f"  > {ex}")
         lines.append("")
@@ -274,6 +296,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("check", "render"):
         sub.add_parser(name).add_argument("target", type=Path)
+    # D136：别的 agent（Claude Code 等）写事实的入口，校验与 fact_add 同一套（出处页没留档就当场抓）
+    pa = sub.add_parser("add")
+    pa.add_argument("target", type=Path, help="卷 / 期 / 企划目录")
+    pa.add_argument("entries", type=Path, help="JSON 数组文件，每条 {claim, url, excerpts, proposed_level?, topic?}")
+    pa.add_argument("--caller", default="cli", help="调用方标签，记进条目的 sid（如 claude-code）")
     p = sub.add_parser("promote")
     p.add_argument("target", type=Path)
     p.add_argument("--level", required=True, choices=HUMAN_LEVELS)
@@ -289,6 +316,15 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "render":
         print(render(a.target))
         return 0
+    if a.cmd == "add":
+        raw = json.loads(a.entries.read_text(encoding="utf-8"))
+        if not isinstance(raw, list) or not raw:
+            print("FAIL entries 文件必须是非空 JSON 数组", file=sys.stderr)
+            return 2
+        out = add(raw, target=a.target, sid=f"cli:{a.caller.strip() or 'cli'}")
+        for r in out["results"]:
+            print(f"{r['id']} ［{r['level']}］{r['match']}　{r['hint']}" if r["ok"] else f"FAIL {r['error']}")
+        return 0 if all(r["ok"] for r in out["results"]) else 1
     ids = [x.strip() for x in a.ids.split(",")] if a.ids else None
     done = promote(a.target, level=a.level, ids=ids, url=a.url)
     print(f"已升为「{a.level}」：{', '.join(done) or '无（只升逐字命中的待核条目）'}")

@@ -23,6 +23,12 @@ from urllib.parse import urlsplit, urlunsplit
 from pipeline import paths
 
 KINDS = ("fetch", "crawl", "browser")
+#: D136：谁触发的这次抓取。抓取与落档都是这里和 `pipeline/agent/fetch.py` 的代码做的，来源只决定报告怎么标：
+#: session = AVA 会话里的抓取工具；system = `acquire check` / `fact_add` 发现出处页没留档、当场抓的；
+#: cli = 别的 agent 或人经 `python -m pipeline.agent.fetch` 抓的（caller 记它自报的标签）。
+#: D136 之前的记录没有这个字段，按 session 读（那时只有 AVA 的工具能写）
+ORIGINS = ("session", "system", "cli")
+ORIGIN_LABELS = {"session": "AVA 会话里抓", "system": "系统当场抓", "cli": "命令行抓"}
 
 
 def _data_root(root: Path | None) -> Path:
@@ -45,7 +51,7 @@ def norm_url(url: str) -> str:
 
 def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | None,
            root: Path | None = None, images: list[dict] | None = None,
-           links: list[dict] | None = None) -> str:
+           links: list[dict] | None = None, origin: str = "session", caller: str | None = None) -> str:
     """落一份全文 + index 一行，返回记录号。
 
     D100：`images` / `links` 是页面里截帽前的完整图片与链接列表（各项至少有 `url`），给了就另存
@@ -54,6 +60,8 @@ def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | 
     """
     if kind not in KINDS:
         raise ValueError(f"未知抓取类型 {kind!r}")
+    if origin not in ORIGINS:
+        raise ValueError(f"未知抓取来源 {origin!r}")
     base = log_dir(root)
     key = hashlib.sha256(norm_url(final_url or url).encode("utf-8")).hexdigest()[:16]
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -64,7 +72,8 @@ def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | 
     entry = {
         "id": rid, "url": url, "final_url": final_url or url, "kind": kind, "sid": sid, "ts": ts,
         "chars": len(text), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "file": str(file.relative_to(base)),
+        "file": str(file.relative_to(base)), "origin": origin,
+        **({"caller": caller} if caller else {}),
     }
     if images is not None or links is not None:
         refs_file = base / key / f"{ts}-{kind}.refs.json"
@@ -80,6 +89,13 @@ def record(*, url: str, final_url: str | None, kind: str, text: str, sid: str | 
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
     return rid
+
+
+def origin_label(entry: dict[str, Any]) -> str:
+    """报告里怎么标这份留档的来源（D136 ③）。"""
+    origin = entry.get("origin") or "session"
+    label = ORIGIN_LABELS.get(origin, origin)
+    return f"{label}（{entry['caller']}）" if entry.get("caller") else label
 
 
 def lookup(url: str, *, sid: str | None = None, root: Path | None = None) -> list[dict[str, Any]]:
