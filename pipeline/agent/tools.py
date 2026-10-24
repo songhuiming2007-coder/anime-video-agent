@@ -792,7 +792,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "写入当期稿件文件（白名单见 filename）。写 01-topic.md 必须 confirmed=true 且需人显式确认。"
             "02-script.md 还不存在时写 02-script.draft.md；02-script.md 存在后只改 02-script.md（草稿冻结），"
-            "不弹卡，写前旧版自动留底；写之前先问人（人已说清怎么改的直接写）。改已有文件的一两段时用 edits 只传改动的片段，不要整篇重写。"
+            "不弹卡，写前旧版自动留底；写之前先问人（人已说清怎么改的直接写）。改已有文件的一两段时用 edits 只传改动的片段，不要整篇重写；02-script.md 存在后只收 edits。"
         ),
         "parameters": {
             "type": "object",
@@ -802,7 +802,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "enum": sorted(EPISODE_WRITABLE_FILES | PROJECT_WRITABLE_FILES),
                     "description": "白名单内的文件名；00-project.md 只在企划会话里可写（改卷表 / 企划名 / 合集会弹卡）",
                 },
-                "content": {"type": "string", "description": "完整文件内容（新建或整篇重写；与 edits 二选一）"},
+                "content": {"type": "string", "description": "完整文件内容（新建或整篇重写；与 edits 二选一；已存在的 02-script.md 不收）"},
                 "edits": {
                     "type": "array",
                     "description": (
@@ -951,7 +951,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "anime": {"type": "string", "description": "番名（与 sources.json / 笔记文件名一致）"},
                 "target": {"type": "string", "enum": list(NOTE_TARGETS), "description": "notes=笔记本体；review=审查报告终审表"},
                 "report": {"type": "string", "description": "target=review 时：报告文件名，如 罪恶王冠-对抗审查报告-2026-10-09.md"},
-                "content": {"type": "string", "description": "完整内容（新建或整篇重写；与 edits 二选一）"},
+                "content": {"type": "string", "description": "完整内容（新建或整篇重写；与 edits 二选一；已存在的笔记本体不收）"},
                 "edits": {
                     "type": "array",
                     "description": "局部替换（与 content 二选一）：按顺序把 old 换成 new；每个 old 必须恰好出现一次",
