@@ -2052,43 +2052,10 @@ def _tool_browser(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 def _save_screenshot(res: dict[str, Any], reason: str, name: str, ctx: ToolContext) -> dict[str, Any]:
-    """D122：PNG 落 incoming/、写抓取留档（页面全文，kind=browser）、台账记一条 scan，回执不带图片字节。"""
-    import datetime
-    import io
+    """D122：落盘、留档、台账（实现在 `pipeline.agent.screenshot.save_screenshot`，D138 起与命令行共用）。"""
+    from pipeline.agent.screenshot import save_screenshot
 
-    from PIL import Image
-
-    from pipeline import candidates
-    from pipeline.still_geometry import STILL_MAX_MAGNIFY, still_peak_magnify
-
-    png = res.pop("png")
-    with Image.open(io.BytesIO(png)) as im:
-        size = im.size
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = candidates.incoming() / f"shot-{candidates.slugify(name or res.get('title') or 'page')}-{stamp}.png"
-    dest.write_bytes(png)
-    page_url = str(res.get("final_url") or res.get("url") or "")
-    res = _keep_record(res, "browser", page_url, ctx)
-    entries = candidates.ledger_load()
-    entries.append({"url": page_url, "title": name or res.get("title") or dest.stem, "type": "scan",
-                    "source": "screenshot", "candidate": None, "file": str(dest), "as": None, "why": reason,
-                    "fetch_record": res.get("fetch_record"),
-                    "element_text": str(res.get("element_text") or "")[:500]})
-    candidates.ledger_save(entries)
-    mag = still_peak_magnify(size)
-    return {
-        "action": "screenshot",
-        "file": str(dest),
-        "size": list(size),
-        "css_size": res.get("css_size"),
-        "magnify": round(mag, 2),
-        "gate": "PASS" if mag <= STILL_MAX_MAGNIFY else f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）",
-        "final_url": page_url,
-        "title": res.get("title"),
-        "element_text": str(res.get("element_text") or "")[:200],
-        "fetch_record": res.get("fetch_record"),
-        **({"fetch_record_error": res["fetch_record_error"]} if "fetch_record_error" in res else {}),
-    }
+    return save_screenshot(res, reason, name, sid=ctx.session_id, root=ctx.root, origin="session")
 
 
 def memory_store_for(

@@ -143,3 +143,56 @@ def test_窄截图回执直说门禁会拒(root, monkeypatch):
     out = _tool_browser({"action": "screenshot", "url": "https://example.com/", "selector": "table",
                          "reason": "x"}, ToolContext(root=root))
     assert out["gate"].startswith("FAIL：入池要放大")
+
+
+# ---------------------------------------------------------------- D138：命令行截图
+
+
+def test_命令行截图_落盘留档台账_记命令行与调用方(root):
+    from pipeline.agent import fetch_log
+    from pipeline.agent import screenshot as S
+
+    out = S.shoot("https://example.com/rank", reason="证段 42 的周榜名次", text="週間5位", name="ORICON",
+                  caller="claude-code", root=root, launch_fn=_launcher(_ShotSession(), []))
+    f = Path(out["file"])
+    assert f.is_file() and f.parent == root / "data" / "library" / "incoming"
+    led = json.loads((root / "data" / "library" / "incoming" / "fetched.json").read_text(encoding="utf-8"))
+    assert led[-1]["file"] == str(f) and led[-1]["source"] == "screenshot" and led[-1]["caller"] == "claude-code"
+    assert led[-1]["why"] == "证段 42 的周榜名次"
+    e = fetch_log.lookup("https://example.com/rank", root=root)[0]
+    assert e["id"] == out["fetch_record"] and e["origin"] == "cli" and e["caller"] == "claude-code"
+
+
+def test_命令行截图_expect_text不在图里_不落盘不进台账(root):
+    from pipeline.agent import screenshot as S
+
+    with pytest.raises(ValueError, match="截到的元素里没有"):
+        S.shoot("https://example.com/", reason="x", selector="article", expect_text="好不容易见面就",
+                root=root, launch_fn=_launcher(_ShotSession(element_text="別の話"), []))
+    inc = root / "data" / "library" / "incoming"
+    assert not list(inc.glob("shot-*.png")) and not (inc / "fetched.json").exists()
+
+
+def test_AVA截图仍记会话里抓(root, monkeypatch):
+    from pipeline.agent import fetch_log
+
+    monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), []))
+    _tool_browser({"action": "screenshot", "url": "https://example.com/rank", "text": "週間5位", "reason": "x"},
+                  ToolContext(root=root, session_id="s1"))
+    e = fetch_log.lookup("https://example.com/rank", root=root)[0]
+    assert e["origin"] == "session" and e["sid"] == "s1" and not e.get("caller")
+    led = json.loads((root / "data" / "library" / "incoming" / "fetched.json").read_text(encoding="utf-8"))
+    assert "caller" not in led[-1]
+
+
+@pytest.mark.parametrize("argv", [["https://example.com/", "--reason", "x"],
+                                  ["https://example.com/", "--selector", "a", "--text", "b", "--reason", "x"],
+                                  ["https://example.com/", "--text", "b"]])
+def test_命令行参数_selector与text恰好一个_reason必填(root, monkeypatch, argv):
+    """挂上 root 与替身浏览器：参数校验被改坏时也只碰临时目录，不出网、不写真实 data/。"""
+    from pipeline.agent import screenshot as S
+
+    monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(element_text="b"), []))
+    with pytest.raises(SystemExit):
+        S.main(argv)
+    assert not list((root / "data" / "library" / "incoming").glob("shot-*.png"))
