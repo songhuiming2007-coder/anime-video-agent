@@ -8,10 +8,11 @@ D122 给网页截图类物证（官方公告、榜单、认证检索页）开了
 用法：
     python -m pipeline.agent.screenshot <url> (--selector <CSS> | --text <页面上原样出现的一段文字>) \\
         --reason <证明第几段的哪句话> [--expect-text <截图里必须出现的话>] [--name <文件名提示>] \\
-        [--caller claude-code]
+        [--scale 2|3|4] [--caller claude-code]
 
 用 AVA 的独立浏览器 profile（登录态在里面）；AVA 开着浏览器会话时会占用同一 profile，先在 AVA 里关掉或等它空闲。
-截完照常 `acquire gate` → `acquire register`（企划卷进企划池）。
+截完照常 `acquire gate` → `acquire register`（企划卷进企划池）。回执报门禁 FAIL、页面正文栏又窄的，
+加 `--scale 3` 或 `4` 重截：浏览器按更高像素密度排版，字是真清楚（D139）；响应式页面会换成手机版排版。
 """
 
 from __future__ import annotations
@@ -57,7 +58,8 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
         "size": list(size),
         "css_size": res.get("css_size"),
         "magnify": round(mag, 2),
-        "gate": "PASS" if mag <= STILL_MAX_MAGNIFY else f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）",
+        "gate": "PASS" if mag <= STILL_MAX_MAGNIFY else (f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）"
+                                                         "；正文栏窄就加 scale 3 或 4 重截"),
         "final_url": page_url,
         "title": res.get("title"),
         "element_text": str(res.get("element_text") or "")[:200],
@@ -68,12 +70,12 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
 
 def shoot(url: str, *, reason: str, selector: str | None = None, text: str | None = None,
           expect_text: str | None = None, name: str = "", caller: str = "cli", root: Path | None = None,
-          launch_fn: Callable[..., Any] | None = None) -> dict[str, Any]:
+          launch_fn: Callable[..., Any] | None = None, scale: int = 2) -> dict[str, Any]:
     """命令行截图：校验与截图本身同 AVA 的 `browser` 截图（`web_browser.browser_action`），落盘记 origin=cli。"""
     from pipeline.agent.web_browser import browser_action
 
     res = browser_action("screenshot", reason, url=url, selector=selector, text=text, expect_text=expect_text,
-                         launch_fn=launch_fn, root=root, keep_full=True)
+                         launch_fn=launch_fn, root=root, keep_full=True, scale=scale)
     return save_screenshot(res, reason, name, sid=None, root=root, origin="cli", caller=caller)
 
 
@@ -87,11 +89,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reason", required=True, help="这张截图证明第几段的哪句话（写进台账的 why）")
     ap.add_argument("--expect-text", default=None, help="截图里必须出现的话；元素文字里没有就不保存")
     ap.add_argument("--name", default="", help="文件名提示（缺省用页面标题）")
+    ap.add_argument("--scale", type=int, choices=(2, 3, 4), default=2,
+                    help="像素密度倍数（缺省 2）；正文栏窄、门禁预判 FAIL 时用 3 或 4（D139）")
     ap.add_argument("--caller", default="cli", help="调用方标签，记进留档与台账（如 claude-code、pi）")
     a = ap.parse_args(argv)
     try:
         out = shoot(a.url, reason=a.reason, selector=a.selector, text=a.text, expect_text=a.expect_text,
-                    name=a.name, caller=a.caller.strip() or "cli")
+                    name=a.name, caller=a.caller.strip() or "cli", scale=a.scale)
     except ValueError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1

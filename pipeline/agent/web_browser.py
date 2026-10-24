@@ -41,13 +41,20 @@ _ACTIONS = ("navigate", "extract_text", "screenshot")
 # 透传 device_scale_factor 会被拒——Camoufox 伪装窗口尺寸时关掉了固定视口）。只在截图时临时起一个这样的
 # 会话、截完即关，平时浏览的配置与指纹不变；代价是这个会话的视口约 960 CSS 宽（窗口物理尺寸不变）。
 SHOT_PREFS = {"layout.css.devPixelsPerPx": "2.0"}
+# 正文栏窄的页（ナタリー、sleepfreaks、ORICON 新版等，正文 550～900 CSS 宽）两倍密度截出来不到 1840 像素宽，
+# 门禁要放大、会拒；`scale` 3 或 4 让浏览器按更高密度重新排版文字，是真像素，不是放大图片（D139）。
+# 代价：视口按密度缩（2026-10-24 实测 3、4 倍都只剩约 500×130～200 CSS），响应式页面会换成手机版排版。
+SHOT_SCALES = (2, 3, 4)
 # 按文字找元素时，命中的元素太小（一行字）就往上取，宽或高够其中一项就停，带上能看出出处的上下文（CSS 像素）。
 # 往上取不越过视口高度 SHOT_MAX_H_VIEWPORTS 倍的父元素；命中的元素本身就这么高（文字跨了元素边界，只有大容器
 # 才整段包含它）就拒——2026-10-20 实测：维基信息框只有 310 宽，「宽且高」的旧条件一路取到 4065 高的整篇正文
 SHOT_MIN_W, SHOT_MIN_H = 480, 160
 SHOT_MAX_H_VIEWPORTS = 1.5
+# 「一屏半」按的视口高至少取这么多 CSS 像素：两倍密度时实测视口高约 443；密度调高后视口只剩一百多，
+# 不兜底的话 scale 4 下稍长一点的段落都会被当成「跨了几个元素」拒掉（D139）
+SHOT_MIN_VIEWPORT_H = 440
 # 在页面里标出要截的元素：包含这段文字的最深元素，太小就往上取父元素
-_SHOT_PICK_JS = r"""([needle, minW, minH, maxVp]) => {
+_SHOT_PICK_JS = r"""([needle, minW, minH, maxVp, minVpH]) => {
   const norm = s => (s || "").replace(/\s+/g, "");
   const n = norm(needle);
   let best = null;
@@ -58,7 +65,7 @@ _SHOT_PICK_JS = r"""([needle, minW, minH, maxVp]) => {
     if (!best || best.contains(el)) best = el;
   }
   if (!best) return {why: "missing"};
-  const maxH = innerHeight * maxVp;
+  const maxH = Math.max(innerHeight, minVpH) * maxVp;
   const b = best.getBoundingClientRect();
   if (b.height > maxH) return {why: "big", w: Math.round(b.width), h: Math.round(b.height)};
   let el = best;
@@ -282,7 +289,8 @@ class _PlaywrightSessionAdapter:
         page = self._current_page()
         page.goto(url, timeout=ms, wait_until="load")
         if text:
-            pick = page.evaluate(_SHOT_PICK_JS, [text, SHOT_MIN_W, SHOT_MIN_H, SHOT_MAX_H_VIEWPORTS])
+            pick = page.evaluate(_SHOT_PICK_JS, [text, SHOT_MIN_W, SHOT_MIN_H, SHOT_MAX_H_VIEWPORTS,
+                                                 SHOT_MIN_VIEWPORT_H])
             if pick.get("why"):
                 return {"final_url": str(page.url or url), "missing": pick["why"],
                         "css_size": [pick.get("w"), pick.get("h")]}
@@ -521,8 +529,10 @@ def _screenshot_action(
     scope: str,
     trigger: dict[str, Any],
     keep_full: bool,
+    scale: int = 2,
 ) -> dict[str, Any]:
     """D122：关掉当前会话，用同一份 profile（登录态在里面）按 SHOT_PREFS 临时起一个会话截图，截完即关。
+    `scale` 不是 2 时只换像素密度（D139）。
 
     下一次 navigate 自动按平时的配置重启。`expect_text` 给了就核：元素文字里没有这句话 = 截图证明不了要证的事，
     不交 PNG（2026-10-19 卷二段 37：截图里根本没有配音引语，人复核才发现）。
@@ -531,7 +541,8 @@ def _screenshot_action(
     fn = _default_launch_fn if launch_fn is None else launch_fn
     pw_errs = _pw_error_types()
     try:
-        sess = fn(user_data_dir=resolved_profile_dir, headed=cfg.headed, prefs=SHOT_PREFS)
+        prefs = SHOT_PREFS if scale == 2 else {**SHOT_PREFS, "layout.css.devPixelsPerPx": f"{scale}.0"}
+        sess = fn(user_data_dir=resolved_profile_dir, headed=cfg.headed, prefs=prefs)
     except Exception as exc:
         if pw_errs and isinstance(exc, pw_errs):
             raise ValueError(f"browser 截图失败（启动失败: {exc}）") from exc
@@ -602,6 +613,7 @@ def browser_action(
     scope: str = "creative",
     root: Path | None = None,
     keep_full: bool = False,
+    scale: int = 2,
 ) -> dict[str, Any]:
     """流程：action ∈ _ACTIONS 校验 → reason 非空 → load_browser_section →
     navigate：egress 断言 + _guard_url(url)；extract_text：要求会话存活
@@ -640,6 +652,8 @@ def browser_action(
         clean_sel, clean_text = str(selector or "").strip(), str(text or "").strip()
         if bool(clean_sel) == bool(clean_text):
             raise ValueError("action='screenshot' 要给 selector 或 text 其中一个（截哪个区域）")
+        if type(scale) is not int or scale not in SHOT_SCALES:  # 3.0 == 3，会拼出 "3.0.0"
+            raise ValueError(f"screenshot 的 scale 只能是 {'/'.join(map(str, SHOT_SCALES))}（像素密度倍数），收到 {scale!r}")
     if clean_action in ("navigate", "screenshot"):
         if not clean_url:
             raise ValueError(f"action={clean_action!r} 时 url 不能为空")
@@ -664,7 +678,7 @@ def browser_action(
             url=clean_url, selector=clean_sel or None, text=clean_text or None,
             expect_text=str(expect_text or "").strip() or None, cfg=cfg, base_root=base_root,
             resolved_profile_dir=resolved_profile_dir, launch_fn=launch_fn, episode_dir=episode_dir,
-            scope=scope, trigger=trigger_info, keep_full=keep_full,
+            scope=scope, trigger=trigger_info, keep_full=keep_full, scale=scale,
         )
 
     if _SESSION is None:

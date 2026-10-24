@@ -196,3 +196,71 @@ def test_命令行参数_selector与text恰好一个_reason必填(root, monkeypa
     with pytest.raises(SystemExit):
         S.main(argv)
     assert not list((root / "data" / "library" / "incoming").glob("shot-*.png"))
+
+
+# ---------------------------------------------------------------- D139：截图像素密度
+
+
+@pytest.mark.parametrize("scale", [3, 4])
+def test_scale按倍数起截图会话_只换像素密度(root, scale):
+    sess, seen = _ShotSession(), []
+    wb.browser_action("screenshot", "证引语", url="https://example.com/a", text="週間5位", scale=scale,
+                      launch_fn=_launcher(sess, seen), root=root)
+    assert seen[0]["prefs"] == {**wb.SHOT_PREFS, "layout.css.devPixelsPerPx": f"{scale}.0"}
+    assert wb.SHOT_PREFS == {"layout.css.devPixelsPerPx": "2.0"}, "缺省口径不被改写"
+    assert sess.closed
+
+
+@pytest.mark.parametrize("bad", [1, 5, True, "3", 3.0, None])
+def test_scale只收2到4的整数_不起浏览器(root, bad):
+    seen: list[dict[str, Any]] = []
+    with pytest.raises(ValueError, match="scale 只能是 2/3/4"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", text="週間5位", scale=bad,
+                          launch_fn=_launcher(_ShotSession(), seen), root=root)
+    assert not seen
+
+
+def test_命令行scale传到截图会话(root, monkeypatch):
+    from pipeline.agent import screenshot as S
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), seen))
+    assert S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "证段 53", "--scale", "4"]) == 0
+    assert seen[0]["prefs"]["layout.css.devPixelsPerPx"] == "4.0"
+    with pytest.raises(SystemExit):
+        S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "x", "--scale", "5"])
+    assert len(seen) == 1
+
+
+def test_AVA工具scale传到截图会话_不给就是两倍(root, monkeypatch):
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), seen))
+    ctx = ToolContext(root=root, session_id="s1")
+    _tool_browser({"action": "screenshot", "url": "https://example.com/a", "text": "週間5位", "reason": "x", "scale": 3}, ctx)
+    _tool_browser({"action": "screenshot", "url": "https://example.com/b", "text": "週間5位", "reason": "x"}, ctx)
+    assert [s["prefs"]["layout.css.devPixelsPerPx"] for s in seen] == ["3.0", "2.0"]
+
+
+class _PickPage:
+    """只走到按文字挑元素那一步：记下传给页面脚本的参数，回「找不到」。"""
+
+    def __init__(self) -> None:
+        self.url, self.args = "https://example.com/", None
+
+    def goto(self, url: str, **kw: Any) -> None:
+        self.url = url
+
+    def evaluate(self, js: str, args: Any) -> dict[str, Any]:
+        self.js, self.args = js, args
+        return {"why": "missing"}
+
+
+def test_按文字挑元素_一屏半按视口高兜底(monkeypatch):
+    """密度调高后视口只剩一百多 CSS 高，「一屏半」的上限按 SHOT_MIN_VIEWPORT_H 兜底（D139）。"""
+    page = _PickPage()
+    adapter = wb._PlaywrightSessionAdapter.__new__(wb._PlaywrightSessionAdapter)
+    monkeypatch.setattr(adapter, "_current_page", lambda: page, raising=False)
+    out = adapter.screenshot("https://example.com/", selector=None, text="週間5位", timeout_s=5)
+    assert out["missing"] == "missing"
+    assert page.args == ["週間5位", wb.SHOT_MIN_W, wb.SHOT_MIN_H, wb.SHOT_MAX_H_VIEWPORTS, wb.SHOT_MIN_VIEWPORT_H]
+    assert "Math.max(innerHeight, minVpH)" in page.js
