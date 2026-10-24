@@ -1644,3 +1644,139 @@ def test_d131_实例还连得上_是手动开的机_照旧新结算一条(monkey
     rc, rows = _down_no_session(monkeypatch, tmp_path, [_D131_ENTRY], 6.98, reachable=True)
     assert rc == 0 and len(rows) == 2 and rows[0] == _D131_ENTRY
     assert rows[1]["session"].startswith("manual_") and rows[1]["rate_cny"] == 6.98
+
+
+# ---------------------------------------------------------------------------
+# D130：cloud hold / release（配完不关机，2 h 自动释放）
+# ---------------------------------------------------------------------------
+
+
+def _bash(script: str) -> str:
+    return _sp.run(["bash", "-c", script], capture_output=True, text=True, check=False).stdout.strip()
+
+
+def test_d130_看门狗在tmux检查之后_空闲关机之前看保持标记():
+    script = cloud.generate_watchdog_script(hold_path="/root/.ava_hold")
+    loop = script[script.index("while true"):]
+    assert loop.index("grep -q '^ava-'") < loop.index("if hold_active; then") < loop.index("IDLE_LIMIT")
+    assert 'touch "$HEARTBEAT_FILE"\n        continue' in loop[loop.index("if hold_active"):]
+    assert script.index("hold_active() {") < script.index("while true"), "函数要在主循环之前定义"
+
+
+@pytest.mark.parametrize("content,held", [
+    (lambda now: f"{now - 60} {now + 600}\n", True),       # 未到期
+    (lambda now: f"{now - 7200} {now - 1}\n", False),      # 已过期：2 h 自动释放
+    (lambda now: "垃圾内容\n", False),                     # 写坏了按没有处理，照常关机
+    (lambda now: f"{now} \n", False),                      # 缺到期字段
+    (None, False),                                         # 没有标记
+])
+def test_d130_保持判定用真bash跑(tmp_path, content, held):
+    f = tmp_path / "hold"
+    if content is not None:
+        f.write_text(content(int(_time.time())), encoding="utf-8")
+    done = _sp.run(["bash", "-c", cloud.watchdog_hold_function(str(f)) + "\nhold_active && echo HELD || echo FREE"],
+                   capture_output=True, text=True, check=False)
+    assert done.stdout.strip() == ("HELD" if held else "FREE")
+    assert done.stderr == "", "看门狗每 20 秒判一次，写坏的标记不许往 watchdog.log 里刷报错"
+
+
+def test_d130_hold续期保留开始时间_过期后重新起算(tmp_path):
+    f = tmp_path / "hold"
+    first = cloud.parse_hold(_bash(cloud.hold_write_command(7200, hold_path=str(f))))
+    assert first is not None and first[1] - first[2] == 7200 and first[0] == first[2]
+    now = int(_time.time())
+    f.write_text(f"{now - 3000} {now + 100}\n", encoding="utf-8")
+    renewed = cloud.parse_hold(_bash(cloud.hold_write_command(7200, hold_path=str(f))))
+    assert renewed[0] == now - 3000 and renewed[1] - renewed[2] == 7200
+    f.write_text(f"{now - 9000} {now - 10}\n", encoding="utf-8")
+    restarted = cloud.parse_hold(_bash(cloud.hold_write_command(7200, hold_path=str(f))))
+    assert restarted[0] >= now, "过期的标记不算续期"
+
+
+def test_d130_status一行():
+    assert "未保持" in cloud.hold_status_line(None, 6.98)
+    line = cloud.hold_status_line((1000, 1000 + 7200, 1000 + 3600), 6.0)
+    assert "剩余 60 分钟" in line and "已保持 60 分钟" in line and "¥6.00" in line
+    expired = cloud.hold_status_line((1000, 1000 + 7200, 1000 + 7200 + 600), 6.0)
+    assert "已过期 10 分钟" in expired and "共保持 120 分钟" in expired and "¥12.00" in expired
+    assert cloud.parse_hold("") is None and cloud.parse_hold("1792839155") is None
+
+
+def _hold_ssh(seen: list[str], watchdog_new: bool, now: int = 1_792_839_155):
+    def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+        seen.append(cmd)
+        if cmd.startswith("grep -q hold_active"):
+            return _sp.CompletedProcess(cmd, 0 if watchdog_new else 1, "", "")
+        if "AVA_WD_EOF" in cmd:
+            return _sp.CompletedProcess(cmd, 0, "4321\n", "")
+        if cmd.startswith("now=$(date +%s)"):
+            return _sp.CompletedProcess(cmd, 0, f"{now} {now + 7200}\n{now}\n", "")
+        return _sp.CompletedProcess(cmd, 0, "", "")
+    return fake
+
+
+@pytest.mark.parametrize("watchdog_new", [True, False])
+def test_d130_hold写标记_旧看门狗先换新(monkeypatch, capsys, watchdog_new):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    seen: list[str] = []
+    monkeypatch.setattr(cloud, "_ssh", _hold_ssh(seen, watchdog_new))
+    assert cloud.cmd_hold(argparse.Namespace()) == 0
+    redeployed = any("AVA_WD_EOF" in c for c in seen)
+    assert redeployed is (not watchdog_new)
+    if redeployed:
+        deploy = next(c for c in seen if "AVA_WD_EOF" in c)
+        assert "hold_active" in deploy and seen.index(deploy) < next(
+            i for i, c in enumerate(seen) if c.startswith("now=$(date +%s)"))
+    assert "120 分钟后自动释放" in capsys.readouterr().out
+
+
+def test_d130_hold_旧看门狗换不掉就不写标记(monkeypatch):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    seen: list[str] = []
+    base = _hold_ssh(seen, watchdog_new=False)
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **k: _sp.CompletedProcess(cmd, 255, "", "")
+                        if "AVA_WD_EOF" in cmd else base(cmd, **k))
+    with pytest.raises(SystemExit, match="不写标记"):
+        cloud.cmd_hold(argparse.Namespace())
+    assert not any(c.startswith("now=$(date +%s)") for c in seen)
+
+
+def test_d130_实例联系不上_hold拒绝(monkeypatch):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: False)
+    with pytest.raises(SystemExit, match="联系不上"):
+        cloud.cmd_hold(argparse.Namespace())
+
+
+def test_d130_release与down都撤标记(monkeypatch, tmp_path):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    seen: list[str] = []
+    monkeypatch.setattr(cloud, "_ssh", _hold_ssh(seen, True))
+    assert cloud.cmd_release(argparse.Namespace()) == 0
+    assert f"rm -f {cloud.REMOTE_HOLD_PATH}" in seen
+
+    seen.clear()
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: tmp_path / "none.json")
+    monkeypatch.setattr(cloud, "get_ledger_file", lambda: tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host=None: ["ava-tts"])   # 有任务：结算后不关机
+    assert cloud.cmd_down(argparse.Namespace(force=False, rate=None)) == 0
+    assert f"rm -f {cloud.REMOTE_HOLD_PATH}" in seen
+
+
+def test_d130_hold与release在命令表里():
+    ap = cloud.build_parser()
+    assert ap.parse_args(["hold"]).cmd == "hold" and ap.parse_args(["release"]).cmd == "release"
+
+
+def test_d130_写标记命令遇到写坏的旧标记_重新起算且不报错(tmp_path):
+    f = tmp_path / "hold"
+    now = int(_time.time())
+    for bad in (f"{now - 50} \n", "垃圾\n", f"x {now + 100}\n"):
+        f.write_text(bad, encoding="utf-8")
+        done = _sp.run(["bash", "-c", cloud.hold_write_command(7200, hold_path=str(f))],
+                       capture_output=True, text=True, check=False)
+        got = cloud.parse_hold(done.stdout)
+        assert done.stderr == "" and got[0] >= now and got[1] - got[2] == 7200, bad

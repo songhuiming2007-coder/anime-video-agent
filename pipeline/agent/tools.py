@@ -231,7 +231,9 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "calibration": {"set", "show"},
     # D102：connect 写 cloud.local.json 的连接三项（Code Freeze 第 ④ 条例外），逐条人审见 HUMAN_GATED_COMMANDS
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env",
-              "connect", "sync-code", "lib-push", "lib-captions", "lib-pull"},
+              "connect", "sync-code", "lib-push", "lib-captions", "lib-pull",
+              # D130（2026-10-24 人定不弹卡）：人说配完不关机就是同意；2 h 自动释放兜住忘了 release
+              "hold", "release"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
     # 人只批卡，不再在终端手敲（ADR-0021 §3 原意，S6-R1 只接了 fetch）。
     # D61 后续（2026-10-10）：probe 可得性探针——出网只解析不下载，URL 清单经人卡，弹卡
