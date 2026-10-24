@@ -287,7 +287,7 @@ def load_tracks_multi(episode: Path) -> dict:
     return {"tracks": tracks}
 
 
-def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
+def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None = None) -> dict:
     """唯一入口：稿子标题顺序 → 成片时间轴 + 每曲事件序列。
 
     返回：
@@ -311,7 +311,7 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict) -> dict:
       - vol=natural：结尾自然播放（同前景音量），播到曲目结束
       - 事件之间曲目内位置不连续 = 跳点（渲染时事件边界淡入淡出衔接）
     """
-    script = episode / "02-script.md"
+    script = script or episode / "02-script.md"   # check_script 也拿草稿来算（D133）
     text = script.read_text(encoding="utf-8")
     blocks = {b.label: b for b in parse_script_music(script)}
     segs = {int(m.group(2)): m.group(2)
@@ -608,3 +608,42 @@ def bgm_source_issue(blocks: list[MusicBlock],
             "照现在的写法全片没有 BGM，渲染到最后一步才会报「音乐床时长不对」。\n"
             "     把 BGM 写成稿件里的背景铺底块（试看 / 音画同源段期间 BGM 自动暂停，结束后接着放）：\n"
             + "\n\n".join(lines))
+
+
+#: 无音乐空档的容差（2026-10-24 人定 1 s，D133）：人定「不留空档、严格算时」，留 1 s 给事件边界的淡入淡出
+#: 交接与 ffprobe 取时长的误差。超过它的未覆盖区间就是成片里的一段干口播。
+MUSIC_GAP_MAX_S = 1.0
+
+
+def music_gaps(plan: dict) -> list[dict]:
+    """`build_timeline` 的结果 → 成片里没有任何音乐的区间（D133）。
+
+    覆盖 = 每首曲目的全部事件（前景 / 降为 BGM / 铺底 / 自然收尾，成片区间 `at`…`at + t1 − t0`）
+    并上音画同源槽（槽内是源片原声，BGM 按设计让路，不算空档）。返回
+    `[{start, end, dur, segments: [段号, …]}]`，按成片时间排序，不做阈值筛选——阈值由调用方用
+    MUSIC_GAP_MAX_S 判，配音前的结构判定（每段极短时长）另有口径。
+    """
+    covered = [(e["at"], e["at"] + (e["t1"] - e["t0"])) for tr in plan["tracks"] for e in tr["events"]]
+    covered += [(b["start"], b["start"] + b["dur"]) for b in plan["blocks"] if b.get("avsync")]
+    covered.sort()
+    gaps: list[tuple[float, float]] = []
+    t = 0.0
+    for a, b in covered:
+        if a > t + 1e-6:
+            gaps.append((t, a))
+        t = max(t, b)
+    if plan["total_duration"] > t + 1e-6:
+        gaps.append((t, plan["total_duration"]))
+    return [{"start": a, "end": b, "dur": b - a,
+             "segments": [s["index"] for s in plan["segments"]
+                          if s["start"] < b - 1e-6 and s["start"] + s["dur"] > a + 1e-6]}
+            for a, b in gaps]
+
+
+def describe_gaps(gaps: list[dict]) -> str:
+    """空档 → 「段3–7（42.0 s）；段12（8.3 s）」，段号连续的写成区间。"""
+    def span(segs: list[int]) -> str:
+        if not segs:
+            return "段落之间"
+        return f"段{segs[0]}" if len(segs) == 1 else f"段{segs[0]}–{segs[-1]}"
+    return "；".join(f"{span(g['segments'])}（{g['dur']:.1f} s）" for g in gaps)

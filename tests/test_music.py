@@ -599,3 +599,61 @@ def test_render入口就拦_不等到最后一步(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "_bgm_plan", lambda *a: pytest.fail("应在入口就拦下"))
     with pytest.raises(SystemExit, match="背景铺底"):
         render.run(ep, force=True)
+
+
+class TestMusicGaps:
+    """D133：成片时间轴上没有任何音乐的口播区间（2026-10-23 supercell 卷二：9 处空档共 954.3 s 无一关报）。"""
+
+    def test_淡出之后到下一个音乐段之间是空档(self, episode):
+        # SCRIPT：M2 淡出 → 段 2（48–58）无人铺底；M3 淡出 → 段 3（118–128）也没有，曲乙要到段 3 之后才自然收尾
+        gaps = m.music_gaps(m.build_timeline(episode, MANIFEST, _bgm()))
+        assert [(g["start"], g["end"], g["segments"]) for g in gaps] == [
+            (pytest.approx(48.0), pytest.approx(58.0), [2]),
+            (pytest.approx(118.0), pytest.approx(128.0), [3])]
+
+    def test_降为BGM与铺底覆盖到下一个音乐段_无空档(self, tmp_path):
+        (tmp_path / "02-script.md").write_text(
+            "## 音乐段 B1\n\n音乐: `测试曲甲` 完整版 00:00\n状态: 背景铺底\n\n"
+            "## 段落 1\n\n配音：一。\n\n"
+            "## 音乐段 M1\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n状态: 前景试听，旁白停止\n过渡: 降为 BGM\n\n"
+            "## 段落 2\n\n配音：二。\n", encoding="utf-8")
+        manifest = {"segments": [{"index": 1, "duration": 10.0}, {"index": 2, "duration": 10.0}]}
+        assert m.music_gaps(m.build_timeline(tmp_path, manifest, _bgm())) == []
+
+    def test_同源槽是原声_不算空档_片头片尾没铺也算(self):
+        plan = {"total_duration": 50.0,
+                "segments": [{"index": 1, "start": 0.0, "dur": 10.0}, {"index": 2, "start": 30.0, "dur": 20.0}],
+                "blocks": [{"start": 10.0, "dur": 20.0, "avsync": "番 S01E01"}],
+                "tracks": [{"events": [{"at": 30.0, "t0": 0.0, "t1": 15.0}]}]}
+        gaps = m.music_gaps(plan)
+        assert [(g["start"], g["end"], g["segments"]) for g in gaps] == [(0.0, 10.0, [1]), (45.0, 50.0, [2])]
+
+    def test_重叠事件合并_不报假空档(self):
+        plan = {"total_duration": 20.0, "segments": [{"index": 1, "start": 0.0, "dur": 20.0}], "blocks": [],
+                "tracks": [{"events": [{"at": 0.0, "t0": 0.0, "t1": 12.0}]},
+                           {"events": [{"at": 5.0, "t0": 0.0, "t1": 4.0}, {"at": 12.0, "t0": 0.0, "t1": 8.0}]}]}
+        assert m.music_gaps(plan) == []
+
+    def test_描述按段号区间(self):
+        gaps = [{"dur": 42.0, "segments": [3, 4, 5]}, {"dur": 8.3, "segments": [12]}]
+        assert m.describe_gaps(gaps) == "段3–5（42.0 s）；段12（8.3 s）"
+
+
+def test_render入口拦无音乐空档(tmp_path, monkeypatch):
+    """D133：render 入口按同一判据硬失败。变异：去掉入口检查 → 走到 _bgm_plan / 切片，本条红。"""
+    import json
+    from pipeline import render
+    ep = tmp_path
+    (ep / "03-audio").mkdir()
+    (ep / "03-audio" / "manifest.json").write_text(json.dumps({"segments": [{"index": 1, "duration": 4.0}]}), encoding="utf-8")
+    (ep / "04-clips.approved.json").write_text(json.dumps({"segments": [
+        {"index": 1, "status": "ok", "duration": 4.0, "clips": [{"season": 1, "episode": 1, "start": 0.0, "dur": 4.0}]}]}), encoding="utf-8")
+    plan = {"total_duration": 14.0, "segments": [{"index": 1, "start": 10.0, "dur": 4.0}], "blocks": [],
+            "tracks": [{"events": [{"at": 0.0, "t0": 0.0, "t1": 10.0}]}]}
+    monkeypatch.setattr(render, "_maybe_music_plan", lambda e, mf: plan)
+    monkeypatch.setattr(m, "parse_script_music", lambda p: [])
+    monkeypatch.setattr(render, "_bgm_list", lambda e: None)
+    monkeypatch.setattr(render, "_bgm_plan", lambda *a: pytest.fail("应在入口就拦下"))
+    with pytest.raises(SystemExit, match=r"1 处没有音乐的口播、共 4\.0 s：段1（4\.0 s）"):
+        render.run(ep, force=True)
+

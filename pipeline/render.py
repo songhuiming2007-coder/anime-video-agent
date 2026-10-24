@@ -1203,6 +1203,14 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             raise SystemExit(f"FAIL {issue[1]}")
         if issue is not None:
             print(f"WARN {issue[1]}", file=sys.stderr)
+        # D133：无音乐空档。此前淡出之后到下一个音乐段之间没人铺底，成片就是一段干口播，没有任何一关报
+        gaps = [g for g in music_mod.music_gaps(music_plan) if g["dur"] > music_mod.MUSIC_GAP_MAX_S]
+        if gaps:
+            raise SystemExit(
+                f"FAIL 成片有 {len(gaps)} 处没有音乐的口播、共 {sum(g['dur'] for g in gaps):.1f} s："
+                f"{music_mod.describe_gaps(gaps)}\n"
+                "     在空档前加背景铺底块，或把前一个前景块的 `过渡:` 改成 `降为 BGM`"
+                "（check_script「无音乐空档」同一判据）")
     bgm_plan = None if music_plan is not None else _bgm_plan(episode, acc, starts)
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
