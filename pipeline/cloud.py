@@ -1617,6 +1617,37 @@ def check_rate(value: float | None) -> float | None:
     return float(value)
 
 
+def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[str], dict]:
+    """D131：把账簿最后一条结算的估算单价换成人事后补报的单价（纯函数）→ (新的各行, 改后的条目)。
+
+    只改「单价是估算」的那一条：时长不动，按新单价重算 cny，note 去掉估算说明、记下原估算值与补报日期。
+    最后一条已是人报的单价、或读不出来，SystemExit 拒绝（账簿是历史记录，改人报过的数要人自己改）。
+    """
+    idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    if idx is None:
+        raise SystemExit("FAIL 账簿是空的，没有可以补单价的结算")
+    try:
+        entry = json.loads(lines[idx])
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"FAIL 账簿最后一行读不出来，不改：{e}") from None
+    note = entry.get("note") or ""
+    clauses = [c for c in note.split("；") if c]
+    estimated = [c for c in clauses if c.startswith("单价估算")]
+    if not estimated:
+        raise SystemExit(
+            f"FAIL 没有活跃会话，账簿最后一条（会话 {entry.get('session')}）的单价 "
+            f"{entry.get('rate_cny')} 元/h 不是估算值，不改。要改人报过的单价请人工改账簿")
+    old_rate, old_cny = entry.get("rate_cny"), entry.get("cny")
+    entry["rate_cny"] = float(rate)
+    entry["cny"] = calculate_session_cost(entry.get("gpu_seconds", 0), float(rate))
+    clauses = [c for c in clauses if not c.startswith("单价估算")]
+    clauses.append(f"单价 {rate:g} 元/h 为人事后补报（{today}；原按 {old_rate} 元/h 估算 ¥{old_cny}）")
+    entry["note"] = "；".join(clauses)
+    out = list(lines)
+    out[idx] = json.dumps(entry, ensure_ascii=False)
+    return out, entry
+
+
 def cmd_down(args: argparse.Namespace) -> int:
     """关机结算命令：按模式精算费用，落盘账簿，提示/下发关机。"""
     cfg_global, cfg_local = load_cloud_config()
@@ -1640,6 +1671,18 @@ def cmd_down(args: argparse.Namespace) -> int:
     # 这会多计一段「关机到被发现」的延迟，属于**上界估计**，必须写进账簿注记。
     reachable = is_ssh_reachable(host)
 
+    # D131：会话已结算、实例也已关（人在控制台关机后补报单价），没有可以结算的新会话——
+    # 照旧走下去会另记一条 0 秒 ¥0 的 manual 会话，刚结算那条的估算单价却没变
+    rate_arg = check_rate(getattr(args, "rate", None))
+    if not sfile.exists() and not reachable and rate_arg is not None:
+        lfile = get_ledger_file()
+        lines = lfile.read_text(encoding="utf-8").splitlines() if lfile.exists() else []
+        new_lines, entry = rerate_last_entry(lines, rate_arg, datetime.now().strftime("%Y-%m-%d"))
+        paths.atomic_write(lfile, "\n".join(new_lines) + "\n")
+        print(f"[*] 没有活跃会话、实例已关：把最近一条结算（会话 {entry['session']}）的估算单价改为 "
+              f"{rate_arg:g} 元/h，重算为 ¥{entry['cny']:.4f}（时长 {entry['gpu_seconds']}s 不变）")
+        return 0
+
     mode = session_info.get("mode")
     if not mode:
         # 无会话文件（用户手动开机后直接 down）：探测真实模式，不猜。
@@ -1652,7 +1695,7 @@ def cmd_down(args: argparse.Namespace) -> int:
     if mode == "gpu" and not gpu_name and reachable:
         gpu_name = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)[0]
     # D108：结算时补报的单价优先于 up 时报的（人看着控制台改口，以最新为准）
-    reported = check_rate(getattr(args, "rate", None))
+    reported = rate_arg
     if reported is None and isinstance(session_info.get("rate_cny"), (int, float)):
         reported = float(session_info["rate_cny"])
     rate, rate_estimate_note = session_rate(cfg_global, mode, gpu_name, reported)

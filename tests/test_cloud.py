@@ -1596,3 +1596,51 @@ def test_lib三命令进白名单_打标是计费卡():
     for c in ("lib-push supercell SP01", "lib-captions supercell SP01 SP02 --batch 2", "lib-pull supercell SP01"):
         ok, msg, _ = validate_pipeline_command(f"python -m pipeline.cloud {c}")
         assert ok, msg
+
+
+_D131_ENTRY = {"session": "20261023_202528", "mode": "gpu", "up": "20:25:28", "down": "21:27:49",
+               "gpu_seconds": 3741, "cny": 2.494, "episode": "02-烟火绽放的至美之日", "tasks": ["tts"],
+               "over_budget": True, "budget_scoped": True, "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+               "rate_cny": 2.4,
+               "note": "实例在结算前已停止响应（多为 watchdog 自动关机）；gpu_seconds 为上界估计，含关机到本地发现之间的延迟；"
+                       "单价估算：没有人报单价，gpu_rates_cny 里也查不到 NVIDIA RTX PRO 6000 Blackwell Server Edition，"
+                       "按 hourly_rate_cny 记"}
+
+
+def _down_no_session(monkeypatch, tmp_path, ledger_rows, rate_arg, reachable=False):
+    _no_config(monkeypatch)
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"hourly_rate_cny": 2.4}, {}))
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in ledger_rows), encoding="utf-8")
+    monkeypatch.setattr(cloud, "get_active_session_file", lambda: tmp_path / "active_session.json")
+    monkeypatch.setattr(cloud, "get_ledger_file", lambda: ledger)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: reachable)
+    monkeypatch.setattr(cloud, "_ssh", lambda *a, **k: _sp.CompletedProcess("x", 1, "", ""))
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host=None: "busy")
+    rc = cloud.cmd_down(argparse.Namespace(force=False, rate=rate_arg))
+    return rc, [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()]
+
+
+def test_d131_结算后补报单价_改写那一条不另开会话(monkeypatch, tmp_path):
+    """2026-10-23 原样：up 没报价 → 人在控制台关机 → down 按 2.4 估算 → 人报 6.98 再跑 down --rate。"""
+    older = {**_D131_ENTRY, "session": "20261020_231740", "rate_cny": 6.98, "note": None}
+    rc, rows = _down_no_session(monkeypatch, tmp_path, [older, _D131_ENTRY], 6.98)
+    assert rc == 0 and len(rows) == 2, "不许再记一条 0 秒的 manual 会话"
+    assert rows[0] == older
+    e = rows[1]
+    assert e["rate_cny"] == 6.98 and e["cny"] == pytest.approx(7.2534) and e["gpu_seconds"] == 3741
+    assert "单价估算" not in e["note"] and "watchdog" in e["note"]
+    assert "人事后补报" in e["note"] and "原按 2.4 元/h 估算 ¥2.494" in e["note"]
+
+
+def test_d131_最后一条已是人报单价_拒绝不改(monkeypatch, tmp_path):
+    reported = {**_D131_ENTRY, "rate_cny": 6.98, "cny": 7.2534, "note": None}
+    with pytest.raises(SystemExit, match="不是估算值，不改"):
+        _down_no_session(monkeypatch, tmp_path, [reported], 5.0)
+    assert json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8")) == reported
+
+
+def test_d131_实例还连得上_是手动开的机_照旧新结算一条(monkeypatch, tmp_path):
+    rc, rows = _down_no_session(monkeypatch, tmp_path, [_D131_ENTRY], 6.98, reachable=True)
+    assert rc == 0 and len(rows) == 2 and rows[0] == _D131_ENTRY
+    assert rows[1]["session"].startswith("manual_") and rows[1]["rate_cny"] == 6.98
