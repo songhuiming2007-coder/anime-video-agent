@@ -415,8 +415,17 @@ STILL_SP_MAX = 2
 #: 图片微动 SP，逗号分隔，括号里写理由，如 `复用: supercell SP70（人定：唯一物证）`。
 #: 用途是唯一物证在后续卷回扣时不必降级成更弱的画面；由人决定写，机检照样计数，只放行带声明的超出次数，
 #: 并把每处声明列在结果里给 02.5 的人看。
+#: 视频 SP 的声明带起点时间码（D137），如 `复用: supercell SP12 00:20（理由）`，只放行本段从这个时间起的那个锚点。
 _REUSE_FIELD = re.compile(r"^\s*复用[：:][ \t]*(.+)$", re.M)
-_REUSE_ITEM = re.compile(rf"(?:(?P<anime>.+?)\s+)?SP(?P<sp>{SP_NUM_LOOSE})", re.I)
+_REUSE_ITEM = re.compile(
+    rf"(?:(?P<anime>.+?)\s+)?SP(?P<sp>{SP_NUM_LOOSE})(?:\s+(?P<m>\d{{1,3}}):(?P<s>\d{{2}}(?:\.\d+)?))?", re.I)
+
+#: 视频 SP（MV、Live，`_is_still` 为假）同一处画面的上限（2026-10-24 人定，D137）：以每个锚点的起点为中心、
+#: 前后各 VIDEO_SP_WINDOW_S 秒之内（含边界），同一 SP 的锚点（含它自己）在企划所有卷合计至多 VIDEO_SP_MAX 个。
+#: 人在「任意 10 秒窗口」与「每个锚点前后 ±10 秒」两种算法里选了后者，所以 0 s、9 s、18 s 三处也算超。
+#: 按片段数计，同段写两遍记两次；区间锚点按起点算。超出的次数落在带时间码 `复用:` 声明的段才放行。
+VIDEO_SP_MAX = 2
+VIDEO_SP_WINDOW_S = 10.0
 
 
 def parse_reuse(text: str) -> dict[str, list[str]]:
@@ -444,6 +453,11 @@ class StillUses:
     reuse: dict[tuple[str, str], set[str]] = field(default_factory=dict)
     bad_reuse: list[str] = field(default_factory=list)
     unavailable: list[str] = field(default_factory=list)
+    #: D137：视频 SP 的锚点 {(池, SPxx): [(段号, 起点秒), …]}、带时间码的声明 {(池, SPxx): {(段号, 起点秒)}}、
+    #: 写错的视频 SP 声明（没带时间码，或本段没有从这个时间起的锚点）
+    video: dict[tuple[str, str], list[tuple[str, float]]] = field(default_factory=dict)
+    video_reuse: dict[tuple[str, str], set[tuple[str, float]]] = field(default_factory=dict)
+    bad_video_reuse: list[str] = field(default_factory=list)
 
 
 def still_sp_uses(episode: Path) -> StillUses:
@@ -490,46 +504,79 @@ def still_sp_uses(episode: Path) -> StillUses:
             src = (cache[pool] or {}).get(f"SP{int(m.group('sp')):02d}")
             if src and _is_still(src):
                 uses.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append(label)
+            elif src:
+                start = int(m.group("m0")) * 60 + float(m.group("s0"))
+                out.video.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append((label, start))
     for label, items in parse_reuse(text).items():
         for item in items:
             m = _REUSE_ITEM.fullmatch(item)
             if not m:
-                out.bad_reuse.append(f"段{label} 复用条目「{item}」格式不对（写 `<池> SPxx`）")
+                out.bad_reuse.append(f"段{label} 复用条目「{item}」格式不对"
+                                     "（写 `<池> SPxx`，视频 SP 带起点 `<池> SPxx mm:ss`）")
                 continue
             key = ((m.group("anime") or "").strip() or main_plan or anime_main, f"SP{int(m.group('sp')):02d}")
-            if label not in uses.get(key, []):
-                out.bad_reuse.append(f"段{label} 复用 {key[0]} {key[1]}，但本段锚点里没有这张图片微动 SP")
+            in_video = [s for l, s in out.video.get(key, []) if l == label]
+            if m.group("m") is not None:
+                start = int(m.group("m")) * 60 + float(m.group("s"))
+                hit = [s for s in in_video if abs(s - start) < 0.01]
+                if hit:
+                    out.video_reuse.setdefault(key, set()).add((label, hit[0]))
+                    continue
+                if not in_video and label in uses.get(key, []):
+                    out.reuse.setdefault(key, set()).add(label)   # 图片微动 SP 带了时间码：时间码不参与
+                    continue
+                out.bad_video_reuse.append(f"段{label} 复用 {key[0]} {key[1]} {_mmss(start)}，"
+                                           "但本段锚点里没有从这个时间起的片段")
                 continue
-            out.reuse.setdefault(key, set()).add(label)
+            if label in uses.get(key, []):
+                out.reuse.setdefault(key, set()).add(label)
+                continue
+            if in_video:
+                out.bad_video_reuse.append(f"段{label} 复用 {key[0]} {key[1]} 没写时间码：视频 SP 的复用要指明"
+                                           f"哪一处，写 `{key[0]} {key[1]} {_mmss(in_video[0])}（理由）`")
+                continue
+            out.bad_reuse.append(f"段{label} 复用 {key[0]} {key[1]}，但本段锚点里没有这张图片微动 SP")
     return out
 
 
-def _check_still_sp_cap(path: Path, add) -> None:
+def _mmss(sec: float) -> str:
+    m, s = divmod(sec, 60)
+    return f"{int(m)}:{s:05.2f}".rstrip("0").rstrip(".") if s % 1 else f"{int(m)}:{int(s):02d}"
+
+
+def _check_sp_caps(path: Path, add) -> None:
+    """企划池 SP 的两项次数上限（图片微动 D126、视频 SP 同一处 D137）：本期与企划其他卷的用法只读一遍。"""
+    from . import project
+    ep = path.parent
+    own = still_sp_uses(ep)
+    if not (own.uses or own.video or own.unavailable or own.bad_reuse or own.bad_video_reuse):
+        return
+    proj = project.project_of(ep)
+    others = [(m.name, still_sp_uses(m)) for m in (project.project_members(proj) if proj else [])
+              if m.name != ep.name]
+    if own.uses or own.unavailable or own.bad_reuse:
+        _check_still_sp_cap(ep, own, others, add)
+    if own.video or own.unavailable or own.bad_video_reuse:
+        _check_video_sp_window(ep, own, others, add)
+
+
+def _check_still_sp_cap(ep: Path, own: StillUses, others: list[tuple[str, StillUses]], add) -> None:
     """图片微动 SP 次数上限：本期用到的每张，连同企划内其他卷的用法合计不超过 STILL_SP_MAX。
 
     只报本期用到的那几张：别的卷自己超了，由那一卷的机检报。本期没引用图片微动 SP 就不出这一项。
     超出的次数落在带 `复用:` 声明的段（任何一卷）里时放行，声明逐处列在结果里（D126）。
     """
-    from . import project
-    ep = path.parent
-    own = still_sp_uses(ep)
-    if not own.uses and not own.unavailable and not own.bad_reuse:
-        return
     total = {k: [(ep.name, l) for l in v] for k, v in own.uses.items()}
     declared = {k: {(ep.name, l) for l in v} for k, v in own.reuse.items()}
     unavailable = list(own.unavailable)
-    proj = project.project_of(ep)
-    for m in (project.project_members(proj) if proj else []):
-        if m.name == ep.name:
-            continue
-        other = still_sp_uses(m)
+    for vol, other in others:
         unavailable += other.unavailable
         for k, v in other.uses.items():
             if k in total:
-                total[k].extend((m.name, l) for l in v)
+                total[k].extend((vol, l) for l in v)
         for k, v in other.reuse.items():
             if k in total:
-                declared.setdefault(k, set()).update((m.name, l) for l in v)
+                declared.setdefault(k, set()).update((vol, l) for l in v)
     name = f"图片微动 SP 全企划至多 {STILL_SP_MAX} 次"
     if unavailable:
         add(name, False, f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
@@ -561,6 +608,64 @@ def _check_still_sp_cap(path: Path, add) -> None:
     add(name, False, "；".join(msgs[:4])
         + f"　同一张图片微动素材在整个企划里最多用 {STILL_SP_MAX} 次（2026-10-17 人定），"
           "多出来的段换别的素材，或由人决定后在该段画面块写 `复用: <池> SPxx（理由）`")
+
+
+def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, StillUses]], add) -> None:
+    """视频 SP 同一处画面上限（D137）：以本期每个视频 SP 锚点的起点为中心、前后 VIDEO_SP_WINDOW_S 秒内，
+    同一 SP 的锚点（含它自己、含企划其他卷）合计不超过 VIDEO_SP_MAX。
+
+    只报以本期锚点为中心的窗口：别的卷内部超了，由那一卷的机检报。不带声明的锚点数超过上限才 FAIL，
+    带时间码 `复用:` 声明的锚点（任何一卷）放行，逐处列在结果里给 02.5 看。
+    """
+    name = f"视频 SP 同一处（前后 {VIDEO_SP_WINDOW_S:g} s）全企划至多 {VIDEO_SP_MAX} 次"
+    unavailable = list(own.unavailable) + [u for _, o in others for u in o.unavailable]
+    if unavailable:
+        add(name, False, f"跳过不可判定：{'；'.join(unavailable[:2])}（S9 跳过不是通过）")
+        return
+    if own.bad_video_reuse:
+        add(name, False, "；".join(own.bad_video_reuse[:4])
+            + "　视频 SP 的 `复用:` 写本段锚点里那一处的起点，如 `<池> SPxx 0:20（理由）`")
+        return
+    # 判定按窗口，报告按簇：同一 SP 相互重叠的超限窗口并成一簇报一次（0/5/15/20 s 是两个窗口、一处画面）
+    keep: list[tuple[tuple[str, str], list[tuple[str, str, float, bool]]]] = []
+    failing: list[tuple[tuple[str, str], list[tuple[str, str, float, bool]]]] = []
+    for key, mine in sorted(own.video.items()):
+        entries = [(ep.name, l, s) for l, s in mine]
+        entries += [(vol, l, s) for vol, o in others for l, s in o.video.get(key, [])]
+        declared = {(ep.name, l, s) for l, s in own.video_reuse.get(key, set())}
+        declared |= {(vol, l, s) for vol, o in others for l, s in o.video_reuse.get(key, set())}
+        clusters: list[tuple[set[int], bool]] = []
+        for _, _, center in entries[:len(mine)]:
+            idx = {i for i, e in enumerate(entries) if abs(e[2] - center) <= VIDEO_SP_WINDOW_S + 1e-9}
+            if len(idx) <= VIDEO_SP_MAX:
+                continue
+            bad = sum(entries[i] not in declared for i in idx) > VIDEO_SP_MAX
+            for c in [c for c in clusters if c[0] & idx]:
+                clusters.remove(c)
+                idx, bad = idx | c[0], bad or c[1]
+            clusters.append((idx, bad))
+        for idx, bad in clusters:
+            win = [(*entries[i], entries[i] in declared) for i in sorted(idx)]
+            (failing if bad else keep).append((key, win))
+
+    def where_text(key: tuple[str, str], win: list[tuple[str, str, float, bool]]) -> str:
+        by_vol: dict[str, list[str]] = {}
+        for vol, label, start, dec in sorted(win, key=lambda e: e[2]):
+            by_vol.setdefault(vol, []).append(f"段{label} {_mmss(start)}{'〔复用〕' if dec else ''}")
+        return (f"{key[0]} {key[1]} 共 {len(win)} 处（"
+                + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
+
+    n_own = sum(len(v) for v in own.video.values())
+    if not failing:
+        if keep:
+            add(name, True, f"本期 {n_own} 处视频 SP 锚点；超出 {VIDEO_SP_MAX} 处的都有人定复用声明："
+                + "；".join(where_text(k, v) for k, v in keep))
+        else:
+            add(name, True, f"本期 {n_own} 处视频 SP 锚点，同一处都不超过 {VIDEO_SP_MAX} 次")
+        return
+    add(name, False, "；".join(where_text(k, v) for k, v in failing[:4])
+        + f"　同一支视频 SP 的同一处画面（起点前后 {VIDEO_SP_WINDOW_S:g} s）在整个企划里最多用 {VIDEO_SP_MAX} 次"
+          "（2026-10-24 人定），多出来的段换一处画面，或由人决定后在该段画面块写 `复用: <池> SPxx mm:ss（理由）`")
 
 
 #: 补丁池名的后缀（`ingest_patch.sanitize_pool_name`：`<净化期名>-patch`，撞名再加 `-N`）。
@@ -941,7 +1046,7 @@ def run(path: Path) -> list[Check]:
                     "；".join(bad_src[:4]) if bad_src
                     else f"{len(anchors_tc)} 段锚点都落在已入库集的片长内")
 
-    _check_still_sp_cap(path, add)
+    _check_sp_caps(path, add)
 
     sents = [s.strip() for v in vo for s in re.split(r"[。？！]", v) if s.strip()]
 

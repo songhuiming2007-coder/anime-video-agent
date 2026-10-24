@@ -816,6 +816,78 @@ class TestStillSpCap:
         assert not chk.ok and "跳过不可判定" in chk.detail
 
 
+class TestVideoSpWindow(TestStillSpCap):
+    """D137：视频 SP 以每个锚点起点为中心前后 10 s 内，同一 SP 的锚点在企划里合计至多 2 个（2026-10-24 人定）。
+
+    继承图片微动那组的夹具（SP01 图片微动、SP02 视频 180 s），父类用例照跑一遍，证明两项互不干扰。"""
+
+    VNAME = "视频 SP 同一处"
+
+    def test_0_9_18三处_以9为中心算超(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:09", "SP02 0:18"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "SP02 共 3 处" in chk.detail and "段1 0:00、段2 0:09、段3 0:18" in chk.detail
+
+    def test_0_11_22三处_任一中心前后都只有两处_PASS(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:11", "SP02 0:22"])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "本期 3 处视频 SP 锚点，同一处都不超过 2 次" in chk.detail
+
+    def test_恰好两处_PASS(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:05"])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "同一处都不超过 2 次" in chk.detail
+
+    def test_前后10秒含边界(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:10", "SP02 0:20"])
+        assert not get(cs.run(f), self.VNAME).ok
+        f = self._vol(root, "02-卷二", ["SP02 1:00", "SP02 1:10.5", "SP02 1:21"])
+        assert get(cs.run(f), self.VNAME).ok
+
+    def test_同段写两遍记两次_区间锚点按起点(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:20-0:40, SP02 0:25", "SP02 0:29"])
+        assert not get(cs.run(f), self.VNAME).ok
+
+    def test_跨卷合计_报出别卷段号(self, root):
+        self._vol(root, "01-卷一", ["SP02 0:20"])
+        f = self._vol(root, "02-卷二", ["SP02 0:20", "SP02 0:27"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "01-卷一 段1 0:20" in chk.detail and "02-卷二 段1 0:20、段2 0:27" in chk.detail
+
+    def test_别卷内部超限不由本卷报(self, root):
+        self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:05", "SP02 0:08"])
+        f = self._vol(root, "02-卷二", ["SP02 2:00"])
+        assert get(cs.run(f), self.VNAME).ok
+
+    def test_图片微动SP不进这一项(self, root):
+        f = self._vol(root, "01-卷一", ["SP01 0:00"])
+        assert not [c for c in cs.run(f) if c.name.startswith(self.VNAME)]
+
+    def test_带时间码的复用声明放行并列出(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:09", "SP02 0:18\n  复用: SP02 0:18（人定：唯一现场）"])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "人定复用声明" in chk.detail and "段3 0:18〔复用〕" in chk.detail
+        assert get(cs.run(f), "锚点格式").ok  # 复用行不被当成锚点续行
+
+    def test_声明时间码对不上本段锚点_FAIL(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:09", "SP02 0:18\n  复用: SP02 0:19"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "段3 复用 企划 SP02 0:19，但本段锚点里没有从这个时间起的片段" in chk.detail
+
+    def test_视频SP声明不带时间码_FAIL(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00", "SP02 0:09", "SP02 0:18\n  复用: SP02"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "没写时间码" in chk.detail and "企划 SP02 0:18（理由）" in chk.detail
+
+    def test_一处声明只放行一处_另两处未声明仍超(self, root):
+        f = self._vol(root, "01-卷一", ["SP02 0:00\n  复用: SP02 0:00", "SP02 0:05", "SP02 0:08", "SP02 0:09"])
+        assert not get(cs.run(f), self.VNAME).ok
+
+    def test_图片微动SP的声明带时间码也认(self, root):
+        f = self._vol(root, "01-卷一", ["SP01 0:00", "SP01 0:00", "SP01 0:00\n  复用: SP01 0:00"])
+        assert get(cs.run(f), self.NAME).ok
+
+
 def make_patch_pool(ep, pool="ep-patch", key="SP01", duration=12.0, indexed=True):
     """最小期内补丁池：pool.json + 镜头表（+ indexed 时的 scene 索引），形状照 ingest_patch 的产物。"""
     import numpy as np
