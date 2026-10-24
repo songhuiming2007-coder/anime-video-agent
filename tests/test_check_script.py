@@ -172,12 +172,17 @@ class TestLongSentence:
 
 
 class TestQuotes:
-    def test_引号要报出来(self, tmp_path):
-        # 管道侧已经在合成前剥掉（`tts.speakable`），但稿件里出现引号仍是个信号：
-        # 那句话在靠视觉标记表达强调或引用，而口播只有语气可用。
+    def test_引号只提示不拦(self, tmp_path):
+        # D134（2026-10-24）：合成前 `tts._MUTE` 剥掉引号、字幕照常显示，
+        # 引号不再判失败；但位置照旧报出来，交人判断口播里听不听得出是引用。
         f = script(tmp_path, [BODY] * 7 + ['他说了句“好啊”就走了。第二季第二集的事。'])
         c = get(cs.run(f), "无引号")
-        assert not c.ok and "2 处" in c.detail
+        assert c.ok and c.detail.startswith("⚠") and "2 处" in c.detail
+
+    def test_引号确实会在合成前剥掉(self):
+        # 降级的前提：引号到不了合成器。这条前提一旦失效，上一条就该改回 FAIL。
+        from pipeline import tts
+        assert tts._MUTE.sub("", "他说了句“好啊”『走』「吧」") == "他说了句好啊走吧"
 
     def test_没有引号就放行(self, tmp_path):
         assert get(cs.run(script(tmp_path, [BODY] * 8)), "无引号").ok
