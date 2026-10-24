@@ -75,6 +75,13 @@ DEFAULT_REMOTE_PYTHON = "/root/it-venv/bin/python"
 # 各写一份的下场是 status 去 pgrep 一个不存在的路径，永远报「未运行」。
 REMOTE_WATCHDOG_PATH = "/root/watchdog.sh"
 
+# D130（2026-10-23 人提、10-24 人定）：「配完不关机」的保持标记。一行两个远端 epoch 秒「开始 到期」，
+# 看门狗见未到期的标记就刷新心跳；过期视同没有，从到期那一刻起照常计空闲。
+# 2 h：人定的自动释放时长——一轮 03.5 顺听加点名重配够用，忘了 release 最多多计两小时；要更久就再 hold 续期。
+# 可用 `config/cloud.json` 的 `hold_seconds` 覆盖
+REMOTE_HOLD_PATH = "/root/.ava_hold"
+DEFAULT_HOLD_SECONDS = 7200
+
 
 # ---------------------------------------------------------------------------
 # 第一节：纯函数计算层
@@ -861,9 +868,25 @@ def build_remote_run_command(
     return cmd
 
 
+def watchdog_hold_function(hold_path: str = REMOTE_HOLD_PATH) -> str:
+    """看门狗里判「人要求保持开机」的 bash 函数（D130）：标记存在、到期字段是整数、且没到期才算。
+
+    单独生成是为了能在测试里真用 bash 跑它（看门狗主循环 sleep 20 跑不完）。标记写坏了按没有处理——
+    宁可照常空闲关机，也不因为一个读不懂的文件让实例一直计费。
+    """
+    return f"""hold_active() {{
+    [ -f "{hold_path}" ] || return 1
+    local hold_start hold_until
+    read -r hold_start hold_until < "{hold_path}" || return 1
+    case "$hold_until" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$hold_until" ]
+}}"""
+
+
 def generate_watchdog_script(
     idle_seconds: int = DEFAULT_IDLE_SHUTDOWN_SECONDS,
     heartbeat_path: str = WATCHDOG_HEARTBEAT_PATH,
+    hold_path: str = REMOTE_HOLD_PATH,
 ) -> str:
     """生成远端自动关机 watchdog 脚本（P0-1 核心修复）。
 
@@ -881,12 +904,18 @@ def generate_watchdog_script(
 HEARTBEAT_FILE="{heartbeat_path}"
 IDLE_LIMIT={idle_seconds}
 LOG=/root/watchdog.log
+{watchdog_hold_function(hold_path)}
 
 touch "$HEARTBEAT_FILE"
 while true; do
     sleep 20
     # S1 真实状态检查：只要有 ava- 开头的 tmux 任务活着，就绝不关机，刷新心跳
     if tmux ls 2>/dev/null | grep -q '^ava-'; then
+        touch "$HEARTBEAT_FILE"
+        continue
+    fi
+    # D130 人要求保持开机（cloud hold），未到期就刷新心跳；过期后从到期那一刻起照常计空闲
+    if hold_active; then
         touch "$HEARTBEAT_FILE"
         continue
     fi
@@ -1753,6 +1782,8 @@ def cmd_down(args: argparse.Namespace) -> int:
     print("=" * 60)
 
     if reachable:
+        # D130：down 就是人要关机了，保持标记一并撤掉（远端有任务、这次不关机时也撤：任务跑完照常空闲关机）
+        _ssh(f"rm -f {REMOTE_HOLD_PATH}", host=host, check=False)
         active_tasks = remote_active_tasks(host=host)
         if active_tasks and not getattr(args, "force", False):
             print(f"[*] 提示: 远端仍有活跃的后台任务正在运行 ({active_tasks})。")
@@ -1780,6 +1811,88 @@ def cmd_down(args: argparse.Namespace) -> int:
 
     print(f"[提示] 实例当前不可达（可能已关机）。请在控制台确认计费已停止：")
     print(f"       https://www.autodl.com/console/instance/list")
+    return 0
+
+
+def hold_write_command(seconds: int, hold_path: str = REMOTE_HOLD_PATH) -> str:
+    """远端写保持标记的命令（纯函数，D130）：到期 = 远端此刻 + seconds；还没到期就续期、保留最初的开始时间。
+
+    用远端时钟算，`status` 也在远端取「此刻」，两边钟差不影响剩余时长。命令最后打印标记与远端此刻供核对。
+    """
+    return (
+        f"now=$(date +%s); start=$now; "
+        f"if [ -f {hold_path} ] && read -r s u < {hold_path}; then "
+        f"case \"$s\" in ''|*[!0-9]*) ;; *) case \"$u\" in ''|*[!0-9]*) ;; *) "
+        f"[ \"$now\" -lt \"$u\" ] && start=$s ;; esac ;; esac; fi; "
+        f"echo \"$start $((now + {int(seconds)}))\" > {hold_path} && cat {hold_path} && date +%s"
+    )
+
+
+def parse_hold(text: str) -> tuple[int, int, int] | None:
+    """`cat 标记; date +%s` 的输出 → (开始, 到期, 远端此刻)；没有标记或读不懂返回 None（纯函数）。"""
+    nums = re.findall(r"\d+", text or "")
+    if len(nums) < 3:
+        return None
+    return int(nums[0]), int(nums[1]), int(nums[-1])
+
+
+def hold_status_line(hold: tuple[int, int, int] | None, rate: float) -> str:
+    """status 的「保持开机」一行（纯函数）：剩余多久、已保持多久、保持期间按单价的估算花费。"""
+    if hold is None:
+        return "未保持（配完照常空闲关机）"
+    start, until, now = hold
+    held = max(now - start, 0)
+    cost = calculate_session_cost(min(held, max(until - start, 0)), rate)
+    if now >= until:
+        return (f"已过期 {(now - until) // 60} 分钟（共保持 {(until - start) // 60} 分钟，约 ¥{cost:.2f}），"
+                "看门狗已恢复空闲关机")
+    return (f"保持中，剩余 {(until - now) // 60} 分钟；已保持 {held // 60} 分钟，约 ¥{cost:.2f}"
+            f"（¥{rate}/小时）。用完 cloud release，或直接 cloud down")
+
+
+def _watchdog_supports_hold(host: str) -> bool:
+    return _ssh(f"grep -q hold_active {REMOTE_WATCHDOG_PATH}", host=host, check=False).returncode == 0
+
+
+def cmd_hold(args: argparse.Namespace) -> int:
+    """D130：人要求配完不关机。写保持标记（再次 hold 即续期），看门狗到期前不做空闲关机。"""
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    if not is_ssh_reachable(host):
+        raise SystemExit("FAIL 实例联系不上：没开机，或已经被看门狗关掉了，hold 无从谈起")
+    seconds = int(cfg_global.get("hold_seconds", DEFAULT_HOLD_SECONDS))
+    if not _watchdog_supports_hold(host):
+        # 本版之前起的看门狗不认标记：照 up 的部署办法换一个（先杀旧进程再起新的，见 build_watchdog_deploy_command）
+        idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
+        res = _ssh(build_watchdog_deploy_command(generate_watchdog_script(idle_sec)), host=host, check=False)
+        if res.returncode != 0 or not res.stdout.strip():
+            raise SystemExit(f"FAIL 远端看门狗是旧版、不认保持标记，换新版没成功（returncode={res.returncode}，"
+                             f"stderr={res.stderr.strip()!r}）；不写标记，免得以为保住了")
+        print(f"[*] 远端看门狗是旧版，已换成认保持标记的新版（PID {res.stdout.strip()}）")
+    res = _ssh(hold_write_command(seconds), host=host, check=False)
+    hold = parse_hold(res.stdout) if res.returncode == 0 else None
+    if hold is None:
+        raise SystemExit(f"FAIL 保持标记没写上（returncode={res.returncode}，stderr={res.stderr.strip()!r}）")
+    start, until, now = hold
+    renewed = start < now
+    print(f"[OK] 保持开机到 {datetime.fromtimestamp(until).strftime('%H:%M')}（本机时间）"
+          f"（{(until - now) // 60} 分钟后自动释放{'；已续期，从第一次 hold 起算已保持 ' + str((now - start) // 60) + ' 分钟' if renewed else ''}）。"
+          "实例这段时间一直计费；用完 cloud release，或直接 cloud down")
+    return 0
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    """D130：撤掉保持标记，看门狗恢复空闲关机（无任务时约 idle_shutdown_seconds 后关机）。"""
+    cfg_global, cfg_local = load_cloud_config()
+    host = _ssh_host(cfg_local)
+    if not is_ssh_reachable(host):
+        print("[*] 实例联系不上，已经关了，没有要撤的保持")
+        return 0
+    res = _ssh(f"rm -f {REMOTE_HOLD_PATH}", host=host, check=False)
+    if res.returncode != 0:
+        raise SystemExit(f"FAIL 保持标记没删掉（returncode={res.returncode}，stderr={res.stderr.strip()!r}）")
+    idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
+    print(f"[OK] 已撤保持：没有 ava- 任务时，看门狗约 {idle_sec} 秒后关机（要马上关机结算用 cloud down）")
     return 0
 
 
@@ -1817,6 +1930,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         active = remote_active_tasks(host=host)
         active_str = f"[{', '.join(active)}]" if active else "无"
         print(f"活跃后台任务 : {active_str}")
+
+        hold_res = _ssh(f"cat {REMOTE_HOLD_PATH} 2>/dev/null; date +%s", host=host, check=False)
+        hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
+        sdata_rate: dict = {}
+        try:
+            sdata_rate = json.loads(get_active_session_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        reported = sdata_rate.get("rate_cny") if isinstance(sdata_rate.get("rate_cny"), (int, float)) else None
+        rate_now, _ = session_rate(cfg_global, sdata_rate.get("mode", "gpu"), sdata_rate.get("gpu"), reported)
+        print(f"保持开机     : {hold_status_line(hold, rate_now)}")
 
     sfile = get_active_session_file()
     if sfile.exists():
@@ -2522,6 +2646,10 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     p_status = sub.add_parser("status", help="查询实例连通性、GPU工况与账簿明细")
 
+    # D130：配完不关机
+    sub.add_parser("hold", help="保持开机（看门狗暂停空闲关机，2 小时后自动释放；再次 hold 即续期）")
+    sub.add_parser("release", help="撤掉 hold，看门狗恢复空闲关机")
+
     # push
     p_push = sub.add_parser("push", help="同步本地稿件与配置至云端")
     p_push.add_argument("target", type=Path, help="本期目录路径")
@@ -2571,6 +2699,8 @@ def main() -> int:
         "up": cmd_up,
         "down": cmd_down,
         "status": cmd_status,
+        "hold": cmd_hold,
+        "release": cmd_release,
         "push": cmd_push,
         "run": cmd_run,
         "pull": cmd_pull,

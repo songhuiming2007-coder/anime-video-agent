@@ -1538,7 +1538,8 @@ def test_readonly_pipeline_modules_are_card_free(episode: Path, root: Path, comm
     assert verdict.action == "allow", verdict
 
 
-@pytest.mark.parametrize("command", ["tts run", "clips", "render", "qc", "cover", "cloud status"])
+@pytest.mark.parametrize("command", ["tts run", "clips", "render", "qc", "cover", "cloud status",
+                                     "cloud hold", "cloud release"])  # D130 人定 hold 不弹卡
 def test_writing_pipeline_modules_are_card_free(episode: Path, root: Path, command: str) -> None:
     """ADR-0030 决策 2：白名单内写期目录的模块免卡（回退靠产物即状态、可重跑）。"""
     verdict = review_tool_call(
