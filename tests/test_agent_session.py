@@ -1678,13 +1678,39 @@ def test_d47_script_write_card_free_and_kept_in_history(episode: Path, root: Pat
     from pipeline.agent.tools import write_episode_file
 
     (episode / "02-script.md").write_text("配音：旧\n", encoding="utf-8")
-    args = {"filename": "02-script.md", "content": "配音：新\n"}
+    args = {"filename": "02-script.md", "edits": [{"old": "旧", "new": "新"}]}
     v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative", root=root,
                          draft_writes_this_turn=0)
     assert v.action == "allow"
     write_episode_file(episode, "02-script.md", "配音：新\n", confirmed=True, root=root)
     hist = list((episode / "_agent" / "script-history").glob("*-02-script.md"))
     assert [h.read_text(encoding="utf-8") for h in hist] == ["配音：旧\n"]
+
+
+def test_d135_existing_script_rejects_content_both_layers(episode: Path, root: Path) -> None:
+    """D135：定稿存在后只收 edits。审卡层在弹卡前拒，执行层（绕过审卡的直接调用）同样拒，磁盘一字不动。"""
+    from pipeline.agent.tools import ToolContext, execute_tool
+
+    (episode / "02-script.md").write_text("配音：人手改过\n", encoding="utf-8")
+    args = {"filename": "02-script.md", "content": "配音：模型上下文里的旧版\n"}
+    v = review_tool_call("write_episode_file", args, ep_dir=episode, scope="creative", root=root,
+                         draft_writes_this_turn=0)
+    assert v.action == "reject" and "只能用 edits" in v.reason
+    out = execute_tool("write_episode_file", args,
+                       ToolContext(root=root, episode_dir=episode, scope="creative", confirmed=True))
+    assert out["ok"] is False and "只能用 edits" in out["error"]
+    assert (episode / "02-script.md").read_text(encoding="utf-8") == "配音：人手改过\n"
+    assert not (episode / "_agent" / "script-history").exists()
+
+
+def test_d135_content_still_allowed_for_draft_and_other_files(episode: Path, root: Path) -> None:
+    """D135 只管人会手改的定稿：草稿（模型自己的工作稿）与其他白名单文件已存在时照收 content。"""
+    (episode / "02-script.draft.md").write_text("旧草稿\n", encoding="utf-8")
+    (episode / "07-titles.md").write_text("旧标题\n", encoding="utf-8")
+    for name in ("02-script.draft.md", "07-titles.md"):
+        v = review_tool_call("write_episode_file", {"filename": name, "content": "新\n"}, ep_dir=episode,
+                             scope="creative", root=root, draft_writes_this_turn=0)
+        assert v.action == "allow", (name, v.reason)
 
 
 def test_d47_review_rejects_before_card(episode: Path, root: Path) -> None:

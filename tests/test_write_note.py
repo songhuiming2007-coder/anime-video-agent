@@ -94,6 +94,23 @@ def test_edits改已有笔记_旧版留底(root: Path):
     assert len(hist) == 1 and "1. 旧句子" in hist[0].read_text(encoding="utf-8")
 
 
+def test_d135_已有笔记不收content_审卡与落盘两层都拒(root: Path):
+    note = root / NOTES / "罪恶王冠.md"
+    before = note.read_text(encoding="utf-8")
+    args = {"anime": "罪恶王冠", "target": "notes", "reason": "r", "content": "# 罪恶王冠\n\n整篇重写\n"}
+    v = _review(args, root)
+    assert v.action == "reject" and "只能用 edits" in v.reason
+    out = execute_tool("write_note", args, _ctx(root))
+    assert out["ok"] is False and "只能用 edits" in out["error"]
+    assert note.read_text(encoding="utf-8") == before
+
+
+def test_d135_终审表照收content_它不是人手改的笔记本体(root: Path):
+    args = {"anime": "罪恶王冠", "target": "review", "report": "罪恶王冠-对抗审查报告-2026-10-09.md",
+            "reason": "终审", "content": "| # | 裁决 |\n|---|---|\n| F1 | 采纳 |\n"}
+    assert _review(args, root).action == "allow"
+
+
 def test_edits找不到在弹卡前拒(root: Path):
     v = _review({"anime": "罪恶王冠", "target": "notes", "reason": "r",
                  "edits": [{"old": "不存在的句子", "new": "x"}]}, root)

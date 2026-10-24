@@ -60,6 +60,10 @@ DRAFT_HISTORY_KEEP = 20
 # 要靠这些快照才能在分析时剔出去；每份 KB 级，一期至多几十份。
 SCRIPT_FILENAME = "02-script.md"
 SCRIPT_HISTORY_DIR = ("_agent", "script-history")
+# D135（2026-10-24 人定）：人会在桌面端手改的文件，存在后只收 edits。content 整篇重写的底稿是模型上下文里的
+# 旧版，人在这期间的手改会被静默冲掉（supercell 卷三 02.5 三次整篇重写，冲掉 34 段人改过的配音行）；
+# edits 按磁盘现版逐条唯一替换，冲不掉没点名的段。番剧笔记（write_note target=notes）同一规则
+EDITS_ONLY_WHEN_EXISTS: frozenset[str] = frozenset({SCRIPT_FILENAME})
 # ADR-0030（D78）：写期文件全部免卡后，其余白名单文件（01-topic.md、07-titles.md、02-adversarial.md）
 # 覆盖前同样留底，人要回退直接从这里拿；不修剪（KB 级纯文本，一期至多几十份）
 FILE_HISTORY_DIR = ("_agent", "file-history")
@@ -1431,6 +1435,9 @@ def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> st
     if content is not None:
         if not isinstance(content, str):
             raise ValueError("content 必须是字符串")
+        name = Path(str(args.get("filename", ""))).name
+        if name in EDITS_ONLY_WHEN_EXISTS and ep_dir is not None and (Path(ep_dir) / name).exists():
+            raise ValueError(_edits_only_message(name))
         return content
     if not isinstance(edits, list) or not edits:
         raise ValueError("edits 必须是非空数组")
@@ -1438,6 +1445,11 @@ def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> st
         raise PermissionError(NO_EPISODE_MESSAGE)
     target = Path(ep_dir) / Path(str(args.get("filename", ""))).name
     return _apply_edits(target, edits)
+
+
+def _edits_only_message(name: str) -> str:
+    return (f"{name} 已存在，人可能在桌面端改过它：只能用 edits 按磁盘现版逐条替换，不收 content 整篇重写"
+            "（D135）。先读一遍现版，再只传要改的片段")
 
 
 def _apply_edits(target: Path, edits: list) -> str:
@@ -1523,6 +1535,9 @@ def resolve_note_content(args: dict[str, Any], root: Path | None = None) -> str:
     if content is not None:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content 必须是非空字符串")
+        dest = note_target(args, root)
+        if str(args.get("target", "notes")) == "notes" and dest.exists():
+            raise ValueError(_edits_only_message(dest.name))
         return content
     if not isinstance(edits, list) or not edits:
         raise ValueError("edits 必须是非空数组")
