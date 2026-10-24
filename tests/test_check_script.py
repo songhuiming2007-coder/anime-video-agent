@@ -1468,3 +1468,71 @@ def test_纪录片SP100锚点计入物证_D127(tmp_path, monkeypatch):
     f = script(tmp_path, [BODY] * 8, anchors=["SP99 01:23", "SP100 02:34", "SP101 03:45"] + [None] * 5)
     chk = get(cs.run(f), "纪录片实证物证锚点")
     assert chk.ok and "3 处" in chk.detail
+
+
+class TestMusicGaps:
+    """D133「无音乐空档」：试听型稿件每段口播都要有音乐垫着（2026-10-23 人定）。"""
+
+    SCRIPT = ("## 音乐段 M1\n\n音乐: `甲` 完整版 00:00-00:10\n状态: 前景试听，旁白停止\n过渡: {after}\n\n"
+              "## 段落 1\n\n配音：" + BODY + "\n\n"
+              "## 音乐段 M2\n\n音乐: `甲` 完整版 01:00-01:10\n状态: 前景试听，旁白停止\n过渡: 淡出\n\n"
+              "## 段落 2\n\n配音：" + BODY + "\n\n"
+              "## 音乐段 M3\n\n音乐: `甲` 完整版 02:00-02:10\n状态: 前景试听，旁白停止\n过渡: 淡出\n")
+    NAME = "无音乐空档"
+
+    @pytest.fixture
+    def ep(self, tmp_path, monkeypatch):
+        from pipeline import music
+        (tmp_path / "x.flac").write_bytes(b"")
+        monkeypatch.setattr(music.paths, "ROOT", tmp_path)
+        monkeypatch.setattr(music, "load_tracks_multi",
+                            lambda e: {"tracks": {"甲": {"path": "x.flac", "dur": 300.0, "lufs": -10.0}}})
+        return tmp_path
+
+    def _write(self, ep, after="降为 BGM", durs=None, name="02-script.md"):
+        f = ep / name
+        f.write_text(self.SCRIPT.format(after=after), encoding="utf-8")
+        if durs is not None:
+            (ep / "03-audio").mkdir(exist_ok=True)
+            (ep / "03-audio" / "manifest.json").write_text(json.dumps(
+                {"segments": [{"index": i, "duration": d} for i, d in enumerate(durs, 1)]}), encoding="utf-8")
+        return f
+
+    def test_配音后按真实段长_超过1秒FAIL并报段号(self, ep):
+        chk = get(cs.run(self._write(ep, durs=[5.0, 1.5])), self.NAME)
+        assert not chk.ok and "1 处空档、共 1.5 s：段2（1.5 s）" in chk.detail
+
+    def test_配音后1秒以内是交接容差_PASS(self, ep):
+        chk = get(cs.run(self._write(ep, durs=[5.0, 1.0])), self.NAME)
+        assert chk.ok and "按配音时长复算" in chk.detail
+
+    def test_配音前按结构判_淡出后无人接管的段照样FAIL(self, ep):
+        chk = get(cs.run(self._write(ep)), self.NAME)
+        assert not chk.ok and "按稿件结构" in chk.detail and "段2" in chk.detail and "段1" not in chk.detail
+
+    def test_配音前结构上没空档_通过但写明要配音后复核(self, ep):
+        f = self._write(ep)
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            "01:00-01:10\n状态: 前景试听，旁白停止\n过渡: 淡出", "01:00-01:10\n状态: 前景试听，旁白停止\n过渡: 降为 BGM"),
+            encoding="utf-8")
+        chk = get(cs.run(f), self.NAME)
+        assert chk.ok and chk.detail.startswith("⚠") and "配音后再跑一次" in chk.detail
+
+    def test_查草稿不拿定稿的manifest算(self, ep):
+        self._write(ep, durs=[5.0, 0.5])                          # 定稿配过音，段 2 只有 0.5 s
+        chk = get(cs.run(self._write(ep, name="02-script.draft.md")), self.NAME)
+        assert not chk.ok and "按稿件结构" in chk.detail
+
+    def test_查草稿算的是草稿本身(self, ep):
+        self._write(ep, after="淡出")                            # 定稿段 1 也没人接管
+        draft = self._write(ep, name="02-script.draft.md")       # 草稿段 1 降为 BGM，只剩段 2
+        chk = get(cs.run(draft), self.NAME)
+        assert not chk.ok and "：段2" in chk.detail and "段1" not in chk.detail
+
+    def test_时间轴建不起来_FAIL(self, ep):
+        chk = get(cs.run(self._write(ep, durs=[5.0])), self.NAME)  # manifest 少了段 2
+        assert not chk.ok and "音乐时间轴建不起来" in chk.detail and "重配音" in chk.detail
+
+    def test_普通期不出这一项(self, tmp_path):
+        f = script(tmp_path, [BODY])
+        assert not [c for c in cs.run(f) if c.name.startswith(self.NAME)]

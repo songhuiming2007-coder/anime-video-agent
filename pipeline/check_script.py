@@ -1161,6 +1161,7 @@ def run(path: Path) -> list[Check]:
 
     _check_avsync_subs(path, add)
     _check_bgm_source(path, add)
+    _check_music_gaps(path, add)
 
     return checks
 
@@ -1199,6 +1200,59 @@ def _check_avsync_subs(path: Path, add) -> None:
             rows.append(f"{b.label}：{n} 句")
     if rows or bad:
         add("试看字幕", not bad, "；".join(bad + rows))
+
+
+#: 配音前的结构判定给每段的时长（秒，D133）：短到任何铺底封顶、曲目长度都盖得住，剩下的空档就与时长无关——
+#: 前景块淡出之后、下一个音乐段之前的段落，配多长都是干口播，写稿时就能报。
+_STRUCTURAL_SEG_S = 0.01
+
+
+def _check_music_gaps(path: Path, add) -> None:
+    """D133「无音乐空档」：试听型稿件（有 `## 音乐段`）的成片时间轴上，不许有没有任何音乐的口播区间。
+
+    配音后（有 manifest、查的是 02-script.md）按真实段长复算，空档超过 MUSIC_GAP_MAX_S 判 FAIL；
+    配音前（或查草稿）按结构判：每段取极短时长跑同一条时间轴，报淡出后无人接管的段落，
+    与时长有关的那部分（铺底封顶、曲目播完）照实写明要配音后复核。普通期不出这一项。
+    """
+    from . import music
+
+    if not music.parse_script_music(path):
+        return
+    name = f"无音乐空档（>{music.MUSIC_GAP_MAX_S:g} s）"
+    ep = path.parent
+    mf = ep / "03-audio" / "manifest.json"
+    exact = path.name == "02-script.md" and mf.exists()
+    try:
+        if exact:
+            manifest = json.loads(mf.read_text(encoding="utf-8"))
+        else:
+            labels = [int(m.group(2)) for m in music._HEAD.finditer(path.read_text(encoding="utf-8"))
+                      if m.group(1) == "段落"]
+            manifest = {"segments": [{"index": n, "duration": _STRUCTURAL_SEG_S} for n in labels]}
+        plan = music.build_timeline(ep, manifest, music.load_tracks_multi(ep), script=path)
+    except SystemExit as e:
+        add(name, False, f"音乐时间轴建不起来：{str(e).removeprefix('FAIL ').strip()}"
+            + ("" if not exact else "（稿件改过段落就先重配音，manifest 要与稿件对得上）"))
+        return
+    gaps = music.music_gaps(plan)
+    fix = ("　每段口播都要有音乐垫着（2026-10-23 人定）：在空档前加背景铺底块，"
+           "或把前一个前景块的 `过渡:` 改成 `降为 BGM`")
+    if exact:
+        bad = [g for g in gaps if g["dur"] > music.MUSIC_GAP_MAX_S]
+        if bad:
+            add(name, False, f"按配音时长复算有 {len(bad)} 处空档、共 {sum(g['dur'] for g in bad):.1f} s："
+                + music.describe_gaps(bad) + fix)
+        else:
+            add(name, True, f"按配音时长复算，没有超过 {music.MUSIC_GAP_MAX_S:g} s 的空档")
+        return
+    bad = [g for g in gaps if g["segments"]]
+    if bad:
+        segs = "；".join(f"段{g['segments'][0]}" if len(g["segments"]) == 1
+                        else f"段{g['segments'][0]}–{g['segments'][-1]}" for g in bad)
+        add(name, False, f"按稿件结构，这些段落没有任何音乐（配多长都是干口播）：{segs}" + fix)
+    else:
+        add(name, True, "⚠ 还没按配音时长复算（缺 03-audio/manifest.json 或查的是草稿）：结构上每段都有音乐接管；"
+            "铺底封顶、曲目播完这类与时长有关的空档，配音后再跑一次本检查")
 
 
 def _check_bgm_source(path: Path, add) -> None:
