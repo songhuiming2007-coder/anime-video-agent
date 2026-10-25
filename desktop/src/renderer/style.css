@@ -300,7 +300,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 
 /* D79：排队中的消息（回合在跑时发出、尚未送达模型）。ui.css 冻结（视觉门禁 1），放这里 */
 .composer-queue { display: flex; flex-direction: column; gap: var(--space-1); }
-.composer-queued { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-2); background: var(--bg-subtle); border: 1px dashed var(--border-strong); border-radius: var(--radius-xl); }
+.composer-queued { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-2); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .composer-queued-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); }
 
 /* ---- D80：对话流工具行 / 终端组 / 回合折叠 / 运行动感（人选方案 A，2026-10-12；ui.css 冻结，新样式只写这里）----
@@ -429,12 +429,16 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-ctl-btn[data-source="session"] { color: var(--fg); }
 .model-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); }
 .model-pop { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 6; width: max-content; min-width: 220px; max-width: 360px; max-height: 50vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
-.model-pop-row { width: 100%; min-height: 28px; gap: var(--space-2); }
+/* D152 A：菜单行对齐 ZCode dropdown-menu.tsx:77（min-h-7 rounded-md px-2 py-1）与
+ * ModelConfigSelect.tsx:402-415（check 挪行尾，pr-8 → 右列 16px）；ui.css 冻结，覆盖写这里。 */
+.model-pop-row { width: 100%; min-height: var(--control-h); gap: var(--space-2); border-radius: var(--radius-md); }
 .model-pop-row .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); }
 .effort-pop .model-pop-row .ui-row-title { font-family: inherit; }
-.model-pop-check { flex: none; display: inline-flex; width: 16px; color: var(--fg); }
-.model-pop-meta { margin-left: auto; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); }
-.model-pop-reset { border-top: 1px solid var(--border); margin-top: 2px; padding-top: 2px; }
+.model-pop-check { flex: none; display: inline-flex; justify-content: flex-end; width: 16px; margin-left: auto; color: var(--fg); }
+.model-pop-meta { color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); }
+.model-pop-meta + .model-pop-check { margin-left: 0; }
+/* ZCode dropdown-menu.tsx:188 分隔：-mx-1 my-1 h-px 横贯浮层内边距 */
+.model-pop-reset { border-top: 1px solid var(--border); margin: 2px calc(-1 * var(--space-2)) 0; padding: 2px var(--space-2) 0; border-radius: 0 0 var(--radius-md) var(--radius-md); }
 .model-pop-reset .ui-row-title { font-family: inherit; color: var(--fg-muted); }
 .model-pop-err, .model-pop-wait { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
 .model-ctl-err { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
@@ -447,5 +451,5 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-pop-warn { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
 .model-pop-err { display: flex; align-items: center; gap: var(--space-2); }
 .model-pop-retry { flex: none; margin-left: auto; }
-.model-pop-custom { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); border-top: 1px solid var(--border); margin-top: 2px; }
+.model-pop-custom { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); border-top: 1px solid var(--border); margin: 2px calc(-1 * var(--space-2)) 0; }
 .model-pop-input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); }

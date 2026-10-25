@@ -364,8 +364,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
                 <span className="ui-row-title">{m}</span>
+                <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
               </button>
             ))}
             {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
@@ -404,8 +404,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="model-pop-check" />
                 <span className="ui-row-title">恢复默认模型</span>
+                <span className="model-pop-check" />
               </button>
             )}
           </div>
@@ -447,9 +447,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="model-pop-check">{(pendingEffort ?? info?.effort) === v ? <Icon name="check" size="sm" /> : null}</span>
                 <span className="ui-row-title">{EFFORT_LABELS[v]}</span>
                 <span className="model-pop-meta">{v}</span>
+                <span className="model-pop-check">{(pendingEffort ?? info?.effort) === v ? <Icon name="check" size="sm" /> : null}</span>
               </button>
             ))}
             <button
@@ -462,8 +462,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                 void rpc.call("conv.command", { convKey, name: "thinking", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
               }}
             >
-              <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
               <span className="ui-row-title">默认（不发推理参数）</span>
+              <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
             </button>
           </div>
         )}
