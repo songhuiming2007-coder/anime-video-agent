@@ -16,8 +16,7 @@ class TestCharWidth:
         assert r.char_width("汉") == 1.0
 
     def test_中文标点半格(self):
-        # 全角码位，但渲染出来只占半格左右。按字数一刀切会把
-        # 「31 汉字 + 1 逗号」误判成超宽——它实际只有 31.5 格。
+        # 折行约定记半格（不是像素：libass 里标点占满格，D146 起 qc 按真实像素卡边距）
         for ch in "，。、；：？！":
             assert r.char_width(ch) == 0.5
 

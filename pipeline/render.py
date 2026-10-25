@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import math
 import os
 import re
 import shutil
@@ -23,7 +24,7 @@ from pathlib import Path
 from . import bgm, paths
 from .keys import SP_NUM_LOOSE, sp_key
 from .music import FOREGROUND_LUFS  # 试听型前景响度，music.py 单源
-from .align import has_clips_approved_diff, verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
+from .align import SEG_TOL, has_clips_approved_diff, verify_alignment, verify_script_vo_hash   # 叶子模块，无环；不挂 clips（否则把检索的 ML 栈拖进渲染）
 
 # 输出规格。片源是 1920x1080 / 23.976fps / yuv420p10le，成片降到 8bit：
 # 抖音和 B 站的转码链对 10bit 支持不稳，而我们又不做调色，10bit 没有收益。
@@ -149,7 +150,96 @@ def frame_time(path: Path) -> float:
     return den / num
 
 
-def cut(clip: dict, dest: Path, slow: float = 1.0) -> None:
+def frame_count(path: Path) -> int:
+    """视频流实际有几帧（逐包数，不信容器头）。"""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True).stdout.strip()
+    return int(out)
+
+
+def _video_tail_gap(path: Path, src_dur: float) -> float:
+    """容器时长比视频流末尾多出的秒数（音轨比画面长时 > 0）。流不报时长（mkv 常见）记 0。"""
+    raw = _ffprobe(path, "stream=start_time,duration", "v:0").split(",")
+    try:
+        end = float(raw[0]) + float(raw[1])
+    except (IndexError, ValueError):
+        return 0.0
+    return max(0.0, src_dur - end)
+
+
+def _frame_edge(t: float) -> int:
+    """成片时间 t 最近的输出帧边界序号。"""
+    return math.floor(t / _fps_to_frame_time(FPS) + 0.5)
+
+
+def span_frames(t0: float, t1: float) -> int:
+    """成片区间 [t0, t1) 在画面轨里占几帧（D145）。
+
+    按计划时间轴的累计边界分帧：n = B(t1) − B(t0)。相邻片段共用同一个边界，
+    拼接后第 k 段的第一帧正好是 B(t0_k)，任一位置离计划不超过半帧。
+    此前每段各按 `-t dur` 截，编码器把尾巴凑到整帧，平均每段多约 18.6 ms，
+    单段在 1 帧容差内、守卫放行，卷三 191 段累积到片尾晚了 3.6 s。
+    """
+    return _frame_edge(t1) - _frame_edge(t0)
+
+
+def segment_clip_frames(segments: list[dict],
+                        seg_span: dict[int, tuple[float, float]]) -> list[int]:
+    """每个段落切片的帧数，顺序同 `[c for s in segments for c in s["clips"]]`。
+
+    段内按 dur(+extend) 累计推边界；末片的终点钉在本段计划终点（= 配音结束），
+    段内 Σdur 与配音的差（≤ SEG_TOL）由末片吸收，不带进下一段。
+    """
+    out: list[int] = []
+    for s in segments:
+        if s["index"] not in seg_span:
+            raise SystemExit(f"FAIL 段落 {s['index']} 不在成片时间轴里")
+        t, end = seg_span[s["index"]]
+        clips = s["clips"]
+        for j, c in enumerate(clips):
+            t1 = end if j == len(clips) - 1 else t + c["dur"] + c.get("extend", 0.0)
+            n = span_frames(t, t1)
+            if n < 1:
+                raise SystemExit(
+                    f"FAIL 段{s['index']} 第 {j + 1} 个片段在成片里不足 1 帧"
+                    f"（{t:.3f}–{t1:.3f}s）")
+            out.append(n)
+            t = t1
+    return out
+
+
+def check_tiling(spans: list[tuple[float, float, str]], total: float) -> None:
+    """画面轨是按顺序拼的，各占位必须首尾相接铺满 [0, total]，否则拼出来的位置就不是计划位置。"""
+    t = 0.0
+    for t0, t1, name in sorted(spans, key=lambda x: x[0]):
+        if abs(t0 - t) > 1e-3:
+            raise SystemExit(
+                f"FAIL 画面占位不连续：{name} 计划 {t0:.3f}s 起，上一段到 {t:.3f}s 止"
+                f"（差 {(t0 - t) * 1000:+.0f}ms）——画面轨顺序拼接会把它放错位置")
+        t = t1
+    if abs(t - total) > 1e-3:
+        raise SystemExit(f"FAIL 画面占位到 {t:.3f}s 止，成片计划 {total:.3f}s")
+
+
+def check_video_track(video: Path, frames: int, total: float) -> None:
+    """拼完、合成前核画面轨（D145）：帧数等于分帧之和，时长与计划差 ≤ 1 帧。
+
+    合成用 `-shortest` 按音频截尾，画面多出来的尾巴在成片里看不见，
+    所以这一关只能放在 mux 之前。
+    """
+    ft = _fps_to_frame_time(FPS)
+    got_n = frame_count(video)
+    got = duration(video)
+    if got_n != frames or abs(got - total) > ft + 1e-6:
+        raise SystemExit(
+            f"FAIL 画面轨与计划不符：{got_n} 帧 / {got:.3f}s，"
+            f"应为 {frames} 帧 / 计划 {total:.3f}s（差 {(got - total) * 1000:+.0f}ms，"
+            f"容差 1 帧 {ft * 1000:.1f}ms）")
+
+
+def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
     """切一个片段，切前切后都校验（CLAUDE.md「截取守卫」，缺一不可）。
 
     ffmpeg 在请求时长超出源片剩余长度时**静默截断且不报错**，踩到就整条音画错位
@@ -162,6 +252,10 @@ def cut(clip: dict, dest: Path, slow: float = 1.0) -> None:
     2026-09-13 三期）。放弃「素材长度不够就报错」的那条路 —— 试听段的画面就是这样
     指定的，报错只会逼写稿人换一个不相干的源。**放慢不是静止**：滑镜仍在滑，只是慢，
     不碰 2026-08-16「试听段不允许静止画面」那条裁定。上限见 MAX_SLOW。
+
+    `frames`：输出帧数，由调用方按成片时间轴分好（`span_frames`，D145）。
+    输出按帧数截（`-frames:v`），不按时长截：`-t` 会被编码器凑到整帧，逐段多出的
+    零头在拼接后累积成音画错位。
     """
     src = Path(clip["source"])
     want = clip["dur"]
@@ -190,32 +284,44 @@ def cut(clip: dict, dest: Path, slow: float = 1.0) -> None:
             + (f"（槽位 {want:.3f}s 已按 {slow:.2f}× 折算）" if slow > 1.0 else "")
         )
 
+    out_ft = _fps_to_frame_time(FPS)
+    src_ft = frame_time(src)
+    # 分帧后的输出长度与 want+ext 差不到 1 帧（末片另吸收段内 ≤ SEG_TOL 的零头）
+    if abs(frames * out_ft - (want + ext)) > SEG_TOL + 2 * out_ft:
+        raise SystemExit(
+            f"FAIL 切片帧数与时长对不上：{dest.name} 要 {want + ext:.3f}s，"
+            f"分到 {frames} 帧 = {frames * out_ft:.3f}s")
+    # 末帧克隆垫底，只补读到源片末尾时的三样零头，再由 -frames:v 截到恰好 frames 帧：
+    # ① 分帧后比 want+ext 多要的部分；② 末帧时长不随 setpts 拉长，差一个源帧 × slow；
+    # ③ 守卫 1 按容器时长卡，视频流可能比容器早结束（D144：SP05 容器 378.541 s、
+    # 视频流 378.51 s，放慢 1.42× 后 ②③ 合计短 70 ms）。另留一个输出帧给帧率换算的取整。
+    # 源片真不够长由守卫 1 拦，不靠垫。
+    pad = (ext + max(0.0, frames * out_ft - (want + ext))
+           + slow * (src_ft + _video_tail_gap(src, src_dur)) + out_ft)
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
     if slow > 1.0:
         vf += f",setpts=PTS*{slow:.6f}"
-    if ext > 0:
-        vf += f",tpad=stop_mode=clone:stop_duration={ext}"
+    vf += f",tpad=stop_mode=clone:stop_duration={pad:.3f}"
     cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
            "-ss", f"{clip['start']:.3f}"]
     if slow > 1.0:
         # 输入级 -t（放在 -i 前）：只读 take 秒，交给 setpts 拉成 want。
         # 若写成输出级 -t take，它会按**输出**时长截，放慢后正好被砍成 1/slow。
         cmd += ["-t", f"{take:.3f}"]
-    cmd += ["-i", str(src), "-t", f"{want + ext:.3f}",
+    cmd += ["-i", str(src), "-frames:v", str(frames),
             "-an", "-sn", "-vf", vf,
             "-r", FPS, "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
             str(dest)]
     subprocess.run(cmd, check=True, capture_output=True)
 
-    # 守卫 2：切之后，容差 = 源片与目标输出帧率中较大者的一帧（跨帧率重采样离散量）
+    # 守卫 2：切之后。帧数必须恰好是分到的帧数，时长与帧数差不过半帧
+    got_n = frame_count(dest)
     got = duration(dest)
-    tol = max(frame_time(src), _fps_to_frame_time(FPS))
-    if abs(got - (want + ext)) > tol:
+    if got_n != frames or abs(got - frames * out_ft) > out_ft / 2:
         raise SystemExit(
             f"FAIL 切后时长不符：{dest.name}\n"
-            f"     要 {want + ext:.3f}s 实得 {got:.3f}s 差 {abs(got - want - ext) * 1000:.0f}ms"
-            f" > 1 帧 {tol * 1000:.1f}ms"
+            f"     要 {frames} 帧 = {frames * out_ft:.3f}s，实得 {got_n} 帧 / {got:.3f}s"
         )
 
 
@@ -226,7 +332,11 @@ def _ass_time(t: float) -> str:
 
 
 def usable_width() -> float:
-    """边距之内一行放得下多少格（一个汉字 = 1 格）。这是**硬上限**，质检按它卡。"""
+    """边距之内按约定宽度算放得下多少格（一格 = 字号 FONT_SIZE 像素）。
+
+    这是折行约定的上限，不是像素：libass 渲出来一个汉字约 46.5 px，不是 54 px（D146）。
+    qc 的「字幕不超宽」按真实像素卡边距（`subtitle_metrics`），不按它。
+    """
     return (W - MARGIN_LR * 2) / FONT_SIZE
 
 
@@ -245,10 +355,11 @@ _OPENING = "（「『【〈《“‘"
 
 
 def char_width(ch: str) -> float:
-    """字符视觉宽度，以一个汉字为 1。
+    """折行约定里的字符宽度，以一个汉字为 1：中文标点与 ASCII 记半格。
 
-    中文标点虽然是全角码位，渲染出来只占半格左右；ASCII 也是半格。
-    按字数一刀切会把「31 个汉字 + 1 个逗号」误判成超宽——它实际只有 31.5 格。
+    这是定「一行放多少字」的约定，不是像素。2026-10-25 实测（D146）中文标点在行中
+    占满一个汉字宽、大写与数字比半格宽；约定宽度对汉字偏大（1 格 = 54 px，实际约 46.5 px），
+    至今的稿子都还在边距内。真实像素宽见 `subtitle_metrics.text_px`，qc 按它卡边距。
     """
     if ch in _NO_LINE_START or ch in _OPENING:
         return 0.5
@@ -944,18 +1055,8 @@ def _maybe_music_plan(episode: Path, manifest: dict) -> dict | None:
     return music_mod.build_timeline(episode, manifest, block)
 
 
-def _still_frames(episode: Path, plan: dict,
-                  parts_by_seg: dict[int, list[Path]], work: Path
-                  ) -> list[tuple[Path, float, float]]:
-    """音乐段画面。
-
-    前景音乐段（blocks）与结尾自然收尾段（natural 事件）都要画面——
-    声明了 `画面:` 的段从源片切实画面（OP/ED/插曲/回忆场景，2026-08-16
-    用户拍板：不允许静止画面）；没声明的回退为上一段最后一帧定格。
-    natural 段继承同曲目最后前景块的画面源并连续接续。
-    返回 [(视频段, 时长, 成片起点)]。
-    """
-    seg_starts = sorted((s["index"], s["start"]) for s in plan["segments"])
+def music_visual_slots(plan: dict) -> list[tuple[float, float, str | None]]:
+    """试听型时间轴上要画面的音乐段：[(成片起点, 时长, `画面:` 声明或 None)]，按起点排序。"""
     # 画面占位段 = 前景块 + natural 事件（at 在最后一个段落之后）。
     # natural 段继承同曲目最后一个前景块的画面源并**连续接续**（起点 += 前景时长），
     # 保证同一曲目的画面与音乐一样不重切。
@@ -981,9 +1082,25 @@ def _still_frames(episode: Path, plan: dict,
                         vis = f"{ep_tag} {_hhmmss_to_sec(start_s) + fgs[-1]['dur']:.2f}"
                 visual.append((ev["at"], ev["t1"] - ev["t0"], vis))
     visual.sort(key=lambda v: v[0])
+    return visual
 
+
+def _still_frames(episode: Path, plan: dict,
+                  parts_by_seg: dict[int, list[Path]], work: Path
+                  ) -> list[tuple[Path, float, float, int]]:
+    """音乐段画面。
+
+    前景音乐段（blocks）与结尾自然收尾段（natural 事件）都要画面——
+    声明了 `画面:` 的段从源片切实画面（OP/ED/插曲/回忆场景，2026-08-16
+    用户拍板：不允许静止画面）；没声明的回退为上一段最后一帧定格。
+    natural 段继承同曲目最后前景块的画面源并连续接续。
+    返回 [(视频段, 时长, 成片起点, 帧数)]；帧数按成片时间轴分（span_frames，D145）。
+    """
+    seg_starts = sorted((s["index"], s["start"]) for s in plan["segments"])
     out = []
+    visual = music_visual_slots(plan)
     for k, (start, dur, vis) in enumerate(visual):
+        n = span_frames(start, start + dur)
         # 声明了 `画面:` 的段从源片切；否则上一段最后一帧定格。
         if vis:
             ep_tag, start_s = vis.rsplit(" ", 1)
@@ -1008,10 +1125,10 @@ def _still_frames(episode: Path, plan: dict,
             clip = {"source": str(src), "start": clip_start,
                     "dur": dur}
             seg_path = work / f"visual-{k:02d}.mp4"
-            cut(clip, seg_path, slow=slow)
+            cut(clip, seg_path, slow=slow, frames=n)
             if slow > 1.0:
                 print(f"  放慢 {slow:.2f}×（{avail:.1f}s → {dur:.1f}s）", file=sys.stderr)
-            out.append((seg_path, dur, start))
+            out.append((seg_path, dur, start, n))
             continue
         prev = [idx for idx, st in seg_starts if st <= start + 1e-6]
         if not prev:
@@ -1037,14 +1154,14 @@ def _still_frames(episode: Path, plan: dict,
         subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
              "-loop", "1", "-framerate", FPS, "-i", str(frame),
-             "-t", f"{dur:.3f}",
+             "-frames:v", str(n),
              "-vf", "format=yuv420p",
              "-c:v", "libx264", "-preset", "faster", "-crf", CRF,
              "-pix_fmt", "yuv420p", "-r", FPS, str(still)],
             check=True, capture_output=True,
         )
         print(f"  定格段 {k + 1}/{len(visual)}（{dur:.0f}s）", file=sys.stderr)
-        out.append((still, dur, start))
+        out.append((still, dur, start, n))
     return out
 
 
@@ -1213,16 +1330,36 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
                 "（check_script「无音乐空档」同一判据）")
     bgm_plan = None if music_plan is not None else _bgm_plan(episode, acc, starts)
 
+    # D145：画面轨按成片时间轴分帧。段落在成片里的区间——试听型取音乐时间轴，
+    # 普通期段落按配音实测时长首尾相接（与人声轨 concat 同一口径）。
+    if music_plan is not None:
+        seg_span = {s["index"]: (s["start"], s["start"] + s["dur"])
+                    for s in music_plan["segments"]}
+        video_total = music_plan["total_duration"]
+        slots = music_visual_slots(music_plan)
+        # 切片要几分钟，占位不连续只读 JSON 就能判，先判
+        check_tiling([(*seg_span[s["index"]], f"段{s['index']}") for s in segments]
+                     + [(st, st + d, f"音乐段画面 {st:.1f}s") for st, d, _v in slots],
+                     video_total)
+    else:
+        slots = []
+        seg_span = {s["index"]: (t0, t0 + s["duration"])
+                    for s, t0 in zip(manifest["segments"], starts)}
+        video_total = acc
+    clip_frames = segment_clip_frames(segments, seg_span)
+    video_frames = sum(clip_frames) + sum(span_frames(st, st + d) for st, d, _v in slots)
+
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
         # 1. 逐个切片（两道守卫在 cut 里，多线程并行加速）
         clips_flat = [c for s in segments for c in s["clips"]]
         n = len(clips_flat)
-        jobs = [(c, work / f"c{i:03d}.mp4", i) for i, c in enumerate(clips_flat, 1)]
+        jobs = [(c, work / f"c{i:03d}.mp4", nf)
+                for i, (c, nf) in enumerate(zip(clips_flat, clip_frames), 1)]
         workers = min(6, os.cpu_count() or 1)
 
         def _do_cut(j):
-            cut(j[0], j[1])
+            cut(j[0], j[1], frames=j[2])
             return j[1]
 
         # 进度在主线程打印：工作线程只干活。`done_cnt += 1` 放 worker 里是非原子
@@ -1249,11 +1386,10 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
                 i += len(s["clips"])
             stills = _still_frames(episode, music_plan, parts_by_seg, work)
             # 按成片时间交错：段落切片序列与定格段按起点排序后依次 concat。
-            seg_start = {s["index"]: s["start"] for s in music_plan["segments"]}
             elems: list[tuple[float, list[Path]]] = [
-                (seg_start[s["index"]], parts_by_seg[s["index"]])
+                (seg_span[s["index"]][0], parts_by_seg[s["index"]])
                 for s in segments]
-            for still, _dur, start in stills:
+            for still, _dur, start, _n in stills:
                 elems.append((start, [still]))
             elems.sort(key=lambda e: e[0])
             concat_parts = [f for _at, files in elems for f in files]
@@ -1268,6 +1404,7 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
              "-safe", "0", "-i", str(lst), "-c", "copy", str(video)],
             check=True, capture_output=True, cwd=work,
         )
+        check_video_track(video, video_frames, video_total)
 
         # 3. 拼人声轨。**每段首尾各加一小段淡入淡出再拼。**
         #
@@ -1362,16 +1499,15 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         # 普通期不适用（没有时间轴）。
         if music_plan is not None:
             want = music_plan["total_duration"]
-            # 人声轨（混音前）必须铺到最后一段落结束；音乐床必须铺满全轴；
-            # 视频轨按帧量化上界容差（每段时长向上取整到帧，最多多 1 帧/段）。
+            # 人声轨（混音前）必须铺到最后一段落结束；音乐床必须铺满全轴。
+            # 视频轨拼完就按帧核过（check_video_track，D145）：此前这里的容差是
+            # 「每段 1 帧」，191 段放过 6 s，3.6 s 的累积漂移正好在容差里。
             voice_end = max(s["start"] + s["dur"]
                             for s in music_plan["segments"])
-            video_tol = len(concat_parts) * frame_time(video) + 0.05
             checks = [("人声轨", voice_raw, voice_end, 0.05)]
             if bed:
                 checks.append(("音乐床", bed, want, 0.05))
             checks.append(("混音轨", voice, want, 0.05))
-            checks.append(("视频轨", video, want, video_tol))
             for name, p, want_len, tol in checks:
                 got = duration(p)
                 if abs(got - want_len) > tol:

@@ -888,6 +888,96 @@ class TestVideoSpWindow(TestStillSpCap):
         assert get(cs.run(f), self.NAME).ok
 
 
+class TestMusicVisualSpCap(TestStillSpCap):
+    """D142：试听块的 `画面: <池> SPxx mm:ss` 从起点连放整段音乐，计进图片微动 / 视频 SP 同一处两项上限。
+
+    视频 SP 记为区间 [起点, 起点 + 音乐长度]（放慢铺满截到源片末尾），区间前后 10 s 内的锚点、
+    与它相交的别的区间都算同一处；图片微动 SP 记一次。SP02 是 180 s 的视频 SP，SP01 是图片微动。"""
+
+    VNAME = "视频 SP 同一处"
+
+    @staticmethod
+    def _block(label, visual, music="`曲` 完整版 00:00-01:00"):
+        return (f"## 音乐段 {label} · 试听\n\n音乐: {music}\n状态: 前景试听，旁白停止\n"
+                f"过渡: 淡出\n画面: {visual}\n")
+
+    def _vol_music(self, root, name, anchors, blocks):
+        f = self._vol(root, name, anchors)
+        f.write_text(f.read_text(encoding="utf-8") + "\n" + "\n".join(blocks), encoding="utf-8")
+        return f
+
+    def test_试听块盖住两个锚点_算三处(self, root):
+        # 试听块 0:30 起连放 60 s（0:30–1:30）：0:50、1:35（终点后 5 s）都在它的「同一处」里
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50", "SP02 1:35", "SP02 2:30"],
+                            [self._block("M1", "SP02 0:30")])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "SP02 共 3 处" in chk.detail
+        assert "段1 0:50、段2 1:35" in chk.detail and "音乐段 M1 0:30–1:30" in chk.detail
+        assert "段3" not in chk.detail
+
+    def test_试听块加一个锚点_两处不超(self, root):
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50", "SP02 2:30"], [self._block("M1", "SP02 0:30")])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "本期 2 处视频 SP 锚点、1 个试听块画面" in chk.detail
+
+    def test_没有锚点只有试听块也出这一项(self, root):
+        f = self._vol_music(root, "01-卷一", ["SP01 0:00"],
+                            [self._block("M1", "SP02 0:30"), self._block("M2", "SP02 1:00"),
+                             self._block("M3", "SP02 1:20")])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "音乐段 M1 0:30–1:30、音乐段 M2 1:00–2:00、音乐段 M3 1:20–2:20" in chk.detail
+
+    def test_放慢铺满截到源片末尾(self, root):
+        # SP02 只有 180 s：2:50 起连放 60 s 只用得到 170–180 s
+        ep = self._vol_music(root, "01-卷一", ["SP01 0:00"], [self._block("M1", "SP02 2:50")]).parent
+        assert cs.still_sp_uses(ep).video_spans == {("企划", "SP02"): [("音乐段 M1", 170.0, 180.0)]}
+
+    def test_音乐没写终点按曲库全长(self, root, monkeypatch):
+        from pipeline import music
+        monkeypatch.setattr(music, "load_tracks_multi", lambda ep: {"tracks": {}})
+        monkeypatch.setattr(music, "_track_for", lambda title, tracks: {"dur": 95.0})
+        ep = self._vol_music(root, "01-卷一", ["SP01 0:00"],
+                             [self._block("M1", "SP02 0:10", music="`曲` 完整版 00:15-结束")]).parent
+        # 曲子 0:15 到 95 s 共 80 s，画面从 SP02 0:10 起
+        assert cs.still_sp_uses(ep).video_spans == {("企划", "SP02"): [("音乐段 M1", 10.0, 90.0)]}
+
+    def test_曲库查不到时长_跳过不是通过(self, root, monkeypatch):
+        from pipeline import music
+
+        def boom(ep):
+            raise SystemExit("FAIL 试听型稿子需要「企划」的曲库")
+        monkeypatch.setattr(music, "load_tracks_multi", boom)
+        f = self._vol_music(root, "01-卷一", ["SP02 0:00"],
+                            [self._block("M1", "SP02 0:10", music="`曲` 完整版 00:15-结束")])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "跳过不可判定" in chk.detail and "音乐段 M1" in chk.detail
+
+    def test_音画同源块按源片区间计(self, root):
+        f = self._vol_music(root, "01-卷一", ["SP02 0:25", "SP02 0:45"], [
+            "## 音乐段 M2 · 同源\n\n源片原声: `企划 SP02` 00:20-00:40\n状态: 前景试听，旁白停止\n"
+            "音画同源: 是\n过渡: 淡出\n画面: 同源\n"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "音乐段 M2 0:20–0:40" in chk.detail
+
+    def test_别卷的试听块也算(self, root):
+        # 窗口仍以本卷用法为中心（D137）：本卷 0:40 的前后 10 s 里有本卷 0:45 与卷一 M1
+        self._vol_music(root, "01-卷一", ["SP01 0:00"], [self._block("M1", "SP02 0:30")])
+        f = self._vol(root, "02-卷二", ["SP02 0:40", "SP02 0:45"])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "01-卷一 音乐段 M1 0:30–1:30" in chk.detail
+
+    def test_番剧集画面与定格不计(self, root):
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50", "SP02 1:00"],
+                            [self._block("M1", "S01E01 0:30"),
+                             "## 音乐段 M2 · 定格\n\n音乐: `曲` 完整版 00:00-01:00\n状态: 前景试听，旁白停止\n过渡: 淡出\n"])
+        assert get(cs.run(f), self.VNAME).ok
+
+    def test_图片微动SP的试听块记一次(self, root):
+        f = self._vol_music(root, "01-卷一", ["SP01 0:00", "SP01 0:00"], [self._block("M1", "SP01 0:00")])
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok and "SP01 共 3 次" in chk.detail and "段1、段2、音乐段 M1" in chk.detail
+
+
 def make_patch_pool(ep, pool="ep-patch", key="SP01", duration=12.0, indexed=True):
     """最小期内补丁池：pool.json + 镜头表（+ indexed 时的 scene 索引），形状照 ingest_patch 的产物。"""
     import numpy as np

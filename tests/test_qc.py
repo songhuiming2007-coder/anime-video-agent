@@ -88,27 +88,44 @@ class TestSourceBlackCovers:
 
 
 class TestMappedCovered:
-    """含累积漂移窗口的覆盖判断。
+    """映射位置允许偏出 FRAME_BOUND（D145 起 render 按成片时间轴分帧，起点离排片 ≤ 半帧）。
 
-    成片时间轴相对排片轴有累积帧舍入误差（随机游走），黑帧映射回源的
-    位置允许偏出 idx×FRAME_BOUND——推导上界，见 qc.py 里的注释。
+    此前窗口按「第 n 片 × 0.05 s」随序号放宽，是在容忍累积漂移；漂移修掉后，
+    放宽的窗口只会把邻近的源黑段错认成「源片自带」。
     """
 
-    SPAN = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 26)   # 第 26 片，窗口 26×0.05
+    SPAN = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 26)   # 第 26 片
 
-    def test_源黑段与映射区间有偏移_窗口内_通过(self):
-        # 模拟累积漂移：源黑段在 1255.13-1255.84，映射区间起点偏后 0.47s
-        # （2026-08-09 实测：42 片成片中间位置漂移 0.5s）
-        assert qc._mapped_covered(self.SPAN, [(1255.13, 1255.84)])
+    def test_偏出一帧以内_通过(self):
+        # 源黑段到 1255.92：不放宽只重叠 0.32 s（< BLACK_MATCH_MIN），放宽 FRAME_BOUND 后 0.37 s
+        assert not qc._source_black_covers([(1255.0, 1255.92)], 1255.6, 1256.3)
+        assert qc._mapped_covered(self.SPAN, [(1255.0, 1255.92)])
 
-    def test_漂移超出窗口_不通过(self):
-        # 黑段在 4s 外——窗口（26×0.05=1.3s）罩不住，说明这黑不是该片段带的
-        assert not qc._mapped_covered(self.SPAN, [(1251.0, 1252.0)])
+    def test_偏出半秒_不再按片段序号罩住(self):
+        # 映射起点偏后 0.47 s（旧口径下第 26 片窗口 1.3 s 能罩住，那正是 D145 的漂移）
+        assert not qc._mapped_covered(self.SPAN, [(1255.13, 1255.84)])
 
-    def test_窗口随片段序号增长(self):
-        # 第 2 片的窗口只有 0.1s，0.47s 的漂移罩不住；第 26 片（上面）能罩住
-        span2 = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 2)
-        assert not qc._mapped_covered(span2, [(1255.13, 1255.84)])
+    def test_窗口不随片段序号增长(self):
+        far = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 177)
+        near = ("src.mkv", 1255.6, 1256.3, 168.1, 168.8, 1)
+        # 放宽 FRAME_BOUND 后重叠 1255.55–1255.85 = 0.30 s < BLACK_MATCH_MIN；旧口径第 177 片窗口 8.85 s 会整段罩住
+        blacks = [(1255.0, 1255.85)]
+        assert qc._mapped_covered(far, blacks) == qc._mapped_covered(near, blacks) is False
+
+
+class TestVoiceStarts:
+    def test_普通期段落起点按配音时长累计(self):
+        audio = [{"index": 1, "duration": 2.5}, {"index": 2, "duration": 1.25}, {"index": 4, "duration": 3.0}]
+        assert qc._voice_starts(audio) == {1: 0.0, 2: 2.5, 4: 3.75}
+
+    def test_没有manifest退回连续累计(self):
+        assert qc._voice_starts(None) is None
+
+    def test_试听型取音乐时间轴_普通期取配音(self):
+        mplan = {"segments": [{"index": 1, "start": 30.0}, {"index": 2, "start": 41.5}]}
+        audio = [{"index": 1, "duration": 2.5}, {"index": 2, "duration": 1.0}]
+        assert qc._seg_starts(mplan, audio) == {1: 30.0, 2: 41.5}
+        assert qc._seg_starts(None, audio) == {1: 0.0, 2: 2.5}
 
 
 def _span(src, slo, shi, flo, fhi, idx, bi):

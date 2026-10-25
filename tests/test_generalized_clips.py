@@ -425,30 +425,41 @@ class TestAlignExtend:
         assert out[0]["clips"][-1]["dur"] == pytest.approx(5.0)
 
 
-class TestRenderExtend:
-    """render.cut：extend 走 tpad 克隆末帧，切后时长按 dur+extend 复核。"""
+def _mock_cut(monkeypatch, clip, slow=1.0, src_dur=100.0):
+    """mock 掉 ffmpeg / ffprobe，返回 cut 发出的命令。帧数按成片 [0, dur+extend) 分（D145）。"""
+    ft = render._fps_to_frame_time(render.FPS)
+    n = render.span_frames(0.0, clip["dur"] + clip.get("extend", 0.0))
+    ran = {}
+    monkeypatch.setattr(render, "duration", lambda p: src_dur if str(p).endswith(".mkv") else n * ft)
+    monkeypatch.setattr(render, "frame_time", lambda p: 1 / 24)
+    monkeypatch.setattr(render, "frame_count", lambda p: n)
+    monkeypatch.setattr(render, "_video_tail_gap", lambda p, d: 0.0)
+    monkeypatch.setattr(render.subprocess, "run", lambda cmd, **k: ran.setdefault("cmd", cmd))
+    render.cut(clip, __import__("pathlib").Path("/tmp/out.mp4"), slow=slow, frames=n)
+    return ran["cmd"], n
 
-    def _cut(self, monkeypatch, clip, out_dur):
-        ran = {}
-        monkeypatch.setattr(render, "duration",
-                            lambda p: 100.0 if str(p).endswith(".mkv") else out_dur)
-        monkeypatch.setattr(render, "frame_time", lambda p: 1 / 24)
-        monkeypatch.setattr(render.subprocess, "run",
-                            lambda cmd, **k: ran.setdefault("cmd", cmd))
-        render.cut(clip, __import__("pathlib").Path("/tmp/out.mp4"))
-        return ran["cmd"]
+
+def _pad(cmd) -> float:
+    vf = cmd[cmd.index("-vf") + 1]
+    return float(vf.rsplit("tpad=stop_mode=clone:stop_duration=", 1)[1])
+
+
+class TestRenderExtend:
+    """render.cut：extend 走 tpad 克隆末帧；输出按帧数截（-frames:v），不按时长（D145）。"""
 
     def test_带extend加tpad(self, monkeypatch):
-        cmd = self._cut(monkeypatch, {"source": "/x.mkv", "start": 10.0,
-                                      "dur": 6.0, "extend": 2.0}, out_dur=8.0)
-        assert "tpad=stop_mode=clone:stop_duration=2.0" in cmd[cmd.index("-vf") + 1]
-        assert cmd[cmd.index("-t") + 1] == "8.000"
+        cmd, n = _mock_cut(monkeypatch, {"source": "/x.mkv", "start": 10.0, "dur": 6.0, "extend": 2.0})
+        # 垫 = extend 2.0 + 分帧多要的 8 ms + 一个源帧 + 一个输出帧
+        assert _pad(cmd) == pytest.approx(2.091, abs=1e-3)
+        assert cmd[cmd.index("-frames:v") + 1] == str(n) == "192"
+        assert "-t" not in cmd
 
     def test_不带extend零漂移(self, monkeypatch):
-        cmd = self._cut(monkeypatch, {"source": "/x.mkv", "start": 10.0, "dur": 6.0},
-                        out_dur=6.0)
-        assert "tpad" not in cmd[cmd.index("-vf") + 1]
-        assert cmd[cmd.index("-t") + 1] == "6.000"
+        cmd, n = _mock_cut(monkeypatch, {"source": "/x.mkv", "start": 10.0, "dur": 6.0})
+        # 没有 extend：垫底只够补读到片尾时的零头（不到 0.1 s），帧数截在 144
+        assert _pad(cmd) < 0.1
+        assert cmd[cmd.index("-frames:v") + 1] == str(n) == "144"
+        assert "-t" not in cmd
 
     def test_渲染门禁放行ok_extended(self):
         # render.run 的状态闸：ok_extended 是可渲染终态
@@ -461,47 +472,33 @@ class TestRenderSlowMotion:
     """试听型音乐段的短素材放慢（2026-09-13，三期 M1/M2/M3：6s 封面微动
     铺 17/32/11s）。没这个机制时 `cut` 直接报「截取越界」，整期渲不出来。"""
 
-    def _cmd(self, monkeypatch, clip, slow, src_dur=6.006, out_dur=None):
-        ran = {}
-        monkeypatch.setattr(render, "duration",
-                            lambda p: src_dur if str(p).endswith(".mkv")
-                            else (out_dur if out_dur is not None else clip["dur"]))
-        monkeypatch.setattr(render, "frame_time", lambda p: 1 / 24)
-        monkeypatch.setattr(render.subprocess, "run",
-                            lambda cmd, **k: ran.setdefault("cmd", cmd))
-        render.cut(clip, __import__("pathlib").Path("/tmp/out.mp4"), slow=slow)
-        return ran["cmd"]
-
     def test_放慢只读take秒并setpts(self, monkeypatch):
         # 6.006s 源、起点 1.0、槽位 32s → 读 5.006s，setpts 拉 6.39×
         clip = {"source": "/x.mkv", "start": 1.0, "dur": 32.0}
-        cmd = self._cmd(monkeypatch, clip, slow=32.0 / 5.006)
-        assert cmd[cmd.index("-vf") + 1].endswith(
-            f",setpts=PTS*{32.0 / 5.006:.6f}")
-        # 输入级 -t 在 -i 之前，值= take；输出级 -t 在 -i 之后，值= 槽位
+        cmd, n = _mock_cut(monkeypatch, clip, slow=32.0 / 5.006, src_dur=6.006)
+        assert f",setpts=PTS*{32.0 / 5.006:.6f}," in cmd[cmd.index("-vf") + 1]
+        # 输入级 -t 在 -i 之前，值 = take；输出按帧数截，没有输出级 -t
         i = cmd.index("-i")
-        assert cmd[i - 1] == "5.006" and cmd[cmd.index("-t", i) + 1] == "32.000"
+        assert cmd[i - 2:i] == ["-t", "5.006"] and cmd.count("-t") == 1
+        assert cmd[cmd.index("-frames:v") + 1] == str(n)
 
-    def test_不带slow的路径一个字节没动(self, monkeypatch):
-        clip = {"source": "/x.mkv", "start": 10.0, "dur": 6.0}
-        cmd = self._cmd(monkeypatch, clip, slow=1.0, src_dur=100.0)
+    def test_不带slow的路径没有输入级t(self, monkeypatch):
+        cmd, _n = _mock_cut(monkeypatch, {"source": "/x.mkv", "start": 10.0, "dur": 6.0})
         assert "setpts" not in cmd[cmd.index("-vf") + 1]
-        # 只有一个 -t，且在 -i 之后（输入级 -t 是 slow 路径专有的）
-        assert cmd.count("-t") == 1
+        assert "-t" not in cmd               # 输入级 -t 是 slow 路径专有的
         assert cmd[cmd.index("-i") - 1] == "10.000"
-        assert cmd[cmd.index("-t") + 1] == "6.000"
 
     def test_放慢时守卫按take卡而不是want(self, monkeypatch):
         # 起点 3.0 + take 3.006 = 6.006 <= 6.006，不越界（若按 want=17 卡就误报）
-        clip = {"source": "/x.mkv", "start": 3.0, "dur": 17.0}
-        cmd = self._cmd(monkeypatch, clip, slow=17.0 / 3.006)
-        assert cmd[cmd.index("-t", cmd.index("-i")) + 1] == "17.000"
+        cmd, n = _mock_cut(monkeypatch, {"source": "/x.mkv", "start": 3.0, "dur": 17.0},
+                           slow=17.0 / 3.006, src_dur=6.006)
+        assert cmd[cmd.index("-frames:v") + 1] == str(n)
 
     def test_放慢系数小于1报错(self, monkeypatch):
         monkeypatch.setattr(render, "duration", lambda p: 100.0)
         with pytest.raises(SystemExit, match="小于 1"):
             render.cut({"source": "/x.mkv", "start": 0.0, "dur": 5.0},
-                       __import__("pathlib").Path("/tmp/out.mp4"), slow=0.5)
+                       __import__("pathlib").Path("/tmp/out.mp4"), slow=0.5, frames=120)
 
     def test_超限直接FAIL并给出两个杠杆(self, monkeypatch, tmp_path):
         """MAX_SLOW 是真闸：三段里有一段越限就不该静默渲出一个卡帧画面。"""

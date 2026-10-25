@@ -2083,6 +2083,18 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
                 print("[*] 待应用纠错中所有受影响段落已全部合成完成。")
                 return manifest_path
 
+            # D143：apply-patch 只重配点名的段，其余段要从已配好的音频复用。manifest 在（缺了 plan_apply 已拒）
+            # 而别的段的 wav 不在时，下面的 run(redo=…) 会把它们当成未合成一起重配，拉回来就换掉人已顺听认可的音频。
+            redo_labels = set(plan["redo"])
+            gone = [t.get("label", str(t.get("index"))) for t in
+                    json.loads(manifest_path.read_text(encoding="utf-8")).get("segments", [])
+                    if t.get("label") not in redo_labels and not (out_dir / t["file"]).exists()]
+            if gone:
+                raise SystemExit(
+                    f"FAIL --apply-patch 只该重配 {len(redo_labels)} 段，但 manifest 里另有 {len(gone)} 段的音频文件不在"
+                    f"（段 {'、'.join(gone[:8])}{' …' if len(gone) > 8 else ''}）：照跑会把它们一起重配。\n"
+                    "     云端换了实例：先 `python -m pipeline.cloud push <期> --with-audio` 把本地配音带上去再跑")
+
             # 引擎前置检查：若旧 manifest 存在且引擎不符，直接报错，避免在注定失败前烧掉 attic 快照槽位
             if manifest_path.exists():
                 try:

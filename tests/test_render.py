@@ -252,7 +252,7 @@ class TestCutGuards:
         from pipeline.render import cut
         with pytest.raises(SystemExit, match="负"):
             cut({"source": "/不存在的片源.mkv", "start": -5.0, "dur": 3.0},
-                tmp_path / "x.mp4")
+                tmp_path / "x.mp4", frames=72)
 
     def test_hhmmss负数报错(self):
         from pipeline.render import _hhmmss_to_sec
