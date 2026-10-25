@@ -370,6 +370,20 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
             ))}
             {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
                 输入框只收值（onKeyDown 不能发 conv.command，TG-10 纪律）；点「切换」按钮发出。 */}
+            {info?.modelSource === "session" && (
+              <button
+                className="ui-row model-pop-row model-pop-reset"
+                data-testid="model-reset"
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setModelOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                }}
+              >
+                <span className="ui-row-title">恢复默认模型</span>
+                <span className="model-pop-check" />
+              </button>
+            )}
             <div className="model-pop-custom">
               <input
                 className="ui-input model-pop-input"
@@ -394,20 +408,6 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                 切换
               </button>
             </div>
-            {info?.modelSource === "session" && (
-              <button
-                className="ui-row model-pop-row model-pop-reset"
-                data-testid="model-reset"
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  setModelOpen(false);
-                  void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                }}
-              >
-                <span className="ui-row-title">恢复默认模型</span>
-                <span className="model-pop-check" />
-              </button>
-            )}
           </div>
         )}
       </div>
