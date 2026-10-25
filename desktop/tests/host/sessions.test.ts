@@ -1475,3 +1475,82 @@ describe("D66 回收站", () => {
     expect(bad.stub.calls).toBe(0);
   });
 });
+
+
+describe("D147 会话启动前预选", () => {
+  const CMD_OK = (name: string) => ({ t: "command_result", name, ok: true, text: "ok", rid: "$rid" });
+  const CMD_FAIL = (name: string) => ({ t: "command_result", name, ok: false, text: "代理没有模型 X", rid: "$rid" });
+
+  it("phase none 时 conv.command{model,thinking} 存 pending 不发帧；send 先下发再发消息；快照带 pending", async () => {
+    const { repo, svc, epKey, key } = await boot();
+    sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_command: [CMD_OK("model")], on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+
+    const r1 = (await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "kimi-k3" })) as Record<string, unknown>;
+    expect(r1).toMatchObject({ ok: true, pending: true });
+    const r2 = (await svc.dispatch("conv.command", { convKey: key, name: "thinking", arg: "low" })) as Record<string, unknown>;
+    expect(r2).toMatchObject({ ok: true, pending: true });
+    expect(sessionSpawns()).toEqual([]); // 存 pending 不起进程
+    const snap = await snapOf(svc, key);
+    expect(snap.pending).toEqual({ model: "kimi-k3", effort: "low" });
+
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    const lines = stdinLines(repo, epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const kinds = lines.map((f) => [f.t, f.name ?? ""]);
+    expect(kinds.slice(0, 3)).toEqual([["command", "model"], ["command", "thinking"], ["user_message", ""]]);
+    expect((lines[0] as { arg: string }).arg).toBe("kimi-k3");
+    expect((lines[1] as { arg: string }).arg).toBe("low");
+    expect((await snapOf(svc, key)).pending).toBeUndefined(); // 下发后清掉
+  });
+
+  it("pending command 失败：用户消息照发、warn 带回、不静默", async () => {
+    const { repo, svc, epKey, key } = await boot();
+    sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_command: [CMD_FAIL("model")], on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "nope" });
+    const r = (await svc.dispatch("conv.send", { convKey: key, text: "hi" })) as { turnId: string; warn?: string };
+    expect(r.turnId).toBe("t1");
+    expect(r.warn).toContain("未生效");
+    const lines = stdinLines(repo, epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines.map((f) => f.t)).toEqual(["command", "user_message"]); // 消息照样发出
+  });
+
+  it("arg=default 清 pending；会话活着时 command 走原通道（不存 pending）", async () => {
+    const { repo, svc, epKey, key } = await boot();
+    sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_command: [{ t: "command_result", name: "model", ok: true, text: "ok", rid: "$rid" }], on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS] }]);
+    await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "kimi-k3" });
+    expect((await snapOf(svc, key)).pending).toEqual({ model: "kimi-k3" });
+    await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "default" });
+    expect((await snapOf(svc, key)).pending).toBeUndefined();
+
+    // 活会话：command 直接写帧（pending 已清，send 不会多写 command 帧）
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    const r = (await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "m2" })) as Record<string, unknown>;
+    expect(r).toMatchObject({ ok: true });
+    expect("pending" in r).toBe(false);
+    const last = JSON.parse(stdinLines(repo, epKey).at(-1)!) as Record<string, unknown>;
+    expect(last).toMatchObject({ t: "command", name: "model", arg: "m2" });
+  });
+});
+
+
+describe("D149 运行中切换", () => {
+  it("running 时 command{model} 照写帧（core 排队到回合收尾执行）；回执 resolve；无 E_BUSY", async () => {
+    const { repo, svc, epKey, key } = await boot();
+    sessionScript(repo, epKey, [READY(epKey), {
+      op: "serve",
+      on_turn: [TURN_STARTED, { t: "request", request_id: "rq1", kind: "tool_call", turn_id: "t1", title: "工具", card_text: "…", fields: {}, options: ["approve", "reject"], feedback_allowed: false }],
+      on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }, TURN_ENDED, STOP_POINTS],
+      on_command: [{ t: "command_result", name: "model", ok: true, text: "ok", rid: "$rid" }],
+    }]);
+    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
+    await waitFor(async () => (await snapOf(svc, key)).open.length === 1);
+    // 回合卡在 request 上：command 照样写帧、不等回合（host 不拦；core 排队语义由 pytest 协议用例钉）
+    const r = (await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "kimi-k3" })) as Record<string, unknown>;
+    expect(r).toMatchObject({ ok: true });
+    const lines = stdinLines(repo, epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines.map((f) => f.t)).toEqual(["user_message", "command"]);
+    // 收尾：答卡放行 → 回合结束（不然 shutdown 撞上在途卡走 SIGKILL 慢路径）
+    await svc.dispatch("conv.answer", { convKey: key, requestId: "rq1", decision: "approve", feedback: null });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "idle", 12000);
+  });
+});

@@ -55,10 +55,25 @@ def test_run_command_model() -> None:
     assert "● kimi-k3" in text and "本会话设置" in text
     back, text = ms.run_command("/model default", BASE, new, "reasoning", models_fetcher=_fetch)
     assert back.model is None and "flash" in text
-    with pytest.raises(ms.ModelSwitchError, match="相近的有：kimi-k3"):
-        ms.run_command("/model kimi-k33", BASE, o, "reasoning", models_fetcher=_fetch)
+    # D148：不在代理列表 → 不拒，照常切、回执与 last_warn 带提醒
+    new2, text = ms.run_command("/model kimi-k33", BASE, o, "reasoning", models_fetcher=_fetch)
+    assert new2.model == "kimi-k33", "未知模型也切换"
+    assert ms.last_warn is not None and "kimi-k33" in ms.last_warn and "kimi-k3" in ms.last_warn, "warn 含名字与相近项"
+    assert "不在代理列表" in text
+    # 名字在列表里 → 无 warn
+    ms.run_command("/model kimi-k3", BASE, o, "reasoning", models_fetcher=_fetch)
+    assert ms.last_warn is None
     with pytest.raises(ms.ModelSwitchError, match="LLM 不可用"):
         ms.run_command("/model kimi-k3", None, o, "reasoning", models_fetcher=_fetch)
+
+
+def test_check_model_rejects_malformed() -> None:
+    """D148：空 / 空白 / 控制字符照旧拒；其余不在列表也放行。"""
+    for bad in ("", " ", "a b", "x\ty", "x\x01y"):
+        with pytest.raises(ms.ModelSwitchError):
+            ms.check_model(bad, MODELS)
+        assert ms.last_warn is None
+    assert ms.check_model("gpt-6", MODELS) == "gpt-6" and "gpt-6" in (ms.last_warn or "")
 
 
 def test_run_command_thinking() -> None:
@@ -254,8 +269,16 @@ def test_protocol_model_and_thinking_commands(world, endpoint, tmp_path) -> None
         assert cfgs[-1]["model"] == "kimi-k3" and cfgs[-1]["model_source"] == "session"
 
         _turn(proc, "/thinking low")
-        _turn(proc, "/model nope")
+        _turn(proc, "/model 带 空格")   # D148：不在列表不报错（warn 放行）；空白这类非法名才报
         assert _notices(proc, "model_err")
+
+        # D148：不在代理列表 → 切换照成、command_result 带 warn 透传
+        proc.send({"t": "command", "name": "model", "arg": "brand-new-7", "rid": "rw"})
+        res = proc.wait_for("command_result")
+        assert res["ok"] and "brand-new-7" in res.get("warn", ""), "warn 字段透传到回执"
+        proc.send({"t": "command", "name": "model", "arg": "kimi-k3", "rid": "rd"})
+        res = proc.wait_for("command_result")
+        assert res["ok"] and "warn" not in res, "在列表里的模型不带 warn"
 
         _turn(proc, "你好")
         proc.wait_for("session_title", timeout=20)
@@ -327,7 +350,9 @@ def test_protocol_command_frame_validation(world, endpoint, tmp_path) -> None:  
 
 
 def test_protocol_model_commands_busy_mid_turn(world, endpoint, tmp_path) -> None:  # noqa: F811
-    """回合在途：文字 /model 不排队、按钮 command 也回 E_BUSY（同 /compact）；回合用的仍是原模型。"""
+    """D149：回合在途时按钮 command{model|thinking|models} 不再 E_BUSY——排队到回合收尾执行，
+    下个回合生效（回合内 cfg 已绑定，本回合仍用原模型）。文字 /model 照旧 E_BUSY（不走队列，
+    与 /compact 同纪律：命令不当 steer 排队消息）。"""
     from tests.test_agent_protocol import tool_call
 
     root, episode = world
@@ -339,16 +364,24 @@ def test_protocol_model_commands_busy_mid_turn(world, endpoint, tmp_path) -> Non
         request = proc.wait_for("request")   # 停在卡上：回合必在进行中
         proc.send({"t": "user_message", "text": "/model kimi-k3"})
         assert proc.wait_for("error")["code"] == "E_BUSY"
-        proc.send({"t": "command", "name": "thinking", "arg": "low"})
-        assert proc.wait_for("error")["code"] == "E_BUSY"
+        proc.send({"t": "command", "name": "thinking", "arg": "low", "rid": "rc1"})
+        proc.send({"t": "command", "name": "model", "arg": "kimi-k3", "rid": "rc2"})
+        # 回合在途时不回执、不 E_BUSY；答卡放行回合，回合收尾后主循环执行排队的命令
         proc.send({"t": "answer", "request_id": request["request_id"], "decision": "approve", "feedback": None})
+        proc.wait_for("turn_finished")
+        r1 = proc.wait_for("command_result")
+        r2 = proc.wait_for("command_result")
+        assert {r1["rid"], r2["rid"]} == {"rc1", "rc2"} and r1["ok"] and r2["ok"]
+        # 排队消息（steer）不吃命令：command 走的是 out 队列不是 steer
+        proc.send({"t": "user_message", "text": "乙"})
         proc.wait_for("turn_finished")
         proc.shutdown()
     finally:
         proc.proc.kill()
-    assert {r["model"] for r in endpoint.requests} == {"mock"}
-    assert all("reasoning_effort" not in r for r in endpoint.requests)
-    assert not any(f.get("t") == "queued" for f in proc.frames), "命令不当排队消息"
+    assert endpoint.requests[0]["model"] == "mock", "在途回合仍用原模型（cfg 回合起点绑定）"
+    assert endpoint.requests[-1]["model"] == "kimi-k3", "排队切换在下个回合生效"
+    assert endpoint.requests[-1].get("reasoning_effort") == "low"
+    assert not any(f.get("t") == "queued" and "model" in str(f.get("text", "")) for f in proc.frames), "命令不当排队消息"
 
 
 def test_repl_model_command(tmp_path: Path, monkeypatch, capsys) -> None:

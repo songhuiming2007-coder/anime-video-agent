@@ -438,3 +438,14 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-pop-reset .ui-row-title { font-family: inherit; color: var(--fg-muted); }
 .model-pop-err, .model-pop-wait { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
 .model-ctl-err { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
+/* D151：本会话覆盖的一眼标记——label 前一个小圆点；默认（data-source 空/"default"）无点。
+ * 实心圆点用背景圆（不用渐变文字）：纯色，跟 --accent-strong 同变量。 */
+.model-ctl-btn[data-source="session"] .model-ctl-label::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-strong); margin-right: 4px; vertical-align: 1px; }
+/* D147：预选（pending）与生效提示 */
+.model-ctl-pending { flex: none; font-size: var(--text-sm); color: var(--fg-subtle); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
+.model-pop-note { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
+.model-pop-warn { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
+.model-pop-err { display: flex; align-items: center; gap: var(--space-2); }
+.model-pop-retry { flex: none; margin-left: auto; }
+.model-pop-custom { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); border-top: 1px solid var(--border); margin-top: 2px; }
+.model-pop-input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); }

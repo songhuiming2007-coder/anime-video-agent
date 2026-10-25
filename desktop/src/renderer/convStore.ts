@@ -18,6 +18,8 @@ export interface ConvState {
   truncatedHead: boolean;
   settlePending: string | null;
   keyProblem: string | null;
+  /** D147：会话启动前预选的模型 / 推理强度；没有为 undefined */
+  pending?: { model?: string; effort?: string };
 }
 
 export interface ConvStore {
@@ -47,6 +49,7 @@ export function fromConvSnapshot(snap: ConvSnapshot): ConvState {
     truncatedHead: snap.truncatedHead,
     settlePending: snap.settlePending,
     keyProblem: snap.keyProblem,
+    pending: snap.pending,
   };
 }
 
@@ -70,6 +73,7 @@ export function reduceConvs(store: ConvStore, action: ConvAction): ConvReduceRes
         entries: d.entries.length ? [...cur.entries, ...d.entries] : cur.entries,
         open: d.open,
         keyProblem: d.keyProblem,
+        pending: d.pending,
       };
       return { store: { convs: { ...store.convs, [d.convKey]: next } }, resnapshot: null };
     }

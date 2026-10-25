@@ -265,6 +265,12 @@ class FrameReader(threading.Thread):
             return
         with slots["steer_lock"]:
             if slots["in_flight"]:
+                # D149：模型 / 推理强度命令在回合在途时不报 E_BUSY——主循环顺序消费 out 队列，
+                # 回合收尾后执行，override 对下个回合首个 LLM 请求生效（回合内 cfg 已绑定，
+                # 更早生效没有意义）。回执照旧走 command_result{rid}，host 的 waiter 挂到那之前。
+                if kind == "command" and frame.get("name") in MODEL_COMMANDS:
+                    slots["out"].put((kind, frame, rid))
+                    return
                 if (
                     kind != "user_message" or slots["shutdown"] or slots["eof"]
                     or frame["text"].strip() == COMPACT_COMMAND  # /compact 是命令，不当排队消息送给模型
@@ -1333,7 +1339,9 @@ def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
         writer.send({"t": "command_result", "name": name, "ok": False, "text": f"{name} 需要 arg", **tail})
         return
     ok, text = _apply_model_line(host, ep_dir, status, f"/{name} {arg}")
-    writer.send({"t": "command_result", "name": name, "ok": ok, "text": text, **tail})
+    # D148：check_model 放行未知模型时留下的提醒透传给 UI（popover 显示一行 warn，不阻断）
+    writer.send({"t": "command_result", "name": name, "ok": ok, "text": text,
+                 **({"warn": model_switch.last_warn} if ok and model_switch.last_warn else {}), **tail})
     if ok:
         _send_model_config(writer, host, ep_dir, status)
 
