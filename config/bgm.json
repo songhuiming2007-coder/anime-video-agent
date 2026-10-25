@@ -2365,7 +2365,7 @@
       "We're Still Here": {
         "path": "data/library/bgm/supercell/We're Still Here.flac",
         "slot": "正文",
-        "dur": 312,
+        "dur": 312.0,
         "lufs": -13.83,
         "onset": 0.557,
         "vocal": true
