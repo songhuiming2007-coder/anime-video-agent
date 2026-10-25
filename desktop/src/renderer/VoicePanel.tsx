@@ -243,13 +243,13 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   return (
     <div className="seg-panel voice-panel" data-testid="voice-panel">
       <div className="toolbar" data-testid="voice-toolbar">
-        <button className="ui-btn" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
+        <button className="ui-btn ui-btn--sm" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
           顺序播放
         </button>
-        <button className="ui-btn" data-testid="voice-stop" disabled={busy || current === null} onClick={stop}>
+        <button className="ui-btn ui-btn--sm" data-testid="voice-stop" disabled={busy || current === null} onClick={stop}>
           停
         </button>
-        <button className="ui-btn" data-testid="voice-refresh" disabled={busy} onClick={() => void load()}>
+        <button className="ui-btn ui-btn--sm" data-testid="voice-refresh" disabled={busy} onClick={() => void load()}>
           刷新
         </button>
         <span className="muted voice-engine" data-testid="voice-engine">

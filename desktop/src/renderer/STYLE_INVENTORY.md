@@ -57,6 +57,17 @@
 
 ## 待改造清单
 
+**施工记录** 2026-10-25（P1–P3 批）：剩余 9 项全落。具体：
+
+- **HumanCards**：`.fingerprints` 列表 `gap: 2px`（与 `ui-kv`/ZCode 行距一致）；`.request-card-text` 补 `padding + bg-subtle + radius-md`（与同仓 `.conv-tool-cmd`/`.tail` 输出块同一形状，ZCode 代码块惯例）。
+- **ConversationPane**：`.conv-user` 对齐 `ConversationUserInputBubble.tsx:27`——底 `bg-subtle`→`bg-panel`（ZCode `bg-surface`）、右上角小角 `border-top-right-radius: radius-sm`（ZCode `rounded-tr-xs`）。
+- **ScriptEditor**：工具栏 5 个裸 `ui-btn` → `ui-btn--sm`（24px，ZCode 工具栏密度；要点切换/保存/从草稿新建/封板/机检）。
+- **VoicePanel**：工具栏 3 个 → `ui-btn--sm`；`.voice-row:hover` 补 `bg-hover`；`.voice-fix-input` 160px 硬编码 → `100%/max-200px`。
+- **PreviewPane**：`.preview-head` 36px→40px（ZCode `PreviewPane.tsx:1587` h-10）；`.preview-switch-row` `min-h` 改 `control-h` token + `radius-md`。
+- **JobBar**：`.jobbar` 平铺 `wait-surface`+`border-bottom` → `rounded-lg border bg-card` 浮条（ZCode `ConversationQuotaBanner.tsx:119`）；`jobbar--warn` 保留 surface。
+- **NewEpisodeForm**、CoverImport/ReviewRating/HumanTimeReadout/copy/PaneBoundary：已是 `ui-*` 规范，未动。
+- 验证：vitest 629 绿；e2e `stopPoint` D71 作业条（不压区域断言）绿、`ack` D74 预览切换器绿。
+
 **施工记录** 2026-10-25（A 批）：P0 两项已落。具体：
 
 - **SessionHeader 模型控件**：胶囊行 `radius-lg`→`radius-md`、`min-height` 改 `control-h` token；check 挪行尾（ZCode `pr-8` 右列，16px 列定位）；`model-pop-reset`/`model-pop-custom` 分隔线横贯浮层内边距（ZCode `dropdown-menu.tsx:188` `-mx-1 my-1`）；effort popover 同理（check 尾置、meta 右对齐不变）。文件：`SessionHeader.tsx` 4 处 DOM 顺序、`style.css` `.model-pop-*` 一族。
@@ -159,14 +170,14 @@
 |---|---|---|---|---|
 | P0 | SessionHeader 模型控件 | CSS ~25 + tsx ~10 | 否 | 否 | **已施工** 2026-10-25 |
 | P0 | Composer | CSS ~10 | 否 | 否 | **已施工** 2026-10-25 |
-| P1 | HumanCards | CSS ~20 + tsx ~10 | 否 | 否 |
-| P1 | ConversationPane | CSS 0–5 | 否 | 否 |
-| P2 | ScriptEditor | CSS 0–10 | 否 | 否 |
-| P2 | VoicePanel | CSS ~20 + tsx ~10 | 否 | 否 |
-| P2 | PreviewPane | CSS ~10 + tsx ~5 | 否 | 否 |
-| P3 | JobBar | CSS ~5 | 否 | 否 |
-| P3 | NewEpisodeForm | ~0 | 否 | 否 |
-| P3 | PreviewSwitcher | ~5 | 否 | 否 |
-| P3 | CoverImport/ReviewRating/HumanTimeReadout/copy/PaneBoundary | 0 | 否 | 否 |
+| P1 | HumanCards | CSS ~3 | 否 | 否 | **已施工** 2026-10-25 |
+| P1 | ConversationPane | CSS 2 | 否 | 否 | **已施工** 2026-10-25 |
+| P2 | ScriptEditor | tsx 5 | 否 | 否 | **已施工** 2026-10-25 |
+| P2 | VoicePanel | CSS ~3 + tsx 3 | 否 | 否 | **已施工** 2026-10-25 |
+| P2 | PreviewPane | CSS ~2 | 否 | 否 | **已施工** 2026-10-25 |
+| P3 | JobBar | CSS ~3 | 否 | 否 | **已施工** 2026-10-25 |
+| P3 | NewEpisodeForm | 0 | 否 | 否 | 已规范·不动 |
+| P3 | PreviewSwitcher | CSS ~1 | 否 | 否 | **已施工** 2026-10-25 |
+| P3 | CoverImport/ReviewRating/HumanTimeReadout/copy/PaneBoundary | 0 | 否 | 否 | 已规范·不动 |
 
 **核心结论**：割裂的根不是 token 缺失，是**自建类的形状**（popover 行圆角/勾位、排队块虚线、jobbar 平铺色条、卡片内字段排布）。全部改造都在 `style.css` + 各组件 `className`，预估总量 ~100-130 行 CSS、~30 行 tsx，零新 token、零逻辑改动。改造后须经 Spec 14 门禁重验（tk.mjs、三态截图对比 mock）。

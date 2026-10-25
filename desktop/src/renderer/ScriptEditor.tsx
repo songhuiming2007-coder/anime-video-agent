@@ -333,7 +333,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
     <div className="editor-shell" ref={shellRef} data-testid="script-editor" data-dirty={dirty ? "1" : "0"} data-layout={wide ? "wide" : "narrow"}>
       <div className="toolbar" data-testid="editor-toolbar">
         {wide ? (
-          <button className="ui-btn" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
+          <button className="ui-btn ui-btn--sm" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
             要点
           </button>
         ) : (
@@ -346,7 +346,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           </span>
         )}
         <button
-          className="ui-btn"
+          className="ui-btn ui-btn--sm"
           data-testid="save-script"
           disabled={off || tooBig}
           onClick={(e) => {
@@ -358,7 +358,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
         </button>
         {stat !== null && stat.script === null && stat.draft !== null && (
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="from-draft"
             disabled={off || !canCreateFromDraft(ed, true)}
             onClick={(e) => {
@@ -370,7 +370,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           </button>
         )}
         <button
-          className="ui-btn"
+          className="ui-btn ui-btn--sm"
           data-testid="seal-script"
           disabled={off || !canSeal(ed)}
           onClick={(e) => {
@@ -381,7 +381,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           封板
         </button>
         <button
-          className="ui-btn"
+          className="ui-btn ui-btn--sm"
           data-testid="check-script"
           disabled={off}
           onClick={(e) => {
