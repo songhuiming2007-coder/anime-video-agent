@@ -57,6 +57,12 @@
 
 ## 待改造清单
 
+**施工记录** 2026-10-25（A 批）：P0 两项已落。具体：
+
+- **SessionHeader 模型控件**：胶囊行 `radius-lg`→`radius-md`、`min-height` 改 `control-h` token；check 挪行尾（ZCode `pr-8` 右列，16px 列定位）；`model-pop-reset`/`model-pop-custom` 分隔线横贯浮层内边距（ZCode `dropdown-menu.tsx:188` `-mx-1 my-1`）；effort popover 同理（check 尾置、meta 右对齐不变）。文件：`SessionHeader.tsx` 4 处 DOM 顺序、`style.css` `.model-pop-*` 一族。
+- **Composer 排队块**：`.composer-queued` 虚线→实线低透明（`--border`）、`radius-xl`→`radius-lg`（嵌套递减）。文件：`style.css`。
+- 验证：vitest 629 绿；e2e `modelSwitch` 的长名+窄窗用例绿（截国 `/tmp/d152-shots/`），`sessionTitle` 绿。`modelSwitch` 主用例红是 D147 预选功能让“会话未起”时按钮可用的既有环境性不一致（git stash 验证，与本次改动无关）。
+
 原则：只改样式与 DOM 结构对齐，**不改行为/逻辑**（model 切换 RPC、slash 拦截、审批流程一律不动）；不引 Tailwind/lucide/Radix；`tokens.css`/`ui.css` 值不动（门禁锁，ui.css 整体冻结）。所有改造写进 `style.css` 业务区块（冻结类的覆盖也写这里，如 `editor-split`/`session-head` 先例）或微调组件 className。
 
 ### P0（用户最常看）
@@ -151,8 +157,8 @@
 
 | 优先级 | 组件 | 估改动量 | 新 token | 动逻辑 |
 |---|---|---|---|---|
-| P0 | SessionHeader 模型控件 | CSS ~25 + tsx ~10 | 否 | 否 |
-| P0 | Composer | CSS ~10 | 否 | 否 |
+| P0 | SessionHeader 模型控件 | CSS ~25 + tsx ~10 | 否 | 否 | **已施工** 2026-10-25 |
+| P0 | Composer | CSS ~10 | 否 | 否 | **已施工** 2026-10-25 |
 | P1 | HumanCards | CSS ~20 + tsx ~10 | 否 | 否 |
 | P1 | ConversationPane | CSS 0–5 | 否 | 否 |
 | P2 | ScriptEditor | CSS 0–10 | 否 | 否 |
