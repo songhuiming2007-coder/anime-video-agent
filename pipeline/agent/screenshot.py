@@ -47,6 +47,8 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
              "source": "screenshot", "candidate": None, "file": str(dest), "as": None, "why": reason,
              "fetch_record": res.get("fetch_record"),
              "element_text": str(res.get("element_text") or "")[:500]}
+    if res.get("ocr_match"):
+        entry["ocr_match"] = res["ocr_match"]
     if caller:
         entry["caller"] = caller
     entries.append(entry)
@@ -63,6 +65,7 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
         "final_url": page_url,
         "title": res.get("title"),
         "element_text": str(res.get("element_text") or "")[:200],
+        **({"ocr_match": res["ocr_match"]} if res.get("ocr_match") else {}),
         "fetch_record": res.get("fetch_record"),
         **({"fetch_record_error": res["fetch_record_error"]} if "fetch_record_error" in res else {}),
     }
@@ -87,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--selector", help="要截的元素的 CSS 选择器")
     g.add_argument("--text", help="页面上原样出现的一段文字，截包含它的区域")
     ap.add_argument("--reason", required=True, help="这张截图证明第几段的哪句话（写进台账的 why）")
-    ap.add_argument("--expect-text", default=None, help="截图里必须出现的话；元素文字里没有就不保存")
+    ap.add_argument("--expect-text", default=None, help="截图里必须出现的话；元素文字里没有、或图上认不出（D141）就不保存")
     ap.add_argument("--name", default="", help="文件名提示（缺省用页面标题）")
     ap.add_argument("--scale", type=int, choices=(2, 3, 4), default=2,
                     help="像素密度倍数（缺省 2）；正文栏窄、门禁预判 FAIL 时用 3 或 4（D139）")
@@ -103,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"OK  {out['file']}（{w}×{h}，入池放大 {out['magnify']} 倍，门禁预判 {out['gate']}）")
     print(f"    留档 {out['fetch_record'] or '无：' + out.get('fetch_record_error', '?')}  {out['final_url']}")
     print(f"    截到的文字：{out['element_text']}")
+    if out.get("ocr_match"):
+        print(f"    图上识别：{'逐字命中' if out['ocr_match'] == 'exact' else '只比字母数字命中（标点或空格有出入）'}")
     return 0 if out["fetch_record"] else 1
 
 

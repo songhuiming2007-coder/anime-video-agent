@@ -1042,7 +1042,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "仅在 crawl 也不够、必须登录态，或要截网页物证时使用，reason 必填。"
             "screenshot（D122）：打开 url，按 selector 或 text（页面上原样出现的一段文字）截出那一块，"
             "PNG 存进 data/library/incoming/、写抓取留档与台账，之后照常 acquire register（企划卷进企划池）。"
-            "给了 expect_text 就核：截到的区域里没有这句话就不保存。回执报入池时要放大几倍，>1 门禁会拒；"
+            "给了 expect_text 就核：截到区域的文字里没有这句话、或截图上识别不出这句话，都不保存。回执报入池时要放大几倍，>1 门禁会拒；"
             "不回图片，要看图另调 view_image。截图会临时重启浏览器，之前打开的页面不保留。"
         ),
         "parameters": {

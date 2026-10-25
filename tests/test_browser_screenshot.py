@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,16 +17,26 @@ from pipeline.agent.tools import ToolContext, _tool_browser
 from tests.test_agent_crawl_browser import _make_full_web_root, _pin_public_dns
 
 
-def _png(w: int, h: int) -> bytes:
+def _png(w: int, h: int, text: str = "") -> bytes:
+    """白底截图；给了 text 就逐行真画上去（D141 起截图会被文字识别，替身也得是真图）。"""
+    from PIL import ImageDraw, ImageFont
+
+    img = Image.new("RGB", (w, h), "white")
+    if text:
+        font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", 48, index=0)
+        for i, line in enumerate(text.splitlines()):
+            ImageDraw.Draw(img).text((40, 40 + i * 80), line, fill="black", font=font)
     buf = io.BytesIO()
-    Image.new("RGB", (w, h), "white").save(buf, "PNG")
+    img.save(buf, "PNG")
     return buf.getvalue()
 
 
 class _ShotSession:
     def __init__(self, *, element_text: str = "君の知らない物語 週間5位 66週ランクイン", missing: str | None = None,
-                 size: tuple[int, int] = (1920, 900)) -> None:
+                 size: tuple[int, int] = (1920, 900), drawn: str | None = None) -> None:
+        """drawn：图上实际画的字；缺省 = 元素文字（页面正常显示），"" = DOM 里有、图上没画出来。"""
         self.element_text, self.missing, self.size = element_text, missing, size
+        self.drawn = element_text if drawn is None else drawn
         self.calls: list[dict[str, Any]] = []
         self.closed = False
 
@@ -33,7 +44,7 @@ class _ShotSession:
         self.calls.append({"url": url, "selector": selector, "text": text})
         if self.missing:
             return {"final_url": url, "missing": self.missing, "css_size": [708, 4065]}
-        return {"final_url": url, "title": "ORICON 年間ランキング", "png": _png(*self.size),
+        return {"final_url": url, "title": "ORICON 年間ランキング", "png": _png(*self.size, self.drawn),
                 "element_text": self.element_text, "css_size": [self.size[0] // 2, self.size[1] // 2],
                 "text": "ORICON 年間ランキング " + self.element_text,
                 "html": '<html><body><img src="https://example.com/a.png"></body></html>'}
@@ -108,6 +119,51 @@ def test_expect_text按事实库同口径归一(root):
     assert out["action"] == "screenshot"
 
 
+needs_vision = pytest.mark.skipif(not shutil.which("swift"), reason="需要 swift（macOS Vision 文字识别）")
+
+
+@needs_vision
+def test_DOM里有_图上没画出来_不交图(root):
+    """D141：2026-10-24 卷三两张 ORICON `id_` 页截图，DOM 里有名次、图上没画出来，expect_text 照样通过。"""
+    sess = _ShotSession(element_text="君の知らない物語 週間5位", drawn="ORICON")
+    with pytest.raises(ValueError, match="截图上却认不出来.*图上认出的最接近一段"):
+        wb.browser_action("screenshot", "证名次", url="https://example.com/", selector="table",
+                          expect_text="週間5位", launch_fn=_launcher(sess, []), root=root)
+
+
+@needs_vision
+def test_图上逐字认出_回执记exact(root):
+    sess = _ShotSession(element_text="君の知らない物語 週間5位")
+    out = wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
+                            expect_text="週間5位", launch_fn=_launcher(sess, []), root=root)
+    assert out["ocr_match"] == "exact"
+
+
+@needs_vision
+def test_标点有出入_只比字母数字命中_回执记approx(root):
+    # DOM 与图上都是「物語 週間5位」，要证的话写成「物語、週間5位」：逐字差一个顿号，字母数字一致
+    sess = _ShotSession(element_text="君の知らない物語、週間5位", drawn="君の知らない物語 週間5位")
+    out = wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
+                            expect_text="物語、週間5位", launch_fn=_launcher(sess, []), root=root)
+    assert out["ocr_match"] == "approx"
+
+
+def test_没有swift_说清楚且不交图(root, monkeypatch):
+    from pipeline.agent import ocr
+    monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="本机没有 swift"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
+                          expect_text="週間5位", launch_fn=_launcher(_ShotSession(), []), root=root)
+
+
+def test_没给expect_text不做识别(root, monkeypatch):
+    from pipeline.agent import ocr
+    monkeypatch.setattr(ocr, "recognize", lambda png: (_ for _ in ()).throw(AssertionError("不该识别")))
+    out = wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
+                            launch_fn=_launcher(_ShotSession(), []), root=root)
+    assert "ocr_match" not in out
+
+
 def test_找不到文字说清楚(root):
     with pytest.raises(ValueError, match="找不到包含「不存在的字」的元素"):
         wb.browser_action("screenshot", "x", url="https://example.com/", text="不存在的字",
@@ -169,6 +225,27 @@ def test_命令行截图_expect_text不在图里_不落盘不进台账(root):
     with pytest.raises(ValueError, match="截到的元素里没有"):
         S.shoot("https://example.com/", reason="x", selector="article", expect_text="好不容易见面就",
                 root=root, launch_fn=_launcher(_ShotSession(element_text="別の話"), []))
+    inc = root / "data" / "library" / "incoming"
+    assert not list(inc.glob("shot-*.png")) and not (inc / "fetched.json").exists()
+
+
+@needs_vision
+def test_命令行截图_图上识别结果进台账与回执(root):
+    from pipeline.agent import screenshot as S
+
+    out = S.shoot("https://example.com/rank", reason="证名次", selector="table", expect_text="週間5位",
+                  root=root, launch_fn=_launcher(_ShotSession(), []))
+    led = json.loads((root / "data" / "library" / "incoming" / "fetched.json").read_text(encoding="utf-8"))
+    assert out["ocr_match"] == led[-1]["ocr_match"] == "exact"
+
+
+@needs_vision
+def test_命令行截图_图上没画出来_不落盘不进台账(root):
+    from pipeline.agent import screenshot as S
+
+    with pytest.raises(ValueError, match="截图上却认不出来"):
+        S.shoot("https://example.com/", reason="x", selector="table", expect_text="週間5位",
+                root=root, launch_fn=_launcher(_ShotSession(drawn=""), []))
     inc = root / "data" / "library" / "incoming"
     assert not list(inc.glob("shot-*.png")) and not (inc / "fetched.json").exists()
 

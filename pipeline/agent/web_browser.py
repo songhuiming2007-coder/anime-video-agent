@@ -535,7 +535,8 @@ def _screenshot_action(
     `scale` 不是 2 时只换像素密度（D139）。
 
     下一次 navigate 自动按平时的配置重启。`expect_text` 给了就核：元素文字里没有这句话 = 截图证明不了要证的事，
-    不交 PNG（2026-10-19 卷二段 37：截图里根本没有配音引语，人复核才发现）。
+    不交 PNG（2026-10-19 卷二段 37：截图里根本没有配音引语，人复核才发现）。DOM 里有之后再对 PNG 做文字识别
+    （D141，`ocr.recognize`），图上认不出也不交。
     """
     _reset_session_for_testing()
     fn = _default_launch_fn if launch_fn is None else launch_fn
@@ -580,6 +581,15 @@ def _screenshot_action(
         if norm_exact(expect_text) not in norm_exact(element_text):
             raise ValueError(f"截到的元素里没有「{expect_text}」，截图证明不了它，没有保存。"
                              f"元素文字开头：{element_text[:120]!r}——换 selector / text 截到真正写着这句话的区域")
+        # D141：DOM 里有不等于图上画出来了（样式丢失、被遮挡、在截图区域外），对 PNG 本身再认一次
+        from pipeline.agent import ocr
+        from pipeline.facts import check_excerpt
+
+        ocr_match, near = check_excerpt(expect_text, ocr.recognize(raw["png"]))
+        if ocr_match == "none":
+            raise ValueError(f"元素的 DOM 文字里有「{expect_text}」，截图上却认不出来，没有保存：多半是页面样式没加载、"
+                             f"文字被遮挡或画在截图区域外（Wayback `id_` 原始页常见）。图上认出的最接近一段：{near!r}"
+                             "——换一个能正常显示的版本（去掉 `id_`、换镜像）或换 selector 再截")
     scrubbed = _scrub(str(raw.get("text") or ""))
     refs: dict[str, Any] = {}
     if keep_full:
@@ -594,6 +604,8 @@ def _screenshot_action(
         "title": _scrub(str(raw.get("title") or "")),
         "png": raw["png"],          # tools 包装层落盘后 pop，不进 LLM
         "element_text": element_text,
+        # 图上认出 expect_text 的程度：exact 逐字（同 norm_exact）/ approx 只比字母数字（标点、空格有出入）
+        **({"ocr_match": ocr_match} if expect_text else {}),
         "css_size": raw.get("css_size"),
         **refs,
     }
