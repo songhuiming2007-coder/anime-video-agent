@@ -87,7 +87,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .decisions { padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); border-bottom: 1px solid var(--border); }
 .decision { position: relative; }
 .decision.readonly, .decision-readonly { color: var(--fg-muted); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
-.fingerprints { list-style: none; margin: var(--space-2) 0 0; padding: 0; font-size: var(--text-sm); color: var(--fg-muted); }
+.fingerprints { list-style: none; margin: var(--space-2) 0 0; padding: 0; font-size: var(--text-sm); color: var(--fg-muted); display: flex; flex-direction: column; gap: 2px; }
 .fingerprints code { color: var(--fg); }
 .reject-form { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
 .banner { display: flex; align-items: center; gap: var(--space-2); margin: 0 var(--space-1) var(--space-1) 0; padding: var(--space-1) var(--space-3); border-radius: var(--radius-lg); font-size: var(--text-sm); color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border); }
@@ -105,7 +105,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .empty { padding: var(--space-8) var(--space-4); text-align: center; color: var(--fg-muted); }
 .muted { color: var(--fg-muted); }
 .error { color: var(--danger); padding: var(--space-2) var(--space-3); }
-.preview-head { flex: none; display: flex; align-items: center; gap: var(--space-2); height: 36px; padding: 0 var(--space-3); border-bottom: 1px solid var(--border); color: var(--fg-muted); font-size: var(--text-sm); }
+.preview-head { flex: none; display: flex; align-items: center; gap: var(--space-2); height: 40px; padding: 0 var(--space-3); border-bottom: 1px solid var(--border); color: var(--fg-muted); font-size: var(--text-sm); }
 .preview-head .ui-row-title { font-family: var(--font-mono); color: var(--fg); }
 /* D49-A S4：预览区文件切换器 */
 .preview-switch { position: relative; flex: none; display: flex; align-items: center; height: 40px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border); }
@@ -113,7 +113,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .preview-switch-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .preview-switch-pop { position: absolute; top: calc(100% + 4px); left: var(--space-2); z-index: 5; width: min(360px, calc(100% - var(--space-4))); max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .preview-switch-gtitle { padding: var(--space-1) var(--space-2) 2px; color: var(--fg-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
-.preview-switch-row { width: 100%; min-height: 30px; gap: var(--space-2); }
+.preview-switch-row { width: 100%; min-height: var(--control-h); gap: var(--space-2); border-radius: var(--radius-md); }
 .preview-switch-row:disabled { color: var(--fg-subtle); cursor: default; }
 .preview-switch-meta { margin-left: auto; color: var(--fg-muted); font-size: var(--text-sm); white-space: nowrap; }
 .preview-body { flex: 1; min-height: 0; overflow: auto; }
@@ -147,8 +147,9 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .meta-title { font-family: var(--font-mono); font-weight: var(--weight-semibold); }
 /* D39 C4：时间线在预览列底部，默认一行摘要；展开上限 40vh（不再横跨对话列，也不再依赖 --sidebar-w） */
 /* D71：顶栏下的全局常驻作业条（人选方案 A） */
-.jobbar { flex: none; display: flex; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-1) var(--space-3); background: var(--wait-surface); border-bottom: 1px solid var(--border); font-size: var(--text-sm); color: var(--fg); }
-.jobbar--warn { background: var(--warn-surface); }
+/* D152 P3-8：作业条对齐 ZCode ConversationQuotaBanner.tsx:119（rounded-xl border bg-card 浮条），不再平铺色条 */
+.jobbar { flex: none; display: flex; align-items: center; gap: var(--space-2); min-width: 0; margin: var(--space-1) var(--space-1) 0; padding: var(--space-1) var(--space-3); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); font-size: var(--text-sm); color: var(--fg); }
+.jobbar--warn { background: var(--warn-surface); border-color: transparent; }
 .jobbar-state { flex: none; font-weight: var(--weight-semibold); }
 .jobbar-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .jobbar-sp { flex: 1; }
@@ -256,11 +257,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .conv-md .markdown th { background: var(--bg-subtle); font-weight: var(--weight-semibold); }
 .conv-md .markdown h1, .conv-md .markdown h2 { font-size: var(--text-lg); margin: var(--space-4) 0 var(--space-2); }
 .conv-obs-wrap summary { cursor: pointer; }
+/* D152 P1-4：用户泡对齐 ZCode ConversationUserInputBubble.tsx:27（rounded-xl rounded-tr-xs bg-surface） */
+.conv-user { background: var(--bg-panel); border-top-right-radius: var(--radius-sm); }
 .conv-activity { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); }
 .conv-activity-secs { font-variant-numeric: tabular-nums; }
 
 /* ---- D47 请求卡：正文按原样换行（写稿卡含 diff），参数原文默认收起 ---- */
-.request-card-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
+.request-card-text { margin: 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
 .request-card-fields summary { cursor: pointer; font-size: var(--text-sm); }
 
 /* D50-A S6：顺听面板段落表与就地纠错（只用 token；ui.css 冻结） */
@@ -269,6 +272,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .voice-hint { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); border-bottom: 1px solid var(--border); }
 .voice-list { flex: 1; min-height: 0; overflow: auto; }
 .voice-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.voice-row:hover { background: var(--bg-hover); }
 .voice-row[aria-current="true"] { background: var(--bg-selected); }
 .voice-row-head { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); min-height: 24px; }
 .voice-row-head .seg-actions { margin-left: auto; display: flex; gap: var(--space-1); }
@@ -276,7 +280,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .voice-mark { background: var(--warn-surface); color: inherit; box-shadow: inset 0 -2px 0 var(--warn); border-radius: var(--radius-sm); }
 .voice-fix { position: static; margin-top: var(--space-2); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .voice-fix .ui-seg > button { white-space: nowrap; }
-.voice-fix-input { width: 160px; }
+.voice-fix-input { width: 100%; max-width: 200px; }
 .voice-fix-actions { display: flex; gap: var(--space-2); }
 /* D87：重配进度摘要（盘上 .tts_progress.json）；行内状态徽标沿用 ui-badge 色调 */
 .voice-synth { padding: var(--space-1) var(--space-3); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
