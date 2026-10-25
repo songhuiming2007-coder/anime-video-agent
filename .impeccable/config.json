@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": [
+          "desktop/src/renderer/style.css"
+        ],
+        "createdAt": "2026-10-25T07:17:29.597Z",
+        "reason": "D46 conv-shimmer 扫光动效为既有刻意设计；本次新增 class 无渐变文字"
+      }
+    ]
+  }
+}

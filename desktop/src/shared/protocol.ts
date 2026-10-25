@@ -477,6 +477,8 @@ export interface ConvSnapshot {
   settlePending: string | null;
   /** §2.9 第 6 条：密钥未就绪时头部显示的原因与可复制的命令；就绪或未起会话为 null */
   keyProblem: string | null;
+  /** D147：会话启动前预选的模型 / 推理强度（send 起进程后先下发）；没有为 undefined */
+  pending?: { model?: string; effort?: string };
 }
 
 export interface ConvDelta {
@@ -488,6 +490,8 @@ export interface ConvDelta {
   turnId: string | null;
   open: OutFrame[];
   keyProblem: string | null;
+  /** D147：同 ConvSnapshot.pending */
+  pending?: { model?: string; effort?: string };
 }
 
 export type Provenance =

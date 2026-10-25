@@ -183,6 +183,19 @@ def test_st7_commands_still_busy_in_flight(frame: dict, kind: str) -> None:
     assert writer.frames[-1]["code"] == "E_BUSY"
 
 
+@pytest.mark.parametrize("name,arg", [("model", "kimi-k3"), ("thinking", "low"), ("models", None)])
+def test_st7b_model_commands_enqueue_in_flight(name: str, arg) -> None:
+    """D149：回合在途时 command{model|thinking|models} 不 E_BUSY——直接进 out 队列，
+    回合收尾后主循环执行（override 下个回合生效；本回合 cfg 已绑定）。回执照旧 command_result{rid}。"""
+    writer = _Writer()
+    slots = _slots(in_flight=True)
+    _reader(slots, writer)._dispatch("command", {"t": "command", "name": name, "arg": arg}, "r1")
+    assert writer.frames == [], "不回 E_BUSY、不发 queued"
+    kind, frame, rid = slots["out"].get_nowait()
+    assert kind == "command" and frame["name"] == name and rid == "r1"
+    assert slots["steer"] == [], "命令不进 steer 排队（不送给模型当 user 消息）"
+
+
 def test_st8_idle_user_message_starts_a_turn() -> None:
     """ST-8：空闲时照旧开新回合（不入排队）。"""
     writer = _Writer()

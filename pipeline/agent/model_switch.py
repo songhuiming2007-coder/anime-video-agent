@@ -102,14 +102,25 @@ def list_models(cfg: "LLMConfig") -> list[str]:
     return sorted(dict.fromkeys(ids))
 
 
+#: ``check_model`` 放行未知模型时留下的提醒；每次调用先清回 None（同进程一次只跑一条命令，
+#: 协议层执行 ``run_command`` 的线程与读这个值的线程是同一个）
+last_warn: str | None = None
+
+
 def check_model(name: str, available: list[str]) -> str:
-    """名字必须在代理列表里；不在就拒，并给出最像的几个。"""
+    """D148：格式非法（空 / 含空白或控制字符）照旧拒；不在代理列表不再拒——返回名字照常切，
+    提醒留在 ``last_warn`` 由调用方放进回执（代理列表落后于新模型，人打字出错靠 warn 就够，不拦死）。"""
+    global last_warn
+    last_warn = None
     name = name.strip()
+    if not name or any(c.isspace() or ord(c) < 0x20 for c in name):
+        raise ModelSwitchError(f"模型名 {name!r} 不合法（空或含空白/控制字符）")
     if name in available:
         return name
     close = difflib.get_close_matches(name, available, n=3, cutoff=0.4)
-    hint = f"；相近的有：{'、'.join(close)}" if close else ""
-    raise ModelSwitchError(f"代理没有模型 {name}{hint}（发 /model 看完整列表）")
+    hint = f"；相近：{'、'.join(close)}" if close else ""
+    last_warn = f"模型 {name} 不在代理列表{hint}——已照常切换，名字打错的话用 /model 换"
+    return name
 
 
 def check_effort(value: str) -> str:
@@ -224,6 +235,8 @@ def run_command(
 
     `cfg` 是**默认**配置（未叠本会话设置）。没有可用配置时只能看、不能换。
     """
+    global last_warn
+    last_warn = None   # D148：每条命令先把上一条的提醒清掉（模块级瞬时态）
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0]
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -245,7 +258,10 @@ def run_command(
             return new, f"已恢复默认模型：{describe(cfg, new, purpose)['model']}（本会话）"
         name = check_model(arg, models_fetcher(cfg))
         new = replace(override, model=name)
-        return new, f"本会话已切换到 {name}（下一轮起生效；新会话仍用默认模型）"
+        text = f"本会话已切换到 {name}（下一轮起生效；新会话仍用默认模型）"
+        if last_warn:
+            text += f"\n{last_warn}"
+        return new, text
     if cmd == "/thinking":
         if not arg:
             levels = " / ".join(f"{e}（{EFFORT_LABELS[e]}）" for e in EFFORTS)

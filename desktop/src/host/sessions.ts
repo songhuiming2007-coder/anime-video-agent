@@ -160,6 +160,10 @@ export interface CommandResult {
   text: string;
   items?: string[];
   efforts?: string[];
+  /** D147：会话未启动时存下的预选（下一条 send 起进程后先下发） */
+  pending?: boolean;
+  /** D148：模型不在代理列表时 core 透传的提醒（不阻断） */
+  warn?: string;
 }
 
 const STDERR_TAIL_BYTES = 8 * 1024;
@@ -208,6 +212,8 @@ function SHUTDOWN_FRAME(): Record<string, unknown> {
 export class SessionManager {
   private readonly timing: SessionTiming;
   private readonly states = new Map<ConvKey, SessionState>();
+  /** D147：会话未启动（phase "none" / 无 proc）时预选的模型与推理强度；send 起进程后先下发。生命周期随 convKey，进程退出不丢（重开照样带） */
+  private readonly pendingByKey = new Map<ConvKey, { model: string | null; effort: string | null }>();
   /** D98：每条会话上一帧 stop_points 的内容；停机点没变（每回合都会重发一帧）就不再叫人 */
   private readonly stopKeys = new Map<ConvKey, string>();
   private n = 0;
@@ -239,6 +245,7 @@ export class SessionManager {
         framesLost: 0,
         settlePending: null,
         keyProblem: null,
+        pending: this.pendingOf(key),
       };
     }
     return {
@@ -253,7 +260,15 @@ export class SessionManager {
       framesLost: s.framesLost,
       settlePending: s.settle?.turnId ?? null,
       keyProblem: s.keyProblem,
+      pending: this.pendingOf(key),
     };
+  }
+
+  /** D147：snapshot / delta 共用的 pending 视图；没有预选为 undefined（不进 JSON） */
+  private pendingOf(key: ConvKey): ConvSnapshot["pending"] {
+    const p = this.pendingByKey.get(key);
+    if (!p || (p.model === null && p.effort === null)) return undefined;
+    return { ...(p.model !== null ? { model: p.model } : {}), ...(p.effort !== null ? { effort: p.effort } : {}) };
   }
 
   summaries(): Map<ConvKey, { live: boolean; running: boolean; openRequests: number }> {
@@ -287,7 +302,7 @@ export class SessionManager {
 
   // ---------------- 对外方法 ----------------
 
-  async send(key: ConvKey, target: SessionTarget, text: string): Promise<{ turnId: string; queued?: boolean }> {
+  async send(key: ConvKey, target: SessionTarget, text: string): Promise<{ turnId: string; queued?: boolean; warn?: string }> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
     if (text === "") this.fail("E_BAD_REQUEST", "消息为空");
@@ -295,12 +310,46 @@ export class SessionManager {
     if (s.phase === "starting") await this.waitReady(s);
     // D79（照 Pi 的 steering）：回合在跑时照写 user_message，core 排队并回 queued；工具批之后送达模型
     if (s.phase !== "idle" && s.phase !== "running") this.fail("E_BUSY", "该会话正在启动或收尾");
+    // D147：会话启动前预选的设置——进程 ready 后、用户消息前依次下发；失败不拦消息，warn 如实带回
+    const warn = await this.flushPending(key, s);
     const rid = this.rid();
     const framed = { v: 1, t: "user_message", text, rid };
     this.precheck(framed);
     const p = new Promise<{ turnId: string; queued?: boolean }>((resolve, reject) => s.sendWaiters.set(rid, { resolve, reject, text }));
     this.writeFrame(s, framed);
-    return this.race(p, this.timing.sendAckMs, "发送结果未知（超时）");
+    const r = await this.race(p, this.timing.sendAckMs, "发送结果未知（超时）");
+    return warn === null ? r : { ...r, warn };
+  }
+
+  /** D147：把 pending 依次写成 command 帧并等回执；任一失败收集文案、照旧放行。返回拼接的 warn（无 = null）。
+   * 帧构造走 `commandFrame`（TG-11：command 入站帧恰 1 个构造点）。 */
+  private async flushPending(key: ConvKey, s: SessionState): Promise<string | null> {
+    const pending = this.pendingByKey.get(key);
+    if (!pending) return null;
+    const items: ["model" | "thinking", string][] = [];
+    if (pending.model !== null) items.push(["model", pending.model]);
+    if (pending.effort !== null) items.push(["thinking", pending.effort]);
+    this.pendingByKey.delete(key);
+    const warns: string[] = [];
+    for (const [name, arg] of items) {
+      const rid = this.rid();
+      try {
+        const framed = this.commandFrame(name, arg, rid);
+        this.precheck(framed);
+        const p = new Promise<CommandResult>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
+        this.writeFrame(s, framed);
+        const res = await this.race(p, this.timing.sendAckMs, `预设 ${name} 结果未知（超时）`);
+        if (!res.ok) warns.push(`预设${name === "model" ? "模型" : "推理强度"} ${arg} 未生效：${res.text}`);
+      } catch (e) {
+        warns.push(`预设${name === "model" ? "模型" : "推理强度"} ${arg} 未生效：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return warns.length > 0 ? warns.join("；") : null;
+  }
+
+  /** command 入站帧的唯一构造点（TG-11）：renderer 的 conv.command 与 D147 的 pending 下发共用。 */
+  private commandFrame(name: CommandName, arg: string | null, rid: string): Record<string, unknown> {
+    return { v: 1, t: "command", name, arg: name === "scope" || name === "model" || name === "thinking" ? arg : null, rid };
   }
 
   async resume(key: ConvKey, target: SessionTarget): Promise<ConvSnapshot> {
@@ -357,10 +406,21 @@ export class SessionManager {
     } else if (arg !== null) {
       this.fail("E_BAD_REQUEST", `${name} 不许带 arg`);
     }
-    const s = this.activeOf(key);
+    const live = this.activeOf(key);
+    // D147：会话未启动时 model / thinking 存 pending（下一条 send 起进程后先下发）；其余命令仍要活进程。
+    // arg="default" 是清 pending（不记值）；core 语义不变（活进程时照旧下发恢复默认）
+    if ((!live || !live.proc) && (name === "model" || name === "thinking") && arg !== null) {
+      const p = this.pendingByKey.get(key) ?? { model: null, effort: null };
+      if (name === "model") p.model = arg === "default" ? null : arg;
+      else p.effort = arg === "default" ? null : arg;
+      this.pendingByKey.set(key, p);
+      this.pushSnapshot(key);
+      return { ok: true, text: `会话启动后生效：${name === "model" ? "模型" : "推理强度"} ${arg}`, pending: true };
+    }
+    const s = live;
     if (!s || !s.proc) this.fail("E_SESSION", "该会话没有活进程");
     const rid = this.rid();
-    const framed = { v: 1, t: "command", name, arg: name === "scope" || name === "model" || name === "thinking" ? arg : null, rid };
+    const framed = this.commandFrame(name, arg, rid);
     this.precheck(framed);
     const p = new Promise<CommandResult>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
     this.writeFrame(s, framed);
@@ -675,7 +735,7 @@ export class SessionManager {
           s.commandWaiters.delete(rid);
           const items = Array.isArray(f.items) ? f.items.filter((x): x is string => typeof x === "string") : undefined;
           const efforts = Array.isArray(f.efforts) ? f.efforts.filter((x): x is string => typeof x === "string") : undefined;
-          w.resolve({ ok: f.ok === true, text: String(f.text ?? ""), ...(items ? { items } : {}), ...(efforts ? { efforts } : {}) });
+          w.resolve({ ok: f.ok === true, text: String(f.text ?? ""), ...(items ? { items } : {}), ...(efforts ? { efforts } : {}), ...(typeof f.warn === "string" ? { warn: f.warn } : {}) });
         }
         break;
       }
@@ -805,7 +865,7 @@ export class SessionManager {
       convKey: s.key,
       generation: s.generation,
       seq: s.seq,
-      data: { convKey: s.key, generation: s.generation, seq: s.seq, entries, phase: s.phase, turnId: s.turnId, open: [...s.open], keyProblem: s.keyProblem },
+      data: { convKey: s.key, generation: s.generation, seq: s.seq, entries, phase: s.phase, turnId: s.turnId, open: [...s.open], keyProblem: s.keyProblem, pending: this.pendingOf(s.key) },
     });
     this.deps.changed();
   }

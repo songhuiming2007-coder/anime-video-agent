@@ -245,23 +245,50 @@ function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivEl
 /** 输入框发裸 `/model`、`/thinking` 时由 App 递进来：n 每次加一，展开对应下拉（只展开、不切换——切换仍要点一行） */
 export type ModelOpenReq = { which: "model" | "effort"; n: number };
 
-export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null; openReq?: ModelOpenReq | null }) {
-  const live = phase === "idle" || phase === "running";
-  const busy = phase === "running" || phase === "starting" || phase === "ending";
+/** D149/D147：按钮是否可用。可用 = none（存 pending）/ idle / running（core 排队）；
+ * 禁 = starting（proc 未 ready）/ ending（收尾）/ exited（进程没了）。 */
+export function modelCtlUsable(phase: ConvPhase): boolean {
+  return phase === "none" || phase === "idle" || phase === "running";
+}
+
+/** 悬停提示：running 时如实说生效时机（core 回合收尾才执行 override）；none 时说 pending 语义；其余 undefined（用默认 title） */
+export function modelCtlHint(phase: ConvPhase): string | undefined {
+  if (phase === "running") return "当前正在跑，切换在下个回合生效";
+  if (phase === "none") return "会话未启动：选择后存下，发第一条消息时生效";
+  return undefined;
+}
+
+/** popover 顶部的生效提示行：running / none 各一行，idle 不显示（立即生效不误导） */
+export function modelPopNote(phase: ConvPhase): string | null {
+  if (phase === "running") return "切换在本回合结束后、下个回合生效";
+  if (phase === "none") return "会话未启动：选择存下，发第一条消息时生效";
+  return null;
+}
+
+export function ModelControls({ rpc, convKey, phase, info, openReq = null, pending = null }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null; openReq?: ModelOpenReq | null; pending?: { model?: string; effort?: string } | null }) {
+  // D149：running 也可用（core 排队到回合收尾执行，下个回合生效）；D147：none 也可用（存 pending，首条消息带出）。
+  const usable = modelCtlUsable(phase);
+  const pendingModel = pending?.model ?? null;
+  const pendingEffort = pending?.effort ?? null;
   const [modelOpen, setModelOpen, modelRef] = usePopover();
   const [effortOpen, setEffortOpen, effortRef] = usePopover();
   const [models, setModels] = useState<string[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [customModel, setCustomModel] = useState("");
+  const [warn, setWarn] = useState<string | null>(null);
   useEffect(() => {
     setModels(null);
     setErr(null);
+    setWarn(null);
+    setCustomModel("");
     setModelOpen(false);
     setEffortOpen(false);
   }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 取列表走纯读的 conv.models（不在点击纪律内：它不改任何设置）
-  const openModel = () => {
-    setEffortOpen(false);
-    setModelOpen(true);
+  // 取列表走纯读的 conv.models（不在点击纪律内：它不改任何设置）。
+  // D147：会话未起（none）时没有进程可取列表——跳过调用、留空列表，popover 只留自定义输入区。
+  // D151：失败行里「重试」重新调一次。
+  const fetchModels = () => {
+    if (phase === "none") { setModels([]); setErr(null); return; }
     void rpc.call<{ ok?: boolean; text?: string; items?: string[] }>("conv.models", { convKey }).then(
       (res) => {
         setModels(res.ok ? res.items ?? [] : []);
@@ -270,19 +297,25 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
       (e2) => setErr(String((e2 as Error).message ?? e2)),
     );
   };
+  const openModel = () => {
+    setEffortOpen(false);
+    setModelOpen(true);
+    fetchModels();
+  };
   useEffect(() => {
-    if (!openReq || !live || busy) return;
+    if (!openReq || !usable) return;
     if (openReq.which === "model") openModel();
     else {
       setModelOpen(false);
       setEffortOpen(true);
     }
   }, [openReq?.n]); // eslint-disable-line react-hooks/exhaustive-deps
-  const hint = busy ? "回合结束后可切换" : !live ? "会话开始后可切换（先发一条消息，或直接发 /model）" : undefined;
+  const hint = modelCtlHint(phase);
+  const popNote = modelPopNote(phase);
   const after = (r: unknown) => {
-    const res = r as { ok?: boolean; text?: string } | null;
-    if (res && res.ok === false) setErr(res.text ?? "切换失败");
-    else setErr(null);
+    const res = r as { ok?: boolean; text?: string; warn?: string } | null;
+    if (res && res.ok === false) { setErr(res.text ?? "切换失败"); setWarn(null); }
+    else { setErr(null); setWarn(res?.warn ?? null); }  // D148：不在代理列表的模型切换成功也带回 warn
   };
   return (
     <div className="model-controls" data-testid="model-controls">
@@ -290,9 +323,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
           data-testid="model-btn"
-          data-source={info?.modelSource ?? ""}
+          data-source={pendingModel !== null ? "session" : info?.modelSource ?? ""}
           aria-expanded={modelOpen}
-          disabled={!live || busy}
+          disabled={!usable}
           title={hint ?? `${info?.model ?? ""} · ${info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"}`}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
@@ -301,19 +334,28 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
           }}
         >
           <Icon name="chip" size="sm" />
-          <span className="model-ctl-label" data-testid="model-label">{info?.model ?? "—"}</span>
+          <span className="model-ctl-label" data-testid="model-label">{pendingModel ?? info?.model ?? "—"}</span>
+          {pendingModel !== null && <span className="model-ctl-pending" data-testid="model-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {modelOpen && (
           <div className="ui-popover model-pop" data-testid="model-pop">
             <div className="ui-popover-title">本会话模型</div>
-            {err !== null && <div className="warn model-pop-err" data-testid="model-pop-err">{err}</div>}
+            {popNote !== null && <div className="muted model-pop-note" data-testid="model-pop-note">{popNote}</div>}
+            {info !== null && info.modelSource === "default" && info.model !== null && <div className="muted model-pop-note" data-testid="model-pop-default">默认：{info.model}</div>}
+            {err !== null && (
+              <div className="warn model-pop-err" data-testid="model-pop-err">
+                {err}
+                <button className="ui-btn ui-btn--ghost ui-btn--sm model-pop-retry" data-testid="model-pop-retry" onClick={(e) => { if (!e.nativeEvent.isTrusted) return; setErr(null); setModels(null); fetchModels(); }}>重试</button>
+              </div>
+            )}
+            {warn !== null && <div className="warn model-pop-warn" data-testid="model-pop-warn">{warn}</div>}
             {models === null && err === null && <div className="muted model-pop-wait">…</div>}
             {models?.map((m) => (
               <button
                 key={m}
                 className="ui-row model-pop-row"
-                aria-current={info?.model === m ? "true" : undefined}
+                aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
                 data-testid="model-row"
                 data-model={m}
                 onClick={(e) => {
@@ -322,10 +364,36 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
                   void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="model-pop-check">{info?.model === m ? <Icon name="check" size="sm" /> : null}</span>
+                <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
                 <span className="ui-row-title">{m}</span>
               </button>
             ))}
+            {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
+                输入框只收值（onKeyDown 不能发 conv.command，TG-10 纪律）；点「切换」按钮发出。 */}
+            <div className="model-pop-custom">
+              <input
+                className="ui-input model-pop-input"
+                data-testid="model-custom-input"
+                placeholder="自定义模型名…"
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) setCustomModel((v) => v.trim());
+                }}
+              />
+              <button
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                data-testid="model-custom-submit"
+                disabled={customModel.trim() === ""}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setModelOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "model", arg: customModel.trim() }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                }}
+              >
+                切换
+              </button>
+            </div>
             {info?.modelSource === "session" && (
               <button
                 className="ui-row model-pop-row model-pop-reset"
@@ -347,9 +415,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
           data-testid="effort-btn"
-          data-source={info?.effortSource ?? ""}
+          data-source={pendingEffort !== null ? "session" : info?.effortSource ?? ""}
           aria-expanded={effortOpen}
-          disabled={!live || busy}
+          disabled={!usable}
           title={hint ?? "推理强度（只影响本会话；「默认」= 不发推理参数，由模型自己定）"}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
@@ -358,17 +426,19 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
           }}
         >
           <Icon name="gauge" size="sm" />
-          <span data-testid="effort-label">{info ? effortText(info.effort) : "—"}</span>
+          <span data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "—"}</span>
+          {pendingEffort !== null && <span className="model-ctl-pending" data-testid="effort-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {effortOpen && (
           <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
             <div className="ui-popover-title">推理强度</div>
+            {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
             {EFFORTS.map((v) => (
               <button
                 key={v}
                 className="ui-row model-pop-row"
-                aria-current={info?.effort === v ? "true" : undefined}
+                aria-current={(pendingEffort ?? info?.effort) === v ? "true" : undefined}
                 data-testid="effort-row"
                 data-effort={v}
                 onClick={(e) => {
@@ -377,7 +447,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null }: { r
                   void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="model-pop-check">{info?.effort === v ? <Icon name="check" size="sm" /> : null}</span>
+                <span className="model-pop-check">{(pendingEffort ?? info?.effort) === v ? <Icon name="check" size="sm" /> : null}</span>
                 <span className="ui-row-title">{EFFORT_LABELS[v]}</span>
                 <span className="model-pop-meta">{v}</span>
               </button>

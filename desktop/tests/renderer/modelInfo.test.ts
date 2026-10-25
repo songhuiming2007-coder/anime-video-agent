@@ -31,3 +31,24 @@ describe("effortText", () => {
     expect([effortText(null), effortText("none"), effortText("xhigh"), effortText("turbo")]).toEqual(["默认", "关", "超高", "turbo"]);
   });
 });
+
+
+// D149/D147：运行中与会话未启动时的可用性与文案（TG-10 下 UI 逻辑抽纯函数测）
+import { modelCtlHint, modelCtlUsable, modelPopNote } from "../../src/renderer/SessionHeader";
+
+describe("modelCtlUsable / modelCtlHint / modelPopNote", () => {
+  it("none/idle/running 可用；starting/ending/exited 禁（D149：running 放行；D147：none 存 pending）", () => {
+    for (const p of ["none", "idle", "running"] as const) expect(modelCtlUsable(p)).toBe(true);
+    for (const p of ["starting", "ending", "exited"] as const) expect(modelCtlUsable(p)).toBe(false);
+  });
+  it("running 提示「下个回合生效」；none 提示存下待发；idle/starting/ending/exited 无覆盖提示", () => {
+    expect(modelCtlHint("running")).toContain("下个回合");
+    expect(modelCtlHint("none")).toContain("发第一条消息时生效");
+    for (const p of ["idle", "starting", "ending", "exited"] as const) expect(modelCtlHint(p)).toBeUndefined();
+  });
+  it("popover 生效提示行只在 running / none 显示（idle 立即生效不误导）", () => {
+    expect(modelPopNote("running")).toContain("本回合结束后");
+    expect(modelPopNote("none")).toContain("会话未启动");
+    for (const p of ["idle", "starting", "ending", "exited"] as const) expect(modelPopNote(p)).toBeNull();
+  });
+});

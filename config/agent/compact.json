@@ -40,6 +40,21 @@
       "window": 1048576,
       "reliable_ratio": 1.0,
       "_source": "2026-10-14 经本机 CPA 代理实测：200 万字请求返回 400「exceeds the maximum number of tokens allowed 1048576」；开头埋暗号 + 99 万字填充（prompt_tokens 985,183）照收、暗号答对——代理不截断。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+    },
+    "devin/swe-2": {
+      "window": 262144,
+      "reliable_ratio": 1.0,
+      "_source": "CPA /v1/models 自报 262000，取保守 262144；无真实超长探针。reliable_ratio 未做长上下文召回实测，1.0 = 不另打折。2026-10-25 冒烟：200 正常回包。"
+    },
+    "claude-opus-4-6-thinking": {
+      "window": 200000,
+      "reliable_ratio": 1.0,
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。"
+    },
+    "claude-sonnet-4-6": {
+      "window": 200000,
+      "reliable_ratio": 1.0,
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。"
     }
   }
 }
