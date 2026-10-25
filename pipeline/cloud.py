@@ -2137,6 +2137,10 @@ def cmd_clean_frames(args: argparse.Namespace) -> int:
     return _remote_maintenance(args, clean_frames_script, "清远端打标帧")
 
 
+#: `push --with-audio` 带上的本地配音目录（wav、manifest；attic 留档不传）
+AUDIO_SYNC_ITEM = "03-audio/"
+
+
 def cmd_push(args: argparse.Namespace) -> int:
     """上行同步命令：采用真实清单构建器并遵循目录斜杠纪律（P1-1/P2-4）。"""
     try:
@@ -2155,22 +2159,32 @@ def cmd_push(args: argparse.Namespace) -> int:
     print(f"    本地源: {ep_dir}")
     print(f"    远端宿: {host}:{remote_ep_dir}")
 
-    # 路径过 shlex.quote：期目录名可以含空格与中文（B7-r5 同族），
-    # 裸插值会让远端 shell 在空格处断开、在中文处乱码。无特殊字符时输出与原文一致。
-    _ssh(f"mkdir -p {shlex.quote(remote_ep_dir)}", host=host)
-
     sync_items = cfg_global.get(
         "sync", {}
     ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json", "04-patch/"])
     for extra_item in ["03-audio/corrections.json", "04-patch/"]:
         if extra_item not in sync_items:
             sync_items.append(extra_item)
+    if getattr(args, "with_audio", False):
+        # D143：新实例上要点名重配（--apply-patch），远端得先有已配好的音频与 manifest，否则整期重配
+        if not (ep_dir / "03-audio" / "manifest.json").exists():
+            raise SystemExit(f"FAIL --with-audio：本地没有 {ep_dir.name}/03-audio/manifest.json，没有可上行的配音")
+        sync_items = [*sync_items, AUDIO_SYNC_ITEM]
     sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
+
+    # 单文件的上级目录要先在远端建好：rsync 不建缺失的上级目录，新实例上还没有 03-audio/ 时
+    # `03-audio/corrections.json` 传不上去（D143 同次所见）。
+    # 路径过 shlex.quote：期目录名可以含空格与中文（B7-r5 同族），
+    # 裸插值会让远端 shell 在空格处断开、在中文处乱码。无特殊字符时输出与原文一致。
+    dirs = [remote_ep_dir] + sorted({dst.rsplit("/", 1)[0] for src, dst in sync_pairs
+                                     if not src.endswith("/")} - {remote_ep_dir})
+    _ssh("mkdir -p " + " ".join(shlex.quote(d) for d in dirs), host=host)
 
     _preflight_remote_capacity(host, remote_root, remote_ep_dir, sync_pairs)
 
     for src, dst in sync_pairs:
-        res = run_rsync(src, f"{host}:{dst}")
+        excl = ["attic/"] if src.rstrip("/").endswith("/" + AUDIO_SYNC_ITEM.rstrip("/")) else None
+        res = run_rsync(src, f"{host}:{dst}", extra_excludes=excl)
         if res.returncode != 0:
             raise SystemExit(f"FAIL 推送失败 {src} -> {dst}: {res.stderr.strip()}")
         print(f"  ✓ 已同步: {src} -> {dst}")
@@ -2442,6 +2456,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not code_ok:
         raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
 
+    extra_args = list(getattr(args, "extra", None) or [])
+    if task == "tts" and "--apply-patch" in extra_args:
+        # D143：远端没有已配好的音频，apply-patch 会整期重配（tts 那边也会拒，这里开跑前就说清楚）
+        remote_mf = f"{remote_root}/{rel_path}/03-audio/manifest.json"
+        probe = _ssh(f"test -f {shlex.quote(remote_mf)} && echo present || echo absent",
+                     host=host, check=False)
+        if (probe.stdout or "").strip() == "absent":
+            raise SystemExit(
+                "FAIL 没开跑：远端没有 03-audio/manifest.json（多半是换了实例），--apply-patch 会整期重配。\n"
+                f"     先 `python -m pipeline.cloud push {args.target} --with-audio` 把本地配音带上去")
+
     sfile = get_active_session_file()
     if sfile.exists():
         try:
@@ -2653,6 +2678,9 @@ def build_parser() -> argparse.ArgumentParser:
     # push
     p_push = sub.add_parser("push", help="同步本地稿件与配置至云端")
     p_push.add_argument("target", type=Path, help="本期目录路径")
+    p_push.add_argument("--with-audio", action="store_true",
+                        help="连同本地 03-audio/（已配好的 wav 与 manifest，不含 attic）上行；"
+                             "换了实例要 --apply-patch 点名重配前用（D143）")
 
     # run
     p_run = sub.add_parser("run", help="在云端执行指定任务（白名单控制：tts, probe）")

@@ -1780,3 +1780,88 @@ def test_d130_写标记命令遇到写坏的旧标记_重新起算且不报错(t
                        capture_output=True, text=True, check=False)
         got = cloud.parse_hold(done.stdout)
         assert done.stderr == "" and got[0] >= now and got[1] - got[2] == 7200, bad
+
+
+class TestPushWithAudio:
+    """D143：换了实例要点名重配，`push --with-audio` 把本地已配好的 03-audio/ 带上去；单文件的上级目录先建好。"""
+
+    def _env(self, monkeypatch, tmp_path, *, manifest=True):
+        _no_config(monkeypatch)
+        ep = tmp_path / "ep"
+        (ep / "03-audio" / "attic").mkdir(parents=True)
+        (ep / "02-script.md").write_text("x", encoding="utf-8")
+        (ep / "03-audio" / "corrections.json").write_text("{}", encoding="utf-8")
+        (ep / "03-audio" / "seg-01.wav").write_bytes(b"x")
+        if manifest:
+            (ep / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(cloud, "resolve_episode_rel_path", lambda t: (ep, "data/episodes/卷 三"))
+        monkeypatch.setattr(cloud, "_preflight_remote_capacity", lambda *a, **k: None)
+        seen = {"ssh": [], "rsync": []}
+        monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: seen["ssh"].append(cmd)
+                            or _sp.CompletedProcess(cmd, 0, "", ""))
+        monkeypatch.setattr(cloud, "run_rsync", lambda s, d, extra_excludes=None: seen["rsync"].append(
+            (s, d, extra_excludes)) or _sp.CompletedProcess([], 0, "", ""))
+        return ep, seen
+
+    def test_带音频_整个03audio上行且不带attic(self, monkeypatch, tmp_path):
+        ep, seen = self._env(monkeypatch, tmp_path)
+        assert cloud.cmd_push(argparse.Namespace(target="x", with_audio=True)) == 0
+        audio = [r for r in seen["rsync"] if r[0] == f"{ep}/03-audio/"]
+        assert len(audio) == 1
+        assert audio[0][1].endswith("/data/episodes/卷 三/03-audio") and audio[0][2] == ["attic/"]
+
+    def test_不带音频_不传wav(self, monkeypatch, tmp_path):
+        ep, seen = self._env(monkeypatch, tmp_path)
+        cloud.cmd_push(argparse.Namespace(target="x"))
+        assert [r[0] for r in seen["rsync"] if "03-audio" in r[0]] == [f"{ep}/03-audio/corrections.json"]
+
+    def test_本地没有manifest_不推(self, monkeypatch, tmp_path):
+        _ep, seen = self._env(monkeypatch, tmp_path, manifest=False)
+        with pytest.raises(SystemExit, match="本地没有.*manifest.json"):
+            cloud.cmd_push(argparse.Namespace(target="x", with_audio=True))
+        assert seen["rsync"] == []
+
+    def test_单文件的上级目录先在远端建好(self, monkeypatch, tmp_path):
+        # 新实例上还没有 03-audio/，rsync 不建上级目录，corrections.json 传不上去
+        _ep, seen = self._env(monkeypatch, tmp_path)
+        cloud.cmd_push(argparse.Namespace(target="x"))
+        mk = [c for c in seen["ssh"] if c.startswith("mkdir -p")]
+        assert len(mk) == 1 and "'/root/anime-video-agent/data/episodes/卷 三/03-audio'" in mk[0]
+
+
+class TestRunApplyPatchProbe:
+    """D143：`cloud run … tts -- --apply-patch` 开跑前探远端 manifest，缺了不开跑、指向 push --with-audio。"""
+
+    def _env(self, monkeypatch, tmp_path, remote_has):
+        _no_config(monkeypatch)
+        monkeypatch.setattr(cloud, "resolve_episode_rel_path", lambda t: (tmp_path, "data/episodes/x"))
+        monkeypatch.setattr(cloud, "remote_code_drift", lambda host, cfg: {"missing": [], "differ": [], "extra": []})
+        monkeypatch.setattr(cloud, "get_active_session_file", lambda: tmp_path / "nonexistent.json")
+        launched: list[str] = []
+
+        def fake(cmd, host="autodl", check=True, timeout=60, capture_output=True):
+            if cmd.startswith("test -f"):
+                assert "03-audio/manifest.json" in cmd
+                return _sp.CompletedProcess(cmd, 0, "present\n" if remote_has else "absent\n", "")
+            launched.append(cmd)
+            return _sp.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cloud, "_ssh", fake)
+        return launched
+
+    def test_远端没有manifest_不开跑(self, monkeypatch, tmp_path):
+        launched = self._env(monkeypatch, tmp_path, remote_has=False)
+        with pytest.raises(SystemExit, match="没开跑：远端没有 03-audio/manifest.json") as exc:
+            cloud.cmd_run(argparse.Namespace(task="tts", target=tmp_path, extra=["--apply-patch"]))
+        assert "--with-audio" in str(exc.value)
+        assert launched == [], "心跳、tmux 都不许发"
+
+    def test_远端有manifest_照常开跑(self, monkeypatch, tmp_path):
+        launched = self._env(monkeypatch, tmp_path, remote_has=True)
+        assert cloud.cmd_run(argparse.Namespace(task="tts", target=tmp_path, extra=["--apply-patch"])) == 0
+        assert any("tmux new-session" in c for c in launched)
+
+    def test_不是apply_patch不探(self, monkeypatch, tmp_path):
+        launched = self._env(monkeypatch, tmp_path, remote_has=False)
+        assert cloud.cmd_run(argparse.Namespace(task="tts", target=tmp_path, extra=["--redo", "3"])) == 0
+        assert any("tmux new-session" in c for c in launched)

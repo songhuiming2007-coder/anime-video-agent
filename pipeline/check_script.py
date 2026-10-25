@@ -458,6 +458,8 @@ class StillUses:
     video: dict[tuple[str, str], list[tuple[str, float]]] = field(default_factory=dict)
     video_reuse: dict[tuple[str, str], set[tuple[str, float]]] = field(default_factory=dict)
     bad_video_reuse: list[str] = field(default_factory=list)
+    #: D142：试听块 `画面:`（及音画同源块的源片）占用的视频 SP 区间 {(池, SPxx): [(「音乐段 Mx」, 起, 止), …]}
+    video_spans: dict[tuple[str, str], list[tuple[str, float, float]]] = field(default_factory=dict)
 
 
 def still_sp_uses(episode: Path) -> StillUses:
@@ -466,6 +468,8 @@ def still_sp_uses(episode: Path) -> StillUses:
     一个锚点条目排出一个片段，所以条目数就是片段数；同一段写两遍记两次。
     格式不对、池名不在番表、未入库的条目不在这里计，它们由「锚点格式」「锚点指向素材」两项报。
     池的归属与「锚点指向素材」一致：SP 锚点没写池名归企划池；`复用:` 条目同一口径。
+    试听块的 `画面: <池> SPxx mm:ss` 从起点连放整段音乐（D142）：指向图片微动 SP 记一次，
+    指向视频 SP 记为区间 [起点, 起点 + 音乐长度]，素材不够长放慢铺满时截到源片末尾。
     """
     out = StillUses()
     f = episode / "02-script.md"
@@ -481,6 +485,24 @@ def still_sp_uses(episode: Path) -> StillUses:
     unavailable = out.unavailable
     cache: dict[str, dict | None] = {}
     text = f.read_text(encoding="utf-8")
+
+    def source(m: re.Match) -> tuple[tuple[str, str], dict | None]:
+        pool = (m.group("anime") or "").strip() or main_plan or anime_main
+        key = (pool, f"SP{int(m.group('sp')):02d}")
+        if pool not in allowed:
+            return key, None
+        if pool not in cache:
+            try:
+                if patch_name and pool == patch_name:
+                    cache[pool] = _patch_sources(episode)
+                else:
+                    from . import ingest  # 延迟 import：与「锚点指向素材」同规矩
+                    cache[pool] = ingest.load_sources(pool)
+            except SystemExit as e:
+                cache[pool] = None
+                unavailable.append(f"{episode.name}：{e}")
+        return key, (cache[pool] or {}).get(key[1])
+
     for label, raw in parse_anchors(text):
         if not raw or raw.startswith("无"):
             continue
@@ -488,25 +510,19 @@ def still_sp_uses(episode: Path) -> StillUses:
             m = ANCHOR_TC.fullmatch(item)
             if not m or m.group("sp") is None:
                 continue
-            pool = (m.group("anime") or "").strip() or main_plan or anime_main
-            if pool not in allowed:
-                continue
-            if pool not in cache:
-                try:
-                    if patch_name and pool == patch_name:
-                        cache[pool] = _patch_sources(episode)
-                    else:
-                        from . import ingest  # 延迟 import：与「锚点指向素材」同规矩
-                        cache[pool] = ingest.load_sources(pool)
-                except SystemExit as e:
-                    cache[pool] = None
-                    unavailable.append(f"{episode.name}：{e}")
-            src = (cache[pool] or {}).get(f"SP{int(m.group('sp')):02d}")
+            key, src = source(m)
             if src and _is_still(src):
-                uses.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append(label)
+                uses.setdefault(key, []).append(label)
             elif src:
                 start = int(m.group("m0")) * 60 + float(m.group("s0"))
-                out.video.setdefault((pool, f"SP{int(m.group('sp')):02d}"), []).append((label, start))
+                out.video.setdefault(key, []).append((label, start))
+    for label, m, start, dur in _music_sp_visuals(episode, f, unavailable):
+        key, src = source(m)
+        if src and _is_still(src):
+            uses.setdefault(key, []).append(label)
+        elif src:
+            end = min(start + dur, float(src.get("duration") or start + dur))
+            out.video_spans.setdefault(key, []).append((label, start, end))
     for label, items in parse_reuse(text).items():
         for item in items:
             m = _REUSE_ITEM.fullmatch(item)
@@ -539,6 +555,49 @@ def still_sp_uses(episode: Path) -> StillUses:
     return out
 
 
+def _music_sp_visuals(episode: Path, script: Path, unavailable: list[str]
+                      ) -> list[tuple[str, re.Match, float, float]]:
+    """试听块里指向 SP 的画面：[(「音乐段 Mx」, `<池> SPxx` 匹配, 源片起点, 连放秒数)]（D142）。
+
+    前景块取 `画面:` 的起点与音乐长度（`音乐:` 没写终点时按曲库全长）；音画同源块取 `源片原声:` 的区间。
+    `画面:` 指向番剧集、写「同源」以外的非 SP 来源、没写画面（定格）的不计。音乐段本身写错由
+    「音乐段解析」那一项报，这里不重复；曲库查不到时长记进 unavailable（S9 跳过不是通过）。
+    """
+    from . import music
+    try:
+        blocks = music.parse_script_music(script)
+    except SystemExit:
+        return []
+    out, tracks = [], None
+    for b in blocks:
+        if b.bgm_only:
+            continue
+        label = f"音乐段 {b.label}"
+        if b.avsync:
+            m = _REUSE_ITEM.fullmatch(b.avsync)
+            if m and m.group("m") is None:
+                out.append((label, m, b.t0, b.t1 - b.t0))
+            continue
+        m = _REUSE_ITEM.fullmatch(b.visual or "")
+        if not m or m.group("m") is None:
+            continue
+        t1 = b.t1
+        if t1 is None:
+            try:
+                tracks = tracks or music.load_tracks_multi(episode)
+                t1 = music._track_for(b.title, tracks)["dur"]
+            except SystemExit as e:
+                unavailable.append(f"{episode.name} {label}：{str(e).removeprefix('FAIL ')}")
+                continue
+        out.append((label, m, int(m.group("m")) * 60 + float(m.group("s")), t1 - b.t0))
+    return out
+
+
+def _where(label: str) -> str:
+    """结果里的位置：段落号写「段N」，试听块原样（「音乐段 M1」）。"""
+    return label if label.startswith("音乐段") else f"段{label}"
+
+
 def _mmss(sec: float) -> str:
     m, s = divmod(sec, 60)
     return f"{int(m)}:{s:05.2f}".rstrip("0").rstrip(".") if s % 1 else f"{int(m)}:{int(s):02d}"
@@ -549,14 +608,15 @@ def _check_sp_caps(path: Path, add) -> None:
     from . import project
     ep = path.parent
     own = still_sp_uses(ep)
-    if not (own.uses or own.video or own.unavailable or own.bad_reuse or own.bad_video_reuse):
+    if not (own.uses or own.video or own.video_spans or own.unavailable or own.bad_reuse
+            or own.bad_video_reuse):
         return
     proj = project.project_of(ep)
     others = [(m.name, still_sp_uses(m)) for m in (project.project_members(proj) if proj else [])
               if m.name != ep.name]
     if own.uses or own.unavailable or own.bad_reuse:
         _check_still_sp_cap(ep, own, others, add)
-    if own.video or own.unavailable or own.bad_video_reuse:
+    if own.video or own.video_spans or own.unavailable or own.bad_video_reuse:
         _check_video_sp_window(ep, own, others, add)
 
 
@@ -590,7 +650,7 @@ def _check_still_sp_cap(ep: Path, own: StillUses, others: list[tuple[str, StillU
         by_vol: dict[str, list[str]] = {}
         for vol, label in where:
             mark = "〔复用〕" if (vol, label) in declared.get(key, set()) else ""
-            by_vol.setdefault(vol, []).append(f"段{label}{mark}")
+            by_vol.setdefault(vol, []).append(f"{_where(label)}{mark}")
         return (f"{key[0]} {key[1]} 共 {len(where)} 次（"
                 + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
 
@@ -614,8 +674,10 @@ def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, Sti
     """视频 SP 同一处画面上限（D137）：以本期每个视频 SP 锚点的起点为中心、前后 VIDEO_SP_WINDOW_S 秒内，
     同一 SP 的锚点（含它自己、含企划其他卷）合计不超过 VIDEO_SP_MAX。
 
-    只报以本期锚点为中心的窗口：别的卷内部超了，由那一卷的机检报。不带声明的锚点数超过上限才 FAIL，
-    带时间码 `复用:` 声明的锚点（任何一卷）放行，逐处列在结果里给 02.5 看。
+    试听块的画面是一段区间（D142）：它的「前后 10 s」从区间起点前 10 s 到终点后 10 s，
+    锚点落进去、或别的区间与它相交都算同一处；锚点之间仍按起点相距 ≤ 10 s 算，与 D137 一致。
+    只报以本期用法为中心的窗口：别的卷内部超了，由那一卷的机检报。不带声明的用法超过上限才 FAIL，
+    带时间码 `复用:` 声明的锚点（任何一卷）放行，逐处列在结果里给 02.5 看；试听块不收 `复用:`。
     """
     name = f"视频 SP 同一处（前后 {VIDEO_SP_WINDOW_S:g} s）全企划至多 {VIDEO_SP_MAX} 次"
     unavailable = list(own.unavailable) + [u for _, o in others for u in o.unavailable]
@@ -626,17 +688,23 @@ def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, Sti
         add(name, False, "；".join(own.bad_video_reuse[:4])
             + "　视频 SP 的 `复用:` 写本段锚点里那一处的起点，如 `<池> SPxx 0:20（理由）`")
         return
+
+    def spans(o: StillUses, key: tuple[str, str]) -> list[tuple[str, float, float]]:
+        return [(l, s, s) for l, s in o.video.get(key, [])] + o.video_spans.get(key, [])
+
     # 判定按窗口，报告按簇：同一 SP 相互重叠的超限窗口并成一簇报一次（0/5/15/20 s 是两个窗口、一处画面）
-    keep: list[tuple[tuple[str, str], list[tuple[str, str, float, bool]]]] = []
-    failing: list[tuple[tuple[str, str], list[tuple[str, str, float, bool]]]] = []
-    for key, mine in sorted(own.video.items()):
-        entries = [(ep.name, l, s) for l, s in mine]
-        entries += [(vol, l, s) for vol, o in others for l, s in o.video.get(key, [])]
-        declared = {(ep.name, l, s) for l, s in own.video_reuse.get(key, set())}
-        declared |= {(vol, l, s) for vol, o in others for l, s in o.video_reuse.get(key, set())}
+    keep: list[tuple[tuple[str, str], list[tuple[str, str, float, float, bool]]]] = []
+    failing: list[tuple[tuple[str, str], list[tuple[str, str, float, float, bool]]]] = []
+    for key in sorted(set(own.video) | set(own.video_spans)):
+        mine = spans(own, key)
+        entries = [(ep.name, l, a, b) for l, a, b in mine]
+        entries += [(vol, l, a, b) for vol, o in others for l, a, b in spans(o, key)]
+        declared = {(ep.name, l, s, s) for l, s in own.video_reuse.get(key, set())}
+        declared |= {(vol, l, s, s) for vol, o in others for l, s in o.video_reuse.get(key, set())}
         clusters: list[tuple[set[int], bool]] = []
-        for _, _, center in entries[:len(mine)]:
-            idx = {i for i, e in enumerate(entries) if abs(e[2] - center) <= VIDEO_SP_WINDOW_S + 1e-9}
+        for _, _, lo, hi in entries[:len(mine)]:
+            idx = {i for i, e in enumerate(entries)
+                   if e[2] <= hi + VIDEO_SP_WINDOW_S + 1e-9 and e[3] >= lo - VIDEO_SP_WINDOW_S - 1e-9}
             if len(idx) <= VIDEO_SP_MAX:
                 continue
             bad = sum(entries[i] not in declared for i in idx) > VIDEO_SP_MAX
@@ -648,24 +716,28 @@ def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, Sti
             win = [(*entries[i], entries[i] in declared) for i in sorted(idx)]
             (failing if bad else keep).append((key, win))
 
-    def where_text(key: tuple[str, str], win: list[tuple[str, str, float, bool]]) -> str:
+    def where_text(key: tuple[str, str], win: list[tuple[str, str, float, float, bool]]) -> str:
         by_vol: dict[str, list[str]] = {}
-        for vol, label, start, dec in sorted(win, key=lambda e: e[2]):
-            by_vol.setdefault(vol, []).append(f"段{label} {_mmss(start)}{'〔复用〕' if dec else ''}")
+        for vol, label, lo, hi, dec in sorted(win, key=lambda e: e[2]):
+            at = _mmss(lo) if hi == lo else f"{_mmss(lo)}–{_mmss(hi)}"
+            by_vol.setdefault(vol, []).append(f"{_where(label)} {at}{'〔复用〕' if dec else ''}")
         return (f"{key[0]} {key[1]} 共 {len(win)} 处（"
                 + "；".join(f"{v} {'、'.join(ls)}" for v, ls in by_vol.items()) + "）")
 
     n_own = sum(len(v) for v in own.video.values())
+    n_spans = sum(len(v) for v in own.video_spans.values())
+    what = f"本期 {n_own} 处视频 SP 锚点" + (f"、{n_spans} 个试听块画面" if n_spans else "")
     if not failing:
         if keep:
-            add(name, True, f"本期 {n_own} 处视频 SP 锚点；超出 {VIDEO_SP_MAX} 处的都有人定复用声明："
+            add(name, True, f"{what}；超出 {VIDEO_SP_MAX} 处的都有人定复用声明："
                 + "；".join(where_text(k, v) for k, v in keep))
         else:
-            add(name, True, f"本期 {n_own} 处视频 SP 锚点，同一处都不超过 {VIDEO_SP_MAX} 次")
+            add(name, True, f"{what}，同一处都不超过 {VIDEO_SP_MAX} 次")
         return
     add(name, False, "；".join(where_text(k, v) for k, v in failing[:4])
-        + f"　同一支视频 SP 的同一处画面（起点前后 {VIDEO_SP_WINDOW_S:g} s）在整个企划里最多用 {VIDEO_SP_MAX} 次"
-          "（2026-10-24 人定），多出来的段换一处画面，或由人决定后在该段画面块写 `复用: <池> SPxx mm:ss（理由）`")
+        + f"　同一支视频 SP 的同一处画面（起点前后 {VIDEO_SP_WINDOW_S:g} s；试听块按它连放的整段）"
+          f"在整个企划里最多用 {VIDEO_SP_MAX} 次（2026-10-24 人定），多出来的段换一处画面，"
+          "或由人决定后在该段画面块写 `复用: <池> SPxx mm:ss（理由）`")
 
 
 #: 补丁池名的后缀（`ingest_patch.sanitize_pool_name`：`<净化期名>-patch`，撞名再加 `-N`）。

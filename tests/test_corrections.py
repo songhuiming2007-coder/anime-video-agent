@@ -506,7 +506,10 @@ class TestPlanApplyAndProgress:
         save_corrections_raw(tmp_path, entries)
         with pytest.raises(SystemExit) as exc:
             plan_apply(tmp_path, [], {})
-        assert "03-audio/manifest.json 缺失，请先跑 03 配音" in str(exc.value)
+        msg = str(exc.value)
+        assert "03-audio/manifest.json 缺失" in msg and "先跑 03 配音" in msg
+        # D143：换了云端实例时照「先跑 03」做就是整期重配，报错要把这条路指出来
+        assert "push <期> --with-audio" in msg and "不要在远端整期重配" in msg
 
     def test_plan_apply受影响段与pin_seed报账(self, tmp_path: Path):
         """受影响段 = redo = backup 集，pin_seed 轴同样进入 redo。"""
@@ -918,3 +921,36 @@ class TestStaleCensusWithOverlay:
         captured = capsys.readouterr().err
         assert "WARN 1/2 段是旧合成逻辑的产物" in captured
         assert "overlay 纠错段" not in captured
+
+
+class TestApplyPatchKeepsApprovedAudio:
+    """D143：apply-patch 只重配点名段；manifest 在而别的段 wav 不在时拒跑，不把它们一起重配。"""
+
+    def _ep(self, tmp_path: Path, wavs: tuple[str, ...]) -> Path:
+        ep = tmp_path
+        (ep / "03-audio").mkdir()
+        (ep / "02-script.md").write_text("## 段落 1\n配音：前面一段。\n\n## 段落 2\n配音：重叠部分。\n",
+                                         encoding="utf-8")
+        segs = [{"index": 1, "label": "1", "text": "前面一段。", "file": "seg-01.wav"},
+                {"index": 2, "label": "2", "text": "重叠部分。", "file": "seg-02.wav"}]
+        (ep / "03-audio/manifest.json").write_text(
+            json.dumps({"engine": "qwen3_tts", "model": "x", "segments": segs}), encoding="utf-8")
+        for w in wavs:
+            (ep / "03-audio" / w).write_bytes(b"x")
+        save_corrections_raw(ep, [{"id": 1, "segment": "2", "word": "重叠", "action": "inject",
+                                   "target_tone3": "chong2", "applied": False}])
+        return ep
+
+    def test_别段音频不在_拒跑并列出(self, tmp_path: Path):
+        ep = self._ep(tmp_path, ("seg-02.wav",))
+        with pytest.raises(SystemExit) as exc:
+            tts.run(ep, apply_patch=True, cfg_path=tts.CONFIG)
+        msg = str(exc.value)
+        assert "另有 1 段的音频文件不在（段 1）" in msg and "--with-audio" in msg
+
+    def test_只缺点名段自己的音频_照常往下走(self, tmp_path: Path):
+        # 点名段本来就要重配，它的 wav 不在不拦；拦下的是后面的引擎同侧检查（夹具引擎与本机配置不同）
+        ep = self._ep(tmp_path, ("seg-01.wav",))
+        with pytest.raises(SystemExit) as exc:
+            tts.run(ep, apply_patch=True, cfg_path=tts.CONFIG)
+        assert "引擎/模型变了" in str(exc.value)

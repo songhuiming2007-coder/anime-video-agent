@@ -33,11 +33,12 @@ BLACK_MATCH_MIN = 0.35                 # 成片黑帧与源片黑段的重叠 �
                                         # （0.04–0.08s），成片黑帧 0.5s 映射回源片最多
                                         # 偏出这么点，0.35 = 0.5 − 0.15 的容差。
                                         # 再低会把「源片有黑但没盖住成片黑」误认成内容。
-FRAME_BOUND = 0.05                     # 单片段帧舍入误差上界，秒。编码器输出帧数 =
-                                        # round(dur×fps) ±1 帧；常见帧率（23.976/24/29.97/
-                                        # 30）一帧 ≤ 0.0417s，取 0.05 有余量。累积漂移是
-                                        # 随机游走，最坏 = 每片同向舍入 → 到第 n 片累计
-                                        # ≤ n×0.05。实测：42 片成片中间位置漂移 0.5s。
+FRAME_BOUND = 0.05                     # 成片位置相对排片的误差上界，秒。D145 起 render
+                                        # 按成片时间轴的累计边界分帧，任一片段起点离计划
+                                        # ≤ 半帧；常见帧率（23.976/24/29.97/30）一帧
+                                        # ≤ 0.0417s，取 0.05 有余量。此前按「第 n 片累计
+                                        # ≤ n×0.05」放宽，那是在容忍 D145 的累积漂移，
+                                        # 卷三第 177 片的窗口放到 ±8.9 s，等于不核。
 SILENCE_MAX = 2.0                      # 单段静音上限，秒
 BLACK_SRC_BUF = 0.3                    # 对照源片时前后各放宽的秒数
                                         # ffmpeg 快速 seek 会落在关键帧上，实际解码起点
@@ -138,13 +139,12 @@ def _map_black_to_sources(blacks: list[tuple[float, float]],
     成片 = 各段 clips 按顺序拼接（与 render.py 同一份 plan、同一套顺序，
     时间轴才会对得上）。返回
     [(源路径, 源区间起点, 源区间终点, 成片区间起点, 成片区间终点, 累计片段序号, 黑帧序号)]；
-    黑帧跨片段边界时一个黑帧映射出多条。片段序号从 1 起——它决定累积漂移
-    窗口的大小（见 `_mapped_covered`）；黑帧序号用于把同一条黑在多个片段上的
-    映射归拢起来判整体（见 `_black_defects`）。
+    黑帧跨片段边界时一个黑帧映射出多条。片段序号从 1 起；黑帧序号用于把同一条黑
+    在多个片段上的映射归拢起来判整体（见 `_black_defects`）。
 
-    试听型的段落起点带音乐段偏移（`seg_starts`：段落号 → 成片起点），
-    否则段落连续假设会把黑帧映射到错误的源位置（2026-08-16 实测：
-    段落 1 的转场黑被映射到 467s 报「源无黑」）。
+    段落起点取 `seg_starts`（段落号 → 成片起点）：试听型带音乐段偏移，否则段落连续
+    假设会把黑帧映射到错误的源位置（2026-08-16 实测：段落 1 的转场黑被映射到 467s
+    报「源无黑」）；普通期是配音实测时长累计（`_voice_starts`），与 render 同口径。
 
     已知边界（2026-08-16 审计 2-36，核实后有意不修）：音乐段（段落间隙）
     的黑帧不映射不判定——OP/ED 画面自带黑场是内容；要判需把 render 的
@@ -178,6 +178,27 @@ def _map_black_to_sources(blacks: list[tuple[float, float]],
     return out
 
 
+def _seg_starts(mplan: dict | None, audio: list[dict] | None) -> dict[int, float] | None:
+    """黑帧映射用的段落成片起点：试听型取音乐时间轴，普通期取配音时长累计。"""
+    if mplan:
+        return {s["index"]: s["start"] for s in mplan["segments"]}
+    return _voice_starts(audio)
+
+
+def _voice_starts(audio: list[dict] | None) -> dict[int, float] | None:
+    """普通期段落的成片起点 = 配音实测时长累计（render 拼人声轨与分帧同一口径，D145）。
+
+    没有 manifest 时返回 None，按片段时长连续累计（旧口径）。
+    """
+    if not audio:
+        return None
+    out, t = {}, 0.0
+    for a in audio:
+        out[a["index"]] = t
+        t += a["duration"]
+    return out
+
+
 def _source_black_covers(src_blacks: list[tuple[float, float]],
                          src_lo: float, src_hi: float) -> bool:
     """源片黑段与映射区间的重叠 ≥ 门槛，认定成片黑帧是源片自带。
@@ -191,17 +212,12 @@ def _source_black_covers(src_blacks: list[tuple[float, float]],
 
 def _mapped_covered(span: tuple[str, float, float, float, float, int],
                     src_blacks: list[tuple[float, float]]) -> bool:
-    """一条映射是否被源片黑段覆盖，含累积漂移窗口。
+    """一条映射是否被源片黑段覆盖，映射位置允许偏出 FRAME_BOUND。
 
-    成片时间轴相对排片轴有**累积帧舍入误差**：每个切片编码器输出帧数 =
-    round(dur×fps) ±1 帧，拼接后漂移是随机游走，最坏 = 每片同向舍入，
-    到第 n 片累计 ≤ n 帧（实测 42 片成片中间位置漂移 0.5s，终点 68ms——
-    终点小只因误差互相抵消，中间照样大）。所以黑帧映射回源的位置允许
-    偏出 idx×FRAME_BOUND——这是推导上界，不是调出来的数。
+    render 按成片时间轴分帧（D145），片段起点离排片 ≤ 半帧，不随片段序号累积。
     """
-    _, slo, shi, _, _, idx = span
-    w = idx * FRAME_BOUND
-    return _source_black_covers(src_blacks, slo - w, shi + w)
+    _, slo, shi, _, _, _idx = span
+    return _source_black_covers(src_blacks, slo - FRAME_BOUND, shi + FRAME_BOUND)
 
 
 def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]],
@@ -400,10 +416,8 @@ def check(video: Path, plan: dict | None = None,
             defects, inherited, src_errs = _assembly_black_spans(
                 [(float(a), float(b)) for a, b in blacks], asm)
         elif plan:
-            seg_starts = ({s["index"]: s["start"]
-                           for s in mplan["segments"]} if mplan else None)
             mapped = _map_black_to_sources(
-                [(float(a), float(b)) for a, b in blacks], plan, seg_starts)
+                [(float(a), float(b)) for a, b in blacks], plan, _seg_starts(mplan, audio))
             # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
             # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
             # 可能早于请求位置；BLACK_SRC_BUF 就是为这种边界黑段留的放宽。
@@ -413,11 +427,11 @@ def check(video: Path, plan: dict | None = None,
                 by_src.setdefault(src, []).append(span)
             covered: set[tuple] = set()
             for src, spans in by_src.items():
-                # 检测范围也要吃下漂移窗口（idx×FRAME_BOUND），否则源黑段在
+                # 检测范围也要吃下映射窗口（FRAME_BOUND），否则源黑段在
                 # 窗口内、检测起点外会整段漏检，判成「源片无黑」（实测踩过：
                 # 黑段起点在映射区间 0.26s 前，d=0.5 检测不到）。
-                lo = min(s - i * FRAME_BOUND for _, s, _, _, _, i, _ in spans) - BLACK_SRC_BUF
-                hi = max(e + i * FRAME_BOUND for _, _, e, _, _, i, _ in spans) + BLACK_SRC_BUF
+                lo = min(s for _, s, _, _, _, _, _ in spans) - FRAME_BOUND - BLACK_SRC_BUF
+                hi = max(e for _, _, e, _, _, _, _ in spans) + FRAME_BOUND + BLACK_SRC_BUF
                 err2, rc2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
                                   "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
                                   f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
@@ -541,10 +555,15 @@ def _subtitle_checks(items: list[tuple[str, dict, dict]]) -> list[Check]:
     检查项一旦测的不是真实产物，通过就毫无意义。
 
     前缀只在总装期非空（同一部片里有三期的段落号，`3-2` 会撞号）。
+
+    「不超宽」按 libass 的真实像素宽判（D146，`subtitle_metrics`）：render 的 `line_width`
+    是折行约定（汉字 1 格 = 54 px、标点与 ASCII 半格），汉字实际约 46.5 px、标点满格、
+    大写与数字比半格宽，拿约定宽度卡边距测的不是真实产物。超出边距的行 libass 会在空格处
+    再折一次，所以「每卡一行」也把它算作折行。
     """
-    from .render import (FONT_SIZE, MARGIN_V, H, cards, line_width, per_line,
-                         usable_width, wrap)
-    cap = usable_width()          # 硬上限，不是折行目标
+    from .render import FONT_SIZE, MARGIN_V, H, cards, per_line, wrap
+    from .subtitle_metrics import max_px, text_px
+    cap = max_px()
     max_lines = int((H - MARGIN_V * 2) // (FONT_SIZE * 1.2))
     empty = [f"{pre}{s['index']}" for pre, s, _ in items if not s["text"].strip()]
     # 验的必须是**真正会上屏的那些卡**，不是整段文本。
@@ -553,19 +572,19 @@ def _subtitle_checks(items: list[tuple[str, dict, dict]]) -> list[Check]:
     for pre, s, a in items:
         for j, (card, _, _) in enumerate(cards(a, s["duration"])):
             wrapped[f"{pre}{s['index']}-{j + 1}"] = wrap(card.strip(), per_line())
-    too_wide = [(i, round(max(line_width(x) for x in ls), 1))
-                for i, ls in wrapped.items() if any(line_width(x) > cap for x in ls)]
+    px = {k: [text_px(x) for x in ls] for k, ls in wrapped.items()}
+    too_wide = [(i, round(max(ws))) for i, ws in px.items() if any(w > cap for w in ws)]
     too_tall = [(i, len(ls)) for i, ls in wrapped.items() if len(ls) > max_lines]
-    widest = max(line_width(x) for ls in wrapped.values() for x in ls)
+    widest = max(w for ws in px.values() for w in ws)
     tallest = max(len(ls) for ls in wrapped.values())
     # 每张卡都该只有一行——分卡的目的就是不折行。折了说明单句太长，
     # 那是稿子的问题，得回去断句，不是这里放宽。
-    multi = [k for k, ls in wrapped.items() if len(ls) > 1]
+    multi = [k for k, ls in wrapped.items() if len(ls) > 1 or any(w > cap for w in px[k])]
     return [
         Check("字幕无空段", not empty, f"空段 {empty}" if empty else "无"),
         Check("字幕不超宽", not too_wide,
-              f"超宽 {too_wide}" if too_wide
-              else f"{len(wrapped)} 张卡，最宽一行 {widest:.1f} 格 ≤ {cap:.2f}"),
+              f"超宽（px）{too_wide}" if too_wide
+              else f"{len(wrapped)} 张卡，最宽一行 {widest:.0f} px ≤ {cap} px"),
         Check("字幕每卡一行", not multi,
               f"{len(multi)} 张卡折了行：{multi[:5]}" if multi else f"最多 {tallest} 行"),
         Check("字幕不超高", not too_tall,

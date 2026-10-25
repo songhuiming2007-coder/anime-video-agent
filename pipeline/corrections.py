@@ -584,7 +584,11 @@ def plan_apply(episode: Path, segs: list[Any], cfg: dict) -> dict:
 
     mf_path = episode / "03-audio" / "manifest.json"
     if not mf_path.exists():
-        raise SystemExit("FAIL 03-audio/manifest.json 缺失，请先跑 03 配音。")
+        raise SystemExit(
+            "FAIL 03-audio/manifest.json 缺失：--apply-patch 只能在已配好的音频上点名重配。\n"
+            "     本期还没配过音：先跑 03 配音。\n"
+            "     云端换了实例（本地有配音、远端没有）：先 `python -m pipeline.cloud push <期> --with-audio`"
+            " 把本地配音带上去再 apply-patch；不要在远端整期重配，那会把已顺听认可的音频整批换掉（D143）")
 
     try:
         manifest = json.loads(mf_path.read_text(encoding="utf-8"))
