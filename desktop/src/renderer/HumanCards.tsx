@@ -5,7 +5,7 @@
 // 处理器首句检查第一个形参的 nativeEvent.isTrusted、体内不许有循环与迭代方法、每个处理器至多一处此类调用。
 // 只呈现确定性事实（停机点类型、对象创建时间、关联产物指纹、note、审片页时间先后），UI 自身零判定、不做 LLM 推荐（direction §5）。
 // 失败时 stdout 与 stderr 尾部都原样显示（补丁段号在 stdout，红队 B3）；不提供任何重试按钮（RF-18）。
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ApprovalJson, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import type { OutFrame } from "../shared/convFrames";
@@ -16,6 +16,7 @@ import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
 import { CopyButton } from "./copy";
 import { Icon } from "./icons";
+import { Badge } from "./ui";
 import { ReviewRating } from "./ReviewRating";
 import { approvalsOf, type EpisodeState } from "./store";
 
@@ -146,17 +147,26 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
     <CardFrame
       className="decision"
       testId="decision"
-      attrs={{ "data-stop": stop, "data-approval-id": obj.approval_id }}
-      title={`停机点 ${stop} ${STOP_NAMES[stop]}`}
-      sub={`${aligned ? "解封物已在终端生成，待你确认" : "待审"} · 创建于 ${obj.created_at} · ${obj.approval_id}`}
+      attrs={{ "data-stop": stop, "data-approval-id": obj.approval_id, title: `${obj.created_at} · ${obj.approval_id}` }}
+      title={
+        <>
+          {stop} {STOP_NAMES[stop]}
+          <Badge tone={aligned ? "wait" : undefined}>{aligned ? "待确认" : "停机"}</Badge>
+        </>
+      }
+      sub={aligned ? "解封物已在终端生成，待你确认" : undefined}
     >
-      <ul className="fingerprints">
+      <dl className="ui-kv">
         {obj.artifacts.map((f) => (
-          <li key={f.path}>
-            <code>{f.path}</code> {f.size < 0 ? "（钉住时缺失）" : `${f.size} 字节 · mtime_ns ${f.mtime_ns}`}
-          </li>
+          <Fragment key={f.path}>
+            <dt>产物</dt>
+            <dd>
+              <code>{f.path}</code>
+              {f.size < 0 ? " （钉住时缺失）" : ` · ${f.size} 字节`}
+            </dd>
+          </Fragment>
         ))}
-      </ul>
+      </dl>
       {obj.note && <div className="muted">{obj.note}</div>}
       {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} />}
       {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
@@ -293,6 +303,13 @@ const ENTER_GUARD_MS = 400;
 const DECISION_LABEL: Record<string, string> = { approve: "批准", approve_session: "本会话都批准", reject: "拒绝", continue: "继续", stop: "停止" };
 const KIND_LABEL: Record<string, string> = { tool_call: "工具卡", fetch: "抓取卡", checkpoint: "检查点", memory_ack: "记忆确认" };
 
+function dangerLabel(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (t === "" || t === "无") return null;
+  return t.replace(/^\[|\]$/g, "");
+}
+
 function fieldText(v: unknown): string {
   if (typeof v === "object" && v !== null) return JSON.stringify(v, null, 2);
   return v === null || v === undefined ? "" : String(v);
@@ -330,6 +347,9 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
   // D76：bash 卡上的命令每行带「│」前缀，手选会连前缀一起复制；按钮复制的是请求参数里的命令原文
   const args = (fields.args ?? {}) as Record<string, unknown>;
   const bashCommand = tool === "bash" && typeof args.command === "string" ? args.command : null;
+  const purpose = tool === "bash" && typeof args.description === "string" && args.description.trim() !== "" ? args.description : null;
+  const mark = dangerLabel(fields.danger);
+  const structuredBash = tool === "bash" && bashCommand !== null && typeof req.card_summary !== "string";
   const feedbackAllowed = kind === "tool_call" && req.feedback_allowed === true && options.includes("reject");
   const off = disabled || busy;
   const approveRef = useRef<HTMLButtonElement | null>(null);
@@ -352,30 +372,46 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
       className="decision request-card"
       testId="request-card"
       attrs={{ "data-kind": kind, "data-request-id": requestId }}
-      title={`${KIND_LABEL[kind] ?? "请求卡"}${tool ? ` · ${tool}` : ""}${req.title ? ` · ${String(req.title)}` : ""}`}
-      // card_text 是 core 确定性渲染的多行纯文本（D47 起写稿卡含 diff）：按原样换行、等宽，不解释任何标记（H-3）
-      sub={
+      title={
         <>
-          {typeof req.card_summary === "string" ? (
-            // D82 Q5（人选 K1）：开单卡卡面先给摘要，工单全文（card_text 原文，含执行审批头）收进折叠——整份工单约 50 行，平铺时批准按钮被挤出视野
-            <>
-              <pre className="request-card-text" data-testid="request-card-text">{req.card_summary}</pre>
-              <details className="request-card-full" data-testid="request-card-full">
-                <summary className="muted">工单全文（{String(req.card_text).split("\n").length} 行）</summary>
-                <pre className="request-card-text">{String(req.card_text)}</pre>
-              </details>
-            </>
-          ) : (
-            <pre className="request-card-text" data-testid="request-card-text">{String(req.card_text)}</pre>
-          )}
-          {bashCommand !== null && (
-            <div className="request-card-copy">
-              <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
-            </div>
-          )}
+          {tool === "bash" ? <Icon name="terminal" size="sm" /> : tool ? <Icon name="stack" size="sm" /> : null}
+          {tool ?? KIND_LABEL[kind] ?? "请求卡"}
+          {tool ? <Badge>{KIND_LABEL[kind] ?? "请求卡"}</Badge> : null}
+          {mark ? <Badge tone="danger">{mark}</Badge> : null}
         </>
       }
     >
+      {typeof req.card_summary === "string" ? (
+        <>
+          <pre className="request-card-text" data-testid="request-card-text">
+            {req.card_summary}
+          </pre>
+          <details className="request-card-full" data-testid="request-card-full">
+            <summary className="muted">工单全文（{String(req.card_text).split("\n").length} 行）</summary>
+            <pre className="request-card-text">{String(req.card_text)}</pre>
+          </details>
+        </>
+      ) : structuredBash ? (
+        <div data-testid="request-card-face">
+          {purpose ? <p className="card-purpose">{purpose}</p> : null}
+          <pre className="card-cmd">{bashCommand}</pre>
+          <details className="card-more" data-testid="request-card-source">
+            <summary className="muted">原文</summary>
+            <pre className="request-card-text" data-testid="request-card-text">
+              {String(req.card_text)}
+            </pre>
+          </details>
+        </div>
+      ) : (
+        <pre className="request-card-text" data-testid="request-card-text">
+          {String(req.card_text)}
+        </pre>
+      )}
+      {bashCommand !== null && (
+        <div className="request-card-copy">
+          <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
+        </div>
+      )}
       {/* 参数原文默认收起：卡片正文已列出目标与危险标记，写稿时 args.content 是整篇原文，铺开会把按钮挤出视野（D47） */}
       <details className="request-card-fields" data-testid="request-card-fields">
         <summary className="muted">参数原文</summary>

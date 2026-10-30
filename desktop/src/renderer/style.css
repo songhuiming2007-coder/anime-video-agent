@@ -265,6 +265,11 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 /* ---- D47 请求卡：正文按原样换行（写稿卡含 diff），参数原文默认收起 ---- */
 .request-card-text { margin: 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
 .request-card-fields summary { cursor: pointer; font-size: var(--text-sm); }
+/* D152 A：停机卡 / 工具卡分层。ui.css 的 .ui-card-title 冻结，覆盖写这里。 */
+.decision .ui-card-title { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.card-purpose { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--fg); }
+.card-cmd { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.card-more { margin-top: var(--space-2); font-size: var(--text-sm); }
 
 /* D50-A S6：顺听面板段落表与就地纠错（只用 token；ui.css 冻结）。D152 A：去行间线、换种子悬停才出、底栏迷你播放条。 */
 .voice-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }

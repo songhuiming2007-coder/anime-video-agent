@@ -797,13 +797,13 @@ test("D77 / ADR-0030 真实 core：bash 清旧图并拷图进期目录 → 硬�
     );
     await openEp(L.page, "SESS-A");
     await send(L.page, "把这张图放进本期封面目录");
-    const cardText = L.page.getByTestId("request-card-text");
-    await expect(cardText).toContainText("命令审批", { timeout: 15_000 });
-    await expect(cardText).toContainText("把人给的图拷进封面目录并改名");
-    await expect(cardText).toContainText("07-cover/import/marika-h.jpg");
-    const text = (await cardText.textContent()) ?? "";
-    expect(text.indexOf("危险标记:")).toBeLessThan(text.indexOf("命令:"));
-    expect(text).toContain("[删除]");
+    const face = L.page.getByTestId("request-card-face");
+    await expect(face).toContainText("把人给的图拷进封面目录并改名", { timeout: 15_000 });
+    await expect(face).toContainText("07-cover/import/marika-h.jpg");
+    await expect(L.page.getByTestId("request-card")).toContainText("删除");
+    const raw = (await L.page.getByTestId("request-card-text").textContent()) ?? "";
+    expect(raw.indexOf("危险标记:")).toBeLessThan(raw.indexOf("命令:"));
+    expect(raw).toContain("[删除]");
     try {
       // D76 ①审批卡：复制的是请求参数里的命令原文
       await armClipboard(L);

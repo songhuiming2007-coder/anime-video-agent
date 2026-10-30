@@ -57,6 +57,8 @@
 
 ## 待改造清单
 
+**施工记录** 2026-10-30（HumanCards 人选 A）：停机卡去掉 ISO/id/mtime_ns，产物改 ui-kv；bash 工具卡改用途+命令块，框线原文进「原文」。闸门按钮同权未动。
+
 **施工记录** 2026-10-30（VoicePanel 人选 A）：行列表皮肤。去 `.voice-row` 行间线、工具栏 `ui-btn--ghost`、换种子悬停/选中/焦点才出、行内 ▶ 改手绘 play 图标、底栏迷你播放条接 `audio.currentTime`（`scaleX`，VS-7）。RPC / 全文铺开 / 就地纠错卡不动。验证：vitest `voiceClock` + `visual` 36 绿；e2e TE-3 / D50-A S6 / D87 绿。
 
 **施工记录** 2026-10-25（P1–P3 批）：剩余 9 项全落。具体：
