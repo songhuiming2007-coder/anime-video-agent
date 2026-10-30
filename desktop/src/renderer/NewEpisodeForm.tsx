@@ -13,7 +13,7 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <div className="new-episode" data-testid="new-episode">
-      <button className="ui-btn ui-btn--sm" data-testid="new-episode-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+      <button className="ui-row proj-new" data-testid="new-episode-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         ＋ 新建一期
       </button>
       {open && (
@@ -23,7 +23,7 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
             <input className="ui-input" data-testid="episode-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 2026-10-01-春物-…" />
           </label>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="episode-create"
             disabled={busy || name.trim() === ""}
             onClick={(e) => {
@@ -78,7 +78,7 @@ export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
             <input className="ui-input" data-testid="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 supercell-编年史" />
           </label>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="project-create"
             disabled={busy || name.trim() === ""}
             onClick={(e) => {
@@ -130,7 +130,7 @@ export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; targ
             <input className="ui-input" data-testid="volume-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 01-…" />
           </label>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="volume-create"
             disabled={busy || name.trim() === ""}
             onClick={(e) => {
