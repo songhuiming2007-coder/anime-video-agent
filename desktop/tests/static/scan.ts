@@ -171,7 +171,7 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   "conv.answer": { file: "renderer/HumanCards.tsx", attrs: ["onClick"] },
   "conv.send": { file: "renderer/Composer.tsx", attrs: ["onClick", "onKeyDown"] },
   "conv.interrupt": { file: "renderer/Composer.tsx", attrs: ["onClick", "onKeyDown"] },
-  "conv.command": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
+  "conv.command": { file: "renderer/SessionHeader.tsx", attrs: ["onClick", "onKeyDown"] },  // D156：Shift+Tab 循环档位走 onKeyDown
   "conv.end": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "conv.resume": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick"] },

@@ -14,8 +14,13 @@
     "gemini-3.8-flash-high": {
       "window": 1048576,
       "reliable_ratio": 1.0,
-      "efforts": ["none", "low", "medium", "high"],
-      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576；2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：98.9 万 token 请求照收、开头埋的暗号答对，超限返回 400「exceeds the maximum number of tokens allowed 1048576」——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。efforts 为 2026-10-30 CPA 实测自报合法集（level \"off\"/\"minimal\"/\"xhigh\" 报 \"valid levels: low, medium, high\"；none 语义 = 不发档）。"
+      "efforts": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576；2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：98.9 万 token 请求照收、开头埋的暗号答对，超限返回 400「exceeds the maximum number of tokens allowed 1048576」——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。efforts 为 2026-10-30 CPA 实测自报合法集（level \"off\"/\"minimal\"/\"xhigh\" 报 \"valid levels: low, medium, high\"；none 语义 = 不发档）。probe_efforts 2026-10-30: 非法值自报合法集（thinking 出现在 ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'max']）"
     },
     "gemini-3.7-flash-high": {
       "window": 1048576,
@@ -45,20 +50,102 @@
     "devin/swe-2": {
       "window": 262144,
       "reliable_ratio": 1.0,
-      "efforts": ["none"],
-      "_source": "CPA /v1/models 自报 262000，取保守 262144；无真实超长探针。reliable_ratio 未做长上下文召回实测，1.0 = 不另打折。2026-10-25 冒烟：200 正常回包。efforts：devin Connect-RPC 不吃 reasoning_effort，2026-10-30 实测 high/low/turbo 全静默吞照回——只留 none（不发档）。"
+      "efforts": [
+        "none"
+      ],
+      "_source": "CPA /v1/models 自报 262000，取保守 262144；无真实超长探针。reliable_ratio 未做长上下文召回实测，1.0 = 不另打折。2026-10-25 冒烟：200 正常回包。efforts：devin Connect-RPC 不吃 reasoning_effort，2026-10-30 实测 high/low/turbo 全静默吞照回——只留 none（不发档）。probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'max', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
     },
     "claude-opus-4-6-thinking": {
       "window": 200000,
       "reliable_ratio": 1.0,
-      "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
-      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：2026-10-30 实测 none/minimal/low/medium/high/xhigh/auto 均 200（off 报 unknown level）——CPA 全档透传，合法集即名义档集。"
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "auto"
+      ],
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：2026-10-30 实测 none/minimal/low/medium/high/xhigh/auto 均 200（off 报 unknown level）——CPA 全档透传，合法集即名义档集。probe_efforts 2026-10-30 D155 全量实测：effort 各档 reasoning_content 出现、随档变长（low 1348c / high 1524c / max 1532c）；turbo 报 \"unknown level\"。none/auto 不发档。probe_efforts 2026-10-30: 非法值报错（校验存在、无合法集自报）；200 的档记为支持集（thinking 出现在 ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']）"
     },
     "claude-sonnet-4-6": {
       "window": 200000,
       "reliable_ratio": 1.0,
-      "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
-      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：同 opus-4-6-thinking，none/minimal/low/medium/high/xhigh/auto 均 200（off/turbo/bogus 报 unknown level）。"
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "auto"
+      ],
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：同 opus-4-6-thinking，none/minimal/low/medium/high/xhigh/auto 均 200（off/turbo/bogus 报 unknown level）。probe_efforts 2026-10-30 D155 全量实测：同上，reasoning_content 随档变化、turbo 报 \"unknown level\"。probe_efforts 2026-10-30: 非法值报错（校验存在、无合法集自报）；200 的档记为支持集（thinking 出现在 ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']）"
+    },
+    "gemini-3-flash": {
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：none/low/minimal 无推理、medium+ 起 reasoning_tokens>0；turbo 报 \"valid levels: minimal, low, medium, high\"。probe_efforts 2026-10-30: 非法值自报合法集（thinking 出现在 ['medium', 'high', 'xhigh', 'auto', 'max']）"
+    },
+    "gemini-3.1-flash-image": {
+      "efforts": [
+        "none",
+        "minimal",
+        "high"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：turbo 429 配额冷却没有合法集自报；沿用 D154 自报集（minimal/high）+ none。"
+    },
+    "gemini-3.1-flash-lite": {
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：同 3-flash——none/low/minimal 无推理、medium+ 起 reasoning_tokens>0；turbo 报合法集 minimal/low/medium/high。probe_efforts 2026-10-30: 非法值自报合法集（thinking 出现在 ['medium', 'high', 'xhigh', 'auto', 'max']）"
+    },
+    "devin/swe-2-lightning": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'max', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "devin/muse-wonder-1-0": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=[]）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "devin/gpt-6-luna": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['xhigh', 'max']）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "devin/claude-haiku-5-5": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['high', 'xhigh', 'auto', 'max']）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "devin/deepseek-v4-1-flash-1017": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "gpt-oss-120b-medium": {
+      "efforts": [
+        "none"
+      ],
+      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus，reasoning_content 恒在且长度与档无关（low 410c / high 510c / max 294c），bogus 也 200 → CPA 对该路由不校验不透传 → 被吞。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'max', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
     }
   }
 }

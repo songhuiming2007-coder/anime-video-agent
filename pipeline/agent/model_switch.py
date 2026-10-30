@@ -18,10 +18,11 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pipeline.agent.llm import LLMConfig
@@ -56,7 +57,7 @@ class Override:
         return self.model is None and self.reasoning_effort is None
 
 
-def effective_config(cfg: "LLMConfig | None", override: Override) -> "LLMConfig | None":
+def effective_config(cfg: LLMConfig | None, override: Override) -> LLMConfig | None:
     """默认配置 + 本会话设置 → 实际使用的配置。
 
     换模型时把分档表清空：推理档与轻量档都用这个模型（会话里说「用 kimi-k3」就是全用它，
@@ -72,7 +73,7 @@ def effective_config(cfg: "LLMConfig | None", override: Override) -> "LLMConfig 
     return out
 
 
-def describe(cfg: "LLMConfig | None", override: Override, purpose: str | None) -> dict[str, Any]:
+def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> dict[str, Any]:
     """给界面与命令回显用：实际模型、推理档、各自来源（session / default）。"""
     eff = effective_config(cfg, override)
     if eff is None:
@@ -85,7 +86,7 @@ def describe(cfg: "LLMConfig | None", override: Override, purpose: str | None) -
     }
 
 
-def list_models(cfg: "LLMConfig") -> list[str]:
+def list_models(cfg: LLMConfig) -> list[str]:
     """GET `{base_url}/models`。失败如实抛 ModelSwitchError（不猜一份列表出来）。"""
     url = cfg.base_url.rstrip("/") + "/models"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {cfg.api_key}"})
@@ -153,15 +154,36 @@ def check_model(name: str, available: list[str]) -> str:
     return name
 
 
-def supported_efforts(model: str | None) -> tuple[str, ...]:
-    """该模型 CPA 认的 effort 档（compact.json `models[].efforts` 实测自报集）；
-    表没记 / 配置坏了 → 全档（向后兼容，不猜一个子集）。"""
+def _window_entry(model: str | None):
+    """compact.json 里该模型的 ModelWindow；表没记 / 配置坏了 → None。"""
     try:
-        from pipeline.agent.compact import load_compact_config
-        entry = load_compact_config().window_for(model or "")
-    except Exception:
-        return EFFORTS
-    return entry.efforts if entry is not None and entry.efforts else EFFORTS
+        from pipeline.agent.compact import CompactConfigError, load_compact_config
+        return load_compact_config().window_for(model or "")
+    except (CompactConfigError, OSError, json.JSONDecodeError, KeyError, AttributeError):
+        return None
+
+
+def supported_efforts(model: str | None) -> tuple[str, ...]:
+    """该模型 CPA 认的 effort 档（compact.json `models[].effort_map` 键 > `efforts` 实测自报集）；
+    表没记 / 配置坏了 → 全档（向后兼容，不猜一个子集）。"""
+    entry = _window_entry(model)
+    supported = entry.supported_efforts() if entry is not None else None
+    return supported if supported else EFFORTS
+
+
+def effort_request(model: str | None, level: str) -> tuple[str, Any] | None:
+    """D155：该模型这档实际发什么参数 → (参数名, 值)；None = 不发任何 effort 参数
+    （对应 Pi thinkingLevelMap 里值为 null 的档）。表没记 → 默认 reasoning_effort=level。"""
+    # none 语义 = 不发档：不管哪个模型、不管有没有 effort_map，一律不带参数。
+    if level == "none":
+        return None
+    entry = _window_entry(model)
+    if entry is None:
+        return ("reasoning_effort", level)
+    spec = entry.effort_spec_for(level)
+    if spec.param is None:
+        return None
+    return (spec.param, spec.value if spec.value is not None else level)
 
 
 def clamp_effort(model: str | None, level: str) -> str:
@@ -273,7 +295,7 @@ def save(log_dir: Path, sid: str, override: Override) -> None:
             data[sid] = {
                 "model": override.model,
                 "reasoning_effort": override.reasoning_effort,
-                "at": datetime.now(timezone.utc).isoformat(),
+                "at": datetime.now(UTC).isoformat(),
             }
         atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
@@ -292,7 +314,7 @@ def _effort_text(effort: str | None, source: str) -> str:
 
 def run_command(
     line: str,
-    cfg: "LLMConfig | None",
+    cfg: LLMConfig | None,
     override: Override,
     purpose: str | None,
     *,

@@ -441,6 +441,10 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-pop-check { flex: none; display: inline-flex; justify-content: flex-end; width: 16px; margin-left: auto; color: var(--fg); }
 .model-pop-meta { color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); }
 .model-pop-meta + .model-pop-check { margin-left: 0; }
+/* D156：推理强度独立选择器——描述行（档名右侧）与顶部搜索框，照 ZCode 菜单语汇（fg-subtle 次要、mono 档位名）。 */
+.effort-pop-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-subtle); font-size: var(--text-sm); text-align: left; }
+.effort-pop-row { align-items: baseline; }
+.effort-pop-search { margin: var(--space-1) 0; flex: none; }
 /* ZCode dropdown-menu.tsx:188 分隔：-mx-1 my-1 h-px 横贯浮层内边距 */
 .model-pop-reset { border-top: 1px solid var(--border); margin: 2px calc(-1 * var(--space-2)) 0; padding: 2px var(--space-2) 0; border-radius: 0 0 var(--radius-md) var(--radius-md); }
 .model-pop-reset .ui-row-title { font-family: inherit; color: var(--fg-muted); }

@@ -52,3 +52,34 @@ describe("modelCtlUsable / modelCtlHint / modelPopNote", () => {
     for (const p of ["idle", "starting", "ending", "exited"] as const) expect(modelPopNote(p)).toBeNull();
   });
 });
+
+// D156：Shift+Tab 循环档位的纯函数 + 每档描述
+import { nextEffort, EFFORT_DESCRIPTIONS } from "../../src/renderer/SessionHeader";
+
+describe("nextEffort（Shift+Tab 循环）", () => {
+  const gemini = ["none", "minimal", "low", "medium", "high"]; // gemini-3.8-flash-high 实测集
+  it("在实测支持集内循环，绕到末尾回头；null（默认态）起步进第一档", () => {
+    expect(nextEffort(gemini, "low")).toBe("medium");
+    expect(nextEffort(gemini, "high")).toBe("none"); // 绕回
+    expect(nextEffort(gemini, null)).toBe("none"); // 默认 → 第一档
+    expect(nextEffort(gemini, "none")).toBe("minimal");
+  });
+  it("当前档不在支持集里（比如改了模型）→ 从第一档开始", () => {
+    expect(nextEffort(gemini, "xhigh")).toBe("none"); // xhigh 不在 gemini 支持集
+  });
+  it("没实测/只吃 none 的模型（devin）→ 不循环（只有默认一档）", () => {
+    expect(nextEffort(["none"], "none")).toBe("none"); // 原地
+    expect(nextEffort(null, "high")).toBeNull();
+    expect(nextEffort([], null)).toBeNull();
+  });
+});
+
+describe("EFFORT_DESCRIPTIONS（每档描述）", () => {
+  it("七个档都有描述", () => {
+    for (const lv of ["none", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      expect(EFFORT_DESCRIPTIONS[lv]).toBeTruthy();
+    }
+    expect(EFFORT_DESCRIPTIONS.none).toBe("不启用推理");
+    expect(EFFORT_DESCRIPTIONS.max).toBe("最大推理");
+  });
+});
