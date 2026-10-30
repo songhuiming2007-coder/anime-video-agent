@@ -1,0 +1,78 @@
+/* D152 续：停机卡 / 工具审批卡选型。基座是 renderer tokens/ui/style；这里只放栅格与 A/B 皮肤。 */
+.main {
+  grid-template-columns: 220px 8px minmax(0, 1fr) 8px minmax(320px, 0.85fr);
+}
+.mock-new { width: 100%; }
+.mock-pad { padding: var(--space-4); }
+.mock-label {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 20;
+  padding: 2px 10px; border-radius: var(--radius-pill);
+  background: var(--overlay-bg); color: var(--overlay-fg);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+[data-only] { display: none; }
+body[data-scheme="now"] [data-only="now"],
+body[data-scheme="A"] [data-only="A"],
+body[data-scheme="B"] [data-only="B"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ---- A：分层卡。框还在，正文改 kv + 命令块，ISO / mtime_ns / 框线原文退下 ---- */
+.card-a .ui-card-head { min-height: var(--control-h); }
+.card-a .ui-card-title { display: flex; align-items: center; gap: var(--space-2); }
+.card-a .ui-kv { margin-top: var(--space-2); }
+.card-a .card-cmd {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.card-a .card-purpose { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--fg); }
+.card-a .card-more { margin-top: var(--space-2); font-size: var(--text-sm); }
+.card-a .ui-card-actions { margin-top: var(--space-3); }
+.card-a .fingerprints { margin-top: var(--space-2); }
+
+/* ---- B：行+展开。照 ZCode PermissionDialog / 工具行：主信息一行，详情展开 ---- */
+.card-b-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+.card-b-row .ui-icon { color: var(--fg-muted); }
+.card-b-cat { flex: none; font-weight: var(--weight-medium); }
+.card-b-main { flex: 1; min-width: 0; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-b-sub { flex: 0 1 auto; min-width: 0; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-b-actions { flex: none; display: flex; gap: var(--space-1); margin-left: auto; }
+.card-b-body {
+  margin: var(--space-1) 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.card-b-body .card-cmd {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+}

@@ -156,11 +156,11 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
         const r = document.querySelector<HTMLElement>(q)!.getBoundingClientRect();
         return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5;
       };
-      return { text: inside("[data-testid=request-card-text]"), approve: inside("[data-testid=request-answer-approve]") };
+      return { text: inside("[data-testid=request-card-face]"), approve: inside("[data-testid=request-answer-approve]") };
     });
     await expect.poll(cardVisible, { message: "1280×800" }).toEqual({ text: true, approve: true });
-    await expect(p.getByTestId("request-card-text")).toContainText("危险标记: [删除]");
-    await expect(p.getByTestId("request-card-text")).toContainText("rm stale.tmp");
+    await expect(p.getByTestId("request-card")).toContainText("删除");
+    await expect(p.getByTestId("request-card-face")).toContainText("rm stale.tmp");
     await p.setViewportSize({ width: 1440, height: 900 });
     await expect.poll(cardVisible, { message: "1440×900" }).toEqual({ text: true, approve: true });
     await p.setViewportSize({ width: 1440, height: 900 });
@@ -203,12 +203,13 @@ test("D80 R6 真实 core：卡片比对话流还高（多行命令）→ 弹出�
     await expect(p.getByTestId("request-answer-approve")).toBeFocused({ timeout: 20_000 });
     const m = await p.evaluate(() => {
       const box = document.querySelector<HTMLElement>("[data-testid=conv-stream]")!;
-      const text = document.querySelector<HTMLElement>("[data-testid=request-card-text]")!.getBoundingClientRect();
+      const text = document.querySelector<HTMLElement>("[data-testid=request-card-face]")!.getBoundingClientRect();
       const b = box.getBoundingClientRect();
       return { taller: document.querySelector<HTMLElement>("[data-testid=request-card]")!.offsetHeight > box.clientHeight, textTop: text.top >= b.top - 0.5 && text.top + 60 <= b.bottom };
     });
-    expect(m).toEqual({ taller: true, textTop: true }); // 前提：卡片确实比可见区高；卡面文本开头（含危险标记行）在视野内
-    await expect(p.getByTestId("request-card-text")).toContainText("危险标记: [删除]");
+    expect(m).toEqual({ taller: true, textTop: true }); // 前提：卡片确实比可见区高；卡面（命令）开头在视野内
+    await expect(p.getByTestId("request-card")).toContainText("删除");
+    await expect(p.getByTestId("request-card-face")).toContainText("rm -f a.tmp");
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

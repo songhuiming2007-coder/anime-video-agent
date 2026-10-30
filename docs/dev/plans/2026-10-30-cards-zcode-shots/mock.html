@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AVA · 停机卡 / 工具审批卡选型</title>
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/tokens.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/ui.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/style.css">
+  <link rel="stylesheet" href="./mock.css">
+</head>
+<body data-scheme="now">
+<div class="mock-label" id="scheme-label">现状</div>
+<div class="app">
+<header class="topbar">
+  <div class="topbar-row">
+    <span class="wordmark">AVA</span>
+    <span class="ui-badge ui-badge--warn">DEV BUILD</span>
+    <span class="repo">anime-video-agent-ava</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">侧栏</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">预览</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">刷新</button>
+  </div>
+</header>
+<div class="main">
+<nav class="left">
+  <div class="side-head">
+    <button class="ui-btn ui-btn--sm mock-new">＋ 新建一期</button>
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名"></label>
+    <div class="side-head-row"><div class="ui-seg"><button aria-pressed="true">按时间</button><button>按工序</button></div><span class="ui-count">2</span></div>
+  </div>
+  <div class="ui-section">选题</div>
+  <button class="ui-row ep" aria-current="true">
+    <span class="ep-line"><span class="ep-name">2026-10-02-测试番-人物志-二</span><span class="ep-time">刚刚</span></span>
+    <span class="ep-step"><span class="ui-badge">停机</span><span class="ep-step-text">03.5 配音顺听 / 04 排片</span></span>
+  </button>
+</nav>
+<div class="splitter"></div>
+<section class="center conv-shell">
+  <div class="status">
+    <div class="status-step">03.5 配音顺听 / 04 排片 <span class="ui-badge">停机</span></div>
+  </div>
+  <div class="session-head">
+    <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon">−</button>
+    <span class="ui-badge">上下文约 4,443 字</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">素材模式</button>
+  </div>
+  <div class="conv conv-stream">
+    <div class="conv-tool-row">
+      <div class="conv-tool">
+        <div class="conv-tool-head">
+          <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="m4.5 6 2 2-2 2M8.5 10.5h3"/></svg>
+          <span class="conv-tool-cat">终端</span>
+          <span class="conv-tool-main">清理临时文件</span>
+          <span class="conv-tool-sub">rm stale.tmp</span>
+          <span class="conv-tool-status" data-st="wait">等待批准</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 现状 -->
+    <div data-only="now">
+      <div class="ui-card decision request-card">
+        <div class="ui-card-head"><span class="ui-card-title">工具卡 · bash · 工具审查: bash</span></div>
+        <div class="ui-card-sub">
+          <pre class="request-card-text">┌─ 命令审批 ──────────────────────────────────────
+│ 工具: bash
+│ 危险标记: [删除]
+│ 用途: 清理临时文件
+│ 目录: /…/2026-10-02-测试番-人物志-二
+│ 命令:
+│   rm stale.tmp</pre>
+          <div class="request-card-copy"><button class="ui-btn ui-btn--ghost ui-btn--sm">复制命令</button></div>
+        </div>
+        <details class="request-card-fields"><summary class="muted">参数原文</summary></details>
+        <div class="ui-card-actions">
+          <button class="ui-btn">批准</button>
+          <button class="ui-btn">本会话都批准</button>
+          <button class="ui-btn">拒绝</button>
+          <button class="ui-btn ui-btn--sm">附说明…</button>
+        </div>
+      </div>
+      <div class="ui-card decision">
+        <div class="ui-card-head"><span class="ui-card-title">停机点 03.5 配音顺听</span></div>
+        <div class="ui-card-sub">待审 · 创建于 2026-10-08T14:28:51.355218Z · appr_1791469731355_4971</div>
+        <ul class="fingerprints">
+          <li><code>03-audio/manifest.json</code> 377 字节 · mtime_ns 1791469725452380396</li>
+        </ul>
+        <div class="ui-card-actions">
+          <button class="ui-btn">批准</button>
+          <button class="ui-btn">打回…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- A 分层卡 -->
+    <div data-only="A" class="card-a">
+      <div class="ui-card decision request-card">
+        <div class="ui-card-head">
+          <span class="ui-card-title">
+            <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="m4.5 6 2 2-2 2M8.5 10.5h3"/></svg>
+            bash
+            <span class="ui-badge">工具卡</span>
+            <span class="ui-badge ui-badge--danger">删除</span>
+          </span>
+        </div>
+        <p class="card-purpose">清理临时文件</p>
+        <pre class="card-cmd">rm stale.tmp</pre>
+        <details class="card-more"><summary class="muted">原文</summary></details>
+        <div class="ui-card-actions">
+          <button class="ui-btn">批准</button>
+          <button class="ui-btn">本会话都批准</button>
+          <button class="ui-btn">拒绝</button>
+          <button class="ui-btn ui-btn--sm">附说明…</button>
+        </div>
+      </div>
+      <div class="ui-card decision">
+        <div class="ui-card-head">
+          <span class="ui-card-title">
+            03.5 配音顺听
+            <span class="ui-badge">停机</span>
+          </span>
+        </div>
+        <dl class="ui-kv">
+          <dt>产物</dt>
+          <dd><code>03-audio/manifest.json</code> · 377 字节</dd>
+        </dl>
+        <div class="ui-card-actions">
+          <button class="ui-btn">批准</button>
+          <button class="ui-btn">打回…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- B 行+展开 -->
+    <div data-only="B">
+      <div>
+        <div class="card-b-row">
+          <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="m4.5 6 2 2-2 2M8.5 10.5h3"/></svg>
+          <span class="card-b-cat">工具卡</span>
+          <span class="card-b-main">清理临时文件</span>
+          <span class="card-b-sub">rm stale.tmp</span>
+          <span class="ui-badge ui-badge--danger">删除</span>
+          <span class="card-b-actions">
+            <button class="ui-btn ui-btn--sm">批准</button>
+            <button class="ui-btn ui-btn--sm">拒绝</button>
+          </span>
+        </div>
+        <div class="card-b-body">
+          <pre class="card-cmd">rm stale.tmp</pre>
+          <div class="ui-card-actions">
+            <button class="ui-btn">本会话都批准</button>
+            <button class="ui-btn ui-btn--sm">附说明…</button>
+          </div>
+        </div>
+      </div>
+      <div class="card-b-row">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r="0.5" fill="currentColor"/></svg>
+        <span class="card-b-cat">停机</span>
+        <span class="card-b-main">03.5 配音顺听</span>
+        <span class="card-b-sub">03-audio/manifest.json</span>
+        <span class="card-b-actions">
+          <button class="ui-btn ui-btn--sm">批准</button>
+          <button class="ui-btn ui-btn--sm">打回…</button>
+        </span>
+      </div>
+    </div>
+  </div>
+  <div class="composer">
+    <textarea rows="2" placeholder="告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="composer-row">
+      <span class="composer-target">2026-10-02-测试番-人物志-二</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--primary ui-btn--sm">发送</button>
+    </div>
+  </div>
+</section>
+<div class="splitter"></div>
+<section class="preview">
+  <div class="preview-switch">
+    <button class="ui-btn ui-btn--ghost preview-switch-btn">
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8h1.5M4.75 5.5v5M7.25 3v10M9.75 5v6M12.25 7v2"/></svg>
+      <span class="preview-switch-label">03-audio</span>
+    </button>
+  </div>
+  <div class="preview-body"><div class="muted mock-pad">顺听面板（已改过，本次不看）</div></div>
+</section>
+</div>
+</div>
+</body>
+</html>
