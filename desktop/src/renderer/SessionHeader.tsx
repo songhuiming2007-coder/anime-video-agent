@@ -211,10 +211,38 @@ export function modelInfo(entries: readonly ConvEntry[]): ModelInfo | null {
 export const EFFORT_LABELS: Readonly<Record<string, string>> = {
   none: "关", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "超高", auto: "自动",
 };
-const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "auto"] as const;
-
 export function effortText(effort: string | null): string {
   return effort === null ? "默认" : EFFORT_LABELS[effort] ?? effort;
+}
+
+/** D156：每档的描述（照 Pi `LEVEL_DESCRIPTIONS`，把英文档名翻成 ava 语境的读法）。 */
+export const EFFORT_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  none: "不启用推理",
+  minimal: "极简推理（~1k token）",
+  low: "轻度推理（~2k token）",
+  medium: "中等推理（~8k token）",
+  high: "深度推理（~16k token）",
+  xhigh: "超高推理（~32k token）",
+  max: "最大推理",
+  auto: "由模型自行决定",
+};
+
+/** 档位循环次序（Shift+Tab 按此走；与 model_switch.py 的 EFFORT_ORDER 同序）。 */
+export const EFFORT_ORDER: readonly string[] = ["none", "minimal", "low", "medium", "high", "xhigh", "auto", "max"];
+
+/**
+ * D156：Shift+Tab 循环档位的纯函数——从 efforts 支持集里挑出当前档的下一档。
+ * @param efforts 该模型实测支持集（不含 "default"，default 用 null 态表示）；null/空 = 不支持循环（只有默认）。
+ * @param current 当前档（null = 默认态）
+ * @returns 下一档名；支持集为空/未拉到时回 null（不动）。
+ */
+export function nextEffort(efforts: readonly string[] | null, current: string | null): string | null {
+  if (!efforts || efforts.length === 0) return null;
+  // 只循环实测支持集（D155 诚实纪律：没实测的档不轮进去）
+  const order = EFFORT_ORDER.filter((lv) => efforts.includes(lv));
+  if (order.length === 0) return null;
+  const idx = current === null ? -1 : order.indexOf(current);
+  return order[(idx + 1) % order.length];
 }
 
 function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivElement | null>] {
@@ -273,12 +301,16 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const [modelOpen, setModelOpen, modelRef] = usePopover();
   const [effortOpen, setEffortOpen, effortRef] = usePopover();
   const [models, setModels] = useState<string[] | null>(null);
-  const [efforts, setEfforts] = useState<string[] | null>(null); // D154：该模型支持档（core 回子集）；null = 用全档
+  const [efforts, setEfforts] = useState<string[] | null>(null); // D154：该模型支持档（core 回子集）；null = 未拉到/不支持
   const [err, setErr] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState("");
   const [warn, setWarn] = useState<string | null>(null);
+  const [effortQuery, setEffortQuery] = useState(""); // D156：选择器搜索框
+  // D156：Shift+Tab 循环要拿到支持集——usable 时主动拉一次（不等点按钮）。模型变了（info.model）也重拉。
+  const infoModel = info?.model ?? null;
   useEffect(() => {
     setModels(null);
+    setEfforts(null);
     setErr(null);
     setWarn(null);
     setCustomModel("");
@@ -298,6 +330,22 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
       (e2) => setErr(String((e2 as Error).message ?? e2)),
     );
   };
+  // D156：控件可用就预拉——Shift+Tab 循环与 effort 选择器都吃 efforts，不等点开再发。
+  useEffect(() => {
+    if (!usable) return;
+    fetchModels();
+  }, [usable, convKey, infoModel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hint = modelCtlHint(phase);
+  const popNote = modelPopNote(phase);
+  const after = (r: unknown) => {
+    const res = r as { ok?: boolean; text?: string; warn?: string } | null;
+    if (res && res.ok === false) { setErr(res.text ?? "切换失败"); setWarn(null); }
+    else { setErr(null); setWarn(res?.warn ?? null); }  // D148：不在代理列表的模型切换成功也带回 warn
+  };
+  // D156：Shift+Tab 循环推理强度（Pi 的行为）。绑 model-controls 容器 onKeyDown（TG-10：conv.command 只能挂在 JSX 事件属性上）。
+  // 焦点在控件内（Tab 到按钮 / popover 搜索框）时 Shift+Tab 循环；下一档从实测支持集 +1。
+  const currentEffort = pendingEffort ?? info?.effort ?? null;
   const openModel = () => {
     setEffortOpen(false);
     setModelOpen(true);
@@ -308,18 +356,19 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     if (openReq.which === "model") openModel();
     else {
       setModelOpen(false);
+      setEffortQuery("");
       setEffortOpen(true);
     }
   }, [openReq?.n]); // eslint-disable-line react-hooks/exhaustive-deps
-  const hint = modelCtlHint(phase);
-  const popNote = modelPopNote(phase);
-  const after = (r: unknown) => {
-    const res = r as { ok?: boolean; text?: string; warn?: string } | null;
-    if (res && res.ok === false) { setErr(res.text ?? "切换失败"); setWarn(null); }
-    else { setErr(null); setWarn(res?.warn ?? null); }  // D148：不在代理列表的模型切换成功也带回 warn
-  };
   return (
-    <div className="model-controls" data-testid="model-controls">
+    <div className="model-controls" data-testid="model-controls" onKeyDown={(e) => {
+      if (!e.nativeEvent.isTrusted) return;
+      if (e.key !== "Tab" || !e.shiftKey) return;
+      const next = nextEffort(efforts, currentEffort);
+      if (next === null || next === currentEffort) return;
+      e.preventDefault();
+      void rpc.call("conv.command", { convKey, name: "thinking", arg: next }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+    }}>
       <div className="model-ctl model-ctl--model" ref={modelRef}>
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
@@ -437,24 +486,51 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
             <div className="ui-popover-title">推理强度</div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
-            {(efforts ?? EFFORTS).map((v) => (
-              <button
-                key={v}
-                className="ui-row model-pop-row"
-                aria-current={(pendingEffort ?? info?.effort) === v ? "true" : undefined}
-                data-testid="effort-row"
-                data-effort={v}
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  setEffortOpen(false);
-                  void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                }}
-              >
-                <span className="ui-row-title">{EFFORT_LABELS[v] ?? v}</span>
-                <span className="model-pop-meta">{v}</span>
-                <span className="model-pop-check">{(pendingEffort ?? info?.effort) === v ? <Icon name="check" size="sm" /> : null}</span>
-              </button>
-            ))}
+            <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 在会话内循环档位</div>
+            {/* D156：独立档位选择器——搜索框过滤（Pi 的 Input+fuzzyFilter）；
+                D155：没实测数据的模型不列全档骗人——只有实测支持集才列出各档，否则只剩底部「默认」 */}
+            <input
+              className="ui-input effort-pop-search"
+              data-testid="effort-search"
+              placeholder="过滤档位…"
+              value={effortQuery}
+              onChange={(e) => setEffortQuery(e.target.value)}
+            />
+            {(efforts ?? [])
+              .filter((v) => {
+                const q = effortQuery.trim().toLowerCase();
+                if (q === "") return true;
+                return (
+                  v.toLowerCase().includes(q) ||
+                  (EFFORT_LABELS[v] ?? "").toLowerCase().includes(q) ||
+                  (EFFORT_DESCRIPTIONS[v] ?? "").toLowerCase().includes(q)
+                );
+              })
+              .map((v) => {
+                const isCurrent = (pendingEffort ?? info?.effort) === v;
+                const isDefault = info !== null && info.effortSource === "default" && info.effort === v;
+                return (
+                  <button
+                    key={v}
+                    className="ui-row model-pop-row effort-pop-row"
+                    aria-current={isCurrent ? "true" : undefined}
+                    data-testid="effort-row"
+                    data-effort={v}
+                    onClick={(e) => {
+                      if (!e.nativeEvent.isTrusted) return;
+                      setEffortOpen(false);
+                      void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                    }}
+                  >
+                    <span className="ui-row-title">{EFFORT_LABELS[v] ?? v}</span>
+                    <span className="effort-pop-desc" data-testid="effort-desc">
+                      {EFFORT_DESCRIPTIONS[v] ?? v}
+                      {isDefault ? " · 默认" : ""}
+                    </span>
+                    <span className="model-pop-check">{isCurrent ? <Icon name="check" size="sm" /> : null}</span>
+                  </button>
+                );
+              })}
             <button
               className="ui-row model-pop-row model-pop-reset"
               aria-current={info !== null && info.effort === null ? "true" : undefined}
@@ -466,6 +542,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
               }}
             >
               <span className="ui-row-title">默认（不发推理参数）</span>
+              <span className="effort-pop-desc">{info !== null && info.effort === null ? "当前生效 · 默认" : "由模型自行决定"}</span>
               <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
             </button>
           </div>

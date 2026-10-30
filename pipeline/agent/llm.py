@@ -22,13 +22,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, Sequence
+from typing import Any, Literal
 
 from pipeline import paths
+from pipeline.agent import model_switch, vision
 from pipeline.agent.aging import age_tool_results
-from pipeline.agent import vision
 from pipeline.agent.compact import COMPACT_KEY, estimate_tokens
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
@@ -511,7 +512,13 @@ def chat_complete(
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
     if cfg.reasoning_effort is not None:
-        payload["reasoning_effort"] = cfg.reasoning_effort  # D91：不设就不带这个键
+        # D155：不再恒发 reasoning_effort——按当前模型的 effort_map/effort_param 决定实际参数名与值，
+        # 该档映射为「不发参数」（devin 等不吃 effort 的模型，或 map 里值为 null 的档）→ 不带键。
+        # reasoning_effort=none 语义 = 不发档，本就该映射到 None 不带键。
+        req = model_switch.effort_request(cfg.model_for(purpose), cfg.reasoning_effort)
+        if req is not None:
+            param, value = req
+            payload[param] = value
     # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
     # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
     payload["stream"] = True
@@ -582,7 +589,7 @@ class Decision:
 
 
 @contextlib.contextmanager
-def _stopping(control: "LoopControl") -> Iterator[None]:
+def _stopping(control: LoopControl) -> Iterator[None]:
     """「停止中」（§2.2 状态表）：补合成结果 / 决定收尾期间到达的中断只置标志、不抛。
 
     这里**只吸收、不放延迟区**：`defer()` 会把异常挡在区内，代价是中止它包住的那段语句，
@@ -713,7 +720,7 @@ def _duplicate_outcome(name: str) -> dict[str, Any]:
 
 
 def _trace(
-    control: "LoopControl",
+    control: LoopControl,
     index: int,
     name: str,
     args: dict[str, Any],

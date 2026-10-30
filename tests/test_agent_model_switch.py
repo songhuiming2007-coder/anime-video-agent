@@ -15,8 +15,7 @@ from pipeline.agent import model_switch as ms
 from pipeline.agent.llm import LLMConfig
 from pipeline.agent.session import SessionHost
 from tests.test_agent_compact_session import Script, _cfg, _main, _say, _turns
-from tests.test_agent_protocol import FakeEndpoint, Protocol  # noqa: F401 - endpoint 夹具按名注入
-from tests.test_agent_protocol import endpoint, world  # noqa: F401
+from tests.test_agent_protocol import FakeEndpoint, Protocol, endpoint, world  # noqa: F401 - endpoint 夹具按名注入  # noqa: F401
 from tests.test_agent_session import FakeChannel, _clean_leases, episode, root  # noqa: F401 - 不引 _no_real_popen：协议用例要起真子进程
 
 BASE = LLMConfig(base_url="http://x/v1", model="flash", api_key="k", models={"reasoning": "flash", "light": "lite"})
@@ -169,6 +168,92 @@ def test_check_effort_clamps_and_warns(tmp_path: Path, monkeypatch) -> None:
         ms.check_effort("bogus", model="m")
 
 
+# ---- D155：effort_map（档 → 实际参数）与 effort_request（参数名映射 / 不发参数）----
+
+
+def test_effort_map_overrides_efforts_list(tmp_path: Path, monkeypatch) -> None:
+    """有 effort_map 时以它为支持集与参数源；gemini 式 thinkingLevel 映射。"""
+    _write_compact_models(tmp_path, {
+        "gem": {"window": 1, "effort_map": {
+            "low": {"param": "reasoning_effort", "value": "low"},
+            "high": {"param": "reasoning_effort", "value": "high"},
+            "none": None}},
+    })
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    assert ms.supported_efforts("gem") == ("low", "high", "none")
+    assert ms.effort_request("gem", "low") == ("reasoning_effort", "low")
+    assert ms.effort_request("gem", "none") is None  # map 值 null → 不发参数
+
+
+def test_effort_param_custom_name(tmp_path: Path, monkeypatch) -> None:
+    """模型认别的参数名（thinking_budget）→ 请求体发那个名而不是 reasoning_effort。"""
+    _write_compact_models(tmp_path, {
+        "odd": {"window": 1, "effort_param": "thinking_budget",
+                 "effort_map": {"low": {"param": "thinking_budget", "value": 1024},
+                                 "high": {"param": "thinking_budget", "value": 4096}}},
+    })
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    assert ms.effort_request("odd", "low") == ("thinking_budget", 1024)
+    assert ms.effort_request("odd", "high") == ("thinking_budget", 4096)
+
+
+def test_effort_request_none_and_fallback(tmp_path: Path, monkeypatch) -> None:
+    _write_compact_models(tmp_path, {"devin": {"window": 1, "efforts": ["none"]}})
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    # none 永远不发参数（不管表怎么记）
+    assert ms.effort_request("devin", "none") is None
+    assert ms.effort_request("anything", "none") is None
+    # 表没记 → 默认 reasoning_effort
+    assert ms.effort_request("unknown-model", "high") == ("reasoning_effort", "high")
+    # 表里只有 ["none"] 的模型被 clamp 到 none 后 effort_request 也是 None（走 check_effort 路径）
+    assert ms.check_effort("high", model="devin") == "none"
+    assert ms.effort_request("devin", "none") is None
+
+
+def test_effort_map_validation_errors(tmp_path: Path) -> None:
+    from pipeline.agent.compact import CompactConfigError, parse_compact_config
+    # 非法档名
+    with pytest.raises(CompactConfigError, match="未知档"):
+        parse_compact_config({"models": {"m": {"window": 1, "effort_map": {"bogus": None}}}})
+    # effort_map 值必须是对象或 null
+    with pytest.raises(CompactConfigError, match="必须是对象或 null"):
+        parse_compact_config({"models": {"m": {"window": 1, "effort_map": {"high": "x"}}}})
+    # window 可缺省（probe 只测 effort）但非正整数仍拒
+    with pytest.raises(CompactConfigError, match="正整数或缺省"):
+        parse_compact_config({"models": {"m": {"window": 0}}})
+    ok = parse_compact_config({"models": {"m": {"efforts": ["none"]}}})  # window 缺省
+    assert ok.models["m"].window is None and ok.models["m"].reliable is None
+
+
+def test_probe_efforts_judgement() -> None:
+    """探针判定逻辑：thinking 出现 → 生效；全 200 无 thinking → 被吞；自报合法集 → 用自报集。"""
+    from pipeline.agent import probe_efforts as pe
+
+    def fake(base, model, extra, timeout=60):
+        lv = extra.get("reasoning_effort")
+        if lv == "turbo":
+            return 400, {"error": {"message": 'level "turbo" not supported, valid levels: minimal, low, medium, high'}}
+        if lv in ("medium", "high", "xhigh", "max", "auto"):
+            return 200, {"usage": {"completion_tokens_details": {"reasoning_tokens": 50}}}
+        return 200, {"usage": {}}
+    real = pe._post
+    pe._post = fake
+    try:
+        r = pe.probe_model("http://x", "gem")
+        assert r["efforts"] == ["none", "minimal", "low", "medium", "high"], r
+    finally:
+        pe._post = real
+
+    def fake_swallow(base, model, extra, timeout=60):
+        return 200, {"usage": {}}  # 全 200、永不出现 thinking
+    pe._post = fake_swallow
+    try:
+        r = pe.probe_model("http://x", "devin/x")
+        assert r["efforts"] == ["none"] and "被吞" in r["note"], r
+    finally:
+        pe._post = real
+
+
 def test_list_models_unauthenticated_failures(tmp_path: Path, endpoint) -> None:  # noqa: F811
     # 无配置 → 不猜一份列表
     with pytest.raises(ms.ModelSwitchError, match="base_url"):
@@ -210,8 +295,11 @@ def test_payload_has_effort_only_when_set(monkeypatch) -> None:
     llm_mod.chat_complete([{"role": "user", "content": "hi"}], config=BASE)
     llm_mod.chat_complete([{"role": "user", "content": "hi"}],
                           config=ms.effective_config(BASE, ms.Override(reasoning_effort="none")))
+    llm_mod.chat_complete([{"role": "user", "content": "hi"}],
+                          config=ms.effective_config(BASE, ms.Override(reasoning_effort="high")))
     assert "reasoning_effort" not in sent[0], "不设就不带这个键（请求体与改动前一致）"
-    assert sent[1]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in sent[1], "D155：none 语义 = 不发档，不带键"
+    assert sent[2]["reasoning_effort"] == "high", "非 none 档照 reasoning_effort 发（模型未配 effort_map 时）"
 
 
 def test_default_effort_from_config(tmp_path: Path, monkeypatch) -> None:

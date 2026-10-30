@@ -47,9 +47,9 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
   try {
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.locator("[data-testid=episode]", { hasText: "SESS-A" }).first().click();
-    // 会话没起：显示「—」、按钮不可点
+    // 会话没起：显示「—」；D147 起按钮可用（存 pending，发第一条消息时生效）
     await expect(page.getByTestId("model-label")).toHaveText("—");
-    await expect(page.getByTestId("model-btn")).toBeDisabled();
+    await expect(page.getByTestId("model-btn")).toBeEnabled();
 
     llm.push(assistant("好的，先看看稿件。"));
     await send(page, "你好");
@@ -79,8 +79,9 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     llm.push({ message: { role: "assistant", content: "换了模型之后的回答。" }, delayMs: 2500 });
     await send(page, "再说一次");
     await expect(page.getByTestId("composer-stop")).toBeVisible();
-    await expect(page.getByTestId("model-btn")).toBeDisabled();
-    await expect(page.getByTestId("effort-btn")).toBeDisabled();
+    // D149：running 也可用（core 排队到回合收尾执行，下个回合生效）——不再置灰
+    await expect(page.getByTestId("model-btn")).toBeEnabled();
+    await expect(page.getByTestId("effort-btn")).toBeEnabled();
     await shoot(page, "4-running");
     await idle(page);
     const last = llm.requests[llm.requests.length - 1];
@@ -112,6 +113,36 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     await expect(page.getByTestId("effort-label")).toHaveText("高");
     await idle(page);
     expect(llm.requests.length).toBe(before);
+
+    // D156：换到实测支持集窄的模型（gemini-3.8-flash-high 表里只 low/medium/high/none），
+    // effort 选择器只列 4 档（不是全档 7）；切回不在表里的 kimi-k3 恢复全档。
+    await page.getByTestId("model-btn").click();
+    await page.locator('[data-testid=model-row][data-model="gemini-3.8-flash-high"]').click();
+    await expect(page.getByTestId("model-label")).toHaveText("gemini-3.8-flash-high");
+    await page.getByTestId("effort-btn").click();
+    await expect(page.getByTestId("effort-pop")).toBeVisible();
+    await expect(page.getByTestId("effort-row")).toHaveCount(4); // none/minimal/low/medium/high 子集 → 4
+    await expect(page.locator('[data-testid=effort-row][data-effort="xhigh"]')).toHaveCount(0);
+    // 搜索框过滤
+    await page.getByTestId("effort-search").fill("高");
+    await expect(page.getByTestId("effort-row")).toHaveCount(1);
+    await expect(page.getByTestId("effort-row")).toHaveAttribute("data-effort", "high");
+    await page.getByTestId("effort-search").fill("");
+    // Shift+Tab 循环：当前 high → Shift+Tab 到 none（绕回）；再按一轮 → minimal
+    await page.getByTestId("effort-search").focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.getByTestId("effort-label")).toHaveText("关");
+    // gemini-3.8 支持集 [none,low,medium,high]（无 minimal）：none → low
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.getByTestId("effort-label")).toHaveText("低");
+    await page.keyboard.press("Escape");
+    // 换回 kimi-k3（表里没记 → 全档）
+    await page.getByTestId("model-btn").click();
+    await page.locator('[data-testid=model-row][data-model="kimi-k3"]').click();
+    await expect(page.getByTestId("model-label")).toHaveText("kimi-k3");
+    await page.getByTestId("effort-btn").click();
+    await expect(page.getByTestId("effort-row")).toHaveCount(7);
+    await page.keyboard.press("Escape");
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

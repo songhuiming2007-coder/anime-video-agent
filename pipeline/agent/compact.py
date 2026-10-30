@@ -59,16 +59,42 @@ class CompactConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class EffortSpec:
+    """D155：一档 effort 怎么发给上游。`param` = 请求体里的参数名，`value` = 发出去的值。
+    `param=None` 表示该档不发任何参数（对应 Pi thinkingLevelMap 里值为 null 的档）。"""
+    param: str | None = None
+    value: Any = None
+
+
+@dataclass(frozen=True)
 class ModelWindow:
-    window: int
+    window: int | None  # D155：probe_efforts 只测 effort、不知道窗口 → None（不自动压缩、不显示分母）
     reliable_ratio: float
     # D154：该模型 CPA 认的 reasoning_effort 档（实测自报错误里的合法集）；
     # None = 表没记 → 全档照旧（向后兼容）。空列表？不允许——不吃 effort 记 ["none"]。
     efforts: tuple[str, ...] | None = None
+    # D155：档 → 实际参数（照 Pi thinkingLevelMap）。与 efforts 并存：有 effort_map 时以它为准，
+    # efforts 是 effort_map 的键的派生平铺（给 UI 只读）。两者都缺 → 全档向后兼容。
+    effort_map: dict[str, EffortSpec] | None = None
+    # D155：该模型 effort 参数名覆盖（模型吃但认别的名时记，如 "thinking_budget"）。
+    # None = 默认 reasoning_effort。
+    effort_param: str | None = None
 
     @property
-    def reliable(self) -> int:
-        return int(self.window * self.reliable_ratio)
+    def reliable(self) -> int | None:
+        return None if self.window is None else int(self.window * self.reliable_ratio)
+
+    def supported_efforts(self) -> tuple[str, ...] | None:
+        """该模型 UI 可选的档：effort_map 的键 > efforts > None（表没记）。"""
+        if self.effort_map is not None:
+            return tuple(self.effort_map.keys())
+        return self.efforts
+
+    def effort_spec_for(self, level: str) -> EffortSpec:
+        """level 在该模型的真实参数形态。没配 effort_map → 默认 reasoning_effort=level。"""
+        if self.effort_map is not None and level in self.effort_map:
+            return self.effort_map[level]
+        return EffortSpec(param=self.effort_param or "reasoning_effort", value=level)
 
 
 @dataclass(frozen=True)
@@ -86,11 +112,11 @@ class CompactConfig:
 
     def trigger_tokens(self, model: str) -> int | None:
         w = self.window_for(model)
-        return None if w is None else int(w.reliable * self.trigger_ratio)
+        return None if w is None or w.reliable is None else int(w.reliable * self.trigger_ratio)
 
     def tail_budget_tokens(self, model: str) -> int | None:
         w = self.window_for(model)
-        return None if w is None else int(w.reliable * self.tail_ratio)
+        return None if w is None or w.reliable is None else int(w.reliable * self.tail_ratio)
 
 
 def _ratio(value: Any, name: str, *, upper_open: bool = False) -> float:
@@ -126,8 +152,8 @@ def parse_compact_config(data: Any) -> CompactConfig:
         if not isinstance(entry, dict):
             raise CompactConfigError(f"models.{name} 必须是对象")
         window = entry.get("window")
-        if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
-            raise CompactConfigError(f"models.{name}.window 必须是正整数: {window!r}")
+        if window is not None and (isinstance(window, bool) or not isinstance(window, int) or window <= 0):
+            raise CompactConfigError(f"models.{name}.window 必须是正整数或缺省（探针只管 effort 的条目可缺省）: {window!r}")
         raw_efforts = entry.get("efforts")
         efforts: tuple[str, ...] | None = None
         if raw_efforts is not None:
@@ -138,10 +164,34 @@ def parse_compact_config(data: Any) -> CompactConfig:
             if bad:
                 raise CompactConfigError(f"models.{name}.efforts 含未知档 {bad}（只能是 {list(EFFORT_ORDER)}）")
             efforts = tuple(dict.fromkeys(raw_efforts))
+        raw_map = entry.get("effort_map")
+        effort_map: dict[str, EffortSpec] | None = None
+        if raw_map is not None:
+            from pipeline.agent.model_switch import EFFORT_ORDER
+            if not isinstance(raw_map, dict) or not raw_map:
+                raise CompactConfigError(f"models.{name}.effort_map 必须是非空对象（pi档名 → 参数/null）: {raw_map!r}")
+            effort_map = {}
+            for lv, spec in raw_map.items():
+                if lv not in EFFORT_ORDER:
+                    raise CompactConfigError(f"models.{name}.effort_map 含未知档 {lv!r}（只能是 {list(EFFORT_ORDER)}）")
+                if spec is None:
+                    effort_map[lv] = EffortSpec(param=None)
+                elif isinstance(spec, dict):
+                    param = spec.get("param")
+                    if param is not None and not isinstance(param, str):
+                        raise CompactConfigError(f"models.{name}.effort_map.{lv}.param 必须是字符串或 null: {param!r}")
+                    effort_map[lv] = EffortSpec(param=param, value=spec.get("value"))
+                else:
+                    raise CompactConfigError(f"models.{name}.effort_map.{lv} 必须是对象或 null: {spec!r}")
+        effort_param = entry.get("effort_param")
+        if effort_param is not None and not isinstance(effort_param, str):
+            raise CompactConfigError(f"models.{name}.effort_param 必须是字符串: {effort_param!r}")
         models[name] = ModelWindow(
             window=window,
             reliable_ratio=_ratio(entry.get("reliable_ratio", 1.0), f"models.{name}.reliable_ratio"),
             efforts=efforts,
+            effort_map=effort_map,
+            effort_param=effort_param,
         )
     return CompactConfig(
         trigger_ratio=trigger, tail_ratio=tail, tail_max_messages=max_messages, models=models,
