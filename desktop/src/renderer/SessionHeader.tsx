@@ -68,15 +68,19 @@ export function SessionHeader({
   const live = phase === "starting" || phase === "idle" || phase === "running" || phase === "ending";
   const running = phase === "running";
   const asset = info.scope === "asset";
+  const scopeLabel =
+    info.scope === "asset" ? "素材模式" : info.scope === "pipeline" ? "流水线模式" : info.scope === "creative" ? "创作模式" : info.scope === "project" ? "企划模式" : null;
   const contextReadout = context === null ? null : contextText(context);
   // N32：无活会话时 scope 命令无处可发——点击不发任何 RPC，只给一行可读提示（换期即清）
   const [needSession, setNeedSession] = useState(false);
   useEffect(() => setNeedSession(false), [convKey]);
   return (
     <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
-      <span className="ui-badge" data-testid="session-scope">
-        {info.scope === "asset" ? "素材模式" : info.scope === "pipeline" ? "流水线模式" : info.scope === "creative" ? "创作模式" : info.scope === "project" ? "企划模式" : "—"}
-      </span>
+      {scopeLabel !== null && (
+        <span className="ui-badge" data-testid="session-scope">
+          {scopeLabel}
+        </span>
+      )}
       {/* D64 余项②（2026-10-09 人选方案 B）：读数做成徽章、紧跟模式徽章，正文色——灰字夹在「LLM 已连接」后面不显眼 */}
       {contextReadout !== null && (
         <span className="ui-badge session-head-readout" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
