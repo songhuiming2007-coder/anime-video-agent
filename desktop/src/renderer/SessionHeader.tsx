@@ -273,6 +273,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const [modelOpen, setModelOpen, modelRef] = usePopover();
   const [effortOpen, setEffortOpen, effortRef] = usePopover();
   const [models, setModels] = useState<string[] | null>(null);
+  const [efforts, setEfforts] = useState<string[] | null>(null); // D154：该模型支持档（core 回子集）；null = 用全档
   const [err, setErr] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState("");
   const [warn, setWarn] = useState<string | null>(null);
@@ -288,9 +289,10 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   // D153：会话未起（none）时也照发——host 无 s.proc 时降级经 PROBE_MODEL_LIST 直连代理取列表，
   // 进程在时透传 core；代理不可达回 ok:false，popover 显示失败行 + 「重试」（D151）。
   const fetchModels = () => {
-    void rpc.call<{ ok?: boolean; text?: string; items?: string[] }>("conv.models", { convKey }).then(
+    void rpc.call<{ ok?: boolean; text?: string; items?: string[]; efforts?: string[] }>("conv.models", { convKey }).then(
       (res) => {
         setModels(res.ok ? res.items ?? [] : []);
+        setEfforts(res.ok ? res.efforts ?? null : null);
         setErr(res.ok ? null : res.text ?? "取模型列表失败");
       },
       (e2) => setErr(String((e2 as Error).message ?? e2)),
@@ -421,6 +423,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             setModelOpen(false);
+            // D154：effort 下拉也要该模型支持档——只在还没拿过时拉一次
+            if (efforts === null && !effortOpen) fetchModels();
             setEffortOpen(!effortOpen);
           }}
         >
@@ -433,7 +437,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
             <div className="ui-popover-title">推理强度</div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
-            {EFFORTS.map((v) => (
+            {(efforts ?? EFFORTS).map((v) => (
               <button
                 key={v}
                 className="ui-row model-pop-row"
@@ -446,7 +450,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="ui-row-title">{EFFORT_LABELS[v]}</span>
+                <span className="ui-row-title">{EFFORT_LABELS[v] ?? v}</span>
                 <span className="model-pop-meta">{v}</span>
                 <span className="model-pop-check">{(pendingEffort ?? info?.effort) === v ? <Icon name="check" size="sm" /> : null}</span>
               </button>

@@ -14,7 +14,8 @@
     "gemini-3.8-flash-high": {
       "window": 1048576,
       "reliable_ratio": 1.0,
-      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576；2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：98.9 万 token 请求照收、开头埋的暗号答对，超限返回 400「exceeds the maximum number of tokens allowed 1048576」——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。"
+      "efforts": ["none", "low", "medium", "high"],
+      "_source": "Vertex AI 文档 gemini-3.8-flash 输入上限 1,048,576；2026-10-10 经本机 CPA 代理实测（spec §五④ 第四探针）：98.9 万 token 请求照收、开头埋的暗号答对，超限返回 400「exceeds the maximum number of tokens allowed 1048576」——代理不截断，标称即可用。reliable_ratio 1.0 依据是这次单点召回实测；推理质量随长度的衰减没测，余量由 trigger_ratio 承担。efforts 为 2026-10-30 CPA 实测自报合法集（level \"off\"/\"minimal\"/\"xhigh\" 报 \"valid levels: low, medium, high\"；none 语义 = 不发档）。"
     },
     "gemini-3.7-flash-high": {
       "window": 1048576,
@@ -44,17 +45,20 @@
     "devin/swe-2": {
       "window": 262144,
       "reliable_ratio": 1.0,
-      "_source": "CPA /v1/models 自报 262000，取保守 262144；无真实超长探针。reliable_ratio 未做长上下文召回实测，1.0 = 不另打折。2026-10-25 冒烟：200 正常回包。"
+      "efforts": ["none"],
+      "_source": "CPA /v1/models 自报 262000，取保守 262144；无真实超长探针。reliable_ratio 未做长上下文召回实测，1.0 = 不另打折。2026-10-25 冒烟：200 正常回包。efforts：devin Connect-RPC 不吃 reasoning_effort，2026-10-30 实测 high/low/turbo 全静默吞照回——只留 none（不发档）。"
     },
     "claude-opus-4-6-thinking": {
       "window": 200000,
       "reliable_ratio": 1.0,
-      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。"
+      "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：2026-10-30 实测 none/minimal/low/medium/high/xhigh/auto 均 200（off 报 unknown level）——CPA 全档透传，合法集即名义档集。"
     },
     "claude-sonnet-4-6": {
       "window": 200000,
       "reliable_ratio": 1.0,
-      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。"
+      "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
+      "_source": "Anthropic 标称 200K；无 CPA 侧探针，reliable_ratio 未做长上下文召回实测。2026-10-25 冒烟：200 正常回包。efforts：同 opus-4-6-thinking，none/minimal/low/medium/high/xhigh/auto 均 200（off/turbo/bogus 报 unknown level）。"
     }
   }
 }

@@ -62,6 +62,9 @@ class CompactConfigError(ValueError):
 class ModelWindow:
     window: int
     reliable_ratio: float
+    # D154：该模型 CPA 认的 reasoning_effort 档（实测自报错误里的合法集）；
+    # None = 表没记 → 全档照旧（向后兼容）。空列表？不允许——不吃 effort 记 ["none"]。
+    efforts: tuple[str, ...] | None = None
 
     @property
     def reliable(self) -> int:
@@ -125,9 +128,20 @@ def parse_compact_config(data: Any) -> CompactConfig:
         window = entry.get("window")
         if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
             raise CompactConfigError(f"models.{name}.window 必须是正整数: {window!r}")
+        raw_efforts = entry.get("efforts")
+        efforts: tuple[str, ...] | None = None
+        if raw_efforts is not None:
+            from pipeline.agent.model_switch import EFFORT_ORDER
+            if not isinstance(raw_efforts, list) or not raw_efforts or not all(isinstance(e, str) for e in raw_efforts):
+                raise CompactConfigError(f"models.{name}.efforts 必须是非空档名数组（不吃 effort 记 [\"none\"]）: {raw_efforts!r}")
+            bad = [e for e in raw_efforts if e not in EFFORT_ORDER]
+            if bad:
+                raise CompactConfigError(f"models.{name}.efforts 含未知档 {bad}（只能是 {list(EFFORT_ORDER)}）")
+            efforts = tuple(dict.fromkeys(raw_efforts))
         models[name] = ModelWindow(
             window=window,
             reliable_ratio=_ratio(entry.get("reliable_ratio", 1.0), f"models.{name}.reliable_ratio"),
+            efforts=efforts,
         )
     return CompactConfig(
         trigger_ratio=trigger, tail_ratio=tail, tail_max_messages=max_messages, models=models,
