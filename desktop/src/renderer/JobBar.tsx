@@ -23,7 +23,7 @@ export function JobBar({ jobs, onShowProgress }: { jobs: readonly JobView[]; onS
   return (
     <div className={gone ? "jobbar jobbar--warn" : "jobbar"} data-testid="jobbar" role="status" aria-live="polite">
       {!gone && <span className="ui-spinner" />}
-      <b className="jobbar-state">{gone ? "进程已不在，未收到结束事件" : head.state === "running" ? "正在运行" : "排队中"}</b>
+      <span className="jobbar-state">{gone ? "进程已不在，未收到结束事件" : head.state === "running" ? "运行中" : "排队中"}</span>
       <code className="jobbar-cmd" data-testid="jobbar-cmd" title={head.command ?? head.jobId}>
         {head.command ?? head.jobId}
       </code>

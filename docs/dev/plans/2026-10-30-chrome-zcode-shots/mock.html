@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AVA · 工序条 / 封面 / 作业条选型</title>
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/tokens.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/ui.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/style.css">
+  <link rel="stylesheet" href="./mock.css">
+</head>
+<body data-scheme="now">
+<div class="mock-label" id="scheme-label">现状</div>
+<div class="app">
+<header class="topbar">
+  <div class="topbar-row">
+    <span class="wordmark">AVA</span>
+    <span class="ui-badge ui-badge--warn">DEV BUILD</span>
+    <span class="repo">anime-video-agent-ava</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">侧栏</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">预览</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">刷新</button>
+  </div>
+</header>
+<div class="jobbar">
+  <span class="ui-spinner"></span>
+  <b class="jobbar-state" data-only="now">正在运行</b>
+  <span class="jobbar-state" data-only="A">运行中</span>
+  <span class="jobbar-state" data-only="B">运行中</span>
+  <code class="jobbar-cmd">tts --apply-patch</code>
+  <span class="muted">已运行 1:52</span>
+  <span class="jobbar-sp"></span>
+  <button class="ui-btn ui-btn--ghost ui-btn--sm">看进度</button>
+</div>
+<div class="main">
+<nav class="left">
+  <div class="side-head">
+    <button class="ui-btn ui-btn--sm mock-new">＋ 新建一期</button>
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名"></label>
+    <div class="side-head-row"><div class="ui-seg"><button aria-pressed="true">按时间</button><button>按工序</button></div><span class="ui-count">2</span></div>
+  </div>
+  <div class="ui-section">选题</div>
+  <button class="ui-row ep" aria-current="true">
+    <span class="ep-line"><span class="ep-name">2026-10-01-测试番-人物志-一</span><span class="ep-time">刚刚</span></span>
+    <span class="ep-step"><span class="ui-badge">停机</span><span class="ep-step-text">02.5 人审改稿</span></span>
+  </button>
+  <div class="files">
+    <div class="files-head">
+      <button class="ui-section">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>
+        本期文件
+      </button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm" data-only="B">封面</button>
+    </div>
+    <div class="cover-import" data-only="now">
+      <div class="ui-dropzone">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m2 11 3.2-3.2a1.5 1.5 0 0 1 2.1 0L11 12"/><circle cx="11.2" cy="6.2" r="1.1"/></svg>
+        <span>拖入封面图（PNG/JPEG，≤ 32 MiB）</span>
+        <button class="ui-btn ui-btn--sm">选择文件…</button>
+      </div>
+    </div>
+    <div class="cover-row" data-only="A">
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m2 11 3.2-3.2a1.5 1.5 0 0 1 2.1 0L11 12"/><circle cx="11.2" cy="6.2" r="1.1"/></svg>
+      拖入封面
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">选择…</button>
+    </div>
+    <ul class="tree-list">
+      <li><button class="ui-row tree-row"><span class="ui-row-title">01-topic.md</span></button></li>
+      <li><button class="ui-row tree-row" aria-current="true"><span class="ui-row-title">02-script.md</span></button></li>
+      <li><button class="ui-row tree-row"><span class="ui-row-title">events.jsonl</span></button></li>
+    </ul>
+  </div>
+</nav>
+<div class="splitter"></div>
+<section class="center conv-shell">
+  <div class="status" data-only="now">
+    <div class="status-step">
+      <strong>02.5 人审改稿</strong>
+      <span class="ui-badge">停机</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">详情</button>
+    </div>
+    <code class="ui-code cmd">python -m pipeline.review /private/var/folders/8f/_04djfns4_l70r2r7pgy4ghm0000gn/T/ava-desktop-repo/data/episodes/2026-10-01-测试番-人物志-一 --approve</code>
+  </div>
+  <div class="status" data-only="A">
+    <div class="status-step">
+      02.5 人审改稿
+      <span class="ui-badge">停机</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">详情</button>
+    </div>
+  </div>
+  <div class="session-head">
+    <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon">−</button>
+    <span class="ui-badge">上下文约 4,443 字</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">素材模式</button>
+  </div>
+  <div class="session-head" data-only="B">
+    <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon">−</button>
+    <span>02.5 人审改稿</span>
+    <span class="ui-badge">停机</span>
+    <span class="ui-badge">上下文约 4,443 字</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">详情</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">素材模式</button>
+  </div>
+  <div class="conv conv-stream">
+    <div class="ui-card decision">
+      <div class="ui-card-head"><span class="ui-card-title">02.5 人审改稿 <span class="ui-badge">停机</span></span></div>
+      <dl class="ui-kv">
+        <dt>产物</dt>
+        <dd><code>02-script.md</code> · 1700 字节</dd>
+      </dl>
+      <div class="ui-card-actions">
+        <button class="ui-btn">批准</button>
+        <button class="ui-btn">打回…</button>
+      </div>
+    </div>
+  </div>
+  <div class="composer">
+    <textarea rows="2" placeholder="告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="composer-row">
+      <span class="composer-target">2026-10-01-测试番-人物志-一</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--primary ui-btn--sm">发送</button>
+    </div>
+  </div>
+</section>
+<div class="splitter"></div>
+<section class="preview">
+  <div class="preview-switch">
+    <button class="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn">
+      <span class="preview-switch-label">02-script.md</span>
+      <span class="ui-badge">可编辑</span>
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>
+    </button>
+  </div>
+  <div class="editor-shell">
+    <div class="toolbar">
+      <span class="muted">未保存</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">要点</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">保存</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">封板</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">机检</button>
+    </div>
+    <div class="editor-split" data-layout="wide" data-pane="two">
+      <div class="editor-src" style="padding: var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm);">
+        ## 段落 1<br>配音：搜查官死后，二十区的血腥暂时平息。
+      </div>
+      <div class="editor-preview">
+        <h2 style="font-size: var(--text-md); margin: 0 0 var(--space-2);">段落 1</h2>
+        <p>搜查官死后，二十区的血腥暂时平息。</p>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+</div>
+</body>
+</html>

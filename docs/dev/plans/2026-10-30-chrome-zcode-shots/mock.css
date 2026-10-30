@@ -1,0 +1,61 @@
+/* D152 续：工序条 / 封面 / 作业条选型。基座是 renderer tokens/ui/style。 */
+.main {
+  grid-template-columns: 220px 8px minmax(0, 1fr) 8px minmax(380px, 1.05fr);
+}
+.mock-new { width: 100%; }
+.mock-label {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 20;
+  padding: 2px 10px; border-radius: var(--radius-pill);
+  background: var(--overlay-bg); color: var(--overlay-fg);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+[data-only] { display: none; }
+body[data-scheme="now"] [data-only="now"],
+body[data-scheme="A"] [data-only="A"],
+body[data-scheme="B"] [data-only="B"] { display: flex; }
+
+body[data-scheme="now"] .status[data-only="now"],
+body[data-scheme="A"] .status[data-only="A"] { display: flex; flex-direction: column; }
+body[data-scheme="B"] .session-head[data-only="B"] { display: flex; }
+body[data-scheme="B"] .session-head:not([data-only]) { display: none; }
+
+/* ---- A：工序卡收成会话头同级的一行；封面收成文件行 ---- */
+body[data-scheme="A"] .status {
+  padding: 0 var(--space-4);
+  min-height: 40px;
+  justify-content: center;
+  gap: 0;
+}
+body[data-scheme="A"] .status-step { font-size: var(--text-base); font-weight: var(--weight-medium); }
+body[data-scheme="A"] .cover-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  margin: var(--space-1) 0;
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+body[data-scheme="A"] .jobbar-state { font-weight: var(--weight-regular); color: var(--fg-muted); }
+
+/* ---- B：工序并进会话头；封面缩成标题旁按钮 ---- */
+body[data-scheme="B"] .jobbar {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  min-height: 32px;
+  padding: 0 var(--space-3);
+}
+body[data-scheme="B"] .files-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+body[data-scheme="B"] .files-head .ui-section { flex: 1; }
