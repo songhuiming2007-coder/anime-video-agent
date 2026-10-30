@@ -1,0 +1,20 @@
+/* D152 续：会话头 / 输入栏选型。基座是 renderer tokens/ui/style。 */
+.main {
+  grid-template-columns: 220px 8px minmax(0, 1fr) 8px minmax(320px, 0.85fr);
+}
+.mock-label {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 20;
+  padding: 2px 10px; border-radius: var(--radius-pill);
+  background: var(--overlay-bg); color: var(--overlay-fg);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+[data-only] { display: none; }
+body[data-scheme="now"] [data-only="now"],
+body[data-scheme="A"] [data-only="A"],
+body[data-scheme="B"] [data-only="B"] { display: inline-flex; align-items: center; gap: var(--space-2); }
+
+body[data-scheme="now"] .composer-stop[data-only="now"],
+body[data-scheme="A"] .composer-stop[data-only="A"],
+body[data-scheme="B"] .composer-stop[data-only="B"] { display: inline-flex; }

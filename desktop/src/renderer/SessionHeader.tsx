@@ -83,12 +83,7 @@ export function SessionHeader({
           {contextReadout}
         </span>
       )}
-      {info.llm === "ok" && (
-        <>
-          <span className="ui-dot ui-dot--ok" data-testid="llm-ok" />
-          <span className="muted">LLM 已连接</span>
-        </>
-      )}
+      {info.llm === "ok" && <span className="ui-dot ui-dot--ok" data-testid="llm-ok" title="LLM 已连接" />}
       {/* D39 C2：头部恒为一行，只留短标；原因全文、钥匙串命令、更早会话进对话流首行（SessionNotes，Spec 10 §2.3「流内一行」） */}
       {info.llm === "degraded" && (
         <span className="warn" data-testid="llm-degraded-mark">

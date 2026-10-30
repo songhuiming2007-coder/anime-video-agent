@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AVA · 会话头 / 输入栏选型</title>
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/tokens.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/ui.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/style.css">
+  <link rel="stylesheet" href="./mock.css">
+</head>
+<body data-scheme="now">
+<div class="mock-label" id="scheme-label">现状</div>
+<div class="app">
+<header class="topbar">
+  <div class="topbar-row">
+    <span class="wordmark">AVA</span>
+    <span class="ui-badge ui-badge--warn">DEV BUILD</span>
+    <span class="repo">anime-video-agent-ava</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">侧栏</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">预览</button>
+  </div>
+</header>
+<div class="main">
+<nav class="left">
+  <div class="side-head">
+    <button class="ui-row proj-new">＋ 新建一期</button>
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名"></label>
+  </div>
+  <div class="ui-section">选题</div>
+  <button class="ui-row ep" aria-current="true">
+    <span class="ep-line"><span class="ep-name">2026-10-01-测试番-人物志-一</span><span class="ep-time">刚刚</span></span>
+    <span class="ep-step"><span class="ui-badge">停机</span><span class="ep-step-text">02.5 人审改稿</span></span>
+  </button>
+</nav>
+<div class="splitter"></div>
+<section class="center conv-shell">
+  <div class="status">
+    <div class="status-step">02.5 人审改稿 <span class="ui-badge">停机</span><span class="spacer"></span><button class="ui-btn ui-btn--ghost ui-btn--sm">详情</button></div>
+  </div>
+  <div class="session-head">
+    <span class="ui-badge">—</span>
+    <span class="ui-badge session-head-readout">上下文约 4,443 字</span>
+    <span class="ui-dot ui-dot--ok" data-only="now"></span>
+    <span class="muted" data-only="now">LLM 已连接</span>
+    <span class="ui-dot ui-dot--ok" data-only="A" title="LLM 已连接"></span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">素材模式</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">结束会话</button>
+    <span class="ui-spinner"></span>
+  </div>
+  <div class="conv conv-stream">
+    <div class="conv-user">改第 3 段配音，别那么油。</div>
+    <div class="conv-activity"><span class="ui-spinner"></span>正在执行 · 12 秒</div>
+  </div>
+  <div class="composer">
+    <textarea rows="2" placeholder="回合进行中：消息会排队，这批工具跑完后送达（Enter 发送）">先别停，改完再看</textarea>
+    <div class="composer-row">
+      <span class="composer-target">2026-10-01-测试番-人物志-一</span>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">glm-4.6</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">中</button>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--sm composer-stop" data-only="now">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
+        停止
+      </button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm composer-stop" data-only="A">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
+        停止
+      </button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon composer-stop" data-only="B" aria-label="停止">
+        <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
+      </button>
+      <button class="ui-btn ui-btn--primary ui-btn--sm">排队</button>
+    </div>
+  </div>
+</section>
+<div class="splitter"></div>
+<section class="preview">
+  <div class="preview-switch"><button class="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"><span class="preview-switch-label">02-script.md</span></button></div>
+  <div class="muted" style="padding: var(--space-4);">预览</div>
+</section>
+</div>
+</div>
+</body>
+</html>
