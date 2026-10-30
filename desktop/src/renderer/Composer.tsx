@@ -102,7 +102,7 @@ export function Composer({
         )}
         {running && (
           <button
-            className="ui-btn ui-btn--sm"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
             data-testid="composer-stop"
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
