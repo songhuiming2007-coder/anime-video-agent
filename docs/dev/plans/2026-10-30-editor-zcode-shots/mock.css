@@ -1,0 +1,116 @@
+/* D152 续：02.5 编辑器选型。基座是 renderer tokens/ui/style；这里只放栅格与 A/B 皮肤。 */
+.main {
+  grid-template-columns: 220px 8px minmax(0, 0.9fr) 8px minmax(420px, 1.15fr);
+}
+.mock-new { width: 100%; }
+.mock-label {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 20;
+  padding: 2px 10px; border-radius: var(--radius-pill);
+  background: var(--overlay-bg); color: var(--overlay-fg);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+[data-only] { display: none; }
+body[data-scheme="now"] .toolbar[data-only="now"],
+body[data-scheme="A"] .toolbar[data-only="A"] { display: flex; }
+body[data-scheme="B"] .ed-filebar[data-only="B"],
+body[data-scheme="B"] .ed-foot[data-only="B"] { display: flex; }
+body[data-scheme="now"] .ed-dump[data-only="now"],
+body[data-scheme="A"] .ed-dump[data-only="A"],
+body[data-scheme="now"] .ui-section[data-only="now"],
+body[data-scheme="A"] .ui-section[data-only="A"],
+body[data-scheme="B"] .ui-section[data-only="B"] { display: block; }
+
+/* 假 CodeMirror：不挂真实编辑器 */
+.mock-cm {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+.mock-gutter {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  text-align: right;
+  padding: var(--space-2) 6px;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.mock-doc {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  white-space: pre-wrap;
+  color: var(--fg);
+}
+.mock-h { color: var(--syntax-heading); font-weight: var(--weight-semibold); }
+.mock-active { background: var(--bg-hover); }
+
+.editor-preview h2 { font-size: var(--text-md); margin: 0 0 var(--space-2); }
+.editor-preview p { margin: 0 0 var(--space-3); }
+.editor-preview .md-k { color: var(--fg-muted); font-size: var(--text-sm); }
+
+/* ---- A：幽灵工具栏 + 安静要点 ---- */
+body[data-scheme="A"] .toolbar { gap: var(--space-1); }
+body[data-scheme="A"] .ed-file {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  font-weight: var(--weight-medium);
+}
+body[data-scheme="A"] .toolbar .ui-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-muted);
+}
+body[data-scheme="A"] .toolbar .ui-btn:hover { color: var(--fg); background: var(--bg-hover); }
+body[data-scheme="A"] .toolbar .ui-btn[aria-pressed="true"] { color: var(--fg); background: var(--bg-selected); }
+body[data-scheme="A"] .checklist { background: transparent; }
+body[data-scheme="A"] .checklist .ui-section { color: var(--fg-subtle); }
+body[data-scheme="A"] .checklist ol { margin: 0; padding-left: 1.2em; color: var(--fg-muted); }
+body[data-scheme="A"] .ed-dump {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  max-height: 72px;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+}
+
+/* ---- B：顶上只留文件，动作沉底 ---- */
+body[data-scheme="B"] .ed-filebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+body[data-scheme="B"] .ed-filebar .ed-file { font-family: var(--font-mono); color: var(--fg); }
+body[data-scheme="B"] .ed-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+body[data-scheme="B"] .ed-foot .ui-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-muted);
+  height: 24px;
+  min-height: 24px;
+}
+body[data-scheme="B"] .checklist { background: transparent; }

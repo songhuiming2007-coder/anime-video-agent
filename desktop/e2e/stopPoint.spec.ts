@@ -575,19 +575,39 @@ test("A1 首日实测：CodeMirror 在 Electron renderer 样式真正生效（CS
   expect(st.headingColor).not.toBe(st.plainColor);
   expect(st.headingWeight).toBe("600"); // --weight-semibold
 
-  // 光标：CSP 拦掉样式时 .cm-cursor 是 `position: static; border-left: 0`（聚焦后看不见光标）
-  await src.locator(".cm-content").click();
-  const cursor = await L.page.evaluate(() => {
-    const sr = (document.querySelector("[data-testid=editor-src]") as HTMLElement).shadowRoot;
-    const c = (sr ?? document).querySelector<HTMLElement>(".cm-cursor");
-    if (!c) return null;
-    const cs = getComputedStyle(c);
-    return { position: cs.position, width: cs.borderLeftWidth, color: cs.borderLeftColor };
-  });
-  expect(cursor).not.toBeNull();
-  expect(cursor!.position).toBe("absolute");
-  expect(cursor!.width).not.toBe("0px");
-  expect(cursor!.color).not.toBe("rgba(0, 0, 0, 0)");
+  // 光标：CSP 拦掉样式时 .cm-cursor 是 `position: static; border-left: 0`（聚焦后看不见光标）。
+  // 浅色 / 深色都跟 --fg（正文色），不许掉回 --accent 浅粉。
+  const cursorAgainst = async (theme: "light" | "dark") => {
+    await src.locator(".cm-content").click();
+    return L.page.evaluate((t) => {
+      document.documentElement.setAttribute("data-theme", t);
+      const sr = (document.querySelector("[data-testid=editor-src]") as HTMLElement).shadowRoot;
+      const c = (sr ?? document).querySelector<HTMLElement>(".cm-cursor");
+      if (!c) return null;
+      const probe = document.createElement("div");
+      probe.style.color = "var(--fg)";
+      probe.style.borderLeftColor = "var(--accent)";
+      document.body.appendChild(probe);
+      const p = getComputedStyle(probe);
+      const cs = getComputedStyle(c);
+      const out = { position: cs.position, width: cs.borderLeftWidth, color: cs.borderLeftColor, fg: p.color, accent: p.borderLeftColor };
+      probe.remove();
+      return out;
+    }, theme);
+  };
+  const light = await cursorAgainst("light");
+  expect(light).not.toBeNull();
+  expect(light!.position).toBe("absolute");
+  expect(light!.width).not.toBe("0px");
+  expect(light!.color).toBe(light!.fg);
+  expect(light!.color).not.toBe(light!.accent);
+  const dark = await cursorAgainst("dark");
+  expect(dark).not.toBeNull();
+  expect(dark!.position).toBe("absolute");
+  expect(dark!.width).not.toBe("0px");
+  expect(dark!.color).toBe(dark!.fg);
+  expect(dark!.color).not.toBe(dark!.accent);
+  expect(dark!.fg).not.toBe(light!.fg);
 
   // 键盘路径跨 shadow 边界：焦点在 shadow 内的 .cm-content，Cmd+S 必须冒泡到 .editor-src 的 onKeyDown
   await L.page.keyboard.press("Meta+S");

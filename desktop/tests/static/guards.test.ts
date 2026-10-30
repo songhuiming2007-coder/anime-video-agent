@@ -116,6 +116,9 @@ describe("TG-3 §5.2 import 纪律", () => {
     expect(ed.text).toContain("attachShadow({ mode: \"open\" })");
     expect(/root:\s*shadow/.test(ed.text)).toBe(true);
     expect(/parent:\s*shadow/.test(ed.text)).toBe(true);
+    expect(ed.text).toMatch(/caretColor:\s*"var\(--fg\)"/);
+    expect(ed.text).toMatch(/borderLeftColor:\s*"var\(--fg\)"/);
+    expect(ed.text).not.toMatch(/caretColor:\s*"var\(--accent\)"/);
   });
 });
 
