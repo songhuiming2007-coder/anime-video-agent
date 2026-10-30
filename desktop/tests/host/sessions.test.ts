@@ -979,6 +979,52 @@ describe("D91 模型 / 推理命令", () => {
   });
 });
 
+describe("D153 无进程时的 conv.models 代理降级", () => {
+  /** 伪造 PROBE_MODEL_LIST 的 CoreResult（其余模板同 fakeRunCore） */
+  function probeRunCore(b: Awaited<ReturnType<typeof boot>>, result: { code: number | null; stdout?: string; stderr?: string; timedOut?: boolean; stdoutFull?: string | null }): void {
+    (b.svc.deps as { runCore: HostDeps["runCore"] }).runCore = (async (t: string) => ({
+      code: t === "PROBE_MODEL_LIST" ? result.code : 0,
+      signal: null,
+      stdoutTail: result.stdout ?? "",
+      stderrTail: result.stderr ?? "",
+      timedOut: result.timedOut ?? false,
+      stdoutFull: result.stdoutFull ?? result.stdout ?? "",
+      stdoutOverflow: result.stdoutFull === null,
+    })) as unknown as HostDeps["runCore"];
+  }
+
+  it("phase none：conv.models 走 PROBE_MODEL_LIST 降级取真实列表；不 spawn 会话进程", async () => {
+    const b = await boot();
+    probeRunCore(b, { code: 0, stdout: "devin/swe-2\nclaude-sonnet-4-6\ngemini-3.8-flash-high\n" });
+    const r = (await b.svc.dispatch("conv.models", { convKey: b.key })) as { ok: boolean; items?: string[] };
+    expect(r).toEqual({ ok: true, text: "3 个模型", items: ["claude-sonnet-4-6", "devin/swe-2", "gemini-3.8-flash-high"] });
+    expect(sessionSpawns().filter((s) => s.startsWith("SESSION"))).toEqual([]); // 没为取列表起会话进程
+  });
+
+  it("core 取列表失败（代理 5xx / 拒连 → 非零退出码）如实 {ok:false,text}，popover 显示失败行", async () => {
+    const b = await boot();
+    probeRunCore(b, { code: 2, stderr: "Traceback ...\nModelSwitchError: 取模型列表失败：HTTP 502" });
+    const r = (await b.svc.dispatch("conv.models", { convKey: b.key })) as { ok: boolean; text?: string; items?: string[] };
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("HTTP 502");
+    expect(r.items).toBeUndefined();
+    // 拒连 / 超时同样不猜一份列表
+    probeRunCore(b, { code: null, stderr: "ModelSwitchError: 取模型列表失败：<urlopen error [Errno 61] Connection refused>", timedOut: true });
+    const r2 = (await b.svc.dispatch("conv.models", { convKey: b.key })) as { ok: boolean; text?: string };
+    expect(r2.ok).toBe(false);
+    expect(r2.text).toMatch(/取模型列表失败/);
+  });
+
+  it("进程在时照旧透传 core（不走降级），core 的 items/efforts 原样返回", async () => {
+    const b = await boot();
+    probeRunCore(b, { code: 0, stdout: "should-not-be-used\n" });
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_command: [{ t: "command_result", name: "models", ok: true, text: "1 个模型", items: ["from-core"], efforts: ["high"], rid: "$rid" }], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    const r = (await b.svc.dispatch("conv.models", { convKey: b.key })) as { ok: boolean; items?: string[]; efforts?: string[] };
+    expect(r).toMatchObject({ ok: true, items: ["from-core"], efforts: ["high"] });
+  });
+});
+
 describe("TH-16 后台常驻与徽标", () => {
   it("A 回合运行中激活 B：A 进程存活继续收帧；徽标 running / openRequests 变化", async () => {
     const b = await boot({ epKey: "EP-A" });

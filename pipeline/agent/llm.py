@@ -225,6 +225,20 @@ def _env_name_of(data: dict[str, Any]) -> str | None:
     return env_name
 
 
+def configured_base_url(root: Path | None = None) -> str | None:
+    """当前生效配置的 base_url（只读配置，**不**读环境变量）。
+
+    D153：桌面端在会话进程不存在时经 PROBE_BASE_URL 取它去直连代理
+    `GET /models`——与 `api_key_env_name` 同一目的（TS 侧不出现第二份
+    「local 优先」规则）。字段缺失 / 配置损坏 → None。
+    """
+    loaded = _load_agent_cfg(root)
+    if loaded is None:
+        return None
+    base_url = str(loaded[0].get("base_url") or "").strip()
+    return base_url or None
+
+
 def api_key_env_name(root: Path | None = None) -> str | None:
     """当前生效配置指名的密钥环境变量名（只读配置，**不**读环境变量）。
 

@@ -68,6 +68,7 @@ import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
 import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
 import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
+import { listProxyModels } from "./proxyModels";
 import { SessionError, SessionManager, type CommandName, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
 import { fetchStatus } from "./status";
 import { readApprovalRecords } from "./store";
@@ -282,6 +283,7 @@ export class HostService {
       spawnSession,
       resolveKey: () => this.deps.resolveSessionKey(this.repoRoot ?? ""),
       resolveWebKeys: (llmName) => this.deps.resolveSessionWebKeys(this.repoRoot ?? "", llmName),
+      listProxyModels: (repoRoot) => listProxyModels(this.core.bind(this) as Parameters<typeof listProxyModels>[0], repoRoot),
       now: () => this.deps.now(),
       bootId: this.deps.bootId,
       push: (env) => this.push(env),

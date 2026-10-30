@@ -102,6 +102,33 @@ def list_models(cfg: "LLMConfig") -> list[str]:
     return sorted(dict.fromkeys(ids))
 
 
+def list_models_unauthenticated(root: Path | None = None) -> list[str]:
+    """D153：不带密钥读代理 `GET {base_url}/models`——会话进程不存在时桌面端经
+    PROBE_MODEL_LIST 调它（`list_models` 要带 Authorization 头，而这步独立进程拿不到密钥）。
+    base_url 与 `api_key_env_name` 同一口径：生效的 agent.local.json / agent.json。
+    失败如实抛 ModelSwitchError，不猜一份列表出来。"""
+    from pipeline.agent.llm import configured_base_url
+
+    base_url = configured_base_url(root)
+    if base_url is None:
+        raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
+    url = base_url.rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=MODELS_TIMEOUT_S) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ModelSwitchError(f"取模型列表失败：HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ModelSwitchError(f"取模型列表失败：{exc}") from None
+    except json.JSONDecodeError as exc:
+        raise ModelSwitchError(f"模型列表不是 JSON：{exc}") from None
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        raise ModelSwitchError("模型列表格式不对（缺 data 数组）")
+    ids = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
+    return sorted(dict.fromkeys(ids))
+
+
 #: ``check_model`` 放行未知模型时留下的提醒；每次调用先清回 None（同进程一次只跑一条命令，
 #: 协议层执行 ``run_command`` 的线程与读这个值的线程是同一个）
 last_warn: str | None = None
