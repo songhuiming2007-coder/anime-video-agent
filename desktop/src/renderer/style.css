@@ -76,9 +76,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 #theme-menu { inset: auto; top: calc(40px + var(--space-1)); right: var(--space-3); margin: 0; }
 /* D39 C1：工序卡默认一行，详情收起（[hidden] 须显式盖掉 display:flex） */
 .status { flex: none; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); border-bottom: 1px solid var(--border); }
+/* D152 A：期工序卡脸上不再甩 next_command；字号跟会话头齐。企划头 .proj-status 仍用上面那套。 */
+.status:not(.proj-status) { padding: 0 var(--space-4); min-height: 40px; justify-content: center; }
+.status:not(.proj-status):has(.status-details:not([hidden])) { padding: var(--space-2) var(--space-4); }
 .status-details { display: flex; flex-direction: column; gap: var(--space-2); }
 .status-details[hidden] { display: none; }
 .status-step { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.status:not(.proj-status) .status-step { min-height: 40px; font-size: var(--text-base); font-weight: var(--weight-medium); }
 .status-step .ui-btn { font-weight: var(--weight-regular); }
 .status .cmd { margin: 0; }
 .advisories { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
@@ -150,7 +154,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 /* D152 P3-8：作业条对齐 ZCode ConversationQuotaBanner.tsx:119（rounded-xl border bg-card 浮条），不再平铺色条 */
 .jobbar { flex: none; display: flex; align-items: center; gap: var(--space-2); min-width: 0; margin: var(--space-1) var(--space-1) 0; padding: var(--space-1) var(--space-3); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); font-size: var(--text-sm); color: var(--fg); }
 .jobbar--warn { background: var(--warn-surface); border-color: transparent; }
-.jobbar-state { flex: none; font-weight: var(--weight-semibold); }
+.jobbar-state { flex: none; color: var(--fg-muted); }
 .jobbar-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .jobbar-sp { flex: 1; }
 .timeline { flex: none; margin-top: auto; border-top: 1px solid var(--border); font-size: var(--text-sm); }
@@ -231,7 +235,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .seg-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--space-3); }
 .seg-list, .pending, .voice-input, .voice-card, .hetero { padding: 0 var(--space-3); }
 .seg-actions { display: flex; gap: var(--space-1); justify-self: end; }
-.cover-import { padding: var(--space-2) 0; }
+.cover-import { padding: var(--space-1) 0; }
+.cover-import .ui-dropzone { min-height: var(--control-h); justify-content: flex-start; padding: 0 var(--space-2); gap: var(--space-2); border-radius: var(--radius-md); }
 .hidden-input { display: none; }
 
 /* 封面缩略图（ui.css 的 .cover-grid/.cover-opt 是容器骨架，图片与单选框的落位在这里） */

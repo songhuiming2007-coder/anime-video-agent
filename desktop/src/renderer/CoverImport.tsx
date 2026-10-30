@@ -48,9 +48,10 @@ export function CoverImport({ epKey, rpc, onImported }: { epKey: string; rpc: Rp
         }}
       >
         <Icon name="image" size="sm" />
-        <span>拖入封面图（PNG/JPEG，≤ 32 MiB）</span>
+        <span title="PNG/JPEG，≤ 32 MiB">拖入封面</span>
+        <span className="spacer" />
         <button
-          className="ui-btn ui-btn--sm"
+          className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="cover-pick"
           disabled={busy}
           onClick={(e) => {
@@ -58,7 +59,7 @@ export function CoverImport({ epKey, rpc, onImported }: { epKey: string; rpc: Rp
             inputRef.current?.click();
           }}
         >
-          选择文件…
+          选择…
         </button>
         <input
           ref={inputRef}

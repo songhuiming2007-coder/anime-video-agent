@@ -1046,8 +1046,8 @@ function StatusCard({ ep, extra }: { ep: EpisodeState; extra?: ReactNode }) {
           <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
         </button>
       </div>
-      {v.next_command && <code className="ui-code cmd">{v.next_command}</code>}
       <div className="status-details" id={detailsId} hidden={!open} data-testid="status-details">
+        {v.next_command && <code className="ui-code cmd">{v.next_command}</code>}
         {v.block_reason && <div className="muted">{v.block_reason}</div>}
         <div>下一步：{v.next_action}</div>
         {v.advisories.length > 0 && (
