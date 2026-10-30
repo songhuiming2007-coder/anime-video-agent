@@ -113,7 +113,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .preview-head .ui-row-title { font-family: var(--font-mono); color: var(--fg); }
 /* D49-A S4：预览区文件切换器 */
 .preview-switch { position: relative; flex: none; display: flex; align-items: center; height: 40px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border); }
-.preview-switch-btn { max-width: 100%; gap: var(--space-1); font-weight: var(--weight-semibold); }
+.preview-switch-btn { max-width: 100%; gap: var(--space-1); font-weight: var(--weight-regular); }
 .preview-switch-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .preview-switch-pop { position: absolute; top: calc(100% + 4px); left: var(--space-2); z-index: 5; width: min(360px, calc(100% - var(--space-4))); max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .preview-switch-gtitle { padding: var(--space-1) var(--space-2) 2px; color: var(--fg-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
