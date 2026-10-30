@@ -20,7 +20,7 @@ import type { SavedFingerprintJson, ScriptStatJson } from "../shared/protocol";
 import { Icon } from "./icons";
 import { MarkdownBody } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
-import { StateView } from "./ui";
+import { StateView, StatusDot } from "./ui";
 
 /** 人审要点（清单五条，真源在 runbook；TC-13 断言两处关键串齐全）。提醒不是判据（D18）。 */
 export const REVIEW_CHECKLIST: readonly string[] = [
@@ -36,8 +36,9 @@ const editorTheme = EditorView.theme({
   "&": { color: "var(--fg)", backgroundColor: "var(--bg-input)", height: "100%" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "var(--text-sm)", lineHeight: "var(--leading-normal)" },
-  ".cm-content": { caretColor: "var(--accent)" },
-  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
+  // 光标跟正文色：浅色 --fg #1d1d1f，深色 --fg #ececf0。不许用 --accent 浅粉（白底/深底都看不清）。
+  ".cm-content": { caretColor: "var(--fg)" },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--fg)" },
   ".cm-gutters": { backgroundColor: "var(--bg-subtle)", color: "var(--fg-muted)", border: "none" },
   ".cm-activeLine": { backgroundColor: "var(--bg-hover)" },
   ".cm-activeLineGutter": { backgroundColor: "var(--bg-hover)" },
@@ -332,8 +333,18 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
   return (
     <div className="editor-shell" ref={shellRef} data-testid="script-editor" data-dirty={dirty ? "1" : "0"} data-layout={wide ? "wide" : "narrow"}>
       <div className="toolbar" data-testid="editor-toolbar">
+        {dirty && (
+          <>
+            <StatusDot tone="wait" />
+            <span className="muted" data-testid="editor-dirty">
+              未保存
+            </span>
+          </>
+        )}
+        {tooBig && <span className="warn">正文超过 1 MiB 上限</span>}
+        <span className="spacer" />
         {wide ? (
-          <button className="ui-btn ui-btn--sm" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
+          <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
             要点
           </button>
         ) : (
@@ -346,7 +357,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           </span>
         )}
         <button
-          className="ui-btn ui-btn--sm"
+          className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="save-script"
           disabled={off || tooBig}
           onClick={(e) => {
@@ -358,7 +369,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
         </button>
         {stat !== null && stat.script === null && stat.draft !== null && (
           <button
-            className="ui-btn ui-btn--sm"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
             data-testid="from-draft"
             disabled={off || !canCreateFromDraft(ed, true)}
             onClick={(e) => {
@@ -370,7 +381,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           </button>
         )}
         <button
-          className="ui-btn ui-btn--sm"
+          className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="seal-script"
           disabled={off || !canSeal(ed)}
           onClick={(e) => {
@@ -381,7 +392,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           封板
         </button>
         <button
-          className="ui-btn ui-btn--sm"
+          className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="check-script"
           disabled={off}
           onClick={(e) => {
@@ -391,12 +402,6 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
         >
           机检
         </button>
-        {dirty && (
-          <span className="muted" data-testid="editor-dirty">
-            有未保存改动
-          </span>
-        )}
-        {tooBig && <span className="warn">正文超过 1 MiB 上限</span>}
       </div>
       {loadErr !== null ? (
         <StateView kind="error" title={loadErr} />
@@ -419,7 +424,7 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
             {preview.trim() === "" ? <div className="muted">（正文为空）</div> : <MarkdownBody text={preview} />}
           </div>
           <aside className="checklist" data-testid="review-checklist">
-            <div className="ui-section">人审要点（真源在 runbook，此处只读镜像）</div>
+            <div className="ui-section">人审要点</div>
             <ol>
               {REVIEW_CHECKLIST.map((t) => (
                 <li key={t}>{t}</li>

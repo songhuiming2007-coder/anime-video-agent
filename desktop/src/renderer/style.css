@@ -221,6 +221,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .editor-split[data-pane="two"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .editor-split[data-pane="tips"] > .checklist { border-left: 0; }
 .editor-shell .ui-seg > button { white-space: nowrap; }
+/* D152 A：幽灵工具栏、要点去灰底、机检收成底边一行。ui.css 的 .toolbar/.checklist/.tail 冻结，覆盖写这里。 */
+.editor-shell .toolbar { gap: var(--space-1); }
+.editor-shell .toolbar .ui-btn[aria-pressed="true"] { color: var(--fg); background: var(--bg-selected); }
+.editor-shell .checklist { background: transparent; }
+.editor-shell .checklist .ui-section { color: var(--fg-subtle); }
+.editor-shell .checklist ol { margin: 0; padding-left: 1.2em; color: var(--fg-muted); }
+.editor-shell .tail { margin: 0; max-height: 72px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: var(--bg); color: var(--fg-muted); }
 .seg-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--space-3); }
 .seg-list, .pending, .voice-input, .voice-card, .hetero { padding: 0 var(--space-3); }
 .seg-actions { display: flex; gap: var(--space-1); justify-self: end; }
