@@ -1,6 +1,6 @@
 // 03.5 顺听面板（Spec 11 §2.3/§4.4）：段落列表 + 播放走 renderer 原生 <audio>（ava-media://）+ 六指令按钮化。
 //
-// 映射表（冻结）：听 N → 行内 ▶；听 → 顺序播放；停 → 停；回滚 N → 行内 回滚（仅当 attic 有快照）；
+// 映射表（冻结）：听 N → 行内播放钮；听 → 顺序播放；停 → 停；回滚 N → 行内 回滚（仅当 attic 有快照）；
 // 撤回 N → 待应用条目行内 撤回；done → 完成并应用补丁。
 // 自由文法纠错的解析与落盘都在 core（`/voice-parse` 纯算、`/voice-add` 重新解析原文），UI 只渲染结构化字段。
 // 播放器从 afplay/QuickTime 改为原位 <audio>（direction §0.2 第 3 条：全要素应用内原位审计）。
@@ -11,6 +11,13 @@ import { heardKey, lockState, redoSegments, segStatus, synthSummary, type SegSta
 import { Icon } from "./icons";
 import { errText, type RpcClient } from "./rpc";
 import { Badge, StateView } from "./ui";
+
+/** 播放条时钟：段都是秒级，不显小时。NaN / 负数落 0:00。 */
+export function formatAudioClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const s = Math.floor(sec);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
 
 const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
   ["segment", "段落"],
@@ -118,6 +125,24 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
 
   const urlOf = (wav: string) => encodeMediaUrl("episodes", `${epKey}/03-audio/${wav}`);
   const current = queue[0] ?? null;
+  const [pos, setPos] = useState({ t: 0, d: 0 });
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || current === null) {
+      setPos({ t: 0, d: 0 });
+      return;
+    }
+    const tick = () => setPos({ t: a.currentTime || 0, d: Number.isFinite(a.duration) ? a.duration : 0 });
+    a.addEventListener("timeupdate", tick);
+    a.addEventListener("loadedmetadata", tick);
+    a.addEventListener("durationchange", tick);
+    tick();
+    return () => {
+      a.removeEventListener("timeupdate", tick);
+      a.removeEventListener("loadedmetadata", tick);
+      a.removeEventListener("durationchange", tick);
+    };
+  }, [current]);
 
   // D87：放到哪段就把那段「这一版重配」记为已复听（开播即算：要的是「这版听过没有」，不是听完没有）
   const curLabel = current?.label ?? null;
@@ -243,14 +268,15 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   return (
     <div className="seg-panel voice-panel" data-testid="voice-panel">
       <div className="toolbar" data-testid="voice-toolbar">
-        <button className="ui-btn ui-btn--sm" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
+        <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
+          <Icon name="play" size="sm" />
           顺序播放
         </button>
-        <button className="ui-btn ui-btn--sm" data-testid="voice-stop" disabled={busy || current === null} onClick={stop}>
-          停
+        <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="voice-stop" disabled={busy || current === null} onClick={stop} aria-label="停">
+          <Icon name="stop" size="sm" />
         </button>
-        <button className="ui-btn ui-btn--sm" data-testid="voice-refresh" disabled={busy} onClick={() => void load()}>
-          刷新
+        <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="voice-refresh" disabled={busy} onClick={() => void load()} aria-label="刷新">
+          <Icon name="refresh" size="sm" />
         </button>
         <span className="muted voice-engine" data-testid="voice-engine">
           {info.engine === "" ? "引擎未记录" : `${info.engine}${info.engine_cloud ? " · 云端" : " · 本地"}`}
@@ -299,8 +325,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           const st = segStatus(info, s.label, heard, today);
           return (
           <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={current?.label === s.label ? "true" : undefined}>
-            <button className="ui-btn ui-btn--sm ui-btn--icon" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
-              ▶
+            <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
+              <Icon name="play" size="sm" />
             </button>
             <div className="voice-row-main">
               <div className="voice-row-head">
@@ -466,6 +492,19 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         <div className="notice" data-testid="voice-msg">
           <Icon name="info" size="sm" />
           {msg}
+        </div>
+      )}
+
+      {current !== null && (
+        <div className="voice-nowplaying" data-testid="voice-nowplaying">
+          <Icon name="wave" size="sm" />
+          <span className="voice-nowplaying-name">段 {current.label}</span>
+          <span className="voice-nowplaying-bar" aria-hidden="true">
+            <span style={{ transform: `scaleX(${pos.d > 0 ? Math.min(1, pos.t / pos.d) : 0})` }} />
+          </span>
+          <span className="voice-nowplaying-clock">
+            {formatAudioClock(pos.t)} / {formatAudioClock(pos.d)}
+          </span>
         </div>
       )}
 

@@ -1,0 +1,291 @@
+<!doctype html>
+<!-- D152 续：03.5 顺听面板选型 mock。只用将发货的 tokens/ui/style + 本目录 mock.css。
+     Playwright 改 body[data-scheme] 切换 now / A / A-fix / B，无页内脚本。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AVA · 03.5 顺听面板选型</title>
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/tokens.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/ui.css">
+  <link rel="stylesheet" href="../../../../desktop/src/renderer/style.css">
+  <link rel="stylesheet" href="./mock.css">
+</head>
+<body data-scheme="now">
+<div class="mock-label" id="scheme-label">现状</div>
+<div class="app">
+<header class="topbar">
+  <div class="topbar-row">
+    <span class="wordmark">AVA</span>
+    <span class="ui-badge ui-badge--warn">DEV BUILD</span>
+    <span class="repo">anime-video-agent-ava</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">侧栏</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">预览</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">刷新</button>
+  </div>
+</header>
+<div class="main">
+<nav class="left">
+  <div class="side-head">
+    <button class="ui-btn ui-btn--sm mock-new">＋ 新建一期</button>
+    <label class="ui-search"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input class="ui-input" placeholder="搜索期名" value=""></label>
+    <div class="side-head-row"><div class="ui-seg"><button aria-pressed="true">按时间</button><button>按工序</button></div><span class="ui-count">2</span></div>
+  </div>
+  <div class="ui-section">选题</div>
+  <button class="ui-row ep" aria-current="true">
+    <span class="ep-line"><span class="ep-name">2026-10-02-测试番-人物志-二</span><span class="ep-time">刚刚</span></span>
+    <span class="ep-step"><span class="ep-step-text">03.5 配音顺听 / 04 排片</span></span>
+  </button>
+  <button class="ui-row ep">
+    <span class="ep-line"><span class="ep-name">2026-10-01-测试番-人物志-一</span><span class="ep-time">刚刚</span></span>
+    <span class="ep-step"><span class="ui-badge">停机</span><span class="ep-step-text">02.5 人审改稿</span></span>
+  </button>
+</nav>
+<div class="splitter"></div>
+<section class="center conv-shell">
+  <div class="status">
+    <div class="status-step">03.5 配音顺听 / 04 排片</div>
+  </div>
+  <div class="session-head">
+    <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="折叠">−</button>
+    <span class="ui-badge">上下文约 4,443 字</span>
+    <span class="spacer"></span>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">素材模式</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">结束会话</button>
+  </div>
+  <div class="conv conv-stream">
+    <div class="ui-card decision">
+      <div class="ui-card-head"><span class="ui-card-title">停机点 03.5 配音顺听</span></div>
+      <div class="ui-card-sub">待审 · 创建于 2026-10-08T14:28:51Z</div>
+      <ul class="fingerprints"><li><code>03-audio/manifest.json</code> 377 字节</li></ul>
+      <div class="ui-card-actions">
+        <button class="ui-btn">批准</button>
+        <button class="ui-btn">打回…</button>
+      </div>
+    </div>
+  </div>
+  <div class="composer">
+    <textarea rows="2" placeholder="告诉 ava 要做什么（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="composer-row">
+      <span class="composer-target">2026-10-02-测试番-人物志-二</span>
+      <span class="spacer"></span>
+      <button class="ui-btn ui-btn--primary ui-btn--sm">发送</button>
+    </div>
+  </div>
+</section>
+<div class="splitter"></div>
+<section class="preview">
+  <div class="preview-switch">
+    <button class="ui-btn ui-btn--ghost preview-switch-btn">
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8h1.5M4.75 5.5v5M7.25 3v10M9.75 5v6M12.25 7v2"/></svg>
+      <span class="preview-switch-label">03-audio</span>
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>
+    </button>
+  </div>
+
+  <!-- 现状：现有 VoicePanel 类名与结构，一字不改形状 -->
+  <div class="seg-panel voice-panel" data-only="now">
+    <div class="toolbar">
+      <button class="ui-btn ui-btn--sm">顺序播放</button>
+      <button class="ui-btn ui-btn--sm">停</button>
+      <button class="ui-btn ui-btn--sm">刷新</button>
+      <span class="muted voice-engine">qwen3_tts · 本地</span>
+    </div>
+    <div class="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
+    <div class="voice-list">
+      <div class="voice-row" aria-current="true">
+        <button class="ui-btn ui-btn--sm ui-btn--icon" aria-label="播放段 1">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 1</span><span class="ui-badge ui-badge--accent">播放中</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">搜查官死后，二十区的血腥暂时平息。妹妹搬来和她同住，她学着像个姐姐那样帮妹妹修剪头发，在店里和同事斗嘴争吵。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 2</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">看着妹妹捡回来的受伤雏鸟，她站在窗边出神。当年父亲也曾带着他们姐弟救过这样一只小鸟，叮嘱她作为姐姐要好好教导弟弟。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 3</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">为了守住高中生的普通日常，她强忍着生理上的排斥，硬生生把朋友送来的便当咽进胃里。即使吃人类食物会损伤身体，她也不愿放弃那一点温度。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 4</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">但这层勉强维系的宁静很快被暴风雨撕碎。激进组织为了追查一个失踪的人，一路搜到二十区。踹开咖啡店大门的，竟然就是她朝思暮想的弟弟。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 5</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">几年未见的重逢没有半分温情。弟弟当众将她按在地上，嘲笑她和人类混在一起过家家太软弱，甚至唾骂死去的父亲是个懦夫。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon">▶</button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 6</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">至亲的践踏与失去同伴的无力，像耳光抽在她脸上。咖啡店构筑的避风港一夜崩塌，她第一次意识到，自己什么都保护不了。</div>
+        </div>
+      </div>
+    </div>
+    <details class="voice-grammar"><summary class="ui-section">按文法录入（终端 /voice 同一文法）</summary></details>
+    <details class="hetero"><summary class="ui-section">多音字预检（10 个字，只读，仅供关注）</summary></details>
+    <div class="voice-foot">
+      <span class="muted">当前没有待重配的段</span>
+      <span class="voice-foot-sp"></span>
+      <button class="ui-btn ui-btn--primary" disabled>只重配这 0 段</button>
+    </div>
+  </div>
+
+  <!-- A：行列表。全文仍在，去表格线，工具栏改 ghost，换种子悬停才出，底栏加迷你播放条 -->
+  <div class="seg-panel voice-panel vp-a" data-only="A">
+    <div class="toolbar">
+      <button class="ui-btn ui-btn--ghost ui-btn--sm" aria-label="顺序播放"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg>顺序播放</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="停"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="刷新"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.5v3.25H10"/></svg></button>
+      <span class="voice-engine">qwen3_tts · 本地</span>
+    </div>
+    <div class="muted voice-hint">选中读错的字就地记下；攒够了在底部只重配这些段。</div>
+    <div class="voice-list">
+      <div class="voice-row" aria-current="true">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play" aria-label="播放段 1"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 1</span><span class="ui-badge ui-badge--accent">播放中</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">搜查官死后，二十区的血腥暂时平息。<mark class="voice-mark">妹妹</mark>搬来和她同住，她学着像个姐姐那样帮妹妹修剪头发，在店里和同事斗嘴争吵。</div>
+          <div class="ui-popover voice-fix voice-fix-demo">
+            <span>「妹妹」应读</span>
+            <span><input class="ui-input voice-fix-input" value="mei4 mei5"></span>
+            <span>改法</span>
+            <span class="ui-seg"><button aria-pressed="true">拼音直注</button><button>同音字</button><button>英文改写</button></span>
+            <span>范围</span>
+            <span class="ui-seg"><button aria-pressed="true">本段 1</button><button>本期</button><button>全局</button></span>
+            <span>核对</span>
+            <span class="voice-ok">读音合法</span>
+            <span></span>
+            <span class="voice-fix-actions"><button class="ui-btn ui-btn--sm ui-btn--primary">记下</button><button class="ui-btn ui-btn--ghost ui-btn--sm">取消</button></span>
+          </div>
+        </div>
+      </div>
+      <div class="voice-row is-hover">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 2</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">看着妹妹捡回来的受伤雏鸟，她站在窗边出神。当年父亲也曾带着他们姐弟救过这样一只小鸟，叮嘱她作为姐姐要好好教导弟弟。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 3</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">为了守住高中生的普通日常，她强忍着生理上的排斥，硬生生把朋友送来的便当咽进胃里。即使吃人类食物会损伤身体，她也不愿放弃那一点温度。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 4</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">但这层勉强维系的宁静很快被暴风雨撕碎。激进组织为了追查一个失踪的人，一路搜到二十区。踹开咖啡店大门的，竟然就是她朝思暮想的弟弟。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 5</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">几年未见的重逢没有半分温情。弟弟当众将她按在地上，嘲笑她和人类混在一起过家家太软弱，甚至唾骂死去的父亲是个懦夫。</div>
+        </div>
+      </div>
+      <div class="voice-row">
+        <button class="ui-btn ui-btn--sm ui-btn--icon vp-play"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg></button>
+        <div class="voice-row-main">
+          <div class="voice-row-head"><span>段 6</span><span class="seg-actions"><button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button></span></div>
+          <div class="voice-row-text">至亲的践踏与失去同伴的无力，像耳光抽在她脸上。咖啡店构筑的避风港一夜崩塌，她第一次意识到，自己什么都保护不了。</div>
+        </div>
+      </div>
+    </div>
+    <div class="voice-nowplaying">
+      <svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8h1.5M4.75 5.5v5M7.25 3v10M9.75 5v6M12.25 7v2"/></svg>
+      <span class="voice-nowplaying-name">段 1</span>
+      <span class="voice-nowplaying-bar"><span></span></span>
+      <span>0:04 / 0:12</span>
+    </div>
+    <details class="voice-grammar"><summary class="ui-section">按文法录入</summary></details>
+    <details class="hetero"><summary class="ui-section">多音字预检（10）</summary></details>
+    <div class="voice-foot">
+      <span class="muted">当前没有待重配的段</span>
+      <span class="voice-foot-sp"></span>
+      <button class="ui-btn ui-btn--primary" disabled>只重配这 0 段</button>
+    </div>
+  </div>
+
+  <!-- B：索引行 + 详情（ZCode PreviewPane：树 / 预览）。全文不再平铺 -->
+  <div class="seg-panel voice-panel vp-b" data-only="B">
+    <div class="toolbar">
+      <button class="ui-btn ui-btn--ghost ui-btn--sm"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg>顺序播放</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="停"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="刷新"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.5v3.25H10"/></svg></button>
+      <span class="muted voice-engine">qwen3_tts · 本地</span>
+    </div>
+    <div class="voice-split">
+      <div class="voice-index">
+        <button class="ui-row" aria-current="true"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 1</span><span class="ui-row-meta">0:12</span><span class="ui-badge ui-badge--accent">播放中</span></button>
+        <button class="ui-row"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 2</span><span class="ui-row-meta">0:14</span></button>
+        <button class="ui-row"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 3</span><span class="ui-row-meta">0:16</span></button>
+        <button class="ui-row"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 4</span><span class="ui-row-meta">0:18</span></button>
+        <button class="ui-row"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 5</span><span class="ui-row-meta">0:15</span></button>
+        <button class="ui-row"><svg class="ui-icon ui-icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg><span class="ui-row-title">段 6</span><span class="ui-row-meta">0:13</span></button>
+      </div>
+      <div class="voice-detail">
+        <div class="voice-detail-head">
+          <strong>段 1</strong>
+          <span class="ui-badge ui-badge--accent">播放中</span>
+          <span class="spacer"></span>
+          <button class="ui-btn ui-btn--ghost ui-btn--sm">换种子</button>
+        </div>
+        <p class="voice-detail-text">搜查官死后，二十区的血腥暂时平息。<mark class="voice-mark">妹妹</mark>搬来和她同住，她学着像个姐姐那样帮妹妹修剪头发，在店里和同事斗嘴争吵。</p>
+        <div class="voice-detail-player">
+          <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.25v9.5L12.5 8z"/></svg>
+          <span class="voice-detail-bar"><span></span></span>
+          <span>0:04 / 0:12</span>
+        </div>
+        <div class="ui-popover voice-fix voice-fix-demo">
+          <span>「妹妹」应读</span>
+          <span><input class="ui-input voice-fix-input" value="mei4 mei5"></span>
+          <span>改法</span>
+          <span class="ui-seg"><button aria-pressed="true">拼音直注</button><button>同音字</button><button>英文改写</button></span>
+          <span>范围</span>
+          <span class="ui-seg"><button aria-pressed="true">本段 1</button><button>本期</button><button>全局</button></span>
+          <span>核对</span>
+          <span class="voice-ok">读音合法</span>
+          <span></span>
+          <span class="voice-fix-actions"><button class="ui-btn ui-btn--sm ui-btn--primary">记下</button><button class="ui-btn ui-btn--ghost ui-btn--sm">取消</button></span>
+        </div>
+      </div>
+    </div>
+    <details class="voice-grammar"><summary class="ui-section">按文法录入</summary></details>
+    <div class="voice-foot">
+      <span class="muted">当前没有待重配的段</span>
+      <span class="voice-foot-sp"></span>
+      <button class="ui-btn ui-btn--primary" disabled>只重配这 0 段</button>
+    </div>
+  </div>
+
+  <div class="timeline">
+    <div class="timeline-head">
+      <button class="ui-btn ui-btn--ghost ui-btn--sm">时间线</button>
+      <span class="ui-badge">作业 0</span>
+      <span class="ui-badge">事件 1</span>
+    </div>
+  </div>
+</section>
+</div>
+</div>
+</body>
+</html>
