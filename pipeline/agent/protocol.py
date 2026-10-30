@@ -1330,9 +1330,10 @@ def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
         except model_switch.ModelSwitchError as exc:
             writer.send({"t": "command_result", "name": name, "ok": False, "text": str(exc), **tail})
             return
+        info = _model_info(host, ep_dir, status)
         writer.send({"t": "command_result", "name": name, "ok": True, "text": f"{len(items)} 个模型",
-                     "items": items, "efforts": list(model_switch.EFFORTS),
-                     **_model_info(host, ep_dir, status), **tail})
+                     "items": items, "efforts": list(model_switch.supported_efforts(info.get("model"))),
+                     **info, **tail})
         return
     arg = str(frame.get("arg") or "").strip()
     if not arg:

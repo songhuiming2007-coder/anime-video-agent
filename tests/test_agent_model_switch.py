@@ -116,6 +116,59 @@ def test_list_models_unauthenticated_reads_configured_base_url(tmp_path: Path, e
     assert ms.list_models_unauthenticated(tmp_path) == ["claude-sonnet-4-6", "devin/swe-2"]
 
 
+# ---- D154：每模型 effort 支持集（compact.json models[].efforts）----
+
+
+def _write_compact_models(tmp_path: Path, models: dict) -> None:
+    d = tmp_path / "config" / "agent"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "compact.json").write_text(json.dumps({"models": models}), encoding="utf-8")
+
+
+def test_supported_efforts_table_and_fallback(tmp_path: Path, monkeypatch) -> None:
+    _write_compact_models(tmp_path, {
+        "gemini-3.8-flash-high": {"window": 1, "efforts": ["none", "low", "medium", "high"]},
+        "devin/swe-2": {"window": 1, "efforts": ["none"]},
+    })
+    monkeypatch.setattr(llm_mod.paths, "ROOT", tmp_path)
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    assert ms.supported_efforts("gemini-3.8-flash-high") == ("none", "low", "medium", "high")
+    assert ms.supported_efforts("devin/swe-2") == ("none",)
+    assert ms.supported_efforts("not-in-table") == ms.EFFORTS  # 表没记 → 全档
+
+
+def test_clamp_effort_nearest_fallback(tmp_path: Path, monkeypatch) -> None:
+    _write_compact_models(tmp_path, {
+        "m": {"window": 1, "efforts": ["none", "low", "medium", "high"]},
+        "none-only": {"window": 1, "efforts": ["none"]},
+        "image": {"window": 1, "efforts": ["none", "minimal", "high"]},
+    })
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    # 向上：minimal 不在 → low（不是 high）
+    assert ms.clamp_effort("m", "minimal") == "low"
+    # 向上：xhigh 不在 → 没有更高 → 向下 high
+    assert ms.clamp_effort("m", "xhigh") == "high"
+    # 不吃 effort：随便什么都 → none
+    assert ms.clamp_effort("none-only", "high") == "none"
+    assert ms.clamp_effort("none-only", "low") == "none"
+    # image 只两档：medium 不在 → 向上 high
+    assert ms.clamp_effort("image", "medium") == "high"
+    # 原样通过
+    assert ms.clamp_effort("m", "high") == "high"
+
+
+def test_check_effort_clamps_and_warns(tmp_path: Path, monkeypatch) -> None:
+    _write_compact_models(tmp_path, {"m": {"window": 1, "efforts": ["none", "low", "medium", "high"]}})
+    monkeypatch.setattr("pipeline.agent.compact.paths.ROOT", tmp_path)
+    assert ms.check_effort("xhigh", model="m") == "high"
+    assert ms.last_warn and "已降为 high" in ms.last_warn
+    assert ms.check_effort("high", model="m") == "high"
+    assert ms.last_warn is None  # 原样通过不留 warn
+    # 非法名照旧拒
+    with pytest.raises(ms.ModelSwitchError, match="推理强度只能"):
+        ms.check_effort("bogus", model="m")
+
+
 def test_list_models_unauthenticated_failures(tmp_path: Path, endpoint) -> None:  # noqa: F811
     # 无配置 → 不猜一份列表
     with pytest.raises(ms.ModelSwitchError, match="base_url"):
@@ -275,7 +328,7 @@ def _notices(proc, code: str) -> list[dict]:
 def test_protocol_model_and_thinking_commands(world, endpoint, tmp_path) -> None:  # noqa: F811
     root, episode = world
     (root / "config" / "agent" / "compact.json").write_text(json.dumps({
-        "models": {"mock": {"window": 1000, "reliable_ratio": 1.0}, "kimi-k3": {"window": 2000, "reliable_ratio": 1.0}},
+        "models": {"mock": {"window": 1000, "reliable_ratio": 1.0}, "kimi-k3": {"window": 2000, "reliable_ratio": 1.0, "efforts": ["none", "low", "medium", "high"]}},
     }), encoding="utf-8")
     endpoint.replies = [{"role": "assistant", "content": "好"}]
     proc = Protocol(root, endpoint, episode=str(episode), tmp=tmp_path)
@@ -311,7 +364,8 @@ def test_protocol_model_and_thinking_commands(world, endpoint, tmp_path) -> None
         proc.send({"t": "command", "name": "models", "arg": None, "rid": "r1"})
         res = proc.wait_for("command_result")
         assert res["ok"] and res["items"] == ["gemini-x", "kimi-k3", "mock"] and res["model"] == "kimi-k3"
-        assert "xhigh" in res["efforts"]
+        # D154：efforts 回该模型支持子集（kimi-k3 表里 low/medium/high，不含 xhigh）
+        assert res["efforts"] == ["none", "low", "medium", "high"]
         proc.send({"t": "command", "name": "thinking", "arg": "default", "rid": "r2"})
         res = proc.wait_for("command_result")
         assert res["ok"] and res["name"] == "thinking"

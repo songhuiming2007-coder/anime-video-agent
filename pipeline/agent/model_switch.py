@@ -28,6 +28,9 @@ if TYPE_CHECKING:
 
 # CLIProxyAPI 认的档位（apply.go：none → 关，auto → 动态，其余为档位名）
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
+# D154：档位排序（none 当 off；auto 特殊不参与就近匹配，放最后）。clamp_effort 照 Pi clampThinkingLevel：
+# 请求档不在支持集 → 先向上、再向下找最近可用档。
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
 EFFORT_LABELS = {
     "none": "关", "minimal": "极低", "low": "低", "medium": "中",
     "high": "高", "xhigh": "超高", "auto": "自动",
@@ -150,10 +153,47 @@ def check_model(name: str, available: list[str]) -> str:
     return name
 
 
-def check_effort(value: str) -> str:
+def supported_efforts(model: str | None) -> tuple[str, ...]:
+    """该模型 CPA 认的 effort 档（compact.json `models[].efforts` 实测自报集）；
+    表没记 / 配置坏了 → 全档（向后兼容，不猜一个子集）。"""
+    try:
+        from pipeline.agent.compact import load_compact_config
+        entry = load_compact_config().window_for(model or "")
+    except Exception:
+        return EFFORTS
+    return entry.efforts if entry is not None and entry.efforts else EFFORTS
+
+
+def clamp_effort(model: str | None, level: str) -> str:
+    """照 Pi clampThinkingLevel：level 不在该模型支持集 → 先向上、再向下找最近可用档。"""
+    supported = supported_efforts(model)
+    if level in supported:
+        return level
+    if level not in EFFORT_ORDER:
+        return supported[0] if supported else level
+    idx = EFFORT_ORDER.index(level)
+    for i in range(idx + 1, len(EFFORT_ORDER)):
+        if EFFORT_ORDER[i] in supported:
+            return EFFORT_ORDER[i]
+    for i in range(idx - 1, -1, -1):
+        if EFFORT_ORDER[i] in supported:
+            return EFFORT_ORDER[i]
+    return supported[0] if supported else level
+
+
+def check_effort(value: str, model: str | None = None) -> str:
+    """D154：三分支——非法名照旧拒；不在该模型支持集 → clamp 就近回落并留 warn（不静默吞）；
+    在支持集 → 原样。"""
+    global last_warn
+    last_warn = None  # 与 check_model 同一约定：本条命令的 warn 只看本条
     v = value.strip().lower()
     if v not in EFFORTS:
         raise ModelSwitchError(f"推理强度只能是 {' / '.join(EFFORTS)}（或 {RESET_WORD} 恢复默认），收到 {value!r}")
+    clamped = clamp_effort(model, v)
+    if clamped != v:
+        supported = " / ".join(supported_efforts(model))
+        last_warn = f"模型 {model or '默认'} 的推理强度只支持 {supported}——已降为 {clamped}"
+        return clamped
     return v
 
 
@@ -291,7 +331,7 @@ def run_command(
         return new, text
     if cmd == "/thinking":
         if not arg:
-            levels = " / ".join(f"{e}（{EFFORT_LABELS[e]}）" for e in EFFORTS)
+            levels = " / ".join(f"{e}（{EFFORT_LABELS[e]}）" for e in supported_efforts(info["model"]))
             return override, (
                 f"当前推理强度：{_effort_text(info['reasoning_effort'], info['effort_source'])}\n"
                 f"可选：{levels}\n切换：/thinking <档>；恢复默认：/thinking default（只影响本会话）"
@@ -300,9 +340,12 @@ def run_command(
             new = replace(override, reasoning_effort=None)
             after = describe(cfg, new, purpose)
             return new, f"已恢复默认推理强度：{_effort_text(after['reasoning_effort'], after['effort_source'])}"
-        effort = check_effort(arg)
+        effort = check_effort(arg, model=info["model"])
         new = replace(override, reasoning_effort=effort)
-        return new, f"本会话推理强度设为 {effort}（{EFFORT_LABELS[effort]}，下一轮起生效）"
+        text = f"本会话推理强度设为 {effort}（{EFFORT_LABELS[effort]}，下一轮起生效）"
+        if last_warn:
+            text += f"\n{last_warn}"
+        return new, text
     raise ModelSwitchError(f"未知命令 {cmd}")
 
 
