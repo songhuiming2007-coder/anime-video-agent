@@ -1,0 +1,40 @@
+/* D152 续：新建一期选型。基座是 renderer tokens/ui/style。 */
+.main {
+  grid-template-columns: 240px 8px minmax(0, 1fr) 8px minmax(340px, 0.9fr);
+}
+.mock-label {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 20;
+  padding: 2px 10px; border-radius: var(--radius-pill);
+  background: var(--overlay-bg); color: var(--overlay-fg);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+[data-only] { display: none; }
+body[data-scheme="now"] [data-only="now"],
+body[data-scheme="A"] [data-only="A"],
+body[data-scheme="B"] [data-only="B"] { display: flex; flex-direction: column; }
+
+body[data-scheme="now"] .mock-new[data-only="now"] { display: inline-flex; width: 100%; }
+body[data-scheme="A"] .proj-new[data-only="A"] { display: flex; }
+body[data-scheme="B"] .side-plus[data-only="B"] { display: inline-flex; }
+body[data-scheme="B"] .new-pop[data-only="B"] { display: flex; flex-direction: column; }
+
+body[data-scheme="now"] .new-episode-form[data-only="now"],
+body[data-scheme="A"] .new-episode-form[data-only="A"] { display: flex; flex-direction: column; }
+body[data-scheme="A"] .new-episode-form .ui-btn { align-self: start; }
+
+.new-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  padding: var(--space-2);
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+}
+.side-head { position: relative; }
+.side-plus { width: var(--control-h); padding: 0; }
