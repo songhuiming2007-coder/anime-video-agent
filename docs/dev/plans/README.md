@@ -55,6 +55,7 @@
 | [D103 ② 番池素材的云端打标命令](2026-10-17-library-captions-cloud-spec.md) | D103, D107 | ADR-0016 | **已施工·机检通过**（2026-10-17；`cloud lib-push / lib-captions / lib-pull`，变异 4/4）；待人：下次租卡真跑一次 |
 | [D127 SP 集键放宽到 2–3 位](2026-10-20-sp-key-three-digits-spec.md) | D127 | ADR-0010 | **已施工·机检通过**（2026-10-20，变异 6/6）；待人：真实登记 SP100–SP105 并走完切镜头 / 云端打标 / 排片 |
 | [D122 网页截图素材入库：三方案](2026-10-20-screenshot-asset-options.md) | D122 | ADR-0021, ADR-0030, ADR-0032 | 人选 A；**已施工·机检与真实冒烟通过**（2026-10-20，变异 6/6）；待人：AVA 里实截一次（门槛人定维持） |
+| [D152 续：桌面 UI 每日施工图](2026-10-30-desktop-ui-daily.md) | D152 | Spec 14 | **天天看的壳已过一轮人选**（2026-10-30）。每天读该文件 §四「下一处」做一项。原盘点 [2026-10-25-desktop-ui-zcode-alignment.md](2026-10-25-desktop-ui-zcode-alignment.md) |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
