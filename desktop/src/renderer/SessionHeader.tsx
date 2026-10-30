@@ -285,10 +285,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     setEffortOpen(false);
   }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // 取列表走纯读的 conv.models（不在点击纪律内：它不改任何设置）。
-  // D147：会话未起（none）时没有进程可取列表——跳过调用、留空列表，popover 只留自定义输入区。
-  // D151：失败行里「重试」重新调一次。
+  // D153：会话未起（none）时也照发——host 无 s.proc 时降级经 PROBE_MODEL_LIST 直连代理取列表，
+  // 进程在时透传 core；代理不可达回 ok:false，popover 显示失败行 + 「重试」（D151）。
   const fetchModels = () => {
-    if (phase === "none") { setModels([]); setErr(null); return; }
     void rpc.call<{ ok?: boolean; text?: string; items?: string[] }>("conv.models", { convKey }).then(
       (res) => {
         setModels(res.ok ? res.items ?? [] : []);

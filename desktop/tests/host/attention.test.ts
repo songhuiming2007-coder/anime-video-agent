@@ -51,6 +51,7 @@ async function session() {
     isActive: () => true,
     canReadApprovals: () => true,
     killGroup: swallow,
+    listProxyModels: async () => ({ ok: false, text: "no proxy" }),
     groupAlive: () => false,
     changed: swallow,
     timing: { readyMs: 5000, coalesceMs: 0, settleMs: 60_000, sendAckMs: 1000, answerAckMs: 1000, endWaitMs: 100, killGraceMs: 100 },

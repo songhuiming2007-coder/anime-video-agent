@@ -101,6 +101,31 @@ def test_list_models_reads_proxy(endpoint) -> None:  # noqa: F811
         ms.list_models(LLMConfig(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"))
 
 
+def _write_agent_cfg(root: Path, name: str, payload: dict) -> None:
+    d = root / "config"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_list_models_unauthenticated_reads_configured_base_url(tmp_path: Path, endpoint, monkeypatch) -> None:  # noqa: F811
+    # D153：无会话进程时走这条路——不带 auth 也能拿代理列表（D150 实测）。base_url 只从配置读（local 优先）。
+    _write_agent_cfg(tmp_path, "agent.json", {"base_url": "http://unused/v1", "model": "m", "api_key_env": "X"})
+    _write_agent_cfg(tmp_path, "agent.local.json", {"base_url": endpoint.url, "model": "m", "api_key_env": "X"})
+    endpoint.models = ["devin/swe-2", "claude-sonnet-4-6", "devin/swe-2"]
+    monkeypatch.delenv("X", raising=False)  # 不读密钥也能取列表
+    assert ms.list_models_unauthenticated(tmp_path) == ["claude-sonnet-4-6", "devin/swe-2"]
+
+
+def test_list_models_unauthenticated_failures(tmp_path: Path, endpoint) -> None:  # noqa: F811
+    # 无配置 → 不猜一份列表
+    with pytest.raises(ms.ModelSwitchError, match="base_url"):
+        ms.list_models_unauthenticated(tmp_path)
+    # 代理拒连 → 如实失败
+    _write_agent_cfg(tmp_path, "agent.local.json", {"base_url": "http://127.0.0.1:9/v1", "model": "m", "api_key_env": "X"})
+    with pytest.raises(ms.ModelSwitchError, match="取模型列表失败"):
+        ms.list_models_unauthenticated(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # 请求体与默认配置
 # ---------------------------------------------------------------------------

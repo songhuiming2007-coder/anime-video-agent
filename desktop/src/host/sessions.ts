@@ -87,6 +87,8 @@ export interface SessionDeps {
   isActive: (epKey: string) => boolean;
   /** 该期此刻能否读对象库（capApprovals && reach === "ok"）；§2.7 第 4 条 */
   canReadApprovals: (epKey: string) => boolean;
+  /** D153：无会话进程时 conv.models 的降级取列表（service 默认实现：PROBE_MODEL_LIST spawn）；测试注入 */
+  listProxyModels: (repoRoot: string) => Promise<CommandResult>;
   /** 进程组清理与存活探测（§2.10） */
   killGroup: (pid: number) => void;
   groupAlive: (pid: number) => boolean;
@@ -407,6 +409,13 @@ export class SessionManager {
       this.fail("E_BAD_REQUEST", `${name} 不许带 arg`);
     }
     const live = this.activeOf(key);
+    // D153：models 是纯读列表——会话未启动时不需要进程，降级经 PROBE_MODEL_LIST 取代理列表（D147 曾在此置空；
+    // host 不出网，实际 HTTP 在 core 探针里）。进程在时照旧透传 core（core 顺带返回 efforts，降级拿不到就缺省）。
+    if ((!live || !live.proc) && name === "models") {
+      const repoRoot = this.deps.repoRoot();
+      if (!repoRoot) this.fail("E_UNREACHABLE", "仓库未就绪");
+      return this.deps.listProxyModels(repoRoot);
+    }
     // D147：会话未启动时 model / thinking 存 pending（下一条 send 起进程后先下发）；其余命令仍要活进程。
     // arg="default" 是清 pending（不记值）；core 语义不变（活进程时照旧下发恢复默认）
     if ((!live || !live.proc) && (name === "model" || name === "thinking") && arg !== null) {

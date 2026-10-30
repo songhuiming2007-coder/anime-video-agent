@@ -36,6 +36,8 @@ export type Template =
   // Spec 10 S8-R3：密钥探测与钥匙串读取（短命令，规则同现状）
   | "PROBE_KEY_ENV"
   | "KEYCHAIN_READ"
+  // D153：无会话进程时 conv.models 的降级取列表（core 读生效配置的 base_url、直连代理 /models）
+  | "PROBE_MODEL_LIST"
   // Spec 15 §2.7：web 检索链上声明的密钥变量名（短命令，同 PROBE_KEY_ENV）
   | "PROBE_WEB_KEY_ENVS"
   // Spec 11 §3.4：02.5 编辑器 / 03.5 顺听 / 人时（S8-R13 闭集）
@@ -120,6 +122,7 @@ export interface TemplateArgs {
   PROBE_KEY_ENV: Record<string, never>;
   /** Spec 10 §2.9：账户名 = core 回答的变量名 */
   KEYCHAIN_READ: { envName: string };
+  PROBE_MODEL_LIST: Record<string, never>;
   PROBE_WEB_KEY_ENVS: Record<string, never>;
   // ---- Spec 11 §3.4 / Spec 12 §3.5 ----
   /** mtimeNs 为十进制字符串（沿用规则 8/9）；`-1/-1` 断言文件不存在（从草稿新建） */
@@ -290,6 +293,14 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       return {
         argv: [py, "-c", "import sys; from pipeline.agent.web import web_key_env_names; sys.stdout.write(''.join(n + '\\n' for n in web_key_env_names()))"],
         timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
+      };
+    case "PROBE_MODEL_LIST":
+      // D153：core 内读生效配置的 base_url 并无 auth 直连代理 GET /models（D150 实测可用）；
+      // host/ 纪律禁止 fetch/node:http——出网只能经 spawn。stdout 每行一个模型 ID；失败 → stderr + 非零退出码
+      return {
+        argv: [py, "-c", "import sys; from pipeline.agent.model_switch import list_models_unauthenticated; sys.stdout.write(''.join(m + '\\n' for m in list_models_unauthenticated()))"],
+        timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
+        stdoutMax: SESSIONS_STDOUT_MAX_BYTES,
       };
     case "KEYCHAIN_READ": {
       const { envName } = args as TemplateArgs["KEYCHAIN_READ"];

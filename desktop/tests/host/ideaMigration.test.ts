@@ -52,6 +52,7 @@ function harness(exitOnShutdown: boolean) {
     isActive: () => false,
     canReadApprovals: () => false,
     killGroup: () => undefined, // 进程组清理失灵：结束序列走完进程仍在
+    listProxyModels: async () => ({ ok: false, text: "no proxy" }),
     groupAlive: () => true,
     changed: () => undefined,
     timing: { readyMs: 2000, coalesceMs: 0, settleMs: 60_000, sendAckMs: 1000, answerAckMs: 1000, endWaitMs: 50, killGraceMs: 50 },
