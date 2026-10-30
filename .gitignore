@@ -37,3 +37,7 @@ __pycache__/
 desktop/node_modules/
 desktop/out/
 desktop/dist/
+# electron-vite / electron-builder 打包时往 desktop/ 根漏出的 bundle 产物（_colorize.js / client.js 等）；
+# 只挡顶层一层，src/ scripts/ e2e/ 等子目录不受影响
+desktop/*.js
+desktop/*.js.map
