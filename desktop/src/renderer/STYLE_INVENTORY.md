@@ -1,5 +1,7 @@
 # 桌面端组件风格盘点（D152）
 
+**续工**：每天按 [`docs/dev/plans/2026-10-30-desktop-ui-daily.md`](../../../docs/dev/plans/2026-10-30-desktop-ui-daily.md) §四「下一处」做，不要从本盘点表另起炉灶。
+
 **日期**：2026-10-25
 **基准**：`tokens.css`（ZCode 五层面 token，sha256 门禁锁定）+ `ui.css`（`ui-*` 类契约，冻结）+ `style.css`（业务区块）
 **ZCode 参照**：`/tmp/zcode`，commit `3c5b2276`（2026-10-20，浅克隆最新版；Spec 14 当时用 `29628c9`，task-row 已挪到 `project-sidebar/grouped/`）
