@@ -57,6 +57,8 @@
 
 ## 待改造清单
 
+**施工记录** 2026-10-30（VoicePanel 人选 A）：行列表皮肤。去 `.voice-row` 行间线、工具栏 `ui-btn--ghost`、换种子悬停/选中/焦点才出、行内 ▶ 改手绘 play 图标、底栏迷你播放条接 `audio.currentTime`（`scaleX`，VS-7）。RPC / 全文铺开 / 就地纠错卡不动。验证：vitest `voiceClock` + `visual` 36 绿；e2e TE-3 / D50-A S6 / D87 绿。
+
 **施工记录** 2026-10-25（P1–P3 批）：剩余 9 项全落。具体：
 
 - **HumanCards**：`.fingerprints` 列表 `gap: 2px`（与 `ui-kv`/ZCode 行距一致）；`.request-card-text` 补 `padding + bg-subtle + radius-md`（与同仓 `.conv-tool-cmd`/`.tail` 输出块同一形状，ZCode 代码块惯例）。

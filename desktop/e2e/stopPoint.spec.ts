@@ -149,6 +149,7 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   // 播音走 renderer 原生 <audio> + ava-media://（不打开外部播放器）
   await panel.getByTestId("seg-play").first().click();
   await expect(panel.getByTestId("voice-audio")).toHaveAttribute("src", /^ava-media:\/\/episodes\/.*seg-01\.wav$/);
+  await expect(panel.getByTestId("voice-nowplaying")).toContainText("段 1");
 
   // 解析 → 确认卡 → 确认落盘（D50-A S6：文法录入收进「按文法录入」折叠区）
   await panel.getByTestId("voice-grammar").click();

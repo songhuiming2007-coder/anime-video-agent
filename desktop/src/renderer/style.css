@@ -266,16 +266,19 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .request-card-text { margin: 0; padding: var(--space-2) var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-normal); }
 .request-card-fields summary { cursor: pointer; font-size: var(--text-sm); }
 
-/* D50-A S6：顺听面板段落表与就地纠错（只用 token；ui.css 冻结） */
+/* D50-A S6：顺听面板段落表与就地纠错（只用 token；ui.css 冻结）。D152 A：去行间线、换种子悬停才出、底栏迷你播放条。 */
 .voice-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.voice-engine { margin-left: auto; white-space: nowrap; }
-.voice-hint { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); border-bottom: 1px solid var(--border); }
-.voice-list { flex: 1; min-height: 0; overflow: auto; }
-.voice-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.voice-engine { margin-left: auto; white-space: nowrap; color: var(--fg-subtle); }
+.voice-hint { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); color: var(--fg-subtle); }
+.voice-list { flex: 1; min-height: 0; overflow: auto; padding: var(--space-1); }
+.voice-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--space-1); padding: var(--space-2); border-radius: var(--radius-md); }
 .voice-row:hover { background: var(--bg-hover); }
 .voice-row[aria-current="true"] { background: var(--bg-selected); }
-.voice-row-head { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); min-height: 24px; }
-.voice-row-head .seg-actions { margin-left: auto; display: flex; gap: var(--space-1); }
+.voice-row > .ui-btn { color: var(--fg-muted); }
+.voice-row:hover > .ui-btn, .voice-row[aria-current="true"] > .ui-btn { color: var(--fg); }
+.voice-row-head { display: flex; align-items: center; gap: var(--space-2); color: var(--fg-subtle); font-size: var(--text-sm); min-height: 24px; }
+.voice-row-head .seg-actions { margin-left: auto; display: flex; gap: var(--space-1); visibility: hidden; }
+.voice-row:hover .seg-actions, .voice-row:focus-within .seg-actions, .voice-row[aria-current="true"] .seg-actions { visibility: visible; }
 .voice-row-text { margin-top: 2px; line-height: var(--leading-normal); cursor: text; user-select: text; }
 .voice-mark { background: var(--warn-surface); color: inherit; box-shadow: inset 0 -2px 0 var(--warn); border-radius: var(--radius-sm); }
 .voice-fix { position: static; margin-top: var(--space-2); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
@@ -294,7 +297,13 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .voice-grammar, .voice-panel .pending, .voice-panel .hetero { padding: var(--space-1) var(--space-3); border-top: 1px solid var(--border); }
 .voice-grammar > summary, .voice-panel .pending > summary, .voice-panel .hetero > summary { cursor: pointer; }
 .voice-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) 0; }
-.voice-foot { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm); }
+.voice-nowplaying { flex: none; display: flex; align-items: center; gap: var(--space-2); margin: 0 var(--space-2) var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); font-size: var(--text-sm); color: var(--fg-muted); }
+.voice-nowplaying .ui-icon { color: var(--fg); }
+.voice-nowplaying-name { color: var(--fg); font-weight: var(--weight-medium); }
+.voice-nowplaying-bar { flex: 1; height: 2px; border-radius: var(--radius-pill); background: var(--border); overflow: hidden; }
+.voice-nowplaying-bar > span { display: block; width: 100%; height: 100%; background: var(--accent-strong); transform: scaleX(0); transform-origin: left center; }
+.voice-nowplaying-clock { flex: none; font-variant-numeric: tabular-nums; }
+.voice-foot { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--bg-panel); font-size: var(--text-sm); }
 .voice-foot-sp { flex: 1; }
 /* D50-A S7：03.5 卡内打点 */
 .review-rating { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
