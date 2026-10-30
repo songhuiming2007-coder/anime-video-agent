@@ -57,6 +57,8 @@
 
 ## 待改造清单
 
+**施工记录** 2026-10-30（PreviewSwitcher 人选 A）：浮层去掉「本期文件」标题；触发文件名常规字重。分组留下。
+
 **施工记录** 2026-10-30（Composer/SessionHeader 人选 A）：停止改 ghost；LLM 已连接收成绿点 title。发送钮未动。
 
 **施工记录** 2026-10-30（NewEpisodeForm 人选 A）：「＋ 新建一期」改 `ui-row proj-new`，与新建企划同一套；建期/建企划/建卷钮 `ui-btn--sm`，不再拉满侧栏。

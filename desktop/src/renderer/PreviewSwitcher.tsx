@@ -77,7 +77,6 @@ export function PreviewSwitcher({
       </button>
       {open && (
         <div className="ui-popover preview-switch-pop" data-testid="preview-switch-pop">
-          <div className="ui-popover-title">本期文件</div>
           {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
           {err !== null && <div className="muted">{err}</div>}
           {entries === null && err === null && <div className="muted">…</div>}
