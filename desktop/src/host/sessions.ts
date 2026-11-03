@@ -115,6 +115,8 @@ interface SendWaiter extends Pending<{ turnId: string; queued?: boolean }> {
 }
 
 interface SessionState {
+  /** 复合键 `${convKey}#${sid ?? "pending:<n>"}`——同 convKey 下可有多段（D157 多会话后台并存） */
+  stateKey: string;
   key: ConvKey;
   generation: string;
   phase: ConvPhase;
@@ -211,9 +213,18 @@ function SHUTDOWN_FRAME(): Record<string, unknown> {
   return { v: 1, t: "shutdown" };
 }
 
+/** D157：会话状态表键——`convKey` 下可挂多段（多会话后台并存），键 = `${convKey}#${sid ?? "pending:<n>"}`。
+ * sid 未定的「pending」占位段在拿到真实 sid（session_start 帧）后重键。 */
+function stateKeyOf(key: ConvKey, sid: string | null, pendingN: number): string {
+  return `${key}#${sid ?? `pending:${pendingN}`}`;
+}
+
 export class SessionManager {
   private readonly timing: SessionTiming;
-  private readonly states = new Map<ConvKey, SessionState>();
+  /** D157：键为 `stateKeyOf` 的复合键，不再直接是 ConvKey */
+  private readonly states = new Map<string, SessionState>();
+  /** D157：每个 convKey 人正在看的那一段（focused）。send / snapshot / quitState 归到这个键 */
+  private readonly focused = new Map<ConvKey, string>();
   /** D147：会话未启动（phase "none" / 无 proc）时预选的模型与推理强度；send 起进程后先下发。生命周期随 convKey，进程退出不丢（重开照样带） */
   private readonly pendingByKey = new Map<ConvKey, { model: string | null; effort: string | null }>();
   /** D98：每条会话上一帧 stop_points 的内容；停机点没变（每回合都会重发一帧）就不再叫人 */
@@ -230,10 +241,28 @@ export class SessionManager {
     throw new SessionError(code, message);
   }
 
+  /** D157：convKey 当前 focused 的那段（不限 phase——snapshot 要能看到 exited 与它的条目）。 */
+  private focusedState(key: ConvKey): SessionState | null {
+    const fk = this.focused.get(key);
+    return fk ? this.states.get(fk) ?? null : null;
+  }
+
+  /** D157：focused 且还没退出的那段（写操作/懒启动用）。 */
+  private activeFocused(key: ConvKey): SessionState | null {
+    const s = this.focusedState(key);
+    return s && s.phase !== "exited" && s.phase !== "none" ? s : null;
+  }
+
+  /** D157：convKey 下 sid 的活 state（没有 = 未起或已退出） */
+  private stateOf(key: ConvKey, sid: string): SessionState | null {
+    for (const s of this.states.values()) if (s.key === key && s.sid === sid && s.phase !== "exited") return s;
+    return null;
+  }
+
   // ---------------- 查询 ----------------
 
   snapshot(key: ConvKey): ConvSnapshot {
-    const s = this.states.get(key);
+    const s = this.focusedState(key);
     if (!s) {
       return {
         convKey: key,
@@ -263,6 +292,7 @@ export class SessionManager {
       settlePending: s.settle?.turnId ?? null,
       keyProblem: s.keyProblem,
       pending: this.pendingOf(key),
+      sid: s.sid,
     };
   }
 
@@ -273,9 +303,17 @@ export class SessionManager {
     return { ...(p.model !== null ? { model: p.model } : {}), ...(p.effort !== null ? { effort: p.effort } : {}) };
   }
 
+  /** D157：按 convKey 聚合（多段并存时任一活/任一 running、openRequests 求和） */
   summaries(): Map<ConvKey, { live: boolean; running: boolean; openRequests: number }> {
     const out = new Map<ConvKey, { live: boolean; running: boolean; openRequests: number }>();
-    for (const [key, s] of this.states) out.set(key, convSummary({ phase: s.phase, open: s.open }));
+    for (const s of this.states.values()) {
+      const cur = out.get(s.key) ?? { live: false, running: false, openRequests: 0 };
+      const c = convSummary({ phase: s.phase, open: s.open });
+      cur.live = cur.live || c.live;
+      cur.running = cur.running || c.running;
+      cur.openRequests += c.openRequests;
+      out.set(s.key, cur);
+    }
     return out;
   }
 
@@ -296,7 +334,7 @@ export class SessionManager {
 
   /** §2.7 第 3 条：service 在活跃期每次读对象库前取 readStart、读完并推完 episode.delta 后调用。 */
   onApprovalsRead(epKey: string, readStart: number): void {
-    const s = this.states.get(`ep:${epKey}` as ConvKey);
+    const s = this.focusedState(`ep:${epKey}` as ConvKey);
     if (!s?.settle || s.settle.stage !== "await-read") return;
     if (readStart <= s.settle.after) return;
     this.settleNow(s, false);
@@ -308,7 +346,9 @@ export class SessionManager {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
     if (text === "") this.fail("E_BAD_REQUEST", "消息为空");
+    // D157：发给当前 focused 那段；没有活段时 ensure 懒起一个（pending 或按 target.sid 恢复）
     const s = await this.ensure(key, target);
+    this.focused.set(key, s.stateKey);
     if (s.phase === "starting") await this.waitReady(s);
     // D79（照 Pi 的 steering）：回合在跑时照写 user_message，core 排队并回 queued；工具批之后送达模型
     if (s.phase !== "idle" && s.phase !== "running") this.fail("E_BUSY", "该会话正在启动或收尾");
@@ -354,13 +394,14 @@ export class SessionManager {
     return { v: 1, t: "command", name, arg: name === "scope" || name === "model" || name === "thinking" ? arg : null, rid };
   }
 
+  /** D157：resume 的语义 = 「把 focused 指到 target.sid 那段；没有活进程才懒起」。
+   * 别的段活着不拦（多会话并存）；同一 sid 已有活进程也只切 focused、不新起。 */
   async resume(key: ConvKey, target: SessionTarget): Promise<ConvSnapshot> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
-    const cur = this.states.get(key);
-    if (cur && cur.phase !== "exited") this.fail("E_BUSY", "该会话已有活进程");
     // idea 没有独立的 continue 模板：--idea 启动即恒恢复（Spec 18 §3.3）
-    await this.ensure(key, { ...target, mode: target.mode === "idea" ? "idea" : "continue" });
+    const s = await this.ensure(key, { ...target, mode: target.mode === "idea" ? "idea" : "continue" });
+    this.focused.set(key, s.stateKey);
     return this.snapshot(key);
   }
 
@@ -375,7 +416,7 @@ export class SessionManager {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     // 冻结顺序（§4.2）：打开集合 → 在途 → 参数校验 → 活进程 → 写。
     // ADR-0030：browser / 抓取不再出卡，会话卡上的原生确认框（§2.4 第 5 层）随之撤掉
-    const s = this.states.get(key);
+    const s = this.focusedState(key);
     const req = s?.openIds.get(requestId);
     if (!s || !req) this.fail("E_STALE", "该请求已关闭或不存在");
     if (s.answering.has(requestId)) this.fail("E_BUSY", "该请求已有答复在途");
@@ -408,7 +449,7 @@ export class SessionManager {
     } else if (arg !== null) {
       this.fail("E_BAD_REQUEST", `${name} 不许带 arg`);
     }
-    const live = this.activeOf(key);
+    const live = this.activeFocused(key);
     // D153：models 是纯读列表——会话未启动时不需要进程，降级经 PROBE_MODEL_LIST 取代理列表（D147 曾在此置空；
     // host 不出网，实际 HTTP 在 core 探针里）。进程在时照旧透传 core（core 顺带返回 efforts，降级拿不到就缺省）。
     if ((!live || !live.proc) && name === "models") {
@@ -436,10 +477,16 @@ export class SessionManager {
     return this.race(p, this.timing.sendAckMs, "命令结果未知（超时）");
   }
 
-  /** §2.10「结束会话」：shutdown → 等 SESSION_END_WAIT_MS → SIGTERM 会话 pid → 宽限 → SIGKILL 整组。 */
+  /** §2.10「结束会话」：focused 段的 shutdown → 等 → SIGTERM → 宽限 → SIGKILL 整组。 */
   async end(key: ConvKey): Promise<{ code: number | null; signal: string | null }> {
-    const s = this.states.get(key);
-    if (!s || !s.proc || s.phase === "exited") return { code: s?.exitedCode ?? null, signal: s?.exitedSignal ?? null };
+    const s = this.focusedState(key);
+    if (!s) return { code: null, signal: null };
+    return this.endState(s);
+  }
+
+  /** 结束单个 SessionState（§2.10 结束序列主体）。 */
+  private async endState(s: SessionState): Promise<{ code: number | null; signal: string | null }> {
+    if (!s.proc || s.phase === "exited") return { code: s.exitedCode, signal: s.exitedSignal };
     s.phase = "ending";
     this.writeFrame(s, SHUTDOWN_FRAME());
     const ended = await this.waitEnd(s, this.timing.endWaitMs);
@@ -460,24 +507,38 @@ export class SessionManager {
     return this.endAndWait(key);
   }
 
-  /** D45：活会话的会话号（没有活进程、或新会话首回合前为 null）。 */
+  /** D157：人正在看的那段（focused）的会话号；没有活进程、或新会话首回合前为 null。 */
   liveSid(key: ConvKey): string | null {
-    const s = this.activeOf(key);
+    const s = this.activeFocused(key);
     return s ? s.sid : null;
   }
 
-  /** 有回合在跑（或正在启动/收尾）时为真：会话管理操作一律拒绝，不打断人正在看的回合。 */
+  /** D157：某 sid 是否有活进程（删除/同段双开判定） */
+  liveSidExists(key: ConvKey, sid: string): boolean {
+    return this.stateOf(key, sid) !== null;
+  }
+
+  /** 有回合在跑（或正在启动/收尾）时为真——D157 起只反映 focused 段；UI 侧的锁改用 `liveSidExists` 判段。 */
   isBusy(key: ConvKey): boolean {
-    const s = this.activeOf(key);
+    const s = this.activeFocused(key);
     return s !== null && s.phase !== "idle";
   }
 
-  /** 结束会话并等进程真正退出（§2.10 同一结束序列）。false = 宽限内仍未退出。 */
+  /** 结束 focused 段并等它退出（§2.10 同一结束序列）。false = 宽限内仍未退出。
+   * 要结束非 focused 段请调 `endSidAndWait`（多会话下删除别的段用）。 */
   async endAndWait(key: ConvKey): Promise<boolean> {
-    const s = this.states.get(key);
+    const s = this.focusedState(key);
     if (!s || s.phase === "exited") return true;
-    await this.end(key);
-    if ((s.phase as ConvPhase) === "exited") return true; // end() 期间 onExit 已把它改成 exited（TS 的收窄看不到）
+    await this.endState(s);
+    if ((s.phase as ConvPhase) === "exited") return true; // endState 期间 onExit 已把它改成 exited
+    return (await this.waitEnd(s, this.timing.killGraceMs)) !== null;
+  }
+
+  /** D157：结束指定 sid 的段（删除别的会话时用——不先切 focused）。 */
+  async endSidAndWait(key: ConvKey, sid: string): Promise<boolean> {    const s = this.stateOf(key, sid);
+    if (!s || s.phase === "exited") return true;
+    await this.endState(s);
+    if ((s.phase as ConvPhase) === "exited") return true;
     return (await this.waitEnd(s, this.timing.killGraceMs)) !== null;
   }
 
@@ -489,11 +550,31 @@ export class SessionManager {
     this.reset(key);
   }
 
-  /** 清掉已退出进程的条目缓冲（重推空快照）；下一次发消息懒启动全新进程（D45「开新会话」同此）。 */
+  /** D157：「＋ 新会话」——只把 focused 指针清掉（旧段留在后台继续跑，下一条 send 起新段）。
+   * 与 `reset` 的区别：reset 要求旧段已退出并丢缓冲；blur 不碰活进程。 */
+  blur(key: ConvKey): void {
+    this.focused.delete(key);
+    this.pushSnapshot(key);
+  }
+
+  /** D157：删掉指定 sid 的已退出 state（删除会话后清场；活进程由 endSidAndWait 先结束）。 */
+  dropSid(key: ConvKey, sid: string): void {
+    for (const [sk, s] of [...this.states]) {
+      if (s.key !== key || s.sid !== sid) continue;
+      this.states.delete(sk);
+      if (this.focused.get(key) === sk) this.focused.delete(key);
+    }
+    this.pushSnapshot(key);
+  }
+
+  /** 清掉 focused 段的条目缓冲（重推空快照）；下一次发消息懒启动全新进程（D45「开新会话」同此）。
+   * D157：只清 focused 段；别的活段不受影响。 */
   reset(key: ConvKey): void {
-    const s = this.states.get(key);
+    const fk = this.focused.get(key);
+    const s = fk ? this.states.get(fk) : null;
     if (!s || s.phase !== "exited") return;
-    this.states.delete(key);
+    this.states.delete(s.stateKey);
+    this.focused.delete(key);
     this.pushSnapshot(key);
   }
 
@@ -538,13 +619,20 @@ export class SessionManager {
   // ---------------- 生命周期 ----------------
 
   private activeOf(key: ConvKey): SessionState | null {
-    const s = this.states.get(key);
-    return s && s.phase !== "exited" && s.phase !== "none" ? s : null;
+    return this.activeFocused(key);
   }
 
+  /** D157：按 target 找/起一段。`target.sid` 有活进程 → 返回它（只切 focused）；无活进程 → 起新 state。
+   * 新段的 stateKey 用 pending 占位（sid 未定）；`target.sid` 段用 `stateKeyOf(key, sid, 0)`。 */
   private async ensure(key: ConvKey, target: SessionTarget): Promise<SessionState> {
-    const existing = this.states.get(key);
-    if (existing && existing.phase !== "exited") return existing;
+    if (target.sid !== undefined) {
+      const live = this.stateOf(key, target.sid);
+      if (live) return live;
+    } else {
+      // 不带 sid：接着 focused 的活段（D157：多段并存时只有 focused 吃新消息）
+      const cur = this.activeFocused(key);
+      if (cur) return cur;
+    }
     // D81：`proj:` 键一律走企划会话模板（新开 / 继续由 cont 决定），不按 mode 落到期会话模板
     const t: SessionTemplate = key.startsWith("proj:") ? "SESSION_PROJECT"
       : target.mode === "idea" ? "SESSION_IDEA" : target.mode === "continue" ? "SESSION_CONTINUE" : "SESSION_NEW";
@@ -552,7 +640,9 @@ export class SessionManager {
     const repoRoot = this.deps.repoRoot();
     if (!repoRoot) this.fail("E_UNREACHABLE", "仓库未就绪");
     this.n += 1;
+    const stateKey = stateKeyOf(key, target.sid ?? null, this.n);
     const s: SessionState = {
+      stateKey,
       key,
       generation: `${this.deps.bootId}:${this.n}`,
       phase: "starting",
@@ -586,7 +676,7 @@ export class SessionManager {
       answerFeedback: new Map(),
       endWaiters: [],
     };
-    this.states.set(key, s);
+    this.states.set(stateKey, s);
     this.pushSnapshot(key);
     // 密钥（§2.9）：任一步失败照常 spawn、如实降级
     const extraEnv: Record<string, string> = {};
@@ -612,6 +702,7 @@ export class SessionManager {
     s.proc = proc;
     s.pid = proc.pid ?? null;
     this.append(s, { k: "spawned", at: this.deps.now(), mode: target.mode, pid: s.pid ?? -1 });
+    this.focused.set(key, stateKey); // D157：新起的段即当前段
     proc.onStdout((chunk) => {
       if (s.procGen === gen) this.onStdout(s, chunk);
     });
@@ -664,7 +755,18 @@ export class SessionManager {
 
   private onFrame(s: SessionState, f: OutFrame): void {
     this.append(s, { k: "frame", at: this.deps.now(), frame: f });
-    if (typeof f.sid === "string") s.sid = f.sid;
+    if (typeof f.sid === "string" && f.sid !== s.sid) {
+      // D157：pending 段的 stateKey 用占位符，拿到真实 sid（session_start 帧）后重键；focused 一并迁
+      const oldKey = s.stateKey;
+      s.sid = f.sid;
+      const newKey = stateKeyOf(s.key, f.sid, 0);
+      if (oldKey !== newKey) {
+        this.states.delete(oldKey);
+        s.stateKey = newKey;
+        this.states.set(newKey, s);
+        if (this.focused.get(s.key) === oldKey) this.focused.set(s.key, newKey);
+      }
+    }
     switch (f.t) {
       case "ready":
         s.readySeen = true;
