@@ -130,7 +130,7 @@ export type Segment =
       endAt: number | null;
     };
 
-/** 进折叠块的行（R4 ①）：工具、作业输出、卡片记录、系统注入，以及不是终稿的答复与回合中途送达的插话 */
+/** 进折叠块的行（R4 ①）：工具、作业输出、卡片记录、系统注入，以及不是终稿的答复 */
 const PROCESS_KINDS = new Set<ConvRow["k"]>(["tool", "log", "card", "injection"]);
 
 /** 连续 ≥2 条 bash 折成一组；其余原样 */
@@ -156,7 +156,8 @@ export function groupRuns(rows: readonly ConvRow[], indices: readonly number[]):
 
 /**
  * 把行序列切成回合段（R4 ①）。段 = 一条 user 行起，到该回合页脚（含）为止；页脚之后、下一条 user 之前的行（停机点等）
- * 归入该段的 tail。回合中途送达的插话（D79 steer：user 行紧跟在工具行之后、回合未结束）留在过程里，不另起一段。
+ * 归入该段的 tail。回合中途送达的插话（D79 steer：user 行紧跟在工具行之后、回合未结束）不另起一段，
+ * 但也进 tail 不进折叠块（T-20261103T091500Z：进过程会被回合折叠吞掉，答复落地后整条消息消失）。
  * 历史重建没有页脚：一条 user 行若跟在答复之后，即视为新一轮。第一条 user 之前的行是 loose（会话开头的提示等）。
  */
 export function turnSegments(rows: readonly ConvRow[], convRunning: boolean): Segment[] {
@@ -207,8 +208,8 @@ function finish(rows: readonly ConvRow[], t: { user: number; body: number[]; foo
   for (const i of t.body) {
     const r = rows[i];
     if (i === finalAnswer) tail.push(i);
-    else if (PROCESS_KINDS.has(r.k) || r.k === "user" || r.k === "assistant") process.push(i);
-    else tail.push(i);
+    else if (PROCESS_KINDS.has(r.k) || r.k === "assistant") process.push(i);
+    else tail.push(i); // steer 插话（body 里的 user 行）落这里：终稿上方常驻可见，不随过程折叠
   }
   const toolRows = process.map((i) => rows[i]).filter((r): r is ToolRow => r.k === "tool");
   const fails = toolRows.filter(isFail).length;

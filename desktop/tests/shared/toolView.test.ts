@@ -161,12 +161,12 @@ describe("R4 ① 回合切段", () => {
     expect([live[1].outcome, turnDefaultOpen(live[1]), foldLabel(live[1], 33_000)]).toEqual(["running", true, "工作中 23 秒"]);
     expect(turns(turnSegments(rows, false))[1].outcome).toBe("stopped");
   });
-  it("D79 插话：user 紧跟工具行、回合未结束 → 留在过程里，不另起一段", () => {
+  it("D79 插话：user 紧跟工具行、回合未结束 → 不另起一段；作为独立行留在答复上方（不进折叠过程，T-20261103T091500Z）", () => {
     const rows: ConvRow[] = [user("改第 3 段"), tool("bash", true), user("顺便看下第 4 段"), tool("bash", true), answer("都改了"), footer()];
     const segs = turns(turnSegments(rows, false));
     expect(segs).toHaveLength(1);
-    expect(segs[0].process).toEqual([{ k: "row", index: 1 }, { k: "row", index: 2 }, { k: "row", index: 3 }]);
-    expect(segs[0].tail).toEqual([4, 5]);
+    expect(segs[0].process).toEqual([{ k: "group", key: "g:1", indices: [1, 3] }]);
+    expect(segs[0].tail).toEqual([2, 4, 5]);
   });
   it("中途答复（D79 续轮）之后还有工具：它进过程，最后那条才是终稿", () => {
     const rows: ConvRow[] = [user("x"), answer("先这样"), tool("read_artifact", true), answer("终稿"), footer()];
