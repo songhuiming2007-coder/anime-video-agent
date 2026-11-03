@@ -1,7 +1,7 @@
 """状态卡组装器（Spec §1.3, §2.2, §6 PR5；Spec 3 §2.8 引导行）。
 
 输入：期目录与 EpisodeStatus。
-输出：注入 messages[0] 的紧凑状态卡字符串（目标 ≤ 400 字符）。
+输出：每轮独立 user 消息的紧凑状态卡字符串（目标 ≤ 400 字符）。
 纪律：
 1. 只放元数据，不放文件正文；
 2. 产物存在性只报阶段名 + ✓/✗，不写受限路径与内容；
@@ -75,7 +75,7 @@ def build_status_card(
     scope: str | None = None,
     project_dir: Path | str | None = None,
 ) -> str:
-    """构建注入 system prompt 的紧凑状态卡（目标 ≤ 400 字符）。
+    """构建每轮独立 user 消息的紧凑状态卡（目标 ≤ 400 字符）。
 
     D81 §6.3 ⑨：卷会话（`project_dir` 由宿主按树规则给出）首行加「企划 <企划> · 第 N 卷」，N 取卷表。
     """

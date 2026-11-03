@@ -505,8 +505,8 @@ def test_interrupt_during_auto_compaction_synthesizes_nothing(root, episode, mon
 
 # ---- PR4：idea 会话 ----
 
-def test_idea_auto_compaction_skips_card(root, monkeypatch):
-    """判据 14：idea 会话同一套触发与切片，跳过重注入（静态卡本就在 messages[0]；变异：照插卡 → 红）。"""
+def test_idea_auto_compaction_reinjects_card(root, monkeypatch):
+    """idea 会话压缩后重注入状态卡（常驻层不再含卡）。"""
     _cfg(root, **MID)
     monkeypatch.setenv("AVA_TEST_KEY", "k")
     replies = [_say("答" * 150) for _ in range(3)] + [_read_call("c1"), _say("好")]
@@ -525,7 +525,9 @@ def test_idea_auto_compaction_skips_card(root, monkeypatch):
                          tracker=tracker, root=root, ep_dir=None)
     assert script.order == ["main"] * 4 + ["summary", "main"]
     assert cp.is_marked(messages[1], cp.MARK_SUMMARY)
-    assert not any(cp.is_marked(m, cp.MARK_CARD) for m in messages)
+    cards = [m for m in messages if cp.is_marked(m, cp.MARK_CARD)]
+    assert len(cards) == 1
+    assert "[状态卡]" in cards[0]["content"]
     assert messages[1:] == _rebuild(root / "data" / "_idea", host.sid)
 
 
@@ -554,6 +556,40 @@ def test_rebuild_projection_and_repairs_after_compaction():
     repairs = slog.plan_repairs(unrepaired)
     fixed = [r for r in repairs if r["k"] == "repair_tool_results"]
     assert [item["tool_call_id"] for r in fixed for item in r["results"]] == ["new"]
+
+
+def test_rebuild_stamps_legacy_status_cards():
+    """旧 injection 卡无键：重建后补键，人的「[状态卡] …」不补；压缩尾部只认换行卡。"""
+    from pipeline.agent.compact import STATUS_CARD_KEY, drop_stale_status_cards, kept_tail
+
+    question = "[状态卡] 这行是什么意思？"
+    records = [
+        _rec(1, "session_start", schema=slog.SCHEMA),
+        _rec(2, "msg", turn_id="t1", origin="injection",
+             message={"role": "user", "content": "[状态卡]\n旧1"}),
+        _rec(3, "msg", turn_id="t1", origin="user",
+             message={"role": "user", "content": question}),
+        _rec(4, "msg", turn_id="t1", origin="injection",
+             message={"role": "user", "content": "[状态卡]\n旧2"}),
+        _rec(5, "compaction", summary=cp.summary_message("摘"),
+             card={"role": "user", "content": "[状态卡]\n压后"},
+             tail=[{"role": "user", "content": question}]),
+    ]
+    rebuilt = slog.rebuild_messages(slog.LoadedSession("s", records))
+    assert rebuilt[0]["content"].startswith("[上下文压缩]")
+    assert rebuilt[1].get(STATUS_CARD_KEY)
+    assert rebuilt[1]["content"] == "[状态卡]\n压后"
+    assert rebuilt[2]["content"] == question
+    assert not rebuilt[2].get(STATUS_CARD_KEY)
+    live = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "[状态卡]\n旧1", STATUS_CARD_KEY: True},
+        {"role": "user", "content": question},
+        {"role": "user", "content": "[状态卡]\n旧2", STATUS_CARD_KEY: True},
+    ]
+    dropped = drop_stale_status_cards(live)
+    assert [m["content"] for m in dropped] == ["S", question, "[状态卡]\n旧2"]
+    assert any(m["content"] == question for m in kept_tail(live, 1))
 
 
 # ---- 协议 ----

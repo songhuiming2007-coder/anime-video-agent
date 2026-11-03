@@ -17,6 +17,7 @@ from pipeline.agent.assembly import (
     assemble_resident_prompt,
     load_injected_doc,
     render_step_injection,
+    resident_token_budget,
     resolve_step_docs,
     step_key_of,
 )
@@ -110,6 +111,11 @@ def test_resolve_step_docs_routes():
     idea_default = resolve_step_docs("idea", "default")
     assert idea_default == []
 
+    # 5. asset 显式 _extends _base，工序 runbook 非空
+    asset_03 = resolve_step_docs("asset", "03")
+    assert asset_03
+    assert Path("docs/runbook/03-tts.md") in asset_03
+
 
 def test_assemble_resident_prompt_structure():
     """常驻层组装三源内容且字节级稳定。"""
@@ -130,8 +136,8 @@ def test_assemble_resident_prompt_structure():
 def test_session_context_tracker():
     """SessionContextTracker 首轮与警告去重行为。"""
     tracker = SessionContextTracker(resident_prompt="RESIDENT_PROMPT", active_scope="creative")
-    init_prompt = tracker.get_initial_system_prompt("STATUS_CARD")
-    assert init_prompt == "RESIDENT_PROMPT\n\n---\n\nSTATUS_CARD"
+    init_prompt = tracker.get_initial_system_prompt()
+    assert init_prompt == "RESIDENT_PROMPT"
     assert tracker.active_scope == "creative"
 
     # 警告去重测试
@@ -205,3 +211,39 @@ def test_n55_resident_refuses_outside_read_domain(tmp_path, capsys):
     assert "OK-DOC" in resident.content
     assert [rel for rel, _ in resident.doc_texts] == ["docs/ok.md"]
     assert capsys.readouterr().err.count("不在读域内") == 2
+
+
+@pytest.mark.parametrize("scope", ["creative", "pipeline", "idea", "asset", "project"])
+def test_resident_token_budget(scope: str):
+    """常驻层 token_estimate 不超过 assembly.json resident_budget；表必须存在。"""
+    cfg = json.loads((Path(__file__).resolve().parents[1] / "config" / "agent" / "assembly.json").read_text(encoding="utf-8"))
+    assert isinstance(cfg.get("resident_budget"), dict)
+    assert scope in cfg["resident_budget"]
+    resident = assemble_resident_prompt(scope)
+    budget = resident_token_budget(scope)
+    assert resident.token_estimate <= budget
+    # 预算贴着现状：施工前 creative ~2675 tok 的体积必须红
+    assert budget <= resident.token_estimate + 400
+
+
+@pytest.mark.parametrize("scope", ["creative", "pipeline", "idea", "asset", "project"])
+def test_resident_scope_size_caps(scope: str):
+    """每份 scope.md ≤ 2000 字且非空；asset/idea 常驻 ≤ 5000 字。不做 40% 灌字。"""
+    resident = assemble_resident_prompt(scope)
+    scope_text = next(text for rel, text in resident.doc_texts if rel.endswith(f"/{scope}.md"))
+    assert 400 <= len(scope_text) <= 2000
+    if scope in ("asset", "idea"):
+        assert len(resident.content) <= 5000
+
+
+def test_resident_contains_egress_boundary():
+    text = assemble_resident_prompt("idea").content
+    assert "唯一出网的是 LLM 请求文本" in text
+    assert "pipeline/" in text
+
+
+def test_resident_token_budget_missing_key_fails(tmp_path):
+    cfg = tmp_path / "assembly.json"
+    cfg.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="resident_budget"):
+        resident_token_budget("creative", config_path=cfg, root=tmp_path)

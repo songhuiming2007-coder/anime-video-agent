@@ -88,12 +88,14 @@ def test_first_round_step_docs_injected_as_user_msg_not_in_messages_zero(tmp_pat
         )
 
     # messages 结构：
-    # [0] system prompt (仅 resident + status_card，无工序文档)
+    # [0] system prompt (仅 resident，无工序文档、无状态卡)
     # [1] user injection ([系统提示更新] 01 选题 SOP)
-    # [2] user turn input ("我想做一期罪恶王冠")
-    # [3] assistant reply
-    assert len(messages) == 4
+    # [2] user [状态卡]
+    # [3] user turn input ("我想做一期罪恶王冠")
+    # [4] assistant reply
+    assert len(messages) == 5
     assert messages[0]["role"] == "system"
+    assert "[状态卡]" not in messages[0]["content"]
     assert "Runbook: 01" not in messages[0]["content"]
     assert "docs/runbook/01-topic.md" not in messages[0]["content"]
 
@@ -102,9 +104,12 @@ def test_first_round_step_docs_injected_as_user_msg_not_in_messages_zero(tmp_pat
     assert "01 选题" in messages[1]["content"] or "01-topic.md" in messages[1]["content"]
 
     assert messages[2]["role"] == "user"
-    assert messages[2]["content"] == "我想做一期罪恶王冠"
+    assert messages[2]["content"].startswith("[状态卡]")
 
-    assert messages[3]["role"] == "assistant"
+    assert messages[3]["role"] == "user"
+    assert messages[3]["content"] == "我想做一期罪恶王冠"
+
+    assert messages[4]["role"] == "assistant"
     assert "docs/runbook/01-topic.md" in tracker.injected_paths
     assert tracker.active_step_key == "01"
 
@@ -132,7 +137,7 @@ def test_step_switch_incremental_injection_and_deduplication(tmp_path: Path):
             tracker=tracker,
         )
 
-    assert len(messages) == 4
+    assert len(messages) == 5
     assert messages[1]["role"] == "user"
     assert "[系统提示更新]" in messages[1]["content"]
     user_injections_count = sum(1 for m in messages if "[系统提示更新]" in str(m.get("content", "")))
@@ -153,8 +158,8 @@ def test_step_switch_incremental_injection_and_deduplication(tmp_path: Path):
     # 不应追加新的 [系统提示更新] 注入
     user_injections_count_r2 = sum(1 for m in messages if "[系统提示更新]" in str(m.get("content", "")))
     assert user_injections_count_r2 == 1
-    # messages 增加了一轮 user("那我们就定这个选题") + assistant("选题继续")
-    assert len(messages) == 6
+    # messages 增加了一轮 状态卡 + user("那我们就定这个选题") + assistant("选题继续")
+    assert len(messages) == 8
 
     # --- 轮次 3：工序切换至 02 脚本写作 ---
     # 写入 01-topic.md，使工序推导进入 02
@@ -220,7 +225,8 @@ def test_resident_prompt_prefix_byte_level_identical_across_turns(tmp_path: Path
         cli._dispatch_agent_turn("hello 1", messages, ep, "pipeline", status_1, tracker=tracker)
 
     sys_prompt_1 = messages[0]["content"]
-    assert sys_prompt_1.startswith(tracker.resident_prompt)
+    assert sys_prompt_1 == tracker.resident_prompt
+    assert "[状态卡]" not in sys_prompt_1
 
     # 改变期目录产生新的 status_card
     (ep / "01-topic.md").write_text("---\n番: 测试\n---\n", encoding="utf-8")
@@ -231,10 +237,16 @@ def test_resident_prompt_prefix_byte_level_identical_across_turns(tmp_path: Path
         cli._dispatch_agent_turn("hello 2", messages, ep, "pipeline", status_2, tracker=tracker)
 
     sys_prompt_2 = messages[0]["content"]
-    assert sys_prompt_2.startswith(tracker.resident_prompt)
+    assert sys_prompt_2 == tracker.resident_prompt
 
-    # 两轮的常驻层前缀严格字节级一致
-    assert sys_prompt_1[: len(tracker.resident_prompt)] == sys_prompt_2[: len(tracker.resident_prompt)]
+    # 两轮的 messages[0] 常驻层严格字节级一致；状态卡是独立 user 消息且随产物变化
+    assert sys_prompt_1 == sys_prompt_2
+    cards = [m["content"] for m in messages if str(m.get("content", "")).startswith("[状态卡]")]
+    assert len(cards) == 2
+    assert cards[0] != cards[1]
+    from pipeline.agent.llm import _wire_messages
+    wired_cards = [m["content"] for m in _wire_messages(messages, "default") if str(m.get("content", "")).startswith("[状态卡]")]
+    assert wired_cards == [cards[-1]]
 
 
 def test_idea_scope_zero_step_injection(tmp_path: Path):
@@ -253,12 +265,15 @@ def test_idea_scope_zero_step_injection(tmp_path: Path):
             tracker=tracker,
         )
 
-    # 无工序注入消息，仅 system [0] + user [1] + assistant [2]
-    assert len(messages) == 3
+    # 无工序注入消息，仅 system [0] + 状态卡 [1] + user [2] + assistant [3]
+    assert len(messages) == 4
     assert messages[0]["role"] == "system"
+    assert "[状态卡]" not in messages[0]["content"]
     assert messages[1]["role"] == "user"
-    assert messages[1]["content"] == "发散一些动漫选题"
-    assert messages[2]["role"] == "assistant"
+    assert messages[1]["content"].startswith("[状态卡]")
+    assert messages[2]["role"] == "user"
+    assert messages[2]["content"] == "发散一些动漫选题"
+    assert messages[3]["role"] == "assistant"
     assert len(tracker.injected_paths) == 0
 
 

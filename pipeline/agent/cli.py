@@ -61,7 +61,6 @@ from pipeline.agent.session_log import (
     split_by_sid,
 )
 from pipeline.agent.status_card import (
-    build_idea_card,
     build_status_card,
     log_approval_decision,
     render_approval_card,
@@ -1759,16 +1758,10 @@ def assemble_system_prompt(
     extra_prompt: str = "",
     root: Path | None = None,
 ) -> str:
-    """重组装 messages[0]：由 assembly.py 单源供给常驻层 + 状态卡（Spec 1 PR2 收编）。"""
+    """重组装 messages[0]：仅常驻层。状态卡由 _assemble 每轮注入独立 user 消息。"""
     from pipeline.agent.assembly import assemble_resident_prompt
 
-    resident = assemble_resident_prompt(scope, root=root, extra_prompt=extra_prompt)
-    if ep_dir is None:
-        from pipeline.agent.status_card import build_idea_card
-        card = build_idea_card()
-    else:
-        card = build_status_card(ep_dir, status, scope=scope)
-    return f"{resident.content}\n\n---\n\n{card}"
+    return assemble_resident_prompt(scope, root=root, extra_prompt=extra_prompt).content
 
 
 def _candidates_brief(raw: Any) -> str:
@@ -2056,7 +2049,7 @@ def _run_agent_loop_body(
         if state is not None and state["status"] == "resumed":
             sub_messages.append({
                 "role": "system",
-                "content": tracker.get_initial_system_prompt(build_idea_card()),
+                "content": tracker.get_initial_system_prompt(),
             })
             sub_messages.extend(state.get("messages") or [])
             print(f"[会话] 已恢复选题会话 {str(state.get('sid', ''))[:8]}，"
@@ -2373,9 +2366,7 @@ def _seed_resume(
     tracker.active_step_key = state.get("step_key")
     messages.append({
         "role": "system",
-        "content": tracker.get_initial_system_prompt(
-            build_status_card(ep_dir, status, scope=scope)
-        ),
+        "content": tracker.get_initial_system_prompt(),
     })
     messages.extend(state.get("messages") or [])
     count = len(state.get("messages") or [])

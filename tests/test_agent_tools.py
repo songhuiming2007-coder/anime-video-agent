@@ -1314,7 +1314,7 @@ def test_idea_scope_full_table_and_needs_episode_message(tmp_path: Path):
 
 
 def test_idea_turn_context_and_system_prompt(monkeypatch, tmp_path):
-    """T7: idea 回合 ToolContext.episode_dir 为 None 且 scope == 'idea'；assemble_system_prompt 含 director 人格与 idea 卡。
+    """T7: idea 回合 ToolContext.episode_dir 为 None 且 scope == 'idea'；assemble_system_prompt 含 director 人格，idea 卡独立。
 
     D42 / Spec 18 改写：idea 会话落库级 `data/_idea/session.jsonl`，不能再对真实仓库根跑
     （数据盘不在时拒启动，在时会写进真 data/）——改在临时根上跑，`config/` 软链真仓库的配置。
@@ -1324,8 +1324,11 @@ def test_idea_turn_context_and_system_prompt(monkeypatch, tmp_path):
 
     prompt = assemble_system_prompt(None, "idea", None)
     assert "Director" in prompt or "导演" in prompt
-    assert "模式: 选题会话（无期）" in prompt
-    assert "scope: idea" in prompt
+    assert "[状态卡]" not in prompt
+    from pipeline.agent.status_card import build_idea_card
+    card = build_idea_card()
+    assert "模式: 选题会话（无期）" in card
+    assert "scope: idea" in card
 
     captured_ctx = []
 

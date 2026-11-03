@@ -30,7 +30,7 @@ from typing import Any, Literal
 from pipeline import paths
 from pipeline.agent import model_switch, vision
 from pipeline.agent.aging import age_tool_results
-from pipeline.agent.compact import COMPACT_KEY, estimate_tokens
+from pipeline.agent.compact import COMPACT_KEY, STATUS_CARD_KEY, drop_stale_status_cards, estimate_tokens
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
     ToolContext,
@@ -111,8 +111,8 @@ STEER_KEY = "_ava_steer"
 # D90：view_image 结果消息上的图片引用（路径 + sha），附图由 vision.attach_images 在请求时投影
 _IMAGE_KEY = vision.IMAGE_KEY
 # 进请求体前一律删除的宿主内部字段：档位 + D62 压缩标记（摘要 / 一次性重注入卡）+ D65 收尾标记 + D79 排队标记
-# + D90 图片引用
-_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY, STEER_KEY, _IMAGE_KEY})
+# + D90 图片引用 + 状态卡身份键
+_INTERNAL_KEYS = frozenset({_TIER_KEY, COMPACT_KEY, _WRAPUP_KEY, STEER_KEY, _IMAGE_KEY, STATUS_CARD_KEY})
 
 # 进程级 WARN 锁存（Spec 7 §1.1 🔵-1）：键 = 配置文件路径 + 问题描述。
 _WARN_LATCH: set[tuple[str, str]] = set()
@@ -371,9 +371,12 @@ def _standard_message(message: dict[str, Any]) -> dict[str, Any]:
 def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[dict[str, Any]]:
     """请求体用的消息序列（Spec 7 §2.7 决策 7b）。
 
-    没有任何消息带宿主内部标记（档位 / D62 压缩标记）→ **原样返回同一个列表对象**：请求体与现状字节一致。
+    没有任何消息带宿主内部标记（档位 / D62 压缩标记 / 状态卡键）且至多一张状态卡 → **原样返回同一个列表对象**。
     压缩标记只删不改：摘要与重注入卡对模型就是普通 user 消息，模型看不见标记、也仿写不出（D62 §4.4）。
+    过期状态卡只留最后一张（认 `_ava_status_card` 键，不认正文前缀）。
+    P8 恒定的是 messages[0] 常驻层；状态卡是易变层，请求体在上一张卡位置起不与上一轮前缀重合。
     """
+    messages = drop_stale_status_cards(messages)
     if not any(isinstance(m, dict) and not _INTERNAL_KEYS.isdisjoint(m) for m in messages):
         return messages
     wired: list[dict[str, Any]] = []

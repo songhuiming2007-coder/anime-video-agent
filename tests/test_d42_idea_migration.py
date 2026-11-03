@@ -144,7 +144,10 @@ def test_t_d42_1_idea_persists_and_always_resumes(world, endpoint, tmp_path) -> 
         assert first.finish() == 0
     log = _idea_log(root)
     msgs = [r["message"] for r in _records(log) if r.get("k") == "msg"]
-    assert [m["content"] for m in msgs if m["role"] in ("user", "assistant")] == [
+    assert [
+        m["content"] for m in msgs
+        if m["role"] in ("user", "assistant") and not str(m.get("content", "")).startswith("[状态卡]")
+    ] == [
         "想做一期杂谈", "先聊聊", "换个角度", "接着聊"
     ]
 
@@ -165,8 +168,13 @@ def test_t_d42_1_idea_persists_and_always_resumes(world, endpoint, tmp_path) -> 
     request = endpoint.requests[mark]["messages"]
     contents = [m.get("content") for m in request]
     assert {"想做一期杂谈", "先聊聊", "换个角度", "接着聊", "刚才聊到哪了"} <= set(contents)
-    # messages[0] 是本进程现装的 idea 常驻层 + idea 状态卡（不取盘上那份）
-    assert request[0]["role"] == "system" and "模式: 选题会话（无期）" in request[0]["content"]
+    # messages[0] 是本进程现装的 idea 常驻层（不取盘上那份）；状态卡是独立 user 消息
+    assert request[0]["role"] == "system"
+    assert "模式: 选题会话（无期）" not in request[0]["content"]
+    assert any(
+        isinstance(c, str) and c.startswith("[状态卡]") and "模式: 选题会话（无期）" in c
+        for c in contents
+    )
     episodes, _hidden = cli.get_episodes_list(root=root)
     assert "_idea" not in {p.name for p in episodes}
 

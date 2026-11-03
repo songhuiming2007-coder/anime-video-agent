@@ -30,6 +30,7 @@ from pipeline.agent.tools import RESTRICTED_EGRESS_PATTERNS
 COMPACT_KEY = "_ava_compact"
 MARK_SUMMARY = "summary"
 MARK_CARD = "card"
+STATUS_CARD_KEY = "_ava_status_card"
 
 # 回落估算的口径：每 token 折多少字符（§4.1 usage=None 时、§4.2 尾部预算一律用它）。
 # spec 原写 ÷4，那是英文口径；本仓会话以中文为主，实测（伪恋期 session.jsonl 的 8 个 turn_end，
@@ -304,7 +305,7 @@ def choose_cut(messages: list[Any], *, token_budget: int, max_messages: int) -> 
 
     从最新往前累加，token 预算与条数任一撞线即停；再往**后**挪到最近的闭环边界——
     往前挪会突破预算，预算是硬的。一个超预算的工具组宁可整组进摘要。
-    `messages[0]`（system 状态卡）永不进摘要。`cut ≤ 1` = 没东西可压。
+    `messages[0]`（常驻层）永不进摘要。`cut ≤ 1` = 没东西可压。
     """
     if not is_closed(messages):
         raise ValueError("历史含未闭环的 tool_calls：压缩只许在工具结果全部写史之后")
@@ -336,13 +337,39 @@ def strip_marked(messages: list[Any]) -> list[Any]:
     return [m for m in messages if not is_marked(m)]
 
 
+STATUS_CARD_PREFIX = "[状态卡]"
+
+
+def is_status_card(message: Any) -> bool:
+    """认内部键，不认正文前缀——人说「[状态卡] …」不是卡。"""
+    return isinstance(message, dict) and bool(message.get(STATUS_CARD_KEY))
+
+
+def drop_stale_status_cards(messages: list[Any]) -> list[Any]:
+    """只留最后一张状态卡。0 或 1 张时返回原列表对象。"""
+    last: int | None = None
+    n = 0
+    for i, message in enumerate(messages):
+        if is_status_card(message):
+            last = i
+            n += 1
+    if n <= 1:
+        return messages
+    return [m for i, m in enumerate(messages) if i == last or not is_status_card(m)]
+
+
+def kept_tail(messages: list[Any], cut: int) -> list[Any]:
+    """压缩保留尾部：去掉旧标记和过期状态卡（当前卡由 reinject 另插）。"""
+    return [m for m in strip_marked(messages[cut:]) if not is_status_card(m)]
+
+
 def summary_message(text: str) -> dict[str, Any]:
     return {"role": "user", "content": SUMMARY_LEAD + text, COMPACT_KEY: MARK_SUMMARY}
 
 
 def card_message(text: str) -> dict[str, Any]:
     """一次性重注入的状态卡（§4.6）：此后不刷新，下一次压缩时被滤掉。"""
-    return {"role": "user", "content": text, COMPACT_KEY: MARK_CARD}
+    return {"role": "user", "content": text, COMPACT_KEY: MARK_CARD, STATUS_CARD_KEY: True}
 
 
 def compacted_history(
@@ -357,7 +384,7 @@ def compacted_history(
         raise ValueError(f"切口越界：cut={cut}，历史 {len(messages)} 条（cut ≤ 1 表示没东西可压）")
     if not valid_cuts(messages)[cut]:
         raise ValueError(f"切口 {cut} 不在闭环边界")
-    tail = strip_marked(messages[cut:])
+    tail = kept_tail(messages, cut)
     return [messages[0], summary, *([card] if card is not None else []), *tail]
 
 

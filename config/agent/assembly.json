@@ -1,6 +1,15 @@
 {
   "version": "1.0",
   "_note": "工序层上下文装配路由表（ADR-0022）。机制进代码，路由进配置。",
+  "_scope_note": "asset/idea/project 只走显式 scope_mode（含 session_kind==\"project\"）；resolver.scope_of 只产出 creative/pipeline。routes 只影响 runbook 注入。",
+  "resident_budget": {
+    "creative": 1450,
+    "pipeline": 1400,
+    "idea": 1250,
+    "asset": 1100,
+    "project": 1450,
+    "default": 1400
+  },
   "memory": {
     "scopes": ["creative", "asset", "idea", "project"]
   },
@@ -30,10 +39,15 @@
     "pipeline": {
       "_extends": "_base"
     },
+    "asset": {
+      "_extends": "_base"
+    },
     "idea": {
+      "_note": "刻意不注入工序 runbook。",
       "default": []
     },
     "project": {
+      "_note": "刻意不注入工序 runbook。",
       "default": []
     }
   }
