@@ -479,6 +479,8 @@ export interface ConvSnapshot {
   keyProblem: string | null;
   /** D147：会话启动前预选的模型 / 推理强度（send 起进程后先下发）；没有为 undefined */
   pending?: { model?: string; effort?: string };
+  /** D157：本快照对应的 sid（多会话并存下区分 convKey 内的段；未起会话为 null） */
+  sid?: string | null;
 }
 
 export interface ConvDelta {
@@ -492,6 +494,8 @@ export interface ConvDelta {
   keyProblem: string | null;
   /** D147：同 ConvSnapshot.pending */
   pending?: { model?: string; effort?: string };
+  /** D157：同 ConvSnapshot.sid */
+  sid?: string | null;
 }
 
 export type Provenance =

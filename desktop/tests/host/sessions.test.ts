@@ -1297,19 +1297,20 @@ describe("D45 会话管理", () => {
     expect(sessionSpawns()).toHaveLength(2);
   });
 
-  it("conv.enter / conv.fresh / conv.delete：有回合在跑 → E_BUSY，且不弹确认框", async () => {
+  it("D157：回合在跑时 conv.enter / conv.fresh / conv.delete 不再 E_BUSY（会话是可并存的并发单元）", async () => {
     const { repo, svc, epKey, key, stub } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
     sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_turn: [TURN_STARTED] }]); // 回合开始后不结束
     await svc.dispatch("conv.send", { convKey: key, text: "hi" });
     await waitFor(async () => (await snapOf(svc, key)).phase === "running");
-    await expect(svc.dispatch("conv.enter", { convKey: key, sid: SID_B })).rejects.toMatchObject({ code: "E_BUSY" });
-    await expect(svc.dispatch("conv.fresh", { convKey: key })).rejects.toMatchObject({ code: "E_BUSY" });
-    await expect(svc.dispatch("conv.delete", { convKey: key, sid: SID_B })).rejects.toMatchObject({ code: "E_BUSY" });
+    // conv.fresh：不再杀活会话，只把 focused 清掉（下一条消息开新段）
+    const fresh = (await svc.dispatch("conv.fresh", { convKey: key })) as ConvSnapshot;
+    expect(fresh.phase).toBe("none");
+    // 旧段仍在后台跑（汇总仍报 running）——这正是 D157 要的「留活进程后台跑」
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
     expect(stub.calls).toBe(0);
-    expect((await snapOf(svc, key)).phase).toBe("running");
   });
 
-  it("conv.fresh：结束活会话、清空对话区；下一条消息走 SESSION_NEW", async () => {
+  it("conv.fresh：focused 清掉、不杀活会话；下一条消息走 SESSION_NEW（D157）", async () => {
     const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore([]) } });
     scriptWithSid(repo, epKey, SID_A);
     await svc.dispatch("conv.send", { convKey: key, text: "hi" });
@@ -1331,7 +1332,7 @@ describe("D45 会话管理", () => {
     stub.respond = false;
     expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_A })).toEqual({ deleted: false, moved: 0 });
     expect(stub.last?.detail).toContain("改段落三");
-    expect(stub.last?.detail).toContain("当前打开的会话会先结束");
+    expect(stub.last?.detail).toContain("仍在运行，会先停止");
     expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
     expect((await snapOf(svc, key)).phase).toBe("idle");
 
@@ -1342,7 +1343,7 @@ describe("D45 会话管理", () => {
     expect(sessionSpawns()).toEqual(["SESSION_NEW"]); // 删的就是活会话：不接回
   });
 
-  it("conv.delete：删别的会话 → 先结束活会话释放租约，删完把它接回来", async () => {
+  it("conv.delete：删非活段 → 不杀活会话、不重新拉进程（D157 多会话并存）", async () => {
     const calls: { t: string; args: Record<string, unknown> }[] = [];
     const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
     scriptWithSid(repo, epKey, SID_A);
@@ -1350,8 +1351,9 @@ describe("D45 会话管理", () => {
     await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
     await svc.dispatch("conv.delete", { convKey: key, sid: SID_B });
     expect(calls.filter((c) => c.t === "DELETE_SESSION").map((c) => c.args.sid)).toEqual([SID_B]);
-    expect(sessionSpawns()).toEqual(["SESSION_NEW", "SESSION_CONTINUE"]);
-    expect(sessionArgvs()[1].slice(-2)).toEqual(["--continue", SID_A]);
+    // 活会话 SID_A 不受影响：不重启、不接回
+    expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
+    expect((await snapOf(svc, key)).phase).toBe("idle");
   });
 
   it("conv.delete：core 报租约被占（退出 3）→ E_SESSION_LOCKED；会话已不在列表 → E_STALE 且不弹框", async () => {
@@ -1413,8 +1415,9 @@ describe("D58 选题会话的会话管理", () => {
     expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: true, moved: 4 });
     expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION").map((c) => c.args)).toEqual([{ sid: SID_B }]);
     expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
-    // 删的是别的段：把刚才为释放租约而结束的活会话按原段接回来
-    expect(ideaArgvs().at(-1)?.slice(-3)).toEqual(["--idea", "--continue", SID_A]);
+    // 删的是别的段（D157）：活段不被碰，不重启、不接回
+    expect(ideaArgvs().at(-1)?.slice(-1)).toEqual(["--idea"]);
+    expect(ideaArgvs()).toHaveLength(1);
   });
 
   it("建期：选题活会话号合规 → NEW_EPISODE 带 ideaSid（只带当前这段）；没有活会话不带", async () => {
