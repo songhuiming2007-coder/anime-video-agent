@@ -11,8 +11,13 @@
    持租约把 `_idea/session.jsonl` 截为空文件（Spec 18 §3.2 d，2026-10-08 D42 修订注记）；
    以及 `move_session_to_trash()`——人在桌面端点「删除会话」并过确认框后，持租约把该 sid 的
    整行搬进 `_agent/session-trash/`、其余行逐字节写回（D45，2026-10-08）。
-2. **单写者**：一个文件多段会话，靠进程级 `flock(LOCK_EX|LOCK_NB)`；每进程每期至多打开一次
-   （同进程第二个 fd 会被 flock 拒掉——R3 实测 Errno 35——所以要在进程内先做单例）。
+2. **按 sid 的多写者（D157，2026-11-03 修订）**：同一日志文件允许**多个**协议进程并发
+   append（一期多会话后台并存，对齐 Pi / Codex「会话即并发单元」）。每条 append 在
+   写期间对日志文件持短 `flock(LOCK_EX)`；追加用 `O_APPEND`，单行一次 `os.write` 循环写满，
+   行不撕裂。同一 sid 至多一个活进程由 `_agent/live/<sid>.pid` presence 文件保证
+   （`claim_sid` / `release_sid`）。`_idea` 建期迁移与 `/delete-session` 需要整文件快照 + 重写，
+   另持 `_agent/session-admin.lock`（**不含**日志 fd，故协议进程 append 不受其阻塞）；
+   delete 额外校验目标 sid 无 presence。
 3. **零重依赖**：只用 stdlib（§5）。
 
 记录格式见 §3.3：公共键 `k` / `sid` / `seq`（会话内单调，跨段连续）/ `ts`（UTC ISO）。
@@ -190,16 +195,19 @@ def split_by_sid(raw: bytes, sid: str) -> tuple[list[bytes], list[bytes]]:
 def move_session_to_trash(lease: "EpisodeLease", sid: str) -> tuple[int, Path]:
     """把会话 `sid` 的整行搬进 `<日志目录>/_agent/session-trash/`，其余行逐字节写回（D45）。
 
-    只在持租约时调用（没有别的写者）。顺序：先截末尾残行 → 回收站文件落盘成功 → 再原子替换日志。
-    解析不了的坏行无法归属，一律留在原文件。**调用后租约即作废并关闭**：日志已换成新文件，
-    旧 fd 指向的是被替换掉的那份，继续 append 会写进孤儿文件。返回（搬走的行数，回收站文件）。
+    D157：不再靠「整期排他租约」保证快照一致——调用方已在 `session_admin_lock` 内，且本函数
+    会拒删仍有活进程的 sid（`sid_alive`，多会话下别的段可继续 append）。顺序：先截末尾残行 →
+    回收站文件落盘成功 → 再原子替换日志。解析不了的坏行无法归属，一律留在原文件。
+    **调用后租约即作废并关闭**（fd 仍指向被替换的旧文件）。返回（搬走的行数，回收站文件）。
 
     D66（红队发现 1）：两次写持 `_agent/session-trash.lock` 共用锁——否则 purge 可插进
     「回收站落盘」与「主日志替换」之间，段从两个位置同时消失且双向报成功（静默永失）。
-    取锁顺序恒为「期租约 → trash 锁」，无反向（purge 只取 trash 锁），无 AB-BA 面。
+    取锁顺序恒为「管理锁 → trash 锁」，无反向（purge 只取 trash 锁），无 AB-BA 面。
     """
     from pipeline.paths import atomic_write
 
+    if sid_alive(lease.ep_dir, sid):
+        raise SessionLocked(f"会话 {sid} 仍在运行")
     lease.truncate_torn_tail()
     moved, kept = split_by_sid(lease.read(), sid)
     if not moved:
@@ -534,10 +542,12 @@ def resume_target(
 
 
 class EpisodeLease:
-    """期租约（§2.5）：进程生命期持有的单一 fd + `flock`，`os.write` 循环写满。
+    """期日志句柄（D157 起不再是整期排他锁）：进程持有 fd + append 短锁，`os.write` 循环写满。
 
-    每进程每期至多一个实例（`acquire` 内部查表）；同进程再要同一个期，拿到的是**同一个对象**，
-    所以子会话不会自己把自己锁在门外（R3 实测：同进程第二个 fd 的 flock 会被拒）。
+    每进程每期至多一个实例（`acquire` 内部查表）；同进程再要同一个期，拿到的是**同一个对象**。
+    D157 起 `acquire` **不再** `flock(LOCK_EX|LOCK_NB)` 占整期——真正的排他边界是
+    `claim_sid`（同一 sid 至多一个活进程）与 `session_admin_lock`（迁移/删除时整文件重写）。
+    多进程并发 append 时行不撕裂靠「`O_APPEND` + 单行写循环 + 写期间短 `flock`」。
     """
 
     def __init__(self, ep_dir: Path, fd: int) -> None:
@@ -559,13 +569,6 @@ class EpisodeLease:
             if not resolved.is_dir():
                 raise SessionLogBroken(f"期目录不存在，拒绝建目录与写会话记录: {resolved}")
             fd = os.open(str(resolved / LOG_NAME), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o644)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                os.close(fd)
-                raise SessionLocked(
-                    f"该期已有活跃会话（{resolved / LOG_NAME} 被另一个进程持有）"
-                ) from None
             lease = cls(resolved, fd)
             _LEASES[key] = lease
             return lease
@@ -604,16 +607,27 @@ class EpisodeLease:
         payload.setdefault("ts", _now_iso())
         line = dumps(payload)
         with self._lock:
-            written = 0
-            while written < len(line):
-                try:
-                    written += os.write(self._fd, line[written:])
-                except OSError as exc:
-                    raise SessionLogBroken(f"会话记录写入失败: {exc}") from None
+            # D157：多进程并发 append——写期间对日志 fd 持短排他锁；O_APPEND + 单行写循环不撕裂。
             try:
-                os.fsync(self._fd)
-            except OSError:
-                pass
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise SessionLogBroken(f"会话记录取写锁失败: {exc}") from None
+            try:
+                written = 0
+                while written < len(line):
+                    try:
+                        written += os.write(self._fd, line[written:])
+                    except OSError as exc:
+                        raise SessionLogBroken(f"会话记录写入失败: {exc}") from None
+                try:
+                    os.fsync(self._fd)
+                except OSError:
+                    pass
+            finally:
+                try:
+                    fcntl.flock(self._fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
     def close(self) -> None:
         """注销并释放（§2.6：登记的生命期就是上下文管理器的范围）。"""
@@ -646,6 +660,99 @@ class EpisodeLease:
             except OSError:
                 pass
             return len(raw) - cut
+
+
+# ---------------------------------------------------------------------------
+# D157：同一 sid 至多一个活进程的 presence 锁（_agent/live/<sid>.pid）与整文件管理锁
+# ---------------------------------------------------------------------------
+
+_LIVE_DIR_NAME = "live"
+
+
+def _live_dir(log_dir: Path | str) -> Path:
+    return Path(log_dir).resolve() / "_agent" / _LIVE_DIR_NAME
+
+
+def _pid_alive(path: Path) -> bool:
+    """presence 文件里的 pid 仍是活进程：内容非法、进程不在、或进程不是 python 协议进程都按「非活」。
+
+    `os.kill(pid, 0)` 只证存在，不证是这个会话——pid 可能已被别的进程复用，所以同时校验
+    `/proc` 不可得时回退 `ps -p <pid> -o comm=` 匹配 python；都拿不到时保守按「活」处理（不删）。
+    """
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        import subprocess
+
+        comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True, timeout=5).stdout.strip()
+        return "python" in comm
+    except Exception:
+        return True  # 拿不到进程名时保守按「活」：宁可挡一次删除，不误删活会话
+
+
+def claim_sid(log_dir: Path | str, sid: str) -> Path:
+    """登记 sid 的活进程 presence：`_agent/live/<sid>.pid` 写本进程 pid；已有活 presence → `SessionLocked`。
+
+    返回写下的文件路径，进程退出前必须 `release_sid`（否则残留；`sid_alive` 会按 pid 判活，
+    死了的 pid 文件不挡——但 pid 复用期可能造成一次误报，仍要尽释放）。
+    """
+    live_dir = _live_dir(log_dir)
+    try:
+        live_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SessionLogBroken(f"无法建立会话 presence 目录 {live_dir}: {exc}") from None
+    path = live_dir / f"{sid}.pid"
+    if path.exists() and _pid_alive(path):
+        raise SessionLocked(f"另一个选题会话进行中（会话 {sid[:8]}… 仍在另一个进程里运行）")
+    try:
+        path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        raise SessionLogBroken(f"会话 presence 写入失败: {exc}") from None
+    return path
+
+
+def release_sid(log_dir: Path | str, sid: str) -> None:
+    try:
+        (_live_dir(log_dir) / f"{sid}.pid").unlink()
+    except OSError:
+        pass
+
+
+def sid_alive(log_dir: Path | str, sid: str) -> bool:
+    """该 sid 是否有一个判活进程（delete 用；含 pid 复用校验）"""
+    return _pid_alive(_live_dir(log_dir) / f"{sid}.pid")
+
+
+@contextlib.contextmanager
+def session_admin_lock(log_dir: Path | str) -> "Iterator[None]":
+    """整文件快照/重写（`_idea` 迁移、`/delete-session`）的管理锁 `_agent/session-admin.lock`。
+
+    **不含**日志 fd，因此不阻塞协议进程的 append；调用方在用本锁读完 + `atomic_write` 重写期间，
+    别的 append 照旧进行——这就要求调用方只对**非活** sid 做整文件重写（delete 已查 `sid_alive`，
+    迁移只动 `_idea` 且取锁前先确认选题会话不在跑）。
+    """
+    agent_dir = Path(log_dir).resolve() / "_agent"
+    try:
+        agent_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SessionLogBroken(f"无法建立管理锁目录 {agent_dir}: {exc}") from None
+    fd = os.open(str(agent_dir / "session-admin.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise SessionLocked("另一个会话管理操作进行中") from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def acquire_idea_lease(root: Path) -> EpisodeLease:

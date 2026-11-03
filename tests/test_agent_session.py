@@ -517,35 +517,39 @@ def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_tk8_lease_is_per_process_and_released_on_death(
+def test_tk8_lease_handle_is_per_process_and_sid_presence_excludes(
     root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """TK-8：同进程主会话与子会话共用一个租约；另一进程被拒；持锁进程被杀后立即可取。"""
+    """D157（原 TK-8）：租约句柄同进程复用；整期排他锁已拆，另一进程可拿句柄；同 sid presence 互斥。"""
     # 本用例需要**真的**另一个进程来持锁：临时把 autouse 的 Popen 守卫摘掉
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     lease = EpisodeLease.acquire(episode)
-    assert EpisodeLease.acquire(episode) is lease, "同进程不自我锁死（R3 实测的 Errno 35）"
+    assert EpisodeLease.acquire(episode) is lease, "同进程复用同一对象"
+
+    from pipeline.agent.session_log import claim_sid, release_sid, sid_alive
 
     holder = subprocess.Popen([sys.executable, "-c", (
-        "import fcntl, sys, time\n"
-        f"fd = open({str(episode / 'session.jsonl')!r}, 'a')\n"
-        "try:\n"
-        "    fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-        "except OSError:\n"
-        "    print('denied', flush=True)\n"
-        "else:\n"
-        "    print('locked', flush=True)\n"
+        "import sys, time\n"
+        "from pipeline.agent.session_log import claim_sid\n"
+        f"claim_sid({str(episode)!r}, 'a' * 16)\n"
+        "print('held', flush=True)\n"
         "time.sleep(30)\n"
     )], stdout=subprocess.PIPE)
     assert holder.stdout is not None
     try:
-        assert holder.stdout.readline().strip() == b"denied", "同进程持有期间，另一进程必须被拒"
+        assert holder.stdout.readline().strip() == b"held"
+        # 别的 sid 不挡本进程 append；同一 sid 才拒
+        assert sid_alive(episode, "a" * 16)
+        with pytest.raises(Exception):
+            claim_sid(episode, "a" * 16)
     finally:
         holder.kill()
         holder.wait(timeout=5)
+    # 死进程的 presence 文件不挡（pid 判活）
+    assert not sid_alive(episode, "a" * 16)
 
     lease.close()
-    assert EpisodeLease.acquire(episode) is not None, "释放后可再取（SIGKILL 后同理：内核自动释放）"
+    assert EpisodeLease.acquire(episode) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -612,23 +616,14 @@ def test_tk11_only_main_messages_are_persisted(root: Path, episode: Path, monkey
 
 
 def _can_another_process_lock(episode: Path) -> bool:
-    """另一个进程能不能立刻取得该期租约（用它当「本进程没占着」的判据）。"""
-    holder = _REAL_POPEN([sys.executable, "-c", (
-        "import fcntl, sys\n"
-        f"fd = open({str(episode / 'session.jsonl')!r}, 'a')\n"
-        "try:\n"
-        "    fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-        "except OSError:\n"
-        "    print('denied', flush=True)\n"
-        "else:\n"
-        "    print('free', flush=True)\n"
-    )], stdout=subprocess.PIPE)
-    try:
-        assert holder.stdout is not None
-        return holder.stdout.readline().strip() == b"free"
-    finally:
-        holder.kill()
-        holder.wait(timeout=5)
+    """D157：本进程还有没有占着该期的**句柄**（不再是排他锁；判据 = `_LEASES` 登记里没它）。
+
+    排他语义已迁到 `claim_sid`（per-sid presence）；「另一个进程能否拿句柄」恒为真，不再作判据。
+    """
+    from pipeline.agent import session_log as slog
+
+    key = str(episode.resolve())
+    return key not in slog._LEASES
 
 
 def test_tk12_registration_lifetime_and_episode_dir(

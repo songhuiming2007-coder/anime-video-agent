@@ -576,8 +576,10 @@ def main(argv: list[str] | None = None) -> int:
         SessionLocked,
         SessionLogBroken,
         acquire_idea_lease,
+        claim_sid,
         list_sessions,
         read_log,
+        release_sid,
         resume_target,
     )
     from pipeline.agent.status_card import build_idea_card, build_project_card, build_status_card
@@ -641,8 +643,8 @@ def main(argv: list[str] | None = None) -> int:
     if not (paths.ROOT / "data").is_dir():
         return fail("E_DATA_UNREACHABLE", f"data/ 不可达：{paths.ROOT / 'data'}", 4)
 
-    # ⑤ 协议进程一律在读文件之前取租约（§2.5）；idea 取库级 `data/_idea` 的租约，
-    # 取不到一律报错退出——不许静默退回「退出即丢」（Spec 18 §3.1 🟡-1）
+    # ⑤ 协议进程取期日志句柄（D157 起**不再**拿整期排他锁）；idea 取库级 `data/_idea` 的句柄。
+    # 取不到 = data 不可达 / 目录建不出——照样报错退出，不许静默退回「退出即丢」（Spec 18 §3.1 🟡-1）
     lease = None
     try:
         lease = EpisodeLease.acquire(ep_dir) if ep_dir is not None else acquire_idea_lease(paths.ROOT)
@@ -657,8 +659,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     host.lease = lease
     slots["interrupt"] = host.interrupt
+    claimed_sid: str | None = None  # D157：本进程占住的 sid（finally 里释放）
 
-    # ⑥ --continue 的会话选择
+    # ⑥ --continue 的会话选择（D157：sid 由 claim_sid 上「同 sid 至多一活」presence 锁，
+    # 锁的是在跑目标段本身——新会话还没 sid，等首回合 _open_session 里 claim）
     continue_status = "new"
     resume_state: dict[str, Any] | None = None
     others: list[dict[str, Any]] = []
@@ -677,6 +681,11 @@ def main(argv: list[str] | None = None) -> int:
             if target is None:
                 continue_status = "no_session"
             else:
+                try:
+                    claim_sid(lease.ep_dir, target.sid)
+                    claimed_sid = target.sid
+                except (SessionLocked, SessionLogBroken) as exc:
+                    return fail("E_SESSION_LOCKED", str(exc), 3)
                 state = prepare_resume(host, target.sid)
                 continue_status = state["status"]
                 if state["status"] == "resumed":
@@ -691,6 +700,11 @@ def main(argv: list[str] | None = None) -> int:
         if target is None:
             continue_status = "no_session"
         else:
+            try:
+                claim_sid(lease.ep_dir, target.sid)
+                claimed_sid = target.sid
+            except (SessionLocked, SessionLogBroken) as exc:
+                return fail("E_SESSION_LOCKED", str(exc), 3)
             state = prepare_resume(host, target.sid)
             continue_status = state["status"]
             if state["status"] == "resumed":
@@ -698,7 +712,10 @@ def main(argv: list[str] | None = None) -> int:
                 host.sid = target.sid
     elif not fresh:
         # idea：裸 --idea 恒恢复最近的可恢复段（Spec 18 §3.1）；--fresh 跳过，开新段（D58）
-        state = resume_idea(host)
+        try:
+            state = resume_idea(host)
+        except (SessionLocked, SessionLogBroken) as exc:
+            return fail("E_SESSION_LOCKED", str(exc), 3)
         if state is not None:
             continue_status = state["status"]
             if state["status"] == "resumed":
@@ -858,6 +875,11 @@ def main(argv: list[str] | None = None) -> int:
                     _release_in_flight(slots, writer)
     finally:
         slots["ready"] = False
+        # D157：释放本进程所占 sid 的 presence（多会话下别的段不受本进程退出影响）；
+        # 新会话首回合才拿到 sid——_open_session 里 claim 后 host.sid 才非空，两条路径都盖
+        sid_to_release = host.sid or claimed_sid
+        if sid_to_release and lease is not None:
+            release_sid(lease.ep_dir, sid_to_release)
         if lease is not None:
             lease.close()
         sys.stdout.flush()

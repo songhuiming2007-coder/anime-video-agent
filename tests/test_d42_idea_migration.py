@@ -692,12 +692,12 @@ def test_d58_idea_delete_session_moves_to_trash(tmp_path, monkeypatch, capsys) -
     import sys
     import textwrap
 
-    # 另一个进程持 `_idea` 租约（选题会话正在进行）→ 拒删、一字不动（同进程重复取租约是可重入的，造不出冲突）
+    # D157：删的是「该 sid 有活进程」的段——presence 文件 + pid 存活判活（不再整库排他）
     holder = subprocess.Popen(
         [sys.executable, "-c", textwrap.dedent(f"""
             import time
-            from pipeline.agent.session_log import EpisodeLease
-            EpisodeLease.acquire({str(root / "data" / "_idea")!r}); print('held', flush=True); time.sleep(30)
+            from pipeline.agent.session_log import claim_sid
+            claim_sid({str(root / "data" / "_idea")!r}, {SID_OLD!r}); print('held', flush=True); time.sleep(30)
         """)],
         stdout=subprocess.PIPE, text=True,
     )

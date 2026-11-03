@@ -217,18 +217,18 @@ def test_rename_session_会话在跑也能改_标题不合格2_会话不存在1(
     import textwrap
 
     _log(ep, A)
-    # 另一个进程持期租约（活会话；同进程内重复取租约测不出「改名不取租约」）
+    # D157：会话在跑的判据是 presence 文件 + pid 存活（不再是整期租约）
     holder = subprocess.Popen(
         [sys.executable, "-c", textwrap.dedent(f"""
             import time
-            from pipeline.agent.session_log import EpisodeLease
-            EpisodeLease.acquire({str(ep)!r}); print('held', flush=True); time.sleep(30)
+            from pipeline.agent.session_log import claim_sid
+            claim_sid({str(ep)!r}, {A!r}); print('held', flush=True); time.sleep(30)
         """)],
         stdout=subprocess.PIPE, text=True,
     )
     try:
         assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
-        assert cli.main([str(ep), "/delete-session", f"--sid={A}"]) == 3  # 对照：租约确实被占着
+        assert cli.main([str(ep), "/delete-session", f"--sid={A}"]) == 3  # 对照：该 sid 有活进程
         capsys.readouterr()
         assert cli.main([str(ep), "/rename-session", f"--sid={A}", "--title=修稿那次"]) == 0
         assert json.loads(capsys.readouterr().out) == {"title": "修稿那次", "source": "custom"}

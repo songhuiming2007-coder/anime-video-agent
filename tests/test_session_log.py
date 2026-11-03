@@ -307,14 +307,15 @@ def test_ts13_sessions_list_reads_without_truncating_under_foreign_lock(ep: Path
         assert [s.sid for s in summaries] == ["sid-a"]
         assert summaries[0].messages == 2 and summaries[0].assistants == 1
         assert (ep / slog.LOG_NAME).read_bytes() == before
-        with pytest.raises(slog.SessionLocked):
-            slog.EpisodeLease.acquire(ep)
+        # D157：acquire 不再拿整期排他锁——另一进程持锁也能拿句柄；同 sid 排他由 claim_sid 管
+        assert slog.EpisodeLease.acquire(ep) is not None
     finally:
         holder.kill()
         holder.wait(timeout=5)
 
     assert (ep / slog.LOG_NAME).read_bytes() == before
-    # 持锁进程被杀后立即可取（持锁者死亡 = 自动释放，进程级 flock 的性质）
+    # 持锁进程被杀后照样可取
+    slog.EpisodeLease._reset_for_testing()
     assert slog.EpisodeLease.acquire(ep) is not None
 
 

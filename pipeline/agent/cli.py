@@ -57,6 +57,7 @@ from pipeline.agent.session_log import (
     purge_trash_file,
     read_log,
     resume_target,
+    session_admin_lock,
     split_by_sid,
 )
 from pipeline.agent.status_card import (
@@ -672,15 +673,34 @@ def migrate_idea_session(target_dir: Path, sid: str | None = None) -> tuple[int,
     if not source.is_file():
         _print_from_idea_marker(False)
         return 0, False
+    # D157：迁入整文件重写走 `_idea` 的管理锁（不阻塞会话 append，但任一选题会话在跑
+    # 都要挡——它随时可能往日志里写，迁移把「其余段」原子重写会把并发写的行丢掉）
     try:
         lease = acquire_idea_lease(paths.ROOT)
-    except SessionLocked:
-        print("[ERROR] 选题会话进行中，请先退出它再建期带入"
-              f"（新期 {target_dir.name} 已建为空期，选题记录未动）", file=sys.stderr)
-        return RC_IDEA_BUSY, False
     except (DataUnreachable, SessionLogBroken) as exc:
         print(f"[ERROR] 建期成功、迁移失败：{exc}", file=sys.stderr)
         return RC_MIGRATE_FAILED, False
+    try:
+        live_dir = lease.ep_dir / "_agent" / "live"
+        if live_dir.is_dir():
+            from pipeline.agent.session_log import sid_alive
+
+            busy = [p.stem for p in live_dir.glob("*.pid") if sid_alive(lease.ep_dir, p.stem)]
+            if busy:
+                lease.close()
+                print(f"[ERROR] 选题会话进行中（会话号 {busy[0][:8]}…），请先退出它再建期带入"
+                      f"（新期 {target_dir.name} 已建为空期，选题记录未动）", file=sys.stderr)
+                return RC_IDEA_BUSY, False
+    except OSError:
+        pass
+    try:
+        with session_admin_lock(lease.ep_dir):
+            pass  # 锁在 try 内进：拿不到 → SessionLocked → RC_IDEA_BUSY（another admin op in flight）
+    except SessionLocked:
+        lease.close()
+        print(f"[ERROR] 选题会话管理操作进行中，请稍后再试"
+              f"（新期 {target_dir.name} 已建为空期，选题记录未动）", file=sys.stderr)
+        return RC_IDEA_BUSY, False
     try:
         try:
             lease.truncate_torn_tail()
@@ -1254,7 +1274,11 @@ def _purge_trash(trash_dir: Path, rest: list[str]) -> int:
 
 
 def _delete_session(acquire: Callable[[], EpisodeLease], rest: list[str], busy_hint: str) -> int:
-    """`/delete-session --sid=<sid>` 的公共部分（期会话与选题会话共用，D58）：取租约 → 移进回收站。"""
+    """`/delete-session --sid=<sid>` 的公共部分（期会话与选题会话共用，D58）：管理锁内移进回收站。
+
+    D157：不再靠整期排他租约挡并发——`session_admin_lock` 串行化删除，目标 sid 仍有活进程
+    （`sid_alive`）→ 退出码 3，别的段可继续 append。
+    """
     try:
         sid = _valued_flags(rest, ("--sid",))["--sid"]
     except _UsageError as exc:
@@ -1263,18 +1287,23 @@ def _delete_session(acquire: Callable[[], EpisodeLease], rest: list[str], busy_h
     if not SESSION_ID.match(sid):
         print(f"[ERROR] 会话号应为 16 位小写十六进制，收到 {sid!r}", file=sys.stderr)
         return 2
+    lease: EpisodeLease | None = None
     try:
         lease = acquire()
-    except SessionLocked as exc:
-        print(f"[ERROR] {exc}（{busy_hint}）", file=sys.stderr)
-        return 3
     except (SessionLogBroken, DataUnreachable) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
     try:
-        moved, dest = move_session_to_trash(lease, sid)
+        with session_admin_lock(lease.ep_dir):
+            moved, dest = move_session_to_trash(lease, sid)
+    except SessionLocked as exc:
+        if lease is not None:
+            lease.close()
+        print(f"[ERROR] {exc}（{busy_hint}）", file=sys.stderr)
+        return 3
     except (ValueError, OSError) as exc:
-        lease.close()
+        if lease is not None:
+            lease.close()
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
     print(json.dumps({"moved": moved, "trash": str(dest)}, ensure_ascii=False))

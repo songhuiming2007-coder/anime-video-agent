@@ -374,9 +374,9 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-20", "guard": "对已关闭请求的答复被拒（与「没见过这个号」可区分）", "file": PROTO,
      "old": '    if frame["request_id"] in slots.get("closed_requests", ()):\n',
      "new": '    if False:  # MUT-20\n'},
-    {"id": "S9-MUT-21", "guard": "期租约真的 flock 住（第二个进程拿不到）", "file": SESSION_LOG,
-     "old": '                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n',
-     "new": '                pass  # MUT-21\n'},
+    {"id": "S9-MUT-21", "guard": "同 sid 第二个进程拿不到 presence（D157 由 claim_sid 挡）", "file": SESSION_LOG,
+     "old": '    if path.exists() and _pid_alive(path):\n        raise SessionLocked(f"另一个选题会话进行中（会话 {sid[:8]}… 仍在另一个进程里运行）")\n',
+     "new": '    pass  # MUT-21\n'},
     {"id": "S9-MUT-30", "guard": "审批记录写 channel 字段", "file": SESSION,
      "old": '            "y" if approved else "n", latency_s=answer.latency_s, channel=answer.channel,\n',
      "new": '            "y" if approved else "n", latency_s=answer.latency_s, channel=None,  # MUT-30\n'},
@@ -1126,10 +1126,16 @@ MUTATIONS: list[dict] = [
      "old": '    target, _candidates = resume_target(list_sessions(host.lease.read()))\n',
      "new": ('    return None  # MUT-D42-e：恒开新段\n'
              '    target, _candidates = resume_target(list_sessions(host.lease.read()))\n')},
-    {"id": "MUT-D42-f", "guard": "idea 租约失败显式报错、不静默非持久（T-D42-8 ③）", "file": PROTO,
-     "old": '        return fail("E_SESSION_LOCKED", str(exc), 3)\n',
-     "new": ('        if ep_dir is not None:  # MUT-D42-f：idea 静默吞掉租约失败\n'
-             '            return fail("E_SESSION_LOCKED", str(exc), 3)\n')},
+    {"id": "MUT-D42-f", "guard": "idea 同 sid presence 拒第二个进程（T-D42-8 ③）", "file": PROTO,
+     "old": ('        try:\n'
+             '            state = resume_idea(host)\n'
+             '        except (SessionLocked, SessionLogBroken) as exc:\n'
+             '            return fail("E_SESSION_LOCKED", str(exc), 3)\n'),
+     "new": ('        try:\n'
+             '            state = resume_idea(host)\n'
+             '        except (SessionLocked, SessionLogBroken) as exc:\n'
+             '            if ep_dir is not None:  # MUT-D42-f：idea 静默吞掉租约失败\n'
+             '                return fail("E_SESSION_LOCKED", str(exc), 3)\n')},
     {"id": "MUT-D42-g", "guard": "plan_repairs 认既有 repair_tool_results（T-D42-9）", "file": SESSION_LOG,
      "old": ('    for record in records:\n'
              '        if record.get("k") == "repair_tool_results":\n'

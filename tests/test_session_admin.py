@@ -145,12 +145,12 @@ def test_delete_refused_while_episode_has_live_session(ep: Path) -> None:
     import textwrap
 
     raw = _write_log(ep)
-    # 另一个进程持租约（活会话）
+    # D157：删的是「该 sid 有活进程」的会话——presence 文件 + pid 存活判活
     holder = subprocess.Popen(
         [sys.executable, "-c", textwrap.dedent(f"""
             import sys, time
-            from pipeline.agent.session_log import EpisodeLease
-            EpisodeLease.acquire({str(ep)!r}); print('held', flush=True); time.sleep(30)
+            from pipeline.agent.session_log import claim_sid
+            claim_sid({str(ep)!r}, {A!r}); print('held', flush=True); time.sleep(30)
         """)],
         stdout=subprocess.PIPE, text=True,
     )
