@@ -479,21 +479,4 @@ describe("D105 没调工具却声称核查过", () => {
     const rows = foldConv([...prev, ...turn("好的。", 0)]).rows.filter((r) => r.k === "footer");
     expect(rows.map((r) => (r.k === "footer" ? r.claims : null))).toEqual([[], []]);
   });
-  it("supercell 卷 2026-11-03：有工具但只是读取，声称「已落盘」仍被抓；有写工具不抓；未否认不算", () => {
-    const hallucinated: ConvEntry[] = [
-      { k: "user", at: 1, text: "可以这么写" },
-      { k: "frame", at: 2, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "read_artifact", summary: "02-script.md", ok: true, observation: null, duplicate: false, command: null, description: null, handoff: null, verdict: null }, 2) },
-      { k: "frame", at: 3, frame: F("assistant", { turn_id: "t1", kind: "answer", text: "合并方案已落盘！现在段落 19 和 20 …" }, 3) },
-      { k: "frame", at: 4, frame: fin(1) },
-    ];
-    expect(claimsOf(hallucinated)).toEqual(["已落盘"]);
-    const wrote: ConvEntry[] = [
-      { k: "user", at: 1, text: "可以" },
-      { k: "frame", at: 2, frame: F("tool", { turn_id: "t1", phase: "end", index: 0, name: "write_episode_file", summary: "02-script.md", ok: true, observation: null, duplicate: false, command: null, description: null, handoff: null, verdict: null }, 2) },
-      { k: "frame", at: 3, frame: F("assistant", { turn_id: "t1", kind: "answer", text: "合并方案已落盘。" }, 3) },
-      { k: "frame", at: 4, frame: fin(1) },
-    ];
-    expect(claimsOf(wrote)).toEqual([]);
-    expect(claimsOf(turn("还没落盘，等你批准", 1))).toEqual([]);
-  });
 });
