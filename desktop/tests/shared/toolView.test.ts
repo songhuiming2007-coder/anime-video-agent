@@ -124,7 +124,7 @@ describe("R2 ⑦ 连续 bash 折成终端组", () => {
 });
 
 describe("R4 ① 回合切段", () => {
-  it("正常一轮：工具进过程，终稿答复 / 页脚 / 停机点留在外面；第一条 user 之前的是 loose；默认收起", () => {
+  it("正常一轮：工具进过程，终稿答复 / 页脚留在外面；第一条 user 之前的是 loose；默认收起", () => {
     const rows: ConvRow[] = [
       { k: "notice", at: 0, level: "warn", code: "code_freeze", text: "…" },
       user("看下进度", 1000),
@@ -133,13 +133,12 @@ describe("R4 ① 回合切段", () => {
       tool("bash", true),
       answer("停在 05", 5000),
       footer("done", 73_000),
-      { k: "stop", at: 0, text: "停机点 05 待审（在待答区处理）" },
     ];
     const segs = turnSegments(rows, false);
     expect(segs[0]).toEqual({ k: "loose", index: 0 });
     const [t] = turns(segs);
     expect(t.process).toEqual([{ k: "row", index: 2 }, { k: "group", key: "g:3", indices: [3, 4] }]);
-    expect(t.tail).toEqual([5, 6, 7]);
+    expect(t.tail).toEqual([5, 6]);
     expect([t.outcome, t.tools, t.fails, t.running]).toEqual(["done", 3, 0, false]);
     expect(turnDefaultOpen(t)).toBe(false);
     expect(foldLabel(t, 0)).toBe("已工作 1分12秒");

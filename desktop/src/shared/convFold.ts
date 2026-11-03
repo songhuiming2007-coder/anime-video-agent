@@ -37,7 +37,6 @@ export type ConvRow =
   | ToolRow
   | { k: "log"; at: number; lines: string[] }
   | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided" }
-  | { k: "stop"; at: number; text: string }
   | { k: "notice"; at: number; level: string; code: string; text: string }
   /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text）；
    *  brief：D80 R5 默认显示的短摘要（「N 次模型调用 · 上下文 …」），完整遥测仍在 text、展开可见 */
@@ -277,9 +276,8 @@ export function bashSummary(command: string | null): string {
 
 /**
  * 把一条已校验的帧折进行序列；`lastTool` 是当前回合里最近一个尚未结束的工具行下标（-1 = 无）；
- * `lastStops` 是上一帧 stop_points 的内容（D80 R5：同一会话里停机点没变化就不再重复成行）。
  */
-function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number; lastStops?: string }): void {
+function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number }): void {
   switch (f.t) {
     case "assistant":
       rows.push({ k: "assistant", at, kind: String(f.kind) as "answer" | "wrapup" | "local_note", text: f.text as string, label: null });
@@ -327,12 +325,8 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       break;
     }
     case "stop_points": {
-      // D80 R5：每回合恰好一帧 stop_points（S9-R4），停机点不变时逐轮重复同一行是噪声——只在内容变化时成行
-      const texts = ((f.items as Record<string, unknown>[]) ?? []).map((item) => `停机点 ${String(item.type)} 待审（在待答区处理）`);
-      const key = texts.join("\n");
-      if (key === lastTool.lastStops) break;
-      lastTool.lastStops = key;
-      for (const text of texts) rows.push({ k: "stop", at, text });
+      // D159：停机点是状态，不是对话事件——期行徽标（停机 / N 张卡待答）已有承载，流里不再成行。
+      // 停机点变化仍然触发桌面通知（host 侧 attention），只是不再往对话流里塞一行灰字。
       break;
     }
     case "command_result":

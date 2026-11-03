@@ -56,9 +56,17 @@ type Opens = { get: (key: string, dflt: boolean) => boolean; toggle: (key: strin
  */
 export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
   const tickets = handoffTickets(rows);
-  if (tickets.length === 0) return null;
+  // D159：启动期的工单提醒（notice：ticket_fixed）也归到这里——它本来就是说工单的事，不该在对话流里占行
+  const notes = rows.filter((r): r is Extract<ConvRow, { k: "notice" }> => r.k === "notice" && r.code === "ticket_fixed");
+  if (tickets.length === 0 && notes.length === 0) return null;
   return (
     <div className="conv-handoff" data-testid="handoff-strip">
+      {notes.map((n) => (
+        <div key={`n:${n.at}:${n.text}`} className="conv-handoff-row" data-testid="handoff-note">
+          <Icon name={n.level === "error" ? "alert" : "info"} size="sm" />
+          <span>{n.text}</span>
+        </div>
+      ))}
       {tickets.map((t) => (
         <div key={t.id} className="conv-handoff-row" data-ticket={t.id}>
           <span>本会话开了工单</span>
@@ -439,13 +447,9 @@ function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean })
         </div>
       );
     }
-    case "stop":
-      return (
-        <div className="conv-note" data-testid="conv-row" data-kind="stop">
-          {row.text}
-        </div>
-      );
     case "notice":
+      // D159：工单提醒归工单提示条（HandoffStrip），不再进对话流
+      if (row.code === "ticket_fixed") return null;
       return (
         <div className={`conv-notice conv-notice--${row.level}`} data-testid="conv-row" data-kind="notice" data-code={row.code} data-level={row.level}>
           <Icon name={row.level === "error" ? "alert" : "info"} size="sm" />
