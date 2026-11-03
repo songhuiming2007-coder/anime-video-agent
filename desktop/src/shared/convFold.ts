@@ -203,9 +203,17 @@ export function lookupsText(v: unknown): string | null {
  */
 const CLAIM_WORDS = /(?<![未待没无不])(查实|复核|核验|核实|调取|查证|一手物证|逐条核对|反复确认)/g;
 
+/** D105 续：声称「已落盘 / 已写入」但没有 write_episode_file 调用撑着的幻觉（supercell 卷 2026-11-03：读了盘就谎称落盘） */
+const WRITE_CLAIM_WORDS = /(?<![未待没无不])(已落盘|已写入|落盘了|写入完成)/g;
+
 /** 回复里声称核查过的措辞（去重，按出现顺序） */
 export function claimWords(text: string): string[] {
   return [...new Set(Array.from(text.matchAll(CLAIM_WORDS), (m) => m[1]))];
+}
+
+/** 回复里声称「已落盘/已写入」的措辞（去重） */
+function writeClaimWords(text: string): string[] {
+  return [...new Set(Array.from(text.matchAll(WRITE_CLAIM_WORDS), (m) => m[1]))];
 }
 
 /** 本回合（上一个用户消息之后）的回复全文 */
@@ -219,10 +227,23 @@ function turnReplyText(rows: readonly ConvRow[]): string {
   return parts.join("\n");
 }
 
-/** 0 次工具调用却声称核查过 → 那些措辞；否则空。0 次模型调用的回合没有回复，不判 */
+/** 本回合有没有调用过写期文件的工具（write_episode_file / write_note / write_memory / fact_add / cover_edit） */
+function hasWriteTool(rows: readonly ConvRow[]): boolean {
+  const WRITE_TOOLS = new Set(["write_episode_file", "write_note", "write_memory", "fact_add", "cover_edit"]);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.k === "user" || r.k === "footer") break;
+    if (r.k === "tool" && WRITE_TOOLS.has(r.name)) return true;
+  }
+  return false;
+}
+
+/** 0 次工具调用却声称核查过；或调了工具但**没有写工具**却声称「已落盘」 → 那些措辞；否则空 */
 function unbackedClaims(f: OutFrame, rows: readonly ConvRow[]): string[] {
-  if (f.tool_calls !== 0 || !(Number(f.llm_calls) > 0)) return [];
-  return claimWords(turnReplyText(rows));
+  if (!(Number(f.llm_calls) > 0)) return [];
+  const reply = turnReplyText(rows);
+  if (f.tool_calls === 0) return claimWords(reply);
+  return hasWriteTool(rows) ? [] : writeClaimWords(reply);
 }
 
 /** D80 R5：回合末默认只显示调用次数与上下文读数——工具数与用时已在回合折叠行上，其余遥测展开看 */
