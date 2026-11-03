@@ -401,21 +401,14 @@ describe("D80 R5 / R6.3：短摘要、停机点去重、卡片短语", () => {
     expect(foot.k === "footer" && [foot.brief, foot.stopped]).toEqual(["2 次模型调用 · 上下文约 100 字", "done"]);
     expect(foot.k === "footer" && foot.text).toContain("检查点 0");
   });
-  it("停机点：内容不变的逐轮 stop_points 不再成行；变了（解决 / 新出现）才成行", () => {
+  it("停机点：D159 起不进对话流（期行徽标 / 待答区承载），任何 stop_points 帧都不成行", () => {
     const { rows } = foldConv([
       { k: "frame", at: 1, frame: stops(["05"], 1) },
       { k: "frame", at: 2, frame: stops(["05"], 2) },
-      { k: "frame", at: 3, frame: stops(["05"], 3) },
       { k: "frame", at: 4, frame: stops([], 4) },
-      { k: "frame", at: 5, frame: stops(["05"], 5) },
       { k: "frame", at: 6, frame: stops(["05", "09"], 6) },
     ]);
-    expect(rows.map((r) => (r.k === "stop" ? [r.at, r.text] : null))).toEqual([
-      [1, "停机点 05 待审（在待答区处理）"],
-      [5, "停机点 05 待审（在待答区处理）"],
-      [6, "停机点 05 待审（在待答区处理）"],
-      [6, "停机点 09 待审（在待答区处理）"],
-    ]);
+    expect(rows).toEqual([]);
   });
   it("卡片短语与卡类 / 工具名", () => {
     expect(cardParts("[工具卡] bash")).toEqual({ kind: "工具卡", tool: "bash" });

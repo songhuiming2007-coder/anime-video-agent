@@ -134,8 +134,8 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await p.emulateMedia({ reducedMotion: "no-preference" });
     await turnsDone(3);
     await expect(shimmer).toHaveCount(0);
-    // R5：三轮下来停机点没变，「停机点 … 待审」只有一行（此前每轮一行）
-    await expect(p.locator("[data-testid=conv-row][data-kind=stop]")).toHaveCount(1);
+    // D159：停机点不再进对话流（期行徽标 / 待答区承载），三轮跑完流里零 stop 行
+    await expect(p.locator("[data-testid=conv-row][data-kind=stop]")).toHaveCount(0);
     await expect(p.locator("[data-testid=session-title][data-running]")).toHaveCount(0);
     await expect(p.getByTestId("conv-turn").nth(2)).toHaveAttribute("data-open", "0"); // 运行 → 结束的边沿自动收起
 

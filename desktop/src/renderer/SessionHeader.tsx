@@ -88,6 +88,12 @@ export function SessionHeader({
         </span>
       )}
       {info.llm === "ok" && <span className="ui-dot ui-dot--ok" data-testid="llm-ok" title="LLM 已连接" />}
+      {/* D159：会话计数是状态不是对话事件——挪到会话头一行小字，不再占对话流首条大横条 */}
+      {info.otherSessions > 0 && (
+        <span className="muted" data-testid="other-sessions">
+          该期还有 {info.otherSessions} 个会话{info.otherLatest ? ` · ${info.otherLatest}` : ""}
+        </span>
+      )}
       {/* D39 C2：头部恒为一行，只留短标；原因全文、钥匙串命令、更早会话进对话流首行（SessionNotes，Spec 10 §2.3「流内一行」） */}
       {info.llm === "degraded" && (
         <span className="warn" data-testid="llm-degraded-mark">
@@ -158,7 +164,7 @@ export function SessionHeader({
  * 文案与原会话头逐字相同；钥匙串命令仍在同一个文本节点里，可一次选中复制（N36）。
  */
 export function SessionNotes({ info, keyProblem }: { info: ReadyInfo; keyProblem: string | null }) {
-  if (info.llm !== "degraded" && keyProblem === null && info.otherSessions === 0) return null;
+  if (info.llm !== "degraded" && keyProblem === null) return null;
   return (
     <div className="session-notes" data-testid="session-notes">
       {info.llm === "degraded" && (
@@ -169,11 +175,6 @@ export function SessionNotes({ info, keyProblem }: { info: ReadyInfo; keyProblem
       {keyProblem !== null && (
         <div className="muted" data-testid="key-problem">
           {keyProblem}
-        </div>
-      )}
-      {info.otherSessions > 0 && (
-        <div className="muted" data-testid="other-sessions">
-          该期还有 {info.otherSessions} 个更早的会话{info.otherLatest ? `；最近一个 ${info.otherLatest}` : ""}
         </div>
       )}
     </div>
