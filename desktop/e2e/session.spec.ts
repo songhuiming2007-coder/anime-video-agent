@@ -327,6 +327,34 @@ test("TX-9 会话崩溃作废：待答区卡消失、流内显示已作废", asy
   });
 });
 
+test("TX-9b 期行再点当前期收起会话子列表（D158）：不杀会话、切期后复位展开", async () => {
+  await withSession(async ({ repo, L }) => {
+    const sid = "aaaaaaaaaaaaaaa1";
+    fixtureWrite(repo.root, "data/episodes/SESS-A/session.jsonl",
+      [{ k: "session_start", sid, seq: 0, ts: "2026-10-01T10:00:00Z", schema: 1 }, { k: "msg", sid, seq: 1, ts: "2026-10-01T10:00:01Z", origin: "user", message: { role: "user", content: "旧消息" } }]
+        .map((r) => JSON.stringify(r)).join("\n") + "\n");
+    sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    const row = L.page.locator("[data-testid=episode]", { hasText: "SESS-A" }).first();
+    await row.click();
+    await expect(L.page.getByTestId("session-list")).toBeVisible();
+    await expect(row).toHaveAttribute("aria-expanded", "true");
+    // 再点当前期：收起子列表，期行仍高亮、中栏仍是该期
+    await row.click();
+    await expect(L.page.getByTestId("session-list")).toHaveCount(0);
+    await expect(row).toHaveAttribute("aria-current", "true");
+    await expect(L.page.getByTestId("center")).toHaveAttribute("data-ep", "SESS-A");
+    // 再点：重新展开
+    await row.click();
+    await expect(L.page.getByTestId("session-list")).toBeVisible();
+    // 收起后切到另一期再切回来：子列表恢复展开（收起态不跨期记忆）
+    await row.click();
+    await expect(L.page.getByTestId("session-list")).toHaveCount(0);
+    await openEp(L.page, "SESS-B");
+    await openEp(L.page, "SESS-A");
+    await expect(L.page.getByTestId("session-list")).toBeVisible();
+  }, ["SESS-A", "SESS-B"]);
+});
+
 test("TX-10 继续上次会话（D45：点侧栏会话行）：出现历史分隔条与历史条目", async () => {
   await withSession(async ({ repo, L }) => {
     // 会话列表由真 core 的 /list-sessions 读 session.jsonl：放一个旧会话进去，侧栏才有行可点
