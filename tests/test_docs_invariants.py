@@ -166,14 +166,22 @@ def test_adrs_0018_0019_exist_with_reversal_conditions():
 
 
 def test_discredited_budget_not_active_rule():
-    """已被否证的「每期人类投入 ≤ 10 分钟」不得在现行核心规程（README/STANDARD/AGENTS）中充当活规则"""
+    """「每期人类投入 ≤ 10 分钟」不得当活规则；现行口径是观测量、不设硬预算。
+
+    「k × 片长」也已废除，STANDARD / AGENTS 只当沿革保留；README 写现行口径即可。
+    """
     pattern = re.compile(r"每期人类投入\s*≤\s*10\s*分钟")
-    for rel_path in ["README.md", "docs/dev/STANDARD.md", "AGENTS.md"]:
+    live = {
+        "README.md": "不设上限",
+        "docs/dev/STANDARD.md": "不设硬预算",
+        "AGENTS.md": "不设硬预算",
+    }
+    for rel_path, marker in live.items():
         content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
         assert not pattern.search(content), (
             f"{rel_path} 仍包含已被实践否证的活规则「每期人类投入 ≤ 10 分钟」"
         )
-        assert "k × 片长" in content, f"{rel_path} 缺少新预算口径「k × 片长」"
+        assert marker in content, f"{rel_path} 缺少现行口径「{marker}」"
 
 
 # 02.5 人审要点五条的**关键串**（Spec 11 §2.6 冻结）。真源是 runbook，桌面端
