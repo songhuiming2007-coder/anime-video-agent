@@ -761,12 +761,11 @@ def test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs(root: Path,
 
     session = AgentSession(host, scope_mode="creative", persist=True)
     tracker = SessionContextTracker()
-    resident = assemble_resident_prompt("creative", root=root).content
-    tracker.resident_prompt = resident
     tracker.active_scope = "creative"
     tracker.injected_paths = {"docs/steps/01.md"}
     tracker.active_step_key = state["step_key"]
-    messages: list[dict] = [{"role": "system", "content": "旧常驻层"}]
+    stale = "OLD_RESIDENT\n\n---\n\n[状态卡]\n旧卡"
+    messages: list[dict] = [{"role": "system", "content": stale}]
     session.messages = messages
     session._injected_docs = dict(state["docs"])
 
@@ -774,9 +773,10 @@ def test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs(root: Path,
     session._open_session("creative", tracker, root)
     session._assemble(messages, tracker, status, "creative", "下一句", root=root)
 
-    # TS-7：messages[0] 是当前装配结果，不是旧常驻层
-    assert messages[0]["content"].startswith(resident.split("\n")[0])
-    assert messages[0]["content"] != "旧常驻层"
+    resident = assemble_resident_prompt("creative", root=root).content
+    assert messages[0]["content"] == resident
+    assert "[状态卡]" not in messages[0]["content"]
+    assert messages[0]["content"] != stale
     # TS-6：该文档的当前 sha 与记录不同 → 追加一条「规程已修订」
     appended = [m for m in messages if "[系统提示更新] 规程已修订" in str(m.get("content"))]
     assert len(appended) == 1
@@ -784,6 +784,36 @@ def test_ts6_ts7_resume_rebuilds_resident_and_reinjects_changed_docs(root: Path,
     # 恢复段写的是 segment_start，且带上当前常驻层 sha
     kinds = [json.loads(line)["k"] for line in lease.read().decode("utf-8").splitlines()]
     assert "segment_start" in kinds
+
+
+def test_seed_resume_rebuilds_messages0_from_current_files(root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """终端 --continue：messages[0] 按当前文件现装，旧卡不进 system。"""
+    from pipeline.agent.assembly import SessionContextTracker, assemble_resident_prompt
+
+    lease = EpisodeLease.acquire(episode)
+    lease.begin("sid-seed", resumed_from_seq=0)
+    lease.append({"k": "session_start", "schema": 1, "sid": "sid-seed", "seq": 1,
+                  "episode": episode.name, "scope_mode": "auto",
+                  "resident_sha256": "0" * 64, "pid": 1})
+    lease.append({"k": "msg", "sid": "sid-seed", "seq": 2, "turn_id": "t1", "origin": "user",
+                  "message": {"role": "user", "content": "甲"}})
+    lease.append({"k": "msg", "sid": "sid-seed", "seq": 3, "turn_id": "t1", "origin": "injection",
+                  "message": {"role": "user", "content": "[状态卡]\n旧卡"}})
+
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    host.lease = lease
+    state = prepare_resume(host, "sid-seed")
+    assert state["status"] == "resumed"
+    monkeypatch.setattr(cli, "_SESSION_HOST", host)
+
+    tracker = SessionContextTracker()
+    messages: list[dict] = []
+    cli._seed_resume(episode, messages, tracker, root)
+    resident = assemble_resident_prompt("creative", root=root).content
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == resident
+    assert "[状态卡]" not in messages[0]["content"]
+    assert any(str(m.get("content", "")).startswith("[状态卡]") for m in messages[1:])
 
 
 def test_n56_resume_reinjects_docs_changed_since_natural_injection(root: Path, episode: Path) -> None:
@@ -1296,7 +1326,7 @@ def _resume_session(root: Path, episode: Path, history: list[dict]) -> tuple[Age
     tracker.active_scope = "creative"
     tracker.injected_paths = set((state.get("docs") or {}).keys())
     tracker.active_step_key = state.get("step_key")
-    messages = [{"role": "system", "content": tracker.get_initial_system_prompt("## 状态卡")}]
+    messages = [{"role": "system", "content": tracker.get_initial_system_prompt()}]
     messages.extend(state["messages"])
     session = AgentSession(host, scope_mode="creative", persist=True)
     return session, messages, tracker
@@ -1994,3 +2024,75 @@ def test_d118_历史帧同样带verdict() -> None:
     w = W()
     _send_history(w, records)  # type: ignore[arg-type]
     assert [f.get("verdict") for f in w.frames if f["role"] == "tool"] == ["无匹配", None, "机检未通过"]
+
+
+def test_send_history_skips_rolled_back_status_card() -> None:
+    from pipeline.agent.compact import STATUS_CARD_KEY
+    from pipeline.agent.protocol import _send_history
+
+    def card(text: str) -> dict:
+        return {"role": "user", "content": text, STATUS_CARD_KEY: True}
+
+    records = [
+        {"k": "msg", "seq": 1, "turn_id": "t1", "origin": "injection",
+         "message": card("[状态卡]\n当前")},
+        {"k": "msg", "seq": 2, "turn_id": "t2", "origin": "injection",
+         "message": card("[状态卡]\n已回滚")},
+        {"k": "turn_rollback", "turn_id": "t2"},
+    ]
+
+    class W:
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+
+        def send(self, f: dict) -> None:
+            self.frames.append(f)
+
+    w = W()
+    _send_history(w, records)  # type: ignore[arg-type]
+    texts = [f["text"] for f in w.frames]
+    assert texts == ["[状态卡]\n当前"]
+
+
+def test_send_history_legacy_injection_card_without_key() -> None:
+    """旧日志没有 _ava_status_card：只认 origin=injection 的卡，人的话原样上屏。"""
+    from pipeline.agent.protocol import _send_history
+
+    question = "[状态卡] 这行是什么意思？"
+    records = [
+        {"k": "msg", "seq": 1, "turn_id": "t1", "origin": "user",
+         "message": {"role": "user", "content": question}},
+        {"k": "msg", "seq": 2, "turn_id": "t1", "origin": "injection",
+         "message": {"role": "user", "content": "[状态卡]\n旧1"}},
+        {"k": "msg", "seq": 3, "turn_id": "t2", "origin": "injection",
+         "message": {"role": "user", "content": "[状态卡]\n旧2"}},
+    ]
+
+    class W:
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+
+        def send(self, f: dict) -> None:
+            self.frames.append(f)
+
+    w = W()
+    _send_history(w, records)  # type: ignore[arg-type]
+    assert [f["text"] for f in w.frames] == [question, "[状态卡]\n旧2"]
+
+
+def test_assemble_skips_empty_status_card(root: Path, episode: Path) -> None:
+    from pipeline.agent.assembly import SessionContextTracker
+
+    host = SessionHost(episode, root=root, channel=FakeChannel([]))
+    session = AgentSession(host, scope_mode="creative", persist=True)
+    host.ensure_lease()
+    tracker = SessionContextTracker()
+    tracker.resident_prompt = "R"
+    tracker.active_scope = "creative"
+    messages: list[dict] = [{"role": "system", "content": "R"}]
+    session.messages = messages
+    session._status_card = lambda *a, **k: "  \n"  # type: ignore[method-assign]
+    session._open_session("creative", tracker, root)
+    session._assemble(messages, tracker, None, "creative", "下一句", root=root)
+    assert all(str(m.get("content") or "").strip() for m in messages)
+    assert not any(str(m.get("content", "")).startswith("[状态卡]") for m in messages)

@@ -1,6 +1,6 @@
 """工序层上下文装配器与路由引擎（ADR-0022）。
 
-常驻层字节级恒定，工序层精准增量注入。
+常驻层字节级恒定（messages[0] 只放常驻层），工序层精准增量注入；状态卡每轮独立 user 消息。
 """
 
 from __future__ import annotations
@@ -73,12 +73,9 @@ class SessionContextTracker:
             if text and text not in self.trusted_doc_texts:
                 self.trusted_doc_texts.append(text)
 
-    def get_initial_system_prompt(
-        self,
-        status_card: str,
-    ) -> str:
-        """首轮 messages[0]：仅常驻层 + 动态层，工序层不拼入。"""
-        return f"{self.resident_prompt}\n\n---\n\n{status_card}"
+    def get_initial_system_prompt(self) -> str:
+        """messages[0]：仅常驻层。状态卡每轮独立 user 消息，不拼进本段。"""
+        return self.resident_prompt
 
     def warn_once(self, path: str, message: str) -> None:
         """同一缺失文件只警告一次，防止 REPL 刷屏（红队 M2）。"""
@@ -255,7 +252,7 @@ def assemble_resident_prompt(
 
     第三份的配置键沿用 `agents`（兼容旧配置）；D92 起指向做片常驻规则，仓库 `AGENTS.md` 留给 coding agent。
 
-    会话内字节级恒定，任何修改都会破坏 Prompt Cache。
+    会话内字节级恒定（messages[0] 只放本段），任何修改都会破坏 Prompt Cache。
     """
     base_root = root or paths.ROOT
     resident_map = resident_paths(scope, config_path, root)
@@ -315,6 +312,30 @@ def _readable_doc(root: Path, rel_path: str, target: Path) -> bool:
 def read_resident_file(path: Path) -> str:
     """常驻层三件的唯一读法（做换行翻译）。装配与出网可信集 (b) 共用（Spec 16 §5.2.2）。"""
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def resident_token_budget(
+    scope: str,
+    config_path: Path | None = None,
+    root: Path | None = None,
+) -> int:
+    """assembly.json 的 resident_budget。缺表、缺键、坏值一律抛，不许静默变宽。"""
+    base_root = root or paths.ROOT
+    cfg_file = config_path or (base_root / "config" / "agent" / "assembly.json")
+    try:
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 resident_budget: {exc}") from exc
+    budgets = data.get("resident_budget") if isinstance(data, dict) else None
+    if not isinstance(budgets, dict):
+        raise ValueError("assembly.json 缺少 resident_budget")
+    raw = budgets.get(scope, budgets.get("default"))
+    if raw is None:
+        raise ValueError(f"resident_budget 没有 {scope} 也没有 default")
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"resident_budget[{scope}] 不是整数: {raw!r}") from exc
 
 
 def resident_paths(

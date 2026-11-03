@@ -37,6 +37,9 @@ from typing import Any, Iterator
 
 SCHEMA = 1
 LOG_NAME = "session.jsonl"
+# shortcut: 与 compact.STATUS_CARD_KEY / PREFIX 同字面量。本模块零重依赖，不 import compact；改键名时两处一起改。
+_STATUS_CARD_KEY = "_ava_status_card"
+_STATUS_CARD_PREFIX = "[状态卡]"
 FIRST_USER_CHARS = 60
 #: 选题会话的库级日志目录名（`data/_idea/`）。`_` 前缀：`_episode_name_problem` 禁止这样的期名，
 #: 而且它在 `data/` 下、不在 `data/episodes/` 下，任何期枚举都够不着（Spec 18 §3.1 / R4）。
@@ -452,6 +455,18 @@ def _copy(message: Any) -> Any:
     return json.loads(json.dumps(message, ensure_ascii=False))
 
 
+def _stamp_legacy_status_card(message: Any, *, origin: str | None = None) -> Any:
+    """旧日志没有内部键：injection 卡、以及压缩尾部里带换行的卡，补上键。"""
+    if not isinstance(message, dict) or message.get(_STATUS_CARD_KEY):
+        return message
+    content = str(message.get("content") or "")
+    if origin == "injection" and content.startswith(_STATUS_CARD_PREFIX):
+        message[_STATUS_CARD_KEY] = True
+    elif origin is None and message.get("role") == "user" and content.startswith(_STATUS_CARD_PREFIX + "\n"):
+        message[_STATUS_CARD_KEY] = True
+    return message
+
+
 def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
     """按记录重建 `messages[1:]`（不含 system）：丢弃回滚回合，按 after_seq 插回修复结果。
 
@@ -467,14 +482,19 @@ def rebuild_messages(session: LoadedSession) -> list[dict[str, Any]]:
             if str(record.get("turn_id")) in rolled_back:
                 continue
             if (record.get("message") or {}).get("role") == "system":
-                # 首轮落盘的 system（当时的常驻层 + 状态卡）不重建：调用方会按**当前**文件现建
-                # messages[0]，再留旧的就是两张互相矛盾的状态卡并存（D62 施工发现，人 2026-10-10 裁决修）
+                # 首轮落盘的 system（常驻层）不重建：调用方会按**当前**文件现建 messages[0]。
                 continue
             positions[int(record.get("seq", 0))] = len(rebuilt)
-            rebuilt.append(_copy(record.get("message")))
+            rebuilt.append(_stamp_legacy_status_card(
+                _copy(record.get("message")), origin=str(record.get("origin") or "") or None,
+            ))
         elif kind == "compaction":
-            card = [_copy(record["card"])] if record.get("card") else []
-            rebuilt = [_copy(record.get("summary")), *card, *(_copy(m) for m in record.get("tail") or [])]
+            card = [_stamp_legacy_status_card(_copy(record["card"]))] if record.get("card") else []
+            rebuilt = [
+                _copy(record.get("summary")),
+                *card,
+                *(_stamp_legacy_status_card(_copy(m)) for m in record.get("tail") or []),
+            ]
             positions = {}
     # 修复结果插在所属 assistant 之后、其已有 tool 消息之后（§2.8 第 4 步）
     for record in session.records:

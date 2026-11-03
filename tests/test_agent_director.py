@@ -379,6 +379,7 @@ def test_m12_director_md_contains_disciplines():
 
     assert "Code Freeze" in text
     assert "--force" in text
+    assert "唯一出网的是 LLM 请求文本" in text
 
 
 def test_m12_director_md_contains_professional_vocabulary():
@@ -675,7 +676,7 @@ def test_m19_script_subloop_with_focus_prompt(tmp_path: Path, monkeypatch):
 
 
 def test_assemble_system_prompt_structure(tmp_path: Path):
-    """系统提示词由 director.md + scope 边界 + 状态卡三段拼接 (Spec §1.3)。"""
+    """系统提示词由 director.md + scope 边界 + production.md 拼接；状态卡不进 messages[0]。"""
     ep = tmp_path / "01-prompt-struct"
     ep.mkdir()
     (ep / "01-topic.md").write_text("# Topic", encoding="utf-8")
@@ -686,8 +687,8 @@ def test_assemble_system_prompt_structure(tmp_path: Path):
     assert "Director Persona" in assembled
     assert "Creative Scope System Prompt" in assembled
     assert "聚焦提示" in assembled
-    assert "[状态卡]" in assembled
-    assert assembled.count("\n\n---\n\n") == 3  # Spec 1 收编后含 AGENTS.md，由 2 处节区分隔升为 3 处
+    assert "[状态卡]" not in assembled
+    assert assembled.count("\n\n---\n\n") == 2
 
 
 def test_system_prompt_replaced_not_appended_across_turns(tmp_path: Path, monkeypatch):
@@ -979,7 +980,12 @@ def test_dispatch_agent_turn_messages_merged_across_turns(tmp_path: Path, monkey
         # 第二轮请求发往 LLM 时，body 中的 messages 必须包含第一轮的 user 和 assistant
         assert len(state["requests"]) == 2
         req2_messages = state["requests"][1]["body"]["messages"]
-        user_texts = [m["content"] for m in req2_messages if m["role"] == "user"]
+        user_texts = [
+            m["content"] for m in req2_messages
+            if m["role"] == "user"
+            and not str(m.get("content", "")).startswith("[状态卡]")
+            and "[系统提示更新]" not in str(m.get("content", ""))
+        ]
         assert user_texts == ["第一轮问题", "第二轮问题"]
         assistant_texts = [m["content"] for m in req2_messages if m["role"] == "assistant"]
         assert assistant_texts == ["这是第一轮回复"]

@@ -1290,12 +1290,12 @@ class AgentSession:
             assemble_resident_prompt,
             load_injected_doc,
             render_step_injection,
-            resolve_memory_injection,
             resolve_step_docs,
             step_key_of,
             trusted_texts_of_docs,
             trusted_texts_of_resident,
         )
+        from pipeline.agent.compact import STATUS_CARD_KEY
         from pipeline.agent.llm import load_llm_config, local_directive_message
         from pipeline.agent.status_card import build_idea_card
 
@@ -1305,6 +1305,11 @@ class AgentSession:
             tracker.active_scope = scope
             # 可信集 (a) 常驻层：三份文件各自的原文，**不取** resident_prompt（它含 extra_prompt）
             tracker.trust(trusted_texts_of_resident(resident, root))
+            if messages:
+                messages[0] = {
+                    "role": "system",
+                    "content": tracker.get_initial_system_prompt(),
+                }
 
         step_key = step_key_of(status.current_step if status else None)
         step_docs = [
@@ -1322,8 +1327,10 @@ class AgentSession:
         )
 
         if not messages:
-            sys_content = tracker.get_initial_system_prompt(status_card)
-            self._commit({"role": "system", "content": sys_content}, "injection")
+            self._commit(
+                {"role": "system", "content": tracker.get_initial_system_prompt()},
+                "injection",
+            )
             if step_docs:
                 injection = render_step_injection(
                     step_docs, step_name=status.current_step if status else None
@@ -1343,15 +1350,15 @@ class AgentSession:
                     tracker.injected_paths.update(d.rel_path for d in new_docs)
                     tracker.trust(trusted_texts_of_docs(new_docs, root))  # 可信集 (a) 工序层
                 tracker.active_step_key = step_key
-            # 刷新状态卡：整段替换 messages[0]（一轮之内不再变）
-            messages[0] = {
-                "role": "system",
-                "content": tracker.get_initial_system_prompt(status_card),
-            }
 
         self._inject_memory(messages, tracker, scope, root=root)
         self._reinject_changed(messages, tracker, scope, status, root=root)
         self._inject_project(tracker, root=root)
+        if status_card and status_card.strip():
+            self._commit(
+                {"role": "user", "content": status_card, STATUS_CARD_KEY: True},
+                "injection",
+            )
 
         if load_llm_config(root) is None:
             return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
@@ -1526,11 +1533,14 @@ class AgentSession:
         region = aged[1:cut] if cut > 1 else []
         if not cp.strip_marked(region):
             return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
+        region = [m for m in region if not cp.is_status_card(m)]
+        if not region:
+            return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
 
         # 读数连同口径一起传进来（审查 #5）：自动触发的读数可能是估算，不许记成实测
         before = reading if reading is not None else cp.context_reading(None, messages)
         card = cp.card_message(reinject_card) if reinject_card else None
-        tail = cp.strip_marked(messages[cut:])
+        tail = cp.kept_tail(messages, cut)
         if not manual:
             # 自动压缩后回合还要接着发请求：先用本回合的可信集把「压缩后会留下的原文」过一遍出网断言，
             # 过不了就不压——否则压缩后撞断言只能回到压缩点，脏串仍在尾部里，一轮轮卡死（审查 #2）。
@@ -1675,8 +1685,11 @@ class AgentSession:
             return None
         if not decision.fire:
             return None
-        card = None
-        if self.host.ep_dir is not None:  # idea 会话：静态卡本就在 messages[0]，跳过重注入（人裁决③）
+        if self.host.ep_dir is None:
+            from pipeline.agent.status_card import build_idea_card
+
+            card = build_idea_card()
+        else:
             from pipeline.status import inspect_episode
 
             card = self._status_card(self._scope, inspect_episode(self.host.ep_dir))

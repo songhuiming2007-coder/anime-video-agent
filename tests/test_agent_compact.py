@@ -15,6 +15,7 @@ from pipeline.agent.compact import (
     COMPACT_KEY,
     MARK_CARD,
     MARK_SUMMARY,
+    STATUS_CARD_KEY,
     CompactConfig,
     CompactConfigError,
     ModelWindow,
@@ -249,6 +250,77 @@ def test_unmarked_history_wires_as_same_object():
     """没有任何内部标记 → 原样返回同一个对象（请求体与改动前逐字节一致）。"""
     plain = [_sys(), _user("u")]
     assert _wire_messages(plain, "reasoning") is plain
+
+
+def _card(text: str) -> dict:
+    return {"role": "user", "content": text, STATUS_CARD_KEY: True}
+
+
+def test_wire_keeps_only_latest_status_card():
+    from pipeline.agent.compact import drop_stale_status_cards
+
+    msgs = [
+        _sys(),
+        _card("[状态卡]\n旧"),
+        _user("hello"),
+        _say("ok"),
+        _card("[状态卡]\n新"),
+        _user("hello2"),
+    ]
+    assert drop_stale_status_cards(msgs) is not msgs
+    wired = _wire_messages(msgs, "reasoning")
+    cards = [m["content"] for m in wired if str(m.get("content", "")).startswith("[状态卡]")]
+    assert cards == ["[状态卡]\n新"]
+    assert all(STATUS_CARD_KEY not in m for m in wired)
+    prefix = msgs[:3]
+    wired_prefix = _wire_messages(prefix, "reasoning")
+    assert [m["content"] for m in wired_prefix] == [m["content"] for m in prefix]
+
+
+def test_status_card_prefix_in_user_text_is_not_a_card():
+    """人说「[状态卡] …」必须原样到 wire / 压缩尾部。"""
+    from pipeline.agent.compact import kept_tail
+    from pipeline.agent.protocol import _send_history
+
+    question = "[状态卡] 这行是什么意思？"
+    mem = [
+        _sys(),
+        _card("[状态卡]\n工序 02"),
+        _user(question),
+        _card("[状态卡]\n工序 03"),
+        _user("继续"),
+    ]
+    wired = _wire_messages(mem, "reasoning")
+    assert any(m["content"] == question for m in wired)
+    wired_cards = [
+        m["content"] for m in wired
+        if m.get("role") == "user" and str(m.get("content", "")).startswith("[状态卡]\n")
+    ]
+    assert wired_cards == ["[状态卡]\n工序 03"]
+    tail = kept_tail(mem, 1)
+    assert any(m["content"] == question for m in tail)
+    assert not any(m.get(STATUS_CARD_KEY) for m in tail)
+
+    class W:
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+
+        def send(self, f: dict) -> None:
+            self.frames.append(f)
+
+    w = W()
+    _send_history(w, [
+        {"k": "msg", "seq": 1, "turn_id": "t1", "origin": "injection",
+         "message": _card("[状态卡]\n工序 02")},
+        {"k": "msg", "seq": 2, "turn_id": "t1", "origin": "user",
+         "message": {"role": "user", "content": question}},
+        {"k": "msg", "seq": 3, "turn_id": "t2", "origin": "injection",
+         "message": _card("[状态卡]\n工序 03")},
+    ])
+    texts = [f["text"] for f in w.frames]
+    assert question in texts
+    assert "[状态卡]\n工序 02" not in texts
+    assert "[状态卡]\n工序 03" in texts
 
 
 def test_second_compaction_drops_old_summary_and_card():

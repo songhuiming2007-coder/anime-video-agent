@@ -582,7 +582,6 @@ def main(argv: list[str] | None = None) -> int:
         release_sid,
         resume_target,
     )
-    from pipeline.agent.status_card import build_idea_card, build_project_card, build_status_card
     from pipeline.status import inspect_episode
 
     def fail(code: str, message: str, rc: int) -> int:
@@ -771,7 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         if resume_state:
             messages.append({
                 "role": "system",
-                "content": tracker.get_initial_system_prompt(build_idea_card()),
+                "content": tracker.get_initial_system_prompt(),
             })
             messages.extend(resume_state["messages"])
             _send_history(writer, resume_state["records"])
@@ -787,13 +786,9 @@ def main(argv: list[str] | None = None) -> int:
             tracker.project_injected = {k: v for k, v in docs.items() if proj_prefix and k.startswith(proj_prefix)}
             tracker.injected_paths = {k for k in docs if k not in tracker.project_injected}
             tracker.active_step_key = resume_state.get("step_key")
-            card = (build_project_card(ep_dir) if is_project else build_status_card(
-                ep_dir, status, scope=scope,
-                project_dir=host.project_dir if host.session_kind == "volume" else None,
-            ))
             messages.append({
                 "role": "system",
-                "content": tracker.get_initial_system_prompt(card),
+                "content": tracker.get_initial_system_prompt(),
             })
             messages.extend(resume_state["messages"])
             _send_history(writer, resume_state["records"])
@@ -936,12 +931,36 @@ def _history_calls(message: dict[str, Any], calls: dict[str, tuple[str, Any]]) -
 
 
 def _send_history(writer: FrameWriter, records: list[dict[str, Any]]) -> None:
+    from pipeline.agent.compact import STATUS_CARD_PREFIX, is_status_card
+
     index = 0
     calls: dict[str, tuple[str, Any]] = {}
+    rolled_back = {str(r.get("turn_id")) for r in records if r.get("k") == "turn_rollback"}
+
+    def is_card_record(record: dict[str, Any], *, live: bool) -> bool:
+        if record.get("k") != "msg":
+            return False
+        if live and str(record.get("turn_id")) in rolled_back:
+            return False
+        message = record.get("message") or {}
+        if is_status_card(message):
+            return True
+        return (
+            record.get("origin") == "injection"
+            and message.get("role") == "user"
+            and str(message.get("content") or "").startswith(STATUS_CARD_PREFIX)
+        )
+
+    last_card_seq = None
+    for record in records:
+        if is_card_record(record, live=True):
+            last_card_seq = record.get("seq")
     for record in records:
         if record.get("k") != "msg":
             continue
         message = record.get("message") or {}
+        if is_card_record(record, live=False) and record.get("seq") != last_card_seq:
+            continue
         _history_calls(message, calls)
         role = _role_of(str(record.get("origin", "")))
         frame: dict[str, Any] = {

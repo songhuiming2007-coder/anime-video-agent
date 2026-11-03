@@ -58,6 +58,7 @@
 | [D152 续：桌面 UI 每日施工图](2026-10-30-desktop-ui-daily.md) | D152 | Spec 14 | **天天看的壳已过一轮人选**（2026-10-30）。每天读该文件 §四「下一处」做一项。原盘点 [2026-10-25-desktop-ui-zcode-alignment.md](2026-10-25-desktop-ui-zcode-alignment.md) |
 | [D157 一期多会话后台并存](2026-11-03-multi-session-spec.md) | D157, D158 | D45, D79, D81 | 人选 **B**（真后台跑，对齐 Pi/Codex 会话即并发单元）；spec 已出，待人终审后施工；D158 已随本批施工（②再点当前期收起） |
 | [D159 系统信息移出对话流（施工后截图）](2026-11-03-d159-shots/shots.spec.ts) | D159 | D80, D82 | 人选 **①**；已施工·机检通过（2026-11-03）；截图落 `desktop/out/d159-shots/`（不进 git）；待人验收真实窗口 |
+| [常驻层上下文装配改造](2026-11-06-context-assembly-redesign.md) | P1–P8 | ADR-0022, Spec 16 | **已施工·机检通过**（2026-11-06，复审改口径）：scope 400–2000 字 + resident_budget 贴现状、状态卡每轮 user 消息（`_ava_status_card`）、asset `_extends _base`；S5 节级 diff 未做 |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
