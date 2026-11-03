@@ -1050,6 +1050,13 @@ class AgentSession:
         resume = self.host.resume_state
         if resume is None:
             sid = secrets.token_hex(8)
+            # D157：新 sid 的 presence 在首个落盘回合登记（此前协议层还没有 sid 可 claim）
+            from pipeline.agent.session_log import claim_sid
+
+            try:
+                claim_sid(self.host.lease.ep_dir, sid)
+            except Exception:
+                pass  # presence 写不进不挡会话：并发 append 的短锁仍保证行不撕裂
             self.host.lease.begin(sid, resumed_from_seq=0)
             self.host.sid = sid
             self._record({
@@ -2084,17 +2091,22 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
 
 
 def resume_idea(host: "SessionHost") -> dict[str, Any] | None:
-    """idea 会话启动即恒恢复（Spec 18 §3.1）：持锁后取 `_idea` 里最近的可恢复段。
+    """idea 会话启动即恒恢复（Spec 18 §3.1）：取 `_idea` 里最近的可恢复段。
 
     无需 `--continue` 与 sid——逻辑上只有一个选题会话。没有可恢复段返回 `None`（全新会话）；
     段损坏等返回非 `resumed` 的状态，调用方照期会话的口径开新会话。`host.sid` 由调用方按
     各自入口的既有口径处理（协议置 sid、终端留空写 `segment_start`），与期会话 `--continue` 一致。
+    D157：同 sid 的活进程用 `claim_sid` 挡；这里不再靠整期租约挡第二个选题会话进程。
     """
     if host.lease is None:
         return None
     target, _candidates = resume_target(list_sessions(host.lease.read()))
     if target is None:
         return None
+    # D157：同一选题段至多一个活进程（多选题会话在框架上允许，但不许同段双写）
+    from pipeline.agent.session_log import claim_sid
+
+    claim_sid(host.lease.ep_dir, target.sid)
     state = prepare_resume(host, target.sid)
     if state["status"] != "resumed":
         host.resume_state = None

@@ -983,21 +983,38 @@ def test_tp7_unknown_closed_and_wrong_decision(world, endpoint, tmp_path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_tp9_second_protocol_process_exits_3_before_ready(world, endpoint, tmp_path) -> None:
-    """TP-9：同期第二个协议进程（带/不带 --continue）→ ready 之前以 error 帧说明并退出 3。"""
+def test_tp9_same_sid_second_protocol_process_exits_3(world, endpoint, tmp_path) -> None:
+    """D157（原 TP-9）：多会话下同期第二个**新**进程照常起（不再整期排他）；同 sid 的第二个
+    `--continue` 进程才在 ready 前以 E_SESSION_LOCKED 退出 3。
+
+    要让第一进程真的占住 sid，得让它先跑过一个回合（_open_session 里 claim_sid）；
+    只发 ready 时它还没 sid，`--continue <sid>` 才能撞上 presence。
+    """
     root, episode = world
     first = Protocol(root, endpoint, tmp=tmp_path / "a")
     try:
         first.wait_for_ready()
-        for extra in ([], ["--continue"]):
-            second = Protocol(root, endpoint, extra=extra, tmp=tmp_path / ("b" + str(len(extra))))
-            try:
-                err = second.wait_for("error", timeout=20)
-                assert err["code"] == "E_SESSION_LOCKED"
-                assert "ready" not in second.kinds(), "拿不到租约就不许发 ready"
-                assert second.finish(timeout=20) == 3
-            finally:
-                second.proc.kill()
+        endpoint.replies = [{"role": "assistant", "content": "好"}]
+        first.send({"t": "user_message", "text": "占住 sid"})
+        first.wait_for("turn_finished", timeout=20)
+        # sid 从任一帧上取（session_start 之后 writer.sid_source 就活了）
+        sids = [f.get("sid") for f in first.frames if f.get("sid")]
+        assert sids, "跑过一个回合后帧上应有 sid"
+        sid = sids[-1]
+        second = Protocol(root, endpoint, extra=["--continue", sid], tmp=tmp_path / "b")
+        try:
+            err = second.wait_for("error", timeout=20)
+            assert err["code"] == "E_SESSION_LOCKED"
+            assert "ready" not in second.kinds(), "同一 sid 已有活进程就不许发 ready"
+            assert second.finish(timeout=20) == 3
+        finally:
+            second.proc.kill()
+        # 同期另一个**新**进程并行起来：多会话并存（D157 的方向 B）
+        other = Protocol(root, endpoint, tmp=tmp_path / "c")
+        try:
+            assert other.wait_for_ready(timeout=20)["t"] == "ready"
+        finally:
+            other.proc.kill()
         first.shutdown()
     finally:
         first.proc.kill()
