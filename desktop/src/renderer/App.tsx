@@ -754,6 +754,8 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   /** D81：企划卡展开状态（人点过的才记；没点过的按「含当前卷 / 当前企划」决定） */
   const [projOpen, setProjOpen] = useState<Record<string, boolean>>({});
+  /** D158：期行会话子列表的本地收起态（方案②：再点当前期 = 收起）。纯显示，不结束会话；换期自动复位。 */
+  const [sessCollapsed, setSessCollapsed] = useState<Record<string, boolean>>({});
   /** 相对时间每 60 s 与回到前台时重算（RF-11） */
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -777,14 +779,20 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
   const row = (e: EpisodeSummary, label: string = e.epKey) => (
     <div key={e.epKey}>
       {epRow(e, label)}
-      {!showIdea && e.epKey === active && !stale && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
+      {!showIdea && e.epKey === active && !stale && !sessCollapsed[e.epKey] && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
     </div>
   );
-  const epRow = (e: EpisodeSummary, label: string) => (
+  const epRow = (e: EpisodeSummary, label: string) => {
+    const isActive = !showIdea && e.epKey === active;
+    return (
     <button
       className="ui-row ep"
-      aria-current={!showIdea && e.epKey === active ? "true" : undefined}
-      onClick={() => onOpen(e.epKey)}
+      aria-current={isActive ? "true" : undefined}
+      aria-expanded={isActive && !sessCollapsed[e.epKey] ? "true" : undefined}
+      onClick={() => {
+        if (isActive) setSessCollapsed((c) => ({ ...c, [e.epKey]: !c[e.epKey] })); // D158 ②：再点当前期只收/展会话子列表
+        else { setSessCollapsed((c) => ({ ...c, [e.epKey]: false })); onOpen(e.epKey); }
+      }}
       title={label !== e.epKey ? e.epKey : undefined}
       data-testid="episode"
       data-ep={e.epKey}
@@ -811,7 +819,8 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         <span className="ep-step-text">{e.currentStep ?? "…"}</span>
       </span>
     </button>
-  );
+    );
+  };
   const isOpen = (p: ProjectSummary): boolean =>
     query.trim() !== "" || (projOpen[p.projKey] ?? (activeProject === p.projKey || p.members.some((m) => m.epKey === active)));
   const card = (p: ProjectSummary) => {
