@@ -355,6 +355,21 @@ test("TX-9b 期行再点当前期收起会话子列表（D158）：不杀会话�
   }, ["SESS-A", "SESS-B"]);
 });
 
+test("TX-9c 回合在跑时不锁会话管理（D157）：＋新会话可点、旧段留后台、期行仍报运行中", async () => {
+  await withSession(async ({ repo, L }) => {
+    sessionScript(repo, "SESS-A", [READY("SESS-A"), { op: "serve", on_turn: [TURN_STARTED] }]); // 回合开始后不结束
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "长活");
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "running");
+    // 旧行为：整行 disabled 导致点不动；D157 起可点
+    await expect(L.page.getByTestId("session-new")).toBeEnabled();
+    await L.page.getByTestId("session-new").click();
+    // 只切 focused：对话区回到待新生态，旧段的回合仍在后台跑
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "none");
+    await expect(L.page.locator("[data-testid=episode]", { hasText: "SESS-A" }).getByTestId("conv-running")).toBeVisible();
+  });
+});
+
 test("TX-10 继续上次会话（D45：点侧栏会话行）：出现历史分隔条与历史条目", async () => {
   await withSession(async ({ repo, L }) => {
     // 会话列表由真 core 的 /list-sessions 读 session.jsonl：放一个旧会话进去，侧栏才有行可点

@@ -68,7 +68,8 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
   };
 
   const running = phase === "running" || phase === "starting" || phase === "ending";
-  const off = busy || running;
+  // D157：回合在跑不再锁住会话管理——切段/开新段都不杀活进程（host 侧已改）。只剩本列表自己的操作在途。
+  const off = busy;
   const saveTitle = (sid: string, text: string) => {
     const problem = titleProblem(text);
     if (problem !== null) {
