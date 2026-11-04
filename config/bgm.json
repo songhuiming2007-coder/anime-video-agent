@@ -2080,7 +2080,7 @@
     }
   },
   "supercell": {
-    "_note": "supercell 企划曲库（候选池，每卷人耳现选）。nico原投稿音轨=2007–09 初音原版（自池内 SP13–17 PV 原样拷出 AAC 125–196kbps），Apple Music 日区无此批录音室版；其余来自 Apple Music 日区（gamdl，aac-web）。",
+    "_note": "从 SP187 MV 抽出的全曲人声版（初音ミク）",
     "tracks": {
       "ブラック★ロックシューター (nico原投稿 sm3645817)": {
         "path": "data/library/bgm/supercell/ブラック★ロックシューター (nico原投稿 sm3645817).m4a",
@@ -2976,6 +2976,118 @@
         "dur": 211.3,
         "lufs": -6.63,
         "onset": 1.207,
+        "vocal": true
+      },
+      "1996": {
+        "path": "data/library/bgm/supercell/1996.flac",
+        "slot": "正文",
+        "dur": 253.1,
+        "lufs": -7.72,
+        "onset": 2.304,
+        "vocal": true
+      },
+      "LEGENDS": {
+        "path": "data/library/bgm/supercell/LEGENDS.flac",
+        "slot": "正文",
+        "dur": 223.7,
+        "lufs": -7.26,
+        "onset": 0.384,
+        "vocal": true
+      },
+      "タクト": {
+        "path": "data/library/bgm/supercell/タクト.flac",
+        "slot": "正文",
+        "dur": 247.3,
+        "lufs": -9.28,
+        "onset": 5.664,
+        "vocal": true
+      },
+      "メルト 10th ANNIVERSARY MIX": {
+        "path": "data/library/bgm/supercell/メルト 10th ANNIVERSARY MIX.flac",
+        "slot": "正文",
+        "dur": 308.2,
+        "lufs": -4.91,
+        "onset": 2.88,
+        "vocal": true
+      },
+      "メルト CPK! Remix (Melt 重编版)": {
+        "path": "data/library/bgm/supercell/メルト CPK! Remix (Melt 重编版).flac",
+        "slot": "正文",
+        "dur": 279.5,
+        "lufs": -6.09,
+        "onset": 1.536,
+        "vocal": true
+      },
+      "ワールドイズマイン CPK! Remix (WIM 重编版)": {
+        "path": "data/library/bgm/supercell/ワールドイズマイン CPK! Remix (WIM 重编版).flac",
+        "slot": "正文",
+        "dur": 225.9,
+        "lufs": -5.69,
+        "onset": 0.576,
+        "vocal": true
+      },
+      "君よ 気高くあれ": {
+        "path": "data/library/bgm/supercell/君よ 気高くあれ.flac",
+        "slot": "正文",
+        "dur": 215.0,
+        "lufs": -5.81,
+        "onset": 0.768,
+        "vocal": true
+      },
+      "笑ウ二重人格": {
+        "path": "data/library/bgm/supercell/笑ウ二重人格.flac",
+        "slot": "正文",
+        "dur": 243.4,
+        "lufs": -6.58,
+        "onset": 1.824,
+        "vocal": true
+      },
+      "運命と Struggle": {
+        "path": "data/library/bgm/supercell/運命と Struggle.flac",
+        "slot": "正文",
+        "dur": 251.8,
+        "lufs": -6.27,
+        "onset": 0.288,
+        "vocal": true
+      },
+      "Deal with the devil (Tia)": {
+        "path": "data/library/bgm/supercell/Deal with the devil (Tia).flac",
+        "slot": "正文",
+        "dur": 284.3,
+        "lufs": -5.55,
+        "onset": 1.152,
+        "vocal": true
+      },
+      "言葉にしたくてできない言葉を (桐嶋ノドカ)": {
+        "path": "data/library/bgm/supercell/言葉にしたくてできない言葉を (桐嶋ノドカ).flac",
+        "slot": "正文",
+        "dur": 349.9,
+        "lufs": -8.38,
+        "onset": 1.056,
+        "vocal": true
+      },
+      "Last Song (BS OST Ending ver.)": {
+        "path": "data/library/bgm/supercell/Last Song (BS OST Ending ver.).flac",
+        "slot": "正文",
+        "dur": 104.1,
+        "lufs": -10.8,
+        "onset": 1.632,
+        "vocal": true
+      },
+      "好きと言われた日 (EGOIST)": {
+        "path": "data/library/bgm/supercell/好きと言われた日 (EGOIST).flac",
+        "slot": "正文",
+        "dur": 291.6,
+        "lufs": -24.95,
+        "onset": 17.376,
+        "vocal": true
+      },
+      "罪の名前 (feat. 初音ミク)": {
+        "path": "data/library/bgm/supercell/罪の名前 (feat. 初音ミク).flac",
+        "slot": "正文",
+        "dur": 388.0,
+        "lufs": -6.99,
+        "onset": 1.728,
         "vocal": true
       }
     }
