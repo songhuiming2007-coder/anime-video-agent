@@ -215,6 +215,12 @@ BREATH_SPLIT = re.compile(r"[，,、；;：:。！？…—\s]+")
 # 「最后」的逗号用前瞻匹配，不吃进组里。
 PAPER_WORDS = re.compile(
     r"(?:^|[。？！，、；：\s])(因此|然而|此外|综上|总之|首先|其次|再者|最后(?=[，,]))")
+#: `## 段落 N` 块的正文区间：到下一个 `## 段落` 或 `## 音乐段` 标题或文尾。
+#: 音乐段嵌在段落之间，不把 `## 音乐段` 当边界的话，试听块里的字段（`画面:`/未来的 `复用:` 等）
+#: 会被并进前一段落的块里——那块的 `复用:` 就变成「本段锚点里找不到」的错配（D137 试听块放行口）。
+_SEGMENT_BLOCK = re.compile(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*(?:段落|音乐段)|\Z)", re.M | re.S)
+
+
 # 跨期套话。2026-08-03 增补，依据是前三期的实测复用率：
 #
 #     「当然要说句公道话／实话」  3/3 期
@@ -340,8 +346,7 @@ def parse_episodes(text: str) -> list[tuple[str, str]]:
     `clips.parse_shots` 一致：`## 段落 N` 到下一个标题之间。
     """
     out = []
-    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)",
-                         text, re.M | re.S):
+    for m in _SEGMENT_BLOCK.finditer(text):
         ep = re.search(r"^\s*集[：:]\s*(.+)$", m.group(2), re.M)
         if ep:
             out.append((m.group(1), ep.group(1).strip()))
@@ -428,13 +433,41 @@ VIDEO_SP_MAX = 2
 VIDEO_SP_WINDOW_S = 10.0
 
 
+def _reuse_items(block: str) -> list[str]:
+    """一个块内 `复用:` 行的条目原文列表；括号里的理由去掉。供段落块与音乐段块共用。"""
+    out: list[str] = []
+    for f in _REUSE_FIELD.finditer(block):
+        raw = re.sub(r"[（(][^）)]*[）)]", "", f.group(1))
+        out.extend(x.strip() for x in re.split(r"[,，、]", raw) if x.strip())
+    return out
+
+
 def parse_reuse(text: str) -> dict[str, list[str]]:
-    """每个段落块的 `复用:` 条目 → {段落号: [条目原文, …]}；括号里的理由去掉。切块口径同 parse_anchors。"""
+    """每个段落块的 `复用:` 条目 → {段落号: [条目原文, …]}。切块口径同 parse_anchors。"""
     out: dict[str, list[str]] = {}
-    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S):
-        for f in _REUSE_FIELD.finditer(m.group(2)):
-            raw = re.sub(r"[（(][^）)]*[）)]", "", f.group(1))
-            out.setdefault(m.group(1), []).extend(x.strip() for x in re.split(r"[,，、]", raw) if x.strip())
+    for m in _SEGMENT_BLOCK.finditer(text):
+        items = _reuse_items(m.group(2))
+        if items:
+            out.setdefault(m.group(1), []).extend(items)
+    return out
+
+
+def parse_music_reuse(text: str) -> dict[str, list[str]]:
+    """每个音乐段块的 `复用:` 条目 → {「音乐段 Mx」: [条目原文, …]}（D137 补的人定放行口）。
+
+    切块口径同 parse_script_music：`## 音乐段 Mx`（标题行，label 只取首个词）到下一个
+    `## 段落`/`## 音乐段` 标题或文尾。试听块 `画面: 同源` 没有自己的 `锚点:`，
+    人定复用声明改挂在试听块上，以它的 `源片原声:`/`画面:` 起点作「本处」锚点等价物。
+    """
+    out: dict[str, list[str]] = {}
+    heads = list(re.finditer(r"^##\s*音乐段\s*(\S+)", text, re.M))
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        nxt = re.search(r"^##\s*段落", text[m.end():end], re.M)
+        body = text[m.end():m.end() + nxt.start()] if nxt else text[m.end():end]
+        items = _reuse_items(body)
+        if items:
+            out.setdefault(f"音乐段 {m.group(1)}", []).extend(items)
     return out
 
 
@@ -460,6 +493,9 @@ class StillUses:
     bad_video_reuse: list[str] = field(default_factory=list)
     #: D142：试听块 `画面:`（及音画同源块的源片）占用的视频 SP 区间 {(池, SPxx): [(「音乐段 Mx」, 起, 止), …]}
     video_spans: dict[tuple[str, str], list[tuple[str, float, float]]] = field(default_factory=dict)
+    #: D137 补充：试听块自身写的人定复用声明 {(池, SPxx): {(「音乐段 Mx」, 源片起点秒)}}。
+    #: 与 video_reuse 分开存是因为它的覆盖范围是「本块连放的整个区间」，判定在簇那侧按区间放行。
+    video_span_reuse: dict[tuple[str, str], set[tuple[str, float]]] = field(default_factory=dict)
 
 
 def still_sp_uses(episode: Path) -> StillUses:
@@ -552,6 +588,30 @@ def still_sp_uses(episode: Path) -> StillUses:
                                            f"哪一处，写 `{key[0]} {key[1]} {_mmss(in_video[0])}（理由）`")
                 continue
             out.bad_reuse.append(f"段{label} 复用 {key[0]} {key[1]}，但本段锚点里没有这张图片微动 SP")
+    for label, items in parse_music_reuse(text).items():
+        spans = {k: [s for l, s, _ in v if l == label] for k, v in out.video_spans.items()}
+        for item in items:
+            m = _REUSE_ITEM.fullmatch(item)
+            if not m:
+                out.bad_reuse.append(f"{label} 复用条目「{item}」格式不对"
+                                     "（写 `<池> SPxx mm:ss`，mm:ss 是本块源片起点）")
+                continue
+            key = ((m.group("anime") or "").strip() or main_plan or anime_main, f"SP{int(m.group('sp')):02d}")
+            starts = spans.get(key, [])
+            if m.group("m") is None:
+                if starts:
+                    out.bad_video_reuse.append(f"{label} 复用 {key[0]} {key[1]} 没写时间码：试听块的复用要指明"
+                                               f"本处源片起点，写 `{key[0]} {key[1]} {_mmss(starts[0])}（理由）`")
+                else:
+                    out.bad_video_reuse.append(f"{label} 复用 {key[0]} {key[1]}，但本试听块没有占用这段视频 SP")
+                continue
+            start = int(m.group("m")) * 60 + float(m.group("s"))
+            hit = [s for s in starts if abs(s - start) < 0.01]
+            if hit:
+                out.video_span_reuse.setdefault(key, set()).add((label, hit[0]))
+            else:
+                out.bad_video_reuse.append(f"{label} 复用 {key[0]} {key[1]} {_mmss(start)}，"
+                                           "但本试听块的源片起点不是这个时间")
     return out
 
 
@@ -609,7 +669,7 @@ def _check_sp_caps(path: Path, add) -> None:
     ep = path.parent
     own = still_sp_uses(ep)
     if not (own.uses or own.video or own.video_spans or own.unavailable or own.bad_reuse
-            or own.bad_video_reuse):
+            or own.bad_video_reuse or own.video_span_reuse):
         return
     proj = project.project_of(ep)
     others = [(m.name, still_sp_uses(m)) for m in (project.project_members(proj) if proj else [])
@@ -677,7 +737,10 @@ def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, Sti
     试听块的画面是一段区间（D142）：它的「前后 10 s」从区间起点前 10 s 到终点后 10 s，
     锚点落进去、或别的区间与它相交都算同一处；锚点之间仍按起点相距 ≤ 10 s 算，与 D137 一致。
     只报以本期用法为中心的窗口：别的卷内部超了，由那一卷的机检报。不带声明的用法超过上限才 FAIL，
-    带时间码 `复用:` 声明的锚点（任何一卷）放行，逐处列在结果里给 02.5 看；试听块不收 `复用:`。
+    带时间码 `复用:` 声明的锚点（任何一卷）放行，逐处列在结果里给 02.5 看。试听块也可写
+    `复用: <池> SPxx mm:ss（理由）`（mm:ss 对它源片起点）；它的声明覆盖它连放的整段区间
+    （含前后 10 s 窗），落在窗内的同素材用法视为同一处一并放行——「人定保留这段画面」
+    而不是某个计数槽位（2026-11-04 人定，T-20261104T085726Z-b95a56）。
     """
     name = f"视频 SP 同一处（前后 {VIDEO_SP_WINDOW_S:g} s）全企划至多 {VIDEO_SP_MAX} 次"
     unavailable = list(own.unavailable) + [u for _, o in others for u in o.unavailable]
@@ -701,6 +764,19 @@ def _check_video_sp_window(ep: Path, own: StillUses, others: list[tuple[str, Sti
         entries += [(vol, l, a, b) for vol, o in others for l, a, b in spans(o, key)]
         declared = {(ep.name, l, s, s) for l, s in own.video_reuse.get(key, set())}
         declared |= {(vol, l, s, s) for vol, o in others for l, s in o.video_reuse.get(key, set())}
+        # 试听块的人定复用：它声明的源片起点对应一段连放区间，把落在该区间前后 10 s 窗内的
+        # 同素材用法（含它自己、含别的锚点/别的试听块、任何一卷）都标为已声明——放行的是
+        # 「这段画面」的复用，不是单个计数槽。
+        span_decl = ([(ep.name, l, s, e) for k in (key,) for l, s, e in own.video_spans.get(k, [])
+                      if (l, s) in own.video_span_reuse.get(k, set())]
+                     + [(vol, l, s, e) for vol, o in others
+                        for l, s, e in o.video_spans.get(key, [])
+                        if (l, s) in o.video_span_reuse.get(key, set())])
+        for i, e in enumerate(entries):
+            for _, _, s_lo, s_hi in span_decl:
+                if e[2] <= s_hi + VIDEO_SP_WINDOW_S + 1e-9 and e[3] >= s_lo - VIDEO_SP_WINDOW_S - 1e-9:
+                    declared.add(e)
+                    break
         clusters: list[tuple[set[int], bool]] = []
         for _, _, lo, hi in entries[:len(mine)]:
             idx = {i for i, e in enumerate(entries)
@@ -765,7 +841,7 @@ def parse_emotion_fields(text: str) -> list[tuple[str, str | None, str | None]]:
     **两个字段都是可选的**（不写 = 平静叙述/中，行为与 v1 一致，旧稿零迁移）。
     """
     out: list[tuple[str, str | None, str | None]] = []
-    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S):
+    for m in _SEGMENT_BLOCK.finditer(text):
         label, block = m.group(1), m.group(2)
         emo = re.search(r"^情绪[：:]\s*(.+)$", block, re.M)
         spd = re.search(r"^语速[：:]\s*(.+)$", block, re.M)
@@ -806,8 +882,7 @@ def parse_anchors(text: str) -> list[tuple[str, str | None]]:
     多锚点段（2026-09-07）：原文含续行与逗号分隔，这里原样带回，拆分在校验侧。
     """
     out = []
-    for m in re.finditer(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)",
-                         text, re.M | re.S):
+    for m in _SEGMENT_BLOCK.finditer(text):
         anc = _ANCHOR_FIELD.search(m.group(2))
         out.append((m.group(1), anc.group(1).strip() if anc else None))
     return out
@@ -901,8 +976,7 @@ def run(path: Path) -> list[Check]:
     add(f"时长 {dur_lo:g}–{dur_hi:g} 分钟", vo_dur_lo <= chars / CPM <= vo_dur_hi, dur_detail)
     # 每段都要有画面来源：`查询`（检索通道）或时间码 `锚点`（ADR-0008 直通通道）。
     # 锚点段不检索，不强求查询；其余段照旧每段一条。
-    block_list = [(m.group(1), m.group(2)) for m in re.finditer(
-        r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", text, re.M | re.S)]
+    block_list = [(m.group(1), m.group(2)) for m in _SEGMENT_BLOCK.finditer(text)]
     no_visual = [label for label, b in block_list if not _has_visual_source(b)]
     add("每段都有查询或锚点", not no_visual,
         f"{len(block_list) - len(no_visual)}/{len(block_list)} 段有画面来源"
@@ -1346,7 +1420,7 @@ def _check_bgm_source(path: Path, add) -> None:
 # 切块口径与 run/parse_episodes/parse_emotion_fields（本文件）及
 # tts.parse_script/clips.parse_shots 一致：`## 段落 N` 到下一个段落标题之间。
 # 与 clips 同款的多处同口径先例，改一处必须同步另一处。
-_HINT_BLOCK = re.compile(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*段落|\Z)", re.M | re.S)
+_HINT_BLOCK = _SEGMENT_BLOCK
 _HINT_VO = re.compile(r"^配音[：:]\s*(.+)$", re.M)
 _HINT_WHO = re.compile(r"^\s*人物[：:]\s*(.+)$", re.M)
 
