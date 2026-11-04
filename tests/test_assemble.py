@@ -501,3 +501,176 @@ def test_bash跑总装也弹卡() -> None:
 
     for cmd in ("python -m pipeline.assemble data/episodes/P", "uv run python pipeline/assemble.py P --replace"):
         assert "[须人审的流水线命令]" in bash_danger_tags(cmd), cmd
+
+
+# ---------------------------------------------------------------- 删减清单 cuts.json（中段切除 / 定点截尾）
+
+
+def write_cuts(p: Path, doc: dict | str) -> None:
+    c = p / "00-合集"
+    if isinstance(doc, str):
+        (c / "cuts.json").write_text(doc, encoding="utf-8")
+    else:
+        (c / "cuts.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+
+def test_形状错一律退2_零ffmpeg(root: Path, capsys: pytest.CaptureFixture) -> None:
+    bads = {
+        "非JSON": "{",
+        "顶层非对象": "[1]",
+        "未知顶层键": {"volumes": {}, "remove": []},
+        "volumes非对象": {"volumes": []},
+        "条目非对象": {"volumes": {"01-a": 3}},
+        "条目未知键": {"volumes": {"01-a": {"trim": [[1, 2]]}}},
+        "remove非列表": {"volumes": {"01-a": {"remove": {"a": 1}}}},
+        "窗口非两元素": {"volumes": {"01-a": {"remove": [[1, 2, 3]]}}},
+        "窗口倒序": {"volumes": {"01-a": {"remove": [[2, 1]]}}},
+        "起点为负": {"volumes": {"01-a": {"remove": [[-1, 2]]}}},
+        "空条目": {"volumes": {"01-a": {}}},
+        "tail_at非正": {"volumes": {"01-a": {"tail_at": 0}}},
+        "seam越界": {"volumes": {"01-a": {"remove": [[1, 2]], "seam_fade_s": 0}}},
+        "重复卷": '{"volumes": {"01-a": {"tail_at": 1}, "01-A": {"tail_at": 2}}}',
+    }
+    for name, doc in bads.items():
+        p = make_project(root, name=f"P-{name}")
+        write_cuts(p, doc)
+        rec = Rec()
+        assert run_main([str(p)], rec) == 2, name
+        assert "cuts.json" in capsys.readouterr().err and rec.calls == [], name
+
+
+def test_删减清单指向卷表外的卷_退2(root: Path, capsys: pytest.CaptureFixture) -> None:
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"09-查无此卷": {"tail_at": 1}}})
+    rec = Rec()
+    assert run_main([str(p)], rec) == 2
+    assert "不在卷表" in capsys.readouterr().err and rec.calls == []
+
+
+def test_窗口越界_退2(root: Path, capsys: pytest.CaptureFixture) -> None:
+    p = make_project(root)   # 01-a 成片时间轴总长 4s
+    write_cuts(p, {"volumes": {"01-a": {"remove": [[1, 5]]}}})
+    rec = Rec()
+    assert run_main([str(p)], rec) == 2
+    assert "越过成片总长" in capsys.readouterr().err and rec.calls == []
+    write_cuts(p, {"volumes": {"01-a": {"tail_at": 4}}})
+    assert run_main([str(p)], Rec()) == 2
+    assert "不在成片" in capsys.readouterr().err
+
+
+def test_窗口重叠_退2(root: Path, capsys: pytest.CaptureFixture) -> None:
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"remove": [[0.5, 1.5], [1.2, 2.0]]}}})
+    rec = Rec()
+    assert run_main([str(p)], rec) == 2
+    assert "重叠" in capsys.readouterr().err and rec.calls == []
+
+
+def test_定点截尾_取严者胜出(root: Path) -> None:
+    """01-a：旁白终点 1s + 余韵1秒 → 余韵截尾 2.00s；定点 1.5s 更严 → 截到 1.50s，走单段截尾路径。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"tail_at": 1.5}}})
+    pl = asm.plan(p, None, False)
+    assert pl.parts[0].cut == "1.50" and pl.parts[0].kept is None
+    text = "\n".join(asm.preview_lines(pl))
+    assert "定点截到 1.50s（余韵截尾 2.00s 更宽，取定点）" in text
+
+
+def test_定点截尾晚于余韵截尾_不生效_警告(root: Path) -> None:
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"tail_at": 3.0}}})
+    pl = asm.plan(p, None, False)
+    assert pl.parts[0].cut == "2.00"          # 仍是余韵截尾
+    assert any("不生效" in w and "定点截尾" in w for w in pl.warnings)
+
+
+def test_中段切除_端到端(root: Path) -> None:
+    """01-a：成片 4s、余韵截尾 2.00s 叠加中段切除 [0.5,1.0) → 保留 [0,0.5)∪[1.0,2.0)，实测 1.5s。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"remove": [[0.5, 1.0]]}}})
+    pl = asm.plan(p, None, False)
+    assert pl.parts[0].kept == [(0.0, 0.5), (1.0, 2.0)] and pl.parts[0].tail_cut
+    rec = Rec()
+    assert run_main([str(p)], rec) == 0
+    led = json.loads((p / "00-合集" / "04-assembly.json").read_text(encoding="utf-8"))
+    assert [x["name"] for x in led["parts"]] == ["card_part1", "part1_cut", "card_part2", "02-b"]
+    assert led["parts"][1]["duration"] == pytest.approx(1.5, abs=0.15)
+    assert led["total_duration"] == pytest.approx(3 + 1.5 + 3 + 3.0, abs=0.3)
+
+
+def test_中段切除_argv_缝口淡入淡出(root: Path) -> None:
+    p = make_project(root)
+    write_cuts(p, {"seam_fade_s": 0.25, "volumes": {"01-a": {"remove": [[0.5, 1.0]]}}})
+    pl = asm.plan(p, None, False)
+    assert pl.parts[0].seam == 0.25
+    rec = Rec()
+    assert run_main([str(p)], rec) == 0
+    fc = next(c[c.index("-filter_complex") + 1] for c in rec.ffmpeg_calls() if "-filter_complex" in c)
+    assert "trim=start=0.00:end=0.50" in fc and "trim=start=1.00:end=2.00" in fc
+    assert "fade=t=out:st=0.25:d=0.25" in fc and "fade=t=in:st=0:d=0.25" in fc
+    assert "afade=t=out:st=0.25:d=0.25" in fc and "concat=n=2:v=1:a=0" in fc and "concat=n=2:v=0:a=1" in fc
+
+
+def test_完整保留卷_中段切除_末段自然收尾(root: Path) -> None:
+    """02-b 完整保留（3s 片）切 [1,2) → 末保留段到片尾、无截尾淡出；部件重编码非 -c copy。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"02-b": {"remove": [[1.0, 2.0]]}}})
+    pl = asm.plan(p, None, False)
+    part = pl.parts[1]
+    assert part.kept is not None and not part.tail_cut
+    assert part.kept[0] == (0.0, 1.0) and part.kept[-1][0] == 2.0
+    rec = Rec()
+    assert run_main([str(p)], rec) == 0
+    fc = next(c[c.index("-filter_complex") + 1] for c in rec.ffmpeg_calls() if "-filter_complex" in c)
+    assert "fade=t=in:st=0:d=0.5" in fc and "fade=t=out" not in fc.split("concat=n")[0].split("[a0]")[-1]
+    led = json.loads((p / "00-合集" / "04-assembly.json").read_text(encoding="utf-8"))
+    assert led["parts"][-1]["name"] == "part2_cut"
+    assert led["parts"][-1]["duration"] == pytest.approx(2.0, abs=0.2)
+
+
+def test_死窗口与剩余过短_警告(root: Path) -> None:
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"remove": [[0.2, 0.4], [3.0, 3.5]]}}})   # [3,3.5) 在截尾 2s 后 → 死窗口
+    pl = asm.plan(p, None, False)
+    assert pl.parts[0].kept == [(0.0, 0.2), (0.4, 2.0)]
+    assert any("不生效" in w for w in pl.warnings)
+    assert any("过短" in w for w in pl.warnings)   # 剩 1.8s < 30s
+
+
+def test_窗口把全片切空_退2(root: Path, capsys: pytest.CaptureFixture) -> None:
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"02-b": {"remove": [[0.0, 4.0]]}}})   # 02-b 时间轴总长 4s
+    rec = Rec()
+    assert run_main([str(p)], rec) == 2
+    assert "切空" in capsys.readouterr().err and rec.calls == []
+
+
+def test_删减清单在合集目录_不在out目录(root: Path, tmp_path: Path) -> None:
+    """--out 别处时仍读 `合集:` 指向期目录的 cuts.json。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"tail_at": 1.5}}})
+    out = root / "data" / "episodes" / "scratch-out"
+    out.mkdir()
+    (out / "01-topic.md").write_text("# 选题\n", encoding="utf-8")
+    pl = asm.plan(p, out, False)
+    assert pl.parts[0].cut == "1.50"
+
+
+def test_切除窗口吃到截尾点后_截点取保留段终点(root: Path) -> None:
+    """01-a：余韵截尾 2.00s，remove [1.5,3.0) 越过截尾点 → 裁为 [1.5,2.0)，净保留 [0,1.5) → 截到 1.50s 而非 2.00s。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"01-a": {"remove": [[1.5, 3.0]]}}})
+    pl = asm.plan(p, None, False)
+    part = pl.parts[0]
+    assert part.cut == "1.50" and part.kept is None
+    assert any("越过截尾点" in w for w in pl.warnings)
+
+
+def test_完整保留卷_切除吃到片尾_末段淡出(root: Path) -> None:
+    """02-b：remove [2,4) 一直吃到片尾 → 净保留 [0,2) 前缀截尾，desc 说「末段随切除止于」而不是余韵。"""
+    p = make_project(root)
+    write_cuts(p, {"volumes": {"02-b": {"remove": [[2.0, 4.0]]}}})
+    pl = asm.plan(p, None, False)
+    part = pl.parts[1]
+    assert part.cut == "2.00" and part.kept is None and part.tail_cut
+    assert "末段随切除止于 2.00s" in (part.note or "")
