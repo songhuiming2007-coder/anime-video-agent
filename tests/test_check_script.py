@@ -977,6 +977,65 @@ class TestMusicVisualSpCap(TestStillSpCap):
         chk = get(cs.run(f), self.NAME)
         assert not chk.ok and "SP01 共 3 次" in chk.detail and "段1、段2、音乐段 M1" in chk.detail
 
+    # D137 补充（2026-11-04 人定）：试听块可写 `复用: <池> SPxx mm:ss（理由）`，mm:ss 对它源片起点；
+    # 声明放行它连放区间（含前后 10 s 窗）内的同一 SP 全部用法——「人定保留这段画面」。
+    def test_试听块复用放行盖住的所有用法(self, root):
+        # M1 画面 SP02 0:30 连放 60 s 盖住段1 0:50；本卷另两处锚点也在同一簇
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP02 0:30（人定：这段画面保留）\n"
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50", "SP02 1:35"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "音乐段 M1 0:30–1:30〔复用〕" in chk.detail and "段1 0:50〔复用〕" in chk.detail
+
+    def test_音画同源块复用放行(self, root):
+        blk = ("## 音乐段 M2 · 同源\n\n源片原声: `企划 SP02` 00:20-00:40\n状态: 前景试听，旁白停止\n"
+               "音画同源: 是\n过渡: 淡出\n画面: 同源\n"
+               "复用: 企划 SP02 0:20（人定：同源试听保留）\n")
+        f = self._vol_music(root, "01-卷一", ["SP02 0:25", "SP02 0:45"], [blk])
+        assert get(cs.run(f), self.VNAME).ok
+
+    def test_试听块复用对不上源片起点_FAIL(self, root):
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP02 0:31（写错了）\n"
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "音乐段 M1 复用 企划 SP02 0:31，但本试听块的源片起点不是这个时间" in chk.detail
+
+    def test_试听块复用不写时间码_FAIL(self, root):
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP02\n"
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "没写时间码" in chk.detail and "企划 SP02 0:30" in chk.detail
+
+    def test_试听块复用本块没占用这段_FAIL(self, root):
+        # 声明指向本块没占用的另一支视频 SP（SP04 不在素材表，但声明格式对、块没占用它）
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP04（无关声明）\n"
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert not chk.ok and "本试听块没有占用这段视频 SP" in chk.detail
+
+    def test_试听块复用盖住别卷锚点也放行(self, root):
+        # 本卷 M1 声明覆盖 0:30-1:30+10s；卷一段1 0:50 与卷二段2 1:35（尾后 5 s）都落在窗内，一并放行
+        self._vol(root, "01-卷一", ["SP02 0:50"])
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP02 0:30\n"
+        f = self._vol_music(root, "02-卷二", ["SP02 0:50", "SP02 1:35"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "01-卷一 段1 0:50〔复用〕" in chk.detail and "段2 1:35〔复用〕" in chk.detail
+
+    def test_试听块复用覆盖窗前后10秒(self, root):
+        # 0:22 在 M1 区间起点前 8 s、1:38 在终点后 8 s：都在覆盖窗内，没有声明窗仍会 FAIL
+        blk = self._block("M1", "SP02 0:30") + "复用: 企划 SP02 0:30\n"
+        f = self._vol_music(root, "01-卷一", ["SP02 0:22", "SP02 1:38", "SP02 2:30"], [blk])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "段1 0:22〔复用〕" in chk.detail and "段2 1:38〔复用〕" in chk.detail
+
+    def test_试听块复用不泄到前一段(self, root):
+        # M1 写在段2 后：它的 `复用:` 不能被并进段2 的块。M1 声明 0:30 若被算成段2 的，
+        # 段2 就会报「本段锚点里没有 0:30 起的片段」（段2 只有 1:00 的 SP02）。
+        # 声明正确生效时 M1 盖住段1 0:50，两处一起被放行。
+        f = self._vol_music(root, "01-卷一", ["SP02 0:50", "SP02 1:00"],
+                            [self._block("M1", "SP02 0:30") + "复用: 企划 SP02 0:30\n"])
+        chk = get(cs.run(f), self.VNAME)
+        assert chk.ok and "段2 复用" not in chk.detail and "音乐段 M1 0:30–1:30〔复用〕" in chk.detail
+
 
 def make_patch_pool(ep, pool="ep-patch", key="SP01", duration=12.0, indexed=True):
     """最小期内补丁池：pool.json + 镜头表（+ indexed 时的 scene 索引），形状照 ingest_patch 的产物。"""
