@@ -247,6 +247,10 @@ class TestParse:
         assert doc.volumes[2].budget_min == (18.0, 20.0)
         assert doc.sections == ("卷表", "总纲", "标题模板")
 
+    def test_字面N表示总装前再定_不裁(self) -> None:
+        doc = project.parse("企划: N\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n| 1 | 01-a | 2011 | 1-2分钟 | 余韵N秒 |\n")
+        assert [(v.tail, v.tail_s) for v in doc.volumes] == [("余韵N秒", None)]
+
     def test_空卷表合法(self) -> None:
         doc = project.parse("企划: 新\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n")
         assert doc.volumes == () and doc.collection is None
@@ -255,7 +259,6 @@ class TestParse:
         (lambda s: s.replace("企划: EGOIST 传奇企划志\n", ""), "缺 `企划:`"),
         (lambda s: s.replace("合集: 00", "企划: 重复\n合集: 00"), "出现两次"),
         (lambda s: s.replace("| 2 | 02-皮套囚徒", "| 3 | 02-皮套囚徒"), "连续整数"),
-        (lambda s: s.replace("| 完整保留 |", "| 余韵18秒 |"), "末行"),
         (lambda s: s.replace("02-皮套囚徒", "02/皮套"), "不合规"),
         (lambda s: s.replace("02-皮套囚徒", "01-借躯降生"), "重复"),
         (lambda s: s.replace("| 时长预算 |", "| 时长 |"), "表头"),

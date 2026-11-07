@@ -32,6 +32,7 @@ TAIL_MAX_S = 60               # 只做形状检查：余韵超过一分钟就不
 VOLUME_TABLE_HEADING = "卷表"
 VOLUME_TABLE_COLUMNS = ("卷序", "目录", "年份", "时长预算", "片尾")
 TAIL_KEEP = "完整保留"
+TAIL_PENDING = "余韵N秒"   # 字面 N：卷表先统一写法，总装前用 cuts.json 的 tail_at 定刀口；没定就是不裁（无损 -c copy）
 
 # ---------------------------------------------------------------------------
 # 期名合规（原 cli._episode_name_problem，搬到叶子模块；cli 以原名再导出）
@@ -362,16 +363,14 @@ def parse(text: str) -> ProjectDoc:
             raise ParseError(f"第 {no} 行：时长预算的数字不成立，实为 {budget!r}") from None
         if not 0 < a <= b:
             raise ParseError(f"第 {no} 行：时长预算须 0 < A ≤ B，实为 {budget!r}")
-        if tail == TAIL_KEEP:
+        if tail in (TAIL_KEEP, TAIL_PENDING):
             tail_s = None
         else:
             mt = _TAIL.match(tail)
             if not mt or not 1 <= int(mt.group(1)) <= TAIL_MAX_S:
-                raise ParseError(f"第 {no} 行：片尾须为 `{TAIL_KEEP}` 或 `余韵N秒`（1 ≤ N ≤ {TAIL_MAX_S}），实为 {tail!r}")
+                raise ParseError(f"第 {no} 行：片尾须为 `{TAIL_KEEP}`、字面 `{TAIL_PENDING}`（总装前再定）或 `余韵<整数>秒`（1 ≤ N ≤ {TAIL_MAX_S}），实为 {tail!r}")
             tail_s = int(mt.group(1))
         volumes.append(Volume(len(volumes) + 1, dirname, years, budget, (a, b), tail, tail_s))
-    if volumes and volumes[-1].tail_s is not None:
-        raise ParseError(f"卷表末行（第 {len(volumes)} 卷）片尾必须是 `{TAIL_KEEP}`（末卷片尾完整保留、不裁）")
     if collection is not None and name_key(collection) in keys:
         raise ParseError(f"`合集` {collection!r} 与第 {keys[name_key(collection)]} 卷目录相同")
     return ProjectDoc(name, collection, tuple(volumes), sections)
