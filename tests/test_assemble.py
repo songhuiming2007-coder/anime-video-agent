@@ -204,11 +204,11 @@ def test_黄金_三条ffmpeg命令与assemble_sh逐token相同() -> None:
         "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "LIST", "-c", "copy", "OUT"]
 
 
-def test_末卷完整保留_部件用原成片() -> None:
-    from pipeline.project import ParseError, parse
+def test_末卷也可余韵N秒() -> None:
+    from pipeline.project import parse
 
-    with pytest.raises(ParseError, match="末行"):
-        parse(table([("01-a", "余韵18秒"), ("02-b", "余韵18秒")]))
+    doc = parse(table([("01-a", "余韵18秒"), ("02-b", "余韵18秒")]))
+    assert [v.tail_s for v in doc.volumes] == [18, 18]
 
 
 # ---------------------------------------------------------------- 截断点 / 流参数
