@@ -173,6 +173,11 @@ CLANNAD（blog/375742）、知乎「哆啦A梦·大雄奶奶」（zhihu.com/ques
   Masahiro、三木孝浩→Miki Takahiro），汉字喂 TTS 会念成无人认领的中文音。判据：
   中国乐迷张嘴怎么叫，稿里就怎么写。歌名、专辑名、单曲名、企划名无此豁免——
   中文直译的歌曲名不是名字，是生造。
+- **英文大小写即读音（2026-11-07 Aimer 卷一立，人定）**：`配音:` 行里的英文按写法
+  念——连续全大写会被 TTS 逐字母念出（`TWINKLE` 念成 T-W-I-N-K-L-E），作品名与
+  普通词写首字母大写（`Twinkle Twinkle Little Star`、`Bleach`、`Spider Sounds`）；
+  要的就是逐字母念的缩写才留全大写（`USEN` 本就念 U-S-E-N），其余写法细节见
+  `docs/runbook/03.5-voice-check.md`（连写名字拆开、数字字母混写用空格分隔等）。
 
 ## 6. 直奔核心，宁短勿水
 
