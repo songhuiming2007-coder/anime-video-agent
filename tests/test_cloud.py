@@ -345,9 +345,18 @@ def test_tmux_launch_base64_encodes_command():
     launch = cloud.build_tmux_launch_command("ava-probe", inner)
     assert _b64.b64encode(inner.encode()).decode() in launch, "命令体必须 base64 编码"
     assert "base64 -d >" in launch
-    assert "'/root/.ava_task_ava-probe.sh'" in launch, "tmux 执行的是脚本文件，不是内联命令"
+    assert "'/root/.ava_task_ava-probe.sh 2>&1 | tee /root/.ava_task_ava-probe.log'" in launch, \
+        "tmux 执行的是脚本文件（stdout tee 留证据），不是内联命令"
     # 核心断言：里头的单引号绝不能出现在 tmux 参数位置上
     assert inner not in launch, "原文不得直接内联，否则引号嵌套破裂"
+
+
+def test_tmux_launch_stdout_tee_留证据():
+    """D162：tmux 起的任务进程退出后 pane 一并消失，不 tee 就只剩
+    「跑到某段就没了」一个表象。启动命令必须把 stdout/stderr tee 落盘。"""
+    launch = cloud.build_tmux_launch_command("ava-tts-x", "python -m pipeline.tts /ep")
+    assert "2>&1 | tee /root/.ava_task_ava-tts-x.log" in launch, \
+        "stdout/stderr 必须 tee 到与会话同名的日志文件，失败才留得下证据"
 
 
 def test_tmux_launch_requires_ava_prefix():
