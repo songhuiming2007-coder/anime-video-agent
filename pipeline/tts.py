@@ -59,6 +59,11 @@ MAX_CER = 0.20      # 回读音节错误率上限。ASR 自身的听岔约 5%，
 MIN_EDITS = 3       # 与上一条同时越线才判失败，避免短段落被 ASR 的一两处听岔冤枉
 ATTEMPTS = 3
 
+# 拉丁专名（Oricon/Gaku/Ann 等）在 ASR 侧必然被转写成同音汉字，CER 里有一大块
+# 是转写差不是念错（D161：读对的句子被双越线判失败，白烧 2–3 次重试）。
+# 判据与重试行为不动——只在失败报文里加注，归 03.5 人耳定夺。
+_LATIN = re.compile(r"[A-Za-z]+")
+
 # 归一化时丢掉的东西：标点、空白、以及口播里不发音的符号
 _DROP = re.compile(r"[\s，。、；：？！…—－·\-—\"'“”‘’《》〈〉（）()\[\]【】,.;:?!~]+")
 
@@ -1528,6 +1533,9 @@ def _render_one(
             why.append(f"时长 {dur:.1f}s / 估算 {want:.1f}s = {ratio:.2f}×")
         if not ok_cer:
             why.append(f"回读差 {edits} 音节（CER {err:.0%}）「{heard[:40]}」")
+            if _LATIN.search(seg.text):
+                why.append(f"本句含 {len(_LATIN.findall(seg.text))} 个拉丁专名，"
+                           f"CER 判定参考性下降，归 03.5 人耳")
         last = "；".join(why)
         print(f"  第 {attempt} 次不过：{last}", file=sys.stderr)
         # 段号由读取方给（摘要「段 X 合成中」、该段徽标），这里只说句与次：拆句段的单元 label 是「段号.句号」
