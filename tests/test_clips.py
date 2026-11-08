@@ -1051,6 +1051,31 @@ class TestAnchorCandidate:
                   "limit", "score", "line", "presence"):
             assert k in cand
 
+    def test_首尾相接两镜头的锚点不算撞车(self):
+        """D163 回归：锚点起点吸附切点后，相接两镜头共享的切点在
+        `start+span` 重算下出 IEEE 尾差（51.84+0.92=52.760000000000005>52.76），
+        锚-锚 gap=0 的「接缝不是撞车」规则被击穿——段30/段37 就是这么误判的。
+        修法：锚点 cand 记录镜头真实尾 `end`，_overlaps 优先取它而不是重算。"""
+        tbl = [{"i": 0, "start": 51.84, "end": 52.76, "rep": 52.0},
+               {"i": 1, "start": 52.76, "end": 69.103, "rep": 60.0}]
+        sources = {"S01E01": {"path": "/x/e01.mkv", "duration": 100.0}}
+        cand = lambda raw: c._anchor_candidate(
+            c._parse_anchor(raw, 1), sources, "番", shots_table=tbl)
+        a, b = cand("S01E01 0:52"), cand("S01E01 1:05")
+        assert a["start"] == 51.84 and a["end"] == 52.76, "锚点必须记录镜头真实尾"
+        assert b["start"] == 52.76 and b["end"] == 69.103
+        assert not c._overlaps(b, [a]), "相接两镜头共享切点是接缝，不是撞车"
+        assert not c._overlaps(a, [b]), "判定与谁先谁后无关"
+
+    def test_同一镜头里的两个锚点仍算撞车(self):
+        """D163 的反面不能放歪：两锚落在同一个镜头内还是同一处画面。"""
+        tbl = [{"i": 0, "start": 51.84, "end": 52.76, "rep": 52.0},
+               {"i": 1, "start": 52.76, "end": 69.103, "rep": 60.0}]
+        sources = {"S01E01": {"path": "/x/e01.mkv", "duration": 100.0}}
+        cand = lambda raw: c._anchor_candidate(
+            c._parse_anchor(raw, 1), sources, "番", shots_table=tbl)
+        assert c._overlaps(cand("S01E01 0:52"), [cand("S01E01 0:52.4")])
+
 
 class TestAnchorIntegration:
     """run() 级集成：预占位 → 3 轮 quota 循环 → final size → 序列化。
@@ -1094,8 +1119,8 @@ class TestAnchorIntegration:
         assert seg["channel"] == "anchor" and seg["status"] == "ok"
         clip = seg["clips"][0]
         assert (clip["start"], clip["dur"]) == (10.0, 8.0)
-        for k in ("limit", "span", "floor"):
-            assert k not in clip          # 排版临时字段不进产物
+        for k in ("limit", "span", "floor", "end"):
+            assert k not in clip          # 排版临时字段不进产物（end 是 D163 加的镜头真实尾）
 
     def test_检索候选撞锚点被拒退到次优(self, tmp_path, monkeypatch):
         # 锚点占 [10,25)；检索首选 (11,13) 落在里面必须被拒，退到 (60,63)
