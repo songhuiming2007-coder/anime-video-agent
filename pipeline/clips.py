@@ -320,11 +320,19 @@ def _overlaps(cand, chosen) -> bool:
             continue
         a_span = cand.get("span", cand.get("dur", 0.0))
         b_span = c.get("span", c.get("dur", 0.0))
-        a0, a1 = cand["start"], cand["start"] + a_span
-        b0, b1 = c["start"], c["start"] + b_span
+        # span 经 round(…,3) 落盘，`start + span` 重算的右端点会带上 IEEE 尾差
+        #（51.84+0.92=52.760000000000005 > 真实尾 52.76），把「接缝」判成「撞车」
+        #（D163：段37 整段失排）。锚点候选带镜头真实尾 `end`，优先用它；
+        # 检索候选与旧产物没有 `end`，回退 start+span 重算。
+        a0, a1 = cand["start"], cand.get("end", cand["start"] + a_span)
+        b0, b1 = c["start"], c.get("end", c["start"] + b_span)
         # 两边都是锚点（无检索分）时不留 OVERLAP_GAP：锚点起点已吸附到镜头切点，
         # 一个镜头恰好接在另一个后面（b0 == a1）是**接缝**，不是撞车。留了 gap
         # 会把合法的相邻镜头拦下，交付里 SP33 的 947s 巨镜头就是这么卡住的。
+        # 同构面核对（D163）：检索 vs 检索 / 锚 vs 检索仍走 OVERLAP_GAP=0.5s 分支，
+        # 缝两侧的 start+span 尾差（~1e-14s）相对 0.5s 带宽是**掩盖**不是放大——
+        # 分支本来就要求 0.5s 净距，接缝必然被判重叠（设计如此），尾差改变不了结论；
+        # 只在「恰好贴 0.5s 边界」时理论上可能翻转，方向是保守（多判撞车），不修。
         gap = 0.0 if (cand.get("score") is None and c.get("score") is None) else OVERLAP_GAP
         if a0 < b1 + gap and b0 < a1 + gap:
             return True
@@ -352,10 +360,14 @@ def _tighten_by_episode(used: list[dict]) -> None:
         cs.sort(key=lambda c: c["start"])
         for a, b in zip(cs, cs[1:]):
             a_span = a.get("span", a.get("dur", 0.0))
-            if b["start"] > a["start"] + a_span:
+            # 右端点优先取锚点记录的镜头真实尾（D163 同类尾差：接缝处
+            # start+span 重算若带正尾差，会把 b 当成不与 a 相接、进而把
+            # a 的 limit 压到自身自然跨度以下）
+            a_end = a.get("end", a["start"] + a_span)
+            if b["start"] > a_end:
                 a_limit = a.get("limit", a["start"] + a.get("dur", 0.0))
                 a["limit"] = min(a_limit, b["start"] - OVERLAP_GAP)
-                b["floor"] = round(a["start"] + a_span + OVERLAP_GAP, 3)
+                b["floor"] = round(a_end + OVERLAP_GAP, 3)
 
 
 def candidate(score: float, u, sources: dict,
@@ -446,6 +458,10 @@ def _anchor_candidate(anchor: dict, sources: dict, anime: str | None,
             "season": anchor["season"], "episode": anchor["episode"],
             "source": src["path"], "start": round(start, 3),
             "dur": round(dur, 3), "span": round(span, 3),
+            # `end` = 镜头真实尾切点（未重算），供 `_overlaps`/`_tighten_by_episode`
+            # 判接缝用——span 经 round 后 `start+span` 会带尾差击穿接缝规则（D163）。
+            # 与 span/limit/floor 同为排版临时字段，`size()` 落产物前剥掉。
+            "end": round(end, 3),
             "limit": src["duration"], "score": None,
             "line": f"锚点 {anchor['raw']}", "presence": None,
             # SP 特典片段显式打标（season=None 与人审手补的「缺 season 键」分得开）：
@@ -498,7 +514,7 @@ def size(chosen: list[dict], need: float,
         # 两头都拉满仍然不够（allow_extend 时不走这条提前判死——
         # 让水填先把真实素材拉满，剩下的缺口再定格，定格时长才最小）
         for c in chosen:
-            c.pop("limit", None); c.pop("span", None); c.pop("floor", None)
+            c.pop("limit", None); c.pop("span", None); c.pop("floor", None); c.pop("end", None)
         return chosen, "short"
 
     base = min(MIN_CLIP, need / n)
@@ -531,7 +547,7 @@ def size(chosen: list[dict], need: float,
             drift = round(drift - back, 3)
 
     for c in chosen:
-        c.pop("limit", None); c.pop("span", None); c.pop("floor", None)
+        c.pop("limit", None); c.pop("span", None); c.pop("floor", None); c.pop("end", None)
     if drift > 0.05:
         if allow_extend and drift <= EXTEND_MAX:
             chosen[-1]["extend"] = round(drift, 3)
