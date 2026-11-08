@@ -427,6 +427,23 @@ class TestQcSkipExemption:
         # 临时尝试文件必须清干净
         assert list(tmp_path.glob(".seg.*.wav")) == []
 
+    def test_CER失败且句含拉丁专名时报文加注(self, monkeypatch, tmp_path, capsys):
+        """D161：拉丁专名在 ASR 侧必然被转写成汉字（Oricon→欧瑞康），读对的
+        句子被双越线判失败、白烧重试。判据不动，只在失败报文加注交 03.5 人耳。"""
+        text = "单曲在 Oricon 州榜排在第44位"
+        heard = ["单曲在欧瑞康州榜排在第44位"] * 3     # ASR 转写拉丁→汉字
+        take, _ = self._render(monkeypatch, tmp_path, heard, text=text)
+        err = capsys.readouterr().err
+        assert "拉丁专名" in err and "归 03.5 人耳" in err, \
+            "含拉丁专名的句子 CER 判失败时，报文必须提示参考性下降"
+        assert "含 1 个拉丁专名" in err
+
+    def test_CER失败但句无拉丁专名时不加注(self, monkeypatch, tmp_path, capsys):
+        """对照：纯中文句子 CER 失败报文照旧，不加拉丁专名提示。"""
+        heard = ["完全不相同的乱码内容甲乙丙丁戊己"] * 3
+        self._render(monkeypatch, tmp_path, heard, text="世界忽然退远了")
+        assert "拉丁专名" not in capsys.readouterr().err
+
 
 class TestVoiceFingerprint:
     """增量重跑的音色指纹（2026-08-16 审计 2-6）。
