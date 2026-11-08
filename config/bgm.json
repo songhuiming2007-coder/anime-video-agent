@@ -2167,13 +2167,13 @@
         "album": "伴奏"
       },
       "Feel so good": {
-        "path": "data/library/bgm/supercell/原曲/Feel so good.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/Feel so good.flac",
         "slot": "正文",
         "dur": 302,
         "lufs": -8.69,
         "onset": 17.833,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "Great Distance (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/Great Distance (Instrumental).flac",
@@ -2194,13 +2194,13 @@
         "album": "合作-feat"
       },
       "Journey's End": {
-        "path": "data/library/bgm/supercell/原曲/Journey's End.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/Journey's End.flac",
         "slot": "正文",
         "dur": 109.3,
         "lufs": -15.32,
         "onset": 3.808,
         "vocal": false,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "LOVE & ROLL (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/LOVE & ROLL (Instrumental).flac",
@@ -2212,13 +2212,13 @@
         "album": "伴奏"
       },
       "LOVE & ROLL": {
-        "path": "data/library/bgm/supercell/原曲/LOVE & ROLL.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/LOVE & ROLL.flac",
         "slot": "正文",
         "dur": 294.6,
         "lufs": -7.66,
         "onset": 2.136,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "Last Song (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/Last Song (Instrumental).flac",
@@ -2248,22 +2248,22 @@
         "album": "伴奏"
       },
       "M.K.O": {
-        "path": "data/library/bgm/supercell/原曲/M.K.O.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/M.K.O.flac",
         "slot": "正文",
         "dur": 255.2,
         "lufs": -8.42,
         "onset": 0.464,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "Mr.Downer": {
-        "path": "data/library/bgm/supercell/原曲/Mr.Downer.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/Mr.Downer.flac",
         "slot": "正文",
         "dur": 251.3,
         "lufs": -7.45,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "My Dearest (Album Mix)": {
         "path": "data/library/bgm/supercell/专辑版/My Dearest (Album Mix).flac",
@@ -2302,13 +2302,13 @@
         "album": "TV-Edit"
       },
       "My Dearest": {
-        "path": "data/library/bgm/supercell/原曲/My Dearest.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/My Dearest.flac",
         "slot": "正文",
         "dur": 338.5,
         "lufs": -5.71,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "Nanairo night (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/Nanairo night (Instrumental).flac",
@@ -2329,13 +2329,13 @@
         "album": "合作-feat"
       },
       "No.525300887039": {
-        "path": "data/library/bgm/supercell/原曲/No.525300887039.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/No.525300887039.flac",
         "slot": "正文",
         "dur": 356.9,
         "lufs": -9.46,
         "onset": 0.464,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "Perfect Day (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/Perfect Day (Instrumental).flac",
@@ -2347,22 +2347,22 @@
         "album": "伴奏"
       },
       "Perfect Day": {
-        "path": "data/library/bgm/supercell/原曲/Perfect Day.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/Perfect Day.flac",
         "slot": "正文",
         "dur": 286.4,
         "lufs": -6.27,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "She is my senior": {
-        "path": "data/library/bgm/supercell/原曲/She is my senior.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/She is my senior.flac",
         "slot": "正文",
         "dur": 171.8,
         "lufs": -8.72,
         "onset": 1.579,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "The Bravery (Album Mix)": {
         "path": "data/library/bgm/supercell/专辑版/The Bravery (Album Mix).flac",
@@ -2401,22 +2401,22 @@
         "album": "TV-Edit"
       },
       "The Bravery": {
-        "path": "data/library/bgm/supercell/原曲/The Bravery.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/The Bravery.flac",
         "slot": "正文",
         "dur": 366.8,
         "lufs": -6.21,
         "onset": 0.743,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "We're Still Here": {
-        "path": "data/library/bgm/supercell/原曲/We're Still Here.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/We're Still Here.flac",
         "slot": "正文",
         "dur": 312.0,
         "lufs": -13.83,
         "onset": 0.557,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "Worldwide Love (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/Worldwide Love (Instrumental).flac",
@@ -2428,31 +2428,31 @@
         "album": "伴奏"
       },
       "Worldwide Love": {
-        "path": "data/library/bgm/supercell/原曲/Worldwide Love.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/Worldwide Love.flac",
         "slot": "正文",
         "dur": 286.6,
         "lufs": -7.71,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "Yeah Oh Ahhh Oh !": {
-        "path": "data/library/bgm/supercell/原曲/Yeah Oh Ahhh Oh !.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/Yeah Oh Ahhh Oh !.flac",
         "slot": "正文",
         "dur": 221.5,
         "lufs": -7.45,
         "onset": 0.464,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "theme of CENCOROLL": {
-        "path": "data/library/bgm/supercell/原曲/theme of CENCOROLL.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/theme of CENCOROLL.flac",
         "slot": "正文",
         "dur": 85.1,
         "lufs": -9.82,
         "onset": 4.458,
         "vocal": false,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "うたかた花火 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/うたかた花火 (Instrumental).flac",
@@ -2464,22 +2464,22 @@
         "album": "伴奏"
       },
       "うたかた花火": {
-        "path": "data/library/bgm/supercell/原曲/うたかた花火.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/うたかた花火.flac",
         "slot": "正文",
         "dur": 361.5,
         "lufs": -9.22,
         "onset": 0.372,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "くるくるマークのすごいやつ": {
-        "path": "data/library/bgm/supercell/原曲/くるくるマークのすごいやつ.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/くるくるマークのすごいやつ.flac",
         "slot": "正文",
         "dur": 223.2,
         "lufs": -7.8,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "さよならメモリーズ (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/さよならメモリーズ (Instrumental).flac",
@@ -2491,40 +2491,40 @@
         "album": "伴奏"
       },
       "さよならメモリーズ": {
-        "path": "data/library/bgm/supercell/原曲/さよならメモリーズ.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/さよならメモリーズ.flac",
         "slot": "正文",
         "dur": 366.9,
         "lufs": -7,
         "onset": 0.557,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "その一秒 次の瞬間": {
-        "path": "data/library/bgm/supercell/原曲/その一秒 次の瞬間.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/その一秒 次の瞬間.flac",
         "slot": "正文",
         "dur": 247.6,
         "lufs": -7.9,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "ひねくれ者": {
-        "path": "data/library/bgm/supercell/原曲/ひねくれ者.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/ひねくれ者.flac",
         "slot": "正文",
         "dur": 253.7,
         "lufs": -10.14,
         "onset": 0.372,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "またね": {
-        "path": "data/library/bgm/supercell/原曲/またね.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/またね.flac",
         "slot": "正文",
         "dur": 41.8,
         "lufs": -12.75,
         "onset": 0.836,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "カレ (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/カレ (Instrumental).flac",
@@ -2536,22 +2536,22 @@
         "album": "伴奏"
       },
       "カレ": {
-        "path": "data/library/bgm/supercell/原曲/カレ.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/カレ.flac",
         "slot": "正文",
         "dur": 246.4,
         "lufs": -10.02,
         "onset": 0.743,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "ハートブレイカー": {
-        "path": "data/library/bgm/supercell/原曲/ハートブレイカー.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/ハートブレイカー.flac",
         "slot": "正文",
         "dur": 260.8,
         "lufs": -7.78,
         "onset": 0,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "ヒーロー (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/ヒーロー (Instrumental).flac",
@@ -2563,13 +2563,13 @@
         "album": "伴奏"
       },
       "ヒーロー": {
-        "path": "data/library/bgm/supercell/原曲/ヒーロー.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/ヒーロー.flac",
         "slot": "正文",
         "dur": 311.7,
         "lufs": -5.69,
         "onset": 0.464,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "ブラック★ロックシューター (2009 supercell album ver.)": {
         "path": "data/library/bgm/supercell/专辑版/ブラック★ロックシューター (2009 supercell album ver.).flac",
@@ -2581,13 +2581,13 @@
         "album": "专辑版"
       },
       "ホワイト製薬": {
-        "path": "data/library/bgm/supercell/原曲/ホワイト製薬.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/ホワイト製薬.flac",
         "slot": "正文",
         "dur": 200.1,
         "lufs": -7.5,
         "onset": 0.464,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "メルト (10th ANNIVERSARY MIX Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/メルト (10th ANNIVERSARY MIX Instrumental).wav",
@@ -2617,13 +2617,13 @@
         "album": "伴奏"
       },
       "ライン": {
-        "path": "data/library/bgm/supercell/原曲/ライン.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/ライン.flac",
         "slot": "正文",
         "dur": 295.4,
         "lufs": -7.65,
         "onset": 0.836,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "リルモア (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/リルモア (Instrumental).flac",
@@ -2635,13 +2635,13 @@
         "album": "伴奏"
       },
       "リルモア": {
-        "path": "data/library/bgm/supercell/原曲/リルモア.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/リルモア.flac",
         "slot": "正文",
         "dur": 234.8,
         "lufs": -11.73,
         "onset": 0.557,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "ロックンロールなんですの (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/ロックンロールなんですの (Instrumental).flac",
@@ -2653,13 +2653,13 @@
         "album": "伴奏"
       },
       "ロックンロールなんですの": {
-        "path": "data/library/bgm/supercell/原曲/ロックンロールなんですの.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/ロックンロールなんですの.flac",
         "slot": "正文",
         "dur": 216.8,
         "lufs": -5.97,
         "onset": 2.508,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "ワールドイズマイン (2009 supercell album ver.)": {
         "path": "data/library/bgm/supercell/专辑版/ワールドイズマイン (2009 supercell album ver.).flac",
@@ -2707,13 +2707,13 @@
         "album": "TV-Edit"
       },
       "僕らのあしあと": {
-        "path": "data/library/bgm/supercell/原曲/僕らのあしあと.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/僕らのあしあと.flac",
         "slot": "正文",
         "dur": 426.3,
         "lufs": -8.2,
         "onset": 0.65,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "初めての恋が終わる時 (2009 supercell album ver.)": {
         "path": "data/library/bgm/supercell/专辑版/初めての恋が終わる時 (2009 supercell album ver.).flac",
@@ -2734,13 +2734,13 @@
         "album": "伴奏"
       },
       "劇場版アニメ映画「ねらわれた学園」特報用BGM": {
-        "path": "data/library/bgm/supercell/原曲/劇場版アニメ映画「ねらわれた学園」特報用BGM.flac",
+        "path": "data/library/bgm/supercell/原声带/ねらわれた学園/劇場版アニメ映画「ねらわれた学園」特報用BGM.flac",
         "slot": "正文",
         "dur": 142.8,
         "lufs": -10.89,
         "onset": 0.557,
         "vocal": false,
-        "album": "原曲"
+        "album": "ねらわれた学園"
       },
       "君の知らない物語 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/君の知らない物語 (Instrumental).flac",
@@ -2761,13 +2761,13 @@
         "album": "TV-Edit"
       },
       "君の知らない物語": {
-        "path": "data/library/bgm/supercell/原曲/君の知らない物語.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/君の知らない物語.flac",
         "slot": "正文",
         "dur": 341.1,
         "lufs": -5.87,
         "onset": 0.743,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "告白 (Album Mix)": {
         "path": "data/library/bgm/supercell/专辑版/告白 (Album Mix).flac",
@@ -2806,22 +2806,22 @@
         "album": "TV-Edit"
       },
       "告白": {
-        "path": "data/library/bgm/supercell/原曲/告白.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/告白.flac",
         "slot": "正文",
         "dur": 326.8,
         "lufs": -8.1,
         "onset": 2.229,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "嘘つきのパレード": {
-        "path": "data/library/bgm/supercell/原曲/嘘つきのパレード.flac",
+        "path": "data/library/bgm/supercell/专辑/supercell-2009/嘘つきのパレード.flac",
         "slot": "正文",
         "dur": 235.3,
         "lufs": -7.96,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "supercell-2009"
       },
       "夕焼けブルース (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/夕焼けブルース (Instrumental).flac",
@@ -2833,13 +2833,13 @@
         "album": "伴奏"
       },
       "夕焼けブルース": {
-        "path": "data/library/bgm/supercell/原曲/夕焼けブルース.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/夕焼けブルース.flac",
         "slot": "正文",
         "dur": 311.6,
         "lufs": -11.38,
         "onset": 2.694,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "夜が明けるよ (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/夜が明けるよ (Instrumental).flac",
@@ -2851,13 +2851,13 @@
         "album": "伴奏"
       },
       "夜が明けるよ": {
-        "path": "data/library/bgm/supercell/原曲/夜が明けるよ.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/夜が明けるよ.flac",
         "slot": "正文",
         "dur": 290.6,
         "lufs": -10.65,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "大貧民 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/大貧民 (Instrumental).flac",
@@ -2869,22 +2869,22 @@
         "album": "伴奏"
       },
       "大貧民": {
-        "path": "data/library/bgm/supercell/原曲/大貧民.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/大貧民.flac",
         "slot": "正文",
         "dur": 260.7,
         "lufs": -5.48,
         "onset": 0.557,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "従属人間": {
-        "path": "data/library/bgm/supercell/原曲/従属人間.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/従属人間.flac",
         "slot": "正文",
         "dur": 214.7,
         "lufs": -9.28,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "復讐 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/復讐 (Instrumental).flac",
@@ -2896,13 +2896,13 @@
         "album": "伴奏"
       },
       "復讐": {
-        "path": "data/library/bgm/supercell/原曲/復讐.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/復讐.flac",
         "slot": "正文",
         "dur": 203.5,
         "lufs": -6.03,
         "onset": 4.458,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "恋は戦争 (2009 supercell album ver.)": {
         "path": "data/library/bgm/supercell/专辑版/恋は戦争 (2009 supercell album ver.).flac",
@@ -2941,13 +2941,13 @@
         "album": "TV-Edit"
       },
       "拍手喝采歌合": {
-        "path": "data/library/bgm/supercell/原曲/拍手喝采歌合.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/拍手喝采歌合.flac",
         "slot": "正文",
         "dur": 238.9,
         "lufs": -6.87,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "教えてあげる (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/教えてあげる (Instrumental).flac",
@@ -2959,13 +2959,13 @@
         "album": "伴奏"
       },
       "教えてあげる": {
-        "path": "data/library/bgm/supercell/原曲/教えてあげる.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/教えてあげる.flac",
         "slot": "正文",
         "dur": 280.6,
         "lufs": -6.54,
         "onset": 2.136,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "星が瞬くこんな夜に (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/星が瞬くこんな夜に (Instrumental).flac",
@@ -2977,31 +2977,31 @@
         "album": "伴奏"
       },
       "星が瞬くこんな夜に": {
-        "path": "data/library/bgm/supercell/原曲/星が瞬くこんな夜に.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/星が瞬くこんな夜に.flac",
         "slot": "正文",
         "dur": 269.3,
         "lufs": -5.98,
         "onset": 1.022,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "時間列車": {
-        "path": "data/library/bgm/supercell/原曲/時間列車.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/時間列車.flac",
         "slot": "正文",
         "dur": 236.9,
         "lufs": -8.73,
         "onset": 1.022,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "百回目のキス": {
-        "path": "data/library/bgm/supercell/原曲/百回目のキス.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/百回目のキス.flac",
         "slot": "正文",
         "dur": 286,
         "lufs": -10.01,
         "onset": 0.186,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "私へ (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/私へ (Instrumental).flac",
@@ -3013,22 +3013,22 @@
         "album": "伴奏"
       },
       "私へ": {
-        "path": "data/library/bgm/supercell/原曲/私へ.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/私へ.flac",
         "slot": "正文",
         "dur": 126.5,
         "lufs": -11.44,
         "onset": 1.115,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "約束をしよう": {
-        "path": "data/library/bgm/supercell/原曲/約束をしよう.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/約束をしよう.flac",
         "slot": "正文",
         "dur": 210.3,
         "lufs": -14.33,
         "onset": 2.508,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "終わりへ向かう始まりの歌 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/終わりへ向かう始まりの歌 (Instrumental).flac",
@@ -3040,13 +3040,13 @@
         "album": "伴奏"
       },
       "終わりへ向かう始まりの歌": {
-        "path": "data/library/bgm/supercell/原曲/終わりへ向かう始まりの歌.flac",
+        "path": "data/library/bgm/supercell/专辑/Today-Is-A-Beautiful-Day-2011/終わりへ向かう始まりの歌.flac",
         "slot": "正文",
         "dur": 130.4,
         "lufs": -12.65,
         "onset": 1.207,
         "vocal": true,
-        "album": "原曲"
+        "album": "Today-Is-A-Beautiful-Day-2011"
       },
       "罪人 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/罪人 (Instrumental).flac",
@@ -3058,13 +3058,13 @@
         "album": "伴奏"
       },
       "罪人": {
-        "path": "data/library/bgm/supercell/原曲/罪人.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/罪人.flac",
         "slot": "正文",
         "dur": 226.7,
         "lufs": -13.17,
         "onset": 0.65,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "銀色飛行船 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/銀色飛行船 (Instrumental).flac",
@@ -3076,13 +3076,13 @@
         "album": "伴奏"
       },
       "銀色飛行船": {
-        "path": "data/library/bgm/supercell/原曲/銀色飛行船.flac",
+        "path": "data/library/bgm/supercell/专辑/ZIGAEXPERIENTIA-2013/銀色飛行船.flac",
         "slot": "正文",
         "dur": 425.5,
         "lufs": -10.85,
         "onset": 0.743,
         "vocal": true,
-        "album": "原曲"
+        "album": "ZIGAEXPERIENTIA-2013"
       },
       "青空 (Instrumental)": {
         "path": "data/library/bgm/supercell/伴奏/青空 (Instrumental).flac",
@@ -3094,49 +3094,49 @@
         "album": "伴奏"
       },
       "青空": {
-        "path": "data/library/bgm/supercell/原曲/青空.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/青空.flac",
         "slot": "正文",
         "dur": 211.3,
         "lufs": -6.63,
         "onset": 1.207,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "1996": {
-        "path": "data/library/bgm/supercell/原曲/1996.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/1996.flac",
         "slot": "正文",
         "dur": 253.1,
         "lufs": -7.72,
         "onset": 2.304,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "LEGENDS": {
-        "path": "data/library/bgm/supercell/原曲/LEGENDS.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/LEGENDS.flac",
         "slot": "正文",
         "dur": 223.7,
         "lufs": -7.26,
         "onset": 0.384,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "タクト": {
-        "path": "data/library/bgm/supercell/原曲/タクト.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/タクト.flac",
         "slot": "正文",
         "dur": 247.3,
         "lufs": -9.28,
         "onset": 5.664,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "メルト 10th ANNIVERSARY MIX": {
-        "path": "data/library/bgm/supercell/原曲/メルト 10th ANNIVERSARY MIX.flac",
+        "path": "data/library/bgm/supercell/专辑版/十周年-10th-ANNIVERSARY/メルト 10th ANNIVERSARY MIX.flac",
         "slot": "正文",
         "dur": 308.2,
         "lufs": -4.91,
         "onset": 2.88,
         "vocal": true,
-        "album": "原曲"
+        "album": "十周年-10th-ANNIVERSARY"
       },
       "メルト CPK! Remix (Melt 重编版)": {
         "path": "data/library/bgm/supercell/重编版/メルト CPK! Remix (Melt 重编版).flac",
@@ -3157,31 +3157,31 @@
         "album": "重编版"
       },
       "君よ 気高くあれ": {
-        "path": "data/library/bgm/supercell/原曲/君よ 気高くあれ.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/君よ 気高くあれ.flac",
         "slot": "正文",
         "dur": 215.0,
         "lufs": -5.81,
         "onset": 0.768,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "笑ウ二重人格": {
-        "path": "data/library/bgm/supercell/原曲/笑ウ二重人格.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/笑ウ二重人格.flac",
         "slot": "正文",
         "dur": 243.4,
         "lufs": -6.58,
         "onset": 1.824,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "運命と Struggle": {
-        "path": "data/library/bgm/supercell/原曲/運命と Struggle.flac",
+        "path": "data/library/bgm/supercell/单曲-其他/各单曲B面与未收曲/運命と Struggle.flac",
         "slot": "正文",
         "dur": 251.8,
         "lufs": -6.27,
         "onset": 0.288,
         "vocal": true,
-        "album": "原曲"
+        "album": "各单曲B面与未收曲"
       },
       "Deal with the devil (Tia)": {
         "path": "data/library/bgm/supercell/合作-feat/Deal with the devil (Tia).flac",

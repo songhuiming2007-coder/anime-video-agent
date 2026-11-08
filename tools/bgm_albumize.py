@@ -52,7 +52,8 @@ def main() -> int:
         parent = src.parent
         if parent.name == "raw" or parent.parent.name == a.anime:
             pass  # 平铺期：父目录就是池根
-        bucket = mapping.get(name)
+        # map 没给的保留原有 album（老池重排时不会把已分好的桶冲进 _未归类）
+        bucket = mapping.get(name) or rec.get("album")
         if not bucket:
             bucket = "_未归类"
             unclassified.append(name)
