@@ -3812,5 +3812,1930 @@
         "vocal": null
       }
     }
+  },
+  "Aimer": {
+    "_note": "Aimer 曲库：按桶分目录（专辑/单曲/现场/伴奏/合作-feat）；音源全部为 B 站转载与投稿逐曲抽轨的 m4a/AAC（采样率 44.1k/48k 混，实测码率中位 194k，最高 330k，最低 93k，无无损），逐曲来源见 from；低码率清单与换源记录见 data/library/bgm/Aimer/入库报告.md",
+    "tracks": {
+      "茜さす": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-blanc-2017/10. 茜さす.m4a",
+        "slot": "正文",
+        "dur": 329.8,
+        "lufs": -9.33,
+        "onset": 1.088,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1BA411475z p10（B站 BV1BA411475z 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-blanc-2017"
+      },
+      "everlasting snow": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-blanc-2017/12. everlasting snow.m4a",
+        "slot": "正文",
+        "dur": 337.1,
+        "lufs": -9.21,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1BA411475z p12（B站 BV1BA411475z 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-blanc-2017"
+      },
+      "March of Time": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-blanc-2017/13. March of Time.m4a",
+        "slot": "正文",
+        "dur": 296.6,
+        "lufs": -7.9,
+        "onset": 0.363,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1BA411475z p13（B站 BV1BA411475z 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-blanc-2017"
+      },
+      "歌鳥風月": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-blanc-2017/14. 歌鳥風月.m4a",
+        "slot": "正文",
+        "dur": 344.6,
+        "lufs": -9.66,
+        "onset": 1.088,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1BA411475z p14（B站 BV1BA411475z 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-blanc-2017"
+      },
+      "凍えそうな季節から -extended ver.-": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-noir-2017/07. 凍えそうな季節から -extended ver.-.m4a",
+        "slot": "正文",
+        "dur": 226.4,
+        "lufs": -6.9,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1xK41157iK p7（B站 BV1xK41157iK 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-noir-2017"
+      },
+      "zero": {
+        "path": "data/library/bgm/Aimer/专辑/BEST-SELECTION-noir-2017/14. zero.m4a",
+        "slot": "正文",
+        "dur": 188.8,
+        "lufs": -6.4,
+        "onset": 1.792,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1xK41157iK p14（B站 BV1xK41157iK 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/BEST-SELECTION-noir-2017"
+      },
+      "誰か、海を。": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/01. 誰か、海を。.m4a",
+        "slot": "正文",
+        "dur": 296.4,
+        "lufs": -13.81,
+        "onset": 1.152,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p11（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/DAWN-2015"
+      },
+      "broKen NIGHT": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/02. broKen NIGHT.m4a",
+        "slot": "正文",
+        "dur": 299.3,
+        "lufs": -8.88,
+        "onset": 4.116,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p13（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/DAWN-2015"
+      },
+      "君を待つ": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/03. 君を待つ.m4a",
+        "slot": "正文",
+        "dur": 276.3,
+        "lufs": -7.84,
+        "onset": 2.218,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p14（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/DAWN-2015"
+      },
+      "Brave Shine": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/04. Brave Shine.m4a",
+        "slot": "正文",
+        "dur": 235.3,
+        "lufs": -8.36,
+        "onset": 1.237,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p15（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/DAWN-2015"
+      },
+      "Believe Be-leave": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/05. Believe Be-leave.m4a",
+        "slot": "正文",
+        "dur": 346.6,
+        "lufs": -12.99,
+        "onset": 22.954,
+        "vocal": true,
+        "album": "专辑/DAWN-2015",
+        "from": "B站 https://www.bilibili.com/video/BV1uT411D7Dd（索尼音乐中国；码率 204kbps，2026-11-08 提质换源）"
+      },
+      "RE-I AM": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/01. RE-I AM.m4a",
+        "slot": "正文",
+        "dur": 357.3,
+        "lufs": -9.7,
+        "onset": 12.074,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p8（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "StarRingChild": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/03. StarRingChild.m4a",
+        "slot": "正文",
+        "dur": 330.7,
+        "lufs": -9.38,
+        "onset": 1.365,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p10（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "words": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/04. words.m4a",
+        "slot": "正文",
+        "dur": 361.2,
+        "lufs": -17.35,
+        "onset": 16.091,
+        "vocal": true,
+        "album": "专辑/Midnight-Sun-2014",
+        "from": "B站 https://www.bilibili.com/video/BV11V4y1d7fk（Aimer大法好；码率 186kbps，2026-11-08 提质换源）"
+      },
+      "残響散歌": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/01. 残響散歌.m4a",
+        "slot": "正文",
+        "dur": 181.8,
+        "lufs": -13.02,
+        "onset": 0.448,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1gb4y1i7eZ（索尼音乐中国；码率 329kbps，2026-11-08 提质换源）"
+      },
+      "朝が来る": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/02. 朝が来る.m4a",
+        "slot": "正文",
+        "dur": 290.3,
+        "lufs": -13.02,
+        "onset": 1.429,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1eT4y117wr（索尼音乐中国；码率 329kbps，2026-11-08 提质换源）"
+      },
+      "オアイコ": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/03. オアイコ.m4a",
+        "slot": "正文",
+        "dur": 263.3,
+        "lufs": -13.21,
+        "onset": 14.165,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p62（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Open-a-Door-2023"
+      },
+      "Deep down": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/04. Deep down.m4a",
+        "slot": "正文",
+        "dur": 229.2,
+        "lufs": -13.23,
+        "onset": 3.307,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p63（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Open-a-Door-2023"
+      },
+      "escalate": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/05. escalate.m4a",
+        "slot": "正文",
+        "dur": 242.9,
+        "lufs": -13.1,
+        "onset": 0.533,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1BR4y1i7nW（索尼音乐中国；码率 205kbps，2026-11-08 提质换源）"
+      },
+      "あてもなく": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/06. あてもなく.m4a",
+        "slot": "正文",
+        "dur": 250.1,
+        "lufs": -13.07,
+        "onset": 13.205,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1Tk4y1M7fL（索尼音乐中国；码率 218kbps，2026-11-08 提质换源）"
+      },
+      "Resonantia": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/07. Resonantia.m4a",
+        "slot": "正文",
+        "dur": 239.5,
+        "lufs": -10.62,
+        "onset": 0.256,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1hk4y1P7aC（Aimer大法好；码率 194kbps，2026-11-08 提质换源）"
+      },
+      "SKYLIGHT": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/08. SKYLIGHT.m4a",
+        "slot": "正文",
+        "dur": 217.9,
+        "lufs": -13.05,
+        "onset": 2.048,
+        "vocal": true,
+        "album": "专辑/Open-a-Door-2023",
+        "from": "B站 https://www.bilibili.com/video/BV1bP411b7xq（索尼音乐中国；码率 204kbps，2026-11-08 提质换源）"
+      },
+      "花の唄": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/01. 花の唄.m4a",
+        "slot": "正文",
+        "dur": 392.4,
+        "lufs": -6.9,
+        "onset": 22.015,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p30（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "Ref-rain": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/02. Ref-rain.m4a",
+        "slot": "正文",
+        "dur": 290.3,
+        "lufs": -6.98,
+        "onset": 0.07,
+        "vocal": true,
+        "album": "专辑/Penny-Rain-2019",
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p31（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））"
+      },
+      "眩いばかり": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/03. 眩いばかり.m4a",
+        "slot": "正文",
+        "dur": 258.7,
+        "lufs": -7.1,
+        "onset": 5.803,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p32（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "Black Bird": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/04. Black Bird.m4a",
+        "slot": "正文",
+        "dur": 217.2,
+        "lufs": -7.23,
+        "onset": 2.219,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p33（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "I beg you": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/05. I beg you.m4a",
+        "slot": "正文",
+        "dur": 289.8,
+        "lufs": -13.07,
+        "onset": 18.197,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p35（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "Stand By You": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/06. Stand By You.m4a",
+        "slot": "正文",
+        "dur": 180.9,
+        "lufs": -7.22,
+        "onset": 0.214,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p46（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "TWINKLE TWINKLE LITTLE STAR -prologue-": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/01. TWINKLE TWINKLE LITTLE STAR -prologue-.m4a",
+        "slot": "正文",
+        "dur": 87.7,
+        "lufs": -12.4,
+        "onset": 5.248,
+        "vocal": null,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p1（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "夜行列車～nothing to lose～": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/02. 夜行列車～nothing to lose～.m4a",
+        "slot": "正文",
+        "dur": 302.7,
+        "lufs": -7.37,
+        "onset": 0.163,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p2（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "あなたに出会わなければ～夏雪冬花～": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/03. あなたに出会わなければ～夏雪冬花～.m4a",
+        "slot": "正文",
+        "dur": 359.9,
+        "lufs": -7.4,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p3（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "笑顔": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/04. 笑顔.m4a",
+        "slot": "正文",
+        "dur": 361.7,
+        "lufs": -7.26,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p4（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "Re-pray": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/05. Re-pray.m4a",
+        "slot": "正文",
+        "dur": 306.7,
+        "lufs": -8.08,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p5（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "悲しみはオーロラに（Restarred by Takagi Masakatsu）": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/06. 悲しみはオーロラに（Restarred by Takagi Masakatsu）.m4a",
+        "slot": "正文",
+        "dur": 269.9,
+        "lufs": -9.99,
+        "onset": 1.091,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p6（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "寂しくて眠れない夜は": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/07. 寂しくて眠れない夜は.m4a",
+        "slot": "正文",
+        "dur": 323.7,
+        "lufs": -8.42,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p7（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "AM02-00": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/08. AM02-00.m4a",
+        "slot": "正文",
+        "dur": 329.7,
+        "lufs": -7.27,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p8（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "星屑ビーナス": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/09. 星屑ビーナス.m4a",
+        "slot": "正文",
+        "dur": 251.8,
+        "lufs": -7.89,
+        "onset": 0.952,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p9（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "雪の降る街": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/10. 雪の降る街.m4a",
+        "slot": "正文",
+        "dur": 243.8,
+        "lufs": -7.27,
+        "onset": 0.859,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p10（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "冬のダイヤモンド（Re-echoed by Genki Rockets）": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/11. 冬のダイヤモンド（Re-echoed by Genki Rockets）.m4a",
+        "slot": "正文",
+        "dur": 371.9,
+        "lufs": -7.89,
+        "onset": 0.325,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p11（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "六等星の夜": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/12. 六等星の夜.m4a",
+        "slot": "正文",
+        "dur": 337.8,
+        "lufs": -7.72,
+        "onset": 0.348,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p12（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "TWINKLE TWINKLE LITTLE STAR": {
+        "path": "data/library/bgm/Aimer/专辑/Sleepless-Nights-2012/13. TWINKLE TWINKLE LITTLE STAR.m4a",
+        "slot": "正文",
+        "dur": 124.7,
+        "lufs": -11.61,
+        "onset": 0.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ks411U7oj p13（B站 BV1Ks411U7oj 分P（整轨转载，投稿 UP：Rin_Kana））",
+        "album": "专辑/Sleepless-Nights-2012"
+      },
+      "soleil": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/01. soleil.m4a",
+        "slot": "正文",
+        "dur": 119.9,
+        "lufs": -12.11,
+        "onset": 0.256,
+        "vocal": null,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p1（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "ONE": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/02. ONE.m4a",
+        "slot": "正文",
+        "dur": 328.5,
+        "lufs": -6.92,
+        "onset": 0.32,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p2（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "We Two": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/03. We Two.m4a",
+        "slot": "正文",
+        "dur": 247.9,
+        "lufs": -6.26,
+        "onset": 0.277,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p3（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "3min": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/04. 3min.m4a",
+        "slot": "正文",
+        "dur": 183.8,
+        "lufs": -7.37,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p4（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "コイワズライ": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/05. コイワズライ.m4a",
+        "slot": "正文",
+        "dur": 235.2,
+        "lufs": -8.98,
+        "onset": 0.747,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p5（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "花びらたちのマーチ": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/06. 花びらたちのマーチ.m4a",
+        "slot": "正文",
+        "dur": 193.4,
+        "lufs": -8.62,
+        "onset": 0.405,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p6（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "思い出は奇麗で": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/07. 思い出は奇麗で.m4a",
+        "slot": "正文",
+        "dur": 209.8,
+        "lufs": -8.05,
+        "onset": 0.576,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p7（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "Monochrome Syndrome": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/08. Monochrome Syndrome.m4a",
+        "slot": "正文",
+        "dur": 292.8,
+        "lufs": -7.09,
+        "onset": 0.277,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p8（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "SUN DANCE": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/09. SUN DANCE.m4a",
+        "slot": "正文",
+        "dur": 328.6,
+        "lufs": -8.1,
+        "onset": 0.299,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p9（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "ONE -epilogue-": {
+        "path": "data/library/bgm/Aimer/专辑/Sun-Dance-2019/10. ONE -epilogue-.m4a",
+        "slot": "正文",
+        "dur": 243.4,
+        "lufs": -8.24,
+        "onset": 0.341,
+        "vocal": null,
+        "from": "B站 https://www.bilibili.com/video/BV1Vv411h7xM p10（B站 BV1Vv411h7xM 分P（整轨转载，投稿 UP：细雨观星））",
+        "album": "专辑/Sun-Dance-2019"
+      },
+      "Walpurgis -prologue-": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/01. Walpurgis -prologue-.m4a",
+        "slot": "正文",
+        "dur": 144.0,
+        "lufs": -11.21,
+        "onset": 6.656,
+        "vocal": null,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p1（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "STAND-ALONE": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/02. STAND-ALONE.m4a",
+        "slot": "正文",
+        "dur": 287.7,
+        "lufs": -6.84,
+        "onset": 5.099,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p2（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "cold rain": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/03. cold rain.m4a",
+        "slot": "正文",
+        "dur": 230.3,
+        "lufs": -7.71,
+        "onset": 0.512,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p3（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "トリル": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/04. トリル.m4a",
+        "slot": "正文",
+        "dur": 320.7,
+        "lufs": -8.03,
+        "onset": 0.811,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p4（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "地球儀": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/05. 地球儀.m4a",
+        "slot": "正文",
+        "dur": 232.9,
+        "lufs": -8.19,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p5（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "SPARK-AGAIN": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/06. SPARK-AGAIN.m4a",
+        "slot": "正文",
+        "dur": 244.2,
+        "lufs": -5.36,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p6（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "wonderland": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/07. wonderland.m4a",
+        "slot": "正文",
+        "dur": 303.9,
+        "lufs": -8.17,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p7（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "Torches": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/08. Torches.m4a",
+        "slot": "正文",
+        "dur": 294.4,
+        "lufs": -7.93,
+        "onset": 0.384,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p8（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "marie": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/09. marie.m4a",
+        "slot": "正文",
+        "dur": 307.3,
+        "lufs": -7.65,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p9（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "ever after": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/10. ever after.m4a",
+        "slot": "正文",
+        "dur": 236.4,
+        "lufs": -8.81,
+        "onset": 0.854,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p10（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "hollow-mas": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/11. hollow-mas.m4a",
+        "slot": "正文",
+        "dur": 173.0,
+        "lufs": -10.05,
+        "onset": 0.768,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p11（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "季路": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/12. 季路.m4a",
+        "slot": "正文",
+        "dur": 352.7,
+        "lufs": -7.87,
+        "onset": 0.469,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p12（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "春はゆく": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/13. 春はゆく.m4a",
+        "slot": "正文",
+        "dur": 305.5,
+        "lufs": -9.9,
+        "onset": 0.299,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p13（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "Walpurgis": {
+        "path": "data/library/bgm/Aimer/专辑/Walpurgis-2021/14. Walpurgis.m4a",
+        "slot": "正文",
+        "dur": 242.8,
+        "lufs": -10.91,
+        "onset": 7.957,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Yv41177iD p14（B站 BV1Yv41177iD 分P（整轨转载，投稿 UP：Lotus_Double蓮））",
+        "album": "专辑/Walpurgis-2021"
+      },
+      "insane dream": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/01. insane dream.m4a",
+        "slot": "正文",
+        "dur": 253.1,
+        "lufs": -5.5,
+        "onset": 0.363,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p1（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "ninelie": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/02. ninelie.m4a",
+        "slot": "正文",
+        "dur": 261.8,
+        "lufs": -7.83,
+        "onset": 0.512,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p2（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "twoface": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/03. twoface.m4a",
+        "slot": "正文",
+        "dur": 185.1,
+        "lufs": -4.98,
+        "onset": 0.192,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p3（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "Higher Ground": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/04. Higher Ground.m4a",
+        "slot": "正文",
+        "dur": 314.2,
+        "lufs": -7.69,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p4（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "for ロンリー": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/05. for ロンリー.m4a",
+        "slot": "正文",
+        "dur": 291.6,
+        "lufs": -6.85,
+        "onset": 0.235,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p5（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "蝶々結び": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/06. 蝶々結び.m4a",
+        "slot": "正文",
+        "dur": 305.3,
+        "lufs": -8.91,
+        "onset": 3.883,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p6（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "カタオモイ": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/07. カタオモイ.m4a",
+        "slot": "正文",
+        "dur": 207.4,
+        "lufs": -9.32,
+        "onset": 1.109,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p7（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "Hz": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/08. Hz.m4a",
+        "slot": "正文",
+        "dur": 289.0,
+        "lufs": -6.73,
+        "onset": 0.192,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p8（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "声色": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/09. 声色.m4a",
+        "slot": "正文",
+        "dur": 297.5,
+        "lufs": -7.55,
+        "onset": 3.861,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p9（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "closer": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/10. closer.m4a",
+        "slot": "正文",
+        "dur": 212.7,
+        "lufs": -5.98,
+        "onset": 0.576,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p10（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "Falling Alone": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/11. Falling Alone.m4a",
+        "slot": "正文",
+        "dur": 253.4,
+        "lufs": -6.47,
+        "onset": 5.44,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p11（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "us": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/12. us.m4a",
+        "slot": "正文",
+        "dur": 274.9,
+        "lufs": -5.7,
+        "onset": 0.896,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p12（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "Stars in the rain": {
+        "path": "data/library/bgm/Aimer/专辑/daydream-2016/13. Stars in the rain.m4a",
+        "slot": "正文",
+        "dur": 302.3,
+        "lufs": -5.76,
+        "onset": 0.213,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Q7HD6JE3w p13（B站 BV1Q7HD6JE3w 分P（整轨转载，投稿 UP：川島ゆきな））",
+        "album": "专辑/daydream-2016"
+      },
+      "7月の翼 (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/7月の翼 (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 284.1,
+        "lufs": -8.13,
+        "onset": 0.232,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p95（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "AM03-00 (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/AM03-00 (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 358.7,
+        "lufs": -9.24,
+        "onset": 0.464,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p97（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "AM04-00 (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/AM04-00 (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 272.6,
+        "lufs": -9.01,
+        "onset": 2.717,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p145（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "April Showers (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/April Showers (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 344.0,
+        "lufs": -8.8,
+        "onset": 0.325,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p146（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "DAWN (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/DAWN (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 310.0,
+        "lufs": -8.82,
+        "onset": 1.37,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p115（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Higher Ground (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Higher Ground (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 314.2,
+        "lufs": -7.68,
+        "onset": 0.255,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p147（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Hz (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Hz (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 289.0,
+        "lufs": -6.74,
+        "onset": 0.186,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p125（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "I know U know (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/I know U know (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 259.7,
+        "lufs": -7.92,
+        "onset": 0.255,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p148（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Iris (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Iris (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 301.3,
+        "lufs": -9.61,
+        "onset": 0.395,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p103（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "LAST STARDUST (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/LAST STARDUST (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 318.5,
+        "lufs": -6.07,
+        "onset": 5.573,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p116（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Noir! Noir! (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Noir! Noir! (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 243.1,
+        "lufs": -8.2,
+        "onset": 0.279,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p175（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Re-far (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Re-far (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 253.4,
+        "lufs": -9.66,
+        "onset": 1.091,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p118（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "Run Riot (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/Run Riot (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 253.2,
+        "lufs": -8.04,
+        "onset": 0.213,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p151（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "SUN DANCE (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/SUN DANCE (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 328.6,
+        "lufs": -8.96,
+        "onset": 0.232,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p152（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "VOICE (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/VOICE (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 286.6,
+        "lufs": -8.8,
+        "onset": 0.395,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p107（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "closer (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/closer (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 212.7,
+        "lufs": -5.97,
+        "onset": 0.557,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p123（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "holLow wORlD (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/holLow wORlD (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 276.6,
+        "lufs": -6.93,
+        "onset": 0.372,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p112（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "ninelie (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/ninelie (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 306.9,
+        "lufs": -10.95,
+        "onset": 0.325,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p120（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "spiral dance (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/spiral dance (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 236.1,
+        "lufs": -7.88,
+        "onset": 0.186,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p177（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "twoface (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/twoface (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 185.1,
+        "lufs": -4.99,
+        "onset": 0.186,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p131（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "コイワズライ (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/コイワズライ (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 235.2,
+        "lufs": -11.89,
+        "onset": 0.65,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p144（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "声色 (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/声色 (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 297.4,
+        "lufs": -7.53,
+        "onset": 3.901,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p108（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "夏草に君を想う (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/夏草に君を想う (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 263.1,
+        "lufs": -7.88,
+        "onset": 0.836,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p119（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "小さな星のメロディー (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/小さな星のメロディー (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 311.4,
+        "lufs": -9.34,
+        "onset": 1.393,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p109（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "群青色の空 (Instrumental)": {
+        "path": "data/library/bgm/Aimer/伴奏/群青色の空 (Instrumental).m4a",
+        "slot": "结尾",
+        "dur": 163.5,
+        "lufs": -9.32,
+        "onset": 0.661,
+        "vocal": false,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p179（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），标注「纯音乐」的无人声版）",
+        "album": "伴奏"
+      },
+      "800": {
+        "path": "data/library/bgm/Aimer/单曲/800.m4a",
+        "slot": "正文",
+        "dur": 235.1,
+        "lufs": -7.66,
+        "onset": 1.672,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1u6421g7dm（百億_光年；码率 149kbps，2026-11-08 提质换源）"
+      },
+      "Eclipse": {
+        "path": "data/library/bgm/Aimer/单曲/Eclipse.m4a",
+        "slot": "正文",
+        "dur": 184.1,
+        "lufs": -14.02,
+        "onset": 2.049,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p42（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "单曲"
+      },
+      "Little Bouquet": {
+        "path": "data/library/bgm/Aimer/单曲/Little Bouquet.m4a",
+        "slot": "正文",
+        "dur": 270.7,
+        "lufs": -7.76,
+        "onset": 7.083,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1q4SgBEEqt（索尼音乐中国；码率 192kbps，2026-11-08 提质换源）"
+      },
+      "ONE AND LAST": {
+        "path": "data/library/bgm/Aimer/单曲/ONE AND LAST.m4a",
+        "slot": "正文",
+        "dur": 287.2,
+        "lufs": -13.04,
+        "onset": 8.021,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p59（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "单曲"
+      },
+      "Pastoral": {
+        "path": "data/library/bgm/Aimer/单曲/Pastoral.m4a",
+        "slot": "正文",
+        "dur": 245.1,
+        "lufs": -8.55,
+        "onset": 0.511,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1tqnuzrEfE（百億_光年；码率 208kbps，2026-11-08 提质换源）"
+      },
+      "SCOPE": {
+        "path": "data/library/bgm/Aimer/单曲/SCOPE.m4a",
+        "slot": "正文",
+        "dur": 173.8,
+        "lufs": -6.8,
+        "onset": 0.512,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1La9wYMEKR（索尼音乐中国；码率 205kbps，2026-11-08 提质换源）"
+      },
+      "Sign": {
+        "path": "data/library/bgm/Aimer/单曲/Sign.m4a",
+        "slot": "正文",
+        "dur": 218.5,
+        "lufs": -8.37,
+        "onset": 0.372,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV13fFQesExU（沐一二吗；码率 180kbps，2026-11-08 提质换源）"
+      },
+      "wavy flow": {
+        "path": "data/library/bgm/Aimer/单曲/wavy flow.m4a",
+        "slot": "正文",
+        "dur": 208.9,
+        "lufs": -13.12,
+        "onset": 7.616,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p61（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "单曲"
+      },
+      "うつくしい世界": {
+        "path": "data/library/bgm/Aimer/单曲/うつくしい世界.m4a",
+        "slot": "正文",
+        "dur": 245.2,
+        "lufs": -8.02,
+        "onset": 0.372,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV13fFQesExR（沐一二吗；码率 179kbps，2026-11-08 提质换源）"
+      },
+      "グレースノート": {
+        "path": "data/library/bgm/Aimer/单曲/グレースノート.m4a",
+        "slot": "正文",
+        "dur": 301.0,
+        "lufs": -7.82,
+        "onset": 0.255,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1hfFQesERA（沐一二吗；码率 180kbps，2026-11-08 提质换源）"
+      },
+      "今日から思い出": {
+        "path": "data/library/bgm/Aimer/单曲/今日から思い出.m4a",
+        "slot": "正文",
+        "dur": 314.2,
+        "lufs": -13.02,
+        "onset": 9.109,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1uW4y1e7VT（索尼音乐中国；码率 329kbps，2026-11-08 提质换源）"
+      },
+      "凍えそうな季節から": {
+        "path": "data/library/bgm/Aimer/单曲/凍えそうな季節から.m4a",
+        "slot": "正文",
+        "dur": 221.1,
+        "lufs": -7.22,
+        "onset": 1.791,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p28（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者））",
+        "album": "单曲"
+      },
+      "太陽が昇らない世界": {
+        "path": "data/library/bgm/Aimer/单曲/太陽が昇らない世界.m4a",
+        "slot": "正文",
+        "dur": 173.0,
+        "lufs": -11.88,
+        "onset": 6.4,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV177C9BXE1N（FANTASONIC；码率 190kbps，2026-11-08 提质换源）"
+      },
+      "星の消えた夜に": {
+        "path": "data/library/bgm/Aimer/单曲/星の消えた夜に.m4a",
+        "slot": "正文",
+        "dur": 365.3,
+        "lufs": -13.87,
+        "onset": 4.096,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1dp4y1d7pu（FANTASONIC；码率 223kbps，2026-11-08 提质换源）"
+      },
+      "月影": {
+        "path": "data/library/bgm/Aimer/单曲/月影.m4a",
+        "slot": "正文",
+        "dur": 207.0,
+        "lufs": -9.46,
+        "onset": 0.256,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV12fHKeVEex（Hachi_Remon；码率 177kbps，2026-11-08 提质换源）"
+      },
+      "白色蜉蝣": {
+        "path": "data/library/bgm/Aimer/单曲/白色蜉蝣.m4a",
+        "slot": "正文",
+        "dur": 202.9,
+        "lufs": -13.19,
+        "onset": 1.835,
+        "vocal": true,
+        "album": "单曲",
+        "from": "B站 https://www.bilibili.com/video/BV1NN411M7b5（索尼音乐中国；码率 198kbps，2026-11-08 提质换源）"
+      },
+      "眠りの森（配信限定单曲版）": {
+        "path": "data/library/bgm/Aimer/单曲/眠りの森（配信限定单曲版）.m4a",
+        "slot": "正文",
+        "dur": 288.8,
+        "lufs": -10.92,
+        "onset": 1.194,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p9（配信限定单曲版 4:49，与 Midnight Sun 专辑版 4:33 不同版本，故单列）",
+        "album": "单曲"
+      },
+      "s-AVE (SawanoHiroyuki[nZk] with Aimer)": {
+        "path": "data/library/bgm/Aimer/合作-feat/澤野弘之/s-AVE (SawanoHiroyuki[nZk] with Aimer).m4a",
+        "slot": "正文",
+        "dur": 293.2,
+        "lufs": -10.77,
+        "onset": 5.099,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p23（Aimer 曲目合集投稿，投稿 UP：MV收藏爱好者）",
+        "album": "合作-feat/澤野弘之"
+      },
+      "7月の翼": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/03. 7月の翼.m4a",
+        "slot": "正文",
+        "dur": 286.2,
+        "lufs": -9.59,
+        "onset": 2.261,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1ix4y1N7tC（云妮洁（B站 Hi-Res 投稿））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "Mine": {
+        "path": "data/library/bgm/Aimer/单曲/StarRingChild-EP-2014/Mine.m4a",
+        "slot": "正文",
+        "dur": 304.7,
+        "lufs": -11.28,
+        "onset": 1.302,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1hC4y1a7AE（诗人鲨（B站单曲投稿））",
+        "album": "单曲/StarRingChild-EP-2014"
+      },
+      "Ref-rain (Live soleil et pluie 18-19)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/Ref-rain (Live soleil et pluie 18-19).m4a",
+        "slot": "正文",
+        "dur": 310.4,
+        "lufs": -13.42,
+        "onset": 14.081,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p188（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "Run Riot (Live night world)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/Run Riot (Live night world).m4a",
+        "slot": "正文",
+        "dur": 248.3,
+        "lufs": -8.96,
+        "onset": 0.044,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p189（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "us (Live 武道館 blanc et noir)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/us (Live 武道館 blanc et noir).m4a",
+        "slot": "正文",
+        "dur": 283.3,
+        "lufs": -11.38,
+        "onset": 5.526,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p192（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "カタオモイ (Live 武道館 blanc et noir)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/カタオモイ (Live 武道館 blanc et noir).m4a",
+        "slot": "正文",
+        "dur": 214.3,
+        "lufs": -14.61,
+        "onset": 2.156,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p194（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "寂しくて眠れない夜は - 夏草に君を想う (Live Hall Tour 2016)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/寂しくて眠れない夜は - 夏草に君を想う (Live Hall Tour 2016).m4a",
+        "slot": "正文",
+        "dur": 673.2,
+        "lufs": -14.61,
+        "onset": 2.154,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p199（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "星屑ビーナス (360RealityAudio Live)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/星屑ビーナス (360RealityAudio Live).m4a",
+        "slot": "正文",
+        "dur": 333.4,
+        "lufs": -8.87,
+        "onset": 8.449,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p200（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "残響散歌 (Live 10th Anniversary Final)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/残響散歌 (Live 10th Anniversary Final).m4a",
+        "slot": "正文",
+        "dur": 219.8,
+        "lufs": -9.59,
+        "onset": 0.022,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p184（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "花の唄 (Live ARIA STRINGS 管弦乐版)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/花の唄 (Live ARIA STRINGS 管弦乐版).m4a",
+        "slot": "正文",
+        "dur": 394.7,
+        "lufs": -13.55,
+        "onset": 5.121,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p198（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "蝶々結び (Live ARIA STRINGS 管弦乐版)": {
+        "path": "data/library/bgm/Aimer/现场/LIVE-AT-ANYWHERE/蝶々結び (Live ARIA STRINGS 管弦乐版).m4a",
+        "slot": "正文",
+        "dur": 330.0,
+        "lufs": -13.43,
+        "onset": 5.121,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TN5K6NEux p197（B站 BV1TN5K6NEux 分P（Aimer 曲目合集，投稿 UP：MV收藏爱好者），LIVE 分P）",
+        "album": "现场/LIVE-AT-ANYWHERE"
+      },
+      "夜行列車～nothing to lose～ (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/01. 夜行列車～nothing to lose～ (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 340.2,
+        "lufs": -11.63,
+        "onset": 1.024,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p1（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "寂しくて眠れない夜は (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/02. 寂しくて眠れない夜は (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 323.1,
+        "lufs": -12.9,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p2（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "花の唄 (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/03. 花の唄 (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 395.3,
+        "lufs": -11.05,
+        "onset": 1.28,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p3（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "words (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/04. words (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 363.3,
+        "lufs": -12.36,
+        "onset": 13.312,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p4（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "Ref-rain (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/05. Ref-rain (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 315.1,
+        "lufs": -11.19,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p5（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "蝶々結び (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/06. 蝶々結び (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 340.2,
+        "lufs": -11.02,
+        "onset": 0.491,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p6（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "broKen NIGHT (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/07. broKen NIGHT (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 330.0,
+        "lufs": -10.82,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p7（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "7月の翼 (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/08. 7月の翼 (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 289.1,
+        "lufs": -11.67,
+        "onset": 1.835,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p8（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "誰か、海を。 (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/09. 誰か、海を。 (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 360.1,
+        "lufs": -10.21,
+        "onset": 0.171,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p9（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "あなたに出会わなければ～夏雪冬花～ (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/10. あなたに出会わなければ～夏雪冬花～ (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 392.5,
+        "lufs": -10.66,
+        "onset": 1.28,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p10（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "Mine (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/11. Mine (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 333.8,
+        "lufs": -11.42,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p11（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "RE-I AM (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/12. RE-I AM (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 381.9,
+        "lufs": -9.46,
+        "onset": 0.171,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p12（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "DAWN (Live ARIA STRINGS 2018)": {
+        "path": "data/library/bgm/Aimer/现场/ARIA-STRINGS-2018/13. DAWN (Live ARIA STRINGS 2018).m4a",
+        "slot": "正文",
+        "dur": 427.4,
+        "lufs": -9.02,
+        "onset": 0.512,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tV411d738 p13（2018 与斯洛伐克国响乐团现场整轨，投稿 UP：细雨观星）",
+        "album": "现场/ARIA-STRINGS-2018"
+      },
+      "After Dark -prologue-": {
+        "path": "data/library/bgm/Aimer/专辑/After-Dark-2013/01. After Dark -prologue-.m4a",
+        "slot": "正文",
+        "dur": 68.0,
+        "lufs": -11.4,
+        "onset": 0.278,
+        "vocal": null,
+        "from": "B站 https://www.bilibili.com/video/BV1o84y1z7rf（一春半载（B站单曲投稿））",
+        "album": "专辑/After-Dark-2013"
+      },
+      "ポラリス": {
+        "path": "data/library/bgm/Aimer/专辑/After-Dark-2013/02. ポラリス.m4a",
+        "slot": "正文",
+        "dur": 371.1,
+        "lufs": -13.06,
+        "onset": 1.194,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1qB4y177Lr（索尼音乐中国（B站官方号））",
+        "album": "专辑/After-Dark-2013"
+      },
+      "After Rain": {
+        "path": "data/library/bgm/Aimer/专辑/After-Dark-2013/05. After Rain.m4a",
+        "slot": "正文",
+        "dur": 292.8,
+        "lufs": -7.97,
+        "onset": 0.278,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1kK411S7G3（白前辈仙贝（B站单曲投稿））",
+        "album": "专辑/After-Dark-2013"
+      },
+      "Noir! Noir!": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/06. Noir! Noir!.m4a",
+        "slot": "正文",
+        "dur": 240.3,
+        "lufs": -8.75,
+        "onset": 0.557,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1g5411X7v4（FM音乐小肆（B站单曲投稿））",
+        "album": "专辑/DAWN-2015"
+      },
+      "Re-far": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/07. Re-far.m4a",
+        "slot": "正文",
+        "dur": 253.7,
+        "lufs": -9.68,
+        "onset": 1.152,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Wd4y147W7（爱哭鬼Erii（B站单曲投稿））",
+        "album": "专辑/DAWN-2015"
+      },
+      "AM04-00": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/08. AM04-00.m4a",
+        "slot": "正文",
+        "dur": 272.1,
+        "lufs": -12.27,
+        "onset": 2.252,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ztha6wEKi（-蜉---蝣-（B站单曲投稿））",
+        "album": "专辑/DAWN-2015"
+      },
+      "LAST STARDUST": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/09. LAST STARDUST.m4a",
+        "slot": "正文",
+        "dur": 318.8,
+        "lufs": -9.26,
+        "onset": 7.168,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV11W4y1x7XT（大杨_Jens（B站单曲投稿））",
+        "album": "专辑/DAWN-2015"
+      },
+      "キズナ": {
+        "path": "data/library/bgm/Aimer/专辑/DAWN-2015/11. キズナ.m4a",
+        "slot": "正文",
+        "dur": 297.8,
+        "lufs": -19.63,
+        "onset": 1.302,
+        "vocal": true,
+        "album": "专辑/DAWN-2015",
+        "from": "B站 https://www.bilibili.com/video/BV1FJ411i79C（林海野羊；码率 191kbps，2026-11-08 提质换源）"
+      },
+      "Cold Sun": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/05. Cold Sun.m4a",
+        "slot": "正文",
+        "dur": 309.5,
+        "lufs": -9.84,
+        "onset": 0.661,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Hs411U7U4（愉悦菌（B站单曲投稿））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "AM03-00": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/06. AM03-00.m4a",
+        "slot": "正文",
+        "dur": 358.7,
+        "lufs": -9.32,
+        "onset": 0.511,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV13fFQesEDV（沐一二吗（B站单曲投稿））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "小さな星のメロディー": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/07. 小さな星のメロディー.m4a",
+        "slot": "正文",
+        "dur": 311.7,
+        "lufs": -9.66,
+        "onset": 1.579,
+        "vocal": true,
+        "album": "专辑/Midnight-Sun-2014",
+        "from": "B站 https://www.bilibili.com/video/BV1bW41197ao（YuukaT；码率 318kbps，2026-11-08 提质换源）"
+      },
+      "VOICE": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/08. VOICE.m4a",
+        "slot": "正文",
+        "dur": 286.7,
+        "lufs": -8.89,
+        "onset": 0.418,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV13fFQesE6F（沐一二吗（B站单曲投稿））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "Iris": {
+        "path": "data/library/bgm/Aimer/专辑/Midnight-Sun-2014/09. Iris.m4a",
+        "slot": "正文",
+        "dur": 301.8,
+        "lufs": -9.12,
+        "onset": 0.512,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV11g411j7HV（纯白之黑chelly（B站单曲投稿））",
+        "album": "专辑/Midnight-Sun-2014"
+      },
+      "I know U know": {
+        "path": "data/library/bgm/Aimer/专辑/Open-a-Door-2023/08. I know U know.m4a",
+        "slot": "正文",
+        "dur": 259.9,
+        "lufs": -7.93,
+        "onset": 0.418,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Cc411w7vJ（百億_光年（B站单曲投稿））",
+        "album": "专辑/Open-a-Door-2023"
+      },
+      "Sailing": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/04. Sailing.m4a",
+        "slot": "正文",
+        "dur": 336.6,
+        "lufs": -11.9,
+        "onset": 3.785,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Rw41197sD（Aimer大法好（B站 MV 投稿））",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "April Showers": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/10. April Showers.m4a",
+        "slot": "正文",
+        "dur": 339.1,
+        "lufs": -8.89,
+        "onset": 1.941,
+        "vocal": true,
+        "album": "专辑/Penny-Rain-2019",
+        "from": "B站 https://www.bilibili.com/video/BV1BE6xBqEES（Tki_tri；码率 197kbps，2026-11-08 提质换源）"
+      },
+      "Ophelia": {
+        "path": "data/library/bgm/Aimer/单曲/Brave-Shine-2015/Ophelia.m4a",
+        "slot": "正文",
+        "dur": 404.3,
+        "lufs": -10.31,
+        "onset": 0.627,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV13fFQesEvp（沐一二吗（B站单曲投稿））",
+        "album": "单曲/Brave-Shine-2015"
+      },
+      "Ivy Ivy Ivy": {
+        "path": "data/library/bgm/Aimer/单曲/Deep-down-2022/Ivy Ivy Ivy.m4a",
+        "slot": "正文",
+        "dur": 298.4,
+        "lufs": -6.25,
+        "onset": 0.557,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Z14y1n7Le（Aimer大法好（B站 MV 投稿））",
+        "album": "单曲/Deep-down-2022"
+      },
+      "rubble pile": {
+        "path": "data/library/bgm/Aimer/单曲/Deep-down-2022/rubble pile.m4a",
+        "slot": "正文",
+        "dur": 238.6,
+        "lufs": -7.56,
+        "onset": 3.32,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Co4y1t79C（LIGHTW-M（B站单曲投稿））",
+        "album": "单曲/Deep-down-2022"
+      },
+      "六等星の夜 Magic Blue ver.": {
+        "path": "data/library/bgm/Aimer/单曲/ONE-2017/六等星の夜 Magic Blue ver..m4a",
+        "slot": "正文",
+        "dur": 347.1,
+        "lufs": -9.55,
+        "onset": 0.372,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1tW411D7qG（TechChiliast（B站单曲投稿））",
+        "album": "单曲/ONE-2017"
+      },
+      "糸": {
+        "path": "data/library/bgm/Aimer/单曲/ONE-2017/糸.m4a",
+        "slot": "正文",
+        "dur": 224.1,
+        "lufs": -11.12,
+        "onset": 0.325,
+        "vocal": true,
+        "album": "单曲/ONE-2017",
+        "from": "B站 https://www.bilibili.com/video/BV1SL4y1s7MP（汐_kitsune；码率 322kbps，2026-11-08 提质换源）"
+      },
+      "After Rain -Scarlet ver.-": {
+        "path": "data/library/bgm/Aimer/单曲/Ref-rain-2018/After Rain -Scarlet ver.-.m4a",
+        "slot": "正文",
+        "dur": 303.9,
+        "lufs": -6.75,
+        "onset": 2.275,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1TJ411k7Hj（音乐选集（B站单曲投稿））",
+        "album": "单曲/Ref-rain-2018"
+      },
+      "Raining": {
+        "path": "data/library/bgm/Aimer/单曲/Ref-rain-2018/Raining.m4a",
+        "slot": "正文",
+        "dur": 303.3,
+        "lufs": -7.95,
+        "onset": 5.632,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1ixAszpEDG（Aimer-WithUs（B站单曲投稿））",
+        "album": "单曲/Ref-rain-2018"
+      },
+      "やさしい舞踏会": {
+        "path": "data/library/bgm/Aimer/单曲/SCOPE-2025/やさしい舞踏会.m4a",
+        "slot": "正文",
+        "dur": 294.5,
+        "lufs": -9.09,
+        "onset": 0.384,
+        "vocal": true,
+        "album": "单曲/SCOPE-2025",
+        "from": "B站 https://www.bilibili.com/video/BV1HyPjeQE3b（饿了的白熊；码率 180kbps，2026-11-08 提质换源）"
+      },
+      "Ash flame": {
+        "path": "data/library/bgm/Aimer/单曲/SPARK-AGAIN-2020/Ash flame.m4a",
+        "slot": "正文",
+        "dur": 226.4,
+        "lufs": -11.67,
+        "onset": 0.512,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1oF411p7bW（罗翔说藦法（B站单曲投稿））",
+        "album": "单曲/SPARK-AGAIN-2020"
+      },
+      "Work it out": {
+        "path": "data/library/bgm/Aimer/单曲/SPARK-AGAIN-2020/Work it out.m4a",
+        "slot": "正文",
+        "dur": 216.5,
+        "lufs": -14.35,
+        "onset": 2.304,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV19t4y1S7ar（りようづき（B站单曲投稿））",
+        "album": "单曲/SPARK-AGAIN-2020"
+      },
+      "悲しみの向こう側": {
+        "path": "data/library/bgm/Aimer/单曲/SPARK-AGAIN-2020/悲しみの向こう側.m4a",
+        "slot": "正文",
+        "dur": 359.6,
+        "lufs": -8.22,
+        "onset": 0.255,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1afFQesEEZ（沐一二吗（B站单曲投稿））",
+        "album": "单曲/SPARK-AGAIN-2020"
+      },
+      "Wren": {
+        "path": "data/library/bgm/Aimer/单曲/Sign-2024/Wren.m4a",
+        "slot": "正文",
+        "dur": 182.0,
+        "lufs": -7.68,
+        "onset": 0.427,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1H3steiEZf（Aimer大法好（B站单曲投稿））",
+        "album": "单曲/Sign-2024"
+      },
+      "Even Heaven": {
+        "path": "data/library/bgm/Aimer/单曲/StarRingChild-EP-2014/Even Heaven.m4a",
+        "slot": "正文",
+        "dur": 459.5,
+        "lufs": -10.37,
+        "onset": 17.216,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV13KhB6rERP（Tki_tri（B站单曲投稿））",
+        "album": "单曲/StarRingChild-EP-2014"
+      },
+      "Blind to you": {
+        "path": "data/library/bgm/Aimer/单曲/Torches-2019/Blind to you.m4a",
+        "slot": "正文",
+        "dur": 281.6,
+        "lufs": -9.04,
+        "onset": 3.25,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1M4411D7EV（CKMusic（B站单曲投稿））",
+        "album": "单曲/Torches-2019"
+      },
+      "Daisy": {
+        "path": "data/library/bgm/Aimer/单曲/Torches-2019/Daisy.m4a",
+        "slot": "正文",
+        "dur": 260.1,
+        "lufs": -8.83,
+        "onset": 2.276,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV117421P7DM（依然丶饭特稀丶（B站单曲投稿））",
+        "album": "单曲/Torches-2019"
+      },
+      "Open The Doors": {
+        "path": "data/library/bgm/Aimer/单曲/broKen-NIGHT-2014/Open The Doors.m4a",
+        "slot": "正文",
+        "dur": 293.8,
+        "lufs": -7.08,
+        "onset": 0.469,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV12K411b7vt（東雲研究所（B站单曲投稿））",
+        "album": "单曲/broKen-NIGHT-2014"
+      },
+      "holLow wORlD": {
+        "path": "data/library/bgm/Aimer/单曲/broKen-NIGHT-2014/holLow wORlD.m4a",
+        "slot": "正文",
+        "dur": 273.0,
+        "lufs": -7.09,
+        "onset": 0.557,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV19P4y1C7Jb（失去的愛-3-（B站单曲投稿））",
+        "album": "单曲/broKen-NIGHT-2014"
+      },
+      "my sweetest one": {
+        "path": "data/library/bgm/Aimer/单曲/broKen-NIGHT-2014/my sweetest one.m4a",
+        "slot": "正文",
+        "dur": 279.3,
+        "lufs": -7.69,
+        "onset": 0.255,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1Ye4y1y7Y3（Drawcy（B站无损投稿））",
+        "album": "单曲/broKen-NIGHT-2014"
+      },
+      "tone": {
+        "path": "data/library/bgm/Aimer/单曲/insane-dream-us-2016/tone.m4a",
+        "slot": "正文",
+        "dur": 288.6,
+        "lufs": -6.7,
+        "onset": 0.96,
+        "vocal": true,
+        "album": "单曲/insane-dream-us-2016",
+        "from": "B站 https://www.bilibili.com/video/BV1K44y1X7Sj（ZYPRESSEN_______；码率 319kbps，2026-11-08 提质换源）"
+      },
+      "スピカ": {
+        "path": "data/library/bgm/Aimer/单曲/ninelie-EP-2016/スピカ.m4a",
+        "slot": "正文",
+        "dur": 320.2,
+        "lufs": -9.53,
+        "onset": 7.339,
+        "vocal": true,
+        "album": "单曲/ninelie-EP-2016",
+        "from": "B站 https://www.bilibili.com/video/BV14W411J7u5（撞撞撞撞撞撞墙；码率 191kbps，2026-11-08 提质换源）"
+      },
+      "冬のダイヤモンド": {
+        "path": "data/library/bgm/Aimer/单曲/冬のダイヤモンド（single ver.）/冬のダイヤモンド.m4a",
+        "slot": "正文",
+        "dur": 360.0,
+        "lufs": -7.69,
+        "onset": 0.929,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1jz3tzSEM5（沐一二吗（B站单曲投稿））",
+        "album": "单曲/冬のダイヤモンド（single ver.）"
+      },
+      "悲しみはオーロラに": {
+        "path": "data/library/bgm/Aimer/单曲/悲しみはオーロラに（single ver.）/悲しみはオーロラに.m4a",
+        "slot": "正文",
+        "dur": 263.0,
+        "lufs": -14.2,
+        "onset": 1.44,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV198HK6aEsQ（Lanmei缤果（B站单曲投稿））",
+        "album": "单曲/悲しみはオーロラに（single ver.）"
+      },
+      "Sweet Igloo": {
+        "path": "data/library/bgm/Aimer/单曲/白色蜉蝣-2023/Sweet Igloo.m4a",
+        "slot": "正文",
+        "dur": 199.6,
+        "lufs": -7.67,
+        "onset": 0.299,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1ag4y1y7a4（饿了的白熊（B站单曲投稿））",
+        "album": "单曲/白色蜉蝣-2023"
+      },
+      "セプテンバーさん": {
+        "path": "data/library/bgm/Aimer/单曲/蝶々結び-2016/セプテンバーさん.m4a",
+        "slot": "正文",
+        "dur": 302.4,
+        "lufs": -9.56,
+        "onset": 0.441,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1r14y1y7vE（杰夫字幕电台（B站单曲投稿））",
+        "album": "单曲/蝶々結び-2016"
+      },
+      "夏草に君を想う": {
+        "path": "data/library/bgm/Aimer/单曲/蝶々結び-2016/夏草に君を想う.m4a",
+        "slot": "正文",
+        "dur": 265.4,
+        "lufs": -7.25,
+        "onset": 0.952,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV14x41127GP（Shinkai6500（B站单曲投稿））",
+        "album": "单曲/蝶々結び-2016"
+      },
+      "白昼夢": {
+        "path": "data/library/bgm/Aimer/单曲/誰か、海を。EP-2014/03. 白昼夢.m4a",
+        "slot": "正文",
+        "dur": 285.9,
+        "lufs": -12.56,
+        "onset": 1.045,
+        "vocal": true,
+        "album": "单曲/誰か、海を。EP-2014",
+        "from": "B站 https://www.bilibili.com/video/BV14S411K7pi（Tki_tri；码率 204kbps，2026-11-08 提质换源）"
+      },
+      "End of All": {
+        "path": "data/library/bgm/Aimer/单曲/遥か-800-EP-2024/End of All.m4a",
+        "slot": "正文",
+        "dur": 218.5,
+        "lufs": -23.35,
+        "onset": 15.325,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1KyKnzvEPA（gld堇（B站单曲投稿））",
+        "album": "单曲/遥か-800-EP-2024"
+      },
+      "Ref-rain -3 nuits ver.": {
+        "path": "data/library/bgm/Aimer/单曲/遥か-800-EP-2024/Ref-rain -3 nuits ver..m4a",
+        "slot": "正文",
+        "dur": 289.0,
+        "lufs": -9.41,
+        "onset": 0.256,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1aUrhBLEyq（索尼音乐中国（B站官方号））",
+        "album": "单曲/遥か-800-EP-2024"
+      },
+      "遥か": {
+        "path": "data/library/bgm/Aimer/单曲/遥か-800-EP-2024/遥か.m4a",
+        "slot": "正文",
+        "dur": 186.3,
+        "lufs": -22.75,
+        "onset": 15.604,
+        "vocal": true,
+        "album": "单曲/遥か-800-EP-2024",
+        "from": "B站 https://www.bilibili.com/video/BV1EUrUBuEdd（gld堇；码率 199kbps，2026-11-08 提质换源）"
+      },
+      "i-mage (in-AR)": {
+        "path": "data/library/bgm/Aimer/专辑/Penny-Rain-2019/08. i-mage (in-AR).m4a",
+        "slot": "正文",
+        "dur": 346.7,
+        "lufs": -6.73,
+        "onset": 1.045,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1jE12YjEaC（Tki_tri，B站单曲投稿；Penny Rain tr.08）",
+        "album": "专辑/Penny-Rain-2019"
+      },
+      "Through My Blood (AM)": {
+        "path": "data/library/bgm/Aimer/单曲/ninelie-EP-2016/Through My Blood (AM).m4a",
+        "slot": "正文",
+        "dur": 244.1,
+        "lufs": -6.7,
+        "onset": 0.627,
+        "vocal": true,
+        "from": "B站 https://www.bilibili.com/video/BV1ds411y7KP（账号已注销，B站单曲投稿；ninelie EP tr.02）",
+        "album": "单曲/ninelie-EP-2016"
+      }
+    }
   }
 }

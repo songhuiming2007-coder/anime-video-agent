@@ -7,7 +7,12 @@
   "lang_code": "zh",
   "_seed_note": "**种子规范。**（2026-09-11 从 readings._note 末尾提炼到顶层——那段注释两千多字全是读音案例史，这条机制藏在最末尾，读者基本找不到。）\n机制：seed = attempt*1000 + 段index + seed_offset。全片基于**一个大种子**，按段落编号与重试次数派生，保证整片 95% 的段落一次稳定输出。\n**两层各司其职：**\n  · `seed_offset`（全局基准）：一改就是**全片每一段**都变，绝不能为了治某一段而动它。它只用来消除系统性的音色/基频问题。\n  · `segment_seeds`（局部纠偏）：只有当某一段在默认种子下出现怪调或吞字时，才给它单独写一个固定值（如 \"13.1\": 2311），定向治好这一句，其余段落不受任何影响。**这是治单段的唯一正确方式。**\n调优记录：\n  · seed_offset=42 消除 seg-03.5 在 seed 1305 下的基频塌陷（203Hz 暴跌 76Hz，换 seed 后极差收至 30Hz 恢复 240+Hz 原声）。\n  · 改 7 兼顾两个点：seg-03.5（240Hz）与消除 seg-10.3 在 seed 2045 下的 212Hz 音色塌陷（回升至 246Hz 恢复少女原声）。当前值 7 即由此来。\n  · 2026-09-12 三部曲配音前复测（seg6 参考 × offset 7/107/207 × 段落 47 原句，人耳盲评）：7 与 207 并列最佳、两者无可辨差异 → **维持 7**。全局基准只有在出现系统性音色/基频问题时才动，单段怪调走 segment_seeds。\n**注意 segment_seeds 的键是期内的裸段落号（如 3、3.1），不是全局唯一标识**：换期必须清空重建，否则旧期标定的值会静默命中新期同号段落。2026-09-12 已清空 6 条 mlx 时代按旧期段落号标定的条目——换引擎后这些数值本已失效，其中键 3 还会命中新一期的段落 3。\n**2026-09-12 EGOIST 一期唯一一次动过它，结论是不该动：**段 21（91 字，拆 3 个合成单元）在 mlx 渲染下段内漂移过大（人耳：「听不下去」），先钉 seed 2028 重渲染——**但钉根本没生效**（_render_one 查的是句级标签 21.1/21.2，而配置键是段号 21，查不到就静默回落派生种子；已修 + 防回退测试 TestSegmentSeedsReachSentenceUnits）。重渲染出来的是同一批派生种子，人耳却判过了——**差异来自 mlx→CUDA 换引擎，不是种子**。因此本表保持清空：不为已验收的音频留一条会让将来重跑改掉它的钉。",
   "seed_offset": 7,
-  "segment_seeds": {},
+  "segment_seeds": {
+    "19": 113,
+    "28": 227,
+    "31": 463,
+    "80": 887
+  },
   "titles": {
     "_note": "回读比对豁免表（2026-08-15 加）。Qwen3-TTS 能念英日歌名，但 Whisper 回读会把它们听岔（エウテルペ→EUTERPE/A.U.T.R.P.，CER 107%）。歌名区段从 CER 比对中挖掉，避免 TTS 念对却被门禁误杀；**只豁免歌名本身**，歌名前后的中文照常参与比对（漏读/重复/跑飞仍抓得住）。键 = 稿件里的歌名原文。换番时按新番歌名清空重填。\n值 = 该歌名单独念一遍的实测秒数（`tts probe` 试出来），供 expected_duration 替代 cpm 估算——歌名按中文字数估算会高估 1.5-2 倍，可能触发时长门禁误杀；`null` = 未实测（该歌名按 cpm 估算，跑期时会打 WARN 提示）。换引擎/换音色后这些数要重测。\n2026-08-16 从 tts.py 的 _TITLE_DURS 硬编码迁来；这批数是 2026-08-15 **seg7** 音色下实测的，seg6 下未重测（沿用旧值，误差由 DUR_BAND 0.5-2.0 的带宽吸收）。",
     "My Dearest": 1.44,
@@ -24,7 +29,27 @@
     "GREATEST HITS ALTER EGO": 2.2,
     "咲かせや咲かせ": 1.8,
     "Fate/Apocrypha": 1.8,
-    "Aimer": 1.0
+    "Aimer": 1.2,
+    "Re:pray": 1.76,
+    "pray": 0.72,
+    "Twinkle Twinkle Little Star": 1.76,
+    "Rokutousei no Yoru": 2.4,
+    "Poker Face": 1.6,
+    "Number Six": 1.04,
+    "Avril Lavigne": 1.44,
+    "aimerrhythm": 1.36,
+    "agehasprings": 1.2,
+    "CD": 1.04,
+    "YouTube": 1.04,
+    "USEN": 0.88,
+    "Ustream": 0.96,
+    "Your favorite things": 1.76,
+    "Tomorrow": 1.12,
+    "Tobinai Masahiro": 1.2,
+    "Strangers in stardust": 1.44,
+    "Stand alone underground": 1.6,
+    "FM802": 2.4,
+    "MAIDEN VOYAGE": 1.76
   },
   "emotions": {
     "_note": "02-script.md 情绪字段的受控词表（架构设计 3.3）。机制：词表在此映射；内容：每期写哪些词由写稿 skill 定；check_script.py 拦表外词。\n**2026-09-11 实测结论：两个通道都没有情感参数**——本地 mlx 的 qwen3_tts 没有；云端 qwen3_tts_cuda 同样没有（IndexTTS2 有 emo_vector，但它已被否决）。所以这两个字段当前**只进 manifest 供 eval 按情绪分组统计**，不改变声学输出。保留字段与词表是为将来换引擎时能立即接上（也让 eval 能回答「声明是否真的改变了声学输出」这个问题——当前答案就是「没改变」，这是通道的已知能力边界，不是 bug）。\nemo_vector 的 8 维顺序（IndexTTS2 用，留档）：happy, angry, sad, afraid, disgusted, melancholic, surprised, calm。",
@@ -162,7 +187,6 @@
     "ninelie": "nine line",
     "破天荒地": "魄天荒的",
     "Aimer 沙哑": "Eme 沙哑",
-    "Aimer": "えめ",
     "二次元": "贰次元",
     "英雄 運命の詩": "英雄 命运之诗",
     "音高": "因高",
@@ -208,7 +232,10 @@
     "柳凪": "柳止",
     "Aa": "Ah",
     "Hajimari no Uta": "Hajimari no uta",
-    "Watashi e": "Watashi eh"
+    "Watashi e": "Watashi eh",
+    "前作": "钱作",
+    "ALTER EGO": "alter ego",
+    "LEGENDS": "legends"
   },
   "pinyin_injections": {
     "_note": "TONE3 统一表示（如 shi4jie4），引擎语法由 pipeline/g2p.py 的 format_for_engine 按 engine 分派。本表 61 条由 readings 表机械转录，2026-09-11 生成，**待人工核对**；另有 23 条替换词非纯汉字，未纳入（见 g2p.py 模块文档）。\n2026-09-12 EGOIST 一期顺听补：① 新增 15 条手写条目（声线/同一次/十五岁/被挑中/主唱/空灵/课桌/秘密/半年后/首专/死/制作组/更登顶/薄纱/台后），都是人耳听出来的错词，TONE3 = to_tone3() 输出 + 人工复核（唯一例外见同一次：它的 yi1 是查表字调，与 一个世界 的 yi2 矛盾）。② **删除 3 条实测失效的**（全部→quánbù 听成「髋部」、二次元→èrcìyuán 听成乱码、二次审查）——同键删掉后由 readings 的同音字路线接管（权部/贰次元/贰次审查）。一条词两条路只能选一条：拼音直注是默认（物理阻断），实测念错就退回同音字。乐迷 不在本表：它走 readings 的同音字路线（乐迷→月迷），初始那条拼音版 le4mi2 已删。",
@@ -299,7 +326,8 @@
     "障猫": "zhang4mao1",
     "彼时": "bi3shi2",
     "前奏": "qian2zou4",
-    "初战": "chu1zhan4"
+    "初战": "chu1zhan4",
+    "Aimer": "ei1mei1"
   },
   "readings_provenance": {
     "千": {
@@ -472,6 +500,14 @@
       "episode": "02-烟火绽放的至美之日",
       "anime": "化物语、火影忍者疾风传、罪恶王冠",
       "engine": "qwen3_tts_cuda",
+      "voice": "seg6.wav"
+    },
+    "Aimer": {
+      "table": "pinyin_injections",
+      "date": "2026-11-08",
+      "episode": "01-声带裂隙",
+      "anime": "NO.6、BLEACH",
+      "engine": "qwen3_tts",
       "voice": "seg6.wav"
     }
   }
