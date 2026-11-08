@@ -998,7 +998,10 @@ def split_sentences(text: str) -> list[str]:
     out = []
     for s in (x.strip() for x in SENT_END.split(text) if x.strip()):
         out.extend(_split_at_commas(s) if len(normalize(s)) > MAX_SYNTH_CHARS else [s])
-    return out
+    # 剥 _MUTE 后什么都不剩（空/纯标点）的片段没有任何读音——引号喂合成器前
+    # 本就剥掉——却被当成独立句子送进时长门禁：D162 的内层引号残句 `」`
+    # 估算 0.2s 永远过不了 DUR_BAND，三次重试全挂后整期配音静默退出。
+    return [s for s in out if normalize(_MUTE.sub("", s))]
 
 
 def _split_at_commas(s: str) -> list[str]:

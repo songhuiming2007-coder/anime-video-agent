@@ -271,6 +271,23 @@ class TestSplitSentences:
     def test_空串(self):
         assert t.split_sentences("") == []
 
+    def test_剥MUTE后无读音的残句不进合成单元(self):
+        """D162 回归：拆句器把内层引号切出 1 字残句 `」`，估算 0.2s 永远过不了
+        DUR_BAND，三次重试全挂后整期配音静默退出。语音侧 _MUTE 本就剥引号，
+        这类片段不含任何读音，必须在拆句层丢掉。"""
+        # issue 原句（Aimer 卷一段 22 稿）
+        s = "他说：「要是把这个结节治好了，这个独特的声音，也会跟着一起消失。」」"
+        out = t.split_sentences(s)
+        assert out, "正常句不该被整句丢掉"
+        for x in out:
+            assert t.normalize(t._MUTE.sub("", x)), \
+                f"残句 {x!r} 剥 _MUTE 后为空，不含读音，不该成为合成单元"
+        assert not any(x.strip() in {"」", "」」", "」。"} for x in out)
+
+    def test_纯引号段切不出句子(self):
+        # 边界：整段只有引号时返回空表，不造不含读音的合成单元
+        assert t.split_sentences("」」") == []
+
 
 class TestSplitAtCommas:
     def test_太短的尾巴并回上一段(self):

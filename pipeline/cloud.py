@@ -695,11 +695,15 @@ def build_tmux_launch_command(session_name: str, remote_cmd: str, remote_root: s
     if not session_name or not session_name.startswith("ava-"):
         raise ValueError(f"tmux 会话名必须以 ava- 开头（watchdog 靠这个前缀判活跃）: {session_name!r}")
     script_path = f"{remote_root}/.ava_task_{session_name}.sh"
+    # stdout/stderr tee 落盘：进程退出后 pane 一并消失，不留证据就只剩
+    # 「跑到某段就没了」一个表象（D162：配音静默退出靠重跑单段才看到成因）。
+    # 日志与脚本同路径前缀，tmux 单引号内无嵌套引号，不破坏 base64 方案。
+    log_path = f"{remote_root}/.ava_task_{session_name}.log"
     encoded = base64.b64encode(remote_cmd.encode("utf-8")).decode("ascii")
     return (
         f"echo {encoded} | base64 -d > {script_path} && chmod +x {script_path} && "
         f"tmux kill-session -t {session_name} 2>/dev/null; "
-        f"tmux new-session -d -s {session_name} '{script_path}'"
+        f"tmux new-session -d -s {session_name} '{script_path} 2>&1 | tee {log_path}'"
     )
 
 
