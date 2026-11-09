@@ -146,7 +146,8 @@ def frame_time(path: Path) -> float:
     但番剧片源普遍是 23.976（24000/1001），一帧 0.0417s——按 0.034 卡会把
     合格的切片判成不合格。这里从 r_frame_rate 现算。
     """
-    num, den = (int(x) for x in _ffprobe(path, "stream=r_frame_rate", "v:0").split("/"))
+    num, den = (int(x) for x in _ffprobe(path, "stream=r_frame_rate", "v:0")
+                .split(",")[0].split("/"))
     return den / num
 
 
@@ -156,7 +157,7 @@ def frame_count(path: Path) -> int:
         ["ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
          "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path)],
         capture_output=True, text=True, check=True).stdout.strip()
-    return int(out)
+    return int(out.split(",")[0])
 
 
 def _video_tail_gap(path: Path, src_dur: float) -> float:
