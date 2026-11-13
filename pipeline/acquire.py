@@ -445,10 +445,12 @@ def still_argv(src: Path, dest: Path, size: tuple[int, int] | None = None,
 
 
 def still_look(src: Path) -> tuple[tuple[int, int], str]:
-    """图片尺寸与补边色（四角像素取平均，`0xRRGGBB`）。读不了图就让 PIL 的报错原样抛出——不猜。"""
-    from PIL import Image
+    """图片尺寸与补边色（四角像素取平均，`0xRRGGBB`）。先按 EXIF Orientation 转正再读取——
+    竖拍实物照（EXIF 6/8 等）若不转正，ffmpeg 对 PNG/JPG 会把竖图当横图铺满放倒 90°。"""
+    from PIL import Image, ImageOps
 
     with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im)
         rgb = im.convert("RGB")
         w, h = rgb.size
         inset = max(0, min(2, w - 1, h - 1))
@@ -458,9 +460,23 @@ def still_look(src: Path) -> tuple[tuple[int, int], str]:
 
 
 def still_to_clip(src: Path, dest: Path) -> Path:
-    """执行 `still_argv`；失败把 ffmpeg 原文抛出（S9），不留半截文件。"""
+    """执行 `still_argv`；若原图含非 1 的 EXIF Orientation，先转正写入临时图再转视频。"""
+    import tempfile
+    from PIL import Image, ImageOps
+
     size, pad = still_look(src)
-    proc = subprocess.run(still_argv(src, dest, size=size, pad=pad), capture_output=True, text=True)
+    with Image.open(src) as im:
+        orient = im.getexif().get(274, 1)
+    if orient not in (None, 1):
+        with tempfile.TemporaryDirectory() as tmp:
+            upright = Path(tmp) / f"{src.stem}_upright.png"
+            with Image.open(src) as im:
+                ImageOps.exif_transpose(im).save(upright)
+            proc = subprocess.run(still_argv(upright, dest, size=size, pad=pad),
+                                  capture_output=True, text=True)
+    else:
+        proc = subprocess.run(still_argv(src, dest, size=size, pad=pad),
+                              capture_output=True, text=True)
     if proc.returncode != 0:
         dest.unlink(missing_ok=True)
         raise SystemExit(f"FAIL 图片转视频失败（ffmpeg 退出码 {proc.returncode}）：{src.name}\n"
@@ -502,14 +518,16 @@ def probe_media(path: Path) -> dict:
 
 
 def probe_image(path: Path) -> dict:
-    """图片解码 + 尺寸（Pillow 已在依赖里，不引 ffmpeg 那条路）。"""
-    from PIL import Image
+    """图片解码 + 尺寸（Pillow 已在依赖里，按 EXIF 转正后取真实显示宽高）。"""
+    from PIL import Image, ImageOps
 
     try:
         with Image.open(path) as im:
             im.load()
-            return {"decoded": True, "detail": f"解出 {im.format} {im.mode}",
-                    "width": im.width, "height": im.height}
+            fmt, mode = im.format, im.mode
+            tr = ImageOps.exif_transpose(im)
+            return {"decoded": True, "detail": f"解出 {fmt} {mode}",
+                    "width": tr.width, "height": tr.height}
     except Exception as e:  # Pillow 的异常类型按格式各不相同，一律记「解不开」
         return {"decoded": False, "detail": f"{type(e).__name__}: {e}"[:40],
                 "width": 0, "height": 0}

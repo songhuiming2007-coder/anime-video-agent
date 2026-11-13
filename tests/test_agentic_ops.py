@@ -183,6 +183,30 @@ class TestStillFit:
         assert cols and min(cols) > 0 and max(cols) < 1919, "左右红边都在画面内"
         assert not red(5, 540) and f.getpixel((5, 540))[0] > 200, "补边是白色（取自四角）"
 
+    @needs_ffmpeg
+    def test_exif竖拍png转正后进安全框不躺倒(self, tmp_path):
+        """原始宽高 1600×1200 + EXIF Orientation=6（左红条转正后应在顶部）→ 转正成竖图进安全框，不横倒。"""
+        from PIL import Image
+        src = tmp_path / "rot6.png"
+        im = Image.new("RGB", (1600, 1200), (255, 255, 255))
+        # 在原始图左侧 x<200 画红条；按 Orientation=6（顺时针 90°）转正后，左侧会变成顶部
+        for x in range(200):
+            for y in range(1200):
+                im.putpixel((x, y), (220, 20, 20))
+        exif = im.getexif()
+        exif[274] = 6
+        im.save(src, exif=exif)
+        size, _ = A.still_look(src)
+        assert size == (1200, 1600)
+        out = A.still_to_clip(src, tmp_path / "rot6.mp4")
+        first = tmp_path / "first.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
+                        "-update", "1", str(first)], check=True)
+        f = Image.open(first).convert("RGB")
+        red = lambda x, y: (lambda p: p[0] > 180 and p[1] < 60 and p[2] < 60)(f.getpixel((x, y)))
+        assert red(960, 120) and not red(960, 960), "顺时针转正后红条应在上方而非下方/左侧"
+        assert not red(400, 540) and f.getpixel((400, 540))[0] > 200, "竖图走安全框左右补白边"
+
 
 # ---------- register：自动取号 / 扫图 / 豁免 ----------
 
