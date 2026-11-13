@@ -88,7 +88,12 @@ def _verify(url: str, excerpts: list[str], root: Path | None,
     records = fetch_log.lookup(url, root=root) if url else []
     fetch_error = None
     if not records and url and fetcher is not None:
-        fetch_error = fetcher(url)
+        try:
+            fetch_error = fetcher(url)
+        except Exception as exc:
+            # D165：fetcher 漏网的任何异常都按「当场抓取失败」处理——本条落「未核实」、
+            # 原因照录，不许穿透 facts.add 连坐整批。
+            fetch_error = f"{type(exc).__name__}: {exc}"
         records = fetch_log.lookup(url, root=root)
     if not records:
         reason = ("这个 URL 没有抓取留档，系统当场抓取也失败：" + fetch_error

@@ -227,6 +227,39 @@ def test_候选表标出留档来源(root):
     assert "（系统当场抓，抓取 20261024T000000Z）" in CC.render_table([(c, rec)])
 
 
+def test_当场抓抛非ValueError异常_记原因不穿透(root, monkeypatch):
+    """D165：fetch_and_record 漏网 URLError/TimeoutError 等异常时，system_fetcher 记原因返回，不穿透。"""
+    import urllib.error
+    monkeypatch.setattr(F, "fetch_and_record",
+                        lambda url, **kw: (_ for _ in ()).throw(urllib.error.URLError("handshake timed out")))
+    fetch = F.system_fetcher(root)
+    reason = fetch(PAGE)
+    assert isinstance(reason, str) and "handshake timed out" in reason
+
+
+def test_当场抓异常不连坐批次_本条未核实其余照写(root, monkeypatch):
+    """D165 病例：同批里死链条目落「未核实」，已留档的有效条目不受影响。"""
+    import urllib.error
+    monkeypatch.setattr(F, "fetch_and_record",
+                        lambda url, **kw: (_ for _ in ()).throw(urllib.error.URLError("dead link")))
+    good_url = "https://supercell.jp/news/2"
+    fetch_log.record(url=good_url, final_url=None, kind="fetch", text=TEXT, sid=None, root=root)
+    vol = _vol(root)
+    out = facts.add(
+        [{"claim": "死链条目", "url": PAGE, "excerpts": [TEXT]},
+         {"claim": "有效条目", "url": good_url, "excerpts": [TEXT], "proposed_level": "一手"}],
+        target=vol, sid=None, root=root, fetcher=F.system_fetcher(root))
+    r_dead, r_good = out["results"]
+    assert r_dead["ok"] and r_dead["level"] == "未核实" and "dead link" in r_dead["hint"]
+    assert r_good["ok"] and (r_good["level"], r_good["match"]) == ("待核", "exact")
+
+    # _verify 本地防线：注入的 fetcher 自己漏抛异常，同样记原因落「未核实」不穿透批次
+    out2 = facts.add([{"claim": "y", "url": PAGE, "excerpts": [TEXT]}], target=vol, sid=None, root=root,
+                     fetcher=lambda u: (_ for _ in ()).throw(urllib.error.URLError("direct raise")))
+    r2 = out2["results"][0]
+    assert r2["ok"] and r2["level"] == "未核实" and "direct raise" in r2["hint"]
+
+
 def test_默认就走系统当场抓_acquire_check与fact_add(root):
     """不注入 fetcher 时用 system_fetcher；conftest 把它的出网换成「测试里不出网」，从失败原因看出确实去抓了。"""
     rec = CC.check_batch([(1, {"url": IMG, "found_on": PAGE, "type": "scan"})], root=root,

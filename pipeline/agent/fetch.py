@@ -111,7 +111,9 @@ def system_fetcher(root: Path | None) -> Callable[[str], str | None]:
                 try:
                     fetch_and_record(url, origin="system", root=root)
                     done[key] = None
-                except ValueError as exc:
+                except Exception as exc:
+                    # D165：不只 ValueError——抓取链任何漏网异常都记为本条原因（核对报告照录、
+                    # 该条目落「未核实」），不许穿透连坐整批有效条目。
                     done[key] = str(exc)
             return done[key]
 

@@ -1130,8 +1130,18 @@ def fetch_web(
     req = urllib.request.Request(request_url, headers={"User-Agent": "ava-agent/1.0"})
     try:
         resp = open_fn(req, timeout=cfg.fetch_timeout_s)
+    except PermissionError:
+        raise
     except urllib.error.HTTPError as exc:
         _raise_http_upgrade_error(exc)
+    except OSError as exc:
+        # URLError / TimeoutError / gaierror / SSLError / ConnectionError 等连接级失败（D165）：
+        # 不包装成 ValueError 会穿透 fetch_and_record → system_fetcher → facts.add 整个批次，
+        # 连累批内已留档的有效条目一并写入失败。
+        raise ValueError(
+            f"连接失败（{type(exc).__name__}: {exc}）：静态获取不可达。按 STANDARD.md 五节升级链"
+            "应升级 crawl（无头绕盾）；抓不到的死链如实报失败，严禁静默降级。"
+        ) from None
 
     headers = getattr(resp, "headers", None) or {}
     content_type = str(headers.get("Content-Type", "text/html; charset=utf-8"))
