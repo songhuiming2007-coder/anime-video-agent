@@ -380,7 +380,9 @@ class TestQcSkipExemption:
         return take, dest
 
     def test_三次全不达标时长达标_豁免保留音频(self, monkeypatch, tmp_path):
-        take, dest = self._render(monkeypatch, tmp_path, self._REAL_HEARD)
+        # D167 起盲句型首轮即豁免——三次重试→_best_take 的验收路径要用纯中文句覆盖
+        take, dest = self._render(monkeypatch, tmp_path, self._REAL_HEARD,
+                                  text="他站在那里很久没有说话了。")
         assert take.qc_skip == "asr-blind"
         assert take.attempts == t.ATTEMPTS
         assert dest.exists(), "豁免必须保留音频，人耳确认要用"
@@ -392,9 +394,9 @@ class TestQcSkipExemption:
         assert not (tmp_path / "seg.wav").exists(), "硬失败必须删掉坏音频"
 
     def test_某次回读达标_正常返回不豁免(self, monkeypatch, tmp_path):
-        good = "エウテルペ 一进来，世界忽然退远了。"
+        good = "他站在那里很久没有说话了。"  # D167：盲句型第一次失败即豁免，测不了重试
         take, dest = self._render(monkeypatch, tmp_path,
-                                  [self._REAL_HEARD[0], good, self._REAL_HEARD[1]])
+                                  [self._REAL_HEARD[0], good, self._REAL_HEARD[1]], text=good)
         assert take.qc_skip is None
         assert take.attempts == 2
 
@@ -409,7 +411,8 @@ class TestQcSkipExemption:
         # attempt3 在带内但偏离。豁免应保留 attempt2，而不是最后一次。
         # 2026-08-16 段落 5.1 实测：三次尝试种子不同，最后一次把歌名念得特别长，
         # 旧实现保留最后一次，时长是盲区段唯一客观质量指标。
-        text = "エウテルペ 一进来，世界忽然退远了。"
+        # D167 起盲句型首轮即豁免——_best_take 挑选路径要用非盲句型（纯中文）覆盖
+        text = "他站在那里很久没有说话了。"
         want = t.expected_duration(text)
         ratios = {1: 2.5, 2: 0.95, 3: 1.2}   # 按 attempt 区分时长
         heard = iter(["A" * 10, "B" * 10, "C" * 10])
@@ -422,6 +425,7 @@ class TestQcSkipExemption:
         dest = tmp_path / "seg.wav"
         take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
         assert take.qc_skip == "asr-blind"
+        assert take.attempts == 3, "非盲句型：时长不达标的一次照常重试，三次用完才走 _best_take"
         assert take.duration == pytest.approx(want * 0.95, abs=0.001)
         assert dest.exists()
         # 临时尝试文件必须清干净
@@ -437,6 +441,68 @@ class TestQcSkipExemption:
         assert "拉丁专名" in err and "归 03.5 人耳" in err, \
             "含拉丁专名的句子 CER 判失败时，报文必须提示参考性下降"
         assert "含 1 个拉丁专名" in err
+
+    # ---- D167：盲句型首轮即豁免，不再空跑两次合成 ----
+
+    def test_假名句首轮即豁免_不空跑(self, monkeypatch, tmp_path):
+        """D167：含假名的句型 CER 不过时，首轮 ok_dur/ok_gap 达标即按 asr-blind 放行。
+        行星生物期实录：16 段 21 次失败重试 ≈15 分钟白烧——Whisper 转写能力与种子无关。"""
+        take, dest = self._render(monkeypatch, tmp_path, ["A5T路配 乱码"])
+        assert take.qc_skip == "asr-blind"
+        assert take.attempts == 1, "盲句型第一次失败就放行，不空跑后两次"
+        assert dest.exists()
+
+    def test_两个及以上拉丁专名首轮即豁免(self, monkeypatch, tmp_path):
+        take, _ = self._render(monkeypatch, tmp_path, ["乱码乱码"],
+                               text="单曲在 Oricon 榜超过 Gaku 的版本")
+        assert take.qc_skip == "asr-blind" and take.attempts == 1
+
+    def test_单个拉丁专名仍走三次重试(self, monkeypatch, tmp_path):
+        """单个专名的同音转写字靠 MIN_EDITS/MAX_CER 正常过检，不属于必盲句型。"""
+        take, _ = self._render(monkeypatch, tmp_path, self._REAL_HEARD,
+                               text="单曲在 Oricon 州榜排在第44位")
+        assert take.qc_skip == "asr-blind" and take.attempts == t.ATTEMPTS
+
+    def test_盲句型时长不达标仍重试_下次达标即放行(self, monkeypatch, tmp_path):
+        """时长是盲句上唯一客观的判据：它不达标那次是真缺陷，照旧重试；
+        下一次时长达标就当次放行，不再跑第三次。"""
+        text = "エウテルペ 一进来，世界忽然退远了。"
+        want = t.expected_duration(text)
+        ratios = {1: 3.0, 2: 1.0}
+        heard = iter(["乱码", "还是乱码", "不该走到第三次"])
+        monkeypatch.setattr(t, "transcribe", lambda _p: next(heard))
+        monkeypatch.setattr(
+            t, "probe_duration",
+            lambda p: want * ratios[int(re.search(r"\.(\d+)\.wav$", str(p)).group(1))])
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("stub", None))
+        dest = tmp_path / "seg.wav"
+        take = t._render_one(self._fake_engine(), t.Segment(1, "1", text), dest)
+        assert take.qc_skip == "asr-blind" and take.attempts == 2
+        assert take.duration == pytest.approx(want, abs=0.001)
+
+    def test_盲句型死寂不豁免_照旧硬失败(self, monkeypatch, tmp_path):
+        """死寂不是盲区（D87 同理）：句内静音不达标时不许经首轮豁免交出去。"""
+        text = "エウテルペ 一进来，世界忽然退远了。"
+        monkeypatch.setattr(t, "transcribe", lambda _p: "乱码")
+        monkeypatch.setattr(t, "probe_duration", lambda _p: t.expected_duration(text))
+        monkeypatch.setattr(t, "_asr_backends", lambda: ("stub", None))
+        monkeypatch.setattr(t, "_longest_gap", lambda _p: t.MAX_INNER_GAP + 1.0)
+        with pytest.raises(SystemExit):
+            t._render_one(self._fake_engine(), t.Segment(1, "1", text), tmp_path / "seg.wav")
+
+    def test_盲句型判据函数(self):
+        assert t._asr_blind_prone("エウテルペ Silence") is True
+        assert t._asr_blind_prone("单曲在 Oricon 榜超过 Gaku 的版本") is True
+        assert t._asr_blind_prone("单曲在 Oricon 州榜排在第44位") is False, "单个不算必盲"
+        assert t._asr_blind_prone("他站在那里很久没有说话了。") is False
+
+    def test_normalize_百分之N归一为百分号(self):
+        """D167：Whisper 把「百分之 N」写成「N%」——归一两侧，CER 不再假阳性。"""
+        assert t.normalize("销量涨了百分之五") == t.normalize("销量涨了5%")
+        assert t.normalize("占比百分之五十") == t.normalize("占比50%")
+        assert t.normalize("占比百分之5") == t.normalize("占比5%")
+        edits, err = t.cer("销量涨了百分之五。", "销量涨了5%。")
+        assert t.readback_passes(edits, err), "issue 里的最小复现"
 
     def test_CER失败但句无拉丁专名时不加注(self, monkeypatch, tmp_path, capsys):
         """对照：纯中文句子 CER 失败报文照旧，不加拉丁专名提示。"""

@@ -63,6 +63,18 @@ ATTEMPTS = 3
 # 是转写差不是念错（D161：读对的句子被双越线判失败，白烧 2–3 次重试）。
 # 判据与重试行为不动——只在失败报文里加注，归 03.5 人耳定夺。
 _LATIN = re.compile(r"[A-Za-z]+")
+# 假名：readings 会把拉丁专名换成假名喂合成器（EGOIST 期做法），Whisper 必写成乱码。
+_KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def _asr_blind_prone(text: str) -> bool:
+    """回读几乎必然失真的句型（D167）：含假名，或拉丁专名 ≥ 2 个。
+
+    这两类句子的 CER 判定参考性为零——换种子改变不了 Whisper 的转写能力，
+    重试是纯浪费（行星生物期 16 段 21 次失败重试 ≈15 分钟空跑）。
+    单个拉丁专名不进此列：一两个同音转写字靠 MIN_EDITS 与 MAX_CER 能正常过检。
+    """
+    return bool(_KANA.search(text)) or len(_LATIN.findall(text)) >= 2
 
 # 归一化时丢掉的东西：标点、空白、以及口播里不发音的符号
 _DROP = re.compile(r"[\s，。、；：？！…—－·\-—\"'“”‘’《》〈〉（）()\[\]【】,.;:?!~]+")
@@ -187,6 +199,8 @@ _CN_NUM_MULTI = re.compile(r"[零一二两三四五六七八九十百千]{2,}")
 # （八幡、千反田、千叶县），转了就制造假阳性；而「十月」这类必须转，
 # 因为 Whisper 回读会写成「10月」。
 _CN_NUM_ONE = re.compile(r"[零一二两三四五六七八九十百千](?=[年月日岁个次份人集口种条部张只篇])")
+# 「百分之 N」：数字部分中文（五/十五/五十）与阿拉伯（5/5.5）都收
+_CN_PERCENT = re.compile(r"百分之([零一二两三四五六七八九十百千]+|\d+(?:\.\d+)?)")
 
 
 def _cn_number_to_arabic(seq: str) -> str:
@@ -226,6 +240,12 @@ def _unify_numbers(s: str) -> str:
     对齐到它最省事。反过来把 "15" 写成「一五」还是「十五」是二选一，
     而两者读音不同，猜错会制造新的假阳性。
     """
+    # D167：Whisper 把「百分之 N」转写成「N%」——先归一成阿拉伯+%，再走数字规则。
+    # 先跑它：不然「百分之五十」里的「五十」会先被多字规则转掉，剩下「百分之50」。
+    s = _CN_PERCENT.sub(
+        lambda m: (m.group(1) if m.group(1)[0].isdigit() else _cn_number_to_arabic(m.group(1))) + "%",
+        s,
+    )
     # 顺序要紧：先多字（长匹配优先），再单字，否则单字规则会切碎多字串
     s = _CN_NUM_MULTI.sub(lambda m: _cn_number_to_arabic(m.group()), s)
     return _CN_NUM_ONE.sub(lambda m: _cn_number_to_arabic(m.group()), s)
@@ -1541,6 +1561,27 @@ def _render_one(
         # 段号由读取方给（摘要「段 X 合成中」、该段徽标），这里只说句与次：拆句段的单元 label 是「段号.句号」
         sent = (f"第 {seg.label[len(overlay_label) + 1:]} 句" if overlay_label and seg.label != overlay_label else "")
         _progress_note(f"{sent}第 {attempt} 次不过：{last}")
+
+        # D167：假名/拉丁专名 ≥2 的句型，CER 不过几乎必然来自 ASR 转写能力——
+        # 换种子改变不了 Whisper 的转写，继续重试是纯浪费（行星生物期 16 段空跑 ≈15 分钟）。
+        # 时长与句内死寂照常拦：它们是这类句子上唯一还客观的判据，都达标才按既有
+        # asr-blind 豁免放行——保留音频、标 qc_skip，03.5 人耳兜底（跳过不是通过）。
+        # 不设首轮限制：某次时长真不达标重试后，下一次达标的当次就该放行。
+        if not ok_cer and ok_dur and ok_gap and _asr_blind_prone(seg.text):
+            os.replace(tmp, dest)
+            _cleanup_takes(dest, ATTEMPTS)
+            print(
+                f"  ASR 盲区即放行（句含假名/拉丁专名，回读不可信，交 03.5 人耳）：{seg.text[:30]}…",
+                file=sys.stderr,
+            )
+            _progress_note(f"{sent}按 ASR 盲区放行（含假名/拉丁专名，未验证，人耳兜底）")
+            return Take(seg.index, seg.label, seg.text, dest.name,
+                        round(dur, 3), round(err, 4), attempt,
+                        sentences=None, qc_skip="asr-blind",
+                        speakable=spk_text, emotion=emo_name, speed=spd_name,
+                        g2p_injections=injections or None,
+                        synth_logic=SYNTH_LOGIC_VERSION,
+                        seeds_used=[seed], seed_base=getattr(engine, "seed_offset", 0))
 
     # 3 次重试都用尽且全不达标。判是否 ASR 盲区：时长达标即豁免，不要求
     # 回读文本两两相似（2026-08-16 段落 5.1：三次回读 CER 60/60/30%、
