@@ -64,10 +64,12 @@ _RETRYABLE_HTTP = frozenset({408, 409, 429})
 # 读出来就是 None，调用方回落到字数口径。
 _LAST_USAGE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("ava_llm_last_usage", default=None)
 
-# 检查点间隔（Spec 9 §2.3 第 6 条）：本轮自上次检查点起，模型回复满 CHECKPOINT_EVERY 条
-# **或**工具执行满 CHECKPOINT_EVERY 次（先到先停）就问一次人。防失控靠「人中断 + 本轮判重
-# + 检查点」，**不再有固定轮数硬上限**（2026-09-24 用户裁决，D28）。
-CHECKPOINT_EVERY = 50
+# 裸循环硬上限（D166）：bare=True 没有交互通道也没有判重保护，模型回复满 BARE_LOOP_CAP 条
+# **或**工具执行满 BARE_LOOP_CAP 次（先到先停）直接收尾停止——防死循环最后一道。
+# 交互会话的检查点弹窗已于 2026-11-11 被人裁决取消（推翻 Spec 9 §2.3 第 6 条）：打断无人值守
+# 长任务，防失控已有「人中断 + 本轮判重 + D62 自动压缩」三层兜底。交互路径防失控仍**没有**
+# 固定轮数硬上限（2026-09-24 用户裁决，D28）。
+BARE_LOOP_CAP = 50
 
 # 收尾指令（Spec 9 §3.5，逐字冻结；reason 用 replace 注入，不用 format——正文里有花括号）。
 WRAPUP_INSTRUCTION = (
@@ -622,7 +624,6 @@ class LoopControl:
     实现必须把消息追加进 `run_tool_loop` 收到的**同一个**列表对象，循环直接拿它当上下文。
     """
     review: Callable[[str, dict[str, Any]], Decision]
-    ask_checkpoint: Callable[[dict[str, Any]], bool]
     post_execute: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None
     fetch_executor: Callable[[int], dict[str, Any]] | None = None
     on_trace: Callable[[dict[str, Any]], None] | None = None
@@ -658,11 +659,6 @@ def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
         name,
         json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
     )
-
-
-def _never_continue(snapshot: dict[str, Any]) -> bool:
-    """裸循环的检查点答复：一律「停止」——有界，随后照常收尾。"""
-    return False
 
 
 def _bare_review(
@@ -821,12 +817,13 @@ def run_tool_loop(
 ) -> dict[str, Any]:
     """多轮 tool_calls 状态机（Spec 9 §2.3、§4.7）。**没有固定轮数上限。**
 
-    防失控三件套：人中断、本轮判重、检查点（回复或工具执行满 `CHECKPOINT_EVERY` 次先到先停）。
+    交互会话防失控两层：人中断、本轮判重（检查点弹窗已按 D166 人裁决取消）；
+    `control is None` 的裸循环另有 `BARE_LOOP_CAP` 硬上限——没通道可问、没判重，到点直接停。
     任何非正常停止都先做一次 `tool_choice:"none"` 的无工具收尾（除非本轮一条回复都没拿到，
     或本轮被出网断言拒绝——那时收尾没有意义，直接回滚）。
 
     `control is None` 时是**裸循环**（仅测试与兼容用途，生产调用点必须传 `control`，TG-6）：
-    不装中断处理器、不判重、有检查点且一律「停止」、`review` 是旧 `approve` 的适配器。
+    不装中断处理器、不判重、有 `BARE_LOOP_CAP` 硬上限、`review` 是旧 `approve` 的适配器。
     「没有人审通道就拒绝运行」由内核（`AgentSession`）执行，不在这里（TK-5）。
     """
     context = ctx or ToolContext(scope=scope, root=root)
@@ -851,7 +848,6 @@ def run_tool_loop(
             interrupt=None,
             commit=lambda message, origin: convo.append(message),
             review=_bare_review(approve),
-            ask_checkpoint=_never_continue,
             critical_tools=frozenset(),
         )
 
@@ -917,14 +913,6 @@ def run_tool_loop(
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
         usage_anchor = None if prompt_tokens is None else (prompt_tokens, requested_len)
         return reply
-
-    def _checkpoint_snapshot(trigger: str) -> dict[str, Any]:
-        return {
-            "llm_calls": llm_calls,
-            "tool_executions": tool_executions,
-            "elapsed_s": time.monotonic() - started,
-            "trigger": trigger,
-        }
 
     def _synthesize_rest(start: int, text: str) -> None:
         for rest in live["calls"][start:]:
@@ -1021,13 +1009,11 @@ def run_tool_loop(
 
     try:
         while True:
-            if replies_since_cp >= CHECKPOINT_EVERY or execs_since_cp >= CHECKPOINT_EVERY:
-                trigger = "replies" if replies_since_cp >= CHECKPOINT_EVERY else "executions"
+            if bare and (replies_since_cp >= BARE_LOOP_CAP or execs_since_cp >= BARE_LOOP_CAP):
+                # D166：裸循环到硬上限直接停（没有交互通道可问）；交互会话不再设检查点
                 checkpoints += 1
-                if not control.ask_checkpoint(_checkpoint_snapshot(trigger)):  # type: ignore[union-attr]
-                    live["call"] = None
-                    return _stop("checkpoint_stop")
-                replies_since_cp = execs_since_cp = 0
+                live["call"] = None
+                return _stop("checkpoint_stop")
 
             live["call"] = None
             live["calls"] = []
@@ -1089,14 +1075,12 @@ def run_tool_loop(
                 tool_calls_made += 1
                 turn_tally[name] = turn_tally.get(name, 0) + 1
 
-                # 执行计数**每次执行之前**查（🟡-A）：同一条回复里的并行调用也逐个受约束
-                if execs_since_cp >= CHECKPOINT_EVERY:
+                # 裸循环执行计数**每次执行之前**查（🟡-A）：同一条回复里的并行调用也逐个受约束
+                if bare and execs_since_cp >= BARE_LOOP_CAP:
                     checkpoints += 1
-                    if not control.ask_checkpoint(_checkpoint_snapshot("executions")):  # type: ignore[union-attr]
-                        _synthesize_rest(index, _SYNTH_CHECKPOINT)
-                        live["call"] = None
-                        return _stop("checkpoint_stop")
-                    replies_since_cp = execs_since_cp = 0
+                    _synthesize_rest(index, _SYNTH_CHECKPOINT)
+                    live["call"] = None
+                    return _stop("checkpoint_stop")
 
                 if bare:
                     key: tuple[str, str] | None = None

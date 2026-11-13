@@ -128,10 +128,10 @@ MUTATIONS: list[dict] = [
              '            full = full[-self.max_bytes:]\n'
              '        return full.decode("utf-8", errors="replace"), truncated'),
      "new": '        truncated = False\n        return full.decode("utf-8", errors="replace"), truncated'},
-    # ---- M10: 检查点间隔（Spec 9 §6.1 重锚：守「检查点确实触发」，不再守轮数硬上限）----
-    {"id": "M10", "guard": "CHECKPOINT_EVERY=50 真的触发检查点", "file": LLM,
+    # ---- M10: 裸循环硬上限（D166 重锚：交互检查点已取消，守「裸循环确实会在 50 处停」）----
+    {"id": "M10", "guard": "BARE_LOOP_CAP=50 真的让裸循环停下", "file": LLM,
      # 锚点带换行：`= 50` 是 `= 500` 的前缀子串，不带换行会在变异后仍「命中」→ 漏报过期锚点
-     "old": "CHECKPOINT_EVERY = 50\n", "new": "CHECKPOINT_EVERY = 10**9\n"},
+     "old": "BARE_LOOP_CAP = 50\n", "new": "BARE_LOOP_CAP = 10**9\n"},
     # ---- M11: scope 热推导 ----
     {"id": "M11", "guard": "scope 每轮热推导（不被会话缓存）", "file": CLI,
      "old": ('    scope_override: str | None = None\n'
@@ -612,12 +612,12 @@ MUTATIONS: list[dict] = [
              '            if not calls:\n'),
      "new": ('            calls = reply.get("tool_calls") or []\n'
              '            if not calls or llm_calls >= 10:  # MUT-1\n')},
-    {"id": "S9-MUT-2", "guard": "检查点恰在第 50 次回复后问（不差一）", "file": LLM,
-     "old": "            if replies_since_cp >= CHECKPOINT_EVERY or execs_since_cp >= CHECKPOINT_EVERY:\n",
-     "new": "            if replies_since_cp >= CHECKPOINT_EVERY - 1 or execs_since_cp >= CHECKPOINT_EVERY:  # MUT-2\n"},
-    {"id": "S9-MUT-3", "guard": "检查点答复被消费（答「停止」即停）", "file": LLM,
-     "old": "                if not control.ask_checkpoint(_checkpoint_snapshot(trigger)):  # type: ignore[union-attr]\n",
-     "new": "                if not (control.ask_checkpoint(_checkpoint_snapshot(trigger)) or True):  # MUT-3\n"},
+    {"id": "S9-MUT-2", "guard": "裸循环上限恰在第 50 次回复后停（不差一）", "file": LLM,
+     "old": "            if bare and (replies_since_cp >= BARE_LOOP_CAP or execs_since_cp >= BARE_LOOP_CAP):\n",
+     "new": "            if bare and (replies_since_cp >= BARE_LOOP_CAP - 1 or execs_since_cp >= BARE_LOOP_CAP):  # MUT-2\n"},
+    {"id": "S9-MUT-3", "guard": "裸循环上限真的被消费（到点即停）", "file": LLM,
+     "old": "            if bare and (replies_since_cp >= BARE_LOOP_CAP or execs_since_cp >= BARE_LOOP_CAP):\n",
+     "new": "            if False:  # MUT-3\n"},
     {"id": "S9-MUT-4", "guard": "收尾调用带 tool_choice:\"none\"", "file": LLM,
      "old": '        reply = _chat(tool_choice="none")\n',
      "new": '        reply = _chat()  # MUT-4\n'},
@@ -935,8 +935,8 @@ MUTATIONS: list[dict] = [
     {"id": "S9-MUT-44", "guard": "--continue 默认只取含 assistant 消息的会话", "file": SESSION_LOG,
      "old": "    resumable = [s for s in summaries if s.resumable]\n",
      "new": "    resumable = list(summaries)  # MUT-44\n"},
-    {"id": "S9-MUT-46", "guard": "执行计数在每次执行之前查（并行调用逐个受约束）", "file": LLM,
-     "old": "                if execs_since_cp >= CHECKPOINT_EVERY:\n",
+    {"id": "S9-MUT-46", "guard": "裸循环执行计数在每次执行之前查（并行调用逐个受约束）", "file": LLM,
+     "old": "                if bare and execs_since_cp >= BARE_LOOP_CAP:\n",
      "new": "                if False:  # MUT-46\n"},
     {"id": "S9-MUT-51", "guard": "生产调用点把 control 传给 run_tool_loop", "file": SESSION,
      "old": ("                    control=self._control(\n"

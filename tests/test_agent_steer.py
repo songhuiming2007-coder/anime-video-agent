@@ -102,18 +102,26 @@ def test_st3_queued_at_final_answer_continues_the_turn(root: Path, monkeypatch) 
 
 
 def test_st4_wrapup_does_not_drain(root: Path, monkeypatch) -> None:
-    """ST-4：检查点停 → 收尾请求之前不取队列（收尾 tool_choice=none，排队消息留给回合收尾退回）。"""
-    script = Script([tool_call("read_artifact", {"path": "a.md"}, call_id="a"),
-                     {"role": "assistant", "content": "收尾"}])
+    """ST-4：非正常停（中断）→ 收尾请求之前不取队列（收尾 tool_choice=none，排队消息留给回合收尾退回）。
+
+    D166 起交互会话没有检查点，改用中断走到同一个 `_stop` → `_wrapup` 路径。
+    """
+    calls = {"n": 0}
+
+    def script(messages_in, tools=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return tool_call("read_artifact", {"path": "a.md"}, call_id="a")
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return {"role": "assistant", "content": "收尾"}
+
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     patch_execute(monkeypatch)
-    monkeypatch.setattr(llm_mod, "CHECKPOINT_EVERY", 1)
     messages = [{"role": "user", "content": "读"}]
     q = Queue({})
-    control = _control(messages, q)
-    control.ask_checkpoint = lambda snapshot: False
-    outcome = run(messages, root, control)
-    assert outcome["stopped"] == "checkpoint_stop"
+    outcome = run(messages, root, _control(messages, q))
+    assert outcome["stopped"] == "interrupted"
     drains_before_wrapup = q.calls
     assert drains_before_wrapup == 1, "只在工具批之后取过一次，收尾期间不取"
 

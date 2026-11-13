@@ -478,28 +478,20 @@ def test_tk6_request_id_never_enters_the_tool_result(episode: Path, root: Path) 
     )
 
 
-def test_tk7_channel_accounting_and_checkpoint_rows(root: Path, episode: Path) -> None:
-    """TK-7：`channel` 正确；检查点卡不产生 `approval_resolved`；作废不进 `approvals.jsonl`。"""
-    from unittest.mock import patch
-
-    channel = FakeChannel(["approve", "continue"])
+def test_tk7_channel_accounting(root: Path, episode: Path) -> None:
+    """TK-7：`channel` 正确；作废不进 `approvals.jsonl`。（D166 起无检查点卡）"""
+    channel = FakeChannel(["approve"])
     host = SessionHost(episode, root=root, channel=channel, ephemeral=True)
     session = AgentSession(host, scope_mode="creative", persist=False)
     session._turn_id = "t1"
 
     session._review("bash", {"command": "rm x", "description": "x"}, "t1", None, root, None)
-    with patch("builtins.input", side_effect=[]):
-        assert session._ask_checkpoint(
-            {"llm_calls": 50, "tool_executions": 0, "elapsed_s": 1.0, "trigger": "replies"}, "t1"
-        ) is True
 
     rows = [
         json.loads(line)
         for line in (episode / "_agent" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["channel"] for row in rows] == ["tty"]
-    assert all(row["tool"] != "checkpoint" for row in rows), "检查点记账不落 approvals.jsonl"
-    assert channel.requests[1].kind == "checkpoint"
 
     # 作废（人审中途被打断）不进 approvals.jsonl：它不是人的决定
     channel2 = FakeChannel([])
@@ -1045,7 +1037,8 @@ def _tool_reply(call_id: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    "outcome", ["done", "rollback", "blocked", "error", "interrupted", "checkpoint_stop"]
+    # D166：交互会话不再产生 checkpoint_stop（它现在是裸循环硬上限的停止原因）
+    "outcome", ["done", "rollback", "blocked", "error", "interrupted"]
 )
 def test_ts11_memory_equals_rebuild_for_every_outcome(
     root: Path, episode: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
@@ -1059,10 +1052,10 @@ def test_ts11_memory_equals_rebuild_for_every_outcome(
 
     def scripted(messages, tools=None, **kw):
         state["n"] += 1
-        # 请求数护栏（同 test_agent_loop.Script.MAX_REQUESTS）：checkpoint_stop 场景靠检查点才停得下来，
-        # 「检查点答复被忽略」时会无限循环——M9 实测 S9-MUT-3 让本用例挂死到 harness 超时
+        # 请求数护栏（同 test_agent_loop.Script.MAX_REQUESTS）：循环停不下来的缺陷会挂死到
+        # harness 超时——M9 实测 S9-MUT-3 让本用例挂死过，护栏必须有
         if state["n"] > 200:
-            raise AssertionError("模型请求超过 200 次：循环没有停下（检查点被绕过）")
+            raise AssertionError("模型请求超过 200 次：循环没有停下（停止路径被绕过）")
         if outcome == "done":
             return {"role": "assistant", "content": "好"}
         if outcome == "rollback":  # 0 条回复 → 回滚
@@ -1077,8 +1070,6 @@ def test_ts11_memory_equals_rebuild_for_every_outcome(
         return _tool_reply(f"c{state['n']}")
 
     monkeypatch.setattr(llm_mod, "chat_complete", scripted)
-    if outcome == "checkpoint_stop":
-        monkeypatch.setattr(llm_mod, "CHECKPOINT_EVERY", 1)  # 执行 1 次就问检查点（默认答 stop）
 
     host = SessionHost(episode, root=root, channel=FakeChannel())
     lease = host.ensure_lease()
