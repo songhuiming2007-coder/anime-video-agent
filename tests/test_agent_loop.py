@@ -24,7 +24,7 @@ import pytest
 
 from pipeline.agent import llm as llm_mod
 from pipeline.agent.llm import (
-    CHECKPOINT_EVERY,
+    BARE_LOOP_CAP,
     WRAPUP_INSTRUCTION,
     Decision,
     LLMError,
@@ -52,8 +52,8 @@ class Script:
         self.steps = list(steps)
         self.requests: list[dict] = []
 
-    #: 请求数护栏（矩阵 MUT-3 行「请求计数 200 为护栏，强制失败」）：靠检查点才停得下来的剧本，
-    #: 在「检查点答复被忽略」一类缺陷下会无限循环。M9 实测 S9-MUT-3 让 TL-10 挂死 15 分钟——
+    #: 请求数护栏（矩阵 MUT-3 行「请求计数 200 为护栏，强制失败」）：靠上限/收尾才停得下来的剧本，
+    #: 在「上限被绕过」一类缺陷下会无限循环。M9 实测 S9-MUT-3 让 TL-10 挂死 15 分钟——
     #: 此前这道护栏只写在矩阵里、代码里没有。现有用例最多 61 次请求（TL-1）。
     MAX_REQUESTS = 200
 
@@ -139,7 +139,6 @@ def build_control(
     messages: list[dict],
     *,
     review=None,
-    ask_checkpoint=None,
     interrupt=None,
     critical_tools=frozenset(),
     post_execute=None,
@@ -157,7 +156,6 @@ def build_control(
         interrupt=interrupt,
         commit=commit,
         review=review or Reviewer(),
-        ask_checkpoint=ask_checkpoint or (lambda snapshot: True),
         post_execute=post_execute,
         on_exec_started=on_exec_started,
         on_trace=on_trace,
@@ -228,55 +226,42 @@ def _replies(count: int, *, name: str = "read_artifact", prefix: str = "c") -> l
 # ---------------------------------------------------------------------------
 
 
-def test_tl1_sixty_replies_then_done(root: Path, monkeypatch) -> None:
-    """TL-1：60 条工具回复后给最终答复；检查点答「继续」→ done、llm_calls == 61。"""
+def test_tl1_sixty_replies_then_done_no_checkpoint(root: Path, monkeypatch) -> None:
+    """TL-1（D166）：交互会话超过旧 50 次检查点阈值也不停不弹卡——checkpoints 恒 0。"""
     replies = _replies(60) + [{"role": "assistant", "content": "最终答复"}]
     script = Script(replies)
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     patch_execute(monkeypatch)
 
-    asked: list[dict] = []
-
-    def ask(snapshot: dict) -> bool:
-        asked.append(snapshot)
-        return True  # 继续
-
     messages = [{"role": "user", "content": "干到完成"}]
-    outcome = run(messages, root, build_control(messages, ask_checkpoint=ask))
+    outcome = run(messages, root, build_control(messages))
 
     assert outcome["stopped"] == "done"
     assert outcome["llm_calls"] == 61
-    assert outcome["checkpoints"] == 1
+    assert outcome["checkpoints"] == 0, "D166：交互会话不再有检查点"
     assert outcome["tool_executions"] == 60
-    assert asked[0]["llm_calls"] == CHECKPOINT_EVERY
-    assert asked[0]["trigger"] == "replies"
     assert outcome["final"]["content"] == "最终答复"
     assert_paired(messages)
 
 
-def test_tl2_checkpoint_stop_wraps_up_without_tools(root: Path, monkeypatch) -> None:
-    """TL-2：无限回复 + 检查点答「停止」→ 提问时恰 50，收尾带 tool_choice:"none"。"""
+def test_tl2_bare_cap_stops_and_wraps_up(root: Path, monkeypatch) -> None:
+    """TL-2（D166）：裸循环无交互通道，满 BARE_LOOP_CAP 条回复直接停，收尾带 tool_choice:"none"。"""
     script = Script(_replies(50, prefix="loop") + [{"role": "assistant", "content": "收尾答复"}])
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     patch_execute(monkeypatch)
 
-    asked: list[dict] = []
-
-    def ask(snapshot: dict) -> bool:
-        asked.append(snapshot)
-        assert len(asked) == 1, "检查点只该问一次"
-        return False  # 停止
-
     messages = [{"role": "user", "content": "无限循环"}]
-    outcome = run(messages, root, build_control(messages, ask_checkpoint=ask))
+    outcome = run_tool_loop(
+        messages, ctx=ToolContext(scope="creative", root=root), config=CFG
+    )
 
     assert outcome["stopped"] == "checkpoint_stop"
-    assert asked[0]["llm_calls"] == 50
-    assert asked[0]["trigger"] == "replies"
+    assert outcome["checkpoints"] == 1
     assert outcome["wrapup"] == "ok"
     assert outcome["final"]["role"] == "assistant"
     assert outcome["final"]["content"] == "收尾答复"
     assert outcome["llm_calls"] == 51
+    assert outcome["tool_executions"] == BARE_LOOP_CAP
 
     wrapup_request = script.requests[-1]
     assert wrapup_request["tool_choice"] == "none"
@@ -285,11 +270,11 @@ def test_tl2_checkpoint_stop_wraps_up_without_tools(root: Path, monkeypatch) -> 
         m.get("role") == "user" and m.get("content") == WRAPUP_INSTRUCTION.replace("{reason}", "检查点停止")
         for m in wrapup_request["messages"]
     )
-    assert_paired(messages)
+    assert_paired(outcome["messages"])  # 裸循环复制 convo，断言要看返回值
 
 
-def test_tl2b_execution_checkpoint_triggers_inside_reply(root: Path, monkeypatch) -> None:
-    """TL-2b：每条回复 7 个并行只读调用（参数各异）→ 第 8 条回复内、第 51 次执行之前提问。"""
+def test_tl2b_bare_cap_triggers_inside_reply(root: Path, monkeypatch) -> None:
+    """TL-2b（D166）：裸循环每条回复 7 个并行调用 → 第 8 条回复内、第 51 次执行之前停。"""
     def reply(turn: int) -> dict:
         if turn > 8:
             return {"role": "assistant", "content": "收尾"}
@@ -308,48 +293,36 @@ def test_tl2b_execution_checkpoint_triggers_inside_reply(root: Path, monkeypatch
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     patch_execute(monkeypatch)
 
-    asked: list[dict] = []
-
-    def ask(snapshot: dict) -> bool:
-        asked.append(snapshot)
-        return False
-
     messages = [{"role": "user", "content": "并行轰炸"}]
-    outcome = run(messages, root, build_control(messages, ask_checkpoint=ask))
+    outcome = run_tool_loop(
+        messages, ctx=ToolContext(scope="creative", root=root), config=CFG
+    )
 
-    assert asked[0]["trigger"] == "executions"
-    assert asked[0]["tool_executions"] == CHECKPOINT_EVERY
-    assert asked[0]["llm_calls"] == 8, "第 8 条回复内触发"
     assert outcome["stopped"] == "checkpoint_stop"
-    assert outcome["tool_executions"] == CHECKPOINT_EVERY
+    assert outcome["llm_calls"] == 9, "第 8 条回复内触发，+1 收尾调用"
+    assert outcome["tool_executions"] == BARE_LOOP_CAP
 
 
-def test_tl2c_parallel_calls_are_constrained_one_by_one(root: Path, monkeypatch) -> None:
-    """TL-2c：一条回复 60 个并行调用；第 51 次执行之前提问，其余补「未执行：检查点停止」。"""
+def test_tl2c_bare_cap_constrains_parallel_calls_one_by_one(root: Path, monkeypatch) -> None:
+    """TL-2c（D166）：裸循环一条回复 60 个并行调用；第 51 次执行之前停，其余补「未执行：检查点停止」。"""
     calls = [tool_call("read_artifact", {"path": f"x{i}.md"}, call_id=f"x{i}") for i in range(60)]
     script = Script([{"role": "assistant", "content": None, "tool_calls": [c["tool_calls"][0] for c in calls]},
                      {"role": "assistant", "content": "收尾"}])
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     executed = patch_execute(monkeypatch)
 
-    asked: list[dict] = []
-
-    def ask(snapshot: dict) -> bool:
-        asked.append(snapshot)
-        return False
-
     messages = [{"role": "user", "content": "一条回复里 60 个调用"}]
-    outcome = run(messages, root, build_control(messages, ask_checkpoint=ask))
+    outcome = run_tool_loop(
+        messages, ctx=ToolContext(scope="creative", root=root), config=CFG
+    )
 
-    assert asked[0]["trigger"] == "executions"
-    assert asked[0]["tool_executions"] == CHECKPOINT_EVERY
-    assert len(executed) == CHECKPOINT_EVERY
-    contents = [json.loads(m["content"]) for m in tool_messages(messages)]
+    assert len(executed) == BARE_LOOP_CAP
+    contents = [json.loads(m["content"]) for m in tool_messages(outcome["messages"])]
     assert all("error" not in item for item in contents[:50])
     tail = [item["error"] for item in contents[50:]]
     assert tail == ["未执行：检查点停止"] * 10
-    assert len(tool_messages(messages)) == 60
-    assert_paired(messages)
+    assert len(tool_messages(outcome["messages"])) == 60
+    assert_paired(outcome["messages"])
 
 
 # ---------------------------------------------------------------------------
@@ -657,8 +630,8 @@ def test_tl9c_interrupt_while_stopping_does_not_raise(root: Path, monkeypatch) -
 
 
 def test_tl10_wrapup_reply_with_tool_calls_is_not_executed(root: Path, monkeypatch) -> None:
-    """TL-10（A1 不成立）：收尾回复仍带 tool_calls → 不执行、补合成结果、配对通过。"""
-    monkeypatch.setattr(llm_mod, "CHECKPOINT_EVERY", 2)
+    """TL-10（A1 不成立；D166 起经裸循环上限触发收尾）：收尾回复仍带 tool_calls → 不执行、补合成结果、配对通过。"""
+    monkeypatch.setattr(llm_mod, "BARE_LOOP_CAP", 2)
     script = Script([
         tool_call("read_artifact", {"path": "a.md"}, call_id="a1"),
         tool_call("read_artifact", {"path": "b.md"}, call_id="b1"),
@@ -667,13 +640,15 @@ def test_tl10_wrapup_reply_with_tool_calls_is_not_executed(root: Path, monkeypat
     monkeypatch.setattr(llm_mod, "chat_complete", script)
     executed = patch_execute(monkeypatch)
 
-    messages = [{"role": "user", "content": "干到检查点"}]
-    outcome = run(messages, root, build_control(messages, ask_checkpoint=lambda s: False))
+    messages = [{"role": "user", "content": "干到裸循环上限"}]
+    outcome = run_tool_loop(
+        messages, ctx=ToolContext(scope="creative", root=root), config=CFG
+    )
 
     assert outcome["stopped"] == "checkpoint_stop"
     assert len(executed) == 2, "收尾阶段那个调用没有被执行"
-    assert json.loads(tool_messages(messages)[-1]["content"])["error"] == "未执行：收尾阶段禁止调用工具"
-    assert_paired(messages)
+    assert json.loads(tool_messages(outcome["messages"])[-1]["content"])["error"] == "未执行：收尾阶段禁止调用工具"
+    assert_paired(outcome["messages"])
 
 
 def test_tl11_error_with_failing_wrapup_yields_local_note(root: Path, monkeypatch) -> None:

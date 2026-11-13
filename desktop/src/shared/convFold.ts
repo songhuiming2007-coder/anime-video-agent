@@ -237,7 +237,9 @@ function footerText(f: OutFrame): string {
   const lookups = lookupsText(f.lookups);
   return (
     `模型调用 ${String(f.llm_calls)} · 工具 ${String(f.tool_calls)}（执行 ${String(f.tool_executions)}、重复拒绝 ${String(f.duplicates_rejected)}）` +
-    ` · 检查点 ${String(f.checkpoints)} · 用时 ${String(f.duration_s)} s · ${String(f.stopped)} · ${String(f.wrapup)}` +
+    // D166：检查点已取消，恒为 0 不占脚注宽度；历史会话的非 0 值仍照实显示
+    (f.checkpoints > 0 ? ` · 检查点 ${String(f.checkpoints)}` : "") +
+    ` · 用时 ${String(f.duration_s)} s · ${String(f.stopped)} · ${String(f.wrapup)}` +
     (lookups === null ? "" : ` · ${lookups}`) +
     (ctx === null ? "" : ` · ${ctx}`)
   );

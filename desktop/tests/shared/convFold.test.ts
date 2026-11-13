@@ -17,8 +17,8 @@ const toolEnd = (name: string, index: number, ok: boolean, seq: number, observat
 const request = (id: string, seq: number) =>
   F("request", { request_id: id, kind: "tool_call", turn_id: "t1", title: "写稿", card_text: "…", fields: { tool: "write_episode_file" }, options: ["approve", "reject"], feedback_allowed: true }, seq);
 
-const TURN_FINISHED = () =>
-  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100, lookups: null, prompt_tokens: null }, 9);
+const TURN_FINISHED = (over: object = {}) =>
+  F("turn_finished", { turn_id: "t1", stopped: "done", llm_calls: 2, tool_calls: 3, tool_executions: 3, duplicates_rejected: 0, checkpoints: 0, wrapup: "none", duration_s: 14, prompt_chars: 100, lookups: null, prompt_tokens: null, ...over }, 9);
 
 describe("TV-2 foldConv 一回合", () => {
   const entries: ConvEntry[] = [
@@ -399,7 +399,13 @@ describe("D80 R5 / R6.3：短摘要、停机点去重、卡片短语", () => {
     const { rows } = foldConv([{ k: "frame", at: 1, frame: TURN_FINISHED() }]);
     const foot = rows[0];
     expect(foot.k === "footer" && [foot.brief, foot.stopped]).toEqual(["2 次模型调用 · 上下文约 100 字", "done"]);
-    expect(foot.k === "footer" && foot.text).toContain("检查点 0");
+    // D166：检查点已取消，恒 0 不占脚注宽度
+    expect(foot.k === "footer" && foot.text).not.toContain("检查点");
+  });
+  it("脚注：历史会话里非 0 的检查点计数仍照实显示", () => {
+    const { rows } = foldConv([{ k: "frame", at: 1, frame: TURN_FINISHED({ checkpoints: 2 }) }]);
+    const foot = rows[0];
+    expect(foot.k === "footer" && foot.text).toContain("检查点 2");
   });
   it("停机点：D159 起不进对话流（期行徽标 / 待答区承载），任何 stop_points 帧都不成行", () => {
     const { rows } = foldConv([

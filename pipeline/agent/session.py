@@ -15,7 +15,7 @@
 ## 子会话
 
 `AgentSession` 由 `SessionHost` 持有：主会话 `persist=True`（落 `session.jsonl`），
-子会话 `persist=False`（独立 messages、退出即丢），但共享进程级的期租约、中断控制与检查点配置。
+子会话 `persist=False`（独立 messages、退出即丢），但共享进程级的期租约与中断控制。
 idea 会话也是主会话（Spec 18 §3.1）：落库级 `data/_idea/session.jsonl`——`SessionHost` 的
 「日志目录」与「期目录」解耦，idea 的 `ep_dir` 恒为 `None`（工具语义照旧无期），日志目录是 `_idea`。
 """
@@ -69,7 +69,6 @@ _PROMPTS = {
     "tool_call": "└─ 执行? [y/N]: ",
     "memory_ack": "└─ 执行? [y/N]: ",
     "fetch": "└─ 抓取? [y/N]: ",
-    "checkpoint": "└─ 继续? [y/N]: ",
 }
 
 
@@ -82,7 +81,7 @@ class HumanRequest:
     """人审请求（§3.2）。`request_id` 是答复的唯一凭据，`secrets.token_hex(16)`，不进 messages。"""
 
     request_id: str
-    kind: Literal["tool_call", "fetch", "checkpoint", "memory_ack"]
+    kind: Literal["tool_call", "fetch", "memory_ack"]
     turn_id: str | None
     title: str
     card_text: str
@@ -1742,7 +1741,6 @@ class AgentSession:
             interrupt=self.interrupt,
             commit=self._commit,
             review=lambda name, args: self._review(name, args, turn_id, status, root, approve_cb),
-            ask_checkpoint=lambda snapshot: self._ask_checkpoint(snapshot, turn_id),
             post_execute=self._post_execute,
             on_trace=self._on_trace,
             on_exec_started=lambda call_id, name: self._record({
@@ -1917,42 +1915,6 @@ class AgentSession:
             "decision": decision, "channel": getattr(self.channel, "name", None),
             "latency_s": latency_s, "cause": cause,
         })
-
-    def _ask_checkpoint(self, snapshot: dict[str, Any], turn_id: str) -> bool:
-        """检查点卡（§2.3 第 6 条）：继续 → True；停止 → False。"""
-        trigger = "模型调用" if snapshot.get("trigger") == "replies" else "工具执行"
-        count = snapshot.get("llm_calls") if snapshot.get("trigger") == "replies" else snapshot.get("tool_executions")
-        minutes = float(snapshot.get("elapsed_s", 0.0)) / 60.0
-        card_text = (
-            "┌─ [检查点] 本轮已连续 "
-            f"{int(count or 0)} 次{trigger}：模型调用 {snapshot.get('llm_calls', 0)} 次，"
-            f"工具执行 {snapshot.get('tool_executions', 0)} 次，用时 {minutes:.1f} 分钟\n"
-            "│ 这不是任务预算：继续则计数归零；停止则先收尾总结。"
-        )
-        request = HumanRequest(
-            request_id=new_request_id(), kind="checkpoint", turn_id=turn_id,
-            title="检查点", card_text=card_text,
-            fields={
-                "llm_calls": snapshot.get("llm_calls", 0),
-                "tool_executions": snapshot.get("tool_executions", 0),
-                "elapsed_s": snapshot.get("elapsed_s", 0.0),
-                "trigger": snapshot.get("trigger"),
-            },
-            options=("continue", "stop"), feedback_allowed=False,
-        )
-        self._record({
-            "k": "request_opened", "request_id": request.request_id, "kind": "checkpoint",
-            "title": request.title, "turn_id": turn_id,
-        })
-        try:
-            answer = self.channel.ask(request)
-        except KeyboardInterrupt:
-            self._close_request(request, reason="voided", decision=None, latency_s=None,
-                                cause="interrupted")
-            raise
-        self._close_request(request, reason="answered", decision=answer.decision,
-                            latency_s=answer.latency_s, cause=None)
-        return answer.decision == "continue"
 
     # ---- 提议后核对钩子（S6-R1 / §2.4.4；D100 起核对、不下载） ----
 
