@@ -255,11 +255,12 @@ class TestProjectWrite:
     @pytest.mark.parametrize("mutate", [
         lambda s: s.replace("企划: 测试编年史\n", ""),
         lambda s: s.replace("| 2 | 02-b", "| 4 | 02-b"),
-        lambda s: s.replace("| 完整保留 |", "| 余韵18秒 |"),
+        lambda s: s.replace("| 完整保留 |", "|"),  # 「余韵18秒」也是合法值，旧变异不再产生不可解析文本
         lambda s: s.replace("| 02-b |", "| 02/b |"),
         lambda s: s.replace("| 01-a |", "| 01-A |").replace("| 02-b |", "| 01-a |"),
     ])
     def test_写后不可解析弹卡前拒(self, world, mutate) -> None:
+        """弹卡前拒：写完 re-parse 失败 → reject（不是 ask），写不进任何东西。"""
         root, P, _Q, _E = world
         v = review("write_episode_file", write_args(mutate(PROJECT_DOC)), kind="project", ep=P, P=P, root=root)
         assert v.action == "reject" and "不可解析" in v.reason, v
