@@ -405,10 +405,11 @@ def test_offline_and_timeout_raise_direct(
         socket.gaierror(8, "nodename nor servname provided"),
     ):
         # Spec 15 §2.2：超时/断网对 search 是「可落下一家」，全链失败时汇总成 ValueError，
-        # 原因里点名异常类型（不再原样穿出）；fetch 腿语义不变。
+        # 原因里点名异常类型（不再原样穿出）。fetch 腿自 D165 起同样包装 ValueError
+        # （裸 URLError 曾穿透 system_fetcher 打崩 fact_add 整批写入）。
         with pytest.raises(ValueError, match=f"全部检索服务失败.*{type(exc).__name__}"):
             search_web("test", config=cfg, opener=lambda req, timeout=20.0, e=exc: (_ for _ in ()).throw(e))
-        with pytest.raises(type(exc)):
+        with pytest.raises(ValueError, match=f"连接失败.*{type(exc).__name__}"):
             fetch_web("https://example.org/", config=cfg, opener=lambda req, timeout=30.0, e=exc: (_ for _ in ()).throw(e))
 
     # 配置缺失 -> ValueError 含 web.json
