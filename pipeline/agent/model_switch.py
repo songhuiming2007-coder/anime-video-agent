@@ -80,7 +80,13 @@ def effective_config(cfg: LLMConfig | None, override: Override, *, root: Path | 
         except auth.AuthError as exc:
             from pipeline.agent.llm import LLMError
 
-            raise LLMError(f"认证凭据不可用或续期失败: {exc}", retryable=True) from exc
+            raw_pid = out.model.split("/", 1)[0]
+            spec = auth.PROVIDER_MAP.get(raw_pid)
+            pid_hint = spec.id if spec is not None else raw_pid
+            raise LLMError(
+                f"认证凭据不可用或续期失败: {exc}（请执行 /login {pid_hint} 重新登录）",
+                retryable=False,
+            ) from exc
         if resolved is not None:
             _pid, wire_model, cred = resolved
             out = replace(

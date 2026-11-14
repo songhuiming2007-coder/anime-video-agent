@@ -15,7 +15,9 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -114,6 +116,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "redirect_uri": "https://platform.claude.com/oauth/code/callback",
             "scopes": "org:create_api_key user:profile user:inference",
             "token_content_type": "json",
+            "state_is_verifier": True,
             "extra_authorize_params": {"code": "true"},
             "extra_headers": {
                 "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14",
@@ -138,6 +141,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "token_url": "https://auth.openai.com/api/accounts/oauth/token",
             "redirect_uri": "http://127.0.0.1:1455/auth/callback",
             "scopes": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+            "required_scope": "chatgpt.tokens.use.direct",
             "resource": "https://api.openai.com/v1",
             "token_content_type": "form",
             "include_host_id": True,
@@ -162,6 +166,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "authorize_url": "https://auth.openai.com/oauth/authorize",
             "token_url": "https://auth.openai.com/oauth/token",
             "redirect_uri": "http://localhost:1455/auth/callback",
+            "device_redirect_uri": "https://auth.openai.com/deviceauth/callback",
             "scopes": "openid profile email offline_access",
             "token_content_type": "form",
             "device_code_url": "https://auth.openai.com/api/accounts/deviceauth/usercode",
@@ -197,9 +202,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ),
         oauth={
             "client_id": "Iv1.b507a08c87ecfe98",
-            "device_code_url": "https://github.com/login/device/code",
-            "token_url": "https://github.com/login/oauth/access_token",
-            "copilot_token_url": "https://api.github.com/copilot_internal/v2/token",
+            "device_code_url": "https://{domain}/login/device/code",
+            "token_url": "https://{domain}/login/oauth/access_token",
+            "copilot_token_url": "https://api.{domain}/copilot_internal/v2/token",
             "scopes": "read:user",
         },
     ),
@@ -914,7 +919,15 @@ def _write_store_unlocked(path: Path, data: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def _http_json(
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise AuthError(f"认证端点拒绝 HTTP {code} 重定向，以防凭据泄露")
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
+def _http_request_json(
     url: str,
     *,
     method: str = "POST",
@@ -922,7 +935,8 @@ def _http_json(
     form_dict: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT_S,
-) -> dict[str, Any]:
+    allow_redirects: bool = True,
+) -> tuple[int, dict[str, Any] | None, str]:
     req_headers: dict[str, str] = {"Accept": "application/json", "User-Agent": "ava-agent/1.0"}
     if headers:
         req_headers.update(headers)
@@ -934,12 +948,23 @@ def _http_json(
         req_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
         body_bytes = urllib.parse.urlencode(form_dict).encode("utf-8")
     req = urllib.request.Request(url, data=body_bytes, headers=req_headers, method=method)
+    opener = urllib.request.urlopen if allow_redirects else _NO_REDIRECT_OPENER.open
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener(req, timeout=timeout) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        detail = exc.read()[:300].decode("utf-8", errors="replace")
-        raise AuthError(f"HTTP {exc.code}: {detail}") from None
+        raw = exc.read().decode("utf-8", errors="replace")
+        parsed_err: dict[str, Any] | None = None
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                parsed_err = obj
+        except json.JSONDecodeError:
+            parsed_err = None
+        return int(exc.code), parsed_err, raw[:300]
+    except AuthError:
+        raise
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise AuthError(f"网络请求失败: {exc}") from None
     try:
@@ -948,6 +973,30 @@ def _http_json(
         raise AuthError(f"响应非 JSON: {exc}") from None
     if not isinstance(parsed, dict):
         raise AuthError("响应 JSON 不是对象")
+    return status, parsed, raw
+
+
+def _http_json(
+    url: str,
+    *,
+    method: str = "POST",
+    data_dict: dict[str, Any] | None = None,
+    form_dict: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = DEFAULT_HTTP_TIMEOUT_S,
+    allow_redirects: bool = True,
+) -> dict[str, Any]:
+    status, parsed, detail = _http_request_json(
+        url,
+        method=method,
+        data_dict=data_dict,
+        form_dict=form_dict,
+        headers=headers,
+        timeout=timeout,
+        allow_redirects=allow_redirects,
+    )
+    if status >= 400 or parsed is None:
+        raise AuthError(f"HTTP {status}: {detail}")
     return parsed
 
 
@@ -1024,10 +1073,11 @@ def _parse_callback_input(
         state = s_part.strip() or None
     if not code:
         raise AuthError("未从输入中解析到授权码（code）")
-    if expected_state and state and state != expected_state:
-        raise AuthError("OAuth state 校验不匹配，请重新发起授权")
-    if not state_optional and expected_state and "?" in text and not state:
-        raise AuthError("OAuth 回调缺少 state 参数，请重新发起授权")
+    if expected_state:
+        if not state_optional and not state:
+            raise AuthError("OAuth 回调缺少 state 参数，请粘贴完整回调链接或 code#state 后重试")
+        if state and state != expected_state:
+            raise AuthError("OAuth state 校验不匹配，请重新发起授权")
     return code, state or expected_state, extra_params
 
 
@@ -1054,6 +1104,87 @@ def _sync_proxy_models(base_url: str, api_key: str, root: Path | None) -> list[s
 
 
 _SECRET_EXTRA_KEYS = frozenset({"aws_secret_access_key", "aws_session_token"})
+_MASKED_EXTRA_KEYS = frozenset({"aws_access_key_id", "credentials_path", "enterprise_domain", "project_id"})
+_NON_SECRET_ENV_VARS = frozenset({
+    "OLLAMA_HOST",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AZURE_OPENAI_RESOURCE_NAME",
+    "AZURE_OPENAI_BASE_URL",
+    "AZURE_OPENAI_DEPLOYMENT_NAME",
+    "AZURE_OPENAI_API_VERSION",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_GATEWAY_ID",
+})
+_GHE_HOST_RE = re.compile(r"^[a-z0-9.-]+(?::\d{1,5})?$")
+
+
+def auth_secret_env_names() -> tuple[str, ...]:
+    """返回所有服务商声明的密钥类环境变量名（供 N50 从子进程剥离与脱敏）。"""
+    names: set[str] = set()
+    for spec in PROVIDERS:
+        for env_name in spec.env_vars:
+            if env_name not in _NON_SECRET_ENV_VARS:
+                names.add(env_name)
+        for ef in spec.extra_fields:
+            if ef.secret and ef.env_var:
+                names.add(ef.env_var)
+    return tuple(sorted(names))
+
+
+def _normalize_ghe_domain(raw: str | None) -> str:
+    trimmed = str(raw or "").strip()
+    if not trimmed:
+        return "github.com"
+    candidate = trimmed if "://" in trimmed else f"https://{trimmed}"
+    parsed = urllib.parse.urlparse(candidate)
+    host = (parsed.netloc or "").strip().lower()
+    if not host or "/" in host or not _GHE_HOST_RE.match(host):
+        raise AuthError(f"GitHub Enterprise 域名格式不合法：{raw!r}")
+    return host
+
+
+def _copilot_oauth_url(template: str, enterprise_domain: str | None) -> str:
+    domain = _normalize_ghe_domain(enterprise_domain)
+    return template.replace("{domain}", domain)
+
+
+def _copilot_base_url_from_token(token: str, enterprise_domain: str | None) -> str | None:
+    match = re.search(r"proxy-ep=([^;\s]+)", token)
+    if match:
+        proxy_host = match.group(1).strip()
+        api_host = re.sub(r"^proxy\.", "api.", proxy_host)
+        return f"https://{api_host}"
+    if enterprise_domain:
+        domain = _normalize_ghe_domain(enterprise_domain)
+        return f"https://copilot-api.{domain}"
+    return None
+
+
+def _vertex_project_id_from_file(cred_path_raw: str | None) -> str | None:
+    raw = str(cred_path_raw or "").strip()
+    if raw:
+        cred_path = Path(raw).expanduser()
+    else:
+        cred_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    if not cred_path.is_file():
+        return None
+    try:
+        info = json.loads(cred_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(info, dict):
+        return None
+    for key in ("project_id", "quota_project_id"):
+        val = str(info.get(key) or "").strip()
+        if val:
+            return val
+    return None
 
 
 def _normalize_extra_config(spec: ProviderSpec, raw_extra: Any) -> dict[str, str]:
@@ -1073,7 +1204,7 @@ def _normalize_extra_config(spec: ProviderSpec, raw_extra: Any) -> dict[str, str
 def _sanitize_extra_config(spec: ProviderSpec, raw_extra: Any) -> dict[str, str]:
     if not isinstance(raw_extra, dict):
         return {}
-    secret_keys = {ef.key for ef in spec.extra_fields if ef.secret} | _SECRET_EXTRA_KEYS
+    secret_keys = {ef.key for ef in spec.extra_fields if ef.secret} | _SECRET_EXTRA_KEYS | _MASKED_EXTRA_KEYS
     clean: dict[str, str] = {}
     for k, v in raw_extra.items():
         if not isinstance(k, str) or not isinstance(v, str) or not v.strip():
@@ -1167,6 +1298,22 @@ def _detect_env_status(spec: ProviderSpec) -> tuple[bool, str | None, str | None
     return False, None, None
 
 
+_COPILOT_ENV_CACHE: dict[tuple[str, str], tuple[str, str, int]] = {}
+_COPILOT_ENV_LOCK = threading.Lock()
+
+
+def _validate_token_scope(spec: ProviderSpec, tok: dict[str, Any]) -> None:
+    req_scope = str(spec.oauth.get("required_scope") or "").strip()
+    if not req_scope:
+        return
+    raw_scope = tok.get("scope")
+    granted = str(raw_scope).split() if isinstance(raw_scope, str) else []
+    if req_scope not in granted:
+        raise AuthError(
+            f"{spec.name} OAuth 授权缺少必要权限 {req_scope}，请重新执行 /login {spec.id} 并完整勾选权限"
+        )
+
+
 def _exchange_oauth_code(
     spec: ProviderSpec,
     code: str,
@@ -1174,6 +1321,7 @@ def _exchange_oauth_code(
     state: str | None,
     *,
     issued_client_id: str | None = None,
+    redirect_uri: str | None = None,
 ) -> dict[str, Any]:
     oauth = spec.oauth
     token_url = str(oauth["token_url"])
@@ -1186,13 +1334,15 @@ def _exchange_oauth_code(
                 "code_verifier": verifier,
                 "code_challenge_method": "S256",
             },
+            allow_redirects=False,
         )
     client_id = issued_client_id or str(oauth["client_id"])
+    effective_redirect = redirect_uri if redirect_uri is not None else str(oauth["redirect_uri"])
     payload: dict[str, str] = {
         "grant_type": "authorization_code",
         "client_id": client_id,
         "code": code,
-        "redirect_uri": str(oauth["redirect_uri"]),
+        "redirect_uri": effective_redirect,
         "code_verifier": verifier,
     }
     if oauth.get("resource"):
@@ -1200,8 +1350,14 @@ def _exchange_oauth_code(
     if oauth.get("token_content_type") == "json":
         if state:
             payload["state"] = state
-        return _http_json(token_url, method="POST", data_dict=payload, headers=oauth.get("extra_headers"))
-    return _http_json(token_url, method="POST", form_dict=payload)
+        return _http_json(
+            token_url,
+            method="POST",
+            data_dict=payload,
+            headers=oauth.get("extra_headers"),
+            allow_redirects=False,
+        )
+    return _http_json(token_url, method="POST", form_dict=payload, allow_redirects=False)
 
 
 def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str, Any]:
@@ -1212,19 +1368,16 @@ def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str,
         if not gh_token:
             raise AuthError("GitHub Copilot 缺少 GitHub 刷新令牌，请重新登录")
         extra_cfg = entry.get("extra_config") if isinstance(entry.get("extra_config"), dict) else {}
-        ent_domain = str(extra_cfg.get("enterprise_domain") or "").strip()
-        copilot_url = (
-            f"https://api.{ent_domain}/copilot_internal/v2/token"
-            if ent_domain
-            else str(oauth["copilot_token_url"])
-        )
+        ent_domain = str(extra_cfg.get("enterprise_domain") or "").strip() or None
+        copilot_url = _copilot_oauth_url(str(oauth["copilot_token_url"]), ent_domain)
         cop = _http_json(
             copilot_url,
             method="GET",
             headers={
-                "Authorization": f"token {gh_token}",
+                "Authorization": f"Bearer {gh_token}",
                 **spec.extra_headers,
             },
+            allow_redirects=False,
         )
         token = str(cop.get("token") or "").strip()
         if not token:
@@ -1235,9 +1388,16 @@ def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str,
         else:
             exp_ms = now + 25 * 60 * 1000
         endpoints = cop.get("endpoints") if isinstance(cop.get("endpoints"), dict) else {}
-        base_url = str(endpoints.get("api") or entry.get("base_url") or spec.default_base_url).rstrip("/")
+        base_url = str(
+            endpoints.get("api")
+            or _copilot_base_url_from_token(token, ent_domain)
+            or entry.get("base_url")
+            or spec.default_base_url
+        ).rstrip("/")
         updated = dict(entry)
+        updated["type"] = "oauth"
         updated["access_token"] = token
+        updated["refresh_token"] = gh_token
         updated["expires_at_ms"] = exp_ms
         updated["base_url"] = base_url
         updated["updated_at_ms"] = now
@@ -1255,6 +1415,7 @@ def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str,
                 "Authorization": f"Bearer {ident_tok}",
                 "x-api-version": "1.0.0",
             },
+            allow_redirects=False,
         )
         api_key = str(minted.get("api_key") or "").strip()
         if not api_key:
@@ -1278,9 +1439,11 @@ def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str,
     if oauth.get("resource"):
         body["resource"] = str(oauth["resource"])
     if oauth.get("token_content_type") == "json":
-        res = _http_json(token_url, method="POST", data_dict=body, headers=oauth.get("extra_headers"))
+        res = _http_json(token_url, method="POST", data_dict=body, headers=oauth.get("extra_headers"), allow_redirects=False)
     else:
-        res = _http_json(token_url, method="POST", form_dict=body)
+        res = _http_json(token_url, method="POST", form_dict=body, allow_redirects=False)
+    if "scope" in res:
+        _validate_token_scope(spec, res)
     access = str(res.get("access_token") or "").strip()
     if not access:
         raise AuthError(f"{spec.name} 刷新令牌未返回 access_token")
@@ -1371,7 +1534,13 @@ def get_auth_status(root: Path | None = None) -> dict[str, Any]:
     }
 
 
-def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None = None) -> dict[str, Any]:
+def start_auth_flow(
+    provider: str,
+    mode: str | None = None,
+    *,
+    extra_config: dict[str, Any] | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
     """发起某家服务商的登录流程：PKCE 授权链接 / Device Code / API Key / 代理参数说明。"""
     spec = _require_provider(provider)
     chosen = mode or spec.auth_modes[0]
@@ -1398,7 +1567,7 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
     if chosen == "oauth_pkce":
         oauth = spec.oauth
         verifier, challenge = _pkce_pair()
-        state = secrets.token_urlsafe(24)
+        state = verifier if oauth.get("state_is_verifier") else secrets.token_urlsafe(24)
         if oauth.get("pkce_kind") == "openrouter_key":
             params = {
                 "callback_url": str(oauth["redirect_uri"]),
@@ -1445,16 +1614,20 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
 
     # oauth_device (GitHub Copilot / OpenAI Codex / Kimi Coding / xAI / Meta)
     oauth = spec.oauth
+    extra_cfg = _normalize_extra_config(spec, extra_config)
+    ent_domain = extra_cfg.get("enterprise_domain") or None
     client_id = str(oauth["client_id"])
     scopes = str(oauth.get("scopes") or "").strip()
     dev_payload: dict[str, str] = {"client_id": client_id}
     if scopes:
         dev_payload["scope"] = scopes
     dev_url = str(oauth["device_code_url"])
+    if spec.id == "github-copilot":
+        dev_url = _copilot_oauth_url(dev_url, ent_domain)
     if oauth.get("device_content_type") == "form":
-        dev = _http_json(dev_url, method="POST", form_dict=dev_payload)
+        dev = _http_json(dev_url, method="POST", form_dict=dev_payload, allow_redirects=False)
     else:
-        dev = _http_json(dev_url, method="POST", data_dict=dev_payload)
+        dev = _http_json(dev_url, method="POST", data_dict=dev_payload, allow_redirects=False)
 
     device_code = str(dev.get("device_code") or dev.get("device_auth_id") or "").strip()
     user_code = str(dev.get("user_code") or "").strip()
@@ -1470,17 +1643,20 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
     expires_in_s = int(raw_exp) if isinstance(raw_exp, (int, float)) else 900
     if not device_code or not user_code or not verification_uri:
         raise AuthError(f"{spec.name} 未返回有效的设备码信息")
+    pending_entry: dict[str, Any] = {
+        "mode": "oauth_device",
+        "device_code": device_code,
+        "user_code": user_code,
+        "interval_s": interval_s,
+        "expires_at_ms": now + expires_in_s * 1000,
+        "created_at_ms": now,
+    }
+    if extra_cfg:
+        pending_entry["extra_config"] = extra_cfg
     with _auth_lock(path):
         store = _read_store_unlocked(path)
         _prune_expired_pending(store, now)
-        store.setdefault("_pending", {})[spec.id] = {
-            "mode": "oauth_device",
-            "device_code": device_code,
-            "user_code": user_code,
-            "interval_s": interval_s,
-            "expires_at_ms": now + expires_in_s * 1000,
-            "created_at_ms": now,
-        }
+        store.setdefault("_pending", {})[spec.id] = pending_entry
         _write_store_unlocked(path, store)
     return {
         "ok": True,
@@ -1491,6 +1667,15 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
         "interval_s": interval_s,
         "expires_in_s": expires_in_s,
     }
+
+
+def _backfill_vertex_extra(spec: ProviderSpec, extra_cfg: dict[str, str]) -> dict[str, str]:
+    if spec.id != "google-vertex" or extra_cfg.get("project_id"):
+        return extra_cfg
+    inferred = _vertex_project_id_from_file(extra_cfg.get("credentials_path"))
+    if inferred:
+        return {**extra_cfg, "project_id": inferred}
+    return extra_cfg
 
 
 def _complete_cloud_entry_allowed_empty_key(spec: ProviderSpec, extra_cfg: dict[str, str]) -> bool:
@@ -1504,10 +1689,19 @@ def _complete_cloud_entry_allowed_empty_key(spec: ProviderSpec, extra_cfg: dict[
         )
         return has_iam or has_profile or has_env
     if spec.id == "google-vertex":
-        has_adc_cfg = bool(extra_cfg.get("project_id") and extra_cfg.get("location"))
-        has_sa = bool(extra_cfg.get("credentials_path"))
-        return has_adc_cfg or has_sa
+        return bool(extra_cfg.get("project_id") and (extra_cfg.get("location") or "us-central1"))
     return False
+
+
+def _save_provider_entry(path: Path, spec: ProviderSpec, entry: dict[str, Any]) -> None:
+    with _auth_lock(path):
+        store = _read_store_unlocked(path)
+        providers_map = store.setdefault("providers", {})
+        providers_map[spec.id] = entry
+        for alias in spec.aliases:
+            providers_map.pop(alias, None)
+        store.get("_pending", {}).pop(spec.id, None)
+        _write_store_unlocked(path, store)
 
 
 def complete_auth_flow(
@@ -1525,7 +1719,7 @@ def complete_auth_flow(
 
     path = auth_path(root)
     now = _now_ms()
-    extra_cfg = _normalize_extra_config(spec, data.get("extra_config"))
+    extra_cfg = _backfill_vertex_extra(spec, _normalize_extra_config(spec, data.get("extra_config")))
 
     if mode == "proxy":
         raw_base = str(data.get("base_url") or "").strip()
@@ -1548,11 +1742,7 @@ def complete_auth_flow(
             entry["api_key"] = api_key
         if extra_cfg:
             entry["extra_config"] = extra_cfg
-        with _auth_lock(path):
-            store = _read_store_unlocked(path)
-            store.setdefault("providers", {})[spec.id] = entry
-            store.get("_pending", {}).pop(spec.id, None)
-            _write_store_unlocked(path, store)
+        _save_provider_entry(path, spec, entry)
         return {
             "ok": True,
             "provider": spec.id,
@@ -1567,28 +1757,39 @@ def complete_auth_flow(
                 raise AuthError(f"请填写 {ef.label}")
         api_key = str(data.get("api_key") or "").strip()
         if not api_key and not _complete_cloud_entry_allowed_empty_key(spec, extra_cfg):
+            if spec.id == "google-vertex" and extra_cfg.get("credentials_path"):
+                raise AuthError("请填写 GCP Project ID（或确保凭据 JSON 中包含 project_id / quota_project_id）")
             raise AuthError("请填写 API Key")
         raw_base = str(data.get("base_url") or "").strip()
         base_url = _resolve_effective_base_url(spec, raw_base, extra_cfg)
         models = list(spec.default_models)
-        entry = {
-            "type": "api_key",
-            "base_url": base_url,
-            "api_protocol": spec.api_protocol,
-            "models": models,
-            "updated_at_ms": now,
-        }
-        if api_key:
-            entry["api_key"] = api_key
-        if extra_cfg:
-            entry["extra_config"] = extra_cfg
-        with _auth_lock(path):
-            store = _read_store_unlocked(path)
-            store.setdefault("providers", {})[spec.id] = entry
-            for alias in spec.aliases:
-                store.get("providers", {}).pop(alias, None)
-            store.get("_pending", {}).pop(spec.id, None)
-            _write_store_unlocked(path, store)
+        if spec.id == "github-copilot":
+            base_entry: dict[str, Any] = {
+                "type": "oauth",
+                "refresh_token": api_key,
+                "access_token": "",
+                "expires_at_ms": 0,
+                "base_url": base_url,
+                "api_protocol": spec.api_protocol,
+                "models": models,
+                "updated_at_ms": now,
+            }
+            if extra_cfg:
+                base_entry["extra_config"] = extra_cfg
+            entry = _refresh_oauth_token(spec, base_entry)
+        else:
+            entry = {
+                "type": "api_key",
+                "base_url": base_url,
+                "api_protocol": spec.api_protocol,
+                "models": models,
+                "updated_at_ms": now,
+            }
+            if api_key:
+                entry["api_key"] = api_key
+            if extra_cfg:
+                entry["extra_config"] = extra_cfg
+        _save_provider_entry(path, spec, entry)
         return {
             "ok": True,
             "provider": spec.id,
@@ -1599,69 +1800,82 @@ def complete_auth_flow(
 
     if mode == "oauth_pkce":
         raw_code = str(data.get("code") or data.get("callback_url") or "").strip()
+        oauth = spec.oauth
         with _auth_lock(path):
             store = _read_store_unlocked(path)
             pending = store.get("_pending", {}).get(spec.id)
-        if not isinstance(pending, dict) or pending.get("mode") != "oauth_pkce":
-            raise AuthError("尚未发起 OAuth 授权或会话已失效，请重新点击开始登录")
-        if now - int(pending.get("created_at_ms") or 0) > PENDING_TTL_MS:
-            raise AuthError("OAuth 授权会话已过期（超过 30 分钟），请重新点击开始登录")
-        oauth = spec.oauth
-        code, state, cb_params = _parse_callback_input(
-            raw_code,
-            pending.get("state"),
-            state_optional=bool(oauth.get("state_optional")),
-        )
-        issued_cid = cb_params.get("client_id") if oauth.get("dynamic_client_id") else None
-        if oauth.get("dynamic_client_id") and not issued_cid:
-            raise AuthError(f"{spec.name} OAuth 回调链接缺少动态签发的 client_id 参数，请粘贴完整回调 URL")
-        tok = _exchange_oauth_code(
-            spec,
-            code,
-            str(pending["code_verifier"]),
-            state,
-            issued_client_id=issued_cid,
-        )
-        if oauth.get("pkce_kind") == "openrouter_key":
-            permanent_key = str(tok.get("key") or "").strip()
-            if not permanent_key:
-                raise AuthError("OpenRouter OAuth 未返回永久 API Key")
-            entry = {
-                "type": "api_key",
-                "api_key": permanent_key,
-                "base_url": spec.default_base_url,
-                "api_protocol": spec.api_protocol,
-                "models": list(spec.default_models),
-                "updated_at_ms": now,
-            }
-        else:
-            access = str(tok.get("access_token") or "").strip()
-            if not access:
-                raise AuthError("OAuth 令牌接口未返回 access_token")
-            refresh = str(tok.get("refresh_token") or "").strip()
-            expires_in = tok.get("expires_in")
-            exp_ms = now + int(float(expires_in) * 1000) if isinstance(expires_in, (int, float)) else now + 3600 * 1000
-            entry = {
-                "type": "oauth",
-                "access_token": access,
-                "refresh_token": refresh,
-                "expires_at_ms": exp_ms,
-                "base_url": spec.default_base_url,
-                "api_protocol": spec.api_protocol,
-                "models": list(spec.default_models),
-                "updated_at_ms": now,
-            }
-            if issued_cid:
-                entry["oauth_client_id"] = issued_cid
-            if spec.id == "openai-codex":
-                acc = _jwt_chatgpt_account_id(access)
-                if acc:
-                    entry["account_id"] = acc
-        with _auth_lock(path):
-            store = _read_store_unlocked(path)
-            store.setdefault("providers", {})[spec.id] = entry
-            store.get("_pending", {}).pop(spec.id, None)
+            if not isinstance(pending, dict) or pending.get("mode") != "oauth_pkce":
+                raise AuthError("尚未发起 OAuth 授权或会话已失效，请重新点击开始登录")
+            if now - int(pending.get("created_at_ms") or 0) > PENDING_TTL_MS:
+                raise AuthError("OAuth 授权会话已过期（超过 30 分钟），请重新点击开始登录")
+            if pending.get("exchanging") and (now - int(pending.get("exchanging_at_ms") or pending.get("created_at_ms") or 0)) <= 120_000:
+                raise AuthError(f"{spec.name} 授权换票正在进行中，请勿重复提交")
+            code, state, cb_params = _parse_callback_input(
+                raw_code,
+                pending.get("state"),
+                state_optional=bool(oauth.get("state_optional")),
+            )
+            issued_cid = cb_params.get("client_id") if oauth.get("dynamic_client_id") else None
+            if oauth.get("dynamic_client_id") and not issued_cid:
+                raise AuthError(f"{spec.name} OAuth 回调链接缺少动态签发的 client_id 参数，请粘贴完整回调 URL")
+            verifier = str(pending["code_verifier"])
+            pending["exchanging"] = True
+            pending["exchanging_at_ms"] = now
             _write_store_unlocked(path, store)
+        try:
+            tok = _exchange_oauth_code(
+                spec,
+                code,
+                verifier,
+                state,
+                issued_client_id=issued_cid,
+            )
+            if oauth.get("pkce_kind") == "openrouter_key":
+                permanent_key = str(tok.get("key") or "").strip()
+                if not permanent_key:
+                    raise AuthError("OpenRouter OAuth 未返回永久 API Key")
+                entry = {
+                    "type": "api_key",
+                    "api_key": permanent_key,
+                    "base_url": spec.default_base_url,
+                    "api_protocol": spec.api_protocol,
+                    "models": list(spec.default_models),
+                    "updated_at_ms": now,
+                }
+            else:
+                _validate_token_scope(spec, tok)
+                access = str(tok.get("access_token") or "").strip()
+                if not access:
+                    raise AuthError("OAuth 令牌接口未返回 access_token")
+                refresh = str(tok.get("refresh_token") or "").strip()
+                expires_in = tok.get("expires_in")
+                exp_ms = now + int(float(expires_in) * 1000) if isinstance(expires_in, (int, float)) else now + 3600 * 1000
+                entry = {
+                    "type": "oauth",
+                    "access_token": access,
+                    "refresh_token": refresh,
+                    "expires_at_ms": exp_ms,
+                    "base_url": spec.default_base_url,
+                    "api_protocol": spec.api_protocol,
+                    "models": list(spec.default_models),
+                    "updated_at_ms": now,
+                }
+                if issued_cid:
+                    entry["oauth_client_id"] = issued_cid
+                if spec.id == "openai-codex":
+                    acc = _jwt_chatgpt_account_id(access)
+                    if acc:
+                        entry["account_id"] = acc
+        except BaseException:
+            with _auth_lock(path):
+                store = _read_store_unlocked(path)
+                cur_pend = store.get("_pending", {}).get(spec.id)
+                if isinstance(cur_pend, dict):
+                    cur_pend.pop("exchanging", None)
+                    cur_pend.pop("exchanging_at_ms", None)
+                    _write_store_unlocked(path, store)
+            raise
+        _save_provider_entry(path, spec, entry)
         return {
             "ok": True,
             "provider": spec.id,
@@ -1678,51 +1892,88 @@ def complete_auth_flow(
         raise AuthError(f"尚未发起 {spec.name} 设备码授权，请先点击获取设备码")
     if int(pending.get("expires_at_ms") or 0) <= now:
         raise AuthError(f"{spec.name} 设备码已过期，请重新获取")
+    pending_extra = pending.get("extra_config") if isinstance(pending.get("extra_config"), dict) else {}
+    merged_extra = {**pending_extra, **extra_cfg} if (pending_extra or extra_cfg) else {}
+    ent_domain = str(merged_extra.get("enterprise_domain") or "").strip() or None
+
     oauth = spec.oauth
     token_url = str(oauth.get("device_token_url") or oauth["token_url"])
-    req_body: dict[str, str]
+    if spec.id == "github-copilot":
+        token_url = _copilot_oauth_url(token_url, ent_domain)
     if oauth.get("device_content_type") == "json":
         req_body = {
             "client_id": str(oauth["client_id"]),
             "user_code": str(pending.get("user_code") or ""),
             "device_auth_id": str(pending["device_code"]),
         }
-        tok = _http_json(token_url, method="POST", data_dict=req_body)
+        status_code, tok_obj, detail = _http_request_json(
+            token_url, method="POST", data_dict=req_body, allow_redirects=False,
+        )
     elif oauth.get("token_content_type") == "form":
         req_body = {
             "client_id": str(oauth["client_id"]),
             "device_code": str(pending["device_code"]),
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
         }
-        tok = _http_json(token_url, method="POST", form_dict=req_body)
+        status_code, tok_obj, detail = _http_request_json(
+            token_url, method="POST", form_dict=req_body, allow_redirects=False,
+        )
     else:
         req_body = {
             "client_id": str(oauth["client_id"]),
             "device_code": str(pending["device_code"]),
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
         }
-        tok = _http_json(token_url, method="POST", data_dict=req_body)
+        status_code, tok_obj, detail = _http_request_json(
+            token_url, method="POST", data_dict=req_body, allow_redirects=False,
+        )
 
-    err = tok.get("error")
-    if err in ("authorization_pending", "slow_down"):
+    tok: dict[str, Any] = tok_obj if isinstance(tok_obj, dict) else {}
+    raw_err = tok.get("error")
+    err_code = raw_err.get("code") if isinstance(raw_err, dict) else raw_err
+    if spec.id == "openai-codex" and status_code in (403, 404):
+        err_code = err_code if err_code == "deviceauth_authorization_pending" else "authorization_pending"
+
+    if err_code in ("authorization_pending", "deviceauth_authorization_pending", "slow_down"):
+        cur_interval = int(pending.get("interval_s") or 5)
+        if err_code == "slow_down":
+            srv_interval = tok.get("interval")
+            new_interval = max(cur_interval + 5, int(srv_interval) if isinstance(srv_interval, (int, float)) else 0)
+            with _auth_lock(path):
+                store = _read_store_unlocked(path)
+                cur_pend = store.get("_pending", {}).get(spec.id)
+                if isinstance(cur_pend, dict):
+                    cur_pend["interval_s"] = new_interval
+                    _write_store_unlocked(path, store)
+        else:
+            new_interval = cur_interval
         return {
             "ok": False,
             "pending": True,
             "provider": spec.id,
-            "error": str(err),
-            "interval_s": int(pending.get("interval_s") or 5) + (5 if err == "slow_down" else 0),
+            "error": str(err_code),
+            "interval_s": new_interval,
             "text": f"等待用户在浏览器完成 {spec.name} 设备码授权…",
         }
-    if err:
-        raise AuthError(f"{spec.name} 授权失败：{tok.get('error_description') or err}")
+    if err_code:
+        desc = (
+            raw_err.get("message")
+            if isinstance(raw_err, dict)
+            else tok.get("error_description")
+        ) or err_code
+        raise AuthError(f"{spec.name} 授权失败：{desc}")
+    if status_code >= 400 or tok_obj is None:
+        raise AuthError(f"HTTP {status_code}: {detail}")
 
     # OpenAI Codex deviceauth returns authorization_code + code_verifier -> exchange for OAuth tokens
     if tok.get("authorization_code") and tok.get("code_verifier"):
+        device_redirect = str(oauth.get("device_redirect_uri") or oauth.get("redirect_uri") or "")
         tok = _exchange_oauth_code(
             spec,
             str(tok["authorization_code"]),
             str(tok["code_verifier"]),
             None,
+            redirect_uri=device_redirect,
         )
 
     access_raw = str(tok.get("access_token") or "").strip()
@@ -1740,8 +1991,8 @@ def complete_auth_flow(
             "models": list(spec.default_models),
             "updated_at_ms": now,
         }
-        if extra_cfg:
-            base_entry["extra_config"] = extra_cfg
+        if merged_extra:
+            base_entry["extra_config"] = merged_extra
         entry = _refresh_oauth_token(spec, base_entry)
     else:
         refresh_tok = str(tok.get("refresh_token") or "").strip()
@@ -1757,18 +2008,14 @@ def complete_auth_flow(
             "models": list(spec.default_models),
             "updated_at_ms": now,
         }
-        if extra_cfg:
-            entry["extra_config"] = extra_cfg
+        if merged_extra:
+            entry["extra_config"] = merged_extra
         if spec.id == "openai-codex":
             acc = _jwt_chatgpt_account_id(access_raw)
             if acc:
                 entry["account_id"] = acc
 
-    with _auth_lock(path):
-        store = _read_store_unlocked(path)
-        store.setdefault("providers", {})[spec.id] = entry
-        store.get("_pending", {}).pop(spec.id, None)
-        _write_store_unlocked(path, store)
+    _save_provider_entry(path, spec, entry)
     return {
         "ok": True,
         "provider": spec.id,
@@ -1800,11 +2047,45 @@ def logout_provider(provider: str, *, root: Path | None = None) -> dict[str, Any
     }
 
 
+def _copilot_env_session(
+    spec: ProviderSpec,
+    gh_token: str,
+    extra_cfg: dict[str, str],
+) -> tuple[str, str]:
+    ent_domain = str(extra_cfg.get("enterprise_domain") or "").strip()
+    tok_digest = hashlib.sha256(gh_token.encode("utf-8")).hexdigest()
+    cache_key = (tok_digest, ent_domain)
+    now = _now_ms()
+    with _COPILOT_ENV_LOCK:
+        cached = _COPILOT_ENV_CACHE.get(cache_key)
+        if cached and cached[2] - now > REFRESH_SKEW_MS:
+            return cached[0], cached[1]
+    exchanged = _refresh_oauth_token(
+        spec,
+        {
+            "type": "oauth",
+            "refresh_token": gh_token,
+            "extra_config": extra_cfg,
+            "base_url": spec.default_base_url,
+        },
+    )
+    sess_tok = str(exchanged.get("access_token") or "").strip()
+    sess_base = str(exchanged.get("base_url") or spec.default_base_url).rstrip("/")
+    exp_ms = int(exchanged.get("expires_at_ms") or (now + 20 * 60 * 1000))
+    with _COPILOT_ENV_LOCK:
+        if len(_COPILOT_ENV_CACHE) > 32:
+            expired = [k for k, v in _COPILOT_ENV_CACHE.items() if v[2] <= now]
+            for k in expired:
+                _COPILOT_ENV_CACHE.pop(k, None)
+        _COPILOT_ENV_CACHE[cache_key] = (sess_tok, sess_base, exp_ms)
+    return sess_tok, sess_base
+
+
 def _build_env_credential(spec: ProviderSpec) -> dict[str, Any] | None:
     env_configured, env_source, _ = _detect_env_status(spec)
     if not env_configured:
         return None
-    extra_cfg = _normalize_extra_config(spec, {})
+    extra_cfg = _backfill_vertex_extra(spec, _normalize_extra_config(spec, {}))
     api_key = ""
     for env_name in spec.env_vars:
         if env_name in ("OLLAMA_HOST", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "AWS_PROFILE", "AWS_ACCESS_KEY_ID"):
@@ -1818,6 +2099,8 @@ def _build_env_credential(spec: ProviderSpec) -> dict[str, Any] | None:
     if spec.id == "cloudflare-workers-ai" and not extra_cfg.get("account_id"):
         return None
     base_url = _resolve_effective_base_url(spec, spec.default_base_url, extra_cfg)
+    if spec.id == "github-copilot" and api_key:
+        api_key, base_url = _copilot_env_session(spec, api_key, extra_cfg)
     return {
         "provider": spec.id,
         "auth_type": "env",
@@ -1849,7 +2132,21 @@ def resolve_provider_credential(
         found = _stored_entry_for_spec(store.get("providers", {}), spec)
         if found is not None:
             stored_key, entry = found
-            if entry.get("type") == "oauth":
+            if spec.id == "github-copilot" and entry.get("type") == "api_key" and entry.get("api_key"):
+                entry = _refresh_oauth_token(
+                    spec,
+                    {
+                        **entry,
+                        "type": "oauth",
+                        "refresh_token": str(entry["api_key"]),
+                        "access_token": "",
+                        "expires_at_ms": 0,
+                    },
+                )
+                entry.pop("api_key", None)
+                store.setdefault("providers", {})[stored_key] = entry
+                _write_store_unlocked(path, store)
+            elif entry.get("type") == "oauth":
                 exp = entry.get("expires_at_ms")
                 if isinstance(exp, (int, float)) and exp - _now_ms() <= REFRESH_SKEW_MS:
                     entry = _refresh_oauth_token(spec, entry)
@@ -1859,6 +2156,7 @@ def resolve_provider_credential(
         return _build_env_credential(spec) if allow_env else None
     api_key = str(entry.get("api_key") or entry.get("access_token") or "").strip()
     extra_cfg = dict(entry.get("extra_config") or {}) if isinstance(entry.get("extra_config"), dict) else {}
+    extra_cfg = _backfill_vertex_extra(spec, extra_cfg)
     headers = dict(spec.extra_headers)
     if spec.id == "anthropic" and entry.get("type") == "oauth":
         headers.update(spec.oauth.get("extra_headers") or {})
@@ -1909,20 +2207,24 @@ def list_authenticated_models(root: Path | None = None) -> list[str]:
 
 
 def resolve_model_provider(model_name: str, *, root: Path | None = None) -> tuple[str, str, dict[str, Any]] | None:
-    """若模型名带 `<provider>/`（含兼容别名）且该服务商已登录，返回 `(provider, wire_model, credential)`。
+    """若模型名带 `<provider>/`（含兼容别名）、该服务商已登录且模型在该服务商清单内，返回 `(provider, wire_model, credential)`。
 
-    例：`openrouter/anthropic/claude-sonnet-4.6` → `("openrouter", "anthropic/claude-sonnet-4.6", cred)`。
+    仅在 `<provider>/` 确属该服务商已申报模型清单时接管路由，防止代理原生 `anthropic/claude-x` 等同名命名被错误劫持。
     """
     if "/" not in model_name:
         return None
     pid, wire_model = model_name.split("/", 1)
-    if pid not in PROVIDER_MAP or not wire_model.strip():
+    wire = wire_model.strip()
+    if pid not in PROVIDER_MAP or not wire:
         return None
     spec = PROVIDER_MAP[pid]
     cred = resolve_provider_credential(spec.id, root=root)
     if cred is None:
         return None
-    return spec.id, wire_model.strip(), cred
+    catalog = cred.get("models") or ()
+    if wire not in catalog:
+        return None
+    return spec.id, wire, cred
 
 
 def first_authenticated_config(root: Path | None = None) -> dict[str, Any] | None:
@@ -1981,7 +2283,7 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
             mark = "●" if p["connected"] else "○"
             extra = f"（已登录 {p['masked_secret']}）" if p["connected"] and p.get("masked_secret") else ("（已连接）" if p["connected"] else f"（未登录 · 支持 {'/'.join(p['auth_modes'])}）")
             lines.append(f"  {mark} {p['id']} — {p['name']} {extra}")
-        lines.append("用法：/login <provider> <api_key>；OAuth：/login <provider> 发起，然后 /login <provider> complete <回调或码>；退出：/logout <provider>")
+        lines.append("用法：/login <provider>；OAuth：/login <provider> complete <回调或码>；退出：/logout <provider>；脚本请用：ava --auth-complete <provider> --stdin")
         return True, "\n".join(lines), None
 
     pid = parts[1].strip()
@@ -1996,14 +2298,31 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
             return True, f"{spec.name} 默认地址：{started['default_base_url']}\n执行：/login {pid} <api_key> 完成配置（或使用桌面端登录弹窗）", None
         arg = parts[2].strip()
-        if arg in ("oauth", "oauth_pkce", "oauth_device"):
-            req_mode = next((m for m in spec.auth_modes if m.startswith("oauth")), None) if arg == "oauth" else arg
-            started = start_auth_flow(pid, mode=req_mode, root=root)
+        allowed_extra = {ef.key for ef in spec.extra_fields}
+        is_extra_kv = bool(parts[2:]) and all(
+            "=" in tok and tok.split("=", 1)[0].strip() in allowed_extra
+            for tok in parts[2:]
+        )
+        if arg in ("oauth", "oauth_pkce", "oauth_device") or is_extra_kv:
+            req_mode: str | None
+            extra_opts: dict[str, str] = {}
+            tail_tokens = parts[3:] if arg in ("oauth", "oauth_pkce", "oauth_device") else parts[2:]
+            for tok in tail_tokens:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    if k.strip() and v.strip():
+                        extra_opts[k.strip()] = v.strip()
+            if arg in ("oauth", "oauth_pkce", "oauth_device"):
+                req_mode = next((m for m in spec.auth_modes if m.startswith("oauth")), None) if arg == "oauth" else arg
+            else:
+                req_mode = spec.auth_modes[0]
+            started = start_auth_flow(pid, mode=req_mode, extra_config=extra_opts or None, root=root)
             mode = started["mode"]
             if mode == "oauth_pkce":
                 return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
             if mode == "oauth_device":
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
+            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n执行：/login {pid} <api_key> 完成配置（或使用桌面端登录弹窗）", None
         if arg == "complete":
             code = " ".join(parts[3:]).strip()
             mode: str | None = None
@@ -2030,6 +2349,23 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
         return False, str(exc), None
 
 
+_ARGV_SECRET_KEY_RE = re.compile(r"(?i)(api_key|token|secret|password|^code$|callback_url)")
+
+
+def _payload_has_sensitive_key(node: Any) -> bool:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if _ARGV_SECRET_KEY_RE.search(str(k)) and isinstance(v, str) and v.strip():
+                return True
+            if _payload_has_sensitive_key(v):
+                return True
+    elif isinstance(node, list):
+        for item in node:
+            if _payload_has_sensitive_key(item):
+                return True
+    return False
+
+
 def dispatch_auth_cli(
     args: list[str],
     *,
@@ -2049,21 +2385,39 @@ def dispatch_auth_cli(
             print(json.dumps(get_auth_status(root), ensure_ascii=False))
             return 0
         if flag == "--auth-start":
-            if len(args) not in (2, 3):
-                raise AuthError("用法: ava --auth-start <provider> [<mode>]")
-            mode = args[2] if len(args) == 3 else None
-            print(json.dumps(start_auth_flow(args[1], mode, root=root), ensure_ascii=False))
+            if len(args) < 2 or len(args) > 4:
+                raise AuthError("用法: ava --auth-start <provider> [<mode>] [--stdin]")
+            has_stdin = args[-1] == "--stdin"
+            pos_args = args[1:-1] if has_stdin else args[1:]
+            if len(pos_args) not in (1, 2):
+                raise AuthError("用法: ava --auth-start <provider> [<mode>] [--stdin]")
+            mode = pos_args[1] if len(pos_args) == 2 else None
+            extra_config: dict[str, Any] | None = None
+            if has_stdin:
+                raw_start = stdin_reader() if stdin_reader is not None else sys.stdin.read()
+                if raw_start.strip():
+                    start_obj = json.loads(raw_start)
+                    if not isinstance(start_obj, dict):
+                        raise AuthError("auth-start stdin 载荷须是 JSON 对象")
+                    if mode is None and isinstance(start_obj.get("mode"), str) and start_obj["mode"].strip():
+                        mode = start_obj["mode"].strip()
+                    if isinstance(start_obj.get("extra_config"), dict):
+                        extra_config = start_obj["extra_config"]
+            print(json.dumps(start_auth_flow(pos_args[0], mode, extra_config=extra_config, root=root), ensure_ascii=False))
             return 0
         if flag == "--auth-complete":
             if len(args) not in (2, 3):
                 raise AuthError("用法: ava --auth-complete <provider> [<json>|--stdin]")
-            if len(args) == 3 and args[2] != "--stdin":
+            from_argv = len(args) == 3 and args[2] != "--stdin"
+            if from_argv:
                 raw = args[2]
             else:
                 raw = stdin_reader() if stdin_reader is not None else sys.stdin.read()
             payload = json.loads(raw) if raw.strip() else {}
             if not isinstance(payload, dict):
                 raise AuthError("auth-complete 载荷须是 JSON 对象")
+            if from_argv and _payload_has_sensitive_key(payload):
+                raise AuthError("为防止密钥进入进程参数或命令历史，--auth-complete 禁止通过命令行参数传凭据，请改用 --stdin")
             print(json.dumps(complete_auth_flow(args[1], payload, root=root), ensure_ascii=False))
             return 0
         if flag == "--auth-logout":

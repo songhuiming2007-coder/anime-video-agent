@@ -344,6 +344,11 @@ describe("D45 会话管理模板的 argv 形状", () => {
     expect(buildArgv("AUTH_START", { provider: "openai-codex", mode: "oauth_pkce" }, "/repo").argv).toEqual([
       pyPath, "-m", "pipeline.agent.cli", "--auth-start", "openai-codex", "oauth_pkce",
     ]);
+    const gheStart = buildArgv("AUTH_START", { provider: "github-copilot", mode: "oauth_device", payload: '{"extra_config":{"enterprise_domain":"ghe.example.com"}}' }, "/repo");
+    expect(gheStart.argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "--auth-start", "github-copilot", "oauth_device", "--stdin",
+    ]);
+    expect(gheStart.stdinPipe).toBe(true);
     const comp = buildArgv("AUTH_COMPLETE", { provider: "deepseek" }, "/repo");
     expect(comp.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "--auth-complete", "deepseek", "--stdin"]);
     expect(comp.stdinPipe).toBe(true);

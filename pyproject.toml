@@ -40,6 +40,8 @@ dependencies = [
     # 探针带 --no-cache-dir 就失败。钉 2026.8.19：10-15 实测「同版本 + yt-dlp-ejs」加
     # --no-cache-dir 能解析 1080p 的就是这一版。升级要重测 YouTube 探针。
     "yt-dlp[default]==2026.8.19",
+    # D170：Google Vertex AI Service Account JWT (RS256) 签发访问令牌
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

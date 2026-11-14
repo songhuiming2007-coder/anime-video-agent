@@ -23,6 +23,7 @@ import hmac
 import http.client
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -194,8 +195,16 @@ class LLMConfig:
         if proto in ("openai-codex-responses", "openai-responses"):
             if base.endswith("/responses"):
                 return base
-            if proto == "openai-codex-responses" and "chatgpt.com/backend-api" in base and not base.endswith("/codex"):
-                return f"{base}/codex/responses"
+            if proto == "openai-codex-responses":
+                parsed_codex = urllib.parse.urlparse(base)
+                host = (parsed_codex.hostname or "").lower()
+                path_part = parsed_codex.path.rstrip("/")
+                if (
+                    (host == "chatgpt.com" or host.endswith(".chatgpt.com"))
+                    and (path_part == "/backend-api" or path_part.startswith("/backend-api/"))
+                    and not path_part.endswith("/codex")
+                ):
+                    return f"{base}/codex/responses"
             return f"{base}/responses"
         if proto == "azure-openai-responses":
             parsed = urllib.parse.urlparse(base)
@@ -515,6 +524,20 @@ def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[
     return wired
 
 
+_PROTECTED_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key", "api-key", "content-type"})
+
+
+def _merge_extra_headers(headers: dict[str, str], extra_headers: dict[str, str] | None) -> dict[str, str]:
+    """合并附加请求头，但禁止覆写或注入鉴权 / Content-Type 头（D170 安全底线）。"""
+    if not extra_headers:
+        return headers
+    for k, v in extra_headers.items():
+        if k.lower() in _PROTECTED_AUTH_HEADERS:
+            continue
+        headers[k] = v
+    return headers
+
+
 def _stream_error(err: Any) -> LLMError:
     """流里的 `data: {"error": …}`：按其中的状态码分类，与 HTTPError 同一套可重试口径（D93）。"""
     info = err if isinstance(err, dict) else {"message": err}
@@ -777,7 +800,7 @@ def _anthropic_request(
     else:
         headers["x-api-key"] = cfg.api_key
         headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
-    headers.update(cfg.extra_headers)
+    _merge_extra_headers(headers, cfg.extra_headers)
     return payload, headers
 
 
@@ -948,6 +971,16 @@ def _codex_request(
             if t:
                 instr_parts.append(t)
         elif role == "assistant":
+            for tb in msg.get("thinking_blocks") or []:
+                if isinstance(tb, dict) and tb.get("type") == "codex_reasoning" and isinstance(tb.get("item"), dict):
+                    raw_item = tb["item"]
+                    replayed = {
+                        k: raw_item[k]
+                        for k in ("type", "id", "summary", "encrypted_content")
+                        if k in raw_item and raw_item[k] is not None
+                    }
+                    replayed["type"] = "reasoning"
+                    items.append(replayed)
             txt = _content_text(msg.get("content"))
             if txt:
                 items.append({
@@ -992,6 +1025,8 @@ def _codex_request(
         "store": False,
         "stream": True,
     }
+    if cfg.api_protocol != "azure-openai-responses":
+        payload["include"] = ["reasoning.encrypted_content"]
     if tools:
         codex_tools = []
         for t in tools:
@@ -1017,8 +1052,20 @@ def _codex_request(
             headers["api-key"] = cfg.api_key
         else:
             headers["Authorization"] = f"Bearer {cfg.api_key}"
-    headers.update(cfg.extra_headers)
+    _merge_extra_headers(headers, cfg.extra_headers)
     return payload, headers
+
+
+def _codex_reasoning_tb(item: dict[str, Any]) -> dict[str, Any] | None:
+    snap = {
+        k: item[k]
+        for k in ("type", "id", "summary", "encrypted_content")
+        if k in item and item[k] is not None
+    }
+    if not snap.get("encrypted_content") and not snap.get("summary") and not snap.get("id"):
+        return None
+    snap["type"] = "reasoning"
+    return {"type": "codex_reasoning", "item": snap}
 
 
 def _normalize_codex_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1033,6 +1080,7 @@ def _normalize_codex_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
 def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     texts: list[str] = []
     thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
     for item in body.get("output") or []:
         if not isinstance(item, dict):
@@ -1046,6 +1094,9 @@ def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[s
             for s in item.get("summary") or []:
                 if isinstance(s, dict) and s.get("text"):
                     thinkings.append(str(s["text"]))
+            tb = _codex_reasoning_tb(item)
+            if tb is not None:
+                thinking_blocks.append(tb)
         elif itype == "function_call":
             calls.append({
                 "id": str(item.get("call_id") or item.get("id") or ""),
@@ -1055,6 +1106,8 @@ def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
     if thinkings:
         msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     if calls:
         msg["tool_calls"] = calls
     return msg, _normalize_codex_usage(body.get("usage"))
@@ -1063,6 +1116,8 @@ def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[s
 def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     texts: list[str] = []
     thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
+    seen_reasoning_ids: set[str] = set()
     calls: dict[str, dict[str, Any]] = {}
     call_order: list[str] = []
     usage: dict[str, Any] | None = None
@@ -1100,6 +1155,39 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
                         "parts": [str(item.get("arguments"))] if item.get("arguments") else [],
                         "done": None,
                     }
+        elif etype == "response.output_item.done":
+            item = ev.get("item") or {}
+            itype = item.get("type")
+            if itype == "function_call":
+                key = str(item.get("id") or item.get("call_id") or len(call_order))
+                if key not in calls:
+                    call_order.append(key)
+                    calls[key] = {
+                        "id": str(item.get("call_id") or item.get("id") or key),
+                        "name": str(item.get("name") or ""),
+                        "parts": [],
+                        "done": str(item["arguments"]) if item.get("arguments") is not None else None,
+                    }
+                else:
+                    if item.get("call_id"):
+                        calls[key]["id"] = str(item["call_id"])
+                    if item.get("name") and not calls[key]["name"]:
+                        calls[key]["name"] = str(item["name"])
+                    if calls[key]["done"] is None and item.get("arguments") is not None:
+                        done_args = str(item["arguments"])
+                        if not calls[key]["parts"] or len(done_args) >= sum(len(p) for p in calls[key]["parts"]):
+                            calls[key]["done"] = done_args
+            elif itype == "reasoning":
+                tb = _codex_reasoning_tb(item)
+                if tb is not None:
+                    rid = str(item.get("id") or "")
+                    if rid:
+                        seen_reasoning_ids.add(rid)
+                    thinking_blocks.append(tb)
+                if not thinkings:
+                    for s in item.get("summary") or []:
+                        if isinstance(s, dict) and s.get("text"):
+                            thinkings.append(str(s["text"]))
         elif etype == "response.function_call_arguments.delta":
             key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
             if key and key in calls:
@@ -1108,17 +1196,32 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
             key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
             if key and key in calls:
                 calls[key]["done"] = str(ev.get("arguments") or "")
-        elif etype == "response.completed":
+        elif etype in ("response.completed", "response.incomplete"):
             ended = True
             resp_obj = ev.get("response") or {}
             usage = _normalize_codex_usage(resp_obj.get("usage"))
-            if not texts and not calls and isinstance(resp_obj.get("output"), list):
+            out_items = resp_obj.get("output")
+            if not texts and not calls and not thinking_blocks and isinstance(out_items, list):
                 return _codex_json_to_message(resp_obj)[0], usage
+            if isinstance(out_items, list):
+                for item in out_items:
+                    if not isinstance(item, dict) or item.get("type") != "reasoning":
+                        continue
+                    rid = str(item.get("id") or "")
+                    if rid and rid in seen_reasoning_ids:
+                        continue
+                    tb = _codex_reasoning_tb(item)
+                    if tb is not None:
+                        if rid:
+                            seen_reasoning_ids.add(rid)
+                        thinking_blocks.append(tb)
     if not ended:
         raise LLMError("Codex 流式响应中途断开（缺少 response.completed）", retryable=True)
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
     if thinkings:
         msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     if call_order:
         msg["tool_calls"] = [
             {
@@ -1134,18 +1237,24 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
     return msg, usage
 
 
-_GOOGLE_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_GOOGLE_TOKEN_CACHE: dict[tuple[str, int], tuple[str, float]] = {}
 _GOOGLE_TOKEN_LOCK = threading.Lock()
 
 
 def _mistral_tool_call_id(raw_id: str, cache: dict[str, str]) -> str:
     if raw_id in cache:
         return cache[raw_id]
-    digest = hashlib.sha256(raw_id.encode("utf-8")).digest()
+    used = set(cache.values())
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    code = "".join(alphabet[b % len(alphabet)] for b in digest[:9])
-    cache[raw_id] = code
-    return code
+    attempt = 0
+    while True:
+        seed = raw_id if attempt == 0 else f"{raw_id}#{attempt}"
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        code = "".join(alphabet[b % len(alphabet)] for b in digest[:9])
+        if code not in used:
+            cache[raw_id] = code
+            return code
+        attempt += 1
 
 
 def _completions_request(
@@ -1162,7 +1271,18 @@ def _completions_request(
         if not isinstance(m, dict):
             oai_msgs.append(m)
             continue
-        clean = {k: v for k, v in m.items() if k != "thinking_blocks"} if "thinking_blocks" in m else dict(m)
+        clean = {
+            k: v
+            for k, v in m.items()
+            if k not in ("thinking_blocks", "reasoning_signature")
+        }
+        if isinstance(clean.get("tool_calls"), list):
+            clean["tool_calls"] = [
+                {k: v for k, v in tc.items() if k not in ("thoughtSignature", "_ava_sig_model")}
+                if isinstance(tc, dict)
+                else tc
+                for tc in clean["tool_calls"]
+            ]
         if is_mistral:
             role = str(clean.get("role") or "")
             if role == "assistant" and isinstance(clean.get("tool_calls"), list):
@@ -1196,7 +1316,8 @@ def _completions_request(
     payload["stream"] = True
     if not is_mistral:
         payload["stream_options"] = {"include_usage": True}
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}", **cfg.extra_headers}
+    headers: dict[str, str] = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}"}
+    _merge_extra_headers(headers, cfg.extra_headers)
     return payload, headers
 
 
@@ -1242,9 +1363,15 @@ def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
         cred_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
     if not cred_path.is_file():
         raise LLMError(f"未找到 Google Vertex 凭据文件：{cred_path}")
-    cache_key = str(cred_path.resolve())
+    try:
+        st = cred_path.stat()
+    except OSError as exc:
+        raise LLMError(f"读取 Google 凭据文件状态失败: {exc}") from None
+    cache_key = (str(cred_path.resolve()), int(st.st_mtime_ns))
     now = time.time()
     with _GOOGLE_TOKEN_LOCK:
+        for stale_key in [k for k, v in _GOOGLE_TOKEN_CACHE.items() if v[1] <= now]:
+            _GOOGLE_TOKEN_CACHE.pop(stale_key, None)
         cached = _GOOGLE_TOKEN_CACHE.get(cache_key)
         if cached and cached[1] - now > 60:
             return cached[0]
@@ -1264,8 +1391,11 @@ def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
             "grant_type": "refresh_token",
         }).encode("utf-8")
     elif ctype == "service_account":
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
+        try:
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+        except ImportError as exc:
+            raise LLMError(f"Google Vertex 服务账号签名需要 cryptography 依赖: {exc}") from None
 
         iat = int(now)
         header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
@@ -1287,14 +1417,19 @@ def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
     else:
         raise LLMError(f"不支持的 Google 凭据类型：{ctype or 'unknown'}")
 
+    class _TokenNoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+            raise urllib.error.HTTPError(req.full_url, code, "Vertex OAuth 拒绝重定向", headers, fp)
+
     req = urllib.request.Request(
         token_uri,
         data=form_data,
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         method="POST",
     )
+    opener = urllib.request.build_opener(_TokenNoRedirect())
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
+        with opener.open(req, timeout=15.0) as resp:
             tok = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise LLMError(f"获取 Google OAuth 访问令牌失败: {exc}") from None
@@ -1326,11 +1461,13 @@ def _google_request(
             if t:
                 system_parts.append({"text": t})
         elif role == "assistant":
+            model_id = cfg.model_for(purpose)
             parts: list[dict[str, Any]] = []
             for tb in msg.get("thinking_blocks") or []:
                 if isinstance(tb, dict) and tb.get("type") == "thinking":
                     p: dict[str, Any] = {"thought": True, "text": str(tb.get("thinking") or "")}
-                    if tb.get("signature"):
+                    sig_model = tb.get("_ava_sig_model")
+                    if tb.get("signature") and (not sig_model or sig_model == model_id):
                         p["thoughtSignature"] = str(tb["signature"])
                     parts.append(p)
             txt = _content_text(msg.get("content"))
@@ -1342,12 +1479,16 @@ def _google_request(
                 cname = str(fn.get("name") or "")
                 if cid and cname:
                     call_names[cid] = cname
-                parts.append({
+                fc_part: dict[str, Any] = {
                     "functionCall": {
                         "name": cname,
                         "args": _parse_tool_args(fn.get("arguments")),
                     }
-                })
+                }
+                sig_model = call.get("_ava_sig_model")
+                if call.get("thoughtSignature") and (not sig_model or sig_model == model_id):
+                    fc_part["thoughtSignature"] = str(call["thoughtSignature"])
+                parts.append(fc_part)
             _append_google_turn(contents, "model", parts)
         elif role == "tool":
             cid = str(msg.get("tool_call_id") or "")
@@ -1415,7 +1556,7 @@ def _google_request(
         headers["Authorization"] = f"Bearer {bearer}"
     elif cfg.api_key:
         headers["x-goog-api-key"] = cfg.api_key
-    headers.update(cfg.extra_headers)
+    _merge_extra_headers(headers, cfg.extra_headers)
     return payload, headers
 
 
@@ -1453,14 +1594,17 @@ def _collect_google_candidate(
             fc = part["functionCall"]
             idx = len(calls) + 1
             cid = str(fc.get("id") or f"call_gemini_{idx}")
-            calls.append({
+            tc_item: dict[str, Any] = {
                 "id": cid,
                 "type": "function",
                 "function": {
                     "name": str(fc.get("name") or ""),
                     "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False),
                 },
-            })
+            }
+            if part.get("thoughtSignature"):
+                tc_item["thoughtSignature"] = str(part["thoughtSignature"])
+            calls.append(tc_item)
 
 
 def _google_json_to_message(body: dict[str, Any] | list[Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1629,6 +1773,71 @@ def _append_bedrock_msg(out: list[dict[str, Any]], role: str, blocks: list[dict[
         out.append({"role": role, "content": list(blocks)})
 
 
+_BEDROCK_ADAPTIVE_RE = re.compile(
+    r"(?:opus-4[.-][678]|sonnet-4[.-]6|(?:opus|sonnet|haiku|fable)-5)(?:$|[-@:.])",
+)
+_BEDROCK_BLOCK_BINDING_RE = re.compile(
+    r"(?:opus-4[.-][78]|(?:opus|sonnet|haiku|fable)-5)(?:$|[-@:.])",
+)
+
+
+def _bedrock_apply_reasoning(
+    payload: dict[str, Any],
+    model_name: str,
+    reasoning_effort: str | None,
+    extra_config: dict[str, str] | None = None,
+) -> None:
+    """将 reasoning_effort 按 Bedrock 目标模型家族映射为 additionalModelRequestFields / inferenceConfig。"""
+    if not reasoning_effort:
+        return
+    lvl = str(reasoning_effort).strip().lower()
+    if not lvl or lvl in ("none", "off"):
+        return
+    low = model_name.lower()
+    if "claude" in low:
+        is_adaptive = bool(_BEDROCK_ADAPTIVE_RE.search(low))
+        if is_adaptive:
+            use_binding = bool(_BEDROCK_BLOCK_BINDING_RE.search(low))
+            region = str((extra_config or {}).get("aws_region") or os.environ.get("AWS_REGION") or "").lower()
+            is_gov = region.startswith("us-gov-") or low.startswith(("us-gov.", "arn:aws-us-gov:"))
+            effort_map = {
+                "minimal": "low",
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+                "xhigh": "xhigh" if use_binding else "max",
+                "max": "max",
+                "auto": "medium",
+            }
+            thinking_cfg: dict[str, Any] = {"type": "adaptive"}
+            add_fields: dict[str, Any] = {
+                "thinking": thinking_cfg,
+                "output_config": {"effort": effort_map.get(lvl, "medium")},
+            }
+            if use_binding and not is_gov:
+                thinking_cfg["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
+                add_fields["anthropic_beta"] = ["thinking-binding-controls-2026-08-01"]
+            payload["additionalModelRequestFields"] = add_fields
+            return
+        from pipeline.agent.compact import THINKING_BUDGETS
+
+        clamped = "high" if lvl in ("xhigh", "max") else ("medium" if lvl == "auto" else lvl)
+        budget = int(THINKING_BUDGETS.get(clamped, 8192))
+        payload["additionalModelRequestFields"] = {
+            "thinking": {"type": "enabled", "budget_tokens": budget},
+            "anthropic_beta": ["interleaved-thinking-2025-05-14"],
+        }
+        payload["inferenceConfig"] = {"maxTokens": max(16384, budget + 4096)}
+        return
+    if "gpt-oss" in low:
+        oss_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+        payload["additionalModelRequestFields"] = {"reasoning_effort": oss_map.get(lvl, "medium")}
+        return
+    if "gpt-" in low:
+        gpt_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
+        payload["additionalModelRequestFields"] = {"reasoning": {"effort": gpt_map.get(lvl, "medium")}}
+
+
 def _bedrock_request(
     cfg: LLMConfig,
     wired: list[dict[str, Any]],
@@ -1636,6 +1845,8 @@ def _bedrock_request(
     purpose: str | None,
     tool_choice: str | None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
+    model_name = cfg.model_for(purpose)
+    is_claude = "claude" in model_name.lower() or "anthropic." in model_name.lower()
     system_blocks: list[dict[str, str]] = []
     bedrock_msgs: list[dict[str, Any]] = []
     for msg in wired:
@@ -1648,6 +1859,36 @@ def _bedrock_request(
                 system_blocks.append({"text": t})
         elif role == "assistant":
             blocks: list[dict[str, Any]] = []
+            raw_tblocks = msg.get("thinking_blocks")
+            if isinstance(raw_tblocks, list) and raw_tblocks:
+                for tb in raw_tblocks:
+                    if not isinstance(tb, dict):
+                        continue
+                    tb_type = tb.get("type")
+                    if tb_type == "redacted_thinking" and tb.get("data"):
+                        blocks.append({"reasoningContent": {"redactedContent": str(tb["data"])}})
+                    elif tb_type == "thinking":
+                        t_str = str(tb.get("thinking") or "")
+                        if not t_str.strip():
+                            continue
+                        sig = str(tb.get("signature") or "").strip()
+                        if is_claude:
+                            if sig:
+                                blocks.append({"reasoningContent": {"reasoningText": {"text": t_str, "signature": sig}}})
+                            else:
+                                blocks.append({"text": t_str})
+                        else:
+                            blocks.append({"reasoningContent": {"reasoningText": {"text": t_str}}})
+            elif msg.get("reasoning_content"):
+                rc_text = str(msg["reasoning_content"])
+                rc_sig = str(msg.get("reasoning_signature") or "").strip()
+                if is_claude:
+                    if rc_sig:
+                        blocks.append({"reasoningContent": {"reasoningText": {"text": rc_text, "signature": rc_sig}}})
+                    else:
+                        blocks.append({"text": rc_text})
+                else:
+                    blocks.append({"reasoningContent": {"reasoningText": {"text": rc_text}}})
             txt = _content_text(msg.get("content"))
             if txt:
                 blocks.append({"text": txt})
@@ -1678,7 +1919,7 @@ def _bedrock_request(
     payload: dict[str, Any] = {"messages": bedrock_msgs}
     if system_blocks:
         payload["system"] = system_blocks
-    if tools:
+    if tools and tool_choice != "none":
         specs = []
         for t in tools:
             if t.get("type") == "function" and isinstance(t.get("function"), dict):
@@ -1696,14 +1937,16 @@ def _bedrock_request(
                 tc_obj["toolChoice"] = {"auto": {}}
             elif tool_choice == "required":
                 tc_obj["toolChoice"] = {"any": {}}
-            elif isinstance(tool_choice, str) and tool_choice != "none":
+            elif isinstance(tool_choice, str):
                 tc_obj["toolChoice"] = {"tool": {"name": tool_choice}}
             payload["toolConfig"] = tc_obj
+
+    _bedrock_apply_reasoning(payload, model_name, cfg.reasoning_effort, cfg.extra_config)
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
-    headers.update(cfg.extra_headers)
+    _merge_extra_headers(headers, cfg.extra_headers)
     return payload, headers
 
 
@@ -1711,6 +1954,7 @@ def _bedrock_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict
     content_blocks = ((body.get("output") or {}).get("message") or {}).get("content") or []
     texts: list[str] = []
     thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
     for block in content_blocks:
         if not isinstance(block, dict):
@@ -1718,9 +1962,19 @@ def _bedrock_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict
         if "text" in block and block["text"] is not None:
             texts.append(str(block["text"]))
         elif isinstance(block.get("reasoningContent"), dict):
-            rt = (block["reasoningContent"].get("reasoningText") or {}).get("text")
-            if rt:
-                thinkings.append(str(rt))
+            rc = block["reasoningContent"]
+            rt_obj = rc.get("reasoningText")
+            if isinstance(rt_obj, dict):
+                rt = str(rt_obj.get("text") or "")
+                sig = rt_obj.get("signature")
+                if rt:
+                    thinkings.append(rt)
+                tb: dict[str, Any] = {"type": "thinking", "thinking": rt}
+                if sig:
+                    tb["signature"] = str(sig)
+                thinking_blocks.append(tb)
+            if rc.get("redactedContent"):
+                thinking_blocks.append({"type": "redacted_thinking", "data": str(rc["redactedContent"])})
         elif isinstance(block.get("toolUse"), dict):
             tu = block["toolUse"]
             calls.append({
@@ -1734,6 +1988,8 @@ def _bedrock_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
     if thinkings:
         msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     if calls:
         msg["tool_calls"] = calls
     raw_u = body.get("usage")
@@ -1746,6 +2002,10 @@ def _bedrock_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict
     return msg, usage
 
 
+def _bedrock_stream_unsupported(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    raise LLMError("Amazon Bedrock Converse 协议当前仅支持 JSON 响应，不支持 text/event-stream 流式帧")
+
+
 _PROTOCOL_ADAPTERS: dict[str, tuple[Any, Any, Any]] = {
     "openai-completions": (_completions_request, _assemble_stream, _completions_json_to_message),
     "mistral-conversations": (_completions_request, _assemble_stream, _completions_json_to_message),
@@ -1755,8 +2015,22 @@ _PROTOCOL_ADAPTERS: dict[str, tuple[Any, Any, Any]] = {
     "azure-openai-responses": (_codex_request, _assemble_codex_stream, _codex_json_to_message),
     "google-generative-ai": (_google_request, _assemble_google_stream, _google_json_to_message),
     "google-vertex": (_google_request, _assemble_google_stream, _google_json_to_message),
-    "bedrock-converse-stream": (_bedrock_request, _assemble_stream, _bedrock_json_to_message),
+    "bedrock-converse-stream": (_bedrock_request, _bedrock_stream_unsupported, _bedrock_json_to_message),
 }
+
+
+def _stamp_google_sig_model(msg: dict[str, Any], cfg: LLMConfig, purpose: str | None) -> dict[str, Any]:
+    """为 Gemini / Vertex 响应的 thoughtSignature 标注来源模型，切模型时跳过过期签名回放。"""
+    if cfg.api_protocol not in ("google-generative-ai", "google-vertex"):
+        return msg
+    model_id = cfg.model_for(purpose)
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict) and tc.get("thoughtSignature"):
+            tc["_ava_sig_model"] = model_id
+    for tb in msg.get("thinking_blocks") or []:
+        if isinstance(tb, dict) and tb.get("signature"):
+            tb["_ava_sig_model"] = model_id
+    return msg
 
 
 def chat_complete(
@@ -1811,7 +2085,7 @@ def chat_complete(
                 line_iter = (raw.decode("utf-8", errors="replace") for raw in resp)
                 message, usage = parse_stream(line_iter)
                 _LAST_USAGE.set(usage)
-                return message
+                return _stamp_google_sig_model(message, cfg, purpose)
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:200].decode("utf-8", errors="replace")
@@ -1827,7 +2101,7 @@ def chat_complete(
         raise LLMError(f"{cfg.api_protocol} 响应不是 JSON 对象")
     msg, usage = parse_json(body)
     _LAST_USAGE.set(usage if isinstance(usage, dict) else None)
-    return msg
+    return _stamp_google_sig_model(msg, cfg, purpose)
 
 
 def _parse_tool_args(raw: Any) -> dict[str, Any]:

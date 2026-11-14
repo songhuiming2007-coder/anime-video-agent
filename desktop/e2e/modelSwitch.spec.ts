@@ -343,6 +343,13 @@ test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、�
       await page.screenshot({ path: join(SHOTS, "d170-cloud-1280.png") });
     }
 
+    // 切换到 github-copilot oauth_device，确认 extra_fields（enterprise_domain）可见且可输入
+    await search.fill("copilot");
+    await page.locator('[data-testid=login-provider-row][data-provider="github-copilot"]').click();
+    await expect(page.getByTestId("login-extra-enterprise_domain")).toBeVisible();
+    await page.getByTestId("login-extra-enterprise_domain").fill("ghe.example.com");
+    await checkModalLayout(page);
+
     // 搜索过滤服务商并连接 DeepSeek
     await search.fill("DeepSeek");
     await expect(page.getByTestId("login-provider-row")).toHaveCount(1);
@@ -351,6 +358,7 @@ test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、�
     await page.getByTestId("login-submit-btn").click();
     await expect(page.getByTestId("login-connected-card")).toBeVisible();
     await expect(page.getByTestId("login-connected-count")).toHaveText("1");
+    await expect(page.getByTestId("login-key-input")).toHaveValue("");
     await search.fill("");
     await expect(page.getByTestId("login-provider-row")).toHaveCount(44);
     await expect(page.getByTestId("login-group-connected")).toBeVisible();
@@ -379,14 +387,16 @@ test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、�
     await dsRow.click();
     await expect(page.getByTestId("model-label")).toHaveText("deepseek/deepseek-chat");
 
-    // 点击 toolbar 登录按钮进入并退出登录 DeepSeek → 模型菜单移除该服务商模型
+    // 点击 toolbar 登录按钮进入并退出登录 DeepSeek → 模型菜单移除该服务商模型，表单输入也保持清空
     await page.getByTestId("login-btn").click();
     await expect(modal).toBeVisible();
     await page.locator('[data-testid=login-provider-row][data-provider="deepseek"]').click();
+    await page.getByTestId("login-key-input").fill("sk-should-reset-on-logout");
     await expect(page.getByTestId("login-logout-btn")).toBeVisible();
     await page.getByTestId("login-logout-btn").click();
     await expect(page.getByTestId("login-connected-card")).toHaveCount(0);
     await expect(page.getByTestId("login-connected-count")).toHaveCount(0);
+    await expect(page.getByTestId("login-key-input")).toHaveValue("");
     await page.getByTestId("login-close-btn").click();
 
     await page.getByTestId("model-btn").click();

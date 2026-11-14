@@ -698,7 +698,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           type="button"
           className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn login-ctl-btn"
           data-testid="login-btn"
-          title="模型服务商登录（/login，管理 10 家 OAuth 与 API Key）"
+          title={`模型服务商登录（/login，管理 ${authStatus?.providers.length ?? 44} 家 OAuth 与 API Key）`}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             setModelOpen(false);

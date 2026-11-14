@@ -166,7 +166,7 @@ export interface TemplateArgs {
   PURGE_IDEA_TRASH: { file: string };
   // D170：多服务商登录管理（AUTH_COMPLETE 的载荷经 stdin 传，不进 argv / spawn 日志）
   AUTH_STATUS: Record<string, never>;
-  AUTH_START: { provider: string; mode?: string };
+  AUTH_START: { provider: string; mode?: string; payload?: string };
   AUTH_COMPLETE: { provider: string };
   AUTH_LOGOUT: { provider: string };
 }
@@ -434,10 +434,16 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "AUTH_STATUS":
       return { argv: [py, "-m", "pipeline.agent.cli", "--auth-status"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
     case "AUTH_START": {
-      const { provider, mode } = args as TemplateArgs["AUTH_START"];
+      const { provider, mode, payload } = args as TemplateArgs["AUTH_START"];
       const argv = [py, "-m", "pipeline.agent.cli", "--auth-start", checkedProvider(provider)];
       if (mode) argv.push(mode);
-      return { argv, timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+      if (payload) argv.push("--stdin");
+      return {
+        argv,
+        timeoutMs: SPAWN_TIMEOUT_ACK_MS,
+        stdoutMax: SESSIONS_STDOUT_MAX_BYTES,
+        ...(payload ? { stdinPipe: true } : {}),
+      };
     }
     case "AUTH_COMPLETE": {
       const { provider } = args as TemplateArgs["AUTH_COMPLETE"];

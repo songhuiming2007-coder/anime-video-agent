@@ -141,7 +141,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "time.read": { required: ["epKey"], optional: [] },
   "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },
   "auth.status": { required: [], optional: [] },
-  "auth.start": { required: ["provider"], optional: ["mode"] },
+  "auth.start": { required: ["provider"], optional: ["mode", "payload"] },
   "auth.complete": { required: ["provider", "payload"], optional: [] },
   "auth.logout": { required: ["provider"], optional: [] },
 };

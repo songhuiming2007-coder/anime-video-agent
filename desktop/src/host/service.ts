@@ -653,11 +653,18 @@ export class HostService {
       // ---- D170：AVA 独立多服务商登录 ----
       case "auth.status":
         return this.runAuthTemplate("AUTH_STATUS", {});
-      case "auth.start":
-        return this.runAuthTemplate("AUTH_START", {
-          provider: p.provider,
-          ...(typeof p.mode === "string" && p.mode ? { mode: p.mode } : {}),
-        });
+      case "auth.start": {
+        const startPayload = typeof p.payload === "string" && p.payload ? p.payload : undefined;
+        return this.runAuthTemplate(
+          "AUTH_START",
+          {
+            provider: p.provider,
+            ...(typeof p.mode === "string" && p.mode ? { mode: p.mode } : {}),
+            ...(startPayload ? { payload: startPayload } : {}),
+          },
+          startPayload,
+        );
+      }
       case "auth.complete":
         return this.runAuthTemplate("AUTH_COMPLETE", { provider: p.provider }, p.payload);
       case "auth.logout":

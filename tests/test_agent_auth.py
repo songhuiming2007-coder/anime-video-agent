@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import stat
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -586,12 +588,13 @@ def test_compact_window_and_frontend_family_heuristics_parity(tmp_path: Path, mo
     assert "anthropic" not in reloaded["_pending"]
     assert "openai-codex" in reloaded["_pending"]
 
-    # NB #3：OAuth 续期失败时 _load_auth_fallback_cfg 优雅回落 None，effective_config 转为可重试 LLMError
+    # M10 + NB #3：OAuth 续期失败时 _load_auth_fallback_cfg 优雅回落 None，effective_config 转为不可重试 LLMError 并提示 /login
     monkeypatch.setattr(auth, "resolve_model_provider", lambda *a, **kw: (_ for _ in ()).throw(auth.AuthError("refresh boom")))
     base = llm.LLMConfig(base_url="http://127.0.0.1:1/v1", model="fake", api_key="k")
     with pytest.raises(llm.LLMError) as exc_info:
         model_switch.effective_config(base, model_switch.Override(model="anthropic/claude-opus-4-6"), root=tmp_path)
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
+    assert "/login" in str(exc_info.value)
 
     monkeypatch.setattr(auth, "first_authenticated_config", lambda *a, **kw: (_ for _ in ()).throw(auth.AuthError("refresh boom")))
     assert llm._load_auth_fallback_cfg(tmp_path) is None
@@ -719,6 +722,7 @@ def test_new_oauth_flows_openai_openrouter_kimi_meta(tmp_path: Path, monkeypatch
                     "access_token": f"oa-access-{grant}",
                     "refresh_token": "oa-refresh-1",
                     "expires_in": 10 if grant == "authorization_code" else 3600,
+                    "scope": "openid profile email offline_access chatgpt.tokens.use.direct",
                 },
             )
             return
@@ -947,5 +951,848 @@ def test_unified_protocol_adapters_gemini_bedrock_azure_mistral(tmp_path: Path) 
         norm_id = sent_m["messages"][0]["tool_calls"][0]["id"]
         assert len(norm_id) == 9 and norm_id.isalnum()
         assert sent_m["messages"][1]["tool_call_id"] == norm_id
+    finally:
+        srv.shutdown()
+
+
+def test_device_flow_pending_errors_slowdown_and_codex_redirect_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1 + B2 + M14：RFC 8628 HTTP 400 pending、slow_down 回写间隔、Codex 403 嵌套 code 与固定 deviceauth/callback。"""
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+    kimi_calls = 0
+    codex_calls = 0
+    codex_token_bodies: list[str] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        nonlocal kimi_calls, codex_calls
+        raw = body.decode("utf-8")
+        if req.path == "/kimi/device":
+            _send_json(
+                req,
+                {
+                    "device_code": "k-dc-pending",
+                    "user_code": "KIMI-P1",
+                    "verification_uri_complete": "https://auth.kimi.com/verify",
+                    "interval": 5,
+                    "expires_in": 600,
+                },
+            )
+            return
+        if req.path == "/kimi/token":
+            kimi_calls += 1
+            if kimi_calls == 1:
+                _send_json(req, {"error": "authorization_pending"}, status=400)
+                return
+            if kimi_calls == 2:
+                _send_json(req, {"error": "slow_down", "interval": 11}, status=400)
+                return
+            _send_json(req, {"access_token": "km-final-tok", "refresh_token": "km-ref", "expires_in": 3600})
+            return
+        if req.path == "/codex/usercode":
+            _send_json(
+                req,
+                {"device_auth_id": "dauth_123", "user_code": "CDX-99", "interval": "5"},
+            )
+            return
+        if req.path == "/codex/devtoken":
+            codex_calls += 1
+            if codex_calls == 1:
+                _send_json(req, {"error": {"code": "deviceauth_authorization_pending"}}, status=403)
+                return
+            if codex_calls == 2:
+                _send_json(req, {"error": "not_found"}, status=404)
+                return
+            _send_json(req, {"authorization_code": "cdx-ac-1", "code_verifier": "cdx-cv-1"})
+            return
+        if req.path == "/codex/oauth/token":
+            codex_token_bodies.append(raw)
+            _send_json(
+                req,
+                {
+                    "access_token": _jwt_with_account("acct_dev_1"),
+                    "refresh_token": "cdx-refresh-tok",
+                    "expires_in": 3600,
+                },
+            )
+            return
+        _send_json(req, {}, 404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        orig_km = auth.PROVIDER_MAP["kimi-coding"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "kimi-coding",
+            type(orig_km)(
+                **{**orig_km.__dict__, "oauth": {**orig_km.oauth, "device_code_url": f"{base}/kimi/device", "token_url": f"{base}/kimi/token"}}
+            ),
+        )
+        auth.start_auth_flow("kimi-coding", "oauth_device", root=tmp_path)
+        r1 = auth.complete_auth_flow("kimi-coding", {"mode": "oauth_device"}, root=tmp_path)
+        assert r1["ok"] is False and r1["pending"] is True
+
+        r2 = auth.complete_auth_flow("kimi-coding", {"mode": "oauth_device"}, root=tmp_path)
+        assert r2["ok"] is False and r2["pending"] is True
+        assert r2["interval_s"] == 11
+        persisted = auth._read_store_unlocked(tmp_path / "auth.json")
+        assert persisted["_pending"]["kimi-coding"]["interval_s"] == 11
+
+        r3 = auth.complete_auth_flow("kimi-coding", {"mode": "oauth_device"}, root=tmp_path)
+        assert r3["ok"] is True
+
+        # Codex device flow: 403 nested error -> pending, 404 -> pending, success -> deviceauth/callback redirect_uri
+        orig_cdx = auth.PROVIDER_MAP["openai-codex"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "openai-codex",
+            type(orig_cdx)(
+                **{
+                    **orig_cdx.__dict__,
+                    "oauth": {
+                        **orig_cdx.oauth,
+                        "device_code_url": f"{base}/codex/usercode",
+                        "device_token_url": f"{base}/codex/devtoken",
+                        "token_url": f"{base}/codex/oauth/token",
+                    },
+                }
+            ),
+        )
+        auth.start_auth_flow("openai-codex", "oauth_device", root=tmp_path)
+        r_cdx1 = auth.complete_auth_flow("openai-codex", {"mode": "oauth_device"}, root=tmp_path)
+        assert r_cdx1["ok"] is False and r_cdx1["pending"] is True and r_cdx1["interval_s"] == 5
+        assert r_cdx1["error"] == "deviceauth_authorization_pending"
+        assert auth.complete_auth_flow("openai-codex", {"mode": "oauth_device"}, root=tmp_path)["pending"] is True
+        done_cdx = auth.complete_auth_flow("openai-codex", {"mode": "oauth_device"}, root=tmp_path)
+        assert done_cdx["ok"] is True
+        parsed_qs = urllib.parse.parse_qs(codex_token_bodies[0])
+        assert parsed_qs["redirect_uri"][0] == "https://auth.openai.com/deviceauth/callback"
+        assert parsed_qs["code"][0] == "cdx-ac-1"
+        assert parsed_qs["code_verifier"][0] == "cdx-cv-1"
+    finally:
+        srv.shutdown()
+
+
+def test_anthropic_pkce_state_is_verifier_and_no_bare_code_bypass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3 + M4 + Minor #10/#11：Anthropic state == verifier；非 state_optional 服务商裸 code 不可跳过 state；exchanging 标记释放；禁用重定向。"""
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+    seen_token_bodies: list[dict[str, Any]] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        if req.path == "/anth/redirect":
+            req.send_response(302)
+            req.send_header("Location", "http://127.0.0.1:9/evil")
+            req.end_headers()
+            return
+        if req.path == "/anth/token":
+            seen_token_bodies.append(json.loads(body.decode("utf-8")))
+            _send_json(req, {"access_token": "ant-oa-tok", "refresh_token": "ant-ref-tok", "expires_in": 3600})
+            return
+        _send_json(req, {}, 404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        orig_ant = auth.PROVIDER_MAP["anthropic"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "anthropic",
+            type(orig_ant)(**{**orig_ant.__dict__, "oauth": {**orig_ant.oauth, "token_url": f"{base}/anth/token"}}),
+        )
+        started = auth.start_auth_flow("anthropic", "oauth_pkce", root=tmp_path)
+        pending = auth._read_store_unlocked(tmp_path / "auth.json")["_pending"]["anthropic"]
+        assert started["state"] == pending["code_verifier"]
+        parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(started["authorize_url"]).query)
+        assert parsed_qs["state"][0] == pending["code_verifier"]
+
+        # M4：anthropic state_optional=False，传裸 code 必须被拒且不可绕过 state 校验
+        with pytest.raises(auth.AuthError, match="state"):
+            auth.complete_auth_flow("anthropic", {"mode": "oauth_pkce", "code": "bare-code-without-state"}, root=tmp_path)
+
+        # Minor #10：换取失败后 exchanging 标记清理，仍可重试成功
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "anthropic",
+            type(orig_ant)(**{**orig_ant.__dict__, "oauth": {**orig_ant.oauth, "token_url": f"{base}/anth/redirect"}}),
+        )
+        with pytest.raises(auth.AuthError, match="重定向"):
+            auth.complete_auth_flow(
+                "anthropic",
+                {"mode": "oauth_pkce", "code": f"code1#{started['state']}"},
+                root=tmp_path,
+            )
+        pending_after_err = auth._read_store_unlocked(tmp_path / "auth.json")["_pending"]["anthropic"]
+        assert not pending_after_err.get("exchanging")
+
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "anthropic",
+            type(orig_ant)(**{**orig_ant.__dict__, "oauth": {**orig_ant.oauth, "token_url": f"{base}/anth/token"}}),
+        )
+        res = auth.complete_auth_flow(
+            "anthropic",
+            {"mode": "oauth_pkce", "code": f"code2#{started['state']}"},
+            root=tmp_path,
+        )
+        assert res["ok"] is True
+        assert seen_token_bodies[0]["state"] == pending["code_verifier"]
+    finally:
+        srv.shutdown()
+
+
+def test_gemini_function_call_thought_signature_roundtrip_and_cross_proto_strip(tmp_path: Path) -> None:
+    """B4 + Minor #12：Gemini functionCall.thoughtSignature 多轮回放保留，跨协议回放 OpenAI Completions 时彻底剥离。"""
+    captured: list[dict[str, Any]] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        captured.append(json.loads(body.decode("utf-8")))
+        if len(captured) == 1:
+            _send_sse(
+                req,
+                [
+                    'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_g1","name":"read_file","args":{"path":"x.md"}},"thoughtSignature":"sig-fc-987"}]}}]}\n\n',
+                    'data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}]}\n\n',
+                ],
+            )
+            return
+        _send_json(req, {"candidates": [{"content": {"parts": [{"text": "round2-ok"}]}, "finishReason": "STOP"}]})
+
+    srv, base = _make_mock_server(handler)
+    try:
+        g_cfg = llm.LLMConfig(
+            base_url=f"{base}/v1beta",
+            model="gemini-3-pro",
+            api_key="gem-k",
+            api_protocol="google-generative-ai",
+        )
+        turn1 = llm.chat_complete([{"role": "user", "content": "read x.md"}], config=g_cfg, root=tmp_path)
+        assert turn1["tool_calls"][0]["thoughtSignature"] == "sig-fc-987"
+
+        turn2 = llm.chat_complete(
+            [
+                {"role": "user", "content": "read x.md"},
+                turn1,
+                {"role": "tool", "tool_call_id": turn1["tool_calls"][0]["id"], "name": "read_file", "content": "ok"},
+            ],
+            config=g_cfg,
+            root=tmp_path,
+        )
+        assert turn2["content"] == "round2-ok"
+        model_parts = captured[1]["contents"][1]["parts"]
+        assert model_parts[0]["functionCall"]["name"] == "read_file"
+        assert model_parts[0]["thoughtSignature"] == "sig-fc-987"
+
+        # 切到 OpenAI Completions 时，thinking_blocks / reasoning_signature / tool_calls[*].thoughtSignature 一并剥离
+        oai_cfg = llm.LLMConfig(base_url=base, model="gpt-4o", api_key="oai-k", api_protocol="openai-completions")
+        oai_payload, _ = llm._completions_request(
+            oai_cfg,
+            [
+                {"role": "user", "content": "hi"},
+                {**turn1, "reasoning_signature": "sig-old", "thinking_blocks": [{"type": "thinking", "thinking": "t"}]},
+            ],
+            None,
+            None,
+            None,
+        )
+        sent_asst = oai_payload["messages"][1]
+        assert "thinking_blocks" not in sent_asst
+        assert "reasoning_signature" not in sent_asst
+        assert "thoughtSignature" not in sent_asst["tool_calls"][0]
+    finally:
+        srv.shutdown()
+
+
+def test_copilot_api_key_and_env_exchange_plus_enterprise_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B5 + M13：Copilot api_key / legacy api_key / COPILOT_GITHUB_TOKEN 经 /copilot_internal/v2/token 换算；GHE enterprise_domain 设备流端到端。"""
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    auth._COPILOT_ENV_CACHE.clear()
+
+    seen_auth_headers: list[tuple[str, str]] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        seen_auth_headers.append((req.path, req.headers.get("Authorization", "")))
+        if req.path == "/copilot_internal/v2/token":
+            _send_json(
+                req,
+                {
+                    "token": "tid=abc;exp=1999999999;proxy-ep=proxy.business.githubcopilot.com;",
+                    "expires_at": int(time.time()) + 3600,
+                },
+            )
+            return
+        _send_json(req, {}, 404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        orig_cp = auth.PROVIDER_MAP["github-copilot"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "github-copilot",
+            type(orig_cp)(**{**orig_cp.__dict__, "oauth": {**orig_cp.oauth, "copilot_token_url": f"{base}/copilot_internal/v2/token"}}),
+        )
+        # 1. 新登录 api_key 模式：立即兑换为 Copilot OAuth 会话令牌与动态 base_url
+        res = auth.complete_auth_flow("github-copilot", {"mode": "api_key", "api_key": "ghp_pat_secret_1"}, root=tmp_path)
+        assert res["ok"] is True
+        cred = auth.resolve_provider_credential("github-copilot", root=tmp_path)
+        assert cred is not None
+        assert cred["api_key"].startswith("tid=abc;exp=")
+        assert cred["base_url"] == "https://api.business.githubcopilot.com"
+        assert ("/copilot_internal/v2/token", "Bearer ghp_pat_secret_1") in seen_auth_headers
+
+        # 2. 旧格式已落盘 api_key 条目：resolve_provider_credential 自动升级换算
+        store = auth._read_store_unlocked(tmp_path / "auth.json")
+        store["providers"]["github-copilot"] = {"type": "api_key", "api_key": "ghp_legacy_2", "extra_config": {}}
+        auth._write_store_unlocked(tmp_path / "auth.json", store)
+        upgraded = auth.resolve_provider_credential("github-copilot", root=tmp_path)
+        assert upgraded is not None and upgraded["api_key"].startswith("tid=abc;")
+
+        # 3. COPILOT_GITHUB_TOKEN 环境变量通道：同样兑换成 Copilot 会话令牌
+        auth.logout_provider("github-copilot", root=tmp_path)
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_env_secret_3")
+        env_cred = auth.resolve_provider_credential("github-copilot", root=tmp_path)
+        assert env_cred is not None
+        assert env_cred["api_key"].startswith("tid=abc;")
+        assert env_cred["base_url"] == "https://api.business.githubcopilot.com"
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+
+        # 4. M13：GHE enterprise_domain 解析 URL 模板并在 start_auth_flow 中落盘供 complete 复用
+        monkeypatch.setitem(auth.PROVIDER_MAP, "github-copilot", orig_cp)
+        assert auth._copilot_oauth_url("https://{domain}/login/device/code", "ghe.example.com") == "https://ghe.example.com/login/device/code"
+        assert auth._copilot_oauth_url("https://api.{domain}/copilot_internal/v2/token", "https://ghe.example.com/") == "https://api.ghe.example.com/copilot_internal/v2/token"
+        captured_urls: list[str] = []
+
+        def fake_http_json(url: str, **kw: Any) -> dict[str, Any]:
+            captured_urls.append(url)
+            if "copilot_internal/v2/token" in url:
+                return {"token": "tid=ghe_tok;exp=1999999999", "expires_at": int(time.time()) + 1800}
+            return {"device_code": "dc-ghe", "user_code": "GHE-1", "verification_uri": "https://ghe.example.com/login/device"}
+
+        def fake_http_req_json(url: str, **kw: Any) -> tuple[int, dict[str, Any], str]:
+            captured_urls.append(url)
+            return (200, {"access_token": "gho-ghe-1"}, "")
+
+        monkeypatch.setattr(auth, "_http_json", fake_http_json)
+        monkeypatch.setattr(auth, "_http_request_json", fake_http_req_json)
+        s_ghe = auth.start_auth_flow("github-copilot", "oauth_device", extra_config={"enterprise_domain": "ghe.example.com"}, root=tmp_path)
+        assert s_ghe["user_code"] == "GHE-1"
+        auth.complete_auth_flow("github-copilot", {"mode": "oauth_device"}, root=tmp_path)
+        assert any("ghe.example.com/login/device/code" in u for u in captured_urls)
+        assert any("ghe.example.com/login/oauth/access_token" in u for u in captured_urls)
+        assert any("api.ghe.example.com/copilot_internal/v2/token" in u for u in captured_urls)
+        ghe_cred = auth.resolve_provider_credential("github-copilot", root=tmp_path)
+        assert ghe_cred is not None and ghe_cred["base_url"] == "https://copilot-api.ghe.example.com"
+    finally:
+        srv.shutdown()
+
+
+def test_openai_pkce_scope_required_and_refresh_revocation_non_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M10 + M11：OpenAI OAuth 缺 chatgpt.tokens.use.direct 报错；真实 HTTP 刷新 401 时 model_switch 抛出不可重试 LLMError。"""
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        raw = body.decode("utf-8")
+        if req.path == "/oa/token":
+            parsed = urllib.parse.parse_qs(raw)
+            if parsed.get("grant_type", [""])[0] == "authorization_code":
+                _send_json(
+                    req,
+                    {"access_token": "at1", "refresh_token": "rt1", "expires_in": 10, "scope": "openid profile"},
+                )
+                return
+            _send_json(req, {"error": "invalid_grant"}, status=401)
+            return
+        _send_json(req, {}, 404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        orig_oa = auth.PROVIDER_MAP["openai"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "openai",
+            type(orig_oa)(**{**orig_oa.__dict__, "oauth": {**orig_oa.oauth, "token_url": f"{base}/oa/token"}}),
+        )
+        s = auth.start_auth_flow("openai", "oauth_pkce", root=tmp_path)
+        cb = f"http://127.0.0.1:1455/auth/callback?code=c1&state={s['state']}&client_id=cid_1"
+        with pytest.raises(auth.AuthError, match="chatgpt.tokens.use.direct"):
+            auth.complete_auth_flow("openai", {"mode": "oauth_pkce", "code": cb}, root=tmp_path)
+
+        # 存入已过期的 OAuth 凭据并通过真实 HTTP 刷新触发 401 -> 经 effective_config 变成 retryable=False 的 LLMError
+        auth._save_provider_entry(
+            tmp_path / "auth.json",
+            auth.PROVIDER_MAP["openai-codex"],
+            {
+                "type": "oauth",
+                "access_token": "expired-tok",
+                "refresh_token": "revoked-rt",
+                "expires_at_ms": 1_000,
+            },
+        )
+        orig_cdx = auth.PROVIDER_MAP["openai-codex"]
+        monkeypatch.setitem(
+            auth.PROVIDER_MAP,
+            "openai-codex",
+            type(orig_cdx)(**{**orig_cdx.__dict__, "oauth": {**orig_cdx.oauth, "token_url": f"{base}/oa/token"}}),
+        )
+        base_cfg = llm.LLMConfig(base_url="http://127.0.0.1:1/v1", model="fake", api_key="k")
+        with pytest.raises(llm.LLMError) as exc_info:
+            model_switch.effective_config(base_cfg, model_switch.Override(model="openai-codex/gpt-5.4"), root=tmp_path)
+        assert exc_info.value.retryable is False
+        assert "/login openai-codex" in str(exc_info.value)
+    finally:
+        srv.shutdown()
+
+
+def test_vertex_project_id_backfill_sa_jwt_mtime_cache_and_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2 + M3 + Minor #4：Vertex 凭据 JSON 自动回填 project_id、真实 RSA 私钥 JWT 兑换令牌、mtime 缓存失效与 ImportError 包装。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+
+    token_calls = 0
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        nonlocal token_calls
+        token_calls += 1
+        _send_json(req, {"access_token": f"vx-tok-{token_calls}", "expires_in": 3600})
+
+    srv, base = _make_mock_server(handler)
+    try:
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(
+            json.dumps({
+                "type": "service_account",
+                "project_id": "proj-from-sa",
+                "client_email": "ava@proj-from-sa.iam.gserviceaccount.com",
+                "private_key": pem,
+                "token_uri": f"{base}/token",
+            }),
+            encoding="utf-8",
+        )
+        res = auth.complete_auth_flow(
+            "google-vertex",
+            {"mode": "api_key", "extra_config": {"credentials_path": str(sa_file), "location": "us-central1"}},
+            root=tmp_path,
+        )
+        assert res["ok"] is True
+        cred = auth.resolve_provider_credential("google-vertex", root=tmp_path)
+        assert cred is not None and cred["extra_config"]["project_id"] == "proj-from-sa"
+
+        # 无 project_id 也无有效凭据时，空 api_key 被明确拒绝
+        with pytest.raises(auth.AuthError, match="Project ID"):
+            auth.complete_auth_flow(
+                "google-vertex",
+                {"mode": "api_key", "extra_config": {"credentials_path": str(tmp_path / "missing.json")}},
+                root=tmp_path,
+            )
+
+        with llm._GOOGLE_TOKEN_LOCK:
+            llm._GOOGLE_TOKEN_CACHE.clear()
+        tok1 = llm._google_vertex_bearer_token({"credentials_path": str(sa_file)})
+        tok2 = llm._google_vertex_bearer_token({"credentials_path": str(sa_file)})
+        assert tok1 == "vx-tok-1" and tok2 == "vx-tok-1" and token_calls == 1
+
+        # 文件内容或 mtime 变化 -> 缓存失效并重新签发
+        sa_file.write_text(
+            json.dumps({
+                "type": "authorized_user",
+                "quota_project_id": "proj-adc-2",
+                "client_id": "cid",
+                "client_secret": "csec",
+                "refresh_token": "rt",
+                "token_uri": f"{base}/token",
+            }),
+            encoding="utf-8",
+        )
+        os.utime(sa_file, (time.time() + 5, time.time() + 5))
+        tok3 = llm._google_vertex_bearer_token({"credentials_path": str(sa_file)})
+        assert tok3 == "vx-tok-2" and token_calls == 2
+
+        # M2：缺少 cryptography 时抛出 LLMError 而非裸 ImportError
+        sa_only = tmp_path / "sa_uncached.json"
+        sa_only.write_text(
+            json.dumps({
+                "type": "service_account",
+                "project_id": "p",
+                "client_email": "e@p.iam.gserviceaccount.com",
+                "private_key": pem,
+                "token_uri": f"{base}/token",
+            }),
+            encoding="utf-8",
+        )
+        orig_import = builtins.__import__ if hasattr(builtins := __import__("builtins"), "__import__") else __import__
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name.startswith("cryptography"):
+                raise ImportError("no cryptography")
+            return orig_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with pytest.raises(llm.LLMError, match="cryptography"):
+            llm._google_vertex_bearer_token({"credentials_path": str(sa_only)})
+    finally:
+        srv.shutdown()
+
+
+def test_codex_responses_encrypted_reasoning_done_and_incomplete(tmp_path: Path) -> None:
+    """M5 + M8 + Minor #7：include encrypted_content、output_item.done 回填、response.incomplete 终结与 URL 主机名解析。"""
+    # Minor #7
+    assert llm.LLMConfig(base_url="https://chatgpt.com/backend-api", model="gpt-5.4", api_key="k", api_protocol="openai-codex-responses").endpoint == "https://chatgpt.com/backend-api/codex/responses"
+    assert llm.LLMConfig(base_url="https://evil.example/?x=chatgpt.com/backend-api", model="gpt-5.4", api_key="k", api_protocol="openai-codex-responses").endpoint == "https://evil.example/?x=chatgpt.com/backend-api/responses"
+
+    captured: list[dict[str, Any]] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        captured.append(json.loads(body.decode("utf-8")))
+        if len(captured) == 1:
+            _send_sse(
+                req,
+                [
+                    'data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think-1"}],"encrypted_content":"enc_blob_xyz"}}\n\n',
+                    'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_9","call_id":"call_9","name":"grep","arguments":"{\\"q\\":\\"abc\\"}"}}\n\n',
+                    'data: {"type":"response.incomplete","response":{"usage":{"input_tokens":10,"output_tokens":5}}}\n\n',
+                ],
+            )
+            return
+        _send_json(req, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done-ok"}]}]})
+
+    srv, base = _make_mock_server(handler)
+    try:
+        cfg = llm.LLMConfig(base_url=base, model="gpt-5.4", api_key="k", api_protocol="openai-codex-responses")
+        t1 = llm.chat_complete([{"role": "user", "content": "q"}], config=cfg, root=tmp_path)
+        assert t1["reasoning_content"] == "think-1"
+        assert t1["tool_calls"][0]["id"] == "call_9"
+        assert json.loads(t1["tool_calls"][0]["function"]["arguments"]) == {"q": "abc"}
+        assert t1["thinking_blocks"][0]["item"]["encrypted_content"] == "enc_blob_xyz"
+        assert captured[0]["include"] == ["reasoning.encrypted_content"]
+
+        t2 = llm.chat_complete(
+            [{"role": "user", "content": "q"}, t1, {"role": "tool", "tool_call_id": "call_9", "content": "hit"}],
+            config=cfg,
+            root=tmp_path,
+        )
+        assert t2["content"] == "done-ok"
+        assert captured[1]["input"][1] == {
+            "type": "reasoning",
+            "id": "rs_1",
+            "summary": [{"type": "summary_text", "text": "think-1"}],
+            "encrypted_content": "enc_blob_xyz",
+        }
+    finally:
+        srv.shutdown()
+
+
+def test_bedrock_tool_choice_none_reasoning_blocks_and_sigv4_kat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M6 + M7 + Minor #5 + KAT：Bedrock tool_choice='none' 不发 toolConfig、redactedContent/签名规则、reasoning_effort 映射、禁用 SSE 与 SigV4 确定性签名。"""
+    import datetime as dt_mod
+    import hashlib
+    import hmac
+
+    sample_tool = [{"type": "function", "function": {"name": "read_file", "description": "r", "parameters": {"type": "object"}}}]
+    b_claude = llm.LLMConfig(base_url="https://bedrock.example", model="anthropic.claude-opus-4-6-v1:0", api_key="bk", api_protocol="bedrock-converse-stream", reasoning_effort="high")
+    p_none, _ = llm._bedrock_request(b_claude, [{"role": "user", "content": "hi"}], sample_tool, None, "none")
+    assert "toolConfig" not in p_none
+    assert p_none["additionalModelRequestFields"]["thinking"]["type"] == "adaptive"
+    assert p_none["additionalModelRequestFields"]["output_config"]["effort"] == "high"
+
+    b_gpt = llm.LLMConfig(base_url="https://bedrock.example", model="openai.gpt-oss-120b-1:0", api_key="bk", api_protocol="bedrock-converse-stream", reasoning_effort="max")
+    p_gpt, _ = llm._bedrock_request(b_gpt, [{"role": "user", "content": "hi"}], None, None, None)
+    assert p_gpt["additionalModelRequestFields"] == {"reasoning_effort": "high"}
+
+    # M7: Claude 保留 signature 与 redactedContent，非 Claude 省略 signature
+    history = [
+        {
+            "role": "assistant",
+            "content": "ok",
+            "thinking_blocks": [
+                {"type": "thinking", "thinking": "deep", "signature": "sig-c1"},
+                {"type": "thinking", "thinking": "unsigned"},
+                {"type": "redacted_thinking", "data": "cmVkYWN0ZWQ="},
+            ],
+        }
+    ]
+    p_replay_c, _ = llm._bedrock_request(b_claude, history, None, None, None)
+    c_blocks = p_replay_c["messages"][0]["content"]
+    assert {"reasoningContent": {"reasoningText": {"text": "deep", "signature": "sig-c1"}}} in c_blocks
+    assert {"reasoningContent": {"redactedContent": "cmVkYWN0ZWQ="}} in c_blocks
+    assert {"text": "unsigned"} in c_blocks
+    p_replay_g, _ = llm._bedrock_request(b_gpt, history, None, None, None)
+    g_blocks = p_replay_g["messages"][0]["content"]
+    assert {"reasoningContent": {"reasoningText": {"text": "deep"}}} in g_blocks
+
+    # Minor #5：Bedrock text/event-stream 直接报明确协议错而非误用 OpenAIChoice 解析
+    def sse_handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        _send_sse(req, ['data: {"output":{"message":{"content":[{"text":"x"}]}}}\n\n'])
+
+    srv, base = _make_mock_server(sse_handler)
+    try:
+        with pytest.raises(llm.LLMError, match="不支持 text/event-stream"):
+            llm.chat_complete(
+                [{"role": "user", "content": "hi"}],
+                config=llm.LLMConfig(base_url=base, model="anthropic.claude-opus-5", api_key="bk", api_protocol="bedrock-converse-stream"),
+                root=tmp_path,
+            )
+    finally:
+        srv.shutdown()
+
+    # AWS SigV4 确定性 Known-Answer Test（冻结 UTC 时间 2015-08-30T12:36:00Z）
+    fixed_dt = dt_mod.datetime(2015, 8, 30, 12, 36, 0, tzinfo=dt_mod.timezone.utc)
+    class FixedDateTime(dt_mod.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> dt_mod.datetime:
+            return fixed_dt if tz is not None else fixed_dt.replace(tzinfo=None)
+
+    monkeypatch.setattr(llm.datetime, "datetime", FixedDateTime)
+    signed = llm._sign_aws_v4(
+        "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-opus-4-6-v1%3A0/converse",
+        b'{"messages":[]}',
+        {"Content-Type": "application/json"},
+        {"aws_region": "us-east-1", "aws_access_key_id": "AKIDEXAMPLE", "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "aws_session_token": "tok-1"},
+    )
+    assert signed["X-Amz-Date"] == "20150830T123600Z"
+    assert signed["X-Amz-Security-Token"] == "tok-1"
+    body_hash = hashlib.sha256(b'{"messages":[]}').hexdigest()
+    canonical = (
+        f"POST\n/model/anthropic.claude-opus-4-6-v1%253A0/converse\n\n"
+        f"content-type:application/json\nhost:bedrock-runtime.us-east-1.amazonaws.com\n"
+        f"x-amz-content-sha256:{body_hash}\nx-amz-date:20150830T123600Z\nx-amz-security-token:tok-1\n\n"
+        f"content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token\n{body_hash}"
+    )
+    sts = f"AWS4-HMAC-SHA256\n20150830T123600Z\n20150830/us-east-1/bedrock/aws4_request\n{hashlib.sha256(canonical.encode()).hexdigest()}"
+    def _h(k: bytes, m: str) -> bytes:
+        return hmac.new(k, m.encode(), hashlib.sha256).digest()
+    k_sign = _h(_h(_h(_h(b"AWS4wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830"), "us-east-1"), "bedrock"), "aws4_request")
+    expected_sig = hmac.new(k_sign, sts.encode(), hashlib.sha256).hexdigest()
+    assert f"Signature={expected_sig}" in signed["Authorization"]
+
+
+def test_provider_prefix_proxy_not_hijacked_and_auth_headers_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M9 + Minor #6：已登录 anthropic 不劫持代理原生 vendor/model 名；extra_headers 不可覆写鉴权头。"""
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "auth.json"))
+    auth.complete_auth_flow("anthropic", {"mode": "api_key", "api_key": "sk-ant-real"}, root=tmp_path)
+    # 代理透传的未知模型名 anthropic/claude-custom-proxy-9 不在 anthropic 注册目录 -> 返回 None 交由激活代理处理
+    assert auth.resolve_model_provider("anthropic/claude-custom-proxy-9", root=tmp_path) is None
+    # 官方已知模型名正常路由到 anthropic
+    resolved = auth.resolve_model_provider("anthropic/claude-opus-4-6", root=tmp_path)
+    assert resolved is not None and resolved[0] == "anthropic" and resolved[1] == "claude-opus-4-6"
+
+    _, ant_hdrs = llm._anthropic_request(
+        llm.LLMConfig(
+            base_url="https://api.anthropic.com",
+            model="claude-opus-4-6",
+            api_key="real-ant-key",
+            api_protocol="anthropic-messages",
+            extra_headers={"x-api-key": "evil", "Authorization": "Bearer evil", "X-Custom": "ok"},
+        ),
+        [{"role": "user", "content": "hi"}],
+        None,
+        None,
+        None,
+    )
+    assert ant_hdrs["x-api-key"] == "real-ant-key"
+    assert "Authorization" not in ant_hdrs
+    assert ant_hdrs["X-Custom"] == "ok"
+
+
+def test_cli_stdin_secret_rejection_n50_aws_and_masked_extra_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M1 + M12 + Minor #1/#2/#13：AWS N50 脱敏、CLI inline argv 含密拒收、extra_config 非纯展示字段脱敏。"""
+    custom = tmp_path / "isolated-auth.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(custom))
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-super-secret-n50-abc")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "br-token-n50-xyz")
+    assert "AWS_SECRET_ACCESS_KEY" in tools.secret_env_names()
+    assert "AWS_BEARER_TOKEN_BEDROCK" in tools.secret_env_names()
+    scrubbed = tools.scrub_secrets("leak aws-super-secret-n50-abc and br-token-n50-xyz", root=tmp_path)
+    assert "aws-super-secret-n50-abc" not in scrubbed and "br-token-n50-xyz" not in scrubbed
+    assert tools._SECRET_FIELD_NAME.search("code_verifier")
+    assert tools._SECRET_FIELD_NAME.search("device_code")
+    assert tools._SECRET_FIELD_NAME.search("user_code")
+
+    # M12：--auth-complete inline argv JSON 带敏感字段必须拒绝
+    rc_bad = auth.dispatch_auth_cli(
+        ["--auth-complete", "openai", '{"mode":"api_key","api_key":"sk-leak"}'],
+        root=tmp_path,
+    )
+    assert rc_bad == 1
+    assert "stdin" in json.loads(capsys.readouterr().out)["error"].lower()
+
+    # Minor #2：project_id / enterprise_domain / aws_access_key_id / credentials_path 在 status 中脱敏
+    auth.complete_auth_flow(
+        "google-vertex",
+        {"mode": "api_key", "api_key": "vx-k", "extra_config": {"project_id": "secret-gcp-project-99", "location": "us-east5"}},
+        root=tmp_path,
+    )
+    status = auth.get_auth_status(tmp_path)
+    assert "secret-gcp-project-99" not in json.dumps(status)
+    vx_row = next(p for p in status["providers"] if p["id"] == "google-vertex")
+    assert vx_row["extra_config"]["location"] == "us-east5"
+    assert "project_id" not in vx_row["extra_config"] or "…" in vx_row["extra_config"]["project_id"]
+
+    # Minor #13：/login 帮助提示包含 --auth-complete <provider> --stdin
+    _, help_txt, _ = auth.run_auth_command("/login", root=tmp_path)
+    assert "--auth-complete <provider> --stdin" in help_txt
+
+
+def test_mistral_bijection_collision_concurrent_flock_and_alias_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Minor #3 + 并发文件锁 + alias 清理测试缺口：Mistral 双射避碰、多线程 complete_auth_flow 并发无损坏、写盘清 legacy alias。"""
+    import concurrent.futures
+
+    # 1. Mistral：即使两个不同 raw_id 的首轮哈希碰撞，依然保持不同输出；相同 raw_id 复用同一 ID
+    cache: dict[str, str] = {"raw_a": "abcdef123"}
+    cache_id_dup = llm._mistral_tool_call_id("raw_a", cache)
+    assert cache_id_dup == "abcdef123"
+    # 找一个非 raw_a 但假装占位冲突的 raw_b
+    raw_b = "raw_b"
+    first_b = llm._mistral_tool_call_id(raw_b, {"other": llm._mistral_tool_call_id(raw_b, {})})
+    assert first_b != llm._mistral_tool_call_id(raw_b, {})
+
+    # 2. legacy alias 写盘清理
+    custom = tmp_path / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(custom))
+    auth._write_store_unlocked(custom, {"providers": {"google-gemini": {"type": "api_key", "api_key": "old-gem"}}})
+    auth.complete_auth_flow("google", {"mode": "api_key", "api_key": "new-gem"}, root=tmp_path)
+    stored = auth._read_store_unlocked(custom)["providers"]
+    assert "google" in stored and "google-gemini" not in stored
+
+    # 3. 并发线程同时写入不同服务商，flock 保证全量落盘且文件可合法解析
+    targets = ["openai", "deepseek", "groq", "mistral", "xai", "openrouter"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        futs = [
+            pool.submit(auth.complete_auth_flow, pid, {"mode": "api_key", "api_key": f"key-{pid}"}, root=tmp_path)
+            for pid in targets
+        ]
+        for fut in futs:
+            assert fut.result()["ok"] is True
+    final_store = auth._read_store_unlocked(custom)["providers"]
+    for pid in targets:
+        assert final_store[pid]["api_key"] == f"key-{pid}"
+
+
+def test_residual_minor_items_hardening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """二次复核 8 项 Minor 残留加固测试：Bedrock block_binding/正则边界、Azure 跳过 include、exchanging 宽限、Vertex 禁重定向、REPL extra_config、Codex done 覆写截断 delta、Gemini 同模型签名门控。"""
+    # 1 + 3. Bedrock opus-4-7 adaptive + block_binding + beta（GovCloud 跳过）；opus-4-60 不误判为 adaptive
+    p47, _ = llm._bedrock_request(
+        llm.LLMConfig(base_url="https://bedrock.example", model="anthropic.claude-opus-4-7-v1:0", api_key="bk", api_protocol="bedrock-converse-stream", reasoning_effort="xhigh"),
+        [{"role": "user", "content": "hi"}],
+        None,
+        None,
+        None,
+    )
+    assert p47["additionalModelRequestFields"]["thinking"] == {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
+    assert p47["additionalModelRequestFields"]["output_config"] == {"effort": "xhigh"}
+    assert p47["additionalModelRequestFields"]["anthropic_beta"] == ["thinking-binding-controls-2026-08-01"]
+
+    p47_gov, _ = llm._bedrock_request(
+        llm.LLMConfig(base_url="https://bedrock.example", model="us-gov.anthropic.claude-opus-4-7-v1:0", api_key="bk", api_protocol="bedrock-converse-stream", reasoning_effort="high", extra_config={"aws_region": "us-gov-west-1"}),
+        [{"role": "user", "content": "hi"}],
+        None,
+        None,
+        None,
+    )
+    assert "block_binding" not in p47_gov["additionalModelRequestFields"]["thinking"]
+    assert "anthropic_beta" not in p47_gov["additionalModelRequestFields"]
+
+    p460, _ = llm._bedrock_request(
+        llm.LLMConfig(base_url="https://bedrock.example", model="anthropic.claude-opus-4-60-v1:0", api_key="bk", api_protocol="bedrock-converse-stream", reasoning_effort="medium"),
+        [{"role": "user", "content": "hi"}],
+        None,
+        None,
+        None,
+    )
+    assert p460["additionalModelRequestFields"]["thinking"]["type"] == "enabled"
+
+    # 2. Azure Responses 不发 include
+    p_az, _ = llm._codex_request(
+        llm.LLMConfig(base_url="https://my.openai.azure.com/openai/v1", model="gpt-5", api_key="ak", api_protocol="azure-openai-responses"),
+        [{"role": "user", "content": "hi"}],
+        None,
+        None,
+        None,
+    )
+    assert "include" not in p_az
+
+    # 7. Codex output_item.done 完整 arguments 优先于被截断的 delta parts
+    msg_done, _ = llm._assemble_codex_stream(
+        iter([
+            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_t","call_id":"call_t","name":"search"}}\n',
+            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_t","delta":"{\\"q\\":"}\n',
+            'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_t","call_id":"call_t","name":"search","arguments":"{\\"q\\":\\"full\\"}"}}\n',
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}\n',
+        ])
+    )
+    assert json.loads(msg_done["tool_calls"][0]["function"]["arguments"]) == {"q": "full"}
+
+    # 4 + 6. exchanging 超过 120s 宽限允许重试，以及 /login REPL enterprise_domain= 透传
+    custom = tmp_path / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(custom))
+    auth.start_auth_flow("anthropic", "oauth_pkce", root=tmp_path)
+    store = auth._read_store_unlocked(custom)
+    store["_pending"]["anthropic"]["exchanging"] = True
+    store["_pending"]["anthropic"]["exchanging_at_ms"] = auth._now_ms() - 10_000
+    auth._write_store_unlocked(custom, store)
+    with pytest.raises(auth.AuthError, match="进行中"):
+        auth.complete_auth_flow("anthropic", {"mode": "oauth_pkce", "code": "c#s"}, root=tmp_path)
+    # 设为过期宽限 > 120s 后，不再被 exchanging 死锁卡住（转为正常 state 校验错误）
+    store["_pending"]["anthropic"]["exchanging_at_ms"] = auth._now_ms() - 180_000
+    auth._write_store_unlocked(custom, store)
+    with pytest.raises(auth.AuthError, match="state"):
+        auth.complete_auth_flow("anthropic", {"mode": "oauth_pkce", "code": f"c1#wrong"}, root=tmp_path)
+
+    seen_cli_urls: list[str] = []
+    monkeypatch.setattr(
+        auth,
+        "_http_json",
+        lambda url, **kw: (seen_cli_urls.append(url) or {"device_code": "dc-cli", "user_code": "CLI-GHE", "verification_uri": "https://ghe.internal/device"}),
+    )
+    ok_cmd, txt_cmd, _ = auth.run_auth_command("/login github-copilot enterprise_domain=ghe.internal", root=tmp_path)
+    assert ok_cmd is True and "CLI-GHE" in txt_cmd
+    assert any("ghe.internal/login/device/code" in u for u in seen_cli_urls)
+
+    # 5 + 8. Vertex SA token_uri 重定向被拒 & Gemini thoughtSignature 同模型保留、跨模型跳过
+    def srv_handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        if req.path == "/redir":
+            req.send_response(302)
+            req.send_header("Location", "http://127.0.0.1:9/x")
+            req.end_headers()
+            return
+        _send_json(req, {"candidates": [{"content": {"parts": [{"functionCall": {"id": "fc1", "name": "f", "args": {}}, "thoughtSignature": "sig-same"}]}, "finishReason": "STOP"}]})
+
+    srv, base = _make_mock_server(srv_handler)
+    try:
+        bad_adc = tmp_path / "adc_redir.json"
+        bad_adc.write_text(json.dumps({"type": "authorized_user", "client_id": "c", "client_secret": "s", "refresh_token": "r", "token_uri": f"{base}/redir"}), encoding="utf-8")
+        with llm._GOOGLE_TOKEN_LOCK:
+            llm._GOOGLE_TOKEN_CACHE.clear()
+        with pytest.raises(llm.LLMError, match="重定向"):
+            llm._google_vertex_bearer_token({"credentials_path": str(bad_adc)})
+
+        g3 = llm.LLMConfig(base_url=f"{base}/v1beta", model="gemini-3-pro", api_key="k", api_protocol="google-generative-ai")
+        g25 = llm.LLMConfig(base_url=f"{base}/v1beta", model="gemini-2.5-flash", api_key="k", api_protocol="google-generative-ai")
+        turn_g3 = llm.chat_complete([{"role": "user", "content": "go"}], config=g3, root=tmp_path)
+        assert turn_g3["tool_calls"][0]["_ava_sig_model"] == "gemini-3-pro"
+        same_req, _ = llm._google_request(g3, [{"role": "user", "content": "go"}, turn_g3], None, None, None)
+        cross_req, _ = llm._google_request(g25, [{"role": "user", "content": "go"}, turn_g3], None, None, None)
+        assert same_req["contents"][1]["parts"][0]["thoughtSignature"] == "sig-same"
+        assert "thoughtSignature" not in cross_req["contents"][1]["parts"][0]
     finally:
         srv.shutdown()

@@ -2208,7 +2208,7 @@ def bash_readonly(command: str) -> bool:
 # 密钥变量名（N50 同一组）：名字像密钥的环境变量，外加 LLM / web 配置指名的密钥变量
 _SECRET_ENV_NAME = re.compile(r"(?i)(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$|^AVA_.*KEY")
 # config/*.local.json 里键名含这些词的字符串值视为密钥
-_SECRET_FIELD_NAME = re.compile(r"(?i)(key|token|secret|password)")
+_SECRET_FIELD_NAME = re.compile(r"(?i)(key|token|secret|password|code_verifier|device_code|user_code)")
 SECRET_MIN_LEN = 8   # 短于 8 的值不当密钥替换：「true」「cn」这类短值替换会把正常输出改得面目全非
 
 
@@ -2227,6 +2227,12 @@ def secret_env_names(root: Path | None = None) -> tuple[str, ...]:
         from pipeline.agent.web import web_key_env_names
 
         names.update(web_key_env_names(root))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from pipeline.agent.auth import auth_secret_env_names
+
+        names.update(auth_secret_env_names())
     except Exception:  # noqa: BLE001
         pass
     return tuple(sorted(names))

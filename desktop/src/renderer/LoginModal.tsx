@@ -34,6 +34,13 @@ const CATEGORY_ORDER: readonly { key: ProviderCategory; label: string }[] = [
   { key: "local", label: "本地 / 代理" },
 ];
 
+const MASKED_EXTRA_KEYS = new Set([
+  "aws_access_key_id",
+  "credentials_path",
+  "enterprise_domain",
+  "project_id",
+]);
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -41,10 +48,22 @@ function errMsg(err: unknown): string {
 function initExtraValues(row: AuthProviderRow): Record<string, string> {
   const out: Record<string, string> = {};
   for (const ef of row.extra_fields ?? []) {
-    const existing = !ef.secret ? row.extra_config?.[ef.key] : "";
+    const masked = Boolean(ef.secret) || MASKED_EXTRA_KEYS.has(ef.key);
+    const existing = !masked ? row.extra_config?.[ef.key] : "";
     out[ef.key] = (existing || ef.default || "").trim();
   }
   return out;
+}
+
+function clearSecretExtraValues(
+  row: AuthProviderRow,
+  prev: Record<string, string>,
+): Record<string, string> {
+  const secretKeys = new Set((row.extra_fields ?? []).filter((ef) => ef.secret).map((ef) => ef.key));
+  if (secretKeys.size === 0) return prev;
+  const next = { ...prev };
+  for (const key of secretKeys) next[key] = "";
+  return next;
 }
 
 function hasCloudAltCredentials(row: AuthProviderRow, extraValues: Record<string, string>): boolean {
@@ -54,9 +73,44 @@ function hasCloudAltCredentials(row: AuthProviderRow, extraValues: Record<string
     return iam || prof || Boolean(row.env_configured);
   }
   if (row.id === "google-vertex") {
-    return Boolean(extraValues.project_id?.trim() && (extraValues.location?.trim() || "us-central1"));
+    return Boolean(extraValues.project_id?.trim() || extraValues.credentials_path?.trim());
   }
   return false;
+}
+
+function ExtraFieldsGrid({
+  fields,
+  values,
+  showRequiredMark,
+  onChange,
+}: {
+  fields: AuthExtraFieldSpec[];
+  values: Record<string, string>;
+  showRequiredMark: boolean;
+  onChange: (key: string, value: string) => void;
+}) {
+  if (fields.length === 0) return null;
+  return (
+    <div className="login-extra-grid" data-testid="login-extra-fields">
+      {fields.map((ef) => (
+        <label key={ef.key} className="ui-field">
+          <span className="login-field-head">
+            <span>{ef.label}{showRequiredMark && ef.required ? " *" : ""}</span>
+            {ef.env_var && <span className="ui-badge">{ef.env_var}</span>}
+          </span>
+          <input
+            type={ef.secret ? "password" : "text"}
+            className="ui-input login-mono-input"
+            data-testid={`login-extra-${ef.key}`}
+            value={values[ef.key] ?? ""}
+            placeholder={ef.placeholder || ef.default}
+            onChange={(e) => onChange(ef.key, e.target.value)}
+          />
+          {ef.help && <span className="login-field-help">{ef.help}</span>}
+        </label>
+      ))}
+    </div>
+  );
 }
 
 export function LoginModal({
@@ -114,7 +168,14 @@ export function LoginModal({
   };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setApiKey("");
+      setAuthCode("");
+      setExtraValues({});
+      setStarted(null);
+      setMsg(null);
+      return;
+    }
     setMsg(null);
     loadStatus(selectedId);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -190,8 +251,20 @@ export function LoginModal({
     if (!current) return;
     setBusy(true);
     setMsg(null);
+    const startExtra: Record<string, string> = {};
+    if (mode === "oauth_device") {
+      for (const ef of current.extra_fields ?? []) {
+        if (ef.secret) continue;
+        const val = (extraValues[ef.key] ?? "").trim();
+        if (val) startExtra[ef.key] = val;
+      }
+    }
+    const rpcArgs: Record<string, string> = { provider: current.id, mode };
+    if (Object.keys(startExtra).length > 0) {
+      rpcArgs.payload = JSON.stringify({ extra_config: startExtra });
+    }
     void rpc
-      .call<AuthStartResult>("auth.start", { provider: current.id, mode })
+      .call<AuthStartResult>("auth.start", rpcArgs)
       .then(
         (res) => {
           setStarted(res);
@@ -244,7 +317,10 @@ export function LoginModal({
           setMsg({ kind: "ok", text: res.text || `已登录 ${current.name}` });
           loadStatus(current.id);
         },
-        (e) => setMsg({ kind: "err", text: errMsg(e) }),
+        (e) => {
+          setExtraValues((prev) => clearSecretExtraValues(current, prev));
+          setMsg({ kind: "err", text: errMsg(e) });
+        },
       )
       .finally(() => setBusy(false));
   };
@@ -257,6 +333,10 @@ export function LoginModal({
       .call<{ ok: boolean; text: string }>("auth.logout", { provider: current.id })
       .then(
         (res) => {
+          setApiKey("");
+          setAuthCode("");
+          setStarted(null);
+          setExtraValues(initExtraValues(current));
           setMsg({ kind: "ok", text: res.text });
           loadStatus(current.id);
         },
@@ -527,29 +607,12 @@ export function LoginModal({
                       />
                     </label>
 
-                    {extraFields.length > 0 && (
-                      <div className="login-extra-grid" data-testid="login-extra-fields">
-                        {extraFields.map((ef) => (
-                          <label key={ef.key} className="ui-field">
-                            <span className="login-field-head">
-                              <span>{ef.label}{ef.required ? " *" : ""}</span>
-                              {ef.env_var && <span className="ui-badge">{ef.env_var}</span>}
-                            </span>
-                            <input
-                              type={ef.secret ? "password" : "text"}
-                              className="ui-input login-mono-input"
-                              data-testid={`login-extra-${ef.key}`}
-                              value={extraValues[ef.key] ?? ""}
-                              placeholder={ef.placeholder || ef.default}
-                              onChange={(e) =>
-                                setExtraValues((prev) => ({ ...prev, [ef.key]: e.target.value }))
-                              }
-                            />
-                            {ef.help && <span className="login-field-help">{ef.help}</span>}
-                          </label>
-                        ))}
-                      </div>
-                    )}
+                    <ExtraFieldsGrid
+                      fields={extraFields}
+                      values={extraValues}
+                      showRequiredMark={true}
+                      onChange={(key, value) => setExtraValues((prev) => ({ ...prev, [key]: value }))}
+                    />
 
                     {current.supports_custom_base_url && (
                       <label className="ui-field">
@@ -639,28 +702,12 @@ export function LoginModal({
 
                 {mode === "oauth_device" && (
                   <div className="login-form">
-                    {extraFields.length > 0 && (
-                      <div className="login-extra-grid" data-testid="login-extra-fields">
-                        {extraFields.map((ef) => (
-                          <label key={ef.key} className="ui-field">
-                            <span className="login-field-head">
-                              <span>{ef.label}</span>
-                            </span>
-                            <input
-                              type={ef.secret ? "password" : "text"}
-                              className="ui-input login-mono-input"
-                              data-testid={`login-extra-${ef.key}`}
-                              value={extraValues[ef.key] ?? ""}
-                              placeholder={ef.placeholder || ef.default}
-                              onChange={(e) =>
-                                setExtraValues((prev) => ({ ...prev, [ef.key]: e.target.value }))
-                              }
-                            />
-                            {ef.help && <span className="login-field-help">{ef.help}</span>}
-                          </label>
-                        ))}
-                      </div>
-                    )}
+                    <ExtraFieldsGrid
+                      fields={extraFields}
+                      values={extraValues}
+                      showRequiredMark={false}
+                      onChange={(key, value) => setExtraValues((prev) => ({ ...prev, [key]: value }))}
+                    />
                     <div className="login-oauth-step">
                       <span className="muted">第 1 步：获取 {current.name} 设备码，复制链接到系统浏览器输入设备码完成授权</span>
                       <div className="login-actions">
