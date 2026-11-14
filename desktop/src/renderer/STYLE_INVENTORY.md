@@ -59,6 +59,18 @@
 
 ## 待改造清单
 
+**施工记录** 2026-11-14（D168/D169/D170 + §四 1–7 批）：对照 ZCode 真实源码（`dialog.tsx`、`ComposerModelMenu.tsx`、`ComposerProviderMenu.tsx`、`ConversationUserInputBubble.tsx`、`PreviewPane.tsx`）统一新界面与存量细节。具体：
+
+- **D168 推理强度（`SessionHeader.tsx` + `style.css`）**：`.effort-seg-bar` 复用 `ui-seg` 胶囊分段控件（`bg-card` + `--shadow-xs` 选中态，去掉实心 `--accent` 粉底）；`model-pending` / `effort-pending` 改用标准 `ui-badge`；`.effort-meter-bar` 过渡对齐 `--dur-fast --ease`。
+- **D169 预览切换器（`PreviewSwitcher.tsx` + `style.css`）**：`.preview-switch-gtitle` 复用 `ui-popover-title` 去重；`.preview-stage-chip` 改 `--radius-md` 与轻悬停/选中态，移除刺眼粉边胶囊。
+- **D170 `/login` 登录弹窗（`LoginModal.tsx` + `style.css`）**：`.login-modal-head` 改为 `var(--bg-panel)`、标题字号收敛为 `var(--text-base)`；左侧服务商列表移除 `.is-selected` 冗余类（完全走 `ui-row[aria-current="true"]`）；绿点与已连接徽标复用 `ui-dot ui-dot--ok` + `ui-badge--ok`；`.login-connected-card` 复用 `ui-card`；OAuth「复制链接」从 `ui-btn--primary` 降为次级 `ui-btn ui-btn--sm`（避免同表单双主按钮）。
+- **§四存量对齐**：
+  - `SessionHeader.tsx`：进入 `asset` 模式时不再重复渲染 `session-scope` 徽标（`scope-toggle` 按钮以 `aria-pressed="true"` 表达选中态）。
+  - `ReviewRating.tsx`：「记下打点」改为 `ui-btn--ghost ui-btn--sm`。
+  - `VoicePanel.tsx`：「撤回」改为 `ui-btn--ghost ui-btn--sm`；「解析/加入/记下/只重配这 N 段」去掉多余 `--primary`，统一使用 `ui-btn` / `ui-btn--sm`。
+  - `HumanCards.tsx` + `style.css`：`reject-submit` 包入 `.ui-card-actions`；`.request-card-text` 补齐 `1px solid var(--border)` 与代码块语义一致；`.cover-opt:hover` 补 `--border-strong` 悬停态。
+  - 验证：`npx tsc --noEmit` 0 错；`npx vitest run` 48 文件 642 用例全绿（含 `visual.test.ts` 35 条）；Playwright `visual` / `layout` / `modelSwitch` / `stopPoint` / `ack` / `preview` / `session` 共 98 passed（`VE-0` skipped），`1280×800` 与 `1440×900` 截图无重叠/无横向溢出。
+
 **施工记录** 2026-10-30（SessionHeader 空模式 人选 A）：auto 不再画「—」徽章；有名字的模式仍显示。
 
 **施工记录** 2026-10-30（PreviewSwitcher 人选 A）：浮层去掉「本期文件」标题；触发文件名常规字重。分组留下。

@@ -199,17 +199,19 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
             问题
             <textarea className="ui-textarea" data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} />
           </label>
-          <button
-            className="ui-btn"
-            data-testid="reject-submit"
-            disabled={off || !target.trim() || !problem.trim()}
-            onClick={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              void run(obj, rpc.call("approval.decide", { ...base, decision: "reject", feedback: { target, problem } }), "已打回");
-            }}
-          >
-            提交打回
-          </button>
+          <div className="ui-card-actions">
+            <button
+              className="ui-btn"
+              data-testid="reject-submit"
+              disabled={off || !target.trim() || !problem.trim()}
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                void run(obj, rpc.call("approval.decide", { ...base, decision: "reject", feedback: { target, problem } }), "已打回");
+              }}
+            >
+              提交打回
+            </button>
+          </div>
         </div>
       )}
     </CardFrame>

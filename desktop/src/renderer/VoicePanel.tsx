@@ -407,7 +407,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               </span>
               <span className="seg-actions">
                 <button
-                  className="ui-btn ui-btn--sm"
+                  className="ui-btn ui-btn--ghost ui-btn--sm"
                   data-testid="pending-retract"
                   disabled={busy}
                   onClick={(e) => {
@@ -431,7 +431,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
             <input className="ui-input" data-testid="voice-raw" value={raw} onChange={(e) => setRaw(e.target.value)} />
           </label>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="voice-parse"
             disabled={busy || raw.trim() === ""}
             onClick={(e) => {
@@ -460,7 +460,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               </div>
             )}
             <button
-              className="ui-btn"
+              className="ui-btn ui-btn--sm"
               data-testid="voice-add"
               disabled={busy}
               onClick={(e) => {
@@ -522,7 +522,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         {/* 同一个位置、同一个按钮名，只按有无期级条目换写路径（每个处理器只许一处闭集调用，TG-4′） */}
         {pending.length > 0 ? (
           <button
-            className="ui-btn ui-btn--primary"
+            className="ui-btn"
             data-testid="voice-done"
             data-mode="apply-patch"
             disabled={doneDisabled}
@@ -535,7 +535,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           </button>
         ) : (
           <button
-            className="ui-btn ui-btn--primary"
+            className="ui-btn"
             data-testid="voice-done"
             data-mode="retts"
             disabled={doneDisabled}
@@ -720,7 +720,7 @@ function FixCard({
           </button>
         ) : effScope === "global" ? (
           <button
-            className="ui-btn ui-btn--sm ui-btn--primary"
+            className="ui-btn ui-btn--sm"
             data-testid="fix-save"
             disabled={busy || writing || check === null || !check.ok}
             onClick={(e) => {
@@ -732,7 +732,7 @@ function FixCard({
           </button>
         ) : (
           <button
-            className="ui-btn ui-btn--sm ui-btn--primary"
+            className="ui-btn ui-btn--sm"
             data-testid="fix-save"
             disabled={busy || writing || check === null || !check.ok}
             onClick={(e) => {

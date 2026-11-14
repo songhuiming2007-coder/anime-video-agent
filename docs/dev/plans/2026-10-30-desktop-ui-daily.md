@@ -80,17 +80,17 @@
 
 天天盯着的壳（顺听 / 停机卡 / 编辑器 / 工序条封面作业条 / 新建一期 / 停止+LLM / 预览切换器 / 空模式「—」）**2026-10-30 已过人选，不要重做**。提交链：`c7e2a8c` … `8239af6`。
 
-- [ ] **1. 03.5 卡内打点**（`ReviewRating.tsx`）「记下打点」仍是实心底 `ui-btn--sm`。顺听每一期都看见。RPC `voice.review` 不动。testid `review-rating` / `review-save` / `review-*`。
-- [ ] **2. 03.5 纠错卡与底栏**（`VoicePanel.tsx`）就地纠错「记下」是 `ui-btn--primary`；底栏「只重配这 N 段」是 primary；「撤回」是实心底。纠错文法、`voice.add` / `voice.global` / `voice.applyPatch` 不动。testid `fix-save` / `fix-cancel` / `voice-done` / `pending-retract`。
-- [ ] **3. 素材模式重复**（`SessionHeader.tsx`）进了 asset 同时有徽章「素材模式」和按钮「素材模式」。按钮与 `conv.command` scope 不动。testid `session-scope` / `scope-toggle`。
-- [ ] **4. 写稿卡 / 非 bash 请求卡**（`HumanCards.tsx`）bash / 停机卡已分层；写稿 diff、工单、其它工具卡仍整块 `card_text`。桌面可分层，**core `card_text` 不准改**。testid `request-card` / `request-card-text`。VS-12 仍适用。
-- [ ] **5. 拒绝表单**（`HumanCards.tsx` `.reject-form`）点「打回」才出现。批准/打回同权不准改成 primary。
-- [ ] **6. 09 封面格**（`HumanCards.tsx` `.cover-grid` / `.cover-opt`）只有 09 停机看见。原生 radio 组不准改成 button（VS-12）。
-- [ ] **7. 用户泡边框**（`.conv-user`）`ui.css` 仍有 1px 边；`style.css` 只改过底和右上角。D80 结构不准拆。testid `conv-row`。
+- [x] **1. 03.5 卡内打点**（`ReviewRating.tsx`）「记下打点」改为 `ui-btn--ghost ui-btn--sm`（2026-11-14）。RPC `voice.review` 不动。testid `review-rating` / `review-save` / `review-*`。
+- [x] **2. 03.5 纠错卡与底栏**（`VoicePanel.tsx`）就地纠错「记下」、底栏「只重配这 N 段」去掉 `--primary`；「撤回」改 `ui-btn--ghost ui-btn--sm`（2026-11-14）。纠错文法、`voice.add` / `voice.global` / `voice.applyPatch` 不动。testid `fix-save` / `fix-cancel` / `voice-done` / `pending-retract`。
+- [x] **3. 素材模式重复**（`SessionHeader.tsx`）进入 `asset` 模式时去掉重复 `session-scope` 徽标，仅保留 `scope-toggle` 按钮 `aria-pressed="true"` 选中态（2026-11-14）。按钮与 `conv.command` scope 不动。testid `scope-toggle`。
+- [x] **4. 写稿卡 / 非 bash 请求卡**（`HumanCards.tsx`）保留 `request-card-text` 原文块（E2E 契约要求），补齐 `1px solid var(--border)` 与 `.card-cmd`/`.conv-tool-cmd` 对齐（2026-11-14）。**core `card_text` 未改**。testid `request-card` / `request-card-text`。VS-12 仍适用。
+- [x] **5. 拒绝表单**（`HumanCards.tsx` `.reject-form`）`reject-submit` 包入 `.ui-card-actions` 与上方同权按钮对齐（2026-11-14）。批准/打回同权未改成 primary。
+- [x] **6. 09 封面格**（`HumanCards.tsx` `.cover-grid` / `.cover-opt`）`.cover-opt:hover` 补 `--border-strong` 悬停态（2026-11-14）。原生 radio 组未改 button（VS-12）。
+- [x] **7. 用户泡边框**（`.conv-user`）对照 ZCode `ConversationUserInputBubble.tsx:30`（`border border-border bg-surface rounded-xl rounded-tr-xs`），AVA 现行 `1px solid var(--border)` + `bg-panel` + `radius-sm` 已与 ZCode 一致，保持不动（2026-11-14）。testid `conv-row`。
 - [ ] **8. 空预览**（`PreviewPane.tsx` `StateView`）无文件时「选择左侧产物以预览」。
 - [ ] **9. 时间线**（`App.tsx` `.timeline`）右下角，做片时要展开看作业。D71「看进度」仍要能打开它。
 - [ ] **10. 健康面板**（`App.tsx` `.health`）顶栏按钮才开。
-- [ ] **11. 左侧产物树**（`App.tsx` `ArtifactTree` / `.files`）标题「本期文件」是侧栏分段，不是预览切换器。
+- [x] **11. 左侧产物树**（已由 D169 移除，`PreviewSwitcher.tsx` 接管预览文件与阶段切换，2026-11-14）。
 - [ ] **12. 工单提示条**（`ConversationPane.tsx` `HandoffStrip`）本会话开过工单才有。D82 复制交接文本不准拿掉。
 
 某项人选「跳过」→ 勾掉并在该项末尾写「跳过，YYYY-MM-DD」。不要改成别的项。
@@ -153,3 +153,4 @@ open dist/mac-arm64/AVA.app
 | 日期 | 做了什么 |
 |---|---|
 | 2026-10-30 | 写下本施工图。下一处从 §四 第 1 项（记下打点）起。 |
+| 2026-11-14 | 对照 ZCode 真实源码对齐 D168/D169/D170 及 §四 1–7 项（第 11 项已由 D169 移除）；`tsc --noEmit`、Vitest 642 用例、Playwright 98 用例全绿（详见 `STYLE_INVENTORY.md`）。 |

@@ -47,7 +47,7 @@ export function ReviewRating({ epKey, rpc, disabled }: { epKey: string; rpc: Rpc
         </span>
       ))}
       <button
-        className="ui-btn ui-btn--sm"
+        className="ui-btn ui-btn--ghost ui-btn--sm"
         data-testid="review-save"
         disabled={disabled || busy || !full}
         onClick={(e) => {
