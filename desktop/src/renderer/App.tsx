@@ -7,9 +7,8 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastContextReading } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, ShotsEntry, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
-import { previewKind } from "../shared/previewKind";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
 import { formatRelTime } from "../shared/relTime";
@@ -23,7 +22,7 @@ import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
 import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
-import { Icon, type IconName } from "./icons";
+import { Icon } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
 import { Splitter } from "./Splitter";
@@ -49,9 +48,6 @@ const FATAL = new URLSearchParams(window.location.search).get("fatal");
  * 门禁 14 已退役（Spec 11 S8-R15，2026-09-26）：人时记账命令（/record-time）落地，
  * 桌面端审阅面可见即计时并落 human_time.json，不再需要「数据源不完整」旁标。
  */
-
-/** 产物树行图标（按扩展名分发，与 PreviewPane 同一份判据） */
-const KIND_ICON: Record<string, IconName> = { video: "film", audio: "wave", image: "image", html: "file" };
 
 function storeReducer(s: Store, a: Action): Store {
   return reduce(s, a).store;
@@ -123,8 +119,6 @@ function Main() {
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   const [previewUnseen, setPreviewUnseen] = useState(false);
-  const filesOpen = layout.filesOpen;
-  const setFilesOpen = (f: (o: boolean) => boolean) => setLayout((l) => ({ ...l, filesOpen: f(l.filesOpen) }));
   const mainRef = useRef<HTMLDivElement | null>(null);
   const [mainW, setMainW] = useState(() => window.innerWidth);
   useEffect(() => {
@@ -427,19 +421,6 @@ function Main() {
             openCards={conv?.open.length ?? 0}
             onConvChanged={() => fetchConvRef.current(convKey, true)}
           />
-          {ep && !showIdea && (
-            <div className="files">
-              <button className="ui-section" aria-expanded={filesOpen} aria-controls="ava-files" onClick={() => setFilesOpen((o) => !o)} data-testid="files-toggle">
-                <Icon name={filesOpen ? "chevron-down" : "chevron-right"} size="sm" />
-                本期文件
-              </button>
-              <div id="ava-files" hidden={!filesOpen}>
-                <CoverImport epKey={ep.epKey} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
-                <ArtifactTree key={`${ep.epKey}:${treeBump}`} epKey={ep.epKey} onPick={pickHuman} />
-              </div>
-            </div>
-          )}
-          <GalleryList reachOk={reachOk} onPick={pickHuman} />
         </nav>
         {layout.leftOpen && (
           <Splitter
@@ -531,15 +512,20 @@ function Main() {
         )}
         {!layout.previewOpen && <PreviewRail target={preview} attention={previewUnseen || strip !== null} onOpen={() => setPreviewOpen(true)} />}
         <section className="preview" id="ava-preview" hidden={!layout.previewOpen} data-auto-open-approval-id={autoOpened.id ?? ""} data-auto-open-count={autoOpened.count}>
-          {/* D49-A S4：预览区顶部的文件切换器——侧栏收起时也能选本期任何产物 */}
+          {/* D49-A S4 + D169：预览区顶部的一站式文件切换器 + 镜头画廊 + 封面导入 */}
+          <PreviewSwitcher
+            epKey={ep && !showIdea && active !== null ? active : null}
+            rpc={rpc}
+            current={preview}
+            running={ep ? ep.jobs.filter((j) => j.state === "running" || j.state === "pending").map((j) => j.command) : []}
+            treeBump={treeBump}
+            reachOk={reachOk}
+            onPick={pickHuman}
+          />
           {ep && !showIdea && active !== null && (
-            <PreviewSwitcher
-              epKey={active}
-              rpc={rpc}
-              current={preview}
-              running={ep.jobs.filter((j) => j.state === "running" || j.state === "pending").map((j) => j.command)}
-              onPick={pickHuman}
-            />
+            <div className="preview-cover-bar">
+              <CoverImport epKey={active} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
+            </div>
           )}
           {strip && (
             <button className="strip" data-testid="auto-open-strip" onClick={() => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }))}>
@@ -561,7 +547,21 @@ function Main() {
                     onReady={onVoiceReady}
                     live={!!ep && ep.jobs.some((j) => j.state === "running" && generatingOf([j.command]).has("03-audio"))}
                   />}
-                {!(voiceTarget && voiceOk === active) && <PreviewPane key={active ?? "-"} target={preview} head={!(ep && !showIdea && active !== null)} />}
+                {!(voiceTarget && voiceOk === active) && (
+                  <PreviewPane
+                    key={active ?? "-"}
+                    target={preview}
+                    head={!(ep && !showIdea && active !== null)}
+                    onPickFile={(dirRel, fileName) =>
+                      pickHuman({
+                        kind: "file",
+                        root: "episodes",
+                        rel: active ? (dirRel.startsWith(`${active}/`) ? `${dirRel}/${fileName}` : `${active}/${dirRel}/${fileName}`) : `${dirRel}/${fileName}`,
+                        size: null,
+                      })
+                    }
+                  />
+                )}
               </>
             )}
           </PaneBoundary>
@@ -993,39 +993,6 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
   );
 }
 
-// ---------------- 镜头画廊（data/library/shots 顶层 html） ----------------
-
-function GalleryList({ reachOk, onPick }: { reachOk: boolean; onPick: (t: PreviewTarget) => void }) {
-  const [items, setItems] = useState<ShotsEntry[] | null>(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (open && reachOk) rpc.call<ShotsEntry[]>("shots.list").then(setItems, () => setItems([]));
-  }, [open, reachOk]);
-  return (
-    <div className="galleries">
-      <button className="ui-section" onClick={() => setOpen(!open)} data-testid="galleries-toggle" aria-expanded={open}>
-        <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
-        镜头画廊
-        {items && <span className="ui-count">{items.length}</span>}
-      </button>
-      {open && items?.length === 0 && <div className="muted">没有画廊</div>}
-      {open &&
-        items?.map((g) => (
-          <button
-            key={g.name}
-            className="ui-row"
-            data-testid="gallery"
-            data-name={g.name}
-            onClick={() => onPick({ kind: "file", root: "shots", rel: g.name, size: g.size })}
-          >
-            <Icon name="file" size="sm" />
-            <span className="ui-row-title">{g.name}</span>
-          </button>
-        ))}
-    </div>
-  );
-}
-
 // ---------------- 工序卡（status --json 原文） ----------------
 
 /**
@@ -1072,58 +1039,6 @@ function StatusCard({ ep, extra }: { ep: EpisodeState; extra?: ReactNode }) {
         {extra}
       </div>
     </div>
-  );
-}
-
-// ---------------- 产物树 ----------------
-
-function ArtifactTree({ epKey, onPick }: { epKey: string; onPick: (t: PreviewTarget) => void }) {
-  return (
-    <div className="tree" data-testid="tree">
-      <TreeDir epKey={epKey} relDir="" depth={0} onPick={onPick} />
-    </div>
-  );
-}
-
-function TreeDir({ epKey, relDir, depth, onPick }: { epKey: string; relDir: string; depth: number; onPick: (t: PreviewTarget) => void }) {
-  const [entries, setEntries] = useState<TreeEntry[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  useEffect(() => {
-    rpc.call<TreeEntry[]>("tree.list", { epKey, relDir }).then(setEntries, (e) => setErr(errText(e)));
-  }, [epKey, relDir]);
-  if (err) return <StateView kind="inline" title={err} />;
-  if (!entries) return <div className="muted">…</div>;
-  return (
-    <ul className="tree-list">
-      {entries.map((e) => (
-        <li key={e.rel}>
-          <button
-            className={`ui-row tree-row ${e.kind}`}
-            style={{ paddingLeft: 8 + depth * 14 }}
-            aria-expanded={e.kind === "dir" ? !!open[e.rel] : undefined}
-            data-testid="tree-row"
-            data-rel={e.rel}
-            onClick={() => {
-              if (e.kind === "dir") {
-                setOpen((o) => ({ ...o, [e.rel]: !o[e.rel] }));
-                void rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: e.rel }).then(
-                  (sub) => onPick({ kind: "dir", root: "episodes", rel: `${epKey}/${e.rel}`, entries: sub.filter((x) => x.kind === "file").map((x) => x.name) }),
-                  () => undefined,
-                );
-              } else if (e.kind === "file") {
-                onPick({ kind: "file", root: "episodes", rel: `${epKey}/${e.rel}`, size: e.size });
-              }
-            }}
-          >
-            {e.kind === "dir" ? <Icon name={open[e.rel] ? "chevron-down" : "chevron-right"} size="sm" /> : null}
-            <Icon name={e.kind === "dir" ? "folder" : (KIND_ICON[previewKind(e.name)] ?? "file")} size="sm" />
-            <span className="ui-row-title">{e.name}</span>
-          </button>
-          {e.kind === "dir" && open[e.rel] && <TreeDir epKey={epKey} relDir={e.rel} depth={depth + 1} onPick={onPick} />}
-        </li>
-      ))}
-    </ul>
   );
 }
 

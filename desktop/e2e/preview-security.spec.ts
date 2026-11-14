@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { expect, test, type Frame } from "@playwright/test";
-import { buildFixture, launch, openEpisode, type Fixture, type Launched } from "./fixtures";
+import { buildFixture, launch, openEpisode, pick, type Fixture, type Launched } from "./fixtures";
 
 let fx: Fixture;
 let L: Launched;
@@ -160,7 +160,7 @@ test("TI-2b 打开 html 预览（iframe）后再重新撮合：新连接可用�
   const X = await launch(fx.repo, ["--ava-test-handshake-hook"]);
   try {
     await openEpisode(X.page, "E2E-A");
-    await X.page.locator(`[data-testid=tree-row][data-rel="04-review.html"]`).click();
+    await pick(X.page, "04-review.html");
     await expect(X.page.getByTestId("html-frame")).toHaveAttribute("sandbox", "");
     const frame = await (await X.page.getByTestId("html-frame").elementHandle())!.contentFrame();
     await frame!.waitForLoadState();

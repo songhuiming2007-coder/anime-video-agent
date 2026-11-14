@@ -155,7 +155,7 @@ test("TP-6 播放中普通推出数据盘（真实磁盘映像 + 不带 force �
     symlinkSync(dataReal, join(repo, "data"));
     X = await launch(repo);
     await openEpisode(X.page, "TP6");
-    await X.page.locator(`[data-testid=tree-row][data-rel="big.mp4"]`).click();
+    await pick(X.page, "big.mp4");
     await X.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement).play());
     await expect.poll(() => X!.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement).currentTime), { timeout: 15_000 }).toBeGreaterThan(3);
     const r = spawnSync("/usr/sbin/diskutil", ["unmount", mnt], { encoding: "utf-8" });
@@ -211,28 +211,28 @@ test("TI-3a（预览部分）关闭 heal 后，对 chmod -R a-w 的夹具树执�
     await expect(R.page.locator("[data-testid=episode]")).toHaveCount(3); // E2E-A、E2E-B、E2E-C
     await openEpisode(R.page, "E2E-A");
     // 网页（episodes 根，sandbox=""）
-    await R.page.locator(`[data-testid=tree-row][data-rel="04-review.html"]`).click();
+    await pick(R.page, "04-review.html");
     const review = await (await R.page.getByTestId("html-frame").elementHandle())!.contentFrame();
     await expect.poll(() => review!.evaluate(() => [...document.images].map((i) => i.complete && i.naturalWidth > 0)), { timeout: 10_000 }).toEqual([true, true]);
     // 视频
-    await R.page.locator(`[data-testid=tree-row][data-rel="05-final.mp4"]`).click();
+    await pick(R.page, "05-final.mp4");
     await expect.poll(() => R.page.evaluate(() => (document.querySelector("video") as HTMLVideoElement | null)?.readyState ?? 0)).toBeGreaterThanOrEqual(1);
     // 音频队列（树浏览子目录）
-    await R.page.locator(`[data-testid=tree-row][data-rel="03-audio"]`).click();
+    await pick(R.page, "03-audio");
     await expect(R.page.getByTestId("audio-queue").locator("li")).toHaveText(["seg-01.wav", "seg-02.wav", "seg-10.wav"]);
     await expect.poll(() => R.page.evaluate(() => (document.querySelector("audio") as HTMLAudioElement | null)?.readyState ?? 0)).toBeGreaterThanOrEqual(1);
     // 图片（树浏览子目录）
-    await R.page.locator(`[data-testid=tree-row][data-rel="07-cover"]`).click();
-    await R.page.locator(`[data-testid=tree-row][data-rel="07-cover/c1.png"]`).click();
+    await pick(R.page, "07-cover");
+    await pick(R.page, "07-cover/c1.png");
     await expect.poll(() => R.page.getByTestId("image").evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBe(64);
     // 文本三类 + 只显示元数据
-    await R.page.locator(`[data-testid=tree-row][data-rel="02-script.md"]`).click();
+    await pick(R.page, "02-script.md");
     await expect(R.page.getByTestId("markdown")).toContainText("标题");
-    await R.page.locator(`[data-testid=tree-row][data-rel="04-clips.json"]`).click();
+    await pick(R.page, "04-clips.json");
     await expect(R.page.getByTestId("json")).toContainText("segments");
-    await R.page.locator(`[data-testid=tree-row][data-rel="big.log"]`).click();
+    await pick(R.page, "big.log");
     await expect(R.page.getByTestId("truncated")).toBeVisible();
-    await R.page.locator(`[data-testid=tree-row][data-rel="run.sh"]`).click();
+    await pick(R.page, "run.sh");
     await expect(R.page.locator(".meta")).toContainText("只显示元数据");
     // shots 根的 gallery（allow-scripts）
     await R.page.getByTestId("galleries-toggle").click();
@@ -241,8 +241,8 @@ test("TI-3a（预览部分）关闭 heal 后，对 chmod -R a-w 的夹具树执�
     const gallery = await (await R.page.getByTestId("html-frame").elementHandle())!.contentFrame();
     await expect.poll(() => gallery!.evaluate(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0))).toBe(true);
     // 切到 B 期（订阅/激活第二个期）
-    await R.page.locator("[data-testid=episode]", { hasText: "E2E-B" }).click();
-    await R.page.locator("[data-testid=tree-row][data-rel='02-script.md']").waitFor();
+    await openEpisode(R.page, "E2E-B");
+    await pick(R.page, "02-script.md");
   } finally {
     await R.app.close();
     const after = treeManifest(ro.dataReal);

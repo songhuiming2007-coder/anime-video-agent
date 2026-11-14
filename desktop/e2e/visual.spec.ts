@@ -86,22 +86,22 @@ type Theme = (typeof THEMES)[number];
 
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
-  // D39 S1 实测（2026-09-29，三态一致）：工序卡默认收成一行、时间线收成摘要条，收起部分不再计入各态；
-  // 收起的内容由新增的 expanded 态单独审计（76 ≥ 原 card 态 73，覆盖不丢）。上一版（PR3）数值见 git 历史。
-  list: 64,
-  "sidebar-step": 68,
-  "sidebar-search": 57,
-  popover: 68,
-  markdown: 76,
-  json: 76,
-  empty: 60,
-  error: 66,
-  health: 84,
-  stale: 71, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定（S1 前为 83，差值同上：收起的工序详情与时间线正文）
-  card: 66,
-  "card-reject": 71,
-  "card-err": 69,
-  expanded: 76,
+  // D169 实测（去掉侧栏「本期文件」树与「镜头画廊」行、收拢到预览区顶部切换条与阶段胶囊，三态一致）：
+  // 见各 state 下三主题（light/dark/forced）恒定值；空态由切换条与胶囊补足至 64。
+  list: 58,
+  "sidebar-step": 62,
+  "sidebar-search": 51,
+  popover: 62,
+  markdown: 70,
+  json: 70,
+  empty: 64,
+  error: 59,
+  health: 77,
+  stale: 63, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
+  card: 59,
+  "card-reject": 64,
+  "card-err": 62,
+  expanded: 70,
 };
 
 interface AuditResult {

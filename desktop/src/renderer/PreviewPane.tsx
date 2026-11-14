@@ -64,17 +64,17 @@ function Head({ rel, kind }: { rel: string; kind: PreviewKind | "dir" }) {
 }
 
 /** `head=false`：外面已有文件切换器当标题（D49-A S4），不再重复一行文件名 */
-export function PreviewPane({ target, head = true }: { target: PreviewTarget | null; head?: boolean }) {
+export function PreviewPane({ target, head = true, onPickFile }: { target: PreviewTarget | null; head?: boolean; onPickFile?: (dirRel: string, fileName: string) => void }) {
   if (!target) {
     return (
       <div className="preview-body">
-        <StateView kind="empty" title="选择左侧产物以预览" />
+        <StateView kind="empty" title="从上方切换条选择产物以预览" />
       </div>
     );
   }
   if (target.kind === "dir") {
     const queue = naturalAudioQueue(target.entries);
-    const body = queue.length === 0 ? <DirMeta rel={target.rel} entries={target.entries} /> : <AudioQueue key={target.rel} root={target.root} dir={target.rel} files={queue} />;
+    const body = queue.length === 0 ? <DirMeta rel={target.rel} entries={target.entries} onPickFile={onPickFile} /> : <AudioQueue key={target.rel} root={target.root} dir={target.rel} files={queue} />;
     return (
       <>
         {head && <Head rel={target.rel || "（期目录）"} kind={queue.length === 0 ? "dir" : "audio"} />}
@@ -117,12 +117,28 @@ export function PreviewPane({ target, head = true }: { target: PreviewTarget | n
   );
 }
 
-function DirMeta({ rel, entries, note }: { rel: string; entries: string[]; note?: string }) {
+function DirMeta({ rel, entries, note, onPickFile }: { rel: string; entries: string[]; note?: string; onPickFile?: (dirRel: string, fileName: string) => void }) {
   return (
     <div className="meta">
       <div className="meta-title">{rel || "（期目录）"}</div>
       {note && <div className="muted">{note}</div>}
       {entries.length > 0 && <div className="muted">{entries.length} 项</div>}
+      {onPickFile && entries.length > 0 && (
+        <div className="dir-file-list">
+          {entries.map((name) => (
+            <button
+              key={name}
+              className="ui-row dir-file-btn"
+              data-testid="dir-file-row"
+              data-name={name}
+              onClick={() => onPickFile(rel, name)}
+            >
+              <Icon name={KIND_ICON[previewKind(name)] ?? "file"} size="sm" />
+              <span className="ui-row-title">{name}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
