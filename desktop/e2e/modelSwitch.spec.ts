@@ -269,3 +269,76 @@ test("D168 新会话未发消息前（phase=none）也可调推理强度 + 信�
     fx.cleanup();
   }
 });
+
+test("D170：/login 与工具栏弹窗支持 10 家服务商、连入后 /model 联动列表及登出移除", async () => {
+  test.setTimeout(90_000);
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, ["ep1"]);
+  const L = await launchSession(fx.repo);
+  try {
+    const { page } = L;
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.locator("[data-testid=episode]", { hasText: "ep1" }).first().click();
+    await expect(page.getByTestId("login-btn")).toBeVisible();
+
+    // 输入框发 /login 直接弹认证窗（不发给模型）
+    const box = page.getByTestId("composer-input");
+    await box.fill("/login");
+    await box.press("Enter");
+    const modal = page.getByTestId("login-modal");
+    await expect(modal).toBeVisible();
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(10);
+
+    // 搜索过滤服务商并连接 DeepSeek
+    const search = page.getByTestId("login-provider-search");
+    await search.fill("DeepSeek");
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(1);
+    await page.locator('[data-testid=login-provider-row][data-provider="deepseek"]').click();
+    await page.getByTestId("login-key-input").fill("sk-deepseek-e2e-test-987654");
+    await page.getByTestId("login-submit-btn").click();
+    await expect(page.getByTestId("login-connected-card")).toBeVisible();
+    await expect(page.getByTestId("login-connected-count")).toHaveText("1");
+    await search.fill("");
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(10);
+
+    if (SHOTS) {
+      mkdirSync(SHOTS, { recursive: true });
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: join(SHOTS, "d170-1280.png") });
+      await page.locator('[data-testid=login-provider-row][data-provider="anthropic"]').click();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: join(SHOTS, "d170-1440.png") });
+      await page.setViewportSize({ width: 1280, height: 800 });
+    }
+
+    await page.getByTestId("login-close-btn").click();
+    await expect(modal).toHaveCount(0);
+
+    // 模型菜单立刻包含已登录服务商的模型并可选中，且菜单头提供“服务商登录”入口
+    await page.getByTestId("model-btn").click();
+    await expect(page.getByTestId("model-pop-login")).toBeVisible();
+    const dsRow = page.locator('[data-testid=model-row][data-model="deepseek/deepseek-chat"]');
+    await expect(dsRow).toBeVisible();
+    await dsRow.click();
+    await expect(page.getByTestId("model-label")).toHaveText("deepseek/deepseek-chat");
+
+    // 点击 toolbar 登录按钮进入并退出登录 DeepSeek → 模型菜单移除该服务商模型
+    await page.getByTestId("login-btn").click();
+    await expect(modal).toBeVisible();
+    await page.locator('[data-testid=login-provider-row][data-provider="deepseek"]').click();
+    await expect(page.getByTestId("login-logout-btn")).toBeVisible();
+    await page.getByTestId("login-logout-btn").click();
+    await expect(page.getByTestId("login-connected-card")).toHaveCount(0);
+    await expect(page.getByTestId("login-connected-count")).toHaveCount(0);
+    await page.getByTestId("login-close-btn").click();
+
+    await page.getByTestId("model-btn").click();
+    await expect(page.locator('[data-testid=model-row][data-model="deepseek/deepseek-chat"]')).toHaveCount(0);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});

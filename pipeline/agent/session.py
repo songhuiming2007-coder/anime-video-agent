@@ -852,8 +852,9 @@ class SessionHost:
 
     def effective_llm_config(self, root: Path | None = None) -> Any:
         """默认配置叠本会话设置——回合、压缩、起标题、读数分母都取这一份（D91）。"""
+        eff_root = root or self.root
         return model_switch.effective_config(
-            llm_module.load_llm_config(root or self.root), self.model_override  # 晚绑定：测试可打桩
+            llm_module.load_llm_config(eff_root), self.model_override, root=eff_root  # 晚绑定：测试可打桩
         )
 
     # ---- 登记 ----

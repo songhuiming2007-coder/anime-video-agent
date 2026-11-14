@@ -2,8 +2,9 @@
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 // D91：输入框下的模型 / 推理按钮（ModelControls）也因此写在这里，由 App 塞进 Composer 的工具栏。
 import { useEffect, useRef, useState } from "react";
-import type { ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
+import type { AuthStatusResult, ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
 import { contextText, type ContextReading } from "../shared/convFold";
+import { LoginModal } from "./LoginModal";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
 import { Icon } from "./icons";
@@ -336,8 +337,8 @@ function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivEl
  * 输入框工具栏上的两个按钮：模型（点开列出代理的模型）、推理强度（点开选档位）。只改本会话。
  * 会话还没起（还没发过消息）时显示「—」并提示：先发一条消息，或直接发 /model。回合在跑时置灰。
  */
-/** 输入框发裸 `/model`、`/thinking` 时由 App 递进来：n 每次加一，展开对应下拉（只展开、不切换——切换仍要点一行） */
-export type ModelOpenReq = { which: "model" | "effort"; n: number };
+/** 输入框发裸 `/model`、`/thinking`、`/login` 时由 App 递进来：n 每次加一，展开对应浮层 */
+export type ModelOpenReq = { which: "model" | "effort" | "login"; n: number };
 
 /** D149/D147：按钮是否可用。可用 = none（存 pending）/ idle / running（core 排队）；
  * 禁 = starting（proc 未 ready）/ ending（收尾）/ exited（进程没了）。 */
@@ -366,6 +367,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const pendingEffort = pending?.effort ?? null;
   const [modelOpen, setModelOpen, modelRef] = usePopover();
   const [effortOpen, setEffortOpen, effortRef] = usePopover();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResult | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
   const [efforts, setEfforts] = useState<string[] | null>(null); // D154/D168：该模型支持档（core 回子集）
   const [effortsForModel, setEffortsForModel] = useState<string | null>(null);
@@ -426,7 +429,17 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     fetchModels();
   };
   useEffect(() => {
-    if (!openReq || !usable) return;
+    void rpc.call<AuthStatusResult>("auth.status", {}).then(setAuthStatus, () => {});
+  }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!openReq) return;
+    if (openReq.which === "login") {
+      setModelOpen(false);
+      setEffortOpen(false);
+      setLoginOpen(true);
+      return;
+    }
+    if (!usable) return;
     if (openReq.which === "model") openModel();
     else {
       setModelOpen(false);
@@ -467,7 +480,22 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
         </button>
         {modelOpen && (
           <div className="ui-popover model-pop" data-testid="model-pop">
-            <div className="ui-popover-title">本会话模型</div>
+            <div className="model-pop-head">
+              <div className="ui-popover-title">本会话模型</div>
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm model-pop-login"
+                data-testid="model-pop-login"
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  setModelOpen(false);
+                  setLoginOpen(true);
+                }}
+              >
+                <Icon name="globe" size="sm" />
+                服务商登录
+              </button>
+            </div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="model-pop-note">{popNote}</div>}
             {info !== null && info.modelSource === "default" && info.model !== null && <div className="muted model-pop-note" data-testid="model-pop-default">默认：{info.model}</div>}
             {err !== null && (
@@ -664,11 +692,41 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           </div>
         )}
       </div>
+      <div className="model-ctl model-ctl--login">
+        <button
+          type="button"
+          className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn login-ctl-btn"
+          data-testid="login-btn"
+          title="模型服务商登录（/login，管理 10 家 OAuth 与 API Key）"
+          onClick={(e) => {
+            if (!e.nativeEvent.isTrusted) return;
+            setModelOpen(false);
+            setEffortOpen(false);
+            setLoginOpen(true);
+          }}
+        >
+          <Icon name="globe" size="sm" />
+          <span className="model-ctl-label">登录</span>
+          {(authStatus?.connected_count ?? 0) > 0 && (
+            <span className="ui-count" data-testid="login-connected-count">{authStatus?.connected_count}</span>
+          )}
+        </button>
+      </div>
       {err !== null && !modelOpen && (
         <span className="warn model-ctl-err" data-testid="model-ctl-err" title={err}>
           {err}
         </span>
       )}
+      <LoginModal
+        open={loginOpen}
+        rpc={rpc}
+        initialStatus={authStatus}
+        onClose={() => setLoginOpen(false)}
+        onAuthChanged={(next) => {
+          setAuthStatus(next);
+          if (usable) fetchModels();
+        }}
+      />
     </div>
   );
 }

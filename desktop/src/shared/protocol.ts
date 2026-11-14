@@ -56,7 +56,12 @@ export type Method =
   | "voice.review" // { epKey, review: "voice=N,prosody=N,misread=N" } → { lines }（spawn TTS_REVIEW；D50-A S7：03.5 卡内打点）
   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
   | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
-  | "cover.import"; // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
+  | "cover.import" // { epKey, name, bytes } → ImportedCoverJson（spawn IMPORT_COVER，字节走 stdin）
+  // ---- D170：AVA 独立多服务商登录 / 凭据管理 ----
+  | "auth.status" // {} → AuthStatusJson（10 家服务商脱敏连接状态）
+  | "auth.start" // { provider, mode? } → AuthStartJson（PKCE URL / Device Code / 模式元数据）
+  | "auth.complete" // { provider, payload } → AuthCompleteJson（payload 经 stdin 交 core 校验/换 token 并落盘）
+  | "auth.logout"; // { provider } → AuthLogoutJson（清除指定服务商凭据）
 
 export type ErrCode =
   | "E_BAD_REQUEST"
@@ -135,6 +140,10 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
   "time.read": { required: ["epKey"], optional: [] },
   "cover.import": { required: ["epKey", "name", "bytes"], optional: [] },
+  "auth.status": { required: [], optional: [] },
+  "auth.start": { required: ["provider"], optional: ["mode"] },
+  "auth.complete": { required: ["provider", "payload"], optional: [] },
+  "auth.logout": { required: ["provider"], optional: [] },
 };
 
 export const METHODS = Object.keys(PARAM_KEYS) as Method[];
@@ -145,6 +154,66 @@ export function isMethod(v: unknown): v is Method {
 
 /** 值不是字符串的参数键（§3.1 唯一例外）：feedback 是对象，bytes 是封面图字节。 */
 export const NON_STRING_PARAM_KEYS: readonly string[] = ["feedback", "bytes"];
+
+/** D170：10 家服务商脱敏状态、登录流响应类型（shared/ 纯 TS 类型） */
+export type AuthMode = "proxy" | "api_key" | "oauth_pkce" | "oauth_device";
+
+export interface AuthProviderRow {
+  id: string;
+  name: string;
+  desc: string;
+  auth_modes: AuthMode[];
+  default_base_url: string;
+  api_protocol: string;
+  supports_custom_base_url: boolean;
+  connected: boolean;
+  auth_type: string | null;
+  base_url: string;
+  masked_secret: string | null;
+  expires_at_ms: number | null;
+  models: string[];
+  default_models: string[];
+}
+
+export interface AuthStatusResult {
+  ok: boolean;
+  auth_file: string;
+  connected_count: number;
+  providers: AuthProviderRow[];
+}
+
+export interface AuthStartResult {
+  ok: boolean;
+  provider: string;
+  mode: AuthMode;
+  default_base_url?: string;
+  api_protocol?: string;
+  authorize_url?: string;
+  redirect_uri?: string;
+  state?: string;
+  verification_uri?: string;
+  user_code?: string;
+  interval_s?: number;
+  expires_in_s?: number;
+}
+
+export interface AuthCompleteResult {
+  ok: boolean;
+  pending?: boolean;
+  provider: string;
+  mode?: AuthMode;
+  models?: string[];
+  interval_s?: number;
+  error?: string;
+  text: string;
+}
+
+export interface AuthLogoutResult {
+  ok: boolean;
+  provider: string;
+  removed: boolean;
+  text: string;
+}
 
 /** exact-keys 校验：params 必须是普通对象（无参方法允许 undefined/{}），键集合恰在闭集内且必填齐全，值为字符串（NON_STRING_PARAM_KEYS 除外）。 */
 export function checkParamKeys(method: Method, params: unknown): string | null {
