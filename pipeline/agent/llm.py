@@ -629,21 +629,20 @@ def _anthropic_request(
                     if not isinstance(tb, dict):
                         continue
                     tb_type = tb.get("type")
-                    if tb_type == "thinking":
-                        entry: dict[str, Any] = {
+                    if tb_type == "thinking" and tb.get("signature"):
+                        blocks.append({
                             "type": "thinking",
                             "thinking": str(tb.get("thinking") or ""),
-                        }
-                        if tb.get("signature"):
-                            entry["signature"] = str(tb["signature"])
-                        blocks.append(entry)
+                            "signature": str(tb["signature"]),
+                        })
                     elif tb_type == "redacted_thinking" and tb.get("data"):
                         blocks.append({"type": "redacted_thinking", "data": str(tb["data"])})
-            elif msg.get("reasoning_content"):
-                entry = {"type": "thinking", "thinking": str(msg["reasoning_content"])}
-                if msg.get("reasoning_signature"):
-                    entry["signature"] = str(msg["reasoning_signature"])
-                blocks.append(entry)
+            elif msg.get("reasoning_content") and msg.get("reasoning_signature"):
+                blocks.append({
+                    "type": "thinking",
+                    "thinking": str(msg["reasoning_content"]),
+                    "signature": str(msg["reasoning_signature"]),
+                })
             txt = _content_text(msg.get("content"))
             if txt:
                 blocks.append({"type": "text", "text": txt})
