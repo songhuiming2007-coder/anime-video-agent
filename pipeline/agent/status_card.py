@@ -516,15 +516,19 @@ def render_approval_card(
     cmd_str = " ".join(argv_list) if argv_list else str(args.get("command", "")).strip()
 
     # 分析模块与子命令
+    from pipeline.agent.tools import strip_provider_flags
+
     cloud_sub = None
+    cloud_provider = None
     is_cloud = False
     is_render = False
 
     if "pipeline.cloud" in argv_list or "cloud" in argv_list:
         is_cloud = True
         idx = argv_list.index("pipeline.cloud") if "pipeline.cloud" in argv_list else argv_list.index("cloud")
-        if idx + 1 < len(argv_list):
-            cloud_sub = argv_list[idx + 1]
+        cloud_provider, cloud_tokens = strip_provider_flags(argv_list[idx + 1:])
+        if cloud_tokens:
+            cloud_sub = cloud_tokens[0]
     elif "pipeline.render" in argv_list or "render" in argv_list:
         is_render = True
     else:
@@ -534,8 +538,9 @@ def render_approval_card(
         if tokens:
             if tokens[0] == "cloud":
                 is_cloud = True
-                if len(tokens) > 1:
-                    cloud_sub = tokens[1]
+                cloud_provider, cloud_tokens = strip_provider_flags(tokens[1:])
+                if cloud_tokens:
+                    cloud_sub = cloud_tokens[0]
             elif tokens[0] == "render":
                 is_render = True
 
@@ -546,7 +551,10 @@ def render_approval_card(
 
     danger_tags: list[str] = []
     if is_billing:
-        danger_tags.append("[计费] ☁计费 实例开机将产生费用，关机才停止")
+        if cloud_provider in ("colab", "colab-drive"):
+            danger_tags.append("[计费] ☁Colab 运行时将消耗 Compute Units（CU），down 或空闲超时自动释放")
+        else:
+            danger_tags.append("[计费] ☁计费 实例开机将产生费用，关机才停止")
     if is_render:
         danger_tags.append("[长任务] 渲染耗时较长（分钟级）")
 
@@ -591,7 +599,10 @@ def render_approval_card(
         danger_str = " ".join(danger_tags)
 
     if is_cloud:
-        nature = "☁ 云端计费动作（计费审批）"
+        if cloud_provider in ("colab", "colab-drive"):
+            nature = f"☁ Colab ({cloud_provider}) 云端动作（CU 审批）"
+        else:
+            nature = "☁ 云端计费动作（计费审批）"
     elif is_corrections:
         nature = "写读音表（" + ("全局 config/voice.json" if is_global_voice else "本期 03-audio/corrections.json") + "）"
     elif is_render:

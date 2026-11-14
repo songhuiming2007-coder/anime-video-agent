@@ -33,5 +33,5 @@
 - 封面：标题候选人定；叠字出图纪律见 director.md 视觉条。横 16:9、竖 9:14 两版。
 - 成片交人前至少听一遍开头和最长的那段；十一项质检全绿不代表能听。
 - `clips` 之后如果审看页有 short / no_source，先 `scout` 再补料，不拿不相干镜头硬塞。
-- 云端作业问人开哪台；连不上先走 `cloud connect`，不自己 ssh。
+- 云端作业支持 `autodl`、`colab`（SSH/cloudflared）与 `colab-drive`（Google Drive 队列）；开哪条先问人，切换走 `cloud use <后端>`（弹卡）或单命令加 `--provider <后端>`，连不上先走 `cloud connect`，不自己 ssh。
 - 顶层定稿封面只在人点名用哪一版之后才转过去，覆盖已有文件前先说一句。

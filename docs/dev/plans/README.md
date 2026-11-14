@@ -59,6 +59,7 @@
 | [D157 一期多会话后台并存](2026-11-03-multi-session-spec.md) | D157, D158 | D45, D79, D81 | 人选 **B**（真后台跑，对齐 Pi/Codex 会话即并发单元）；spec 已出，待人终审后施工；D158 已随本批施工（②再点当前期收起） |
 | [D159 系统信息移出对话流（施工后截图）](2026-11-03-d159-shots/shots.spec.ts) | D159 | D80, D82 | 人选 **①**；已施工·机检通过（2026-11-03）；截图落 `desktop/out/d159-shots/`（不进 git）；待人验收真实窗口 |
 | [常驻层上下文装配改造](2026-11-06-context-assembly-redesign.md) | P1–P8 | ADR-0022, Spec 16 | **已施工·机检通过**（2026-11-06，复审改口径）：scope 400–2000 字 + resident_budget 贴现状、状态卡每轮 user 消息（`_ava_status_card`）、asset `_extends _base`；S5 节级 diff 未做 |
+| [云端算力双后端（AutoDL + Google Colab SSH / Drive）](2026-11-14-colab-dual-cloud-provider-spec.md) | — | ADR-0014, ADR-0016, ADR-0030 | 已施工·机检通过（2026-11-14）：支持 `autodl`、`colab`（`cloudflared` SSH）与 `colab-drive`（Google Drive 队列），双口径 CU/¥ 账本与 agent 友好切换；全仓 pytest 3799 passed（实机 Colab GPU 待冒烟） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 

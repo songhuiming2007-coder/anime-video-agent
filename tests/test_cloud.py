@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import pytest
 
 from pipeline import cloud
@@ -1874,3 +1875,224 @@ class TestRunApplyPatchProbe:
         launched = self._env(monkeypatch, tmp_path, remote_has=False)
         assert cloud.cmd_run(argparse.Namespace(task="tts", target=tmp_path, extra=["--redo", "3"])) == 0
         assert any("tmux new-session" in c for c in launched)
+
+
+# ---------------------------------------------------------------------------
+# Google Colab 双后端（SSH + cloudflared / Drive 共享队列）与双单位账簿测试
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_provider_优先级与非法拒绝(monkeypatch):
+    monkeypatch.delenv("AVA_CLOUD_PROVIDER", raising=False)
+    assert cloud.resolve_provider({}, {}) == "autodl"
+    assert cloud.resolve_provider({"provider": "colab"}, {}) == "colab"
+    assert cloud.resolve_provider({"provider": "autodl"}, {"active_provider": "colab-drive"}) == "colab-drive"
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "colab")
+    assert cloud.resolve_provider({"provider": "autodl"}, {"active_provider": "colab-drive"}) == "colab"
+    assert cloud.resolve_provider({"provider": "autodl"}, {"active_provider": "colab-drive"}, "autodl") == "autodl"
+    with pytest.raises(ValueError, match="不支持的云算力后端"):
+        cloud.resolve_provider({}, {}, "aws-ec2")
+
+
+def test_parse_colab_connect_target与ssh_config渲染(tmp_path):
+    c1 = cloud.parse_colab_connect_target(
+        'ssh -o ProxyCommand="cloudflared access ssh --hostname %h" root@demo-tunnel.trycloudflare.com'
+    )
+    assert c1 == {
+        "server": "demo-tunnel.trycloudflare.com",
+        "port": 22,
+        "user": "root",
+        "proxy_type": "cloudflared",
+    }
+    c2 = cloud.parse_colab_connect_target("https://abc-123.trycloudflare.com")
+    assert c2["server"] == "abc-123.trycloudflare.com" and c2["proxy_type"] == "cloudflared"
+
+    c3 = cloud.parse_colab_connect_target("ssh -p 2222 root@1.2.3.4")
+    assert c3["server"] == "1.2.3.4" and c3["port"] == 2222 and c3["proxy_type"] == "direct"
+
+    with pytest.raises(ValueError):
+        cloud.parse_colab_connect_target("ssh root@bad;rm -rf /.trycloudflare.com")
+
+    cfg_txt = cloud.render_ssh_config("ava-colab", c1, tmp_path / "known_hosts")
+    assert "ProxyCommand cloudflared access ssh --hostname %h" in cfg_txt
+    assert "Port " not in cfg_txt
+    assert "Host ava-colab" in cfg_txt
+
+
+def test_cmd_use切换后端互不覆盖profiles(monkeypatch, tmp_path):
+    cfg = tmp_path / "config"
+    data = tmp_path / "data"
+    cfg.mkdir()
+    data.mkdir()
+    monkeypatch.setattr(cloud.paths, "CONFIG", cfg)
+    monkeypatch.setattr(cloud.paths, "DATA", data)
+    monkeypatch.setattr(cloud.paths, "require_data", lambda: None)
+
+    (cfg / "cloud.json").write_text(
+        json.dumps({"provider": "autodl", "providers": {"colab": {"billing_unit": "cu"}, "colab-drive": {"billing_unit": "cu"}}}),
+        encoding="utf-8",
+    )
+    local = {
+        "server": "connect.weste.seetacloud.com",
+        "port": 34557,
+        "user": "root",
+        "profiles": {
+            "colab": {"server": "x.trycloudflare.com", "user": "root", "proxy_type": "cloudflared"},
+        },
+    }
+    (cfg / "cloud.local.json").write_text(json.dumps(local), encoding="utf-8")
+
+    assert cloud.cmd_use(argparse.Namespace(provider_name="colab")) == 0
+    saved = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))
+    assert saved["active_provider"] == "colab"
+    assert saved["server"] == "connect.weste.seetacloud.com" and saved["port"] == 34557
+    assert saved["profiles"]["colab"]["server"] == "x.trycloudflare.com"
+
+    multi = cloud.render_all_ssh_configs(json.loads((cfg / "cloud.json").read_text(encoding="utf-8")), saved, data / "known_hosts")
+    assert "Host autodl" in multi and "Host ava-colab" in multi
+
+
+def test_colab纯函数_doctor_fix_env_watchdog_run_command():
+    tag, _, ok = cloud.evaluate_doctor_gpu("", 1, provider="colab")
+    assert tag == "FAIL" and not ok
+
+    cmds = cloud.fix_env_commands(
+        remote_root="/content/ava",
+        models_root="/content/models",
+        repo_missing=True,
+        bad_models=[("BAAI/bge-m3", "bge-m3")],
+        provider="colab",
+        python="/content/venv/bin/python",
+    )
+    assert "network_turbo" not in cmds[0]
+    assert "HF_ENDPOINT" not in cmds[1] and cmds[1].startswith("/content/venv/bin/python -c")
+
+    wd = cloud.generate_watchdog_script(
+        300,
+        heartbeat_path=cloud.COLAB_HEARTBEAT_PATH,
+        hold_path=cloud.COLAB_HOLD_PATH,
+        unassign_path=cloud.COLAB_UNASSIGN_PATH,
+        log_path="/content/watchdog.log",
+    )
+    assert "/usr/bin/shutdown" not in wd
+    assert cloud.COLAB_UNASSIGN_PATH in wd
+
+    run_cmd = cloud.build_remote_run_command(
+        "tts",
+        "data/episodes/ep1",
+        "/content/ava",
+        "/content/venv/bin/python",
+        "--redo 1",
+        provider="colab",
+        models_root="/content/models",
+        heartbeat_path=cloud.COLAB_HEARTBEAT_PATH,
+    )
+    assert "AVA_CLOUD_PROVIDER=colab" in run_cmd
+    assert "AVA_REMOTE_MODELS=/content/models" in run_cmd
+    assert cloud.COLAB_HEARTBEAT_PATH in run_cmd
+
+
+def test_cu双单位账簿与费率估算():
+    cfg_global = {
+        "providers": {
+            "colab": {
+                "billing_unit": "cu",
+                "cu_rate_fallback": 1.5,
+                "cu_rates": {"T4": 1.3, "L4": 2.0, "A100": 5.3},
+            }
+        }
+    }
+    rate, note = cloud.session_rate(cfg_global, "gpu", "NVIDIA L4", provider="colab")
+    assert rate == 2.0 and note is not None
+
+    e1 = cloud.format_ledger_entry("s1", "10:00:00", "10:30:00", 1800, 0.18, "ep1", ["tts"], 0.35, provider="autodl", billing_unit="cny", rate_cny=0.36)
+    e2 = cloud.format_ledger_entry("s2", "11:00:00", "11:30:00", 1800, 1.0, "ep2", ["captions"], 1.5, provider="colab", billing_unit="cu", rate_cny=2.0, gpu="NVIDIA L4")
+    summary = cloud.parse_ledger_summary(json.dumps(e1) + "\n" + json.dumps(e2) + "\n")
+    assert summary["total_cny"] == 0.18
+    assert summary["total_cu"] == 1.0
+    assert summary["by_provider"]["colab"]["cu"] == 1.0
+    assert summary["by_provider"]["autodl"]["cny"] == 0.18
+
+
+def test_colab_drive全链路生命周期与lib命令(monkeypatch, tmp_path):
+    from pipeline import cloud_drive
+
+    root = tmp_path / "repo"
+    cfg = root / "config"
+    data = root / "data"
+    drive_root = tmp_path / "MyDrive" / "ava_cloud"
+    ep = data / "episodes" / "ep-demo"
+    for d in (root / "pipeline", cfg, ep / "03-audio", drive_root.parent):
+        d.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text("[project]\nname='ava'\n", encoding="utf-8")
+    (root / "pipeline" / "__init__.py").write_text("", encoding="utf-8")
+    (ep / "02-script.md").write_text("# 剧本\n", encoding="utf-8")
+    (cfg / "cloud.json").write_text(
+        json.dumps({"provider": "autodl", "providers": {"colab-drive": {"transport": "drive", "billing_unit": "cu", "cu_rate_fallback": 1.5, "cu_rates": {"T4": 1.3}, "budget_per_episode_cu": 2.0}}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cloud.paths, "ROOT", root)
+    monkeypatch.setattr(cloud.paths, "CONFIG", cfg)
+    monkeypatch.setattr(cloud.paths, "DATA", data)
+    monkeypatch.setattr(cloud.paths, "require_data", lambda: None)
+
+    assert cloud.cmd_connect(argparse.Namespace(provider="colab-drive", drive_root=str(drive_root), login=None)) == 0
+    assert cloud.cmd_use(argparse.Namespace(provider_name="colab-drive")) == 0
+
+    # 写入在线心跳
+    cloud_drive.ensure_drive_layout(drive_root)
+    (drive_root / cloud_drive.HEARTBEAT_REL).write_text(
+        json.dumps({"ts": time.time(), "boot_epoch": time.time() - 60, "gpu": "Tesla T4", "gpu_mem_mib": 15360, "torch_version": "2.8.0", "torch_cuda": True, "disk_free_gb": 50}),
+        encoding="utf-8",
+    )
+
+    assert cloud.cmd_up(argparse.Namespace(provider="colab-drive", mode=None, rate=None, timeout=10, episode="ep-demo")) == 0
+    assert cloud.cmd_sync_code(argparse.Namespace(provider="colab-drive")) == 0
+    assert cloud.cmd_doctor(argparse.Namespace(provider="colab-drive")) == 0
+    assert cloud.cmd_push(argparse.Namespace(provider="colab-drive", target=ep, with_audio=False)) == 0
+    assert cloud.cmd_run(argparse.Namespace(provider="colab-drive", target=ep, task="probe", extra=[])) == 0
+
+    jobs = cloud_drive.list_drive_jobs(drive_root)
+    assert len(jobs) == 1
+    out_probe = jobs[0]["dir"] / "output" / "data" / "episodes" / "ep-demo" / "03-audio" / "probe.log"
+    out_probe.parent.mkdir(parents=True, exist_ok=True)
+    out_probe.write_text("GPU Probe: torch=2.8.0, cuda=True\n", encoding="utf-8")
+    (jobs[0]["dir"] / "status.json").write_text(json.dumps({"job_id": jobs[0]["job_id"], "state": "succeeded"}), encoding="utf-8")
+
+    assert cloud.cmd_pull(argparse.Namespace(provider="colab-drive", target=ep)) == 0
+    assert (ep / "03-audio" / "probe.log").read_text(encoding="utf-8").startswith("GPU Probe")
+    assert cloud.cmd_hold(argparse.Namespace(provider="colab-drive")) == 0
+    assert cloud_drive.read_drive_hold(drive_root) is not None
+    assert cloud.cmd_release(argparse.Namespace(provider="colab-drive")) == 0
+    assert cloud_drive.read_drive_hold(drive_root) is None
+
+    # 心跳清成离线后执行 down，避免等 60s 轮询
+    (drive_root / cloud_drive.HEARTBEAT_REL).write_text(json.dumps({"ts": 100.0}), encoding="utf-8")
+    assert cloud.cmd_down(argparse.Namespace(provider="colab-drive", force=False, rate=1.4)) == 0
+    assert (drive_root / cloud_drive.SHUTDOWN_REL).is_file()
+    ledger = (data / "cloud" / "ledger.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert json.loads(ledger[-1])["unit"] == "cu" and json.loads(ledger[-1])["provider"] == "colab-drive"
+
+
+def test_远端模型路径在Colab可直落HF或AVA_REMOTE_MODELS(monkeypatch, tmp_path):
+    from pipeline import asr, tts, vindex
+
+    # 1. ASR：AVA_REMOTE_MODELS 下目录不存在且 AVA_CLOUD_PROVIDER=colab 时允许 HF 直拉兜底
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(tmp_path))
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "colab")
+    local_w = tmp_path / "openai" / "whisper-large-v3"
+    assert asr.cloud_model_dir("openai/whisper-large-v3", asr.CLOUD_WHISPER_DIR) == str(local_w)
+    assert asr._hf_fallback_allowed() is True
+    # 本地目录存在非空权重时直接命中该目录
+    local_w.mkdir(parents=True)
+    (local_w / "config.json").write_text("{}", encoding="utf-8")
+    assert Path(asr.cloud_model_dir("openai/whisper-large-v3", asr.CLOUD_WHISPER_DIR)).is_dir()
+
+    # 2. TTS：_resolve_cloud_model 把 AutoDL 前缀重写为 AVA_REMOTE_MODELS，缺失时回落 HF repo_id
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(tmp_path / "empty"))
+    assert tts._resolve_cloud_model("/root/autodl-tmp/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base") == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+    # 3. vindex：caption_model_ref 在 Colab 未预下载时回落 HF repo_id
+    assert vindex.caption_model_ref() == vindex.CAPTIONS_REPO
+
