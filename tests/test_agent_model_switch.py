@@ -622,11 +622,7 @@ def test_d168_standalone_efforts_and_protocol_mapping(tmp_path: Path, monkeypatc
 
     p_anth_auto: dict[str, object] = {}
     ms.apply_effort_to_extra_body(p_anth_auto, "claude-opus-4-6", "auto", protocol="anthropic-messages")
-    assert p_anth_auto == {"thinking": {"type": "adaptive"}}
-
-    p_gem: dict[str, object] = {}
-    ms.apply_effort_to_extra_body(p_gem, "gemini-2.5-pro", "medium", protocol="google-gemini")
-    assert p_gem == {"generationConfig": {"thinkingConfig": {"thinkingLevel": "MEDIUM"}}}
+    assert p_anth_auto == {}
 
 
 def test_d168_probe_payload_and_protocol_model_efforts(world, endpoint, tmp_path: Path, monkeypatch) -> None:

@@ -487,7 +487,7 @@ function Main() {
               returned={folded.returned}
               toolbar={<ModelControls rpc={rpc} convKey={convKey} phase={conv?.phase ?? "none"} info={modelInfo(conv?.entries ?? [])} openReq={modelOpenReq} pending={conv?.pending ?? null} />}
               onSlash={(cmd) => {
-                if (cmd === "/login" || cmd === "/logout") {
+                if (cmd === "/login") {
                   setModelOpenReq((r) => ({ which: "login", n: (r?.n ?? 0) + 1 }));
                   return true;
                 }

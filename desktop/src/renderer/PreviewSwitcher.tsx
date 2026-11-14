@@ -45,6 +45,8 @@ export function PreviewSwitcher({
   const [pickErr, setPickErr] = useState<string | null>(null);
   /** 下拉面板内展开的子目录（rel -> TreeEntry[] | "loading" | string 错误） */
   const [subOpen, setSubOpen] = useState<Record<string, boolean>>({});
+  const subOpenRef = useRef(subOpen);
+  subOpenRef.current = subOpen;
   const [subTrees, setSubTrees] = useState<Record<string, TreeEntry[] | "loading" | string>>({});
   /** 镜头画廊（从左侧栏移到预览切换器顶栏） */
   const [galleriesOpen, setGalleriesOpen] = useState(false);
@@ -78,14 +80,14 @@ export function PreviewSwitcher({
   // 已展开的子目录在 treeBump（如新导入封面）后也刷新
   useEffect(() => {
     if (!epKey || treeBump === 0) return;
-    for (const [dir, opened] of Object.entries(subOpen)) {
+    for (const [dir, opened] of Object.entries(subOpenRef.current)) {
       if (!opened) continue;
       rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: dir }).then(
         (sub) => setSubTrees((m) => ({ ...m, [dir]: sub })),
         (e) => setSubTrees((m) => ({ ...m, [dir]: errText(e) })),
       );
     }
-  }, [treeBump, epKey, rpc, subOpen]);
+  }, [treeBump, epKey, rpc]);
 
   useEffect(() => {
     if (galleriesOpen && reachOk) {

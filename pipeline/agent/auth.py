@@ -11,23 +11,25 @@ from __future__ import annotations
 
 import base64
 import contextlib
-from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import secrets
 import time
-from typing import Any, Iterator
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from pipeline import paths
 
 REFRESH_SKEW_MS = 60_000
+PENDING_TTL_MS = 30 * 60 * 1000
 DEFAULT_HTTP_TIMEOUT_S = 20.0
 ALLOWED_AUTH_MODES = frozenset({"proxy", "api_key", "oauth_pkce", "oauth_device"})
 
@@ -275,7 +277,23 @@ def _read_store_unlocked(path: Path) -> dict[str, Any]:
     return {"providers": dict(providers), "_pending": dict(pending)}
 
 
+def _prune_expired_pending(store: dict[str, Any], now_ms: int) -> None:
+    pending = store.get("_pending")
+    if not isinstance(pending, dict):
+        return
+    expired = [
+        k
+        for k, v in pending.items()
+        if not isinstance(v, dict)
+        or (isinstance(v.get("expires_at_ms"), (int, float)) and int(v["expires_at_ms"]) <= now_ms)
+        or (now_ms - int(v.get("created_at_ms") or v.get("created_at") or 0) > PENDING_TTL_MS)
+    ]
+    for k in expired:
+        pending.pop(k, None)
+
+
 def _write_store_unlocked(path: Path, data: dict[str, Any]) -> None:
+    _prune_expired_pending(data, _now_ms())
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -373,7 +391,7 @@ def _parse_callback_input(raw: str, expected_state: str | None) -> tuple[str, st
         raise AuthError("请粘贴授权回调链接或授权码")
     code = text
     state: str | None = None
-    if text.startswith("http://") or text.startswith("https://") or "?" in text:
+    if text.startswith(("http://", "https://")) or "?" in text:
         parsed = urllib.parse.urlparse(text)
         qs = urllib.parse.parse_qs(parsed.query)
         if qs.get("error"):
@@ -579,6 +597,7 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
         authorize_url = f"{oauth['authorize_url']}?{urllib.parse.urlencode(params)}"
         with _auth_lock(path):
             store = _read_store_unlocked(path)
+            _prune_expired_pending(store, now)
             store.setdefault("_pending", {})[spec.id] = {
                 "mode": "oauth_pkce",
                 "code_verifier": verifier,
@@ -611,6 +630,7 @@ def start_auth_flow(provider: str, mode: str | None = None, *, root: Path | None
         raise AuthError("GitHub 未返回有效的设备码信息")
     with _auth_lock(path):
         store = _read_store_unlocked(path)
+        _prune_expired_pending(store, now)
         store.setdefault("_pending", {})[spec.id] = {
             "mode": "oauth_device",
             "device_code": device_code,
@@ -711,6 +731,8 @@ def complete_auth_flow(
             pending = store.get("_pending", {}).get(spec.id)
         if not isinstance(pending, dict) or pending.get("mode") != "oauth_pkce":
             raise AuthError("尚未发起 OAuth 授权或会话已失效，请重新点击开始登录")
+        if now - int(pending.get("created_at_ms") or 0) > PENDING_TTL_MS:
+            raise AuthError("OAuth 授权会话已过期（超过 30 分钟），请重新点击开始登录")
         code, state = _parse_callback_input(raw_code, pending.get("state"))
         tok = _exchange_oauth_code(spec, code, str(pending["code_verifier"]), state)
         access = str(tok.get("access_token") or "").strip()
@@ -918,7 +940,10 @@ def first_authenticated_config(root: Path | None = None) -> dict[str, Any] | Non
         entry = providers.get(spec.id)
         if not isinstance(entry, dict) or not entry.get("type"):
             continue
-        cred = resolve_provider_credential(spec.id, root=root)
+        try:
+            cred = resolve_provider_credential(spec.id, root=root)
+        except AuthError:
+            continue
         if cred is None:
             continue
         models = cred["models"]

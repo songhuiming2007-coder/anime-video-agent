@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 # CLIProxyAPI 认的档位（apply.go：none → 关，auto → 动态，其余为档位名）
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
-# D154/D168：档位排序（none 当 off，含 max 供 Claude 4.6/5.5 等预算型模型；clamp_effort 照 Pi clampThinkingLevel）。
+# D154/D168：档位排序（none 当 off，含 max 供 Claude 4.6/5.5 等预算型模型；auto 置 xhigh 后供 Gemini/CPA 动态思考，clamp_effort 在支持集内按序就近回落）。
 EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "auto", "max")
 EFFORT_LABELS = {
     "none": "关", "minimal": "极低", "low": "低", "medium": "中",
@@ -75,7 +75,12 @@ def effective_config(cfg: LLMConfig | None, override: Override, *, root: Path | 
     if "/" in out.model:
         from pipeline.agent import auth
 
-        resolved = auth.resolve_model_provider(out.model, root=root)
+        try:
+            resolved = auth.resolve_model_provider(out.model, root=root)
+        except auth.AuthError as exc:
+            from pipeline.agent.llm import LLMError
+
+            raise LLMError(f"认证凭据不可用或续期失败: {exc}", retryable=True) from exc
         if resolved is not None:
             _pid, wire_model, cred = resolved
             out = replace(
@@ -247,6 +252,8 @@ def cache_models_metadata(data: list[Any], root: Path | None = None) -> None:
 
 
 def _maybe_cache_models_metadata(data: list[Any], root: Path | None = None) -> None:
+    # shortcut: pytest 常以打桩调 discover_models 且不传 tmp_path root，为免污染真实仓 config/agent/models.local.json，
+    # 测试默认 root=None 下跳过落盘；显式传 root 的缓存单测仍走真实写盘。
     if root is None and not os.environ.get("AVA_MODELS_CACHE_PATH", "").strip() and "pytest" in sys.modules:
         return
     cache_models_metadata(data, root=root)
@@ -447,16 +454,11 @@ def apply_effort_to_extra_body(
     if protocol == "anthropic-messages":
         from pipeline.agent.compact import THINKING_BUDGETS
 
+        # shortcut: Anthropic 合法 thinking.type 仅 enabled/disabled；auto 不发 thinking 键交服务端默认
         if lvl == "auto":
-            payload["thinking"] = {"type": "adaptive"}
-        else:
-            budget = THINKING_BUDGETS.get(lvl, 8192)
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        return payload
-    if protocol == "google-gemini":
-        gen = payload.setdefault("generationConfig", {})
-        if isinstance(gen, dict):
-            gen["thinkingConfig"] = {"thinkingLevel": lvl.upper()}
+            return payload
+        budget = THINKING_BUDGETS.get(lvl, 8192)
+        payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         return payload
     req = effort_request(model, lvl, root=root)
     if req is not None:
@@ -512,7 +514,7 @@ def store_path(log_dir: Path) -> Path:
 def _parse(raw: str) -> dict[str, dict[str, Any]]:
     data = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError("顶层不是对象")
+        raise TypeError("顶层不是对象")
     return {str(k): v for k, v in data.items() if isinstance(v, dict)}
 
 
@@ -540,7 +542,7 @@ def load(log_dir: Path | None, sid: str | None) -> tuple[Override, str | None]:
         return Override(), f"读不了 {path.name}（{exc}），本会话按默认模型"
     try:
         return _from_entry(_parse(raw).get(sid)), None
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         return Override(), f"{path.name} 无法解析（{exc}），本会话按默认模型"
 
 
@@ -566,7 +568,7 @@ def save(log_dir: Path, sid: str, override: Override) -> None:
             data = _parse(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {}
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             raise ModelSwitchError(f"{path.name} 无法解析，拒绝覆盖：{exc}") from None
         if override.empty:
             if sid not in data:

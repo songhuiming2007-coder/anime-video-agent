@@ -408,7 +408,7 @@ export function LoginModal({
                 {mode === "oauth_pkce" && (
                   <div className="login-form">
                     <div className="login-oauth-step">
-                      <span className="muted">第 1 步：生成 PKCE S256 授权链接并在浏览器打开</span>
+                      <span className="muted">第 1 步：生成 PKCE S256 授权链接，复制并在系统浏览器中打开</span>
                       <div className="login-actions">
                         <button
                           type="button"
@@ -419,28 +419,18 @@ export function LoginModal({
                         >
                           {started?.authorize_url ? "重新生成授权链接" : "生成授权链接"}
                         </button>
-                        {started?.authorize_url && (
-                          <a
-                            className="ui-btn ui-btn--primary"
-                            href={started.authorize_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-testid="login-oauth-open-link"
-                          >
-                            打开授权页
-                          </a>
-                        )}
                       </div>
                       {started?.authorize_url && (
                         <div className="login-url-box">
                           <code className="login-url-text" data-testid="login-authorize-url">{started.authorize_url}</code>
                           <button
                             type="button"
-                            className="ui-btn ui-btn--ghost ui-btn--sm"
+                            className="ui-btn ui-btn--primary ui-btn--sm"
+                            data-testid="login-copy-url-btn"
                             onClick={() => copyText("url", started.authorize_url ?? "")}
                           >
                             <Icon name="copy" size="sm" />
-                            {copiedKey === "url" ? "已复制" : "复制"}
+                            {copiedKey === "url" ? "已复制链接" : "复制链接后到浏览器打开"}
                           </button>
                         </div>
                       )}
@@ -455,6 +445,11 @@ export function LoginModal({
                         onChange={(e) => setAuthCode(e.target.value)}
                       />
                     </label>
+                    {started?.redirect_uri?.includes("localhost:") && (
+                      <div className="login-hint-note" data-testid="login-localhost-callback-note">
+                        提示：授权后浏览器跳转至 <code>{started.redirect_uri}</code> 显示「无法访问此网站 / 连接被拒绝」属正常现象（无需本地回调服务），请直接复制浏览器地址栏中的完整回调链接粘贴到上方输入框。
+                      </div>
+                    )}
                     <div className="login-actions">
                       <button
                         type="button"
@@ -472,7 +467,7 @@ export function LoginModal({
                 {mode === "oauth_device" && (
                   <div className="login-form">
                     <div className="login-oauth-step">
-                      <span className="muted">第 1 步：获取 GitHub 设备码并在浏览器完成授权</span>
+                      <span className="muted">第 1 步：获取 GitHub 设备码，复制链接到系统浏览器输入设备码完成授权</span>
                       <div className="login-actions">
                         <button
                           type="button"
@@ -483,17 +478,21 @@ export function LoginModal({
                         >
                           {started?.user_code ? "重新获取设备码" : "获取 GitHub 设备码"}
                         </button>
-                        {started?.verification_uri && (
-                          <a
-                            className="ui-btn"
-                            href={started.verification_uri}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            打开 GitHub 授权页
-                          </a>
-                        )}
                       </div>
+                      {started?.verification_uri && (
+                        <div className="login-url-box">
+                          <code className="login-url-text" data-testid="login-device-url">{started.verification_uri}</code>
+                          <button
+                            type="button"
+                            className="ui-btn ui-btn--primary ui-btn--sm"
+                            data-testid="login-copy-url-btn"
+                            onClick={() => copyText("url", started.verification_uri ?? "")}
+                          >
+                            <Icon name="copy" size="sm" />
+                            {copiedKey === "url" ? "已复制链接" : "复制链接后到浏览器打开"}
+                          </button>
+                        </div>
+                      )}
                       {started?.user_code && (
                         <div className="login-device-card">
                           <span className="muted">一次性设备码：</span>

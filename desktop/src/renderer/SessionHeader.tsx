@@ -236,9 +236,8 @@ export const EFFORT_DEFAULT_LIST: readonly string[] = ["none", "minimal", "low",
 export function clientFamilyEfforts(model: string | null): string[] {
   if (!model) return [...EFFORT_DEFAULT_LIST];
   const low = model.trim().toLowerCase();
-  const slash = low.indexOf("/");
-  const bare = slash >= 0 ? low.slice(slash + 1) : low;
-  if (["claude-opus-4-6", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"].some((p) => bare.includes(p))) {
+  const bare = low.includes("/") ? low.slice(low.lastIndexOf("/") + 1) : low;
+  if (["claude-opus-4-6", "claude-opus-4.6", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5"].some((p) => bare.includes(p))) {
     return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
   }
   if (bare.startsWith("claude-") || bare.startsWith("gpt-5") || bare.startsWith("gpt-6") || bare.startsWith("o1") || bare.startsWith("o3") || bare.startsWith("o4") || bare.includes("codex")) {
@@ -264,8 +263,11 @@ export function resolveSupportedEfforts(
 ): string[] {
   if (model && modelEfforts) {
     if (model in modelEfforts) return [...modelEfforts[model]];
-    const slash = model.indexOf("/");
-    const bare = slash >= 0 ? model.slice(slash + 1) : model;
+    const firstSlash = model.indexOf("/");
+    const rest = firstSlash >= 0 ? model.slice(firstSlash + 1) : model;
+    if (rest in modelEfforts) return [...modelEfforts[rest]];
+    const lastSlash = model.lastIndexOf("/");
+    const bare = lastSlash >= 0 ? model.slice(lastSlash + 1) : model;
     if (bare in modelEfforts) return [...modelEfforts[bare]];
   }
   if (directEfforts && directEfforts.length > 0) {
@@ -430,7 +432,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   };
   useEffect(() => {
     void rpc.call<AuthStatusResult>("auth.status", {}).then(setAuthStatus, () => {});
-  }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!openReq) return;
     if (openReq.which === "login") {
