@@ -136,6 +136,12 @@ def _launch_persistent_context(pw: Any, profile_dir: Path, *, headless: bool) ->
             headless=headless,
             os=CAMOUFOX_OS,
             env=browser_env(),
+            # Colab 的 outputframe 跑在 *.colab.googleusercontent.com 跨站沙箱域下，
+            # 仅在本隔离 Colab 档案内放开跨站 Cookie，避免「third-party cookies are not allowed」弹窗。
+            firefox_user_prefs={
+                "network.cookie.cookieBehavior": 0,
+                "privacy.trackingprotection.enabled": False,
+            },
         )
     except Exception as exc:
         hint = (
@@ -208,13 +214,15 @@ def _handle_colab_modals(ctx: Any, main_page: Any, log_fn: Callable[[str], None]
                     "Google 账号在 Drive OAuth 弹窗要求重新输入密码/二次验证，"
                     "请运行一次 `cloud connect --provider colab --browser-login` 完成授权。"
                 )
-            acct = p.locator("[data-email], [data-identifier]").first
-            if acct.count() > 0 and acct.is_visible():
-                acct.click(timeout=2000)
-                log_fn("[*] 已在 Google OAuth 弹窗选择已登录账号")
-                time.sleep(2)
-                clicked = True
-                continue
+            # 先处理权限勾选框与 Continue / Allow 提交按钮（同意页顶部也带 data-email 徽章，不可先点它）
+            try:
+                select_all = p.get_by_role("checkbox", name=re.compile(r"Select all|全选", re.I)).first
+                if select_all.count() > 0 and select_all.is_visible() and not select_all.is_checked():
+                    select_all.check(timeout=1500)
+                    log_fn("[*] 已在 Google OAuth 弹窗勾选全选权限")
+            except Exception:
+                pass
+            submitted = False
             for pat in (r"^Continue$|^继续$", r"^Allow$|^允许$"):
                 btn = p.get_by_role("button", name=re.compile(pat, re.I)).first
                 if btn.count() > 0 and btn.is_visible() and btn.is_enabled():
@@ -227,7 +235,19 @@ def _handle_colab_modals(ctx: Any, main_page: Any, log_fn: Callable[[str], None]
                     log_fn(f"[*] 已在 Google OAuth 弹窗点击: {label}")
                     time.sleep(2)
                     clicked = True
+                    submitted = True
                     break
+            if submitted:
+                continue
+            # 仅当当前是纯账号选择页（无 Continue/Allow 按钮）且未跳转时才点账号项
+            if "oauthchooseaccount" in pu or "accountchooser" in pu:
+                acct = p.locator("[data-email], [data-identifier]").first
+                if acct.count() > 0 and acct.is_visible():
+                    acct.click(timeout=2000)
+                    log_fn("[*] 已在 Google OAuth 账号选择页点击已登录账号")
+                    time.sleep(2)
+                    clicked = True
+                    continue
         except RuntimeError:
             raise
         except Exception:
@@ -397,6 +417,10 @@ def auto_boot_colab_ssh(
                         _trigger_colab_run_all(page)
                         time.sleep(2)
                         continue
+                if "ValueError: mount failed" in all_text:
+                    raise RuntimeError(
+                        "Colab Google Drive 挂载失败（mount failed），可能是 OAuth 弹窗未完成授权。"
+                    )
                 if detect_colab_login_required(cur_url, all_text):
                     raise RuntimeError(
                         "Colab 页面跳转到登录框（Cookie 已过期），请运行：\n"
