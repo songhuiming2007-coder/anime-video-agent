@@ -58,7 +58,7 @@ REQUEST_ID_BYTES = 16
 # 临界区工具（§2.2 第 3 条）：显式字面量，TG-5 比对它与「side_effect 为真的工具 − run_pipeline」。
 # Spec 12：cover_edit 不标 side_effect（fail-closed 弹卡）→ 必须同步进临界区。ADR-0028：write_note 同理。
 CRITICAL_TOOLS = frozenset(
-    {"write_episode_file", "acquire_propose", "write_memory", "browser", "cover_edit", "write_note", "fact_add"}
+    {"write_episode_file", "acquire_propose", "write_memory", "browser", "chrome", "cover_edit", "write_note", "fact_add"}
 )
 
 # ADR-0030 决策 5：卡片答复「本会话都批准」——批准本次，并让本会话进程内同类（同 allow_key）此后免卡
@@ -467,6 +467,19 @@ def review_tool_call(
         if not tags:
             return ToolVerdict("allow", echo=_echo_line(name, args))
         allow_key = "bash:" + "".join(sorted(set(tags)))
+    elif name == "chrome":
+        from pipeline.agent.status_card import chrome_danger_tags
+        from pipeline.agent.web_chrome import coerce_page_id, precheck_chrome_access
+
+        precheck_err = precheck_chrome_access(str(args.get("action") or ""), args, root=root)
+        if precheck_err:
+            return ToolVerdict("reject", reason=precheck_err)
+        danger_tags = chrome_danger_tags(args, root=root)
+        if not danger_tags:
+            return ToolVerdict("allow", echo=_echo_line(name, args))
+        # 仅涉及同个既有标签页的常规操作允许本会话放行；JS 执行与高敏站点交互固定逐次审批
+        if danger_tags == ["[用户既有标签页]"]:
+            allow_key = f"chrome:existing:{coerce_page_id(args.get('page_id'))}"
     elif name == "run_pipeline":
         from pipeline.agent.tools import strip_provider_flags
 
@@ -497,6 +510,7 @@ def review_tool_call(
         request=_tool_request(
             name, args, argv, ep_dir, status, memory_plan, turn_id, loop_label=loop_label,
             command_preview=command_preview, session_allow=allow_key is not None, card_summary=card_summary,
+            root=root,
         ),
         allow_key=allow_key,
     )
@@ -586,6 +600,12 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
         lines = str(args.get("command", "")).strip().splitlines()
         first = lines[0] if lines else ""
         summary = (first[:80] + "…") if len(first) > 80 or len(lines) > 1 else first
+    elif name == "chrome":
+        act = str(args.get("action", "")).strip()
+        target = str(args.get("url") or "").strip()
+        if not target and args.get("page_id") is not None:
+            target = f"tab#{args.get('page_id')}"
+        summary = " · ".join(p for p in (act, target) if p)
     elif name == "search_notes" and args.get("source") == "subs":
         parts = ["[字幕]", str(args.get("episode", "")).strip(), str(args.get("query", "")).strip()]
         summary = " ".join(p for p in parts if p)
@@ -693,6 +713,7 @@ def _tool_request(
     command_preview: list[str] | None = None,
     session_allow: bool = False,
     card_summary: list[str] | None = None,
+    root: Path | None = None,
 ) -> HumanRequest:
     from pipeline.agent.memory import render_plan_preview
     from pipeline.agent.status_card import render_approval_card
@@ -716,6 +737,7 @@ def _tool_request(
         episode_dir=ep_dir,
         memory_preview=render_plan_preview(memory_plan) if memory_plan else None,
         command_preview=command_preview,
+        root=root,
     )
     body = card.split("\n")
     if body and body[-1].strip().startswith("└─"):

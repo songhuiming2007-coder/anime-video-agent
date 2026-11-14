@@ -284,7 +284,7 @@ RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
 
 # 回合脚注的查证计数（2026-10-09，D48 ①）：四类，桌面端照实显示，不判断模型编没编
 LOOKUP_KINDS: tuple[str, ...] = ("subs", "presence", "notes", "web")
-_WEB_TOOLS = frozenset({"web_search", "web_fetch", "crawl", "browser"})
+_WEB_TOOLS = frozenset({"web_search", "web_fetch", "crawl", "browser", "chrome"})
 
 
 def lookup_kind(name: str, args: dict[str, Any]) -> str | None:
@@ -1099,6 +1099,93 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                           "description": "screenshot 可选：像素密度倍数，缺省 2；正文栏窄、回执门禁 FAIL 时用 3 或 4 重截"},
             },
             "required": ["action", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    "chrome": {
+        "name": "chrome",
+        "adr": "plans/2026-11-14-chrome-devtools-mcp-spec.md",
+        "description": (
+            "主力 Chrome 后台通道（chrome-devtools-mcp --autoConnect，连接用户日常 Chrome 144+ 登录态）。"
+            "公开网页仍先走 web_fetch / crawl / browser；本工具仅在需主力账号登录态、多步点击展开/拦截 XHR、"
+            "或协助处理用户已在 Chrome 打开的页面时使用。"
+            "新建页固定后台打开、不切前台；默认只读并限制操作与关闭 AVA 自建标签页，"
+            "读取/操作用户既有标签页须显式传 allow_existing=true 经人审批准。"
+            "extract_text 写入 fetch-log 留档池供 fact_add 引用；screenshot 默认保存至缓存并随本轮附图回看，"
+            "传 save_evidence=true（须写 reason，可选 expect_text/name）才按 D122 落 data/library/incoming/。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "list_pages",
+                        "open",
+                        "navigate",
+                        "close",
+                        "snapshot",
+                        "extract_text",
+                        "screenshot",
+                        "click",
+                        "fill",
+                        "wait_for",
+                        "list_network",
+                        "get_network",
+                        "evaluate",
+                    ],
+                },
+                "url": {"type": "string", "description": "open / navigate(nav_type=url) 目标 URL"},
+                "page_id": {"type": "integer", "description": "目标标签页 ID（由 open 或 list_pages 返回）"},
+                "allow_existing": {
+                    "type": "boolean",
+                    "description": "操作非本会话 open 打开的用户既有标签页时必须显式置 true（将弹审批卡）",
+                },
+                "nav_type": {
+                    "type": "string",
+                    "enum": ["url", "back", "forward", "reload"],
+                    "description": "navigate 方式，默认 url",
+                },
+                "uid": {"type": "string", "description": "snapshot 返回的元素 uid（click / fill 必填，screenshot 可选）"},
+                "value": {"type": "string", "description": "fill 填入的文本值"},
+                "dbl_click": {"type": "boolean", "description": "click 是否双击，默认 false"},
+                "include_snapshot": {"type": "boolean", "description": "click / fill 后是否附带最新 snapshot"},
+                "verbose": {"type": "boolean", "description": "snapshot 是否返回完整无障碍树"},
+                "text": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                    "description": "wait_for 等待出现的文本或文本数组",
+                },
+                "visible": {"type": "boolean", "description": "wait_for 是否要求可见"},
+                "timeout_ms": {"type": "integer", "description": "wait_for 超时毫秒数"},
+                "resource_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "list_network 过滤资源类型（如 [\"xhr\", \"fetch\"]）",
+                },
+                "page_size": {"type": "integer", "description": "list_network 每页条数"},
+                "page_idx": {"type": "integer", "description": "list_network 页码（从 0 起）"},
+                "include_preserved": {"type": "boolean", "description": "list_network 是否包含最近 3 次导航历史请求"},
+                "reqid": {"type": "integer", "description": "get_network 目标请求 reqid（由 list_network 返回）"},
+                "function": {"type": "string", "description": "evaluate 执行的 JS 函数源码，例如 () => document.title"},
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "evaluate 可选元素 uid 参数列表",
+                },
+                "wait_for_stable_dom": {"type": "boolean", "description": "evaluate 前是否等待 DOM 稳定"},
+                "full_page": {"type": "boolean", "description": "screenshot 是否整页截图（未传 uid 时有效）"},
+                "save_evidence": {
+                    "type": "boolean",
+                    "description": "screenshot 为 true 时按 D122 存进 incoming 并写台账；默认 false 仅缓存并返回附图",
+                },
+                "reason": {"type": "string", "description": "操作原因或 screenshot 物证用途（save_evidence=true 时必填）"},
+                "expect_text": {"type": "string", "description": "screenshot(save_evidence=true) 可选：页面须含的证言文本"},
+                "name": {"type": "string", "description": "screenshot(save_evidence=true) 可选：入库文件名提示"},
+            },
+            "required": ["action"],
             "additionalProperties": False,
         },
     },
@@ -2101,6 +2188,51 @@ def _save_screenshot(res: dict[str, Any], reason: str, name: str, ctx: ToolConte
     return save_screenshot(res, reason, name, sid=ctx.session_id, root=ctx.root, origin="session")
 
 
+def _tool_chrome(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from pipeline.agent.web_chrome import chrome_action, coerce_bool_flag
+
+    action = str(args.get("action", "")).strip()
+    url_raw = args.get("url")
+    url = str(url_raw).strip() if url_raw is not None else None
+    save_evidence = coerce_bool_flag(args.get("save_evidence"), False)
+    reason = str(args.get("reason") or "").strip()
+
+    res = chrome_action(
+        action,
+        url=url,
+        page_id=args.get("page_id"),
+        allow_existing=coerce_bool_flag(args.get("allow_existing"), False),
+        nav_type=str(args.get("nav_type") or "url").strip(),
+        uid=str(args.get("uid")).strip() if args.get("uid") is not None else None,
+        value=str(args.get("value")) if args.get("value") is not None else None,
+        dbl_click=coerce_bool_flag(args.get("dbl_click"), False),
+        include_snapshot=coerce_bool_flag(args.get("include_snapshot"), False),
+        verbose=coerce_bool_flag(args.get("verbose"), False),
+        text=args.get("text"),
+        visible=coerce_bool_flag(args.get("visible"), False),
+        timeout_ms=args.get("timeout_ms"),
+        resource_types=args.get("resource_types"),
+        page_size=args.get("page_size"),
+        page_idx=args.get("page_idx"),
+        include_preserved=coerce_bool_flag(args.get("include_preserved"), False),
+        reqid=args.get("reqid"),
+        function=str(args.get("function")) if args.get("function") is not None else None,
+        eval_args=args.get("args"),
+        wait_for_stable_dom=coerce_bool_flag(args.get("wait_for_stable_dom"), False),
+        full_page=coerce_bool_flag(args.get("full_page"), False),
+        save_evidence=save_evidence,
+        reason=reason or None,
+        expect_text=str(args.get("expect_text")).strip() if args.get("expect_text") else None,
+        root=ctx.root,
+        keep_full=True,
+    )
+    if action == "screenshot" and save_evidence:
+        return _save_screenshot(res, reason, str(args.get("name") or "").strip(), ctx)
+    if action == "extract_text" and "full_text" in res:
+        return _keep_record(res, "browser", str(res.get("final_url") or res.get("url") or url or ""), ctx)
+    return res
+
+
 def memory_store_for(
     args: dict[str, Any], session_kind: str, project_dir: Path | None, root: Path | None
 ) -> tuple[Any, dict[str, Any]]:
@@ -2345,6 +2477,7 @@ _TOOL_IMPLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "acquire_propose": _tool_acquire_propose,
     "crawl": _tool_crawl,
     "browser": _tool_browser,
+    "chrome": _tool_chrome,
     "write_memory": _tool_write_memory,
     "cover_edit": _tool_cover_edit,
     "write_note": _tool_write_note,

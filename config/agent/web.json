@@ -21,5 +21,21 @@
     "timeout_s": 60,
     "cookies_for": ["youtube.com", "youtu.be", "bilibili.com", "x.com", "twitter.com"]
   },
+  "chrome": {
+    "command": "npx",
+    "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--redactNetworkHeaders"],
+    "timeout_s": 45,
+    "max_chars": 20000,
+    "sensitive_hosts": [
+      "accounts.google.com",
+      "myaccount.google.com",
+      "passport.bilibili.com",
+      "pay.bilibili.com",
+      "studio.youtube.com",
+      "member.bilibili.com",
+      "pay.weixin.qq.com",
+      "alipay.com"
+    ]
+  },
   "trusted_fake_ip_ranges": []
 }

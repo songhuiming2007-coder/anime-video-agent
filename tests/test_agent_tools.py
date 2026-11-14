@@ -441,6 +441,7 @@ SPEC_TOOLS = [
     "acquire_propose",
     "crawl",
     "browser",
+    "chrome",
     "write_memory",
     "cover_edit",
     "write_note",

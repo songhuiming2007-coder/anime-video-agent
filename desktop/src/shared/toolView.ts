@@ -20,6 +20,7 @@ export const TOOL_CATEGORY: Readonly<Record<string, string>> = {
   web_fetch: "网页",
   crawl: "网页",
   browser: "网页",
+  chrome: "网页",
   acquire_propose: "素材",
 };
 

@@ -346,6 +346,41 @@ def bash_danger_tags(command: str) -> list[str]:
     return tags
 
 
+def chrome_danger_tags(args: dict[str, Any], *, root: Path | None = None) -> list[str]:
+    """chrome 工具命中的硬危险标记：默认日常浏览与自有后台页操作免卡，仅硬危险弹卡（ADR-0030）。"""
+    from pipeline.agent.web_chrome import (
+        coerce_bool_flag,
+        coerce_page_id,
+        is_owned_page,
+        is_sensitive_host,
+        known_page_url,
+        load_chrome_section,
+    )
+
+    action = str(args.get("action") or "").strip()
+    pid = coerce_page_id(args.get("page_id"))
+    tags: list[str] = []
+
+    if action == "evaluate":
+        tags.append("[JS 执行]")
+
+    if (pid is not None and not is_owned_page(pid)) or coerce_bool_flag(args.get("allow_existing"), False):
+        if action != "list_pages" and action != "open":
+            tags.append("[用户既有标签页]")
+
+    if action in {"click", "fill", "evaluate"}:
+        try:
+            sensitive_hosts = load_chrome_section(root).sensitive_hosts
+        except Exception:
+            sensitive_hosts = None
+        # 同时检查页表登记的真实 URL 与参数 url：防止模型传无关 args.url 遮蔽高敏页判定
+        candidate_urls = (known_page_url(pid), str(args.get("url") or "").strip())
+        if any(u and is_sensitive_host(u, sensitive_hosts) for u in candidate_urls):
+            tags.append("[高敏站点交互]")
+
+    return tags
+
+
 def render_approval_card(
     name: str,
     args: dict[str, Any],
@@ -356,6 +391,7 @@ def render_approval_card(
     episode_dir: Path | str | None = None,
     memory_preview: list[str] | None = None,
     command_preview: list[str] | None = None,
+    root: Path | None = None,
 ) -> str:
     """标准化人机审批卡片渲染纯函数（Spec §3.2, §6 PR6）。
 
@@ -510,6 +546,39 @@ def render_approval_card(
             "│ 危险标记: 无",
             "└─ 执行? [y/N]: ",
         ])
+        return "\n".join(lines)
+
+    if name == "chrome":
+        from pipeline.agent.web_chrome import coerce_page_id, known_page_url
+
+        action = _sanitize_card_field(args.get("action")) or "?"
+        pid = coerce_page_id(args.get("page_id"))
+        tags = chrome_danger_tags(args, root=root)
+        actual_url = _sanitize_card_field(known_page_url(pid))
+        arg_url = _sanitize_card_field(args.get("url"))
+        lines = [
+            "┌─ Chrome 浏览器审批 ─────────────────────────────────",
+            f"│ 工具: {name}",
+            f"│ 危险标记: {' '.join(tags) if tags else '无'}",
+            f"│ 动作: {action}" + (f" (page_id={pid})" if pid is not None else ""),
+        ]
+        if actual_url:
+            lines.append(f"│ 目标页: {actual_url}")
+        if arg_url and arg_url != actual_url:
+            label = "附带 url" if actual_url else "目标页"
+            lines.append(f"│ {label}: {arg_url}")
+        if tags == ["[用户既有标签页]"]:
+            lines.append("│ 提示: 若选「本会话都批准」，本会话内此页常规操作均放行（JS 执行/高敏站点仍逐次审批）")
+        if args.get("uid"):
+            lines.append(f"│ 元素 uid: {_sanitize_card_field(args.get('uid'))}")
+        if args.get("value") is not None:
+            lines.append(f"│ 输入内容: {_sanitize_card_field(str(args.get('value'))[:120])}")
+        if args.get("function"):
+            fn_preview = _sanitize_card_field(str(args.get("function")).strip().splitlines()[0][:120])
+            lines.append(f"│ 脚本: {fn_preview}")
+        if args.get("reason"):
+            lines.append(f"│ 理由: {_sanitize_card_field(args.get('reason'))}")
+        lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 
     # run_pipeline 或通用执行类工具
