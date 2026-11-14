@@ -87,7 +87,8 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 | `/memory` | 全阶段 | 跨期记忆：`show`（默认）/ `check` / `ack` / `digest` | 查看记忆全文；外部改动后 ack 对齐；聚合驳回反馈提议新条目 |
 | `/compact` | 全阶段 | 手动压缩当前会话上下文 | 长会话泄压，保留尾部预算与关键决策，读数带分母 |
 | `/model` | 全阶段 | 看 / 切换**本会话**模型：`/model`、`/model <名>`、`/model default` | 只影响当前会话（按会话记住，重开还在）；新会话仍用 `agent.local.json` 的默认。桌面端输入框下方的模型按钮同一条路；桌面端发裸 `/model` 直接展开模型下拉（`/thinking` 同理），点一行才切换 |
-| `/thinking` | 全阶段 | 看 / 切换本会话推理强度：`/thinking <none\|minimal\|low\|medium\|high\|xhigh\|auto>`、`/thinking default` | 请求带 `reasoning_effort`；`default` = 不发，由模型自定。桌面端输入框下方的推理按钮同一条路 |
+| `/thinking` | 全阶段 | 看 / 切换本会话推理强度：`/thinking <none\|minimal\|low\|medium\|high\|xhigh\|auto\|max>`、`/thinking default` | 请求带 `reasoning_effort`；`default` = 不发，由模型自定。桌面端输入框下方的推理按钮同一条路（GUI 分段滑块 + `Shift+Tab` 循环，D168） |
+| `/login` `/logout` | 全阶段 | 查看 / 登录 / 登出模型服务商：`/login [<provider> [<api_key>]]`、`/logout <provider>`（44 家，D170） | 凭据落 `config/auth.local.json`（0600）；桌面端工具栏登录按钮与模型下拉同一条路 |
 | `/help` | 全阶段 | 查看命令列表 | 随时查看帮助提示 |
 | `/quit` `/exit` | 全阶段 | 退出 ava 交互终端 | 进度 100% 依赖落盘文件，随时安全退出 |
 
@@ -119,7 +120,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
 **按键纪律**：
 
 - **默认 N**：回车、EOF、任何非 `y` 输入一律不执行——注意只有单个 `y` 算批准，敲 `yes` 不算。
-- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` / `browser` 及单条只读 `bash` 命令免卡；`run_pipeline` 里的只读命令（下表粗体项）同样免卡。其余写盘、出网、改配置或调流水线的工具一律弹审批卡。
+- **只读工具免卡**：`read_artifact` / `read_status` / `search_notes` / `list_episodes` / `web_search` / `web_fetch` / `crawl` / `browser` / `chrome` 及单条只读 `bash` 命令免卡；`run_pipeline` 里的只读命令（下表粗体项）同样免卡。其余写盘、出网、改配置或调流水线的工具一律弹审批卡。（`chrome` 连的是你日常用的主力 Chrome：常规浏览与自建后台页免卡，只有 JS 执行、碰你既有标签页、以及在高敏站点上点击/输入才弹卡。）
 - **拒收不弹卡**：`--force`、白名单外、未注册的工具、无期会话里需要期目录的工具在弹卡**之前**就被拦下，直接 `[REJECT] <具体拒因>` 回喂模型（它分得清「护栏拒的」和「你拒的」）。（2026-10-08 修订（D43 / Spec 17）：原「未注册/超 scope」——「超 scope」拒绝已随 D43 废除，所有模式开放全部工具。）
 - **留痕**：每次按键都追加一行到 `data/episodes/<期>/_agent/approvals.jsonl`（时间、工具、规范化命令、y/n、决策耗时秒数）——这是审批疲劳的唯一读数来源。
 
@@ -138,7 +139,7 @@ ava <期号> /run tts   # ⚠️ 人手敲的这一行 = 已确认，不弹卡�
     `faces` detect / cluster / sheet / name / presence；
     `calibration` **show** / set（写 config 标定值，D60，卡上标 `[全局配置]`）；
   - 整模块不补期目录：`notes_review <番>`（笔记对抗审查，每集一次模型调用，D61）；
-    `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames / fix-env（`exec` 永久禁用）；
+    `cloud` status / logs / doctor / up / down / run / push / pull / relocate-data / clean-frames / fix-env / connect（弹卡）/ use（弹卡）/ sync-code / lib-push / lib-captions / lib-pull / hold / release，`--provider <autodl\|colab\|colab-drive>` 可逐命令临时切换云端后端（`exec` 永久禁用）；
 - **参数自动补齐**：敲 `/run clips` 会自动注入当前期的完整路径；敲 `/run tts --redo 3` 也会自动注入当期路径；
 - **坚决拒收**：`--force` 与 `--force-all` 会被当场拦截，并指引你使用增量参数 `--redo <段号>` 或 `--apply-patch`。
 
@@ -221,7 +222,8 @@ done          # 顺听录入完毕，退出并询问是否立即执行增量重�
 - **环境变量**：在 `~/.zshrc` 里确保 `export CPA_API_KEY="..."`（密钥绝不写进仓库文件）；
 - **无模型降级**：未起 CPA 或未配 Key 时，任何自然语言输入都打印 `[降级模式·本地纯指示]` 并给出人工清单，
   **快捷键照常可用**，不抛裸异常；`/chat` `/script` 同样降级退出。
-- **网络工具配置同理**：`config/agent/web.local.json` 存在时**整份取代** `web.json`（不做深合并，search/fetch/crawl/browser 段要写全，缺段等于该段没配）。
+- **网络工具配置同理**：`config/agent/web.local.json` 存在时**整份取代** `web.json`（不做深合并，search/fetch/crawl/browser/chrome 段要写全，缺段等于该段没配）。
+- **多服务商登录（D170）**：`/login` 管 44 家服务商凭据（OAuth / API Key / CPA 代理），落盘 `config/auth.local.json`（0600，不进 git）；登录后 `/model` 下拉里直接出现 `<provider>/<model>` 可切。
 
 ---
 

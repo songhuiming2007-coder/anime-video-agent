@@ -2473,7 +2473,7 @@ def _run_repl_body(
                 print("  /compact     压缩上下文：较早的对话并成一条摘要，保留近期原文（D62）")
                 print("  /model       看 / 切换本会话模型：/model、/model <名>、/model default（D91）")
                 print("  /thinking    看 / 切换本会话推理强度：/thinking、/thinking <none|low|medium|high|…>、/thinking default")
-                print("  /login       查看或登录 10 家模型服务商（/login [<provider> [<api_key>]]、/logout <provider>）（D170）")
+                print("  /login       查看或登录 44 家模型服务商（/login [<provider> [<api_key>]]、/logout <provider>）（D170）")
                 print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
                 print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")

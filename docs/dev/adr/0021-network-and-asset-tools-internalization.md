@@ -12,6 +12,8 @@ status: accepted
 依据：Hermes 工具系统调研（2026-09-22）、STANDARD.md 五节反爬升级链（2026-09-03 立）、scout-handoff 八会话施工复盘
 
 > **修订注（2026-10-15，ADR-0032）**：工具表取消数量硬上限，改为软约束（每个工具的 `adr` 字段指向现存 ADR 或施工图，出处里回答「为什么不复用现有工具」）。本文中的封顶数字已失效。
+>
+> **修订注（2026-11-14）**：升级链增第四级 `chrome`（`chrome-devtools-mcp --autoConnect` 接主力 Chrome 登录态；公开页仍先走 `web_fetch` / `crawl` / `browser`），规格见 plans/2026-11-14-chrome-devtools-mcp-spec.md。「browser 不接主力 Chrome Default 配置」的边界不变，`chrome` 是经显式授权的通道。
 
 > **修订注（2026-10-15，D96）**：第三级浏览器由 Playwright 启动的 Chromium（`data/browser-profile`）改为 Camoufox（Firefox 内核，`data/browser-profile-firefox`）：Chromium 里 Google 拒绝登录，YouTube 不登录过不了 bot 检查；Camoufox 下 Google 等 8 个站登录、重开保持均实测通过。yt-dlp 改读配置目录下的 `cookies.sqlite`（`--cookies-from-browser firefox:<目录>`，不经钥匙串），仍是「整个目录交给 yt-dlp，AVA 不碰 cookie 本体」。人补登录走 `uv run python -m pipeline.agent.web_browser login [URL ...]`。依据见 [实测记录](../plans/2026-10-15-browser-login-options.md)、[施工图](../plans/2026-10-15-browser-camoufox-spec.md)。
 

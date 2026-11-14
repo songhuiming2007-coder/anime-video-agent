@@ -82,7 +82,7 @@
 ## 四、失败处理
 
 - **诚实失败优于凑合交付。** 拿不到关键素材、配音反复不自然、检索无匹配——立即停下报告，不许降低标准硬交。这是本项目最重要的一条。
-- **源抓不到 ≠ 放弃，严禁偷懒降级为水百科（2026-09-03 立）。** 主 agent 或 subagent 调研剧情、考据论坛长评（Bangumi、知乎、贴吧、B站专栏等）时遇反爬（403、Cloudflare、验证码、JS 渲染阻断）是常态不是意外。**严禁因静态获取失败就偷懒退回简略百科交差**；必须执行仓内工具升级链：`web_fetch` 静态抓取失败 → 升级 `crawl`（无头渲染，遇反爬开 stealth 绕盾）；确需登录态或复杂交互 → 升级 `browser`（独立持久化 profile；ADR-0030 起免卡），严禁直连主力 Chrome Default 配置。宁可多花 10 分钟提取一手深度文本，绝不拿二手粗糙概括充数。
+- **源抓不到 ≠ 放弃，严禁偷懒降级为水百科（2026-09-03 立）。** 主 agent 或 subagent 调研剧情、考据论坛长评（Bangumi、知乎、贴吧、B站专栏等）时遇反爬（403、Cloudflare、验证码、JS 渲染阻断）是常态不是意外。**严禁因静态获取失败就偷懒退回简略百科交差**；必须执行仓内工具升级链：`web_fetch` 静态抓取失败 → 升级 `crawl`（无头渲染，遇反爬开 stealth 绕盾）；确需登录态或复杂交互 → 升级 `browser`（独立持久化 profile；ADR-0030 起免卡），严禁直连主力 Chrome Default 配置；确需主力号登录态兜底 → `chrome`（`--autoConnect` 接主力 Chrome，新建页固定后台、只动自建标签页，JS 执行 / 高敏站点交互 / 碰既有标签页才弹卡）。宁可多花 10 分钟提取一手深度文本，绝不拿二手粗糙概括充数。
 - **不许硬塞不匹配的画面，留白远优于画文不符。**
 - **检索落空走查询阶梯**：`查询` → `备选` → `配音` 原文，逐级重试，门槛 `0.45` 不动。**只救不比**——上一级够格就到此为止，绝不因下一级分数更高而换。加大 TOPK 救不了落空（结果按分数降序，top-1 不及格时第 25 名只会更低）。
 - **三级都不及格 → `"status": "no_match"`，渲染硬失败交人处理，不自动降级。** 落空绝大多数是查询写错了：写台词语义，别向字幕索引要画面构图。
@@ -122,7 +122,7 @@
 - ffmpeg 必须带 libass（`preflight.sh` 查）。中文字幕字体 `Hiragino Sans GB`（`config/project.json` 里配置）。
 
 ```bash
-pytest                                          # 纯函数测试，约 2 分钟（2000+ 条），改完代码先跑；含 ruff 静态门禁（tests/test_static.py）
+pytest                                          # 纯函数测试，约 3 分钟（3800+ 条），改完代码先跑；含 ruff 静态门禁（tests/test_static.py）
 ./pipeline/preflight.sh                         # 环境自检：data 可达 + ffmpeg 带 libass
 python -m pipeline.check_script <02-script.md>  # 稿件机检
 python -m pipeline.vindex status --anime <番>   # 七条数字对不对得上（v2 起含 captions）

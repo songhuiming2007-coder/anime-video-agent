@@ -8,6 +8,8 @@ status: accepted
 
 > 修订（2026-10-15，D100）：`acquire_propose` 不再一调用就下载，改为登记后机器核对、人看机器表点名后再 fetch。理由：人在对话里看到的是模型自己写的表，「先问人」这道关不存在，见 plans/2026-10-15-asset-candidate-gate-spec.md。
 
+> 修订（2026-11-14，`chrome` 工具，[spec](../plans/2026-11-14-chrome-devtools-mcp-spec.md)）：新增 `chrome` 工具经 `chrome-devtools-mcp --autoConnect` 接主力 Chrome 登录态，沿用本 ADR 同一口径——默认免卡，只硬危险弹卡：`[JS 执行]`（`evaluate`）、`[高敏站点交互]`（`click` / `fill` / `evaluate` 命中 `web.json` 的 `sensitive_hosts`）、`[用户既有标签页]`（读 / 操作非本会话 `open` 的页，其中这类开放「本会话都批准」，前两类逐条弹卡）。新建页固定后台、不切前台。决策 4「不碰主力 Chrome」仅约束 `browser` 的独立 profile，`chrome` 是经过显式 `--autoConnect` 授权的通道，不算直连 Default 配置。
+
 日期：2026-10-12
 状态：**已通过**（2026-10-12 人提出方向：「在目前的 agent 时代，实际上尽可能减少人的审批，模型是在不断进步的」；人看过 Claude 第一版边界表后要求「再减少一些弹框」，按第二版施工）
 前置：ADR-0029（bash 不加沙箱）、ADR-0027（工具不按模式授权）、D44（审批按参数分级）、D37（原生确认框只认鼠标）

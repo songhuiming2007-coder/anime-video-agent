@@ -5,7 +5,7 @@
 ## 由什么组成
 
 - **流水线**（`pipeline/`）：一组能单独运行的 Python 模块，配音、排片、渲染、质检、出封面各一个。每个模块读上一步的产物、写自己的产物，支持音画同源原声试听与动态配乐编排。模块里不调对话大模型，只用 TTS、ASR、VLM、向量检索这类专用模型。
-- **`ava`**（`pipeline/agent/`）：项目自主实现的 agent 宿主，不依赖第三方 agent 框架。里面的制片 agent 是一个对话大模型：它看期目录判断做到哪一步，写需要创作的文本（选题、稿件草稿、标题候选），再通过 17 个白名单工具（含 `bash`，ADR-0029）驱动流水线与环境。有副作用的操作先在对话里说清、人同意再做；弹审批卡的只剩云端计费、写 `config/` 的四条例外、越过停机点的选项、开工单和 `bash` 的硬危险操作（ADR-0030）。`/` 开头的快捷命令直接执行；支持上下文老化与手动 `/compact`，会话内可用 `/model`、`/thinking` 切换模型与推理强度。
+- **`ava`**（`pipeline/agent/`）：项目自主实现的 agent 宿主，不依赖第三方 agent 框架。里面的制片 agent 是一个对话大模型：它看期目录判断做到哪一步，写需要创作的文本（选题、稿件草稿、标题候选），再通过 18 个白名单工具（含 `bash`，ADR-0029）驱动流水线与环境。有副作用的操作先在对话里说清、人同意再做；弹审批卡的只剩云端计费、写 `config/` 的四条例外、越过停机点的选项、开工单、`bash` 与 `chrome` 的硬危险操作（ADR-0030）。`/` 开头的快捷命令直接执行；支持上下文老化与手动 `/compact`，会话内可用 `/model`、`/thinking` 切换模型与推理强度，`/login` 登录 44 家模型服务商（凭据独立落 `config/auth.local.json`，D170）。
 - **桌面端 AVA**（`desktop/`，可选）：`ava` 的 macOS Electron 界面，包含期看板、对话区、全局常驻作业条、产物预览与 02.5 改稿 / 03.5 顺听专用面板，和终端用同一套会话与状态机。
 
 会话分三种：期会话（绑定一期）、选题会话（`ava idea`，还没建期）、企划会话（绑定一个多卷系列，见下文「企划」）。
@@ -45,7 +45,7 @@ uv venv && uv pip install -e ".[apple,dev]"
 
 ./pipeline/preflight.sh --init          # 建数据目录；放外置盘就在后面加盘上的路径
 ./pipeline/preflight.sh                 # 环境自检
-pytest                                  # 纯函数测试，3500+ 用例约 3 分钟
+pytest                                  # 纯函数测试，3800+ 用例约 3 分钟
 ```
 
 联网抓取的 `crawl`（Crawl4AI）/ `browser`（Camoufox）两组可选依赖，以及浏览器本体的一次性安装命令，见 `pyproject.toml` 注释。
@@ -65,13 +65,13 @@ ava idea                # 不建期，先聊选题
 
 配音有念错的字不用整期重配：03.5 阶段在桌面端顺听面板划选错字并记入期级或全局表（或终端 `ava <期号> /voice`），随后靶向只重配受影响段落。
 
-云端配音的一轮是：人在云平台租机，把控制台登录指令贴给 agent → `cloud connect` → `cloud up` → `cloud push` → `cloud run <期> tts` → `cloud pull` → `cloud down`。开机、跑任务、关机都是计费卡。
+云端配音支持 AutoDL 与 Google Colab 双后端（`cloud use` / `--provider` 切换）：AutoDL 由人租机、把控制台登录指令贴给 agent → `cloud connect`；Colab 首次 `cloud connect --provider colab --browser-login` 登录一次后，`cloud up --provider colab` 自动无头开机。之后同样走 `cloud up` → `cloud push` → `cloud run <期> tts` → `cloud pull` → `cloud down`。开机、跑任务、关机都是计费卡。
 
 九步各自做什么、停机点要看什么，见 [`docs/WORKFLOW.md`](docs/WORKFLOW.md)（≤100 行）；对话里的 `/` 快捷命令见 [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md)。
 
 ### 补素材
 
-素材库里没有的画面（官方图、PV、访谈等）由 agent 搜候选、列给人，人点名后才下载：`acquire_propose` 登记并机器核对候选 → `acquire fetch` 只抓结论为「可下载」的 → `acquire gate` 过门禁 → `acquire register` 登记（图片自动转成微动视频）。期内一次性补料进本期补丁池再跑 `ingest_patch`（切镜头、云端打标、向量化）；企划的卷一律进企划池，池内素材经 `cloud lib-push / lib-captions / lib-pull` 打标。只为写锚点的补料可以不打标。网页抓取走 `web_fetch` → `crawl` → `browser` 升级链，每抓一页全文留档。完整衔接顺序见 [`skills/acquire-assets/SKILL.md`](skills/acquire-assets/SKILL.md)。
+素材库里没有的画面（官方图、PV、访谈等）由 agent 搜候选、列给人，人点名后才下载：`acquire_propose` 登记并机器核对候选 → `acquire fetch` 只抓结论为「可下载」的 → `acquire gate` 过门禁 → `acquire register` 登记（图片自动转成微动视频）。期内一次性补料进本期补丁池再跑 `ingest_patch`（切镜头、云端打标、向量化）；企划的卷一律进企划池，池内素材经 `cloud lib-push / lib-captions / lib-pull` 打标。只为写锚点的补料可以不打标。网页抓取走 `web_fetch` → `crawl` → `browser` 升级链，需主力 Chrome 登录态时另有 `chrome` 工具兜底（后台无扰接入，硬危险才弹卡），每抓一页全文留档。完整衔接顺序见 [`skills/acquire-assets/SKILL.md`](skills/acquire-assets/SKILL.md)。
 
 ### 企划（多卷系列）
 
@@ -105,7 +105,7 @@ ava new --project <企划名> <卷名>    # 在企划下建一卷
 
 ### 桌面端（可选）
 
-`desktop/` 是 Electron 桌面端（打包后的 app 叫 AVA），功能与终端 `ava` 相同：期看板、对话、产物预览、审批卡、改稿编辑器、配音顺听、封面定稿。窗口不在前台时，等人处理会让 Dock 图标持续弹跳。它只是 core 的一层壳，所有写入都经 core 的命令完成。LLM 密钥从系统钥匙串读取。
+`desktop/` 是 Electron 桌面端（打包后的 app 叫 AVA），功能与终端 `ava` 相同：期看板、对话、产物预览、审批卡、改稿编辑器、配音顺听、封面定稿。窗口不在前台时，等人处理会让 Dock 图标持续弹跳。它只是 core 的一层壳，所有写入都经 core 的命令完成。环境变量命名的密钥从系统钥匙串读取；`/login` 登录的服务商凭据落 `config/auth.local.json`（0600，不进 git）。
 
 ```bash
 cd desktop && npm ci

@@ -122,16 +122,19 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 ## 四、反爬升级链
 
 **不许静默降级。** 403 / Cloudflare 是常态，抓不到就升级工具，不许退回「水百科凑一段」交差
-（STANDARD §五）。ava 里的三级对应三个工具（ADR-0021 §1）：
+（STANDARD §五）。ava 里的四级对应四个工具（ADR-0021 §1，第四级 2026-11-14 增）：
 
 1. **`web_fetch`（静态抓取）**：覆盖九成；看返回的 `links` 做站内导航，不猜 URL。
 2. **`crawl`（无头静默，优先）**：被盾或 `links` 截断时升级；严格反爬开 `stealth`。
    长文考据与图片直链嗅探首选它。
-3. **`browser`（登录态，逐调用过卡）**：需要登录态（B站收藏夹、微博、Discord）时才上；profile 只来自
+3. **`browser`（登录态）**：需要登录态（B站收藏夹、微博、Discord）时才上；profile 只来自
    配置（`web.json` / `web.local.json` 的 `browser.profile_dir`，必须在 `data/` 之下），**永不接主力 Chrome 的 Default 配置**
    （SingletonLock 与 Keychain 阻断，会抢焦点、写坏登录态）。
+4. **`chrome`（主力号登录态，兜底）**：只有必须挂主力 Chrome 账号登录态、要多步点击展开 / 拦 XHR、
+   或人已在 Chrome 打开的页才用；新建页固定后台不切前台，只动自建标签页，JS 执行 / 高敏站点交互 /
+   碰人既有标签页才弹卡（web.json `sensitive_hosts`）。
 
-每升一级在 `reason` 里写明下一级为何不够。下载本身仍走 `acquire fetch`（curl / yt-dlp），不是这三个工具。
+每升一级在 `reason` 里写明下一级为何不够。下载本身仍走 `acquire fetch`（curl / yt-dlp），不是这几个工具。
 
 **反爬失败的正确结局是「停下来说抓不到」**，不是换一个质量更低的源顶上。
 
