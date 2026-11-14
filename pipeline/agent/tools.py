@@ -167,8 +167,35 @@ READONLY_ASSET_SUBCOMMANDS: dict[str, frozenset[str]] = {
 # （status_card 的 `[须人审的流水线命令]` 规则由本表生成）。子命令为 None = 该模块任何调用。
 # 前四条是 AGENTS.md Code Freeze 四条例外（写 config/，ADR-0030 决策 2；cloud connect 是 D102 加的第 ④ 条）；
 # `session.CONFIG_WRITE_COMMANDS` 是它的子集。
+VALID_CLOUD_PROVIDERS = ("autodl", "colab", "colab-drive")
+
+
+def strip_provider_flags(tokens: Sequence[str], *, strict: bool = False) -> tuple[str | None, list[str]]:
+    """剥离参数列表中的 `--provider <val>` / `--provider=<val>`，返回 `(provider, 剩余 token 列表)`。"""
+    found: str | None = None
+    rest: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = str(tokens[i])
+        if tok == "--provider":
+            if i + 1 >= len(tokens):
+                if strict:
+                    raise ValueError("--provider 缺少值")
+                break
+            found = str(tokens[i + 1])
+            i += 2
+        elif tok.startswith("--provider="):
+            found = tok.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    return found, rest
+
+
 HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
     ("corrections", "global"), ("calibration", "set"), ("bgm", "register"), ("cloud", "connect"),
+    ("cloud", "use"),
     ("tickets", "open"),
     # D81 §4.8（人裁决 Q5）：每次总装都弹卡，--replace 覆盖已有成片同样逐条人审
     ("assemble", None),
@@ -229,9 +256,9 @@ ASSET_COMMANDS: dict[str, set[str]] = {
     "faces": {"detect", "cluster", "sheet", "name", "presence"},
     # D60：标定值写入 config（AGENTS.md Code Freeze 第二个例外）；set 弹卡前预检，show 只读
     "calibration": {"set", "show"},
-    # D102：connect 写 cloud.local.json 的连接三项（Code Freeze 第 ④ 条例外），逐条人审见 HUMAN_GATED_COMMANDS
+    # D102：connect/use 写 cloud.local.json（Code Freeze 第 ④ 条例外），逐条人审见 HUMAN_GATED_COMMANDS
     "cloud": {"status", "logs", "doctor", "up", "down", "run", "push", "pull", "relocate-data", "clean-frames", "fix-env",
-              "connect", "sync-code", "lib-push", "lib-captions", "lib-pull",
+              "connect", "use", "sync-code", "lib-push", "lib-captions", "lib-pull",
               # D130（2026-10-24 人定不弹卡）：人说配完不关机就是同意；2 h 自动释放兜住忘了 release
               "hold", "release"},
     # D59：gate（只读免卡）/ register（登记或 --to-patch，弹卡）/ forget（台账移走一条，弹卡）。
@@ -589,22 +616,34 @@ def validate_pipeline_command(
     # (a) 模块属于 ASSET_COMMANDS 时，子命令校验永远生效（防未来重名模块被「不限子命令」侧吞掉）
     if in_asset:
         allowed_subs = ASSET_COMMANDS[module]
-        if not args or args[0] not in allowed_subs:
-            return (
-                False,
-                f"子命令 '{args[0] if args else ''}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
-                [],
-            )
-
-        # 对 cloud run 校验 extra_args（直接传 token 列表，🔵 2 优化）
-        if module == "cloud" and args[0] == "run":
-            if len(args) >= 3:
-                extra_tokens = args[3:]
+        if module == "cloud":
+            try:
+                prov_val, cloud_tokens = strip_provider_flags(args, strict=True)
+            except ValueError as exc:
+                return False, f"cloud --provider 参数错误: {exc}", []
+            if prov_val is not None and prov_val not in VALID_CLOUD_PROVIDERS:
+                return False, f"cloud --provider 值非法: {prov_val!r}（可选: {', '.join(VALID_CLOUD_PROVIDERS)}）", []
+            subcmd = cloud_tokens[0] if cloud_tokens else ""
+            if not subcmd or subcmd not in allowed_subs:
+                return (
+                    False,
+                    f"子命令 '{subcmd}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
+                    [],
+                )
+            if subcmd == "run" and len(cloud_tokens) >= 3:
+                extra_tokens = cloud_tokens[3:]
                 if extra_tokens:
                     try:
                         validate_extra_args(extra_tokens)
                     except ValueError as exc:
                         return False, f"cloud run 参数非法: {exc}", []
+        else:
+            if not args or args[0] not in allowed_subs:
+                return (
+                    False,
+                    f"子命令 '{args[0] if args else ''}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
+                    [],
+                )
 
     # (b0) D53：格式错的命令在弹卡前拒（人批准后才 0.2 s 退出码 2 = 白审一次）
     if in_pipeline and module in _AUTOFILL_MODULES:

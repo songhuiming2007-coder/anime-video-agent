@@ -700,3 +700,29 @@ def test_forget_候选号字符串与整数同义(repo: Path):
     """命令行传进来是字符串「1」，要按候选号走，不能当成文件名。"""
     _set_ledger(repo, [{"url": "u1", "candidate": 1, "file": "x", "as": None}])
     assert A.cmd_forget("1") == 0 and _ledger(repo) == []
+
+
+def test_colab双后端切换与单命令provider在agent审查与审批卡正确生效(repo: Path):
+    """cloud use 逐条人审；cloud --provider colab run 与尾部 --provider 均通过预检并显示 Colab 提示。"""
+    from pipeline.agent import status_card
+
+    ep = _episode(repo)
+    v_use = _review("cloud use colab", ep)
+    assert v_use.action == "ask" and v_use.allow_key is None
+
+    v_before = _review(f"cloud --provider colab run {ep} tts --redo 2", ep)
+    assert v_before.action == "ask" and v_before.allow_key == "run_pipeline:cloud run"
+
+    v_after = _review(f"cloud run {ep} tts --provider colab-drive --redo 2", ep)
+    assert v_after.action == "ask" and v_after.allow_key == "run_pipeline:cloud run"
+
+    # 不合规 extra_args 即使前带 --provider 也必须被 precheck 拦下
+    v_bad = _review(f"cloud --provider colab run {ep} tts --force", ep)
+    assert v_bad.action == "reject"
+
+    card = status_card.render_approval_card(
+        "run_pipeline",
+        {"command": f"cloud run {ep} tts --provider colab --redo 2"},
+        argv=["python", "-m", "pipeline.cloud", "--provider", "colab", "run", str(ep), "tts", "--redo", "2"],
+    )
+    assert "Colab" in card and "CU" in card

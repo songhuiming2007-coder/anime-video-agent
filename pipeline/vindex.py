@@ -828,11 +828,26 @@ def captions_path(anime: str, key: str, out_dir: Path = VINDEX_DIR) -> Path:
     return out_dir / f"{anime}_{key}.captions.json"
 
 
+def _active_cloud_provider(cf: dict) -> str:
+    env_p = os.environ.get("AVA_CLOUD_PROVIDER", "").strip()
+    if env_p:
+        return env_p
+    lp = paths.CONFIG / "cloud.local.json"
+    if lp.is_file():
+        try:
+            ldata = json.loads(lp.read_text(encoding="utf-8"))
+            if ldata.get("active_provider"):
+                return str(ldata["active_provider"])
+        except Exception:
+            pass
+    return str(cf.get("provider") or "autodl")
+
+
 def caption_model_ref() -> str:
     """caption 模型的加载目标：**数据盘上的平铺目录优先，否则 HF repo id**。
 
     云端模型是平铺下载在数据盘上的（`config/cloud.json` 的 `remote_models` +
-    `models[repo].dir` → `/root/autodl-tmp/models/Qwen/Qwen3-VL-8B-Instruct/`），
+    `models[repo].dir` → `/root/autodl-tmp/models/Qwen/Qwen3-VL-8B-Instruct/` 或 Colab `/content/models/...`），
     不是 HF hub 缓存布局，所以 `from_pretrained("Qwen/Qwen3-VL-8B-Instruct")` 在云端
     找不到缓存**会去联网重下 17G**，而且写进 `paths.HF_HOME`——即仓库内 `data/models`，
     在系统盘上。这正是本项目「静默往内置盘写几个 G」那条坑（paths.py 的 HF_HOME 注释）。
@@ -840,9 +855,17 @@ def caption_model_ref() -> str:
     """
     cf = json.loads((paths.CONFIG / "cloud.json").read_text(encoding="utf-8"))
     entry = (cf.get("models") or {}).get(CAPTIONS_REPO) or {}
-    root = cf.get("remote_models")
-    if root and entry.get("dir"):
-        p = Path(root) / entry["dir"]
+    sub = entry.get("dir")
+    env_root = os.environ.get("AVA_REMOTE_MODELS", "").strip()
+    if env_root and sub:
+        p = Path(env_root) / sub
+        if p.is_dir():
+            return str(p)
+    prov = _active_cloud_provider(cf)
+    p_cfg = (cf.get("providers") or {}).get(prov) or {}
+    root = p_cfg.get("remote_models") or cf.get("remote_models")
+    if root and sub:
+        p = Path(root) / sub
         if p.is_dir():
             return str(p)
     return CAPTIONS_REPO
@@ -1190,6 +1213,24 @@ def cloud_budget() -> tuple[float, float]:
         raise SystemExit(f"FAIL 没有 {p}，预算闸算不出上限（不许默认放行）")
     cf = json.loads(p.read_text(encoding="utf-8"))
     return float(cf["hourly_rate_cny"]), float(cf["budget_per_phase0_cny"])
+
+
+def cloud_budget_info(provider: str | None = None) -> tuple[float, float, str]:
+    """（每小时费率, Phase 0 预算上限, 计费单位 'cny'|'cu'），按当前/指定 provider 取数。"""
+    p = paths.CONFIG / "cloud.json"
+    if not p.exists():
+        raise SystemExit(f"FAIL 没有 {p}，预算闸算不出上限（不许默认放行）")
+    cf = json.loads(p.read_text(encoding="utf-8"))
+    prov = provider or _active_cloud_provider(cf)
+    p_cfg = (cf.get("providers") or {}).get(prov) or {}
+    unit = str(p_cfg.get("billing_unit") or "cny")
+    if unit == "cu":
+        cu_rates = p_cfg.get("cu_rates") or {}
+        # VLM 打标至少需要 L4 (24GB)，优先取 L4 参考 CU/h，再退回 fallback
+        rate = float(cu_rates.get("L4") or p_cfg.get("cu_rate_fallback") or 2.0)
+        budget = float(p_cfg.get("budget_per_phase0_cu") or 25.0)
+        return rate, budget, "cu"
+    return float(cf["hourly_rate_cny"]), float(cf["budget_per_phase0_cny"]), "cny"
 
 
 _EMBEDDER = None
@@ -1573,18 +1614,21 @@ def main() -> int:
         return 0
 
     if a.cmd == "captions":
-        rate, budget = cloud_budget()
+        rate, budget, unit = cloud_budget_info()
         shots_total = 0
         chk = (a.shots_dir == shots.SHOTS_DIR)
         for key in a.episode:
             shots_total += len(shots.load(a.anime, key, out_dir=a.shots_dir, check_config=chk)["shots"])
         est = estimate_caption_cost(shots_total, rate)
-        print(f"[*] 单次运行预估 {shots_total} 个镜头 ≈ ¥{est:.2f}"
-              f"（按 {CAPTION_SECONDS_PER_SHOT:g}s/镜头、{rate:g} 元/h 估；"
-              f"Phase 0 预算上限 ¥{budget:.2f}）", flush=True)
+        unit_prefix = "¥" if unit == "cny" else ""
+        unit_suffix = "" if unit == "cny" else " CU"
+        rate_unit = "元/h" if unit == "cny" else "CU/h"
+        print(f"[*] 单次运行预估 {shots_total} 个镜头 ≈ {unit_prefix}{est:.2f}{unit_suffix}"
+              f"（按 {CAPTION_SECONDS_PER_SHOT:g}s/镜头、{rate:g} {rate_unit} 估；"
+              f"Phase 0 预算上限 {unit_prefix}{budget:.2f}{unit_suffix}）", flush=True)
         if est > budget and not a.confirm_cost:
             raise SystemExit(
-                f"FAIL 单次运行预估超过 Phase 0 预算闸 ¥{budget:.2f}。\n"
+                f"FAIL 单次运行预估超过 Phase 0 预算闸 {unit_prefix}{budget:.2f}{unit_suffix}。\n"
                 f"     大账单必须是显式动作（ADR-0015 判断 6）：确认后加 --confirm-cost 重跑")
         bad = 0
         for key in a.episode:

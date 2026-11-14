@@ -361,6 +361,7 @@ def ingest(
     batch: int = vindex.CAPTION_BATCH,
     confirm_cost: bool = False,
     anchor_only: bool = False,
+    provider: str | None = None,
 ) -> int:
     """单期补料编排流程（Spec §4.3 两段式）。
 
@@ -521,19 +522,35 @@ def ingest(
                     check=False,
                 )
         else:
-            # 云端两段式
+            # 云端两段式（支持 AutoDL / Colab SSH / Colab Drive）
             cfg_global, cfg_local = cloud.load_cloud_config()
-            host = cloud._ssh_host(cfg_local)
-            if not cloud.is_ssh_reachable(host):
-                raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
+            resolved_provider = cloud.resolve_provider(cfg_global, cfg_local, provider)
+            cloud_ns_extra = {"provider": resolved_provider} if provider is not None else {}
 
-            active = cloud.remote_active_tasks(host=host)
-            if "ava-captions" in active:
-                print("[*] 远端打标任务正在运行 (ava-captions)，请稍后重跑本命令。")
-                return 2
+            if resolved_provider == "colab-drive":
+                from . import cloud_drive
+
+                ctx = cloud._cloud_context(cli_provider=resolved_provider)
+                drive_root = cloud._require_drive_root(ctx)
+                if cloud_drive.active_drive_jobs(drive_root):
+                    print("[*] Drive 队列仍有活跃任务正在运行，请稍后重跑本命令。")
+                    return 2
+            else:
+                host = (
+                    cloud._ssh_host(cfg_local)
+                    if resolved_provider == "autodl"
+                    else cloud.provider_ssh_host(cfg_global, cfg_local, resolved_provider)
+                )
+                if not cloud.is_ssh_reachable(host):
+                    raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
+
+                active = cloud.remote_active_tasks(host=host)
+                if "ava-captions" in active:
+                    print("[*] 远端打标任务正在运行 (ava-captions)，请稍后重跑本命令。")
+                    return 2
 
             # 尝试拉回现有产物
-            cloud.cmd_pull(argparse.Namespace(target=str(episode)))
+            cloud.cmd_pull(argparse.Namespace(target=str(episode), **cloud_ns_extra))
 
             # 重新核验是否仍有未完成的 key
             still_pending = []
@@ -552,13 +569,15 @@ def ingest(
             if still_pending:
                 # 远端未在运行且本地尚缺产物：提交远端任务
                 print(f"[*] 推送资产并提交远端打标任务: {still_pending}")
-                cloud.cmd_push(argparse.Namespace(target=str(episode)))
+                cloud.cmd_push(argparse.Namespace(target=str(episode), **cloud_ns_extra))
                 cloud.cmd_run(argparse.Namespace(
                     target=str(episode),
                     task="captions",
                     extra=[pool_name] + still_pending,
+                    **cloud_ns_extra,
                 ))
-                print("[*] 已提交云端打标 (tmux: ava-captions)，完成后请重跑本命令。")
+                label = "Drive 队列" if resolved_provider == "colab-drive" else "tmux: ava-captions"
+                print(f"[*] 已提交云端打标 ({label})，完成后请重跑本命令。")
                 return 0
 
     # 4. stage 2 就绪：执行本地 embed 向量化
@@ -595,6 +614,8 @@ def main() -> int:
     ap.add_argument("--confirm-cost", action="store_true")
     ap.add_argument("--anchor-only", action="store_true",
                     help="只登记不打标：切镜头后就写 pool.json（可写锚点），不打标、不碰云端（D84）")
+    ap.add_argument("--provider", choices=["autodl", "colab", "colab-drive"], default=None,
+                    help="指定云端算力后端（默认按 cloud.local.json active_provider）")
     ap.add_argument("--reset", action="store_true",
                     help="旧 04-patch/ 挪进 04-patch.attic/<时间>/ 后从 patch_assets/ 重建（不删）")
     a = ap.parse_args()
@@ -602,7 +623,7 @@ def main() -> int:
     if a.reset:
         reset_pool(a.episode)
     return ingest(a.episode, floor=a.floor, local=a.local, batch=a.batch, confirm_cost=a.confirm_cost,
-                  anchor_only=a.anchor_only)
+                  anchor_only=a.anchor_only, provider=a.provider)
 
 
 if __name__ == "__main__":

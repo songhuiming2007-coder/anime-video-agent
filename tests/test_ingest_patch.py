@@ -397,3 +397,46 @@ class TestAnchorOnly:
         (ep / "04-patch" / "shots" / "p_SP01.json").write_text(json.dumps({"shots": [{"start": 0, "end": 5}]}))
         with pytest.raises(SystemExit, match="索引缺失或半建"):
             ingest_patch.load_pool(ep)
+
+
+def test_ingest_patch云端分支透传provider_与colab_drive支持(monkeypatch, tmp_path):
+    from pipeline import cloud, cloud_drive
+
+    ep = tmp_path / "ep01"
+    patch_assets = ep / "patch_assets"
+    patch_assets.mkdir(parents=True)
+    clip = patch_assets / "clip.mp4"
+    clip.write_bytes(b"mp4")
+
+    drive_root = tmp_path / "ava_cloud"
+    cloud_drive.ensure_drive_layout(drive_root)
+
+    monkeypatch.setattr(ingest_patch.bgm, "anime_of", lambda _ep: "demo")
+    monkeypatch.setattr(ingest_patch, "intact", lambda _p: None)
+    monkeypatch.setattr(ingest_patch, "probe_video", lambda _p: {"duration": 5.0, "fps": 24.0})
+    monkeypatch.setattr(ingest_patch.shots, "scan", lambda _p: [])
+    monkeypatch.setattr(ingest_patch.shots, "cut", lambda _c, _t, _d, _m: [{"start": 0.0, "end": 1.0}])
+    monkeypatch.setattr(
+        ingest_patch.shots,
+        "caption_frames",
+        lambda *_a, **_kw: 1,
+    )
+    monkeypatch.setattr(
+        cloud,
+        "load_cloud_config",
+        lambda: ({"provider": "autodl", "providers": {"colab-drive": {"transport": "drive", "billing_unit": "cu"}}}, {}),
+    )
+    monkeypatch.setattr(cloud, "_require_drive_root", lambda _ctx: drive_root)
+
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(cloud, "cmd_pull", lambda ns: calls.append(("pull", getattr(ns, "provider", None))) or 0)
+    monkeypatch.setattr(cloud, "cmd_push", lambda ns: calls.append(("push", getattr(ns, "provider", None))) or 0)
+    monkeypatch.setattr(cloud, "cmd_run", lambda ns: calls.append(("run", getattr(ns, "provider", None))) or 0)
+
+    rc = ingest_patch.ingest(ep, floor=0.28, provider="colab-drive")
+    assert rc == 0
+    assert calls == [
+        ("pull", "colab-drive"),
+        ("push", "colab-drive"),
+        ("run", "colab-drive"),
+    ]

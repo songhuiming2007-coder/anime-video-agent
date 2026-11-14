@@ -68,5 +68,63 @@
       "description": "SenseVoice-Small 高速回读质检主读模型"
     }
   },
-  "_models_note": "doctor / fix-env 按这张表核与补。2026-10-15 去掉 IndexTeam/IndexTTS-2（已出局 ADR-0017，没拷进文件存储；留着 doctor 在新实例上永远报缺、fix-env 会往文件存储里重下 11GB），补上一直没核的 Qwen3-TTS"
+  "_models_note": "doctor / fix-env 按这张表核与补。2026-10-15 去掉 IndexTeam/IndexTTS-2（已出局 ADR-0017，没拷进文件存储；留着 doctor 在新实例上永远报缺、fix-env 会往文件存储里重下 11GB），补上一直没核的 Qwen3-TTS",
+  "providers": {
+    "autodl": {
+      "transport": "ssh",
+      "ssh_host": "autodl",
+      "billing_unit": "cny",
+      "remote_root": "/root/anime-video-agent",
+      "remote_models": "/root/autodl-tmp/models",
+      "fs_models": "/root/autodl-fs/models",
+      "remote_data_disk": "/root/autodl-tmp",
+      "remote_log_dir": "/root/autodl-tmp/logs",
+      "remote_python": "/root/it-venv/bin/python"
+    },
+    "colab": {
+      "transport": "ssh",
+      "ssh_host": "ava-colab",
+      "billing_unit": "cu",
+      "cu_rate_fallback": 1.5,
+      "cu_rates": {
+        "T4": 1.3,
+        "L4": 2.0,
+        "A100-SXM4-40GB": 5.3,
+        "A100-SXM4-80GB": 6.8,
+        "A100": 5.3
+      },
+      "_cu_rates_note": "Google AI Pro Colab Compute Units 参考消耗（CU/小时，实际消耗受 Colab 实时调度影响，以 Colab 面板或 --rate 传入为准）。T4 约 1.1~1.5 CU/h（配音够用），L4 约 1.5~3.0 CU/h（VLM 打标 24GB 够用）",
+      "budget_per_episode_cu": 1.5,
+      "budget_per_phase0_cu": 25.0,
+      "remote_root": "/content/anime-video-agent",
+      "remote_models": "/content/models",
+      "drive_cache_dir": "/content/drive/MyDrive/ava_cache",
+      "remote_data_disk": "/content",
+      "remote_log_dir": "/content/logs",
+      "remote_python": "/content/venv/bin/python",
+      "idle_shutdown_seconds": 300
+    },
+    "colab-drive": {
+      "transport": "drive",
+      "billing_unit": "cu",
+      "cu_rate_fallback": 1.5,
+      "cu_rates": {
+        "T4": 1.3,
+        "L4": 2.0,
+        "A100-SXM4-40GB": 5.3,
+        "A100-SXM4-80GB": 6.8,
+        "A100": 5.3
+      },
+      "budget_per_episode_cu": 1.5,
+      "budget_per_phase0_cu": 25.0,
+      "remote_root": "/content/anime-video-agent",
+      "remote_models": "/content/models",
+      "drive_cache_dir": "/content/drive/MyDrive/ava_cache",
+      "drive_queue_subpath": "ava_cloud",
+      "remote_data_disk": "/content",
+      "remote_log_dir": "/content/logs",
+      "remote_python": "/content/venv/bin/python",
+      "idle_shutdown_seconds": 300
+    }
+  }
 }

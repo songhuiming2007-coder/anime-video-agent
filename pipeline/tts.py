@@ -453,6 +453,24 @@ def _resolve_model(ref: str) -> str | Path:
     return local if local.is_dir() else ref
 
 
+def _resolve_cloud_model(ref: str) -> str | Path:
+    """云端 CUDA 模型目录解析：AVA_REMOTE_MODELS → 给定目录 → cloud.json 当前 provider → HF 回退。"""
+    repo_rel = ref.removeprefix("/root/autodl-tmp/models/").lstrip("/") if ref.startswith("/root/autodl-tmp/models/") else ref
+    env_root = os.environ.get("AVA_REMOTE_MODELS", "").strip()
+    if env_root:
+        cand = Path(env_root) / repo_rel
+        if cand.is_dir():
+            return cand
+    if Path(ref).is_dir():
+        return ref
+    resolved = asr.cloud_model_dir(repo_rel, ref)
+    if Path(resolved).is_dir():
+        return resolved
+    if asr._hf_fallback_allowed():
+        return repo_rel
+    return _resolve_model(ref)
+
+
 def _load_indextts(ref: str | Path):
     """IndexTTS 要手工搭一下。
 
@@ -637,7 +655,7 @@ class Engine:
 
         self.voice_prompt = None
         if self.kind == "qwen3_tts_cuda":
-            self.model = _load_qwen3_cuda(cfg, _resolve_model(cfg["model"]))
+            self.model = _load_qwen3_cuda(cfg, _resolve_cloud_model(cfg["model"]))
             # **说话人嵌入只提一次，全程复用。** 2026-09-11 人耳验收抓出：
             # 每句各自提特征会让段内音色漂移（听感是「同一段里像换了好几个人」）。
             # x_vector 只依赖参考音频，本来就不必每句重算——缓存它既省时间又锁音色。

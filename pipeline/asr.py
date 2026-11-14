@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -133,6 +135,58 @@ CLOUD_SENSEVOICE_DIR = "/root/autodl-tmp/models/FunAudioLLM/SenseVoiceSmall"
 PRIMARY_ORDER = ("sensevoice_cuda", "whisper_large_v3_cuda", "mlx_whisper_local")
 
 
+def _active_cloud_provider() -> str:
+    env_p = os.environ.get("AVA_CLOUD_PROVIDER", "").strip()
+    if env_p:
+        return env_p
+    local_cfg = paths.CONFIG / "cloud.local.json"
+    if local_cfg.is_file():
+        try:
+            data = json.loads(local_cfg.read_text(encoding="utf-8"))
+            if data.get("active_provider"):
+                return str(data["active_provider"])
+        except Exception:
+            pass
+    global_cfg = paths.CONFIG / "cloud.json"
+    if global_cfg.is_file():
+        try:
+            data = json.loads(global_cfg.read_text(encoding="utf-8"))
+            if data.get("provider"):
+                return str(data["provider"])
+        except Exception:
+            pass
+    return "autodl"
+
+
+def cloud_model_dir(repo_id: str, default_dir: str) -> str:
+    """按远端环境（AVA_REMOTE_MODELS → cloud.json 非 autodl provider → 代码默认）解析云端 ASR 模型目录。"""
+    env_root = os.environ.get("AVA_REMOTE_MODELS", "").strip()
+    if env_root:
+        return str(Path(env_root) / repo_id)
+    prov = _active_cloud_provider()
+    if prov != "autodl":
+        global_cfg = paths.CONFIG / "cloud.json"
+        if global_cfg.is_file():
+            try:
+                cf = json.loads(global_cfg.read_text(encoding="utf-8"))
+                p_cfg = (cf.get("providers") or {}).get(prov) or {}
+                root = p_cfg.get("remote_models") or cf.get("remote_models")
+                entry = (cf.get("models") or {}).get(repo_id) or {}
+                sub = entry.get("dir", repo_id)
+                if root:
+                    return str(Path(root) / sub)
+            except Exception:
+                pass
+    return default_dir
+
+
+def _hf_fallback_allowed() -> bool:
+    return (
+        os.environ.get("AVA_CLOUD_HF_FALLBACK", "").strip() == "1"
+        or _active_cloud_provider().startswith("colab")
+    )
+
+
 def _backend_mlx_whisper(path: Path) -> str:
     """本地 Apple Silicon 通道（mlx-whisper）。"""
     import mlx_whisper
@@ -164,9 +218,11 @@ def _backend_whisper_cuda(path: Path) -> str:
     """云端 Whisper Large-v3（transformers pipeline）。"""
     from transformers import pipeline
 
+    model_dir = cloud_model_dir("openai/whisper-large-v3", CLOUD_WHISPER_DIR)
+    model_ref = model_dir if Path(model_dir).is_dir() or not _hf_fallback_allowed() else "openai/whisper-large-v3"
     pipe = pipeline(
         "automatic-speech-recognition",
-        model=CLOUD_WHISPER_DIR,
+        model=model_ref,
         device=0,
         generate_kwargs={"language": "zh", "task": "transcribe"},
     )
@@ -181,7 +237,9 @@ def _backend_sensevoice_cuda(path: Path) -> str:
     """
     from funasr import AutoModel
 
-    model = AutoModel(model=CLOUD_SENSEVOICE_DIR, disable_update=True)
+    model_dir = cloud_model_dir("FunAudioLLM/SenseVoiceSmall", CLOUD_SENSEVOICE_DIR)
+    model_ref = model_dir if Path(model_dir).is_dir() or not _hf_fallback_allowed() else "FunAudioLLM/SenseVoiceSmall"
+    model = AutoModel(model=model_ref, disable_update=True)
     res = model.generate(input=str(path), language="zh", use_itn=True)
     return res[0]["text"].strip()
 
@@ -202,14 +260,16 @@ def backend_unavailable_reason(name: str) -> str | None:
     if name == "whisper_large_v3_cuda":
         if importlib.util.find_spec("transformers") is None:
             return "未安装 transformers"
-        if not Path(CLOUD_WHISPER_DIR).is_dir():
-            return f"模型目录不存在: {CLOUD_WHISPER_DIR}"
+        model_dir = cloud_model_dir("openai/whisper-large-v3", CLOUD_WHISPER_DIR)
+        if not Path(model_dir).is_dir() and not _hf_fallback_allowed():
+            return f"模型目录不存在: {model_dir}"
         return None
     if name == "sensevoice_cuda":
         if importlib.util.find_spec("funasr") is None:
             return "未安装 funasr"
-        if not Path(CLOUD_SENSEVOICE_DIR).is_dir():
-            return f"模型目录不存在: {CLOUD_SENSEVOICE_DIR}"
+        model_dir = cloud_model_dir("FunAudioLLM/SenseVoiceSmall", CLOUD_SENSEVOICE_DIR)
+        if not Path(model_dir).is_dir() and not _hf_fallback_allowed():
+            return f"模型目录不存在: {model_dir}"
         # `find_spec` 只回答「包在不在」，不回答「能不能用」。2026-09-11 实测：
         # funasr 装上了，但它依赖的 torch_complex 缺失，`from funasr import
         # AutoModel` 直接抛——于是 pick_backends 选中它当仲裁，整期跑到第一段

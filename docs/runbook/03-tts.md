@@ -11,6 +11,13 @@ agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。�
 
 `cloud up` 启动的看门狗在远端没有 `ava-` 开头的 tmux 任务、且空闲 300 s 时会自动关机，配音一结束就会触发。所以 `cloud run … tts` 发出后，接着跑 `cloud hold`（不弹卡）：看门狗在 2 小时内不做空闲关机，到期自动释放；顺听还没完就再跑一次 `cloud hold` 续期。告诉人实例在保持期间一直计费，`cloud status` 能看到剩余时间和已花的钱。人说关时提议 `cloud down`（会顺带撤掉保持）；只想撤掉保持、让实例空闲后自己关，用 `cloud release`。
 
+## 云端双后端：AutoDL 与 Google Colab
+
+除 AutoDL（见下文「用完即弃」）外，`pipeline.cloud` 同时支持 Google Colab：
+- `colab`（推荐）：运行 [`tools/ava_colab_bootstrap.ipynb`](../../tools/ava_colab_bootstrap.ipynb)（`mode="ssh"`），用 `cloudflared` 暴露 SSH 隧道，`cloud connect "<隧道指令>" --provider colab` 接入；按 Compute Units（CU）计费，`cloud down` 或空闲超时自动调用 `runtime.unassign()` 释放运行时。
+- `colab-drive`（零隧道兜底）：在 Notebook 跑 `mode="drive"`，本机 `cloud connect --provider colab-drive --drive-root "<Drive同步目录>/ava_cloud"` 绑定共享队列目录，全流程复用 `push / run / pull / logs / hold / down`。
+- 切换与并行配置：`cloud use <autodl|colab|colab-drive>`（弹卡）切换默认后端，单条命令也可用 `--provider <后端>` 临时覆盖，三套配置互不覆盖。
+
 ## 云端实例用完即弃（D102）
 
 实例绑定一台物理机，关机后那台的卡会被别人租走，所以不再保留固定实例。模型在西北B区的文件存储（`/root/autodl-fs/models`，全区实例开机自动挂载），环境在自定义镜像里（`config/cloud.json` 的 `image`）。

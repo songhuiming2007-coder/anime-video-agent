@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -31,12 +32,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import cloud_drive, paths
 from .keys import SP_NUM
 
 # ---------------------------------------------------------------------------
 # 常量定义与判据依据（E3：每个常量后面写「为什么是这个数」）
 # ---------------------------------------------------------------------------
+
+# 可用 cloud fix-env / 医生检查或切换的提供商标识
+VALID_PROVIDERS = ("autodl", "colab", "colab-drive")
 
 # 允许通过 run 命令透传执行的远端任务白名单
 # 为什么是白名单：禁止透传任意 shell 命令，杜绝远端非预期写操作破坏环境
@@ -48,6 +52,7 @@ ALLOWED_TASKS = {
 
 # 默认心跳文件位置与空闲关机阈值
 WATCHDOG_HEARTBEAT_PATH = "/root/.ava_heartbeat"
+COLAB_HEARTBEAT_PATH = "/content/.ava_heartbeat"
 DEFAULT_IDLE_SHUTDOWN_SECONDS = 300  # 300s：无操作 5 分钟关机，给 pull 预留容错窗口
 
 # 显存提示线（D102 起不再是硬门槛）：24GB 依据 Qwen3-VL-8B bf16 权重 17.5GB 加推理开销。
@@ -63,6 +68,7 @@ RENT_MIN_CUDA = "12.8"
 
 # 远端日志根目录
 REMOTE_LOG_DIR = "/root/autodl-tmp/logs"
+COLAB_LOG_DIR = "/content/logs"
 
 # 远端解释器。**必须是装了模型栈的那一个。** 2026-09-11 实测：这台实例上
 # `/root/miniconda3/bin/python` 里连 transformers 都没有（torch/torchvision 有，模型栈在
@@ -70,16 +76,20 @@ REMOTE_LOG_DIR = "/root/autodl-tmp/logs"
 # 起来第一行就 ImportError，而账簿里只记「任务已启动」。可用 `config/cloud.json`
 # 的 `remote_python` 覆盖（换实例/换镜像只改配置，不改代码）。
 DEFAULT_REMOTE_PYTHON = "/root/it-venv/bin/python"
+COLAB_REMOTE_PYTHON = "/content/venv/bin/python"
 
 # watchdog 脚本与心跳的远端路径。**只此一处定义**：部署与查进程必须指同一个文件，
 # 各写一份的下场是 status 去 pgrep 一个不存在的路径，永远报「未运行」。
 REMOTE_WATCHDOG_PATH = "/root/watchdog.sh"
+COLAB_WATCHDOG_PATH = "/content/watchdog.sh"
 
 # D130（2026-10-23 人提、10-24 人定）：「配完不关机」的保持标记。一行两个远端 epoch 秒「开始 到期」，
 # 看门狗见未到期的标记就刷新心跳；过期视同没有，从到期那一刻起照常计空闲。
 # 2 h：人定的自动释放时长——一轮 03.5 顺听加点名重配够用，忘了 release 最多多计两小时；要更久就再 hold 续期。
 # 可用 `config/cloud.json` 的 `hold_seconds` 覆盖
 REMOTE_HOLD_PATH = "/root/.ava_hold"
+COLAB_HOLD_PATH = "/content/.ava_hold"
+COLAB_UNASSIGN_PATH = "/content/.ava_unassign"
 DEFAULT_HOLD_SECONDS = 7200
 
 
@@ -99,15 +109,121 @@ def load_cloud_config(config_dir: Path | None = None) -> tuple[dict, dict]:
     return cfg_global, cfg_local
 
 
-def remote_python(cfg: dict | None = None) -> str:
+def resolve_provider(
+    cfg_global: dict | None = None,
+    cfg_local: dict | None = None,
+    cli_provider: str | None = None,
+) -> str:
+    """按优先级解析云算力后端（纯函数）：CLI --provider > AVA_CLOUD_PROVIDER > cloud.local.json > cloud.json > autodl。"""
+    raw = (
+        cli_provider
+        or os.environ.get("AVA_CLOUD_PROVIDER")
+        or (cfg_local or {}).get("active_provider")
+        or (cfg_global or {}).get("provider")
+        or "autodl"
+    )
+    provider = str(raw).strip()
+    if provider not in VALID_PROVIDERS:
+        raise ValueError(f"不支持的云算力后端 {provider!r}，可选: {', '.join(VALID_PROVIDERS)}")
+    return provider
+
+
+def provider_settings(cfg_global: dict, provider: str | None = None) -> dict[str, Any]:
+    """合并顶层 cloud.json 与 providers.<provider> 配置（纯函数）。"""
+    p = provider or str(cfg_global.get("provider") or "autodl")
+    merged = {k: v for k, v in cfg_global.items() if k != "providers"}
+    sub = (cfg_global.get("providers") or {}).get(p)
+    if isinstance(sub, dict):
+        merged.update(sub)
+    merged.setdefault("provider", p)
+    if p == "autodl":
+        merged.setdefault("transport", "ssh")
+        merged.setdefault("billing_unit", "cny")
+        merged.setdefault("remote_root", "/root/anime-video-agent")
+        merged.setdefault("remote_models", "/root/autodl-tmp/models")
+        merged.setdefault("fs_models", DEFAULT_FS_MODELS)
+        merged.setdefault("remote_data_disk", "/root/autodl-tmp")
+        merged.setdefault("remote_log_dir", REMOTE_LOG_DIR)
+        merged.setdefault("remote_python", DEFAULT_REMOTE_PYTHON)
+        merged.setdefault("ssh_host", "autodl")
+    else:
+        merged.setdefault("transport", "drive" if p == "colab-drive" else "ssh")
+        merged.setdefault("billing_unit", "cu")
+        merged.setdefault("remote_root", "/content/anime-video-agent")
+        merged.setdefault("remote_models", "/content/models")
+        merged.setdefault("remote_data_disk", "/content")
+        merged.setdefault("remote_log_dir", COLAB_LOG_DIR)
+        merged.setdefault("remote_python", COLAB_REMOTE_PYTHON)
+        if p == "colab":
+            merged.setdefault("ssh_host", "ava-colab")
+    return merged
+
+
+def provider_profile(cfg_local: dict, provider: str) -> dict[str, Any]:
+    """读取 cloud.local.json 里指定后端的独立配置段，兼容旧版顶层 AutoDL 键（纯函数）。"""
+    profiles = cfg_local.get("profiles") or {}
+    prof = dict(profiles.get(provider) or {}) if isinstance(profiles.get(provider), dict) else {}
+    if provider == "autodl":
+        for k in ("ssh_host", "server", "port", "user"):
+            if k in cfg_local and k not in prof:
+                prof[k] = cfg_local[k]
+        prof.setdefault("ssh_host", "autodl")
+    elif provider == "colab":
+        prof.setdefault("ssh_host", "ava-colab")
+    elif provider == "colab-drive":
+        prof.setdefault("drive_queue_subpath", "ava_cloud")
+    return prof
+
+
+def provider_remote_paths(cfg_global: dict, provider: str | None = None) -> dict[str, str]:
+    """返回指定后端的远端工作/模型/心跳/hold 路径字典（纯函数）。"""
+    p = provider or str(cfg_global.get("provider") or "autodl")
+    st = provider_settings(cfg_global, p)
+    is_colab = p in ("colab", "colab-drive")
+    return {
+        "remote_root": str(st["remote_root"]),
+        "remote_models": str(st["remote_models"]),
+        "fs_models": str(st.get("fs_models") or ""),
+        "remote_data_disk": str(st["remote_data_disk"]),
+        "remote_log_dir": str(st["remote_log_dir"]),
+        "remote_python": str(st["remote_python"]),
+        "heartbeat_path": COLAB_HEARTBEAT_PATH if is_colab else WATCHDOG_HEARTBEAT_PATH,
+        "hold_path": COLAB_HOLD_PATH if is_colab else REMOTE_HOLD_PATH,
+        "unassign_path": COLAB_UNASSIGN_PATH if is_colab else "",
+        "watchdog_path": COLAB_WATCHDOG_PATH if is_colab else REMOTE_WATCHDOG_PATH,
+    }
+
+
+def provider_ssh_host(cfg_global: dict, cfg_local: dict, provider: str | None = None) -> str:
+    """获取指定后端的 SSH Host 别名（纯函数）。"""
+    p = provider or resolve_provider(cfg_global, cfg_local)
+    prof = provider_profile(cfg_local, p)
+    st = provider_settings(cfg_global, p)
+    return str(prof.get("ssh_host") or st.get("ssh_host") or ("ava-colab" if p == "colab" else "autodl"))
+
+
+def billing_unit_of(cfg_global: dict, provider: str | None = None) -> str:
+    """返回指定后端的计费单位（'cny' 或 'cu'）。"""
+    st = provider_settings(cfg_global, provider or str(cfg_global.get("provider") or "autodl"))
+    return str(st.get("billing_unit") or ("cu" if st.get("provider") in ("colab", "colab-drive") else "cny"))
+
+
+def remote_python(cfg: dict | None = None, *, provider: str | None = None) -> str:
     """远端解释器路径：`config/cloud.json` 的 `remote_python` 优先，缺了用默认值。
 
     做成可配不是洁癖：云端环境里同时存在多个 venv，模型栈只在其中一个里（见常量注释）。
     写死在代码里就是把这个实例的现状当机制（ADR-0003 R2：换台机器就要改代码即缺陷）。
     """
     if cfg is None:
-        cfg = load_cloud_config()[0]
-    return str(cfg.get("remote_python") or DEFAULT_REMOTE_PYTHON)
+        cfg_global, cfg_local = load_cloud_config()
+        p = provider or resolve_provider(cfg_global, cfg_local)
+        return str(provider_settings(cfg_global, p).get("remote_python") or DEFAULT_REMOTE_PYTHON)
+    if provider is not None:
+        return str(provider_settings(cfg, provider).get("remote_python") or (COLAB_REMOTE_PYTHON if provider != "autodl" else DEFAULT_REMOTE_PYTHON))
+    if "remote_python" in cfg:
+        return str(cfg["remote_python"] or DEFAULT_REMOTE_PYTHON)
+    p = str(cfg.get("provider") or "autodl")
+    return str(provider_settings(cfg, p).get("remote_python") or DEFAULT_REMOTE_PYTHON)
 
 
 def build_exec_tmux_command(
@@ -151,16 +267,24 @@ def parse_gpu_query(raw: str) -> tuple[str | None, float | None]:
     return name, mem
 
 
-def evaluate_doctor_gpu(raw_vram_output: str, returncode: int) -> tuple[str, str, bool]:
+def evaluate_doctor_gpu(
+    raw_vram_output: str,
+    returncode: int,
+    *,
+    provider: str = "autodl",
+) -> tuple[str, str, bool]:
     """评估 GPU 项健康状态（纯函数）。
 
     判据：
-    - 无 GPU / nvidia-smi 失败 → 判定为「无卡模式，GPU 未挂载」（状态陈述，非失败）
+    - AutoDL 无 GPU / nvidia-smi 失败 → 判定为「无卡模式，GPU 未挂载」（状态陈述，非失败）
+    - Colab 无 GPU → 判 FAIL，提示在 Colab 笔记本设置中选择 T4 / L4 / A100
     - 有 GPU → 报型号与显存；低于 MIN_VRAM_GB 报 WARN 并说明哪类任务受影响（D102：卡型按需租，
       只配音的任务用小卡是正常选择，不判失败）
     返回: (状态标签 OK/INFO/WARN/FAIL, 详情描述, 是否通过质检)
     """
     if returncode != 0 or not raw_vram_output.strip():
+        if provider in ("colab", "colab-drive"):
+            return "FAIL", "Colab 运行时未挂载 GPU（请在 Colab「修改笔记本设置」选择 T4/L4/A100）", False
         return "INFO", "无卡模式，GPU 未挂载（0.10元/h 节能维护模式）", True
 
     name, vram_mb = parse_gpu_query(raw_vram_output)
@@ -177,7 +301,7 @@ def evaluate_doctor_gpu(raw_vram_output: str, returncode: int) -> tuple[str, str
 
 
 def lookup_gpu_rate(gpu_name: str | None, rates: dict, fallback: float) -> tuple[float, bool]:
-    """按实测 GPU 型号查 `cloud.json` 的 `gpu_rates_cny`（纯函数）。返回 (元/时, 是否估算)。
+    """按实测 GPU 型号查 `cloud.json` 的 `gpu_rates_cny` 或 `cu_rates`（纯函数）。返回 (费率, 是否估算)。
 
     表的键是算力市场的卡型名，nvidia-smi 报的名字常带厂商前缀（如 `NVIDIA GeForce RTX 4090`），
     所以按「键是型号名的子串」匹配、忽略大小写；多个键命中取最长的（`RTX 4090D` 不被 `RTX 4090` 抢走）。
@@ -191,16 +315,16 @@ def lookup_gpu_rate(gpu_name: str | None, rates: dict, fallback: float) -> tuple
     return float(fallback), True
 
 
-def evaluate_doctor_disk(avail_gb_str: str) -> tuple[str, str, bool]:
-    """评估数据盘 /root/autodl-tmp 空间（纯函数）。"""
+def evaluate_doctor_disk(avail_gb_str: str, disk_path: str = "/root/autodl-tmp") -> tuple[str, str, bool]:
+    """评估数据盘可用空间（纯函数）。"""
     try:
         val = int(avail_gb_str.strip())
         if val >= 10:
-            return "OK", f"/root/autodl-tmp 数据盘可用空间充足: {val}GB", True
+            return "OK", f"{disk_path} 数据盘可用空间充足: {val}GB", True
         else:
-            return "FAIL", f"/root/autodl-tmp 剩余空间不足 10GB (仅剩 {val}GB)", False
+            return "FAIL", f"{disk_path} 剩余空间不足 10GB (仅剩 {val}GB)", False
     except Exception:
-        return "FAIL", "数据盘 /root/autodl-tmp 未挂载或不可读", False
+        return "FAIL", f"数据盘 {disk_path} 未挂载或不可读", False
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +397,149 @@ def parse_login_command(text: str) -> dict[str, Any]:
     return {"server": found["server"], "port": int(port_s), "user": found["user"]}
 
 
+def parse_colab_connect_target(text: str) -> dict[str, Any]:
+    """解析 Colab 连接目标（纯函数）：支持 cloudflared 隧道、SSH `-p` 指令或 bare hostname。
+
+    支持形态：
+    1. `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" root@xxx.trycloudflare.com`
+    2. `root@xxx.trycloudflare.com` / `xxx.trycloudflare.com` / `https://xxx.trycloudflare.com`
+    3. `ssh -p <端口> <用户>@<主机>`（与 AutoDL TCP 隧道相同，委托 parse_login_command）
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("Colab 连接目标不能为空")
+
+    # 形态 2：bare host / URL（不含 ssh 前缀，含 trycloudflare.com）
+    if not raw.startswith("ssh ") and " " not in raw:
+        cleaned = raw
+        if "://" in cleaned:
+            cleaned = cleaned.split("://", 1)[1]
+        cleaned = cleaned.split("/", 1)[0]
+        user = "root"
+        host = cleaned
+        if "@" in cleaned:
+            user, host = cleaned.rsplit("@", 1)
+        if not _LOGIN_HOST_RE.match(host):
+            raise ValueError(f"Colab 主机名含不允许的字符：{host!r}")
+        if not _LOGIN_USER_RE.match(user):
+            raise ValueError(f"Colab 用户名含不允许的字符：{user!r}")
+        return {"server": host, "port": 22, "user": user, "proxy_type": "cloudflared"}
+
+    # 形态 1：带 cloudflared ProxyCommand 的 ssh 命令（通常不带 -p）
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as exc:
+        raise ValueError(f"Colab 登录指令无法分词：{exc}") from exc
+
+    has_cloudflared = any("cloudflared" in t or "trycloudflare.com" in t for t in tokens)
+    if has_cloudflared and "-p" not in tokens and not any(t.startswith("-p") and len(t) > 2 for t in tokens):
+        if tokens[0] != "ssh":
+            raise ValueError(f"登录指令要以 ssh 开头，实际开头是 {tokens[0]!r}")
+        targets: list[str] = []
+        user_opt: str | None = None
+        i = 1
+        while i < len(tokens):
+            t = tokens[i]
+            if t.startswith("-") and len(t) >= 2:
+                opt, inline = t[1], t[2:]
+                if opt in _SSH_VALUED_OPTS:
+                    val = inline if inline else (tokens[i + 1] if i + 1 < len(tokens) else None)
+                    if val is None:
+                        raise ValueError(f"选项 -{opt} 缺值")
+                    if opt == "l":
+                        user_opt = val
+                    i += 1 if inline else 2
+                else:
+                    i += 1
+                continue
+            targets.append(t)
+            i += 1
+        if len(targets) != 1:
+            raise ValueError(f"要恰好一个「用户@主机」，实际 {targets or '没有'}")
+        target = targets[0]
+        user, host = target.rsplit("@", 1) if "@" in target else (user_opt or "root", target)
+        if not _LOGIN_HOST_RE.match(host):
+            raise ValueError(f"主机名含不允许的字符：{host!r}")
+        if not _LOGIN_USER_RE.match(user):
+            raise ValueError(f"用户名含不允许的字符：{user!r}")
+        return {"server": host, "port": 22, "user": user, "proxy_type": "cloudflared"}
+
+    # 形态 3：标准 TCP SSH (`ssh -p ...`)
+    conn = parse_login_command(raw)
+    conn["proxy_type"] = "direct"
+    return conn
+
+
 def merge_local_connection(local: dict, conn: dict) -> dict:
     """把连接三项并进 cloud.local.json 的内容（纯函数）：只改 server / port / user，其余键与顺序原样。"""
     out = dict(local)
     for k in ("server", "port", "user"):
         out[k] = conn[k]
     return out
+
+
+def merge_profile_connection(local: dict, provider: str, conn: dict, ssh_host: str | None = None) -> dict:
+    """把指定后端的连接信息写入 `cloud.local.json`（纯函数），不覆盖其他后端。"""
+    out = dict(local)
+    if provider == "autodl":
+        out = merge_local_connection(out, conn)
+        if ssh_host:
+            out["ssh_host"] = ssh_host
+        if "profiles" in out:
+            profiles = dict(out.get("profiles") or {})
+            prof = dict(profiles.get("autodl") or {})
+            for k in ("server", "port", "user"):
+                prof[k] = conn[k]
+            prof["ssh_host"] = ssh_host or out.get("ssh_host", "autodl")
+            profiles["autodl"] = prof
+            out["profiles"] = profiles
+        return out
+
+    profiles = dict(out.get("profiles") or {})
+    prof = dict(profiles.get(provider) or {})
+    if provider == "colab-drive":
+        for k, v in conn.items():
+            prof[k] = v
+    else:
+        for k in ("server", "port", "user"):
+            if k in conn:
+                prof[k] = conn[k]
+        if conn.get("proxy_type"):
+            prof["proxy_type"] = conn["proxy_type"]
+        if ssh_host:
+            prof["ssh_host"] = ssh_host
+        else:
+            prof.setdefault("ssh_host", "ava-colab")
+    profiles[provider] = prof
+    out["profiles"] = profiles
+    return out
+
+
+def merge_active_provider(local: dict, provider: str) -> dict:
+    """切换 `cloud.local.json` 的 `active_provider`（纯函数），保留所有 profiles。"""
+    if provider not in VALID_PROVIDERS:
+        raise ValueError(f"不支持的云算力后端 {provider!r}，可选: {', '.join(VALID_PROVIDERS)}")
+    out = dict(local)
+    out["active_provider"] = provider
+    return out
+
+
+def _render_ssh_host_block(alias: str, conn: dict, known_hosts: Path) -> str:
+    """生成单个 Host 块（纯函数），支持直连端口与 cloudflared ProxyCommand。"""
+    lines = [
+        f"Host {alias}",
+        f"    HostName {conn['server']}",
+        f"    User {conn.get('user', 'root')}",
+    ]
+    if conn.get("proxy_type") == "cloudflared":
+        lines.append("    ProxyCommand cloudflared access ssh --hostname %h")
+    else:
+        lines.append(f"    Port {int(conn['port'])}")
+    lines.extend([
+        "    StrictHostKeyChecking accept-new",
+        f'    UserKnownHostsFile "{known_hosts}"',
+    ])
+    return "\n".join(lines) + "\n"
 
 
 def render_ssh_config(alias: str, conn: dict, known_hosts: Path) -> str:
@@ -292,15 +553,32 @@ def render_ssh_config(alias: str, conn: dict, known_hosts: Path) -> str:
     """
     return (
         "# 由 python -m pipeline.cloud connect 生成（D102），换实例时重写；手改会被下次 connect 覆盖\n"
-        f"Host {alias}\n"
-        f"    HostName {conn['server']}\n"
-        f"    Port {int(conn['port'])}\n"
-        f"    User {conn['user']}\n"
-        f"    StrictHostKeyChecking accept-new\n"
-        f'    UserKnownHostsFile "{known_hosts}"\n'
-        "\n"
-        "Match all\n"
-        "Include ~/.ssh/config\n"
+        + _render_ssh_host_block(alias, conn, known_hosts)
+        + "\nMatch all\nInclude ~/.ssh/config\n"
+    )
+
+
+def render_all_ssh_configs(cfg_global: dict, cfg_local: dict, known_hosts: Path) -> str:
+    """为所有已配置连接的 SSH 后端（autodl / colab）生成多 Host 块 `ssh_config`（纯函数）。"""
+    blocks: list[str] = []
+    seen_aliases: set[str] = set()
+    for p in ("autodl", "colab"):
+        prof = provider_profile(cfg_local, p)
+        if not prof.get("server") or not prof.get("user"):
+            continue
+        if prof.get("proxy_type") != "cloudflared" and not prof.get("port"):
+            continue
+        alias = str(prof.get("ssh_host") or provider_settings(cfg_global, p).get("ssh_host") or p)
+        if alias in seen_aliases:
+            continue
+        seen_aliases.add(alias)
+        blocks.append(_render_ssh_host_block(alias, prof, known_hosts))
+    if not blocks:
+        return ""
+    return (
+        "# 由 python -m pipeline.cloud connect 生成（D102 / Colab），换实例时重写；手改会被下次 connect 覆盖\n"
+        + "\n".join(blocks)
+        + "\nMatch all\nInclude ~/.ssh/config\n"
     )
 
 
@@ -351,8 +629,24 @@ FS_MOUNT_CHECK_CMD = "mountpoint -q /root/autodl-fs && echo MOUNTED || echo NOT_
 GPU_QUERY_CMD = "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
 
 
-def rent_instructions(cfg_global: dict) -> list[str]:
-    """`up` 连不上时打印的租机条件（纯函数，D102）：地区、显存、CUDA、镜像四项，外加下一步。"""
+def rent_instructions(cfg_global: dict, provider: str = "autodl") -> list[str]:
+    """`up` 连不上时打印的接入指引（纯函数）：AutoDL 租机四项 / Colab 启动指南。"""
+    if provider == "colab":
+        return [
+            "Colab SSH 隧道连不上。请按以下步骤拉起 Colab 运行时：",
+            "  1. 打开 Colab（https://colab.research.google.com/）上传/运行 `tools/ava_colab_bootstrap.ipynb`",
+            "  2. 在「修改笔记本设置」选择 GPU（TTS 选 T4 即可；VLM 打标选 L4 / A100）",
+            "  3. 运行 Cell 1（挂 Drive 缓存、建 venv、拉模型到 /content/models）与 Cell 2（mode = \"ssh\"）",
+            "  4. 把 Cell 2 打印的 SSH/cloudflared 连接串交给 `cloud connect \"<连接串>\" --provider colab`",
+            "  5. 如本机无公网/隧道受阻，可改用 `cloud use colab-drive` 走 Google Drive 共享队列模式",
+        ]
+    if provider == "colab-drive":
+        return [
+            "Colab Drive Worker 未在线（未探测到最新心跳）。请确认：",
+            "  1. 本机 Google Drive for Desktop 已运行且 `drive_root` 已通过 `cloud connect --drive-root <路径> --provider colab-drive` 绑定",
+            "  2. Colab 中 `tools/ava_colab_bootstrap.ipynb` 已选 GPU 并启动 Cell 2（mode = \"drive\"）",
+            "  3. Drive 目录下的 `heartbeat/worker.json` 会在 15s 内更新，随后执行 `cloud up --provider colab-drive`",
+        ]
     region = cfg_global.get("region", "西北B区")
     image = cfg_global.get("image", "（cloud.json 未写 image）")
     return [
@@ -595,10 +889,12 @@ def compare_code_manifest(local: dict[str, str], remote: dict[str, str]) -> dict
     }
 
 
-def remote_code_drift(host: str, cfg_global: dict) -> dict[str, list[str]] | str:
+def remote_code_drift(host: str, cfg_global: dict, *, provider: str | None = None) -> dict[str, list[str]] | str:
     """远端与本地代码比对：成功返回 compare_code_manifest 的结果；核对不了返回原因字符串。"""
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
-    res = _ssh(build_code_manifest_cmd(remote_root, remote_python(cfg_global)), host=host, check=False, timeout=90)
+    st = provider_settings(cfg_global, provider) if provider else cfg_global
+    remote_root = str(st.get("remote_root", "/root/anime-video-agent"))
+    py = remote_python(cfg_global, provider=provider)
+    res = _ssh(build_code_manifest_cmd(remote_root, py), host=host, check=False, timeout=90)
     try:
         remote = json.loads(res.stdout.strip().splitlines()[-1]) if res.returncode == 0 else None
     except (ValueError, IndexError):
@@ -608,6 +904,13 @@ def remote_code_drift(host: str, cfg_global: dict) -> dict[str, list[str]] | str
     if not remote:
         return f"远端 {remote_root} 下一个代码文件都没有（仓库不在？先 cloud fix-env）"
     return compare_code_manifest(code_manifest(paths.ROOT), remote)
+
+
+def _check_remote_drift(host: str, cfg_global: dict, provider: str) -> dict[str, list[str]] | str:
+    """兼容仅接受两参 (host, cfg_global) 的测试桩，仅非 AutoDL 后端传入 provider。"""
+    if provider == "autodl":
+        return remote_code_drift(host, cfg_global)
+    return remote_code_drift(host, cfg_global, provider=provider)
 
 
 def code_drift_lines(drift: dict[str, list[str]] | str) -> tuple[bool, list[str]]:
@@ -773,26 +1076,41 @@ def validate_extra_args(extra_args: str | list[str]) -> str:
 
 
 def build_remote_run_command(
-    task: str, ep_rel_path: str, remote_root: str = "/root/anime-video-agent",
-    python: str = DEFAULT_REMOTE_PYTHON, extra_args: str = "",
+    task: str,
+    ep_rel_path: str,
+    remote_root: str = "/root/anime-video-agent",
+    python: str = DEFAULT_REMOTE_PYTHON,
+    extra_args: str = "",
+    *,
+    provider: str = "autodl",
+    models_root: str | None = None,
+    heartbeat_path: str | None = None,
 ) -> str:
-    """生成远端安全执行命令（P0-1 首尾心跳，P2-5 probe 任务分支）。
+    """生成远端安全执行命令（P0-1 首尾心跳，P2-5 probe 任务分支，支持 Colab 环境变量注入）。
 
     `python` 由调用方从配置现取（见 `remote_python`），**不在函数里读配置**：
     这样它仍是纯函数（可测），而「用哪个解释器」这件事只在一个地方决定。
     """
     task = validate_task_whitelist(task)
+    hb = heartbeat_path or (COLAB_HEARTBEAT_PATH if provider != "autodl" else WATCHDOG_HEARTBEAT_PATH)
+    env_parts: list[str] = []
+    if provider != "autodl":
+        env_parts.append(f"AVA_CLOUD_PROVIDER={shlex.quote(provider)}")
+    if models_root:
+        env_parts.append(f"AVA_REMOTE_MODELS={shlex.quote(models_root)}")
+    env_prefix = (" ".join(env_parts) + " ") if env_parts else ""
+
     if task == "probe":
         # probe 探针任务：轻量级验证 GPU/Torch/环境，不拖入未移植的 TTS 模块
         cmd = (
             f"cd {remote_root} && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH} && "
+            f"touch {hb} && "
             f"mkdir -p {ep_rel_path}/03-audio && "
-            f"{python} -c '"
+            f"{env_prefix}{python} -c '"
             f"import torch; "
             f"print(f\"GPU Probe: torch={{torch.__version__}}, cuda={{torch.cuda.is_available()}}\")"
             f"' | tee {ep_rel_path}/03-audio/probe.log && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH}"
+            f"touch {hb}"
         )
     elif task == "captions":
         # captions 专用分支（Spec §4.6 R1-r15）：
@@ -848,12 +1166,12 @@ def build_remote_run_command(
         flags_str = (" " + " ".join(extra_flags)) if extra_flags else ""
         cmd = (
             f"cd {remote_root} && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH} && "
-            f"{python} -m pipeline.vindex captions {shlex.quote(pool)} {key_str} "
+            f"touch {hb} && "
+            f"{env_prefix}{python} -m pipeline.vindex captions {shlex.quote(pool)} {key_str} "
             f"--shots-dir {shlex.quote(shots_dir)} "
             f"--frames-dir {shlex.quote(frames_dir)} "
             f"--out-dir {shlex.quote(out_dir)}{flags_str} && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH}"
+            f"touch {hb}"
         )
     else:
         # tts 必须走云端覆盖层：本地 Mac 只有 mlx（qwen3_tts），云端只有 CUDA（indextts2），
@@ -865,9 +1183,9 @@ def build_remote_run_command(
                 extra += f" {validated}"
         cmd = (
             f"cd {remote_root} && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH} && "
-            f"{python} -m pipeline.{task} {ep_rel_path}{extra} && "
-            f"touch {WATCHDOG_HEARTBEAT_PATH}"
+            f"touch {hb} && "
+            f"{env_prefix}{python} -m pipeline.{task} {ep_rel_path}{extra} && "
+            f"touch {hb}"
         )
     return cmd
 
@@ -891,23 +1209,38 @@ def generate_watchdog_script(
     idle_seconds: int = DEFAULT_IDLE_SHUTDOWN_SECONDS,
     heartbeat_path: str = WATCHDOG_HEARTBEAT_PATH,
     hold_path: str = REMOTE_HOLD_PATH,
+    *,
+    unassign_path: str | None = None,
+    log_path: str = "/root/watchdog.log",
 ) -> str:
-    """生成远端自动关机 watchdog 脚本（P0-1 核心修复）。
+    """生成远端自动关机 / Colab 运行时释放 watchdog 脚本（P0-1 核心修复）。
 
     判据（S1 测真实状态）：
     循环内必须先检查 `tmux ls 2>/dev/null | grep -q '^ava-'`。
-    只要存在以 `ava-` 开头的活跃会话，说明有任务正在后台执行，绝对不可关机！
+    只要存在以 `ava-` 开头的活跃会话，说明有任务正在后台执行，绝对不可关机或释放！
 
-    关机命令（2026-09-11 实测）：AutoDL 容器内 PID 1 是 `bash /init/boot/boot.sh`，
-    **没有 systemd**（`/run/systemd/system` 不存在，`poweroff` 指向的 systemctl 无效），
-    唯一可用的是 AutoDL 自带的 `/usr/bin/shutdown` 包装脚本。
-    写成 `||` 链是为了兼容未来基础镜像变化，但首选必须是 `/usr/bin/shutdown`。
+    关机/释放命令：
+    - AutoDL：`unassign_path` 为 None 时调 `/usr/bin/shutdown -h now`；
+    - Colab：`unassign_path` 指定时写释放信号文件（由 Colab sentinel / worker 调 `google.colab.runtime.unassign()`）。
     """
+    if unassign_path:
+        action_block = (
+            f'            touch "{unassign_path}"\n'
+            f'            echo "$(date \'+%F %T\') [watchdog] unassign 信号已写入 {unassign_path}" >> "$LOG"'
+        )
+    else:
+        action_block = (
+            '            if /usr/bin/shutdown -h now >> "$LOG" 2>&1; then\n'
+            '                echo "$(date \'+%F %T\') [watchdog] shutdown 已下发" >> "$LOG"\n'
+            '            else\n'
+            '                echo "$(date \'+%F %T\') [watchdog] shutdown 下发失败，需人工到控制台关机" >> "$LOG"\n'
+            '            fi'
+        )
     return f"""#!/bin/bash
-# AVA Remote Watchdog: AutoDL idle shutdown with active task guard
+# AVA Remote Watchdog: AutoDL/Colab idle shutdown with active task guard
 HEARTBEAT_FILE="{heartbeat_path}"
 IDLE_LIMIT={idle_seconds}
-LOG=/root/watchdog.log
+LOG="{log_path}"
 {watchdog_hold_function(hold_path)}
 
 touch "$HEARTBEAT_FILE"
@@ -930,11 +1263,7 @@ while true; do
         idle=$((now - mtime))
         if [ "$idle" -ge "$IDLE_LIMIT" ]; then
             echo "$(date '+%F %T') [watchdog] Idle $idle s >= $IDLE_LIMIT s, no ava-* task. Shutting down." >> "$LOG"
-            if /usr/bin/shutdown -h now >> "$LOG" 2>&1; then
-                echo "$(date '+%F %T') [watchdog] shutdown 已下发" >> "$LOG"
-            else
-                echo "$(date '+%F %T') [watchdog] shutdown 下发失败，需人工到控制台关机" >> "$LOG"
-            fi
+{action_block}
             exit 0
         fi
     fi
@@ -1012,37 +1341,45 @@ def format_ledger_entry(
     note: str | None = None,
     gpu: str | None = None,
     rate_cny: float | None = None,
+    *,
+    provider: str | None = None,
+    billing_unit: str = "cny",
 ) -> dict[str, Any]:
-    """格式化账簿单行 JSON 对象（P1-2 增加 mode 字段）。
+    """格式化账簿单行 JSON 对象（支持 cny 与 Colab cu 双单位）。
 
     note 用于标注时长的可信度：实例已被 watchdog 自动关机时，down 根本联系不上远端，
     只能把时长算到「执行 down 的此刻」——这会多算一段关机到发现的延迟，
     属于**上界估计**。记进 note 而不是假装精确。
     """
-    # **单期预算只对「真的在做某一期」的会话有意义。** 模型下载、环境部署、
-    # 引擎选型这类会话根本没有「单期」可言，拿单期预算去量它们必然误报
-    # （2026-09-11 实测：一个含 15GB 模型下载 + 两次部署尝试的会话被标
-    # 「超预算 16 倍」，而它压根没在做任何一期）。警告天天误报就没人看了，
-    # 所以这里显式区分，并把判定范围记进账簿而不是藏起来。
     budget_scoped = bool(episode) and episode != "unknown"
     over_budget = budget_scoped and cost_cny > budget_cny
+    is_cu = billing_unit == "cu"
     entry: dict[str, Any] = {
         "session": session_id,
         "mode": mode,
         "up": up_time,
         "down": down_time,
         "gpu_seconds": int(gpu_seconds),
-        "cny": round(cost_cny, 4),
+        "cny": 0.0 if is_cu else round(cost_cny, 4),
         "episode": episode or "unknown",
         "tasks": tasks,
         "over_budget": over_budget,
         "budget_scoped": budget_scoped,
     }
+    if is_cu:
+        entry["unit"] = "cu"
+        entry["cu"] = round(cost_cny, 4)
+        entry["provider"] = provider or "colab"
+    elif provider and provider != "autodl":
+        entry["provider"] = provider
     # D102：卡型不固定，记实际用的卡与按哪个单价算的（估算与否写在 note）
     if gpu:
         entry["gpu"] = gpu
     if rate_cny is not None:
-        entry["rate_cny"] = rate_cny
+        if is_cu:
+            entry["rate_cu"] = rate_cny
+        else:
+            entry["rate_cny"] = rate_cny
     if note:
         entry["note"] = note
     return entry
@@ -1067,14 +1404,124 @@ def parse_ledger(ledger_text: str) -> tuple[float, int, list[dict]]:
     return round(total_cny, 4), total_sec, records
 
 
+def parse_ledger_summary(ledger_text: str) -> dict[str, Any]:
+    """按双计费单位（cny / cu）与提供商汇总账簿记录（纯函数）。"""
+    total_cny, total_sec, records = parse_ledger(ledger_text)
+    total_cu = 0.0
+    by_provider: dict[str, dict[str, Any]] = {}
+    for r in records:
+        p = str(r.get("provider") or "autodl")
+        cu_val = float(r.get("cu", 0.0))
+        cny_val = float(r.get("cny", 0.0))
+        sec_val = int(r.get("gpu_seconds", 0))
+        total_cu += cu_val
+        bucket = by_provider.setdefault(p, {"sessions": 0, "seconds": 0, "cny": 0.0, "cu": 0.0})
+        bucket["sessions"] += 1
+        bucket["seconds"] += sec_val
+        bucket["cny"] = round(bucket["cny"] + cny_val, 4)
+        bucket["cu"] = round(bucket["cu"] + cu_val, 4)
+    return {
+        "total_cny": total_cny,
+        "total_cu": round(total_cu, 4),
+        "total_sec": total_sec,
+        "records": records,
+        "by_provider": by_provider,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 第二节：SSH / Rsync 执行薄壳
 # ---------------------------------------------------------------------------
 
 
-def _ssh_host(cfg_local: dict) -> str:
+def _extract_provider_from_extra(extra: list[str]) -> tuple[str | None, list[str]]:
+    """从透传参数 `extra` 里剥离 `--provider <p>` 或 `--provider=<p>`（纯函数），避免进入白名单参数检查。"""
+    found: str | None = None
+    rest: list[str] = []
+    i = 0
+    while i < len(extra):
+        tok = extra[i]
+        if tok == "--provider":
+            if i + 1 >= len(extra):
+                raise ValueError("--provider 缺少值")
+            found = extra[i + 1]
+            i += 2
+        elif tok.startswith("--provider="):
+            found = tok.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    return found, rest
+
+
+def _resolve_drive_root(st: dict, prof: dict) -> Path | None:
+    """获取 colab-drive 的本地挂载根目录（profile 配置优先，其次自动探测 Google Drive for Desktop）。"""
+    raw = prof.get("drive_root")
+    if raw:
+        return Path(os.path.expanduser(str(raw)))
+    return cloud_drive.detect_drive_root(str(st.get("drive_queue_subpath") or "ava_cloud"))
+
+
+def _cloud_context(args: argparse.Namespace | None = None, *, cli_provider: str | None = None) -> dict[str, Any]:
+    """统一解析当前命令的提供商上下文：cfg_global, cfg_local, provider, settings, rpaths, profile, host, unit, drive_root。"""
+    cfg_global, cfg_local = load_cloud_config()
+    raw_cli = cli_provider if cli_provider is not None else getattr(args, "provider", None)
+    try:
+        provider = resolve_provider(cfg_global, cfg_local, raw_cli)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+    st = provider_settings(cfg_global, provider)
+    rpaths = provider_remote_paths(cfg_global, provider)
+    prof = provider_profile(cfg_local, provider)
+    host = provider_ssh_host(cfg_global, cfg_local, provider)
+    unit = billing_unit_of(cfg_global, provider)
+    drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
+    return {
+        "cfg_global": cfg_global,
+        "cfg_local": cfg_local,
+        "provider": provider,
+        "settings": st,
+        "rpaths": rpaths,
+        "profile": prof,
+        "host": host,
+        "unit": unit,
+        "drive_root": drive_root,
+    }
+
+
+def _require_drive_root(ctx: dict[str, Any]) -> Path:
+    """确保 colab-drive 的本地 Drive 目录可用；不可达则给出明确指引并 SystemExit。"""
+    drive_root = ctx.get("drive_root")
+    if not cloud_drive.is_drive_reachable(drive_root):
+        hint = (
+            f"当前 drive_root={drive_root}"
+            if drive_root is not None
+            else "未探测到 Google Drive for Desktop 挂载盘（~/Library/CloudStorage/GoogleDrive-*/My Drive）"
+        )
+        raise SystemExit(
+            f"FAIL colab-drive 队列目录不可用（{hint}）。\n"
+            "     修法: python -m pipeline.cloud connect --provider colab-drive --drive-root \"<GoogleDrive同步目录>/ava_cloud\""
+        )
+    assert drive_root is not None
+    return drive_root
+
+
+def _require_local_cloudflared(prof: dict) -> None:
+    """若 Colab SSH 配置采用 cloudflared ProxyCommand，先检查本机是否已装 cloudflared。"""
+    if prof.get("proxy_type") == "cloudflared" and not shutil.which("cloudflared"):
+        raise SystemExit(
+            "FAIL 本机未安装 cloudflared（Colab Cloudflare 隧道需要 ProxyCommand cloudflared）。\n"
+            "     修法（macOS）: brew install cloudflared\n"
+            "     或切换零隧道队列模式: python -m pipeline.cloud use colab-drive"
+        )
+
+
+def _ssh_host(cfg_local: dict, provider: str | None = None) -> str:
     """获取 SSH 连接目标 Host 别名（定义在 data/cloud/ssh_config，没有该文件时走 ~/.ssh/config）。"""
-    return cfg_local.get("ssh_host", "autodl")
+    if provider == "colab":
+        return str(provider_profile(cfg_local, "colab").get("ssh_host") or "ava-colab")
+    return str(cfg_local.get("ssh_host") or provider_profile(cfg_local, "autodl").get("ssh_host") or "autodl")
 
 
 def ssh_config_file() -> Path:
@@ -1195,8 +1642,12 @@ def get_ledger_file() -> Path:
 
 def cmd_exec(args: argparse.Namespace) -> int:
     """远端执行核心：一律 tmux 包裹后台化，仅 --fg 允许直连短命令。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    ctx = _cloud_context(args)
+    if ctx["provider"] == "colab-drive":
+        raise SystemExit("FAIL colab-drive 为无隧道队列模式，不支持 exec；请改用 run / sync-code 或切换到 --provider colab")
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    rpaths = ctx["rpaths"]
     remote_cmd = args.command.strip()
 
     if not is_ssh_reachable(host):
@@ -1220,7 +1671,12 @@ def cmd_exec(args: argparse.Namespace) -> int:
     # 2. 默认后台 tmux 通道
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_name = f"ava-{ts}"
-    tmux_cmd, log_path = build_exec_tmux_command(remote_cmd, session_name)
+    tmux_cmd, log_path = build_exec_tmux_command(
+        remote_cmd,
+        session_name,
+        log_dir=rpaths["remote_log_dir"],
+        heartbeat_path=rpaths["heartbeat_path"],
+    )
 
     _ssh(tmux_cmd, host=host, check=True)
 
@@ -1234,14 +1690,45 @@ def cmd_exec(args: argparse.Namespace) -> int:
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    """查看或追踪远端 tmux 任务日志。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    """查看或追踪远端 tmux 任务日志（colab-drive 读取 Drive worker.log）。"""
+    ctx = _cloud_context(args)
     session_name = args.session.strip()
     if session_name.endswith(".log"):
         session_name = session_name[:-4]
 
-    log_path = f"{REMOTE_LOG_DIR}/{session_name}.log"
+    if ctx["provider"] == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        jobs = cloud_drive.list_drive_jobs(drive_root)
+        job_id = session_name
+        if not any(j["job_id"] == job_id for j in jobs):
+            # 允许传 task/ava-tts 等模糊前缀匹配最近任务
+            task_hint = session_name.removeprefix("ava-")
+            match = cloud_drive.latest_job_for(drive_root, task=task_hint) or (jobs[0] if jobs else None)
+            if not match:
+                print("FAIL Drive 队列中没有任何任务日志", file=sys.stderr)
+                return 1
+            job_id = match["job_id"]
+        if not args.follow:
+            content = cloud_drive.read_drive_job_logs(drive_root, job_id, lines=args.lines)
+            if content is None:
+                print(f"FAIL 未找到任务 {job_id} 的 worker.log（可能尚未被 Colab Worker 接单）", file=sys.stderr)
+                return 1
+            print(content, end="")
+            return 0
+        seen_len = 0
+        while True:
+            content = cloud_drive.read_drive_job_logs(drive_root, job_id, lines=0) or ""
+            if len(content) > seen_len:
+                print(content[seen_len:], end="", flush=True)
+                seen_len = len(content)
+            cur = next((j for j in cloud_drive.list_drive_jobs(drive_root) if j["job_id"] == job_id), None)
+            if cur and cur["status"].get("state") in ("succeeded", "failed"):
+                return 0 if cur["status"].get("state") == "succeeded" else 1
+            time.sleep(3)
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    log_path = f"{ctx['rpaths']['remote_log_dir']}/{session_name}.log"
 
     tail_opts = f"-n {args.lines}"
     if args.follow:
@@ -1283,49 +1770,214 @@ def forget_known_host(conn: dict) -> None:
     kh = known_hosts_file()
     if not kh.is_file():
         return
-    subprocess.run(["ssh-keygen", "-R", f"[{conn['server']}]:{int(conn['port'])}", "-f", str(kh)],
-                   capture_output=True, text=True)
+    if conn.get("proxy_type") == "cloudflared":
+        subprocess.run(["ssh-keygen", "-R", conn["server"], "-f", str(kh)],
+                       capture_output=True, text=True)
+    else:
+        subprocess.run(["ssh-keygen", "-R", f"[{conn['server']}]:{int(conn['port'])}", "-f", str(kh)],
+                       capture_output=True, text=True)
 
 
-def cmd_connect(args: argparse.Namespace) -> int:
-    """换实例：解析控制台登录指令，写连接三项、生成 ssh_config、验连通、建模型软链（D102，弹卡）。
-
-    Code Freeze 第 ④ 条例外：只写 `config/cloud.local.json` 的 server / port / user，其余键原样保留。
-    输出不回显该文件的其他内容。
-    """
+def cmd_use(args: argparse.Namespace) -> int:
+    """切换默认云算力后端（Code Freeze 例外 ④：只改 cloud.local.json 的 active_provider，保留各后端 profiles）。"""
     try:
-        conn = parse_login_command(args.login)
+        target = resolve_provider(cli_provider=args.provider_name)
     except ValueError as exc:
-        raise SystemExit(f"FAIL 登录指令解析不出：{exc}") from exc
+        raise SystemExit(f"FAIL {exc}") from exc
     paths.require_data()
     f_local = paths.CONFIG / "cloud.local.json"
     local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
-    merged = merge_local_connection(local, conn)
+    merged = merge_active_provider(local, target)
     paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-    host = _ssh_host(merged)
+    cfg_global, _ = load_cloud_config()
+    unit = billing_unit_of(cfg_global, target).upper()
+    prof = provider_profile(merged, target)
+    if target == "colab-drive":
+        detail = prof.get("drive_root") or "待 cloud connect --drive-root 绑定 / 自动探测"
+    else:
+        detail = f"host={prof.get('ssh_host')}" + (f" ({prof['server']})" if prof.get("server") else "（尚未 connect）")
+    print(f"[OK] 当前默认云端后端已切换为: {target}（计费单位: {unit}，{detail}）")
+    return 0
+
+
+def cmd_connect(args: argparse.Namespace) -> int:
+    """接入/换实例（D102 + Colab）：解析 SSH/cloudflared 或绑定 Drive 共享队列，写入对应 profile。
+
+    Code Freeze 第 ④ 条例外：只写 `config/cloud.local.json` 的连接字段，其余键原样保留。
+    输出不回显该文件的其他内容。
+    """
+    cfg_global, cfg_local = load_cloud_config()
+    try:
+        provider = resolve_provider(cfg_global, cfg_local, getattr(args, "provider", None))
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+
+    drive_root_arg = getattr(args, "drive_root", None)
+    if drive_root_arg and getattr(args, "provider", None) is None:
+        provider = "colab-drive"
+
+    paths.require_data()
+    f_local = paths.CONFIG / "cloud.local.json"
+    local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
+
+    if provider == "colab-drive":
+        st = provider_settings(cfg_global, "colab-drive")
+        if drive_root_arg:
+            try:
+                drive_root = cloud_drive.validate_drive_root(drive_root_arg)
+            except ValueError as exc:
+                raise SystemExit(f"FAIL {exc}") from exc
+        else:
+            drive_root = cloud_drive.detect_drive_root(str(st.get("drive_queue_subpath") or "ava_cloud"))
+            if drive_root is None:
+                raise SystemExit(
+                    "FAIL 未自动探测到 Google Drive for Desktop 本地目录。\n"
+                    "     请显式传入: python -m pipeline.cloud connect --provider colab-drive --drive-root \"<Drive目录>/ava_cloud\""
+                )
+        cloud_drive.ensure_drive_layout(drive_root)
+        merged = merge_profile_connection(local, "colab-drive", {"drive_root": str(drive_root)})
+        paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+        print(f"[OK] Colab Drive 共享队列已绑定: {drive_root}")
+        hb = cloud_drive.parse_worker_heartbeat(drive_root)
+        if hb and hb.get("online"):
+            print(f"[OK] Colab Worker 在线：GPU={hb.get('gpu') or '未知'}（心跳延迟 {hb.get('stale_s')}s）")
+        else:
+            print("[*] 当前未检测到在线 Worker 心跳，请确保 Colab Bootstrap Notebook Cell 2 (drive 模式) 已运行")
+        if merged.get("active_provider", cfg_global.get("provider", "autodl")) != "colab-drive":
+            print("[*] 提示: 默认后端仍未切换，如需默认走 Drive 队列请执行: python -m pipeline.cloud use colab-drive")
+        return 0
+
+    login_text = (getattr(args, "login", None) or "").strip()
+    if not login_text:
+        raise SystemExit(f"FAIL {provider} 需要提供控制台登录指令或隧道主机，如: cloud connect \"ssh -p ...\" --provider {provider}")
+    try:
+        conn = parse_colab_connect_target(login_text) if provider == "colab" else parse_login_command(login_text)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL 登录指令解析不出：{exc}") from exc
+
+    alias = str(provider_profile(local, provider).get("ssh_host")
+                or provider_settings(cfg_global, provider).get("ssh_host")
+                or ("ava-colab" if provider == "colab" else "autodl"))
+    merged = merge_profile_connection(local, provider, conn, ssh_host=alias)
+    paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
     ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
     forget_known_host(conn)
-    paths.atomic_write(ssh_config_file(), render_ssh_config(host, conn, known_hosts_file()))
-    print(f"[OK] 连接信息已更新：{conn['user']}@{conn['server']}:{conn['port']}（别名 {host}）")
+    rendered = render_all_ssh_configs(cfg_global, merged, known_hosts_file()) or render_ssh_config(alias, conn, known_hosts_file())
+    paths.atomic_write(ssh_config_file(), rendered)
 
-    if not is_ssh_reachable(host):
-        print(f"FAIL 连不上 {conn['server']}:{conn['port']}。实例刚开机可能还没起来，过半分钟再 connect 一次；"
-              "仍不通就看控制台实例状态，以及镜像里是否带着本机公钥", file=sys.stderr)
+    endpoint = f"{conn['user']}@{conn['server']}" if conn.get("proxy_type") == "cloudflared" else f"{conn['user']}@{conn['server']}:{conn['port']}"
+    print(f"[OK] {provider} 连接信息已更新：{endpoint}（别名 {alias}）")
+
+    _require_local_cloudflared(conn)
+    if not is_ssh_reachable(alias):
+        print(f"FAIL 连不上 {endpoint}。实例刚开机可能还没起来，过半分钟再 connect 一次；"
+              "仍不通就确认隧道服务（sshd / cloudflared）是否已就绪", file=sys.stderr)
         return 1
     print("[OK] SSH 连通")
-    cfg_global, _ = load_cloud_config()
-    return 0 if ensure_models_link(host, cfg_global) else 1
+    if provider == "autodl":
+        return 0 if ensure_models_link(alias, cfg_global) else 1
+    gpu_res = _ssh(GPU_QUERY_CMD, host=alias, check=False)
+    tag, desc, ok = evaluate_doctor_gpu(gpu_res.stdout, gpu_res.returncode, provider=provider)
+    print(f"{tag:<5} [GPU] {desc}")
+    if merged.get("active_provider", cfg_global.get("provider", "autodl")) != "colab":
+        print("[*] 提示: 如需默认走 Colab，请执行: python -m pipeline.cloud use colab")
+    return 0 if ok else 1
+
+
+def _doctor_colab_drive(ctx: dict[str, Any]) -> int:
+    """colab-drive 后端诊断：本地 Drive 目录、Worker 心跳、代码一致性、GPU 与模型报告。"""
+    cfg_global = ctx["cfg_global"]
+    drive_root = ctx.get("drive_root")
+    print("=" * 65)
+    print("  Colab Drive 队列诊断 (pipeline.cloud doctor --provider colab-drive)")
+    print("=" * 65)
+    all_passed = True
+
+    if cloud_drive.is_drive_reachable(drive_root):
+        cloud_drive.ensure_drive_layout(drive_root)
+        print(f"OK    [DRIVE] Drive 队列目录可读写: {drive_root}")
+    else:
+        print(f"FAIL  [DRIVE] Drive 队列目录不可用: {drive_root}")
+        print("      修法: 确认 Google Drive for Desktop 已运行，并执行 cloud connect --provider colab-drive --drive-root <路径>")
+        return 1
+
+    mf = cloud_drive.read_drive_code_manifest(drive_root)
+    if isinstance(mf, str):
+        all_passed = False
+        print(f"FAIL  [CODE] {mf}")
+    else:
+        drift = compare_code_manifest(code_manifest(paths.ROOT), mf)
+        code_ok, code_lines = code_drift_lines(drift)
+        print(f"{'OK' if code_ok else 'FAIL':<5} [CODE] {code_lines[0]}")
+        for line in code_lines[1:]:
+            print(f"      {line}")
+        if not code_ok:
+            all_passed = False
+
+    hb = cloud_drive.parse_worker_heartbeat(drive_root)
+    if not hb:
+        all_passed = False
+        print("FAIL  [WORKER] 尚未检测到 Colab Worker 心跳 (heartbeat/worker.json)")
+        print("      修法: 在 Colab 中运行 tools/ava_colab_bootstrap.ipynb Cell 2 (mode = \"drive\")")
+    elif not hb.get("online"):
+        all_passed = False
+        print(f"FAIL  [WORKER] Colab Worker 心跳已过期（最后上报于 {hb.get('stale_s')}s 前）")
+        print("      修法: 检查 Colab 运行时是否已断开，并在 Colab 重跑 Cell 2")
+    else:
+        print(f"OK    [WORKER] Colab Worker 在线（心跳延迟 {hb.get('stale_s')}s，活跃任务: {hb.get('active_job') or '无'}）")
+        gpu_str = str(hb.get("gpu") or "")
+        vram_mib = hb.get("gpu_mem_mib")
+        raw_gpu = f"{gpu_str}, {int(vram_mib)}" if (gpu_str and vram_mib) else ""
+        g_tag, g_desc, g_ok = evaluate_doctor_gpu(raw_gpu, 0 if raw_gpu else 1, provider="colab-drive")
+        print(f"{g_tag:<5} [GPU] {g_desc}")
+        if not g_ok:
+            all_passed = False
+        if hb.get("torch_cuda"):
+            print(f"OK    [TORCH] PyTorch {hb.get('torch_version', '?')}, CUDA可用=True")
+        else:
+            all_passed = False
+            print(f"FAIL  [TORCH] PyTorch CUDA 不可用 ({hb.get('torch_version', '未知')})")
+        if hb.get("disk_free_gb") is not None:
+            d_tag, d_desc, d_ok = evaluate_doctor_disk(str(hb["disk_free_gb"]), disk_path=ctx["rpaths"]["remote_data_disk"])
+            print(f"{d_tag:<5} [DISK] {d_desc}")
+            if not d_ok:
+                all_passed = False
+        reported_models = hb.get("models") or {}
+        for m_id in cfg_global.get("models", {}):
+            st_m = reported_models.get(m_id)
+            if st_m == "ok":
+                print(f"OK    [MODEL] {m_id}")
+            elif st_m:
+                all_passed = False
+                print(f"FAIL  [MODEL] {m_id}: {st_m}")
+            else:
+                print(f"INFO  [MODEL] {m_id}（尚未上报；Colab 按需从 HuggingFace 拉取）")
+
+    print("=" * 65)
+    print("[✓] Drive 队列诊断完成。" if all_passed else "[✗] 存在未通过检查项，请依据上方提示处理。")
+    return 0 if all_passed else 1
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """环境自检诊断命令（逐项检查，E10 精确修复提示）。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    """环境自检诊断命令（逐项检查，支持 AutoDL / Colab SSH / Colab Drive）。"""
+    ctx = _cloud_context(args)
+    provider = ctx["provider"]
+    if provider == "colab-drive":
+        return _doctor_colab_drive(ctx)
+
+    cfg_global = ctx["cfg_global"]
+    rpaths = ctx["rpaths"]
+    host = ctx["host"]
+    remote_root = rpaths["remote_root"]
+    models_root = rpaths["remote_models"]
+    py_exe = rpaths["remote_python"]
+    disk_path = rpaths["remote_data_disk"]
     models_spec = cfg_global.get("models", {})
 
+    _require_local_cloudflared(ctx["profile"])
+    title = "Google Colab SSH" if provider == "colab" else "AutoDL"
     print("=" * 65)
-    print("  AutoDL 云端环境诊断 (pipeline.cloud doctor)")
+    print(f"  {title} 云端环境诊断 (pipeline.cloud doctor)")
     print("=" * 65)
 
     all_passed = True
@@ -1333,21 +1985,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # 1. SSH 连通性
     ssh_ok = is_ssh_reachable(host)
     if ssh_ok:
-        print("OK    [SSH] 远端跳板机连通且 ControlMaster 链路正常")
+        print(f"OK    [SSH] 远端连通 ({host})")
     else:
-        print("FAIL  [SSH] 无法通过 SSH 连接远端实例")
-        print("      修法: 1. 确认控制台实例是否已开机 (https://www.autodl.com/console/instance/list);")
-        print("            2. 换过实例的话，把控制台的 SSH 登录指令交给 cloud connect。")
+        print(f"FAIL  [SSH] 无法通过 SSH 连接远端实例 ({host})")
+        if provider == "colab":
+            print("      修法: 1. 在 Colab 运行 tools/ava_colab_bootstrap.ipynb Cell 2 (mode = \"ssh\");")
+            print("            2. 把输出的隧道连接串交给 cloud connect --provider colab;")
+            print("            3. 或切换无隧道队列: cloud use colab-drive。")
+        else:
+            print("      修法: 1. 确认控制台实例是否已开机 (https://www.autodl.com/console/instance/list);")
+            print("            2. 换过实例的话，把控制台的 SSH 登录指令交给 cloud connect。")
         return 1
 
-    # 2. NVIDIA GPU（断言显存容量 ≥ 24GB，允许无卡模式）
+    # 2. NVIDIA GPU
     gpu_res = _ssh(GPU_QUERY_CMD, host=host, check=False)
-    status_tag, desc, passed = evaluate_doctor_gpu(gpu_res.stdout, gpu_res.returncode)
+    status_tag, desc, passed = evaluate_doctor_gpu(gpu_res.stdout, gpu_res.returncode, provider=provider)
     print(f"{status_tag:<5} [GPU] {desc}")
     if not passed:
         all_passed = False
 
-    # 3. 远端代码仓库
+    # 3. 远端代码仓库与内容核对
     repo_res = _ssh(f"test -d {remote_root}/.git && cd {remote_root} && git rev-parse --short HEAD", host=host, check=False)
     if repo_res.returncode == 0:
         print(f"OK    [REPO] 远端仓库就绪 ({remote_root}, commit: {repo_res.stdout.strip()})")
@@ -1356,9 +2013,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"FAIL  [REPO] 远端仓库不存在或未完成初始化: {remote_root}")
         print("      修法: cloud fix-env（弹卡；克隆仓库到远端，已在就跳过）")
 
-    # 3b. D107：远端代码内容与本地是否一致（仓库在 ≠ 代码对）
     if repo_res.returncode == 0:
-        code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+        code_ok, code_lines = code_drift_lines(_check_remote_drift(host, cfg_global, provider))
         print(f"{'OK' if code_ok else 'FAIL':<5} [CODE] {code_lines[0]}")
         for line in code_lines[1:]:
             print(f"      {line}")
@@ -1367,7 +2023,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # 4. PyTorch 与 CUDA 可用性
     torch_cmd = (
-        f"{remote_python()} -c "
+        f"{py_exe} -c "
         "'import torch; print(f\"{torch.__version__}___{torch.cuda.is_available()}\")'"
     )
     torch_res = _ssh(torch_cmd, host=host, check=False)
@@ -1375,43 +2031,49 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         t_ver, c_avail = torch_res.stdout.strip().split("___")
         if c_avail == "True":
             print(f"OK    [TORCH] PyTorch {t_ver}, CUDA可用=True")
+        elif provider == "colab":
+            all_passed = False
+            print(f"FAIL  [TORCH] Colab PyTorch {t_ver} CUDA 不可用")
         else:
             print(f"INFO  [TORCH] PyTorch {t_ver} (无卡模式，CUDA暂离线)")
     else:
         all_passed = False
         print(f"FAIL  [TORCH] PyTorch 未安装或环境损坏: {torch_res.stderr.strip()}")
-        print("      修法: 在远端模型栈环境里装（config/cloud.json 的 remote_python 指的就是它）")
+        print(f"      修法: 在 {py_exe} 对应 venv 安装依赖")
 
-    # 5. 数据盘存储
-    disk_res = _ssh("df -BG /root/autodl-tmp | tail -1 | awk '{print $4}' | tr -d 'G'", host=host, check=False)
-    d_tag, d_desc, d_passed = evaluate_doctor_disk(disk_res.stdout)
+    # 5. 数据盘 / Colab 运行盘存储
+    disk_res = _ssh(f"df -BG {shlex.quote(disk_path)} | tail -1 | awk '{{print $4}}' | tr -d 'G'", host=host, check=False)
+    d_tag, d_desc, d_passed = evaluate_doctor_disk(disk_res.stdout, disk_path=disk_path)
     print(f"{d_tag:<5} [DISK] {d_desc}")
     if not d_passed:
         all_passed = False
-        print("      修法: 清理 /root/autodl-tmp 中无用的大文件或临时缓存。")
 
-    # 5b. 文件存储挂载与模型软链（D102：模型在文件存储里，数据盘上只是软链）
-    fs_res = _ssh(FS_MOUNT_CHECK_CMD, host=host, check=False)
-    if fs_res.stdout.strip() == "MOUNTED":
-        print("OK    [FS] 文件存储 /root/autodl-fs 已挂载")
+    # 5b. AutoDL 文件存储软链 / Colab Drive 缓存检查
+    if provider == "autodl":
+        fs_res = _ssh(FS_MOUNT_CHECK_CMD, host=host, check=False)
+        if fs_res.stdout.strip() == "MOUNTED":
+            print("OK    [FS] 文件存储 /root/autodl-fs 已挂载")
+        else:
+            all_passed = False
+            print("FAIL  [FS] 文件存储 /root/autodl-fs 没挂载")
+            print(f"      修法: 控制台「文件存储」页看 {cfg_global.get('region', '西北B区')} 是否已初始化；"
+                  "已初始化仍没挂上就重启实例（文件存储只在开机时挂载）")
+        fs = fs_models_dir(cfg_global)
+        ln_res = _ssh(models_link_script(fs, models_root, create=False), host=host, check=False)
+        l_tag, l_desc, l_ok = evaluate_models_link(ln_res.stdout, fs, models_root)
+        print(f"{l_tag:<5} [LINK] {l_desc}")
+        if not l_ok:
+            all_passed = False
     else:
-        all_passed = False
-        print("FAIL  [FS] 文件存储 /root/autodl-fs 没挂载")
-        print(f"      修法: 控制台「文件存储」页看 {cfg_global.get('region', '西北B区')} 是否已初始化；"
-              "已初始化仍没挂上就重启实例（文件存储只在开机时挂载）")
-    fs = fs_models_dir(cfg_global)
-    tmp = cfg_global.get("remote_models", "/root/autodl-tmp/models")
-    ln_res = _ssh(models_link_script(fs, tmp, create=False), host=host, check=False)
-    l_tag, l_desc, l_ok = evaluate_models_link(ln_res.stdout, fs, tmp)
-    print(f"{l_tag:<5} [LINK] {l_desc}")
-    if not l_ok:
-        all_passed = False
+        drive_cache = str(ctx["settings"].get("drive_cache_dir") or "/content/drive/MyDrive/ava_cache")
+        dc_res = _ssh(f"test -d {shlex.quote(drive_cache)} && echo MOUNTED || echo MISSING", host=host, check=False)
+        if dc_res.stdout.strip() == "MOUNTED":
+            print(f"OK    [DRIVE] Drive 依赖缓存已挂载: {drive_cache}")
+        else:
+            print(f"INFO  [DRIVE] 未挂载 Drive 缓存 {drive_cache}（冷启动可跑，但无法复用 venv 缓存）")
 
-    # 6. 五大模型逐一核查
+    # 6. 模型资产核查
     print("-" * 65)
-    # 模型根目录走 config/cloud.json 的 remote_models（2026-09-16 接线：键早就
-    # 声明了，代码一直没读）。注意 remote_data 是**有意不接线**的，见该键的 _note。
-    models_root = cfg_global.get("remote_models", "/root/autodl-tmp/models")
     print(f"模型资产在位核查 ({models_root}):")
     for m_id, spec in models_spec.items():
         m_dir = spec.get("dir", m_id)
@@ -1429,9 +2091,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 sz_gb = float(sz_str)
                 if sz_gb >= min_gb:
                     print(f"OK    [MODEL] {m_id:<30} ({sz_gb:.1f}GB ≥ {min_gb}GB) - {desc}")
-                    # 体积只证存在、不证完整：再跑一层结构校验（任务 0）。
-                    # 失败不推翻体积结论，但会拉倒 all_passed。
-                    st_res = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=remote_python(cfg_global)),
+                    st_res = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=py_exe),
                                   host=host, check=False, timeout=90)
                     st_tag, st_desc = parse_model_structure_result(st_res.stdout, st_res.returncode)
                     print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
@@ -1446,9 +2106,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 all_passed = False
                 print(f"FAIL  [MODEL] {m_id:<30} 状态异常 - {desc}")
         else:
-            all_passed = False
-            print(f"FAIL  [MODEL] {m_id:<30} 缺失 - {desc}")
-            print("      修法: cloud fix-env（弹卡；下载缺失的模型）")
+            if provider == "colab":
+                print(f"INFO  [MODEL] {m_id:<30} 尚未预载到 {models_root}（Colab 支持运行时从 HF 直拉，或先 cloud fix-env 预载）")
+            else:
+                all_passed = False
+                print(f"FAIL  [MODEL] {m_id:<30} 缺失 - {desc}")
+                print("      修法: cloud fix-env（弹卡；下载缺失的模型）")
 
     print("=" * 65)
     if all_passed:
@@ -1459,17 +2122,93 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
 
 
-def cmd_up(args: argparse.Namespace) -> int:
-    """开机命令：检测状态，记录模式，激活 watchdog。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    declared = getattr(args, "mode", None)   # D108：不声明 = 按探测记，单价跟实测模式走
-    rate = check_rate(getattr(args, "rate", None))   # D108：先校验，别开了机才报参数错
+def _rate_label(unit: str) -> str:
+    return "CU/小时" if unit == "cu" else "元/小时"
 
-    print(f"[*] 检查云端实例连通性 (Host: {host}, 模式: {declared or '开机后探测'})...")
+
+def _cost_prefix(unit: str) -> str:
+    return "CU " if unit == "cu" else "¥"
+
+
+def _session_unit(cfg_global: dict, sdata: dict | None, fallback_provider: str | None = None) -> tuple[str, str]:
+    p = str((sdata or {}).get("provider") or fallback_provider or "autodl")
+    u = str((sdata or {}).get("billing_unit") or billing_unit_of(cfg_global, p))
+    return p, u
+
+
+def cmd_up(args: argparse.Namespace) -> int:
+    """开机/接入命令：检测 AutoDL 或 Colab 运行时状态、激活 watchdog 并开启计费会话。"""
+    ctx = _cloud_context(args)
+    cfg_global, cfg_local = ctx["cfg_global"], ctx["cfg_local"]
+    provider, st, rpaths, host, unit = (
+        ctx["provider"], ctx["settings"], ctx["rpaths"], ctx["host"], ctx["unit"],
+    )
+    declared = getattr(args, "mode", None)
+    rate = check_rate(getattr(args, "rate", None), unit=unit)
+
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        cloud_drive.ensure_drive_layout(drive_root)
+        print(f"[*] 检查 Colab Drive Worker 在线状态 (目录: {drive_root})...")
+        hb = cloud_drive.parse_worker_heartbeat(drive_root)
+        if not hb or not hb.get("online"):
+            print()
+            for line in rent_instructions(cfg_global, "colab-drive"):
+                print(f"[!] {line}")
+            print(f"[*] 轮询等待 Colab Worker 心跳上线（超时 {args.timeout} 秒）...")
+            start_wait = time.time()
+            while time.time() - start_wait < args.timeout:
+                hb = cloud_drive.parse_worker_heartbeat(drive_root)
+                if hb and hb.get("online"):
+                    break
+                time.sleep(5)
+            if not hb or not hb.get("online"):
+                raise SystemExit(f"FAIL 在 {args.timeout} 秒内未检测到在线 Colab Drive Worker 心跳。")
+        gpu_name = hb.get("gpu")
+        gpu_mem = hb.get("gpu_mem_mib")
+        mode = "gpu" if gpu_name else "cardless"
+        print(f"[OK] Colab Worker 在线：GPU={gpu_name or '未知'}" + (f"，显存 {float(gpu_mem) / 1024:.1f}GB" if gpu_mem else ""))
+        sfile = get_active_session_file()
+        now_epoch = time.time()
+        target = f"drive:{drive_root}"
+        boot_ep = hb.get("boot_epoch")
+        try:
+            prev = json.loads(sfile.read_text(encoding="utf-8")) if sfile.exists() else None
+        except (OSError, ValueError):
+            prev = None
+        resumed = resumable_session(prev, target, float(boot_ep) if boot_ep is not None else None)
+        if resumed and prev is not None:
+            session_data = dict(prev)
+            print(f"[OK] 沿用当前 Colab 会话 {prev.get('session')}（开始于 {prev.get('up')}）")
+        else:
+            session_data = {
+                "session": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "provider": "colab-drive",
+                "billing_unit": "cu",
+                "mode": mode,
+                "up": datetime.now().strftime("%H:%M:%S"),
+                "up_epoch": now_epoch,
+                "episode": getattr(args, "episode", None),
+                "tasks": [],
+                "target": target,
+            }
+        if gpu_name:
+            session_data["gpu"] = gpu_name
+        if gpu_mem:
+            session_data["gpu_mem_mib"] = gpu_mem
+        if rate is not None:
+            session_data["rate_cu"] = rate
+            session_data["rate_source"] = "人报（up --rate）"
+        sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not resumed:
+            print(f"[OK] 会话已开启: {session_data['session']} (后端: colab-drive, 计费单位: CU)")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    print(f"[*] 检查云端实例连通性 (后端: {provider}, Host: {host}, 模式: {declared or '开机后探测'})...")
     if not is_ssh_reachable(host):
         print()
-        for line in rent_instructions(cfg_global):
+        for line in rent_instructions(cfg_global, provider):
             print(f"[!] {line}")
         print(f"[*] 轮询等待 SSH 可达中（超时 {args.timeout} 秒；期间 connect 换了连接也会接上）...")
 
@@ -1486,10 +2225,6 @@ def cmd_up(args: argparse.Namespace) -> int:
 
     print("[OK] SSH 连通就绪。")
 
-    # **断言声明的模式与实测一致。** 2026-09-11 实测踩过：`up --mode gpu` 只信参数，
-    # 实际开出来是无卡模式——账簿按 2.4 元/h 虚记 24 倍，而 GPU 任务在加载权重时
-    # 被 cgroup OOM 杀掉，报出来的只有一行 `Killed`，从字面上看不出「这台没有卡」。
-    # `down` 早就有这个探针，`up` 也该有：探测比猜测便宜得多（同一句注释的下半句）。
     actual = detect_runtime_mode_from_gpu_probe(
         _ssh("nvidia-smi -L", host=host, check=False).returncode)
     if declared and actual != declared:
@@ -1497,27 +2232,36 @@ def cmd_up(args: argparse.Namespace) -> int:
         if actual == "cardless":
             print("     → 无 GPU：带卡任务（VLM 打标/重推理）会在加载权重时被 OOM 杀掉，"
                   "而且报错只有一行 Killed。\n"
-                  "     → 账簿已按实测的 cardless 记（否则虚高 24 倍）；"
-                  "要跑 GPU 任务请关机后在控制台按带卡模式重开。")
+                  "     → 账簿已按实测的 cardless 记；"
+                  "要跑 GPU 任务请更换带卡运行时。")
     mode = actual
 
-    # D102：卡型按需租，记下实际是哪张卡（账本按型号查价）；模型目录软链到文件存储
     gpu_name, gpu_mem = (None, None)
     if mode == "gpu":
         gpu_name, gpu_mem = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)
         print(f"[OK] GPU：{gpu_name or '型号未读出'}" + (f"，显存 {gpu_mem / 1024:.1f}GB" if gpu_mem else ""))
-    if not ensure_models_link(host, cfg_global):
+    if provider == "autodl" and not ensure_models_link(host, cfg_global):
         print("WARN 模型目录没接上文件存储：带模型的任务会找不到权重，先看 cloud doctor", file=sys.stderr)
 
-    # 部署并激活远端 watchdog（带活跃任务检测）
-    idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
-    watchdog_content = generate_watchdog_script(idle_sec)
-    deploy_cmd = build_watchdog_deploy_command(watchdog_content)
+    # 部署并激活远端 watchdog（AutoDL 写 /usr/bin/shutdown，Colab 写 .ava_unassign 触发 runtime.unassign）
+    idle_sec = int(st.get("idle_shutdown_seconds") or DEFAULT_IDLE_SHUTDOWN_SECONDS)
+    wd_log = "/content/watchdog.log" if provider == "colab" else "/root/watchdog.log"
+    watchdog_content = generate_watchdog_script(
+        idle_sec,
+        heartbeat_path=rpaths["heartbeat_path"],
+        hold_path=rpaths["hold_path"],
+        unassign_path=rpaths["unassign_path"] or None,
+        log_path=wd_log,
+    )
+    deploy_cmd = build_watchdog_deploy_command(
+        watchdog_content,
+        heartbeat_path=rpaths["heartbeat_path"],
+        script_path=rpaths["watchdog_path"],
+        log_path=wd_log,
+    )
     res = _ssh(deploy_cmd, host=host, check=False)
     wd_pid = res.stdout.strip()
     if res.returncode != 0 or not wd_pid:
-        # 必须把 returncode 也报出来：ssh 自身出错时返回 255 而 stderr 往往是空的，
-        # 只看 stderr 会得到「失败但无任何信息」这种最难排查的状态（2026-09-11 真实踩过）
         raise SystemExit(
             f"FAIL Watchdog 部署后未能确认进程存活。\n"
             f"     ssh returncode={res.returncode} (255 = 连接层断开，通常是 pkill 误伤自身会话)\n"
@@ -1525,19 +2269,18 @@ def cmd_up(args: argparse.Namespace) -> int:
             f"     stderr={res.stderr.strip()!r}\n"
             f"     不会假装成功：不验证就宣布成功会重演 2026-09-11 空转事故"
         )
-    print(f"[OK] 远端自动关机 Watchdog 已激活 (PID {wd_pid}，无活跃任务且空闲 {idle_sec}s 自动关机)。")
+    wd_action = "写入释放信号 (unassign)" if provider == "colab" else "自动关机"
+    print(f"[OK] 远端守卫 Watchdog 已激活 (PID {wd_pid}，无活跃任务且空闲 {idle_sec}s {wd_action})。")
 
     sfile = get_active_session_file()
     now_epoch = time.time()
-    target = connection_target(cfg_local)
+    target = connection_target(cfg_local, provider=provider)
     try:
         prev = json.loads(sfile.read_text(encoding="utf-8")) if sfile.exists() else None
     except (OSError, ValueError):
         prev = None
-    # D128：同一次开机里再跑 up（换了 agent、重跑一遍）沿用原会话——覆盖会丢掉报过的单价，
-    # 开机时刻也往后挪、少计一段。开机时刻 = 本地 now − 远端 uptime，不受两边时钟偏差影响
     resumed = resumable_session(prev, target, remote_boot_epoch(host, now_epoch))
-    if resumed:
+    if resumed and prev is not None:
         session_data = dict(prev)
         session_data["mode"] = mode
         print(f"[OK] 沿用本次开机的活跃会话 {prev.get('session')}（开始于 {prev.get('up')}），开机时刻与已报单价不变")
@@ -1547,6 +2290,8 @@ def cmd_up(args: argparse.Namespace) -> int:
                   "实例已重启或换了一台，那段费用不进账本", file=sys.stderr)
         session_data = {
             "session": f"{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "provider": provider,
+            "billing_unit": unit,
             "mode": mode,
             "up": datetime.now().strftime("%H:%M:%S"),
             "up_epoch": now_epoch,
@@ -1559,31 +2304,39 @@ def cmd_up(args: argparse.Namespace) -> int:
         session_data["gpu"] = gpu_name
     if gpu_mem:
         session_data["gpu_mem_mib"] = gpu_mem
+    rate_key = "rate_cu" if unit == "cu" else "rate_cny"
     if rate is not None and mode == "gpu" and declared in (None, "gpu"):
-        session_data["rate_cny"] = rate
+        session_data[rate_key] = rate
         session_data["rate_source"] = "人报（up --rate）"
     elif rate is not None and mode == "gpu":
-        print(f"WARN 报的单价 {rate:g} 元/h 是按 --mode {declared} 报的，实测是 {mode}，"
+        print(f"WARN 报的单价 {rate:g} {_rate_label(unit)} 是按 --mode {declared} 报的，实测是 {mode}，"
               "这个价不记；结算时用 down --rate 补实际单价", file=sys.stderr)
     elif rate is not None:
-        print(f"WARN 实测是无卡模式，按平台固定价记，报的单价 {rate:g} 元/h 不记", file=sys.stderr)
-    elif mode == "gpu" and "rate_cny" not in session_data:
-        print("WARN 没报单价：账本会按参考价估算。看控制台这台实例的按量单价，"
-              "结算时用 cloud down --rate <元/时> 补上", file=sys.stderr)
+        print(f"WARN 实测是无卡模式，按平台固定价记，报的单价 {rate:g} {_rate_label(unit)} 不记", file=sys.stderr)
+    elif mode == "gpu" and rate_key not in session_data:
+        print(f"WARN 没报单价：账本会按参考价估算（{_rate_label(unit)}）。"
+              "结算时可用 cloud down --rate <单价> 补上", file=sys.stderr)
     if declared and mode != declared:
-        # 与声明不符时留痕，事后查账不用猜（带卡/无卡差 24 倍价，不是小事）
         session_data["mode_corrected"] = f"up 声明 --mode {declared}，实测为 {mode}，按实测记账"
     sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
     if not resumed:
-        print(f"[OK] 会话已开启: {session_data['session']} (模式: {mode})")
+        print(f"[OK] 会话已开启: {session_data['session']} (后端: {provider}, 模式: {mode})")
     return 0
 
 
-def connection_target(cfg_local: dict) -> str | None:
-    """`cloud connect` 记下的 user@server:port（纯函数）；没 connect 过（走 ~/.ssh/config）为 None。"""
-    if not (cfg_local.get("server") and cfg_local.get("port")):
+def connection_target(cfg_local: dict, *, provider: str | None = None) -> str | None:
+    """`cloud connect` 记下的目标字符串（纯函数）；没 connect 过为 None。"""
+    p = provider or "autodl"
+    prof = provider_profile(cfg_local, p)
+    if p == "colab-drive":
+        return f"drive:{prof['drive_root']}" if prof.get("drive_root") else None
+    if not prof.get("server"):
         return None
-    return f"{cfg_local.get('user', 'root')}@{cfg_local['server']}:{cfg_local['port']}"
+    if prof.get("proxy_type") == "cloudflared":
+        return f"{prof.get('user', 'root')}@{prof['server']}"
+    if not prof.get("port"):
+        return None
+    return f"{prof.get('user', 'root')}@{prof['server']}:{prof['port']}"
 
 
 def remote_boot_epoch(host: str, now_epoch: float) -> float | None:
@@ -1619,17 +2372,31 @@ def detect_runtime_mode_from_gpu_probe(returncode: int) -> str:
     return "gpu" if returncode == 0 else "cardless"
 
 
-def session_rate(cfg_global: dict, mode: str | None, gpu_name: str | None,
-                 reported: float | None = None) -> tuple[float, str | None]:
-    """会话单价（纯函数）→ (元/时, 估算说明)。说明为 None = 单价可信。
+def session_rate(
+    cfg_global: dict,
+    mode: str | None,
+    gpu_name: str | None,
+    reported: float | None = None,
+    *,
+    provider: str = "autodl",
+) -> tuple[float, str | None]:
+    """会话单价（纯函数）→ (元/时 或 CU/时, 估算说明)。说明为 None = 单价可信。
 
-    D108：每次租的卡不一样，同一张卡不同时候价也不同，**唯一可信的带卡单价是人租卡时在控制台上
-    看到的那个数**（`up --rate` / `down --rate`）。没报就只能估：先按型号查 gpu_rates_cny，
-    查不到用 hourly_rate_cny；两种都标估算。无卡模式是平台固定价，不算估算。
-    mode 不可知时取带卡价：宁可高估也不能低估预算风险。
+    AutoDL 按 `gpu_rates_cny` / `hourly_rate_cny`（元/h）；Colab 按 `providers.colab.cu_rates` / `cu_rate_fallback`（CU/h）。
     """
     if reported is not None:
         return float(reported), None
+    if provider in ("colab", "colab-drive"):
+        st = provider_settings(cfg_global, provider)
+        fallback = float(st.get("cu_rate_fallback", 1.5))
+        cu_rates = st.get("cu_rates", {}) or {}
+        if mode != "gpu":
+            return fallback, f"单价估算：Colab 按参考 fallback {fallback} CU/h 记"
+        rate, missed = lookup_gpu_rate(gpu_name, cu_rates, fallback)
+        if missed:
+            return rate, f"单价估算：cu_rates 里查不到 {gpu_name or '本次 GPU 型号'}，按 {fallback} CU/h 记"
+        return rate, f"单价估算：按 cu_rates 里 {gpu_name} 参考耗电率（{rate} CU/h）记"
+
     if mode == "cardless":
         return float(cfg_global.get("cardless_rate_cny", 0.10)), None
     fallback = float(cfg_global.get("hourly_rate_cny", 2.40))
@@ -1641,21 +2408,18 @@ def session_rate(cfg_global: dict, mode: str | None, gpu_name: str | None,
     return rate, f"单价估算：没有人报单价（up / down --rate），按 gpu_rates_cny 里 {gpu_name} 的参考价记"
 
 
-def check_rate(value: float | None) -> float | None:
-    """人报单价的合理性（纯函数）：必须是正数；>50 元/时多半是把日价或总价当成了时价。"""
+def check_rate(value: float | None, *, unit: str = "cny") -> float | None:
+    """人报单价的合理性（纯函数）：必须是正数；>50 多半是误把总价/月费当成了时价。"""
     if value is None:
         return None
     if not (0 < value <= 50):
-        raise SystemExit(f"FAIL --rate {value:g} 不像按量时价（应为 0–50 元/小时，看控制台实例列表的「付费方式」一栏）")
+        u_label = "CU/小时" if unit == "cu" else "元/小时"
+        raise SystemExit(f"FAIL --rate {value:g} 不像按量时价（应为 0–50 {u_label}）")
     return float(value)
 
 
 def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[str], dict]:
-    """D131：把账簿最后一条结算的估算单价换成人事后补报的单价（纯函数）→ (新的各行, 改后的条目)。
-
-    只改「单价是估算」的那一条：时长不动，按新单价重算 cny，note 去掉估算说明、记下原估算值与补报日期。
-    最后一条已是人报的单价、或读不出来，SystemExit 拒绝（账簿是历史记录，改人报过的数要人自己改）。
-    """
+    """D131：把账簿最后一条结算的估算单价换成人事后补报的单价（纯函数）→ (新的各行, 改后的条目)。"""
     idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
     if idx is None:
         raise SystemExit("FAIL 账簿是空的，没有可以补单价的结算")
@@ -1666,15 +2430,20 @@ def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[s
     note = entry.get("note") or ""
     clauses = [c for c in note.split("；") if c]
     estimated = [c for c in clauses if c.startswith("单价估算")]
+    is_cu = entry.get("unit") == "cu"
+    rate_key = "rate_cu" if is_cu else "rate_cny"
+    cost_key = "cu" if is_cu else "cny"
+    u_label = "CU/h" if is_cu else "元/h"
+    cost_prefix = "CU " if is_cu else "¥"
     if not estimated:
         raise SystemExit(
             f"FAIL 没有活跃会话，账簿最后一条（会话 {entry.get('session')}）的单价 "
-            f"{entry.get('rate_cny')} 元/h 不是估算值，不改。要改人报过的单价请人工改账簿")
-    old_rate, old_cny = entry.get("rate_cny"), entry.get("cny")
-    entry["rate_cny"] = float(rate)
-    entry["cny"] = calculate_session_cost(entry.get("gpu_seconds", 0), float(rate))
+            f"{entry.get(rate_key)} {u_label} 不是估算值，不改。要改人报过的单价请人工改账簿")
+    old_rate, old_cost = entry.get(rate_key), entry.get(cost_key)
+    entry[rate_key] = float(rate)
+    entry[cost_key] = calculate_session_cost(entry.get("gpu_seconds", 0), float(rate))
     clauses = [c for c in clauses if not c.startswith("单价估算")]
-    clauses.append(f"单价 {rate:g} 元/h 为人事后补报（{today}；原按 {old_rate} 元/h 估算 ¥{old_cny}）")
+    clauses.append(f"单价 {rate:g} {u_label} 为人事后补报（{today}；原按 {old_rate} {u_label} 估算 {cost_prefix}{old_cost}）")
     entry["note"] = "；".join(clauses)
     out = list(lines)
     out[idx] = json.dumps(entry, ensure_ascii=False)
@@ -1682,9 +2451,14 @@ def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[s
 
 
 def cmd_down(args: argparse.Namespace) -> int:
-    """关机结算命令：按模式精算费用，落盘账簿，提示/下发关机。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    """关机/释放结算命令：按后端双单位精算费用，落盘账簿，下发关机或 Colab 运行时释放。"""
+    ctx = _cloud_context(args)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
+    host = ctx["host"]
+    rpaths = ctx["rpaths"]
+    st = ctx["settings"]
+    drive_root = ctx.get("drive_root")
 
     sfile = get_active_session_file()
     session_info: dict = {}
@@ -1693,56 +2467,73 @@ def cmd_down(args: argparse.Namespace) -> int:
         try:
             session_info = json.loads(sfile.read_text(encoding="utf-8"))
         except Exception as e:
-            # 不静默（审计 F10）：损坏还按「无会话」走会把 up_epoch 默认成当前时间，
-            # 几小时的开机费用被算成 0 元，随后 unlink 连证据一起销毁
             session_corrupt = True
             print(f"WARN 会话文件损坏，按未知会话结算（时长/费用不可靠）: {e}",
                   file=sys.stderr)
 
-    # 先探一次连通性：它同时决定「时长可信度」与「模式判定」。
-    # 若实例已被 watchdog 自动关机，本地根本联系不上，只能把时长算到此刻——
-    # 这会多计一段「关机到被发现」的延迟，属于**上界估计**，必须写进账簿注记。
-    reachable = is_ssh_reachable(host)
+    # 若未显式传 --provider，优先继承活跃会话自己的 provider/unit，防止切默认后端后算错账
+    if getattr(args, "provider", None) is None and session_info.get("provider") in VALID_PROVIDERS:
+        provider = session_info["provider"]
+        st = provider_settings(cfg_global, provider)
+        rpaths = provider_remote_paths(cfg_global, provider)
+        prof = provider_profile(ctx["cfg_local"], provider)
+        host = provider_ssh_host(cfg_global, ctx["cfg_local"], provider)
+        drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
 
-    # D131：会话已结算、实例也已关（人在控制台关机后补报单价），没有可以结算的新会话——
-    # 照旧走下去会另记一条 0 秒 ¥0 的 manual 会话，刚结算那条的估算单价却没变
-    rate_arg = check_rate(getattr(args, "rate", None))
+    unit = billing_unit_of(cfg_global, provider)
+    if provider == "colab-drive":
+        reachable = bool(drive_root and cloud_drive.is_drive_reachable(drive_root)
+                         and (hb := cloud_drive.parse_worker_heartbeat(drive_root)) and hb.get("online"))
+    else:
+        _require_local_cloudflared(provider_profile(ctx["cfg_local"], provider))
+        reachable = is_ssh_reachable(host)
+
+    rate_arg = check_rate(getattr(args, "rate", None), unit=unit)
     if not sfile.exists() and not reachable and rate_arg is not None:
         lfile = get_ledger_file()
         lines = lfile.read_text(encoding="utf-8").splitlines() if lfile.exists() else []
         new_lines, entry = rerate_last_entry(lines, rate_arg, datetime.now().strftime("%Y-%m-%d"))
         paths.atomic_write(lfile, "\n".join(new_lines) + "\n")
+        cost_val = entry.get("cu") if entry.get("unit") == "cu" else entry.get("cny", 0.0)
         print(f"[*] 没有活跃会话、实例已关：把最近一条结算（会话 {entry['session']}）的估算单价改为 "
-              f"{rate_arg:g} 元/h，重算为 ¥{entry['cny']:.4f}（时长 {entry['gpu_seconds']}s 不变）")
+              f"{rate_arg:g} {_rate_label(entry.get('unit', 'cny'))}，重算为 {_cost_prefix(entry.get('unit', 'cny'))}{cost_val:.4f}"
+              f"（时长 {entry['gpu_seconds']}s 不变）")
         return 0
 
     mode = session_info.get("mode")
     if not mode:
-        # 无会话文件（用户手动开机后直接 down）：探测真实模式，不猜。
-        if reachable:
+        if provider == "colab-drive":
+            mode = "gpu" if reachable else "unknown"
+        elif reachable:
             mode = detect_runtime_mode_from_gpu_probe(_ssh("nvidia-smi -L", host=host, check=False).returncode)
         else:
             mode = "unknown"
 
     gpu_name = session_info.get("gpu")
     if mode == "gpu" and not gpu_name and reachable:
-        gpu_name = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)[0]
-    # D108：结算时补报的单价优先于 up 时报的（人看着控制台改口，以最新为准）
-    reported = rate_arg
-    if reported is None and isinstance(session_info.get("rate_cny"), (int, float)):
-        reported = float(session_info["rate_cny"])
-    rate, rate_estimate_note = session_rate(cfg_global, mode, gpu_name, reported)
+        if provider == "colab-drive" and drive_root is not None:
+            hb_gpu = cloud_drive.parse_worker_heartbeat(drive_root) or {}
+            gpu_name = hb_gpu.get("gpu")
+        else:
+            gpu_name = parse_gpu_query(_ssh(GPU_QUERY_CMD, host=host, check=False).stdout)[0]
 
-    budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
+    reported = rate_arg
+    if reported is None:
+        r_key = "rate_cu" if unit == "cu" else "rate_cny"
+        if isinstance(session_info.get(r_key), (int, float)):
+            reported = float(session_info[r_key])
+    rate, rate_estimate_note = session_rate(cfg_global, mode, gpu_name, reported, provider=provider)
+
+    budget = float(st.get("budget_per_episode_cu", 1.5) if unit == "cu" else st.get("budget_per_episode_cny", 0.35))
     up_epoch = session_info.get("up_epoch", time.time())
     duration_sec = int(max(time.time() - up_epoch, 0))
-    cost_cny = calculate_session_cost(duration_sec, rate)
+    cost_val = calculate_session_cost(duration_sec, rate)
     down_time = datetime.now().strftime("%H:%M:%S")
 
     note = None
     if not reachable:
         note = (
-            "实例在结算前已停止响应（多为 watchdog 自动关机）；"
+            "实例在结算前已停止响应（多为 watchdog 自动释放/关机）；"
             "gpu_seconds 为上界估计，含关机到本地发现之间的延迟"
         )
     if session_corrupt:
@@ -1755,7 +2546,7 @@ def cmd_down(args: argparse.Namespace) -> int:
         up_time=session_info.get("up", down_time),
         down_time=down_time,
         gpu_seconds=duration_sec,
-        cost_cny=cost_cny,
+        cost_cny=cost_val,
         episode=session_info.get("episode"),
         tasks=session_info.get("tasks", []),
         budget_cny=budget,
@@ -1763,6 +2554,8 @@ def cmd_down(args: argparse.Namespace) -> int:
         note=note,
         gpu=gpu_name,
         rate_cny=rate,
+        provider=provider,
+        billing_unit=unit,
     )
     lfile = get_ledger_file()
     with lfile.open("a", encoding="utf-8") as f:
@@ -1771,23 +2564,46 @@ def cmd_down(args: argparse.Namespace) -> int:
     if sfile.exists() and not session_corrupt:
         sfile.unlink()
 
+    c_pref = _cost_prefix(unit)
+    u_name = "CU" if unit == "cu" else "元"
     print("=" * 60)
-    print(f"会话结算完成：")
-    print(f"  会话模式: {mode} (计费单价: ¥{rate}/小时)")
+    print(f"会话结算完成（后端: {provider}）：")
+    print(f"  会话模式: {mode} (计费单价: {c_pref}{rate}/{_rate_label(unit).split('/')[1]})")
     print(f"  运行时长: {duration_sec // 60} 分 {duration_sec % 60} 秒 ({duration_sec}s)")
-    print(f"  本次计费: ¥{cost_cny:.4f} 元")
+    print(f"  本次计费: {c_pref}{cost_val:.4f} {u_name}")
     if ledger_entry["over_budget"]:
-        print(f"  \033[91m⚠️  警告: 本次花费超出单期预算 ¥{budget} 元！\033[0m")
+        print(f"  \033[91m⚠️  警告: 本次花费超出单期预算 {c_pref}{budget} {u_name}！\033[0m")
     elif ledger_entry["budget_scoped"]:
-        print(f"  预算状态: 达标 (≤ ¥{budget} 元)")
+        print(f"  预算状态: 达标 (≤ {c_pref}{budget} {u_name})")
     else:
         print(f"  预算状态: 本会话未绑定某一期（{ledger_entry['episode']}），单期预算不适用")
     print(f"  账簿记录: → {lfile}")
     print("=" * 60)
 
+    if provider == "colab-drive" and drive_root is not None:
+        cloud_drive.clear_drive_hold(drive_root)
+        active_jobs = cloud_drive.active_drive_jobs(drive_root)
+        if active_jobs and not getattr(args, "force", False):
+            print(f"[*] 提示: Drive 队列仍有未完成任务 ({active_jobs})，暂不发送释放信号。")
+            print("    如需强制释放请加 --force: python -m pipeline.cloud down --force --provider colab-drive")
+            return 0
+        flag = cloud_drive.request_drive_shutdown(drive_root)
+        print(f"[*] 已写入 Colab 运行时释放信号: {flag}")
+        if not reachable:
+            print("[提示] Worker 当前已离线；请在 Colab 页面确认运行时已断开以停止 CU 消耗。")
+            return 0
+        print("[*] 等待 Colab Worker 响应并断开运行时（最多 60 秒）...")
+        for _ in range(12):
+            time.sleep(5)
+            hb_now = cloud_drive.parse_worker_heartbeat(drive_root)
+            if not hb_now or not hb_now.get("online"):
+                print("[OK] Worker 已停止心跳，Colab 运行时已释放。")
+                return 0
+        print("[!] 60 秒内 Worker 仍在心跳（Drive 同步可能有延迟），请到 Colab 界面确认断开连接。")
+        return 0
+
     if reachable:
-        # D130：down 就是人要关机了，保持标记一并撤掉（远端有任务、这次不关机时也撤：任务跑完照常空闲关机）
-        _ssh(f"rm -f {REMOTE_HOLD_PATH}", host=host, check=False)
+        _ssh(f"rm -f {rpaths['hold_path']}", host=host, check=False)
         active_tasks = remote_active_tasks(host=host)
         if active_tasks and not getattr(args, "force", False):
             print(f"[*] 提示: 远端仍有活跃的后台任务正在运行 ({active_tasks})。")
@@ -1795,14 +2611,28 @@ def cmd_down(args: argparse.Namespace) -> int:
             print(f"    如需强制停机请加 --force: python -m pipeline.cloud down --force")
             return 0
 
+        if provider == "colab":
+            print("[*] 正在通知 Colab 运行时释放（runtime.unassign）...")
+            unassign = rpaths["unassign_path"]
+            _ssh(
+                f"touch {shlex.quote(unassign)} && "
+                f"(nohup {shlex.quote(rpaths['remote_python'])} -c 'from google.colab import runtime; runtime.unassign()' >/dev/null 2>&1 &); sleep 1",
+                host=host,
+                check=False,
+                timeout=15,
+            )
+            print("[*] 正在验证 Colab 隧道是否已断开（最多等 60 秒）...")
+            for _ in range(12):
+                time.sleep(5)
+                if not is_ssh_reachable(host):
+                    print("[OK] 已验证：Colab SSH 隧道已断开，运行时释放信号已生效。")
+                    return 0
+            print("[WARN] 60 秒内 SSH 仍可达（若通过终端直跑未走 Notebook 内核，runtime.unassign 需由 Bootstrap sentinel 执行）；请在 Colab 页面点「断开连接并删除运行时」。", file=sys.stderr)
+            return 1
+
         print("[*] 正在发送远端停机指令...")
-        # AutoDL 容器内只有 /usr/bin/shutdown（平台包装脚本）有效：PID 1 是 boot.sh、无 systemd，
-        # /sbin/shutdown 根本不存在、poweroff 指向的 systemctl 也无效（2026-09-11 实测）。
-        # nohup 后台化：实例停机瞬间会切断当前 SSH，前台执行会让本地拿到假失败。
         _ssh("nohup /usr/bin/shutdown -h now >/dev/null 2>&1 & sleep 1", host=host, check=False, timeout=15)
 
-        # **必须验证**（2026-09-11 教训）：只打印「已下发」不验证＝假成功，
-        # 而自动关机失效正是本项目最贵的一类静默失败（忘关一晚是单期预算的百倍量级）。
         print("[*] 正在验证实例是否真的停止响应（最多等 60 秒）...")
         for _ in range(12):
             time.sleep(5)
@@ -1813,8 +2643,11 @@ def cmd_down(args: argparse.Namespace) -> int:
         print(f"       请到控制台手动关机：https://www.autodl.com/console/instance/list", file=sys.stderr)
         return 1
 
-    print(f"[提示] 实例当前不可达（可能已关机）。请在控制台确认计费已停止：")
-    print(f"       https://www.autodl.com/console/instance/list")
+    if provider == "colab":
+        print("[提示] Colab 运行时当前不可达（可能已释放）。请在 Colab 页面确认 CU 计费已停止。")
+    else:
+        print(f"[提示] 实例当前不可达（可能已关机）。请在控制台确认计费已停止：")
+        print(f"       https://www.autodl.com/console/instance/list")
     return 0
 
 
@@ -1840,40 +2673,68 @@ def parse_hold(text: str) -> tuple[int, int, int] | None:
     return int(nums[0]), int(nums[1]), int(nums[-1])
 
 
-def hold_status_line(hold: tuple[int, int, int] | None, rate: float) -> str:
+def hold_status_line(hold: tuple[int, int, int] | None, rate: float, *, unit: str = "cny") -> str:
     """status 的「保持开机」一行（纯函数）：剩余多久、已保持多久、保持期间按单价的估算花费。"""
     if hold is None:
-        return "未保持（配完照常空闲关机）"
+        return "未保持（配完照常空闲关机/释放）"
     start, until, now = hold
     held = max(now - start, 0)
     cost = calculate_session_cost(min(held, max(until - start, 0)), rate)
+    pref = _cost_prefix(unit)
+    u_lbl = _rate_label(unit)
     if now >= until:
-        return (f"已过期 {(now - until) // 60} 分钟（共保持 {(until - start) // 60} 分钟，约 ¥{cost:.2f}），"
-                "看门狗已恢复空闲关机")
-    return (f"保持中，剩余 {(until - now) // 60} 分钟；已保持 {held // 60} 分钟，约 ¥{cost:.2f}"
-            f"（¥{rate}/小时）。用完 cloud release，或直接 cloud down")
+        return (f"已过期 {(now - until) // 60} 分钟（共保持 {(until - start) // 60} 分钟，约 {pref}{cost:.2f}），"
+                "看门狗已恢复空闲关机/释放")
+    return (f"保持中，剩余 {(until - now) // 60} 分钟；已保持 {held // 60} 分钟，约 {pref}{cost:.2f}"
+            f"（{pref}{rate}/{u_lbl.split('/')[1]}）。用完 cloud release，或直接 cloud down")
 
 
-def _watchdog_supports_hold(host: str) -> bool:
-    return _ssh(f"grep -q hold_active {REMOTE_WATCHDOG_PATH}", host=host, check=False).returncode == 0
+def _watchdog_supports_hold(host: str, watchdog_path: str = REMOTE_WATCHDOG_PATH) -> bool:
+    return _ssh(f"grep -q hold_active {watchdog_path}", host=host, check=False).returncode == 0
 
 
 def cmd_hold(args: argparse.Namespace) -> int:
-    """D130：人要求配完不关机。写保持标记（再次 hold 即续期），看门狗到期前不做空闲关机。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    """D130：人要求配完不关机。写保持标记（再次 hold 即续期），看门狗到期前不做空闲关机/释放。"""
+    ctx = _cloud_context(args)
+    cfg_global, provider, host, rpaths = ctx["cfg_global"], ctx["provider"], ctx["host"], ctx["rpaths"]
+    seconds = int(ctx["settings"].get("hold_seconds", DEFAULT_HOLD_SECONDS))
+
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        now = int(time.time())
+        start, until = cloud_drive.write_drive_hold(drive_root, seconds, now_epoch=now)
+        renewed = start < now
+        print(f"[OK] Drive 保持标记已写入，有效至 {datetime.fromtimestamp(until).strftime('%H:%M')}（本机时间）"
+              f"（{(until - now) // 60} 分钟后自动释放{'；已续期，已保持 ' + str((now - start) // 60) + ' 分钟' if renewed else ''}）。"
+              "用完 cloud release，或直接 cloud down")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例联系不上：没开机，或已经被看门狗关掉了，hold 无从谈起")
-    seconds = int(cfg_global.get("hold_seconds", DEFAULT_HOLD_SECONDS))
-    if not _watchdog_supports_hold(host):
-        # 本版之前起的看门狗不认标记：照 up 的部署办法换一个（先杀旧进程再起新的，见 build_watchdog_deploy_command）
-        idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
-        res = _ssh(build_watchdog_deploy_command(generate_watchdog_script(idle_sec)), host=host, check=False)
+    wd_path = rpaths["watchdog_path"]
+    hold_path = rpaths["hold_path"]
+    if not _watchdog_supports_hold(host, wd_path):
+        idle_sec = int(ctx["settings"].get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS))
+        wd_log = "/content/watchdog.log" if provider == "colab" else "/root/watchdog.log"
+        wd_script = generate_watchdog_script(
+            idle_sec,
+            heartbeat_path=rpaths["heartbeat_path"],
+            hold_path=hold_path,
+            unassign_path=rpaths["unassign_path"] or None,
+            log_path=wd_log,
+        )
+        res = _ssh(build_watchdog_deploy_command(
+            wd_script,
+            heartbeat_path=rpaths["heartbeat_path"],
+            script_path=wd_path,
+            log_path=wd_log,
+        ), host=host, check=False)
         if res.returncode != 0 or not res.stdout.strip():
             raise SystemExit(f"FAIL 远端看门狗是旧版、不认保持标记，换新版没成功（returncode={res.returncode}，"
                              f"stderr={res.stderr.strip()!r}）；不写标记，免得以为保住了")
         print(f"[*] 远端看门狗是旧版，已换成认保持标记的新版（PID {res.stdout.strip()}）")
-    res = _ssh(hold_write_command(seconds), host=host, check=False)
+    res = _ssh(hold_write_command(seconds, hold_path=hold_path), host=host, check=False)
     hold = parse_hold(res.stdout) if res.returncode == 0 else None
     if hold is None:
         raise SystemExit(f"FAIL 保持标记没写上（returncode={res.returncode}，stderr={res.stderr.strip()!r}）")
@@ -1886,89 +2747,123 @@ def cmd_hold(args: argparse.Namespace) -> int:
 
 
 def cmd_release(args: argparse.Namespace) -> int:
-    """D130：撤掉保持标记，看门狗恢复空闲关机（无任务时约 idle_shutdown_seconds 后关机）。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    """D130：撤掉保持标记，看门狗恢复空闲关机/释放。"""
+    ctx = _cloud_context(args)
+    provider, host, rpaths, st = ctx["provider"], ctx["host"], ctx["rpaths"], ctx["settings"]
+    idle_sec = int(st.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS))
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        cloud_drive.clear_drive_hold(drive_root)
+        print(f"[OK] 已撤 Drive 保持标记：没有活跃任务时，Worker 约 {idle_sec} 秒后自动释放（要马上释放用 cloud down）")
+        return 0
+    _require_local_cloudflared(ctx["profile"])
     if not is_ssh_reachable(host):
         print("[*] 实例联系不上，已经关了，没有要撤的保持")
         return 0
-    res = _ssh(f"rm -f {REMOTE_HOLD_PATH}", host=host, check=False)
+    res = _ssh(f"rm -f {rpaths['hold_path']}", host=host, check=False)
     if res.returncode != 0:
         raise SystemExit(f"FAIL 保持标记没删掉（returncode={res.returncode}，stderr={res.stderr.strip()!r}）")
-    idle_sec = cfg_global.get("idle_shutdown_seconds", DEFAULT_IDLE_SHUTDOWN_SECONDS)
-    print(f"[OK] 已撤保持：没有 ava- 任务时，看门狗约 {idle_sec} 秒后关机（要马上关机结算用 cloud down）")
+    print(f"[OK] 已撤保持：没有 ava- 任务时，看门狗约 {idle_sec} 秒后关机/释放（要马上结算用 cloud down）")
     return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    """工况与账簿查询命令。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    budget = float(cfg_global.get("budget_per_episode_cny", 0.35))
+    """工况与账簿查询命令（支持 AutoDL / Colab SSH / Colab Drive 及双单位账簿汇总）。"""
+    ctx = _cloud_context(args)
+    cfg_global, provider, host, rpaths, st, unit = (
+        ctx["cfg_global"], ctx["provider"], ctx["host"], ctx["rpaths"], ctx["settings"], ctx["unit"],
+    )
+    budget = float(st.get("budget_per_episode_cu", 1.5) if unit == "cu" else st.get("budget_per_episode_cny", 0.35))
 
     print("=" * 65)
-    print("  AutoDL 端云工况状态")
+    print(f"  端云工况状态 (当前后端: {provider} | 计费单位: {unit.upper()})")
     print("=" * 65)
 
-    reachable = is_ssh_reachable(host)
-    print(f"实例连通状态 : {'\033[92m● 运行中 (SSH在线)\033[0m' if reachable else '\033[90m○ 未开机 / 离线\033[0m'}")
+    if provider == "colab-drive":
+        drive_root = ctx.get("drive_root")
+        reachable_fs = cloud_drive.is_drive_reachable(drive_root)
+        hb = cloud_drive.parse_worker_heartbeat(drive_root) if reachable_fs and drive_root else None
+        online = bool(hb and hb.get("online"))
+        print(f"Drive 队列目录: {drive_root or '未绑定'}")
+        print(f"Worker 在线状态: {'\033[92m● 在线 (心跳延迟 ' + str(hb.get('stale_s')) + 's)\033[0m' if online else '\033[90m○ 离线 / 未启动\033[0m'}")
+        if hb:
+            print(f"显卡与显存   : {hb.get('gpu') or '未知'}" + (f", {hb.get('gpu_mem_mib')} MiB" if hb.get("gpu_mem_mib") else ""))
+            active_jobs = cloud_drive.active_drive_jobs(drive_root) if drive_root else []
+            print(f"活跃队列任务 : {active_jobs or '无'}")
+            hold = cloud_drive.read_drive_hold(drive_root) if drive_root else None
+            rate_now, _ = session_rate(cfg_global, "gpu", hb.get("gpu"), provider="colab-drive")
+            print(f"保持开机     : {hold_status_line(hold, rate_now, unit='cu')}")
+    else:
+        _require_local_cloudflared(ctx["profile"])
+        reachable = is_ssh_reachable(host)
+        print(f"实例连通状态 : {'\033[92m● 运行中 (SSH在线)\033[0m' if reachable else '\033[90m○ 未开机 / 离线\033[0m'}")
 
-    if reachable:
-        gpu_res = _ssh(
-            "nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader",
-            host=host,
-            check=False,
-        )
-        if gpu_res.returncode == 0 and gpu_res.stdout.strip():
-            print(f"显卡与显存   : {gpu_res.stdout.strip()}")
-        else:
-            print("显卡与显存   : 无卡模式，未挂载独立 GPU")
+        if reachable:
+            gpu_res = _ssh(
+                "nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader",
+                host=host,
+                check=False,
+            )
+            if gpu_res.returncode == 0 and gpu_res.stdout.strip():
+                print(f"显卡与显存   : {gpu_res.stdout.strip()}")
+            else:
+                print("显卡与显存   : 无卡模式，未挂载独立 GPU")
 
-        disk_res = _ssh("df -h /root/autodl-tmp | tail -1 | awk '{print $4\" 可用 / \"$2\" 总量 (\"$5\" 已用)\"}'", host=host, check=False)
-        if disk_res.returncode == 0 and disk_res.stdout.strip():
-            print(f"数据盘存储   : {disk_res.stdout.strip()}")
+            disk_res = _ssh(f"df -h {shlex.quote(rpaths['remote_data_disk'])} | tail -1 | awk '{{print $4\" 可用 / \"$2\" 总量 (\"$5\" 已用)\"}}'", host=host, check=False)
+            if disk_res.returncode == 0 and disk_res.stdout.strip():
+                print(f"数据盘存储   : {disk_res.stdout.strip()}")
 
-        watch_res = _ssh(f"pgrep -f '{_watchdog_proc_pattern(REMOTE_WATCHDOG_PATH)}' >/dev/null && echo '运行中' || echo '未运行'", host=host, check=False)
-        print(f"自动关机守卫 : {watch_res.stdout.strip()}")
+            watch_res = _ssh(f"pgrep -f '{_watchdog_proc_pattern(rpaths['watchdog_path'])}' >/dev/null && echo '运行中' || echo '未运行'", host=host, check=False)
+            print(f"自动关机守卫 : {watch_res.stdout.strip()}")
 
-        active = remote_active_tasks(host=host)
-        active_str = f"[{', '.join(active)}]" if active else "无"
-        print(f"活跃后台任务 : {active_str}")
+            active = remote_active_tasks(host=host)
+            active_str = f"[{', '.join(active)}]" if active else "无"
+            print(f"活跃后台任务 : {active_str}")
 
-        hold_res = _ssh(f"cat {REMOTE_HOLD_PATH} 2>/dev/null; date +%s", host=host, check=False)
-        hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
-        sdata_rate: dict = {}
-        try:
-            sdata_rate = json.loads(get_active_session_file().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            pass
-        reported = sdata_rate.get("rate_cny") if isinstance(sdata_rate.get("rate_cny"), (int, float)) else None
-        rate_now, _ = session_rate(cfg_global, sdata_rate.get("mode", "gpu"), sdata_rate.get("gpu"), reported)
-        print(f"保持开机     : {hold_status_line(hold, rate_now)}")
+            hold_res = _ssh(f"cat {rpaths['hold_path']} 2>/dev/null; date +%s", host=host, check=False)
+            hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
+            sdata_rate: dict = {}
+            try:
+                sdata_rate = json.loads(get_active_session_file().read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            sp, su = _session_unit(cfg_global, sdata_rate, provider)
+            r_key = "rate_cu" if su == "cu" else "rate_cny"
+            reported = sdata_rate.get(r_key) if isinstance(sdata_rate.get(r_key), (int, float)) else None
+            rate_now, _ = session_rate(cfg_global, sdata_rate.get("mode", "gpu"), sdata_rate.get("gpu"), reported, provider=sp)
+            print(f"保持开机     : {hold_status_line(hold, rate_now, unit=su)}")
 
     sfile = get_active_session_file()
     if sfile.exists():
         try:
             sdata = json.loads(sfile.read_text(encoding="utf-8"))
+            sp, su = _session_unit(cfg_global, sdata, provider)
+            s_st = provider_settings(cfg_global, sp)
+            s_budget = float(s_st.get("budget_per_episode_cu", 1.5) if su == "cu" else s_st.get("budget_per_episode_cny", 0.35))
             mode = sdata.get("mode", "gpu")
-            reported = sdata.get("rate_cny") if isinstance(sdata.get("rate_cny"), (int, float)) else None
-            rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"), reported)
+            r_key = "rate_cu" if su == "cu" else "rate_cny"
+            reported = sdata.get(r_key) if isinstance(sdata.get(r_key), (int, float)) else None
+            rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"), reported, provider=sp)
             elapsed = int(time.time() - sdata.get("up_epoch", time.time()))
             cur_cost = calculate_session_cost(elapsed, rate)
+            pref = _cost_prefix(su)
+            u_word = "CU" if su == "cu" else "元"
             print("-" * 65)
-            print(f"当前活跃会话 : {sdata.get('session')} (开始于 {sdata.get('up')}, 模式: {mode})")
+            print(f"当前活跃会话 : {sdata.get('session')} (后端: {sp}, 开始于 {sdata.get('up')}, 模式: {mode})")
             print(f"已运行时间   : {elapsed // 60} 分 {elapsed % 60} 秒")
-            cost_color = "\033[91m" if cur_cost > budget else "\033[92m"
-            print(f"已产生费用   : {cost_color}¥{cur_cost:.4f}\033[0m 元 (单价: ¥{rate}/小时{'，估算' if estimated else ''}, 限额: ¥{budget})")
+            cost_color = "\033[91m" if cur_cost > s_budget else "\033[92m"
+            print(f"已产生费用   : {cost_color}{pref}{cur_cost:.4f}\033[0m {u_word} (单价: {pref}{rate}/小时{'，估算' if estimated else ''}, 限额: {pref}{s_budget})")
         except Exception as e:
             print(f"WARN 会话文件损坏，无法展示当前会话: {e}", file=sys.stderr)
 
     lfile = get_ledger_file()
     if lfile.exists():
-        tot_cny, tot_sec, records = parse_ledger(lfile.read_text(encoding="utf-8"))
+        summary = parse_ledger_summary(lfile.read_text(encoding="utf-8"))
+        records = summary["records"]
+        tot_sec = summary["total_sec"]
         print("-" * 65)
         print(f"历史账簿统计 : 共 {len(records)} 次会话，累计计费 {tot_sec // 3600}小时{(tot_sec % 3600) // 60}分")
-        print(f"累计消费金额 : ¥{tot_cny:.2f} 元")
+        print(f"累计消费统计 : AutoDL ¥{summary['total_cny']:.2f} 元 | Colab {summary['total_cu']:.4f} CU")
         over_budget_count = sum(1 for r in records if r.get("over_budget"))
         if over_budget_count > 0:
             print(f"\033[91m⚠️  历史超预算会话: {over_budget_count} 次！\033[0m")
@@ -2048,21 +2943,26 @@ def clean_frames_script(remote_root: str) -> str:
 
 def _remote_maintenance(args: argparse.Namespace, script_of, label: str) -> int:
     """relocate-data / clean-frames 共用的前置：实例可达、没有活跃任务，再执行脚本。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    ctx = _cloud_context(args)
+    if ctx["provider"] == "colab-drive":
+        print(f"[*] {label} 仅适用于 SSH 挂载实例，colab-drive 队列模式无需此维护操作。")
+        return 0
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    rpaths = ctx["rpaths"]
+    remote_root = rpaths["remote_root"]
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
     active = remote_active_tasks(host)
     if active:
         raise SystemExit(f"FAIL 远端还有任务在跑（{', '.join(active)}），{label}会动到它在用的数据——等它结束再来")
-    script = script_of(remote_root)
+    script = script_of(remote_root) if label != "远端 data/ 改道数据盘" else relocate_data_script(remote_root, rpaths["remote_data_disk"])
     print(f"[*] {label}：{host}\n    {script}")
     res = _ssh(script, host=host, check=False, timeout=600)
     out = (res.stdout or "").strip()
     print(out)
     if res.returncode == 3 and "CONFLICT" in out:
-        raise SystemExit(f"FAIL 数据盘上已有 {REMOTE_DATA_DISK}/data（上次挪到一半？），不覆盖不合并——交人看")
+        raise SystemExit(f"FAIL 数据盘上已有 {rpaths['remote_data_disk']}/data（上次挪到一半？），不覆盖不合并——交人看")
     if res.returncode != 0:
         raise SystemExit(f"FAIL {label}失败（退出码 {res.returncode}）：{(res.stderr or '').strip()[:300]}")
     return 0
@@ -2073,30 +2973,50 @@ REMOTE_REPO_URL = "https://github.com/songhuiming2007-coder/anime-video-agent.gi
 HF_MIRROR = "https://hf-mirror.com"
 
 
-def fix_env_commands(*, remote_root: str, models_root: str, repo_missing: bool,
-                     bad_models: list[tuple[str, str]], repo_url: str = REMOTE_REPO_URL) -> list[str]:
+def fix_env_commands(
+    *,
+    remote_root: str,
+    models_root: str,
+    repo_missing: bool,
+    bad_models: list[tuple[str, str]],
+    repo_url: str = REMOTE_REPO_URL,
+    provider: str = "autodl",
+    python: str = "python3",
+) -> list[str]:
     """`cloud fix-env` 要在远端执行的命令（纯函数，D59）。
 
     只做 doctor 能判定、且修法确定的两件事：克隆缺失的仓库、按 config/cloud.json 的 `models`
     清单重下缺失 / 体积不足 / 结构校验不过的模型。模型 id 只来自配置清单，不接受运行时参数。
-    装 PyTorch 等环境依赖不在此列（属于装全局依赖，交人）。
+    AutoDL 走 network_turbo 与 hf-mirror；Colab 直连 GitHub 与 HuggingFace 官方源。
     """
+    is_colab = provider in ("colab", "colab-drive")
     cmds = []
     if repo_missing:
-        cmds.append(f"source /etc/network_turbo && git clone {shlex.quote(repo_url)} {shlex.quote(remote_root)}")
+        clone_cmd = f"git clone {shlex.quote(repo_url)} {shlex.quote(remote_root)}"
+        cmds.append(clone_cmd if is_colab else f"source /etc/network_turbo && {clone_cmd}")
+    py_exe = python if is_colab else "python3"
     for m_id, m_dir in bad_models:
         py = (f"from huggingface_hub import snapshot_download; "
               f"snapshot_download({json.dumps(m_id)}, local_dir={json.dumps(models_root + '/' + m_dir)})")
-        cmds.append(f"export HF_ENDPOINT={HF_MIRROR} && python3 -c {shlex.quote(py)}")
+        dl_cmd = f"{py_exe} -c {shlex.quote(py)}"
+        cmds.append(dl_cmd if is_colab else f"export HF_ENDPOINT={HF_MIRROR} && {dl_cmd}")
     return cmds
 
 
 def cmd_fix_env(args: argparse.Namespace) -> int:
     """按 doctor 的判据修远端环境：仓库缺了就克隆、模型缺 / 小 / 坏就重下（D59，弹卡）。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
-    models_root = cfg_global.get("remote_models", "/root/autodl-tmp/models")
+    ctx = _cloud_context(args)
+    provider = ctx["provider"]
+    if provider == "colab-drive":
+        print("[*] colab-drive 队列模式的模型与环境由 Colab Bootstrap Cell 1 就地安装；如需预检请在 Colab 运行 Cell 1。")
+        return 0
+    _require_local_cloudflared(ctx["profile"])
+    cfg_global = ctx["cfg_global"]
+    rpaths = ctx["rpaths"]
+    host = ctx["host"]
+    remote_root = rpaths["remote_root"]
+    models_root = rpaths["remote_models"]
+    py_exe = rpaths["remote_python"]
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
     active = remote_active_tasks(host)
@@ -2114,13 +3034,14 @@ def cmd_fix_env(args: argparse.Namespace) -> int:
         except ValueError:
             ok = False
         if ok:
-            st = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=remote_python(cfg_global)),
+            st = _ssh(build_model_structure_probe_cmd(m_dir, models_root=models_root, python=py_exe),
                       host=host, check=False, timeout=90)
             ok = parse_model_structure_result(st.stdout, st.returncode)[0] != "FAIL"
         if not ok:
             bad.append((m_id, m_dir))
     cmds = fix_env_commands(remote_root=remote_root, models_root=models_root,
-                            repo_missing=repo_missing, bad_models=bad)
+                            repo_missing=repo_missing, bad_models=bad,
+                            provider=provider, python=py_exe)
     if not cmds:
         print("OK 仓库与模型都在位，无需修复")
         return 0
@@ -2146,7 +3067,7 @@ AUDIO_SYNC_ITEM = "03-audio/"
 
 
 def cmd_push(args: argparse.Namespace) -> int:
-    """上行同步命令：采用真实清单构建器并遵循目录斜杠纪律（P1-1/P2-4）。"""
+    """上行同步命令：SSH 后端走 rsync；colab-drive 暂存到 Drive `staging/`。"""
     try:
         ep_dir, rel_path = resolve_episode_rel_path(args.target)
     except ValueError as exc:
@@ -2154,32 +3075,39 @@ def cmd_push(args: argparse.Namespace) -> int:
     if not ep_dir.is_dir():
         raise SystemExit(f"FAIL 本期目录不存在: {ep_dir}")
 
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
-
-    remote_ep_dir = f"{remote_root}/{rel_path}"
-    print(f"[*] 正在推送当期必要资产至远端...")
-    print(f"    本地源: {ep_dir}")
-    print(f"    远端宿: {host}:{remote_ep_dir}")
-
-    sync_items = cfg_global.get(
+    ctx = _cloud_context(args)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
+    sync_items = list(cfg_global.get(
         "sync", {}
-    ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json", "04-patch/"])
+    ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json", "04-patch/"]))
     for extra_item in ["03-audio/corrections.json", "04-patch/"]:
         if extra_item not in sync_items:
             sync_items.append(extra_item)
-    if getattr(args, "with_audio", False):
-        # D143：新实例上要点名重配（--apply-patch），远端得先有已配好的音频与 manifest，否则整期重配
+    with_audio = bool(getattr(args, "with_audio", False))
+    if with_audio:
         if not (ep_dir / "03-audio" / "manifest.json").exists():
             raise SystemExit(f"FAIL --with-audio：本地没有 {ep_dir.name}/03-audio/manifest.json，没有可上行的配音")
-        sync_items = [*sync_items, AUDIO_SYNC_ITEM]
-    sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
+        if provider != "colab-drive":
+            sync_items = [*sync_items, AUDIO_SYNC_ITEM]
 
-    # 单文件的上级目录要先在远端建好：rsync 不建缺失的上级目录，新实例上还没有 03-audio/ 时
-    # `03-audio/corrections.json` 传不上去（D143 同次所见）。
-    # 路径过 shlex.quote：期目录名可以含空格与中文（B7-r5 同族），
-    # 裸插值会让远端 shell 在空格处断开、在中文处乱码。无特殊字符时输出与原文一致。
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        staged = cloud_drive.stage_episode_inputs(
+            drive_root, ep_dir, rel_path, sync_items, paths.ROOT, with_audio=with_audio
+        )
+        print(f"[OK] push 完成（Drive 暂存 {len(staged)} 项）→ {drive_root / 'staging' / rel_path}")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = ctx["rpaths"]["remote_root"]
+    remote_ep_dir = f"{remote_root}/{rel_path}"
+    print(f"[*] 正在推送当期必要资产至远端（后端: {provider}）...")
+    print(f"    本地源: {ep_dir}")
+    print(f"    远端宿: {host}:{remote_ep_dir}")
+
+    sync_pairs = build_sync_up_files(ep_dir, sync_items, remote_ep_dir, remote_root)
     dirs = [remote_ep_dir] + sorted({dst.rsplit("/", 1)[0] for src, dst in sync_pairs
                                      if not src.endswith("/")} - {remote_ep_dir})
     _ssh("mkdir -p " + " ".join(shlex.quote(d) for d in dirs), host=host)
@@ -2201,13 +3129,24 @@ CODE_SYNC_ITEMS = ("pipeline/", "config/", "pyproject.toml")
 
 
 def cmd_sync_code(args: argparse.Namespace) -> int:
-    """D107：把本地 pipeline/ config/（不含 *.local.json）pyproject.toml 推到远端，再按哈希核对一遍。
+    """D107：把本地 pipeline/ config/（不含 *.local.json）pyproject.toml 推到远端或 Drive 队列，再按哈希核对一遍。"""
+    ctx = _cloud_context(args)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
 
-    不删远端多出的文件（见 compare_code_manifest）；远端有任务在跑就拒——中途换代码会让它半新半旧。
-    """
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        active = cloud_drive.active_drive_jobs(drive_root)
+        if active:
+            raise SystemExit(f"FAIL Drive 队列有未完成任务（{', '.join(active)}），跑完再 sync-code")
+        local_mf = code_manifest(paths.ROOT)
+        synced = cloud_drive.sync_code_to_drive(drive_root, paths.ROOT, local_mf)
+        print(f"[OK] 已同步 {synced} 个代码文件至 Drive {drive_root / 'code'}")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = ctx["rpaths"]["remote_root"]
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
     active = remote_active_tasks(host=host)
@@ -2219,7 +3158,7 @@ def cmd_sync_code(args: argparse.Namespace) -> int:
         if res.returncode != 0:
             raise SystemExit(f"FAIL 同步 {item} 失败: {res.stderr.strip()}")
         print(f"  ✓ 已同步 {item}")
-    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+    code_ok, code_lines = code_drift_lines(_check_remote_drift(host, cfg_global, provider))
     print(("[OK] " if code_ok else "FAIL ") + "\n     ".join(code_lines))
     return 0 if code_ok else 1
 
@@ -2287,10 +3226,27 @@ def build_lib_up_pairs(pool: str, keys: list[str], remote_root: str,
     return pairs
 
 
-def build_lib_captions_command(pool: str, keys: list[str], remote_root: str,
-                               python: str = DEFAULT_REMOTE_PYTHON, *, batch: int | None = None,
-                               limit: int | None = None, confirm_cost: bool = False) -> str:
+def build_lib_captions_command(
+    pool: str,
+    keys: list[str],
+    remote_root: str,
+    python: str = DEFAULT_REMOTE_PYTHON,
+    *,
+    batch: int | None = None,
+    limit: int | None = None,
+    confirm_cost: bool = False,
+    provider: str = "autodl",
+    models_root: str | None = None,
+    heartbeat_path: str | None = None,
+) -> str:
     """远端打标命令（纯函数）：首尾心跳，与 build_remote_run_command 同口径；目录用 vindex 默认值。"""
+    hb = heartbeat_path or (COLAB_HEARTBEAT_PATH if provider != "autodl" else WATCHDOG_HEARTBEAT_PATH)
+    env_parts: list[str] = []
+    if provider != "autodl":
+        env_parts.append(f"AVA_CLOUD_PROVIDER={shlex.quote(provider)}")
+    if models_root:
+        env_parts.append(f"AVA_REMOTE_MODELS={shlex.quote(models_root)}")
+    env_prefix = (" ".join(env_parts) + " ") if env_parts else ""
     flags = ""
     if batch is not None:
         flags += f" --batch {int(batch)}"
@@ -2300,9 +3256,9 @@ def build_lib_captions_command(pool: str, keys: list[str], remote_root: str,
         flags += " --confirm-cost"
     return (
         f"cd {shlex.quote(remote_root)} && "
-        f"touch {WATCHDOG_HEARTBEAT_PATH} && "
-        f"{python} -m pipeline.vindex captions {shlex.quote(pool)} {' '.join(keys)}{flags} && "
-        f"touch {WATCHDOG_HEARTBEAT_PATH}"
+        f"touch {hb} && "
+        f"{env_prefix}{python} -m pipeline.vindex captions {shlex.quote(pool)} {' '.join(keys)}{flags} && "
+        f"touch {hb}"
     )
 
 
@@ -2330,7 +3286,7 @@ def _note_session_task(task: str, label: str) -> None:
 
 
 def cmd_lib_push(args: argparse.Namespace) -> int:
-    """番池素材打标输入上行：镜头表 + 打标帧。缺一样整批拒，一条 rsync 都不发。"""
+    """番池素材打标输入上行：镜头表 + 打标帧。缺一样整批拒，不发送。"""
     keys = _lib_target(args)
     paths.require_data()
     dirs = lib_dirs()
@@ -2341,9 +3297,17 @@ def cmd_lib_push(args: argparse.Namespace) -> int:
     if miss:
         raise SystemExit("FAIL 打标输入不全，整批没传：\n     " + "\n     ".join(miss))
 
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    ctx = _cloud_context(args)
+    provider = ctx["provider"]
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        staged = cloud_drive.stage_lib_inputs(drive_root, args.pool, keys, shots_rel, frames_rel, paths.ROOT)
+        print(f"[OK] lib-push 完成（Drive 暂存 {len(staged)} 项）：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)} --provider colab-drive")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = ctx["rpaths"]["remote_root"]
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
     remote_shots = f"{remote_root}/{shots_rel}"
@@ -2360,24 +3324,71 @@ def cmd_lib_push(args: argparse.Namespace) -> int:
 
 
 def cmd_lib_captions(args: argparse.Namespace) -> int:
-    """番池素材云端打标：先核远端代码（D107），再 tmux 后台跑 vindex captions。"""
+    """番池素材云端打标：先核远端/Drive 代码（D107），再提交任务。"""
     keys = _lib_target(args)
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    ctx = _cloud_context(args)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
+    rpaths = ctx["rpaths"]
 
-    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        mf = cloud_drive.read_drive_code_manifest(drive_root)
+        if isinstance(mf, str):
+            raise SystemExit(f"FAIL 没开跑：{mf}")
+        code_ok, code_lines = code_drift_lines(compare_code_manifest(code_manifest(paths.ROOT), mf))
+        if not code_ok:
+            raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
+        active = cloud_drive.active_drive_jobs(drive_root)
+        if active:
+            raise SystemExit(f"FAIL Drive 队列仍有未完成任务（{', '.join(active)}），请等待完成后再发")
+        _note_session_task("captions", f"library:{args.pool}")
+        extra_tokens: list[str] = list(keys)
+        if args.batch is not None:
+            extra_tokens.extend(["--batch", str(int(args.batch))])
+        if args.limit is not None:
+            extra_tokens.extend(["--limit", str(int(args.limit))])
+        if args.confirm_cost:
+            extra_tokens.append("--confirm-cost")
+        job_id = f"lib_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        cloud_drive.submit_drive_job(
+            drive_root,
+            job_id=job_id,
+            task="captions",
+            ep_rel_path="",
+            extra_args=" ".join(shlex.quote(t) for t in extra_tokens),
+            lib_pool=args.pool,
+            lib_keys=keys,
+        )
+        print(f"[OK] 已提交 Drive 队列番池打标任务: {job_id}")
+        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive")
+        print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)} --provider colab-drive")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = rpaths["remote_root"]
+    code_ok, code_lines = code_drift_lines(_check_remote_drift(host, cfg_global, provider))
     if not code_ok:
         raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
     if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
-        # 同名 tmux 会话会被 build_tmux_launch_command 先 kill 掉：再发一次等于打断正在跑的那批
         raise SystemExit(f"FAIL 上一批番池打标（{LIB_CAPTIONS_SESSION}）还在跑；跑完再开下一批，"
                          f"进度看 cloud attach --session {LIB_CAPTIONS_SESSION}")
 
     _note_session_task("captions", f"library:{args.pool}")
-    _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
-    remote_cmd = build_lib_captions_command(args.pool, keys, remote_root, remote_python(cfg_global),
-                                            batch=args.batch, limit=args.limit, confirm_cost=args.confirm_cost)
+    _ssh(f"touch {rpaths['heartbeat_path']}", host=host)
+    remote_cmd = build_lib_captions_command(
+        args.pool,
+        keys,
+        remote_root,
+        rpaths["remote_python"],
+        batch=args.batch,
+        limit=args.limit,
+        confirm_cost=args.confirm_cost,
+        provider=provider,
+        models_root=rpaths["remote_models"] if provider != "autodl" else None,
+        heartbeat_path=rpaths["heartbeat_path"],
+    )
     print(f"[*] 启动远端番池打标 (tmux: {LIB_CAPTIONS_SESSION})")
     print(f"    远端执行: {remote_cmd}")
     _ssh(build_tmux_launch_command(LIB_CAPTIONS_SESSION, remote_cmd, remote_root), host=host)
@@ -2392,15 +3403,33 @@ def cmd_lib_pull(args: argparse.Namespace) -> int:
     keys = _lib_target(args)
     paths.require_data()
     _, _, vindex_rel = lib_dirs()
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
+    ctx = _cloud_context(args)
+    provider = ctx["provider"]
+    local_dir = paths.ROOT / vindex_rel
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        if cloud_drive.active_drive_jobs(drive_root):
+            raise SystemExit("FAIL Drive 队列仍有未完成任务，跑完再 lib-pull")
+        job_id, ok_list, missing = cloud_drive.pull_drive_lib_outputs(
+            drive_root, args.pool, keys, vindex_rel, local_dir
+        )
+        for name in ok_list:
+            print(f"  ✓ 已从 Drive ({job_id}) 拉取: {vindex_rel}/{name}")
+        if missing:
+            print("FAIL Drive 未见产物：" + "；".join(missing), file=sys.stderr)
+            return 1
+        print(f"[OK] lib-pull 完成。下一步本地 vindex embed {args.pool}，再 vindex status --anime {args.pool} 对账")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = ctx["rpaths"]["remote_root"]
     if not is_ssh_reachable(host):
         raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
     if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
         raise SystemExit(f"FAIL 番池打标（{LIB_CAPTIONS_SESSION}）还在跑，跑完再拉：中途拉到的可能是半份产物")
-    local_dir = paths.ROOT / vindex_rel
-    local_dir.mkdir(parents=True, exist_ok=True)
     missing: list[str] = []
     for k in keys:
         name = f"{args.pool}_{k}.captions.json"
@@ -2441,116 +3470,8 @@ def resolve_episode_rel_path(target: Any) -> tuple[Path, str]:
     return ep_dir, str(rel)
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """远端任务触发命令：白名单限制，tmux 包裹，首尾双重心跳（P0-1/P2-5）。"""
-    task = validate_task_whitelist(args.task)
-    try:
-        ep_dir, rel_path = resolve_episode_rel_path(args.target)
-    except ValueError as exc:
-        raise SystemExit(f"FAIL {exc}") from exc
-    if not ep_dir.is_dir():
-        raise SystemExit(f"FAIL 本期目录不存在: {ep_dir}")
-
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
-
-    # D107：旧代码打出来的产物可能过不了加载校验，也可能校验相同但口径不同（后者不报错），开跑前挡住
-    code_ok, code_lines = code_drift_lines(remote_code_drift(host, cfg_global))
-    if not code_ok:
-        raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
-
-    extra_args = list(getattr(args, "extra", None) or [])
-    if task == "tts" and "--apply-patch" in extra_args:
-        # D143：远端没有已配好的音频，apply-patch 会整期重配（tts 那边也会拒，这里开跑前就说清楚）
-        remote_mf = f"{remote_root}/{rel_path}/03-audio/manifest.json"
-        probe = _ssh(f"test -f {shlex.quote(remote_mf)} && echo present || echo absent",
-                     host=host, check=False)
-        if (probe.stdout or "").strip() == "absent":
-            raise SystemExit(
-                "FAIL 没开跑：远端没有 03-audio/manifest.json（多半是换了实例），--apply-patch 会整期重配。\n"
-                f"     先 `python -m pipeline.cloud push {args.target} --with-audio` 把本地配音带上去")
-
-    sfile = get_active_session_file()
-    if sfile.exists():
-        try:
-            sdata = json.loads(sfile.read_text(encoding="utf-8"))
-            sdata.setdefault("tasks", [])
-            if task not in sdata["tasks"]:
-                sdata["tasks"].append(task)
-            sdata["episode"] = ep_dir.name
-            sfile.write_text(json.dumps(sdata, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            print(f"WARN 会话文件损坏，本次任务未记账（不影响远端执行）: {e}",
-                  file=sys.stderr)
-
-    _ssh(f"touch {WATCHDOG_HEARTBEAT_PATH}", host=host)
-
-    session_name = f"ava-{task}"
-    extra_str = " ".join(args.extra) if getattr(args, "extra", None) else ""
-    try:
-        remote_cmd = build_remote_run_command(task, rel_path, remote_root,
-                                              python=remote_python(cfg_global),
-                                              extra_args=extra_str)
-    except ValueError as exc:
-        raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
-    tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
-
-    print(f"[*] 启动远端任务: {task} (tmux: {session_name})")
-    print(f"    远端执行: {remote_cmd}")
-    _ssh(tmux_launch, host=host)
-
-    print(f"[OK] 任务已在远端 tmux 会话运行。")
-    print(f"     查看日志: python -m pipeline.cloud attach --session {session_name}")
-    print(f"     完成后请执行:")
-    print(f"       python -m pipeline.cloud pull {args.target}")
-    print(f"       python -m pipeline.cloud down")
-    return 0
-
-
-def cmd_pull(args: argparse.Namespace) -> int:
-    """下行拉取命令：遵循目录斜杠纪律与完整性自检（P1-1/P2-4，Spec §4.3 三态可辨）。"""
-    try:
-        ep_dir, rel_path = resolve_episode_rel_path(args.target)
-    except ValueError as exc:
-        raise SystemExit(f"FAIL {exc}") from exc
-    if not ep_dir.is_dir():
-        raise SystemExit(f"FAIL 本期目录不存在: {ep_dir}")
-
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
-    remote_root = cfg_global.get("remote_root", "/root/anime-video-agent")
-
-    # ① 动 rsync 前先探实例可达与活跃任务（r10 / r15）
-    # 当 run_rsync 未被单元测试拦截时执行真实连通性探测
-    if run_rsync is _ORIGINAL_RUN_RSYNC:
-        if not is_ssh_reachable(host):
-            raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
-        active = remote_active_tasks(host=host)
-        if active:
-            print(f"[*] 提示: 远端仍有活跃后台任务正在运行 ({active})")
-
-    remote_ep_dir = f"{remote_root}/{rel_path}"
-    print(f"[*] 从远端拉取执行产物...")
-
-    sync_items = cfg_global.get("sync", {}).get("down", ["03-audio/", "04-clips.json", "06-check.log", "04-patch/"])
-    if "04-patch/" not in sync_items:
-        sync_items.append("04-patch/")
-    sync_pairs = build_sync_down_files(ep_dir, sync_items, remote_ep_dir)
-
-    for src, dst in sync_pairs:
-        res = run_rsync(f"{host}:{src}", dst)
-        if res.returncode == 0:
-            print(f"  ✓ 已拉取: {src} -> {dst}")
-        else:
-            # 非零可能是「远端没有这个产物」（正常跳过），也可能是网络/认证
-            # 失败——把 rsync 的原话带上，两种病因不混成一句（审计 R3）
-            tail = (res.stderr.strip().splitlines() or [""])[-1][:120]
-            print(f"  ○ 未发现远端产物或跳过: {src}（rsync 退出码 {res.returncode}：{tail}）")
-
-    # 自检验收：只校验**本次任务实际该产出的东西**。
-    # 旧写法一看到 manifest.json 存在就报「校验通过」，但那个 manifest 是上轮 v1 留下的，
-    # 跟本次任务毫无关系——看起来验证过了，实际什么都没验（误导性输出）。
+def _verify_pulled_outputs(ep_dir: Path) -> int:
+    """统一校验从云端拉回的本期产物（SSH 与 Drive 后端共用）。"""
     session_tasks: list[str] = []
     sfile = get_active_session_file()
     if sfile.exists():
@@ -2616,14 +3537,187 @@ def cmd_pull(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """远端任务触发命令：白名单限制，支持 AutoDL/Colab SSH (tmux) 与 Colab Drive 队列。"""
+    task = validate_task_whitelist(args.task)
+    try:
+        ep_dir, rel_path = resolve_episode_rel_path(args.target)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+    if not ep_dir.is_dir():
+        raise SystemExit(f"FAIL 本期目录不存在: {ep_dir}")
+
+    raw_extra = list(getattr(args, "extra", None) or [])
+    try:
+        extra_provider, clean_extra = _extract_provider_from_extra(raw_extra)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+
+    cli_prov = extra_provider or getattr(args, "provider", None)
+    ctx = _cloud_context(args, cli_provider=cli_prov)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
+    rpaths = ctx["rpaths"]
+
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        mf = cloud_drive.read_drive_code_manifest(drive_root)
+        if isinstance(mf, str):
+            raise SystemExit(f"FAIL 没开跑：{mf}")
+        code_ok, code_lines = code_drift_lines(compare_code_manifest(code_manifest(paths.ROOT), mf))
+        if not code_ok:
+            raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
+        if task == "tts" and "--apply-patch" in clean_extra:
+            staged_mf = drive_root / "staging" / rel_path / "03-audio" / "manifest.json"
+            if not staged_mf.is_file():
+                raise SystemExit(
+                    "FAIL 没开跑：Drive 暂存区没有 03-audio/manifest.json，--apply-patch 会整期重配。\n"
+                    f"     先 `python -m pipeline.cloud push {args.target} --with-audio --provider colab-drive`"
+                )
+        extra_str = " ".join(clean_extra)
+        try:
+            # 用纯函数提前校验 extra_args 合法性
+            build_remote_run_command(
+                task, rel_path, rpaths["remote_root"], python=rpaths["remote_python"],
+                extra_args=extra_str, provider="colab-drive",
+                models_root=rpaths["remote_models"], heartbeat_path=rpaths["heartbeat_path"],
+            )
+        except ValueError as exc:
+            raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
+        _note_session_task(task, ep_dir.name)
+        job_id = f"ep_{task}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        cloud_drive.submit_drive_job(
+            drive_root,
+            job_id=job_id,
+            task=task,
+            ep_rel_path=rel_path,
+            extra_args=extra_str,
+        )
+        print(f"[OK] Drive 队列任务已提交: {job_id} (task={task})")
+        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive")
+        print(f"     完成后请执行:")
+        print(f"       python -m pipeline.cloud pull {args.target} --provider colab-drive")
+        print(f"       python -m pipeline.cloud down --provider colab-drive")
+        return 0
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = rpaths["remote_root"]
+
+    code_ok, code_lines = code_drift_lines(_check_remote_drift(host, cfg_global, provider))
+    if not code_ok:
+        raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
+
+    if task == "tts" and "--apply-patch" in clean_extra:
+        remote_mf = f"{remote_root}/{rel_path}/03-audio/manifest.json"
+        probe = _ssh(f"test -f {shlex.quote(remote_mf)} && echo present || echo absent",
+                     host=host, check=False)
+        if (probe.stdout or "").strip() == "absent":
+            raise SystemExit(
+                "FAIL 没开跑：远端没有 03-audio/manifest.json（多半是换了实例），--apply-patch 会整期重配。\n"
+                f"     先 `python -m pipeline.cloud push {args.target} --with-audio` 把本地配音带上去")
+
+    _note_session_task(task, ep_dir.name)
+    _ssh(f"touch {rpaths['heartbeat_path']}", host=host)
+
+    session_name = f"ava-{task}"
+    extra_str = " ".join(clean_extra)
+    try:
+        remote_cmd = build_remote_run_command(
+            task,
+            rel_path,
+            remote_root,
+            python=rpaths["remote_python"],
+            extra_args=extra_str,
+            provider=provider,
+            models_root=rpaths["remote_models"] if provider != "autodl" else None,
+            heartbeat_path=rpaths["heartbeat_path"],
+        )
+    except ValueError as exc:
+        raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
+    tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
+
+    print(f"[*] 启动远端任务: {task} (后端: {provider}, tmux: {session_name})")
+    print(f"    远端执行: {remote_cmd}")
+    _ssh(tmux_launch, host=host)
+
+    print(f"[OK] 任务已在远端 tmux 会话运行。")
+    print(f"     查看日志: python -m pipeline.cloud attach --session {session_name}")
+    print(f"     完成后请执行:")
+    print(f"       python -m pipeline.cloud pull {args.target}")
+    print(f"       python -m pipeline.cloud down")
+    return 0
+
+
+def cmd_pull(args: argparse.Namespace) -> int:
+    """下行拉取命令：支持 AutoDL/Colab SSH (rsync) 与 Colab Drive 队列输出复制。"""
+    try:
+        ep_dir, rel_path = resolve_episode_rel_path(args.target)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {exc}") from exc
+    if not ep_dir.is_dir():
+        raise SystemExit(f"FAIL 本期目录不存在: {ep_dir}")
+
+    ctx = _cloud_context(args)
+    cfg_global = ctx["cfg_global"]
+    provider = ctx["provider"]
+    sync_items = list(cfg_global.get("sync", {}).get("down", ["03-audio/", "04-clips.json", "06-check.log", "04-patch/"]))
+    if "04-patch/" not in sync_items:
+        sync_items.append("04-patch/")
+
+    if provider == "colab-drive":
+        drive_root = _require_drive_root(ctx)
+        active = cloud_drive.active_drive_jobs(drive_root)
+        if active:
+            print(f"[*] 提示: Drive 队列仍有未完成任务 ({active})")
+        job_id, pulled = cloud_drive.pull_drive_outputs(drive_root, ep_dir, rel_path, sync_items)
+        if not job_id:
+            print(f"[*] Drive 队列尚未找到 {rel_path} 的任务输出。")
+        else:
+            for item in pulled:
+                print(f"  ✓ 已从 Drive ({job_id}) 拉取: {item}")
+        return _verify_pulled_outputs(ep_dir)
+
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    remote_root = ctx["rpaths"]["remote_root"]
+
+    if run_rsync is _ORIGINAL_RUN_RSYNC:
+        if not is_ssh_reachable(host):
+            raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
+        active = remote_active_tasks(host=host)
+        if active:
+            print(f"[*] 提示: 远端仍有活跃后台任务正在运行 ({active})")
+
+    remote_ep_dir = f"{remote_root}/{rel_path}"
+    print(f"[*] 从远端拉取执行产物（后端: {provider}）...")
+
+    sync_pairs = build_sync_down_files(ep_dir, sync_items, remote_ep_dir)
+    for src, dst in sync_pairs:
+        res = run_rsync(f"{host}:{src}", dst)
+        if res.returncode == 0:
+            print(f"  ✓ 已拉取: {src} -> {dst}")
+        else:
+            tail = (res.stderr.strip().splitlines() or [""])[-1][:120]
+            print(f"  ○ 未发现远端产物或跳过: {src}（rsync 退出码 {res.returncode}：{tail}）")
+
+    return _verify_pulled_outputs(ep_dir)
+
+
 def cmd_attach(args: argparse.Namespace) -> int:
-    """本地接入远端 tmux 会话。"""
-    cfg_global, cfg_local = load_cloud_config()
-    host = _ssh_host(cfg_local)
+    """本地接入远端 tmux 会话（colab-drive 自动回退为实时跟踪 Drive 任务日志）。"""
+    ctx = _cloud_context(args)
     session_name = args.session or "ava-tts"
-    # 列表传参，不用 shell=True：本地 shell 没有要在这里展开的任何东西，
-    # 引号拼接只会把合法的会话名截断（审计 R1）
-    print(f"[*] 接入 tmux 会话 {session_name}...")
+    if ctx["provider"] == "colab-drive":
+        return cmd_logs(argparse.Namespace(
+            provider="colab-drive",
+            session=session_name,
+            follow=True,
+            lines=50,
+        ))
+    _require_local_cloudflared(ctx["profile"])
+    host = ctx["host"]
+    print(f"[*] 接入 tmux 会话 {session_name} ({host})...")
     return subprocess.call([*ssh_base(), "-t", host, f"tmux attach-session -t {session_name}"])
 
 
@@ -2633,80 +3727,99 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    provider_parent = argparse.ArgumentParser(add_help=False)
+    provider_parent.add_argument(
+        "--provider",
+        choices=list(VALID_PROVIDERS),
+        default=argparse.SUPPRESS,
+        help="覆盖默认云算力后端（autodl / colab / colab-drive）",
+    )
+
     ap = argparse.ArgumentParser(
         description="端云协同管理系统（E9：python -m pipeline.cloud）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    ap.add_argument(
+        "--provider",
+        choices=list(VALID_PROVIDERS),
+        default=None,
+        help="覆盖默认云算力后端（autodl / colab / colab-drive）",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # use
+    p_use = sub.add_parser("use", parents=[provider_parent], help="切换默认云算力后端（autodl / colab / colab-drive，互不覆盖配置）")
+    p_use.add_argument("provider_name", choices=list(VALID_PROVIDERS), help="目标云算力后端")
+
     # exec
-    p_exec = sub.add_parser("exec", help="在远端执行命令（默认强制 tmux 包裹后台化）")
+    p_exec = sub.add_parser("exec", parents=[provider_parent], help="在远端执行命令（默认强制 tmux 包裹后台化）")
     p_exec.add_argument("command", type=str, help="要执行的远端命令")
     p_exec.add_argument("--fg", action="store_true", help="前台直连执行（限 <60s 探针短命令）")
 
     # logs
-    p_logs = sub.add_parser("logs", help="查看或追踪远端任务日志")
-    p_logs.add_argument("session", type=str, help="tmux 会话名或日志前缀（如 ava-20260910_221500）")
+    p_logs = sub.add_parser("logs", parents=[provider_parent], help="查看或追踪远端/Drive 队列任务日志")
+    p_logs.add_argument("session", type=str, help="tmux 会话名或 Drive job_id（如 ava-20260910_221500）")
     p_logs.add_argument("-f", "--follow", action="store_true", help="实时追踪日志输出")
     p_logs.add_argument("-n", "--lines", type=int, default=30, help="显示末尾行数（默认 30 行）")
 
     # doctor
-    p_doctor = sub.add_parser("doctor", help="全面诊断远端环境、显卡、数据盘与模型资产")
+    sub.add_parser("doctor", parents=[provider_parent], help="全面诊断远端环境、显卡、存储与模型资产")
 
-    # connect（D102）
-    p_connect = sub.add_parser("connect", help="换实例：贴控制台的 SSH 登录指令，写连接信息并生成 ssh 配置")
-    p_connect.add_argument("login", type=str, help='控制台复制的登录指令，整段加引号，如 "ssh -p 34557 root@connect.weste.seetacloud.com"')
+    # connect（D102 + Colab）
+    p_connect = sub.add_parser("connect", parents=[provider_parent], help="换实例或接入 Colab：写连接配置并生成 ssh_config / 绑定 Drive 队列")
+    p_connect.add_argument("login", nargs="?", default=None, type=str, help='SSH/cloudflared 登录指令（如 "ssh -p ... root@..." 或 trycloudflare 域名）')
+    p_connect.add_argument("--drive-root", type=str, default=None, help="colab-drive 本机 Google Drive 队列目录（含 ava_cloud）")
 
     # up
-    p_up = sub.add_parser("up", help="开启实例并初始化远端守护脚本")
+    p_up = sub.add_parser("up", parents=[provider_parent], help="开启实例 / 检测 Colab 运行时并激活守护脚本")
     p_up.add_argument("--mode", choices=["cardless", "gpu"], default=None,
                       help="声明开机模式 (cardless=无卡节能模式, gpu=带卡模式)；不填按 nvidia-smi 探测记")
     p_up.add_argument("--rate", type=float, default=None,
-                      help="这台实例的按量单价（元/小时，控制台上看到的数；D108：卡不固定、价不固定，不报则账本按参考价估算）")
+                      help="本次单价（AutoDL 元/小时；Colab CU/小时）")
     p_up.add_argument("--timeout", type=int, default=300, help="开机等待超时秒数（默认 300s）")
     p_up.add_argument("--episode", type=str, default=None, help="关联合同期号")
 
     # down
-    p_down = sub.add_parser("down", help="关闭实例并完成账簿结算")
-    p_down.add_argument("--force", action="store_true", help="强制下发关机指令（即使远端仍有活跃任务）")
+    p_down = sub.add_parser("down", parents=[provider_parent], help="关闭实例或释放 Colab 运行时并完成账簿结算")
+    p_down.add_argument("--force", action="store_true", help="强制停机/释放（即使远端仍有活跃任务）")
     p_down.add_argument("--rate", type=float, default=None,
-                        help="补报这台实例的按量单价（元/小时）；优先于 up 时报的")
+                        help="补报本次单价（AutoDL 元/小时；Colab CU/小时）；优先于 up 时报的")
 
     # status
-    p_status = sub.add_parser("status", help="查询实例连通性、GPU工况与账簿明细")
+    sub.add_parser("status", parents=[provider_parent], help="查询实例连通性、GPU工况与双单位账簿明细")
 
     # D130：配完不关机
-    sub.add_parser("hold", help="保持开机（看门狗暂停空闲关机，2 小时后自动释放；再次 hold 即续期）")
-    sub.add_parser("release", help="撤掉 hold，看门狗恢复空闲关机")
+    sub.add_parser("hold", parents=[provider_parent], help="保持开机（看门狗暂停空闲关机/释放，2 小时后自动恢复；再次 hold 即续期）")
+    sub.add_parser("release", parents=[provider_parent], help="撤掉 hold，看门狗恢复空闲关机/释放")
 
     # push
-    p_push = sub.add_parser("push", help="同步本地稿件与配置至云端")
+    p_push = sub.add_parser("push", parents=[provider_parent], help="同步本地稿件与配置至云端")
     p_push.add_argument("target", type=Path, help="本期目录路径")
     p_push.add_argument("--with-audio", action="store_true",
                         help="连同本地 03-audio/（已配好的 wav 与 manifest，不含 attic）上行；"
                              "换了实例要 --apply-patch 点名重配前用（D143）")
 
     # run
-    p_run = sub.add_parser("run", help="在云端执行指定任务（白名单控制：tts, probe）")
+    p_run = sub.add_parser("run", parents=[provider_parent], help="在云端执行指定任务（白名单控制：tts, captions, probe）")
     p_run.add_argument("target", type=Path, help="本期目录路径")
-    p_run.add_argument("task", type=str, help="任务名称（当前放行：tts, probe）")
+    p_run.add_argument("task", type=str, help="任务名称（当前放行：tts, captions, probe）")
     p_run.add_argument("extra", nargs=argparse.REMAINDER, help="透传给远端任务的额外参数（如 --redo 3,7）")
 
     # pull
-    p_pull = sub.add_parser("pull", help="拉取云端产物回本地")
+    p_pull = sub.add_parser("pull", parents=[provider_parent], help="拉取云端产物回本地")
     p_pull.add_argument("target", type=Path, help="本期目录路径")
 
-    # D59：远端一次性维护，原先要人登远端手敲
-    sub.add_parser("relocate-data", help="远端 data/ 改道数据盘并软链回来（幂等；有任务在跑就拒）")
-    sub.add_parser("clean-frames", help="清远端上一轮 VLM 打标帧 *_cap（本地可秒级重抽）")
-    sub.add_parser("fix-env", help="按 doctor 判据修远端：克隆缺失的仓库、重下缺失/残缺的模型（清单来自 config）")
-    sub.add_parser("sync-code", help="把本地 pipeline/ config/ pyproject.toml 推到远端并按哈希核对（D107）")
+    # D59：远端一次性维护
+    sub.add_parser("relocate-data", parents=[provider_parent], help="远端 data/ 改道数据盘并软链回来（幂等；有任务在跑就拒）")
+    sub.add_parser("clean-frames", parents=[provider_parent], help="清远端上一轮 VLM 打标帧 *_cap（本地可秒级重抽）")
+    sub.add_parser("fix-env", parents=[provider_parent], help="按 doctor 判据修远端：克隆缺失的仓库、重下缺失/残缺的模型（清单来自 config）")
+    sub.add_parser("sync-code", parents=[provider_parent], help="把本地 pipeline/ config/ pyproject.toml 推到远端并按哈希核对（D107）")
 
     # D103 ②：番池素材（data/library/ 下的番剧集与 SP）云端打标
     for name, help_ in (("lib-push", "番池素材打标输入（镜头表 + 打标帧）上传"),
                         ("lib-captions", "番池素材云端打标（计费；先核远端代码）"),
                         ("lib-pull", "番池素材打标产物拉回（只拉写明的集键）")):
-        p_lib = sub.add_parser(name, help=help_)
+        p_lib = sub.add_parser(name, parents=[provider_parent], help=help_)
         p_lib.add_argument("pool", help="池名（番名 / 企划名）")
         p_lib.add_argument("keys", nargs="+", help="集键 SP01 / S01E01，可多个或逗号分隔")
         if name == "lib-captions":
@@ -2715,7 +3828,7 @@ def build_parser() -> argparse.ArgumentParser:
             p_lib.add_argument("--confirm-cost", action="store_true", help="预估超预算仍继续（同 vindex captions）")
 
     # attach
-    p_attach = sub.add_parser("attach", help="终端接驳远端 tmux 会话")
+    p_attach = sub.add_parser("attach", parents=[provider_parent], help="终端接驳远端 tmux 会话")
     p_attach.add_argument("--session", type=str, default="ava-tts", help="tmux 会话名")
     return ap
 
@@ -2724,6 +3837,7 @@ def main() -> int:
     args = build_parser().parse_args()
 
     dispatch = {
+        "use": cmd_use,
         "exec": cmd_exec,
         "logs": cmd_logs,
         "doctor": cmd_doctor,
