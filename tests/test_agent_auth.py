@@ -474,6 +474,41 @@ def test_anthropic_tool_choice_none_and_thinking_tool_loop_continuation(tmp_path
         assert turn2_msgs[2]["role"] == "user"
         assert turn2_msgs[2]["content"][0]["type"] == "tool_result"
 
+        # 复审残留项 1：无签名 reasoning_content / 无签名 thinking_blocks 必须丢弃，只有带签名才回传
+        unsigned_payload, _ = llm._anthropic_request(
+            cfg_high,
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "reasoning_content": "来自 openai 的无签名思考", "content": "a1"},
+                {"role": "user", "content": "q2"},
+            ],
+            None,
+            None,
+            None,
+        )
+        assert unsigned_payload["messages"][1]["content"] == [{"type": "text", "text": "a1"}]
+
+        signed_payload, _ = llm._anthropic_request(
+            cfg_high,
+            [
+                {"role": "user", "content": "q1"},
+                {
+                    "role": "assistant",
+                    "reasoning_content": "带签名的历史思考",
+                    "reasoning_signature": "sig_ok",
+                    "content": "a1",
+                },
+                {"role": "user", "content": "q2"},
+            ],
+            None,
+            None,
+            None,
+        )
+        assert signed_payload["messages"][1]["content"] == [
+            {"type": "thinking", "thinking": "带签名的历史思考", "signature": "sig_ok"},
+            {"type": "text", "text": "a1"},
+        ]
+
         # B1：Turn 3 收尾请求必须发 {"type": "none"}，而非 {"type": "tool", "name": "none"}
         assert sent_bodies[2]["tool_choice"] == {"type": "none"}
     finally:
