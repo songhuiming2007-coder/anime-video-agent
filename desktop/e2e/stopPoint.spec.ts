@@ -7,7 +7,7 @@ import { cleanup, makeFixtureRepo, py } from "../tests/helpers";
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { spawns, openEp, card, readStore, type SpawnRec } from "./ackFixtures";
-import { launch, type Launched } from "./fixtures";
+import { launch, pick, type Launched } from "./fixtures";
 import { stubConfirm } from "./sessionFixtures";
 
 const REPO = makeRepoRoots();
@@ -141,7 +141,7 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   const L = await start(ctx);
   await openEp(L.page, "SP11-TE3");
   // 点开 03-audio 目录 → 顺听面板替下音频队列
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   const panel = L.page.getByTestId("voice-panel");
   await panel.waitFor({ timeout: 15_000 });
   expect(spawnNames(L, "VOICE_INFO")).toHaveLength(1);
@@ -189,7 +189,7 @@ test("TE-4 人时：打开 02.5 编辑器 → 停留 → 关闭 → human_time.j
   await L.page.getByTestId("script-editor").waitFor({ timeout: 15_000 });
   await L.page.waitForTimeout(1500); // 真实墙钟停留（不设时长下限）
   // 关闭审阅面：点开同期的另一个文件（02-script.md → 01-topic.md）
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click();
+  await pick(L.page, "01-topic.md");
   await expect(L.page.getByTestId("script-editor")).toHaveCount(0);
   const ht = join(ctx.ep, "human_time.json");
   await expect.poll(() => existsSync(ht), { timeout: 15_000 }).toBe(true);
@@ -206,7 +206,7 @@ test("D50-A S6 就地纠错：选中段落文字 → 小卡读音核对 → 记�
   const ctx = epAt035("SP11-S6");
   const L = await start(ctx);
   await openEp(L.page, "SP11-S6");
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   const panel = L.page.getByTestId("voice-panel");
   await panel.waitFor({ timeout: 15_000 });
   // 选中段 1 里的「雪乃」（程序化选区 + mouseup：打开小卡不是写操作）
@@ -264,7 +264,7 @@ test("D72 全局读音纠错后重配入口不丢：记下（写全局表）→ 
   dubbedManifest(ctx);
   const L = await start(ctx);
   await openEp(L.page, "SP11-D72");
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   const panel = L.page.getByTestId("voice-panel");
   await panel.waitFor({ timeout: 15_000 });
   await expect(panel.getByTestId("voice-no-pending")).toBeVisible();
@@ -294,9 +294,9 @@ test("D72 全局读音纠错后重配入口不丢：记下（写全局表）→ 
   await expect(done).toHaveAttribute("data-mode", "retts");
   await expect(panel.getByTestId("voice-redo-segs")).toContainText("段 2");
   // 原病例：切走再切回，入口不能消失（待重配段由 core 从盘上现算，不在组件内存里）
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click();
+  await pick(L.page, "01-topic.md");
   await expect(L.page.getByTestId("voice-panel")).toHaveCount(0);
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   await expect(L.page.getByTestId("voice-done")).toContainText("只重配这 1 段", { timeout: 15_000 });
   // 确认框取消 → 不起长任务
   await stubConfirm(L, false);
@@ -317,7 +317,7 @@ test("D70 从草稿新建可达：只有草稿时切换器列出「02-script.md 
   writeFileSync(join(ctx.ep, "02-script.draft.md"), SCRIPT_V1);
   const L = await start(ctx);
   await openEp(L.page, "SP11-D70");
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click(); // 展开预览区
+  await pick(L.page, "01-topic.md"); // 展开预览区
   await L.page.getByTestId("preview-switch-btn").click();
   const row = L.page.locator("[data-testid=preview-switch-row][data-rel='02-script.md']");
   await expect(row).toBeEnabled();
@@ -334,25 +334,25 @@ test("D70 从草稿新建可达：只有草稿时切换器列出「02-script.md 
   await expect(L.page.getByTestId("from-draft")).toHaveCount(0, { timeout: 15_000 }); // 定稿已在：按钮退场
 });
 
-test("D73 预览区渲染异常被错误边界兜住：报错可见、侧栏照常，换文件 / 重试即恢复（不整窗白屏）", async () => {
+test("D73 预览区渲染异常被错误边界兜住：报错可见、切换器与侧栏照常，换文件 / 重试即恢复（不整窗白屏）", async () => {
   const ctx = epAt035("SP11-D73");
   const L = await start(ctx);
   await openEp(L.page, "SP11-D73");
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   await L.page.getByTestId("voice-panel").waitFor({ timeout: 15_000 });
   await L.page.evaluate(() => {
     (window as unknown as { __avaTestCrashPreview: boolean }).__avaTestCrashPreview = true;
   });
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click(); // 换目标 → 重渲染 → 探针抛错
+  await pick(L.page, "01-topic.md"); // 换目标 → 重渲染 → 探针抛错
   await expect(L.page.getByTestId("pane-crash")).toContainText("测试钩子触发的渲染异常");
-  await expect(L.page.locator("[data-testid=tree-row][data-rel='03-audio']")).toBeVisible(); // 边界之外照常
+  await expect(L.page.getByTestId("preview-switch-btn")).toBeVisible(); // 边界之外照常
   await L.page.evaluate(() => {
     (window as unknown as { __avaTestCrashPreview: boolean }).__avaTestCrashPreview = false;
   });
   await L.page.getByTestId("pane-crash-retry").click();
   await expect(L.page.getByTestId("pane-crash")).toHaveCount(0);
   // 切回 03-audio：上次读到的配音信息立刻占位（D73 ①），不经空白等待
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   await expect(L.page.getByTestId("voice-panel")).toBeVisible();
   await expect(L.page.getByTestId("seg-row")).toHaveCount(2);
 });
@@ -446,11 +446,11 @@ test("TE-5 错误态不计时（红队 ④）：审阅面装载失败时人时�
   rmSync(join(ctx.ep, "02-script.md")); // core /voice-info 的前置缺失 → RPC 失败 → 面板停在错误态
   const L = await start(ctx);
   await openEp(L.page, "SP11-TE5");
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   await expect(L.page.getByText(/找不到 02-script\.md/)).toBeVisible({ timeout: 15_000 });
   await expect(L.page.getByTestId("voice-panel")).toHaveCount(0); // 错误态替下整个面板
   await L.page.waitForTimeout(1200);
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click();
+  await pick(L.page, "01-topic.md");
   await expect(L.page.getByTestId("voice-panel")).toHaveCount(0);
   await L.page.waitForTimeout(1200);
   expect(existsSync(join(ctx.ep, "human_time.json"))).toBe(false);
@@ -464,7 +464,7 @@ test("TE-6 错误态不计时（红队 ④·编辑器半边）：正文不可读
   await L.page.getByTestId("script-editor").waitFor({ timeout: 15_000 });
   await expect(L.page.getByTestId("editor-src")).toHaveCount(0); // 错误态替下编辑区
   await L.page.waitForTimeout(1200);
-  await L.page.locator("[data-testid=tree-row][data-rel='01-topic.md']").click();
+  await pick(L.page, "01-topic.md");
   await expect(L.page.getByTestId("script-editor")).toHaveCount(0);
   await L.page.waitForTimeout(1200);
   expect(existsSync(join(ctx.ep, "human_time.json"))).toBe(false);
@@ -631,7 +631,7 @@ test("D87 03.5 预览栏逐段重配状态：合成中 / 排队 → 已重配·�
   writeFileSync(progress, JSON.stringify({ ...base, pid: process.pid, state: "running", done: { "1": t1 }, current: "2", note: "第 1 次不过：句内静音 5.8s（门槛 2.0s）" }));
   const L = await start(ctx);
   await openEp(L.page, "D87-STATUS");
-  await L.page.locator("[data-testid=tree-row][data-rel='03-audio']").click();
+  await pick(L.page, "03-audio");
   const panel = L.page.getByTestId("voice-panel");
   await panel.waitFor({ timeout: 15_000 });
   const status = (label: string) => panel.locator(`[data-testid=seg-row][data-label='${label}'] [data-testid=seg-status]`);

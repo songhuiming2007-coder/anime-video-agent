@@ -130,11 +130,37 @@ export async function launch(repo: string, extraArgs: string[] = [], userData = 
 
 export async function openEpisode(page: Page, epKey: string): Promise<void> {
   await page.locator("[data-testid=episode]", { hasText: epKey }).first().click();
-  await page.locator("[data-testid=tree-row][data-rel='01-topic.md']").waitFor();
+  await page.locator(`[data-testid=center][data-ep="${epKey}"][data-loading="0"]`).waitFor();
 }
 
 export async function pick(page: Page, rel: string): Promise<void> {
-  const row = page.locator(`[data-testid=tree-row][data-rel="${rel}"]`);
-  if ((await row.count()) === 0 && !rel.includes("/")) await openEpisode(page, "E2E-A"); // 失败重启 worker 后的前置状态
+  const preview = page.locator("#ava-preview");
+  if ((await preview.count()) === 0 || !(await preview.isVisible())) {
+    const toggle = page.getByTestId("toggle-preview");
+    if ((await toggle.count()) > 0 && (await toggle.getAttribute("aria-pressed")) === "false") {
+      await toggle.click();
+    }
+    await preview.waitFor();
+  }
+  const switchBtn = page.getByTestId("preview-switch-btn");
+  if ((await switchBtn.count()) === 0) await openEpisode(page, "E2E-A"); // 失败重启 worker 后的前置状态
+  await switchBtn.waitFor();
+  if ((await page.getByTestId("preview-switch-pop").count()) === 0) {
+    await switchBtn.click();
+    await page.getByTestId("preview-switch-pop").waitFor();
+  }
+  if (rel.includes("/")) {
+    const parts = rel.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      const tog = page.locator(`[data-testid="preview-subdir-toggle"][data-dir="${dir}"]`);
+      await tog.waitFor();
+      if ((await tog.getAttribute("aria-expanded")) !== "true") {
+        await tog.click();
+      }
+    }
+  }
+  const row = page.locator(`[data-testid=preview-switch-row][data-rel="${rel}"]`);
+  await row.waitFor();
   await row.click();
 }

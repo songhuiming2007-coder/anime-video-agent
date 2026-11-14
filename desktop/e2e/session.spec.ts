@@ -5,7 +5,7 @@ import { stringifyLossless } from "../src/shared/losslessJson";
 import { fixtureWrite } from "../tests/fixtures/session";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import type { Launched } from "./fixtures";
+import { pick, type Launched } from "./fixtures";
 import { fingerprintOf, launchSession, pendingObj, quitStubCalls, releaseQuit, sessionFixture, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
 import { spawns } from "./ackFixtures";
 import { sessionRecords, sessionScript, stdinLines } from "../tests/fixtures/session";
@@ -229,7 +229,7 @@ test("TX-5 ①②④ 自动呼出：新 pending 打开预览；人占用时只�
     expect(Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"))).toBe(1);
     // ② 人点开别的文件 → 新 pending 只出「已就绪」条
     // Spec 11 §2.2：02-script.md 的预览位长成 CodeMirror 编辑器（.md 预览由编辑器右栏承担）
-    await L.page.locator("[data-testid=tree-row][data-rel='02-script.md']").click();
+    await pick(L.page, "02-script.md");
     await expect(L.page.getByTestId("script-editor")).toBeVisible();
     // ④ 出现「已就绪」条的前后 activeElement 不变（期间无任何人手操作）
     const before = await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);

@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import type { Launched } from "./fixtures";
+import { pick, type Launched } from "./fixtures";
 import { assistant, startFakeLlm, toolCalls, type FakeLlm } from "./fakeLlm";
 import { convSnapshot, fingerprintOf, launchSession, pendingObj, quitStubCalls, realCoreFixture, stubConfirm, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
 import { ACK_TEMPLATES, spawns } from "./ackFixtures";
@@ -940,7 +940,7 @@ test("TX-5 ①②④ 真实 core：新 pending 自动打开预览；人占用时
       await openEp(L.page, "SESS-A");
       await expect(L.page.getByTestId("audio-queue")).toBeVisible({ timeout: 15_000 });
       expect(Number(await L.page.locator(".preview").getAttribute("data-auto-open-count"))).toBe(1);
-      await L.page.locator("[data-testid=tree-row][data-rel='02-script.md']").click();
+      await pick(L.page, "02-script.md");
       await expect(L.page.getByTestId("script-editor")).toBeVisible();
       const before = await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
       const fp = fingerprintOf(repo, "SESS-A", "03-audio/manifest.json");

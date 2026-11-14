@@ -6,21 +6,23 @@ import { buildFixture, launch, openEpisode } from "./fixtures";
 import { fingerprintOf, launchSession, pendingObj, sessionFixture, stubQuit, writeStore } from "./sessionFixtures";
 import { fixtureWrite, sessionScript } from "../tests/fixtures/session";
 
-test("L-1 收起侧栏、展开预览、收起本期文件 → 同一 userData 重启后原样恢复", async () => {
+test("L-1 侧栏仅保留企划/期列表（无产物树），收起侧栏、展开预览 → 同一 userData 重启后原样恢复", async () => {
   const fx = buildFixture();
   const ud = tmp("ud");
   try {
     let L = await launch(fx.repo, [], ud, { previewOpen: false });
-    // 首次启动是默认态：侧栏在、预览收成窄条
+    // 首次启动是默认态：侧栏在、预览收成窄条；D169 侧栏不再渲染产物树与折叠开关
     await expect(L.page.locator("#ava-left")).toBeVisible();
+    await expect(L.page.getByTestId("files-toggle")).toHaveCount(0);
+    await expect(L.page.locator("#ava-files")).toHaveCount(0);
+    await expect(L.page.getByTestId("tree")).toHaveCount(0);
     await expect(L.page.getByTestId("preview-rail")).toBeVisible();
     await openEpisode(L.page, "E2E-A");
-    await L.page.getByTestId("files-toggle").click();
-    await expect(L.page.getByTestId("files-toggle")).toHaveAttribute("aria-expanded", "false");
     await L.page.getByTestId("toggle-left").click();
     await L.page.getByTestId("toggle-preview").click();
     await expect(L.page.locator("#ava-left")).toBeHidden();
     await expect(L.page.locator("#ava-preview")).toBeVisible();
+    await expect(L.page.getByTestId("preview-switch-btn")).toBeVisible();
     await L.app.close();
 
     L = await launch(fx.repo, [], ud, { previewOpen: false });
@@ -30,10 +32,9 @@ test("L-1 收起侧栏、展开预览、收起本期文件 → 同一 userData �
       await expect(L.page.locator("#ava-preview")).toBeVisible();
       await expect(L.page.getByTestId("preview-rail")).toHaveCount(0);
       await L.page.getByTestId("toggle-left").click();
-      // 本期文件是收起的，树行不可见，所以不用 openEpisode（它等树行出现）；等中栏切到该期即可
-      await L.page.locator("[data-testid=episode]", { hasText: "E2E-A" }).first().click();
-      await expect(L.page.getByTestId("center")).toHaveAttribute("data-ep", "E2E-A");
-      await expect(L.page.getByTestId("files-toggle")).toHaveAttribute("aria-expanded", "false");
+      await openEpisode(L.page, "E2E-A");
+      await expect(L.page.getByTestId("files-toggle")).toHaveCount(0);
+      await expect(L.page.getByTestId("preview-switch-btn")).toBeVisible();
     } finally {
       await L.app.close();
     }

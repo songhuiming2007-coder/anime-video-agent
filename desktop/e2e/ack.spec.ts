@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { pick } from "./fixtures";
 import { stubConfirm } from "./sessionFixtures";
 import { cleanup, treeManifest } from "../tests/helpers";
 import {
@@ -244,7 +245,7 @@ test("TA-5 无点击零 ack：打开期、预览审片页、播放音频、切�
   const L = await start(R);
   await openEp(L.page, "TA5");
   await expect(L.page.getByTestId("html-frame")).toBeVisible(); // 05 停机点自动呼出 04-review.html
-  await L.page.locator(`[data-testid=tree-row][data-rel="03-audio"]`).click();
+  await pick(L.page, "03-audio");
   await L.page.locator("audio").first().waitFor();
   await L.page.locator("audio").first().evaluate((a: HTMLAudioElement) => a.play().catch(() => undefined));
   await L.page.waitForTimeout(800);
