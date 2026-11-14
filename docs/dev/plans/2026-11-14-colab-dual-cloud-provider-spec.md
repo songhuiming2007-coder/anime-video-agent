@@ -70,7 +70,7 @@
   - `ssh` 模式保活/自动释放哨兵：巡检 `tmux ls | grep '^ava-'`、`.ava_hold`、`.ava_unassign`，满足空闲或主动关机条件时返回退出信号触发 Notebook 内核 `google.colab.runtime.unassign()`。
 - `tools/ava_colab_bootstrap.ipynb`（联合 `pipeline/cloud_colab_boot.py`）：已收口为**单格一键 Notebook** + **隔离浏览器全自动拉起**：
   - Notebook 仅保留 1 个整合代码格：自动挂 Drive、恢复/构建 `/content/venv` 缓存、更新仓库并按 `TASK_PROFILE` 准备权重、按 `sshd_config` 实际端口启动 `sshd` + `cloudflared`，并在输出打印 `AVA_COLAB_SSH_READY: root@<host>.trycloudflare.com`。
-  - 一次性 `--browser-login`（`cloud connect --provider colab --browser-login`）：在严格隔离的 `data/cloud/colab-browser-profile`（`0700`）完成一次 Google 登录；此后 `cloud up --provider colab` 自动无头拉起 Colab、触发 `Run all`、抓取隧道并刷新 `profiles.colab` 与 `ssh_config`，对 Agent 全程无感自治。
+  - 一次性 `--browser-login`（`cloud connect --provider colab --browser-login`）：在严格隔离的 Camoufox（Firefox）目录 `data/cloud/colab-browser-profile-firefox`（`0700`）完成一次 Google 登录；此后 `cloud up --provider colab` 自动无头拉起 Colab、触发运行、抓取隧道并刷新 `profiles.colab` 与 `ssh_config`，对 Agent 全程无感自治。
 
 ### 5. Agent 友好性：`pipeline/agent/*`、`config/agent/scopes/pipeline.md`、`docs/`
 

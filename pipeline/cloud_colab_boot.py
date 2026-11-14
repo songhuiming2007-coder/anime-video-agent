@@ -1,9 +1,12 @@
 """Google Colab 浏览器自举器（`pipeline/cloud_colab_boot.py`）。
 
-供 AVA Agent 在执行 `cloud up --provider colab` 时自主唤醒 Colab 运行时并抓取
-`cloudflared` 隧道地址（补齐 Colab 没有官方开机 REST API 的最后一环）：
-- 顶层零重依赖：`playwright.sync_api` 仅在浏览器动作内延迟导入；
-- 浏览器档案严格隔离于 `data/cloud/colab-browser-profile`（`0700`），绝不触碰系统主力 Chrome Default；
+供 AVA Agent 在执行 `cloud up --provider colab` 时通过 **Camoufox（Firefox 内核）**
+自主唤醒 Colab 运行时并抓取 `cloudflared` 隧道地址（补齐 Colab 无官方开机 REST API 的最后一环）：
+- 与 AVA 既有浏览器栈（`pipeline/agent/web_browser.py`）一致：顶层零重依赖，函数级延迟导入
+  `camoufox` / `playwright.sync_api`，复用 `browser_env()`（剥离密钥变量）与 `CAMOUFOX_OS`；
+- 强制使用 `camoufox_path(download_if_missing=False)` 预检，绝不自动下载浏览器本体；
+- 浏览器档案严格隔离于 `data/cloud/colab-browser-profile-firefox`（`0700`），与
+  `data/browser-profile-firefox` 互不抢锁，也绝不触碰系统主力浏览器；
 - 纯函数解析规则与状态判定均可单测覆盖，不依赖真实网络。
 """
 
@@ -30,9 +33,9 @@ _PLACEHOLDER_HOSTS = frozenset({"xxxx.trycloudflare.com", "example.trycloudflare
 
 
 def colab_browser_profile_dir(data_dir: Path | None = None) -> Path:
-    """返回 AVA 专用的 Colab 隔离浏览器目录（`data/cloud/colab-browser-profile`，`0700`）。"""
+    """返回 AVA 专用的 Colab Camoufox 隔离目录（`data/cloud/colab-browser-profile-firefox`，`0700`）。"""
     base = data_dir if data_dir is not None else paths.DATA
-    p = base / "cloud" / "colab-browser-profile"
+    p = base / "cloud" / "colab-browser-profile-firefox"
     p.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(p, 0o700)
@@ -42,18 +45,12 @@ def colab_browser_profile_dir(data_dir: Path | None = None) -> Path:
 
 
 def has_saved_browser_profile(profile_dir: Path) -> bool:
-    """判断隔离浏览器档案是否已做过一次人工登录（纯文件系统探测）。"""
+    """判断 Camoufox（Firefox）隔离档案是否已做过人工登录（纯文件系统探测）。"""
     if not profile_dir.is_dir():
         return False
-    # Chrome/Chromium persistent context 登录后会生成 Default/Cookies 或 Local State
-    for marker in (
-        profile_dir / "Default" / "Cookies",
-        profile_dir / "Default" / "Network" / "Cookies",
-        profile_dir / "Local State",
-    ):
-        if marker.is_file() and marker.stat().st_size > 0:
-            return True
-    return False
+    # D96：Camoufox（Firefox 内核）登录后会在配置根目录写入非空 cookies.sqlite
+    cookies_db = profile_dir / "cookies.sqlite"
+    return cookies_db.is_file() and cookies_db.stat().st_size > 0
 
 
 def resolve_colab_notebook_url(
@@ -105,17 +102,33 @@ def detect_colab_login_required(url: str, page_text: str) -> bool:
 
 
 def _launch_persistent_context(pw: Any, profile_dir: Path, *, headless: bool) -> Any:
-    """用 Chrome（首选）或 Chromium 拉起受控隔离 persistent context。"""
-    common = dict(
-        user_data_dir=str(profile_dir),
-        headless=headless,
-        args=["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
-        ignore_default_args=["--enable-automation"],
-    )
+    """用 AVA 同款 Camoufox（Firefox 内核 + `browser_env()`）拉起隔离持久上下文。"""
+    from camoufox.pkgman import camoufox_path  # type: ignore[import-not-found]
+    from camoufox.sync_api import NewBrowser  # type: ignore[import-not-found]
+
+    from pipeline.agent.web_browser import CAMOUFOX_FETCH_HINT, CAMOUFOX_OS, browser_env
+
     try:
-        return pw.chromium.launch_persistent_context(channel="chrome", **common)
-    except Exception:
-        return pw.chromium.launch_persistent_context(**common)
+        camoufox_path(download_if_missing=False)
+    except Exception as exc:
+        raise RuntimeError(f"Camoufox 浏览器本体未就绪: {exc} {CAMOUFOX_FETCH_HINT}") from exc
+
+    try:
+        return NewBrowser(
+            pw,
+            persistent_context=True,
+            user_data_dir=str(profile_dir),
+            headless=headless,
+            os=CAMOUFOX_OS,
+            env=browser_env(),
+        )
+    except Exception as exc:
+        hint = (
+            "（该 Camoufox Colab 档案正被另一窗口占用，请先关闭后重试）"
+            if "already open" in str(exc).lower()
+            else ""
+        )
+        raise RuntimeError(f"启动 Colab Camoufox 浏览器失败: {exc}{hint}") from exc
 
 
 def _collect_page_and_frames_text(page: Any) -> str:
@@ -137,28 +150,65 @@ def _collect_page_and_frames_text(page: Any) -> str:
     return "\n".join(parts)
 
 
-def _click_dialog_button(page: Any, pattern: str) -> bool:
-    """安全点击弹窗确认按钮（若存在且已启用）。"""
+def _click_dialog_button(target: Any, pattern: str) -> str | None:
+    """安全点击目标页面或 frame 内的弹窗确认按钮（若存在且已启用）。"""
     try:
-        btn = page.get_by_role("button", name=re.compile(pattern, re.I)).first
+        btn = target.get_by_role("button", name=re.compile(pattern, re.I)).first
         if btn.count() > 0 and btn.is_visible() and btn.is_enabled():
+            label = (btn.inner_text(timeout=1000) or pattern).strip()
             btn.click(timeout=2000)
-            return True
+            return label
     except Exception:
-        return False
-    return False
+        return None
+    return None
 
 
-def _handle_colab_modals(page: Any) -> bool:
-    """处理 GitHub Notebook 信任确认与 Google Drive 挂载授权弹窗。"""
+def _handle_colab_modals(ctx: Any, main_page: Any, log_fn: Callable[[str], None] = print) -> bool:
+    """处理 GitHub Notebook 信任确认、Drive 挂载确认以及 OAuth 授权弹窗。"""
     clicked = False
-    for pattern in (
+    targets = [main_page] + [fr for fr in list(getattr(main_page, "frames", [])) if fr is not main_page.main_frame]
+    patterns = (
         r"^Run anyway$|^仍然运行$",
         r"^Connect to Google Drive$|^连接到 Google 云端硬盘$",
         r"^Allow$|^允许$",
-    ):
-        if _click_dialog_button(page, pattern):
-            clicked = True
+        r"^Continue$|^继续$",
+    )
+    for tgt in targets:
+        for pat in patterns:
+            label = _click_dialog_button(tgt, pat)
+            if label:
+                log_fn(f"[*] 已自动点击 Colab 确认弹窗: {label}")
+                clicked = True
+
+    # 处理点击 "Connect to Google Drive" 后可能弹出的 accounts.google.com OAuth 新标签页
+    for p in list(getattr(ctx, "pages", [])):
+        if p is main_page:
+            continue
+        pu = (getattr(p, "url", "") or "").lower()
+        if "accounts.google.com" not in pu:
+            continue
+        try:
+            if p.locator('input[type="password"]').count() > 0:
+                raise RuntimeError(
+                    "Google 账号在 Drive OAuth 弹窗要求重新输入密码/二次验证，"
+                    "请运行一次 `cloud connect --provider colab --browser-login` 完成授权。"
+                )
+            acct = p.locator("[data-email], [data-identifier]").first
+            if acct.count() > 0 and acct.is_visible():
+                acct.click(timeout=2000)
+                log_fn("[*] 已在 Google OAuth 弹窗选择已登录账号")
+                clicked = True
+                continue
+            for pat in (r"^Continue$|^继续$", r"^Allow$|^允许$"):
+                label = _click_dialog_button(p, pat)
+                if label:
+                    log_fn(f"[*] 已在 Google OAuth 弹窗点击: {label}")
+                    clicked = True
+                    break
+        except RuntimeError:
+            raise
+        except Exception:
+            continue
     return clicked
 
 
@@ -169,12 +219,12 @@ def interactive_browser_login(
     timeout_s: int = 300,
     log_fn: Callable[[str], None] = print,
 ) -> str:
-    """打开隔离的有界面 Chrome 让用户完成一次 Google 登录并返回最终确认后的 Notebook URL。"""
+    """打开隔离的有界面 Camoufox（Firefox）让用户完成一次 Google 登录并返回确认后的 Notebook URL。"""
     from playwright.sync_api import sync_playwright
 
     profile_dir.mkdir(parents=True, exist_ok=True)
-    log_fn(f"[*] 正在打开独立 Colab 授权浏览器窗口（档案目录: {profile_dir}）...")
-    log_fn("[*] 请在弹出的窗口中登录你的 Google AI Pro 账号；进入 Colab Notebook 后会自动保存并继续。")
+    log_fn(f"[*] 正在打开 AVA Camoufox Colab 授权窗口（档案目录: {profile_dir}）...")
+    log_fn("[*] 请在弹出的 Camoufox 窗口中登录你的 Google AI Pro 账号；进入 Colab Notebook 后会自动保存并继续。")
 
     final_url = notebook_url
     with sync_playwright() as pw:
@@ -207,21 +257,28 @@ def interactive_browser_login(
     return final_url
 
 
-def _trigger_colab_run_all(page: Any) -> bool:
-    """触发 Colab 执行（优先点 Run all 按钮，回退第一个 Cell 的 Run cell 或 Ctrl/Meta+F9）。"""
+def _trigger_colab_run_all(page: Any) -> str | None:
+    """触发 Colab 执行（优先点击唯一代码格 `colab-run-button`，再试菜单/按钮与快捷键）。"""
+    try:
+        run_btn = page.locator("colab-run-button").first
+        if run_btn.count() > 0 and run_btn.is_visible():
+            run_btn.click(timeout=3000)
+            return "colab-run-button"
+    except Exception:
+        pass
     for pat in (r"^Run all", r"^全部运行", r"^Run cell"):
         try:
             btn = page.get_by_role("button", name=re.compile(pat, re.I)).first
             if btn.count() > 0 and btn.is_visible():
                 btn.click(timeout=3000)
-                return True
+                return f"button:{pat}"
         except Exception:
             pass
     try:
         page.keyboard.press("Meta+F9")
-        return True
+        return "shortcut:Meta+F9"
     except Exception:
-        return False
+        return None
 
 
 def auto_boot_colab_ssh(
@@ -232,29 +289,32 @@ def auto_boot_colab_ssh(
     headless: bool = True,
     log_fn: Callable[[str], None] = print,
 ) -> str:
-    """自主打开 Colab Notebook、触发运行并抓取新的 `AVA_COLAB_SSH_READY` 隧道目标。"""
+    """自主通过 Camoufox 打开 Colab Notebook、触发运行并抓取新的 `AVA_COLAB_SSH_READY` 隧道目标。"""
     if not has_saved_browser_profile(profile_dir):
         raise RuntimeError(
-            "Colab 隔离浏览器档案尚未登录 Google。请先运行一次：\n"
+            "Colab Camoufox 隔离档案尚未登录 Google。请先运行一次：\n"
             "  python -m pipeline.cloud connect --provider colab --browser-login"
         )
 
     from playwright.sync_api import sync_playwright
 
-    log_fn(f"[*] 正在通过 AVA 隔离浏览器自动唤醒 Colab 运行时 ({'headless' if headless else 'headed'})...")
+    log_fn(f"[*] 正在通过 AVA Camoufox 自动唤醒 Colab 运行时 ({'headless' if headless else 'headed'})...")
     with sync_playwright() as pw:
         ctx = _launch_persistent_context(pw, profile_dir, headless=headless)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
-            # 等 Colab 工具栏或登录跳转稳定
             for _ in range(15):
                 if detect_colab_login_required(page.url, _collect_page_and_frames_text(page)):
                     raise RuntimeError(
-                        "Colab 浏览器登录态已失效，请重新运行一次：\n"
+                        "Colab Camoufox 登录态已失效，请重新运行一次：\n"
                         "  python -m pipeline.cloud connect --provider colab --browser-login"
                     )
-                if page.get_by_role("button", name=re.compile(r"Run all|Run cell|全部运行", re.I)).count() > 0:
+                has_run_ui = (
+                    page.locator("colab-run-button").count() > 0
+                    or page.get_by_role("button", name=re.compile(r"Run all|Run cell|全部运行", re.I)).count() > 0
+                )
+                if has_run_ui:
                     break
                 time.sleep(1)
 
@@ -262,16 +322,20 @@ def auto_boot_colab_ssh(
             initial_ready = _READY_RE.findall(initial_text)
             prev_last = initial_ready[-1] if initial_ready else None
 
-            if not _trigger_colab_run_all(page):
-                raise RuntimeError("未能触发 Colab Run all，请检查 Notebook URL 是否有效。")
-            log_fn("[*] 已触发 Colab 执行，等待驱动挂载、venv 恢复与 cloudflared 隧道就绪...")
+            how = _trigger_colab_run_all(page)
+            if not how:
+                raise RuntimeError("未能触发 Colab 运行按钮，请检查 Notebook URL 是否有效。")
+            log_fn(f"[*] 已触发 Colab 执行 ({how})，等待 Drive 挂载、venv 恢复与 cloudflared 隧道就绪...")
 
             deadline = time.time() + max(60, timeout_s)
             saw_running = False
+            saw_drive = False
+            last_text = ""
             while time.time() < deadline:
-                _handle_colab_modals(page)
+                _handle_colab_modals(ctx, page, log_fn=log_fn)
                 cur_url = page.url or ""
                 all_text = _collect_page_and_frames_text(page)
+                last_text = all_text
                 if detect_colab_login_required(cur_url, all_text):
                     raise RuntimeError(
                         "Colab 页面跳转到登录框（Cookie 已过期），请运行：\n"
@@ -280,10 +344,15 @@ def auto_boot_colab_ssh(
                 if not saw_running and (
                     "Executing" in all_text
                     or "Connecting" in all_text
-                    or "Mounted at /content/drive" in all_text
-                    or page.locator('[aria-label*="Interrupt execution"]').count() > 0
+                    or "Busy" in all_text
+                    or page.locator('[aria-label*="Interrupt execution"], [aria-label*="中断执行"]').count() > 0
                 ):
                     saw_running = True
+                    log_fn("[*] Colab 运行时已开始执行 Bootstrap...")
+                if not saw_drive and "Mounted at /content/drive" in all_text:
+                    saw_drive = True
+                    saw_running = True
+                    log_fn("[*] Google Drive 已挂载，正在恢复 venv 并启动 cloudflared...")
 
                 ready_matches = _READY_RE.findall(all_text)
                 if ready_matches:
@@ -295,8 +364,16 @@ def auto_boot_colab_ssh(
                         return target
                 time.sleep(2)
 
+            diag_shot = profile_dir.parent / "colab-boot-timeout.png"
+            try:
+                page.screenshot(path=str(diag_shot), full_page=False)
+                os.chmod(diag_shot, 0o600)
+            except Exception:
+                pass
+            tail = " | ".join(ln.strip() for ln in last_text.splitlines()[-6:] if ln.strip())[:240]
             raise RuntimeError(
-                f"在 {timeout_s} 秒内未在 Colab 输出中找到 AVA_COLAB_SSH_READY 隧道信号。"
+                f"在 {timeout_s} 秒内未在 Colab 输出中找到 AVA_COLAB_SSH_READY 隧道信号"
+                f"（截图: {diag_shot}；末尾页面文本: {tail or '空'}）。"
             )
         finally:
             ctx.close()
