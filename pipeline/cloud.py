@@ -534,6 +534,7 @@ def _render_ssh_host_block(alias: str, conn: dict, known_hosts: Path) -> str:
     ]
     if conn.get("proxy_type") == "cloudflared":
         lines.append("    ProxyCommand cloudflared access ssh --hostname %h")
+        lines.append("    ControlPath ~/.ssh/cm-%C")
     else:
         lines.append(f"    Port {int(conn['port'])}")
     lines.extend([

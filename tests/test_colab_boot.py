@@ -233,6 +233,7 @@ def test_cmd_up_colab_auto_boot_refreshes_profile_and_ssh_config(monkeypatch, tm
     assert "Host ava-colab" in ssh_conf
     assert "HostName fresh-new-tunnel.trycloudflare.com" in ssh_conf
     assert "cloudflared access ssh --hostname %h" in ssh_conf
+    assert "ControlPath ~/.ssh/cm-%C" in ssh_conf
 
 
 def test_cmd_up_colab_no_auto_boot_skips_browser(monkeypatch, tmp_path: Path):
