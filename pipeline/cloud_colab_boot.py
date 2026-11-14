@@ -94,11 +94,26 @@ def detect_colab_login_required(url: str, page_text: str) -> bool:
     if "accounts.google.com" in u or "servicelogin" in u:
         return True
     txt = page_text or ""
-    if "Sign in" in txt and "Colab Pro" not in txt and "Runtime" not in txt:
+    lines = {ln.strip() for ln in txt.splitlines() if ln.strip()}
+    if "Sign in" in lines or "Please Sign in to continue" in txt or "Sign in to" in txt:
         return True
-    if "登录" in txt and "代码执行程序" not in txt and "Runtime" not in txt:
+    if "登录" in lines or "请登录" in txt or "需要登录" in txt:
         return True
     return False
+
+
+def _is_colab_authenticated(page: Any) -> bool:
+    """检查 Colab 页面 DOM 是否已呈现 Google 登录账号头像/SignOutOptions，且无 Sign in 按钮。"""
+    try:
+        signed_out = page.locator(
+            'a[href*="ServiceLogin"], a:has-text("Sign in"), button:has-text("Sign in"), a:has-text("登录")'
+        ).count()
+        signed_in = page.locator(
+            '[aria-label*="Google Account:"], [aria-label*="Google 账号："], a[href*="SignOutOptions"]'
+        ).count()
+        return signed_in > 0 and signed_out == 0
+    except Exception:
+        return False
 
 
 def _launch_persistent_context(pw: Any, profile_dir: Path, *, headless: bool) -> Any:
@@ -219,41 +234,60 @@ def interactive_browser_login(
     timeout_s: int = 300,
     log_fn: Callable[[str], None] = print,
 ) -> str:
-    """打开隔离的有界面 Camoufox（Firefox）让用户完成一次 Google 登录并返回确认后的 Notebook URL。"""
+    """打开隔离的有界面 Camoufox（Firefox），等用户完成 Google 登录并手动关闭窗口后返回 URL。"""
     from playwright.sync_api import sync_playwright
 
     profile_dir.mkdir(parents=True, exist_ok=True)
     log_fn(f"[*] 正在打开 AVA Camoufox Colab 授权窗口（档案目录: {profile_dir}）...")
-    log_fn("[*] 请在弹出的 Camoufox 窗口中登录你的 Google AI Pro 账号；进入 Colab Notebook 后会自动保存并继续。")
+    log_fn("[*] 请在弹出的 Camoufox 窗口中完成以下两步：")
+    log_fn("    1. 点击右上角「Sign in / 登录」，登录你的 Google AI Pro 账号；")
+    log_fn("    2. 确认左上/右上已显示你的 Google 头像后，**直接关闭这个 Camoufox 窗口**即可保存（不会再提前闪退）。")
 
     final_url = notebook_url
+    saw_auth = False
     with sync_playwright() as pw:
         ctx = _launch_persistent_context(pw, profile_dir, headless=False)
+        closed = False
+
+        def _on_close(*_args: Any) -> None:
+            nonlocal closed
+            closed = True
+
+        if hasattr(ctx, "on"):
+            ctx.on("close", _on_close)
+
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
-            deadline = time.time() + max(60, timeout_s)
-            saw_ready = False
-            while time.time() < deadline:
-                if ctx.pages:
-                    cur = ctx.pages[-1]
-                    cur_url = cur.url or ""
-                    if "colab.research.google.com" in cur_url and "accounts.google.com" not in cur_url:
-                        body = _collect_page_and_frames_text(cur)
-                        has_account = (
-                            cur.locator('[aria-label*="Google Account"], [aria-label*="Google 账号"]').count() > 0
-                            or ("Runtime" in body or "代码执行程序" in body)
-                        )
-                        not_guest = not detect_colab_login_required(cur_url, body)
-                        if has_account and not_guest:
-                            final_url = cur_url.split("#", 1)[0]
-                            saw_ready = True
-                            break
-                time.sleep(2)
-            if not saw_ready:
-                raise SystemExit(f"FAIL 在 {timeout_s} 秒内未检测到已登录的 Colab 页面，请重试 --browser-login。")
+            deadline = time.time() + max(180, timeout_s)
+            while not closed and time.time() < deadline:
+                try:
+                    pages = list(ctx.pages)
+                except Exception:
+                    break
+                if not pages:
+                    break
+                cur = pages[-1]
+                cur_url = getattr(cur, "url", "") or ""
+                if "colab.research.google.com" in cur_url and "accounts.google.com" not in cur_url:
+                    final_url = cur_url.split("#", 1)[0]
+                    if not saw_auth and _is_colab_authenticated(cur):
+                        saw_auth = True
+                        log_fn("[*] 已检测到 Google 账号登录成功！如需改选 GPU 或复制到 Drive 可顺手完成，然后直接关闭此窗口即可。")
+                try:
+                    page.wait_for_timeout(1000)
+                except Exception:
+                    break
+            if not closed and time.time() >= deadline:
+                raise SystemExit(f"FAIL 等待关闭登录窗口超时（{timeout_s}s），请重试 --browser-login。")
         finally:
-            ctx.close()
+            if not closed:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+    if not saw_auth:
+        log_fn("[!] 提醒：窗口关闭前未检测到 Colab 页面出现 Google 已登录头像，若后续无头开机提示未登录，请重新执行一次 --browser-login。")
     return final_url
 
 
@@ -281,6 +315,15 @@ def _trigger_colab_run_all(page: Any) -> str | None:
         return None
 
 
+def _page_needs_login(page: Any, url: str, body_text: str) -> bool:
+    if detect_colab_login_required(url, body_text):
+        return True
+    try:
+        return page.locator('a[href*="ServiceLogin"]').count() > 0
+    except Exception:
+        return False
+
+
 def auto_boot_colab_ssh(
     notebook_url: str,
     *,
@@ -305,7 +348,7 @@ def auto_boot_colab_ssh(
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
             for _ in range(15):
-                if detect_colab_login_required(page.url, _collect_page_and_frames_text(page)):
+                if _page_needs_login(page, page.url, _collect_page_and_frames_text(page)):
                     raise RuntimeError(
                         "Colab Camoufox 登录态已失效，请重新运行一次：\n"
                         "  python -m pipeline.cloud connect --provider colab --browser-login"
