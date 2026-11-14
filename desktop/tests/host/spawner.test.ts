@@ -339,4 +339,21 @@ describe("D45 会话管理模板的 argv 形状", () => {
     expect(() => buildArgv("DELETE_SESSION", { ep: "/ep", sid }, "/repo")).toThrow();
     expect(() => sessionArgv("SESSION_CONTINUE", "/ep", "/repo", sid)).toThrow();
   });
+  it("D170 AUTH_* 模板：密钥经 stdin 传入而不进 argv，非法 provider ID 抛错", () => {
+    expect(buildArgv("AUTH_STATUS", {}, "/repo").argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "--auth-status"]);
+    expect(buildArgv("AUTH_START", { provider: "openai-codex", mode: "oauth_pkce" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "--auth-start", "openai-codex", "oauth_pkce",
+    ]);
+    const comp = buildArgv("AUTH_COMPLETE", { provider: "deepseek" }, "/repo");
+    expect(comp.argv).toEqual([pyPath, "-m", "pipeline.agent.cli", "--auth-complete", "deepseek", "--stdin"]);
+    expect(comp.stdinPipe).toBe(true);
+    expect(buildArgv("AUTH_LOGOUT", { provider: "deepseek" }, "/repo").argv).toEqual([
+      pyPath, "-m", "pipeline.agent.cli", "--auth-logout", "deepseek",
+    ]);
+    for (const bad of ["", "OpenAI", "../x", "a b", "bad;cmd"]) {
+      expect(() => buildArgv("AUTH_START", { provider: bad }, "/repo")).toThrow();
+      expect(() => buildArgv("AUTH_COMPLETE", { provider: bad }, "/repo")).toThrow();
+      expect(() => buildArgv("AUTH_LOGOUT", { provider: bad }, "/repo")).toThrow();
+    }
+  });
 });

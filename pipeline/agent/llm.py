@@ -158,10 +158,27 @@ class LLMConfig:
     reasoning_effort: str | None = None
     # D93：单次请求超时（秒）；None = 不设（配置写 0）
     request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S
+    # D170：多协议路由（openai-completions | anthropic-messages | openai-codex-responses）与额外请求头
+    api_protocol: str = "openai-completions"
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    auth_type: str | None = None
 
     @property
     def endpoint(self) -> str:
-        return self.base_url.rstrip("/") + "/chat/completions"
+        base = self.base_url.rstrip("/")
+        if self.api_protocol == "anthropic-messages":
+            if base.endswith("/messages"):
+                return base
+            return f"{base}/messages" if base.endswith("/v1") else f"{base}/v1/messages"
+        if self.api_protocol == "openai-codex-responses":
+            if base.endswith("/responses"):
+                return base
+            if "chatgpt.com/backend-api" in base and not base.endswith("/codex"):
+                return f"{base}/codex/responses"
+            return f"{base}/responses"
+        if base.endswith("/chat/completions"):
+            return base
+        return base + "/chat/completions"
 
     def model_for(self, purpose: str | None) -> str:
         """purpose=None 或该档未配置 → 回落到单一 model。"""
@@ -264,24 +281,51 @@ def api_key_env_name(root: Path | None = None) -> str | None:
     return _env_name_of(loaded[0])
 
 
-def load_llm_config(root: Path | None = None) -> LLMConfig | None:
-    """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量。
+def _load_auth_fallback_cfg(
+    root: Path | None,
+    *,
+    reasoning_effort: str | None = None,
+    request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S,
+) -> LLMConfig | None:
+    """D170：`agent*.json` 未就绪时，回落到 `config/auth.local.json` 的首个已登录服务商。"""
+    from pipeline.agent import auth
 
-    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None。没有 models 段时行为与单模型完全一致。
+    cred = auth.first_authenticated_config(root)
+    if cred is None:
+        return None
+    return LLMConfig(
+        base_url=str(cred["base_url"]),
+        model=str(cred["model"]),
+        api_key=str(cred.get("api_key") or ""),
+        models={},
+        reasoning_effort=reasoning_effort,
+        request_timeout_s=request_timeout_s,
+        api_protocol=str(cred.get("api_protocol") or "openai-completions"),
+        extra_headers=dict(cred.get("extra_headers") or {}),
+        auth_type=cred.get("auth_type"),
+    )
+
+
+def load_llm_config(root: Path | None = None) -> LLMConfig | None:
+    """读 config/agent.local.json（优先）或 config/agent.json + 指名环境变量；缺省时回落已登录服务商。
+
+    无配置 / JSON 损坏 / 字段不全 / 密钥空 → None（若 auth.local.json 也未登录）。没有 models 段时行为与单模型完全一致。
     """
     loaded = _load_agent_cfg(root)
     if loaded is None:
-        return None
+        return _load_auth_fallback_cfg(root)
     data, cfg_file, using_local, local_cfg = loaded
     cfg_dir = cfg_file.parent
+    effort = _parse_effort(data, cfg_file)
+    timeout = _parse_timeout(data, cfg_file)
     base_url = str(data.get("base_url") or "").strip()
     model = str(data.get("model") or "").strip()
     env_name = _env_name_of(data)  # 与 api_key_env_name 同一段规则，但不再重读配置文件
     if env_name is None:
-        return None
+        return _load_auth_fallback_cfg(root, reasoning_effort=effort, request_timeout_s=timeout)
     api_key = os.environ.get(env_name, "").strip()
     if not api_key:
-        return None
+        return _load_auth_fallback_cfg(root, reasoning_effort=effort, request_timeout_s=timeout)
 
     if using_local and "models" not in data:
         # local 是整文件取代：写在 agent.json 的 models 会被静默埋掉，必须响亮
@@ -295,10 +339,12 @@ def load_llm_config(root: Path | None = None) -> LLMConfig | None:
                 "models 段写在 agent.json，但本机 agent.local.json 整文件取代它，分档未生效",
             )
 
+    protocol = str(data.get("api_protocol") or "openai-completions").strip() or "openai-completions"
     return LLMConfig(
         base_url=base_url, model=model, api_key=api_key, models=_parse_models(data, cfg_file),
-        reasoning_effort=_parse_effort(data, cfg_file),
-        request_timeout_s=_parse_timeout(data, cfg_file),
+        reasoning_effort=effort,
+        request_timeout_s=timeout,
+        api_protocol=protocol,
     )
 
 
@@ -496,6 +542,471 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
     return message, usage
 
 
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in ("text", "input_text", "output_text"):
+                parts.append(str(item.get("text") or ""))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return "" if content is None else str(content)
+
+
+def _anthropic_content_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return [{"type": "text", "text": _content_text(content)}]
+    blocks: list[dict[str, Any]] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            url = str(((item.get("image_url") or {}).get("url")) or "")
+            if url.startswith("data:") and ";base64," in url:
+                header, b64 = url.split(";base64,", 1)
+                media_type = header[5:] or "image/png"
+                blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}})
+                continue
+        if isinstance(item, dict) and item.get("type") in ("text", "input_text", "output_text"):
+            blocks.append({"type": "text", "text": str(item.get("text") or "")})
+        elif isinstance(item, str):
+            blocks.append({"type": "text", "text": item})
+    return blocks or [{"type": "text", "text": ""}]
+
+
+def _append_anthropic_msg(out: list[dict[str, Any]], role: str, blocks: list[dict[str, Any]]) -> None:
+    if out and out[-1]["role"] == role:
+        prev = out[-1]["content"]
+        if isinstance(prev, str):
+            out[-1]["content"] = [{"type": "text", "text": prev}, *blocks]
+        else:
+            prev.extend(blocks)
+        return
+    out.append({"role": role, "content": blocks})
+
+
+def _anthropic_request(
+    cfg: LLMConfig,
+    wired: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    purpose: str | None,
+    tool_choice: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    from pipeline.agent import model_switch
+
+    model_name = cfg.model_for(purpose)
+    system_parts: list[str] = []
+    anth_msgs: list[dict[str, Any]] = []
+    for msg in wired:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system":
+            t = _content_text(msg.get("content"))
+            if t:
+                system_parts.append(t)
+        elif role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            txt = _content_text(msg.get("content"))
+            if txt:
+                blocks.append({"type": "text", "text": txt})
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": str(call.get("id") or ""),
+                    "name": str(fn.get("name") or ""),
+                    "input": _parse_tool_args(fn.get("arguments")),
+                })
+            _append_anthropic_msg(anth_msgs, "assistant", blocks or [{"type": "text", "text": ""}])
+        elif role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": str(msg.get("tool_call_id") or ""),
+                "content": _content_text(msg.get("content")),
+            }
+            _append_anthropic_msg(anth_msgs, "user", [block])
+        else:
+            _append_anthropic_msg(anth_msgs, "user", _anthropic_content_blocks(msg.get("content")))
+
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "max_tokens": 16384,
+        "messages": anth_msgs,
+        "stream": True,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(system_parts)
+    if tools:
+        anth_tools = []
+        for t in tools:
+            if t.get("type") == "function" and isinstance(t.get("function"), dict):
+                fn = t["function"]
+                anth_tools.append({
+                    "name": fn.get("name"),
+                    "description": fn.get("description") or "",
+                    "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+                })
+        if anth_tools:
+            payload["tools"] = anth_tools
+    if tool_choice is not None:
+        if tool_choice == "auto":
+            payload["tool_choice"] = {"type": "auto"}
+        elif tool_choice == "required":
+            payload["tool_choice"] = {"type": "any"}
+        elif isinstance(tool_choice, str):
+            payload["tool_choice"] = {"type": "tool", "name": tool_choice}
+    if cfg.reasoning_effort is not None:
+        model_switch.apply_effort_to_extra_body(
+            payload, model_name, cfg.reasoning_effort, protocol="anthropic-messages",
+        )
+        thinking = payload.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+            budget = int(thinking.get("budget_tokens") or 0)
+            payload["max_tokens"] = max(int(payload["max_tokens"]), budget + 4096)
+
+    is_oauth = cfg.auth_type == "oauth" or cfg.api_key.startswith("sk-ant-oat")
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if is_oauth:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
+        headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+    else:
+        headers["x-api-key"] = cfg.api_key
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    headers.update(cfg.extra_headers)
+    return payload, headers
+
+
+def _normalize_anthropic_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    inp = int(raw.get("input_tokens") or 0) + int(raw.get("cache_read_input_tokens") or 0) + int(raw.get("cache_creation_input_tokens") or 0)
+    out = int(raw.get("output_tokens") or 0)
+    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+
+
+def _anthropic_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    texts: list[str] = []
+    thinkings: list[str] = []
+    calls: list[dict[str, Any]] = []
+    for block in body.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            texts.append(str(block.get("text") or ""))
+        elif btype == "thinking":
+            thinkings.append(str(block.get("thinking") or ""))
+        elif btype == "tool_use":
+            calls.append({
+                "id": str(block.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(block.get("name") or ""),
+                    "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                },
+            })
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if calls:
+        msg["tool_calls"] = calls
+    return msg, _normalize_anthropic_usage(body.get("usage"))
+
+
+def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    blocks: dict[int, dict[str, Any]] = {}
+    usage_raw: dict[str, Any] = {}
+    ended = False
+    for raw in lines:
+        line = raw.strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            ev = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"Anthropic 流式响应行非 JSON: {exc}") from None
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        if etype == "error":
+            raise _stream_error(ev.get("error") or ev)
+        if etype == "message_start":
+            u = (ev.get("message") or {}).get("usage")
+            if isinstance(u, dict):
+                usage_raw.update(u)
+        elif etype == "content_block_start":
+            idx = int(ev.get("index") or 0)
+            blk = ev.get("content_block") or {}
+            btype = blk.get("type")
+            slot: dict[str, Any] = {
+                "type": btype,
+                "text": [str(blk.get("text") or "")] if btype == "text" and blk.get("text") else [],
+                "thinking": [str(blk.get("thinking") or "")] if btype == "thinking" and blk.get("thinking") else [],
+                "id": blk.get("id"),
+                "name": blk.get("name"),
+                "input_parts": [],
+                "init_input": blk.get("input") if isinstance(blk.get("input"), dict) and blk.get("input") else None,
+            }
+            blocks[idx] = slot
+        elif etype == "content_block_delta":
+            idx = int(ev.get("index") or 0)
+            slot = blocks.setdefault(idx, {"type": "text", "text": [], "thinking": [], "input_parts": []})
+            delta = ev.get("delta") or {}
+            dtype = delta.get("type")
+            if dtype == "text_delta":
+                slot["text"].append(str(delta.get("text") or ""))
+            elif dtype == "thinking_delta":
+                slot["thinking"].append(str(delta.get("thinking") or ""))
+            elif dtype == "input_json_delta":
+                slot["input_parts"].append(str(delta.get("partial_json") or ""))
+        elif etype == "message_delta":
+            u = ev.get("usage")
+            if isinstance(u, dict):
+                usage_raw.update(u)
+        elif etype == "message_stop":
+            ended = True
+    if not ended:
+        raise LLMError("Anthropic 流式响应中途断开（缺少 message_stop）", retryable=True)
+    texts: list[str] = []
+    thinkings: list[str] = []
+    calls: list[dict[str, Any]] = []
+    for idx in sorted(blocks):
+        blk = blocks[idx]
+        if blk.get("type") == "text":
+            texts.extend(blk["text"])
+        elif blk.get("type") == "thinking":
+            thinkings.extend(blk["thinking"])
+        elif blk.get("type") == "tool_use":
+            raw_json = "".join(blk["input_parts"])
+            if not raw_json and blk.get("init_input") is not None:
+                raw_json = json.dumps(blk["init_input"], ensure_ascii=False)
+            calls.append({
+                "id": str(blk.get("id") or ""),
+                "type": "function",
+                "function": {"name": str(blk.get("name") or ""), "arguments": raw_json or "{}"},
+            })
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if calls:
+        msg["tool_calls"] = calls
+    return msg, _normalize_anthropic_usage(usage_raw) if usage_raw else None
+
+
+def _codex_request(
+    cfg: LLMConfig,
+    wired: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    purpose: str | None,
+    tool_choice: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    from pipeline.agent import model_switch
+
+    model_name = cfg.model_for(purpose)
+    instr_parts: list[str] = []
+    items: list[dict[str, Any]] = []
+    for msg in wired:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system":
+            t = _content_text(msg.get("content"))
+            if t:
+                instr_parts.append(t)
+        elif role == "assistant":
+            txt = _content_text(msg.get("content"))
+            if txt:
+                items.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": txt}],
+                })
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                args = fn.get("arguments")
+                items.append({
+                    "type": "function_call",
+                    "call_id": str(call.get("id") or ""),
+                    "name": str(fn.get("name") or ""),
+                    "arguments": args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False),
+                })
+        elif role == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": str(msg.get("tool_call_id") or ""),
+                "output": _content_text(msg.get("content")),
+            })
+        else:
+            raw_c = msg.get("content")
+            content_parts: list[dict[str, Any]] = []
+            if isinstance(raw_c, list):
+                for part in raw_c:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = str(((part.get("image_url") or {}).get("url")) or "")
+                        if url:
+                            content_parts.append({"type": "input_image", "image_url": url})
+                    elif isinstance(part, dict):
+                        content_parts.append({"type": "input_text", "text": str(part.get("text") or "")})
+            else:
+                content_parts.append({"type": "input_text", "text": _content_text(raw_c)})
+            items.append({"type": "message", "role": "user", "content": content_parts})
+
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "instructions": "\n\n".join(instr_parts) if instr_parts else "You are AVA.",
+        "input": items,
+        "store": False,
+        "stream": True,
+    }
+    if tools:
+        codex_tools = []
+        for t in tools:
+            if t.get("type") == "function" and isinstance(t.get("function"), dict):
+                fn = t["function"]
+                codex_tools.append({
+                    "type": "function",
+                    "name": fn.get("name"),
+                    "description": fn.get("description") or "",
+                    "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                })
+        if codex_tools:
+            payload["tools"] = codex_tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    if cfg.reasoning_effort is not None:
+        model_switch.apply_effort_to_extra_body(
+            payload, model_name, cfg.reasoning_effort, protocol="openai-codex-responses",
+        )
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
+    headers.update(cfg.extra_headers)
+    return payload, headers
+
+
+def _normalize_codex_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    inp = int(raw.get("input_tokens") or raw.get("prompt_tokens") or 0)
+    out = int(raw.get("output_tokens") or raw.get("completion_tokens") or 0)
+    tot = int(raw.get("total_tokens") or (inp + out))
+    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+
+
+def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    texts: list[str] = []
+    thinkings: list[str] = []
+    calls: list[dict[str, Any]] = []
+    for item in body.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "message":
+            for c in item.get("content") or []:
+                if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
+                    texts.append(str(c.get("text") or ""))
+        elif itype == "reasoning":
+            for s in item.get("summary") or []:
+                if isinstance(s, dict) and s.get("text"):
+                    thinkings.append(str(s["text"]))
+        elif itype == "function_call":
+            calls.append({
+                "id": str(item.get("call_id") or item.get("id") or ""),
+                "type": "function",
+                "function": {"name": str(item.get("name") or ""), "arguments": str(item.get("arguments") or "{}")},
+            })
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if calls:
+        msg["tool_calls"] = calls
+    return msg, _normalize_codex_usage(body.get("usage"))
+
+
+def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    texts: list[str] = []
+    thinkings: list[str] = []
+    calls: dict[str, dict[str, Any]] = {}
+    call_order: list[str] = []
+    usage: dict[str, Any] | None = None
+    ended = False
+    for raw in lines:
+        line = raw.strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            ev = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"Codex 流式响应行非 JSON: {exc}") from None
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        if etype in ("error", "response.failed"):
+            err = ev.get("error") or (ev.get("response") or {}).get("error") or ev
+            raise _stream_error(err)
+        if etype == "response.output_text.delta":
+            texts.append(str(ev.get("delta") or ""))
+        elif etype in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+            thinkings.append(str(ev.get("delta") or ""))
+        elif etype == "response.output_item.added":
+            item = ev.get("item") or {}
+            if item.get("type") == "function_call":
+                key = str(item.get("id") or item.get("call_id") or len(call_order))
+                if key not in calls:
+                    call_order.append(key)
+                    calls[key] = {
+                        "id": str(item.get("call_id") or item.get("id") or key),
+                        "name": str(item.get("name") or ""),
+                        "parts": [str(item.get("arguments"))] if item.get("arguments") else [],
+                        "done": None,
+                    }
+        elif etype == "response.function_call_arguments.delta":
+            key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
+            if key and key in calls:
+                calls[key]["parts"].append(str(ev.get("delta") or ""))
+        elif etype == "response.function_call_arguments.done":
+            key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
+            if key and key in calls:
+                calls[key]["done"] = str(ev.get("arguments") or "")
+        elif etype == "response.completed":
+            ended = True
+            resp_obj = ev.get("response") or {}
+            usage = _normalize_codex_usage(resp_obj.get("usage"))
+            if not texts and not calls and isinstance(resp_obj.get("output"), list):
+                return _codex_json_to_message(resp_obj)[0], usage
+    if not ended:
+        raise LLMError("Codex 流式响应中途断开（缺少 response.completed）", retryable=True)
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if call_order:
+        msg["tool_calls"] = [
+            {
+                "id": calls[k]["id"],
+                "type": "function",
+                "function": {
+                    "name": calls[k]["name"],
+                    "arguments": calls[k]["done"] if calls[k]["done"] is not None else ("".join(calls[k]["parts"]) or "{}"),
+                },
+            }
+            for k in call_order
+        ]
+    return msg, usage
+
+
 def chat_complete(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -519,42 +1030,56 @@ def chat_complete(
     if cfg is None:
         return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
 
-    payload: dict[str, Any] = {
-        "model": cfg.model_for(purpose),
-        "messages": _wire_messages(messages, purpose),
-    }
-    if tools:
-        payload["tools"] = tools
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
-    if cfg.reasoning_effort is not None:
-        # D155/D168：按协议与模型映射推理参数（OpenAI reasoning_effort / effort_map / Codex / Anthropic 等）；
-        # reasoning_effort=none 语义 = 不发档，映射到不带键。
-        model_switch.apply_effort_to_extra_body(
-            payload,
-            cfg.model_for(purpose),
-            cfg.reasoning_effort,
-            protocol="openai-completions",
-        )
-    # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
-    # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
-    payload["stream"] = True
-    payload["stream_options"] = {"include_usage": True}
+    wired = _wire_messages(messages, purpose)
+    if cfg.api_protocol == "anthropic-messages":
+        payload, headers = _anthropic_request(cfg, wired, tools, purpose, tool_choice)
+    elif cfg.api_protocol == "openai-codex-responses":
+        payload, headers = _codex_request(cfg, wired, tools, purpose, tool_choice)
+    else:
+        payload = {
+            "model": cfg.model_for(purpose),
+            "messages": wired,
+        }
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if cfg.reasoning_effort is not None:
+            # D155/D168：按协议与模型映射推理参数（OpenAI reasoning_effort / effort_map / Codex / Anthropic 等）；
+            # reasoning_effort=none 语义 = 不发档，映射到不带键。
+            model_switch.apply_effort_to_extra_body(
+                payload,
+                cfg.model_for(purpose),
+                cfg.reasoning_effort,
+                protocol="openai-completions",
+            )
+        # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
+        # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}", **cfg.extra_headers}
+
     assert_egress_boundary(cfg.endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
 
     request = urllib.request.Request(
         cfg.endpoint,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}"},
+        headers=headers,
         method="POST",
     )
     try:
         effective = timeout if timeout is not None else cfg.request_timeout_s
         with urllib.request.urlopen(request, timeout=effective) as resp:
-            headers = getattr(resp, "headers", None)
-            ctype = str(headers.get("Content-Type", "") if headers is not None else "").lower()
+            resp_headers = getattr(resp, "headers", None)
+            ctype = str(resp_headers.get("Content-Type", "") if resp_headers is not None else "").lower()
             if "text/event-stream" in ctype:
-                message, usage = _assemble_stream(raw.decode("utf-8", errors="replace") for raw in resp)
+                line_iter = (raw.decode("utf-8", errors="replace") for raw in resp)
+                if cfg.api_protocol == "anthropic-messages":
+                    message, usage = _assemble_anthropic_stream(line_iter)
+                elif cfg.api_protocol == "openai-codex-responses":
+                    message, usage = _assemble_codex_stream(line_iter)
+                else:
+                    message, usage = _assemble_stream(line_iter)
                 _LAST_USAGE.set(usage)
                 return message
             body = json.loads(resp.read().decode("utf-8"))
@@ -567,6 +1092,19 @@ def chat_complete(
         raise LLMError(f"LLM 请求失败: {exc}", retryable=True) from None
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 响应非 JSON: {exc}") from None
+
+    if cfg.api_protocol == "anthropic-messages":
+        if not isinstance(body, dict):
+            raise LLMError("Anthropic 响应不是 JSON 对象")
+        msg, usage = _anthropic_json_to_message(body)
+        _LAST_USAGE.set(usage)
+        return msg
+    if cfg.api_protocol == "openai-codex-responses":
+        if not isinstance(body, dict):
+            raise LLMError("Codex 响应不是 JSON 对象")
+        msg, usage = _codex_json_to_message(body)
+        _LAST_USAGE.set(usage)
+        return msg
 
     usage = body.get("usage") if isinstance(body, dict) else None
     _LAST_USAGE.set(usage if isinstance(usage, dict) else None)

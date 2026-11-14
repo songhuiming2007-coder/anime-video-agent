@@ -650,6 +650,18 @@ export class HostService {
         return this.sessions.command(p.convKey as ConvKey, p.name as CommandName, typeof p.arg === "string" ? p.arg : null);
       case "conv.models":
         return this.sessions.command(p.convKey as ConvKey, "models", null);
+      // ---- D170：AVA 独立多服务商登录 ----
+      case "auth.status":
+        return this.runAuthTemplate("AUTH_STATUS", {});
+      case "auth.start":
+        return this.runAuthTemplate("AUTH_START", {
+          provider: p.provider,
+          ...(typeof p.mode === "string" && p.mode ? { mode: p.mode } : {}),
+        });
+      case "auth.complete":
+        return this.runAuthTemplate("AUTH_COMPLETE", { provider: p.provider }, p.payload);
+      case "auth.logout":
+        return this.runAuthTemplate("AUTH_LOGOUT", { provider: p.provider });
       case "conv.end":
         return this.sessions.end(p.convKey as ConvKey);
       case "conv.snapshot":
@@ -1318,6 +1330,35 @@ export class HostService {
     const snap = await this.sessions.resume(target.key, target);
     if (convKey.startsWith("ep:")) this.carried.delete(convKey.slice(3));
     return snap;
+  }
+
+  // ---------------- 多服务商登录（D170） ----------------
+
+  private async runAuthTemplate<T extends "AUTH_STATUS" | "AUTH_START" | "AUTH_COMPLETE" | "AUTH_LOGOUT">(
+    template: T,
+    args: import("./spawner").TemplateArgs[T],
+    stdinData?: string,
+  ): Promise<unknown> {
+    if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
+    const r = await this.core(template, args, {}, stdinData);
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "认证请求超时", tails);
+    if (r.stdoutOverflow || r.stdoutFull === null) throw new RpcFail("E_CORE", "认证响应超过上限", tails);
+    const raw = r.stdoutFull.trim();
+    let parsed: Record<string, unknown> | null = null;
+    if (raw.startsWith("{")) {
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        parsed = null;
+      }
+    }
+    if (r.code !== 0) {
+      const msg = (parsed && typeof parsed.error === "string" && parsed.error) || r.stderrTail.trim() || "认证操作失败";
+      throw new RpcFail("E_CORE", msg, tails);
+    }
+    if (!parsed) throw new RpcFail("E_CORE", "认证返回非 JSON", tails);
+    return parsed;
   }
 
   // ---------------- 会话管理（D45） ----------------

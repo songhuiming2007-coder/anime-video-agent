@@ -60,6 +60,7 @@
 | [D159 系统信息移出对话流（施工后截图）](2026-11-03-d159-shots/shots.spec.ts) | D159 | D80, D82 | 人选 **①**；已施工·机检通过（2026-11-03）；截图落 `desktop/out/d159-shots/`（不进 git）；待人验收真实窗口 |
 | [常驻层上下文装配改造](2026-11-06-context-assembly-redesign.md) | P1–P8 | ADR-0022, Spec 16 | **已施工·机检通过**（2026-11-06，复审改口径）：scope 400–2000 字 + resident_budget 贴现状、状态卡每轮 user 消息（`_ava_status_card`）、asset `_extends _base`；S5 节级 diff 未做 |
 | [云端算力双后端（AutoDL + Google Colab SSH / Drive）](2026-11-14-colab-dual-cloud-provider-spec.md) | — | ADR-0014, ADR-0016, ADR-0030 | 已施工·机检通过（2026-11-14）：支持 `autodl`、`colab`（`cloudflared` SSH）与 `colab-drive`（Google Drive 队列），双口径 CU/¥ 账本与 agent 友好切换；全仓 pytest 3799 passed（实机 Colab GPU 待冒烟） |
+| [D169 + D168 + D170：桌面端体验重做与独立多服务商 /login & 推理强度对齐方案](2026-11-14-d169-d168-d170-pi-ux-spec.md) | D168, D169, D170 | D49, D91, D154–D156, N50, ADR-0021 | **已施工·机检通过，待人验收**（2026-11-14；分 3 个 Commit 落地：D169 侧栏去冗余产物树、D168 GUI 推理分段滑块与多协议映射、D170 独立 10 服务商 `/login` 认证与多协议 LLM 适配；pytest 400 / vitest 642 / E2E 通过，含 1280×800 与 1440×900 真实窗口截图）；待人：真实窗口与数据验收 |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 

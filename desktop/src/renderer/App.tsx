@@ -487,6 +487,10 @@ function Main() {
               returned={folded.returned}
               toolbar={<ModelControls rpc={rpc} convKey={convKey} phase={conv?.phase ?? "none"} info={modelInfo(conv?.entries ?? [])} openReq={modelOpenReq} pending={conv?.pending ?? null} />}
               onSlash={(cmd) => {
+                if (cmd === "/login" || cmd === "/logout") {
+                  setModelOpenReq((r) => ({ which: "login", n: (r?.n ?? 0) + 1 }));
+                  return true;
+                }
                 // D147/D149：none（存 pending）与 running（排队到回合收尾）也展开下拉；只有 starting/ending/exited 才照常发给 core
                 if (conv?.phase !== "idle" && conv?.phase !== "none" && conv?.phase !== "running") return false;
                 setModelOpenReq((r) => ({ which: cmd === "/model" ? "model" : "effort", n: (r?.n ?? 0) + 1 }));

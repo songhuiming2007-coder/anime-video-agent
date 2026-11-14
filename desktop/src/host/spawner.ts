@@ -73,7 +73,12 @@ export type Template =
   | "PURGE_IDEA_TRASH"
   // D80：会话改名（`ava <期> /rename-session --sid= --title=`；idea 两叉不带期目录）
   | "RENAME_SESSION"
-  | "RENAME_IDEA_SESSION";
+  | "RENAME_IDEA_SESSION"
+  // D170：AVA 独立多服务商登录 CLI 子命令
+  | "AUTH_STATUS"
+  | "AUTH_START"
+  | "AUTH_COMPLETE"
+  | "AUTH_LOGOUT";
 
 /** D50-A S6：读音参数——`pinyin`、`homophone + expect`、`latin`（英文改写）三选一（core 再校验一遍） */
 export interface VoiceReadingArgs {
@@ -159,6 +164,11 @@ export interface TemplateArgs {
   RENAME_SESSION: { ep: string; sid: string; title: string };
   RENAME_IDEA_SESSION: { sid: string; title: string };
   PURGE_IDEA_TRASH: { file: string };
+  // D170：多服务商登录管理（AUTH_COMPLETE 的载荷经 stdin 传，不进 argv / spawn 日志）
+  AUTH_STATUS: Record<string, never>;
+  AUTH_START: { provider: string; mode?: string };
+  AUTH_COMPLETE: { provider: string };
+  AUTH_LOGOUT: { provider: string };
 }
 
 /** 写进 spawn 日志的归属标签：heal 的触发编号、decide 关联号（TA-2/TA-11 只统计该次 decide 关联的 spawn） */
@@ -421,9 +431,39 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { file } = args as TemplateArgs["PURGE_IDEA_TRASH"];
       return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/purge-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
     }
+    case "AUTH_STATUS":
+      return { argv: [py, "-m", "pipeline.agent.cli", "--auth-status"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    case "AUTH_START": {
+      const { provider, mode } = args as TemplateArgs["AUTH_START"];
+      const argv = [py, "-m", "pipeline.agent.cli", "--auth-start", checkedProvider(provider)];
+      if (mode) argv.push(mode);
+      return { argv, timeoutMs: SPAWN_TIMEOUT_ACK_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    }
+    case "AUTH_COMPLETE": {
+      const { provider } = args as TemplateArgs["AUTH_COMPLETE"];
+      return {
+        argv: [py, "-m", "pipeline.agent.cli", "--auth-complete", checkedProvider(provider), "--stdin"],
+        timeoutMs: SPAWN_TIMEOUT_REVIEW_MS,
+        stdoutMax: SESSIONS_STDOUT_MAX_BYTES,
+        stdinPipe: true,
+      };
+    }
+    case "AUTH_LOGOUT": {
+      const { provider } = args as TemplateArgs["AUTH_LOGOUT"];
+      return {
+        argv: [py, "-m", "pipeline.agent.cli", "--auth-logout", checkedProvider(provider)],
+        timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
+        stdoutMax: SESSIONS_STDOUT_MAX_BYTES,
+      };
+    }
     default:
       throw new Error(`未知 spawn 模板 ${String(t)}`);
   }
+}
+
+function checkedProvider(provider: string): string {
+  if (!/^[a-z0-9-]+$/.test(provider)) throw new Error(`服务商 ID 形状不对：「${provider}」`);
+  return provider;
 }
 
 /** D80：标题作为单个 argv 元素（等号形式）传给 core；不合格抛错不 spawn（core 再按同规则校验） */

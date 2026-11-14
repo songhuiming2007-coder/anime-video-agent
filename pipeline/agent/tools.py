@@ -278,6 +278,7 @@ ASSET_COMMANDS: dict[str, set[str]] = {
 RESTRICTED_EGRESS_PATTERNS: tuple[str, ...] = (
     "cloud.local.json",
     "agent.local.json",
+    "auth.local.json",
 )
 
 
@@ -2270,7 +2271,11 @@ def _secret_values(root: Path | None = None) -> list[str]:
         if v:
             values.add(v)
     config_dir = Path(root or paths.ROOT) / "config"
-    for path in sorted(config_dir.glob("*.local.json")):
+    candidates = list(sorted(config_dir.glob("*.local.json")))
+    auth_override = os.environ.get("AVA_AUTH_PATH", "").strip()
+    if auth_override:
+        candidates.append(Path(auth_override))
+    for path in candidates:
         try:
             _collect_secret_fields(json.loads(path.read_text(encoding="utf-8")), values)
         except (OSError, ValueError):

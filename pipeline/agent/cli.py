@@ -2473,6 +2473,7 @@ def _run_repl_body(
                 print("  /compact     压缩上下文：较早的对话并成一条摘要，保留近期原文（D62）")
                 print("  /model       看 / 切换本会话模型：/model、/model <名>、/model default（D91）")
                 print("  /thinking    看 / 切换本会话推理强度：/thinking、/thinking <none|low|medium|high|…>、/thinking default")
+                print("  /login       查看或登录 10 家模型服务商（/login [<provider> [<api_key>]]、/logout <provider>）（D170）")
                 print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
                 print("  /patch       临时补料派工单（/scout --type patch 别名）")
                 print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
@@ -2523,6 +2524,13 @@ def _run_repl_body(
 
             if line.split(maxsplit=1)[0] in ("/model", "/thinking"):
                 run_model_command(line, scope, root=root)
+                continue
+
+            if line.split(maxsplit=1)[0] in ("/login", "/logout"):
+                from pipeline.agent import auth as auth_mod
+
+                ok, reply, _ = auth_mod.run_auth_command(line, root=root)
+                print(reply if ok else f"[ERROR] {reply}")
                 continue
 
             if line == "/patch" or line.startswith("/patch "):
@@ -2785,6 +2793,14 @@ def _print_idea_non_tty_help() -> None:
 def main(argv: list[str] | None = None) -> int:
     """ava 统一入口。"""
     args = argv if argv is not None else sys.argv[1:]
+
+    # D170：--auth-status / --auth-start / --auth-complete / --auth-logout（桌面端与 CLI 共用 JSON 通道）
+    if args and args[0].startswith("--auth-"):
+        from pipeline.agent.auth import dispatch_auth_cli
+
+        rc = dispatch_auth_cli(args)
+        if rc is not None:
+            return rc
 
     # 子命令 0: ava --continue [<会话号前缀>] / ava --sessions（不带期）
     if args and args[0] in ("--continue", "--sessions"):

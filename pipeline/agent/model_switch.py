@@ -57,27 +57,47 @@ class Override:
         return self.model is None and self.reasoning_effort is None
 
 
-def effective_config(cfg: LLMConfig | None, override: Override) -> LLMConfig | None:
+def effective_config(cfg: LLMConfig | None, override: Override, *, root: Path | None = None) -> LLMConfig | None:
     """默认配置 + 本会话设置 → 实际使用的配置。
 
     换模型时把分档表清空：推理档与轻量档都用这个模型（会话里说「用 kimi-k3」就是全用它，
     不让起标题、压缩之类的轻量请求悄悄留在旧模型上）。
+    D170：有效模型带已登录 `<provider>/` 前缀时，自动路由至该服务商的 base_url / api_key / api_protocol / extra_headers。
     """
-    if cfg is None or override.empty:
-        return cfg
+    if cfg is None:
+        return None
     out = cfg
-    if override.model is not None:
-        out = replace(out, model=override.model, models={})
-    if override.reasoning_effort is not None:
-        out = replace(out, reasoning_effort=override.reasoning_effort)
+    if not override.empty:
+        if override.model is not None:
+            out = replace(out, model=override.model, models={})
+        if override.reasoning_effort is not None:
+            out = replace(out, reasoning_effort=override.reasoning_effort)
+    if "/" in out.model:
+        from pipeline.agent import auth
+
+        resolved = auth.resolve_model_provider(out.model, root=root)
+        if resolved is not None:
+            _pid, wire_model, cred = resolved
+            out = replace(
+                out,
+                base_url=str(cred["base_url"]),
+                model=wire_model,
+                api_key=str(cred.get("api_key") or ""),
+                models={},
+                api_protocol=str(cred.get("api_protocol") or "openai-completions"),
+                extra_headers=dict(cred.get("extra_headers") or {}),
+                auth_type=cred.get("auth_type"),
+            )
     return out
 
 
 def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> dict[str, Any]:
     """给界面与命令回显用：实际模型、推理档、各自来源（session / default）。"""
-    eff = effective_config(cfg, override)
-    if eff is None:
+    if cfg is None:
         return {"model": None, "reasoning_effort": None, "model_source": "default", "effort_source": "default"}
+    eff = replace(cfg, model=override.model, models={}) if override.model is not None else cfg
+    if override.reasoning_effort is not None:
+        eff = replace(eff, reasoning_effort=override.reasoning_effort)
     return {
         "model": eff.model_for(purpose),
         "reasoning_effort": eff.reasoning_effort,
@@ -86,53 +106,57 @@ def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> 
     }
 
 
-def list_models(cfg: LLMConfig) -> list[str]:
-    """GET `{base_url}/models`。失败如实抛 ModelSwitchError（不猜一份列表出来）。"""
-    url = cfg.base_url.rstrip("/") + "/models"
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {cfg.api_key}"})
+def _fetch_openai_models(url: str, headers: dict[str, str], *, root: Path | None = None) -> tuple[list[str] | None, ModelSwitchError | None]:
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT_S) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise ModelSwitchError(f"取模型列表失败：HTTP {exc.code}") from None
+        return None, ModelSwitchError(f"取模型列表失败：HTTP {exc.code}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ModelSwitchError(f"取模型列表失败：{exc}") from None
+        return None, ModelSwitchError(f"取模型列表失败：{exc}")
     except json.JSONDecodeError as exc:
-        raise ModelSwitchError(f"模型列表不是 JSON：{exc}") from None
+        return None, ModelSwitchError(f"模型列表不是 JSON：{exc}")
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list):
-        raise ModelSwitchError("模型列表格式不对（缺 data 数组）")
-    _maybe_cache_models_metadata(data)
-    ids = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
-    return sorted(dict.fromkeys(ids))
+        return None, ModelSwitchError("模型列表格式不对（缺 data 数组）")
+    _maybe_cache_models_metadata(data, root=root)
+    return [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")], None
+
+
+def list_models(cfg: LLMConfig, *, root: Path | None = None) -> list[str]:
+    """GET `{base_url}/models` 并合并已登录服务商模型。代理失败但已登录服务商有模型时照常返回。"""
+    from pipeline.agent import auth
+
+    auth_models = auth.list_authenticated_models(root)
+    url = cfg.base_url.rstrip("/") + "/models"
+    proxy_ids, proxy_err = _fetch_openai_models(
+        url, {"Authorization": f"Bearer {cfg.api_key}"}, root=root,
+    )
+    if proxy_ids is not None:
+        return sorted(dict.fromkeys([*proxy_ids, *auth_models]))
+    if auth_models:
+        return auth_models
+    raise proxy_err or ModelSwitchError("取模型列表失败")
 
 
 def list_models_unauthenticated(root: Path | None = None) -> list[str]:
-    """D153：不带密钥读代理 `GET {base_url}/models`——会话进程不存在时桌面端经
-    PROBE_MODEL_LIST 调它（`list_models` 要带 Authorization 头，而这步独立进程拿不到密钥）。
-    base_url 与 `api_key_env_name` 同一口径：生效的 agent.local.json / agent.json。
-    失败如实抛 ModelSwitchError，不猜一份列表出来。"""
+    """D153/D170：无会话进程时合并代理 `/models` 与已登录服务商模型（仅二者全空/失败才抛）。"""
+    from pipeline.agent import auth
     from pipeline.agent.llm import configured_base_url
 
+    auth_models = auth.list_authenticated_models(root)
     base_url = configured_base_url(root)
     if base_url is None:
+        if auth_models:
+            return auth_models
         raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
-    url = base_url.rstrip("/") + "/models"
-    try:
-        with urllib.request.urlopen(url, timeout=MODELS_TIMEOUT_S) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise ModelSwitchError(f"取模型列表失败：HTTP {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ModelSwitchError(f"取模型列表失败：{exc}") from None
-    except json.JSONDecodeError as exc:
-        raise ModelSwitchError(f"模型列表不是 JSON：{exc}") from None
-    data = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(data, list):
-        raise ModelSwitchError("模型列表格式不对（缺 data 数组）")
-    _maybe_cache_models_metadata(data, root=root)
-    ids = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
-    return sorted(dict.fromkeys(ids))
+    proxy_ids, proxy_err = _fetch_openai_models(base_url.rstrip("/") + "/models", {}, root=root)
+    if proxy_ids is not None:
+        return sorted(dict.fromkeys([*proxy_ids, *auth_models]))
+    if auth_models:
+        return auth_models
+    raise proxy_err or ModelSwitchError("取模型列表失败")
 
 
 #: ``check_model`` 放行未知模型时留下的提醒；每次调用先清回 None（同进程一次只跑一条命令，
@@ -257,6 +281,22 @@ def _extract_efforts_from_entry(entry: dict[str, Any]) -> tuple[str, ...] | None
     return tuple(lv for lv in EFFORT_ORDER if lv in mapped_t) or None
 
 
+def _candidate_model_names(model: str) -> list[str]:
+    """为 `<provider>/<vendor>/<model>` 依次生成匹配候选（含去服务商前缀及裸模型名）。"""
+    out = [model]
+    if "/" in model:
+        first, rest = model.split("/", 1)
+        if rest and rest not in out:
+            out.append(rest)
+        if "/" in rest:
+            bare = rest.split("/", 1)[1]
+            if bare and bare not in out:
+                out.append(bare)
+        elif first:
+            pass
+    return out
+
+
 def _cached_model_efforts(model: str | None, root: Path | None = None) -> tuple[str, ...] | None:
     """第二级解析：从 AVA 本地 models.local.json 缓存读取 efforts / thinkingLevelMap。"""
     if not model:
@@ -268,7 +308,7 @@ def _cached_model_efforts(model: str | None, root: Path | None = None) -> tuple[
         raw = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    bare = model.split("/", 1)[1] if "/" in model else model
+    names = _candidate_model_names(model)
     entry: dict[str, Any] | None = None
     candidates: list[Any] = []
     if isinstance(raw, dict):
@@ -277,7 +317,7 @@ def _cached_model_efforts(model: str | None, root: Path | None = None) -> tuple[
         elif isinstance(raw.get("data"), list):
             candidates = raw["data"]
         else:
-            for k in (model, bare):
+            for k in names:
                 if isinstance(raw.get(k), dict):
                     entry = raw[k]
                     break
@@ -285,7 +325,7 @@ def _cached_model_efforts(model: str | None, root: Path | None = None) -> tuple[
         candidates = raw
     if entry is None:
         for item in candidates:
-            if isinstance(item, dict) and item.get("id") in (model, bare):
+            if isinstance(item, dict) and item.get("id") in names:
                 entry = item
                 break
     if not isinstance(entry, dict):
@@ -298,8 +338,18 @@ def _family_heuristic_efforts(model: str | None) -> tuple[str, ...]:
     if not model:
         return EFFORTS
     low = model.strip().lower()
-    bare = low.split("/", 1)[1] if "/" in low else low
-    if any(p in bare for p in ("claude-opus-4-6", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5")):
+    bare = low.split("/")[-1] if "/" in low else low
+    if any(
+        p in bare
+        for p in (
+            "claude-opus-4-6",
+            "claude-opus-4.6",
+            "claude-opus-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4.6",
+            "claude-sonnet-5",
+        )
+    ):
         return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
     if bare.startswith("claude-"):
         return ("none", "minimal", "low", "medium", "high", "xhigh")
@@ -318,10 +368,12 @@ def efforts_for_model(model: str | None, root: Path | None = None) -> tuple[str,
     2. AVA 本地缓存 config/agent/models.local.json 的 efforts / thinkingLevelMap；
     3. 模型家族启发式与 EFFORTS 默认全档（未入探针表不再锁死）。
     """
-    entry = _window_entry(model, root)
-    supported = entry.supported_efforts() if entry is not None else None
-    if supported is not None:
-        return supported
+    if model:
+        for candidate in _candidate_model_names(model):
+            entry = _window_entry(candidate, root)
+            supported = entry.supported_efforts() if entry is not None else None
+            if supported is not None:
+                return supported
     cached = _cached_model_efforts(model, root)
     if cached is not None:
         return cached
@@ -339,11 +391,15 @@ def efforts_map_for_models(items: list[str] | tuple[str, ...], root: Path | None
 
 
 def probe_models_and_efforts_payload(root: Path | None = None) -> dict[str, Any]:
-    """D168：供 PROBE_MODEL_LIST 输出结构化 JSON（模型列表 + 每模型支持集 + 当前默认模型）。"""
+    """D168/D170：供 PROBE_MODEL_LIST 输出结构化 JSON（模型列表 + 每模型支持集 + 当前默认模型）。"""
+    from pipeline.agent import auth
     from pipeline.agent.llm import configured_model_name
 
     items = list_models_unauthenticated(root)
     active_model = configured_model_name(root)
+    if active_model is None:
+        auth_cfg = auth.first_authenticated_config(root)
+        active_model = str(auth_cfg["model"]) if auth_cfg else None
     return {
         "items": items,
         "efforts": list(efforts_for_model(active_model, root)),
@@ -354,11 +410,16 @@ def probe_models_and_efforts_payload(root: Path | None = None) -> dict[str, Any]
 
 def effort_request(model: str | None, level: str, root: Path | None = None) -> tuple[str, Any] | None:
     """D155：该模型这档实际发什么参数 → (参数名, 值)；None = 不发任何 effort 参数
-    （对应 Pi thinkingLevelMap 里值为 null 的档）。表没记 → 默认 reasoning_effort=level。"""
+    （对应模型 thinkingLevelMap 里值为 null 的档）。表没记 → 默认 reasoning_effort=level。"""
     # none 语义 = 不发档：不管哪个模型、不管有没有 effort_map，一律不带参数。
     if level == "none":
         return None
-    entry = _window_entry(model, root)
+    entry = None
+    if model:
+        for candidate in _candidate_model_names(model):
+            entry = _window_entry(candidate, root)
+            if entry is not None:
+                break
     if entry is None:
         return ("reasoning_effort", level)
     spec = entry.effort_spec_for(level)

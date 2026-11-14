@@ -1242,9 +1242,10 @@ MODEL_COMMANDS = frozenset({"models", "model", "thinking"})
 
 
 def _is_model_command(text: str) -> bool:
+    from pipeline.agent import auth
     from pipeline.agent.model_switch import is_command
 
-    return is_command(text)
+    return is_command(text) or auth.is_auth_slash_command(text)
 
 
 def _session_scope(host, ep_dir, status) -> str:
@@ -1276,10 +1277,19 @@ def _send_model_config(writer, host, ep_dir, status) -> None:
 
 
 def _apply_model_line(host, ep_dir, status, line: str) -> tuple[bool, str]:
-    """跑一条 `/model …` / `/thinking …`：成功则改本会话设置。返回 (ok, 回显文字)。"""
+    """跑一条 `/model …` / `/thinking …` / `/login …` / `/logout …`：返回 (ok, 回显文字)。"""
+    from dataclasses import replace as dc_replace
     from pipeline import paths
+    from pipeline.agent import auth
     from pipeline.agent import compact as cp
     from pipeline.agent import llm, model_switch
+
+    if auth.is_auth_slash_command(line):
+        ok, text, logged_out = auth.run_auth_command(line, root=paths.ROOT)
+        if ok and logged_out and host.model_override.model and host.model_override.model.startswith(f"{logged_out}/"):
+            host.set_model_override(dc_replace(host.model_override, model=None))
+            text += "\n本会话已切回默认模型"
+        return ok, text
 
     scope = _session_scope(host, ep_dir, status)
     purpose = llm.purpose_for_scope(scope)
@@ -1363,11 +1373,16 @@ def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
     ep_dir = host.ep_dir
     status = None if ep_dir is None or host.session_kind == "project" else inspect_episode(ep_dir)
     if name == "models":
+        from pipeline.agent import auth
+
         cfg = llm.load_llm_config(paths.ROOT)
         try:
             if cfg is None:
-                raise model_switch.ModelSwitchError("LLM 不可用（缺配置或密钥）")
-            items = model_switch.list_models(cfg)
+                items = auth.list_authenticated_models(paths.ROOT)
+                if not items:
+                    raise model_switch.ModelSwitchError("LLM 不可用（缺配置或密钥）")
+            else:
+                items = model_switch.list_models(cfg)
         except model_switch.ModelSwitchError as exc:
             writer.send({"t": "command_result", "name": name, "ok": False, "text": str(exc), **tail})
             return
