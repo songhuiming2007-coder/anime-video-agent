@@ -76,6 +76,9 @@ def test_detect_colab_login_required():
     assert cloud_colab_boot.detect_colab_login_required(
         "https://colab.research.google.com/drive/123", "Please Sign in to continue"
     )
+    assert cloud_colab_boot.detect_colab_login_required(
+        "https://colab.research.google.com/github/a/b.ipynb", "File\nEdit\nRuntime\nSign in\nConnect"
+    )
     assert not cloud_colab_boot.detect_colab_login_required(
         "https://colab.research.google.com/github/songhuiming2007-coder/anime-video-agent/blob/main/tools/ava_colab_bootstrap.ipynb",
         "RAM Disk Runtime Connected GPU",
