@@ -270,11 +270,45 @@ test("D168 新会话未发消息前（phase=none）也可调推理强度 + 信�
   }
 });
 
-test("D170：/login 与工具栏弹窗支持 10 家服务商、连入后 /model 联动列表及登出移除", async () => {
+test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、连入后 /model 联动及 1280/1440 无溢出", async () => {
   test.setTimeout(90_000);
   const llm = await startFakeLlm();
   const fx = realCoreFixture(llm.url, ["ep1"]);
   const L = await launchSession(fx.repo);
+  const checkModalLayout = async (page: any) => {
+    const metrics = await page.evaluate(() => {
+      const m = document.querySelector("[data-testid=login-modal]") as HTMLElement | null;
+      const listPane = document.querySelector(".login-provider-list") as HTMLElement | null;
+      const detailPane = document.querySelector(".login-detail-pane") as HTMLElement | null;
+      const closeBtn = document.querySelector("[data-testid=login-close-btn]") as HTMLElement | null;
+      const submitBtn = document.querySelector("[data-testid=login-submit-btn]") as HTMLElement | null;
+      if (!m || !listPane || !detailPane || !closeBtn) return null;
+      const mr = m.getBoundingClientRect();
+      const lr = listPane.getBoundingClientRect();
+      const dr = detailPane.getBoundingClientRect();
+      const cr = closeBtn.getBoundingClientRect();
+      const sr = submitBtn ? submitBtn.getBoundingClientRect() : null;
+      return {
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+        modalRight: mr.right,
+        modalBottom: mr.bottom,
+        modalOverflowX: m.scrollWidth - m.clientWidth,
+        detailOverflowX: detailPane.scrollWidth - detailPane.clientWidth,
+        panesOverlapX: lr.right > dr.left + 1,
+        closeOutsideModal: cr.right > mr.right + 1 || cr.left < mr.left - 1,
+        submitClipped: sr ? sr.bottom > mr.bottom + 1 : false,
+      };
+    });
+    expect(metrics).not.toBeNull();
+    expect(metrics!.modalRight).toBeLessThanOrEqual(metrics!.vw + 1);
+    expect(metrics!.modalBottom).toBeLessThanOrEqual(metrics!.vh + 1);
+    expect(metrics!.modalOverflowX).toBeLessThanOrEqual(1);
+    expect(metrics!.detailOverflowX).toBeLessThanOrEqual(1);
+    expect(metrics!.panesOverlapX).toBe(false);
+    expect(metrics!.closeOutsideModal).toBe(false);
+    expect(metrics!.submitClipped).toBe(false);
+  };
   try {
     const { page } = L;
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -287,10 +321,29 @@ test("D170：/login 与工具栏弹窗支持 10 家服务商、连入后 /model 
     await box.press("Enter");
     const modal = page.getByTestId("login-modal");
     await expect(modal).toBeVisible();
-    await expect(page.getByTestId("login-provider-row")).toHaveCount(10);
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(44);
+    await expect(page.getByTestId("login-group-oauth")).toBeVisible();
+    await expect(page.getByTestId("login-group-flagship")).toBeVisible();
+    await expect(page.getByTestId("login-group-cloud")).toBeVisible();
+    await expect(page.getByTestId("login-group-local")).toBeVisible();
+    await checkModalLayout(page);
+
+    // 搜索支持环境变量名 & 协议名过滤，并渲染云平台附加字段
+    const search = page.getByTestId("login-provider-search");
+    await search.fill("GEMINI_API_KEY");
+    await expect(page.locator('[data-testid=login-provider-row][data-provider="google"]')).toBeVisible();
+    await search.fill("bedrock-converse-stream");
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(1);
+    await page.locator('[data-testid=login-provider-row][data-provider="amazon-bedrock"]').click();
+    await expect(page.getByTestId("login-extra-aws_region")).toBeVisible();
+    await checkModalLayout(page);
+    if (SHOTS) {
+      mkdirSync(SHOTS, { recursive: true });
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: join(SHOTS, "d170-cloud-1280.png") });
+    }
 
     // 搜索过滤服务商并连接 DeepSeek
-    const search = page.getByTestId("login-provider-search");
     await search.fill("DeepSeek");
     await expect(page.getByTestId("login-provider-row")).toHaveCount(1);
     await page.locator('[data-testid=login-provider-row][data-provider="deepseek"]').click();
@@ -299,7 +352,9 @@ test("D170：/login 与工具栏弹窗支持 10 家服务商、连入后 /model 
     await expect(page.getByTestId("login-connected-card")).toBeVisible();
     await expect(page.getByTestId("login-connected-count")).toHaveText("1");
     await search.fill("");
-    await expect(page.getByTestId("login-provider-row")).toHaveCount(10);
+    await expect(page.getByTestId("login-provider-row")).toHaveCount(44);
+    await expect(page.getByTestId("login-group-connected")).toBeVisible();
+    await checkModalLayout(page);
 
     if (SHOTS) {
       mkdirSync(SHOTS, { recursive: true });
@@ -308,6 +363,7 @@ test("D170：/login 与工具栏弹窗支持 10 家服务商、连入后 /model 
       await page.locator('[data-testid=login-provider-row][data-provider="anthropic"]').click();
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.waitForTimeout(150);
+      await checkModalLayout(page);
       await page.screenshot({ path: join(SHOTS, "d170-1440.png") });
       await page.setViewportSize({ width: 1280, height: 800 });
     }

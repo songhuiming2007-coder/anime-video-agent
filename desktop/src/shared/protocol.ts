@@ -155,17 +155,39 @@ export function isMethod(v: unknown): v is Method {
 /** 值不是字符串的参数键（§3.1 唯一例外）：feedback 是对象，bytes 是封面图字节。 */
 export const NON_STRING_PARAM_KEYS: readonly string[] = ["feedback", "bytes"];
 
-/** D170：10 家服务商脱敏状态、登录流响应类型（shared/ 纯 TS 类型） */
+/** D170：多服务商脱敏状态、登录流响应类型（shared/ 纯 TS 类型） */
 export type AuthMode = "proxy" | "api_key" | "oauth_pkce" | "oauth_device";
+export type ProviderCategory = "oauth" | "flagship" | "cloud" | "local";
+
+export interface AuthExtraFieldSpec {
+  key: string;
+  label: string;
+  placeholder: string;
+  required: boolean;
+  secret: boolean;
+  default: string;
+  env_var: string;
+  help: string;
+}
 
 export interface AuthProviderRow {
   id: string;
   name: string;
   desc: string;
+  category?: ProviderCategory;
   auth_modes: AuthMode[];
   default_base_url: string;
   api_protocol: string;
   supports_custom_base_url: boolean;
+  optional_key_in_proxy?: boolean;
+  oauth_label?: string;
+  env_vars?: string[];
+  env_configured?: boolean;
+  env_source?: string | null;
+  masked_env_secret?: string | null;
+  extra_fields?: AuthExtraFieldSpec[];
+  extra_config?: Record<string, string>;
+  aliases?: string[];
   connected: boolean;
   auth_type: string | null;
   base_url: string;
@@ -188,6 +210,11 @@ export interface AuthStartResult {
   mode: AuthMode;
   default_base_url?: string;
   api_protocol?: string;
+  extra_fields?: AuthExtraFieldSpec[];
+  env_vars?: string[];
+  env_configured?: boolean;
+  env_source?: string | null;
+  masked_env_secret?: string | null;
   authorize_url?: string;
   redirect_uri?: string;
   state?: string;

@@ -1,21 +1,23 @@
-// D170：AVA 独立 /login 多服务商认证弹窗（对齐 Pi /login 体验，零外部 CLI 前提）。
+// D170：AVA 独立 /login 多服务商认证弹窗（对齐 Pi /login 生态覆盖与 ZCode ui-* 规范）。
 // 只调 auth.status / auth.start / auth.complete / auth.logout RPC（密钥永不进 spawn argv，通过 core stdin 写 config/auth.local.json）。
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AuthCompleteResult,
+  AuthExtraFieldSpec,
   AuthMode,
   AuthProviderRow,
   AuthStartResult,
   AuthStatusResult,
+  ProviderCategory,
 } from "../shared/protocol";
 import type { RpcClient } from "./rpc";
 import { Icon } from "./icons";
 
 const MODE_LABELS: Record<AuthMode, string> = {
   oauth_pkce: "OAuth 浏览器授权",
-  oauth_device: "GitHub 设备码",
+  oauth_device: "设备码授权",
   proxy: "代理地址 + 密钥",
-  api_key: "API Key",
+  api_key: "API Key / 凭据",
 };
 
 const MODE_SHORT: Record<AuthMode, string> = {
@@ -25,8 +27,36 @@ const MODE_SHORT: Record<AuthMode, string> = {
   api_key: "Key",
 };
 
+const CATEGORY_ORDER: readonly { key: ProviderCategory; label: string }[] = [
+  { key: "oauth", label: "OAuth 订阅" },
+  { key: "flagship", label: "常用大模型" },
+  { key: "cloud", label: "云平台与路由" },
+  { key: "local", label: "本地 / 代理" },
+];
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function initExtraValues(row: AuthProviderRow): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ef of row.extra_fields ?? []) {
+    const existing = !ef.secret ? row.extra_config?.[ef.key] : "";
+    out[ef.key] = (existing || ef.default || "").trim();
+  }
+  return out;
+}
+
+function hasCloudAltCredentials(row: AuthProviderRow, extraValues: Record<string, string>): boolean {
+  if (row.id === "amazon-bedrock") {
+    const iam = Boolean(extraValues.aws_access_key_id?.trim() && extraValues.aws_secret_access_key?.trim());
+    const prof = Boolean(extraValues.aws_profile?.trim());
+    return iam || prof || Boolean(row.env_configured);
+  }
+  if (row.id === "google-vertex") {
+    return Boolean(extraValues.project_id?.trim() && (extraValues.location?.trim() || "us-central1"));
+  }
+  return false;
 }
 
 export function LoginModal({
@@ -49,10 +79,22 @@ export function LoginModal({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [authCode, setAuthCode] = useState("");
+  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
   const [started, setStarted] = useState<AuthStartResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const syncProviderDefaults = (row: AuthProviderRow) => {
+    setSelectedId(row.id);
+    setMode(row.auth_modes[0] ?? "api_key");
+    setBaseUrl(row.base_url || row.default_base_url);
+    setApiKey("");
+    setAuthCode("");
+    setExtraValues(initExtraValues(row));
+    setStarted(null);
+  };
 
   const loadStatus = (preferredId?: string) => {
     void rpc.call<AuthStatusResult>("auth.status", {}).then(
@@ -71,15 +113,6 @@ export function LoginModal({
     );
   };
 
-  const syncProviderDefaults = (row: AuthProviderRow) => {
-    setSelectedId(row.id);
-    setMode(row.auth_modes[0] ?? "api_key");
-    setBaseUrl(row.base_url || row.default_base_url);
-    setApiKey("");
-    setAuthCode("");
-    setStarted(null);
-  };
-
   useEffect(() => {
     if (!open) return;
     setMsg(null);
@@ -95,24 +128,63 @@ export function LoginModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
-
   const providers = status?.providers ?? [];
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? providers.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          p.id.toLowerCase().includes(q) ||
-          p.desc.toLowerCase().includes(q),
-      )
-    : providers;
-  const current = providers.find((p) => p.id === selectedId) ?? providers[0] ?? null;
+
+  const { groups, flatVisible } = useMemo(() => {
+    const filtered = q
+      ? providers.filter((p) => {
+          const hay = [
+            p.name,
+            p.id,
+            p.desc,
+            p.api_protocol,
+            ...(p.aliases ?? []),
+            ...(p.env_vars ?? []),
+          ]
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q);
+        })
+      : providers;
+
+    const out: { key: string; label: string; items: AuthProviderRow[] }[] = [];
+    const connectedItems = filtered.filter((p) => p.connected);
+    if (connectedItems.length > 0) {
+      out.push({ key: "connected", label: "已连接", items: connectedItems });
+    }
+    const remaining = filtered.filter((p) => !p.connected);
+    for (const cat of CATEGORY_ORDER) {
+      const items = remaining.filter((p) => (p.category ?? "flagship") === cat.key);
+      if (items.length > 0) out.push({ key: cat.key, label: cat.label, items });
+    }
+    const categorizedIds = new Set(out.flatMap((g) => g.items.map((p) => p.id)));
+    const other = remaining.filter((p) => !categorizedIds.has(p.id));
+    if (other.length > 0) out.push({ key: "other", label: "其他", items: other });
+
+    return { groups: out, flatVisible: out.flatMap((g) => g.items) };
+  }, [providers, q]);
 
   const selectProvider = (row: AuthProviderRow) => {
     setMsg(null);
     syncProviderDefaults(row);
   };
+
+  const stepSelection = (delta: number) => {
+    if (flatVisible.length === 0) return;
+    const idx = flatVisible.findIndex((p) => p.id === selectedId);
+    const nextIdx = idx < 0 ? 0 : Math.max(0, Math.min(flatVisible.length - 1, idx + delta));
+    const next = flatVisible[nextIdx];
+    if (next) {
+      selectProvider(next);
+      const btn = listRef.current?.querySelector(`[data-provider="${next.id}"]`);
+      if (btn instanceof HTMLElement) btn.scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  if (!open) return null;
+
+  const current = providers.find((p) => p.id === selectedId) ?? flatVisible[0] ?? providers[0] ?? null;
 
   const handleStartOAuth = () => {
     if (!current) return;
@@ -138,15 +210,22 @@ export function LoginModal({
     if (!current) return;
     setBusy(true);
     setMsg(null);
-    const payloadObj: Record<string, string> = { mode };
+    const cleanExtra: Record<string, string> = {};
+    for (const [k, v] of Object.entries(extraValues)) {
+      if (v.trim()) cleanExtra[k] = v.trim();
+    }
+    const payloadObj: Record<string, unknown> = { mode };
     if (mode === "proxy") {
       payloadObj.base_url = baseUrl.trim() || current.default_base_url;
       if (apiKey.trim()) payloadObj.api_key = apiKey.trim();
     } else if (mode === "api_key") {
-      payloadObj.api_key = apiKey.trim();
+      if (apiKey.trim()) payloadObj.api_key = apiKey.trim();
       if (baseUrl.trim()) payloadObj.base_url = baseUrl.trim();
     } else if (mode === "oauth_pkce") {
       payloadObj.code = authCode.trim();
+    }
+    if (Object.keys(cleanExtra).length > 0) {
+      payloadObj.extra_config = cleanExtra;
     }
     void rpc
       .call<AuthCompleteResult>("auth.complete", {
@@ -193,11 +272,21 @@ export function LoginModal({
     });
   };
 
+  const missingRequiredExtra = (current?.extra_fields ?? []).some(
+    (ef) => ef.required && !(extraValues[ef.key] ?? "").trim(),
+  );
+  const altCloudOk = current ? hasCloudAltCredentials(current, extraValues) : false;
   const submitDisabled =
     busy ||
     !current ||
-    (mode === "api_key" && apiKey.trim() === "") ||
+    missingRequiredExtra ||
+    (mode === "api_key" && apiKey.trim() === "" && !altCloudOk) ||
     (mode === "oauth_pkce" && authCode.trim() === "");
+
+  const extraFields: AuthExtraFieldSpec[] = current?.extra_fields ?? [];
+  const needsLoopbackNote =
+    Boolean(started?.redirect_uri?.includes("localhost:")) ||
+    Boolean(started?.redirect_uri?.includes("127.0.0.1:"));
 
   return (
     <div className="login-backdrop" data-testid="login-backdrop">
@@ -243,33 +332,66 @@ export function LoginModal({
               <input
                 className="ui-input"
                 data-testid="login-provider-search"
-                placeholder="筛选服务商（10 家）…"
+                placeholder={`筛选服务商（${providers.length || 44} 家，名/协议/Env）…`}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    stepSelection(1);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    stepSelection(-1);
+                  }
+                }}
               />
             </div>
-            <div className="login-provider-list">
-              {filtered.map((p) => {
-                const isSelected = current?.id === p.id;
-                const primaryMode = p.auth_modes[0] ?? "api_key";
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    aria-current={isSelected ? "true" : undefined}
-                    className="ui-row login-provider-row"
-                    data-testid="login-provider-row"
-                    data-provider={p.id}
-                    data-connected={p.connected ? "1" : "0"}
-                    onClick={() => selectProvider(p)}
-                  >
-                    <span className={p.connected ? "ui-dot ui-dot--ok" : "ui-dot"} aria-hidden="true" />
-                    <span className="login-provider-name">{p.name}</span>
-                    <span className={p.connected ? "ui-badge ui-badge--ok" : "ui-badge"}>{p.connected ? "已连接" : MODE_SHORT[primaryMode]}</span>
-                  </button>
-                );
-              })}
-              {filtered.length === 0 && <div className="muted login-empty">无匹配服务商</div>}
+            <div className="login-provider-list" ref={listRef}>
+              {groups.map((grp) => (
+                <div key={grp.key} className="login-group" data-testid={`login-group-${grp.key}`}>
+                  <div className="ui-section login-group-head">
+                    <span>{grp.label}</span>
+                    <span className="ui-count">{grp.items.length}</span>
+                  </div>
+                  {grp.items.map((p) => {
+                    const isSelected = current?.id === p.id;
+                    const primaryMode = p.auth_modes[0] ?? "api_key";
+                    const badgeLabel = p.connected
+                      ? "已连接"
+                      : p.env_configured
+                        ? "Env"
+                        : MODE_SHORT[primaryMode];
+                    const badgeCls = p.connected ? "ui-badge ui-badge--ok" : "ui-badge";
+                    const dotCls = p.connected ? "ui-dot ui-dot--ok" : "ui-dot";
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        aria-current={isSelected ? "true" : undefined}
+                        className="ui-row login-provider-row"
+                        data-testid="login-provider-row"
+                        data-provider={p.id}
+                        data-connected={p.connected ? "1" : "0"}
+                        onClick={() => selectProvider(p)}
+                        onKeyDown={(e) => {
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            stepSelection(1);
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            stepSelection(-1);
+                          }
+                        }}
+                      >
+                        <span className={dotCls} aria-hidden="true" />
+                        <span className="login-provider-name">{p.name}</span>
+                        <span className={badgeCls}>{badgeLabel}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              {flatVisible.length === 0 && <div className="muted login-empty">无匹配服务商</div>}
             </div>
           </div>
 
@@ -281,7 +403,9 @@ export function LoginModal({
                     <div className="login-detail-name">{current.name}</div>
                     <div className="muted login-detail-desc">{current.desc}</div>
                   </div>
-                  <span className="ui-badge" data-testid="login-detail-protocol">{current.api_protocol}</span>
+                  <div className="login-detail-badges">
+                    <span className="ui-badge" data-testid="login-detail-protocol">{current.api_protocol}</span>
+                  </div>
                 </div>
 
                 {current.connected && (
@@ -309,6 +433,27 @@ export function LoginModal({
                   </div>
                 )}
 
+                {!current.connected && (current.env_configured || (current.env_vars?.length ?? 0) > 0) && (
+                  <div className="ui-card login-env-card" data-testid="login-env-card">
+                    {current.env_configured ? (
+                      <>
+                        <span className="ui-badge ui-badge--ok">环境变量已就绪</span>
+                        <span>检测到 <code>{current.env_source}</code></span>
+                        {current.masked_env_secret && <span className="login-secret-mask">{current.masked_env_secret}</span>}
+                      </>
+                    ) : (
+                      <>
+                        <span className="muted">支持环境变量：</span>
+                        <div className="login-env-badges">
+                          {(current.env_vars ?? []).map((ev) => (
+                            <span key={ev} className="ui-badge">{ev}</span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 {current.auth_modes.length > 1 && (
                   <div className="ui-seg login-mode-tabs" role="tablist" aria-label="认证方式">
                     {current.auth_modes.map((m) => (
@@ -325,7 +470,7 @@ export function LoginModal({
                           setMsg(null);
                         }}
                       >
-                        {MODE_LABELS[m]}
+                        {m === "oauth_pkce" && current.oauth_label ? current.oauth_label : MODE_LABELS[m]}
                       </button>
                     ))}
                   </div>
@@ -371,26 +516,54 @@ export function LoginModal({
                 {mode === "api_key" && (
                   <div className="login-form">
                     <label className="ui-field">
-                      <span>API Key</span>
+                      <span>{current.id === "amazon-bedrock" || current.id === "google-vertex" ? "API Key / Bearer Token（使用下方 IAM/ADC 时可留空）" : "API Key"}</span>
                       <input
                         type="password"
                         className="ui-input login-mono-input"
                         data-testid="login-key-input"
                         value={apiKey}
-                        placeholder="粘贴服务商 API Key…"
+                        placeholder="粘贴服务商 API Key 或令牌…"
                         onChange={(e) => setApiKey(e.target.value)}
                       />
                     </label>
-                    <label className="ui-field">
-                      <span>接口地址（可留默认，或填自建兼容网关）</span>
-                      <input
-                        className="ui-input login-mono-input"
-                        data-testid="login-baseurl-input"
-                        value={baseUrl}
-                        placeholder={current.default_base_url}
-                        onChange={(e) => setBaseUrl(e.target.value)}
-                      />
-                    </label>
+
+                    {extraFields.length > 0 && (
+                      <div className="login-extra-grid" data-testid="login-extra-fields">
+                        {extraFields.map((ef) => (
+                          <label key={ef.key} className="ui-field">
+                            <span className="login-field-head">
+                              <span>{ef.label}{ef.required ? " *" : ""}</span>
+                              {ef.env_var && <span className="ui-badge">{ef.env_var}</span>}
+                            </span>
+                            <input
+                              type={ef.secret ? "password" : "text"}
+                              className="ui-input login-mono-input"
+                              data-testid={`login-extra-${ef.key}`}
+                              value={extraValues[ef.key] ?? ""}
+                              placeholder={ef.placeholder || ef.default}
+                              onChange={(e) =>
+                                setExtraValues((prev) => ({ ...prev, [ef.key]: e.target.value }))
+                              }
+                            />
+                            {ef.help && <span className="login-field-help">{ef.help}</span>}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
+                    {current.supports_custom_base_url && (
+                      <label className="ui-field">
+                        <span>接口地址（可留默认，或填自建兼容网关）</span>
+                        <input
+                          className="ui-input login-mono-input"
+                          data-testid="login-baseurl-input"
+                          value={baseUrl}
+                          placeholder={current.default_base_url}
+                          onChange={(e) => setBaseUrl(e.target.value)}
+                        />
+                      </label>
+                    )}
+
                     <div className="login-actions">
                       <button
                         type="button"
@@ -441,13 +614,13 @@ export function LoginModal({
                         className="ui-input login-mono-input"
                         data-testid="login-code-input"
                         value={authCode}
-                        placeholder="http://localhost:1455/auth/callback?code=… 或 code#state"
+                        placeholder="http://127.0.0.1:1455/auth/callback?code=… 或 code#state"
                         onChange={(e) => setAuthCode(e.target.value)}
                       />
                     </label>
-                    {started?.redirect_uri?.includes("localhost:") && (
+                    {needsLoopbackNote && (
                       <div className="login-hint-note" data-testid="login-localhost-callback-note">
-                        提示：授权后浏览器跳转至 <code>{started.redirect_uri}</code> 显示「无法访问此网站 / 连接被拒绝」属正常现象（无需本地回调服务），请直接复制浏览器地址栏中的完整回调链接粘贴到上方输入框。
+                        提示：授权后浏览器跳转至 <code>{started?.redirect_uri}</code> 显示「无法访问此网站 / 连接被拒绝」属正常现象（无需本地回调服务），请直接复制浏览器地址栏中的完整回调链接粘贴到上方输入框。
                       </div>
                     )}
                     <div className="login-actions">
@@ -466,8 +639,30 @@ export function LoginModal({
 
                 {mode === "oauth_device" && (
                   <div className="login-form">
+                    {extraFields.length > 0 && (
+                      <div className="login-extra-grid" data-testid="login-extra-fields">
+                        {extraFields.map((ef) => (
+                          <label key={ef.key} className="ui-field">
+                            <span className="login-field-head">
+                              <span>{ef.label}</span>
+                            </span>
+                            <input
+                              type={ef.secret ? "password" : "text"}
+                              className="ui-input login-mono-input"
+                              data-testid={`login-extra-${ef.key}`}
+                              value={extraValues[ef.key] ?? ""}
+                              placeholder={ef.placeholder || ef.default}
+                              onChange={(e) =>
+                                setExtraValues((prev) => ({ ...prev, [ef.key]: e.target.value }))
+                              }
+                            />
+                            {ef.help && <span className="login-field-help">{ef.help}</span>}
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     <div className="login-oauth-step">
-                      <span className="muted">第 1 步：获取 GitHub 设备码，复制链接到系统浏览器输入设备码完成授权</span>
+                      <span className="muted">第 1 步：获取 {current.name} 设备码，复制链接到系统浏览器输入设备码完成授权</span>
                       <div className="login-actions">
                         <button
                           type="button"
@@ -476,7 +671,7 @@ export function LoginModal({
                           disabled={busy}
                           onClick={handleStartOAuth}
                         >
-                          {started?.user_code ? "重新获取设备码" : "获取 GitHub 设备码"}
+                          {started?.user_code ? "重新获取设备码" : `获取 ${current.name} 设备码`}
                         </button>
                       </div>
                       {started?.verification_uri && (

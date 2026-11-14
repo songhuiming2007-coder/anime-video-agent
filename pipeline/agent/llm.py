@@ -13,14 +13,21 @@
 
 from __future__ import annotations
 
+import base64
+import configparser
 import contextlib
 import contextvars
+import datetime
+import hashlib
+import hmac
 import http.client
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
@@ -163,27 +170,74 @@ class LLMConfig:
     reasoning_effort: str | None = None
     # D93：单次请求超时（秒）；None = 不设（配置写 0）
     request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S
-    # D170：多协议路由（openai-completions | anthropic-messages | openai-codex-responses）与额外请求头
+    # D170：多协议路由与额外请求头/云平台参数
     api_protocol: str = "openai-completions"
     extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_config: dict[str, str] = field(default_factory=dict)
     auth_type: str | None = None
 
-    @property
-    def endpoint(self) -> str:
+    def _effective_model(self, purpose: str | None) -> str:
+        raw = self.model_for(purpose)
+        if self.api_protocol == "azure-openai-responses":
+            dep = str(self.extra_config.get("deployment_name") or "").strip()
+            if dep:
+                return dep
+        return raw
+
+    def endpoint_for(self, purpose: str | None = None) -> str:
         base = self.base_url.rstrip("/")
-        if self.api_protocol == "anthropic-messages":
+        proto = self.api_protocol
+        if proto == "anthropic-messages":
             if base.endswith("/messages"):
                 return base
             return f"{base}/messages" if base.endswith("/v1") else f"{base}/v1/messages"
-        if self.api_protocol == "openai-codex-responses":
+        if proto in ("openai-codex-responses", "openai-responses"):
             if base.endswith("/responses"):
                 return base
-            if "chatgpt.com/backend-api" in base and not base.endswith("/codex"):
+            if proto == "openai-codex-responses" and "chatgpt.com/backend-api" in base and not base.endswith("/codex"):
                 return f"{base}/codex/responses"
             return f"{base}/responses"
+        if proto == "azure-openai-responses":
+            parsed = urllib.parse.urlparse(base)
+            path_part = parsed.path.rstrip("/")
+            if not path_part.endswith("/responses"):
+                path_part = f"{path_part}/responses"
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "api-version" not in qs:
+                api_ver = str(self.extra_config.get("api_version") or os.environ.get("AZURE_OPENAI_API_VERSION") or "v1").strip() or "v1"
+                qs["api-version"] = [api_ver]
+            query_str = urllib.parse.urlencode([(k, v) for k, vals in qs.items() for v in vals])
+            return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path_part, "", query_str, ""))
+        if proto == "google-generative-ai":
+            if ":streamGenerateContent" in base or ":generateContent" in base:
+                return base
+            model_id = urllib.parse.quote(self.model_for(purpose), safe="")
+            return f"{base}/models/{model_id}:streamGenerateContent?alt=sse"
+        if proto == "google-vertex":
+            if ":streamGenerateContent" in base or ":generateContent" in base:
+                return base
+            model_id = urllib.parse.quote(self.model_for(purpose), safe="")
+            project_id = str(self.extra_config.get("project_id") or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+            location = str(self.extra_config.get("location") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1").strip() or "us-central1"
+            if project_id and "/projects/" not in base:
+                return f"{base}/projects/{urllib.parse.quote(project_id, safe='')}/locations/{urllib.parse.quote(location, safe='')}/publishers/google/models/{model_id}:streamGenerateContent?alt=sse"
+            return f"{base}/models/{model_id}:streamGenerateContent?alt=sse"
+        if proto == "bedrock-converse-stream":
+            if base.endswith("/converse") or base.endswith("/converse-stream"):
+                return base
+            model_id = urllib.parse.quote(self.model_for(purpose), safe="")
+            return f"{base}/model/{model_id}/converse"
+        if proto == "mistral-conversations":
+            if base.endswith("/chat/completions"):
+                return base
+            return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
         if base.endswith("/chat/completions"):
             return base
         return base + "/chat/completions"
+
+    @property
+    def endpoint(self) -> str:
+        return self.endpoint_for(None)
 
     def model_for(self, purpose: str | None) -> str:
         """purpose=None 或该档未配置 → 回落到单一 model。"""
@@ -311,6 +365,7 @@ def _load_auth_fallback_cfg(
         request_timeout_s=request_timeout_s,
         api_protocol=str(cred.get("api_protocol") or "openai-completions"),
         extra_headers=dict(cred.get("extra_headers") or {}),
+        extra_config=dict(cred.get("extra_config") or {}),
         auth_type=cred.get("auth_type"),
     )
 
@@ -881,7 +936,7 @@ def _codex_request(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     from pipeline.agent import model_switch
 
-    model_name = cfg.model_for(purpose)
+    model_name = cfg._effective_model(purpose)
     instr_parts: list[str] = []
     items: list[dict[str, Any]] = []
     for msg in wired:
@@ -958,7 +1013,10 @@ def _codex_request(
         )
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
+        if cfg.api_protocol == "azure-openai-responses":
+            headers["api-key"] = cfg.api_key
+        else:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
     headers.update(cfg.extra_headers)
     return payload, headers
 
@@ -1076,6 +1134,631 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
     return msg, usage
 
 
+_GOOGLE_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_GOOGLE_TOKEN_LOCK = threading.Lock()
+
+
+def _mistral_tool_call_id(raw_id: str, cache: dict[str, str]) -> str:
+    if raw_id in cache:
+        return cache[raw_id]
+    digest = hashlib.sha256(raw_id.encode("utf-8")).digest()
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    code = "".join(alphabet[b % len(alphabet)] for b in digest[:9])
+    cache[raw_id] = code
+    return code
+
+
+def _completions_request(
+    cfg: LLMConfig,
+    wired: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    purpose: str | None,
+    tool_choice: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    is_mistral = cfg.api_protocol == "mistral-conversations"
+    id_cache: dict[str, str] = {}
+    oai_msgs: list[dict[str, Any]] = []
+    for m in wired:
+        if not isinstance(m, dict):
+            oai_msgs.append(m)
+            continue
+        clean = {k: v for k, v in m.items() if k != "thinking_blocks"} if "thinking_blocks" in m else dict(m)
+        if is_mistral:
+            role = str(clean.get("role") or "")
+            if role == "assistant" and isinstance(clean.get("tool_calls"), list):
+                clean["tool_calls"] = [
+                    {**tc, "id": _mistral_tool_call_id(str(tc.get("id") or ""), id_cache)}
+                    if isinstance(tc, dict)
+                    else tc
+                    for tc in clean["tool_calls"]
+                ]
+            elif role == "tool" and clean.get("tool_call_id"):
+                clean["tool_call_id"] = _mistral_tool_call_id(str(clean["tool_call_id"]), id_cache)
+        oai_msgs.append(clean)
+
+    payload: dict[str, Any] = {
+        "model": cfg.model_for(purpose),
+        "messages": oai_msgs,
+    }
+    if tools:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = "any" if (is_mistral and tool_choice == "required") else tool_choice
+    if cfg.reasoning_effort is not None:
+        # D155/D168：按协议与模型映射推理参数；reasoning_effort=none 语义 = 不发档
+        model_switch.apply_effort_to_extra_body(
+            payload,
+            cfg.model_for(purpose),
+            cfg.reasoning_effort,
+            protocol="openai-completions",
+        )
+    # D94：一律请求流式；不支持流式的服务商回 application/json，按 Content-Type 分流解析
+    payload["stream"] = True
+    if not is_mistral:
+        payload["stream_options"] = {"include_usage": True}
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}", **cfg.extra_headers}
+    return payload, headers
+
+
+def _completions_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    usage = body.get("usage") if isinstance(body, dict) else None
+    try:
+        return body["choices"][0]["message"], usage if isinstance(usage, dict) else None
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"LLM 响应缺少 choices[0].message: {exc}") from None
+
+
+def _clean_gemini_schema(schema: Any) -> Any:
+    if isinstance(schema, list):
+        return [_clean_gemini_schema(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    drop_keys = {"$schema", "additionalProperties", "exclusiveMinimum", "exclusiveMaximum"}
+    out: dict[str, Any] = {}
+    for k, v in schema.items():
+        if k in drop_keys:
+            continue
+        out[k] = _clean_gemini_schema(v)
+    return out
+
+
+def _append_google_turn(contents: list[dict[str, Any]], role: str, parts: list[dict[str, Any]]) -> None:
+    if not parts:
+        return
+    if contents and contents[-1]["role"] == role:
+        contents[-1]["parts"].extend(parts)
+    else:
+        contents.append({"role": role, "parts": list(parts)})
+
+
+def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
+    cred_path_raw = (
+        str(extra_config.get("credentials_path") or "").strip()
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    )
+    if cred_path_raw:
+        cred_path = Path(cred_path_raw).expanduser()
+    else:
+        cred_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    if not cred_path.is_file():
+        raise LLMError(f"未找到 Google Vertex 凭据文件：{cred_path}")
+    cache_key = str(cred_path.resolve())
+    now = time.time()
+    with _GOOGLE_TOKEN_LOCK:
+        cached = _GOOGLE_TOKEN_CACHE.get(cache_key)
+        if cached and cached[1] - now > 60:
+            return cached[0]
+    try:
+        info = json.loads(cred_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LLMError(f"读取 Google 凭据 JSON 失败: {exc}") from None
+    if not isinstance(info, dict):
+        raise LLMError("Google 凭据文件格式错误")
+    ctype = str(info.get("type") or "")
+    token_uri = str(info.get("token_uri") or "https://oauth2.googleapis.com/token")
+    if ctype == "authorized_user":
+        form_data = urllib.parse.urlencode({
+            "client_id": str(info.get("client_id") or ""),
+            "client_secret": str(info.get("client_secret") or ""),
+            "refresh_token": str(info.get("refresh_token") or ""),
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+    elif ctype == "service_account":
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        iat = int(now)
+        header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
+        claim_b64 = base64.urlsafe_b64encode(json.dumps({
+            "iss": info["client_email"],
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "aud": token_uri,
+            "iat": iat,
+            "exp": iat + 3600,
+        }).encode("utf-8")).rstrip(b"=")
+        signing_input = header_b64 + b"." + claim_b64
+        key = serialization.load_pem_private_key(str(info["private_key"]).encode("utf-8"), password=None)
+        sig = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())  # type: ignore[union-attr]
+        assertion = (signing_input + b"." + base64.urlsafe_b64encode(sig).rstrip(b"=")).decode("ascii")
+        form_data = urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }).encode("utf-8")
+    else:
+        raise LLMError(f"不支持的 Google 凭据类型：{ctype or 'unknown'}")
+
+    req = urllib.request.Request(
+        token_uri,
+        data=form_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            tok = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise LLMError(f"获取 Google OAuth 访问令牌失败: {exc}") from None
+    access_token = str(tok.get("access_token") or "").strip()
+    if not access_token:
+        raise LLMError("Google OAuth 未返回 access_token")
+    expires_in = float(tok.get("expires_in") or 3600)
+    with _GOOGLE_TOKEN_LOCK:
+        _GOOGLE_TOKEN_CACHE[cache_key] = (access_token, time.time() + expires_in)
+    return access_token
+
+
+def _google_request(
+    cfg: LLMConfig,
+    wired: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    purpose: str | None,
+    tool_choice: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    system_parts: list[dict[str, str]] = []
+    contents: list[dict[str, Any]] = []
+    call_names: dict[str, str] = {}
+    for msg in wired:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system":
+            t = _content_text(msg.get("content"))
+            if t:
+                system_parts.append({"text": t})
+        elif role == "assistant":
+            parts: list[dict[str, Any]] = []
+            for tb in msg.get("thinking_blocks") or []:
+                if isinstance(tb, dict) and tb.get("type") == "thinking":
+                    p: dict[str, Any] = {"thought": True, "text": str(tb.get("thinking") or "")}
+                    if tb.get("signature"):
+                        p["thoughtSignature"] = str(tb["signature"])
+                    parts.append(p)
+            txt = _content_text(msg.get("content"))
+            if txt:
+                parts.append({"text": txt})
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                cid = str(call.get("id") or "")
+                cname = str(fn.get("name") or "")
+                if cid and cname:
+                    call_names[cid] = cname
+                parts.append({
+                    "functionCall": {
+                        "name": cname,
+                        "args": _parse_tool_args(fn.get("arguments")),
+                    }
+                })
+            _append_google_turn(contents, "model", parts)
+        elif role == "tool":
+            cid = str(msg.get("tool_call_id") or "")
+            cname = str(msg.get("name") or call_names.get(cid) or "tool")
+            _append_google_turn(
+                contents,
+                "user",
+                [{
+                    "functionResponse": {
+                        "name": cname,
+                        "response": {"output": _content_text(msg.get("content"))},
+                    }
+                }],
+            )
+        else:
+            raw_c = msg.get("content")
+            u_parts: list[dict[str, Any]] = []
+            if isinstance(raw_c, list):
+                for part in raw_c:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = str(((part.get("image_url") or {}).get("url")) or "")
+                        if url.startswith("data:") and ";base64," in url:
+                            head, b64 = url.split(";base64,", 1)
+                            u_parts.append({"inlineData": {"mimeType": head[5:] or "image/png", "data": b64}})
+                    elif isinstance(part, dict) and part.get("text"):
+                        u_parts.append({"text": str(part["text"])})
+            else:
+                u_parts.append({"text": _content_text(raw_c)})
+            _append_google_turn(contents, "user", u_parts)
+
+    payload: dict[str, Any] = {"contents": contents}
+    if system_parts:
+        payload["systemInstruction"] = {"parts": system_parts}
+    if tools:
+        decls = []
+        for t in tools:
+            if t.get("type") == "function" and isinstance(t.get("function"), dict):
+                fn = t["function"]
+                decls.append({
+                    "name": fn.get("name"),
+                    "description": fn.get("description") or "",
+                    "parameters": _clean_gemini_schema(fn.get("parameters") or {"type": "object", "properties": {}}),
+                })
+        if decls:
+            payload["tools"] = [{"functionDeclarations": decls}]
+    if tool_choice is not None:
+        mode_map = {"auto": "AUTO", "none": "NONE", "required": "ANY"}
+        if tool_choice in mode_map:
+            payload["toolConfig"] = {"functionCallingConfig": {"mode": mode_map[tool_choice]}}
+        else:
+            payload["toolConfig"] = {
+                "functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": [str(tool_choice)]}
+            }
+    if cfg.reasoning_effort is not None:
+        lvl = model_switch.validate_effort(cfg.reasoning_effort)
+        if lvl and lvl != "none":
+            from pipeline.agent.compact import THINKING_BUDGETS
+
+            budget = THINKING_BUDGETS.get(lvl, 8192)
+            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": budget, "includeThoughts": True}}
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if cfg.api_protocol == "google-vertex" and not cfg.api_key:
+        bearer = _google_vertex_bearer_token(cfg.extra_config)
+        headers["Authorization"] = f"Bearer {bearer}"
+    elif cfg.api_key:
+        headers["x-goog-api-key"] = cfg.api_key
+    headers.update(cfg.extra_headers)
+    return payload, headers
+
+
+def _normalize_google_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    inp = int(raw.get("promptTokenCount") or 0)
+    out = int(raw.get("candidatesTokenCount") or 0) + int(raw.get("thoughtsTokenCount") or 0)
+    tot = int(raw.get("totalTokenCount") or (inp + out))
+    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+
+
+def _collect_google_candidate(
+    cand: dict[str, Any],
+    texts: list[str],
+    thinkings: list[str],
+    thinking_blocks: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
+) -> None:
+    content = cand.get("content") or {}
+    for part in content.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("text") is not None:
+            t_str = str(part["text"])
+            if part.get("thought"):
+                thinkings.append(t_str)
+                tb: dict[str, Any] = {"type": "thinking", "thinking": t_str}
+                if part.get("thoughtSignature"):
+                    tb["signature"] = str(part["thoughtSignature"])
+                thinking_blocks.append(tb)
+            else:
+                texts.append(t_str)
+        elif isinstance(part.get("functionCall"), dict):
+            fc = part["functionCall"]
+            idx = len(calls) + 1
+            cid = str(fc.get("id") or f"call_gemini_{idx}")
+            calls.append({
+                "id": cid,
+                "type": "function",
+                "function": {
+                    "name": str(fc.get("name") or ""),
+                    "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False),
+                },
+            })
+
+
+def _google_json_to_message(body: dict[str, Any] | list[Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    chunks = body if isinstance(body, list) else [body]
+    texts: list[str] = []
+    thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    usage_raw: dict[str, Any] | None = None
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        if isinstance(chunk.get("error"), dict):
+            raise _stream_error(chunk["error"])
+        if isinstance(chunk.get("usageMetadata"), dict):
+            usage_raw = chunk["usageMetadata"]
+        for cand in chunk.get("candidates") or []:
+            if isinstance(cand, dict):
+                _collect_google_candidate(cand, texts, thinkings, thinking_blocks, calls)
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
+    if calls:
+        msg["tool_calls"] = calls
+    return msg, _normalize_google_usage(usage_raw)
+
+
+def _assemble_google_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    texts: list[str] = []
+    thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    usage_raw: dict[str, Any] | None = None
+    saw_event = False
+    for raw in lines:
+        line = raw.strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            ev = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"Gemini 流式响应行非 JSON: {exc}") from None
+        if not isinstance(ev, dict):
+            continue
+        saw_event = True
+        if isinstance(ev.get("error"), dict):
+            raise _stream_error(ev["error"])
+        if isinstance(ev.get("usageMetadata"), dict):
+            usage_raw = ev["usageMetadata"]
+        for cand in ev.get("candidates") or []:
+            if isinstance(cand, dict):
+                _collect_google_candidate(cand, texts, thinkings, thinking_blocks, calls)
+    if not saw_event:
+        raise LLMError("Gemini 流式响应未收到有效数据", retryable=True)
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
+    if calls:
+        msg["tool_calls"] = calls
+    return msg, _normalize_google_usage(usage_raw)
+
+
+def _resolve_aws_iam_credentials(extra_config: dict[str, str]) -> tuple[str, str, str | None, str]:
+    region = str(
+        extra_config.get("aws_region")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    ).strip()
+    ak = str(extra_config.get("aws_access_key_id") or os.environ.get("AWS_ACCESS_KEY_ID") or "").strip()
+    sk = str(extra_config.get("aws_secret_access_key") or os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()
+    tok = str(extra_config.get("aws_session_token") or os.environ.get("AWS_SESSION_TOKEN") or "").strip() or None
+    if ak and sk:
+        return ak, sk, tok, region
+    profile = str(extra_config.get("aws_profile") or os.environ.get("AWS_PROFILE") or "default").strip()
+    creds_file = Path.home() / ".aws" / "credentials"
+    if creds_file.is_file():
+        cp = configparser.ConfigParser()
+        cp.read(creds_file, encoding="utf-8")
+        if cp.has_section(profile):
+            ak = cp.get(profile, "aws_access_key_id", fallback="").strip()
+            sk = cp.get(profile, "aws_secret_access_key", fallback="").strip()
+            tok = cp.get(profile, "aws_session_token", fallback="").strip() or None
+            if ak and sk:
+                return ak, sk, tok, region
+    raise LLMError("Amazon Bedrock 缺少 Bearer Token 或 AWS IAM Access Key / Profile")
+
+
+def _sign_aws_v4(
+    endpoint: str,
+    body_bytes: bytes,
+    headers: dict[str, str],
+    extra_config: dict[str, str],
+) -> dict[str, str]:
+    ak, sk, session_tok, region = _resolve_aws_iam_credentials(extra_config)
+    parsed = urllib.parse.urlparse(endpoint)
+    host = parsed.netloc
+    canonical_uri = urllib.parse.quote(parsed.path or "/", safe="/-_.~")
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    amz_date = now_dt.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now_dt.strftime("%Y%m%d")
+    payload_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    signed_headers_map = {
+        "content-type": headers.get("Content-Type", "application/json"),
+        "host": host,
+        "x-amz-content-sha256": payload_hash,
+        "x-amz-date": amz_date,
+    }
+    if session_tok:
+        signed_headers_map["x-amz-security-token"] = session_tok
+
+    sorted_keys = sorted(signed_headers_map)
+    canonical_headers = "".join(f"{k}:{signed_headers_map[k]}\n" for k in sorted_keys)
+    signed_headers_str = ";".join(sorted_keys)
+    canonical_request = "\n".join([
+        "POST",
+        canonical_uri,
+        parsed.query,
+        canonical_headers,
+        signed_headers_str,
+        payload_hash,
+    ])
+    scope = f"{date_stamp}/{region}/bedrock/aws4_request"
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+
+    def _hmac(key_b: bytes, msg_s: str) -> bytes:
+        return hmac.new(key_b, msg_s.encode("utf-8"), hashlib.sha256).digest()
+
+    k_date = _hmac(f"AWS4{sk}".encode("utf-8"), date_stamp)
+    k_region = _hmac(k_date, region)
+    k_service = _hmac(k_region, "bedrock")
+    k_signing = _hmac(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    out = dict(headers)
+    out["Host"] = host
+    out["X-Amz-Date"] = amz_date
+    out["X-Amz-Content-Sha256"] = payload_hash
+    if session_tok:
+        out["X-Amz-Security-Token"] = session_tok
+    out["Authorization"] = (
+        f"AWS4-HMAC-SHA256 Credential={ak}/{scope}, SignedHeaders={signed_headers_str}, Signature={signature}"
+    )
+    return out
+
+
+def _append_bedrock_msg(out: list[dict[str, Any]], role: str, blocks: list[dict[str, Any]]) -> None:
+    if not blocks:
+        return
+    if out and out[-1]["role"] == role:
+        out[-1]["content"].extend(blocks)
+    else:
+        out.append({"role": role, "content": list(blocks)})
+
+
+def _bedrock_request(
+    cfg: LLMConfig,
+    wired: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    purpose: str | None,
+    tool_choice: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    system_blocks: list[dict[str, str]] = []
+    bedrock_msgs: list[dict[str, Any]] = []
+    for msg in wired:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system":
+            t = _content_text(msg.get("content"))
+            if t:
+                system_blocks.append({"text": t})
+        elif role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            txt = _content_text(msg.get("content"))
+            if txt:
+                blocks.append({"text": txt})
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                blocks.append({
+                    "toolUse": {
+                        "toolUseId": str(call.get("id") or ""),
+                        "name": str(fn.get("name") or ""),
+                        "input": _parse_tool_args(fn.get("arguments")),
+                    }
+                })
+            _append_bedrock_msg(bedrock_msgs, "assistant", blocks or [{"text": ""}])
+        elif role == "tool":
+            _append_bedrock_msg(
+                bedrock_msgs,
+                "user",
+                [{
+                    "toolResult": {
+                        "toolUseId": str(msg.get("tool_call_id") or ""),
+                        "content": [{"text": _content_text(msg.get("content"))}],
+                    }
+                }],
+            )
+        else:
+            _append_bedrock_msg(bedrock_msgs, "user", [{"text": _content_text(msg.get("content")) or " "}])
+
+    payload: dict[str, Any] = {"messages": bedrock_msgs}
+    if system_blocks:
+        payload["system"] = system_blocks
+    if tools:
+        specs = []
+        for t in tools:
+            if t.get("type") == "function" and isinstance(t.get("function"), dict):
+                fn = t["function"]
+                specs.append({
+                    "toolSpec": {
+                        "name": fn.get("name"),
+                        "description": fn.get("description") or "tool",
+                        "inputSchema": {"json": fn.get("parameters") or {"type": "object", "properties": {}}},
+                    }
+                })
+        if specs:
+            tc_obj: dict[str, Any] = {"tools": specs}
+            if tool_choice == "auto":
+                tc_obj["toolChoice"] = {"auto": {}}
+            elif tool_choice == "required":
+                tc_obj["toolChoice"] = {"any": {}}
+            elif isinstance(tool_choice, str) and tool_choice != "none":
+                tc_obj["toolChoice"] = {"tool": {"name": tool_choice}}
+            payload["toolConfig"] = tc_obj
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
+    headers.update(cfg.extra_headers)
+    return payload, headers
+
+
+def _bedrock_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    content_blocks = ((body.get("output") or {}).get("message") or {}).get("content") or []
+    texts: list[str] = []
+    thinkings: list[str] = []
+    calls: list[dict[str, Any]] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if "text" in block and block["text"] is not None:
+            texts.append(str(block["text"]))
+        elif isinstance(block.get("reasoningContent"), dict):
+            rt = (block["reasoningContent"].get("reasoningText") or {}).get("text")
+            if rt:
+                thinkings.append(str(rt))
+        elif isinstance(block.get("toolUse"), dict):
+            tu = block["toolUse"]
+            calls.append({
+                "id": str(tu.get("toolUseId") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(tu.get("name") or ""),
+                    "arguments": json.dumps(tu.get("input") or {}, ensure_ascii=False),
+                },
+            })
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
+    if thinkings:
+        msg["reasoning_content"] = "".join(thinkings) or None
+    if calls:
+        msg["tool_calls"] = calls
+    raw_u = body.get("usage")
+    usage = None
+    if isinstance(raw_u, dict):
+        inp = int(raw_u.get("inputTokens") or 0)
+        out = int(raw_u.get("outputTokens") or 0)
+        tot = int(raw_u.get("totalTokens") or (inp + out))
+        usage = {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+    return msg, usage
+
+
+_PROTOCOL_ADAPTERS: dict[str, tuple[Any, Any, Any]] = {
+    "openai-completions": (_completions_request, _assemble_stream, _completions_json_to_message),
+    "mistral-conversations": (_completions_request, _assemble_stream, _completions_json_to_message),
+    "anthropic-messages": (_anthropic_request, _assemble_anthropic_stream, _anthropic_json_to_message),
+    "openai-codex-responses": (_codex_request, _assemble_codex_stream, _codex_json_to_message),
+    "openai-responses": (_codex_request, _assemble_codex_stream, _codex_json_to_message),
+    "azure-openai-responses": (_codex_request, _assemble_codex_stream, _codex_json_to_message),
+    "google-generative-ai": (_google_request, _assemble_google_stream, _google_json_to_message),
+    "google-vertex": (_google_request, _assemble_google_stream, _google_json_to_message),
+    "bedrock-converse-stream": (_bedrock_request, _assemble_stream, _bedrock_json_to_message),
+}
+
+
 def chat_complete(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -1088,7 +1771,7 @@ def chat_complete(
     tool_choice: str | None = None,
     egress_trusted: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """发一次 chat/completions，返回 `choices[0].message`。
+    """发一次统一多协议 LLM 请求，返回 OpenAI 同形 `choices[0].message`。
 
     配置缺失 → 降级消息（不抛）；网络/HTTP/协议失败 → `LLMError`。
     `tool_choice=None`（默认）时请求体**不含该键**——与加这个参数之前逐字节相同（TL-15）。
@@ -1100,44 +1783,22 @@ def chat_complete(
         return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
 
     wired = _wire_messages(messages, purpose)
-    if cfg.api_protocol == "anthropic-messages":
-        payload, headers = _anthropic_request(cfg, wired, tools, purpose, tool_choice)
-    elif cfg.api_protocol == "openai-codex-responses":
-        payload, headers = _codex_request(cfg, wired, tools, purpose, tool_choice)
-    else:
-        oai_msgs = (
-            [{k: v for k, v in m.items() if k != "thinking_blocks"} if isinstance(m, dict) and "thinking_blocks" in m else m for m in wired]
-            if any(isinstance(m, dict) and "thinking_blocks" in m for m in wired)
-            else wired
-        )
-        payload = {
-            "model": cfg.model_for(purpose),
-            "messages": oai_msgs,
-        }
-        if tools:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
-        if cfg.reasoning_effort is not None:
-            # D155/D168：按协议与模型映射推理参数（OpenAI reasoning_effort / effort_map / Codex / Anthropic 等）；
-            # reasoning_effort=none 语义 = 不发档，映射到不带键。
-            model_switch.apply_effort_to_extra_body(
-                payload,
-                cfg.model_for(purpose),
-                cfg.reasoning_effort,
-                protocol="openai-completions",
-            )
-        # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
-        # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}", **cfg.extra_headers}
+    endpoint = cfg.endpoint_for(purpose)
+    build_req, parse_stream, parse_json = _PROTOCOL_ADAPTERS.get(
+        cfg.api_protocol,
+        (_completions_request, _assemble_stream, _completions_json_to_message),
+    )
+    payload, headers = build_req(cfg, wired, tools, purpose, tool_choice)
 
-    assert_egress_boundary(cfg.endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
+    assert_egress_boundary(endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
+
+    body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if cfg.api_protocol == "bedrock-converse-stream" and not cfg.api_key:
+        headers = _sign_aws_v4(endpoint, body_bytes, headers, cfg.extra_config)
 
     request = urllib.request.Request(
-        cfg.endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        endpoint,
+        data=body_bytes,
         headers=headers,
         method="POST",
     )
@@ -1148,12 +1809,7 @@ def chat_complete(
             ctype = str(resp_headers.get("Content-Type", "") if resp_headers is not None else "").lower()
             if "text/event-stream" in ctype:
                 line_iter = (raw.decode("utf-8", errors="replace") for raw in resp)
-                if cfg.api_protocol == "anthropic-messages":
-                    message, usage = _assemble_anthropic_stream(line_iter)
-                elif cfg.api_protocol == "openai-codex-responses":
-                    message, usage = _assemble_codex_stream(line_iter)
-                else:
-                    message, usage = _assemble_stream(line_iter)
+                message, usage = parse_stream(line_iter)
                 _LAST_USAGE.set(usage)
                 return message
             body = json.loads(resp.read().decode("utf-8"))
@@ -1167,25 +1823,11 @@ def chat_complete(
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 响应非 JSON: {exc}") from None
 
-    if cfg.api_protocol == "anthropic-messages":
-        if not isinstance(body, dict):
-            raise LLMError("Anthropic 响应不是 JSON 对象")
-        msg, usage = _anthropic_json_to_message(body)
-        _LAST_USAGE.set(usage)
-        return msg
-    if cfg.api_protocol == "openai-codex-responses":
-        if not isinstance(body, dict):
-            raise LLMError("Codex 响应不是 JSON 对象")
-        msg, usage = _codex_json_to_message(body)
-        _LAST_USAGE.set(usage)
-        return msg
-
-    usage = body.get("usage") if isinstance(body, dict) else None
+    if not isinstance(body, (dict, list)) or (isinstance(body, dict) is False and cfg.api_protocol not in ("google-generative-ai", "google-vertex")):
+        raise LLMError(f"{cfg.api_protocol} 响应不是 JSON 对象")
+    msg, usage = parse_json(body)
     _LAST_USAGE.set(usage if isinstance(usage, dict) else None)
-    try:
-        return body["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMError(f"LLM 响应缺少 choices[0].message: {exc}") from None
+    return msg
 
 
 def _parse_tool_args(raw: Any) -> dict[str, Any]:

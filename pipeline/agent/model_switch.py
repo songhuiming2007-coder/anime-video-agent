@@ -91,6 +91,7 @@ def effective_config(cfg: LLMConfig | None, override: Override, *, root: Path | 
                 models={},
                 api_protocol=str(cred.get("api_protocol") or "openai-completions"),
                 extra_headers=dict(cred.get("extra_headers") or {}),
+                extra_config=dict(cred.get("extra_config") or {}),
                 auth_type=cred.get("auth_type"),
             )
     return out
