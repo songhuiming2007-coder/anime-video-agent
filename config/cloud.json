@@ -84,6 +84,7 @@
     "colab": {
       "transport": "ssh",
       "ssh_host": "ava-colab",
+      "notebook_url": "https://colab.research.google.com/github/songhuiming2007-coder/anime-video-agent/blob/main/tools/ava_colab_bootstrap.ipynb",
       "billing_unit": "cu",
       "cu_rate_fallback": 1.5,
       "cu_rates": {
@@ -106,6 +107,7 @@
     },
     "colab-drive": {
       "transport": "drive",
+      "notebook_url": "https://colab.research.google.com/github/songhuiming2007-coder/anime-video-agent/blob/main/tools/ava_colab_bootstrap.ipynb",
       "billing_unit": "cu",
       "cu_rate_fallback": 1.5,
       "cu_rates": {

@@ -14,7 +14,7 @@ agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。�
 ## 云端双后端：AutoDL 与 Google Colab
 
 除 AutoDL（见下文「用完即弃」）外，`pipeline.cloud` 同时支持 Google Colab：
-- `colab`（推荐）：运行 [`tools/ava_colab_bootstrap.ipynb`](../../tools/ava_colab_bootstrap.ipynb)（`mode="ssh"`），用 `cloudflared` 暴露 SSH 隧道，`cloud connect "<隧道指令>" --provider colab` 接入；按 Compute Units（CU）计费，`cloud down` 或空闲超时自动调用 `runtime.unassign()` 释放运行时。
+- `colab`（推荐，支持 Agent 全自动开机）：[`tools/ava_colab_bootstrap.ipynb`](../../tools/ava_colab_bootstrap.ipynb) 已合并为**单格一键 Notebook**。首次执行一次 `cloud connect --provider colab --browser-login` 在隔离浏览器保存 Google 登录态后，以后每次 `cloud up --provider colab` 会自动无头打开 Colab、触发运行并抓取新的 `trycloudflare.com` 隧道、更新 `profiles.colab` 与 `data/cloud/ssh_config`；按 Compute Units（CU）计费，`cloud down` 或空闲超时自动调用 `runtime.unassign()` 释放运行时。
 - `colab-drive`（零隧道兜底）：在 Notebook 跑 `mode="drive"`，本机 `cloud connect --provider colab-drive --drive-root "<Drive同步目录>/ava_cloud"` 绑定共享队列目录，全流程复用 `push / run / pull / logs / hold / down`。
 - 切换与并行配置：`cloud use <autodl|colab|colab-drive>`（弹卡）切换默认后端，单条命令也可用 `--provider <后端>` 临时覆盖，三套配置互不覆盖。
 

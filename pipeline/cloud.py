@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import cloud_drive, paths
+from . import cloud_colab_boot, cloud_drive, paths
 from .keys import SP_NUM
 
 # ---------------------------------------------------------------------------
@@ -504,12 +504,13 @@ def merge_profile_connection(local: dict, provider: str, conn: dict, ssh_host: s
         for k in ("server", "port", "user"):
             if k in conn:
                 prof[k] = conn[k]
-        if conn.get("proxy_type"):
-            prof["proxy_type"] = conn["proxy_type"]
+        for opt_key in ("proxy_type", "notebook_url"):
+            if conn.get(opt_key):
+                prof[opt_key] = conn[opt_key]
         if ssh_host:
             prof["ssh_host"] = ssh_host
         else:
-            prof.setdefault("ssh_host", "ava-colab")
+            prof.setdefault("ssh_host", "autodl" if provider == "autodl" else "ava-colab")
     profiles[provider] = prof
     out["profiles"] = profiles
     return out
@@ -633,18 +634,16 @@ def rent_instructions(cfg_global: dict, provider: str = "autodl") -> list[str]:
     """`up` 连不上时打印的接入指引（纯函数）：AutoDL 租机四项 / Colab 启动指南。"""
     if provider == "colab":
         return [
-            "Colab SSH 隧道连不上。请按以下步骤拉起 Colab 运行时：",
-            "  1. 打开 Colab（https://colab.research.google.com/）上传/运行 `tools/ava_colab_bootstrap.ipynb`",
-            "  2. 在「修改笔记本设置」选择 GPU（TTS 选 T4 即可；VLM 打标选 L4 / A100）",
-            "  3. 运行 Cell 1（挂 Drive 缓存、建 venv、拉模型到 /content/models）与 Cell 2（mode = \"ssh\"）",
-            "  4. 把 Cell 2 打印的 SSH/cloudflared 连接串交给 `cloud connect \"<连接串>\" --provider colab`",
-            "  5. 如本机无公网/隧道受阻，可改用 `cloud use colab-drive` 走 Google Drive 共享队列模式",
+            "Colab SSH 隧道连不上。可用以下任一方式拉起 Colab 运行时：",
+            "  方式 A（全自动，推荐）：首次执行 `cloud connect --provider colab --browser-login` 完成一次 Google 登录，之后 `cloud up --provider colab` 自动无头打开 Notebook、点「全部运行」并刷新隧道。",
+            "  方式 B（手动接管）：在 Colab 打开 `tools/ava_colab_bootstrap.ipynb`，选好 GPU（TTS 选 T4；VLM 打标选 L4/A100）运行唯一代码格（`MODE = \"ssh\"`），把输出的隧道地址交给 `cloud connect \"<连接串>\" --provider colab`。",
+            "  如隧道受阻，也可改用 `cloud use colab-drive` 走 Google Drive 共享队列模式。",
         ]
     if provider == "colab-drive":
         return [
             "Colab Drive Worker 未在线（未探测到最新心跳）。请确认：",
             "  1. 本机 Google Drive for Desktop 已运行且 `drive_root` 已通过 `cloud connect --drive-root <路径> --provider colab-drive` 绑定",
-            "  2. Colab 中 `tools/ava_colab_bootstrap.ipynb` 已选 GPU 并启动 Cell 2（mode = \"drive\"）",
+            "  2. Colab 中 `tools/ava_colab_bootstrap.ipynb` 已选 GPU 并运行唯一代码格（`MODE = \"drive\"`）",
             "  3. Drive 目录下的 `heartbeat/worker.json` 会在 15s 内更新，随后执行 `cloud up --provider colab-drive`",
         ]
     region = cfg_global.get("region", "西北B区")
@@ -1800,6 +1799,38 @@ def cmd_use(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_ssh_profile_connection(
+    cfg_global: dict,
+    local: dict,
+    f_local: Path,
+    provider: str,
+    conn: dict,
+    *,
+    alias: str | None = None,
+) -> tuple[dict, str, str]:
+    """持久化 SSH/cloudflared 连接配置并重绘 data/cloud/ssh_config。"""
+    resolved_alias = alias or str(
+        provider_profile(local, provider).get("ssh_host")
+        or provider_settings(cfg_global, provider).get("ssh_host")
+        or ("ava-colab" if provider == "colab" else "autodl")
+    )
+    merged = merge_profile_connection(local, provider, conn, ssh_host=resolved_alias)
+    paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+    ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
+    forget_known_host(conn)
+    rendered = (
+        render_all_ssh_configs(cfg_global, merged, known_hosts_file())
+        or render_ssh_config(resolved_alias, conn, known_hosts_file())
+    )
+    paths.atomic_write(ssh_config_file(), rendered)
+    endpoint = (
+        f"{conn['user']}@{conn['server']}"
+        if conn.get("proxy_type") == "cloudflared"
+        else f"{conn['user']}@{conn['server']}:{conn['port']}"
+    )
+    return merged, resolved_alias, endpoint
+
+
 def cmd_connect(args: argparse.Namespace) -> int:
     """接入/换实例（D102 + Colab）：解析 SSH/cloudflared 或绑定 Drive 共享队列，写入对应 profile。
 
@@ -1842,30 +1873,46 @@ def cmd_connect(args: argparse.Namespace) -> int:
         if hb and hb.get("online"):
             print(f"[OK] Colab Worker 在线：GPU={hb.get('gpu') or '未知'}（心跳延迟 {hb.get('stale_s')}s）")
         else:
-            print("[*] 当前未检测到在线 Worker 心跳，请确保 Colab Bootstrap Notebook Cell 2 (drive 模式) 已运行")
+            print("[*] 当前未检测到在线 Worker 心跳，请确保 Colab Bootstrap Notebook (MODE=\"drive\") 已运行")
         if merged.get("active_provider", cfg_global.get("provider", "autodl")) != "colab-drive":
             print("[*] 提示: 默认后端仍未切换，如需默认走 Drive 队列请执行: python -m pipeline.cloud use colab-drive")
         return 0
 
+    if getattr(args, "browser_login", False):
+        if provider != "colab":
+            raise SystemExit("FAIL --browser-login 仅支持 --provider colab")
+        nb_url = cloud_colab_boot.resolve_colab_notebook_url(
+            cfg_global, local, getattr(args, "notebook_url", None)
+        )
+        prof_dir = cloud_colab_boot.colab_browser_profile_dir()
+        try:
+            cloud_colab_boot.interactive_browser_login(
+                nb_url,
+                profile_dir=prof_dir,
+                timeout_s=int(getattr(args, "timeout", 300) or 300),
+            )
+        except RuntimeError as exc:
+            raise SystemExit(f"FAIL {exc}") from exc
+        merged = merge_profile_connection(local, "colab", {"notebook_url": nb_url}, ssh_host=None)
+        paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+        print(f"[OK] Google/Colab 登录态已保存到隔离浏览器目录: {prof_dir}")
+        print("[*] 之后执行 `python -m pipeline.cloud up --provider colab` 可自动无头拉起 Colab 并接通 SSH。")
+        return 0
+
     login_text = (getattr(args, "login", None) or "").strip()
     if not login_text:
-        raise SystemExit(f"FAIL {provider} 需要提供控制台登录指令或隧道主机，如: cloud connect \"ssh -p ...\" --provider {provider}")
+        extra = "；Colab 首次开启自动拉起可运行: cloud connect --provider colab --browser-login" if provider == "colab" else ""
+        raise SystemExit(f"FAIL {provider} 需要提供控制台登录指令或隧道主机，如: cloud connect \"ssh -p ...\" --provider {provider}{extra}")
     try:
         conn = parse_colab_connect_target(login_text) if provider == "colab" else parse_login_command(login_text)
     except ValueError as exc:
         raise SystemExit(f"FAIL 登录指令解析不出：{exc}") from exc
 
-    alias = str(provider_profile(local, provider).get("ssh_host")
-                or provider_settings(cfg_global, provider).get("ssh_host")
-                or ("ava-colab" if provider == "colab" else "autodl"))
-    merged = merge_profile_connection(local, provider, conn, ssh_host=alias)
-    paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-    ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
-    forget_known_host(conn)
-    rendered = render_all_ssh_configs(cfg_global, merged, known_hosts_file()) or render_ssh_config(alias, conn, known_hosts_file())
-    paths.atomic_write(ssh_config_file(), rendered)
+    nb_override = (getattr(args, "notebook_url", None) or "").strip()
+    if nb_override and provider == "colab":
+        conn["notebook_url"] = nb_override
 
-    endpoint = f"{conn['user']}@{conn['server']}" if conn.get("proxy_type") == "cloudflared" else f"{conn['user']}@{conn['server']}:{conn['port']}"
+    merged, alias, endpoint = _apply_ssh_profile_connection(cfg_global, local, f_local, provider, conn)
     print(f"[OK] {provider} 连接信息已更新：{endpoint}（别名 {alias}）")
 
     _require_local_cloudflared(conn)
@@ -1918,11 +1965,11 @@ def _doctor_colab_drive(ctx: dict[str, Any]) -> int:
     if not hb:
         all_passed = False
         print("FAIL  [WORKER] 尚未检测到 Colab Worker 心跳 (heartbeat/worker.json)")
-        print("      修法: 在 Colab 中运行 tools/ava_colab_bootstrap.ipynb Cell 2 (mode = \"drive\")")
+        print("      修法: 在 Colab 运行 tools/ava_colab_bootstrap.ipynb 唯一代码格 (MODE = \"drive\")")
     elif not hb.get("online"):
         all_passed = False
         print(f"FAIL  [WORKER] Colab Worker 心跳已过期（最后上报于 {hb.get('stale_s')}s 前）")
-        print("      修法: 检查 Colab 运行时是否已断开，并在 Colab 重跑 Cell 2")
+        print("      修法: 检查 Colab 运行时是否已断开，并在 Colab 重跑 Bootstrap 唯一代码格")
     else:
         print(f"OK    [WORKER] Colab Worker 在线（心跳延迟 {hb.get('stale_s')}s，活跃任务: {hb.get('active_job') or '无'}）")
         gpu_str = str(hb.get("gpu") or "")
@@ -1989,8 +2036,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print(f"FAIL  [SSH] 无法通过 SSH 连接远端实例 ({host})")
         if provider == "colab":
-            print("      修法: 1. 在 Colab 运行 tools/ava_colab_bootstrap.ipynb Cell 2 (mode = \"ssh\");")
-            print("            2. 把输出的隧道连接串交给 cloud connect --provider colab;")
+            print("      修法: 1. 直接运行 cloud up --provider colab 自动无头拉起（需先运行过一次 --browser-login）；")
+            print("            2. 或手动在 Colab 运行 tools/ava_colab_bootstrap.ipynb 后 `cloud connect \"<隧道串>\" --provider colab`;")
             print("            3. 或切换无隧道队列: cloud use colab-drive。")
         else:
             print("      修法: 1. 确认控制台实例是否已开机 (https://www.autodl.com/console/instance/list);")
@@ -2204,24 +2251,58 @@ def cmd_up(args: argparse.Namespace) -> int:
             print(f"[OK] 会话已开启: {session_data['session']} (后端: colab-drive, 计费单位: CU)")
         return 0
 
-    _require_local_cloudflared(ctx["profile"])
+    _require_local_cloudflared(ctx["profile"] or ({"proxy_type": "cloudflared"} if provider == "colab" else {}))
     print(f"[*] 检查云端实例连通性 (后端: {provider}, Host: {host}, 模式: {declared or '开机后探测'})...")
     if not is_ssh_reachable(host):
-        print()
-        for line in rent_instructions(cfg_global, provider):
-            print(f"[!] {line}")
-        print(f"[*] 轮询等待 SSH 可达中（超时 {args.timeout} 秒；期间 connect 换了连接也会接上）...")
+        if provider == "colab" and not getattr(args, "no_auto_boot", False):
+            prof_dir = cloud_colab_boot.colab_browser_profile_dir()
+            if cloud_colab_boot.has_saved_browser_profile(prof_dir):
+                nb_url = cloud_colab_boot.resolve_colab_notebook_url(
+                    cfg_global, ctx["cfg_local"], getattr(args, "notebook_url", None)
+                )
+                print(f"[*] Colab 尚未连通，尝试通过隔离浏览器自动无头拉起：{nb_url}")
+                try:
+                    tunnel_target = cloud_colab_boot.auto_boot_colab_ssh(
+                        nb_url,
+                        profile_dir=prof_dir,
+                        timeout_s=int(args.timeout),
+                    )
+                except RuntimeError as exc:
+                    raise SystemExit(f"FAIL Colab 自动拉起失败: {exc}") from exc
+                conn = parse_colab_connect_target(tunnel_target)
+                conn["notebook_url"] = nb_url
+                paths.require_data()
+                merged, host, endpoint = _apply_ssh_profile_connection(
+                    cfg_global,
+                    ctx["cfg_local"],
+                    paths.CONFIG / "cloud.local.json",
+                    "colab",
+                    conn,
+                    alias=host,
+                )
+                ctx["cfg_local"] = merged
+                ctx["profile"] = provider_profile(merged, "colab")
+                print(f"[OK] Colab 自动拉起成功，隧道已刷新：{endpoint}（别名 {host}）")
+            else:
+                print("[*] 尚未检测到 Colab 隔离浏览器登录态；如需无人值守自动开机，可先执行一次：")
+                print("    python -m pipeline.cloud connect --provider colab --browser-login")
 
-        start_wait = time.time()
-        connected = False
-        while time.time() - start_wait < args.timeout:
-            if is_ssh_reachable(host):
-                connected = True
-                break
-            time.sleep(5)
+        if not is_ssh_reachable(host):
+            print()
+            for line in rent_instructions(cfg_global, provider):
+                print(f"[!] {line}")
+            print(f"[*] 轮询等待 SSH 可达中（超时 {args.timeout} 秒；期间 connect 换了连接也会接上）...")
 
-        if not connected:
-            raise SystemExit(f"FAIL 实例在 {args.timeout} 秒内未能成功连接，请核查实例是否已开机。")
+            start_wait = time.time()
+            connected = False
+            while time.time() - start_wait < args.timeout:
+                if is_ssh_reachable(host):
+                    connected = True
+                    break
+                time.sleep(5)
+
+            if not connected:
+                raise SystemExit(f"FAIL 实例在 {args.timeout} 秒内未能成功连接，请核查实例是否已开机。")
 
     print("[OK] SSH 连通就绪。")
 
@@ -3769,15 +3850,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_connect = sub.add_parser("connect", parents=[provider_parent], help="换实例或接入 Colab：写连接配置并生成 ssh_config / 绑定 Drive 队列")
     p_connect.add_argument("login", nargs="?", default=None, type=str, help='SSH/cloudflared 登录指令（如 "ssh -p ... root@..." 或 trycloudflare 域名）')
     p_connect.add_argument("--drive-root", type=str, default=None, help="colab-drive 本机 Google Drive 队列目录（含 ava_cloud）")
+    p_connect.add_argument("--browser-login", action="store_true", help="打开隔离浏览器完成一次性 Google/Colab 登录，供后续 cloud up 自动无头开机")
+    p_connect.add_argument("--notebook-url", type=str, default=None, help="覆盖保存的 Colab Bootstrap Notebook URL（如 Drive 里的副本链接）")
+    p_connect.add_argument("--timeout", type=int, default=300, help="browser-login 等待登录完成超时秒数（默认 300s）")
 
     # up
-    p_up = sub.add_parser("up", parents=[provider_parent], help="开启实例 / 检测 Colab 运行时并激活守护脚本")
+    p_up = sub.add_parser("up", parents=[provider_parent], help="开启实例 / 自动拉起 Colab 运行时并激活守护脚本")
     p_up.add_argument("--mode", choices=["cardless", "gpu"], default=None,
                       help="声明开机模式 (cardless=无卡节能模式, gpu=带卡模式)；不填按 nvidia-smi 探测记")
     p_up.add_argument("--rate", type=float, default=None,
                       help="本次单价（AutoDL 元/小时；Colab CU/小时）")
     p_up.add_argument("--timeout", type=int, default=300, help="开机等待超时秒数（默认 300s）")
     p_up.add_argument("--episode", type=str, default=None, help="关联合同期号")
+    p_up.add_argument("--no-auto-boot", action="store_true", help="Colab 模式下禁用自动无头拉起，仅等待手动开机")
+    p_up.add_argument("--notebook-url", type=str, default=None, help="临时覆盖本次自动拉起使用的 Colab Notebook URL")
 
     # down
     p_down = sub.add_parser("down", parents=[provider_parent], help="关闭实例或释放 Colab 运行时并完成账簿结算")
