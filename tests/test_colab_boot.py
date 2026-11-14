@@ -105,12 +105,11 @@ def test_resolve_colab_notebook_url():
 
 
 def test_has_saved_browser_profile(tmp_path: Path):
-    prof = tmp_path / "colab-browser-profile"
+    prof = tmp_path / "colab-browser-profile-firefox"
     assert not cloud_colab_boot.has_saved_browser_profile(prof)
     prof.mkdir()
     assert not cloud_colab_boot.has_saved_browser_profile(prof)
-    (prof / "Default").mkdir()
-    (prof / "Default" / "Cookies").write_bytes(b"sqlite-placeholder")
+    (prof / "cookies.sqlite").write_bytes(b"sqlite-placeholder")
     assert cloud_colab_boot.has_saved_browser_profile(prof)
 
 
@@ -154,7 +153,7 @@ def test_cmd_connect_browser_login_persists_notebook_url(monkeypatch, tmp_path: 
     )
     assert rc == 0
     assert called["nb_url"] == custom_url
-    assert called["profile_dir"] == data / "cloud" / "colab-browser-profile"
+    assert called["profile_dir"] == data / "cloud" / "colab-browser-profile-firefox"
     assert called["timeout_s"] == 120
     local = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))
     assert local["active_provider"] == "autodl"
@@ -178,9 +177,9 @@ def test_cmd_up_colab_auto_boot_refreshes_profile_and_ssh_config(monkeypatch, tm
             },
         },
     )
-    prof_dir = data / "cloud" / "colab-browser-profile"
-    (prof_dir / "Default").mkdir(parents=True)
-    (prof_dir / "Default" / "Cookies").write_bytes(b"sqlite-placeholder")
+    prof_dir = data / "cloud" / "colab-browser-profile-firefox"
+    prof_dir.mkdir(parents=True)
+    (prof_dir / "cookies.sqlite").write_bytes(b"sqlite-placeholder")
 
     monkeypatch.setattr(cloud.shutil, "which", lambda name: "/opt/homebrew/bin/cloudflared" if name == "cloudflared" else None)
 
@@ -270,9 +269,9 @@ def test_cmd_up_colab_auto_boot_failure_raises_clear_error(monkeypatch, tmp_path
         tmp_path,
         {"profiles": {"colab": {"ssh_host": "ava-colab", "proxy_type": "cloudflared"}}},
     )
-    prof_dir = data / "cloud" / "colab-browser-profile"
-    (prof_dir / "Default").mkdir(parents=True)
-    (prof_dir / "Default" / "Cookies").write_bytes(b"sqlite-placeholder")
+    prof_dir = data / "cloud" / "colab-browser-profile-firefox"
+    prof_dir.mkdir(parents=True)
+    (prof_dir / "cookies.sqlite").write_bytes(b"sqlite-placeholder")
 
     monkeypatch.setattr(cloud.shutil, "which", lambda name: "/opt/homebrew/bin/cloudflared")
     monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: False)
