@@ -14,11 +14,45 @@ export async function listProxyModels(run: RunCore, repoRoot: string): Promise<C
     const why = probe.stderrTail.trim().split("\n").pop() ?? "core 取列表失败";
     return { ok: false, text: `取模型列表失败：${why}${probe.timedOut ? "（超时）" : ""}` };
   }
-  const items = probe.stdoutFull
-    ? [...new Set(probe.stdoutFull.split("\n").map((l) => l.trim()).filter((l) => l !== ""))].sort().slice(0, MAX_MODELS)
-    : [];
   if (probe.stdoutOverflow || probe.stdoutFull === null) {
     return { ok: false, text: "模型列表太长，截断后不可用" };
   }
+  const trimmed = probe.stdoutFull.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        items?: unknown;
+        efforts?: unknown;
+        model_efforts?: unknown;
+      };
+      const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+      const items = [...new Set(rawItems.filter((x): x is string => typeof x === "string").map((s) => s.trim()).filter((s) => s !== ""))]
+        .sort()
+        .slice(0, MAX_MODELS);
+      const efforts = Array.isArray(parsed.efforts)
+        ? parsed.efforts.filter((x): x is string => typeof x === "string")
+        : undefined;
+      let model_efforts: Record<string, string[]> | undefined;
+      if (parsed.model_efforts && typeof parsed.model_efforts === "object" && !Array.isArray(parsed.model_efforts)) {
+        const cleaned: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(parsed.model_efforts as Record<string, unknown>)) {
+          if (Array.isArray(v)) cleaned[k] = v.filter((x): x is string => typeof x === "string");
+        }
+        model_efforts = cleaned;
+      }
+      return {
+        ok: true,
+        text: `${items.length} 个模型`,
+        items,
+        ...(efforts ? { efforts } : {}),
+        ...(model_efforts ? { model_efforts } : {}),
+      };
+    } catch {
+      return { ok: false, text: "模型列表解析失败（JSON 损坏）" };
+    }
+  }
+  const items = probe.stdoutFull
+    ? [...new Set(probe.stdoutFull.split("\n").map((l) => l.trim()).filter((l) => l !== ""))].sort().slice(0, MAX_MODELS)
+    : [];
   return { ok: true, text: `${items.length} 个模型`, items };
 }

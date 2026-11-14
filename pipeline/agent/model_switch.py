@@ -16,6 +16,7 @@ import difflib
 import fcntl
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -29,12 +30,11 @@ if TYPE_CHECKING:
 
 # CLIProxyAPI 认的档位（apply.go：none → 关，auto → 动态，其余为档位名）
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
-# D154：档位排序（none 当 off；auto 特殊不参与就近匹配，放最后）。clamp_effort 照 Pi clampThinkingLevel：
-# 请求档不在支持集 → 先向上、再向下找最近可用档。
-EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
+# D154/D168：档位排序（none 当 off，含 max 供 Claude 4.6/5.5 等预算型模型；clamp_effort 照 Pi clampThinkingLevel）。
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "auto", "max")
 EFFORT_LABELS = {
     "none": "关", "minimal": "极低", "low": "低", "medium": "中",
-    "high": "高", "xhigh": "超高", "auto": "自动",
+    "high": "高", "xhigh": "超高", "auto": "自动", "max": "最大",
 }
 RESET_WORD = "default"
 MODELS_TIMEOUT_S = 10
@@ -102,6 +102,7 @@ def list_models(cfg: LLMConfig) -> list[str]:
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list):
         raise ModelSwitchError("模型列表格式不对（缺 data 数组）")
+    _maybe_cache_models_metadata(data)
     ids = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
     return sorted(dict.fromkeys(ids))
 
@@ -129,6 +130,7 @@ def list_models_unauthenticated(root: Path | None = None) -> list[str]:
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list):
         raise ModelSwitchError("模型列表格式不对（缺 data 数组）")
+    _maybe_cache_models_metadata(data, root=root)
     ids = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
     return sorted(dict.fromkeys(ids))
 
@@ -154,36 +156,252 @@ def check_model(name: str, available: list[str]) -> str:
     return name
 
 
-def _window_entry(model: str | None):
+def _window_entry(model: str | None, root: Path | None = None):
     """compact.json 里该模型的 ModelWindow；表没记 / 配置坏了 → None。"""
     try:
         from pipeline.agent.compact import CompactConfigError, load_compact_config
-        return load_compact_config().window_for(model or "")
+        return load_compact_config(root).window_for(model or "")
     except (CompactConfigError, OSError, json.JSONDecodeError, KeyError, AttributeError):
         return None
 
 
-def supported_efforts(model: str | None) -> tuple[str, ...]:
-    """该模型 CPA 认的 effort 档（compact.json `models[].effort_map` 键 > `efforts` 实测自报集）；
-    表没记 / 配置坏了 → 全档（向后兼容，不猜一个子集）。"""
-    entry = _window_entry(model)
+def validate_effort(value: str | None) -> str | None:
+    """D168：规范化推理强度：None / "" / "default" → None；"off" → "none"；非法名抛 ModelSwitchError。"""
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if not v or v == RESET_WORD:
+        return None
+    if v == "off":
+        v = "none"
+    if v not in EFFORT_ORDER:
+        raise ModelSwitchError(f"推理强度只能是 {' / '.join(EFFORT_ORDER)}（或 {RESET_WORD} 恢复默认），收到 {value!r}")
+    return v
+
+
+def models_cache_path(root: Path | None = None) -> Path:
+    """D168：AVA 本地动态模型元数据缓存路径（可用 AVA_MODELS_CACHE_PATH 覆盖以便测试隔离）。"""
+    env = os.environ.get("AVA_MODELS_CACHE_PATH", "").strip()
+    if env:
+        return Path(env)
+    from pipeline import paths
+    return Path(root or paths.ROOT) / "config" / "agent" / "models.local.json"
+
+
+def cache_models_metadata(data: list[Any], root: Path | None = None) -> None:
+    """将 /models 返回中带 thinkingLevelMap / efforts 的元数据写入 AVA 本地缓存。"""
+    entries: dict[str, dict[str, Any]] = {}
+    for item in data:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        mid = str(item["id"])
+        rec: dict[str, Any] = {}
+        if isinstance(item.get("thinkingLevelMap"), dict) and item["thinkingLevelMap"]:
+            rec["thinkingLevelMap"] = item["thinkingLevelMap"]
+        if isinstance(item.get("efforts"), list):
+            rec["efforts"] = item["efforts"]
+        if rec:
+            entries[mid] = rec
+    if not entries:
+        return
+    p = models_cache_path(root)
+    try:
+        from pipeline import paths
+        p.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, Any] = {}
+        if p.is_file():
+            try:
+                old = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(old, dict):
+                    existing = old
+            except (OSError, ValueError):
+                existing = {}
+        merged = {**existing, **entries}
+        paths.atomic_write(p, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+    except OSError:
+        return
+
+
+def _maybe_cache_models_metadata(data: list[Any], root: Path | None = None) -> None:
+    if root is None and not os.environ.get("AVA_MODELS_CACHE_PATH", "").strip() and "pytest" in sys.modules:
+        return
+    cache_models_metadata(data, root=root)
+
+
+def _extract_efforts_from_entry(entry: dict[str, Any]) -> tuple[str, ...] | None:
+    raw_efforts = entry.get("efforts")
+    if isinstance(raw_efforts, list):
+        mapped: list[str] = []
+        for item in raw_efforts:
+            if not isinstance(item, str):
+                continue
+            nk = "none" if item.strip().lower() == "off" else item.strip().lower()
+            if nk in EFFORT_ORDER and nk not in mapped:
+                mapped.append(nk)
+        if raw_efforts == []:
+            return ()
+        if mapped:
+            return tuple(lv for lv in EFFORT_ORDER if lv in mapped) or None
+    tmap = entry.get("thinkingLevelMap")
+    if not isinstance(tmap, dict) or not tmap:
+        return None
+    mapped_t: list[str] = []
+    for k in tmap:
+        if not isinstance(k, str):
+            continue
+        nk = "none" if k.strip().lower() == "off" else k.strip().lower()
+        if nk in EFFORT_ORDER and nk not in mapped_t:
+            mapped_t.append(nk)
+    if not mapped_t:
+        return None
+    return tuple(lv for lv in EFFORT_ORDER if lv in mapped_t) or None
+
+
+def _cached_model_efforts(model: str | None, root: Path | None = None) -> tuple[str, ...] | None:
+    """第二级解析：从 AVA 本地 models.local.json 缓存读取 efforts / thinkingLevelMap。"""
+    if not model:
+        return None
+    p = models_cache_path(root)
+    try:
+        if not p.is_file():
+            return None
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    bare = model.split("/", 1)[1] if "/" in model else model
+    entry: dict[str, Any] | None = None
+    candidates: list[Any] = []
+    if isinstance(raw, dict):
+        if isinstance(raw.get("models"), list):
+            candidates = raw["models"]
+        elif isinstance(raw.get("data"), list):
+            candidates = raw["data"]
+        else:
+            for k in (model, bare):
+                if isinstance(raw.get(k), dict):
+                    entry = raw[k]
+                    break
+    elif isinstance(raw, list):
+        candidates = raw
+    if entry is None:
+        for item in candidates:
+            if isinstance(item, dict) and item.get("id") in (model, bare):
+                entry = item
+                break
+    if not isinstance(entry, dict):
+        return None
+    return _extract_efforts_from_entry(entry)
+
+
+def _family_heuristic_efforts(model: str | None) -> tuple[str, ...]:
+    """第三级解析：按模型家族推断合理档位；未识别模型回落 EFFORTS 全档（绝不锁死）。"""
+    if not model:
+        return EFFORTS
+    low = model.strip().lower()
+    bare = low.split("/", 1)[1] if "/" in low else low
+    if any(p in bare for p in ("claude-opus-4-6", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5")):
+        return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    if bare.startswith("claude-"):
+        return ("none", "minimal", "low", "medium", "high", "xhigh")
+    if bare.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")) or "codex" in bare:
+        return ("none", "minimal", "low", "medium", "high", "xhigh")
+    if bare.startswith(("gemini-2.5", "gemini-3")):
+        return ("none", "minimal", "low", "medium", "high")
+    if bare.startswith("deepseek"):
+        return ("none", "low", "medium", "high")
+    return EFFORTS
+
+
+def efforts_for_model(model: str | None, root: Path | None = None) -> tuple[str, ...]:
+    """D168 三级推理支持集解析（完全独立于外部 CLI，零外部路径依赖）：
+    1. config/agent/compact.json 显式 effort_map / efforts；
+    2. AVA 本地缓存 config/agent/models.local.json 的 efforts / thinkingLevelMap；
+    3. 模型家族启发式与 EFFORTS 默认全档（未入探针表不再锁死）。
+    """
+    entry = _window_entry(model, root)
     supported = entry.supported_efforts() if entry is not None else None
-    return supported if supported else EFFORTS
+    if supported is not None:
+        return supported
+    cached = _cached_model_efforts(model, root)
+    if cached is not None:
+        return cached
+    return _family_heuristic_efforts(model)
 
 
-def effort_request(model: str | None, level: str) -> tuple[str, Any] | None:
+def supported_efforts(model: str | None) -> tuple[str, ...]:
+    """兼容旧入口：委托 `efforts_for_model(model)`。"""
+    return efforts_for_model(model)
+
+
+def efforts_map_for_models(items: list[str] | tuple[str, ...], root: Path | None = None) -> dict[str, list[str]]:
+    """D168：为候选模型列表批量计算每个模型的推理支持集。"""
+    return {m: list(efforts_for_model(m, root)) for m in items}
+
+
+def probe_models_and_efforts_payload(root: Path | None = None) -> dict[str, Any]:
+    """D168：供 PROBE_MODEL_LIST 输出结构化 JSON（模型列表 + 每模型支持集 + 当前默认模型）。"""
+    from pipeline.agent.llm import configured_model_name
+
+    items = list_models_unauthenticated(root)
+    active_model = configured_model_name(root)
+    return {
+        "items": items,
+        "efforts": list(efforts_for_model(active_model, root)),
+        "model_efforts": efforts_map_for_models(items, root),
+        "active_model": active_model,
+    }
+
+
+def effort_request(model: str | None, level: str, root: Path | None = None) -> tuple[str, Any] | None:
     """D155：该模型这档实际发什么参数 → (参数名, 值)；None = 不发任何 effort 参数
     （对应 Pi thinkingLevelMap 里值为 null 的档）。表没记 → 默认 reasoning_effort=level。"""
     # none 语义 = 不发档：不管哪个模型、不管有没有 effort_map，一律不带参数。
     if level == "none":
         return None
-    entry = _window_entry(model)
+    entry = _window_entry(model, root)
     if entry is None:
         return ("reasoning_effort", level)
     spec = entry.effort_spec_for(level)
     if spec.param is None:
         return None
     return (spec.param, spec.value if spec.value is not None else level)
+
+
+def apply_effort_to_extra_body(
+    payload: dict[str, Any],
+    model: str | None,
+    level: str | None,
+    *,
+    protocol: str = "openai-completions",
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """D168：按模型与目标协议将 Pi 推理档位写入请求体（不改动 none / default）。"""
+    lvl = validate_effort(level)
+    if lvl is None or lvl == "none":
+        return payload
+    if protocol == "openai-codex-responses":
+        codex_lvl = "low" if lvl == "minimal" else ("xhigh" if lvl == "max" else lvl)
+        payload["reasoning"] = {"effort": codex_lvl, "summary": "auto"}
+        return payload
+    if protocol == "anthropic-messages":
+        from pipeline.agent.compact import THINKING_BUDGETS
+
+        if lvl == "auto":
+            payload["thinking"] = {"type": "adaptive"}
+        else:
+            budget = THINKING_BUDGETS.get(lvl, 8192)
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        return payload
+    if protocol == "google-gemini":
+        gen = payload.setdefault("generationConfig", {})
+        if isinstance(gen, dict):
+            gen["thinkingConfig"] = {"thinkingLevel": lvl.upper()}
+        return payload
+    req = effort_request(model, lvl, root=root)
+    if req is not None:
+        param, value = req
+        payload[param] = value
+    return payload
 
 
 def clamp_effort(model: str | None, level: str) -> str:
@@ -204,19 +422,21 @@ def clamp_effort(model: str | None, level: str) -> str:
 
 
 def check_effort(value: str, model: str | None = None) -> str:
-    """D154：三分支——非法名照旧拒；不在该模型支持集 → clamp 就近回落并留 warn（不静默吞）；
-    在支持集 → 原样。"""
+    """D154/D168：三分支——非法名照旧拒；不在该模型支持集 → clamp 就近回落并留 warn；
+    在支持集 → 原样。支持 Pi `off` 归一成 `none`。"""
     global last_warn
     last_warn = None  # 与 check_model 同一约定：本条命令的 warn 只看本条
-    v = value.strip().lower()
-    if v not in EFFORTS:
-        raise ModelSwitchError(f"推理强度只能是 {' / '.join(EFFORTS)}（或 {RESET_WORD} 恢复默认），收到 {value!r}")
-    clamped = clamp_effort(model, v)
-    if clamped != v:
+    raw_norm = value.strip().lower()
+    if raw_norm == "off":
+        raw_norm = "none"
+    if raw_norm not in EFFORT_ORDER:
+        raise ModelSwitchError(f"推理强度只能是 {' / '.join(EFFORT_ORDER)}（或 {RESET_WORD} 恢复默认），收到 {value!r}")
+    clamped = clamp_effort(model, raw_norm)
+    if clamped != raw_norm:
         supported = " / ".join(supported_efforts(model))
         last_warn = f"模型 {model or '默认'} 的推理强度只支持 {supported}——已降为 {clamped}"
         return clamped
-    return v
+    return raw_norm
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +462,7 @@ def _from_entry(entry: dict[str, Any] | None) -> Override:
     effort = entry.get("reasoning_effort")
     return Override(
         model=model if isinstance(model, str) and model.strip() else None,
-        reasoning_effort=effort if effort in EFFORTS else None,
+        reasoning_effort=effort if effort in EFFORT_ORDER else None,
     )
 
 

@@ -209,13 +209,13 @@ export function modelInfo(entries: readonly ConvEntry[]): ModelInfo | null {
 
 /** 档位 → 中文词（与 pipeline/agent/model_switch.py 的 EFFORT_LABELS 同表） */
 export const EFFORT_LABELS: Readonly<Record<string, string>> = {
-  none: "关", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "超高", auto: "自动",
+  none: "关", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "超高", auto: "自动", max: "最大",
 };
 export function effortText(effort: string | null): string {
   return effort === null ? "默认" : EFFORT_LABELS[effort] ?? effort;
 }
 
-/** D156：每档的描述（照 Pi `LEVEL_DESCRIPTIONS`，把英文档名翻成 ava 语境的读法）。 */
+/** D156/D168：每档的描述（照 Pi 档位语义与 token 预算）。 */
 export const EFFORT_DESCRIPTIONS: Readonly<Record<string, string>> = {
   none: "不启用推理",
   minimal: "极简推理（~1k token）",
@@ -223,12 +223,78 @@ export const EFFORT_DESCRIPTIONS: Readonly<Record<string, string>> = {
   medium: "中等推理（~8k token）",
   high: "深度推理（~16k token）",
   xhigh: "超高推理（~32k token）",
-  max: "最大推理",
+  max: "最大推理（~64k token）",
   auto: "由模型自行决定",
 };
 
 /** 档位循环次序（Shift+Tab 按此走；与 model_switch.py 的 EFFORT_ORDER 同序）。 */
 export const EFFORT_ORDER: readonly string[] = ["none", "minimal", "low", "medium", "high", "xhigh", "auto", "max"];
+export const EFFORT_DEFAULT_LIST: readonly string[] = ["none", "minimal", "low", "medium", "high", "xhigh", "auto"];
+
+/** D168：按模型家族推断客户端兜底推理档位（与服务端 _family_heuristic_efforts 同源，永不锁死）。 */
+export function clientFamilyEfforts(model: string | null): string[] {
+  if (!model) return [...EFFORT_DEFAULT_LIST];
+  const low = model.trim().toLowerCase();
+  const slash = low.indexOf("/");
+  const bare = slash >= 0 ? low.slice(slash + 1) : low;
+  if (["claude-opus-4-6", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"].some((p) => bare.includes(p))) {
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  }
+  if (bare.startsWith("claude-") || bare.startsWith("gpt-5") || bare.startsWith("gpt-6") || bare.startsWith("o1") || bare.startsWith("o3") || bare.startsWith("o4") || bare.includes("codex")) {
+    return ["none", "minimal", "low", "medium", "high", "xhigh"];
+  }
+  if (bare.startsWith("gemini-2.5") || bare.startsWith("gemini-3")) {
+    return ["none", "minimal", "low", "medium", "high"];
+  }
+  if (bare.startsWith("deepseek")) {
+    return ["none", "low", "medium", "high"];
+  }
+  return [...EFFORT_DEFAULT_LIST];
+}
+
+/**
+ * D168：三层前端支持集解析：model_efforts[model] > 服务端 directEfforts > 模型家族启发式兜底。
+ * 确保新会话（phase === "none"）或未入 compact.json 探针表的模型也始终可调推理强度。
+ */
+export function resolveSupportedEfforts(
+  model: string | null,
+  modelEfforts: Readonly<Record<string, readonly string[]>> | null | undefined,
+  directEfforts: readonly string[] | null | undefined,
+): string[] {
+  if (model && modelEfforts) {
+    if (model in modelEfforts) return [...modelEfforts[model]];
+    const slash = model.indexOf("/");
+    const bare = slash >= 0 ? model.slice(slash + 1) : model;
+    if (bare in modelEfforts) return [...modelEfforts[bare]];
+  }
+  if (directEfforts && directEfforts.length > 0) {
+    return [...directEfforts];
+  }
+  if (directEfforts && directEfforts.length === 0 && model) {
+    return [];
+  }
+  return clientFamilyEfforts(model);
+}
+
+/** D168：推理档位映射为 0..5 信号格数（按钮可视化指示）。 */
+export function effortBarLevel(effort: string | null): number {
+  switch (effort) {
+    case "minimal":
+      return 1;
+    case "low":
+      return 2;
+    case "medium":
+    case "auto":
+      return 3;
+    case "high":
+      return 4;
+    case "xhigh":
+    case "max":
+      return 5;
+    default:
+      return 0;
+  }
+}
 
 /**
  * D156：Shift+Tab 循环档位的纯函数——从 efforts 支持集里挑出当前档的下一档。
@@ -301,16 +367,23 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const [modelOpen, setModelOpen, modelRef] = usePopover();
   const [effortOpen, setEffortOpen, effortRef] = usePopover();
   const [models, setModels] = useState<string[] | null>(null);
-  const [efforts, setEfforts] = useState<string[] | null>(null); // D154：该模型支持档（core 回子集）；null = 未拉到/不支持
+  const [efforts, setEfforts] = useState<string[] | null>(null); // D154/D168：该模型支持档（core 回子集）
+  const [effortsForModel, setEffortsForModel] = useState<string | null>(null);
+  const [modelEfforts, setModelEfforts] = useState<Record<string, string[]> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState("");
   const [warn, setWarn] = useState<string | null>(null);
   const [effortQuery, setEffortQuery] = useState(""); // D156：选择器搜索框
-  // D156：Shift+Tab 循环要拿到支持集——usable 时主动拉一次（不等点按钮）。模型变了（info.model）也重拉。
-  const infoModel = info?.model ?? null;
+  const activeModel = pendingModel ?? info?.model ?? null;
+  const currentEffort = pendingEffort ?? info?.effort ?? null;
+  const scopedDirectEfforts = efforts !== null && (effortsForModel === activeModel || effortsForModel === null) ? efforts : null;
+  const supportedEfforts = resolveSupportedEfforts(activeModel, modelEfforts, scopedDirectEfforts);
+  const meterLevel = effortBarLevel(currentEffort);
   useEffect(() => {
     setModels(null);
     setEfforts(null);
+    setEffortsForModel(null);
+    setModelEfforts(null);
     setErr(null);
     setWarn(null);
     setCustomModel("");
@@ -318,23 +391,26 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     setEffortOpen(false);
   }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // 取列表走纯读的 conv.models（不在点击纪律内：它不改任何设置）。
-  // D153：会话未起（none）时也照发——host 无 s.proc 时降级经 PROBE_MODEL_LIST 直连代理取列表，
-  // 进程在时透传 core；代理不可达回 ok:false，popover 显示失败行 + 「重试」（D151）。
+  // D153/D168：会话未起（none）时经 PROBE_MODEL_LIST 取全量模型与 model_efforts 映射；
+  // 进程启动从 none→starting→idle 时不再重复往 stdin 自动灌入 {t:"command", name:"models"}（修复 N32）。
   const fetchModels = () => {
-    void rpc.call<{ ok?: boolean; text?: string; items?: string[]; efforts?: string[] }>("conv.models", { convKey }).then(
+    const targetModel = activeModel;
+    void rpc.call<{ ok?: boolean; text?: string; items?: string[]; efforts?: string[]; model_efforts?: Record<string, string[]> }>("conv.models", { convKey }).then(
       (res) => {
         setModels(res.ok ? res.items ?? [] : []);
         setEfforts(res.ok ? res.efforts ?? null : null);
+        setEffortsForModel(res.ok ? targetModel : null);
+        if (res.ok && res.model_efforts) setModelEfforts(res.model_efforts);
         setErr(res.ok ? null : res.text ?? "取模型列表失败");
       },
       (e2) => setErr(String((e2 as Error).message ?? e2)),
     );
   };
-  // D156：控件可用就预拉——Shift+Tab 循环与 effort 选择器都吃 efforts，不等点开再发。
+  // D168：仅在会话未启动（phase === "none"）时按 convKey 预拉一次（走外带 PROBE_MODEL_LIST，不写 stdin）。
   useEffect(() => {
-    if (!usable) return;
+    if (!usable || phase !== "none") return;
     fetchModels();
-  }, [usable, convKey, infoModel]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usable, convKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hint = modelCtlHint(phase);
   const popNote = modelPopNote(phase);
@@ -343,9 +419,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     if (res && res.ok === false) { setErr(res.text ?? "切换失败"); setWarn(null); }
     else { setErr(null); setWarn(res?.warn ?? null); }  // D148：不在代理列表的模型切换成功也带回 warn
   };
-  // D156：Shift+Tab 循环推理强度（Pi 的行为）。绑 model-controls 容器 onKeyDown（TG-10：conv.command 只能挂在 JSX 事件属性上）。
-  // 焦点在控件内（Tab 到按钮 / popover 搜索框）时 Shift+Tab 循环；下一档从实测支持集 +1。
-  const currentEffort = pendingEffort ?? info?.effort ?? null;
+  // D156/D168：Shift+Tab 循环推理强度。始终有 resolveSupportedEfforts 兜底支持集。
   const openModel = () => {
     setEffortOpen(false);
     setModelOpen(true);
@@ -357,6 +431,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     else {
       setModelOpen(false);
       setEffortQuery("");
+      if (models === null || (activeModel !== null && !(activeModel in (modelEfforts ?? {})) && effortsForModel !== activeModel)) {
+        fetchModels();
+      }
       setEffortOpen(true);
     }
   }, [openReq?.n]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -364,7 +441,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     <div className="model-controls" data-testid="model-controls" onKeyDown={(e) => {
       if (!e.nativeEvent.isTrusted) return;
       if (e.key !== "Tab" || !e.shiftKey) return;
-      const next = nextEffort(efforts, currentEffort);
+      const next = nextEffort(supportedEfforts, currentEffort);
       if (next === null || next === currentEffort) return;
       e.preventDefault();
       void rpc.call("conv.command", { convKey, name: "thinking", arg: next }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
@@ -401,23 +478,29 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
             )}
             {warn !== null && <div className="warn model-pop-warn" data-testid="model-pop-warn">{warn}</div>}
             {models === null && err === null && <div className="muted model-pop-wait">…</div>}
-            {models?.map((m) => (
-              <button
-                key={m}
-                className="ui-row model-pop-row"
-                aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
-                data-testid="model-row"
-                data-model={m}
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  setModelOpen(false);
-                  void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                }}
-              >
-                <span className="ui-row-title">{m}</span>
-                <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
-              </button>
-            ))}
+            {models?.map((m) => {
+              const mEffs = modelEfforts?.[m];
+              return (
+                <button
+                  key={m}
+                  className="ui-row model-pop-row"
+                  aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
+                  data-testid="model-row"
+                  data-model={m}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    setModelOpen(false);
+                    void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                  }}
+                >
+                  <span className="ui-row-title">{m}</span>
+                  {mEffs && mEffs.length > 0 && (
+                    <span className="model-pop-meta" data-testid="model-row-efforts">{mEffs.length}档</span>
+                  )}
+                  <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
+                </button>
+              );
+            })}
             {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
                 输入框只收值（onKeyDown 不能发 conv.command，TG-10 纪律）；点「切换」按钮发出。 */}
             {info?.modelSource === "session" && (
@@ -468,27 +551,60 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           data-source={pendingEffort !== null ? "session" : info?.effortSource ?? ""}
           aria-expanded={effortOpen}
           disabled={!usable}
-          title={hint ?? "推理强度（只影响本会话；「默认」= 不发推理参数，由模型自己定）"}
+          title={hint ?? "推理强度（只影响本会话；Shift+Tab 循环；「默认」= 不发推理参数）"}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             setModelOpen(false);
-            // D154：effort 下拉也要该模型支持档——只在还没拿过时拉一次
-            if (efforts === null && !effortOpen) fetchModels();
+            if (!effortOpen && (models === null || (activeModel !== null && !(activeModel in (modelEfforts ?? {})) && effortsForModel !== activeModel))) {
+              fetchModels();
+            }
             setEffortOpen(!effortOpen);
           }}
         >
-          <Icon name="gauge" size="sm" />
-          <span data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "—"}</span>
+          <span className="effort-meter" data-testid="effort-meter" data-level={meterLevel} aria-hidden="true">
+            <span className="effort-meter-bar effort-meter-bar--1" data-active={meterLevel >= 1 ? "1" : "0"} />
+            <span className="effort-meter-bar effort-meter-bar--2" data-active={meterLevel >= 2 ? "1" : "0"} />
+            <span className="effort-meter-bar effort-meter-bar--3" data-active={meterLevel >= 3 ? "1" : "0"} />
+            <span className="effort-meter-bar effort-meter-bar--4" data-active={meterLevel >= 4 ? "1" : "0"} />
+            <span className="effort-meter-bar effort-meter-bar--5" data-active={meterLevel >= 5 ? "1" : "0"} />
+          </span>
+          <span className="model-ctl-label" data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "默认"}</span>
           {pendingEffort !== null && <span className="model-ctl-pending" data-testid="effort-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {effortOpen && (
           <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
-            <div className="ui-popover-title">推理强度</div>
+            <div className="effort-pop-head">
+              <div className="ui-popover-title">推理强度</div>
+              <span className="muted effort-pop-cur">{currentEffort ? (EFFORT_DESCRIPTIONS[currentEffort] ?? currentEffort) : "默认 · 由模型决定"}</span>
+            </div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
-            <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 在会话内循环档位</div>
-            {/* D156：独立档位选择器——搜索框过滤（Pi 的 Input+fuzzyFilter）；
-                D155：没实测数据的模型不列全档骗人——只有实测支持集才列出各档，否则只剩底部「默认」 */}
+            <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 循环档位 · 当前模型 {activeModel ?? "默认"}</div>
+            {/* D168：可视化横向分段滑块（Pi GUI 体验） */}
+            <div className="effort-seg-bar" data-testid="effort-seg-bar" role="group" aria-label="推理强度分段选择器">
+              {supportedEfforts.map((v) => {
+                const isCurrent = currentEffort === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    className="effort-seg-btn"
+                    data-testid="effort-seg-btn"
+                    data-effort={v}
+                    aria-pressed={isCurrent}
+                    title={EFFORT_DESCRIPTIONS[v] ?? v}
+                    onClick={(e) => {
+                      if (!e.nativeEvent.isTrusted) return;
+                      setEffortOpen(false);
+                      void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                    }}
+                  >
+                    {EFFORT_LABELS[v] ?? v}
+                  </button>
+                );
+              })}
+            </div>
+            {/* D156：搜索过滤 + 完整档位说明列表 */}
             <input
               className="ui-input effort-pop-search"
               data-testid="effort-search"
@@ -496,7 +612,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
               value={effortQuery}
               onChange={(e) => setEffortQuery(e.target.value)}
             />
-            {(efforts ?? [])
+            {supportedEfforts
               .filter((v) => {
                 const q = effortQuery.trim().toLowerCase();
                 if (q === "") return true;
@@ -507,7 +623,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                 );
               })
               .map((v) => {
-                const isCurrent = (pendingEffort ?? info?.effort) === v;
+                const isCurrent = currentEffort === v;
                 const isDefault = info !== null && info.effortSource === "default" && info.effort === v;
                 return (
                   <button

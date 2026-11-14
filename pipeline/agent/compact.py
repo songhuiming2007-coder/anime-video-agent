@@ -43,6 +43,22 @@ CHARS_PER_TOKEN = 1.0
 # 膨胀护栏（§4.5，Gemini 护栏变体）：摘要 ≥ 被压缩区间 × 0.8 → 压缩没意义，本回合交人。
 BLOAT_RATIO = 0.8
 
+# D168：Pi 档位对应的 token 思考预算（Anthropic Messages / 预算型上游共用）
+THINKING_BUDGETS: dict[str, int] = {
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 32768,
+    "max": 64000,
+}
+
+
+def normalize_effort_name(name: str) -> str:
+    """D168：将 Pi 的 `off` 归一成内部档位名 `none`。"""
+    s = name.strip().lower()
+    return "none" if s == "off" else s
+
 # 脱敏注记（§4.4，审查 #14）：摘要里出现 [已脱敏] 时随附，防模型把空锚补编成文件名。
 # spec 原文是「用工具切片查 session.jsonl」——read_artifact 只放行 .md/.txt/.json/.patch/.log，
 # session.jsonl 读不到，受限文件名本身也一律不出网；写一句做不到的指示等于让模型去撞墙。
@@ -161,10 +177,11 @@ def parse_compact_config(data: Any) -> CompactConfig:
             from pipeline.agent.model_switch import EFFORT_ORDER
             if not isinstance(raw_efforts, list) or not raw_efforts or not all(isinstance(e, str) for e in raw_efforts):
                 raise CompactConfigError(f"models.{name}.efforts 必须是非空档名数组（不吃 effort 记 [\"none\"]）: {raw_efforts!r}")
-            bad = [e for e in raw_efforts if e not in EFFORT_ORDER]
+            norm_efforts = [normalize_effort_name(e) for e in raw_efforts]
+            bad = [e for e in norm_efforts if e not in EFFORT_ORDER]
             if bad:
                 raise CompactConfigError(f"models.{name}.efforts 含未知档 {bad}（只能是 {list(EFFORT_ORDER)}）")
-            efforts = tuple(dict.fromkeys(raw_efforts))
+            efforts = tuple(dict.fromkeys(norm_efforts))
         raw_map = entry.get("effort_map")
         effort_map: dict[str, EffortSpec] | None = None
         if raw_map is not None:
@@ -172,9 +189,10 @@ def parse_compact_config(data: Any) -> CompactConfig:
             if not isinstance(raw_map, dict) or not raw_map:
                 raise CompactConfigError(f"models.{name}.effort_map 必须是非空对象（pi档名 → 参数/null）: {raw_map!r}")
             effort_map = {}
-            for lv, spec in raw_map.items():
+            for raw_lv, spec in raw_map.items():
+                lv = normalize_effort_name(raw_lv) if isinstance(raw_lv, str) else raw_lv
                 if lv not in EFFORT_ORDER:
-                    raise CompactConfigError(f"models.{name}.effort_map 含未知档 {lv!r}（只能是 {list(EFFORT_ORDER)}）")
+                    raise CompactConfigError(f"models.{name}.effort_map 含未知档 {raw_lv!r}（只能是 {list(EFFORT_ORDER)}）")
                 if spec is None:
                     effort_map[lv] = EffortSpec(param=None)
                 elif isinstance(spec, dict):

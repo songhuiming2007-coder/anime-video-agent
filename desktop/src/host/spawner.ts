@@ -295,10 +295,14 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
         timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
       };
     case "PROBE_MODEL_LIST":
-      // D153：core 内读生效配置的 base_url 并无 auth 直连代理 GET /models（D150 实测可用）；
-      // host/ 纪律禁止 fetch/node:http——出网只能经 spawn。stdout 每行一个模型 ID；失败 → stderr + 非零退出码
+      // D153/D168：core 内读生效配置的 base_url 并直连 /models，输出包含 items / efforts / model_efforts / active_model 的 JSON；
+      // host/ 纪律禁止 fetch/node:http——出网只能经 spawn；失败 → stderr + 非零退出码
       return {
-        argv: [py, "-c", "import sys; from pipeline.agent.model_switch import list_models_unauthenticated; sys.stdout.write(''.join(m + '\\n' for m in list_models_unauthenticated()))"],
+        argv: [
+          py,
+          "-c",
+          "import json, sys; from pipeline.agent.model_switch import probe_models_and_efforts_payload; sys.stdout.write(json.dumps(probe_models_and_efforts_payload(), ensure_ascii=False))",
+        ],
         timeoutMs: SPAWN_TIMEOUT_SHORT_MS,
         stdoutMax: SESSIONS_STDOUT_MAX_BYTES,
       };

@@ -1,7 +1,14 @@
 // D91：输入框工具栏的模型 / 推理显示——从帧流取最近一份本会话设置。
 import { describe, expect, it } from "vitest";
 import type { ConvEntry } from "../../src/shared/protocol";
-import { effortText, modelInfo } from "../../src/renderer/SessionHeader";
+import {
+  EFFORT_LABELS,
+  clientFamilyEfforts,
+  effortBarLevel,
+  effortText,
+  modelInfo,
+  resolveSupportedEfforts,
+} from "../../src/renderer/SessionHeader";
 
 const frame = (t: string, extra: Record<string, unknown>): ConvEntry =>
   ({ k: "frame", frame: { v: 1, t, seq: 1, sid: "s", ...extra } }) as unknown as ConvEntry;
@@ -80,6 +87,40 @@ describe("EFFORT_DESCRIPTIONS（每档描述）", () => {
       expect(EFFORT_DESCRIPTIONS[lv]).toBeTruthy();
     }
     expect(EFFORT_DESCRIPTIONS.none).toBe("不启用推理");
-    expect(EFFORT_DESCRIPTIONS.max).toBe("最大推理");
+    expect(EFFORT_DESCRIPTIONS.max).toBe("最大推理（~64k token）");
+    expect(EFFORT_LABELS.max).toBe("最大");
+  });
+});
+
+describe("D168 resolveSupportedEfforts / effortBarLevel", () => {
+  it("优先命中 modelEfforts，其次 directEfforts，否则走家族启发式永不锁死", () => {
+    expect(
+      resolveSupportedEfforts(
+        "gemini-3.8-flash-high",
+        { "gemini-3.8-flash-high": ["none", "low", "medium", "high"] },
+        ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
+      ),
+    ).toEqual(["none", "low", "medium", "high"]);
+
+    expect(resolveSupportedEfforts("devin/gpt-6-luna", null, null)).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh",
+    ]);
+    expect(resolveSupportedEfforts("claude-opus-5-5-high", null, null)).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh", "max",
+    ]);
+    expect(clientFamilyEfforts("deepseek-r1")).toEqual(["none", "low", "medium", "high"]);
+    expect(clientFamilyEfforts(null).length).toBe(7);
+  });
+
+  it("effortBarLevel 映射 0..5 信号格", () => {
+    expect(effortBarLevel(null)).toBe(0);
+    expect(effortBarLevel("none")).toBe(0);
+    expect(effortBarLevel("minimal")).toBe(1);
+    expect(effortBarLevel("low")).toBe(2);
+    expect(effortBarLevel("medium")).toBe(3);
+    expect(effortBarLevel("auto")).toBe(3);
+    expect(effortBarLevel("high")).toBe(4);
+    expect(effortBarLevel("xhigh")).toBe(5);
+    expect(effortBarLevel("max")).toBe(5);
   });
 });
