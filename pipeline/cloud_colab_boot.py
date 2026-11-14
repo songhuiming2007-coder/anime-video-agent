@@ -212,12 +212,20 @@ def _handle_colab_modals(ctx: Any, main_page: Any, log_fn: Callable[[str], None]
             if acct.count() > 0 and acct.is_visible():
                 acct.click(timeout=2000)
                 log_fn("[*] 已在 Google OAuth 弹窗选择已登录账号")
+                time.sleep(2)
                 clicked = True
                 continue
             for pat in (r"^Continue$|^继续$", r"^Allow$|^允许$"):
-                label = _click_dialog_button(p, pat)
-                if label:
+                btn = p.get_by_role("button", name=re.compile(pat, re.I)).first
+                if btn.count() > 0 and btn.is_visible() and btn.is_enabled():
+                    try:
+                        btn.scroll_into_view_if_needed(timeout=1000)
+                    except Exception:
+                        pass
+                    label = (btn.inner_text(timeout=1000) or pat).strip()
+                    btn.click(timeout=2000)
                     log_fn(f"[*] 已在 Google OAuth 弹窗点击: {label}")
+                    time.sleep(2)
                     clicked = True
                     break
         except RuntimeError:
@@ -374,11 +382,21 @@ def auto_boot_colab_ssh(
             saw_running = False
             saw_drive = False
             last_text = ""
+            exec_retries = 0
             while time.time() < deadline:
                 _handle_colab_modals(ctx, page, log_fn=log_fn)
                 cur_url = page.url or ""
                 all_text = _collect_page_and_frames_text(page)
                 last_text = all_text
+                if "Failed to execute cell" in all_text and exec_retries < 2:
+                    ok_lbl = _click_dialog_button(page, r"^OK$|^确定$")
+                    if ok_lbl:
+                        exec_retries += 1
+                        log_fn(f"[*] 捕获 Colab 运行时握手瞬断弹窗，确认并重试执行 ({exec_retries}/2)...")
+                        time.sleep(2)
+                        _trigger_colab_run_all(page)
+                        time.sleep(2)
+                        continue
                 if detect_colab_login_required(cur_url, all_text):
                     raise RuntimeError(
                         "Colab 页面跳转到登录框（Cookie 已过期），请运行：\n"
@@ -402,8 +420,8 @@ def auto_boot_colab_ssh(
                     latest = ready_matches[-1].strip()
                     if latest != prev_last or saw_running:
                         target = latest if "@" in latest else f"root@{latest}"
-                        # 留 2 秒给 cloudflared trycloudflare 边缘路由生效
-                        time.sleep(2)
+                        # 留 3 秒给 cloudflared trycloudflare 边缘路由生效
+                        time.sleep(3)
                         return target
                 time.sleep(2)
 
