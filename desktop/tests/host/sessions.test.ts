@@ -1602,4 +1602,35 @@ describe("D149 运行中切换", () => {
     await svc.dispatch("conv.answer", { convKey: key, requestId: "rq1", decision: "approve", feedback: null });
     await waitFor(async () => (await snapOf(svc, key)).phase === "idle", 12000);
   });
+
+  it("D168 listProxyModels 解析结构化 JSON 负载（efforts + model_efforts）", async () => {
+    const { listProxyModels } = await import("../../src/host/proxyModels");
+    const run = async () => ({
+      code: 0,
+      signal: null,
+      timedOut: false,
+      stdoutFull: JSON.stringify({
+        items: ["devin/gpt-6-luna", "kimi-k3"],
+        efforts: ["none", "low", "medium", "high"],
+        model_efforts: {
+          "devin/gpt-6-luna": ["none", "minimal", "low", "medium", "high", "xhigh"],
+          "kimi-k3": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
+        },
+      }),
+      stdoutTail: "",
+      stdoutOverflow: false,
+      stderrTail: "",
+    });
+    const r = await listProxyModels(run as unknown as Parameters<typeof listProxyModels>[0], "/repo");
+    expect(r).toEqual({
+      ok: true,
+      text: "2 个模型",
+      items: ["devin/gpt-6-luna", "kimi-k3"],
+      efforts: ["none", "low", "medium", "high"],
+      model_efforts: {
+        "devin/gpt-6-luna": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "kimi-k3": ["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
+      },
+    });
+  });
 });

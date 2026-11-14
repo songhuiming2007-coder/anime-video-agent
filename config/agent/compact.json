@@ -125,21 +125,70 @@
     },
     "devin/gpt-6-luna": {
       "efforts": [
-        "none"
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ],
-      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['xhigh', 'max']）→ CPA 未翻译/模型不吃，判定被吞"
+      "_source": "D168：Devin/CPA 代理接入的 GPT-6 Luna 支持完整推理档（不再因早期 CPA Chat Completions 吞字段探针锁死为 [\"none\"]）。"
+    },
+    "devin/claude-fable-5-2": {
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "_source": "D168：Devin Claude Fable 5.2 推理支持集（对齐 Pi Agent 档位与思考预算）。"
     },
     "devin/claude-haiku-5-5": {
       "efforts": [
-        "none"
+        "none",
+        "low",
+        "medium",
+        "high"
       ],
-      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['high', 'xhigh', 'auto', 'max']）→ CPA 未翻译/模型不吃，判定被吞"
+      "_source": "D168：Claude Haiku 5.5 推理支持集（none/low/medium/high）。"
     },
     "devin/deepseek-v4-1-flash-1017": {
       "efforts": [
-        "none"
+        "none",
+        "low",
+        "medium",
+        "high"
       ],
-      "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus 非法值，usage 无 reasoning_tokens、reasoning_content 与档无关地随机波动 → CPA devin/openai-compat 适配层未翻译 reasoning_effort（判定被吞）。CPA 二进制内嵌 devin 目录有 supports_reasoning_effort_updates/supported_reasoning_levels 字段，证明 CPA 知道能力但没接。只记 none（不发档）。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
+      "_source": "D168：DeepSeek V4.1 Flash 推理开关与档位支持集（none/low/medium/high）。"
+    },
+    "claude-opus-5-5-high": {
+      "window": 200000,
+      "reliable_ratio": 1.0,
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "_source": "D168：Claude Opus 5.5 标称 200K 上下文，支持含 max 的全档推理与 Anthropic thinking 预算。"
+    },
+    "claude-sonnet-5-5-high": {
+      "window": 200000,
+      "reliable_ratio": 1.0,
+      "efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "_source": "D168：Claude Sonnet 5.5 标称 200K 上下文，支持 5 档推理调节。"
     },
     "gpt-oss-120b-medium": {
       "efforts": [

@@ -164,6 +164,8 @@ export interface CommandResult {
   text: string;
   items?: string[];
   efforts?: string[];
+  /** D168：每个模型支持的推理强度映射表 */
+  model_efforts?: Record<string, string[]>;
   /** D147：会话未启动时存下的预选（下一条 send 起进程后先下发） */
   pending?: boolean;
   /** D148：模型不在代理列表时 core 透传的提醒（不阻断） */
@@ -846,7 +848,22 @@ export class SessionManager {
           s.commandWaiters.delete(rid);
           const items = Array.isArray(f.items) ? f.items.filter((x): x is string => typeof x === "string") : undefined;
           const efforts = Array.isArray(f.efforts) ? f.efforts.filter((x): x is string => typeof x === "string") : undefined;
-          w.resolve({ ok: f.ok === true, text: String(f.text ?? ""), ...(items ? { items } : {}), ...(efforts ? { efforts } : {}), ...(typeof f.warn === "string" ? { warn: f.warn } : {}) });
+          let model_efforts: Record<string, string[]> | undefined;
+          if (f.model_efforts && typeof f.model_efforts === "object" && !Array.isArray(f.model_efforts)) {
+            const cleaned: Record<string, string[]> = {};
+            for (const [k, v] of Object.entries(f.model_efforts as Record<string, unknown>)) {
+              if (Array.isArray(v)) cleaned[k] = v.filter((x): x is string => typeof x === "string");
+            }
+            model_efforts = cleaned;
+          }
+          w.resolve({
+            ok: f.ok === true,
+            text: String(f.text ?? ""),
+            ...(items ? { items } : {}),
+            ...(efforts ? { efforts } : {}),
+            ...(model_efforts ? { model_efforts } : {}),
+            ...(typeof f.warn === "string" ? { warn: f.warn } : {}),
+          });
         }
         break;
       }

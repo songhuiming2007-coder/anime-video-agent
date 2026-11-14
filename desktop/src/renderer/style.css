@@ -484,10 +484,27 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-pop-row .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); }
 .effort-pop .model-pop-row .ui-row-title { font-family: inherit; }
 .model-pop-check { flex: none; display: inline-flex; justify-content: flex-end; width: 16px; margin-left: auto; color: var(--fg); }
-.model-pop-meta { color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-sm); }
+.model-pop-meta { color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-sm); }
 .model-pop-meta + .model-pop-check { margin-left: 0; }
-/* D156：推理强度独立选择器——描述行（档名右侧）与顶部搜索框，照 ZCode 菜单语汇（fg-subtle 次要、mono 档位名）。 */
-.effort-pop-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-subtle); font-size: var(--text-sm); text-align: left; }
+/* D156/D168：推理强度独立选择器与 GUI 信号条/分段滑块（全走 CSS 变量，禁止色名与字面量色） */
+.effort-pop { min-width: 310px; max-width: 400px; max-height: 62vh; }
+.effort-pop .model-pop-row .ui-row-title { font-family: inherit; min-width: 3.4em; flex: none; }
+.effort-pop .model-pop-reset .ui-row-title { min-width: auto; }
+.effort-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-1); }
+.effort-pop-cur { font-size: var(--text-sm); white-space: nowrap; }
+.effort-meter { display: inline-flex; align-items: flex-end; gap: 1px; height: 12px; width: 14px; flex: none; }
+.effort-meter-bar { width: 2px; border-radius: 1px; background: var(--border-strong); transition: background 0.12s ease; }
+.effort-meter-bar[data-active="1"] { background: var(--accent-strong); }
+.effort-meter-bar--1 { height: 3px; }
+.effort-meter-bar--2 { height: 5px; }
+.effort-meter-bar--3 { height: 7px; }
+.effort-meter-bar--4 { height: 9px; }
+.effort-meter-bar--5 { height: 12px; }
+.effort-seg-bar { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius-md); background: var(--bg-subtle); border: 1px solid var(--border); margin: var(--space-1) 0; }
+.effort-seg-btn { flex: 1 1 0; min-width: 0; height: 24px; padding: 0 var(--space-1); border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: var(--text-sm); cursor: pointer; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.effort-seg-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.effort-seg-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent-border); color: var(--fg-on-accent); font-weight: var(--weight-medium); }
+.effort-pop-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); font-size: var(--text-sm); text-align: left; }
 .effort-pop-row { align-items: baseline; }
 .effort-pop-search { margin: var(--space-1) 0; flex: none; }
 /* ZCode dropdown-menu.tsx:188 分隔：-mx-1 my-1 h-px 横贯浮层内边距 */

@@ -201,3 +201,71 @@ test("D91 长会话名 + 窄窗：会话名截断，模型 / 推理按钮完整�
     fx.cleanup();
   }
 });
+
+test("D168 新会话未发消息前（phase=none）也可调推理强度 + 信号格 + 分段滑块", async () => {
+  test.setTimeout(90_000);
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, ["ep1"]);
+  const L = await launchSession(fx.repo);
+  const page = L.page;
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.locator("[data-testid=episode]", { hasText: "ep1" }).first().click();
+    // phase === "none"（尚未发送任何消息）：模型与推理按钮立即可用、无置灰锁死
+    await expect(page.getByTestId("model-btn")).toBeEnabled();
+    await expect(page.getByTestId("effort-btn")).toBeEnabled();
+    await expect(page.getByTestId("effort-meter")).toBeVisible();
+
+    await page.getByTestId("effort-btn").click();
+    await expect(page.getByTestId("effort-pop")).toBeVisible();
+    await expect(page.getByTestId("effort-seg-bar")).toBeVisible();
+    const segCount = await page.getByTestId("effort-seg-btn").count();
+    expect(segCount).toBeGreaterThanOrEqual(4);
+
+    // 点分段滑块「高」→ pending 生效，按钮信号格亮 4 格
+    await page.locator('[data-testid=effort-seg-btn][data-effort="high"]').click();
+    await expect(page.getByTestId("effort-label")).toHaveText("高");
+    await expect(page.getByTestId("effort-pending")).toBeVisible();
+    await expect(page.getByTestId("effort-meter")).toHaveAttribute("data-level", "4");
+
+    if (SHOTS) {
+      mkdirSync(SHOTS, { recursive: true });
+      await page.getByTestId("effort-btn").click();
+      await page.getByTestId("effort-seg-bar").waitFor();
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: join(SHOTS, "d168-1280.png") });
+      await page.keyboard.press("Escape");
+    }
+
+    // 切到 devin/gpt-6-luna 后仍能自由选高/超高档位（不因未入旧探针表被锁）
+    await page.getByTestId("model-btn").click();
+    if (SHOTS) {
+      await page.locator('[data-testid=model-row]').first().waitFor();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: join(SHOTS, "d168-1440.png") });
+      await page.setViewportSize({ width: 1280, height: 800 });
+    }
+    await page.getByTestId("model-custom-input").fill("devin/gpt-6-luna");
+    await page.getByTestId("model-custom-submit").click();
+    await expect(page.getByTestId("model-label")).toHaveText("devin/gpt-6-luna");
+    await page.getByTestId("effort-btn").click();
+    await expect(page.locator('[data-testid=effort-seg-btn][data-effort="xhigh"]')).toBeVisible();
+    await page.locator('[data-testid=effort-seg-btn][data-effort="xhigh"]').click();
+    await expect(page.getByTestId("effort-label")).toHaveText("超高");
+    await expect(page.getByTestId("effort-meter")).toHaveAttribute("data-level", "5");
+
+    // 发首条消息时，预选的模型与推理强度一起带出并落库请求
+    llm.push(assistant("明白。"));
+    await send(page, "你好");
+    await expect(page.getByTestId("model-label")).toHaveText("devin/gpt-6-luna");
+    await expect(page.getByTestId("effort-label")).toHaveText("超高");
+    await expect(page.getByTestId("effort-pending")).toHaveCount(0);
+    await idle(page);
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});

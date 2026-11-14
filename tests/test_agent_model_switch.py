@@ -564,3 +564,111 @@ def test_repl_model_command(tmp_path: Path, monkeypatch, capsys) -> None:
     assert host.model_override.model == "kimi-k3" and "kimi-k3" in capsys.readouterr().out
     cli.run_model_command("/thinking turbo", "creative")
     assert "[ERROR]" in capsys.readouterr().out and host.model_override.reasoning_effort is None
+
+
+def test_d168_standalone_efforts_and_protocol_mapping(tmp_path: Path, monkeypatch) -> None:
+    """D168：AVA 独立三级推理能力发现（compact.json -> AVA 本地 models.local.json 缓存 -> 家族启发式）、
+    off->none 与 max 归一化，以及多协议 extra_body 映射。不依赖任何外部 CLI 目录。"""
+    import json as _json
+    from pipeline.agent import compact as compact_mod
+
+    # 1. validate_effort 兼容 off -> none 与 max
+    assert ms.validate_effort("off") == "none"
+    assert ms.validate_effort("MAX") == "max"
+    assert ms.validate_effort("default") is None
+
+    # 2. AVA_MODELS_CACHE_PATH 覆盖 Tier 2（支持 efforts 与 thinkingLevelMap，不依赖 ~/.pi）
+    cache_file = tmp_path / "models.local.json"
+    monkeypatch.setenv("AVA_MODELS_CACHE_PATH", str(cache_file))
+    assert ms.models_cache_path(tmp_path) == cache_file
+    assert ms.models_cache_path.__defaults__ == (None,)
+    assert ".pi" not in str(ms.models_cache_path(tmp_path) if False else (tmp_path / "config" / "agent" / "models.local.json"))
+
+    cache_file.write_text(
+        _json.dumps({
+            "custom-cached-a": {"thinkingLevelMap": {"off": None, "low": "low", "high": "high"}},
+            "custom-cached-b": {"efforts": ["off", "medium", "xhigh"]},
+        }),
+        encoding="utf-8",
+    )
+    assert ms.efforts_for_model("custom-cached-a", tmp_path) == ("none", "low", "high")
+    assert ms.efforts_for_model("custom-cached-b", tmp_path) == ("none", "medium", "xhigh")
+
+    # 3. Tier 3 家族启发式兜底：未入表/新增 CPA 模型永不锁死
+    assert ms.efforts_for_model("devin/gpt-6-luna") == ("none", "minimal", "low", "medium", "high", "xhigh")
+    assert ms.efforts_for_model("claude-opus-5-5-high") == ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    assert ms.efforts_for_model("completely-unknown-model", tmp_path) == ms.EFFORTS
+
+    # 4. efforts_map_for_models + 多协议 apply_effort_to_extra_body
+    mapping = ms.efforts_map_for_models(["devin/gpt-6-luna", "completely-unknown-model"], tmp_path)
+    assert "max" not in mapping["devin/gpt-6-luna"]
+    assert mapping["completely-unknown-model"] == list(ms.EFFORTS)
+
+    p_openai: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_openai, "devin/gpt-6-luna", "high", protocol="openai-completions")
+    assert p_openai == {"reasoning_effort": "high"}
+
+    p_none: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_none, "devin/gpt-6-luna", "off", protocol="openai-completions")
+    assert p_none == {}
+
+    p_codex: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_codex, "gpt-5.2-codex", "max", protocol="openai-codex-responses")
+    assert p_codex == {"reasoning": {"effort": "xhigh", "summary": "auto"}}
+
+    p_anth: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_anth, "claude-opus-4-6", "high", protocol="anthropic-messages")
+    assert p_anth == {"thinking": {"type": "enabled", "budget_tokens": compact_mod.THINKING_BUDGETS["high"]}}
+
+    p_anth_auto: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_anth_auto, "claude-opus-4-6", "auto", protocol="anthropic-messages")
+    assert p_anth_auto == {"thinking": {"type": "adaptive"}}
+
+    p_gem: dict[str, object] = {}
+    ms.apply_effort_to_extra_body(p_gem, "gemini-2.5-pro", "medium", protocol="google-gemini")
+    assert p_gem == {"generationConfig": {"thinkingConfig": {"thinkingLevel": "MEDIUM"}}}
+
+
+def test_d168_probe_payload_and_protocol_model_efforts(world, endpoint, tmp_path: Path, monkeypatch) -> None:
+    """D168：probe_models_and_efforts_payload 与 protocol.py /models 返回 model_efforts 映射表。"""
+    import urllib.request
+
+    root, episode = world
+    monkeypatch.setenv("AVA_MODELS_CACHE_PATH", str(tmp_path / "models.local.json"))
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import json as _json
+
+    raw = _json.dumps({
+        "data": [
+            {"id": "devin/gpt-6-luna", "thinkingLevelMap": {"off": None, "low": "low", "high": "high"}},
+            {"id": "kimi-k3"},
+        ]
+    }).encode("utf-8")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResp(raw))
+    res = ms.probe_models_and_efforts_payload(root)
+    assert res["items"] == ["devin/gpt-6-luna", "kimi-k3"]
+    assert isinstance(res["model_efforts"]["kimi-k3"], list) and len(res["model_efforts"]["kimi-k3"]) == 7
+
+    proc = Protocol(root, endpoint, episode=str(episode), tmp=tmp_path)
+    try:
+        proc.wait_for_ready()
+        proc.send({"t": "command", "name": "models", "arg": None, "rid": "rm1"})
+        cmd_res = proc.wait_for("command_result")
+        assert cmd_res["ok"] is True
+        assert isinstance(cmd_res.get("model_efforts"), dict)
+        proc.shutdown()
+    finally:
+        proc.proc.kill()

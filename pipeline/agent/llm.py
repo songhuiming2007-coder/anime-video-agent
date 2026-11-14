@@ -242,6 +242,15 @@ def configured_base_url(root: Path | None = None) -> str | None:
     return base_url or None
 
 
+def configured_model_name(root: Path | None = None) -> str | None:
+    """D168：当前生效配置的默认模型名（只读配置，不读环境变量与钥匙串）。"""
+    loaded = _load_agent_cfg(root)
+    if loaded is None:
+        return None
+    model = str(loaded[0].get("model") or "").strip()
+    return model or None
+
+
 def api_key_env_name(root: Path | None = None) -> str | None:
     """当前生效配置指名的密钥环境变量名（只读配置，**不**读环境变量）。
 
@@ -308,15 +317,17 @@ def _parse_timeout(data: dict[str, Any], cfg_file: Path) -> float | None:
 
 
 def _parse_effort(data: dict[str, Any], cfg_file: Path) -> str | None:
-    """D91：配置里可选的默认推理强度。不合法 → 警告一次、当没配（不猜成别的档）。"""
-    from pipeline.agent.model_switch import EFFORTS
+    """D91/D168：配置里可选的默认推理强度。`off` 归一成 `none`；不合法 → 警告一次、当没配。"""
+    from pipeline.agent.model_switch import EFFORT_ORDER
 
     raw = data.get("reasoning_effort")
     if raw is None:
         return None
     value = str(raw).strip().lower()
-    if value not in EFFORTS:
-        _warn_once(cfg_file, "effort", f"reasoning_effort={raw!r} 不在 {list(EFFORTS)} 里，已忽略")
+    if value == "off":
+        value = "none"
+    if value not in EFFORT_ORDER:
+        _warn_once(cfg_file, "effort", f"reasoning_effort={raw!r} 不在 {list(EFFORT_ORDER)} 里，已忽略")
         return None
     return value
 
@@ -517,13 +528,14 @@ def chat_complete(
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
     if cfg.reasoning_effort is not None:
-        # D155：不再恒发 reasoning_effort——按当前模型的 effort_map/effort_param 决定实际参数名与值，
-        # 该档映射为「不发参数」（devin 等不吃 effort 的模型，或 map 里值为 null 的档）→ 不带键。
-        # reasoning_effort=none 语义 = 不发档，本就该映射到 None 不带键。
-        req = model_switch.effort_request(cfg.model_for(purpose), cfg.reasoning_effort)
-        if req is not None:
-            param, value = req
-            payload[param] = value
+        # D155/D168：按协议与模型映射推理参数（OpenAI reasoning_effort / effort_map / Codex / Anthropic 等）；
+        # reasoning_effort=none 语义 = 不发档，映射到不带键。
+        model_switch.apply_effort_to_extra_body(
+            payload,
+            cfg.model_for(purpose),
+            cfg.reasoning_effort,
+            protocol="openai-completions",
+        )
     # D94：一律请求流式。超时（socket 每次读取各自计时）随之从「整体多久返回」变成「两段数据之间最长多久」；
     # 不支持流式的服务商与测试桩回 application/json，下面按 Content-Type 分流照旧整体解析
     payload["stream"] = True
