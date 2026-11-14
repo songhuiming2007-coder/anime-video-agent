@@ -257,15 +257,15 @@ export function LoginModal({
                     key={p.id}
                     type="button"
                     aria-current={isSelected ? "true" : undefined}
-                    className={`ui-row login-provider-row${isSelected ? " is-selected" : ""}`}
+                    className="ui-row login-provider-row"
                     data-testid="login-provider-row"
                     data-provider={p.id}
                     data-connected={p.connected ? "1" : "0"}
                     onClick={() => selectProvider(p)}
                   >
-                    <span className={`ui-dot${p.connected ? " login-dot--ok" : ""}`} aria-hidden="true" />
+                    <span className={p.connected ? "ui-dot ui-dot--ok" : "ui-dot"} aria-hidden="true" />
                     <span className="login-provider-name">{p.name}</span>
-                    <span className="ui-badge">{p.connected ? "已连接" : MODE_SHORT[primaryMode]}</span>
+                    <span className={p.connected ? "ui-badge ui-badge--ok" : "ui-badge"}>{p.connected ? "已连接" : MODE_SHORT[primaryMode]}</span>
                   </button>
                 );
               })}
@@ -285,7 +285,7 @@ export function LoginModal({
                 </div>
 
                 {current.connected && (
-                  <div className="login-connected-card" data-testid="login-connected-card">
+                  <div className="ui-card login-connected-card" data-testid="login-connected-card">
                     <div className="login-connected-row">
                       <span className="ui-badge ui-badge--ok">当前已连接</span>
                       {current.masked_secret && <span className="login-secret-mask">{current.masked_secret}</span>}
@@ -425,7 +425,7 @@ export function LoginModal({
                           <code className="login-url-text" data-testid="login-authorize-url">{started.authorize_url}</code>
                           <button
                             type="button"
-                            className="ui-btn ui-btn--primary ui-btn--sm"
+                            className="ui-btn ui-btn--sm"
                             data-testid="login-copy-url-btn"
                             onClick={() => copyText("url", started.authorize_url ?? "")}
                           >
@@ -484,7 +484,7 @@ export function LoginModal({
                           <code className="login-url-text" data-testid="login-device-url">{started.verification_uri}</code>
                           <button
                             type="button"
-                            className="ui-btn ui-btn--primary ui-btn--sm"
+                            className="ui-btn ui-btn--sm"
                             data-testid="login-copy-url-btn"
                             onClick={() => copyText("url", started.verification_uri ?? "")}
                           >

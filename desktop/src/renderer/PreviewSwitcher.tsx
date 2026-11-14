@@ -278,7 +278,7 @@ export function PreviewSwitcher({
           {entries !== null &&
             allItems.map((g) => (
               <div key={g.title} className="preview-switch-group">
-                <div className="preview-switch-gtitle">{g.title}</div>
+                <div className="ui-popover-title preview-switch-gtitle">{g.title}</div>
                 {g.items.map((it: SwitchItem) => (
                   <div key={it.rel}>
                     <div className="preview-switch-item">
@@ -319,7 +319,7 @@ export function PreviewSwitcher({
 
       {galleriesOpen && (
         <div className="ui-popover preview-switch-pop preview-galleries-pop" data-testid="galleries-pop">
-          <div className="preview-switch-gtitle">镜头画廊（shots）</div>
+          <div className="ui-popover-title preview-switch-gtitle">镜头画廊（shots）</div>
           {galleries === null && <div className="muted">…</div>}
           {galleries?.length === 0 && <div className="muted">没有画廊</div>}
           {galleries?.map((g) => (

@@ -77,7 +77,7 @@ export function SessionHeader({
   useEffect(() => setNeedSession(false), [convKey]);
   return (
     <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
-      {scopeLabel !== null && (
+      {scopeLabel !== null && !asset && (
         <span className="ui-badge" data-testid="session-scope">
           {scopeLabel}
         </span>
@@ -477,7 +477,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
         >
           <Icon name="chip" size="sm" />
           <span className="model-ctl-label" data-testid="model-label">{pendingModel ?? info?.model ?? "—"}</span>
-          {pendingModel !== null && <span className="model-ctl-pending" data-testid="model-pending">待生效</span>}
+          {pendingModel !== null && <span className="ui-badge" data-testid="model-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {modelOpen && (
@@ -599,7 +599,7 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
             <span className="effort-meter-bar effort-meter-bar--5" data-active={meterLevel >= 5 ? "1" : "0"} />
           </span>
           <span className="model-ctl-label" data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "默认"}</span>
-          {pendingEffort !== null && <span className="model-ctl-pending" data-testid="effort-pending">待生效</span>}
+          {pendingEffort !== null && <span className="ui-badge" data-testid="effort-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {effortOpen && (
@@ -610,15 +610,14 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
             </div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
             <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 循环档位 · 当前模型 {activeModel ?? "默认"}</div>
-            {/* D168：可视化横向分段滑块（Pi GUI 体验） */}
-            <div className="effort-seg-bar" data-testid="effort-seg-bar" role="group" aria-label="推理强度分段选择器">
+            {/* D168：可视化横向分段选择器（复用 ui-seg 视觉语言） */}
+            <div className="ui-seg effort-seg-bar" data-testid="effort-seg-bar" role="group" aria-label="推理强度分段选择器">
               {supportedEfforts.map((v) => {
                 const isCurrent = currentEffort === v;
                 return (
                   <button
                     key={v}
                     type="button"
-                    className="effort-seg-btn"
                     data-testid="effort-seg-btn"
                     data-effort={v}
                     aria-pressed={isCurrent}
