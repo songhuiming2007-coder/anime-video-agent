@@ -2,18 +2,18 @@
 from __future__ import annotations
 
 import base64
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
-from pathlib import Path
 import stat
 import threading
-from typing import Any
 import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-from pipeline.agent import auth, llm, model_switch, tools
+from pipeline.agent import auth, compact, llm, model_switch, tools
 
 
 def _jwt_with_account(account_id: str) -> str:
@@ -25,15 +25,15 @@ def _jwt_with_account(account_id: str) -> str:
 
 def _make_mock_server(handler_fn):
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             handler_fn(self, "GET", b"")
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             length = int(self.headers.get("Content-Length") or "0")
             body = self.rfile.read(length) if length > 0 else b""
             handler_fn(self, "POST", body)
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             return
 
     server = HTTPServer(("127.0.0.1", 0), _Handler)
@@ -368,3 +368,159 @@ def test_cli_auth_subcommands_and_n50_secret_isolation(tmp_path: Path, monkeypat
 
     assert auth.dispatch_auth_cli(["--auth-logout", "openai"], root=tmp_path) == 0
     assert json.loads(capsys.readouterr().out)["removed"] is True
+
+
+def test_anthropic_tool_choice_none_and_thinking_tool_loop_continuation(tmp_path: Path) -> None:
+    """B1 + B2 + NB#2 回归：tool_choice='none'、signed thinking 跨工具轮续传与 max_tokens 上限夹紧。"""
+    sent_bodies: list[dict[str, Any]] = []
+    turn = {"n": 0}
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        req_json = json.loads(body.decode("utf-8"))
+        sent_bodies.append(req_json)
+        turn["n"] += 1
+        n = turn["n"]
+        if n == 1:
+            _send_sse(req, [
+                'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":50}}}\n\n',
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先查期列表"}}\n\n',
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_part_1"}}\n\n',
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"_part_2"}}\n\n',
+                'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_ep","name":"list_episodes"}}\n\n',
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+                'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":30}}\n\n',
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            ])
+            return
+        if n == 2:
+            # 第二轮再发一次 tool_use，让后续 approve 抛 KeyboardInterrupt 触发 tool_choice="none" 收尾（B1）
+            _send_sse(req, [
+                'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":80}}}\n\n',
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_ep2","name":"list_episodes"}}\n\n',
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+                'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":10}}\n\n',
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            ])
+            return
+        _send_sse(req, [
+            'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":90}}}\n\n',
+            'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"已收尾停止"}}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":12}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ])
+
+    srv, base = _make_mock_server(handler)
+    try:
+        repo_root = Path(__file__).resolve().parents[1]
+        (tmp_path / "config" / "agent").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "config" / "agent" / "tools.json").write_text(
+            (repo_root / "config" / "agent" / "tools.json").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        cfg_high = llm.LLMConfig(
+            base_url=base,
+            model="claude-opus-4-6",
+            api_key="sk-ant-key-123",
+            reasoning_effort="high",
+            api_protocol="anthropic-messages",
+        )
+        # B1 直接载荷断言
+        none_payload, _ = llm._anthropic_request(cfg_high, [{"role": "user", "content": "stop"}], None, None, "none")
+        assert none_payload["tool_choice"] == {"type": "none"}
+
+        # NB #2：max 档位 clamp max_tokens <= 64000 且 budget_tokens < max_tokens
+        cfg_max = llm.LLMConfig(
+            base_url=base,
+            model="claude-opus-4-6",
+            api_key="sk-ant-key-123",
+            reasoning_effort="max",
+            api_protocol="anthropic-messages",
+        )
+        max_payload, _ = llm._anthropic_request(cfg_max, [{"role": "user", "content": "hi"}], None, None, None)
+        assert max_payload["max_tokens"] == 64000
+        assert max_payload["thinking"]["budget_tokens"] == 59904
+        assert max_payload["thinking"]["budget_tokens"] < max_payload["max_tokens"]
+
+        approve_calls = {"c": 0}
+
+        def _approve(name: str, args: dict[str, Any]) -> bool:
+            approve_calls["c"] += 1
+            if approve_calls["c"] >= 2:
+                raise KeyboardInterrupt
+            return True
+
+        res = llm.run_tool_loop(
+            [{"role": "user", "content": "列出所有期"}],
+            config=cfg_high,
+            root=tmp_path,
+            scope="idea",
+            approve=_approve,
+        )
+        assert res["stopped"] == "interrupted"
+        assert len(sent_bodies) == 3
+
+        # B2：Turn 2 请求里的 assistant 历史消息必须以带完整 signature 的 thinking 块开头，紧跟 tool_use
+        turn2_msgs = sent_bodies[1]["messages"]
+        assert turn2_msgs[1]["role"] == "assistant"
+        assert turn2_msgs[1]["content"][0] == {
+            "type": "thinking",
+            "thinking": "先查期列表",
+            "signature": "sig_part_1_part_2",
+        }
+        assert turn2_msgs[1]["content"][1]["type"] == "tool_use"
+        assert turn2_msgs[2]["role"] == "user"
+        assert turn2_msgs[2]["content"][0]["type"] == "tool_result"
+
+        # B1：Turn 3 收尾请求必须发 {"type": "none"}，而非 {"type": "tool", "name": "none"}
+        assert sent_bodies[2]["tool_choice"] == {"type": "none"}
+    finally:
+        srv.shutdown()
+
+
+def test_compact_window_and_frontend_family_heuristics_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """NB #3/#4/#6/#12：前缀剥离复用 compact 窗口 + 前后端启发式一致 + AuthError 降级 + 过期 pending 清理。"""
+    cfg = compact.load_compact_config(Path(__file__).resolve().parents[1])
+    w_anth = cfg.window_for("anthropic/claude-sonnet-4-6")
+    w_or = cfg.window_for("openrouter/anthropic/claude-sonnet-4-6")
+    assert w_anth is not None and w_anth.window == 200000
+    assert w_or is not None and w_or.window == 200000
+    assert cfg.window_for("unknown/claude-sonnet-4-6") is None
+
+    # 解析 SessionHeader.tsx 存在性与关键家族分支（全对齐走 node 侧与 Python 对比）
+    tsx = (Path(__file__).resolve().parents[1] / "desktop" / "src" / "renderer" / "SessionHeader.tsx").read_text(encoding="utf-8")
+    assert 'lastIndexOf("/")' in tsx
+    assert "claude-opus-4.6" in tsx and "claude-sonnet-4.6" in tsx
+    assert model_switch._family_heuristic_efforts("openrouter/anthropic/claude-opus-4.6") == (
+        "none", "minimal", "low", "medium", "high", "xhigh", "max"
+    )
+    assert model_switch._family_heuristic_efforts("devin/gpt-6-luna") == (
+        "none", "minimal", "low", "medium", "high", "xhigh"
+    )
+
+    # NB #4：过期 _pending 条目在写盘时自动清理
+    custom_auth = tmp_path / "auth.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(custom_auth))
+    store = {
+        "providers": {},
+        "_pending": {
+            "anthropic": {"mode": "oauth_pkce", "created_at_ms": 1_000},
+            "openai-codex": {"mode": "oauth_pkce", "created_at_ms": auth._now_ms()},
+        },
+    }
+    auth._write_store_unlocked(custom_auth, store)
+    reloaded = auth._read_store_unlocked(custom_auth)
+    assert "anthropic" not in reloaded["_pending"]
+    assert "openai-codex" in reloaded["_pending"]
+
+    # NB #3：OAuth 续期失败时 _load_auth_fallback_cfg 优雅回落 None，effective_config 转为可重试 LLMError
+    monkeypatch.setattr(auth, "resolve_model_provider", lambda *a, **kw: (_ for _ in ()).throw(auth.AuthError("refresh boom")))
+    base = llm.LLMConfig(base_url="http://127.0.0.1:1/v1", model="fake", api_key="k")
+    with pytest.raises(llm.LLMError) as exc_info:
+        model_switch.effective_config(base, model_switch.Override(model="anthropic/claude-opus-4-6"), root=tmp_path)
+    assert exc_info.value.retryable is True
+
+    monkeypatch.setattr(auth, "first_authenticated_config", lambda *a, **kw: (_ for _ in ()).throw(auth.AuthError("refresh boom")))
+    assert llm._load_auth_fallback_cfg(tmp_path) is None

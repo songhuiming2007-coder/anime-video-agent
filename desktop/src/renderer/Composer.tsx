@@ -33,8 +33,8 @@ export function Composer({
   returned?: { key: string; text: string } | null;
   /** D91：输入框下一行的左侧控件（模型 / 推理强度按钮，照 ZCode 工具栏）；由 App 传入 */
   toolbar?: ReactNode;
-  /** D91/D170：裸 `/model`、`/thinking`、`/login`、`/logout` 先交给它（展开工具栏下拉/登录弹窗）；返回 true = 已接手、不发送。 */
-  onSlash?: (cmd: "/model" | "/thinking" | "/login" | "/logout") => boolean;
+  /** D91/D170：裸 `/model`、`/thinking`、`/login` 先交给它（展开工具栏下拉/登录弹窗）；返回 true = 已接手、不发送。 */
+  onSlash?: (cmd: "/model" | "/thinking" | "/login") => boolean;
 }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +75,7 @@ export function Composer({
           e.preventDefault();
           if (disabled || value.trim() === "") return;
           const bare = value.trim();
-          if ((bare === "/model" || bare === "/thinking" || bare === "/login" || bare === "/logout") && onSlash?.(bare)) {
+          if ((bare === "/model" || bare === "/thinking" || bare === "/login") && onSlash?.(bare)) {
             setValue("");
             setError(null);
             return;

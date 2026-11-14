@@ -124,8 +124,26 @@ class CompactConfig:
     auto_trigger: bool = False
 
     def window_for(self, model: str) -> ModelWindow | None:
-        """表里没有 → None：不自动压缩、不显示分母，**不猜窗口**（人裁决⑤）。"""
-        return self.models.get(model)
+        """表里没有 → None：不自动压缩、不显示分母，**不猜窗口**（人裁决⑤）。
+
+        已登记服务商前缀 `<provider>/<model>`（含 openrouter 二级前缀）剥除后查同一张实测表。
+        """
+        if not model:
+            return None
+        if model in self.models:
+            return self.models[model]
+        if "/" in model:
+            prefix, rest = model.split("/", 1)
+            from pipeline.agent.auth import PROVIDER_MAP
+
+            if prefix in PROVIDER_MAP and rest:
+                if rest in self.models:
+                    return self.models[rest]
+                if "/" in rest:
+                    bare = rest.rsplit("/", 1)[-1]
+                    if bare in self.models:
+                        return self.models[bare]
+        return None
 
     def trigger_tokens(self, model: str) -> int | None:
         w = self.window_for(model)

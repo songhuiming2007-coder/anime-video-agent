@@ -32,7 +32,6 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .preview-rail { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); min-height: 0; margin-left: var(--space-1); padding: var(--space-2) 0; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--bg-panel); color: var(--fg-muted); cursor: pointer; }
 .preview-rail:hover { color: var(--fg); background: var(--bg-hover); }
 .preview-rail-label { writing-mode: vertical-rl; font-size: var(--text-sm); letter-spacing: 0.04em; overflow: hidden; }
-.files { padding-bottom: var(--space-1); }
 .main.stale .center, .main.stale .preview { opacity: 0.75; } /* Spec 8 §2.8「置灰」：非活动界面，文字守 3:1 下限（VE-1 stale 态） */
 /* S8-R23：「陈旧」标记的落位（中栏顶部那条；侧栏里直接放在 .side-head-row 里） */
 .stale-note { padding: var(--space-2) var(--space-3) 0; }
@@ -67,9 +66,6 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .ep-title-swap { animation: ep-title-swap var(--dur-base) var(--ease) both; }
 @keyframes ep-title-swap { from { opacity: 0; } }
 .ep-session-err { padding: var(--space-1) var(--space-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
-.tree-list { list-style: none; margin: 0; padding: 0; }
-.tree-row { min-height: 26px; gap: var(--space-1); font-size: var(--text-base); }
-.tree-row.dir { color: var(--fg); }
 .side-head { position: sticky; top: 0; z-index: 1; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0; background: var(--bg-sidebar); }
 .side-head-row { display: flex; align-items: center; gap: var(--space-2); }
 /* 外观浮层落位（D3）：popover 的 UA 默认是 fixed + inset:0 + margin:auto（居中），须显式盖掉 */
@@ -186,8 +182,6 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .fatal pre { font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; }
 
 /* ---- Spec 10 已落地的区块（Spec 14 §8 PR2：只替换 Spec 8 时代的选择器，Spec 10 的区块保留） ---- */
-.tree { padding: 0 var(--space-1) var(--space-2); }
-.galleries { padding-bottom: var(--space-2); }
 .new-episode { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0; }
 .new-episode-form { display: flex; flex-direction: column; gap: var(--space-2); }
 /* D152 A：建期钮不要被 flex 列拉满侧栏宽。 */
@@ -562,6 +556,8 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .login-oauth-step { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); }
 .login-url-box { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-md); background: var(--bg-subtle); border: 1px solid var(--border); }
 .login-url-text { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.login-hint-note { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--bg-subtle); border: 1px solid var(--border); font-size: var(--text-sm); color: var(--fg-muted); line-height: 1.5; }
+.login-hint-note code { font-family: var(--font-mono); color: var(--fg); }
 .login-device-card { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--bg-subtle); border: 1px solid var(--border); }
 .login-device-code { font-family: var(--font-mono); font-size: var(--text-lg); letter-spacing: 0.08em; color: var(--fg); }
 .login-feedback { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); }

@@ -108,6 +108,12 @@ describe("D168 resolveSupportedEfforts / effortBarLevel", () => {
     expect(resolveSupportedEfforts("claude-opus-5-5-high", null, null)).toEqual([
       "none", "minimal", "low", "medium", "high", "xhigh", "max",
     ]);
+    expect(resolveSupportedEfforts("openrouter/anthropic/claude-opus-4.6", null, null)).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh", "max",
+    ]);
+    expect(resolveSupportedEfforts("anthropic/claude-sonnet-4.6", null, null)).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh", "max",
+    ]);
     expect(clientFamilyEfforts("deepseek-r1")).toEqual(["none", "low", "medium", "high"]);
     expect(clientFamilyEfforts(null).length).toBe(7);
   });

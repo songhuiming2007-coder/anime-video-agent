@@ -30,7 +30,12 @@ from typing import Any, Literal
 from pipeline import paths
 from pipeline.agent import model_switch, vision
 from pipeline.agent.aging import age_tool_results
-from pipeline.agent.compact import COMPACT_KEY, STATUS_CARD_KEY, drop_stale_status_cards, estimate_tokens
+from pipeline.agent.compact import (
+    COMPACT_KEY,
+    STATUS_CARD_KEY,
+    drop_stale_status_cards,
+    estimate_tokens,
+)
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
     ToolContext,
@@ -290,7 +295,11 @@ def _load_auth_fallback_cfg(
     """D170：`agent*.json` 未就绪时，回落到 `config/auth.local.json` 的首个已登录服务商。"""
     from pipeline.agent import auth
 
-    cred = auth.first_authenticated_config(root)
+    try:
+        cred = auth.first_authenticated_config(root)
+    except auth.AuthError as exc:
+        print(f"[WARN] 读取已登录凭据失败（已回落降级模式）：{exc}", file=sys.stderr)
+        return None
     if cred is None:
         return None
     return LLMConfig(
@@ -588,6 +597,9 @@ def _append_anthropic_msg(out: list[dict[str, Any]], role: str, blocks: list[dic
     out.append({"role": role, "content": blocks})
 
 
+_ANTHROPIC_MAX_OUTPUT_TOKENS = 64000
+
+
 def _anthropic_request(
     cfg: LLMConfig,
     wired: list[dict[str, Any]],
@@ -610,6 +622,28 @@ def _anthropic_request(
                 system_parts.append(t)
         elif role == "assistant":
             blocks: list[dict[str, Any]] = []
+            # Anthropic Messages 开启 thinking 且带工具循环时，历史 assistant 须把带签名的 thinking 块放前面原样回传
+            raw_tblocks = msg.get("thinking_blocks")
+            if isinstance(raw_tblocks, list) and raw_tblocks:
+                for tb in raw_tblocks:
+                    if not isinstance(tb, dict):
+                        continue
+                    tb_type = tb.get("type")
+                    if tb_type == "thinking":
+                        entry: dict[str, Any] = {
+                            "type": "thinking",
+                            "thinking": str(tb.get("thinking") or ""),
+                        }
+                        if tb.get("signature"):
+                            entry["signature"] = str(tb["signature"])
+                        blocks.append(entry)
+                    elif tb_type == "redacted_thinking" and tb.get("data"):
+                        blocks.append({"type": "redacted_thinking", "data": str(tb["data"])})
+            elif msg.get("reasoning_content"):
+                entry = {"type": "thinking", "thinking": str(msg["reasoning_content"])}
+                if msg.get("reasoning_signature"):
+                    entry["signature"] = str(msg["reasoning_signature"])
+                blocks.append(entry)
             txt = _content_text(msg.get("content"))
             if txt:
                 blocks.append({"type": "text", "text": txt})
@@ -657,6 +691,8 @@ def _anthropic_request(
             payload["tool_choice"] = {"type": "auto"}
         elif tool_choice == "required":
             payload["tool_choice"] = {"type": "any"}
+        elif tool_choice == "none":
+            payload["tool_choice"] = {"type": "none"}
         elif isinstance(tool_choice, str):
             payload["tool_choice"] = {"type": "tool", "name": tool_choice}
     if cfg.reasoning_effort is not None:
@@ -665,8 +701,16 @@ def _anthropic_request(
         )
         thinking = payload.get("thinking")
         if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+            thinking = dict(thinking)
             budget = int(thinking.get("budget_tokens") or 0)
-            payload["max_tokens"] = max(int(payload["max_tokens"]), budget + 4096)
+            if budget > 0:
+                budget = min(budget, _ANTHROPIC_MAX_OUTPUT_TOKENS - 4096)
+                thinking["budget_tokens"] = budget
+                payload["max_tokens"] = min(
+                    _ANTHROPIC_MAX_OUTPUT_TOKENS,
+                    max(int(payload["max_tokens"]), budget + 4096),
+                )
+            payload["thinking"] = thinking
 
     is_oauth = cfg.auth_type == "oauth" or cfg.api_key.startswith("sk-ant-oat")
     headers: dict[str, str] = {
@@ -694,6 +738,7 @@ def _normalize_anthropic_usage(raw: dict[str, Any] | None) -> dict[str, Any] | N
 def _anthropic_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     texts: list[str] = []
     thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
     for block in body.get("content") or []:
         if not isinstance(block, dict):
@@ -702,7 +747,14 @@ def _anthropic_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], di
         if btype == "text":
             texts.append(str(block.get("text") or ""))
         elif btype == "thinking":
-            thinkings.append(str(block.get("thinking") or ""))
+            t_str = str(block.get("thinking") or "")
+            thinkings.append(t_str)
+            tb: dict[str, Any] = {"type": "thinking", "thinking": t_str}
+            if block.get("signature"):
+                tb["signature"] = str(block["signature"])
+            thinking_blocks.append(tb)
+        elif btype == "redacted_thinking" and block.get("data"):
+            thinking_blocks.append({"type": "redacted_thinking", "data": str(block["data"])})
         elif btype == "tool_use":
             calls.append({
                 "id": str(block.get("id") or ""),
@@ -715,6 +767,8 @@ def _anthropic_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], di
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
     if thinkings:
         msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     if calls:
         msg["tool_calls"] = calls
     return msg, _normalize_anthropic_usage(body.get("usage"))
@@ -752,6 +806,8 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
                 "type": btype,
                 "text": [str(blk.get("text") or "")] if btype == "text" and blk.get("text") else [],
                 "thinking": [str(blk.get("thinking") or "")] if btype == "thinking" and blk.get("thinking") else [],
+                "signature": [str(blk.get("signature") or "")] if btype == "thinking" and blk.get("signature") else [],
+                "data": str(blk.get("data") or "") if btype == "redacted_thinking" else "",
                 "id": blk.get("id"),
                 "name": blk.get("name"),
                 "input_parts": [],
@@ -760,13 +816,15 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
             blocks[idx] = slot
         elif etype == "content_block_delta":
             idx = int(ev.get("index") or 0)
-            slot = blocks.setdefault(idx, {"type": "text", "text": [], "thinking": [], "input_parts": []})
+            slot = blocks.setdefault(idx, {"type": "text", "text": [], "thinking": [], "signature": [], "input_parts": []})
             delta = ev.get("delta") or {}
             dtype = delta.get("type")
             if dtype == "text_delta":
                 slot["text"].append(str(delta.get("text") or ""))
             elif dtype == "thinking_delta":
                 slot["thinking"].append(str(delta.get("thinking") or ""))
+            elif dtype == "signature_delta":
+                slot.setdefault("signature", []).append(str(delta.get("signature") or ""))
             elif dtype == "input_json_delta":
                 slot["input_parts"].append(str(delta.get("partial_json") or ""))
         elif etype == "message_delta":
@@ -779,14 +837,24 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
         raise LLMError("Anthropic 流式响应中途断开（缺少 message_stop）", retryable=True)
     texts: list[str] = []
     thinkings: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
     for idx in sorted(blocks):
         blk = blocks[idx]
-        if blk.get("type") == "text":
+        btype = blk.get("type")
+        if btype == "text":
             texts.extend(blk["text"])
-        elif blk.get("type") == "thinking":
-            thinkings.extend(blk["thinking"])
-        elif blk.get("type") == "tool_use":
+        elif btype == "thinking":
+            t_str = "".join(blk["thinking"])
+            sig_str = "".join(blk.get("signature") or [])
+            thinkings.append(t_str)
+            tb: dict[str, Any] = {"type": "thinking", "thinking": t_str}
+            if sig_str:
+                tb["signature"] = sig_str
+            thinking_blocks.append(tb)
+        elif btype == "redacted_thinking" and blk.get("data"):
+            thinking_blocks.append({"type": "redacted_thinking", "data": str(blk["data"])})
+        elif btype == "tool_use":
             raw_json = "".join(blk["input_parts"])
             if not raw_json and blk.get("init_input") is not None:
                 raw_json = json.dumps(blk["init_input"], ensure_ascii=False)
@@ -798,6 +866,8 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
     if thinkings:
         msg["reasoning_content"] = "".join(thinkings) or None
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     if calls:
         msg["tool_calls"] = calls
     return msg, _normalize_anthropic_usage(usage_raw) if usage_raw else None
@@ -1036,9 +1106,14 @@ def chat_complete(
     elif cfg.api_protocol == "openai-codex-responses":
         payload, headers = _codex_request(cfg, wired, tools, purpose, tool_choice)
     else:
+        oai_msgs = (
+            [{k: v for k, v in m.items() if k != "thinking_blocks"} if isinstance(m, dict) and "thinking_blocks" in m else m for m in wired]
+            if any(isinstance(m, dict) and "thinking_blocks" in m for m in wired)
+            else wired
+        )
         payload = {
             "model": cfg.model_for(purpose),
-            "messages": wired,
+            "messages": oai_msgs,
         }
         if tools:
             payload["tools"] = tools
