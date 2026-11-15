@@ -191,6 +191,7 @@ describe("模型来源识别与分组过滤", () => {
     expect(sourceKindLabel("proxy")).toBe("代理");
     expect(sourceKindLabel("api_key")).toBe("API Key");
     expect(sourceKindLabel("oauth_pkce")).toBe("OAuth");
+    expect(sourceKindLabel("env")).toBe("环境变量");
     expect(sourceKindLabel("config")).toBe("配置");
   });
 
@@ -367,5 +368,74 @@ describe("模型来源识别与分组过滤", () => {
     expect(filteredByPill.allGroups).toHaveLength(5);
     expect(filteredByPill.filteredGroups).toHaveLength(1);
     expect(filteredByPill.filteredGroups[0].items[0].id).toBe("devin/deepseek-v4-1-flash");
+
+    // 选中的 sourceFilter 在列表刷新后消失时，自动回落不过滤，避免死胡同
+    const vanishedFilter = groupModelsBySource(
+      ["opencode/deepseek-v4-1-flash"],
+      sampleSources,
+      authStatus,
+      "",
+      "default:devin",
+    );
+    expect(vanishedFilter.allGroups).toHaveLength(1);
+    expect(vanishedFilter.filteredGroups).toHaveLength(1);
+    expect(vanishedFilter.filteredGroups[0].id).toBe("opencode");
+
+    // 搜索词不命中任何条目时 filteredGroups 为空但 allGroups 保留
+    const emptySearch = groupModelsBySource(models, sampleSources, authStatus, "nonexistent-xyz", null);
+    expect(emptySearch.allGroups).toHaveLength(5);
+    expect(emptySearch.filteredGroups).toHaveLength(0);
+  });
+
+  it("resolveModelSource 不会把旧 activeModelSource 残留到裸模型名，也不会用 default_models 越界匹配", () => {
+    const authStatus: AuthStatusResult = {
+      ok: true,
+      auth_file: "config/auth.local.json",
+      connected_count: 1,
+      providers: [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          desc: "DeepSeek 官方 API",
+          category: "flagship",
+          auth_modes: ["api_key"],
+          default_base_url: "https://api.deepseek.com/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: true,
+          connected: true,
+          auth_type: "api_key",
+          base_url: "https://api.deepseek.com/v1",
+          masked_secret: "sk-****",
+          expires_at_ms: null,
+          models: ["deepseek-v4"],
+          default_models: ["deepseek-chat"],
+        },
+      ],
+    };
+
+    // 旧 activeModelSource 是 deepseek/deepseek-v4-1-flash，切换到裸模型名 deepseek-v4-1-flash 不能残留为 DeepSeek
+    const staleAuthToBare = resolveModelSource(
+      "deepseek-v4-1-flash",
+      null,
+      authStatus,
+      sampleSources["deepseek/deepseek-v4-1-flash"],
+    );
+    expect(staleAuthToBare).toMatchObject({ id: "default", shortLabel: "默认配置" });
+
+    // 旧 activeModelSource 是 devin/deepseek-v4-1-flash（display_model=deepseek-v4-1-flash），切换到裸模型名也不能残留成 Devin
+    const staleProxyToBare = resolveModelSource(
+      "deepseek-v4-1-flash",
+      null,
+      authStatus,
+      sampleSources["devin/deepseek-v4-1-flash"],
+    );
+    expect(staleProxyToBare).toMatchObject({ id: "default", shortLabel: "默认配置" });
+
+    // models 为 ["deepseek-v4"]、default_models 为 ["deepseek-chat"] 时：v4 命中官方，chat 走默认代理不越界
+    expect(resolveModelSource("deepseek/deepseek-v4", null, authStatus)).toMatchObject({ id: "deepseek" });
+    expect(resolveModelSource("deepseek/deepseek-chat", null, authStatus)).toMatchObject({
+      id: "default:deepseek",
+      shortLabel: "DeepSeek · 代理",
+    });
   });
 });

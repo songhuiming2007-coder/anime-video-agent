@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import errno
 import fcntl
 import hashlib
 import json
@@ -2200,34 +2199,67 @@ def _format_channel_label(raw: str) -> str:
 def _url_host(url: str | None) -> str | None:
     if not url:
         return None
-    parsed = urllib.parse.urlparse(url.strip())
-    return parsed.netloc or None
+    raw = url.strip()
+    if not raw:
+        return None
+    if "://" not in raw and not raw.startswith("//"):
+        raw = f"http://{raw}"
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    formatted = f"[{host}]" if ":" in host else host
+    return f"{formatted}:{port}" if port is not None else formatted
+
+
+def _env_provider_entry(spec: ProviderSpec) -> tuple[str, str, tuple[str, ...]] | None:
+    """无网络副作用地推导环境变量配置的 `(source_kind, base_url, models)`，与 `resolve_provider_credential` 路由口径一致。"""
+    env_configured, _, _ = _detect_env_status(spec)
+    if not env_configured:
+        return None
+    extra_cfg = _backfill_vertex_extra(spec, _normalize_extra_config(spec, {}))
+    if spec.id == "cloudflare-ai-gateway" and not (extra_cfg.get("account_id") and extra_cfg.get("gateway_id")):
+        return None
+    if spec.id == "cloudflare-workers-ai" and not extra_cfg.get("account_id"):
+        return None
+    try:
+        base_url = _resolve_effective_base_url(spec, spec.default_base_url, extra_cfg)
+    except AuthError:
+        return None
+    return "env", base_url, spec.default_models
 
 
 def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
-    """读取所有已登录服务商的 `(full_model_id, source_meta)` 列表（按完整模型名去重排序）。"""
+    """读取所有已登录（含环境变量已生效）服务商的 `(full_model_id, source_meta)` 列表（按完整模型名去重排序）。"""
     path = auth_path(root)
     try:
         with _auth_lock(path):
             store = _read_store_unlocked(path)
-    except AuthError:
-        return []
-    except OSError as exc:
-        if exc.errno == errno.EACCES:
-            return []
+    except (AuthError, OSError):
         return []
     providers = store.get("providers", {})
     out: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     for spec in PROVIDERS:
         found = _stored_entry_for_spec(providers, spec)
-        if found is None:
-            continue
-        entry = found[1]
-        raw_models = entry.get("models")
-        models = raw_models if isinstance(raw_models, list) and raw_models else spec.default_models
-        auth_type = str(entry.get("type") or spec.category)
-        endpoint = _url_host(str(entry.get("base_url") or spec.default_base_url))
+        if found is not None:
+            entry = found[1]
+            raw_models = entry.get("models")
+            models: list[str] | tuple[str, ...] = (
+                raw_models if isinstance(raw_models, list) and raw_models else spec.default_models
+            )
+            auth_type = str(entry.get("type") or spec.category)
+            base_url = str(entry.get("base_url") or spec.default_base_url)
+        else:
+            env_info = _env_provider_entry(spec)
+            if env_info is None:
+                continue
+            auth_type, base_url, models = env_info
+        endpoint = _url_host(base_url)
         for m in models:
             if not isinstance(m, str) or not m.strip():
                 continue
@@ -2254,7 +2286,10 @@ def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[st
 
 
 def list_authenticated_models(root: Path | None = None) -> list[str]:
-    """列出所有已登录服务商的 `<provider>/<model>` 模型列表（去重排序）。"""
+    """公共只读 API：列出所有已登录（含环境变量已配置）服务商的 `<provider>/<model>` 模型列表（去重排序）。
+
+    保留为兼容外部调用的公共辅助函数；仓内合并流程优先使用 `list_authenticated_model_sources` 一次取回元信息。
+    """
     return [full for full, _ in _iter_authenticated_model_entries(root)]
 
 

@@ -149,13 +149,6 @@ def _fetch_openai_model_entries(
     return entries, None
 
 
-def _fetch_openai_models(url: str, headers: dict[str, str], *, root: Path | None = None) -> tuple[list[str] | None, ModelSwitchError | None]:
-    entries, err = _fetch_openai_model_entries(url, headers, root=root)
-    if entries is None:
-        return None, err
-    return [e["id"] for e in entries], None
-
-
 _GENERIC_OWNED_BY = frozenset({"", "system", "organization-owner", "user"})
 
 
@@ -169,7 +162,13 @@ def _proxy_source_meta(
     from pipeline.agent import auth
 
     host = auth._url_host(base_url)
-    is_local_proxy = bool(host and host.startswith(("127.0.0.1", "localhost", "[::1]")))
+    is_local_proxy = bool(
+        host
+        and (
+            host in ("127.0.0.1", "localhost", "[::1]")
+            or host.startswith(("127.0.0.1:", "localhost:", "[::1]:"))
+        )
+    )
     base_label = "默认代理" if is_local_proxy else (f"默认配置 ({host})" if host else "默认配置")
     channel: str | None = None
     display_model = model_id
@@ -205,6 +204,21 @@ def _proxy_source_meta(
     return meta
 
 
+def _match_auth_source(mid: str, auth_sources: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """按完整名或服务商兼容别名匹配已认证服务商元信息（与 `resolve_model_provider` 路由口径一致）。"""
+    if mid in auth_sources:
+        return auth_sources[mid]
+    if "/" not in mid:
+        return None
+    from pipeline.agent import auth
+
+    pid, wire = mid.split("/", 1)
+    spec = auth.PROVIDER_MAP.get(pid)
+    if spec is None or not wire.strip():
+        return None
+    return auth_sources.get(f"{spec.id}/{wire.strip()}")
+
+
 def _merge_proxy_and_auth_models(
     proxy_entries: list[dict[str, Any]] | None,
     proxy_err: ModelSwitchError | None,
@@ -223,7 +237,11 @@ def _merge_proxy_and_auth_models(
         for entry in proxy_entries:
             mid = str(entry["id"])
             proxy_ids.append(mid)
-            sources.setdefault(mid, _proxy_source_meta(mid, base_url=base_url, owned_by=entry.get("owned_by")))
+            if mid not in sources:
+                matched = _match_auth_source(mid, auth_sources)
+                sources[mid] = matched if matched is not None else _proxy_source_meta(
+                    mid, base_url=base_url, owned_by=entry.get("owned_by"),
+                )
         sources.update(auth_sources)
         items = sorted(dict.fromkeys([*proxy_ids, *auth_models]))
         return items, {m: sources[m] for m in items if m in sources}
@@ -276,28 +294,19 @@ def describe_model_source(
     *,
     base_url: str | None = None,
     root: Path | None = None,
+    auth_sources: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """为单个模型名推导来源元信息（优先查已登录服务商路由，其次按默认配置/代理通道归类）。"""
+    """为单个模型名推导来源元信息（优先查已登录/环境配置的服务商路由，其次按默认配置/代理通道归类）。"""
     if not model or not model.strip():
         return None
     mid = model.strip()
-    from pipeline.agent import auth
+    if auth_sources is None:
+        from pipeline.agent import auth
 
-    auth_sources = auth.list_authenticated_model_sources(root)
-    if mid in auth_sources:
-        return auth_sources[mid]
-    if "/" in mid:
-        resolved = auth.resolve_model_provider(mid, root=root)
-        if resolved is not None:
-            pid, wire, cred = resolved
-            spec = auth.PROVIDER_MAP.get(pid)
-            return {
-                "source_id": pid,
-                "source_name": spec.name if spec is not None else pid,
-                "source_kind": str(cred.get("auth_type") or (spec.category if spec else "api_key")),
-                "wire_model": wire,
-                "display_model": wire,
-            }
+        auth_sources = auth.list_authenticated_model_sources(root)
+    matched = _match_auth_source(mid, auth_sources)
+    if matched is not None:
+        return matched
     return _proxy_source_meta(mid, base_url=base_url)
 
 
@@ -309,12 +318,15 @@ def model_sources_for_items(
     root: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """为任意模型列表补全 `{model_id: source_meta}`，供 CLI `/model` 分组展示。"""
+    from pipeline.agent import auth
+
+    auth_sources = auth.list_authenticated_model_sources(root) if not known or len(known) < len(items) else None
     out: dict[str, dict[str, Any]] = {}
     for m in items:
         if known and m in known:
             out[m] = known[m]
             continue
-        meta = describe_model_source(m, base_url=base_url, root=root)
+        meta = describe_model_source(m, base_url=base_url, root=root, auth_sources=auth_sources)
         if meta is not None:
             out[m] = meta
     return out
@@ -794,11 +806,15 @@ def run_command(
             tag = "本会话设置" if info["model_source"] == "session" else "默认配置"
             cur_src = f" · 来源：{cur_meta['source_name']}" if cur_meta else ""
             lines = [f"当前模型：{info['model']}（{tag}{cur_src}）", "可用模型："]
-            grouped: dict[str, list[str]] = {}
+            grouped: dict[str, tuple[str, list[str]]] = {}
             for m in available:
-                slabel = sources.get(m, {}).get("source_name") or "默认配置"
-                grouped.setdefault(slabel, []).append(m)
-            for slabel, group_items in grouped.items():
+                meta = sources.get(m, {})
+                sid = str(meta.get("source_id") or "default")
+                slabel = str(meta.get("source_name") or "默认配置")
+                if sid not in grouped:
+                    grouped[sid] = (slabel, [])
+                grouped[sid][1].append(m)
+            for slabel, group_items in grouped.values():
                 lines.append(f"  [{slabel}]")
                 lines += [f"    {'●' if m == info['model'] else '○'} {m}" for m in group_items]
             lines.append("切换：/model <名>；恢复默认：/model default（只影响本会话）")

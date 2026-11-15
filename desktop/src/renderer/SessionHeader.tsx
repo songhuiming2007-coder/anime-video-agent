@@ -375,6 +375,7 @@ const CHANNEL_LABELS: Readonly<Record<string, string>> = {
   nvidia: "NVIDIA",
 };
 
+// 与 pipeline/agent/auth.py _format_channel_label 保持同口径（旧 core 无 model_sources 时的前端回退）
 function formatChannelLabel(raw: string): string {
   const trimmed = raw.trim();
   const mapped = CHANNEL_LABELS[trimmed.toLowerCase()];
@@ -393,6 +394,8 @@ export function sourceKindLabel(kind: string): string {
       return "OAuth";
     case "api_key":
       return "API Key";
+    case "env":
+      return "环境变量";
     case "proxy":
       return "代理";
     case "config":
@@ -444,6 +447,13 @@ export interface ModelSourceGroup {
   items: ModelEntryItem[];
 }
 
+function matchesActiveModelSource(active: ModelSourceInfo, trimmed: string): boolean {
+  if (active.source_id === "default" || active.source_id.startsWith("default:")) {
+    return active.wire_model === trimmed;
+  }
+  return Boolean(active.wire_model && `${active.source_id}/${active.wire_model}` === trimmed);
+}
+
 export function resolveModelSource(
   model: string | null,
   modelSources: Readonly<Record<string, ModelSourceInfo>> | null | undefined,
@@ -454,10 +464,7 @@ export function resolveModelSource(
   const trimmed = model.trim();
   const direct =
     modelSources?.[trimmed] ??
-    (activeModelSource &&
-    (activeModelSource.wire_model === trimmed ||
-      `${activeModelSource.source_id}/${activeModelSource.wire_model ?? ""}` === trimmed ||
-      activeModelSource.display_model === trimmed)
+    (activeModelSource && matchesActiveModelSource(activeModelSource, trimmed)
       ? activeModelSource
       : undefined);
   if (direct) {
@@ -479,7 +486,7 @@ export function resolveModelSource(
     const rest = trimmed.slice(slash + 1).trim();
     const providers = authStatus?.providers ?? [];
     const matched = providers.find((p) => p.connected && (p.id === pid || (p.aliases ?? []).includes(pid)));
-    if (matched && rest !== "" && (matched.models.includes(rest) || matched.default_models.includes(rest))) {
+    if (matched && rest !== "" && matched.models.includes(rest)) {
       const meta: ModelSourceInfo = {
         source_id: matched.id,
         source_name: matched.name,
@@ -584,9 +591,11 @@ export function groupModelsBySource(
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);
+  const effectiveFilter =
+    sourceFilter && allGroups.some((grp) => grp.id === sourceFilter) ? sourceFilter : null;
   const filteredGroups: ModelSourceGroup[] = [];
   for (const grp of allGroups) {
-    if (sourceFilter && grp.id !== sourceFilter) continue;
+    if (effectiveFilter && grp.id !== effectiveFilter) continue;
     const items =
       tokens.length === 0
         ? grp.items
@@ -629,6 +638,11 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     () => groupModelsBySource(models, modelSources, authStatus, modelQuery, sourceFilter),
     [models, modelSources, authStatus, modelQuery, sourceFilter],
   );
+  useEffect(() => {
+    if (sourceFilter !== null && models !== null && !modelGroups.some((g) => g.id === sourceFilter)) {
+      setSourceFilter(null);
+    }
+  }, [sourceFilter, models, modelGroups]);
   const scopedDirectEfforts = efforts !== null && (effortsForModel === activeModel || effortsForModel === null) ? efforts : null;
   const supportedEfforts = resolveSupportedEfforts(activeModel, modelEfforts, scopedDirectEfforts);
   const meterLevel = effortBarLevel(currentEffort);
@@ -668,8 +682,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           setEfforts(res.ok ? res.efforts ?? null : null);
           setEffortsForModel(res.ok ? targetModel : null);
           if (res.ok && res.model_efforts) setModelEfforts(res.model_efforts);
-          if (res.ok && res.model_sources) setModelSources(res.model_sources);
-          if (res.ok && res.active_model_source) setActiveModelSource(res.active_model_source);
+          setModelSources(res.ok ? res.model_sources ?? null : null);
+          setActiveModelSource(res.ok ? res.active_model_source ?? null : null);
           setErr(res.ok ? null : res.text ?? "取模型列表失败");
         },
         (e2) => setErr(String((e2 as Error).message ?? e2)),

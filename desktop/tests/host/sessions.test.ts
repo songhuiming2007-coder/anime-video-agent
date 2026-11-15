@@ -1705,4 +1705,63 @@ describe("D149 运行中切换", () => {
       active_model_source: activeSource,
     });
   });
+
+  it("model_sources 缺省或含非法条目时安全降级（兼容旧 core 与脏数据过滤）", async () => {
+    const { listProxyModels } = await import("../../src/host/proxyModels");
+    const runPartial = async () => ({
+      code: 0,
+      signal: null,
+      timedOut: false,
+      stdoutFull: JSON.stringify({
+        items: ["kimi-k3", "deepseek/deepseek-chat"],
+        model_sources: {
+          bad_empty: {},
+          bad_str: "not-an-object",
+          bad_missing_name: { source_id: "x" },
+          "deepseek/deepseek-chat": { source_id: "deepseek", source_name: "DeepSeek", source_kind: "" },
+        },
+        active_model_source: { source_id: "" },
+      }),
+      stdoutTail: "",
+      stdoutOverflow: false,
+      stderrTail: "",
+    });
+    const r = await listProxyModels(runPartial as unknown as Parameters<typeof listProxyModels>[0], "/repo");
+    expect(r).toEqual({
+      ok: true,
+      text: "2 个模型",
+      items: ["deepseek/deepseek-chat", "kimi-k3"],
+      model_sources: {
+        "deepseek/deepseek-chat": { source_id: "deepseek", source_name: "DeepSeek", source_kind: "config" },
+      },
+    });
+    expect("active_model_source" in r).toBe(false);
+
+    const b = await boot();
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      {
+        op: "serve",
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS],
+        on_command: [
+          {
+            t: "command_result",
+            name: "models",
+            ok: true,
+            text: "1 个模型",
+            items: ["kimi-k3"],
+            model_sources: { bad: { source_id: "x" } },
+            active_model_source: "bad-shape",
+            rid: "$rid",
+          },
+        ],
+        on_shutdown: "exit",
+      },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    const legacyRes = (await b.svc.dispatch("conv.models", { convKey: b.key })) as Record<string, unknown>;
+    expect(legacyRes).toEqual({ ok: true, text: "1 个模型", items: ["kimi-k3"] });
+    expect("model_sources" in legacyRes).toBe(false);
+    expect("active_model_source" in legacyRes).toBe(false);
+  });
 });

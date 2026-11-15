@@ -666,6 +666,7 @@ def test_d168_probe_payload_and_protocol_model_efforts(world, endpoint, tmp_path
         assert cmd_res["ok"] is True
         assert isinstance(cmd_res.get("model_efforts"), dict)
         assert isinstance(cmd_res.get("model_sources"), dict)
+        assert set(cmd_res["model_sources"]) == set(cmd_res["items"])
         proc.shutdown()
     finally:
         proc.proc.kill()
@@ -747,3 +748,89 @@ def test_model_sources_distinguish_proxy_channels_and_auth_providers(
     assert "  [DeepSeek]" in reply
     assert "    ● devin/deepseek-v4-1-flash" in reply
     assert "    ○ deepseek/deepseek-v4-1-flash" in reply
+
+
+def test_url_host_strips_userinfo_and_handles_remote_generic_owned_by(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pipeline.agent import auth as auth_mod
+
+    assert auth_mod._url_host("http://sk-KEY@127.0.0.1:8317/v1") == "127.0.0.1:8317"
+    assert auth_mod._url_host("https://user:pass@api.example.com/v1") == "api.example.com"
+    assert auth_mod._url_host("http://sk-KEY@[::1]:8317/v1") == "[::1]:8317"
+    assert auth_mod._url_host("127.0.0.1:8317/v1") == "127.0.0.1:8317"
+
+    local_meta = ms._proxy_source_meta("kimi-k3", base_url="http://sk-SECRET@127.0.0.1:8317/v1")
+    assert local_meta["source_kind"] == "proxy"
+    assert local_meta["endpoint"] == "127.0.0.1:8317"
+    assert "sk-SECRET" not in json.dumps(local_meta)
+
+    schemeless_meta = ms._proxy_source_meta("kimi-k3", base_url="127.0.0.1:8317/v1")
+    assert schemeless_meta["source_kind"] == "proxy"
+    assert schemeless_meta["endpoint"] == "127.0.0.1:8317"
+
+    remote_generic = ms._proxy_source_meta("gpt-5", base_url="https://api.example.com/v1", owned_by="openai")
+    assert remote_generic["source_kind"] == "config"
+    assert remote_generic["source_id"] == "default"
+    assert remote_generic["source_name"] == "默认配置 (api.example.com)"
+
+    remote_vendor = ms._proxy_source_meta("claude-4", base_url="https://api.example.com/v1", owned_by="anthropic")
+    assert remote_vendor["source_kind"] == "config"
+    assert remote_vendor["source_id"] == "default:anthropic"
+    assert remote_vendor["source_name"] == "Anthropic (默认配置 (api.example.com))"
+
+
+def test_env_credential_sources_match_router_and_custom_fetcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+    from pipeline.agent import auth as auth_mod
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "config" / "auth.local.json"))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-secret-ds")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-secret-gem")
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> "_FakeResp":
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    proxy_payload = json.dumps({
+        "data": [
+            {"id": "deepseek/deepseek-chat", "owned_by": "deepseek"},
+            {"id": "google-gemini/gemini-2.5-pro"},
+            {"id": "devin/custom-x"},
+        ]
+    }).encode("utf-8")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResp(proxy_payload))
+
+    cfg = LLMConfig(base_url="http://127.0.0.1:8317/v1", model="deepseek/deepseek-chat", api_key="k")
+    items, sources = ms.list_models_with_sources(cfg, root=tmp_path)
+    assert "deepseek/deepseek-chat" in items
+    assert "sk-env-secret-ds" not in json.dumps(sources)
+    assert "AIza-env-secret-gem" not in json.dumps(sources)
+
+    resolved_ds = auth_mod.resolve_model_provider("deepseek/deepseek-chat", root=tmp_path)
+    assert resolved_ds is not None
+    assert sources["deepseek/deepseek-chat"]["source_id"] == resolved_ds[0] == "deepseek"
+    assert sources["deepseek/deepseek-chat"]["source_kind"] == "env"
+    assert sources["deepseek/deepseek-chat"]["endpoint"] == "api.deepseek.com"
+    assert ms.describe_model_source("deepseek/deepseek-chat", base_url=cfg.base_url, root=tmp_path) == sources["deepseek/deepseek-chat"]
+
+    resolved_gem = auth_mod.resolve_model_provider("google-gemini/gemini-2.5-pro", root=tmp_path)
+    assert resolved_gem is not None
+    assert sources["google-gemini/gemini-2.5-pro"]["source_id"] == resolved_gem[0] == "google"
+    assert sources["devin/custom-x"]["source_id"] == "default:devin"
+
+    custom_items = ["deepseek/deepseek-chat", "devin/custom-x"]
+    _, reply = ms.run_command("/model", cfg, ms.Override(), None, models_fetcher=lambda _c: custom_items)
+    assert "当前模型：deepseek/deepseek-chat（默认配置 · 来源：DeepSeek）" in reply
+    assert "  [DeepSeek]" in reply
+    assert "  [Devin (默认代理)]" in reply
