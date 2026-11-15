@@ -159,6 +159,52 @@ export const NON_STRING_PARAM_KEYS: readonly string[] = ["feedback", "bytes"];
 export type AuthMode = "proxy" | "api_key" | "oauth_pkce" | "oauth_device";
 export type ProviderCategory = "oauth" | "flagship" | "cloud" | "local";
 
+/** 模型来源元信息（用于区分同模型名来自哪个服务商 / 代理通道） */
+export interface ModelSourceInfo {
+  source_id: string;
+  source_name: string;
+  source_kind: string;
+  category?: string;
+  wire_model?: string;
+  display_model?: string;
+  channel?: string;
+  owned_by?: string;
+  endpoint?: string;
+}
+
+export function parseModelSourceInfo(raw: unknown): ModelSourceInfo | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.source_id !== "string" || !r.source_id.trim()) return undefined;
+  if (typeof r.source_name !== "string" || !r.source_name.trim()) return undefined;
+  const out: ModelSourceInfo = {
+    source_id: r.source_id.trim(),
+    source_name: r.source_name.trim(),
+    source_kind: typeof r.source_kind === "string" && r.source_kind.trim() ? r.source_kind.trim() : "config",
+  };
+  if (typeof r.category === "string" && r.category.trim()) out.category = r.category.trim();
+  if (typeof r.wire_model === "string" && r.wire_model.trim()) out.wire_model = r.wire_model.trim();
+  if (typeof r.display_model === "string" && r.display_model.trim()) out.display_model = r.display_model.trim();
+  if (typeof r.channel === "string" && r.channel.trim()) out.channel = r.channel.trim();
+  if (typeof r.owned_by === "string" && r.owned_by.trim()) out.owned_by = r.owned_by.trim();
+  if (typeof r.endpoint === "string" && r.endpoint.trim()) out.endpoint = r.endpoint.trim();
+  return out;
+}
+
+export function parseModelSources(raw: unknown): Record<string, ModelSourceInfo> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, ModelSourceInfo> = {};
+  let hasAny = false;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const parsed = parseModelSourceInfo(v);
+    if (parsed) {
+      out[k] = parsed;
+      hasAny = true;
+    }
+  }
+  return hasAny ? out : undefined;
+}
+
 export interface AuthExtraFieldSpec {
   key: string;
   label: string;

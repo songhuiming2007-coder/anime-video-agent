@@ -468,13 +468,27 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 /* 收缩顺序：会话名（.composer-target，flex-shrink 1000）先缩到 2em，再缩模型名（省略号，全名在悬停提示）；推理按钮不缩 */
 .model-controls { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px; }
 .model-ctl { position: relative; flex: none; }
-.model-ctl--model { flex: 0 1 auto; min-width: 0; display: flex; }
-.model-ctl--model .model-ctl-btn { min-width: 0; overflow: hidden; }
+.model-ctl--model { flex: 0 1 auto; min-width: 0; max-width: 280px; display: flex; }
+.model-ctl--model .model-ctl-btn { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
 .model-ctl-btn > svg { flex: none; }
-.model-ctl-btn { gap: var(--space-1); max-width: 280px; color: var(--fg-muted); }
+.model-ctl-btn { gap: var(--space-1); padding: 0 var(--space-1); color: var(--fg-muted); }
 .model-ctl-btn[data-source="session"] { color: var(--fg); }
+.model-ctl-source { display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 96px; line-height: 18px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; }
 .model-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); }
 .model-pop { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 6; width: max-content; min-width: 220px; max-width: 360px; max-height: 50vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.model-pop--models { min-width: 320px; max-width: 460px; max-height: 58vh; overflow: hidden; }
+.model-pop-search { flex: none; margin: 2px 0; }
+.model-pop-filters { flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
+.model-pop-filter-btn { height: auto; min-height: 22px; padding: 2px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--bg-subtle); color: var(--fg-muted); font-size: var(--text-sm); }
+.model-pop-filter-btn[aria-pressed="true"] { background: var(--bg-selected); border-color: var(--border-strong); color: var(--fg); font-weight: var(--weight-medium); }
+.model-pop-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 2px; }
+.model-pop-group { display: flex; flex-direction: column; gap: 2px; }
+.model-pop-group + .model-pop-group { margin-top: var(--space-1); padding-top: var(--space-1); border-top: 1px solid var(--border); }
+.model-pop-group-head { display: flex; align-items: center; gap: var(--space-1); padding: 2px var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.model-pop-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-pop-group-head .ui-count { margin-left: auto; }
+.model-pop-source { flex: none; max-width: 116px; overflow: hidden; text-overflow: ellipsis; }
+.model-pop-empty { padding: var(--space-2); text-align: center; font-size: var(--text-sm); }
 /* D152 A：菜单行对齐 ZCode dropdown-menu.tsx:77（min-h-7 rounded-md px-2 py-1）与
  * ModelConfigSelect.tsx:402-415（check 挪行尾，pr-8 → 右列 16px）；ui.css 冻结，覆盖写这里。 */
 .model-pop-row { width: 100%; min-height: var(--control-h); gap: var(--space-2); border-radius: var(--radius-md); }
@@ -483,6 +497,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .model-pop-check { flex: none; display: inline-flex; justify-content: flex-end; width: 16px; margin-left: auto; color: var(--fg); }
 .model-pop-meta { color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-sm); }
 .model-pop-meta + .model-pop-check { margin-left: 0; }
+.model-pop-head, .model-pop-note, .model-pop-err, .model-pop-warn, .model-pop-reset, .model-pop-custom { flex: none; }
 /* D156/D168：推理强度独立选择器与 GUI 信号条/分段滑块（全走 CSS 变量，禁止色名与字面量色） */
 .effort-pop { min-width: 310px; max-width: 400px; max-height: 62vh; }
 .effort-pop .model-pop-row .ui-row-title { font-family: inherit; min-width: 3.4em; flex: none; }

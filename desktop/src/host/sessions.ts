@@ -21,7 +21,7 @@ import { convSummary } from "../shared/convFold";
 import { parseOutFrame, type OutFrame } from "../shared/convFrames";
 import { LineSplitter } from "../shared/jsonl";
 import { stringifyLossless } from "../shared/losslessJson";
-import type { ConvEntry, ConvKey, ConvPhase, ConvSnapshot, Envelope, ErrCode } from "../shared/protocol";
+import { parseModelSourceInfo, parseModelSources, type ConvEntry, type ConvKey, type ConvPhase, type ConvSnapshot, type Envelope, type ErrCode, type ModelSourceInfo } from "../shared/protocol";
 import type { SessionProc, SessionTemplate } from "./spawner";
 
 export class SessionError extends Error {
@@ -158,7 +158,7 @@ interface SessionState {
 /** core 会话命令闭集（`pipeline/agent/protocol.py::_COMMANDS` 里 renderer 能发的那几个；compact 只走对话框 /compact） */
 export const COMMAND_NAMES = ["memory_ack", "scope", "models", "model", "thinking"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
-/** command_result：`models` 另带代理的模型列表与可选档位（D91） */
+/** command_result：`models` 另带代理的模型列表、来源元信息与可选档位（D91） */
 export interface CommandResult {
   ok: boolean;
   text: string;
@@ -166,6 +166,9 @@ export interface CommandResult {
   efforts?: string[];
   /** D168：每个模型支持的推理强度映射表 */
   model_efforts?: Record<string, string[]>;
+  /** 模型来源元信息映射（区分同模型名来自哪家服务商/代理通道） */
+  model_sources?: Record<string, ModelSourceInfo>;
+  active_model_source?: ModelSourceInfo;
   /** D147：会话未启动时存下的预选（下一条 send 起进程后先下发） */
   pending?: boolean;
   /** D148：模型不在代理列表时 core 透传的提醒（不阻断） */
@@ -856,12 +859,16 @@ export class SessionManager {
             }
             model_efforts = cleaned;
           }
+          const model_sources = parseModelSources(f.model_sources);
+          const active_model_source = parseModelSourceInfo(f.active_model_source);
           w.resolve({
             ok: f.ok === true,
             text: String(f.text ?? ""),
             ...(items ? { items } : {}),
             ...(efforts ? { efforts } : {}),
             ...(model_efforts ? { model_efforts } : {}),
+            ...(model_sources ? { model_sources } : {}),
+            ...(active_model_source ? { active_model_source } : {}),
             ...(typeof f.warn === "string" ? { warn: f.warn } : {}),
           });
         }

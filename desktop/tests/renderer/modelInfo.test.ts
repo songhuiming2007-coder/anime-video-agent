@@ -1,13 +1,17 @@
 // D91：输入框工具栏的模型 / 推理显示——从帧流取最近一份本会话设置。
 import { describe, expect, it } from "vitest";
-import type { ConvEntry } from "../../src/shared/protocol";
+import type { AuthStatusResult, ConvEntry, ModelSourceInfo } from "../../src/shared/protocol";
 import {
   EFFORT_LABELS,
   clientFamilyEfforts,
   effortBarLevel,
   effortText,
+  groupModelsBySource,
   modelInfo,
+  resolveModelSource,
   resolveSupportedEfforts,
+  shortSourceLabel,
+  sourceKindLabel,
 } from "../../src/renderer/SessionHeader";
 
 const frame = (t: string, extra: Record<string, unknown>): ConvEntry =>
@@ -128,5 +132,240 @@ describe("D168 resolveSupportedEfforts / effortBarLevel", () => {
     expect(effortBarLevel("high")).toBe(4);
     expect(effortBarLevel("xhigh")).toBe(5);
     expect(effortBarLevel("max")).toBe(5);
+  });
+});
+
+describe("模型来源识别与分组过滤", () => {
+  const sampleSources: Record<string, ModelSourceInfo> = {
+    "devin/deepseek-v4-1-flash": {
+      source_id: "default:devin",
+      source_name: "Devin (默认代理)",
+      source_kind: "proxy",
+      display_model: "deepseek-v4-1-flash",
+      wire_model: "devin/deepseek-v4-1-flash",
+      owned_by: "deepseek",
+      endpoint: "127.0.0.1:8317",
+      channel: "Devin",
+    },
+    "opencode/deepseek-v4-1-flash": {
+      source_id: "opencode",
+      source_name: "OpenCode Zen",
+      source_kind: "api_key",
+      display_model: "deepseek-v4-1-flash",
+      wire_model: "deepseek-v4-1-flash",
+      endpoint: "opencode.ai",
+    },
+    "opencode-go/deepseek-v4-1-flash": {
+      source_id: "opencode-go",
+      source_name: "OpenCode Go",
+      source_kind: "api_key",
+      display_model: "deepseek-v4-1-flash",
+      wire_model: "deepseek-v4-1-flash",
+      endpoint: "opencode.ai",
+    },
+    "deepseek/deepseek-v4-1-flash": {
+      source_id: "deepseek",
+      source_name: "DeepSeek",
+      source_kind: "api_key",
+      display_model: "deepseek-v4-1-flash",
+      wire_model: "deepseek-v4-1-flash",
+      owned_by: "deepseek",
+      endpoint: "api.deepseek.com",
+    },
+    "claude-opus-5-5-high": {
+      source_id: "cliproxyapi",
+      source_name: "CLIProxyAPI",
+      source_kind: "proxy",
+      display_model: "claude-opus-5-5-high",
+      wire_model: "claude-opus-5-5-high",
+      owned_by: "antigravity",
+      endpoint: "127.0.0.1:8317",
+      channel: "Antigravity",
+    },
+  };
+
+  it("shortSourceLabel 与 sourceKindLabel 生成简洁标签", () => {
+    expect(shortSourceLabel(sampleSources["devin/deepseek-v4-1-flash"])).toBe("Devin · 代理");
+    expect(shortSourceLabel(sampleSources["claude-opus-5-5-high"])).toBe("CLIProxy · Antigravity");
+    expect(shortSourceLabel(sampleSources["opencode/deepseek-v4-1-flash"])).toBe("OpenCode Zen");
+    expect(sourceKindLabel("proxy")).toBe("代理");
+    expect(sourceKindLabel("api_key")).toBe("API Key");
+    expect(sourceKindLabel("oauth_pkce")).toBe("OAuth");
+    expect(sourceKindLabel("config")).toBe("配置");
+  });
+
+  it("resolveModelSource 优先使用后端 modelSources / activeModelSource，否则回退 authStatus / 前缀", () => {
+    const authStatus: AuthStatusResult = {
+      ok: true,
+      auth_file: "config/auth.local.json",
+      connected_count: 1,
+      providers: [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          desc: "DeepSeek 官方 API",
+          category: "flagship",
+          auth_modes: ["api_key"],
+          default_base_url: "https://api.deepseek.com/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: true,
+          connected: true,
+          auth_type: "api_key",
+          base_url: "https://api.deepseek.com/v1",
+          masked_secret: "sk-****",
+          expires_at_ms: null,
+          models: ["deepseek-chat", "deepseek-reasoner"],
+          default_models: ["deepseek-chat"],
+        },
+      ],
+    };
+
+    const exact = resolveModelSource("devin/deepseek-v4-1-flash", sampleSources, authStatus);
+    expect(exact).toMatchObject({
+      id: "default:devin",
+      label: "Devin (默认代理)",
+      shortLabel: "Devin · 代理",
+      displayModel: "deepseek-v4-1-flash",
+      kindLabel: "代理",
+      channel: "Devin",
+    });
+
+    const active = resolveModelSource(
+      "deepseek/deepseek-v4-1-flash",
+      null,
+      authStatus,
+      sampleSources["deepseek/deepseek-v4-1-flash"],
+    );
+    expect(active).toMatchObject({
+      id: "deepseek",
+      label: "DeepSeek",
+      shortLabel: "DeepSeek",
+      displayModel: "deepseek-v4-1-flash",
+    });
+
+    const fallbackAuth = resolveModelSource("deepseek/deepseek-reasoner", null, authStatus);
+    expect(fallbackAuth).toMatchObject({
+      id: "deepseek",
+      label: "DeepSeek",
+      kindLabel: "API Key",
+      displayModel: "deepseek-reasoner",
+    });
+
+    const fallbackPrefix = resolveModelSource("devin/custom-model", null, null);
+    expect(fallbackPrefix).toMatchObject({
+      id: "default:devin",
+      label: "Devin (默认代理)",
+      shortLabel: "Devin · 代理",
+      displayModel: "custom-model",
+    });
+  });
+
+  it("groupModelsBySource 区分同名模型并支持多关键字搜索和来源过滤", () => {
+    const models = Object.keys(sampleSources);
+    const authStatus: AuthStatusResult = {
+      ok: true,
+      auth_file: "config/auth.local.json",
+      connected_count: 3,
+      providers: [
+        {
+          id: "opencode",
+          name: "OpenCode Zen",
+          desc: "",
+          auth_modes: ["api_key"],
+          default_base_url: "https://opencode.ai/zen/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: false,
+          connected: true,
+          auth_type: "api_key",
+          base_url: "https://opencode.ai/zen/v1",
+          masked_secret: null,
+          expires_at_ms: null,
+          models: [],
+          default_models: [],
+        },
+        {
+          id: "opencode-go",
+          name: "OpenCode Go",
+          desc: "",
+          auth_modes: ["api_key"],
+          default_base_url: "https://opencode.ai/zen/go/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: false,
+          connected: true,
+          auth_type: "api_key",
+          base_url: "https://opencode.ai/zen/go/v1",
+          masked_secret: null,
+          expires_at_ms: null,
+          models: [],
+          default_models: [],
+        },
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          desc: "",
+          auth_modes: ["api_key"],
+          default_base_url: "https://api.deepseek.com/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: false,
+          connected: true,
+          auth_type: "api_key",
+          base_url: "https://api.deepseek.com/v1",
+          masked_secret: null,
+          expires_at_ms: null,
+          models: [],
+          default_models: [],
+        },
+        {
+          id: "cliproxyapi",
+          name: "CLIProxyAPI",
+          desc: "",
+          auth_modes: ["proxy"],
+          default_base_url: "http://127.0.0.1:8317/v1",
+          api_protocol: "openai",
+          supports_custom_base_url: true,
+          connected: true,
+          auth_type: "proxy",
+          base_url: "http://127.0.0.1:8317/v1",
+          masked_secret: null,
+          expires_at_ms: null,
+          models: [],
+          default_models: [],
+        },
+      ],
+    };
+
+    const initial = groupModelsBySource(models, sampleSources, authStatus, "", null);
+    expect(initial.allGroups.map((g) => g.label)).toEqual([
+      "OpenCode Zen",
+      "OpenCode Go",
+      "DeepSeek",
+      "CLIProxyAPI",
+      "Devin (默认代理)",
+    ]);
+    expect(initial.filteredGroups).toHaveLength(5);
+
+    const searchByNameAndSource = groupModelsBySource(
+      models,
+      sampleSources,
+      authStatus,
+      "deepseek zen",
+      null,
+    );
+    expect(searchByNameAndSource.filteredGroups).toHaveLength(1);
+    expect(searchByNameAndSource.filteredGroups[0].label).toBe("OpenCode Zen");
+    expect(searchByNameAndSource.filteredGroups[0].items.map((x) => x.id)).toEqual([
+      "opencode/deepseek-v4-1-flash",
+    ]);
+
+    const filteredByPill = groupModelsBySource(
+      models,
+      sampleSources,
+      authStatus,
+      "",
+      "default:devin",
+    );
+    expect(filteredByPill.allGroups).toHaveLength(5);
+    expect(filteredByPill.filteredGroups).toHaveLength(1);
+    expect(filteredByPill.filteredGroups[0].items[0].id).toBe("devin/deepseek-v4-1-flash");
   });
 });

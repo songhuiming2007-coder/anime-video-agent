@@ -1381,16 +1381,29 @@ def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
                 items = auth.list_authenticated_models(paths.ROOT)
                 if not items:
                     raise model_switch.ModelSwitchError("LLM 不可用（缺配置或密钥）")
+                model_sources = auth.list_authenticated_model_sources(paths.ROOT)
             else:
-                items = model_switch.list_models(cfg)
+                items, model_sources = model_switch.list_models_with_sources(cfg, root=paths.ROOT)
         except model_switch.ModelSwitchError as exc:
             writer.send({"t": "command_result", "name": name, "ok": False, "text": str(exc), **tail})
             return
         info = _model_info(host, ep_dir, status)
+        cur_model = info.get("model")
+        active_source = (
+            model_sources.get(cur_model)
+            if isinstance(cur_model, str)
+            else None
+        ) or model_switch.describe_model_source(
+            cur_model if isinstance(cur_model, str) else None,
+            base_url=cfg.base_url if cfg is not None else None,
+            root=paths.ROOT,
+        )
         writer.send({"t": "command_result", "name": name, "ok": True, "text": f"{len(items)} 个模型",
                      "items": items,
                      "efforts": list(model_switch.supported_efforts(info.get("model"))),
                      "model_efforts": model_switch.efforts_map_for_models(items),
+                     "model_sources": model_sources,
+                     **({"active_model_source": active_source} if active_source else {}),
                      **info, **tail})
         return
     arg = str(frame.get("arg") or "").strip()

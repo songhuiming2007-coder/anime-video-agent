@@ -2174,8 +2174,38 @@ def resolve_provider_credential(
     }
 
 
-def list_authenticated_models(root: Path | None = None) -> list[str]:
-    """列出所有已登录服务商的 `<provider>/<model>` 模型列表（去重排序）。"""
+def _format_channel_label(raw: str) -> str:
+    """将代理通道或 owned_by 标识转为可读标签。"""
+    key = raw.strip()
+    known = {
+        "devin": "Devin",
+        "antigravity": "Antigravity",
+        "opencode": "OpenCode",
+        "deepseek": "DeepSeek",
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        "google": "Google",
+        "cognition": "Cognition",
+        "moonshot": "Moonshot",
+        "nvidia": "NVIDIA",
+    }
+    low = key.lower()
+    if low in known:
+        return known[low]
+    if key.isascii() and key.islower() and key.isalpha() and len(key) <= 24:
+        return key.capitalize()
+    return key
+
+
+def _url_host(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url.strip())
+    return parsed.netloc or None
+
+
+def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """读取所有已登录服务商的 `(full_model_id, source_meta)` 列表（按完整模型名去重排序）。"""
     path = auth_path(root)
     try:
         with _auth_lock(path):
@@ -2187,7 +2217,7 @@ def list_authenticated_models(root: Path | None = None) -> list[str]:
             return []
         return []
     providers = store.get("providers", {})
-    out: list[str] = []
+    out: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     for spec in PROVIDERS:
         found = _stored_entry_for_spec(providers, spec)
@@ -2196,14 +2226,41 @@ def list_authenticated_models(root: Path | None = None) -> list[str]:
         entry = found[1]
         raw_models = entry.get("models")
         models = raw_models if isinstance(raw_models, list) and raw_models else spec.default_models
+        auth_type = str(entry.get("type") or spec.category)
+        endpoint = _url_host(str(entry.get("base_url") or spec.default_base_url))
         for m in models:
             if not isinstance(m, str) or not m.strip():
                 continue
-            full = f"{spec.id}/{m.strip()}"
-            if full not in seen:
-                seen.add(full)
-                out.append(full)
-    return sorted(out)
+            wire = m.strip()
+            full = f"{spec.id}/{wire}"
+            if full in seen:
+                continue
+            seen.add(full)
+            meta: dict[str, Any] = {
+                "source_id": spec.id,
+                "source_name": spec.name,
+                "source_kind": auth_type,
+                "category": spec.category,
+                "wire_model": wire,
+                "display_model": wire,
+            }
+            if endpoint:
+                meta["endpoint"] = endpoint
+            if spec.id in ("cliproxyapi", "ollama", "lmstudio") and "/" in wire:
+                meta["channel"] = _format_channel_label(wire.split("/", 1)[0])
+            out.append((full, meta))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def list_authenticated_models(root: Path | None = None) -> list[str]:
+    """列出所有已登录服务商的 `<provider>/<model>` 模型列表（去重排序）。"""
+    return [full for full, _ in _iter_authenticated_model_entries(root)]
+
+
+def list_authenticated_model_sources(root: Path | None = None) -> dict[str, dict[str, Any]]:
+    """返回已登录服务商模型的来源元数据映射：`{full_model_id: source_meta}`。"""
+    return {full: meta for full, meta in _iter_authenticated_model_entries(root)}
 
 
 def resolve_model_provider(model_name: str, *, root: Path | None = None) -> tuple[str, str, dict[str, Any]] | None:

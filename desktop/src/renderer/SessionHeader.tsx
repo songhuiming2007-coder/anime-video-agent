@@ -1,8 +1,8 @@
 // Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、建期…（D45：继续会话移到侧栏会话列表）。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 // D91：输入框下的模型 / 推理按钮（ModelControls）也因此写在这里，由 App 塞进 Composer 的工具栏。
-import { useEffect, useRef, useState } from "react";
-import type { AuthStatusResult, ConvEntry, ConvKey, ConvPhase, CreatedEpisode } from "../shared/protocol";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AuthStatusResult, ConvEntry, ConvKey, ConvPhase, CreatedEpisode, ModelSourceInfo } from "../shared/protocol";
 import { contextText, type ContextReading } from "../shared/convFold";
 import { LoginModal } from "./LoginModal";
 import { NewEpisodeForm } from "./NewEpisodeForm";
@@ -362,6 +362,242 @@ export function modelPopNote(phase: ConvPhase): string | null {
   return null;
 }
 
+const CHANNEL_LABELS: Readonly<Record<string, string>> = {
+  devin: "Devin",
+  antigravity: "Antigravity",
+  opencode: "OpenCode",
+  deepseek: "DeepSeek",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  cognition: "Cognition",
+  moonshot: "Moonshot",
+  nvidia: "NVIDIA",
+};
+
+function formatChannelLabel(raw: string): string {
+  const trimmed = raw.trim();
+  const mapped = CHANNEL_LABELS[trimmed.toLowerCase()];
+  if (mapped) return mapped;
+  if (/^[a-z]+$/.test(trimmed) && trimmed.length <= 24) {
+    return trimmed[0].toUpperCase() + trimmed.slice(1);
+  }
+  return trimmed;
+}
+
+export function sourceKindLabel(kind: string): string {
+  switch (kind) {
+    case "oauth":
+    case "oauth_pkce":
+    case "oauth_device":
+      return "OAuth";
+    case "api_key":
+      return "API Key";
+    case "proxy":
+      return "代理";
+    case "config":
+      return "配置";
+    default:
+      return kind;
+  }
+}
+
+export function shortSourceLabel(meta: ModelSourceInfo): string {
+  if (meta.source_id.startsWith("default:") && meta.channel) {
+    return `${meta.channel} · 代理`;
+  }
+  if (meta.source_id === "cliproxyapi") {
+    return meta.channel ? `CLIProxy · ${meta.channel}` : "CLIProxyAPI";
+  }
+  if (meta.source_id === "ollama") return "Ollama";
+  if (meta.source_id === "lmstudio") return "LM Studio";
+  if (meta.source_id === "default") return meta.source_name.startsWith("默认代理") ? "默认代理" : "默认配置";
+  return meta.source_name;
+}
+
+export interface ResolvedModelSource {
+  id: string;
+  label: string;
+  shortLabel: string;
+  kindLabel: string;
+  displayModel: string;
+  channel?: string;
+  ownedBy?: string;
+  endpoint?: string;
+}
+
+export interface ModelEntryItem {
+  id: string;
+  displayModel: string;
+  sourceBadge: string;
+  ownedBy?: string;
+  endpoint?: string;
+  searchText: string;
+}
+
+export interface ModelSourceGroup {
+  id: string;
+  label: string;
+  shortLabel: string;
+  kindLabel: string;
+  endpoint?: string;
+  items: ModelEntryItem[];
+}
+
+export function resolveModelSource(
+  model: string | null,
+  modelSources: Readonly<Record<string, ModelSourceInfo>> | null | undefined,
+  authStatus: AuthStatusResult | null | undefined,
+  activeModelSource?: ModelSourceInfo | null,
+): ResolvedModelSource | null {
+  if (!model || model.trim() === "") return null;
+  const trimmed = model.trim();
+  const direct =
+    modelSources?.[trimmed] ??
+    (activeModelSource &&
+    (activeModelSource.wire_model === trimmed ||
+      `${activeModelSource.source_id}/${activeModelSource.wire_model ?? ""}` === trimmed ||
+      activeModelSource.display_model === trimmed)
+      ? activeModelSource
+      : undefined);
+  if (direct) {
+    const shortLabel = shortSourceLabel(direct);
+    return {
+      id: direct.source_id,
+      label: direct.source_name,
+      shortLabel,
+      kindLabel: sourceKindLabel(direct.source_kind),
+      displayModel: direct.display_model || trimmed,
+      ...(direct.channel ? { channel: direct.channel } : {}),
+      ...(direct.owned_by ? { ownedBy: direct.owned_by } : {}),
+      ...(direct.endpoint ? { endpoint: direct.endpoint } : {}),
+    };
+  }
+  const slash = trimmed.indexOf("/");
+  if (slash > 0) {
+    const pid = trimmed.slice(0, slash);
+    const rest = trimmed.slice(slash + 1).trim();
+    const providers = authStatus?.providers ?? [];
+    const matched = providers.find((p) => p.connected && (p.id === pid || (p.aliases ?? []).includes(pid)));
+    if (matched && rest !== "" && (matched.models.includes(rest) || matched.default_models.includes(rest))) {
+      const meta: ModelSourceInfo = {
+        source_id: matched.id,
+        source_name: matched.name,
+        source_kind: matched.auth_type || "api_key",
+        wire_model: rest,
+        display_model: rest,
+      };
+      return {
+        id: matched.id,
+        label: matched.name,
+        shortLabel: shortSourceLabel(meta),
+        kindLabel: sourceKindLabel(meta.source_kind),
+        displayModel: rest,
+      };
+    }
+    const ch = formatChannelLabel(pid);
+    return {
+      id: `default:${pid.toLowerCase()}`,
+      label: `${ch} (默认代理)`,
+      shortLabel: `${ch} · 代理`,
+      kindLabel: "代理",
+      displayModel: rest || trimmed,
+      channel: ch,
+    };
+  }
+  return {
+    id: "default",
+    label: "默认配置",
+    shortLabel: "默认配置",
+    kindLabel: "配置",
+    displayModel: trimmed,
+  };
+}
+
+export function groupModelsBySource(
+  models: readonly string[] | null,
+  modelSources: Readonly<Record<string, ModelSourceInfo>> | null | undefined,
+  authStatus: AuthStatusResult | null | undefined,
+  query: string,
+  sourceFilter: string | null,
+): { allGroups: ModelSourceGroup[]; filteredGroups: ModelSourceGroup[] } {
+  if (!models || models.length === 0) return { allGroups: [], filteredGroups: [] };
+  const byGroup = new Map<string, ModelSourceGroup>();
+  for (const m of models) {
+    const src = resolveModelSource(m, modelSources, authStatus) ?? {
+      id: "default",
+      label: "默认配置",
+      shortLabel: "默认配置",
+      kindLabel: "配置",
+      displayModel: m,
+    };
+    let grp = byGroup.get(src.id);
+    if (!grp) {
+      grp = {
+        id: src.id,
+        label: src.label,
+        shortLabel: src.shortLabel,
+        kindLabel: src.kindLabel,
+        ...(src.endpoint ? { endpoint: src.endpoint } : {}),
+        items: [],
+      };
+      byGroup.set(src.id, grp);
+    }
+    const searchText = [
+      m,
+      src.displayModel,
+      src.label,
+      src.shortLabel,
+      src.id,
+      src.kindLabel,
+      src.channel ?? "",
+      src.ownedBy ?? "",
+      src.endpoint ?? "",
+    ]
+      .join(" ")
+      .toLowerCase();
+    grp.items.push({
+      id: m,
+      displayModel: src.displayModel,
+      sourceBadge: src.shortLabel,
+      ...(src.ownedBy ? { ownedBy: src.ownedBy } : {}),
+      ...(src.endpoint ? { endpoint: src.endpoint } : {}),
+      searchText,
+    });
+  }
+  const providerOrder = new Map<string, number>();
+  (authStatus?.providers ?? []).forEach((p, idx) => providerOrder.set(p.id, idx));
+  const rankOf = (g: ModelSourceGroup): [number, number, string] => {
+    const pIdx = providerOrder.get(g.id);
+    if (pIdx !== undefined) return [0, pIdx, g.label];
+    if (g.id.startsWith("default:")) return [1, 0, g.label];
+    if (g.id === "default") return [2, 0, g.label];
+    return [3, 0, g.label];
+  };
+  const allGroups = [...byGroup.values()].sort((a, b) => {
+    const ra = rankOf(a);
+    const rb = rankOf(b);
+    return ra[0] - rb[0] || ra[1] - rb[1] || ra[2].localeCompare(rb[2]);
+  });
+  const tokens = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const filteredGroups: ModelSourceGroup[] = [];
+  for (const grp of allGroups) {
+    if (sourceFilter && grp.id !== sourceFilter) continue;
+    const items =
+      tokens.length === 0
+        ? grp.items
+        : grp.items.filter((item) => tokens.every((tok) => item.searchText.includes(tok)));
+    if (items.length > 0) {
+      filteredGroups.push({ ...grp, items });
+    }
+  }
+  return { allGroups, filteredGroups };
+}
+
 export function ModelControls({ rpc, convKey, phase, info, openReq = null, pending = null }: { rpc: RpcClient; convKey: ConvKey; phase: ConvPhase; info: ModelInfo | null; openReq?: ModelOpenReq | null; pending?: { model?: string; effort?: string } | null }) {
   // D149：running 也可用（core 排队到回合收尾执行，下个回合生效）；D147：none 也可用（存 pending，首条消息带出）。
   const usable = modelCtlUsable(phase);
@@ -375,12 +611,24 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const [efforts, setEfforts] = useState<string[] | null>(null); // D154/D168：该模型支持档（core 回子集）
   const [effortsForModel, setEffortsForModel] = useState<string | null>(null);
   const [modelEfforts, setModelEfforts] = useState<Record<string, string[]> | null>(null);
+  const [modelSources, setModelSources] = useState<Record<string, ModelSourceInfo> | null>(null);
+  const [activeModelSource, setActiveModelSource] = useState<ModelSourceInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
   const [warn, setWarn] = useState<string | null>(null);
   const [effortQuery, setEffortQuery] = useState(""); // D156：选择器搜索框
   const activeModel = pendingModel ?? info?.model ?? null;
   const currentEffort = pendingEffort ?? info?.effort ?? null;
+  const activeSource = useMemo(
+    () => resolveModelSource(activeModel, modelSources, authStatus, activeModelSource),
+    [activeModel, modelSources, authStatus, activeModelSource],
+  );
+  const { allGroups: modelGroups, filteredGroups: visibleModelGroups } = useMemo(
+    () => groupModelsBySource(models, modelSources, authStatus, modelQuery, sourceFilter),
+    [models, modelSources, authStatus, modelQuery, sourceFilter],
+  );
   const scopedDirectEfforts = efforts !== null && (effortsForModel === activeModel || effortsForModel === null) ? efforts : null;
   const supportedEfforts = resolveSupportedEfforts(activeModel, modelEfforts, scopedDirectEfforts);
   const meterLevel = effortBarLevel(currentEffort);
@@ -389,9 +637,13 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
     setEfforts(null);
     setEffortsForModel(null);
     setModelEfforts(null);
+    setModelSources(null);
+    setActiveModelSource(null);
     setErr(null);
     setWarn(null);
     setCustomModel("");
+    setModelQuery("");
+    setSourceFilter(null);
     setModelOpen(false);
     setEffortOpen(false);
   }, [convKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -400,16 +652,28 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   // 进程启动从 none→starting→idle 时不再重复往 stdin 自动灌入 {t:"command", name:"models"}（修复 N32）。
   const fetchModels = () => {
     const targetModel = activeModel;
-    void rpc.call<{ ok?: boolean; text?: string; items?: string[]; efforts?: string[]; model_efforts?: Record<string, string[]> }>("conv.models", { convKey }).then(
-      (res) => {
-        setModels(res.ok ? res.items ?? [] : []);
-        setEfforts(res.ok ? res.efforts ?? null : null);
-        setEffortsForModel(res.ok ? targetModel : null);
-        if (res.ok && res.model_efforts) setModelEfforts(res.model_efforts);
-        setErr(res.ok ? null : res.text ?? "取模型列表失败");
-      },
-      (e2) => setErr(String((e2 as Error).message ?? e2)),
-    );
+    void rpc
+      .call<{
+        ok?: boolean;
+        text?: string;
+        items?: string[];
+        efforts?: string[];
+        model_efforts?: Record<string, string[]>;
+        model_sources?: Record<string, ModelSourceInfo>;
+        active_model_source?: ModelSourceInfo;
+      }>("conv.models", { convKey })
+      .then(
+        (res) => {
+          setModels(res.ok ? res.items ?? [] : []);
+          setEfforts(res.ok ? res.efforts ?? null : null);
+          setEffortsForModel(res.ok ? targetModel : null);
+          if (res.ok && res.model_efforts) setModelEfforts(res.model_efforts);
+          if (res.ok && res.model_sources) setModelSources(res.model_sources);
+          if (res.ok && res.active_model_source) setActiveModelSource(res.active_model_source);
+          setErr(res.ok ? null : res.text ?? "取模型列表失败");
+        },
+        (e2) => setErr(String((e2 as Error).message ?? e2)),
+      );
   };
   // D168：仅在会话未启动（phase === "none"）时按 convKey 预拉一次（走外带 PROBE_MODEL_LIST，不写 stdin）。
   useEffect(() => {
@@ -427,6 +691,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   // D156/D168：Shift+Tab 循环推理强度。始终有 resolveSupportedEfforts 兜底支持集。
   const openModel = () => {
     setEffortOpen(false);
+    setModelQuery("");
+    setSourceFilter(null);
     setModelOpen(true);
     fetchModels();
   };
@@ -468,7 +734,12 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           data-source={pendingModel !== null ? "session" : info?.modelSource ?? ""}
           aria-expanded={modelOpen}
           disabled={!usable}
-          title={hint ?? `${info?.model ?? ""} · ${info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"}`}
+          title={
+            hint ??
+            `${info?.model ?? ""}${activeSource ? ` · 来源：${activeSource.label}${activeSource.endpoint ? ` (${activeSource.endpoint})` : ""}` : ""} · ${
+              info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"
+            }`
+          }
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             if (modelOpen) setModelOpen(false);
@@ -476,12 +747,17 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
           }}
         >
           <Icon name="chip" size="sm" />
+          {activeSource && activeSource.id !== "default" && (
+            <span className="ui-badge model-ctl-source" data-testid="model-source-badge">
+              {activeSource.shortLabel}
+            </span>
+          )}
           <span className="model-ctl-label" data-testid="model-label">{pendingModel ?? info?.model ?? "—"}</span>
           {pendingModel !== null && <span className="ui-badge" data-testid="model-pending">待生效</span>}
           <Icon name="chevron-down" size="sm" />
         </button>
         {modelOpen && (
-          <div className="ui-popover model-pop" data-testid="model-pop">
+          <div className="ui-popover model-pop model-pop--models" data-testid="model-pop">
             <div className="model-pop-head">
               <div className="ui-popover-title">本会话模型</div>
               <button
@@ -499,7 +775,12 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
               </button>
             </div>
             {popNote !== null && <div className="muted model-pop-note" data-testid="model-pop-note">{popNote}</div>}
-            {info !== null && info.modelSource === "default" && info.model !== null && <div className="muted model-pop-note" data-testid="model-pop-default">默认：{info.model}</div>}
+            {info !== null && info.modelSource === "default" && info.model !== null && (
+              <div className="muted model-pop-note" data-testid="model-pop-default">
+                默认：{info.model}
+                {activeSource && info.modelSource === "default" ? ` · ${activeSource.label}` : ""}
+              </div>
+            )}
             {err !== null && (
               <div className="warn model-pop-err" data-testid="model-pop-err">
                 {err}
@@ -507,30 +788,96 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
               </div>
             )}
             {warn !== null && <div className="warn model-pop-warn" data-testid="model-pop-warn">{warn}</div>}
-            {models === null && err === null && <div className="muted model-pop-wait">…</div>}
-            {models?.map((m) => {
-              const mEffs = modelEfforts?.[m];
-              return (
+            {models !== null && models.length > 0 && (
+              <div className="ui-search model-pop-search">
+                <Icon name="search" size="sm" />
+                <input
+                  className="ui-input"
+                  data-testid="model-search"
+                  placeholder="筛选模型名或来源（如 deepseek / opencode / devin）…"
+                  value={modelQuery}
+                  onChange={(e) => setModelQuery(e.target.value)}
+                />
+              </div>
+            )}
+            {modelGroups.length > 1 && (
+              <div className="model-pop-filters" data-testid="model-source-filters" role="group" aria-label="按来源筛选">
                 <button
-                  key={m}
-                  className="ui-row model-pop-row"
-                  aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
-                  data-testid="model-row"
-                  data-model={m}
-                  onClick={(e) => {
-                    if (!e.nativeEvent.isTrusted) return;
-                    setModelOpen(false);
-                    void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                  }}
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm model-pop-filter-btn"
+                  data-testid="model-source-filter"
+                  data-source-id="all"
+                  aria-pressed={sourceFilter === null}
+                  onClick={() => setSourceFilter(null)}
                 >
-                  <span className="ui-row-title">{m}</span>
-                  {mEffs && mEffs.length > 0 && (
-                    <span className="model-pop-meta" data-testid="model-row-efforts">{mEffs.length}档</span>
-                  )}
-                  <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
+                  全部 ({models?.length ?? 0})
                 </button>
-              );
-            })}
+                {modelGroups.map((grp) => (
+                  <button
+                    key={grp.id}
+                    type="button"
+                    className="ui-btn ui-btn--ghost ui-btn--sm model-pop-filter-btn"
+                    data-testid="model-source-filter"
+                    data-source-id={grp.id}
+                    aria-pressed={sourceFilter === grp.id}
+                    onClick={() => setSourceFilter((prev) => (prev === grp.id ? null : grp.id))}
+                  >
+                    {grp.shortLabel} ({grp.items.length})
+                  </button>
+                ))}
+              </div>
+            )}
+            {models === null && err === null && <div className="muted model-pop-wait">…</div>}
+            {models !== null && (
+              <div className="model-pop-list" data-testid="model-pop-list">
+                {visibleModelGroups.map((grp) => (
+                  <div key={grp.id} className="model-pop-group" data-testid="model-group" data-source-id={grp.id}>
+                    <div className="model-pop-group-head" data-testid="model-group-head">
+                      <span className="model-pop-group-title">{grp.label}</span>
+                      <span className="ui-badge">{grp.kindLabel}</span>
+                      <span className="ui-count">{grp.items.length}</span>
+                    </div>
+                    {grp.items.map((item) => {
+                      const m = item.id;
+                      const mEffs = modelEfforts?.[m];
+                      const titleParts = [m, `来源：${grp.label}`];
+                      if (item.ownedBy && item.ownedBy.toLowerCase() !== grp.id.replace("default:", "")) {
+                        titleParts.push(`上游：${item.ownedBy}`);
+                      }
+                      if (item.endpoint) titleParts.push(`地址：${item.endpoint}`);
+                      return (
+                        <button
+                          key={m}
+                          className="ui-row model-pop-row"
+                          aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
+                          data-testid="model-row"
+                          data-model={m}
+                          data-source-id={grp.id}
+                          title={titleParts.join(" · ")}
+                          onClick={(e) => {
+                            if (!e.nativeEvent.isTrusted) return;
+                            setModelOpen(false);
+                            void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                          }}
+                        >
+                          <span className="ui-row-title">{item.displayModel}</span>
+                          <span className="ui-badge model-pop-source" data-testid="model-row-source">{item.sourceBadge}</span>
+                          {mEffs && mEffs.length > 0 && (
+                            <span className="model-pop-meta" data-testid="model-row-efforts">{mEffs.length}档</span>
+                          )}
+                          <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+                {visibleModelGroups.length === 0 && models.length > 0 && (
+                  <div className="muted model-pop-empty" data-testid="model-pop-empty">
+                    没有匹配的模型，可用下方输入框直接切换
+                  </div>
+                )}
+              </div>
+            )}
             {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
                 输入框只收值（onKeyDown 不能发 conv.command，TG-10 纪律）；点「切换」按钮发出。 */}
             {info?.modelSource === "session" && (

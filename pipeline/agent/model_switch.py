@@ -118,7 +118,10 @@ def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> 
     }
 
 
-def _fetch_openai_models(url: str, headers: dict[str, str], *, root: Path | None = None) -> tuple[list[str] | None, ModelSwitchError | None]:
+def _fetch_openai_model_entries(
+    url: str, headers: dict[str, str], *, root: Path | None = None
+) -> tuple[list[dict[str, Any]] | None, ModelSwitchError | None]:
+    """GET `{url}` 并保留模型条目的 id 与 owned_by 来源元信息。"""
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT_S) as resp:
@@ -133,42 +136,188 @@ def _fetch_openai_models(url: str, headers: dict[str, str], *, root: Path | None
     if not isinstance(data, list):
         return None, ModelSwitchError("模型列表格式不对（缺 data 数组）")
     _maybe_cache_models_metadata(data, root=root)
-    return [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")], None
+    entries: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        mid = str(item["id"]).strip()
+        if not mid:
+            continue
+        owned_raw = item.get("owned_by")
+        owned_by = str(owned_raw).strip() if isinstance(owned_raw, str) and owned_raw.strip() else None
+        entries.append({"id": mid, "owned_by": owned_by})
+    return entries, None
+
+
+def _fetch_openai_models(url: str, headers: dict[str, str], *, root: Path | None = None) -> tuple[list[str] | None, ModelSwitchError | None]:
+    entries, err = _fetch_openai_model_entries(url, headers, root=root)
+    if entries is None:
+        return None, err
+    return [e["id"] for e in entries], None
+
+
+_GENERIC_OWNED_BY = frozenset({"", "system", "organization-owner", "user"})
+
+
+def _proxy_source_meta(
+    model_id: str,
+    *,
+    base_url: str | None = None,
+    owned_by: str | None = None,
+) -> dict[str, Any]:
+    """为来自默认配置 / 本机代理 `/models` 的模型构造可读来源元信息。"""
+    from pipeline.agent import auth
+
+    host = auth._url_host(base_url)
+    is_local_proxy = bool(host and host.startswith(("127.0.0.1", "localhost", "[::1]")))
+    base_label = "默认代理" if is_local_proxy else (f"默认配置 ({host})" if host else "默认配置")
+    channel: str | None = None
+    display_model = model_id
+    if "/" in model_id:
+        prefix, rest = model_id.split("/", 1)
+        channel = auth._format_channel_label(prefix)
+        source_id = f"default:{prefix.strip().lower()}"
+        source_name = f"{channel} ({base_label})"
+        if rest:
+            display_model = rest
+    elif owned_by and owned_by.strip().lower() not in _GENERIC_OWNED_BY and (
+        is_local_proxy or owned_by.strip().lower() != "openai"
+    ):
+        channel = auth._format_channel_label(owned_by)
+        source_id = f"default:{owned_by.strip().lower()}"
+        source_name = f"{channel} ({base_label})"
+    else:
+        source_id = "default"
+        source_name = base_label
+    meta: dict[str, Any] = {
+        "source_id": source_id,
+        "source_name": source_name,
+        "source_kind": "proxy" if is_local_proxy else "config",
+        "wire_model": model_id,
+        "display_model": display_model,
+    }
+    if channel:
+        meta["channel"] = channel
+    if owned_by:
+        meta["owned_by"] = owned_by
+    if host:
+        meta["endpoint"] = host
+    return meta
+
+
+def _merge_proxy_and_auth_models(
+    proxy_entries: list[dict[str, Any]] | None,
+    proxy_err: ModelSwitchError | None,
+    *,
+    base_url: str | None,
+    root: Path | None = None,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """合并代理 `/models` 与已登录服务商模型；已登录服务商路由覆盖同名来源元信息。"""
+    from pipeline.agent import auth
+
+    auth_sources = auth.list_authenticated_model_sources(root)
+    auth_models = list(auth_sources.keys())
+    if proxy_entries is not None:
+        sources: dict[str, dict[str, Any]] = {}
+        proxy_ids: list[str] = []
+        for entry in proxy_entries:
+            mid = str(entry["id"])
+            proxy_ids.append(mid)
+            sources.setdefault(mid, _proxy_source_meta(mid, base_url=base_url, owned_by=entry.get("owned_by")))
+        sources.update(auth_sources)
+        items = sorted(dict.fromkeys([*proxy_ids, *auth_models]))
+        return items, {m: sources[m] for m in items if m in sources}
+    if auth_models:
+        return auth_models, auth_sources
+    raise proxy_err or ModelSwitchError("取模型列表失败")
+
+
+def list_models_with_sources(cfg: LLMConfig, *, root: Path | None = None) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """GET `{base_url}/models` 并合并已登录服务商模型，同时返回每个模型的来源映射。"""
+    url = cfg.base_url.rstrip("/") + "/models"
+    proxy_entries, proxy_err = _fetch_openai_model_entries(
+        url, {"Authorization": f"Bearer {cfg.api_key}"}, root=root,
+    )
+    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=cfg.base_url, root=root)
 
 
 def list_models(cfg: LLMConfig, *, root: Path | None = None) -> list[str]:
     """GET `{base_url}/models` 并合并已登录服务商模型。代理失败但已登录服务商有模型时照常返回。"""
-    from pipeline.agent import auth
+    items, _ = list_models_with_sources(cfg, root=root)
+    return items
 
-    auth_models = auth.list_authenticated_models(root)
-    url = cfg.base_url.rstrip("/") + "/models"
-    proxy_ids, proxy_err = _fetch_openai_models(
-        url, {"Authorization": f"Bearer {cfg.api_key}"}, root=root,
-    )
-    if proxy_ids is not None:
-        return sorted(dict.fromkeys([*proxy_ids, *auth_models]))
-    if auth_models:
-        return auth_models
-    raise proxy_err or ModelSwitchError("取模型列表失败")
+
+_ORIGINAL_LIST_MODELS = list_models
+
+
+def list_models_unauthenticated_with_sources(root: Path | None = None) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """D153/D170：无会话进程时合并代理 `/models` 与已登录服务商模型及来源元信息。"""
+    from pipeline.agent import auth
+    from pipeline.agent.llm import configured_base_url
+
+    auth_sources = auth.list_authenticated_model_sources(root)
+    base_url = configured_base_url(root)
+    if base_url is None:
+        if auth_sources:
+            return list(auth_sources.keys()), auth_sources
+        raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
+    proxy_entries, proxy_err = _fetch_openai_model_entries(base_url.rstrip("/") + "/models", {}, root=root)
+    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=base_url, root=root)
 
 
 def list_models_unauthenticated(root: Path | None = None) -> list[str]:
     """D153/D170：无会话进程时合并代理 `/models` 与已登录服务商模型（仅二者全空/失败才抛）。"""
-    from pipeline.agent import auth
-    from pipeline.agent.llm import configured_base_url
+    items, _ = list_models_unauthenticated_with_sources(root)
+    return items
 
-    auth_models = auth.list_authenticated_models(root)
-    base_url = configured_base_url(root)
-    if base_url is None:
-        if auth_models:
-            return auth_models
-        raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
-    proxy_ids, proxy_err = _fetch_openai_models(base_url.rstrip("/") + "/models", {}, root=root)
-    if proxy_ids is not None:
-        return sorted(dict.fromkeys([*proxy_ids, *auth_models]))
-    if auth_models:
-        return auth_models
-    raise proxy_err or ModelSwitchError("取模型列表失败")
+
+def describe_model_source(
+    model: str | None,
+    *,
+    base_url: str | None = None,
+    root: Path | None = None,
+) -> dict[str, Any] | None:
+    """为单个模型名推导来源元信息（优先查已登录服务商路由，其次按默认配置/代理通道归类）。"""
+    if not model or not model.strip():
+        return None
+    mid = model.strip()
+    from pipeline.agent import auth
+
+    auth_sources = auth.list_authenticated_model_sources(root)
+    if mid in auth_sources:
+        return auth_sources[mid]
+    if "/" in mid:
+        resolved = auth.resolve_model_provider(mid, root=root)
+        if resolved is not None:
+            pid, wire, cred = resolved
+            spec = auth.PROVIDER_MAP.get(pid)
+            return {
+                "source_id": pid,
+                "source_name": spec.name if spec is not None else pid,
+                "source_kind": str(cred.get("auth_type") or (spec.category if spec else "api_key")),
+                "wire_model": wire,
+                "display_model": wire,
+            }
+    return _proxy_source_meta(mid, base_url=base_url)
+
+
+def model_sources_for_items(
+    items: list[str] | tuple[str, ...],
+    *,
+    base_url: str | None = None,
+    known: dict[str, dict[str, Any]] | None = None,
+    root: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """为任意模型列表补全 `{model_id: source_meta}`，供 CLI `/model` 分组展示。"""
+    out: dict[str, dict[str, Any]] = {}
+    for m in items:
+        if known and m in known:
+            out[m] = known[m]
+            continue
+        meta = describe_model_source(m, base_url=base_url, root=root)
+        if meta is not None:
+            out[m] = meta
+    return out
 
 
 #: ``check_model`` 放行未知模型时留下的提醒；每次调用先清回 None（同进程一次只跑一条命令，
@@ -405,20 +554,27 @@ def efforts_map_for_models(items: list[str] | tuple[str, ...], root: Path | None
 
 
 def probe_models_and_efforts_payload(root: Path | None = None) -> dict[str, Any]:
-    """D168/D170：供 PROBE_MODEL_LIST 输出结构化 JSON（模型列表 + 每模型支持集 + 当前默认模型）。"""
+    """D168/D170：供 PROBE_MODEL_LIST 输出结构化 JSON（模型列表 + 来源元信息 + 每模型支持集 + 当前默认模型）。"""
     from pipeline.agent import auth
-    from pipeline.agent.llm import configured_model_name
+    from pipeline.agent.llm import configured_base_url, configured_model_name
 
-    items = list_models_unauthenticated(root)
+    items, model_sources = list_models_unauthenticated_with_sources(root)
     active_model = configured_model_name(root)
     if active_model is None:
         auth_cfg = auth.first_authenticated_config(root)
         active_model = str(auth_cfg["model"]) if auth_cfg else None
+    active_source = (
+        model_sources.get(active_model)
+        if active_model
+        else None
+    ) or describe_model_source(active_model, base_url=configured_base_url(root), root=root)
     return {
         "items": items,
         "efforts": list(efforts_for_model(active_model, root)),
         "model_efforts": efforts_map_for_models(items, root),
+        "model_sources": model_sources,
         "active_model": active_model,
+        **({"active_model_source": active_source} if active_source else {}),
     }
 
 
@@ -626,10 +782,25 @@ def run_command(
     info = describe(cfg, override, purpose)
     if cmd == "/model":
         if not arg:
-            available = models_fetcher(cfg)
+            if models_fetcher is _ORIGINAL_LIST_MODELS:
+                available, raw_sources = list_models_with_sources(cfg)
+            else:
+                available = models_fetcher(cfg)
+                raw_sources = {}
+            sources = model_sources_for_items(available, base_url=cfg.base_url, known=raw_sources)
+            cur_meta = (
+                sources.get(info["model"]) if info["model"] else None
+            ) or describe_model_source(info["model"], base_url=cfg.base_url)
             tag = "本会话设置" if info["model_source"] == "session" else "默认配置"
-            lines = [f"当前模型：{info['model']}（{tag}）", "代理提供的模型："]
-            lines += [f"  {'●' if m == info['model'] else '○'} {m}" for m in available]
+            cur_src = f" · 来源：{cur_meta['source_name']}" if cur_meta else ""
+            lines = [f"当前模型：{info['model']}（{tag}{cur_src}）", "可用模型："]
+            grouped: dict[str, list[str]] = {}
+            for m in available:
+                slabel = sources.get(m, {}).get("source_name") or "默认配置"
+                grouped.setdefault(slabel, []).append(m)
+            for slabel, group_items in grouped.items():
+                lines.append(f"  [{slabel}]")
+                lines += [f"    {'●' if m == info['model'] else '○'} {m}" for m in group_items]
             lines.append("切换：/model <名>；恢复默认：/model default（只影响本会话）")
             return override, "\n".join(lines)
         if arg == RESET_WORD:

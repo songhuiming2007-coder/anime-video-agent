@@ -665,6 +665,85 @@ def test_d168_probe_payload_and_protocol_model_efforts(world, endpoint, tmp_path
         cmd_res = proc.wait_for("command_result")
         assert cmd_res["ok"] is True
         assert isinstance(cmd_res.get("model_efforts"), dict)
+        assert isinstance(cmd_res.get("model_sources"), dict)
         proc.shutdown()
     finally:
         proc.proc.kill()
+
+
+def test_model_sources_distinguish_proxy_channels_and_auth_providers(
+    root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, endpoint: FakeEndpoint
+) -> None:
+    import urllib.request
+    from pipeline.agent import auth as auth_mod
+
+    auth_mod.auth_path(root).write_text(
+        json.dumps({
+            "version": 1,
+            "providers": {
+                "deepseek": {"type": "api_key", "key": "sk-ds", "models": ["deepseek-v4-1-flash", "deepseek-chat"]},
+                "opencode": {"type": "api_key", "key": "sk-oc", "models": ["deepseek-v4-1-flash", "deepseek-chat"]},
+                "opencode-go": {"type": "api_key", "key": "sk-ocg", "models": ["deepseek-v4-1-flash", "deepseek-chat"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> "_FakeResp":
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    proxy_payload = json.dumps({
+        "data": [
+            {"id": "devin/deepseek-v4-1-flash", "owned_by": "deepseek"},
+            {"id": "claude-opus-5-5-high", "owned_by": "antigravity"},
+        ]
+    }).encode("utf-8")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResp(proxy_payload))
+
+    (root / "config" / "agent.json").write_text(
+        json.dumps({"base_url": "http://127.0.0.1:8317/v1", "model": "devin/deepseek-v4-1-flash", "api_key": "k"}),
+        encoding="utf-8",
+    )
+
+    payload = ms.probe_models_and_efforts_payload(root)
+    assert set(payload["items"]) == {
+        "devin/deepseek-v4-1-flash",
+        "claude-opus-5-5-high",
+        "opencode/deepseek-v4-1-flash",
+        "opencode/deepseek-chat",
+        "opencode-go/deepseek-v4-1-flash",
+        "opencode-go/deepseek-chat",
+        "deepseek/deepseek-v4-1-flash",
+        "deepseek/deepseek-chat",
+    }
+    sources = payload["model_sources"]
+    assert sources["devin/deepseek-v4-1-flash"]["source_id"] == "default:devin"
+    assert sources["devin/deepseek-v4-1-flash"]["source_name"] == "Devin (默认代理)"
+    assert sources["devin/deepseek-v4-1-flash"]["display_model"] == "deepseek-v4-1-flash"
+    assert sources["devin/deepseek-v4-1-flash"]["source_kind"] == "proxy"
+    assert sources["opencode/deepseek-v4-1-flash"]["source_name"] == "OpenCode Zen"
+    assert sources["opencode-go/deepseek-v4-1-flash"]["source_name"] == "OpenCode Go"
+    assert sources["deepseek/deepseek-v4-1-flash"]["source_name"] == "DeepSeek"
+    assert sources["claude-opus-5-5-high"]["source_name"] == "Antigravity (默认代理)"
+    assert payload["active_model_source"] == sources["devin/deepseek-v4-1-flash"]
+
+    cfg = LLMConfig(base_url="http://127.0.0.1:8317/v1", model="devin/deepseek-v4-1-flash", api_key="k")
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_mod.auth_path(root)))
+    _, reply = ms.run_command("/model", cfg, ms.Override(), None)
+    assert "当前模型：devin/deepseek-v4-1-flash（默认配置 · 来源：Devin (默认代理)）" in reply
+    assert "  [Devin (默认代理)]" in reply
+    assert "  [OpenCode Zen]" in reply
+    assert "  [OpenCode Go]" in reply
+    assert "  [DeepSeek]" in reply
+    assert "    ● devin/deepseek-v4-1-flash" in reply
+    assert "    ○ deepseek/deepseek-v4-1-flash" in reply

@@ -1633,4 +1633,76 @@ describe("D149 运行中切换", () => {
       },
     });
   });
+
+  it("model_sources 与 active_model_source 在 listProxyModels 与 command_result 中透传", async () => {
+    const { listProxyModels } = await import("../../src/host/proxyModels");
+    const sources = {
+      "devin/deepseek-v4-1-flash": {
+        source_id: "default:devin",
+        source_name: "Devin (默认代理)",
+        source_kind: "proxy",
+        wire_model: "devin/deepseek-v4-1-flash",
+        display_model: "deepseek-v4-1-flash",
+        owned_by: "deepseek",
+        endpoint: "127.0.0.1:8317",
+        channel: "Devin",
+      },
+    };
+    const activeSource = sources["devin/deepseek-v4-1-flash"];
+    const run = async () => ({
+      code: 0,
+      signal: null,
+      timedOut: false,
+      stdoutFull: JSON.stringify({
+        items: ["devin/deepseek-v4-1-flash"],
+        efforts: ["low", "high"],
+        model_efforts: { "devin/deepseek-v4-1-flash": ["low", "high"] },
+        model_sources: sources,
+        active_model_source: activeSource,
+      }),
+      stdoutTail: "",
+      stdoutOverflow: false,
+      stderrTail: "",
+    });
+    const r = await listProxyModels(run as unknown as Parameters<typeof listProxyModels>[0], "/repo");
+    expect(r).toEqual({
+      ok: true,
+      text: "1 个模型",
+      items: ["devin/deepseek-v4-1-flash"],
+      efforts: ["low", "high"],
+      model_efforts: { "devin/deepseek-v4-1-flash": ["low", "high"] },
+      model_sources: sources,
+      active_model_source: activeSource,
+    });
+
+    const b = await boot();
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      {
+        op: "serve",
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS],
+        on_command: [
+          {
+            t: "command_result",
+            name: "models",
+            ok: true,
+            text: "1 个模型",
+            items: ["devin/deepseek-v4-1-flash"],
+            model_sources: sources,
+            active_model_source: activeSource,
+            rid: "$rid",
+          },
+        ],
+        on_shutdown: "exit",
+      },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    const cmdRes = await b.svc.dispatch("conv.models", { convKey: b.key });
+    expect(cmdRes).toMatchObject({
+      ok: true,
+      items: ["devin/deepseek-v4-1-flash"],
+      model_sources: sources,
+      active_model_source: activeSource,
+    });
+  });
 });

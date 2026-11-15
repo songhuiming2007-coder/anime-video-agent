@@ -5,6 +5,7 @@
 // 失败如实 {ok:false,text}：renderer popover 显示错误行 + 「重试」（D151），不猜一份列表出来。
 import type { CommandResult } from "./sessions";
 import type { RunCore } from "./secrets";
+import { parseModelSourceInfo, parseModelSources } from "../shared/protocol";
 
 const MAX_MODELS = 500;
 
@@ -24,6 +25,8 @@ export async function listProxyModels(run: RunCore, repoRoot: string): Promise<C
         items?: unknown;
         efforts?: unknown;
         model_efforts?: unknown;
+        model_sources?: unknown;
+        active_model_source?: unknown;
       };
       const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
       const items = [...new Set(rawItems.filter((x): x is string => typeof x === "string").map((s) => s.trim()).filter((s) => s !== ""))]
@@ -40,12 +43,16 @@ export async function listProxyModels(run: RunCore, repoRoot: string): Promise<C
         }
         model_efforts = cleaned;
       }
+      const model_sources = parseModelSources(parsed.model_sources);
+      const active_model_source = parseModelSourceInfo(parsed.active_model_source);
       return {
         ok: true,
         text: `${items.length} 个模型`,
         items,
         ...(efforts ? { efforts } : {}),
         ...(model_efforts ? { model_efforts } : {}),
+        ...(model_sources ? { model_sources } : {}),
+        ...(active_model_source ? { active_model_source } : {}),
       };
     } catch {
       return { ok: false, text: "模型列表解析失败（JSON 损坏）" };
