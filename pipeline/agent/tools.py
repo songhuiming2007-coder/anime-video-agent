@@ -760,9 +760,22 @@ def sys_python() -> str:
 # read_artifact 的读域硬排除（Spec §2.5 Y2-r19）：03-audio/（音频与 manifest）与
 # 补丁池素材物理上就在期目录里，但属「一律不出网」清单——读域该拒的必须在这里拒，
 # 不能靠发送前的字符串断言补漏（漏一个文件名就是一次静默出网）。
-# 同理只放行文本类后缀，二进制产物连读出都不给。
-READ_DENY_PARTS = frozenset({"03-audio", "04-patch"})
-READ_ALLOWED_SUFFIXES = frozenset({".md", ".txt", ".json", ".patch", ".log"})
+# 放行文本与结构化数据后缀（含 facts.jsonl / 字幕 / 配置等），二进制产物与会话/审计日志依然拒读。
+READ_DENY_PARTS = frozenset({"03-audio", "04-patch", "session-trash"})
+READ_DENY_BASENAMES = frozenset({
+    "session.jsonl",
+    "events.jsonl",
+    "_events.jsonl",
+    "approvals.jsonl",
+    "memory.log.jsonl",
+    "00-memory.log.jsonl",
+})
+READ_ALLOWED_SUFFIXES = frozenset({
+    ".md", ".txt", ".json", ".jsonl", ".patch", ".log",
+    ".yaml", ".yml", ".toml", ".csv", ".srt", ".ass", ".vtt",
+})
+_REPO_READ_DIRS = frozenset({"docs", "skills", "config", "tickets"})
+_REPO_READ_FILES = frozenset({"AGENTS.md", "README.md", "CONTRIBUTING.md", "pyproject.toml"})
 
 MAX_READ_BYTES = 200_000      # read_artifact 单次读出上限
 MAX_NOTE_BYTES = 1_000_000    # search_notes 单文件扫描上限
@@ -802,23 +815,25 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "side_effect": False,
         "adr": "ADR-0018",
         "description": (
-            "读取当期目录内文件或 data/library/ 下的笔记（只读）。"
-            "读域写死：期目录内 + data/library/，且硬排除 03-audio/ 与 04-patch/（一律不出网）；"
-            "越界或非文本类必拒。"
+            "读取与当前任务相关的文本及结构化数据文件（只读）：涵盖当期/当卷、所属企划总纲与全部兄弟卷、"
+            "其他期目录（area=episodes）、data/library/ 笔记与资料，以及仓库文档/技能/非凭据配置（area=repo）；"
+            "支持 facts.jsonl。硬排除 03-audio/、04-patch/、记忆文件、会话/事件/审批日志与 *.local.* 凭据。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "相对路径，如 01-topic.md、02-script.draft.md、notes/春物.md",
+                    "description": "相对路径，如 01-topic.md、facts.jsonl、01-声带裂隙/02-script.md、docs/runbook/02-script.md",
                 },
                 "area": {
                     "type": "string",
-                    "enum": ["episode", "project", "library"],
+                    "enum": ["episode", "project", "library", "episodes", "repo"],
                     "description": (
-                        "可选，读哪个区：episode=当期 / 当卷目录；project=所属企划（卷会话只能读企划顶层的单个文件，"
-                        "如 00-project.md；企划会话可读各卷）；library=data/library。省略则按 期 → library → 企划顶层 的顺序找"
+                        "可选，读哪个区：episode=当期/当卷目录；project=所属企划（含企划文件与所有兄弟卷，企划/卷会话均可用）；"
+                        "library=data/library；episodes=data/episodes 下其他期（只读）；"
+                        "repo=仓库 docs/、skills/、config/（非凭据）、tickets/、AGENTS.md、README.md。"
+                        "省略则按 当期 → 所属企划（含兄弟卷）→ library → 明确前缀（data/episodes/...、docs/... 等）顺序查找"
                     ),
                 },
             },
@@ -1425,28 +1440,30 @@ def build_tool_schemas(root: Path | None = None) -> list[dict[str, Any]]:
     return schemas
 
 
-def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
-    """读域的根（全部 resolve）。D81 §4.3：企划会话 = 企划目录 + 各成员的 resolve()（成员可以是软链卷）+ library；
-    卷会话 = 卷目录 + library（企划顶层文件另由 `_project_top_ok` 单独放行）；普通期不变。"""
-    roots: list[Path] = []
-    if ctx.session_kind == "project" and ctx.project_dir is not None:
-        from pipeline.project import project_members
+def _project_read_roots(ctx: ToolContext) -> list[Path]:
+    """企划与卷会话共享的企划读根（resolve 后）：企划目录 + 各成员（含软链卷）+ 当前卷。"""
+    if ctx.project_dir is None:
+        return []
+    from pipeline.project import project_members
 
-        roots.append(Path(ctx.project_dir).resolve())
-        roots.extend(m.resolve() for m in project_members(Path(ctx.project_dir)))
+    proj = Path(ctx.project_dir)
+    roots = [proj.resolve(), *(m.resolve() for m in project_members(proj))]
+    if ctx.episode_dir:
+        roots.append(Path(ctx.episode_dir).resolve())
+    return roots
+
+
+def _allowed_read_roots(ctx: ToolContext) -> list[Path]:
+    """默认读域的根（全部 resolve）：企划/卷会话含所属企划及全部兄弟卷 + library；普通期 = 期目录 + library。"""
+    roots: list[Path] = []
+    if ctx.session_kind in ("project", "volume") and ctx.project_dir is not None:
+        roots.extend(_project_read_roots(ctx))
     elif ctx.episode_dir:
         roots.append(Path(ctx.episode_dir).resolve())
     library = (ctx.base / "data" / "library").resolve()
     if library.exists():
         roots.append(library)
     return roots
-
-
-def _project_top_ok(rel: Path, target: Path, ctx: ToolContext) -> bool:
-    """卷会话读企划顶层：`rel` 只有一段，且 resolve 后的 target 的父目录就是企划目录（软链指出去不算）。"""
-    if ctx.session_kind != "volume" or ctx.project_dir is None or len(rel.parts) != 1:
-        return False
-    return target.parent == Path(ctx.project_dir).resolve()
 
 
 def deny_dir_hit(path: Path) -> str | None:
@@ -1485,62 +1502,127 @@ def _is_memory_file(target: Path, ctx: ToolContext) -> bool:
     }
 
 
-def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """读域写死：期目录内 + data/library/ 只读，硬排除 03-audio/ 与 04-patch/（§2.5）。
+def _is_denied_read_file(path: Path) -> str | None:
+    """不可读的会话/事件/审计日志与本地凭据文件（大小写不敏感）。"""
+    name = path.name.casefold()
+    folded = path.as_posix().casefold()
+    if name in READ_DENY_BASENAMES or name.endswith(".log.jsonl"):
+        return f"会话/事件/审计日志不可直读: {path.name}"
+    if ".local." in name or name == ".env" or name.startswith(".env."):
+        return f"本地凭据/环境文件不可读: {path.name}"
+    for pattern in RESTRICTED_EGRESS_PATTERNS:
+        if pattern.casefold() in folded:
+            return f"受限凭据文件不可读: {pattern}"
+    return None
 
-    D81 §4.3：`area` 选区；卷会话另可读企划顶层的单个文件（如 00-project.md）、不能借读兄弟卷；
-    企划会话可读整个企划（含软链卷）。后缀、硬排除、记忆文件三条都对 `rel` 与 resolve 后的 target 各判一次。
+
+def _episodes_read_roots(episodes_dir: Path, sub_rel: Path) -> list[Path]:
+    """`data/episodes/` 读根；容许首/次级目录本身是软链卷/期。"""
+    roots = [episodes_dir.resolve()]
+    if sub_rel.parts:
+        first = episodes_dir / sub_rel.parts[0]
+        if first.is_dir():
+            roots.append(first.resolve())
+            if len(sub_rel.parts) >= 2:
+                second = first / sub_rel.parts[1]
+                if second.is_dir():
+                    roots.append(second.resolve())
+    return roots
+
+
+def _repo_read_roots(base: Path) -> list[Path]:
+    """仓库文档、技能、非凭据配置与工单目录读根。"""
+    roots = [(base / d).resolve() for d in _REPO_READ_DIRS if (base / d).exists()]
+    roots.extend((base / f).resolve() for f in _REPO_READ_FILES if (base / f).exists())
+    return roots
+
+
+def _read_candidates(rel: Path, area: str | None, ctx: ToolContext) -> list[tuple[Path, list[Path]]]:
+    """按 area 生成 (候选路径, 允许的 resolve 根列表) 对；默认先当期 → 企划(含兄弟卷) → library → 明确前缀。"""
+    out: list[tuple[Path, list[Path]]] = []
+    project_roots = _project_read_roots(ctx) if ctx.session_kind in ("project", "volume") else []
+    if area in (None, "episode") and ctx.episode_dir and ctx.session_kind != "project":
+        ep_roots = project_roots if (ctx.session_kind == "volume" and project_roots) else [Path(ctx.episode_dir).resolve()]
+        out.append((Path(ctx.episode_dir) / rel, ep_roots))
+    if area in (None, "project") and ctx.session_kind in ("project", "volume") and ctx.project_dir is not None:
+        out.append((Path(ctx.project_dir) / rel, project_roots))
+    library = ctx.base / "data" / "library"
+    lib_roots = [library.resolve()] if library.exists() else []
+    if area in (None, "library"):
+        out.append((library / rel, lib_roots))
+        out.append((library / "notes" / rel, lib_roots))
+
+    episodes_dir = ctx.base / "data" / "episodes"
+    if area == "episodes":
+        out.append((episodes_dir / rel, _episodes_read_roots(episodes_dir, rel)))
+    elif area is None and len(rel.parts) >= 3 and rel.parts[0] == "data":
+        sub = Path(*rel.parts[2:])
+        if rel.parts[1] == "episodes":
+            out.append((ctx.base / rel, _episodes_read_roots(episodes_dir, sub)))
+        elif rel.parts[1] == "library":
+            out.append((ctx.base / rel, lib_roots))
+
+    repo_roots = _repo_read_roots(ctx.base)
+    if area == "repo" or (
+        area is None
+        and (
+            (len(rel.parts) >= 2 and rel.parts[0] in _REPO_READ_DIRS)
+            or rel.as_posix() in _REPO_READ_FILES
+        )
+    ):
+        out.append((ctx.base / rel, repo_roots))
+    return out
+
+
+def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """受控只读读域：当期/企划(含卷会话读兄弟卷)/其他期/library/仓库文档配置。
+
+    保留硬排除：03-audio/、04-patch/、session-trash/、记忆文件、会话/事件/审批日志与 *.local.* 凭据；
+    后缀、硬排除、日志/凭据、记忆文件四条均对 `rel`/`cand` 与 `resolve()` 后 target 各判一次。
     """
     raw = str(args.get("path", "")).strip()
     if not raw:
         raise ValueError("path 不能为空")
     area = args.get("area")
-    if area is not None and area not in ("episode", "project", "library"):
-        raise ValueError(f"area 只能是 episode / project / library，收到 {area!r}")
+    valid_areas = ("episode", "project", "library", "episodes", "repo")
+    if area is not None and area not in valid_areas:
+        raise ValueError(f"area 只能是 {' / '.join(valid_areas)}，收到 {area!r}")
     if area == "project" and ctx.session_kind not in ("volume", "project"):
         raise PermissionError("area=project 只在卷会话与企划会话里可用（当前会话不属于任何企划）")
     rel = Path(raw)
     if rel.is_absolute() or ".." in rel.parts:
-        raise PermissionError(f"越界读被拒（只读期目录内与 data/library/）: {raw}")
-    if rel.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
-        raise PermissionError(
-            f"只读文本类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}"
-        )
+        raise PermissionError(f"越界读被拒（仅限读域内相对路径）: {raw}")
     hit = deny_dir_hit(rel)
     if hit:
         raise PermissionError(
             f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
         )
+    if rel.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
+        raise PermissionError(
+            f"只读文本/数据类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}"
+        )
+    denied_reason = _is_denied_read_file(rel)
+    if denied_reason:
+        raise PermissionError(f"{denied_reason}（拒读: {raw}）")
 
-    library = ctx.base / "data" / "library"
-    candidates: list[Path] = []
-    if area in (None, "episode") and ctx.episode_dir and ctx.session_kind != "project":
-        candidates.append(Path(ctx.episode_dir) / rel)
-    if area in (None, "project") and ctx.session_kind == "project" and ctx.project_dir is not None:
-        candidates.append(Path(ctx.project_dir) / rel)
-    if area in (None, "library"):
-        candidates.append(library / rel)
-        candidates.append(library / "notes" / rel)
-    if area in (None, "project") and ctx.session_kind == "volume" and ctx.project_dir is not None and len(rel.parts) == 1:
-        candidates.append(Path(ctx.project_dir) / rel)   # 企划顶层候选排在最后（同名时当卷文件优先）
-
-    roots = _allowed_read_roots(ctx)
-    for cand in candidates:
+    for cand, cand_roots in _read_candidates(rel, area, ctx):
         target = cand.resolve()
-        if target.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
-            # 红队 R-15：软链 `x.json -> 00-memory.log.jsonl` 以 .json 的名义读 .jsonl——后缀对 resolve 后再判一次
-            raise PermissionError(f"只读文本类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}")
-        # 判 resolve 后的绝对路径：软链接绕进 03-audio 同样拦下
         hit = deny_dir_hit(target)
         if hit:
             raise PermissionError(
                 f"读域硬排除 {hit}/：属「一律不出网」清单（Spec §2.5 Y2-r19），拒读: {raw}"
             )
+        if target.suffix.casefold() not in READ_ALLOWED_SUFFIXES:
+            # 软链 `x.json -> binary` 等绕过：后缀对 resolve 后再判一次
+            raise PermissionError(f"只读文本/数据类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}")
         if _is_memory_file(target, ctx) or _is_memory_file(cand, ctx):
             raise PermissionError(
                 "memory.md 只经装配器校验后注入，模型不可直读；人请用 /memory"
             )
-        if not (any(target == r or r in target.parents for r in roots) or _project_top_ok(rel, target, ctx)):
+        denied_reason = _is_denied_read_file(target) or _is_denied_read_file(cand)
+        if denied_reason:
+            raise PermissionError(f"{denied_reason}（拒读: {raw}）")
+        if not any(target == r or r in target.parents for r in cand_roots):
             continue
         if target.is_file():
             size = target.stat().st_size
@@ -1551,7 +1633,7 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
                 "text": blob.decode("utf-8", errors="replace"),
                 "truncated": size > MAX_READ_BYTES,
             }
-    raise FileNotFoundError(f"文件不存在或不在读域内: {raw}（只读期目录内与 data/library/）")
+    raise FileNotFoundError(f"文件不存在或不在读域内: {raw}")
 
 
 def resolve_write_content(ep_dir: Path | str | None, args: dict[str, Any]) -> str:

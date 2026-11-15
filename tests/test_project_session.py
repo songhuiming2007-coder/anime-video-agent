@@ -127,21 +127,48 @@ class TestReadDomain:
             out = read(vol_ctx(root, P), "00-project.md", area)
             assert out["ok"] and "测试编年史" in out["result"]["text"], out
 
-    def test_卷会话不能借读兄弟卷_四条路径(self, world) -> None:
+    def test_卷会话可读兄弟卷与企划_越界仍拒(self, world) -> None:
         root, P, _Q, _E = world
-        (P / "evil.md").symlink_to(Path("02-b") / "02-script.md")
-        (P / "01-a" / "x.md").symlink_to(Path("..") / "02-b" / "02-script.md")
         ctx = vol_ctx(root, P)
-        for path, area in (("../02-b/02-script.md", None), ("02-b/02-script.md", "project"),
-                           ("evil.md", None), ("evil.md", "project"), ("x.md", None)):
+        # 默认同名仍优先读当前卷，写卷前缀可读兄弟卷（area=None 或 area="project" 均可）
+        assert "第一卷独有句" in read(ctx, "02-script.md")["result"]["text"]
+        for area in (None, "project"):
+            out = read(ctx, "02-b/02-script.md", area)
+            assert out["ok"] and "第二卷独有句" in out["result"]["text"], (area, out)
+        # 上跳路径与软链逃出企划依然被拒
+        (P / "01-a" / "escape.md").symlink_to(Path("..") / ".." / "Q" / "01-a" / "02-script.md")
+        for path, area in (("../02-b/02-script.md", None), ("escape.md", None)):
             out = read(ctx, path, area)
             assert out["ok"] is False, (path, area, out)
 
-    def test_企划候选只认一段_多段经软链落回企划顶层也拒(self, world) -> None:
-        """M4：去掉「只有一段」后，`02-b/up.md -> ../00-project.md` 的父目录恰是企划目录，父目录检查拦不住。"""
+    def test_卷会话可读facts_jsonl与多area扩展_凭据日志仍拒(self, world) -> None:
         root, P, _Q, _E = world
-        (P / "02-b" / "up.md").symlink_to(Path("..") / "00-project.md")
-        assert read(vol_ctx(root, P), "02-b/up.md", "project")["ok"] is False
+        (P / "02-b" / "facts.jsonl").write_text('{"id": 1, "claim": "事实条目"}\n', encoding="utf-8")
+        (P / "01-a" / "events.jsonl").write_text("{}\n", encoding="utf-8")
+        (P / "01-a" / "_agent").mkdir()
+        (P / "01-a" / "_agent" / "approvals.jsonl").write_text("{}\n", encoding="utf-8")
+        (root / "docs" / "runbook").mkdir(parents=True, exist_ok=True)
+        (root / "docs" / "runbook" / "02-script.md").write_text("# 写稿手册\n", encoding="utf-8")
+        (root / "config" / "bgm.json").write_text('{"tracks": []}\n', encoding="utf-8")
+        (root / "config" / "cloud.local.json").write_text('{"api_key": "SECRET"}\n', encoding="utf-8")
+        (root / "pipeline").mkdir(exist_ok=True)
+        (root / "pipeline" / "secret.py").write_text("SECRET = 1\n", encoding="utf-8")
+
+        ctx = vol_ctx(root, P)
+        assert "事实条目" in read(ctx, "02-b/facts.jsonl")["result"]["text"]
+        assert "Q 企划的句子" in read(ctx, "Q/01-a/02-script.md", "episodes")["result"]["text"]
+        assert "Q 企划的句子" in read(ctx, "data/episodes/Q/01-a/02-script.md")["result"]["text"]
+        assert "写稿手册" in read(ctx, "docs/runbook/02-script.md")["result"]["text"]
+        assert "tracks" in read(ctx, "config/bgm.json", "repo")["result"]["text"]
+
+        for bad_path, area in (
+            ("events.jsonl", None),
+            ("_agent/approvals.jsonl", None),
+            ("config/cloud.local.json", None),
+            ("config/cloud.local.json", "repo"),
+            ("pipeline/secret.py", "repo"),
+        ):
+            assert read(ctx, bad_path, area)["ok"] is False, (bad_path, area)
 
     def test_企划会话读整个企划(self, world, tmp_path: Path) -> None:
         root, P, Q, _E = world
