@@ -1367,6 +1367,14 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
                 episode, chap_spec, seg_span, music_plan, video_total
             )
             fonts_dir = chapters_mod.verify_hud_fonts()
+    music_spans = chapters_mod.collect_music_hud_spans(music_plan, bgm_plan, video_total)
+    music_font: str | None = None
+    if music_spans and fonts_dir is None:
+        hud_fonts = paths.ROOT / str(paths.conf("hud.fonts_dir", "data/fonts"))
+        if (hud_fonts / "SourceHanSansSC-Bold.otf").is_file():
+            fonts_dir = hud_fonts
+        else:
+            music_font = FONT
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
@@ -1551,13 +1559,20 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         if music_plan is not None:
             seg_starts = {s["index"]: s["start"]
                           for s in music_plan["segments"]}
+        chap_hud = chapters_mod.build_hud_ass(resolved_chaps, W) if resolved_chaps else None
+        music_hud = (
+            chapters_mod.build_music_hud_ass(
+                music_spans, W, has_top_bar=resolved_chaps is not None, font_name=music_font,
+            )
+            if music_spans else None
+        )
         ass = build_ass(segments, sub_audio, work / "vo.ass",
                         starts=seg_starts,
                         # D86：试看块（音画同源）切自番剧集时，窗口内的原片中文台词一并上屏
                         extra=_avsync_cues(episode, music_plan) if music_plan is not None else None,
-                        hud=chapters_mod.build_hud_ass(resolved_chaps, W) if resolved_chaps else None)
+                        hud=chapters_mod.merge_hud_parts(chap_hud, music_hud))
         vf_ass = f"ass={ass.name}"
-        if resolved_chaps is not None and fonts_dir is not None:
+        if fonts_dir is not None and (resolved_chaps is not None or music_spans):
             fonts_link = work / "_fonts"
             if not fonts_link.exists():
                 try:

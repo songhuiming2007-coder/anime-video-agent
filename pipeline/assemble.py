@@ -829,33 +829,43 @@ def _ff_filter_escape(s: str) -> str:
     )
 
 
-def _resolve_member_chapters(member: Path):
-    from . import chapters, music
+def _resolve_member_hud_info(member: Path):
+    from . import chapters, music, render
 
     sp = member / SCRIPT
     if not sp.is_file():
-        return None
+        return None, ()
     chap_spec = chapters.parse_script_chapters(sp)
     if chap_spec is None:
-        return None
+        return None, ()
     mf_path = member.joinpath(*MANIFEST)
     if not mf_path.is_file():
-        return None
+        return None, ()
     manifest = json.loads(mf_path.read_text(encoding="utf-8"))
     mplan = None
+    bplan = None
     if music.parse_script_music(sp):
         mplan = music.build_timeline(member, manifest, music.load_tracks_multi(member))
         seg_span = {s["index"]: (s["start"], s["start"] + s["dur"]) for s in mplan["segments"]}
         vol_total = float(mplan["total_duration"])
     else:
         seg_span = {}
+        starts = []
         t_acc = 0.0
         for s in manifest["segments"]:
+            starts.append(t_acc)
             dur = float(s["duration"])
             seg_span[s["index"]] = (t_acc, t_acc + dur)
             t_acc += dur
         vol_total = t_acc
-    return chapters.resolve_chapters(member, chap_spec, seg_span, mplan, vol_total, check_widths=False)
+        bplan = render._bgm_plan(member, vol_total, starts)
+    resolved = chapters.resolve_chapters(member, chap_spec, seg_span, mplan, vol_total, check_widths=False)
+    music_spans = chapters.collect_music_hud_spans(mplan, bplan, vol_total)
+    return resolved, music_spans
+
+
+def _resolve_member_chapters(member: Path):
+    return _resolve_member_hud_info(member)[0]
 
 
 def _prepare_hud_reburn(
@@ -870,7 +880,7 @@ def _prepare_hud_reburn(
     from . import chapters
 
     try:
-        resolved = _resolve_member_chapters(p.member)
+        resolved, music_spans = _resolve_member_hud_info(p.member)
         if resolved is None:
             return None
         tail_fade = TRIM_FADE_S if tail_cut else 0.0
@@ -894,9 +904,12 @@ def _prepare_hud_reburn(
         projected = chapters.project_chapters_to_kept(resolved, windows, seam=p.seam, tail_fade=tail_fade)
         if projected is None:
             return real_top, None, None
+        proj_music = chapters.project_music_spans_to_kept(
+            music_spans, windows, seam=p.seam, tail_fade=tail_fade,
+        )
         fonts_dir = chapters.verify_hud_fonts()
         hud_ass = work / f"part{idx}_hud.ass"
-        chapters.write_standalone_hud_ass(projected, hud_ass)
+        chapters.write_standalone_hud_ass(projected, hud_ass, music_spans=proj_music)
         return real_top, hud_ass, fonts_dir
     except (SystemExit, Exception) as exc:
         log(f"  ⚠ {p.name} 顶栏重算跳过：{exc}")

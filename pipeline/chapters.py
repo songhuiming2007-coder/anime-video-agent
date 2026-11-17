@@ -105,6 +105,15 @@ class ResolvedChapters:
     explicit_end: bool = False
 
 
+@dataclass(frozen=True)
+class MusicHudSpan:
+    """右上角「正在播放」歌名浮标的成片时间段。"""
+
+    title: str
+    start: float
+    end: float
+
+
 def ass_escape(text: str) -> str:
     """转义用户输入进 ASS 事件的语法字符，与 render._ass_escape 同口径。"""
     s = _ASS_NEWLINE.sub(" ", text).strip()
@@ -780,9 +789,234 @@ def hud_strip_height(video_height: int) -> int:
     return max(16, min(video_height, ((math.ceil(video_height * 96 / 1080) + 15) // 16) * 16))
 
 
-def write_standalone_hud_ass(resolved: ResolvedChapters, dest: Path) -> Path:
-    """写出仅含方案 C 顶栏的独立 ASS 文件（1920×1080 虚坐标，libass 按目标分辨率等比缩放）。"""
-    styles, events = build_hud_ass(resolved, 1920)
+def _clean_music_hud_title(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw.replace("\xa0", " ")).strip()
+
+
+def _resolve_avsync_music_title(block: dict) -> str | None:
+    disp = str(block.get("music_display") or "").strip()
+    if disp in ("无", "关"):
+        return None
+    if disp:
+        return _clean_music_hud_title(disp)
+    if block.get("src_subs", True):
+        return None
+    heading = _clean_music_hud_title(str(block.get("heading_title") or ""))
+    if not heading:
+        return None
+    if heading.endswith("原声") and len(heading) > 2:
+        heading = heading[:-2].strip()
+    return heading or None
+
+
+def _normalize_music_spans(raw_spans: list[tuple[float, float, str]]) -> tuple[MusicHudSpan, ...]:
+    items = sorted(
+        ((max(0.0, st), ed, _clean_music_hud_title(title)) for st, ed, title in raw_spans if ed > st + 0.05),
+        key=lambda x: (x[0], x[1]),
+    )
+    out: list[list] = []
+    for st, ed, title in items:
+        if not title:
+            continue
+        if out:
+            prev_st, prev_ed, prev_title = out[-1]
+            if title == prev_title and st - prev_ed <= 0.15:
+                out[-1][1] = max(prev_ed, ed)
+                continue
+            if st < prev_ed:
+                out[-1][1] = st
+        out.append([st, ed, title])
+    return tuple(MusicHudSpan(t, st, ed) for st, ed, t in out if ed - st >= 0.2)
+
+
+def collect_music_hud_spans(
+    music_plan: dict | None,
+    bgm_plan: list[tuple[dict, float, float]] | None,
+    total_duration: float,
+) -> tuple[MusicHudSpan, ...]:
+    """从试听时间轴或普通期 BGM 计划收集全片所有音乐播放区间的展示歌名。"""
+    raw: list[tuple[float, float, str]] = []
+    if music_plan is not None:
+        for tr in music_plan.get("tracks") or []:
+            track_name = str(tr.get("name") or "")
+            for ev in tr.get("events") or []:
+                disp = str(ev.get("music_display") or "").strip()
+                if disp in ("无", "关"):
+                    continue
+                title = disp or track_name
+                at = float(ev.get("at") or 0.0)
+                t0 = float(ev.get("t0") or 0.0)
+                t1 = float(ev.get("t1") if ev.get("t1") is not None else total_duration)
+                dur = max(0.0, t1 - t0)
+                if dur > 0.05:
+                    raw.append((at, min(total_duration, at + dur), title))
+        for blk in music_plan.get("blocks") or []:
+            if not blk.get("avsync"):
+                continue
+            title = _resolve_avsync_music_title(blk)
+            if title:
+                st = float(blk.get("start") or 0.0)
+                dur = float(blk.get("dur") or 0.0)
+                raw.append((st, min(total_duration, st + dur), title))
+    elif bgm_plan:
+        n = len(bgm_plan)
+        for i, (rec, start_s, offset_s) in enumerate(bgm_plan):
+            title = str(rec.get("title") or rec.get("name") or "")
+            eff_dur = max(0.0, float(rec.get("dur") or 0.0) - float(offset_s or 0.0))
+            if i == n - 1:
+                end_s = total_duration
+            else:
+                nxt_start = float(bgm_plan[i + 1][1])
+                end_s = nxt_start if nxt_start <= start_s + eff_dur else start_s + eff_dur
+            if end_s > start_s + 0.05:
+                raw.append((start_s, min(total_duration, end_s), title))
+    return _normalize_music_spans(raw)
+
+
+def project_music_spans_to_kept(
+    spans: tuple[MusicHudSpan, ...],
+    kept: list[tuple[float, float]],
+    *,
+    seam: float = 0.5,
+    tail_fade: float = 0.0,
+) -> tuple[MusicHudSpan, ...]:
+    """将卷成片的音乐播放区间映射到合集保留窗口输出时间轴。"""
+    if not spans or not kept:
+        return ()
+    n_win = len(kept)
+    raw: list[tuple[float, float, str]] = []
+    for sp in spans:
+        acc = 0.0
+        for idx, (a, c) in enumerate(kept):
+            rf = seam if idx + 1 < n_win else tail_fade
+            eff_hi = max(a, c - rf)
+            ov_st = max(sp.start, a)
+            ov_ed = min(sp.end, eff_hi)
+            if ov_ed - ov_st >= 0.2:
+                raw.append((acc + (ov_st - a), acc + (ov_ed - a), sp.title))
+            acc += c - a
+    return _normalize_music_spans(raw)
+
+
+def _estimate_music_text_px(text: str, font_size: int, fsp: float = 0.5) -> float:
+    """按 libass + Source Han Sans SC 实测像素宽估算右上角歌名浮标宽（纯标准库）。"""
+    if not text:
+        return 0.0
+    w = 0.0
+    for ch in text:
+        code = ord(ch)
+        if ch == " ":
+            w += 0.22
+        elif code > 0x2E80:
+            w += 0.72 if ch in "（）：·「」『』～" else 0.78
+        elif "A" <= ch <= "Z":
+            w += 0.48
+        elif "0" <= ch <= "9":
+            w += 0.42
+        elif "a" <= ch <= "z":
+            w += 0.36
+        else:
+            w += 0.35
+    return w * font_size + max(0, len(text) - 1) * fsp
+
+
+def build_music_hud_ass(
+    spans: tuple[MusicHudSpan, ...],
+    width: int = 1920,
+    *,
+    has_top_bar: bool = False,
+    font_name: str | None = None,
+) -> tuple[str, list[str]]:
+    """生成右上角「正在播放」歌名浮标的 ASS 样式与事件列表（显眼但不抢戏）。"""
+    sans_font = font_name or str(paths.conf("hud.sans_font", "Source Han Sans SC"))
+    styles = (
+        f"Style: HUD_MUSIC,{sans_font},19,&H00EEF4F7,&H60120E0B,&H80120E0B,0,0,0,0,100,100,0,0,1,0.4,0.8,4,0,0,0,1\n"
+        f"Style: HUD_DRAW,{sans_font},20,&H00EEF4F7,&H00120E0B,&H00120E0B,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
+    )
+    if not spans:
+        return styles, []
+
+    x_right = float(width) - (SIDE_PAD if has_top_bar else 40.0)
+    y0 = BAR_HEIGHT + 12.0 if has_top_bar else 32.0
+    pill_h = 30.0
+    y1 = y0 + pill_h
+    mid_y = (y0 + y1) / 2.0
+    pad_l = 14.0
+    note_gap = 20.0
+    pad_r = 15.0
+    max_pill_w = min(640.0, float(width) * 0.36)
+    max_text_w = max(80.0, max_pill_w - pad_l - note_gap - pad_r)
+
+    events: list[str] = []
+    for sp in spans:
+        dur_ms = max(1, round((sp.end - sp.start) * 1000))
+        fad_ms = min(350, max(60, dur_ms // 4))
+        fad_tag = f"\\fad({fad_ms},{fad_ms})"
+        display_title = sp.title
+        while len(display_title) > 1 and _estimate_music_text_px(display_title + "…", 19, 0.5) > max_text_w:
+            display_title = display_title[:-1]
+        if display_title != sp.title:
+            display_title += "…"
+        text_w = _estimate_music_text_px(display_title, 19, 0.5)
+        pill_w = min(max_pill_w, pad_l + note_gap + text_w + pad_r)
+        x0 = x_right - pill_w
+
+        # 磨砂深色底卡 + 左侧细金线点缀（与方案 C 顶栏同一色板）
+        events.append(_rect_evt(
+            11, sp.start, sp.end, x0, y0, x_right, y1,
+            C_BAR_BG, alpha="4E", extra_tags=fad_tag,
+        ))
+        events.append(_rect_evt(
+            12, sp.start, sp.end, x0, y0, x0 + 3.0, y1,
+            C_GOLD, alpha="10", extra_tags=fad_tag,
+        ))
+        events.append(_text_evt(
+            13, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + 5.0, mid_y + 0.5, "♪",
+            size=17, color=C_GOLD, alpha="0E", fsp=0.0, an=5, bord=0.0, shad=0.5,
+            bold=0, extra_tags=fad_tag,
+        ))
+        events.append(_text_evt(
+            14, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + note_gap, mid_y, display_title,
+            size=19, color=C_WHITE, alpha="0C", fsp=0.5, an=4, bord=0.3, shad=0.8,
+            bold=0, extra_tags=fad_tag,
+        ))
+    return styles, events
+
+
+def merge_hud_parts(*parts: tuple[str, list[str]] | None) -> tuple[str, list[str]] | None:
+    """合并多个 ASS HUD 片段（按 Style 名去重，事件顺次拼接）。"""
+    style_lines: list[str] = []
+    seen_styles: set[str] = set()
+    events: list[str] = []
+    for part in parts:
+        if part is None:
+            continue
+        styles_raw, evs = part
+        for ln in styles_raw.splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            name = s.split(":", 1)[1].split(",", 1)[0].strip() if ":" in s else s
+            if name not in seen_styles:
+                seen_styles.add(name)
+                style_lines.append(s)
+        events.extend(evs)
+    if not style_lines and not events:
+        return None
+    return ("\n".join(style_lines) + ("\n" if style_lines else "")), events
+
+
+def write_standalone_hud_ass(
+    resolved: ResolvedChapters,
+    dest: Path,
+    *,
+    music_spans: tuple[MusicHudSpan, ...] = (),
+) -> Path:
+    """写出仅含方案 C 顶栏（及可选右上角歌名浮标）的独立 ASS 文件。"""
+    chap_part = build_hud_ass(resolved, 1920)
+    music_part = build_music_hud_ass(music_spans, 1920, has_top_bar=True) if music_spans else None
+    merged = merge_hud_parts(chap_part, music_part)
+    styles, events = merged if merged is not None else ("", [])
     content = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"

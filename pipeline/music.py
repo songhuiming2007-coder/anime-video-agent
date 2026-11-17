@@ -64,6 +64,9 @@ _STATUS_BGM = re.compile(r"^状态[：:]\s*背景铺底", re.M)
 # 铺底块的时间行：`音乐: `曲名` 完整版 MM:SS`（只写起点，覆盖到下一个音乐段）；
 # 也允许 `MM:SS-MM:SS` 显式封顶（封顶是明示意图，截断留空隙不算静默失败）。
 _BGM_TIME = re.compile(r"`(.+?)`.+?(\d+):(\d{2})(?:-(?:(\d+):(\d{2})|结束))?\s*$", re.M)
+# 可选展示歌名覆盖（主要用于音画同源试看块：`曲名: 六等星の夜` 或 `曲名: 无`）
+_MUSIC_DISPLAY = re.compile(r"^曲名[：:]\s*(.+?)\s*$", re.M)
+_HEADING_WITH_TITLE = re.compile(r"^##\s*音乐段\s*(\S+)(?:[ \t]*[·:：][ \t]*(.+?))?[ \t]*$", re.M)
 
 
 @dataclass
@@ -79,6 +82,8 @@ class MusicBlock:
     avsync: str | None = None  # 形态 2 源片标签（如 "EGOIST SP04"）；None = 形态 1 CD 试听
     bgm_only: bool = False     # True = 背景铺底块（零时长，只产 BGM 事件与边界）
     src_subs: bool = True      # D86：同源块是否配原片字幕（`原声字幕: 关` → False；SP 源片渲染时本来就不配）
+    heading_title: str | None = None   # 标题 `·` 后的副题（供未写 `曲名:` 的同源音乐块兜底）
+    music_display: str | None = None   # 显式 `曲名:` 覆盖（「无/关」表示隐藏右上角浮标）
 
 
 def _to_sec(m: int, s: str) -> float:
@@ -137,10 +142,13 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
     """
     text = path.read_text(encoding="utf-8")
     blocks: list[MusicBlock] = []
-    for m in re.finditer(r"^##\s*音乐段\s*(\S+)", text, re.M):
+    for m in _HEADING_WITH_TITLE.finditer(text):
         nxt_m = re.search(r"\n(?:##\s+|###\s*子节)", text[m.end():])
         nxt = m.end() + nxt_m.start() if nxt_m else -1
         body = text[m.end():nxt] if nxt != -1 else text[m.end():]
+        heading_title = m.group(2).strip() if m.group(2) else None
+        disp_m = _MUSIC_DISPLAY.search(body)
+        music_display = disp_m.group(1).strip() if disp_m else None
 
         if _STATUS_BGM.search(body):
             # 背景铺底块：无前景、零时长，只声明「从这里起铺哪首到哪」。
@@ -162,7 +170,9 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
                 raise SystemExit(
                     f"FAIL 音乐段 {m.group(1)}（背景铺底）时间区间为空：{t0:.2f}-{t1:.2f}s")
             blocks.append(MusicBlock(m.group(1), tm.group(1), t0, t1, "bgm",
-                                     None, bgm_only=True))
+                                     None, bgm_only=True,
+                                     heading_title=heading_title,
+                                     music_display=music_display))
             continue
 
         trans = _TRANSITION.search(body)
@@ -218,7 +228,9 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
                 src_subs = val == "开"
             blocks.append(MusicBlock(m.group(1), av.group(1).strip(),
                                      t0, t1, after, None,
-                                     avsync=av.group(1).strip(), src_subs=src_subs))
+                                     avsync=av.group(1).strip(), src_subs=src_subs,
+                                     heading_title=heading_title,
+                                     music_display=music_display))
             continue
 
         title_m = _TITLE_ONLY.search(body)
@@ -235,7 +247,8 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
         t1 = None if tm.group(4) is None else (
             _to_sec(int(tm.group(4)), tm.group(5)))
         blocks.append(MusicBlock(m.group(1), title_m.group(1), t0, t1, after,
-                                 visual))
+                                 visual, heading_title=heading_title,
+                                 music_display=music_display))
     return blocks
 
 
@@ -338,7 +351,8 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                 timeline.append({"kind": "music", "bgm_only": True,
                                  "label": label, "title": b.title,
                                  "t0": b.t0, "t1": b.t1,
-                                 "dur": 0.0, "start": t})
+                                 "dur": 0.0, "start": t,
+                                 "music_display": b.music_display})
                 continue
             if b.avsync:
                 # 形态 2：不查 CD 曲库（源片不在 bgm.json），越界由 render 切片的
@@ -348,6 +362,8 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                                  "dur": b.t1 - b.t0,
                                  "after": b.after, "visual": b.visual,
                                  "avsync": b.avsync, "src_subs": b.src_subs,
+                                 "heading_title": b.heading_title,
+                                 "music_display": b.music_display,
                                  "start": t})
                 t += b.t1 - b.t0
                 continue
@@ -362,6 +378,7 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                              "title": b.title, "t0": b.t0, "t1": t1,
                              "dur": t1 - b.t0,
                              "after": b.after, "visual": b.visual,
+                             "music_display": b.music_display,
                              "start": t})
             t += t1 - b.t0
 
@@ -406,8 +423,11 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                     dur_ = min(dur_, it["t1"] - pos_)
                 if dur_ <= 1e-6:
                     continue
-                evs.append({"t0": pos_, "t1": pos_ + dur_, "vol": "bgm",
-                            "at": at_, "underlay": True})
+                ev_item: dict = {"t0": pos_, "t1": pos_ + dur_, "vol": "bgm",
+                                 "at": at_, "underlay": True}
+                if it.get("music_display"):
+                    ev_item["music_display"] = it["music_display"]
+                evs.append(ev_item)
             continue
         if it.get("avsync"):
             # 形态 2 只占时间槽，不进曲目事件序列——它的声音来自源片原声切片，
@@ -418,7 +438,8 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
             order.append(title)
         evs = track_evs.setdefault(title, [])
         t0, t1 = it["t0"], it["t1"]
-        evs.append({"t0": t0, "t1": t1, "vol": "foreground", "at": it["start"]})
+        disp_extra = {"music_display": it["music_display"]} if it.get("music_display") else {}
+        evs.append({"t0": t0, "t1": t1, "vol": "foreground", "at": it["start"], **disp_extra})
         if it["after"] == "bgm":
             # BGM 从前景结束点继续，覆盖到**下一个真正的音乐段开始**
             # （BGM 是给旁白让路的铺底，旁白段落之间由下一个音乐段接管）。
@@ -427,10 +448,10 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
             for at_, pos_, dur_ in _lets_way(it["start"] + (t1 - t0), nxt_start,
                                              t1, slots):
                 evs.append({"t0": pos_, "t1": pos_ + dur_, "vol": "bgm",
-                            "at": at_})
+                            "at": at_, **disp_extra})
         elif it["after"] == "end":
             evs.append({"t0": t1, "t1": None, "vol": "natural",
-                        "at": it["start"] + (t1 - t0)})
+                        "at": it["start"] + (t1 - t0), **disp_extra})
 
     for title, at, ovis in naturals:
         if title not in order:
@@ -523,7 +544,11 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                        if it.get("avsync") else {}),
                     # D86：只在关掉时带键——默认开，旧期的计划字典逐键不变
                     **({"src_subs": False}
-                       if it.get("avsync") and not it.get("src_subs", True) else {})}
+                       if it.get("avsync") and not it.get("src_subs", True) else {}),
+                    **({"heading_title": it["heading_title"]}
+                       if it.get("avsync") and it.get("heading_title") else {}),
+                    **({"music_display": it["music_display"]}
+                       if it.get("music_display") else {})}
                    for it in timeline if it["kind"] == "music"
                    and not it.get("bgm_only")],
         "tracks": tracks,

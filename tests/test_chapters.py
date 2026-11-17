@@ -425,3 +425,148 @@ class TestRealFfmpegHudRender:
         band = arr[40:44, :, :]
         gold_mask = (band[:, :, 0].astype(int) > 180) & (band[:, :, 0].astype(int) - band[:, :, 2].astype(int) > 80)
         assert gold_mask.any()
+
+
+class TestMusicHud:
+    def test_collect_music_hud_spans_for_music_plan_and_bgm_plan(self):
+        # 1. 试听型：同曲连续 foreground→bgm→natural 合并；avsync 按 src_subs/heading_title/曲名 过滤
+        music_plan = {
+            "total_duration": 100.0,
+            "tracks": [
+                {
+                    "name": "Poker Face",
+                    "events": [
+                        {"at": 20.0, "t0": 10.0, "t1": 30.0, "vol": "foreground"},
+                        {"at": 40.0, "t0": 30.0, "t1": 55.0, "vol": "bgm"},
+                    ],
+                },
+                {
+                    "name": "Planetes",
+                    "events": [
+                        {"at": 75.0, "t0": 0.0, "t1": 25.0, "vol": "natural"},
+                    ],
+                },
+            ],
+            "blocks": [
+                {"label": "M1", "start": 0.0, "dur": 15.0, "avsync": "Aimer SP02",
+                 "src_subs": False, "heading_title": "六等星の夜原声"},
+                {"label": "M2", "start": 65.0, "dur": 10.0, "avsync": "伪恋 S01E07"},  # src_subs 默认 True → 对白试看不画歌名
+                {"label": "M3", "start": 15.0, "dur": 5.0, "avsync": "Aimer SP21",
+                 "src_subs": False, "heading_title": "节电短片原声", "music_display": "六等星の夜（短片版）"},
+            ],
+        }
+        spans = ch.collect_music_hud_spans(music_plan, None, 100.0)
+        assert [(s.title, s.start, s.end) for s in spans] == [
+            ("六等星の夜", 0.0, 15.0),
+            ("六等星の夜（短片版）", 15.0, 20.0),
+            ("Poker Face", 20.0, 65.0),
+            ("Planetes", 75.0, 100.0),
+        ]
+
+        # 2. 普通期 BGM：按衔接/自然结束推算展示窗口
+        bgm_plan = [
+            ({"name": "繋ぎとめた世界", "dur": 50.0}, 1.0, 0.0),
+            ({"name": "春擬き", "dur": 60.0}, 60.0, 10.0),
+        ]
+        bgm_spans = ch.collect_music_hud_spans(None, bgm_plan, 120.0)
+        assert [(s.title, s.start, s.end) for s in bgm_spans] == [
+            ("繋ぎとめた世界", 1.0, 51.0),
+            ("春擬き", 60.0, 120.0),
+        ]
+
+    def test_music_block_optional_title_override_and_suppression(self, tmp_path: Path):
+        from pipeline import music as music_mod
+
+        sc = tmp_path / "02-script.md"
+        sc.write_text(
+            "## 音乐段 M1 · 六等星の夜原声\n\n"
+            "源片原声: `Aimer SP02` 00:00-00:10.00\n"
+            "状态: 前景试听，旁白停止\n"
+            "音画同源: 是\n"
+            "过渡: 淡出\n"
+            "画面: 同源\n"
+            "原声字幕: 关\n"
+            "曲名: 六等星の夜\n\n"
+            "## 音乐段 M2 · 访谈片段\n\n"
+            "源片原声: `Aimer SP05` 00:00-00:05.00\n"
+            "状态: 前景试听，旁白停止\n"
+            "音画同源: 是\n"
+            "过渡: 淡出\n"
+            "画面: 同源\n"
+            "原声字幕: 关\n"
+            "曲名: 无\n\n"
+            "## 段落 1\n\n配音：测试。\n",
+            encoding="utf-8",
+        )
+        blocks = music_mod.parse_script_music(sc)
+        assert blocks[0].music_display == "六等星の夜"
+        assert blocks[1].music_display == "无"
+
+        plan = music_mod.build_timeline(tmp_path, {"segments": [{"index": 1, "duration": 2.0}]}, {"tracks": {}}, script=sc)
+        spans = ch.collect_music_hud_spans(plan, None, plan["total_duration"])
+        assert [(s.title, s.start, s.end) for s in spans] == [("六等星の夜", 0.0, 10.0)]
+
+    def test_project_music_spans_and_merge_hud_dedup(self, tmp_path: Path):
+        spans = (
+            ch.MusicHudSpan("Song A", 0.0, 20.0),
+            ch.MusicHudSpan("Song B", 25.0, 40.0),
+        )
+        projected = ch.project_music_spans_to_kept(spans, [(5.0, 15.0), (22.0, 35.0)], seam=0.5, tail_fade=0.5)
+        # [5, 14.5) 映到 [0, 9.5)；[22, 34.5) 与 [25, 40) 交集 [25, 34.5) 映到 [13.0, 22.5)
+        assert len(projected) == 2
+        assert projected[0] == ch.MusicHudSpan("Song A", 0.0, 9.5)
+        assert projected[1] == ch.MusicHudSpan("Song B", 13.0, 22.5)
+
+        resolved = ch.ResolvedChapters(
+            chapters=(ch.ResolvedChapter("序幕", 0.0, 10.0),),
+            badge=None,
+            bar_end=10.0,
+            total_duration=10.0,
+        )
+        out = ch.write_standalone_hud_ass(resolved, tmp_path / "hud.ass", music_spans=(ch.MusicHudSpan("Song A", 0.0, 10.0),))
+        text = out.read_text(encoding="utf-8")
+        assert text.count("Style: HUD_DRAW,") == 1
+        assert "Style: HUD_MUSIC," in text and "Song A" in text
+
+    @needs_ffmpeg
+    def test_libass_music_hud_renders_top_right_and_clears_after_end(self, tmp_path: Path):
+        merged = ch.merge_hud_parts(
+            ch.build_music_hud_ass((ch.MusicHudSpan("六等星の夜", 0.0, 1.5),), 1920, has_top_bar=True),
+        )
+        ass_path = render.build_ass(
+            [{"index": 1, "duration": 3.0}],
+            [{"text": "测试。", "sentences": None}],
+            tmp_path / "vo.ass",
+            hud=merged,
+        )
+        fonts_dir = paths.ROOT / "data" / "fonts"
+        vf = f"ass={ass_path.name}"
+        if fonts_dir.is_dir():
+            (tmp_path / "_fonts").symlink_to(fonts_dir.resolve())
+            vf = f"ass={ass_path.name}:fontsdir=_fonts"
+        out_mp4 = tmp_path / "out.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=24:d=3.0",
+                "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out_mp4),
+            ],
+            check=True, cwd=tmp_path,
+        )
+
+        def top_right_gold_and_max(ts: float) -> tuple[bool, int]:
+            png = tmp_path / f"m_{ts:.2f}.png"
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                 "-ss", f"{ts:.2f}", "-i", str(out_mp4), "-frames:v", "1", str(png)],
+                check=True,
+            )
+            arr = np.asarray(Image.open(png).convert("RGB"))
+            roi = arr[54:90, 1600:1910, :]
+            gold = ((roi[:, :, 0].astype(int) > 160) & (roi[:, :, 0].astype(int) - roi[:, :, 2].astype(int) > 60)).any()
+            return bool(gold), int(roi.max())
+
+        has_gold_on, max_on = top_right_gold_and_max(0.8)
+        has_gold_off, max_off = top_right_gold_and_max(2.5)
+        assert has_gold_on is True and max_on > 180
+        assert has_gold_off is False and max_off < 15
