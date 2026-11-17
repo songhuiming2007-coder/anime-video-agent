@@ -933,11 +933,11 @@ class TestSmartSplice:
                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:d=28.0",
                *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
                "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "48000", str(raw_v1))
-        ffmpeg("-i", str(raw_v1), "-vf", "crop=640:32:0:0", "-an",
+        ffmpeg("-i", str(raw_v1), "-vf", "crop=640:48:0:0", "-an",
                *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
                "-r", "24000/1001", str(v1 / "_agent" / "hud_clean_top.mp4"))
         ffmpeg("-i", str(raw_v1),
-               "-vf", "drawbox=x=0:y=0:w=640:h=16:color=red@1.0:t=fill,drawbox=x=100:y=300:w=440:h=30:color=green@1.0:t=fill",
+               "-vf", "drawbox=x=0:y=0:w=640:h=24:color=red@1.0:t=fill,drawbox=x=100:y=300:w=440:h=30:color=green@1.0:t=fill",
                *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
                "-r", "24000/1001", "-c:a", "copy", str(v1 / "05-final.mp4"))
         raw_v1.unlink()
@@ -962,7 +962,7 @@ class TestSmartSplice:
                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:d=26.0",
                *asm.TRIM_VIDEO_ARGS, "-g", "24", "-pix_fmt", "yuv420p", "-color_range", "tv",
                "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "48000", "-shortest", str(v2 / "05-final.mp4"))
-        ffmpeg("-i", str(v2 / "05-final.mp4"), "-vf", "crop=640:32:0:0", "-an",
+        ffmpeg("-i", str(v2 / "05-final.mp4"), "-vf", "crop=640:48:0:0", "-an",
                *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
                "-r", "24000/1001", str(v2 / "_agent" / "hud_clean_top.mp4"))
         make_cover(v2 / "08-cover.jpg")
@@ -992,16 +992,16 @@ class TestSmartSplice:
         chk = c / "work" / "reburn_check.png"
         ffmpeg("-ss", "9.0", "-i", str(c / "05-final.mp4"), "-frames:v", "1", str(chk))
         arr = np.asarray(Image.open(chk).convert("RGB"))
-        top_band = arr[0:16, :, :]
+        top_band = arr[0:24, :, :]
         # 原先纯红旧顶栏 (R>200, G<40, B<40) 应已完全清除
         red_mask = (top_band[:, :, 0] > 200) & (top_band[:, :, 1] < 40) & (top_band[:, :, 2] < 40)
         assert not red_mask.any()
-        # 底部绿色字幕块完好保留，且净条带下半（y=20）还原为原蓝底
+        # 底部绿色字幕块完好保留，且净条带下半（y=36）还原为原蓝底
         sub_px = arr[315, 320]
         assert int(sub_px[1]) > 100 and int(sub_px[0]) < 40
-        assert int(arr[20, 320][2]) > 120 and int(arr[20, 320][0]) < 40
+        assert int(arr[36, 320][2]) > 120 and int(arr[36, 320][0]) < 40
         # 新暖金条像素存在（640x360 1/3 缩放 + yuv420p 色度亚采样下仍呈显著 R>B 暖金色）
-        gold_band = arr[12:16, :, :]
+        gold_band = arr[19:22, :, :]
         gold_mask = (gold_band[:, :, 0].astype(int) > 150) & (gold_band[:, :, 0].astype(int) - gold_band[:, :, 2].astype(int) > 15)
         assert gold_mask.any()
 

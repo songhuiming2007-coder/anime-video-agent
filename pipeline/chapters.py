@@ -14,15 +14,15 @@ from pathlib import Path
 from . import paths, project
 
 DEFAULT_MAX_CHAPTERS = 8
-BAR_HEIGHT = 44.0
+BAR_HEIGHT = 64.0
 SIDE_PAD = 24.0
-BADGE_TRACK_START = 190.0
-BADGE_X = 92.0
-BADGE_DIVIDER_X = 180.0
+BADGE_TRACK_START = 252.0
+BADGE_X = 122.0
+BADGE_DIVIDER_X = 240.0
 SLOT_GAP = 3.0
-MIN_SLOT_WIDTH = 72.0
-MIN_RENDER_SLOT_W = 64.0
-MAX_BADGE_PX = 164.0
+MIN_SLOT_WIDTH = 90.0
+MIN_RENDER_SLOT_W = 80.0
+MAX_BADGE_PX = 228.0
 MAX_SUB_TITLE_PX = 1200.0
 
 # 方案 C 配色（ASS &HBBGGRR）
@@ -373,7 +373,7 @@ def resolve_badge(episode: Path) -> str | None:
                 badge = f"[ VOL.{seq:02d} ]"
 
     if badge is not None:
-        px = estimate_text_px(badge, 20, fsp=1.2, bold=True)
+        px = estimate_text_px(badge, 28, fsp=1.2, bold=True)
         if px > MAX_BADGE_PX:
             raise SystemExit(
                 f"FAIL 进度条铭牌「{badge}」过宽（约 {px:.0f}px > 上限 {MAX_BADGE_PX:.0f}px），会侵入章节轨"
@@ -405,23 +405,25 @@ def estimate_text_px(text: str, font_size: int, fsp: float = 0.5, *, bold: bool 
 
 
 def slot_font_size(slot_w: float) -> int:
-    """顶栏单格字号（下限钉死 16px，绝不退化成不可读小字）。"""
-    if slot_w >= 180.0:
-        return 21
-    if slot_w >= 135.0:
-        return 18
-    return 16
+    """顶栏单格字号（兼顾桌面与手机可读性，下限钉死 22px）。"""
+    if slot_w >= 260.0:
+        return 31
+    if slot_w >= 195.0:
+        return 28
+    if slot_w >= 145.0:
+        return 25
+    return 22
 
 
 def validate_sub_titles(chapters: tuple[ChapterSpecItem, ...] | tuple[ResolvedChapter, ...]) -> list[str]:
-    """检查子节左下角悬浮标签在 22px 粗体下是否过长。"""
+    """检查子节左上角悬浮标签在 30px 粗体下是否过长。"""
     violations: list[str] = []
     for ch in chapters:
         for sub in ch.subs:
-            px = estimate_text_px(sub.title, 22, fsp=1.0, bold=True)
+            px = estimate_text_px(sub.title, 30, fsp=1.0, bold=True)
             if px > MAX_SUB_TITLE_PX:
                 violations.append(
-                    f"子节「{sub.title}」在 22px 粗体下约宽 {px:.0f}px > 上限 {MAX_SUB_TITLE_PX:.0f}px，可能超出画面"
+                    f"子节「{sub.title}」在 30px 粗体下约宽 {px:.0f}px > 上限 {MAX_SUB_TITLE_PX:.0f}px，可能超出画面"
                 )
     return violations
 
@@ -646,8 +648,8 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
     sans_font = str(paths.conf("hud.sans_font", "Source Han Sans SC"))
     serif_font = str(paths.conf("hud.serif_font", "Songti SC"))
     styles = (
-        f"Style: HUD_SANS,{sans_font},20,&H00EEF4F7,&H60120E0B,&H80120E0B,-1,0,0,0,100,100,0,0,1,0.8,0.8,5,0,0,0,1\n"
-        f"Style: HUD_SERIF,{serif_font},21,&H00EEF4F7,&H55120E0B,&H85120E0B,-1,0,0,0,100,100,0,0,1,0.8,0.8,5,0,0,0,1\n"
+        f"Style: HUD_SANS,{sans_font},28,&H00EEF4F7,&H60120E0B,&H80120E0B,-1,0,0,0,100,100,0,0,1,0.9,0.9,5,0,0,0,1\n"
+        f"Style: HUD_SERIF,{serif_font},29,&H00EEF4F7,&H55120E0B,&H85120E0B,-1,0,0,0,100,100,0,0,1,0.9,0.9,5,0,0,0,1\n"
         f"Style: HUD_DRAW,{sans_font},20,&H00EEF4F7,&H00120E0B,&H00120E0B,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
     )
 
@@ -666,11 +668,11 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
     ]
     if resolved.badge:
         events.append(_text_evt(
-            13, "HUD_SANS", bar_start, bar_end, BADGE_X, 22, resolved.badge,
-            size=20, color=C_GOLD, alpha="08", fsp=1.2, an=5, bord=0.8, shad=0.5, extra_tags=base_fad,
+            13, "HUD_SANS", bar_start, bar_end, BADGE_X, 32, resolved.badge,
+            size=28, color=C_GOLD, alpha="08", fsp=1.2, an=5, bord=1.0, shad=0.8, extra_tags=base_fad,
         ))
         events.append(_rect_evt(
-            12, bar_start, bar_end, BADGE_DIVIDER_X, 9, BADGE_DIVIDER_X + 1.5, BAR_HEIGHT - 9,
+            12, bar_start, bar_end, BADGE_DIVIDER_X, 12, BADGE_DIVIDER_X + 2.0, BAR_HEIGHT - 12,
             C_WHITE, alpha="B8", extra_tags=base_fad,
         ))
 
@@ -701,9 +703,13 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
     for idx in range(n - 1):
         _, sx1 = slots[idx]
         events.append(_rect_evt(
-            12, bar_start, bar_end, sx1 + 1.0, 11, sx1 + 2.0, BAR_HEIGHT - 11,
+            12, bar_start, bar_end, sx1 + 1.0, 15, sx1 + 2.5, BAR_HEIGHT - 15,
             C_WHITE, alpha="C6", extra_tags=base_fad,
         ))
+
+    prog_h = 5.0
+    clip_y0 = round(BAR_HEIGHT - prog_h - 1.0)
+    clip_y1 = round(BAR_HEIGHT + 1.0)
 
     for cur_idx, cur_ch in enumerate(chaps):
         t0, t1 = cur_ch.start, cur_ch.end
@@ -722,15 +728,15 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
                 active_title = _fit_title_to_slot(ch.title, sw, fs, fsp, bold=True)
                 events.append(_rect_evt(11, t0, t1, sx0, 1, sx1, BAR_HEIGHT - 1, C_WHITE, alpha="E8", extra_tags=win_fad))
                 events.append(_text_evt(
-                    14, "HUD_SERIF", t0, t1, mid, 21, active_title,
-                    size=fs, color=C_WHITE, alpha="00", fsp=fsp, an=5, bord=0.8, shad=0.8, bold=900, extra_tags=win_fad,
+                    14, "HUD_SERIF", t0, t1, mid, 30, active_title,
+                    size=fs, color=C_WHITE, alpha="00", fsp=fsp, an=5, bord=1.0, shad=0.9, bold=900, extra_tags=win_fad,
                 ))
                 if not ch.subs:
-                    events.append(_rect_evt(12, t0, t1, sx0, BAR_HEIGHT - 4.0, sx1, BAR_HEIGHT, C_WHITE, alpha="CA", extra_tags=win_fad))
+                    events.append(_rect_evt(12, t0, t1, sx0, BAR_HEIGHT - prog_h, sx1, BAR_HEIGHT, C_WHITE, alpha="CA", extra_tags=win_fad))
                     dur_ms = max(1, round((t1 - t0) * 1000))
                     ix0, ix1 = round(sx0), round(sx1)
-                    clip_anim = f"\\clip({ix0},39,{ix0},45)\\t(0,{dur_ms},\\clip({ix0},39,{ix1},45))"
-                    events.append(_rect_evt(13, t0, t1, sx0, BAR_HEIGHT - 4.0, sx1, BAR_HEIGHT, C_GOLD, alpha="00", extra_tags=clip_anim + win_fad))
+                    clip_anim = f"\\clip({ix0},{clip_y0},{ix0},{clip_y1})\\t(0,{dur_ms},\\clip({ix0},{clip_y0},{ix1},{clip_y1}))"
+                    events.append(_rect_evt(13, t0, t1, sx0, BAR_HEIGHT - prog_h, sx1, BAR_HEIGHT, C_GOLD, alpha="00", extra_tags=clip_anim + win_fad))
                 else:
                     sub_gap = 3.0
                     m_subs = len(ch.subs)
@@ -750,43 +756,43 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
                         sfad = f"\\fad({s_fad_in},{s_fad_out})" if (s_fad_in or s_fad_out) else ""
                         for k_idx, (bx0, bx1) in enumerate(sub_boxes):
                             if k_idx < s_idx:
-                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - 4.0, bx1, BAR_HEIGHT, C_WHITE, alpha="55", extra_tags=sfad))
+                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - prog_h, bx1, BAR_HEIGHT, C_WHITE, alpha="55", extra_tags=sfad))
                             elif k_idx == s_idx:
-                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - 4.0, bx1, BAR_HEIGHT, C_WHITE, alpha="B8", extra_tags=sfad))
+                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - prog_h, bx1, BAR_HEIGHT, C_WHITE, alpha="B8", extra_tags=sfad))
                                 sdur_ms = max(1, round((st1 - st0) * 1000))
                                 ibx0, ibx1 = round(bx0), round(bx1)
-                                sclip = f"\\clip({ibx0},39,{ibx0},45)\\t(0,{sdur_ms},\\clip({ibx0},39,{ibx1},45))"
-                                events.append(_rect_evt(14, st0, st1, bx0, BAR_HEIGHT - 4.0, bx1, BAR_HEIGHT, C_GOLD, alpha="00", extra_tags=sclip + sfad))
+                                sclip = f"\\clip({ibx0},{clip_y0},{ibx0},{clip_y1})\\t(0,{sdur_ms},\\clip({ibx0},{clip_y0},{ibx1},{clip_y1}))"
+                                events.append(_rect_evt(14, st0, st1, bx0, BAR_HEIGHT - prog_h, bx1, BAR_HEIGHT, C_GOLD, alpha="00", extra_tags=sclip + sfad))
                             else:
-                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - 4.0, bx1, BAR_HEIGHT, C_WHITE, alpha="C2", extra_tags=sfad))
+                                events.append(_rect_evt(13, st0, st1, bx0, BAR_HEIGHT - prog_h, bx1, BAR_HEIGHT, C_WHITE, alpha="C2", extra_tags=sfad))
 
                         sub_fade = f"\\fad({s_fad_in or 200},{s_fad_out or 200})"
                         events.extend(_glow_text_evts(
-                            14, "HUD_SANS", st0, st1, 44.0, BAR_HEIGHT + 14.0, sub.title,
-                            size=22, fsp=1.0, fade_tags=sub_fade,
+                            14, "HUD_SANS", st0, st1, 32.0, BAR_HEIGHT + 18.0, sub.title,
+                            size=30, fsp=1.0, fade_tags=sub_fade,
                         ))
             elif j < cur_idx:
-                dim_fs = max(14, fs - 2)
+                dim_fs = max(20, fs - 3)
                 dim_title = _fit_title_to_slot(ch.title, sw, dim_fs, 0.5, bold=False)
-                events.append(_rect_evt(12, t0, t1, sx0, BAR_HEIGHT - 2.0, sx1, BAR_HEIGHT, C_WHITE, alpha="88", extra_tags=win_fad))
+                events.append(_rect_evt(12, t0, t1, sx0, BAR_HEIGHT - 2.5, sx1, BAR_HEIGHT, C_WHITE, alpha="88", extra_tags=win_fad))
                 events.append(_text_evt(
-                    14, "HUD_SANS", t0, t1, mid, 21, dim_title,
-                    size=dim_fs, color=C_SUBTLE, alpha="48", fsp=0.5, an=5, bord=0.6, shad=0.5, bold=0, extra_tags=win_fad,
+                    14, "HUD_SANS", t0, t1, mid, 30, dim_title,
+                    size=dim_fs, color=C_SUBTLE, alpha="48", fsp=0.5, an=5, bord=0.8, shad=0.7, bold=0, extra_tags=win_fad,
                 ))
             else:
-                dim_fs = max(14, fs - 2)
+                dim_fs = max(20, fs - 3)
                 dim_title = _fit_title_to_slot(ch.title, sw, dim_fs, 0.5, bold=False)
                 events.append(_text_evt(
-                    14, "HUD_SANS", t0, t1, mid, 21, dim_title,
-                    size=dim_fs, color=C_SUBTLE, alpha="7C", fsp=0.5, an=5, bord=0.6, shad=0.5, bold=0, extra_tags=win_fad,
+                    14, "HUD_SANS", t0, t1, mid, 30, dim_title,
+                    size=dim_fs, color=C_SUBTLE, alpha="7C", fsp=0.5, an=5, bord=0.8, shad=0.7, bold=0, extra_tags=win_fad,
                 ))
 
     return styles, events
 
 
 def hud_strip_height(video_height: int) -> int:
-    """计算需留存的顶部净画面条带像素高度（1080p → 96px，按 16 像素对齐）。"""
-    return max(16, min(video_height, ((math.ceil(video_height * 96 / 1080) + 15) // 16) * 16))
+    """计算需留存的顶部净画面条带像素高度（1080p → 128px，按 16 像素对齐）。"""
+    return max(16, min(video_height, ((math.ceil(video_height * 128 / 1080) + 15) // 16) * 16))
 
 
 def _clean_music_hud_title(raw: str) -> str:
@@ -930,21 +936,21 @@ def build_music_hud_ass(
     """生成右上角「正在播放」歌名浮标的 ASS 样式与事件列表（显眼但不抢戏）。"""
     sans_font = font_name or str(paths.conf("hud.sans_font", "Source Han Sans SC"))
     styles = (
-        f"Style: HUD_MUSIC,{sans_font},19,&H00EEF4F7,&H60120E0B,&H80120E0B,0,0,0,0,100,100,0,0,1,0.4,0.8,4,0,0,0,1\n"
+        f"Style: HUD_MUSIC,{sans_font},28,&H00EEF4F7,&H60120E0B,&H80120E0B,0,0,0,0,100,100,0,0,1,0.5,1.0,4,0,0,0,1\n"
         f"Style: HUD_DRAW,{sans_font},20,&H00EEF4F7,&H00120E0B,&H00120E0B,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
     )
     if not spans:
         return styles, []
 
-    x_right = float(width) - (SIDE_PAD if has_top_bar else 40.0)
-    y0 = BAR_HEIGHT + 12.0 if has_top_bar else 32.0
-    pill_h = 30.0
+    x_right = float(width) - (SIDE_PAD if has_top_bar else 36.0)
+    y0 = BAR_HEIGHT + 12.0 if has_top_bar else 30.0
+    pill_h = 44.0
     y1 = y0 + pill_h
     mid_y = (y0 + y1) / 2.0
-    pad_l = 14.0
-    note_gap = 20.0
-    pad_r = 15.0
-    max_pill_w = min(640.0, float(width) * 0.36)
+    pad_l = 16.0
+    note_gap = 30.0
+    pad_r = 18.0
+    max_pill_w = min(840.0, float(width) * 0.44)
     max_text_w = max(80.0, max_pill_w - pad_l - note_gap - pad_r)
 
     events: list[str] = []
@@ -953,11 +959,11 @@ def build_music_hud_ass(
         fad_ms = min(350, max(60, dur_ms // 4))
         fad_tag = f"\\fad({fad_ms},{fad_ms})"
         display_title = sp.title
-        while len(display_title) > 1 and _estimate_music_text_px(display_title + "…", 19, 0.5) > max_text_w:
+        while len(display_title) > 1 and _estimate_music_text_px(display_title + "…", 28, 0.6) > max_text_w:
             display_title = display_title[:-1]
         if display_title != sp.title:
             display_title += "…"
-        text_w = _estimate_music_text_px(display_title, 19, 0.5)
+        text_w = _estimate_music_text_px(display_title, 28, 0.6)
         pill_w = min(max_pill_w, pad_l + note_gap + text_w + pad_r)
         x0 = x_right - pill_w
 
@@ -967,17 +973,17 @@ def build_music_hud_ass(
             C_BAR_BG, alpha="4E", extra_tags=fad_tag,
         ))
         events.append(_rect_evt(
-            12, sp.start, sp.end, x0, y0, x0 + 3.0, y1,
+            12, sp.start, sp.end, x0, y0, x0 + 4.0, y1,
             C_GOLD, alpha="10", extra_tags=fad_tag,
         ))
         events.append(_text_evt(
-            13, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + 5.0, mid_y + 0.5, "♪",
-            size=17, color=C_GOLD, alpha="0E", fsp=0.0, an=5, bord=0.0, shad=0.5,
+            13, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + 6.0, mid_y + 1.0, "♪",
+            size=25, color=C_GOLD, alpha="0E", fsp=0.0, an=5, bord=0.0, shad=0.6,
             bold=0, extra_tags=fad_tag,
         ))
         events.append(_text_evt(
             14, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + note_gap, mid_y, display_title,
-            size=19, color=C_WHITE, alpha="0C", fsp=0.5, an=4, bord=0.3, shad=0.8,
+            size=28, color=C_WHITE, alpha="0C", fsp=0.6, an=4, bord=0.5, shad=1.0,
             bold=0, extra_tags=fad_tag,
         ))
     return styles, events

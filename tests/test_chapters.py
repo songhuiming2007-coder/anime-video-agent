@@ -367,21 +367,22 @@ class TestRealFfmpegHudRender:
                 check=True,
             )
             arr = np.asarray(Image.open(png).convert("RGB"))
-            band = arr[40:44, :, :]
+            band = arr[59:64, :, :]
             # 暖金色进度像素：R 很高且显著大于 B
             gold_mask = (band[:, :, 0].astype(int) > 180) & (
                 band[:, :, 0].astype(int) - band[:, :, 2].astype(int) > 80
             )
             cols = np.where(gold_mask.any(axis=0))[0]
-            top_max = int(arr[0:45, :, :].max())
+            top_max = int(arr[0:65, :, :].max())
             return (int(cols[-1]) if len(cols) else -1), top_max
 
         x_early, max_early = gold_right_x(0.30)
         x_late, _ = gold_right_x(1.70)
         x_after, max_after = gold_right_x(3.05)
 
+        assert ch.hud_strip_height(1080) == 128
         assert max_early > 150
-        assert x_early > 190
+        assert x_early > 252
         assert x_late - x_early > 350
         assert x_after == -1 and max_after < 15
 
@@ -422,7 +423,7 @@ class TestRealFfmpegHudRender:
             check=True, cwd=tmp_path,
         )
         arr = np.asarray(Image.open(out_png).convert("RGB"))
-        band = arr[40:44, :, :]
+        band = arr[59:64, :, :]
         gold_mask = (band[:, :, 0].astype(int) > 180) & (band[:, :, 0].astype(int) - band[:, :, 2].astype(int) > 80)
         assert gold_mask.any()
 
@@ -562,7 +563,7 @@ class TestMusicHud:
                 check=True,
             )
             arr = np.asarray(Image.open(png).convert("RGB"))
-            roi = arr[54:90, 1600:1910, :]
+            roi = arr[74:124, 1500:1910, :]
             gold = ((roi[:, :, 0].astype(int) > 160) & (roi[:, :, 0].astype(int) - roi[:, :, 2].astype(int) > 60)).any()
             return bool(gold), int(roi.max())
 
