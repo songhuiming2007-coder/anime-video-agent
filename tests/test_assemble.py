@@ -674,3 +674,332 @@ def test_完整保留卷_切除吃到片尾_末段淡出(root: Path) -> None:
     part = pl.parts[1]
     assert part.cut == "2.00" and part.kept is None and part.tail_cut
     assert "末段随切除止于 2.00s" in (part.note or "")
+
+
+# ---------------------------------------------------------------- Smart Splice + 合集章节导出
+
+
+def _make_gop_video(dest: Path, seconds: float, *, b_frames: int = 0, src_expr: str = "testsrc=size=320x180:rate=24000/1001") -> None:
+    key = ("gop24", seconds, b_frames, src_expr)
+    if key not in _CACHE:
+        tmp = dest.with_name(".gen_gop.mp4")
+        extra = ["-bf", str(b_frames)] if b_frames > 0 else []
+        ffmpeg("-f", "lavfi", "-i", src_expr,
+               "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", str(seconds),
+               *asm.TRIM_VIDEO_ARGS, "-g", "24", *extra, "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "48000", "-movflags", "+faststart",
+               "-shortest", str(tmp))
+        _CACHE[key] = tmp.read_bytes()
+        tmp.unlink()
+    dest.write_bytes(_CACHE[key])
+
+
+def _probe_pkt_total(path: Path) -> int:
+    out = subprocess.check_output(
+        ["ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path)],
+        text=True,
+    )
+    return int(out.strip().splitlines()[0].split(",")[0])
+
+
+class TestSmartSplice:
+    def test_单段截尾走关键帧拷贝_流签名一致_零解码报错(self, root: Path) -> None:
+        p = root / "data" / "episodes" / "P-splice-trim"
+        v1 = p / "01-a"
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text(
+            "## 段落 1\n\n配音：甲。\n\n## 段落 2\n\n配音：乙。\n\n"
+            "## 音乐段 M1\n\n音乐: `短曲` 完整版 00:00-00:05\n状态: 前景试听，旁白停止\n过渡: 淡出\n",
+            encoding="utf-8",
+        )
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 10.5}, {"index": 2, "duration": 10.5}]}),
+            encoding="utf-8",
+        )
+        _make_gop_video(v1 / "05-final.mp4", 26.0)
+        make_cover(v1 / "08-cover.jpg")
+
+        make_volume(p, "02-b", seconds=3.0)
+        c = p / "00-合集"
+        c.mkdir()
+        (c / "01-topic.md").write_text("# 选题\n时长目标: 0.4-2分钟\n", encoding="utf-8")
+        (p / "00-project.md").write_text(table([("01-a", "余韵1秒"), ("02-b", "完整保留")]), encoding="utf-8")
+
+        rec = Rec()
+        assert run_main([str(p)], rec) == 0
+        assert any("-c:v" in cmd and "copy" in cmd and any("w0_head.mp4" in a for a in cmd) for cmd in rec.ffmpeg_calls())
+        led = json.loads((c / "04-assembly.json").read_text(encoding="utf-8"))
+        assert led["parts"][1]["duration"] == pytest.approx(22.0, abs=0.15)
+        assert not (c / asm.CHAPTERS_TXT).exists()
+
+    def test_中段切除走关键帧拷贝_且合集chapters精准前移并剔除被切章节(self, root: Path) -> None:
+        p = root / "data" / "episodes" / "P-splice-cut"
+        v1 = p / "01-a"
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text(
+            "## 章节 · 01 开端\n## 段落 1\n配音：一。\n\n"
+            "## 章节 · 02 被切中段\n## 段落 2\n配音：二。\n\n"
+            "## 章节 · 03 中后高潮\n## 段落 3\n配音：三。\n\n"
+            "## 章节 · 04 被截尾声\n## 段落 4\n配音：四。\n",
+            encoding="utf-8",
+        )
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [
+                {"index": 1, "duration": 12.0},
+                {"index": 2, "duration": 3.0},
+                {"index": 3, "duration": 10.0},
+                {"index": 4, "duration": 3.0},
+            ]}),
+            encoding="utf-8",
+        )
+        _make_gop_video(v1 / "05-final.mp4", 28.0)
+        make_cover(v1 / "08-cover.jpg")
+
+        v2 = p / "02-b"
+        (v2 / "03-audio").mkdir(parents=True)
+        (v2 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v2 / "02-script.md").write_text(
+            "## 章节 · 01 续章\n## 段落 1\n配音：甲。\n\n"
+            "## 章节 · 02 终章\n## 段落 2\n配音：乙。\n",
+            encoding="utf-8",
+        )
+        (v2 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 15.0}, {"index": 2, "duration": 11.0}]}),
+            encoding="utf-8",
+        )
+        _make_gop_video(v2 / "05-final.mp4", 26.0)
+        make_cover(v2 / "08-cover.jpg")
+
+        c = p / "00-合集"
+        c.mkdir()
+        (c / "01-topic.md").write_text("# 选题\n时长目标: 0.5-2分钟\n", encoding="utf-8")
+        (c / "cuts.json").write_text(
+            json.dumps({"volumes": {"01-a": {"remove": [[12.0, 15.0]], "tail_at": 25.0}}}),
+            encoding="utf-8",
+        )
+        (p / "00-project.md").write_text(table([("01-a", "完整保留"), ("02-b", "完整保留")]), encoding="utf-8")
+
+        rec = Rec()
+        assert run_main([str(p)], rec) == 0
+        # 卷一：先头段 [0,12) 走 head 拷贝，后段 [15,25) 是 10s 保留窗（a>0 且 kf_out - kf_in >= 5s）也走主体拷贝
+        assert any("-noaccurate_seek" in cmd and "-c:v" in cmd and "copy" in cmd for cmd in rec.ffmpeg_calls())
+        led = json.loads((c / "04-assembly.json").read_text(encoding="utf-8"))
+        assert led["parts"][1]["duration"] == pytest.approx(22.0, abs=0.2)
+        assert led["total_duration"] == pytest.approx(54.0, abs=0.35)
+
+        txt = (c / asm.CHAPTERS_TXT).read_text(encoding="utf-8")
+        assert "00:00 第1卷 · a" in txt
+        assert "00:03 01 开端" in txt
+        assert "00:15 03 中后高潮" in txt
+        assert "02 被切中段" not in txt
+        assert "04 被截尾声" not in txt
+        assert "00:28 01 续章" in txt
+        assert "00:43 02 终章" in txt
+
+    def test_B帧非网格起点与无尾裁保留末帧_包数精确且无重复帧(self, root: Path) -> None:
+        import math
+        import numpy as np
+        from fractions import Fraction
+        from PIL import Image
+
+        p = root / "data" / "episodes" / "P-splice-bf"
+        v1 = p / "01-a"
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text("## 段落 1\n配音：甲。\n", encoding="utf-8")
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 55.0}]}), encoding="utf-8"
+        )
+        src_mp4 = v1 / "05-final.mp4"
+        _make_gop_video(src_mp4, 55.0, b_frames=2, src_expr="testsrc2=size=320x180:rate=24000/1001")
+        src_pkts = _probe_pkt_total(src_mp4)
+        make_cover(v1 / "08-cover.jpg")
+
+        c = p / "00-合集"
+        c.mkdir()
+        (c / "01-topic.md").write_text("# 选题\n时长目标: 0.5-2分钟\n", encoding="utf-8")
+        (c / "cuts.json").write_text(json.dumps({"volumes": {"01-a": {"remove": [[25.0, 32.0]]}}}), encoding="utf-8")
+        (p / "00-project.md").write_text(table([("01-a", "完整保留")]), encoding="utf-8")
+
+        rec = Rec()
+        assert run_main([str(p)], rec) == 0
+        # splice_* 中间目录完成后即时清理
+        assert not (c / "work" / "splice_part1").exists()
+
+        part_cut = c / "work" / "part1_cut.mp4"
+        fps = float(Fraction("24000/1001"))
+        win0_want = math.ceil(25.0 * fps - 1e-4)
+        win1_start_idx = math.ceil(32.0 * fps - 1e-4)
+        want_pkts = win0_want + (src_pkts - win1_start_idx)
+        assert _probe_pkt_total(part_cut) == want_pkts
+
+        # 核对 w1_hseam 末尾与 w1_mid 首帧（第 win0_want+47 vs win0_want+48 帧）不是重复关键帧
+        kf_frame_idx = win0_want + (round(34.034 * fps) - win1_start_idx)
+        f_prev = c / "work" / "f_prev.png"
+        f_kf = c / "work" / "f_kf.png"
+        ffmpeg("-i", str(part_cut), "-vf", f"select=eq(n\\,{kf_frame_idx - 1})", "-vsync", "0", "-frames:v", "1", str(f_prev))
+        ffmpeg("-i", str(part_cut), "-vf", f"select=eq(n\\,{kf_frame_idx})", "-vsync", "0", "-frames:v", "1", str(f_kf))
+        diff = float(np.abs(np.asarray(Image.open(f_prev), float) - np.asarray(Image.open(f_kf), float)).mean())
+        assert diff > 2.0
+
+    def test_smart_splice子段失败时自动回退全重编(self, root: Path) -> None:
+        p = root / "data" / "episodes" / "P-splice-fb"
+        v1 = p / "01-a"
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text(
+            "## 段落 1\n配音：甲。\n\n## 段落 2\n配音：乙。\n\n"
+            "## 音乐段 M1\n音乐: `短曲` 完整版 00:00-00:05\n状态: 前景试听，旁白停止\n过渡: 淡出\n",
+            encoding="utf-8",
+        )
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 10.5}, {"index": 2, "duration": 10.5}]}),
+            encoding="utf-8",
+        )
+        _make_gop_video(v1 / "05-final.mp4", 26.0)
+        make_cover(v1 / "08-cover.jpg")
+        c = p / "00-合集"
+        c.mkdir()
+        (c / "01-topic.md").write_text("# 选题\n时长目标: 0.2-2分钟\n", encoding="utf-8")
+        (p / "00-project.md").write_text(table([("01-a", "余韵1秒")]), encoding="utf-8")
+
+        def fail_head_copy(argv: list[str]):
+            if argv[0] == "ffmpeg" and any("w0_head.mp4" in a for a in argv):
+                return subprocess.CompletedProcess(argv, 1, "", "simulated head copy failure")
+            return None
+
+        rec = Rec(hook=fail_head_copy)
+        assert run_main([str(p)], rec) == 0
+        # 回退到了全段 trim_argv 路径
+        assert any("-to" in cmd and "22.00" in cmd for cmd in rec.ffmpeg_calls())
+        assert (c / "05-final.mp4").is_file()
+
+    def test_收尾chapters生成异常不阻断成片与qc(self, root: Path, capsys) -> None:
+        p = make_project(root, name="P-chap-err")
+        (p / "01-a" / "02-script.md").write_text(
+            "## 章节 · 甲\n## 段落 1\n配音：一。\n\n## 章节 · 乙\n## 音乐段 M1\n"
+            "音乐: `短曲` 完整版 00:00-00:03\n状态: 前景试听，旁白停止\n过渡: 淡出\n",
+            encoding="utf-8",
+        )
+        # 完整保留卷 plan() 阶段不读稿；写坏语法在收尾阶段触发 SystemExit
+        (p / "02-b" / "02-script.md").write_text("## 章节结束\n## 段落 1\n配音：坏。\n", encoding="utf-8")
+        rec = Rec()
+        assert run_main([str(p)], rec) == 0
+        out_txt = capsys.readouterr().out
+        assert "跳过 07-chapters.txt 生成" in out_txt
+        assert (p / "00-合集" / "05-final.mp4").is_file()
+        assert (p / "00-合集" / "04-assembly.json").is_file()
+        assert len(rec.qc_checks) > 0
+
+    def test_日期前缀剥离_章首被切保留章尾_与净顶条自动重算重烧顶栏(self, root: Path) -> None:
+        import numpy as np
+        from PIL import Image
+
+        real_fonts = Path(__file__).resolve().parents[1] / "data" / "fonts"
+        if real_fonts.is_dir():
+            (root / "data" / "fonts").symlink_to(real_fonts.resolve())
+
+        p = root / "data" / "episodes" / "P-reburn"
+        v1_name = "2026-08-12-初音编年"
+        v1 = p / v1_name
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "_agent").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text(
+            "## 章节 · 01 开篇\n## 段落 1\n配音：一。\n\n"
+            "## 章节 · 02 章首被切\n## 段落 2\n配音：二。\n\n"
+            "## 章节 · 03 中段\n## 段落 3\n配音：三。\n\n"
+            "## 章节 · 04 尾声\n## 段落 4\n配音：四。\n",
+            encoding="utf-8",
+        )
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [
+                {"index": 1, "duration": 8.0},
+                {"index": 2, "duration": 8.0},
+                {"index": 3, "duration": 8.0},
+                {"index": 4, "duration": 4.0},
+            ]}),
+            encoding="utf-8",
+        )
+        # 构造 640x360：蓝色净底（存入 _agent/hud_clean_top.mp4）+ 旧红色顶栏 + 底部绿色字幕块（存入 05-final.mp4）
+        raw_v1 = v1 / ".raw.mp4"
+        ffmpeg("-f", "lavfi", "-i", "color=c=0x1030A0:s=640x360:r=24000/1001:d=28.0",
+               "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:d=28.0",
+               *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "48000", str(raw_v1))
+        ffmpeg("-i", str(raw_v1), "-vf", "crop=640:32:0:0", "-an",
+               *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-r", "24000/1001", str(v1 / "_agent" / "hud_clean_top.mp4"))
+        ffmpeg("-i", str(raw_v1),
+               "-vf", "drawbox=x=0:y=0:w=640:h=16:color=red@1.0:t=fill,drawbox=x=100:y=300:w=440:h=30:color=green@1.0:t=fill",
+               *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-r", "24000/1001", "-c:a", "copy", str(v1 / "05-final.mp4"))
+        raw_v1.unlink()
+        make_cover(v1 / "08-cover.jpg")
+
+        # 卷二仅裁余韵（cuts 不碰章节区）：应跳过重烧、走 _smart_splice_part 快速通道
+        v2 = p / "02-余韵卷"
+        (v2 / "03-audio").mkdir(parents=True)
+        (v2 / "_agent").mkdir(parents=True)
+        (v2 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v2 / "02-script.md").write_text(
+            "## 章节 · 开场\n## 段落 1\n配音：一。\n\n"
+            "## 章节 · 终幕\n## 段落 2\n配音：二。\n\n"
+            "## 章节结束\n## 音乐段 M1\n音乐: `短曲` 完整版 00:00-00:05\n状态: 前景试听，旁白停止\n过渡: 淡出\n",
+            encoding="utf-8",
+        )
+        (v2 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [{"index": 1, "duration": 10.5}, {"index": 2, "duration": 10.5}]}),
+            encoding="utf-8",
+        )
+        ffmpeg("-f", "lavfi", "-i", "color=c=0x1030A0:s=640x360:r=24000/1001:d=26.0",
+               "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:d=26.0",
+               *asm.TRIM_VIDEO_ARGS, "-g", "24", "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "48000", "-shortest", str(v2 / "05-final.mp4"))
+        ffmpeg("-i", str(v2 / "05-final.mp4"), "-vf", "crop=640:32:0:0", "-an",
+               *asm.TRIM_VIDEO_ARGS, "-pix_fmt", "yuv420p", "-color_range", "tv",
+               "-r", "24000/1001", str(v2 / "_agent" / "hud_clean_top.mp4"))
+        make_cover(v2 / "08-cover.jpg")
+
+        c = p / "00-合集"
+        c.mkdir()
+        (c / "01-topic.md").write_text("# 选题\n时长目标: 0.5-2分钟\n", encoding="utf-8")
+        (c / "cuts.json").write_text(
+            json.dumps({"volumes": {v1_name: {"remove": [[8.0, 12.0]], "tail_at": 24.0}}}),
+            encoding="utf-8",
+        )
+        (p / "00-project.md").write_text(
+            table([(v1_name, "完整保留"), ("02-余韵卷", "余韵1秒")]), encoding="utf-8"
+        )
+
+        rec = Rec()
+        assert run_main([str(p)], rec) == 0
+        # 卷一触发了重烧（生成 part1_hud.ass），卷二走关键帧直拷（w0_head.mp4）
+        assert (c / "work" / "part1_hud.ass").is_file()
+        assert any("-c:v" in cmd and "copy" in cmd and any("w0_head.mp4" in a for a in cmd) for cmd in rec.ffmpeg_calls())
+
+        # 检查卷一重烧后成片（约在总长 3s + 6s = 9s，即仍在 01 开篇结尾附近）：旧红块被擦除、暖金条与底部绿字幕同时存在
+        chk = c / "work" / "reburn_check.png"
+        ffmpeg("-ss", "9.0", "-i", str(c / "05-final.mp4"), "-frames:v", "1", str(chk))
+        arr = np.asarray(Image.open(chk).convert("RGB"))
+        top_band = arr[0:16, :, :]
+        # 原先纯红旧顶栏 (R>200, G<40, B<40) 应已完全清除
+        red_mask = (top_band[:, :, 0] > 200) & (top_band[:, :, 1] < 40) & (top_band[:, :, 2] < 40)
+        assert not red_mask.any()
+        # 底部绿色字幕块完好保留，且净条带下半（y=20）还原为原蓝底
+        sub_px = arr[315, 320]
+        assert int(sub_px[1]) > 100 and int(sub_px[0]) < 40
+        assert int(arr[20, 320][2]) > 120 and int(arr[20, 320][0]) < 40
+        # 新暖金条像素存在（640x360 1/3 缩放 + yuv420p 色度亚采样下仍呈显著 R>B 暖金色）
+        gold_band = arr[12:16, :, :]
+        gold_mask = (gold_band[:, :, 0].astype(int) > 150) & (gold_band[:, :, 0].astype(int) - gold_band[:, :, 2].astype(int) > 15)
+        assert gold_mask.any()
+
+        # 日期前缀已剥除，被切去开头的 `02 章首被切` 在切口 8s + 卡3s = 00:11 处标出
+        txt = (c / asm.CHAPTERS_TXT).read_text(encoding="utf-8")
+        assert "00:00 第1卷 · 初音编年" in txt
+        assert "00:11 02 章首被切" in txt
+        assert "04 尾声" not in txt

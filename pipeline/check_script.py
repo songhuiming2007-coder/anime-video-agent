@@ -215,10 +215,10 @@ BREATH_SPLIT = re.compile(r"[，,、；;：:。！？…—\s]+")
 # 「最后」的逗号用前瞻匹配，不吃进组里。
 PAPER_WORDS = re.compile(
     r"(?:^|[。？！，、；：\s])(因此|然而|此外|综上|总之|首先|其次|再者|最后(?=[，,]))")
-#: `## 段落 N` 块的正文区间：到下一个 `## 段落` 或 `## 音乐段` 标题或文尾。
+#: `## 段落 N` 块的正文区间：到下一个 `## 段落`/`## 音乐段`/`## 章节`/`### 子节` 标题或文尾。
 #: 音乐段嵌在段落之间，不把 `## 音乐段` 当边界的话，试听块里的字段（`画面:`/未来的 `复用:` 等）
 #: 会被并进前一段落的块里——那块的 `复用:` 就变成「本段锚点里找不到」的错配（D137 试听块放行口）。
-_SEGMENT_BLOCK = re.compile(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*(?:段落|音乐段)|\Z)", re.M | re.S)
+_SEGMENT_BLOCK = re.compile(r"^##\s*段落\s*(\S+)\s*\n(.*?)(?=^##\s*(?:段落|音乐段|章节)|^###\s*子节|\Z)", re.M | re.S)
 
 
 # 跨期套话。2026-08-03 增补，依据是前三期的实测复用率：
@@ -1308,6 +1308,9 @@ def run(path: Path) -> list[Check]:
     _check_avsync_subs(path, add)
     _check_bgm_source(path, add)
     _check_music_gaps(path, add)
+    from . import chapters
+    if (chap_res := chapters.check_script_chapters(path, CPM)) is not None:
+        add("章节顶栏", chap_res[0], chap_res[1])
 
     return checks
 

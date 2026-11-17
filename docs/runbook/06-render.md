@@ -11,6 +11,8 @@ agent 先问人，再跑 `render`（长任务；期目录自动补上）。人�
 
 ## 产物与位置
 - `data/episodes/<期号>/05-final.mp4`（1080p 成片）
+- `data/episodes/<期号>/07-chapters.txt`（仅当 `02-script.md` 声明 `## 章节` 时生成，供 B 站看点 / YouTube Chapters 导入）
+- `data/episodes/<期号>/_agent/hud_clean_top.mp4`（仅当声明 `## 章节` 时从净画面裁出顶部条带，供合集剪辑重算顶栏时复用）
 
 ## 规则与内部护栏
 1. **截取双重守卫强制执行**：
@@ -20,12 +22,14 @@ agent 先问人，再跑 `render`（长任务；期目录自动补上）。人�
 2.5 **字幕显示替换表（D132）**：字幕文本取自配音 manifest 的句子原文，而稿件为了 TTS 念得准，写的是中文数字与歌名罗马字。上屏写法不同时，在期目录写 `02-subtitles.json`（`{"原文": "上屏写法"}`，`_` 开头的键是注释；agent 用 `write_episode_file` 写，免卡），渲染烧字幕前替换，07 质检的字幕四项也查替换后的文本。配音、manifest、台词哈希都不动，不用重配。键必须在某句字幕里原样出现，拼错或跨了句当场 FAIL。
    - 写法约定（人 2026-10-23）：日期、名次、周数、曲序、年龄、人数、震级换成阿拉伯数字（2009年8月12日、第5位、66周、第11首、15岁、2000人、9.0级）；量词与固定说法不换（一首歌、两个人、一代人、八分音符）。歌名罗马字换成日文原名，官方英文名与人名不换。
    - 同一个短串在不同语境要换成不同写法时，用带上下文的长键（`第十一首`、`三月十一日`），长键优先匹配，替换结果不会再被别的键匹配。
+2.6 **章节顶栏与平台看点清单**：当 `02-script.md` 含有 `## 章节 · 标题` 时，渲染在切片段前解析章节结构（未写 `## 章节结束` 时默认于 `vo_fg_end` 收口）、校验各格与子节宽度，并逐一核验 `config/project.json` 中 `hud.fonts_dir`（默认 `data/fonts`）内的 `Songti.ttc` 与 `SourceHanSansSC-Bold.otf` 等 `hud.required_files` 文件存在；拼好净画面轨后裁存顶部条带 `_agent/hud_clean_top.mp4`，烧录字幕时通过 `ass=vo.ass:fontsdir=_fonts` 绘制方案 C 窄顶栏，并在最终成片落盘后原子写出 `07-chapters.txt`。未声明章节的期不触发该逻辑，`vo.ass` 保持原样。
 3. **BGM 响度与侧链闪避**：每首 BGM 按实测归一到 -26 LUFS，人声触发自动动态闪避，避免覆盖口播。
 
 ## 06.2 截取守卫与渲染门禁参数
 
 - **截取守卫（渲染强制，缺一不可）**：切前校验 `seek + duration <= 源时长`；切后复核实际时长与请求之差 ≤ 1 帧。ffmpeg 在请求超出片尾时**静默截断且不报错**，检索命中集尾时必然踩到，一踩整条音画错位。「1 帧」按 `ffprobe` 的 `r_frame_rate` 现算，不许写死（23.976fps 一帧 0.0417s）。
 - **段级不变量**：每段 Σclip.dur == manifest 段时长（±0.05s），approve 与 render 双重拦截；05 人审改画面只改 start/source，改完让 agent 跑 `clips --refit` 重排版。
+- **中间切片与成片参数分层**：`render.cut` 与静帧缓推生成的中间片段使用 `config/project.json` 的 `video.cut_preset`（默认 `ultrafast`）与 `video.cut_crf`（默认 `12`），最终合成层保持 `video.preset`（`medium`）与 `video.crf`（`18`）。
 
 ## 06.3 双模态片段协议（ADR-0013）
 

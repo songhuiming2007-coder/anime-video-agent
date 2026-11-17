@@ -138,7 +138,8 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
     text = path.read_text(encoding="utf-8")
     blocks: list[MusicBlock] = []
     for m in re.finditer(r"^##\s*音乐段\s*(\S+)", text, re.M):
-        nxt = text.find("\n## ", m.end())
+        nxt_m = re.search(r"\n(?:##\s+|###\s*子节)", text[m.end():])
+        nxt = m.end() + nxt_m.start() if nxt_m else -1
         body = text[m.end():nxt] if nxt != -1 else text[m.end():]
 
         if _STATUS_BGM.search(body):
@@ -537,7 +538,8 @@ def _segment_bodies(text: str):
     免得两处对「哪一行算收尾声明」各有一套理解。
     """
     for m in re.finditer(r"^##\s*段落\s*(\S+)", text, re.M):
-        nxt = text.find("\n## ", m.end())
+        nxt_m = re.search(r"\n(?:##\s+|###\s*子节)", text[m.end():])
+        nxt = m.end() + nxt_m.start() if nxt_m else -1
         yield m.group(1), (text[m.end():nxt] if nxt != -1 else text[m.end():])
 
 

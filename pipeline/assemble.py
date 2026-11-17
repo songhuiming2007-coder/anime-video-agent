@@ -25,11 +25,14 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -49,6 +52,8 @@ TRIM_AUDIO_BITRATE = "192k"
 COLOR_RANGE = "tv"                  # `-color_range tv`（不在签名字段里，照脚本原值）
 DURATION_TOLERANCE_S = 0.1          # 自证「总长 = 部件之和」的容差（`$GOT-$SUM<0.1`），也是验收的时长差上限
 ASSEMBLE_FREE_FACTOR = 2.0          # 输出 ≈ 部件之和，截尾件 ≤ 部件之和：两者相加 ≤ 2 倍（EGOIST 实测 1.66 / 1.82 GB）
+SMART_SPLICE_MIN_S = 20.0           # 保留时长 ≥ 此阈值时走关键帧局部重编（短于它或短夹具仍走全重编）
+CHAPTERS_TXT = "07-chapters.txt"
 
 # 流签名字段：与 assemble.sh 的 stream_sig() 同一组
 SIG_FIELDS = ("codec_type", "codec_name", "profile", "level", "pix_fmt", "width", "height", "r_frame_rate",
@@ -540,6 +545,458 @@ def concat_line(path: Path) -> str:
     return "file '" + s.replace("'", "'\\''") + "'\n"
 
 
+def _probe_video_meta(src: Path, runner: Runner) -> tuple[int, float] | None:
+    """读取源片视频流 `(timescale, start_pts)`；非 H.264 或无有效 time_base 返回 None。"""
+    p = runner([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,time_base,start_time", "-of", "json", str(src),
+    ])
+    if p.returncode != 0:
+        return None
+    try:
+        streams = json.loads(p.stdout).get("streams", [])
+        if not streams:
+            return None
+        s = streams[0]
+        if s.get("codec_name") != "h264":
+            return None
+        tb = str(s.get("time_base") or "")
+        num_s, _, den_s = tb.partition("/")
+        if num_s != "1" or not den_s.isdigit() or int(den_s) <= 0:
+            return None
+        start_time = float(s.get("start_time") or 0.0)
+        return int(den_s), start_time
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _probe_keyframes(src: Path, lo: float, hi: float, runner: Runner) -> list[tuple[float, int]]:
+    """探测区间 `[lo, hi]` 内的视频关键帧（MP4 同步样本 `(pts_time, size)` 升序去重）。"""
+    p = runner([
+        "ffprobe", "-v", "error", "-read_intervals", f"{max(0.0, lo):.2f}%{hi:.2f}",
+        "-select_streams", "v:0", "-show_entries", "packet=pts_time,size,flags", "-of", "json", str(src),
+    ])
+    if p.returncode != 0:
+        return []
+    try:
+        pkts = json.loads(p.stdout).get("packets", [])
+        by_pts: dict[float, int] = {}
+        for pk in pkts:
+            if "K" not in str(pk.get("flags", "")) or pk.get("pts_time") is None:
+                continue
+            pt = float(pk["pts_time"])
+            if pt < lo - 1e-3 or pt > hi + 1e-3:
+                continue
+            by_pts.setdefault(pt, int(pk.get("size") or 0))
+        return sorted(by_pts.items(), key=lambda x: x[0])
+    except (ValueError, KeyError, TypeError):
+        return []
+
+
+def _probe_pkt_stats(path: Path, runner: Runner) -> tuple[int, int] | None:
+    """返回视频流 `(总包数, 首包字节数)`；探测失败返回 None。"""
+    p = runner([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "packet=size", "-of", "json", str(path),
+    ])
+    if p.returncode != 0:
+        return None
+    try:
+        pkts = json.loads(p.stdout).get("packets", [])
+        if not pkts:
+            return 0, 0
+        return len(pkts), int(pkts[0].get("size") or 0)
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _probe_pkt_count(path: Path, runner: Runner) -> int | None:
+    p = runner([
+        "ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path),
+    ])
+    if p.returncode != 0:
+        return None
+    try:
+        return int(p.stdout.strip().splitlines()[0].split(",")[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _seek_before_frame(t: float) -> float:
+    """在目标帧 PTS 前 2ms 起 seek（远小于帧间隔 ~41.7ms），避免 `1/24000` 浮点舍入跳过目标帧。"""
+    return max(0.0, t - 0.002)
+
+
+def _smart_splice_part(
+    src: Path, out: Path, windows: list[tuple[float, float]],
+    seam: float, tail_cut: bool, b: Base, work: Path, tag: str, runner: Runner,
+) -> bool:
+    """关键帧局部重编：按源帧网格量化，保留主体 `-c:v copy`，只重编切口 / 淡出前后数秒。
+
+    不满足阈值、关键帧分布不足、包数/首包不对齐或子段编码出错时均安全清理并返回 False，交回全重编路径。
+    """
+    if sum(c - a for a, c in windows) < SMART_SPLICE_MIN_S:
+        return False
+    meta = _probe_video_meta(src, runner)
+    if meta is None:
+        return False
+    timescale, start_pts = meta
+    fps = float(Fraction(b.fps))
+    src_pkts = _probe_pkt_count(src, runner)
+    if src_pkts is None or src_pkts < 2:
+        return False
+
+    sp_dir = work / f"splice_{tag}"
+    sp_dir.mkdir(exist_ok=True)
+    enc = [
+        *TRIM_VIDEO_ARGS, "-pix_fmt", b.pix_fmt, "-color_range", COLOR_RANGE,
+        "-r", b.fps, "-video_track_timescale", str(timescale),
+    ]
+
+    v_segs: list[Path] = []
+    a_wins: list[tuple[float, float, bool]] = []
+    copy_count = 0
+    n_win = len(windows)
+
+    try:
+        for idx, (a, c) in enumerate(windows):
+            fade_in = seam if a > 0.0 else 0.0
+            fade_out = seam if (idx + 1 < n_win) else (TRIM_FADE_S if tail_cut else 0.0)
+            idx_a = 0 if a == 0.0 else max(0, math.ceil((a - start_pts) * fps - 1e-4))
+            idx_c = (
+                src_pkts if (idx + 1 == n_win and not tail_cut)
+                else min(src_pkts, math.ceil((c - start_pts) * fps - 1e-4))
+            )
+            win_frames = idx_c - idx_a
+            if win_frames < 2:
+                return False
+            a_q = start_pts + idx_a / fps
+            c_q = start_pts + idx_c / fps
+            a_wins.append((a_q, c_q, idx + 1 == n_win and not tail_cut))
+
+            if a == 0.0:
+                kfs = _probe_keyframes(src, max(0.0, c - fade_out - 20.0), c - fade_out - 0.5, runner)
+                kf_out = max((t for t, _sz in kfs if 5.0 <= t <= c - fade_out - 0.5), default=None)
+                if kf_out is not None:
+                    idx_kf_out = round((kf_out - start_pts) * fps)
+                    head_want = idx_kf_out
+                    tail_want = idx_c - idx_kf_out
+                    if head_want >= 24 and tail_want >= 1:
+                        hv = sp_dir / f"w{idx}_head.mp4"
+                        _ffmpeg([
+                            "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+                            "-frames:v", str(head_want), "-an", "-c:v", "copy",
+                            "-video_track_timescale", str(timescale), str(hv),
+                        ], runner, f"关键帧拷贝 {tag} 头段")
+                        if _probe_pkt_count(hv, runner) == head_want:
+                            tv = sp_dir / f"w{idx}_tail.mp4"
+                            vf_ops = ["setpts=PTS-STARTPTS"]
+                            if fade_out > 0:
+                                fst = max(0.0, tail_want / fps - fade_out)
+                                vf_ops.append(f"fade=t=out:st={fst:.3f}:d={fade_out:g}")
+                            _ffmpeg([
+                                "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{_seek_before_frame(kf_out):.6f}", "-i", str(src),
+                                "-frames:v", str(tail_want), "-an", "-vf", ",".join(vf_ops), *enc, str(tv),
+                            ], runner, f"尾段重编 {tag}")
+                            if _probe_pkt_count(tv, runner) == tail_want:
+                                v_segs.extend([hv, tv])
+                                copy_count += 1
+                                continue
+            else:
+                kfs_lo = _probe_keyframes(src, a_q, min(c_q, a_q + fade_in + 20.0), runner)
+                kf_pair = next(((t, sz) for t, sz in kfs_lo if t >= a_q + fade_in + 1.0), None)
+                kfs_hi = _probe_keyframes(src, max(a_q, c_q - fade_out - 20.0), c_q - fade_out - 0.5, runner)
+                kf_out = max((t for t, _sz in kfs_hi if t <= c_q - fade_out - 0.5), default=None)
+                if kf_pair is not None and kf_out is not None and kf_out - kf_pair[0] >= 5.0:
+                    kf_in, kf_in_size = kf_pair
+                    idx_kf_in = round((kf_in - start_pts) * fps)
+                    idx_kf_out = round((kf_out - start_pts) * fps)
+                    head_want = idx_kf_in - idx_a
+                    mid_want = idx_kf_out - idx_kf_in
+                    tail_want = idx_c - idx_kf_out
+                    if head_want >= 1 and mid_want >= 24 and tail_want >= 1:
+                        mv = sp_dir / f"w{idx}_mid.mp4"
+                        _ffmpeg([
+                            "ffmpeg", "-y", "-loglevel", "error",
+                            "-noaccurate_seek", "-ss", f"{kf_in + 0.01:.6f}", "-i", str(src),
+                            "-frames:v", str(mid_want), "-an", "-c:v", "copy",
+                            "-avoid_negative_ts", "make_zero", "-video_track_timescale", str(timescale), str(mv),
+                        ], runner, f"关键帧拷贝 {tag} 主体")
+                        mv_stats = _probe_pkt_stats(mv, runner)
+                        if mv_stats is not None and mv_stats[0] == mid_want and (kf_in_size <= 0 or mv_stats[1] == kf_in_size):
+                            hv = sp_dir / f"w{idx}_hseam.mp4"
+                            h_ops = ["setpts=PTS-STARTPTS"]
+                            if fade_in > 0:
+                                h_ops.append(f"fade=t=in:st=0:d={fade_in:g}")
+                            _ffmpeg([
+                                "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{_seek_before_frame(a_q):.6f}", "-i", str(src),
+                                "-frames:v", str(head_want), "-an", "-vf", ",".join(h_ops), *enc, str(hv),
+                            ], runner, f"头缝重编 {tag}")
+                            if _probe_pkt_count(hv, runner) == head_want:
+                                tv = sp_dir / f"w{idx}_tseam.mp4"
+                                t_ops = ["setpts=PTS-STARTPTS"]
+                                if fade_out > 0:
+                                    fst = max(0.0, tail_want / fps - fade_out)
+                                    t_ops.append(f"fade=t=out:st={fst:.3f}:d={fade_out:g}")
+                                _ffmpeg([
+                                    "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{_seek_before_frame(kf_out):.6f}", "-i", str(src),
+                                    "-frames:v", str(tail_want), "-an", "-vf", ",".join(t_ops), *enc, str(tv),
+                                ], runner, f"尾缝重编 {tag}")
+                                if _probe_pkt_count(tv, runner) == tail_want:
+                                    v_segs.extend([hv, mv, tv])
+                                    copy_count += 1
+                                    continue
+
+            # 本窗口过短、未命中关键帧边界或子段校验未对齐：单窗口完整重编
+            wv = sp_dir / f"w{idx}_full.mp4"
+            w_ops = ["setpts=PTS-STARTPTS"]
+            if fade_in > 0:
+                w_ops.append(f"fade=t=in:st=0:d={fade_in:g}")
+            if fade_out > 0:
+                fst = max(0.0, win_frames / fps - fade_out)
+                w_ops.append(f"fade=t=out:st={fst:.3f}:d={fade_out:g}")
+            _ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{_seek_before_frame(a_q):.6f}", "-i", str(src),
+                "-frames:v", str(win_frames), "-an", "-vf", ",".join(w_ops), *enc, str(wv),
+            ], runner, f"窗口重编 {tag}")
+            if _probe_pkt_count(wv, runner) != win_frames:
+                return False
+            v_segs.append(wv)
+
+        if copy_count == 0:
+            return False
+
+        vlist = sp_dir / "vconcat.txt"
+        vlist.write_text("".join(concat_line(v) for v in v_segs), encoding="utf-8")
+
+        if n_win == 1 and windows[0][0] == 0.0:
+            cut_end = a_wins[0][1]
+            af = (f"afade=t=out:st={max(0.0, cut_end - TRIM_FADE_S):.3f}:d={TRIM_FADE_S}"
+                  if tail_cut else "anull")
+            _ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", str(vlist),
+                *([] if a_wins[0][2] else ["-to", f"{cut_end:.6f}"]), "-i", str(src),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-af", af,
+                "-c:a", "aac", "-b:a", TRIM_AUDIO_BITRATE, "-ac", str(b.channels), "-ar", b.sample_rate,
+                str(out),
+            ], runner, f"局部重编混流 {tag}")
+        else:
+            a_parts = []
+            for idx, (a_q, c_q, to_eof) in enumerate(a_wins):
+                dur = c_q - a_q
+                trim_end = "" if to_eof else f":end={c_q:.6f}"
+                au = f"[1:a]atrim=start={a_q:.6f}{trim_end},asetpts=PTS-STARTPTS"
+                if windows[idx][0] > 0.0:
+                    au += f",afade=t=in:st=0:d={seam:g}"
+                if idx + 1 < n_win:
+                    au += f",afade=t=out:st={max(dur - seam, 0.0):.3f}:d={seam:g}"
+                elif tail_cut:
+                    au += f",afade=t=out:st={max(dur - TRIM_FADE_S, 0.0):.3f}:d={TRIM_FADE_S:g}"
+                a_parts.append(au + f"[a{idx}]")
+            fc = ";".join(a_parts) + ";" + "".join(f"[a{i}]" for i in range(n_win)) + f"concat=n={n_win}:v=0:a=1[a]"
+            _ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", str(vlist), "-i", str(src),
+                "-filter_complex", fc, "-map", "0:v:0", "-map", "[a]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", TRIM_AUDIO_BITRATE,
+                "-ac", str(b.channels), "-ar", b.sample_rate, str(out),
+            ], runner, f"局部重编混流 {tag}")
+        return True
+    except AssembleError:
+        return False
+    finally:
+        shutil.rmtree(sp_dir, ignore_errors=True)
+
+
+def _ff_filter_escape(s: str) -> str:
+    """两级转义 ffmpeg filtergraph 选项值中的反斜杠、冒号、单引号与滤镜分隔符。"""
+    s = s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    return (
+        s.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+        .replace("[", "\\[").replace("]", "\\]").replace(",", "\\,").replace(";", "\\;")
+    )
+
+
+def _resolve_member_chapters(member: Path):
+    from . import chapters, music
+
+    sp = member / SCRIPT
+    if not sp.is_file():
+        return None
+    chap_spec = chapters.parse_script_chapters(sp)
+    if chap_spec is None:
+        return None
+    mf_path = member.joinpath(*MANIFEST)
+    if not mf_path.is_file():
+        return None
+    manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+    mplan = None
+    if music.parse_script_music(sp):
+        mplan = music.build_timeline(member, manifest, music.load_tracks_multi(member))
+        seg_span = {s["index"]: (s["start"], s["start"] + s["dur"]) for s in mplan["segments"]}
+        vol_total = float(mplan["total_duration"])
+    else:
+        seg_span = {}
+        t_acc = 0.0
+        for s in manifest["segments"]:
+            dur = float(s["duration"])
+            seg_span[s["index"]] = (t_acc, t_acc + dur)
+            t_acc += dur
+        vol_total = t_acc
+    return chapters.resolve_chapters(member, chap_spec, seg_span, mplan, vol_total, check_widths=False)
+
+
+def _prepare_hud_reburn(
+    p: Part,
+    windows: list[tuple[float, float]],
+    tail_cut: bool,
+    b: Base,
+    work: Path,
+    idx: int,
+    log: Callable[[str], None],
+) -> tuple[Path, Path | None, Path | None] | None:
+    """若卷带净片顶条且刀口切入顶栏区间，按保留窗口重算 ASS 顶栏并返回重烧物料。"""
+    from . import chapters
+
+    clean_top = p.member / "_agent" / "hud_clean_top.mp4"
+    if not clean_top.is_file():
+        return None
+    real_top = clean_top.resolve()
+    if not _inside(real_top, p.member.resolve()):
+        log(f"  ⚠ {p.name}/_agent/hud_clean_top.mp4 指向成员目录之外，跳过顶栏重算")
+        return None
+
+    try:
+        resolved = _resolve_member_chapters(p.member)
+        if resolved is None:
+            return None
+        tail_fade = TRIM_FADE_S if tail_cut else 0.0
+        if len(windows) == 1 and windows[0][0] == 0.0 and windows[0][1] - tail_fade >= resolved.bar_end - 1e-3:
+            return None
+        projected = chapters.project_chapters_to_kept(resolved, windows, seam=p.seam, tail_fade=tail_fade)
+        if projected is None:
+            return real_top, None, None
+        fonts_dir = chapters.verify_hud_fonts()
+        hud_ass = work / f"part{idx}_hud.ass"
+        chapters.write_standalone_hud_ass(projected, hud_ass, width=b.width, height=b.height)
+        return real_top, hud_ass, fonts_dir
+    except (SystemExit, Exception) as exc:
+        log(f"  ⚠ {p.name} 顶栏重算跳过：{exc}")
+        return None
+
+
+def _hud_reburn_argv(
+    src: Path,
+    clean_top: Path,
+    out: Path,
+    windows: list[tuple[float, float]],
+    seam: float,
+    tail_cut: bool,
+    b: Base,
+    hud_ass: Path | None,
+    fonts_dir: Path | None,
+) -> list[str]:
+    """还原顶部净画面并按投影后章节重烧新顶栏（保留底部既有烧录字幕）。"""
+    v_parts, a_parts, n = [], [], len(windows)
+    for i, (a, c) in enumerate(windows):
+        dur = c - a
+        v_parts.append(f"[0:v]trim=start={a:.3f}:end={c:.3f},setpts=PTS-STARTPTS[vm{i}]")
+        v_parts.append(f"[1:v]trim=start={a:.3f}:end={c:.3f},setpts=PTS-STARTPTS[vt{i}]")
+        ov = f"[vm{i}][vt{i}]overlay=x=0:y=0:eof_action=repeat"
+        if a > 0.0:
+            ov += f",fade=t=in:st=0:d={seam:g}"
+        if i + 1 < n:
+            ov += f",fade=t=out:st={max(dur - seam, 0.0):.3f}:d={seam:g}"
+        v_parts.append(ov + f"[v{i}]")
+
+        au = f"[0:a]atrim=start={a:.3f}:end={c:.3f},asetpts=PTS-STARTPTS"
+        if a > 0.0:
+            au += f",afade=t=in:st=0:d={seam:g}"
+        if i + 1 < n:
+            au += f",afade=t=out:st={max(dur - seam, 0.0):.3f}:d={seam:g}"
+        elif tail_cut:
+            au += f",afade=t=out:st={max(dur - TRIM_FADE_S, 0.0):.3f}:d={TRIM_FADE_S:g}"
+        a_parts.append(au + f"[a{i}]")
+
+    v_concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vcat]"
+    tail_filters: list[str] = []
+    if hud_ass is not None:
+        ass_opt = f"ass=filename={_ff_filter_escape(str(hud_ass))}"
+        if fonts_dir is not None:
+            ass_opt += f":fontsdir={_ff_filter_escape(str(fonts_dir))}"
+        tail_filters.append(ass_opt)
+    if tail_cut:
+        kept_total = sum(c - a for a, c in windows)
+        tail_filters.append(f"fade=t=out:st={max(kept_total - TRIM_FADE_S, 0.0):.3f}:d={TRIM_FADE_S:g}")
+    if tail_filters:
+        v_tail = "[vcat]" + ",".join(tail_filters) + "[v]"
+        v_map = "[v]"
+    else:
+        v_tail = None
+        v_map = "[vcat]"
+
+    fc_parts = [*v_parts, v_concat]
+    if v_tail is not None:
+        fc_parts.append(v_tail)
+    fc_parts.extend([*a_parts, "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[a]"])
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(src), "-i", str(clean_top),
+        "-filter_complex", ";".join(fc_parts),
+        "-map", v_map, "-map", "[a]",
+        *TRIM_VIDEO_ARGS, "-pix_fmt", b.pix_fmt, "-color_range", COLOR_RANGE, "-r", b.fps,
+        "-c:a", "aac", "-b:a", TRIM_AUDIO_BITRATE, "-ac", str(b.channels), "-ar", b.sample_rate, str(out),
+    ]
+
+
+def _write_collection_chapters(pl: Plan, ledger_parts: list[dict], total_duration: float) -> None:
+    """当企划任一卷声明 `## 章节` 时，按实测账本与保留窗口推导合集 `07-chapters.txt`。"""
+    from . import chapters
+
+    specs: list[chapters.ChapterSpec | None] = []
+    for p in pl.parts:
+        sp = p.member / SCRIPT
+        specs.append(chapters.parse_script_chapters(sp) if sp.is_file() else None)
+    if not any(specs):
+        return
+
+    entries: list[tuple[float, str]] = []
+    for idx, (p, chap_spec) in enumerate(zip(pl.parts, specs)):
+        card_rec = ledger_parts[2 * idx]
+        part_rec = ledger_parts[2 * idx + 1]
+        clean_title = re.sub(r"^(?:\d{4}[-_]\d{1,2}[-_]\d{1,2}[-_.\s]+|\d+[-_.·\s]+)", "", p.name) or p.name
+        entries.append((float(card_rec["offset"]), f"第{p.seq}卷 · {clean_title}"))
+        if chap_spec is None:
+            continue
+
+        resolved = _resolve_member_chapters(p.member)
+        if resolved is None:
+            continue
+        vol_total = resolved.total_duration
+        if p.kept is not None:
+            windows = p.kept
+            tail_fade = TRIM_FADE_S if p.tail_cut else 0.0
+        elif p.cut is not None:
+            windows = [(0.0, float(p.cut))]
+            tail_fade = TRIM_FADE_S
+        else:
+            windows = [(0.0, vol_total + 1.0)]
+            tail_fade = 0.0
+
+        part_offset = float(part_rec["offset"])
+        for st, ed, title in chapters.episode_chapter_spans(resolved):
+            mapped = chapters.map_chapter_to_kept(st, ed, windows, seam=p.seam, tail_fade=tail_fade)
+            if mapped is not None:
+                entries.append((part_offset + mapped[0], title))
+
+    txt = chapters.format_chapters_txt(entries, total_duration)
+    if txt:
+        paths.atomic_write(pl.out_dir / CHAPTERS_TXT, txt)
+
+
 def _ffmpeg(argv: list[str], runner: Runner, what: str) -> None:
     p = runner(argv)
     if p.returncode != 0:
@@ -573,6 +1030,10 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
     tmp = pl.out_dir / TMP_FINAL
     try:
         sources = [f for p in pl.parts for f in (p.final, p.cover)]
+        for p in pl.parts:
+            ct = p.member / "_agent" / "hud_clean_top.mp4"
+            if ct.is_file() and _inside(ct.resolve(), p.member.resolve()):
+                sources.append(ct.resolve())
         before = _fingerprint(sources)
         base_streams = probe_streams(pl.parts[0].final, runner)
         base = base_from(base_streams)
@@ -599,11 +1060,24 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
             assembly.append((f"card_part{i}", "card", card, None))
             if p.kept is not None:
                 cut = work / f"part{i}_cut.mp4"
-                _ffmpeg(cut_argv(p.final, cut, p.kept, p.seam, p.tail_cut, base), runner, f"切除 part{i}_cut")
+                reburn = _prepare_hud_reburn(p, p.kept, p.tail_cut, base, work, i, log)
+                if reburn is not None:
+                    clean_top, hud_ass, fonts_dir = reburn
+                    log(f"  重算并重绘 part{i}_cut 顶栏（刀口触及章节区）")
+                    _ffmpeg(_hud_reburn_argv(p.final, clean_top, cut, p.kept, p.seam, p.tail_cut, base, hud_ass, fonts_dir), runner, f"重绘顶栏 part{i}_cut")
+                elif not _smart_splice_part(p.final, cut, p.kept, p.seam, p.tail_cut, base, work, f"part{i}", runner):
+                    _ffmpeg(cut_argv(p.final, cut, p.kept, p.seam, p.tail_cut, base), runner, f"切除 part{i}_cut")
                 assembly.append((f"part{i}_cut", "part", cut, p.member.resolve()))
             elif p.cut is not None:
                 trimmed = work / f"part{i}_trimmed.mp4"
-                _ffmpeg(trim_argv(p.final, trimmed, p.cut, base), runner, f"截尾 part{i}_trimmed")
+                win = [(0.0, float(p.cut))]
+                reburn = _prepare_hud_reburn(p, win, True, base, work, i, log)
+                if reburn is not None:
+                    clean_top, hud_ass, fonts_dir = reburn
+                    log(f"  重算并重绘 part{i}_trimmed 顶栏（刀口触及章节区）")
+                    _ffmpeg(_hud_reburn_argv(p.final, clean_top, trimmed, win, p.seam, True, base, hud_ass, fonts_dir), runner, f"重绘顶栏 part{i}_trimmed")
+                elif not _smart_splice_part(p.final, trimmed, win, p.seam, True, base, work, f"part{i}", runner):
+                    _ffmpeg(trim_argv(p.final, trimmed, p.cut, base), runner, f"截尾 part{i}_trimmed")
                 assembly.append((f"part{i}_trimmed", "part", trimmed, p.member.resolve()))
             else:
                 assembly.append((p.name, "part", p.final, p.member.resolve()))
@@ -648,6 +1122,10 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
              "_note": "总装账本：部件实测窗口，由 pipeline.assemble 生成。别手改——"
                       "qc 的黑帧归因与静音豁免按 offset/duration 定位。"},
             ensure_ascii=False, indent=2))
+        try:
+            _write_collection_chapters(pl, parts, got_total)
+        except (SystemExit, Exception) as exc:
+            log(f"  ⚠ 跳过 {CHAPTERS_TXT} 生成：{exc}")
         log(f"  总长 {got_total:.2f}s，{len(parts)} 个部件，解码零报错；账本 {LEDGER}")
     finally:
         if tmp.exists():

@@ -34,6 +34,10 @@ FPS = paths.conf("video.fps", "24000/1001")
 # 二压素材，源已经压过一次，这里给足码率避免二次劣化
 CRF = paths.conf("video.crf", "18")
 PRESET = paths.conf("video.preset", "medium")
+# 中间临时切片参数：拼成 video.mp4 后最终合成还会经 PRESET/CRF 重编码烧字幕，
+# 中间段改用高码率快编码，避免整片慢编两遍且减少一代有损压缩。
+CUT_CRF = paths.conf("video.cut_crf", "12")
+CUT_PRESET = paths.conf("video.cut_preset", "ultrafast")
 
 # 字幕样式。1080p 下 54px 约等于画面高度的 5%，是竖屏解说号的常见字号；
 # MarginV 90 把字托在下方安全区内，MarginL/R 各 120 保证不顶到边——
@@ -312,7 +316,7 @@ def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
         cmd += ["-t", f"{take:.3f}"]
     cmd += ["-i", str(src), "-frames:v", str(frames),
             "-an", "-sn", "-vf", vf,
-            "-r", FPS, "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+            "-r", FPS, "-c:v", "libx264", "-preset", CUT_PRESET, "-crf", CUT_CRF,
             str(dest)]
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -570,13 +574,14 @@ def apply_subtitle_map(audio: list[dict], table: dict[str, str]) -> list[dict]:
 
 def build_ass(segments: list[dict], audio: list[dict], dest: Path,
               starts: dict[int, float] | None = None,
-              extra: list[tuple[float, float, str]] | None = None) -> Path:
+              extra: list[tuple[float, float, str]] | None = None,
+              hud: tuple[str, list[str]] | None = None) -> Path:
     """口播原文按句上屏。时间轴取自配音每句的真实时长，天然严丝合缝。
 
     试听型的段落起点带音乐段偏移（`starts`：段落号 → 成片起点）；
     `starts` 为 None 时段落连续累计（普通期，行为不变）。
     `extra`（D86）：试看块的原片台词（成片起、止、文本），用 `SRC` 样式上屏；
-    None / 空 = 不加，旁白行与样式表逐字节不变。
+    `hud`：方案 C 章节顶栏 `(样式行, 事件行)`；None = 不加，vo.ass 逐字节不变。
 
     用 ASS 而不是 SRT：SRT 没有样式，字号边距要在滤镜里另外传，
     而 `force_style` 对中文字体名的转义在不同 ffmpeg 构建上表现不一致。
@@ -591,7 +596,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
 Style: VO,{FONT},{FONT_SIZE},&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,{MARGIN_LR},{MARGIN_LR},{MARGIN_V},1
-{SRC_STYLE_LINE if extra else ""}
+{SRC_STYLE_LINE if extra else ""}{hud[0] if hud else ""}
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
@@ -616,6 +621,8 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
             continue
         body = r"\N".join(wrap(_ass_escape(text.strip()), per_line()))
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},SRC,,0,0,0,,{body}")
+    if hud:
+        lines.extend(hud[1])
     dest.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
     return dest
 
@@ -1157,7 +1164,7 @@ def _still_frames(episode: Path, plan: dict,
              "-loop", "1", "-framerate", FPS, "-i", str(frame),
              "-frames:v", str(n),
              "-vf", "format=yuv420p",
-             "-c:v", "libx264", "-preset", "faster", "-crf", CRF,
+             "-c:v", "libx264", "-preset", CUT_PRESET, "-crf", CUT_CRF,
              "-pix_fmt", "yuv420p", "-r", FPS, str(still)],
             check=True, capture_output=True,
         )
@@ -1350,6 +1357,17 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
     clip_frames = segment_clip_frames(segments, seg_span)
     video_frames = sum(clip_frames) + sum(span_frames(st, st + d) for st, d, _v in slots)
 
+    from . import chapters as chapters_mod
+    resolved_chaps = None
+    fonts_dir: Path | None = None
+    if script_path.exists():
+        chap_spec = chapters_mod.parse_script_chapters(script_path)
+        if chap_spec is not None:
+            resolved_chaps = chapters_mod.resolve_chapters(
+                episode, chap_spec, seg_span, music_plan, video_total
+            )
+            fonts_dir = chapters_mod.verify_hud_fonts()
+
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
         # 1. 逐个切片（两道守卫在 cut 里，多线程并行加速）
@@ -1406,6 +1424,17 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             check=True, capture_output=True, cwd=work,
         )
         check_video_track(video, video_frames, video_total)
+        clean_top_tmp: Path | None = None
+        if resolved_chaps is not None:
+            clean_top_tmp = work / "hud_clean_top.mp4"
+            strip_h = chapters_mod.hud_strip_height(H)
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                 "-i", str(video), "-vf", f"crop={W}:{strip_h}:0:0",
+                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+                 "-pix_fmt", "yuv420p", "-r", FPS, str(clean_top_tmp)],
+                check=True, capture_output=True,
+            )
 
         # 3. 拼人声轨。**每段首尾各加一小段淡入淡出再拼。**
         #
@@ -1525,17 +1554,27 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         ass = build_ass(segments, sub_audio, work / "vo.ass",
                         starts=seg_starts,
                         # D86：试看块（音画同源）切自番剧集时，窗口内的原片中文台词一并上屏
-                        extra=_avsync_cues(episode, music_plan) if music_plan is not None else None)
+                        extra=_avsync_cues(episode, music_plan) if music_plan is not None else None,
+                        hud=chapters_mod.build_hud_ass(resolved_chaps, W) if resolved_chaps else None)
+        vf_ass = f"ass={ass.name}"
+        if resolved_chaps is not None and fonts_dir is not None:
+            fonts_link = work / "_fonts"
+            if not fonts_link.exists():
+                try:
+                    os.symlink(fonts_dir.resolve(), fonts_link)
+                except OSError:
+                    shutil.copytree(fonts_dir.resolve(), fonts_link)
+            vf_ass = f"ass={ass.name}:fontsdir=_fonts"
         print(f"  最终合成（13 分钟重编码，约 5-10 分钟）…", file=sys.stderr)
         # 响度归一两遍（2026-08-16 改）：先量整条音频，再线性增益重放——
         # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
         # linear=true + measured_* 保证段落间相对响度与混音时一致。
         loud = _measure_loudnorm(voice)
-        return _write_final(episode, work, [
+        out_video = _write_final(episode, work, [
              "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
              "-i", str(video), "-i", str(voice),
              # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
-             "-vf", f"ass={ass.name}",
+             "-vf", vf_ass,
              "-af", (f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}:linear=true"
                      f":measured_I={loud['input_i']}"
                      f":measured_TP={loud['input_tp']}"
@@ -1546,6 +1585,17 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
              "-map", "0:v:0", "-map", "1:a:0", "-shortest",
              "-movflags", "+faststart"])
+        if resolved_chaps is not None:
+            chap_txt = chapters_mod.format_chapters_txt(
+                chapters_mod.episode_chapter_entries(resolved_chaps), video_total
+            )
+            if chap_txt:
+                paths.atomic_write(episode / "07-chapters.txt", chap_txt)
+            if clean_top_tmp is not None and clean_top_tmp.is_file():
+                agent_dir = episode / "_agent"
+                agent_dir.mkdir(exist_ok=True)
+                os.replace(clean_top_tmp, agent_dir / "hud_clean_top.mp4")
+        return out_video
     finally:
         if keep:
             print(f"  中间文件留在 {work}")
