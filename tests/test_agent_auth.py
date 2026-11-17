@@ -1850,3 +1850,73 @@ def test_google_api_key_syncs_available_models(tmp_path: Path) -> None:
         assert res_fallback["models"] == list(auth.PROVIDER_MAP["google"].default_models)
     finally:
         srv.shutdown()
+
+
+def test_google_request_normalizes_all_tool_schemas() -> None:
+    """Gemini `functionDeclarations` 必须把联合 type、oneOf 与非字符串 enum 规整为 Protobuf Schema 子集。"""
+    from pipeline.agent import tools
+
+    allowed_schema_keys = {
+        "type", "format", "title", "description", "nullable", "enum",
+        "items", "maxItems", "minItems", "properties", "required",
+        "minProperties", "maxProperties", "minimum", "maximum",
+        "minLength", "maxLength", "pattern", "example", "anyOf", "propertyOrdering",
+    }
+
+    def _assert_gemini_schema(node: object, path: str) -> None:
+        assert isinstance(node, dict), f"{path} 必须是 dict"
+        for k, v in node.items():
+            assert k in allowed_schema_keys, f"{path} 包含 Gemini 不支持的 schema 字段 {k!r}"
+            if k == "type":
+                assert isinstance(v, str) and v != "null", f"{path}.type 非法: {v!r}"
+            elif k == "enum":
+                assert node.get("type") == "string", f"{path}.enum 仅允许用于 string，实际 type={node.get('type')!r}"
+                assert isinstance(v, list) and all(isinstance(x, str) for x in v), f"{path}.enum 必须全为字符串: {v!r}"
+            elif k == "properties":
+                assert isinstance(v, dict)
+                for pk, pv in v.items():
+                    _assert_gemini_schema(pv, f"{path}.properties.{pk}")
+            elif k == "items":
+                _assert_gemini_schema(v, f"{path}.items")
+            elif k == "anyOf":
+                assert isinstance(v, list)
+                for idx, branch in enumerate(v):
+                    _assert_gemini_schema(branch, f"{path}.anyOf[{idx}]")
+
+    cfg = llm.LLMConfig(
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-2.5-flash",
+        api_key="AIza-test",
+        api_protocol="google-generative-ai",
+    )
+    payload, _ = llm._google_request(cfg, [{"role": "user", "content": "hi"}], tools.build_tool_schemas(), None, None)
+    decls = {d["name"]: d["parameters"] for d in payload["tools"][0]["functionDeclarations"]}
+    for name, params in decls.items():
+        _assert_gemini_schema(params, name)
+
+    expected_dur = decls["acquire_propose"]["properties"]["candidates"]["items"]["properties"]["expected_dur"]
+    assert expected_dur["type"] == "number" and expected_dur["nullable"] is True
+
+    scale = decls["browser"]["properties"]["scale"]
+    assert scale["type"] == "integer" and "enum" not in scale and "2, 3, 4" in scale["description"]
+
+    chrome_text = decls["chrome"]["properties"]["text"]
+    assert "oneOf" not in chrome_text and chrome_text["anyOf"] == [
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+    ]
+
+    # properties 下的同名参数（如 default / type）不能被当成 schema 关键字删掉，anyOf+[null] 应折叠
+    cleaned = llm._clean_gemini_schema({
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "type": {"type": ["string", "null"], "enum": ["a", "b"]},
+            "default": {"anyOf": [{"type": "integer"}, {"type": "null"}], "description": "默认值"},
+            "mixed": {"type": ["string", "integer"]},
+        },
+    })
+    assert set(cleaned["properties"]) == {"type", "default", "mixed"}
+    assert cleaned["properties"]["type"] == {"type": "string", "nullable": True, "enum": ["a", "b"]}
+    assert cleaned["properties"]["default"] == {"type": "integer", "nullable": True, "description": "默认值"}
+    assert cleaned["properties"]["mixed"] == {"anyOf": [{"type": "string"}, {"type": "integer"}]}

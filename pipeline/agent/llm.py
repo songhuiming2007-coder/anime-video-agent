@@ -1329,17 +1329,112 @@ def _completions_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], 
         raise LLMError(f"LLM 响应缺少 choices[0].message: {exc}") from None
 
 
+_GEMINI_DROP_SCHEMA_KEYS = frozenset({
+    "$schema",
+    "$id",
+    "$ref",
+    "$defs",
+    "definitions",
+    "$comment",
+    "additionalProperties",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "allOf",
+    "not",
+    "const",
+    "default",
+    "uniqueItems",
+    "prefixItems",
+    "patternProperties",
+    "unevaluatedProperties",
+    "dependentRequired",
+    "dependentSchemas",
+    "if",
+    "then",
+    "else",
+    "contentMediaType",
+    "contentEncoding",
+    "examples",
+    "readOnly",
+    "writeOnly",
+    "deprecated",
+})
+
+
 def _clean_gemini_schema(schema: Any) -> Any:
+    """将通用 JSON Schema 规整为 Gemini `FunctionDeclaration.parameters` 接受的 Protobuf Schema 子集。"""
     if isinstance(schema, list):
         return [_clean_gemini_schema(x) for x in schema]
     if not isinstance(schema, dict):
         return schema
-    drop_keys = {"$schema", "additionalProperties", "exclusiveMinimum", "exclusiveMaximum"}
+
     out: dict[str, Any] = {}
+    nullable = bool(schema.get("nullable"))
+    raw_type = schema.get("type")
+    raw_enum = schema.get("enum")
+
     for k, v in schema.items():
-        if k in drop_keys:
+        if k in _GEMINI_DROP_SCHEMA_KEYS or k == "enum":
+            continue
+        if k == "properties" and isinstance(v, dict):
+            # properties 的键是参数名（如 "type" / "default"），不能按 schema 关键字过滤
+            out["properties"] = {pk: _clean_gemini_schema(pv) for pk, pv in v.items()}
+            continue
+        if k == "type":
+            if isinstance(v, list):
+                has_null = "null" in v
+                non_null = [str(x) for x in v if x != "null" and x is not None]
+                if has_null:
+                    nullable = True
+                if len(non_null) == 1:
+                    out["type"] = non_null[0]
+                elif len(non_null) > 1:
+                    out.setdefault("anyOf", [{"type": t} for t in non_null])
+                elif has_null:
+                    out["type"] = "string"
+            elif v is not None:
+                out["type"] = v
+            continue
+        if k == "oneOf" and isinstance(v, list):
+            if "anyOf" not in out:
+                out["anyOf"] = [_clean_gemini_schema(x) for x in v]
+            continue
+        if k == "anyOf" and isinstance(v, list):
+            out["anyOf"] = [_clean_gemini_schema(x) for x in v]
             continue
         out[k] = _clean_gemini_schema(v)
+
+    if isinstance(out.get("anyOf"), list):
+        branches: list[Any] = []
+        for branch in out["anyOf"]:
+            if isinstance(branch, dict) and branch.get("type") == "null":
+                nullable = True
+            else:
+                branches.append(branch)
+        if len(branches) == 1 and isinstance(branches[0], dict) and "type" not in out:
+            desc = out.get("description")
+            merged = dict(branches[0])
+            out.pop("anyOf", None)
+            out.update(merged)
+            if desc and not merged.get("description"):
+                out["description"] = desc
+        else:
+            out["anyOf"] = branches
+
+    if nullable and "type" in out:
+        out["nullable"] = True
+
+    if isinstance(raw_enum, list) and raw_enum:
+        eff_type = str(out.get("type") or (raw_type if isinstance(raw_type, str) else "")).lower()
+        if eff_type == "string" or not eff_type:
+            out["enum"] = [str(x) for x in raw_enum if x is not None]
+        else:
+            # Gemini Schema.enum 仅支持 STRING 类型；非字符串枚举降级写入 description
+            choices = ", ".join(str(x) for x in raw_enum)
+            desc = str(out.get("description") or "").strip()
+            if choices not in desc:
+                out["description"] = f"{desc}（可选值：{choices}）" if desc else f"可选值：{choices}"
+
     return out
 
 
