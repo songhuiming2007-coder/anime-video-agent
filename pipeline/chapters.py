@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths, project
@@ -35,9 +35,9 @@ C_BAR_BG = "&H221C18"
 _HEADING_END = re.compile(r"^##\s*章节结束(.*)$")
 _HEADING_END_BAD = re.compile(r"^#{3,}\s*章节结束")
 _HEADING_CHAP = re.compile(r"^##\s*章节(.*)$")
-_HEADING_CHAP_BAD = re.compile(r"^#{3,}\s*章节(?:\s|[·:：]|$)")
+_HEADING_CHAP_BAD = re.compile(r"^#{3,}\s*章节")
 _HEADING_SUB = re.compile(r"^###\s*子节(.*)$")
-_HEADING_SUB_BAD = re.compile(r"^(?:##|#{4,})\s*子节(?:\s|[·:：]|$)")
+_HEADING_SUB_BAD = re.compile(r"^(?:##|#{4,})\s*子节")
 _HEADING_TITLE_BODY = re.compile(r"^\s*[·:：]\s*(.+?)\s*$")
 _HEADING_SEG = re.compile(r"^##\s*段落\s*(\S+)\s*$")
 _HEADING_MUSIC = re.compile(r"^##\s*音乐段\s*(\S+)")
@@ -780,11 +780,8 @@ def hud_strip_height(video_height: int) -> int:
     return max(16, min(video_height, ((math.ceil(video_height * 96 / 1080) + 15) // 16) * 16))
 
 
-def write_standalone_hud_ass(
-    resolved: ResolvedChapters, dest: Path, width: int = 1920, height: int = 1080,
-) -> Path:
-    """写出仅含方案 C 顶栏的独立 ASS 文件（1920×1080 虚坐标，供合集局部重烧使用）。"""
-    del width, height  # libass 按 PlayResX/PlayResY=1920×1080 等比缩放到任意目标分辨率
+def write_standalone_hud_ass(resolved: ResolvedChapters, dest: Path) -> Path:
+    """写出仅含方案 C 顶栏的独立 ASS 文件（1920×1080 虚坐标，libass 按目标分辨率等比缩放）。"""
     styles, events = build_hud_ass(resolved, 1920)
     content = (
         "[Script Info]\n"

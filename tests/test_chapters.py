@@ -125,6 +125,10 @@ class TestParseAndGuards:
                 "## 章节 · 甲\n## 段落 1\n配音：甲。\n### 章节结束\n",
                 "章节结束层级错误",
             ),
+            (
+                "### 章节粘连无分隔符\n## 段落 1\n配音：甲。\n",
+                "章节标题层级错误",
+            ),
         ],
     )
     def test_语法与结构错误报错且check_script标FAIL(self, tmp_path: Path, bad_body: str, msg: str):

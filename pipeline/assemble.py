@@ -706,16 +706,22 @@ def _smart_splice_part(
             else:
                 kfs_lo = _probe_keyframes(src, a_q, min(c_q, a_q + fade_in + 20.0), runner)
                 kf_pair = next(((t, sz) for t, sz in kfs_lo if t >= a_q + fade_in + 1.0), None)
-                kfs_hi = _probe_keyframes(src, max(a_q, c_q - fade_out - 20.0), c_q - fade_out - 0.5, runner)
-                kf_out = max((t for t, _sz in kfs_hi if t <= c_q - fade_out - 0.5), default=None)
-                if kf_pair is not None and kf_out is not None and kf_out - kf_pair[0] >= 5.0:
+                need_tail = fade_out > 0.0
+                kf_out: float | None = None
+                if need_tail:
+                    kfs_hi = _probe_keyframes(src, max(a_q, c_q - fade_out - 20.0), c_q - fade_out - 0.5, runner)
+                    kf_out = max((t for t, _sz in kfs_hi if t <= c_q - fade_out - 0.5), default=None)
+                if kf_pair is not None and (
+                    (need_tail and kf_out is not None and kf_out - kf_pair[0] >= 5.0)
+                    or (not need_tail and c_q - kf_pair[0] >= 5.0)
+                ):
                     kf_in, kf_in_size = kf_pair
                     idx_kf_in = round((kf_in - start_pts) * fps)
-                    idx_kf_out = round((kf_out - start_pts) * fps)
+                    idx_kf_out = round((kf_out - start_pts) * fps) if need_tail else idx_c
                     head_want = idx_kf_in - idx_a
                     mid_want = idx_kf_out - idx_kf_in
-                    tail_want = idx_c - idx_kf_out
-                    if head_want >= 1 and mid_want >= 24 and tail_want >= 1:
+                    tail_want = (idx_c - idx_kf_out) if need_tail else 0
+                    if head_want >= 1 and mid_want >= 24 and (not need_tail or tail_want >= 1):
                         mv = sp_dir / f"w{idx}_mid.mp4"
                         _ffmpeg([
                             "ffmpeg", "-y", "-loglevel", "error",
@@ -734,11 +740,14 @@ def _smart_splice_part(
                                 "-frames:v", str(head_want), "-an", "-vf", ",".join(h_ops), *enc, str(hv),
                             ], runner, f"头缝重编 {tag}")
                             if _probe_pkt_count(hv, runner) == head_want:
+                                if not need_tail:
+                                    v_segs.extend([hv, mv])
+                                    copy_count += 1
+                                    continue
                                 tv = sp_dir / f"w{idx}_tseam.mp4"
                                 t_ops = ["setpts=PTS-STARTPTS"]
-                                if fade_out > 0:
-                                    fst = max(0.0, tail_want / fps - fade_out)
-                                    t_ops.append(f"fade=t=out:st={fst:.3f}:d={fade_out:g}")
+                                fst = max(0.0, tail_want / fps - fade_out)
+                                t_ops.append(f"fade=t=out:st={fst:.3f}:d={fade_out:g}")
                                 _ffmpeg([
                                     "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{_seek_before_frame(kf_out):.6f}", "-i", str(src),
                                     "-frames:v", str(tail_want), "-an", "-vf", ",".join(t_ops), *enc, str(tv),
@@ -853,16 +862,28 @@ def _prepare_hud_reburn(
     p: Part,
     windows: list[tuple[float, float]],
     tail_cut: bool,
-    b: Base,
     work: Path,
     idx: int,
     log: Callable[[str], None],
 ) -> tuple[Path, Path | None, Path | None] | None:
-    """若卷带净片顶条且刀口切入顶栏区间，按保留窗口重算 ASS 顶栏并返回重烧物料。"""
+    """若刀口切入章节顶栏区间，按保留窗口重算 ASS 顶栏并返回重烧物料。"""
     from . import chapters
+
+    try:
+        resolved = _resolve_member_chapters(p.member)
+        if resolved is None:
+            return None
+        tail_fade = TRIM_FADE_S if tail_cut else 0.0
+        first_rf = p.seam if len(windows) > 1 else tail_fade
+        if windows[0][0] == 0.0 and windows[0][1] - first_rf >= resolved.bar_end - 1e-3:
+            return None
+    except (SystemExit, Exception) as exc:
+        log(f"  ⚠ {p.name} 顶栏重算跳过：{exc}")
+        return None
 
     clean_top = p.member / "_agent" / "hud_clean_top.mp4"
     if not clean_top.is_file():
+        log(f"  ⚠ {p.name} 刀口触及章节顶栏区间，但缺少 _agent/hud_clean_top.mp4，保留原画面顶栏（重跑该卷 render 可补齐）")
         return None
     real_top = clean_top.resolve()
     if not _inside(real_top, p.member.resolve()):
@@ -870,18 +891,12 @@ def _prepare_hud_reburn(
         return None
 
     try:
-        resolved = _resolve_member_chapters(p.member)
-        if resolved is None:
-            return None
-        tail_fade = TRIM_FADE_S if tail_cut else 0.0
-        if len(windows) == 1 and windows[0][0] == 0.0 and windows[0][1] - tail_fade >= resolved.bar_end - 1e-3:
-            return None
         projected = chapters.project_chapters_to_kept(resolved, windows, seam=p.seam, tail_fade=tail_fade)
         if projected is None:
             return real_top, None, None
         fonts_dir = chapters.verify_hud_fonts()
         hud_ass = work / f"part{idx}_hud.ass"
-        chapters.write_standalone_hud_ass(projected, hud_ass, width=b.width, height=b.height)
+        chapters.write_standalone_hud_ass(projected, hud_ass)
         return real_top, hud_ass, fonts_dir
     except (SystemExit, Exception) as exc:
         log(f"  ⚠ {p.name} 顶栏重算跳过：{exc}")
@@ -1060,7 +1075,7 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
             assembly.append((f"card_part{i}", "card", card, None))
             if p.kept is not None:
                 cut = work / f"part{i}_cut.mp4"
-                reburn = _prepare_hud_reburn(p, p.kept, p.tail_cut, base, work, i, log)
+                reburn = _prepare_hud_reburn(p, p.kept, p.tail_cut, work, i, log)
                 if reburn is not None:
                     clean_top, hud_ass, fonts_dir = reburn
                     log(f"  重算并重绘 part{i}_cut 顶栏（刀口触及章节区）")
@@ -1071,7 +1086,7 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
             elif p.cut is not None:
                 trimmed = work / f"part{i}_trimmed.mp4"
                 win = [(0.0, float(p.cut))]
-                reburn = _prepare_hud_reburn(p, win, True, base, work, i, log)
+                reburn = _prepare_hud_reburn(p, win, True, work, i, log)
                 if reburn is not None:
                     clean_top, hud_ass, fonts_dir = reburn
                     log(f"  重算并重绘 part{i}_trimmed 顶栏（刀口触及章节区）")

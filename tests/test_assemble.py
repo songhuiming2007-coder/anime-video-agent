@@ -734,7 +734,7 @@ class TestSmartSplice:
         assert led["parts"][1]["duration"] == pytest.approx(22.0, abs=0.15)
         assert not (c / asm.CHAPTERS_TXT).exists()
 
-    def test_中段切除走关键帧拷贝_且合集chapters精准前移并剔除被切章节(self, root: Path) -> None:
+    def test_中段切除走关键帧拷贝_且合集chapters精准前移并剔除被切章节(self, root: Path, capsys) -> None:
         p = root / "data" / "episodes" / "P-splice-cut"
         v1 = p / "01-a"
         (v1 / "03-audio").mkdir(parents=True)
@@ -784,6 +784,8 @@ class TestSmartSplice:
 
         rec = Rec()
         assert run_main([str(p)], rec) == 0
+        out_txt = capsys.readouterr().out
+        assert "⚠ 01-a 刀口触及章节顶栏区间，但缺少 _agent/hud_clean_top.mp4" in out_txt
         # 卷一：先头段 [0,12) 走 head 拷贝，后段 [15,25) 是 10s 保留窗（a>0 且 kf_out - kf_in >= 5s）也走主体拷贝
         assert any("-noaccurate_seek" in cmd and "-c:v" in cmd and "copy" in cmd for cmd in rec.ffmpeg_calls())
         led = json.loads((c / "04-assembly.json").read_text(encoding="utf-8"))
@@ -826,8 +828,9 @@ class TestSmartSplice:
 
         rec = Rec()
         assert run_main([str(p)], rec) == 0
-        # splice_* 中间目录完成后即时清理
+        # splice_* 中间目录完成后即时清理；末窗直通片尾无淡出，不生成 w1_tseam.mp4
         assert not (c / "work" / "splice_part1").exists()
+        assert not any("w1_tseam.mp4" in a for cmd in rec.ffmpeg_calls() for a in cmd)
 
         part_cut = c / "work" / "part1_cut.mp4"
         fps = float(Fraction("24000/1001"))
@@ -940,7 +943,7 @@ class TestSmartSplice:
         raw_v1.unlink()
         make_cover(v1 / "08-cover.jpg")
 
-        # 卷二仅裁余韵（cuts 不碰章节区）：应跳过重烧、走 _smart_splice_part 快速通道
+        # 卷二仅删 bar_end 之后片段（多窗口但全部切口在顶栏结束之后）：应跳过重烧、走 _smart_splice_part 快速通道
         v2 = p / "02-余韵卷"
         (v2 / "03-audio").mkdir(parents=True)
         (v2 / "_agent").mkdir(parents=True)
@@ -968,17 +971,21 @@ class TestSmartSplice:
         c.mkdir()
         (c / "01-topic.md").write_text("# 选题\n时长目标: 0.5-2分钟\n", encoding="utf-8")
         (c / "cuts.json").write_text(
-            json.dumps({"volumes": {v1_name: {"remove": [[8.0, 12.0]], "tail_at": 24.0}}}),
+            json.dumps({"volumes": {
+                v1_name: {"remove": [[8.0, 12.0]], "tail_at": 24.0},
+                "02-余韵卷": {"remove": [[22.0, 24.0]]},
+            }}),
             encoding="utf-8",
         )
         (p / "00-project.md").write_text(
-            table([(v1_name, "完整保留"), ("02-余韵卷", "余韵1秒")]), encoding="utf-8"
+            table([(v1_name, "完整保留"), ("02-余韵卷", "完整保留")]), encoding="utf-8"
         )
 
         rec = Rec()
         assert run_main([str(p)], rec) == 0
-        # 卷一触发了重烧（生成 part1_hud.ass），卷二走关键帧直拷（w0_head.mp4）
+        # 卷一触发了重烧（part1_hud.ass），卷二虽为多窗口但切口在 bar_end 后故跳过重烧（无 part2_hud.ass）并走关键帧直拷
         assert (c / "work" / "part1_hud.ass").is_file()
+        assert not (c / "work" / "part2_hud.ass").exists()
         assert any("-c:v" in cmd and "copy" in cmd and any("w0_head.mp4" in a for a in cmd) for cmd in rec.ffmpeg_calls())
 
         # 检查卷一重烧后成片（约在总长 3s + 6s = 9s，即仍在 01 开篇结尾附近）：旧红块被擦除、暖金条与底部绿字幕同时存在
