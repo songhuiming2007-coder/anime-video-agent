@@ -1796,3 +1796,57 @@ def test_residual_minor_items_hardening(tmp_path: Path, monkeypatch: pytest.Monk
         assert "thoughtSignature" not in cross_req["contents"][1]["parts"][0]
     finally:
         srv.shutdown()
+
+
+def test_google_api_key_syncs_available_models(tmp_path: Path) -> None:
+    """绑定 Google Gemini API Key 时应从 `/models` 同步支持 generateContent 的全量模型，失败时回退到 default_models。"""
+    seen_headers: list[str | None] = []
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        seen_headers.append(req.headers.get("x-goog-api-key"))
+        if req.path.startswith("/v1beta/models"):
+            if "pageToken=p2" in req.path:
+                _send_json(req, {
+                    "models": [
+                        {"name": "models/gemini-4-hydrogen", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                        {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]},
+                    ]
+                })
+                return
+            _send_json(req, {
+                "models": [
+                    {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                ],
+                "nextPageToken": "p2",
+            })
+            return
+        _send_json(req, {"error": {"message": "not found"}}, status=404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        res = auth.complete_auth_flow(
+            "google",
+            {"mode": "api_key", "api_key": "AIza-test-sync", "base_url": f"{base}/v1beta"},
+            root=tmp_path,
+        )
+        assert res["ok"] is True
+        assert seen_headers == ["AIza-test-sync", "AIza-test-sync"]
+        assert res["models"] == ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-4-hydrogen"]
+        listed = auth.list_authenticated_models(root=tmp_path)
+        assert listed == [
+            "google/gemini-3.5-flash",
+            "google/gemini-3.8-flash",
+            "google/gemini-4-hydrogen",
+        ]
+
+        # 探测失败时回退到 default_models
+        res_fallback = auth.complete_auth_flow(
+            "google",
+            {"mode": "api_key", "api_key": "AIza-fail", "base_url": f"{base}/bad"},
+            root=tmp_path,
+        )
+        assert res_fallback["models"] == list(auth.PROVIDER_MAP["google"].default_models)
+    finally:
+        srv.shutdown()

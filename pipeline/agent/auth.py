@@ -1102,6 +1102,56 @@ def _sync_proxy_models(base_url: str, api_key: str, root: Path | None) -> list[s
     return ids
 
 
+def _sync_google_generative_models(base_url: str, api_key: str) -> list[str]:
+    """查询 Google Gemini REST `/models` 端点并提取支持 `generateContent` 的模型 ID。"""
+    base = f"{base_url.rstrip('/')}/models"
+    headers = {"Accept": "application/json", "x-goog-api-key": api_key}
+    ids: list[str] = []
+    seen: set[str] = set()
+    page_token: str | None = None
+    for _ in range(5):
+        params = {"pageSize": "1000"}
+        if page_token:
+            params["pageToken"] = page_token
+        url = f"{base}?{urllib.parse.urlencode(params)}"
+        data = _http_json(url, method="GET", headers=headers, timeout=5.0)
+        raw_items = data.get("models")
+        if not isinstance(raw_items, list):
+            break
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if not isinstance(methods, list) or "generateContent" not in methods:
+                continue
+            raw_name = item.get("name")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                continue
+            mid = raw_name.strip()
+            if mid.startswith("models/"):
+                mid = mid[len("models/"):]
+            if mid and mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
+        next_token = data.get("nextPageToken")
+        if not isinstance(next_token, str) or not next_token.strip():
+            break
+        page_token = next_token.strip()
+    return sorted(ids)
+
+
+def _sync_api_key_models(spec: ProviderSpec, base_url: str, api_key: str) -> list[str]:
+    """为 API Key 直连服务商同步可用模型列表；探测失败时回退到 `spec.default_models`。"""
+    if spec.api_protocol == "google-generative-ai" and api_key:
+        try:
+            synced = _sync_google_generative_models(base_url, api_key)
+            if synced:
+                return synced
+        except (AuthError, OSError, ValueError):
+            pass
+    return list(spec.default_models)
+
+
 _SECRET_EXTRA_KEYS = frozenset({"aws_secret_access_key", "aws_session_token"})
 _MASKED_EXTRA_KEYS = frozenset({"aws_access_key_id", "credentials_path", "enterprise_domain", "project_id"})
 _NON_SECRET_ENV_VARS = frozenset({
@@ -1761,7 +1811,7 @@ def complete_auth_flow(
             raise AuthError("请填写 API Key")
         raw_base = str(data.get("base_url") or "").strip()
         base_url = _resolve_effective_base_url(spec, raw_base, extra_cfg)
-        models = list(spec.default_models)
+        models = list(spec.default_models) if data.get("skip_probe") else _sync_api_key_models(spec, base_url, api_key)
         if spec.id == "github-copilot":
             base_entry: dict[str, Any] = {
                 "type": "oauth",
