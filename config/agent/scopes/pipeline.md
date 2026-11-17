@@ -15,7 +15,7 @@
 ## 配音与读音纠错
 - 重配之前先列清单：哪几段重配、为什么，其余段复用，由人定范围。人改了一段文字，只重配那一段；读音表的改动按 `tts` 的复用判据只重配受影响的段。
 - 首次配音前问人本地还是云端；`01-topic.md` 写了 `配音: 本地|云端` 就不问。之后的重配与 apply 跟随本期 manifest 的引擎侧。
-- 云端配完不提议关机：实例留到 03.5 纠错做完、人说关再 `cloud down`，保活做法见 runbook 03「配完不关机」。
+- 云端配完先留实例到 03.5 纠错完；但人说「配音完全没有问题」「这部分素材已达标结束」或判断长期不用 GPU 时，主动申请发 `cloud down` 关闭对应 Colab session（弹卡，详 production.md）。
 - 人报读错的字：照 `docs/runbook/03.5-voice-check.md`「给 agent 的边界」的五步做。纠错写在读音表（`corrections add` / `corrections global`），不改稿件；替换读音先 `corrections check` 自查；同音字只看音不看义。
 - 顺听结论只能来自人耳，严禁机器代说「这版配音没问题可以过」。段时长与音频属性只能由人从本地粘贴提供。
 
@@ -33,5 +33,5 @@
 - 封面：标题候选人定；叠字出图纪律见 director.md 视觉条。横 16:9、竖 9:14 两版。
 - 成片交人前至少听一遍开头和最长的那段；十一项质检全绿不代表能听。
 - `clips` 之后如果审看页有 short / no_source，先 `scout` 再补料，不拿不相干镜头硬塞。
-- 云端作业支持 `autodl`、`colab`（SSH/cloudflared + Camoufox 无头自动拉起）与 `colab-drive`（Google Drive 队列）；先问人再开，切换走 `cloud use <后端>`（弹卡）或加 `--provider <后端>`。Colab 完成一次 `cloud connect --provider colab --browser-login` 后，`cloud up --provider colab` 自动无头开机并刷新隧道，不必手动点运行、复制域名或自己 ssh。
+- 云端支持 `autodl`、`colab`（SSH/cloudflared + Camoufox 无头拉起）与 `colab-drive`；先问再开，切换走 `cloud use <后端>`（弹卡）或 `--provider`。Colab 完成 `cloud connect --provider colab --browser-login` 后，`cloud up --provider colab` 自动开机并刷新隧道，不必手动操作网页或 ssh。
 - 顶层定稿封面只在人点名用哪一版之后才转过去，覆盖已有文件前先说一句。
