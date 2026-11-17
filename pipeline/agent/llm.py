@@ -1643,7 +1643,8 @@ def _google_request(
             from pipeline.agent.compact import THINKING_BUDGETS
 
             budget = THINKING_BUDGETS.get(lvl, 8192)
-            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": budget, "includeThoughts": True}}
+            # 不附带 includeThoughts：AVA 不展示思维摘要，且 gemini-4-hydrogen 等模型在长上下文开启 includeThoughts 时易触发 MALFORMED_RESPONSE 空回包
+            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": budget}}
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cfg.api_protocol == "google-vertex" and not cfg.api_key:
@@ -1702,39 +1703,111 @@ def _collect_google_candidate(
             calls.append(tc_item)
 
 
-def _google_json_to_message(body: dict[str, Any] | list[Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    chunks = body if isinstance(body, list) else [body]
-    texts: list[str] = []
-    thinkings: list[str] = []
-    thinking_blocks: list[dict[str, Any]] = []
-    calls: list[dict[str, Any]] = []
-    usage_raw: dict[str, Any] | None = None
-    for chunk in chunks:
-        if not isinstance(chunk, dict):
+_GOOGLE_RETRYABLE_FINISH_REASONS = frozenset({
+    "MALFORMED_RESPONSE",
+    "MALFORMED_FUNCTION_CALL",
+    "UNEXPECTED_TOOL_CALL",
+    "OTHER",
+})
+_GOOGLE_BLOCKED_FINISH_REASONS = frozenset({
+    "SAFETY",
+    "RECITATION",
+    "LANGUAGE",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+    "IMAGE_SAFETY",
+    "IMAGE_PROHIBITED_CONTENT",
+    "IMAGE_RECITATION",
+    "NO_IMAGE",
+})
+
+
+def _new_google_state() -> dict[str, Any]:
+    return {
+        "texts": [],
+        "thinkings": [],
+        "thinking_blocks": [],
+        "calls": [],
+        "usage_raw": None,
+        "finish_reason": None,
+        "finish_message": None,
+        "block_reason": None,
+        "block_message": None,
+    }
+
+
+def _consume_google_event(ev: dict[str, Any], state: dict[str, Any]) -> None:
+    if isinstance(ev.get("error"), dict):
+        raise _stream_error(ev["error"])
+    if isinstance(ev.get("usageMetadata"), dict):
+        state["usage_raw"] = ev["usageMetadata"]
+    pf = ev.get("promptFeedback")
+    if isinstance(pf, dict) and pf.get("blockReason"):
+        state["block_reason"] = str(pf["blockReason"])
+        if pf.get("blockReasonMessage"):
+            state["block_message"] = str(pf["blockReasonMessage"])
+    for cand in ev.get("candidates") or []:
+        if not isinstance(cand, dict):
             continue
-        if isinstance(chunk.get("error"), dict):
-            raise _stream_error(chunk["error"])
-        if isinstance(chunk.get("usageMetadata"), dict):
-            usage_raw = chunk["usageMetadata"]
-        for cand in chunk.get("candidates") or []:
-            if isinstance(cand, dict):
-                _collect_google_candidate(cand, texts, thinkings, thinking_blocks, calls)
-    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
-    if thinkings:
-        msg["reasoning_content"] = "".join(thinkings) or None
-    if thinking_blocks:
-        msg["thinking_blocks"] = thinking_blocks
+        if cand.get("finishReason"):
+            state["finish_reason"] = str(cand["finishReason"])
+            if cand.get("finishMessage"):
+                state["finish_message"] = str(cand["finishMessage"])
+        _collect_google_candidate(
+            cand,
+            state["texts"],
+            state["thinkings"],
+            state["thinking_blocks"],
+            state["calls"],
+        )
+
+
+def _finalize_google_message(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    content_text = "".join(state["texts"])
+    calls = state["calls"]
+    finish_reason = state["finish_reason"]
+    finish_msg = state["finish_message"]
+    block_reason = state["block_reason"]
+    block_msg = state["block_message"]
+
+    if finish_reason in _GOOGLE_RETRYABLE_FINISH_REASONS and (not calls or not content_text):
+        suffix = f": {finish_msg}" if finish_msg else ""
+        raise LLMError(f"Gemini 返回异常终止 ({finish_reason}){suffix}", retryable=True)
+
+    if not content_text and not calls:
+        if block_reason:
+            suffix = f": {block_msg}" if block_msg else ""
+            raise LLMError(f"Gemini 拒绝请求 ({block_reason}){suffix}", retryable=False)
+        if finish_reason in _GOOGLE_BLOCKED_FINISH_REASONS:
+            suffix = f": {finish_msg}" if finish_msg else ""
+            raise LLMError(f"Gemini 终止输出 ({finish_reason}){suffix}", retryable=False)
+        if finish_reason and finish_reason != "STOP":
+            suffix = f": {finish_msg}" if finish_msg else ""
+            raise LLMError(f"Gemini 返回异常终止 ({finish_reason}){suffix}", retryable=True)
+        raise LLMError("Gemini 返回空响应", retryable=True)
+
+    msg: dict[str, Any] = {"role": "assistant", "content": content_text or None}
+    if state["thinkings"]:
+        msg["reasoning_content"] = "".join(state["thinkings"]) or None
+    if state["thinking_blocks"]:
+        msg["thinking_blocks"] = state["thinking_blocks"]
     if calls:
         msg["tool_calls"] = calls
-    return msg, _normalize_google_usage(usage_raw)
+    return msg, _normalize_google_usage(state["usage_raw"])
+
+
+def _google_json_to_message(body: dict[str, Any] | list[Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    chunks = body if isinstance(body, list) else [body]
+    state = _new_google_state()
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            _consume_google_event(chunk, state)
+    return _finalize_google_message(state)
 
 
 def _assemble_google_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    texts: list[str] = []
-    thinkings: list[str] = []
-    thinking_blocks: list[dict[str, Any]] = []
-    calls: list[dict[str, Any]] = []
-    usage_raw: dict[str, Any] | None = None
+    state = _new_google_state()
     saw_event = False
     for raw in lines:
         line = raw.strip()
@@ -1750,23 +1823,10 @@ def _assemble_google_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[
         if not isinstance(ev, dict):
             continue
         saw_event = True
-        if isinstance(ev.get("error"), dict):
-            raise _stream_error(ev["error"])
-        if isinstance(ev.get("usageMetadata"), dict):
-            usage_raw = ev["usageMetadata"]
-        for cand in ev.get("candidates") or []:
-            if isinstance(cand, dict):
-                _collect_google_candidate(cand, texts, thinkings, thinking_blocks, calls)
+        _consume_google_event(ev, state)
     if not saw_event:
         raise LLMError("Gemini 流式响应未收到有效数据", retryable=True)
-    msg: dict[str, Any] = {"role": "assistant", "content": "".join(texts) or None}
-    if thinkings:
-        msg["reasoning_content"] = "".join(thinkings) or None
-    if thinking_blocks:
-        msg["thinking_blocks"] = thinking_blocks
-    if calls:
-        msg["tool_calls"] = calls
-    return msg, _normalize_google_usage(usage_raw)
+    return _finalize_google_message(state)
 
 
 def _resolve_aws_iam_credentials(extra_config: dict[str, str]) -> tuple[str, str, str | None, str]:

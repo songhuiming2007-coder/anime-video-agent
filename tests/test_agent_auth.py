@@ -1920,3 +1920,44 @@ def test_google_request_normalizes_all_tool_schemas() -> None:
     assert cleaned["properties"]["type"] == {"type": "string", "nullable": True, "enum": ["a", "b"]}
     assert cleaned["properties"]["default"] == {"type": "integer", "nullable": True, "description": "默认值"}
     assert cleaned["properties"]["mixed"] == {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+
+
+def test_google_stream_rejects_malformed_blocked_and_empty_responses() -> None:
+    """Gemini 返回 MALFORMED_RESPONSE / 安全拦截 / 空回复时不能静默当成正常完成，应按可重试或硬拒抛 LLMError。"""
+    cfg = llm.LLMConfig(
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-4-hydrogen",
+        api_key="AIza-test",
+        api_protocol="google-generative-ai",
+        reasoning_effort="medium",
+    )
+    req_payload, _ = llm._google_request(cfg, [{"role": "user", "content": "hi"}], None, None, None)
+    assert req_payload["generationConfig"] == {"thinkingConfig": {"thinkingBudget": 8192}}
+
+    with pytest.raises(llm.LLMError, match="MALFORMED_RESPONSE") as exc_mal:
+        llm._assemble_google_stream(iter([
+            'data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig"}]},"finishReason":"MALFORMED_RESPONSE"}]}\n',
+        ]))
+    assert exc_mal.value.retryable is True
+
+    with pytest.raises(llm.LLMError, match="MALFORMED_FUNCTION_CALL") as exc_mfc:
+        llm._google_json_to_message({
+            "candidates": [{"content": {"parts": [{"text": "先查一下"}]}, "finishReason": "MALFORMED_FUNCTION_CALL"}],
+        })
+    assert exc_mfc.value.retryable is True
+
+    with pytest.raises(llm.LLMError, match="SAFETY") as exc_safe:
+        llm._assemble_google_stream(iter([
+            'data: {"candidates":[{"finishReason":"SAFETY"}]}\n',
+        ]))
+    assert exc_safe.value.retryable is False
+
+    with pytest.raises(llm.LLMError, match="PROHIBITED_CONTENT") as exc_blk:
+        llm._google_json_to_message({"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}})
+    assert exc_blk.value.retryable is False
+
+    with pytest.raises(llm.LLMError, match="空响应") as exc_empty:
+        llm._assemble_google_stream(iter([
+            'data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}]}\n',
+        ]))
+    assert exc_empty.value.retryable is True
