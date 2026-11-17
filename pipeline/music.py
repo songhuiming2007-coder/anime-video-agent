@@ -33,7 +33,7 @@ from . import paths
 # 音乐低于人声 3-5dB。待 2026-08-16 版试听后按听感微调（-16 温和/-19 当前）。
 FOREGROUND_LUFS = -19.0
 
-_HEAD = re.compile(r"^##\s*(段落|音乐段)\s*(\S+)", re.M)
+_HEAD = re.compile(r"^##\s*(段落|音乐段)\s*([^\s·:：]+)", re.M)
 _TITLE_ONLY = re.compile(r"^音乐[：:]\s*`(.+?)`", re.M)
 _TIME_RANGE = re.compile(r"`(.+?)`.+?(\d+):(\d{2})-(?:(\d+):(\d{2})|结束)")
 _TRANSITION = re.compile(r"^过渡[：:]\s*(.+)$", re.M)
@@ -65,8 +65,11 @@ _STATUS_BGM = re.compile(r"^状态[：:]\s*背景铺底", re.M)
 # 也允许 `MM:SS-MM:SS` 显式封顶（封顶是明示意图，截断留空隙不算静默失败）。
 _BGM_TIME = re.compile(r"`(.+?)`.+?(\d+):(\d{2})(?:-(?:(\d+):(\d{2})|结束))?\s*$", re.M)
 # 可选展示歌名覆盖（主要用于音画同源试看块：`曲名: 六等星の夜` 或 `曲名: 无`）
-_MUSIC_DISPLAY = re.compile(r"^曲名[：:]\s*(.+?)\s*$", re.M)
-_HEADING_WITH_TITLE = re.compile(r"^##\s*音乐段\s*(\S+)(?:[ \t]*[·:：][ \t]*(.+?))?[ \t]*$", re.M)
+_MUSIC_DISPLAY = re.compile(r"^曲名[：:][ \t]*(.*?)[ \t]*$", re.M)
+_HEADING_WITH_TITLE = re.compile(
+    r"^##\s*音乐段\s*([^\s·:：]+)(?:[ \t]*(?:[·:：][ \t]*|[ \t]+)(.*?))?[ \t]*$",
+    re.M,
+)
 
 
 @dataclass
@@ -146,9 +149,16 @@ def parse_script_music(path: Path) -> list[MusicBlock]:
         nxt_m = re.search(r"\n(?:##\s+|###\s*子节)", text[m.end():])
         nxt = m.end() + nxt_m.start() if nxt_m else -1
         body = text[m.end():nxt] if nxt != -1 else text[m.end():]
-        heading_title = m.group(2).strip() if m.group(2) else None
+        heading_title = (m.group(2) or "").strip() or None
         disp_m = _MUSIC_DISPLAY.search(body)
-        music_display = disp_m.group(1).strip() if disp_m else None
+        if disp_m:
+            music_display = disp_m.group(1).strip()
+            if not music_display:
+                raise SystemExit(
+                    f"FAIL 音乐段 {m.group(1)} 的 `曲名:` 不能为空（隐藏请写 `曲名: 无`）"
+                )
+        else:
+            music_display = None
 
         if _STATUS_BGM.search(body):
             # 背景铺底块：无前景、零时长，只声明「从这里起铺哪首到哪」。
@@ -486,8 +496,10 @@ def build_timeline(episode: Path, manifest: dict, bgm: dict, script: Path | None
                 f"槽 {hit[0]:.1f}-{hit[1]:.1f}s，收尾 {at:.1f}-{at + nat_dur:.1f}s。\n"
                 f"     收尾段无法中途静音，槽位落进去等于现场原声被音乐床压着播。\n"
                 f"     把同源槽挪到最后一段落之前，或删掉这段自然收尾。")
+        prev_disp = chain[-1].get("music_display") if chain else (evs[-1].get("music_display") if evs else None)
+        disp_extra = {"music_display": prev_disp} if prev_disp else {}
         evs.append({"t0": tail_t, "t1": None, "vol": "natural", "at": at,
-                    "visual": ovis})
+                    "visual": ovis, **disp_extra})
 
     # 解析曲目信息 + 修正 t1=None（曲目结束）
     tracks = []

@@ -460,7 +460,7 @@ def parse_music_reuse(text: str) -> dict[str, list[str]]:
     人定复用声明改挂在试听块上，以它的 `源片原声:`/`画面:` 起点作「本处」锚点等价物。
     """
     out: dict[str, list[str]] = {}
-    heads = list(re.finditer(r"^##\s*音乐段\s*(\S+)", text, re.M))
+    heads = list(re.finditer(r"^##\s*音乐段\s*([^\s·:：]+)", text, re.M))
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
         nxt = re.search(r"^##\s*段落", text[m.end():end], re.M)

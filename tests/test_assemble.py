@@ -951,7 +951,7 @@ class TestSmartSplice:
         (v2 / "02-script.md").write_text(
             "## 章节 · 开场\n## 段落 1\n配音：一。\n\n"
             "## 章节 · 终幕\n## 段落 2\n配音：二。\n\n"
-            "## 章节结束\n## 音乐段 M1\n音乐: `短曲` 完整版 00:00-00:05\n状态: 前景试听，旁白停止\n过渡: 淡出\n",
+            "## 章节结束\n## 音乐段 M1\n音乐: `短曲` 完整版 00:00-00:05\n状态: 前景试听，旁白停止\n过渡: 淡出\n曲名: 无\n",
             encoding="utf-8",
         )
         (v2 / "03-audio" / "manifest.json").write_text(
@@ -1010,3 +1010,65 @@ class TestSmartSplice:
         assert "00:00 第1卷 · 初音编年" in txt
         assert "00:11 02 章首被切" in txt
         assert "04 尾声" not in txt
+
+    def test_旧96px净顶条拦截_与章节切空或无章节但有音乐浮标照常重烧(self, root: Path) -> None:
+        """[M2] 高度不足的旧 hud_clean_top.mp4 不静默残留鬼影；章节全切空或无章节但音乐仍在时照常重烧音乐浮标。"""
+        p = root / "data" / "episodes" / "P-hud-music-reburn"
+        v1 = p / "01-a"
+        (v1 / "03-audio").mkdir(parents=True)
+        (v1 / "_agent").mkdir(parents=True)
+        (v1 / "01-topic.md").write_text("# 选题\n番: 测试番\n", encoding="utf-8")
+        (v1 / "02-script.md").write_text(
+            "## 章节 · 01 短开场\n## 段落 1\n配音：一。\n\n"
+            "## 章节 · 02 前奏\n## 段落 2\n配音：二。\n\n"
+            "## 章节结束\n"
+            "## 音乐段 M1 · 尾曲试听\n"
+            "源片原声: `Aimer SP02` 00:00-00:12.00\n"
+            "状态: 前景试听，旁白停止\n音画同源: 是\n过渡: 淡出\n画面: 同源\n曲名: 六等星の夜\n\n"
+            "## 段落 3\n配音：三。\n",
+            encoding="utf-8",
+        )
+        (v1 / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": [
+                {"index": 1, "duration": 4.0},
+                {"index": 2, "duration": 4.0},
+                {"index": 3, "duration": 6.0},
+            ]}),
+            encoding="utf-8",
+        )
+        _make_gop_video(v1 / "05-final.mp4", 26.0)
+        make_cover(v1 / "08-cover.jpg")
+        # 写入旧版 96px（在 640x360 为 32px < 现行 48px）的 hud_clean_top.mp4，应被拦截并打清晰提示
+        ffmpeg("-f", "lavfi", "-i", "color=c=#183070:s=640x32:r=24000/1001:d=26.0",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24000/1001", str(v1 / "_agent" / "hud_clean_top.mp4"))
+
+        real_fonts = Path(__file__).resolve().parents[1] / "data" / "fonts"
+        if real_fonts.is_dir():
+            (root / "data" / "fonts").symlink_to(real_fonts.resolve())
+
+        base = asm.Base(640, 360, "24000/1001", "yuv420p", 2, "stereo", "48000")
+        part = asm.Part(1, "01-a", v1, v1 / "05-final.mp4", v1 / "08-cover.jpg", None, kept=[(8.0, 22.0)], seam=0.5, tail_cut=True)
+        work = p / "_work"
+        work.mkdir()
+        logs: list[str] = []
+        assert asm._prepare_hud_reburn(part, part.kept, True, work, 1, logs.append, base=base) is None
+        assert any("小于现行净顶条 640x48" in line for line in logs), f"actual logs={logs}"
+
+        # 替换为正确高度 48px 的 clean_top：保留窗口 [8, 22) 把 0-8s 两章全切空，但音乐浮标仍在 [8, 20) 内 → 照常产出 hud_ass
+        ffmpeg("-f", "lavfi", "-i", "color=c=#183070:s=640x48:r=24000/1001:d=26.0",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24000/1001", str(v1 / "_agent" / "hud_clean_top.mp4"))
+        reburn = asm._prepare_hud_reburn(part, part.kept, True, work, 1, logs.append, base=base)
+        assert reburn is not None
+        _, hud_ass, _ = reburn
+        assert hud_ass is not None
+        ass_txt = hud_ass.read_text(encoding="utf-8")
+        assert "六等星の夜" in ass_txt and "HUD_MUSIC" in ass_txt
+        # 章节已被全切空，音乐浮标应使用无顶栏纵坐标 y0=30（即 x_right-18=1866, mid_y=52）
+        assert "pos(1866.0,52.0)" in ass_txt
+
+        # 切口仅落在 bar_end (8.0s) 之后的片尾音乐区间 [12, 16) 内：也必须触发重烧（带顶栏 pos x_right-18=1878, mid_y=98）
+        part_after_bar = asm.Part(1, "01-a", v1, v1 / "05-final.mp4", v1 / "08-cover.jpg", None, kept=[(0.0, 12.0), (16.0, 22.0)], seam=0.5, tail_cut=True)
+        reburn2 = asm._prepare_hud_reburn(part_after_bar, part_after_bar.kept, True, work, 2, logs.append, base=base)
+        assert reburn2 is not None and reburn2[1] is not None
+        ass_txt2 = reburn2[1].read_text(encoding="utf-8")
+        assert "pos(1878.0,98.0)" in ass_txt2 and "六等星の夜" in ass_txt2

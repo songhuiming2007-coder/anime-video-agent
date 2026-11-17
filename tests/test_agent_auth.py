@@ -1914,16 +1914,30 @@ def test_google_request_normalizes_all_tool_schemas() -> None:
             "type": {"type": ["string", "null"], "enum": ["a", "b"]},
             "default": {"anyOf": [{"type": "integer"}, {"type": "null"}], "description": "默认值"},
             "mixed": {"type": ["string", "integer"]},
+            "multi_nullable": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]},
+            "only_null": {"anyOf": [{"type": "null"}]},
+            "bare_str_enum": {"enum": ["x", "y"]},
+            "bare_int_enum": {"enum": [1, 2]},
         },
     })
-    assert set(cleaned["properties"]) == {"type", "default", "mixed"}
+    assert set(cleaned["properties"]) == {
+        "type", "default", "mixed", "multi_nullable", "only_null", "bare_str_enum", "bare_int_enum",
+    }
     assert cleaned["properties"]["type"] == {"type": "string", "nullable": True, "enum": ["a", "b"]}
     assert cleaned["properties"]["default"] == {"type": "integer", "nullable": True, "description": "默认值"}
     assert cleaned["properties"]["mixed"] == {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+    assert cleaned["properties"]["multi_nullable"] == {
+        "anyOf": [{"type": "string"}, {"type": "integer"}],
+        "nullable": True,
+    }
+    assert cleaned["properties"]["only_null"] == {"type": "string", "nullable": True}
+    assert cleaned["properties"]["bare_str_enum"] == {"type": "string", "enum": ["x", "y"]}
+    _assert_gemini_schema(cleaned["properties"]["bare_str_enum"], "bare_str_enum")
+    assert cleaned["properties"]["bare_int_enum"] == {"description": "可选值：1, 2"}
 
 
 def test_google_stream_rejects_malformed_blocked_and_empty_responses() -> None:
-    """Gemini 返回 MALFORMED_RESPONSE / 安全拦截 / 空回复时不能静默当成正常完成，应按可重试或硬拒抛 LLMError。"""
+    """Gemini 返回 MALFORMED_RESPONSE / 安全拦截 / 空回复 / 中途断流时不能静默当成正常完成，应按可重试或硬拒抛 LLMError。"""
     cfg = llm.LLMConfig(
         base_url="https://generativelanguage.googleapis.com/v1beta",
         model="gemini-4-hydrogen",
@@ -1939,6 +1953,34 @@ def test_google_stream_rejects_malformed_blocked_and_empty_responses() -> None:
             'data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig"}]},"finishReason":"MALFORMED_RESPONSE"}]}\n',
         ]))
     assert exc_mal.value.retryable is True
+
+    # 文本 + functionCall 同时存在时，MALFORMED_FUNCTION_CALL 仍必须报错，不能吞掉残缺工具批
+    with pytest.raises(llm.LLMError, match="MALFORMED_FUNCTION_CALL") as exc_mixed_mal:
+        llm._google_json_to_message({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "先查一下"},
+                        {"functionCall": {"name": "read_file", "args": {"path": "a.md"}}},
+                    ],
+                },
+                "finishReason": "MALFORMED_FUNCTION_CALL",
+            }],
+        })
+    assert exc_mixed_mal.value.retryable is True
+
+    # SSE 半截断流（无 finishReason）必须可重试报错
+    with pytest.raises(llm.LLMError, match="缺少 finishReason") as exc_trunc:
+        llm._assemble_google_stream(iter([
+            'data: {"candidates":[{"content":{"parts":[{"text":"说到一半"}]}}]}\n',
+        ]))
+    assert exc_trunc.value.retryable is True
+
+    # finishReason="OTHER" 且已有完整正文时正常放行，不白白重跑
+    msg_other, _ = llm._google_json_to_message({
+        "candidates": [{"content": {"parts": [{"text": "完整答复"}]}, "finishReason": "OTHER"}],
+    })
+    assert msg_other["content"] == "完整答复"
 
     with pytest.raises(llm.LLMError, match="MALFORMED_FUNCTION_CALL") as exc_mfc:
         llm._google_json_to_message({

@@ -835,13 +835,11 @@ def _resolve_member_hud_info(member: Path):
     sp = member / SCRIPT
     if not sp.is_file():
         return None, ()
-    chap_spec = chapters.parse_script_chapters(sp)
-    if chap_spec is None:
-        return None, ()
     mf_path = member.joinpath(*MANIFEST)
     if not mf_path.is_file():
         return None, ()
     manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+    chap_spec = chapters.parse_script_chapters(sp)
     mplan = None
     bplan = None
     if music.parse_script_music(sp):
@@ -859,8 +857,13 @@ def _resolve_member_hud_info(member: Path):
             t_acc += dur
         vol_total = t_acc
         bplan = render._bgm_plan(member, vol_total, starts)
-    resolved = chapters.resolve_chapters(member, chap_spec, seg_span, mplan, vol_total, check_widths=False)
+    resolved = (
+        chapters.resolve_chapters(member, chap_spec, seg_span, mplan, vol_total, check_widths=False)
+        if chap_spec is not None else None
+    )
     music_spans = chapters.collect_music_hud_spans(mplan, bplan, vol_total)
+    if resolved is None and not music_spans:
+        return None, ()
     return resolved, music_spans
 
 
@@ -875,17 +878,24 @@ def _prepare_hud_reburn(
     work: Path,
     idx: int,
     log: Callable[[str], None],
+    *,
+    base: Base | None = None,
+    runner: Runner = default_runner,
 ) -> tuple[Path, Path | None, Path | None] | None:
-    """若刀口切入章节顶栏区间，按保留窗口重算 ASS 顶栏并返回重烧物料。"""
+    """若刀口切入章节顶栏或右上角歌名浮标区间，按保留窗口重算 ASS 并返回重烧物料。"""
     from . import chapters
 
     try:
         resolved, music_spans = _resolve_member_hud_info(p.member)
-        if resolved is None:
+        if resolved is None and not music_spans:
             return None
+        hud_end = max(
+            resolved.bar_end if resolved is not None else 0.0,
+            max((sp.end for sp in music_spans), default=0.0),
+        )
         tail_fade = TRIM_FADE_S if tail_cut else 0.0
         first_rf = p.seam if len(windows) > 1 else tail_fade
-        if windows[0][0] == 0.0 and windows[0][1] - first_rf >= resolved.bar_end - 1e-3:
+        if hud_end <= 1e-3 or (windows[0][0] == 0.0 and windows[0][1] - first_rf >= hud_end - 1e-3):
             return None
     except (SystemExit, Exception) as exc:
         log(f"  ⚠ {p.name} 顶栏重算跳过：{exc}")
@@ -901,12 +911,30 @@ def _prepare_hud_reburn(
         return None
 
     try:
-        projected = chapters.project_chapters_to_kept(resolved, windows, seam=p.seam, tail_fade=tail_fade)
-        if projected is None:
-            return real_top, None, None
+        if base is not None:
+            top_streams = probe_streams(real_top, runner)
+            top_v = next((s for s in top_streams if s.get("codec_type") == "video"), None)
+            if top_v is None:
+                log(f"  ⚠ {p.name}/_agent/hud_clean_top.mp4 无视频流，跳过顶栏重算（重跑该卷 render 可补齐）")
+                return None
+            got_w, got_h = int(top_v["width"]), int(top_v["height"])
+            want_h = chapters.hud_strip_height(base.height)
+            if got_w != base.width or got_h < want_h:
+                log(
+                    f"  ⚠ {p.name}/_agent/hud_clean_top.mp4 尺寸 {got_w}x{got_h} "
+                    f"小于现行净顶条 {base.width}x{want_h}，跳过顶栏重算（重跑该卷 render 可补齐）"
+                )
+                return None
+
+        projected = (
+            chapters.project_chapters_to_kept(resolved, windows, seam=p.seam, tail_fade=tail_fade)
+            if resolved is not None else None
+        )
         proj_music = chapters.project_music_spans_to_kept(
             music_spans, windows, seam=p.seam, tail_fade=tail_fade,
         )
+        if projected is None and not proj_music:
+            return real_top, None, None
         fonts_dir = chapters.verify_hud_fonts()
         hud_ass = work / f"part{idx}_hud.ass"
         chapters.write_standalone_hud_ass(projected, hud_ass, music_spans=proj_music)
@@ -1088,7 +1116,7 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
             assembly.append((f"card_part{i}", "card", card, None))
             if p.kept is not None:
                 cut = work / f"part{i}_cut.mp4"
-                reburn = _prepare_hud_reburn(p, p.kept, p.tail_cut, work, i, log)
+                reburn = _prepare_hud_reburn(p, p.kept, p.tail_cut, work, i, log, base=base, runner=runner)
                 if reburn is not None:
                     clean_top, hud_ass, fonts_dir = reburn
                     log(f"  重算并重绘 part{i}_cut 顶栏（刀口触及章节区）")
@@ -1099,7 +1127,7 @@ def run(pl: Plan, runner: Runner = default_runner, log: Callable[[str], None] = 
             elif p.cut is not None:
                 trimmed = work / f"part{i}_trimmed.mp4"
                 win = [(0.0, float(p.cut))]
-                reburn = _prepare_hud_reburn(p, win, True, work, i, log)
+                reburn = _prepare_hud_reburn(p, win, True, work, i, log, base=base, runner=runner)
                 if reburn is not None:
                     clean_top, hud_ass, fonts_dir = reburn
                     log(f"  重算并重绘 part{i}_trimmed 顶栏（刀口触及章节区）")

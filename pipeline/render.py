@@ -1433,7 +1433,7 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
         )
         check_video_track(video, video_frames, video_total)
         clean_top_tmp: Path | None = None
-        if resolved_chaps is not None:
+        if resolved_chaps is not None or music_spans:
             clean_top_tmp = work / "hud_clean_top.mp4"
             strip_h = chapters_mod.hud_strip_height(H)
             subprocess.run(
@@ -1606,10 +1606,10 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             )
             if chap_txt:
                 paths.atomic_write(episode / "07-chapters.txt", chap_txt)
-            if clean_top_tmp is not None and clean_top_tmp.is_file():
-                agent_dir = episode / "_agent"
-                agent_dir.mkdir(exist_ok=True)
-                os.replace(clean_top_tmp, agent_dir / "hud_clean_top.mp4")
+        if clean_top_tmp is not None and clean_top_tmp.is_file():
+            agent_dir = episode / "_agent"
+            agent_dir.mkdir(exist_ok=True)
+            os.replace(clean_top_tmp, agent_dir / "hud_clean_top.mp4")
         return out_video
     finally:
         if keep:

@@ -22,13 +22,14 @@ import { MarkdownBody } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
 import { StateView, StatusDot } from "./ui";
 
-/** 人审要点（清单五条，真源在 runbook；TC-13 断言两处关键串齐全）。提醒不是判据（D18）。 */
+/** 人审要点（清单六条，真源在 runbook；TC-13 断言核心串齐全）。提醒不是判据（D18）。 */
 export const REVIEW_CHECKLIST: readonly string[] = [
   "编辑判断立不立得住：反方立场像不像真人在说话，张力是否虚构",
   "事实核验：台词出处、说话人、关键集号与数字是否真实，拦截 AI 幻觉",
   "去模型味：删去油腻拔高、翻案腔与套路排比",
   "`人物:` 该写没写：对照机检 INFO 行逐段扫一眼。该写没写不可证伪，这一条是提醒不是判据",
   "说话人断言抽帧核对：「某某说」类断言抽帧确认说话人（字幕 Name 字段基本不填，机器判不了）",
+  "访谈原话出处顺口带出：改稿涉及转述本人采访原话时，尽量顺口带出媒体名或年份（如「在二零一七年 CINRA 专访里」），避免泛写「她在采访中回忆」",
 ];
 
 /** CodeMirror 主题：只引用 CSS 变量（VS-3 禁字面量；VS-11 禁 .cm-* 写进 ui.css）。 */

@@ -427,10 +427,19 @@ class TestRealFfmpegHudRender:
         gold_mask = (band[:, :, 0].astype(int) > 180) & (band[:, :, 0].astype(int) - band[:, :, 2].astype(int) > 80)
         assert gold_mask.any()
 
+    def test_slot_font_size_monotonic_across_tier_thresholds(self):
+        """[B2] 草稿占比过检后，配音略微变长跨过 145/195/260 阶跃线不得引发假越界。"""
+        titles = ["第二幕的转折", "发展与伏笔收束篇", "高潮阶段与完整复盘总结", "尾声收口篇"]
+        draft_w = [0.104, 0.25, 0.346, 0.30]
+        assert ch.validate_slot_widths(titles, draft_w, has_badge=False, safety_px=22.0) == []
+        # 实测配音微涨让首格跨过 195px 阈值
+        tts_w = [0.106, 0.248, 0.346, 0.30]
+        assert ch.validate_slot_widths(titles, tts_w, has_badge=False, safety_px=16.0) == []
+
 
 class TestMusicHud:
     def test_collect_music_hud_spans_for_music_plan_and_bgm_plan(self):
-        # 1. 试听型：同曲连续 foreground→bgm→natural 合并；avsync 按 src_subs/heading_title/曲名 过滤
+        # 1. 试听型：同曲连续 foreground→bgm→natural 合并；avsync 仅显式写 `曲名:` 时上屏
         music_plan = {
             "total_duration": 100.0,
             "tracks": [
@@ -449,17 +458,18 @@ class TestMusicHud:
                 },
             ],
             "blocks": [
-                {"label": "M1", "start": 0.0, "dur": 15.0, "avsync": "Aimer SP02",
-                 "src_subs": False, "heading_title": "六等星の夜原声"},
-                {"label": "M2", "start": 65.0, "dur": 10.0, "avsync": "伪恋 S01E07"},  # src_subs 默认 True → 对白试看不画歌名
-                {"label": "M3", "start": 15.0, "dur": 5.0, "avsync": "Aimer SP21",
-                 "src_subs": False, "heading_title": "节电短片原声", "music_display": "六等星の夜（短片版）"},
+                # 无 `曲名:` 时即便是 src_subs=False 也不应猜成歌名（避免番剧无对白试看误标）
+                {"label": "M0", "start": 0.0, "dur": 15.0, "avsync": "罪恶王冠 S01E01",
+                 "src_subs": False, "heading_title": "《罪恶王冠》第一集开场试看"},
+                # SP Live/MV（src_subs 默认 True）只要显式写 `曲名:` 即可展示
+                {"label": "M1", "start": 15.0, "dur": 5.0, "avsync": "EGOIST SP04",
+                 "src_subs": True, "heading_title": "Live现场", "music_display": "Departures"},
+                {"label": "M2", "start": 65.0, "dur": 10.0, "avsync": "伪恋 S01E07"},
             ],
         }
         spans = ch.collect_music_hud_spans(music_plan, None, 100.0)
         assert [(s.title, s.start, s.end) for s in spans] == [
-            ("六等星の夜", 0.0, 15.0),
-            ("六等星の夜（短片版）", 15.0, 20.0),
+            ("Departures", 15.0, 20.0),
             ("Poker Face", 20.0, 65.0),
             ("Planetes", 75.0, 100.0),
         ]
@@ -571,3 +581,53 @@ class TestMusicHud:
         has_gold_off, max_off = top_right_gold_and_max(2.5)
         assert has_gold_on is True and max_on > 180
         assert has_gold_off is False and max_off < 15
+
+    @needs_ffmpeg
+    def test_music_hud_no_overlap_with_subchapter_and_no_right_overflow(self, tmp_path: Path):
+        """[M3] 宽拉丁字母/破折号在右对齐后绝不冲出底卡右沿；左上子节与右上浮标保持横向隔离；[M2] 无章节独立写出走 y0=30。"""
+        assert 32.0 + ch.MAX_SUB_TITLE_PX < 1896.0 - min(760.0, 1920.0 * 0.40)
+        no_bar_ass = ch.write_standalone_hud_ass(
+            None, tmp_path / "music_only.ass", music_spans=(ch.MusicHudSpan("Song B", 0.0, 2.0),),
+        )
+        assert "pos(1866.0,52.0)" in no_bar_ass.read_text(encoding="utf-8")
+
+        merged = ch.merge_hud_parts(
+            ch.build_music_hud_ass(
+                (
+                    ch.MusicHudSpan("WWWWWWWWWWWWWWWW", 0.0, 1.5),
+                    ch.MusicHudSpan("My Dearest — Album Mix…", 1.5, 3.0),
+                ),
+                1920,
+                has_top_bar=True,
+            ),
+        )
+        ass_path = render.build_ass(
+            [{"index": 1, "duration": 3.5}],
+            [{"text": "测试。", "sentences": None}],
+            tmp_path / "vo_wide.ass",
+            hud=merged,
+        )
+        fonts_dir = paths.ROOT / "data" / "fonts"
+        vf = f"ass={ass_path.name}"
+        if fonts_dir.is_dir():
+            (tmp_path / "_fonts").symlink_to(fonts_dir.resolve())
+            vf = f"ass={ass_path.name}:fontsdir=_fonts"
+        out_mp4 = tmp_path / "wide.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=24:d=3.5",
+                "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out_mp4),
+            ],
+            check=True, cwd=tmp_path,
+        )
+        for ts in (0.7, 2.2):
+            png = tmp_path / f"w_{ts:.1f}.png"
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                 "-ss", f"{ts:.1f}", "-i", str(out_mp4), "-frames:v", "1", str(png)],
+                check=True,
+            )
+            arr = np.asarray(Image.open(png).convert("RGB"))
+            assert arr[72:124, 1898:, :].max() < 15, f"t={ts} 文字冲出了浮标右沿 x=1896"
+            assert arr[76:120, 1850:1895, :].max() > 160, f"t={ts} 浮标右内侧未渲染出文字"

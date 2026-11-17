@@ -1418,22 +1418,33 @@ def _clean_gemini_schema(schema: Any) -> Any:
             out.update(merged)
             if desc and not merged.get("description"):
                 out["description"] = desc
+        elif not branches:
+            out.pop("anyOf", None)
+            if nullable and "type" not in out:
+                out["type"] = "string"
         else:
             out["anyOf"] = branches
 
-    if nullable and "type" in out:
+    if nullable and ("type" in out or "anyOf" in out):
         out["nullable"] = True
 
     if isinstance(raw_enum, list) and raw_enum:
-        eff_type = str(out.get("type") or (raw_type if isinstance(raw_type, str) else "")).lower()
-        if eff_type == "string" or not eff_type:
-            out["enum"] = [str(x) for x in raw_enum if x is not None]
-        else:
-            # Gemini Schema.enum 仅支持 STRING 类型；非字符串枚举降级写入 description
-            choices = ", ".join(str(x) for x in raw_enum)
-            desc = str(out.get("description") or "").strip()
-            if choices not in desc:
-                out["description"] = f"{desc}（可选值：{choices}）" if desc else f"可选值：{choices}"
+        if any(x is None for x in raw_enum) and ("type" in out or "anyOf" in out):
+            out["nullable"] = True
+        non_null_enum = [x for x in raw_enum if x is not None]
+        if non_null_enum:
+            eff_type = str(out.get("type") or (raw_type if isinstance(raw_type, str) else "")).lower()
+            if eff_type == "string":
+                out["enum"] = [str(x) for x in non_null_enum]
+            elif not eff_type and all(isinstance(x, str) for x in non_null_enum):
+                out["type"] = "string"
+                out["enum"] = list(non_null_enum)
+            else:
+                # Gemini Schema.enum 仅支持 STRING 类型；非字符串枚举降级写入 description
+                choices = ", ".join(str(x) for x in non_null_enum)
+                desc = str(out.get("description") or "").strip()
+                if choices not in desc:
+                    out["description"] = f"{desc}（可选值：{choices}）" if desc else f"可选值：{choices}"
 
     return out
 
@@ -1703,11 +1714,10 @@ def _collect_google_candidate(
             calls.append(tc_item)
 
 
-_GOOGLE_RETRYABLE_FINISH_REASONS = frozenset({
+_GOOGLE_MALFORMED_FINISH_REASONS = frozenset({
     "MALFORMED_RESPONSE",
     "MALFORMED_FUNCTION_CALL",
     "UNEXPECTED_TOOL_CALL",
-    "OTHER",
 })
 _GOOGLE_BLOCKED_FINISH_REASONS = frozenset({
     "SAFETY",
@@ -1771,7 +1781,7 @@ def _finalize_google_message(state: dict[str, Any]) -> tuple[dict[str, Any], dic
     block_reason = state["block_reason"]
     block_msg = state["block_message"]
 
-    if finish_reason in _GOOGLE_RETRYABLE_FINISH_REASONS and (not calls or not content_text):
+    if finish_reason in _GOOGLE_MALFORMED_FINISH_REASONS:
         suffix = f": {finish_msg}" if finish_msg else ""
         raise LLMError(f"Gemini 返回异常终止 ({finish_reason}){suffix}", retryable=True)
 
@@ -1826,6 +1836,8 @@ def _assemble_google_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[
         _consume_google_event(ev, state)
     if not saw_event:
         raise LLMError("Gemini 流式响应未收到有效数据", retryable=True)
+    if state["finish_reason"] is None and not state["block_reason"]:
+        raise LLMError("Gemini 流式响应中途断开（缺少 finishReason）", retryable=True)
     return _finalize_google_message(state)
 
 

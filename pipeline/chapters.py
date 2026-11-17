@@ -23,7 +23,7 @@ SLOT_GAP = 3.0
 MIN_SLOT_WIDTH = 90.0
 MIN_RENDER_SLOT_W = 80.0
 MAX_BADGE_PX = 228.0
-MAX_SUB_TITLE_PX = 1200.0
+MAX_SUB_TITLE_PX = 960.0
 
 # 方案 C 配色（ASS &HBBGGRR）
 C_WHITE = "&HEEF4F7"
@@ -40,7 +40,7 @@ _HEADING_SUB = re.compile(r"^###\s*子节(.*)$")
 _HEADING_SUB_BAD = re.compile(r"^(?:##|#{4,})\s*子节")
 _HEADING_TITLE_BODY = re.compile(r"^\s*[·:：]\s*(.+?)\s*$")
 _HEADING_SEG = re.compile(r"^##\s*段落\s*(\S+)\s*$")
-_HEADING_MUSIC = re.compile(r"^##\s*音乐段\s*(\S+)")
+_HEADING_MUSIC = re.compile(r"^##\s*音乐段\s*([^\s·:：]+)")
 _ANY_CHAPTER_HINT = re.compile(r"^#{2,}\s*(?:章节结束|章节|子节)", re.M)
 _BLOCK_BOUNDARY = re.compile(r"^(?:##\s+|#{2,}\s*(?:章节结束|章节|子节))")
 _STATUS_BGM = re.compile(r"^状态[：:]\s*背景铺底", re.M)
@@ -404,14 +404,21 @@ def estimate_text_px(text: str, font_size: int, fsp: float = 0.5, *, bold: bool 
     return w * font_size * scale + max(0, len(text) - 1) * fsp
 
 
-def slot_font_size(slot_w: float) -> int:
-    """顶栏单格字号（兼顾桌面与手机可读性，下限钉死 22px）。"""
-    if slot_w >= 260.0:
-        return 31
-    if slot_w >= 195.0:
-        return 28
-    if slot_w >= 145.0:
-        return 25
+def slot_font_size(slot_w: float, title: str | None = None, *, safety_px: float = 16.0) -> int:
+    """顶栏单格字号（兼顾桌面与手机可读性；提供 title 时按槽宽自适应降档防越界，下限钉死 22px）。"""
+    tiers = ((31, 260.0), (28, 195.0), (25, 145.0), (22, 0.0))
+    if title is None:
+        for fs, min_w in tiers:
+            if slot_w >= min_w:
+                return fs
+        return 22
+    fsp = 0.5 if slot_w < 140.0 else 1.2
+    for fs, min_w in tiers:
+        if fs == 22 or (
+            slot_w >= min_w
+            and estimate_text_px(title, fs, fsp=fsp, bold=True) + safety_px <= slot_w
+        ):
+            return fs
     return 22
 
 
@@ -443,7 +450,7 @@ def validate_slot_widths(
     violations: list[str] = []
     for idx, (title, weight) in enumerate(zip(titles, weights), 1):
         sw = avail * weight
-        fs = slot_font_size(sw)
+        fs = slot_font_size(sw, title, safety_px=safety_px)
         fsp = 0.5 if sw < 140.0 else 1.2
         need = estimate_text_px(title, fs, fsp=fsp, bold=True) + safety_px
         if sw < MIN_SLOT_WIDTH or need > sw:
@@ -722,7 +729,7 @@ def build_hud_ass(resolved: ResolvedChapters, width: int = 1920) -> tuple[str, l
             sw = sx1 - sx0
             mid = (sx0 + sx1) / 2.0
             fsp = 0.5 if sw < 140.0 else 1.2
-            fs = slot_font_size(sw)
+            fs = slot_font_size(sw, ch.title, safety_px=16.0)
 
             if j == cur_idx:
                 active_title = _fit_title_to_slot(ch.title, sw, fs, fsp, bold=True)
@@ -800,19 +807,11 @@ def _clean_music_hud_title(raw: str) -> str:
 
 
 def _resolve_avsync_music_title(block: dict) -> str | None:
+    """音画同源块仅在显式声明 `曲名: <歌名>` 时展示浮标，不从原声字幕开关或标题后缀猜测。"""
     disp = str(block.get("music_display") or "").strip()
-    if disp in ("无", "关"):
+    if not disp or disp in ("无", "关"):
         return None
-    if disp:
-        return _clean_music_hud_title(disp)
-    if block.get("src_subs", True):
-        return None
-    heading = _clean_music_hud_title(str(block.get("heading_title") or ""))
-    if not heading:
-        return None
-    if heading.endswith("原声") and len(heading) > 2:
-        heading = heading[:-2].strip()
-    return heading or None
+    return _clean_music_hud_title(disp)
 
 
 def _normalize_music_spans(raw_spans: list[tuple[float, float, str]]) -> tuple[MusicHudSpan, ...]:
@@ -904,26 +903,37 @@ def project_music_spans_to_kept(
     return _normalize_music_spans(raw)
 
 
-def _estimate_music_text_px(text: str, font_size: int, fsp: float = 0.5) -> float:
-    """按 libass + Source Han Sans SC 实测像素宽估算右上角歌名浮标宽（纯标准库）。"""
+def _estimate_music_text_px(
+    text: str, font_size: int, fsp: float = 0.5, *, fallback: bool = False,
+) -> float:
+    """按 libass 实测像素宽估算右上角歌名浮标宽（主力字体紧凑匹配，回退字体加宽余量）。"""
     if not text:
         return 0.0
     w = 0.0
     for ch in text:
         code = ord(ch)
         if ch == " ":
-            w += 0.22
+            w += 0.21
+        elif ch in "—…":
+            w += 0.70
+        elif ch in "·“”‘’–":
+            w += 0.40
         elif code > 0x2E80:
-            w += 0.72 if ch in "（）：·「」『』～" else 0.78
+            w += 0.66 if ch in "（）：「」『』～" else 0.70
+        elif ch in "WM":
+            w += 0.65
         elif "A" <= ch <= "Z":
-            w += 0.48
+            w += 0.46
         elif "0" <= ch <= "9":
-            w += 0.42
+            w += 0.40
+        elif ch in "wm":
+            w += 0.50
         elif "a" <= ch <= "z":
-            w += 0.36
+            w += 0.34
         else:
-            w += 0.35
-    return w * font_size + max(0, len(text) - 1) * fsp
+            w += 0.36
+    scale = 1.32 if fallback else 1.0
+    return w * font_size * scale + max(0, len(text) - 1) * fsp
 
 
 def build_music_hud_ass(
@@ -935,6 +945,7 @@ def build_music_hud_ass(
 ) -> tuple[str, list[str]]:
     """生成右上角「正在播放」歌名浮标的 ASS 样式与事件列表（显眼但不抢戏）。"""
     sans_font = font_name or str(paths.conf("hud.sans_font", "Source Han Sans SC"))
+    fallback = bool(font_name and "Source Han Sans" not in font_name)
     styles = (
         f"Style: HUD_MUSIC,{sans_font},28,&H00EEF4F7,&H60120E0B,&H80120E0B,0,0,0,0,100,100,0,0,1,0.5,1.0,4,0,0,0,1\n"
         f"Style: HUD_DRAW,{sans_font},20,&H00EEF4F7,&H00120E0B,&H00120E0B,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
@@ -948,9 +959,9 @@ def build_music_hud_ass(
     y1 = y0 + pill_h
     mid_y = (y0 + y1) / 2.0
     pad_l = 16.0
-    note_gap = 30.0
+    note_gap = 34.0
     pad_r = 18.0
-    max_pill_w = min(840.0, float(width) * 0.44)
+    max_pill_w = min(760.0, float(width) * 0.40)
     max_text_w = max(80.0, max_pill_w - pad_l - note_gap - pad_r)
 
     events: list[str] = []
@@ -959,11 +970,14 @@ def build_music_hud_ass(
         fad_ms = min(350, max(60, dur_ms // 4))
         fad_tag = f"\\fad({fad_ms},{fad_ms})"
         display_title = sp.title
-        while len(display_title) > 1 and _estimate_music_text_px(display_title + "…", 28, 0.6) > max_text_w:
+        while (
+            len(display_title) > 1
+            and _estimate_music_text_px(display_title + "…", 28, 0.6, fallback=fallback) > max_text_w
+        ):
             display_title = display_title[:-1]
         if display_title != sp.title:
             display_title += "…"
-        text_w = _estimate_music_text_px(display_title, 28, 0.6)
+        text_w = _estimate_music_text_px(display_title, 28, 0.6, fallback=fallback)
         pill_w = min(max_pill_w, pad_l + note_gap + text_w + pad_r)
         x0 = x_right - pill_w
 
@@ -982,8 +996,8 @@ def build_music_hud_ass(
             bold=0, extra_tags=fad_tag,
         ))
         events.append(_text_evt(
-            14, "HUD_MUSIC", sp.start, sp.end, x0 + pad_l + note_gap, mid_y, display_title,
-            size=28, color=C_WHITE, alpha="0C", fsp=0.6, an=4, bord=0.5, shad=1.0,
+            14, "HUD_MUSIC", sp.start, sp.end, x_right - pad_r, mid_y, display_title,
+            size=28, color=C_WHITE, alpha="0C", fsp=0.6, an=6, bord=0.5, shad=1.0,
             bold=0, extra_tags=fad_tag,
         ))
     return styles, events
@@ -1013,14 +1027,14 @@ def merge_hud_parts(*parts: tuple[str, list[str]] | None) -> tuple[str, list[str
 
 
 def write_standalone_hud_ass(
-    resolved: ResolvedChapters,
+    resolved: ResolvedChapters | None,
     dest: Path,
     *,
     music_spans: tuple[MusicHudSpan, ...] = (),
 ) -> Path:
-    """写出仅含方案 C 顶栏（及可选右上角歌名浮标）的独立 ASS 文件。"""
-    chap_part = build_hud_ass(resolved, 1920)
-    music_part = build_music_hud_ass(music_spans, 1920, has_top_bar=True) if music_spans else None
+    """写出仅含方案 C 顶栏（及/或右上角歌名浮标）的独立 ASS 文件。"""
+    chap_part = build_hud_ass(resolved, 1920) if resolved is not None else None
+    music_part = build_music_hud_ass(music_spans, 1920, has_top_bar=resolved is not None) if music_spans else None
     merged = merge_hud_parts(chap_part, music_part)
     styles, events = merged if merged is not None else ("", [])
     content = (

@@ -657,3 +657,39 @@ def test_render入口拦无音乐空档(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match=r"1 处没有音乐的口播、共 4\.0 s：段1（4\.0 s）"):
         render.run(ep, force=True)
 
+
+def test_空曲名不吞下一行_各种音乐段标题与自然收尾透传曲名(tmp_path: Path):
+    """[M1] 空 `曲名:` 直接报错；`## 音乐段 Mx 副题` / `Mx· 副题` 标题解析与时间轴一致；自然收尾继承曲名覆写。"""
+    bad_sc = tmp_path / "bad.md"
+    bad_sc.write_text(
+        "## 音乐段 M1 · 试听\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+        "曲名:\n状态: 前景试听，旁白停止\n过渡: 淡出\n\n## 段落 1\n\n配音：甲。\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="曲名:.*不能为空"):
+        m.parse_script_music(bad_sc)
+
+    ok_sc = tmp_path / "02-script.md"
+    ok_sc.write_text(
+        "## 音乐段 M1 副歌试听\n\n音乐: `测试曲甲` 完整版 00:00-00:10\n"
+        "状态: 前景试听，旁白停止\n过渡: 淡出\n曲名: 自定义甲名\n\n"
+        "## 音乐段 M2· 尾曲\n\n音乐: `测试曲乙` 完整版 00:00-00:10\n"
+        "状态: 前景试听，旁白停止\n过渡: 淡出\n曲名: 无\n\n"
+        "## 段落 1\n\n配音：收尾。\n音乐: `测试曲甲` 继续播放至完整版结束\n\n"
+        "## 段落 2\n\n配音：完。\n音乐: `测试曲乙` 继续播放至完整版结束\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "01-topic.md").write_text("# 选题\n番: 测试\n", encoding="utf-8")
+    blocks = m.parse_script_music(ok_sc)
+    assert [(b.label, b.heading_title, b.music_display) for b in blocks] == [
+        ("M1", "副歌试听", "自定义甲名"),
+        ("M2", "尾曲", "无"),
+    ]
+    manifest = {"segments": [{"index": 1, "duration": 5.0}, {"index": 2, "duration": 5.0}]}
+    plan = m.build_timeline(tmp_path, manifest, _bgm(), script=ok_sc)
+    evs_a = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲甲"]
+    evs_b = {tr["name"]: tr["events"] for tr in plan["tracks"]}["测试曲乙"]
+    assert evs_a[-1]["vol"] == "natural" and evs_a[-1]["music_display"] == "自定义甲名"
+    assert evs_b[-1]["vol"] == "natural" and evs_b[-1]["music_display"] == "无"
+
+
