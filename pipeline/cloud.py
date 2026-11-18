@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Callable, Mapping, Sequence
+import hashlib
+import inspect
 import json
 import os
 import re
@@ -41,6 +44,10 @@ from .keys import SP_NUM
 
 # 可用 cloud fix-env / 医生检查或切换的提供商标识
 VALID_PROVIDERS = ("autodl", "colab", "colab-drive")
+
+# 多开实例槽位默认名称与合法字符集（缺省沿用 default / ava-colab / autodl，保持 100% 向后兼容）
+DEFAULT_SLOT = "default"
+_SLOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 
 # 允许通过 run 命令透传执行的远端任务白名单
 # 为什么是白名单：禁止透传任意 shell 命令，杜绝远端非预期写操作破坏环境
@@ -159,19 +166,103 @@ def provider_settings(cfg_global: dict, provider: str | None = None) -> dict[str
     return merged
 
 
-def provider_profile(cfg_local: dict, provider: str) -> dict[str, Any]:
-    """读取 cloud.local.json 里指定后端的独立配置段，兼容旧版顶层 AutoDL 键（纯函数）。"""
+def normalize_slot(raw: str | None, *, allow_auto: bool = False) -> str:
+    """校验并归一化实例槽位名（纯函数）：缺省或空白返回 `default`。"""
+    s = (raw or "").strip()
+    if not s:
+        return DEFAULT_SLOT
+    if not _SLOT_RE.fullmatch(s):
+        raise ValueError(
+            f"非法槽位名 {s!r}（仅允许字母、数字、下划线与连字符，长度 1–32，且以字母或数字开头）"
+        )
+    if s == "auto" and not allow_auto:
+        raise ValueError(
+            "--slot auto 仅支持 cloud up / cloud connect 自动分配新槽位；"
+            "操作已有实例请指定具体 --slot <名称>（可运行 cloud status 查看）"
+        )
+    return s
+
+
+def resolve_slot(
+    cli_slot: str | None = None,
+    *,
+    allow_auto: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, bool]:
+    """按优先级解析槽位（纯函数）：CLI `--slot` / `--instance` > `AVA_CLOUD_SLOT` > `default`。
+
+    返回 `(slot, is_explicit)`；`is_explicit=True` 表示用户或环境变量显式指定了槽位。
+    """
+    raw_cli = cli_slot.strip() if isinstance(cli_slot, str) else ""
+    raw_env = str((env if env is not None else os.environ).get("AVA_CLOUD_SLOT") or "").strip()
+    chosen = raw_cli or raw_env
+    return normalize_slot(chosen or None, allow_auto=allow_auto), bool(chosen)
+
+
+def default_slot_ssh_host(
+    provider: str,
+    slot: str = DEFAULT_SLOT,
+    cfg_global: dict | None = None,
+) -> str:
+    """生成指定后端+槽位的默认 SSH Host 别名（纯函数）：default 沿用原名，命名槽位追加 `-<slot>`。"""
+    base = str(
+        provider_settings(cfg_global or {}, provider).get("ssh_host")
+        or ("ava-colab" if provider == "colab" else "autodl")
+    )
+    return base if slot == DEFAULT_SLOT else f"{base}-{slot}"
+
+
+def slot_control_path(slot: str = DEFAULT_SLOT) -> str:
+    """生成槽位独立的 SSH ControlPath（纯函数），避免不同实例共用同一控制套接字，且控制路径长度安全。"""
+    if slot == DEFAULT_SLOT:
+        return "~/.ssh/cm-%C"
+    tag = slot if len(slot) <= 10 else f"{slot[:6]}{hashlib.sha1(slot.encode('utf-8')).hexdigest()[:4]}"
+    return f"~/.ssh/cm-{tag}-%C"
+
+
+def list_configured_slots(cfg_local: dict, provider: str) -> list[str]:
+    """列出 `cloud.local.json` 中指定后端已配置的全部槽位（总是以 `default` 开头，纯函数）。"""
+    slots = [DEFAULT_SLOT]
+    raw_prov = (cfg_local.get("profiles") or {}).get(provider)
+    if isinstance(raw_prov, dict) and isinstance(raw_prov.get("slots"), dict):
+        for k in sorted(raw_prov["slots"]):
+            ks = str(k)
+            if ks != DEFAULT_SLOT and _SLOT_RE.fullmatch(ks):
+                slots.append(ks)
+    return slots
+
+
+def provider_profile(cfg_local: dict, provider: str, slot: str = DEFAULT_SLOT) -> dict[str, Any]:
+    """读取 `cloud.local.json` 指定后端与槽位的配置段，兼容旧版无槽位结构（纯函数）。"""
     profiles = cfg_local.get("profiles") or {}
-    prof = dict(profiles.get(provider) or {}) if isinstance(profiles.get(provider), dict) else {}
-    if provider == "autodl":
-        for k in ("ssh_host", "server", "port", "user"):
-            if k in cfg_local and k not in prof:
-                prof[k] = cfg_local[k]
-        prof.setdefault("ssh_host", "autodl")
-    elif provider == "colab":
-        prof.setdefault("ssh_host", "ava-colab")
+    raw_prov = profiles.get(provider) if isinstance(profiles.get(provider), dict) else {}
+    slots_map = raw_prov.get("slots") if isinstance(raw_prov.get("slots"), dict) else {}
+
+    if slot == DEFAULT_SLOT:
+        prof = {k: v for k, v in raw_prov.items() if k != "slots"}
+        if isinstance(slots_map.get(DEFAULT_SLOT), dict):
+            prof.update(slots_map[DEFAULT_SLOT])
+        if provider == "autodl":
+            for k in ("ssh_host", "server", "port", "user"):
+                if k in cfg_local and k not in prof:
+                    prof[k] = cfg_local[k]
+            prof.setdefault("ssh_host", "autodl")
+        elif provider == "colab":
+            prof.setdefault("ssh_host", "ava-colab")
+        elif provider == "colab-drive":
+            prof.setdefault("drive_queue_subpath", "ava_cloud")
+        return prof
+
+    slot_raw = slots_map.get(slot)
+    prof = dict(slot_raw) if isinstance(slot_raw, dict) else {}
+    if provider == "colab":
+        if "browser_profile" not in prof and raw_prov.get("browser_profile"):
+            prof["browser_profile"] = raw_prov["browser_profile"]
+        prof.setdefault("ssh_host", default_slot_ssh_host(provider, slot))
+    elif provider == "autodl":
+        prof.setdefault("ssh_host", default_slot_ssh_host(provider, slot))
     elif provider == "colab-drive":
-        prof.setdefault("drive_queue_subpath", "ava_cloud")
+        prof.setdefault("drive_queue_subpath", f"ava_cloud_{slot}")
     return prof
 
 
@@ -194,12 +285,17 @@ def provider_remote_paths(cfg_global: dict, provider: str | None = None) -> dict
     }
 
 
-def provider_ssh_host(cfg_global: dict, cfg_local: dict, provider: str | None = None) -> str:
-    """获取指定后端的 SSH Host 别名（纯函数）。"""
+def provider_ssh_host(
+    cfg_global: dict,
+    cfg_local: dict,
+    provider: str | None = None,
+    *,
+    slot: str = DEFAULT_SLOT,
+) -> str:
+    """获取指定后端与槽位的 SSH Host 别名（纯函数）。"""
     p = provider or resolve_provider(cfg_global, cfg_local)
-    prof = provider_profile(cfg_local, p)
-    st = provider_settings(cfg_global, p)
-    return str(prof.get("ssh_host") or st.get("ssh_host") or ("ava-colab" if p == "colab" else "autodl"))
+    prof = provider_profile(cfg_local, p, slot=slot)
+    return str(prof.get("ssh_host") or default_slot_ssh_host(p, slot, cfg_global))
 
 
 def billing_unit_of(cfg_global: dict, provider: str | None = None) -> str:
@@ -478,9 +574,54 @@ def merge_local_connection(local: dict, conn: dict) -> dict:
     return out
 
 
-def merge_profile_connection(local: dict, provider: str, conn: dict, ssh_host: str | None = None) -> dict:
-    """把指定后端的连接信息写入 `cloud.local.json`（纯函数），不覆盖其他后端。"""
+def _apply_conn_fields(
+    prof: dict[str, Any],
+    provider: str,
+    conn: dict,
+    ssh_host: str | None,
+    default_alias: str,
+) -> dict[str, Any]:
+    """将连接字段合入单个 profile/slot 字典（纯函数）。"""
+    updated = dict(prof)
+    if provider == "colab-drive":
+        updated.update(conn)
+        return updated
+    for k in ("server", "port", "user"):
+        if k in conn:
+            updated[k] = conn[k]
+    for opt_key in ("proxy_type", "notebook_url", "browser_profile"):
+        if conn.get(opt_key):
+            updated[opt_key] = conn[opt_key]
+    if ssh_host:
+        updated["ssh_host"] = ssh_host
+    else:
+        updated.setdefault("ssh_host", default_alias)
+    return updated
+
+
+def merge_profile_connection(
+    local: dict,
+    provider: str,
+    conn: dict,
+    ssh_host: str | None = None,
+    *,
+    slot: str = DEFAULT_SLOT,
+) -> dict:
+    """把指定后端（及槽位）的连接信息写入 `cloud.local.json`（纯函数），互不覆盖其他后端或槽位。"""
+    norm_slot = normalize_slot(slot)
     out = dict(local)
+    if norm_slot != DEFAULT_SLOT:
+        profiles = dict(out.get("profiles") or {})
+        prov_dict = dict(profiles.get(provider) or {})
+        slots_map = dict(prov_dict.get("slots") or {})
+        s_prof = dict(slots_map.get(norm_slot) or {})
+        default_alias = default_slot_ssh_host(provider, norm_slot)
+        slots_map[norm_slot] = _apply_conn_fields(s_prof, provider, conn, ssh_host, default_alias)
+        prov_dict["slots"] = slots_map
+        profiles[provider] = prov_dict
+        out["profiles"] = profiles
+        return out
+
     if provider == "autodl":
         out = merge_local_connection(out, conn)
         if ssh_host:
@@ -497,21 +638,7 @@ def merge_profile_connection(local: dict, provider: str, conn: dict, ssh_host: s
 
     profiles = dict(out.get("profiles") or {})
     prof = dict(profiles.get(provider) or {})
-    if provider == "colab-drive":
-        for k, v in conn.items():
-            prof[k] = v
-    else:
-        for k in ("server", "port", "user"):
-            if k in conn:
-                prof[k] = conn[k]
-        for opt_key in ("proxy_type", "notebook_url"):
-            if conn.get(opt_key):
-                prof[opt_key] = conn[opt_key]
-        if ssh_host:
-            prof["ssh_host"] = ssh_host
-        else:
-            prof.setdefault("ssh_host", "autodl" if provider == "autodl" else "ava-colab")
-    profiles[provider] = prof
+    profiles[provider] = _apply_conn_fields(prof, provider, conn, ssh_host, "ava-colab")
     out["profiles"] = profiles
     return out
 
@@ -525,8 +652,14 @@ def merge_active_provider(local: dict, provider: str) -> dict:
     return out
 
 
-def _render_ssh_host_block(alias: str, conn: dict, known_hosts: Path) -> str:
-    """生成单个 Host 块（纯函数），支持直连端口与 cloudflared ProxyCommand。"""
+def _render_ssh_host_block(
+    alias: str,
+    conn: dict,
+    known_hosts: Path,
+    *,
+    slot: str = DEFAULT_SLOT,
+) -> str:
+    """生成单个 Host 块（纯函数），支持直连端口与 cloudflared ProxyCommand 及槽位独立 ControlPath。"""
     lines = [
         f"Host {alias}",
         f"    HostName {conn['server']}",
@@ -534,17 +667,23 @@ def _render_ssh_host_block(alias: str, conn: dict, known_hosts: Path) -> str:
     ]
     if conn.get("proxy_type") == "cloudflared":
         lines.append("    ProxyCommand cloudflared access ssh --hostname %h")
-        lines.append("    ControlPath ~/.ssh/cm-%C")
     else:
         lines.append(f"    Port {int(conn['port'])}")
     lines.extend([
+        f"    ControlPath {slot_control_path(slot)}",
         "    StrictHostKeyChecking accept-new",
         f'    UserKnownHostsFile "{known_hosts}"',
     ])
     return "\n".join(lines) + "\n"
 
 
-def render_ssh_config(alias: str, conn: dict, known_hosts: Path) -> str:
+def render_ssh_config(
+    alias: str,
+    conn: dict,
+    known_hosts: Path,
+    *,
+    slot: str = DEFAULT_SLOT,
+) -> str:
     """生成 `data/cloud/ssh_config`（纯函数）。
 
     - `StrictHostKeyChecking accept-new`：新实例第一次连接自动记下主机密钥，之后密钥变了照常拒绝；
@@ -555,26 +694,27 @@ def render_ssh_config(alias: str, conn: dict, known_hosts: Path) -> str:
     """
     return (
         "# 由 python -m pipeline.cloud connect 生成（D102），换实例时重写；手改会被下次 connect 覆盖\n"
-        + _render_ssh_host_block(alias, conn, known_hosts)
+        + _render_ssh_host_block(alias, conn, known_hosts, slot=slot)
         + "\nMatch all\nInclude ~/.ssh/config\n"
     )
 
 
 def render_all_ssh_configs(cfg_global: dict, cfg_local: dict, known_hosts: Path) -> str:
-    """为所有已配置连接的 SSH 后端（autodl / colab）生成多 Host 块 `ssh_config`（纯函数）。"""
+    """为所有已配置连接的 SSH 后端与槽位（autodl / colab）生成多 Host 块 `ssh_config`（纯函数）。"""
     blocks: list[str] = []
     seen_aliases: set[str] = set()
     for p in ("autodl", "colab"):
-        prof = provider_profile(cfg_local, p)
-        if not prof.get("server") or not prof.get("user"):
-            continue
-        if prof.get("proxy_type") != "cloudflared" and not prof.get("port"):
-            continue
-        alias = str(prof.get("ssh_host") or provider_settings(cfg_global, p).get("ssh_host") or p)
-        if alias in seen_aliases:
-            continue
-        seen_aliases.add(alias)
-        blocks.append(_render_ssh_host_block(alias, prof, known_hosts))
+        for slot in list_configured_slots(cfg_local, p):
+            prof = provider_profile(cfg_local, p, slot=slot)
+            if not prof.get("server") or not prof.get("user"):
+                continue
+            if prof.get("proxy_type") != "cloudflared" and not prof.get("port"):
+                continue
+            alias = str(prof.get("ssh_host") or default_slot_ssh_host(p, slot, cfg_global))
+            if alias in seen_aliases:
+                continue
+            seen_aliases.add(alias)
+            blocks.append(_render_ssh_host_block(alias, prof, known_hosts, slot=slot))
     if not blocks:
         return ""
     return (
@@ -582,6 +722,117 @@ def render_all_ssh_configs(cfg_global: dict, cfg_local: dict, known_hosts: Path)
         + "\n".join(blocks)
         + "\nMatch all\nInclude ~/.ssh/config\n"
     )
+
+
+def known_colab_tunnel_hosts(
+    cfg_local: dict,
+    active_sessions: Sequence[dict[str, Any]] = (),
+    *,
+    exclude_slot: str | None = None,
+) -> set[str]:
+    """收集已知 Colab 隧道主机名（活跃会话 + 已配置槽位），供 auto_boot 过滤防止抓错旧/并发隧道（纯函数）。"""
+    hosts: set[str] = set()
+    for slot in list_configured_slots(cfg_local, "colab"):
+        if exclude_slot is not None and slot == exclude_slot:
+            continue
+        prof = provider_profile(cfg_local, "colab", slot=slot)
+        srv = str(prof.get("server") or "").strip()
+        if "trycloudflare.com" in srv:
+            hosts.add(cloud_colab_boot.normalize_tunnel_host(srv))
+    for sess in active_sessions:
+        if str(sess.get("provider") or "") != "colab":
+            continue
+        if exclude_slot is not None and str(sess.get("slot") or DEFAULT_SLOT) == exclude_slot:
+            continue
+        tgt = str(sess.get("target") or "").strip()
+        if "trycloudflare.com" in tgt:
+            hosts.add(cloud_colab_boot.normalize_tunnel_host(tgt))
+    return hosts
+
+
+def allocate_auto_slot(
+    cfg_local: dict,
+    provider: str,
+    active_sessions: Sequence[dict[str, Any]],
+    *,
+    is_reachable_fn: Callable[[str], bool] | None = None,
+    cfg_global: dict | None = None,
+) -> str:
+    """为 `--slot auto` 分配首个空闲槽位（纯函数）：优先 default，被占或在线则按 gpu2..gpu64 递增。"""
+    busy_slots = {
+        str(s.get("slot") or DEFAULT_SLOT)
+        for s in active_sessions
+        if str(s.get("provider") or "autodl") == provider
+    }
+    candidates = [DEFAULT_SLOT, *(f"gpu{i}" for i in range(2, 65))]
+    for cand in candidates:
+        if cand in busy_slots:
+            continue
+        if cand == DEFAULT_SLOT and is_reachable_fn is not None:
+            prof = provider_profile(cfg_local, provider, slot=cand)
+            if prof.get("server") or prof.get("drive_root"):
+                alias = provider_ssh_host(cfg_global or {}, cfg_local, provider, slot=cand)
+                if provider != "colab-drive" and is_reachable_fn(alias):
+                    continue
+        return cand
+    raise RuntimeError("无可用自动槽位（gpu2–gpu64 均被占用）")
+
+
+def evaluate_slot_busy_guard(
+    *,
+    provider: str,
+    slot: str,
+    host: str,
+    slot_explicit: bool,
+    action: str,
+    active_tasks: Sequence[str],
+    hold: tuple[int, int, int] | None,
+    recreate: bool = False,
+) -> str | None:
+    """槽位防误覆盖护栏（纯函数）：槽位正跑任务或仍在 hold 保活时，拦截不带 --slot 的 up / recreate / connect 覆盖。"""
+    hold_active = hold is not None and hold[2] < hold[1]
+    tasks_list = [str(t) for t in active_tasks if str(t)]
+    if not tasks_list and not hold_active:
+        return None
+
+    reasons: list[str] = []
+    if tasks_list:
+        reasons.append(f"活跃后台任务: {', '.join(tasks_list)}")
+    if hold is not None and hold_active:
+        rem_min = max((hold[1] - hold[2]) // 60, 0)
+        reasons.append(f"保活 hold 中（剩余约 {rem_min} 分钟）")
+    reason_str = "；".join(reasons)
+
+    if action == "connect":
+        down_slot = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
+        return (
+            f"FAIL 槽位 {slot!r}（{provider}, {host}）当前正在运行中（{reason_str}），"
+            "拒绝直接覆盖连接导致原实例失联变成孤儿计费！\n"
+            f"     如要再开一台并发实例，请指定新槽位：\n"
+            f"       python -m pipeline.cloud connect \"<登录指令>\" --provider {provider} --slot <新槽位名>\n"
+            f"     或自动分配新槽位：--slot auto\n"
+            f"     如确实不再需要原实例，请先释放：python -m pipeline.cloud down --provider {provider}{down_slot}"
+        )
+
+    if action == "up" and recreate:
+        return (
+            f"FAIL 槽位 {slot!r}（{provider}, {host}）当前正在运行中（{reason_str}），"
+            "拒绝 --recreate 重建以免中断任务并造成孤儿计费。\n"
+            f"     如要再开一台并发 GPU，请改用：\n"
+            f"       python -m pipeline.cloud up --provider {provider} --slot <新槽位名>  # 或 --slot auto"
+        )
+
+    if action == "up" and not slot_explicit:
+        return (
+            f"FAIL 默认槽位 ({slot}, {provider}, {host}) 当前正忙（{reason_str}），"
+            "不带 --slot 执行 up 可能误覆盖或混淆实例。\n"
+            f"     可选操作：\n"
+            f"       1. 再开一台并发 GPU（推荐）：python -m pipeline.cloud up --provider {provider} --slot <名称>  # 如 tts / captions / --slot auto\n"
+            f"       2. 查看所有槽位状态：python -m pipeline.cloud status\n"
+            f"       3. 如确认只是刷新/沿用该槽位本身：python -m pipeline.cloud up --provider {provider} --slot {slot}"
+        )
+
+    return None
 
 
 def models_link_script(fs_models: str, tmp_models: str, *, create: bool = True) -> str:
@@ -1344,8 +1595,9 @@ def format_ledger_entry(
     *,
     provider: str | None = None,
     billing_unit: str = "cny",
+    slot: str = DEFAULT_SLOT,
 ) -> dict[str, Any]:
-    """格式化账簿单行 JSON 对象（支持 cny 与 Colab cu 双单位）。
+    """格式化账簿单行 JSON 对象（支持 cny 与 Colab cu 双单位及多实例槽位标记）。
 
     note 用于标注时长的可信度：实例已被 watchdog 自动关机时，down 根本联系不上远端，
     只能把时长算到「执行 down 的此刻」——这会多算一段关机到发现的延迟，
@@ -1372,6 +1624,8 @@ def format_ledger_entry(
         entry["provider"] = provider or "colab"
     elif provider and provider != "autodl":
         entry["provider"] = provider
+    if slot and slot != DEFAULT_SLOT:
+        entry["slot"] = slot
     # D102：卡型不固定，记实际用的卡与按哪个单价算的（估算与否写在 note）
     if gpu:
         entry["gpu"] = gpu
@@ -1434,25 +1688,38 @@ def parse_ledger_summary(ledger_text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _extract_provider_from_extra(extra: list[str]) -> tuple[str | None, list[str]]:
-    """从透传参数 `extra` 里剥离 `--provider <p>` 或 `--provider=<p>`（纯函数），避免进入白名单参数检查。"""
-    found: str | None = None
+def _extract_cloud_flags_from_extra(extra: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """从透传参数 `extra` 里剥离 `--provider` 与 `--slot`/`--instance`（纯函数），避免进入白名单参数检查。"""
+    found_provider: str | None = None
+    found_slot: str | None = None
     rest: list[str] = []
     i = 0
     while i < len(extra):
         tok = extra[i]
-        if tok == "--provider":
+        if tok in ("--provider", "--slot", "--instance"):
             if i + 1 >= len(extra):
-                raise ValueError("--provider 缺少值")
-            found = extra[i + 1]
+                raise ValueError(f"{tok} 缺少值")
+            if tok == "--provider":
+                found_provider = extra[i + 1]
+            else:
+                found_slot = extra[i + 1]
             i += 2
         elif tok.startswith("--provider="):
-            found = tok.split("=", 1)[1]
+            found_provider = tok.split("=", 1)[1]
+            i += 1
+        elif tok.startswith("--slot=") or tok.startswith("--instance="):
+            found_slot = tok.split("=", 1)[1]
             i += 1
         else:
             rest.append(tok)
             i += 1
-    return found, rest
+    return found_provider, found_slot, rest
+
+
+def _extract_provider_from_extra(extra: list[str]) -> tuple[str | None, list[str]]:
+    """兼容旧接口：从 `extra` 剥离 `--provider`。"""
+    found_provider, _, rest = _extract_cloud_flags_from_extra(extra)
+    return found_provider, rest
 
 
 def _resolve_drive_root(st: dict, prof: dict) -> Path | None:
@@ -1460,27 +1727,38 @@ def _resolve_drive_root(st: dict, prof: dict) -> Path | None:
     raw = prof.get("drive_root")
     if raw:
         return Path(os.path.expanduser(str(raw)))
-    return cloud_drive.detect_drive_root(str(st.get("drive_queue_subpath") or "ava_cloud"))
+    return cloud_drive.detect_drive_root(str(prof.get("drive_queue_subpath") or st.get("drive_queue_subpath") or "ava_cloud"))
 
 
-def _cloud_context(args: argparse.Namespace | None = None, *, cli_provider: str | None = None) -> dict[str, Any]:
-    """统一解析当前命令的提供商上下文：cfg_global, cfg_local, provider, settings, rpaths, profile, host, unit, drive_root。"""
+def _cloud_context(
+    args: argparse.Namespace | None = None,
+    *,
+    cli_provider: str | None = None,
+    cli_slot: str | None = None,
+    allow_auto_slot: bool = False,
+) -> dict[str, Any]:
+    """统一解析当前命令的提供商与槽位上下文。"""
     cfg_global, cfg_local = load_cloud_config()
     raw_cli = cli_provider if cli_provider is not None else getattr(args, "provider", None)
+    raw_slot = cli_slot if cli_slot is not None else getattr(args, "slot", None)
     try:
         provider = resolve_provider(cfg_global, cfg_local, raw_cli)
+        slot, slot_explicit = resolve_slot(raw_slot, allow_auto=allow_auto_slot)
     except ValueError as exc:
         raise SystemExit(f"FAIL {exc}") from exc
     st = provider_settings(cfg_global, provider)
     rpaths = provider_remote_paths(cfg_global, provider)
-    prof = provider_profile(cfg_local, provider)
-    host = provider_ssh_host(cfg_global, cfg_local, provider)
+    lookup_slot = DEFAULT_SLOT if slot == "auto" else slot
+    prof = provider_profile(cfg_local, provider, slot=lookup_slot)
+    host = provider_ssh_host(cfg_global, cfg_local, provider, slot=lookup_slot)
     unit = billing_unit_of(cfg_global, provider)
     drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
     return {
         "cfg_global": cfg_global,
         "cfg_local": cfg_local,
         "provider": provider,
+        "slot": slot,
+        "slot_explicit": slot_explicit,
         "settings": st,
         "rpaths": rpaths,
         "profile": prof,
@@ -1517,11 +1795,11 @@ def _require_local_cloudflared(prof: dict) -> None:
         )
 
 
-def _ssh_host(cfg_local: dict, provider: str | None = None) -> str:
+def _ssh_host(cfg_local: dict, provider: str | None = None, *, slot: str = DEFAULT_SLOT) -> str:
     """获取 SSH 连接目标 Host 别名（定义在 data/cloud/ssh_config，没有该文件时走 ~/.ssh/config）。"""
-    if provider == "colab":
-        return str(provider_profile(cfg_local, "colab").get("ssh_host") or "ava-colab")
-    return str(cfg_local.get("ssh_host") or provider_profile(cfg_local, "autodl").get("ssh_host") or "autodl")
+    p = provider or "autodl"
+    prof = provider_profile(cfg_local, p, slot=slot)
+    return str(prof.get("ssh_host") or default_slot_ssh_host(p, slot))
 
 
 def ssh_config_file() -> Path:
@@ -1633,6 +1911,148 @@ def get_active_session_file() -> Path:
     return cloud_dir / "active_session.json"
 
 
+_ORIGINAL_GET_ACTIVE_SESSION_FILE = get_active_session_file
+
+
+def get_sessions_dir() -> Path:
+    paths.require_data()
+    sdir = paths.DATA / "cloud" / "sessions"
+    sdir.mkdir(parents=True, exist_ok=True)
+    return sdir
+
+
+def _infer_provider_slot_from_filename(stem: str) -> tuple[str, str]:
+    for p in sorted(VALID_PROVIDERS, key=len, reverse=True):
+        prefix = f"{p}_"
+        if stem.startswith(prefix):
+            return p, stem[len(prefix):] or DEFAULT_SLOT
+    return "autodl", DEFAULT_SLOT
+
+
+def migrate_legacy_active_session(
+    cloud_dir: Path | None = None,
+    *,
+    fallback_provider: str = "autodl",
+) -> Path | None:
+    """将旧版单文件 `active_session.json` 迁移到 `sessions/<provider>_<slot>.json`（幂等）。"""
+    cdir = cloud_dir or (paths.DATA / "cloud")
+    legacy = cdir / "active_session.json"
+    if not legacy.exists():
+        return None
+    sdir = cdir / "sessions"
+    sdir.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(legacy.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("active_session.json root must be object")
+    except Exception:
+        dest = sdir / f"{fallback_provider}_{DEFAULT_SLOT}.json"
+        if not dest.exists():
+            os.replace(legacy, dest)
+        return dest
+
+    prov = str(data.get("provider") or fallback_provider)
+    if prov not in VALID_PROVIDERS:
+        prov = fallback_provider
+    try:
+        slot = normalize_slot(data.get("slot"))
+    except ValueError:
+        slot = DEFAULT_SLOT
+    data.setdefault("provider", prov)
+    data.setdefault("slot", slot)
+    dest = sdir / f"{prov}_{slot}.json"
+    if not dest.exists():
+        paths.atomic_write(dest, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    legacy.unlink()
+    return dest
+
+
+def session_file_for(
+    provider: str,
+    slot: str = DEFAULT_SLOT,
+    *,
+    migrate: bool = False,
+) -> Path:
+    """定位指定后端与槽位的会话文件（兼容测试 monkeypatch `get_active_session_file`）。"""
+    norm_slot = normalize_slot(slot)
+    if get_active_session_file is not _ORIGINAL_GET_ACTIVE_SESSION_FILE:
+        legacy_mock = get_active_session_file()
+        if norm_slot == DEFAULT_SLOT:
+            return legacy_mock
+        sdir = legacy_mock.parent / "sessions"
+        if migrate:
+            sdir.mkdir(parents=True, exist_ok=True)
+        return sdir / f"{provider}_{norm_slot}.json"
+
+    paths.require_data()
+    cloud_dir = paths.DATA / "cloud"
+    sdir = cloud_dir / "sessions"
+    if migrate:
+        migrate_legacy_active_session(cloud_dir, fallback_provider=provider)
+        return sdir / f"{provider}_{norm_slot}.json"
+
+    target = sdir / f"{provider}_{norm_slot}.json"
+    if target.exists():
+        return target
+    legacy = cloud_dir / "active_session.json"
+    if norm_slot == DEFAULT_SLOT and legacy.exists():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and str(data.get("provider") or "autodl") == provider:
+                return legacy
+        except Exception:
+            return legacy
+    return target
+
+
+def list_active_sessions() -> list[dict[str, Any]]:
+    """只读列出当前所有活跃会话（同时读取 `sessions/*.json` 与未迁移的 `active_session.json`）。"""
+    candidates: list[Path] = []
+    if get_active_session_file is not _ORIGINAL_GET_ACTIVE_SESSION_FILE:
+        legacy_mock = get_active_session_file()
+        sdir = legacy_mock.parent / "sessions"
+        if sdir.is_dir():
+            candidates.extend(sorted(sdir.glob("*.json")))
+        if legacy_mock.is_file():
+            candidates.append(legacy_mock)
+    else:
+        paths.require_data()
+        cloud_dir = paths.DATA / "cloud"
+        sdir = cloud_dir / "sessions"
+        if sdir.is_dir():
+            candidates.extend(sorted(sdir.glob("*.json")))
+        legacy = cloud_dir / "active_session.json"
+        if legacy.is_file():
+            candidates.append(legacy)
+
+    sessions: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for p in candidates:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+        except Exception as exc:
+            print(f"WARN 会话文件损坏已跳过 ({p.name}): {exc}", file=sys.stderr)
+            continue
+        if p.parent.name == "sessions":
+            inf_p, inf_s = _infer_provider_slot_from_filename(p.stem)
+        else:
+            inf_p, inf_s = "autodl", DEFAULT_SLOT
+        prov = str(data.get("provider") or inf_p)
+        slot = str(data.get("slot") or inf_s)
+        key = (prov, slot)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = dict(data)
+        entry["provider"] = prov
+        entry["slot"] = slot
+        entry["_file"] = p
+        sessions.append(entry)
+    return sessions
+
+
 def get_ledger_file() -> Path:
     paths.require_data()
     cloud_dir = paths.DATA / "cloud"
@@ -1643,6 +2063,7 @@ def get_ledger_file() -> Path:
 def cmd_exec(args: argparse.Namespace) -> int:
     """远端执行核心：一律 tmux 包裹后台化，仅 --fg 允许直连短命令。"""
     ctx = _cloud_context(args)
+    slot = ctx["slot"]
     if ctx["provider"] == "colab-drive":
         raise SystemExit("FAIL colab-drive 为无隧道队列模式，不支持 exec；请改用 run / sync-code 或切换到 --provider colab")
     _require_local_cloudflared(ctx["profile"])
@@ -1651,11 +2072,12 @@ def cmd_exec(args: argparse.Namespace) -> int:
     remote_cmd = args.command.strip()
 
     if not is_ssh_reachable(host):
-        raise SystemExit(f"FAIL 远端实例不可达 ({host})。请先运行 python -m pipeline.cloud up 确认开机。")
+        slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
+        raise SystemExit(f"FAIL 远端实例不可达 ({host})。请先运行 python -m pipeline.cloud up{slot_flag} 确认开机。")
 
     # 1. 前台直连通道（严格限制 <60s 探针短命令）
     if args.fg:
-        print(f"[*] 前台直连执行 (限短命令): {remote_cmd}")
+        print(f"[*] 前台直连执行 (限短命令, Host: {host}): {remote_cmd}")
         try:
             # BatchMode 与 _ssh 同标配（公钥失效必须立刻失败，不许挂交互）；
             # timeout 兑现上面「限 <60s」的承诺——裸 run 会把挂死的远端命令
@@ -1680,11 +2102,12 @@ def cmd_exec(args: argparse.Namespace) -> int:
 
     _ssh(tmux_cmd, host=host, check=True)
 
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     print("=" * 65)
-    print(f"OK    远端后台任务已启动 (tmux 会话: {session_name})")
+    print(f"OK    远端后台任务已启动 (Host: {host}, tmux 会话: {session_name})")
     print(f"      远端命令: {remote_cmd}")
     print(f"      日志文件: {log_path}")
-    print(f"      查看进度: python -m pipeline.cloud logs {session_name} -f")
+    print(f"      查看进度: python -m pipeline.cloud logs {session_name} -f{slot_flag}")
     print("=" * 65)
     return 0
 
@@ -1808,20 +2231,21 @@ def _apply_ssh_profile_connection(
     conn: dict,
     *,
     alias: str | None = None,
+    slot: str = DEFAULT_SLOT,
 ) -> tuple[dict, str, str]:
     """持久化 SSH/cloudflared 连接配置并重绘 data/cloud/ssh_config。"""
+    norm_slot = normalize_slot(slot)
     resolved_alias = alias or str(
-        provider_profile(local, provider).get("ssh_host")
-        or provider_settings(cfg_global, provider).get("ssh_host")
-        or ("ava-colab" if provider == "colab" else "autodl")
+        provider_profile(local, provider, slot=norm_slot).get("ssh_host")
+        or default_slot_ssh_host(provider, norm_slot, cfg_global)
     )
-    merged = merge_profile_connection(local, provider, conn, ssh_host=resolved_alias)
+    merged = merge_profile_connection(local, provider, conn, ssh_host=resolved_alias, slot=norm_slot)
     paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
     ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
     forget_known_host(conn)
     rendered = (
         render_all_ssh_configs(cfg_global, merged, known_hosts_file())
-        or render_ssh_config(resolved_alias, conn, known_hosts_file())
+        or render_ssh_config(resolved_alias, conn, known_hosts_file(), slot=norm_slot)
     )
     paths.atomic_write(ssh_config_file(), rendered)
     endpoint = (
@@ -1833,7 +2257,7 @@ def _apply_ssh_profile_connection(
 
 
 def cmd_connect(args: argparse.Namespace) -> int:
-    """接入/换实例（D102 + Colab）：解析 SSH/cloudflared 或绑定 Drive 共享队列，写入对应 profile。
+    """接入/换实例（D102 + Colab）：解析 SSH/cloudflared 或绑定 Drive 共享队列，写入对应 profile/slot。
 
     Code Freeze 第 ④ 条例外：只写 `config/cloud.local.json` 的连接字段，其余键原样保留。
     输出不回显该文件的其他内容。
@@ -1841,6 +2265,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
     cfg_global, cfg_local = load_cloud_config()
     try:
         provider = resolve_provider(cfg_global, cfg_local, getattr(args, "provider", None))
+        slot, slot_explicit = resolve_slot(getattr(args, "slot", None), allow_auto=True)
     except ValueError as exc:
         raise SystemExit(f"FAIL {exc}") from exc
 
@@ -1852,24 +2277,36 @@ def cmd_connect(args: argparse.Namespace) -> int:
     f_local = paths.CONFIG / "cloud.local.json"
     local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
 
+    if slot == "auto":
+        slot = allocate_auto_slot(
+            local,
+            provider,
+            list_active_sessions(),
+            is_reachable_fn=is_ssh_reachable,
+            cfg_global=cfg_global,
+        )
+        slot_explicit = True
+        print(f"[*] 自动分配并发槽位: {slot}")
+
     if provider == "colab-drive":
         st = provider_settings(cfg_global, "colab-drive")
+        prof = provider_profile(local, "colab-drive", slot=slot)
         if drive_root_arg:
             try:
                 drive_root = cloud_drive.validate_drive_root(drive_root_arg)
             except ValueError as exc:
                 raise SystemExit(f"FAIL {exc}") from exc
         else:
-            drive_root = cloud_drive.detect_drive_root(str(st.get("drive_queue_subpath") or "ava_cloud"))
+            drive_root = cloud_drive.detect_drive_root(str(prof.get("drive_queue_subpath") or st.get("drive_queue_subpath") or "ava_cloud"))
             if drive_root is None:
                 raise SystemExit(
                     "FAIL 未自动探测到 Google Drive for Desktop 本地目录。\n"
                     "     请显式传入: python -m pipeline.cloud connect --provider colab-drive --drive-root \"<Drive目录>/ava_cloud\""
                 )
         cloud_drive.ensure_drive_layout(drive_root)
-        merged = merge_profile_connection(local, "colab-drive", {"drive_root": str(drive_root)})
+        merged = merge_profile_connection(local, "colab-drive", {"drive_root": str(drive_root)}, slot=slot)
         paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-        print(f"[OK] Colab Drive 共享队列已绑定: {drive_root}")
+        print(f"[OK] Colab Drive 共享队列已绑定（槽位: {slot}）: {drive_root}")
         hb = cloud_drive.parse_worker_heartbeat(drive_root)
         if hb and hb.get("online"):
             print(f"[OK] Colab Worker 在线：GPU={hb.get('gpu') or '未知'}（心跳延迟 {hb.get('stale_s')}s）")
@@ -1879,25 +2316,30 @@ def cmd_connect(args: argparse.Namespace) -> int:
             print("[*] 提示: 默认后端仍未切换，如需默认走 Drive 队列请执行: python -m pipeline.cloud use colab-drive")
         return 0
 
+    bp_arg = (getattr(args, "browser_profile", None) or "").strip() or None
     if getattr(args, "browser_login", False):
         if provider != "colab":
             raise SystemExit("FAIL --browser-login 仅支持 --provider colab")
         nb_url = cloud_colab_boot.resolve_colab_notebook_url(
-            cfg_global, local, getattr(args, "notebook_url", None)
+            cfg_global, local, getattr(args, "notebook_url", None), slot=slot
         )
-        prof_dir = cloud_colab_boot.colab_browser_profile_dir()
         try:
+            prof_dir = cloud_colab_boot.colab_browser_profile_dir(profile_name=bp_arg)
             cloud_colab_boot.interactive_browser_login(
                 nb_url,
                 profile_dir=prof_dir,
                 timeout_s=int(getattr(args, "timeout", 300) or 300),
             )
-        except RuntimeError as exc:
+        except (ValueError, RuntimeError) as exc:
             raise SystemExit(f"FAIL {exc}") from exc
-        merged = merge_profile_connection(local, "colab", {"notebook_url": nb_url}, ssh_host=None)
+        login_conn: dict[str, Any] = {"notebook_url": nb_url}
+        if bp_arg:
+            login_conn["browser_profile"] = bp_arg
+        merged = merge_profile_connection(local, "colab", login_conn, ssh_host=None, slot=slot)
         paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
         print(f"[OK] Google/Colab 登录态已保存到隔离浏览器目录: {prof_dir}")
-        print("[*] 之后执行 `python -m pipeline.cloud up --provider colab` 可自动无头拉起 Colab 并接通 SSH。")
+        slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
+        print(f"[*] 之后执行 `python -m pipeline.cloud up --provider colab{slot_flag}` 可自动无头拉起 Colab 并接通 SSH。")
         return 0
 
     login_text = (getattr(args, "login", None) or "").strip()
@@ -1912,9 +2354,41 @@ def cmd_connect(args: argparse.Namespace) -> int:
     nb_override = (getattr(args, "notebook_url", None) or "").strip()
     if nb_override and provider == "colab":
         conn["notebook_url"] = nb_override
+    if bp_arg and provider == "colab":
+        conn["browser_profile"] = bp_arg
 
-    merged, alias, endpoint = _apply_ssh_profile_connection(cfg_global, local, f_local, provider, conn)
-    print(f"[OK] {provider} 连接信息已更新：{endpoint}（别名 {alias}）")
+    # 防误覆盖护栏：若目标槽位已有在线实例且正跑任务或 hold 保活中，阻止 connect 直接覆盖原连接
+    existing_target = connection_target(local, provider=provider, slot=slot)
+    new_target = (
+        f"{conn['user']}@{conn['server']}"
+        if conn.get("proxy_type") == "cloudflared"
+        else f"{conn['user']}@{conn['server']}:{conn['port']}"
+    )
+    existing_sfile = session_file_for(provider, slot, migrate=False)
+    if existing_target and existing_target != new_target and (existing_sfile.exists() or ssh_config_file().is_file()):
+        existing_alias = provider_ssh_host(cfg_global, local, provider, slot=slot)
+        if is_ssh_reachable(existing_alias):
+            rpaths = provider_remote_paths(cfg_global, provider)
+            active_tasks = remote_active_tasks(host=existing_alias)
+            hold_res = _ssh(f"cat {rpaths['hold_path']} 2>/dev/null; date +%s", host=existing_alias, check=False)
+            hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
+            guard_err = evaluate_slot_busy_guard(
+                provider=provider,
+                slot=slot,
+                host=existing_alias,
+                slot_explicit=slot_explicit,
+                action="connect",
+                active_tasks=active_tasks,
+                hold=hold,
+            )
+            if guard_err:
+                raise SystemExit(guard_err)
+
+    merged, alias, endpoint = _apply_ssh_profile_connection(
+        cfg_global, local, f_local, provider, conn, slot=slot
+    )
+    slot_desc = f"，槽位 {slot}" if slot != DEFAULT_SLOT else ""
+    print(f"[OK] {provider} 连接信息已更新：{endpoint}（别名 {alias}{slot_desc}）")
 
     _require_local_cloudflared(conn)
     if not is_ssh_reachable(alias):
@@ -2010,6 +2484,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     """环境自检诊断命令（逐项检查，支持 AutoDL / Colab SSH / Colab Drive）。"""
     ctx = _cloud_context(args)
     provider = ctx["provider"]
+    slot = ctx["slot"]
     if provider == "colab-drive":
         return _doctor_colab_drive(ctx)
 
@@ -2024,8 +2499,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     _require_local_cloudflared(ctx["profile"])
     title = "Google Colab SSH" if provider == "colab" else "AutoDL"
+    slot_suffix = f" | 槽位: {slot}" if slot != DEFAULT_SLOT else ""
     print("=" * 65)
-    print(f"  {title} 云端环境诊断 (pipeline.cloud doctor)")
+    print(f"  {title} 云端环境诊断 (pipeline.cloud doctor{slot_suffix})")
     print("=" * 65)
 
     all_passed = True
@@ -2185,19 +2661,43 @@ def _session_unit(cfg_global: dict, sdata: dict | None, fallback_provider: str |
 
 
 def cmd_up(args: argparse.Namespace) -> int:
-    """开机/接入命令：检测 AutoDL 或 Colab 运行时状态、激活 watchdog 并开启计费会话。"""
-    ctx = _cloud_context(args)
+    """开机/接入命令：检测 AutoDL 或 Colab 运行时状态、激活 watchdog 并开启计费会话（支持 --slot 多开）。"""
+    ctx = _cloud_context(args, allow_auto_slot=True)
     cfg_global, cfg_local = ctx["cfg_global"], ctx["cfg_local"]
-    provider, st, rpaths, host, unit = (
-        ctx["provider"], ctx["settings"], ctx["rpaths"], ctx["host"], ctx["unit"],
+    provider, slot, slot_explicit, st, rpaths, host, unit = (
+        ctx["provider"],
+        ctx["slot"],
+        ctx["slot_explicit"],
+        ctx["settings"],
+        ctx["rpaths"],
+        ctx["host"],
+        ctx["unit"],
     )
     declared = getattr(args, "mode", None)
     rate = check_rate(getattr(args, "rate", None), unit=unit)
+    recreate = bool(getattr(args, "recreate", False))
+
+    if slot == "auto":
+        slot = allocate_auto_slot(
+            cfg_local,
+            provider,
+            list_active_sessions(),
+            is_reachable_fn=is_ssh_reachable,
+            cfg_global=cfg_global,
+        )
+        slot_explicit = True
+        ctx["slot"] = slot
+        ctx["slot_explicit"] = True
+        ctx["profile"] = provider_profile(cfg_local, provider, slot=slot)
+        host = provider_ssh_host(cfg_global, cfg_local, provider, slot=slot)
+        ctx["host"] = host
+        ctx["drive_root"] = _resolve_drive_root(st, ctx["profile"]) if provider == "colab-drive" else None
+        print(f"[*] 自动分配并发槽位: {slot} (Host: {host})")
 
     if provider == "colab-drive":
         drive_root = _require_drive_root(ctx)
         cloud_drive.ensure_drive_layout(drive_root)
-        print(f"[*] 检查 Colab Drive Worker 在线状态 (目录: {drive_root})...")
+        print(f"[*] 检查 Colab Drive Worker 在线状态 (槽位: {slot}, 目录: {drive_root})...")
         hb = cloud_drive.parse_worker_heartbeat(drive_root)
         if not hb or not hb.get("online"):
             print()
@@ -2212,11 +2712,24 @@ def cmd_up(args: argparse.Namespace) -> int:
                 time.sleep(5)
             if not hb or not hb.get("online"):
                 raise SystemExit(f"FAIL 在 {args.timeout} 秒内未检测到在线 Colab Drive Worker 心跳。")
+        if hb and hb.get("online"):
+            guard_err = evaluate_slot_busy_guard(
+                provider="colab-drive",
+                slot=slot,
+                host=str(drive_root),
+                slot_explicit=slot_explicit,
+                action="up",
+                active_tasks=cloud_drive.active_drive_jobs(drive_root),
+                hold=cloud_drive.read_drive_hold(drive_root),
+                recreate=recreate,
+            )
+            if guard_err:
+                raise SystemExit(guard_err)
         gpu_name = hb.get("gpu")
         gpu_mem = hb.get("gpu_mem_mib")
         mode = "gpu" if gpu_name else "cardless"
         print(f"[OK] Colab Worker 在线：GPU={gpu_name or '未知'}" + (f"，显存 {float(gpu_mem) / 1024:.1f}GB" if gpu_mem else ""))
-        sfile = get_active_session_file()
+        sfile = session_file_for("colab-drive", slot, migrate=True)
         now_epoch = time.time()
         target = f"drive:{drive_root}"
         boot_ep = hb.get("boot_epoch")
@@ -2232,6 +2745,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             session_data = {
                 "session": datetime.now().strftime("%Y%m%d_%H%M%S"),
                 "provider": "colab-drive",
+                "slot": slot,
                 "billing_unit": "cu",
                 "mode": mode,
                 "up": datetime.now().strftime("%H:%M:%S"),
@@ -2240,6 +2754,7 @@ def cmd_up(args: argparse.Namespace) -> int:
                 "tasks": [],
                 "target": target,
             }
+        session_data.setdefault("slot", slot)
         if gpu_name:
             session_data["gpu"] = gpu_name
         if gpu_mem:
@@ -2247,31 +2762,78 @@ def cmd_up(args: argparse.Namespace) -> int:
         if rate is not None:
             session_data["rate_cu"] = rate
             session_data["rate_source"] = "人报（up --rate）"
-        sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        sfile.parent.mkdir(parents=True, exist_ok=True)
+        paths.atomic_write(sfile, json.dumps(session_data, ensure_ascii=False, indent=2))
         if not resumed:
-            print(f"[OK] 会话已开启: {session_data['session']} (后端: colab-drive, 计费单位: CU)")
+            print(f"[OK] 会话已开启: {session_data['session']} (后端: colab-drive, 槽位: {slot}, 计费单位: CU)")
         return 0
 
     _require_local_cloudflared(ctx["profile"] or ({"proxy_type": "cloudflared"} if provider == "colab" else {}))
-    print(f"[*] 检查云端实例连通性 (后端: {provider}, Host: {host}, 模式: {declared or '开机后探测'})...")
-    if not is_ssh_reachable(host):
+    print(f"[*] 检查云端实例连通性 (后端: {provider}, 槽位: {slot}, Host: {host}, 模式: {declared or '开机后探测'})...")
+    sfile = session_file_for(provider, slot, migrate=True)
+    try:
+        prev = json.loads(sfile.read_text(encoding="utf-8")) if sfile.exists() else None
+    except (OSError, ValueError):
+        prev = None
+    existing_target = connection_target(cfg_local, provider=provider, slot=slot)
+
+    reachable = is_ssh_reachable(host)
+    if not reachable and prev and existing_target and prev.get("target") == existing_target and prev.get("tasks"):
+        # 对已有活跃任务的会话做一次防抖重试，避免 cloudflared 瞬断误判离线而触发覆盖拉起
+        reachable = is_ssh_reachable(host)
+
+    if reachable and (not slot_explicit or recreate):
+        active_tasks = remote_active_tasks(host=host)
+        hold_res = _ssh(f"cat {rpaths['hold_path']} 2>/dev/null; date +%s", host=host, check=False)
+        hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
+        guard_err = evaluate_slot_busy_guard(
+            provider=provider,
+            slot=slot,
+            host=host,
+            slot_explicit=slot_explicit,
+            action="up",
+            active_tasks=active_tasks,
+            hold=hold,
+            recreate=recreate,
+        )
+        if guard_err:
+            raise SystemExit(guard_err)
+
+    if not reachable or (provider == "colab" and recreate):
         if provider == "colab" and not getattr(args, "no_auto_boot", False):
-            prof_dir = cloud_colab_boot.colab_browser_profile_dir()
+            bp_name = (getattr(args, "browser_profile", None) or "").strip() or ctx["profile"].get("browser_profile")
+            try:
+                prof_dir = cloud_colab_boot.colab_browser_profile_dir(profile_name=bp_name)
+            except ValueError as exc:
+                raise SystemExit(f"FAIL {exc}") from exc
             if cloud_colab_boot.has_saved_browser_profile(prof_dir):
+                active_all = list_active_sessions()
+                default_busy = any(s["provider"] == "colab" and s["slot"] == DEFAULT_SLOT for s in active_all)
                 nb_url = cloud_colab_boot.resolve_colab_notebook_url(
-                    cfg_global, ctx["cfg_local"], getattr(args, "notebook_url", None)
+                    cfg_global,
+                    ctx["cfg_local"],
+                    getattr(args, "notebook_url", None),
+                    slot=slot,
+                    default_slot_busy=default_busy,
                 )
-                print(f"[*] Colab 尚未连通，尝试通过隔离浏览器自动无头拉起：{nb_url}")
+                exclude_hosts = known_colab_tunnel_hosts(ctx["cfg_local"], active_all)
+                print(f"[*] Colab 尚未连通（槽位: {slot}），尝试通过隔离浏览器自动无头拉起：{nb_url}")
                 try:
-                    tunnel_target = cloud_colab_boot.auto_boot_colab_ssh(
-                        nb_url,
-                        profile_dir=prof_dir,
-                        timeout_s=int(args.timeout),
-                    )
+                    boot_fn = cloud_colab_boot.auto_boot_colab_ssh
+                    sig_params = inspect.signature(boot_fn).parameters
+                    accepts_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values())
+                    boot_kwargs: dict[str, Any] = {"profile_dir": prof_dir, "timeout_s": int(args.timeout)}
+                    if accepts_kw or "slot" in sig_params:
+                        boot_kwargs["slot"] = slot
+                    if accepts_kw or "exclude_hosts" in sig_params:
+                        boot_kwargs["exclude_hosts"] = exclude_hosts
+                    tunnel_target = boot_fn(nb_url, **boot_kwargs)
                 except RuntimeError as exc:
                     raise SystemExit(f"FAIL Colab 自动拉起失败: {exc}") from exc
                 conn = parse_colab_connect_target(tunnel_target)
                 conn["notebook_url"] = nb_url
+                if bp_name:
+                    conn["browser_profile"] = bp_name
                 paths.require_data()
                 merged, host, endpoint = _apply_ssh_profile_connection(
                     cfg_global,
@@ -2280,10 +2842,11 @@ def cmd_up(args: argparse.Namespace) -> int:
                     "colab",
                     conn,
                     alias=host,
+                    slot=slot,
                 )
                 ctx["cfg_local"] = merged
-                ctx["profile"] = provider_profile(merged, "colab")
-                print(f"[OK] Colab 自动拉起成功，隧道已刷新：{endpoint}（别名 {host}）")
+                ctx["profile"] = provider_profile(merged, "colab", slot=slot)
+                print(f"[OK] Colab 自动拉起成功，隧道已刷新：{endpoint}（别名 {host}, 槽位 {slot}）")
             else:
                 print("[*] 尚未检测到 Colab 隔离浏览器登录态；如需无人值守自动开机，可先执行一次：")
                 print("    python -m pipeline.cloud connect --provider colab --browser-login")
@@ -2354,25 +2917,21 @@ def cmd_up(args: argparse.Namespace) -> int:
     wd_action = "写入释放信号 (unassign)" if provider == "colab" else "自动关机"
     print(f"[OK] 远端守卫 Watchdog 已激活 (PID {wd_pid}，无活跃任务且空闲 {idle_sec}s {wd_action})。")
 
-    sfile = get_active_session_file()
     now_epoch = time.time()
-    target = connection_target(cfg_local, provider=provider)
-    try:
-        prev = json.loads(sfile.read_text(encoding="utf-8")) if sfile.exists() else None
-    except (OSError, ValueError):
-        prev = None
+    target = connection_target(ctx["cfg_local"], provider=provider, slot=slot)
     resumed = resumable_session(prev, target, remote_boot_epoch(host, now_epoch))
     if resumed and prev is not None:
         session_data = dict(prev)
         session_data["mode"] = mode
-        print(f"[OK] 沿用本次开机的活跃会话 {prev.get('session')}（开始于 {prev.get('up')}），开机时刻与已报单价不变")
+        print(f"[OK] 沿用本次开机的活跃会话 {prev.get('session')}（槽位: {slot}，开始于 {prev.get('up')}），开机时刻与已报单价不变")
     else:
         if prev is not None:
-            print(f"WARN 上一个会话 {prev.get('session')}（开始于 {prev.get('up')}）没有 down 结算就被替换："
+            print(f"WARN 上一个会话 {prev.get('session')}（槽位 {slot}，开始于 {prev.get('up')}）没有 down 结算就被替换："
                   "实例已重启或换了一台，那段费用不进账本", file=sys.stderr)
         session_data = {
             "session": f"{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "provider": provider,
+            "slot": slot,
             "billing_unit": unit,
             "mode": mode,
             "up": datetime.now().strftime("%H:%M:%S"),
@@ -2380,6 +2939,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             "episode": getattr(args, "episode", None),
             "tasks": [],
         }
+    session_data.setdefault("slot", slot)
     if target:
         session_data["target"] = target
     if gpu_name:
@@ -2396,20 +2956,27 @@ def cmd_up(args: argparse.Namespace) -> int:
     elif rate is not None:
         print(f"WARN 实测是无卡模式，按平台固定价记，报的单价 {rate:g} {_rate_label(unit)} 不记", file=sys.stderr)
     elif mode == "gpu" and rate_key not in session_data:
+        slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
         print(f"WARN 没报单价：账本会按参考价估算（{_rate_label(unit)}）。"
-              "结算时可用 cloud down --rate <单价> 补上", file=sys.stderr)
+              f"结算时可用 cloud down{slot_flag} --rate <单价> 补上", file=sys.stderr)
     if declared and mode != declared:
         session_data["mode_corrected"] = f"up 声明 --mode {declared}，实测为 {mode}，按实测记账"
-    sfile.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    sfile.parent.mkdir(parents=True, exist_ok=True)
+    paths.atomic_write(sfile, json.dumps(session_data, ensure_ascii=False, indent=2))
     if not resumed:
-        print(f"[OK] 会话已开启: {session_data['session']} (后端: {provider}, 模式: {mode})")
+        print(f"[OK] 会话已开启: {session_data['session']} (后端: {provider}, 槽位: {slot}, 模式: {mode})")
     return 0
 
 
-def connection_target(cfg_local: dict, *, provider: str | None = None) -> str | None:
+def connection_target(
+    cfg_local: dict,
+    *,
+    provider: str | None = None,
+    slot: str = DEFAULT_SLOT,
+) -> str | None:
     """`cloud connect` 记下的目标字符串（纯函数）；没 connect 过为 None。"""
     p = provider or "autodl"
-    prof = provider_profile(cfg_local, p)
+    prof = provider_profile(cfg_local, p, slot=slot)
     if p == "colab-drive":
         return f"drive:{prof['drive_root']}" if prof.get("drive_root") else None
     if not prof.get("server"):
@@ -2500,10 +3067,32 @@ def check_rate(value: float | None, *, unit: str = "cny") -> float | None:
     return float(value)
 
 
-def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[str], dict]:
+def rerate_last_entry(
+    lines: list[str],
+    rate: float,
+    today: str,
+    *,
+    slot: str | None = None,
+) -> tuple[list[str], dict]:
     """D131：把账簿最后一条结算的估算单价换成人事后补报的单价（纯函数）→ (新的各行, 改后的条目)。"""
-    idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    idx: int | None = None
+    for i in range(len(lines) - 1, -1, -1):
+        raw = lines[i].strip()
+        if not raw:
+            continue
+        if slot is None:
+            idx = i
+            break
+        try:
+            cand = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if str(cand.get("slot") or DEFAULT_SLOT) == slot:
+            idx = i
+            break
     if idx is None:
+        if slot is not None:
+            raise SystemExit(f"FAIL 账簿里没有槽位 {slot!r} 的可补单价结算记录")
         raise SystemExit("FAIL 账簿是空的，没有可以补单价的结算")
     try:
         entry = json.loads(lines[idx])
@@ -2533,16 +3122,44 @@ def rerate_last_entry(lines: list[str], rate: float, today: str) -> tuple[list[s
 
 
 def cmd_down(args: argparse.Namespace) -> int:
-    """关机/释放结算命令：按后端双单位精算费用，落盘账簿，下发关机或 Colab 运行时释放。"""
+    """关机/释放结算命令：按后端+槽位双单位精算费用，落盘账簿，只释放对应槽位实例。"""
     ctx = _cloud_context(args)
     cfg_global = ctx["cfg_global"]
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_explicit = ctx["slot_explicit"]
     host = ctx["host"]
     rpaths = ctx["rpaths"]
     st = ctx["settings"]
     drive_root = ctx.get("drive_root")
 
-    sfile = get_active_session_file()
+    sfile = session_file_for(provider, slot, migrate=False)
+    if not sfile.exists():
+        all_sessions = list_active_sessions()
+        if slot_explicit and getattr(args, "provider", None) is None:
+            matches = [s for s in all_sessions if s["slot"] == slot]
+            if len(matches) == 1:
+                provider = matches[0]["provider"]
+                st = provider_settings(cfg_global, provider)
+                rpaths = provider_remote_paths(cfg_global, provider)
+                prof = provider_profile(ctx["cfg_local"], provider, slot=slot)
+                host = provider_ssh_host(cfg_global, ctx["cfg_local"], provider, slot=slot)
+                drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
+                sfile = matches[0]["_file"]
+            elif len(matches) > 1:
+                provs = ", ".join(m["provider"] for m in matches)
+                raise SystemExit(f"FAIL 多个后端存在槽位 {slot!r} 的活跃会话 ({provs})，请显式传入 --provider")
+        elif not slot_explicit and getattr(args, "provider", None) is None:
+            def_matches = [s for s in all_sessions if s["slot"] == DEFAULT_SLOT]
+            if len(def_matches) == 1:
+                provider = def_matches[0]["provider"]
+                st = provider_settings(cfg_global, provider)
+                rpaths = provider_remote_paths(cfg_global, provider)
+                prof = provider_profile(ctx["cfg_local"], provider, slot=slot)
+                host = provider_ssh_host(cfg_global, ctx["cfg_local"], provider, slot=slot)
+                drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
+                sfile = def_matches[0]["_file"]
+
     session_info: dict = {}
     session_corrupt = False
     if sfile.exists():
@@ -2558,8 +3175,8 @@ def cmd_down(args: argparse.Namespace) -> int:
         provider = session_info["provider"]
         st = provider_settings(cfg_global, provider)
         rpaths = provider_remote_paths(cfg_global, provider)
-        prof = provider_profile(ctx["cfg_local"], provider)
-        host = provider_ssh_host(cfg_global, ctx["cfg_local"], provider)
+        prof = provider_profile(ctx["cfg_local"], provider, slot=slot)
+        host = provider_ssh_host(cfg_global, ctx["cfg_local"], provider, slot=slot)
         drive_root = _resolve_drive_root(st, prof) if provider == "colab-drive" else None
 
     unit = billing_unit_of(cfg_global, provider)
@@ -2567,20 +3184,36 @@ def cmd_down(args: argparse.Namespace) -> int:
         reachable = bool(drive_root and cloud_drive.is_drive_reachable(drive_root)
                          and (hb := cloud_drive.parse_worker_heartbeat(drive_root)) and hb.get("online"))
     else:
-        _require_local_cloudflared(provider_profile(ctx["cfg_local"], provider))
+        _require_local_cloudflared(provider_profile(ctx["cfg_local"], provider, slot=slot))
         reachable = is_ssh_reachable(host)
 
     rate_arg = check_rate(getattr(args, "rate", None), unit=unit)
-    if not sfile.exists() and not reachable and rate_arg is not None:
-        lfile = get_ledger_file()
-        lines = lfile.read_text(encoding="utf-8").splitlines() if lfile.exists() else []
-        new_lines, entry = rerate_last_entry(lines, rate_arg, datetime.now().strftime("%Y-%m-%d"))
-        paths.atomic_write(lfile, "\n".join(new_lines) + "\n")
-        cost_val = entry.get("cu") if entry.get("unit") == "cu" else entry.get("cny", 0.0)
-        print(f"[*] 没有活跃会话、实例已关：把最近一条结算（会话 {entry['session']}）的估算单价改为 "
-              f"{rate_arg:g} {_rate_label(entry.get('unit', 'cny'))}，重算为 {_cost_prefix(entry.get('unit', 'cny'))}{cost_val:.4f}"
-              f"（时长 {entry['gpu_seconds']}s 不变）")
-        return 0
+    if not sfile.exists() and not reachable:
+        if not slot_explicit and rate_arg is None:
+            all_sessions = list_active_sessions()
+            if all_sessions:
+                desc = "、".join(f"{s['provider']}:{s['slot']}" for s in all_sessions)
+                first = all_sessions[0]
+                raise SystemExit(
+                    f"FAIL 默认槽位 (default) 没有活跃会话且实例未连通，当前有其他并发槽位在运行（{desc}）。\n"
+                    f"     请指定 --slot 结算并释放目标实例，例如：\n"
+                    f"       python -m pipeline.cloud down --provider {first['provider']} --slot {first['slot']}"
+                )
+        if rate_arg is not None:
+            lfile = get_ledger_file()
+            lines = lfile.read_text(encoding="utf-8").splitlines() if lfile.exists() else []
+            new_lines, entry = rerate_last_entry(
+                lines,
+                rate_arg,
+                datetime.now().strftime("%Y-%m-%d"),
+                slot=slot if slot_explicit else None,
+            )
+            paths.atomic_write(lfile, "\n".join(new_lines) + "\n")
+            cost_val = entry.get("cu") if entry.get("unit") == "cu" else entry.get("cny", 0.0)
+            print(f"[*] 没有活跃会话、实例已关：把最近一条结算（会话 {entry['session']}）的估算单价改为 "
+                  f"{rate_arg:g} {_rate_label(entry.get('unit', 'cny'))}，重算为 {_cost_prefix(entry.get('unit', 'cny'))}{cost_val:.4f}"
+                  f"（时长 {entry['gpu_seconds']}s 不变）")
+            return 0
 
     mode = session_info.get("mode")
     if not mode:
@@ -2638,6 +3271,7 @@ def cmd_down(args: argparse.Namespace) -> int:
         rate_cny=rate,
         provider=provider,
         billing_unit=unit,
+        slot=slot,
     )
     lfile = get_ledger_file()
     with lfile.open("a", encoding="utf-8") as f:
@@ -2648,8 +3282,10 @@ def cmd_down(args: argparse.Namespace) -> int:
 
     c_pref = _cost_prefix(unit)
     u_name = "CU" if unit == "cu" else "元"
+    slot_label = f", 槽位: {slot}" if slot != DEFAULT_SLOT else ""
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     print("=" * 60)
-    print(f"会话结算完成（后端: {provider}）：")
+    print(f"会话结算完成（后端: {provider}{slot_label}）：")
     print(f"  会话模式: {mode} (计费单价: {c_pref}{rate}/{_rate_label(unit).split('/')[1]})")
     print(f"  运行时长: {duration_sec // 60} 分 {duration_sec % 60} 秒 ({duration_sec}s)")
     print(f"  本次计费: {c_pref}{cost_val:.4f} {u_name}")
@@ -2667,7 +3303,7 @@ def cmd_down(args: argparse.Namespace) -> int:
         active_jobs = cloud_drive.active_drive_jobs(drive_root)
         if active_jobs and not getattr(args, "force", False):
             print(f"[*] 提示: Drive 队列仍有未完成任务 ({active_jobs})，暂不发送释放信号。")
-            print("    如需强制释放请加 --force: python -m pipeline.cloud down --force --provider colab-drive")
+            print(f"    如需强制释放请加 --force: python -m pipeline.cloud down --force --provider colab-drive{slot_flag}")
             return 0
         flag = cloud_drive.request_drive_shutdown(drive_root)
         print(f"[*] 已写入 Colab 运行时释放信号: {flag}")
@@ -2689,8 +3325,8 @@ def cmd_down(args: argparse.Namespace) -> int:
         active_tasks = remote_active_tasks(host=host)
         if active_tasks and not getattr(args, "force", False):
             print(f"[*] 提示: 远端仍有活跃的后台任务正在运行 ({active_tasks})。")
-            print(f"    账簿已结算，保留远端实例运行以等待任务完成。")
-            print(f"    如需强制停机请加 --force: python -m pipeline.cloud down --force")
+            print("    账簿已结算，保留远端实例运行以等待任务完成。")
+            print(f"    如需强制停机请加 --force: python -m pipeline.cloud down --force{slot_flag}")
             return 0
 
         if provider == "colab":
@@ -2849,16 +3485,126 @@ def cmd_release(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    """工况与账簿查询命令（支持 AutoDL / Colab SSH / Colab Drive 及双单位账簿汇总）。"""
-    ctx = _cloud_context(args)
-    cfg_global, provider, host, rpaths, st, unit = (
-        ctx["cfg_global"], ctx["provider"], ctx["host"], ctx["rpaths"], ctx["settings"], ctx["unit"],
+def format_slot_summary_line(
+    *,
+    provider: str,
+    slot: str,
+    host: str,
+    online: bool,
+    gpu: str | None,
+    active_tasks: Sequence[str],
+    hold: tuple[int, int, int] | None,
+    elapsed_sec: int,
+    cost: float,
+    unit: str,
+) -> str:
+    """将单个并发槽位的连通、GPU、活跃任务、hold 剩余及累计费用格式化为汇总行（纯函数）。"""
+    status_icon = "● 在线" if online else "○ 离线"
+    gpu_str = gpu or "未知/无卡"
+    tasks_str = f"[{', '.join(active_tasks)}]" if active_tasks else "无"
+    if hold is not None and hold[2] < hold[1]:
+        hold_str = f"hold 剩余 {(hold[1] - hold[2]) // 60}m"
+    else:
+        hold_str = "未 hold"
+    pref = _cost_prefix(unit)
+    u_word = "CU" if unit == "cu" else "元"
+    mins, secs = elapsed_sec // 60, elapsed_sec % 60
+    return (
+        f"  [{provider}:{slot}] ({host}) {status_icon} | GPU: {gpu_str} | "
+        f"任务: {tasks_str} | {hold_str} | {mins}m{secs}s | {pref}{cost:.4f} {u_word}"
     )
-    budget = float(st.get("budget_per_episode_cu", 1.5) if unit == "cu" else st.get("budget_per_episode_cny", 0.35))
 
+
+def _probe_slot_summary(
+    cfg_global: dict,
+    cfg_local: dict,
+    sdata: dict[str, Any],
+) -> str:
+    """采集并格式化单个活跃会话槽位的汇总行。"""
+    sp = str(sdata.get("provider") or "autodl")
+    sl = str(sdata.get("slot") or DEFAULT_SLOT)
+    su = str(sdata.get("billing_unit") or billing_unit_of(cfg_global, sp))
+    s_st = provider_settings(cfg_global, sp)
+    s_rpaths = provider_remote_paths(cfg_global, sp)
+    s_prof = provider_profile(cfg_local, sp, slot=sl)
+    s_host = provider_ssh_host(cfg_global, cfg_local, sp, slot=sl)
+
+    s_online = False
+    s_gpu: str | None = sdata.get("gpu")
+    s_tasks: list[str] = list(sdata.get("tasks") or [])
+    s_hold: tuple[int, int, int] | None = None
+
+    if sp == "colab-drive":
+        droot = _resolve_drive_root(s_st, s_prof)
+        s_host = str(droot or "drive")
+        hb = cloud_drive.parse_worker_heartbeat(droot) if droot and cloud_drive.is_drive_reachable(droot) else None
+        s_online = bool(hb and hb.get("online"))
+        if hb:
+            s_gpu = hb.get("gpu") or s_gpu
+            s_tasks = cloud_drive.active_drive_jobs(droot) if droot else s_tasks
+            s_hold = cloud_drive.read_drive_hold(droot) if droot else None
+    else:
+        cf_ok = True
+        try:
+            _require_local_cloudflared(s_prof)
+        except SystemExit:
+            cf_ok = False
+        if cf_ok:
+            s_online = is_ssh_reachable(s_host)
+        if s_online:
+            g_res = _ssh(GPU_QUERY_CMD, host=s_host, check=False)
+            if g_res.returncode == 0 and g_res.stdout.strip():
+                g_name, _ = parse_gpu_query(g_res.stdout)
+                if g_name:
+                    s_gpu = g_name
+            s_tasks = remote_active_tasks(host=s_host)
+            h_res = _ssh(f"cat {s_rpaths['hold_path']} 2>/dev/null; date +%s", host=s_host, check=False)
+            s_hold = parse_hold(h_res.stdout) if h_res.returncode == 0 else None
+
+    mode = str(sdata.get("mode") or "gpu")
+    r_key = "rate_cu" if su == "cu" else "rate_cny"
+    reported = sdata.get(r_key) if isinstance(sdata.get(r_key), (int, float)) else None
+    rate_now, _ = session_rate(cfg_global, mode, s_gpu, reported, provider=sp)
+    elapsed = int(max(time.time() - float(sdata.get("up_epoch", time.time())), 0))
+    cost_now = calculate_session_cost(elapsed, rate_now)
+    return format_slot_summary_line(
+        provider=sp,
+        slot=sl,
+        host=s_host,
+        online=s_online,
+        gpu=s_gpu,
+        active_tasks=s_tasks,
+        hold=s_hold,
+        elapsed_sec=elapsed,
+        cost=cost_now,
+        unit=su,
+    )
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """工况与账簿查询命令（支持 AutoDL / Colab SSH / Colab Drive、多槽位汇总与双单位账簿）。"""
+    ctx = _cloud_context(args)
+    cfg_global, provider, slot, slot_explicit, host, rpaths, st, unit = (
+        ctx["cfg_global"],
+        ctx["provider"],
+        ctx["slot"],
+        ctx["slot_explicit"],
+        ctx["host"],
+        ctx["rpaths"],
+        ctx["settings"],
+        ctx["unit"],
+    )
+    sfile = session_file_for(provider, slot, migrate=False)
+    sdata_primary: dict = {}
+    if sfile.exists():
+        try:
+            sdata_primary = json.loads(sfile.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            sdata_primary = {}
+
+    slot_hdr = f" | 槽位: {slot}" if slot != DEFAULT_SLOT else ""
     print("=" * 65)
-    print(f"  端云工况状态 (当前后端: {provider} | 计费单位: {unit.upper()})")
+    print(f"  端云工况状态 (当前后端: {provider}{slot_hdr} | 计费单位: {unit.upper()})")
     print("=" * 65)
 
     if provider == "colab-drive":
@@ -2904,18 +3650,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
             hold_res = _ssh(f"cat {rpaths['hold_path']} 2>/dev/null; date +%s", host=host, check=False)
             hold = parse_hold(hold_res.stdout) if hold_res.returncode == 0 else None
-            sdata_rate: dict = {}
-            try:
-                sdata_rate = json.loads(get_active_session_file().read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
-            sp, su = _session_unit(cfg_global, sdata_rate, provider)
+            sp, su = _session_unit(cfg_global, sdata_primary, provider)
             r_key = "rate_cu" if su == "cu" else "rate_cny"
-            reported = sdata_rate.get(r_key) if isinstance(sdata_rate.get(r_key), (int, float)) else None
-            rate_now, _ = session_rate(cfg_global, sdata_rate.get("mode", "gpu"), sdata_rate.get("gpu"), reported, provider=sp)
+            reported = sdata_primary.get(r_key) if isinstance(sdata_primary.get(r_key), (int, float)) else None
+            rate_now, _ = session_rate(cfg_global, sdata_primary.get("mode", "gpu"), sdata_primary.get("gpu"), reported, provider=sp)
             print(f"保持开机     : {hold_status_line(hold, rate_now, unit=su)}")
 
-    sfile = get_active_session_file()
     if sfile.exists():
         try:
             sdata = json.loads(sfile.read_text(encoding="utf-8"))
@@ -2930,13 +3670,24 @@ def cmd_status(args: argparse.Namespace) -> int:
             cur_cost = calculate_session_cost(elapsed, rate)
             pref = _cost_prefix(su)
             u_word = "CU" if su == "cu" else "元"
+            s_slot = str(sdata.get("slot") or slot)
+            slot_info = f", 槽位: {s_slot}" if s_slot != DEFAULT_SLOT else ""
             print("-" * 65)
-            print(f"当前活跃会话 : {sdata.get('session')} (后端: {sp}, 开始于 {sdata.get('up')}, 模式: {mode})")
+            print(f"当前活跃会话 : {sdata.get('session')} (后端: {sp}{slot_info}, 开始于 {sdata.get('up')}, 模式: {mode})")
             print(f"已运行时间   : {elapsed // 60} 分 {elapsed % 60} 秒")
             cost_color = "\033[91m" if cur_cost > s_budget else "\033[92m"
             print(f"已产生费用   : {cost_color}{pref}{cur_cost:.4f}\033[0m {u_word} (单价: {pref}{rate}/小时{'，估算' if estimated else ''}, 限额: {pref}{s_budget})")
         except Exception as e:
             print(f"WARN 会话文件损坏，无法展示当前会话: {e}", file=sys.stderr)
+
+    if not slot_explicit:
+        all_sessions = list_active_sessions()
+        has_other = any(not (s["provider"] == provider and s["slot"] == slot) for s in all_sessions)
+        if has_other or len(all_sessions) > 1:
+            print("-" * 65)
+            print(f"多实例并发槽位汇总（共 {len(all_sessions)} 个活跃会话）：")
+            for sess in all_sessions:
+                print(_probe_slot_summary(cfg_global, ctx["cfg_local"], sess))
 
     lfile = get_ledger_file()
     if lfile.exists():
@@ -2950,7 +3701,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if over_budget_count > 0:
             print(f"\033[91m⚠️  历史超预算会话: {over_budget_count} 次！\033[0m")
         else:
-            print(f"预算合规记录 : 全部会话均在预算控制范围内。")
+            print("预算合规记录 : 全部会话均在预算控制范围内。")
     print("=" * 65)
     return 0
 
@@ -3351,18 +4102,26 @@ def _lib_target(args: argparse.Namespace) -> list[str]:
         raise SystemExit(f"FAIL {exc}") from exc
 
 
-def _note_session_task(task: str, label: str) -> None:
-    """把任务记进活跃会话文件（账本按它列本次跑过什么）；文件坏了只警告，不挡远端执行。"""
-    sfile = get_active_session_file()
+def _note_session_task(
+    task: str,
+    label: str,
+    *,
+    provider: str = "autodl",
+    slot: str = DEFAULT_SLOT,
+) -> None:
+    """把任务记进对应后端与槽位的活跃会话文件；文件坏了只警告，不挡远端执行。"""
+    sfile = session_file_for(provider, slot, migrate=False)
     if not sfile.exists():
         return
+    if sfile.name == "active_session.json":
+        sfile = session_file_for(provider, slot, migrate=True)
     try:
         sdata = json.loads(sfile.read_text(encoding="utf-8"))
         sdata.setdefault("tasks", [])
         if task not in sdata["tasks"]:
             sdata["tasks"].append(task)
         sdata["episode"] = label
-        sfile.write_text(json.dumps(sdata, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths.atomic_write(sfile, json.dumps(sdata, ensure_ascii=False, indent=2))
     except Exception as e:
         print(f"WARN 会话文件损坏，本次任务未记账（不影响远端执行）: {e}", file=sys.stderr)
 
@@ -3381,17 +4140,19 @@ def cmd_lib_push(args: argparse.Namespace) -> int:
 
     ctx = _cloud_context(args)
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     if provider == "colab-drive":
         drive_root = _require_drive_root(ctx)
         staged = cloud_drive.stage_lib_inputs(drive_root, args.pool, keys, shots_rel, frames_rel, paths.ROOT)
-        print(f"[OK] lib-push 完成（Drive 暂存 {len(staged)} 项）：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)} --provider colab-drive")
+        print(f"[OK] lib-push 完成（Drive 暂存 {len(staged)} 项）：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)} --provider colab-drive{slot_flag}")
         return 0
 
     _require_local_cloudflared(ctx["profile"])
     host = ctx["host"]
     remote_root = ctx["rpaths"]["remote_root"]
     if not is_ssh_reachable(host):
-        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
+        raise SystemExit(f"FAIL 实例不可达/已关机 ({host})，先 cloud up{slot_flag}")
     remote_shots = f"{remote_root}/{shots_rel}"
     _ssh(f"mkdir -p {shlex.quote(remote_shots)} {shlex.quote(f'{remote_root}/{frames_rel}')}", host=host)
     pairs = build_lib_up_pairs(args.pool, keys, remote_root, dirs, paths.ROOT)
@@ -3401,7 +4162,7 @@ def cmd_lib_push(args: argparse.Namespace) -> int:
         if res.returncode != 0:
             raise SystemExit(f"FAIL 上传失败 {src} -> {dst}: {res.stderr.strip()}")
         print(f"  ✓ 已同步: {src} -> {dst}")
-    print(f"[OK] lib-push 完成：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)}（计费）")
+    print(f"[OK] lib-push 完成（{host}）：{args.pool} {' '.join(keys)}。下一步 cloud lib-captions {args.pool} {' '.join(keys)}{slot_flag}（计费）")
     return 0
 
 
@@ -3411,6 +4172,8 @@ def cmd_lib_captions(args: argparse.Namespace) -> int:
     ctx = _cloud_context(args)
     cfg_global = ctx["cfg_global"]
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     rpaths = ctx["rpaths"]
 
     if provider == "colab-drive":
@@ -3424,7 +4187,7 @@ def cmd_lib_captions(args: argparse.Namespace) -> int:
         active = cloud_drive.active_drive_jobs(drive_root)
         if active:
             raise SystemExit(f"FAIL Drive 队列仍有未完成任务（{', '.join(active)}），请等待完成后再发")
-        _note_session_task("captions", f"library:{args.pool}")
+        _note_session_task("captions", f"library:{args.pool}", provider=provider, slot=slot)
         extra_tokens: list[str] = list(keys)
         if args.batch is not None:
             extra_tokens.extend(["--batch", str(int(args.batch))])
@@ -3443,8 +4206,8 @@ def cmd_lib_captions(args: argparse.Namespace) -> int:
             lib_keys=keys,
         )
         print(f"[OK] 已提交 Drive 队列番池打标任务: {job_id}")
-        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive")
-        print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)} --provider colab-drive")
+        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive{slot_flag}")
+        print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)} --provider colab-drive{slot_flag}")
         return 0
 
     _require_local_cloudflared(ctx["profile"])
@@ -3455,9 +4218,9 @@ def cmd_lib_captions(args: argparse.Namespace) -> int:
         raise SystemExit("FAIL 没开跑：" + "\n     ".join(code_lines))
     if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
         raise SystemExit(f"FAIL 上一批番池打标（{LIB_CAPTIONS_SESSION}）还在跑；跑完再开下一批，"
-                         f"进度看 cloud attach --session {LIB_CAPTIONS_SESSION}")
+                         f"进度看 cloud attach --session {LIB_CAPTIONS_SESSION}{slot_flag}")
 
-    _note_session_task("captions", f"library:{args.pool}")
+    _note_session_task("captions", f"library:{args.pool}", provider=provider, slot=slot)
     _ssh(f"touch {rpaths['heartbeat_path']}", host=host)
     remote_cmd = build_lib_captions_command(
         args.pool,
@@ -3471,12 +4234,12 @@ def cmd_lib_captions(args: argparse.Namespace) -> int:
         models_root=rpaths["remote_models"] if provider != "autodl" else None,
         heartbeat_path=rpaths["heartbeat_path"],
     )
-    print(f"[*] 启动远端番池打标 (tmux: {LIB_CAPTIONS_SESSION})")
+    print(f"[*] 启动远端番池打标 (Host: {host}, tmux: {LIB_CAPTIONS_SESSION})")
     print(f"    远端执行: {remote_cmd}")
     _ssh(build_tmux_launch_command(LIB_CAPTIONS_SESSION, remote_cmd, remote_root), host=host)
     print("[OK] 已在远端后台运行。")
-    print(f"     查看进度: python -m pipeline.cloud attach --session {LIB_CAPTIONS_SESSION}")
-    print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)}，再本地 vindex embed {args.pool}")
+    print(f"     查看进度: python -m pipeline.cloud attach --session {LIB_CAPTIONS_SESSION}{slot_flag}")
+    print(f"     跑完后:   python -m pipeline.cloud lib-pull {args.pool} {' '.join(keys)}{slot_flag}，再本地 vindex embed {args.pool}")
     return 0
 
 
@@ -3487,6 +4250,8 @@ def cmd_lib_pull(args: argparse.Namespace) -> int:
     _, _, vindex_rel = lib_dirs()
     ctx = _cloud_context(args)
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     local_dir = paths.ROOT / vindex_rel
     local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3509,7 +4274,7 @@ def cmd_lib_pull(args: argparse.Namespace) -> int:
     host = ctx["host"]
     remote_root = ctx["rpaths"]["remote_root"]
     if not is_ssh_reachable(host):
-        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up")
+        raise SystemExit(f"FAIL 实例不可达/已关机 ({host})，先 cloud up{slot_flag}")
     if LIB_CAPTIONS_SESSION in remote_active_tasks(host=host):
         raise SystemExit(f"FAIL 番池打标（{LIB_CAPTIONS_SESSION}）还在跑，跑完再拉：中途拉到的可能是半份产物")
     missing: list[str] = []
@@ -3552,10 +4317,15 @@ def resolve_episode_rel_path(target: Any) -> tuple[Path, str]:
     return ep_dir, str(rel)
 
 
-def _verify_pulled_outputs(ep_dir: Path) -> int:
+def _verify_pulled_outputs(
+    ep_dir: Path,
+    *,
+    provider: str = "autodl",
+    slot: str = DEFAULT_SLOT,
+) -> int:
     """统一校验从云端拉回的本期产物（SSH 与 Drive 后端共用）。"""
     session_tasks: list[str] = []
-    sfile = get_active_session_file()
+    sfile = session_file_for(provider, slot, migrate=False)
     if sfile.exists():
         try:
             session_tasks = json.loads(sfile.read_text(encoding="utf-8")).get("tasks", [])
@@ -3631,14 +4401,17 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     raw_extra = list(getattr(args, "extra", None) or [])
     try:
-        extra_provider, clean_extra = _extract_provider_from_extra(raw_extra)
+        extra_provider, extra_slot, clean_extra = _extract_cloud_flags_from_extra(raw_extra)
     except ValueError as exc:
         raise SystemExit(f"FAIL {exc}") from exc
 
     cli_prov = extra_provider or getattr(args, "provider", None)
-    ctx = _cloud_context(args, cli_provider=cli_prov)
+    cli_slot = extra_slot or getattr(args, "slot", None)
+    ctx = _cloud_context(args, cli_provider=cli_prov, cli_slot=cli_slot)
     cfg_global = ctx["cfg_global"]
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     rpaths = ctx["rpaths"]
 
     if provider == "colab-drive":
@@ -3654,7 +4427,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if not staged_mf.is_file():
                 raise SystemExit(
                     "FAIL 没开跑：Drive 暂存区没有 03-audio/manifest.json，--apply-patch 会整期重配。\n"
-                    f"     先 `python -m pipeline.cloud push {args.target} --with-audio --provider colab-drive`"
+                    f"     先 `python -m pipeline.cloud push {args.target} --with-audio --provider colab-drive{slot_flag}`"
                 )
         extra_str = " ".join(clean_extra)
         try:
@@ -3666,7 +4439,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         except ValueError as exc:
             raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
-        _note_session_task(task, ep_dir.name)
+        _note_session_task(task, ep_dir.name, provider=provider, slot=slot)
         job_id = f"ep_{task}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         cloud_drive.submit_drive_job(
             drive_root,
@@ -3675,11 +4448,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             ep_rel_path=rel_path,
             extra_args=extra_str,
         )
-        print(f"[OK] Drive 队列任务已提交: {job_id} (task={task})")
-        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive")
+        print(f"[OK] Drive 队列任务已提交: {job_id} (task={task}, 槽位={slot})")
+        print(f"     查看日志: python -m pipeline.cloud logs {job_id} -f --provider colab-drive{slot_flag}")
         print(f"     完成后请执行:")
-        print(f"       python -m pipeline.cloud pull {args.target} --provider colab-drive")
-        print(f"       python -m pipeline.cloud down --provider colab-drive")
+        print(f"       python -m pipeline.cloud pull {args.target} --provider colab-drive{slot_flag}")
+        print(f"       python -m pipeline.cloud down --provider colab-drive{slot_flag}")
         return 0
 
     _require_local_cloudflared(ctx["profile"])
@@ -3697,9 +4470,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if (probe.stdout or "").strip() == "absent":
             raise SystemExit(
                 "FAIL 没开跑：远端没有 03-audio/manifest.json（多半是换了实例），--apply-patch 会整期重配。\n"
-                f"     先 `python -m pipeline.cloud push {args.target} --with-audio` 把本地配音带上去")
+                f"     先 `python -m pipeline.cloud push {args.target} --with-audio{slot_flag}` 把本地配音带上去")
 
-    _note_session_task(task, ep_dir.name)
+    _note_session_task(task, ep_dir.name, provider=provider, slot=slot)
     _ssh(f"touch {rpaths['heartbeat_path']}", host=host)
 
     session_name = f"ava-{task}"
@@ -3719,15 +4492,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         raise SystemExit(f"FAIL 远端命令参数非法: {exc}") from exc
     tmux_launch = build_tmux_launch_command(session_name, remote_cmd, remote_root)
 
-    print(f"[*] 启动远端任务: {task} (后端: {provider}, tmux: {session_name})")
+    print(f"[*] 启动远端任务: {task} (后端: {provider}, 槽位: {slot}, Host: {host}, tmux: {session_name})")
     print(f"    远端执行: {remote_cmd}")
     _ssh(tmux_launch, host=host)
 
     print(f"[OK] 任务已在远端 tmux 会话运行。")
-    print(f"     查看日志: python -m pipeline.cloud attach --session {session_name}")
+    print(f"     查看日志: python -m pipeline.cloud attach --session {session_name}{slot_flag}")
     print(f"     完成后请执行:")
-    print(f"       python -m pipeline.cloud pull {args.target}")
-    print(f"       python -m pipeline.cloud down")
+    print(f"       python -m pipeline.cloud pull {args.target}{slot_flag}")
+    print(f"       python -m pipeline.cloud down{slot_flag}")
     return 0
 
 
@@ -3743,6 +4516,8 @@ def cmd_pull(args: argparse.Namespace) -> int:
     ctx = _cloud_context(args)
     cfg_global = ctx["cfg_global"]
     provider = ctx["provider"]
+    slot = ctx["slot"]
+    slot_flag = f" --slot {slot}" if slot != DEFAULT_SLOT else ""
     sync_items = list(cfg_global.get("sync", {}).get("down", ["03-audio/", "04-clips.json", "06-check.log", "04-patch/"]))
     if "04-patch/" not in sync_items:
         sync_items.append("04-patch/")
@@ -3758,7 +4533,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
         else:
             for item in pulled:
                 print(f"  ✓ 已从 Drive ({job_id}) 拉取: {item}")
-        return _verify_pulled_outputs(ep_dir)
+        return _verify_pulled_outputs(ep_dir, provider=provider, slot=slot)
 
     _require_local_cloudflared(ctx["profile"])
     host = ctx["host"]
@@ -3766,13 +4541,13 @@ def cmd_pull(args: argparse.Namespace) -> int:
 
     if run_rsync is _ORIGINAL_RUN_RSYNC:
         if not is_ssh_reachable(host):
-            raise SystemExit("FAIL 实例不可达/已关机，先 `python -m pipeline.cloud up`")
+            raise SystemExit(f"FAIL 实例不可达/已关机 ({host})，先 `python -m pipeline.cloud up{slot_flag}`")
         active = remote_active_tasks(host=host)
         if active:
             print(f"[*] 提示: 远端仍有活跃后台任务正在运行 ({active})")
 
     remote_ep_dir = f"{remote_root}/{rel_path}"
-    print(f"[*] 从远端拉取执行产物（后端: {provider}）...")
+    print(f"[*] 从远端拉取执行产物（后端: {provider}, Host: {host}）...")
 
     sync_pairs = build_sync_down_files(ep_dir, sync_items, remote_ep_dir)
     for src, dst in sync_pairs:
@@ -3783,7 +4558,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
             tail = (res.stderr.strip().splitlines() or [""])[-1][:120]
             print(f"  ○ 未发现远端产物或跳过: {src}（rsync 退出码 {res.returncode}：{tail}）")
 
-    return _verify_pulled_outputs(ep_dir)
+    return _verify_pulled_outputs(ep_dir, provider=provider, slot=slot)
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
@@ -3793,6 +4568,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
     if ctx["provider"] == "colab-drive":
         return cmd_logs(argparse.Namespace(
             provider="colab-drive",
+            slot=ctx["slot"],
             session=session_name,
             follow=True,
             lines=50,
@@ -3816,6 +4592,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="覆盖默认云算力后端（autodl / colab / colab-drive）",
     )
+    provider_parent.add_argument(
+        "--slot",
+        "--instance",
+        dest="slot",
+        type=str,
+        default=argparse.SUPPRESS,
+        help="实例并发槽位名（如 tts / captions / gpu2，或 up/connect 用 auto；缺省为 default）",
+    )
 
     ap = argparse.ArgumentParser(
         description="端云协同管理系统（E9：python -m pipeline.cloud）",
@@ -3826,6 +4610,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(VALID_PROVIDERS),
         default=None,
         help="覆盖默认云算力后端（autodl / colab / colab-drive）",
+    )
+    ap.add_argument(
+        "--slot",
+        "--instance",
+        dest="slot",
+        type=str,
+        default=None,
+        help="实例并发槽位名（如 tts / captions / gpu2，或 up/connect 用 auto；缺省为 default）",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -3852,6 +4644,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_connect.add_argument("login", nargs="?", default=None, type=str, help='SSH/cloudflared 登录指令（如 "ssh -p ... root@..." 或 trycloudflare 域名）')
     p_connect.add_argument("--drive-root", type=str, default=None, help="colab-drive 本机 Google Drive 队列目录（含 ava_cloud）")
     p_connect.add_argument("--browser-login", action="store_true", help="打开隔离浏览器完成一次性 Google/Colab 登录，供后续 cloud up 自动无头开机")
+    p_connect.add_argument("--browser-profile", type=str, default=None, help="指定 Colab Camoufox 浏览器档案名（多 Google 账号隔离用）")
     p_connect.add_argument("--notebook-url", type=str, default=None, help="覆盖保存的 Colab Bootstrap Notebook URL（如 Drive 里的副本链接）")
     p_connect.add_argument("--timeout", type=int, default=300, help="browser-login 等待登录完成超时秒数（默认 300s）")
 
@@ -3864,6 +4657,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_up.add_argument("--timeout", type=int, default=300, help="开机等待超时秒数（默认 300s）")
     p_up.add_argument("--episode", type=str, default=None, help="关联合同期号")
     p_up.add_argument("--no-auto-boot", action="store_true", help="Colab 模式下禁用自动无头拉起，仅等待手动开机")
+    p_up.add_argument("--recreate", action="store_true", help="忽略当前空闲隧道，重新拉起新 Colab 运行时（槽位正跑任务或 hold 中会被拒）")
+    p_up.add_argument("--browser-profile", type=str, default=None, help="指定本次开机使用的 Colab 浏览器档案名（多账号隔离用）")
     p_up.add_argument("--notebook-url", type=str, default=None, help="临时覆盖本次自动拉起使用的 Colab Notebook URL")
 
     # down

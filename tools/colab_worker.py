@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,179 @@ def trigger_colab_unassign() -> bool:
         return True
     except Exception:
         return False
+
+
+def atomic_write_drive_file(dest: Path, content: str) -> None:
+    """用主机名+PID 隔离的临时文件原子写入 Drive 共享文件，避免多实例并发写同一文件名互相踩踏。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    node = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.uname().nodename)
+    tmp = dest.with_name(f".{dest.name}.{node}_{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def compute_file_sha256(path: Path) -> tuple[str, int]:
+    """流式计算文件 SHA256 与字节大小。"""
+    h = hashlib.sha256()
+    total = 0
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+            total += len(chunk)
+    return h.hexdigest(), total
+
+
+def _parse_sha256_sidecar(meta_path: Path) -> tuple[str, int] | None:
+    try:
+        parts = meta_path.read_text(encoding="utf-8").strip().split()
+    except OSError:
+        return None
+    if len(parts) < 2:
+        return None
+    sha, size_s = parts[0].lower(), parts[1]
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha) or not size_s.isdigit():
+        return None
+    return sha, int(size_s)
+
+
+def verify_venv_tarball(
+    tar_path: Path,
+    *,
+    wait_sync_s: float = 0.0,
+    poll_s: float = 1.0,
+) -> tuple[bool, str]:
+    """校验 Drive 共享 `ava_venv_*.tar.gz` 完整性，防止并发实例读到未写完/未同步完的半截压缩包。"""
+    if not tar_path.is_file():
+        return False, "缓存文件不存在"
+    meta_path = Path(f"{tar_path}.sha256")
+    if meta_path.is_file():
+        parsed = _parse_sha256_sidecar(meta_path)
+        if parsed is None:
+            return False, "sha256 校验文件损坏"
+        exp_sha, exp_size = parsed
+        deadline = time.monotonic() + max(0.0, float(wait_sync_s))
+        while tar_path.is_file() and tar_path.stat().st_size != exp_size and time.monotonic() < deadline:
+            time.sleep(min(poll_s, max(0.05, deadline - time.monotonic())))
+        if not tar_path.is_file():
+            return False, "缓存文件在等待同步期间被替换或移除"
+        actual_size = tar_path.stat().st_size
+        if actual_size != exp_size:
+            return False, f"文件大小不符 ({actual_size} != {exp_size}，可能仍在同步)"
+        actual_sha, _ = compute_file_sha256(tar_path)
+        if actual_sha != exp_sha:
+            return False, "SHA256 校验不符（可能仍在同步或已损坏）"
+        return True, "sha256 verified"
+
+    try:
+        if tar_path.stat().st_size <= 0:
+            return False, "缓存文件为空"
+        with tarfile.open(tar_path, "r:gz") as tf:
+            members = sum(1 for _ in tf)
+        if members == 0:
+            return False, "tar 归档为空"
+        return True, "tar stream verified"
+    except Exception as exc:
+        return False, f"tar.gz 完整性校验失败: {exc}"
+
+
+def restore_colab_venv_cache(
+    tar_path: Path,
+    content_root: Path = Path("/content"),
+    *,
+    wait_sync_s: float = 10.0,
+    poll_s: float = 1.0,
+) -> bool:
+    """校验并原子恢复共享 Drive venv 缓存到 `<content_root>/venv`，不留半截目录。"""
+    ok, reason = verify_venv_tarball(tar_path, wait_sync_s=wait_sync_s, poll_s=poll_s)
+    if not ok:
+        print(f"[!] Drive venv 缓存不可用或正在由另一实例写入 ({reason})，跳过缓存改走本地构建", flush=True)
+        return False
+    stage_dir = content_root / f".venv_restore_{os.getpid()}"
+    target_venv = content_root / "venv"
+    try:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        res = subprocess.run(
+            ["tar", "-xzf", str(tar_path), "-C", str(stage_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        staged_venv = stage_dir / "venv"
+        if res.returncode != 0 or not (staged_venv / "bin" / "python").exists():
+            print(f"[!] 解压 Drive venv 缓存失败，改走本地构建: {(res.stderr or '').strip()[:160]}", flush=True)
+            return False
+        if target_venv.exists():
+            shutil.rmtree(target_venv, ignore_errors=True)
+        os.replace(staged_venv, target_venv)
+        return (target_venv / "bin" / "python").exists()
+    except Exception as exc:
+        print(f"[!] 恢复 Drive venv 缓存异常，改走本地构建: {exc}", flush=True)
+        return False
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+def publish_colab_venv_cache(
+    venv_dir: Path,
+    tar_path: Path,
+    *,
+    scratch_dir: Path = Path("/tmp"),
+) -> bool:
+    """先在本地容器盘打包计算 SHA256，再用唯一临时名原子替换到 Drive 并写 `.sha256` 伴随校验文件。"""
+    meta_path = Path(f"{tar_path}.sha256")
+    if tar_path.is_file() and meta_path.is_file() and verify_venv_tarball(tar_path)[0]:
+        return True
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    node = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.uname().nodename)
+    local_tar = scratch_dir / f"ava_venv_{os.getpid()}.tar.gz"
+    drive_tar_tmp = tar_path.with_name(f".{tar_path.name}.{node}_{os.getpid()}.tmp")
+    drive_meta_tmp = meta_path.with_name(f".{meta_path.name}.{node}_{os.getpid()}.tmp")
+    try:
+        subprocess.run(
+            ["tar", "-czf", str(local_tar), "-C", str(venv_dir.parent), venv_dir.name],
+            check=True,
+        )
+        sha, size = compute_file_sha256(local_tar)
+        if tar_path.is_file() and meta_path.is_file() and verify_venv_tarball(tar_path)[0]:
+            return True
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+        with local_tar.open("rb") as src_f, drive_tar_tmp.open("wb") as dst_f:
+            shutil.copyfileobj(src_f, dst_f, length=1024 * 1024)
+            dst_f.flush()
+            os.fsync(dst_f.fileno())
+        os.replace(drive_tar_tmp, tar_path)
+        with drive_meta_tmp.open("w", encoding="utf-8") as mf:
+            mf.write(f"{sha} {size}\n")
+            mf.flush()
+            os.fsync(mf.fileno())
+        os.replace(drive_meta_tmp, meta_path)
+        return True
+    except Exception as exc:
+        print(f"[!] 备份 venv 到 Drive 缓存失败（不影响本次运行）: {exc}", flush=True)
+        return False
+    finally:
+        for leftover in (local_tar, drive_tar_tmp, drive_meta_tmp):
+            if leftover.exists():
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
 
 
 def _copy_dir_contents(src: Path, dst: Path) -> None:

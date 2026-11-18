@@ -2096,3 +2096,361 @@ def test_远端模型路径在Colab可直落HF或AVA_REMOTE_MODELS(monkeypatch, 
     # 3. vindex：caption_model_ref 在 Colab 未预下载时回落 HF repo_id
     assert vindex.caption_model_ref() == vindex.CAPTIONS_REPO
 
+
+# ---------------------------------------------------------------------------
+# 多槽位并发隔离（--slot / 多会话计费 / SSH 别名隔离 / 防误覆盖护栏）
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_and_resolve_slot(monkeypatch):
+    monkeypatch.delenv("AVA_CLOUD_SLOT", raising=False)
+    assert cloud.normalize_slot(None) == "default"
+    assert cloud.normalize_slot("   ") == "default"
+    assert cloud.normalize_slot("tts") == "tts"
+    assert cloud.normalize_slot("2") == "2"
+    assert cloud.normalize_slot("gpu_2-a") == "gpu_2-a"
+    assert cloud.normalize_slot("auto", allow_auto=True) == "auto"
+
+    for bad in ("../etc", "a/b", "has space", "-leading", "_under", "a" * 33, "auto"):
+        with pytest.raises(ValueError):
+            cloud.normalize_slot(bad)
+
+    assert cloud.resolve_slot() == ("default", False)
+    monkeypatch.setenv("AVA_CLOUD_SLOT", "captions")
+    assert cloud.resolve_slot() == ("captions", True)
+    assert cloud.resolve_slot("tts") == ("tts", True)
+    assert cloud.resolve_slot("auto", allow_auto=True) == ("auto", True)
+
+
+def test_allocate_auto_slot():
+    cfg_local = {"profiles": {"colab": {"server": "busy-def.trycloudflare.com", "user": "root", "proxy_type": "cloudflared"}}}
+    cfg_global = {"providers": {"colab": {"ssh_host": "ava-colab"}}}
+
+    assert cloud.allocate_auto_slot({}, "colab", []) == "default"
+    assert cloud.allocate_auto_slot(cfg_local, "colab", [], is_reachable_fn=lambda h: False, cfg_global=cfg_global) == "default"
+    # default 虽无会话记录但 SSH 已连通（例如刚连上或别的窗口开机）：跳到 gpu2
+    assert cloud.allocate_auto_slot(
+        cfg_local, "colab", [{"provider": "autodl", "slot": "default"}],
+        is_reachable_fn=lambda h: h == "ava-colab", cfg_global=cfg_global,
+    ) == "gpu2"
+    # default 与 gpu2 均有活跃 Colab 会话时顺延到 gpu3
+    assert cloud.allocate_auto_slot(
+        cfg_local, "colab",
+        [{"provider": "colab", "slot": "default"}, {"provider": "colab", "slot": "gpu2"}],
+    ) == "gpu3"
+
+
+def test_multislot_profile_and_ssh_config_isolation(tmp_path):
+    cfg_global = {
+        "provider": "autodl",
+        "providers": {
+            "autodl": {"ssh_host": "autodl"},
+            "colab": {"ssh_host": "ava-colab"},
+        },
+    }
+    local = {
+        "active_provider": "colab",
+        "server": "auto1.example.com",
+        "port": 30001,
+        "user": "root",
+        "profiles": {
+            "colab": {"server": "col0.trycloudflare.com", "port": 22, "user": "root", "proxy_type": "cloudflared"}
+        },
+    }
+    assert cloud.provider_profile(local, "colab", slot="default")["server"] == "col0.trycloudflare.com"
+    assert cloud.provider_profile(local, "colab", slot="tts")["ssh_host"] == "ava-colab-tts"
+
+    merged = cloud.merge_profile_connection(
+        local, "colab", {"server": "col1.trycloudflare.com", "port": 22, "user": "root", "proxy_type": "cloudflared"},
+        ssh_host="ava-colab-tts", slot="tts",
+    )
+    merged = cloud.merge_profile_connection(
+        merged, "autodl", {"server": "auto2.example.com", "port": 30002, "user": "root"},
+        ssh_host="autodl-gpu2", slot="gpu2",
+    )
+    assert merged["profiles"]["colab"]["server"] == "col0.trycloudflare.com"
+    assert merged["profiles"]["colab"]["slots"]["tts"]["server"] == "col1.trycloudflare.com"
+    assert merged["server"] == "auto1.example.com"
+    assert merged["profiles"]["autodl"]["slots"]["gpu2"]["port"] == 30002
+
+    ssh_txt = cloud.render_all_ssh_configs(cfg_global, merged, tmp_path / "known_hosts")
+    for expected in (
+        "Host autodl", "Host autodl-gpu2", "Host ava-colab", "Host ava-colab-tts",
+        "HostName auto1.example.com", "HostName auto2.example.com",
+        "HostName col0.trycloudflare.com", "HostName col1.trycloudflare.com",
+        "ControlPath ~/.ssh/cm-%C", "ControlPath ~/.ssh/cm-gpu2-%C", "ControlPath ~/.ssh/cm-tts-%C",
+    ):
+        assert expected in ssh_txt
+
+    long_cp = cloud.slot_control_path("very_long_instance_name_beyond_limit")
+    assert len(f"/Users/someuser/{long_cp.removeprefix('~/')}") < 104
+
+
+def test_legacy_active_session_migration_and_multislot_lifecycle(monkeypatch, tmp_path, capsys):
+    from pipeline import cloud_colab_boot
+
+    root = tmp_path / "repo"
+    cfg = root / "config"
+    data = root / "data"
+    ep = data / "episodes" / "02-demo"
+    (cfg).mkdir(parents=True)
+    (ep / "03-audio").mkdir(parents=True)
+    (data / "cloud" / "colab-browser-profile-firefox").mkdir(parents=True)
+    (data / "cloud" / "colab-browser-profile-firefox" / "cookies.sqlite").write_bytes(b"cookie")
+
+    global_cfg = {
+        "provider": "colab",
+        "providers": {
+            "colab": {
+                "transport": "ssh",
+                "ssh_host": "ava-colab",
+                "billing_unit": "cu",
+                "cu_rate_fallback": 1.5,
+                "cu_rates": {"T4": 1.3, "A100": 5.3},
+                "budget_per_episode_cu": 2.0,
+                "remote_root": "/content/ava",
+                "remote_models": "/content/models",
+                "remote_data_disk": "/content",
+                "remote_log_dir": "/content/logs",
+                "remote_python": "/content/venv/bin/python",
+                "idle_shutdown_seconds": 300,
+            }
+        },
+    }
+    (cfg / "cloud.json").write_text(json.dumps(global_cfg), encoding="utf-8")
+    monkeypatch.setattr(cloud.paths, "ROOT", root)
+    monkeypatch.setattr(cloud.paths, "CONFIG", cfg)
+    monkeypatch.setattr(cloud.paths, "DATA", data)
+    monkeypatch.setattr(cloud.paths, "require_data", lambda: data)
+    monkeypatch.setattr(cloud.shutil, "which", lambda name: "/opt/homebrew/bin/cloudflared")
+    monkeypatch.setattr(cloud, "forget_known_host", lambda conn: None)
+
+    # 1. 旧单文件 active_session.json 自动迁移到 sessions/colab_default.json
+    legacy_file = data / "cloud" / "active_session.json"
+    legacy_file.write_text(
+        json.dumps({"session": "20261118_090000", "provider": "colab", "up_epoch": 100.0}),
+        encoding="utf-8",
+    )
+    migrated = cloud.session_file_for("colab", "default", migrate=True)
+    assert migrated == data / "cloud" / "sessions" / "colab_default.json"
+    assert migrated.is_file() and not legacy_file.exists()
+    migrated.unlink()
+
+    # 2. 同用 colab 并发拉起 captions 与 tts 两个槽位
+    boot_calls: list[tuple[str, set[str]]] = []
+    unassigned_hosts: list[str] = []
+
+    def fake_auto_boot(nb_url, *, profile_dir, timeout_s=300, slot="default", exclude_hosts=()):
+        boot_calls.append((slot, set(exclude_hosts)))
+        return f"root@tunnel-{slot}.trycloudflare.com"
+
+    monkeypatch.setattr(cloud_colab_boot, "auto_boot_colab_ssh", fake_auto_boot)
+
+    def fake_reachable(host: str = "autodl") -> bool:
+        if host in unassigned_hosts:
+            return False
+        local_now = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8")) if (cfg / "cloud.local.json").exists() else {}
+        for s in cloud.list_configured_slots(local_now, "colab"):
+            prof = cloud.provider_profile(local_now, "colab", slot=s)
+            if prof.get("ssh_host") == host and prof.get("server"):
+                return True
+        return False
+
+    monkeypatch.setattr(cloud, "is_ssh_reachable", fake_reachable)
+    monkeypatch.setattr(cloud, "remote_code_drift", lambda host, cfg_g, **kw: {"missing": [], "differ": [], "extra": []})
+    monkeypatch.setattr(cloud, "resolve_episode_rel_path", lambda t: (ep, "data/episodes/02-demo"))
+
+    def fake_ssh(cmd: str, host: str = "autodl", check: bool = True, timeout: int = 60, capture_output: bool = True):
+        if "nvidia-smi -L" in cmd:
+            gpu_line = "GPU 0: NVIDIA A100-SXM4-40GB" if "captions" in host else "GPU 0: Tesla T4"
+            return _sp.CompletedProcess(cmd, 0, gpu_line + "\n", "")
+        if "nvidia-smi --query-gpu" in cmd:
+            if "captions" in host:
+                return _sp.CompletedProcess(cmd, 0, "NVIDIA A100-SXM4-40GB, 40536 MiB, 8000 MiB, 60 %\n", "")
+            return _sp.CompletedProcess(cmd, 0, "Tesla T4, 15360 MiB, 2000 MiB, 25 %\n", "")
+        if "tmux ls" in cmd:
+            sess = "ava-lib-captions" if "captions" in host else "ava-tts"
+            return _sp.CompletedProcess(cmd, 0, sess + "\n", "")
+        if "watchdog" in cmd and "pgrep" in cmd:
+            return _sp.CompletedProcess(cmd, 0, "运行中\n", "")
+        if "watchdog" in cmd or "nohup" in cmd:
+            if "runtime.unassign" in cmd:
+                unassigned_hosts.append(host)
+                return _sp.CompletedProcess(cmd, 0, "", "")
+            return _sp.CompletedProcess(cmd, 0, "1234\n", "")
+        if cloud.COLAB_HOLD_PATH in cmd and "cat " in cmd:
+            now = int(time.time())
+            if "captions" in host:
+                return _sp.CompletedProcess(cmd, 0, f"{now - 60} {now + 3600}\n{now}\n", "")
+            return _sp.CompletedProcess(cmd, 0, f"{now}\n", "")
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cloud, "_ssh", fake_ssh)
+    monkeypatch.setattr(cloud.time, "sleep", lambda s: None)
+
+    assert cloud.cmd_up(argparse.Namespace(provider="colab", slot="captions", mode=None, rate=None, timeout=60, episode=None, no_auto_boot=False, recreate=False, notebook_url=None, browser_profile=None)) == 0
+    assert cloud.cmd_up(argparse.Namespace(provider="colab", slot="tts", mode=None, rate=None, timeout=60, episode="02-demo", no_auto_boot=False, recreate=False, notebook_url=None, browser_profile=None)) == 0
+
+    assert boot_calls[0][0] == "captions"
+    assert boot_calls[1][0] == "tts"
+    assert "tunnel-captions.trycloudflare.com" in boot_calls[1][1], "开第二张卡时必须把 captions 槽位隧道传进 exclude_hosts"
+
+    assert (data / "cloud" / "sessions" / "colab_captions.json").is_file()
+    assert (data / "cloud" / "sessions" / "colab_tts.json").is_file()
+    ssh_conf = (data / "cloud" / "ssh_config").read_text(encoding="utf-8")
+    assert "Host ava-colab-captions" in ssh_conf and "Host ava-colab-tts" in ssh_conf
+
+    # 为两个槽位各自记录互不串台的任务
+    cloud._note_session_task("lib-captions", "lib:demo", provider="colab", slot="captions")
+    assert cloud.cmd_run(argparse.Namespace(provider="colab", slot="tts", target=ep, task="tts", extra=["--redo", "2"])) == 0
+
+    cap_sess = json.loads((data / "cloud" / "sessions" / "colab_captions.json").read_text(encoding="utf-8"))
+    tts_sess = json.loads((data / "cloud" / "sessions" / "colab_tts.json").read_text(encoding="utf-8"))
+    assert cap_sess["tasks"] == ["lib-captions"]
+    assert tts_sess["tasks"] == ["tts"]
+
+    (ep / "03-audio" / "manifest.json").write_text("{}", encoding="utf-8")
+    assert cloud._verify_pulled_outputs(ep, provider="colab", slot="tts") == 0
+
+    capsys.readouterr()
+    assert cloud.cmd_status(argparse.Namespace(provider="colab", slot=None)) == 0
+    status_out = capsys.readouterr().out
+    assert "多实例并发槽位汇总（共 2 个活跃会话）" in status_out
+    assert "colab:captions" in status_out and "ava-lib-captions" in status_out
+    assert "colab:tts" in status_out and "ava-tts" in status_out
+
+    # 不带 --slot 执行 down（此时 default 无活跃会话）必须拒绝并提示具体 --slot
+    with pytest.raises(SystemExit, match="--slot"):
+        cloud.cmd_down(argparse.Namespace(provider=None, slot=None, force=False, rate=None))
+
+    # 只释放 tts 槽位，不影响 captions 槽位
+    assert cloud.cmd_down(argparse.Namespace(provider="colab", slot="tts", force=True, rate=None)) == 0
+    assert "ava-colab-tts" in unassigned_hosts
+    assert "ava-colab-captions" not in unassigned_hosts
+    assert not (data / "cloud" / "sessions" / "colab_tts.json").exists()
+    assert (data / "cloud" / "sessions" / "colab_captions.json").is_file()
+
+    ledger_entries = [json.loads(line) for line in (data / "cloud" / "ledger.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert ledger_entries[-1]["slot"] == "tts" and ledger_entries[-1]["provider"] == "colab"
+
+    # 测试 rerate_last_entry 按 slot 精准补单价（即使后来追加了 captions 记录）
+    e_cap = cloud.format_ledger_entry(
+        "s_cap", "12:00:00", "13:00:00", 3600, 5.3, "lib:demo", ["lib-captions"],
+        2.0, provider="colab", billing_unit="cu", rate_cny=5.3,
+        note="单价估算：按 cu_rates 记", slot="captions",
+    )
+    e_tts = cloud.format_ledger_entry(
+        "s_tts", "12:00:00", "13:00:00", 3600, 1.3, "02-demo", ["tts"],
+        2.0, provider="colab", billing_unit="cu", rate_cny=1.3,
+        note="单价估算：按 cu_rates 记", slot="tts",
+    )
+    rerated_lines, updated = cloud.rerate_last_entry(
+        [json.dumps(e_tts, ensure_ascii=False), json.dumps(e_cap, ensure_ascii=False)],
+        1.8, "2026-11-18", slot="tts",
+    )
+    assert updated["slot"] == "tts" and updated["cu"] == 1.8
+    assert json.loads(rerated_lines[1])["slot"] == "captions" and json.loads(rerated_lines[1])["cu"] == 5.3
+
+
+def test_busy_slot_guardrails(monkeypatch, tmp_path):
+    now = int(time.time())
+    assert cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=False, action="up", active_tasks=[], hold=None,
+    ) is None
+    # 已过期的 hold 不算忙
+    assert cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=False, action="up", active_tasks=[], hold=(now - 7200, now - 10, now),
+    ) is None
+
+    msg_unslotted = cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=False, action="up", active_tasks=["ava-lib-captions"], hold=None,
+    )
+    assert msg_unslotted and "--slot" in msg_unslotted and "--slot auto" in msg_unslotted
+
+    msg_hold = cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=False, action="up", active_tasks=[], hold=(now - 60, now + 1800, now),
+    )
+    assert msg_hold and "保活 hold 中" in msg_hold
+
+    # 显式指明 --slot default（不带 --recreate）允许沿用当前槽位
+    assert cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=True, action="up", active_tasks=["ava-lib-captions"], hold=None, recreate=False,
+    ) is None
+    # 带 --recreate 即便显式指定槽位也拦截
+    msg_recreate = cloud.evaluate_slot_busy_guard(
+        provider="colab", slot="default", host="ava-colab",
+        slot_explicit=True, action="up", active_tasks=["ava-lib-captions"], hold=None, recreate=True,
+    )
+    assert msg_recreate and "--recreate" in msg_recreate
+
+    # connect 覆盖正忙槽位必须拦截
+    msg_conn = cloud.evaluate_slot_busy_guard(
+        provider="autodl", slot="default", host="autodl",
+        slot_explicit=False, action="connect", active_tasks=["ava-tts"], hold=None,
+    )
+    assert msg_conn and "孤儿计费" in msg_conn
+
+    # 集成校验 cmd_up 与 cmd_connect
+    cfg, data = _fake_connect_env(monkeypatch, tmp_path, {
+        "active_provider": "autodl",
+        "ssh_host": "autodl",
+        "server": "old.host",
+        "port": 11111,
+        "user": "root",
+    })
+    (data / "cloud").mkdir(parents=True, exist_ok=True)
+    (data / "cloud" / "ssh_config").write_text("Host autodl\n    HostName old.host\n    Port 11111\n", encoding="utf-8")
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host: True)
+    monkeypatch.setattr(cloud, "remote_active_tasks", lambda host="autodl": ["ava-lib-captions"])
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: _sp.CompletedProcess(cmd, 0, f"{now}\n", ""))
+
+    with pytest.raises(SystemExit, match="当前正忙"):
+        cloud.cmd_up(argparse.Namespace(mode="gpu", rate=None, timeout=10, episode=None))
+
+    before_local = (cfg / "cloud.local.json").read_text(encoding="utf-8")
+    with pytest.raises(SystemExit, match="孤儿计费"):
+        cloud.cmd_connect(argparse.Namespace(login=REAL_LOGIN))
+    assert (cfg / "cloud.local.json").read_text(encoding="utf-8") == before_local
+
+
+def test_parser_accepts_slot_and_instance_across_all_subcommands():
+    ap = cloud.build_parser()
+    cases = [
+        (["connect", "--slot", "tts"], "tts"),
+        (["up", "--slot", "auto"], "auto"),
+        (["doctor", "--slot", "captions"], "captions"),
+        (["status", "--slot", "tts"], "tts"),
+        (["hold", "--slot", "tts"], "tts"),
+        (["release", "--slot", "tts"], "tts"),
+        (["sync-code", "--slot", "tts"], "tts"),
+        (["push", "ep1", "--slot", "tts"], "tts"),
+        (["run", "--slot", "gpu2", "ep1", "tts"], "gpu2"),
+        (["pull", "ep1", "--slot", "tts"], "tts"),
+        (["lib-push", "pool", "SP01", "--slot", "captions"], "captions"),
+        (["lib-captions", "pool", "SP01", "--slot", "captions"], "captions"),
+        (["lib-pull", "pool", "SP01", "--slot", "captions"], "captions"),
+        (["logs", "ava-tts", "--slot", "tts"], "tts"),
+        (["attach", "--slot", "tts"], "tts"),
+        (["down", "--slot", "tts"], "tts"),
+        (["exec", "ls", "--instance", "gpu2"], "gpu2"),
+        (["relocate-data", "--instance", "gpu2"], "gpu2"),
+        (["clean-frames", "--instance", "gpu2"], "gpu2"),
+        (["fix-env", "--instance", "gpu2"], "gpu2"),
+    ]
+    for argv, expected_slot in cases:
+        ns = ap.parse_args(argv)
+        assert getattr(ns, "slot", None) == expected_slot, f"{argv} 解析 slot 失败"
+        ns_before = ap.parse_args(["--instance", expected_slot, *argv[:1], *[x for x in argv[1:] if x not in ("--slot", "--instance", expected_slot)]])
+        assert getattr(ns_before, "slot", None) == expected_slot
+
+    # cloud run 尾部透传参数中携带 --slot，由 _extract_cloud_flags_from_extra 提取而不污染 extra
+    ns_run_tail = ap.parse_args(["run", "ep1", "tts", "--slot", "tts", "--redo", "2"])
+    prov, slot_ex, clean = cloud._extract_cloud_flags_from_extra(ns_run_tail.extra)
+    assert prov is None and slot_ex == "tts" and clean == ["--redo", "2"]
+
+

@@ -193,6 +193,42 @@ def strip_provider_flags(tokens: Sequence[str], *, strict: bool = False) -> tupl
     return found, rest
 
 
+def strip_cloud_flags(
+    tokens: Sequence[str], *, strict: bool = False
+) -> tuple[str | None, str | None, list[str]]:
+    """剥离 `cloud` 参数中的 `--provider` 与 `--slot`/`--instance`，返回 `(provider, slot, 剩余 token 列表)`。"""
+    provider: str | None = None
+    slot: str | None = None
+    rest: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = str(tokens[i])
+        if tok in ("--provider", "--slot", "--instance"):
+            if i + 1 >= len(tokens):
+                if strict:
+                    raise ValueError(f"{tok} 缺少值")
+                break
+            val = str(tokens[i + 1])
+            if tok == "--provider":
+                provider = val
+            else:
+                slot = val
+            i += 2
+        elif tok.startswith("--provider="):
+            provider = tok.split("=", 1)[1]
+            i += 1
+        elif tok.startswith("--slot="):
+            slot = tok.split("=", 1)[1]
+            i += 1
+        elif tok.startswith("--instance="):
+            slot = tok.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    return provider, slot, rest
+
+
 HUMAN_GATED_COMMANDS: frozenset[tuple[str, str | None]] = frozenset({
     ("corrections", "global"), ("calibration", "set"), ("bgm", "register"), ("cloud", "connect"),
     ("cloud", "use"),
@@ -576,6 +612,7 @@ def validate_pipeline_command(
     # 1. 拒收 --force / --force-all 标志（含 --force=x, --force-all=true 变体）
     #    Spec 9 C-R5（自查 S-1）：argparse 的前缀缩写让 `--force-a` 能命中 `--force-all`，
     #    所以按**前缀**判定（`--` 开头、`split("=")[0]`、长度 ≥ 3），人与模型两条路同时生效。
+    _cloud_preview = strip_cloud_flags(args, strict=False)[2] if module == "cloud" else []
     for a in args:
         bare = a.split("=")[0]
         if not bare.startswith("--") or len(bare) < 3:
@@ -584,7 +621,7 @@ def validate_pipeline_command(
         if not any(flag.startswith(forced) for flag in ("force", "force-all")):
             continue
         flag_name = "--force-all" if "force-all".startswith(forced) and forced != "force" else "--force"
-        if module == "cloud" and args and args[0] == "down":
+        if module == "cloud" and _cloud_preview[:1] == ["down"]:
             return (
                 False,
                 "拒绝执行：cloud down --force 会强行销毁正在运行的后台任务！请先运行 cloud status 确认无活跃任务。",
@@ -619,9 +656,10 @@ def validate_pipeline_command(
         allowed_subs = ASSET_COMMANDS[module]
         if module == "cloud":
             try:
-                prov_val, cloud_tokens = strip_provider_flags(args, strict=True)
+                prov_val, slot_val, cloud_tokens = strip_cloud_flags(args, strict=True)
             except ValueError as exc:
-                return False, f"cloud --provider 参数错误: {exc}", []
+                prefix = "cloud --provider 参数错误" if "--provider" in str(exc) else "cloud --slot 参数错误"
+                return False, f"{prefix}: {exc}", []
             if prov_val is not None and prov_val not in VALID_CLOUD_PROVIDERS:
                 return False, f"cloud --provider 值非法: {prov_val!r}（可选: {', '.join(VALID_CLOUD_PROVIDERS)}）", []
             subcmd = cloud_tokens[0] if cloud_tokens else ""
@@ -631,6 +669,13 @@ def validate_pipeline_command(
                     f"子命令 '{subcmd}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
                     [],
                 )
+            if slot_val is not None:
+                from pipeline.cloud import normalize_slot
+
+                try:
+                    normalize_slot(slot_val, allow_auto=(subcmd in {"up", "connect"}))
+                except ValueError as exc:
+                    return False, f"cloud --slot 参数非法: {exc}", []
             if subcmd == "run" and len(cloud_tokens) >= 3:
                 extra_tokens = cloud_tokens[3:]
                 if extra_tokens:

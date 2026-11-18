@@ -12,11 +12,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection, Iterator
 
 from pipeline import paths
 
@@ -30,18 +32,83 @@ _READY_RE = re.compile(
 )
 _ANY_TUNNEL_RE = re.compile(r"\b([A-Za-z0-9-]+\.trycloudflare\.com)\b")
 _PLACEHOLDER_HOSTS = frozenset({"xxxx.trycloudflare.com", "example.trycloudflare.com"})
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 
 
-def colab_browser_profile_dir(data_dir: Path | None = None) -> Path:
-    """返回 AVA 专用的 Colab Camoufox 隔离目录（`data/cloud/colab-browser-profile-firefox`，`0700`）。"""
+def colab_browser_profile_dir(
+    data_dir: Path | None = None,
+    profile_name: str | None = None,
+) -> Path:
+    """返回 AVA 专用的 Colab Camoufox 隔离目录（`0700`）；支持按 profile_name 区分多账号。"""
     base = data_dir if data_dir is not None else paths.DATA
-    p = base / "cloud" / "colab-browser-profile-firefox"
+    raw_name = (profile_name or "").strip()
+    if not raw_name or raw_name == "default":
+        dir_name = "colab-browser-profile-firefox"
+    else:
+        if not _PROFILE_NAME_RE.fullmatch(raw_name):
+            raise ValueError(
+                f"非法浏览器档案名 {raw_name!r}（仅允许字母、数字、下划线与连字符，长度 1–32，且以字母或数字开头）"
+            )
+        dir_name = f"colab-browser-profile-firefox-{raw_name}"
+    p = base / "cloud" / dir_name
     p.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(p, 0o700)
     except OSError:
         pass
     return p
+
+
+@contextlib.contextmanager
+def colab_browser_lock(
+    profile_dir: Path,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 0.5,
+    blocking: bool = True,
+    log_fn: Callable[[str], None] = print,
+) -> Iterator[None]:
+    """对同一个 Camoufox profile_dir 加 fcntl 排他文件锁，防止多进程并发拉起报 already open。"""
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = profile_dir.parent / f".{profile_dir.name}.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            if not blocking:
+                raise RuntimeError(
+                    f"Colab Camoufox 浏览器档案 {profile_dir} 正被另一进程占用（请先关闭已有浏览器/登录窗口，"
+                    "等待正在进行的开机完成，或使用 `--browser-profile <名称>` 隔离账号）。"
+                ) from exc
+            log_fn(
+                f"[*] 检测到另一进程正在使用 Colab 浏览器档案 ({profile_dir.name})，"
+                f"排队等待锁释放（最多等待 {timeout_s:g}s）..."
+            )
+            deadline = time.monotonic() + max(0.01, float(timeout_s))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"等待 Colab 浏览器档案锁超时（{int(timeout_s)}s，档案: {profile_dir.name}）。"
+                        "请确认没有卡死的浏览器窗口后重试，或使用 `--browser-profile <名称>`。"
+                    ) from exc
+                time.sleep(min(poll_s, remaining))
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    continue
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def has_saved_browser_profile(profile_dir: Path) -> bool:
@@ -57,32 +124,69 @@ def resolve_colab_notebook_url(
     cfg_global: dict[str, Any],
     cfg_local: dict[str, Any],
     explicit: str | None = None,
+    *,
+    slot: str = "default",
+    default_slot_busy: bool = False,
 ) -> str:
-    """按 CLI 显式传入 → `cloud.local.json` profiles.colab → `cloud.json` providers.colab → 默认解析 Notebook URL。"""
+    """按 CLI 显式传入 → 槽位配置 → profiles.colab → cloud.json → 默认解析 Notebook URL。
+
+    当并发开启非 default 槽位且 default 槽位已有活跃运行时，避免复用绑定同一份 Drive 文件的
+    `/drive/` 链接（Colab 会把同一 Drive 文件URL接到已存在的运行时而中断原任务），回退到全局/GitHub URL。
+    """
     if explicit and explicit.strip():
         return explicit.strip()
     local_prof = (cfg_local.get("profiles") or {}).get("colab") or {}
+    if slot != "default":
+        slot_prof = (local_prof.get("slots") or {}).get(slot) or {}
+        if isinstance(slot_prof, dict) and slot_prof.get("notebook_url"):
+            return str(slot_prof["notebook_url"]).strip()
     if local_prof.get("notebook_url"):
-        return str(local_prof["notebook_url"]).strip()
+        local_url = str(local_prof["notebook_url"]).strip()
+        if not (slot != "default" and default_slot_busy and "/drive/" in local_url):
+            return local_url
     global_prof = (cfg_global.get("providers") or {}).get("colab") or {}
     if global_prof.get("notebook_url"):
         return str(global_prof["notebook_url"]).strip()
     return DEFAULT_COLAB_NOTEBOOK_URL
 
 
-def extract_colab_tunnel_host(text: str) -> str | None:
+def normalize_tunnel_host(raw: str) -> str:
+    """将 `root@xxx.trycloudflare.com` / `https://xxx.trycloudflare.com` 归一化为小写纯主机名。"""
+    s = (raw or "").strip()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0]
+    if "@" in s:
+        s = s.rsplit("@", 1)[1]
+    s = s.split(":", 1)[0]
+    return s.strip().lower()
+
+
+def extract_colab_tunnel_host(
+    text: str,
+    *,
+    exclude_hosts: Collection[str] = (),
+    ready_only: bool = False,
+) -> str | None:
     """从 Colab 页面/输出文本提取最新的 `trycloudflare.com` 隧道目标。
 
-    优先匹配显式信标 `AVA_COLAB_SSH_READY: root@<host>`，兜底取最后一条非占位域名。
+    优先匹配显式信标 `AVA_COLAB_SSH_READY: root@<host>`，过滤掉占位域名与 `exclude_hosts`（旧标签/其他槽位）；
+    `ready_only=False` 时兜底取最后一条未排除的隧道域名。
     """
     if not text:
         return None
+    excluded = {normalize_tunnel_host(h) for h in exclude_hosts if h} | _PLACEHOLDER_HOSTS
     ready_matches = _READY_RE.findall(text)
-    if ready_matches:
-        target = ready_matches[-1].strip()
-        return target if "@" in target else f"root@{target}"
+    for raw_target in reversed(ready_matches):
+        target = raw_target.strip()
+        if normalize_tunnel_host(target) not in excluded:
+            return target if "@" in target else f"root@{target}"
+    if ready_only:
+        return None
 
-    candidates = [h for h in _ANY_TUNNEL_RE.findall(text) if h.lower() not in _PLACEHOLDER_HOSTS]
+    candidates = [
+        h for h in _ANY_TUNNEL_RE.findall(text) if normalize_tunnel_host(h) not in excluded
+    ]
     if candidates:
         return f"root@{candidates[-1]}"
     return None
@@ -273,54 +377,65 @@ def interactive_browser_login(
 
     final_url = notebook_url
     saw_auth = False
-    with sync_playwright() as pw:
-        ctx = _launch_persistent_context(pw, profile_dir, headless=False)
-        closed = False
+    with colab_browser_lock(profile_dir, blocking=False, log_fn=log_fn):
+        with sync_playwright() as pw:
+            ctx = _launch_persistent_context(pw, profile_dir, headless=False)
+            closed = False
 
-        def _on_close(*_args: Any) -> None:
-            nonlocal closed
-            closed = True
+            def _on_close(*_args: Any) -> None:
+                nonlocal closed
+                closed = True
 
-        if hasattr(ctx, "on"):
-            ctx.on("close", _on_close)
+            if hasattr(ctx, "on"):
+                ctx.on("close", _on_close)
 
-        try:
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
-            deadline = time.time() + max(180, timeout_s)
-            while not closed and time.time() < deadline:
-                try:
-                    pages = list(ctx.pages)
-                except Exception:
-                    break
-                if not pages:
-                    break
-                cur = pages[-1]
-                cur_url = getattr(cur, "url", "") or ""
-                if "colab.research.google.com" in cur_url and "accounts.google.com" not in cur_url:
-                    final_url = cur_url.split("#", 1)[0]
-                    if not saw_auth and _is_colab_authenticated(cur):
-                        saw_auth = True
-                        log_fn("[*] 已检测到 Google 账号登录成功！如需改选 GPU 或复制到 Drive 可顺手完成，然后直接关闭此窗口即可。")
-                try:
-                    page.wait_for_timeout(1000)
-                except Exception:
-                    break
-            if not closed and time.time() >= deadline:
-                raise SystemExit(f"FAIL 等待关闭登录窗口超时（{timeout_s}s），请重试 --browser-login。")
-        finally:
-            if not closed:
-                try:
-                    ctx.close()
-                except Exception:
-                    pass
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
+                deadline = time.time() + max(180, timeout_s)
+                while not closed and time.time() < deadline:
+                    try:
+                        pages = list(ctx.pages)
+                    except Exception:
+                        break
+                    if not pages:
+                        break
+                    cur = pages[-1]
+                    cur_url = getattr(cur, "url", "") or ""
+                    if "colab.research.google.com" in cur_url and "accounts.google.com" not in cur_url:
+                        final_url = cur_url.split("#", 1)[0]
+                        if not saw_auth and _is_colab_authenticated(cur):
+                            saw_auth = True
+                            log_fn("[*] 已检测到 Google 账号登录成功！如需改选 GPU 或复制到 Drive 可顺手完成，然后直接关闭此窗口即可。")
+                    try:
+                        page.wait_for_timeout(1000)
+                    except Exception:
+                        break
+                if not closed and time.time() >= deadline:
+                    raise SystemExit(f"FAIL 等待关闭登录窗口超时（{timeout_s}s），请重试 --browser-login。")
+            finally:
+                if not closed:
+                    try:
+                        ctx.close()
+                    except Exception:
+                        pass
     if not saw_auth:
         log_fn("[!] 提醒：窗口关闭前未检测到 Colab 页面出现 Google 已登录头像，若后续无头开机提示未登录，请重新执行一次 --browser-login。")
     return final_url
 
 
+def _is_colab_cell_running(page: Any) -> bool:
+    """检查当前 Colab 页面是否已有正在运行的 Cell（Interrupt execution 按钮出现）。"""
+    try:
+        return page.locator('[aria-label*="Interrupt execution"], [aria-label*="中断执行"]').count() > 0
+    except Exception:
+        return False
+
+
 def _trigger_colab_run_all(page: Any) -> str | None:
-    """触发 Colab 执行（优先点击唯一代码格 `colab-run-button`，再试菜单/按钮与快捷键）。"""
+    """触发 Colab 执行（若当前已在运行则返回 already-running，避免点停正在跑的任务）。"""
+    if _is_colab_cell_running(page):
+        return "already-running"
     try:
         run_btn = page.locator("colab-run-button").first
         if run_btn.count() > 0 and run_btn.is_visible():
@@ -352,6 +467,23 @@ def _page_needs_login(page: Any, url: str, body_text: str) -> bool:
         return False
 
 
+def _wait_for_colab_ui(page: Any) -> None:
+    """等待 Colab 页面加载出运行按钮，期间若跳登录则立即报错。"""
+    for _ in range(15):
+        if _page_needs_login(page, page.url, _collect_page_and_frames_text(page)):
+            raise RuntimeError(
+                "Colab Camoufox 登录态已失效，请重新运行一次：\n"
+                "  python -m pipeline.cloud connect --provider colab --browser-login"
+            )
+        has_run_ui = (
+            page.locator("colab-run-button").count() > 0
+            or page.get_by_role("button", name=re.compile(r"Run all|Run cell|全部运行", re.I)).count() > 0
+        )
+        if has_run_ui:
+            break
+        time.sleep(1)
+
+
 def auto_boot_colab_ssh(
     notebook_url: str,
     *,
@@ -359,6 +491,8 @@ def auto_boot_colab_ssh(
     timeout_s: int = 300,
     headless: bool = True,
     log_fn: Callable[[str], None] = print,
+    slot: str = "default",
+    exclude_hosts: Collection[str] = (),
 ) -> str:
     """自主通过 Camoufox 打开 Colab Notebook、触发运行并抓取新的 `AVA_COLAB_SSH_READY` 隧道目标。"""
     if not has_saved_browser_profile(profile_dir):
@@ -369,96 +503,112 @@ def auto_boot_colab_ssh(
 
     from playwright.sync_api import sync_playwright
 
-    log_fn(f"[*] 正在通过 AVA Camoufox 自动唤醒 Colab 运行时 ({'headless' if headless else 'headed'})...")
-    with sync_playwright() as pw:
-        ctx = _launch_persistent_context(pw, profile_dir, headless=headless)
-        try:
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
-            for _ in range(15):
-                if _page_needs_login(page, page.url, _collect_page_and_frames_text(page)):
-                    raise RuntimeError(
-                        "Colab Camoufox 登录态已失效，请重新运行一次：\n"
-                        "  python -m pipeline.cloud connect --provider colab --browser-login"
+    total_deadline = time.time() + max(60, timeout_s)
+    excluded_norm = {normalize_tunnel_host(h) for h in exclude_hosts if h}
+    log_fn(
+        f"[*] 正在通过 AVA Camoufox 自动唤醒 Colab 运行时 "
+        f"({'headless' if headless else 'headed'}, 槽位: {slot})..."
+    )
+    with colab_browser_lock(profile_dir, timeout_s=max(30, timeout_s), blocking=True, log_fn=log_fn):
+        with sync_playwright() as pw:
+            ctx = _launch_persistent_context(pw, profile_dir, headless=headless)
+            try:
+                page = ctx.new_page() if hasattr(ctx, "new_page") else (ctx.pages[0] if ctx.pages else ctx.new_page())
+                page.goto(notebook_url, wait_until="domcontentloaded", timeout=60_000)
+                _wait_for_colab_ui(page)
+
+                initial_text = _collect_page_and_frames_text(page)
+                initial_ready = _READY_RE.findall(initial_text)
+                already_running = _is_colab_cell_running(page)
+                hits_other_slot = any(normalize_tunnel_host(h) in excluded_norm for h in initial_ready)
+
+                if already_running and (slot != "default" or hits_other_slot):
+                    if notebook_url != DEFAULT_COLAB_NOTEBOOK_URL:
+                        log_fn(
+                            f"[!] 检测到 {notebook_url} 正连接着运行中的 Colab 运行时，"
+                            "为避免中断已有任务，改用默认 Bootstrap Notebook 新开独立运行时..."
+                        )
+                        page.goto(DEFAULT_COLAB_NOTEBOOK_URL, wait_until="domcontentloaded", timeout=60_000)
+                        _wait_for_colab_ui(page)
+                        initial_text = _collect_page_and_frames_text(page)
+                        initial_ready = _READY_RE.findall(initial_text)
+                        already_running = _is_colab_cell_running(page)
+                        hits_other_slot = any(normalize_tunnel_host(h) in excluded_norm for h in initial_ready)
+                    if already_running and (slot != "default" or hits_other_slot):
+                        raise RuntimeError(
+                            "Colab 将该页面挂载到了已在运行的运行时（未点击执行，以免中断现有任务）。"
+                            "多开并发请为新槽位指定独立的 Colab Notebook 副本（--notebook-url），"
+                            "或使用独立浏览器档案（--browser-profile <名称>）。"
+                        )
+
+                blocked_hosts = {normalize_tunnel_host(h) for h in (*initial_ready, *exclude_hosts) if h}
+                how = _trigger_colab_run_all(page)
+                if not how:
+                    raise RuntimeError("未能触发 Colab 运行按钮，请检查 Notebook URL 是否有效。")
+                log_fn(f"[*] 已触发 Colab 执行 ({how})，等待 Drive 挂载、venv 恢复与 cloudflared 隧道就绪...")
+
+                deadline = total_deadline
+                saw_running = False
+                saw_drive = False
+                last_text = ""
+                exec_retries = 0
+                while time.time() < deadline:
+                    _handle_colab_modals(ctx, page, log_fn=log_fn)
+                    cur_url = page.url or ""
+                    all_text = _collect_page_and_frames_text(page)
+                    last_text = all_text
+                    if "Failed to execute cell" in all_text and exec_retries < 2:
+                        ok_lbl = _click_dialog_button(page, r"^OK$|^确定$")
+                        if ok_lbl:
+                            exec_retries += 1
+                            log_fn(f"[*] 捕获 Colab 运行时握手瞬断弹窗，确认并重试执行 ({exec_retries}/2)...")
+                            time.sleep(2)
+                            _trigger_colab_run_all(page)
+                            time.sleep(2)
+                            continue
+                    if "ValueError: mount failed" in all_text:
+                        raise RuntimeError(
+                            "Colab Google Drive 挂载失败（mount failed），可能是 OAuth 弹窗未完成授权。"
+                        )
+                    if detect_colab_login_required(cur_url, all_text):
+                        raise RuntimeError(
+                            "Colab 页面跳转到登录框（Cookie 已过期），请运行：\n"
+                            "  python -m pipeline.cloud connect --provider colab --browser-login"
+                        )
+                    if not saw_running and (
+                        "Executing" in all_text
+                        or "Connecting" in all_text
+                        or "Busy" in all_text
+                        or _is_colab_cell_running(page)
+                    ):
+                        saw_running = True
+                        log_fn("[*] Colab 运行时已开始执行 Bootstrap...")
+                    if not saw_drive and "Mounted at /content/drive" in all_text:
+                        saw_drive = True
+                        saw_running = True
+                        log_fn("[*] Google Drive 已挂载，正在恢复 venv 并启动 cloudflared...")
+
+                    # 严禁因 saw_running=True 而吞掉旧输出或别的槽位隧道：必须命中未在 blocked_hosts 中的新信标
+                    target = extract_colab_tunnel_host(
+                        all_text, exclude_hosts=blocked_hosts, ready_only=True
                     )
-                has_run_ui = (
-                    page.locator("colab-run-button").count() > 0
-                    or page.get_by_role("button", name=re.compile(r"Run all|Run cell|全部运行", re.I)).count() > 0
-                )
-                if has_run_ui:
-                    break
-                time.sleep(1)
-
-            initial_text = _collect_page_and_frames_text(page)
-            initial_ready = _READY_RE.findall(initial_text)
-            prev_last = initial_ready[-1] if initial_ready else None
-
-            how = _trigger_colab_run_all(page)
-            if not how:
-                raise RuntimeError("未能触发 Colab 运行按钮，请检查 Notebook URL 是否有效。")
-            log_fn(f"[*] 已触发 Colab 执行 ({how})，等待 Drive 挂载、venv 恢复与 cloudflared 隧道就绪...")
-
-            deadline = time.time() + max(60, timeout_s)
-            saw_running = False
-            saw_drive = False
-            last_text = ""
-            exec_retries = 0
-            while time.time() < deadline:
-                _handle_colab_modals(ctx, page, log_fn=log_fn)
-                cur_url = page.url or ""
-                all_text = _collect_page_and_frames_text(page)
-                last_text = all_text
-                if "Failed to execute cell" in all_text and exec_retries < 2:
-                    ok_lbl = _click_dialog_button(page, r"^OK$|^确定$")
-                    if ok_lbl:
-                        exec_retries += 1
-                        log_fn(f"[*] 捕获 Colab 运行时握手瞬断弹窗，确认并重试执行 ({exec_retries}/2)...")
-                        time.sleep(2)
-                        _trigger_colab_run_all(page)
-                        time.sleep(2)
-                        continue
-                if "ValueError: mount failed" in all_text:
-                    raise RuntimeError(
-                        "Colab Google Drive 挂载失败（mount failed），可能是 OAuth 弹窗未完成授权。"
-                    )
-                if detect_colab_login_required(cur_url, all_text):
-                    raise RuntimeError(
-                        "Colab 页面跳转到登录框（Cookie 已过期），请运行：\n"
-                        "  python -m pipeline.cloud connect --provider colab --browser-login"
-                    )
-                if not saw_running and (
-                    "Executing" in all_text
-                    or "Connecting" in all_text
-                    or "Busy" in all_text
-                    or page.locator('[aria-label*="Interrupt execution"], [aria-label*="中断执行"]').count() > 0
-                ):
-                    saw_running = True
-                    log_fn("[*] Colab 运行时已开始执行 Bootstrap...")
-                if not saw_drive and "Mounted at /content/drive" in all_text:
-                    saw_drive = True
-                    saw_running = True
-                    log_fn("[*] Google Drive 已挂载，正在恢复 venv 并启动 cloudflared...")
-
-                ready_matches = _READY_RE.findall(all_text)
-                if ready_matches:
-                    latest = ready_matches[-1].strip()
-                    if latest != prev_last or saw_running:
-                        target = latest if "@" in latest else f"root@{latest}"
+                    if target:
                         # 留 3 秒给 cloudflared trycloudflare 边缘路由生效
                         time.sleep(3)
                         return target
-                time.sleep(2)
+                    time.sleep(2)
 
-            diag_shot = profile_dir.parent / "colab-boot-timeout.png"
-            try:
-                page.screenshot(path=str(diag_shot), full_page=False)
-                os.chmod(diag_shot, 0o600)
-            except Exception:
-                pass
-            tail = " | ".join(ln.strip() for ln in last_text.splitlines()[-6:] if ln.strip())[:240]
-            raise RuntimeError(
-                f"在 {timeout_s} 秒内未在 Colab 输出中找到 AVA_COLAB_SSH_READY 隧道信号"
-                f"（截图: {diag_shot}；末尾页面文本: {tail or '空'}）。"
-            )
-        finally:
-            ctx.close()
+                shot_name = "colab-boot-timeout.png" if slot == "default" else f"colab-boot-timeout-{slot}.png"
+                diag_shot = profile_dir.parent / shot_name
+                try:
+                    page.screenshot(path=str(diag_shot), full_page=False)
+                    os.chmod(diag_shot, 0o600)
+                except Exception:
+                    pass
+                tail = " | ".join(ln.strip() for ln in last_text.splitlines()[-6:] if ln.strip())[:240]
+                raise RuntimeError(
+                    f"在 {timeout_s} 秒内未在 Colab 输出中找到新的 AVA_COLAB_SSH_READY 隧道信号"
+                    f"（槽位: {slot}；截图: {diag_shot}；末尾页面文本: {tail or '空'}）。"
+                )
+            finally:
+                ctx.close()

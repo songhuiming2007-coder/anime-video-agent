@@ -726,3 +726,44 @@ def test_colab双后端切换与单命令provider在agent审查与审批卡正�
         argv=["python", "-m", "pipeline.cloud", "--provider", "colab", "run", str(ep), "tts", "--redo", "2"],
     )
     assert "Colab" in card and "CU" in card
+
+
+def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path):
+    """--slot / --instance 在子命令前、后、run 尾部均正常剥离校验，非法槽位与护栏命令不漏放。"""
+    from pipeline.agent import status_card
+
+    ep = _episode(repo)
+
+    for cmd in (
+        "cloud --slot tts up --provider colab",
+        "cloud up --slot auto --provider colab",
+        f"cloud run {ep} tts --slot tts --redo 2",
+        f"cloud --instance captions lib-captions pool SP01",
+    ):
+        ok, msg, _ = validate_pipeline_command(cmd, ep_dir=ep)
+        assert ok, f"{cmd} 应被放行: {msg}"
+
+    for bad_cmd in (
+        "cloud status --slot auto",
+        "cloud up --slot ../bad",
+        "cloud --slot tts exec ls",
+        "cloud --slot tts down --force",
+    ):
+        ok, _, _ = validate_pipeline_command(bad_cmd, ep_dir=ep)
+        assert not ok, f"{bad_cmd} 必须被拒绝"
+
+    # 前置 --slot tts 仍走计费弹卡，前置 --slot tts connect 仍逐条人审（allow_key=None）
+    v_up = _review("cloud --slot tts up --provider colab", ep)
+    assert v_up.action == "ask" and v_up.allow_key == "run_pipeline:cloud up"
+    assert "Colab" in v_up.request.card_text and "CU" in v_up.request.card_text
+
+    v_conn = _review('cloud --slot tts connect "ssh -p 34557 root@connect.weste.seetacloud.com"', ep)
+    assert v_conn.action == "ask" and v_conn.allow_key is None
+
+    card = status_card.render_approval_card(
+        "run_pipeline",
+        {"command": "cloud --slot tts up --provider colab"},
+        argv=["python", "-m", "pipeline.cloud", "--slot", "tts", "up", "--provider", "colab"],
+    )
+    assert "Colab" in card and "CU" in card
+

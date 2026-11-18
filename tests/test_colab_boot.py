@@ -311,3 +311,218 @@ def test_bootstrap_notebook_single_code_cell_and_valid_python():
     assert "TASK_PROFILE" in src
     assert "/etc/ssh/sshd_config" in src
     ast.parse(src)
+
+
+def test_colab_browser_profile_dir_and_lock(tmp_path: Path):
+    import threading
+    import time
+
+    default_dir = cloud_colab_boot.colab_browser_profile_dir(tmp_path)
+    assert default_dir == tmp_path / "cloud" / "colab-browser-profile-firefox"
+    acct2 = cloud_colab_boot.colab_browser_profile_dir(tmp_path, "acct2")
+    assert acct2 == tmp_path / "cloud" / "colab-browser-profile-firefox-acct2"
+
+    with pytest.raises(ValueError, match="非法浏览器档案名"):
+        cloud_colab_boot.colab_browser_profile_dir(tmp_path, "../escape")
+
+    # 同进程不同文件描述符（os.open）同样受 flock 互斥约束，验证非阻塞与排队等待
+    with cloud_colab_boot.colab_browser_lock(default_dir, blocking=False):
+        with pytest.raises(RuntimeError, match="正被另一进程占用"):
+            with cloud_colab_boot.colab_browser_lock(default_dir, blocking=False):
+                pass
+        with pytest.raises(RuntimeError, match="超时"):
+            with cloud_colab_boot.colab_browser_lock(default_dir, timeout_s=0.12, poll_s=0.05, blocking=True, log_fn=lambda _: None):
+                pass
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _holder():
+        with cloud_colab_boot.colab_browser_lock(default_dir, blocking=True, log_fn=lambda _: None):
+            entered.set()
+            release.wait(timeout=2.0)
+
+    t = threading.Thread(target=_holder)
+    t.start()
+    assert entered.wait(timeout=1.0)
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        logs: list[str] = []
+        t0 = time.monotonic()
+        with cloud_colab_boot.colab_browser_lock(default_dir, timeout_s=2.0, poll_s=0.05, blocking=True, log_fn=logs.append):
+            assert time.monotonic() - t0 >= 0.1
+        assert any("排队等待锁释放" in ln for ln in logs)
+    finally:
+        release.set()
+        timer.cancel()
+        t.join(timeout=2.0)
+
+
+def test_resolve_colab_notebook_url_and_extract_tunnel_with_exclusions():
+    shared_drive_url = "https://colab.research.google.com/drive/shared123"
+    cfg_global = {"providers": {"colab": {"notebook_url": cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL}}}
+    cfg_local = {
+        "profiles": {
+            "colab": {
+                "notebook_url": shared_drive_url,
+                "slots": {
+                    "captions": {"notebook_url": "https://colab.research.google.com/drive/cap456"},
+                },
+            }
+        }
+    }
+    assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="default", default_slot_busy=False) == shared_drive_url
+    assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="captions", default_slot_busy=True) == "https://colab.research.google.com/drive/cap456"
+    # default 正忙且并发槽位无独立 URL：绝不打开共享 /drive/ 副本以免把运行中内核接走
+    assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="tts", default_slot_busy=True) == cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
+
+    text = (
+        "log: https://other-bare.trycloudflare.com\n"
+        "AVA_COLAB_SSH_READY: root@busy-old.trycloudflare.com\n"
+        "AVA_COLAB_SSH_READY: root@new-slot.trycloudflare.com\n"
+    )
+    assert cloud_colab_boot.extract_colab_tunnel_host(
+        text, exclude_hosts={"busy-old.trycloudflare.com"}, ready_only=True
+    ) == "root@new-slot.trycloudflare.com"
+    assert cloud_colab_boot.extract_colab_tunnel_host(
+        "AVA_COLAB_SSH_READY: root@busy-old.trycloudflare.com\nhttps://other-bare.trycloudflare.com",
+        exclude_hosts={"busy-old.trycloudflare.com"},
+        ready_only=True,
+    ) is None
+
+
+def test_auto_boot_ignores_excluded_and_does_not_interrupt_running_cell(monkeypatch, tmp_path: Path):
+    import sys
+    import types
+
+    data_dir = tmp_path / "data"
+    prof_dir = cloud_colab_boot.colab_browser_profile_dir(data_dir)
+    (prof_dir / "cookies.sqlite").write_bytes(b"cookie")
+
+    class _FakeLoc:
+        def __init__(self, *, count_val: int = 0, visible: bool = False):
+            self._c = count_val
+            self._v = visible
+            self.clicked = 0
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return self._c
+
+        def is_visible(self):
+            return self._v
+
+        def click(self, timeout=0):
+            self.clicked += 1
+
+    # 1. _trigger_colab_run_all：检测到 Interrupt execution 时返回 already-running，绝不点停止/重跑
+    interrupt_page = type("_Page", (), {
+        "locator": lambda self, sel: _FakeLoc(count_val=1 if "Interrupt execution" in sel else 0, visible=True),
+    })()
+    assert cloud_colab_boot._trigger_colab_run_all(interrupt_page) == "already-running"
+
+    # 2. auto_boot_colab_ssh：页面上出现 busy-slot + 执行态时也不会抓错旧隧道，只返回新信标
+    class _FakePage:
+        def __init__(self):
+            self.url = cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
+            self.main_frame = object()
+            self.frames = []
+            self._step = 0
+            self.keyboard = types.SimpleNamespace(press=lambda k: None)
+
+        def goto(self, url, wait_until=None, timeout=0):
+            self.url = url
+
+        def locator(self, sel):
+            if "Interrupt execution" in sel:
+                return _FakeLoc(count_val=0)
+            if "colab-run-button" in sel:
+                return _FakeLoc(count_val=1, visible=True)
+            return _FakeLoc(count_val=0)
+
+        def get_by_role(self, role, name=None):
+            return _FakeLoc(count_val=0)
+
+        def inner_text(self, sel, timeout=0):
+            self._step += 1
+            if self._step <= 2:
+                return "AVA_COLAB_SSH_READY: root@stale-initial.trycloudflare.com"
+            return (
+                "Executing...\n"
+                "AVA_COLAB_SSH_READY: root@stale-initial.trycloudflare.com\n"
+                "AVA_COLAB_SSH_READY: root@busy-other.trycloudflare.com\n"
+                "AVA_COLAB_SSH_READY: root@fresh-tts.trycloudflare.com\n"
+            )
+
+        def screenshot(self, path=None, full_page=False):
+            pass
+
+    fake_page = _FakePage()
+
+    class _FakeCtx:
+        pages = [fake_page]
+        def new_page(self):
+            return fake_page
+        def close(self):
+            pass
+
+    class _FakeSyncPW:
+        def __enter__(self):
+            return object()
+        def __exit__(self, *a):
+            return False
+
+    fake_pw_mod = types.ModuleType("playwright.sync_api")
+    fake_pw_mod.sync_playwright = lambda: _FakeSyncPW()
+    fake_pw_pkg = types.ModuleType("playwright")
+    fake_pw_pkg.sync_api = fake_pw_mod
+    monkeypatch.setitem(sys.modules, "playwright", fake_pw_pkg)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_pw_mod)
+    monkeypatch.setattr(cloud_colab_boot, "_launch_persistent_context", lambda pw, pdir, headless=True: _FakeCtx())
+    monkeypatch.setattr(cloud_colab_boot.time, "sleep", lambda s: None)
+
+    got = cloud_colab_boot.auto_boot_colab_ssh(
+        cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL,
+        profile_dir=prof_dir,
+        timeout_s=30,
+        slot="tts",
+        exclude_hosts={"busy-other.trycloudflare.com"},
+        log_fn=lambda _: None,
+    )
+    assert got == "root@fresh-tts.trycloudflare.com"
+
+
+def test_colab_worker_venv_cache_integrity_and_atomic_restore(tmp_path: Path):
+    from tools import colab_worker
+
+    content_root = tmp_path / "content"
+    venv_src = tmp_path / "build" / "venv"
+    (venv_src / "bin").mkdir(parents=True)
+    (venv_src / "bin" / "python").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    (venv_src / "marker.txt").write_text("ava-venv", encoding="utf-8")
+
+    tar_path = tmp_path / "drive" / "ava_venv_test.tar.gz"
+    assert colab_worker.publish_colab_venv_cache(venv_src, tar_path, scratch_dir=tmp_path / "scratch") is True
+    assert tar_path.is_file() and Path(f"{tar_path}.sha256").is_file()
+    assert colab_worker.verify_venv_tarball(tar_path)[0] is True
+    assert colab_worker.restore_colab_venv_cache(tar_path, content_root=content_root, wait_sync_s=0.0) is True
+    assert (content_root / "venv" / "bin" / "python").is_file()
+
+    # 模拟并发另一实例尚在写入/Drive 只同步了半截：大小或哈希不符时拒绝恢复且不留残缺 venv
+    bad_content = tmp_path / "bad_content"
+    orig_bytes = tar_path.read_bytes()
+    tar_path.write_bytes(orig_bytes[:-10])
+    ok_trunc, reason_trunc = colab_worker.verify_venv_tarball(tar_path, wait_sync_s=0.0)
+    assert ok_trunc is False and "大小不符" in reason_trunc
+    assert colab_worker.restore_colab_venv_cache(tar_path, content_root=bad_content, wait_sync_s=0.0) is False
+    assert not (bad_content / "venv").exists()
+
+    # 同等长度但内容损坏：SHA256 校验必须拦下
+    tar_path.write_bytes(bytes([orig_bytes[0] ^ 0xFF]) + orig_bytes[1:])
+    ok_sha, reason_sha = colab_worker.verify_venv_tarball(tar_path, wait_sync_s=0.0)
+    assert ok_sha is False and "SHA256" in reason_sha
+

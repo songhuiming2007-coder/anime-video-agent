@@ -481,12 +481,12 @@ def review_tool_call(
         if danger_tags == ["[用户既有标签页]"]:
             allow_key = f"chrome:existing:{coerce_page_id(args.get('page_id'))}"
     elif name == "run_pipeline":
-        from pipeline.agent.tools import strip_provider_flags
+        from pipeline.agent.tools import strip_cloud_flags
 
         # ADR-0030 决策 2：白名单内全部免卡，只有 cloud 花钱 / 销毁子命令弹卡
         raw_rest = argv[argv.index("-m") + 2:] if argv and "-m" in argv else []
         module = _pipeline_module_of(argv or [])
-        rest = strip_provider_flags(raw_rest)[1] if module == "cloud" else raw_rest
+        rest = strip_cloud_flags(raw_rest)[2] if module == "cloud" else raw_rest
         if module == "cloud" and rest[:1] and rest[0] in CLOUD_CARD_SUBCOMMANDS:
             allow_key = f"run_pipeline:cloud {rest[0]}"
         elif _human_gated(module, rest):

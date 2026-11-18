@@ -585,7 +585,7 @@ def render_approval_card(
     cmd_str = " ".join(argv_list) if argv_list else str(args.get("command", "")).strip()
 
     # 分析模块与子命令
-    from pipeline.agent.tools import strip_provider_flags
+    from pipeline.agent.tools import strip_cloud_flags
 
     cloud_sub = None
     cloud_provider = None
@@ -595,7 +595,7 @@ def render_approval_card(
     if "pipeline.cloud" in argv_list or "cloud" in argv_list:
         is_cloud = True
         idx = argv_list.index("pipeline.cloud") if "pipeline.cloud" in argv_list else argv_list.index("cloud")
-        cloud_provider, cloud_tokens = strip_provider_flags(argv_list[idx + 1:])
+        cloud_provider, _cloud_slot, cloud_tokens = strip_cloud_flags(argv_list[idx + 1:])
         if cloud_tokens:
             cloud_sub = cloud_tokens[0]
     elif "pipeline.render" in argv_list or "render" in argv_list:
@@ -607,7 +607,7 @@ def render_approval_card(
         if tokens:
             if tokens[0] == "cloud":
                 is_cloud = True
-                cloud_provider, cloud_tokens = strip_provider_flags(tokens[1:])
+                cloud_provider, _cloud_slot, cloud_tokens = strip_cloud_flags(tokens[1:])
                 if cloud_tokens:
                     cloud_sub = cloud_tokens[0]
             elif tokens[0] == "render":
