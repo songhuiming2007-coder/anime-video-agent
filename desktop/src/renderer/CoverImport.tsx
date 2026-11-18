@@ -17,17 +17,14 @@ export function CoverImport({
   onNotice?: (msg: string | null) => void;
 }) {
   const [dragover, setDragover] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setMsg(null);
     onNotice?.(null);
   }, [epKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const emitMsg = (next: string | null) => {
-    setMsg(next);
     onNotice?.(next);
   };
 
@@ -96,12 +93,6 @@ export function CoverImport({
           }}
         />
       </div>
-      {!onNotice && msg !== null && (
-        <div className="notice" data-testid="cover-import-msg">
-          <Icon name="info" size="sm" />
-          {msg}
-        </div>
-      )}
     </div>
   );
 }

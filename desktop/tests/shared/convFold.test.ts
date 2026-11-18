@@ -60,6 +60,7 @@ describe("TV-2 foldConv 一回合", () => {
     if (card.k === "card") {
       expect(card.status).toBe("rejected");
       expect(card.text).toBe("[工具卡] write_episode_file · 已拒绝（附反馈：改成第三人称）");
+      expect(card.detail).toBe("…");
     }
     const foot = rows[5];
     if (foot.k === "footer") expect(foot.text).toContain("模型调用 2 · 工具 3（执行 3、重复拒绝 0）");

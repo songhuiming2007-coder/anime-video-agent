@@ -7,7 +7,7 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastContextReading } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, Provenance, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
@@ -544,7 +544,10 @@ function Main() {
                   rpc={rpc}
                   onEditScript={
                     active !== null && !showIdea
-                      ? () => pickHuman({ kind: "file", root: "episodes", rel: `${active}/02-script.md`, size: null })
+                      ? () => {
+                          if (convKeyRef.current !== convKey) return;
+                          pickHuman({ kind: "file", root: "episodes", rel: `${active}/02-script.md`, size: null });
+                        }
                       : undefined
                   }
                 />
@@ -648,6 +651,23 @@ function Main() {
 
 // ---------------- 顶栏与横幅 ----------------
 
+function provenanceDetail(p: Provenance): string {
+  switch (p.kind) {
+    case "dev":
+      return "dev";
+    case "consistent":
+      return `consistent（${p.gitHead.slice(0, 8)}）`;
+    case "dirty":
+      return `dirty（未提交的 desktop/ 改动，基线 ${p.gitHead.slice(0, 8)}）`;
+    case "stale":
+      return `stale（未按当前源码重建，构建于 ${p.gitHead.slice(0, 8)}）`;
+    case "incomparable":
+      return `incomparable（构建提交 ${p.gitHead.slice(0, 8)} 不在本仓库）`;
+    case "unknown":
+      return `unknown：${p.message}`;
+  }
+}
+
 function HealthPanel({ health, diags, linked, onChangeRepo }: { health: Health; diags: string[]; linked: boolean; onChangeRepo: () => void }) {
   const rows: [string, string][] = [
     ["host 连接", linked ? "在线" : "断开"],
@@ -657,7 +677,7 @@ function HealthPanel({ health, diags, linked, onChangeRepo }: { health: Health; 
     ["approval 能力", health.capabilities.approvals ? "在场" : `缺席：${health.capabilities.approvalsDetail}`],
     ["纳秒无损解析", health.losslessJson ? "ok" : "不支持（决策条只读）"],
     ["core Code Freeze", health.codeFreeze.detail],
-    ["UI 构建溯源", health.buildProvenance.kind],
+    ["UI 构建溯源", provenanceDetail(health.buildProvenance)],
     ["数据可达性", `${health.reach}${health.reachDetail ? `：${health.reachDetail}` : ""}`],
   ];
   return (

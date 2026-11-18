@@ -36,7 +36,7 @@ export type ConvRow =
   | { k: "assistant"; at: number; kind: "answer" | "wrapup" | "local_note"; text: string; label: string | null; hist?: true }
   | ToolRow
   | { k: "log"; at: number; lines: string[] }
-  | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided" }
+  | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided"; detail?: string }
   | { k: "notice"; at: number; level: string; code: string; text: string }
   /** stopped：`turn_finished.stopped` 原值（D80 回合折叠据此判「已停止」，不解析 text）；
    *  brief：D80 R5 默认显示的短摘要（「N 次模型调用 · 上下文 …」），完整遥测仍在 text、展开可见 */
@@ -315,7 +315,8 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
     }
     case "request": {
       const label = cardLabel(f);
-      rows.push({ k: "card", at, requestId: String(f.request_id), label, text: cardText(label, "open", null, null), status: "open" });
+      const detail = typeof f.card_text === "string" && f.card_text.trim() !== "" ? f.card_text : undefined;
+      rows.push({ k: "card", at, requestId: String(f.request_id), label, text: cardText(label, "open", null, null), status: "open", ...(detail ? { detail } : {}) });
       break;
     }
     case "request_closed": {

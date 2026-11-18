@@ -10,8 +10,8 @@
   --bg-panel: #ffffff;
   --bg-card: #ffffff;
   --bg-popover: #ffffff;
-  --bg-input: #ffffff;
-  --bg-user: #efeff2;
+  --bg-input: #f4f4f6;
+  --bg-user: #f1f1f4;
   --bg-subtle: rgba(13, 13, 15, 0.035);
   --bg-hover: rgba(13, 13, 15, 0.05);
   --bg-selected: #fceef3;
@@ -58,6 +58,14 @@
   --syntax-heading: var(--syntax-key);
   --syntax-link: var(--accent-strong);
   --syntax-meta: var(--fg-muted);
+
+  /* ---- 强调色圆点 ---- */
+  --swatch-sakura: #e889a8;
+  --swatch-violet: #8c70ec;
+  --swatch-sky: #4a8ef2;
+  --swatch-sage: #3ea86b;
+  --swatch-amber: #df8c2c;
+  --swatch-graphite: #6b6b76;
 
   /* ---- 阴影 ---- */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -126,7 +134,7 @@
     --bg-panel: #1f1f22;
     --bg-card: #26262a;
     --bg-popover: #2c2c30;
-    --bg-input: #26262a;
+    --bg-input: #1d1d20;
     --bg-user: #27272c;
     --bg-subtle: rgba(255, 255, 255, 0.035);
     --bg-hover: rgba(255, 255, 255, 0.06);
@@ -169,6 +177,13 @@
     --syntax-link: var(--accent-strong);
     --syntax-meta: var(--fg-muted);
 
+    --swatch-sakura: #e889a8;
+    --swatch-violet: #8c70ec;
+    --swatch-sky: #4a8ef2;
+    --swatch-sage: #3ea86b;
+    --swatch-amber: #df8c2c;
+    --swatch-graphite: #6b6b76;
+
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
     --shadow-pod: 0 4px 16px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06);
     --shadow-overlay: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.07);
@@ -184,7 +199,7 @@
   --bg-panel: #1f1f22;
   --bg-card: #26262a;
   --bg-popover: #2c2c30;
-  --bg-input: #26262a;
+  --bg-input: #1d1d20;
   --bg-user: #27272c;
   --bg-subtle: rgba(255, 255, 255, 0.035);
   --bg-hover: rgba(255, 255, 255, 0.06);
@@ -226,6 +241,13 @@
   --syntax-heading: var(--syntax-key);
   --syntax-link: var(--accent-strong);
   --syntax-meta: var(--fg-muted);
+
+  --swatch-sakura: #e889a8;
+  --swatch-violet: #8c70ec;
+  --swatch-sky: #4a8ef2;
+  --swatch-sage: #3ea86b;
+  --swatch-amber: #df8c2c;
+  --swatch-graphite: #6b6b76;
 
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-pod: 0 4px 16px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06);
@@ -407,11 +429,3 @@
   --fg-on-accent: #161618;
   --accent-strong: #d4d4dc;
 }
-
-/* 外观浮层里的纯色圆点（只允许在 tokens.css 出现颜色字面量） */
-.theme-swatch[data-swatch="sakura"] { background: #e889a8; }
-.theme-swatch[data-swatch="violet"] { background: #8c70ec; }
-.theme-swatch[data-swatch="sky"] { background: #4a8ef2; }
-.theme-swatch[data-swatch="sage"] { background: #3ea86b; }
-.theme-swatch[data-swatch="amber"] { background: #df8c2c; }
-.theme-swatch[data-swatch="graphite"] { background: #6b6b76; }

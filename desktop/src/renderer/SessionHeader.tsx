@@ -11,7 +11,7 @@ import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
 import type { EpisodeState } from "./store";
 import { Icon } from "./icons";
-import { StateView } from "./ui";
+import { StateView, StatusDot } from "./ui";
 
 export interface ReadyInfo {
   scope: string | null;
@@ -47,6 +47,18 @@ export const CONTEXT_READOUT_TITLE =
   "继续会话后、新一轮跑完前显示的是上次测得的值（带「上次」）。" +
   "嫌长可以在对话框发 /compact，把较早的对话压成一条摘要、保留近期原文；" +
   "或点侧栏本期下面的「＋ 新会话」从空白上下文开始：期的进度在产物里，不靠对话记忆。";
+
+function healthAlerts(health: Health | null): string[] {
+  if (!health) return [];
+  const alerts: string[] = [];
+  if (health.codeFreeze.ok === false) alerts.push(`core Code Freeze：${health.codeFreeze.detail}`);
+  const p = health.buildProvenance;
+  if (p.kind === "dirty") alerts.push("UI 构建自未提交的 desktop/ 改动");
+  else if (p.kind === "stale") alerts.push(`UI 未按当前源码重建（构建于 ${p.gitHead.slice(0, 8)}）`);
+  else if (p.kind === "incomparable") alerts.push("无法比对 UI 构建版本（构建提交不在本仓库）");
+  else if (p.kind === "unknown") alerts.push(`无法比对 UI 构建版本：${p.message}`);
+  return alerts;
+}
 
 export function SessionHeader({
   rpc,
@@ -104,6 +116,7 @@ export function SessionHeader({
   const epStatus = ep && !isIdea ? ep.status : null;
   const statusVal = epStatus?.ok ? epStatus.value : null;
   const detailsId = ep ? `status-details-${ep.epKey}` : undefined;
+  const alerts = healthAlerts(health);
   return (
     <>
       <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
@@ -160,7 +173,7 @@ export function SessionHeader({
         )}
         {running && <span className="ui-spinner" data-testid="session-running" />}
         <span className="spacer" />
-        {/* D64 余项②：上下文读数悬停使用 FloatingTooltip，避免系统原生 title 迟滞 */}
+        {/* D64 余项②：上下文读数悬停/聚焦使用 FloatingTooltip，避免系统原生 title 迟滞与双重叠加 */}
         {contextReadout !== null && (
           <FloatingTooltip
             label={CONTEXT_READOUT_TITLE}
@@ -170,7 +183,7 @@ export function SessionHeader({
                 {...trigger.props}
                 className="ui-badge session-head-readout"
                 data-testid="context-readout"
-                title={CONTEXT_READOUT_TITLE}
+                tabIndex={0}
               >
                 {contextReadout}
               </span>
@@ -241,14 +254,15 @@ export function SessionHeader({
         </button>
         <button
           type="button"
-          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+          className={alerts.length > 0 ? "ui-btn ui-btn--ghost ui-btn--sm" : "ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"}
           aria-label="健康"
-          title="诊断与环境"
+          title={alerts.length > 0 ? `诊断与环境（${alerts.join("；")}）` : "诊断与环境"}
           aria-pressed={showHealth}
           onClick={onToggleHealth}
           data-testid="health-toggle"
         >
           <Icon name="pulse" size="sm" />
+          {alerts.length > 0 && <StatusDot tone={health?.buildProvenance.kind === "dirty" ? "danger" : "warn"} />}
         </button>
         {utilityRight}
       </div>

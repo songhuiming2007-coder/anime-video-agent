@@ -55,10 +55,15 @@ export function PreviewSwitcher({
     rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "" }).then(setEntries, (e) => setErr(errText(e)));
   }, [epKey, rpc]);
 
-  // 切期、导入封面(treeBump)、打开下拉或恢复可达时刷新顶层产物目录
+  // 切期或切往选题/企划视图时清空上一期残留状态（coverNotice 不随 treeBump 清空）
   useEffect(() => {
+    setCoverNotice(null);
     setSubOpen({});
     setSubTrees({});
+  }, [epKey]);
+
+  // 切期、导入封面(treeBump)或恢复可达时刷新顶层产物目录
+  useEffect(() => {
     if (!epKey || !reachOk) {
       if (!epKey) setEntries(null);
       return;
@@ -304,7 +309,7 @@ export function PreviewSwitcher({
           )}
         />
       </div>
-      {coverNotice !== null && (
+      {epKey !== null && coverNotice !== null && (
         <div className="notice preview-cover-notice" data-testid="cover-import-msg">
           <Icon name="info" size="sm" />
           {coverNotice}

@@ -1,5 +1,5 @@
 // CSP-safe positioned popovers, tooltips, and modal dialogs built on @floating-ui/react.
-// Positioning uses inline CSSOM styles only (VS-7 exempts this file; zero runtime <style> tags).
+// Positioning uses inline CSSOM styles only (VS-7 exempts floatingStyles; zero runtime <style> tags).
 import {
   autoUpdate,
   flip,
@@ -76,7 +76,7 @@ export function FloatingPopover({
   const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss, ariaRole]);
 
   const panel = open ? (
-    <FloatingFocusManager context={context} modal={false} guards={false} initialFocus={initialFocus} returnFocus={true}>
+    <FloatingFocusManager context={context} modal={false} initialFocus={initialFocus} returnFocus={true}>
       <div
         ref={refs.setFloating}
         className={["ui-pop-anim", className].filter(Boolean).join(" ")}

@@ -348,8 +348,15 @@ export function RequestCards({ conv, rpc, onEditScript }: { conv?: ConvState; rp
   );
 }
 
-function isScriptTarget(v: unknown): boolean {
-  return typeof v === "string" && (v === "02-script.md" || v.endsWith("/02-script.md"));
+type ScriptTargetName = "02-script.md" | "02-script.draft.md";
+
+function scriptTargetOf(args: Record<string, unknown>): ScriptTargetName | null {
+  for (const v of [args.filename, args.path, args.rel_path]) {
+    if (typeof v !== "string") continue;
+    if (v === "02-script.md" || v.endsWith("/02-script.md")) return "02-script.md";
+    if (v === "02-script.draft.md" || v.endsWith("/02-script.draft.md")) return "02-script.draft.md";
+  }
+  return null;
 }
 
 export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false, onEditScript }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean; focusApprove?: boolean; onEditScript?: () => void }) {
@@ -365,7 +372,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
   const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
   // D76：bash 卡上的命令每行带「│」前缀，手选会连前缀一起复制；按钮复制的是请求参数里的命令原文
   const args = (fields.args ?? {}) as Record<string, unknown>;
-  const isScriptWrite = tool === "write_episode_file" && (isScriptTarget(args.filename) || isScriptTarget(args.path) || isScriptTarget(args.rel_path));
+  const scriptTarget = tool === "write_episode_file" ? scriptTargetOf(args) : null;
   const bashCommand = tool === "bash" && typeof args.command === "string" ? args.command : null;
   const purpose = tool === "bash" && typeof args.description === "string" && args.description.trim() !== "" ? args.description : null;
   const mark = dangerLabel(fields.danger);
@@ -400,7 +407,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           {mark ? <Badge tone="danger">{mark}</Badge> : null}
         </>
       }
-      sub={isScriptWrite ? "AI 建议写入 02-script.md（可采纳直接写入，或参考建议自己打开双栏编辑器修改）" : undefined}
+      sub={scriptTarget !== null ? `AI 建议写入 ${scriptTarget}（可采纳直接写入，或参考建议自己打开双栏编辑器修改）` : undefined}
     >
       {typeof req.card_summary === "string" ? (
         <>
@@ -481,7 +488,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
             {DECISION_LABEL[decision] ?? decision}
           </button>
         ))}
-        {isScriptWrite && feedbackAllowed && (
+        {scriptTarget !== null && feedbackAllowed && onEditScript !== undefined && (
           <button
             className="ui-btn"
             data-testid="request-answer-self-edit"
@@ -490,15 +497,17 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
               if (!e.nativeEvent.isTrusted) return;
               setBusy(true);
               setError(null);
-              onEditScript?.();
               void rpc
                 .call("conv.answer", {
                   convKey,
                   requestId,
                   decision: "reject",
-                  feedback: "我已参考你的建议，决定在右侧文案编辑器里自己修改 02-script.md，请勿直接覆盖。",
+                  feedback: "我已参考你的建议，决定在右侧文案编辑器里自己修改，请勿直接覆盖。",
                 })
-                .then(() => setBusy(false))
+                .then(() => {
+                  setBusy(false);
+                  onEditScript();
+                })
                 .catch((err) => {
                   setBusy(false);
                   setError(errText(err));

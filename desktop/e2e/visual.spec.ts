@@ -271,6 +271,16 @@ test("VE-3 键盘：Tab 到 [data-testid=episode] 时焦点环为 --focus-ring�
     await L.page.keyboard.press("Escape");
     await expect(L.page.getByTestId("theme-menu")).toBeHidden();
     expect(await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid"))).toBe("appearance");
+    // P1-1 回归：initialFocus=-1 且 portal=true 的浮层在展开后，按 Tab 应落进 FloatingPortal 面板内部（guards={true} 桥接）
+    await L.page.getByTestId("preview-switch-btn").focus();
+    await L.page.keyboard.press("Space");
+    await expect(L.page.getByTestId("preview-switch-pop")).toBeVisible();
+    await L.page.locator("[data-testid=preview-switch-pop] [data-testid=preview-switch-row]:not(:disabled)").first().waitFor();
+    await L.page.keyboard.press("Tab");
+    expect(await L.page.evaluate(() => document.activeElement?.closest("[data-testid=preview-switch-pop]") !== null)).toBe(true);
+    await L.page.keyboard.press("Escape");
+    await expect(L.page.getByTestId("preview-switch-pop")).toBeHidden();
+    expect(await L.page.evaluate(() => document.activeElement?.getAttribute("data-testid"))).toBe("preview-switch-btn");
   } finally {
     await L.app.close();
     fx.cleanup();

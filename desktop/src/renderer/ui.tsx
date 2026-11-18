@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { Icon } from "./icons";
 
 export type BadgeTone = "wait" | "ok" | "warn" | "danger" | "accent";
-export type DotTone = "neutral" | "wait" | "ok" | "danger" | "unknown";
+export type DotTone = "neutral" | "wait" | "ok" | "warn" | "danger" | "unknown";
 export type StateKind = "empty" | "error" | "loading" | "inline";
 
 const cls = (base: string, mod?: string) => (mod ? `${base} ${base}--${mod}` : base);

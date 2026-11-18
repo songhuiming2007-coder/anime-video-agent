@@ -99,9 +99,8 @@ export function domAudit() {
     const r = el.getBoundingClientRect();
     if (!r.width || !r.height || el.closest(":disabled")) continue;
     const cs = getComputedStyle(el);
-    const isDot = el.classList.contains("ui-dot");
-    const ring = isDot && el.classList.contains("ui-dot--unknown");
-    const fgc = isDot ? (ring ? P(cs.boxShadow) : P(cs.backgroundColor)) : P(cs.borderTopColor);
+    const ring = el.classList.contains("ui-dot--unknown");
+    const fgc = ring ? P(cs.boxShadow) : P(cs.backgroundColor);
     if (!fgc || !el.parentElement) continue;
     const eff = effective(el.parentElement, fgc);
     if (!eff || eff.media) continue;

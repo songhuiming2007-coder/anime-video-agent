@@ -146,10 +146,13 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   await panel.waitFor({ timeout: 15_000 });
   expect(spawnNames(L, "VOICE_INFO")).toHaveLength(1);
   await expect(panel.getByTestId("seg-row")).toHaveCount(2);
-  // 播音走 renderer 原生 <audio> + ava-media://（不打开外部播放器）
+  // 播音走 renderer 原生 <audio> + ava-media://（不打开外部播放器）；再次点击同一段触发停止（P1-3）
   await panel.getByTestId("seg-play").first().click();
   await expect(panel.getByTestId("voice-audio")).toHaveAttribute("src", /^ava-media:\/\/episodes\/.*seg-01\.wav$/);
   await expect(panel.getByTestId("voice-nowplaying")).toContainText("段 1");
+  await expect(panel.getByTestId("seg-play").first()).toHaveAttribute("aria-label", "停止段 1");
+  await panel.getByTestId("seg-play").first().click();
+  await expect(panel.getByTestId("voice-nowplaying")).toHaveCount(0);
 
   // 解析 → 确认卡 → 确认落盘（D50-A S6：文法录入收进「按文法录入」折叠区）
   await panel.getByTestId("voice-grammar").click();
@@ -493,6 +496,10 @@ test("Spec 12 TD-1/TE-1：选择器导入封面 → 09 卡选封面填标题 →
   // 导入（选择器路径：Playwright 的 setInputFiles 产生可信 change 事件）
   await L.page.getByTestId("cover-file").setInputFiles(coverPath);
   await expect(L.page.getByTestId("cover-import-msg")).toContainText("已导入", { timeout: 15_000 });
+  // P1-5 回归：切往「选题」视图清空上一期封面提示，返回本期继续批准 09
+  await L.page.getByTestId("idea").click();
+  await expect(L.page.getByTestId("cover-import-msg")).toHaveCount(0);
+  await openEp(L.page, "SP12-TE1");
   const imports = spawnNames(L, "IMPORT_COVER");
   expect(imports).toHaveLength(1);
   expect(imports[0].argv.some((a) => a.startsWith("--name="))).toBe(true);

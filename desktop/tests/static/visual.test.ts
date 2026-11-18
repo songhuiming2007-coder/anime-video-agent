@@ -74,7 +74,7 @@ export function parseTokens(css: string) {
 }
 
 const COLOR = /^(#[0-9a-f]{6}|rgba\(\d+, \d+, \d+, [\d.]+\)|var\(--[\w-]+\))$/i;
-const COLOR_KEY = /^--(bg|fg|border|accent|focus|ok|warn|danger|wait|overlay|syntax)/;
+const COLOR_KEY = /^--(bg|fg|border|accent|focus|ok|warn|danger|wait|overlay|syntax|swatch)/;
 const colorKeys = (t: Tokens) => Object.entries(t).filter(([, v]) => COLOR.test(v)).map(([k]) => k);
 
 function resolveVar(t: Tokens, v: string): string {
@@ -89,9 +89,14 @@ function resolveVar(t: Tokens, v: string): string {
   throw new Error("bad alias " + v);
 }
 
-export const EXPECTED_PAIRS = 280;
-const S = ["--bg", "--bg-sidebar", "--bg-panel", "--bg-card", "--bg-popover", "--bg-input"];
-const SEL = [["--bg-sidebar", "--bg-selected"], ["--bg-panel", "--bg-selected"]];
+export const EXPECTED_PAIRS = 296;
+const S = ["--bg", "--bg-sidebar", "--bg-panel", "--bg-card", "--bg-popover", "--bg-input", "--bg-user"];
+const SEL = [
+  ["--bg-sidebar", "--bg-selected"],
+  ["--bg-panel", "--bg-selected"],
+  ["--bg-card", "--bg-selected"],
+  ["--bg-popover", "--bg-selected"],
+];
 const HOV = [["--bg-sidebar", "--bg-hover"], ["--bg-panel", "--bg-hover"]];
 const ROWBG = [["--bg-sidebar"], ["--bg-sidebar", "--bg-hover"], ["--bg-sidebar", "--bg-selected"], ["--bg-panel", "--bg-hover"], ["--bg-panel", "--bg-selected"]];
 export type Pair = [string, string[], number, string];
@@ -140,15 +145,15 @@ export function checkPairs(css: string): { results: PairResult[]; missing: strin
 
 /** 每类判据的最小值（实跑自 `node tools/tk.mjs tokens.css`，见 Spec 14 §7.1 VS-2 的注释） */
 const MINS: Record<string, [number, number]> = {
-  正文: [5.64, 5.96],
-  选中行文字: [5.56, 5.56],
+  正文: [5.54, 5.96],
+  选中行文字: [5.56, 4.69],
   悬停行文字: [5.08, 5.93],
-  "弱提示（禁用态/装饰，不承载必读文字）": [3.09, 3.27],
+  "弱提示（禁用态/装饰，不承载必读文字）": [3.04, 3.27],
   "中性徽标（含「停机」）": [4.73, 5],
   主按钮文字: [9.98, 9.78],
   主按钮悬停文字: [8.68, 11.25],
   "强调色文字/链接": [5.3, 6.76],
-  "焦点环对各面（offset 2px，环只压在面上）": [3.84, 6.23],
+  "焦点环对各面（offset 2px，环只压在面上）": [3.77, 6.23],
   "主按钮边界（非文本 3:1）": [3.8, 8.76],
   "状态点与未知圆环（非文本）": [5.08, 5.56],
   状态文字: [5.9, 6.6],
@@ -156,7 +161,7 @@ const MINS: Record<string, [number, number]> = {
   "状态点压在行上（非文本）": [5.32, 5.68],
   "媒体浮层文字（黑画面）": [21, 21],
   "媒体浮层文字（白画面）": [9.23, 9.23],
-  "代码/JSON/Markdown 高亮": [5.87, 6.46],
+  "代码/JSON/Markdown 高亮": [5.35, 6.46],
 };
 
 // ---------------- VS-3~VS-6 / VS-11：CSS 静态守卫（附件 tools/vs.mjs） ----------------
@@ -296,15 +301,10 @@ const rendererFiles = () => sourceFiles().filter((f) => f.rel.startsWith("render
 const ACCENT_PRESETS = ["sakura", "violet", "sky", "sage", "amber", "graphite"] as const;
 
 export function parseAccentOverrides(css: string, accent: string) {
-  const lightMatch = css.match(new RegExp(`^:root\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^\\}`, "m"));
-  const mediaMatch = css.match(
-    new RegExp(`@media \\(prefers-color-scheme: dark\\) \\{\\s*:root:not\\(\\[data-theme="light"\\]\\)\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^  \\}`, "m"),
-  );
-  const darkMatch = css.match(new RegExp(`^:root\\[data-theme="dark"\\]\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^\\}`, "m"));
   return {
-    light: lightMatch ? decls(lightMatch[1]) : {},
-    mediaDark: mediaMatch ? decls(mediaMatch[1]) : {},
-    forcedDark: darkMatch ? decls(darkMatch[1]) : {},
+    light: decls(body(css, new RegExp(`^:root\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^\\}`, "m"))),
+    mediaDark: decls(body(css, new RegExp(`@media \\(prefers-color-scheme: dark\\) \\{\\s*:root:not\\(\\[data-theme="light"\\]\\)\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^  \\}`, "m"))),
+    forcedDark: decls(body(css, new RegExp(`^:root\\[data-theme="dark"\\]\\[data-accent="${accent}"\\] \\{([\\s\\S]*?)^\\}`, "m"))),
   };
 }
 
@@ -328,10 +328,10 @@ describe("VS-1 token 格式、覆盖与两块深色一致", () => {
     const bad = Object.entries({ ...t.light, ...t.forcedDark }).filter(([k, v]) => COLOR_KEY.test(k) && !COLOR.test(v));
     expect(bad.map(([k]) => k)).toEqual([]);
   });
-  it("浅色恰 84 个 token（新增 --bg-user / --shadow-card / --shadow-pod）、其中 41 个颜色 token，且手动深色块全部覆盖", () => {
+  it("浅色恰 90 个 token（含 --bg-user / --shadow-* / --swatch-*）、其中 47 个颜色 token，且手动深色块全部覆盖", () => {
     const t = parseTokens(TOKENS);
-    expect(Object.keys(t.light)).toHaveLength(84);
-    expect(colorKeys(t.light)).toHaveLength(41);
+    expect(Object.keys(t.light)).toHaveLength(90);
+    expect(colorKeys(t.light)).toHaveLength(47);
     expect(checkPairs(TOKENS).missing).toEqual([]);
   });
   it("跟随系统深色块与手动深色块键集合、取值逐项相等", () => {
@@ -379,10 +379,18 @@ describe("VS-2 对比度对子表", () => {
 });
 
 describe("VS-2b 6 套强调色预设全部满足对比度与深色双块一致", () => {
+  it("检查器自测：缺失块立刻抛错而非静默回退空对象", () => {
+    expect(() => parseAccentOverrides(TOKENS.replace(':root[data-theme="dark"][data-accent="violet"]', ':root[data-theme="dark"][data-accent="broken"]'), "violet")).toThrow("block missing");
+  });
   it("6 个 data-accent 预设在浅色 / 深色下所有 PAIRS 达标且 mediaDark === forcedDark", () => {
     const base = parseTokens(TOKENS);
     for (const accent of ACCENT_PRESETS) {
       const ov = parseAccentOverrides(TOKENS, accent);
+      expect(Object.keys(ov.light).length, `${accent} light empty`).toBeGreaterThan(0);
+      expect(Object.keys(ov.forcedDark).length, `${accent} dark empty`).toBeGreaterThan(0);
+      for (const [k, v] of [...Object.entries(ov.light), ...Object.entries(ov.forcedDark)]) {
+        expect(COLOR.test(v), `${accent} ${k}: ${v}`).toBe(true);
+      }
       expect(Object.keys(ov.mediaDark).sort(), `${accent} dark diff`).toEqual(Object.keys(ov.forcedDark).sort());
       for (const k of Object.keys(ov.forcedDark)) expect(ov.mediaDark[k], `${accent} ${k}`).toBe(ov.forcedDark[k]);
       const themes = [
@@ -497,17 +505,16 @@ export function vs3Tsx(f: SourceFile): string[] {
 
 // gridTemplateColumns：D39 S2 分栏宽度随拖拽变化，只能运行时设；React 的 style 走 CSSOM，不受 CSP style-src 拦截（Spec 14 E1）
 const STYLE_KEYS = new Set(["paddingLeft", "transform", "gridTemplateColumns"]);
-const STYLE_EXEMPT_FILES = new Set(["renderer/floating.tsx"]);
 
 export function vs7(f: SourceFile): string[] {
-  if (STYLE_EXEMPT_FILES.has(f.rel)) return [];
   const bad: string[] = [];
   if (/\bstyle="/.test(f.text)) bad.push(`${f.rel}: 字符串形式的 style 属性`);
   const walk = (n: ts.Node) => {
     if (ts.isJsxAttribute(n) && n.name.getText() === "style" && n.initializer && ts.isJsxExpression(n.initializer) && n.initializer.expression) {
       const e = n.initializer.expression;
+      const isFloatingStyles = f.rel === "renderer/floating.tsx" && ts.isIdentifier(e) && e.text === "floatingStyles";
       if (!ts.isObjectLiteralExpression(e)) {
-        bad.push(`${f.rel}: style 的值不是就地字面量`);
+        if (!isFloatingStyles) bad.push(`${f.rel}: style 的值不是就地字面量`);
       } else {
         for (const prop of e.properties) {
           const name = ts.isPropertyAssignment(prop) && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.getText().replace(/"/g, "") : null;
@@ -632,7 +639,11 @@ describe("VS-7 TSX 内联样式白名单（paddingLeft / transform）", () => {
     expect(vs7(src("renderer/A.tsx", `const A = () => <img style={{ transform: t }} />;`))).toEqual([]);
     expect(vs7(src("renderer/A.tsx", `const A = () => <div style={{ color: x }} />;`))).toHaveLength(1); // M33
     expect(vs7(src("renderer/A.tsx", `const A = () => <div style="color: red" />;`))).toHaveLength(1);
+    expect(vs7(src("renderer/A.tsx", `const A = () => <div style={floatingStyles} />;`))).toHaveLength(1);
     expect(vs7(src("renderer/floating.tsx", `const A = () => <div style={floatingStyles} />;`))).toEqual([]);
+    expect(vs7(src("renderer/floating.tsx", `const A = () => <div style={otherStyles} />;`))).toHaveLength(1);
+    expect(vs7(src("renderer/floating.tsx", `const A = () => <div style="color: red" />;`))).toHaveLength(1);
+    expect(vs7(src("renderer/floating.tsx", `const A = () => <div style={{ color: "#333" }} />;`))).toHaveLength(1);
   });
   it("真实 renderer 源码", () => {
     expect(rendererFiles().flatMap((f) => vs7(src(f.rel, f.text)))).toEqual([]);

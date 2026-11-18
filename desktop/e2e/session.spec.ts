@@ -147,14 +147,14 @@ test("TX-D47 请求卡正文按原样换行（写稿 diff 可读）；参数原�
   });
 });
 
-test("Route B 写稿卡「参考建议，我自己改」打开双栏编辑器并发送含反馈的 reject", async () => {
+test("Route B 写稿卡「参考建议，我自己改」兼容草稿超限卡、成功后再开编辑器且保留建议 diff", async () => {
   await withSession(async ({ repo, L }) => {
-    const cardText = "┌─ 写入审批\n│ 目标: 02-script.md\n│ +新内容";
+    const cardText = "┌─ 写入审批（本轮第 4 次重写草稿）\n│ 目标: 02-script.draft.md\n│ +新内容";
     sessionScript(repo, "SESS-A", [
       READY("SESS-A"),
       {
         op: "serve",
-        on_turn: [TURN_STARTED, { t: "request", request_id: "qse", kind: "tool_call", turn_id: "$turn", title: "写稿", card_text: cardText, fields: { tool: "write_episode_file", args: { filename: "02-script.md", content: "建议稿" } }, options: ["approve", "reject"], feedback_allowed: true }],
+        on_turn: [TURN_STARTED, { t: "request", request_id: "qse", kind: "tool_call", turn_id: "$turn", title: "写稿", card_text: cardText, fields: { tool: "write_episode_file", args: { filename: "02-script.draft.md", content: "建议稿" } }, options: ["approve", "reject"], feedback_allowed: true }],
         on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }],
       },
     ]);
@@ -165,9 +165,10 @@ test("Route B 写稿卡「参考建议，我自己改」打开双栏编辑器并
     await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(1);
     const ans = JSON.parse(stdinLines(repo, "SESS-A").find((l) => JSON.parse(l).t === "answer")!);
     expect(ans.decision).toBe("reject");
-    expect(ans.feedback).toContain("02-script.md");
+    expect(ans.feedback).toContain("自己修改");
     await expect(L.page.locator("#ava-preview")).toBeVisible();
     await expect(L.page.getByTestId("preview-switch-btn")).toContainText("02-script.md");
+    await expect(L.page.getByTestId("card-detail-text")).toContainText("+新内容");
   });
 });
 

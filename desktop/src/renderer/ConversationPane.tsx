@@ -359,7 +359,7 @@ function Activity({ rows }: { rows: ConvRow[] }) {
 function RowView({ rows, index, running, fresh, opens, inGroup = false }: { rows: ConvRow[]; index: number; running: boolean; fresh: (r: ConvRow) => boolean; opens: Opens; inGroup?: boolean }) {
   const row = rows[index];
   if (row.k === "tool") return <ToolLine row={row} turnRunning={running} fresh={fresh(row)} opens={opens} inGroup={inGroup} />;
-  return <Row row={row} fresh={fresh(row)} />;
+  return <Row row={row} fresh={fresh(row)} opens={opens} />;
 }
 
 /** D80 R6.3：卡片结局的状态色——待批准用等待色、被拒用危险色，其余中性（语义色只给真实状态） */
@@ -391,7 +391,7 @@ function Footer({ text, brief, claims }: { text: string; brief: string; claims: 
 }
 
 /** 非工具行。D80：只有实时到达的用户消息与答复挂入场标记（R3 ④）；工具行在 ToolLine */
-function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean }) {
+function Row({ row, fresh, opens }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean; opens: Opens }) {
   const enter = fresh ? " conv-enter" : "";
   switch (row.k) {
     case "user":
@@ -432,6 +432,33 @@ function Row({ row, fresh }: { row: Exclude<ConvRow, ToolRow>; fresh: boolean })
       // D80 R6.3：与工具行同结构（方案 A）——类别词是卡类，主文本是工具名，状态词是卡的结局（被拒附反馈原文、作废附原因）
       const { kind, tool } = cardParts(row.label);
       const phrase = cardPhrase(row);
+      if (row.status !== "open" && row.detail !== undefined) {
+        const key = `card:${row.requestId}`;
+        const defaultOpen = row.status === "rejected" && row.text.includes("我已参考你的建议");
+        const open = opens.get(key, defaultOpen);
+        return (
+          <div className="conv-tool-row conv-card" data-testid="conv-row" data-kind="card" data-request-id={row.requestId} data-status={row.status}>
+            <div className="conv-tool" title={row.text}>
+              <button type="button" className="conv-tool-head" data-testid="card-toggle" aria-expanded={open} onClick={() => opens.toggle(key, open)}>
+                <Icon name="alert" size="sm" />
+                <span className="conv-tool-cat">{kind}</span>
+                {tool !== "" && <span className="conv-tool-main">{tool}</span>}
+              </button>
+              <span className="conv-tool-status conv-card-phrase" data-st={CARD_TONE[row.status]}>
+                {phrase}
+              </span>
+              <Chevron open={open} onToggle={() => opens.toggle(key, open)} />
+            </div>
+            <Collapse open={open}>
+              {() => (
+                <div className="conv-tool-detail">
+                  <pre className="conv-tool-out" data-testid="card-detail-text">{row.detail}</pre>
+                </div>
+              )}
+            </Collapse>
+          </div>
+        );
+      }
       return (
         <div className="conv-tool-row conv-card" data-testid="conv-row" data-kind="card" data-request-id={row.requestId} data-status={row.status}>
           <div className="conv-tool" title={row.text}>
