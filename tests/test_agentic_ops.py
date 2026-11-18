@@ -728,8 +728,9 @@ def test_colab双后端切换与单命令provider在agent审查与审批卡正�
     assert "Colab" in card and "CU" in card
 
 
-def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path):
-    """--slot / --instance 在子命令前、后、run 尾部均正常剥离校验，非法槽位与护栏命令不漏放。"""
+def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path, monkeypatch):
+    """--slot / --instance 在子命令前、后、run 尾部均正常剥离校验，缩写与空值等变形全部拦截，审批卡防伪造。"""
+    from pipeline import cloud
     from pipeline.agent import status_card
 
     ep = _episode(repo)
@@ -738,7 +739,7 @@ def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path):
         "cloud --slot tts up --provider colab",
         "cloud up --slot auto --provider colab",
         f"cloud run {ep} tts --slot tts --redo 2",
-        f"cloud --instance captions lib-captions pool SP01",
+        "cloud --instance captions lib-captions pool SP01",
     ):
         ok, msg, _ = validate_pipeline_command(cmd, ep_dir=ep)
         assert ok, f"{cmd} 应被放行: {msg}"
@@ -746,16 +747,27 @@ def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path):
     for bad_cmd in (
         "cloud status --slot auto",
         "cloud up --slot ../bad",
-        "cloud --slot tts exec ls",
         "cloud --slot tts down --force",
+        "cloud --prov autodl up",
+        "cloud --sl auto status",
+        "cloud up --inst gpu2",
+        "cloud --provider badprov up --provider colab",
+        "cloud --slot auto run " + str(ep) + " tts --slot=",
+        "cloud --slot ../bad up --slot tts",
     ):
         ok, _, _ = validate_pipeline_command(bad_cmd, ep_dir=ep)
         assert not ok, f"{bad_cmd} 必须被拒绝"
 
-    # 前置 --slot tts 仍走计费弹卡，前置 --slot tts connect 仍逐条人审（allow_key=None）
+    ok_exec, msg_exec, _ = validate_pipeline_command("cloud --slot tts exec ls", ep_dir=ep)
+    assert not ok_exec and "永久禁用" in msg_exec
+
+    # 前置 --slot tts 仍走计费弹卡且 allow_key 隔离至 provider+slot；--slot auto 与 --recreate 固定逐次人审
     v_up = _review("cloud --slot tts up --provider colab", ep)
-    assert v_up.action == "ask" and v_up.allow_key == "run_pipeline:cloud up"
+    assert v_up.action == "ask" and v_up.allow_key == "run_pipeline:cloud up:colab:tts"
     assert "Colab" in v_up.request.card_text and "CU" in v_up.request.card_text
+
+    assert _review("cloud up --slot auto --provider colab", ep).allow_key is None
+    assert _review("cloud up --slot tts --recreate --provider colab", ep).allow_key is None
 
     v_conn = _review('cloud --slot tts connect "ssh -p 34557 root@connect.weste.seetacloud.com"', ep)
     assert v_conn.action == "ask" and v_conn.allow_key is None
@@ -765,5 +777,20 @@ def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path):
         {"command": "cloud --slot tts up --provider colab"},
         argv=["python", "-m", "pipeline.cloud", "--slot", "tts", "up", "--provider", "colab"],
     )
-    assert "Colab" in card and "CU" in card
+    assert "Colab" in card and "CU" in card and "槽位: tts" in card
+
+    # 防止 --prov autodl 缩写伪造 Colab 卡面，且缺省 --provider 时按配置解析生效后端
+    monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"provider": "colab"}, {}))
+    card_default_colab = status_card.render_approval_card(
+        "run_pipeline",
+        {"command": "cloud --slot tts up"},
+        argv=["python", "-m", "pipeline.cloud", "--slot", "tts", "up"],
+    )
+    assert "Colab" in card_default_colab and "CU" in card_default_colab
+    card_spoofed = status_card.render_approval_card(
+        "run_pipeline",
+        {"command": "cloud --provider colab up --prov autodl"},
+        argv=["python", "-m", "pipeline.cloud", "--provider", "colab", "up", "--prov", "autodl"],
+    )
+    assert "Colab" not in card_spoofed and "CU" not in card_spoofed
 

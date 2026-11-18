@@ -127,10 +127,11 @@ def resolve_colab_notebook_url(
     *,
     slot: str = "default",
     default_slot_busy: bool = False,
+    other_colab_busy: bool = False,
 ) -> str:
     """按 CLI 显式传入 → 槽位配置 → profiles.colab → cloud.json → 默认解析 Notebook URL。
 
-    当并发开启非 default 槽位且 default 槽位已有活跃运行时，避免复用绑定同一份 Drive 文件的
+    当并发开启多个 Colab 槽位且另一槽位已有活跃运行时，避免复用绑定同一份 Drive 文件的
     `/drive/` 链接（Colab 会把同一 Drive 文件URL接到已存在的运行时而中断原任务），回退到全局/GitHub URL。
     """
     if explicit and explicit.strip():
@@ -140,9 +141,10 @@ def resolve_colab_notebook_url(
         slot_prof = (local_prof.get("slots") or {}).get(slot) or {}
         if isinstance(slot_prof, dict) and slot_prof.get("notebook_url"):
             return str(slot_prof["notebook_url"]).strip()
+    busy = bool(other_colab_busy or default_slot_busy)
     if local_prof.get("notebook_url"):
         local_url = str(local_prof["notebook_url"]).strip()
-        if not (slot != "default" and default_slot_busy and "/drive/" in local_url):
+        if not (busy and "/drive/" in local_url):
             return local_url
     global_prof = (cfg_global.get("providers") or {}).get("colab") or {}
     if global_prof.get("notebook_url"):
@@ -372,7 +374,7 @@ def interactive_browser_login(
     profile_dir.mkdir(parents=True, exist_ok=True)
     log_fn(f"[*] 正在打开 AVA Camoufox Colab 授权窗口（档案目录: {profile_dir}）...")
     log_fn("[*] 请在弹出的 Camoufox 窗口中完成以下两步：")
-    log_fn("    1. 点击右上角「Sign in / 登录」，登录你的 Google AI Pro 账号；")
+    log_fn("    1. 点击右上角「Sign in / 登录」，登录你的 Google 账号；")
     log_fn("    2. 确认左上/右上已显示你的 Google 头像后，**直接关闭这个 Camoufox 窗口**即可保存（不会再提前闪退）。")
 
     final_url = notebook_url
@@ -425,9 +427,16 @@ def interactive_browser_login(
 
 
 def _is_colab_cell_running(page: Any) -> bool:
-    """检查当前 Colab 页面是否已有正在运行的 Cell（Interrupt execution 按钮出现）。"""
+    """检查当前 Colab 页面是否已有正在运行的 Cell（Interrupt/Cancel execution 按钮或运行属性出现）。"""
     try:
-        return page.locator('[aria-label*="Interrupt execution"], [aria-label*="中断执行"]').count() > 0
+        return (
+            page.locator(
+                '[aria-label*="Interrupt execution"], [aria-label*="中断执行"], '
+                '[aria-label*="Cancel execution"], [aria-label*="取消执行"], '
+                'colab-run-button[running], colab-run-button[executing]'
+            ).count()
+            > 0
+        )
     except Exception:
         return False
 
@@ -468,7 +477,7 @@ def _page_needs_login(page: Any, url: str, body_text: str) -> bool:
 
 
 def _wait_for_colab_ui(page: Any) -> None:
-    """等待 Colab 页面加载出运行按钮，期间若跳登录则立即报错。"""
+    """等待 Colab 页面加载出运行按钮并完成内核/outputframe 水合，期间若跳登录则立即报错。"""
     for _ in range(15):
         if _page_needs_login(page, page.url, _collect_page_and_frames_text(page)):
             raise RuntimeError(
@@ -482,6 +491,24 @@ def _wait_for_colab_ui(page: Any) -> None:
         if has_run_ui:
             break
         time.sleep(1)
+    for _ in range(3):
+        if _is_colab_cell_running(page):
+            break
+        txt = _collect_page_and_frames_text(page)
+        connecting = any(k in txt for k in ("Connecting", "Initializing", "正在连接", "正在初始化"))
+        if connecting or not _READY_RE.search(txt):
+            time.sleep(1)
+            if not connecting:
+                break
+        else:
+            break
+
+
+def _has_too_many_sessions_dialog(text: str) -> bool:
+    return any(
+        k in text
+        for k in ("Too many active sessions", "Manage sessions", "活跃会话过多", "管理会话")
+    )
 
 
 def auto_boot_colab_ssh(
@@ -493,6 +520,8 @@ def auto_boot_colab_ssh(
     log_fn: Callable[[str], None] = print,
     slot: str = "default",
     exclude_hosts: Collection[str] = (),
+    recreate: bool = False,
+    _lock_held: bool = False,
 ) -> str:
     """自主通过 Camoufox 打开 Colab Notebook、触发运行并抓取新的 `AVA_COLAB_SSH_READY` 隧道目标。"""
     if not has_saved_browser_profile(profile_dir):
@@ -503,13 +532,18 @@ def auto_boot_colab_ssh(
 
     from playwright.sync_api import sync_playwright
 
-    total_deadline = time.time() + max(60, timeout_s)
     excluded_norm = {normalize_tunnel_host(h) for h in exclude_hosts if h}
     log_fn(
         f"[*] 正在通过 AVA Camoufox 自动唤醒 Colab 运行时 "
         f"({'headless' if headless else 'headed'}, 槽位: {slot})..."
     )
-    with colab_browser_lock(profile_dir, timeout_s=max(30, timeout_s), blocking=True, log_fn=log_fn):
+    lock_cm = (
+        contextlib.nullcontext()
+        if _lock_held
+        else colab_browser_lock(profile_dir, timeout_s=max(30, timeout_s), blocking=True, log_fn=log_fn)
+    )
+    with lock_cm:
+        deadline = time.monotonic() + max(60, timeout_s)
         with sync_playwright() as pw:
             ctx = _launch_persistent_context(pw, profile_dir, headless=headless)
             try:
@@ -522,7 +556,7 @@ def auto_boot_colab_ssh(
                 already_running = _is_colab_cell_running(page)
                 hits_other_slot = any(normalize_tunnel_host(h) in excluded_norm for h in initial_ready)
 
-                if already_running and (slot != "default" or hits_other_slot):
+                if already_running and (slot != "default" or hits_other_slot or recreate):
                     if notebook_url != DEFAULT_COLAB_NOTEBOOK_URL:
                         log_fn(
                             f"[!] 检测到 {notebook_url} 正连接着运行中的 Colab 运行时，"
@@ -534,29 +568,38 @@ def auto_boot_colab_ssh(
                         initial_ready = _READY_RE.findall(initial_text)
                         already_running = _is_colab_cell_running(page)
                         hits_other_slot = any(normalize_tunnel_host(h) in excluded_norm for h in initial_ready)
-                    if already_running and (slot != "default" or hits_other_slot):
+                    if already_running and (slot != "default" or hits_other_slot or recreate):
                         raise RuntimeError(
                             "Colab 将该页面挂载到了已在运行的运行时（未点击执行，以免中断现有任务）。"
                             "多开并发请为新槽位指定独立的 Colab Notebook 副本（--notebook-url），"
                             "或使用独立浏览器档案（--browser-profile <名称>）。"
                         )
 
-                blocked_hosts = {normalize_tunnel_host(h) for h in (*initial_ready, *exclude_hosts) if h}
                 how = _trigger_colab_run_all(page)
                 if not how:
                     raise RuntimeError("未能触发 Colab 运行按钮，请检查 Notebook URL 是否有效。")
+                if how == "already-running":
+                    # 未触发重跑说明复用当前已在运行的默认槽位内核：仅排除其他槽位隧道，不拉黑自身既有信标
+                    blocked_hosts = set(excluded_norm)
+                else:
+                    blocked_hosts = {normalize_tunnel_host(h) for h in (*initial_ready, *exclude_hosts) if h}
                 log_fn(f"[*] 已触发 Colab 执行 ({how})，等待 Drive 挂载、venv 恢复与 cloudflared 隧道就绪...")
 
-                deadline = total_deadline
                 saw_running = False
                 saw_drive = False
                 last_text = ""
                 exec_retries = 0
-                while time.time() < deadline:
+                while time.monotonic() < deadline:
                     _handle_colab_modals(ctx, page, log_fn=log_fn)
                     cur_url = page.url or ""
                     all_text = _collect_page_and_frames_text(page)
                     last_text = all_text
+                    if _has_too_many_sessions_dialog(all_text):
+                        raise RuntimeError(
+                            "Colab 当前账号并发活跃运行时已达套餐上限（Too many active sessions）。"
+                            "请先执行 `cloud down --provider colab --slot <旧槽位>` 释放空闲实例，"
+                            "或使用 `--browser-profile <名称>` 切换另一 Google 账号。"
+                        )
                     if "Failed to execute cell" in all_text and exec_retries < 2:
                         ok_lbl = _click_dialog_button(page, r"^OK$|^确定$")
                         if ok_lbl:

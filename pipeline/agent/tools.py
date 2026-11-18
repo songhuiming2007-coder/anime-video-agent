@@ -193,39 +193,77 @@ def strip_provider_flags(tokens: Sequence[str], *, strict: bool = False) -> tupl
     return found, rest
 
 
-def strip_cloud_flags(
+def _match_cloud_flag_kind(bare: str) -> str | None:
+    """识别 `cloud` 作用域开关旗标及 3+ 字符前缀缩写，防止缩写欺骗宿主解析层。"""
+    if bare == "--provider":
+        return "provider"
+    if bare in ("--slot", "--instance"):
+        return "slot"
+    if len(bare) >= 3 and bare.startswith("--") and bare != "--session":
+        if "--provider".startswith(bare):
+            return "provider_abbr"
+        if "--slot".startswith(bare) or "--instance".startswith(bare):
+            return "slot_abbr"
+    return None
+
+
+def _strip_cloud_flags_all(
     tokens: Sequence[str], *, strict: bool = False
-) -> tuple[str | None, str | None, list[str]]:
-    """剥离 `cloud` 参数中的 `--provider` 与 `--slot`/`--instance`，返回 `(provider, slot, 剩余 token 列表)`。"""
+) -> tuple[str | None, str | None, list[str], list[str]]:
+    """剥离并严格校验所有 `--provider` 与 `--slot`/`--instance`，同时返回全量 slot 值列表。"""
     provider: str | None = None
     slot: str | None = None
+    seen_slots: list[str] = []
     rest: list[str] = []
     i = 0
     while i < len(tokens):
         tok = str(tokens[i])
-        if tok in ("--provider", "--slot", "--instance"):
-            if i + 1 >= len(tokens):
-                if strict:
-                    raise ValueError(f"{tok} 缺少值")
-                break
-            val = str(tokens[i + 1])
-            if tok == "--provider":
-                provider = val
-            else:
-                slot = val
-            i += 2
-        elif tok.startswith("--provider="):
-            provider = tok.split("=", 1)[1]
-            i += 1
-        elif tok.startswith("--slot="):
-            slot = tok.split("=", 1)[1]
-            i += 1
-        elif tok.startswith("--instance="):
-            slot = tok.split("=", 1)[1]
-            i += 1
-        else:
+        bare, has_eq, eq_val = tok.partition("=")
+        kind = _match_cloud_flag_kind(bare)
+        if kind is None:
             rest.append(tok)
             i += 1
+            continue
+
+        if strict and kind in ("provider_abbr", "slot_abbr"):
+            raise ValueError(f"禁止使用缩写参数 {bare}，请使用完整参数名")
+
+        if has_eq:
+            val = eq_val
+            i += 1
+        else:
+            if i + 1 >= len(tokens):
+                if strict:
+                    raise ValueError(f"{bare} 缺少值")
+                break
+            val = str(tokens[i + 1])
+            i += 2
+
+        if strict and not val.strip():
+            raise ValueError(f"{bare} 值不能为空")
+
+        norm_kind = "provider" if kind in ("provider", "provider_abbr") else "slot"
+        if norm_kind == "provider":
+            if strict and val not in VALID_CLOUD_PROVIDERS:
+                raise ValueError(
+                    f"--provider 值非法: {val!r}（可选: {', '.join(VALID_CLOUD_PROVIDERS)}）"
+                )
+            provider = val
+        else:
+            if strict:
+                from pipeline.cloud import normalize_slot
+
+                normalize_slot(val, allow_auto=True)
+            seen_slots.append(val)
+            slot = val
+    return provider, slot, seen_slots, rest
+
+
+def strip_cloud_flags(
+    tokens: Sequence[str], *, strict: bool = False
+) -> tuple[str | None, str | None, list[str]]:
+    """剥离 `cloud` 参数中的 `--provider` 与 `--slot`/`--instance`，返回 `(provider, slot, 剩余 token 列表)`。"""
+    provider, slot, _all_slots, rest = _strip_cloud_flags_all(tokens, strict=strict)
     return provider, slot, rest
 
 
@@ -634,7 +672,7 @@ def validate_pipeline_command(
         )
 
     # 2. 绝对拒收 cloud exec（R1-r10）
-    if module == "cloud" and args and args[0] == "exec":
+    if module == "cloud" and _cloud_preview[:1] == ["exec"]:
         return (
             False,
             "拒绝执行：cloud exec 绕过安全白名单直接执行任意远端命令，已被护栏永久禁用。",
@@ -656,7 +694,7 @@ def validate_pipeline_command(
         allowed_subs = ASSET_COMMANDS[module]
         if module == "cloud":
             try:
-                prov_val, slot_val, cloud_tokens = strip_cloud_flags(args, strict=True)
+                prov_val, _slot_val, all_slots, cloud_tokens = _strip_cloud_flags_all(args, strict=True)
             except ValueError as exc:
                 prefix = "cloud --provider 参数错误" if "--provider" in str(exc) else "cloud --slot 参数错误"
                 return False, f"{prefix}: {exc}", []
@@ -669,11 +707,12 @@ def validate_pipeline_command(
                     f"子命令 '{subcmd}' 不在 'pipeline.{module}' 的放行清单内（当前放行: {sorted(allowed_subs)}）",
                     [],
                 )
-            if slot_val is not None:
+            if all_slots:
                 from pipeline.cloud import normalize_slot
 
                 try:
-                    normalize_slot(slot_val, allow_auto=(subcmd in {"up", "connect"}))
+                    for sv in all_slots:
+                        normalize_slot(sv, allow_auto=(subcmd in {"up", "connect"}))
                 except ValueError as exc:
                     return False, f"cloud --slot 参数非法: {exc}", []
             if subcmd == "run" and len(cloud_tokens) >= 3:

@@ -589,13 +589,14 @@ def render_approval_card(
 
     cloud_sub = None
     cloud_provider = None
+    cloud_slot = None
     is_cloud = False
     is_render = False
 
     if "pipeline.cloud" in argv_list or "cloud" in argv_list:
         is_cloud = True
         idx = argv_list.index("pipeline.cloud") if "pipeline.cloud" in argv_list else argv_list.index("cloud")
-        cloud_provider, _cloud_slot, cloud_tokens = strip_cloud_flags(argv_list[idx + 1:])
+        cloud_provider, cloud_slot, cloud_tokens = strip_cloud_flags(argv_list[idx + 1:])
         if cloud_tokens:
             cloud_sub = cloud_tokens[0]
     elif "pipeline.render" in argv_list or "render" in argv_list:
@@ -607,11 +608,20 @@ def render_approval_card(
         if tokens:
             if tokens[0] == "cloud":
                 is_cloud = True
-                cloud_provider, _cloud_slot, cloud_tokens = strip_cloud_flags(tokens[1:])
+                cloud_provider, cloud_slot, cloud_tokens = strip_cloud_flags(tokens[1:])
                 if cloud_tokens:
                     cloud_sub = cloud_tokens[0]
             elif tokens[0] == "render":
                 is_render = True
+
+    if is_cloud and not cloud_provider:
+        try:
+            from pipeline import cloud
+
+            cfg_g, cfg_l = cloud.load_cloud_config()
+            cloud_provider = cloud.resolve_provider(cfg_g, cfg_l, None)
+        except Exception:
+            cloud_provider = "autodl"
 
     if "pipeline.render" in cmd_str:
         is_render = True
@@ -668,10 +678,11 @@ def render_approval_card(
         danger_str = " ".join(danger_tags)
 
     if is_cloud:
+        slot_desc = f"槽位: {cloud_slot}，" if cloud_slot and cloud_slot != "default" else ""
         if cloud_provider in ("colab", "colab-drive"):
-            nature = f"☁ Colab ({cloud_provider}) 云端动作（CU 审批）"
+            nature = f"☁ Colab ({cloud_provider}) {slot_desc}云端动作（CU 审批）"
         else:
-            nature = "☁ 云端计费动作（计费审批）"
+            nature = f"☁ {slot_desc}云端计费动作（计费审批）"
     elif is_corrections:
         nature = "写读音表（" + ("全局 config/voice.json" if is_global_voice else "本期 03-audio/corrections.json") + "）"
     elif is_render:

@@ -376,6 +376,9 @@ def test_resolve_colab_notebook_url_and_extract_tunnel_with_exclusions():
     assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="captions", default_slot_busy=True) == "https://colab.research.google.com/drive/cap456"
     # default 正忙且并发槽位无独立 URL：绝不打开共享 /drive/ 副本以免把运行中内核接走
     assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="tts", default_slot_busy=True) == cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
+    # 即使不经过 default，两个命名槽位间或命名槽位先开时也必须避开共享 /drive/ URL
+    assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="default", other_colab_busy=True) == cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
+    assert cloud_colab_boot.resolve_colab_notebook_url(cfg_global, cfg_local, slot="tts", other_colab_busy=True) == cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
 
     text = (
         "log: https://other-bare.trycloudflare.com\n"
@@ -431,25 +434,31 @@ def test_auto_boot_ignores_excluded_and_does_not_interrupt_running_cell(monkeypa
             self.url = cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL
             self.main_frame = object()
             self.frames = []
-            self._step = 0
+            self.triggered = False
             self.keyboard = types.SimpleNamespace(press=lambda k: None)
 
         def goto(self, url, wait_until=None, timeout=0):
             self.url = url
 
         def locator(self, sel):
+            page_ref = self
+
+            class _BtnLoc(_FakeLoc):
+                def click(self, timeout=0):
+                    super().click(timeout=timeout)
+                    page_ref.triggered = True
+
             if "Interrupt execution" in sel:
                 return _FakeLoc(count_val=0)
-            if "colab-run-button" in sel:
-                return _FakeLoc(count_val=1, visible=True)
+            if sel == "colab-run-button":
+                return _BtnLoc(count_val=1, visible=True)
             return _FakeLoc(count_val=0)
 
         def get_by_role(self, role, name=None):
             return _FakeLoc(count_val=0)
 
         def inner_text(self, sel, timeout=0):
-            self._step += 1
-            if self._step <= 2:
+            if not self.triggered:
                 return "AVA_COLAB_SSH_READY: root@stale-initial.trycloudflare.com"
             return (
                 "Executing...\n"
@@ -496,6 +505,127 @@ def test_auto_boot_ignores_excluded_and_does_not_interrupt_running_cell(monkeypa
     assert got == "root@fresh-tts.trycloudflare.com"
 
 
+def test_auto_boot_already_running_default_reuses_and_named_slot_falls_back(monkeypatch, tmp_path: Path):
+    import sys
+    import types
+
+    data_dir = tmp_path / "data"
+    prof_dir = cloud_colab_boot.colab_browser_profile_dir(data_dir)
+    (prof_dir / "cookies.sqlite").write_bytes(b"cookie")
+
+    class _FakeLoc:
+        def __init__(self, count_val: int = 0, visible: bool = False):
+            self._c = count_val
+            self._v = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return self._c
+
+        def is_visible(self):
+            return self._v
+
+        def click(self, timeout=0):
+            raise AssertionError("already-running 时不得再点击任何运行/中断按钮")
+
+    class _RunningPage:
+        def __init__(self, body_text: str, *, running_on_default_fallback: bool = False):
+            self.url = "https://colab.research.google.com/drive/shared123"
+            self.main_frame = object()
+            self.frames = []
+            self._body = body_text
+            self._running_on_fb = running_on_default_fallback
+            self.keyboard = types.SimpleNamespace(press=lambda k: None)
+
+        def goto(self, url, wait_until=None, timeout=0):
+            self.url = url
+
+        def locator(self, sel):
+            if "Interrupt execution" in sel:
+                if self.url == cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL and not self._running_on_fb:
+                    return _FakeLoc(0)
+                return _FakeLoc(1, visible=True)
+            if "colab-run-button" in sel:
+                return _FakeLoc(1, visible=True)
+            return _FakeLoc(0)
+
+        def get_by_role(self, role, name=None):
+            return _FakeLoc(0)
+
+        def inner_text(self, sel, timeout=0):
+            return self._body
+
+        def screenshot(self, path=None, full_page=False):
+            pass
+
+    class _FakeCtx:
+        def __init__(self, page):
+            self.pages = [page]
+            self._page = page
+
+        def new_page(self):
+            return self._page
+
+        def close(self):
+            pass
+
+    class _FakeSyncPW:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *a):
+            return False
+
+    fake_pw_mod = types.ModuleType("playwright.sync_api")
+    fake_pw_mod.sync_playwright = lambda: _FakeSyncPW()
+    fake_pw_pkg = types.ModuleType("playwright")
+    fake_pw_pkg.sync_api = fake_pw_mod
+    monkeypatch.setitem(sys.modules, "playwright", fake_pw_pkg)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_pw_mod)
+    monkeypatch.setattr(cloud_colab_boot.time, "sleep", lambda s: None)
+
+    # 1. default 槽位已有正在运行的 cell 与信标：绝不自锁拉黑自身 initial_ready，立即复连返回
+    p_default = _RunningPage("AVA_COLAB_SSH_READY: root@live-default.trycloudflare.com\n")
+    monkeypatch.setattr(cloud_colab_boot, "_launch_persistent_context", lambda *a, **k: _FakeCtx(p_default))
+    got_default = cloud_colab_boot.auto_boot_colab_ssh(
+        "https://colab.research.google.com/drive/shared123",
+        profile_dir=prof_dir, timeout_s=60, slot="default", log_fn=lambda _: None,
+    )
+    assert got_default == "root@live-default.trycloudflare.com"
+
+    # 2. 命名槽位撞上已在运行的运行时，即便是回退默认 URL 也依然提示报错而不点停内核
+    p_named = _RunningPage("AVA_COLAB_SSH_READY: root@live-default.trycloudflare.com\n", running_on_default_fallback=True)
+    monkeypatch.setattr(cloud_colab_boot, "_launch_persistent_context", lambda *a, **k: _FakeCtx(p_named))
+    with pytest.raises(RuntimeError, match="已在运行的运行时"):
+        cloud_colab_boot.auto_boot_colab_ssh(
+            "https://colab.research.google.com/drive/shared123",
+            profile_dir=prof_dir, timeout_s=60, slot="tts", exclude_hosts={"live-default.trycloudflare.com"},
+            log_fn=lambda _: None,
+        )
+
+    # 3. 弹出 Too many active sessions 时立即快速失败
+    class _RunClickLoc(_FakeLoc):
+        def click(self, timeout=0):
+            pass
+
+    class _LimitPage(_RunningPage):
+        def locator(self, sel):
+            if sel == "colab-run-button":
+                return _RunClickLoc(1, visible=True)
+            return _FakeLoc(0)
+
+    p_limit = _LimitPage("Too many active sessions. Manage sessions to continue.")
+    monkeypatch.setattr(cloud_colab_boot, "_launch_persistent_context", lambda *a, **k: _FakeCtx(p_limit))
+    with pytest.raises(RuntimeError, match="Too many active sessions"):
+        cloud_colab_boot.auto_boot_colab_ssh(
+            cloud_colab_boot.DEFAULT_COLAB_NOTEBOOK_URL,
+            profile_dir=prof_dir, timeout_s=60, slot="tts", log_fn=lambda _: None,
+        )
+
+
 def test_colab_worker_venv_cache_integrity_and_atomic_restore(tmp_path: Path):
     from tools import colab_worker
 
@@ -505,12 +635,23 @@ def test_colab_worker_venv_cache_integrity_and_atomic_restore(tmp_path: Path):
     (venv_src / "bin" / "python").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
     (venv_src / "marker.txt").write_text("ava-venv", encoding="utf-8")
 
+    # 存在坏符号链接 /content/venv 时也能安全清理后原子恢复
+    content_root.mkdir(parents=True, exist_ok=True)
+    (content_root / "venv").symlink_to(tmp_path / "dangling")
+
     tar_path = tmp_path / "drive" / "ava_venv_test.tar.gz"
     assert colab_worker.publish_colab_venv_cache(venv_src, tar_path, scratch_dir=tmp_path / "scratch") is True
     assert tar_path.is_file() and Path(f"{tar_path}.sha256").is_file()
     assert colab_worker.verify_venv_tarball(tar_path)[0] is True
     assert colab_worker.restore_colab_venv_cache(tar_path, content_root=content_root, wait_sync_s=0.0) is True
     assert (content_root / "venv" / "bin" / "python").is_file()
+
+    # force=True 时必须用最新环境包覆盖已有合法归档，不能继续短路
+    (venv_src / "new_dep.txt").write_text("reinstalled-v2", encoding="utf-8")
+    assert colab_worker.publish_colab_venv_cache(venv_src, tar_path, scratch_dir=tmp_path / "scratch", force=True) is True
+    re_content = tmp_path / "content_v2"
+    assert colab_worker.restore_colab_venv_cache(tar_path, content_root=re_content, wait_sync_s=0.0) is True
+    assert (re_content / "venv" / "new_dep.txt").read_text(encoding="utf-8") == "reinstalled-v2"
 
     # 模拟并发另一实例尚在写入/Drive 只同步了半截：大小或哈希不符时拒绝恢复且不留残缺 venv
     bad_content = tmp_path / "bad_content"
@@ -525,4 +666,16 @@ def test_colab_worker_venv_cache_integrity_and_atomic_restore(tmp_path: Path):
     tar_path.write_bytes(bytes([orig_bytes[0] ^ 0xFF]) + orig_bytes[1:])
     ok_sha, reason_sha = colab_worker.verify_venv_tarball(tar_path, wait_sync_s=0.0)
     assert ok_sha is False and "SHA256" in reason_sha
+
+
+def test_cmd_connect_browser_login_persists_returned_copy_url(monkeypatch, tmp_path: Path):
+    cfg, _ = _setup_cloud_env(monkeypatch, tmp_path, {"active_provider": "autodl"})
+    new_copy = "https://colab.research.google.com/drive/newly-saved-copy"
+    monkeypatch.setattr(cloud_colab_boot, "interactive_browser_login", lambda *a, **k: new_copy)
+    rc = cloud.cmd_connect(
+        argparse.Namespace(provider="colab", browser_login=True, login=None, drive_root=None, notebook_url=None, timeout=60)
+    )
+    assert rc == 0
+    local = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))
+    assert local["profiles"]["colab"]["notebook_url"] == new_copy
 

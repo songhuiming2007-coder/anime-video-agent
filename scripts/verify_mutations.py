@@ -68,6 +68,9 @@ COVER_EDIT = "pipeline/cover_edit.py"
 APPROVALS = "pipeline/approvals.py"
 MEMORY = "pipeline/agent/memory.py"
 WEB = "pipeline/agent/web.py"
+CLOUD = "pipeline/cloud.py"
+COLAB_BOOT = "pipeline/cloud_colab_boot.py"
+COLAB_WORKER = "tools/colab_worker.py"
 
 CLEAN = "    t_out.join()\n    t_err.join()"
 
@@ -1054,7 +1057,7 @@ MUTATIONS: list[dict] = [
      "new": '    in_asset = False  # MUT-A4\n'},
     {"id": "MUT-A5", "guard": "cloud exec 永久禁令不丢", "file": TOOLS,
      "old": ('    # 2. 绝对拒收 cloud exec（R1-r10）\n'
-             '    if module == "cloud" and args and args[0] == "exec":\n'
+             '    if module == "cloud" and _cloud_preview[:1] == ["exec"]:\n'
              '        return (\n'
              '            False,\n'
              '            "拒绝执行：cloud exec 绕过安全白名单直接执行任意远端命令，已被护栏永久禁用。",\n'
@@ -1150,6 +1153,25 @@ MUTATIONS: list[dict] = [
     {"id": "MUT-D42-h", "guard": "清空失败诚实报错非零（T-D42-3b）", "file": CLI,
      "old": '            return RC_CLEAR_FAILED, False\n',
      "new": '            return 0, True  # MUT-D42-h：清空失败静默成功\n'},
+    {"id": "MUT-CL1", "guard": "cloud 多槽位防误覆盖护栏生效", "file": CLOUD,
+     "old": ('    if not tasks_list and not hold_active and not (action == "connect" and online):\n'
+             '        return None\n'),
+     "new": '    return None  # MUT-CL1：绕过并发槽位防误覆盖护栏\n'},
+    {"id": "MUT-CL2", "guard": "Colab 多开按 exclude_hosts 过滤旧/并发隧道", "file": COLAB_BOOT,
+     "old": '        if normalize_tunnel_host(target) not in excluded:\n',
+     "new": '        if normalize_tunnel_host(target) not in _PLACEHOLDER_HOSTS:  # MUT-CL2\n'},
+    {"id": "MUT-CL3", "guard": "strip_cloud_flags 严格模式拒收 --prov/--sl 缩写", "file": TOOLS,
+     "old": ('        if strict and kind in ("provider_abbr", "slot_abbr"):\n'
+             '            raise ValueError(f"禁止使用缩写参数 {bare}，请使用完整参数名")\n'),
+     "new": '        if False and strict and kind in ("provider_abbr", "slot_abbr"):  # MUT-CL3\n            raise ValueError("")\n'},
+    {"id": "MUT-CL4", "guard": "Drive 共享 venv 缓存强制校验文件大小防止读半截", "file": COLAB_WORKER,
+     "old": ('        actual_size = tar_path.stat().st_size\n'
+             '        if actual_size != exp_size:\n'),
+     "new": ('        actual_size = tar_path.stat().st_size\n'
+             '        if False and actual_size != exp_size:  # MUT-CL4\n'),
+     "also": [{"file": COLAB_WORKER,
+               "old": '        if not tar_path.is_file() or tar_path.stat().st_size != exp_size:\n',
+               "new": '        if not tar_path.is_file():  # MUT-CL4\n'}]},
 ]
 
 

@@ -486,9 +486,35 @@ def review_tool_call(
         # ADR-0030 决策 2：白名单内全部免卡，只有 cloud 花钱 / 销毁子命令弹卡
         raw_rest = argv[argv.index("-m") + 2:] if argv and "-m" in argv else []
         module = _pipeline_module_of(argv or [])
-        rest = strip_cloud_flags(raw_rest)[2] if module == "cloud" else raw_rest
+        if module == "cloud":
+            prov_flag, slot_flag, rest = strip_cloud_flags(raw_rest)
+        else:
+            prov_flag, slot_flag, rest = None, None, raw_rest
         if module == "cloud" and rest[:1] and rest[0] in CLOUD_CARD_SUBCOMMANDS:
-            allow_key = f"run_pipeline:cloud {rest[0]}"
+            sub = rest[0]
+            recreate_or_auto = sub == "up" and (
+                slot_flag == "auto"
+                or any(t == "--recreate" or t.startswith("--recreate=") for t in rest[1:])
+            )
+            if recreate_or_auto:
+                allow_key = None
+            elif sub in {"up", "down"} and (
+                prov_flag is not None or (slot_flag is not None and slot_flag != "default")
+            ):
+                eff_prov = prov_flag or "autodl"
+                if prov_flag is None:
+                    try:
+                        from pipeline import cloud
+
+                        cfg_dir = (Path(root) / "config") if root is not None else None
+                        cfg_g, cfg_l = cloud.load_cloud_config(config_dir=cfg_dir)
+                        eff_prov = cloud.resolve_provider(cfg_g, cfg_l, None)
+                    except Exception:
+                        eff_prov = "autodl"
+                norm_slot = (slot_flag or "").strip() or "default"
+                allow_key = f"run_pipeline:cloud {sub}:{eff_prov}:{norm_slot}"
+            else:
+                allow_key = f"run_pipeline:cloud {sub}"
         elif _human_gated(module, rest):
             # D82 §4.4：逐条人审的模块命令（Code Freeze 四条例外写 config/ + tickets open）：每次弹卡，不开放「本会话都批准」
             pass
