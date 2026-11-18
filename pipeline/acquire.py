@@ -40,8 +40,9 @@ from urllib.parse import urlparse
 from . import paths
 from .keys import SP_MAX, SP_NUM
 from .still_geometry import (  # noqa: F401  重新导出：门禁、still_argv 与测试照旧从 acquire 取
+    SHOT_MAX_H_OVER_W, SHOT_MIN_FRAME_FIT,
     STILL_FILL_TOL, STILL_MARGIN, STILL_MAX_MAGNIFY, STILL_SAFE_H, STILL_SAFE_W, STILL_ZOOM_END,
-    still_fills, still_peak_magnify,
+    screenshot_frame_issue, still_fills, still_frame_fit, still_peak_magnify,
 )
 from .candidates import (
     TYPES,
@@ -178,18 +179,29 @@ def check_video(*, kind: str, intact_ok: bool, intact_detail: str, width: int, h
 
 
 def check_image(*, decoded: bool, decode_detail: str,
-                width: int, height: int) -> list[Verdict]:
-    """图片两判据：可解码 / 转成缓推视频时峰值不放大（D123）。**别拿音轨判据去量扫图。**"""
+                width: int, height: int, is_screenshot: bool = False) -> list[Verdict]:
+    """图片判据：可解码 / 峰值不放大（D123）；网页截图再核局部构图（防整页缩糊）。**别拿音轨判据去量扫图。**"""
     mag = still_peak_magnify((width, height)) if width and height else float("inf")
     ok = mag <= STILL_MAX_MAGNIFY
     need = "" if ok or mag == float("inf") else \
         f"放大 {mag:.2f} 倍会糊：原图至少要 {math.ceil(width * mag)}×{math.ceil(height * mag)}"
-    return [
+    vs = [
         _verdict("可解码", decode_detail, "能完整解码", "PASS" if decoded else "FAIL",
                  "" if decoded else "截断或非图片，重下"),
         _verdict("峰值放大", f"{mag:.2f}×（{width}×{height}）", f"≤{STILL_MAX_MAGNIFY:.2f}×",
                  "PASS" if ok else "FAIL", need),
     ]
+    if is_screenshot:
+        issue = screenshot_frame_issue((width, height)) if (decoded and width and height) else "图片未解出"
+        if width and height:
+            val = f"高宽比 {height / width:.2f}，成片缩放 {still_frame_fit((width, height)):.2f}×"
+        else:
+            val = "—"
+        vs.append(_verdict(
+            "局部构图", val, f"H/W≤{SHOT_MAX_H_OVER_W:g} 且缩放≥{SHOT_MIN_FRAME_FIT:g}×",
+            "FAIL" if issue else "PASS", issue or "",
+        ))
+    return vs
 
 
 _RANK = {"PASS": 0, "WARN": 1, "FAIL": 2}
@@ -560,7 +572,8 @@ def cmd_gate(target: Path, *, expected_dur: float | None = None) -> int:
         if kind_of(f.name) == "scan":
             p = probe_image(f)
             vs = check_image(decoded=p["decoded"], decode_detail=p["detail"],
-                             width=p["width"], height=p["height"])
+                             width=p["width"], height=p["height"],
+                             is_screenshot=(led or {}).get("source") == "screenshot")
         elif kind_of(f.name) == "video":
             p = probe_media(f)
             if "error" in p:
@@ -760,7 +773,8 @@ def cmd_register(file: Path, *, pool: str, key: int | None = None, force: bool =
         # 扫图：先按图片判据过门禁，再转微动视频（STILL_SECONDS；register 只收视频，渲染要 mp4）。原图留在原处
         p = probe_image(file)
         vs = check_image(decoded=p["decoded"], decode_detail=p["detail"],
-                         width=p["width"], height=p["height"])
+                         width=p["width"], height=p["height"],
+                         is_screenshot=(led or {}).get("source") == "screenshot")
         print(TABLE_HEAD)
         for v in vs:
             print("  " + v.line())
@@ -835,12 +849,22 @@ def cmd_to_patch(file: Path, episode: Path) -> int:
         raise SystemExit(f"FAIL 只挪 data/library/incoming/ 里抓到的文件，收到 {file}")
     if kind_of(file.name) not in ("video", "scan"):
         raise SystemExit(f"FAIL 认不出素材类型（后缀 {file.suffix}），补丁池只收视频或图片")
+    entries = ledger_load()
+    led = next((e for e in entries if Path(e.get("file", "")).name == file.name), None)
+    if kind_of(file.name) == "scan" and (led or {}).get("source") == "screenshot":
+        p = probe_image(file)
+        vs = check_image(decoded=p["decoded"], decode_detail=p["detail"],
+                         width=p["width"], height=p["height"], is_screenshot=True)
+        if overall(vs) == "FAIL":
+            print(TABLE_HEAD)
+            for v in vs:
+                print("  " + v.line())
+            raise SystemExit("FAIL 网页截图未过门禁，不挪入补丁池：请只截本段对应的段落或表格重抓")
     dest = ep / "patch_assets" / file.name
     if dest.exists():
         raise SystemExit(f"FAIL {dest} 已存在——同名不同文件，先人看一眼再决定")
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(file), str(dest))
-    entries = ledger_load()
     for e in entries:
         if Path(e.get("file", "")).name == file.name:
             e["file"], e["to_patch"] = str(dest), ep.name

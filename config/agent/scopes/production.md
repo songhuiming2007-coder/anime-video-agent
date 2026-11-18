@@ -24,6 +24,8 @@ Colab GPU 释放原则：常规配音后实例先留到 03.5 顺听完成；但�
 
 诚实失败优于凑合交付。源抓不到走升级链：`web_fetch` → `crawl`（反爬开 stealth）→ `browser`（独立 profile）→ `chrome`（仅主力号登录态、多步交互/异步接口或人已打开页兜底，禁无故建前台页与碰无关标签页），不许退回简略百科。不硬塞不匹配的画面。检索落空走 `查询` → `备选` → `配音` 原文，上一级够格就停；三级都不及格就交人。
 
+网页物证截图只截本段引证的段落或表格（必填 expect_text；chrome 入库给 uid、禁 full_page；栏窄加 scale 3/4），以 1080p OCR 与 acquire gate 为准。
+
 ## 五、记忆两层
 
 跨系列通用的教训进全局记忆（`write_memory`）或 `config/voice.json`；只属于本系列的用 `target="project"` 进企划记忆。

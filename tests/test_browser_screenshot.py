@@ -17,15 +17,15 @@ from pipeline.agent.tools import ToolContext, _tool_browser
 from tests.test_agent_crawl_browser import _make_full_web_root, _pin_public_dns
 
 
-def _png(w: int, h: int, text: str = "") -> bytes:
+def _png(w: int, h: int, text: str = "", *, font_px: int = 48) -> bytes:
     """白底截图；给了 text 就逐行真画上去（D141 起截图会被文字识别，替身也得是真图）。"""
     from PIL import ImageDraw, ImageFont
 
     img = Image.new("RGB", (w, h), "white")
     if text:
-        font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", 48, index=0)
+        font = ImageFont.truetype("/System/Library/Fonts/Hiragino Sans GB.ttc", font_px, index=0)
         for i, line in enumerate(text.splitlines()):
-            ImageDraw.Draw(img).text((40, 40 + i * 80), line, fill="black", font=font)
+            ImageDraw.Draw(img).text((40, 40 + i * (font_px + 16)), line, fill="black", font=font)
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
@@ -33,9 +33,9 @@ def _png(w: int, h: int, text: str = "") -> bytes:
 
 class _ShotSession:
     def __init__(self, *, element_text: str = "君の知らない物語 週間5位 66週ランクイン", missing: str | None = None,
-                 size: tuple[int, int] = (1920, 900), drawn: str | None = None) -> None:
+                 size: tuple[int, int] = (1920, 900), drawn: str | None = None, font_px: int = 48) -> None:
         """drawn：图上实际画的字；缺省 = 元素文字（页面正常显示），"" = DOM 里有、图上没画出来。"""
-        self.element_text, self.missing, self.size = element_text, missing, size
+        self.element_text, self.missing, self.size, self.font_px = element_text, missing, size, font_px
         self.drawn = element_text if drawn is None else drawn
         self.calls: list[dict[str, Any]] = []
         self.closed = False
@@ -44,7 +44,7 @@ class _ShotSession:
         self.calls.append({"url": url, "selector": selector, "text": text})
         if self.missing:
             return {"final_url": url, "missing": self.missing, "css_size": [708, 4065]}
-        return {"final_url": url, "title": "ORICON 年間ランキング", "png": _png(*self.size, self.drawn),
+        return {"final_url": url, "title": "ORICON 年間ランキング", "png": _png(*self.size, self.drawn, font_px=self.font_px),
                 "element_text": self.element_text, "css_size": [self.size[0] // 2, self.size[1] // 2],
                 "text": "ORICON 年間ランキング " + self.element_text,
                 "html": '<html><body><img src="https://example.com/a.png"></body></html>'}
@@ -76,6 +76,14 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     wb._reset_session_for_testing()
 
 
+@pytest.fixture
+def stub_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 Vision 专项测试跳过 swift 冷启动：直接返回与默认替身匹配的正文。"""
+    from pipeline.agent import ocr
+
+    monkeypatch.setattr(ocr, "recognize", lambda _png: "『君の知らない物語』\n週間 5 位\n66週ランクイン")
+
+
 def _launcher(sess: _ShotSession, seen: list[dict[str, Any]]):
     def launch(*, user_data_dir: Path, headed: bool, prefs: dict | None = None) -> _ShotSession:
         seen.append({"user_data_dir": user_data_dir, "headed": headed, "prefs": prefs})
@@ -83,12 +91,12 @@ def _launcher(sess: _ShotSession, seen: list[dict[str, Any]]):
     return launch
 
 
-def test_截图关掉平时会话_按两倍密度另起_截完即关(root):
+def test_截图关掉平时会话_按两倍密度另起_截完即关(root, stub_ocr):
     main = _Main()
     wb._SESSION = main
     sess, seen = _ShotSession(), []
     out = wb.browser_action("screenshot", "证榜单名次", url="https://example.com/rank", text="週間5位",
-                            launch_fn=_launcher(sess, seen), root=root)
+                            expect_text="週間5位", launch_fn=_launcher(sess, seen), root=root)
     assert main.closed and sess.closed and wb._SESSION is None, "下次 navigate 要按平时配置重启"
     assert seen[0]["prefs"] == wb.SHOT_PREFS
     assert seen[0]["user_data_dir"] == (root / "data" / "browser-profile").resolve(), "同一份 profile，登录态在里面"
@@ -99,8 +107,17 @@ def test_截图关掉平时会话_按两倍密度另起_截完即关(root):
 @pytest.mark.parametrize("kw", [{}, {"selector": "#rank", "text": "週間5位"}])
 def test_selector与text恰好给一个(root, kw):
     with pytest.raises(ValueError, match="selector 或 text"):
-        wb.browser_action("screenshot", "x", url="https://example.com/", launch_fn=_launcher(_ShotSession(), []),
-                          root=root, **kw)
+        wb.browser_action("screenshot", "x", url="https://example.com/", expect_text="週間5位",
+                          launch_fn=_launcher(_ShotSession(), []), root=root, **kw)
+
+
+@pytest.mark.parametrize("bad_sel", ["body", "BODY", "html", ":root"])
+def test_selector禁整页容器_不起浏览器(root, bad_sel):
+    seen: list[dict[str, Any]] = []
+    with pytest.raises(ValueError, match="不接受整页选择器"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", selector=bad_sel,
+                          expect_text="週間5位", launch_fn=_launcher(_ShotSession(), seen), root=root)
+    assert not seen
 
 
 def test_expect_text不在截图里_不交图(root):
@@ -111,7 +128,7 @@ def test_expect_text不在截图里_不交图(root):
     assert sess.closed
 
 
-def test_expect_text按事实库同口径归一(root):
+def test_expect_text按事实库同口径归一(root, stub_ocr):
     """空白、全半角、引号差异不算不一样（与 D99 fact_add 的逐字比对同一个 norm_exact）。"""
     sess = _ShotSession(element_text="『君の知らない物語』\n週間 5 位")
     out = wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
@@ -156,30 +173,53 @@ def test_没有swift_说清楚且不交图(root, monkeypatch):
                           expect_text="週間5位", launch_fn=_launcher(_ShotSession(), []), root=root)
 
 
-def test_没给expect_text不做识别(root, monkeypatch):
-    from pipeline.agent import ocr
-    monkeypatch.setattr(ocr, "recognize", lambda png: (_ for _ in ()).throw(AssertionError("不该识别")))
-    out = wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
-                            launch_fn=_launcher(_ShotSession(), []), root=root)
-    assert "ocr_match" not in out
+@pytest.mark.parametrize("missing_expect", [None, "", "   "])
+def test_没给expect_text直接拒_不起浏览器(root, missing_expect):
+    seen: list[dict[str, Any]] = []
+    with pytest.raises(ValueError, match="必须提供 expect_text"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", selector="table",
+                          expect_text=missing_expect, launch_fn=_launcher(_ShotSession(), seen), root=root)
+    assert not seen
+
+
+@needs_vision
+def test_截图范围过大缩进1080p后字太小_Vision认不出拒存(root):
+    """3000×2400 截图上 20px 字在原图能认出，但缩进 1080p 安全框（1128×902，约 7.5px）后已糊，必须拒存。"""
+    sess = _ShotSession(element_text="君の知らない物語 週間5位", size=(3000, 2400), font_px=20)
+    with pytest.raises(ValueError, match="缩进 1080p 成片安全框后截图上却认不出来"):
+        wb.browser_action("screenshot", "证名次", url="https://example.com/", selector=".qa-box",
+                          expect_text="週間5位", launch_fn=_launcher(sess, []), root=root)
 
 
 def test_找不到文字说清楚(root):
     with pytest.raises(ValueError, match="找不到包含「不存在的字」的元素"):
         wb.browser_action("screenshot", "x", url="https://example.com/", text="不存在的字",
-                          launch_fn=_launcher(_ShotSession(missing="missing"), []), root=root)
+                          expect_text="不存在的字", launch_fn=_launcher(_ShotSession(missing="missing"), []), root=root)
 
 
 def test_文字跨元素_命中的是整篇就拒(root):
     with pytest.raises(ValueError, match="708×4065.*换一段在同一行里原样出现的短文字"):
         wb.browser_action("screenshot", "x", url="https://example.com/", text="週間5位",
-                          launch_fn=_launcher(_ShotSession(missing="big"), []), root=root)
+                          expect_text="週間5位", launch_fn=_launcher(_ShotSession(missing="big"), []), root=root)
 
 
-def test_工具层落盘_留档_台账_回执报放大倍数(root, monkeypatch):
+def test_selector命中超一屏半大容器被拒(root):
+    with pytest.raises(ValueError, match="超过一屏半高度上限"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", selector=".long-article",
+                          expect_text="週間5位", launch_fn=_launcher(_ShotSession(missing="big_sel"), []), root=root)
+
+
+def test_整页长竖条截图在落盘前被几何门禁拒收(root):
+    with pytest.raises(ValueError, match="高宽比"):
+        wb.browser_action("screenshot", "x", url="https://example.com/", selector=".tall",
+                          expect_text="週間5位", launch_fn=_launcher(_ShotSession(size=(1360, 5000)), []), root=root)
+    assert not list((root / "data" / "library" / "incoming").glob("shot-*.png"))
+
+
+def test_工具层落盘_留档_台账_回执报放大倍数(root, stub_ocr, monkeypatch):
     monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(size=(1920, 900)), []))
     out = _tool_browser({"action": "screenshot", "url": "https://example.com/rank", "text": "週間5位",
-                         "reason": "证段 20 的榜单名次", "name": "ORICON 君の知らない物語"},
+                         "expect_text": "週間5位", "reason": "证段 20 的榜单名次", "name": "ORICON 君の知らない物語"},
                         ToolContext(root=root, session_id="s1"))
     f = Path(out["file"])
     assert f.parent == root / "data" / "library" / "incoming" and f.name.startswith("shot-ORICON")
@@ -194,22 +234,22 @@ def test_工具层落盘_留档_台账_回执报放大倍数(root, monkeypatch):
     assert "https://example.com/rank" in idx
 
 
-def test_窄截图回执直说门禁会拒(root, monkeypatch):
+def test_窄截图回执直说门禁会拒(root, stub_ocr, monkeypatch):
     monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(size=(960, 320)), []))
     out = _tool_browser({"action": "screenshot", "url": "https://example.com/", "selector": "table",
-                         "reason": "x"}, ToolContext(root=root))
+                         "expect_text": "週間5位", "reason": "x"}, ToolContext(root=root))
     assert out["gate"].startswith("FAIL：入池要放大")
 
 
 # ---------------------------------------------------------------- D138：命令行截图
 
 
-def test_命令行截图_落盘留档台账_记命令行与调用方(root):
+def test_命令行截图_落盘留档台账_记命令行与调用方(root, stub_ocr):
     from pipeline.agent import fetch_log
     from pipeline.agent import screenshot as S
 
-    out = S.shoot("https://example.com/rank", reason="证段 42 的周榜名次", text="週間5位", name="ORICON",
-                  caller="claude-code", root=root, launch_fn=_launcher(_ShotSession(), []))
+    out = S.shoot("https://example.com/rank", reason="证段 42 的周榜名次", text="週間5位", expect_text="週間5位",
+                  name="ORICON", caller="claude-code", root=root, launch_fn=_launcher(_ShotSession(), []))
     f = Path(out["file"])
     assert f.is_file() and f.parent == root / "data" / "library" / "incoming"
     led = json.loads((root / "data" / "library" / "incoming" / "fetched.json").read_text(encoding="utf-8"))
@@ -250,22 +290,23 @@ def test_命令行截图_图上没画出来_不落盘不进台账(root):
     assert not list(inc.glob("shot-*.png")) and not (inc / "fetched.json").exists()
 
 
-def test_AVA截图仍记会话里抓(root, monkeypatch):
+def test_AVA截图仍记会话里抓(root, stub_ocr, monkeypatch):
     from pipeline.agent import fetch_log
 
     monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), []))
-    _tool_browser({"action": "screenshot", "url": "https://example.com/rank", "text": "週間5位", "reason": "x"},
-                  ToolContext(root=root, session_id="s1"))
+    _tool_browser({"action": "screenshot", "url": "https://example.com/rank", "text": "週間5位",
+                   "expect_text": "週間5位", "reason": "x"}, ToolContext(root=root, session_id="s1"))
     e = fetch_log.lookup("https://example.com/rank", root=root)[0]
     assert e["origin"] == "session" and e["sid"] == "s1" and not e.get("caller")
     led = json.loads((root / "data" / "library" / "incoming" / "fetched.json").read_text(encoding="utf-8"))
     assert "caller" not in led[-1]
 
 
-@pytest.mark.parametrize("argv", [["https://example.com/", "--reason", "x"],
-                                  ["https://example.com/", "--selector", "a", "--text", "b", "--reason", "x"],
-                                  ["https://example.com/", "--text", "b"]])
-def test_命令行参数_selector与text恰好一个_reason必填(root, monkeypatch, argv):
+@pytest.mark.parametrize("argv", [["https://example.com/", "--reason", "x", "--expect-text", "a"],
+                                  ["https://example.com/", "--selector", "a", "--text", "b", "--reason", "x", "--expect-text", "a"],
+                                  ["https://example.com/", "--text", "b", "--expect-text", "b"],
+                                  ["https://example.com/", "--text", "b", "--reason", "x"]])
+def test_命令行参数_selector与text恰好一个_reason与expect_text必填(root, monkeypatch, argv):
     """挂上 root 与替身浏览器：参数校验被改坏时也只碰临时目录，不出网、不写真实 data/。"""
     from pipeline.agent import screenshot as S
 
@@ -279,10 +320,10 @@ def test_命令行参数_selector与text恰好一个_reason必填(root, monkeypa
 
 
 @pytest.mark.parametrize("scale", [3, 4])
-def test_scale按倍数起截图会话_只换像素密度(root, scale):
+def test_scale按倍数起截图会话_只换像素密度(root, stub_ocr, scale):
     sess, seen = _ShotSession(), []
-    wb.browser_action("screenshot", "证引语", url="https://example.com/a", text="週間5位", scale=scale,
-                      launch_fn=_launcher(sess, seen), root=root)
+    wb.browser_action("screenshot", "证引语", url="https://example.com/a", text="週間5位", expect_text="週間5位",
+                      scale=scale, launch_fn=_launcher(sess, seen), root=root)
     assert seen[0]["prefs"] == {**wb.SHOT_PREFS, "layout.css.devPixelsPerPx": f"{scale}.0"}
     assert wb.SHOT_PREFS == {"layout.css.devPixelsPerPx": "2.0"}, "缺省口径不被改写"
     assert sess.closed
@@ -292,29 +333,29 @@ def test_scale按倍数起截图会话_只换像素密度(root, scale):
 def test_scale只收2到4的整数_不起浏览器(root, bad):
     seen: list[dict[str, Any]] = []
     with pytest.raises(ValueError, match="scale 只能是 2/3/4"):
-        wb.browser_action("screenshot", "x", url="https://example.com/", text="週間5位", scale=bad,
-                          launch_fn=_launcher(_ShotSession(), seen), root=root)
+        wb.browser_action("screenshot", "x", url="https://example.com/", text="週間5位", expect_text="週間5位",
+                          scale=bad, launch_fn=_launcher(_ShotSession(), seen), root=root)
     assert not seen
 
 
-def test_命令行scale传到截图会话(root, monkeypatch):
+def test_命令行scale传到截图会话(root, stub_ocr, monkeypatch):
     from pipeline.agent import screenshot as S
 
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), seen))
-    assert S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "证段 53", "--scale", "4"]) == 0
+    assert S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "证段 53", "--expect-text", "週間5位", "--scale", "4"]) == 0
     assert seen[0]["prefs"]["layout.css.devPixelsPerPx"] == "4.0"
     with pytest.raises(SystemExit):
-        S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "x", "--scale", "5"])
+        S.main(["https://example.com/rank", "--text", "週間5位", "--reason", "x", "--expect-text", "週間5位", "--scale", "5"])
     assert len(seen) == 1
 
 
-def test_AVA工具scale传到截图会话_不给就是两倍(root, monkeypatch):
+def test_AVA工具scale传到截图会话_不给就是两倍(root, stub_ocr, monkeypatch):
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(wb, "_default_launch_fn", _launcher(_ShotSession(), seen))
     ctx = ToolContext(root=root, session_id="s1")
-    _tool_browser({"action": "screenshot", "url": "https://example.com/a", "text": "週間5位", "reason": "x", "scale": 3}, ctx)
-    _tool_browser({"action": "screenshot", "url": "https://example.com/b", "text": "週間5位", "reason": "x"}, ctx)
+    _tool_browser({"action": "screenshot", "url": "https://example.com/a", "text": "週間5位", "expect_text": "週間5位", "reason": "x", "scale": 3}, ctx)
+    _tool_browser({"action": "screenshot", "url": "https://example.com/b", "text": "週間5位", "expect_text": "週間5位", "reason": "x"}, ctx)
     assert [s["prefs"]["layout.css.devPixelsPerPx"] for s in seen] == ["3.0", "2.0"]
 
 
@@ -340,4 +381,14 @@ def test_按文字挑元素_一屏半按视口高兜底(monkeypatch):
     out = adapter.screenshot("https://example.com/", selector=None, text="週間5位", timeout_s=5)
     assert out["missing"] == "missing"
     assert page.args == ["週間5位", wb.SHOT_MIN_W, wb.SHOT_MIN_H, wb.SHOT_MAX_H_VIEWPORTS, wb.SHOT_MIN_VIEWPORT_H]
+    assert "Math.max(innerHeight, minVpH)" in page.js
+
+
+def test_selector分支同样校验一屏半上限(monkeypatch):
+    page = _PickPage()
+    adapter = wb._PlaywrightSessionAdapter.__new__(wb._PlaywrightSessionAdapter)
+    monkeypatch.setattr(adapter, "_current_page", lambda: page, raising=False)
+    out = adapter.screenshot("https://example.com/", selector="article", text=None, timeout_s=5)
+    assert out["missing"] == "missing"
+    assert page.args == ["article", wb.SHOT_MAX_H_VIEWPORTS, wb.SHOT_MIN_VIEWPORT_H]
     assert "Math.max(innerHeight, minVpH)" in page.js

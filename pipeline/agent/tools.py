@@ -1095,9 +1095,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "登录态浏览器（升级链第三级；ADR-0030 起不弹卡，每次启动落审批事件）。"
             "action：navigate / extract_text / screenshot；profile 独立持久化、路径由配置钉死。"
             "仅在 crawl 也不够、必须登录态，或要截网页物证时使用，reason 必填。"
-            "screenshot（D122）：打开 url，按 selector 或 text（页面上原样出现的一段文字）截出那一块，"
-            "PNG 存进 data/library/incoming/、写抓取留档与台账，之后照常 acquire register（企划卷进企划池）。"
-            "给了 expect_text 就核：截到区域的文字里没有这句话、或截图上识别不出这句话，都不保存。回执报入池时要放大几倍，>1 门禁会拒；"
+            "screenshot（D122）：打开 url，只按 selector 或 text（本段原样连续短句）截出对应那一段或表格，"
+            "禁传 html/body 或长文外层容器；PNG 存进 data/library/incoming/、写抓取留档与台账，之后照常 acquire register（企划卷进企划池）。"
+            "expect_text 必填：截到区域的文字里没有这句话、或缩进 1080p 成片框尺寸后 OCR 认不出，都不保存。回执报入池放大倍数与构图，FAIL 门禁会拒；"
             "不回图片，要看图另调 view_image。截图会临时重启浏览器，之前打开的页面不保留。"
         ),
         "parameters": {
@@ -1106,9 +1106,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "action": {"type": "string", "enum": ["navigate", "extract_text", "screenshot"]},
                 "url": {"type": "string", "description": "navigate / screenshot 的目标 URL"},
                 "reason": {"type": "string", "description": "为什么 crawl 不够/为何需要登录态/截这张图证什么"},
-                "selector": {"type": "string", "description": "screenshot：要截的元素的 CSS 选择器（与 text 二选一）"},
-                "text": {"type": "string", "description": "screenshot：页面上原样出现的一段文字，截包含它的区域（与 selector 二选一）"},
-                "expect_text": {"type": "string", "description": "screenshot 可选：截图里必须出现的话（配音要证的那句、榜单名次等）"},
+                "selector": {"type": "string", "description": "screenshot：目标段落/表格元素的精确 CSS 选择器（不传 html/body 等整页容器；与 text 二选一）"},
+                "text": {"type": "string", "description": "screenshot：本段页面原样出现的一段短文字，自动定位到该段元素（与 selector 二选一）"},
+                "expect_text": {"type": "string", "description": "screenshot 必填：截图里必须出现的本段证言原文或关键数据（核对 DOM 与 1080p 成片尺寸 OCR）"},
                 "name": {"type": "string", "description": "screenshot 可选：文件名提示（缺省用页面标题）"},
                 "scale": {"type": "integer", "enum": [2, 3, 4],
                           "description": "screenshot 可选：像素密度倍数，缺省 2；正文栏窄、回执门禁 FAIL 时用 3 或 4 重截"},
@@ -1127,7 +1127,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "新建页固定后台打开、不切前台；默认只读并限制操作与关闭 AVA 自建标签页，"
             "读取/操作用户既有标签页须显式传 allow_existing=true 经人审批准。"
             "extract_text 写入 fetch-log 留档池供 fact_add 引用；screenshot 默认保存至缓存并随本轮附图回看，"
-            "传 save_evidence=true（须写 reason，可选 expect_text/name）才按 D122 落 data/library/incoming/。"
+            "传 save_evidence=true（须写 reason/uid/expect_text 且禁 full_page）才按 D122/D141 校验局部构图与 1080p OCR 并落 data/library/incoming/。"
         ),
         "parameters": {
             "type": "object",
@@ -1161,7 +1161,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "enum": ["url", "back", "forward", "reload"],
                     "description": "navigate 方式，默认 url",
                 },
-                "uid": {"type": "string", "description": "snapshot 返回的元素 uid（click / fill 必填，screenshot 可选）"},
+                "uid": {"type": "string", "description": "snapshot 返回的元素 uid（click / fill 与 screenshot(save_evidence=true) 必填）"},
                 "value": {"type": "string", "description": "fill 填入的文本值"},
                 "dbl_click": {"type": "boolean", "description": "click 是否双击，默认 false"},
                 "include_snapshot": {"type": "boolean", "description": "click / fill 后是否附带最新 snapshot"},
@@ -1191,13 +1191,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "description": "evaluate 可选元素 uid 参数列表",
                 },
                 "wait_for_stable_dom": {"type": "boolean", "description": "evaluate 前是否等待 DOM 稳定"},
-                "full_page": {"type": "boolean", "description": "screenshot 是否整页截图（未传 uid 时有效）"},
+                "full_page": {"type": "boolean", "description": "screenshot 是否整页截图（仅 save_evidence=false 且未传 uid 时可用）"},
                 "save_evidence": {
                     "type": "boolean",
                     "description": "screenshot 为 true 时按 D122 存进 incoming 并写台账；默认 false 仅缓存并返回附图",
                 },
                 "reason": {"type": "string", "description": "操作原因或 screenshot 物证用途（save_evidence=true 时必填）"},
-                "expect_text": {"type": "string", "description": "screenshot(save_evidence=true) 可选：页面须含的证言文本"},
+                "expect_text": {"type": "string", "description": "screenshot(save_evidence=true) 必填：本段要印证的关键原文或数据（核对 DOM 与 1080p OCR）"},
                 "name": {"type": "string", "description": "screenshot(save_evidence=true) 可选：入库文件名提示"},
             },
             "required": ["action"],

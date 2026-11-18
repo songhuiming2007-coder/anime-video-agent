@@ -415,21 +415,58 @@ def test_screenshot_cache_inline_vs_save_evidence(tmp_path: Path, monkeypatch):
     assert vision.OUTCOME_IMAGE_KEY not in clean_outcome["result"]
     assert image_ref and Path(image_ref["abs_path"]) == shot_file
 
-    # 2) save_evidence=True + expect_text 不匹配时不落 incoming
-    with pytest.raises(ValueError, match="没有保存"):
+    # 2) save_evidence=True 强制要求 uid / expect_text、禁止 full_page=True，且拒绝整页比例与不匹配的 expect_text
+    ctx = ToolContext(episode_dir=ep, scope="creative", root=root, session_id="s-shot")
+    with pytest.raises(ValueError, match="uid"):
         _tool_chrome(
             {
                 "action": "screenshot",
                 "page_id": opened["page_id"],
                 "save_evidence": True,
                 "reason": "证片尾职员表",
+                "expect_text": "Jane Doe",
+            },
+            ctx,
+        )
+    with pytest.raises(ValueError, match="full_page=true"):
+        _tool_chrome(
+            {
+                "action": "screenshot",
+                "page_id": opened["page_id"],
+                "uid": "node-staff",
+                "full_page": True,
+                "save_evidence": True,
+                "reason": "证片尾职员表",
+                "expect_text": "Jane Doe",
+            },
+            ctx,
+        )
+    with pytest.raises(ValueError, match="expect_text"):
+        _tool_chrome(
+            {
+                "action": "screenshot",
+                "page_id": opened["page_id"],
+                "uid": "node-staff",
+                "save_evidence": True,
+                "reason": "证片尾职员表",
+            },
+            ctx,
+        )
+    with pytest.raises(ValueError, match="没有保存"):
+        _tool_chrome(
+            {
+                "action": "screenshot",
+                "page_id": opened["page_id"],
+                "uid": "node-staff",
+                "save_evidence": True,
+                "reason": "证片尾职员表",
                 "expect_text": "不存在的这句话",
             },
-            ToolContext(episode_dir=ep, scope="creative", root=root, session_id="s-shot"),
+            ctx,
         )
     assert list((root / "data" / "library" / "incoming").iterdir()) == []
 
-    # 3) save_evidence=True + OCR 命中时按 D122 进 incoming + 台账 + fetch-log
+    # 3) save_evidence=True + uid + OCR 命中时按 D122 进 incoming + 台账 + fetch-log；若 MCP 返回竖长整页图则拒
     from pipeline import paths
 
     monkeypatch.setattr(paths, "DATA", root / "data")
@@ -438,16 +475,42 @@ def test_screenshot_cache_inline_vs_save_evidence(tmp_path: Path, monkeypatch):
         {
             "action": "screenshot",
             "page_id": opened["page_id"],
+            "uid": "node-staff",
             "save_evidence": True,
             "reason": "证片尾导演署名",
             "expect_text": "Director Jane Doe",
             "name": "ed-credits",
         },
-        ToolContext(episode_dir=ep, scope="creative", root=root, session_id="s-shot"),
+        ctx,
     )
     assert saved["ocr_match"] == "exact"
     assert Path(saved["file"]).parent == root / "data" / "library" / "incoming"
     assert Path(saved["file"]).is_file()
+
+    # 4) save_evidence=True 返回超长竖条 PNG 时在落 incoming 前被局部构图门禁拒收
+    tall_png = _tiny_png_bytes(width=1360, height=5000)
+    orig_call = fake.call_tool
+
+    def _tall_call(name: str, arguments: dict[str, Any], *, timeout_s: float = 10.0) -> dict[str, Any]:
+        if name == "take_screenshot":
+            return {"content": [{"type": "image", "data": base64.b64encode(tall_png).decode("ascii"), "mimeType": "image/png"}]}
+        return orig_call(name, arguments, timeout_s=timeout_s)
+
+    monkeypatch.setattr(fake, "call_tool", _tall_call)
+    before_files = set((root / "data" / "library" / "incoming").iterdir())
+    with pytest.raises(ValueError, match="高宽比"):
+        _tool_chrome(
+            {
+                "action": "screenshot",
+                "page_id": opened["page_id"],
+                "uid": "node-staff",
+                "save_evidence": True,
+                "reason": "证片尾导演署名",
+                "expect_text": "Director Jane Doe",
+            },
+            ctx,
+        )
+    assert set((root / "data" / "library" / "incoming").iterdir()) == before_files
 
 
 def test_review_tool_call_and_danger_tags_no_default_card(tmp_path: Path):

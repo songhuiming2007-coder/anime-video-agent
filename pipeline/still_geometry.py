@@ -30,15 +30,47 @@ def still_fills(size: tuple[int, int] | None) -> bool:
     return abs((size[0] / size[1]) / (16 / 9) - 1) <= STILL_FILL_TOL
 
 
+def still_frame_fit(size: tuple[int, int]) -> float:
+    """`still_argv` 首帧缩放比（铺满 1920×1080 或缩进 STILL_SAFE_W×STILL_SAFE_H 安全框）。"""
+    w, h = size
+    return max(1920 / w, 1080 / h) if still_fills(size) else min(STILL_SAFE_W / w, STILL_SAFE_H / h)
+
+
 def still_peak_magnify(size: tuple[int, int]) -> float:
     """`still_argv` 出的视频里原图像素被放大的峰值倍数（纯函数，与 still_argv 同一套几何）。
 
     铺满：先放大到盖住 1920×1080；安全框：缩进 STILL_SAFE_W×STILL_SAFE_H（小图会被放大）。
     再缓推到 STILL_ZOOM_END——zoompan 末帧裁出 1/z 再放回 1920×1080，所以峰值 = 首帧缩放 × z。
     """
+    return still_frame_fit(size) * STILL_ZOOM_END
+
+
+#: 网页物证截图的高宽比与成片缩小下限（仅管 `source == "screenshot"`，不影响画册/Booklet 等实体竖版扫图）。
+#: 1.35：即便 550 CSS 宽的窄栏按 1.5 倍视口高上限（660 CSS）截一段访谈/表格，高宽比仅 1.20；超出即整页或长竖条。
+#: 0.30：即便最高 scale=4 下 660 CSS 高（2640 px），放进 902 px 安全高也只缩到 0.34×；低于 0.30 说明原图
+#: 超过 ~3000 px 高或 ~5300 px 宽，正文塞进 1080p 成片会缩成几像素（与 still_peak_magnify 对称守两端）。
+SHOT_MAX_H_OVER_W = 1.35
+SHOT_MIN_FRAME_FIT = 0.30
+
+
+def screenshot_frame_issue(size: tuple[int, int]) -> str | None:
+    """网页截图进 1080p 成片框的局部构图校验；合规返回 None，不合规返回原因（仅用于网页截图）。"""
     w, h = size
-    fit = max(1920 / w, 1080 / h) if still_fills(size) else min(STILL_SAFE_W / w, STILL_SAFE_H / h)
-    return fit * STILL_ZOOM_END
+    if w <= 0 or h <= 0:
+        return "尺寸非法"
+    hw = h / w
+    if hw > SHOT_MAX_H_OVER_W:
+        return (
+            f"高宽比 {hw:.2f} 超上限 {SHOT_MAX_H_OVER_W:g}（整页或长竖条截图进 1080p 安全框字会缩糊；"
+            "请只截本段对应的那一段或那几行表）"
+        )
+    fit = still_frame_fit(size)
+    if fit < SHOT_MIN_FRAME_FIT:
+        return (
+            f"进 1080p 成片要缩到 {fit:.2f}×（下限 {SHOT_MIN_FRAME_FIT:g}×，原图 {w}×{h} 范围过大；"
+            "请收紧到目标段落或表格，去掉多余留白与无关区域）"
+        )
+    return None
 
 
 #: 图片转缓推视频时的峰值放大倍数上限（D123）。图片唯一的去处是 `still_to_clip`：横屏铺满或缩进

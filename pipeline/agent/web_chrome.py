@@ -438,6 +438,23 @@ def _precheck_with_exc(
     if act == "screenshot" and coerce_bool_flag(args.get("save_evidence"), False):
         if not str(args.get("reason") or "").strip():
             return "chrome screenshot 传 save_evidence=true 时必须填写 reason（说明物证用途）", False
+        if coerce_bool_flag(args.get("full_page"), False):
+            return (
+                "chrome screenshot 传 save_evidence=true 入库时禁止 full_page=true（整页截图进 1080p 成片字会缩糊）："
+                "请先调 snapshot 找到目标段落/表格元素的 uid 做局部截图",
+                False,
+            )
+        if not str(args.get("uid") or "").strip():
+            return (
+                "chrome screenshot 传 save_evidence=true 入库时必须提供目标段落/表格元素的 uid"
+                "（先调 snapshot 取对应节点的 uid，禁止不传 uid 截整个视口）",
+                False,
+            )
+        if not str(args.get("expect_text") or "").strip():
+            return (
+                "chrome screenshot 传 save_evidence=true 入库时必须提供 expect_text（填入本段要印证的关键原文或数据）",
+                False,
+            )
 
     return None, False
 
@@ -1376,7 +1393,14 @@ def _handle_screenshot(
             vision.OUTCOME_IMAGE_KEY: {"abs_path": str(saved_path), "sha256": digest},
         }
 
-    # D122/D141 证据入库模式：取页内 DOM 与文字做 expect_text + OCR 复核，供 save_screenshot 入 incoming
+    # D122/D141 证据入库模式：先校验局部构图尺寸，再取页内 DOM 与 1080p 缩放图 OCR 复核，供 save_screenshot 入 incoming
+    from pipeline.still_geometry import screenshot_frame_issue
+
+    issue = screenshot_frame_issue((size[0], size[1]))
+    if issue:
+        saved_path.unlink(missing_ok=True)
+        raise ValueError(f"chrome 物证截图尺寸不合规（{size[0]}×{size[1]}）：{issue}，没有保存")
+
     raw_url, title, raw_text, raw_html = _extract_dom_snapshot(sess, page_id, timeout_s=cfg.timeout_s)
     final_url = raw_url or known_page_url(page_id)
     if final_url:
@@ -1400,10 +1424,10 @@ def _handle_screenshot(
                 f"页面 DOM 文字里没有「{expect_text}」，截图证明不了它，没有保存。"
                 f"页面文字开头：{normalized[:120]!r}"
             )
-        ocr_match, near = check_excerpt(expect_text, ocr.recognize(png_bytes))
+        ocr_match, near = check_excerpt(expect_text, ocr.recognize_for_1080p(png_bytes))
         if ocr_match == "none":
             raise ValueError(
-                f"页面 DOM 里有「{expect_text}」，但截图上 OCR 认不出来，没有保存；"
+                f"页面 DOM 里有「{expect_text}」，但缩进 1080p 成片安全框后截图上 OCR 认不出来，没有保存；"
                 f"最接近一段：{near!r}"
             )
 
@@ -1476,8 +1500,10 @@ def chrome_action(
             "reqid": reqid,
             "function": function,
             "eval_args": eval_args,
+            "full_page": full_page,
             "save_evidence": save_evidence,
             "reason": reason,
+            "expect_text": expect_text,
         },
         root=base_root,
     )

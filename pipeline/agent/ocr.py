@@ -8,6 +8,7 @@ DOM 里有那句话、图上却没画出来，照样通过（2026-10-24 卷三�
 
 from __future__ import annotations
 
+import io
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,25 @@ from pathlib import Path
 SCRIPT = Path(__file__).with_name("ocr_vision.swift")
 # 冷启动（首次编译模块缓存）实测约 8 s，之后约 1.3 s；大截图再留余量
 TIMEOUT_S = 120
+
+
+def scale_png_for_1080p(png: bytes) -> bytes:
+    """按 1080p 成片安全框实际尺寸缩小网页截图（判据 1：只缩小不放大，测观众真正看到的清晰度）。"""
+    from PIL import Image
+
+    from pipeline.still_geometry import still_frame_fit
+
+    with Image.open(io.BytesIO(png)) as im:
+        k = min(1.0, still_frame_fit(im.size))
+        if k >= 1.0:
+            return png
+        resized = im.convert("RGB").resize(
+            (max(1, round(im.width * k)), max(1, round(im.height * k))),
+            Image.Resampling.LANCZOS,
+        )
+        buf = io.BytesIO()
+        resized.save(buf, "PNG")
+        return buf.getvalue()
 
 
 def recognize(png: bytes) -> str:
@@ -33,3 +53,8 @@ def recognize(png: bytes) -> str:
     if r.returncode != 0:
         raise ValueError(f"截图文字识别失败（swift 退出码 {r.returncode}）：{r.stderr.strip()[-300:]}")
     return r.stdout
+
+
+def recognize_for_1080p(png: bytes) -> str:
+    """先缩进 1080p 成片框尺寸，再调 Vision OCR，防止原图高分能认出、成片缩糊却放行。"""
+    return recognize(scale_png_for_1080p(png))

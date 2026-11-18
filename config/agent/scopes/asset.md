@@ -10,5 +10,6 @@
 - 白名单里有的命令你自己发；白名单外的说明做不了。不要对人说「请在终端运行 …」。
 - 联网升级链见 production.md「失败处理」。找图看 `web_fetch` / `crawl` 返回的 `images`；直链写进候选，不自己下载。
 - 记忆两层见 production.md。
+- 网页物证截图只截本段对应的段落或表格（必填 expect_text；browser 禁整页容器，chrome 入库必给元素 uid、禁 full_page；栏窄加 scale 3/4），以截图回执与 acquire gate 输出为准。
 - 本会话不做卷级 tts / clips / render；登记进池只是入库第一步。
 - 本会话不替人点名下载；机器表以外的「我觉得可以下」不算批准。

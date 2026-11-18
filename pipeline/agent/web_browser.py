@@ -78,6 +78,16 @@ _SHOT_PICK_JS = r"""([needle, minW, minH, maxVp, minVpH]) => {
   el.setAttribute("data-ava-shot", "1");
   return {why: null};
 }"""
+_WHOLE_PAGE_SELECTORS = frozenset({"html", "body", ":root", "document"})
+_SHOT_CHECK_SEL_JS = r"""([sel, maxVp, minVpH]) => {
+  const el = document.querySelector(sel);
+  if (!el) return {why: "missing_sel"};
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return {why: "missing_sel"};
+  const maxH = Math.max(innerHeight, minVpH) * maxVp;
+  if (r.height > maxH) return {why: "big_sel", w: Math.round(r.width), h: Math.round(r.height)};
+  return {why: null};
+}"""
 _SESSION: Any | None = None
 _ATEXIT_REGISTERED: bool = False
 
@@ -296,6 +306,10 @@ class _PlaywrightSessionAdapter:
                         "css_size": [pick.get("w"), pick.get("h")]}
             loc = page.locator('[data-ava-shot="1"]').first
         else:
+            chk = page.evaluate(_SHOT_CHECK_SEL_JS, [str(selector), SHOT_MAX_H_VIEWPORTS, SHOT_MIN_VIEWPORT_H])
+            if chk.get("why"):
+                return {"final_url": str(page.url or url), "missing": chk["why"],
+                        "css_size": [chk.get("w"), chk.get("h")]}
             loc = page.locator(str(selector)).first
         loc.scroll_into_view_if_needed(timeout=ms)
         box = loc.bounding_box(timeout=ms) or {}
@@ -570,10 +584,25 @@ def _screenshot_action(
     _guard_url(final_url, trusted_ranges=cfg.trusted_fake_ip_ranges)
     if raw.get("missing") == "big":
         w, h = raw.get("css_size") or [None, None]
-        raise ValueError(f"包含「{text}」的最小元素有 {w}×{h}（CSS 像素），比一屏半还高：这段文字多半跨了几个元素，"
-                         f"换一段在同一行里原样出现的短文字，或改用 selector（{_scrub(final_url)}）")
+        raise ValueError(
+            f"包含「{text}」的最小元素有 {w}×{h}（CSS 像素），比一屏半还高：这段文字多半跨了几个元素，"
+            f"换一段在同一行里原样出现的短文字，或给定位到该段 <p>/<tr>/<blockquote> 的精确 selector（不传整页容器）（{_scrub(final_url)}）"
+        )
+    if raw.get("missing") == "big_sel":
+        w, h = raw.get("css_size") or [None, None]
+        raise ValueError(
+            f"selector {selector!r} 命中的元素有 {w}×{h}（CSS 像素），超过一屏半高度上限：不截整页或长文外层容器，"
+            f"请改传本段短句 text，或将 selector 收紧到目标段落/表格行（{_scrub(final_url)}）"
+        )
+    if raw.get("missing") == "missing_sel":
+        raise ValueError(
+            f"页面上找不到可见的 selector {selector!r}（{_scrub(final_url)}）：请核对选择器或改用 text 传页面原句"
+        )
     if raw.get("missing"):
-        raise ValueError(f"页面上找不到包含「{text}」的元素（{_scrub(final_url)}）：换一段页面上原样出现的文字，或改用 selector")
+        raise ValueError(
+            f"页面上找不到包含「{text}」的元素（{_scrub(final_url)}）：换一段页面上原样出现的文字，"
+            "或给定位到具体段落/表格的 selector"
+        )
     element_text = _scrub(str(raw.get("element_text") or ""))
     if expect_text:
         from pipeline.facts import norm_exact
@@ -581,15 +610,28 @@ def _screenshot_action(
         if norm_exact(expect_text) not in norm_exact(element_text):
             raise ValueError(f"截到的元素里没有「{expect_text}」，截图证明不了它，没有保存。"
                              f"元素文字开头：{element_text[:120]!r}——换 selector / text 截到真正写着这句话的区域")
-        # D141：DOM 里有不等于图上画出来了（样式丢失、被遮挡、在截图区域外），对 PNG 本身再认一次
+    import io
+    from PIL import Image
+    from pipeline.still_geometry import screenshot_frame_issue
+
+    with Image.open(io.BytesIO(raw["png"])) as im:
+        png_size = im.size
+    issue = screenshot_frame_issue(png_size)
+    if issue:
+        raise ValueError(f"截图尺寸不合局部物证要求（{png_size[0]}×{png_size[1]}）：{issue}（{_scrub(final_url)}）")
+
+    if expect_text:
+        # D141 + 判据 1：先缩进 1080p 成片框尺寸再跑 OCR，范围过大导致成片字糊时直接拒存
         from pipeline.agent import ocr
         from pipeline.facts import check_excerpt
 
-        ocr_match, near = check_excerpt(expect_text, ocr.recognize(raw["png"]))
+        ocr_match, near = check_excerpt(expect_text, ocr.recognize_for_1080p(raw["png"]))
         if ocr_match == "none":
-            raise ValueError(f"元素的 DOM 文字里有「{expect_text}」，截图上却认不出来，没有保存：多半是页面样式没加载、"
-                             f"文字被遮挡或画在截图区域外（Wayback `id_` 原始页常见）。图上认出的最接近一段：{near!r}"
-                             "——换一个能正常显示的版本（去掉 `id_`、换镜像）或换 selector 再截")
+            raise ValueError(
+                f"元素的 DOM 文字里有「{expect_text}」，但缩进 1080p 成片安全框后截图上却认不出来，没有保存："
+                f"可能是截图范围过大导致字太小、页面样式未加载或文字被遮挡。图上认出的最接近一段：{near!r}"
+                "——请只截对应段落/表格（栏窄可加 scale 3 或 4）或换正常显示的版本再截"
+            )
     scrubbed = _scrub(str(raw.get("text") or ""))
     refs: dict[str, Any] = {}
     if keep_full:
@@ -664,6 +706,11 @@ def browser_action(
         clean_sel, clean_text = str(selector or "").strip(), str(text or "").strip()
         if bool(clean_sel) == bool(clean_text):
             raise ValueError("action='screenshot' 要给 selector 或 text 其中一个（截哪个区域）")
+        if clean_sel and clean_sel.lower() in _WHOLE_PAGE_SELECTORS:
+            raise ValueError(f"screenshot 不接受整页选择器 {clean_sel!r}：请传 text 定位本段原句，或给定位到具体段落/表格元素的 selector")
+        clean_expect = str(expect_text or "").strip()
+        if not clean_expect:
+            raise ValueError("action='screenshot' 必须提供 expect_text（本段要印证的关键原文、标题或榜单数据，用于核对局部范围与 1080p 可读性）")
         if type(scale) is not int or scale not in SHOT_SCALES:  # 3.0 == 3，会拼出 "3.0.0"
             raise ValueError(f"screenshot 的 scale 只能是 {'/'.join(map(str, SHOT_SCALES))}（像素密度倍数），收到 {scale!r}")
     if clean_action in ("navigate", "screenshot"):
@@ -688,7 +735,7 @@ def browser_action(
     if clean_action == "screenshot":
         return _screenshot_action(
             url=clean_url, selector=clean_sel or None, text=clean_text or None,
-            expect_text=str(expect_text or "").strip() or None, cfg=cfg, base_root=base_root,
+            expect_text=clean_expect, cfg=cfg, base_root=base_root,
             resolved_profile_dir=resolved_profile_dir, launch_fn=launch_fn, episode_dir=episode_dir,
             scope=scope, trigger=trigger_info, keep_full=keep_full, scale=scale,
         )

@@ -146,6 +146,40 @@ class TestCheckImage:
                            width=0, height=0)
         assert A.overall(vs) == "FAIL"
 
+    def test_网页截图与画册扫图区分_整页竖条和过宽大图只拦screenshot(self):
+        # 1582×2860 画册竖图（is_screenshot=False）照旧 PASS；网页截图（is_screenshot=True）按局部构图判 FAIL
+        assert A.overall(A.check_image(decoded=True, decode_detail="x", width=1582, height=2860, is_screenshot=False)) == "PASS"
+        tall = A.check_image(decoded=True, decode_detail="x", width=1360, height=8000, is_screenshot=True)
+        assert next(v for v in tall if v.name == "局部构图").level == "FAIL"
+        assert A.overall(tall) == "FAIL"
+        # 过宽过高的整屏区域：进 1080p 安全框缩小到 0.25× < 0.30× → FAIL
+        oversized = A.check_image(decoded=True, decode_detail="x", width=4000, height=3600, is_screenshot=True)
+        assert next(v for v in oversized if v.name == "局部构图").level == "FAIL"
+        # 窄栏 scale=4 局部问答框（2200×2480，H/W=1.13≤1.35，缩放 0.36×≥0.30×）→ PASS
+        narrow_ok = A.check_image(decoded=True, decode_detail="x", width=2200, height=2480, is_screenshot=True)
+        assert A.overall(narrow_ok) == "PASS"
+
+
+def test_cmd_gate与cmd_to_patch拦下台账里整页长竖条screenshot(tmp_path, monkeypatch):
+    from PIL import Image
+    from pipeline import candidates, paths
+
+    data = tmp_path / "data"
+    inc = data / "library" / "incoming"
+    ep = data / "episodes" / "01-ep"
+    inc.mkdir(parents=True)
+    ep.mkdir(parents=True)
+    shot = inc / "shot-fullpage.png"
+    Image.new("RGB", (1360, 8000), "white").save(shot, "PNG")
+    monkeypatch.setattr(paths, "DATA", data)
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    candidates.ledger_save([{"url": "https://example.com/", "title": "t", "type": "scan", "source": "screenshot",
+                             "candidate": None, "file": str(shot), "as": None, "why": "x"}])
+    assert A.cmd_gate(shot) == 1
+    with pytest.raises(SystemExit, match="网页截图未过门禁"):
+        A.cmd_to_patch(shot, ep)
+    assert shot.is_file() and not (ep / "patch_assets" / shot.name).exists()
+
 
 class TestOverall:
     def test_只有WARN时整批不能报PASS(self):

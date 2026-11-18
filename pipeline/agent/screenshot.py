@@ -32,7 +32,7 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
 
     from pipeline import candidates
     from pipeline.agent.fetch import keep_record
-    from pipeline.still_geometry import STILL_MAX_MAGNIFY, still_peak_magnify
+    from pipeline.still_geometry import STILL_MAX_MAGNIFY, screenshot_frame_issue, still_peak_magnify
 
     png = res.pop("png")
     with Image.open(io.BytesIO(png)) as im:
@@ -54,14 +54,20 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
     entries.append(entry)
     candidates.ledger_save(entries)
     mag = still_peak_magnify(size)
+    frame_issue = screenshot_frame_issue(size)
+    if frame_issue:
+        gate = f"FAIL：{frame_issue}"
+    elif mag <= STILL_MAX_MAGNIFY:
+        gate = "PASS"
+    else:
+        gate = f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）；正文栏窄就加 scale 3 或 4 重截"
     return {
         "action": "screenshot",
         "file": str(dest),
         "size": list(size),
         "css_size": res.get("css_size"),
         "magnify": round(mag, 2),
-        "gate": "PASS" if mag <= STILL_MAX_MAGNIFY else (f"FAIL：入池要放大 {mag:.2f} 倍（上限 {STILL_MAX_MAGNIFY:g}）"
-                                                         "；正文栏窄就加 scale 3 或 4 重截"),
+        "gate": gate,
         "final_url": page_url,
         "title": res.get("title"),
         "element_text": str(res.get("element_text") or "")[:200],
@@ -72,7 +78,7 @@ def save_screenshot(res: dict[str, Any], reason: str, name: str, *, sid: str | N
 
 
 def shoot(url: str, *, reason: str, selector: str | None = None, text: str | None = None,
-          expect_text: str | None = None, name: str = "", caller: str = "cli", root: Path | None = None,
+          expect_text: str = "", name: str = "", caller: str = "cli", root: Path | None = None,
           launch_fn: Callable[..., Any] | None = None, scale: int = 2) -> dict[str, Any]:
     """命令行截图：校验与截图本身同 AVA 的 `browser` 截图（`web_browser.browser_action`），落盘记 origin=cli。"""
     from pipeline.agent.web_browser import browser_action
@@ -90,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--selector", help="要截的元素的 CSS 选择器")
     g.add_argument("--text", help="页面上原样出现的一段文字，截包含它的区域")
     ap.add_argument("--reason", required=True, help="这张截图证明第几段的哪句话（写进台账的 why）")
-    ap.add_argument("--expect-text", default=None, help="截图里必须出现的话；元素文字里没有、或图上认不出（D141）就不保存")
+    ap.add_argument("--expect-text", required=True, help="截图里必须出现的本段证言原文或关键数据；DOM 里没有或缩进 1080p 后认不出（D141）就不保存")
     ap.add_argument("--name", default="", help="文件名提示（缺省用页面标题）")
     ap.add_argument("--scale", type=int, choices=(2, 3, 4), default=2,
                     help="像素密度倍数（缺省 2）；正文栏窄、门禁预判 FAIL 时用 3 或 4（D139）")
