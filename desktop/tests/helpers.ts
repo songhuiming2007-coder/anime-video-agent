@@ -2,7 +2,10 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
+
+const PERSONAL_CONFIG_STEMS = ["voice", "bgm", "characters", "scenes", "project"] as const;
+const PERSONAL_CONFIG_FILES = new Set<string>(PERSONAL_CONFIG_STEMS.map((stem) => `${stem}.json`));
 
 export const DESKTOP = resolve(__dirname, "..");
 export const REPO = resolve(DESKTOP, "..");
@@ -50,13 +53,12 @@ export function makeFixtureRepo(opts: { withApprovals?: boolean } = {}): string 
   cpSync(join(REPO, "pipeline"), join(root, "pipeline"), { recursive: true, filter: (s) => !s.includes("__pycache__") });
   cpSync(join(REPO, "config"), join(root, "config"), {
     recursive: true,
-    filter: (s) =>
-      !s.endsWith("auth.local.json") &&
-      !s.endsWith(".auth.local.json.lock") &&
-      !s.endsWith("cloud.local.json") &&
-      !s.endsWith(".cloud.local.json.lock"),
+    filter: (s) => {
+      const name = basename(s);
+      return !name.endsWith(".local.json") && !name.endsWith(".lock") && !PERSONAL_CONFIG_FILES.has(name);
+    },
   });
-  for (const stem of ["voice", "bgm", "characters", "scenes", "project"]) {
+  for (const stem of PERSONAL_CONFIG_STEMS) {
     const cfgDst = join(root, "config", `${stem}.json`);
     const cfgEx = join(root, "config", `${stem}.example.json`);
     if (!existsSync(cfgDst) && existsSync(cfgEx)) cpSync(cfgEx, cfgDst);

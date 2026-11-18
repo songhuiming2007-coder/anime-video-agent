@@ -269,6 +269,9 @@ QUOTES = re.compile(r"[“”‘’「」『』\"']")
 DIGITS = re.compile(r"[0-9０-９]")
 
 
+_REPO_VOICE_EXAMPLE = paths.CONFIG / "voice.example.json"
+
+
 def _voice_cfg_path() -> Path:
     """优先读本机 `config/voice.json`；fresh clone / CI 未建时回退受控词表模板 `voice.example.json`。"""
     cfg = paths.CONFIG / "voice.json"
@@ -278,6 +281,16 @@ def _voice_cfg_path() -> Path:
     if example.is_file():
         return example
     return cfg
+
+
+def _load_voice_cfg() -> dict:
+    """读取 voice 配置（含测试将 `paths.CONFIG` 指到空目录时，兜底回仓内受控词表模板）。"""
+    p = _voice_cfg_path()
+    if p.is_file():
+        return json.loads(p.read_text(encoding="utf-8"))
+    if _REPO_VOICE_EXAMPLE.is_file():
+        return json.loads(_REPO_VOICE_EXAMPLE.read_text(encoding="utf-8"))
+    return {}
 
 
 @lru_cache(maxsize=8)
@@ -1007,7 +1020,7 @@ def run(path: Path) -> list[Check]:
     # 情绪/语速字段机检（架构设计 3.3，2026-09-11 加）：表外值当场报错。
     # 受控词表的真源在 config/voice.json（模板 voice.example.json），不在这里硬编码——
     # 词表会随引擎实测调整，抄一份到代码里必然分叉。
-    voice_cfg = json.loads(_voice_cfg_path().read_text(encoding="utf-8"))
+    voice_cfg = _load_voice_cfg()
     allowed_emo = {k for k in (voice_cfg.get("emotions") or {}) if not k.startswith("_")}
     allowed_spd = {k for k in (voice_cfg.get("speed") or {}) if not k.startswith("_")}
     emo_fields = parse_emotion_fields(text)

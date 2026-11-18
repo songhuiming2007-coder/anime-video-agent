@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import contextvars
 import hashlib
 import importlib.util
 import inspect
@@ -47,8 +49,36 @@ from .align import compute_script_vo_hash
 from .align import verify_alignment   # 叶子模块，无环
 from .qc import episode_duration_band
 
-CONFIG = paths.CONFIG / "voice.json"
-EXAMPLE_CONFIG = paths.CONFIG / "voice.example.json"
+_DEFAULT_CONFIG_DIR = paths.CONFIG
+CONFIG = _DEFAULT_CONFIG_DIR / "voice.json"
+EXAMPLE_CONFIG = _DEFAULT_CONFIG_DIR / "voice.example.json"
+_ACTIVE_VOICE_TABLES: contextvars.ContextVar[tuple[dict, dict[str, str]] | None] = (
+    contextvars.ContextVar("_ACTIVE_VOICE_TABLES", default=None)
+)
+
+
+def _active_config_path() -> Path:
+    """优先尊重对 `tts.CONFIG` 的显式打桩；未单改 `tts.CONFIG` 时跟随 `paths.CONFIG`。"""
+    if CONFIG != _DEFAULT_CONFIG_DIR / "voice.json":
+        return CONFIG
+    return paths.CONFIG / "voice.json"
+
+
+@contextmanager
+def _use_voice_cfg(cfg: dict):
+    """在 run / probe / rerun_labels 作用域内将已加载的基配置绑定给读音表/歌名表查询。"""
+    tok = _ACTIVE_VOICE_TABLES.set((cfg, g2p.load_injections(cfg)))
+    try:
+        yield
+    finally:
+        _ACTIVE_VOICE_TABLES.reset(tok)
+
+
+def _current_voice_cfg() -> dict:
+    active = _ACTIVE_VOICE_TABLES.get()
+    if active is not None:
+        return active[0]
+    return _voice_cfg(_active_config_path())
 
 CPM = paths.conf("script.cpm", 380)   # 与 check_script 同源同 fallback；真值在
                                       # config/project.json（2026-08-10 校准 315），
@@ -299,7 +329,7 @@ def _titles() -> list[str]:
     歌名区段不参与 CER 比对；歌名前后的中文照常比对。
     走 `_voice_cfg` 的按路径缓存，不每句读盘。
     """
-    v = _voice_cfg(CONFIG).get("titles", {})
+    v = _current_voice_cfg().get("titles", {})
     if isinstance(v, dict):
         v = [k for k in v if not k.startswith("_")]
     return [t for t in v if t]
@@ -313,7 +343,7 @@ def _title_durs() -> dict[str, float]:
     「机制进代码、内容进配置」。值为 null 表示未实测：该歌名按 cpm 估算，
     `run()` 会 WARN（cpm 估英日歌名会高估 1.5-2 倍，见 `expected_duration`）。
     """
-    v = _voice_cfg(CONFIG).get("titles", {})
+    v = _current_voice_cfg().get("titles", {})
     if isinstance(v, list):        # 老格式：裸列表 = 全部未实测
         return {}
     return {t: float(secs) for t, secs in v.items()
@@ -565,13 +595,26 @@ def _cuda_device_index(device_map: object) -> int:
     return 0
 
 
+_QWEN3_DTYPE_ALIASES = {"fp16": "float16", "bf16": "bfloat16"}
+
+
+def _normalize_qwen3_dtype_name(raw: object) -> str:
+    """将 Qwen3 CUDA `dtype` 配置规整为 `torch.<name>` 属性名，兼容大小写、空白与 fp16/bf16 别名。"""
+    name = str(raw or "bfloat16").strip().lower() or "bfloat16"
+    return _QWEN3_DTYPE_ALIASES.get(name, name)
+
+
 def _resolve_qwen3_attn_impl(opts: dict, torch_mod) -> str:
     """为 Qwen3-TTS CUDA 选择高效注意力实现：显式配置优先；否则 Ampere+ 且装了 flash_attn 用 flash_attention_2，其余显式用 PyTorch sdpa。"""
     explicit = opts.get("attn_implementation")
     if explicit and str(explicit).strip().lower() != "auto":
-        return str(explicit)
-    dtype_name = str(opts.get("dtype", "bfloat16"))
-    if _flash_attn_usable() and dtype_name in ("float16", "bfloat16") and torch_mod.cuda.is_available():
+        return str(explicit).strip()
+    dtype_name = _normalize_qwen3_dtype_name(opts.get("dtype", "bfloat16"))
+    if (
+        _flash_attn_usable()
+        and dtype_name in ("float16", "bfloat16", "half")
+        and torch_mod.cuda.is_available()
+    ):
         dev = _cuda_device_index(opts.get("device_map", "cuda:0"))
         try:
             major, _ = torch_mod.cuda.get_device_capability(dev)
@@ -615,7 +658,7 @@ def _load_qwen3_cuda(cfg: dict, model_dir: str | Path):
 
     kwargs: dict = {
         "device_map": opts.get("device_map", "cuda:0"),
-        "dtype": getattr(torch, opts.get("dtype", "bfloat16")),
+        "dtype": getattr(torch, _normalize_qwen3_dtype_name(opts.get("dtype", "bfloat16"))),
     }
     attn_impl = _resolve_qwen3_attn_impl(opts, torch)
     params = inspect.signature(Qwen3TTSModel.from_pretrained).parameters
@@ -906,7 +949,7 @@ def load_config(path: Path | None = None) -> dict:
     覆盖层只写差异，其余字段从基配置继承。
     """
     if path is None:
-        path = CONFIG
+        path = _active_config_path()
     if not path.exists():
         hint = (
             "若首次拉取仓库，先 `cp config/voice.example.json config/voice.json` "
@@ -929,7 +972,13 @@ def load_config(path: Path | None = None) -> dict:
         if not base_path.is_absolute():
             base_path = paths.CONFIG / base_name
         if not base_path.exists():
-            raise SystemExit(f"FAIL {path} 的 _extends 指向不存在的 {base_path}")
+            extra = (
+                "（请先在本机 cp config/voice.example.json config/voice.json 填好 ref_audio；"
+                "若在云端运行，请先在本机执行 python -m pipeline.cloud push 或 cloud sync-code 同步配置）"
+                if base_path.name == "voice.json"
+                else ""
+            )
+            raise SystemExit(f"FAIL {path} 的 _extends 指向不存在的 {base_path}{extra}")
         base = load_config(base_path)
         base.update({k: v for k, v in cfg.items() if k != "_extends"})
         cfg = base
@@ -1026,12 +1075,15 @@ def _readings() -> dict[str, str]:
     **v2 起降级为「逐案 override」**：音读泄漏改由 `g2p` 的拼音直注层治理，
     本表只保留自动注音仍读错的残余个例。
     """
-    return _voice_cfg(CONFIG).get("readings", {})
+    return _current_voice_cfg().get("readings", {})
 
 
 def _injections() -> dict[str, str]:
     """voice.json 的 `pinyin_injections`（TONE3 统一表示，引擎语法由 g2p 分派）。"""
-    return _injections_for(CONFIG)
+    active = _ACTIVE_VOICE_TABLES.get()
+    if active is not None:
+        return active[1]
+    return _injections_for(_active_config_path())
 
 
 def speakable_traced(
@@ -1871,27 +1923,27 @@ def rerun_labels(episode: Path, cfg_path: Path | None = None) -> list[str] | Non
     返回 None = 判不了（无 manifest / 清单不可读 / 本期引擎与当前配置不是同一个，
     例如云端配的期拿本地配置比）——拿不到可证伪信息就不定罪（判据 4）。
     """
-    import contextlib
     import io
 
     from . import corrections
 
     if cfg_path is None:
-        cfg_path = CONFIG
+        cfg_path = _active_config_path()
     mf_path = episode / "03-audio" / "manifest.json"
     try:
         old = json.loads(mf_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    cfg = load_config(cfg_path)
-    if (old.get("engine"), old.get("model")) != (cfg["engine"], cfg["model"]):
+    base_cfg = load_config(cfg_path)
+    if (old.get("engine"), old.get("model")) != (base_cfg["engine"], base_cfg["model"]):
         return None
-    segs = parse_script(episode / "02-script.md")
-    cfg = _cfg_with_overlay(cfg, corrections.load_overlay(episode, include_pending=False))
-    with contextlib.redirect_stdout(io.StringIO()):   # _reusable 的进度行是给终端看的
-        done = _reusable(old, segs, episode / "03-audio", cfg)
-    had_take = {int(t["index"]) for t in old.get("segments", []) if "index" in t}
-    return [str(s.label) for s in segs if s.index in had_take and s.index not in done]
+    with _use_voice_cfg(base_cfg):
+        segs = parse_script(episode / "02-script.md")
+        cfg = _cfg_with_overlay(base_cfg, corrections.load_overlay(episode, include_pending=False))
+        with contextlib.redirect_stdout(io.StringIO()):   # _reusable 的进度行是给终端看的
+            done = _reusable(old, segs, episode / "03-audio", cfg)
+        had_take = {int(t["index"]) for t in old.get("segments", []) if "index" in t}
+        return [str(s.label) for s in segs if s.index in had_take and s.index not in done]
 
 
 def _stale_downstream(episode: Path, audio: list[dict]) -> list[str]:
@@ -2209,8 +2261,36 @@ def run(episode: Path, force: bool = False, cfg_path: Path | None = None,
         return write_review(episode, review)
 
     if cfg_path is None:
-        cfg_path = CONFIG
-    cfg = load_config(cfg_path)
+        cfg_path = _active_config_path()
+    base_cfg = load_config(cfg_path)
+    with _use_voice_cfg(base_cfg):
+        return _run_loaded(
+            episode,
+            base_cfg,
+            script=script,
+            cfg_path=cfg_path,
+            force=force,
+            redo=redo,
+            force_all=force_all,
+            allow_engine_mix=allow_engine_mix,
+            apply_patch=apply_patch,
+            _overlay=_overlay,
+        )
+
+
+def _run_loaded(
+    episode: Path,
+    cfg: dict,
+    *,
+    script: Path,
+    cfg_path: Path,
+    force: bool = False,
+    redo: list[str] | None = None,
+    force_all: bool = False,
+    allow_engine_mix: bool = False,
+    apply_patch: bool = False,
+    _overlay: dict | None = None,
+) -> Path:
     segs = parse_script(script)
     out_dir = episode / "03-audio"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2484,19 +2564,20 @@ def probe(text: str, cfg_path: Path | None, dest: Path, ref: Path | None = None,
     `attempt*1000 + 段号 + seed_offset` 下的表现）就显式传——
     传 `seed_offset` 得到的就是那一期该段首次真正会用的种子。
     """
-    cfg = load_config(CONFIG if cfg_path is None else cfg_path)
+    cfg = load_config(_active_config_path() if cfg_path is None else cfg_path)
     if ref is not None:
         cfg = {**cfg, "ref_audio": str(ref), "ref_text": _ref_text_for(ref)}
-    engine = Engine(cfg)
-    t0 = time.perf_counter()
-    # speakable 要按试音引擎自己的语法渲染拼音直注（SHI4JIE4 vs shìjiè），
-    # 否则试音喂的文本与真实 run 不一致，比音色就比错了对象（审计 F13）
-    engine.synthesize(speakable(text, engine.kind), dest, attempt=1, seed=seed)
-    dur = probe_duration(dest)
-    heard = transcribe(dest)
-    edits, err = cer(text, heard)
-    print(f"{dest}  {dur:.2f}s  {dur / (time.perf_counter() - t0):.2f}× 实时")
-    print(f"  回读差 {edits} 音节（CER {err:.0%}）：{heard}")
+    with _use_voice_cfg(cfg):
+        engine = Engine(cfg)
+        t0 = time.perf_counter()
+        # speakable 要按试音引擎自己的语法渲染拼音直注（SHI4JIE4 vs shìjiè），
+        # 否则试音喂的文本与真实 run 不一致，比音色就比错了对象（审计 F13）
+        engine.synthesize(speakable(text, engine.kind), dest, attempt=1, seed=seed)
+        dur = probe_duration(dest)
+        heard = transcribe(dest)
+        edits, err = cer(text, heard)
+        print(f"{dest}  {dur:.2f}s  {dur / (time.perf_counter() - t0):.2f}× 实时")
+        print(f"  回读差 {edits} 音节（CER {err:.0%}）：{heard}")
 
 
 def main() -> int:

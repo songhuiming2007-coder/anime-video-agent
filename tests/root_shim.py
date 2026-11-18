@@ -20,6 +20,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 _COPIED = ("config", "docs", "skills", "AGENTS.md")
+_PERSONAL_CONFIG_STEMS = ("voice", "bgm", "characters", "scenes", "project")
+_PERSONAL_CONFIG_FILES = tuple(f"{stem}.json" for stem in _PERSONAL_CONFIG_STEMS)
 
 HOOK = '''\
 import os
@@ -41,10 +43,14 @@ def shim_root(base: Path, episodes_dir: Path) -> Path:
         for name in _COPIED:
             src = REPO / name
             if src.is_dir():
-                shutil.copytree(src, root / name, ignore=shutil.ignore_patterns("*.local.json", "__pycache__"))
+                ignored = shutil.ignore_patterns(
+                    "*.local.json", "*.lock", "__pycache__",
+                    *(_PERSONAL_CONFIG_FILES if name == "config" else ()),
+                )
+                shutil.copytree(src, root / name, ignore=ignored)
             elif src.is_file():
                 shutil.copy2(src, root / name)
-        for stem in ("voice", "bgm", "characters", "scenes", "project"):
+        for stem in _PERSONAL_CONFIG_STEMS:
             cfg_dst = root / "config" / f"{stem}.json"
             cfg_ex = root / "config" / f"{stem}.example.json"
             if not cfg_dst.exists() and cfg_ex.exists():

@@ -436,9 +436,30 @@ class TestNoArabicDigits:
     def test_读音表接管的词条豁免(self, tmp_path, monkeypatch):
         # M2U 是韩国作曲家的 handle，稿子写不出别的写法（字幕要显示 M2U）。
         # 规则的理由是「TTS 读法不可控」，readings 把它钉成 M two U 后理由消失。
-        monkeypatch.setattr(cs, "_readings_keys", lambda: ("M2U",))
-        c = self._one(tmp_path, "词曲交由韩国作曲家 M2U 操刀。")
+        # 通过真实 config/voice.json 解析路径触发 `_readings_keys_for`（含过滤 _note 与长键优先排序）。
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / "voice.json").write_text(
+            json.dumps(
+                {
+                    "readings": {"_99": "注释键不豁免", "M2U": "M two U", "M2U2": "M two U two"},
+                    "emotions": {"平静叙述": {}},
+                    "speed": {"中": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cs.paths, "CONFIG", cfg_dir)
+
+        ep_long = tmp_path / "ep_long"
+        ep_long.mkdir()
+        c = self._one(ep_long, "词曲交由韩国作曲家 M2U 与 M2U2 操刀。")
         assert c.ok and "豁免" in c.detail
+
+        ep_note = tmp_path / "ep_note"
+        ep_note.mkdir()
+        assert not self._one(ep_note, "平时只做_99件事，看番和写代码。").ok
 
     def test_表外的数字照旧判失败(self, tmp_path):
         # 豁免只限表内键的原样命中：同一个位置换一个 handle 就该拦。
@@ -1205,6 +1226,21 @@ class TestEmotionSpeedFields:
         monkeypatch.setattr(paths, "CONFIG", cfg_dir)
 
         ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        f = script_with_emotion(
+            ep_dir, [BODY] * 8, emotions=["激越陈词"] + [None] * 7, speeds=["快"] + [None] * 7
+        )
+        chk = get(cs.run(f), "情绪/语速在受控词表内")
+        assert chk.ok, chk.detail
+        assert "1/8 段声明" in chk.detail
+
+    def test_配置目录全空时情绪词表回退模板不裸崩(self, tmp_path, monkeypatch):
+        """即使测试把 paths.CONFIG 指到空目录（无 voice.json 也无 example），也不得裸抛 FileNotFoundError。"""
+        empty_cfg = tmp_path / "empty_cfg"
+        empty_cfg.mkdir()
+        monkeypatch.setattr(paths, "CONFIG", empty_cfg)
+
+        ep_dir = tmp_path / "ep_empty"
         ep_dir.mkdir()
         f = script_with_emotion(
             ep_dir, [BODY] * 8, emotions=["激越陈词"] + [None] * 7, speeds=["快"] + [None] * 7

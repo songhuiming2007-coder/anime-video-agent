@@ -111,6 +111,14 @@ def test_find_matching_flash_attn_wheel_精确匹配与版本排序():
             "browser_download_url": "https://example.com/2.8.3.whl",
         },
         {
+            "name": "flash_attn-2.9.9+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl.sha256",
+            "browser_download_url": "https://example.com/2.9.9.whl.sha256",
+        },
+        {
+            "name": "flash_attn-2.9.9+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl.asc",
+            "browser_download_url": "https://example.com/2.9.9.whl.asc",
+        },
+        {
             "name": "flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
             "browser_download_url": "https://example.com/abi_true.whl",
         },
@@ -128,6 +136,15 @@ def test_find_matching_flash_attn_wheel_精确匹配与版本排序():
         )
         is None
     )
+
+    # _collect_release_assets：聚合多版本正式 Release 资产，跳过 draft/prerelease
+    collected = colab_worker._collect_release_assets([
+        {"draft": True, "prerelease": False, "assets": [{"name": "draft.whl"}]},
+        {"draft": False, "prerelease": True, "assets": [{"name": "pre.whl"}]},
+        {"draft": False, "prerelease": False, "assets": [{"name": "v2.whl"}]},
+        {"draft": False, "prerelease": False, "assets": [{"name": "v1.whl"}]},
+    ])
+    assert [a["name"] for a in collected] == ["v2.whl", "v1.whl"]
 
 
 def test_try_install_flash_attn_wheel_精确轮子走only_binary否则秒级跳过(monkeypatch, tmp_path):
@@ -201,4 +218,130 @@ def test_try_install_flash_attn_wheel_精确轮子走only_binary否则秒级跳�
         }),
     )
     assert colab_worker.try_install_flash_attn_wheel(venv_py) is False
+    assert not [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
+
+
+def test_ensure_colab_flash_attn_回滚损坏清理与T4降级(monkeypatch, tmp_path):
+    import io
+    import subprocess
+    import urllib.error
+    import urllib.request
+
+    venv_py = tmp_path / "venv" / "bin" / "python"
+    release_payload = json.dumps([
+        {
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": "flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl",
+                    "browser_download_url": "https://example.com/fa-2.8.3.whl",
+                }
+            ],
+        }
+    ]).encode("utf-8")
+
+    class _FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    # 1. 安装后 import flash_attn 失败（verify returncode=1）→ 触发 uv pip uninstall 回滚
+    cmds: list[list[str]] = []
+
+    def _run_verify_fail(cmd, **_kw):
+        cmds.append(cmd)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "has_flash" in cmd[2]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({
+                    "spec_exists": False, "has_flash": False, "cuda": "12.8",
+                    "torch": "2.8.0+cu128", "abi": "FALSE", "py": "cp312",
+                    "plat": "linux_x86_64", "sm_major": 8,
+                }) + "\n",
+                "",
+            )
+        if cmd == [str(venv_py), "-c", "import flash_attn"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "ImportError: undefined symbol")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=8.0: _FakeResp(release_payload))
+    monkeypatch.setattr(subprocess, "run", _run_verify_fail)
+    assert colab_worker.ensure_colab_flash_attn(venv_py) == (False, False)
+    assert [str(venv_py), "-c", "import flash_attn"] in cmds
+    assert any(c[:3] == ["uv", "pip", "uninstall"] and "flash-attn" in c for c in cmds)
+
+    # 2. 环境里残留 ABI 失配的 flash_attn（spec_exists=True, has_flash=False），
+    #    即使在 T4（sm_major=7）或 torch 2.15 无轮子场景也必须清理卸载并标 mutated=True
+    for probe_info in (
+        {"spec_exists": True, "has_flash": False, "cuda": "12.4", "torch": "2.6.0+cu124", "abi": "FALSE", "py": "cp312", "plat": "linux_x86_64", "sm_major": 7},
+        {"spec_exists": True, "has_flash": False, "cuda": "13.2", "torch": "2.15.0+cu132", "abi": "FALSE", "py": "cp312", "plat": "linux_x86_64", "sm_major": 8},
+    ):
+        cmds.clear()
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda cmd, _info=probe_info, **_kw: (
+                cmds.append(cmd)
+                or (
+                    subprocess.CompletedProcess(cmd, 0, json.dumps(_info) + "\n", "")
+                    if len(cmd) >= 3 and cmd[1] == "-c" and "spec_exists" in cmd[2]
+                    else subprocess.CompletedProcess(cmd, 0, "", "")
+                )
+            ),
+        )
+        assert colab_worker.ensure_colab_flash_attn(venv_py) == (False, True)
+        assert any(c[:3] == ["uv", "pip", "uninstall"] and "flash-attn" in c for c in cmds)
+
+    # 3. 干净 T4（sm_major=7, spec_exists=False）直接短路，不触网也不调 uv
+    cmds.clear()
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("T4 不支持 flash-attn2，不得请求 GitHub API")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **_kw: (
+            cmds.append(cmd)
+            or subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({
+                    "spec_exists": False, "has_flash": False, "cuda": "12.4",
+                    "torch": "2.6.0+cu124", "abi": "FALSE", "py": "cp312",
+                    "plat": "linux_x86_64", "sm_major": 7,
+                }) + "\n",
+                "",
+            )
+        ),
+    )
+    assert colab_worker.ensure_colab_flash_attn(venv_py) == (False, False)
+    assert len(cmds) == 1
+
+    # 4. GitHub API 限流/超时优雅降级，不调 uv pip install
+    cmds.clear()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(urllib.error.URLError("timeout")))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **_kw: (
+            cmds.append(cmd)
+            or subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({
+                    "spec_exists": False, "has_flash": False, "cuda": "12.8",
+                    "torch": "2.8.0+cu128", "abi": "FALSE", "py": "cp312",
+                    "plat": "linux_x86_64", "sm_major": 8,
+                }) + "\n",
+                "",
+            )
+        ),
+    )
+    assert colab_worker.ensure_colab_flash_attn(venv_py) == (False, False)
     assert not [c for c in cmds if c[:3] == ["uv", "pip", "install"]]

@@ -878,7 +878,7 @@ class TestStaleCensusWithOverlay:
             corrections.plan_apply(ep, segs, {"engine": "qwen3_tts"})
         assert "纠错条目无法收口" in str(exc.value)
 
-    def test_apply_patch_引擎不符时改口报错指路(self, tmp_path: Path):
+    def test_apply_patch_引擎不符时改口报错指路(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """P2 审定测试：apply-patch 遇到旧引擎不同时，明确提示同侧纪律与云端命令。"""
         import shutil
 
@@ -894,6 +894,7 @@ class TestStaleCensusWithOverlay:
         )
         cfg_path = tmp_path / "_voice.json"
         shutil.copy2(paths.CONFIG / "voice.example.json", cfg_path)
+        monkeypatch.setattr(tts.paths, "require_data", lambda *a, **k: None)
         with pytest.raises(SystemExit) as exc:
             tts.run(ep, apply_patch=True, cfg_path=cfg_path)
         msg = str(exc.value)
@@ -930,7 +931,7 @@ class TestStaleCensusWithOverlay:
 class TestApplyPatchKeepsApprovedAudio:
     """D143：apply-patch 只重配点名段；manifest 在而别的段 wav 不在时拒跑，不把它们一起重配。"""
 
-    def _ep(self, tmp_path: Path, wavs: tuple[str, ...]) -> Path:
+    def _ep(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wavs: tuple[str, ...]) -> Path:
         import shutil
 
         ep = tmp_path
@@ -946,18 +947,19 @@ class TestApplyPatchKeepsApprovedAudio:
         save_corrections_raw(ep, [{"id": 1, "segment": "2", "word": "重叠", "action": "inject",
                                    "target_tone3": "chong2", "applied": False}])
         shutil.copy2(paths.CONFIG / "voice.example.json", tmp_path / "_voice.json")
+        monkeypatch.setattr(tts.paths, "require_data", lambda *a, **k: None)
         return ep
 
-    def test_别段音频不在_拒跑并列出(self, tmp_path: Path):
-        ep = self._ep(tmp_path, ("seg-02.wav",))
+    def test_别段音频不在_拒跑并列出(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        ep = self._ep(tmp_path, monkeypatch, ("seg-02.wav",))
         with pytest.raises(SystemExit) as exc:
             tts.run(ep, apply_patch=True, cfg_path=tmp_path / "_voice.json")
         msg = str(exc.value)
         assert "另有 1 段的音频文件不在（段 1）" in msg and "--with-audio" in msg
 
-    def test_只缺点名段自己的音频_照常往下走(self, tmp_path: Path):
+    def test_只缺点名段自己的音频_照常往下走(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # 点名段本来就要重配，它的 wav 不在不拦；拦下的是后面的引擎同侧检查（夹具引擎与本机配置不同）
-        ep = self._ep(tmp_path, ("seg-01.wav",))
+        ep = self._ep(tmp_path, monkeypatch, ("seg-01.wav",))
         with pytest.raises(SystemExit) as exc:
             tts.run(ep, apply_patch=True, cfg_path=tmp_path / "_voice.json")
         assert "引擎/模型变了" in str(exc.value)

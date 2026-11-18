@@ -1535,12 +1535,24 @@ class TestQwen3CudaLoader:
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev=0: (7, 5))
         t._load_qwen3_cuda({"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16"}}, "/models/x")
 
-        # 3. 显式配置 attn_implementation 原样透传
+        # 3. 显式配置 attn_implementation 原样透传（含去空白与 half dtype 别名兼容）
         t._load_qwen3_cuda(
-            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16", "attn_implementation": "eager"}},
+            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16", "attn_implementation": " eager "}},
             "/models/x",
         )
         assert [c["attn_implementation"] for c in seen] == ["flash_attention_2", "sdpa", "eager"]
+
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev=0: (8, 9))
+        t._load_qwen3_cuda(
+            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": " fp16 ", "attn_implementation": "auto"}},
+            "/models/x",
+        )
+        t._load_qwen3_cuda(
+            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": " half ", "attn_implementation": "auto"}},
+            "/models/x",
+        )
+        assert seen[-2]["dtype"] == torch.float16 and seen[-2]["attn_implementation"] == "flash_attention_2"
+        assert seen[-1]["dtype"] == torch.float16 and seen[-1]["attn_implementation"] == "flash_attention_2"
 
     def test_语言码必须翻成全名(self):
         """云端实测（2026-09-11）：PyTorch 版传 `zh` 直接 ValueError。
@@ -2412,16 +2424,152 @@ class TestProbeSpeakable:
                 captured["text"] = text
                 dest.write_bytes(b"x")
 
-        cfg = tmp_path / "voice.json"
-        cfg.write_text(json.dumps({"engine": "indextts2", "model": "m",
-                                   "ref_audio": "r.wav"}), encoding="utf-8")
-        monkeypatch.setattr(t, "_injections", lambda: {"世界": "shi4jie4"})
-        monkeypatch.setattr(t, "_readings", lambda: {})
+        empty_cfg_dir = tmp_path / "empty_cfg"
+        empty_cfg_dir.mkdir()
+        monkeypatch.setattr(paths, "CONFIG", empty_cfg_dir)
+
+        cfg = tmp_path / "custom.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "engine": "indextts2",
+                    "model": "m",
+                    "ref_audio": "r.wav",
+                    "pinyin_injections": {"世界": "shi4jie4"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         monkeypatch.setattr(t, "Engine", _Eng)
         monkeypatch.setattr(t, "probe_duration", lambda p: 1.0)
         monkeypatch.setattr(t, "transcribe", lambda p: "世界")
         t.probe("世界", cfg, tmp_path / "out.wav")
-        assert captured["text"] == t.speakable("世界", "indextts2") == "SHI4JIE4"
+        assert captured["text"] == "SHI4JIE4"
+
+
+class TestCustomConfigTables:
+    """传 `--config custom.json` 时（尤其无本机 voice.json 的环境），读音表/注入表/歌名表必须随传入配置生效。"""
+
+    def test_无voice_json时run与probe与rerun_labels使用自定义config各表(self, tmp_path, monkeypatch, capsys):
+        import shutil
+        from pipeline import corrections, g2p
+
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        shutil.copy2(paths.CONFIG / "voice.example.json", cfg_dir / "voice.example.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+        monkeypatch.setattr(t.paths, "require_data", lambda *a, **k: None)
+
+        # 验证 paths.CONFIG 动态跟随（tts / corrections / g2p）
+        assert t._active_config_path() == cfg_dir / "voice.json"
+        assert corrections._voice_config_path() == cfg_dir / "voice.json"
+        assert g2p._config_path() == cfg_dir / "voice.json"
+
+        custom_cfg = tmp_path / "custom.json"
+        base_tpl = json.loads((cfg_dir / "voice.example.json").read_text(encoding="utf-8"))
+        base_tpl["engine"] = "qwen3_tts"
+        base_tpl["model"] = "m"
+        base_tpl["ref_audio"] = "r.wav"
+        base_tpl["readings"] = {"私奔": "丝奔"}
+        base_tpl["pinyin_injections"] = {"世界": "shi4jie4"}
+        base_tpl["titles"] = {"LongCustomTitleAB": 0.5}
+        custom_cfg.write_text(json.dumps(base_tpl, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 1. probe() 使用 custom.json 的 readings / injections / titles（LongCustomTitleAB 按 custom titles 豁免后 CER 归零）
+        probed: list[str] = []
+
+        class _ProbeEng:
+            kind = "qwen3_tts"
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def synthesize(self, text, dest, attempt, seed, emo_params=None):
+                probed.append(text)
+                dest.write_bytes(b"RIFF")
+
+        monkeypatch.setattr(t, "Engine", _ProbeEng)
+        monkeypatch.setattr(t, "probe_duration", lambda p: 0.9)
+        monkeypatch.setattr(t, "transcribe", lambda p: "丝奔世界 WrongCustomTitlXY")
+        t.probe("私奔世界 LongCustomTitleAB", custom_cfg, tmp_path / "probe.wav")
+        assert probed == ["丝奔shìjiè LongCustomTitleAB"]
+        probe_out = capsys.readouterr().out
+        assert "CER 0%" in probe_out or "回读差 0 音节" in probe_out
+
+        # 2. run() + 期级 overlay 隔离：第 1 段走 custom 表与 title_durs（若未读到 titles，0.9s 会被判过短失败），
+        #    第 2 段额外有期级注入且不串入第 1 段
+        ep = tmp_path / "ep"
+        (ep / "02-script.md").parent.mkdir(parents=True, exist_ok=True)
+        (ep / "02-script.md").write_text(
+            "## 段落 1\n\n配音：私奔看世界 LongCustomTitleAB。\n\n## 段落 2\n\n配音：另一段测试文本。\n",
+            encoding="utf-8",
+        )
+        corrections.save_corrections_raw(
+            ep,
+            [
+                {
+                    "id": 1,
+                    "segment": "2",
+                    "word": "测试",
+                    "action": "inject",
+                    "target_tone3": "ce4shi4",
+                    "applied": True,
+                }
+            ],
+        )
+
+        synthesized: list[str] = []
+
+        class _RunEng:
+            kind = "qwen3_tts"
+            seed_offset = 0
+            segment_seeds: dict = {}
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def synthesize(self, text, dest, attempt, seed, emo_params=None):
+                synthesized.append(text)
+                _write_wav(dest, [(1.0, 3000)])
+
+        monkeypatch.setattr(t, "Engine", _RunEng)
+        monkeypatch.setattr(t, "probe_duration", lambda p: 0.9 if len(synthesized) == 1 else t.expected_duration("另一段测试文本。"))
+        monkeypatch.setattr(
+            t,
+            "transcribe",
+            lambda p: "丝奔看世界 WrongCustomTitlXY" if len(synthesized) == 1 else "另一段测试文本",
+        )
+        monkeypatch.setattr(t, "_longest_gap", lambda p: 0.0)
+
+        mf_path = t.run(ep, cfg_path=custom_cfg)
+        err = capsys.readouterr().err
+        assert "LongCustomTitleAB" not in err  # 已在 custom titles 实测，不虚报未实测 WARN
+        mf = json.loads(mf_path.read_text(encoding="utf-8"))
+        assert mf["segments"][0]["speakable"] == "丝奔看shìjiè LongCustomTitleAB。"
+        assert mf["segments"][1]["speakable"] == "另一段cèshì文本。"
+
+        # 3. rerun_labels() 同样认 custom_cfg；只改 custom_cfg 的 readings 后精确报受影响的段 1
+        assert t.rerun_labels(ep, cfg_path=custom_cfg) == []
+        base_tpl["readings"]["私奔"] = "思奔"
+        custom_cfg.write_text(json.dumps(base_tpl, ensure_ascii=False, indent=2), encoding="utf-8")
+        assert t.rerun_labels(ep, cfg_path=custom_cfg) == ["1"]
+
+        # 退出作用域后全局表不受 custom_cfg 污染
+        assert t._titles() == []
+
+    def test_extends缺少voice_json时提示本机模板与云端同步命令(self, tmp_path, monkeypatch):
+        import shutil
+
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        shutil.copy2(paths.CONFIG / "voice.cloud.json", cfg_dir / "voice.cloud.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+
+        with pytest.raises(SystemExit) as exc:
+            t.load_config(cfg_dir / "voice.cloud.json")
+        msg = str(exc.value)
+        assert "voice.example.json" in msg and "cloud push" in msg
 
 
 class TestVoiceConfigGitIsolation:

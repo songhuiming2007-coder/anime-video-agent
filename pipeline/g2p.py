@@ -50,7 +50,15 @@ from pypinyin.contrib.tone_convert import to_tone
 
 from . import paths
 
-CONFIG = paths.CONFIG / "voice.json"
+_DEFAULT_CONFIG_DIR = paths.CONFIG
+CONFIG = _DEFAULT_CONFIG_DIR / "voice.json"
+
+
+def _config_path() -> Path:
+    """优先尊重对 `g2p.CONFIG` 的显式打桩；未单改时跟随 `paths.CONFIG`。"""
+    if CONFIG != _DEFAULT_CONFIG_DIR / "voice.json":
+        return CONFIG
+    return paths.CONFIG / "voice.json"
 
 # 纯汉字判定：转录只对「替换词全是汉字」的条目做，其余交人。
 _HAN_ONLY = re.compile(r"[\u4e00-\u9fff]+")
@@ -197,9 +205,10 @@ def _heteronyms_of(ch: str) -> list[str]:
 
 def _cmd_derive(args: argparse.Namespace) -> int:
     """打印（或显式写入）readings → pinyin_injections 的转录表。"""
-    if not CONFIG.exists():
-        raise SystemExit(f"FAIL 缺少 {CONFIG}（请先从 config/voice.example.json 复制创建）")
-    cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+    cfg_path = _config_path()
+    if not cfg_path.exists():
+        raise SystemExit(f"FAIL 缺少 {cfg_path}（请先从 config/voice.example.json 复制创建）")
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     mechanical, manual = derive_injections_from_readings(cfg.get("readings", {}))
 
     print("=" * 74)
@@ -224,8 +233,8 @@ def _cmd_derive(args: argparse.Namespace) -> int:
             ),
             **mechanical,
         }
-        CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n[OK] 已写入 {CONFIG} 的 pinyin_injections（{len(mechanical)} 条，标注待核对）")
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n[OK] 已写入 {cfg_path} 的 pinyin_injections（{len(mechanical)} 条，标注待核对）")
     else:
         print("\n[i] 未写入。核对无误后加 --write 落盘。")
     return 0

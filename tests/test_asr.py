@@ -265,3 +265,39 @@ def test_whisper_cuda_模型按fp16懒加载缓存仅初始化一次_清理或�
     asr.clear_model_cache()
     assert asr._backend_whisper_cuda(short_wav) == "第一句"
     assert len(pipe_inits) == 3
+
+
+def test_whisper_cuda_兼容旧版transformers仅含torch_dtype形参(monkeypatch, tmp_path):
+    import torch
+
+    root = tmp_path / "models_legacy"
+    (root / "openai" / "whisper-large-v3").mkdir(parents=True)
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(root))
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "autodl")
+
+    wav = tmp_path / "legacy.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 16000 * 2)
+
+    seen: list[dict[str, object]] = []
+
+    def _legacy_pipeline(task, model=None, device=None, generate_kwargs=None, torch_dtype=None):
+        seen.append({
+            "task": task,
+            "model": model,
+            "device": device,
+            "generate_kwargs": generate_kwargs,
+            "torch_dtype": torch_dtype,
+        })
+        return lambda audio_path, **_kw: {"text": "<|zh|>兼容旧版"}
+
+    fake_tf = types.ModuleType("transformers")
+    fake_tf.pipeline = _legacy_pipeline  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+
+    assert asr._backend_whisper_cuda(wav) == "兼容旧版"
+    assert len(seen) == 1
+    assert seen[0]["torch_dtype"] == torch.float16

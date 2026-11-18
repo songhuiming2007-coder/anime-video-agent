@@ -910,7 +910,15 @@ def retract_correction(episode: Path, item_id: int) -> dict:
 # ---------------------------------------------------------------------------
 
 # 全局读音表的唯一位置。CLI 不接受路径参数：否则等于给 agent 一个任意 JSON 写入口。
-VOICE_CONFIG = paths.CONFIG / "voice.json"
+_DEFAULT_CONFIG_DIR = paths.CONFIG
+VOICE_CONFIG = _DEFAULT_CONFIG_DIR / "voice.json"
+
+
+def _voice_config_path() -> Path:
+    """优先尊重对 `corrections.VOICE_CONFIG` 的显式打桩；未单改时跟随 `paths.CONFIG`。"""
+    if VOICE_CONFIG != _DEFAULT_CONFIG_DIR / "voice.json":
+        return VOICE_CONFIG
+    return paths.CONFIG / "voice.json"
 # N12（2026-10-09）：每条经本命令写入的全局读音，记下它在哪一期、哪部番、哪个引擎与音色上实测成立。
 # 换音色 / 换引擎时据此挑出要重测的条目。只记往后的；旧条目不回填（凭 _note 推断会编出假来历）。
 # tts 的复用指纹只看两张表的内容（tts._voice_fingerprint），这个键不触发重配。
@@ -1094,7 +1102,7 @@ def plan_global_write(
 
 
 def _load_voice_config() -> tuple[dict, bytes]:
-    path = VOICE_CONFIG
+    path = _voice_config_path()
     if not path.exists():
         raise PatchError("缺少 config/voice.json：请先从 config/voice.example.json 复制创建后再写入全局读音表。")
     raw = path.read_bytes()
@@ -1157,7 +1165,7 @@ def write_global_entry(
         del cfg[plan["removed"]["table"]][word]
     cfg.setdefault(PROVENANCE_KEY, {})[word] = provenance_of(episode, plan["table"])
     text = _dump_voice_config(cfg, raw)
-    path = VOICE_CONFIG
+    path = _voice_config_path()
     if _digest(path.read_bytes()) != _digest(raw):
         raise PatchError("config/voice.json 在读取之后被改过（有人在手改？），本次未写入；重新提议即可。")
     tmp = path.with_name(path.name + ".tmp")

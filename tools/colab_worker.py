@@ -158,17 +158,14 @@ def restore_colab_venv_cache(
         if parsed is None:
             print("[!] Drive venv .sha256 校验文件损坏，跳过缓存改走本地构建", flush=True)
             return False
-        _, exp_size = parsed
+        exp_sha, exp_size = parsed
         deadline = time.monotonic() + max(0.0, float(wait_sync_s))
         while tar_path.is_file() and tar_path.stat().st_size != exp_size and time.monotonic() < deadline:
             time.sleep(min(poll_s, max(0.05, deadline - time.monotonic())))
         if not tar_path.is_file() or tar_path.stat().st_size != exp_size:
             print("[!] Drive venv 缓存大小未与 .sha256 对齐（可能仍在同步），跳过缓存改走本地构建", flush=True)
             return False
-        try:
-            meta_text = meta_path.read_text(encoding="utf-8")
-        except OSError:
-            meta_text = None
+        meta_text = f"{exp_sha} {exp_size}\n"
 
     content_root.mkdir(parents=True, exist_ok=True)
     local_tar = content_root / f".ava_venv_restore_{os.getpid()}.tar.gz"
@@ -263,12 +260,28 @@ def publish_colab_venv_cache(
                     pass
 
 
-FLASH_ATTN_RELEASE_API = "https://api.github.com/repos/Dao-AILab/flash-attention/releases/latest"
+FLASH_ATTN_RELEASE_API = "https://api.github.com/repos/Dao-AILab/flash-attention/releases?per_page=5"
 
 
 def _wheel_version_key(name: str) -> tuple[int, ...]:
     prefix = name.split("+", 1)[0].removeprefix("flash_attn-")
     return tuple(int(x) for x in re.findall(r"\d+", prefix))
+
+
+def _collect_release_assets(release_data: Any) -> list[dict[str, Any]]:
+    """聚合多个正式 Release 的资产清单（跳过 draft 与 prerelease），避免新发版窗口漏轮子。"""
+    assets: list[dict[str, Any]] = []
+    if isinstance(release_data, list):
+        for item in release_data:
+            if not isinstance(item, dict) or item.get("draft") or item.get("prerelease"):
+                continue
+            assets.extend(a for a in (item.get("assets") or []) if isinstance(a, dict))
+        return assets
+    if isinstance(release_data, dict):
+        if release_data.get("draft") or release_data.get("prerelease"):
+            return []
+        return [a for a in (release_data.get("assets") or []) if isinstance(a, dict)]
+    return assets
 
 
 def find_matching_flash_attn_wheel(
@@ -286,7 +299,7 @@ def find_matching_flash_attn_wheel(
     for asset in assets:
         name = str(asset.get("name") or "")
         url = str(asset.get("browser_download_url") or "")
-        if name.startswith("flash_attn-") and needle in name and url:
+        if name.startswith("flash_attn-") and name.endswith(needle) and url:
             matches.append((_wheel_version_key(name), url))
     if not matches:
         return None
@@ -294,10 +307,17 @@ def find_matching_flash_attn_wheel(
     return matches[0][1]
 
 
-def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -> bool:
-    """仅当 GitHub Release 存在精确匹配的预编译 wheel 时秒装 `flash-attn`，绝不触发源码编译。"""
+def ensure_colab_flash_attn(venv_python: Path, *, timeout_s: float = 8.0) -> tuple[bool, bool]:
+    """探测并维护 `venv` 中的预编译 `flash-attn`，返回 `(usable, venv_mutated)`。
+
+    - 若已可正常导入，直接返回 `(True, False)`；
+    - 若检测到损坏或 ABI 失配残留（`find_spec` 存在但 `import flash_attn` 失败），先执行
+      `uv pip uninstall` 清理，避免污染同环境中依赖 `is_flash_attn_2_available()` 的推理链路；
+    - 仅在 `SM >= 8` 且 GitHub Release 存在精确匹配的预编译 wheel 时秒装（绝不源码编译）。
+    """
     probe_code = (
-        "import json, platform, sys, torch; "
+        "import importlib.util, json, platform, sys, torch; "
+        "spec_exists = importlib.util.find_spec('flash_attn') is not None\n"
         "has_flash = False\n"
         "try:\n"
         "    import flash_attn\n"
@@ -306,6 +326,7 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
         "    pass\n"
         "sm = torch.cuda.get_device_capability(0)[0] if torch.cuda.is_available() else 0; "
         "print(json.dumps({"
+        "'spec_exists': spec_exists, "
         "'has_flash': has_flash, "
         "'cuda': torch.version.cuda or '', "
         "'torch': torch.__version__, "
@@ -324,25 +345,42 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
             check=False,
         )
         if res.returncode != 0 or not res.stdout.strip():
-            return False
+            return False, False
         info = json.loads(res.stdout.strip().splitlines()[-1])
     except Exception as exc:
         print(f"[*] 探测 PyTorch/CUDA 环境失败，跳过 flash-attn 安装（配音自动启用 PyTorch SDPA）: {exc}", flush=True)
-        return False
+        return False, False
 
     if info.get("has_flash"):
-        return True
+        return True, False
+
+    mutated = False
+    if bool(info.get("spec_exists", False)):
+        try:
+            uninst = subprocess.run(
+                ["uv", "pip", "uninstall", "--python", str(venv_python), "flash-attn"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if uninst.returncode == 0:
+                mutated = True
+                print("[!] 检测到损坏或 ABI 失配的 flash-attn 残留，已从 venv 卸载清理", flush=True)
+        except Exception:
+            pass
+
     cuda_ver = str(info.get("cuda") or "").strip()
     sm_major = int(info.get("sm_major") or 0)
     if not cuda_ver or sm_major < 8:
         print("[*] 当前 GPU/CUDA 环境不需要或不支持 flash-attn2，跳过安装（配音自动启用 PyTorch SDPA）", flush=True)
-        return False
+        return False, mutated
 
     cu_tag = cuda_ver.split(".")[0]
     torch_base = str(info.get("torch") or "").split("+", 1)[0]
     torch_parts = torch_base.split(".")
     if len(torch_parts) < 2:
-        return False
+        return False, mutated
     torch_mm = f"{torch_parts[0]}.{torch_parts[1]}"
 
     try:
@@ -352,10 +390,10 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
         )
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             release_data = json.loads(resp.read().decode("utf-8"))
-        assets = release_data.get("assets") or []
+        assets = _collect_release_assets(release_data)
     except Exception as exc:
         print(f"[*] 查询 flash-attn 预编译 wheel 失败（{exc}），跳过安装（配音自动启用 PyTorch SDPA）", flush=True)
-        return False
+        return False, mutated
 
     wheel_url = find_matching_flash_attn_wheel(
         assets,
@@ -367,7 +405,7 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
     )
     if not wheel_url:
         print("[*] 未找到匹配当前环境的预编译 flash-attn wheel，跳过安装（配音自动启用 PyTorch SDPA）", flush=True)
-        return False
+        return False, mutated
 
     print(f"[*] 尝试秒装预编译 flash-attn wheel: {wheel_url}", flush=True)
     try:
@@ -379,8 +417,8 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
             check=False,
         )
         if inst.returncode != 0:
-            print(f"[*] 安装预编译 flash-attn wheel 失败，跳过（配音自动启用 PyTorch SDPA）", flush=True)
-            return False
+            print("[*] 安装预编译 flash-attn wheel 失败，跳过（配音自动启用 PyTorch SDPA）", flush=True)
+            return False, mutated
         verify = subprocess.run(
             [str(venv_python), "-c", "import flash_attn"],
             capture_output=True,
@@ -389,15 +427,32 @@ def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -
             check=False,
         )
         if verify.returncode != 0:
-            subprocess.run(["uv", "pip", "uninstall", "--python", str(venv_python), "flash-attn"], check=False)
+            subprocess.run(
+                ["uv", "pip", "uninstall", "--python", str(venv_python), "flash-attn"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
             print("[*] flash-attn 导入校验未通过，已卸载并改用 PyTorch SDPA", flush=True)
-            return False
+            return False, mutated
         print("[OK] 已安装预编译 flash-attn wheel", flush=True)
-        return True
+        return True, True
     except Exception as exc:
-        subprocess.run(["uv", "pip", "uninstall", "--python", str(venv_python), "flash-attn"], check=False)
+        subprocess.run(
+            ["uv", "pip", "uninstall", "--python", str(venv_python), "flash-attn"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
         print(f"[*] 安装 flash-attn wheel 异常（{exc}），已跳过并改用 PyTorch SDPA", flush=True)
-        return False
+        return False, mutated
+
+
+def try_install_flash_attn_wheel(venv_python: Path, *, timeout_s: float = 8.0) -> bool:
+    """仅当 GitHub Release 存在精确匹配的预编译 wheel 时秒装 `flash-attn`，绝不触发源码编译。"""
+    return ensure_colab_flash_attn(venv_python, timeout_s=timeout_s)[0]
 
 
 def _copy_dir_contents(src: Path, dst: Path) -> None:

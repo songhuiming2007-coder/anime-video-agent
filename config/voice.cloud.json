@@ -4,7 +4,7 @@
   "engine": "qwen3_tts_cuda",
   "model": "/root/autodl-tmp/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
   "qwen3_cuda": {
-    "_note": "实测参数（2026-09-11）。dtype=bfloat16 与官方推荐一致；device_map 指 GPU。默认自动按硬件与环境选择 flash_attention_2（Ampere+ 且已装 flash-attn）或 PyTorch 原生 sdpa（避免退回慢速手动实现）；如需强制指定可配 attn_implementation。",
+    "_note": "实测参数（2026-09-11）。dtype=bfloat16 与官方推荐一致；device_map 指 GPU。默认自动按硬件与环境选择 flash_attention_2（Ampere+ 且已装 flash-attn）或 PyTorch 原生 sdpa（避免退回慢速手动实现）；注：T4 (SM 7.5) 无 BF16 Tensor Core，bfloat16 下 sdpa 走 PyTorch C++ math 内核（显著快于 eager 且无需改变 dtype，未做声学回读实测前保持 bfloat16 不变）；如需强制指定可配 attn_implementation。",
     "device_map": "cuda:0",
     "dtype": "bfloat16"
   }
