@@ -2683,15 +2683,77 @@ def test_rerate_last_entry_isolates_provider_and_recreate_settles_old_session(mo
     monkeypatch.setattr(cloud.shutil, "which", lambda n: "/opt/homebrew/bin/cloudflared")
     monkeypatch.setattr(cloud, "forget_known_host", lambda c: None)
     monkeypatch.setattr(cloud, "remote_active_tasks", lambda host="autodl": [])
-    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host="autodl": True)
+    monkeypatch.setattr(cloud.time, "sleep", lambda _s: None)
+    unassign_sent = False
+    unassign_polls = 0
+    old_disconnected = False
+
+    def _recreate_ssh_reachable(host: str = "autodl") -> bool:
+        nonlocal unassign_polls, old_disconnected
+        cur_local = json.loads((cfg / "cloud.local.json").read_text(encoding="utf-8"))
+        if cur_local.get("profiles", {}).get("colab", {}).get("server") == "new.trycloudflare.com":
+            return True
+        if unassign_sent:
+            unassign_polls += 1
+            if unassign_polls >= 3:
+                old_disconnected = True
+                return False
+        return True
+
+    monkeypatch.setattr(cloud, "is_ssh_reachable", _recreate_ssh_reachable)
     ssh_cmds: list[str] = []
-    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **k: (ssh_cmds.append(cmd), _sp.CompletedProcess(cmd, 0, "Tesla T4, 15360\n" if "query-gpu" in cmd else "99\n", ""))[1])
-    monkeypatch.setattr(cloud_colab_boot, "auto_boot_colab_ssh", lambda *a, **k: "root@new.trycloudflare.com")
+
+    def _recreate_ssh(cmd: str, **k):
+        nonlocal unassign_sent
+        ssh_cmds.append(cmd)
+        if "runtime.unassign" in cmd:
+            unassign_sent = True
+        return _sp.CompletedProcess(cmd, 0, "Tesla T4, 15360\n" if "query-gpu" in cmd else "99\n", "")
+
+    monkeypatch.setattr(cloud, "_ssh", _recreate_ssh)
+
+    def _recreate_boot(*a, **k):
+        assert old_disconnected is True, "必须等旧 Colab 隧道断开后再进 auto_boot_colab_ssh"
+        return "root@new.trycloudflare.com"
+
+    monkeypatch.setattr(cloud_colab_boot, "auto_boot_colab_ssh", _recreate_boot)
 
     assert cloud.cmd_up(argparse.Namespace(provider="colab", slot="default", mode=None, rate=None, timeout=30, episode=None, no_auto_boot=False, recreate=True, notebook_url=None, browser_profile=None)) == 0
     assert any("runtime.unassign" in c for c in ssh_cmds)
+    assert old_disconnected is True and unassign_polls >= 3
     ledger_rows = [json.loads(x) for x in (data / "cloud" / "ledger.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
     assert ledger_rows[-1]["session"] == "old_col_sess"
+
+
+def test_cmd_connect_colab_gpu_failure_returns_1_and_lock_rejects_duplicate_target(monkeypatch, tmp_path, capsys):
+    cfg, _ = _fake_connect_env(monkeypatch, tmp_path, {})
+    (cfg / "cloud.json").write_text(
+        json.dumps({"providers": {"colab": {"ssh_host": "ava-colab", "billing_unit": "cu"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud.shutil, "which", lambda _name: "/opt/homebrew/bin/cloudflared")
+    monkeypatch.setattr(cloud, "forget_known_host", lambda _conn: None)
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host="autodl": True)
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: _sp.CompletedProcess(cmd, 1, "", "nvidia-smi not found"))
+
+    rc = cloud.cmd_connect(argparse.Namespace(provider="colab", login="https://broken-gpu.trycloudflare.com"))
+    assert rc == 1
+    out = capsys.readouterr()
+    assert "FAIL" in out.out
+
+    # 模拟并发窗口：入口读取了旧 local 快照后，另一终端已在锁内先把该隧道写入 default 槽位；锁内重读仍必须拦截重复绑定
+    cfg_g, _ = cloud.load_cloud_config()
+    stale_local = {}
+    with pytest.raises(SystemExit, match="已绑定在"):
+        cloud._apply_ssh_profile_connection(
+            cfg_g,
+            stale_local,
+            cfg / "cloud.local.json",
+            "colab",
+            {"user": "root", "server": "broken-gpu.trycloudflare.com", "port": 22, "proxy_type": "cloudflared"},
+            slot="captions",
+            reject_duplicate_target=True,
+        )
 
 
 

@@ -498,19 +498,12 @@ def review_tool_call(
             )
             if recreate_or_auto:
                 allow_key = None
-            elif sub in {"up", "down"} and (
-                prov_flag is not None or (slot_flag is not None and slot_flag != "default")
-            ):
-                eff_prov = prov_flag or "autodl"
-                if prov_flag is None:
-                    try:
-                        from pipeline import cloud
+            elif prov_flag is not None or (slot_flag is not None and slot_flag != "default"):
+                from pipeline import cloud
 
-                        cfg_dir = (Path(root) / "config") if root is not None else None
-                        cfg_g, cfg_l = cloud.load_cloud_config(config_dir=cfg_dir)
-                        eff_prov = cloud.resolve_provider(cfg_g, cfg_l, None)
-                    except Exception:
-                        eff_prov = "autodl"
+                eff_prov = cloud.resolve_effective_cloud_provider_for_agent(
+                    prov_flag, slot_flag, sub, root=root
+                )
                 norm_slot = (slot_flag or "").strip() or "default"
                 allow_key = f"run_pipeline:cloud {sub}:{eff_prov}:{norm_slot}"
             else:

@@ -1778,14 +1778,21 @@ def _resolve_provider_for_existing_slot(
     cfg_local: dict,
     default_provider: str,
     slot: str,
+    *,
+    cloud_dir: Path | None = None,
 ) -> str:
     """当未传 `--provider` 且默认后端不存在该命名槽位时，从活跃会话或已配置槽位反查唯一后端。"""
     slots_map = ((cfg_local.get("profiles") or {}).get(default_provider) or {}).get("slots") or {}
-    if slot in slots_map or session_file_for(default_provider, slot, migrate=False).exists():
+    default_sess_exists = (
+        (cloud_dir / "sessions" / f"{default_provider}_{normalize_slot(slot)}.json").exists()
+        if cloud_dir is not None
+        else session_file_for(default_provider, slot, migrate=False).exists()
+    )
+    if slot in slots_map or default_sess_exists:
         return default_provider
 
     sess_matches = sorted({
-        str(s["provider"]) for s in list_active_sessions()
+        str(s["provider"]) for s in list_active_sessions(cloud_dir=cloud_dir)
         if s.get("slot") == slot and str(s.get("provider") or "") in VALID_PROVIDERS
     })
     if len(sess_matches) == 1:
@@ -1806,6 +1813,38 @@ def _resolve_provider_for_existing_slot(
             f"FAIL 多个后端均配置了槽位 {slot!r} ({', '.join(cfg_matches)})，请显式传入 --provider"
         )
     return default_provider
+
+
+def resolve_effective_cloud_provider_for_agent(
+    prov_flag: str | None,
+    slot_flag: str | None,
+    subcommand: str | None,
+    *,
+    root: Path | None = None,
+) -> str:
+    """为 Agent 审查与审批卡解析命令实际命中的云端后端（含跨后端既有命名槽位反查）。"""
+    if prov_flag:
+        return prov_flag
+    try:
+        cfg_dir = (Path(root) / "config") if root is not None else None
+        cdir = (Path(root) / "data" / "cloud") if root is not None else None
+        cfg_g, cfg_l = load_cloud_config(config_dir=cfg_dir) if cfg_dir is not None else load_cloud_config()
+        eff_prov = resolve_provider(cfg_g, cfg_l, None)
+        if (
+            not os.environ.get("AVA_CLOUD_PROVIDER", "").strip()
+            and slot_flag
+            and slot_flag not in (DEFAULT_SLOT, "auto")
+            and subcommand not in ("up", "connect", "use", None)
+        ):
+            try:
+                eff_prov = _resolve_provider_for_existing_slot(
+                    cfg_g, cfg_l, eff_prov, slot_flag, cloud_dir=cdir
+                )
+            except SystemExit:
+                pass
+        return eff_prov
+    except Exception:
+        return "autodl"
 
 
 def _cloud_context(
@@ -2105,10 +2144,17 @@ def session_file_for(
     return target
 
 
-def list_active_sessions() -> list[dict[str, Any]]:
+def list_active_sessions(cloud_dir: Path | None = None) -> list[dict[str, Any]]:
     """只读列出当前所有活跃会话（同时读取 `sessions/*.json` 与未迁移的 `active_session.json`）。"""
     candidates: list[Path] = []
-    if get_active_session_file is not _ORIGINAL_GET_ACTIVE_SESSION_FILE:
+    if cloud_dir is not None:
+        sdir = cloud_dir / "sessions"
+        if sdir.is_dir():
+            candidates.extend(sorted(p for p in sdir.glob("*.json") if not p.name.startswith(".")))
+        legacy = cloud_dir / "active_session.json"
+        if legacy.is_file():
+            candidates.append(legacy)
+    elif get_active_session_file is not _ORIGINAL_GET_ACTIVE_SESSION_FILE:
         legacy_mock = get_active_session_file()
         sdir = legacy_mock.parent / "sessions"
         if sdir.is_dir():
@@ -2117,11 +2163,11 @@ def list_active_sessions() -> list[dict[str, Any]]:
             candidates.append(legacy_mock)
     else:
         paths.require_data()
-        cloud_dir = paths.DATA / "cloud"
-        sdir = cloud_dir / "sessions"
+        resolved_cloud_dir = paths.DATA / "cloud"
+        sdir = resolved_cloud_dir / "sessions"
         if sdir.is_dir():
             candidates.extend(sorted(p for p in sdir.glob("*.json") if not p.name.startswith(".")))
-        legacy = cloud_dir / "active_session.json"
+        legacy = resolved_cloud_dir / "active_session.json"
         if legacy.is_file():
             candidates.append(legacy)
 
@@ -2492,11 +2538,27 @@ def _apply_ssh_profile_connection(
     *,
     alias: str | None = None,
     slot: str = DEFAULT_SLOT,
+    reject_duplicate_target: bool = False,
 ) -> tuple[dict, str, str]:
     """在状态锁保护下重新读取最新 `cloud.local.json` 并合并连接配置，重绘 `data/cloud/ssh_config`。"""
     norm_slot = normalize_slot(slot)
+    endpoint = (
+        f"{conn['user']}@{conn['server']}"
+        if conn.get("proxy_type") == "cloudflared"
+        else f"{conn['user']}@{conn['server']}:{conn['port']}"
+    )
     with cloud_state_lock():
         latest_local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else dict(local)
+        if reject_duplicate_target:
+            for other_s in list_configured_slots(latest_local, provider):
+                if other_s == norm_slot:
+                    continue
+                if connection_target(latest_local, provider=provider, slot=other_s) == endpoint:
+                    raise SystemExit(
+                        f"FAIL 目标 {endpoint} 已绑定在 {provider} 槽位 {other_s!r}；"
+                        "将同一实例绑定到多个槽位会导致 hold/unassign 互相干扰。\n"
+                        f"     若要操作该实例请直接使用 `--slot {other_s}`。"
+                    )
         resolved_alias = alias or str(
             provider_profile(latest_local, provider, slot=norm_slot).get("ssh_host")
             or default_slot_ssh_host(provider, norm_slot, cfg_global)
@@ -2510,11 +2572,6 @@ def _apply_ssh_profile_connection(
             or render_ssh_config(resolved_alias, conn, known_hosts_file(), slot=norm_slot)
         )
         paths.atomic_write(ssh_config_file(), rendered)
-    endpoint = (
-        f"{conn['user']}@{conn['server']}"
-        if conn.get("proxy_type") == "cloudflared"
-        else f"{conn['user']}@{conn['server']}:{conn['port']}"
-    )
     return merged, resolved_alias, endpoint
 
 
@@ -2546,6 +2603,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
         print(f"[*] 自动分配并发槽位: {slot}")
 
     try:
+        local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else {}
         if provider == "colab-drive":
             st = provider_settings(cfg_global, "colab-drive")
             prof = provider_profile(local, "colab-drive", slot=slot)
@@ -2642,6 +2700,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
             if conn.get("proxy_type") == "cloudflared"
             else f"{conn['user']}@{conn['server']}:{conn['port']}"
         )
+        local = json.loads(f_local.read_text(encoding="utf-8")) if f_local.exists() else local
         for other_s in list_configured_slots(local, provider):
             if other_s == slot:
                 continue
@@ -2686,7 +2745,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
                 )
 
         merged, alias, endpoint = _apply_ssh_profile_connection(
-            cfg_global, local, f_local, provider, conn, slot=slot
+            cfg_global, local, f_local, provider, conn, slot=slot, reject_duplicate_target=True
         )
         slot_desc = f"，槽位 {slot}" if slot != DEFAULT_SLOT else ""
         print(f"[OK] {provider} 连接信息已更新：{endpoint}（别名 {alias}{slot_desc}）")
@@ -2704,11 +2763,10 @@ def cmd_connect(args: argparse.Namespace) -> int:
         print(f"{tag:<5} [GPU] {desc}")
         if merged.get("active_provider", cfg_global.get("provider", "autodl")) != "colab":
             print("[*] 提示: 如需默认走 Colab，请执行: python -m pipeline.cloud use colab")
-        return 0
+        return 0 if ok else 1
     finally:
         if alloc_lock is not None:
             alloc_lock.unlink(missing_ok=True)
-    return 0 if ok else 1
 
 
 def _doctor_colab_drive(ctx: dict[str, Any]) -> int:
@@ -2965,6 +3023,21 @@ def _session_unit(cfg_global: dict, sdata: dict | None, fallback_provider: str |
     return p, u
 
 
+def _wait_colab_unassign_disconnect(
+    host: str,
+    *,
+    timeout_s: float = 28.0,
+    poll_s: float = 2.0,
+) -> bool:
+    """等待旧 Colab 运行时响应 `.ava_unassign` 哨兵并断开隧道，防 --recreate 抢开时撞上旧内核。"""
+    max_polls = max(1, int(timeout_s / max(0.1, poll_s)))
+    for _ in range(max_polls):
+        time.sleep(poll_s)
+        if not is_ssh_reachable(host):
+            return True
+    return False
+
+
 def cmd_up(args: argparse.Namespace) -> int:
     """开机/接入命令：检测 AutoDL 或 Colab 运行时状态、激活 watchdog 并开启计费会话（支持 --slot 多开）。"""
     ctx = _cloud_context(args, allow_auto_slot=True, prefer_existing_slot=False)
@@ -3111,6 +3184,7 @@ def cmd_up(args: argparse.Namespace) -> int:
                 prev = None
             if reachable:
                 unassign = rpaths["unassign_path"]
+                print("[*] 正在通知旧 Colab 运行时释放（runtime.unassign），等待旧隧道断开...")
                 _ssh(
                     f"touch {shlex.quote(unassign)} && "
                     f"(nohup {shlex.quote(rpaths['remote_python'])} -c 'from google.colab import runtime; runtime.unassign()' >/dev/null 2>&1 &); sleep 1",
@@ -3118,6 +3192,14 @@ def cmd_up(args: argparse.Namespace) -> int:
                     check=False,
                     timeout=15,
                 )
+                if _wait_colab_unassign_disconnect(host):
+                    print("[OK] 旧 Colab SSH 隧道已断开，继续拉起新运行时。")
+                    reachable = False
+                else:
+                    print(
+                        "[WARN] 等待旧 Colab 隧道断开超时（若非 Notebook 内核启动则 sentinel 未运行），继续尝试拉起新运行时...",
+                        file=sys.stderr,
+                    )
 
         if not reachable or (provider == "colab" and recreate):
             if provider == "colab" and not getattr(args, "no_auto_boot", False):

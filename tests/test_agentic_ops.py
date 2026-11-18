@@ -711,10 +711,10 @@ def test_colab双后端切换与单命令provider在agent审查与审批卡正�
     assert v_use.action == "ask" and v_use.allow_key is None
 
     v_before = _review(f"cloud --provider colab run {ep} tts --redo 2", ep)
-    assert v_before.action == "ask" and v_before.allow_key == "run_pipeline:cloud run"
+    assert v_before.action == "ask" and v_before.allow_key == "run_pipeline:cloud run:colab:default"
 
     v_after = _review(f"cloud run {ep} tts --provider colab-drive --redo 2", ep)
-    assert v_after.action == "ask" and v_after.allow_key == "run_pipeline:cloud run"
+    assert v_after.action == "ask" and v_after.allow_key == "run_pipeline:cloud run:colab-drive:default"
 
     # 不合规 extra_args 即使前带 --provider 也必须被 precheck 拦下
     v_bad = _review(f"cloud --provider colab run {ep} tts --force", ep)
@@ -778,6 +778,41 @@ def test_cloud_slot参数在agent校验与审批卡正确生效(repo: Path, monk
         argv=["python", "-m", "pipeline.cloud", "--slot", "tts", "up", "--provider", "colab"],
     )
     assert "Colab" in card and "CU" in card and "槽位: tts" in card
+
+    # 跨后端既有命名槽位反查：active_provider 为 autodl 时，对仅在 colab 活跃/配置的 --slot tts 执行 down / run 必须对齐 colab 卡面与 allow_key
+    (repo / "config").mkdir(parents=True, exist_ok=True)
+    (repo / "config" / "cloud.local.json").write_text(
+        json.dumps({
+            "active_provider": "autodl",
+            "profiles": {"colab": {"slots": {"tts": {"server": "s.trycloudflare.com", "user": "root"}}}},
+        }),
+        encoding="utf-8",
+    )
+    sess_dir = repo / "data" / "cloud" / "sessions"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    (sess_dir / "colab_tts.json").write_text(
+        json.dumps({"session": "s1", "provider": "colab", "slot": "tts"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "CONFIG", repo / "config")
+
+    v_down_cross = _review("cloud down --slot tts", ep)
+    assert v_down_cross.action == "ask" and v_down_cross.allow_key == "run_pipeline:cloud down:colab:tts"
+    assert "Colab" in v_down_cross.request.card_text and "CU" in v_down_cross.request.card_text and "槽位: tts" in v_down_cross.request.card_text
+
+    v_down_cross_root = review_tool_call(
+        "run_pipeline", {"command": "cloud down --slot tts"}, ep_dir=ep, scope="asset", root=repo
+    )
+    assert v_down_cross_root.allow_key == "run_pipeline:cloud down:colab:tts"
+    assert "Colab" in v_down_cross_root.request.card_text and "CU" in v_down_cross_root.request.card_text
+
+    v_run_cross = _review(f"cloud run {ep} tts --slot tts", ep)
+    assert v_run_cross.action == "ask" and v_run_cross.allow_key == "run_pipeline:cloud run:colab:tts"
+    assert "Colab" in v_run_cross.request.card_text and "CU" in v_run_cross.request.card_text
+
+    v_up_cross = _review("cloud up --slot tts", ep)
+    assert v_up_cross.action == "ask" and v_up_cross.allow_key == "run_pipeline:cloud up:autodl:tts"
+    assert "Colab" not in v_up_cross.request.card_text
 
     # 防止 --prov autodl 缩写伪造 Colab 卡面，且缺省 --provider 时按配置解析生效后端
     monkeypatch.setattr(cloud, "load_cloud_config", lambda *a, **k: ({"provider": "colab"}, {}))

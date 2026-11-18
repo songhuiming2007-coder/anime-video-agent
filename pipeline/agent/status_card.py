@@ -618,8 +618,9 @@ def render_approval_card(
         try:
             from pipeline import cloud
 
-            cfg_g, cfg_l = cloud.load_cloud_config()
-            cloud_provider = cloud.resolve_provider(cfg_g, cfg_l, None)
+            cloud_provider = cloud.resolve_effective_cloud_provider_for_agent(
+                None, cloud_slot, cloud_sub, root=root
+            )
         except Exception:
             cloud_provider = "autodl"
 
