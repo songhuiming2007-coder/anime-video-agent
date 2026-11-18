@@ -197,6 +197,8 @@ def _heteronyms_of(ch: str) -> list[str]:
 
 def _cmd_derive(args: argparse.Namespace) -> int:
     """打印（或显式写入）readings → pinyin_injections 的转录表。"""
+    if not CONFIG.exists():
+        raise SystemExit(f"FAIL 缺少 {CONFIG}（请先从 config/voice.example.json 复制创建）")
     cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
     mechanical, manual = derive_injections_from_readings(cfg.get("readings", {}))
 

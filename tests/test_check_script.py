@@ -433,11 +433,10 @@ class TestNoArabicDigits:
         # 同一期的 yy 与 coding 都念得正常。没有证据就不立规矩。
         assert self._one(tmp_path, "今天开始yy，顺便写点coding。").ok
 
-    def test_读音表接管的词条豁免(self, tmp_path):
+    def test_读音表接管的词条豁免(self, tmp_path, monkeypatch):
         # M2U 是韩国作曲家的 handle，稿子写不出别的写法（字幕要显示 M2U）。
         # 规则的理由是「TTS 读法不可控」，readings 把它钉成 M two U 后理由消失。
-        # **本键在 config/voice.json；表里没这条了就该红**——那是三期稿子重新
-        # 变红的先兆，正是要看见的东西。
+        monkeypatch.setattr(cs, "_readings_keys", lambda: ("M2U",))
         c = self._one(tmp_path, "词曲交由韩国作曲家 M2U 操刀。")
         assert c.ok and "豁免" in c.detail
 
@@ -1195,6 +1194,24 @@ class TestEmotionSpeedFields:
         f = script(tmp_path, [BODY] * 8)
         chk = get(cs.run(f), "情绪/语速在受控词表内")
         assert chk.ok and "0/8 段声明" in chk.detail
+
+    def test_仅有voice_example时情绪语速校验正常通过(self, tmp_path, monkeypatch):
+        """fresh clone / CI 无 config/voice.json 时，自动回退 config/voice.example.json 的受控词表。"""
+        import shutil
+
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        shutil.copy2(paths.CONFIG / "voice.example.json", cfg_dir / "voice.example.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        f = script_with_emotion(
+            ep_dir, [BODY] * 8, emotions=["激越陈词"] + [None] * 7, speeds=["快"] + [None] * 7
+        )
+        chk = get(cs.run(f), "情绪/语速在受控词表内")
+        assert chk.ok, chk.detail
+        assert "1/8 段声明" in chk.detail
 
 
 class TestDocumentaryGenre:

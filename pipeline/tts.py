@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
+import inspect
 import json
 import math
 import os
@@ -46,6 +48,7 @@ from .align import verify_alignment   # 叶子模块，无环
 from .qc import episode_duration_band
 
 CONFIG = paths.CONFIG / "voice.json"
+EXAMPLE_CONFIG = paths.CONFIG / "voice.example.json"
 
 CPM = paths.conf("script.cpm", 380)   # 与 check_script 同源同 fallback；真值在
                                       # config/project.json（2026-08-10 校准 315），
@@ -540,6 +543,45 @@ def qwen3_language_name(code: str | None) -> str:
     return _QWEN3_LANG_NAMES[key]
 
 
+def _flash_attn_usable() -> bool:
+    """检查当前环境是否实际可导入 `flash_attn`（纯探测+安全导入，不抛错）。"""
+    if importlib.util.find_spec("flash_attn") is None:
+        return False
+    try:
+        import flash_attn  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cuda_device_index(device_map: object) -> int:
+    """从 `device_map` 解析目标 CUDA 设备编号，默认 0。"""
+    if isinstance(device_map, int):
+        return device_map
+    if isinstance(device_map, str) and device_map.startswith("cuda:"):
+        tail = device_map.split(":", 1)[1].strip()
+        if tail.isdigit():
+            return int(tail)
+    return 0
+
+
+def _resolve_qwen3_attn_impl(opts: dict, torch_mod) -> str:
+    """为 Qwen3-TTS CUDA 选择高效注意力实现：显式配置优先；否则 Ampere+ 且装了 flash_attn 用 flash_attention_2，其余显式用 PyTorch sdpa。"""
+    explicit = opts.get("attn_implementation")
+    if explicit and str(explicit).strip().lower() != "auto":
+        return str(explicit)
+    dtype_name = str(opts.get("dtype", "bfloat16"))
+    if _flash_attn_usable() and dtype_name in ("float16", "bfloat16") and torch_mod.cuda.is_available():
+        dev = _cuda_device_index(opts.get("device_map", "cuda:0"))
+        try:
+            major, _ = torch_mod.cuda.get_device_capability(dev)
+            if major >= 8:
+                return "flash_attention_2"
+        except Exception:  # noqa: BLE001
+            pass
+    return "sdpa"
+
+
 def _load_qwen3_cuda(cfg: dict, model_dir: str | Path):
     """Qwen3-TTS 的 **PyTorch/CUDA** 版 loader（云端主选，2026-09-11 实测通过）。
 
@@ -571,11 +613,18 @@ def _load_qwen3_cuda(cfg: dict, model_dir: str | Path):
     opts = cfg.get("qwen3_cuda") or {}
     import torch
 
-    return Qwen3TTSModel.from_pretrained(
-        str(model_dir),
-        device_map=opts.get("device_map", "cuda:0"),
-        dtype=getattr(torch, opts.get("dtype", "bfloat16")),
-    )
+    kwargs: dict = {
+        "device_map": opts.get("device_map", "cuda:0"),
+        "dtype": getattr(torch, opts.get("dtype", "bfloat16")),
+    }
+    attn_impl = _resolve_qwen3_attn_impl(opts, torch)
+    params = inspect.signature(Qwen3TTSModel.from_pretrained).parameters
+    if "attn_implementation" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+        kwargs["attn_implementation"] = attn_impl
+
+    return Qwen3TTSModel.from_pretrained(str(model_dir), **kwargs)
 
 
 LOADERS = {"indextts": _load_indextts, "qwen3_tts": _load_qwen3}
@@ -847,7 +896,7 @@ def _ref_text_for(ref: Path) -> str | None:
     return json.loads(book.read_text(encoding="utf-8")).get(Path(ref).name)
 
 
-def load_config(path: Path = CONFIG) -> dict:
+def load_config(path: Path | None = None) -> dict:
     """读配音配置，支持 `_extends` 覆盖层。
 
     **为什么要覆盖层**（2026-09-11）：本地 Mac 只装得了 mlx（qwen3_tts），
@@ -856,11 +905,16 @@ def load_config(path: Path = CONFIG) -> dict:
     漏一处就是静默不一致（而读音分叉的代价是某一期突然念错）。
     覆盖层只写差异，其余字段从基配置继承。
     """
+    if path is None:
+        path = CONFIG
     if not path.exists():
-        raise SystemExit(
-            f"FAIL 缺少 {path}。先跑 `python -m pipeline.tts probe` 选定音色，"
-            f"再把结论写进这个文件。"
+        hint = (
+            "若首次拉取仓库，先 `cp config/voice.example.json config/voice.json` "
+            "并填入本机 `ref_audio`。"
+            if path.name == "voice.json"
+            else "先跑 `python -m pipeline.tts probe` 选定音色，再把结论写进这个文件。"
         )
+        raise SystemExit(f"FAIL 缺少 {path}。{hint}")
     # 前置校验（2026-08-18 复盘②）：坏 JSON / 缺必要键在加载处当场报——
     # 不拦的话，流到 Engine 构造或 _voice_fingerprint 才是裸 KeyError，
     # 报错离病根隔了好几层
@@ -937,11 +991,30 @@ def _voice_cfg(path: Path) -> dict:
     早就写明了这条约束）。**按路径做缓存键**而不是零参缓存：测试会
     monkeypatch `CONFIG` 指到临时文件，零参缓存会让后来的用例吃到上一个
     用例的脏缓存（红队核实的假红陷阱）；路径变了自然 miss。
+
+    `config/voice.json` 本机未创建（如 CI / fresh clone）时，回退读同目录
+    `voice.example.json`（或返回空字典），确保纯函数测验与受控词表查询可用。
     """
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    p = Path(path)
+    if not p.exists() and p.name == "voice.json":
+        example = p.with_name("voice.example.json")
+        if example.is_file():
+            p = example
+        elif EXAMPLE_CONFIG.is_file():
+            p = EXAMPLE_CONFIG
+        else:
+            return {}
+    elif not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
+def _injections_for(path: Path) -> dict[str, str]:
+    """按路径缓存 `pinyin_injections`（TONE3 统一表示，引擎语法由 g2p 分派）。"""
+    return g2p.load_injections(_voice_cfg(path))
+
+
 def _readings() -> dict[str, str]:
     """`config/voice.json` 的读音替换表（键 = 原文词，值 = 合成侧同音替换词）。
 
@@ -956,10 +1029,9 @@ def _readings() -> dict[str, str]:
     return _voice_cfg(CONFIG).get("readings", {})
 
 
-@lru_cache(maxsize=1)
 def _injections() -> dict[str, str]:
     """voice.json 的 `pinyin_injections`（TONE3 统一表示，引擎语法由 g2p 分派）。"""
-    return g2p.load_injections(_voice_cfg(CONFIG))
+    return _injections_for(CONFIG)
 
 
 def speakable_traced(
@@ -1788,7 +1860,7 @@ def _cfg_with_overlay(cfg: dict, overlay: dict) -> dict:
     return {**cfg, "overlay": overlay}
 
 
-def rerun_labels(episode: Path, cfg_path: Path = CONFIG) -> list[str] | None:
+def rerun_labels(episode: Path, cfg_path: Path | None = None) -> list[str] | None:
     """普通重跑 `tts`（不带 --force/--redo）会重配哪些**已配过**的段。纯读，零写入。
 
     D72（2026-10-10 伪恋期）：全局读音表改了之后，「哪些段要重配」只记在桌面端组件内存里，
@@ -1804,6 +1876,8 @@ def rerun_labels(episode: Path, cfg_path: Path = CONFIG) -> list[str] | None:
 
     from . import corrections
 
+    if cfg_path is None:
+        cfg_path = CONFIG
     mf_path = episode / "03-audio" / "manifest.json"
     try:
         old = json.loads(mf_path.read_text(encoding="utf-8"))
@@ -2111,7 +2185,7 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
+def run(episode: Path, force: bool = False, cfg_path: Path | None = None,
         review: dict[str, int] | None = None, redo: list[str] | None = None,
         force_all: bool = False, allow_engine_mix: bool = False,
         apply_patch: bool = False, _overlay: dict | None = None) -> Path:
@@ -2134,6 +2208,8 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
     if review is not None:
         return write_review(episode, review)
 
+    if cfg_path is None:
+        cfg_path = CONFIG
     cfg = load_config(cfg_path)
     segs = parse_script(script)
     out_dir = episode / "03-audio"
@@ -2397,7 +2473,7 @@ def run(episode: Path, force: bool = False, cfg_path: Path = CONFIG,
         return manifest_path
 
 
-def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,
+def probe(text: str, cfg_path: Path | None, dest: Path, ref: Path | None = None,
           seed: int = 0) -> None:
     """试音：单句生成 + 回读，用来比较引擎和参考干声。
 
@@ -2408,7 +2484,7 @@ def probe(text: str, cfg_path: Path, dest: Path, ref: Path | None = None,
     `attempt*1000 + 段号 + seed_offset` 下的表现）就显式传——
     传 `seed_offset` 得到的就是那一期该段首次真正会用的种子。
     """
-    cfg = load_config(cfg_path)
+    cfg = load_config(CONFIG if cfg_path is None else cfg_path)
     if ref is not None:
         cfg = {**cfg, "ref_audio": str(ref), "ref_text": _ref_text_for(ref)}
     engine = Engine(cfg)
@@ -2434,7 +2510,7 @@ def main() -> int:
                    help="已改名：全量重配必须写 --force-all（这条仍然报错，见 run()）")
     r.add_argument("--force-all", action="store_true",
                    help="全量重配（本期每一段都重合成；人耳逐段审听会全部作废，动手前先问人）")
-    r.add_argument("--config", type=Path, default=CONFIG)
+    r.add_argument("--config", type=Path, default=None)
     r.add_argument("--review", type=str, default=None,
                    help="写入 03.5 结构化打点（如 voice=4,prosody=3,misread=4），不触发重合成")
     r.add_argument("--redo", type=str, default=None,
@@ -2452,7 +2528,7 @@ def main() -> int:
 
     p = sub.add_parser("probe", help="单句试音")
     p.add_argument("text")
-    p.add_argument("--config", type=Path, default=CONFIG)
+    p.add_argument("--config", type=Path, default=None)
     p.add_argument("--out", type=Path, default=paths.VOICE / "probe" / "probe.wav")
     p.add_argument("--ref", type=Path, help="临时换参考干声（相对仓库根），用于比音色")
     p.add_argument("--seed", type=int, default=0,

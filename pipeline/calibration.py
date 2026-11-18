@@ -128,6 +128,9 @@ def parse_value(target: Target, raw: str) -> float | int:
 
 
 def _load(path: Path) -> tuple[dict, bytes]:
+    if not path.exists():
+        hint = "（请先从 config/voice.example.json 复制创建）" if path.name == "voice.json" else ""
+        raise CalibrationError(f"缺少 config/{path.name}{hint}")
     raw = path.read_bytes()
     cfg = json.loads(raw.decode("utf-8"))
     if _dump(cfg, raw).encode("utf-8") != raw:

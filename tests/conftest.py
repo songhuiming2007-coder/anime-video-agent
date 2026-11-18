@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import pytest
 
-from pipeline import paths
+from pipeline import asr, paths
 from pipeline.jobs import _reset_global_publisher_for_testing
 
 _REAL_EVENTS_SNAPSHOT: dict[str, object] = {}
@@ -52,6 +52,14 @@ def _isolate_ava_events_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_global_publisher_for_testing()
     yield tmp_path
     _reset_global_publisher_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_asr_model_cache():
+    """函数级 autouse 夹具：隔离云端 ASR 后端进程级模型缓存，避免跨用例污染。"""
+    asr.clear_model_cache()
+    yield
+    asr.clear_model_cache()
 
 
 # 变异 harness 专用（scripts/verify_mutations.py 设置 AVA_KI_AS_FAILURE=1）：测试体里逃逸的

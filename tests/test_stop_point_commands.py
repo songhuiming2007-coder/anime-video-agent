@@ -43,11 +43,18 @@ TIMBRE_LINE = "2段 语气发飘 换种子"
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """假仓库根：data/episodes/ep-test（稿件 + 草稿 + 03-audio）。"""
+    """假仓库根：data/episodes/ep-test（稿件 + 草稿 + 03-audio）与独立 voice.json 夹具。"""
+    import shutil
+
     ep = tmp_path / "data" / "episodes" / "ep-test"
     (ep / "03-audio").mkdir(parents=True)
     (ep / "02-script.md").write_text(SCRIPT, encoding="utf-8")
     (ep / "02-script.draft.md").write_text(DRAFT, encoding="utf-8")
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir(parents=True)
+    voice_cfg = cfg_dir / "voice.json"
+    shutil.copy2(paths.CONFIG / "voice.example.json", voice_cfg)
+    monkeypatch.setattr(tts, "CONFIG", voice_cfg)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     return ep
 

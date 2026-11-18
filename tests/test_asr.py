@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import asr
+from pipeline import asr, tts
 
 
 @pytest.mark.parametrize("dur, kwargs", [
@@ -75,7 +75,10 @@ def test_sensevoice_Colab冷启动显式传hub_hf并透传至AutoModel(monkeypat
         def generate(self, **_kwargs):
             return [{"text": " 你好 "}]
 
+    import importlib.machinery
+
     fake_funasr = types.ModuleType("funasr")
+    fake_funasr.__spec__ = importlib.machinery.ModuleSpec("funasr", loader=None)
     fake_funasr.AutoModel = _FakeAutoModel  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
 
@@ -114,3 +117,151 @@ def test_sensevoice_Colab首段已落HF缓存后改喂本地snapshot且半残缓
         "model": str(snap),
         "disable_update": True,
     }
+
+
+def test_strip_asr_tags_剥离SenseVoice与事件标签且不误伤普通符号():
+    assert asr.strip_asr_tags("<|zh|><|NEUTRAL|><|Speech|><|withitn|>他们必须摸索出1种") == "他们必须摸索出1种"
+    assert asr.strip_asr_tags("  <|HAPPY|><|Laughter|>哈哈<|/Laughter|>你好  ") == "哈哈你好"
+    assert asr.strip_asr_tags("<|nospeech|>") == ""
+    assert asr.strip_asr_tags("a < b | c > d") == "a < b | c > d"
+
+
+def test_sensevoice_剥离控制标签后tts_cer归零(monkeypatch, tmp_path):
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(tmp_path))
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "autodl")
+    local_dir = tmp_path / "FunAudioLLM" / "SenseVoiceSmall"
+    local_dir.mkdir(parents=True)
+
+    class _FakeAutoModel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, **_kwargs):
+            return [{"text": "<|zh|><|NEUTRAL|><|Speech|><|withitn|>他们必须摸索出1种"}]
+
+    import importlib.machinery
+
+    fake_funasr = types.ModuleType("funasr")
+    fake_funasr.__spec__ = importlib.machinery.ModuleSpec("funasr", loader=None)
+    fake_funasr.AutoModel = _FakeAutoModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
+
+    wav = tmp_path / "seg.wav"
+    heard, used = asr.transcribe_audio(wav, backend="sensevoice_cuda")
+    assert used == "sensevoice_cuda"
+    assert heard == "他们必须摸索出1种"
+    assert tts.cer("他们必须摸索出一种", heard) == (0, 0.0)
+
+
+def test_sensevoice_模型按配置缓存仅初始化一次_冷启动落盘不双载_参数变化或清理后重建(monkeypatch, tmp_path):
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(tmp_path / "missing_models"))
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "colab")
+    hub = tmp_path / "hub"
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+
+    init_calls: list[dict[str, object]] = []
+    gen_calls: list[str] = []
+
+    class _FakeAutoModel:
+        def __init__(self, **kwargs):
+            init_calls.append(kwargs)
+
+        def generate(self, **kwargs):
+            gen_calls.append(str(kwargs["input"]))
+            return [{"text": "<|zh|><|NEUTRAL|><|Speech|><|withitn|>你好世界"}]
+
+    import importlib.machinery
+
+    fake_funasr = types.ModuleType("funasr")
+    fake_funasr.__spec__ = importlib.machinery.ModuleSpec("funasr", loader=None)
+    fake_funasr.AutoModel = _FakeAutoModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
+
+    wav1 = tmp_path / "1.wav"
+    wav2 = tmp_path / "2.wav"
+    assert asr._backend_sensevoice_cuda(wav1) == "你好世界"
+    assert len(init_calls) == 1
+
+    # 模拟 Colab 首段推理后权重已落进 HF_HUB_CACHE：第 2 段必须复用同一模型实例，不双载
+    repo_cache = hub / "models--FunAudioLLM--SenseVoiceSmall"
+    (repo_cache / "refs").mkdir(parents=True)
+    (repo_cache / "refs" / "main").write_text("deadbeef", encoding="utf-8")
+    snap = repo_cache / "snapshots" / "deadbeef"
+    snap.mkdir(parents=True)
+    (snap / "configuration.json").write_text("{}", encoding="utf-8")
+    (snap / "model.pt").write_bytes(b"pt")
+
+    assert asr._backend_sensevoice_cuda(wav2) == "你好世界"
+    assert len(init_calls) == 1, "冷启动落盘后第 2 段不应再次实例化 AutoModel"
+    assert len(gen_calls) == 2
+
+    # 切换本地模型目录后应重建实例
+    new_root = tmp_path / "local_models"
+    (new_root / "FunAudioLLM" / "SenseVoiceSmall").mkdir(parents=True)
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(new_root))
+    assert asr._backend_sensevoice_cuda(wav1) == "你好世界"
+    assert len(init_calls) == 2
+
+    # 显式清理缓存后再次调用应重建实例
+    asr.clear_model_cache()
+    assert asr._backend_sensevoice_cuda(wav1) == "你好世界"
+    assert len(init_calls) == 3
+
+
+def test_whisper_cuda_模型按fp16懒加载缓存仅初始化一次_清理或切目录后重建(monkeypatch, tmp_path):
+    import torch
+
+    root1 = tmp_path / "models1"
+    (root1 / "openai" / "whisper-large-v3").mkdir(parents=True)
+    root2 = tmp_path / "models2"
+    (root2 / "openai" / "whisper-large-v3").mkdir(parents=True)
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(root1))
+    monkeypatch.setenv("AVA_CLOUD_PROVIDER", "autodl")
+
+    def _mk_wav(name: str, secs: int) -> Path:
+        p = tmp_path / name
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16000 * secs)
+        return p
+
+    short_wav = _mk_wav("short.wav", 5)
+    long_wav = _mk_wav("long.wav", 31)
+
+    pipe_inits: list[dict[str, object]] = []
+    pipe_calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_pipeline(task, **kwargs):
+        pipe_inits.append({"task": task, **kwargs})
+
+        def _run(audio_path, **call_kw):
+            pipe_calls.append((audio_path, call_kw))
+            return {"text": " <|zh|>第一句 "}
+
+        return _run
+
+    fake_tf = types.ModuleType("transformers")
+    fake_tf.pipeline = _fake_pipeline  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+
+    assert asr._backend_whisper_cuda(short_wav) == "第一句"
+    assert asr._backend_whisper_cuda(long_wav) == "第一句"
+    assert len(pipe_inits) == 1
+    assert pipe_inits[0]["dtype"] == torch.float16
+    assert pipe_inits[0]["model"] == str(root1 / "openai" / "whisper-large-v3")
+    assert pipe_calls == [
+        (str(short_wav), {}),
+        (str(long_wav), {"return_timestamps": True}),
+    ]
+
+    # 切目录后重建
+    monkeypatch.setenv("AVA_REMOTE_MODELS", str(root2))
+    assert asr._backend_whisper_cuda(short_wav) == "第一句"
+    assert len(pipe_inits) == 2
+
+    # 清理缓存后重建
+    asr.clear_model_cache()
+    assert asr._backend_whisper_cuda(short_wav) == "第一句"
+    assert len(pipe_inits) == 3

@@ -2454,3 +2454,52 @@ def test_parser_accepts_slot_and_instance_across_all_subcommands():
     assert prov is None and slot_ex == "tts" and clean == ["--redo", "2"]
 
 
+def test_voice_json虽git忽略但非local_cloud同步上云后voice_cloud完整继承(tmp_path, monkeypatch):
+    """D107 + 方案 B：config/voice.json 不进 git，但仍属于需同步到云端的运行时配置（非 *.local.json）。"""
+    import shutil
+    from pipeline import cloud_drive, tts
+
+    repo = tmp_path / "repo"
+    cfg = repo / "config"
+    ep = repo / "data" / "episodes" / "ep-demo"
+    drive_root = tmp_path / "MyDrive" / "ava_cloud"
+    (repo / "pipeline").mkdir(parents=True)
+    (repo / "pipeline" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='ava'\n", encoding="utf-8")
+    cfg.mkdir(parents=True)
+    ep.mkdir(parents=True)
+    (ep / "02-script.md").write_text("## 段落 1\n\n配音：测试。\n", encoding="utf-8")
+
+    # 造本机私有 config/voice.json 与凭据 config/cloud.local.json，另放真实的 voice.cloud.json
+    voice_data = json.loads((cloud.paths.CONFIG / "voice.example.json").read_text(encoding="utf-8"))
+    voice_data["ref_audio"] = "data/voice/reference/seg6.wav"
+    voice_data["readings"]["AM02:00"] = "Gozen Niji"
+    voice_data["titles"]["My Dearest"] = 1.44
+    (cfg / "voice.json").write_text(json.dumps(voice_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    shutil.copy2(cloud.paths.CONFIG / "voice.cloud.json", cfg / "voice.cloud.json")
+    (cfg / "cloud.local.json").write_text('{"api_token": "SECRET"}', encoding="utf-8")
+
+    # 1. code_manifest 与 build_sync_up_files 必须包含 config/voice.json 并过滤 *.local.json
+    mf = cloud.code_manifest(repo)
+    assert "config/voice.json" in mf and "config/voice.cloud.json" in mf
+    assert "config/cloud.local.json" not in mf
+
+    monkeypatch.setattr(cloud.paths, "ROOT", repo)
+    pairs = cloud.build_sync_up_files(ep, ["02-script.md", "config/"], "/remote/ep", "/remote")
+    assert (f"{cfg}/", "/remote/config") in pairs
+
+    # 2. colab-drive staging + sync_code_to_drive 后，远端工作目录加载 voice.cloud.json 能继承完整本机资产
+    cloud_drive.sync_code_to_drive(drive_root, repo, mf)
+    cloud_drive.stage_episode_inputs(drive_root, ep, "data/episodes/ep-demo", ["config/"], repo)
+    remote_cfg = drive_root / "code" / "config"
+    assert (remote_cfg / "voice.json").is_file()
+    assert not (remote_cfg / "cloud.local.json").exists()
+
+    monkeypatch.setattr(tts.paths, "CONFIG", remote_cfg)
+    cloud_voice = tts.load_config(remote_cfg / "voice.cloud.json")
+    assert cloud_voice["engine"] == "qwen3_tts_cuda"
+    assert cloud_voice["ref_audio"] == "data/voice/reference/seg6.wav"
+    assert cloud_voice["readings"]["AM02:00"] == "Gozen Niji"
+    assert cloud_voice["titles"]["My Dearest"] == 1.44
+
+

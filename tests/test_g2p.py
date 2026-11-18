@@ -147,19 +147,32 @@ def test_adr0006_leak_cases_are_a_fixed_sample_set():
 
 
 def test_derive_from_real_readings_table_is_total():
-    """拿真实 readings 表跑一遍：**一条都不许漏**。
+    """全形态 readings 表转录总数守恒：**一条都不许漏**。
 
     防的错误：转录逻辑对某些形态的条目静默跳过。总数守恒（机械＋人工 == 表长）
-    是「没有静默丢弃」的可证伪判据。
+    是「没有静默丢弃」的可证伪判据。本机若存在 config/voice.json 亦顺带核验。
     """
-    cfg = json.loads((paths.CONFIG / "voice.json").read_text(encoding="utf-8"))
-    readings = {k: v for k, v in cfg["readings"].items() if not k.startswith("_")}
-    mech, manual = g2p.derive_injections_from_readings(cfg["readings"])
+    sample = {
+        "_note": "元数据",
+        "世界": "逝戒",
+        "成人": "chéng人",
+        "reche": "Rishe",
+        "最後の花弁": "Saigo no Hanabira",
+        "koeda": "扣诶达",
+    }
+    tables = [sample]
+    local_voice = paths.CONFIG / "voice.json"
+    if local_voice.is_file():
+        cfg = json.loads(local_voice.read_text(encoding="utf-8"))
+        if cfg.get("readings"):
+            tables.append(cfg["readings"])
 
-    assert len(mech) + len(manual) == len(readings), "转录总数必须等于表长"
-    assert mech and manual, "实际情况应两者都有"
-
-    for word, tone3 in mech.items():
-        for engine in ("indextts2", "qwen3_tts"):
-            rendered = g2p.format_for_engine(tone3, engine)
-            assert rendered, f"{word} 在 {engine} 下渲染为空"
+    for raw_table in tables:
+        readings = {k: v for k, v in raw_table.items() if not k.startswith("_")}
+        mech, manual = g2p.derive_injections_from_readings(raw_table)
+        assert len(mech) + len(manual) == len(readings), "转录总数必须等于表长"
+        assert mech and manual, "应同时覆盖机械与人工两条分支"
+        for word, tone3 in mech.items():
+            for engine in ("indextts2", "qwen3_tts"):
+                rendered = g2p.format_for_engine(tone3, engine)
+                assert rendered, f"{word} 在 {engine} 下渲染为空"

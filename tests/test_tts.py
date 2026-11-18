@@ -1325,7 +1325,7 @@ class TestConfigOverlay:
         with pytest.raises(SystemExit, match="_extends"):
             t.load_config(over)
 
-    def test_云端覆盖层切到cuda引擎并继承全部共享表(self):
+    def test_云端覆盖层切到cuda引擎并继承全部共享表(self, tmp_path, monkeypatch):
         """真实文件检查：云端配置必须切到 qwen3_tts_cuda，且共享表一条不少。
 
         防的错误：覆盖层写错字段名（比如漏了 readings 就该继承却手写了个空表），
@@ -1335,16 +1335,28 @@ class TestConfigOverlay:
         与本地 mlx 版同版权重 → 音色一致（用户实听确认「相当好，很纯净」）。
         Index 系列已否决：IndexTTS2 非多语种，与本项目英日歌名需求直接冲突。
         """
-        base = t.load_config(paths.CONFIG / "voice.json")
-        cloud = t.load_config(paths.CONFIG / "voice.cloud.json")
+        import shutil
+
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        ex = json.loads((paths.CONFIG / "voice.example.json").read_text(encoding="utf-8"))
+        ex["readings"]["M2U"] = "M two U"
+        ex["pinyin_injections"]["世界"] = "shi4jie4"
+        ex["titles"]["My Dearest"] = 1.44
+        (cfg_dir / "voice.json").write_text(json.dumps(ex, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        shutil.copy2(paths.CONFIG / "voice.cloud.json", cfg_dir / "voice.cloud.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+
+        base = t.load_config(cfg_dir / "voice.json")
+        cloud = t.load_config(cfg_dir / "voice.cloud.json")
         assert cloud["engine"] == "qwen3_tts_cuda"
         # 云端模型在数据盘、不在仓库内，所以用绝对路径；本地配置仍用 HF 仓库名
         assert cloud["model"] == "/root/autodl-tmp/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-        assert cloud["readings"] == base["readings"]
+        assert cloud["readings"] == base["readings"] and cloud["readings"]["M2U"] == "M two U"
         assert cloud["pinyin_injections"] == base["pinyin_injections"]
         assert cloud["emotions"] == base["emotions"]
         assert cloud["speed"] == base["speed"]
-        assert cloud["titles"] == base["titles"]
+        assert cloud["titles"] == base["titles"] and cloud["titles"]["My Dearest"] == 1.44
 
 
 class TestCascadeArbitration:
@@ -1487,11 +1499,48 @@ class TestQwen3CudaLoader:
         fake_mod.Qwen3TTSModel = FakeModel
         monkeypatch.setitem(_sys.modules, "qwen_tts", fake_mod)
 
+        monkeypatch.setattr(t, "_flash_attn_usable", lambda: False)
         t._load_qwen3_cuda(
             {"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16"}}, "/models/x"
         )
         assert seen["path"] == "/models/x"
         assert seen["device_map"] == "cuda:0"
+        assert seen["attn_implementation"] == "sdpa"
+
+    def test_loader_高效注意力按硬件与配置选择(self, monkeypatch):
+        """无 flash-attn 或 T4 (SM 7.5) 回退 sdpa；L4/A100 (SM >= 8.0) 且可用 flash-attn 用 flash_attention_2；显式配置优先。"""
+        import sys as _sys
+        import types as _types
+        import torch
+
+        seen: list[dict] = []
+
+        class FakeModel:
+            @staticmethod
+            def from_pretrained(path, **kw):
+                seen.append({"path": path, **kw})
+                return object()
+
+        fake_mod = _types.ModuleType("qwen_tts")
+        fake_mod.Qwen3TTSModel = FakeModel
+        monkeypatch.setitem(_sys.modules, "qwen_tts", fake_mod)
+
+        # 1. L4 (SM 8.9) + flash_attn 可用 → flash_attention_2
+        monkeypatch.setattr(t, "_flash_attn_usable", lambda: True)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev=0: (8, 9))
+        t._load_qwen3_cuda({"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16"}}, "/models/x")
+
+        # 2. T4 (SM 7.5) + flash_attn 可用 → 回退 sdpa（防止 Turing 架构运行崩溃）
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev=0: (7, 5))
+        t._load_qwen3_cuda({"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16"}}, "/models/x")
+
+        # 3. 显式配置 attn_implementation 原样透传
+        t._load_qwen3_cuda(
+            {"qwen3_cuda": {"device_map": "cuda:0", "dtype": "bfloat16", "attn_implementation": "eager"}},
+            "/models/x",
+        )
+        assert [c["attn_implementation"] for c in seen] == ["flash_attention_2", "sdpa", "eager"]
 
     def test_语言码必须翻成全名(self):
         """云端实测（2026-09-11）：PyTorch 版传 `zh` 直接 ValueError。
@@ -1631,9 +1680,17 @@ class TestQwen3CudaLoader:
         with pytest.raises(ValueError):
             t.sampling_for(0)
 
-    def test_云端配置的模型路径是数据盘绝对路径(self):
+    def test_云端配置的模型路径是数据盘绝对路径(self, tmp_path, monkeypatch):
         """云端模型在数据盘、不在仓库内，必须是绝对路径（否则 _resolve_model 会拼到仓库根）。"""
-        cloud = t.load_config(paths.CONFIG / "voice.cloud.json")
+        import shutil
+
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        shutil.copy2(paths.CONFIG / "voice.example.json", cfg_dir / "voice.json")
+        shutil.copy2(paths.CONFIG / "voice.cloud.json", cfg_dir / "voice.cloud.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+
+        cloud = t.load_config(cfg_dir / "voice.cloud.json")
         assert cloud["model"].startswith("/root/autodl-tmp/models/")
 
 
@@ -2358,11 +2415,61 @@ class TestProbeSpeakable:
         cfg = tmp_path / "voice.json"
         cfg.write_text(json.dumps({"engine": "indextts2", "model": "m",
                                    "ref_audio": "r.wav"}), encoding="utf-8")
+        monkeypatch.setattr(t, "_injections", lambda: {"世界": "shi4jie4"})
+        monkeypatch.setattr(t, "_readings", lambda: {})
         monkeypatch.setattr(t, "Engine", _Eng)
         monkeypatch.setattr(t, "probe_duration", lambda p: 1.0)
         monkeypatch.setattr(t, "transcribe", lambda p: "世界")
         t.probe("世界", cfg, tmp_path / "out.wav")
         assert captured["text"] == t.speakable("世界", "indextts2") == "SHI4JIE4"
+
+
+class TestVoiceConfigGitIsolation:
+    """config/voice.json 个人资产隔离与 voice.example.json 模板契约。"""
+
+    def test_voice_json已忽略且不进git跟踪_example已跟踪且格式往返一致(self):
+        import subprocess
+        from pipeline import calibration, corrections
+
+        ig = subprocess.run(["git", "-C", str(paths.ROOT), "check-ignore", "-q", "config/voice.json"], check=False)
+        assert ig.returncode == 0, "config/voice.json 必须被 .gitignore 覆盖"
+        ls_voice = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "ls-files", "config/voice.json"],
+            capture_output=True, text=True, check=True,
+        )
+        assert ls_voice.stdout.strip() == "", "config/voice.json 不得被 git 跟踪"
+
+        ex_path = paths.CONFIG / "voice.example.json"
+        assert ex_path.is_file()
+        ig_ex = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "check-ignore", "-q", "config/voice.example.json"], check=False
+        )
+        assert ig_ex.returncode != 0, "config/voice.example.json 不能被 .gitignore 忽略"
+        ls_ex = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "ls-files", "config/voice.example.json"],
+            capture_output=True, text=True, check=True,
+        )
+        assert ls_ex.stdout.strip() == "config/voice.example.json"
+
+        raw = ex_path.read_bytes()
+        cfg = json.loads(raw.decode("utf-8"))
+        assert corrections._dump_voice_config(cfg, raw).encode("utf-8") == raw
+        assert calibration._dump(cfg, raw).encode("utf-8") == raw
+
+    def test_fresh_clone仅有example时纯函数可用而load_config显式引导创建(self, tmp_path, monkeypatch):
+        import shutil
+
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        shutil.copy2(paths.CONFIG / "voice.example.json", cfg_dir / "voice.example.json")
+        monkeypatch.setattr(paths, "CONFIG", cfg_dir)
+        monkeypatch.setattr(t, "CONFIG", cfg_dir / "voice.json")
+
+        assert t.cer("八幡自爆", "八番自爆") == (0, 0.0)
+        assert t.expected_duration("八幡自爆了") == pytest.approx(5 / t.CPM * 60)
+        assert t.speakable("他站在那里。") == "他站在那里。"
+        with pytest.raises(SystemExit, match="voice.example.json"):
+            t.load_config()
 
 
 # ---------------------------------------------------------------------------

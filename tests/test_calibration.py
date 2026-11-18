@@ -25,8 +25,9 @@ EVID = "S01E01 整集密度表 thr8–12 中位 3.0s，切点抽检 24 个里 20
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d = tmp_path / "config"
     d.mkdir()
-    for name in ("project.json", "scenes.json", "voice.json"):
+    for name in ("project.json", "scenes.json"):
         shutil.copy2(REPO_CONFIG / name, d / name)
+    shutil.copy2(REPO_CONFIG / "voice.example.json", d / "voice.json")
     monkeypatch.setattr(paths, "CONFIG", d)
     monkeypatch.setattr(shots, "SHOTS_DIR", tmp_path / "shots")
     return d

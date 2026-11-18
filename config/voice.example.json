@@ -1,0 +1,69 @@
+{
+  "_note": "配音参数模板（不含本机个人路径、读音表、钉种子与番剧歌名）。首次使用请执行 `cp config/voice.example.json config/voice.json` 并填入本机 `ref_audio`（`config/voice.json` 已被 `.gitignore` 忽略，不随开源仓库提交）。",
+  "engine": "qwen3_tts",
+  "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+  "ref_audio": "data/voice/reference/example.wav",
+  "ref_text": null,
+  "lang_code": "zh",
+  "_seed_note": "种子规范：seed = attempt*1000 + 段index + seed_offset。`seed_offset` 为全局基准；`segment_seeds` 为按段号/句号（如 \"13.1\"）的局部纠偏。",
+  "seed_offset": 7,
+  "segment_seeds": {},
+  "titles": {
+    "_note": "回读比对豁免与实测时长表：键为歌名原文，值为单独念白实测秒数（null 表示未实测）。"
+  },
+  "emotions": {
+    "_note": "02-script.md 情绪字段的受控词表（架构设计 3.3）。机制：词表在此映射；内容：每期写哪些词由写稿 skill 定；check_script.py 拦表外词。\n**2026-09-11 实测结论：两个通道都没有情感参数**——本地 mlx 的 qwen3_tts 没有；云端 qwen3_tts_cuda 同样没有（IndexTTS2 有 emo_vector，但它已被否决）。所以这两个字段当前**只进 manifest 供 eval 按情绪分组统计**，不改变声学输出。保留字段与词表是为将来换引擎时能立即接上（也让 eval 能回答「声明是否真的改变了声学输出」这个问题——当前答案就是「没改变」，这是通道的已知能力边界，不是 bug）。\nemo_vector 的 8 维顺序（IndexTTS2 用，留档）：happy, angry, sad, afraid, disgusted, melancholic, surprised, calm。",
+    "平静叙述": {
+      "emo_vector": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "emo_alpha": 1.0
+    },
+    "低沉克制": {
+      "emo_vector": [
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.6,
+        0.0,
+        0.2
+      ],
+      "emo_alpha": 0.8
+    },
+    "激越陈词": {
+      "emo_vector": [
+        0.4,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.1,
+        0.0
+      ],
+      "emo_alpha": 0.9
+    }
+  },
+  "speed": {
+    "_note": "02-script.md 语速字段的受控词表 → 合成时长系数（架构设计 3.3/3.4）。取值只许 慢/中/快，check_script.py 机检。系数乘在 expected_duration 上作为合成目标，**不采信模型自报时长**——仍以 ffprobe 实测为准写 manifest（铁律）。软带 [0.9, 1.12] 与 dur_drift 标记待 M2 实测回填，不许先当门禁用（S2）。",
+    "慢": 0.92,
+    "中": 1.0,
+    "快": 1.08
+  },
+  "readings": {
+    "_note": "合成侧读音替换表（键=原文词，值=同音字或英文改写；经 corrections global 录入）。"
+  },
+  "pinyin_injections": {
+    "_note": "TONE3 拼音直注表（如 shi4jie4，经 corrections global 录入）。"
+  },
+  "readings_provenance": {}
+}

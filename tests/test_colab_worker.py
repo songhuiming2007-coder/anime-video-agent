@@ -98,3 +98,107 @@ def test_process_one_job与should_release_drive(tmp_path):
     cloud_drive.request_drive_shutdown(drive_root)
     rel_flag, reason_flag = colab_worker.should_release_drive(drive_root, last_activity_epoch=now, idle_seconds=300, now_epoch=now)
     assert rel_flag and reason_flag == "shutdown.flag"
+
+
+def test_find_matching_flash_attn_wheel_精确匹配与版本排序():
+    assets = [
+        {
+            "name": "flash_attn-2.7.4.post1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl",
+            "browser_download_url": "https://example.com/2.7.4.post1.whl",
+        },
+        {
+            "name": "flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl",
+            "browser_download_url": "https://example.com/2.8.3.whl",
+        },
+        {
+            "name": "flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+            "browser_download_url": "https://example.com/abi_true.whl",
+        },
+    ]
+    assert (
+        colab_worker.find_matching_flash_attn_wheel(
+            assets, cu_tag="12", torch_mm="2.8", cxx11_abi="FALSE", py_tag="cp312"
+        )
+        == "https://example.com/2.8.3.whl"
+    )
+    # 不匹配（如 torch 2.15 + cu13）必须返回 None，不跨版本瞎猜
+    assert (
+        colab_worker.find_matching_flash_attn_wheel(
+            assets, cu_tag="13", torch_mm="2.15", cxx11_abi="FALSE", py_tag="cp312"
+        )
+        is None
+    )
+
+
+def test_try_install_flash_attn_wheel_精确轮子走only_binary否则秒级跳过(monkeypatch, tmp_path):
+    import io
+    import subprocess
+    import urllib.request
+
+    venv_py = tmp_path / "venv" / "bin" / "python"
+    cmds: list[list[str]] = []
+
+    def make_fake_run(probe_info: dict):
+        def _fake_run(cmd, **_kw):
+            cmds.append(cmd)
+            if len(cmd) >= 3 and cmd[1] == "-c" and "has_flash" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(probe_info) + "\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return _fake_run
+
+    release_payload = json.dumps({
+        "assets": [
+            {
+                "name": "flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl",
+                "browser_download_url": "https://example.com/fa-2.8.3.whl",
+            }
+        ]
+    }).encode("utf-8")
+
+    class _FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=8.0: _FakeResp(release_payload))
+
+    # 1. 匹配到轮子（L4 + CUDA 12.8 + torch 2.8）→ --only-binary :all: 安装并校验
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        make_fake_run({
+            "has_flash": False,
+            "cuda": "12.8",
+            "torch": "2.8.0+cu128",
+            "abi": "FALSE",
+            "py": "cp312",
+            "plat": "linux_x86_64",
+            "sm_major": 8,
+        }),
+    )
+    assert colab_worker.try_install_flash_attn_wheel(venv_py) is True
+    uv_inst = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
+    assert len(uv_inst) == 1
+    assert "--only-binary" in uv_inst[0] and ":all:" in uv_inst[0]
+    assert "https://example.com/fa-2.8.3.whl" in uv_inst[0]
+
+    # 2. torch 2.15 + cu132 无匹配轮子 → 直接跳过，绝不调 uv install
+    cmds.clear()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        make_fake_run({
+            "has_flash": False,
+            "cuda": "13.2",
+            "torch": "2.15.0+cu132",
+            "abi": "FALSE",
+            "py": "cp312",
+            "plat": "linux_x86_64",
+            "sm_major": 8,
+        }),
+    )
+    assert colab_worker.try_install_flash_attn_wheel(venv_py) is False
+    assert not [c for c in cmds if c[:3] == ["uv", "pip", "install"]]

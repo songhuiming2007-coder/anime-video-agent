@@ -1095,6 +1095,8 @@ def plan_global_write(
 
 def _load_voice_config() -> tuple[dict, bytes]:
     path = VOICE_CONFIG
+    if not path.exists():
+        raise PatchError("缺少 config/voice.json：请先从 config/voice.example.json 复制创建后再写入全局读音表。")
     raw = path.read_bytes()
     cfg = json.loads(raw.decode("utf-8"))
     return cfg, raw

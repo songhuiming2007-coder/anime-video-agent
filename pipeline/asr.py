@@ -19,8 +19,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -188,13 +190,36 @@ def _hf_fallback_allowed() -> bool:
     )
 
 
+_ASR_CONTROL_TAG_RE = re.compile(r"<\|[^|>]+\|>")
+
+_SENSEVOICE_CACHE: dict[tuple[object, ...], object] = {}
+_WHISPER_CACHE: dict[tuple[object, ...], object] = {}
+
+
+def strip_asr_tags(text: str) -> str:
+    """剥离 ASR 输出中的 `<|...|>` 控制标签（如 SenseVoice 的 `<|zh|><|NEUTRAL|><|Speech|><|withitn|>`）。
+
+    不用 FunASR 的 `rich_transcription_postprocess`：它会把 `<|HAPPY|>`/`<|Laughter|>` 等标签
+    替换成 `😊`/`😄` 等 Emoji，进入 `tts.syllables()` 仍会拆成额外非汉字音节污染 CER。
+    """
+    return _ASR_CONTROL_TAG_RE.sub("", text).strip()
+
+
+def clear_model_cache() -> None:
+    """清空云端 ASR 后端进程内模型缓存（供单测隔离或显存回收使用）。"""
+    _SENSEVOICE_CACHE.clear()
+    _WHISPER_CACHE.clear()
+
+
 def _backend_mlx_whisper(path: Path) -> str:
     """本地 Apple Silicon 通道（mlx-whisper）。"""
     import mlx_whisper
 
-    return mlx_whisper.transcribe(
-        str(path), path_or_hf_repo=REPO, language="zh", verbose=None
-    )["text"].strip()
+    return strip_asr_tags(
+        mlx_whisper.transcribe(
+            str(path), path_or_hf_repo=REPO, language="zh", verbose=None
+        )["text"]
+    )
 
 
 #: Whisper 一次只看 30 秒（3000 帧 mel）。更长的音频 transformers 走逐窗的长音频生成，
@@ -215,19 +240,34 @@ def _wav_seconds(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
-def _backend_whisper_cuda(path: Path) -> str:
-    """云端 Whisper Large-v3（transformers pipeline）。"""
+def _get_whisper_pipeline():
+    """按模型路径与 dtype 懒加载并缓存云端 Whisper 仲裁管线（显式 fp16 控制显存）。"""
+    import torch
     from transformers import pipeline
 
     model_dir = cloud_model_dir("openai/whisper-large-v3", CLOUD_WHISPER_DIR)
     model_ref = model_dir if Path(model_dir).is_dir() or not _hf_fallback_allowed() else "openai/whisper-large-v3"
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model_ref,
-        device=0,
-        generate_kwargs={"language": "zh", "task": "transcribe"},
-    )
-    return pipe(str(path), **_whisper_call_kwargs(_wav_seconds(path)))["text"].strip()
+    params = inspect.signature(pipeline).parameters
+    dtype_key = "torch_dtype" if ("torch_dtype" in params and "dtype" not in params) else "dtype"
+    whisper_dtype = torch.float16
+    cache_key = (model_ref, 0, whisper_dtype, pipeline)
+    pipe = _WHISPER_CACHE.get(cache_key)
+    if pipe is None:
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model_ref,
+            device=0,
+            generate_kwargs={"language": "zh", "task": "transcribe"},
+            **{dtype_key: whisper_dtype},
+        )
+        _WHISPER_CACHE[cache_key] = pipe
+    return pipe
+
+
+def _backend_whisper_cuda(path: Path) -> str:
+    """云端 Whisper Large-v3（transformers pipeline，按需懒加载缓存）。"""
+    pipe = _get_whisper_pipeline()
+    return strip_asr_tags(pipe(str(path), **_whisper_call_kwargs(_wav_seconds(path)))["text"])
 
 
 def _hf_cached_dir(repo_id: str) -> Path | None:
@@ -262,17 +302,37 @@ def _sensevoice_model_kwargs() -> dict[str, object]:
     return {"model": SENSEVOICE_REPO, "hub": "hf", "disable_update": True}
 
 
+def _sensevoice_cache_key(auto_model_cls: object) -> tuple[object, ...]:
+    """为 SenseVoice 生成进程级缓存键，避免 Colab 首段落盘 HF 缓存后第 2 段双载。"""
+    model_dir = cloud_model_dir(SENSEVOICE_REPO, CLOUD_SENSEVOICE_DIR)
+    if Path(model_dir).is_dir() or not _hf_fallback_allowed():
+        return ("dir", model_dir, auto_model_cls)
+    hf_root = str(Path(os.environ.get("HF_HUB_CACHE", str(paths.MODELS / "hub"))))
+    return ("hf", SENSEVOICE_REPO, hf_root, auto_model_cls)
+
+
+def _get_sensevoice_model():
+    """获取并缓存 SenseVoice AutoModel 实例。"""
+    from funasr import AutoModel
+
+    cache_key = _sensevoice_cache_key(AutoModel)
+    model = _SENSEVOICE_CACHE.get(cache_key)
+    if model is None:
+        model = AutoModel(**_sensevoice_model_kwargs())
+        _SENSEVOICE_CACHE[cache_key] = model
+    return model
+
+
 def _backend_sensevoice_cuda(path: Path) -> str:
     """云端 SenseVoice-Small（funasr）。
 
-    主读候选：快（≈15× 实时）且情感标签白送。**情感输出只进 manifest 观测，
-    不进任何门禁**——它测的是「模型觉得什么情绪」，不是「念得对不对」（S1）。
+    主读候选：快（≈15× 实时）。`transcribe_audio` 通道必须返回剥离 `<|...|>` 后的纯文本，
+    否则语言/情感/ITN 控制前缀会直接污染 CER；若未来需要观测情感标签，应在剥离前走独立
+    结构化字段（且只进 manifest 观测，不进任何门禁——S1），绝不混入转录纯文本。
     """
-    from funasr import AutoModel
-
-    model = AutoModel(**_sensevoice_model_kwargs())
+    model = _get_sensevoice_model()
     res = model.generate(input=str(path), language="zh", use_itn=True)
-    return res[0]["text"].strip()
+    return strip_asr_tags(res[0]["text"]) if res else ""
 
 
 BACKENDS = {

@@ -269,7 +269,26 @@ QUOTES = re.compile(r"[“”‘’「」『』\"']")
 DIGITS = re.compile(r"[0-9０-９]")
 
 
-@lru_cache(maxsize=1)
+def _voice_cfg_path() -> Path:
+    """优先读本机 `config/voice.json`；fresh clone / CI 未建时回退受控词表模板 `voice.example.json`。"""
+    cfg = paths.CONFIG / "voice.json"
+    if cfg.is_file():
+        return cfg
+    example = paths.CONFIG / "voice.example.json"
+    if example.is_file():
+        return example
+    return cfg
+
+
+@lru_cache(maxsize=8)
+def _readings_keys_for(path: Path) -> tuple[str, ...]:
+    if not path.is_file():
+        return ()
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    keys = [k for k in cfg.get("readings", {}) if not k.startswith("_")]
+    return tuple(sorted(keys, key=len, reverse=True))
+
+
 def _readings_keys() -> tuple[str, ...]:
     """`config/voice.json` readings 表的键（长键在前）。
 
@@ -277,9 +296,7 @@ def _readings_keys() -> tuple[str, ...]:
     而不 import tts：tts 拖着 pypinyin/asr 一串重依赖，而机检只跑稿件时
     不需要碰音频链路。
     """
-    cfg = json.loads((paths.CONFIG / "voice.json").read_text(encoding="utf-8"))
-    keys = [k for k in cfg.get("readings", {}) if not k.startswith("_")]
-    return tuple(sorted(keys, key=len, reverse=True))
+    return _readings_keys_for(_voice_cfg_path())
 
 
 def _strip_readings_covered(body: str) -> tuple[str, list[str]]:
@@ -988,9 +1005,9 @@ def run(path: Path) -> list[Check]:
         if marks else "没有待办标记")
 
     # 情绪/语速字段机检（架构设计 3.3，2026-09-11 加）：表外值当场报错。
-    # 受控词表的真源在 config/voice.json，不在这里硬编码——词表会随引擎实测调整，
-    # 抄一份到代码里必然分叉。
-    voice_cfg = json.loads((paths.CONFIG / "voice.json").read_text(encoding="utf-8"))
+    # 受控词表的真源在 config/voice.json（模板 voice.example.json），不在这里硬编码——
+    # 词表会随引擎实测调整，抄一份到代码里必然分叉。
+    voice_cfg = json.loads(_voice_cfg_path().read_text(encoding="utf-8"))
     allowed_emo = {k for k in (voice_cfg.get("emotions") or {}) if not k.startswith("_")}
     allowed_spd = {k for k in (voice_cfg.get("speed") or {}) if not k.startswith("_")}
     emo_fields = parse_emotion_fields(text)

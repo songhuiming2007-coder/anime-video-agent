@@ -45,3 +45,6 @@ desktop/*.js.map
 
 # 本机个人曲库配置（含本地 data/ 曲目路径，不随开源仓库提交）
 config/bgm.json
+
+# 本机个人配音资产（音色参考路径、读音表、钉种子、曲名实测时长；模板见 config/voice.example.json）
+config/voice.json
