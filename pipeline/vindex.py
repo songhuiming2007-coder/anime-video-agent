@@ -143,7 +143,8 @@ def alias_map(anime: str, path: Path = CHARACTERS) -> dict[str, str]:
     """
     if not path.exists():
         raise SystemExit(
-            f"FAIL 没有 {path}。角色名表是 Phase 0 资产（与 config/bgm.json 同类），\n"
+            f"FAIL 没有 {path}（请先从 config/characters.example.json 复制创建）。"
+            f"角色名表是 Phase 0 资产（与 config/bgm.json 同类），\n"
             f"     格式：{{\"<番>\": {{\"<booru 标签>\": [\"中文名\", \"别名\"...]}}}}")
     db = json.loads(path.read_text(encoding="utf-8"))
     table = db.get(anime)
@@ -168,7 +169,8 @@ def scene_conf(anime: str, path: Path = SCENES) -> dict:
     """
     if not path.exists():
         raise SystemExit(
-            f"FAIL 没有 {path}。画面语义配置是 Phase 0 资产（与 config/characters.json 同类），\n"
+            f"FAIL 没有 {path}（请先从 config/scenes.example.json 复制创建）。"
+            f"画面语义配置是 Phase 0 资产（与 config/characters.json 同类），\n"
             f"     格式：{{\"<番>\": {{\"queries\": [...], \"negative\": [...]}}}}")
     db = json.loads(path.read_text(encoding="utf-8"))
     # 下划线开头的顶层键是注释（`_note` / `_why_note`），不是番。

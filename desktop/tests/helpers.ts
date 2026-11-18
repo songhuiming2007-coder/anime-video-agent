@@ -56,6 +56,11 @@ export function makeFixtureRepo(opts: { withApprovals?: boolean } = {}): string 
       !s.endsWith("cloud.local.json") &&
       !s.endsWith(".cloud.local.json.lock"),
   });
+  for (const stem of ["voice", "bgm", "characters", "scenes", "project"]) {
+    const cfgDst = join(root, "config", `${stem}.json`);
+    const cfgEx = join(root, "config", `${stem}.example.json`);
+    if (!existsSync(cfgDst) && existsSync(cfgEx)) cpSync(cfgEx, cfgDst);
+  }
   cpSync(join(REPO, "pyproject.toml"), join(root, "pyproject.toml"));
   symlinkSync(join(REPO, ".venv"), join(root, ".venv"));
   if (opts.withApprovals === false) rmSync(join(root, "pipeline/approvals.py"));

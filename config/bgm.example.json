@@ -1,0 +1,17 @@
+{
+  "_note": "本机个人曲库模板：使用前请复制为 config/bgm.json（已在 .gitignore 忽略），经 `python -m pipeline.bgm register` 测量并登记曲目，路径统一存相对仓库根的 `data/...`。",
+  "示例番": {
+    "_note": "《示例番》BGM 候选池示例",
+    "use": {},
+    "tracks": {
+      "示例曲": {
+        "path": "data/library/bgm/示例番/01. 示例曲.flac",
+        "slot": "正文",
+        "dur": 120.0,
+        "lufs": -14.0,
+        "onset": 0.2,
+        "vocal": false
+      }
+    }
+  }
+}

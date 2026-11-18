@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,6 +85,8 @@ def conf(dotted: str, default=None):
     global _CONF
     if _CONF is None:
         f = CONFIG / "project.json"
+        if not f.exists():
+            f = CONFIG / "project.example.json"
         try:
             _CONF = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
         except json.JSONDecodeError as e:
@@ -126,12 +129,19 @@ def atomic_write(dest: Path, data: str | bytes) -> None:
     `bytes` 形态（Spec 12 C12-R2）：图片字节绝不重编码，原样落盘——
     走 `write_text` 会多一次 UTF-8 解码/编码往返，非 UTF-8 的二进制当场抛错。
     """
-    tmp = dest.with_name(dest.name + ".tmp")
-    if isinstance(data, bytes):
-        tmp.write_bytes(data)
-    else:
-        tmp.write_text(data, encoding="utf-8")
-    os.replace(tmp, dest)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}_{threading.get_ident()}.tmp")
+    try:
+        if isinstance(data, bytes):
+            tmp.write_bytes(data)
+        else:
+            tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def repo_rel(path: Path) -> str:

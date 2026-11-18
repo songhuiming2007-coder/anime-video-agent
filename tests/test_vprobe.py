@@ -160,15 +160,22 @@ class TestSceneEnabled:
 
 
 class TestShippedConf:
-    """仓库里真实的 config/scenes.json 也要过同一套判据。
+    """仓库里模板 config/scenes.example.json（及本机存在时的 config/scenes.json）都要过同一套判据。"""
 
-    测试用的是 tmp 里的假配置，真配置写错了照样没人发现——而它才是真正会被用的那份。
-    """
-
-    def test_春物的表是合法的(self):
-        pos, neg = vindex.scene_queries("春物")
-        assert len(pos) >= 8, "ADR-0003 要求手写 10 条这条流水线真会用到的查询"
-        assert neg
+    def test_模板表与本机表都是合法的(self):
+        ex_path = vindex.paths.CONFIG / "scenes.example.json"
+        pos, neg = vindex.scene_queries("示例番", path=ex_path)
+        assert len(pos) >= 8, "ADR-0003 要求手写 ≥8 条这条流水线真会用到的查询"
+        assert len(neg) >= 10, "ADR-0015 待实测 #4 的零假设组要 10 条反例"
+        local = vindex.paths.CONFIG / "scenes.json"
+        if local.exists():
+            db = json.loads(local.read_text(encoding="utf-8"))
+            for anime in db:
+                if anime.startswith("_"):
+                    continue
+                p, n = vindex.scene_queries(anime, path=local)
+                assert len(p) >= 8, anime
+                assert n, anime
 
 
 class TestCalibrateThreshold:
@@ -244,12 +251,22 @@ class TestWriteNoMatch:
 
 
 class TestShippedConfV2:
-    """仓库里真实的 config/scenes.json：v2 的零假设组要求 10 条反例（ADR-0015）。"""
+    """模板 config/scenes.example.json（及本机存在时的 config/scenes.json）：v2 零假设组要求 10 条反例（ADR-0015）。"""
 
-    def test_罪恶王冠的表是合法的(self):
-        pos, neg = vindex.scene_queries("罪恶王冠")
-        assert len(pos) >= 8, "ADR-0003 要求手写 8~10 条这条流水线真会用到的查询"
-        assert len(neg) >= 10, "ADR-0015 待实测 #4 的零假设组要 10 条反例"
+    def test_模板与本机v2表反例足额(self):
+        ex_path = vindex.paths.CONFIG / "scenes.example.json"
+        pos, neg = vindex.scene_queries("示例番", path=ex_path)
+        assert len(pos) >= 8
+        assert len(neg) >= 10
+        local = vindex.paths.CONFIG / "scenes.json"
+        if local.exists():
+            db = json.loads(local.read_text(encoding="utf-8"))
+            for anime in db:
+                if anime.startswith("_") or anime == "春物":
+                    continue
+                p, n = vindex.scene_queries(anime, path=local)
+                assert len(p) >= 8, anime
+                assert len(n) >= 10, anime
 
 
 class TestCaptionsProbePool:

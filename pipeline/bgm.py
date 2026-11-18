@@ -241,7 +241,7 @@ def register(files: list[Path], anime: str, note: str | None = None, overwrite: 
     """
     cfg_file = paths.CONFIG / "bgm.json"
     if not cfg_file.exists():
-        raise SystemExit(f"FAIL 配置文件不存在：{cfg_file}")
+        raise SystemExit(f"FAIL 配置文件不存在：{cfg_file}（请先从 config/bgm.example.json 复制创建）")
 
     db = json.loads(cfg_file.read_text(encoding="utf-8"))
     anime_entry = db.setdefault(anime, {})

@@ -96,11 +96,16 @@ class TestDeadKeysRemoved:
     frames_per_shot 的 _frames_note 承诺了 shots.frames 不存在的调参能力。"""
 
     def test_死键没有回来(self):
-        cfg = json.loads((paths.CONFIG / "project.json").read_text(encoding="utf-8"))
-        assert "font_fallback" not in cfg["subtitle"]
-        assert "frames_per_shot" not in cfg["visual"]
-        assert all(not k.startswith("_") or k != "_frames_note"
-                   for k in cfg["visual"])
+        targets = [paths.CONFIG / "project.example.json"]
+        local = paths.CONFIG / "project.json"
+        if local.exists():
+            targets.append(local)
+        for p in targets:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+            assert "font_fallback" not in cfg["subtitle"], p
+            assert "frames_per_shot" not in cfg["visual"], p
+            assert all(not k.startswith("_") or k != "_frames_note"
+                       for k in cfg["visual"]), p
 
 
 class TestAtomicWrite:
@@ -196,3 +201,39 @@ class TestHfCacheEnv:
         finally:
             monkeypatch.undo()
             importlib.reload(paths)
+
+
+class TestPersonalConfigsGitIsolation:
+    """个人经验与逐番积累的配置资产（5 份 Phase 0 表）只留本机，不进 git；仓内留脱敏模板。"""
+
+    @pytest.mark.parametrize("stem", ["voice", "bgm", "characters", "scenes", "project"])
+    def test_个人配置被忽略且未追踪_模板存在且受追踪(self, stem: str):
+        import subprocess
+
+        rel_local = f"config/{stem}.json"
+        rel_example = f"config/{stem}.example.json"
+        ig_local = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "check-ignore", "-q", rel_local], check=False
+        )
+        assert ig_local.returncode == 0, f"{rel_local} 未被 .gitignore 忽略"
+
+        ls_local = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "ls-files", rel_local],
+            capture_output=True, text=True, check=True,
+        )
+        assert ls_local.stdout.strip() == "", f"{rel_local} 仍被 git 追踪"
+
+        ex_path = paths.CONFIG / f"{stem}.example.json"
+        assert ex_path.is_file(), f"缺少模板文件 {rel_example}"
+        assert isinstance(json.loads(ex_path.read_text(encoding="utf-8")), dict)
+
+        ig_ex = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "check-ignore", "-q", rel_example], check=False
+        )
+        assert ig_ex.returncode != 0, f"模板 {rel_example} 不应被 .gitignore 忽略"
+
+        ls_ex = subprocess.run(
+            ["git", "-C", str(paths.ROOT), "ls-files", rel_example],
+            capture_output=True, text=True, check=True,
+        )
+        assert ls_ex.stdout.strip() == rel_example, f"模板 {rel_example} 必须被 git 追踪"

@@ -1380,6 +1380,30 @@ FIXTURE_HINT_LINES = [
 ]
 
 
+FIXTURE_CHARS = {
+    "春物": {
+        "hikigaya_hachiman": ["八幡", "比企谷八幡", "大老师", "老师"],
+        "yukinoshita_yukino": ["雪乃", "雪之下雪乃", "雪之下"],
+        "yuigahama_yui": ["结衣", "由比滨结衣", "由比滨", "团子"],
+        "isshiki_iroha": ["一色", "一色彩羽", "彩羽"],
+        "hikigaya_komachi": ["小町", "比企谷小町"],
+        "yukinoshita_haruno": ["陽乃", "雪之下阳乃", "阳乃"],
+    }
+}
+
+
+@pytest.fixture
+def chars_cfg(tmp_path, monkeypatch):
+    import shutil
+
+    cfg = tmp_path / "_chars_cfg"
+    cfg.mkdir(exist_ok=True)
+    (cfg / "characters.json").write_text(json.dumps(FIXTURE_CHARS, ensure_ascii=False), encoding="utf-8")
+    shutil.copy2(paths.CONFIG / "voice.example.json", cfg / "voice.example.json")
+    monkeypatch.setattr(cs.paths, "CONFIG", cfg)
+    return cfg
+
+
 def hint_episode(tmp_path, blocks: str, topic: str | None = "番: 春物\n"):
     """造一个夹具期目录：01-topic.md（番表）+ 02-script.md。topic=None 表示无番表。"""
     if topic is not None:
@@ -1390,12 +1414,15 @@ def hint_episode(tmp_path, blocks: str, topic: str | None = "番: 春物\n"):
 
 
 class TestCharacterHints:
-    def test_等价夹具期期望值(self, tmp_path):
+    def test_等价夹具期期望值(self, tmp_path, chars_cfg):
         """TC-1（外置盘不在时的等价夹具）：嵌套别名、去重、跳过规则一次覆盖。"""
         f = hint_episode(tmp_path, FIXTURE_BLOCKS)
         assert cs.character_hints(f) == FIXTURE_HINT_LINES
 
-    @pytest.mark.skipif(not REAL_HINT_EPISODE.exists(), reason="外置盘未挂载，真实期不在")
+    @pytest.mark.skipif(
+        not REAL_HINT_EPISODE.exists() or not (paths.CONFIG / "characters.json").exists(),
+        reason="外置盘未挂载或本机 characters.json 不在，真实期对拍跳过",
+    )
     def test_真实期期望值(self, tmp_path):
         """TC-1：真实期 `2026-07-30-春物-雪乃适合大老师` 恰 9 行（§2.5 冻结值）。
 
@@ -1405,21 +1432,21 @@ class TestCharacterHints:
         lines = cs.character_hints(REAL_HINT_EPISODE / "02-script.md")
         assert lines == REAL_HINT_LINES
 
-    def test_别名嵌套不双报(self, tmp_path):
+    def test_别名嵌套不双报(self, tmp_path, chars_cfg):
         """TC-3：文本含「大老师」时命中「大老师」不含「老师」。"""
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：大老师说得对。\n")
         assert cs.character_hints(f) == [
             "INFO 段1 提到已登记角色但未写 `人物:`：大老师"
         ]
 
-    def test_写了人物或锚点的段不报_场景段照报(self, tmp_path):
+    def test_写了人物或锚点的段不报_场景段照报(self, tmp_path, chars_cfg):
         """TC-4 前半：`人物:`/`锚点:` 段跳过（人已显式选择），`场景:` 段照列。"""
         lines = cs.character_hints(hint_episode(tmp_path, FIXTURE_BLOCKS))
         assert not any("段5" in l for l in lines), "写了 `人物:` 的段不该报"
         assert not any("段6" in l for l in lines), "写了 `锚点:` 的段不该报（锚点与人物互斥）"
         assert any("段7" in l and "由比滨" in l for l in lines), "写了 `场景:` 的段照样列"
 
-    def test_拿不到别名表就安静返回空(self, tmp_path, monkeypatch):
+    def test_拿不到别名表就安静返回空(self, tmp_path, monkeypatch, chars_cfg):
         """TC-4 后半：无番表 / characters.json 缺席 / 番不在表 → []，不抛不报。"""
         blocks = "## 段落 1\n\n配音：大老师说得对。\n"
         assert cs.character_hints(hint_episode(tmp_path, blocks, topic=None)) == []
@@ -1430,7 +1457,7 @@ class TestCharacterHints:
         monkeypatch.setattr(paths, "CONFIG", empty)
         assert cs.character_hints(hint_episode(tmp_path, blocks)) == []
 
-    def test_INFO_不改变退出码且排在判定块之后(self, tmp_path, monkeypatch, capsys):
+    def test_INFO_不改变退出码且排在判定块之后(self, tmp_path, monkeypatch, capsys, chars_cfg):
         """TC-2：INFO 行不进 failed、不影响退出码，且打印在 PASS/FAIL 块之后、总结行之前。"""
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：大老师说得对。\n")
         argv = ["check_script", str(f)]
@@ -1452,15 +1479,16 @@ class TestCharacterHints:
         assert "1 项未过" in capsys.readouterr().out
 
 
-def test_人物提示跨进程确定性(tmp_path):
+def test_人物提示跨进程确定性(tmp_path, chars_cfg):
     """TC-1b：同一实现跨进程（不同 PYTHONHASHSEED）输出逐字节一致。
 
     set 收集之类的非确定实现在此变红：段 8 一行里 6 个别名，set 迭代序的翻转
     概率极高（单次运行可能侥绿）。"""
     f = hint_episode(tmp_path, FIXTURE_BLOCKS)
     code = (
-        "import sys; from pipeline import check_script as cs;"
-        f"print(chr(10).join(cs.character_hints(__import__('pathlib').Path({str(f)!r}))))"
+        "import pathlib; from pipeline import check_script as cs, paths;"
+        f"paths.CONFIG = pathlib.Path({str(chars_cfg)!r});"
+        f"print(chr(10).join(cs.character_hints(pathlib.Path({str(f)!r}))))"
     )
     outs = set()
     for seed in ("0", "1", "42", "12345", "random"):
@@ -1516,7 +1544,7 @@ class TestFacelessCharacterHints:
             )
         return vdir
 
-    def test_零贴名簇出_INFO(self, tmp_path):
+    def test_零贴名簇出_INFO(self, tmp_path, chars_cfg):
         """「阳乃」→ yukinoshita_haruno，簇里没人贴这个键 → INFO 一行。"""
         vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9},
                                        "7": {"name": None, "n": 4}})
@@ -1526,13 +1554,13 @@ class TestFacelessCharacterHints:
             "在场过滤对本段无效（贴名：python -m pipeline.faces sheet 春物）"
         ]
 
-    def test_有贴名簇不报(self, tmp_path):
+    def test_有贴名簇不报(self, tmp_path, chars_cfg):
         """「雪乃」→ yukinoshita_yukino 已有簇贴名 → 不报。"""
         vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9}})
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：雪乃说得对。\n\n画面：\n  人物: 雪乃\n")
         assert cs.faceless_character_hints(f, vindex_dir=vdir) == []
 
-    def test_clusters_缺席安静跳过(self, tmp_path):
+    def test_clusters_缺席安静跳过(self, tmp_path, chars_cfg):
         """判据 4：clusters 文件缺席/坏 json → 不定罪、安静返回空。"""
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：阳乃出场。\n\n画面：\n  人物: 阳乃\n")
         assert cs.faceless_character_hints(f, vindex_dir=self._vindex(tmp_path, None)) == []
@@ -1541,7 +1569,7 @@ class TestFacelessCharacterHints:
         (bad / "春物.clusters.json").write_text("{bad json", encoding="utf-8")
         assert cs.faceless_character_hints(f, vindex_dir=bad) == []
 
-    def test_main_接线_INFO_进输出且不改退出码(self, tmp_path, monkeypatch, capsys):
+    def test_main_接线_INFO_进输出且不改退出码(self, tmp_path, monkeypatch, capsys, chars_cfg):
         """N47 评审补：函数对了但 main() 没调用 = 无效代码。假 DATA 根 + 假 clusters，
         走 main()，INFO 行必须出现在输出里、退出码仍 0。"""
         data = tmp_path / "data"
@@ -1558,7 +1586,7 @@ class TestFacelessCharacterHints:
         out = capsys.readouterr().out
         assert "INFO 段2 `人物:` 的「阳乃」在《春物》索引里无代表脸" in out
 
-    def test_未写人物的段不报(self, tmp_path):
+    def test_未写人物的段不报(self, tmp_path, chars_cfg):
         """没写 `人物:` 的段与本提示无关（那是 D18 的地盘）。"""
         vdir = self._vindex(tmp_path, {"3": {"name": "yukinoshita_yukino", "n": 9}})
         f = hint_episode(tmp_path, "## 段落 1\n\n配音：阳乃出场。\n")

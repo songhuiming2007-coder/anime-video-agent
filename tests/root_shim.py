@@ -44,8 +44,11 @@ def shim_root(base: Path, episodes_dir: Path) -> Path:
                 shutil.copytree(src, root / name, ignore=shutil.ignore_patterns("*.local.json", "__pycache__"))
             elif src.is_file():
                 shutil.copy2(src, root / name)
-        if not (root / "config" / "voice.json").exists() and (root / "config" / "voice.example.json").exists():
-            shutil.copy2(root / "config" / "voice.example.json", root / "config" / "voice.json")
+        for stem in ("voice", "bgm", "characters", "scenes", "project"):
+            cfg_dst = root / "config" / f"{stem}.json"
+            cfg_ex = root / "config" / f"{stem}.example.json"
+            if not cfg_dst.exists() and cfg_ex.exists():
+                shutil.copy2(cfg_ex, cfg_dst)
         (root / "pipeline").symlink_to(REPO / "pipeline")
         (root / "data" / "episodes").symlink_to(episodes_dir)
     return root

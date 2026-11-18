@@ -25,8 +25,16 @@ EVID = "S01E01 整集密度表 thr8–12 中位 3.0s，切点抽检 24 个里 20
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d = tmp_path / "config"
     d.mkdir()
-    for name in ("project.json", "scenes.json"):
-        shutil.copy2(REPO_CONFIG / name, d / name)
+    proj = json.loads((REPO_CONFIG / "project.example.json").read_text(encoding="utf-8"))
+    proj["visual"]["scene_threshold"] = {"罪恶王冠": 10.0, "EGOIST/SP04": 15.0}
+    proj["visual"]["ccip_margin"] = {"春物": 0.02}
+    (d / "project.json").write_text(json.dumps(proj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    scenes = json.loads((REPO_CONFIG / "scenes.example.json").read_text(encoding="utf-8"))
+    scenes["罪恶王冠"] = {"queries": ["a"], "negative": ["b"], "_no_match_note": "初始实录"}
+    scenes["春物"] = {"queries": ["c"], "negative": ["d"]}
+    (d / "scenes.json").write_text(json.dumps(scenes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     shutil.copy2(REPO_CONFIG / "voice.example.json", d / "voice.json")
     monkeypatch.setattr(paths, "CONFIG", d)
     monkeypatch.setattr(shots, "SHOTS_DIR", tmp_path / "shots")
@@ -220,3 +228,9 @@ def test_人审卡批准的作业环境带标记(tmp_path: Path, monkeypatch: py
         tools.run_pipeline("calibration show script.cpm", episode_dir=ep, scope="asset",
                            confirmed=True, human_card=card)
     assert seen == [{HUMAN_CARD_ENV: "1"}, {}]
+
+
+@pytest.mark.parametrize("name", ["project.example.json", "scenes.example.json", "voice.example.json"])
+def test_example模板排版符合calibration标准(name: str):
+    cfg_data, raw = C._load(REPO_CONFIG / name)
+    assert isinstance(cfg_data, dict) and raw.endswith(b"\n")

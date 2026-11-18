@@ -213,9 +213,14 @@ class TestCcipFromConfig:
         assert faces.face_expand("春物") == 1.6
 
     def test_config真的声明了这三个键(self):
-        cfg = json.loads((faces.paths.CONFIG / "project.json").read_text(encoding="utf-8"))
+        ex_cfg = json.loads((faces.paths.CONFIG / "project.example.json").read_text(encoding="utf-8"))
         for k in ("ccip_same", "ccip_margin", "face_expand"):
-            assert isinstance(cfg["visual"][k], dict) and "春物" in cfg["visual"][k], k
+            assert isinstance(ex_cfg["visual"][k], dict), k
+        local = faces.paths.CONFIG / "project.json"
+        if local.exists():
+            cfg = json.loads(local.read_text(encoding="utf-8"))
+            for k in ("ccip_same", "ccip_margin", "face_expand"):
+                assert isinstance(cfg["visual"][k], dict), k
 
 
 class TestEvalRemoved:

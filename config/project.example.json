@@ -1,0 +1,122 @@
+{
+  "_note": "跨模块共用的可调参数模板：使用前请复制为 config/project.json（已在 .gitignore 忽略）。机制默认值与逐番标定值存于本机 config/project.json，不随公开仓库提交。",
+  "anime": {
+    "_note": "当前在做的番。clips / cover / ingest 的 --anime 默认值取这里，命令行仍可覆盖。",
+    "default": ""
+  },
+  "video": {
+    "_note": "成片规格。改动前先确认平台兼容——10bit 与非标准帧率在平台转码链上都出过问题。",
+    "width": 1920,
+    "height": 1080,
+    "fps": "24000/1001",
+    "crf": "18",
+    "preset": "medium",
+    "cut_preset": "ultrafast",
+    "cut_crf": "12",
+    "_cut_note": "中间临时切片（render.cut 与 _still_frames）的编码参数。中间片拼成 video.mp4 后在最终合成时还要经 preset/crf 压一次字幕层；两处共用同一组参数保证 concat -c copy 流签名一致。",
+    "duration_band": [
+      120.0,
+      240.0
+    ],
+    "_duration_note": "成片时长默认带（秒），可被该期 01-topic.md 的 `时长目标` 字段覆盖，由 qc.episode_duration_band() 读取。"
+  },
+  "subtitle": {
+    "_note": "字幕样式。font 必须是本机 fontconfig 认得的名字，否则 libass 会静默退到默认字体。",
+    "font": "Hiragino Sans GB",
+    "size": 54,
+    "margin_v": 90,
+    "margin_lr": 120,
+    "_nd_note": "非对白 style 命名表：换番/换字幕组只改这张表，主对白 style 绝不能进表，值与 subindex._DEFAULT_NON_DIALOGUE_STYLES 同步演进。",
+    "non_dialogue_styles": {
+      "prefix_bounded": [
+        "op",
+        "ed",
+        "in"
+      ],
+      "prefix": [
+        "title",
+        "staff",
+        "bgm",
+        "gamen",
+        "logo",
+        "sign",
+        "song",
+        "lyric",
+        "kara",
+        "yokoku",
+        "preview",
+        "次回予告",
+        "下集预告",
+        "予告",
+        "预告"
+      ],
+      "exact": [
+        "jp",
+        "note"
+      ],
+      "suffix": [
+        "song",
+        "yokoku",
+        "preview",
+        "予告",
+        "预告"
+      ]
+    }
+  },
+  "cover": {
+    "_note": "封面叠字字体。文件由人放置到 data/fonts/（不进 git）；缺席时 cover_edit 如实报错、绝不 fallback 系统字体。ttc 必须钉 index。",
+    "font_file": "data/fonts/SourceHanSansSC-Bold.otf",
+    "font_index": 0,
+    "_font_source_note": "思源黑体 SC Bold（Adobe source-han-sans 官方 release），加载出的家族名 = ('Source Han Sans SC', 'Bold')。"
+  },
+  "hud": {
+    "_note": "章节窄顶栏配置：渲染前校验 fonts_dir 下的 required_files。",
+    "fonts_dir": "data/fonts",
+    "required_files": [
+      "Songti.ttc",
+      "SourceHanSansSC-Bold.otf"
+    ],
+    "serif_font": "Songti SC",
+    "sans_font": "Source Han Sans SC",
+    "max_chapters": 8
+  },
+  "audio": {
+    "_note": "响度目标，EBU R128。质检门禁按这三个数判。",
+    "lufs": -16.0,
+    "lufs_tolerance": 1.5,
+    "true_peak_max": -1.0
+  },
+  "script": {
+    "_note": "口播稿机检阈值。cpm 随音色和文风变，换音色应重测；min_chars/max_chars 可被 01-topic.md 的 `时长目标` 字段覆盖。",
+    "cpm": 257,
+    "min_chars": 870,
+    "max_chars": 1300,
+    "max_sentence": 90,
+    "max_breath": 30,
+    "min_burstiness": 0.55,
+    "min_long_sentences": 2,
+    "min_anchors": 3,
+    "shrink_factor": 0.8,
+    "_cpm_note": "当前基准语速（字/分）。换引擎/换音色后经 `calibration set script.cpm` 回写并追加实测依据。",
+    "para_gap": 0.4
+  },
+  "visual": {
+    "_note": "视觉索引（ADR-0003）机制参数与逐番标定容器。每部番的值经实测标定后通过 `calibration set` 写入本机 config/project.json。",
+    "scene_threshold": {},
+    "_scene_threshold_note": "ffmpeg scdet 阈值，逐番标定（python -m pipeline.shots calibrate <视频>），过切无害、漏切有害，拿不准往低取。",
+    "min_shot": 0.5,
+    "_min_shot_note": "短于此秒数的镜头并进前一个，避免切点过渡帧污染镜头角色集合。",
+    "ccip_same": {},
+    "ccip_margin": {},
+    "face_expand": {},
+    "_ccip_note": "人脸通道（pipeline/faces.py）逐番标定参数（ccip_same / ccip_margin / face_expand）。改三项阈值须重跑 faces 聚类链路。",
+    "presence_producer": "ccip",
+    "_presence_producer_note": "通道 1 产出器：ccip 或 tagger（两者分数量纲不同，不可混用）。",
+    "tagger": "camie",
+    "_tagger_note": "备用 booru tagger（候选见 pipeline/vindex.py 的 TAGGERS）。"
+  },
+  "storage": {
+    "_note": "data/ 是指向外置盘的符号链接。volume_hint 只用在报错信息里，告诉人该插哪块盘；改成你自己的卷名。",
+    "volume_hint": "外置 SSD"
+  }
+}
