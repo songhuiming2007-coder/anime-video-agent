@@ -1,6 +1,6 @@
 # 云端算力双后端改造施工图（AutoDL + Google Colab SSH / Drive）
 
-- **状态**：已施工·机检通过（2026-11-14：全仓 `pytest -q` 3799 passed、Notebook JSON/AST 校验通过；真实 Google Colab Pro GPU 运行时实机冒烟待用户在 Colab 端执行确认）
+- **状态**：已施工·机检通过（2026-11-14：全仓 `pytest -q` 3799 passed、Notebook JSON/AST 校验通过；真实 Google Colab GPU 运行时实机冒烟待用户在 Colab 端执行确认）
 - **关联 ADR**：[ADR-0014](../adr/0014-cloud-gpu-headless-model-stack.md)、[ADR-0016](../adr/0016-render-local-inference-cloud.md)、[ADR-0030](../adr/0030-approval-danger-only.md)
 - **目标**：把 AVA 全部云端 GPU 能力（`tts` 配音与回读、`captions` / `lib-captions` VLM 打标、`ingest_patch` 补料打标、`probe` 探针）解耦为 **AutoDL** 与 **Google Colab** 两条平行通道；其中 Colab 同时支持 **SSH 隧道（`colab`，优先 `cloudflared`）** 与 **Google Drive 共享队列（`colab-drive`）** 两种接入，且全程对 `ava` agent 透明友好。
 

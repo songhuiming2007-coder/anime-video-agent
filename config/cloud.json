@@ -94,7 +94,7 @@
         "A100-SXM4-80GB": 6.8,
         "A100": 5.3
       },
-      "_cu_rates_note": "Google AI Pro Colab Compute Units 参考消耗（CU/小时，实际消耗受 Colab 实时调度影响，以 Colab 面板或 --rate 传入为准）。T4 约 1.1~1.5 CU/h（配音够用），L4 约 1.5~3.0 CU/h（VLM 打标 24GB 够用）",
+      "_cu_rates_note": "Google Colab Compute Units 参考消耗（CU/小时，实际消耗受 Colab 实时调度影响，以 Colab 面板或 --rate 传入为准）。T4 约 1.1~1.5 CU/h（配音够用），L4 约 1.5~3.0 CU/h（VLM 打标 24GB 够用）",
       "budget_per_episode_cu": 1.5,
       "budget_per_phase0_cu": 25.0,
       "remote_root": "/content/anime-video-agent",
