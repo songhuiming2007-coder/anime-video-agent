@@ -1,33 +1,52 @@
-// 封面图导入（Spec 12 §2.1/§4.2）：拖放区 + 文件选择器，字节经 host spawn `/import-cover`（stdin）落 07-cover/import/。
+// 封面图导入（Spec 12 §2.1/§4.2）：紧凑拖放按钮 + 隐藏文件选择器，字节经 host spawn `/import-cover` 落 07-cover/import/。
 // 人是唯一发起者：拖入 / 点选都是显式动作；host 对 data/ 零写入（I1 不变）。
-// 压在图片上的文字只用 --overlay-*（Spec 14 S12-R1）。
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ImportedCoverJson } from "../shared/protocol";
 import { Icon } from "./icons";
 import { errText, type RpcClient } from "./rpc";
 
-export function CoverImport({ epKey, rpc, onImported }: { epKey: string; rpc: RpcClient; onImported: (r: ImportedCoverJson) => void }) {
+export function CoverImport({
+  epKey,
+  rpc,
+  onImported,
+  onNotice,
+}: {
+  epKey: string;
+  rpc: RpcClient;
+  onImported: (r: ImportedCoverJson) => void;
+  onNotice?: (msg: string | null) => void;
+}) {
   const [dragover, setDragover] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    setMsg(null);
+    onNotice?.(null);
+  }, [epKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const emitMsg = (next: string | null) => {
+    setMsg(next);
+    onNotice?.(next);
+  };
+
   const settle = async (call: Promise<ImportedCoverJson>): Promise<void> => {
     setBusy(true);
-    setMsg(null);
+    emitMsg(null);
     try {
       const r = await call;
-      setMsg(`已导入 ${r.path}（${r.format} ${r.width}×${r.height}）`);
+      emitMsg(`已导入 ${r.path}（${r.format} ${r.width}×${r.height}）`);
       onImported(r);
     } catch (e) {
-      setMsg(errText(e));
+      emitMsg(errText(e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="cover-import">
+    <div className="cover-compact">
       <div
         className="ui-dropzone"
         data-testid="cover-dropzone"
@@ -47,19 +66,19 @@ export function CoverImport({ epKey, rpc, onImported }: { epKey: string; rpc: Rp
           void settle(rpc.call("cover.import", { epKey, name: f.name, bytes }));
         }}
       >
-        <Icon name="image" size="sm" />
-        <span title="PNG/JPEG，≤ 32 MiB">拖入封面</span>
-        <span className="spacer" />
         <button
+          type="button"
           className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="cover-pick"
           disabled={busy}
+          title="点击选择或直接拖入封面图（PNG/JPEG，≤ 32 MiB）"
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             inputRef.current?.click();
           }}
         >
-          选择…
+          <Icon name="image" size="sm" />
+          导入封面
         </button>
         <input
           ref={inputRef}
@@ -77,7 +96,7 @@ export function CoverImport({ epKey, rpc, onImported }: { epKey: string; rpc: Rp
           }}
         />
       </div>
-      {msg !== null && (
+      {!onNotice && msg !== null && (
         <div className="notice" data-testid="cover-import-msg">
           <Icon name="info" size="sm" />
           {msg}

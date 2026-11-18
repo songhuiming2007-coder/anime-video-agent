@@ -369,6 +369,7 @@ function boot(): void {
       width: 1280,
       height: 820,
       title: "AVA",
+      ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 14, y: 14 } } : {}),
       // N41：不用 show:false 了事——隐藏窗口的绘制会被 Chromium 压低，视觉审计与截图会失真；改为下面 showInactive
       show: !dev.background,
       webPreferences: {

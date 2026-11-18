@@ -143,6 +143,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
   const needsFinalize = stop === "09" && !aligned;
   const ready = !needsFinalize || (cover.trim() !== "" && title.trim() !== "");
   const approveParams = needsFinalize ? { ...base, decision: "approve", cover, title } : { ...base, decision: "approve" };
+  const missingArtifacts = obj.artifacts.filter((f) => f.size < 0);
   return (
     <CardFrame
       className="decision"
@@ -156,20 +157,33 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
       }
       sub={aligned ? "解封物已在终端生成，待你确认" : undefined}
     >
-      <dl className="ui-kv">
-        {obj.artifacts.map((f) => (
-          <Fragment key={f.path}>
-            <dt>产物</dt>
-            <dd>
-              <code>{f.path}</code>
-              {f.size < 0 ? " （钉住时缺失）" : ` · ${f.size} 字节`}
-            </dd>
-          </Fragment>
-        ))}
-      </dl>
-      {obj.note && <div className="muted">{obj.note}</div>}
+      {missingArtifacts.map((f) => (
+        <div className="warn" key={f.path}>
+          <code>{f.path}</code>（钉住时缺失）
+        </div>
+      ))}
+      {(obj.artifacts.length > 0 || obj.note) && (
+        <details className="card-more">
+          <summary className="muted">产物详情（{obj.artifacts.length} 项）</summary>
+          {obj.artifacts.length > 0 && (
+            <dl className="ui-kv">
+              {obj.artifacts.map((f) => (
+                <Fragment key={f.path}>
+                  <dt>产物</dt>
+                  <dd>
+                    <code>{f.path}</code>
+                    {f.size < 0 ? " （钉住时缺失）" : ` · ${f.size} 字节`}
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          {obj.note && <div className="muted">{obj.note}</div>}
+        </details>
+      )}
       {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} />}
       {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
+      {stop === "03.5" && <ReviewRating epKey={ep.epKey} rpc={rpc} disabled={off} />}
       <div className="ui-card-actions">
         <button
           className="ui-btn"
@@ -180,16 +194,15 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
             void run(obj, rpc.call("approval.decide", approveParams), aligned ? "已确认批准" : "已批准");
           }}
         >
-          批准
+          {aligned ? "批准" : stop === "03.5" ? "顺听无误，进入排片" : "批准"}
         </button>
-        {stop === "03.5" && <ReviewRating epKey={ep.epKey} rpc={rpc} disabled={off} />}
-        {!aligned && (
+        {!aligned && stop !== "03.5" && (
           <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
             打回…
           </button>
         )}
       </div>
-      {rejecting && !aligned && (
+      {rejecting && !aligned && stop !== "03.5" && (
         <div className="reject-form" data-testid="reject-form">
           <label className="ui-field">
             哪段
@@ -323,19 +336,23 @@ function fieldText(v: unknown): string {
  * 派发的是 isTrusted 的 click，走下面同一个 onClick（TG-4′ 不变：effect 里只 focus，不调答复方法）。
  */
 /** D80 R6（方案 C）：本会话的待答请求卡，挂在对话流末尾（正在跑的回合下面）；第一张自动聚焦「批准」 */
-export function RequestCards({ conv, rpc }: { conv?: ConvState; rpc: RpcClient }) {
+export function RequestCards({ conv, rpc, onEditScript }: { conv?: ConvState; rpc: RpcClient; onEditScript?: () => void }) {
   const requests = conv?.open ?? [];
   if (!conv || requests.length === 0) return null;
   return (
     <>
       {requests.map((req, i) => (
-        <RequestCard key={String(req.request_id)} convKey={conv.convKey} req={req} rpc={rpc} disabled={false} focusApprove={i === 0} />
+        <RequestCard key={String(req.request_id)} convKey={conv.convKey} req={req} rpc={rpc} disabled={false} focusApprove={i === 0} onEditScript={onEditScript} />
       ))}
     </>
   );
 }
 
-export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean; focusApprove?: boolean }) {
+function isScriptTarget(v: unknown): boolean {
+  return typeof v === "string" && (v === "02-script.md" || v.endsWith("/02-script.md"));
+}
+
+export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false, onEditScript }: { convKey: ConvKey; req: OutFrame; rpc: RpcClient; disabled: boolean; focusApprove?: boolean; onEditScript?: () => void }) {
   const requestId = String(req.request_id);
   const kind = String(req.kind);
   const options = Array.isArray(req.options) ? (req.options as unknown[]).map(String) : [];
@@ -348,6 +365,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
   const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
   // D76：bash 卡上的命令每行带「│」前缀，手选会连前缀一起复制；按钮复制的是请求参数里的命令原文
   const args = (fields.args ?? {}) as Record<string, unknown>;
+  const isScriptWrite = tool === "write_episode_file" && (isScriptTarget(args.filename) || isScriptTarget(args.path) || isScriptTarget(args.rel_path));
   const bashCommand = tool === "bash" && typeof args.command === "string" ? args.command : null;
   const purpose = tool === "bash" && typeof args.description === "string" && args.description.trim() !== "" ? args.description : null;
   const mark = dangerLabel(fields.danger);
@@ -382,6 +400,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
           {mark ? <Badge tone="danger">{mark}</Badge> : null}
         </>
       }
+      sub={isScriptWrite ? "AI 建议写入 02-script.md（可采纳直接写入，或参考建议自己打开双栏编辑器修改）" : undefined}
     >
       {typeof req.card_summary === "string" ? (
         <>
@@ -462,6 +481,33 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false 
             {DECISION_LABEL[decision] ?? decision}
           </button>
         ))}
+        {isScriptWrite && feedbackAllowed && (
+          <button
+            className="ui-btn"
+            data-testid="request-answer-self-edit"
+            disabled={off}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              setBusy(true);
+              setError(null);
+              onEditScript?.();
+              void rpc
+                .call("conv.answer", {
+                  convKey,
+                  requestId,
+                  decision: "reject",
+                  feedback: "我已参考你的建议，决定在右侧文案编辑器里自己修改 02-script.md，请勿直接覆盖。",
+                })
+                .then(() => setBusy(false))
+                .catch((err) => {
+                  setBusy(false);
+                  setError(errText(err));
+                });
+            }}
+          >
+            参考建议，我自己改
+          </button>
+        )}
         {focusApprove && options.length > 0 && !busy && (
           // 提示放在按钮外：按钮文字只取 options 的标签（H-4），不混入提示
           <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>

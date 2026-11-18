@@ -129,7 +129,7 @@ export function Composer({
             });
           }}
         >
-          <Icon name="play" size="sm" />
+          <Icon name="arrow-up" size="sm" />
           {running ? "排队" : "发送"}
         </button>
       </div>

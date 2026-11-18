@@ -1,23 +1,14 @@
-// D49-A S4/S5 + D169：预览区顶部的一站式文件切换器（彻底取代左侧栏产物树与画廊列表）。
-// 包含：① 当前产物下拉按钮 + 子目录内联展开（如 07-cover/c1.png、03-audio/*.wav）；
-// ② 镜头画廊弹出选择器（data/library/shots/*.html）；
-// ③ 核心阶段快捷胶囊（01 选题 / 02 稿件 / 03 配音 / 04 审看 / 05 成片）。
+// D49-A S4/S5 + D169：预览区顶部的一站式文件切换器（完整本期产物下拉 + 子目录内联展开 + 镜头画廊 + 紧凑封面导入）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { groupArtifacts, type SwitchItem } from "../shared/artifactGroups";
 import type { ShotsEntry, TreeEntry } from "../shared/protocol";
+import { CoverImport } from "./CoverImport";
+import { FloatingPopover } from "./floating";
 import { Icon, type IconName } from "./icons";
 import { previewKind } from "../shared/previewKind";
 import type { PreviewTarget } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
 import { Badge } from "./ui";
-
-const STAGE_CHIPS: readonly { name: string; label: string; kind: "file" | "dir" }[] = [
-  { name: "01-topic.md", label: "01 选题", kind: "file" },
-  { name: "02-script.md", label: "02 稿件", kind: "file" },
-  { name: "03-audio", label: "03 配音", kind: "dir" },
-  { name: "04-review.html", label: "04 审看", kind: "file" },
-  { name: "05-final.mp4", label: "05 成片", kind: "file" },
-];
 
 const KIND_ICON: Record<string, IconName> = { video: "film", audio: "wave", image: "image", html: "file" };
 
@@ -29,6 +20,7 @@ export function PreviewSwitcher({
   treeBump = 0,
   reachOk = true,
   onPick,
+  onCoverImported,
 }: {
   epKey: string | null;
   rpc: RpcClient;
@@ -37,6 +29,7 @@ export function PreviewSwitcher({
   treeBump?: number;
   reachOk?: boolean;
   onPick: (t: PreviewTarget) => void;
+  onCoverImported?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<TreeEntry[] | null>(null);
@@ -48,10 +41,10 @@ export function PreviewSwitcher({
   const subOpenRef = useRef(subOpen);
   subOpenRef.current = subOpen;
   const [subTrees, setSubTrees] = useState<Record<string, TreeEntry[] | "loading" | string>>({});
-  /** 镜头画廊（从左侧栏移到预览切换器顶栏） */
+  /** 镜头画廊 */
   const [galleriesOpen, setGalleriesOpen] = useState(false);
   const [galleries, setGalleries] = useState<ShotsEntry[] | null>(null);
-  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [coverNotice, setCoverNotice] = useState<string | null>(null);
 
   const loadRoot = useCallback(() => {
     if (!epKey) {
@@ -94,28 +87,6 @@ export function PreviewSwitcher({
       rpc.call<ShotsEntry[]>("shots.list").then(setGalleries, () => setGalleries([]));
     }
   }, [galleriesOpen, reachOk, rpc]);
-
-  useEffect(() => {
-    if (!open && !galleriesOpen) return;
-    const away = (ev: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(ev.target as Node)) {
-        setOpen(false);
-        setGalleriesOpen(false);
-      }
-    };
-    const esc = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        setOpen(false);
-        setGalleriesOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open, galleriesOpen]);
 
   const curRel = current
     ? current.root === "episodes" && epKey
@@ -197,147 +168,146 @@ export function PreviewSwitcher({
     );
   };
 
-  const entryMap = new Map((entries ?? []).map((e) => [e.name, e]));
-  const hasDraft = entryMap.get("02-script.draft.md")?.kind === "file";
   const allItems = entries ? groupArtifacts(entries, running) : [];
 
   return (
-    <div className="preview-switch-wrap" ref={boxRef} data-testid="preview-switch">
+    <div className="preview-switch-wrap" data-testid="preview-switch">
       <div className="preview-switch">
         {epKey !== null && (
-          <button
-            className="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"
-            aria-expanded={open}
-            data-testid="preview-switch-btn"
-            onClick={() => {
-              setGalleriesOpen(false);
-              setOpen((o) => !o);
+          <FloatingPopover
+            open={open}
+            onOpenChange={(next) => {
+              if (next) setGalleriesOpen(false);
+              setOpen(next);
             }}
-          >
-            <Icon name="folder" size="sm" />
-            <span className="preview-switch-label">{label}</span>
-            {curRel === "02-script.md" && <Badge>可编辑</Badge>}
-            <Icon name="chevron-down" size="sm" />
-          </button>
+            placement="bottom-start"
+            className="ui-popover preview-switch-pop"
+            testId="preview-switch-pop"
+            renderTrigger={(trigger) => (
+              <button
+                type="button"
+                ref={trigger.ref}
+                {...trigger.props}
+                className="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"
+                aria-expanded={open}
+                data-testid="preview-switch-btn"
+              >
+                <Icon name="folder" size="sm" />
+                <span className="preview-switch-label">{label}</span>
+                {curRel === "02-script.md" && <Badge>可编辑</Badge>}
+                <Icon name="chevron-down" size="sm" />
+              </button>
+            )}
+            renderContent={() => (
+              <>
+                {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
+                {err !== null && <div className="muted">{err}</div>}
+                {entries === null && err === null && <div className="muted">…</div>}
+                {entries !== null &&
+                  allItems.map((g) => (
+                    <div key={g.title} className="preview-switch-group">
+                      <div className="ui-popover-title preview-switch-gtitle">{g.title}</div>
+                      {g.items.map((it: SwitchItem) => (
+                        <div key={it.rel}>
+                          <div className="preview-switch-item">
+                            <button
+                              className="ui-row preview-switch-row"
+                              aria-current={curRel === it.rel ? "true" : undefined}
+                              disabled={it.missing && !it.fromDraft}
+                              data-testid="preview-switch-row"
+                              data-rel={it.rel}
+                              onClick={() => pickItem(it)}
+                            >
+                              <Icon name={it.kind === "dir" ? "folder" : (KIND_ICON[previewKind(it.name)] ?? "file")} size="sm" />
+                              <span className="ui-row-title">{it.name}</span>
+                              <span className="preview-switch-meta">
+                                {it.fromDraft ? "✎ 从草稿新建" : it.missing ? "未生成" : it.generating ? <Badge tone="wait">生成中</Badge> : it.editable ? "✎ 可在此编辑" : ""}
+                              </span>
+                            </button>
+                            {it.kind === "dir" && !it.missing && (
+                              <button
+                                className="ui-btn ui-btn--ghost ui-btn--sm preview-subdir-toggle"
+                                aria-expanded={!!subOpen[it.rel]}
+                                aria-label={`展开 ${it.name}`}
+                                data-testid="preview-subdir-toggle"
+                                data-dir={it.rel}
+                                onClick={() => toggleSubdir(it.rel)}
+                              >
+                                <Icon name={subOpen[it.rel] ? "chevron-down" : "chevron-right"} size="sm" />
+                              </button>
+                            )}
+                          </div>
+                          {it.kind === "dir" && !it.missing && subOpen[it.rel] && renderSubEntries(it.rel, 1)}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+              </>
+            )}
+          />
         )}
         {epKey === null && <span className="preview-switch-label muted">{label}</span>}
         <span className="spacer" />
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm preview-galleries-btn"
-          aria-expanded={galleriesOpen}
-          data-testid="galleries-toggle"
-          onClick={() => {
-            setOpen(false);
-            setGalleriesOpen((o) => !o);
+        {epKey !== null && (
+          <CoverImport
+            epKey={epKey}
+            rpc={rpc}
+            onImported={() => onCoverImported?.()}
+            onNotice={setCoverNotice}
+          />
+        )}
+        <FloatingPopover
+          open={galleriesOpen}
+          onOpenChange={(next) => {
+            if (next) setOpen(false);
+            setGalleriesOpen(next);
           }}
-        >
-          <Icon name="image" size="sm" />
-          镜头画廊
-          {galleries && <span className="ui-count">{galleries.length}</span>}
-        </button>
-      </div>
-
-      {/* 核心阶段快捷切换胶囊（无需先点开下拉即可一步跳转常用产物） */}
-      {epKey !== null && (
-        <div className="preview-stage-chips" data-testid="preview-stage-chips">
-          {STAGE_CHIPS.map((ch) => {
-            const found = entryMap.get(ch.name);
-            const fromDraft = ch.name === "02-script.md" && !found && hasDraft;
-            const disabled = !found && !fromDraft;
-            const active = curRel === ch.name;
-            return (
-              <button
-                key={ch.name}
-                className="ui-btn ui-btn--ghost ui-btn--sm preview-stage-chip"
-                aria-current={active ? "true" : undefined}
-                disabled={disabled}
-                data-testid="preview-stage-chip"
-                data-rel={ch.name}
-                onClick={() =>
-                  pickItem({
-                    rel: ch.name,
-                    kind: ch.kind,
-                    missing: !found,
-                    fromDraft,
-                    size: found?.size ?? null,
-                  })
-                }
-              >
-                {ch.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {open && epKey !== null && (
-        <div className="ui-popover preview-switch-pop" data-testid="preview-switch-pop">
-          {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
-          {err !== null && <div className="muted">{err}</div>}
-          {entries === null && err === null && <div className="muted">…</div>}
-          {entries !== null &&
-            allItems.map((g) => (
-              <div key={g.title} className="preview-switch-group">
-                <div className="ui-popover-title preview-switch-gtitle">{g.title}</div>
-                {g.items.map((it: SwitchItem) => (
-                  <div key={it.rel}>
-                    <div className="preview-switch-item">
-                      <button
-                        className="ui-row preview-switch-row"
-                        aria-current={curRel === it.rel ? "true" : undefined}
-                        disabled={it.missing && !it.fromDraft}
-                        data-testid="preview-switch-row"
-                        data-rel={it.rel}
-                        onClick={() => pickItem(it)}
-                      >
-                        <Icon name={it.kind === "dir" ? "folder" : (KIND_ICON[previewKind(it.name)] ?? "file")} size="sm" />
-                        <span className="ui-row-title">{it.name}</span>
-                        <span className="preview-switch-meta">
-                          {it.fromDraft ? "✎ 从草稿新建" : it.missing ? "未生成" : it.generating ? <Badge tone="wait">生成中</Badge> : it.editable ? "✎ 可在此编辑" : ""}
-                        </span>
-                      </button>
-                      {it.kind === "dir" && !it.missing && (
-                        <button
-                          className="ui-btn ui-btn--ghost ui-btn--sm preview-subdir-toggle"
-                          aria-expanded={!!subOpen[it.rel]}
-                          aria-label={`展开 ${it.name}`}
-                          data-testid="preview-subdir-toggle"
-                          data-dir={it.rel}
-                          onClick={() => toggleSubdir(it.rel)}
-                        >
-                          <Icon name={subOpen[it.rel] ? "chevron-down" : "chevron-right"} size="sm" />
-                        </button>
-                      )}
-                    </div>
-                    {it.kind === "dir" && !it.missing && subOpen[it.rel] && renderSubEntries(it.rel, 1)}
-                  </div>
-                ))}
-              </div>
-            ))}
-        </div>
-      )}
-
-      {galleriesOpen && (
-        <div className="ui-popover preview-switch-pop preview-galleries-pop" data-testid="galleries-pop">
-          <div className="ui-popover-title preview-switch-gtitle">镜头画廊（shots）</div>
-          {galleries === null && <div className="muted">…</div>}
-          {galleries?.length === 0 && <div className="muted">没有画廊</div>}
-          {galleries?.map((g) => (
+          placement="bottom-end"
+          className="ui-popover preview-switch-pop preview-galleries-pop"
+          testId="galleries-pop"
+          renderTrigger={(trigger) => (
             <button
-              key={g.name}
-              className="ui-row preview-switch-row"
-              aria-current={current?.root === "shots" && current.rel === g.name ? "true" : undefined}
-              data-testid="gallery"
-              data-name={g.name}
-              onClick={() => {
-                setGalleriesOpen(false);
-                onPick({ kind: "file", root: "shots", rel: g.name, size: g.size });
-              }}
+              type="button"
+              ref={trigger.ref}
+              {...trigger.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm preview-galleries-btn"
+              aria-expanded={galleriesOpen}
+              data-testid="galleries-toggle"
             >
-              <Icon name="file" size="sm" />
-              <span className="ui-row-title">{g.name}</span>
+              <Icon name="image" size="sm" />
+              镜头画廊
+              {galleries && <span className="ui-count">{galleries.length}</span>}
             </button>
-          ))}
+          )}
+          renderContent={() => (
+            <>
+              <div className="ui-popover-title preview-switch-gtitle">镜头画廊（shots）</div>
+              {galleries === null && <div className="muted">…</div>}
+              {galleries?.length === 0 && <div className="muted">没有画廊</div>}
+              {galleries?.map((g) => (
+                <button
+                  key={g.name}
+                  className="ui-row preview-switch-row"
+                  aria-current={current?.root === "shots" && current.rel === g.name ? "true" : undefined}
+                  data-testid="gallery"
+                  data-name={g.name}
+                  onClick={() => {
+                    setGalleriesOpen(false);
+                    onPick({ kind: "file", root: "shots", rel: g.name, size: g.size });
+                  }}
+                >
+                  <Icon name="file" size="sm" />
+                  <span className="ui-row-title">{g.name}</span>
+                </button>
+              ))}
+            </>
+          )}
+        />
+      </div>
+      {coverNotice !== null && (
+        <div className="notice preview-cover-notice" data-testid="cover-import-msg">
+          <Icon name="info" size="sm" />
+          {coverNotice}
         </div>
       )}
     </div>

@@ -1,13 +1,17 @@
 // Spec 10 §2.6 / §2.8 / §4.3：会话头部。scope、LLM 状态、素材模式、确认记忆、结束会话、建期…（D45：继续会话移到侧栏会话列表）。
 // 全仓唯一出现 "conv.command"、"conv.end"、"conv.resume" 的文件（TG-10：调用点只在原生元素的 onClick 里）。
 // D91：输入框下的模型 / 推理按钮（ModelControls）也因此写在这里，由 App 塞进 Composer 的工具栏。
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { AuthStatusResult, ConvEntry, ConvKey, ConvPhase, CreatedEpisode, ModelSourceInfo } from "../shared/protocol";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { AuthStatusResult, ConvEntry, ConvKey, ConvPhase, CreatedEpisode, Health, ModelSourceInfo } from "../shared/protocol";
 import { contextText, type ContextReading } from "../shared/convFold";
+import { FloatingPopover, FloatingTooltip } from "./floating";
+import { HumanTimeReadout } from "./HumanTimeReadout";
 import { LoginModal } from "./LoginModal";
 import { NewEpisodeForm } from "./NewEpisodeForm";
 import type { RpcClient } from "./rpc";
+import type { EpisodeState } from "./store";
 import { Icon } from "./icons";
+import { StateView } from "./ui";
 
 export interface ReadyInfo {
   scope: string | null;
@@ -54,6 +58,16 @@ export function SessionHeader({
   context,
   onCreated,
   onEnded,
+  title,
+  ep,
+  leftOpen,
+  onToggleLeft,
+  health,
+  canRefresh,
+  onRefresh,
+  showHealth,
+  onToggleHealth,
+  utilityRight,
 }: {
   rpc: RpcClient;
   convKey: ConvKey;
@@ -65,6 +79,16 @@ export function SessionHeader({
   context: ContextReading | null;
   onCreated: (created: CreatedEpisode) => void;
   onEnded: () => void;
+  title: string;
+  ep?: EpisodeState;
+  leftOpen: boolean;
+  onToggleLeft: () => void;
+  health: Health | null;
+  canRefresh: boolean;
+  onRefresh: () => void;
+  showHealth: boolean;
+  onToggleHealth: () => void;
+  utilityRight?: ReactNode;
 }) {
   const live = phase === "starting" || phase === "idle" || phase === "running" || phase === "ending";
   const running = phase === "running";
@@ -75,88 +99,186 @@ export function SessionHeader({
   // N32：无活会话时 scope 命令无处可发——点击不发任何 RPC，只给一行可读提示（换期即清）
   const [needSession, setNeedSession] = useState(false);
   useEffect(() => setNeedSession(false), [convKey]);
+  const [statusOpen, setStatusOpen] = useState(false);
+  useEffect(() => setStatusOpen(false), [ep?.epKey]);
+  const epStatus = ep && !isIdea ? ep.status : null;
+  const statusVal = epStatus?.ok ? epStatus.value : null;
+  const detailsId = ep ? `status-details-${ep.epKey}` : undefined;
   return (
-    <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
-      {scopeLabel !== null && !asset && (
-        <span className="ui-badge" data-testid="session-scope">
-          {scopeLabel}
-        </span>
-      )}
-      {/* D64 余项②（2026-10-09 人选方案 B）：读数做成徽章、紧跟模式徽章，正文色——灰字夹在「LLM 已连接」后面不显眼 */}
-      {contextReadout !== null && (
-        <span className="ui-badge session-head-readout" data-testid="context-readout" title={CONTEXT_READOUT_TITLE}>
-          {contextReadout}
-        </span>
-      )}
-      {info.llm === "ok" && <span className="ui-dot ui-dot--ok" data-testid="llm-ok" title="LLM 已连接" />}
-      {/* D159：会话计数是状态不是对话事件——挪到会话头一行小字，不再占对话流首条大横条 */}
-      {info.otherSessions > 0 && (
-        <span className="muted" data-testid="other-sessions">
-          该期还有 {info.otherSessions} 个会话{info.otherLatest ? ` · ${info.otherLatest}` : ""}
-        </span>
-      )}
-      {/* D39 C2：头部恒为一行，只留短标；原因全文、钥匙串命令、更早会话进对话流首行（SessionNotes，Spec 10 §2.3「流内一行」） */}
-      {info.llm === "degraded" && (
-        <span className="warn" data-testid="llm-degraded-mark">
-          LLM 未就绪
-        </span>
-      )}
-      <span className="spacer" />
-      {/* D81：企划会话没有素材模式（企划级只做规划、跨卷审查、总装） */}
-      {!isIdea && !convKey.startsWith("proj:") && (
+    <>
+      <div className="session-head" data-testid="session-head" data-conv={convKey} data-phase={phase}>
+        {!leftOpen && (
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+            aria-label="侧栏"
+            aria-pressed={false}
+            aria-controls="ava-left"
+            onClick={onToggleLeft}
+            data-testid="toggle-left"
+          >
+            <Icon name="panel-left" size="sm" />
+          </button>
+        )}
+        <strong className="head-title">{title}</strong>
+        {statusVal !== null && (
+          <>
+            <span className="head-sep" aria-hidden="true">·</span>
+            <span className="head-step" data-testid="current-step">{statusVal.current_step}</span>
+            {statusVal.advisories.length > 0 && (
+              <span className="ui-badge ui-badge--warn" data-testid="status-advisory-count">
+                {statusVal.advisories.length} 条提示
+              </span>
+            )}
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm"
+              aria-expanded={statusOpen}
+              aria-controls={detailsId}
+              onClick={() => setStatusOpen((o) => !o)}
+              data-testid="status-toggle"
+            >
+              详情
+              <Icon name={statusOpen ? "chevron-down" : "chevron-right"} size="sm" />
+            </button>
+          </>
+        )}
+        {scopeLabel !== null && !asset && (
+          <span className="ui-badge" data-testid="session-scope">
+            {scopeLabel}
+          </span>
+        )}
+        {info.otherSessions > 0 && (
+          <span className="muted" data-testid="other-sessions">
+            该期还有 {info.otherSessions} 个会话{info.otherLatest ? ` · ${info.otherLatest}` : ""}
+          </span>
+        )}
+        {info.llm === "degraded" && (
+          <span className="warn" data-testid="llm-degraded-mark">
+            LLM 未就绪
+          </span>
+        )}
+        {running && <span className="ui-spinner" data-testid="session-running" />}
+        <span className="spacer" />
+        {/* D64 余项②：上下文读数悬停使用 FloatingTooltip，避免系统原生 title 迟滞 */}
+        {contextReadout !== null && (
+          <FloatingTooltip
+            label={CONTEXT_READOUT_TITLE}
+            renderTrigger={(trigger) => (
+              <span
+                ref={trigger.ref}
+                {...trigger.props}
+                className="ui-badge session-head-readout"
+                data-testid="context-readout"
+                title={CONTEXT_READOUT_TITLE}
+              >
+                {contextReadout}
+              </span>
+            )}
+          />
+        )}
+        {/* D81：企划会话没有素材模式（企划级只做规划、跨卷审查、总装） */}
+        {!isIdea && !convKey.startsWith("proj:") && (
+          <button
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="scope-toggle"
+            aria-pressed={asset}
+            disabled={running || phase === "ending"}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              if (!live) {
+                setNeedSession(true);
+                return;
+              }
+              void rpc.call("conv.command", { convKey, name: "scope", arg: asset ? "auto" : "asset" }).catch(() => undefined);
+            }}
+          >
+            素材模式
+          </button>
+        )}
+        {memoryAsk && (
+          <button
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="memory-ack-open"
+            disabled={running}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void rpc.call("conv.command", { convKey, name: "memory_ack" }).catch(() => undefined);
+            }}
+          >
+            确认记忆…
+          </button>
+        )}
+        {isIdea && <NewEpisodeForm rpc={rpc} onCreated={onCreated} />}
+        {!isIdea && live && (
+          <button
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="session-end"
+            disabled={phase === "ending"}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void rpc.call("conv.end", { convKey }).then(() => onEnded(), () => onEnded());
+            }}
+          >
+            结束会话
+          </button>
+        )}
+        {health && !health.isPackaged && (
+          <span className="ui-badge ui-badge--warn" data-testid="dev-build">
+            DEV
+          </span>
+        )}
         <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="scope-toggle"
-          aria-pressed={asset}
-          disabled={running || phase === "ending"}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            if (!live) {
-              setNeedSession(true);
-              return;
-            }
-            void rpc.call("conv.command", { convKey, name: "scope", arg: asset ? "auto" : "asset" }).catch(() => undefined);
-          }}
+          type="button"
+          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+          aria-label="刷新"
+          title="刷新"
+          onClick={onRefresh}
+          disabled={!canRefresh}
+          data-testid="refresh"
         >
-          素材模式
+          <Icon name="refresh" size="sm" />
         </button>
-      )}
+        <button
+          type="button"
+          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+          aria-label="健康"
+          title="诊断与环境"
+          aria-pressed={showHealth}
+          onClick={onToggleHealth}
+          data-testid="health-toggle"
+        >
+          <Icon name="pulse" size="sm" />
+        </button>
+        {utilityRight}
+      </div>
       {!isIdea && needSession && !live && (
-        <span className="muted" role="status" data-testid="scope-needs-session">
+        <div className="head-substrip muted" role="status" data-testid="scope-needs-session">
           没有进行中的会话：先发一条消息（或「继续上次会话」）再切素材模式
-        </span>
+        </div>
       )}
-      {memoryAsk && (
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="memory-ack-open"
-          disabled={running}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void rpc.call("conv.command", { convKey, name: "memory_ack" }).catch(() => undefined);
-          }}
-        >
-          确认记忆…
-        </button>
+      {epStatus && !epStatus.ok && (
+        <StateView kind="error" title={`工序读取失败（${epStatus.code}）：${epStatus.message}`} />
       )}
-      {isIdea && <NewEpisodeForm rpc={rpc} onCreated={onCreated} />}
-      {!isIdea && live && (
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="session-end"
-          disabled={phase === "ending"}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void rpc.call("conv.end", { convKey }).then(() => onEnded(), () => onEnded());
-          }}
-        >
-          结束会话
-        </button>
+      {ep && statusVal !== null && (
+        <div className="status-details head-substrip" id={detailsId} hidden={!statusOpen} data-testid="status-details">
+          {statusVal.next_command && <code className="ui-code cmd">{statusVal.next_command}</code>}
+          {statusVal.block_reason && <div className="muted">{statusVal.block_reason}</div>}
+          <div>下一步：{statusVal.next_action}</div>
+          {statusVal.advisories.length > 0 && (
+            <ul className="advisories">
+              {statusVal.advisories.map((a) => (
+                <li key={a}>
+                  <Icon name="alert" size="sm" />
+                  {a}
+                </li>
+              ))}
+            </ul>
+          )}
+          <HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />
+        </div>
       )}
-      {/* D45 / D58：「继续上次会话」由侧栏会话子列表取代（期会话与选题会话同一套；点哪个进哪个） */}
-      {running && <span className="ui-spinner" data-testid="session-running" />}
-      {info.llm === null && <Icon name="info" size="sm" />}
-    </div>
+    </>
   );
 }
 
@@ -314,29 +436,7 @@ export function nextEffort(efforts: readonly string[] | null, current: string | 
   return order[(idx + 1) % order.length];
 }
 
-function usePopover(): [boolean, (v: boolean) => void, React.RefObject<HTMLDivElement | null>] {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (ev: MouseEvent) => {
-      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
-    };
-    const esc = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open]);
-  return [open, setOpen, ref];
-}
-
-/**
- * 输入框工具栏上的两个按钮：模型（点开列出代理的模型）、推理强度（点开选档位）。只改本会话。
+/** 输入框工具栏上的两个按钮：模型（点开列出代理的模型）、推理强度（点开选档位）。只改本会话。
  * 会话还没起（还没发过消息）时显示「—」并提示：先发一条消息，或直接发 /model。回合在跑时置灰。
  */
 /** 输入框发裸 `/model`、`/thinking`、`/login` 时由 App 递进来：n 每次加一，展开对应浮层 */
@@ -612,8 +712,8 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
   const usable = modelCtlUsable(phase);
   const pendingModel = pending?.model ?? null;
   const pendingEffort = pending?.effort ?? null;
-  const [modelOpen, setModelOpen, modelRef] = usePopover();
-  const [effortOpen, setEffortOpen, effortRef] = usePopover();
+  const [modelOpen, setModelOpen] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatusResult | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
@@ -741,318 +841,349 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
       e.preventDefault();
       void rpc.call("conv.command", { convKey, name: "thinking", arg: next }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
     }}>
-      <div className="model-ctl model-ctl--model" ref={modelRef}>
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
-          data-testid="model-btn"
-          data-source={pendingModel !== null ? "session" : info?.modelSource ?? ""}
-          aria-expanded={modelOpen}
-          disabled={!usable}
-          title={
-            hint ??
-            `${info?.model ?? ""}${activeSource ? ` · 来源：${activeSource.label}${activeSource.endpoint ? ` (${activeSource.endpoint})` : ""}` : ""} · ${
-              info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"
-            }`
-          }
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            if (modelOpen) setModelOpen(false);
-            else openModel();
+      <div className="model-ctl model-ctl--model">
+        <FloatingPopover
+          open={modelOpen}
+          onOpenChange={(next) => {
+            if (!usable) {
+              setModelOpen(false);
+              return;
+            }
+            if (next) openModel();
+            else setModelOpen(false);
           }}
-        >
-          <Icon name="chip" size="sm" />
-          {activeSource && activeSource.id !== "default" && (
-            <span className="ui-badge model-ctl-source" data-testid="model-source-badge">
-              {activeSource.shortLabel}
-            </span>
+          placement="top-start"
+          className="ui-popover model-pop model-pop--models"
+          testId="model-pop"
+          renderTrigger={(trigger) => (
+            <button
+              type="button"
+              ref={trigger.ref}
+              {...trigger.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
+              data-testid="model-btn"
+              data-source={pendingModel !== null ? "session" : info?.modelSource ?? ""}
+              aria-expanded={modelOpen}
+              disabled={!usable}
+              title={
+                hint ??
+                `${info?.model ?? ""}${activeSource ? ` · 来源：${activeSource.label}${activeSource.endpoint ? ` (${activeSource.endpoint})` : ""}` : ""} · ${
+                  info?.modelSource === "session" ? "本会话设置的模型（新会话仍用默认）" : "默认模型（config/agent.local.json）"
+                }`
+              }
+            >
+              <Icon name="chip" size="sm" />
+              {activeSource && activeSource.id !== "default" && (
+                <span className="ui-badge model-ctl-source" data-testid="model-source-badge">
+                  {activeSource.shortLabel}
+                </span>
+              )}
+              <span className="model-ctl-label" data-testid="model-label">{pendingModel ?? info?.model ?? "—"}</span>
+              {pendingModel !== null && <span className="ui-badge" data-testid="model-pending">待生效</span>}
+              <Icon name="chevron-down" size="sm" />
+            </button>
           )}
-          <span className="model-ctl-label" data-testid="model-label">{pendingModel ?? info?.model ?? "—"}</span>
-          {pendingModel !== null && <span className="ui-badge" data-testid="model-pending">待生效</span>}
-          <Icon name="chevron-down" size="sm" />
-        </button>
-        {modelOpen && (
-          <div className="ui-popover model-pop model-pop--models" data-testid="model-pop">
-            <div className="model-pop-head">
-              <div className="ui-popover-title">本会话模型</div>
-              <button
-                type="button"
-                className="ui-btn ui-btn--ghost ui-btn--sm model-pop-login"
-                data-testid="model-pop-login"
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  setModelOpen(false);
-                  setLoginOpen(true);
-                }}
-              >
-                <Icon name="globe" size="sm" />
-                服务商登录
-              </button>
-            </div>
-            {popNote !== null && <div className="muted model-pop-note" data-testid="model-pop-note">{popNote}</div>}
-            {info !== null && info.modelSource === "default" && info.model !== null && (
-              <div className="muted model-pop-note" data-testid="model-pop-default">
-                默认：{info.model}
-                {activeSource && info.modelSource === "default" ? ` · ${activeSource.label}` : ""}
-              </div>
-            )}
-            {err !== null && (
-              <div className="warn model-pop-err" data-testid="model-pop-err">
-                {err}
-                <button className="ui-btn ui-btn--ghost ui-btn--sm model-pop-retry" data-testid="model-pop-retry" onClick={(e) => { if (!e.nativeEvent.isTrusted) return; setErr(null); setModels(null); fetchModels(); }}>重试</button>
-              </div>
-            )}
-            {warn !== null && <div className="warn model-pop-warn" data-testid="model-pop-warn">{warn}</div>}
-            {models !== null && models.length > 0 && (
-              <div className="ui-search model-pop-search">
-                <Icon name="search" size="sm" />
-                <input
-                  className="ui-input"
-                  data-testid="model-search"
-                  placeholder="筛选模型名或来源（如 deepseek / opencode / devin）…"
-                  value={modelQuery}
-                  onChange={(e) => setModelQuery(e.target.value)}
-                />
-              </div>
-            )}
-            {modelGroups.length > 1 && (
-              <div className="model-pop-filters" data-testid="model-source-filters" role="group" aria-label="按来源筛选">
+          renderContent={() => (
+            <>
+              <div className="model-pop-head">
+                <div className="ui-popover-title">本会话模型</div>
                 <button
                   type="button"
-                  className="ui-btn ui-btn--ghost ui-btn--sm model-pop-filter-btn"
-                  data-testid="model-source-filter"
-                  data-source-id="all"
-                  aria-pressed={sourceFilter === null}
-                  onClick={() => setSourceFilter(null)}
+                  className="ui-btn ui-btn--ghost ui-btn--sm model-pop-login"
+                  data-testid="model-pop-login"
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    setModelOpen(false);
+                    setLoginOpen(true);
+                  }}
                 >
-                  全部 ({models?.length ?? 0})
+                  <Icon name="globe" size="sm" />
+                  服务商登录
                 </button>
-                {modelGroups.map((grp) => (
+              </div>
+              {popNote !== null && <div className="muted model-pop-note" data-testid="model-pop-note">{popNote}</div>}
+              {info !== null && info.modelSource === "default" && info.model !== null && (
+                <div className="muted model-pop-note" data-testid="model-pop-default">
+                  默认：{info.model}
+                  {activeSource && info.modelSource === "default" ? ` · ${activeSource.label}` : ""}
+                </div>
+              )}
+              {err !== null && (
+                <div className="warn model-pop-err" data-testid="model-pop-err">
+                  {err}
+                  <button className="ui-btn ui-btn--ghost ui-btn--sm model-pop-retry" data-testid="model-pop-retry" onClick={(e) => { if (!e.nativeEvent.isTrusted) return; setErr(null); setModels(null); fetchModels(); }}>重试</button>
+                </div>
+              )}
+              {warn !== null && <div className="warn model-pop-warn" data-testid="model-pop-warn">{warn}</div>}
+              {models !== null && models.length > 0 && (
+                <div className="ui-search model-pop-search">
+                  <Icon name="search" size="sm" />
+                  <input
+                    className="ui-input"
+                    data-testid="model-search"
+                    placeholder="筛选模型名或来源（如 deepseek / opencode / devin）…"
+                    value={modelQuery}
+                    onChange={(e) => setModelQuery(e.target.value)}
+                  />
+                </div>
+              )}
+              {modelGroups.length > 1 && (
+                <div className="model-pop-filters" data-testid="model-source-filters" role="group" aria-label="按来源筛选">
                   <button
-                    key={grp.id}
                     type="button"
                     className="ui-btn ui-btn--ghost ui-btn--sm model-pop-filter-btn"
                     data-testid="model-source-filter"
-                    data-source-id={grp.id}
-                    aria-pressed={sourceFilter === grp.id}
-                    onClick={() => setSourceFilter((prev) => (prev === grp.id ? null : grp.id))}
+                    data-source-id="all"
+                    aria-pressed={sourceFilter === null}
+                    onClick={() => setSourceFilter(null)}
                   >
-                    {grp.shortLabel} ({grp.items.length})
+                    全部 ({models?.length ?? 0})
                   </button>
-                ))}
-              </div>
-            )}
-            {models === null && err === null && <div className="muted model-pop-wait">…</div>}
-            {models !== null && (
-              <div className="model-pop-list" data-testid="model-pop-list">
-                {visibleModelGroups.map((grp) => (
-                  <div key={grp.id} className="model-pop-group" data-testid="model-group" data-source-id={grp.id}>
-                    <div className="model-pop-group-head" data-testid="model-group-head">
-                      <span className="model-pop-group-title">{grp.label}</span>
-                      <span className="ui-badge">{grp.kindLabel}</span>
-                      <span className="ui-count">{grp.items.length}</span>
+                  {modelGroups.map((grp) => (
+                    <button
+                      key={grp.id}
+                      type="button"
+                      className="ui-btn ui-btn--ghost ui-btn--sm model-pop-filter-btn"
+                      data-testid="model-source-filter"
+                      data-source-id={grp.id}
+                      aria-pressed={sourceFilter === grp.id}
+                      onClick={() => setSourceFilter((prev) => (prev === grp.id ? null : grp.id))}
+                    >
+                      {grp.shortLabel} ({grp.items.length})
+                    </button>
+                  ))}
+                </div>
+              )}
+              {models === null && err === null && <div className="muted model-pop-wait">…</div>}
+              {models !== null && (
+                <div className="model-pop-list" data-testid="model-pop-list">
+                  {visibleModelGroups.map((grp) => (
+                    <div key={grp.id} className="model-pop-group" data-testid="model-group" data-source-id={grp.id}>
+                      <div className="model-pop-group-head" data-testid="model-group-head">
+                        <span className="model-pop-group-title">{grp.label}</span>
+                        <span className="ui-badge">{grp.kindLabel}</span>
+                        <span className="ui-count">{grp.items.length}</span>
+                      </div>
+                      {grp.items.map((item) => {
+                        const m = item.id;
+                        const mEffs = modelEfforts?.[m];
+                        const titleParts = [m, `来源：${grp.label}`];
+                        if (item.ownedBy && item.ownedBy.toLowerCase() !== grp.id.replace("default:", "")) {
+                          titleParts.push(`上游：${item.ownedBy}`);
+                        }
+                        if (item.endpoint) titleParts.push(`地址：${item.endpoint}`);
+                        return (
+                          <button
+                            key={m}
+                            className="ui-row model-pop-row"
+                            aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
+                            data-testid="model-row"
+                            data-model={m}
+                            data-source-id={grp.id}
+                            title={titleParts.join(" · ")}
+                            onClick={(e) => {
+                              if (!e.nativeEvent.isTrusted) return;
+                              setModelOpen(false);
+                              void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                            }}
+                          >
+                            <span className="ui-row-title">{item.displayModel}</span>
+                            <span className="ui-badge model-pop-source" data-testid="model-row-source">{item.sourceBadge}</span>
+                            {mEffs && mEffs.length > 0 && (
+                              <span className="model-pop-meta" data-testid="model-row-efforts">{mEffs.length}档</span>
+                            )}
+                            <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    {grp.items.map((item) => {
-                      const m = item.id;
-                      const mEffs = modelEfforts?.[m];
-                      const titleParts = [m, `来源：${grp.label}`];
-                      if (item.ownedBy && item.ownedBy.toLowerCase() !== grp.id.replace("default:", "")) {
-                        titleParts.push(`上游：${item.ownedBy}`);
-                      }
-                      if (item.endpoint) titleParts.push(`地址：${item.endpoint}`);
-                      return (
-                        <button
-                          key={m}
-                          className="ui-row model-pop-row"
-                          aria-current={(pendingModel ?? info?.model) === m ? "true" : undefined}
-                          data-testid="model-row"
-                          data-model={m}
-                          data-source-id={grp.id}
-                          title={titleParts.join(" · ")}
-                          onClick={(e) => {
-                            if (!e.nativeEvent.isTrusted) return;
-                            setModelOpen(false);
-                            void rpc.call("conv.command", { convKey, name: "model", arg: m }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                          }}
-                        >
-                          <span className="ui-row-title">{item.displayModel}</span>
-                          <span className="ui-badge model-pop-source" data-testid="model-row-source">{item.sourceBadge}</span>
-                          {mEffs && mEffs.length > 0 && (
-                            <span className="model-pop-meta" data-testid="model-row-efforts">{mEffs.length}档</span>
-                          )}
-                          <span className="model-pop-check">{(pendingModel ?? info?.model) === m ? <Icon name="check" size="sm" /> : null}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-                {visibleModelGroups.length === 0 && models.length > 0 && (
-                  <div className="muted model-pop-empty" data-testid="model-pop-empty">
-                    没有匹配的模型，可用下方输入框直接切换
-                  </div>
-                )}
+                  ))}
+                  {visibleModelGroups.length === 0 && models.length > 0 && (
+                    <div className="muted model-pop-empty" data-testid="model-pop-empty">
+                      没有匹配的模型，可用下方输入框直接切换
+                    </div>
+                  )}
+                </div>
+              )}
+              {info?.modelSource === "session" && (
+                <button
+                  className="ui-row model-pop-row model-pop-reset"
+                  data-testid="model-reset"
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    setModelOpen(false);
+                    void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                  }}
+                >
+                  <span className="ui-row-title">恢复默认模型</span>
+                  <span className="model-pop-check" />
+                </button>
+              )}
+              <div className="model-pop-custom">
+                <input
+                  className="ui-input model-pop-input"
+                  data-testid="model-custom-input"
+                  placeholder="自定义模型名…"
+                  value={customModel}
+                  onChange={(e) => setCustomModel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) setCustomModel((v) => v.trim());
+                  }}
+                />
+                <button
+                  className="ui-btn ui-btn--ghost ui-btn--sm"
+                  data-testid="model-custom-submit"
+                  disabled={customModel.trim() === ""}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    setModelOpen(false);
+                    void rpc.call("conv.command", { convKey, name: "model", arg: customModel.trim() }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                  }}
+                >
+                  切换
+                </button>
               </div>
-            )}
-            {/* D148：列表里没有的模型手输——不校验、照样走 conv.command，core 不在列表时回 warn 不拦。
-                输入框只收值（onKeyDown 不能发 conv.command，TG-10 纪律）；点「切换」按钮发出。 */}
-            {info?.modelSource === "session" && (
+            </>
+          )}
+        />
+      </div>
+      <div className="model-ctl">
+        <FloatingPopover
+          open={effortOpen}
+          onOpenChange={(next) => {
+            if (!usable) {
+              setEffortOpen(false);
+              return;
+            }
+            if (next) {
+              setModelOpen(false);
+              if (models === null || (activeModel !== null && !(activeModel in (modelEfforts ?? {})) && effortsForModel !== activeModel)) {
+                fetchModels();
+              }
+              setEffortQuery("");
+              setEffortOpen(true);
+            } else {
+              setEffortOpen(false);
+            }
+          }}
+          placement="top-start"
+          className="ui-popover model-pop effort-pop"
+          testId="effort-pop"
+          renderTrigger={(trigger) => (
+            <button
+              type="button"
+              ref={trigger.ref}
+              {...trigger.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
+              data-testid="effort-btn"
+              data-source={pendingEffort !== null ? "session" : info?.effortSource ?? ""}
+              aria-expanded={effortOpen}
+              disabled={!usable}
+              title={hint ?? "推理强度（只影响本会话；Shift+Tab 循环；「默认」= 不发推理参数）"}
+            >
+              <span className="effort-meter" data-testid="effort-meter" data-level={meterLevel} aria-hidden="true">
+                <span className="effort-meter-bar effort-meter-bar--1" data-active={meterLevel >= 1 ? "1" : "0"} />
+                <span className="effort-meter-bar effort-meter-bar--2" data-active={meterLevel >= 2 ? "1" : "0"} />
+                <span className="effort-meter-bar effort-meter-bar--3" data-active={meterLevel >= 3 ? "1" : "0"} />
+                <span className="effort-meter-bar effort-meter-bar--4" data-active={meterLevel >= 4 ? "1" : "0"} />
+                <span className="effort-meter-bar effort-meter-bar--5" data-active={meterLevel >= 5 ? "1" : "0"} />
+              </span>
+              <span className="model-ctl-label" data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "默认"}</span>
+              {pendingEffort !== null && <span className="ui-badge" data-testid="effort-pending">待生效</span>}
+              <Icon name="chevron-down" size="sm" />
+            </button>
+          )}
+          renderContent={() => (
+            <>
+              <div className="effort-pop-head">
+                <div className="ui-popover-title">推理强度</div>
+                <span className="muted effort-pop-cur">{currentEffort ? (EFFORT_DESCRIPTIONS[currentEffort] ?? currentEffort) : "默认 · 由模型决定"}</span>
+              </div>
+              {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
+              <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 循环档位 · 当前模型 {activeModel ?? "默认"}</div>
+              {/* D168：可视化横向分段选择器（复用 ui-seg 视觉语言） */}
+              <div className="ui-seg effort-seg-bar" data-testid="effort-seg-bar" role="group" aria-label="推理强度分段选择器">
+                {supportedEfforts.map((v) => {
+                  const isCurrent = currentEffort === v;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      data-testid="effort-seg-btn"
+                      data-effort={v}
+                      aria-pressed={isCurrent}
+                      title={EFFORT_DESCRIPTIONS[v] ?? v}
+                      onClick={(e) => {
+                        if (!e.nativeEvent.isTrusted) return;
+                        setEffortOpen(false);
+                        void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                      }}
+                    >
+                      {EFFORT_LABELS[v] ?? v}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* D156：搜索过滤 + 完整档位说明列表 */}
+              <input
+                className="ui-input effort-pop-search"
+                data-testid="effort-search"
+                placeholder="过滤档位…"
+                value={effortQuery}
+                onChange={(e) => setEffortQuery(e.target.value)}
+              />
+              {supportedEfforts
+                .filter((v) => {
+                  const q = effortQuery.trim().toLowerCase();
+                  if (q === "") return true;
+                  return (
+                    v.toLowerCase().includes(q) ||
+                    (EFFORT_LABELS[v] ?? "").toLowerCase().includes(q) ||
+                    (EFFORT_DESCRIPTIONS[v] ?? "").toLowerCase().includes(q)
+                  );
+                })
+                .map((v) => {
+                  const isCurrent = currentEffort === v;
+                  const isDefault = info !== null && info.effortSource === "default" && info.effort === v;
+                  return (
+                    <button
+                      key={v}
+                      className="ui-row model-pop-row effort-pop-row"
+                      aria-current={isCurrent ? "true" : undefined}
+                      data-testid="effort-row"
+                      data-effort={v}
+                      onClick={(e) => {
+                        if (!e.nativeEvent.isTrusted) return;
+                        setEffortOpen(false);
+                        void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                      }}
+                    >
+                      <span className="ui-row-title">{EFFORT_LABELS[v] ?? v}</span>
+                      <span className="effort-pop-desc" data-testid="effort-desc">
+                        {EFFORT_DESCRIPTIONS[v] ?? v}
+                        {isDefault ? " · 默认" : ""}
+                      </span>
+                      <span className="model-pop-check">{isCurrent ? <Icon name="check" size="sm" /> : null}</span>
+                    </button>
+                  );
+                })}
               <button
                 className="ui-row model-pop-row model-pop-reset"
-                data-testid="model-reset"
+                aria-current={info !== null && info.effort === null ? "true" : undefined}
+                data-testid="effort-reset"
                 onClick={(e) => {
                   if (!e.nativeEvent.isTrusted) return;
-                  setModelOpen(false);
-                  void rpc.call("conv.command", { convKey, name: "model", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
+                  setEffortOpen(false);
+                  void rpc.call("conv.command", { convKey, name: "thinking", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
                 }}
               >
-                <span className="ui-row-title">恢复默认模型</span>
-                <span className="model-pop-check" />
+                <span className="ui-row-title">默认（不发推理参数）</span>
+                <span className="effort-pop-desc">{info !== null && info.effort === null ? "当前生效 · 默认" : "由模型自行决定"}</span>
+                <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
               </button>
-            )}
-            <div className="model-pop-custom">
-              <input
-                className="ui-input model-pop-input"
-                data-testid="model-custom-input"
-                placeholder="自定义模型名…"
-                value={customModel}
-                onChange={(e) => setCustomModel(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) setCustomModel((v) => v.trim());
-                }}
-              />
-              <button
-                className="ui-btn ui-btn--ghost ui-btn--sm"
-                data-testid="model-custom-submit"
-                disabled={customModel.trim() === ""}
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  setModelOpen(false);
-                  void rpc.call("conv.command", { convKey, name: "model", arg: customModel.trim() }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                }}
-              >
-                切换
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="model-ctl" ref={effortRef}>
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm model-ctl-btn"
-          data-testid="effort-btn"
-          data-source={pendingEffort !== null ? "session" : info?.effortSource ?? ""}
-          aria-expanded={effortOpen}
-          disabled={!usable}
-          title={hint ?? "推理强度（只影响本会话；Shift+Tab 循环；「默认」= 不发推理参数）"}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            setModelOpen(false);
-            if (!effortOpen && (models === null || (activeModel !== null && !(activeModel in (modelEfforts ?? {})) && effortsForModel !== activeModel))) {
-              fetchModels();
-            }
-            setEffortOpen(!effortOpen);
-          }}
-        >
-          <span className="effort-meter" data-testid="effort-meter" data-level={meterLevel} aria-hidden="true">
-            <span className="effort-meter-bar effort-meter-bar--1" data-active={meterLevel >= 1 ? "1" : "0"} />
-            <span className="effort-meter-bar effort-meter-bar--2" data-active={meterLevel >= 2 ? "1" : "0"} />
-            <span className="effort-meter-bar effort-meter-bar--3" data-active={meterLevel >= 3 ? "1" : "0"} />
-            <span className="effort-meter-bar effort-meter-bar--4" data-active={meterLevel >= 4 ? "1" : "0"} />
-            <span className="effort-meter-bar effort-meter-bar--5" data-active={meterLevel >= 5 ? "1" : "0"} />
-          </span>
-          <span className="model-ctl-label" data-testid="effort-label">{pendingEffort !== null ? effortText(pendingEffort) : info ? effortText(info.effort) : "默认"}</span>
-          {pendingEffort !== null && <span className="ui-badge" data-testid="effort-pending">待生效</span>}
-          <Icon name="chevron-down" size="sm" />
-        </button>
-        {effortOpen && (
-          <div className="ui-popover model-pop effort-pop" data-testid="effort-pop">
-            <div className="effort-pop-head">
-              <div className="ui-popover-title">推理强度</div>
-              <span className="muted effort-pop-cur">{currentEffort ? (EFFORT_DESCRIPTIONS[currentEffort] ?? currentEffort) : "默认 · 由模型决定"}</span>
-            </div>
-            {popNote !== null && <div className="muted model-pop-note" data-testid="effort-pop-note">{popNote}</div>}
-            <div className="muted model-pop-note" data-testid="effort-pop-cycle">Shift+Tab 循环档位 · 当前模型 {activeModel ?? "默认"}</div>
-            {/* D168：可视化横向分段选择器（复用 ui-seg 视觉语言） */}
-            <div className="ui-seg effort-seg-bar" data-testid="effort-seg-bar" role="group" aria-label="推理强度分段选择器">
-              {supportedEfforts.map((v) => {
-                const isCurrent = currentEffort === v;
-                return (
-                  <button
-                    key={v}
-                    type="button"
-                    data-testid="effort-seg-btn"
-                    data-effort={v}
-                    aria-pressed={isCurrent}
-                    title={EFFORT_DESCRIPTIONS[v] ?? v}
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      setEffortOpen(false);
-                      void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                    }}
-                  >
-                    {EFFORT_LABELS[v] ?? v}
-                  </button>
-                );
-              })}
-            </div>
-            {/* D156：搜索过滤 + 完整档位说明列表 */}
-            <input
-              className="ui-input effort-pop-search"
-              data-testid="effort-search"
-              placeholder="过滤档位…"
-              value={effortQuery}
-              onChange={(e) => setEffortQuery(e.target.value)}
-            />
-            {supportedEfforts
-              .filter((v) => {
-                const q = effortQuery.trim().toLowerCase();
-                if (q === "") return true;
-                return (
-                  v.toLowerCase().includes(q) ||
-                  (EFFORT_LABELS[v] ?? "").toLowerCase().includes(q) ||
-                  (EFFORT_DESCRIPTIONS[v] ?? "").toLowerCase().includes(q)
-                );
-              })
-              .map((v) => {
-                const isCurrent = currentEffort === v;
-                const isDefault = info !== null && info.effortSource === "default" && info.effort === v;
-                return (
-                  <button
-                    key={v}
-                    className="ui-row model-pop-row effort-pop-row"
-                    aria-current={isCurrent ? "true" : undefined}
-                    data-testid="effort-row"
-                    data-effort={v}
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      setEffortOpen(false);
-                      void rpc.call("conv.command", { convKey, name: "thinking", arg: v }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-                    }}
-                  >
-                    <span className="ui-row-title">{EFFORT_LABELS[v] ?? v}</span>
-                    <span className="effort-pop-desc" data-testid="effort-desc">
-                      {EFFORT_DESCRIPTIONS[v] ?? v}
-                      {isDefault ? " · 默认" : ""}
-                    </span>
-                    <span className="model-pop-check">{isCurrent ? <Icon name="check" size="sm" /> : null}</span>
-                  </button>
-                );
-              })}
-            <button
-              className="ui-row model-pop-row model-pop-reset"
-              aria-current={info !== null && info.effort === null ? "true" : undefined}
-              data-testid="effort-reset"
-              onClick={(e) => {
-                if (!e.nativeEvent.isTrusted) return;
-                setEffortOpen(false);
-                void rpc.call("conv.command", { convKey, name: "thinking", arg: "default" }).then(after, (e2) => setErr(String((e2 as Error).message ?? e2)));
-              }}
-            >
-              <span className="ui-row-title">默认（不发推理参数）</span>
-              <span className="effort-pop-desc">{info !== null && info.effort === null ? "当前生效 · 默认" : "由模型自行决定"}</span>
-              <span className="model-pop-check">{info !== null && info.effort === null ? <Icon name="check" size="sm" /> : null}</span>
-            </button>
-          </div>
-        )}
+            </>
+          )}
+        />
       </div>
       <div className="model-ctl model-ctl--login">
         <button

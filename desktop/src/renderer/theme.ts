@@ -5,9 +5,19 @@
 import { parseLayout, serializeLayout, type Layout } from "./layout";
 
 export type Theme = "system" | "light" | "dark";
+export type Accent = "sakura" | "violet" | "sky" | "sage" | "amber" | "graphite";
+export const ACCENTS: { id: Accent; label: string }[] = [
+  { id: "sakura", label: "樱粉" },
+  { id: "violet", label: "暮紫" },
+  { id: "sky", label: "晴空" },
+  { id: "sage", label: "鼠尾草" },
+  { id: "amber", label: "琥珀" },
+  { id: "graphite", label: "石墨" },
+];
 export type EpisodeViewPref = "time" | "step";
 
 const THEME_KEY = "ava.theme";
+const ACCENT_KEY = "ava.accent";
 const VIEW_KEY = "ava.episodeView";
 const LAYOUT_KEY = "ava.layout";
 
@@ -36,6 +46,31 @@ export function saveTheme(t: Theme): boolean {
 export function applyTheme(t: Theme): void {
   if (t === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
+}
+
+/** 强调色偏好：默认 sakura（浅樱粉）；非法值/读取失败一律回落 sakura */
+export function readAccent(): Accent {
+  try {
+    const v = localStorage.getItem(ACCENT_KEY);
+    if (ACCENTS.some((a) => a.id === v)) return v as Accent;
+  } catch {
+    /* 读取失败按缺省 */
+  }
+  return "sakura";
+}
+
+export function saveAccent(a: Accent): boolean {
+  try {
+    localStorage.setItem(ACCENT_KEY, a);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function applyAccent(a: Accent): void {
+  if (a === "sakura") document.documentElement.removeAttribute("data-accent");
+  else document.documentElement.setAttribute("data-accent", a);
 }
 
 /** 视图默认「按时间」（D4），纪律同主题 */

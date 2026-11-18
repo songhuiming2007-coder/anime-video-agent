@@ -32,14 +32,16 @@ const src = (rel: string, text: string): SourceFile => ({ rel, text });
 
 describe("TG-1 npm 依赖精确白名单（§5.1）", () => {
   const pkg = JSON.parse(readFileSync(join(DESKTOP, "package.json"), "utf-8"));
-  it("dependencies 恰为 Spec 11 §5.1 的 CodeMirror 组 + react/react-dom/markdown-it，精确版本", () => {
+  it("dependencies 恰为 CodeMirror 组 + react/react-dom/markdown-it + lucide-react + @floating-ui/react，精确版本", () => {
     expect(pkg.dependencies).toEqual({
       "@codemirror/commands": "6.11.1",
       "@codemirror/lang-markdown": "6.5.2",
       "@codemirror/language": "6.12.4",
       "@codemirror/state": "6.7.6",
       "@codemirror/view": "6.43.13",
+      "@floating-ui/react": "0.27.20",
       "@lezer/highlight": "1.2.4",
+      "lucide-react": "1.74.0",
       "markdown-it": "15.0.2",
       react: "19.3.0",
       "react-dom": "19.3.0",
@@ -98,9 +100,19 @@ describe("TG-3 §5.2 import 纪律", () => {
     expect(importViolations(src("main/a.ts", "import { spawn } from 'node:child_process';"))).toHaveLength(1);
     expect(importViolations(src("preload/a.ts", "import { ipcRenderer, shell } from 'electron';"))).toHaveLength(1);
     expect(importViolations(src("renderer/a.tsx", "import { useState } from 'react'; import '../shared/protocol';"))).toHaveLength(0);
+    expect(importViolations(src("renderer/icons.tsx", "import { Play } from 'lucide-react';"))).toHaveLength(0);
+    expect(importViolations(src("renderer/a.tsx", "import { Play } from 'lucide-react';"))).toHaveLength(1);
+    expect(importViolations(src("renderer/floating.tsx", "import { useFloating } from '@floating-ui/react';"))).toHaveLength(0);
+    expect(importViolations(src("renderer/a.tsx", "import { useFloating } from '@floating-ui/react';"))).toHaveLength(1);
   });
   it("真实源码", () => {
     expect(files.flatMap(importViolations)).toEqual([]);
+  });
+  it("真实源码：lucide-react 只出现在 renderer/icons.tsx，@floating-ui/react 只出现在 renderer/floating.tsx", () => {
+    const iconHolders = files.filter((f) => moduleSpecifiers(f).some((s) => s === "lucide-react")).map((f) => f.rel);
+    const floatHolders = files.filter((f) => moduleSpecifiers(f).some((s) => s === "@floating-ui/react")).map((f) => f.rel);
+    expect(iconHolders).toEqual(["renderer/icons.tsx"]);
+    expect(floatHolders).toEqual(["renderer/floating.tsx"]);
   });
   it("源码只分布在五个约定目录", () => {
     const dirs = new Set(files.map((f) => topDir(f.rel)));

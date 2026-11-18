@@ -11,6 +11,7 @@ import type {
   ProviderCategory,
 } from "../shared/protocol";
 import type { RpcClient } from "./rpc";
+import { FloatingModal } from "./floating";
 import { Icon } from "./icons";
 
 const MODE_LABELS: Record<AuthMode, string> = {
@@ -179,15 +180,6 @@ export function LoginModal({
     setMsg(null);
     loadStatus(selectedId);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
 
   const providers = status?.providers ?? [];
   const q = query.trim().toLowerCase();
@@ -369,22 +361,15 @@ export function LoginModal({
     Boolean(started?.redirect_uri?.includes("127.0.0.1:"));
 
   return (
-    <div className="login-backdrop" data-testid="login-backdrop">
-      <button
-        type="button"
-        tabIndex={-1}
-        className="login-backdrop-btn"
-        aria-label="关闭登录窗口"
-        onClick={onClose}
-      />
-      <div
-        className="login-modal"
-        data-testid="login-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="login-modal-title"
-      >
-        <div className="login-modal-head">
+    <FloatingModal
+      open={open}
+      onClose={onClose}
+      backdropTestId="login-backdrop"
+      testId="login-modal"
+      className="login-modal"
+      ariaLabel="模型服务商登录（/login）"
+    >
+      <div className="login-modal-head">
           <div className="login-modal-title-wrap">
             <h2 id="login-modal-title" className="login-modal-title">
               模型服务商登录（/login）
@@ -776,7 +761,6 @@ export function LoginModal({
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </FloatingModal>
   );
 }

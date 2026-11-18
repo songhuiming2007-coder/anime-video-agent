@@ -422,6 +422,8 @@ test("D50-A S7 卡内打点：三维 1–5 → manifest.human_review 合并写�
   await openEp(L.page, "SP11-S7");
   const c = card(L.page, "03.5");
   await c.waitFor({ timeout: 15_000 });
+  await expect(c.getByTestId("reject-open")).toHaveCount(0);
+  await expect(c.getByTestId("approve")).toHaveText("顺听无误，进入排片");
   const firstId = await c.getAttribute("data-approval-id");
   await expect(c.getByTestId("review-save")).toBeDisabled(); // 三维没打全不能记
   for (const id of ["review-voice-4", "review-prosody-3", "review-misread-5"]) await c.getByTestId(id).click();

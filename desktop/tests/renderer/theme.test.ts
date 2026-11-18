@@ -1,6 +1,17 @@
 // VU-3：theme.ts 的读写纪律（Spec 14 §3.3 / §7.1）。vitest 环境是 node：localStorage / document 一律桩出来。
 import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme } from "../../src/renderer/theme";
+import {
+  applyAccent,
+  applyTheme,
+  readAccent,
+  readEpisodeView,
+  readLayout,
+  readTheme,
+  saveAccent,
+  saveEpisodeView,
+  saveLayout,
+  saveTheme,
+} from "../../src/renderer/theme";
 import { DEFAULT_LAYOUT } from "../../src/renderer/layout";
 
 const g = globalThis as unknown as Record<string, unknown>;
@@ -65,6 +76,31 @@ describe("VU-3 theme.ts", () => {
     expect(attrs.get("data-theme")).toBe("light");
     applyTheme("system");
     expect(attrs.has("data-theme")).toBe(false);
+  });
+  it("强调色读写与 applyAccent 遵循同一安全纪律", () => {
+    g.localStorage = throwingStorage();
+    expect(readAccent()).toBe("sakura");
+    expect(saveAccent("violet")).toBe(false);
+
+    const s = memStorage();
+    g.localStorage = s;
+    expect(readAccent()).toBe("sakura");
+    s.setItem("ava.accent", "neon");
+    expect(readAccent()).toBe("sakura");
+    expect(saveAccent("sky")).toBe(true);
+    expect(readAccent()).toBe("sky");
+
+    const attrs = new Map<string, string>();
+    g.document = {
+      documentElement: {
+        setAttribute: (k: string, v: string) => void attrs.set(k, v),
+        removeAttribute: (k: string) => void attrs.delete(k),
+      },
+    };
+    applyAccent("sage");
+    expect(attrs.get("data-accent")).toBe("sage");
+    applyAccent("sakura");
+    expect(attrs.has("data-accent")).toBe(false);
   });
 });
 

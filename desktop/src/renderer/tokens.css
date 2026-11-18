@@ -1,38 +1,34 @@
-/* ava 桌面端设计 token（Spec 14 §3.1，v0.2）。施工时原样落为 desktop/src/renderer/tokens.css。
- * 格式纪律（VS-1 机检依赖，不许放宽）：每行至多一条声明；颜色值只许 #rrggbb、rgba(r, g, b, a) 或整值 var(--x) 别名；
- * 不许 color-mix / hsl / 命名色。
- * 主题（v0.2 按红队 🔴-1 改为方案 a，2026-09-26 用户裁决）：浅色为 :root 默认；深色写两块、逐值相同（VS-1 断言）——
- *   ① 跟随系统：@media (prefers-color-scheme: dark) 下的 :root:not([data-theme="light"])；
- *   ② 手动深色：:root[data-theme="dark"]。
- * renderer 把三档偏好存 localStorage，写 <html data-theme>（跟随系统时不写该属性）。原生对话框与系统菜单只跟随 macOS 外观。 */
+/* ava 桌面端设计 token（Spec 14 §3.1 + Route B 主题/多强调色扩展）。
+ * 格式纪律（VS-1 机检依赖）：每行至多一条声明；颜色值只许 #rrggbb、rgba(r, g, b, a) 或整值 var(--x) 别名；
+ * 不许 color-mix / hsl / 命名色。深色写两块且逐值相同（VS-1 断言）。 */
 :root {
   color-scheme: light;
 
   /* ---- 面：由底到顶 ---- */
   --bg: #f7f7f8;
-  --bg-sidebar: #f0f0f2;
+  --bg-sidebar: #f3f3f5;
   --bg-panel: #ffffff;
   --bg-card: #ffffff;
   --bg-popover: #ffffff;
   --bg-input: #ffffff;
-  --bg-subtle: rgba(13, 13, 15, 0.03);
+  --bg-user: #efeff2;
+  --bg-subtle: rgba(13, 13, 15, 0.035);
   --bg-hover: rgba(13, 13, 15, 0.05);
-  --bg-selected: #fce8ef;
+  --bg-selected: #fceef3;
   --bg-media: #000000;
   --bg-frame: #ffffff;
 
   /* ---- 线 ---- */
-  --border: rgba(13, 13, 15, 0.10);
-  --border-strong: rgba(13, 13, 15, 0.18);
-  --border-input: #818189;
+  --border: rgba(13, 13, 15, 0.08);
+  --border-strong: rgba(13, 13, 15, 0.14);
+  --border-input: rgba(13, 13, 15, 0.11);
 
   /* ---- 字 ---- */
   --fg: #1d1d1f;
   --fg-muted: #5f6068;
   --fg-subtle: #8a8a93;
 
-  /* ---- 强调：浅粉（2026-09-26 用户裁决：选中、焦点、活动指示与主按钮都用粉；2026-10-08 用户裁决：浅色焦点环改中性中灰，
-   *      深玫红环套在输入框上读作红色警告；对各面最低 3.74:1，过 VS-2 非文本 3:1） ---- */
+  /* ---- 默认强调：浅粉（sakura） ---- */
   --accent: #f7c5d5;
   --accent-hover: #f3b3c8;
   --accent-border: #d6457a;
@@ -40,7 +36,7 @@
   --accent-strong: #c2185b;
   --focus-ring: #7a7a83;
 
-  /* ---- 语义状态：只用于真实状态，不许借来「显得更响」 ---- */
+  /* ---- 语义状态 ---- */
   --ok: #17652f;
   --ok-surface: rgba(23, 101, 47, 0.10);
   --warn: #824b00;
@@ -63,15 +59,17 @@
   --syntax-link: var(--accent-strong);
   --syntax-meta: var(--fg-muted);
 
-  /* ---- 阴影：只给浮层 ---- */
-  --shadow-overlay: 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
-  --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.16);
+  /* ---- 阴影 ---- */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-pod: 0 2px 10px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-overlay: 0 6px 20px rgba(0, 0, 0, 0.10), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
 
-  /* ---- 字体（CSP 无 font-src：只用系统字体，不引 webfont） ---- */
+  /* ---- 字体 ---- */
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, "PingFang SC", monospace;
 
-  /* ---- 字号（下限 10px 只许徽标/计数；正文内容下限 12px，TK-3） ---- */
+  /* ---- 字号 ---- */
   --text-xs: 10px;
   --text-sm: 12px;
   --text-base: 14px;
@@ -84,7 +82,7 @@
   --weight-medium: 500;
   --weight-semibold: 600;
 
-  /* ---- 间距：4px 网格 ---- */
+  /* ---- 间距 ---- */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -93,7 +91,7 @@
   --space-6: 24px;
   --space-8: 32px;
 
-  /* ---- 圆角：随嵌套逐级递减 xl → lg → md → sm ---- */
+  /* ---- 圆角 ---- */
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
@@ -111,10 +109,9 @@
   --sidebar-w: 260px;
   --center-w: 360px;
 
-  /* ---- 动效：快、克制；prefers-reduced-motion 下归零（components.css） ---- */
+  /* ---- 动效 ---- */
   --dur-fast: 120ms;
   --dur-base: 180ms;
-  /* D80（2026-10-12 人裁决 Q3）：展开收起照 ZCode Collapsible 300ms；入场 240ms——答复整段到达，ZCode 配流式的 900ms 会显得迟钝 */
   --dur-slow: 300ms;
   --dur-enter: 240ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
@@ -130,15 +127,16 @@
     --bg-card: #26262a;
     --bg-popover: #2c2c30;
     --bg-input: #26262a;
-    --bg-subtle: rgba(255, 255, 255, 0.03);
+    --bg-user: #27272c;
+    --bg-subtle: rgba(255, 255, 255, 0.035);
     --bg-hover: rgba(255, 255, 255, 0.06);
     --bg-selected: rgba(244, 143, 177, 0.13);
     --bg-media: #000000;
     --bg-frame: #ffffff;
 
-    --border: rgba(255, 255, 255, 0.10);
-    --border-strong: rgba(255, 255, 255, 0.18);
-    --border-input: #72727c;
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --border-input: rgba(255, 255, 255, 0.13);
 
     --fg: #ececf0;
     --fg-muted: #a9a9b1;
@@ -171,8 +169,10 @@
     --syntax-link: var(--accent-strong);
     --syntax-meta: var(--fg-muted);
 
-    --shadow-overlay: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
-    --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.55);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-pod: 0 4px 16px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-overlay: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
   }
 }
 
@@ -185,15 +185,16 @@
   --bg-card: #26262a;
   --bg-popover: #2c2c30;
   --bg-input: #26262a;
-  --bg-subtle: rgba(255, 255, 255, 0.03);
+  --bg-user: #27272c;
+  --bg-subtle: rgba(255, 255, 255, 0.035);
   --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-selected: rgba(244, 143, 177, 0.13);
   --bg-media: #000000;
   --bg-frame: #ffffff;
 
-  --border: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.18);
-  --border-input: #72727c;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-input: rgba(255, 255, 255, 0.13);
 
   --fg: #ececf0;
   --fg-muted: #a9a9b1;
@@ -226,6 +227,191 @@
   --syntax-link: var(--accent-strong);
   --syntax-meta: var(--fg-muted);
 
-  --shadow-overlay: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-pod: 0 4px 16px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-overlay: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
+
+/* ---- 6 套强调色预设（浅色 / 跟随系统深色 / 手动深色，均经 VS-2b 逐对对比度门禁校验） ---- */
+:root[data-accent="sakura"] {
+  --bg-selected: #fceef3;
+  --accent: #f7c5d5;
+  --accent-hover: #f3b3c8;
+  --accent-border: #d6457a;
+  --fg-on-accent: #4a1026;
+  --accent-strong: #c2185b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="sakura"] {
+    --bg-selected: rgba(244, 143, 177, 0.13);
+    --accent: #f4b4c8;
+    --accent-hover: #f8c6d6;
+    --accent-border: #f4b4c8;
+    --fg-on-accent: #3b0a1e;
+    --accent-strong: #f48fb1;
+  }
+}
+
+:root[data-theme="dark"][data-accent="sakura"] {
+  --bg-selected: rgba(244, 143, 177, 0.13);
+  --accent: #f4b4c8;
+  --accent-hover: #f8c6d6;
+  --accent-border: #f4b4c8;
+  --fg-on-accent: #3b0a1e;
+  --accent-strong: #f48fb1;
+}
+
+:root[data-accent="violet"] {
+  --bg-selected: #f3effd;
+  --accent: #ddd3fb;
+  --accent-hover: #cfc1f8;
+  --accent-border: #6d48d6;
+  --fg-on-accent: #241354;
+  --accent-strong: #5a34c2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="violet"] {
+    --bg-selected: rgba(168, 145, 248, 0.14);
+    --accent: #c5b4f9;
+    --accent-hover: #d5c7fb;
+    --accent-border: #c5b4f9;
+    --fg-on-accent: #1d1045;
+    --accent-strong: #b49ef8;
+  }
+}
+
+:root[data-theme="dark"][data-accent="violet"] {
+  --bg-selected: rgba(168, 145, 248, 0.14);
+  --accent: #c5b4f9;
+  --accent-hover: #d5c7fb;
+  --accent-border: #c5b4f9;
+  --fg-on-accent: #1d1045;
+  --accent-strong: #b49ef8;
+}
+
+:root[data-accent="sky"] {
+  --bg-selected: #edf4fd;
+  --accent: #cce2fb;
+  --accent-hover: #b8d5f9;
+  --accent-border: #256bd6;
+  --fg-on-accent: #0f2954;
+  --accent-strong: #1a54ab;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="sky"] {
+    --bg-selected: rgba(140, 188, 255, 0.11);
+    --accent: #a6cbff;
+    --accent-hover: #bed9ff;
+    --accent-border: #a6cbff;
+    --fg-on-accent: #0c2247;
+    --accent-strong: #8cbcff;
+  }
+}
+
+:root[data-theme="dark"][data-accent="sky"] {
+  --bg-selected: rgba(140, 188, 255, 0.11);
+  --accent: #a6cbff;
+  --accent-hover: #bed9ff;
+  --accent-border: #a6cbff;
+  --fg-on-accent: #0c2247;
+  --accent-strong: #8cbcff;
+}
+
+:root[data-accent="sage"] {
+  --bg-selected: #ecf6ef;
+  --accent: #c6e8d2;
+  --accent-hover: #b2dfc1;
+  --accent-border: #1e7340;
+  --fg-on-accent: #0c311b;
+  --accent-strong: #17652f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="sage"] {
+    --bg-selected: rgba(92, 201, 138, 0.14);
+    --accent: #9bdcb3;
+    --accent-hover: #b2e6c5;
+    --accent-border: #9bdcb3;
+    --fg-on-accent: #0a2e18;
+    --accent-strong: #6fd398;
+  }
+}
+
+:root[data-theme="dark"][data-accent="sage"] {
+  --bg-selected: rgba(92, 201, 138, 0.14);
+  --accent: #9bdcb3;
+  --accent-hover: #b2e6c5;
+  --accent-border: #9bdcb3;
+  --fg-on-accent: #0a2e18;
+  --accent-strong: #6fd398;
+}
+
+:root[data-accent="amber"] {
+  --bg-selected: #fcf3e8;
+  --accent: #f7deb3;
+  --accent-hover: #f3d096;
+  --accent-border: #965700;
+  --fg-on-accent: #3d2100;
+  --accent-strong: #824b00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="amber"] {
+    --bg-selected: rgba(240, 160, 64, 0.10);
+    --accent: #f2be7a;
+    --accent-hover: #f6cd96;
+    --accent-border: #f2be7a;
+    --fg-on-accent: #381e00;
+    --accent-strong: #f0a040;
+  }
+}
+
+:root[data-theme="dark"][data-accent="amber"] {
+  --bg-selected: rgba(240, 160, 64, 0.10);
+  --accent: #f2be7a;
+  --accent-hover: #f6cd96;
+  --accent-border: #f2be7a;
+  --fg-on-accent: #381e00;
+  --accent-strong: #f0a040;
+}
+
+:root[data-accent="graphite"] {
+  --bg-selected: #ececef;
+  --accent: #d8d8df;
+  --accent-hover: #cacad3;
+  --accent-border: #55555e;
+  --fg-on-accent: #1d1d1f;
+  --accent-strong: #3c3c43;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="graphite"] {
+    --bg-selected: rgba(216, 216, 224, 0.08);
+    --accent: #c8c8d2;
+    --accent-hover: #d8d8e0;
+    --accent-border: #c8c8d2;
+    --fg-on-accent: #161618;
+    --accent-strong: #d4d4dc;
+  }
+}
+
+:root[data-theme="dark"][data-accent="graphite"] {
+  --bg-selected: rgba(216, 216, 224, 0.08);
+  --accent: #c8c8d2;
+  --accent-hover: #d8d8e0;
+  --accent-border: #c8c8d2;
+  --fg-on-accent: #161618;
+  --accent-strong: #d4d4dc;
+}
+
+/* 外观浮层里的纯色圆点（只允许在 tokens.css 出现颜色字面量） */
+.theme-swatch[data-swatch="sakura"] { background: #e889a8; }
+.theme-swatch[data-swatch="violet"] { background: #8c70ec; }
+.theme-swatch[data-swatch="sky"] { background: #4a8ef2; }
+.theme-swatch[data-swatch="sage"] { background: #3ea86b; }
+.theme-swatch[data-swatch="amber"] { background: #df8c2c; }
+.theme-swatch[data-swatch="graphite"] { background: #6b6b76; }

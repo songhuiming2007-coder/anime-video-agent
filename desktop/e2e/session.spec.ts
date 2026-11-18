@@ -147,6 +147,30 @@ test("TX-D47 请求卡正文按原样换行（写稿 diff 可读）；参数原�
   });
 });
 
+test("Route B 写稿卡「参考建议，我自己改」打开双栏编辑器并发送含反馈的 reject", async () => {
+  await withSession(async ({ repo, L }) => {
+    const cardText = "┌─ 写入审批\n│ 目标: 02-script.md\n│ +新内容";
+    sessionScript(repo, "SESS-A", [
+      READY("SESS-A"),
+      {
+        op: "serve",
+        on_turn: [TURN_STARTED, { t: "request", request_id: "qse", kind: "tool_call", turn_id: "$turn", title: "写稿", card_text: cardText, fields: { tool: "write_episode_file", args: { filename: "02-script.md", content: "建议稿" } }, options: ["approve", "reject"], feedback_allowed: true }],
+        on_answer: [{ t: "request_closed", request_id: "$request_id", reason: "answered", decision: "$decision", rid: "$rid" }],
+      },
+    ]);
+    await openEp(L.page, "SESS-A");
+    await send(L.page, "优化开场");
+    await expect(L.page.getByTestId("request-answer-self-edit")).toBeVisible();
+    await L.page.getByTestId("request-answer-self-edit").click();
+    await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "answer").length).toBe(1);
+    const ans = JSON.parse(stdinLines(repo, "SESS-A").find((l) => JSON.parse(l).t === "answer")!);
+    expect(ans.decision).toBe("reject");
+    expect(ans.feedback).toContain("02-script.md");
+    await expect(L.page.locator("#ava-preview")).toBeVisible();
+    await expect(L.page.getByTestId("preview-switch-btn")).toContainText("02-script.md");
+  });
+});
+
 test("TX-2 合成点击无效、真实点击恰一条 answer；打开/切期/重载不产生写入", async () => {
   await withSession(async ({ repo, L }) => {
     sessionScript(repo, "SESS-A", [

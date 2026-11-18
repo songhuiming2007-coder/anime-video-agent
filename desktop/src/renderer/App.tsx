@@ -1,7 +1,7 @@
 // 桌面端 v1 主界面（Spec 8 §2.11；Spec 10 PR1 版面重排：产物树移左栏、中栏 = 工序卡 + 待答区）。
 // UI 自身零判定：工序一律取 status --json，只呈现确定性事实；不做 LLM 推荐（direction §5）。
 // 类名与元素种类按 Spec 14 §3.1/§3.2 的契约（可点击的行一律原生 <button class="ui-row">，VS-8）。
-import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ApprovalJson } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
@@ -17,11 +17,10 @@ import { filterProject, plainEpisodes, progressSegments, projectBadges, projectT
 import { AnswerDock, RequestCards } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane, HandoffStrip } from "./ConversationPane";
-import { CoverImport } from "./CoverImport";
-import { HumanTimeReadout } from "./HumanTimeReadout";
 import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
 import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
+import { FloatingPopover } from "./floating";
 import { Icon } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
@@ -31,13 +30,28 @@ import { PreviewPane, type PreviewTarget } from "./PreviewPane";
 import { PreviewSwitcher } from "./PreviewSwitcher";
 import { generatingOf } from "../shared/artifactGroups";
 import { errText, RpcClient } from "./rpc";
-import { applyTheme, readEpisodeView, readLayout, readTheme, saveEpisodeView, saveLayout, saveTheme, type EpisodeViewPref, type Theme } from "./theme";
+import {
+  ACCENTS,
+  applyAccent,
+  applyTheme,
+  readAccent,
+  readEpisodeView,
+  readLayout,
+  readTheme,
+  saveAccent,
+  saveEpisodeView,
+  saveLayout,
+  saveTheme,
+  type Accent,
+  type EpisodeViewPref,
+  type Theme,
+} from "./theme";
 import { approvalsOf, emptyStore, reduce, select, type Action, type EpisodeState, type Store } from "./store";
 import { CrashProbe, installTestHooks } from "./testHooks";
 import { PaneBoundary } from "./PaneBoundary";
 import { JobBar } from "./JobBar";
 import { isCheckNotPassed } from "../shared/jobBar";
-import { Badge, StateView, StatusDot } from "./ui";
+import { Badge, StatusDot } from "./ui";
 
 const rpc = new RpcClient(window);
 
@@ -391,20 +405,45 @@ function Main() {
   const [voiceOk, setVoiceOk] = useState<string | null>(null);
   const onVoiceReady = useCallback((ok: boolean) => setVoiceOk(ok ? activeRef.current : null), []);
   const voiceTarget = preview?.kind === "dir" && preview.root === "episodes" && (preview.rel === "03-audio" || preview.rel === `${active}/03-audio`);
+  const activeProjObj = activeProject !== null ? list?.projects.find((x) => x.projKey === activeProject) ?? null : null;
+  const headerTitle = showIdea ? "选题" : activeProjObj ? projectTitle(activeProjObj) : activeProject ?? ep?.epKey ?? active ?? "AVA";
+  const toggleLeft = () => setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }));
 
   return (
     <div className="app">
-      <TopBar health={health} onToggleHealth={() => setShowHealth((v) => !v)} onRefresh={refresh} canRefresh={!!active} onChangeRepo={changeRepo} layout={layout} onToggleLeft={() => setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }))} onTogglePreview={() => setPreviewOpen(!layout.previewOpen)} />
+      {health && health.reach !== "ok" && (
+        <div className="banner banner-red" data-testid="reach-banner">
+          <Icon name="alert" size="sm" />
+          {health.reach}：{health.reachDetail}
+        </div>
+      )}
       {ep && <JobBar jobs={ep.jobs} onShowProgress={showProgress} />}
-      {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} />}
+      {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} onChangeRepo={changeRepo} />}
       {error && (
         <div className="banner banner-red" data-testid="error">
           <Icon name="alert" size="sm" />
           {error}
         </div>
       )}
-      <div className={`main ${reachOk ? "" : "stale"}`} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
+      <div className={`main ${reachOk ? "" : "stale"}`} data-left={layout.leftOpen ? "1" : "0"} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
         <nav className="left" id="ava-left" hidden={!layout.leftOpen}>
+          {layout.leftOpen && (
+            <div className="side-topbar">
+              <span className="spacer" />
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                aria-label="侧栏"
+                title="收起侧栏"
+                aria-pressed={true}
+                aria-controls="ava-left"
+                onClick={toggleLeft}
+                data-testid="toggle-left"
+              >
+                <Icon name="panel-left" size="sm" />
+              </button>
+            </div>
+          )}
           <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} />
           <EpisodeList
             list={list}
@@ -436,16 +475,6 @@ function Main() {
           />
         )}
         <section className="center conv-shell" data-testid="center" data-ep={showIdea ? "" : active ?? ""} data-proj={showIdea ? "" : activeProject ?? ""} data-conv={convKey} data-loading={loading > 0 ? "1" : "0"}>
-          {/* S8-R23：与 .main.stale 同一条件（不引入新判定），与 reach-banner 分工不同——横幅说原因，这里标出哪些区域是旧数据 */}
-          {!reachOk && (
-            <div className="stale-note">
-              <span className="ui-badge" data-testid="stale-mark">
-                陈旧
-              </span>
-            </div>
-          )}
-          {!showIdea && activeProject !== null && <ProjectHeader p={list?.projects.find((x) => x.projKey === activeProject) ?? null} projKey={activeProject} />}
-          {ep && !showIdea && <StatusCard key={ep.epKey} ep={ep} extra={<HumanTimeReadout key={ep.epKey} epKey={ep.epKey} rpc={rpc} version={ep.events.length} />} />}
           <SessionHeader
             rpc={rpc}
             convKey={convKey}
@@ -456,7 +485,42 @@ function Main() {
             context={lastContextReading(conv?.entries ?? [])}
             onCreated={onCreatedEp}
             onEnded={() => fetchConvRef.current(convKey, true)}
+            title={headerTitle}
+            ep={ep}
+            leftOpen={layout.leftOpen}
+            onToggleLeft={toggleLeft}
+            health={health}
+            canRefresh={!!active}
+            onRefresh={refresh}
+            showHealth={showHealth}
+            onToggleHealth={() => setShowHealth((v) => !v)}
+            utilityRight={
+              <>
+                <ThemeMenu onChangeRepo={changeRepo} />
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                  aria-label="预览"
+                  title="切换预览"
+                  aria-pressed={layout.previewOpen}
+                  aria-controls="ava-preview"
+                  onClick={() => setPreviewOpen(!layout.previewOpen)}
+                  data-testid="toggle-preview"
+                >
+                  <Icon name="panel-right" size="sm" />
+                </button>
+              </>
+            }
           />
+          {/* S8-R23：与 .main.stale 同一条件（不引入新判定），与 reach-banner 分工不同——横幅说原因，这里标出哪些区域是旧数据 */}
+          {!reachOk && (
+            <div className="stale-note">
+              <span className="ui-badge" data-testid="stale-mark">
+                陈旧
+              </span>
+            </div>
+          )}
+          {!showIdea && activeProject !== null && <ProjectHeader p={activeProjObj} projKey={activeProject} />}
           <div className="conv">
             {justCreated !== null && justCreated.epKey === active && !showIdea && (
               <div className="conv-note" data-testid="idea-note" data-migrated={justCreated.migrated ? "1" : "0"}>
@@ -474,7 +538,17 @@ function Main() {
               running={conv?.phase === "running"}
               awaiting={(conv?.open.length ?? 0) > 0}
               lead={<SessionNotes info={readyInfo(conv?.entries ?? [])} keyProblem={conv?.keyProblem ?? null} />}
-              cards={<RequestCards conv={conv} rpc={rpc} />}
+              cards={
+                <RequestCards
+                  conv={conv}
+                  rpc={rpc}
+                  onEditScript={
+                    active !== null && !showIdea
+                      ? () => pickHuman({ kind: "file", root: "episodes", rel: `${active}/02-script.md`, size: null })
+                      : undefined
+                  }
+                />
+              }
             />
             <AnswerDock ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} />
             <HandoffStrip rows={rows} />
@@ -525,12 +599,8 @@ function Main() {
             treeBump={treeBump}
             reachOk={reachOk}
             onPick={pickHuman}
+            onCoverImported={() => setTreeBump((n) => n + 1)}
           />
-          {ep && !showIdea && active !== null && (
-            <div className="preview-cover-bar">
-              <CoverImport epKey={active} rpc={rpc} onImported={() => setTreeBump((n) => n + 1)} />
-            </div>
-          )}
           {strip && (
             <button className="strip" data-testid="auto-open-strip" onClick={() => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }))}>
               <Icon name="info" size="sm" />
@@ -578,102 +648,7 @@ function Main() {
 
 // ---------------- 顶栏与横幅 ----------------
 
-function TopBar({
-  health,
-  onToggleHealth,
-  onRefresh,
-  canRefresh,
-  onChangeRepo,
-  layout,
-  onToggleLeft,
-  onTogglePreview,
-}: {
-  health: Health | null;
-  onToggleHealth: () => void;
-  onRefresh: () => void;
-  canRefresh: boolean;
-  onChangeRepo: () => void;
-  layout: Layout;
-  onToggleLeft: () => void;
-  onTogglePreview: () => void;
-}) {
-  const p = health?.buildProvenance;
-  return (
-    <header className="topbar">
-      <div className="topbar-row">
-        <span className="wordmark">AVA</span>
-        {health && !health.isPackaged && (
-          <span className="ui-badge ui-badge--warn dev-mark" data-testid="dev-build">
-            DEV BUILD
-          </span>
-        )}
-        <span className="repo" data-testid="repo-root">
-          <Icon name="repo" size="sm" />
-          {health?.repoRoot ?? health?.repoRootProblem ?? "…"}
-          {health?.repoHead && <code> @{health.repoHead.slice(0, 8)}</code>}
-        </span>
-        <span className="spacer" />
-        {/* D39 S2：两栏的收起 / 展开开关（macOS 工具栏惯例）；收起的栏仍挂在 DOM 里，搜索词、树展开状态、未保存的编辑都不丢 */}
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-pressed={layout.leftOpen} aria-controls="ava-left" onClick={onToggleLeft} data-testid="toggle-left">
-          侧栏
-        </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-pressed={layout.previewOpen} aria-controls="ava-preview" onClick={onTogglePreview} data-testid="toggle-preview">
-          预览
-        </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" onClick={onChangeRepo} data-testid="change-repo">
-          切换仓库…
-        </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" onClick={onRefresh} disabled={!canRefresh} data-testid="refresh">
-          <Icon name="refresh" size="sm" />
-          刷新
-        </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" onClick={onToggleHealth} data-testid="health-toggle">
-          <Icon name="pulse" size="sm" />
-          健康
-        </button>
-        <ThemeMenu />
-      </div>
-      {health && health.reach !== "ok" && (
-        <div className="banner banner-red" data-testid="reach-banner">
-          <Icon name="alert" size="sm" />
-          {health.reach}：{health.reachDetail}
-        </div>
-      )}
-      {health && health.codeFreeze.ok === false && (
-        <div className="banner banner-yellow">
-          <Icon name="alert" size="sm" />
-          core Code Freeze：{health.codeFreeze.detail}
-        </div>
-      )}
-      {p?.kind === "dirty" && (
-        <div className="banner banner-red">
-          <Icon name="alert" size="sm" />
-          UI 构建自未提交的 desktop/ 改动
-        </div>
-      )}
-      {p?.kind === "stale" && (
-        <div className="banner banner-yellow">
-          <Icon name="alert" size="sm" />
-          UI 未按当前源码重建（构建于 {p.gitHead.slice(0, 8)}）
-        </div>
-      )}
-      {p?.kind === "incomparable" && (
-        <div className="banner banner-grey">
-          <Icon name="info" size="sm" />
-          无法比对 UI 构建版本（构建提交不在本仓库）
-        </div>
-      )}
-      {p?.kind === "unknown" && (
-        <div className="banner banner-grey">
-          <Icon name="info" size="sm" />
-          无法比对 UI 构建版本：{p.message}
-        </div>
-      )}
-    </header>
-  );
-}
-
-function HealthPanel({ health, diags, linked }: { health: Health; diags: string[]; linked: boolean }) {
+function HealthPanel({ health, diags, linked, onChangeRepo }: { health: Health; diags: string[]; linked: boolean; onChangeRepo: () => void }) {
   const rows: [string, string][] = [
     ["host 连接", linked ? "在线" : "断开"],
     ["repoRoot", health.repoRoot ?? `未就绪：${health.repoRootProblem ?? ""}`],
@@ -687,6 +662,13 @@ function HealthPanel({ health, diags, linked }: { health: Health; diags: string[
   ];
   return (
     <div className="health" data-testid="health-panel">
+      <div className="health-head">
+        <strong>诊断与环境</strong>
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="health-change-repo" onClick={onChangeRepo}>
+          <Icon name="repo" size="sm" />
+          切换仓库…
+        </button>
+      </div>
       <table>
         <tbody>
           {rows.map(([k, v]) => (
@@ -702,13 +684,19 @@ function HealthPanel({ health, diags, linked }: { health: Health; diags: string[
   );
 }
 
-/** 外观浮层（D3）：原生 popover API，Esc 关闭且焦点回到触发按钮（E8）；主题三档存 localStorage（§3.3） */
-function ThemeMenu() {
+/** 外观浮层（Floating UI）：主题三档 + 6 套强调色 + 切换仓库；Esc 关闭且焦点回到触发按钮 */
+function ThemeMenu({ onChangeRepo }: { onChangeRepo: () => void }) {
   const [theme, setTheme] = useState<Theme>(() => readTheme());
+  const [accent, setAccent] = useState<Accent>(() => readAccent());
   const choose = (t: Theme) => {
     setTheme(t);
     applyTheme(t);
     saveTheme(t);
+  };
+  const chooseAccent = (a: Accent) => {
+    setAccent(a);
+    applyAccent(a);
+    saveAccent(a);
   };
   const OPTS: [Theme, string][] = [
     ["system", "跟随系统"],
@@ -716,21 +704,68 @@ function ThemeMenu() {
     ["dark", "深色"],
   ];
   return (
-    <>
-      <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="外观" popoverTarget="theme-menu" data-testid="appearance">
-        <Icon name="appearance" size="sm" />
-      </button>
-      <div className="ui-popover" id="theme-menu" popover="" data-testid="theme-menu">
-        <div className="ui-popover-title">外观</div>
-        <div className="ui-seg">
-          {OPTS.map(([v, label]) => (
-            <button key={v} aria-pressed={theme === v} onClick={() => choose(v)}>
-              {label}
+    <FloatingPopover
+      placement="bottom-end"
+      role="dialog"
+      initialFocus={0}
+      className="ui-popover theme-pop"
+      testId="theme-menu"
+      renderTrigger={(trigger) => (
+        <button
+          type="button"
+          ref={trigger.ref}
+          {...trigger.props}
+          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+          aria-label="外观"
+          title="外观"
+          data-testid="appearance"
+        >
+          <Icon name="appearance" size="sm" />
+        </button>
+      )}
+      renderContent={(close) => (
+        <>
+          <div className="ui-popover-title">外观</div>
+          <div className="ui-seg">
+            {OPTS.map(([v, label]) => (
+              <button key={v} type="button" aria-pressed={theme === v} onClick={() => choose(v)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="ui-popover-title">强调色</div>
+          <div className="theme-swatches" role="group" aria-label="强调色">
+            {ACCENTS.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                className="theme-swatch"
+                data-swatch={a.id}
+                data-testid={`accent-${a.id}`}
+                aria-label={a.label}
+                aria-pressed={accent === a.id}
+                title={a.label}
+                onClick={() => chooseAccent(a.id)}
+              />
+            ))}
+          </div>
+          <div className="theme-pop-foot">
+            <button
+              type="button"
+              className="ui-row"
+              data-testid="change-repo"
+              onClick={() => {
+                close();
+                onChangeRepo();
+              }}
+            >
+              <Icon name="repo" size="sm" />
+              <span className="ui-row-title">切换仓库…</span>
             </button>
-          ))}
-        </div>
-      </div>
-    </>
+          </div>
+        </>
+      )}
+    />
   );
 }
 
@@ -818,7 +853,6 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
             {e.conv.openRequests} 张卡待答
           </span>
         )}
-        {e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
         {e.currentStep === null && <StatusDot tone="unknown" />}
         <span className="ep-step-text">{e.currentStep ?? "…"}</span>
       </span>
@@ -861,7 +895,7 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
               </span>
             )}
             {b.stops > 0 && (
-              <span className="ui-badge stop-mark" data-testid="project-stops">
+              <span className="muted" data-testid="project-stops">
                 停机 {b.stops}
               </span>
             )}
@@ -981,7 +1015,7 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
           {rows.map((r) => (
             <li key={r.e.epKey} title={r.e.epKey}>
               <span className="proj-status-vol">{r.label}</span>
-              {r.e.isBlocked && <span className="ui-badge stop-mark">停机</span>}
+              {r.e.isBlocked && <span className="muted">停机</span>}
               <span className="muted">{r.e.currentStep ?? "…"}</span>
             </li>
           ))}
@@ -993,55 +1027,6 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
           {h}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ---------------- 工序卡（status --json 原文） ----------------
-
-/**
- * D39 C1/C5：工序卡默认一行（工序 + 停机 + 命令），停机原因、下一步、advisories、人时收进「详情」。
- * 收起时详情仍在 DOM 里（`hidden`），文案一字不改；有 advisories 时「详情」旁标条数，警告不被静默藏掉。
- */
-function StatusCard({ ep, extra }: { ep: EpisodeState; extra?: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const s = ep.status;
-  // 门禁 5：文案与 HEAD 逐字相同（不为换皮改可见字符串），StateView 的形态只承载这一条原文
-  if (!s.ok) return <StateView kind="error" title={`工序读取失败（${s.code}）：${s.message}`} />;
-  const v = s.value;
-  const detailsId = `status-details-${ep.epKey}`;
-  return (
-    <div className="status" role="group" aria-label="当前工序" data-testid="status">
-      <div className="status-step">
-        <strong data-testid="current-step">{v.current_step}</strong>
-        {v.is_blocked && <span className="ui-badge stop-mark">停机</span>}
-        <span className="spacer" />
-        {v.advisories.length > 0 && (
-          <span className="ui-badge ui-badge--warn" data-testid="status-advisory-count">
-            {v.advisories.length} 条提示
-          </span>
-        )}
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen((o) => !o)} data-testid="status-toggle">
-          详情
-          <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
-        </button>
-      </div>
-      <div className="status-details" id={detailsId} hidden={!open} data-testid="status-details">
-        {v.next_command && <code className="ui-code cmd">{v.next_command}</code>}
-        {v.block_reason && <div className="muted">{v.block_reason}</div>}
-        <div>下一步：{v.next_action}</div>
-        {v.advisories.length > 0 && (
-          <ul className="advisories">
-            {v.advisories.map((a) => (
-              <li key={a}>
-                <Icon name="alert" size="sm" />
-                {a}
-              </li>
-            ))}
-          </ul>
-        )}
-        {extra}
-      </div>
     </div>
   );
 }

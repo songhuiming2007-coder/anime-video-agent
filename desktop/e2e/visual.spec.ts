@@ -86,22 +86,21 @@ type Theme = (typeof THEMES)[number];
 
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
-  // D169 实测（去掉侧栏「本期文件」树与「镜头画廊」行、收拢到预览区顶部切换条与阶段胶囊，三态一致）：
-  // 见各 state 下三主题（light/dark/forced）恒定值；空态由切换条与胶囊补足至 64。
-  list: 58,
-  "sidebar-step": 62,
-  "sidebar-search": 51,
-  popover: 62,
-  markdown: 70,
-  json: 70,
-  empty: 64,
-  error: 59,
-  health: 77,
-  stale: 63, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
-  card: 59,
-  "card-reject": 64,
-  "card-err": 62,
-  expanded: 70,
+  // Route B 精简顶栏与侧栏停机红粉徽标后（去掉独立 topbar 行、wordmark/repo、停机徽标、快捷键标签）三态一致，list 降至 44：
+  list: 43,
+  "sidebar-step": 47,
+  "sidebar-search": 37,
+  popover: 49,
+  markdown: 55,
+  json: 55,
+  empty: 49,
+  error: 44,
+  health: 64,
+  stale: 49, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
+  card: 44,
+  "card-reject": 47,
+  "card-err": 47,
+  expanded: 55,
 };
 
 interface AuditResult {
@@ -293,16 +292,21 @@ test("VE-2 主题三档：深色立即生效且重启保持；跟随系统对齐
     await L.page.getByTestId("appearance").click();
     await L.page.getByTestId("theme-menu").getByText("深色", { exact: true }).click();
     await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
-    expect(await L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg（冻结文件）
+    await L.page.getByTestId("accent-violet").click();
+    await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-accent"))).toBe("violet");
+    expect(await L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg
     await L.page.keyboard.press("Escape");
     expect(await L.page.evaluate(() => location.origin)).toBe("file://"); // A7 的实质：渲染器从 file:// 载入（打包版同源），偏好才跨重启留在 userData 里
-    // ② 重启（同 userData）后仍为深色
+    // ② 重启（同 userData）后仍为深色 + violet 强调色
     await L.app.close();
     const L2 = await launch(fx.repo, [], ud);
     try {
       expect(await L2.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
-      // ③ 点「跟随系统」并解除 Playwright 的 light 模拟 → 页面 matchMedia 与 main 的 nativeTheme 一致
+      expect(await L2.page.evaluate(() => document.documentElement.getAttribute("data-accent"))).toBe("violet");
+      // ③ 还原 sakura 强调色 + 点「跟随系统」并解除 Playwright 的 light 模拟 → 页面 matchMedia 与 main 的 nativeTheme 一致
       await L2.page.getByTestId("appearance").click();
+      await L2.page.getByTestId("accent-sakura").click();
+      await expect.poll(() => L2.page.evaluate(() => document.documentElement.getAttribute("data-accent"))).toBe(null);
       await L2.page.getByTestId("theme-menu").getByText("跟随系统", { exact: true }).click();
       await expect.poll(() => L2.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe(null);
       await L2.page.emulateMedia({ colorScheme: null });

@@ -92,6 +92,8 @@ export function importViolations(f: SourceFile): string[] {
         // Spec 11 §5.2：`@codemirror/*` / `@lezer/*` 只允许出现在 renderer/ScriptEditor.tsx（MUT-15）
         if (/^(react|react-dom|markdown-it)(\/|$)/.test(spec)) break;
         if (f.rel === "renderer/ScriptEditor.tsx" && /^(@codemirror|@lezer)\//.test(spec)) break;
+        if (f.rel === "renderer/icons.tsx" && spec === "lucide-react") break;
+        if (f.rel === "renderer/floating.tsx" && spec === "@floating-ui/react") break;
         bad.push(`${f.rel}: renderer/ 禁止 ${spec}`);
         break;
       case "preload":

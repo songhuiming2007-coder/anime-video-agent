@@ -20,10 +20,12 @@ test("门禁 7：真实 app 三态截图（工作台 + 按工序分组 + 外观�
   ] as const;
   try {
     mkdirSync(OUT!, { recursive: true });
+    await L.page.setViewportSize({ width: 1280, height: 820 });
     await openEpisode(L.page, "E2E-A");
     await pick(L.page, "02-script.md");
+    const renderTab = L.page.locator("[data-testid=editor-pane-switch] button[data-pane=render]");
+    if (await renderTab.isVisible().catch(() => false)) await renderTab.click();
     await L.page.getByTestId("markdown").waitFor();
-    await L.page.setViewportSize({ width: 1280, height: 820 });
     for (const [name, scheme] of themes) {
       // light/dark 走系统外观（media 块）；forced-dark 走手动块（§2.7 的三态口径）
       await L.page.evaluate((s) => {

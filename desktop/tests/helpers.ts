@@ -48,7 +48,10 @@ export function cleanup(dir: string): void {
 export function makeFixtureRepo(opts: { withApprovals?: boolean } = {}): string {
   const root = tmp("repo");
   cpSync(join(REPO, "pipeline"), join(root, "pipeline"), { recursive: true, filter: (s) => !s.includes("__pycache__") });
-  cpSync(join(REPO, "config"), join(root, "config"), { recursive: true });
+  cpSync(join(REPO, "config"), join(root, "config"), {
+    recursive: true,
+    filter: (s) => !s.endsWith("auth.local.json") && !s.endsWith(".auth.local.json.lock"),
+  });
   cpSync(join(REPO, "pyproject.toml"), join(root, "pyproject.toml"));
   symlinkSync(join(REPO, ".venv"), join(root, ".venv"));
   if (opts.withApprovals === false) rmSync(join(root, "pipeline/approvals.py"));

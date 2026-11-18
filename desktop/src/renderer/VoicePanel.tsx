@@ -326,12 +326,11 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           return (
           <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={current?.label === s.label ? "true" : undefined}>
             <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="seg-play" disabled={!s.wav_exists} onClick={() => playOne(s)} aria-label={`播放段 ${s.label}`}>
-              <Icon name="play" size="sm" />
+              <Icon name={current?.label === s.label ? "pause" : "play"} size="sm" />
             </button>
             <div className="voice-row-main">
               <div className="voice-row-head">
                 <span>段 {s.label}</span>
-                {current?.label === s.label && <Badge tone="accent">播放中</Badge>}
                 {st !== null && (
                   <span className="voice-status" data-testid="seg-status" data-kind={st.kind} title={st.title}>
                     <Badge tone={STATUS_TONE[st.kind]}>{st.text}</Badge>

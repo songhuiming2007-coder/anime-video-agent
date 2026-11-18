@@ -197,7 +197,7 @@ test("D80 R6 真实 core：卡片比对话流还高（多行命令）→ 弹出�
   try {
     await p.setViewportSize({ width: 1280, height: 800 });
     await openEp(p, EP);
-    const command = ["rm -f a.tmp", ...Array.from({ length: 9 }, (_, i) => `rm -f b${String(i)}.tmp`)].join(" && \\\n  ");
+    const command = ["rm -f a.tmp", ...Array.from({ length: 16 }, (_, i) => `rm -f b${String(i)}.tmp`)].join(" && \\\n  ");
     llm.push(toolCalls(bash(command, "清理一批临时文件")), assistant("清理完了。"));
     await send(p, "把临时文件都清掉");
     await expect(p.getByTestId("request-answer-approve")).toBeFocused({ timeout: 20_000 });

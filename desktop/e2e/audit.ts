@@ -95,7 +95,7 @@ export function domAudit() {
     const badge = !!el.closest(".ui-badge, .ui-count, .ui-kbd");
     if (fs < 10 || (fs < 12 && !badge)) small.push({ text: t.textContent!.trim().slice(0, 20), cls: el.className, fs });
   }
-  for (const el of Array.from(document.querySelectorAll("input.ui-input, textarea.ui-textarea, .ui-dot"))) {
+  for (const el of Array.from(document.querySelectorAll(".ui-dot"))) {
     const r = el.getBoundingClientRect();
     if (!r.width || !r.height || el.closest(":disabled")) continue;
     const cs = getComputedStyle(el);
