@@ -130,6 +130,7 @@ def run(video: Path, dest: Path, language: str = "zh") -> Path:
 # 云端模型路径与 config/cloud.json 的 models 段对应（那份是机制配置，这份是代码默认）
 CLOUD_WHISPER_DIR = "/root/autodl-tmp/models/openai/whisper-large-v3"
 CLOUD_SENSEVOICE_DIR = "/root/autodl-tmp/models/FunAudioLLM/SenseVoiceSmall"
+SENSEVOICE_REPO = "FunAudioLLM/SenseVoiceSmall"
 
 # 后端优先级：主读取第一个可用的；仲裁取与主读不同的下一个
 PRIMARY_ORDER = ("sensevoice_cuda", "whisper_large_v3_cuda", "mlx_whisper_local")
@@ -229,6 +230,38 @@ def _backend_whisper_cuda(path: Path) -> str:
     return pipe(str(path), **_whisper_call_kwargs(_wav_seconds(path)))["text"].strip()
 
 
+def _hf_cached_dir(repo_id: str) -> Path | None:
+    """HF_HUB_CACHE 中已完整落盘的 snapshot 目录（纯本地读取，不触网）。"""
+    rev = paths.model_revision(repo_id)
+    if not rev:
+        return None
+    root = Path(os.environ.get("HF_HUB_CACHE", str(paths.MODELS / "hub")))
+    snap = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / rev
+    if (snap / "configuration.json").is_file() and (snap / "model.pt").is_file():
+        return snap
+    return None
+
+
+def _sensevoice_model_kwargs() -> dict[str, object]:
+    """构造 funasr.AutoModel 的加载参数（纯函数）。
+
+    FunASR 默认 `hub="ms"`（ModelScope），而 ModelScope 上仓库名叫 `iic/SenseVoiceSmall`；
+    Colab 冷启动未预载模型时若传 HF 仓库名 `FunAudioLLM/SenseVoiceSmall` 却漏传 `hub="hf"`，
+    会请求 `modelscope.cn/.../FunAudioLLM/SenseVoiceSmall` 报 404，异常被吞后在 `build_model`
+    抛 `model 'FunAudioLLM/SenseVoiceSmall' is not registered`。
+    此外 `funasr` 的 `get_or_download_model_dir_hf` 忽略 `disable_update=True`，每次构造都会跑
+    `snapshot_download(model)` 联网核对；首段落进 `HF_HUB_CACHE` 后第 2 段起改喂本地 snapshot
+    路径，避免全期几十段逐段请求 HF API 撞 429。
+    """
+    model_dir = cloud_model_dir(SENSEVOICE_REPO, CLOUD_SENSEVOICE_DIR)
+    if Path(model_dir).is_dir() or not _hf_fallback_allowed():
+        return {"model": model_dir, "disable_update": True}
+    cached = _hf_cached_dir(SENSEVOICE_REPO)
+    if cached is not None:
+        return {"model": str(cached), "disable_update": True}
+    return {"model": SENSEVOICE_REPO, "hub": "hf", "disable_update": True}
+
+
 def _backend_sensevoice_cuda(path: Path) -> str:
     """云端 SenseVoice-Small（funasr）。
 
@@ -237,9 +270,7 @@ def _backend_sensevoice_cuda(path: Path) -> str:
     """
     from funasr import AutoModel
 
-    model_dir = cloud_model_dir("FunAudioLLM/SenseVoiceSmall", CLOUD_SENSEVOICE_DIR)
-    model_ref = model_dir if Path(model_dir).is_dir() or not _hf_fallback_allowed() else "FunAudioLLM/SenseVoiceSmall"
-    model = AutoModel(model=model_ref, disable_update=True)
+    model = AutoModel(**_sensevoice_model_kwargs())
     res = model.generate(input=str(path), language="zh", use_itn=True)
     return res[0]["text"].strip()
 
@@ -267,7 +298,7 @@ def backend_unavailable_reason(name: str) -> str | None:
     if name == "sensevoice_cuda":
         if importlib.util.find_spec("funasr") is None:
             return "未安装 funasr"
-        model_dir = cloud_model_dir("FunAudioLLM/SenseVoiceSmall", CLOUD_SENSEVOICE_DIR)
+        model_dir = cloud_model_dir(SENSEVOICE_REPO, CLOUD_SENSEVOICE_DIR)
         if not Path(model_dir).is_dir() and not _hf_fallback_allowed():
             return f"模型目录不存在: {model_dir}"
         # `find_spec` 只回答「包在不在」，不回答「能不能用」。2026-09-11 实测：
