@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 import math
 import os
@@ -375,6 +377,11 @@ def line_width(s: str) -> float:
     return sum(char_width(c) for c in s)
 
 
+# 连续 ASCII 单词（含数字与所有格撇号，如 Tower / Lovers / Mind's / 250），
+# 折行时优先保持整词不拆；只有单词本身超过整行宽度时才退回逐字符折断。
+_ASCII_WORD = re.compile(r"[A-Za-z0-9']+")
+
+
 def wrap(text: str, width: float) -> list[str]:
     """按视觉宽度折行。
 
@@ -383,8 +390,11 @@ def wrap(text: str, width: float) -> list[str]:
     横贯画面，两端各被切掉十几个字，而质检的「字幕不超框」还判了通过
     （它算的是「应该折成几行」，没验「实际折没折」）。
     """
-    lines, cur, w = [], "", 0.0
-    for ch in text:
+    lines: list[str] = []
+    cur, w = "", 0.0
+
+    def _push_char(ch: str) -> None:
+        nonlocal cur, w
         cw = char_width(ch)
         # 避头尾：收尾标点即使超宽也留在本行，不许挂到下一行开头
         if w + cw > width and ch not in _NO_LINE_START and cur:
@@ -392,6 +402,28 @@ def wrap(text: str, width: float) -> list[str]:
             cur, w = "", 0.0
         cur += ch
         w += cw
+
+    i, n = 0, len(text)
+    while i < n:
+        m = _ASCII_WORD.match(text, i)
+        if m:
+            tok = m.group(0)
+            i = m.end()
+            tw = line_width(tok)
+            if w + tw <= width:
+                cur += tok
+                w += tw
+                continue
+            if tw <= width and cur:
+                lines.append(cur)
+                cur, w = tok, tw
+                continue
+            # 单个词本身超过整行宽度或当前行为空：退回逐字符折断
+            for ch in tok:
+                _push_char(ch)
+            continue
+        _push_char(text[i])
+        i += 1
     if cur:
         lines.append(cur)
     return lines
@@ -570,6 +602,154 @@ def apply_subtitle_map(audio: list[dict], table: dict[str, str]) -> list[dict]:
         raise SystemExit(
             f"FAIL {SUBTITLE_MAP} 有 {len(miss)} 个键在字幕句子里找不到（拼错，或跨了句）：{miss[:8]}")
     return out
+
+
+@dataclass(frozen=True)
+class SubtitleCardInfo:
+    """单张上屏字幕卡的折行与宽度实测快照（供 render / qc / check_script 共用）。"""
+
+    card_id: str
+    text: str
+    lines: list[str]
+    grid_width: float
+    line_px: list[float]
+
+
+@dataclass(frozen=True)
+class SubtitleReport:
+    """字幕四项检查的共享结果。"""
+
+    cards: list[SubtitleCardInfo]
+    empty: list[str]
+    too_wide: list[tuple[str, int]]
+    multi: list[SubtitleCardInfo]
+    too_tall: list[tuple[str, int]]
+    cap_px: int
+    max_lines: int
+    widest_px: float
+    tallest: int
+
+
+def inspect_subtitles(
+    items: list[tuple[str, dict, dict]],
+    *,
+    check_px: bool = True,
+    measure_px: Callable[[str], float] | None = None,
+) -> SubtitleReport:
+    """对即将上屏的字幕卡执行统一版式检查：空段 / 像素超宽 / 折行 / 超高。
+
+    `items` = [(前缀, 段落, manifest 段)]，由 `render.verify_subtitles`、`qc._subtitle_checks`
+    与 `check_script` 共用同一份分卡、折行与超宽判据，避免三处各写各的而漂移。
+    """
+    from . import subtitle_metrics as sm
+
+    cap = sm.max_px()
+    max_lines = int((H - MARGIN_V * 2) // (FONT_SIZE * 1.2))
+    px_fn = measure_px if measure_px is not None else (sm.text_px if check_px else None)
+    target_w = per_line()
+
+    empty: list[str] = []
+    card_infos: list[SubtitleCardInfo] = []
+    too_wide: list[tuple[str, int]] = []
+    multi: list[SubtitleCardInfo] = []
+    too_tall: list[tuple[str, int]] = []
+    widest = 0.0
+    tallest = 0
+
+    for pre, s, a in items:
+        seg_id = f"{pre}{s['index']}"
+        seg_text = s["text"] if s.get("text") is not None else (a.get("text") or "")
+        if not str(seg_text).strip():
+            empty.append(seg_id)
+        raw_dur = s.get("duration") if s.get("duration") is not None else a.get("duration")
+        dur = float(1.0 if raw_dur is None else raw_dur)
+        for j, (card, _, _) in enumerate(cards(a, dur)):
+            cid = f"{seg_id}-{j + 1}"
+            stripped = card.strip()
+            if not stripped:
+                if seg_id not in empty:
+                    empty.append(cid)
+                continue
+            ls = wrap(stripped, target_w)
+            ws = [px_fn(x) for x in ls] if px_fn is not None else []
+            info = SubtitleCardInfo(
+                card_id=cid,
+                text=stripped,
+                lines=ls,
+                grid_width=line_width(stripped),
+                line_px=ws,
+            )
+            card_infos.append(info)
+            if ws:
+                mx = max(ws)
+                widest = max(widest, mx)
+                if mx > cap:
+                    too_wide.append((cid, round(mx)))
+            tallest = max(tallest, len(ls))
+            if len(ls) > max_lines:
+                too_tall.append((cid, len(ls)))
+            if len(ls) > 1 or any(w > cap for w in ws):
+                multi.append(info)
+
+    return SubtitleReport(
+        cards=card_infos,
+        empty=empty,
+        too_wide=too_wide,
+        multi=multi,
+        too_tall=too_tall,
+        cap_px=cap,
+        max_lines=max_lines,
+        widest_px=widest,
+        tallest=tallest,
+    )
+
+
+def verify_subtitles(
+    segments: list[dict],
+    audio: list[dict],
+    *,
+    measure_px: Callable[[str], float] | None = None,
+) -> SubtitleReport:
+    """渲染入口的 0 秒 fail-fast 字幕门禁（D171）：切片与 ffmpeg 编码前拦截空段/超宽/折行。"""
+    rep = inspect_subtitles(
+        [("", s, a) for s, a in zip(segments, audio)],
+        check_px=True,
+        measure_px=measure_px,
+    )
+    if not (rep.empty or rep.too_wide or rep.multi or rep.too_tall):
+        return rep
+
+    lines = ["FAIL 字幕预检未通过（切片前拦截，避免空跑渲染）："]
+    if rep.empty:
+        lines.append(f"  [字幕无空段] 空段/空卡：{'、'.join(rep.empty[:10])}")
+    if rep.too_wide:
+        lines.append(
+            f"  [字幕不超宽] {len(rep.too_wide)} 张卡单行超出 {rep.cap_px} px："
+            + "、".join(f"{cid}({px}px)" for cid, px in rep.too_wide[:8])
+        )
+    if rep.too_tall:
+        lines.append(f"  [字幕不超高] 最多 {rep.tallest} 行 > 上限 {rep.max_lines}：{rep.too_tall[:8]}")
+    if rep.multi:
+        lines.append(
+            f"  [字幕每卡一行] {len(rep.multi)} 张卡折行或超宽"
+            f"（折行目标 {per_line():g} 格，像素上限 {rep.cap_px} px）："
+        )
+        for c in rep.multi[:20]:
+            if len(c.lines) > 1:
+                px_note = f"，最宽行 {round(max(c.line_px))} px / 上限 {rep.cap_px} px" if c.line_px else ""
+                lines.append(
+                    f"    - {c.card_id}：折成 {len(c.lines)} 行"
+                    f"（宽 {c.grid_width:g} 格 > {per_line():g} 格{px_note}）：「{c.text}」"
+                )
+            else:
+                lines.append(
+                    f"    - {c.card_id}：单行超宽"
+                    f"（实测 {round(max(c.line_px))} px > 上限 {rep.cap_px} px，约定宽 {c.grid_width:g} 格）：「{c.text}」"
+                )
+        if len(rep.multi) > 20:
+            lines.append(f"    ... 另有 {len(rep.multi) - 20} 张未展开")
+    lines.append("     修法：在超格长子句内加逗号/破折号断卡，或调整 02-subtitles.json 上屏写法后再渲染。")
+    raise SystemExit("\n".join(lines))
 
 
 def build_ass(segments: list[dict], audio: list[dict], dest: Path,
@@ -1375,6 +1555,10 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
             fonts_dir = hud_fonts
         else:
             music_font = FONT
+
+    # D171：所有纯 JSON/字体前置校验已过，切片与编码前做 0 秒字幕版式拦截，
+    # 绝不跑完高负载全片编码才在 07 qc 因折行/超宽报错。
+    verify_subtitles(segments, sub_audio)
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:

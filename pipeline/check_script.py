@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import statistics
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -1238,6 +1240,8 @@ def run(path: Path) -> list[Check]:
         "、".join(f"{len(b)}字「{b[:16]}…」" for b in winded[:3]) or
         f"最长 {max((len(b) for b in breaths), default=0)} 字")
 
+    _check_subtitle_layout(path, text, add)
+
     # 句长起伏。整齐是「机器味」最直接的量化形态，见上方对照表。
     lens = [len(s) for s in sents]
     burst = (statistics.pstdev(lens) / statistics.mean(lens)) if len(lens) > 1 else 0.0
@@ -1343,6 +1347,126 @@ def run(path: Path) -> list[Check]:
         add("章节顶栏", chap_res[0], chap_res[1])
 
     return checks
+
+
+_LATIN_CHAR = re.compile(r"[A-Za-z]")
+
+
+def _subtitle_px_fn():
+    """可用时返回真实 libass 像素测量函数；缺 ffmpeg / fc-match（如 CI）时返回 None。"""
+    if not (shutil.which("ffmpeg") and shutil.which("fc-match")):
+        return None
+    from . import subtitle_metrics as sm
+
+    try:
+        sm.font_file()
+        sm.cjk_px()
+    except (SystemExit, OSError, subprocess.SubprocessError):
+        return None
+    return sm.text_px
+
+
+def _parse_vo_segments(text: str) -> list[tuple[str, str]]:
+    """提取所有含 `配音：` 的段落 `(段落号, 配音原文)`（含片尾，因为片尾也会上屏）。"""
+    out: list[tuple[str, str]] = []
+    for m in _SEGMENT_BLOCK.finditer(text):
+        vo = re.search(r"^配音[：:]\s*(.+)$", m.group(2), re.M)
+        if vo:
+            out.append((m.group(1), vo.group(1).strip()))
+    if out:
+        return out
+    return [(str(i), v.strip()) for i, v in enumerate(parse(text)[0], 1)]
+
+
+def _check_subtitle_layout(path: Path, text: str, add) -> None:
+    """D171「字幕每卡一行」写稿前置检查：按语音拆句 + 分卡 + 折行口径提前拦截无断点超格长子句。"""
+    from . import render
+    from .tts import split_sentences
+
+    vo_segs = _parse_vo_segments(text)
+    if not vo_segs:
+        return
+
+    raw_audio: list[dict] = []
+    raw_items_meta: list[dict] = []
+    for label, vo_text in vo_segs:
+        sents = split_sentences(vo_text)
+        sent_list = (
+            [{"text": vo_text, "start": 0.0, "duration": 1.0}]
+            if len(sents) <= 1
+            else [{"text": s, "start": float(k), "duration": 1.0} for k, s in enumerate(sents)]
+        )
+        dur = float(len(sent_list))
+        raw_audio.append({"index": label, "text": vo_text, "duration": dur, "sentences": sent_list})
+        raw_items_meta.append({"index": label, "text": vo_text, "duration": dur})
+
+    sub_map_applied = False
+    map_note = ""
+    audio = raw_audio
+    sub_path = path.parent / render.SUBTITLE_MAP
+    if sub_path.exists():
+        try:
+            table = render.load_subtitle_map(path.parent)
+            if table:
+                audio = render.apply_subtitle_map(raw_audio, table)
+                sub_map_applied = True
+        except (SystemExit, ValueError, OSError):
+            map_note = "02-subtitles.json 试跑未生效，已退回原文"
+
+    px_fn = _subtitle_px_fn()
+    rep = render.inspect_subtitles(
+        [("", meta, aud) for meta, aud in zip(raw_items_meta, audio)],
+        check_px=px_fn is not None,
+        measure_px=px_fn,
+    )
+    target = render.per_line()
+
+    def _fmt(c) -> str:
+        if len(c.lines) > 1:
+            return f"{c.card_id}（{c.grid_width:g}格>{target:g}格「{c.text}」）"
+        return f"{c.card_id}（{round(max(c.line_px))}px>{rep.cap_px}px「{c.text}」）"
+
+    def _join(cs: list, limit: int = 15) -> str:
+        body = "；".join(_fmt(c) for c in cs[:limit])
+        return body + (f"……（共 {len(cs)} 张）" if len(cs) > limit else "")
+
+    fix_hint = "　在超格长子句内加逗号/破折号断卡，或调整 02-subtitles.json 上屏写法"
+    note_prefix = f"{map_note}；" if map_note else ""
+
+    if sub_map_applied:
+        if rep.empty or rep.multi:
+            parts = []
+            if rep.empty:
+                parts.append(f"空卡 {'、'.join(rep.empty[:5])}")
+            if rep.multi:
+                parts.append(f"{len(rep.multi)} 张卡超格折行或超宽（已按 02-subtitles.json 校验）：{_join(rep.multi)}")
+            add("字幕每卡一行", False, "；".join(parts) + fix_hint)
+        else:
+            add("字幕每卡一行", True, f"共 {len(rep.cards)} 张卡，均单行放得下（已按 02-subtitles.json 校验）")
+        return
+
+    hard_bad = [c for c in rep.multi if not _LATIN_CHAR.search(c.text)]
+    latin_warn = [c for c in rep.multi if _LATIN_CHAR.search(c.text)]
+    if rep.empty or hard_bad:
+        parts = []
+        if rep.empty:
+            parts.append(f"空卡 {'、'.join(rep.empty[:5])}")
+        if hard_bad:
+            parts.append(f"{note_prefix}{len(hard_bad)} 张卡单句无断点超格：{_join(hard_bad)}")
+        if latin_warn:
+            parts.append(f"另有 {len(latin_warn)} 张含拉丁/罗马字卡按原文超格：{_join(latin_warn, limit=5)}")
+        add("字幕每卡一行", False, "；".join(parts) + fix_hint)
+    elif latin_warn:
+        add(
+            "字幕每卡一行",
+            True,
+            f"⚠ {note_prefix}{len(latin_warn)} 张含拉丁/罗马字卡按原文超格"
+            f"（若为英文原名不替换将在渲染前被拦截，若为罗马字请配 02-subtitles.json 后复检）："
+            + _join(latin_warn),
+        )
+    else:
+        suffix = f"（{map_note}）" if map_note else ""
+        add("字幕每卡一行", True, f"共 {len(rep.cards)} 张卡，均单行放得下{suffix}")
 
 
 def _check_avsync_subs(path: Path, add) -> None:

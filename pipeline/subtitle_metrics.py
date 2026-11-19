@@ -26,41 +26,59 @@ from . import render
 _REF = "一"
 
 
-@functools.lru_cache(maxsize=1)
-def font_file() -> tuple[str, int]:
-    """fontconfig 对 `render.FONT` 解析出的字体文件与 TTC 序号（libass 走同一条路）。"""
+@functools.lru_cache(maxsize=8)
+def _font_file_for(font_name: str) -> tuple[str, int]:
     try:
-        out = subprocess.run(["fc-match", "-f", "%{file}|%{index}", render.FONT],
+        out = subprocess.run(["fc-match", "-f", "%{file}|%{index}", font_name],
                              capture_output=True, text=True, check=True).stdout.strip()
     except FileNotFoundError:
         raise SystemExit("FAIL 量字幕宽度要 fc-match（fontconfig），本机没有：brew install fontconfig")
     path, _, idx = out.partition("|")
     if not path or not Path(path).exists():
-        raise SystemExit(f"FAIL fontconfig 解析不出字体「{render.FONT}」：{out!r}")
+        raise SystemExit(f"FAIL fontconfig 解析不出字体「{font_name}」：{out!r}")
     return path, int(idx or 0)
 
 
-@functools.lru_cache(maxsize=1)
-def _font():
+def font_file() -> tuple[str, int]:
+    """fontconfig 对 `render.FONT` 解析出的字体文件与 TTC 序号（libass 走同一条路）。"""
+    return _font_file_for(render.FONT)
+
+
+@functools.lru_cache(maxsize=8)
+def _font_for(font_name: str):
     from PIL import ImageFont
-    path, idx = font_file()
+    path, idx = _font_file_for(font_name)
     return ImageFont.truetype(path, 1000, index=idx)
 
 
-def _ink_width(text: str, work: Path) -> int:
+def _font():
+    return _font_for(render.FONT)
+
+
+def _ink_width(
+    text: str,
+    work: Path,
+    font_name: str | None = None,
+    font_size: int | None = None,
+) -> int:
     """用 libass 把一行渲在黑底上，量白色像素的水平跨度。"""
     import numpy as np
     from PIL import Image
+    fname = font_name or render.FONT
+    fsize = font_size or render.FONT_SIZE
+    # 标定画布必须够宽够高（即使小画幅测试夹具把 render.W/H 缩到 160x90，也不截断 40 个参照汉字）
+    canvas_w = max(render.W * 2, fsize * 50)
+    canvas_h = max(render.H, fsize * 4)
     ass = work / "m.ass"
     ass.write_text(f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: {render.W * 2}
-PlayResY: {render.H}
+PlayResX: {canvas_w}
+PlayResY: {canvas_h}
 WrapStyle: 2
 
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: M,{render.FONT},{render.FONT_SIZE},&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1
+Style: M,{fname},{fsize},&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
@@ -68,21 +86,25 @@ Dialogue: 0,0:00:00.00,0:00:01.00,M,,0,0,0,,{text}
 """, encoding="utf-8")
     png = work / "m.png"
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
-                    "-i", f"color=c=black:s={render.W * 2}x{render.H}:d=0.1",
+                    "-i", f"color=c=black:s={canvas_w}x{canvas_h}:d=0.1",
                     "-vf", f"ass={ass.name}", "-frames:v", "1", png.name],
                    check=True, capture_output=True, cwd=work)
     cols = np.where((np.asarray(Image.open(png).convert("L")) > 128).any(axis=0))[0]
     if not len(cols):
-        raise SystemExit(f"FAIL libass 没渲出字（字体「{render.FONT}」）——先查 fc-list 认不认得这个名字")
+        raise SystemExit(f"FAIL libass 没渲出字（字体「{fname}」）——先查 fc-list 认不认得这个名字")
     return int(cols[-1] - cols[0] + 1)
 
 
-@functools.lru_cache(maxsize=1)
-def cjk_px() -> float:
-    """libass 渲染时一个汉字的步进宽（像素）。"""
+@functools.lru_cache(maxsize=8)
+def _cjk_px_for(font_name: str, font_size: int) -> float:
     with tempfile.TemporaryDirectory() as d:
         w = Path(d)
-        return (_ink_width(_REF * 40, w) - _ink_width(_REF * 20, w)) / 20
+        return (_ink_width(_REF * 40, w, font_name, font_size) - _ink_width(_REF * 20, w, font_name, font_size)) / 20
+
+
+def cjk_px() -> float:
+    """libass 渲染时一个汉字的步进宽（像素）。"""
+    return _cjk_px_for(render.FONT, render.FONT_SIZE)
 
 
 def text_px(text: str) -> float:

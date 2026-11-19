@@ -561,34 +561,19 @@ def _subtitle_checks(items: list[tuple[str, dict, dict]]) -> list[Check]:
     大写与数字比半格宽，拿约定宽度卡边距测的不是真实产物。超出边距的行 libass 会在空格处
     再折一次，所以「每卡一行」也把它算作折行。
     """
-    from .render import FONT_SIZE, MARGIN_V, H, cards, per_line, wrap
-    from .subtitle_metrics import max_px, text_px
-    cap = max_px()
-    max_lines = int((H - MARGIN_V * 2) // (FONT_SIZE * 1.2))
-    empty = [f"{pre}{s['index']}" for pre, s, _ in items if not s["text"].strip()]
-    # 验的必须是**真正会上屏的那些卡**，不是整段文本。
-    # 渲染器按句分卡，这里若还按整段算，测的就又不是真实产物了。
-    wrapped = {}
-    for pre, s, a in items:
-        for j, (card, _, _) in enumerate(cards(a, s["duration"])):
-            wrapped[f"{pre}{s['index']}-{j + 1}"] = wrap(card.strip(), per_line())
-    px = {k: [text_px(x) for x in ls] for k, ls in wrapped.items()}
-    too_wide = [(i, round(max(ws))) for i, ws in px.items() if any(w > cap for w in ws)]
-    too_tall = [(i, len(ls)) for i, ls in wrapped.items() if len(ls) > max_lines]
-    widest = max(w for ws in px.values() for w in ws)
-    tallest = max(len(ls) for ls in wrapped.values())
-    # 每张卡都该只有一行——分卡的目的就是不折行。折了说明单句太长，
-    # 那是稿子的问题，得回去断句，不是这里放宽。
-    multi = [k for k, ls in wrapped.items() if len(ls) > 1 or any(w > cap for w in px[k])]
+    from .render import inspect_subtitles
+
+    rep = inspect_subtitles(items, check_px=True)
+    multi = [c.card_id for c in rep.multi]
     return [
-        Check("字幕无空段", not empty, f"空段 {empty}" if empty else "无"),
-        Check("字幕不超宽", not too_wide,
-              f"超宽（px）{too_wide}" if too_wide
-              else f"{len(wrapped)} 张卡，最宽一行 {widest:.0f} px ≤ {cap} px"),
+        Check("字幕无空段", not rep.empty, f"空段 {rep.empty}" if rep.empty else "无"),
+        Check("字幕不超宽", not rep.too_wide,
+              f"超宽（px）{rep.too_wide}" if rep.too_wide
+              else f"{len(rep.cards)} 张卡，最宽一行 {rep.widest_px:.0f} px ≤ {rep.cap_px} px"),
         Check("字幕每卡一行", not multi,
-              f"{len(multi)} 张卡折了行：{multi[:5]}" if multi else f"最多 {tallest} 行"),
-        Check("字幕不超高", not too_tall,
-              f"超高 {too_tall}" if too_tall else f"最多 {tallest} 行 ≤ {max_lines}"),
+              f"{len(multi)} 张卡折了行：{multi[:5]}" if multi else f"最多 {rep.tallest} 行"),
+        Check("字幕不超高", not rep.too_tall,
+              f"超高 {rep.too_tall}" if rep.too_tall else f"最多 {rep.tallest} 行 ≤ {rep.max_lines}"),
     ]
 
 

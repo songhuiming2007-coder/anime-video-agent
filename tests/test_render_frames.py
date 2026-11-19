@@ -199,6 +199,11 @@ def test_定格段按帧数出(tmp_path: Path, small):
 
 @needs_ffmpeg
 def test_普通期渲染_合成前按计划核画面轨(tmp_path: Path, small, monkeypatch):
+    # small 夹具把画幅缩到 160x90 但未同步缩字幕边距/字号（默认 MARGIN_LR=120 会令可用宽为 -80px）；
+    # 按小画幅等比缩边距与字号，让测试照常走真实 verify_subtitles 门禁而不放宽任何阈值。
+    monkeypatch.setattr(render, "MARGIN_LR", 10)
+    monkeypatch.setattr(render, "MARGIN_V", 10)
+    monkeypatch.setattr(render, "FONT_SIZE", 12)
     src = _src(tmp_path, 10.0)
     ep = tmp_path / "ep"
     (ep / "03-audio").mkdir(parents=True)

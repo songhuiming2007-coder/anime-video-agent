@@ -115,3 +115,15 @@ def test_约定宽度超了照样算折行():
     got = _by_name(qc._subtitle_checks(_items(long)))
     assert got["字幕不超宽"].ok
     assert not got["字幕每卡一行"].ok
+
+
+def test_小画幅标定不污染默认缓存(monkeypatch):
+    base = m.cjk_px()
+    assert 44 < base < 49
+    with monkeypatch.context() as mp:
+        mp.setattr(render, "W", 160)
+        mp.setattr(render, "H", 90)
+        mp.setattr(render, "FONT_SIZE", 12)
+        small_px = m.cjk_px()
+        assert 0 < small_px < base
+    assert m.cjk_px() == base

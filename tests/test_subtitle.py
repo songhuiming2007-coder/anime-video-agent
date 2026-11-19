@@ -65,6 +65,48 @@ class TestWrap:
             assert r.line_width(line) <= r.per_line() + 0.5
 
 
+class TestWrapAsciiWords:
+    """D171：wrap() 保护连续 ASCII 单词不从中间劈断，超长无空格串退回逐字符折断并守避头尾。"""
+
+    def test_D171_英文单词不从中间劈断(self):
+        s82 = "Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of Lovers》——"
+        assert r.wrap(s82, r.per_line()) == [
+            "Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of ",
+            "Lovers》——",
+        ]
+        s83 = "是4月11日与18日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。"
+        assert r.wrap(s83, r.per_line()) == [
+            "是4月11日与18日分别在东京品川基督教会和大阪举办的教会专场《",
+            "Premier Live in church》。",
+        ]
+
+    def test_所有格撇号整词不断开(self):
+        text = "前" * 26 + "《Her Mind's Voice》"
+        lines = r.wrap(text, r.per_line())
+        assert lines == ["前" * 26 + "《Her ", "Mind's Voice》"]
+
+    def test_超长无空格单串退回逐字符折断且不丢字(self):
+        long_tok = "A" * 80
+        lines = r.wrap(long_tok, r.per_line())
+        assert len(lines) == 2 and "".join(lines) == long_tok
+        assert all(r.line_width(ln) <= r.per_line() + 0.5 for ln in lines)
+
+        mixed = "前缀" + "A" * 80
+        lines_m = r.wrap(mixed, r.per_line())
+        assert len(lines_m) == 2 and "".join(lines_m) == mixed
+        assert all(r.line_width(ln) <= r.per_line() + 0.5 for ln in lines_m)
+
+        assert r.wrap("abcdefghijkl", 5) == ["abcdefghij", "kl"]
+
+    def test_英文词后紧跟避头尾标点仍守避头尾(self):
+        assert r.wrap("abcdefghij，哦", 5) == ["abcdefghij，", "哦"]
+        assert r.wrap("一二三，abcdefghij，哦", 5) == ["一二三，", "abcdefghij，", "哦"]
+
+    def test_单行放得下的英文句不误折(self):
+        short = "《Today Is a Beautiful Day》很短。"
+        assert r.wrap(short, r.per_line()) == [short]
+
+
 class TestSplitLong:
     def _sent(self, text, start=0.0, dur=10.0):
         return {"text": text, "start": start, "duration": dur}

@@ -1766,3 +1766,74 @@ class TestMusicGaps:
     def test_普通期不出这一项(self, tmp_path):
         f = script(tmp_path, [BODY])
         assert not [c for c in cs.run(f) if c.name.startswith(self.NAME)]
+
+
+class TestSubtitleSingleLineCheck:
+    """D171「字幕每卡一行」写稿前置检查：无断点超格长子句（含 02-subtitles.json 试跑与缺表降级）。"""
+
+    NAME = "字幕每卡一行"
+
+    def test_纯中文无断点超格长子句_FAIL(self, tmp_path):
+        long_cn = "他站在那座没有任何人愿意提起的旧校舍走廊尽头沉默了整整三十分钟直到天色暗透。"
+        f = script(tmp_path, [long_cn] + [BODY] * 7)
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok
+        assert "1-1" in chk.detail and long_cn in chk.detail
+
+    def test_无替换表时含拉丁超格长句_给警告不阻断(self, tmp_path):
+        lat = "Aimer 发行了第三张双主打单曲《Anata ni Deawanakereba / Yuki no Furu Machi》，后面接了一段短话。"
+        f = script(tmp_path, [lat] + [BODY] * 7)
+        chk = get(cs.run(f), self.NAME)
+        assert chk.ok and chk.detail.startswith("⚠")
+        assert "1-1" in chk.detail and "02-subtitles.json" in chk.detail
+
+    def test_配了替换表后缩回单行_PASS(self, tmp_path):
+        lat = "Aimer 发行了第三张双主打单曲《Anata ni Deawanakereba / Yuki no Furu Machi》，后面接了一段短话。"
+        (tmp_path / "02-subtitles.json").write_text(
+            json.dumps({
+                "第三": "第3",
+                "Anata ni Deawanakereba / Yuki no Furu Machi": "雪の降る街 / 冬の街",
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        f = script(tmp_path, [lat] + [BODY] * 7)
+        chk = get(cs.run(f), self.NAME)
+        assert chk.ok and not chk.detail.startswith("⚠") and "02-subtitles.json" in chk.detail
+
+    def test_配了替换表后仍超格_D171真实病例_FAIL(self, tmp_path):
+        vos = [
+            "二零一二年七月。Aimer 第四张双主打单曲 CD《Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus》正式发售。",
+            "同年五月。Aimer 在 Tower Records 涩谷店地下一层办起第一场《Tower of Lovers》——",
+            "紧接着。是四月十一日与十八日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。",
+        ] + [BODY] * 5
+        (tmp_path / "02-subtitles.json").write_text(
+            json.dumps({
+                "第四": "第4",
+                "第一": "第1",
+                "四月十一日与十八日": "4月11日与18日",
+                "Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus": "あなたに出会わなければ 〜夏雪冬花〜 / 星屑ビーナス",
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        f = script(tmp_path, vos)
+        chk = get(cs.run(f), self.NAME)
+        assert not chk.ok
+        for cid in ("1-2", "2-2", "3-2"):
+            assert cid in chk.detail
+        assert "夏雪冬花" in chk.detail and "Tower of Lovers" in chk.detail and "Premier Live in church" in chk.detail
+
+    def test_替换表缺失键或损坏时退回原文不崩溃(self, tmp_path):
+        # 1. 损坏 JSON：不崩溃，按原文检出纯中文超格卡
+        (tmp_path / "02-subtitles.json").write_text("{broken json", encoding="utf-8")
+        long_cn = "他站在那座没有任何人愿意提起的旧校舍走廊尽头沉默了整整三十分钟直到天色暗透。"
+        chk_bad = get(cs.run(script(tmp_path, [long_cn] + [BODY] * 7)), self.NAME)
+        assert not chk_bad.ok and "退回原文" in chk_bad.detail and "1-1" in chk_bad.detail
+
+        # 2. 替换键不命中（如草稿阶段）：不崩溃，退回原文对短句放行
+        (tmp_path / "02-subtitles.json").write_text(json.dumps({"不存在的键": "x"}), encoding="utf-8")
+        chk_miss = get(cs.run(script(tmp_path, [BODY] * 8)), self.NAME)
+        assert chk_miss.ok and "退回原文" in chk_miss.detail
+
+    def test_合规短句脚本_PASS(self, tmp_path):
+        chk = get(cs.run(script(tmp_path, [BODY] * 8)), self.NAME)
+        assert chk.ok and not chk.detail.startswith("⚠")

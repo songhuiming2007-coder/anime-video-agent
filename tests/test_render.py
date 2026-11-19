@@ -666,3 +666,114 @@ class TestSubtitleMap:
         shown = apply_subtitle_map(self._audio(), {"十一": "11"})
         text = build_ass(segments, shown, tmp_path / "vo.ass").read_text(encoding="utf-8")
         assert "第11首" in text and "第十一首" not in text
+
+
+class TestRenderSubtitleFailFast:
+    """D171：render.run() 入口在切片与 ffmpeg 编码前 fail-fast 拦截字幕版式违规。"""
+
+    def _setup_ep(self, tmp_path: Path, segs: list[tuple[int, list[str]]], sub_map: dict | None = None) -> Path:
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        man_segs, plan_segs = [], []
+        for idx, sent_texts in segs:
+            full = "".join(sent_texts)
+            dur = float(len(sent_texts) * 2)
+            sents = [{"text": t, "start": float(k * 2), "duration": 2.0} for k, t in enumerate(sent_texts)]
+            man_segs.append({"index": idx, "file": f"{idx:02d}.wav", "duration": dur, "text": full, "sentences": sents})
+            plan_segs.append({
+                "index": idx, "status": "ok", "duration": dur, "text": full,
+                "clips": [{"source": "/nonexistent.mkv", "start": 0.0, "dur": dur}],
+            })
+        (ep / "03-audio" / "manifest.json").write_text(
+            json.dumps({"segments": man_segs}, ensure_ascii=False), encoding="utf-8",
+        )
+        (ep / "04-clips.approved.json").write_text(
+            json.dumps({"segments": plan_segs}, ensure_ascii=False), encoding="utf-8",
+        )
+        if sub_map is not None:
+            (ep / "02-subtitles.json").write_text(json.dumps(sub_map, ensure_ascii=False), encoding="utf-8")
+        return ep
+
+    def _forbid_work(self, monkeypatch):
+        import tempfile as _tf
+
+        orig_mkdtemp = _tf.mkdtemp
+
+        def guarded_mkdtemp(*a, **kw):
+            if kw.get("prefix") == "render-":
+                pytest.fail("字幕违规必须在建 render 临时目录前拦截")
+            return orig_mkdtemp(*a, **kw)
+
+        monkeypatch.setattr(render, "cut", lambda *a, **kw: pytest.fail("字幕违规必须在 cut 之前拦截"))
+        monkeypatch.setattr(render, "ThreadPoolExecutor", lambda *a, **kw: pytest.fail("字幕违规必须在起切片线程池前拦截"))
+        monkeypatch.setattr(render.tempfile, "mkdtemp", guarded_mkdtemp)
+
+    def test_D171_真实超格卡在切片前fail_fast并列卡号(self, tmp_path: Path, monkeypatch):
+        from pipeline import subtitle_metrics as sm
+
+        self._forbid_work(monkeypatch)
+        monkeypatch.setattr(sm, "text_px", lambda s: render.line_width(s) * 46.5)
+
+        ep = self._setup_ep(
+            tmp_path,
+            [
+                (23, ["二零一二年七月。", "Aimer 第四张双主打单曲 CD《Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus》正式发售。"]),
+                (82, ["同年五月。", "Aimer 在 Tower Records 涩谷店地下一层办起第一场《Tower of Lovers》——"]),
+                (83, ["紧接着。", "是四月十一日与十八日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。"]),
+            ],
+            sub_map={
+                "第四": "第4",
+                "第一": "第1",
+                "四月十一日与十八日": "4月11日与18日",
+                "Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus": "あなたに出会わなければ 〜夏雪冬花〜 / 星屑ビーナス",
+            },
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            render.run(ep)
+        msg = str(exc_info.value)
+        assert "字幕每卡一行" in msg
+        for cid in ("23-2", "82-2", "83-2"):
+            assert cid in msg
+        assert "夏雪冬花" in msg
+        assert "Tower of Lovers" in msg
+        assert "Premier Live in church" in msg
+
+    def test_空字幕段在切片前fail_fast(self, tmp_path: Path, monkeypatch):
+        from pipeline import subtitle_metrics as sm
+
+        self._forbid_work(monkeypatch)
+        monkeypatch.setattr(sm, "text_px", lambda s: render.line_width(s) * 46.5)
+        ep = self._setup_ep(tmp_path, [(1, ["   "])])
+        with pytest.raises(SystemExit) as exc_info:
+            render.run(ep)
+        msg = str(exc_info.value)
+        assert "字幕无空段" in msg and "1" in msg
+
+    def test_单行像素超宽在切片前fail_fast(self, tmp_path: Path, monkeypatch):
+        from pipeline import subtitle_metrics as sm
+
+        self._forbid_work(monkeypatch)
+        # 中文标点在 libass 里实际占满格（约 46.5 px）：30 格约定宽度下真实像素达 1860 > 1680
+        monkeypatch.setattr(sm, "text_px", lambda s: len(s) * 46.5)
+        ep = self._setup_ep(tmp_path, [(4, ["一、" * 20])])
+        with pytest.raises(SystemExit) as exc_info:
+            render.run(ep)
+        msg = str(exc_info.value)
+        assert "字幕不超宽" in msg and "字幕每卡一行" in msg and "4-1" in msg and "px" in msg
+
+    @needs_ffmpeg
+    @pytest.mark.skipif(not shutil.which("fc-match"), reason="需要 fontconfig (fc-match)")
+    def test_D171_真实像素度量在切片前fail_fast(self, tmp_path: Path, monkeypatch):
+        self._forbid_work(monkeypatch)
+        ep = self._setup_ep(
+            tmp_path,
+            [
+                (1, ["一、" * 20]),
+                (82, ["同年五月。", "Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of Lovers》——"]),
+            ],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            render.run(ep)
+        msg = str(exc_info.value)
+        assert "字幕不超宽" in msg and "1-1" in msg
+        assert "字幕每卡一行" in msg and "82-2" in msg and "Tower of Lovers" in msg
