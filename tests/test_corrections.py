@@ -493,6 +493,20 @@ class TestOverlayLifecycleAndR3:
         eff_none = effective_injections(None, "5")
         assert eff_none == {}
 
+    def test_cfg_with_overlay段级注入不泄漏给其他段(self):
+        cfg = {"engine": "qwen3_tts", "model": "m", "ref_audio": "r", "pinyin_injections": {}}
+        overlay = {
+            "injections": {
+                "*": {"全局": "quan2ju2"},
+                "83": {"大阪": "da4ban3"},
+            }
+        }
+        cfg_ov = tts._cfg_with_overlay(cfg, overlay)
+        assert cfg_ov["pinyin_injections"] == {"全局": "quan2ju2"}
+        with tts._use_voice_cfg(cfg_ov):
+            assert tts.speakable("去大阪玩", "qwen3_tts", overlay=overlay, label="46") == "去大阪玩"
+            assert tts.speakable("去大阪玩", "qwen3_tts", overlay=overlay, label="83") == "去dàbǎn玩"
+
 
 # ===========================================================================
 # 5. 进度模型、原子写盘与 plan_apply 测试（Spec §3.5）

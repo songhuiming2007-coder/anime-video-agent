@@ -1940,10 +1940,12 @@ def _cfg_with_overlay(cfg: dict, overlay: dict) -> dict:
             **cfg,
             "segment_seeds": {**cfg.get("segment_seeds", {}), **overlay["segment_seeds"]},
         }
-    if overlay.get("injections"):
+    # 只把整期级("*")的期级注入并入全局 pinyin_injections；具体段号（如 "83"）必须交由
+    # speakable_traced(..., overlay=overlay, label=label) 按段分派，不能污染其他段。
+    global_ov_inj = (overlay.get("injections") or {}).get("*")
+    if global_ov_inj:
         all_inj = dict(cfg.get("pinyin_injections") or g2p.load_injections(cfg))
-        for k, v in overlay["injections"].items():
-            all_inj.update(v)
+        all_inj.update(global_ov_inj)
         cfg = {**cfg, "pinyin_injections": all_inj}
     return {**cfg, "overlay": overlay}
 
