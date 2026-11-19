@@ -5,6 +5,13 @@
 
 ---
 
+## 2026-11-19：实片验收归档（1 条）
+
+### [D171] 字幕折行（`字幕每卡一行`）无前置校验，每次都在高负载全片渲染完成后才被 `07 qc` 拦住，返工必重渲整片
+- 状态：**已解决·实片验收通过（2026-11-19，`d5bd320` + `0c54415`；`Aimer-传奇企划志/02-长夜盲行` 重渲并 `07 qc` 11/11 通过，用户抽看确认无误）**
+- 关联（原表）：`pipeline/check_script.py`（`_check_subtitle_layout`）、`pipeline/render.py`（`wrap`、`_split_by_brackets`、`_split_long`、`inspect_subtitles`、`verify_subtitles`、`run`）、`pipeline/qc.py::_subtitle_checks`、`pipeline/subtitle_metrics.py`；D146、D132（`06-render.md §2.5`）、`docs/runbook/07-qc.md`
+- 原记录（活跃表原文）：**病例（2026-11-19 `Aimer-传奇企划志/02-长夜盲行`）**：整片 `36.87 分钟` 1080p 渲染完后 `qc` 报 `10/11` 通过，仅 `FAIL 字幕每卡一行`（11 张卡折为 2 行：`15-2`/`22-2`/`23-2`/`24-1`/`31-4`/`34-2`/`36-2`/`58-2`/`81-2`/`82-2`/`83-2`；其中 `82-2` 劈断 `Tower of Lover / s`、`83-2` 劈断 `Pre / mier Live in church`；同次 `字幕不超宽` 最宽行 `1668 px ≤ 1680 px` 仍 PASS）。**2026-11-19 施工**：① 共享校验与 0 秒 fail-fast——`render.py` 新增 `inspect_subtitles`（与 `qc._subtitle_checks` 共用同一份空段/像素超宽/折行/超高判据）与 `verify_subtitles`，在 `render.run()` 建临时目录与切片前即拦截违规并列出卡号、实测格数/像素与原文；② 英文整词不拆行——`render.wrap()` 对 `[A-Za-z0-9']+` 连续词整词入行或整词换行，仅单词本身超过整行宽度时退回逐字符折断并保持 `_NO_LINE_START` 避头尾；③ 同步修 `subtitle_metrics.py` 按 `(FONT, FONT_SIZE)` 键缓存且放大标定画布，避免小画幅测试夹具截断 `cjk_px()` 污染缓存；④ 写稿前置校验——`check_script.py` 新增 `_check_subtitle_layout`；⑤ 书名号/引号外边界二次断卡（方案一）——`render.py::_split_by_brackets()` 在无逗号但含 `《「『》」』` 的超格句中自然断卡，不往屏幕硬加不自然逗号。**实片验收**：未改动 `02-长夜盲行` 原台词与 `02-subtitles.json`，直接以 `0c54415` 重渲全片（`2212.293s`，`933M`），`07 qc` **11/11 通过**（`370 张卡`，最宽行 `1668 px ≤ 1680 px`，`字幕每卡一行` 最多 `1 行`），用户抽看新片确认无误。
+
 ## 2026-10-25：集中清理·真实期已用过或已解决（2 条）
 
 ### [D70] 「从草稿新建」在 UI 里不可达：按钮只在预览目标恰为 `02-script.md` 时渲染，但该文件此时不存在、文件树/切换器不列它；唯一能自动跳转的 02.5 停机灰条，就绪条件又要求 `02-script.md` 已存在且已封板——双头互锁，人只能靠终端 `cp` 解围；该按钮在全部测试中零引用、从没被端到端走过
