@@ -460,22 +460,58 @@ def probe_duration(path: Path) -> float:
     return float(out)
 
 
-def expected_duration(text: str) -> float:
-    """估算一段话念多久。中文按 cpm（字/分钟）算，歌名按实测时长算。
+_LATIN_VOWEL_GROUPS = re.compile(r"[aeiouyAEIOUY]+")
 
-    **歌名不能按字数估算。** Qwen3-TTS 念英文/日文歌名比念中文快得多，
-    按 cpm 估算会高估 1.5-2 倍（エウテルペ 5 个假名按 cpm 估 2.9s，实测 1.68s），
-    导致实际/估算 < 0.5× 被时长门禁误杀（2026-08-15 段落 5.1 实测踩到）。
-    歌名实测时长在 `config/voice.json` 的 `titles` 值里（换引擎/换音色要重测；
-    没实测的按 cpm 估，`run()` 对出现在稿件里的这类歌名打 WARN）。
+
+def _latin_word_chars(word: str) -> float:
+    """估算单个未实测英文/罗马音词折合的汉字拍数，避免按字母数高估 2 倍。"""
+    # 全大写缩略词（EP/CD/HMV/OVA）通常逐字母念出
+    if word.isupper() and len(word) <= 5:
+        return len(word) * 1.2
+    groups = len(_LATIN_VOWEL_GROUPS.findall(word))
+    if len(word) > 3 and word.lower().endswith("e") and not word.lower().endswith(("ee", "ie", "le", "ue", "oe")):
+        groups = max(1, groups - 1)
+    return max(1, groups) * 1.1 + 0.4
+
+
+def expected_duration(text: str) -> float:
+    """估算一段话念多久。中文按 cpm 算，已实测歌名按实测秒数算，未实测拉丁词按音节估算。
+
+    **歌名与长罗马音/英文词不能按字母数估算。** Qwen3-TTS 念英文/日文歌名比念中文快得多，
+    按 cpm 逐字母估算会高估 1.5-2.2 倍（如 2026-08-15 段落 5.1 エウテルペ 实测 1.68s vs
+    估算 2.9s；2026-11-19 段落 33.2 叫「Nemurenai Yoru no Monogatari」实测 2.9s vs
+    按字母估算 6.5s），导致实际/估算 < 0.5× 被时长门禁误杀。
+    已实测歌名优先取 `config/voice.json` `titles` 的数值；其余未实测拉丁词按元音音节块与词边界
+    折算成等效字数再走 CPM。
     """
-    total = len(normalize(text))
-    for t, secs in _title_durs().items():
-        n = normalize(text).count(normalize(t))
+    measured_secs = 0.0
+    rem = _unify_numbers(text).translate(_FOLD)
+    drop_opt = _DROP.pattern[:-1] + "*" if _DROP.pattern.endswith("+") else ""
+    for t, secs in sorted(_title_durs().items(), key=lambda kv: len(normalize(kv[0])), reverse=True):
+        nt = normalize(t)
+        if not nt or nt not in normalize(rem):
+            continue
+        pat_str = drop_opt.join(re.escape(ch) for ch in nt)
+        if nt[0].isascii() and nt[0].isalnum():
+            pat_str = r"(?<![A-Za-z0-9])" + pat_str
+        if nt[-1].isascii() and nt[-1].isalnum():
+            pat_str = pat_str + r"(?![A-Za-z0-9])"
+        rem, n = re.subn(pat_str, " ", rem, flags=re.I)
         if n:
-            total -= len(normalize(t)) * n
-            total += secs * CPM / 60 * n
-    return total / CPM * 60
+            measured_secs += secs * n
+
+    latin_chars = 0.0
+
+    def _collect_latin(m: re.Match) -> str:
+        nonlocal latin_chars
+        latin_chars += _latin_word_chars(m.group(0))
+        return ""
+
+    # 先把斜杠/连字符拆成词边界，再剥离撇号（Mind's 保持单词）
+    rem_words = re.sub(r"[/\-~—]+", " ", rem)
+    rem_words = re.sub(r"['’]", "", rem_words)
+    no_latin = _LATIN.sub(_collect_latin, rem_words)
+    return measured_secs + (len(normalize(no_latin)) + latin_chars) / CPM * 60
 
 
 # ---------- 引擎 ----------

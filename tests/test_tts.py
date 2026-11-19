@@ -244,6 +244,22 @@ class TestExpectedDuration:
         from pipeline import paths as pl
         assert t.CPM == pl.conf("script.cpm", 380)
 
+    def test_未实测长罗马音不按字母逐字高估(self, tmp_path, monkeypatch):
+        p = tmp_path / "voice.json"
+        p.write_text('{"titles": {}}', encoding="utf-8")
+        monkeypatch.setattr(t, "CONFIG", p)
+        want = t.expected_duration("叫「Nemurenai Yoru no Monogatari」。")
+        # 2.9s 实测必须落在 DUR_BAND (0.5, 2.0) 内，不能像按 28 字母估成 6.5s 那样误杀
+        assert 0.5 <= 2.9 / want <= 2.0
+        assert want < 5.0
+
+    def test_已实测歌名最长匹配优先且不重复扣减(self, tmp_path, monkeypatch):
+        p = tmp_path / "voice.json"
+        p.write_text('{"titles": {"Re:pray": 1.76, "pray": 0.72}}', encoding="utf-8")
+        monkeypatch.setattr(t, "CONFIG", p)
+        want = 1.76 + 2 / t.CPM * 60
+        assert t.expected_duration("发行Re:pray") == pytest.approx(want)
+
 
 class TestSplitSentences:
     def test_按句末标点切且保留标点(self):
