@@ -8,6 +8,8 @@
 每条断言的期望值都是 2026-07-29 在实际实现上跑出来的。
 """
 
+import pytest
+
 from pipeline import render as r
 
 
@@ -188,6 +190,80 @@ class TestSplitLongDash:
         assert all(r.line_width(p["text"]) <= r.per_line() for p in out)
         # 第一片必须已经接近满行，不能在第一个逗号就收
         assert r.line_width(out[0]["text"]) > r.per_line() * 0.5
+
+
+class TestSplitLongBrackets:
+    """D171 方案一：句中无逗号但含书名号/引号导致超宽时，在括界外侧兜底断卡。"""
+
+    def _sent(self, text: str, duration: float = 6.0) -> dict:
+        return {"text": text, "start": 10.0, "duration": duration}
+
+    @pytest.mark.parametrize("card_id,text", [
+        ("15-2", "这张 CD 发售当晚接近0点，Aimer 把第8场线上直播《Live at anywhere》选在了六本木新城250米高的展望台。"),
+        ("22-2", "7月，半年前发行的第2张单曲 CD《Re:pray》的封面在巴黎国际摄影大赛 PX3 上，"),
+        ("23-2", "8月15日，Aimer 第4张双主打单曲 CD《あなたに出会わなければ 〜夏雪冬花〜 / 星屑ビーナス》正式发售。"),
+        ("24-1", "其中《あなたに出会わなければ 〜夏雪冬花〜》是动画《夏雪密会》的片尾曲，"),
+        ("31-4", "12月15日，乐坛前辈桑田佳祐在个人招牌广播节目《桑田佳祐のやさしい夜遊び》里，"),
+        ("34-2", "开头用八音盒般简短的《Twinkle Twinkle Little Star》序曲翻开第一页，"),
+        ("36-2", "在短暂的序曲之后，飞内将大作曲的《夜行列車 〜nothing to lose〜》真正拉开了全专的大幕。"),
+        ("58-2", "12月12日，Aimer 在独立时期的翻唱合辑《Your favorite things》的基础上加入新录曲目，"),
+        ("81-2", "3月23日，Aimer 先在涩谷的一家爵士俱乐部办了名为《Her Mind's Voice》的演出，"),
+        ("82-2", "紧接着4月7日，Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of Lovers》——后来连办多年的塔店招牌系列就从这天起步；"),
+        ("83-2", "最特别的一站，是4月11日与18日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。"),
+    ])
+    def test_D171_11张超格句式无逗号全部单行落卡(self, card_id: str, text: str):
+        dur = 8.0
+        out = r._split_long(self._sent(text, dur))
+        assert len(out) >= 2, f"{card_id} 应被拆分: {out}"
+        assert "".join(p["text"] for p in out) == text
+        for p in out:
+            assert len(r.wrap(p["text"], r.per_line())) == 1, f"{card_id} 仍折行: {p['text']!r}"
+        assert sum(p["duration"] for p in out) == pytest.approx(dur, abs=0.02)
+        starts = [p["start"] for p in out]
+        assert starts == sorted(starts) and starts[0] == 10.0
+
+    def test_两段可收尾时选最均衡断点_不把开头两字单独扯碎(self):
+        s24 = "其中《あなたに出会わなければ 〜夏雪冬花〜》是动画《夏雪密会》的片尾曲，"
+        assert [p["text"] for p in r._split_long(self._sent(s24))] == [
+            "其中《あなたに出会わなければ 〜夏雪冬花〜》",
+            "是动画《夏雪密会》的片尾曲，",
+        ]
+
+    def test_闭括后虚词与避头尾标点不拆散(self):
+        # 》的、》里、》—— 均应保住黏连，宁在《前拆分
+        s_de = "Aimer 在独立时期的翻唱合辑《Your favorite things》的基础上加入新录曲目，"
+        assert [p["text"] for p in r._split_long(self._sent(s_de))] == [
+            "Aimer 在独立时期的翻唱合辑",
+            "《Your favorite things》的基础上加入新录曲目，",
+        ]
+        s_dash = "Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of Lovers》——"
+        assert [p["text"] for p in r._split_long(self._sent(s_dash))] == [
+            "Aimer 在 Tower Records 涩谷店地下一层办起第1场",
+            "《Tower of Lovers》——",
+        ]
+
+    def test_嵌套引号与前导空格不在括间切出空片或孤括(self):
+        nested = "她在访谈里认真回忆「《当年那张完全没有加过逗号的特别长专辑正标题》」带给她的震撼与勇气"
+        out = r._split_long(self._sent(nested))
+        texts = [p["text"] for p in out]
+        assert "".join(texts) == nested
+        assert not any(t.endswith(("「", "《")) or t.startswith(("」", "》")) for t in texts)
+        assert texts == [
+            "她在访谈里认真回忆",
+            "「《当年那张完全没有加过逗号的特别长专辑正标题》」",
+            "带给她的震撼与勇气",
+        ]
+
+        spaced = "  《前面只有空白的长专辑名如果前面全空格绝不能切出纯空白卡片》后面还有半句话"
+        out_sp = r._split_long(self._sent(spaced))
+        assert all(p["text"].strip() for p in out_sp)
+        assert len(out_sp) == 2
+
+    def test_单个超长书名号无外边界时安全退回原句(self):
+        bare = "《这是一个超过三十一格完全没有内部标点的超长书名号内容用来测兜底》"
+        assert r.line_width(bare) > r.per_line()
+        sent = self._sent(bare)
+        assert r._split_long(sent) == [sent]
 
 
 class TestOutroStart:

@@ -708,6 +708,26 @@ class TestRenderSubtitleFailFast:
         monkeypatch.setattr(render, "ThreadPoolExecutor", lambda *a, **kw: pytest.fail("字幕违规必须在起切片线程池前拦截"))
         monkeypatch.setattr(render.tempfile, "mkdtemp", guarded_mkdtemp)
 
+    def test_D171_书名号长句_23_82_83_经二次断卡通过verify_subtitles(self, tmp_path: Path):
+        ep = self._setup_ep(
+            tmp_path,
+            [
+                (23, ["8月15日。", "Aimer 第4张双主打单曲 CD《Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus》正式发售。"]),
+                (82, ["紧接着4月7日。", "Aimer 在 Tower Records 涩谷店地下一层办起第一场《Tower of Lovers》——"]),
+                (83, ["最特别的一站。", "是四月十一日与十八日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。"]),
+            ],
+            sub_map={
+                "第一": "第1",
+                "四月十一日与十八日": "4月11日与18日",
+                "Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus": "あなたに出会わなければ 〜夏雪冬花〜 / 星屑ビーナス",
+            },
+        )
+        man = json.loads((ep / "03-audio" / "manifest.json").read_text(encoding="utf-8"))
+        plan = json.loads((ep / "04-clips.approved.json").read_text(encoding="utf-8"))
+        mapped = render.apply_subtitle_map(man["segments"], render.load_subtitle_map(ep))
+        rep = render.verify_subtitles(plan["segments"], mapped)
+        assert not rep.empty and not rep.too_wide and not rep.multi and not rep.too_tall
+
     def test_D171_真实超格卡在切片前fail_fast并列卡号(self, tmp_path: Path, monkeypatch):
         from pipeline import subtitle_metrics as sm
 
@@ -717,15 +737,13 @@ class TestRenderSubtitleFailFast:
         ep = self._setup_ep(
             tmp_path,
             [
-                (23, ["二零一二年七月。", "Aimer 第四张双主打单曲 CD《Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus》正式发售。"]),
-                (82, ["同年五月。", "Aimer 在 Tower Records 涩谷店地下一层办起第一场《Tower of Lovers》——"]),
-                (83, ["紧接着。", "是四月十一日与十八日分别在东京品川基督教会和大阪举办的教会专场《Premier Live in church》。"]),
+                (23, ["二零一二年。", "东京台场的 Joypolis 馆里架起了初音未来演唱会同款的 Dilad 透射屏。"]),
+                (82, ["同年五月。", "之前提到过的乐评频道 Music Synopsis 对这首歌的赞美几乎没有留余地。"]),
+                (83, ["紧接着。", "在 supercell 做了第三年主唱之后单飞的 Koeda 迎来了个人第一张迷你专辑。"]),
             ],
             sub_map={
-                "第四": "第4",
+                "第三": "第3",
                 "第一": "第1",
-                "四月十一日与十八日": "4月11日与18日",
-                "Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus": "あなたに出会わなければ 〜夏雪冬花〜 / 星屑ビーナス",
             },
         )
         with pytest.raises(SystemExit) as exc_info:
@@ -734,9 +752,9 @@ class TestRenderSubtitleFailFast:
         assert "字幕每卡一行" in msg
         for cid in ("23-2", "82-2", "83-2"):
             assert cid in msg
-        assert "夏雪冬花" in msg
-        assert "Tower of Lovers" in msg
-        assert "Premier Live in church" in msg
+        assert "Dilad" in msg
+        assert "Music Synopsis" in msg
+        assert "第3年主唱" in msg
 
     def test_空字幕段在切片前fail_fast(self, tmp_path: Path, monkeypatch):
         from pipeline import subtitle_metrics as sm
@@ -769,11 +787,11 @@ class TestRenderSubtitleFailFast:
             tmp_path,
             [
                 (1, ["一、" * 20]),
-                (82, ["同年五月。", "Aimer 在 Tower Records 涩谷店地下一层办起第1场《Tower of Lovers》——"]),
+                (82, ["同年五月。", "之前提到过的乐评频道 Music Synopsis 对这首歌的赞美几乎没有留余地。"]),
             ],
         )
         with pytest.raises(SystemExit) as exc_info:
             render.run(ep)
         msg = str(exc_info.value)
         assert "字幕不超宽" in msg and "1-1" in msg
-        assert "字幕每卡一行" in msg and "82-2" in msg and "Tower of Lovers" in msg
+        assert "字幕每卡一行" in msg and "82-2" in msg and "Music Synopsis" in msg

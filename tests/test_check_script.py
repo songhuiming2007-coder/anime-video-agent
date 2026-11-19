@@ -1781,18 +1781,18 @@ class TestSubtitleSingleLineCheck:
         assert "1-1" in chk.detail and long_cn in chk.detail
 
     def test_无替换表时含拉丁超格长句_给警告不阻断(self, tmp_path):
-        lat = "Aimer 发行了第三张双主打单曲《Anata ni Deawanakereba / Yuki no Furu Machi》，后面接了一段短话。"
+        lat = "她唱过 Anata ni Deawanakereba ~Kasetsutouka~ 与 Yuki no Furu Machi，后面是短话。"
         f = script(tmp_path, [lat] + [BODY] * 7)
         chk = get(cs.run(f), self.NAME)
         assert chk.ok and chk.detail.startswith("⚠")
         assert "1-1" in chk.detail and "02-subtitles.json" in chk.detail
 
     def test_配了替换表后缩回单行_PASS(self, tmp_path):
-        lat = "Aimer 发行了第三张双主打单曲《Anata ni Deawanakereba / Yuki no Furu Machi》，后面接了一段短话。"
+        lat = "她唱过 Anata ni Deawanakereba ~Kasetsutouka~ 与 Yuki no Furu Machi，后面是短话。"
         (tmp_path / "02-subtitles.json").write_text(
             json.dumps({
-                "第三": "第3",
-                "Anata ni Deawanakereba / Yuki no Furu Machi": "雪の降る街 / 冬の街",
+                "Anata ni Deawanakereba ~Kasetsutouka~": "あなたに出会わなければ",
+                "Yuki no Furu Machi": "雪の降る街",
             }, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -1800,7 +1800,7 @@ class TestSubtitleSingleLineCheck:
         chk = get(cs.run(f), self.NAME)
         assert chk.ok and not chk.detail.startswith("⚠") and "02-subtitles.json" in chk.detail
 
-    def test_配了替换表后仍超格_D171真实病例_FAIL(self, tmp_path):
+    def test_带书名号超格长句自动二次断卡_PASS(self, tmp_path):
         vos = [
             "二零一二年七月。Aimer 第四张双主打单曲 CD《Anata ni Deawanakereba ~Kasetsutouka~ / Hoshikuzu Venus》正式发售。",
             "同年五月。Aimer 在 Tower Records 涩谷店地下一层办起第一场《Tower of Lovers》——",
@@ -1817,10 +1817,27 @@ class TestSubtitleSingleLineCheck:
         )
         f = script(tmp_path, vos)
         chk = get(cs.run(f), self.NAME)
+        assert chk.ok and not chk.detail.startswith("⚠") and "02-subtitles.json" in chk.detail
+
+    def test_配了替换表后无书名号仍超格_FAIL(self, tmp_path):
+        vos = [
+            "二零一二年。东京台场的 Joypolis 馆里架起了初音未来演唱会同款的 Dilad 透射屏。",
+            "同年五月。之前提到过的乐评频道 Music Synopsis 对这首歌的赞美几乎没有留余地。",
+            "紧接着。在 supercell 做了第三年主唱之后单飞的 Koeda 迎来了个人第一张迷你专辑。",
+        ] + [BODY] * 5
+        (tmp_path / "02-subtitles.json").write_text(
+            json.dumps({
+                "第三": "第3",
+                "第一": "第1",
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        f = script(tmp_path, vos)
+        chk = get(cs.run(f), self.NAME)
         assert not chk.ok
         for cid in ("1-2", "2-2", "3-2"):
             assert cid in chk.detail
-        assert "夏雪冬花" in chk.detail and "Tower of Lovers" in chk.detail and "Premier Live in church" in chk.detail
+        assert "Dilad" in chk.detail and "Music Synopsis" in chk.detail and "第3年主唱" in chk.detail
 
     def test_替换表缺失键或损坏时退回原文不崩溃(self, tmp_path):
         # 1. 损坏 JSON：不崩溃，按原文检出纯中文超格卡

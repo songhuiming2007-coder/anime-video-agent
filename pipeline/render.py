@@ -442,6 +442,57 @@ _SUB_BREAK = "，、；：？！"
 _DASH = "——"
 
 
+_OPEN_BRACKET_BREAK = "《「『"
+_CLOSE_BRACKET_BREAK = "》」』"
+_ATTACH_AFTER_CLOSE = "的里上中之与和"
+
+
+def _split_by_brackets(piece: str, limit: float) -> list[str]:
+    """片段仍超单行上限时，兜底在书名号/引号外边界断卡，避免因缺逗号折成两行。"""
+    if line_width(piece) <= limit:
+        return [piece]
+
+    # 只允许在边界外侧切：开括前（前面须有实质内容且非连续左括），闭括后（后面须有实质内容且非避行首标点或黏连虚词）
+    bbreaks = [
+        b for b in range(1, len(piece))
+        if (
+            piece[b] in _OPEN_BRACKET_BREAK
+            and piece[:b].strip()
+            and piece[b - 1] not in _OPENING
+        ) or (
+            piece[b - 1] in _CLOSE_BRACKET_BREAK
+            and piece[b:].strip()
+            and piece[b] not in _NO_LINE_START
+            and piece[b] not in _ATTACH_AFTER_CLOSE
+        )
+    ]
+    if not bbreaks:
+        return [piece]
+
+    out, start = [], 0
+    while start < len(piece):
+        if line_width(piece[start:]) <= limit:
+            out.append(piece[start:])
+            break
+        fits = [b for b in bbreaks if b > start and line_width(piece[start:b]) <= limit]
+        if fits:
+            # 剩余一段就能两卡收尾时选两侧长度最均衡的断点，避免首片只剩一两个字或尾片失衡
+            two_way = [b for b in fits if line_width(piece[b:]) <= limit]
+            if two_way:
+                b = min(two_way, key=lambda x: abs(line_width(piece[start:x]) - line_width(piece[x:])))
+            else:
+                b = fits[-1]
+        else:
+            nxt = [b for b in bbreaks if b > start]
+            if not nxt:
+                out.append(piece[start:])
+                break
+            b = nxt[0]
+        out.append(piece[start:b])
+        start = b
+    return out
+
+
 def _split_long(sent: dict) -> list[dict]:
     """单句一行放不下时，在逗号处再切，时长按字数比例分。
 
@@ -452,44 +503,48 @@ def _split_long(sent: dict) -> list[dict]:
     按字数比例分时长是近似，但同一句内语速本来就基本恒定，误差在几十毫秒量级。
     """
     text = sent["text"]
-    if line_width(text) <= per_line():
+    limit = per_line()
+    if line_width(text) <= limit:
         return [sent]
 
     # 断点候选：标点之后，或破折号**成对**之后。
     # 中文破折号是两个字符，断在第一个后面会在行尾留下孤零零一个「—」。
     breaks = [i + 1 for i, ch in enumerate(text)
               if ch in _SUB_BREAK or text[max(0, i - 1):i + 1] == _DASH]
-    if not breaks:                     # 整句没有可断点，只能让它折行
-        return [sent]
+    if not breaks:
+        pieces = [text]
+    else:
+        # **贪心断行：在放得下的断点里取最远的。**
+        #
+        # 原先的写法是「攒够半行且遇到标点就断」，那个 0.5 的系数是个魔法数，
+        # 而且它的失败方式是错的：断点不达标就整句放弃、折成两行——
+        # **而折行比稍短的卡更糟**，正是这个检查项要防的东西。
+        # 2026-07-30 踩的：「跟这种人相处最省心的就在这儿——你永远不用猜…」
+        # 破折号处正好 15.0 格，半行门槛 15.25，差 0.25 格，于是折了两行。
+        #
+        # 换成贪心之后没有可调参数：能放下就继续往后，放不下就在上一个断点收。
+        pieces, start = [], 0
+        while start < len(text):
+            fits = [b for b in breaks
+                    if b > start and line_width(text[start:b]) <= limit]
+            if fits:
+                start, piece = fits[-1], text[start:fits[-1]]
+            else:
+                # 一个断点都放不下（两个标点之间就超宽），取最近的那个：
+                # 宁可这一片超宽，也别把整句退回去折行
+                nxt = [b for b in breaks if b > start]
+                if not nxt:
+                    break
+                start, piece = nxt[0], text[start:nxt[0]]
+            pieces.append(piece)
+        if start < len(text):              # 末尾没有标点收尾时的残余
+            pieces.append(text[start:])
 
-    # **贪心断行：在放得下的断点里取最远的。**
-    #
-    # 原先的写法是「攒够半行且遇到标点就断」，那个 0.5 的系数是个魔法数，
-    # 而且它的失败方式是错的：断点不达标就整句放弃、折成两行——
-    # **而折行比稍短的卡更糟**，正是这个检查项要防的东西。
-    # 2026-07-30 踩的：「跟这种人相处最省心的就在这儿——你永远不用猜…」
-    # 破折号处正好 15.0 格，半行门槛 15.25，差 0.25 格，于是折了两行。
-    #
-    # 换成贪心之后没有可调参数：能放下就继续往后，放不下就在上一个断点收。
-    pieces, start = [], 0
-    while start < len(text):
-        fits = [b for b in breaks
-                if b > start and line_width(text[start:b]) <= per_line()]
-        if fits:
-            start, piece = fits[-1], text[start:fits[-1]]
-        else:
-            # 一个断点都放不下（两个标点之间就超宽），取最近的那个：
-            # 宁可这一片超宽，也别把整句退回去折行
-            nxt = [b for b in breaks if b > start]
-            if not nxt:
-                break
-            start, piece = nxt[0], text[start:nxt[0]]
-        pieces.append(piece)
-    if start < len(text):              # 末尾没有标点收尾时的残余
-        pieces.append(text[start:])
+    # 对仍超单行上限的片段（句内缺少逗号但含书名号/引号），再按括界兜底拆分
+    pieces = [sub for p in pieces for sub in _split_by_brackets(p, limit)]
 
-    if len(pieces) > 1 and line_width(pieces[-1]) < per_line() * 0.25 \
-            and line_width(pieces[-2] + pieces[-1]) <= per_line():
+    if len(pieces) > 1 and line_width(pieces[-1]) < limit * 0.25 \
+            and line_width(pieces[-2] + pieces[-1]) <= limit:
         pieces[-2:] = [pieces[-2] + pieces[-1]]   # 尾巴太短就并回上一片
     if len(pieces) <= 1:
         return [sent]
