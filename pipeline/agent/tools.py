@@ -902,7 +902,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "读取与当前任务相关的文本及结构化数据文件（只读）：涵盖当期/当卷、所属企划总纲与全部兄弟卷、"
             "其他期目录（area=episodes）、data/library/ 笔记与资料，以及仓库文档/技能/非凭据配置（area=repo）；"
             "支持 facts.jsonl。硬排除 03-audio/、04-patch/、记忆文件（memory.md / 00-memory.md 及日志由系统自动校验注入，未注入即当前为空，严禁用本工具直读）、"
-            "会话/事件/审批日志与 *.local.* 凭据；对当期状态卡标为 ✗ 的产物（如当期尚未生成的 01-hero-shots.md / 02-script.draft.md）不要盲猜试读。"
+            "会话/事件/审批日志与 *.local.* 凭据（skills/ 下的 *.local.md 本机写稿与声音指南例外）；对当期状态卡标为 ✗ 的产物（如当期尚未生成的 01-hero-shots.md / 02-script.draft.md）不要盲猜试读。"
         ),
         "parameters": {
             "type": "object",
@@ -1587,14 +1587,41 @@ def _is_memory_file(target: Path, ctx: ToolContext) -> bool:
     }
 
 
-def _is_denied_read_file(path: Path) -> str | None:
+def _is_allowed_local_skill_md(path: Path, *, skills_roots: tuple[Path, ...] = ()) -> bool:
+    """仅放行 `<repo>/skills/` 下的本机技能/声音扩展文档（`*.local.md`）。
+
+    凭据/环境配置（`config/*.local.*`、`*.local.json`、`.env*`、其他目录的 `*.local.*`）
+    一律继续拦截；软链逃出 `skills/` 时 resolve 后不在 `skills_roots` 下同样拒读。
+    """
+    folded_name = path.name.casefold()
+    if not folded_name.endswith(".local.md") or len(folded_name) <= len(".local.md"):
+        return False
+    if path.is_absolute():
+        return any(root in path.parents for root in skills_roots)
+    return len(path.parts) >= 2 and path.parts[0].casefold() == "skills"
+
+
+def _is_denied_read_file(
+    path: Path,
+    *,
+    skills_roots: tuple[Path, ...] = (),
+    allow_rel_skill_local: bool = False,
+) -> str | None:
     """不可读的会话/事件/审计日志与本地凭据文件（大小写不敏感）。"""
     name = path.name.casefold()
     folded = path.as_posix().casefold()
     if name in READ_DENY_BASENAMES or name.endswith(".log.jsonl"):
         return f"会话/事件/审计日志不可直读: {path.name}"
-    if ".local." in name or name == ".env" or name.startswith(".env."):
+    if name == ".env" or name.startswith(".env."):
         return f"本地凭据/环境文件不可读: {path.name}"
+    if ".local." in name:
+        allowed = (
+            _is_allowed_local_skill_md(path, skills_roots=skills_roots)
+            if path.is_absolute()
+            else (allow_rel_skill_local and _is_allowed_local_skill_md(path))
+        )
+        if not allowed:
+            return f"本地凭据/环境文件不可读: {path.name}"
     for pattern in RESTRICTED_EGRESS_PATTERNS:
         if pattern.casefold() in folded:
             return f"受限凭据文件不可读: {pattern}"
@@ -1686,7 +1713,11 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
         raise PermissionError(
             f"只读文本/数据类文件 {sorted(READ_ALLOWED_SUFFIXES)}，拒读: {raw}"
         )
-    denied_reason = _is_denied_read_file(rel)
+    raw_skills = ctx.base / "skills"
+    resolved_skills = raw_skills.resolve()
+    skills_roots = (raw_skills, resolved_skills)
+    allow_rel_skill_local = area in (None, "repo")
+    denied_reason = _is_denied_read_file(rel, allow_rel_skill_local=allow_rel_skill_local)
     if denied_reason:
         raise PermissionError(f"{denied_reason}（拒读: {raw}）")
 
@@ -1704,9 +1735,15 @@ def _tool_read_artifact(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
             raise PermissionError(
                 "memory.md 只经装配器校验后注入，模型不可直读；人请用 /memory"
             )
-        denied_reason = _is_denied_read_file(target) or _is_denied_read_file(cand)
-        if denied_reason:
-            raise PermissionError(f"{denied_reason}（拒读: {raw}）")
+        if target.exists() or cand.is_symlink():
+            # `target` 严格对照 `resolved_skills`（防止 `skills/*.local.md` 软链逃逸到仓库/config）；
+            # 不存在的探测候选跳过，让 `area=None` 顺位落到真正的 `<repo>/skills/` 根
+            denied_reason = (
+                _is_denied_read_file(target, skills_roots=(resolved_skills,))
+                or _is_denied_read_file(cand, skills_roots=skills_roots)
+            )
+            if denied_reason:
+                raise PermissionError(f"{denied_reason}（拒读: {raw}）")
         if not any(target == r or r in target.parents for r in cand_roots):
             continue
         if target.is_file():

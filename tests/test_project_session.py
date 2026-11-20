@@ -170,6 +170,46 @@ class TestReadDomain:
         ):
             assert read(ctx, bad_path, area)["ok"] is False, (bad_path, area)
 
+    def test_skills下local_md放行_其他local与软链逃逸仍拒(self, world) -> None:
+        root, P, _Q, _E = world
+        skill_dir = root / "skills" / "write-script"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.local.md").write_text("# 私有写稿约定\n", encoding="utf-8")
+        (skill_dir / "VOICE.local.md").write_text("# 个人声音锚点\n", encoding="utf-8")
+        (skill_dir / "secret.local.json").write_text('{"token": "nope"}\n', encoding="utf-8")
+        (skill_dir / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
+        (root / "CLAUDE.local.md").write_text("仓库根本地配置\n", encoding="utf-8")
+        (root / "config" / "auth.local.json").write_text('{"api_key": "SECRET"}\n', encoding="utf-8")
+        (root / "docs").mkdir(parents=True, exist_ok=True)
+        (root / "docs" / "note.local.md").write_text("非 skills 的 local md\n", encoding="utf-8")
+        (skill_dir / "escape_json.local.md").symlink_to(Path("..") / ".." / "config" / "auth.local.json")
+        (skill_dir / "escape_md.local.md").symlink_to(Path("..") / ".." / "CLAUDE.local.md")
+        ep_skills = P / "01-a" / "skills"
+        ep_skills.mkdir(parents=True, exist_ok=True)
+        (ep_skills / "fake.local.md").write_text("期内同名 skills 伪造\n", encoding="utf-8")
+
+        ctx = vol_ctx(root, P)
+        for rel in ("skills/write-script/SKILL.local.md", "skills/write-script/VOICE.local.md"):
+            for area in (None, "repo"):
+                out = read(ctx, rel, area)
+                assert out["ok"] is True, (rel, area, out)
+        assert "私有写稿约定" in read(ctx, "skills/write-script/SKILL.local.md", "repo")["result"]["text"]
+        assert "个人声音锚点" in read(ctx, "skills/write-script/VOICE.local.md", None)["result"]["text"]
+
+        for bad_path, area in (
+            ("skills/write-script/secret.local.json", "repo"),
+            ("skills/write-script/.env.local", "repo"),
+            ("CLAUDE.local.md", "repo"),
+            ("config/auth.local.json", "repo"),
+            ("docs/note.local.md", "repo"),
+            ("skills/write-script/escape_json.local.md", "repo"),
+            ("skills/write-script/escape_md.local.md", "repo"),
+            ("skills/fake.local.md", "episode"),
+            ("skills/fake.local.md", None),
+        ):
+            out = read(ctx, bad_path, area)
+            assert out["ok"] is False, (bad_path, area, out)
+
     def test_企划会话读整个企划(self, world, tmp_path: Path) -> None:
         root, P, Q, _E = world
         outside = _ep(tmp_path / "elsewhere" / "linked", "## 段落 1\n配音：软链卷的句子。\n")
