@@ -87,16 +87,9 @@
     "true_peak_max": -1.0
   },
   "script": {
-    "_note": "口播稿机检阈值。cpm 随音色和文风变，换音色应重测；min_chars/max_chars 可被 01-topic.md 的 `时长目标` 字段覆盖。",
+    "_note": "口播稿参数。cpm 随音色和文风变，换音色应重测；min_anchors 为剧情锚点下限；para_gap 为段间停顿秒数。",
     "cpm": 257,
-    "min_chars": 870,
-    "max_chars": 1300,
-    "max_sentence": 90,
-    "max_breath": 30,
-    "min_burstiness": 0.55,
-    "min_long_sentences": 2,
     "min_anchors": 3,
-    "shrink_factor": 0.8,
     "_cpm_note": "当前基准语速（字/分）。换引擎/换音色后经 `calibration set script.cpm` 回写并追加实测依据。",
     "para_gap": 0.4
   },
