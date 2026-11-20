@@ -1239,7 +1239,7 @@ export class HostService {
     const r = await this.core("NEW_PROJECT", { name });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建企划超时，请手动确认企划目录", tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", `建企划失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `建企划失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     this.refreshEpisodes();
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
     void this.refreshEpisodeStatuses();
@@ -1253,7 +1253,7 @@ export class HostService {
     const r = await this.core("NEW_VOLUME", { project, name });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建卷超时，请手动确认卷目录", tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", `建卷失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `建卷失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     this.refreshEpisodes();
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
     void this.refreshEpisodeStatuses();
@@ -1286,7 +1286,7 @@ export class HostService {
     const r = await this.core("NEW_EPISODE", ideaSid !== null ? { name, ideaSid } : { name });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     this.refreshEpisodes();
     this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
     const marker = parseFromIdeaMarker(r.stdoutTail);

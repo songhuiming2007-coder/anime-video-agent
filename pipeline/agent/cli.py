@@ -494,6 +494,8 @@ def create_new_episode(ep_name: str, project: str | None = None) -> int:
 
     D81：`project` 给定时在该企划下建卷（`ava new --project <企划> <卷名>`）——企划必须已存在且
     `classify_dir` 判为企划（对普通期拒：否则会把一个期悄悄变成「自己也有 01-topic.md 的企划」，红队 R-13）。
+    若企划下同名普通目录已预先存在（如先出封面产物而尚未建 `01-topic.md`），则在确认目录名精确一致且
+    不含 `01-topic.md` / `00-project.md` 后保留原有文件并补写 `01-topic.md`（已含 `01-topic.md` 则仍退 1 拒建）。
     """
     data = paths.ROOT / "data"
     try:
@@ -523,16 +525,37 @@ def create_new_episode(ep_name: str, project: str | None = None) -> int:
             return 2
 
     target_dir = parent / ep_name
-    if target_dir.exists():
-        print(f"[ERROR] 期目录已存在：{target_dir}，拒绝覆盖！", file=sys.stderr)
-        return 1
-
-    target_dir.mkdir(parents=False, exist_ok=False)
-    if target_dir.resolve().parent != parent.resolve():
-        # 纵深防御：名字规则已挡住分隔符与符号链接，正常不可达
-        target_dir.rmdir()
-        print(f"[ERROR] 期目录会落在 {parent} 之外，已删除：{target_dir}", file=sys.stderr)
-        return 2
+    adopted = False
+    if target_dir.exists() or target_dir.is_symlink():
+        if project is None:
+            print(f"[ERROR] 期目录已存在：{target_dir}，拒绝覆盖！", file=sys.stderr)
+            return 1
+        if target_dir.is_symlink() or not target_dir.is_dir():
+            print(f"[ERROR] 同名路径已存在且不是普通目录：{target_dir}，拒绝覆盖！", file=sys.stderr)
+            return 1
+        actual_names = {p.name for p in parent.iterdir()}
+        if ep_name not in actual_names:
+            print(f"[ERROR] 卷目录已存在但目录名大小写不一致：{target_dir}，拒绝覆盖！", file=sys.stderr)
+            return 1
+        if target_dir.resolve().parent != parent.resolve():
+            print(f"[ERROR] 期目录会落在 {parent} 之外，拒绝写入：{target_dir}", file=sys.stderr)
+            return 2
+        topic_path = target_dir / project_mod.TOPIC_FILE
+        if topic_path.exists() or topic_path.is_symlink():
+            print(f"[ERROR] 卷已存在：{target_dir}，拒绝覆盖！", file=sys.stderr)
+            return 1
+        project_path = target_dir / project_mod.PROJECT_FILE
+        if project_path.exists() or project_path.is_symlink():
+            print(f"[ERROR] 目录含 {project_mod.PROJECT_FILE}，拒绝作为卷覆盖：{target_dir}", file=sys.stderr)
+            return 1
+        adopted = True
+    else:
+        target_dir.mkdir(parents=False, exist_ok=False)
+        if target_dir.resolve().parent != parent.resolve():
+            # 纵深防御：名字规则已挡住分隔符与符号链接，正常不可达
+            target_dir.rmdir()
+            print(f"[ERROR] 期目录会落在 {parent} 之外，已删除：{target_dir}", file=sys.stderr)
+            return 2
 
     topic_content = (
         f"# {ep_name} 选题配置\n\n"
@@ -542,9 +565,12 @@ def create_new_episode(ep_name: str, project: str | None = None) -> int:
         "张力：\n"
         "锚点：\n"
     )
-    topic_file = target_dir / "01-topic.md"
+    topic_file = target_dir / project_mod.TOPIC_FILE
     paths.atomic_write(topic_file, topic_content)
-    print(f"[OK] 已立项新期：{target_dir}")
+    if adopted:
+        print(f"[OK] 已在既有目录补立项新卷：{target_dir}（保留已有文件）")
+    else:
+        print(f"[OK] 已立项新期：{target_dir}")
     print(f"     已生成初始选题模板：{topic_file}")
     return 0
 

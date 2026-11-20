@@ -497,7 +497,7 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
     }
   });
 
-  it("core 退 2 → E_CORE 且附 stderr 尾部；失败时 host 自身零写入", async () => {
+  it("core 退 2 → E_CORE 且 message 与 stderrTail 均透传 stderr 原文；失败时 host 自身零写入", async () => {
     const r = makeFixtureRepo();
     try {
       const fakeRun = (async () => ({
@@ -509,8 +509,18 @@ describe("TH-14 建期（episode.create；Spec 10 S8-R2 / §2.5）", () => {
       const err = await svc.dispatch("episode.create", { name: "../x" }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(RpcFail);
       expect((err as RpcFail).code).toBe("E_CORE");
+      expect((err as RpcFail).message).toContain("[ERROR] 期名不合规：不许为空或首尾带空白");
       expect((err as RpcFail).tails.stderrTail).toContain("期名不合规");
       expect(treeManifest(join(r, "data"))).toEqual(before);
+
+      const silentRun = (async () => ({
+        code: 1, signal: null, stdoutTail: "", stderrTail: "  \n",
+        timedOut: false, stdoutFull: null, stdoutOverflow: false,
+      })) as unknown as HostDeps["runCore"];
+      const { svc: silentSvc } = await startService({ runCore: silentRun }, r);
+      const silentErr = await silentSvc.dispatch("episode.create", { name: "x" }).catch((e: unknown) => e);
+      expect((silentErr as RpcFail).code).toBe("E_CORE");
+      expect((silentErr as RpcFail).message).toBe("建期失败（core 退出码 1）");
     } finally {
       cleanup(r);
     }
@@ -592,6 +602,58 @@ describe("D81 PR-2b 建企划 / 在企划下建卷 / 卷表（project.create、e
       const g = await startService({ runCore: garbage }, r);
       await g.svc.refreshEpisodeStatuses();
       expect(((await g.svc.dispatch("episodes.list", {})) as L).projects.map((x) => x.meta)).toEqual([null, null]);
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("episode.create{project} 对既有封面目录（无 01-topic.md）补立项成功、保留原有文件并出现在企划成员中", async () => {
+    const r = makeFixtureRepo();
+    try {
+      mkdirSync(join(r, "data/episodes/P/03-破晓淬火/07-cover"), { recursive: true });
+      writeFileSync(join(r, "data/episodes/P/00-project.md"), TABLE);
+      writeFileSync(join(r, "data/episodes/P/03-破晓淬火/07-cover/make_cover.py"), "# keep\n");
+      writeFileSync(join(r, "data/episodes/P/03-破晓淬火/08-cover.jpg"), "JPG");
+      const { svc } = await startService({}, r);
+      const res = (await svc.dispatch("episode.create", { name: "03-破晓淬火", project: "P" })) as { epKey: string; migrated: boolean };
+      expect([res.epKey, res.migrated]).toEqual(["P/03-破晓淬火", false]);
+      expect(readFileSync(join(r, "data/episodes/P/03-破晓淬火/07-cover/make_cover.py"), "utf-8")).toBe("# keep\n");
+      expect(readFileSync(join(r, "data/episodes/P/03-破晓淬火/08-cover.jpg"), "utf-8")).toBe("JPG");
+      expect(readFileSync(join(r, "data/episodes/P/03-破晓淬火/01-topic.md"), "utf-8")).toContain("# 03-破晓淬火 选题配置");
+      const l = (await svc.dispatch("episodes.list", {})) as L;
+      expect(l.projects.find((x) => x.projKey === "P")!.members.map((m) => m.epKey)).toEqual(["P/03-破晓淬火"]);
+    } finally {
+      cleanup(r);
+    }
+  });
+
+  it("project.create 与 episode.create{project} 失败时透传 stderr 原文，stderr 为空才回退兜底文案", async () => {
+    const r = makeFixtureRepo();
+    try {
+      mkdirSync(join(r, "data/episodes/P"), { recursive: true });
+      writeFileSync(join(r, "data/episodes/P/00-project.md"), TABLE);
+
+      const withErr = (async () => ({
+        code: 1, signal: null, stdoutTail: "", stderrTail: "[ERROR] 卷已存在：/x，拒绝覆盖！\n",
+        timedOut: false, stdoutFull: null, stdoutOverflow: false,
+      })) as unknown as HostDeps["runCore"];
+      const { svc: s1 } = await startService({ runCore: withErr }, r);
+      const eProj = await s1.dispatch("project.create", { name: "P" }).catch((e: unknown) => e);
+      expect((eProj as RpcFail).code).toBe("E_CORE");
+      expect((eProj as RpcFail).message).toBe("[ERROR] 卷已存在：/x，拒绝覆盖！");
+      const eVol = await s1.dispatch("episode.create", { name: "01-a", project: "P" }).catch((e: unknown) => e);
+      expect((eVol as RpcFail).code).toBe("E_CORE");
+      expect((eVol as RpcFail).message).toBe("[ERROR] 卷已存在：/x，拒绝覆盖！");
+
+      const emptyErr = (async () => ({
+        code: 1, signal: null, stdoutTail: "", stderrTail: "",
+        timedOut: false, stdoutFull: null, stdoutOverflow: false,
+      })) as unknown as HostDeps["runCore"];
+      const { svc: s2 } = await startService({ runCore: emptyErr }, r);
+      const eProjFallback = await s2.dispatch("project.create", { name: "P" }).catch((e: unknown) => e);
+      expect((eProjFallback as RpcFail).message).toBe("建企划失败（core 退出码 1）");
+      const eVolFallback = await s2.dispatch("episode.create", { name: "01-a", project: "P" }).catch((e: unknown) => e);
+      expect((eVolFallback as RpcFail).message).toBe("建卷失败（core 退出码 1）");
     } finally {
       cleanup(r);
     }

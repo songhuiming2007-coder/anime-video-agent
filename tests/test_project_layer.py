@@ -316,3 +316,14 @@ class TestParse:
             "卷表列了 `03-终局葬礼` 但目录不存在",
             "目录 `05-多出来` 不在卷表",
         ]
+
+    def test_目录已存在但缺topic与目录不存在区分提示(self, tmp_path: Path) -> None:
+        proj = tmp_path / "P"
+        _ep(proj / "01-借躯降生")
+        (proj / "02-皮套囚徒" / "07-cover").mkdir(parents=True)
+        _ep(proj / "00-全一期-典藏版")
+        hints = project.members_vs_table(proj, project.parse(SAMPLE))
+        assert hints == [
+            "卷表列了 `02-皮套囚徒` 且目录已存在，但缺少 01-topic.md（未立项）",
+            "卷表列了 `03-终局葬礼` 但目录不存在",
+        ]

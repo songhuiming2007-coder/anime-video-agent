@@ -616,6 +616,61 @@ class TestCliCreate:
         assert cli.classify_dir(root / "data/episodes/supercell 编年史/01-第一卷") == "volume"
         assert cli.main(["new", "--project", "supercell 编年史", "坏名。"]) == 2
 
+    def test_既有封面目录补立项建卷与拒建边界(self, world, capsys) -> None:
+        root, P, _Q, _E = world
+        vol = P / "03-破晓淬火"
+        (vol / "07-cover").mkdir(parents=True)
+        (vol / "07-cover" / "make_cover.py").write_text("# cover\n", encoding="utf-8")
+        (vol / "08-cover.jpg").write_bytes(b"JPGDATA")
+        capsys.readouterr()
+
+        assert cli.main(["new", "--project", "P", "03-破晓淬火"]) == 0
+        out = capsys.readouterr().out
+        assert "补立项新卷" in out
+        assert cli.classify_dir(vol) == "volume"
+        assert (vol / "01-topic.md").is_file()
+        assert (vol / "07-cover" / "make_cover.py").read_text(encoding="utf-8") == "# cover\n"
+        assert (vol / "08-cover.jpg").read_bytes() == b"JPGDATA"
+
+        # 已存在 01-topic.md 后再建必须拒建并保留已有 01-topic.md
+        (vol / "01-topic.md").write_text("# custom\n", encoding="utf-8")
+        assert cli.main(["new", "--project", "P", "03-破晓淬火"]) == 1
+        assert "拒绝覆盖" in capsys.readouterr().err
+        assert (vol / "01-topic.md").read_text(encoding="utf-8") == "# custom\n"
+
+        # 同名路径是普通文件、符号链接或含 00-project.md 的目录均拒建
+        (P / "plain-file").write_text("x", encoding="utf-8")
+        assert cli.main(["new", "--project", "P", "plain-file"]) == 1
+        assert "不是普通目录" in capsys.readouterr().err
+
+        outside = root / "outside-vol"
+        outside.mkdir()
+        (P / "link-vol").symlink_to(outside)
+        assert cli.main(["new", "--project", "P", "link-vol"]) == 1
+        assert "不是普通目录" in capsys.readouterr().err
+        assert not (outside / "01-topic.md").exists()
+
+        nested = P / "nested-proj"
+        nested.mkdir()
+        (nested / "00-project.md").write_text("企划: nested\n", encoding="utf-8")
+        assert cli.main(["new", "--project", "P", "nested-proj"]) == 1
+        assert "00-project.md" in capsys.readouterr().err
+        assert not (nested / "01-topic.md").exists()
+
+        # 大小写不敏感文件系统上大小写不一致的同名目录拒建
+        (P / "03-Case").mkdir()
+        if (P / "03-case").exists():
+            assert cli.main(["new", "--project", "P", "03-case"]) == 1
+            assert "大小写不一致" in capsys.readouterr().err
+            assert not (P / "03-Case" / "01-topic.md").exists()
+
+        # 普通期（project=None）已有无 01-topic.md 的空目录仍拒建
+        plain_empty = root / "data/episodes/plain-empty"
+        plain_empty.mkdir()
+        assert cli.create_new_episode("plain-empty") == 1
+        assert "拒绝覆盖" in capsys.readouterr().err
+        assert not (plain_empty / "01-topic.md").exists()
+
     def test_data不可达退2且不建(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(paths, "ROOT", tmp_path / "nowhere")
         assert cli.main(["new-project", "企划"]) == 2

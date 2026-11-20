@@ -418,7 +418,23 @@ def members_vs_table(project_dir: Path, doc: ProjectDoc) -> list[str]:
     listed = {name_key(v.dir): v.dir for v in doc.volumes}
     if doc.collection is not None:
         listed.setdefault(name_key(doc.collection), doc.collection)
-    hints = [f"卷表列了 `{listed[k]}` 但目录不存在" for k in listed if k not in members]
+    try:
+        existing_dirs = {
+            name_key(s.name)
+            for s in Path(project_dir).iterdir()
+            if not s.name.startswith((".", "_")) and s.is_dir()
+        }
+    except OSError:
+        existing_dirs = set()
+    hints = [
+        (
+            f"卷表列了 `{listed[k]}` 且目录已存在，但缺少 {TOPIC_FILE}（未立项）"
+            if k in existing_dirs
+            else f"卷表列了 `{listed[k]}` 但目录不存在"
+        )
+        for k in listed
+        if k not in members
+    ]
     hints += [f"目录 `{members[k]}` 不在卷表" for k in members if k not in listed]
     return hints
 

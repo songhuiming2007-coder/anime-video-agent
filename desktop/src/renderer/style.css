@@ -111,7 +111,7 @@ code, pre, kbd, .ui-mono { font-family: var(--font-mono); }
 .stderr { background: var(--danger-surface); border-color: transparent; }
 .empty { padding: var(--space-8) var(--space-4); text-align: center; color: var(--fg-muted); }
 .muted { color: var(--fg-muted); }
-.error { color: var(--danger); padding: var(--space-2) var(--space-3); }
+.error { color: var(--danger); padding: var(--space-2) var(--space-3); overflow-wrap: anywhere; }
 .preview-head { flex: none; display: flex; align-items: center; gap: var(--space-2); height: 40px; padding: 0 var(--space-3); border-bottom: 1px solid var(--border); color: var(--fg-muted); font-size: var(--text-sm); }
 .preview-head .ui-row-title { font-family: var(--font-mono); color: var(--fg); }
 /* D49-A S4：预览区顶部切换条（产物切换 + 封面导入 + 镜头画廊 + 子目录展开） */
