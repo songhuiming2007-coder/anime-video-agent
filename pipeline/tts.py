@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import contextvars
+import copy
 import hashlib
 import importlib.util
 import inspect
@@ -757,11 +758,216 @@ def _indextts_audio(model, ref_mel, text: str, temp: float, top_k: int, max_toke
     return np.asarray(audio.squeeze(), dtype=np.float32), model.sample_rate
 
 
+def _pin_cuda_speaker_embedding(icl_prompt, xvec_prompt):
+    """把 ICL prompt 的说话人嵌入钉死为 `ref_audio`（如 seg6.wav）提取的原始 x-vector。
+
+    2026-11-20 实测依据：中文黄金锚点 ICL 负责锁住响度、贴耳距离、共鸣与语速基调，
+    但纯由锚点自提 x-vector 会使声纹相似度略降（0.9801→0.9760）；将 `ref_spk_embedding`
+    显式钉回原始 `ref_audio` 后，声纹保持 0.9775+ 且不牺牲任何句间一致性。
+    """
+    pinned = copy.deepcopy(icl_prompt)
+    src_items = xvec_prompt if isinstance(xvec_prompt, list) else [xvec_prompt]
+    dst_items = pinned if isinstance(pinned, list) else [pinned]
+    if not src_items or not dst_items:
+        raise RuntimeError("voice_clone_prompt 为空，无法钉死说话人嵌入")
+    src = src_items[0]
+    for dst in dst_items:
+        replaced = False
+        for attr in ("ref_spk_embedding", "spk_embedding", "speaker_embedding"):
+            if hasattr(src, attr) and hasattr(dst, attr):
+                setattr(dst, attr, copy.deepcopy(getattr(src, attr)))
+                replaced = True
+                break
+        if not replaced and isinstance(src, dict) and isinstance(dst, dict):
+            for key in ("ref_spk_embedding", "spk_embedding", "speaker_embedding"):
+                if key in src and key in dst:
+                    dst[key] = copy.deepcopy(src[key])
+                    replaced = True
+                    break
+        if not replaced:
+            raise RuntimeError(
+                f"无法在 {type(dst).__name__} 上定位说话人嵌入字段（ref_spk_embedding），"
+                "请核对 qwen-tts 版本兼容性"
+            )
+    return pinned
+
+
+def _qwen3_mlx_icl_audio(
+    model,
+    text: str,
+    *,
+    ref_codes,
+    ref_text_ids,
+    speaker_embed,
+    lang_code: str,
+    temp: float,
+    top_k: int,
+    top_p: float,
+    sub_temp: float,
+    sub_top_k: int,
+    sub_top_p: float,
+    repetition_penalty: float = 1.05,
+    max_tokens: int = 1200,
+):
+    """本地 MLX 通道的固定中文锚点 ICL 解码（与 PyTorch CUDA 路径对齐）。
+
+    不用 `mlx_audio` 默认 `generate(..., ref_text=...)` 的三点原因：
+    1. `generate()` 内部从 `ref_audio` 重提说话人嵌入，无法钉死 `ref_audio`（seg6）原始 x-vector；
+    2. `generate()` 强制把 ICL 的 `repetition_penalty` 拉高到 1.5（官方 PyTorch 为 1.05）；
+    3. `generate()` 让主解码与子解码共用同一套 temperature/top_k，无法与云端解耦子解码对齐。
+    """
+    import mlx.core as mx
+    import numpy as np
+
+    config = model.config.talker_config
+    target_chat = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+    target_ids = mx.array(model.tokenizer.encode(target_chat))[None, :]
+    text_ids = target_ids[:, 3:-5]
+
+    tts_tokens = mx.array([[
+        model.config.tts_bos_token_id,
+        model.config.tts_eos_token_id,
+        model.config.tts_pad_token_id,
+    ]])
+    tts_embeds = model.talker.text_projection(model.talker.get_text_embeddings()(tts_tokens))
+    tts_bos_embed = tts_embeds[:, 0:1, :]
+    tts_eos_embed = tts_embeds[:, 1:2, :]
+    tts_pad_embed = tts_embeds[:, 2:3, :]
+
+    combined_text_ids = mx.concatenate([ref_text_ids, text_ids], axis=1)
+    text_embed = model.talker.text_projection(model.talker.get_text_embeddings()(combined_text_ids))
+    text_embed = mx.concatenate([text_embed, tts_eos_embed], axis=1)
+    text_lens = text_embed.shape[1]
+
+    first_cb = ref_codes[:, 0, :]
+    ref_codec_embed = model.talker.get_input_embeddings()(first_cb)
+    for i in range(config.num_code_groups - 1):
+        ref_codec_embed = ref_codec_embed + model.talker.code_predictor.codec_embedding[i](
+            ref_codes[:, i + 1, :]
+        )
+    codec_bos_embed = model.talker.get_input_embeddings()(mx.array([[config.codec_bos_id]]))
+    codec_embed_icl = mx.concatenate([codec_bos_embed, ref_codec_embed], axis=1)
+    codec_lens = codec_embed_icl.shape[1]
+
+    codec_pad_embed = model.talker.get_input_embeddings()(mx.array([[config.codec_pad_id]]))
+    text_with_codec_pad = text_embed + mx.broadcast_to(
+        codec_pad_embed, (1, text_lens, codec_pad_embed.shape[-1])
+    )
+    codec_with_text_pad = codec_embed_icl + mx.broadcast_to(
+        tts_pad_embed, (1, codec_lens, tts_pad_embed.shape[-1])
+    )
+    icl_input_embed = mx.concatenate([text_with_codec_pad, codec_with_text_pad], axis=1)
+
+    language_id = None
+    if lang_code.lower() != "auto" and config.codec_language_id:
+        language_id = config.codec_language_id.get(lang_code.lower())
+    if language_id is None:
+        codec_prefill = [config.codec_nothink_id, config.codec_think_bos_id, config.codec_think_eos_id]
+    else:
+        codec_prefill = [config.codec_think_id, config.codec_think_bos_id, language_id, config.codec_think_eos_id]
+
+    codec_prefix = model.talker.get_input_embeddings()(mx.array([codec_prefill]))
+    codec_suffix = model.talker.get_input_embeddings()(mx.array([[config.codec_pad_id, config.codec_bos_id]]))
+    codec_prefix = mx.concatenate(
+        [codec_prefix, speaker_embed.reshape(1, 1, -1), codec_suffix], axis=1
+    )
+
+    role_embed = model.talker.text_projection(model.talker.get_text_embeddings()(target_ids[:, :3]))
+    pad_count = codec_prefix.shape[1] - 2
+    pad_embeds = mx.broadcast_to(tts_pad_embed, (1, pad_count, tts_pad_embed.shape[-1]))
+    combined_prefix = mx.concatenate([pad_embeds, tts_bos_embed], axis=1) + codec_prefix[:, :-1, :]
+    input_embeds = mx.concatenate([role_embed, combined_prefix, icl_input_embed], axis=1)
+
+    cache = model.talker.make_cache()
+    code_cache = model.talker.code_predictor.make_cache()
+    generated_codes = []
+    generated_token_ids: list[int] = []
+    eos_token_id = config.codec_eos_token_id
+    suppress_tokens = [
+        i for i in range(config.vocab_size - 1024, config.vocab_size) if i != eos_token_id
+    ]
+
+    for _ in range(max_tokens):
+        logits, hidden = model.talker(input_embeds, cache=cache)
+        next_token = model._sample_token(
+            logits,
+            temperature=temp,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            generated_tokens=generated_token_ids or None,
+            suppress_tokens=suppress_tokens,
+            eos_token_id=eos_token_id,
+        )
+        is_eos = next_token[0, 0] == eos_token_id
+        code_tokens = [next_token]
+        code_hidden = hidden[:, -1:, :]
+        for c in code_cache:
+            c.keys = None
+            c.values = None
+            c.offset = 0
+
+        for code_idx in range(config.num_code_groups - 1):
+            if code_idx == 0:
+                code_0_embed = model.talker.get_input_embeddings()(next_token)
+                code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+            else:
+                code_input = model.talker.code_predictor.codec_embedding[code_idx - 1](code_tokens[-1])
+            code_logits, code_cache, _ = model.talker.code_predictor(
+                code_input, cache=code_cache, generation_step=code_idx
+            )
+            next_code = model._sample_token(
+                code_logits,
+                temperature=sub_temp,
+                top_k=sub_top_k,
+                top_p=sub_top_p,
+                repetition_penalty=1.0,
+            )
+            code_tokens.append(next_code)
+
+        all_codes = mx.concatenate(code_tokens, axis=1)
+        codec_embed = model.talker.get_input_embeddings()(next_token)
+        for i, code in enumerate(code_tokens[1:]):
+            codec_embed = codec_embed + model.talker.code_predictor.codec_embedding[i](code)
+        input_embeds = tts_pad_embed + codec_embed
+        mx.eval(input_embeds, is_eos)
+        if is_eos.item():
+            break
+        generated_token_ids.append(int(next_token[0, 0]))
+        generated_codes.append(all_codes)
+
+    if not generated_codes:
+        mx.clear_cache()
+        raise RuntimeError("模型没有产出任何音频")
+
+    gen_codes = mx.stack(generated_codes, axis=1)
+    ref_codes_t = mx.transpose(ref_codes, (0, 2, 1))
+    full_codes = mx.concatenate([ref_codes_t, gen_codes], axis=1)
+    ref_len = ref_codes.shape[2]
+    total_len = full_codes.shape[1]
+    audio, audio_lengths = model.speech_tokenizer.decode(full_codes)
+    audio = audio[0]
+    valid_len = int(audio_lengths[0])
+    if 0 < valid_len < audio.shape[0]:
+        audio = audio[:valid_len]
+    cut = int(ref_len / max(total_len, 1) * audio.shape[0])
+    if 0 < cut < audio.shape[0]:
+        audio = audio[cut:]
+    mx.eval(audio)
+    out = np.asarray(audio, dtype=np.float32).reshape(-1)
+    mx.clear_cache()
+    return out, model.sample_rate
+
+
 class Engine:
     """TTS 引擎的接缝。换引擎只改 config/voice.json，别处不动。"""
 
-    # 重试时逐次降温：第一次自然，不行就换种子并收紧采样换稳定
-    SAMPLING = [(0.8, 30), (0.7, 20), (0.5, 10)]
+    # 重试时逐次降温：2026-11-20 声学稳定性消融定稿（C14 方案 06 胜出）——
+    # 首试主解码 0.70/25/top_p=0.90、子解码 0.60/25 兼顾自然韵律与响度/基频稳定；
+    # 子解码下限 0.40（0.1 实测触发无 EOS 死循环）。
+    SAMPLING = [(0.70, 25), (0.60, 20), (0.50, 15)]
+    SUB_SAMPLING = [(0.60, 25), (0.50, 20), (0.40, 15)]
+    TOP_P = [0.90, 0.88, 0.85]
     MAX_MEL_TOKENS = 1200   # ≈ 51s，远超单段上限，纯粹兜底防死循环
 
     def __init__(self, cfg: dict) -> None:
@@ -776,18 +982,61 @@ class Engine:
         if not Path(self.ref_audio).exists():
             raise SystemExit(f"FAIL 参考干声不存在：{self.ref_audio}")
 
+        raw_anchor_audio = cfg.get("icl_anchor_audio")
+        raw_anchor_text = cfg.get("icl_anchor_text")
+        if bool(raw_anchor_audio) != bool(raw_anchor_text):
+            raise SystemExit("FAIL icl_anchor_audio 与 icl_anchor_text 必须成对配置")
+        self.icl_anchor_audio: str | None = None
+        self.icl_anchor_text: str | None = None
+        self.use_icl = False
+        if raw_anchor_audio and raw_anchor_text:
+            anchor_path = (paths.ROOT / str(raw_anchor_audio)).resolve()
+            if not anchor_path.exists():
+                raise SystemExit(f"FAIL ICL 锚点干声不存在：{anchor_path}")
+            self.icl_anchor_audio = str(anchor_path)
+            self.icl_anchor_text = str(raw_anchor_text)
+            self.use_icl = True
+
         self.voice_prompt = None
+        self._mlx_spk_embed = None
+        self._mlx_anchor_codes = None
+        self._mlx_anchor_text_ids = None
         if self.kind == "qwen3_tts_cuda":
             self.model = _load_qwen3_cuda(cfg, _resolve_cloud_model(cfg["model"]))
             # **说话人嵌入只提一次，全程复用。** 2026-09-11 人耳验收抓出：
             # 每句各自提特征会让段内音色漂移（听感是「同一段里像换了好几个人」）。
-            # x_vector 只依赖参考音频，本来就不必每句重算——缓存它既省时间又锁音色。
-            self.voice_prompt = self.model.create_voice_clone_prompt(
+            # 2026-11-20 升级：配置了同语种中文黄金锚点（icl_anchor_audio/text）时，
+            # 走 ICL 声学前缀锁定响度/贴耳度/语速，同时把 ref_spk_embedding 显式钉回 ref_audio（seg6）。
+            xvec_prompt = self.model.create_voice_clone_prompt(
                 ref_audio=self.ref_audio, x_vector_only_mode=True
             )
+            if self.use_icl:
+                icl_prompt = self.model.create_voice_clone_prompt(
+                    ref_audio=self.icl_anchor_audio,
+                    ref_text=self.icl_anchor_text,
+                    x_vector_only_mode=False,
+                )
+                self.voice_prompt = _pin_cuda_speaker_embedding(icl_prompt, xvec_prompt)
+            else:
+                self.voice_prompt = xvec_prompt
         else:
             loader = LOADERS.get(self.kind, _load_generic)
             self.model = loader(_resolve_model(cfg["model"]))
+            if self.kind == "qwen3_tts" and self.use_icl:
+                import mlx.core as mx
+                from mlx_audio.utils import load_audio
+
+                ref_wav = load_audio(self.ref_audio, sample_rate=self.model.sample_rate)
+                self._mlx_spk_embed = self.model.extract_speaker_embedding(ref_wav)
+                anc_wav = load_audio(self.icl_anchor_audio, sample_rate=self.model.sample_rate)
+                if anc_wav.ndim == 1:
+                    anc_wav = anc_wav[None, None, :]
+                elif anc_wav.ndim == 2:
+                    anc_wav = anc_wav[None, :]
+                self._mlx_anchor_codes = self.model.speech_tokenizer.encode(anc_wav)
+                ref_chat = f"<|im_start|>assistant\n{self.icl_anchor_text}<|im_end|>\n"
+                self._mlx_anchor_text_ids = mx.array(self.model.tokenizer.encode(ref_chat))[None, 3:-2]
+                mx.eval(self._mlx_spk_embed, self._mlx_anchor_codes, self._mlx_anchor_text_ids)
 
         self.ref_mel = None
         if self.kind == "indextts":
@@ -833,20 +1082,13 @@ class Engine:
     def _synthesize_cuda(self, text: str, attempt: int, seed: int):
         """云端 CUDA 通道（Qwen3-TTS PyTorch 版）。**不碰 mlx。**
 
-        四件事缺一不可，前三件各对应一次实测故障，第四件是两条路径的对齐：
-
-        1. `x_vector_only_mode=True`：ICL 路径（传 ref_text）会把参考转录当正文
-           念出来（ADR-0006 实测）；x-vector 是纯说话人嵌入路径，只传 ref_audio。
-        2. `voice_clone_prompt`（__init__ 里预算好）：每句各自提特征会让段内音色
-           漂移——2026-09-11 人耳验收听到「同一段里像换人」。
-        3. `torch.manual_seed`：mlx 版一直有 `mx.random.seed`，云端版最初漏了，
-           于是默认采样每句随机起步——这是段内语气/语速突变的另一半原因。
-           云端比本地明显，正是因为本地有种子、云端没有。
-        4. 采样参数照 `Engine.SAMPLING[attempt-1]` 显式传（D68，2026-10-10）：不传
-           就吃 qwen-tts 包默认 temperature 0.9 / top_k 50，比本地首试 0.8 / 30 更热，
-           同一段文本云端与本地的随机性不一样、重试也不降温。主解码与子解码
-           （subtalker，逐码本预测）同传一组：mlx 版的 code_predictor 就是复用
-           主解码的 temperature / top_k，不同传就仍不对齐。
+        关键不变量：
+        1. `use_icl=True`（配置了同语种中文黄金锚点）走 `x_vector_only_mode=False`
+           + 钉死 `ref_audio` 原始 `ref_spk_embedding`；未配置锚点时退回 `x_vector_only_mode=True`
+           （绝不对日文原参考直接开中文 ICL，2026-11-20 实测 CER 40.1%）。
+        2. `voice_clone_prompt`（__init__ 里预算好）：每句复用同一份，避免声学漂移。
+        3. `torch.manual_seed`：固定每句随机源。
+        4. 主解码与子解码按 `sampling_for` / `sub_sampling_for` 显式传参，端云对齐。
         """
         import numpy as np
         import torch
@@ -856,15 +1098,19 @@ class Engine:
             torch.cuda.manual_seed_all(seed)
 
         temp, top_k = sampling_for(attempt)
+        sub_temp, sub_top_k, top_p = sub_sampling_for(attempt)
+        use_icl = bool(getattr(self, "use_icl", False))
         wavs, rate = self.model.generate_voice_clone(
             text=text,
             language=qwen3_language_name(self.lang_code),
             voice_clone_prompt=self.voice_prompt,
-            x_vector_only_mode=True,
+            x_vector_only_mode=not use_icl,
             temperature=temp,
             top_k=top_k,
-            subtalker_temperature=temp,
-            subtalker_top_k=top_k,
+            top_p=top_p,
+            subtalker_temperature=sub_temp,
+            subtalker_top_k=sub_top_k,
+            subtalker_top_p=top_p,
         )
         return np.asarray(wavs[0]).reshape(-1), rate
 
@@ -875,37 +1121,51 @@ class Engine:
 
         mx.random.seed(seed)
         temp, top_k = sampling_for(attempt)
+        sub_temp, sub_top_k, top_p = sub_sampling_for(attempt)
 
         if self.kind == "indextts":
             audio, rate = _indextts_audio(
                 self.model, self.ref_mel, text, temp, top_k, self.MAX_MEL_TOKENS
             )
         elif self.kind == "qwen3_tts":
-            # Qwen3-TTS 只传 ref_audio，不传 ref_text。
-            #
-            # 新版 mlx-audio 的 ICL 克隆路径（ref_audio + ref_text 齐传）有 bug：
-            # 模型会把 ref_text 当正文复述出来（2026-08-15 实测，输出念的是参考
-            # 转录而非目标文本）。只传 ref_audio 走 x-vector 说话人嵌入路径，
-            # 念的是目标文本，音色照样来自参考。不传 ref_text 也就绕过了
-            # transcripts.json 的依赖。
-            #
-            # lang_code 来自 config/voice.json（zh = 中文旁白 + 英日歌名混读）。
-            # 采样参数照 Engine.SAMPLING 逐次降温；Qwen3 默认 temperature 0.9、
-            # top_k 50，首测即达标时这两个参数不生效，只是兜底。
-            kwargs: dict = {
-                "text": text,
-                "ref_audio": self.ref_audio,
-                "lang_code": self.lang_code,
-                "temperature": temp,
-                "top_k": top_k,
-            }
-            chunks, rate = [], None
-            for r in self.model.generate(**kwargs):
-                chunks.append(np.asarray(r.audio, dtype=np.float32).reshape(-1))
-                rate = r.sample_rate
-            if not chunks:
-                raise RuntimeError("模型没有产出任何音频")
-            audio = np.concatenate(chunks)
+            # 2026-11-20 修隐藏 bug：mlx-audio 的 codec_language_id 只认全名（"chinese"），
+            # 传 ISO 码 "zh" 会静默回退到 language_id=None（nothink/auto），导致 CER 翻倍。
+            lang_name = qwen3_language_name(self.lang_code)
+            if (
+                getattr(self, "use_icl", False)
+                and getattr(self, "_mlx_anchor_codes", None) is not None
+            ):
+                audio, rate = _qwen3_mlx_icl_audio(
+                    self.model,
+                    text,
+                    ref_codes=self._mlx_anchor_codes,
+                    ref_text_ids=self._mlx_anchor_text_ids,
+                    speaker_embed=self._mlx_spk_embed,
+                    lang_code=lang_name,
+                    temp=temp,
+                    top_k=top_k,
+                    top_p=top_p,
+                    sub_temp=sub_temp,
+                    sub_top_k=sub_top_k,
+                    sub_top_p=top_p,
+                    max_tokens=self.MAX_MEL_TOKENS,
+                )
+            else:
+                kwargs: dict = {
+                    "text": text,
+                    "ref_audio": self.ref_audio,
+                    "lang_code": lang_name,
+                    "temperature": temp,
+                    "top_k": top_k,
+                    "top_p": top_p,
+                }
+                chunks, rate = [], None
+                for r in self.model.generate(**kwargs):
+                    chunks.append(np.asarray(r.audio, dtype=np.float32).reshape(-1))
+                    rate = r.sample_rate
+                if not chunks:
+                    raise RuntimeError("模型没有产出任何音频")
+                audio = np.concatenate(chunks)
         else:
             kwargs: dict = {"text": text, "ref_audio": self.ref_audio}
             if self.ref_text is not None:
@@ -923,13 +1183,27 @@ class Engine:
 
 
 def sampling_for(attempt: int) -> tuple[float, int]:
-    """第 attempt 次（从 1 起）合成的 (temperature, top_k)。本地 mlx 与云端 CUDA 共用。
+    """第 attempt 次（从 1 起）合成的主解码 (temperature, top_k)。本地 mlx 与云端 CUDA 共用。
 
     超出阶梯长度的重试停在最冷一档，不越界。
     """
     if attempt < 1:
         raise ValueError(f"attempt 从 1 起，收到 {attempt}")
     return Engine.SAMPLING[min(attempt, len(Engine.SAMPLING)) - 1]
+
+
+def sub_sampling_for(attempt: int) -> tuple[float, int, float]:
+    """第 attempt 次（从 1 起）合成的子解码 (sub_temperature, sub_top_k, top_p)。
+
+    2026-11-20 实测：子解码温和降温（0.60→0.50→0.40）可锁住音色与响度纹理，
+    同时严守 ≥0.40 下限（0.1 会导致码本塌缩、主解码丢 EOS 死循环）。
+    """
+    if attempt < 1:
+        raise ValueError(f"attempt 从 1 起，收到 {attempt}")
+    idx = min(attempt, len(Engine.SUB_SAMPLING)) - 1
+    sub_t, sub_k = Engine.SUB_SAMPLING[idx]
+    top_p = Engine.TOP_P[min(attempt, len(Engine.TOP_P)) - 1]
+    return sub_t, sub_k, top_p
 
 
 @lru_cache(maxsize=1)
@@ -1035,11 +1309,13 @@ def load_config(path: Path | None = None) -> dict:
 SENT_END = re.compile(r"(?<=[。？！])")
 # 单个合成单元的字数上限。超过就在逗号处再断。
 #
-# 2026-07-29 实测：段 4 那句「在户部告白之前，当着所有人的面走过去，说我从很早以前
-# 就开始喜欢你了，请和我交往吧。」40 字一口气念完 6.79 秒，明显比别处快，还吞了字
-# （回读 CER 9%，没到 20% 的门槛所以没被拦下）。模型对整句时长有先验，
-# 单元越长压得越狠——把单元控制在 30 字以内，语速就稳了。
-MAX_SYNTH_CHARS = 30
+# 历史演进：
+# - 2026-07-29（IndexTTS-1.5）：模型有整句时长压缩先验，超过 30 字会压语速吞字，故定 30。
+# - 2026-11-20（Qwen3-TTS 1.7B Base 消融）：Qwen3 无时长压缩先验，反而是按 30 字在逗号处
+#   强拆冷启动会把句内 F0/RMS 跳变放大 2–3 倍（C0→C1：21.9 Hz → 8.0 Hz，CER 3.1% → 1.9%）。
+#   升至 90 字后正常整句一次合成（下游 render._split_long 照常按显示行宽拆字幕卡），
+#   仅极端超长复句（>90 字）仍保留逗号兜底。
+MAX_SYNTH_CHARS = 90
 _COMMA = "，、；："
 # 句间停顿。TTS 每句自带的首尾静音会被裁掉，改由这个常数统一控制节奏。
 SENT_GAP = 0.18
@@ -1818,7 +2094,10 @@ def _render_one(
 #   6 —— 顺听纠错与期级 overlay 接管（2026-09-19，PR2 / r17）：引入 corrections overlay
 #        （段级/全局拼音注入与钉种子）接管合成链、speakable 段级比对与 Take 审计；
 #        bump 版本以杜绝新老混血与静默复用旧产物。
-SYNTH_LOGIC_VERSION = 6
+#   7 —— 句间声学一致性根治（2026-11-20）：固定同语种中文黄金锚点 ICL + 钉死 ref_audio
+#        原始 x-vector（端云对齐）、MAX_SYNTH_CHARS 30→90 整句合成、主/子解码采样解耦
+#        （0.70/25/p0.90 + 子解码 0.60/25）、修复本地 MLX 透传 lang_code="zh" 静默退化 bug。
+SYNTH_LOGIC_VERSION = 7
 
 
 def _voice_fingerprint(cfg: dict) -> dict:
@@ -1839,6 +2118,7 @@ def _voice_fingerprint(cfg: dict) -> dict:
         "engine": cfg["engine"],
         "model": cfg["model"],
         "ref_audio": cfg["ref_audio"],
+        "icl_anchor_audio": cfg.get("icl_anchor_audio"),
         "readings": hashlib.sha256(json.dumps(
             cfg.get("readings", {}), sort_keys=True, ensure_ascii=False
         ).encode("utf-8")).hexdigest()[:16],
@@ -1879,6 +2159,10 @@ def _reusable(
     texts = {s.index: s.text for s in segs}
     by_index = {s.index: s for s in segs}
     voice_changed = [k for k in ("engine", "model", "ref_audio") if old.get(k) != fp[k]]
+    # v7 起若旧 manifest 已记录过 icl_anchor_audio 且换成了另一条锚点，视同音色配置变化；
+    # v6 及更早 manifest 无此键（None），交由 synth_logic 报账而不强制废掉已验收旧期。
+    if old.get("icl_anchor_audio") is not None and old.get("icl_anchor_audio") != fp["icl_anchor_audio"]:
+        voice_changed.append("icl_anchor_audio")
     if voice_changed:
         print(f"     音色配置变了（{'、'.join(voice_changed)}），旧配音全部重做")
     # 配置指纹拦不住引擎代码变化，那是 `Take.synth_logic` 逐段管的；但读音表/注入表
@@ -2596,7 +2880,14 @@ def probe(text: str, cfg_path: Path | None, dest: Path, ref: Path | None = None,
     """
     cfg = load_config(_active_config_path() if cfg_path is None else cfg_path)
     if ref is not None:
-        cfg = {**cfg, "ref_audio": str(ref), "ref_text": _ref_text_for(ref)}
+        # 显式 --ref 试别的参考音时，清掉原音色的 ICL 锚点，避免把 seg6 锚点混进新音色试音
+        cfg = {
+            **cfg,
+            "ref_audio": str(ref),
+            "ref_text": _ref_text_for(ref),
+            "icl_anchor_audio": None,
+            "icl_anchor_text": None,
+        }
     with _use_voice_cfg(cfg):
         engine = Engine(cfg)
         t0 = time.perf_counter()

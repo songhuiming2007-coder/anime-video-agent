@@ -170,11 +170,17 @@ def stage_episode_inputs(
     staging_ep = drive_root / "staging" / rel_path
     for item in items:
         is_config = item.startswith("config")
+        is_data = item.startswith("data/")
         item_clean = item.rstrip("/")
-        src = repo_root / item_clean if is_config else ep_dir / item_clean
+        src = repo_root / item_clean if (is_config or is_data) else ep_dir / item_clean
         if not src.exists():
             continue
-        dst = (drive_root / "code" / item_clean) if is_config else (staging_ep / item_clean)
+        if is_config:
+            dst = drive_root / "code" / item_clean
+        elif is_data:
+            dst = drive_root / "staging" / item_clean
+        else:
+            dst = staging_ep / item_clean
         if src.is_dir():
             files = _copy_tree_filtered(src, dst, exclude_attic=True)
             staged.extend(f"{item_clean}/{f}" for f in files)

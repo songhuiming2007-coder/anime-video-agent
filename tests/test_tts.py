@@ -269,9 +269,14 @@ class TestSplitSentences:
     def test_短句不再拆(self):
         assert t.split_sentences("那不是牺牲。") == ["那不是牺牲。"]
 
-    def test_超长句在逗号处再断(self):
-        # 就是踩坑的那一句，40 字。断成两段之后语速才稳。
+    def test_普通长句不再被逗号切碎(self):
+        # 2026-11-20 Qwen3-TTS 消融：40-85 字整句合成比 30 字逗号强拆更稳（F0 跳变 21.9→8.0 Hz）
         s = "在户部告白之前，当着所有人的面走过去，说我从很早以前就开始喜欢你了，请和我交往吧。"
+        assert t.split_sentences(s) == [s]
+
+    def test_超长句在逗号处再断(self):
+        # 超过 MAX_SYNTH_CHARS（90 字）的极端复句仍在逗号处兜底断成两段，避免单单元过长
+        s = "甲" * 50 + "，" + "乙" * 50 + "。"
         out = t.split_sentences(s)
         assert len(out) == 2
         assert all(len(t.normalize(x)) <= t.MAX_SYNTH_CHARS for x in out)
@@ -311,8 +316,8 @@ class TestSplitAtCommas:
         assert t._split_at_commas("啊" * 16 + "，" + "哦" * 3) == ["啊" * 16 + "，" + "哦" * 3]
 
     def test_尾巴并不回去就单独成段(self):
-        # 16 + 25 超过 30 字上限，并回去等于没断
-        out = t._split_at_commas("啊" * 16 + "，" + "哦" * 25)
+        # 50 + 50 超过 MAX_SYNTH_CHARS（90 字）上限，并回去等于没断
+        out = t._split_at_commas("啊" * 50 + "，" + "哦" * 50)
         assert len(out) == 2
 
     def test_逗号太靠前不断(self):
@@ -1674,12 +1679,13 @@ class TestQwen3CudaLoader:
         assert captured["voice_clone_prompt"] == {"cached": True}, "必须传缓存的 prompt"
 
     def test_cuda采样参数与mlx同一阶梯(self):
-        """D68（2026-10-10 EGOIST V2 复盘）：云端不传采样参数就吃 qwen-tts 默认
-        0.9 / 50，比本地首试 0.8 / 30 更热，重试也不降温。
+        """D68 + 2026-11-20 声学稳定性消融（方案 06）：云端与本地共用主/子解码阶梯。
 
-        逐次断言与 `sampling_for` 同表，且子解码（subtalker）同传——mlx 版的
-        code_predictor 复用主解码的 temperature / top_k，只传主解码仍不对齐。
-        期望值先在实现上核过：SAMPLING = [(0.8, 30), (0.7, 20), (0.5, 10)]，第 4 次停在最冷档。
+        期望值先在实现上核过：
+          主解码 SAMPLING     = [(0.70, 25), (0.60, 20), (0.50, 15)]
+          子解码 SUB_SAMPLING = [(0.60, 25), (0.50, 20), (0.40, 15)]
+          top_p TOP_P         = [0.90, 0.88, 0.85]
+        第 4 次停在最冷档，且子解码下限 ≥0.40（0.1 实测触发无 EOS 死循环）。
         """
         calls: list[dict] = []
 
@@ -1697,16 +1703,128 @@ class TestQwen3CudaLoader:
 
         for attempt in (1, 2, 3, 4):
             t.Engine._synthesize_cuda(FakeEngine(), "世界", attempt=attempt, seed=1)
-        got = [(c["temperature"], c["top_k"], c["subtalker_temperature"], c["subtalker_top_k"])
-               for c in calls]
-        assert got == [(0.8, 30, 0.8, 30), (0.7, 20, 0.7, 20),
-                       (0.5, 10, 0.5, 10), (0.5, 10, 0.5, 10)]
-        assert t.sampling_for(1) == (0.8, 30), "云端首试必须与本地 mlx 首试同档"
+        got = [
+            (
+                c["temperature"],
+                c["top_k"],
+                c["top_p"],
+                c["subtalker_temperature"],
+                c["subtalker_top_k"],
+                c["subtalker_top_p"],
+            )
+            for c in calls
+        ]
+        assert got == [
+            (0.70, 25, 0.90, 0.60, 25, 0.90),
+            (0.60, 20, 0.88, 0.50, 20, 0.88),
+            (0.50, 15, 0.85, 0.40, 15, 0.85),
+            (0.50, 15, 0.85, 0.40, 15, 0.85),
+        ]
+        assert t.sampling_for(1) == (0.70, 25), "云端首试必须与本地 mlx 首试同档"
+        assert t.sub_sampling_for(1) == (0.60, 25, 0.90)
+        assert all(st >= 0.40 for st, _ in t.Engine.SUB_SAMPLING), "子解码下限必须 >=0.40 防死循环"
 
     def test_sampling_for拒绝attempt0(self):
         """attempt 从 1 起；0 若静默取 SAMPLING[-1] 会拿到最冷档，属于静默错。"""
         with pytest.raises(ValueError):
             t.sampling_for(0)
+        with pytest.raises(ValueError):
+            t.sub_sampling_for(0)
+
+    def test_pin_cuda_speaker_embedding替换嵌入且不改原对象(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Item:
+            ref_code: list
+            ref_spk_embedding: list
+
+        xvec = [_Item(ref_code=[], ref_spk_embedding=[1.0, 2.0])]
+        icl = [_Item(ref_code=[9, 8], ref_spk_embedding=[0.0, 0.0])]
+        pinned = t._pin_cuda_speaker_embedding(icl, xvec)
+        assert pinned[0].ref_code == [9, 8]
+        assert pinned[0].ref_spk_embedding == [1.0, 2.0]
+        assert icl[0].ref_spk_embedding == [0.0, 0.0], "不能原地污染入参"
+
+        with pytest.raises(RuntimeError, match="ref_spk_embedding"):
+            t._pin_cuda_speaker_embedding([{"unknown": 1}], [{"unknown": 2}])
+
+    def test_cuda配置icl锚点时关闭x_vector_only并钉死原ref嵌入(self, monkeypatch, tmp_path):
+        ref_wav = tmp_path / "seg6.wav"
+        anc_wav = tmp_path / "anchor.wav"
+        ref_wav.write_bytes(b"RIFF")
+        anc_wav.write_bytes(b"RIFF")
+        monkeypatch.setattr(paths, "ROOT", tmp_path)
+
+        prompt_calls: list[dict] = []
+        gen_calls: list[dict] = []
+
+        class FakeModel:
+            def create_voice_clone_prompt(self, **kw):
+                prompt_calls.append(kw)
+                if kw.get("x_vector_only_mode"):
+                    return [{"ref_code": None, "ref_spk_embedding": "SEG6_XVEC"}]
+                return [{"ref_code": "ANCHOR_CODES", "ref_spk_embedding": "ANCHOR_XVEC"}]
+
+            def generate_voice_clone(self, **kw):
+                gen_calls.append(kw)
+                return ([np.full(2400, 0.1, dtype=np.float32)], 24000)
+
+        monkeypatch.setattr(t, "_load_qwen3_cuda", lambda cfg, mdir: FakeModel())
+        cfg = {
+            "engine": "qwen3_tts_cuda",
+            "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "ref_audio": "seg6.wav",
+            "icl_anchor_audio": "anchor.wav",
+            "icl_anchor_text": "中性中文锚点。",
+            "lang_code": "zh",
+        }
+        eng = t.Engine(cfg)
+        assert eng.use_icl is True
+        assert len(prompt_calls) == 2
+        assert eng.voice_prompt[0]["ref_code"] == "ANCHOR_CODES"
+        assert eng.voice_prompt[0]["ref_spk_embedding"] == "SEG6_XVEC"
+
+        eng._synthesize_cuda("测试句子。", attempt=1, seed=7)
+        assert gen_calls[0]["x_vector_only_mode"] is False
+        assert gen_calls[0]["voice_clone_prompt"] is eng.voice_prompt
+
+    def test_icl锚点只配一半或文件不存在直接报错(self, monkeypatch, tmp_path):
+        (tmp_path / "seg6.wav").write_bytes(b"RIFF")
+        monkeypatch.setattr(paths, "ROOT", tmp_path)
+        base = {
+            "engine": "qwen3_tts_cuda",
+            "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "ref_audio": "seg6.wav",
+            "lang_code": "zh",
+        }
+        with pytest.raises(SystemExit, match="成对配置"):
+            t.Engine({**base, "icl_anchor_audio": "anchor.wav"})
+        with pytest.raises(SystemExit, match="锚点干声不存在"):
+            t.Engine({**base, "icl_anchor_audio": "missing.wav", "icl_anchor_text": "锚点。"})
+
+    def test_v6旧manifest不因新增icl锚点被强废而v7换锚点必须重做(self, tmp_path):
+        seg = t.Segment(1, "1", "你好。")
+        (tmp_path / "seg-01.wav").write_bytes(b"RIFF")
+        base_cfg = {
+            "engine": "qwen3_tts_cuda",
+            "model": "m",
+            "ref_audio": "seg6.wav",
+            "icl_anchor_audio": "a1.wav",
+            "readings": {},
+            "pinyin_injections": {},
+        }
+        row = {
+            "index": 1, "label": "1", "text": "你好。", "file": "seg-01.wav",
+            "duration": 1.0, "cer": 0.0, "attempts": 1,
+            "speakable": "你好。", "synth_logic": 6,
+        }
+        # v6 manifest 没有 icl_anchor_audio：不强制废掉，只由 synth_logic 报账
+        old_v6 = {**t._voice_fingerprint({**base_cfg, "icl_anchor_audio": None}), "segments": [row]}
+        assert 1 in t._reusable(old_v6, [seg], tmp_path, base_cfg)
+        # v7 manifest 换了另一条锚点（a1.wav -> a2.wav）：必须重做
+        old_v7 = {**t._voice_fingerprint(base_cfg), "segments": [{**row, "synth_logic": 7}]}
+        assert t._reusable(old_v7, [seg], tmp_path, {**base_cfg, "icl_anchor_audio": "a2.wav"}) == {}
 
     def test_云端配置的模型路径是数据盘绝对路径(self, tmp_path, monkeypatch):
         """云端模型在数据盘、不在仓库内，必须是绝对路径（否则 _resolve_model 会拼到仓库根）。"""
@@ -1905,6 +2023,29 @@ class TestQwen3MlxPath:
             assert "没有产出" in str(e)
         else:
             raise AssertionError("空产出必须报错，不能返回 None 当成功")
+
+    def test_mlx通道必须把zh翻译成chinese且透传top_p(self):
+        """2026-11-20 回归：mlx-audio 的 codec_language_id 只认全名 chinese，
+        传 ISO 码 zh 会静默退回 language_id=None（nothink），CER 翻倍。"""
+        seen: dict = {}
+
+        class _R:
+            audio = np.full(2400, 0.1, dtype=np.float32)
+            sample_rate = 24000
+
+        class FakeModel:
+            def generate(self, **kw):
+                seen.update(kw)
+                yield _R()
+
+        eng = self._engine([])
+        eng.model = FakeModel()
+        eng.lang_code = "zh"
+        eng._synthesize_mlx("你好。", attempt=1, seed=7)
+        assert seen["lang_code"] == "chinese", "绝不能把 zh 原样传给 mlx-audio"
+        assert seen["temperature"] == 0.70
+        assert seen["top_k"] == 25
+        assert seen["top_p"] == 0.90
 
 
 class _SeedEngine(_FakeEngine):

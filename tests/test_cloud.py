@@ -2806,3 +2806,63 @@ def test_voice_json虽git忽略但非local_cloud同步上云后voice_cloud完整
     assert cloud_voice["titles"]["My Dearest"] == 1.44
 
 
+def test_cloud_push_auto_syncs_voice_ref_and_icl_anchor(tmp_path: Path, monkeypatch):
+    """voice.json / voice.cloud.json 配的 ref_audio 与 icl_anchor_audio 自动随 cloud push 同步，
+    防止换新云端实例或替换锚点后漏传文件。"""
+    from pipeline import cloud_drive
+
+    repo = tmp_path / "repo"
+    cfg = repo / "config"
+    ref_dir = repo / "data" / "voice" / "reference"
+    ep = repo / "data" / "episodes" / "ep-demo"
+    drive_root = tmp_path / "drive"
+    cfg.mkdir(parents=True)
+    ref_dir.mkdir(parents=True)
+    ep.mkdir(parents=True)
+    (ep / "02-script.md").write_text("# demo\n", encoding="utf-8")
+    (ref_dir / "seg6.wav").write_bytes(b"RIFF_SEG6")
+    (ref_dir / "seg6_zh_anchor.wav").write_bytes(b"RIFF_ANCHOR")
+
+    (cfg / "voice.json").write_text(json.dumps({
+        "engine": "qwen3_tts",
+        "ref_audio": "data/voice/reference/seg6.wav",
+        "icl_anchor_audio": "data/voice/reference/seg6_zh_anchor.wav",
+        "icl_anchor_text": "中性中文锚点。",
+    }, ensure_ascii=False), encoding="utf-8")
+    (cfg / "voice.cloud.json").write_text(json.dumps({
+        "_extends": "voice.json",
+        "engine": "qwen3_tts_cuda",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    # 1. voice_reference_sync_items 解析 _extends 并返回去重保序的 data/ 相对路径
+    items = cloud.voice_reference_sync_items(cfg)
+    assert items == [
+        "data/voice/reference/seg6.wav",
+        "data/voice/reference/seg6_zh_anchor.wav",
+    ]
+
+    # 2. SSH 上行：data/ 条目按仓库根解析并落到远端仓库根
+    monkeypatch.setattr(cloud.paths, "ROOT", repo)
+    pairs = cloud.build_sync_up_files(ep, ["02-script.md", *items], "/remote/ep", "/remote")
+    assert (str(ref_dir / "seg6.wav"), "/remote/data/voice/reference/seg6.wav") in pairs
+    assert (
+        str(ref_dir / "seg6_zh_anchor.wav"),
+        "/remote/data/voice/reference/seg6_zh_anchor.wav",
+    ) in pairs
+
+    # 3. colab-drive 上行：data/ 条目暂存到 staging/data/...
+    staged = cloud_drive.stage_episode_inputs(
+        drive_root, ep, "data/episodes/ep-demo", ["02-script.md", *items], repo
+    )
+    assert "data/voice/reference/seg6_zh_anchor.wav" in staged
+    assert (drive_root / "staging" / "data" / "voice" / "reference" / "seg6_zh_anchor.wav").read_bytes() == b"RIFF_ANCHOR"
+
+    # 4. 非 data/ 或越界路径一律忽略，不把任意宿主路径塞进 rsync
+    (cfg / "voice.cloud.json").write_text(json.dumps({
+        "ref_audio": "/etc/passwd",
+        "icl_anchor_audio": "../outside.wav",
+    }), encoding="utf-8")
+    assert cloud.voice_reference_sync_items(cfg) == []
+
+
+

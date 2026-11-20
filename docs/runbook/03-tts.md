@@ -3,7 +3,7 @@
 根据定稿脚本进行增量语音合成，确定各段真实物理时长。
 
 ## 执行
-agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡。跑完不提议 `cloud down`，见下一节「配完不关机」。
+agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡。`cloud push` 会自动把 `config/voice.json` / `config/voice.cloud.json` 里配置的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）一并同步到远端，换新实例或更换锚点无需手工上传。跑完不提议 `cloud down`，见下一节「配完不关机」。
 
 ## 配完不关机（2026-10-23 人定）
 

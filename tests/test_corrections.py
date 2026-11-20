@@ -342,9 +342,9 @@ class TestWiringAndOverlaySynthesis:
         eng = _CapturingFakeEngine()
         eng.cfg["overlay"] = overlay
 
-        # 构造超过 30 字且含有逗号断句的长段落
-        long_text = "这一句讲述重叠的起因，那一句讲述重叠的发展，最后一句讲述重叠的彻底终结。"
-        assert len(long_text) > 30
+        # 构造多句段落（按句末标点拆出多个合成单元），验证每句都收到段级 overlay_label 注入
+        long_text = "这一句讲述重叠的起因。那一句讲述重叠的发展。最后一句讲述重叠的彻底终结。"
+        assert len(tts.split_sentences(long_text)) >= 2
         seg = tts.Segment(21, "21", long_text)
         dest = tmp_path / "seg-21.wav"
 
@@ -917,10 +917,10 @@ class TestStaleCensusWithOverlay:
         assert "python -m pipeline.cloud run <期号> tts -- --apply-patch" in msg
 
     def test_旧v5段被准确列出且带overlay提示(self, capsys):
-        """造一条 synth_logic=5 的旧 Take + 一条 synth_logic=6 的段，_report_stale 必须精确报出。"""
+        """造一条旧版本 Take + 一条当前版本段，_report_stale 必须精确报出。"""
         takes = [
-            tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=5),
-            tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=6),
+            tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=tts.SYNTH_LOGIC_VERSION - 1),
+            tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=tts.SYNTH_LOGIC_VERSION),
         ]
         count = tts._report_stale(takes, has_overlay=True)
         assert count == 1
@@ -932,8 +932,8 @@ class TestStaleCensusWithOverlay:
     def test_无overlay纠错时不虚报overlay文案(self, capsys):
         """P2 审定测试：has_overlay=False 时，_report_stale 绝不虚报存在 overlay 纠错段。"""
         takes = [
-            tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=5),
-            tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=6),
+            tts.Take(1, "1", "文本", "seg-01.wav", 2.0, 0.0, 1, synth_logic=tts.SYNTH_LOGIC_VERSION - 1),
+            tts.Take(2, "2", "文本", "seg-02.wav", 2.0, 0.0, 1, synth_logic=tts.SYNTH_LOGIC_VERSION),
         ]
         count = tts._report_stale(takes, has_overlay=False)
         assert count == 1

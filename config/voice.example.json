@@ -4,6 +4,8 @@
   "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
   "ref_audio": "data/voice/reference/example.wav",
   "ref_text": null,
+  "icl_anchor_audio": null,
+  "icl_anchor_text": null,
   "lang_code": "zh",
   "_seed_note": "种子规范：seed = attempt*1000 + 段index + seed_offset。`seed_offset` 为全局基准；`segment_seeds` 为按段号/句号（如 \"13.1\"）的局部纠偏。",
   "seed_offset": 7,

@@ -118,3 +118,17 @@ ADR-0002 的「回读比对在带声调拼音上做」（`tts.syllables()`）继
 - `readings` 读音替换表（楪祈→夜祈 等）是 IndexTTS 的补偿机制。Qwen3-TTS 多语种、
   多音字处理更强，换引擎后**逐条实测再决定去留**，暂时保留（换了无害、删了要重测）。
 - 0.6B 模型待 1.7B 整篇验证后删除。
+
+### 补记（2026-11-20）：句间声学漂移根治 —— 中文黄金锚点 ICL + 钉死 `seg6` x-vector + 整句合成（`SYNTH_LOGIC_VERSION = 7`）
+
+`决定二` 原本因早期 `mlx-audio` 复述 `ref_text` 的 bug 停用 ICL，全线走 `x_vector_only_mode=True` 叠加 IndexTTS 遗留的 `MAX_SYNTH_CHARS = 30` 逗号切片。生产长片（如《行星生物》155 段，全段同 `seed=7`）实测发现，即使无重试，段内相邻句仍存在平均 `17.0 Hz` 基频跳变与 `1.22 dB`（p90 `2.37 dB`）响度跳变，云端 CUDA 同型。
+
+经五层可控消融（本地 MLX + 云端 Colab L4 PyTorch CUDA 共 20+ 组对照与 12 段 ~145s 长程压测）定位：
+1. **根因在冷启动条件化与过细切片**：`x-vector` 只提供静态 1D 说话人向量，不锁响度、贴耳距离、共鸣与语速；不同文本复用同一随机种子在分布上仍等价于独立采样。单降采样温度或切单态 `seg6` 切片均无法消除单元边界跳变；子解码过冷（`0.1`）会触发无 EOS 死循环。
+2. **日文原参考直接开中文 ICL 不可用**：新版 `mlx-audio 0.4.6` 与 PyTorch `qwen-tts` 虽已修复 `ref_text` 复述 bug，但用日文 `seg6` 切片直接跑中文 ICL 会产生严重跨语种干扰（Whisper CER `40.1%`）。
+3. **最终定案（`SYNTH_LOGIC_VERSION = 7`，端云对齐，零后处理直出）**：
+   - **同语种中文黄金锚点 ICL + 钉死 `ref_audio` 原始 x-vector**：用 `seg6.wav` 自举一条平稳中性中文独白（`data/voice/reference/seg6_zh_anchor.wav`，配进 `config/voice.json` 的 `icl_anchor_audio` / `icl_anchor_text`）作为每句固定声学前缀，同时把 `ref_spk_embedding` 显式钉回 `seg6.wav` 原始向量。12 段压测段间 RMS 跳变从 `1.10 dB` 压至 `0.38–0.39 dB`，6 段盲听人耳首选（CER `2.1%`，声纹相似度 `0.9775`）。
+   - **整句合成**：`MAX_SYNTH_CHARS` 从 `30` 提至 `90`，正常整句一次合成（下游 `render._split_long` 照常按行宽拆字幕卡）。
+   - **主/子解码采样解耦**：`SAMPLING = [(0.70, 25), (0.60, 20), (0.50, 15)]`，`SUB_SAMPLING = [(0.60, 25), (0.50, 20), (0.40, 15)]`，`TOP_P = [0.90, 0.88, 0.85]`。
+   - **修复本地 MLX 语言码静默退化**：`_synthesize_mlx` 统一经 `qwen3_language_name()` 传入 `"chinese"`（此前直传 `"zh"` 在 `mlx-audio` 中静默回落 `language_id=None`）。
+   - **云端资产自动同步**：`cloud push` 自动读取配置中的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）随当期一并上行。

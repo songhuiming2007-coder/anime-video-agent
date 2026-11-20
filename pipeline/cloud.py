@@ -1206,6 +1206,53 @@ def code_drift_lines(drift: dict[str, list[str]] | str) -> tuple[bool, list[str]
                    "修法: python -m pipeline.cloud sync-code（把本地 pipeline/ config/ pyproject.toml 推上去）"]
 
 
+def voice_reference_sync_items(config_dir: Path | None = None) -> list[str]:
+    """从 voice.cloud.json / voice.json 读取需随 `cloud push` 上行的参考干声与 ICL 锚点路径。
+
+    只返回位于仓库 `data/` 下的相对路径（去重保序），避免换新实例或更新 `seg6_zh_anchor.wav`
+    后忘记手工上传导致云端 `tts` 启动即报文件不存在。配置缺失或不可读时返回空表。
+    """
+    cdir = config_dir or paths.CONFIG
+    ordered_cfg_paths = [cdir / "voice.cloud.json", cdir / "voice.json"]
+    cfg: dict[str, Any] = {}
+    for p in ordered_cfg_paths:
+        if not p.is_file():
+            continue
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        base_name = raw.get("_extends")
+        if base_name:
+            base_path = Path(str(base_name))
+            if not base_path.is_absolute():
+                base_path = cdir / base_path
+            if base_path.is_file():
+                try:
+                    base_raw = json.loads(base_path.read_text(encoding="utf-8"))
+                    if isinstance(base_raw, dict):
+                        cfg = {**base_raw, **{k: v for k, v in raw.items() if k != "_extends"}}
+                        break
+                except (OSError, json.JSONDecodeError):
+                    pass
+        cfg = raw
+        break
+
+    items: list[str] = []
+    for key in ("ref_audio", "icl_anchor_audio"):
+        val = cfg.get(key)
+        if not isinstance(val, str):
+            continue
+        rel = val.strip().lstrip("./")
+        if not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+            continue
+        if rel.startswith("data/") and rel not in items:
+            items.append(rel)
+    return items
+
+
 def build_sync_up_files(
     ep_dir: Path, sync_items: list[str], remote_ep_dir: str, remote_root: str
 ) -> list[tuple[str, str]]:
@@ -1213,21 +1260,22 @@ def build_sync_up_files(
 
     目录同步规则：src 必须带尾斜杠 '/'，dst 不带尾斜杠，
     防范 rsync 在远端创建 config/config/ 之类的多重嵌套。
+    以 `config` 或 `data/` 开头的条目按仓库根解析并落到远端仓库根；其余按当期目录解析。
     """
     pairs: list[tuple[str, str]] = []
     for item in sync_items:
-        is_config = item.startswith("config")
-        src_path = paths.ROOT / item if is_config else ep_dir / item
+        is_root_item = item.startswith("config") or item.startswith("data/")
+        src_path = paths.ROOT / item if is_root_item else ep_dir / item
         if not src_path.exists():
             continue
 
         item_clean = item.rstrip("/")
         if src_path.is_dir():
             src_str = f"{str(src_path)}/"
-            dst_str = f"{remote_root}/{item_clean}" if is_config else f"{remote_ep_dir}/{item_clean}"
+            dst_str = f"{remote_root}/{item_clean}" if is_root_item else f"{remote_ep_dir}/{item_clean}"
         else:
             src_str = str(src_path)
-            dst_str = f"{remote_root}/{item}" if is_config else f"{remote_ep_dir}/{item}"
+            dst_str = f"{remote_root}/{item}" if is_root_item else f"{remote_ep_dir}/{item}"
 
         pairs.append((src_str, dst_str))
     return pairs
@@ -4386,7 +4434,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     sync_items = list(cfg_global.get(
         "sync", {}
     ).get("up", ["02-script.md", "01-topic.md", "config/", "03-audio/corrections.json", "04-patch/"]))
-    for extra_item in ["03-audio/corrections.json", "04-patch/"]:
+    for extra_item in ["03-audio/corrections.json", "04-patch/", *voice_reference_sync_items()]:
         if extra_item not in sync_items:
             sync_items.append(extra_item)
     with_audio = bool(getattr(args, "with_audio", False))
