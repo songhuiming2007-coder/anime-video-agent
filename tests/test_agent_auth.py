@@ -2065,15 +2065,20 @@ def test_google_models_refresh_with_ttl_cache_failure_fallback_and_routing(
         assert "google/gemini-4-neon" in sources2
         assert calls == 1
 
-        # 3) 再次过期且远端返回 HTTP 500 → 静默保留旧缓存，不丢模型、不抛异常
+        # 3) 再次过期且远端返回 HTTP 500 → 静默保留旧缓存，并进入短冷却（连调不再反复阻塞打远端）
         persisted["models_synced_at_ms"] = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
         auth_file.write_text(json.dumps({"version": 1, "providers": {"google": persisted}}), encoding="utf-8")
         fail_mode = True
         sources_fail = auth.list_authenticated_model_sources(tmp_path, refresh=True)
         assert "google/gemini-4-neon" in sources_fail
         assert calls == 2
+        sources_cooldown = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-4-neon" in sources_cooldown
+        assert calls == 2
 
         # 4) resolve_model_provider 遇到过期缓存里未列出的新模型时自动刷新一次并放行；真不存在的模型仍返回 None
+        with auth._ENV_MODELS_LOCK:
+            auth._MODELS_SYNC_FAILURES.clear()
         fail_mode = False
         persisted["models"] = ["gemini-3.5-flash"]
         persisted["models_synced_at_ms"] = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
@@ -2085,4 +2090,166 @@ def test_google_models_refresh_with_ttl_cache_failure_fallback_and_routing(
         assert calls == 3
         assert auth.resolve_model_provider("google/not-a-real-model", root=tmp_path) is None
     finally:
+        with auth._ENV_MODELS_LOCK:
+            auth._MODELS_SYNC_FAILURES.clear()
+        srv.shutdown()
+
+
+def test_google_models_refresh_guards_concurrency_env_isolation_and_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-6/P1-7/P2-5：同 key 换 base_url、慢/快并发防陈旧覆盖、坏时间戳容错、env 切 key 隔离与失败留缓存、只读回填、分页截止时间。"""
+    auth_file = tmp_path / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file))
+
+    page_calls = 0
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        nonlocal page_calls
+        del method, body
+        if req.path.startswith("/slow/v1beta/models"):
+            time.sleep(0.2)
+            _send_json(req, {"models": [{"name": "models/gemini-stale", "supportedGenerationMethods": ["generateContent"]}]})
+            return
+        if req.path.startswith("/fast/v1beta/models"):
+            _send_json(req, {"models": [{"name": "models/gemini-fresh", "supportedGenerationMethods": ["generateContent"]}]})
+            return
+        if req.path.startswith("/key2/v1beta/models"):
+            _send_json(req, {"models": [{"name": "models/gemini-key2", "supportedGenerationMethods": ["generateContent"]}]})
+            return
+        if req.path.startswith("/fail/v1beta/models"):
+            _send_json(req, {"error": "boom"}, status=500)
+            return
+        if req.path.startswith("/paged/v1beta/models"):
+            page_calls += 1
+            time.sleep(0.08)
+            _send_json(
+                req,
+                {
+                    "models": [{"name": f"models/gemini-p{page_calls}", "supportedGenerationMethods": ["generateContent"]}],
+                    "nextPageToken": f"tok-{page_calls + 1}",
+                },
+            )
+            return
+        _send_json(req, {}, status=404)
+
+    srv, base = _make_mock_server(handler)
+    with auth._ENV_MODELS_LOCK:
+        auth._ENV_MODELS_CACHE.clear()
+        auth._MODELS_SYNC_FAILURES.clear()
+    try:
+        # 1) 同 key 刷新在途改 base_url + 并发慢请求不得覆盖快请求结果
+        stale_ts = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
+        auth_file.write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {
+                    "google": {
+                        "type": "api_key",
+                        "api_key": "AIza-same-key",
+                        "base_url": f"{base}/slow/v1beta",
+                        "api_protocol": "google-generative-ai",
+                        "models": ["gemini-old"],
+                        "models_synced_at_ms": "not-a-number",
+                        "updated_at_ms": stale_ts,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        slow_out: dict[str, Any] = {}
+
+        def run_slow() -> None:
+            slow_out["res"] = auth.refresh_authenticated_models(root=tmp_path, provider_ids=("google",))
+
+        t = threading.Thread(target=run_slow)
+        t.start()
+        time.sleep(0.05)
+        # 在途期间用同一把 api_key 切换 base_url，并写入更新的时间戳
+        with auth._auth_lock(auth_file):
+            st = auth._read_store_unlocked(auth_file)
+            st["providers"]["google"]["base_url"] = f"{base}/fast/v1beta"
+            st["providers"]["google"]["models"] = ["gemini-switched-url"]
+            st["providers"]["google"]["updated_at_ms"] = auth._now_ms()
+            st["providers"]["google"]["models_synced_at_ms"] = 0
+            auth._write_store_unlocked(auth_file, st)
+        t.join()
+        persisted = auth._read_store_unlocked(auth_file)["providers"]["google"]
+        assert persisted["models"] == ["gemini-switched-url"]
+        assert "google" not in slow_out["res"], "base_url 变更后慢结果不得写回也不得假返旧列表"
+
+        # 双并发：慢请求（即使同 base_url/同 key）也不得覆盖已先落盘的快请求
+        with auth._auth_lock(auth_file):
+            st = auth._read_store_unlocked(auth_file)
+            st["providers"]["google"]["base_url"] = f"{base}/slow/v1beta"
+            st["providers"]["google"]["models_synced_at_ms"] = stale_ts
+            auth._write_store_unlocked(auth_file, st)
+        t2 = threading.Thread(target=run_slow)
+        t2.start()
+        time.sleep(0.05)
+        with auth._auth_lock(auth_file):
+            st = auth._read_store_unlocked(auth_file)
+            st["providers"]["google"]["models"] = ["gemini-winner"]
+            st["providers"]["google"]["models_synced_at_ms"] = auth._now_ms()
+            auth._write_store_unlocked(auth_file, st)
+        t2.join()
+        assert auth._read_store_unlocked(auth_file)["providers"]["google"]["models"] == ["gemini-winner"]
+
+        # 2) 磁盘只读/写回失败时，内存中仍返回刷新列表（不丢结果）
+        with auth._auth_lock(auth_file):
+            st = auth._read_store_unlocked(auth_file)
+            st["providers"]["google"]["base_url"] = f"{base}/fast/v1beta"
+            st["providers"]["google"]["models_synced_at_ms"] = stale_ts
+            auth._write_store_unlocked(auth_file, st)
+        orig_write = auth._write_store_unlocked
+        monkeypatch.setattr(auth, "_write_store_unlocked", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("rofs")))
+        ro_sources = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-fresh" in ro_sources
+        monkeypatch.setattr(auth, "_write_store_unlocked", orig_write)
+
+        # 3) env 模式按 api_key 摘要隔离缓存，且过期刷新失败时保留已有动态缓存
+        auth_file.unlink()
+        orig_providers = auth.PROVIDERS
+        orig_google = auth.PROVIDER_MAP["google"]
+
+        def _patch_google_base(new_base: str) -> None:
+            patched = type(orig_google)(**{**orig_google.__dict__, "default_base_url": new_base})
+            monkeypatch.setattr(
+                auth, "PROVIDERS", tuple(patched if p.id == "google" else p for p in orig_providers)
+            )
+            monkeypatch.setitem(auth.PROVIDER_MAP, "google", patched)
+            monkeypatch.setitem(auth.PROVIDER_MAP, "google-gemini", patched)
+
+        _patch_google_base(f"{base}/fast/v1beta")
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-one")
+        env1 = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-fresh" in env1
+
+        # 切换为第二把 GEMINI_API_KEY + 不同路径，不得命中第一把 key 的 60s 缓存
+        _patch_google_base(f"{base}/key2/v1beta")
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-two")
+        env2 = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-key2" in env2 and "google/gemini-fresh" not in env2
+
+        # 换回第一把 key 但使其缓存过期且服务端报 500 → 仍保留之前动态缓存在手的 gemini-fresh
+        key1_digest = auth._secret_digest("AIza-env-one")
+        cache_k1 = ("google", f"{base}/fast/v1beta", key1_digest)
+        with auth._ENV_MODELS_LOCK:
+            auth._ENV_MODELS_CACHE[cache_k1] = (1, ["gemini-fresh"])
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-one")
+        _patch_google_base(f"{base}/fast/v1beta")
+        orig_sync = auth._sync_google_generative_models
+        monkeypatch.setattr(auth, "_sync_google_generative_models", lambda *_a, **_kw: (_ for _ in ()).throw(auth.AuthError("500")))
+        env1_fail = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-fresh" in env1_fail
+        monkeypatch.setattr(auth, "_sync_google_generative_models", orig_sync)
+
+        # 4) 分页同步按总 deadline 封顶
+        with pytest.raises(auth.AuthError, match="超时|timed out"):
+            auth._sync_google_generative_models(f"{base}/paged/v1beta", "AIza-paged", timeout=0.14)
+        assert page_calls < 5
+    finally:
+        with auth._ENV_MODELS_LOCK:
+            auth._ENV_MODELS_CACHE.clear()
+            auth._MODELS_SYNC_FAILURES.clear()
         srv.shutdown()

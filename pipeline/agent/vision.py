@@ -170,6 +170,19 @@ def _turn_boundary(messages: list[Any]) -> int:
     return 0
 
 
+def count_turn_images(messages: list[Any]) -> int:
+    """统计当前回合实际上网请求的附图数量（不超过 `MAX_IMAGES_PER_TURN`，零磁盘 I/O）。"""
+    start = _turn_boundary(messages)
+    count = sum(
+        1
+        for i in range(start, len(messages))
+        if isinstance(messages[i], dict)
+        and messages[i].get("role") == "tool"
+        and isinstance(messages[i].get(IMAGE_KEY), dict)
+    )
+    return min(count, MAX_IMAGES_PER_TURN)
+
+
 def attach_images(messages: list[Any]) -> list[Any]:
     """请求时附图投影。没有本回合的图 → 原样返回同一个列表对象。
 

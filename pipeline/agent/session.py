@@ -1569,23 +1569,21 @@ class AgentSession:
             return fail("open_calls", "历史里有还没配上结果的工具调用，现在压缩会切坏配对")
         # D65（红队 F2，人拍板 2026-10-10）：压缩三处口径全按老化后（= 实际发送口径）——
         # 投影保序保长，切口下标回原列表取 tail / 写史；落盘与出网断言对象不变。
-        # 手动 /compact 在出错中断或单回合海量抓取后也会执行（无下一条真 user 划界），因此
-        # 手动压缩按全量待压区间口径老化，避免摘要器把原样百万字工具结果直接吞进 400。
+        # 手动 /compact 在单回合海量抓取后也会执行（无下一条真 user 划界）：先用 `exempt_last_turn=True`
+        # 按实际发送体积划切口（防止 8 批×150k 先全老化被误判成 `nothing`，也防 >10 批把百万字原文放进 tail），
+        # 再对切出的待压区间 `region` 无条件按 `exempt_last_turn=False` 老化送摘要器。
         from pipeline.agent import aging
 
-        aged = aging.age_tool_results(messages, exempt_last_turn=not manual)
+        aged = aging.age_tool_results(messages, exempt_last_turn=True)
         cut = cp.choose_cut(aged, token_budget=budget, max_messages=ccfg.tail_max_messages)
-        region = aged[1:cut] if cut > 1 else []
-        if not cp.strip_marked(region):
+        raw_region = aged[1:cut] if cut > 1 else []
+        region = [m for m in raw_region if not cp.is_status_card(m)]
+        if not region or not cp.strip_marked(region):
             return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
-        region = [m for m in region if not cp.is_status_card(m)]
-        if not region:
-            return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
-        if not manual:
-            region = aging.age_tool_results(region, exempt_last_turn=False)
+        region = aging.age_tool_results(region, exempt_last_turn=False)
 
         # 读数连同口径一起传进来（审查 #5）：自动触发的读数可能是估算，不许记成实测
-        before = reading if reading is not None else cp.context_reading(None, messages)
+        before = reading if reading is not None else cp.context_reading(None, aged)
         card = cp.card_message(reinject_card) if reinject_card else None
         tail = cp.kept_tail(messages, cut)
         if not manual:
@@ -1624,13 +1622,14 @@ class AgentSession:
 
         summary = cp.summary_message(cp.annotate_redactions(text, input_hits))
         after = cp.compacted_history(messages, cut, summary, card)
-        chars_before = sum(cp.message_chars(m) for m in messages)
-        chars_after = sum(cp.message_chars(m) for m in after)
+        aged_after = aging.age_tool_results(after, exempt_last_turn=True)
+        chars_before = sum(cp.message_chars(m) for m in aged)
+        chars_after = sum(cp.message_chars(m) for m in aged_after)
         if before.source == "usage" and before.tokens is not None and chars_before:
             # 同一把尺：压缩前是服务商实测，压缩后按字数比例折算，不拿实测去比估算
             tokens_after, after_source = round(before.tokens * chars_after / chars_before), "scaled"
         else:
-            tokens_after, after_source = cp.estimate_tokens(after), "estimate"
+            tokens_after, after_source = cp.estimate_tokens(aged_after), "estimate"
         kept_docs = self._kept_injected(tracker, tail, effective_scope, root)
         # D81：企划注入的正文没留在尾部 → 下一轮重注（与规程同一判据）
         kept_project = cp.kept_doc_paths(tracker.project_texts, tail)

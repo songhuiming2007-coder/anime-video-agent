@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pipeline.agent import fetch_log
 
@@ -95,6 +97,54 @@ def _browser_text(url: str, reason: str, root: Path | None) -> dict[str, Any]:
     return browser_action("extract_text", reason, root=root, keep_full=True)
 
 
+_CHROME_RETRY_DELAY_S = 2.0
+_CHROME_MAX_RETRIES = 3
+_chrome_sleep = time.sleep
+
+
+def _chrome_challenge_reason(title: str, text: str) -> str | None:
+    """识别 Chrome 抓回的空白页或 Cloudflare/反爬验证中间页，防止脏页落进 fetch-log。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return "页面正文为空（可能是空白页或尚未完成渲染）"
+    if len(stripped) >= 1500:
+        return None
+    low_title = (title or "").strip().lower()
+    low_body = stripped.lower()
+    if (
+        "just a moment" in low_title
+        or "checking your browser" in low_title
+        or ("attention required" in low_title and "cloudflare" in low_title)
+        or "ddos-guard" in low_title
+    ):
+        return f"页面疑似反爬验证拦截页（title={title.strip() or '无'}）"
+    if (
+        ("请稍候" in low_title or "請稍候" in low_title or "しばらくお待ちください" in low_title)
+        and (
+            len(stripped) < 400
+            or "cloudflare" in low_body
+            or "ray id" in low_body
+            or "turnstile" in low_body
+        )
+    ):
+        return f"页面疑似反爬验证拦截页（title={title.strip() or '无'}）"
+    challenge_markers = (
+        "enable javascript and cookies to continue",
+        "checking if the site connection is secure",
+        "performing security verification",
+        "checking your browser before accessing",
+        "cf-browser-verification",
+        "challenge-platform",
+    )
+    if any(marker in low_body for marker in challenge_markers):
+        return "页面停留在 Cloudflare / 反爬安全验证页"
+    if "verify you are human" in low_body and (
+        "cloudflare" in low_body or "ray id" in low_body or "security" in low_body or len(stripped) < 500
+    ):
+        return "页面停留在人机验证（CAPTCHA / Turnstile）拦截页"
+    return None
+
+
 def _chrome_text(url: str, reason: str, root: Path | None) -> dict[str, Any]:
     """用本机主力 Chrome 后台新建标签抓全文，读完即关闭标签，不抢前台焦点。"""
     from pipeline.agent.web_chrome import chrome_action
@@ -102,7 +152,25 @@ def _chrome_text(url: str, reason: str, root: Path | None) -> dict[str, Any]:
     opened = chrome_action("open", url=url, reason=reason, root=root)
     page_id = opened.get("page_id")
     try:
-        return chrome_action("extract_text", page_id=page_id, reason=reason, root=root, keep_full=True)
+        last_bad: str | None = None
+        for attempt in range(_CHROME_MAX_RETRIES + 1):
+            if attempt > 0:
+                _chrome_sleep(_CHROME_RETRY_DELAY_S)
+            res = chrome_action(
+                "extract_text",
+                page_id=page_id,
+                reason=reason,
+                root=root,
+                keep_full=True,
+                wait_for_stable_dom=True,
+            )
+            body_text = str(
+                res.get("full_text") if res.get("full_text") is not None else res.get("text") or ""
+            )
+            last_bad = _chrome_challenge_reason(str(res.get("title") or ""), body_text)
+            if last_bad is None:
+                return res
+        raise ValueError(f"Chrome 抓取未取到有效正文：{last_bad}")
     finally:
         if page_id is not None:
             try:
@@ -152,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "crawl" if a.crawl else "browser" if a.browser else "chrome" if a.chrome else "auto"
     try:
         out = fetch_and_record(a.url, mode=mode, origin="cli", caller=a.caller.strip() or "cli", reason=a.reason)
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
     for line in out["tried"]:

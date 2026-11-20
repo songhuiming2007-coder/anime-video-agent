@@ -129,6 +129,15 @@ _CONNECT_HINT_KEYWORDS = (
     "target closed",
     "protocol error",
 )
+_EVAL_CONNECT_HINT_KEYWORDS = (
+    "autoconnect",
+    "remote-debugging",
+    "remote debugging",
+    "could not connect",
+    "econnrefused",
+    "target closed",
+    "protocol error",
+)
 
 _PERMISSION_DENIED_KEYWORDS = (
     "eperm",
@@ -140,8 +149,19 @@ _DEVTOOLS_PORT_HINT_KEYWORDS = (
     "devtoolsactiveport",
     "google/chrome",
     "google\\chrome",
+    "application support/google/chrome",
+    "chrome/user data",
+    "chrome\\user data",
     "chrome-profile",
-    "user data",
+)
+_DEVTOOLS_IO_CONTEXT_KEYWORDS = (
+    "could not read",
+    "could not connect",
+    "open '",
+    'open "',
+    "eperm",
+    "eacces",
+    "operation not permitted",
 )
 _DEVTOOLS_PORT_FILE = "DevToolsActivePort"
 _MACOS_CHROME_CHANNEL_DIRS: dict[str, str] = {
@@ -496,15 +516,26 @@ def precheck_chrome_access(action: str, args: dict[str, Any], *, root: Path | No
 
 
 def _has_autoconnect_flag(args: Sequence[str]) -> bool:
-    """判断配置参数是否启用 `--autoConnect`（兼容 kebab-case 与显式关闭标记）。"""
+    """判断配置参数是否启用 `--autoConnect`（兼容 kebab-case、空格布尔值与显式关闭标记，后者覆盖前者）。"""
+    arg_list = [str(a).strip() for a in args]
     enabled = False
-    for raw in args:
-        token = str(raw).strip()
+    i = 0
+    while i < len(arg_list):
+        token = arg_list[i]
+        i += 1
         if not token:
             continue
         lowered = token.lower()
         if lowered in {"--autoconnect", "--auto-connect"}:
             enabled = True
+            if i < len(arg_list):
+                nxt = arg_list[i].lower()
+                if nxt in {"1", "true", "yes"}:
+                    enabled = True
+                    i += 1
+                elif nxt in {"0", "false", "no"}:
+                    enabled = False
+                    i += 1
         elif lowered in {"--no-autoconnect", "--no-auto-connect"}:
             enabled = False
         elif lowered.startswith(("--autoconnect=", "--auto-connect=")):
@@ -517,26 +548,35 @@ def _has_autoconnect_flag(args: Sequence[str]) -> bool:
 
 
 def _extract_cli_option(args: Sequence[str], names: Sequence[str]) -> str | None:
-    """提取 yargs 风格参数值（支持 `--flag=value` 与 `--flag value`，大小写无关）。"""
+    """提取 yargs 风格参数值（last-wins，支持 `--flag=value` 与 `--flag value`，不吞后续 flag）。"""
     lowered_names = tuple(n.lower() for n in names)
-    arg_list = [str(a) for a in args]
-    for i, token in enumerate(arg_list):
-        stripped = token.strip()
-        if not stripped:
+    arg_list = [str(a).strip() for a in args]
+    found: str | None = None
+    i = 0
+    while i < len(arg_list):
+        token = arg_list[i]
+        i += 1
+        if not token:
             continue
-        low = stripped.lower()
+        low = token.lower()
         for name in lowered_names:
             if low == name:
-                if i + 1 < len(arg_list):
-                    nxt = arg_list[i + 1].strip()
-                    if nxt:
-                        return nxt
-                return None
+                if i < len(arg_list):
+                    nxt = arg_list[i]
+                    if nxt and not nxt.startswith("-"):
+                        found = nxt
+                        i += 1
+                    else:
+                        found = None
+                else:
+                    found = None
+                break
             prefix = f"{name}="
             if low.startswith(prefix):
-                val = stripped[len(prefix) :].strip()
-                return val or None
-    return None
+                val = token[len(prefix) :].strip()
+                found = val or None
+                break
+    return found
 
 
 def _resolve_autoconnect_port_path(
@@ -572,8 +612,13 @@ def _resolve_autoconnect_port_path(
 
 def _is_devtools_permission_error(detail: str) -> bool:
     lowered = detail.lower()
-    return any(kw in lowered for kw in _PERMISSION_DENIED_KEYWORDS) and any(
-        kw in lowered for kw in _DEVTOOLS_PORT_HINT_KEYWORDS
+    return (
+        any(kw in lowered for kw in _PERMISSION_DENIED_KEYWORDS)
+        and any(kw in lowered for kw in _DEVTOOLS_PORT_HINT_KEYWORDS)
+        and (
+            "devtoolsactiveport" in lowered
+            or any(kw in lowered for kw in _DEVTOOLS_IO_CONTEXT_KEYWORDS)
+        )
     )
 
 
@@ -604,11 +649,14 @@ def _permission_error_message(
     )
 
 
-def _connect_error_message(detail: str) -> str:
+def _connect_error_message(detail: str, *, tool_name: str | None = None) -> str:
     if _is_devtools_permission_error(detail):
         return _permission_error_message(detail)
     lowered = detail.lower()
-    if any(kw in lowered for kw in _CONNECT_HINT_KEYWORDS):
+    hint_keywords = (
+        _EVAL_CONNECT_HINT_KEYWORDS if tool_name == "evaluate_script" else _CONNECT_HINT_KEYWORDS
+    )
+    if any(kw in lowered for kw in hint_keywords):
         return (
             f"chrome 连接主力 Chrome 失败：{detail}。"
             "请确认 Google Chrome 144+ 已运行且在 chrome://inspect/#remote-debugging 勾选启用远程调试"
@@ -805,7 +853,7 @@ class _McpStdioClient:
         result = self._request("tools/call", {"name": name, "arguments": arguments}, timeout_s=timeout_s)
         if result.get("isError"):
             err_text = _extract_mcp_text(result) or f"MCP 工具 {name} 返回错误"
-            raise ValueError(_connect_error_message(err_text))
+            raise ValueError(_connect_error_message(err_text, tool_name=name))
         return result
 
     def close(self) -> None:
@@ -844,19 +892,12 @@ def _check_autoconnect_port_permission(
         with port_path.open("rb") as fh:
             # 仅探测内核读权限，绝不保留、记录或暴露文件内容（含敏感 CDP websocket token）
             fh.read(1)
-    except PermissionError as exc:
-        raise ValueError(
-            _permission_error_message(
-                f"{exc} (errno={exc.errno}, path={port_path})",
-                platform=platform,
-                port_path=port_path,
-            )
-        ) from exc
     except OSError as exc:
-        if exc.errno in (errno.EPERM, errno.EACCES):
+        if isinstance(exc, PermissionError) or exc.errno in (errno.EPERM, errno.EACCES):
+            detail = exc.strerror or str(exc)
             raise ValueError(
                 _permission_error_message(
-                    f"{exc} (errno={exc.errno}, path={port_path})",
+                    f"{detail} (errno={exc.errno})",
                     platform=platform,
                     port_path=port_path,
                 )
@@ -1224,10 +1265,15 @@ def _extract_dom_snapshot(
     page_id: int,
     *,
     timeout_s: float,
+    wait_for_stable_dom: bool = False,
 ) -> tuple[str, str, str, str]:
     res = sess.call_tool(
         "evaluate_script",
-        {"pageId": page_id, "function": _EXTRACT_PAGE_JS, "waitForStableDom": False},
+        {
+            "pageId": page_id,
+            "function": _EXTRACT_PAGE_JS,
+            "waitForStableDom": bool(wait_for_stable_dom),
+        },
         timeout_s=timeout_s,
     )
     payload = _parse_evaluate_payload(res)
@@ -1425,10 +1471,13 @@ def _handle_extract_text(
     page_id: int,
     root: Path | None,
     keep_full: bool,
+    wait_for_stable_dom: bool = False,
 ) -> dict[str, Any]:
     _select_background(sess, page_id, timeout_s=cfg.timeout_s)
     _guard_current_page_url(sess, cfg, page_id)
-    raw_url, title, raw_text, raw_html = _extract_dom_snapshot(sess, page_id, timeout_s=cfg.timeout_s)
+    raw_url, title, raw_text, raw_html = _extract_dom_snapshot(
+        sess, page_id, timeout_s=cfg.timeout_s, wait_for_stable_dom=wait_for_stable_dom
+    )
     final_url = raw_url or known_page_url(page_id)
     if final_url:
         _guard_url_and_cleanup_on_fail(
@@ -1709,7 +1758,14 @@ def chrome_action(
         return _handle_close(sess, cfg, page_id=pid)
 
     if action == "extract_text":
-        return _handle_extract_text(sess, cfg, page_id=pid, root=base_root, keep_full=keep_full)
+        return _handle_extract_text(
+            sess,
+            cfg,
+            page_id=pid,
+            root=base_root,
+            keep_full=keep_full,
+            wait_for_stable_dom=wait_for_stable_dom,
+        )
 
     if action == "screenshot":
         return _handle_screenshot(

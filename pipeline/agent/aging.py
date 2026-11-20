@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pipeline.agent.compact import message_chars
+
 # 阈值（spec §3.3）：2026-10-10 全量 session.jsonl 实测（含全部 sid、排除回滚消息）——
 # 91 条 tool 消息，中位数 319 字符、P90 = 2,666；>4000 的恰 5 条（5.5%）占 67.8% 字符体量。
 # 4000 落在 P90 与 P99 之间，恰好只切顶部 5%，常规检索/状态结果（≤3k）一律不碰。
@@ -89,17 +91,6 @@ def _last_turn_boundary(messages: list[Any]) -> int | None:
     return None
 
 
-def _message_chars(message: Any) -> int:
-    """单条消息进入请求体的字符数（content + tool_calls 名参），口径同 compact.message_chars。"""
-    if not isinstance(message, dict):
-        return 0
-    total = len(str(message.get("content") or ""))
-    for call in message.get("tool_calls") or []:
-        function = (call or {}).get("function") or {}
-        total += len(str(function.get("name") or "")) + len(str(function.get("arguments") or ""))
-    return total
-
-
 def age_tool_results(
     messages: list[Any], *, exempt_last_turn: bool = True
 ) -> list[Any]:
@@ -145,7 +136,7 @@ def age_current_turn_tool_results(
     boundary = _last_turn_boundary(aged)
     if boundary is None:
         return aged, 0
-    total_chars = sum(_message_chars(m) for m in aged)
+    total_chars = sum(message_chars(m) for m in aged)
     if target_chars is not None and total_chars <= target_chars:
         return aged, 0
 
@@ -161,6 +152,7 @@ def age_current_turn_tool_results(
             if not batches:
                 batches.append([])
             batches[-1].append(i)
+    batches = [b for b in batches if b]
 
     if keep_recent_batches <= 0:
         candidate_batches = batches

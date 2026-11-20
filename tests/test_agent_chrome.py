@@ -1020,4 +1020,41 @@ def test_devtools_active_port_eperm_diagnostics_and_preflight(tmp_path: Path, mo
     err_text = str(launch_exc.value)
     assert "macOS TCC" in err_text
     assert "SECRET_UUID_DO_NOT_LEAK" not in err_text
-    assert str(custom_port) in err_text
+    assert err_text.count(str(custom_port)) == 1
+
+    # 4) P1-8：evaluate_script 的业务 JS 异常不得误报为 macOS TCC 或 Chrome 连接失败
+    eval_perm = wc._connect_error_message(
+        "Error: Permission denied when reading user data from API",
+        tool_name="evaluate_script",
+    )
+    assert eval_perm.startswith("chrome 操作失败：")
+    assert "macOS TCC" not in eval_perm and "DevToolsActivePort" not in eval_perm
+
+    eval_js_ref = wc._connect_error_message(
+        "ReferenceError: chrome is not defined",
+        tool_name="evaluate_script",
+    )
+    assert eval_js_ref == "chrome 操作失败：ReferenceError: chrome is not defined"
+
+    # 5) P1-9：CLI 参数解析支持 --autoConnect false、last-wins 覆盖与不吞后续 flag
+    assert wc._has_autoconnect_flag(["--autoConnect", "false"]) is False
+    assert wc._has_autoconnect_flag(["--autoConnect", "false", "--auto-connect", "true"]) is True
+    assert wc._extract_cli_option(["--channel=stable", "--channel=canary"], ("--channel",)) == "canary"
+    assert wc._extract_cli_option(["--browserUrl", "--autoConnect"], ("--browserUrl",)) is None
+    assert wc._extract_cli_option(["--userDataDir", "--autoConnect"], ("--userDataDir",)) is None
+    assert (
+        wc._resolve_autoconnect_port_path(
+            _cfg_with(("--autoConnect", "--channel=stable", "--channel=canary")),
+            platform="darwin",
+            home=fake_home,
+        )
+        == fake_home / "Library" / "Application Support" / "Google" / "Chrome Canary" / "DevToolsActivePort"
+    )
+    assert (
+        wc._resolve_autoconnect_port_path(
+            _cfg_with(("--browserUrl", "--autoConnect")),
+            platform="darwin",
+            home=fake_home,
+        )
+        == fake_home / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort"
+    )

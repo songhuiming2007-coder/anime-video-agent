@@ -1103,8 +1103,37 @@ def _sync_proxy_models(base_url: str, api_key: str, root: Path | None) -> list[s
 
 
 MODELS_SYNC_TTL_MS = 60_000
+MODELS_SYNC_FAIL_COOLDOWN_MS = 20_000
 LIVE_MODELS_SYNC_TIMEOUT_S = 4.0
-_ENV_MODELS_CACHE: dict[tuple[str, str], tuple[int, list[str]]] = {}
+_ENV_MODELS_LOCK = threading.Lock()
+_ENV_MODELS_CACHE: dict[tuple[str, str, str], tuple[int, list[str]]] = {}
+_MODELS_SYNC_FAILURES: dict[tuple[str, str, str], int] = {}
+
+
+def _secret_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _safe_int_ms(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _get_cached_env_models(provider_id: str, base_url: str, api_key: str) -> list[str] | None:
+    if not api_key:
+        return None
+    cache_key = (provider_id, base_url.rstrip("/"), _secret_digest(api_key))
+    with _ENV_MODELS_LOCK:
+        cached = _ENV_MODELS_CACHE.get(cache_key)
+        return list(cached[1]) if cached and cached[1] else None
 
 
 def _sync_google_generative_models(
@@ -1119,12 +1148,16 @@ def _sync_google_generative_models(
     ids: list[str] = []
     seen: set[str] = set()
     page_token: str | None = None
+    deadline = time.monotonic() + max(0.05, float(timeout))
     for _ in range(5):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AuthError("Google 模型列表同步超时")
         params = {"pageSize": "1000"}
         if page_token:
             params["pageToken"] = page_token
         url = f"{base}?{urllib.parse.urlencode(params)}"
-        data = _http_json(url, method="GET", headers=headers, timeout=timeout)
+        data = _http_json(url, method="GET", headers=headers, timeout=remaining)
         raw_items = data.get("models")
         if not isinstance(raw_items, list):
             break
@@ -1137,9 +1170,7 @@ def _sync_google_generative_models(
             raw_name = item.get("name")
             if not isinstance(raw_name, str) or not raw_name.strip():
                 continue
-            mid = raw_name.strip()
-            if mid.startswith("models/"):
-                mid = mid[len("models/"):]
+            mid = raw_name.strip().removeprefix("models/")
             if mid and mid not in seen:
                 seen.add(mid)
                 ids.append(mid)
@@ -2143,19 +2174,28 @@ def _copilot_env_session(
     return sess_tok, sess_base
 
 
+def _env_api_key(spec: ProviderSpec) -> str:
+    for env_name in spec.env_vars:
+        if env_name in (
+            "OLLAMA_HOST",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "AWS_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+        ):
+            continue
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            return val
+    return ""
+
+
 def _build_env_credential(spec: ProviderSpec) -> dict[str, Any] | None:
     env_configured, env_source, _ = _detect_env_status(spec)
     if not env_configured:
         return None
     extra_cfg = _backfill_vertex_extra(spec, _normalize_extra_config(spec, {}))
-    api_key = ""
-    for env_name in spec.env_vars:
-        if env_name in ("OLLAMA_HOST", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "AWS_PROFILE", "AWS_ACCESS_KEY_ID"):
-            continue
-        val = os.environ.get(env_name, "").strip()
-        if val:
-            api_key = val
-            break
+    api_key = _env_api_key(spec)
     if spec.id == "cloudflare-ai-gateway" and not (extra_cfg.get("account_id") and extra_cfg.get("gateway_id")):
         return None
     if spec.id == "cloudflare-workers-ai" and not extra_cfg.get("account_id"):
@@ -2163,15 +2203,21 @@ def _build_env_credential(spec: ProviderSpec) -> dict[str, Any] | None:
     base_url = _resolve_effective_base_url(spec, spec.default_base_url, extra_cfg)
     if spec.id == "github-copilot" and api_key:
         api_key, base_url = _copilot_env_session(spec, api_key, extra_cfg)
+    norm_base = base_url.rstrip("/")
+    models = list(spec.default_models)
+    if spec.api_protocol == "google-generative-ai" and api_key:
+        cached_models = _get_cached_env_models(spec.id, norm_base, api_key)
+        if cached_models:
+            models = cached_models
     return {
         "provider": spec.id,
         "auth_type": "env",
         "api_key": api_key,
-        "base_url": base_url.rstrip("/"),
+        "base_url": norm_base,
         "api_protocol": spec.api_protocol,
         "extra_headers": dict(spec.extra_headers),
         "extra_config": extra_cfg,
-        "models": list(spec.default_models),
+        "models": models,
         "env_source": env_source,
     }
 
@@ -2293,28 +2339,30 @@ def _env_provider_entry(spec: ProviderSpec) -> tuple[str, str, tuple[str, ...]] 
         base_url = _resolve_effective_base_url(spec, spec.default_base_url, extra_cfg)
     except AuthError:
         return None
-    return "env", base_url, spec.default_models
+    models: tuple[str, ...] = spec.default_models
+    if spec.api_protocol == "google-generative-ai":
+        api_key = _env_api_key(spec)
+        cached_models = _get_cached_env_models(spec.id, base_url.rstrip("/"), api_key) if api_key else None
+        if cached_models:
+            models = tuple(cached_models)
+    return "env", base_url, models
 
 
-def refresh_authenticated_models(
+def _refresh_authenticated_models_with_meta(
     root: Path | None = None,
     *,
     provider_ids: tuple[str, ...] | list[str] | None = None,
     ttl_ms: int = MODELS_SYNC_TTL_MS,
     timeout: float = LIVE_MODELS_SYNC_TIMEOUT_S,
     force: bool = False,
-) -> dict[str, list[str]]:
-    """按 TTL 对已接入动态目录的服务商（如 Google AI Studio）刷新可用模型列表，并安全写回存储。
-
-    三阶段无锁出网：持锁读候选 → 解锁发 HTTP 请求 → 持锁核对凭据未变更后原子回写。
-    任何网络或远端异常均静默保留已有缓存，不阻断模型列表展示。
-    """
+) -> tuple[dict[str, list[str]], dict[str, tuple[str, str]]]:
     path = auth_path(root)
     now = _now_ms()
     wanted = set(provider_ids) if provider_ids is not None else None
-    stored_candidates: list[tuple[str, str, str, str]] = []
-    env_candidates: list[tuple[str, str, str]] = []
+    stored_candidates: list[tuple[str, str, str, str, int, int]] = []
+    env_candidates: list[tuple[str, str, str, tuple[str, str, str], list[str] | None]] = []
     refreshed: dict[str, list[str]] = {}
+    refreshed_meta: dict[str, tuple[str, str]] = {}
 
     try:
         with _auth_lock(path):
@@ -2338,42 +2386,95 @@ def refresh_authenticated_models(
             if not api_key:
                 continue
             base_url = str(entry.get("base_url") or spec.default_base_url).rstrip("/")
-            last_sync = int(entry.get("models_synced_at_ms") or entry.get("updated_at_ms") or 0)
+            raw_sync_ts = _safe_int_ms(entry.get("models_synced_at_ms"))
+            raw_updated_ts = _safe_int_ms(entry.get("updated_at_ms"))
+            last_sync = raw_sync_ts or raw_updated_ts
             if force or ttl_ms <= 0 or last_sync <= 0 or (now - last_sync) >= ttl_ms:
-                stored_candidates.append((spec.id, stored_key, base_url, api_key))
+                fail_key = (spec.id, base_url, _secret_digest(api_key))
+                with _ENV_MODELS_LOCK:
+                    fail_ts = _MODELS_SYNC_FAILURES.get(fail_key)
+                if not force and fail_ts is not None and (now - fail_ts) < MODELS_SYNC_FAIL_COOLDOWN_MS:
+                    continue
+                stored_candidates.append(
+                    (spec.id, stored_key, base_url, api_key, raw_sync_ts, raw_updated_ts)
+                )
         else:
             env_configured, _, _ = _detect_env_status(spec)
             if not env_configured:
                 continue
-            cred = _build_env_credential(spec)
-            if cred is None or not cred.get("api_key"):
+            extra_cfg = _backfill_vertex_extra(spec, _normalize_extra_config(spec, {}))
+            try:
+                base_url = _resolve_effective_base_url(spec, spec.default_base_url, extra_cfg).rstrip("/")
+            except AuthError:
                 continue
-            base_url = str(cred.get("base_url") or spec.default_base_url).rstrip("/")
-            cache_key = (spec.id, base_url)
-            cached = _ENV_MODELS_CACHE.get(cache_key)
+            api_key = _env_api_key(spec)
+            if not api_key:
+                continue
+            cache_key = (spec.id, base_url, _secret_digest(api_key))
+            with _ENV_MODELS_LOCK:
+                cached = _ENV_MODELS_CACHE.get(cache_key)
+                fail_ts = _MODELS_SYNC_FAILURES.get(cache_key)
+            stale_models = list(cached[1]) if cached and cached[1] else None
             if not force and ttl_ms > 0 and cached is not None and (now - cached[0]) < ttl_ms:
                 refreshed[spec.id] = list(cached[1])
+                refreshed_meta[spec.id] = (api_key, base_url)
+            elif not force and fail_ts is not None and (now - fail_ts) < MODELS_SYNC_FAIL_COOLDOWN_MS:
+                if stale_models:
+                    refreshed[spec.id] = stale_models
+                    refreshed_meta[spec.id] = (api_key, base_url)
             else:
-                env_candidates.append((spec.id, base_url, str(cred["api_key"])))
+                env_candidates.append((spec.id, base_url, api_key, cache_key, stale_models))
 
-    stored_updates: dict[str, tuple[str, str, list[str]]] = {}
-    for pid, stored_key, base_url, api_key in stored_candidates:
+    stored_updates: dict[str, tuple[str, str, str, int, int, list[str]]] = {}
+    for pid, stored_key, base_url, api_key, expected_sync_ts, expected_updated_ts in stored_candidates:
+        fail_key = (pid, base_url, _secret_digest(api_key))
         try:
             synced = _sync_google_generative_models(base_url, api_key, timeout=timeout)
         except (AuthError, OSError, ValueError):
+            with _ENV_MODELS_LOCK:
+                if len(_MODELS_SYNC_FAILURES) > 32:
+                    _MODELS_SYNC_FAILURES.pop(next(iter(_MODELS_SYNC_FAILURES)), None)
+                _MODELS_SYNC_FAILURES[fail_key] = _now_ms()
             continue
         if synced:
-            stored_updates[pid] = (stored_key, api_key, synced)
+            with _ENV_MODELS_LOCK:
+                _MODELS_SYNC_FAILURES.pop(fail_key, None)
+            stored_updates[pid] = (
+                stored_key,
+                base_url,
+                api_key,
+                expected_sync_ts,
+                expected_updated_ts,
+                synced,
+            )
             refreshed[pid] = list(synced)
+            refreshed_meta[pid] = (api_key, base_url)
 
-    for pid, base_url, api_key in env_candidates:
+    for pid, base_url, api_key, cache_key, stale_models in env_candidates:
         try:
             synced = _sync_google_generative_models(base_url, api_key, timeout=timeout)
         except (AuthError, OSError, ValueError):
+            with _ENV_MODELS_LOCK:
+                if len(_MODELS_SYNC_FAILURES) > 32:
+                    _MODELS_SYNC_FAILURES.pop(next(iter(_MODELS_SYNC_FAILURES)), None)
+                _MODELS_SYNC_FAILURES[cache_key] = _now_ms()
+            if stale_models:
+                refreshed[pid] = list(stale_models)
+                refreshed_meta[pid] = (api_key, base_url)
             continue
         if synced:
-            _ENV_MODELS_CACHE[(pid, base_url)] = (_now_ms(), list(synced))
-            refreshed[pid] = list(synced)
+            with _ENV_MODELS_LOCK:
+                _MODELS_SYNC_FAILURES.pop(cache_key, None)
+                if len(_ENV_MODELS_CACHE) > 32:
+                    _ENV_MODELS_CACHE.pop(next(iter(_ENV_MODELS_CACHE)), None)
+                _ENV_MODELS_CACHE[cache_key] = (_now_ms(), list(synced))
+            cur_spec = PROVIDER_MAP.get(pid)
+            if cur_spec is not None and _env_api_key(cur_spec) == api_key:
+                refreshed[pid] = list(synced)
+                refreshed_meta[pid] = (api_key, base_url)
+        elif stale_models:
+            refreshed[pid] = list(stale_models)
+            refreshed_meta[pid] = (api_key, base_url)
 
     if stored_updates:
         try:
@@ -2382,21 +2483,66 @@ def refresh_authenticated_models(
                 latest_providers = latest_store.setdefault("providers", {})
                 write_ts = _now_ms()
                 dirty = False
-                for pid, (stored_key, expected_key, synced) in stored_updates.items():
+                for pid, (
+                    stored_key,
+                    expected_base,
+                    expected_key,
+                    expected_sync_ts,
+                    expected_updated_ts,
+                    synced,
+                ) in stored_updates.items():
                     cur = latest_providers.get(stored_key)
                     if not isinstance(cur, dict):
+                        refreshed.pop(pid, None)
+                        refreshed_meta.pop(pid, None)
                         continue
+                    cur_spec = PROVIDER_MAP.get(pid)
                     cur_key = str(cur.get("api_key") or cur.get("access_token") or "").strip()
-                    if cur_key != expected_key:
+                    cur_base = str(
+                        cur.get("base_url") or (cur_spec.default_base_url if cur_spec else "")
+                    ).rstrip("/")
+                    cur_sync_ts = _safe_int_ms(cur.get("models_synced_at_ms"))
+                    cur_updated_ts = _safe_int_ms(cur.get("updated_at_ms"))
+                    if (
+                        cur_key != expected_key
+                        or cur_base != expected_base
+                        or cur_sync_ts > expected_sync_ts
+                        or cur_updated_ts > expected_updated_ts
+                    ):
+                        refreshed.pop(pid, None)
+                        refreshed_meta.pop(pid, None)
                         continue
                     cur["models"] = list(synced)
-                    cur["models_synced_at_ms"] = write_ts
+                    cur["models_synced_at_ms"] = max(write_ts, cur_sync_ts + 1)
                     dirty = True
                 if dirty:
                     _write_store_unlocked(path, latest_store)
         except (AuthError, OSError):
             pass
 
+    return refreshed, refreshed_meta
+
+
+def refresh_authenticated_models(
+    root: Path | None = None,
+    *,
+    provider_ids: tuple[str, ...] | list[str] | None = None,
+    ttl_ms: int = MODELS_SYNC_TTL_MS,
+    timeout: float = LIVE_MODELS_SYNC_TIMEOUT_S,
+    force: bool = False,
+) -> dict[str, list[str]]:
+    """按 TTL 对已接入动态目录的服务商（如 Google AI Studio）刷新可用模型列表，并安全写回存储。
+
+    三阶段无锁出网：持锁读候选 → 解锁发 HTTP 请求 → 持锁核对凭据/base_url/时间戳未变更后原子回写。
+    任何网络或远端异常均进入短冷却并静默保留已有缓存，不阻断模型列表展示。
+    """
+    refreshed, _ = _refresh_authenticated_models_with_meta(
+        root=root,
+        provider_ids=provider_ids,
+        ttl_ms=ttl_ms,
+        timeout=timeout,
+        force=force,
+    )
     return refreshed
 
 
@@ -2406,7 +2552,9 @@ def _iter_authenticated_model_entries(
     refresh: bool = False,
 ) -> list[tuple[str, dict[str, Any]]]:
     """读取所有已登录（含环境变量已生效）服务商的 `(full_model_id, source_meta)` 列表（按完整模型名去重排序）。"""
-    refreshed: dict[str, list[str]] = refresh_authenticated_models(root=root) if refresh else {}
+    refreshed, refreshed_meta = (
+        _refresh_authenticated_models_with_meta(root=root) if refresh else ({}, {})
+    )
     path = auth_path(root)
     try:
         with _auth_lock(path):
@@ -2426,12 +2574,18 @@ def _iter_authenticated_model_entries(
             )
             auth_type = str(entry.get("type") or spec.category)
             base_url = str(entry.get("base_url") or spec.default_base_url)
+            entry_key = str(entry.get("api_key") or entry.get("access_token") or "").strip()
+            meta_pair = refreshed_meta.get(spec.id)
+            if refreshed.get(spec.id) and (
+                meta_pair is None or meta_pair == (entry_key, base_url.rstrip("/"))
+            ):
+                models = refreshed[spec.id]
         else:
             env_info = _env_provider_entry(spec)
             if env_info is None:
                 continue
             auth_type, base_url, models = env_info
-            if spec.id in refreshed and refreshed[spec.id]:
+            if refreshed.get(spec.id):
                 models = refreshed[spec.id]
         endpoint = _url_host(base_url)
         for m in models:
@@ -2489,10 +2643,16 @@ def resolve_model_provider(model_name: str, *, root: Path | None = None) -> tupl
         return None
     catalog = cred.get("models") or ()
     if wire not in catalog and spec.api_protocol == "google-generative-ai" and cred.get("api_key"):
+        orig_key = str(cred.get("api_key") or "")
+        orig_base = str(cred.get("base_url") or "")
         refreshed = refresh_authenticated_models(root=root, provider_ids=(spec.id,), ttl_ms=MODELS_SYNC_TTL_MS)
-        if spec.id in refreshed and refreshed[spec.id]:
+        if refreshed.get(spec.id):
             cred = resolve_provider_credential(spec.id, root=root) or cred
-            if cred.get("auth_type") == "env":
+            if (
+                wire not in (cred.get("models") or ())
+                and str(cred.get("api_key") or "") == orig_key
+                and str(cred.get("base_url") or "") == orig_base
+            ):
                 cred["models"] = list(refreshed[spec.id])
             catalog = cred.get("models") or ()
     if wire not in catalog:

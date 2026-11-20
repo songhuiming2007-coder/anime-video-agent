@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -39,12 +40,14 @@ from pipeline import paths
 from pipeline.agent import model_switch, vision
 from pipeline.agent.aging import age_current_turn_tool_results, age_tool_results
 from pipeline.agent.compact import (
+    CHARS_PER_TOKEN,
     COMPACT_KEY,
     STATUS_CARD_KEY,
     CompactConfigError,
     drop_stale_status_cards,
     estimate_tokens,
     load_compact_config,
+    message_chars,
 )
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
@@ -150,9 +153,18 @@ class LLMError(RuntimeError):
     `retryable`（D93）：超时、连不上、408/409/429/5xx 为真，工具循环据此自动重试；默认假。
     """
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        raw_detail: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status_code = status_code
+        self.raw_detail = raw_detail
 
 
 def _warn_once(cfg_file: Path, kind: str, message: str) -> None:
@@ -2257,9 +2269,16 @@ def chat_complete(
                 return _stamp_google_sig_model(message, cfg, purpose)
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read()[:200].decode("utf-8", errors="replace")
+        raw_bytes = exc.read(4096) or b""
+        raw_body = raw_bytes.decode("utf-8", errors="replace")
+        detail = raw_body[:1024]
         retryable = exc.code in _RETRYABLE_HTTP or exc.code >= 500
-        raise LLMError(f"LLM HTTP {exc.code}: {detail}", retryable=retryable) from None
+        raise LLMError(
+            f"LLM HTTP {exc.code}: {detail}",
+            retryable=retryable,
+            status_code=exc.code,
+            raw_detail=raw_body,
+        ) from None
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         # HTTPException：流读到一半连接被掐（IncompleteRead 等），与超时同属可重试
         raise LLMError(f"LLM 请求失败: {exc}", retryable=True) from None
@@ -2518,6 +2537,8 @@ def _zero_lookups() -> dict[str, int]:
 # ---- 回合内上下文防爆仓护栏 ----
 
 INTRA_TURN_AGE_RATIO = 0.75
+INTRA_TURN_HARD_RATIO = 0.95
+_EST_TOKENS_PER_IMAGE = 2_000
 
 _CONTEXT_OVERFLOW_RE = re.compile(
     r"(?:"
@@ -2531,14 +2552,31 @@ _CONTEXT_OVERFLOW_RE = re.compile(
     r"|request too large.*token"
     r"|too many tokens"
     r"|context window.*exceed"
+    r"|exceeds?(?: the)?(?: model'?s?)? context window"
+    r"|request_too_large"
+    r"|payload size exceeds"
     r")",
+    re.IGNORECASE,
+)
+
+_RATE_LIMIT_RE = re.compile(
+    r"(?:HTTP\s+429\b|tokens?\s+per\s+min(?:ute)?\b|\bTPM\b|rate[ _-]?limit)",
     re.IGNORECASE,
 )
 
 
 def is_context_overflow_error(exc: BaseException) -> bool:
-    """判断服务商错误是否属于输入上下文超出模型上限。"""
-    return bool(_CONTEXT_OVERFLOW_RE.search(str(exc)))
+    """判断服务商错误是否属于输入上下文超出模型上限（排除 HTTP 429 / TPM 限流）。"""
+    if isinstance(exc, LLMError) and exc.status_code == 429:
+        return False
+    text = (
+        f"{exc}\n{exc.raw_detail}"
+        if isinstance(exc, LLMError) and exc.raw_detail
+        else str(exc)
+    )
+    if _RATE_LIMIT_RE.search(text):
+        return False
+    return bool(_CONTEXT_OVERFLOW_RE.search(text))
 
 
 def _known_model_window(cfg: LLMConfig, purpose: str, root: Path | None) -> int | None:
@@ -2604,12 +2642,14 @@ def run_tool_loop(
     llm_retries = 0  # D93：本回合自动重试次数（跨请求累计）
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
+    sent_message_chars = 0
     prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
-    # D62：触发读数提示的基准——最近一次请求时的实测 token、当时历史长度与实际发出字符数；压缩或回合内老化后作废
-    usage_anchor: tuple[int, int, int] | None = None
+    # D62：触发读数提示的基准——最近一次请求时的实测 token、当时历史长度、完整消息字符数与附图数
+    usage_anchor: tuple[int, int, int, int] | None = None
     model_window = _known_model_window(cfg, purpose, effective_root)
     sticky_keep_batches: int | None = None
     proactive_notified = False
+    proactive_hard_notified = False
     comp: dict[str, Any] = {"compacted": False, "tokens_before": None, "tokens_after": None}
     lookups = _zero_lookups()  # D48 ①：本回合实际执行的查证调用，按类计数
     started = time.monotonic()
@@ -2618,8 +2658,21 @@ def run_tool_loop(
         "calls": [], "index": 0, "call": None, "stage": None, "outcome": None, "name": "",
     }
 
+    def _estimate_projected_tokens(aged: list[dict[str, Any]]) -> int:
+        cur_images = vision.count_turn_images(aged)
+        if usage_anchor is not None and usage_anchor[1] <= len(aged):
+            anchor_tokens, anchor_len, anchor_chars, anchor_images = usage_anchor
+            prefix_chars = sum(message_chars(m) for m in aged[:anchor_len])
+            delta_img_tokens = max(0, cur_images - anchor_images) * _EST_TOKENS_PER_IMAGE
+            if prefix_chars == anchor_chars:
+                return anchor_tokens + estimate_tokens(aged[anchor_len:]) + delta_img_tokens
+            # 前缀因较早批老化而缩水：保留上次实测里的非文本开销（附图/Schema/分词差），叠加当前全文估算
+            non_text_overhead = max(0, anchor_tokens - math.ceil(anchor_chars / CHARS_PER_TOKEN))
+            return estimate_tokens(aged) + non_text_overhead + delta_img_tokens
+        return estimate_tokens(aged) + cur_images * _EST_TOKENS_PER_IMAGE
+
     def _project_messages(force_keep_batches: int | None = None) -> list[dict[str, Any]]:
-        nonlocal proactive_notified
+        nonlocal proactive_notified, proactive_hard_notified, sticky_keep_batches
         if force_keep_batches is not None:
             aged, _ = age_current_turn_tool_results(
                 convo, keep_recent_batches=force_keep_batches, target_chars=None
@@ -2629,35 +2682,46 @@ def run_tool_loop(
             aged, _ = age_current_turn_tool_results(
                 convo, keep_recent_batches=sticky_keep_batches, target_chars=None
             )
-            return aged
-        aged = age_tool_results(convo)
+        else:
+            aged = age_tool_results(convo)
         if model_window is not None:
             safe_tokens = int(model_window * INTRA_TURN_AGE_RATIO)
-            if (
-                usage_anchor is not None
-                and usage_anchor[1] <= len(aged)
-                and sum(
-                    len(str(m.get("content") or ""))
-                    for m in aged[: usage_anchor[1]]
-                    if isinstance(m, dict)
+            hard_tokens = int(model_window * INTRA_TURN_HARD_RATIO)
+            projected = _estimate_projected_tokens(aged)
+            if projected > safe_tokens and sticky_keep_batches is None:
+                aged_chars = sum(message_chars(m) for m in aged)
+                excess_chars = math.ceil((projected - safe_tokens) * CHARS_PER_TOKEN)
+                target_chars = max(0, aged_chars - excess_chars)
+                cand, n1 = age_current_turn_tool_results(
+                    convo, keep_recent_batches=1, target_chars=target_chars
                 )
-                == usage_anchor[2]
-            ):
-                projected = usage_anchor[0] + estimate_tokens(aged[usage_anchor[1] :])
-            else:
-                projected = estimate_tokens(aged)
-            if projected > safe_tokens:
-                cand, n_aged = age_current_turn_tool_results(
-                    convo, keep_recent_batches=1, target_chars=safe_tokens
-                )
-                if n_aged > 0:
+                if n1 > 0:
                     aged = cand
+                    sticky_keep_batches = 1
+                    projected = _estimate_projected_tokens(aged)
                     if not proactive_notified:
                         proactive_notified = True
                         if control.on_context_guard is not None:  # type: ignore[union-attr]
                             control.on_context_guard(  # type: ignore[union-attr]
-                                f"本回合上下文接近窗口上限，已将本回合较早的 {n_aged} 条大体积工具结果"
+                                f"本回合上下文接近窗口上限，已将本回合较早的 {n1} 条大体积工具结果"
                                 "按占位发送（原文仍保留在会话与 fetch-log 中）。"
+                            )
+            if projected > hard_tokens:
+                aged_chars = sum(message_chars(m) for m in aged)
+                excess_chars = math.ceil((projected - hard_tokens) * CHARS_PER_TOKEN)
+                target_chars = max(0, aged_chars - excess_chars)
+                cand0, n0 = age_current_turn_tool_results(
+                    convo, keep_recent_batches=0, target_chars=target_chars
+                )
+                if n0 > 0 and sum(message_chars(m) for m in cand0) < aged_chars:
+                    aged = cand0
+                    sticky_keep_batches = 1
+                    if not proactive_hard_notified:
+                        proactive_hard_notified = True
+                        if control.on_context_guard is not None:  # type: ignore[union-attr]
+                            control.on_context_guard(  # type: ignore[union-attr]
+                                f"本回合上下文已逼近窗口硬上限，已将本回合含最新批次在内的 {n0} 条大体积工具结果"
+                                "按占位发送以防超限（原文仍保留在会话与 fetch-log 中）。"
                             )
         return aged
 
@@ -2682,12 +2746,8 @@ def run_tool_loop(
                         cand_aged, _ = age_current_turn_tool_results(
                             convo, keep_recent_batches=k, target_chars=None
                         )
-                        cand_chars = sum(
-                            len(str(m.get("content") or ""))
-                            for m in cand_aged
-                            if isinstance(m, dict)
-                        )
-                        if cand_chars < prompt_chars:
+                        cand_chars = sum(message_chars(m) for m in cand_aged)
+                        if cand_chars < sent_message_chars:
                             local_keep = k
                             sticky_keep_batches = 1
                             if control.on_context_guard is not None:  # type: ignore[union-attr]
@@ -2700,6 +2760,7 @@ def run_tool_loop(
                             break
                     if switched:
                         continue
+                    raise
                 if not exc.retryable:
                     raise
                 if attempt >= LLM_MAX_RETRIES:
@@ -2714,13 +2775,15 @@ def run_tool_loop(
     def _chat_once(
         tool_choice: str | None, *, force_keep_batches: int | None = None
     ) -> dict[str, Any]:
-        nonlocal prompt_chars, prompt_tokens, usage_anchor
+        nonlocal prompt_chars, sent_message_chars, prompt_tokens, usage_anchor
         # D65：发送与字符统计都走老化投影（上一回合及更早的大工具结果换占位串）；
         # convo 与 session.jsonl 一字不动（纯函数投影，日志即事实）
         aged = _project_messages(force_keep_batches)
         prompt_chars = sum(
             len(str(m.get("content") or "")) for m in aged if isinstance(m, dict)
         )
+        sent_message_chars = sum(message_chars(m) for m in aged)
+        sent_images = vision.count_turn_images(aged)
         requested_len = len(convo)
         _LAST_USAGE.set(None)
         reply = chat_complete(
@@ -2734,7 +2797,11 @@ def run_tool_loop(
             egress_trusted=egress_trusted,
         )
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
-        usage_anchor = None if prompt_tokens is None else (prompt_tokens, requested_len, prompt_chars)
+        usage_anchor = (
+            None
+            if prompt_tokens is None
+            else (prompt_tokens, requested_len, sent_message_chars, sent_images)
+        )
         return reply
 
     def _synthesize_rest(start: int, text: str) -> None:
@@ -2847,16 +2914,26 @@ def run_tool_loop(
                 live["stage"] = "compact"
                 hint = None
                 if usage_anchor is not None and usage_anchor[1] <= len(convo):
-                    anchor_chars = sum(
-                        len(str(m.get("content") or ""))
-                        for m in age_tool_results(convo)[: usage_anchor[1]]
-                        if isinstance(m, dict)
-                    )
+                    if sticky_keep_batches is not None:
+                        compact_base, _ = age_current_turn_tool_results(
+                            convo, keep_recent_batches=sticky_keep_batches, target_chars=None
+                        )
+                    else:
+                        compact_base = age_tool_results(convo)
+                    anchor_chars = sum(message_chars(m) for m in compact_base[: usage_anchor[1]])
                     if anchor_chars == usage_anchor[2]:
-                        hint = usage_anchor[0] + estimate_tokens(convo[usage_anchor[1] :])
+                        delta_imgs = max(
+                            0, vision.count_turn_images(compact_base) - usage_anchor[3]
+                        )
+                        hint = (
+                            usage_anchor[0]
+                            + estimate_tokens(compact_base[usage_anchor[1] :])
+                            + delta_imgs * _EST_TOKENS_PER_IMAGE
+                        )
                 compacted = control.compact(convo, hint)  # type: ignore[union-attr]
                 if compacted is not None and compacted.get("ok"):
                     usage_anchor = None  # 历史已缩：旧实测不再对得上
+                    sticky_keep_batches = None
                     if not comp["compacted"]:
                         comp["tokens_before"] = compacted.get("tokens_before")
                     comp["compacted"] = True

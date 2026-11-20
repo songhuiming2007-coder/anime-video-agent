@@ -574,5 +574,231 @@ def test_19_manual_compact_on_single_turn_ages_tool_results_for_summarizer(
     result = session.compact(messages, tracker=tracker, root=root, scope="creative", trigger="manual")
     assert result["ok"], result
     body = script.summarizer[0]["messages"][1]["content"]
-    assert "[工具结果已老化｜原 10000 字符｜" in body
+    assert body.count("[工具结果已老化｜原 10000 字符｜") >= 5
     assert "M00" not in body and "M05" not in body, "摘要器绝不吃到 10k 全文原文"
+
+
+def test_20_intra_turn_aging_ignores_trailing_unpaired_tool_call() -> None:
+    """末尾悬着未配对 tool_calls 时不产生空批占位，避免多砍一批真实保留结果。"""
+    b1 = _big(8_000, marker="B1")
+    b2 = _big(8_000, marker="B2")
+    msgs = [
+        _user("本回合"),
+        _call("c1"), _tool("c1", b1),
+        _call("c2"), _tool("c2", b2),
+        _call("c3"),
+    ]
+    aged, count = age_current_turn_tool_results(msgs, keep_recent_batches=1)
+    assert count == 1
+    assert aged[2]["content"].startswith("[工具结果已老化｜")
+    assert aged[4]["content"] == b2, "真实最新批 B2 必须保留"
+
+
+def test_21_proactive_guard_with_usage_anchor_overhead_and_monotone_sticky(root: Path, monkeypatch) -> None:  # noqa: F811
+    """P1-1/P1-2：usage_anchor 含开销时按 75% 老化较早批；75%–95% 间保留最新批，仅 >95% 硬上限才降级 k=0。"""
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    _compact_cfg(root, window=100_000, auto=False)  # safe_tokens = 75,000, hard_tokens = 95,000
+    r1 = "R1-" + "填" * 20_000 + "-R1END"
+    r2 = "R2-" + "填" * 20_000 + "-R2END"
+    r3 = "R3-" + "填" * 45_000 + "-R3END"
+    r4 = "R4-" + "填" * 60_000 + "-R4END"
+    results = iter([
+        {"ok": True, "result": {"data": r1}},
+        {"ok": True, "result": {"data": r2}},
+        {"ok": True, "result": {"data": r3}},
+        {"ok": True, "result": {"data": r4}},
+    ])
+    patch_execute(monkeypatch, lambda name, args, ctx: next(results))
+
+    call_idx = 0
+    seen_reqs: list[list[dict]] = []
+
+    def fake_chat(messages, tools=None, **kw):
+        nonlocal call_idx
+        call_idx += 1
+        seen_reqs.append(copy.deepcopy(messages))
+        if call_idx == 1:
+            llm_mod._LAST_USAGE.set({"prompt_tokens": 35_000})
+            return _call("c1", path="p1.md")
+        if call_idx == 2:
+            # 实测 60k（含 Schema/分词开销 ≈ 39.9k）远高于 20k 纯字数
+            llm_mod._LAST_USAGE.set({"prompt_tokens": 60_000})
+            return _call("c2", path="p2.md")
+        if call_idx == 3:
+            llm_mod._LAST_USAGE.set({"prompt_tokens": 60_500})
+            return _call("c3", path="p3.md")
+        if call_idx == 4:
+            llm_mod._LAST_USAGE.set({"prompt_tokens": 86_000})
+            return _call("c4", path="p4.md")
+        llm_mod._LAST_USAGE.set({"prompt_tokens": 22_000})
+        return {"role": "assistant", "content": "完成"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fake_chat)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("开工")]
+    notices: list[str] = []
+    control = build_control(convo)
+    control.on_context_guard = notices.append
+
+    out = run_tool_loop(convo, ctx=ToolContext(scope="creative", root=root), config=LOOP_CFG, control=control)
+    assert out["stopped"] == "done" and len(notices) == 2
+    assert "较早" in notices[0] and "含最新批次" in notices[1]
+
+    # 第 3 次请求：total_chars(~40k) < safe_tokens(75k)，但 projected(~80k) > 75k → 主动老化 r1、保留 r2
+    req3_tools = [m["content"] for m in seen_reqs[2] if m.get("role") == "tool"]
+    assert "-R1END" not in req3_tools[0] and req3_tools[0].startswith("[工具结果已老化｜")
+    assert r2 in req3_tools[1]
+
+    # 第 4 次请求（r3=45k + non_text ≈ 86k，处于 75%–95%）：r1/r2 不可复活，且刚取回的 r3 必须完整保留
+    req4_tools = [m["content"] for m in seen_reqs[3] if m.get("role") == "tool"]
+    assert "-R1END" not in req4_tools[0] and "-R2END" not in req4_tools[1]
+    assert r3 in req4_tools[2]
+
+    # 第 5 次请求（r4=60k + non_text ≈ 101k > 95k 硬上限）：触发 k=0 保护且发含「含最新批次」的独立提示
+    req5_tools = [m["content"] for m in seen_reqs[4] if m.get("role") == "tool"]
+    assert all("-R" + f"{i}END" not in req5_tools[i - 1] for i in (1, 2, 3, 4))
+
+
+def test_21b_single_batch_between_75_and_95_percent_preserves_newest_result(root: Path, monkeypatch) -> None:  # noqa: F811
+    """200k 窗口（75%=150k, 95%=190k）历史 125k + 单批新读 30k（总 ~155k < 190k）不得误砍刚读到的最新结果。"""
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    _compact_cfg(root, window=200_000, auto=False)
+    draft = "DRAFT-" + "填" * 30_000 + "-DRAFTEND"
+    patch_execute(monkeypatch, lambda name, args, ctx: {"ok": True, "result": {"data": draft}})
+
+    call_idx = 0
+    seen_reqs: list[list[dict]] = []
+
+    def fake_chat(messages, tools=None, **kw):
+        nonlocal call_idx
+        call_idx += 1
+        seen_reqs.append(copy.deepcopy(messages))
+        if call_idx == 1:
+            llm_mod._LAST_USAGE.set({"prompt_tokens": 125_000})
+            return _call("c1", path="02-script.md")
+        llm_mod._LAST_USAGE.set({"prompt_tokens": 155_000})
+        return {"role": "assistant", "content": "已读完稿件"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fake_chat)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("读稿件")]
+    notices: list[str] = []
+    control = build_control(convo)
+    control.on_context_guard = notices.append
+
+    out = run_tool_loop(convo, ctx=ToolContext(scope="creative", root=root), config=LOOP_CFG, control=control)
+    assert out["stopped"] == "done" and notices == []
+    req2_tools = [m["content"] for m in seen_reqs[1] if m.get("role") == "tool"]
+    assert draft in req2_tools[0], "75%-95% 区间内模型刚读取的最新批次全文必须完整送达"
+
+
+def test_22_manual_compact_8_batches_150k_on_1m_window_succeeds(root: Path, episode: Path, monkeypatch) -> None:  # noqa: F811
+    """P1-4：1M 窗口单回合 8 批×150k 爆仓后手动 /compact，不得误判为 nothing，也不得把百万字原文放进 tail。"""
+    _compact_cfg(root, window=1_048_576, tail_ratio=0.15)  # tail_budget = 157,286
+    history: list[dict] = [_user("单回合连抓 8 批大页面")]
+    for i in range(8):
+        history.extend([
+            _call(f"c{i}", path=f"p{i}.md"),
+            _tool(f"c{i}", _big(150_000, marker=f"M{i:02d}")),
+        ])
+
+    script = CompactScript(summaries=[{"role": "assistant", "content": "8批压缩摘要"}])
+    host, session, messages, tracker = _compact_main(root, episode, monkeypatch, script)
+    messages.extend(history)
+    result = session.compact(messages, tracker=tracker, root=root, scope="creative", trigger="manual")
+    assert result["ok"] is True, result
+    assert result["compacted"] >= 14
+    body = script.summarizer[0]["messages"][1]["content"]
+    assert "[工具结果已老化｜原 150000 字符｜" in body
+    assert "M00" not in body and "M06" not in body
+    tail_chars = sum(cp.message_chars(m) for m in messages[2:])
+    assert tail_chars <= 157_286
+
+
+def test_23_real_http_400_long_body_and_overflow_classifier(root: Path, monkeypatch) -> None:  # noqa: F811
+    """P1-3：真实 chat_complete 的 >200B HTTP 400 JSON 能被识别并触发循环自救；覆盖 Responses/413，排除 429 TPM。"""
+    import io
+    import urllib.error
+
+    # 1) 分类器精确区分上下文超限 vs 429 TPM 限流
+    assert llm_mod.is_context_overflow_error(
+        llm_mod.LLMError("LLM HTTP 400: Your input exceeds the context window of this model.", status_code=400)
+    ) is True
+    assert llm_mod.is_context_overflow_error(
+        llm_mod.LLMError('LLM HTTP 413: {"error":{"type":"request_too_large"}}', status_code=413)
+    ) is True
+    assert llm_mod.is_context_overflow_error(
+        llm_mod.LLMError(
+            "LLM HTTP 429: Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 45000",
+            status_code=429,
+        )
+    ) is False
+    assert llm_mod.is_context_overflow_error(
+        llm_mod.LLMError("too many tokens per minute", retryable=True)
+    ) is False
+
+    # 2) 真实 chat_complete 读取 >200B 错误体并通过 run_tool_loop 降重自救
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    r1 = "F1-" + "填" * 10_000
+    r2 = "F2-" + "填" * 10_000
+    results = iter([{"ok": True, "result": {"data": r1}}, {"ok": True, "result": {"data": r2}}])
+    patch_execute(monkeypatch, lambda name, args, ctx: next(results))
+
+    req_count = 0
+
+    class _OkResp:
+        def __init__(self, body: dict) -> None:
+            self._b = json.dumps(body).encode("utf-8")
+            self.headers = {"Content-Type": "application/json"}
+
+        def read(self) -> bytes:
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        nonlocal req_count
+        req_count += 1
+        payload = json.loads(request.data.decode("utf-8"))
+        msgs = payload["messages"]
+        if req_count == 1:
+            return _OkResp({"choices": [{"message": _call("c1", path="p1.md")}]})
+        if req_count == 2:
+            return _OkResp({"choices": [{"message": _call("c2", path="p2.md")}]})
+        tool_chars = sum(len(str(m.get("content") or "")) for m in msgs if m.get("role") == "tool")
+        if tool_chars > 8_000:
+            padding = "x" * 260
+            long_json = json.dumps({
+                "meta": {"request_id": "req-123", "trace": padding},
+                "error": {"code": 400, "message": "The input token count exceeds the maximum number of tokens allowed (1048576)."},
+            })
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {}, io.BytesIO(long_json.encode("utf-8"))
+            )
+        return _OkResp({"choices": [{"message": {"role": "assistant", "content": "长400自救成功"}}]})
+
+    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", fake_urlopen)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("开工")]
+    out = run_tool_loop(
+        convo,
+        ctx=ToolContext(scope="creative", root=root),
+        config=llm_mod.LLMConfig(base_url=LOOP_CFG.base_url, model="unlisted-model", api_key="k"),
+        control=build_control(convo),
+    )
+    assert out["stopped"] == "done" and out["final"]["content"] == "长400自救成功"
+
+    # 3) 可重试 500 包裹超限且已无减重空间时，不得进入 2/4/8s 徒劳重试
+    sleeps: list[float] = []
+    monkeypatch.setattr(llm_mod, "_sleep", sleeps.append)
+
+    def fail_500_overflow(*_a, **_kw):
+        raise llm_mod.LLMError(
+            "LLM HTTP 500: maximum context length exceeded", retryable=True, status_code=500
+        )
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fail_500_overflow)
+    convo2: list[dict] = [{"role": "system", "content": "S"}, _user("裸请求即超限")]
+    out2 = run_tool_loop(convo2, ctx=ToolContext(scope="creative", root=root), config=LOOP_CFG, control=build_control(convo2))
+    assert out2["stopped"] == "error" and sleeps == [] and out2["llm_retries"] == 0

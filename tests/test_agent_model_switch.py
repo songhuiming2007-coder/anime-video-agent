@@ -839,11 +839,12 @@ def test_env_credential_sources_match_router_and_custom_fetcher(
 
 
 def test_probe_models_refreshes_stale_google_models_via_live_sync(
-    tmp_path: Path, endpoint, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, endpoint, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     """`probe_models_and_efforts_payload` 应对过期的 Google AI Studio 目录触发 TTL 刷新并透出新模型（如 gemini-4-neon）。"""
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from threading import Thread
+
     from pipeline.agent import auth as auth_mod
 
     (tmp_path / "config").mkdir(parents=True, exist_ok=True)
@@ -851,7 +852,7 @@ def test_probe_models_refreshes_stale_google_models_via_live_sync(
     monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file))
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -899,4 +900,78 @@ def test_probe_models_refreshes_stale_google_models_via_live_sync(
         assert payload["model_sources"]["google/gemini-4-neon"]["source_id"] == "google"
         assert payload["model_sources"]["google/gemini-4-neon"]["display_model"] == "gemini-4-neon"
     finally:
+        srv.shutdown()
+
+
+def test_list_models_runs_proxy_and_auth_concurrently_and_env_alias_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """代理 `/models` 与 Google 鉴权刷新应并发执行，且 env 模式动态模型支持 `describe_model_source` 别名解析。"""
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    from pipeline.agent import auth as auth_mod
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AVA_AUTH_PATH", str(tmp_path / "config" / "auth.local.json"))
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-concurrent-env-key")
+
+    with auth_mod._ENV_MODELS_LOCK:
+        auth_mod._ENV_MODELS_CACHE.clear()
+        auth_mod._MODELS_SYNC_FAILURES.clear()
+
+    class _SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            time.sleep(0.25)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            if self.path.startswith("/v1beta/models"):
+                payload = {
+                    "models": [
+                        {"name": "models/gemini-4-neon", "supportedGenerationMethods": ["generateContent"]},
+                    ]
+                }
+            else:
+                payload = {"data": [{"id": "kimi-k3", "owned_by": "moonshot"}]}
+            self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+        def log_message(self, *_a: object) -> None:
+            return None
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _SlowHandler)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        orig_google = auth_mod.PROVIDER_MAP["google"]
+        patched = type(orig_google)(**{**orig_google.__dict__, "default_base_url": f"{base}/v1beta"})
+        monkeypatch.setattr(
+            auth_mod,
+            "PROVIDERS",
+            tuple(patched if p.id == "google" else p for p in auth_mod.PROVIDERS),
+        )
+        monkeypatch.setitem(auth_mod.PROVIDER_MAP, "google", patched)
+        monkeypatch.setitem(auth_mod.PROVIDER_MAP, "google-gemini", patched)
+        (tmp_path / "config" / "agent.json").write_text(
+            json.dumps({"base_url": f"{base}/v1", "model": "kimi-k3", "api_key": "k"}),
+            encoding="utf-8",
+        )
+
+        t0 = time.monotonic()
+        items, sources = ms.list_models_unauthenticated_with_sources(tmp_path)
+        elapsed = time.monotonic() - t0
+        assert "kimi-k3" in items and "google/gemini-4-neon" in items
+        assert elapsed < 0.45, f"应并发拉取（两路各 0.25s，总计 {elapsed:.3f}s 不得串行叠加）"
+
+        # 断开网络环境（refresh=False）：env 别名 google-gemini/gemini-4-neon 仍能从只读缓存识别来源
+        alias_meta = ms.describe_model_source("google-gemini/gemini-4-neon", base_url=f"{base}/v1", root=tmp_path)
+        assert alias_meta is not None
+        assert alias_meta["source_id"] == "google"
+        assert alias_meta["source_kind"] == "env"
+        assert alias_meta == sources["google/gemini-4-neon"]
+    finally:
+        with auth_mod._ENV_MODELS_LOCK:
+            auth_mod._ENV_MODELS_CACHE.clear()
+            auth_mod._MODELS_SYNC_FAILURES.clear()
         srv.shutdown()

@@ -313,3 +313,77 @@ def test_命令行Chrome抓取与标签自动关闭(root, monkeypatch, capsys):
         F.fetch_and_record(PAGE, mode="chrome", origin="cli", caller="antigravity", root=root)
     assert [a for a, _ in calls] == ["open", "extract_text", "close"]
     assert calls[2][1]["page_id"] == 9
+
+
+@pytest.mark.real_fetch_and_record
+def test_命令行Chrome空页与盾页拒落档_重试恢复可落档_PermissionError规范退出(root, monkeypatch, capsys):
+    from pipeline import paths
+    from pipeline.agent import web_chrome
+
+    monkeypatch.setattr(paths, "ROOT", root)
+    sleeps: list[float] = []
+    monkeypatch.setattr(F, "_chrome_sleep", sleeps.append)
+
+    # 1) 持续空页/Cloudflare 盾页 → 重试耗尽拒写 fetch-log、关闭标签、main 返回 1
+    calls: list[tuple[str, dict]] = []
+
+    def always_challenge(action, **kw):
+        calls.append((action, kw))
+        if action == "open":
+            return {"ok": True, "page_id": 11}
+        if action == "extract_text":
+            return {"text": "Just a moment...", "full_text": "", "final_url": PAGE, "title": "Just a moment..."}
+        if action == "close":
+            return {"ok": True}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(web_chrome, "chrome_action", always_challenge)
+    assert F.main([PAGE, "--chrome", "--caller", "antigravity"]) == 1
+    assert "FAIL" in capsys.readouterr().err
+    assert fetch_log.lookup(PAGE, root=root) == []
+    assert [a for a, _ in calls] == ["open"] + ["extract_text"] * (F._CHROME_MAX_RETRIES + 1) + ["close"]
+    assert len(sleeps) == F._CHROME_MAX_RETRIES
+
+    # 2) 首跳是 Cloudflare 验证页、重试后渲染出正文 → 正常落档
+    calls.clear()
+    sleeps.clear()
+    attempt = 0
+
+    def recover_after_challenge(action, **kw):
+        nonlocal attempt
+        calls.append((action, kw))
+        if action == "open":
+            return {"ok": True, "page_id": 12}
+        if action == "extract_text":
+            attempt += 1
+            if attempt == 1:
+                return {
+                    "text": "Checking if the site connection is secure",
+                    "full_text": "Enable JavaScript and cookies to continue",
+                    "final_url": PAGE,
+                    "title": "Just a moment...",
+                }
+            return {
+                "text": "完整访谈正文",
+                "full_text": "完整访谈正文",
+                "final_url": PAGE,
+                "title": "Natalie Interview",
+            }
+        if action == "close":
+            return {"ok": True}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(web_chrome, "chrome_action", recover_after_challenge)
+    assert F.main([PAGE, "--chrome", "--caller", "antigravity"]) == 0
+    assert "OK  留档" in capsys.readouterr().out
+    assert len(fetch_log.lookup(PAGE, root=root)) == 1
+    assert calls[-1][0] == "close" and calls[-1][1]["page_id"] == 12
+
+    # 3) PermissionError 在 CLI 捕获后打印 FAIL 并返回 1（不喷 traceback）
+    monkeypatch.setattr(
+        web_chrome,
+        "chrome_action",
+        lambda *a, **kw: (_ for _ in ()).throw(PermissionError("blocked egress")),
+    )
+    assert F.main([PAGE, "--chrome"]) == 1
+    assert "FAIL blocked egress" in capsys.readouterr().err

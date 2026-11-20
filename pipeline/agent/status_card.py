@@ -140,18 +140,29 @@ def build_status_card(
 
         pending_labels, has_uncovered_rejected = approvals.get_status_card_guidance(d)
         guidance_lines: list[str] = []
+        full_reject_line = "驳回反馈: _agent/approval_feedback.md（read_artifact 可读）"
+        short_reject_line = "驳回反馈: _agent/approval_feedback.md"
+        reject_line = ""
+        if has_uncovered_rejected:
+            reject_line = full_reject_line
+            if len(card) + 1 + len(full_reject_line) > 400 and len(card) + 1 + len(short_reject_line) <= 400:
+                reject_line = short_reject_line
+
         if pending_labels:
+            extra_len = (1 + len(reject_line)) if reject_line else 0
             full_line = f"待审批: {'、'.join(pending_labels)}（/approvals 查看详情）"
             fallback_line = f"待审批: {len(pending_labels)} 项（/approvals 查看详情）"
-            if len(card) + 1 + len(full_line) <= 400:
+            if len(card) + 1 + len(full_line) + extra_len <= 400:
                 guidance_lines.append(full_line)
-            elif len(card) + 1 + len(fallback_line) <= 400:
+            elif len(card) + 1 + len(fallback_line) + extra_len <= 400:
                 guidance_lines.append(fallback_line)
             else:
+                if reject_line == full_reject_line:
+                    reject_line = short_reject_line
                 guidance_lines.append(f"待审批: {len(pending_labels)} 项")
 
-        if has_uncovered_rejected:
-            guidance_lines.append("驳回反馈: _agent/approval_feedback.md（read_artifact 可读）")
+        if reject_line:
+            guidance_lines.append(reject_line)
 
         if guidance_lines:
             card = card + "\n" + "\n".join(guidance_lines)

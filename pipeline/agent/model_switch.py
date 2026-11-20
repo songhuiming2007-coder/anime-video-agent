@@ -20,6 +20,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ EFFORT_LABELS = {
 }
 RESET_WORD = "default"
 MODELS_TIMEOUT_S = 10
+PROBE_MODELS_TIMEOUT_S = 6.5
 
 FILE_NAME = "session-models.json"
 LOCK_NAME = "session-models.lock"
@@ -119,12 +121,17 @@ def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> 
 
 
 def _fetch_openai_model_entries(
-    url: str, headers: dict[str, str], *, root: Path | None = None
+    url: str,
+    headers: dict[str, str],
+    *,
+    root: Path | None = None,
+    timeout: float | None = None,
 ) -> tuple[list[dict[str, Any]] | None, ModelSwitchError | None]:
     """GET `{url}` 并保留模型条目的 id 与 owned_by 来源元信息。"""
     request = urllib.request.Request(url, headers=headers)
+    eff_timeout = MODELS_TIMEOUT_S if timeout is None else timeout
     try:
-        with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(request, timeout=eff_timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return None, ModelSwitchError(f"取模型列表失败：HTTP {exc.code}")
@@ -254,12 +261,19 @@ def _merge_proxy_and_auth_models(
 
 
 def list_models_with_sources(cfg: LLMConfig, *, root: Path | None = None) -> tuple[list[str], dict[str, dict[str, Any]]]:
-    """GET `{base_url}/models` 并合并已登录服务商模型，同时返回每个模型的来源映射。"""
+    """GET `{base_url}/models` 并发合并已登录服务商模型，同时返回每个模型的来源映射。"""
+    from pipeline.agent import auth
+
     url = cfg.base_url.rstrip("/") + "/models"
-    proxy_entries, proxy_err = _fetch_openai_model_entries(
-        url, {"Authorization": f"Bearer {cfg.api_key}"}, root=root,
+    headers = {"Authorization": f"Bearer {cfg.api_key}"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        proxy_fut = pool.submit(_fetch_openai_model_entries, url, headers, root=root)
+        auth_fut = pool.submit(auth.list_authenticated_model_sources, root, refresh=True)
+        proxy_entries, proxy_err = proxy_fut.result()
+        auth_sources = auth_fut.result()
+    return _merge_proxy_and_auth_models(
+        proxy_entries, proxy_err, base_url=cfg.base_url, root=root, auth_sources=auth_sources
     )
-    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=cfg.base_url, root=root, refresh_auth=True)
 
 
 def list_models(cfg: LLMConfig, *, root: Path | None = None) -> list[str]:
@@ -271,18 +285,29 @@ def list_models(cfg: LLMConfig, *, root: Path | None = None) -> list[str]:
 _ORIGINAL_LIST_MODELS = list_models
 
 
-def list_models_unauthenticated_with_sources(root: Path | None = None) -> tuple[list[str], dict[str, dict[str, Any]]]:
-    """D153/D170：无会话进程时合并代理 `/models` 与已登录服务商模型及来源元信息。"""
+def list_models_unauthenticated_with_sources(
+    root: Path | None = None,
+    *,
+    proxy_timeout: float | None = None,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """D153/D170：无会话进程时并发合并代理 `/models` 与已登录服务商模型及来源元信息。"""
     from pipeline.agent import auth
     from pipeline.agent.llm import configured_base_url
 
-    auth_sources = auth.list_authenticated_model_sources(root, refresh=True)
     base_url = configured_base_url(root)
     if base_url is None:
+        auth_sources = auth.list_authenticated_model_sources(root, refresh=True)
         if auth_sources:
             return list(auth_sources.keys()), auth_sources
         raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
-    proxy_entries, proxy_err = _fetch_openai_model_entries(base_url.rstrip("/") + "/models", {}, root=root)
+    proxy_url = base_url.rstrip("/") + "/models"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        proxy_fut = pool.submit(
+            _fetch_openai_model_entries, proxy_url, {}, root=root, timeout=proxy_timeout
+        )
+        auth_fut = pool.submit(auth.list_authenticated_model_sources, root, refresh=True)
+        proxy_entries, proxy_err = proxy_fut.result()
+        auth_sources = auth_fut.result()
     return _merge_proxy_and_auth_models(
         proxy_entries, proxy_err, base_url=base_url, root=root, auth_sources=auth_sources
     )
@@ -575,7 +600,9 @@ def probe_models_and_efforts_payload(root: Path | None = None) -> dict[str, Any]
     from pipeline.agent import auth
     from pipeline.agent.llm import configured_base_url, configured_model_name
 
-    items, model_sources = list_models_unauthenticated_with_sources(root)
+    items, model_sources = list_models_unauthenticated_with_sources(
+        root, proxy_timeout=PROBE_MODELS_TIMEOUT_S
+    )
     active_model = configured_model_name(root)
     if active_model is None:
         auth_cfg = auth.first_authenticated_config(root)
