@@ -102,6 +102,8 @@ class TestDeadKeysRemoved:
             targets.append(local)
         for p in targets:
             cfg = json.loads(p.read_text(encoding="utf-8"))
+            assert "duration_band" not in cfg["video"], p
+            assert "_duration_note" not in cfg["video"], p
             assert "font_fallback" not in cfg["subtitle"], p
             assert "frames_per_shot" not in cfg["visual"], p
             assert all(not k.startswith("_") or k != "_frames_note"

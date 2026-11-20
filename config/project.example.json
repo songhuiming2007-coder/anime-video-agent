@@ -13,12 +13,7 @@
     "preset": "medium",
     "cut_preset": "ultrafast",
     "cut_crf": "12",
-    "_cut_note": "中间临时切片（render.cut 与 _still_frames）的编码参数。中间片拼成 video.mp4 后在最终合成时还要经 preset/crf 压一次字幕层；两处共用同一组参数保证 concat -c copy 流签名一致。",
-    "duration_band": [
-      120.0,
-      240.0
-    ],
-    "_duration_note": "成片时长默认带（秒），可被该期 01-topic.md 的 `时长目标` 字段覆盖，由 qc.episode_duration_band() 读取。"
+    "_cut_note": "中间临时切片（render.cut 与 _still_frames）的编码参数。中间片拼成 video.mp4 后在最终合成时还要经 preset/crf 压一次字幕层；两处共用同一组参数保证 concat -c copy 流签名一致。"
   },
   "subtitle": {
     "_note": "字幕样式。font 必须是本机 fontconfig 认得的名字，否则 libass 会静默退到默认字体。",

@@ -47,7 +47,6 @@ from . import asr
 from . import g2p
 from .align import compute_script_vo_hash
 from .align import verify_alignment   # 叶子模块，无环
-from .qc import episode_duration_band
 
 _DEFAULT_CONFIG_DIR = paths.CONFIG
 CONFIG = _DEFAULT_CONFIG_DIR / "voice.json"
@@ -83,11 +82,7 @@ def _current_voice_cfg() -> dict:
 CPM = paths.conf("script.cpm", 380)   # 与 check_script 同源同 fallback；真值在
                                       # config/project.json（2026-08-10 校准 315），
                                       # 注释不再声称「同源」却各写各的数
-DUR_BAND = (0.5, 2.0)   # 实际时长 / 估算时长 的允许区间，超出说明念飞了
-# 成片总时长带是另一条：run() 末尾从 config/project.json 的 video.duration_band
-# 取默认带，有 01-topic.md `时长目标` 就按该期覆盖（复用 qc.episode_duration_band，
-# 不再抄第三份正则——tts/check_script/qc 曾经各写一份）。跟上面这条 DUR_BAND
-# 是两个不同的量，名字像不代表是同一件事。
+DUR_BAND = (0.5, 2.0)   # 单段实际时长 / 估算时长的允许区间，超出说明念飞了
 MAX_CER = 0.20      # 回读音节错误率上限。ASR 自身的听岔约 5%，留了余量
 MIN_EDITS = 3       # 与上一条同时越线才判失败，避免短段落被 ASR 的一两处听岔冤枉
 ATTEMPTS = 3
@@ -2576,9 +2571,6 @@ def _run_loaded(
                     f" 把差额吸进末片（人改过的 start/source 不动）；差额过大 refit 会拒绝，"
                     f"那就整条重跑 `python -m pipeline.clips {episode}` 并重走 05。",
                   file=sys.stderr)
-        band = episode_duration_band(episode) or tuple(paths.conf("video.duration_band", [120.0, 240.0]))
-        if not band[0] <= total <= band[1]:
-            print(f"WARN 成片时长 {total / 60:.1f} 分钟，超出目标区间", file=sys.stderr)
         skipped = [t for t in takes if t.qc_skip]
         if skipped:
             print(f"WARN {len(skipped)} 段 ASR 盲区豁免（回读稳定失真，CER 不可用）："

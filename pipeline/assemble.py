@@ -320,7 +320,7 @@ def plan(project_dir: Path, out: Path | None, replace: bool) -> Plan:
             raise AssembleError(2, "卷表没写 `合集:`，又没给 --out：不知道输出到哪")
         coll = pdir / doc.collection
         if project_mod.classify_dir(coll) != "volume":
-            raise AssembleError(2, f"合集 `{doc.collection}` 不存在或没有 01-topic.md（qc 读它的 `时长目标`）")
+            raise AssembleError(2, f"合集 `{doc.collection}` 不存在或没有 01-topic.md（成员期立项文件）")
         out_dir = coll.resolve()
     else:
         if not Path(out).is_dir():
@@ -329,7 +329,7 @@ def plan(project_dir: Path, out: Path | None, replace: bool) -> Plan:
         if out_dir == pdir.resolve():
             raise AssembleError(2, "--out 不能是企划目录本身")
         if not (out_dir / project_mod.TOPIC_FILE).is_file():
-            raise AssembleError(2, "--out 目录没有 01-topic.md（qc 读它的 `时长目标`）")
+            raise AssembleError(2, "--out 目录没有 01-topic.md（成员期立项文件）")
     if any(_inside(out_dir, m) for m in members_real):
         raise AssembleError(2, f"输出目录落在卷目录里（{out_dir}）：总装不往任何一卷里写")
     target = out_dir / FINAL

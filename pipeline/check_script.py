@@ -25,36 +25,6 @@ from .keys import SP_NUM_LOOSE, key_sort, sp_key
 CPM = paths.conf("script.cpm", 380)
 MIN_ANCHOR = paths.conf("script.min_anchors", 3)   # 剧情锚点下限：带画面集号字段的段落数
 
-# `01-topic.md` 里 `时长目标: 7-8分钟` 这样的字段（供外部或 qc 对齐解析）。
-#     不锚 `$`：01-topic.md 允许行尾挂 `# 备注`（BGM 字段已经这么用），
-#     锚了 `$` 会把注释一起吃进数字组，2026-08-09 实测直接踩到——
-#     字段写了但正则不匹配，静默退回默认档，没有任何报错。
-DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
-# 「写了字段」按行首判（冒号可漏），正文提及不算——与 qc.py 同款，见那边注释
-DURATION_FIELD_HINT = re.compile(r"^\s*时长目标\s*[:：]?", re.M)
-
-
-def episode_duration_override(script_path: Path) -> tuple[float, float] | None:
-    """从这一期 `01-topic.md` 的 `时长目标` 字段读目标时长（分钟）。
-
-    没有这个文件、或没写这个字段，返回 None。
-
-    **行首**写了字段但格式认不出 → 直接报错，不静默回退（2026-08-16 审计
-    2-10）。正文/备注里**提到**字段名不算写了字段，不拦（二次审计 §6-1 收窄）。
-    qc.py 的同名函数同款行为，两处口径必须一致。
-    """
-    topic = script_path.parent / "01-topic.md"
-    if not topic.exists():
-        return None
-    text = topic.read_text(encoding="utf-8")
-    m = DURATION_FIELD.search(text)
-    if m is None and DURATION_FIELD_HINT.search(text):
-        raise SystemExit(
-            "FAIL 01-topic.md 的 `时长目标` 格式认不出，应为 `时长目标: 7-8分钟`"
-            "（半角连字符 - / – / ~，范围写法）。\n"
-            "     先改对格式再跑")
-    return (float(m.group(1)), float(m.group(2))) if m else None
-
 # 六种题材（见 skills/write-script 第 4 节）。`类型` 行允许带括号备注
 # （「人物志（经历+点评，编年体）」），按关键词匹配主词，不在六种里就返回空串。
 GENRES = ("人物志", "剧情回顾", "杂谈", "盘点", "共鸣", "纪录片")

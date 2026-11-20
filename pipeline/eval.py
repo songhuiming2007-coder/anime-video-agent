@@ -82,7 +82,7 @@ PASSING_THRESHOLDS: dict[str, float | bool] = {
     "tts.cer_median": 0.20,              # 0.20：对齐 pipeline/tts.py 的 MAX_CER 门槛（行 55）
     "tts.dur_ratio_out_of_band": 0,      # 0：对齐 pipeline/tts.py DUR_BAND 门禁，时长比越界不允许发生
     "clips.no_match_count": 0,           # 0：对齐 clips 检索三级阶梯落空即硬失败交 05 人工纪律（CLAUDE.md 第四节）
-    "qc.pass": True,                     # True：成片质检门禁 11 项全过为及格
+    "qc.pass": True,                     # True：成片质检门禁 10 项全过为及格
     "qc.violations_count": 0,            # 0：成片质检门禁 0 违规项为及格
     # 来源 ①（约定）：5 分制主观评价约定及格线
     "human_review.voice_stability": 3,   # 3 分：5 分制常规约定及格线（约定，非机器标定）

@@ -31,7 +31,7 @@
 - 渲染、质检不过就诊断、修当期输入、重渲，不调阈值绕过门禁。
 - 09 发布与上传不自动化，交付清单以 `read_status` 为准。
 - 封面：标题候选人定；叠字出图纪律见 director.md 视觉条。横 16:9、竖 9:14 两版。
-- 成片交人前至少听一遍开头和最长的那段；十一项质检全绿不代表能听。
+- 成片交人前至少听一遍开头和最长的那段；十项质检全绿不代表能听。
 - `clips` 之后如果审看页有 short / no_source，先 `scout` 再补料，不拿不相干镜头硬塞。
 - 云端支持 `autodl`、`colab`（SSH/cloudflared + Camoufox 无头拉起）与 `colab-drive`；先问再开，切换走 `cloud use <后端>`（弹卡）或 `--provider`。Colab 完成 `cloud connect --provider colab --browser-login` 后，`cloud up --provider colab` 自动开机并刷新隧道，不必手动操作网页或 ssh。
 - 顶层定稿封面只在人点名用哪一版之后才转过去，覆盖已有文件前先说一句。

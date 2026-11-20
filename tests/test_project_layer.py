@@ -244,11 +244,16 @@ class TestParse:
         assert doc.collection == "00-全一期-典藏版"
         assert [v.dir for v in doc.volumes] == ["01-借躯降生", "02-皮套囚徒", "03-终局葬礼"]
         assert [v.tail_s for v in doc.volumes] == [18, 18, None]
-        assert doc.volumes[2].budget_min == (18.0, 20.0)
+        assert doc.volumes[2].budget == "18-20分钟"
         assert doc.sections == ("卷表", "总纲", "标题模板")
 
+    @pytest.mark.parametrize("budget", ["不限", "随内容", "—", "", "约30分钟", "14-16分钟"])
+    def test_时长预算允许任意简短文本(self, budget: str) -> None:
+        doc = project.parse(SAMPLE.replace("14-16分钟", budget, 1))
+        assert doc.volumes[0].budget == budget
+
     def test_字面N表示总装前再定_不裁(self) -> None:
-        doc = project.parse("企划: N\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n| 1 | 01-a | 2011 | 1-2分钟 | 余韵N秒 |\n")
+        doc = project.parse("企划: N\n\n## 卷表\n\n| 卷序 | 目录 | 年份 | 时长预算 | 片尾 |\n|---|---|---|---|---|\n| 1 | 01-a | 2011 | 不限 | 余韵N秒 |\n")
         assert [(v.tail, v.tail_s) for v in doc.volumes] == [("余韵N秒", None)]
 
     def test_空卷表合法(self) -> None:
@@ -262,7 +267,8 @@ class TestParse:
         (lambda s: s.replace("02-皮套囚徒", "02/皮套"), "不合规"),
         (lambda s: s.replace("02-皮套囚徒", "01-借躯降生"), "重复"),
         (lambda s: s.replace("| 时长预算 |", "| 时长 |"), "表头"),
-        (lambda s: s.replace("14-16分钟 | 余韵18秒 |\n| 2", "16-14分钟 | 余韵18秒 |\n| 2"), "0 < A ≤ B"),
+        (lambda s: s.replace("14-16分钟", "长" * (project.BUDGET_MAX_CHARS + 1), 1), "时长预算须为单行"),
+        (lambda s: s.replace("14-16分钟", "不限\x00", 1), "时长预算须为单行"),
         (lambda s: s.replace("余韵18秒 |\n| 2", "余韵61秒 |\n| 2"), "余韵N秒"),
         (lambda s: s.replace("合集: 00-全一期-典藏版", "合集: 01-借躯降生"), "合集"),
         (lambda s: s.replace("## 卷表", "## 卷目"), "缺 `## 卷表`"),
@@ -271,12 +277,10 @@ class TestParse:
         with pytest.raises(project.ParseError, match=needle):
             project.parse(mutate(SAMPLE))
 
-    def test_多位小数的时长预算是解析错不是崩溃(self, tmp_path: Path) -> None:
-        """D81 审查发现（2026-10-13）：`1.2.3-4分钟` 这类单元格曾让 float() 的裸 ValueError 漏出
-        parse/load——render_project_doc 只捕 ParseError，于是每轮注入都炸掉整个回合
-        （坏文件只能经 bash / 手改落盘，而那正是「解析失败要给人看」分支存在的理由）。"""
-        bad = SAMPLE.replace("14-16分钟", "1.2.3-4分钟", 1)
-        with pytest.raises(project.ParseError, match="数字不成立"):
+    def test_超长时长预算是解析错不是崩溃(self, tmp_path: Path) -> None:
+        """坏单元格通过 ParseError 暴露给 load 与注入降级层，不炸整个回合。"""
+        bad = SAMPLE.replace("14-16分钟", "超长说明" * 10, 1)
+        with pytest.raises(project.ParseError, match="时长预算须为单行"):
             project.parse(bad)
         proj = tmp_path / "P"
         proj.mkdir()

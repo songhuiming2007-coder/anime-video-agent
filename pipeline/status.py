@@ -499,7 +499,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             is_blocked=False,
             block_reason=None,
             completed_steps=completed,
-            next_action="成片已出。执行 11 项机器硬指标质检门禁。",
+            next_action="成片已出。执行 10 项机器硬指标质检门禁。",
             next_command=f"python -m pipeline.qc {d}",
             docs_ref="docs/runbook/07-qc.md",
         )

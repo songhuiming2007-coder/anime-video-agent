@@ -43,40 +43,7 @@ SILENCE_MAX = 2.0                      # 单段静音上限，秒
 BLACK_SRC_BUF = 0.3                    # 对照源片时前后各放宽的秒数
                                         # ffmpeg 快速 seek 会落在关键帧上，实际解码起点
                                         # 可能早于请求位置；不放宽会漏检紧贴边界的黑段。
-DUR_BAND = tuple(paths.conf("video.duration_band", [120.0, 240.0]))   # 成片默认带，2–4 分钟
 ASSEMBLY = "04-assembly.json"   # 总装期部件账本（assemble.sh 写，qc 读）
-
-# 同 check_script.py 的同名机制：`01-topic.md` 的 `时长目标` 字段（分钟）覆盖这条默认带。
-# 两个模块各自维护一份两行的正则，没有抽共用模块——目前只有这两处用得到，
-# 抽出来的复用收益小于多一层间接。
-#     不锚 `$`，理由同 check_script.py 的同名正则：字段允许行尾带 `# 备注`。
-DURATION_FIELD = re.compile(r"^\s*时长目标\s*[:：]\s*([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟", re.M)
-# 「写了字段」的判据是**行首**出现字段名（冒号可漏）——不是全文子串。
-# 策划备注里讨论「时长目标」这四个字（真实稿件就有）不等于设了字段，
-# 子串判据会把这种期硬错（二次审计 §6-1）。
-DURATION_FIELD_HINT = re.compile(r"^\s*时长目标\s*[:：]?", re.M)
-
-
-def episode_duration_band(episode: Path) -> tuple[float, float] | None:
-    """从这一期 `01-topic.md` 读 `时长目标`（分钟），换算成秒。没有就返回 None。
-
-    **行首**写了字段但格式认不出 → 直接报错，不静默回退默认带（2026-08-16
-    审计 2-10）：全角破折号「13—15分钟」或单值「13分钟」都不匹配正则，回退
-    2–4 分钟带会把 13 分钟的人物志误判 FAIL，且报告里看不出是字段没读上。
-    正文/备注里**提到**字段名不算写了字段，不拦（二次审计 §6-1 收窄）。
-    check_script.py 的同名函数同款行为，两处口径必须一致。
-    """
-    topic = episode / "01-topic.md"
-    if not topic.exists():
-        return None
-    text = topic.read_text(encoding="utf-8")
-    m = DURATION_FIELD.search(text)
-    if m is None and DURATION_FIELD_HINT.search(text):
-        raise SystemExit(
-            "FAIL 01-topic.md 的 `时长目标` 格式认不出，应为 `时长目标: 7-8分钟`"
-            "（半角连字符 - / – / ~，范围写法）。\n"
-            "     静默回退默认 2–4 分钟带会把这篇稿子按错标准判——先改对格式再跑")
-    return (float(m.group(1)) * 60, float(m.group(2)) * 60) if m else None
 
 
 @dataclass
@@ -350,7 +317,6 @@ def check(video: Path, plan: dict | None = None,
           audio: list[dict] | None = None) -> list[Check]:
     out: list[Check] = []
     asm = assembly_ledger(video.parent)
-    dur_band = episode_duration_band(video.parent) or DUR_BAND
     # 音乐时间轴一次解析，多处复用（与排片一致 / 黑帧映射 / 静音豁免），
     # 不重复 parse 稿件与 build_timeline
     mplan = _music_plan(video.parent)
@@ -358,12 +324,9 @@ def check(video: Path, plan: dict | None = None,
     vdur = _duration(video, "v:0")
     adur = _duration(video, "a:0")
 
-    out.append(Check(f"成片时长 {dur_band[0] / 60:g}–{dur_band[1] / 60:g} 分钟",
-                     dur_band[0] <= vdur <= dur_band[1],
-                     f"{vdur:.2f}s = {vdur / 60:.2f} 分钟"))
     out.append(Check("音画时长对齐",
                      abs(vdur - adur) < AV_DRIFT_MAX,
-                     f"画面 {vdur:.3f}s / 音频 {adur:.3f}s 差 {abs(vdur - adur) * 1000:.0f}ms"))
+                     f"画面 {vdur:.3f}s（{vdur / 60:.2f} 分钟）/ 音频 {adur:.3f}s 差 {abs(vdur - adur) * 1000:.0f}ms"))
 
     if plan or asm:
         if mplan:

@@ -27,6 +27,7 @@ TOPIC_FILE = "01-topic.md"
 # 取值理由见 D81 spec §6.4
 PROJECT_NAME_MAX_CHARS = 40   # 企划名进状态卡首行与侧栏；超了多半是把一句话当成了名字
 YEAR_SPAN_MAX_CHARS = 20      # `2011–2014`、`2020–2023（终场）` 都在 15 字内；超了说明写进了别的内容
+BUDGET_MAX_CHARS = 30         # `时长预算` 为软参考简短文本（如 `不限`、`随内容`、`14-16分钟`），不做分钟范围硬拦截
 TAIL_MAX_S = 60               # 只做形状检查：余韵超过一分钟就不是「片尾余韵」而是一段音乐
 
 VOLUME_TABLE_HEADING = "卷表"
@@ -247,7 +248,6 @@ def get_episode_tree(root: Path | None = None) -> EpisodeTree:
 # ---------------------------------------------------------------------------
 
 _HEADER_LINE = re.compile(r"^([^\s:：#|][^:：]*?)\s*[:：]\s*(.*?)\s*$")
-_DURATION = re.compile(r"^([\d.]+)\s*[-–~]\s*([\d.]+)\s*分钟$")   # 与 check_script.DURATION_FIELD 同一数字段语法
 _TAIL = re.compile(r"^余韵(\d+)秒$")
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
@@ -262,7 +262,6 @@ class Volume:
     dir: str
     years: str
     budget: str
-    budget_min: tuple[float, float]
     tail: str
     tail_s: int | None   # None = 完整保留
 
@@ -352,17 +351,8 @@ def parse(text: str) -> ProjectDoc:
         keys[key] = len(volumes) + 1
         if len(years) > YEAR_SPAN_MAX_CHARS or _CTRL.search(years):
             raise ParseError(f"第 {no} 行：年份须为单行、≤ {YEAR_SPAN_MAX_CHARS} 字")
-        m = _DURATION.match(budget)
-        if not m:
-            raise ParseError(f"第 {no} 行：时长预算须形如 `14-16分钟`，实为 {budget!r}")
-        try:
-            a, b = float(m.group(1)), float(m.group(2))
-        except ValueError:
-            # `[\d.]+` 放进来的多位小数（`1.2.3-4分钟`）：解析错误的契约是 ParseError，
-            # 裸 ValueError 会漏过 load() 与注入层的 ParseError 捕获，把每个回合炸掉（D81 审查）
-            raise ParseError(f"第 {no} 行：时长预算的数字不成立，实为 {budget!r}") from None
-        if not 0 < a <= b:
-            raise ParseError(f"第 {no} 行：时长预算须 0 < A ≤ B，实为 {budget!r}")
+        if len(budget) > BUDGET_MAX_CHARS or _CTRL.search(budget):
+            raise ParseError(f"第 {no} 行：时长预算须为单行、≤ {BUDGET_MAX_CHARS} 字")
         if tail in (TAIL_KEEP, TAIL_PENDING):
             tail_s = None
         else:
@@ -370,7 +360,7 @@ def parse(text: str) -> ProjectDoc:
             if not mt or not 1 <= int(mt.group(1)) <= TAIL_MAX_S:
                 raise ParseError(f"第 {no} 行：片尾须为 `{TAIL_KEEP}`、字面 `{TAIL_PENDING}`（总装前再定）或 `余韵<整数>秒`（1 ≤ N ≤ {TAIL_MAX_S}），实为 {tail!r}")
             tail_s = int(mt.group(1))
-        volumes.append(Volume(len(volumes) + 1, dirname, years, budget, (a, b), tail, tail_s))
+        volumes.append(Volume(len(volumes) + 1, dirname, years, budget, tail, tail_s))
     if collection is not None and name_key(collection) in keys:
         raise ParseError(f"`合集` {collection!r} 与第 {keys[name_key(collection)]} 卷目录相同")
     return ProjectDoc(name, collection, tuple(volumes), sections)

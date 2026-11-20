@@ -162,22 +162,35 @@ class TestBlackDefects:
             ("c.mkv", 300.0, 300.6, 500.0, 500.6)]
 
 
-class TestEpisodeDurationBand:
-    """成片总时长带的按期覆盖（N15）：tts.py 现在也读这个函数判 WARN 阈值，
-    不再自己抄一份 120/240 硬编码——两个调用点（qc 渲染后质检、tts 配音后
-    WARN）必须走同一份「没写就用默认带，写了就按该期覆盖」的逻辑。
-    """
+class TestNoDurationGate:
+    """成片总时长不进质检门禁（2026-11-20 裁决）：随内容自然决定，不设默认带，
+    也不解析或校验 `01-topic.md` 的 `时长目标` 字段。"""
 
-    def test_没有_01_topic_md_返回None(self, tmp_path):
-        assert qc.episode_duration_band(tmp_path) is None
+    def _fake_ok(self, monkeypatch, dur_s: float):
+        import subprocess as sp
 
-    def test_没写时长目标字段也返回None(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("# 标题\n类型: 人物志\n", encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) is None
+        def run(cmd, **kw):
+            if cmd[0] == "ffprobe":
+                return sp.CompletedProcess(cmd, 0, stdout=f"{dur_s}\n", stderr="")
+            if any("loudnorm" in a for a in cmd):
+                return sp.CompletedProcess(
+                    cmd, 0, stdout="", stderr='{"input_i": "-16.0", "input_tp": "-1.5"}'
+                )
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    def test_写了时长目标按分钟换算成秒(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟\n", encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) == (420.0, 480.0)
+        monkeypatch.setattr(qc.subprocess, "run", run)
+
+    @pytest.mark.parametrize("dur_s", [15.0, 180.0, 3600.0])
+    def test_任意总时长均不出现时长门禁且不失败(self, monkeypatch, tmp_path, dur_s):
+        (tmp_path / "01-topic.md").write_text("时长目标: 随内容不限\n", encoding="utf-8")
+        video = tmp_path / "05-final.mp4"
+        video.write_text("stub", encoding="utf-8")
+        self._fake_ok(monkeypatch, dur_s)
+        checks = qc.check(video)
+        assert not any("成片时长" in c.name for c in checks)
+        align = next(c for c in checks if c.name == "音画时长对齐")
+        assert align.ok is True
+        assert f"{dur_s / 60:.2f} 分钟" in align.detail
 
 
 class TestDetectorFailure:
@@ -214,64 +227,6 @@ class TestDetectorFailure:
         assert silence.ok is False and "退出码 1" in silence.detail
         assert loud.ok is False              # 响度测量也失败，不许漏报
         assert black.skipped is False and silence.skipped is False
-
-
-class TestDurationFieldStrict:
-    """`时长目标` 写了但格式认不出 → 报错，不静默回退默认 2–4 分钟带。
-
-    2026-08-16 审计 2-10：全角破折号「13—15分钟」或单值「13分钟」都不匹配
-    正则，旧实现静默用 [120,240] 判——13 分钟人物志必 FAIL，且报告里看不出
-    是字段没读上。check_script.py 的同名机制有同款测试。
-    """
-
-    def test_全角破折号报错(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="时长目标"):
-            qc.episode_duration_band(tmp_path)
-
-    def test_单值写法报错(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 13分钟\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="时长目标"):
-            qc.episode_duration_band(tmp_path)
-
-    def test_没写字段仍返回None(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("类型: 杂谈\n", encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) is None
-
-    def test_格式正确照常解析(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟  # 备注\n", encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) == (420.0, 480.0)
-
-
-class TestDurationFieldProseTolerance:
-    """时长目标触发条件收窄为行首判据（二次审计 §6-1）。
-
-    旧条件是全文子串——正文/备注里**提到**「时长目标」四个字（真实稿件
-    就有这种行）而没写字段的期会被硬错。判据改成 `^\\s*时长目标` 行首
-    匹配：字段行坏格式仍报错，正文提及不拦。
-    """
-
-    def test_正文提及字段名而无字段行_不拦(self, tmp_path):
-        # 真实稿件形态：策划备注里讨论这个字段，但本期没设它
-        (tmp_path / "01-topic.md").write_text(
-            "类型: 杂谈\n\n备注：不预设目标，写完看实际字数再倒填 `时长目标` 字段。\n",
-            encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) is None
-
-    def test_行首提及但缺冒号_仍按坏格式报错(self, tmp_path):
-        # 行首出现字段名却不是合法字段行（漏冒号）——这是「想写没写对」，
-        # 报错而不是静默退回默认带
-        (tmp_path / "01-topic.md").write_text("时长目标 7-8分钟\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="时长目标"):
-            qc.episode_duration_band(tmp_path)
-
-    @pytest.mark.parametrize("lo,hi", [("5", "6"), ("7.5", "8.5"),
-                                       ("1.5", "3"), ("12", "20"), ("7", "8")])
-    def test_真实五期写法全部通过(self, tmp_path, lo, hi):
-        # data/episodes 里实际用过的五种写法，收窄判据后一个都不能误杀
-        (tmp_path / "01-topic.md").write_text(
-            f"时长目标: {lo}-{hi}分钟\n", encoding="utf-8")
-        assert qc.episode_duration_band(tmp_path) == (float(lo) * 60, float(hi) * 60)
 
 
 class TestAssemblyBlackSpans:

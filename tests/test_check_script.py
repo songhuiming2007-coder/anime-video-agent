@@ -363,23 +363,6 @@ class TestEpisodeChecks:
         assert c.ok
 
 
-class TestDurationOverrideStrict:
-    """`时长目标` 坏格式显式报错（2026-08-16 审计 2-10），与 qc 同款。"""
-
-    def test_坏格式报错不静默回退(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 13—15分钟\n", encoding="utf-8")
-        f = tmp_path / "02-script.md"
-        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="时长目标"):
-            cs.episode_duration_override(f)
-
-    def test_好格式照常解析(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text("时长目标: 7-8分钟\n", encoding="utf-8")
-        f = tmp_path / "02-script.md"
-        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
-        assert cs.episode_duration_override(f) == (7.0, 8.0)
-
-
 class TestEmptyScript:
     """空稿/无「配音：」段落：干净 FAIL，不裸抛 StatisticsError（审计 2-15）。"""
 
@@ -396,16 +379,6 @@ class TestEmptyScript:
         checks = cs.run(f)
         assert checks[0].ok is False
 
-
-class TestDurationOverrideProseTolerance:
-    """与 qc.TestDurationFieldProseTolerance 同款：正文提及字段名不拦（二次审计 §6-1）。"""
-
-    def test_正文提及字段名而无字段行_不拦(self, tmp_path):
-        (tmp_path / "01-topic.md").write_text(
-            "类型: 杂谈\n\n备注：先按 `时长目标` 立带，写完再倒填。\n", encoding="utf-8")
-        f = tmp_path / "02-script.md"
-        f.write_text("## 段落 1\n\n配音：x。\n", encoding="utf-8")
-        assert cs.episode_duration_override(f) is None
 
 class TestAnchorChecks:
     """锚点三段递进机检（ADR-0008）：字段在不在 → 格式对不对 → 指向真不真。

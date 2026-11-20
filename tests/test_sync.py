@@ -10,13 +10,12 @@ align 是不能 import clips 的零依赖叶子），但「靠人肉记得同步
 
 - `clips._ANCHOR` ↔ `check_script.ANCHOR_TC`（锚点时间码语法）
 - `clips._ANCHOR_FIELD` ↔ `check_script._ANCHOR_FIELD`（锚点字段续行规则）
-- `qc.DURATION_FIELD(+_HINT)` ↔ `check_script.DURATION_FIELD(+_HINT)`（时长目标字段）
 - `clips.MIN_CLIP` ↔ `align.REFIT_MIN_CLIP`（「比这更短会闪」在生成/重排两段的落实）
 
 pattern 与 flags 一起比：`re.I`/`re.M` 是语法的一部分，只比字符串等于漏掉一半。
 """
 
-from pipeline import align, check_script, clips, qc
+from pipeline import align, check_script, clips
 
 
 def _same(a, b) -> bool:
@@ -31,12 +30,6 @@ def test_锚点时间码正则两处逐字一致():
 def test_锚点字段续行正则两处逐字一致():
     assert _same(clips._ANCHOR_FIELD, check_script._ANCHOR_FIELD), \
         "clips._ANCHOR_FIELD 与 check_script._ANCHOR_FIELD 必须逐字一致"
-
-
-def test_时长目标字段正则两处逐字一致():
-    assert _same(qc.DURATION_FIELD, check_script.DURATION_FIELD), \
-        "qc 与 check_script 的 DURATION_FIELD 必须逐字一致（两处口径必须一致）"
-    assert _same(qc.DURATION_FIELD_HINT, check_script.DURATION_FIELD_HINT)
 
 
 def test_片段时长下限两处同源():

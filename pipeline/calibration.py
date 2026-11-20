@@ -225,7 +225,7 @@ def impact(target: Target, value) -> list[str]:
     if p in ("visual.ccip_same.", "visual.ccip_margin.", "visual.face_expand."):
         return ["改了要从 faces detect 起重跑这部番的整条人脸链（_ccip_note）"]
     if p == "script.cpm":
-        return ["影响所有期的字数 / 时长估算与 check_script、qc 的时长判据"]
+        return ["影响所有期的语速粗算（章节顶栏预估格宽与单句 TTS 时长估算）"]
     if p == "scenes.":
         return ["影响这部番的画面检索门槛（no_match）与补丁池默认 floor"]
     return ["影响含这个歌名的段的时长估算与回读豁免"]

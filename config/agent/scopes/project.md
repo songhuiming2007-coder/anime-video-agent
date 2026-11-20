@@ -13,7 +13,7 @@
   - 素材预收集：素材候选→人点名→抓取链见 `skills/acquire-assets/SKILL.md` 衔接顺序节；要检索得到走 `skills/acquire-assets/SKILL.md` 第二节第 4 步。候选、下载、素材池全库共用、不分卷，不必为抓取开卷会话。
   - 写记忆：`write_memory` 带 `target="project"` 写本企划的企划记忆（`00-memory.md`，3000 字符，证据只认本企划的卷）。
 - **不能做什么**：卷级工序（tts / clips / render / qc / cover / status / check_script …）、封面编辑、把素材挪进某卷补丁池（`acquire register --to-patch`）一律到对应卷的会话里做。
-- **卷表即分卷边界**：`00-project.md` 的格式见首轮注入的立项文件；卷表表头恰为 `卷序 / 目录 / 年份 / 时长预算 / 片尾`，末卷片尾必须是 `完整保留`。
+- **卷表即分卷边界**：`00-project.md` 的格式见首轮注入的立项文件；卷表表头恰为 `卷序 / 目录 / 年份 / 时长预算 / 片尾`（`时长预算` 为任意简短软参考文本，如 `不限`、`随内容` 或粗估区间，非硬约束），末卷片尾必须是 `完整保留`。
 - 联网升级、Code Freeze、开工单见 production.md。记忆两层见 production.md。
 
 ## 企划实际怎么做

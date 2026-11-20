@@ -49,7 +49,7 @@
 ## 二、标准执行速查（01 – 09 步）
 
 1. **[01 选题](runbook/01-topic.md)**（人）：填 `01-topic.md`（番、类型、锚点、张力）。张力是整条流水线唯一编辑判断，定死后不许 agent 篡改。
-2. **[02 写稿](runbook/02-script.md)**（Agent）：先给人设计稿（核心立意、大概写什么、多长），人点头再写；先读番剧笔记，按 `skills/write-script` 写 `02-script.draft.md`，自己跑 `check_script` 到全绿，再跑 02.8 `adversarial`（每期必跑）。
+2. **[02 写稿](runbook/02-script.md)**（Agent）：先给人设计稿（核心立意、大概写什么、大致体量软参考），人点头再写；先读番剧笔记，按 `skills/write-script` 写 `02-script.draft.md`，自己跑 `check_script` 到全绿，再跑 02.8 `adversarial`（每期必跑）。
 3. **[02.5 人审](runbook/02.5-human-review.md)**（人）：逐段挑刺、事实核查、人自己改稿、结构改动（拆段、补素材、多锚点、试看段）；让 agent 改时写前留底。批准 02.5 时自动封板生成 `02-diff.patch`（也可在 app 内 02.5 编辑器点「封板」）。
 4. **[03 配音](runbook/03-tts.md)**（Agent/机器）：agent 先问本地还是云端、再跑 `tts`（云端开机 / 跑任务 / 关机是计费卡）。
    - **红线**：此后一律只补点名段，**严禁擅自 `--force` 全量重配**（ava 层直接拒收该旗标并指引 `--redo`）；错字走 `g2p.py` 注入，换引擎前必须报备影响段数。
@@ -57,7 +57,7 @@
 6. **[04 排片](runbook/04-clips.md)**（Agent/机器）：agent 跑 `clips`，全局贪心分派。通道互斥（锚点直通 / 台词 / 画面 VLM），不跨通道比分。审看页发现画面问题改锚点重排，不动配音。**普通期的 BGM 在这时由人点名**（配音出来之后才听得出该配什么），agent 写进 `01-topic.md` 与稿件的音乐段（`skills/write-script/SKILL.md` 8.3）。
 7. **[05 审片](runbook/05-timecode.md)**（人）：预览区看 `04-review.html`，通过后在决策条批准 05（终端 `/approve 05`），产出 `04-clips.approved.json`。
 8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：agent 跑 `render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
-9. **[07 质检](runbook/07-qc.md)**（机器）：agent 跑 `qc`，11 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
+9. **[07 质检](runbook/07-qc.md)**（机器）：agent 跑 `qc`，10 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
 10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：agent 跑 `cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`）。叠字：先和人商量写什么字，再由 agent 调 `cover_edit` 直接出图、自己先看过再交人。横版 16:9、竖版 9:14、4:3 三版都要（竖版由裁剪或 AI 扩图得到；4:3 从横版裁，字和主体要能同框）；简介统一一份。
 11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面路径与标题原文（app 内两个输入；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
 
