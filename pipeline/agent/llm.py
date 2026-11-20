@@ -37,12 +37,14 @@ from typing import Any, Literal
 
 from pipeline import paths
 from pipeline.agent import model_switch, vision
-from pipeline.agent.aging import age_tool_results
+from pipeline.agent.aging import age_current_turn_tool_results, age_tool_results
 from pipeline.agent.compact import (
     COMPACT_KEY,
     STATUS_CARD_KEY,
+    CompactConfigError,
     drop_stale_status_cards,
     estimate_tokens,
+    load_compact_config,
 )
 from pipeline.agent.tools import (
     LOOKUP_KINDS,
@@ -2350,6 +2352,8 @@ class LoopControl:
     协议层要先把它推上屏，否则人看不到。"""
     on_llm_retry: Callable[[int, int, float, str], None] | None = None
     """D93：模型请求遇可重试错误、即将等待重发时的通知：(第几次重试, 上限, 等几秒, 报错原文)。"""
+    on_context_guard: Callable[[str], None] | None = None
+    """回合内上下文防爆仓保护生效时的通知：(说明文本)。"""
 
 
 def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
@@ -2511,6 +2515,42 @@ def _zero_lookups() -> dict[str, int]:
     return {k: 0 for k in LOOKUP_KINDS}
 
 
+# ---- 回合内上下文防爆仓护栏 ----
+
+INTRA_TURN_AGE_RATIO = 0.75
+
+_CONTEXT_OVERFLOW_RE = re.compile(
+    r"(?:"
+    r"input token count exceeds the maximum"
+    r"|exceeds the maximum number of tokens"
+    r"|maximum context length"
+    r"|context_length_exceeded"
+    r"|exceeded(?: [\w.-]+)? (?:model )?token limit"
+    r"|prompt is too long"
+    r"|input is too long"
+    r"|request too large.*token"
+    r"|too many tokens"
+    r"|context window.*exceed"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_context_overflow_error(exc: BaseException) -> bool:
+    """判断服务商错误是否属于输入上下文超出模型上限。"""
+    return bool(_CONTEXT_OVERFLOW_RE.search(str(exc)))
+
+
+def _known_model_window(cfg: LLMConfig, purpose: str, root: Path | None) -> int | None:
+    """查 `config/agent/compact.json` 里该模型的可靠窗口；未知或配置异常返回 None（不猜窗口）。"""
+    try:
+        table = load_compact_config(root)
+    except CompactConfigError:
+        return None
+    window = table.window_for(cfg.model_for(purpose))
+    return window.reliable if window is not None else None
+
+
 def run_tool_loop(
     messages: list[dict[str, Any]],
     *,
@@ -2565,8 +2605,11 @@ def run_tool_loop(
     replies_since_cp = execs_since_cp = 0
     prompt_chars = 0
     prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
-    # D62：触发读数提示的基准——最近一次请求时的实测 token 与当时的历史长度；压缩后作废
-    usage_anchor: tuple[int, int] | None = None
+    # D62：触发读数提示的基准——最近一次请求时的实测 token、当时历史长度与实际发出字符数；压缩或回合内老化后作废
+    usage_anchor: tuple[int, int, int] | None = None
+    model_window = _known_model_window(cfg, purpose, effective_root)
+    sticky_keep_batches: int | None = None
+    proactive_notified = False
     comp: dict[str, Any] = {"compacted": False, "tokens_before": None, "tokens_after": None}
     lookups = _zero_lookups()  # D48 ①：本回合实际执行的查证调用，按类计数
     started = time.monotonic()
@@ -2575,17 +2618,88 @@ def run_tool_loop(
         "calls": [], "index": 0, "call": None, "stage": None, "outcome": None, "name": "",
     }
 
-    def _chat(tool_choice: str | None = None) -> dict[str, Any]:
-        """一次模型请求；可重试错误（D93）按 2 / 4 / 8 s 自动重发，用尽才抛。
+    def _project_messages(force_keep_batches: int | None = None) -> list[dict[str, Any]]:
+        nonlocal proactive_notified
+        if force_keep_batches is not None:
+            aged, _ = age_current_turn_tool_results(
+                convo, keep_recent_batches=force_keep_batches, target_chars=None
+            )
+            return aged
+        if sticky_keep_batches is not None:
+            aged, _ = age_current_turn_tool_results(
+                convo, keep_recent_batches=sticky_keep_batches, target_chars=None
+            )
+            return aged
+        aged = age_tool_results(convo)
+        if model_window is not None:
+            safe_tokens = int(model_window * INTRA_TURN_AGE_RATIO)
+            if (
+                usage_anchor is not None
+                and usage_anchor[1] <= len(aged)
+                and sum(
+                    len(str(m.get("content") or ""))
+                    for m in aged[: usage_anchor[1]]
+                    if isinstance(m, dict)
+                )
+                == usage_anchor[2]
+            ):
+                projected = usage_anchor[0] + estimate_tokens(aged[usage_anchor[1] :])
+            else:
+                projected = estimate_tokens(aged)
+            if projected > safe_tokens:
+                cand, n_aged = age_current_turn_tool_results(
+                    convo, keep_recent_batches=1, target_chars=safe_tokens
+                )
+                if n_aged > 0:
+                    aged = cand
+                    if not proactive_notified:
+                        proactive_notified = True
+                        if control.on_context_guard is not None:  # type: ignore[union-attr]
+                            control.on_context_guard(  # type: ignore[union-attr]
+                                f"本回合上下文接近窗口上限，已将本回合较早的 {n_aged} 条大体积工具结果"
+                                "按占位发送（原文仍保留在会话与 fetch-log 中）。"
+                            )
+        return aged
+
+    def _chat(tool_choice: str | None = None, *, overflow_wrapup: bool = False) -> dict[str, Any]:
+        """一次模型请求；遇上下文超限 400 自动逐级老化本回合工具结果重发，可重试错误（D93）按 2 / 4 / 8 s 重发。
 
         等待用 `_sleep`：人点停止 → SIGINT 打断等待 → KeyboardInterrupt 走调用方现有的中断落点。
         """
-        nonlocal llm_retries
+        nonlocal llm_retries, sticky_keep_batches
         attempt = 0
+        local_keep: int | None = 0 if overflow_wrapup else None
         while True:
             try:
-                return _chat_once(tool_choice)
+                return _chat_once(tool_choice, force_keep_batches=local_keep)
             except LLMError as exc:
+                if is_context_overflow_error(exc):
+                    candidates: tuple[int, ...] = (
+                        (1, 0) if local_keep is None else ((0,) if local_keep > 0 else ())
+                    )
+                    switched = False
+                    for k in candidates:
+                        cand_aged, _ = age_current_turn_tool_results(
+                            convo, keep_recent_batches=k, target_chars=None
+                        )
+                        cand_chars = sum(
+                            len(str(m.get("content") or ""))
+                            for m in cand_aged
+                            if isinstance(m, dict)
+                        )
+                        if cand_chars < prompt_chars:
+                            local_keep = k
+                            sticky_keep_batches = 1
+                            if control.on_context_guard is not None:  # type: ignore[union-attr]
+                                mode_label = "较早轮次" if k == 1 else "本回合全部"
+                                control.on_context_guard(  # type: ignore[union-attr]
+                                    f"请求超出模型上下文上限，已将{mode_label}大体积工具结果老化为摘要占位并自动重试"
+                                    "（原文仍保留在本地）。"
+                                )
+                            switched = True
+                            break
+                    if switched:
+                        continue
                 if not exc.retryable:
                     raise
                 if attempt >= LLM_MAX_RETRIES:
@@ -2597,11 +2711,13 @@ def run_tool_loop(
                     control.on_llm_retry(attempt, LLM_MAX_RETRIES, delay, str(exc))  # type: ignore[union-attr]
                 _sleep(delay)
 
-    def _chat_once(tool_choice: str | None) -> dict[str, Any]:
+    def _chat_once(
+        tool_choice: str | None, *, force_keep_batches: int | None = None
+    ) -> dict[str, Any]:
         nonlocal prompt_chars, prompt_tokens, usage_anchor
         # D65：发送与字符统计都走老化投影（上一回合及更早的大工具结果换占位串）；
         # convo 与 session.jsonl 一字不动（纯函数投影，日志即事实）
-        aged = age_tool_results(convo)
+        aged = _project_messages(force_keep_batches)
         prompt_chars = sum(
             len(str(m.get("content") or "")) for m in aged if isinstance(m, dict)
         )
@@ -2618,7 +2734,7 @@ def run_tool_loop(
             egress_trusted=egress_trusted,
         )
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
-        usage_anchor = None if prompt_tokens is None else (prompt_tokens, requested_len)
+        usage_anchor = None if prompt_tokens is None else (prompt_tokens, requested_len, prompt_chars)
         return reply
 
     def _synthesize_rest(start: int, text: str) -> None:
@@ -2652,7 +2768,7 @@ def run_tool_loop(
             "已执行的工具结果保留在会话中。"
         )
 
-    def _wrapup(reason: str) -> tuple[str, dict[str, Any] | None, str | None, str | None]:
+    def _wrapup(reason: str, *, overflow: bool = False) -> tuple[str, dict[str, Any] | None, str | None, str | None]:
         """收尾调用（§2.3 第 2 条）。返回 (wrapup 状态, final, local_note, error)。"""
         nonlocal llm_calls
         if control.interrupt is not None:  # type: ignore[union-attr]
@@ -2669,7 +2785,7 @@ def run_tool_loop(
             "wrapup_instruction",
         )
         try:
-            reply = _chat(tool_choice="none")
+            reply = _chat(tool_choice="none", overflow_wrapup=overflow)
         except KeyboardInterrupt:
             return "aborted", None, None, None
         except Exception as exc:  # noqa: BLE001 - 收尾失败必须如实降级，不许假装答完
@@ -2688,7 +2804,7 @@ def run_tool_loop(
             return "ok", reply, None, None
         return "failed", None, _local_note(reason, None), "收尾回复不含可用答复"
 
-    def _stop(reason: str, *, error: str | None = None):
+    def _stop(reason: str, *, error: str | None = None, overflow: bool = False):
         """非正常停止的收尾闸：本轮一条回复都没拿到 → 回滚；否则收尾。"""
         if getattr(control.interrupt, "skip_wrapup", False):
             # SIGTERM（§2.2 第 5 条）：host 的 SIGKILL 倒计时只有 5 s，收尾最长 60 s → 跳过收尾
@@ -2705,7 +2821,7 @@ def run_tool_loop(
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
                 error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
             )
-        state, final, note, wrapup_error = _wrapup(reason)
+        state, final, note, wrapup_error = _wrapup(reason, overflow=overflow)
         return _loop_result(
             convo, final=final, local_note=note, stopped=reason, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
@@ -2731,7 +2847,13 @@ def run_tool_loop(
                 live["stage"] = "compact"
                 hint = None
                 if usage_anchor is not None and usage_anchor[1] <= len(convo):
-                    hint = usage_anchor[0] + estimate_tokens(convo[usage_anchor[1]:])
+                    anchor_chars = sum(
+                        len(str(m.get("content") or ""))
+                        for m in age_tool_results(convo)[: usage_anchor[1]]
+                        if isinstance(m, dict)
+                    )
+                    if anchor_chars == usage_anchor[2]:
+                        hint = usage_anchor[0] + estimate_tokens(convo[usage_anchor[1] :])
                 compacted = control.compact(convo, hint)  # type: ignore[union-attr]
                 if compacted is not None and compacted.get("ok"):
                     usage_anchor = None  # 历史已缩：旧实测不再对得上
@@ -2900,6 +3022,6 @@ def run_tool_loop(
             prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
-        return _stop("error", error=str(exc))
+        return _stop("error", error=str(exc), overflow=is_context_overflow_error(exc))
     except Exception as exc:  # noqa: BLE001 - 意外异常也走「先收尾后停」，不假装无事发生
         return _stop("error", error=f"{type(exc).__name__}: {exc}")

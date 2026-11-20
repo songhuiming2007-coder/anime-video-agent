@@ -80,6 +80,9 @@ def test_repo_config_parses_and_covers_both_effective_models():
     assert cfg.window_for("gemini-3.8-flash-high") == ModelWindow(1048576, 1.0, efforts=("none", "low", "medium", "high"))
     # agent.local.json 的 light 档（pipeline scope）：缺了它流水线模式既无分母也压不了（2026-10-10 实测补入）
     assert cfg.window_for("gemini-3.7-flash-high") == ModelWindow(1048576, 1.0)
+    # Google AI Studio 实查 Gemini 4 / 3.8 / 3.5 / 2.5 1M 窗口已登记（支持 google/ 前缀剥离查询）
+    assert cfg.window_for("google/gemini-4-neon") == ModelWindow(1048576, 1.0)
+    assert cfg.window_for("gemini-4-hydrogen") == ModelWindow(1048576, 1.0)
     # spec §4.0：gpt-4o 的触发点 76.8k、尾部 ≈19k
     assert cfg.trigger_tokens("gpt-4o") == 76800
     assert cfg.tail_budget_tokens("gpt-4o") == 19200

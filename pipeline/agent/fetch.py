@@ -7,10 +7,11 @@ D136 之前这条底线被实现成「AVA 的工具抓过」：别的 agent 查�
 抓回来的原文，调用方给不了正文。
 
 用法：
-    python -m pipeline.agent.fetch <url> [--crawl | --browser] [--caller claude-code] [--reason …]
+    python -m pipeline.agent.fetch <url> [--crawl | --browser | --chrome] [--caller claude-code] [--reason …]
 
 默认静态抓取，失败自动升级无头渲染（crawl）；要登录态的页（X、B 站收藏夹）用 --browser，它用 AVA 的
 独立浏览器 profile，AVA 开着浏览器会话时会占用同一 profile，先在 AVA 里关掉或等它空闲。
+需要主力 Chrome 已登录态或绕过 Cloudflare 等反爬盾的页可用 --chrome（后台打开提取后自动关闭，不抢焦点）。
 """
 
 from __future__ import annotations
@@ -51,8 +52,7 @@ def fetch_and_record(url: str, *, mode: str = "auto", origin: str, caller: str |
                      ) -> dict[str, Any]:
     """抓 `url` 并留档 → {record, kind, final_url, chars, title, tried}。抓不到或没落上档抛 ValueError。
 
-    mode：auto（静态，失败升级 crawl）/ fetch / crawl / browser。browser 只在明说时用：它要登录态 profile，
-    系统当场抓不去碰它。
+    mode：auto（静态，失败升级 crawl）/ fetch / crawl / browser / chrome。browser / chrome 只在明说时用。
     """
     from pipeline.agent.web import fetch_web
     from pipeline.agent.web_crawl import crawl_page
@@ -76,8 +76,10 @@ def fetch_and_record(url: str, *, mode: str = "auto", origin: str, caller: str |
             raise ValueError("；".join(tried)) from None
     if res is None and mode == "browser":
         res, kind = _browser_text(url, why, root), "browser"
+    if res is None and mode == "chrome":
+        res, kind = _chrome_text(url, why, root), "browser"
     if res is None:
-        raise ValueError(f"未知抓取方式 {mode!r}（auto / fetch / crawl / browser）")
+        raise ValueError(f"未知抓取方式 {mode!r}（auto / fetch / crawl / browser / chrome）")
     res = keep_record(res, kind, url, sid=sid, root=root, origin=origin, caller=caller)
     if not res.get("fetch_record"):
         raise ValueError(res.get("fetch_record_error") or "抓到了，但这次没有全文可留档")
@@ -91,6 +93,22 @@ def _browser_text(url: str, reason: str, root: Path | None) -> dict[str, Any]:
 
     browser_action("navigate", reason, url=url, root=root)
     return browser_action("extract_text", reason, root=root, keep_full=True)
+
+
+def _chrome_text(url: str, reason: str, root: Path | None) -> dict[str, Any]:
+    """用本机主力 Chrome 后台新建标签抓全文，读完即关闭标签，不抢前台焦点。"""
+    from pipeline.agent.web_chrome import chrome_action
+
+    opened = chrome_action("open", url=url, reason=reason, root=root)
+    page_id = opened.get("page_id")
+    try:
+        return chrome_action("extract_text", page_id=page_id, reason=reason, root=root, keep_full=True)
+    finally:
+        if page_id is not None:
+            try:
+                chrome_action("close", page_id=page_id, root=root)
+            except Exception:
+                pass
 
 
 def system_fetcher(root: Path | None) -> Callable[[str], str | None]:
@@ -127,10 +145,11 @@ def main(argv: list[str] | None = None) -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--crawl", action="store_true", help="直接无头渲染（JS 渲染 / 反爬页）")
     g.add_argument("--browser", action="store_true", help="用 AVA 的独立浏览器 profile（要登录态的页）")
+    g.add_argument("--chrome", action="store_true", help="用本机已登录的主力 Chrome 后台标签抓（反爬盾页，需先开 remote-debugging）")
     ap.add_argument("--caller", default="cli", help="调用方标签，记进留档（如 claude-code、pi）")
     ap.add_argument("--reason", default=None, help="为什么抓这页（crawl / browser 记进审计）")
     a = ap.parse_args(argv)
-    mode = "crawl" if a.crawl else "browser" if a.browser else "auto"
+    mode = "crawl" if a.crawl else "browser" if a.browser else "chrome" if a.chrome else "auto"
     try:
         out = fetch_and_record(a.url, mode=mode, origin="cli", caller=a.caller.strip() or "cli", reason=a.reason)
     except ValueError as exc:

@@ -268,3 +268,48 @@ def test_默认就走系统当场抓_acquire_check与fact_add(root):
     assert "系统当场抓取也失败：测试里不出网" in rec["provenance"]["detail"]
     r = facts.add([{"claim": "x", "url": PAGE, "excerpts": [TEXT]}], target=_vol(root), sid=None, root=root)
     assert "系统当场抓取也失败：测试里不出网" in r["results"][0]["hint"]
+
+
+@pytest.mark.real_fetch_and_record
+def test_命令行Chrome抓取与标签自动关闭(root, monkeypatch, capsys):
+    from pipeline import paths
+    from pipeline.agent import web_chrome
+
+    monkeypatch.setattr(paths, "ROOT", root)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_chrome(action, **kw):
+        calls.append((action, kw))
+        if action == "open":
+            return {"ok": True, "page_id": 7}
+        if action == "extract_text":
+            return {"text": "截断版", "full_text": "Chrome完整全文", "final_url": PAGE, "title": "CT"}
+        if action == "close":
+            return {"ok": True}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(web_chrome, "chrome_action", fake_chrome)
+    assert F.main([PAGE, "--chrome", "--caller", "antigravity", "--reason", "读盾页"]) == 0
+    assert "OK  留档" in capsys.readouterr().out
+    assert [a for a, _ in calls] == ["open", "extract_text", "close"]
+    assert calls[1][1]["keep_full"] is True and calls[2][1]["page_id"] == 7
+    e = fetch_log.lookup(PAGE, root=root)[0]
+    assert (e["origin"], e["caller"], e["kind"]) == ("cli", "antigravity", "browser")
+    assert fetch_log.read_text(e, root=root) == "Chrome完整全文"
+
+    # 提取阶段失败也必须关闭新建后台标签
+    calls.clear()
+
+    def fake_chrome_fail(action, **kw):
+        calls.append((action, kw))
+        if action == "open":
+            return {"ok": True, "page_id": 9}
+        if action == "extract_text":
+            raise ValueError("页面超时")
+        return {"ok": True}
+
+    monkeypatch.setattr(web_chrome, "chrome_action", fake_chrome_fail)
+    with pytest.raises(ValueError, match="页面超时"):
+        F.fetch_and_record(PAGE, mode="chrome", origin="cli", caller="antigravity", root=root)
+    assert [a for a, _ in calls] == ["open", "extract_text", "close"]
+    assert calls[2][1]["page_id"] == 9

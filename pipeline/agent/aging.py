@@ -73,6 +73,33 @@ def _placeholder(tool_name: str | None, content: str) -> str:
     return f"[工具结果已老化｜原 {n} 字符｜需要全文请重新调用同一工具]\n{head}"
 
 
+def _last_turn_boundary(messages: list[Any]) -> int | None:
+    """最后一条不带 wrapup / steer（D79）标记的 user 消息下标（兼容 summary / card 作为起点）。"""
+    wrapup_key = _wrapup_key()
+    steer_key = _steer_key()
+    for i in range(len(messages) - 1, -1, -1):
+        message = messages[i]
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and wrapup_key not in message
+            and steer_key not in message
+        ):
+            return i
+    return None
+
+
+def _message_chars(message: Any) -> int:
+    """单条消息进入请求体的字符数（content + tool_calls 名参），口径同 compact.message_chars。"""
+    if not isinstance(message, dict):
+        return 0
+    total = len(str(message.get("content") or ""))
+    for call in message.get("tool_calls") or []:
+        function = (call or {}).get("function") or {}
+        total += len(str(function.get("name") or "")) + len(str(function.get("arguments") or ""))
+    return total
+
+
 def age_tool_results(
     messages: list[Any], *, exempt_last_turn: bool = True
 ) -> list[Any]:
@@ -83,20 +110,7 @@ def age_tool_results(
     没有 user 消息 → 整条列表视为「当前回合之前」，全部按规则处理（防御分支）。
     `exempt_last_turn=False`（摘要器路径）：被压缩的 region 全是旧历史，没有当前回合可豁免。
     """
-    wrapup_key = _wrapup_key()
-    steer_key = _steer_key()
-    boundary: int | None = None
-    if exempt_last_turn:
-        for i in range(len(messages) - 1, -1, -1):
-            message = messages[i]
-            if (
-                isinstance(message, dict)
-                and message.get("role") == "user"
-                and wrapup_key not in message
-                and steer_key not in message
-            ):
-                boundary = i
-                break
+    boundary = _last_turn_boundary(messages) if exempt_last_turn else None
     names = _tool_names(messages)
     aged: list[Any] = []
     for i, message in enumerate(messages):
@@ -112,3 +126,65 @@ def age_tool_results(
         else:
             aged.append(message)
     return aged
+
+
+def age_current_turn_tool_results(
+    messages: list[Any],
+    *,
+    keep_recent_batches: int = 1,
+    target_chars: int | None = None,
+) -> tuple[list[Any], int]:
+    """回合内防爆仓老化投影：在跨回合老化基础上，按「本回合工具批」从早到晚老化大体积 tool 结果。
+
+    - 优先保留最近 `keep_recent_batches` 批工具调用的完整结果（默认保留最新 1 批，免得模型看不见刚取回的页）。
+    - `keep_recent_batches <= 0`（紧急兜底 / 超限收尾）时，允许老化本回合全部大体积工具结果。
+    - 给了 `target_chars` 时，总字符降到阈值及以下即停，尽量少动还能用得上的近期结果。
+    - 纯函数：不改 `messages` 与其中的消息字典。返回 `(projected_messages, newly_aged_count)`。
+    """
+    aged = age_tool_results(messages, exempt_last_turn=True)
+    boundary = _last_turn_boundary(aged)
+    if boundary is None:
+        return aged, 0
+    total_chars = sum(_message_chars(m) for m in aged)
+    if target_chars is not None and total_chars <= target_chars:
+        return aged, 0
+
+    batches: list[list[int]] = []
+    for i in range(boundary + 1, len(aged)):
+        msg = aged[i]
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant" and (msg.get("tool_calls") or []):
+            batches.append([])
+        elif role == "tool":
+            if not batches:
+                batches.append([])
+            batches[-1].append(i)
+
+    if keep_recent_batches <= 0:
+        candidate_batches = batches
+    elif len(batches) > keep_recent_batches:
+        candidate_batches = batches[:-keep_recent_batches]
+    else:
+        candidate_batches = []
+
+    if not candidate_batches:
+        return aged, 0
+
+    names = _tool_names(aged)
+    aged_count = 0
+    for batch in candidate_batches:
+        for i in batch:
+            msg = aged[i]
+            content = msg.get("content")
+            if not (isinstance(content, str) and len(content) > AGED_TOOL_MAX_CHARS):
+                continue
+            tool_name = names.get(str(msg.get("tool_call_id") or ""))
+            placeholder = _placeholder(tool_name, content)
+            aged[i] = {**msg, "content": placeholder}
+            total_chars -= len(content) - len(placeholder)
+            aged_count += 1
+            if target_chars is not None and total_chars <= target_chars:
+                return aged, aged_count
+    return aged, aged_count

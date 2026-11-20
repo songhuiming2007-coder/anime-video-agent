@@ -32,14 +32,14 @@ import secrets
 import signal
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Protocol
 
 from pipeline import paths
 from pipeline.agent import llm as llm_module  # 晚绑定：测试打桩 pipeline.agent.llm.run_tool_loop 要生效
 from pipeline.agent import model_switch
-from pipeline.agent.llm import Decision, LoopControl, dedup_key
+from pipeline.agent.llm import Decision, LoopControl
 from pipeline.agent.session_log import (
     SCHEMA as SCHEMA_NAME,
     EpisodeLease,
@@ -1569,10 +1569,11 @@ class AgentSession:
             return fail("open_calls", "历史里有还没配上结果的工具调用，现在压缩会切坏配对")
         # D65（红队 F2，人拍板 2026-10-10）：压缩三处口径全按老化后（= 实际发送口径）——
         # 投影保序保长，切口下标回原列表取 tail / 写史；落盘与出网断言对象不变。
-        # 放这里一次投影三处共用，不进 compact.py（它的生产调用方只有本函数）。
+        # 手动 /compact 在出错中断或单回合海量抓取后也会执行（无下一条真 user 划界），因此
+        # 手动压缩按全量待压区间口径老化，避免摘要器把原样百万字工具结果直接吞进 400。
         from pipeline.agent import aging
 
-        aged = aging.age_tool_results(messages)
+        aged = aging.age_tool_results(messages, exempt_last_turn=not manual)
         cut = cp.choose_cut(aged, token_budget=budget, max_messages=ccfg.tail_max_messages)
         region = aged[1:cut] if cut > 1 else []
         if not cp.strip_marked(region):
@@ -1580,6 +1581,8 @@ class AgentSession:
         region = [m for m in region if not cp.is_status_card(m)]
         if not region:
             return fail("nothing", "没有可压缩的内容：较早的历史已经全在保留的近期原文里")
+        if not manual:
+            region = aging.age_tool_results(region, exempt_last_turn=False)
 
         # 读数连同口径一起传进来（审查 #5）：自动触发的读数可能是估算，不许记成实测
         before = reading if reading is not None else cp.context_reading(None, messages)
@@ -1798,7 +1801,12 @@ class AgentSession:
             drain_steer=self.host.steer_source if self.persist else None,
             on_steer=self._on_steer,
             on_llm_retry=self._on_llm_retry,
+            on_context_guard=self._on_context_guard,
         )
+
+    def _on_context_guard(self, text: str) -> None:
+        """回合内防爆仓老化或超限重试生效时的前端提示。"""
+        self.channel.show("notice", {"level": "warn", "code": "context_guard", "text": text})
 
     def _on_llm_retry(self, attempt: int, limit: int, delay: float, error: str) -> None:
         """D93：模型请求遇可重试错误、即将自动重发——上屏一行，人看得到「在重试」而不是干等。"""

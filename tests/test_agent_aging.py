@@ -10,12 +10,15 @@ import copy
 import json
 from pathlib import Path
 
-import pytest
-
 from pipeline.agent import aging, compact as cp
 from pipeline.agent import llm as llm_mod
 from pipeline.agent import session_log as slog
-from pipeline.agent.aging import AGE_HEAD_CHARS, AGED_TOOL_MAX_CHARS, age_tool_results
+from pipeline.agent.aging import (
+    AGE_HEAD_CHARS,
+    AGED_TOOL_MAX_CHARS,
+    age_current_turn_tool_results,
+    age_tool_results,
+)
 from pipeline.agent.llm import _WRAPUP_KEY, run_tool_loop
 from pipeline.agent.tools import ToolContext
 from tests.test_agent_compact_session import Script as CompactScript
@@ -38,13 +41,13 @@ def _user(text: str, **extra) -> dict:
     return {"role": "user", "content": text, **extra}
 
 
-def _call(call_id: str, name: str = "read_artifact") -> dict:
+def _call(call_id: str, name: str = "read_artifact", *, path: str = "01-topic.md") -> dict:
     return {
         "role": "assistant",
         "content": None,
         "tool_calls": [{
             "id": call_id, "type": "function",
-            "function": {"name": name, "arguments": json.dumps({"path": "01-topic.md"})},
+            "function": {"name": name, "arguments": json.dumps({"path": path})},
         }],
     }
 
@@ -410,3 +413,166 @@ def test_14_run_tool_loop_ages_across_turns_but_wrapup_sees_fresh_result(
     on_disk_tools = [m for m in convo if m.get("role") == "tool"]
     assert any(m["content"].endswith(big1) or big1 in m["content"] for m in on_disk_tools)
     assert any(big2 in m["content"] for m in on_disk_tools)
+
+
+# ---- 回合内防爆仓护栏 ----
+
+def test_15_intra_turn_aging_ages_oldest_batches_first_and_preserves_newest() -> None:
+    """age_current_turn_tool_results 优先保留最新 1 批，按从早到晚老化到 target_chars 即停，且不改原列表。"""
+    old = _big(8_000, marker="OLD")
+    b1 = _big(8_000, marker="B1")
+    b2 = _big(8_000, marker="B2")
+    b3 = _big(8_000, marker="B3")
+    msgs = [
+        _user("上回合"), _call("c0"), _tool("c0", old),
+        _user("本回合"),
+        _call("c1"), _tool("c1", b1),
+        _call("c2"), _tool("c2", b2),
+        _call("c3"), _tool("c3", b3),
+    ]
+    snapshot = copy.deepcopy(msgs)
+
+    # 总字数在老回合老化后约 24k，压到 18k 只需老化 B1，不碰 B2/B3
+    aged_early, count_early = age_current_turn_tool_results(msgs, keep_recent_batches=1, target_chars=18_000)
+    assert count_early == 1
+    assert aged_early[2]["content"].startswith("[工具结果已老化｜"), "跨回合旧结果必老化"
+    assert aged_early[5]["content"].startswith("[工具结果已老化｜"), "本回合最老批 B1 老化"
+    assert aged_early[7]["content"] == b2, "达到目标即停，不动 B2"
+    assert aged_early[9]["content"] == b3, "最新批 B3 原样保留"
+
+    # 不给 target_chars 时老化除最新 1 批外的全部较早批
+    aged_keep1, count_keep1 = age_current_turn_tool_results(msgs, keep_recent_batches=1)
+    assert count_keep1 == 2
+    assert aged_keep1[5]["content"].startswith("[工具结果已老化｜")
+    assert aged_keep1[7]["content"].startswith("[工具结果已老化｜")
+    assert aged_keep1[9]["content"] == b3
+
+    # keep_recent_batches=0（紧急兜底/超限收尾）允许老化本回合全部大结果
+    aged_all, count_all = age_current_turn_tool_results(msgs, keep_recent_batches=0)
+    assert count_all == 3
+    assert all(aged_all[i]["content"].startswith("[工具结果已老化｜") for i in (5, 7, 9))
+    assert msgs == snapshot, "纯函数不得变异入参"
+
+
+def test_16_proactive_intra_turn_guard_fires_before_window_overflow(root: Path, monkeypatch) -> None:
+    """单回合多轮连续抓大结果超过窗口 75% 时，主动老化本回合较早轮次、保留最新批，且 convo 原文不动。"""
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    _compact_cfg(root, window=10_000, auto=False)  # 75% = 7,500
+    r1 = "ROUND1-" + "填" * 6_000 + "-R1TAIL"
+    r2 = "ROUND2-" + "填" * 6_000 + "-R2TAIL"
+    results = iter([{"ok": True, "result": {"data": r1}}, {"ok": True, "result": {"data": r2}}])
+    patch_execute(monkeypatch, lambda name, args, ctx: next(results))
+
+    script = LoopScript([
+        _call("c1", path="p1.md"),
+        _call("c2", path="p2.md"),
+        {"role": "assistant", "content": "已完成"},
+    ])
+    monkeypatch.setattr(llm_mod, "chat_complete", script)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("开始抓")]
+    notices: list[str] = []
+    control = build_control(convo)
+    control.on_context_guard = notices.append
+
+    out = run_tool_loop(convo, ctx=ToolContext(scope="creative", root=root), config=LOOP_CFG, control=control)
+    assert out["stopped"] == "done" and out["final"]["content"] == "已完成"
+    assert len(notices) == 1 and "较早" in notices[0]
+
+    req3_tools = [m["content"] for m in script.requests[2]["messages"] if m.get("role") == "tool"]
+    assert req3_tools[0].startswith("[工具结果已老化｜"), "第 1 批超过安全线后已主动老化"
+    assert "-R1TAIL" not in req3_tools[0]
+    assert r2 in req3_tools[1], "最新第 2 批保持原文"
+
+    raw_tools = [m["content"] for m in convo if m.get("role") == "tool"]
+    assert r1 in raw_tools[0] and r2 in raw_tools[1], "会话原历史保持原文不动"
+
+
+def test_17_reactive_400_overflow_recovery_in_loop(root: Path, monkeypatch) -> None:
+    """即使模型未登记窗口（或单批骤爆），遇输入超限 400 会自动逐级老化本回合结果并重试成功。"""
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    unknown_cfg = llm_mod.LLMConfig(base_url=LOOP_CFG.base_url, model="unlisted-model", api_key="k")
+    r1 = "FIRST-" + "填" * 10_000
+    r2 = "SECOND-" + "填" * 10_000
+    results = iter([{"ok": True, "result": {"data": r1}}, {"ok": True, "result": {"data": r2}}])
+    patch_execute(monkeypatch, lambda name, args, ctx: next(results))
+
+    seen_requests: list[list[dict]] = []
+    call_idx = 0
+
+    def fake_chat(messages, tools=None, **kw):
+        nonlocal call_idx
+        call_idx += 1
+        seen_requests.append(copy.deepcopy(messages))
+        if call_idx == 1:
+            return _call("c1", path="p1.md")
+        if call_idx == 2:
+            return _call("c2", path="p2.md")
+        tool_chars = sum(len(str(m.get("content") or "")) for m in messages if m.get("role") == "tool")
+        # 故意卡在 8,000：keep_recent_batches=1（10.4k）仍超限，必须再降到 keep_recent_batches=0（~0.8k）才放行
+        if tool_chars > 8_000:
+            raise llm_mod.LLMError(
+                'LLM HTTP 400: {"error":{"code":400,"message":"The input token count exceeds the maximum '
+                'number of tokens allowed (1048576); input token count: 1194489."}}'
+            )
+        return {"role": "assistant", "content": "逐级减重后成功"}
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fake_chat)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("开工")]
+    notices: list[str] = []
+    control = build_control(convo)
+    control.on_context_guard = notices.append
+
+    out = run_tool_loop(convo, ctx=ToolContext(scope="creative", root=root), config=unknown_cfg, control=control)
+    assert out["stopped"] == "done" and out["final"]["content"] == "逐级减重后成功"
+    assert len(notices) == 2 and "较早轮次" in notices[0] and "本回合全部" in notices[1]
+    assert len(seen_requests) == 5, "第3轮原样400 -> keep1仍400 -> keep0通过"
+    raw_tools = [m["content"] for m in convo if m.get("role") == "tool"]
+    assert r1 in raw_tools[0] and r2 in raw_tools[1]
+
+
+def test_18_overflow_wrapup_ages_current_turn_to_avoid_double_400(root: Path, monkeypatch) -> None:
+    """主请求因上下文超限 400 彻底失败进入收尾时，收尾请求主动老化本回合全量工具结果，避免二次 400。"""
+    monkeypatch.setenv("AVA_TEST_KEY", "k")
+    big = "本回合超高结果-" + "填" * 20_000 + "-TOOBIG"
+    patch_execute(monkeypatch, lambda name, args, ctx: {"ok": True, "result": {"data": big}})
+    seen: list[dict] = []
+
+    def fake_chat(messages, tools=None, tool_choice=None, **kw):
+        seen.append({"messages": copy.deepcopy(messages), "tool_choice": tool_choice})
+        if len(seen) == 1:
+            return _call("c1", path="p1.md")
+        if tool_choice == "none":
+            tool_contents = [m["content"] for m in messages if m.get("role") == "tool"]
+            assert tool_contents and tool_contents[0].startswith("[工具结果已老化｜"), "超限收尾必把本回合大结果也占位"
+            assert "TOOBIG" not in tool_contents[0]
+            return {"role": "assistant", "content": "已安全收尾"}
+        raise llm_mod.LLMError(
+            "LLM HTTP 400: The input token count exceeds the maximum number of tokens allowed (1048576); "
+            "input token count: 1187895."
+        )
+
+    monkeypatch.setattr(llm_mod, "chat_complete", fake_chat)
+    convo: list[dict] = [{"role": "system", "content": "S"}, _user("开始")]
+    out = run_tool_loop(convo, ctx=ToolContext(scope="creative", root=root), config=LOOP_CFG, control=build_control(convo))
+    assert out["stopped"] == "error" and out["wrapup"] == "ok"
+    assert out["final"]["content"] == "已安全收尾"
+    assert big in next(m["content"] for m in convo if m.get("role") == "tool"), "会话原始工具结果不丢失"
+
+
+def test_19_manual_compact_on_single_turn_ages_tool_results_for_summarizer(
+    root: Path, episode: Path, monkeypatch,
+) -> None:
+    """单回合海量抓取报错停住后，紧接着手动 /compact 应把当前回合已落史的大工具结果先老化再送摘要器。"""
+    _compact_cfg(root, window=100_000, tail_ratio=0.05)  # 尾部预算 5k、最多 20 条
+    history: list[dict] = [_user("单回合连抓 25 批")]
+    for i in range(25):
+        history.extend([_call(f"c{i}"), _tool(f"c{i}", _big(10_000, marker=f"M{i:02d}"))])
+
+    script = CompactScript(summaries=[{"role": "assistant", "content": "单回合压缩摘要"}])
+    host, session, messages, tracker = _compact_main(root, episode, monkeypatch, script)
+    messages.extend(history)
+    result = session.compact(messages, tracker=tracker, root=root, scope="creative", trigger="manual")
+    assert result["ok"], result
+    body = script.summarizer[0]["messages"][1]["content"]
+    assert "[工具结果已老化｜原 10000 字符｜" in body
+    assert "M00" not in body and "M05" not in body, "摘要器绝不吃到 10k 全文原文"

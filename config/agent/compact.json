@@ -128,6 +128,46 @@
         "none"
       ],
       "_source": "probe_efforts 2026-10-30 D155 全量实测：全档 200 照收含 turbo/bogus，reasoning_content 恒在且长度与档无关（low 410c / high 510c / max 294c），bogus 也 200 → CPA 对该路由不校验不透传 → 被吞。probe_efforts 2026-10-30: 非法值 turbo/bogus 也 200 照收（thinking_seen=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'auto', 'max', 'turbo', 'bogus']）→ CPA 未翻译/模型不吃，判定被吞"
+    },
+    "gemini-4-neon": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-4-argon": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-4-carbon": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-4-hydrogen": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-3.8-flash": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-3.5-flash": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-2.5-pro": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+    },
+    "gemini-2.5-flash": {
+      "window": 1048576,
+      "reliable_ratio": 1.0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
     }
   }
 }
