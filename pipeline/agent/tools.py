@@ -901,7 +901,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "读取与当前任务相关的文本及结构化数据文件（只读）：涵盖当期/当卷、所属企划总纲与全部兄弟卷、"
             "其他期目录（area=episodes）、data/library/ 笔记与资料，以及仓库文档/技能/非凭据配置（area=repo）；"
-            "支持 facts.jsonl。硬排除 03-audio/、04-patch/、记忆文件、会话/事件/审批日志与 *.local.* 凭据。"
+            "支持 facts.jsonl。硬排除 03-audio/、04-patch/、记忆文件（memory.md / 00-memory.md 及日志由系统自动校验注入，未注入即当前为空，严禁用本工具直读）、"
+            "会话/事件/审批日志与 *.local.* 凭据；对状态卡标为 ✗ 的产物（如尚未生成的 01-hero-shots.md / 02-script.draft.md）不要盲猜试读。"
         ),
         "parameters": {
             "type": "object",

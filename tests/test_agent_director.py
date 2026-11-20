@@ -182,6 +182,7 @@ def test_status_card_artifact_checklist_symbols(tmp_path: Path):
 
     card = build_status_card(ep)
     assert "选题 ✓" in card
+    assert "物证表 ✗" in card
     assert "草稿 ✓" in card
     assert "定稿 ✗" in card
     assert "配音产物 ✗" in card
@@ -189,7 +190,14 @@ def test_status_card_artifact_checklist_symbols(tmp_path: Path):
     assert "审片 ✗" in card
     assert "成片 ✗" in card
     assert "01-topic.md" not in card
+    assert "01-hero-shots.md" not in card
     assert "02-script.draft.md" not in card
+
+    (ep / "01-hero-shots.md").write_text("# 物证表", encoding="utf-8")
+    card_with_hero = build_status_card(ep)
+    assert "物证表 ✓" in card_with_hero
+    assert "01-hero-shots.md" not in card_with_hero
+    assert len(card_with_hero) <= 400
 
 
 def test_status_card_blocked_state(tmp_path: Path):

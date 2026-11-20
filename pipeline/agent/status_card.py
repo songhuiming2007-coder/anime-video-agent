@@ -93,6 +93,7 @@ def build_status_card(
     next_cmd = _strip_episode_prefix(status.next_command, d)
 
     has_topic = _check_artifact_exists(d, "01-topic.md")
+    has_hero_shots = _check_artifact_exists(d, "01-hero-shots.md")
     has_draft = _check_artifact_exists(d, "02-script.draft.md")
     has_script = _check_artifact_exists(d, "02-script.md")
     has_audio = _check_audio_exists(d)
@@ -102,6 +103,7 @@ def build_status_card(
 
     checklist = (
         f"选题 {'✓' if has_topic else '✗'} / "
+        f"物证表 {'✓' if has_hero_shots else '✗'} / "
         f"草稿 {'✓' if has_draft else '✗'} / "
         f"定稿 {'✓' if has_script else '✗'} / "
         f"配音产物 {'✓' if has_audio else '✗'} / "
