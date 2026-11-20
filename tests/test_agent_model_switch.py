@@ -92,12 +92,13 @@ def test_is_command() -> None:
     assert not ms.is_command("/models") and not ms.is_command("用 /model 切换") and not ms.is_command("")
 
 
-def test_list_models_reads_proxy(endpoint) -> None:  # noqa: F811
+def test_list_models_reads_proxy(endpoint, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    monkeypatch.delenv("AVA_AUTH_PATH", raising=False)
     endpoint.models = ["b", "a", "a"]
     cfg = LLMConfig(base_url=endpoint.url, model="mock", api_key="k")
-    assert ms.list_models(cfg) == ["a", "b"]
+    assert ms.list_models(cfg, root=tmp_path) == ["a", "b"]
     with pytest.raises(ms.ModelSwitchError, match="取模型列表失败"):
-        ms.list_models(LLMConfig(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"))
+        ms.list_models(LLMConfig(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"), root=tmp_path)
 
 
 def _write_agent_cfg(root: Path, name: str, payload: dict) -> None:
@@ -597,6 +598,7 @@ def test_d168_standalone_efforts_and_protocol_mapping(tmp_path: Path, monkeypatc
     # 3. Tier 3 家族启发式兜底：未入表/新增 CPA 模型永不锁死
     assert ms.efforts_for_model("devin/gpt-6-luna") == ("none", "minimal", "low", "medium", "high", "xhigh")
     assert ms.efforts_for_model("claude-opus-5-5-high") == ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    assert ms.efforts_for_model("google/gemini-4-neon", tmp_path) == ("none", "minimal", "low", "medium", "high")
     assert ms.efforts_for_model("completely-unknown-model", tmp_path) == ms.EFFORTS
 
     # 4. efforts_map_for_models + 多协议 apply_effort_to_extra_body
@@ -834,3 +836,67 @@ def test_env_credential_sources_match_router_and_custom_fetcher(
     assert "当前模型：deepseek/deepseek-chat（默认配置 · 来源：DeepSeek）" in reply
     assert "  [DeepSeek]" in reply
     assert "  [Devin (默认代理)]" in reply
+
+
+def test_probe_models_refreshes_stale_google_models_via_live_sync(
+    tmp_path: Path, endpoint, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`probe_models_and_efforts_payload` 应对过期的 Google AI Studio 目录触发 TTL 刷新并透出新模型（如 gemini-4-neon）。"""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from threading import Thread
+    from pipeline.agent import auth as auth_mod
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    auth_file = tmp_path / "config" / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file))
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({
+                    "models": [
+                        {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/gemini-4-neon", "supportedGenerationMethods": ["generateContent"]},
+                    ]
+                }).encode("utf-8")
+            )
+
+        def log_message(self, *_a: object) -> None:
+            return None
+
+    srv = HTTPServer(("127.0.0.1", 0), _Handler)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        base_v1beta = f"http://127.0.0.1:{srv.server_address[1]}/v1beta"
+        stale_ts = auth_mod._now_ms() - auth_mod.MODELS_SYNC_TTL_MS - 5_000
+        auth_file.write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {
+                    "google": {
+                        "type": "api_key",
+                        "api_key": "AIza-stale-probe",
+                        "base_url": base_v1beta,
+                        "api_protocol": "google-generative-ai",
+                        "models": ["gemini-3.5-flash"],
+                        "updated_at_ms": stale_ts,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        endpoint.models = ["kimi-k3"]
+        (tmp_path / "config" / "agent.json").write_text(
+            json.dumps({"base_url": endpoint.url, "model": "kimi-k3", "api_key": "k"}),
+            encoding="utf-8",
+        )
+
+        payload = ms.probe_models_and_efforts_payload(tmp_path)
+        assert "google/gemini-4-neon" in payload["items"]
+        assert payload["model_sources"]["google/gemini-4-neon"]["source_id"] == "google"
+        assert payload["model_sources"]["google/gemini-4-neon"]["display_model"] == "gemini-4-neon"
+    finally:
+        srv.shutdown()

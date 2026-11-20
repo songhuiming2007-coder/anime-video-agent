@@ -1102,7 +1102,17 @@ def _sync_proxy_models(base_url: str, api_key: str, root: Path | None) -> list[s
     return ids
 
 
-def _sync_google_generative_models(base_url: str, api_key: str) -> list[str]:
+MODELS_SYNC_TTL_MS = 60_000
+LIVE_MODELS_SYNC_TIMEOUT_S = 4.0
+_ENV_MODELS_CACHE: dict[tuple[str, str], tuple[int, list[str]]] = {}
+
+
+def _sync_google_generative_models(
+    base_url: str,
+    api_key: str,
+    *,
+    timeout: float = 5.0,
+) -> list[str]:
     """查询 Google Gemini REST `/models` 端点并提取支持 `generateContent` 的模型 ID。"""
     base = f"{base_url.rstrip('/')}/models"
     headers = {"Accept": "application/json", "x-goog-api-key": api_key}
@@ -1114,7 +1124,7 @@ def _sync_google_generative_models(base_url: str, api_key: str) -> list[str]:
         if page_token:
             params["pageToken"] = page_token
         url = f"{base}?{urllib.parse.urlencode(params)}"
-        data = _http_json(url, method="GET", headers=headers, timeout=5.0)
+        data = _http_json(url, method="GET", headers=headers, timeout=timeout)
         raw_items = data.get("models")
         if not isinstance(raw_items, list):
             break
@@ -1786,6 +1796,7 @@ def complete_auth_flow(
             "api_protocol": spec.api_protocol,
             "models": models,
             "updated_at_ms": now,
+            "models_synced_at_ms": now,
         }
         if api_key:
             entry["api_key"] = api_key
@@ -1822,6 +1833,7 @@ def complete_auth_flow(
                 "api_protocol": spec.api_protocol,
                 "models": models,
                 "updated_at_ms": now,
+                "models_synced_at_ms": now,
             }
             if extra_cfg:
                 base_entry["extra_config"] = extra_cfg
@@ -1833,6 +1845,7 @@ def complete_auth_flow(
                 "api_protocol": spec.api_protocol,
                 "models": models,
                 "updated_at_ms": now,
+                "models_synced_at_ms": now,
             }
             if api_key:
                 entry["api_key"] = api_key
@@ -2283,8 +2296,117 @@ def _env_provider_entry(spec: ProviderSpec) -> tuple[str, str, tuple[str, ...]] 
     return "env", base_url, spec.default_models
 
 
-def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
+def refresh_authenticated_models(
+    root: Path | None = None,
+    *,
+    provider_ids: tuple[str, ...] | list[str] | None = None,
+    ttl_ms: int = MODELS_SYNC_TTL_MS,
+    timeout: float = LIVE_MODELS_SYNC_TIMEOUT_S,
+    force: bool = False,
+) -> dict[str, list[str]]:
+    """按 TTL 对已接入动态目录的服务商（如 Google AI Studio）刷新可用模型列表，并安全写回存储。
+
+    三阶段无锁出网：持锁读候选 → 解锁发 HTTP 请求 → 持锁核对凭据未变更后原子回写。
+    任何网络或远端异常均静默保留已有缓存，不阻断模型列表展示。
+    """
+    path = auth_path(root)
+    now = _now_ms()
+    wanted = set(provider_ids) if provider_ids is not None else None
+    stored_candidates: list[tuple[str, str, str, str]] = []
+    env_candidates: list[tuple[str, str, str]] = []
+    refreshed: dict[str, list[str]] = {}
+
+    try:
+        with _auth_lock(path):
+            store = _read_store_unlocked(path)
+    except (AuthError, OSError):
+        store = {"version": 1, "providers": {}}
+
+    providers = store.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+
+    for spec in PROVIDERS:
+        if wanted is not None and spec.id not in wanted:
+            continue
+        if spec.api_protocol != "google-generative-ai":
+            continue
+        found = _stored_entry_for_spec(providers, spec)
+        if found is not None:
+            stored_key, entry = found
+            api_key = str(entry.get("api_key") or entry.get("access_token") or "").strip()
+            if not api_key:
+                continue
+            base_url = str(entry.get("base_url") or spec.default_base_url).rstrip("/")
+            last_sync = int(entry.get("models_synced_at_ms") or entry.get("updated_at_ms") or 0)
+            if force or ttl_ms <= 0 or last_sync <= 0 or (now - last_sync) >= ttl_ms:
+                stored_candidates.append((spec.id, stored_key, base_url, api_key))
+        else:
+            env_configured, _, _ = _detect_env_status(spec)
+            if not env_configured:
+                continue
+            cred = _build_env_credential(spec)
+            if cred is None or not cred.get("api_key"):
+                continue
+            base_url = str(cred.get("base_url") or spec.default_base_url).rstrip("/")
+            cache_key = (spec.id, base_url)
+            cached = _ENV_MODELS_CACHE.get(cache_key)
+            if not force and ttl_ms > 0 and cached is not None and (now - cached[0]) < ttl_ms:
+                refreshed[spec.id] = list(cached[1])
+            else:
+                env_candidates.append((spec.id, base_url, str(cred["api_key"])))
+
+    stored_updates: dict[str, tuple[str, str, list[str]]] = {}
+    for pid, stored_key, base_url, api_key in stored_candidates:
+        try:
+            synced = _sync_google_generative_models(base_url, api_key, timeout=timeout)
+        except (AuthError, OSError, ValueError):
+            continue
+        if synced:
+            stored_updates[pid] = (stored_key, api_key, synced)
+            refreshed[pid] = list(synced)
+
+    for pid, base_url, api_key in env_candidates:
+        try:
+            synced = _sync_google_generative_models(base_url, api_key, timeout=timeout)
+        except (AuthError, OSError, ValueError):
+            continue
+        if synced:
+            _ENV_MODELS_CACHE[(pid, base_url)] = (_now_ms(), list(synced))
+            refreshed[pid] = list(synced)
+
+    if stored_updates:
+        try:
+            with _auth_lock(path):
+                latest_store = _read_store_unlocked(path)
+                latest_providers = latest_store.setdefault("providers", {})
+                write_ts = _now_ms()
+                dirty = False
+                for pid, (stored_key, expected_key, synced) in stored_updates.items():
+                    cur = latest_providers.get(stored_key)
+                    if not isinstance(cur, dict):
+                        continue
+                    cur_key = str(cur.get("api_key") or cur.get("access_token") or "").strip()
+                    if cur_key != expected_key:
+                        continue
+                    cur["models"] = list(synced)
+                    cur["models_synced_at_ms"] = write_ts
+                    dirty = True
+                if dirty:
+                    _write_store_unlocked(path, latest_store)
+        except (AuthError, OSError):
+            pass
+
+    return refreshed
+
+
+def _iter_authenticated_model_entries(
+    root: Path | None = None,
+    *,
+    refresh: bool = False,
+) -> list[tuple[str, dict[str, Any]]]:
     """读取所有已登录（含环境变量已生效）服务商的 `(full_model_id, source_meta)` 列表（按完整模型名去重排序）。"""
+    refreshed: dict[str, list[str]] = refresh_authenticated_models(root=root) if refresh else {}
     path = auth_path(root)
     try:
         with _auth_lock(path):
@@ -2309,6 +2431,8 @@ def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[st
             if env_info is None:
                 continue
             auth_type, base_url, models = env_info
+            if spec.id in refreshed and refreshed[spec.id]:
+                models = refreshed[spec.id]
         endpoint = _url_host(base_url)
         for m in models:
             if not isinstance(m, str) or not m.strip():
@@ -2335,17 +2459,17 @@ def _iter_authenticated_model_entries(root: Path | None = None) -> list[tuple[st
     return out
 
 
-def list_authenticated_models(root: Path | None = None) -> list[str]:
+def list_authenticated_models(root: Path | None = None, *, refresh: bool = False) -> list[str]:
     """公共只读 API：列出所有已登录（含环境变量已配置）服务商的 `<provider>/<model>` 模型列表（去重排序）。
 
     保留为兼容外部调用的公共辅助函数；仓内合并流程优先使用 `list_authenticated_model_sources` 一次取回元信息。
     """
-    return [full for full, _ in _iter_authenticated_model_entries(root)]
+    return [full for full, _ in _iter_authenticated_model_entries(root, refresh=refresh)]
 
 
-def list_authenticated_model_sources(root: Path | None = None) -> dict[str, dict[str, Any]]:
+def list_authenticated_model_sources(root: Path | None = None, *, refresh: bool = False) -> dict[str, dict[str, Any]]:
     """返回已登录服务商模型的来源元数据映射：`{full_model_id: source_meta}`。"""
-    return {full: meta for full, meta in _iter_authenticated_model_entries(root)}
+    return {full: meta for full, meta in _iter_authenticated_model_entries(root, refresh=refresh)}
 
 
 def resolve_model_provider(model_name: str, *, root: Path | None = None) -> tuple[str, str, dict[str, Any]] | None:
@@ -2364,6 +2488,13 @@ def resolve_model_provider(model_name: str, *, root: Path | None = None) -> tupl
     if cred is None:
         return None
     catalog = cred.get("models") or ()
+    if wire not in catalog and spec.api_protocol == "google-generative-ai" and cred.get("api_key"):
+        refreshed = refresh_authenticated_models(root=root, provider_ids=(spec.id,), ttl_ms=MODELS_SYNC_TTL_MS)
+        if spec.id in refreshed and refreshed[spec.id]:
+            cred = resolve_provider_credential(spec.id, root=root) or cred
+            if cred.get("auth_type") == "env":
+                cred["models"] = list(refreshed[spec.id])
+            catalog = cred.get("models") or ()
     if wire not in catalog:
         return None
     return spec.id, wire, cred

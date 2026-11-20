@@ -225,11 +225,14 @@ def _merge_proxy_and_auth_models(
     *,
     base_url: str | None,
     root: Path | None = None,
+    refresh_auth: bool = False,
+    auth_sources: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """合并代理 `/models` 与已登录服务商模型；已登录服务商路由覆盖同名来源元信息。"""
     from pipeline.agent import auth
 
-    auth_sources = auth.list_authenticated_model_sources(root)
+    if auth_sources is None:
+        auth_sources = auth.list_authenticated_model_sources(root, refresh=refresh_auth)
     auth_models = list(auth_sources.keys())
     if proxy_entries is not None:
         sources: dict[str, dict[str, Any]] = {}
@@ -256,7 +259,7 @@ def list_models_with_sources(cfg: LLMConfig, *, root: Path | None = None) -> tup
     proxy_entries, proxy_err = _fetch_openai_model_entries(
         url, {"Authorization": f"Bearer {cfg.api_key}"}, root=root,
     )
-    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=cfg.base_url, root=root)
+    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=cfg.base_url, root=root, refresh_auth=True)
 
 
 def list_models(cfg: LLMConfig, *, root: Path | None = None) -> list[str]:
@@ -273,14 +276,16 @@ def list_models_unauthenticated_with_sources(root: Path | None = None) -> tuple[
     from pipeline.agent import auth
     from pipeline.agent.llm import configured_base_url
 
-    auth_sources = auth.list_authenticated_model_sources(root)
+    auth_sources = auth.list_authenticated_model_sources(root, refresh=True)
     base_url = configured_base_url(root)
     if base_url is None:
         if auth_sources:
             return list(auth_sources.keys()), auth_sources
         raise ModelSwitchError("未能从 config/agent*.json 读取 base_url，取不了模型列表")
     proxy_entries, proxy_err = _fetch_openai_model_entries(base_url.rstrip("/") + "/models", {}, root=root)
-    return _merge_proxy_and_auth_models(proxy_entries, proxy_err, base_url=base_url, root=root)
+    return _merge_proxy_and_auth_models(
+        proxy_entries, proxy_err, base_url=base_url, root=root, auth_sources=auth_sources
+    )
 
 
 def list_models_unauthenticated(root: Path | None = None) -> list[str]:
@@ -530,7 +535,7 @@ def _family_heuristic_efforts(model: str | None) -> tuple[str, ...]:
         return ("none", "minimal", "low", "medium", "high", "xhigh")
     if bare.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")) or "codex" in bare:
         return ("none", "minimal", "low", "medium", "high", "xhigh")
-    if bare.startswith(("gemini-2.5", "gemini-3")):
+    if bare.startswith(("gemini-2.5", "gemini-3", "gemini-4")):
         return ("none", "minimal", "low", "medium", "high")
     if bare.startswith("deepseek"):
         return ("none", "low", "medium", "high")

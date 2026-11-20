@@ -2003,3 +2003,86 @@ def test_google_stream_rejects_malformed_blocked_and_empty_responses() -> None:
             'data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}]}\n',
         ]))
     assert exc_empty.value.retryable is True
+
+
+def test_google_models_refresh_with_ttl_cache_failure_fallback_and_routing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Google AI Studio 过期缓存应在 refresh=True / resolve_model_provider 时按 TTL 自动刷新并写回，失败保留旧缓存。"""
+    auth_file = tmp_path / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file))
+
+    calls = 0
+    fail_mode = False
+
+    def handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        nonlocal calls
+        del method, body
+        if req.path.startswith("/v1beta/models"):
+            calls += 1
+            if fail_mode:
+                _send_json(req, {"error": {"message": "upstream error"}}, status=500)
+                return
+            _send_json(req, {
+                "models": [
+                    {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/gemini-4-neon", "supportedGenerationMethods": ["generateContent"]},
+                ]
+            })
+            return
+        _send_json(req, {"error": {"message": "not found"}}, status=404)
+
+    srv, base = _make_mock_server(handler)
+    try:
+        stale_ts = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
+        auth_file.write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {
+                    "google": {
+                        "type": "api_key",
+                        "api_key": "AIza-test-ttl",
+                        "base_url": f"{base}/v1beta",
+                        "api_protocol": "google-generative-ai",
+                        "models": ["gemini-3.5-flash"],
+                        "updated_at_ms": stale_ts,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        # 1) refresh=True 命中过期缓存 → 拉取并写回 gemini-4-neon + models_synced_at_ms
+        sources = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-4-neon" in sources
+        assert calls == 1
+        persisted = json.loads(auth_file.read_text(encoding="utf-8"))["providers"]["google"]
+        assert "gemini-4-neon" in persisted["models"]
+        assert isinstance(persisted.get("models_synced_at_ms"), int)
+
+        # 2) TTL 内二次调用走缓存，不再发 HTTP 请求
+        sources2 = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-4-neon" in sources2
+        assert calls == 1
+
+        # 3) 再次过期且远端返回 HTTP 500 → 静默保留旧缓存，不丢模型、不抛异常
+        persisted["models_synced_at_ms"] = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
+        auth_file.write_text(json.dumps({"version": 1, "providers": {"google": persisted}}), encoding="utf-8")
+        fail_mode = True
+        sources_fail = auth.list_authenticated_model_sources(tmp_path, refresh=True)
+        assert "google/gemini-4-neon" in sources_fail
+        assert calls == 2
+
+        # 4) resolve_model_provider 遇到过期缓存里未列出的新模型时自动刷新一次并放行；真不存在的模型仍返回 None
+        fail_mode = False
+        persisted["models"] = ["gemini-3.5-flash"]
+        persisted["models_synced_at_ms"] = auth._now_ms() - auth.MODELS_SYNC_TTL_MS - 5_000
+        auth_file.write_text(json.dumps({"version": 1, "providers": {"google": persisted}}), encoding="utf-8")
+
+        routed = auth.resolve_model_provider("google/gemini-4-neon", root=tmp_path)
+        assert routed is not None
+        assert routed[0] == "google" and routed[1] == "gemini-4-neon"
+        assert calls == 3
+        assert auth.resolve_model_provider("google/not-a-real-model", root=tmp_path) is None
+    finally:
+        srv.shutdown()

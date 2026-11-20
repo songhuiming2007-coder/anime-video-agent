@@ -1378,7 +1378,7 @@ def _run_model_command(host, writer, frame: dict[str, Any], rid) -> None:
         cfg = llm.load_llm_config(paths.ROOT)
         try:
             if cfg is None:
-                model_sources = auth.list_authenticated_model_sources(paths.ROOT)
+                model_sources = auth.list_authenticated_model_sources(paths.ROOT, refresh=True)
                 items = list(model_sources.keys())
                 if not items:
                     raise model_switch.ModelSwitchError("LLM 不可用（缺配置或密钥）")
