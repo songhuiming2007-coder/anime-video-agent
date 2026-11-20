@@ -120,6 +120,7 @@
 
 - Python 3.12 / 3.13 / 3.14，用 uv 建虚拟环境，不依赖系统解释器。`pyproject.toml` 的 **`numpy>=2.0,<2.5` 上界不能删**（依赖链 mlx-whisper → numba → llvmlite，numpy 2.5 会回退到装不上的组合；此坑**只咬新环境**，所以「我这儿能跑」不构成证据）。
 - ffmpeg 必须带 libass（`preflight.sh` 查）。中文字幕字体 `Hiragino Sans GB`（`config/project.json` 里配置）。
+- 桌面端重新打包安装：完全退出 AVA 后执行 `cd desktop && npm run release-install`（本地固定证书签名替换 `/Applications/AVA.app` 并清理 `dist/mac-arm64/AVA.app`，保留 macOS TCC 授权；首次建证书先跑 `npm run init-cert`）。
 
 ```bash
 pytest                                          # 纯函数测试，约 3 分钟（3800+ 条），改完代码先跑；含 ruff 静态门禁（tests/test_static.py）

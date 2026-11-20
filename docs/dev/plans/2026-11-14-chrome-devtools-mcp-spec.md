@@ -36,7 +36,8 @@
 - **macOS 桌面端 TCC 权限与 `CDHash` 注意事项（2026-11-20 核实）**：
   - 主力 Chrome 配置目录（`~/Library/Application Support/Google/Chrome`）及其中 `DevToolsActivePort` 受 macOS TCC `kTCCServiceSystemPolicyAppDataDetailed`（文件与文件夹 → 其他 App 数据：`com.google.Chrome`）与 `kTCCServiceSystemPolicyAllFiles`（完全磁盘访问权限）保护，由桌面端宿主 `local.ava.desktop`（`AVA.app`）负责承载子进程树归因。
   - Chrome 144+ 开启 `chrome://inspect/#remote-debugging` 时仅通过 `DevToolsActivePort` 暴露随机生成的 WebSocket token（`--browserUrl=http://127.0.0.1:9222` 返回 HTTP 404），因此仍应保留 `--autoConnect`。
-  - 因 `AVA.app` 采用 ad-hoc 签名（`mac.identity: null`，见桌面端 Spec 8 `TG-5`），每次重新打包都会改变 `CDHash`；而这两类 TCC 权限在 `CDHash` 失配时**不会弹窗询问**，会直接返回 `EPERM`。若系统设置里已有旧条目但仍报 `EPERM`，需在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」先点「-」移除旧条目再点「+」重新添加当前 `AVA.app`（或在「文件与文件夹 → AVA」开启 `Google Chrome`），并完全退出后重启 AVA。
+  - 因 `dist/mac-arm64/AVA.app` 默认构建采用 ad-hoc 签名（`mac.identity: null`，见桌面端 Spec 8 `TG-5`），每次重新打包都会改变 `CDHash`；而这两类 TCC 权限在 `CDHash` 失配时**不会弹窗询问**，会直接返回 `EPERM`。若直接运行该裸产物且系统设置里已有旧条目但仍报 `EPERM`，需在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」先点「-」移除旧条目再点「+」重新添加当前 `AVA.app`（或在「文件与文件夹 → AVA」开启 `Google Chrome`），并完全退出后重启 AVA。
+  - **本机永久方案（不改 Spec 8 `TG-5` 冻结项）**：首次运行 `cd desktop && npm run init-cert` 在登录钥匙串创建专用本地代码签名证书 `AVA Local Dev`，之后桌面端有改动需要重新打包安装时，完全退出 AVA 后运行 `cd desktop && npm run release-install`（执行 `release-build` 后调用 `desktop/scripts/install-mac.mjs` 由内而外重签、替换 `/Applications/AVA.app` 并清理 `dist/mac-arm64/AVA.app`）。安装版签名要求绑定 `identifier "local.ava.desktop"` + 固定证书叶而非 `CDHash`，只需对 `/Applications/AVA.app` 授一次 TCC 权限即可跨重建持久保留。
   - `pipeline/agent/web_chrome.py` 在 `_default_launch_fn` 中对 `--autoConnect` 模式执行 1 字节只读权限预检（绝不读入或暴露 token 内容），与 `_connect_error_message` 协同区分「未启用远程调试（`ENOENT`）」与「macOS TCC 拦截（`EPERM`）」，遇到 `EPERM` 时直接给出上述 TCC 指引而非误导去重复勾选 `chrome://inspect/#remote-debugging`。
 - 不引入重型异步 MCP SDK 依赖：基于标准库 `subprocess` / `json` / `threading` 实现 MCP stdio JSON-RPC 2.0 客户端，避免与 `TurnInterrupt` 及现有同步工具循环冲突。
 

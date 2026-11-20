@@ -10,7 +10,10 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "release-build": "npm ci && node scripts/write-build-info.mjs && electron-vite build && electron-builder"
+    "release-build": "npm ci && node scripts/write-build-info.mjs && electron-vite build && electron-builder",
+    "init-cert": "node scripts/install-mac.mjs --init-cert",
+    "install-app": "node scripts/install-mac.mjs",
+    "release-install": "npm run release-build && npm run install-app"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",

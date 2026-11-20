@@ -638,8 +638,8 @@ def _permission_error_message(
             "请按以下任一方式放行并重启 AVA："
             "1) 打开「系统设置 → 隐私与安全性 → 文件与文件夹」，展开「AVA」并打开「Google Chrome」；"
             "2) 或打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，添加并勾选当前 AVA.app。"
-            "注意：AVA.app 为 ad-hoc 签名构建，每次重新打包后 CDHash 会变化，系统设置中旧条目可能表面仍开启但已被 TCC 静默拒绝，"
-            "需先选中旧条目点「-」移除，再点「+」重新添加当前 AVA.app 后完全退出并重启 AVA"
+            "注意：若启动的是 dist/mac-arm64/ 下未重签的 ad-hoc AVA.app，每次重新打包后 CDHash 会变化，系统设置中旧条目可能表面仍开启但已被 TCC 静默拒绝，"
+            "需先选中旧条目点「-」移除再点「+」重新添加后完全重启；如希望一次授权长期有效，请运行 `cd desktop && npm run release-install` 安装稳定签名版到 /Applications/AVA.app。"
             "（若仅抓公开网页，请用 web_fetch / crawl / browser）"
         )
     return (

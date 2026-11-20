@@ -49,8 +49,12 @@ uv venv && uv pip install -e ".[apple,dev]"
 # 2. 启动或打包桌面端 AVA
 cd desktop && npm ci
 npm run dev                      # 开发模式启动
-npm run release-build            # 打包 macOS 应用
+npm run release-build            # 打包 macOS 裸产物（dist/mac-arm64/AVA.app）
+npm run init-cert                # 首次运行：生成本机代码签名证书「AVA Local Dev」（保 TCC 授权不漂移）
+npm run release-install          # 打包并安装稳定签名版到 /Applications/AVA.app
 ```
+
+> 以后桌面端有改动需要重新打包安装时，只需完全退出 AVA（`Cmd + Q`）后跑一条命令：`cd desktop && npm run release-install`（会自动重签替换 `/Applications/AVA.app` 并清理 `dist/mac-arm64/AVA.app`，macOS TCC 权限持久保留）。
 
 运行纯函数测试可在仓库根目录执行 `pytest`（约 3 分钟）。网页抓取所需的 `crawl` / `browser` 可选依赖见 [`pyproject.toml`](pyproject.toml)；环境变量密钥从系统钥匙串读取，服务商登录凭据保存于 `config/auth.local.json`（权限 0600，不进 git）。
 
