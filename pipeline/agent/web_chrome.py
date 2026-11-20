@@ -17,8 +17,10 @@ from __future__ import annotations
 import atexit
 import base64
 from collections import deque
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import datetime
+import errno
 import hashlib
 import io
 import ipaddress
@@ -28,22 +30,22 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
-import time
-from typing import Any, Callable, Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 from pipeline.agent import vision
 from pipeline.agent.tools import assert_egress_boundary, scrub_secrets
 from pipeline.agent.web import (
-    _TextExtractor,
     _clean_refs,
     _extract_images,
     _extract_links,
     _guard_url,
     _normalized_for_assert,
     _scrub,
+    _TextExtractor,
 )
 from pipeline.agent.web_browser import _parse_trusted_ranges, browser_env
 
@@ -127,6 +129,31 @@ _CONNECT_HINT_KEYWORDS = (
     "target closed",
     "protocol error",
 )
+
+_PERMISSION_DENIED_KEYWORDS = (
+    "eperm",
+    "eacces",
+    "operation not permitted",
+    "permission denied",
+)
+_DEVTOOLS_PORT_HINT_KEYWORDS = (
+    "devtoolsactiveport",
+    "google/chrome",
+    "google\\chrome",
+    "chrome-profile",
+    "user data",
+)
+_DEVTOOLS_PORT_FILE = "DevToolsActivePort"
+_MACOS_CHROME_CHANNEL_DIRS: dict[str, str] = {
+    "stable": "Chrome",
+    "chrome": "Chrome",
+    "beta": "Chrome Beta",
+    "chrome-beta": "Chrome Beta",
+    "dev": "Chrome Dev",
+    "chrome-dev": "Chrome Dev",
+    "canary": "Chrome Canary",
+    "chrome-canary": "Chrome Canary",
+}
 
 _PAGE_LINE_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)\s*:)\s*(.+?)\s*$")
 _URL_TOKEN_RE = re.compile(r"(?:https?://\S+|about:\S+|chrome(?:-[a-z]+)?://\S+)")
@@ -468,7 +495,118 @@ def precheck_chrome_access(action: str, args: dict[str, Any], *, root: Path | No
     return err
 
 
+def _has_autoconnect_flag(args: Sequence[str]) -> bool:
+    """判断配置参数是否启用 `--autoConnect`（兼容 kebab-case 与显式关闭标记）。"""
+    enabled = False
+    for raw in args:
+        token = str(raw).strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in {"--autoconnect", "--auto-connect"}:
+            enabled = True
+        elif lowered in {"--no-autoconnect", "--no-auto-connect"}:
+            enabled = False
+        elif lowered.startswith(("--autoconnect=", "--auto-connect=")):
+            val = lowered.split("=", 1)[1].strip()
+            if val in {"1", "true", "yes", ""}:
+                enabled = True
+            elif val in {"0", "false", "no"}:
+                enabled = False
+    return enabled
+
+
+def _extract_cli_option(args: Sequence[str], names: Sequence[str]) -> str | None:
+    """提取 yargs 风格参数值（支持 `--flag=value` 与 `--flag value`，大小写无关）。"""
+    lowered_names = tuple(n.lower() for n in names)
+    arg_list = [str(a) for a in args]
+    for i, token in enumerate(arg_list):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        for name in lowered_names:
+            if low == name:
+                if i + 1 < len(arg_list):
+                    nxt = arg_list[i + 1].strip()
+                    if nxt:
+                        return nxt
+                return None
+            prefix = f"{name}="
+            if low.startswith(prefix):
+                val = stripped[len(prefix) :].strip()
+                return val or None
+    return None
+
+
+def _resolve_autoconnect_port_path(
+    cfg: ChromeSection,
+    *,
+    platform: str | None = None,
+    home: Path | None = None,
+) -> Path | None:
+    """解析 `--autoConnect` 模式将读取的 `DevToolsActivePort` 路径；非直连端口文件模式返回 None。"""
+    if not _has_autoconnect_flag(cfg.args):
+        return None
+    if _extract_cli_option(cfg.args, ("--wsEndpoint", "--ws-endpoint", "-w")):
+        return None
+    if _extract_cli_option(cfg.args, ("--browserUrl", "--browser-url", "-u")):
+        return None
+
+    user_data_dir = _extract_cli_option(cfg.args, ("--userDataDir", "--user-data-dir"))
+    if user_data_dir:
+        return Path(user_data_dir).expanduser() / _DEVTOOLS_PORT_FILE
+
+    plat = platform if platform is not None else sys.platform
+    if plat != "darwin":
+        return None
+
+    channel = (_extract_cli_option(cfg.args, ("--channel",)) or "stable").strip().lower()
+    dir_name = _MACOS_CHROME_CHANNEL_DIRS.get(channel)
+    if not dir_name:
+        return None
+
+    base_home = home if home is not None else Path.home()
+    return base_home / "Library" / "Application Support" / "Google" / dir_name / _DEVTOOLS_PORT_FILE
+
+
+def _is_devtools_permission_error(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(kw in lowered for kw in _PERMISSION_DENIED_KEYWORDS) and any(
+        kw in lowered for kw in _DEVTOOLS_PORT_HINT_KEYWORDS
+    )
+
+
+def _permission_error_message(
+    detail: str,
+    *,
+    platform: str | None = None,
+    port_path: Path | None = None,
+) -> str:
+    plat = platform if platform is not None else sys.platform
+    path_hint = f"（{port_path}）" if port_path is not None else ""
+    if plat == "darwin":
+        return (
+            f"chrome 无法读取主力 Chrome 的 DevToolsActivePort{path_hint}（权限被 macOS TCC 拦截）：{detail}。"
+            "这不是未勾选 chrome://inspect/#remote-debugging 的问题，而是当前进程树所属 App 无权读取 Google Chrome 数据目录"
+            "（TCC 服务 kTCCServiceSystemPolicyAppDataDetailed / kTCCServiceSystemPolicyAllFiles）。"
+            "请按以下任一方式放行并重启 AVA："
+            "1) 打开「系统设置 → 隐私与安全性 → 文件与文件夹」，展开「AVA」并打开「Google Chrome」；"
+            "2) 或打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，添加并勾选当前 AVA.app。"
+            "注意：AVA.app 为 ad-hoc 签名构建，每次重新打包后 CDHash 会变化，系统设置中旧条目可能表面仍开启但已被 TCC 静默拒绝，"
+            "需先选中旧条目点「-」移除，再点「+」重新添加当前 AVA.app 后完全退出并重启 AVA"
+            "（若仅抓公开网页，请用 web_fetch / crawl / browser）"
+        )
+    return (
+        f"chrome 无法读取主力 Chrome 的 DevToolsActivePort{path_hint}（操作系统或沙盒权限被拒）：{detail}。"
+        "这不是未开启远程调试的问题，请检查当前宿主进程及子进程对 Chrome 用户数据目录的读取权限"
+        "（若仅抓公开网页，请用 web_fetch / crawl / browser）"
+    )
+
+
 def _connect_error_message(detail: str) -> str:
+    if _is_devtools_permission_error(detail):
+        return _permission_error_message(detail)
     lowered = detail.lower()
     if any(kw in lowered for kw in _CONNECT_HINT_KEYWORDS):
         return (
@@ -692,7 +830,41 @@ class _McpStdioClient:
         self._wake_all_with_eof()
 
 
+def _check_autoconnect_port_permission(
+    cfg: ChromeSection,
+    *,
+    platform: str | None = None,
+    home: Path | None = None,
+) -> None:
+    """`--autoConnect` 启动前做 1 字节只读探针；被 TCC/OS 拦下时立即快速失败，不拉起空转 npx 子进程。"""
+    port_path = _resolve_autoconnect_port_path(cfg, platform=platform, home=home)
+    if port_path is None:
+        return
+    try:
+        with port_path.open("rb") as fh:
+            # 仅探测内核读权限，绝不保留、记录或暴露文件内容（含敏感 CDP websocket token）
+            fh.read(1)
+    except PermissionError as exc:
+        raise ValueError(
+            _permission_error_message(
+                f"{exc} (errno={exc.errno}, path={port_path})",
+                platform=platform,
+                port_path=port_path,
+            )
+        ) from exc
+    except OSError as exc:
+        if exc.errno in (errno.EPERM, errno.EACCES):
+            raise ValueError(
+                _permission_error_message(
+                    f"{exc} (errno={exc.errno}, path={port_path})",
+                    platform=platform,
+                    port_path=port_path,
+                )
+            ) from exc
+
+
 def _default_launch_fn(cfg: ChromeSection) -> _McpStdioClient:
+    _check_autoconnect_port_permission(cfg)
     return _McpStdioClient(
         cfg.command,
         cfg.args,

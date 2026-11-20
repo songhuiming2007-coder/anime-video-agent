@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+import errno
 import io
 import json
 from pathlib import Path
@@ -888,3 +889,135 @@ def test_security_regressions_p1_and_p2(tmp_path: Path, monkeypatch):
             ToolContext(episode_dir=ep, scope="creative", root=root, session_id="s-p3"),
         )
         assert vision.OUTCOME_IMAGE_KEY in shot3 and Path(shot3["file"]).is_file()
+
+
+def test_devtools_active_port_eperm_diagnostics_and_preflight(tmp_path: Path, monkeypatch):
+    import pipeline.agent.web_chrome as wc
+
+    real_eperm_detail = (
+        "Could not connect to Chrome. Check if Chrome is running and remote debugging is enabled by going to "
+        "chrome://inspect/#remote-debugging. Cause: Could not read DevToolsActivePort for chrome at "
+        "/Users/test/Library/Application Support/Google/Chrome/DevToolsActivePort: permission denied "
+        "Cause: EPERM: operation not permitted, open "
+        "'/Users/test/Library/Application Support/Google/Chrome/DevToolsActivePort'"
+    )
+
+    monkeypatch.setattr(wc.sys, "platform", "darwin")
+    msg_darwin = wc._connect_error_message(real_eperm_detail)
+    assert "macOS TCC" in msg_darwin
+    assert "文件与文件夹" in msg_darwin
+    assert "完全磁盘访问权限" in msg_darwin
+    assert "CDHash" in msg_darwin
+    assert "「-」" in msg_darwin and "「+」" in msg_darwin
+    assert "请确认 Google Chrome 144+ 已运行且在 chrome://inspect/#remote-debugging 勾选启用远程调试" not in msg_darwin
+
+    msg_linux = wc._permission_error_message(real_eperm_detail, platform="linux")
+    assert "完全磁盘访问权限" not in msg_linux
+    assert "web_fetch / crawl / browser" in msg_linux
+
+    msg_enoent = wc._connect_error_message(
+        "Could not find DevToolsActivePort for chrome at /Users/test/Library/Application Support/Google/Chrome/DevToolsActivePort"
+    )
+    assert "请确认 Google Chrome 144+ 已运行且在 chrome://inspect/#remote-debugging 勾选启用远程调试" in msg_enoent
+    assert "完全磁盘访问权限" not in msg_enoent
+
+    # 端到端模拟真实 MCP 子进程返回 EPERM isError
+    root = _write_minimal_repo(tmp_path)
+    eperm_server = (
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    mid = msg.get('id')\n"
+        "    if msg.get('method') == 'initialize':\n"
+        "        sys.stdout.write(json.dumps({'jsonrpc':'2.0','id':mid,'result':{'protocolVersion':'2024-11-05','capabilities':{}}})+'\\n')\n"
+        "    elif msg.get('method') == 'tools/call':\n"
+        f"        sys.stdout.write(json.dumps({{'jsonrpc':'2.0','id':mid,'result':{{'isError':True,'content':[{{'type':'text','text':{real_eperm_detail!r}}}]}}}})+'\\n')\n"
+        "    sys.stdout.flush()\n"
+    )
+    cfg_dir = root / "config" / "agent"
+    data = json.loads((cfg_dir / "web.json").read_text(encoding="utf-8"))
+    data["chrome"]["command"] = sys.executable
+    data["chrome"]["args"] = ["-c", eperm_server]
+    (cfg_dir / "web.json").write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        chrome_action("list_pages", root=root)
+    assert "完全磁盘访问权限" in str(exc_info.value)
+    assert "CDHash" in str(exc_info.value)
+
+    # 路径解析覆盖：默认 stable / canary / userDataDir / wsEndpoint / browserUrl
+    def _cfg_with(args: tuple[str, ...]) -> wc.ChromeSection:
+        return wc.ChromeSection(command="npx", args=args, timeout_s=45.0, max_chars=20000, sensitive_hosts=())
+
+    fake_home = tmp_path / "home"
+    assert wc._resolve_autoconnect_port_path(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect")),
+        platform="darwin",
+        home=fake_home,
+    ) == fake_home / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort"
+
+    assert wc._resolve_autoconnect_port_path(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", "--channel=canary")),
+        platform="darwin",
+        home=fake_home,
+    ) == fake_home / "Library" / "Application Support" / "Google" / "Chrome Canary" / "DevToolsActivePort"
+
+    custom_dir = tmp_path / "custom-chrome-profile"
+    custom_port = wc._resolve_autoconnect_port_path(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--auto-connect", "--userDataDir", str(custom_dir))),
+        platform="linux",
+        home=fake_home,
+    )
+    assert custom_port == custom_dir / "DevToolsActivePort"
+
+    assert wc._resolve_autoconnect_port_path(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", "--wsEndpoint=ws://127.0.0.1:9222/devtools/browser/id")),
+        platform="darwin",
+        home=fake_home,
+    ) is None
+    assert wc._resolve_autoconnect_port_path(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", "--browserUrl", "http://127.0.0.1:9222")),
+        platform="darwin",
+        home=fake_home,
+    ) is None
+
+    # _default_launch_fn 预检遇到 PermissionError 时必须快速失败且绝不拉起 _McpStdioClient
+    def _fail_if_spawned(*_a, **_kw):
+        raise AssertionError("预检拦下 EPERM 时不应拉起 MCP 子进程")
+
+    monkeypatch.setattr(wc, "_McpStdioClient", _fail_if_spawned)
+    custom_dir.mkdir(parents=True, exist_ok=True)
+    custom_port.write_text("9222\n/devtools/browser/SECRET_UUID_DO_NOT_LEAK\n", encoding="utf-8")
+
+    # 1) 可读文件（含敏感 token）预检静默通过，不泄露内容
+    wc._check_autoconnect_port_permission(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", f"--userDataDir={custom_dir}")),
+        platform="darwin",
+        home=fake_home,
+    )
+
+    # 2) 不存在 (ENOENT) 不误报权限拒绝
+    missing_dir = tmp_path / "missing-chrome-profile"
+    wc._check_autoconnect_port_permission(
+        _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", f"--userDataDir={missing_dir}")),
+        platform="darwin",
+        home=fake_home,
+    )
+
+    # 3) Path.open 触发 EPERM 时 _default_launch_fn 快速报错，不泄露任何 token 且不拉起子进程
+    orig_open = Path.open
+
+    def _eperm_open(self: Path, *args: Any, **kwargs: Any):
+        if self == custom_port:
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(self))
+        return orig_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _eperm_open)
+    with pytest.raises(ValueError) as launch_exc:
+        wc._default_launch_fn(
+            _cfg_with(("-y", "chrome-devtools-mcp@latest", "--autoConnect", f"--userDataDir={custom_dir}"))
+        )
+    err_text = str(launch_exc.value)
+    assert "macOS TCC" in err_text
+    assert "SECRET_UUID_DO_NOT_LEAK" not in err_text
+    assert str(custom_port) in err_text
