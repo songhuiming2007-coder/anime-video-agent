@@ -622,8 +622,8 @@ MUTATIONS: list[dict] = [
      "old": "            if bare and (replies_since_cp >= BARE_LOOP_CAP or execs_since_cp >= BARE_LOOP_CAP):\n",
      "new": "            if False:  # MUT-3\n"},
     {"id": "S9-MUT-4", "guard": "收尾调用带 tool_choice:\"none\"", "file": LLM,
-     "old": '        reply = _chat(tool_choice="none")\n',
-     "new": '        reply = _chat()  # MUT-4\n'},
+     "old": '            reply = _chat(tool_choice="none", overflow_wrapup=overflow)\n',
+     "new": '            reply = _chat(overflow_wrapup=overflow)  # MUT-4\n'},
     {"id": "S9-MUT-5", "guard": "中断时为未配对的调用补合成结果", "file": LLM,
      # D35 在这两行之间插了 `hook` 分支（抓取钩子中断），锚点随之改到新的首个分支
      "old": ('            if call is not None:\n'
@@ -645,8 +645,8 @@ MUTATIONS: list[dict] = [
              "                    if key is not None:\n"
              "                        dedup.pop(key, None)  # MUT-9\n")},
     {"id": "S9-MUT-10", "guard": "本地说明不进 messages", "file": LLM,
-     "old": "        state, final, note, wrapup_error = _wrapup(reason)\n",
-     "new": ("        state, final, note, wrapup_error = _wrapup(reason)\n"
+     "old": "        state, final, note, wrapup_error = _wrapup(reason, overflow=overflow)\n",
+     "new": ("        state, final, note, wrapup_error = _wrapup(reason, overflow=overflow)\n"
              "        if note:\n"
              '            control.commit({"role": "assistant", "content": note}, "assistant")  # MUT-10\n')},
     {"id": "S9-MUT-11", "guard": "首个模型请求就失败 → 回滚、不收尾", "file": LLM,
