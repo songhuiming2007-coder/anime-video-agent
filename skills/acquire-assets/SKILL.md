@@ -24,10 +24,12 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 |---|---|---|
 | `title` | ✅ | 人一眼能认出是哪个素材的名字，**别用网站原标题原文**（含站点广告词） |
 | `url` | ✅ | 可解析的 http(s) 直链或视频页 |
+| `found_on` | ✅ | 在哪一页看到它（留档核对用；视频页或直链本身就是出处时填它自己） |
 | `type` | ✅ | `live` / `mv` / `scan` / `interview` 之一；`scan` = 任何静态图片（扫图、图表、示意图、实物照，D84） |
 | `source` | ✅ | 从哪儿来的：站点名 + 大致检索路径（如「B站搜『EGOIST 横滨』，UP 主 xxx 投稿」） |
 | `why` | ✅ | **为什么值得下**（见下） |
 | `expected_dur` | 可空 | 秒数。有考据页面写着时长就填——门禁拿它算时长偏差（>5% 报 WARN），也是「下成了剪辑版」的唯一自动哨兵 |
+| `segment` | 可空 | 补单段缺口时可标明对应段号（如 `5`） |
 
 **`why` 是这份文件的全部价值所在。** 它让「下什么」这个判断落盘可审计：人扫一眼就能把垃圾挑掉，
 不用自己再判断一遍。写法是**「它补的是哪个缺口 + 凭什么认为是它」**，不是「这个素材很好」。
@@ -47,8 +49,8 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 
 1. **检索 → 提议 → 人看机器表 → 抓**：每条候选写 `found_on`（在哪一页看到它；视频页或直链本身就是出处时填它自己）。
    那页还没有抓取留档时，核对会由系统当场抓一次（静态，失败升级无头渲染，D136）；要登录态的页静态抓不到，先用
-   `browser` 打开。别的 agent 在 AVA 之外查到的候选同样直接提，不必再让 AVA 抓一遍；它们抓登录态页用
-   `python -m pipeline.agent.fetch <url> --browser --caller <名字>`。`acquire_propose` 只登记并核对、不下载，返回机器表；把表原样给人，人点名后 `acquire fetch <号>`（只能抓核对结论为「可下载」的）。核不上的换一个能核上的出处页重提，不绕过（D100）。
+   `browser` 打开。别的 agent 在 AVA 之外查到的候选同样直接提，不必再让 AVA 抓一遍；它们抓登录态页或高反爬页用
+   `python -m pipeline.agent.fetch <url> --browser --caller <名字>`（需主力 Chrome 登录态兜底改传 `--chrome`）。`acquire_propose` 只登记并核对、不下载，返回机器表；把表原样给人，人点名后 `acquire fetch <号>`（只能抓核对结论为「可下载」的）。核不上的换一个能核上的出处页重提，不绕过（D100）。
    对话里不另写候选表，不补分辨率、尺寸或授权：这些以机器表为准。
    **不许绕开 acquire 自己下载**（不用 bash 跑 curl / yt-dlp）。
 1.5 **探针预检（2026-10-10 增）**：心里没底的源先 `acquire probe all`——只解析不下载，死链、
@@ -79,9 +81,9 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
       按规则算好每条要切的镜头与切点，整批列给人，人同意后逐条 `shots rebuild --anime <池> --episode SPnn --also-cut MM:SS,…`
       （写进 `meta.manual_cuts`，之后 rebuild 自动重放）。
    4. `shots caption-frames <池> SPnn` 抽打标帧。
-   5. 云端打标：**只能在云端跑**（VLM，本机跑不动），计费，先问人。实例开着（`cloud up`）后依次
+   5. 云端打标：**只能在云端跑**（VLM，本机跑不动），计费，先问人。Colab 跑 VLM 打标推荐 **A100**；同时在做配音等重任务时可另开槽位（`--provider <后端> --slot <名|auto>`）。实例开着（`cloud up`）后依次
       `cloud lib-push <池> SPnn …`（传镜头表与打标帧）→ `cloud lib-captions <池> SPnn …`（计费卡；远端代码与本地不一致会拒跑，
-      先 `cloud sync-code`）→ 等它跑完（`cloud attach --session ava-lib-captions` 看进度）→ `cloud lib-pull <池> SPnn …`。
+      先 `cloud sync-code`）→ 等它跑完（`cloud status` 或 `cloud logs` 看进度；`cloud attach` 不在 `run_pipeline` 白名单内）→ `cloud lib-pull <池> SPnn …`。
       期目录的 `cloud push / run / pull` 只管 `04-patch/`，番池素材不走它们；不用 bash 自己 rsync / ssh。
    6. `vindex embed <池>`：本机跑（16 GB Mac 上 63 件不到 1 分钟）。
    7. `vindex status --anime <池>` 对账，七条数字对得上才算入库完成。
@@ -113,7 +115,7 @@ description: 为素材池检索并扩充素材（Live/MV/扫图/访谈），产�
 | `mv`（官方 MV / NCOP/NCED） | YouTube 官方频道、BDRip 特典原盘（NCOP/NCED） | **纯净画面优先**：前景试听段（`music.py`）必须无台标，广播录像过不了铁律四 |
 | `scan`（扫图/场刊/CD 原画） | 知乎/微博/B站专栏的考据长文、贴吧、Discord 图源频道、曲子实体附赠 booklet | 图源网站常压缩到 1200px 宽；门禁按转成 1080p 缓推视频时要不要放大来判，**要放大就拒**（16:9 横图约需 2208×1242 以上，竖图、宽幅图缩进安全框，要求低得多）——找原图，别存缩略图 |
 | `scan`（图表 / 示意图 / 实物照，D84） | Wikimedia Commons（文件页写着授权，`links` 里的「原始文件」是原图直链）、维基条目配图、论文与科普文章原图、官方资料页 | `web_fetch` / `crawl` 返回的 `images` 是页面图片直链（og:image 在前、`<img>` 取 srcset 最大档）。维基缩略图 URL 带 `/thumb/…/NNNpx-`，要换成原始文件。**`register` 不收 `.svg`**（只收 jpg/png/webp/bmp/tif）：Commons 上的 SVG 示意图用它的 PNG 渲染 `…/thumb/<路径>/<文件>.svg/3840px-<文件>.svg.png`（2026-10-13 实测：3840 可取；2400 这类非标准宽度返回 400）。`why` 写清授权（CC BY-SA 等要署名的在 `source` 里记作者） |
-| `scan`（网页截图：官方公告、榜单、认证检索页，D122） | 仅用于**不可替代的硬核事实物证**（官方发售页/SKU/定价、Oricon/RIAJ 榜单、官方公告/访谈原话框、频谱/曲速数据图）。**乐评博客/长篇文字观后感一律不截图**——讲乐评观点、音乐听感与创作幕后时优先配动态视频（Live/MV/录音室/访谈/正片），不用网页文字墙占画面 | 1. **严禁整页截图与竖条机械切片（`*_切片XofY`）**：长网页或竖条切片塞进 1920×1080 安全框会被高度压扁，正文缩成几像素完全糊掉；<br>2. **必须横屏紧凑裁切（~16:9，宽 ≥ 1920px）**：`browser screenshot` 给精确 `selector` 或原文 `text` 只裁目标段落/数据表（或后期按 16:9 裁出焦点区），剔除导航栏、右侧边栏、Cookie 弹窗、空白广告位与大片留白，保证成片缩放框内文字大而清晰可读；<br>3. **竖拍实物照/视频**：静态图由 `acquire`/`still_to_clip` 自动按 EXIF 转正并正立放进 1920×1080 安全框，严禁拿未转正的横躺图或旋转错向的视频入池；<br>4. 命令行截图：`python -m pipeline.agent.screenshot <url> --selector <CSS>｜--text <原文> --reason <证第几段哪句> --expect-text <本段证言> --caller <名字>`，正文栏窄门禁 FAIL 时加 `scale` 3 或 4（命令行 `--scale`，D139），截歪了用 `acquire forget <路径>` 重抓（D138） |
+| `scan`（网页截图：官方公告、榜单、认证检索页，D122） | 仅用于**不可替代的硬核事实物证**（官方发售页/SKU/定价、Oricon/RIAJ 榜单、官方公告/访谈原话框、频谱/曲速数据图）。**乐评博客/长篇文字观后感一律不截图**——讲乐评观点、音乐听感与创作幕后时优先配动态视频（Live/MV/录音室/访谈/正片），不用网页文字墙占画面 | 1. **严禁整页截图与竖条机械切片（`*_切片XofY`）**：`browser` 禁用 `html`/`body`/`:root`/`document` 及超 1.5 倍视口高元素；`chrome screenshot(save_evidence=true)` 禁 `full_page=true` 且必传 `uid`、`reason` 与 `expect_text`；<br>2. **定量尺寸与构图上限（`still_geometry.py`）**：高宽比 `H/W <= 1.35`、安全框占幅 `frame_fit >= 0.30`、入池不放大（`peak_magnify <= 1.0`，16:9 横图约需 `>= 2208×1242`），并剔除导航栏、弹窗与留白；<br>3. **必填原文与 1080p OCR 复核**：`browser` 与 `chrome(save_evidence=true)` 及命令行截图**必填 `expect_text`**，入库前缩放到 1080p 安全框执行 Vision OCR 核对原文；<br>4. **竖拍实物照/视频**：静态图由 `acquire`/`still_to_clip` 自动按 EXIF 转正并正立放进 1920×1080 安全框；<br>5. 命令行截图：`python -m pipeline.agent.screenshot <url> --selector <CSS>｜--text <原文> --reason <证第几段哪句> --expect-text <本段证言> --caller <名字>`，正文栏窄门禁 FAIL 时加 `scale` 3 或 4（命令行 `--scale`，D139），截歪了用 `acquire forget <路径>` 重抓（D138） |
 | `scan`（专辑 / 单曲封面） | **Cover Art Archive**（MusicBrainz 社区扫图，多数实体盘与常见专辑有 Front 图，800px 起、很多 1400–3600px）→ **iTunes Search / Lookup API**（`is1-ssl.mzstatic.com` 官方图床 3000px，**但数字单曲 / 新曲 / 部分企划单可能没条目**，实测 `supercell #Love` 就没有）→ 都没有时**如实报缺**，**不要去抓 `music.apple.com`**——那是网页播放器首页，没有专辑页大图；`browser screenshot` 截到的只是播放器 UI，不是封面。拿到 URL 后照走 `acquire fetch` / `register` 全链 | |
 | `interview` | YouTube（官方/杂志频道）、音乐媒体的文字访谈网页、电视台节目 | **必须有音轨**，没音轨的访谈是死素材（门禁硬拒） |
 | 种子/生肉 | Nyaa、nyaa.si 镜像、动漫花园 | 找 BDRip 特典（NCOP/NCED）、演唱会碟。**别下「合集」包**：几十 G 里只有一段有用，`fetch` 也不给你挑 |

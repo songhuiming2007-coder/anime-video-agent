@@ -15,19 +15,19 @@ agent 先问人，再跑 `render`（长任务；期目录自动补上）。人�
 - `data/episodes/<期号>/_agent/hud_clean_top.mp4`（当存在 `## 章节` 或音乐 HUD 时从净画面裁出顶部条带，供合集剪辑重算顶栏/浮标时复用）
 
 ## 规则与内部护栏
-1. **截取双重守卫强制执行**：
+1. **截取双重守卫与帧数精确对齐**（D145）：
    - 切前校验：`seek + duration <= 源文件时长`，越界当场报错；
-   - 切后校验：实际截取帧数与请求帧数相差不超过 1 帧。
-2. **字幕贪心断行**：代码按标点自算折行并安全转义，不依赖 libass 的空格断词。
+   - 切后校验：单段切片实得帧数必须与请求帧数**精确相等**（`got_n == frames`），且 `|实得时长 - 请求时长| <= 0.5 输出帧`（按输出帧率 `FPS` 现算；源片 `r_frame_rate` 用于末帧 `tpad` 垫底）；拼轨校验（`check_video_track`）要求总帧数相等且总时长差 `<= 1 输出帧`。
+2. **字幕预检与断行保护**（D171）：切片与编码启动前先执行 0 秒 fail-fast 字幕检查（`verify_subtitles`，基于 `subtitle_metrics.py` 的真实 libass 像素宽度）；代码按标点自算折行并安全转义，无逗号超长句回退至书名号/引号外沿（`《「『` / `》」』`）拆卡，连续 ASCII 词组（`_ASCII_WORD`）受整词保护不在单词中间断开。
 2.5 **字幕显示替换表（D132）**：字幕文本取自配音 manifest 的句子原文，而稿件为了 TTS 念得准，写的是中文数字与歌名罗马字。上屏写法不同时，在期目录写 `02-subtitles.json`（`{"原文": "上屏写法"}`，`_` 开头的键是注释；agent 用 `write_episode_file` 写，免卡），渲染烧字幕前替换，07 质检的字幕四项也查替换后的文本。配音、manifest、台词哈希都不动，不用重配。键必须在某句字幕里原样出现，拼错或跨了句当场 FAIL。
    - 写法约定（人 2026-10-23）：日期、名次、周数、曲序、年龄、人数、震级换成阿拉伯数字（2009年8月12日、第5位、66周、第11首、15岁、2000人、9.0级）；量词与固定说法不换（一首歌、两个人、一代人、八分音符）。歌名罗马字换成日文原名，官方英文名与人名不换。
    - 同一个短串在不同语境要换成不同写法时，用带上下文的长键（`第十一首`、`三月十一日`），长键优先匹配，替换结果不会再被别的键匹配。
-2.6 **章节顶栏、音乐浮标与平台看点清单**：当 `02-script.md` 含有 `## 章节 · 标题` 时，渲染在切片段前解析章节结构（未写 `## 章节结束` 时默认于 `vo_fg_end` 收口）、校验各格与子节宽度，并逐一核验 `config/project.json` 中 `hud.fonts_dir`（默认 `data/fonts`）内的 `Songti.ttc` 与 `SourceHanSansSC-Bold.otf` 等 `hud.required_files` 文件存在；拼好净画面轨后裁存顶部条带 `_agent/hud_clean_top.mp4`，烧录字幕时通过 `ass=vo.ass:fontsdir=_fonts` 绘制方案 C 窄顶栏，并在最终成片落盘后原子写出 `07-chapters.txt`。未声明章节的期若配有 BGM 或 `## 音乐段`（/显式 `曲名:`），仍会在 `vo.ass` 写入 `HUD_MUSIC`/`HUD_DRAW` 浮标并裁存 `hud_clean_top.mp4`；两者皆无时 `vo.ass` 保持原样。
+2.6 **章节顶栏、音乐浮标与平台看点清单**：当 `02-script.md` 含有 `## 章节 · 标题` 时，渲染在切片段前解析章节结构（未写 `## 章节结束` 时默认于 `vo_fg_end` 收口）、校验各格与子节宽度，并逐一核验 `config/project.json` 中 `hud.fonts_dir`（默认 `data/fonts`）内的 `Songti.ttc` 与 `SourceHanSansSC-Bold.otf` 等 `hud.required_files` 文件存在；拼好净画面轨后裁存顶部条带 `_agent/hud_clean_top.mp4`（1080p 下条高 128 px），烧录字幕时通过 `ass=vo.ass:fontsdir=_fonts` 绘制方案 C 窄顶栏，并在最终成片落盘后原子写出 `07-chapters.txt`。未声明章节的期若配有 BGM 或 `## 音乐段`（同源块须显式写 `曲名:`），仍会在 `vo.ass` 写入 `HUD_MUSIC`/`HUD_DRAW` 浮标并裁存 `hud_clean_top.mp4`（无章节期不强求 `verify_hud_fonts()`：`SourceHanSansSC-Bold.otf` 存在即用，缺席则回退到 `subtitle.font`）；两者皆无时 `vo.ass` 保持原样。
 3. **BGM 响度与侧链闪避**：每首 BGM 按实测归一到 -26 LUFS，人声触发自动动态闪避，避免覆盖口播。
 
 ## 06.2 截取守卫与渲染门禁参数
 
-- **截取守卫（渲染强制，缺一不可）**：切前校验 `seek + duration <= 源时长`；切后复核实际时长与请求之差 ≤ 1 帧。ffmpeg 在请求超出片尾时**静默截断且不报错**，检索命中集尾时必然踩到，一踩整条音画错位。「1 帧」按 `ffprobe` 的 `r_frame_rate` 现算，不许写死（23.976fps 一帧 0.0417s）。
+- **截取守卫（渲染强制，缺一不可）**：切前校验 `seek + duration <= 源时长`；切后复核按帧输出后的精确帧数（`got_n == frames`）与时长误差 `<= 0.5 输出帧`。ffmpeg 在请求超出片尾时**静默截断且不报错**，检索命中集尾时必然踩到，一踩整条音画错位。「输出帧」按 `config/project.json` 的 `video.fps` 计算（23.976fps 一帧 0.0417s）。
 - **段级不变量**：每段 Σclip.dur == manifest 段时长（±0.05s），approve 与 render 双重拦截；05 人审改画面只改 start/source，改完让 agent 跑 `clips --refit` 重排版。
 - **中间切片与成片参数分层**：`render.cut` 与静帧缓推生成的中间片段使用 `config/project.json` 的 `video.cut_preset`（默认 `ultrafast`）与 `video.cut_crf`（默认 `12`），最终合成层保持 `video.preset`（`medium`）与 `video.crf`（`18`）。
 

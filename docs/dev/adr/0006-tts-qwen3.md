@@ -32,6 +32,8 @@ IndexTTS 把 `My Dearest` 念成 `Femi Dearest Faye`（实测），CER 28% 且�
 
 ## 决定二：克隆走 x-vector 路径，不传 ref_text
 
+> **补注（2026-11-20）**：仅限以中文黄金锚点自举参考（`icl_anchor_audio` + `icl_anchor_text`）并钉死 `seg6` 原始 x-vector 时，新版 `mlx-audio` 与 PyTorch `qwen-tts` 已启用同语种 ICL；日文原参考仍禁止直接走中文 ICL。详见文末「2026-11-20 补记」。
+
 新版 mlx-audio（0.4.8 重写版，`qwen3_tts` 模块）有两条克隆路径：
 
 | 路径 | 触发条件 | 实测结果 |
@@ -47,6 +49,8 @@ ICL 复述的根因在 mlx-audio 的 `_prepare_icl_generation_inputs`：
 只传 `ref_audio` + `lang_code`。这也顺带消除了对 `transcripts.json` 的依赖。
 
 ## 决定三：语言用 lang_code 控制，写进 voice.json
+
+> **补注（2026-11-20）**：本地 `_synthesize_mlx` 已修复直传 `"zh"` 静默退化的问题，统一经 `qwen3_language_name()` 转为 `"chinese"` 传入 `mlx-audio`（见文末「2026-11-20 补记」）。
 
 Qwen3-TTS 的 `lang_code` 参数控制发音语言（auto / chinese / english / japanese…）。
 本项目的旁白是中文、夹英日歌名，实测 `lang_code="zh"` 时中文正常、歌名按原文念。

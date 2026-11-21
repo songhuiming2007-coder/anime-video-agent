@@ -19,7 +19,7 @@
 | 04 素材排片 | [`runbook/04-clips.md`](runbook/04-clips.md) | 三通道互斥分派与全局贪心占坑 |
 | **05 审时间码（停机点 3）** | [`runbook/05-timecode.md`](runbook/05-timecode.md) | 浏览器审片与 `--approve` 显式批准 |
 | 06 本地渲染 | [`runbook/06-render.md`](runbook/06-render.md) | 本地 ffmpeg 一趟出片与双重截取守卫 |
-| 07 质量门禁 | [`runbook/07-qc.md`](runbook/07-qc.md) | 11 项机器硬指标自动化检测 |
+| 07 质量门禁 | [`runbook/07-qc.md`](runbook/07-qc.md) | 10 项机器硬指标自动化检测 |
 | 08 封面与标题候选 | [`runbook/08-cover-title.md`](runbook/08-cover-title.md) | 候选帧去重过滤与 5 条标题生成（严禁机器定稿） |
 | **09 人工发布（停机点 4）** | [`runbook/09-publish.md`](runbook/09-publish.md) | 人选封面标题与手动平台上传 |
 | 10 企划总装（多卷 → 合集） | [`runbook/10-assemble.md`](runbook/10-assemble.md) | 企划会话里每次弹卡；部件从卷表读、截断点从时间轴算、自证后才替换 |

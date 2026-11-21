@@ -14,11 +14,11 @@
 
 一期 01→09。停机点 02.5 / 03.5 / 05 / 09 由人批。耗时在改稿、顺听、画面、封面四个环。选题会话人定期名，普通期这时不定 BGM。01 起草前贴人看。02 设计稿→笔记→草稿→`check_script`→02.8。03 问人本地或云端。03.5 人耳。04/05 排片、人点名 BGM。06/07 渲染质检。08 先定字再出图。09 以 `read_status` 为准。补素材不固定步骤。重开会话先 `read_status`。企划期见 `project.md`。
 
-Colab GPU 释放原则：常规配音后实例先留到 03.5 顺听完成；但只要人明确说「配音完全没有问题」「这一部分的素材已经全部达标结束了」，或判断接下来较长时间不会用到 GPU，就主动向人申请发 `cloud down`（需要时带 `--provider colab` / `colab-drive`）关闭终止对应的 Colab session，由人在审批卡确认释放，避免空耗算力。
+云端 GPU 释放原则（AutoDL / Colab 通用）：常规配音后实例先留到 03.5 顺听完成；但只要人明确说「配音完全没有问题」「这一部分的素材已经全部达标结束了」，或判断接下来较长时间不会用到 GPU，就主动向人申请发 `cloud down`（需要时带 `--provider` / `--slot`）关闭或释放对应实例，由人在审批卡确认释放，避免空耗算力。
 
 ## 三、做片期代码只读（Code Freeze）
 
-做片期间 `pipeline/`、`config/`、`tests/` 只读。`bash` 没有卡不等于允许。例外四条，经 `run_pipeline` 发、弹卡由人批：读音表（`corrections global`）、标定值（`calibration set`）、曲库登记（`bgm register`）、云端连接（`cloud connect`）。写错曲名改 `01-topic.md` 的 BGM 字段。确信是引擎缺陷时 `run_pipeline tickets open` 开单，不自己改代码。`--why` 必填。
+做片期间 `pipeline/`、`config/`、`tests/` 只读。`bash` 没有卡不等于允许。例外四条，经 `run_pipeline` 发、弹卡由人批：读音表（`corrections global`）、标定值（`calibration set`）、曲库登记（`bgm register`）、云端连接与切换（`cloud connect / use`）。写错曲名改 `01-topic.md` 的 BGM 字段。确信是引擎缺陷时 `run_pipeline tickets open` 开单，不自己改代码。`--why` 必填。
 
 ## 四、失败处理
 

@@ -184,19 +184,20 @@ def test_discredited_budget_not_active_rule():
         assert marker in content, f"{rel_path} 缺少现行口径「{marker}」"
 
 
-# 02.5 人审要点五条的**关键串**（Spec 11 §2.6 冻结）。真源是 runbook，桌面端
-# ScriptEditor.tsx 侧栏硬编码镜像；PR3 的桌面等价断言复用本常量（两处五条同时齐）。
+# 02.5 人审要点六条的**关键串**（Spec 11 §2.6 冻结，2026-11-17 补第 6 条）。真源是 runbook，桌面端
+# ScriptEditor.tsx 侧栏硬编码镜像；PR3 的桌面等价断言复用本常量（两处六条同时齐）。
 REVIEW_POINT_KEYWORDS = (
     "编辑判断立不立得住",   # 1
     "事实核验",             # 2
     "去模型味",             # 3
     "`人物:` 该写没写",     # 4（Spec 11 新增，D18）
     "抽帧",                 # 5（Spec 11 新增，D19）
+    "访谈原话出处顺口带出", # 6（2026-11-17 增）
 )
 
 
-def test_runbook_02_5_review_points_five_items():
-    """TC-13（core 半）：runbook 02.5 的审查重点必须五条齐全（Spec 11 §2.6，D18/D19 收口）。
+def test_runbook_02_5_review_points_six_items():
+    """TC-13（core 半）：runbook 02.5 的审查重点必须六条齐全（Spec 11 §2.6，D18/D19 + 访谈出处）。
 
     打勾式确认是把形式当实质，与「不立判据」的拍板同源，所以只断言文案在，
     不要求 UI/文档做强制确认。

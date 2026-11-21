@@ -1,6 +1,6 @@
 # 云端算力双后端改造施工图（AutoDL + Google Colab SSH / Drive）
 
-- **状态**：已施工·机检通过（2026-11-14：全仓 `pytest -q` 3799 passed、Notebook JSON/AST 校验通过；真实 Google Colab GPU 运行时实机冒烟待用户在 Colab 端执行确认）
+- **状态**：已施工·机检与 Colab L4 实机验证通过（2026-11-14 初版落盘，11-18/20 完成多槽位并发 `c08582a`/`2a2743d`/`2917e20`、Drive venv `.sha256` 校验与 `flash-attn` 探测 `586b27d`，并在真实 Colab L4 跑通配音与音频回传）
 - **关联 ADR**：[ADR-0014](../adr/0014-cloud-gpu-headless-model-stack.md)、[ADR-0016](../adr/0016-render-local-inference-cloud.md)、[ADR-0030](../adr/0030-approval-danger-only.md)
 - **目标**：把 AVA 全部云端 GPU 能力（`tts` 配音与回读、`captions` / `lib-captions` VLM 打标、`ingest_patch` 补料打标、`probe` 探针）解耦为 **AutoDL** 与 **Google Colab** 两条平行通道；其中 Colab 同时支持 **SSH 隧道（`colab`，优先 `cloudflared`）** 与 **Google Drive 共享队列（`colab-drive`）** 两种接入，且全程对 `ava` agent 透明友好。
 
@@ -27,24 +27,24 @@
   - `colab`：`transport: "ssh"`、`remote_root: "/content/anime-video-agent"`、`remote_models: "/content/models"`、`remote_python: "/content/venv/bin/python"`、`remote_data_disk: "/content"`、`remote_log_dir: "/content/logs"`、`drive_cache_dir: "/content/drive/MyDrive/ava_cache"`、`billing_unit: "cu"`、`cu_rates`（T4/L4/A100 参考 CU/h）、`budget_per_episode_cu`、`budget_per_phase0_cu`。
   - `colab-drive`：`transport: "drive"`、同上远端与 CU 预算配置，任务队列通过本地挂载的 `drive_root` 交互。
 - `config/cloud.local.json`（不进 git，受出网敏感词保护）：
-  - 新增 `active_provider`（默认 `"autodl"`）与 `profiles.{autodl, colab, colab-drive}`。
-  - 保留顶层 `server` / `port` / `user` / `ssh_host` 向下兼容：读写 `autodl` profile 时同步顶层字段。
+  - 新增 `active_provider`（默认 `"autodl"`）与 `profiles.{autodl, colab, colab-drive}.slots.<slot>` 多槽位配置（同时兼容旧版扁平 profile 读取）。
+  - 保留顶层 `server` / `port` / `user` / `ssh_host` 向下兼容：读写 `autodl` 默认槽位时同步顶层字段。
 
 ### 2. 核心调度层：`pipeline/cloud.py`
 
-1. **Provider 解析与切换**：
+1. **Provider 解析、切换与多槽位隔离**：
    - `resolve_provider(cfg_global, cfg_local, cli_provider=None) -> str`
-   - `provider_config(cfg_global, cfg_local, provider) -> dict`
+   - `provider_settings(cfg_global, provider) -> dict` 与 `provider_profile(cfg_local, provider, slot=DEFAULT_SLOT) -> dict`
    - 新增子命令 `cloud use <provider>`：切换 `active_provider` 写入 `cloud.local.json`（Code Freeze 例外同 `cloud connect`）。
-   - 所有子命令增加 `--provider {autodl,colab,colab-drive}` 可选参数，临时指定不改写 `active_provider`。
+   - 所有子命令支持 `--provider {autodl,colab,colab-drive}` 与 `--slot <name>` / `--instance`（环境变量 `AVA_CLOUD_SLOT`），`up` / `connect` 支持 `--slot auto`（基于 `.alloc_<provider>_<slot>.lock` 自动分配 `gpu2..gpu64`）、`--recreate`、`--browser-profile`、`--notebook-url`。
 2. **`colab`（SSH 隧道）支持**：
-   - `parse_login_command(text)` 兼容标准 `ssh -p <port> user@host` 与 `cloudflared` 写法（如 `ssh -o "ProxyCommand=cloudflared access ssh --hostname %h" root@xxxx.trycloudflare.com` 或裸域名 `xxxx.trycloudflare.com`），严格校验主机名与用户名字符集。
-   - `render_ssh_config(...)` 按连接类型生成直连或带 `ProxyCommand cloudflared access ssh --hostname %h` 的配置，使用独立 Host 别名（`autodl` / `ava-colab`）互不干扰。
+   - `parse_login_command(text)` 解析严格 `ssh -p <port> user@host`；Colab `cloudflared`（`ssh -o "ProxyCommand=cloudflared access ssh --hostname %h" root@xxxx.trycloudflare.com`）与裸域名由 `parse_colab_connect_target(text)` 解析，严格校验主机名与用户名字符集。
+   - `render_ssh_config(...)` 按连接类型生成直连或带 `ProxyCommand cloudflared access ssh --hostname %h` 的配置，使用按槽位区分的 Host 别名（`autodl` / `autodl-<slot>` / `ava-colab` / `ava-colab-<slot>`）与紧凑 `ControlPath` 互不干扰。
    - 远端模型目录、数据盘、日志目录、解释器按当前 provider 读取，并支持 `AVA_REMOTE_MODELS` 环境变量注入远端运行命令。
-   - `doctor` / `fix-env` 按 provider 分派：Colab 下检查 `cloudflared`（仅 `cloudflared` 隧道）、不查 `/root/autodl-fs`、不执行 `/etc/network_turbo` 与 `hf-mirror.com`，直接从 HuggingFace 拉取模型；按显存报告 T4（仅配音）与 L4/A100（VLM + 配音）差异。
+   - `doctor` / `fix-env` 按 provider 分派：Colab 下检查 `cloudflared`（仅 `cloudflared` 隧道）、不查 `/root/autodl-fs`、不执行 `/etc/network_turbo` 与 `hf-mirror.com`，直接从 HuggingFace 拉取模型；TTS 选 T4 即可，VLM 打标（`captions` / `lib-captions`）统一推荐 A100（L4 可用显存 ~22.5GB 低于 `MIN_VRAM_GB=24.0` 告警）。
    - Watchdog 与 `down`：Colab 写入 `/content/.ava_unassign` 标记通知内核释放运行时（`google.colab.runtime.unassign()`），不依赖 `/usr/bin/shutdown`。
 3. **`colab-drive`（Google Drive 共享队列）支持**：
-   - `cloud connect <drive_path> --provider colab-drive` 记录 `drive_root` 并验证目录可读可写。
+   - `cloud connect --provider colab-drive --drive-root <drive_path>` 记录 `drive_root` 并验证目录可读可写。
    - 共享目录契约：
      - `code/`（`sync-code` 同步 `pipeline/`、`config/`、`pyproject.toml` + `code_manifest.json`）
      - `staging/`（`push` / `lib-push` 暂存输入）
@@ -100,4 +100,12 @@
    - `tts` / `asr` / `vindex` 经 `AVA_REMOTE_MODELS` 解析模型目录；
    - `ava` agent 对 `cloud use` 逐条弹卡与 `--provider` 透传校验。
 3. **Notebook 结构校验**：`json.loads` 解析 `tools/ava_colab_bootstrap.ipynb` 为合法 `.ipynb` 格式。
-4. **待人手验项（标注，不伪造通过）**：在真实 Google Colab 运行一次 `ava_colab_bootstrap.ipynb`，分别实测 `colab`（`cloudflared` SSH）与 `colab-drive` 跑通 `probe` / `tts` / `captions`。
+4. **待人手验项（已验更新）**：`colab`（`cloudflared` SSH）与 `tts` / `down` 已在真实 Colab L4 GPU 跑通；`colab-drive` 与 VLM `captions` 待后续真实跑批进一步验证。
+
+---
+
+## 四、后续增量回填（2026-11-18 ~ 2026-11-20：`c08582a` / `2a2743d` / `2917e20` / `586b27d` / `cce8449`）
+
+1. **多槽位并发与会话隔离**：活动会话文件由单文件 `active_session.json` 迁为按 `(provider, slot)` 隔离的 `data/cloud/sessions/<provider>_<slot>.json`；新增 `evaluate_slot_busy_guard` 占位保护、跨提供商同名槽位查找、`--recreate` 释放旧隧道并等待断连后再拉新、`colab_browser_lock` 串行化 Camoufox 拉起、`--browser-profile` 隔离多账号目录（`colab-browser-profile-firefox-<name>`）。agent 侧 `up --recreate` 与 `up --slot auto` 强制逐次弹审批卡。
+2. **Colab Worker 缓存与依赖硬化**：`tools/colab_worker.py` 新增 `.sha256` 校验与原子替换的 Drive venv 缓存恢复/发布（`restore_colab_venv_cache` / `publish_colab_venv_cache`），以及仅使用预编译轮子、跳过失败源码编译的 `ensure_colab_flash_attn`。
+3. **语音资产自动同步**：`cloud push`（SSH 与 Drive 路径）自动读取 `config/voice.json` / `config/voice.cloud.json` 中的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）随当期一并上行（`cce8449`）。

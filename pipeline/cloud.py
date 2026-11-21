@@ -916,7 +916,7 @@ def rent_instructions(cfg_global: dict, provider: str = "autodl") -> list[str]:
         return [
             "Colab SSH 隧道连不上。可用以下任一方式拉起 Colab 运行时：",
             "  方式 A（全自动，推荐）：首次执行 `cloud connect --provider colab --browser-login` 完成一次 Google 登录，之后 `cloud up --provider colab` 自动无头打开 Notebook、点「全部运行」并刷新隧道。",
-            "  方式 B（手动接管）：在 Colab 打开 `tools/ava_colab_bootstrap.ipynb`，选好 GPU（TTS 选 T4；VLM 打标选 L4/A100）运行唯一代码格（`MODE = \"ssh\"`），把输出的隧道地址交给 `cloud connect \"<连接串>\" --provider colab`。",
+            "  方式 B（手动接管）：在 Colab 打开 `tools/ava_colab_bootstrap.ipynb`，选好 GPU（TTS 选 T4；VLM 打标选 A100）运行唯一代码格（`MODE = \"ssh\"`），把输出的隧道地址交给 `cloud connect \"<连接串>\" --provider colab`。",
             "  如隧道受阻，也可改用 `cloud use colab-drive` 走 Google Drive 共享队列模式。",
         ]
     if provider == "colab-drive":

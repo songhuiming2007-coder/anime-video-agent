@@ -994,8 +994,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "校验白名单内的 pipeline 子命令（如 tts --redo 2,4,5，段号逗号分隔）并返回规范化 argv。"
             "**校验通过即在本对话回路内真执行，大多不弹卡**（ADR-0030）：有副作用的命令先在对话里问人、人同意再调，"
-            "人已明确说了要跑的直接调；只有云端计费（cloud up/run/down 等）、写 config/ 的四条例外"
-            "（corrections global、calibration set、bgm register、cloud connect）、越过人工关卡的选项、tickets open、assemble 会弹审批卡。"
+            "人已明确说了要跑的直接调；只有云端计费/维护（cloud up/run/down 等）、写 config/ 的四条例外"
+            "（corrections global、calibration set、bgm register、cloud connect/use）、越过人工关卡的选项、tickets open、assemble、facts promote 会弹审批卡。"
             "实时输出与尾部日志（stdout_tail/stderr_tail）回喂给你做汇报；"
             "--force/--force-all/cloud exec 一律拒收。"
             "只读命令：check_script、status、corrections check、"

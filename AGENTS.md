@@ -10,7 +10,7 @@
 |---|---|---|
 | **本文件** | 常驻规则：定位、硬约束、判据、红线、命令 | 每次会话 |
 | `docs/WORKFLOW.md` | 【生产态】每期九步速查与 4 大停机规程（≤100 行精炼版） | 跑视频作业时必读 |
-| `docs/runbook/` | 【生产态】分工序独立 SOP（01 到 09，每篇独立成册、按需取用） | 跑具体某一步骤时按需读取 |
+| `docs/runbook/` | 【生产态】分工序独立 SOP（01 到 10，每篇独立成册、按需取用） | 跑具体某一步骤时按需读取 |
 | `docs/INDEX.md` | **文档总入口**：开发态与生产态清晰隔离导航 | 查阅文档总貌时 |
 | `docs/dev/STANDARD.md` | 【开发态】判据系统定义：每条标准的「为什么」与违反程序 | 做取舍 / 写判据 / 改标准时 |
 | `docs/dev/postmortems/` | 【开发态】历史踩坑论证、演化背景与全量复盘 | 探究历史成因或修改机制时 |
@@ -18,7 +18,7 @@
 | `docs/dev/issues/` | 【开发态】未解决问题单表 | 找当前系统卡点时 |
 | `docs/dev/plans/` | 【开发态】可执行施工图索引 | 要动工改代码实现时 |
 | `docs/dev/adr/` | 【开发态】难以回头的架构决策与证据 | 动某块系统架构前先读对应 ADR |
-| `skills/write-script/` | 写稿指令：五种题材骨架与判据 | 第 02 步写稿时 |
+| `skills/write-script/` | 写稿指令：六种题材骨架与判据 | 第 02 步写稿时 |
 | `config/agent/scopes/production.md` | AVA（制片 agent）的做片常驻规则；**AVA 不加载本文件**（D92），改 AVA 的行为改那边与同目录的 director / scope 文件 | 改 AVA 行为时 |
 | `README.md` | 全流程介绍与快速上手 | 给不了解项目的人 |
 
@@ -36,8 +36,8 @@
 
 - **生产期代码写保护（Code Freeze：不经人同意不改代码）**：
   在进行做视频（写稿、配音、排片、渲染、封面等）任务期间，`pipeline/`、`config/`、`tests/` 下的代码与配置视为**只读**。
-  **例外只有四条**：① 读音表（2026-10-08，D51）：`config/voice.json` 的 `readings` / `pinyin_injections`，可经 `python -m pipeline.corrections global` 在人审卡批准后逐条新增、覆盖或删除同键，同一命令顺带写 `readings_provenance`（每条的来历：表、日期、期、番、引擎、音色；2026-10-09 N12）；② 标定值（2026-10-09，D60）：`project.json` 的 `visual.scene_threshold` / `ccip_same` / `ccip_margin` / `face_expand` 按番键与 `script.cpm`、`scenes.json` 的 `<番>.no_match`、`voice.json` 的 `titles`，可经 `python -m pipeline.calibration set` 在人审卡批准后写入，标定实录同步追加进对应 `_note`（取值由人看测量结果拍板）；③ 曲库登记（2026-10-11）：`config/bgm.json` 的 `<番>.tracks`，可经 `python -m pipeline.bgm register` 在人审卡批准后新增或覆盖曲目（没登记的曲子配不了乐；路径一律存 `data/…` 相对路径）。写错曲名报「曲目表里没有」时先看报错是否已指出表里的键，**改 `01-topic.md` 的 BGM 字段，不要重新登记**；④ 云端连接（2026-10-15，D102）：`config/cloud.local.json` 的 `server` / `port` / `user`，可经 `python -m pipeline.cloud connect "<控制台登录指令>"` 在人审卡批准后写入（同时生成 `data/cloud/ssh_config`）；该文件其余键（含 `api_token`）不动。其余字段与 `config/` 其他文件照旧只读。
-  **ava 的 `bash` 工具（ADR-0029）同样受本条约束**：它在技术上能写任何文件，本条是它唯一的边界。ADR-0030 起 bash 只在命中硬危险（删除、git 改历史 / 推远端、提权、全局装依赖、写 `pipeline/` `config/`、碰停机点解封物）时弹卡，其余免卡——没有卡不等于允许越界。
+  **例外只有四条**：① 读音表（2026-10-08，D51）：`config/voice.json` 的 `readings` / `pinyin_injections`，可经 `python -m pipeline.corrections global` 在人审卡批准后逐条新增、覆盖或删除同键，同一命令顺带写 `readings_provenance`（每条的来历：表、日期、期、番、引擎、音色；2026-10-09 N12）；② 标定值（2026-10-09，D60）：`project.json` 的 `visual.scene_threshold` / `ccip_same` / `ccip_margin` / `face_expand` 按番键与 `script.cpm`、`scenes.json` 的 `<番>.no_match`、`voice.json` 的 `titles`，可经 `python -m pipeline.calibration set` 在人审卡批准后写入，标定实录同步追加进对应 `_note`（取值由人看测量结果拍板）；③ 曲库登记（2026-10-11）：`config/bgm.json` 的 `<番>.tracks`，可经 `python -m pipeline.bgm register` 在人审卡批准后新增或覆盖曲目（没登记的曲子配不了乐；路径一律存 `data/…` 相对路径）。写错曲名报「曲目表里没有」时先看报错是否已指出表里的键，**改 `01-topic.md` 的 BGM 字段，不要重新登记**；④ 云端连接与切换（D102）：`config/cloud.local.json` 的 `active_provider` 与 `profiles`（各后端/槽位 `server`、`port`、`user`、`drive_root` 等），可经 `python -m pipeline.cloud connect` / `use <后端>` 在人审卡批准后写入（同时生成 `data/cloud/ssh_config`）；其余键（含 `api_token`）及 `config/` 其余字段照旧只读。
+  **ava 的 `bash` 工具（ADR-0029）同样受本条约束**：它在技术上能写任何文件，本条是它唯一的边界。ADR-0030 起 bash 只在命中硬危险（删除、git 改历史 / 推远端、提权、全局装依赖、写 `pipeline/` `config/`、写停机点解封物、须人审命令、写工单目录、拉起 coding agent、写事实库）时弹卡，其余免卡——没有卡不等于允许越界。
   遇到任何异常，99% 是由于当期 `01-topic.md` 或 `02-script.md` 字段格式错误、语法不符或素材缺失引起的，**只允许排查和修改当期目录下的输入文件**。
   Agent 不为单期给 `pipeline/` 源码加特判。确信是通用流水线代码 Bug、必须修改时，**先停下向人出示三项**：
   1. 原始报错堆栈；
@@ -95,7 +95,7 @@
 - **路径一律相对仓库根**（`./data/...`），不硬编码卷路径。
 - **临时脚本不落仓库**（2026-08-26 人指出，N23）：一次性探针 / 统计放会话的 scratch 目录或 `/tmp`；单期验证走 `data/episodes/<本期>/` 或现有 CLI；要长期留的工具进 `tools/` 并写清用途与用法，`pipeline/` 与仓库根一律不放。
 - **依赖隔离**：依赖装项目内（uv 虚拟环境），不污染全局。新增能力开新文件。
-- **存储分离**：仓库只有纯文本进 git；大件在 `data/` **不进 git**，可以是外置盘符号链接。
+- **存储分离**：仓库只有机制代码、`config/*.example.json` 模板与文档进 git；大件在 `data/`（可作外置盘符号链接），个人配置（`config/{project,voice,bgm,characters,scenes}.json`）及 `*.local.*` **不进 git**。
 - **脚本绝不自动创建 `data/`**：不可达立刻报错退出。建骨架走 `./pipeline/preflight.sh --init`。
 - **HF 缓存钉到 SSD**：本项目在 `data/models/hub/`；`from . import paths` 必须排在第三方 import 之前。
 - **模型起草的说明文档要人审阅**（2026-10-15，D101）：`skills/`、`docs/`、`config/agent/`、本文件，以及代码里写给模型看的提示文字，凡由模型起草或改写，提交前由人过目。这些文字会被模型当成说话的样板（10-15 实查：Gemini 写的写稿说明书越写越激昂，Gemini 读了它写出来的稿也跟着浮夸）。所以说明文档用中性的规则语气，只写规则和理由；不喊口号、不自我夸耀；文风要求写成原则，不写成「严禁 / 铁律」式的禁令；机器真正卡的约束注明以哪个检查的输出为准。
@@ -111,7 +111,7 @@
 
 - **01 必须带 `类型`**：骨架由题材决定；`模式` 与 `张力` 杂谈必填。
 - **02 `查询` 是机器接口**：送进索引检索台词语义；`集` 字段做集内掩码。先保真再去味。
-- **03 按句合成**：时长 `ffprobe` 复核进 `manifest.json`，不采信模型自报。
+- **03 整句合成**：`MAX_SYNTH_CHARS=90` 整句直出，时长 `ffprobe` 复核进 `manifest.json`，不采信模型自报。
 - **05 人工关卡**：`--approve` 必须是显式动作。
 - **04 视觉通道二选一**：`人物` 走台词检索+在场过滤；`场景` 走画面语义检索。不跨通道比分。
 - **08 候选不排名**：9 张候选机器筛+人选；封面硬过滤，排片软过滤。
@@ -123,7 +123,7 @@
 - 桌面端重新打包安装：完全退出 AVA 后执行 `cd desktop && npm run release-install`（本地固定证书签名替换 `/Applications/AVA.app` 并清理 `dist/mac-arm64/AVA.app`，保留 macOS TCC 授权；首次建证书先跑 `npm run init-cert`）。
 
 ```bash
-pytest                                          # 纯函数测试，约 3 分钟（3800+ 条），改完代码先跑；含 ruff 静态门禁（tests/test_static.py）
+pytest                                          # 纯函数测试，约 3 分钟（3900+ 条），改完代码先跑；含 ruff 静态门禁（tests/test_static.py）
 ./pipeline/preflight.sh                         # 环境自检：data 可达 + ffmpeg 带 libass
 python -m pipeline.check_script <02-script.md>  # 稿件机检
 python -m pipeline.vindex status --anime <番>   # 七条数字对不对得上（v2 起含 captions）

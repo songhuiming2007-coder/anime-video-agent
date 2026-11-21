@@ -55,12 +55,12 @@
 | [D103 ② 番池素材的云端打标命令](2026-10-17-library-captions-cloud-spec.md) | D103, D107 | ADR-0016 | **已施工·机检通过**（2026-10-17；`cloud lib-push / lib-captions / lib-pull`，变异 4/4）；待人：下次租卡真跑一次 |
 | [D127 SP 集键放宽到 2–3 位](2026-10-20-sp-key-three-digits-spec.md) | D127 | ADR-0010 | **已施工·机检通过**（2026-10-20，变异 6/6）；待人：真实登记 SP100–SP105 并走完切镜头 / 云端打标 / 排片 |
 | [D122 网页截图素材入库：三方案](2026-10-20-screenshot-asset-options.md) | D122 | ADR-0021, ADR-0030, ADR-0032 | 人选 A；**已施工·机检与真实冒烟通过**（2026-10-20，变异 6/6）；待人：AVA 里实截一次（门槛人定维持） |
-| [D152 续：桌面 UI 每日施工图](2026-10-30-desktop-ui-daily.md) | D152 | Spec 14 | **天天看的壳已过一轮人选**（2026-10-30）。每天读该文件 §四「下一处」做一项。原盘点 [2026-10-25-desktop-ui-zcode-alignment.md](2026-10-25-desktop-ui-zcode-alignment.md) |
-| [D157 一期多会话后台并存](2026-11-03-multi-session-spec.md) | D157, D158 | D45, D79, D81 | 人选 **B**（真后台跑，对齐 Pi/Codex 会话即并发单元）；spec 已出，待人终审后施工；D158 已随本批施工（②再点当前期收起） |
+| [D152 续：桌面 UI 每日施工图](2026-10-30-desktop-ui-daily.md) | D152 | Spec 14 | **已由 2026-11-18 macOS UI 重构（`3a10c46`）取代并收口**（原 ZCode 盘点见 [`STYLE_INVENTORY.md`](../../desktop/src/renderer/STYLE_INVENTORY.md)） |
+| [D157 一期多会话后台并存](2026-11-03-multi-session-spec.md) | D157, D158 | D45, D79, D81 | **已施工·机检通过，待人验收**（2026-11-03 PR-1/2/3 已落；D158 已随本批施工） |
 | [D159 系统信息移出对话流（施工后截图）](2026-11-03-d159-shots/shots.spec.ts) | D159 | D80, D82 | 人选 **①**；已施工·机检通过（2026-11-03）；截图落 `desktop/out/d159-shots/`（不进 git）；待人验收真实窗口 |
 | [常驻层上下文装配改造](2026-11-06-context-assembly-redesign.md) | P1–P8 | ADR-0022, Spec 16 | **已施工·机检通过**（2026-11-06，复审改口径）：scope 400–2000 字 + resident_budget 贴现状、状态卡每轮 user 消息（`_ava_status_card`）、asset `_extends _base`；S5 节级 diff 未做 |
-| [云端算力双后端（AutoDL + Google Colab SSH / Drive）](2026-11-14-colab-dual-cloud-provider-spec.md) | — | ADR-0014, ADR-0016, ADR-0030 | 已施工·机检通过（2026-11-14）：支持 `autodl`、`colab`（`cloudflared` SSH）与 `colab-drive`（Google Drive 队列），双口径 CU/¥ 账本与 agent 友好切换；全仓 pytest 3799 passed（实机 Colab GPU 待冒烟） |
-| [D169 + D168 + D170：桌面端体验重做与独立多服务商 /login & 推理强度对齐方案](2026-11-14-d169-d168-d170-pi-ux-spec.md) | D168, D169, D170 | D49, D91, D154–D156, N50, ADR-0021 | **已施工·机检通过，待人验收**（2026-11-14；分 3 个 Commit 落地：D169 侧栏去冗余产物树、D168 GUI 推理分段滑块与多协议映射、D170 独立 44 服务商 `/login` 认证与多协议 LLM 适配（`12b1a83`/`6fc1ad8` 将设计稿 10 家扩为 44 家、协议适配器扩为 9 种含 Vertex/Bedrock）；pytest 400 / vitest 642 / E2E 通过，含 1280×800 与 1440×900 真实窗口截图）；待人：真实窗口与数据验收 |
+| [云端算力双后端（AutoDL + Google Colab SSH / Drive）](2026-11-14-colab-dual-cloud-provider-spec.md) | — | ADR-0014, ADR-0016, ADR-0030 | **已施工·机检与 Colab L4 实机验证通过**（2026-11-14 立，11-18/20 扩至 `--slot` 多槽位并发、`.sha256` venv 缓存与 `flash-attn` 探测，并经实机 Colab L4 跑通） |
+| [D169 + D168 + D170：桌面端体验重做与独立多服务商 /login & 推理强度对齐方案](2026-11-14-d169-d168-d170-pi-ux-spec.md) | D168, D169, D170 | D49, D91, D154–D156, N50, ADR-0021 | **已施工·机检通过，待人验收**（2026-11-14 交付三批；后续 `3a10c46` 移除阶段胶囊并重做顶栏/主题/Floating UI，`545ad78`/`2f36522` 增模型来源分组，`66ed508`/`1cd3b3b` 增 Gemini 4 窗口与回合内防溢出）；待人：真实窗口与数据验收 |
 | [接入 chrome-devtools-mcp：主力 Chrome 后台无扰检索与交互](2026-11-14-chrome-devtools-mcp-spec.md) | — | ADR-0021, ADR-0030, ADR-0032 | **已施工·机检与真实探针通过**（2026-11-14；新增独立 `chrome` 工具走 `--autoConnect`，含后台焦点隔离、Tab 归属隔离、敏感头剥离、仅硬危险弹卡与 `fetch-log` 留档；变异 5/5 KILLED、真实 `list_pages` 探针 4.65s 连通，待真做片会话手验场景 A/B） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）

@@ -8,9 +8,9 @@ status: accepted
 
 日期：2026-10-06
 状态：**已通过**（2026-10-06 红队定向复审 D30-R2 🟢；人已于同日选定本方案）。沿革：D30-A 立文；2026-10-06 人已选定本方案（Spec 16 §10 Q1 = ②a）；同日红队一轮 🟡 修订后复审——判定机制成立，可信集的取材口径须按 Spec 16 文首 🟡-1~3 修订；**同日 Spec 16 v0.2 作者修订已按此同步本 ADR**（可信集 = 本进程已提交正文 ∪ 路由表当前正文、白名单根、长度门槛），定向复审 🟢 后改「已通过」）
-> **修订注（2026-10-13，D89）**：受限模式表只剩凭据两条（`cloud.local.json`、`agent.local.json`），去掉 `03-audio/manifest.json` 与 `03-audio/voice.json`。它们当初靠「没给 LLM 读它们的工具」成立；bash 落地后 `cat 03-audio/*.json` 不含这串字面量照样读得到，子串比对拦不住内容，只会误拦写出完整路径的正常提问（《束胸力学》「配音总长多少？」整轮回滚）。两份文件里没有凭据。本 ADR 的豁免机制不变，对凭据两条照常生效；`read_artifact` 读域排除 `03-audio/` 不在本次范围。
+> **修订注（2026-10-13，D89；2026-11 更新）**：受限模式表由四条删为凭据两条（`cloud.local.json`、`agent.local.json`）后，随 D170 新增 **`auth.local.json`** 共三条（`RESTRICTED_EGRESS_PATTERNS`），去掉 `03-audio/manifest.json` 与 `03-audio/voice.json`。两份文件里没有凭据。本 ADR 的豁免机制不变，对凭据三条照常生效；`read_artifact` 读域排除 `03-audio/` 不变，仓库 `config/` 下的非凭据/非 `.local.` 配置文件已于 `62c92fa` 纳入 `read_artifact(area="repo")` 可读根。
 
-> **修订注（2026-10-09，D48 ②）**：出网调用方 +1——`pipeline.adversarial`（02.8 零上下文对抗审查，人同意）。它经同一个 `chat_complete` 发请求，断言照常生效；可信集为空（发出的笔记与字幕在 `data/` 下，本就不进可信集），命中受限模式即整次审查失败、不写报告。发出的内容（稿件、番剧笔记、字幕与在场证据）与写稿会话本来就发的同类。`plans/2026-10-09-adversarial-review-spec.md`。
+> **修订注（2026-10-09 ~ 11）**：`pipeline/` 侧 `LLM_KEY_MODULES` 出网调用方已扩展至 3 个：`pipeline.adversarial`（D48 ②）、`pipeline.fact_review` 与 `pipeline.notes_review`（均经 `chat_complete` 走相同出网断言）。`plans/2026-10-09-adversarial-review-spec.md`。
 
 前置：impl spec §2.5 Y2-r19（出网边界）、Spec 4 §2.4（断言生效点）、ADR-0021（网络工具内化）、ADR-0022（工序层上下文装配）
 

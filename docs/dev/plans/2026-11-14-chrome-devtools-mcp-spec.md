@@ -21,7 +21,7 @@
 
 1. **工具形态**：新增独立工具 `chrome`。
 2. **审批策略**：不默认弹审批卡；遵循 ADR-0030 仅在硬危险动作时弹卡（`chrome_danger_tags`）。
-3. **`screenshot` 行为**：默认仅保存到缓存目录 `data/_cache/chrome-shots/`（不可用时回退系统临时目录）并返回 `_image` 供模型同轮直接 `vision.attach_images` 读图，不污染 `data/library/incoming/` 与候选账本；显式传 `save_evidence=true`（附带 `reason`、可选 `expect_text`/`name`）时复用 `screenshot.save_screenshot()` 走 D122/D141 OCR 与入库留档流程。
+3. **`screenshot` 行为**：默认仅保存到缓存目录 `data/_cache/chrome-shots/`（不可用时回退系统临时目录）并返回 `_image` 供模型同轮直接 `vision.attach_images` 读图，不污染 `data/library/incoming/` 与候选账本；显式传 `save_evidence=true` 时（**必传 `uid`、`reason` 与 `expect_text`，禁止 `full_page=true`**，可附 `name`）先过 `still_geometry` 几何门禁，再复用 `screenshot.save_screenshot()` 走 D122/D141 1080p Vision OCR 与入库留档流程（`6219fe6`）。
 4. **`extract_text` 留档口径**：复用 `fetch_log.KINDS` 既有 `"browser"` 类型，写入 `fetch-log` 并回写 `cache_path`/`snapshot_id`，与 `fact_add` / `acquire_propose(found_on)` 无缝衔接。
 5. **首批优先级场景**：
    - 场景 A：02 写稿考据 / 补料阶段遇到强风控或登录态站点（X/Twitter、知乎评论与展开、B 站动态/专栏等），通过后台新建 Tab、点击展开/读取 Network XHR JSON、`extract_text` 留档后交 `fact_add` 引用。
@@ -86,13 +86,13 @@
 
 | 常量 | 值 | 依据 |
 |---|---|---|
-| `_DEFAULT_CHROME_CFG["command"]` | `"npx"` | macOS/本机无需全局安装 npm 包，直接复用与桌面端 MCP 一致的 `npx` 启动链 |
-| `_DEFAULT_CHROME_CFG["args"]` | `["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--redactNetworkHeaders"]` | 与本机已验证的 `chrome-devtools-mcp --autoConnect` 通道一致，`-y` 避免非交互子进程卡在首次确认提示，`--redactNetworkHeaders` 开启服务端敏感头脱敏 |
-| `_DEFAULT_CHROME_CFG["timeout_s"]` | `45` | 初次 `npx` 解析 + Chrome CDP 握手及网页加载留足余量，同时低于模型单步工具超时上限（对齐 `crawl` `timeout_s=45`） |
-| `_DEFAULT_CHROME_CFG["max_chars"]` | `20000` | 对齐 `crawl` 单次最大正文字数（`20000`），避免 snapshot / 长列表与 Network JSON 撑爆对话上下文 |
-| `_DEFAULT_SENSITIVE_HOSTS` | 登录/支付/发帖高敏域名与路径后缀集合 | 涵盖主账号登录鉴权（`accounts.google.com`、`passport.bilibili.com`、`login.*`）、支付收银（`pay.*`、`checkout.*`）、创作者发布后台（`studio.youtube.com`、`member.bilibili.com`）与社交写接口高敏域，防止未审触发不可逆写操作 |
-| `_SCREENSHOT_MAX_WAIT_S` / 清理超时 `_CLOSE_TIMEOUT_S` | `3.0` | `atexit` 关闭多个后台 Tab 时单个页最多等 3s，防止 Chrome 挂起拖死 Python 退出路径 |
-| `_CACHE_SHOT_DIR` | `data/_cache/chrome-shots` | 位于 `data/_cache/` 下，既隔离于 `data/library/incoming/` 避免污染素材台账与候选池，又能在跨轮调试时保留路径索引 |
+| `_DEFAULT_COMMAND` | `"npx"` | macOS/本机无需全局安装 npm 包，直接复用与桌面端 MCP 一致的 `npx` 启动链 |
+| `_DEFAULT_ARGS` | `["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--redactNetworkHeaders"]` | 与本机已验证的 `chrome-devtools-mcp --autoConnect` 通道一致，`-y` 避免非交互子进程卡在首次确认提示，`--redactNetworkHeaders` 开启服务端敏感头脱敏 |
+| `_DEFAULT_TIMEOUT_S` | `45` | 初次 `npx` 解析 + Chrome CDP 握手及网页加载留足余量，同时低于模型单步工具超时上限（`web.json` 中 `crawl.timeout_s` 为 `60`） |
+| `_DEFAULT_MAX_CHARS` | `20000` | 避免 snapshot / 长列表与 Network JSON 撑爆对话上下文（`web.json` 中 `crawl.max_chars` 为 `30000`） |
+| `_DEFAULT_SENSITIVE_HOSTS` | 8 个高敏主机名精确/子域匹配集合 | `accounts.google.com`、`myaccount.google.com`、`passport.bilibili.com`、`pay.bilibili.com`、`studio.youtube.com`、`member.bilibili.com`、`pay.weixin.qq.com`、`alipay.com`（`is_sensitive_host` 按主机名精确或子域后缀匹配，无通配符与路径关键字匹配） |
+| `_CLOSE_TIMEOUT_S` | `3.0` | `atexit` 关闭多个后台 Tab 时单个页最多等 3s，防止 Chrome 挂起拖死 Python 退出路径 |
+| `_CACHE_SHOT_REL` | `data/_cache/chrome-shots` | 位于 `data/_cache/` 下，既隔离于 `data/library/incoming/` 避免污染素材台账与候选池，又能在跨轮调试时保留路径索引 |
 
 ---
 

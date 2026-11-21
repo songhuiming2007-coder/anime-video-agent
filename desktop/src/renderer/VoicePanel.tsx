@@ -306,8 +306,10 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         <div className="notice notice--warn" data-testid="voice-lock-stale">
           <Icon name="alert" size="sm" />
           <span>
-            锁残留（上次进程被杀、断电，或锁文件写到一半；{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}）。可在终端执行
-            <code>{` rm data/episodes/${epKey}/03-audio/.apply_patch.lock `}</code>
+            锁残留（上次进程被杀、断电，或锁文件写到一半；{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}）。请让 AVA 跑
+            <code>{` tts --clear-stale-lock `}</code>
+            或终端执行
+            <code>{` python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock `}</code>
             清除后重试；app 不提供「清锁」按钮（那是绕过单写者纪律的新写通道）。
           </span>
         </div>

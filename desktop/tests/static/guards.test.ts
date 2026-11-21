@@ -348,10 +348,10 @@ describe("TG-9 host/ 与 shared/ 的 JSON.stringify 只在 shared/losslessJson.t
 });
 
 describe("TC-13 人审要点双源一致（runbook 02.5 ↔ ScriptEditor.tsx，Spec 11 §2.6）", () => {
-  it("两处都含清单五条的关键串（含「人物」「抽帧」两条新串）", () => {
+  it("两处都含清单六条的关键串（含「人物」「抽帧」「访谈原话出处顺口带出」）", () => {
     const runbook = readFileSync(join(DESKTOP, "../docs/runbook/02.5-human-review.md"), "utf-8");
     const tsx = readFileSync(join(DESKTOP, "src/renderer/ScriptEditor.tsx"), "utf-8");
-    for (const key of ["编辑判断立不立得住", "事实核验", "去模型味", "人物:", "抽帧"]) {
+    for (const key of ["编辑判断立不立得住", "事实核验", "去模型味", "人物:", "抽帧", "访谈原话出处顺口带出"]) {
       expect(runbook, `runbook: ${key}`).toContain(key);
       expect(tsx, `ScriptEditor: ${key}`).toContain(key);
     }

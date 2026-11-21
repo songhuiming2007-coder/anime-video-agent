@@ -90,9 +90,10 @@ Fish Audio Research License 与 28GB 显存门槛两条前置约束依旧成立�
 
 ### 仍待回填
 
-- 胜者的 **cpm 实测（N19）**：本地 v1 为 315，PyTorch 版需重测
+- 胜者的 **cpm 实测（N19）**：`config/project.example.json` 基准记为 `257`，`issues/README.md` N19 实测区间 `250–282 字/分`（早期本地 v1 为 315）
+- 声学稳定性与合成方案演进：已由 `ADR-0006`「2026-11-20 补记」（`SYNTH_LOGIC_VERSION = 7`）落地中文黄金锚点 ICL + 钉死 `seg6` x-vector + `MAX_SYNTH_CHARS = 90` 整句合成 + `sdpa`/`flash_attention_2` 自动选择
 - `emotions` / `speed` 字段的最终形态：**实测结论是两个通道都没有情感参数**
   （本地 qwen3_tts 没有；IndexTTS2 有 emo_vector 但已出局），故当前
   `情绪:`/`语速:` 只进 manifest 供 eval 分组统计，不改变声学输出——
   按本文「不许假装协议已兑现」的要求，本期如实记录**韵律维度不承诺提升**
-- CosyVoice 2.0 的补充评估（若日后进行）
+- CosyVoice 2.0 的补充评估（若日后进行；本 ADR 保持 `provisional`）

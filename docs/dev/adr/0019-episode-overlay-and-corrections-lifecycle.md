@@ -12,7 +12,7 @@ status: accepted
 
 > **修订注（2026-10-08，D53 ①）**：正文两处 `config/voice_readings.json` 从未存在过。全局层实为 `config/voice.json` 的 `pinyin_injections`（拼音直注）与 `readings`（同音字替换），见 `pipeline/g2p.py`、`pipeline/tts.py::speakable_traced`。决策本身不变；历史正文不改。
 >
-> **修订注（2026-10-08，D51）**：期级 overlay 与全局表都可由 agent 经人审卡写入（`python -m pipeline.corrections add` / `global`），写入前做读音校验；「全局表是长期沉淀层、期级对同名键严格优先」不变。见 `plans/2026-10-08-agent-voice-corrections-spec.md`。
+> **修订注（2026-10-08，D51；2026-10-12 ADR-0030 更新）**：全局表（`python -m pipeline.corrections global`）经人审卡写入，写入前做读音校验；ADR-0030 后期级 overlay（`corrections add`）不再弹卡（在对话确认后写入）；「全局表是长期沉淀层、期级对同名键严格优先」不变。见 `plans/2026-10-08-agent-voice-corrections-spec.md`。
 
 ## 背景
 

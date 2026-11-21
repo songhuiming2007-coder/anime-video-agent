@@ -2,8 +2,12 @@
 
 **编号**：D152（续工）
 **日期**：2026-10-30
-**状态**：天天看的壳已过一轮人选；按「下一处」逐项做
-**人怎么开工**：对 agent 说「读 `docs/dev/plans/2026-10-30-desktop-ui-daily.md`，按下一处做 UI。」
+**状态**：**已由 2026-11-18 macOS UI 重构（`3a10c46` / `d60baf6`）取代并收口**（不再按本文件日循环与旧 ZCode 冻结约束继续施工；下文保留作历史施工档案）
+**收口变更摘要（2026-11-18 ~ 11-20）**：
+- `3a10c46` 已引入 `lucide-react`（`icons.tsx`）、`@floating-ui/react`（`floating.tsx`）与 6 套强调色主题，取消了 `tokens.css` 的 SHA-256 锁定并更新 `ui.css`；
+- 独立 `TopBar` 与 `StatusCard` 并入统一 `hiddenInset` 顶栏与 `SessionHeader`；`PreviewSwitcher` 移除了 `STAGE_CHIPS` 阶段胶囊并内联 `CoverImport`；`.conv-user` 改用 `--bg-user` 无边框；`SessionHeader` 移除了 `llm-ok` 绿点；
+- 第 8 项空预览文案已在 D169 改为「从上方切换条选择产物以预览」；第 10 项 `health-toggle` 已迁入 `SessionHeader`；N32 已在 D168 修复；
+- macOS 安装打包改用 `cd desktop && npm run init-cert` + `npm run release-install`（签名安装到 `/Applications/AVA.app` 并清理 `dist/mac-arm64/AVA.app`），不再打开 `dist/mac-arm64/AVA.app`。
 
 关联：issues D152、[盘点](../../desktop/src/renderer/STYLE_INVENTORY.md)、[原方案](2026-10-25-desktop-ui-zcode-alignment.md)、Spec 14（`archive/2026-09-26-desktop-visual-design-spec.md`）、plans/README UI 规则 1–5。
 

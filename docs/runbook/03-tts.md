@@ -3,23 +3,23 @@
 根据定稿脚本进行增量语音合成，确定各段真实物理时长。
 
 ## 执行
-agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，开机（up）与跑任务（run）是计费卡。`cloud push` 会自动把 `config/voice.json` / `config/voice.cloud.json` 里配置的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）一并同步到远端，换新实例或更换锚点无需手工上传。跑完不提议 `cloud down`，见下一节「配完不关机」。
+agent 先问人，再经 `run_pipeline` 跑 `tts`（期目录自动补上）。云端无头 GPU 实例（ADR-0016）：agent 依次提议 `cloud up` → `cloud push <期目录>` → `cloud run <期目录> tts` → `cloud pull <期目录>`，其中 `connect`、`use`、`up`、`run`、`down`、`sync-code`、`clean-frames`、`relocate-data`、`lib-captions` 需弹审批卡（`push` / `pull` 不弹卡）。`cloud push` 会自动把 `config/voice.json` / `config/voice.cloud.json` 里配置的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）一并同步到远端，换新实例或更换锚点无需手工上传；`icl_anchor_audio` 与 `icl_anchor_text` 必须成对配置（或同为 `null`），改动已生效锚点会使复配指纹失效，`tts probe --ref <音频>` 会自动清空旧锚点。合成阈值已放宽至 `MAX_SYNTH_CHARS = 90` 整句直出（端云对齐，ADR-0006）。跑完不立刻提议 `cloud down`，见下一节「配完不关机」。
 
-## 配完不关机（2026-10-23 人定）
+## 配完不关机与主动释放（AutoDL / Colab 通用）
 
-云端配音跑完、`cloud pull` 拉回音频后，常规先把实例保留到 03.5 顺听纠错全部做完，避免重配时卡被租走、还要重新 connect 和 push。但只要出现以下任一情形，agent 应主动向人申请执行 `cloud down`（弹卡确认后对 Colab 调用 `runtime.unassign()` 关闭终止对应 session）：
+云端配音跑完、`cloud pull` 拉回音频后，常规先把实例保留到 03.5 顺听纠错全部做完，避免重配时卡被租走、还要重新 connect 和 push。但只要出现以下任一情形，agent 应主动向人申请执行 `cloud down`（AutoDL 与 Colab 均适用，弹卡确认后 Colab 调用 `runtime.unassign()` 释放运行时，AutoDL 关闭实例；非默认槽位须带 `--slot <槽位>`）：
 - 人明确说「配音完全没有问题」；
 - 人明确说「这一部分的素材已经全部达标结束了」；
 - agent 判断接下来会有较长时间不会用到 GPU。
 
-`cloud up` 启动的看门狗在远端没有 `ava-` 开头的 tmux 任务、且空闲 300 s 时会自动关机，配音一结束就会触发。所以 `cloud run … tts` 发出后，接着跑 `cloud hold`（不弹卡）：看门狗在 2 小时内不做空闲关机，到期自动释放；顺听还没完就再跑一次 `cloud hold` 续期。告诉人实例在保持期间一直计费，`cloud status` 能看到剩余时间和已花的钱。人说关时提议 `cloud down`（会顺带撤掉保持）；只想撤掉保持、让实例空闲后自己关，用 `cloud release`。
+`cloud up` 启动的看门狗在远端没有 `ava-` 开头的 tmux 任务、且空闲 300 s 时会自动关机，配音一结束就会触发。所以 `cloud run … tts` 发出后，接着跑 `cloud hold`（不弹卡）：看门狗在 2 小时内不做空闲关机，到期自动释放；顺听还没完就再跑一次 `cloud hold` 续期。告诉人实例在保持期间一直计费，`cloud status` 能看到各槽位剩余时间和已花的钱/CU。人说关时提议 `cloud down`（会顺带撤掉保持）；只想撤掉保持、让实例空闲后自己关，用 `cloud release`。
 
-## 云端双后端：AutoDL 与 Google Colab
+## 云端双后端与多槽位并发（AutoDL + Google Colab）
 
-除 AutoDL（见下文「用完即弃」）外，`pipeline.cloud` 同时支持 Google Colab：
-- `colab`（推荐，支持 Agent 全自动开机）：[`tools/ava_colab_bootstrap.ipynb`](../../tools/ava_colab_bootstrap.ipynb) 已合并为**单格一键 Notebook**。首次执行一次 `cloud connect --provider colab --browser-login` 在隔离浏览器保存 Google 登录态后，以后每次 `cloud up --provider colab` 会自动无头打开 Colab、触发运行并抓取新的 `trycloudflare.com` 隧道、更新 `profiles.colab` 与 `data/cloud/ssh_config`；按 Compute Units（CU）计费，`cloud down` 或空闲超时自动调用 `runtime.unassign()` 释放运行时。
-- `colab-drive`（零隧道兜底）：在 Notebook 跑 `mode="drive"`，本机 `cloud connect --provider colab-drive --drive-root "<Drive同步目录>/ava_cloud"` 绑定共享队列目录，全流程复用 `push / run / pull / logs / hold / down`。
-- 切换与并行配置：`cloud use <autodl|colab|colab-drive>`（弹卡）切换默认后端，单条命令也可用 `--provider <后端>` 临时覆盖，三套配置互不覆盖。
+除 AutoDL（见下文「用完即弃」）外，`pipeline.cloud` 同时支持 Google Colab 与多槽位并发：
+- `colab`（推荐，支持 Agent 全自动开机）：[`tools/ava_colab_bootstrap.ipynb`](../../tools/ava_colab_bootstrap.ipynb) 已合并为**单格一键 Notebook**。首次执行一次 `cloud connect --provider colab --browser-login` 在隔离浏览器保存 Google 登录态后，以后每次 `cloud up --provider colab` 会自动无头打开 Colab、触发运行并抓取新的 `trycloudflare.com` 隧道、更新 `profiles.colab` 与 `data/cloud/ssh_config`；按 Compute Units（CU）计费，`cloud down` 或空闲超时自动调用 `runtime.unassign()` 释放运行时。Colab 上 TTS 配音选 **T4** 即可，VLM 视觉打标（`captions` / `lib-captions`）统一推荐 **A100**（L4 实测可用显存约 22.5 GB，跑 Qwen3-VL-8B 偏紧且会触发 24 GB 告警）。
+- `colab-drive`（零隧道兜底）：在 Notebook 跑 `MODE = "drive"`，本机 `cloud connect --provider colab-drive --drive-root "<Drive同步目录>/ava_cloud"` 绑定共享队列目录，全流程复用 `push / run / pull / logs / hold / down`。
+- 切换与多槽位并发：`cloud use <autodl|colab|colab-drive>`（弹卡）切换默认后端，单条命令也可用 `--provider <后端>` 临时覆盖，三套配置互不覆盖。需要并发跑不同重任务时（如一边配音一边做 VLM 视觉打标），agent 可主动提议加 `--slot <名>`（或 `up`/`connect` 用 `--slot auto` 自动分配 `gpu2..gpu64`、`--recreate` 释放旧会话重建、Colab 用 `--browser-profile` / `--notebook-url` 隔离多账号）：连接与状态按 `data/cloud/sessions/<provider>_<slot>.json` 隔离并带占位防误覆盖保护，未传 `--slot` 默认读 `default` 槽位（仅非默认槽位在跑时，裸 `cloud down` 会提示显式指定 `--slot`）。
 
 ## 云端实例用完即弃（D102）
 

@@ -10,6 +10,13 @@ status: accepted
 
 > 修订（2026-11-14，`chrome` 工具，[spec](../plans/2026-11-14-chrome-devtools-mcp-spec.md)）：新增 `chrome` 工具经 `chrome-devtools-mcp --autoConnect` 接主力 Chrome 登录态，沿用本 ADR 同一口径——默认免卡，只硬危险弹卡：`[JS 执行]`（`evaluate`）、`[高敏站点交互]`（`click` / `fill` / `evaluate` 命中 `web.json` 的 `sensitive_hosts`）、`[用户既有标签页]`（读 / 操作非本会话 `open` 的页，其中这类开放「本会话都批准」，前两类逐条弹卡）。新建页固定后台、不切前台。决策 4「不碰主力 Chrome」仅约束 `browser` 的独立 profile，`chrome` 是经过显式 `--autoConnect` 授权的通道，不算直连 Default 配置。
 
+> 修订（2026-11，汇总后续已落地变更）：
+> - `CLOUD_CARD_SUBCOMMANDS` 现为 7 项（`up`、`run`、`down`、`clean-frames`、`relocate-data`、`sync-code`、`lib-captions`）；其中 `up --recreate` 与 `up --slot auto` 强制逐条弹卡，其余云端卡按 `(sub, provider, slot)` 开放「本会话都批准」；
+> - `CONFIG_WRITE_COMMANDS` 扩至 5 组（新增 `cloud connect`、`cloud use`），连同 `tickets open`、`assemble`、`facts promote` 共 8 组 `HUMAN_GATED_COMMANDS`（均不开放「本会话都批准」）；
+> - `write_episode_file` 另对企划会话修改 `00-project.md` 机读字段（`企划`/`合集`/`卷表`，绑定 `base_sha`）弹卡，不开放「本会话都批准」；`EPISODE_WRITABLE_FILES` 共 7 个文件（新增 `02-asset-requests.json`、`02-subtitles.json`）；
+> - `bash` 危险标记新增 `[事实库]`（`facts.jsonl`/`fetch-log/`），且 `[停机点解封物]` 收窄为仅写操作触发（D119）；
+> - 交互会话每 50 轮弹出的「检查点」卡片已于 D166（2026-11-13）正式取消（仅无交互 `bare=True` 裸循环保留 `BARE_LOOP_CAP = 50` 硬上限）。
+
 日期：2026-10-12
 状态：**已通过**（2026-10-12 人提出方向：「在目前的 agent 时代，实际上尽可能减少人的审批，模型是在不断进步的」；人看过 Claude 第一版边界表后要求「再减少一些弹框」，按第二版施工）
 前置：ADR-0029（bash 不加沙箱）、ADR-0027（工具不按模式授权）、D44（审批按参数分级）、D37（原生确认框只认鼠标）

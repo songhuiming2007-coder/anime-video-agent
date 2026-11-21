@@ -10,6 +10,8 @@ status: accepted
 状态：**已通过**
 前置：ADR-0006, ADR-0014, ADR-0015, ADR-0017
 
+> **修订注（2026-11，按现状同步）**：`resolver.scope_of` 现仅按期状态自动推导 `creative` 与 `pipeline`；`asset`、无期 `idea` 与多卷 `project` 均走显式入口进入（见 `config/agent/assembly.json` `_scope_note`）。桌面端 GUI 与部分日常免卡口令分别由后续 ADR-0020、ADR-0030 修订。
+
 ## 背景
 
 当前系统由一组离散的 pipeline 脚本组成。在写稿端切换至 Gemini 之后，02.5 改稿瓶颈已消除，但人类用户在调度各个工序时存在大量摩擦。若引入外部 Agent 框架（如 LangChain、CrewAI）会带来沉重黑盒与过度抽象；若完全由 LLM 自由调用 shell，则存在擅自改代码、全量重配废弃人工审听、擅自定稿标题封面等严重合规风险。

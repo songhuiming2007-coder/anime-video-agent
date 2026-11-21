@@ -11,6 +11,8 @@ status: accepted
 前置：ADR-0018, ADR-0019, ADR-0020
 依据：Hermes MEMORY.md / USER.md 双文件模式调研（2026-09-22）、Hermes `delegation.model` 分层配置模式
 
+> **修订注（2026-10-12 ~ 11，按 ADR-0030 与 D81 同步）**：`write_memory` 已纳入 ADR-0030 免卡工具列表（靠 `memory.log.jsonl` before/after 审计）；全局记忆注入范围扩展至 `creative / asset / idea / project` 四类 scope（`config/agent/assembly.json`）；D81 新增企划级记忆（`<企划>/00-memory.md`，上限 3000 字符，`target="project"`），在企划会话与卷会话一律注入。
+
 ## 背景
 
 ava 的经验沉淀目前只有两条通道：AGENTS.md 的手工增补（人写，低频）与 `03-audio/corrections.json`（TTS 专用，ADR-0019）。但 20 期生产积累的跨期模式——「这类查询写法命中率高」「某番检索阈值系统性偏低」「某类题材 BGM 搭配被驳回率高」——散落在各期目录与用户脑中，agent 每期从零开始。人时预算的一部分被反复消耗在「重新教会 agent 已经踩过的坑」上。

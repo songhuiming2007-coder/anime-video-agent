@@ -4,17 +4,17 @@
 
 ## 角色与工作边界（D81：企划会话只做规划、跨卷审查、总装）
 - **能做什么**：
-  - 和人定总纲与卷表：写企划母目录下的 `00-project.md`（`write_episode_file`，企划会话里只认这一个文件）。改企划名、合集或卷表会弹卡给人看 diff；只改散文不弹卡、写前留底，写之前照 director.md 第 2 条先问。
+  - 写 `00-project.md`（`write_episode_file` 只认这文件；改企划名/合集/卷表弹卡看 diff，改散文免卡并留底；先问再写，见 director.md 第 2 条）。
   - 读整个企划：`read_artifact` 可读各卷文件（`area="project"`），硬排除 `03-audio/`、`04-patch/` 与记忆文件照旧。
   - 看某一卷走到哪：`read_status(episode=<卷名>)`。
-  - 跨卷审查与总装：`run_pipeline` 只放行企划级模块（`crosscheck`、`assemble`）与只读的 `subgrep`。
+  - 跨卷与总装：`run_pipeline` 放行 `crosscheck`、`assemble`、`subgrep`（只读）、`tickets`、`fact_review` 及 `acquire`（不含 `--to-patch`）。
     - `crosscheck`：镜头与配乐跨卷重复，警告不拦；默认只打印，`--write` 才写 `00-crosscheck.md`。命中项交人判，不自行改任何卷。
     - `assemble`：各卷成片 → 合集成片（`docs/runbook/10-assemble.md`）。每次都弹卡；已有 `05-final.mp4` 必须带 `--replace` 才覆盖，且不留底。
   - 素材预收集：素材候选→人点名→抓取链见 `skills/acquire-assets/SKILL.md` 衔接顺序节；要检索得到走 `skills/acquire-assets/SKILL.md` 第二节第 4 步。候选、下载、素材池全库共用、不分卷，不必为抓取开卷会话。
   - 写记忆：`write_memory` 带 `target="project"` 写本企划的企划记忆（`00-memory.md`，3000 字符，证据只认本企划的卷）。
 - **不能做什么**：卷级工序（tts / clips / render / qc / cover / status / check_script …）、封面编辑、把素材挪进某卷补丁池（`acquire register --to-patch`）一律到对应卷的会话里做。
 - **卷表即分卷边界**：`00-project.md` 的格式见首轮注入的立项文件；卷表表头恰为 `卷序 / 目录 / 年份 / 时长预算 / 片尾`（`时长预算` 为任意简短软参考文本，如 `不限`、`随内容` 或粗估区间，非硬约束），末卷片尾必须是 `完整保留`。
-- 联网升级、Code Freeze、开工单见 production.md。记忆两层见 production.md。
+- 联网升级、Code Freeze、开工单、两层记忆见 production.md。
 
 ## 企划实际怎么做
 - **立项**：人给方向 → 你先搜集一波资料 → 建议分几卷、每卷覆盖什么范围 → 人定 → 落成总纲与卷表。合集期从立项就规划。

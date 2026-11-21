@@ -3,6 +3,11 @@
 - **状态**: Accepted (2026-09-08 架构立项)
 - **关联**: ADR-0002 (本地TTS), ADR-0003 (视觉索引与VLM门禁), ADR-0005 (文本相似度≠语义理解), ADR-0006 (Qwen3-TTS), D4 (VLM启动条件), D22 (多模态漏斗检索), D23 (配音顺听摩擦力), D25 (CJK音读泄漏治理), B2 (每期人时预算)
 
+> **修订注（2026-11，按落地现状同步，下文原立项架构正文不变）**：
+> 1. **算力通道**：在 AutoDL（现已按 D102 改为用完即弃、模型存 `/root/autodl-fs/models`）之外，已接入 Google Colab 双后端（`colab` SSH/cloudflared 自动开机与 `colab-drive` 队列）及 `--slot` 多槽位并发（`pipeline/cloud.py`）；
+> 2. **实际模型栈**：03 配音已定为 `Qwen/Qwen3-TTS-12Hz-1.7B-Base` + 中文锚点 ICL（见 ADR-0017、ADR-0006 2026-11-20 补记）；03.5 云端回读为 `FunAudioLLM/SenseVoiceSmall`（并已剥除 `<|...|>` 情感控制标签）+ `openai/whisper-large-v3` 仲裁；04 台词检索（`pipeline/subindex.py`）保留本地 `BAAI/bge-base-zh-v1.5`，`BAAI/bge-m3` 用于 VLM 视觉意象检索（`pipeline/vindex.py`）；04 视觉打标采用 `Qwen/Qwen3-VL-8B-Instruct`；
+> 3. **渲染边界**：视频剪辑与渲染已由 ADR-0016 明确留在本机 Mac，不在云端开机渲染。
+
 ---
 
 ## 一、 背景与物理瓶颈（The 16GB Barrier）

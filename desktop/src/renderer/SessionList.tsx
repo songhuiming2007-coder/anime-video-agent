@@ -90,7 +90,7 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
         // 没有哪个会话在跑时，下一条消息本来就开新会话——如实标成当前
         aria-current={!anyLive ? "true" : undefined}
         disabled={off}
-        title="结束当前会话，下一条消息从空白上下文开始"
+        title="新建一段空白上下文会话（当前会话继续留在后台）"
         onClick={(e) => {
           if (!e.nativeEvent.isTrusted) return;
           act(() => rpc.call("conv.fresh", { convKey }));

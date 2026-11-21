@@ -15,7 +15,7 @@
   "_cardless_rate_note": "0.10元/小时：AutoDL 无卡模式开机（0.5核 2GB），用于环境准备、代码同步与模型预置",
   "remote_root": "/root/anime-video-agent",
   "remote_data": "/root/autodl-tmp/data",
-  "_remote_data_note": "**这个键目前没接线**（2026-09-11 实测）：实例上 data/ 是 /root/anime-video-agent/data 的实体目录（系统盘），不是指向 remote_data 的符号链接，而且没有任何代码读这个键。帧级素材（全季 ~550MB / 2h Live ~1GB）上行吃的因此是系统盘；要改道数据盘，需在远端把 data/library 迁到 /root/autodl-tmp 下再软链（一次性动作，需人确认，见 docs/WORKFLOW.md「云端中间物」）。",
+  "_remote_data_note": "**这个键目前没接线**（2026-09-11 实测）：实例上 data/ 是 /root/anime-video-agent/data 的实体目录（系统盘），不是指向 remote_data 的符号链接，而且没有任何代码读这个键。帧级素材（全季 ~550MB / 2h Live ~1GB）上行吃的因此是系统盘；要改道数据盘，需在远端把 data/library 迁到 /root/autodl-tmp 下再软链（一次性动作，需人确认，见 docs/dev/postmortems/workflow-history.md「云端中间物」）。",
   "remote_models": "/root/autodl-tmp/models",
   "fs_models": "/root/autodl-fs/models",
   "_fs_models_note": "D102：模型在西北B区文件存储（全区实例开机自动挂载，不随实例释放）。cloud connect / up 把 remote_models 软链到这里（已是实体目录的不动），所以 voice.cloud.json、asr.py 里的 /root/autodl-tmp/models 路径不改。2026-10-15 拷入 5 个模型共 30.1GB，逐文件核对数目与字节数一致；无卡模式实测读取 82MB/s",
@@ -26,7 +26,7 @@
   "budget_per_phase0_cny": 25.0,
   "idle_shutdown_seconds": 300,
   "_idle_note": "300s：云端任务完成后 5 分钟无心跳且无 tmux 活跃任务即由 watchdog 自动 shutdown 实例，防止忘关机产生高额计费",
-  "_branch_strategy_note": "远端仓库跟踪 v2-cloud-gpu 分支，M2 开工前经人批准 push、云端 pull 同步",
+  "_branch_strategy_note": "远端仓库默认跟踪 main 分支，本地合入后经 `cloud sync-code` 或远端 pull 同步",
   "_disk_expansion_note": "2026-09-11 拍板：数据盘扩至 100GB（原 50GB 仅剩 21GB）。依据：五模型 33GB + Phase 0 打标帧缓存（番级 3-5GB）+ 每期工作集 + 日志；50GB 是「勉强活着」，100GB 是「不用想」。数据盘为分级固定价，属一次性小钱。",
   "_instance_lifecycle_note": "2026-10-15 改定（D102，推翻 2026-09-11 的「停机保号」）：按量实例绑定一台物理机，关机后那台的卡会被别人租走，10 月起每次开机都报「主机 GPU 空闲数量 0 卡」，而同区别的机器有空卡。现在实例用完即弃：模型放文件存储（fs_models），环境放镜像（image）；要用卡时人在西北B区任租一台有卡的机器，把登录指令交给 cloud connect，跑完 down。不再需要每 10 天开机续期。F29 与它数据盘上没拷走的旧模型（IndexTTS-2 / 2.5、CosyVoice2）人定不留",
   "sync": {
@@ -94,7 +94,7 @@
         "A100-SXM4-80GB": 6.8,
         "A100": 5.3
       },
-      "_cu_rates_note": "Google Colab Compute Units 参考消耗（CU/小时，实际消耗受 Colab 实时调度影响，以 Colab 面板或 --rate 传入为准）。T4 约 1.1~1.5 CU/h（配音够用），L4 约 1.5~3.0 CU/h（VLM 打标 24GB 够用）",
+      "_cu_rates_note": "Google Colab Compute Units 参考消耗（CU/小时，实际消耗受 Colab 实时调度影响，以 Colab 面板或 --rate 传入为准）。T4 约 1.1~1.5 CU/h（配音够用）；L4 约 1.5~3.0 CU/h（实测可用显存 ~22.5GB，跑 Qwen3-VL-8B 偏紧，VLM 打标统一推荐 A100）",
       "budget_per_episode_cu": 1.5,
       "budget_per_phase0_cu": 25.0,
       "remote_root": "/content/anime-video-agent",

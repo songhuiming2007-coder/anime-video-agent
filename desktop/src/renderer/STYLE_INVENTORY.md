@@ -1,12 +1,40 @@
-# 桌面端组件风格盘点（D152）
+# 桌面端组件风格盘点（D152 · 已由 2026-11-18 macOS UI 重构收口）
 
-**续工**：每天按 [`docs/dev/plans/2026-10-30-desktop-ui-daily.md`](../../../docs/dev/plans/2026-10-30-desktop-ui-daily.md) §四「下一处」做，不要从本盘点表另起炉灶。
+> **收口说明（2026-11-18，`3a10c46` / `d60baf6`）**：本盘点及 [`2026-10-30-desktop-ui-daily.md`](../../../docs/dev/plans/2026-10-30-desktop-ui-daily.md) 已由 2026-11-18 macOS UI 重构**取代并收口**，不再按早期 ZCode 冻结约束逐项推进。11-18 重构引入了 `hiddenInset` 一体顶栏、`@floating-ui/react` 浮层、`lucide-react` 图标与 6 套强调色主题，解除了 `tokens.css` 的 SHA-256 锁定（改为 `VS-2b` 全强调色对比度校验），将 `TopBar` 与 `StatusCard` 并入统一头部，移除了预览阶段胶囊并将 `CoverImport` 并入 `PreviewSwitcher` 顶栏。
 
-**日期**：2026-10-25
-**基准**：`tokens.css`（ZCode 五层面 token，sha256 门禁锁定）+ `ui.css`（`ui-*` 类契约，冻结）+ `style.css`（业务区块）
-**ZCode 参照**：`/tmp/zcode`，commit `3c5b2276`（2026-10-20，浅克隆最新版；Spec 14 当时用 `29628c9`，task-row 已挪到 `project-sidebar/grouped/`）
+**盘点更新日期**：2026-11-21（反映 `3a10c46` / `545ad78` / `2f36522` / `d60baf6` 现状）
+**基准**：`tokens.css`（431 行，含 90 个浅色变量与 6 组 `data-accent` 强调色 preset，由 `VS-2b` 对比度门禁校验）+ `ui.css` / `ui.tsx`（`ui-*` 基础原语、Floating 浮层/提示/弹窗、无边框 `.conv-user`）+ `style.css`（595 行，业务区块）+ `floating.tsx`（`@floating-ui/react`）+ `icons.tsx`（`lucide-react` 34 个图标）
 
-## 分档口径
+## 现状组件清单（截至 2026-11-21）
+
+| 组件 | 文件 | 行数 | 当前状态与说明 |
+|---|---|---|---|
+| tokens.css | tokens.css | 431 | 含浅/深/随系统三主题与 `sakura`/`violet`/`sky`/`sage`/`amber`/`graphite` 6 强调色 preset；SHA-256 锁已取消，由 `VS-2b` 保证对比度 |
+| ui 组件原语 | ui.css / ui.tsx | 140 / 35 | `ui-btn`/`ui-row`/`ui-popover`/`ui-card`/`ui-badge`/`ui-seg`/`ui-state` + `.ui-pop-anim`/`.ui-tooltip`/`.ui-modal-backdrop`；`.conv-user` 改用 `--bg-user` 无边框 |
+| 浮层原语 | floating.tsx | 180 | 基于 `@floating-ui/react@0.27.20` 封装 `FloatingPopover`、`FloatingTooltip`、`FloatingModal` |
+| 图标 | icons.tsx | 85 | 基于 `lucide-react@1.74.0` 封装 34 个图标（替代早年手绘 24 SVG） |
+| 主框架 / 顶栏 / 侧栏 | App.tsx + style.css | 1131 / 595 | macOS `hiddenInset` 拖拽顶栏、`ThemeMenu`（三主题 + 6 强调色 + 仓库切换）；已移除独立 `TopBar` 与 `StatusCard`；`epRow` 移除「停机」徽标与冗余产物树（D169） |
+| SessionHeader | SessionHeader.tsx | 1239 | 吸收原 `StatusCard`（`current_step`、提醒徽标、`详情` 折叠）、`health-toggle`、登录按钮、按来源分组与筛选的模型菜单、`effort-meter` 5 格信号柱与 `effort-seg-bar` 分段条（移除原 `llm-ok` 绿点） |
+| LoginModal | LoginModal.tsx | 766 | D170 44 家服务商认证弹窗（OAuth PKCE / Device Flow / CPA / API Key） |
+| SessionList | SessionList.tsx | 248 | 侧栏期行下的多会话子列表（D157 并存后台跑 + `＋ 新会话`） |
+| Splitter / PaneBoundary | Splitter.tsx / PaneBoundary.tsx | 68 / 44 | 栏宽拖拽条与预览区错误边界 |
+| Composer 输入壳 | Composer.tsx | 138 | 排队消息提示块（D79）、拦截裸 `/model` / `/thinking` / `/login` |
+| ConversationPane | ConversationPane.tsx | 518 | 工具折行与扫光、HandoffStrip 工单提示条、核查未调工具提醒 |
+| HumanCards | HumanCards.tsx | 539 | 02.5 写稿卡带「参考建议，我自己改」；03.5 停机卡含 `ReviewRating` 与「顺听无误，进入排片」（隐藏打回）；09 卡用 `07-cover/` 缩略图单选网格 |
+| ScriptEditor | ScriptEditor.tsx | 492 | CodeMirror 6 改稿编辑器 + 右侧 6 条人审要点清单 + 机检底条 |
+| VoicePanel | VoicePanel.tsx | 757 | 顺听面板：每段「换种子」「回滚」、划词就地纠错 `FixCard`、折叠文法输入、底栏迷你进度条与「只重配这 N 段」 |
+| PreviewPane | PreviewPane.tsx | 423 | 通用产物预览（HTML/视频/音频/图片/Markdown/JSON/目录列表） |
+| PreviewSwitcher | PreviewSwitcher.tsx | 324 | `FloatingPopover` 文件与镜头画廊切换器 + 内联紧凑 `CoverImport`（已于 `3a10c46` 移除 `STAGE_CHIPS` 阶段胶囊） |
+| CoverImport / NewEpisodeForm / JobBar / ReviewRating / HumanTimeReadout / copy | 各自 `.tsx` | 98 / 166 / 46 / 68 / 31 / 94 | 辅助交互与表单组件 |
+| main.tsx / autoOpen / layout / theme / rpc / store / convStore / testHooks | `*.ts` | 741 | 应用入口与状态/主题/IPC 基础设施（其中 `theme.ts` 114 行） |
+
+> 注：下文「分档口径」「旧盘点表」及「待改造清单」均保留作 D152（2026-10-25 至 2026-11-14）历史施工档案；`desktop/src/renderer/` 当前最新全量架构以上表为准。
+
+---
+
+## 历史档案（D152 ZCode 对齐阶段，2026-10-25 ~ 2026-11-14）
+
+### 分档口径
 
 - **Z**：结构或样式直接照 ZCode 落（Spec 14 直接产物，或完全由 `ui-*` 类组装无自建样式块）
 - **M**：用 `ui-*` / token 变量，但自写了一套 ZCode 里没有同构对应物的结构（自建 CSS 类、自写布局块）
@@ -14,7 +42,7 @@
 
 注意：**ava 的 `ui-*` 体系本身就是 ZCode 语言的移植**（Spec 14 PR1 把五层面/字号阶梯/圆角递减/低透明线落成 token + `ui.css`）。所以 M 不是「没对齐 token」——全部组件都只用了 token 变量，零 hex 字面量——而是「这个区块的形状在 ZCode 里有没有原型」。偏差要点写的是「和 ZCode 同功能件长得不一样的地方」。
 
-## 盘点表
+### 历史盘点表（2026-10-25 冻结快照，仅供对照）
 
 | 组件 | 文件 | 行数 | 分档 | 与 ZCode 对应物 | 风格偏差要点 |
 |---|---|---|---|---|---|

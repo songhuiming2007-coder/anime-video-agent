@@ -362,7 +362,7 @@ D81 A、B。完成后：CLI / 协议层能建企划、开企划会话与卷会�
 - 企划会话 `run_pipeline`：卷级模块（`tts`）→ 拒，拒因含「到卷 … 的会话里跑」；`status` → 拒，拒因指向 `read_status`；`subgrep` → 放行。
 - 期目录守卫：`protocol <企划目录>`（期模式）→ `E_BAD_REQUEST`；`write_episode_file` 以企划目录为 `episode_dir` → 拒。
 - `list_episodes`：V1 与 V2 同名卷给出两个不同的 `name`。
-- `ava new-project` / `ava new --project`：名字不合规退 2；`data/` 不可达退 2 且不建；已存在退 1。
+- `ava new-project` / `ava new --project`：名字不合规退 2；`data/` 不可达退 2 且不建；已存在退 1（注：`7bc48a4` 起若企划下已有同名普通目录但不含 `01-topic.md` / `00-project.md`，如预放封面目录，允许直接接管并保留原文件）。
 
 **vitest**
 

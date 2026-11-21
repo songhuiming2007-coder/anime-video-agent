@@ -10,6 +10,11 @@ status: accepted
 状态：已采纳
 前置：ADR-0014（计算与交互解耦）；修正对象：2026-09-08 v2 重构施工图的云端拓扑
 
+> **修订注（2026-11，按后续演进同步，历史正文不变）**：
+> 1. **云端实际推理栈**：TTS 已于 ADR-0017 替换为 `Qwen3-TTS-12Hz-1.7B-Base`（含 ADR-0006 2026-11-20 中文锚点 ICL）；`vindex embed`（`bge-m3` 向量建库）实际在本地 Mac 运行，云端仅跑 VLM 打标、TTS 与 ASR 回读；
+> 2. **`cloud push` 上行清单**：除 `02-script.md` 与 `config/` 外，自动上行 `03-audio/corrections.json`、`04-patch/`、配置中的 `ref_audio`/`icl_anchor_audio`（`data/` 下），以及 `--with-audio` 时带上本地已配音音频与 `manifest.json`（D143）；
+> 3. **实例生命周期**：AutoDL 已按 D102 改为用完即弃（模型存西北B区文件存储 `/root/autodl-fs/models`，不再每 10 天续期固定机），并已接入 Google Colab（`colab` / `colab-drive`）双后端与 `--slot` 多槽位并发。
+
 ## 背景
 
 ADR-0014 确立了「本地交互端 + 云端 Headless GPU」的解耦架构，但 2026-09-08 施工图的

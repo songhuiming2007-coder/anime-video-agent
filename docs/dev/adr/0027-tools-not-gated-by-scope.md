@@ -21,7 +21,7 @@ status: accepted
 1. 模式只决定注入哪份提示与工序手册，不参与任何工具放行判断；`tools.json` 收为单表（Spec 17 §3.1，§8 Q1 人已裁决）。
 2. 删除：调用前的「越 scope」拒绝；`write_episode_file` 与 `write_memory` 的 creative-only 检查；`run_pipeline` 的按模式分表（合为一表）。
 3. 保留（与模式无关，一条不动）：写入文件白名单与路径防穿透、写 `01-topic.md` 必须人确认、`CRITICAL_TOOLS` 人审卡、`browser` 原生确认框、出网断言与 URL 守卫、清洗与脱敏、`cloud exec` 与 `--force` 禁令、`run_pipeline` 执行须人在宿主确认、Code Freeze。
-4. 需要期目录的工具（`write_episode_file`、`cover_edit`、`run_pipeline`、`acquire_propose`）在无期会话（idea）里统一报「先建期」，不藏工具；拦截在弹卡之前（Spec 17 §3.4）。
+4. 需要期目录的工具（`write_episode_file`、`cover_edit`、`run_pipeline`、`acquire_propose`、`view_image`；另 `fact_add` 亦需期或企划目录）在无期会话（idea）里统一报「先建期」，不藏工具；拦截在弹卡之前（Spec 17 §3.4）。
 
 ## 理由
 

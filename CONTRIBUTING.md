@@ -209,4 +209,4 @@ runner 没有 CUDA 也没有 MPS。
 ## 八、现在做什么
 
 见 [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md)。当前在**阶段 1：Windows 上跑通九步**，
-完成判据是「在 Windows 上用自己的素材跑完九步，11 项质检全过，出一条能发的片」。
+完成判据是「在 Windows 上用自己的素材跑完九步，10 项质检全过，出一条能发的片」。

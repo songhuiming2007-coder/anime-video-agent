@@ -3,7 +3,7 @@
 产物即状态，落盘于 `data/episodes/<期号>/`。无数据库与外部队列，任何步骤中断，解决后从断点继续跑。
 
 > **开工第一指令（自然语言优先）**：主入口是桌面端 AVA（侧栏选期 / 选题，直接说白话）；终端等价入口如下。
-> **命令由 agent 发，先问再发**（D59、D92）：流水线命令都由 agent 经 `run_pipeline` 发，人不在终端手敲。有副作用的命令 agent 先在对话里问、人同意再发；人的话已经说清要做什么（「开始渲染吧」）就直接发。真正弹卡的只剩云端计费、写 `config/` 的四条例外、越过人工关卡的选项、开工单，以及 `bash` / `chrome` 的硬危险操作。停机点的批准仍只能由人做。下文的 `python -m …` 只作底层排查参考。
+> **命令由 agent 发，先问再发**（D59、D92）：流水线命令都由 agent 经 `run_pipeline` 发，人不在终端手敲。有副作用的命令 agent 先在对话里问、人同意再发；人的话已经说清要做什么（「开始渲染吧」）就直接发。真正弹卡的只剩云端计费/维护、写 `config/`（含 `cloud connect / use`）、越过人工关卡选项、开工单、企划总装/`facts promote`、草稿单轮写超 3 次、`00-project.md` 机读字段变更，以及 `bash` / `chrome` 硬危险操作。停机点批准仍只能由人做。下文的 `python -m …` 只作底层排查参考。
 > ```bash
 > ava <期号>                                      # 宿主入口：与 AI 制片总监连续对话（ava idea 选题发散）
 > ava <期号> --continue [<会话号前缀>]             # 接着本期上一段会话继续（ava <期号> --sessions 列出全部会话）
@@ -23,7 +23,7 @@
 - **单一事实来源（SSOT）**：解说词、微单元分镜、音乐试听段（`## 音乐段`）、音画同源开关，**只写在 `02-script.md` 里**。不另维护外置文件（两份会分叉）；中间草稿隔离，生产目录只留唯一生效文件。
 - **离散工序**：流水线分四个阶段，到停机点停下交人：
   - **工序 A【脚本与分镜】**：agent 维护 `02-script.md` ──→ 跑 `check_script` 全绿 ──→ 🛑 **【停机点 1】**：人类阅读审稿确认（02.5），批准即封板！
-  - **工序 B【配音与顺听】**：agent 提议 `tts`（本地）或云端（AutoDL / Google Colab）：先确认/切换后端（`cloud use` / `--provider`）→ `cloud connect` → `cloud up` → `cloud push` → `cloud run <期> tts` → `cloud pull` → 03.5 改完、人说关或满足主动关机条件再申请 `cloud down`（connect、use、up、run、down 弹卡；Colab 自动 `unassign` 停扣 CU；配完不关机与三条主动关机条件见 runbook 03）──→ 🛑 **【停机点 2】**：顺听（03.5）打点，错字处置走顺听面板 / `/voice` → `corrections.json` → `--apply-patch`，定死时长！
+  - **工序 B【配音与顺听】**：agent 提议 `tts`（本地）或云端（AutoDL / Google Colab；需并发如配音+打标时可主动提议 `--slot <名|auto>`）：先确认/切换后端（`cloud use` / `--provider`）→ 首次 `cloud connect`（Colab 完成 `--browser-login` 后日常直接 `cloud up`）→ `cloud push` → `cloud run <期> tts` → `cloud pull` → 03.5 改完、人说关或满足主动关机条件再申请 `cloud down`（`connect`、`use`、`up`、`run`、`down`、`sync-code`、`clean-frames`、`relocate-data`、`lib-captions` 弹卡；AutoDL 与 Colab 均适用三条主动关机条件，详 runbook 03）──→ 🛑 **【停机点 2】**：顺听（03.5）打点，错字处置走顺听面板 / `/voice` → `corrections.json` → `--apply-patch`，定死时长！
   - **工序 C【排片与审片】**：agent 跑 `clips`、`review` 产出 `04-review.html` ──→ 🛑 **【停机点 3】**：桌面端预览区审看（05），人在决策条批准，产出 `04-clips.approved.json`！
   - **工序 D【确定性渲染与质检】**：读取 `approved.json` ──→ agent 跑 `render` 与 `qc`，一趟出片！
 
@@ -42,7 +42,7 @@
 | **B. 配音与顺听** | 03 语音合成 | `tts`<br>`corrections add` / `corrections global`（全局表弹卡）→ `tts --apply-patch` | `python -m pipeline.tts <期>` | **03.5 配音顺听**：顺听面板（终端备用 /voice）纠错（corrections.json 永久资产，--apply-patch 靶向重配）。 |
 | **C. 排片与审片** | 04 画面排片 → 05 审时间码 | `clips`、`review` | `python -m pipeline.clips <期>`<br>`python -m pipeline.review <期>` | **05 审时间码**：预览区看 `04-review.html` 确认无画外音错配，人在决策条批准（agent 不能 approve）。无 approved 文件渲染器拒绝启动。 |
 | **D. 渲染与发布** | 06 渲染 → 07 质检 → 08 封面标题 → 09 发布 | `render`、`qc`、`cover` | `python -m pipeline.render <期>`<br>`python -m pipeline.qc <期>`<br>`python -m pipeline.cover <期>` | **09 标题与封面拍板**：Agent 仅出 5 条标题候选与封面池，**严禁自行定稿**，必须由人类挑选并手动上传。 |
-| **补料通道**（不固定在哪一步，所有题材；企划期常要补好几轮） | 缺画面 → 补料入池 → 写锚点 / 重排 | 检索（`images` 直链）→ 候选列给人、人同意 → `acquire_propose`（直接下载）→ `acquire register --to-patch` → `ingest_patch`（写稿期只为锚点加 `--anchor-only`）→ `clips`（见 runbook 02 第 2.5 步、04.5） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
+| **补料通道**（不固定在哪一步，所有题材；企划期常要补好几轮） | 缺画面 → 补料入池 → 写锚点 / 重排 | 检索（`images` 直链）→ 写候选 → `acquire_propose`（登记核对，出机器表）→ 人点名 → `acquire fetch` → `acquire gate` → `acquire register --to-patch` → `ingest_patch`（写稿期只为锚点加 `--anchor-only`）→ `clips`（见 runbook 02 第 2.5 步、04.5） | `python -m pipeline.ingest_patch <期>` | 缺口段带「必审」标进 05，不得绕过审片。 |
 
 ---
 
@@ -59,7 +59,7 @@
 8. **[06 渲染](runbook/06-render.md)**（Agent/机器）：agent 跑 `render`，产出 `05-final.mp4`（强制双重切片校验、字幕折行、BGM侧链闪避）。
 9. **[07 质检](runbook/07-qc.md)**（机器）：agent 跑 `qc`，10 项机器硬门禁全绿（音画同步、黑帧、静音等），产出 `06-check.log`。
 10. **[08 封面与标题](runbook/08-cover-title.md)**（Agent/机器）：agent 跑 `cover`。产出候选池与 `07-titles.md`（5 条候选）。人自备图可在 app 内导入 `07-cover/import/`（或 `cat <图> | ava <期> /import-cover --name=<文件名>`）。叠字：先和人商量写什么字，再由 agent 调 `cover_edit` 直接出图、自己先看过再交人。横版 16:9、竖版 9:14、4:3 三版都要（竖版由裁剪或 AI 扩图得到；4:3 从横版裁，字和主体要能同框）；简介统一一份。
-11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面路径与标题原文（app 内两个输入；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
+11. **[09 发布](runbook/09-publish.md)**（人）：人选定稿封面图与标题，手动上传各平台。第 09 停机点的批准须携带封面与标题原文（app 内从 `07-cover/` 缩略图单选 + 标题框；终端 `/approve 09 --id <id> --cover <路径> --title <标题>`），core 落定稿记录供事后审计；发布动作仍在 ava 之外。
 
 > **不固定的两件事**：补素材随时可能发生（写稿、改稿、排片、审片）；会话也不固定，一期可以一个会话从头到尾，也可以分几个会话。企划（多卷系列）多出来的做法见 `config/agent/scopes/project.md`「企划实际怎么做」。
 

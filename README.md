@@ -4,8 +4,8 @@
 
 ## 架构组成
 
-- **桌面端 AVA**（`desktop/`）：日常唯一交互入口（macOS Electron），提供期看板、对话区、全局作业条、产物预览、02.5 改稿与 03.5 顺听专用面板，支持会话内切换模型、推理强度与多服务商登录；窗口在后台等人处理时 Dock 图标持续弹跳提醒。
-- **agent 宿主**（`pipeline/agent/`）：由桌面端自动拉起并驱动流水线，负责读取期状态、起草文本与调用工具。有副作用的操作先在对话确认，仅高风险动作（云端计费、特例改配置、越过停机点、开工单、`bash`/`chrome` 危险操作）弹审批卡。
+- **桌面端 AVA**（`desktop/`）：日常唯一交互入口（macOS Electron），提供期看板、对话区、全局作业条、产物预览、02.5 改稿与 03.5 顺听专用面板，支持按来源分组切换模型、推理强度、多主题强调色与多服务商登录；窗口在后台等人处理时 Dock 图标持续弹跳提醒。
+- **agent 宿主**（`pipeline/agent/`）：由桌面端自动拉起并驱动流水线，负责读取期状态、起草文本与调用工具。有副作用的操作先在对话确认，仅高风险动作（云端计费、特例改配置、越过停机点、开工单、企划总装、`bash`/`chrome` 危险操作）弹审批卡。
 - **流水线**（`pipeline/`）：独立的 Python 工序模块（配音、排片、渲染、质检、封面），通过磁盘产物衔接，支持原声试听与动态配乐编排；仅调用 TTS / ASR / VLM / 向量检索等专用模型。
 
 ## 单期流程
@@ -52,11 +52,11 @@ npm run dev                      # 开发模式启动
 npm run release-build            # 打包 macOS 应用
 ```
 
-运行纯函数测试可在仓库根目录执行 `pytest`（约 3 分钟）。网页抓取所需的 `crawl` / `browser` 可选依赖见 [`pyproject.toml`](pyproject.toml)；环境变量密钥从系统钥匙串读取，服务商登录凭据保存于 `config/auth.local.json`（权限 0600，不进 git）。
+运行纯函数测试可在仓库根目录执行 `pytest`（约 3 分钟）。首次拉起仓库投入生产前，需将 `config/*.example.json` 复制为对应的 `config/{project,voice,bgm,characters,scenes}.json` 并填入本机参数（均已忽略不进 git）；网页抓取所需的 `crawl` / `browser` 可选依赖见 [`pyproject.toml`](pyproject.toml)；环境变量密钥从系统钥匙串读取，服务商登录凭据保存于 `config/auth.local.json`（权限 0600，不进 git）。
 
 ## 常见工作流
 
-- **单期制作**：在 AVA 侧栏新建期（或从选题会话带入），全程直接用中文与制片 agent 对话推进。03.5 阶段在顺听面板标出错字后靶向重配，无需整期重来；云端配音支持 AutoDL 与 Google Colab 双后端，开机、任务与关机均需计费审批。
+- **单期制作**：在 AVA 侧栏新建期（或从选题会话带入），全程直接用中文与制片 agent 对话推进。03.5 阶段在顺听面板标出错字后靶向重配，无需整期重来；云端配音支持 AutoDL 与 Google Colab 双后端（支持 `--slot` 多槽位并发），开机、任务、同步代码与关机均需审批确认。
 - **补素材**：缺少库内画面（官方图、PV、访谈等）时，agent 搜索并列出候选，人点名后下载登记（图片自动转为微动视频）。期内补料进本期补丁池并切镜打标，企划卷进企划池统一打标；网页抓取按 `web_fetch` → `crawl` → `browser` → 主力 `chrome` 升级并留档原文，细节见 [`skills/acquire-assets/SKILL.md`](skills/acquire-assets/SKILL.md)。
 - **多卷企划**：在 AVA 侧栏创建企划与子卷。企划会话负责规划 `00-project.md`、预收集素材、跨卷查重与成片合集总装（见 [`docs/runbook/10-assemble.md`](docs/runbook/10-assemble.md)）；事实条目需经逐字核对留档出处与独立复核后再入库。
 - **新番入库（每部番一次）**：将片源放入 `data/library/raw/<番>/` 后，在 AVA 会话内由 agent 依次发起验片、对轴建字幕索引、视觉标定与人脸贴名、索引核对、参考音色试音与 BGM 登记；番剧本体不做 VLM 打标。参数细节见 [`docs/dev/postmortems/workflow-history.md`](docs/dev/postmortems/workflow-history.md) 的 Phase 0 章节。
