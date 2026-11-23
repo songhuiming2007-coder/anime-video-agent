@@ -1154,6 +1154,51 @@ class TestTrimSilence:
         with wave.open(str(p)) as w:
             assert w.getnframes() == n                 # 尾部原样保留
 
+    def test_帧rms裁掉icl首尾近静音与单点微毛刺(self, tmp_path):
+        """回归测试（2026-11-23）：ICL 首尾常见 0.7–0.9s 的 -64 dB 近静音，
+        夹杂 -53 dB（> 1e-3）单点微毛刺会骗过旧版单采样阈值；25ms 帧 RMS 必须裁干净并留 30ms 气口。
+        """
+        sr = 24000
+        lead = [18] * int(sr * 0.80)          # ~-65 dB 底噪
+        lead[int(sr * 0.02)] = 75             # -53 dB 单点毛刺（旧版 abs(x)>32 会被骗）
+        speech = [6000] * int(sr * 1.00)      # ~-15 dB 正常人声
+        trail = [18] * int(sr * 0.60)
+        trail[-int(sr * 0.02)] = -75          # 尾部同样放一颗 -53 dB 毛刺
+        a = lead + speech + trail
+        p = tmp_path / "icl_dead_air.wav"
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(struct.pack(f"<{len(a)}h", *a))
+
+        t._trim_silence(p, check_tail=False)
+        with wave.open(str(p)) as w:
+            dur = w.getnframes() / sr
+        # 1.00s 人声 + 首尾各 0.03s 气口（±一个 hop 0.01s + 窗宽余量），绝不能保留 2.40s 原长
+        assert 1.04 <= dur <= 1.12, f"期望裁至 ~1.06s，实际 {dur:.3f}s"
+
+    def test_全静音文件不崩不裁空(self, tmp_path):
+        sr = 24000
+        a = [10] * int(sr * 0.5)
+        p = tmp_path / "quiet.wav"
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(struct.pack(f"<{len(a)}h", *a))
+        t._trim_silence(p, check_tail=False)
+        with wave.open(str(p)) as w:
+            assert w.getnframes() == len(a)
+
+    def test_停顿标定与总呼吸一致(self):
+        """demo_B 盲听拍板口径：首尾 30ms×2 + SENT_GAP 0.46 = 0.52s；段间 +0.72 = 0.78s。"""
+        assert t.SENT_GAP == pytest.approx(0.46)
+        assert t.TRIM_PAD_S == pytest.approx(0.030)
+        assert t.TRIM_RMS_DB == pytest.approx(-45.0)
+        assert t.SENT_GAP + 2 * t.TRIM_PAD_S == pytest.approx(0.52)
+        assert t._para_gap() + 2 * t.TRIM_PAD_S == pytest.approx(0.78)
+
 
 # ---------------------------------------------------------------------------
 # v2 情绪/语速协议、拼音注入留痕、评审打点（架构设计三.2/三.3，2026-09-11）

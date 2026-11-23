@@ -86,7 +86,7 @@
     "cpm": 257,
     "min_anchors": 3,
     "_cpm_note": "当前基准语速（字/分）。换引擎/换音色后经 `calibration set script.cpm` 回写并追加实测依据。",
-    "para_gap": 0.4
+    "para_gap": 0.72
   },
   "visual": {
     "_note": "视觉索引（ADR-0003）机制参数与逐番标定容器。每部番的值经实测标定后通过 `calibration set` 写入本机 config/project.json。",

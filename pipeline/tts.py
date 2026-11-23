@@ -1317,10 +1317,17 @@ SENT_END = re.compile(r"(?<=[。？！])")
 #   仅极端超长复句（>90 字）仍保留逗号兜底。
 MAX_SYNTH_CHARS = 90
 _COMMA = "，、；："
-# 句间停顿。TTS 每句自带的首尾静音会被裁掉，改由这个常数统一控制节奏。
-SENT_GAP = 0.18
-# 裁静音的门限。TTS 的「静音」不是绝对零，是很小的底噪。
+# 句间停顿。2026-11-23 改用 25ms 帧 RMS（-45 dBFS）裁净首尾死静音并保留 30ms 气口后，
+# 句间总停顿 = 0.03 + 0.46 + 0.03 = 0.52s（复刻旧版真实成片 B0_prod_actual 节奏，
+# 消除 ICL 首尾 0.7–0.9s 近静音漏裁造成的 1.55–1.83s 冷场，又不致过紧）。
+SENT_GAP = 0.46
+# 裁静音门限：主口径走 25ms 窗 RMS > TRIM_RMS_DB（与 _longest_gap 的 GAP_DB 同口径），
+# 防止 -64 dB 死静音里零星 -53 dB 单点微底噪骗过单采样点阈值；极短片段（< 1 窗）退回 TRIM_DB。
 TRIM_DB = 1e-3
+TRIM_RMS_DB = -45.0
+TRIM_WIN_S = 0.025
+TRIM_HOP_S = 0.010
+TRIM_PAD_S = 0.030
 
 # **送进合成器之前剥掉的符号：纯书面标记，念不出来。**
 #
@@ -1549,8 +1556,11 @@ def _tail_artifact(a: list[int], sr: int, hi: int) -> int:
 def _trim_silence(path: Path, check_tail: bool = True) -> None:
     """裁掉首尾静音与结尾的机械声，就地重写。
 
-    每句自带的首尾静音加起来能有 0.4s，60 来句就是 20 多秒的死时间，
-    而且长短不一，节奏没法控制。裁干净之后由 SENT_GAP 统一给停顿。
+    每句自带的首尾静音长短不一（ICL 模式下首部常见 0.7–0.9s、尾部 0.2–0.6s 的 -64 dB
+    近静音），旧版按单采样 > -60 dBFS 判有声会被 -53 dB 零星微毛刺骗过导致一刀未裁，
+    叠加 SENT_GAP / para_gap 后把停顿撑成 1.55–1.83s。2026-11-23 改按 25ms 帧 RMS
+    > TRIM_RMS_DB（-45 dBFS，与 _longest_gap 同口径）定位起止并首尾各留 TRIM_PAD_S
+    （30ms）保护气口，再由 SENT_GAP / para_gap 精准控制节奏。
 
     `check_tail`：结尾机械声检测只对 IndexTTS 开——那是 BigVGAN 对停止符附近
     条件不良帧的渲染产物；Qwen3-TTS 没有这个成因（2026-09-05 审计复核：
@@ -1558,22 +1568,42 @@ def _trim_silence(path: Path, check_tail: bool = True) -> None:
     """
     import wave
     import struct
+    import numpy as np
 
     with wave.open(str(path)) as w:
         sr, n = w.getframerate(), w.getnframes()
-        a = list(struct.unpack(f"<{n}h", w.readframes(n)))
-    thr = 32768 * TRIM_DB
-    lo = next((i for i, x in enumerate(a) if abs(x) > thr), 0)
-    hi = next((i for i in range(n - 1, -1, -1) if abs(a[i]) > thr), n - 1) + 1
+        raw = w.readframes(n)
+    if n == 0:
+        return
+    a_np = np.frombuffer(raw, dtype=np.int16)
+    win = max(1, int(sr * TRIM_WIN_S))
+    hop = max(1, int(sr * TRIM_HOP_S))
+    if n >= win:
+        x = a_np.astype(np.float64) / 32768.0
+        n_frames = 1 + (n - win) // hop
+        frames = np.lib.stride_tricks.sliding_window_view(x, win)[::hop][:n_frames]
+        rms_db = 20.0 * np.log10(np.sqrt(np.mean(frames ** 2, axis=1) + 1e-12) + 1e-12)
+        active = np.flatnonzero(rms_db > TRIM_RMS_DB)
+        if len(active) == 0:
+            lo, hi = 0, n
+        else:
+            lo = int(active[0]) * hop
+            hi = min(n, int(active[-1]) * hop + win)
+    else:
+        thr = 32768 * TRIM_DB
+        a_list = a_np.tolist()
+        lo = next((i for i, v in enumerate(a_list) if abs(v) > thr), 0)
+        hi = next((i for i in range(n - 1, -1, -1) if abs(a_list[i]) > thr), n - 1) + 1
     if check_tail:
-        hi = _tail_artifact(a, sr, hi)            # 先砍掉结尾的机械声
-    lo = max(0, lo - int(sr * 0.01))          # 前后各留 10ms，别把气口裁掉
-    hi = min(n, hi + int(sr * 0.01))
+        hi = _tail_artifact(a_np.tolist(), sr, hi)   # 先砍掉结尾的机械声
+    pad = int(sr * TRIM_PAD_S)                # 前后各留 30ms，保护柔辅音与气口
+    lo = max(0, lo - pad)
+    hi = min(n, hi + pad)
     if hi - lo < int(sr * 0.05):              # 兜底：别把整句裁没了
         lo, hi = 0, n
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-        w.writeframes(struct.pack(f"<{hi - lo}h", *a[lo:hi]))
+        w.writeframes(struct.pack(f"<{hi - lo}h", *a_np[lo:hi].tolist()))
 
 
 # **句内死寂门禁（D87）。** 2026-10-13《束胸力学》段 6 第 2 句：语音 4.6 s 就念完，引擎又吐出
@@ -1805,11 +1835,11 @@ def _concat_with_gap(parts: list[Path], dest: Path, gap: float) -> None:
 def _para_gap() -> float:
     """段与段之间的停顿秒数（段落呼吸），`config/project.json` 的 `script.para_gap`。
 
-    2026-08-10 用户定 0.4s：段间原本背靠背硬拼接、毫无停顿，听感急促；而且 12ms
-    的淡入淡出只磨掉波形阶跃的一小段，段边界咔嗒声仍在。0.4s 纯静音一次解决两个：
-    说话人换气的常规量级 + 「静音→静音」没有幅度跳变，不可能咔嗒。
+    2026-08-10 初定 0.4s（彼时单采样裁静音漏留了 ~0.38s 句首静音，实际听感 ~0.78s）；
+    2026-11-23 `_trim_silence` 改 25ms 帧 RMS 裁净首尾死静音（仅留 30ms×2 气口）后，
+    默认标定为 0.72s（总段间呼吸 0.78s，精准复刻既定成片节奏，经三档人耳盲听拍板）。
     """
-    return float(paths.conf("script.para_gap", 0.4))
+    return float(paths.conf("script.para_gap", 0.72))
 
 
 def _pad_tail(path: Path, secs: float) -> None:
@@ -2097,7 +2127,11 @@ def _render_one(
 #   7 —— 句间声学一致性根治（2026-11-20）：固定同语种中文黄金锚点 ICL + 钉死 ref_audio
 #        原始 x-vector（端云对齐）、MAX_SYNTH_CHARS 30→90 整句合成、主/子解码采样解耦
 #        （0.70/25/p0.90 + 子解码 0.60/25）、修复本地 MLX 透传 lang_code="zh" 静默退化 bug。
-SYNTH_LOGIC_VERSION = 7
+#   8 —— 句首尾死静音帧 RMS 精准裁切与停顿重标（2026-11-23）：`_trim_silence` 由单采样
+#        -60 dBFS 升级为 25ms 帧 RMS > -45 dBFS + 30ms 气口，根治 ICL 首尾 0.7–0.9s
+#        近静音漏裁造成的 1.55–1.83s 冷场；`SENT_GAP` 0.18→0.46s、`para_gap` 0.40→0.72s
+#        （总听感 0.52s / 0.78s，精准对齐历史成片呼吸节奏）。
+SYNTH_LOGIC_VERSION = 8
 
 
 def _voice_fingerprint(cfg: dict) -> dict:

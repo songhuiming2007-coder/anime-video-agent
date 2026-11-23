@@ -136,3 +136,6 @@ ADR-0002 的「回读比对在带声调拼音上做」（`tts.syllables()`）继
    - **主/子解码采样解耦**：`SAMPLING = [(0.70, 25), (0.60, 20), (0.50, 15)]`，`SUB_SAMPLING = [(0.60, 25), (0.50, 20), (0.40, 15)]`，`TOP_P = [0.90, 0.88, 0.85]`。
    - **修复本地 MLX 语言码静默退化**：`_synthesize_mlx` 统一经 `qwen3_language_name()` 传入 `"chinese"`（此前直传 `"zh"` 在 `mlx-audio` 中静默回落 `language_id=None`）。
    - **云端资产自动同步**：`cloud push` 自动读取配置中的 `ref_audio` 与 `icl_anchor_audio`（位于 `data/` 下）随当期一并上行。
+4. **2026-11-23 补修（`SYNTH_LOGIC_VERSION = 8`）—— 帧 RMS 静音裁切与停顿重标**：
+   - 实测发现 ICL 锚点模式下每句会自带 `0.71–0.92s` 句首与 `0.20–0.63s` 句尾的 `-64 dB` 近静音，其中零星 `-53 dB` 单采样毛刺绕过了旧版单采样 `-60 dBFS` 的 `_trim_silence`，与 `SENT_GAP` / `para_gap` 叠加出 `1.55–1.83s` 冷场。
+   - `_trim_silence` 改为 **25ms 帧 RMS > `-45 dBFS` + 首尾 `30ms` 保护气口**（与 `_longest_gap` 同口径），同步将 `SENT_GAP` 标定为 `0.46s`、`script.para_gap` 标定为 `0.72s`（总停顿 `0.52s / 0.78s`，三档盲听精准对齐既有成片呼吸节奏）。
