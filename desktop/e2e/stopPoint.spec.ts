@@ -146,12 +146,15 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   await panel.waitFor({ timeout: 15_000 });
   expect(spawnNames(L, "VOICE_INFO")).toHaveLength(1);
   await expect(panel.getByTestId("seg-row")).toHaveCount(2);
-  // 播音走 renderer 原生 <audio> + ava-media://（不打开外部播放器）；再次点击同一段触发停止（P1-3）
+  // 播音走 renderer 原生 <audio> + ava-media://（不打开外部播放器）；再次点击同一段原位暂停，点「停」才清空播放条
   await panel.getByTestId("seg-play").first().click();
   await expect(panel.getByTestId("voice-audio")).toHaveAttribute("src", /^ava-media:\/\/episodes\/.*seg-01\.wav$/);
   await expect(panel.getByTestId("voice-nowplaying")).toContainText("段 1");
-  await expect(panel.getByTestId("seg-play").first()).toHaveAttribute("aria-label", "停止段 1");
+  await expect(panel.getByTestId("seg-play").first()).toHaveAttribute("aria-label", "暂停段 1");
   await panel.getByTestId("seg-play").first().click();
+  await expect(panel.getByTestId("seg-play").first()).toHaveAttribute("aria-label", "继续播放段 1");
+  await expect(panel.getByTestId("voice-nowplaying")).toBeVisible();
+  await panel.getByTestId("voice-stop").click();
   await expect(panel.getByTestId("voice-nowplaying")).toHaveCount(0);
 
   // 解析 → 确认卡 → 确认落盘（D50-A S6：文法录入收进「按文法录入」折叠区）
@@ -173,16 +176,14 @@ test("TE-3 03.5 闭环：段落列表（ava-media://）→ 解析 → 确认落�
   // 回滚只看 has_attic（段 1 有快照、段 2 无）
   await expect(panel.getByTestId("seg-revert")).toHaveCount(1);
 
-  // done：无 pending 时禁用；有 pending + 确认框取消 → 不 spawn 长任务
+  // done：无 pending 时禁用；有 pending 时（A2 本机可逆操作免确认框）点击直接执行增量重配
   await expect(panel.getByTestId("voice-done")).toBeDisabled();
-  await stubConfirm(L, false);
   await panel.getByTestId("voice-raw").fill("2段 语气发飘 换种子");
   await panel.getByTestId("voice-parse").click();
   await panel.getByTestId("voice-add").click();
   await expect(panel.getByTestId("voice-done")).toBeEnabled();
   await panel.getByTestId("voice-done").click();
-  await expect(panel.getByTestId("voice-msg")).toContainText("已取消");
-  expect(spawnNames(L, "RUN_TTS_APPLY_PATCH")).toHaveLength(0);
+  await expect.poll(() => spawnNames(L, "RUN_TTS_APPLY_PATCH").length, { timeout: 15_000 }).toBe(1);
 });
 
 test("TE-4 人时：打开 02.5 编辑器 → 停留 → 关闭 → human_time.json 恰增一条 source=desktop；期视图读数可见", async () => {
@@ -301,12 +302,10 @@ test("D72 全局读音纠错后重配入口不丢：记下（写全局表）→ 
   await expect(L.page.getByTestId("voice-panel")).toHaveCount(0);
   await pick(L.page, "03-audio");
   await expect(L.page.getByTestId("voice-done")).toContainText("只重配这 1 段", { timeout: 15_000 });
-  // 确认框取消 → 不起长任务
-  await stubConfirm(L, false);
-  await L.page.getByTestId("voice-done").click();
-  await expect(L.page.getByTestId("voice-msg")).toContainText("已取消");
-  expect(spawnNames(L, "RUN_TTS")).toHaveLength(0);
+  // A2：本地可回滚重配不再弹冗余确认框，点击主按钮直接触发 RUN_TTS
   expect(spawnNames(L, "VOICE_GLOBAL")).toHaveLength(1);
+  await L.page.getByTestId("voice-done").click();
+  await expect.poll(() => spawnNames(L, "RUN_TTS").length, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
   // 重配进行中（锁在、pid 活着）→ 主按钮禁用，不许再起第二个
   writeFileSync(join(ctx.ep, "03-audio/.apply_patch.lock"), String(process.pid));
   await L.page.getByTestId("voice-refresh").click();

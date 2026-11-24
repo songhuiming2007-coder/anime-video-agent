@@ -16,9 +16,16 @@ import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
 import { CopyButton } from "./copy";
 import { Icon } from "./icons";
+import { Disclosure } from "./motion";
 import { Badge } from "./ui";
 import { ReviewRating } from "./ReviewRating";
 import { approvalsOf, type EpisodeState } from "./store";
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const STOP_NAMES: Record<StopType, string> = { "02.5": "人审改稿", "03.5": "配音顺听", "05": "审时间码", "09": "人工发布" };
 
@@ -30,7 +37,7 @@ function actionable(a: ApprovalJson): boolean {
 /** 卡片外框（Spec 10 §2.8；类名按 Spec 14 §3.2）：Spec 12 的 09 定稿控件、Spec 11 的编辑器都挂在这里的 body 插槽里。 */
 export function CardFrame({ className, testId, attrs, title, sub, children }: { className: string; testId: string; attrs: Record<string, string>; title: ReactNode; sub?: ReactNode; children?: ReactNode }) {
   return (
-    <div className={`ui-card ${className}`} data-testid={testId} {...attrs}>
+    <div className={`ui-card ui-card-enter ${className}`} data-testid={testId} {...attrs}>
       <div className="ui-card-head">
         <span className="ui-card-title">{title}</span>
       </div>
@@ -85,19 +92,19 @@ export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Hea
   const disabled = a?.state !== "ok" || health?.reach !== "ok" || busy;
   return (
     <div className="decisions dock" data-testid="decisions">
-      {a?.state === "error" && <div className="error">对象库读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
+      {a?.state === "error" && <div className="error">审批状态读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
       {items.map((obj) => (
         <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} run={run} />
       ))}
       {busy && <div className="muted">处理中…</div>}
       {outcome?.kind === "ok" && (
-        <div className="decision-ok" data-testid="decision-ok" data-approval-id={outcome.approvalId}>
+        <div className="decision-ok ui-confirm-enter" data-testid="decision-ok" data-approval-id={outcome.approvalId}>
           <Icon name="check" size="sm" />
           停机点 {outcome.stop}：{outcome.text}（{outcome.approvalId}）
         </div>
       )}
       {outcome?.kind === "err" && (
-        <div className="decision-err" data-testid="decision-err" data-code={outcome.error.code} data-approval-id={outcome.approvalId}>
+        <div className="decision-err ui-error-shake" data-testid="decision-err" data-code={outcome.error.code} data-approval-id={outcome.approvalId}>
           <div>
             停机点 {outcome.stop}（{outcome.approvalId}）{outcome.error.code}：{outcome.error.message}
           </div>
@@ -155,11 +162,11 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
           <Badge tone={aligned ? "wait" : undefined}>{aligned ? "待确认" : "停机"}</Badge>
         </>
       }
-      sub={aligned ? "解封物已在终端生成，待你确认" : undefined}
+      sub={aligned ? "已在终端生成批准文件，待你确认" : undefined}
     >
       {missingArtifacts.map((f) => (
         <div className="warn" key={f.path}>
-          <code>{f.path}</code>（钉住时缺失）
+          <code>{f.path}</code>（当时缺失）
         </div>
       ))}
       {(obj.artifacts.length > 0 || obj.note) && (
@@ -172,7 +179,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
                   <dt>产物</dt>
                   <dd>
                     <code>{f.path}</code>
-                    {f.size < 0 ? " （钉住时缺失）" : ` · ${f.size} 字节`}
+                    {f.size < 0 ? " （当时缺失）" : ` · ${formatBytes(f.size)}`}
                   </dd>
                 </Fragment>
               ))}
@@ -197,12 +204,12 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
           {aligned ? "批准" : stop === "03.5" ? "顺听无误，进入排片" : "批准"}
         </button>
         {!aligned && stop !== "03.5" && (
-          <button className="ui-btn" data-testid="reject-open" disabled={off} onClick={() => setRejecting((v) => !v)}>
-            打回…
+          <button className="ui-btn" data-testid="reject-open" aria-expanded={rejecting} disabled={off} onClick={() => setRejecting((v) => !v)}>
+            {rejecting ? "收起打回" : "打回…"}
           </button>
         )}
       </div>
-      {rejecting && !aligned && stop !== "03.5" && (
+      <Disclosure open={rejecting && !aligned && stop !== "03.5"}>
         <div className="reject-form" data-testid="reject-form">
           <label className="ui-field">
             哪段
@@ -226,7 +233,7 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
             </button>
           </div>
         </div>
-      )}
+      </Disclosure>
     </CardFrame>
   );
 }
@@ -385,8 +392,15 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
   useEffect(() => {
     if (!focusApprove) return;
     const active = document.activeElement;
-    // 人正在输入框里写东西（有内容）就不抢焦点：回车应当发送他的消息，而不是批准
-    if (active instanceof HTMLTextAreaElement && active.value.trim() !== "") return;
+    // 人正在输入框、侧栏、右侧编辑器/顺听面板、或弹窗/浮层里操作就不抢焦点，不打断手上正在做的事
+    if (
+      document.querySelector('.ui-modal-backdrop:not([data-status="close"])') !== null ||
+      active instanceof HTMLInputElement ||
+      (active instanceof HTMLTextAreaElement && active.value.trim() !== "") ||
+      (active instanceof HTMLElement && active.closest("#ava-preview, #ava-left, .ui-modal-backdrop, .ui-popover") !== null)
+    ) {
+      return;
+    }
     // D80 R6：卡片在对话流末尾——聚焦不让浏览器按按钮位置滚动（会把卡头滚出视野），改为把整张卡带进视野
     // 卡片比可见区还高时（多行命令、写稿 diff），nearest 对齐的是卡头——R6.1 要的正是危险标记与命令，按钮往下滚即见、焦点仍在它上面。
     // 前提是对话流此时不贴底（ConversationPane 待答时不跟到底），否则卡头会被每秒的重渲染滚走
@@ -452,12 +466,12 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           ))}
         </ul>
       </details>
-      {feedbackAllowed && feedbackOpen && (
+      <Disclosure open={feedbackAllowed && feedbackOpen}>
         <label className="ui-field">
           告诉它怎么改
           <textarea className="ui-textarea" data-testid="request-feedback" rows={2} autoFocus value={feedback} onChange={(e) => setFeedback(e.target.value)} />
         </label>
-      )}
+      </Disclosure>
       <div className="ui-card-actions">
         {options.map((decision) => (
           <button
@@ -521,16 +535,23 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           // 提示放在按钮外：按钮文字只取 options 的标签（H-4），不混入提示
           <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>
         )}
-        {/* 「附说明…」不是答复：只展开说明框。与闸门按钮同一变体（VS-12）、小号，放在动作行省一行高度（1280×800 下卡片要装进对话流可见区） */}
-        {feedbackAllowed && !feedbackOpen && !busy && (
-          <button type="button" className="ui-btn ui-btn--sm request-feedback-toggle" data-testid="request-feedback-toggle" disabled={off} onClick={() => setFeedbackOpen(true)}>
-            附说明…
+        {/* 「附说明…」不是答复：只展开/收起说明框。与闸门按钮同一变体（VS-12）、小号，放在动作行省一行高度 */}
+        {feedbackAllowed && !busy && (
+          <button
+            type="button"
+            className="ui-btn ui-btn--sm request-feedback-toggle"
+            data-testid="request-feedback-toggle"
+            aria-expanded={feedbackOpen}
+            disabled={off}
+            onClick={() => setFeedbackOpen((v) => !v)}
+          >
+            {feedbackOpen ? "收起说明" : "附说明…"}
           </button>
         )}
         {busy && <span className="muted">处理中…</span>}
       </div>
       {error && (
-        <div className="decision-err" data-testid="request-error">
+        <div className="decision-err ui-error-shake" data-testid="request-error">
           {error}
         </div>
       )}

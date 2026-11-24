@@ -118,11 +118,17 @@
   --center-w: 360px;
 
   /* ---- 动效 ---- */
+  --dur-press: 90ms;
   --dur-fast: 120ms;
+  --dur-exit: 130ms;
   --dur-base: 180ms;
-  --dur-slow: 300ms;
-  --dur-enter: 240ms;
-  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-enter: 220ms;
+  --dur-slow: 280ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 18.2%, 1.017 22.8%, 1.031 26.8%, 1.019 32.6%, 1.002 44.3%, 0.999 58.6%, 1);
+  --ease-spring-snappy: linear(0, 0.014, 0.056 2.2%, 0.221 4.8%, 0.858 13.8%, 1.018 20.5%, 1.028 24.5%, 1.008 34.2%, 1 50%, 1);
 }
 
 @media (prefers-color-scheme: dark) {

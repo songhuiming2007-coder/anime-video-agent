@@ -614,17 +614,19 @@ test("N32 无会话时点「素材模式」：零 conv.command、出现可读提
     });
     const sent = () => L.page.evaluate(() => (window as unknown as { __rpcSent: string[] }).__rpcSent.filter((m) => m === "conv.send" || m === "conv.command"));
     await L.page.getByTestId("scope-toggle").click();
-    await expect(L.page.getByTestId("scope-needs-session")).toBeVisible();
-    await L.page.waitForTimeout(300);
-    expect(await sent()).toEqual([]);
+    await expect(L.page.getByTestId("scope-toggle")).toHaveAttribute("aria-pressed", "true");
+    await expect(L.page.getByTestId("scope-pending")).toBeVisible();
+    // A2：会话启动前支持预选素材模式（仅存 pending，不起进程）；首条消息发出时自动下发 scope 命令
+    await expect.poll(sent).toEqual(["conv.command"]);
+    expect(stdinLines(repo, "SESS-A")).toEqual([]);
 
-    // 对照组：会话起来后同一按钮照常发 scope 命令，提示消失
+    // 发首条消息时，预选的 scope 命令先随会话启动生效，再切回自动模式
     await send(L.page, "在吗");
     await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "idle");
-    await expect(L.page.getByTestId("scope-needs-session")).toHaveCount(0);
-    await L.page.getByTestId("scope-toggle").click();
-    await expect.poll(sent).toEqual(["conv.send", "conv.command"]);
+    await expect(L.page.getByTestId("scope-pending")).toHaveCount(0);
     await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "command").length).toBe(1);
+    await L.page.getByTestId("scope-toggle").click();
+    await expect.poll(() => stdinLines(repo, "SESS-A").filter((l) => JSON.parse(l).t === "command").length).toBe(2);
   });
 });
 

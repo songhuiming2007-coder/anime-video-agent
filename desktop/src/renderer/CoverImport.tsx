@@ -74,7 +74,7 @@ export function CoverImport({
             inputRef.current?.click();
           }}
         >
-          <Icon name="image" size="sm" />
+          {busy ? <span className="ui-spinner" /> : <Icon name="image" size="sm" />}
           导入封面
         </button>
         <input

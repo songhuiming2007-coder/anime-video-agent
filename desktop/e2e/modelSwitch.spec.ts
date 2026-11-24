@@ -68,11 +68,11 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     await expect(page.getByTestId("model-label")).toHaveText("kimi-k3");
     await expect(page.getByTestId("model-btn")).toHaveAttribute("data-source", "session");
 
-    // 推理下拉
+    // 推理下拉（A1 精简为单套分段滑块 + 实时说明）
     await page.getByTestId("effort-btn").click();
-    await expect(page.getByTestId("effort-row")).toHaveCount(7);
+    await expect(page.getByTestId("effort-seg-btn")).toHaveCount(7);
     await shoot(page, "3-effort-open");
-    await page.locator('[data-testid=effort-row][data-effort="low"]').click();
+    await page.locator('[data-testid=effort-seg-btn][data-effort="low"]').click();
     await expect(page.getByTestId("effort-label")).toHaveText("低");
 
     // 下一轮请求用新设置；回合在跑时两个按钮置灰
@@ -109,27 +109,22 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     await expect(page.getByTestId("model-label")).toHaveText("kimi-k2.8");
     await send(page, "/thinking");
     await expect(page.getByTestId("effort-pop")).toBeVisible();
-    await page.locator('[data-testid=effort-row][data-effort="high"]').click();
+    await page.locator('[data-testid=effort-seg-btn][data-effort="high"]').click();
     await expect(page.getByTestId("effort-label")).toHaveText("高");
     await idle(page);
     expect(llm.requests.length).toBe(before);
 
-    // D156：换到实测支持集窄的模型（gemini-3.8-flash-high 表里只 low/medium/high/none），
-    // effort 选择器只列 4 档（不是全档 7）；切回不在表里的 kimi-k3 恢复全档。
+    // D156 + A1：换到实测支持集窄的模型（gemini-3.8-flash-high 表里只 low/medium/high/none），
+    // effort 分段条只列 4 档（不是全档 7）；切回不在表里的 kimi-k3 恢复全档。
     await page.getByTestId("model-btn").click();
     await page.locator('[data-testid=model-row][data-model="gemini-3.8-flash-high"]').click();
     await expect(page.getByTestId("model-label")).toHaveText("gemini-3.8-flash-high");
     await page.getByTestId("effort-btn").click();
     await expect(page.getByTestId("effort-pop")).toBeVisible();
-    await expect(page.getByTestId("effort-row")).toHaveCount(4); // none/minimal/low/medium/high 子集 → 4
-    await expect(page.locator('[data-testid=effort-row][data-effort="xhigh"]')).toHaveCount(0);
-    // 搜索框过滤
-    await page.getByTestId("effort-search").fill("高");
-    await expect(page.getByTestId("effort-row")).toHaveCount(1);
-    await expect(page.getByTestId("effort-row")).toHaveAttribute("data-effort", "high");
-    await page.getByTestId("effort-search").fill("");
-    // Shift+Tab 循环：当前 high → Shift+Tab 到 none（绕回）；再按一轮 → minimal
-    await page.getByTestId("effort-search").focus();
+    await expect(page.getByTestId("effort-seg-btn")).toHaveCount(4); // none/low/medium/high 子集 → 4
+    await expect(page.locator('[data-testid=effort-seg-btn][data-effort="xhigh"]')).toHaveCount(0);
+    // Shift+Tab 循环：当前 high → Shift+Tab 到 none（绕回）；再按一轮 → low
+    await page.locator('[data-testid=effort-seg-btn][data-effort="high"]').focus();
     await page.keyboard.press("Shift+Tab");
     await expect(page.getByTestId("effort-label")).toHaveText("关");
     // gemini-3.8 支持集 [none,low,medium,high]（无 minimal）：none → low
@@ -141,7 +136,7 @@ test("D91 模型 / 推理按钮：显示、切换、只影响本会话、回合�
     await page.locator('[data-testid=model-row][data-model="kimi-k3"]').click();
     await expect(page.getByTestId("model-label")).toHaveText("kimi-k3");
     await page.getByTestId("effort-btn").click();
-    await expect(page.getByTestId("effort-row")).toHaveCount(7);
+    await expect(page.getByTestId("effort-seg-btn")).toHaveCount(7);
     await page.keyboard.press("Escape");
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
@@ -394,6 +389,9 @@ test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、�
     await page.getByTestId("login-key-input").fill("sk-should-reset-on-logout");
     await expect(page.getByTestId("login-logout-btn")).toBeVisible();
     await page.getByTestId("login-logout-btn").click();
+    // A2：退出登录采用弹窗内二段确认，防误点
+    await expect(page.getByTestId("login-logout-confirm")).toBeVisible();
+    await page.getByTestId("login-logout-confirm").click();
     await expect(page.getByTestId("login-connected-card")).toHaveCount(0);
     await expect(page.getByTestId("login-connected-count")).toHaveCount(0);
     await expect(page.getByTestId("login-key-input")).toHaveValue("");

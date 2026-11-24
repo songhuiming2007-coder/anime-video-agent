@@ -87,20 +87,20 @@ type Theme = (typeof THEMES)[number];
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
   // Route B 精简顶栏与侧栏停机红粉徽标后（去掉独立 topbar 行、wordmark/repo、停机徽标、快捷键标签）三态一致，list 降至 44：
-  list: 43,
-  "sidebar-step": 47,
-  "sidebar-search": 37,
-  popover: 49,
-  markdown: 55,
-  json: 55,
-  empty: 49,
-  error: 44,
-  health: 64,
-  stale: 49, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
-  card: 44,
-  "card-reject": 47,
-  "card-err": 47,
-  expanded: 55,
+  list: 42,
+  "sidebar-step": 46,
+  "sidebar-search": 36,
+  popover: 48,
+  markdown: 54,
+  json: 50,
+  empty: 46,
+  error: 42,
+  health: 60,
+  stale: 46, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
+  card: 42,
+  "card-reject": 45,
+  "card-err": 45,
+  expanded: 52,
 };
 
 interface AuditResult {
@@ -177,7 +177,9 @@ test("VE-1 真实 DOM 审计：全部夹具状态 × 三种主题态，对比度
     await pick(L.page, "link-out.json");
     await L.page.getByText("读取失败").waitFor({ timeout: 10_000 });
     await audit(L.page, "error");
-    // ⑥ 健康面板
+    // ⑥ 健康面板（无异常时收在偏好设置浮层内；展开后顶栏亮起开关，也可直接关闭）
+    await L.page.getByTestId("appearance").click();
+    await L.page.getByTestId("theme-menu").waitFor();
     await L.page.getByTestId("health-toggle").click();
     await L.page.getByTestId("health-panel").waitFor();
     await audit(L.page, "health");

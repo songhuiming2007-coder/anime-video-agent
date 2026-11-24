@@ -64,11 +64,21 @@ function Head({ rel, kind }: { rel: string; kind: PreviewKind | "dir" }) {
 }
 
 /** `head=false`：外面已有文件切换器当标题（D49-A S4），不再重复一行文件名 */
-export function PreviewPane({ target, head = true, onPickFile }: { target: PreviewTarget | null; head?: boolean; onPickFile?: (dirRel: string, fileName: string) => void }) {
+export function PreviewPane({
+  target,
+  head = true,
+  hasEpisode = false,
+  onPickFile,
+}: {
+  target: PreviewTarget | null;
+  head?: boolean;
+  hasEpisode?: boolean;
+  onPickFile?: (dirRel: string, fileName: string) => void;
+}) {
   if (!target) {
     return (
       <div className="preview-body">
-        <StateView kind="empty" title="从上方切换条选择产物以预览" />
+        <StateView kind="empty" title={hasEpisode ? "在顶部选择本期产物文件查看" : "选择一期或文件后可在这里预览"} />
       </div>
     );
   }
@@ -276,13 +286,47 @@ function AudioQueue({ root, dir, files, single }: { root: MediaRoot; dir: string
 function ImagePreview({ url }: { url: string }) {
   const [z, setZ] = useState(1);
   const [off, setOff] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; y: number } | null>(null);
+  const reset = () => {
+    setZ(1);
+    setOff({ x: 0, y: 0 });
+  };
   const onWheel = (e: WheelEvent) => setZ((v) => Math.min(20, Math.max(0.1, v * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
-  const onDown = (e: MouseEvent) => (drag.current = { x: e.clientX - off.x, y: e.clientY - off.y });
+  const onDown = (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    drag.current = { x: e.clientX - off.x, y: e.clientY - off.y };
+    setDragging(true);
+  };
   const onMove = (e: MouseEvent) => drag.current && setOff({ x: e.clientX - drag.current.x, y: e.clientY - drag.current.y });
+  const stopDrag = () => {
+    drag.current = null;
+    setDragging(false);
+  };
+  const moved = Math.abs(z - 1) > 0.005 || off.x !== 0 || off.y !== 0;
   return (
-    <div className="image-wrap" onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={() => (drag.current = null)} onMouseLeave={() => (drag.current = null)} onDoubleClick={() => { setZ(1); setOff({ x: 0, y: 0 }); }}>
+    <div
+      className="image-wrap"
+      data-dragging={dragging ? "1" : "0"}
+      onWheel={onWheel}
+      onMouseDown={onDown}
+      onMouseMove={onMove}
+      onMouseUp={stopDrag}
+      onMouseLeave={stopDrag}
+      onDoubleClick={reset}
+    >
       <img src={url} alt="" draggable={false} data-testid="image" style={{ transform: `translate(${off.x}px, ${off.y}px) scale(${z})` }} />
+      {moved && (
+        <button
+          type="button"
+          className="image-zoom-pill ui-card-enter"
+          data-testid="image-zoom-reset"
+          title="点击复位缩放与位置（也可双击画面复位）"
+          onClick={reset}
+        >
+          {Math.round(z * 100)}% · 复位
+        </button>
+      )}
     </div>
   );
 }
@@ -395,8 +439,8 @@ function JsonNode({ k, v, depth }: { k: string | null; v: unknown; depth: number
     const [l, r] = Array.isArray(v) ? ["[", "]"] : ["{", "}"];
     return (
       <div className="j-node">
-        <button className="j-toggle" data-testid="json-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? "▾" : "▸"}
+        <button type="button" className="j-toggle" data-testid="json-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <span className="ui-chev" data-open={open ? "1" : "0"}><Icon name="chevron-right" size="sm" /></span>
         </button>
         {label}
         {l}

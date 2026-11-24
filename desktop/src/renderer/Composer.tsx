@@ -52,7 +52,7 @@ export function Composer({
       {queued.length > 0 && (
         <div className="composer-queue" data-testid="composer-queue">
           {queued.map((q) => (
-            <div key={q.id} className="composer-queued" data-testid="composer-queued" title="排队中：这批工具跑完后送达">
+            <div key={q.id} className="composer-queued ui-card-enter" data-testid="composer-queued" title="排队中：这批工具跑完后送达">
               <span className="muted">排队中</span>
               <span className="composer-queued-text">{q.text}</span>
             </div>
@@ -62,7 +62,7 @@ export function Composer({
       <textarea
         className="ui-textarea"
         data-testid="composer-input"
-        rows={3}
+        rows={2}
         value={value}
         disabled={disabled}
         placeholder={running ? "回合进行中：消息会排队，这批工具跑完后送达（Enter 发送）" : placeholder}
@@ -103,7 +103,7 @@ export function Composer({
         {toolbar}
         <span className="spacer" />
         {error && (
-          <span className="error" data-testid="composer-error">
+          <span key={error} className="error ui-error-shake" data-testid="composer-error">
             {error}
           </span>
         )}

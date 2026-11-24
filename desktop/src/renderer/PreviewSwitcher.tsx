@@ -5,6 +5,7 @@ import type { ShotsEntry, TreeEntry } from "../shared/protocol";
 import { CoverImport } from "./CoverImport";
 import { FloatingPopover } from "./floating";
 import { Icon, type IconName } from "./icons";
+import { Disclosure } from "./motion";
 import { previewKind } from "../shared/previewKind";
 import type { PreviewTarget } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
@@ -162,11 +163,15 @@ export function PreviewSwitcher({
                   data-dir={sub.rel}
                   onClick={() => toggleSubdir(sub.rel)}
                 >
-                  <Icon name={subOpen[sub.rel] ? "chevron-down" : "chevron-right"} size="sm" />
+                  <span className="ui-chev" data-open={subOpen[sub.rel] ? "1" : "0"}><Icon name="chevron-right" size="sm" /></span>
                 </button>
               )}
             </div>
-            {sub.kind === "dir" && subOpen[sub.rel] && renderSubEntries(sub.rel, depth + 1)}
+            {sub.kind === "dir" && (
+              <Disclosure open={!!subOpen[sub.rel]}>
+                {() => renderSubEntries(sub.rel, depth + 1)}
+              </Disclosure>
+            )}
           </div>
         ))}
       </div>
@@ -207,7 +212,13 @@ export function PreviewSwitcher({
               <>
                 {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
                 {err !== null && <div className="muted">{err}</div>}
-                {entries === null && err === null && <div className="muted">…</div>}
+                {entries === null && err === null && (
+                  <div className="ui-skeleton-stack">
+                    <div className="ui-skeleton ui-skeleton--lg" />
+                    <div className="ui-skeleton ui-skeleton--md" />
+                    <div className="ui-skeleton ui-skeleton--sm" />
+                  </div>
+                )}
                 {entries !== null &&
                   allItems.map((g) => (
                     <div key={g.title} className="preview-switch-group">
@@ -238,11 +249,15 @@ export function PreviewSwitcher({
                                 data-dir={it.rel}
                                 onClick={() => toggleSubdir(it.rel)}
                               >
-                                <Icon name={subOpen[it.rel] ? "chevron-down" : "chevron-right"} size="sm" />
+                                <span className="ui-chev" data-open={subOpen[it.rel] ? "1" : "0"}><Icon name="chevron-right" size="sm" /></span>
                               </button>
                             )}
                           </div>
-                          {it.kind === "dir" && !it.missing && subOpen[it.rel] && renderSubEntries(it.rel, 1)}
+                          {it.kind === "dir" && !it.missing && (
+                            <Disclosure open={!!subOpen[it.rel]}>
+                              {() => renderSubEntries(it.rel, 1)}
+                            </Disclosure>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -286,8 +301,13 @@ export function PreviewSwitcher({
           )}
           renderContent={() => (
             <>
-              <div className="ui-popover-title preview-switch-gtitle">镜头画廊（shots）</div>
-              {galleries === null && <div className="muted">…</div>}
+              <div className="ui-popover-title preview-switch-gtitle">镜头画廊</div>
+              {galleries === null && (
+                <div className="ui-skeleton-stack">
+                  <div className="ui-skeleton ui-skeleton--md" />
+                  <div className="ui-skeleton ui-skeleton--sm" />
+                </div>
+              )}
               {galleries?.length === 0 && <div className="muted">没有画廊</div>}
               {galleries?.map((g) => (
                 <button
@@ -310,7 +330,7 @@ export function PreviewSwitcher({
         />
       </div>
       {epKey !== null && coverNotice !== null && (
-        <div className="notice preview-cover-notice" data-testid="cover-import-msg">
+        <div className="notice preview-cover-notice ui-confirm-enter" data-testid="cover-import-msg">
           <Icon name="info" size="sm" />
           {coverNotice}
         </div>

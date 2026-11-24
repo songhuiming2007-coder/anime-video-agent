@@ -1,6 +1,7 @@
 // D50-A S7：03.5 停机卡内的结构化打点。单独成文件：打点的 1–5 分段按钮不是闸门按钮，
 // 不受 HumanCards.tsx 的 VS-12「闸门按钮同权」约束。
 import { useState } from "react";
+import { SegmentedBar } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 
 const REVIEW_DIMS: readonly [string, string][] = [
@@ -37,13 +38,13 @@ export function ReviewRating({ epKey, rpc, disabled }: { epKey: string; rpc: Rpc
       {REVIEW_DIMS.map(([k, label]) => (
         <span key={k} className="review-dim">
           {label}
-          <span className="ui-seg">
+          <SegmentedBar activeKey={score[k] ?? null} label={label}>
             {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} aria-pressed={score[k] === n} data-testid={`review-${k}-${n}`} onClick={() => setScore((s) => ({ ...s, [k]: n }))}>
+              <button key={n} type="button" aria-pressed={score[k] === n} data-testid={`review-${k}-${n}`} onClick={() => setScore((s) => ({ ...s, [k]: n }))}>
                 {n}
               </button>
             ))}
-          </span>
+          </SegmentedBar>
         </span>
       ))}
       <button
@@ -58,7 +59,7 @@ export function ReviewRating({ epKey, rpc, disabled }: { epKey: string; rpc: Rpc
         记下打点
       </button>
       {msg !== null && (
-        <span className="muted" data-testid="review-msg">
+        <span className="muted ui-confirm-enter" data-testid="review-msg">
           {msg}
         </span>
       )}

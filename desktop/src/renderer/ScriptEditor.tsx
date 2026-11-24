@@ -17,7 +17,9 @@ import { EDITOR_PREVIEW_DEBOUNCE_MS, SAVE_SCRIPT_MAX_BYTES } from "../shared/con
 import { canCreateFromDraft, canSeal, diskVerdict, emptyEditor, expectOf, reduceEditor, type ScriptEditorState } from "../shared/editorState";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { SavedFingerprintJson, ScriptStatJson } from "../shared/protocol";
+import { FloatingModal, FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
+import { SegmentedBar } from "./motion";
 import { MarkdownBody } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
 import { StateView, StatusDot } from "./ui";
@@ -65,7 +67,12 @@ const mdHighlight = HighlightStyle.define([
 
 let dirtyCheck: (() => boolean) | null = null;
 
-/** 切期 / 切仓库 / 关窗前询问是否丢弃未保存改动（ScriptEditor 挂载期间才有守卫）。 */
+/** 查询 02-script 编辑器当前是否有未保存改动（App 用来唤起应用内三键保存/丢弃弹窗）。 */
+export function isScriptDirty(): boolean {
+  return Boolean(dirtyCheck?.());
+}
+
+/** 切期 / 切仓库 / 关窗前询问是否丢弃未保存改动（保留旧签名供回退）。 */
 export function confirmDiscardDirty(): boolean {
   if (!dirtyCheck?.()) return true;
   return window.confirm("02-script 编辑器有未保存的改动，确定丢弃？");
@@ -102,7 +109,17 @@ const PANES: readonly [EditorPane, string][] = [
   ["tips", "要点"],
 ];
 
-export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
+export function ScriptEditor({
+  epKey,
+  rpc,
+  pendingSwitch = false,
+  onResolveSwitch,
+}: {
+  epKey: string;
+  rpc: RpcClient;
+  pendingSwitch?: boolean;
+  onResolveSwitch?: (action: "proceed" | "cancel" | "save-failed") => void;
+}) {
   const [stat, setStat] = useState<ScriptStatJson | null>(null);
   const [ed, setEd] = useState<ScriptEditorState>(emptyEditor);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -280,8 +297,14 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
     return () => clearTimeout(t);
   }, [ed.text]);
 
+  useEffect(() => {
+    if (!reloadArm) return;
+    const t = window.setTimeout(() => setReloadArm(false), 5000);
+    return () => window.clearTimeout(t);
+  }, [reloadArm]);
+
   const doSave = useCallback(
-    async (call: Promise<unknown>) => {
+    async (call: Promise<unknown>): Promise<boolean> => {
       setBusy(true);
       setSaveMsg(null);
       setSealMsg(null);
@@ -291,9 +314,11 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
         setEd((s) => reduceEditor(s, { type: "saved", baselineFp: { size: String(fp.size), mtimeNs: fp.mtimeNs } }));
         setSaveMsg("已保存");
         void rpc.call<ScriptStatJson>("script.stat", { epKey }).then(setStat, () => undefined);
+        return true;
       } catch (e) {
         setEd((s) => reduceEditor(s, { type: "conflict" }));
         setSaveMsg(errText(e));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -328,8 +353,10 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
 
   const off = busy || loadErr !== null;
   const dirty = ed.dirty;
+  const nothingToSave = stat !== null && stat.script !== null && !dirty;
   const tooBig = new TextEncoder().encode(ed.text).length > SAVE_SCRIPT_MAX_BYTES;
   const saveParams = () => ({ epKey, text: edRef.current.text, ...expectOf(edRef.current) });
+  const sealDisabledReason = dirty ? "有未保存的改动，请先保存后再封板" : !canSeal(ed) ? "先保存为 02-script.md 后再封板" : null;
 
   return (
     <div className="editor-shell" ref={shellRef} data-testid="script-editor" data-dirty={dirty ? "1" : "0"} data-layout={wide ? "wide" : "narrow"}>
@@ -349,25 +376,32 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
             要点
           </button>
         ) : (
-          <span className="ui-seg" data-testid="editor-pane-switch">
+          <SegmentedBar activeKey={pane} testId="editor-pane-switch" label="编辑视图">
             {PANES.map(([k, label]) => (
-              <button key={k} aria-pressed={pane === k} data-pane={k} onClick={() => setPane(k)}>
+              <button key={k} type="button" aria-pressed={pane === k} data-pane={k} onClick={() => setPane(k)}>
                 {label}
               </button>
             ))}
-          </span>
+          </SegmentedBar>
         )}
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="save-script"
-          disabled={off || tooBig}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void doSave(rpc.call("script.save", saveParams()));
-          }}
-        >
-          保存
-        </button>
+        <FloatingTooltip
+          label={nothingToSave ? "当前没有未保存的改动" : <>保存文稿 <kbd className="ui-kbd">⌘S</kbd></>}
+          renderTrigger={(t) => (
+            <span ref={t.ref} {...t.props}>
+              <button
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                data-testid="save-script"
+                disabled={off || tooBig || nothingToSave}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  void doSave(rpc.call("script.save", saveParams()));
+                }}
+              >
+                保存
+              </button>
+            </span>
+          )}
+        />
         {stat !== null && stat.script === null && stat.draft !== null && (
           <button
             className="ui-btn ui-btn--ghost ui-btn--sm"
@@ -381,17 +415,24 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
             从草稿新建
           </button>
         )}
-        <button
-          className="ui-btn ui-btn--ghost ui-btn--sm"
-          data-testid="seal-script"
-          disabled={off || !canSeal(ed)}
-          onClick={(e) => {
-            if (!e.nativeEvent.isTrusted) return;
-            void doSeal(rpc.call("script.seal", { epKey }));
-          }}
-        >
-          封板
-        </button>
+        <FloatingTooltip
+          label={sealDisabledReason ?? "生成人审补丁并封板"}
+          renderTrigger={(t) => (
+            <span ref={t.ref} {...t.props}>
+              <button
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                data-testid="seal-script"
+                disabled={off || !canSeal(ed)}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  void doSeal(rpc.call("script.seal", { epKey }));
+                }}
+              >
+                封板
+              </button>
+            </span>
+          )}
+        />
         <button
           className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="check-script"
@@ -435,17 +476,17 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
         </div>
       )}
       {saveMsg !== null && (
-        <div className="notice" data-testid="save-msg">
+        <div className={ed.conflict ? "notice ui-error-shake" : "notice ui-confirm-enter"} data-testid="save-msg">
           <Icon name={ed.conflict ? "alert" : "info"} size="sm" />
           {saveMsg}
         </div>
       )}
       {(ed.conflict || diskChanged) && (
-        <div className="notice notice--warn" data-testid="save-conflict">
+        <div className="notice notice--warn ui-error-shake" data-testid="save-conflict">
           <Icon name="alert" size="sm" />
           <span>{ed.conflict ? "磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。" : "磁盘上的版本已变（agent 或别处改过）。你有未保存改动，没有自动载入。"}</span>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             data-testid="reload-script"
             disabled={busy}
             onClick={() => {
@@ -458,14 +499,25 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           >
             {reloadArm ? "确认丢弃本地改动并重新载入？" : "重新载入磁盘版本"}
           </button>
+          {reloadArm && (
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm"
+              data-testid="reload-script-cancel"
+              disabled={busy}
+              onClick={() => setReloadArm(false)}
+            >
+              取消
+            </button>
+          )}
         </div>
       )}
       {stashOffer !== null && (
-        <div className="notice" data-testid="stash-offer">
+        <div className="notice ui-card-enter" data-testid="stash-offer">
           <Icon name="info" size="sm" />
-          检测到上次未保存的草稿（localStorage 便利层）。
+          <span>检测到上次未保存的草稿。</span>
           <button
-            className="ui-btn"
+            className="ui-btn ui-btn--sm"
             onClick={() => {
               setDoc(stashOffer);
               setStashOffer(null);
@@ -473,10 +525,18 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           >
             恢复草稿
           </button>
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="stash-dismiss"
+            onClick={() => setStashOffer(null)}
+          >
+            忽略
+          </button>
         </div>
       )}
       {sealMsg !== null && (
-        <div className="notice" data-testid="seal-msg">
+        <div className="notice ui-confirm-enter" data-testid="seal-msg">
           <Icon name="info" size="sm" />
           {sealMsg}
         </div>
@@ -487,6 +547,52 @@ export function ScriptEditor({ epKey, rpc }: { epKey: string; rpc: RpcClient }) 
           {checkOut.stderrTail}
         </pre>
       )}
+      <FloatingModal
+        open={pendingSwitch}
+        onClose={() => {
+          if (!busy) onResolveSwitch?.("cancel");
+        }}
+        testId="dirty-script-modal"
+        className="confirm-modal"
+        ariaLabel="文稿有未保存的改动"
+      >
+        <h3 className="confirm-modal-title">文稿有未保存的改动</h3>
+        <p className="confirm-modal-body">离开前要如何处理当前编辑中的 02-script.md？</p>
+        <div className="confirm-modal-actions">
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="dirty-cancel"
+            disabled={busy}
+            onClick={() => onResolveSwitch?.("cancel")}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="ui-btn ui-btn--danger ui-btn--sm"
+            data-testid="dirty-discard"
+            disabled={busy}
+            onClick={() => onResolveSwitch?.("proceed")}
+          >
+            丢弃改动
+          </button>
+          <button
+            type="button"
+            className="ui-btn ui-btn--primary ui-btn--sm"
+            data-testid="dirty-save-and-switch"
+            disabled={off || tooBig}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void doSave(rpc.call("script.save", saveParams())).then((ok) => {
+                onResolveSwitch?.(ok ? "proceed" : "save-failed");
+              });
+            }}
+          >
+            {busy ? "正在保存…" : "保存并切换"}
+          </button>
+        </div>
+      </FloatingModal>
     </div>
   );
 }

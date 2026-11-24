@@ -176,8 +176,8 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   "conv.command": { file: "renderer/SessionHeader.tsx", attrs: ["onClick", "onKeyDown"] },  // D156：Shift+Tab 循环档位走 onKeyDown
   "conv.end": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "conv.resume": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
-  "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick"] },
-  "project.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick"] }, // D81：建企划同建期纪律
+  "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick", "onKeyDown"] },
+  "project.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick", "onKeyDown"] }, // D81：建企划同建期纪律（支持按钮点击与输入框回车提交）
   // Spec 11 S8-R13 的显式点击纪律扩展：停机点写路径只许挂在对应按钮/确认框上。
   // RECORD_TIME 的发送点在 host/humanTime.ts（审核面事件驱动），不在 renderer，故不在此表。
   "script.save": { file: "renderer/ScriptEditor.tsx", attrs: ["onClick", "onKeyDown"] },

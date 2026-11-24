@@ -277,7 +277,7 @@ test("TA-7 后置核验：APPROVE 退 0 却什么都不做 → E_UNVERIFIED，UI
   await openEp(L.page, "TA7");
   await card(L.page, "03.5").getByTestId("approve").click();
   await expect(errOf(L)).toHaveAttribute("data-code", "E_UNVERIFIED");
-  await expect(errOf(L)).toContainText("目标对象未到达预期状态");
+  await expect(errOf(L)).toContainText("审批状态未如预期更新");
   expect(await L.page.getByTestId("decision-ok").count()).toBe(0);
 });
 
@@ -330,7 +330,7 @@ test("TA-9 不批准替身（03.5）：spawn 前改写 manifest → core 退 1�
   writeManifest(e2, [4.5]);
   await release(L, "before-heal");
   await expect(errOf(L)).toHaveAttribute("data-code", "E_STALE");
-  await expect(errOf(L)).toContainText("已不在可操作状态");
+  await expect(errOf(L)).toContainText("该审批已被处理或更新");
   expect(ackSpawns(L).length).toBe(acks);
   expect(readStore(e2).find((o) => o.approval_id === A)!.status).toBe("superseded");
 
@@ -347,7 +347,7 @@ test("TA-9 不批准替身（03.5）：spawn 前改写 manifest → core 退 1�
   expect(store.find((o) => o.approval_id === A)!.status).toBe("pending");
   await release(L, "after-heal");
   await expect(errOf(L)).toHaveAttribute("data-code", "E_STALE");
-  await expect(errOf(L)).toContainText("指纹不符");
+  await expect(errOf(L)).toContainText("对应文件在你审阅后已发生变动");
   expect(ackSpawns(L).length).toBe(acks);
   expect(decisionLines(e3).length).toBe(linesBefore);
 });
@@ -577,6 +577,8 @@ test("TI-9 kill -9 host → 10 s 内看护重启、健康面板显示 host 在�
   epAt035(R.eps, "TI9");
   const L = await start(R);
   await openEp(L.page, "TI9");
+  await L.page.getByTestId("appearance").click();
+  await L.page.getByTestId("theme-menu").waitFor();
   await L.page.getByTestId("health-toggle").click();
   await expect(L.page.locator("[data-row='host 连接'] td")).toHaveText("在线");
   const pid = (await hostPid(L))!;

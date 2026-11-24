@@ -10,6 +10,7 @@ import type { ConvEntry, ConvKey, ConvSnapshot, SessionRow, TrashRow } from "../
 import { formatRelTime } from "../shared/relTime";
 import { titleProblem } from "../shared/sessionTitle";
 import { Icon } from "./icons";
+import { Disclosure } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 
 /** D80：本会话键收到过几帧 session_title——变了就重取会话列表（标题在回合结束之后才异步到达，阶段早已变完） */
@@ -24,9 +25,10 @@ export function formatTrashSize(bytes: number): string {
 }
 
 /** D80 R7：`openCards` = 活会话的待答卡数（只有活会话能有卡，口径同期行的「N 张卡待答」） */
-export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; titles?: number; openCards?: number; onChanged: () => void }) {
+export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, active = true, onChanged }: { rpc: RpcClient; convKey: ConvKey; phase: ConvSnapshot["phase"]; titles?: number; openCards?: number; active?: boolean; onChanged: () => void }) {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
-  const [editing, setEditing] = useState<{ sid: string; text: string } | null>(null);
+  const [editing, setEditing] = useState<{ sid: string; text: string; origTitle: string } | null>(null);
+  const renameCancelledRef = useRef(false);
   // R1.5：标题换了（兜底 → 生成名 / 改名）的行淡入切换；首次载入不播
   const seen = useRef<Map<string, string>>(new Map());
   const [trash, setTrash] = useState<TrashRow[] | null>(null);
@@ -70,20 +72,21 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
   const running = phase === "running" || phase === "starting" || phase === "ending";
   // D157：回合在跑不再锁住会话管理——切段/开新段都不杀活进程（host 侧已改）。只剩本列表自己的操作在途。
   const off = busy;
-  const saveTitle = (sid: string, text: string) => {
+  const saveTitle = (sid: string, text: string): boolean => {
     const problem = titleProblem(text);
     if (problem !== null) {
       setError(problem);
-      return;
+      return false;
     }
     setEditing(null);
     // 改名不结束活会话、回合在跑时也能改（core 侧标题文件自带锁）：只受本列表自己的 busy 约束
     act(() => rpc.call("conv.rename", { convKey, sid, title: text.trim() }));
+    return true;
   };
   const anyLive = rows?.some((r) => r.live) ?? false;
   const now = Date.now();
   return (
-    <div className="ep-sessions" data-testid="session-list" aria-busy={busy || undefined}>
+    <div className="ep-sessions" data-testid={active ? "session-list" : undefined} aria-hidden={!active || undefined} aria-busy={busy || undefined}>
       <button
         className="ui-row ep-session"
         data-testid="session-new"
@@ -104,6 +107,14 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
         const swapped = prev !== undefined && prev !== title;
         seen.current.set(r.sid, title);
         if (editing?.sid === r.sid) {
+          const commitRename = (): boolean => {
+            const trimmed = editing.text.trim();
+            if (trimmed === "" || trimmed === editing.origTitle) {
+              setEditing(null);
+              return true;
+            }
+            return saveTitle(r.sid, editing.text);
+          };
           return (
             <div key={r.sid} className="ep-session-wrap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
               <input
@@ -112,23 +123,31 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
                 aria-label="会话标题"
                 autoFocus
                 value={editing.text}
-                onChange={(e) => setEditing({ sid: r.sid, text: e.target.value })}
+                onChange={(e) => setEditing({ sid: r.sid, text: e.target.value, origTitle: editing.origTitle })}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                     e.preventDefault();
-                    if (editing.text.trim() === "" || editing.text.trim() === title) setEditing(null); // 空串 / 没改 = 取消
-                    else saveTitle(r.sid, editing.text);
+                    if (commitRename()) renameCancelledRef.current = true;
                   } else if (e.key === "Escape") {
                     e.preventDefault();
+                    renameCancelledRef.current = true;
                     setEditing(null);
                   }
                 }}
-                onBlur={() => setEditing(null)}
+                onBlur={() => {
+                  if (renameCancelledRef.current) {
+                    renameCancelledRef.current = false;
+                    return;
+                  }
+                  commitRename();
+                }}
               />
             </div>
           );
         }
         const when = Number.isNaN(Date.parse(r.lastActivity)) ? r.lastActivity : formatRelTime(Date.parse(r.lastActivity), now);
+        const rowRunning = (r.live && running) || r.bgRunning === true;
+        const rowOpenCards = r.live ? openCards : r.bgOpenCards ?? 0;
         return (
           <div key={r.sid} className="ep-session-wrap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
             <button
@@ -143,58 +162,63 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
                 act(() => rpc.call("conv.enter", { convKey, sid: r.sid }));
               }}
             >
-              {/* R7.2：正在跑的会话标题扫光（与对话区同一套语言）；有待答卡用期行同口径的徽标 */}
+              {/* R7.2：正在跑的会话标题扫光（含后台并存运行段）；有待答卡用期行同口径的徽标 */}
               <span
                 key={title}
-                className={`ui-row-title${swapped ? " ep-title-swap" : ""}${r.live && running ? " conv-shimmer" : ""}`}
+                className={`ui-row-title${swapped ? " ep-title-swap" : ""}${rowRunning ? " conv-shimmer" : ""}`}
                 data-testid="session-title"
                 data-source={r.titleSource}
-                data-running={r.live && running ? "1" : undefined}
+                data-running={rowRunning ? "1" : undefined}
               >
                 {title}
               </span>
-              {r.live && openCards > 0 && (
+              {rowOpenCards > 0 && (
                 <span className="ui-badge ui-badge--wait" data-testid="session-open">
                   待答
                 </span>
               )}
             </button>
-            {/* R7.1：相对时间平时显示；悬停 / 键盘进入本行时换成改名、删除两个图标（R7.3） */}
-            <span className="ep-session-when" data-testid="session-when">
-              {when}
+            {/* R7.1：相对时间与悬停操作按钮叠在同一格淡入淡出，标题宽度零跳动 */}
+            <span className="ep-session-trail">
+              <span className="ep-session-when" data-testid="session-when">
+                {when}
+              </span>
+              <span className="ep-session-actions">
+                <button
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ep-session-del"
+                  data-testid="session-rename"
+                  aria-label={`改名：${title}`}
+                  title="改名"
+                  disabled={busy}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    setError(null);
+                    renameCancelledRef.current = false;
+                    setEditing({ sid: r.sid, text: r.titleSource === "first_input" ? "" : title, origTitle: title });
+                  }}
+                >
+                  <Icon name="pen" size="sm" />
+                </button>
+                <button
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-btn--danger-hover ep-session-del"
+                  data-testid="session-delete"
+                  aria-label={`删除会话：${title}`}
+                  title="移到回收站"
+                  disabled={off}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    act(() => rpc.call("conv.delete", { convKey, sid: r.sid }));
+                  }}
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </span>
             </span>
-            <button
-              className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
-              data-testid="session-rename"
-              aria-label={`改名：${title}`}
-              title="改名"
-              disabled={busy}
-              onClick={(e) => {
-                if (!e.nativeEvent.isTrusted) return;
-                setError(null);
-                setEditing({ sid: r.sid, text: r.titleSource === "first_input" ? "" : title });
-              }}
-            >
-              <Icon name="pen" size="sm" />
-            </button>
-            <button
-              className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
-              data-testid="session-delete"
-              aria-label={`删除会话：${title}`}
-              title="删除（移到回收站）"
-              disabled={off}
-              onClick={(e) => {
-                if (!e.nativeEvent.isTrusted) return;
-                act(() => rpc.call("conv.delete", { convKey, sid: r.sid }));
-              }}
-            >
-              <Icon name="trash" size="sm" />
-            </button>
           </div>
         );
       })}
       {error && (
-        <div className="warn ep-session-err" data-testid="session-error">
+        <div className="warn ep-session-err ui-error-shake" data-testid="session-error">
           {error}
         </div>
       )}
@@ -209,38 +233,63 @@ export function SessionList({ rpc, convKey, phase, titles = 0, openCards = 0, on
               setTrashOpen((v) => !v);
             }}
           >
-            <span className="ui-row-title">{trashOpen ? "▾" : "▸"} 回收站（{trash.length}）</span>
+            <span className="ui-chev" data-open={trashOpen ? "1" : "0"}>
+              <Icon name="chevron-right" size="sm" />
+            </span>
+            <span className="ui-row-title">回收站（{trash.length}）</span>
           </button>
-          {trashOpen &&
-            trash.map((t) => {
-              const when = Number.isNaN(Date.parse(t.lastTs)) ? t.lastTs : formatRelTime(Date.parse(t.lastTs), now);
-              // 同 sid 多文件（手动搬回再删即再造）：行内显示时间戳后缀区分（红队发现 6）
-              const dup = t.sid !== null && trash.filter((x) => x.sid === t.sid).length > 1;
-              const label = t.empty
-                ? "空文件"
-                : t.parseError
-                  ? "无法解析"
-                  : `${t.title ?? (t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话")} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
-              return (
-                <div key={t.file} className="ep-session-wrap" data-testid="trash-row" data-file={t.file}>
-                  <span className="ui-row ep-session ep-trash-row" title={`${t.file}\n${formatTrashSize(t.bytes)}`}>
-                    <span className="ui-row-title">{label}</span>
-                  </span>
-                  <button
-                    className="ui-btn ui-btn--ghost ui-btn--sm ep-session-del"
-                    data-testid="trash-purge"
-                    aria-label={`彻底删除：${t.file}`}
-                    disabled={off}
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      act(() => rpc.call("conv.purgeTrash", { convKey, file: t.file }));
-                    }}
-                  >
-                    彻底删除
-                  </button>
-                </div>
-              );
-            })}
+          <Disclosure open={trashOpen}>
+            <div>
+              {trash.map((t) => {
+                const when = Number.isNaN(Date.parse(t.lastTs)) ? t.lastTs : formatRelTime(Date.parse(t.lastTs), now);
+                // 同 sid 多文件（手动搬回再删即再造）：行内显示时间戳后缀区分（红队发现 6）
+                const dup = t.sid !== null && trash.filter((x) => x.sid === t.sid).length > 1;
+                const label = t.empty
+                  ? "空文件"
+                  : t.parseError
+                    ? "无法解析"
+                    : `${t.title ?? (t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话")} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
+                const restorable = !t.empty && !t.parseError;
+                return (
+                  <div key={t.file} className="ep-session-wrap ep-trash-wrap" data-testid="trash-row" data-file={t.file}>
+                    <span className="ui-row ep-session ep-trash-row" title={`${t.file}\n${formatTrashSize(t.bytes)}`}>
+                      <span className="ui-row-title">{label}</span>
+                    </span>
+                    <span className="ep-trash-actions">
+                      {restorable && (
+                        <button
+                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ep-session-del"
+                          data-testid="trash-restore"
+                          aria-label={`还原：${t.file}`}
+                          title="还原回会话列表"
+                          disabled={off}
+                          onClick={(e) => {
+                            if (!e.nativeEvent.isTrusted) return;
+                            act(() => rpc.call("conv.restoreTrash", { convKey, file: t.file }));
+                          }}
+                        >
+                          <Icon name="undo" size="sm" />
+                        </button>
+                      )}
+                      <button
+                        className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-btn--danger-hover ep-session-del"
+                        data-testid="trash-purge"
+                        aria-label={`彻底删除：${t.file}`}
+                        title="彻底删除（不可恢复）"
+                        disabled={off}
+                        onClick={(e) => {
+                          if (!e.nativeEvent.isTrusted) return;
+                          act(() => rpc.call("conv.purgeTrash", { convKey, file: t.file }));
+                        }}
+                      >
+                        <Icon name="trash" size="sm" />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Disclosure>
         </div>
       )}
     </div>

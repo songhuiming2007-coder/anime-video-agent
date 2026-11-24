@@ -8,7 +8,9 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { VoiceCheckJson, VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
 import { heardKey, lockState, redoSegments, segStatus, synthSummary, type SegStatusKind } from "../shared/voiceInfo";
+import { CopyButton } from "./copy";
 import { Icon } from "./icons";
+import { SegmentedBar } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 import { Badge, StateView } from "./ui";
 
@@ -74,6 +76,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<{ wav: string; label: string; mtime: number | null }[]>([]);
+  const [paused, setPaused] = useState(false);
   /** 复听记账变了要重渲染（Set 本身在模块级 Map 里） */
   const [, setHeardTick] = useState(0);
   // D50-A S6：在段落文字上选中的词 → 就地纠错小卡。
@@ -156,17 +159,70 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     setHeardTick((n) => n + 1);
   }, [epKey, curLabel, curDoneAt]);
 
-  // 队列推进：src 变化后自动开播；`ended` 由元素事件接下一条（Spec 8 §2.7 音频队列同款）
+  // 队列推进：src 变化后自动开播；队空时复位 paused（<audio> 条件卸载自动停播）
   useEffect(() => {
+    if (!current) {
+      setPaused(false);
+      return;
+    }
     const a = audioRef.current;
-    if (!a || !current) return;
-    void a.play().catch(() => undefined);
+    if (!a) return;
+    setPaused(false);
+    void a.play().catch(() => setPaused(true));
   }, [current]);
 
-  const playOne = (seg: VoiceSegmentJson) => setQueue([{ wav: seg.wav, label: seg.label, mtime: seg.mtime }]);
-  const playAll = () => setQueue((info?.segments ?? []).filter((s) => s.wav_exists).map((s) => ({ wav: s.wav, label: s.label, mtime: s.mtime })));
+  // 段落回滚或重配后 mtime 变化时同步队列：队首过期则纯返回空队（由上方 effect 与卸载停播），其余待播项同步新 mtime
+  useEffect(() => {
+    if (!info) return;
+    const byLabel = new Map(info.segments.map((s) => [s.label, s]));
+    setQueue((prev) => {
+      if (prev.length === 0) return prev;
+      const head = prev[0];
+      const headSeg = byLabel.get(head.label);
+      if (!headSeg || !headSeg.wav_exists || headSeg.mtime !== head.mtime) {
+        return [];
+      }
+      let changed = false;
+      const next = [head];
+      for (let i = 1; i < prev.length; i++) {
+        const seg = byLabel.get(prev[i].label);
+        if (!seg || !seg.wav_exists) {
+          changed = true;
+          continue;
+        }
+        if (seg.mtime !== prev[i].mtime || seg.wav !== prev[i].wav) {
+          changed = true;
+          next.push({ wav: seg.wav, label: seg.label, mtime: seg.mtime });
+        } else {
+          next.push(prev[i]);
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [info]);
+
+  const playOne = (seg: VoiceSegmentJson) => {
+    setPaused(false);
+    setQueue([{ wav: seg.wav, label: seg.label, mtime: seg.mtime }]);
+  };
+  const playAll = () => {
+    setPaused(false);
+    setQueue((info?.segments ?? []).filter((s) => s.wav_exists).map((s) => ({ wav: s.wav, label: s.label, mtime: s.mtime })));
+  };
+  const togglePause = () => {
+    const a = audioRef.current;
+    if (!a || !current) return;
+    if (a.paused) {
+      setPaused(false);
+      void a.play().catch(() => setPaused(true));
+    } else {
+      a.pause();
+      setPaused(true);
+    }
+  };
   const stop = () => {
     setQueue([]);
+    setPaused(false);
     audioRef.current?.pause();
   };
 
@@ -306,12 +362,13 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         <div className="notice notice--warn" data-testid="voice-lock-stale">
           <Icon name="alert" size="sm" />
           <span>
-            锁残留（上次进程被杀、断电，或锁文件写到一半；{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}）。请让 AVA 跑
+            锁残留（上次进程异常中断；{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}）。请让 AVA 跑
             <code>{` tts --clear-stale-lock `}</code>
             或终端执行
             <code>{` python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock `}</code>
-            清除后重试；app 不提供「清锁」按钮（那是绕过单写者纪律的新写通道）。
+            清除后重试。
           </span>
+          <CopyButton text={`python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock`} label="复制清锁命令" testId="voice-lock-copy" />
         </div>
       )}
 
@@ -325,16 +382,18 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       <div className="voice-list" data-testid="voice-segments">
         {info.segments.map((s) => {
           const st = segStatus(info, s.label, heard, today);
+          const isCurrent = current?.label === s.label && current.mtime === s.mtime;
+          const isPlayingThis = isCurrent && !paused;
           return (
-          <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={current?.label === s.label ? "true" : undefined}>
+          <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={isCurrent ? "true" : undefined}>
             <button
               className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
               data-testid="seg-play"
               disabled={!s.wav_exists}
-              onClick={() => (current?.label === s.label ? stop() : playOne(s))}
-              aria-label={current?.label === s.label ? `停止段 ${s.label}` : `播放段 ${s.label}`}
+              onClick={() => (isCurrent ? togglePause() : playOne(s))}
+              aria-label={isPlayingThis ? `暂停段 ${s.label}` : isCurrent ? `继续播放段 ${s.label}` : `播放段 ${s.label}`}
             >
-              <Icon name={current?.label === s.label ? "pause" : "play"} size="sm" />
+              <Icon name={isPlayingThis ? "pause" : "play"} size="sm" />
             </button>
             <div className="voice-row-main">
               <div className="voice-row-head">
@@ -496,22 +555,54 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       )}
 
       {msg !== null && (
-        <div className="notice" data-testid="voice-msg">
+        <div className="notice ui-confirm-enter" data-testid="voice-msg">
           <Icon name="info" size="sm" />
           {msg}
         </div>
       )}
 
       {current !== null && (
-        <div className="voice-nowplaying" data-testid="voice-nowplaying">
-          <Icon name="wave" size="sm" />
+        <div className="voice-nowplaying ui-card-enter" data-testid="voice-nowplaying">
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+            data-testid="voice-nowplaying-toggle"
+            onClick={togglePause}
+            aria-label={paused ? "继续播放" : "暂停播放"}
+          >
+            <Icon name={paused ? "play" : "pause"} size="sm" />
+          </button>
           <span className="voice-nowplaying-name">段 {current.label}</span>
-          <span className="voice-nowplaying-bar" aria-hidden="true">
-            <span style={{ transform: `scaleX(${pos.d > 0 ? Math.min(1, pos.t / pos.d) : 0})` }} />
-          </span>
+          <input
+            type="range"
+            className="voice-nowplaying-seek"
+            data-testid="voice-seek"
+            aria-label="播放进度"
+            aria-valuetext={`${formatAudioClock(pos.t)} / ${formatAudioClock(pos.d)}`}
+            min={0}
+            max={pos.d > 0 ? pos.d : 0}
+            step={0.1}
+            value={pos.d > 0 ? Math.min(pos.t, pos.d) : 0}
+            disabled={pos.d <= 0}
+            onChange={(e) => {
+              const a = audioRef.current;
+              const next = Number(e.target.value);
+              if (!a || !Number.isFinite(next) || !Number.isFinite(a.duration) || a.duration <= 0) return;
+              a.currentTime = Math.max(0, Math.min(a.duration, next));
+              setPos({ t: a.currentTime, d: a.duration });
+            }}
+          />
           <span className="voice-nowplaying-clock">
             {formatAudioClock(pos.t)} / {formatAudioClock(pos.d)}
           </span>
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+            onClick={stop}
+            aria-label="停止播放"
+          >
+            <Icon name="close" size="sm" />
+          </button>
         </div>
       )}
 
@@ -538,6 +629,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               void doDone(rpc.call("voice.applyPatch", { epKey }));
             }}
           >
+            {busy && <span className="ui-spinner" />}
             只重配这 {redoSegs.length} 段
           </button>
         ) : (
@@ -551,12 +643,23 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               void doDone(rpc.call("voice.retts", { epKey }));
             }}
           >
+            {busy && <span className="ui-spinner" />}
             只重配这 {redoSegs.length} 段
           </button>
         )}
       </div>
       {/* key 带 mtime：重配后同名 wav 换了内容，强制换一个元素重新取，不播旧缓冲（D87） */}
-      {current !== null && <audio key={`${current.wav}@${current.mtime ?? ""}`} ref={audioRef} src={urlOf(current.wav)} data-testid="voice-audio" onEnded={() => setQueue((q) => q.slice(1))} />}
+      {current !== null && (
+        <audio
+          key={`${current.wav}@${current.mtime ?? ""}`}
+          ref={audioRef}
+          src={urlOf(current.wav)}
+          data-testid="voice-audio"
+          onPlay={() => setPaused(false)}
+          onPause={() => setPaused(true)}
+          onEnded={() => setQueue((q) => q.slice(1))}
+        />
+      )}
     </div>
   );
 }
@@ -610,8 +713,9 @@ function FixCard({
   onAdd: (call: Promise<unknown>) => void;
   onGlobalDone: (line: string) => void;
 }) {
+  const looksLatin = /^[A-Za-z0-9\s\-_.'’]+$/.test(word) && /[A-Za-z]/.test(word);
   const [pinyin, setPinyin] = useState("");
-  const [method, setMethod] = useState<Method>("pinyin");
+  const [method, setMethod] = useState<Method>(() => (looksLatin ? "latin" : "pinyin"));
   const [homophone, setHomophone] = useState("");
   const [scope, setScope] = useState<Scope>("seg");
   const [check, setCheck] = useState<VoiceCheckJson | null>(null);
@@ -648,43 +752,68 @@ function FixCard({
   const needSupersede = result !== null && !result.ok && result.lines.some((l) => l.includes("--supersede"));
 
   return (
-    <div className="ui-popover voice-fix" data-testid="voice-fix">
+    <div className="ui-popover voice-fix ui-card-enter" data-testid="voice-fix">
       <span>「{word}」应读</span>
       <span>
-        <input className="ui-input voice-fix-input" data-testid="fix-pinyin" placeholder={method === "latin" ? "如 Eternal Wind" : "如 jie3 di4"} value={pinyin} onChange={(e) => setPinyin(e.target.value)} />
+        <input
+          className="ui-input voice-fix-input"
+          data-testid="fix-pinyin"
+          autoFocus
+          placeholder={method === "latin" ? "如 Eternal Wind" : "如 jie3 di4"}
+          value={pinyin}
+          onChange={(e) => setPinyin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+        />
       </span>
       <span>改法</span>
-      <span className="ui-seg">
-        <button aria-pressed={method === "pinyin"} data-testid="fix-method-pinyin" onClick={() => setMethod("pinyin")}>
+      <SegmentedBar activeKey={method} label="改法">
+        <button type="button" aria-pressed={method === "pinyin"} data-testid="fix-method-pinyin" onClick={() => setMethod("pinyin")}>
           拼音直注
         </button>
-        <button aria-pressed={method === "homophone"} data-testid="fix-method-homophone" onClick={() => setMethod("homophone")}>
+        <button type="button" aria-pressed={method === "homophone"} data-testid="fix-method-homophone" onClick={() => setMethod("homophone")}>
           同音字
         </button>
-        <button aria-pressed={method === "latin"} data-testid="fix-method-latin" onClick={() => setMethod("latin")}>
+        <button type="button" aria-pressed={method === "latin"} data-testid="fix-method-latin" onClick={() => setMethod("latin")}>
           英文改写
         </button>
-      </span>
+      </SegmentedBar>
       {method === "homophone" && (
         <>
           <span>同音字</span>
           <span>
-            <input className="ui-input voice-fix-input" data-testid="fix-homophone" placeholder="读音唯一的字" value={homophone} onChange={(e) => setHomophone(e.target.value)} />
+            <input
+              className="ui-input voice-fix-input"
+              data-testid="fix-homophone"
+              placeholder="读音唯一的字"
+              value={homophone}
+              onChange={(e) => setHomophone(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  onCancel();
+                }
+              }}
+            />
           </span>
         </>
       )}
       <span>范围</span>
-      <span className="ui-seg">
-        <button aria-pressed={effScope === "seg"} disabled={method !== "pinyin"} data-testid="fix-scope-seg" onClick={() => setScope("seg")}>
+      <SegmentedBar activeKey={effScope} label="生效范围">
+        <button type="button" aria-pressed={effScope === "seg"} disabled={method !== "pinyin"} data-testid="fix-scope-seg" onClick={() => setScope("seg")}>
           本段 {label}
         </button>
-        <button aria-pressed={effScope === "ep"} disabled={method !== "pinyin"} data-testid="fix-scope-ep" onClick={() => setScope("ep")}>
+        <button type="button" aria-pressed={effScope === "ep"} disabled={method !== "pinyin"} data-testid="fix-scope-ep" onClick={() => setScope("ep")}>
           本期
         </button>
-        <button aria-pressed={effScope === "global"} data-testid="fix-scope-global" onClick={() => setScope("global")}>
+        <button type="button" aria-pressed={effScope === "global"} data-testid="fix-scope-global" onClick={() => setScope("global")}>
           全局
         </button>
-      </span>
+      </SegmentedBar>
       {method === "homophone" && (
         <>
           <span />

@@ -3,6 +3,7 @@
 // 该字面量的调用点只在「建期」按钮的 onClick 里（TG-10）。
 import { useState } from "react";
 import type { CreatedEpisode } from "../shared/protocol";
+import { Disclosure } from "./motion";
 import type { RpcClient } from "./rpc";
 import { errText } from "./rpc";
 
@@ -16,11 +17,42 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
       <button className="ui-row proj-new" data-testid="new-episode-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         ＋ 新建一期
       </button>
-      {open && (
+      <Disclosure open={open}>
         <div className="new-episode-form">
           <label className="ui-field">
             期名
-            <input className="ui-input" data-testid="episode-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 2026-10-01-春物-…" />
+            <input
+              className="ui-input"
+              data-testid="episode-name"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                  return;
+                }
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.keyCode === 229 || busy || name.trim() === "") return;
+                e.preventDefault();
+                setBusy(true);
+                setProblem(null);
+                rpc.call<CreatedEpisode>("episode.create", { name: name.trim() }).then(
+                  (r) => {
+                    setBusy(false);
+                    setName("");
+                    setOpen(false);
+                    onCreated(r);
+                  },
+                  (err) => {
+                    setBusy(false);
+                    setProblem(errText(err));
+                  },
+                );
+              }}
+              placeholder="例如 2026-10-01-春物-…"
+            />
           </label>
           <button
             className="ui-btn ui-btn--sm"
@@ -30,7 +62,7 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               if (!e.nativeEvent.isTrusted) return;
               setBusy(true);
               setProblem(null);
-              rpc.call<CreatedEpisode>("episode.create", { name }).then(
+              rpc.call<CreatedEpisode>("episode.create", { name: name.trim() }).then(
                 (r) => {
                   setBusy(false);
                   setName("");
@@ -44,21 +76,22 @@ export function NewEpisodeForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               );
             }}
           >
+            {busy && <span className="ui-spinner" />}
             建期
           </button>
           {busy && <span className="muted">建期中…</span>}
           {problem && (
-            <div className="error" data-testid="new-episode-error">
+            <div className="error ui-error-shake" data-testid="new-episode-error">
               {problem}
             </div>
           )}
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }
 
-// ---------------- D81：建企划、在企划下建卷（同一文件：TG-10 建期类方法只在本文件的点击处理器里） ----------------
+// ---------------- D81：建企划、在企划下建卷（同一文件：TG-10 建期类方法只在本文件的点击/按键处理器里） ----------------
 // 企划名 / 卷名初值同样是空串字面量、不从对话预填（TG-15 的同一纪律）；目标企划是宿主扫出来的对象（不是可预填的名字）。
 
 export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: (projKey: string) => void }) {
@@ -71,11 +104,42 @@ export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
       <button className="ui-row proj-new" data-testid="new-project-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         ＋ 新建企划
       </button>
-      {open && (
+      <Disclosure open={open}>
         <div className="new-episode-form">
           <label className="ui-field">
             企划名
-            <input className="ui-input" data-testid="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 supercell-编年史" />
+            <input
+              className="ui-input"
+              data-testid="project-name"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                  return;
+                }
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.keyCode === 229 || busy || name.trim() === "") return;
+                e.preventDefault();
+                setBusy(true);
+                setProblem(null);
+                rpc.call<{ projKey: string }>("project.create", { name: name.trim() }).then(
+                  (r) => {
+                    setBusy(false);
+                    setName("");
+                    setOpen(false);
+                    onCreated(r.projKey);
+                  },
+                  (err) => {
+                    setBusy(false);
+                    setProblem(errText(err));
+                  },
+                );
+              }}
+              placeholder="例如 supercell-编年史"
+            />
           </label>
           <button
             className="ui-btn ui-btn--sm"
@@ -85,7 +149,7 @@ export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               if (!e.nativeEvent.isTrusted) return;
               setBusy(true);
               setProblem(null);
-              rpc.call<{ projKey: string }>("project.create", { name }).then(
+              rpc.call<{ projKey: string }>("project.create", { name: name.trim() }).then(
                 (r) => {
                   setBusy(false);
                   setName("");
@@ -99,16 +163,17 @@ export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               );
             }}
           >
+            {busy && <span className="ui-spinner" />}
             建企划
           </button>
           {busy && <span className="muted">建企划中…</span>}
           {problem && (
-            <div className="error" data-testid="new-project-error">
+            <div className="error ui-error-shake" data-testid="new-project-error">
               {problem}
             </div>
           )}
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }
@@ -123,11 +188,42 @@ export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; targ
       <button className="ui-row proj-new" data-testid="new-volume-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         ＋ 新建卷
       </button>
-      {open && (
+      <Disclosure open={open}>
         <div className="new-episode-form">
           <label className="ui-field">
             卷名
-            <input className="ui-input" data-testid="volume-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 01-…" />
+            <input
+              className="ui-input"
+              data-testid="volume-name"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                  return;
+                }
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.keyCode === 229 || busy || name.trim() === "") return;
+                e.preventDefault();
+                setBusy(true);
+                setProblem(null);
+                rpc.call<CreatedEpisode>("episode.create", { name: name.trim(), project: target.projKey }).then(
+                  (r) => {
+                    setBusy(false);
+                    setName("");
+                    setOpen(false);
+                    onCreated(r);
+                  },
+                  (err) => {
+                    setBusy(false);
+                    setProblem(errText(err));
+                  },
+                );
+              }}
+              placeholder="例如 01-…"
+            />
           </label>
           <button
             className="ui-btn ui-btn--sm"
@@ -137,7 +233,7 @@ export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; targ
               if (!e.nativeEvent.isTrusted) return;
               setBusy(true);
               setProblem(null);
-              rpc.call<CreatedEpisode>("episode.create", { name, project: target.projKey }).then(
+              rpc.call<CreatedEpisode>("episode.create", { name: name.trim(), project: target.projKey }).then(
                 (r) => {
                   setBusy(false);
                   setName("");
@@ -151,16 +247,17 @@ export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; targ
               );
             }}
           >
+            {busy && <span className="ui-spinner" />}
             建卷
           </button>
           {busy && <span className="muted">建卷中…</span>}
           {problem && (
-            <div className="error" data-testid="new-volume-error">
+            <div className="error ui-error-shake" data-testid="new-volume-error">
               {problem}
             </div>
           )}
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }

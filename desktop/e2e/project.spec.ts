@@ -140,6 +140,12 @@ for (const [w, h] of [[1280, 800], [1440, 900]] as const) {
       await volRow(p, "supercell-编年史/02-nagi接棒的那几年").click(); // 当前卷下挂会话列表
       await card(p, "EGOIST-传奇企划志-V2").getByTestId("new-volume-toggle").click(); // 展开一张建卷表单
       await expect(p.locator("[data-testid=project-volumes] [data-testid=episode]")).toHaveCount(10);
+      // 等待展开动效落位再测静态布局不重叠（过渡中 .ui-collapse-inner 按 overflow:clip 裁切，视觉不重叠但原 DOM rect 尚未展开到位）
+      await expect(card(p, "EGOIST-传奇企划志-V2").locator(".new-volume .ui-collapse")).toHaveAttribute("data-state", "open");
+      await p.evaluate(async () => {
+        const anims = document.querySelectorAll("nav.left .ui-collapse");
+        await Promise.all([...anims].flatMap((el) => el.getAnimations().map((a) => a.finished.catch(() => undefined))));
+      });
       const r = await p.evaluate(() => {
         const side = document.querySelector("nav.left") as HTMLElement;
         const sel = ".proj-head, .proj-name, .proj-sess, .proj-sub, .proj-bar, .proj-empty, [data-testid=episodes] .ui-row, [data-testid=episodes] .ep-session-wrap, [data-testid=episodes] .new-episode-form";

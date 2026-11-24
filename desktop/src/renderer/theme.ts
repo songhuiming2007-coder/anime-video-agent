@@ -42,8 +42,24 @@ export function saveTheme(t: Theme): boolean {
   }
 }
 
-/** system 删 data-theme（跟随系统深色块生效），否则写入 */
-export function applyTheme(t: Theme): void {
+let themeTransitionTimer: ReturnType<typeof setTimeout> | null = null;
+
+function pulseThemeTransition(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const root = document.documentElement;
+  root.setAttribute("data-theme-transition", "1");
+  if (themeTransitionTimer !== null) clearTimeout(themeTransitionTimer);
+  // 105ms 略短于视觉门禁 120ms 等待窗，既平滑过渡又不留半途状态
+  themeTransitionTimer = setTimeout(() => {
+    themeTransitionTimer = null;
+    root.removeAttribute("data-theme-transition");
+  }, 105);
+}
+
+/** system 删 data-theme（跟随系统深色块生效），否则写入；用户主动切换时开启短促表面过渡 */
+export function applyTheme(t: Theme, animate = false): void {
+  if (animate) pulseThemeTransition();
   if (t === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
 }
@@ -68,7 +84,8 @@ export function saveAccent(a: Accent): boolean {
   }
 }
 
-export function applyAccent(a: Accent): void {
+export function applyAccent(a: Accent, animate = false): void {
+  if (animate) pulseThemeTransition();
   if (a === "sakura") document.documentElement.removeAttribute("data-accent");
   else document.documentElement.setAttribute("data-accent", a);
 }

@@ -17,10 +17,12 @@ import { filterProject, plainEpisodes, progressSegments, projectBadges, projectT
 import { AnswerDock, RequestCards } from "./HumanCards";
 import { Composer } from "./Composer";
 import { ConversationPane, HandoffStrip } from "./ConversationPane";
-import { confirmDiscardDirty, ScriptEditor } from "./ScriptEditor";
+import { isScriptDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
-import { ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
-import { FloatingPopover } from "./floating";
+import { healthAlerts, ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
+import { FloatingPopover, FloatingTooltip, TooltipGroup } from "./floating";
+import { Disclosure, SegmentedBar, useCountBump } from "./motion";
+import { CopyButton } from "./copy";
 import { Icon } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
 import { clampLeft, effectivePreviewW, gridColumns, LEFT_DEFAULT, LEFT_MAX, LEFT_MIN, previewMax, PREVIEW_MIN, type Layout } from "./layout";
@@ -77,14 +79,23 @@ function hasMemoryAsk(entries: readonly ConvEntry[]): boolean {
 }
 
 export function App() {
-  return FATAL !== null ? <FatalPanel text={FATAL} /> : <Main />;
+  return FATAL !== null ? (
+    <FatalPanel text={FATAL} />
+  ) : (
+    <TooltipGroup>
+      <Main />
+    </TooltipGroup>
+  );
 }
 
 function FatalPanel({ text }: { text: string }) {
   return (
     <div className="fatal" data-testid="fatal">
-      <h2>ava-host 反复崩溃，已停止重启</h2>
-      <p>界面不再连接任何后台进程。排查后请退出并重新打开 app。</p>
+      <h2>后台服务连续异常退出，已停止自动重启</h2>
+      <p>当前窗口已断开连接。请复制下方诊断信息排查后，完全退出并重新打开 AVA。</p>
+      <div className="ui-card-actions">
+        <CopyButton text={text} label="复制诊断信息" testId="fatal-copy" />
+      </div>
       <pre data-testid="fatal-detail">{text}</pre>
     </div>
   );
@@ -133,6 +144,18 @@ function Main() {
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   const [previewUnseen, setPreviewUnseen] = useState(false);
+  const [paneDragging, setPaneDragging] = useState(false);
+  const [paneAnimating, setPaneAnimating] = useState(false);
+  const paneAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pulsePaneAnim = useCallback(() => {
+    setPaneAnimating(true);
+    if (paneAnimTimer.current !== null) clearTimeout(paneAnimTimer.current);
+    paneAnimTimer.current = setTimeout(() => {
+      paneAnimTimer.current = null;
+      setPaneAnimating(false);
+    }, 185);
+  }, []);
+  useEffect(() => () => { if (paneAnimTimer.current !== null) clearTimeout(paneAnimTimer.current); }, []);
   const mainRef = useRef<HTMLDivElement | null>(null);
   const [mainW, setMainW] = useState(() => window.innerWidth);
   useEffect(() => {
@@ -143,8 +166,17 @@ function Main() {
     return () => ro.disconnect();
   }, []);
   const setPreviewOpen = useCallback((open: boolean) => {
+    pulsePaneAnim();
     setLayout((l) => ({ ...l, previewOpen: open }));
     if (open) setPreviewUnseen(false);
+  }, [pulsePaneAnim]);
+  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
+  const guardDirty = useCallback((fn: () => void) => {
+    if (isScriptDirty()) {
+      setPendingNav(() => fn);
+      return;
+    }
+    fn();
   }, []);
 
   const loadHealth = useCallback(() => rpc.call<Health>("app.health").then(setHealth, (e) => setError(errText(e))), []);
@@ -217,9 +249,7 @@ function Main() {
     if (health && !health.isPackaged) installTestHooks(health.isPackaged, rpc);
   }, [health]);
 
-  const open = useCallback(async (epKey: string) => {
-    // RF-7：02.5 编辑器有未保存改动时先二次确认（切期即卸载，脏缓冲区会蒸发）
-    if (!confirmDiscardDirty()) return;
+  const openDirect = useCallback(async (epKey: string) => {
     setError(null);
     setPreview(null);
     setPreviewUnseen(false);
@@ -237,24 +267,31 @@ function Main() {
     }
   }, []);
 
+  const open = useCallback((epKey: string) => {
+    guardDirty(() => void openDirect(epKey));
+  }, [guardDirty, openDirect]);
+
   /** D81：进企划会话。不激活任何期（中栏不显示工序卡，显示企划头部）；预览清空同切期 */
   const openProject = useCallback((projKey: string) => {
-    if (!confirmDiscardDirty()) return;
-    setError(null);
-    setPreview(null);
-    setPreviewUnseen(false);
-    setShowIdea(false);
-    setActive(null);
-    setActiveProject(projKey);
-  }, []);
+    guardDirty(() => {
+      setError(null);
+      setPreview(null);
+      setPreviewUnseen(false);
+      setShowIdea(false);
+      setActive(null);
+      setActiveProject(projKey);
+    });
+  }, [guardDirty]);
 
-  /** 建期成功（两处「＋ 新建一期」共用）：记下带入结果给 idea-note 两态与选题视图的「已带入」提示 */
+  /** 建期成功（两处「＋ 新建一期」及企划下「＋ 新建卷」共用）：经 guardDirty 保护当前未保存文稿 */
   const onCreatedEp = useCallback((created: CreatedEpisode) => {
-    setJustCreated(created);
-    setIdeaCarriedTo(created.migrated ? created.epKey : null);
-    setShowIdea(false);
-    void open(created.epKey);
-  }, [open]);
+    guardDirty(() => {
+      setJustCreated(created);
+      setIdeaCarriedTo(created.migrated ? created.epKey : null);
+      setShowIdea(false);
+      void openDirect(created.epKey);
+    });
+  }, [guardDirty, openDirect]);
 
   const refresh = useCallback(async () => {
     if (!active) return;
@@ -269,8 +306,7 @@ function Main() {
     }
   }, [active, loadHealth]);
 
-  const changeRepo = useCallback(async () => {
-    if (!confirmDiscardDirty()) return;
+  const changeRepoDirect = useCallback(async () => {
     setError(null);
     try {
       const r = await rpc.call<{ changed: boolean; repoRoot: string | null; problem: string | null }>("app.requestRepoRootChange");
@@ -280,6 +316,7 @@ function Main() {
       setActiveProject(null);
       setPreview(null);
       dispatch({ type: "reset" });
+      dispatchConv({ type: "reset-convs" });
       autoRef.current = initialAutoOpen;
       setStrip(null);
       void loadHealth();
@@ -288,6 +325,10 @@ function Main() {
       setError(errText(e));
     }
   }, [loadHealth]);
+
+  const changeRepo = useCallback(() => {
+    guardDirty(() => void changeRepoDirect());
+  }, [guardDirty, changeRepoDirect]);
 
   const ep = select(store, active);
   // D71：时间线展开状态提到这里——作业条的「看进度」要从预览区之外把它展开（切期即收起，同原先按期重挂载）
@@ -316,8 +357,9 @@ function Main() {
     }
   }, []);
 
-  /** 「人不空闲」的第二半：预览区里有媒体在播（另一头是 owner === "human"，由 R4 自己维护） */
-  const mediaPlaying = () =>
+  /** 「人不空闲」的第二半：预览区里有媒体在播，或文稿编辑器有未保存改动（避免自动呼出静默卸载未保存文稿） */
+  const previewBusy = () =>
+    isScriptDirty() ||
     [...document.querySelectorAll("audio, video")].some((m) => {
       const el = m as HTMLMediaElement;
       return !el.paused && !el.ended;
@@ -340,17 +382,27 @@ function Main() {
   useEffect(() => {
     if (!ep) return;
     const items = approvalsOf(ep).filter((a) => a.status === "pending" && isStopType(a.type));
-    applyAuto(step(autoRef.current, { kind: "pendings", items }, { mediaPlaying: mediaPlaying() }));
+    applyAuto(step(autoRef.current, { kind: "pendings", items }, { mediaPlaying: previewBusy() }));
   }, [ep, applyAuto]);
 
   /** R4：人从产物树 / 画廊点开文件（此后不再自动替换，只出「已就绪」条） */
   const pickHuman = useCallback((t: PreviewTarget) => {
-    autoRef.current = step(autoRef.current, { kind: "human" }, { mediaPlaying: false }).state;
-    setStrip(autoRef.current.strip);
-    setPreview(t);
-    // 人自己点开文件 = 要看它：展开预览（与停机点自动呼出不同，这不是「抢」）
-    setPreviewOpen(true);
-  }, [setPreviewOpen]);
+    const switchingAwayFromScript =
+      preview?.kind === "file" &&
+      preview.root === "episodes" &&
+      activeRef.current !== null &&
+      preview.rel === `${activeRef.current}/02-script.md` &&
+      !(t.kind === "file" && t.root === "episodes" && t.rel === `${activeRef.current}/02-script.md`);
+    const go = () => {
+      autoRef.current = step(autoRef.current, { kind: "human" }, { mediaPlaying: false }).state;
+      setStrip(autoRef.current.strip);
+      setPreview(t);
+      // 人自己点开文件 = 要看它：展开预览（与停机点自动呼出不同，这不是「抢」）
+      setPreviewOpen(true);
+    };
+    if (switchingAwayFromScript) guardDirty(go);
+    else go();
+  }, [guardDirty, preview, setPreviewOpen]);
 
   /** R6：切期 / host 重连 / renderer 重载 → 预览清空、owner 归 none、deferred/strip 清空；`seen` 保留；
    * `awaiting` 从会话 snapshot 的三个顶层字段重建（不扫条目：长回合截头会丢 `turn_started`，四轮 🔵-3）。 */
@@ -369,11 +421,11 @@ function Main() {
     (key: ConvKey, entries: readonly ConvEntry[]) => {
       if (key !== convKeyRef.current) return;
       for (const e of entries) {
-        if (e.k === "frame" && e.frame.t === "turn_started") applyAuto(step(autoRef.current, { kind: "turn_started", turnId: String(e.frame.turn_id) }, { mediaPlaying: mediaPlaying() }));
+        if (e.k === "frame" && e.frame.t === "turn_started") applyAuto(step(autoRef.current, { kind: "turn_started", turnId: String(e.frame.turn_id) }, { mediaPlaying: previewBusy() }));
         if (e.k === "settled") {
           const epKey = key.startsWith("ep:") ? key.slice(3) : null;
           const items = epKey ? approvalsOf(select(storeRef.current, epKey)).filter((a) => a.status === "pending" && isStopType(a.type)) : [];
-          applyAuto(step(autoRef.current, { kind: "settled", turnId: e.turnId, items }, { mediaPlaying: mediaPlaying() }));
+          applyAuto(step(autoRef.current, { kind: "settled", turnId: e.turnId, items }, { mediaPlaying: previewBusy() }));
         }
       }
     },
@@ -399,49 +451,105 @@ function Main() {
 
   const reachOk = health?.reach === "ok";
   /** Spec 11 的深度组件按预览目标长出：02.5 编辑器长在 02-script.md 的 .md 预览旁；03.5 顺听面板替下 03-audio 队列 */
-  const editorTarget = preview?.kind === "file" && preview.root === "episodes" && preview.rel === `${active}/02-script.md`;
+  const editorTarget = !showIdea && active !== null && preview?.kind === "file" && preview.root === "episodes" && preview.rel === `${active}/02-script.md`;
   // 03-audio 目标有两个来源：自动呼出（STOP_PREVIEW 的 rel 不带期名前缀）与产物树行（带期名前缀）
   // 顺听面板装载成功的那一期（null = 未成功 / 出错）：只有成功时才收起纯播放队列
   const [voiceOk, setVoiceOk] = useState<string | null>(null);
   const onVoiceReady = useCallback((ok: boolean) => setVoiceOk(ok ? activeRef.current : null), []);
-  const voiceTarget = preview?.kind === "dir" && preview.root === "episodes" && (preview.rel === "03-audio" || preview.rel === `${active}/03-audio`);
+  const voiceTarget = !showIdea && active !== null && preview?.kind === "dir" && preview.root === "episodes" && (preview.rel === "03-audio" || preview.rel === `${active}/03-audio`);
   const activeProjObj = activeProject !== null ? list?.projects.find((x) => x.projKey === activeProject) ?? null : null;
   const headerTitle = showIdea ? "选题" : activeProjObj ? projectTitle(activeProjObj) : activeProject ?? ep?.epKey ?? active ?? "AVA";
-  const toggleLeft = () => setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }));
+  const toggleLeft = useCallback(() => {
+    pulsePaneAnim();
+    setLayout((l) => ({ ...l, leftOpen: !l.leftOpen }));
+  }, [pulsePaneAnim]);
+  const alerts = healthAlerts(health);
+  const healthSurfaced = alerts.length > 0 || !linked || showHealth;
+
+  // 全局高频快捷键：⌘B 侧栏、⌘J 预览、⌘K 搜期名、⌘R 刷新当前期
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.altKey || (!e.metaKey && !e.ctrlKey)) return;
+      if (document.querySelector(".ui-modal-backdrop")) return;
+      const k = e.key.toLowerCase();
+      if (k === "b" && !e.shiftKey) {
+        e.preventDefault();
+        toggleLeft();
+      } else if (k === "j" && !e.shiftKey) {
+        e.preventDefault();
+        setPreviewOpen(!layoutRef.current.previewOpen);
+      } else if (k === "k" && !e.shiftKey) {
+        e.preventDefault();
+        if (!layoutRef.current.leftOpen) {
+          pulsePaneAnim();
+          setLayout((l) => ({ ...l, leftOpen: true }));
+        }
+        requestAnimationFrame(() => {
+          const inp = document.querySelector<HTMLInputElement>('[data-testid="ep-search"]');
+          inp?.focus();
+          inp?.select();
+        });
+      } else if (k === "r" && !e.shiftKey && activeRef.current) {
+        e.preventDefault();
+        void refresh();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pulsePaneAnim, refresh, setPreviewOpen, toggleLeft]);
 
   return (
     <div className="app">
       {health && health.reach !== "ok" && (
-        <div className="banner banner-red" data-testid="reach-banner">
+        <div className="banner banner-red ui-card-enter" data-testid="reach-banner">
           <Icon name="alert" size="sm" />
-          {health.reach}：{health.reachDetail}
+          <span>{health.reach}：{health.reachDetail}</span>
         </div>
       )}
       {ep && <JobBar jobs={ep.jobs} onShowProgress={showProgress} />}
-      {showHealth && health && <HealthPanel health={health} diags={diags} linked={linked} onChangeRepo={changeRepo} />}
+      <Disclosure open={showHealth && health !== null}>
+        {health && <HealthPanel health={health} diags={diags} linked={linked} onChangeRepo={changeRepo} onClose={() => setShowHealth(false)} />}
+      </Disclosure>
       {error && (
-        <div className="banner banner-red" data-testid="error">
+        <div className="banner banner-red ui-card-enter" data-testid="error" role="alert">
           <Icon name="alert" size="sm" />
-          {error}
+          <span>{error}</span>
+          <span className="spacer" />
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭错误提示" onClick={() => setError(null)} data-testid="error-dismiss">
+            <Icon name="close" size="sm" />
+          </button>
         </div>
       )}
-      <div className={`main ${reachOk ? "" : "stale"}`} data-left={layout.leftOpen ? "1" : "0"} ref={mainRef} style={{ gridTemplateColumns: gridColumns(mainW, layout) }}>
+      <div
+        className={`main ${reachOk ? "" : "stale"}`}
+        data-left={layout.leftOpen ? "1" : "0"}
+        data-dragging={paneDragging ? "1" : "0"}
+        data-animating={paneAnimating && !paneDragging ? "1" : "0"}
+        ref={mainRef}
+        style={{ gridTemplateColumns: gridColumns(mainW, layout) }}
+      >
         <nav className="left" id="ava-left" hidden={!layout.leftOpen}>
           {layout.leftOpen && (
             <div className="side-topbar">
               <span className="spacer" />
-              <button
-                type="button"
-                className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-                aria-label="侧栏"
-                title="收起侧栏"
-                aria-pressed={true}
-                aria-controls="ava-left"
-                onClick={toggleLeft}
-                data-testid="toggle-left"
-              >
-                <Icon name="panel-left" size="sm" />
-              </button>
+              <FloatingTooltip
+                label={<><span>收起侧栏</span><kbd className="ui-kbd">⌘B</kbd></>}
+                renderTrigger={(trigger) => (
+                  <button
+                    type="button"
+                    ref={trigger.ref}
+                    {...trigger.props}
+                    className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                    aria-label="侧栏"
+                    aria-pressed={true}
+                    aria-controls="ava-left"
+                    onClick={toggleLeft}
+                    data-testid="toggle-left"
+                  >
+                    <Icon name="panel-left" size="sm" />
+                  </button>
+                )}
+              />
             </div>
           )}
           <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} />
@@ -453,7 +561,16 @@ function Main() {
             onOpen={open}
             onOpenProject={openProject}
             onCreatedVolume={onCreatedEp}
-            onIdea={() => { setShowIdea(true); setActiveProject(null); setJustCreated(null); }}
+            onIdea={() =>
+              guardDirty(() => {
+                setShowIdea(true);
+                setActive(null);
+                setActiveProject(null);
+                setPreview(null);
+                setPreviewUnseen(false);
+                setJustCreated(null);
+              })
+            }
             stale={!reachOk}
             convPhase={conv?.phase ?? "none"}
             titles={titleTick(conv?.entries ?? [])}
@@ -470,7 +587,8 @@ function Main() {
             max={LEFT_MAX}
             dir={1}
             onChange={(w) => setLayout((l) => ({ ...l, leftW: clampLeft(w) }))}
-            onReset={() => setLayout((l) => ({ ...l, leftW: LEFT_DEFAULT }))}
+            onReset={() => { pulsePaneAnim(); setLayout((l) => ({ ...l, leftW: LEFT_DEFAULT })); }}
+            onDraggingChange={setPaneDragging}
             testId="split-left"
           />
         )}
@@ -479,6 +597,7 @@ function Main() {
             rpc={rpc}
             convKey={convKey}
             phase={conv?.phase ?? "none"}
+            pendingScope={conv?.pending?.scope ?? null}
             info={readyInfo(conv?.entries ?? [])}
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
@@ -490,25 +609,38 @@ function Main() {
             leftOpen={layout.leftOpen}
             onToggleLeft={toggleLeft}
             health={health}
+            healthSurfaced={healthSurfaced}
             canRefresh={!!active}
+            refreshing={loading > 0}
             onRefresh={refresh}
             showHealth={showHealth}
             onToggleHealth={() => setShowHealth((v) => !v)}
             utilityRight={
               <>
-                <ThemeMenu onChangeRepo={changeRepo} />
-                <button
-                  type="button"
-                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-                  aria-label="预览"
-                  title="切换预览"
-                  aria-pressed={layout.previewOpen}
-                  aria-controls="ava-preview"
-                  onClick={() => setPreviewOpen(!layout.previewOpen)}
-                  data-testid="toggle-preview"
-                >
-                  <Icon name="panel-right" size="sm" />
-                </button>
+                <ThemeMenu
+                  onChangeRepo={changeRepo}
+                  showHealthEntry={!healthSurfaced}
+                  showHealth={showHealth}
+                  onToggleHealth={() => setShowHealth((v) => !v)}
+                />
+                <FloatingTooltip
+                  label={<><span>{layout.previewOpen ? "收起预览" : "展开预览"}</span><kbd className="ui-kbd">⌘J</kbd></>}
+                  renderTrigger={(trigger) => (
+                    <button
+                      type="button"
+                      ref={trigger.ref}
+                      {...trigger.props}
+                      className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                      aria-label="预览"
+                      aria-pressed={layout.previewOpen}
+                      aria-controls="ava-preview"
+                      onClick={() => setPreviewOpen(!layout.previewOpen)}
+                      data-testid="toggle-preview"
+                    >
+                      <Icon name="panel-right" size="sm" />
+                    </button>
+                  )}
+                />
               </>
             }
           />
@@ -587,7 +719,8 @@ function Main() {
             max={previewMax(mainW, layout)}
             dir={-1}
             onChange={(w) => setLayout((l) => ({ ...l, previewW: w }))}
-            onReset={() => setLayout((l) => ({ ...l, previewW: null }))}
+            onReset={() => { pulsePaneAnim(); setLayout((l) => ({ ...l, previewW: null })); }}
+            onDraggingChange={setPaneDragging}
             testId="split-preview"
           />
         )}
@@ -605,7 +738,15 @@ function Main() {
             onCoverImported={() => setTreeBump((n) => n + 1)}
           />
           {strip && (
-            <button className="strip" data-testid="auto-open-strip" onClick={() => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }))}>
+            <button
+              className="strip ui-card-enter"
+              data-testid="auto-open-strip"
+              onClick={() => {
+                const go = () => applyAuto(step(autoRef.current, { kind: "strip" }, { mediaPlaying: false }));
+                if (strip.type !== "02.5") guardDirty(go);
+                else go();
+              }}
+            >
               <Icon name="info" size="sm" />
               停机点 {strip.type} 已就绪 · 查看
             </button>
@@ -613,7 +754,18 @@ function Main() {
           <PaneBoundary resetKey={`${active ?? "-"}|${preview?.kind ?? ""}|${preview?.rel ?? ""}`}>
             <CrashProbe isPackaged={health?.isPackaged ?? true} />
             {active !== null && editorTarget ? (
-              <ScriptEditor key={`script:${active}`} epKey={active} rpc={rpc} />
+              <ScriptEditor
+                key={`script:${active}`}
+                epKey={active}
+                rpc={rpc}
+                pendingSwitch={pendingNav !== null}
+                onResolveSwitch={(action) => {
+                  const fn = pendingNav;
+                  setPendingNav(null);
+                  if (action === "proceed" && fn) fn();
+                  else if (action === "save-failed") setPreviewOpen(true);
+                }}
+              />
             ) : (
               <>
                 {/* D50-A S1：03-audio 只留顺听面板一套播放器；面板取不到数据时退回 Spec 8 的纯播放队列 */}
@@ -628,6 +780,7 @@ function Main() {
                   <PreviewPane
                     key={active ?? "-"}
                     target={preview}
+                    hasEpisode={Boolean(ep && !showIdea && active !== null)}
                     head={!(ep && !showIdea && active !== null)}
                     onPickFile={(dirRel, fileName) =>
                       pickHuman({
@@ -668,32 +821,36 @@ function provenanceDetail(p: Provenance): string {
   }
 }
 
-function HealthPanel({ health, diags, linked, onChangeRepo }: { health: Health; diags: string[]; linked: boolean; onChangeRepo: () => void }) {
-  const rows: [string, string][] = [
-    ["host 连接", linked ? "在线" : "断开"],
-    ["repoRoot", health.repoRoot ?? `未就绪：${health.repoRootProblem ?? ""}`],
-    ["HEAD", health.repoHead ?? "—"],
-    ["Python", health.python ?? "—"],
-    ["approval 能力", health.capabilities.approvals ? "在场" : `缺席：${health.capabilities.approvalsDetail}`],
-    ["纳秒无损解析", health.losslessJson ? "ok" : "不支持（决策条只读）"],
-    ["core Code Freeze", health.codeFreeze.detail],
-    ["UI 构建溯源", provenanceDetail(health.buildProvenance)],
-    ["数据可达性", `${health.reach}${health.reachDetail ? `：${health.reachDetail}` : ""}`],
+function HealthPanel({ health, diags, linked, onChangeRepo, onClose }: { health: Health; diags: string[]; linked: boolean; onChangeRepo: () => void; onClose: () => void }) {
+  const rows: [string, string, string][] = [
+    ["host 连接", "后台连接", linked ? "在线" : "断开"],
+    ["repoRoot", "仓库目录", health.repoRoot ?? `未就绪：${health.repoRootProblem ?? ""}`],
+    ["HEAD", "代码版本", health.repoHead ? health.repoHead.slice(0, 12) : "—"],
+    ["Python", "Python 解释器", health.python ?? "—"],
+    ["approval 能力", "审批模块", health.capabilities.approvals ? "正常" : `受限：${health.capabilities.approvalsDetail}`],
+    ["纳秒无损解析", "高精度文件校验", health.losslessJson ? "正常" : "不支持（决策条只读）"],
+    ["core Code Freeze", "代码写保护", health.codeFreeze.detail],
+    ["UI 构建溯源", "界面构建状态", provenanceDetail(health.buildProvenance)],
+    ["数据可达性", "数据目录状态", `${health.reach}${health.reachDetail ? `：${health.reachDetail}` : ""}`],
   ];
   return (
     <div className="health" data-testid="health-panel">
       <div className="health-head">
         <strong>诊断与环境</strong>
+        <span className="spacer" />
         <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="health-change-repo" onClick={onChangeRepo}>
           <Icon name="repo" size="sm" />
           切换仓库…
         </button>
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="收起诊断面板" onClick={onClose}>
+          <Icon name="close" size="sm" />
+        </button>
       </div>
       <table>
         <tbody>
-          {rows.map(([k, v]) => (
-            <tr key={k} data-row={k}>
-              <th>{k}</th>
+          {rows.map(([rowKey, label, v]) => (
+            <tr key={rowKey} data-row={rowKey}>
+              <th>{label}</th>
               <td>{v}</td>
             </tr>
           ))}
@@ -704,18 +861,28 @@ function HealthPanel({ health, diags, linked, onChangeRepo }: { health: Health; 
   );
 }
 
-/** 外观浮层（Floating UI）：主题三档 + 6 套强调色 + 切换仓库；Esc 关闭且焦点回到触发按钮 */
-function ThemeMenu({ onChangeRepo }: { onChangeRepo: () => void }) {
+/** 偏好设置浮层（Floating UI）：主题三档 + 6 套强调色 + 切换仓库 + 常态诊断入口；Esc 关闭且焦点回到触发按钮 */
+function ThemeMenu({
+  onChangeRepo,
+  showHealthEntry,
+  showHealth,
+  onToggleHealth,
+}: {
+  onChangeRepo: () => void;
+  showHealthEntry: boolean;
+  showHealth: boolean;
+  onToggleHealth: () => void;
+}) {
   const [theme, setTheme] = useState<Theme>(() => readTheme());
   const [accent, setAccent] = useState<Accent>(() => readAccent());
   const choose = (t: Theme) => {
     setTheme(t);
-    applyTheme(t);
+    applyTheme(t, true);
     saveTheme(t);
   };
   const chooseAccent = (a: Accent) => {
     setAccent(a);
-    applyAccent(a);
+    applyAccent(a, true);
     saveAccent(a);
   };
   const OPTS: [Theme, string][] = [
@@ -731,28 +898,37 @@ function ThemeMenu({ onChangeRepo }: { onChangeRepo: () => void }) {
       className="ui-popover theme-pop"
       testId="theme-menu"
       renderTrigger={(trigger) => (
-        <button
-          type="button"
-          ref={trigger.ref}
-          {...trigger.props}
-          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-          aria-label="外观"
-          title="外观"
-          data-testid="appearance"
-        >
-          <Icon name="appearance" size="sm" />
-        </button>
+        <FloatingTooltip
+          label="偏好设置"
+          disabled={trigger.open}
+          renderTrigger={(tip) => (
+            <button
+              type="button"
+              ref={(node) => {
+                trigger.ref(node);
+                tip.ref(node);
+              }}
+              {...tip.props}
+              {...trigger.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              aria-label="偏好设置"
+              data-testid="appearance"
+            >
+              <Icon name="appearance" size="sm" />
+            </button>
+          )}
+        />
       )}
       renderContent={(close) => (
         <>
           <div className="ui-popover-title">外观</div>
-          <div className="ui-seg">
+          <SegmentedBar activeKey={theme} label="外观主题">
             {OPTS.map(([v, label]) => (
               <button key={v} type="button" aria-pressed={theme === v} onClick={() => choose(v)}>
                 {label}
               </button>
             ))}
-          </div>
+          </SegmentedBar>
           <div className="ui-popover-title">强调色</div>
           <div className="theme-swatches" role="group" aria-label="强调色">
             {ACCENTS.map((a) => (
@@ -782,6 +958,21 @@ function ThemeMenu({ onChangeRepo }: { onChangeRepo: () => void }) {
               <Icon name="repo" size="sm" />
               <span className="ui-row-title">切换仓库…</span>
             </button>
+            {showHealthEntry && (
+              <button
+                type="button"
+                className="ui-row"
+                data-testid="health-toggle"
+                aria-pressed={showHealth}
+                onClick={() => {
+                  close();
+                  onToggleHealth();
+                }}
+              >
+                <Icon name="pulse" size="sm" />
+                <span className="ui-row-title">诊断与环境</span>
+              </button>
+            )}
           </div>
         </>
       )}
@@ -791,15 +982,31 @@ function ThemeMenu({ onChangeRepo }: { onChangeRepo: () => void }) {
 
 // ---------------- 预览收起后的窄条（D39 S2） ----------------
 
-/** 整条是一个按钮：点哪儿都展开。停机点自动呼出（或「已就绪」条）发生在收起期间时亮等待色圆点，不自动展开、不动焦点 */
+/** 整条是一个按钮：点哪儿都展开。停机点自动呼出（或「已就绪」条）发生在收起期间时亮呼吸脉冲圆点，不自动展开、不动焦点 */
 function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | null; attention: boolean; onOpen: () => void }) {
   const name = target ? target.rel.split("/").pop() : null;
   return (
-    <button className="preview-rail" aria-controls="ava-preview" aria-expanded={false} aria-label={attention ? "展开预览（停机点已就绪）" : "展开预览"} onClick={onOpen} data-testid="preview-rail" data-attention={attention ? "1" : "0"}>
-      <Icon name="chevron-right" size="sm" />
-      {attention && <span className="ui-dot ui-dot--wait" aria-hidden="true" />}
-      <span className="preview-rail-label">预览{name ? ` · ${name}` : ""}</span>
-    </button>
+    <FloatingTooltip
+      placement="left"
+      label={<><span>{attention ? "展开预览（停机点已就绪）" : "展开预览"}</span><kbd className="ui-kbd">⌘J</kbd></>}
+      renderTrigger={(trigger) => (
+        <button
+          ref={trigger.ref}
+          {...trigger.props}
+          className="preview-rail"
+          aria-controls="ava-preview"
+          aria-expanded={false}
+          aria-label={attention ? "展开预览（停机点已就绪）" : "展开预览"}
+          onClick={onOpen}
+          data-testid="preview-rail"
+          data-attention={attention ? "1" : "0"}
+        >
+          <Icon name="chevron-left" size="sm" />
+          {attention && <span className="preview-rail-dot" aria-hidden="true" />}
+          <span className="preview-rail-label">预览{name ? ` · ${name}` : ""}</span>
+        </button>
+      )}
+    />
   );
 }
 
@@ -833,14 +1040,19 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
   const eps = list ? filterEpisodes(list.episodes, query) : [];
   // D81（人 2026-10-13 选方案 B「分组卡片」）：企划成员不进平铺列表，归到企划卡里；搜索命中卷名时企划连带显示、只列命中的卷
   const projects = list ? list.projects.map((p) => filterProject(p, query)).filter((p): p is ProjectSummary => p !== null) : [];
-  const plain = list ? plainEpisodes(filterEpisodes(list.episodes, query), list.projects) : [];
+  const plain = list ? plainEpisodes(eps, list.projects) : [];
   // D45：当前期下面展开它的会话子列表（人 2026-10-08 选方案 B）
-  const row = (e: EpisodeSummary, label: string = e.epKey) => (
-    <div key={e.epKey}>
-      {epRow(e, label)}
-      {!showIdea && e.epKey === active && !stale && !sessCollapsed[e.epKey] && <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
-    </div>
-  );
+  const row = (e: EpisodeSummary, label: string = e.epKey) => {
+    const sessOpen = !showIdea && e.epKey === active && !stale && !sessCollapsed[e.epKey];
+    return (
+      <div key={e.epKey}>
+        {epRow(e, label)}
+        <Disclosure open={sessOpen}>
+          <SessionList rpc={rpc} convKey={`ep:${e.epKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} active={sessOpen} onChanged={onConvChanged} />
+        </Disclosure>
+      </div>
+    );
+  };
   const epRow = (e: EpisodeSummary, label: string) => {
     const isActive = !showIdea && e.epKey === active;
     return (
@@ -890,7 +1102,9 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
       <div key={`proj:${p.projKey}`} className="proj-card" data-testid="project" data-proj={p.projKey}>
         <div className="proj-head">
           <button className="proj-toggle" aria-expanded={opened} onClick={() => setProjOpen((o) => ({ ...o, [p.projKey]: !opened }))} title={p.projKey} data-testid="project-toggle">
-            <Icon name={opened ? "chevron-down" : "chevron-right"} size="sm" />
+            <span className="ui-chev" data-open={opened ? "1" : "0"}>
+              <Icon name="chevron-right" size="sm" />
+            </span>
             <span className="proj-name">{projectTitle(p)}</span>
             {!p.hasProjectFile && (
               <span className="ui-badge" data-testid="project-unplanned">
@@ -916,13 +1130,13 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
             )}
             {b.stops > 0 && (
               <span className="muted" data-testid="project-stops">
-                停机 {b.stops}
+                待处理 {b.stops}
               </span>
             )}
           </div>
         )}
         {segs.length > 0 ? (
-          <div className="proj-bar" title="每卷一段：绿 = 走到 09、橙 = 停在人审、灰蓝 = 进行中" data-testid="project-bar">
+          <div className="proj-bar" title="每卷一段：绿 = 待发布(09)、橙 = 待人处理、蓝 = 进行中" data-testid="project-bar">
             {segs.map((s) => (
               <span key={s.label} className={`proj-seg seg-${s.stage}`} title={s.title} data-stage={s.stage} />
             ))}
@@ -930,45 +1144,76 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         ) : (
           <div className="proj-empty muted">还没有卷</div>
         )}
-        {sessCur && !stale && <SessionList rpc={rpc} convKey={`proj:${p.projKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
-        {opened && (
+        <Disclosure open={sessCur && !stale}>
+          <SessionList rpc={rpc} convKey={`proj:${p.projKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} active={sessCur && !stale} onChanged={onConvChanged} />
+        </Disclosure>
+        <Disclosure open={opened}>
           <div className="proj-vols" data-testid="project-volumes">
             {volumeRows(p).map((r) => row(r.e, r.label))}
             <NewVolumeForm rpc={rpc} target={{ projKey: p.projKey }} onCreated={onCreatedVolume} />
           </div>
-        )}
+        </Disclosure>
       </div>
     );
   };
-  /** 「按工序」（方案 B 散开）：各卷按自身 is_blocked 进停机点 / 非停机点组，行文字带企划名与卷序 */
+  /** 「按工序」（方案 B 散开）：各卷与普通期统一按 待你处理 / 进行中 / 待发布 / 状态未取到 分组 */
   const stepItems = [
-    ...plain.map((e) => ({ e, label: e.epKey, isBlocked: e.isBlocked })),
-    ...projects.flatMap((p) => volumeRows(p).map((r) => ({ e: r.e, label: `${projectTitle(p)} · ${r.label}`, isBlocked: r.e.isBlocked }))),
+    ...plain.map((e) => ({ e, label: e.epKey, isBlocked: e.isBlocked, currentStep: e.currentStep })),
+    ...projects.flatMap((p) => volumeRows(p).map((r) => ({ e: r.e, label: `${projectTitle(p)} · ${r.label}`, isBlocked: r.e.isBlocked, currentStep: r.e.currentStep }))),
   ];
+  const visibleCount = stepItems.length;
+  const countBump = useCountBump(visibleCount);
   const nothing = plain.length === 0 && projects.length === 0;
   return (
     <div className="episodes" data-testid="episodes">
       <div className="side-head">
-        <label className="ui-search">
+        <div className={`ui-search${query ? " ui-search--clearable" : ""}`}>
           <Icon name="search" size="sm" />
-          <input className="ui-input" placeholder="搜索期名" value={query} onChange={(e) => setQuery(e.target.value)} data-testid="ep-search" />
-        </label>
+          <input
+            className="ui-input"
+            placeholder="搜索期名或企划（⌘K）"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && query !== "") {
+                e.preventDefault();
+                setQuery("");
+              }
+            }}
+            data-testid="ep-search"
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-search-clear"
+              aria-label="清空搜索"
+              onClick={() => setQuery("")}
+              data-testid="ep-search-clear"
+            >
+              <Icon name="close" size="sm" />
+            </button>
+          )}
+        </div>
         <div className="side-head-row">
-          <div className="ui-seg">
-            <button aria-pressed={view === "time"} onClick={() => chooseView("time")}>
+          <SegmentedBar activeKey={view} label="期列表视图">
+            <button type="button" aria-pressed={view === "time"} onClick={() => chooseView("time")}>
               按时间
             </button>
-            <button aria-pressed={view === "step"} onClick={() => chooseView("step")}>
+            <button type="button" aria-pressed={view === "step"} onClick={() => chooseView("step")}>
               按工序
             </button>
-          </div>
+          </SegmentedBar>
           <span className="spacer" />
           {stale && (
             <span className="ui-badge" data-testid="stale-mark">
               陈旧
             </span>
           )}
-          {list && <span className="ui-count">{eps.length}</span>}
+          {list && (
+            <span className="ui-count" data-bump={countBump ? "1" : undefined}>
+              {visibleCount}
+            </span>
+          )}
         </div>
       </div>
       <button className="ui-row ep" aria-current={showIdea ? "true" : undefined} onClick={onIdea} data-testid="idea">
@@ -989,42 +1234,55 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         </span>
       </button>
       {/* D58：选题会话与期会话同一个会话列表（看 / 进 / 新开 / 删），选中「选题」时展开 */}
-      {showIdea && !stale && <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} onChanged={onConvChanged} />}
+      <Disclosure open={showIdea && !stale}>
+        <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} active={showIdea && !stale} onChanged={onConvChanged} />
+      </Disclosure>
       <NewProjectForm rpc={rpc} onCreated={onOpenProject} />
-      {!list && <div className="muted">加载中…</div>}
+      {!list && (
+        <div className="ui-skeleton-stack" aria-label="加载中">
+          <div className="ui-skeleton ui-skeleton--lg" />
+          <div className="ui-skeleton ui-skeleton--md" />
+          <div className="ui-skeleton ui-skeleton--sm" />
+        </div>
+      )}
       {list && query.trim() !== "" && nothing && <div className="muted">没有匹配的期</div>}
       {view === "time" && timeline(plain, projects).map((i) => (i.kind === "episode" ? row(i.e) : card(i.p)))}
       {view === "step" &&
         groupByStep(stepItems).map((g) => (
           <div key={g.key}>
             <button className="ui-section" aria-expanded={!collapsed[g.key]} onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}>
-              <Icon name={collapsed[g.key] ? "chevron-right" : "chevron-down"} size="sm" />
+              <span className="ui-chev" data-open={!collapsed[g.key] ? "1" : "0"}>
+                <Icon name="chevron-right" size="sm" />
+              </span>
               {g.label}
               <span className="ui-count">{g.items.length}</span>
             </button>
-            {!collapsed[g.key] && g.items.map((x) => row(x.e, x.label))}
+            <Disclosure open={!collapsed[g.key]}>
+              <div>{g.items.map((x) => row(x.e, x.label))}</div>
+            </Disclosure>
           </div>
         ))}
-      {list && list.hiddenUnderscore > 0 && <div className="muted">另有 {list.hiddenUnderscore} 个 _ 前缀目录未显示</div>}
+      {list && list.hiddenUnderscore > 0 && <div className="muted">另有 {list.hiddenUnderscore} 个隐藏目录（_ 开头）</div>}
     </div>
   );
 }
 
-// ---------------- D81：企划会话的中栏头部（卷表经 core /project-meta；侧栏与这里都不解析 00-project.md） ----------------
+// ---------------- D81：企划会话的中栏头部（只展示相对顶部会话头的增量信息：合集/未立项/卷表/提示） ----------------
 
 function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: string }) {
   const m = p?.meta ?? null;
   const rows = p ? volumeRows(p) : [];
+  const hasMeta = Boolean((p && !p.hasProjectFile) || m?.collection || m?.error || rows.length > 0 || (m?.hints.length ?? 0) > 0);
+  if (!hasMeta) return null;
   return (
-    <div className="status proj-status" role="group" aria-label="企划" data-testid="project-head" data-proj={projKey}>
-      <div className="status-step">
-        <strong data-testid="project-title">{p ? projectTitle(p) : projKey}</strong>
-        <span className="ui-badge">企划会话</span>
-        {p && !p.hasProjectFile && <span className="ui-badge">未立项</span>}
-        <span className="spacer" />
-        {m?.collection && <span className="proj-status-coll">合集 · {m.collection}</span>}
-      </div>
-      {p && !p.hasProjectFile && <div className="muted">还没有 00-project.md：在这里和 ava 定总纲与卷表，写入前会弹卡给你看 diff。</div>}
+    <div className="status proj-status" role="group" aria-label="企划信息" data-testid="project-head" data-proj={projKey}>
+      {((p && !p.hasProjectFile) || m?.collection) && (
+        <div className="status-step">
+          {p && !p.hasProjectFile && <span className="ui-badge">未立项</span>}
+          {m?.collection && <span className="proj-status-coll">合集 · {m.collection}</span>}
+        </div>
+      )}
+      {p && !p.hasProjectFile && <div className="muted">还没有 00-project.md：在这里和 ava 定总纲与卷表，写入前会弹卡给你看差异。</div>}
       {m?.error && (
         <div className="error" data-testid="project-meta-error">
           卷表解析失败：{m.error}
@@ -1035,7 +1293,7 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
           {rows.map((r) => (
             <li key={r.e.epKey} title={r.e.epKey}>
               <span className="proj-status-vol">{r.label}</span>
-              {r.e.isBlocked && <span className="muted">停机</span>}
+              {r.e.isBlocked && <span className="ui-badge ui-badge--warn">待处理</span>}
               <span className="muted">{r.e.currentStep ?? "…"}</span>
             </li>
           ))}
@@ -1053,8 +1311,6 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
 
 // ---------------- 事件时间线（有损观测） ----------------
 
-// 标签文案在 shared/fold.ts（TV-7 / S8-R9 的判据本体；此处只渲染）
-
 const JOB_TONE: Record<string, "ok" | "danger" | "warn" | "wait" | undefined> = {
   succeeded: "ok",
   failed: "danger",
@@ -1063,9 +1319,16 @@ const JOB_TONE: Record<string, "ok" | "danger" | "warn" | "wait" | undefined> = 
   pending: undefined,
 };
 
+const JOB_STATE_LABEL: Record<string, string> = {
+  succeeded: "成功",
+  failed: "失败",
+  blocked: "已拦截",
+  running: "运行中",
+  pending: "等待中",
+};
+
 /**
  * D39 C4：时间线收成预览列底部的一行摘要（作业 / 失败 / 事件计数），点开才展开（上限 40vh）。
- * 收起时正文仍在 DOM 里（`hidden`），「观测层有损」声明原样留在正文顶部。
  */
 function Timeline({ ep, open, onToggle }: { ep: EpisodeState; open: boolean; onToggle: () => void }) {
   const nonJob = ep.events.filter((e) => e.kind.startsWith("approval_") || e.kind === "unknown" || e.kind === "human_time_recorded" || e.kind.startsWith("script_save"));
@@ -1076,56 +1339,60 @@ function Timeline({ ep, open, onToggle }: { ep: EpisodeState; open: boolean; onT
     <footer className="timeline" data-testid="timeline">
       <div className="timeline-head">
         <button className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={open} aria-controls={bodyId} onClick={onToggle} data-testid="timeline-toggle">
-          <Icon name={open ? "chevron-down" : "chevron-right"} size="sm" />
+          <span className="ui-chev" data-open={open ? "1" : "0"}>
+            <Icon name="chevron-right" size="sm" />
+          </span>
           时间线
         </button>
         <span className="ui-badge">作业 {ep.jobs.length}</span>
         {failed > 0 && <span className="ui-badge ui-badge--danger">失败 {failed}</span>}
-        {ep.degradedNotices.length > 0 && <span className="ui-badge ui-badge--warn">丢事件</span>}
+        {ep.degradedNotices.length > 0 && <span className="ui-badge ui-badge--warn">有遗漏</span>}
         <span className="ui-badge">事件 {nonJob.length}</span>
       </div>
-      <div className="timeline-body" id={bodyId} hidden={!open}>
-        <div className="notice">
-          <Icon name="info" size="sm" />
-          观测层有损（Spec 2 §2.3），轨迹可能不完整；工序以 status 为准
-        </div>
-        {ep.eventsMeta.truncatedHead && <div className="notice">更早的 job 未载入</div>}
-        {ep.degradedNotices.map((d) => (
-          <div key={d.at} className="notice notice--warn" data-testid="degraded">
-            某进程在熔断期丢了 {d.droppedDuringCircuit} 条事件（不限于本期）· {d.at}
+      <Disclosure open={open} keepMounted>
+        <div className="timeline-body" id={bodyId}>
+          <div className="notice">
+            <Icon name="info" size="sm" />
+            事件日志可能存在少量延迟或遗漏；当前进度以顶部工序为准
           </div>
-        ))}
-        <ul className="jobs">
-          {ep.jobs.map((j) => (
-            <li key={j.jobId} className={`job ${j.state}`} data-testid="job">
-              <span className="job-state">
-                {isCheckNotPassed(j) ? <Badge tone="warn">未通过</Badge> : <Badge tone={JOB_TONE[j.state]}>{j.state}</Badge>}
-              </span>
-              <code>{j.command ?? j.jobId}</code>
-              {j.returncode !== null && <span className="muted">rc={j.returncode}</span>}
-              {j.durationS !== null && <span className="muted">{j.durationS}s</span>}
-              {j.noFollowupEvents && <span className="warn">未见后续事件</span>}
-              {j.finishedEventMissing && <span className="warn">进程已不在，未收到 job_finished</span>}
-              {j.message && <span className="muted">{j.message}</span>}
-              {j.state === "failed" && j.stderrTail && <pre className="stderr">{j.stderrTail}</pre>}
-            </li>
+          {ep.eventsMeta.truncatedHead && <div className="notice">更早的作业记录未载入</div>}
+          {ep.degradedNotices.map((d) => (
+            <div key={d.at} className="notice notice--warn" data-testid="degraded">
+              事件日志熔断期间漏记 {d.droppedDuringCircuit} 条记录 · {d.at}
+            </div>
           ))}
-        </ul>
-        {nonJob.length > 0 && (
-          <ul className="events">
-            {nonJob.map((e) => (
-              <li key={e.event_id}>
-                <span className="muted">{e.timestamp}</span> {eventLabel(e)}
+          <ul className="jobs">
+            {ep.jobs.map((j) => (
+              <li key={j.jobId} className={`job ${j.state}`} data-testid="job">
+                <span className="job-state">
+                  {isCheckNotPassed(j) ? <Badge tone="warn">未通过</Badge> : <Badge tone={JOB_TONE[j.state]}>{JOB_STATE_LABEL[j.state] ?? j.state}</Badge>}
+                </span>
+                <code>{j.command ?? j.jobId}</code>
+                {j.returncode !== null && j.returncode !== 0 && <span className="muted">退出码 {j.returncode}</span>}
+                {j.durationS !== null && <span className="muted">{j.durationS}s</span>}
+                {j.noFollowupEvents && <span className="warn">未见后续进度</span>}
+                {j.finishedEventMissing && <span className="warn">进程已结束，未收到完成事件</span>}
+                {j.message && j.message !== "退出码 0" && <span className="muted">{j.message}</span>}
+                {j.state === "failed" && j.stderrTail && <pre className="stderr">{j.stderrTail}</pre>}
               </li>
             ))}
           </ul>
-        )}
-        {(ep.eventsMeta.malformed > 0 || ep.eventsMeta.episodeFieldMismatch > 0) && (
-          <div className="muted">
-            损坏行 {ep.eventsMeta.malformed}；episode 字段与文件位置不一致 {ep.eventsMeta.episodeFieldMismatch}
-          </div>
-        )}
-      </div>
+          {nonJob.length > 0 && (
+            <ul className="events">
+              {nonJob.map((e) => (
+                <li key={e.event_id}>
+                  <span className="muted">{e.timestamp}</span> {eventLabel(e)}
+                </li>
+              ))}
+            </ul>
+          )}
+          {(ep.eventsMeta.malformed > 0 || ep.eventsMeta.episodeFieldMismatch > 0) && (
+            <div className="muted">
+              格式异常记录 {ep.eventsMeta.malformed} 条；归属不一致 {ep.eventsMeta.episodeFieldMismatch} 条
+            </div>
+          )}
+        </div>
+      </Disclosure>
     </footer>
   );
 }

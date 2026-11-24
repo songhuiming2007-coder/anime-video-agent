@@ -18,8 +18,8 @@ export interface ConvState {
   truncatedHead: boolean;
   settlePending: string | null;
   keyProblem: string | null;
-  /** D147：会话启动前预选的模型 / 推理强度；没有为 undefined */
-  pending?: { model?: string; effort?: string };
+  /** D147：会话启动前预选的模型 / 推理强度 / 模式；没有为 undefined */
+  pending?: { model?: string; effort?: string; scope?: "asset" | "auto" };
 }
 
 export interface ConvStore {

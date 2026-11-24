@@ -328,9 +328,9 @@ describe("VS-1 token 格式、覆盖与两块深色一致", () => {
     const bad = Object.entries({ ...t.light, ...t.forcedDark }).filter(([k, v]) => COLOR_KEY.test(k) && !COLOR.test(v));
     expect(bad.map(([k]) => k)).toEqual([]);
   });
-  it("浅色恰 90 个 token（含 --bg-user / --shadow-* / --swatch-*）、其中 47 个颜色 token，且手动深色块全部覆盖", () => {
+  it("浅色恰 96 个 token（含 --bg-user / --shadow-* / --swatch-* / 统一动效曲线与时长）、其中 47 个颜色 token，且手动深色块全部覆盖", () => {
     const t = parseTokens(TOKENS);
-    expect(Object.keys(t.light)).toHaveLength(90);
+    expect(Object.keys(t.light)).toHaveLength(96);
     expect(colorKeys(t.light)).toHaveLength(47);
     expect(checkPairs(TOKENS).missing).toEqual([]);
   });

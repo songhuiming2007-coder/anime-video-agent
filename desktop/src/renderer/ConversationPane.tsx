@@ -3,7 +3,7 @@
 // 卡片、本地说明、工具原文仍是纯文本。失败调用的 observation 逐字、不截断，但默认收起。
 // D80（人选方案 A，2026-10-12）：工具行「图标 类别词 主文本 次文本 … 状态词 ›」、只有状态词带语义色；连续 bash 折成终端组；
 // 一轮过程折成「已工作 … · N 个工具」，答复留在外面；运行中类别词扫光；新到的行淡入。只改怎么显示，行数据一条不删。
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cardParts, cardPhrase, type ConvRow, type ToolRow } from "../shared/convFold";
 import {
   durText,
@@ -23,15 +23,12 @@ import {
 } from "../shared/toolView";
 import { CopyButton } from "./copy";
 import { Icon, type IconName } from "./icons";
+import { Disclosure, prefersReducedMotion } from "./motion";
 import { ChatMarkdown } from "./PreviewPane";
 /** 离底部不超过这么多像素就算「人在看最新」：新行到来时跟到底；人往上翻了就不打扰（D39 S2） */
 const STICK_PX = 48;
-
-/**
- * 收起后卸载内容的兜底时长：比 `--dur-slow`（300ms）多 100ms。正常由 transitionend 触发卸载；
- * 减弱动效下过渡时长被归零（ui.css 全局规则），transitionend 不触发，只能靠它
- */
-const COLLAPSE_UNMOUNT_MS = 400;
+/** 往上翻超过这么多像素时浮出「回到底部」胶囊 */
+const JUMP_PX = 240;
 
 const CATEGORY_ICON: Readonly<Record<string, IconName>> = {
   终端: "terminal",
@@ -62,13 +59,13 @@ export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
   return (
     <div className="conv-handoff" data-testid="handoff-strip">
       {notes.map((n) => (
-        <div key={`n:${n.at}:${n.text}`} className="conv-handoff-row" data-testid="handoff-note">
+        <div key={`n:${n.at}:${n.text}`} className="conv-handoff-row ui-card-enter" data-testid="handoff-note">
           <Icon name={n.level === "error" ? "alert" : "info"} size="sm" />
           <span>{n.text}</span>
         </div>
       ))}
       {tickets.map((t) => (
-        <div key={t.id} className="conv-handoff-row" data-ticket={t.id}>
+        <div key={t.id} className="conv-handoff-row ui-card-enter" data-ticket={t.id}>
           <span>本会话开了工单</span>
           <span className="conv-handoff-id">{t.id}</span>
           <span>（待修）</span>
@@ -83,44 +80,150 @@ export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
 export function ConversationPane({ rows, lead, cards, running = false, awaiting = false }: { rows: ConvRow[]; lead?: ReactNode; cards?: ReactNode; running?: boolean; awaiting?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
+  const jumpingRef = useRef(false);
+  const jumpTimerRef = useRef<number | null>(null);
+  const prevLenRef = useRef(rows.length);
+  const [showJump, setShowJump] = useState(false);
+  const [hasUnread, setHasUnread] = useState(false);
   // D80（R3 ④）：只有本次挂载之后才到达的行播入场；历史恢复、切会话重挂时已在的行不播（App 以 convKey 为 key 重挂）
   const mountedAt = useRef(Date.now());
   const [opened, setOpened] = useState<Readonly<Record<string, boolean>>>({});
-  const opens: Opens = {
-    get: (key, dflt) => opened[key] ?? dflt,
-    toggle: (key, current) => setOpened((o) => ({ ...o, [key]: !current })),
+
+  const cancelJump = (restorePill = false) => {
+    if (!jumpingRef.current) return;
+    jumpingRef.current = false;
+    if (jumpTimerRef.current !== null) {
+      window.clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = null;
+    }
+    if (restorePill) {
+      const el = ref.current;
+      if (el && el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX) {
+        setShowJump(true);
+      }
+    }
   };
+
+  const finishJump = () => {
+    if (!jumpingRef.current) return;
+    jumpingRef.current = false;
+    if (jumpTimerRef.current !== null) {
+      window.clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = null;
+    }
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stick.current = true;
+    setHasUnread(false);
+    setShowJump(false);
+  };
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScrollEnd = () => finishJump();
+    el.addEventListener("scrollend", onScrollEnd);
+    return () => {
+      el.removeEventListener("scrollend", onScrollEnd);
+      if (jumpTimerRef.current !== null) {
+        window.clearTimeout(jumpTimerRef.current);
+        jumpTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // 每次渲染后（新帧、卡片进出、窗口变化引起的重排）若人在底部就跟到底；App 以 convKey 为 key 重挂，切会话即从底部开始。
   // D80 R6：有卡片待答时不跟——卡片自己负责进视野（比可见区高时让卡面文本顶到上沿）；运行中每秒的重渲染若照跟到底，
   // 会把刚滚好的卡头又滚走（滚动事件异步，stick 标记来不及更新）。回合停在等人答，这期间本就没有新行
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && stick.current && !awaiting) el.scrollTop = el.scrollHeight;
+    if (el && stick.current && !awaiting && !jumpingRef.current) el.scrollTop = el.scrollHeight;
   });
-  const fresh = (r: ConvRow) => !("hist" in r && r.hist) && r.at >= mountedAt.current;
-  const segments = turnSegments(rows, running);
-  const showActivity = running && !awaiting;
-  const activityPlaced = segments.some((s) => s.k === "turn" && s.running);
+  useEffect(() => {
+    if (rows.length > prevLenRef.current && !stick.current) {
+      setHasUnread(true);
+    }
+    prevLenRef.current = rows.length;
+  }, [rows.length]);
+  // 缓存消息树：滚动切出「回到底部」胶囊时跳过整条长对话（100+ 行 Markdown）的无谓重渲染
+  const body = useMemo(() => {
+    const opens: Opens = {
+      get: (key, dflt) => opened[key] ?? dflt,
+      toggle: (key, current) => setOpened((o) => ({ ...o, [key]: !current })),
+    };
+    const fresh = (r: ConvRow) => !("hist" in r && r.hist) && r.at >= mountedAt.current;
+    const segments = turnSegments(rows, running);
+    const showActivity = running && !awaiting;
+    const activityPlaced = segments.some((s) => s.k === "turn" && s.running);
+    return (
+      <>
+        {segments.map((seg) =>
+          seg.k === "loose" ? (
+            <RowView key={seg.index} rows={rows} index={seg.index} running={running} fresh={fresh} opens={opens} />
+          ) : (
+            <Turn key={seg.key} seg={seg} rows={rows} fresh={fresh} opens={opens} activity={showActivity && seg.running ? <Activity rows={rows} /> : null} />
+          ),
+        )}
+        {showActivity && !activityPlaced && <Activity rows={rows} />}
+      </>
+    );
+  }, [rows, running, awaiting, opened]);
   return (
     <div
       className="conv-stream"
       data-testid="conv-stream"
       ref={ref}
+      onWheel={() => cancelJump(true)}
+      onPointerDown={() => cancelJump(true)}
+      onTouchStart={() => cancelJump(true)}
       onScroll={(e) => {
         const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
+        const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const atBottom = gap <= STICK_PX;
+        if (atBottom) {
+          cancelJump();
+          stick.current = true;
+          setHasUnread(false);
+          setShowJump(false);
+        } else if (!jumpingRef.current) {
+          stick.current = false;
+          setShowJump(gap > JUMP_PX);
+        }
       }}
     >
       {lead}
-      {segments.map((seg) =>
-        seg.k === "loose" ? (
-          <RowView key={seg.index} rows={rows} index={seg.index} running={running} fresh={fresh} opens={opens} />
-        ) : (
-          <Turn key={seg.key} seg={seg} rows={rows} fresh={fresh} opens={opens} activity={showActivity && seg.running ? <Activity rows={rows} /> : null} />
-        ),
-      )}
-      {showActivity && !activityPlaced && <Activity rows={rows} />}
+      {body}
       {cards}
+      {showJump && (
+        <div className="conv-jump-wrap ui-card-enter">
+          <button
+            type="button"
+            className="ui-btn ui-btn--sm conv-jump-btn"
+            data-testid="conv-jump-bottom"
+            data-unread={hasUnread ? "1" : "0"}
+            onClick={() => {
+              const el = ref.current;
+              setShowJump(false);
+              setHasUnread(false);
+              if (!el) return;
+              if (prefersReducedMotion()) {
+                cancelJump();
+                stick.current = true;
+                el.scrollTop = el.scrollHeight;
+              } else {
+                jumpingRef.current = true;
+                if (jumpTimerRef.current !== null) window.clearTimeout(jumpTimerRef.current);
+                jumpTimerRef.current = window.setTimeout(finishJump, 550);
+                el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+              }
+            }}
+          >
+            <Icon name="arrow-down" size="sm" />
+            {hasUnread ? "有新消息 · 回到底部" : "回到底部"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -134,36 +237,6 @@ function useNow(active: boolean): number {
     return () => clearInterval(t);
   }, [active]);
   return active ? now : Date.now();
-}
-
-/**
- * 高度过渡（R2 ③ / R4 ④）：grid-template-rows 0fr ↔ 1fr，纯 CSS；收起时等过渡结束再卸载内容，避免高度塌陷闪烁。
- * 初次渲染就是展开的不播过渡。
- */
-function Collapse({ open, children }: { open: boolean; children: () => ReactNode }) {
-  const [mounted, setMounted] = useState(open);
-  const [shown, setShown] = useState(open);
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      const raf = requestAnimationFrame(() => setShown(true));
-      return () => cancelAnimationFrame(raf);
-    }
-    setShown(false);
-    const t = setTimeout(() => setMounted(false), COLLAPSE_UNMOUNT_MS);
-    return () => clearTimeout(t);
-  }, [open]);
-  return (
-    <div
-      className="conv-collapse"
-      data-open={shown ? "1" : "0"}
-      onTransitionEnd={(e) => {
-        if (e.target === e.currentTarget && !open) setMounted(false);
-      }}
-    >
-      <div className="conv-collapse-inner">{mounted ? children() : null}</div>
-    </div>
-  );
 }
 
 function Turn({ seg, rows, fresh, opens, activity }: { seg: Extract<Segment, { k: "turn" }>; rows: ConvRow[]; fresh: (r: ConvRow) => boolean; opens: Opens; activity: ReactNode }) {
@@ -187,7 +260,7 @@ function Turn({ seg, rows, fresh, opens, activity }: { seg: Extract<Segment, { k
               <Icon name="chevron-right" size="sm" />
             </span>
           </button>
-          <Collapse open={open}>
+          <Disclosure open={open}>
             {() => (
               <div className="conv-turn-body">
                 {seg.process.map((it) => (
@@ -196,7 +269,7 @@ function Turn({ seg, rows, fresh, opens, activity }: { seg: Extract<Segment, { k
                 {activity}
               </div>
             )}
-          </Collapse>
+          </Disclosure>
         </div>
       )}
       {seg.tail.map((i) => (
@@ -227,7 +300,7 @@ function ProcView({ item, rows, turnRunning, fresh, opens, scope }: { item: Proc
         </span>
         <Chevron open={open} onToggle={() => opens.toggle(key, open)} />
       </div>
-      <Collapse open={open}>
+      <Disclosure open={open}>
         {() => (
           <div className="conv-group-body">
             {item.indices.map((i) => (
@@ -235,7 +308,7 @@ function ProcView({ item, rows, turnRunning, fresh, opens, scope }: { item: Proc
             ))}
           </div>
         )}
-      </Collapse>
+      </Disclosure>
     </div>
   );
 }
@@ -305,7 +378,7 @@ function ToolLine({ row, turnRunning, fresh, opens, inGroup }: { row: ToolRow; t
         </span>
         <Chevron open={open} onToggle={() => opens.toggle(key, open)} />
       </div>
-      <Collapse open={open}>
+      <Disclosure open={open}>
         {() => (
           <div className="conv-tool-detail">
             {row.command !== null ? (
@@ -334,7 +407,7 @@ function ToolLine({ row, turnRunning, fresh, opens, inGroup }: { row: ToolRow; t
             )}
           </div>
         )}
-      </Collapse>
+      </Disclosure>
     </div>
   );
 }
@@ -384,7 +457,7 @@ function Footer({ text, brief, claims }: { text: string; brief: string; claims: 
           <Icon name="info" size="sm" />
         </button>
       </div>
-      {open && <div data-testid="footer-full">{text}</div>}
+      <Disclosure open={open}>{() => <div data-testid="footer-full">{text}</div>}</Disclosure>
     </div>
     </>
   );
@@ -449,13 +522,13 @@ function Row({ row, fresh, opens }: { row: Exclude<ConvRow, ToolRow>; fresh: boo
               </span>
               <Chevron open={open} onToggle={() => opens.toggle(key, open)} />
             </div>
-            <Collapse open={open}>
+            <Disclosure open={open}>
               {() => (
                 <div className="conv-tool-detail">
                   <pre className="conv-tool-out" data-testid="card-detail-text">{row.detail}</pre>
                 </div>
               )}
-            </Collapse>
+            </Disclosure>
           </div>
         );
       }
@@ -487,21 +560,21 @@ function Row({ row, fresh, opens }: { row: Exclude<ConvRow, ToolRow>; fresh: boo
     case "footer":
       return <Footer text={row.text} brief={row.brief} claims={row.claims} />;
     case "historySeparator":
-      // 文案与 Spec 10 §2.3 一致；红线 3 / TG-14 禁止 desktop/src 出现「会话记录文件名」字面量，故拆开拼接
+      // 去掉底层记录文件名，同时遵守红线 3 / TG-14
       return (
         <div className="conv-foot" data-testid="conv-row" data-kind="history-separator">
-          {"以下为恢复的历史，重建自 " + "session" + ".jsonl" + "：只含消息，不含当时的工具耗时与作业输出"}
+          以下为恢复的历史记录（不含当时的工具耗时与过程输出）
         </div>
       );
     case "exited":
       return (
         <div data-testid="conv-row" data-kind="exited">
           <div className="conv-note">
-            会话已结束（{row.code === null ? `信号 ${row.signal ?? "?"}` : `退出码 ${row.code}`}）
+            {row.code === 0 ? "会话已结束" : `会话已结束（${row.code === null ? `信号 ${row.signal ?? "?"}` : `退出码 ${row.code}`}）`}
           </div>
           {row.stderrTail.trim() !== "" && (
             <details>
-              <summary className="conv-note">stderr 尾部（诊断，从不解析）</summary>
+              <summary className="conv-note">错误输出详情</summary>
               <pre className="conv-obs">{row.stderrTail}</pre>
             </details>
           )}

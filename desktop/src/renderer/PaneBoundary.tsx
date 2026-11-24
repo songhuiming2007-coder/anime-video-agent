@@ -3,6 +3,7 @@
 // 边界把异常收在预览区内：原文显示报错、给「重试」，侧栏与对话照常可用。
 // `resetKey` 变了（换预览目标、换期）即自动复位，不必人点。
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { CopyButton } from "./copy";
 import { StateView } from "./ui";
 
 interface Props {
@@ -33,11 +34,14 @@ export class PaneBoundary extends Component<Props, State> {
     const { error } = this.state;
     if (error === null) return this.props.children;
     return (
-      <div className="pane-crash" data-testid="pane-crash">
-        <StateView kind="error" title={`预览区渲染出错：${error.message}`} detail="换一个文件或点「重试」；反复出现请把这行报错记进 issue（开发者工具 Console 有完整堆栈）" />
-        <button className="ui-btn" data-testid="pane-crash-retry" onClick={() => this.setState({ error: null })}>
-          重试
-        </button>
+      <div className="pane-crash ui-card-enter" data-testid="pane-crash">
+        <StateView kind="error" title={`预览区渲染出错：${error.message}`} detail="可以切换其他文件或点「重试」恢复；若反复出现，可复制报错信息反馈。" />
+        <div className="ui-card-actions">
+          <button className="ui-btn ui-btn--sm" data-testid="pane-crash-retry" onClick={() => this.setState({ error: null })}>
+            重试
+          </button>
+          <CopyButton text={error.message} label="复制报错" testId="pane-crash-copy" />
+        </div>
       </div>
     );
   }

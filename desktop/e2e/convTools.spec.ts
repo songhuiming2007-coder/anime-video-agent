@@ -66,7 +66,8 @@ test("D80 真实 core：工具行说人话、失败回合不折 / 成功回合�
     await expect(foot.getByTestId("footer-brief")).toHaveText(/^\d+ 次模型调用 · 上下文/);
     await expect(foot.getByTestId("footer-full")).toHaveCount(0);
     await foot.getByTestId("footer-more").click();
-    await expect(foot.getByTestId("footer-full")).toContainText("检查点");
+    await expect(foot.getByTestId("footer-full")).toContainText("模型调用");
+    await expect(foot.getByTestId("footer-full")).toContainText("查证");
     // R7：会话行右侧相对时间
     await expect(p.getByTestId("session-when").first()).toHaveText("刚刚");
 

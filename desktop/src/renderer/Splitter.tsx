@@ -1,6 +1,6 @@
 // D39 S2：栏间拖拽手柄。role="separator"（可聚焦的窗口分隔条），←/→ 每次 16px、Home/End 到上下限、双击恢复默认。
 // 键盘逻辑在 layout.ts 的纯函数 nudge 里（单元测试覆盖，不做键盘自动化，D37）。
-import { useRef, type KeyboardEvent, type PointerEvent } from "react";
+import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { nudge } from "./layout";
 
 export function Splitter({
@@ -12,6 +12,7 @@ export function Splitter({
   dir,
   onChange,
   onReset,
+  onDraggingChange,
   testId,
 }: {
   label: string;
@@ -23,10 +24,18 @@ export function Splitter({
   dir: 1 | -1;
   onChange: (w: number) => void;
   onReset: () => void;
+  onDraggingChange?: (dragging: boolean) => void;
   testId: string;
 }) {
   const drag = useRef<{ x: number; v: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const clamp = (v: number) => Math.min(max, Math.max(min, Math.round(v)));
+  const endDrag = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    setDragging(false);
+    onDraggingChange?.(false);
+  };
   return (
     <div
       className="splitter"
@@ -39,23 +48,25 @@ export function Splitter({
       aria-valuemax={max}
       tabIndex={0}
       data-testid={testId}
+      data-dragging={dragging ? "1" : undefined}
       onPointerDown={(e: PointerEvent<HTMLDivElement>) => {
         if (e.button !== 0) return;
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
         drag.current = { x: e.clientX, v: value };
+        setDragging(true);
+        onDraggingChange?.(true);
       }}
       onPointerMove={(e: PointerEvent<HTMLDivElement>) => {
         const d = drag.current;
         if (d) onChange(clamp(d.v + dir * (e.clientX - d.x)));
       }}
       onPointerUp={(e: PointerEvent<HTMLDivElement>) => {
-        drag.current = null;
+        endDrag();
         if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       }}
-      onPointerCancel={() => {
-        drag.current = null;
-      }}
+      onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       onDoubleClick={onReset}
       onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
         const v = nudge(value, e.key, min, max, dir);
