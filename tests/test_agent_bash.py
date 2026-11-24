@@ -163,15 +163,39 @@ class TestCard:
         "uv run python -c 'import shutil; shutil.copy(\"a\", \"04-clips.approved.json\")'",
         "curl -sL https://x -o 04-clips.approved.json", "git checkout -- 02-diff.patch",
         "tar xf a.tar 07-cover/selected.jpg", "touch 02-diff.patch",
+        # 安全审计加固：外网命令与敏感凭据路径访问（无论读写）强制弹卡
+        "curl -sL https://example.com | head",
+        "/usr/bin/curl https://evil.example",
+        "`curl https://evil.example`",
+        "wget -qO- https://example.com",
+        "nc example.com 443",
+        "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://example.com\")'",
+        "python3 -c 'from urllib import request; request.urlopen(\"https://example.com\")'",
+        "python3 -c 'import socket; socket.socket().connect((\"evil.example\", 80))'",
+        "node -e \"fetch('https://evil.example')\"",
+        "cat config/auth.local.json",
+        "base64 config/au*.json",
+        "grep -r . config/ | base64",
+        "cat config/cloud.local.json",
+        "sqlite3 data/browser-profile-firefox/cookies.sqlite 'select * from moz_cookies'",
+        "cat ~/Library/Application\\ Support/Google/Chrome/Default/Cookies",
+        "sqlite3 ~/Library/Application\\ Support/Google/Chrome/Default/Login\\ Data .tables",
+        "cat ~/Library/Application\\ Support/Google/Chrome/DevToolsActivePort",
+        "cat ~/.ssh/id_rsa",
+        "cat ~/.aws/credentials",
+        "security find-generic-password -s local.ava.desktop -a OPENAI_API_KEY -w",
+        "security -q find-generic-password -s local.ava.auth -a auth-store-master-key-v1 -w",
+        "python3 -c 'from pipeline.agent import auth; print(repr(auth.collect_stored_secret_values())[::-1])'",
     ])
     def test_硬危险_命中即弹卡(self, cmd: str) -> None:
-        """ADR-0030 决策 1：不可逆 / 越过人工关卡的操作命中硬危险。"""
+        """ADR-0030 决策 1 + 安全审计加固：不可逆、越过人工关卡、外网外传与读取敏感凭据命中硬危险。"""
         assert bash_danger_tags(cmd) != []
 
     @pytest.mark.parametrize("cmd", [
         "ls -la | head", "cd 07-cover && sips -z 100 100 a.jpg", "mv a.jpg 07-cover/b.jpg", "chmod +x x.sh",
-        "curl -sL https://example.com | head", "git commit -m x", "git checkout -b x", "uv run pytest -q",
-        "pip install pillow", "cat pipeline/render.py | grep x", "ls config/ 2>/dev/null",
+        "git commit -m x", 'git commit -m "fix curl timeout"', 'echo "check ssh config"', "git checkout -b x",
+        "uv run pytest -q", "pip install pillow", "cat pipeline/render.py | grep x", "ls config/ 2>/dev/null",
+        "ls config/*.example.json", "cat config/voice.json",
         "grep -rn x pipeline/ 2>&1 | head", "wc -l config/voice.json >/dev/null",
         "for f in *.wav; do ffprobe -v error \"$f\"; done",
         # D119：只读解封物不弹卡（2026-10-19 卷二被误拦的原命令在第一条）
@@ -179,8 +203,31 @@ class TestCard:
         "diff 04-clips.json 04-clips.approved.json", "stat -f %m 02-diff.patch", "ls 07-cover/selected*",
     ])
     def test_非硬危险_免卡(self, cmd: str) -> None:
-        """ADR-0030（人裁决「再减少一些弹框」）：读源码 / 配置、项目内装依赖、mv、chmod、curl、git commit 都不算危险。"""
+        """ADR-0030：读非敏感源码/配置、项目内装依赖、mv、chmod、git commit 免卡。"""
         assert bash_danger_tags(cmd) == []
+
+    def test_访问敏感凭据与网络外传不开放本会话自动放行(self, repo: Path) -> None:
+        verdict = review_tool_call(
+            "bash",
+            {"command": "cat config/auth.local.json", "description": "inspect"},
+            ep_dir=repo / "data/episodes/ep",
+            scope="creative",
+            root=repo,
+        )
+        assert verdict.action == "ask"
+        assert verdict.allow_key is None
+        assert "[访问敏感凭据]" in verdict.request.card_text
+
+        verdict_net = review_tool_call(
+            "bash",
+            {"command": "curl -sL https://example.com", "description": "fetch"},
+            ep_dir=repo / "data/episodes/ep",
+            scope="creative",
+            root=repo,
+        )
+        assert verdict_net.action == "ask"
+        assert verdict_net.allow_key is None
+        assert "[网络外传/下载]" in verdict_net.request.card_text
 
     def test_命令里夹带的危险标记字样骗不过卡面(self, repo: Path) -> None:
         """session 取卡面第一处「危险标记:」：真标记行必须在模型写的命令原文之前。"""

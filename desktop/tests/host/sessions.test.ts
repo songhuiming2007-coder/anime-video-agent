@@ -1764,4 +1764,18 @@ describe("D149 运行中切换", () => {
     expect("model_sources" in legacyRes).toBe(false);
     expect("active_model_source" in legacyRes).toBe(false);
   });
+
+  it("安全加固：若经 conv.send 收到带参数的 /login（含大写 /LOGIN），落入会话时间线的用户消息必须脱敏", async () => {
+    const b = await boot();
+    sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "/login openai sk-should-never-appear-in-ui" });
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "/LOGIN openai sk-uppercase-should-never-appear" });
+    const snap = (await b.svc.dispatch("conv.snapshot", { convKey: b.key })) as { entries: { k: string; text?: string }[] };
+    const userEntries = snap.entries.filter((e) => e.k === "user");
+    expect(userEntries).toHaveLength(2);
+    expect(userEntries[0].text).toBe("/login [凭据参数已脱敏]");
+    expect(userEntries[1].text).toBe("/login [凭据参数已脱敏]");
+    expect(JSON.stringify(snap)).not.toContain("sk-should-never-appear-in-ui");
+    expect(JSON.stringify(snap)).not.toContain("sk-uppercase-should-never-appear");
+  });
 });

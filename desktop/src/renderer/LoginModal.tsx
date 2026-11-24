@@ -375,7 +375,15 @@ export function LoginModal({
               模型服务商登录（/login）
             </h2>
             <span className="muted login-modal-sub">
-              {status ? `已连接 ${status.connected_count} / ${providers.length} 家 · 独立存储于 config/auth.local.json (0600)` : "正在读取认证状态…"}
+              {status
+                ? `已连接 ${status.connected_count} / ${providers.length} 家 · ${
+                    status.storage_encrypted === true
+                      ? "钥匙串加密存储于 config/auth.local.json (0600)"
+                      : status.storage_encrypted === false
+                        ? "存储于 config/auth.local.json (0600，未启用钥匙串加密)"
+                        : "独立存储于 config/auth.local.json (0600)"
+                  }`
+                : "正在读取认证状态…"}
             </span>
           </div>
           <button

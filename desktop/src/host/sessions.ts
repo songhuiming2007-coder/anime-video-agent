@@ -787,7 +787,8 @@ export class SessionManager {
         const w = rid ? s.sendWaiters.get(rid) : undefined;
         if (rid && w) {
           s.sendWaiters.delete(rid);
-          this.append(s, { k: "user", at: this.deps.now(), text: w.text });
+          const safeText = /^\/login\s+\S/i.test(w.text.trim()) ? "/login [凭据参数已脱敏]" : w.text;
+          this.append(s, { k: "user", at: this.deps.now(), text: safeText });
           w.resolve({ turnId: s.turnId });
         }
         break;

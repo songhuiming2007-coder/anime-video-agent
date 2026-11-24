@@ -120,6 +120,15 @@ def describe(cfg: LLMConfig | None, override: Override, purpose: str | None) -> 
     }
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise ModelSwitchError(f"取模型列表拒绝 HTTP {code} 重定向，以防 Authorization 凭据泄露")
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+_ORIG_URLOPEN = urllib.request.urlopen
+
+
 def _fetch_openai_model_entries(
     url: str,
     headers: dict[str, str],
@@ -127,12 +136,15 @@ def _fetch_openai_model_entries(
     root: Path | None = None,
     timeout: float | None = None,
 ) -> tuple[list[dict[str, Any]] | None, ModelSwitchError | None]:
-    """GET `{url}` 并保留模型条目的 id 与 owned_by 来源元信息。"""
+    """GET `{url}` 并保留模型条目的 id 与 owned_by 来源元信息（禁止 3xx 重定向转发 Authorization）。"""
     request = urllib.request.Request(url, headers=headers)
     eff_timeout = MODELS_TIMEOUT_S if timeout is None else timeout
     try:
-        with urllib.request.urlopen(request, timeout=eff_timeout) as resp:
+        opener = _NO_REDIRECT_OPENER.open if urllib.request.urlopen is _ORIG_URLOPEN else urllib.request.urlopen
+        with opener(request, timeout=eff_timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+    except ModelSwitchError as exc:
+        return None, exc
     except urllib.error.HTTPError as exc:
         return None, ModelSwitchError(f"取模型列表失败：HTTP {exc.code}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

@@ -274,9 +274,9 @@ def _script_diff(target: Path, new: str) -> list[str]:
     return out
 
 
-# ADR-0030（D78）：bash 的「硬危险」——命中即弹卡，未命中免卡。只收不可逆或越过人工关卡的操作；
-# 宿主静态规则，判不到不等于安全（`python -c "shutil.rmtree(…)"` 这类绕法由 ADR-0030 写明、人已接受）。
-# D77 原表里的 mv / chmod / curl / git commit / 项目内 uv、pip 已按人裁决「再减少一些弹框」移出。
+# ADR-0030（D78）+ 安全审计加固：bash 的「硬危险」——命中即弹卡，未命中免卡。
+# 除不可逆或越过人工关卡的操作外，恢复外部网络命令（curl/wget/nc 等）及一切敏感凭据路径访问（无论读写）
+# 强制弹卡，阻断间接提示词注入经由 bash 零弹窗窃取并外传本机凭据的攻击链。
 _BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(^|[\s;&|(])(rm|rmdir|unlink)(\s|$)|\s-delete\b"), "[删除]"),
     (re.compile(r"\bgit\s+(push|reset|rebase|clean)\b"), "[git 改历史/推远端]"),
@@ -288,7 +288,42 @@ _BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "[全局装依赖]",
     ),
+    (
+        re.compile(
+            r"(?:^|[;&|(`\n])\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|exec|xargs|command|time)\s+)*"
+            r"(?:/[^\s;&|()'\"]+/)?"
+            r"(?:curl|wget|nc|ncat|netcat|socat|scp|sftp|ssh|ftp|telnet)(?=$|[\s;&|)`])"
+            r"|\b(?:urllib\.request|from\s+urllib\s+import\s+request|http\.client|from\s+http\s+import\s+client"
+            r"|socket\.create_connection|requests\.(?:get|post|put|patch|delete|request)"
+            r"|httpx\.(?:get|post|put|request|Client)|aiohttp\.ClientSession)\b"
+            r"|\bsocket\.socket\s*\("
+            r"|\bnode\b[^\n]*\b(?:fetch\s*\(|https?\.(?:request|get)\s*\()"
+        ),
+        "[网络外传/下载]",
+    ),
 )
+# 敏感凭据与浏览器会话库：无论读或写均强制弹卡（且不开放 session_allow）
+_SECRET_ACCESS_PAT = re.compile(
+    r"(?i)(?:auth|cloud|agent)\.local\.json"
+    r"|\.local\.json\b"
+    r"|config/[^\s;&|'\"()]*local"
+    r"|config/(?![^\s;&|'\"()]*\.example\.json(?=$|[\s;&|'\"()]))[^\s;&|'\"()]*[*?\[]"
+    r"|\b(?:grep\b[^\n]*-(?:[A-Za-z]*[rR]|-recursive)|rg\b|tar\b|zip\b|find\b)[^\n]*(?:^|[\s'\"=/])config(?:/|\b)"
+    r"|cookies\.sqlite\b"
+    r"|browser-profile-firefox"
+    r"|DevToolsActivePort\b"
+    r"|Application(?:\\\s+|\s+)Support/Google/Chrome"
+    r"|Login(?:\\\s+|\s+)Data\b"
+    r"|Library/Keychains"
+    r"|(?:^|[\s'\"=/~])\.ssh(?:/|\b)"
+    r"|(?:^|[\s'\"=/~])\.aws(?:/|\b)"
+    r"|application_default_credentials\.json\b"
+    r"|(?:^|[\s'\"=/~])\.netrc\b"
+    r"|(?:^|[\s'\"=/])\.env(?:\.local)?(?=$|[\s'\"&;|)])"
+    r"|\bsecurity\b[^\n]*\b(?:find-(?:generic|internet)-password|dump-keychain|export|unlock-keychain)\b"
+    r"|\b(?:pipeline\.agent\.auth|collect_stored_secret_values|_load_master_key)\b"
+)
+_SECRET_ACCESS_TAG = "[访问敏感凭据]"
 # Code Freeze 只认「写入」：读 pipeline/ config/（cat、grep、ls）不拦。写法 = 重定向、tee、原地编辑、
 # 拷贝 / 移动 / 链接 / 新建；先剥掉 `2>&1`、`>/dev/null` 这类不写文件的重定向
 _FREEZE_PATH = re.compile(r"(^|[\s'\"/=])(pipeline|config)/")
@@ -343,6 +378,8 @@ def _gated_pipeline_hit(command: str) -> bool:
 def bash_danger_tags(command: str) -> list[str]:
     """bash 命令命中的硬危险标记（按规则表顺序，去重）。非空即弹卡（ADR-0030 决策 1）。"""
     tags = [tag for pat, tag in _BASH_DANGER_RULES if pat.search(command)]
+    if _SECRET_ACCESS_PAT.search(command):
+        tags.append(_SECRET_ACCESS_TAG)
     stripped = _HARMLESS_REDIRECT.sub(" ", command)
     if _UNSEAL_PATH.search(stripped) and _UNSEAL_WRITE.search(stripped):
         tags.append(_UNSEAL_TAG)
@@ -360,7 +397,7 @@ def bash_danger_tags(command: str) -> list[str]:
 
 
 def chrome_danger_tags(args: dict[str, Any], *, root: Path | None = None) -> list[str]:
-    """chrome 工具命中的硬危险标记：默认日常浏览与自有后台页操作免卡，仅硬危险弹卡（ADR-0030）。"""
+    """chrome 工具命中的硬危险标记：默认日常公开浏览与非高敏自有后台页免卡，硬危险全部弹卡。"""
     from pipeline.agent.web_chrome import (
         coerce_bool_flag,
         coerce_page_id,
@@ -381,7 +418,9 @@ def chrome_danger_tags(args: dict[str, Any], *, root: Path | None = None) -> lis
         if action != "list_pages" and action != "open":
             tags.append("[用户既有标签页]")
 
-    if action in {"click", "fill", "evaluate"}:
+    # 高敏站点防护覆盖全部读写/打开/导航/截图/抓包动作（仅 list_pages 与 close 除外），
+    # 防止在主力 Chrome 后台静默打开并读取邮件、开发控制台或账密页面。
+    if action not in {"list_pages", "close"}:
         try:
             sensitive_hosts = load_chrome_section(root).sensitive_hosts
         except Exception:
@@ -562,12 +601,13 @@ def render_approval_card(
         return "\n".join(lines)
 
     if name == "chrome":
-        from pipeline.agent.web_chrome import coerce_page_id, known_page_url
+        from pipeline.agent.web_chrome import coerce_page_id, known_page_url, page_origin
 
         action = _sanitize_card_field(args.get("action")) or "?"
         pid = coerce_page_id(args.get("page_id"))
         tags = chrome_danger_tags(args, root=root)
-        actual_url = _sanitize_card_field(known_page_url(pid))
+        raw_known_url = known_page_url(pid)
+        actual_url = _sanitize_card_field(raw_known_url)
         arg_url = _sanitize_card_field(args.get("url"))
         lines = [
             "┌─ Chrome 浏览器审批 ─────────────────────────────────",
@@ -580,15 +620,29 @@ def render_approval_card(
         if arg_url and arg_url != actual_url:
             label = "附带 url" if actual_url else "目标页"
             lines.append(f"│ {label}: {arg_url}")
-        if tags == ["[用户既有标签页]"]:
-            lines.append("│ 提示: 若选「本会话都批准」，本会话内此页常规操作均放行（JS 执行/高敏站点仍逐次审批）")
+        if tags == ["[用户既有标签页]"] and action != "navigate" and page_origin(raw_known_url):
+            lines.append("│ 提示: 若选「本会话都批准」，仅放行本会话内此标签页当前站点的常规操作（切站导航/JS 执行/高敏站点仍逐次审批）")
         if args.get("uid"):
             lines.append(f"│ 元素 uid: {_sanitize_card_field(args.get('uid'))}")
         if args.get("value") is not None:
-            lines.append(f"│ 输入内容: {_sanitize_card_field(str(args.get('value'))[:120])}")
+            val_lines = str(args.get("value")).splitlines() or [""]
+            if len(val_lines) == 1 and len(val_lines[0]) <= 120:
+                lines.append(f"│ 输入内容: {_sanitize_card_field(val_lines[0])}")
+            else:
+                lines.append("│ 输入内容:")
+                for raw_ln in val_lines[:CARD_DIFF_MAX_LINES]:
+                    clean_ln = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw_ln)
+                    lines.append("│   " + re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", clean_ln))
+                if len(val_lines) > CARD_DIFF_MAX_LINES:
+                    lines.append(f"│   ……另有 {len(val_lines) - CARD_DIFF_MAX_LINES} 行未显示")
         if args.get("function"):
-            fn_preview = _sanitize_card_field(str(args.get("function")).strip().splitlines()[0][:120])
-            lines.append(f"│ 脚本: {fn_preview}")
+            fn_lines = str(args.get("function")).splitlines() or [""]
+            lines.append("│ 脚本:")
+            for raw_ln in fn_lines[:CARD_DIFF_MAX_LINES]:
+                clean_ln = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw_ln)
+                lines.append("│   " + re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", clean_ln))
+            if len(fn_lines) > CARD_DIFF_MAX_LINES:
+                lines.append(f"│   ……另有 {len(fn_lines) - CARD_DIFF_MAX_LINES} 行未显示（请勿批准截断脚本）")
         if args.get("reason"):
             lines.append(f"│ 理由: {_sanitize_card_field(args.get('reason'))}")
         lines.append("└─ 执行? [y/N]: ")

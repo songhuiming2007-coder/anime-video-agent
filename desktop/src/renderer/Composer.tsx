@@ -75,9 +75,16 @@ export function Composer({
           e.preventDefault();
           if (disabled || value.trim() === "") return;
           const bare = value.trim();
-          if ((bare === "/model" || bare === "/thinking" || bare === "/login") && onSlash?.(bare)) {
+          const bareLower = bare.toLowerCase();
+          if ((bareLower === "/model" || bareLower === "/thinking" || bareLower === "/login") && onSlash?.(bareLower)) {
             setValue("");
             setError(null);
+            return;
+          }
+          if (/^\/login\s+\S/i.test(bare)) {
+            setValue("");
+            onSlash?.("/login");
+            setError("为防止密钥留在聊天记录中，请直接在登录弹窗内填写凭据");
             return;
           }
           const text = value;
@@ -120,7 +127,20 @@ export function Composer({
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             const text = value;
-            if (disabled || text.trim() === "") return;
+            const bare = text.trim();
+            const bareLower = bare.toLowerCase();
+            if (disabled || bare === "") return;
+            if ((bareLower === "/model" || bareLower === "/thinking" || bareLower === "/login") && onSlash?.(bareLower)) {
+              setValue("");
+              setError(null);
+              return;
+            }
+            if (/^\/login\s+\S/i.test(bare)) {
+              setValue("");
+              onSlash?.("/login");
+              setError("为防止密钥留在聊天记录中，请直接在登录弹窗内填写凭据");
+              return;
+            }
             setValue("");
             setError(null);
             void rpc.call("conv.send", { convKey, text }).catch((err) => {

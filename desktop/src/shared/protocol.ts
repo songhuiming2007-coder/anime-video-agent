@@ -246,6 +246,7 @@ export interface AuthProviderRow {
 export interface AuthStatusResult {
   ok: boolean;
   auth_file: string;
+  storage_encrypted?: boolean;
   connected_count: number;
   providers: AuthProviderRow[];
 }

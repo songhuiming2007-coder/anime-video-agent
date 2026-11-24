@@ -321,10 +321,14 @@ def _guard_url(
     is_link_local/is_multicast/is_reserved/is_unspecified 任一命中 → PermissionError。
     DNS 解析失败（gaierror，OSError 子类）不捕获，自然传播为断网错误数据。
     """
+    if "\\" in url:
+        raise PermissionError("拒绝包含反斜杠的 URL（防止浏览器解析差异绕过主机校验）")
     parsed = urllib.parse.urlparse(url)
     scheme = (parsed.scheme or "").lower()
     if scheme not in ("http", "https"):
         raise PermissionError(f"仅允许 http/https 协议，拒绝 scheme '{parsed.scheme}'")
+    if parsed.username is not None or parsed.password is not None:
+        raise PermissionError("拒绝包含内嵌凭据（userinfo）的 URL")
     host = parsed.hostname
     if not host:
         raise PermissionError("URL 缺少主机名")

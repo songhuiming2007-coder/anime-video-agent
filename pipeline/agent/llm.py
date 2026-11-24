@@ -1536,6 +1536,30 @@ def _append_google_turn(contents: list[dict[str, Any]], role: str, parts: list[d
         contents.append({"role": role, "parts": list(parts)})
 
 
+_ALLOWED_VERTEX_TOKEN_HOSTS = frozenset({
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+    "www.googleapis.com",
+    "sts.googleapis.com",
+})
+_ALLOW_LOOPBACK_VERTEX_TOKEN_URI = False
+
+
+def _validate_vertex_token_uri(token_uri: str) -> str:
+    clean = str(token_uri or "").strip()
+    parsed = urllib.parse.urlparse(clean)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or parsed.username is not None or parsed.password is not None:
+        raise LLMError(f"Google Vertex 凭据 token_uri 格式非法：{token_uri!r}")
+    if parsed.scheme == "https" and host in _ALLOWED_VERTEX_TOKEN_HOSTS:
+        return clean
+    if _ALLOW_LOOPBACK_VERTEX_TOKEN_URI and parsed.scheme in ("http", "https") and host in ("127.0.0.1", "localhost", "::1"):
+        return clean
+    raise LLMError(
+        f"拒绝向不受信任的 Google Vertex token_uri 发送凭据：{token_uri!r}（仅允许 https:// 官方 Google OAuth 端点）"
+    )
+
+
 def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
     cred_path_raw = (
         str(extra_config.get("credentials_path") or "").strip()
@@ -1566,7 +1590,7 @@ def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
     if not isinstance(info, dict):
         raise LLMError("Google 凭据文件格式错误")
     ctype = str(info.get("type") or "")
-    token_uri = str(info.get("token_uri") or "https://oauth2.googleapis.com/token")
+    token_uri = _validate_vertex_token_uri(str(info.get("token_uri") or "https://oauth2.googleapis.com/token"))
     if ctype == "authorized_user":
         form_data = urllib.parse.urlencode({
             "client_id": str(info.get("client_id") or ""),
@@ -2654,6 +2678,8 @@ class Decision:
     feedback: str | None = None
     # D81 §4.4 卡上绑定：只在人在卡上批准时带卡面所依据的状态（如 00-project.md 的 base_sha）；其余路径一律 None
     bind: dict | None = None
+    # 本会话同类放行命中的 allow_key（仅 provenance == "session_allow" 时携带，供执行层复核如 chrome origin）
+    allow_key: str | None = None
 
 
 @contextlib.contextmanager
@@ -3620,6 +3646,9 @@ def run_tool_loop(
                         # D81 §4.4：执行层据此分辨「人在卡上批了」与免卡 / 本会话已批（后两者 confirmed 也为真）
                         human_approved=bool(decision.ok and decision.provenance == "human"),
                         bound=decision.bind if decision.ok and decision.provenance == "human" else None,
+                        session_allow_key=(
+                            decision.allow_key if decision.ok and decision.provenance == "session_allow" else None
+                        ),
                     ) if (approve is not None or not bare) else context
                 )
                 if control.interrupt is not None and name in control.critical_tools:  # type: ignore[union-attr]

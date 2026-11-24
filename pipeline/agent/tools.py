@@ -889,6 +889,7 @@ class ToolContext:
     session_kind: str = "episode"
     human_approved: bool = False
     bound: dict | None = None
+    session_allow_key: str | None = None
     # D99：会话号，抓取留档记它作追溯（宿主填，不取模型参数）；无会话（单测、CLI 直调）为 None
     session_id: str | None = None
 
@@ -2419,6 +2420,20 @@ def _tool_chrome(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     save_evidence = coerce_bool_flag(args.get("save_evidence"), False)
     reason = str(args.get("reason") or "").strip()
 
+    approved_sensitive_hosts: tuple[str, ...] = ()
+    expected_origin: str | None = None
+    if ctx.human_approved and isinstance(ctx.bound, dict):
+        raw_hosts = ctx.bound.get("chrome_approved_sensitive_hosts")
+        if isinstance(raw_hosts, (list, tuple)):
+            approved_sensitive_hosts = tuple(str(h).strip().lower() for h in raw_hosts if str(h).strip())
+        raw_origin = ctx.bound.get("chrome_approved_origin")
+        if isinstance(raw_origin, str) and raw_origin.strip():
+            expected_origin = raw_origin.strip()
+    elif ctx.session_allow_key and ctx.session_allow_key.startswith("chrome:existing:"):
+        parts = ctx.session_allow_key.split(":", 3)
+        if len(parts) == 4 and parts[3].strip():
+            expected_origin = parts[3].strip()
+
     res = chrome_action(
         action,
         url=url,
@@ -2447,6 +2462,9 @@ def _tool_chrome(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         expect_text=str(args.get("expect_text")).strip() if args.get("expect_text") else None,
         root=ctx.root,
         keep_full=True,
+        human_approved=ctx.human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        expected_origin=expected_origin,
     )
     if action == "screenshot" and save_evidence:
         return _save_screenshot(res, reason, str(args.get("name") or "").strip(), ctx)
@@ -2640,6 +2658,12 @@ def _secret_values(root: Path | None = None) -> list[str]:
             _collect_secret_fields(json.loads(path.read_text(encoding="utf-8")), values)
         except (OSError, ValueError):
             continue
+    try:
+        from pipeline.agent.auth import collect_stored_secret_values
+
+        values.update(collect_stored_secret_values(root))
+    except Exception:  # noqa: BLE001
+        pass
     return sorted((v for v in values if len(v) >= SECRET_MIN_LEN), key=len, reverse=True)
 
 

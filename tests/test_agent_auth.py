@@ -1402,6 +1402,7 @@ def test_vertex_project_id_backfill_sa_jwt_mtime_cache_and_errors(
 
         with llm._GOOGLE_TOKEN_LOCK:
             llm._GOOGLE_TOKEN_CACHE.clear()
+        monkeypatch.setattr(llm, "_ALLOW_LOOPBACK_VERTEX_TOKEN_URI", True)
         tok1 = llm._google_vertex_bearer_token({"credentials_path": str(sa_file)})
         tok2 = llm._google_vertex_bearer_token({"credentials_path": str(sa_file)})
         assert tok1 == "vx-tok-1" and tok2 == "vx-tok-1" and token_calls == 1
@@ -1783,6 +1784,7 @@ def test_residual_minor_items_hardening(tmp_path: Path, monkeypatch: pytest.Monk
         bad_adc.write_text(json.dumps({"type": "authorized_user", "client_id": "c", "client_secret": "s", "refresh_token": "r", "token_uri": f"{base}/redir"}), encoding="utf-8")
         with llm._GOOGLE_TOKEN_LOCK:
             llm._GOOGLE_TOKEN_CACHE.clear()
+        monkeypatch.setattr(llm, "_ALLOW_LOOPBACK_VERTEX_TOKEN_URI", True)
         with pytest.raises(llm.LLMError, match="重定向"):
             llm._google_vertex_bearer_token({"credentials_path": str(bad_adc)})
 
@@ -2253,3 +2255,321 @@ def test_google_models_refresh_guards_concurrency_env_isolation_and_deadline(
             auth._ENV_MODELS_CACHE.clear()
             auth._MODELS_SYNC_FAILURES.clear()
         srv.shutdown()
+
+
+def test_security_audit_login_hardening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """覆盖安全审计 /login 全项加固：钥匙串 AES-GCM 加密与 scrub_secrets 联动、3xx 重定向拒发、明文 http 限制、URL 模板防注入、Copilot/Vertex 端点白名单、dynamic_client_id 校验与报错脱敏。"""
+    from pipeline.agent.tools import scrub_secrets
+
+    auth_file = tmp_path / "auth.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file))
+
+    # 1) 钥匙串 AES-256-GCM 加密落盘 + 明文透明迁移 + scrub_secrets 仍能脱敏解密后的真实值
+    # 先以明文写入一条旧版凭据（模拟迁移前状态）
+    auth.complete_auth_flow("openai", {"mode": "api_key", "api_key": "sk-legacy-plain-1234567890"}, root=tmp_path)
+    assert "sk-legacy-plain-1234567890" in auth_file.read_text(encoding="utf-8")
+
+    # 启用模拟钥匙串后端后，读取旧明文成功、写回时自动加密
+    keychain_box: dict[str, str] = {}
+
+    def fake_keychain(op: str, val: str | None) -> str | None:
+        if op == "get":
+            return keychain_box.get("k")
+        if op == "set" and val is not None:
+            keychain_box["k"] = val
+        return None
+
+    monkeypatch.setattr(auth, "_KEYCHAIN_BACKEND", fake_keychain)
+    monkeypatch.setattr(auth, "_CACHED_MASTER_KEY", None)
+
+    cred_migrated = auth.resolve_provider_credential("openai", root=tmp_path)
+    assert cred_migrated is not None and cred_migrated["api_key"] == "sk-legacy-plain-1234567890"
+
+    auth.complete_auth_flow(
+        "amazon-bedrock",
+        {
+            "mode": "api_key",
+            "extra_config": {
+                "aws_region": "us-east-1",
+                "aws_access_key_id": "AKIAEXAMPLE12345",
+                "aws_secret_access_key": "aws-secret-value-9876543210",
+            },
+        },
+        root=tmp_path,
+    )
+    raw_disk = auth_file.read_text(encoding="utf-8")
+    assert "sk-legacy-plain-1234567890" not in raw_disk
+    assert "aws-secret-value-9876543210" not in raw_disk
+    assert "enc:v1:" in raw_disk
+    assert auth.get_auth_status(tmp_path)["storage_encrypted"] is True
+
+    # 解密读取正常，且 scrub_secrets 仍能识别并脱敏磁盘加密存储的密钥
+    cred_aws = auth.resolve_provider_credential("amazon-bedrock", root=tmp_path)
+    assert cred_aws is not None and cred_aws["extra_config"]["aws_secret_access_key"] == "aws-secret-value-9876543210"
+    scrubbed = scrub_secrets("leak sk-legacy-plain-1234567890 and aws-secret-value-9876543210 here", tmp_path)
+    assert "sk-legacy-plain-1234567890" not in scrubbed
+    assert "aws-secret-value-9876543210" not in scrubbed
+
+    # 钥匙串不可用（返回 None）时，读加密文件必须显式报错而非把密文当明文
+    monkeypatch.setattr(auth, "_KEYCHAIN_BACKEND", lambda _op, _v: None)
+    with pytest.raises(auth.AuthError, match="钥匙串"):
+        auth.resolve_provider_credential("openai", root=tmp_path)
+    monkeypatch.setattr(auth, "_KEYCHAIN_BACKEND", None)
+
+    # 2) 非回环明文 http:// 对云服务商被拒，本地代理与回环允许；userinfo 内嵌凭据被拒
+    with pytest.raises(auth.AuthError, match="https://"):
+        auth._validate_base_url("http://api.openai.com/v1")
+    with pytest.raises(auth.AuthError, match="userinfo"):
+        auth._validate_base_url("https://user:pass@api.openai.com/v1")
+    assert auth._validate_base_url("http://127.0.0.1:8317/v1") == "http://127.0.0.1:8317/v1"
+    assert auth._resolve_effective_base_url(auth.PROVIDER_MAP["ollama"], "http://192.168.1.10:11434/v1", {}) == "http://192.168.1.10:11434/v1"
+
+    # 3) 云服务商模板字段注入被拒
+    with pytest.raises(auth.AuthError, match="AWS Region"):
+        auth._resolve_effective_base_url(auth.PROVIDER_MAP["amazon-bedrock"], "", {"aws_region": "us-east-1@evil.com#"})
+    with pytest.raises(auth.AuthError, match="GCP Location"):
+        auth._resolve_effective_base_url(auth.PROVIDER_MAP["google-vertex"], "", {"location": "evil.com/path?"})
+    with pytest.raises(auth.AuthError, match="Account ID"):
+        auth._resolve_effective_base_url(auth.PROVIDER_MAP["cloudflare-ai-gateway"], "", {"account_id": "../evil", "gateway_id": "gw"})
+    with pytest.raises(auth.AuthError, match="Resource Name"):
+        auth._resolve_effective_base_url(auth.PROVIDER_MAP["azure"], "", {"resource_name": "res@evil.com"})
+
+    # 4) Copilot 非法 api endpoint / proxy-ep 被拒
+    with pytest.raises(auth.AuthError, match="不受信任"):
+        auth._validate_copilot_api_url("https://evil.example.com/v1", None)
+    with pytest.raises(auth.AuthError, match="不受信任"):
+        auth._copilot_base_url_from_token("tid=1;proxy-ep=proxy.evil.example.com;", None)
+    assert auth._validate_copilot_api_url("https://api.individual.githubcopilot.com", None) == "https://api.individual.githubcopilot.com"
+
+    # 5) Vertex 非官方 token_uri（及默认关闭回环时的 127.0.0.1）被拒
+    monkeypatch.setattr(llm, "_ALLOW_LOOPBACK_VERTEX_TOKEN_URI", False)
+    with pytest.raises(llm.LLMError, match="不受信任"):
+        llm._validate_vertex_token_uri("https://evil.example.com/token")
+    with pytest.raises(llm.LLMError, match="不受信任"):
+        llm._validate_vertex_token_uri("http://127.0.0.1:8080/token")
+    assert llm._validate_vertex_token_uri("https://oauth2.googleapis.com/token") == "https://oauth2.googleapis.com/token"
+
+    # 6) OpenAI dynamic_client_id 非法字符被拒
+    auth_file2 = tmp_path / "auth2.local.json"
+    monkeypatch.setenv("AVA_AUTH_PATH", str(auth_file2))
+    started = auth.start_auth_flow("openai", "oauth_pkce", root=tmp_path)
+    bad_cb = f"http://127.0.0.1:1455/auth/callback?code=ok&state={started['state']}&client_id=bad%20cid%2Fevil"
+    with pytest.raises(auth.AuthError, match="client_id 格式不合法"):
+        auth.complete_auth_flow("openai", {"mode": "oauth_pkce", "code": bad_cb}, root=tmp_path)
+
+    # 7) _sync_proxy_models / _sync_google_generative_models / llm.chat_complete 全部拒绝 3xx 重定向，且报错体脱敏
+    def redir_handler(req: BaseHTTPRequestHandler, method: str, body: bytes) -> None:
+        if req.path.startswith("/err"):
+            _send_json(req, {"error": "failed with Bearer sk-leak-secret-999999"}, 401)
+            return
+        req.send_response(302)
+        req.send_header("Location", "http://127.0.0.1:9/steal")
+        req.end_headers()
+
+    srv, base = _make_mock_server(redir_handler)
+    try:
+        with pytest.raises(auth.AuthError, match="重定向"):
+            auth._sync_proxy_models(base, "sk-proxy-secret", tmp_path)
+        with pytest.raises(auth.AuthError, match="重定向"):
+            auth._sync_google_generative_models(base, "AIza-secret")
+        cfg = llm.LLMConfig(base_url=base, model="gpt-5.4", api_key="sk-llm-secret", api_protocol="openai-completions")
+        with pytest.raises(llm.LLMError, match="重定向"):
+            llm.chat_complete([{"role": "user", "content": "hi"}], config=cfg, root=tmp_path)
+        with pytest.raises(auth.AuthError) as err_info:
+            auth._http_json(f"{base}/err", method="GET")
+        assert "sk-leak-secret-999999" not in str(err_info.value)
+        assert "[已脱敏]" in str(err_info.value)
+    finally:
+        srv.shutdown()
+
+
+def test_cr_auth_keychain_fail_closed_cache_and_redirects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """覆盖 CR P0-4 / P1-3 / P1-5 / P2-1：钥匙串超时/锁住绝不覆盖或降级明文、stdin 写键、只读缓存与零副作用、多状态码重定向与 model_switch 拦截。"""
+    import base64
+    import secrets
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pipeline.agent import llm, model_switch
+
+    # 1) P0-4: subprocess.TimeoutExpired 必被捕获转为 AuthError，且绝不触发写键或降级明文
+    monkeypatch.delenv("AVA_AUTH_PATH", raising=False)
+    monkeypatch.setenv("AVA_AUTH_KEYCHAIN", "1")
+    monkeypatch.delenv("AVA_AUTH_NO_KEYCHAIN", raising=False)
+    monkeypatch.setattr(auth, "_KEYCHAIN_BACKEND", None)
+    monkeypatch.setattr(auth, "_CACHED_MASTER_KEY", None)
+    monkeypatch.setattr(auth.sys, "platform", "darwin")
+    monkeypatch.setattr(auth.os.path, "isfile", lambda p: True)
+
+    calls: list[dict[str, Any]] = []
+
+    def _timeout_run(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), "input": kwargs.get("input")})
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=5.0)
+
+    monkeypatch.setattr(auth.subprocess, "run", _timeout_run)
+    with pytest.raises(auth.AuthError, match="超时或失败"):
+        auth.complete_auth_flow("openai", {"mode": "api_key", "api_key": "sk-never-plaintext-on-timeout"}, root=tmp_path)
+    assert not auth.auth_path(tmp_path).exists()
+    assert len(calls) == 1  # 只读未尝试覆盖写
+
+    # 2) P0-4: 非 44 退出码（如 36 钥匙串已锁）绝不调用 add-generic-password 覆盖旧密钥，也绝不明文落盘
+    calls.clear()
+
+    def _locked_run(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), "input": kwargs.get("input")})
+        return subprocess.CompletedProcess(cmd, returncode=36, stdout="", stderr="User interaction is not allowed.")
+
+    monkeypatch.setattr(auth.subprocess, "run", _locked_run)
+    with pytest.raises(auth.AuthError, match="退出码 36"):
+        auth.complete_auth_flow("openai", {"mode": "api_key", "api_key": "sk-never-plaintext-on-lock"}, root=tmp_path)
+    assert not auth.auth_path(tmp_path).exists()
+    assert len(calls) == 1 and "find-generic-password" in calls[0]["cmd"]
+
+    # 3) P0-4: 44 不存在 -> security -i 走 stdin 写入（无 -U、无明文进 argv）；遇 45 并发重复改为回读已有键
+    calls.clear()
+    existing_key_b64 = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+    get_count = {"n": 0}
+
+    def _dup_race_run(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), "input": kwargs.get("input")})
+        if "find-generic-password" in cmd:
+            get_count["n"] += 1
+            if get_count["n"] == 1:
+                return subprocess.CompletedProcess(cmd, returncode=44, stdout="", stderr="not found")
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout=existing_key_b64 + "\n", stderr="")
+        # security -i 写键：断言无 -U 且主密钥不在 argv 而是在 stdin
+        assert cmd == [auth._KEYCHAIN_EXEC, "-i"]
+        assert "-U" not in (kwargs.get("input") or "")
+        assert "add-generic-password" in (kwargs.get("input") or "")
+        return subprocess.CompletedProcess(cmd, returncode=45, stdout="", stderr="The specified item already exists")
+
+    monkeypatch.setattr(auth.subprocess, "run", _dup_race_run)
+    auth.complete_auth_flow("openai", {"mode": "api_key", "api_key": "sk-race-safe-secret-777"}, root=tmp_path)
+    disk_text = auth.auth_path(tmp_path).read_text(encoding="utf-8")
+    assert "sk-race-safe-secret-777" not in disk_text
+    assert "enc:v1:" in disk_text
+    assert auth.get_auth_status(root=tmp_path)["storage_encrypted"] is True
+
+    # 4) P0-4 / P2-2: 旧版未迁移明文文件在开启钥匙串时 get_auth_status 如实汇报 storage_encrypted=False
+    legacy_root = tmp_path / "legacy"
+    legacy_path = auth.auth_path(legacy_root)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps({"providers": {"openai": {"type": "api_key", "api_key": "sk-legacy-plain-123"}}, "_pending": {}}),
+        encoding="utf-8",
+    )
+    assert auth.get_auth_status(root=legacy_root)["storage_encrypted"] is False
+
+    # 5) P1-3: collect_stored_secret_values 在文件不存在时不建目录/锁文件；存在时命中缓存且钥匙串出错走负缓存
+    empty_root = tmp_path / "empty_no_side_effect"
+    assert auth.collect_stored_secret_values(root=empty_root) == []
+    assert not (empty_root / "config").exists()
+
+    read_calls = {"n": 0}
+    orig_read = auth._read_store_unlocked
+
+    def _counting_read(p: Path):
+        read_calls["n"] += 1
+        return orig_read(p)
+
+    monkeypatch.setattr(auth, "_read_store_unlocked", _counting_read)
+    auth._invalidate_secrets_cache()
+    s1 = auth.collect_stored_secret_values(root=tmp_path)
+    s2 = auth.collect_stored_secret_values(root=tmp_path)
+    assert "sk-race-safe-secret-777" in s1 and s1 == s2
+    assert read_calls["n"] == 1  # 第二次命中缓存
+
+    # 负缓存：钥匙串锁住时 15s 内不重复触发读盘/安全调用风暴
+    monkeypatch.setattr(auth, "_CACHED_MASTER_KEY", None)
+    monkeypatch.setattr(auth, "_read_store_unlocked", orig_read)
+    auth._invalidate_secrets_cache()
+    fail_runs = {"n": 0}
+
+    def _counting_fail_run(cmd, **kwargs):
+        fail_runs["n"] += 1
+        return subprocess.CompletedProcess(cmd, returncode=36, stdout="", stderr="locked")
+
+    monkeypatch.setattr(auth.subprocess, "run", _counting_fail_run)
+    assert auth.collect_stored_secret_values(root=tmp_path) == []
+    assert auth.collect_stored_secret_values(root=tmp_path) == []
+    assert fail_runs["n"] == 1
+
+    # 6) P1-5 & P2-1: 301/302/307/308 在 llm（连接池 + _LLM_NO_REDIRECT_OPENER 回退）与 model_switch 均被拦截，
+    # 且第二台靶机收到 0 次请求（确认未转发 Authorization）
+    target_hits: list[str] = []
+
+    class _TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            target_hits.append(f"GET {self.headers.get('Authorization', '')}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"data":[]}')
+
+        def do_POST(self) -> None:
+            target_hits.append(f"POST {self.headers.get('Authorization', '')}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    target_srv = HTTPServer(("127.0.0.1", 0), _TargetHandler)
+    target_base = f"http://127.0.0.1:{target_srv.server_port}"
+    threading.Thread(target=target_srv.serve_forever, daemon=True).start()
+
+    class _MultiRedirectHandler(BaseHTTPRequestHandler):
+        def _send_redir(self) -> None:
+            code = int(self.path.strip("/").split("/")[0])
+            self.send_response(code)
+            self.send_header("Location", f"{target_base}/stolen")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            self._send_redir()
+
+        def do_POST(self) -> None:
+            self._send_redir()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    redir_srv = HTTPServer(("127.0.0.1", 0), _MultiRedirectHandler)
+    redir_base = f"http://127.0.0.1:{redir_srv.server_port}"
+    threading.Thread(target=redir_srv.serve_forever, daemon=True).start()
+    try:
+        for code in (301, 302, 307, 308):
+            # model_switch._fetch_openai_model_entries
+            entries, err = model_switch._fetch_openai_model_entries(
+                f"{redir_base}/{code}",
+                {"Authorization": "Bearer sk-model-switch-secret"},
+                root=tmp_path,
+            )
+            assert entries is None and err is not None and "重定向" in str(err)
+
+            # llm.chat_complete（走 _KeepAlivePool）
+            cfg = llm.LLMConfig(
+                base_url=f"{redir_base}/{code}",
+                model="gpt-5.4",
+                api_key="sk-llm-secret",
+                api_protocol="openai-completions",
+            )
+            with pytest.raises(llm.LLMError, match="重定向"):
+                llm.chat_complete([{"role": "user", "content": "hi"}], config=cfg, root=tmp_path)
+
+            # llm._LLM_NO_REDIRECT_OPENER 回退路径直测
+            req = urllib.request.Request(
+                f"{redir_base}/{code}",
+                data=b"{}",
+                headers={"Authorization": "Bearer sk-fallback-secret"},
+                method="POST",
+            )
+            with pytest.raises(llm.LLMError, match="重定向"):
+                llm._LLM_NO_REDIRECT_OPENER.open(req, timeout=5.0)
+        assert target_hits == []  # 靶机零命中：Authorization 从未被转发
+    finally:
+        redir_srv.shutdown()
+        target_srv.shutdown()
+
+

@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -25,7 +29,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pipeline import paths
 
@@ -33,6 +37,35 @@ REFRESH_SKEW_MS = 60_000
 PENDING_TTL_MS = 30 * 60 * 1000
 DEFAULT_HTTP_TIMEOUT_S = 20.0
 ALLOWED_AUTH_MODES = frozenset({"proxy", "api_key", "oauth_pkce", "oauth_device"})
+
+# D170 安全加固：macOS 钥匙串托管主密钥 + AES-256-GCM 敏感字段加密
+_KEYCHAIN_EXEC = "/usr/bin/security"
+_KEYCHAIN_SERVICE = "local.ava.auth"
+_KEYCHAIN_ACCOUNT = "auth-store-master-key-v1"
+_ENC_PREFIX = "enc:v1:"
+_ENCRYPTED_PROVIDER_FIELDS = frozenset({"api_key", "access_token", "refresh_token"})
+_ENCRYPTED_PENDING_FIELDS = frozenset({"code_verifier", "device_code"})
+_ENCRYPTED_EXTRA_FIELDS = frozenset({"aws_secret_access_key", "aws_session_token"})
+_KEYCHAIN_LOCK = threading.Lock()
+_CACHED_MASTER_KEY: bytes | None = None
+# 测试可注入的钥匙串后端：(op: "get"|"set", value: str|None) -> str|None
+_KEYCHAIN_BACKEND: Callable[[str, str | None], str | None] | None = None
+_BASE64URL_RE = re.compile(r"^[A-Za-z0-9_=-]+$")
+# collect_stored_secret_values 只读缓存（避免并发只读工具争抢 LOCK_EX 或在钥匙串锁定时超时风暴）
+_SECRETS_CACHE_LOCK = threading.Lock()
+_SECRETS_POS_CACHE: dict[tuple[Any, ...], tuple[str, ...]] = {}
+_SECRETS_NEG_CACHE: dict[tuple[Any, ...], float] = {}
+_SECRETS_NEG_TTL_S = 15.0
+
+_CLOUD_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CLOUD_REGION_RE = re.compile(r"^[a-z0-9-]{2,64}$")
+_AZURE_RESOURCE_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_DYNAMIC_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+_ERR_BEARER_RE = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
+_ERR_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+_ERR_SECRET_KV_RE = re.compile(
+    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password)[\"']?\s*[:=]\s*[\"']?)([^\"',\s}]+)"
+)
 
 
 class AuthError(RuntimeError):
@@ -524,7 +557,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             ExtraFieldSpec(
                 key="aws_secret_access_key",
                 label="IAM Secret Access Key",
-                placeholder="仅本地加密落盘",
+                placeholder="粘贴 AWS Secret Access Key",
                 secret=True,
                 env_var="AWS_SECRET_ACCESS_KEY",
             ),
@@ -836,12 +869,355 @@ def _require_provider(provider: str) -> ProviderSpec:
     return spec
 
 
-def _validate_base_url(url: str) -> str:
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    low = host.strip().lower().rstrip(".")
+    if low == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(low.split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_base_url(url: str, *, allow_http: bool = False) -> str:
     clean = url.strip().rstrip("/")
     parsed = urllib.parse.urlparse(clean)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.hostname:
         raise AuthError(f"base_url 须是合法 http/https 地址：{url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise AuthError(f"base_url 不允许包含内嵌凭据（userinfo）：{url!r}")
+    if parsed.scheme == "http" and not allow_http and not _is_loopback_host(parsed.hostname):
+        raise AuthError(
+            f"远程服务商 base_url 必须使用 https://（拒绝明文 http://{parsed.hostname}，以防 API Key 与对话内容明文泄露）"
+        )
     return clean
+
+
+def _keychain_enabled() -> bool:
+    """判断当前环境是否应启用钥匙串主密钥加密。
+
+    - 测试注入 `_KEYCHAIN_BACKEND` 时强制启用；
+    - 环境变量 `AVA_AUTH_NO_KEYCHAIN=1` 显式关闭；
+    - `AVA_AUTH_KEYCHAIN=1` 显式开启；
+    - 默认仅在真实 macOS 生产/开发运行态启用（单测指定 `AVA_AUTH_PATH` 或 pytest 下默认不碰本机真实钥匙串）。
+    """
+    if _KEYCHAIN_BACKEND is not None:
+        return True
+    if os.environ.get("AVA_AUTH_NO_KEYCHAIN", "").strip() == "1":
+        return False
+    if os.environ.get("AVA_AUTH_KEYCHAIN", "").strip() == "1":
+        return sys.platform == "darwin"
+    if sys.platform != "darwin":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AVA_AUTH_PATH", "").strip():
+        return False
+    return os.path.isfile(_KEYCHAIN_EXEC)
+
+
+def _keychain_get_raw() -> tuple[str, str | None]:
+    """返回 `("ok", b64_key)` / `("not_found", None)` / `("error", detail)`。
+
+    严格区分退出码 44（条目不存在）与其他错误（36 钥匙串已锁、51/128 拒权、TimeoutExpired 超时），
+    绝不将暂时不可用误判为「不存在」而触发覆盖旧密钥。
+    """
+    if _KEYCHAIN_BACKEND is not None:
+        try:
+            val = _KEYCHAIN_BACKEND("get", None)
+        except (OSError, subprocess.SubprocessError, AuthError) as exc:
+            return "error", str(exc)
+        return ("ok", val) if val else ("not_found", None)
+    try:
+        res = subprocess.run(
+            [_KEYCHAIN_EXEC, "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "error", f"读取钥匙串超时或失败（{type(exc).__name__}）"
+    if res.returncode == 0:
+        val = res.stdout.strip()
+        if val:
+            return "ok", val
+        return "error", "钥匙串条目为空"
+    if res.returncode == 44:
+        return "not_found", None
+    err_detail = _scrub_error_detail((res.stderr or "").strip())
+    return "error", f"security find-generic-password 退出码 {res.returncode}" + (f": {err_detail}" if err_detail else "")
+
+
+def _keychain_set_raw(b64_key: str) -> tuple[str, str | None]:
+    """通过 `security -i` 从 stdin 写入主密钥（避免出现在 argv，且不传 `-U` 防止覆盖既有密钥）。
+
+    返回 `("ok", None)` / `("duplicate", None)` / `("error", detail)`。
+    """
+    if not _BASE64URL_RE.fullmatch(b64_key):
+        return "error", "主密钥编码非法"
+    if _KEYCHAIN_BACKEND is not None:
+        try:
+            _KEYCHAIN_BACKEND("set", b64_key)
+        except (OSError, subprocess.SubprocessError, AuthError) as exc:
+            return "error", str(exc)
+        return "ok", None
+    stdin_cmd = f"add-generic-password -s {_KEYCHAIN_SERVICE} -a {_KEYCHAIN_ACCOUNT} -w {b64_key}\n"
+    try:
+        res = subprocess.run(
+            [_KEYCHAIN_EXEC, "-i"],
+            input=stdin_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "error", f"写入钥匙串超时或失败（{type(exc).__name__}）"
+    if res.returncode == 0:
+        return "ok", None
+    stderr_low = (res.stderr or "").lower()
+    if res.returncode == 45 or "already exists" in stderr_low or "-25299" in stderr_low:
+        return "duplicate", None
+    err_detail = _scrub_error_detail((res.stderr or "").strip())
+    return "error", f"security add-generic-password 退出码 {res.returncode}" + (f": {err_detail}" if err_detail else "")
+
+
+def _decode_master_key_b64(raw: str) -> bytes:
+    try:
+        key = base64.urlsafe_b64decode(raw.encode("ascii"))
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise AuthError(f"钥匙串中的 AVA 主密钥（{_KEYCHAIN_SERVICE}）编码损坏: {exc}") from None
+    if len(key) != 32:
+        raise AuthError(f"钥匙串中的 AVA 主密钥（{_KEYCHAIN_SERVICE}）长度异常（期望 32 字节，实得 {len(key)} 字节）")
+    return key
+
+
+def _load_master_key(*, create: bool) -> bytes | None:
+    """从钥匙串读取或初始化 32 字节 AES-256 主密钥。
+
+    - 未启用钥匙串加密时返回 None；
+    - 已启用但钥匙串锁定/拒权/超时/损坏时直接抛 AuthError（fail-closed，绝不覆盖旧键、绝不静默降级明文）。
+    """
+    global _CACHED_MASTER_KEY
+    if not _keychain_enabled():
+        return None
+    with _KEYCHAIN_LOCK:
+        if _CACHED_MASTER_KEY is not None and _KEYCHAIN_BACKEND is None:
+            return _CACHED_MASTER_KEY
+        status, raw = _keychain_get_raw()
+        if status == "error":
+            raise AuthError(
+                f"无法访问 macOS 登录钥匙串（{raw}）；请先解锁登录钥匙串后重试，已中止操作以防覆盖旧密钥或明文降级"
+            )
+        if status == "ok" and raw:
+            key = _decode_master_key_b64(raw)
+            if _KEYCHAIN_BACKEND is None:
+                _CACHED_MASTER_KEY = key
+            return key
+        if not create:
+            return None
+        key = secrets.token_bytes(32)
+        b64_key = base64.urlsafe_b64encode(key).decode("ascii")
+        set_status, set_err = _keychain_set_raw(b64_key)
+        if set_status == "ok":
+            if _KEYCHAIN_BACKEND is None:
+                _CACHED_MASTER_KEY = key
+            return key
+        if set_status == "duplicate":
+            r_status, r_raw = _keychain_get_raw()
+            if r_status == "ok" and r_raw:
+                existing = _decode_master_key_b64(r_raw)
+                if _KEYCHAIN_BACKEND is None:
+                    _CACHED_MASTER_KEY = existing
+                return existing
+            raise AuthError(f"并发初始化钥匙串主密钥时回读失败（{r_raw}），已中止保存")
+        raise AuthError(f"无法将主密钥写入 macOS 登录钥匙串（{set_err}）；已中止保存，拒绝明文降级")
+
+
+def _encrypt_secret_value(plaintext: str, key: bytes, aad: bytes) -> str:
+    if not plaintext or plaintext.startswith(_ENC_PREFIX):
+        return plaintext
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = secrets.token_bytes(12)
+    ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), aad)
+    return _ENC_PREFIX + base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+
+
+def _decrypt_secret_value(value: str, key: bytes | None, aad: bytes) -> str:
+    if not value.startswith(_ENC_PREFIX):
+        return value
+    if key is None:
+        raise AuthError("认证文件已由钥匙串加密，但当前无法读取钥匙串主密钥（请解锁 macOS 登录钥匙串后重试）")
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    try:
+        blob = base64.urlsafe_b64decode(value[len(_ENC_PREFIX):].encode("ascii"))
+        if len(blob) <= 12:
+            raise ValueError("ciphertext too short")
+        nonce, ct = blob[:12], blob[12:]
+        return AESGCM(key).decrypt(nonce, ct, aad).decode("utf-8")
+    except Exception as exc:
+        raise AuthError(f"认证凭据解密失败（钥匙串密钥不匹配或文件已损坏）: {exc}") from None
+
+
+def _store_encryption_flags(store: dict[str, Any]) -> tuple[bool, bool]:
+    """扫描原始落盘 store 的敏感字段，返回 `(是否存在密文, 是否存在未加密明文)`。"""
+    has_enc = False
+    has_plain = False
+    for entry in (store.get("providers") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for field_name in _ENCRYPTED_PROVIDER_FIELDS:
+            v = entry.get(field_name)
+            if isinstance(v, str) and v:
+                if v.startswith(_ENC_PREFIX):
+                    has_enc = True
+                else:
+                    has_plain = True
+        extra = entry.get("extra_config")
+        if isinstance(extra, dict):
+            for field_name in _ENCRYPTED_EXTRA_FIELDS:
+                v = extra.get(field_name)
+                if isinstance(v, str) and v:
+                    if v.startswith(_ENC_PREFIX):
+                        has_enc = True
+                    else:
+                        has_plain = True
+    for entry in (store.get("_pending") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for field_name in _ENCRYPTED_PENDING_FIELDS:
+            v = entry.get(field_name)
+            if isinstance(v, str) and v:
+                if v.startswith(_ENC_PREFIX):
+                    has_enc = True
+                else:
+                    has_plain = True
+    return has_enc, has_plain
+
+
+def _store_has_encrypted_values(store: dict[str, Any]) -> bool:
+    return _store_encryption_flags(store)[0]
+
+
+def _invalidate_secrets_cache(path: Path | None = None) -> None:
+    with _SECRETS_CACHE_LOCK:
+        if path is None:
+            _SECRETS_POS_CACHE.clear()
+            _SECRETS_NEG_CACHE.clear()
+            return
+        target = str(path)
+        for k in [k for k in _SECRETS_POS_CACHE if k[0] == target]:
+            _SECRETS_POS_CACHE.pop(k, None)
+        for k in [k for k in _SECRETS_NEG_CACHE if k[0] == target]:
+            _SECRETS_NEG_CACHE.pop(k, None)
+
+
+def _transform_store_secrets(store: dict[str, Any], *, encrypt: bool, key: bytes | None) -> dict[str, Any]:
+    out = copy.deepcopy(store)
+    providers = out.get("providers")
+    if isinstance(providers, dict):
+        for pid, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            for field_name in _ENCRYPTED_PROVIDER_FIELDS:
+                val = entry.get(field_name)
+                if isinstance(val, str) and val:
+                    aad = f"providers:{pid}:{field_name}".encode("utf-8")
+                    if encrypt:
+                        assert key is not None
+                        entry[field_name] = _encrypt_secret_value(val, key, aad)
+                    else:
+                        entry[field_name] = _decrypt_secret_value(val, key, aad)
+            extra = entry.get("extra_config")
+            if isinstance(extra, dict):
+                for field_name in _ENCRYPTED_EXTRA_FIELDS:
+                    val = extra.get(field_name)
+                    if isinstance(val, str) and val:
+                        aad = f"extra:{pid}:{field_name}".encode("utf-8")
+                        if encrypt:
+                            assert key is not None
+                            extra[field_name] = _encrypt_secret_value(val, key, aad)
+                        else:
+                            extra[field_name] = _decrypt_secret_value(val, key, aad)
+    pending = out.get("_pending")
+    if isinstance(pending, dict):
+        for pid, entry in pending.items():
+            if not isinstance(entry, dict):
+                continue
+            for field_name in _ENCRYPTED_PENDING_FIELDS:
+                val = entry.get(field_name)
+                if isinstance(val, str) and val:
+                    aad = f"pending:{pid}:{field_name}".encode("utf-8")
+                    if encrypt:
+                        assert key is not None
+                        entry[field_name] = _encrypt_secret_value(val, key, aad)
+                    else:
+                        entry[field_name] = _decrypt_secret_value(val, key, aad)
+    return out
+
+
+def collect_stored_secret_values(root: Path | None = None) -> list[str]:
+    """返回已落盘认证凭据中的真实明文密钥列表（供 `tools.scrub_secrets` 脱敏，即使磁盘已加密也能生效）。
+
+    只读无锁快速路径（依赖 `_write_store_unlocked` 的原子 `os.replace`）：
+    - 文件不存在时直接返回空，绝不在只读脱敏路径创建 `config/` 目录或 `.lock` 文件；
+    - 按 `(path, mtime_ns, size)` 缓存解密结果，避免并行只读工具争抢 `LOCK_EX`；
+    - 钥匙串暂不可用时短 TTL 负缓存，防止并发超时风暴。
+    """
+    path = auth_path(root)
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    cache_key = (str(path), st.st_mtime_ns, st.st_size, _keychain_enabled(), id(_KEYCHAIN_BACKEND))
+    now = time.monotonic()
+    with _SECRETS_CACHE_LOCK:
+        cached = _SECRETS_POS_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
+        neg_until = _SECRETS_NEG_CACHE.get(cache_key)
+        if neg_until is not None and now < neg_until:
+            return []
+    try:
+        store = _read_store_unlocked(path)
+    except AuthError:
+        with _SECRETS_CACHE_LOCK:
+            if len(_SECRETS_NEG_CACHE) >= 32:
+                _SECRETS_NEG_CACHE.clear()
+            _SECRETS_NEG_CACHE[cache_key] = time.monotonic() + _SECRETS_NEG_TTL_S
+        return []
+    except OSError:
+        return []
+    found: list[str] = []
+    for entry in (store.get("providers") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for field_name in _ENCRYPTED_PROVIDER_FIELDS:
+            v = entry.get(field_name)
+            if isinstance(v, str) and v:
+                found.append(v)
+        extra = entry.get("extra_config")
+        if isinstance(extra, dict):
+            for field_name in _ENCRYPTED_EXTRA_FIELDS:
+                v = extra.get(field_name)
+                if isinstance(v, str) and v:
+                    found.append(v)
+    for entry in (store.get("_pending") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for field_name in ("code_verifier", "device_code", "user_code"):
+            v = entry.get(field_name)
+            if isinstance(v, str) and v:
+                found.append(v)
+    with _SECRETS_CACHE_LOCK:
+        if len(_SECRETS_POS_CACHE) >= 32:
+            _SECRETS_POS_CACHE.clear()
+        _SECRETS_POS_CACHE[cache_key] = tuple(found)
+        _SECRETS_NEG_CACHE.pop(cache_key, None)
+    return found
 
 
 @contextlib.contextmanager
@@ -880,7 +1256,11 @@ def _read_store_unlocked(path: Path) -> dict[str, Any]:
         return {"providers": {}, "_pending": {}}
     providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
     pending = data.get("_pending") if isinstance(data.get("_pending"), dict) else {}
-    return {"providers": dict(providers), "_pending": dict(pending)}
+    store = {"providers": dict(providers), "_pending": dict(pending)}
+    if _store_has_encrypted_values(store):
+        key = _load_master_key(create=False)
+        store = _transform_store_secrets(store, encrypt=False, key=key)
+    return store
 
 
 def _prune_expired_pending(store: dict[str, Any], now_ms: int) -> None:
@@ -900,9 +1280,15 @@ def _prune_expired_pending(store: dict[str, Any], now_ms: int) -> None:
 
 def _write_store_unlocked(path: Path, data: dict[str, Any]) -> None:
     _prune_expired_pending(data, _now_ms())
+    if _keychain_enabled():
+        key = _load_master_key(create=True)
+        assert key is not None
+        payload_to_write = _transform_store_secrets(data, encrypt=True, key=key)
+    else:
+        payload_to_write = data
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    text = json.dumps(payload_to_write, ensure_ascii=False, indent=2) + "\n"
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, text.encode("utf-8"))
@@ -916,6 +1302,7 @@ def _write_store_unlocked(path: Path, data: dict[str, Any]) -> None:
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     os.chmod(path, 0o600)
+    _invalidate_secrets_cache(path)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -926,6 +1313,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
+def _scrub_error_detail(raw: str) -> str:
+    text = _ERR_BEARER_RE.sub(r"\1[已脱敏]", raw)
+    text = _ERR_JWT_RE.sub("[已脱敏]", text)
+    text = _ERR_SECRET_KV_RE.sub(r"\1[已脱敏]", text)
+    return text[:300]
+
+
 def _http_request_json(
     url: str,
     *,
@@ -934,7 +1328,7 @@ def _http_request_json(
     form_dict: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT_S,
-    allow_redirects: bool = True,
+    allow_redirects: bool = False,
 ) -> tuple[int, dict[str, Any] | None, str]:
     req_headers: dict[str, str] = {"Accept": "application/json", "User-Agent": "ava-agent/1.0"}
     if headers:
@@ -961,7 +1355,7 @@ def _http_request_json(
                 parsed_err = obj
         except json.JSONDecodeError:
             parsed_err = None
-        return int(exc.code), parsed_err, raw[:300]
+        return int(exc.code), parsed_err, _scrub_error_detail(raw)
     except AuthError:
         raise
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -983,7 +1377,7 @@ def _http_json(
     form_dict: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT_S,
-    allow_redirects: bool = True,
+    allow_redirects: bool = False,
 ) -> dict[str, Any]:
     status, parsed, detail = _http_request_json(
         url,
@@ -1244,15 +1638,29 @@ def _copilot_oauth_url(template: str, enterprise_domain: str | None) -> str:
     return template.replace("{domain}", domain)
 
 
+def _validate_copilot_api_url(url_str: str, enterprise_domain: str | None) -> str:
+    clean = _validate_base_url(url_str, allow_http=False)
+    parsed = urllib.parse.urlparse(clean)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    allowed_suffixes = ["githubcopilot.com"]
+    if enterprise_domain:
+        ent = _normalize_ghe_domain(enterprise_domain).split(":", 1)[0]
+        if ent:
+            allowed_suffixes.append(ent)
+    if not any(host == suf or host.endswith("." + suf) for suf in allowed_suffixes):
+        raise AuthError(f"GitHub Copilot 返回了不受信任的 API 端点：{host!r}")
+    return clean
+
+
 def _copilot_base_url_from_token(token: str, enterprise_domain: str | None) -> str | None:
     match = re.search(r"proxy-ep=([^;\s]+)", token)
     if match:
         proxy_host = match.group(1).strip()
         api_host = re.sub(r"^proxy\.", "api.", proxy_host)
-        return f"https://{api_host}"
+        return _validate_copilot_api_url(f"https://{api_host}", enterprise_domain)
     if enterprise_domain:
         domain = _normalize_ghe_domain(enterprise_domain)
-        return f"https://copilot-api.{domain}"
+        return _validate_copilot_api_url(f"https://copilot-api.{domain}", enterprise_domain)
     return None
 
 
@@ -1319,39 +1727,52 @@ def _resolve_effective_base_url(
     raw_base: str,
     extra: dict[str, str],
 ) -> str:
+    allow_http = spec.category == "local"
     base = raw_base.strip() or spec.default_base_url
     if spec.id == "cloudflare-ai-gateway":
         acc = extra.get("account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
         gw = extra.get("gateway_id") or os.environ.get("CLOUDFLARE_GATEWAY_ID", "").strip()
         if not acc or not gw:
             raise AuthError("Cloudflare AI Gateway 需要填写 Account ID 和 Gateway ID")
+        if not _CLOUD_ID_RE.match(acc):
+            raise AuthError(f"Cloudflare Account ID 格式不合法：{acc!r}")
+        if not _CLOUD_ID_RE.match(gw):
+            raise AuthError(f"Cloudflare Gateway ID 格式不合法：{gw!r}")
         base = base.replace("{account_id}", acc).replace("{gateway_id}", gw)
-        return _validate_base_url(base)
+        return _validate_base_url(base, allow_http=allow_http)
     if spec.id == "cloudflare-workers-ai":
         acc = extra.get("account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
         if not acc:
             raise AuthError("Cloudflare Workers AI 需要填写 Account ID")
+        if not _CLOUD_ID_RE.match(acc):
+            raise AuthError(f"Cloudflare Account ID 格式不合法：{acc!r}")
         base = base.replace("{account_id}", acc)
-        return _validate_base_url(base)
+        return _validate_base_url(base, allow_http=allow_http)
     if spec.id == "amazon-bedrock":
         region = extra.get("aws_region") or os.environ.get("AWS_REGION", "").strip() or "us-east-1"
+        if not _CLOUD_REGION_RE.match(region):
+            raise AuthError(f"AWS Region 格式不合法：{region!r}")
         if not raw_base.strip() or base == spec.default_base_url:
             base = f"https://bedrock-runtime.{region}.amazonaws.com"
-        return _validate_base_url(base)
+        return _validate_base_url(base, allow_http=allow_http)
     if spec.id == "google-vertex":
         loc = extra.get("location") or os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip() or "us-central1"
+        if not _CLOUD_REGION_RE.match(loc):
+            raise AuthError(f"GCP Location 格式不合法：{loc!r}")
         if not raw_base.strip() or base == spec.default_base_url:
             if loc == "global":
                 base = "https://aiplatform.googleapis.com/v1"
             else:
                 base = f"https://{loc}-aiplatform.googleapis.com/v1"
-        return _validate_base_url(base)
+        return _validate_base_url(base, allow_http=allow_http)
     if spec.id == "azure":
         res_name = extra.get("resource_name") or os.environ.get("AZURE_OPENAI_RESOURCE_NAME", "").strip()
         env_base = os.environ.get("AZURE_OPENAI_BASE_URL", "").strip()
         if (not raw_base.strip() or "YOUR-RESOURCE" in base) and env_base:
             base = env_base
         elif (not raw_base.strip() or "YOUR-RESOURCE" in base) and res_name:
+            if not _AZURE_RESOURCE_RE.match(res_name):
+                raise AuthError(f"Azure Resource Name 格式不合法：{res_name!r}")
             base = f"https://{res_name}.openai.azure.com/openai/v1"
         elif "YOUR-RESOURCE" in base:
             raise AuthError("Azure OpenAI 请填写 Resource Name 或自定义 Base URL")
@@ -1363,7 +1784,7 @@ def _resolve_effective_base_url(
                 host = f"http://{host}"
             host = host.rstrip("/")
             base = host if host.endswith("/v1") else f"{host}/v1"
-    return _validate_base_url(base)
+    return _validate_base_url(base, allow_http=allow_http)
 
 
 def _detect_env_status(spec: ProviderSpec) -> tuple[bool, str | None, str | None]:
@@ -1478,8 +1899,14 @@ def _refresh_oauth_token(spec: ProviderSpec, entry: dict[str, Any]) -> dict[str,
         else:
             exp_ms = now + 25 * 60 * 1000
         endpoints = cop.get("endpoints") if isinstance(cop.get("endpoints"), dict) else {}
+        raw_api_ep = endpoints.get("api")
+        validated_ep = (
+            _validate_copilot_api_url(str(raw_api_ep), ent_domain)
+            if isinstance(raw_api_ep, str) and raw_api_ep.strip()
+            else None
+        )
         base_url = str(
-            endpoints.get("api")
+            validated_ep
             or _copilot_base_url_from_token(token, ent_domain)
             or entry.get("base_url")
             or spec.default_base_url
@@ -1605,11 +2032,28 @@ def _stored_entry_for_spec(providers_data: dict[str, Any], spec: ProviderSpec) -
     return None
 
 
+def _read_raw_store_dict(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def get_auth_status(root: Path | None = None) -> dict[str, Any]:
     """返回脱敏后的全部支持服务商状态（绝不返回真实密钥/令牌）。"""
     path = auth_path(root)
     with _auth_lock(path):
+        raw_disk = _read_raw_store_dict(path)
         store = _read_store_unlocked(path)
+    _, has_plaintext = _store_encryption_flags(raw_disk)
+    storage_encrypted = _keychain_enabled() and not has_plaintext
     providers_data = store.get("providers", {})
     rows = []
     for spec in PROVIDERS:
@@ -1619,6 +2063,7 @@ def get_auth_status(root: Path | None = None) -> dict[str, Any]:
     return {
         "ok": True,
         "auth_file": str(path),
+        "storage_encrypted": storage_encrypted,
         "connected_count": connected_count,
         "providers": rows,
     }
@@ -1909,8 +2354,11 @@ def complete_auth_flow(
                 state_optional=bool(oauth.get("state_optional")),
             )
             issued_cid = cb_params.get("client_id") if oauth.get("dynamic_client_id") else None
-            if oauth.get("dynamic_client_id") and not issued_cid:
-                raise AuthError(f"{spec.name} OAuth 回调链接缺少动态签发的 client_id 参数，请粘贴完整回调 URL")
+            if oauth.get("dynamic_client_id"):
+                if not issued_cid:
+                    raise AuthError(f"{spec.name} OAuth 回调链接缺少动态签发的 client_id 参数，请粘贴完整回调 URL")
+                if not _DYNAMIC_CLIENT_ID_RE.match(issued_cid):
+                    raise AuthError(f"{spec.name} OAuth 回调中的 client_id 格式不合法")
             verifier = str(pending["code_verifier"])
             pending["exchanging"] = True
             pending["exchanging_at_ms"] = now
@@ -2729,7 +3177,7 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
                 return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
             if mode == "oauth_device":
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
-            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n执行：/login {pid} <api_key> 完成配置（或使用桌面端登录弹窗）", None
+            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
         arg = parts[2].strip()
         allowed_extra = {ef.key for ef in spec.extra_fields}
         is_extra_kv = bool(parts[2:]) and all(
@@ -2755,7 +3203,7 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
                 return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
             if mode == "oauth_device":
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
-            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n执行：/login {pid} <api_key> 完成配置（或使用桌面端登录弹窗）", None
+            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
         if arg == "complete":
             code = " ".join(parts[3:]).strip()
             mode: str | None = None

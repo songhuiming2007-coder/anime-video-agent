@@ -460,26 +460,61 @@ def review_tool_call(
 
     # ADR-0030 决策 1（取代 ADR-0029 决策 4）：bash 只在命中硬危险时弹卡，其余免卡
     allow_key: str | None = None
+    verdict_bind: dict[str, Any] | None = None
     if name == "bash":
         from pipeline.agent.status_card import bash_danger_tags
 
         tags = bash_danger_tags(str(args.get("command", "")))
         if not tags:
             return ToolVerdict("allow", echo=_echo_line(name, args))
-        allow_key = "bash:" + "".join(sorted(set(tags)))
+        # 访问敏感凭据与网络外传/下载固定逐条审批，绝不开放「本会话都批准」
+        if "[访问敏感凭据]" not in tags and "[网络外传/下载]" not in tags:
+            allow_key = "bash:" + "".join(sorted(set(tags)))
     elif name == "chrome":
         from pipeline.agent.status_card import chrome_danger_tags
-        from pipeline.agent.web_chrome import coerce_page_id, precheck_chrome_access
+        from pipeline.agent.web_chrome import (
+            _url_host,
+            coerce_page_id,
+            is_owned_page,
+            is_sensitive_host,
+            known_page_url,
+            load_chrome_section,
+            page_origin,
+            precheck_chrome_access,
+        )
 
-        precheck_err = precheck_chrome_access(str(args.get("action") or ""), args, root=root)
+        act = str(args.get("action") or "").strip()
+        precheck_err = precheck_chrome_access(act, args, root=root)
         if precheck_err:
             return ToolVerdict("reject", reason=precheck_err)
         danger_tags = chrome_danger_tags(args, root=root)
         if not danger_tags:
             return ToolVerdict("allow", echo=_echo_line(name, args))
-        # 仅涉及同个既有标签页的常规操作允许本会话放行；JS 执行与高敏站点交互固定逐次审批
-        if danger_tags == ["[用户既有标签页]"]:
-            allow_key = f"chrome:existing:{coerce_page_id(args.get('page_id'))}"
+        pid = coerce_page_id(args.get("page_id"))
+        known_url = known_page_url(pid)
+        origin = page_origin(known_url)
+        # 仅涉及同个既有标签页同 origin 的常规操作允许本会话放行；
+        # navigate（会改变页面 origin）、JS 执行与高敏站点固定逐次审批
+        if danger_tags == ["[用户既有标签页]"] and act != "navigate":
+            if pid is not None and origin:
+                allow_key = f"chrome:existing:{pid}:{origin}"
+        # 卡面绑定：执行层仅对卡面明确展示并经人批过的高敏主机与既有页 origin 放行（防 TOCTOU 与跨标记绕过）
+        approved_sensitive: list[str] = []
+        if "[高敏站点交互]" in danger_tags:
+            try:
+                sensitive_hosts = load_chrome_section(root).sensitive_hosts
+            except Exception:
+                sensitive_hosts = None
+            seen_hosts: set[str] = set()
+            for cand in (known_url, str(args.get("url") or "").strip()):
+                if cand and is_sensitive_host(cand, sensitive_hosts):
+                    h = _url_host(cand)
+                    if h and h not in seen_hosts:
+                        seen_hosts.add(h)
+                        approved_sensitive.append(h)
+        verdict_bind = {"chrome_approved_sensitive_hosts": approved_sensitive}
+        if pid is not None and not is_owned_page(pid) and act not in {"list_pages", "open", "close", "navigate"} and origin:
+            verdict_bind["chrome_approved_origin"] = origin
     elif name == "run_pipeline":
         from pipeline.agent.tools import strip_cloud_flags
 
@@ -532,6 +567,7 @@ def review_tool_call(
             root=root,
         ),
         allow_key=allow_key,
+        bind=verdict_bind,
     )
 
 
@@ -1963,7 +1999,7 @@ class AgentSession:
                 latency_s=None, channel="session_allow",
             )
             self.channel.show("echo", {"text": f"[本会话已批准同类] {verdict.allow_key}"})
-            return Decision(ok=True, provenance="session_allow")
+            return Decision(ok=True, provenance="session_allow", allow_key=verdict.allow_key)
         self._record({
             "k": "request_opened", "request_id": request.request_id,
             "kind": request.kind, "title": request.title, "turn_id": turn_id,

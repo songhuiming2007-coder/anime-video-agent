@@ -66,20 +66,47 @@ CHROME_ACTIONS: tuple[str, ...] = (
 )
 
 # 常量取值理由见 docs/dev/plans/2026-11-14-chrome-devtools-mcp-spec.md §4.2
+# 安全加固：精确锁定 npm 版本，禁止 @latest 自动拉取未审计上游版本（防 TCC 进程树内供应链 RCE）
 _DEFAULT_COMMAND = "npx"
-_DEFAULT_ARGS: tuple[str, ...] = ("-y", "chrome-devtools-mcp@latest", "--autoConnect", "--redactNetworkHeaders")
+_PINNED_MCP_PACKAGE = "chrome-devtools-mcp@1.13.0"
+_DEFAULT_ARGS: tuple[str, ...] = ("-y", _PINNED_MCP_PACKAGE, "--autoConnect", "--redactNetworkHeaders")
+_PINNED_SEMVER_RE = re.compile(r"^(?:@[a-z0-9._-]+/)?[a-z0-9._-]+@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 _DEFAULT_TIMEOUT_S = 45.0
 _DEFAULT_MAX_CHARS = 20000
 _CLOSE_TIMEOUT_S = 3.0
 _DEFAULT_SENSITIVE_HOSTS: tuple[str, ...] = (
     "accounts.google.com",
     "myaccount.google.com",
+    "mail.google.com",
+    "drive.google.com",
     "passport.bilibili.com",
     "pay.bilibili.com",
     "studio.youtube.com",
     "member.bilibili.com",
     "pay.weixin.qq.com",
     "alipay.com",
+    "github.com",
+    "gitlab.com",
+    "console.aws.amazon.com",
+    "signin.aws.amazon.com",
+    "console.cloud.google.com",
+    "portal.azure.com",
+    "dash.cloudflare.com",
+    "platform.openai.com",
+    "console.anthropic.com",
+    "aistudio.google.com",
+    "openrouter.ai",
+    "login.microsoftonline.com",
+    "outlook.live.com",
+    "outlook.office.com",
+    "icloud.com",
+    "appleid.apple.com",
+    "id.apple.com",
+    "vault.bitwarden.com",
+    "my.1password.com",
+    "paypal.com",
+    "stripe.com",
+    "dashboard.stripe.com",
 )
 _CACHE_SHOT_REL = Path("data") / "_cache" / "chrome-shots"
 
@@ -87,6 +114,7 @@ _SENSITIVE_HEADER_NAMES: frozenset[str] = frozenset(
     {
         "cookie",
         "set-cookie",
+        "set_cookie",
         "authorization",
         "proxy-authorization",
         "authentication",
@@ -101,6 +129,20 @@ _SENSITIVE_HEADER_NAMES: frozenset[str] = frozenset(
         "x-xsrf-token",
         "x-api-key",
         "api-key",
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "token",
+        "csrf_token",
+        "xsrf_token",
+        "session_id",
+        "session_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
     }
 )
 _SENSITIVE_HEADER_ALT = "|".join(re.escape(name) for name in sorted(_SENSITIVE_HEADER_NAMES))
@@ -111,9 +153,12 @@ _SENSITIVE_HEADER_JSON_KV_RE = re.compile(
     rf"(?i)([\"'](?:{_SENSITIVE_HEADER_ALT})[\"']\s*:\s*)"
     r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')"
 )
+_JWT_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+_BEARER_TOKEN_RE = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9._~+/=-]{12,})")
 _SENSITIVE_QUERY_RE = re.compile(
-    r"(?i)([?&](?:token|access_token|refresh_token|id_token|auth|csrf|csrf_token|xsrf|xsrf_token|"
-    r"key|api_key|apikey|sig|signature|secret|session|session_id|x-amz-security-token|x-amz-signature)=)"
+    r"(?i)([?&#](?:token|access_token|refresh_token|id_token|auth|code|state|code_verifier|code_challenge|"
+    r"csrf|csrf_token|xsrf|xsrf_token|key|api_key|apikey|sig|signature|secret|session|session_id|"
+    r"password|passwd|pwd|jwt|bearer|x-amz-security-token|x-amz-signature)=)"
     r"([^&#\s\"'<>]+)"
 )
 _SAVED_SHOT_PATH_RE = re.compile(r"(?im)saved screenshot to\s+([^\r\n]+)")
@@ -226,6 +271,165 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
     return raw
 
 
+_NPX_VALUE_FLAGS = frozenset({
+    "--prefix",
+    "--cache",
+    "--registry",
+    "--userconfig",
+    "--node-options",
+    "--shell",
+    "--workspace",
+    "-w",
+    "-C",
+    "--cwd",
+    "--tag",
+})
+_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"})
+
+
+def _extract_pkg_runner_args(command: str, args: Sequence[str]) -> tuple[str, list[str]] | None:
+    """剥离外层 env，识别 npx / bunx / npm exec / pnpm dlx / yarn dlx 等动态拉包启动器。"""
+    tokens = [command.strip(), *(str(a).strip() for a in args if str(a).strip())]
+    if not tokens or not tokens[0]:
+        return None
+    idx = 0
+    while idx < len(tokens) and Path(tokens[idx]).name.lower() in {"env", "env.exe"}:
+        idx += 1
+        while idx < len(tokens):
+            tok = tokens[idx]
+            if tok == "--":
+                idx += 1
+                break
+            if tok in _ENV_VALUE_FLAGS:
+                idx += 2
+                continue
+            if tok.startswith("-"):
+                idx += 1
+                continue
+            if "=" in tok and not tok.startswith("="):
+                idx += 1
+                continue
+            break
+    if idx >= len(tokens):
+        return None
+    runner = Path(tokens[idx]).name.lower()
+    rest = tokens[idx + 1:]
+    if runner in {"npx", "npx.cmd", "bunx", "bunx.exe"}:
+        return runner, rest
+    if runner in {"npm", "npm.cmd"}:
+        j = 0
+        while j < len(rest):
+            t = rest[j]
+            if t in _NPX_VALUE_FLAGS:
+                j += 2
+                continue
+            if t.startswith("-"):
+                j += 1
+                continue
+            if t in {"exec", "x"}:
+                return f"{runner} {t}", rest[j + 1:]
+            return None
+        return None
+    if runner in {"pnpm", "pnpm.cmd", "yarn", "yarn.cmd"}:
+        j = 0
+        while j < len(rest):
+            t = rest[j]
+            if t in _NPX_VALUE_FLAGS:
+                j += 2
+                continue
+            if t.startswith("-"):
+                j += 1
+                continue
+            if t == "dlx":
+                return f"{runner} dlx", rest[j + 1:]
+            return None
+        return None
+    return None
+
+
+def _validate_chrome_command_args(
+    command: str,
+    args: Sequence[str],
+    *,
+    source_path: Path | None = None,
+) -> None:
+    """使用 npx / npm exec / pnpm dlx / yarn dlx / bunx 启动 MCP 时，要求包名精确锁定 semver，禁止浮动标签与 -c。"""
+    extracted = _extract_pkg_runner_args(command, args)
+    if extracted is None:
+        return
+    runner_label, runner_args = extracted
+    src_hint = f"（配置文件：{source_path}）" if source_path is not None else ""
+
+    explicit_pkgs: list[str] = []
+    positional_pkg: str | None = None
+    i = 0
+    after_double_dash = False
+    while i < len(runner_args):
+        s = runner_args[i]
+        if not after_double_dash:
+            if s == "--":
+                after_double_dash = True
+                i += 1
+                continue
+            if s in {"-c", "--call"} or s.startswith("--call="):
+                raise ValueError(
+                    f"web 配置 `chrome.args` 使用 {runner_label} 时禁止 `-c`/`--call` 任意命令执行{src_hint}"
+                )
+            if s in {"-p", "--package"}:
+                if i + 1 >= len(runner_args) or not runner_args[i + 1].strip():
+                    raise ValueError(f"web 配置 `chrome.args` 的 `{s}` 缺少包名参数{src_hint}")
+                explicit_pkgs.append(runner_args[i + 1].strip())
+                i += 2
+                continue
+            if s.startswith("--package=") or s.startswith("-p="):
+                pkg_val = s.split("=", 1)[1].strip()
+                if not pkg_val:
+                    raise ValueError(f"web 配置 `chrome.args` 的 `{s}` 缺少包名参数{src_hint}")
+                explicit_pkgs.append(pkg_val)
+                i += 1
+                continue
+            if s in _NPX_VALUE_FLAGS:
+                i += 2
+                continue
+            if s.startswith("-"):
+                i += 1
+                continue
+        if positional_pkg is None:
+            positional_pkg = s
+        break
+
+    pkgs_to_check = explicit_pkgs if explicit_pkgs else ([positional_pkg] if positional_pkg else [])
+    if not pkgs_to_check:
+        raise ValueError(
+            f"web 配置 `chrome.args` 使用 {runner_label} 时未识别到可校验的锁版本包名{src_hint}："
+            f"请精确固定版本号（例如 {_PINNED_MCP_PACKAGE!r}）"
+        )
+    for pkg_spec in pkgs_to_check:
+        if not _PINNED_SEMVER_RE.match(pkg_spec):
+            raise ValueError(
+                f"web 配置 `chrome.args` 使用 {runner_label} 时禁止未锁定版本或浮动标签 ({pkg_spec!r}){src_hint}："
+                f"请精确固定版本号（例如 {_PINNED_MCP_PACKAGE!r}），防止高权限进程树内供应链自动拉取未审计代码"
+            )
+
+
+def _load_trusted_fake_ip_ranges(
+    root: Path | None = None,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """仅读取 `trusted_fake_ip_ranges`，避免 `chrome.args` 等其他字段校验失败时静默丢弃代理 FakeIP 白名单。"""
+    base = Path(root) if root is not None else _repo_root()
+    agent_dir = base / "config" / "agent"
+    local_path = agent_dir / "web.local.json"
+    base_path = agent_dir / "web.json"
+    primary_data = _read_json_dict(local_path) if local_path.exists() else {}
+    fallback_data = _read_json_dict(base_path) if base_path.exists() else {}
+    merged_ranges_raw = (
+        primary_data["trusted_fake_ip_ranges"]
+        if "trusted_fake_ip_ranges" in primary_data
+        else fallback_data.get("trusted_fake_ip_ranges", [])
+    )
+    return _parse_trusted_ranges(merged_ranges_raw)
+
+
 def load_chrome_section(root: Path | None = None) -> ChromeSection:
     """读取 `config/agent/web.local.json`（优先）与 `web.json` 的 `chrome` 段。
 
@@ -253,33 +457,45 @@ def load_chrome_section(root: Path | None = None) -> ChromeSection:
     )
     trusted_ranges = _parse_trusted_ranges(merged_ranges_raw)
 
-    raw_chrome = primary_data.get("chrome") if "chrome" in primary_data else fallback_data.get("chrome")
+    has_local_chrome = "chrome" in primary_data
+    chrome_src_path = local_path if has_local_chrome else base_path
+    raw_chrome = primary_data.get("chrome") if has_local_chrome else fallback_data.get("chrome")
     if raw_chrome is None:
         raw_chrome = {}
     if not isinstance(raw_chrome, dict):
-        raise ValueError("web 配置 `chrome` 段必须为 JSON 对象")
+        raise ValueError(f"web 配置 `chrome` 段必须为 JSON 对象（{chrome_src_path}）")
 
     command = str(raw_chrome.get("command") or _DEFAULT_COMMAND).strip()
     if not command:
-        raise ValueError("web 配置 `chrome.command` 不能为空")
+        raise ValueError(f"web 配置 `chrome.command` 不能为空（{chrome_src_path}）")
 
     raw_args = raw_chrome.get("args", list(_DEFAULT_ARGS))
     if not isinstance(raw_args, list) or not raw_args or not all(isinstance(x, str) and x.strip() for x in raw_args):
-        raise ValueError("web 配置 `chrome.args` 必须为非空字符串数组")
+        raise ValueError(f"web 配置 `chrome.args` 必须为非空字符串数组（{chrome_src_path}）")
     args = tuple(raw_args)
+    _validate_chrome_command_args(command, args, source_path=chrome_src_path)
 
     raw_timeout = raw_chrome.get("timeout_s", _DEFAULT_TIMEOUT_S)
     if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float)) or raw_timeout <= 0:
-        raise ValueError("web 配置 `chrome.timeout_s` 必须为正数")
+        raise ValueError(f"web 配置 `chrome.timeout_s` 必须为正数（{chrome_src_path}）")
 
     raw_max_chars = raw_chrome.get("max_chars", _DEFAULT_MAX_CHARS)
     if isinstance(raw_max_chars, bool) or not isinstance(raw_max_chars, int) or raw_max_chars <= 0:
-        raise ValueError("web 配置 `chrome.max_chars` 必须为正整数")
+        raise ValueError(f"web 配置 `chrome.max_chars` 必须为正整数（{chrome_src_path}）")
 
-    raw_hosts = raw_chrome.get("sensitive_hosts", list(_DEFAULT_SENSITIVE_HOSTS))
-    if not isinstance(raw_hosts, list) or not all(isinstance(x, str) for x in raw_hosts):
-        raise ValueError("web 配置 `chrome.sensitive_hosts` 必须为字符串数组")
-    sensitive_hosts = tuple(h.strip().lower().lstrip(".") for h in raw_hosts if h.strip())
+    raw_hosts = raw_chrome.get("sensitive_hosts")
+    replace_defaults = bool(raw_chrome.get("replace_default_sensitive_hosts", False))
+    if raw_hosts is None:
+        sensitive_hosts = _DEFAULT_SENSITIVE_HOSTS
+    else:
+        if not isinstance(raw_hosts, list) or not all(isinstance(x, str) for x in raw_hosts):
+            raise ValueError(f"web 配置 `chrome.sensitive_hosts` 必须为字符串数组（{chrome_src_path}）")
+        cleaned_custom = [h.strip().lower().lstrip(".") for h in raw_hosts if h.strip()]
+        if replace_defaults:
+            sensitive_hosts = tuple(dict.fromkeys(cleaned_custom))
+        else:
+            # 默认与内置高敏名单取并集，防止旧版 web.local.json 仅保留 8 个旧域名而静默丢弃新增高敏站
+            sensitive_hosts = tuple(dict.fromkeys((*_DEFAULT_SENSITIVE_HOSTS, *cleaned_custom)))
 
     return ChromeSection(
         command=command,
@@ -323,9 +539,44 @@ def known_page_url(page_id: int | None) -> str:
         return _PAGE_URLS.get(page_id, "")
 
 
-def is_sensitive_host(url_or_host: str, sensitive_hosts: Sequence[str] | None = None) -> bool:
-    """判断 URL 或主机名是否命中高敏站点名单（精确或子域后缀匹配）。"""
+def page_origin(url_or_host: str) -> str:
+    """提取 URL 的规范 origin（`scheme://host[:port]`）；含反斜杠/userinfo 或无法解析时返回空串。"""
     raw = str(url_or_host or "").strip()
+    if not raw or "://" not in raw or "\\" in raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if scheme not in {"http", "https"} or not host:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    formatted = f"[{host}]" if ":" in host else host
+    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        return f"{scheme}://{formatted}:{port}"
+    return f"{scheme}://{formatted}"
+
+
+def _scrub_url(url: str) -> str:
+    """对返回给模型的 URL 做敏感 query/fragment 参数剥离 + 受限路径词脱敏。"""
+    raw = str(url or "")
+    if not raw:
+        return ""
+    cleaned = _SENSITIVE_QUERY_RE.sub(r"\1[已剥离敏感参数]", raw)
+    cleaned = _JWT_TOKEN_RE.sub("[已剥离敏感令牌]", cleaned)
+    return _scrub(cleaned)
+
+
+def is_sensitive_host(url_or_host: str, sensitive_hosts: Sequence[str] | None = None) -> bool:
+    """判断 URL 或主机名是否命中高敏站点名单（精确或子域后缀匹配；先将反斜杠归一防 WHATWG 解析差异）。"""
+    raw = str(url_or_host or "").strip().replace("\\", "/")
     if not raw:
         return False
     parsed = urlparse(raw if "://" in raw else f"https://{raw}")
@@ -388,7 +639,7 @@ def _coerce_int_param(
 def _check_target_url_allowed(url: str, *, root: Path | None) -> tuple[str | None, bool]:
     trusted_ranges: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
     try:
-        trusted_ranges = load_chrome_section(root).trusted_fake_ip_ranges
+        trusted_ranges = _load_trusted_fake_ip_ranges(root)
     except Exception:
         pass
     try:
@@ -634,10 +885,10 @@ def _permission_error_message(
         return (
             f"chrome 无法读取主力 Chrome 的 DevToolsActivePort{path_hint}（权限被 macOS TCC 拦截）：{detail}。"
             "这不是未勾选 chrome://inspect/#remote-debugging 的问题，而是当前进程树所属 App 无权读取 Google Chrome 数据目录"
-            "（TCC 服务 kTCCServiceSystemPolicyAppDataDetailed / kTCCServiceSystemPolicyAllFiles）。"
-            "请按以下任一方式放行并重启 AVA："
-            "1) 打开「系统设置 → 隐私与安全性 → 文件与文件夹」，展开「AVA」并打开「Google Chrome」；"
-            "2) 或打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，添加并勾选当前 AVA.app。"
+            "（TCC 服务 kTCCServiceSystemPolicyAppDataDetailed）。"
+            "请按最小权限原则放行并重启 AVA："
+            "打开「系统设置 → 隐私与安全性 → 文件与文件夹」，展开「AVA」并仅勾选「Google Chrome」"
+            "（不建议授予「完全磁盘访问权限」，以免 AVA 子进程树获得整机隐私目录读取权限）。"
             "注意：若启动的是 dist/mac-arm64/ 下未重签的 ad-hoc AVA.app，每次重新打包后 CDHash 会变化，系统设置中旧条目可能表面仍开启但已被 TCC 静默拒绝，"
             "需先选中旧条目点「-」移除再点「+」重新添加后完全重启；如希望一次授权长期有效，请运行 `cd desktop && npm run release-install` 安装稳定签名版到 /Applications/AVA.app。"
             "（若仅抓公开网页，请用 web_fetch / crawl / browser）"
@@ -1122,7 +1373,7 @@ def _strip_sensitive_headers_obj(obj: Any) -> Any:
 
 
 def _strip_sensitive_headers_text(raw: str) -> str:
-    """对 Network 详情做结构化 + 请求头 + URL 敏感 query 三层剥离。"""
+    """对 Network 详情做结构化 + 请求头/JSON 凭据键 + JWT/Bearer + URL 敏感 query 四层剥离。"""
     stripped = raw.strip()
     if stripped.startswith(("{", "[")):
         try:
@@ -1134,6 +1385,8 @@ def _strip_sensitive_headers_text(raw: str) -> str:
             pass
     raw = _SENSITIVE_HEADER_JSON_KV_RE.sub(r'\1"[已剥离敏感头]"', raw)
     raw = _SENSITIVE_HEADER_LINE_RE.sub(r"\1[已剥离敏感头]", raw)
+    raw = _BEARER_TOKEN_RE.sub(r"\1[已剥离敏感令牌]", raw)
+    raw = _JWT_TOKEN_RE.sub("[已剥离敏感令牌]", raw)
     raw = _SENSITIVE_QUERY_RE.sub(r"\1[已剥离敏感参数]", raw)
     return raw
 
@@ -1186,7 +1439,8 @@ def _norm_url_key(url: str) -> str:
 
 def _url_host(url: str) -> str:
     try:
-        return (urlparse(str(url or "").strip()).hostname or "").lower().rstrip(".")
+        raw = str(url or "").strip().replace("\\", "/")
+        return (urlparse(raw).hostname or "").lower().rstrip(".")
     except Exception:
         return ""
 
@@ -1244,9 +1498,12 @@ def _resolve_opened_page_id(
         if not (open_existing_ids and not open_new_pages and target_url not in text):
             return new_pages[0]["page_id"]
 
-    # 5) 多个新增页仍无 URL/响应命中时兜底取最后一个新增页；若无新增页则退 open_res 自身
-    if new_pages:
-        return new_pages[-1]["page_id"]
+    # 5) 多个新增页且 URL / 响应 / 主机均未命中时，绝不盲目认领最后一个新增页（防把用户并发手开页误登记为自有页）
+    if len(new_pages) > 1:
+        raise ValueError(
+            "chrome open 期间检测到多个新增标签页且无法唯一识别归属（可能与用户手动新开页并发），"
+            "为防误操作用户标签页已中止认领"
+        )
     for p in open_pages:
         if p["page_id"] not in before_ids:
             return p["page_id"]
@@ -1317,23 +1574,157 @@ def _guard_url_and_cleanup_on_fail(
         raise
 
 
+def _is_sensitive_url_approved(
+    url: str,
+    cfg: ChromeSection,
+    *,
+    human_approved: bool,
+    approved_sensitive_hosts: Sequence[str] | None,
+) -> bool:
+    """判断高敏 URL 是否已获本次审批放行。
+
+    - 若调用方传入了显式主机白名单（agent 工具执行层从 `ctx.bound` 注入），必须实时主机名精确命中该名单；
+      防止「批准了普通既有页 / JS 执行，但执行期页面实为或跳向高敏站」的跨标记 / TOCTOU 绕过。
+    - 若未传主机名单（外部 Python 直调兼容模式），退回 `human_approved` 布尔判断。
+    """
+    if not url or not is_sensitive_host(url, cfg.sensitive_hosts):
+        return True
+    if approved_sensitive_hosts is not None:
+        live_host = _url_host(url)
+        allowed = {str(h).strip().lower().rstrip(".") for h in approved_sensitive_hosts if str(h).strip()}
+        return bool(live_host and live_host in allowed)
+    return bool(human_approved)
+
+
+def _guard_sensitive_host_live(
+    url: str,
+    cfg: ChromeSection,
+    *,
+    action: str,
+    human_approved: bool,
+    approved_sensitive_hosts: Sequence[str] | None = None,
+    sess: Any | None = None,
+    close_pid_on_fail: int | None = None,
+) -> None:
+    """实时 URL 高敏站点复核（防两次调用间 JS/重定向跳转与跨标记审批绕过）。"""
+    if _is_sensitive_url_approved(
+        url,
+        cfg,
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+    ):
+        return
+    if sess is not None and close_pid_on_fail is not None:
+        try:
+            sess.call_tool("close_page", {"pageId": close_pid_on_fail}, timeout_s=_CLOSE_TIMEOUT_S)
+        except Exception:
+            pass
+        with _SESSION_LOCK:
+            _OWNED_PAGES.discard(close_pid_on_fail)
+            _PAGE_URLS.pop(close_pid_on_fail, None)
+    raise PermissionError(
+        f"实时页面位于未获审批的高敏站点（{_scrub_url(url)}），chrome {action} 须经针对该站点的人工审批后才能执行"
+    )
+
+
+def _guard_expected_origin_live(
+    url: str,
+    page_id: int,
+    *,
+    expected_origin: str | None,
+) -> None:
+    """校验既有标签页实时 origin 与卡面 / session_allow 绑定的 origin 一致（防页面切站后静默复用放行）。"""
+    if not expected_origin:
+        return
+    live_origin = page_origin(url)
+    if live_origin != expected_origin:
+        raise PermissionError(
+            f"标签页 page_id={page_id} 当前站点已变更为 {_scrub_url(url) or '(未知)'}"
+            f"（与已批准的 origin={expected_origin} 不一致），请重新审批"
+        )
+
+
 def _guard_current_page_url(
     sess: Any,
     cfg: ChromeSection,
     page_id: int,
     *,
     close_owned_on_fail: bool = True,
+    action: str | None = None,
+    human_approved: bool = True,
+    approved_sensitive_hosts: Sequence[str] | None = None,
+    expected_origin: str | None = None,
 ) -> tuple[str, str]:
-    """实时刷新页内 URL/title（更新 `_PAGE_URLS`）并对当前真实 URL 过 `_guard_url`。"""
+    """实时刷新页内 URL/title（更新 `_PAGE_URLS`）并对当前真实 URL 过 `_guard_url`、origin 绑定与高敏站点复核。"""
     url, title = _read_current_page_meta(sess, page_id, timeout_s=cfg.timeout_s)
+    close_pid = page_id if (close_owned_on_fail and is_owned_page(page_id)) else None
     if url:
         _guard_url_and_cleanup_on_fail(
             url,
             trusted_ranges=cfg.trusted_fake_ip_ranges,
             sess=sess if close_owned_on_fail else None,
-            close_pid_on_fail=page_id if (close_owned_on_fail and is_owned_page(page_id)) else None,
+            close_pid_on_fail=close_pid,
         )
+        _guard_expected_origin_live(url, page_id, expected_origin=expected_origin)
+        if action is not None:
+            _guard_sensitive_host_live(
+                url,
+                cfg,
+                action=action,
+                human_approved=human_approved,
+                approved_sensitive_hosts=approved_sensitive_hosts,
+                sess=sess if close_owned_on_fail else None,
+                close_pid_on_fail=close_pid,
+            )
+    elif expected_origin:
+        _guard_expected_origin_live("", page_id, expected_origin=expected_origin)
     return url, title
+
+
+def _redact_sensitive_network_list(
+    raw_text: str,
+    cfg: ChromeSection,
+    *,
+    human_approved: bool,
+    approved_sensitive_hosts: Sequence[str] | None,
+) -> str:
+    """对 list_network 中指向未审批高敏站点的请求行做遮蔽（含 include_preserved 历史请求）。"""
+    out_lines: list[str] = []
+    for ln in raw_text.splitlines():
+        urls = _URL_TOKEN_RE.findall(ln)
+        if any(
+            not _is_sensitive_url_approved(
+                u,
+                cfg,
+                human_approved=human_approved,
+                approved_sensitive_hosts=approved_sensitive_hosts,
+            )
+            for u in urls
+        ):
+            out_lines.append("[已隐藏未审批高敏站点网络请求]")
+        else:
+            out_lines.append(ln)
+    return "\n".join(out_lines)
+
+
+def _guard_sensitive_network_detail(
+    raw_text: str,
+    cfg: ChromeSection,
+    *,
+    human_approved: bool,
+    approved_sensitive_hosts: Sequence[str] | None,
+) -> None:
+    """校验 get_network 返回详情中的目标请求 URL 不属于未审批高敏站点。"""
+    for u in _URL_TOKEN_RE.findall(raw_text):
+        if not _is_sensitive_url_approved(
+            u,
+            cfg,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        ):
+            raise PermissionError(
+                f"抓取到的网络请求指向未获审批的高敏站点（{_scrub_url(u)}），chrome get_network 须经针对该站点的人工审批后才能读取"
+            )
 
 
 def _handle_list_pages(sess: Any, cfg: ChromeSection) -> dict[str, Any]:
@@ -1350,7 +1741,7 @@ def _handle_list_pages(sess: Any, cfg: ChromeSection) -> dict[str, Any]:
             "page_id": p["page_id"],
             "owned": p["page_id"] in owned_snapshot,
             "selected": p["selected"],
-            "url": _scrub(p["url"]),
+            "url": _scrub_url(p["url"]),
             "title": _scrub(p["title"]),
         }
         for p in pages
@@ -1367,9 +1758,18 @@ def _handle_open(
     cfg: ChromeSection,
     *,
     url: str,
+    human_approved: bool = False,
+    approved_sensitive_hosts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     _guard_url(url, trusted_ranges=cfg.trusted_fake_ip_ranges)
     assert_egress_boundary(url, {"url": _normalized_for_assert(url)})
+    _guard_sensitive_host_live(
+        url,
+        cfg,
+        action="open",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+    )
 
     before_pages = _parse_pages(sess.call_tool("list_pages", {}, timeout_s=cfg.timeout_s))
     before_ids = {p["page_id"] for p in before_pages}
@@ -1397,6 +1797,15 @@ def _handle_open(
         sess=sess,
         close_pid_on_fail=pid,
     )
+    _guard_sensitive_host_live(
+        final_url,
+        cfg,
+        action="open",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        sess=sess,
+        close_pid_on_fail=pid,
+    )
     with _SESSION_LOCK:
         _PAGE_URLS[pid] = final_url
 
@@ -1405,8 +1814,8 @@ def _handle_open(
         "page_id": pid,
         "owned": True,
         "background": True,
-        "url": _scrub(url),
-        "final_url": _scrub(final_url),
+        "url": _scrub_url(url),
+        "final_url": _scrub_url(final_url),
         "title": _scrub(title),
     }
 
@@ -1418,13 +1827,30 @@ def _handle_navigate(
     page_id: int,
     nav_type: str,
     url: str | None,
+    human_approved: bool = False,
+    approved_sensitive_hosts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if nav_type == "url":
         assert url is not None
         _guard_url(url, trusted_ranges=cfg.trusted_fake_ip_ranges)
         assert_egress_boundary(url, {"url": _normalized_for_assert(url)})
+        _guard_sensitive_host_live(
+            url,
+            cfg,
+            action="navigate",
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        )
 
     _select_background(sess, page_id, timeout_s=cfg.timeout_s)
+    _guard_current_page_url(
+        sess,
+        cfg,
+        page_id,
+        action="navigate",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+    )
     nav_args: dict[str, Any] = {
         "pageId": page_id,
         "type": nav_type,
@@ -1434,12 +1860,19 @@ def _handle_navigate(
         nav_args["url"] = url
     nav_res = sess.call_tool("navigate_page", nav_args, timeout_s=cfg.timeout_s)
 
-    final_url, title = _guard_current_page_url(sess, cfg, page_id)
+    final_url, title = _guard_current_page_url(
+        sess,
+        cfg,
+        page_id,
+        action="navigate",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+    )
     return {
         "action": "navigate",
         "page_id": page_id,
         "owned": is_owned_page(page_id),
-        "final_url": _scrub(final_url),
+        "final_url": _scrub_url(final_url),
         "title": _scrub(title),
         "text": _scrub(_extract_mcp_text(nav_res)),
     }
@@ -1472,19 +1905,41 @@ def _handle_extract_text(
     root: Path | None,
     keep_full: bool,
     wait_for_stable_dom: bool = False,
+    human_approved: bool = False,
+    approved_sensitive_hosts: Sequence[str] | None = None,
+    expected_origin: str | None = None,
 ) -> dict[str, Any]:
     _select_background(sess, page_id, timeout_s=cfg.timeout_s)
-    _guard_current_page_url(sess, cfg, page_id)
+    _guard_current_page_url(
+        sess,
+        cfg,
+        page_id,
+        action="extract_text",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        expected_origin=expected_origin,
+    )
     raw_url, title, raw_text, raw_html = _extract_dom_snapshot(
         sess, page_id, timeout_s=cfg.timeout_s, wait_for_stable_dom=wait_for_stable_dom
     )
     final_url = raw_url or known_page_url(page_id)
     if final_url:
+        close_pid = page_id if is_owned_page(page_id) else None
         _guard_url_and_cleanup_on_fail(
             final_url,
             trusted_ranges=cfg.trusted_fake_ip_ranges,
             sess=sess,
-            close_pid_on_fail=page_id if is_owned_page(page_id) else None,
+            close_pid_on_fail=close_pid,
+        )
+        _guard_expected_origin_live(final_url, page_id, expected_origin=expected_origin)
+        _guard_sensitive_host_live(
+            final_url,
+            cfg,
+            action="extract_text",
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            sess=sess,
+            close_pid_on_fail=close_pid,
         )
         with _SESSION_LOCK:
             _PAGE_URLS[page_id] = final_url
@@ -1498,8 +1953,8 @@ def _handle_extract_text(
     out: dict[str, Any] = {
         "action": "extract_text",
         "page_id": page_id,
-        "url": _scrub(final_url),
-        "final_url": _scrub(final_url),
+        "url": _scrub_url(final_url),
+        "final_url": _scrub_url(final_url),
         "title": _scrub(title),
         "text": capped,
         "truncated": truncated,
@@ -1581,11 +2036,22 @@ def _handle_screenshot(
     save_evidence: bool,
     expect_text: str | None,
     keep_full: bool,
+    human_approved: bool = False,
+    approved_sensitive_hosts: Sequence[str] | None = None,
+    expected_origin: str | None = None,
 ) -> dict[str, Any]:
     from PIL import Image
 
     _select_background(sess, page_id, timeout_s=cfg.timeout_s)
-    _guard_current_page_url(sess, cfg, page_id)
+    _guard_current_page_url(
+        sess,
+        cfg,
+        page_id,
+        action="screenshot",
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        expected_origin=expected_origin,
+    )
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:18]
     cache_dir = _shot_cache_dir(base_root)
     cache_path = cache_dir / f"chrome-p{page_id}-{stamp}.png"
@@ -1602,12 +2068,24 @@ def _handle_screenshot(
         size = [im.width, im.height]
 
     if not save_evidence:
-        cur_url, title = _guard_current_page_url(sess, cfg, page_id)
+        try:
+            cur_url, title = _guard_current_page_url(
+                sess,
+                cfg,
+                page_id,
+                action="screenshot",
+                human_approved=human_approved,
+                approved_sensitive_hosts=approved_sensitive_hosts,
+                expected_origin=expected_origin,
+            )
+        except Exception:
+            saved_path.unlink(missing_ok=True)
+            raise
         digest = hashlib.sha256(png_bytes).hexdigest()
         return {
             "action": "screenshot",
             "page_id": page_id,
-            "final_url": _scrub(cur_url),
+            "final_url": _scrub_url(cur_url),
             "title": _scrub(title),
             "file": str(saved_path),
             "size": size,
@@ -1622,17 +2100,32 @@ def _handle_screenshot(
         saved_path.unlink(missing_ok=True)
         raise ValueError(f"chrome 物证截图尺寸不合规（{size[0]}×{size[1]}）：{issue}，没有保存")
 
-    raw_url, title, raw_text, raw_html = _extract_dom_snapshot(sess, page_id, timeout_s=cfg.timeout_s)
-    final_url = raw_url or known_page_url(page_id)
-    if final_url:
-        _guard_url_and_cleanup_on_fail(
-            final_url,
-            trusted_ranges=cfg.trusted_fake_ip_ranges,
-            sess=sess,
-            close_pid_on_fail=page_id if is_owned_page(page_id) else None,
-        )
-        with _SESSION_LOCK:
-            _PAGE_URLS[page_id] = final_url
+    try:
+        raw_url, title, raw_text, raw_html = _extract_dom_snapshot(sess, page_id, timeout_s=cfg.timeout_s)
+        final_url = raw_url or known_page_url(page_id)
+        if final_url:
+            close_pid = page_id if is_owned_page(page_id) else None
+            _guard_url_and_cleanup_on_fail(
+                final_url,
+                trusted_ranges=cfg.trusted_fake_ip_ranges,
+                sess=sess,
+                close_pid_on_fail=close_pid,
+            )
+            _guard_expected_origin_live(final_url, page_id, expected_origin=expected_origin)
+            _guard_sensitive_host_live(
+                final_url,
+                cfg,
+                action="screenshot",
+                human_approved=human_approved,
+                approved_sensitive_hosts=approved_sensitive_hosts,
+                sess=sess,
+                close_pid_on_fail=close_pid,
+            )
+            with _SESSION_LOCK:
+                _PAGE_URLS[page_id] = final_url
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        raise
     normalized = scrub_secrets(_scrub(_normalize_extracted_text(raw_text, raw_html)), base_root)
 
     ocr_match: str | None = None
@@ -1661,8 +2154,8 @@ def _handle_screenshot(
     return {
         "action": "screenshot",
         "page_id": page_id,
-        "url": _scrub(final_url),
-        "final_url": _scrub(final_url),
+        "url": _scrub_url(final_url),
+        "final_url": _scrub_url(final_url),
         "title": _scrub(title),
         "png": png_bytes,
         "element_text": normalized[:500],
@@ -1700,6 +2193,9 @@ def chrome_action(
     expect_text: str | None = None,
     root: Path | None = None,
     keep_full: bool = False,
+    human_approved: bool = False,
+    approved_sensitive_hosts: Sequence[str] | None = None,
+    expected_origin: str | None = None,
     launch_fn: Callable[[ChromeSection], Any] | None = None,
 ) -> dict[str, Any]:
     """执行一次受控的主力 Chrome 动作（通过标准 chrome-devtools-mcp --autoConnect）。"""
@@ -1746,13 +2242,27 @@ def chrome_action(
 
     if action == "open":
         assert url is not None
-        return _handle_open(sess, cfg, url=url.strip())
+        return _handle_open(
+            sess,
+            cfg,
+            url=url.strip(),
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        )
 
     pid = coerce_page_id(page_id)
     assert pid is not None
 
     if action == "navigate":
-        return _handle_navigate(sess, cfg, page_id=pid, nav_type=nav_type, url=url.strip() if url else None)
+        return _handle_navigate(
+            sess,
+            cfg,
+            page_id=pid,
+            nav_type=nav_type,
+            url=url.strip() if url else None,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        )
 
     if action == "close":
         return _handle_close(sess, cfg, page_id=pid)
@@ -1765,6 +2275,9 @@ def chrome_action(
             root=base_root,
             keep_full=keep_full,
             wait_for_stable_dom=wait_for_stable_dom,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
         )
 
     if action == "screenshot":
@@ -1778,16 +2291,35 @@ def chrome_action(
             save_evidence=coerce_bool_flag(save_evidence, False),
             expect_text=expect_text,
             keep_full=keep_full,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
         )
 
     _select_background(sess, pid, timeout_s=cfg.timeout_s)
-    cur_url, _ = _guard_current_page_url(sess, cfg, pid)
+    cur_url, _ = _guard_current_page_url(
+        sess,
+        cfg,
+        pid,
+        action=action,
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        expected_origin=expected_origin,
+    )
 
     if action == "snapshot":
         res = sess.call_tool("take_snapshot", {"pageId": pid, "verbose": bool(verbose)}, timeout_s=cfg.timeout_s)
         clean, truncated = _sanitize_text(_extract_mcp_text(res), root=base_root, max_chars=cfg.max_chars)
-        final_url, _ = _guard_current_page_url(sess, cfg, pid)
-        return {"action": "snapshot", "page_id": pid, "final_url": _scrub(final_url), "text": clean, "truncated": truncated}
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
+        return {"action": "snapshot", "page_id": pid, "final_url": _scrub_url(final_url), "text": clean, "truncated": truncated}
 
     if action == "click":
         assert uid is not None
@@ -1802,12 +2334,20 @@ def chrome_action(
             timeout_s=cfg.timeout_s,
         )
         clean, truncated = _sanitize_text(_extract_mcp_text(res), root=base_root, max_chars=cfg.max_chars)
-        final_url, _ = _guard_current_page_url(sess, cfg, pid)
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
         return {
             "action": "click",
             "page_id": pid,
             "uid": uid,
-            "final_url": _scrub(final_url),
+            "final_url": _scrub_url(final_url),
             "text": clean,
             "truncated": truncated,
         }
@@ -1826,12 +2366,20 @@ def chrome_action(
             timeout_s=cfg.timeout_s,
         )
         clean, truncated = _sanitize_text(_extract_mcp_text(res), root=base_root, max_chars=cfg.max_chars)
-        final_url, _ = _guard_current_page_url(sess, cfg, pid)
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
         return {
             "action": "fill",
             "page_id": pid,
             "uid": uid,
-            "final_url": _scrub(final_url),
+            "final_url": _scrub_url(final_url),
             "text": clean,
             "truncated": truncated,
         }
@@ -1843,11 +2391,19 @@ def chrome_action(
             wait_args["timeout"] = timeout_ms_val
         res = sess.call_tool("wait_for", wait_args, timeout_s=cfg.timeout_s)
         clean, truncated = _sanitize_text(_extract_mcp_text(res), root=base_root, max_chars=cfg.max_chars)
-        final_url, _ = _guard_current_page_url(sess, cfg, pid)
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
         return {
             "action": "wait_for",
             "page_id": pid,
-            "final_url": _scrub(final_url),
+            "final_url": _scrub_url(final_url),
             "text": clean,
             "truncated": truncated,
         }
@@ -1861,18 +2417,49 @@ def chrome_action(
         if page_idx_val is not None:
             net_args["pageIdx"] = page_idx_val
         res = sess.call_tool("list_network_requests", net_args, timeout_s=cfg.timeout_s)
-        stripped_list = _SENSITIVE_QUERY_RE.sub(r"\1[已剥离敏感参数]", _extract_mcp_text(res))
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
+        filtered_list = _redact_sensitive_network_list(
+            _extract_mcp_text(res),
+            cfg,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        )
+        stripped_list = _SENSITIVE_QUERY_RE.sub(r"\1[已剥离敏感参数]", filtered_list)
         clean, truncated = _sanitize_text(stripped_list, root=base_root, max_chars=cfg.max_chars)
-        return {"action": "list_network", "page_id": pid, "final_url": _scrub(cur_url), "text": clean, "truncated": truncated}
+        return {"action": "list_network", "page_id": pid, "final_url": _scrub_url(final_url or cur_url), "text": clean, "truncated": truncated}
 
     if action == "get_network":
         req_args: dict[str, Any] = {"pageId": pid}
         if reqid_val is not None:
             req_args["reqid"] = reqid_val
         res = sess.call_tool("get_network_request", req_args, timeout_s=cfg.timeout_s)
-        stripped = _strip_sensitive_headers_text(_extract_mcp_text(res))
+        final_url, _ = _guard_current_page_url(
+            sess,
+            cfg,
+            pid,
+            action=action,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+            expected_origin=expected_origin,
+        )
+        raw_net_text = _extract_mcp_text(res)
+        _guard_sensitive_network_detail(
+            raw_net_text,
+            cfg,
+            human_approved=human_approved,
+            approved_sensitive_hosts=approved_sensitive_hosts,
+        )
+        stripped = _strip_sensitive_headers_text(raw_net_text)
         clean, truncated = _sanitize_text(stripped, root=base_root, max_chars=cfg.max_chars)
-        return {"action": "get_network", "page_id": pid, "final_url": _scrub(cur_url), "text": clean, "truncated": truncated}
+        return {"action": "get_network", "page_id": pid, "final_url": _scrub_url(final_url or cur_url), "text": clean, "truncated": truncated}
 
     # evaluate
     assert function is not None
@@ -1885,11 +2472,19 @@ def chrome_action(
         eval_payload["args"] = list(eval_args)
     res = sess.call_tool("evaluate_script", eval_payload, timeout_s=cfg.timeout_s)
     clean, truncated = _sanitize_text(_extract_mcp_text(res), root=base_root, max_chars=cfg.max_chars)
-    final_url, _ = _guard_current_page_url(sess, cfg, pid)
+    final_url, _ = _guard_current_page_url(
+        sess,
+        cfg,
+        pid,
+        action=action,
+        human_approved=human_approved,
+        approved_sensitive_hosts=approved_sensitive_hosts,
+        expected_origin=expected_origin,
+    )
     return {
         "action": "evaluate",
         "page_id": pid,
-        "final_url": _scrub(final_url),
+        "final_url": _scrub_url(final_url),
         "text": clean,
         "truncated": truncated,
     }
