@@ -2,7 +2,7 @@
 // 真实 core 输出的契约对拍在 tests/host/stopPoint.test.ts（需要夹具 repo）。
 import { describe, expect, it } from "vitest";
 import type { SynthProgressJson, VoiceInfoJson } from "../../src/shared/protocol";
-import { clock, heardKey, lockState, parseVoiceInfo, segStatus, synthSummary } from "../../src/shared/voiceInfo";
+import { clock, heardKey, lockState, parseVoiceInfo, redoSegments, segStatus, synthSummary } from "../../src/shared/voiceInfo";
 
 const GOOD = {
   v: 1,
@@ -177,5 +177,30 @@ describe("D87 synthSummary：一行进度摘要", () => {
   it("clock：今天只给时分，不是今天带月日", () => {
     expect(clock("2026-10-13T19:02:00", TODAY)).toBe("19:02");
     expect(clock("2026-10-12T19:02:00", TODAY)).toBe("10-12 19:02");
+  });
+
+  it("redoSegments 包含本期范围(scope=global)纠错命中的所有含词段落，长列表摘要自动折叠", () => {
+    const segs = ["1", "2", "3", "4", "5", "6", "7"].map((l, i) => ({
+      ...GOOD.segments[0],
+      label: l,
+      index: i + 1,
+      text: l === "1" || l === "4" || l === "7" ? "雪乃今天也在教室里。" : "其他台词。",
+    }));
+    const r = parseVoiceInfo(
+      JSON.stringify({
+        ...GOOD,
+        segments: segs,
+        pending_corrections: [{ id: 1, segment: 1, word: "雪乃", scope: "global", applied: false }],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(redoSegments(r.info)).toEqual(["1", "4", "7"]);
+
+    const doneMap = Object.fromEntries(segs.map((s) => [s.label, "2026-10-13T19:09:00"]));
+    const many = infoWith({ ...SYNTH, state: "ok", current: null, note: null, finished_at: "2026-10-13T19:09:00", queue: segs.map((s) => s.label), done: doneMap });
+    const sum = synthSummary(many, new Set<string>(), TODAY);
+    expect(sum?.text).toContain("等 7 段");
+    expect(sum?.title).toContain("1、2、3、4、5、6、7");
   });
 });

@@ -99,11 +99,16 @@ describe("TV-7 时间线标签（S8-R9 / H-10）", () => {
     expect(t).not.toContain("命令卡批准");
     expect(t).not.toContain("命令卡拒绝");
   });
-  it("带 approval_id 的两种形状不变", () => {
+  it("带 approval_id 的两种形状已中文化并涵盖人时记录事件", () => {
     expect(eventLabel(ev({ approval_id: "appr_1", stop: "05", decision: "approved", confirms: "artifact" }))).toBe(
-      "确认已对齐的批准：05",
+      "已确认终端批准：05",
     );
-    expect(eventLabel(ev({ approval_id: "appr_1", stop: "03.5", decision: "rejected" }))).toBe("停机点决策：03.5 → rejected");
+    expect(eventLabel(ev({ approval_id: "appr_1", stop: "03.5", decision: "rejected" }))).toBe("停机点决策：03.5 → 打回");
+    const ht = parseEventLine(
+      JSON.stringify({ event_id: "evt_ht", timestamp: "2026-10-20T13:13:57Z", episode: "ep", type: "human_time_recorded", payload: { stop: "02.5", minutes: 3.5 } }),
+    );
+    expect(ht.ok).toBe(true);
+    if (ht.ok) expect(eventLabel(ht.ev)).toContain("人时");
   });
 });
 

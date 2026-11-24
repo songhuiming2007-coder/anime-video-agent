@@ -48,7 +48,7 @@ export function parseDecideParams(raw: Record<string, unknown>): DecideParams {
   const keys = Object.keys(f).sort();
   if (keys.length !== 2 || keys[0] !== "problem" || keys[1] !== "target") fail("E_BAD_REQUEST", "feedback 只含 target 与 problem");
   if (typeof f.target !== "string" || typeof f.problem !== "string" || !f.target.trim() || !f.problem.trim()) {
-    fail("E_BAD_REQUEST", "「哪段」与「问题」trim 后都不能为空");
+    fail("E_BAD_REQUEST", "「哪段」与「问题」都不能为空");
   }
   return { epKey: epKey as string, approvalId: approvalId as string, stop: stop as StopType, decision: "reject", feedback: { target: f.target as string, problem: f.problem as string } };
 }
@@ -110,6 +110,18 @@ export interface DecideCtx {
 
 const tailsOf = (r: CoreResult) => ({ stdoutTail: r.stdoutTail, stderrTail: r.stderrTail });
 
+function coreErrorDetail(r: CoreResult): string {
+  const lines = `${r.stderrTail}\n${r.stdoutTail}`
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const errLine = lines.find((l) => l.startsWith("[ERROR]") || l.startsWith("错误：") || l.startsWith("ERROR:"));
+  if (errLine) return errLine.replace(/^\[ERROR\]\s*/, "");
+  const fallback = lines.at(-1);
+  if (fallback && fallback.length <= 240) return fallback;
+  return `执行失败（退出码 ${r.code ?? `信号 ${r.signal}`}）`;
+}
+
 function findById(r: StoreRead, id: string): ApprovalRecord | undefined {
   return r.state === "ok" ? r.items.find((o) => o.approval_id === id) : undefined;
 }
@@ -147,8 +159,8 @@ export async function decide(
     if (!h.ok) ctx.diag(`ack 前自愈失败（${p.epKey}），继续由 core 侧 --id 兜底：${h.stderrTail.trim().slice(-400)}`); // 红队 m8
     if (!ctx.isPackaged) await ctx.testHook("after-heal"); // TA-9 变体 3 在此改写产物，单独考 fingerprintsMatch
     const obj = findById(ctx.readStore(ep!), p.approvalId); // 闸 2：对象
-    if (!obj || obj.type !== p.stop || !ackable(obj, p.decision)) fail("E_STALE", "审批对象已不在可操作状态（可能已被处理或替换），请以刷新后的卡片为准");
-    if (!fingerprintsMatch(ep!.abs, obj!.artifacts, ctx.fs)) fail("E_STALE", "关联产物在你审阅之后已变更（指纹不符），请重新审阅"); // 闸 2：指纹
+    if (!obj || obj.type !== p.stop || !ackable(obj, p.decision)) fail("E_STALE", "该审批已被处理或更新，请以刷新后的卡片为准");
+    if (!fingerprintsMatch(ep!.abs, obj!.artifacts, ctx.fs)) fail("E_STALE", "对应文件在你审阅后已发生变动，请重新审阅后再决定"); // 闸 2：指纹
     if (p.decision === "approve" && p.stop === "05" && obj!.status === "approved" && !gateMatches(ep!.abs, obj!.artifacts, ctx.fs)) {
       fail("E_GATE_MISMATCH", "批准文件对应的不是你审阅的版本"); // 已对齐待确认：先核验再只做确认
     }
@@ -174,12 +186,12 @@ export async function decide(
     for (const s of plan(p, obj!, ep!.abs, confirmPatch)) {
       const r = await ctx.run(s.t, s.args, { decide: decideId });
       if (r.timedOut) fail("E_TIMEOUT", "结果未知，请以稍后刷新为准", tailsOf(r));
-      if (r.code !== 0) fail("E_CORE", `core 退出码 ${r.code ?? `信号 ${r.signal}`}`, tailsOf(r));
+      if (r.code !== 0) fail("E_CORE", coreErrorDetail(r), tailsOf(r));
       if (s.t === "REVIEW_APPROVE" && !gateMatches(ep!.abs, obj!.artifacts, ctx.fs)) {
         fail("E_GATE_MISMATCH", "批准文件对应的不是你审阅的版本"); // 闸 3：第 ② 步不 spawn；host 不删除该文件
       }
     }
-    if (!verified(findById(ctx.readStore(ep!), p.approvalId), p)) fail("E_UNVERIFIED", "目标对象未到达预期状态（可能已被替换），请以对象库为准"); // 闸 4
+    if (!verified(findById(ctx.readStore(ep!), p.approvalId), p)) fail("E_UNVERIFIED", "审批状态未如预期更新（可能已被替换），请刷新后核对"); // 闸 4
     return { approvalId: p.approvalId, decision: p.decision };
   } finally {
     ctx.release(p.epKey);

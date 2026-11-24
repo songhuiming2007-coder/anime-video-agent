@@ -6,6 +6,11 @@
 import type { AttentionKind } from "./attention";
 import type { Reach } from "./contracts";
 
+export interface ConfirmOptions {
+  kind?: "question" | "warning";
+  confirmLabel?: string;
+}
+
 export type MainToHost =
   | { type: "init"; userData: string; isPackaged: boolean; appPath: string; devRepoRoot: string | null; keychainExec?: string | null }
   | { type: "port" }
@@ -16,6 +21,7 @@ export type MainToHost =
   | { type: "quit-query" }
   | { type: "quit-proceed" }
   | { type: "confirm-result"; reqId: string; ok: boolean }
+  | { type: "open-external-result"; reqId: string; ok: boolean; error?: string }
   | { type: "test-arm"; name: string }
   | { type: "test-release"; name: string };
 
@@ -26,7 +32,8 @@ export type HostToMain =
   | { type: "repo-root-dialog"; reqId: number }
   | { type: "quit-state"; busy: { convKey: string; label: string; running: boolean; openRequests: number }[] }
   | { type: "sessions-down" }
-  | { type: "confirm-query"; reqId: string; title: string; detail: string }
+  | { type: "confirm-query"; reqId: string; title: string; detail: string; kind?: "question" | "warning"; confirmLabel?: string }
+  | { type: "open-external-url"; reqId: string; url: string }
   | { type: "test-hook-hit"; name: string }
   /** D98：叫人回来看（main 在窗口不在前台时更新 Dock 角标 / 弹跳） */
   | { type: "attention"; kind: AttentionKind; key: string };

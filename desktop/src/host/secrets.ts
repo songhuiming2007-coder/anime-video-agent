@@ -10,7 +10,7 @@ export type RunCore = <T extends Template>(t: T, args: TemplateArgs[T], ctx: { r
 
 export type KeyResolution = { name: string; value: string } | { problem: string };
 
-const OPT_OUT = "不注入密钥，会话照常启动并按 Spec 9 如实降级";
+const OPT_OUT = "未注入钥匙串密钥；会话照常启动（如已在「登录」中连接服务商则不受影响）";
 
 function setupHint(name: string): string {
   return `设置密钥：security add-generic-password -s ${KEYCHAIN_SERVICE} -a ${name} -w`;

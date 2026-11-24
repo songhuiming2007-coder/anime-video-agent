@@ -680,14 +680,101 @@ describe("TH-12 帧超限", () => {
   });
 });
 
-describe("TH-13 切换仓库互斥（S8-R10）", () => {
-  it("有活会话时切换 → E_BUSY，对话框桩调用 0 次", async () => {
+describe("TH-13 切换仓库互斥与热切（S8-R10 / A2）", () => {
+  it("仅有空闲活会话时切换成功：不弹确认框，自动收尾旧会话并清空状态且新仓库就绪", async () => {
+    const repo2 = sessionRepo();
+    roots.push(repo2.root);
+    mkEpisode(repo2.root, "EP-TWO", { "01-topic.md": "# t\n类型：杂谈\n" });
     let dialogCalls = 0;
-    const b = await boot({ overrides: { chooseRepoRoot: async () => { dialogCalls += 1; return null; } } });
+    const b = await boot({ overrides: { chooseRepoRoot: async () => { dialogCalls += 1; return repo2.root; } } });
     sessionScript(b.repo, b.epKey, [READY(b.epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
     await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    await waitFor(async () => (await snapOf(b.svc, b.key)).phase === "idle");
+    const r = (await b.svc.dispatch("app.requestRepoRootChange", {})) as { changed: boolean; repoRoot: string | null };
+    expect(r.changed).toBe(true);
+    expect(r.repoRoot).toBe(repo2.root);
+    expect(dialogCalls).toBe(1);
+    expect(b.stub.calls).toBe(0);
+    expect(b.svc.sessions.anyLive()).toBe(false);
+    expect((await snapOf(b.svc, b.key)).phase).toBe("none");
+    const list = (await b.svc.dispatch("episodes.list", {})) as { episodes: { epKey: string }[] };
+    expect(list.episodes.map((e) => e.epKey)).toEqual(["EP-TWO"]);
+  });
+
+  it("有运行中或待答卡片的忙会话时切换：确认框期间置 choosing 阻断重入与新会话，取消则不选目录", async () => {
+    let dialogCalls = 0;
+    let releaseConfirm!: (ok: boolean) => void;
+    const confirmGate = new Promise<boolean>((r) => (releaseConfirm = r));
+    let confirmTitle = "";
+    const b = await boot({
+      overrides: {
+        chooseRepoRoot: async () => { dialogCalls += 1; return null; },
+        confirm: async (title) => { confirmTitle = title; return confirmGate; },
+      },
+    });
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      {
+        op: "serve",
+        on_turn: [TURN_STARTED, { t: "request", request_id: "r1", kind: "tool_call", turn_id: "t1", title: "工具", card_text: "x", options: ["approve", "reject"], fields: {}, feedback_allowed: true }],
+        on_shutdown: "exit",
+      },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "hi" });
+    await waitFor(async () => (await snapOf(b.svc, b.key)).open.length === 1);
+    const pendingSwitch = b.svc.dispatch("app.requestRepoRootChange", {}) as Promise<{ changed: boolean }>;
+    await waitFor(() => confirmTitle !== "");
+    // P1-2：确认框在途期间 choosing=true，阻断重入切仓与并发 conv.send / episode.create
     await expect(b.svc.dispatch("app.requestRepoRootChange", {})).rejects.toMatchObject({ code: "E_BUSY" });
+    await expect(b.svc.dispatch("conv.send", { convKey: b.key, text: "nope" })).rejects.toMatchObject({ code: "E_BUSY" });
+    await expect(b.svc.dispatch("episode.create", { name: "X" })).rejects.toMatchObject({ code: "E_BUSY" });
+    releaseConfirm(false);
+    const r = await pendingSwitch;
+    expect(r.changed).toBe(false);
+    expect(confirmTitle).toContain("正在运行");
     expect(dialogCalls).toBe(0);
+    expect((await snapOf(b.svc, b.key)).open.length).toBe(1);
+  });
+
+  it("P2-1：无 sid 调用 conv.resume 恢复历史会话时清掉空白页 pending 预选，不再串入后续 send", async () => {
+    const { repo, svc, epKey, key } = await boot();
+    sessionScript(repo, epKey, [READY(epKey), { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" }]);
+    await svc.dispatch("conv.command", { convKey: key, name: "model", arg: "kimi-k3" });
+    expect((await snapOf(svc, key)).pending).toEqual({ model: "kimi-k3" });
+    const resumed = (await svc.dispatch("conv.resume", { convKey: key })) as { pending?: unknown };
+    expect(resumed.pending).toBeUndefined();
+    await svc.dispatch("conv.send", { convKey: key, text: "hello" });
+    const lines = stdinLines(repo, epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines.map((f) => f.t)).toEqual(["user_message"]);
+  });
+
+  it("auth.openUrl 仅允许打开本次 auth.start 颁发的 https:// 授权链接，拒绝未颁发 URL", async () => {
+    const opened: string[] = [];
+    const b = await boot({
+      realCore: true,
+      overrides: {
+        openExternalUrl: async (url) => { opened.push(url); return { ok: true }; },
+        runCore: async (t) => {
+          if (t === "AUTH_START") {
+            return {
+              code: 0,
+              signal: null,
+              stdoutTail: "",
+              stderrTail: "",
+              timedOut: false,
+              stdoutFull: JSON.stringify({ mode: "oauth_pkce", authorize_url: "https://auth.example.com/oauth?state=1" }),
+              stdoutOverflow: false,
+            };
+          }
+          return { code: 0, signal: null, stdoutTail: "", stderrTail: "", timedOut: false, stdoutFull: "{}", stdoutOverflow: false };
+        },
+      },
+    });
+    await expect(b.svc.dispatch("auth.openUrl", { url: "https://evil.example.com/phish" })).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    await b.svc.dispatch("auth.start", { provider: "anthropic", mode: "oauth_pkce" });
+    const ok = (await b.svc.dispatch("auth.openUrl", { url: "https://auth.example.com/oauth?state=1" })) as { ok: boolean };
+    expect(ok).toEqual({ ok: true });
+    expect(opened).toEqual(["https://auth.example.com/oauth?state=1"]);
   });
 
   it("choosing 期间 conv.send / conv.resume / episode.create 均 E_BUSY、零 SESSION spawn", async () => {
@@ -1401,7 +1488,7 @@ describe("D58 选题会话的会话管理", () => {
     expect(ideaArgvs().at(-1)?.slice(-1)).toEqual(["--idea"]); // 标记已消费：裸 --idea 恢复最近段
   });
 
-  it("conv.delete：确认文案指向 data/_idea 回收站；取消不调用；确认后 DELETE_IDEA_SESSION 带 sid", async () => {
+  it("conv.delete：确认文案说明移到回收站且可还原；取消不调用；确认后 DELETE_IDEA_SESSION 带 sid", async () => {
     const calls: { t: string; args: Record<string, unknown> }[] = [];
     const { repo, svc, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
     ideaScriptWithSid(repo, SID_A);
@@ -1409,7 +1496,8 @@ describe("D58 选题会话的会话管理", () => {
     await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
     stub.respond = false;
     expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: false, moved: 0 });
-    expect(stub.last?.detail).toContain("data/_idea/_agent/session-trash/");
+    expect(stub.last?.detail).toContain("回收站");
+    expect(stub.last?.detail).toContain("还原");
     expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION")).toEqual([]);
     stub.respond = true;
     expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: true, moved: 4 });
@@ -1455,7 +1543,7 @@ const TRASH_ROWS = [
 ];
 
 /** 假 core：LIST_TRASH 回三行（含同 sid 两文件与空文件）；PURGE_* 按给定退出码。 */
-function trashCore(calls: { t: string; args: Record<string, unknown> }[], opts: { purgeCode?: number; listJson?: string } = {}): HostDeps["runCore"] {
+function trashCore(calls: { t: string; args: Record<string, unknown> }[], opts: { purgeCode?: number; restoreCode?: number; listJson?: string } = {}): HostDeps["runCore"] {
   return (async (t: string, args: Record<string, unknown>) => {
     calls.push({ t, args });
     const base = { signal: null, stderrTail: "", timedOut: false, stdoutOverflow: false };
@@ -1466,6 +1554,11 @@ function trashCore(calls: { t: string; args: Record<string, unknown> }[], opts: 
     if (t === "PURGE_TRASH" || t === "PURGE_IDEA_TRASH") {
       const code = opts.purgeCode ?? 0;
       return { ...base, code, stdoutTail: code === 0 ? '{"purged": "x.jsonl"}' : "", stderrTail: code === 3 ? "回收站锁被占" : "", stdoutFull: null };
+    }
+    if (t === "RESTORE_TRASH" || t === "RESTORE_IDEA_TRASH") {
+      const code = opts.restoreCode ?? 0;
+      const out = code === 0 ? JSON.stringify({ restored: String(args.file ?? ""), sid: SID_A, lines: 4 }) : "";
+      return { ...base, code, stdoutTail: out, stderrTail: code === 3 ? "会话锁被占" : "", stdoutFull: out };
     }
     return { ...base, code: t === "GIT_HEAD" ? 128 : 0, stdoutTail: "", stdoutFull: null };
   }) as unknown as HostDeps["runCore"];
@@ -1523,6 +1616,25 @@ describe("D66 回收站", () => {
       .rejects.toMatchObject({ code: "E_BAD_REQUEST" });
     expect(bad.stub.calls).toBe(0);
   });
+
+  it("conv.restoreTrash：一键还原免确认框；期 / 选题两叉；退出码 3 → E_SESSION_LOCKED；坏文件名 → E_BAD_REQUEST", async () => {
+    const calls: { t: string; args: Record<string, unknown> }[] = [];
+    const { svc, key, stub } = await boot({ realCore: true, overrides: { runCore: trashCore(calls) } });
+    const r = (await svc.dispatch("conv.restoreTrash", { convKey: key, file: `${SID_A}.jsonl` })) as Record<string, unknown>;
+    expect(r).toEqual({ restored: true, sid: SID_A, lines: 4 });
+    expect(stub.calls).toBe(0);
+    expect(calls.filter((c) => c.t === "RESTORE_TRASH").map((c) => c.args.file)).toEqual([`${SID_A}.jsonl`]);
+
+    await svc.dispatch("conv.restoreTrash", { convKey: "idea", file: `${SID_A}.jsonl` });
+    expect(calls.filter((c) => c.t === "RESTORE_IDEA_TRASH").map((c) => c.args)).toEqual([{ file: `${SID_A}.jsonl` }]);
+
+    const locked = await boot({ realCore: true, overrides: { runCore: trashCore([], { restoreCode: 3 }) } });
+    await expect(locked.svc.dispatch("conv.restoreTrash", { convKey: locked.key, file: `${SID_A}.jsonl` }))
+      .rejects.toMatchObject({ code: "E_SESSION_LOCKED" });
+
+    await expect(svc.dispatch("conv.restoreTrash", { convKey: key, file: "../bad.jsonl" }))
+      .rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+  });
 });
 
 
@@ -1538,16 +1650,19 @@ describe("D147 会话启动前预选", () => {
     expect(r1).toMatchObject({ ok: true, pending: true });
     const r2 = (await svc.dispatch("conv.command", { convKey: key, name: "thinking", arg: "low" })) as Record<string, unknown>;
     expect(r2).toMatchObject({ ok: true, pending: true });
+    const r3 = (await svc.dispatch("conv.command", { convKey: key, name: "scope", arg: "asset" })) as Record<string, unknown>;
+    expect(r3).toMatchObject({ ok: true, pending: true });
     expect(sessionSpawns()).toEqual([]); // 存 pending 不起进程
     const snap = await snapOf(svc, key);
-    expect(snap.pending).toEqual({ model: "kimi-k3", effort: "low" });
+    expect(snap.pending).toEqual({ model: "kimi-k3", effort: "low", scope: "asset" });
 
     await svc.dispatch("conv.send", { convKey: key, text: "hi" });
     const lines = stdinLines(repo, epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
     const kinds = lines.map((f) => [f.t, f.name ?? ""]);
-    expect(kinds.slice(0, 3)).toEqual([["command", "model"], ["command", "thinking"], ["user_message", ""]]);
+    expect(kinds.slice(0, 4)).toEqual([["command", "model"], ["command", "thinking"], ["command", "scope"], ["user_message", ""]]);
     expect((lines[0] as { arg: string }).arg).toBe("kimi-k3");
     expect((lines[1] as { arg: string }).arg).toBe("low");
+    expect((lines[2] as { arg: string }).arg).toBe("asset");
     expect((await snapOf(svc, key)).pending).toBeUndefined(); // 下发后清掉
   });
 

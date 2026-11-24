@@ -107,11 +107,20 @@ export function lockState(lock: VoiceInfoJson["apply_patch_lock"]): "none" | "bu
   return lock.pid_alive === true ? "busy" : "stale";
 }
 
-/** 待重配的段（D72 起的两层：期级待应用条目 + core 现算的「普通重跑会重配」），按稿件顺序 */
+/** 待重配的段（D72 起的两层：期级待应用条目 + 全局范围词匹配段 + core 现算的「普通重跑会重配」），按稿件顺序 */
 export function redoSegments(info: VoiceInfoJson): string[] {
-  const pending = new Set(info.pending_corrections.map((c) => String(c.segment)));
+  const pendingSegs = new Set<string>();
+  const globalWords: string[] = [];
+  for (const c of info.pending_corrections) {
+    if (c.segment !== undefined && c.segment !== null) pendingSegs.add(String(c.segment));
+    if (c.scope === "global" && typeof c.word === "string" && c.word !== "") {
+      globalWords.push(c.word);
+    }
+  }
   const rerun = new Set(info.rerun_segments ?? []);
-  return info.segments.map((s) => s.label).filter((l) => pending.has(l) || rerun.has(l));
+  return info.segments
+    .filter((s) => pendingSegs.has(s.label) || rerun.has(s.label) || globalWords.some((w) => s.text.includes(w)))
+    .map((s) => s.label);
 }
 
 /** 「已复听」的记账键：同一段每重配一次换一个键，上一轮听过不算这一轮 */
@@ -174,7 +183,12 @@ export function synthSummary(info: VoiceInfoJson, heard: ReadonlySet<string>, to
   const at = when === null ? "" : `${clock(when, today)} `;
   if (sy.state === "ok") {
     const unheard = doneLabels.filter((l) => !heard.has(heardKey(l, sy.done[l]))).length;
-    return { tone: "ok", text: `上次重配 ${at}完成：段 ${doneLabels.join("、")}${unheard > 0 ? `（待复听 ${unheard} 段）` : "（都已复听）"}` };
+    const labelStr = doneLabels.length > 5 ? `${doneLabels.slice(0, 3).join("、")} 等 ${doneLabels.length} 段` : doneLabels.join("、");
+    return {
+      tone: "ok",
+      text: `上次重配 ${at}完成：段 ${labelStr}${unheard > 0 ? `（待复听 ${unheard} 段）` : "（都已复听）"}`,
+      ...(doneLabels.length > 5 ? { title: `已重配段：${doneLabels.join("、")}` } : {}),
+    };
   }
   const where = sy.current === null ? "" : `段 ${sy.current}`;
   if (sy.state === "failed") {

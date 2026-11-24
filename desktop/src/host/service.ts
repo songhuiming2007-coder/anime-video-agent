@@ -3,6 +3,8 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { ApprovalRecord, EventRecord, Reach } from "../shared/contracts";
+import type { ConfirmOptions } from "../shared/lifecycle";
+import { formatRelTime } from "../shared/relTime";
 import {
   ACTIVE_POLL_MS,
   BACKGROUND_POLL_MS,
@@ -94,8 +96,10 @@ export interface HostDeps {
   runCore: <T extends Template>(t: T, args: TemplateArgs[T], ctx: { repoRoot: string }, tag?: SpawnTag, stdinData?: string | Uint8Array) => Promise<CoreResult>;
   /** main 的原生对话框选择 + 二次确认（§2.10）；返回确认后的 repoRoot，取消为 null */
   chooseRepoRoot: () => Promise<string | null>;
-  /** browser/抓取卡「批准」前的原生确认框（Spec 10 §2.4 第 5 层）；true = 人点了批准 */
-  confirm: (title: string, detail: string) => Promise<boolean>;
+  /** 原生确认框；true = 人点了确认按钮 */
+  confirm: (title: string, detail: string, opts?: ConfirmOptions) => Promise<boolean>;
+  /** 受控打开外部 https:// 链接（OAuth / Device Code 授权页） */
+  openExternalUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
   /** 会话进程启动时的随机串（Spec 10 🟡-9）：generation = "<bootId>:<n>" */
   bootId: string;
   /** 密钥解析（§2.9）；默认走 PROBE_KEY_ENV + 钥匙串，测试可注入 */
@@ -225,6 +229,8 @@ export class HostService {
   private carried = new Set<string>();
   /** D58：选题「＋ 新会话」之后、下一次拉起选题会话之前为 true（拉起带 --fresh，成功即清；建期、进入指定段也清） */
   private ideaFresh = false;
+  /** 最近一次 auth.start 返回的授权页链接白名单（仅允许打开本会话内 core 产出的 https:// 链接） */
+  private allowedAuthUrls = new Set<string>();
   subs = new Map<string, EpisodeRuntime>();
   active: string | null = null;
   /** repoRoot 代号：每次确认切换 +1；只读 spawn 的结果若代号已过期则丢弃（§2.10，红队 R3 m4） */
@@ -264,6 +270,7 @@ export class HostService {
       runCore,
       chooseRepoRoot: async () => null,
       confirm: async () => false,
+      openExternalUrl: async () => ({ ok: false, error: "当前环境不支持打开外部浏览器" }),
       bootId: Math.random().toString(36).slice(2, 10),
       resolveSessionKey: (root: string) => resolveLlmKey(this.core.bind(this) as Parameters<typeof resolveLlmKey>[0], root),
       resolveSessionWebKeys: (root: string, llmName: string | null) =>
@@ -414,9 +421,9 @@ export class HostService {
     const probeOk = appr.code === 0;
     this.capApprovals = probeOk && this.losslessJson;
     this.capDetail = !probeOk
-      ? "core 尚未提供 approval 对象层（Spec 3 未施工）"
+      ? "当前仓库版本暂不支持桌面端审批操作"
       : !this.losslessJson
-        ? "运行时不支持无损解析纳秒指纹（假设 10），决策条只读"
+        ? "当前运行环境不支持高精度文件校验，停机点决策条为只读"
         : "ok";
     this.heal.setExecutor(this.capApprovals ? (this.deps.healExecutor === undefined ? this.realHeal : this.deps.healExecutor) : null);
     this.codeFreeze =
@@ -655,20 +662,18 @@ export class HostService {
         return this.runAuthTemplate("AUTH_STATUS", {});
       case "auth.start": {
         const startPayload = typeof p.payload === "string" && p.payload ? p.payload : undefined;
-        return this.runAuthTemplate(
-          "AUTH_START",
-          {
-            provider: p.provider,
-            ...(typeof p.mode === "string" && p.mode ? { mode: p.mode } : {}),
-            ...(startPayload ? { payload: startPayload } : {}),
-          },
+        return this.authStart(
+          p.provider,
+          typeof p.mode === "string" && p.mode ? p.mode : undefined,
           startPayload,
         );
       }
       case "auth.complete":
         return this.runAuthTemplate("AUTH_COMPLETE", { provider: p.provider }, p.payload);
       case "auth.logout":
-        return this.runAuthTemplate("AUTH_LOGOUT", { provider: p.provider });
+        return this.authLogout(p.provider);
+      case "auth.openUrl":
+        return this.authOpenUrl(p.url);
       case "conv.end":
         return this.sessions.end(p.convKey as ConvKey);
       case "conv.snapshot":
@@ -683,6 +688,8 @@ export class HostService {
         return this.convDelete(p.convKey, p.sid);
       case "conv.trashList":
         return this.convTrashList(p.convKey);
+      case "conv.restoreTrash":
+        return this.convRestoreTrash(p.convKey, p.file);
       case "conv.purgeTrash":
         return this.convPurgeTrash(p.convKey, p.file);
       case "conv.rename":
@@ -1163,13 +1170,22 @@ export class HostService {
   // ---------------- repoRoot 切换（§2.10；renderer 只发无参请求，路径只在 main 里选） ----------------
 
   async requestRepoRootChange(): Promise<{ changed: boolean; repoRoot: string | null; problem: string | null }> {
-    // 第一段守卫：有 decide 或 heal 在途 → E_BUSY、不弹框；对话框已开着也不再叠一个
+    // 第一段守卫：有 decide 或 heal 在途 → E_BUSY、不弹框；确认框与目录选择器期间全程置 choosing，阻断重入与并发会话
     if (this.choosing) throw new RpcFail("E_BUSY", "仓库选择对话框已打开");
-    if (this.switching || this.acking.size > 0 || this.heal.busy()) throw new RpcFail("E_BUSY", "有操作在途（审批或自愈），稍后再切换仓库");
-    if (this.sessions.anyLive()) throw new RpcFail("E_BUSY", "存在活会话，先结束全部会话再切换仓库");
+    if (this.switching || this.acking.size > 0 || this.heal.busy()) throw new RpcFail("E_BUSY", "有操作正在进行（审批或状态同步），稍后再切换仓库");
     let chosen: string | null;
     this.choosing = true;
     try {
+      const busy = this.sessions.quitState();
+      if (busy.length > 0) {
+        const lines = busy.map((b) => `${b.label} · ${b.running ? "运行中" : "空闲"}${b.openRequests > 0 ? ` · ${b.openRequests} 张卡未答` : ""}`);
+        const ok = await this.deps.confirm(
+          "有会话正在运行，仍要切换仓库？",
+          `${lines.join("\n")}\n\n确认切换后，将自动结束当前所有会话并切换到新仓库。`,
+          { kind: "warning", confirmLabel: "结束并切换" },
+        );
+        if (!ok) return { changed: false, repoRoot: this.repoRoot, problem: null };
+      }
       chosen = await this.deps.chooseRepoRoot();
     } finally {
       this.choosing = false;
@@ -1177,10 +1193,16 @@ export class HostService {
     if (chosen === null) return { changed: false, repoRoot: this.repoRoot, problem: null };
     const problem = validateRepoRoot(chosen); // main 已校验并由人确认；生效前按同一规则复核
     if (problem) return { changed: false, repoRoot: this.repoRoot, problem };
-    // 第二段：进入切换中，代号 +1（在途只读 spawn 的结果随之作废），等在途 spawn 全部结束再换
+    // 第二段：进入切换中，代号 +1（在途只读 spawn 的结果随之作废），结束活会话并等在途 spawn 全部结束再换
     this.switching = true;
     this.repoGen += 1;
     try {
+      if (this.sessions.anyLive()) {
+        const allEnded = await this.sessions.endAllForRepoSwitch();
+        if (!allEnded) {
+          throw new RpcFail("E_BUSY", "旧仓库仍有会话未在时限内退出，已取消切换仓库；请稍后重试");
+        }
+      }
       while (this.inflight.size > 0 || this.acking.size > 0 || this.heal.busy()) {
         await Promise.allSettled([...this.inflight]);
         if (this.inflight.size === 0) await new Promise<void>((r) => setTimeout(r, 50)); // decide 停在非 spawn 处时轮询等待
@@ -1191,7 +1213,11 @@ export class HostService {
       this.summaries.clear();
       this.carried.clear();
       this.ideaFresh = false;
+      this.allowedAuthUrls.clear();
       this.episodes.clear();
+      this.projects.clear();
+      this.projectMeta.clear();
+      this.sessions.clearAllForRepoSwitch();
       this.resolveRepoRoot();
       this.onDataRoot(this.dataRoot);
       this.pollReach();
@@ -1271,35 +1297,45 @@ export class HostService {
    * 租约，必报「进行中」）；结束不了 → 不建期、如实报错。core 非零时期可能已建为空期（core 的原子性
    * 约定），重试同名会撞「期目录已存在」——换名或进那个空期继续，原文透传，不另造恢复通道。
    */
-  private async createEpisode(name: string): Promise<CreatedEpisode> {
-    if (this.sessionQuitting) throw new RpcFail("E_BUSY", "正在退出");
-    if (this.choosing || this.switching) throw new RpcFail("E_BUSY", "正在切换仓库");
-    if (!this.repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪");
-    // D58：只带当前这段（人裁决）——结束选题活会话之前记下它的会话号；没有活会话就让 core 带最近段
-    const liveIdea = this.sessions.liveSid("idea");
-    const ideaSid = liveIdea !== null && SESSION_ID_RE.test(liveIdea) ? liveIdea : null;
-    if (liveIdea !== null && ideaSid === null) this.diag(`选题活会话号形状不对（${liveIdea}），建期改带最近段`);
-    if (!(await this.sessions.endForMigration("idea"))) {
-      throw new RpcFail("E_BUSY", "选题会话未能结束，未建期（选题记录未动）；请稍后重试");
-    }
-    this.ideaFresh = false;
-    const r = await this.core("NEW_EPISODE", ideaSid !== null ? { name, ideaSid } : { name });
-    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
-    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
-    this.refreshEpisodes();
-    this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
-    const marker = parseFromIdeaMarker(r.stdoutTail);
-    if (marker === null) this.diag(`建期成功，但 core 输出里没有合式的选题带入标注，按「未带入」处理（${name}）`);
-    const created: CreatedEpisode = { epKey: name, ...(marker ?? { migrated: false, sid: null, messages: 0 }) };
-    if (created.migrated) {
-      this.carried.add(name);
-      this.sessions.resetAfterMigration("idea"); // §3.3 ④：选题视图不再显示已带走的旧讨论
-    } else {
-      // 同名期被 app 外删除后重建、这次没带入：上一次留下的标记不许让新期接着旧段起（N60 / D42-C C-2(b)）
-      this.carried.delete(name);
-    }
-    return created;
+  private createEpisode(name: string): Promise<CreatedEpisode> {
+    if (this.sessionQuitting) return Promise.reject(new RpcFail("E_BUSY", "正在退出"));
+    if (this.choosing || this.switching) return Promise.reject(new RpcFail("E_BUSY", "正在切换仓库"));
+    if (!this.repoRoot) return Promise.reject(new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪"));
+    const gen = this.repoGen;
+    // 全程登记在 inflight（含 endForMigration 等待），防止切仓绕过迁移空窗把新期建进新仓库
+    return this.track(
+      (async () => {
+        // D58：只带当前这段（人裁决）——结束选题活会话之前记下它的会话号；若处于「＋ 新会话」空白态则不带走无关旧段
+        const liveIdea = this.sessions.liveSid("idea");
+        const skipIdea = this.ideaFresh && liveIdea === null;
+        const ideaSid = liveIdea !== null && SESSION_ID_RE.test(liveIdea) ? liveIdea : null;
+        if (liveIdea !== null && ideaSid === null) this.diag(`选题活会话号形状不对（${liveIdea}），建期改带最近段`);
+        if (!skipIdea && !(await this.sessions.endForMigration("idea"))) {
+          throw new RpcFail("E_BUSY", "选题会话未能结束，未建期（选题记录未动）；请稍后重试");
+        }
+        if (this.switching || this.repoGen !== gen || !this.repoRoot) {
+          throw new RpcFail("E_BUSY", "仓库状态已变化，未建期；请重试");
+        }
+        const r = await this.core("NEW_EPISODE", skipIdea ? { name, skipIdea: true } : ideaSid !== null ? { name, ideaSid } : { name });
+        const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+        if (r.timedOut) throw new RpcFail("E_TIMEOUT", "建期超时，请手动确认期目录", tails);
+        if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `建期失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+        if (!skipIdea) this.ideaFresh = false;
+        this.refreshEpisodes();
+        this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
+        const marker = skipIdea ? { migrated: false, sid: null, messages: 0 } : parseFromIdeaMarker(r.stdoutTail);
+        if (marker === null) this.diag(`建期成功，但输出里没有合式的选题带入标注，按「未带入」处理（${name}）`);
+        const created: CreatedEpisode = { epKey: name, ...(marker ?? { migrated: false, sid: null, messages: 0 }) };
+        if (created.migrated) {
+          this.carried.add(name);
+          this.sessions.resetAfterMigration("idea"); // §3.3 ④：选题视图不再显示已带走的旧讨论
+        } else {
+          // 同名期被 app 外删除后重建、这次没带入：上一次留下的标记不许让新期接着旧段起（N60 / D42-C C-2(b)）
+          this.carried.delete(name);
+        }
+        return created;
+      })(),
+    );
   }
 
   // ---------------- 会话（Spec 10 §2.1、§3.1） ----------------
@@ -1364,8 +1400,54 @@ export class HostService {
       const msg = (parsed && typeof parsed.error === "string" && parsed.error) || r.stderrTail.trim() || "认证操作失败";
       throw new RpcFail("E_CORE", msg, tails);
     }
-    if (!parsed) throw new RpcFail("E_CORE", "认证返回非 JSON", tails);
+    if (!parsed) throw new RpcFail("E_CORE", "认证返回格式异常", tails);
     return parsed;
+  }
+
+  private async authStart(provider: string, mode?: string, payload?: string): Promise<unknown> {
+    const res = (await this.runAuthTemplate(
+      "AUTH_START",
+      {
+        provider,
+        ...(mode ? { mode } : {}),
+        ...(payload ? { payload } : {}),
+      },
+      payload,
+    )) as Record<string, unknown>;
+    for (const k of ["authorize_url", "verification_uri", "verification_uri_complete"] as const) {
+      const raw = res[k];
+      if (typeof raw !== "string") continue;
+      const norm = normalizeHttpsUrl(raw);
+      if (norm) {
+        this.allowedAuthUrls.add(norm);
+        if (this.allowedAuthUrls.size > 24) {
+          const oldest = this.allowedAuthUrls.values().next().value;
+          if (oldest) this.allowedAuthUrls.delete(oldest);
+        }
+      }
+    }
+    return res;
+  }
+
+  private async authLogout(provider: string): Promise<unknown> {
+    const res = (await this.runAuthTemplate("AUTH_LOGOUT", { provider })) as Record<string, unknown>;
+    if (res.ok === true) {
+      this.sessions.resetModelOverrideForProvider(provider);
+    }
+    return res;
+  }
+
+  private async authOpenUrl(url: string): Promise<{ ok: boolean }> {
+    const norm = normalizeHttpsUrl(url);
+    if (!norm) {
+      throw new RpcFail("E_BAD_REQUEST", "只允许打开 https:// 授权页链接");
+    }
+    if (!this.allowedAuthUrls.has(norm)) {
+      throw new RpcFail("E_BAD_REQUEST", "该链接不是本次授权流程颁发的地址，已拒绝打开");
+    }
+    const r = await this.deps.openExternalUrl(norm);
+    if (!r.ok) throw new RpcFail("E_CORE", r.error || "无法打开系统浏览器，请手动复制链接");
+    return { ok: true };
   }
 
   // ---------------- 会话管理（D45） ----------------
@@ -1418,7 +1500,21 @@ export class HostService {
       }
       const title = typeof o.title === "string" ? o.title : o.first_user;
       const titleSource = (o.title_source as SessionRow["titleSource"] | undefined) ?? "first_input";
-      return { sid: o.sid, messages: o.messages, assistants: o.assistants, lastActivity: o.last_activity, firstUser: o.first_user, title, titleSource, resumable: o.resumable, live: o.sid === live };
+      const isLive = o.sid === live;
+      const st = !isLive ? this.sessions.sidStatus(key, o.sid) : null;
+      return {
+        sid: o.sid,
+        messages: o.messages,
+        assistants: o.assistants,
+        lastActivity: o.last_activity,
+        firstUser: o.first_user,
+        title,
+        titleSource,
+        resumable: o.resumable,
+        live: isLive,
+        ...(st && st.running ? { bgRunning: true } : {}),
+        ...(st && st.openCards > 0 ? { bgOpenCards: st.openCards } : {}),
+      };
     });
   }
 
@@ -1458,13 +1554,14 @@ export class HostService {
     const row = (await this.convSessions(convKey)).find((r) => r.sid === sid);
     if (!row) throw new RpcFail("E_STALE", "该会话已不存在");
     const running = this.sessions.liveSidExists(target.key, sid);
+    const when = relTimeOfIso(row.lastActivity, this.deps.now());
     const detail = [
       row.title || "（没有用户消息）",
-      `${row.messages} 条消息 · 最后活动 ${row.lastActivity}`,
-      idea ? "将移到 data/_idea/_agent/session-trash/，需要时可以手工找回。" : "将移到本期 _agent/session-trash/，需要时可以手工找回。",
+      `${row.messages} 条消息 · 最后活动 ${when}`,
+      "将移到回收站，需要时可随时还原或彻底删除。",
       ...(running ? ["这段会话仍在运行，会先停止它。"] : []),
     ].join("\n");
-    if (!(await this.deps.confirm("把这个会话移到回收站？", detail))) return { deleted: false, moved: 0 };
+    if (!(await this.deps.confirm("把这个会话移到回收站？", detail, { kind: "warning", confirmLabel: "移到回收站" }))) return { deleted: false, moved: 0 };
     // 只结束被删那段（core 的 delete 要求目标 sid 无活进程；别的段不受影响）
     if (running) {
       if (!(await this.sessions.endSidAndWait(target.key, sid))) throw new RpcFail("E_SESSION", "该会话未能在宽限内退出");
@@ -1533,20 +1630,41 @@ export class HostService {
     }
   }
 
+  /** 还原回收站里的一段会话回会话列表（安全追加写，不破坏正在运行的会话）。 */
+  private async convRestoreTrash(convKey: string, file: string): Promise<{ restored: boolean; sid: string; lines: number }> {
+    const base = file.split("/").pop() ?? "";
+    if (base !== file || file === ".." || !file.endsWith(".jsonl")) throw new RpcFail("E_BAD_REQUEST", `回收站文件名格式不正确：「${file}」`);
+    const target = this.adminConv(convKey);
+    const idea = target.key === "idea";
+    const r = idea ? await this.core("RESTORE_IDEA_TRASH", { file }) : await this.core("RESTORE_TRASH", { ep: target.abs as string, file });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "还原会话超时", tails);
+    if (r.code === 3) throw new RpcFail("E_SESSION_LOCKED", r.stderrTail.trim() || "另一个会话管理操作正在进行中", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || "还原会话失败", tails);
+    try {
+      const o = JSON.parse(r.stdoutTail.trim()) as { restored?: unknown; sid?: unknown; lines?: unknown };
+      if (typeof o.restored !== "string" || typeof o.sid !== "string" || typeof o.lines !== "number") throw new Error("shape");
+      return { restored: true, sid: o.sid, lines: o.lines };
+    } catch {
+      throw new RpcFail("E_CORE", "还原会话返回格式异常", tails);
+    }
+  }
+
   /** D66：彻底删除回收站里的一段（不可恢复）。确认框在 spawn core **之前**（同 convDelete 落位，红队发现 2）。 */
   private async convPurgeTrash(convKey: string, file: string): Promise<{ purged: boolean }> {
     const base = file.split("/").pop() ?? "";
-    if (base !== file || file === ".." || !file.endsWith(".jsonl")) throw new RpcFail("E_BAD_REQUEST", `回收站文件名形状不对：「${file}」`);
+    if (base !== file || file === ".." || !file.endsWith(".jsonl")) throw new RpcFail("E_BAD_REQUEST", `回收站文件名格式不正确：「${file}」`);
     const target = this.adminConv(convKey);
     const idea = target.key === "idea";
     const row = (await this.convTrashList(convKey)).find((r) => r.file === file);
     if (!row) throw new RpcFail("E_STALE", "该回收站条目已不存在");
+    const when = row.lastTs ? ` · 最后活动 ${relTimeOfIso(row.lastTs, this.deps.now())}` : "";
     const detail = [
       row.title ?? (row.sid ? `会话 ${row.sid.slice(0, 8)}…` : "（无法辨认所属会话）"),
-      `${row.messageCount} 条消息 · ${Math.round(row.bytes / 1024)} KB${row.lastTs ? ` · 最后活动 ${row.lastTs}` : ""}`,
-      "彻底删除，不可恢复。",
+      `${row.messageCount} 条消息 · ${formatBytes(row.bytes)}${when}`,
+      "彻底删除后不可恢复。",
     ].join("\n");
-    if (!(await this.deps.confirm("彻底删除这段会话？", detail))) return { purged: false };
+    if (!(await this.deps.confirm("彻底删除这段会话？", detail, { kind: "warning", confirmLabel: "彻底删除" }))) return { purged: false };
     const r = idea ? await this.core("PURGE_IDEA_TRASH", { file }) : await this.core("PURGE_TRASH", { ep: target.abs as string, file });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "彻底删除超时", tails);
@@ -1665,8 +1783,8 @@ export class HostService {
    * `mtime_ns` 是约 1.8e18 的纳秒值，普通 `JSON.parse` 丢精度后「刚存完就冲突」（Spec 11 红队 🟡-2）。
    */
   private async scriptSave(e: EpisodeEntry, text: string, expectSize: string, expectMtimeNs: string): Promise<SavedFingerprintJson> {
-    if (!this.losslessJson) throw new RpcFail("E_CAPABILITY", "运行时不支持无损解析纳秒指纹，无法校验保存结果");
-    if (Buffer.byteLength(text, "utf-8") > SAVE_SCRIPT_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `正文超过 ${SAVE_SCRIPT_MAX_BYTES} 字节上限`);
+    if (!this.losslessJson) throw new RpcFail("E_CAPABILITY", "当前运行环境不支持高精度文件校验，无法校验保存结果");
+    if (Buffer.byteLength(text, "utf-8") > SAVE_SCRIPT_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `正文超过 ${formatBytes(SAVE_SCRIPT_MAX_BYTES)} 上限`);
     const r = await this.core("SAVE_SCRIPT", { ep: e.abs, size: expectSize, mtimeNs: expectMtimeNs }, {}, text);
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "保存超时，请刷新确认磁盘版本", tails);
@@ -1718,7 +1836,7 @@ export class HostService {
   }
 
   private async voiceParse(e: EpisodeEntry, text: string): Promise<VoicePatchJson> {
-    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${VOICE_PARSE_MAX_BYTES} 字节上限`);
+    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${formatBytes(VOICE_PARSE_MAX_BYTES)} 上限`);
     const r = await this.core("VOICE_PARSE", { ep: e.abs }, {}, text);
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "解析超时", tails);
@@ -1732,7 +1850,7 @@ export class HostService {
 
   /** 落盘：stdin 传**原文**（core 重新解析）。跨进程只回读条目 dict，不回传解析结果（Spec 11 §2.3）。 */
   private async voiceAdd(e: EpisodeEntry, text: string): Promise<Record<string, unknown>> {
-    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${VOICE_PARSE_MAX_BYTES} 字节上限`);
+    if (Buffer.byteLength(text, "utf-8") > VOICE_PARSE_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `纠错原文超过 ${formatBytes(VOICE_PARSE_MAX_BYTES)} 上限`);
     const r = await this.core("VOICE_ADD", { ep: e.abs }, {}, text);
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "纠错落盘超时", tails);
@@ -1760,14 +1878,13 @@ export class HostService {
     return null;
   }
 
-  /** done：长任务（无超时、app 退出不发信号、进度经 events.jsonl 观测；S8-R16/R17）。
-   *  先请 main 弹原生确认框（Spec 11 §2.3；确认框取消则不 spawn，Spec 9 RF-17 的显式答复）。 */
+  /** done：本地可回滚的增量重配（无超时、app 退出不发信号、进度经 events.jsonl 观测；S8-R16/R17）。
+   *  重配前旧 wav 自动留存 attic 可一键回滚，直接点击执行，不再重复弹确认框。 */
   private async voiceApplyPatch(e: EpisodeEntry): Promise<{ started: boolean }> {
-    if (!(await this.deps.confirm("执行增量重配？", "是否立即执行增量重配 (--apply-patch)?"))) return { started: false };
     const r = await this.core("RUN_TTS_APPLY_PATCH", { ep: e.abs });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
-    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "增量重配超时（本模板无超时，此路径不应到达）", tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `增量重配失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "增量重配超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `增量重配失败（退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     return { started: true };
   }
 
@@ -1784,7 +1901,7 @@ export class HostService {
   private async voiceGlobal(e: EpisodeEntry, a: VoiceReadingArgs, supersede: boolean): Promise<VoiceCheckJson> {
     const what =
       a.pinyin !== undefined ? `拼音直注 ${a.word} → ${a.pinyin}` : a.latin !== undefined ? `英文改写 ${a.word} → ${a.latin}` : `同音字 ${a.word} → ${a.homophone ?? ""}`;
-    if (!(await this.deps.confirm("写入全局读音表？", `config/voice.json：${what}${supersede ? "（并删除另一张表的同名条目）" : ""}。影响所有番、所有期。`))) {
+    if (!(await this.deps.confirm("写入全局读音表？", `config/voice.json：${what}${supersede ? "（并删除另一张表的同名条目）" : ""}。影响所有番、所有期。`, { kind: "warning", confirmLabel: "写入全局表" }))) {
       return { ok: false, lines: ["已取消，未写入"] };
     }
     const r = await this.core("VOICE_GLOBAL", { ...a, ep: e.abs, supersede });
@@ -1802,10 +1919,9 @@ export class HostService {
   }
 
   private async voiceReTts(e: EpisodeEntry): Promise<{ started: boolean }> {
-    if (!(await this.deps.confirm("重配受影响的段？", "普通重跑 tts（不带 --force）：只重配念法、文本或钉种子变了的段，其余段原样复用。"))) return { started: false };
     const r = await this.core("RUN_TTS", { ep: e.abs });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
-    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `重配失败（core 退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `重配失败（退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     return { started: true };
   }
 
@@ -1842,7 +1958,7 @@ export class HostService {
   private async coverImport(e: EpisodeEntry, name: string, bytes: unknown): Promise<ImportedCoverJson> {
     if (!(bytes instanceof Uint8Array)) throw new RpcFail("E_BAD_REQUEST", "bytes 必须是字节数组");
     if (bytes.byteLength === 0) throw new RpcFail("E_BAD_REQUEST", "空的图片字节");
-    if (bytes.byteLength > IMPORT_COVER_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `图片字节超过 ${IMPORT_COVER_MAX_BYTES} 字节上限`);
+    if (bytes.byteLength > IMPORT_COVER_MAX_BYTES) throw new RpcFail("E_BAD_REQUEST", `图片大小超过 ${formatBytes(IMPORT_COVER_MAX_BYTES)} 上限`);
     const r = await this.core("IMPORT_COVER", { ep: e.abs, name }, {}, bytes);
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.timedOut) throw new RpcFail("E_TIMEOUT", "导入超时", tails);
@@ -1870,4 +1986,32 @@ function readingOf(p: Record<string, string | undefined>): VoiceReadingArgs {
 
 function linesOf(stdout: string, stderr: string): string[] {
   return `${stdout}\n${stderr}`.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "");
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) {
+    const kb = n / 1024;
+    return `${kb >= 100 || Number.isInteger(kb) ? Math.round(kb) : kb.toFixed(1)} KB`;
+  }
+  const mb = n / (1024 * 1024);
+  return `${mb >= 100 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function relTimeOfIso(iso: string, nowMs: number): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? formatRelTime(ms, nowMs) : iso;
+}
+
+/** 严格规范化 https:// 链接（大小写无关协议、拒控制字符与凭据段），不合式返回 null。 */
+function normalizeHttpsUrl(rawUrl: string): string | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.length > 4096 || /[\x00-\x1f\x7f]/.test(trimmed)) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }

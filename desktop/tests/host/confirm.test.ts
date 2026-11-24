@@ -79,9 +79,19 @@ describe("TH-22b 两处原生确认框的按钮语义（Spec 10 §2.4 第 5 层�
     expect(o.detail.startsWith("D37-TEST · 运行中 · 1 张卡未答\n\n")).toBe(true);
   });
 
+  it("危险操作选项：支持 warning 图标与自定义确认按钮文案，默认与取消仍锁定在「取消」", () => {
+    const ac = new AbortController();
+    const o = approveBoxOptions("彻底删除这条回收站记录？", "删除后无法恢复", ac.signal, { kind: "warning", confirmLabel: "彻底删除" });
+    expect(o.type).toBe("warning");
+    expect(o.buttons).toEqual(["彻底删除", "取消"]);
+    expect(o.buttons[APPROVE_BUTTON]).toBe("彻底删除");
+    expect(o.defaultId).toBe(1);
+    expect(o.cancelId).toBe(1);
+  });
+
   it("main/index.ts 两处都经这两个函数取选项、按 APPROVE_BUTTON 判放行，不再内联按钮表；窗口 closed 时调 windowGone", () => {
     const src = readFileSync(join(__dirname, "../../src/main/index.ts"), "utf8");
-    expect(src).toContain("approveBoxOptions(title, detail, signal)");
+    expect(src).toContain("approveBoxOptions(title, detail, signal, opts)");
     expect(src).toContain("quitBoxOptions(lists)");
     expect(src).not.toMatch(/buttons:\s*\[\s*"(批准|退出)"/);
     expect(src.match(/r\.response === APPROVE_BUTTON/g)).toHaveLength(2);

@@ -2,6 +2,8 @@
 // host 退出时以 AbortSignal 撤下已打开的确认框、丢弃排队中的全部，不向任何 host 回 confirm-result（二轮 🔵-5）。
 // 不 import electron：真实对话框由调用方（main/index.ts）注入，便于单测（TH-22）。
 
+import type { ConfirmOptions } from "../shared/lifecycle";
+
 /** 原生确认框选项的最小结构（不 import electron；main/index.ts 原样交给 dialog.showMessageBox） */
 export interface NativeBoxOptions {
   type: "question" | "warning";
@@ -19,9 +21,11 @@ export interface NativeBoxOptions {
 // 「放行」按钮永远不是 defaultId / cancelId——改这里须同步 Spec 10 §2.4 第 5 层与 §2.10。
 export const APPROVE_BUTTON = 0;
 
-/** §2.4 第 5 层：browser / 抓取卡批准前的确认框 */
-export function approveBoxOptions(title: string, detail: string, signal: AbortSignal): NativeBoxOptions {
-  return { type: "question", title, message: title, detail, buttons: ["批准", "取消"], defaultId: 1, cancelId: 1, signal };
+/** §2.4 第 5 层：原生确认框（支持按风险级别指定 warning 与显式动词按钮，永远维持 defaultId=1 / cancelId=1） */
+export function approveBoxOptions(title: string, detail: string, signal: AbortSignal, opts?: ConfirmOptions): NativeBoxOptions {
+  const type = opts?.kind === "warning" ? "warning" : "question";
+  const action = opts?.confirmLabel?.trim() || "批准";
+  return { type, title, message: title, detail, buttons: [action, "取消"], defaultId: 1, cancelId: 1, signal };
 }
 
 /** §2.10 第 4 步：有忙会话时的退出确认框 */
@@ -37,7 +41,7 @@ export function quitBoxOptions(lists: string[]): NativeBoxOptions {
 }
 
 export interface MainConfirmBroker {
-  request(reqId: string, title: string, detail: string): void;
+  request(reqId: string, title: string, detail: string, opts?: ConfirmOptions): void;
   /** host 退出：撤下已打开的一个、丢弃排队中的全部 */
   hostExited(): void;
   /**
@@ -50,16 +54,16 @@ export interface MainConfirmBroker {
 export interface ConfirmStub {
   calls: number;
   respond: boolean;
-  last: { title: string; detail: string } | null;
+  last: { title: string; detail: string; kind?: "question" | "warning"; confirmLabel?: string } | null;
 }
 
 export function createMainConfirmBroker(deps: {
-  show: (title: string, detail: string, signal: AbortSignal) => Promise<boolean>;
+  show: (title: string, detail: string, signal: AbortSignal, opts?: ConfirmOptions) => Promise<boolean>;
   result: (reqId: string, ok: boolean) => void;
   /** 仅未打包构建的测试桩；由 main/index.ts 在 !isPackaged 守卫下注入 */
   stub?: () => ConfirmStub | undefined;
 }): MainConfirmBroker {
-  const queue: { reqId: string; title: string; detail: string }[] = [];
+  const queue: { reqId: string; title: string; detail: string; opts?: ConfirmOptions }[] = [];
   let active: AbortController | null = null;
   let activeReqId: string | null = null;
 
@@ -69,7 +73,7 @@ export function createMainConfirmBroker(deps: {
     const stub = deps.stub?.();
     if (stub) {
       stub.calls += 1;
-      stub.last = { title: item.title, detail: item.detail };
+      stub.last = { title: item.title, detail: item.detail, ...(item.opts?.kind ? { kind: item.opts.kind } : {}), ...(item.opts?.confirmLabel ? { confirmLabel: item.opts.confirmLabel } : {}) };
       deps.result(item.reqId, stub.respond);
       drain();
       return;
@@ -77,7 +81,7 @@ export function createMainConfirmBroker(deps: {
     const ac = new AbortController();
     active = ac;
     activeReqId = item.reqId;
-    void deps.show(item.title, item.detail, ac.signal).then(
+    void deps.show(item.title, item.detail, ac.signal, item.opts).then(
       (ok) => {
         if (active !== ac) return; // 已被 hostExited / windowGone 撤下：迟到的结果一律不回
         active = null;
@@ -96,8 +100,8 @@ export function createMainConfirmBroker(deps: {
   };
 
   return {
-    request(reqId, title, detail) {
-      queue.push({ reqId, title, detail });
+    request(reqId, title, detail, opts) {
+      queue.push({ reqId, title, detail, opts });
       drain();
     },
     hostExited() {

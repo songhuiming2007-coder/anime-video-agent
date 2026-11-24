@@ -3,7 +3,7 @@
 // 禁止：spawn 子进程、解析事件/审批、对 data/ 的任何写、crashReporter.start（TG-3、TG-8）。
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, MessageChannelMain, screen, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
+import { app, BrowserWindow, dialog, MessageChannelMain, screen, shell, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
 import { installEgressBlock } from "./egress";
 import { MediaServer, registerMediaScheme } from "./mediaProtocol";
 import { approveBoxOptions, APPROVE_BUTTON, createMainConfirmBroker, quitBoxOptions } from "./confirm";
@@ -197,14 +197,37 @@ function boot(): void {
 
   /** 熔断：停止重启，renderer 换成致命面板（含 host stderr 尾部）；UI 不再持有任何 host 端口 */
   const mainConfirm = createMainConfirmBroker({
-    show: async (title, detail, signal) => {
-      const box: Electron.MessageBoxOptions = approveBoxOptions(title, detail, signal);
+    show: async (title, detail, signal, opts) => {
+      const box: Electron.MessageBoxOptions = approveBoxOptions(title, detail, signal, opts);
       const r = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
       return r.response === APPROVE_BUTTON;
     },
     result: (reqId, ok) => sendToHost({ type: "confirm-result", reqId, ok }),
     stub: () => (!app.isPackaged ? testGlobals.__avaTestConfirm : undefined),
   });
+
+  /** 仅允许在系统浏览器打开严格校验后的 https:// 授权链接（防止 file:///javascript:/命令注入） */
+  const openExternalHttps = async (rawUrl: string): Promise<{ ok: boolean; error?: string }> => {
+    const trimmed = rawUrl.trim();
+    if (!trimmed || trimmed.length > 4096 || /[\x00-\x1f\x7f]/.test(trimmed)) {
+      return { ok: false, error: "链接格式不合法" };
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return { ok: false, error: "无法解析链接" };
+    }
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) {
+      return { ok: false, error: "只允许打开 https:// 授权页链接" };
+    }
+    try {
+      await shell.openExternal(parsed.toString());
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
 
   /** Spec 10 §2.10 第 5 步：main 发送 quit-proceed → host 收尾 → sessions-down → 停定时器 → 退出 */
   const proceedQuit = () => {
@@ -312,7 +335,9 @@ function boot(): void {
       } else if (m.type === "sessions-down") {
         if (quitPhase === "stopping") finishQuit();
       } else if (m.type === "confirm-query") {
-        mainConfirm.request(m.reqId, m.title, m.detail);
+        mainConfirm.request(m.reqId, m.title, m.detail, m.kind || m.confirmLabel ? { kind: m.kind, confirmLabel: m.confirmLabel } : undefined);
+      } else if (m.type === "open-external-url") {
+        void openExternalHttps(m.url).then((res) => sendToHost({ type: "open-external-result", reqId: m.reqId, ...res }));
       } else if (m.type === "attention") {
         const r = onAttention(dock, { kind: m.kind, key: m.key }, win !== null && win.isFocused());
         dock = r.state;

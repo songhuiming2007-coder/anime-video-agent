@@ -214,21 +214,18 @@ describe("Spec 11 §2.4：人时采集（RECORD_TIME / time.read）", () => {
   });
 });
 
-describe("Spec 11 TD-4：done 的确认框与长任务模板", () => {
-  it("确认框取消 → {started:false} 且不 spawn；确认 → spawn RUN_TTS_APPLY_PATCH", async () => {
+describe("Spec 11 TD-4：done 直接执行增量重配与长任务模板（本机可逆操作免冗余弹窗）", () => {
+  it("voice.applyPatch：不弹原生确认框，直接 spawn RUN_TTS_APPLY_PATCH", async () => {
     const calls: string[] = [];
+    let confirmCalls = 0;
     const fakeRun: HostDeps["runCore"] = async (t) => {
       calls.push(t as string);
       return { code: 0, signal: null, stdoutTail: "", stderrTail: "", timedOut: false, stdoutFull: null, stdoutOverflow: false };
     };
-    let answer = false;
-    const { svc } = await startService({ runCore: fakeRun, confirm: async () => answer });
-    const r1 = (await svc.dispatch("voice.applyPatch", { epKey: "SP11" })) as { started: boolean };
-    expect(r1.started).toBe(false);
-    expect(calls).not.toContain("RUN_TTS_APPLY_PATCH");
-    answer = true;
-    const r2 = (await svc.dispatch("voice.applyPatch", { epKey: "SP11" })) as { started: boolean };
-    expect(r2.started).toBe(true);
+    const { svc } = await startService({ runCore: fakeRun, confirm: async () => { confirmCalls += 1; return false; } });
+    const r = (await svc.dispatch("voice.applyPatch", { epKey: "SP11" })) as { started: boolean };
+    expect(r.started).toBe(true);
+    expect(confirmCalls).toBe(0);
     expect(calls).toContain("RUN_TTS_APPLY_PATCH");
   });
 });
@@ -277,15 +274,17 @@ describe("D50-A S6：读音核对 / 全局读音表 / 按全局表重配", () =>
     expect(asked[0]).toContain("英文改写 ETERNAL WIND → Eternal Wind");
   });
 
-  it("voice.retts：确认框取消 → 不 spawn RUN_TTS", async () => {
+  it("voice.retts：不弹原生确认框，直接 spawn RUN_TTS", async () => {
     const calls: string[] = [];
+    let confirmCalls = 0;
     const fakeRun: HostDeps["runCore"] = async (t) => {
       calls.push(t as string);
       return result(0, "");
     };
-    const { svc } = await startService({ runCore: fakeRun, confirm: async () => false });
-    expect(((await svc.dispatch("voice.retts", { epKey: "SP11" })) as { started: boolean }).started).toBe(false);
-    expect(calls).not.toContain("RUN_TTS");
+    const { svc } = await startService({ runCore: fakeRun, confirm: async () => { confirmCalls += 1; return false; } });
+    expect(((await svc.dispatch("voice.retts", { epKey: "SP11" })) as { started: boolean }).started).toBe(true);
+    expect(confirmCalls).toBe(0);
+    expect(calls).toContain("RUN_TTS");
   });
 });
 

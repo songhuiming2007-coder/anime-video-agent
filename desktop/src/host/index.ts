@@ -40,10 +40,20 @@ function chooseRepoRoot(): Promise<string | null> {
   });
 }
 
-// Spec 10 §2.4 第 5 层：browser/抓取卡「批准」前的原生确认框。reqId = "<bootId>:<n>"（🟡-5 防串号）。
+// Spec 10 §2.4 第 5 层：原生确认框与受控 https:// 外部链接打开。reqId = "<bootId>:<n>"（🟡-5 防串号）。
 const bootId = Math.random().toString(36).slice(2, 10);
 let svcRef: HostService | null = null;
 const confirmBroker = createConfirmBroker({ bootId, post: (m) => parentPort.postMessage(m) });
+
+let extUrlSeq = 0;
+const extUrlWaiters = new Map<string, (res: { ok: boolean; error?: string }) => void>();
+function openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }> {
+  const reqId = `${bootId}:url:${++extUrlSeq}`;
+  return new Promise((resolve) => {
+    extUrlWaiters.set(reqId, resolve);
+    parentPort.postMessage({ type: "open-external-url", reqId, url });
+  });
+}
 
 // 测试钩子（仅未打包构建，TG-6）：main 布置 → 走到钩子处通知 main 并暂停，直到 main 放行
 const armed = new Set<string>();
@@ -82,7 +92,8 @@ parentPort.on("message", (e) => {
         { userData: m.userData, isPackaged: m.isPackaged, appPath: m.appPath, devRepoRoot: m.devRepoRoot },
         {
           chooseRepoRoot,
-          confirm: (t, d) => confirmBroker.request(t, d),
+          confirm: (t, d, opts) => confirmBroker.request(t, d, opts),
+          openExternalUrl,
           bootId,
           testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()),
           attention: (a) => parentPort.postMessage({ type: "attention", kind: a.kind, key: a.key }),
@@ -120,6 +131,12 @@ parentPort.on("message", (e) => {
     case "confirm-result":
       confirmBroker.resolve(m.reqId, m.ok);
       break;
+    case "open-external-result": {
+      const w = extUrlWaiters.get(m.reqId);
+      extUrlWaiters.delete(m.reqId);
+      w?.({ ok: m.ok, ...(m.error ? { error: m.error } : {}) });
+      break;
+    }
     case "repo-root-chosen": {
       const w = dialogWaiters.get(m.reqId);
       dialogWaiters.delete(m.reqId);

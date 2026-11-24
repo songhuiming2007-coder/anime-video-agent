@@ -132,6 +132,8 @@ interface SessionState {
   keyProblem: string | null;
   /** D45：最近一帧携带的会话号（新会话首回合前为 null）；会话列表据此标出活会话 */
   sid: string | null;
+  /** 当前会话已知模型名（ready / model 切换时记录，用于退出登录对应服务商时自动复位） */
+  activeModel: string | null;
   proc: SessionProc | null;
   pid: number | null;
   splitter: LineSplitter;
@@ -230,8 +232,8 @@ export class SessionManager {
   private readonly states = new Map<string, SessionState>();
   /** D157：每个 convKey 人正在看的那一段（focused）。send / snapshot / quitState 归到这个键 */
   private readonly focused = new Map<ConvKey, string>();
-  /** D147：会话未启动（phase "none" / 无 proc）时预选的模型与推理强度；send 起进程后先下发。生命周期随 convKey，进程退出不丢（重开照样带） */
-  private readonly pendingByKey = new Map<ConvKey, { model: string | null; effort: string | null }>();
+  /** D147：会话未启动（phase "none" / 无 proc）时预选的模型、推理强度与工作模式；send 起进程后先下发。 */
+  private readonly pendingByKey = new Map<ConvKey, { model: string | null; effort: string | null; scope: "asset" | "auto" | null }>();
   /** D98：每条会话上一帧 stop_points 的内容；停机点没变（每回合都会重发一帧）就不再叫人 */
   private readonly stopKeys = new Map<ConvKey, string>();
   private n = 0;
@@ -304,8 +306,12 @@ export class SessionManager {
   /** D147：snapshot / delta 共用的 pending 视图；没有预选为 undefined（不进 JSON） */
   private pendingOf(key: ConvKey): ConvSnapshot["pending"] {
     const p = this.pendingByKey.get(key);
-    if (!p || (p.model === null && p.effort === null)) return undefined;
-    return { ...(p.model !== null ? { model: p.model } : {}), ...(p.effort !== null ? { effort: p.effort } : {}) };
+    if (!p || (p.model === null && p.effort === null && p.scope === null)) return undefined;
+    return {
+      ...(p.model !== null ? { model: p.model } : {}),
+      ...(p.effort !== null ? { effort: p.effort } : {}),
+      ...(p.scope !== null ? { scope: p.scope } : {}),
+    };
   }
 
   /** D157：按 convKey 聚合（多段并存时任一活/任一 running、openRequests 求和） */
@@ -368,15 +374,18 @@ export class SessionManager {
     return warn === null ? r : { ...r, warn };
   }
 
-  /** D147：把 pending 依次写成 command 帧并等回执；任一失败收集文案、照旧放行。返回拼接的 warn（无 = null）。
+  /** D147：把 pending 依次写成 command 帧并等回执；任一失败收集文案、记入对话提示并照旧放行。返回拼接的 warn（无 = null）。
    * 帧构造走 `commandFrame`（TG-11：command 入站帧恰 1 个构造点）。 */
   private async flushPending(key: ConvKey, s: SessionState): Promise<string | null> {
     const pending = this.pendingByKey.get(key);
     if (!pending) return null;
-    const items: ["model" | "thinking", string][] = [];
+    const items: ["model" | "thinking" | "scope", string][] = [];
     if (pending.model !== null) items.push(["model", pending.model]);
     if (pending.effort !== null) items.push(["thinking", pending.effort]);
+    if (pending.scope !== null) items.push(["scope", pending.scope]);
     this.pendingByKey.delete(key);
+    const labelOf = (name: "model" | "thinking" | "scope") =>
+      name === "model" ? "模型" : name === "thinking" ? "推理强度" : "工作模式";
     const warns: string[] = [];
     for (const [name, arg] of items) {
       const rid = this.rid();
@@ -385,13 +394,24 @@ export class SessionManager {
         this.precheck(framed);
         const p = new Promise<CommandResult>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
         this.writeFrame(s, framed);
-        const res = await this.race(p, this.timing.sendAckMs, `预设 ${name} 结果未知（超时）`);
-        if (!res.ok) warns.push(`预设${name === "model" ? "模型" : "推理强度"} ${arg} 未生效：${res.text}`);
+        const res = await this.race(p, this.timing.sendAckMs, `预设${labelOf(name)}结果未知（超时）`);
+        if (res.ok && name === "model") s.activeModel = arg === "default" ? null : arg;
+        if (!res.ok) warns.push(`预设${labelOf(name)} ${arg} 未生效：${res.text}`);
       } catch (e) {
-        warns.push(`预设${name === "model" ? "模型" : "推理强度"} ${arg} 未生效：${e instanceof Error ? e.message : String(e)}`);
+        warns.push(`预设${labelOf(name)} ${arg} 未生效：${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    return warns.length > 0 ? warns.join("；") : null;
+    if (warns.length > 0) {
+      const warnText = warns.join("；");
+      this.append(s, {
+        k: "frame",
+        at: this.deps.now(),
+        frame: { v: 1, t: "notice", seq: 0, sid: s.sid, level: "warn", code: "pending_preset", text: warnText },
+      });
+      this.flush(s, true);
+      return warnText;
+    }
+    return null;
   }
 
   /** command 入站帧的唯一构造点（TG-11）：renderer 的 conv.command 与 D147 的 pending 下发共用。 */
@@ -404,6 +424,8 @@ export class SessionManager {
   async resume(key: ConvKey, target: SessionTarget): Promise<ConvSnapshot> {
     if (this.quitting) this.fail("E_BUSY", "正在退出");
     if (this.deps.blocked()) this.fail("E_BUSY", "正在切换仓库");
+    // 只要恢复/切进已有会话，就清掉空白页留下的未生效预选，避免把新开空白页的预选误套到历史会话上
+    this.pendingByKey.delete(key);
     // idea 没有独立的 continue 模板：--idea 启动即恒恢复（Spec 18 §3.3）
     const s = await this.ensure(key, { ...target, mode: target.mode === "idea" ? "idea" : "continue" });
     this.focused.set(key, s.stateKey);
@@ -462,24 +484,36 @@ export class SessionManager {
       if (!repoRoot) this.fail("E_UNREACHABLE", "仓库未就绪");
       return this.deps.listProxyModels(repoRoot);
     }
-    // D147：会话未启动时 model / thinking 存 pending（下一条 send 起进程后先下发）；其余命令仍要活进程。
-    // arg="default" 是清 pending（不记值）；core 语义不变（活进程时照旧下发恢复默认）
-    if ((!live || !live.proc) && (name === "model" || name === "thinking") && arg !== null) {
-      const p = this.pendingByKey.get(key) ?? { model: null, effort: null };
-      if (name === "model") p.model = arg === "default" ? null : arg;
-      else p.effort = arg === "default" ? null : arg;
-      this.pendingByKey.set(key, p);
+    // D147：会话未启动时 model / thinking / scope 存 pending（下一条 send 起进程后先下发）；其余命令仍要活进程。
+    // arg="default" / scope="auto" 是清 pending（不记值）；core 语义不变（活进程时照旧下发恢复默认）
+    if ((!live || !live.proc) && (name === "model" || name === "thinking" || name === "scope") && arg !== null) {
+      const p = this.pendingByKey.get(key) ?? { model: null, effort: null, scope: null };
+      let text: string;
+      if (name === "model") {
+        p.model = arg === "default" ? null : arg;
+        text = arg === "default" ? "已取消预设模型，将使用默认模型" : `会话启动后将使用模型 ${arg}`;
+      } else if (name === "thinking") {
+        p.effort = arg === "default" ? null : arg;
+        text = arg === "default" ? "已取消预设推理强度，将跟随模型默认" : `会话启动后将使用推理强度 ${arg}`;
+      } else {
+        p.scope = arg === "asset" ? "asset" : null;
+        text = arg === "asset" ? "会话启动后将进入素材模式" : "已取消素材模式预选";
+      }
+      if (p.model === null && p.effort === null && p.scope === null) this.pendingByKey.delete(key);
+      else this.pendingByKey.set(key, p);
       this.pushSnapshot(key);
-      return { ok: true, text: `会话启动后生效：${name === "model" ? "模型" : "推理强度"} ${arg}`, pending: true };
+      return { ok: true, text, pending: true };
     }
     const s = live;
-    if (!s || !s.proc) this.fail("E_SESSION", "该会话没有活进程");
+    if (!s || !s.proc) this.fail("E_SESSION", "当前还没有正在运行的会话");
     const rid = this.rid();
     const framed = this.commandFrame(name, arg, rid);
     this.precheck(framed);
     const p = new Promise<CommandResult>((resolve, reject) => s.commandWaiters.set(rid, { resolve, reject }));
     this.writeFrame(s, framed);
-    return this.race(p, this.timing.sendAckMs, "命令结果未知（超时）");
+    const res = await this.race(p, this.timing.sendAckMs, "命令结果未知（超时）");
+    if (res.ok && name === "model") s.activeModel = arg === "default" ? null : arg;
+    return res;
   }
 
   /** §2.10「结束会话」：focused 段的 shutdown → 等 → SIGTERM → 宽限 → SIGKILL 整组。 */
@@ -505,11 +539,93 @@ export class SessionManager {
   }
 
   /**
-   * Spec 18 §3.3 ③：建期带入前结束会话（core 要拿选题记录的租约）。走 §2.10 同一结束序列，
-   * 之后再等进程真正退出（SIGKILL 整组后 onExit 稍后才到）。返回 false = 宽限内仍未退出，调用方不许建期。
+   * Spec 18 §3.3 ③：建期带入前结束该键下的全部活会话（含 D157 后台并存段，core 要拿选题记录的租约）。
+   * 走 §2.10 同一结束序列，之后再等进程真正退出。返回 false = 宽限内仍有进程未退出，调用方不许建期。
    */
   async endForMigration(key: ConvKey): Promise<boolean> {
-    return this.endAndWait(key);
+    return this.endAllForKey(key);
+  }
+
+  /** D157：结束同一 convKey 下的所有活段（聚焦段 + 后台并存段），并等待它们全部退出。 */
+  async endAllForKey(key: ConvKey): Promise<boolean> {
+    const live = [...this.states.values()].filter((s) => s.key === key && s.phase !== "exited" && s.phase !== "none");
+    if (live.length === 0) return true;
+    await Promise.all(live.map((s) => this.endState(s)));
+    const results = await Promise.all(
+      live.map(async (s) => ((s.phase as ConvPhase) === "exited" ? true : (await this.waitEnd(s, this.timing.killGraceMs)) !== null)),
+    );
+    return results.every(Boolean);
+  }
+
+  /** 切仓前统一结束全部活会话（不置 quitting 标志，切完仓后继续接新请求）。 */
+  async endAllForRepoSwitch(): Promise<boolean> {
+    const live = [...this.states.values()].filter((s) => s.phase !== "exited" && s.phase !== "none");
+    if (live.length === 0) return true;
+    await Promise.all(live.map((s) => this.endState(s)));
+    const results = await Promise.all(
+      live.map(async (s) => ((s.phase as ConvPhase) === "exited" ? true : (await this.waitEnd(s, this.timing.killGraceMs)) !== null)),
+    );
+    return results.every(Boolean);
+  }
+
+  /** 切仓清空全部旧仓库会话状态与预选，并作废旧进程回调代次以防残留事件回流新仓库。 */
+  clearAllForRepoSwitch(): void {
+    const err = new SessionError("E_SESSION", "仓库已切换，原会话已终止");
+    for (const s of this.states.values()) {
+      s.procGen += 1;
+      s.phase = "exited";
+      s.proc = null;
+      if (s.flushTimer) {
+        clearTimeout(s.flushTimer);
+        s.flushTimer = null;
+      }
+      if (s.settleTimer) {
+        clearTimeout(s.settleTimer);
+        s.settleTimer = null;
+      }
+      for (const w of s.readyWaiters.splice(0)) w.reject(err);
+      for (const w of s.sendWaiters.values()) w.reject(err);
+      s.sendWaiters.clear();
+      for (const w of s.commandWaiters.values()) w.reject(err);
+      s.commandWaiters.clear();
+      for (const w of s.answerWaiters.values()) w.reject(err);
+      s.answerWaiters.clear();
+      for (const w of s.endWaiters.splice(0)) w.resolve({ code: null, signal: "SIGKILL" });
+    }
+    this.states.clear();
+    this.focused.clear();
+    this.pendingByKey.clear();
+    this.stopKeys.clear();
+  }
+
+  /** 退出登录某个服务商后：清掉匹配的未启动预选，并对正在运行且命中该服务商的空闲会话复位为默认模型。 */
+  resetModelOverrideForProvider(providerId: string): void {
+    const prefix = `${providerId}/`;
+    const matches = (m: string | null) => m !== null && (m === providerId || m.startsWith(prefix));
+    for (const [key, p] of [...this.pendingByKey]) {
+      if (matches(p.model)) {
+        p.model = null;
+        if (p.model === null && p.effort === null && p.scope === null) this.pendingByKey.delete(key);
+        this.pushSnapshot(key);
+      }
+    }
+    for (const s of this.states.values()) {
+      if (!s.proc || s.phase !== "idle" || !matches(s.activeModel)) continue;
+      const rid = this.rid();
+      try {
+        const framed = this.commandFrame("model", "default", rid);
+        this.precheck(framed);
+        s.commandWaiters.set(rid, {
+          resolve: () => {
+            s.activeModel = null;
+          },
+          reject: () => undefined,
+        });
+        this.writeFrame(s, framed);
+      } catch {
+        /* 复位失败不影响退出登录主流程 */
+      }
+    }
   }
 
   /** D157：人正在看的那段（focused）的会话号；没有活进程、或新会话首回合前为 null。 */
@@ -521,6 +637,13 @@ export class SessionManager {
   /** D157：某 sid 是否有活进程（删除/同段双开判定） */
   liveSidExists(key: ConvKey, sid: string): boolean {
     return this.stateOf(key, sid) !== null;
+  }
+
+  /** D157：查询指定 sid 的运行态（包括非 focused 的后台并存段）。 */
+  sidStatus(key: ConvKey, sid: string): { live: boolean; running: boolean; openCards: number } {
+    const s = this.stateOf(key, sid);
+    if (!s) return { live: false, running: false, openCards: 0 };
+    return { live: true, running: s.phase === "running", openCards: s.open.length };
   }
 
   /** 有回合在跑（或正在启动/收尾）时为真——D157 起只反映 focused 段；UI 侧的锁改用 `liveSidExists` 判段。 */
@@ -662,6 +785,7 @@ export class SessionManager {
       settleTimer: null,
       keyProblem: null,
       sid: null,
+      activeModel: null,
       proc: null,
       pid: null,
       splitter: new LineSplitter(SESSION_FRAME_MAX_BYTES),
@@ -682,6 +806,7 @@ export class SessionManager {
       endWaiters: [],
     };
     this.states.set(stateKey, s);
+    this.focused.set(key, stateKey); // 必须先切 focused 再 pushSnapshot，否则会推旧 exited 段的 generation 导致后续 delta 被全部丢弃
     this.pushSnapshot(key);
     // 密钥（§2.9）：任一步失败照常 spawn、如实降级
     const extraEnv: Record<string, string> = {};
@@ -775,6 +900,7 @@ export class SessionManager {
     switch (f.t) {
       case "ready":
         s.readySeen = true;
+        if (typeof f.model === "string" && f.model.trim()) s.activeModel = f.model.trim();
         if (s.phase === "starting") {
           s.phase = "idle";
           for (const w of s.readyWaiters.splice(0)) w.resolve();
@@ -1040,15 +1166,29 @@ export class SessionManager {
     const entries = s.buffered;
     s.buffered = [];
     s.seq += 1;
-    this.deps.push({
-      v: 1,
-      kind: "push",
-      topic: "conv.delta",
-      convKey: s.key,
-      generation: s.generation,
-      seq: s.seq,
-      data: { convKey: s.key, generation: s.generation, seq: s.seq, entries, phase: s.phase, turnId: s.turnId, open: [...s.open], keyProblem: s.keyProblem, pending: this.pendingOf(s.key) },
-    });
+    // D157：只有当前 focused 段向 renderer 推送 conv.delta；后台并存段不向同 convKey 串推 delta（切换回来时拉 snapshot 即可）
+    if (this.focused.get(s.key) === s.stateKey) {
+      this.deps.push({
+        v: 1,
+        kind: "push",
+        topic: "conv.delta",
+        convKey: s.key,
+        generation: s.generation,
+        seq: s.seq,
+        data: {
+          convKey: s.key,
+          generation: s.generation,
+          seq: s.seq,
+          entries,
+          phase: s.phase,
+          turnId: s.turnId,
+          open: [...s.open],
+          keyProblem: s.keyProblem,
+          pending: this.pendingOf(s.key),
+          sid: s.sid,
+        },
+      });
+    }
     // 纯流式文本增量不影响侧栏 phase / open / pending 摘要，跳过 20 Hz 无意义全量广播
     if (entries.some((e) => !(e.k === "frame" && e.frame.t === "assistant_delta"))) {
       this.deps.changed();
@@ -1068,7 +1208,7 @@ export class SessionManager {
   }
 
   private precheck(frame: Record<string, unknown>): void {
-    if (Buffer.byteLength(stringifyLossless(frame), "utf-8") > MAX_INBOUND_LINE_BYTES) this.fail("E_BAD_REQUEST", "帧超过 1 MiB 上限");
+    if (Buffer.byteLength(stringifyLossless(frame), "utf-8") > MAX_INBOUND_LINE_BYTES) this.fail("E_BAD_REQUEST", "消息内容过大（超过 1 MB 上限）");
   }
 
   private rid(): string {
@@ -1078,11 +1218,11 @@ export class SessionManager {
 
   private checkFeedback(req: OutFrame, decision: string, feedback: string | null): string | null {
     if (feedback === null || feedback === undefined) return null;
-    if (typeof feedback !== "string") this.fail("E_BAD_REQUEST", "feedback 必须是字符串");
+    if (typeof feedback !== "string") this.fail("E_BAD_REQUEST", "反馈说明必须是文本");
     const allowed = req.kind === "tool_call" && decision === "reject" && req.feedback_allowed === true;
-    if (!allowed) this.fail("E_BAD_REQUEST", "该请求不接受 feedback");
-    if (feedback.trim() === "") this.fail("E_BAD_REQUEST", "feedback 不能为空");
-    if (Buffer.byteLength(feedback, "utf-8") > FEEDBACK_MAX_BYTES) this.fail("E_BAD_REQUEST", "feedback 超长");
+    if (!allowed) this.fail("E_BAD_REQUEST", "该请求不支持附加反馈说明");
+    if (feedback.trim() === "") this.fail("E_BAD_REQUEST", "反馈说明不能为空");
+    if (Buffer.byteLength(feedback, "utf-8") > FEEDBACK_MAX_BYTES) this.fail("E_BAD_REQUEST", "反馈说明过长");
     return feedback;
   }
 

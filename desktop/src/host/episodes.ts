@@ -90,16 +90,34 @@ export function listEpisodeTree(episodesRoot: string, fs: FsProbe): EpisodeTree 
       hiddenUnderscore += 1;
       continue;
     }
-    const children = fs.readdir(d);
+    let children: string[];
+    try {
+      children = fs.readdir(d);
+    } catch {
+      continue;
+    }
     const memberNames = children.filter((s) => isMember(fs, d, s)).sort(compareCodePoints);
     const hasProjectFile = isFile(fs, `${d}/00-project.md`);
+    let dirMtime: number;
+    try {
+      dirMtime = fs.stat(d).mtimeMs;
+    } catch {
+      continue;
+    }
     if (hasProjectFile || memberNames.length > 0) {
-      const members = memberNames.map((s) => ({ epKey: `${name}/${s}`, abs: `${d}/${s}`, mtimeMs: fs.stat(`${d}/${s}`).mtimeMs }));
+      const members: EpisodeEntry[] = [];
+      for (const s of memberNames) {
+        try {
+          members.push({ epKey: `${name}/${s}`, abs: `${d}/${s}`, mtimeMs: fs.stat(`${d}/${s}`).mtimeMs });
+        } catch {
+          /* 子目录在扫盘间隙消失或不可读：跳过单条，不拖垮整张列表 */
+        }
+      }
       hiddenUnderscore += children.filter((s) => isDir(fs, `${d}/${s}`) && s.startsWith("_")).length;
-      const mtimeMs = Math.max(fs.stat(d).mtimeMs, ...members.map((m) => m.mtimeMs));
+      const mtimeMs = Math.max(dirMtime, ...members.map((m) => m.mtimeMs));
       projects.push({ projKey: name, abs: d, members, hasProjectFile, mtimeMs });
     } else {
-      plain.push({ epKey: name, abs: d, mtimeMs: fs.stat(d).mtimeMs });
+      plain.push({ epKey: name, abs: d, mtimeMs: dirMtime });
     }
   }
   const order: TreeItem[] = [

@@ -33,8 +33,9 @@ export type Method =
   | "conv.enter" // { convKey, sid } → ConvSnapshot：有回合在跑 E_BUSY；先结束空闲活会话，再 --continue <sid>
   | "conv.fresh" // { convKey } → ConvSnapshot：结束活会话并清空对话区；下一条消息开新会话
   | "conv.delete" // { convKey, sid } → { deleted, moved }：原生确认框后 spawn DELETE_SESSION（移进 _agent/session-trash/）
-  // ---- D66：回收站查看与选择性彻底清空（人裁决：恢复不做 / 逐段确认 / 仅人手动）----
+  // ---- D66：回收站查看、还原与选择性彻底清空 ----
   | "conv.trashList" // { convKey } → TrashRow[]（spawn LIST_TRASH，纯读）
+  | "conv.restoreTrash" // { convKey, file } → { restored, sid, lines }：spawn RESTORE_TRASH（还原回会话列表）
   | "conv.purgeTrash" // { convKey, file } → { purged }：原生确认框（写明不可恢复）后 spawn PURGE_TRASH
   // ---- D80 R1：会话改名（custom 标题，迟到的生成名不覆盖；不结束活会话）----
   | "conv.rename" // { convKey, sid, title } → { title, source }：spawn RENAME_SESSION
@@ -61,7 +62,8 @@ export type Method =
   | "auth.status" // {} → AuthStatusJson（10 家服务商脱敏连接状态）
   | "auth.start" // { provider, mode? } → AuthStartJson（PKCE URL / Device Code / 模式元数据）
   | "auth.complete" // { provider, payload } → AuthCompleteJson（payload 经 stdin 交 core 校验/换 token 并落盘）
-  | "auth.logout"; // { provider } → AuthLogoutJson（清除指定服务商凭据）
+  | "auth.logout" // { provider } → AuthLogoutJson（清除指定服务商凭据）
+  | "auth.openUrl"; // { url } → { ok }（仅允许 https:// 授权页，在 main 经 shell.openExternal 打开系统浏览器）
 
 export type ErrCode =
   | "E_BAD_REQUEST"
@@ -121,6 +123,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "conv.fresh": { required: ["convKey"], optional: [] },
   "conv.delete": { required: ["convKey", "sid"], optional: [] },
   "conv.trashList": { required: ["convKey"], optional: [] },
+  "conv.restoreTrash": { required: ["convKey", "file"], optional: [] },
   "conv.purgeTrash": { required: ["convKey", "file"], optional: [] },
   "conv.rename": { required: ["convKey", "sid", "title"], optional: [] },
   "script.stat": { required: ["epKey"], optional: [] },
@@ -144,6 +147,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "auth.start": { required: ["provider"], optional: ["mode", "payload"] },
   "auth.complete": { required: ["provider", "payload"], optional: [] },
   "auth.logout": { required: ["provider"], optional: [] },
+  "auth.openUrl": { required: ["url"], optional: [] },
 };
 
 export const METHODS = Object.keys(PARAM_KEYS) as Method[];
@@ -620,8 +624,8 @@ export interface ConvSnapshot {
   settlePending: string | null;
   /** §2.9 第 6 条：密钥未就绪时头部显示的原因与可复制的命令；就绪或未起会话为 null */
   keyProblem: string | null;
-  /** D147：会话启动前预选的模型 / 推理强度（send 起进程后先下发）；没有为 undefined */
-  pending?: { model?: string; effort?: string };
+  /** D147：会话启动前预选的模型 / 推理强度 / 工作模式（send 起进程后先下发）；没有为 undefined */
+  pending?: { model?: string; effort?: string; scope?: "asset" | "auto" };
   /** D157：本快照对应的 sid（多会话并存下区分 convKey 内的段；未起会话为 null） */
   sid?: string | null;
 }
@@ -636,7 +640,7 @@ export interface ConvDelta {
   open: OutFrame[];
   keyProblem: string | null;
   /** D147：同 ConvSnapshot.pending */
-  pending?: { model?: string; effort?: string };
+  pending?: { model?: string; effort?: string; scope?: "asset" | "auto" };
   /** D157：同 ConvSnapshot.sid */
   sid?: string | null;
 }
@@ -677,6 +681,9 @@ export interface SessionRow {
   titleSource: "first_input" | "generated" | "custom";
   resumable: boolean;
   live: boolean;
+  /** D157：后台并存的活会话运行态（非 focused 也能在列表里看到正在运行 / 有待答卡） */
+  bgRunning?: boolean;
+  bgOpenCards?: number;
 }
 
 /** D66：回收站一行（core `/list-trash` 的字段改名；empty/parseError/partial 见 core `_trash_rows` 判据）。 */

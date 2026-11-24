@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { filterEpisodes, groupByStep } from "../../src/shared/episodeView";
 
-const EP = (epKey: string, isBlocked: boolean | null) => ({ epKey, isBlocked });
+const EP = (epKey: string, isBlocked: boolean | null, currentStep: string | null = null) => ({ epKey, isBlocked, currentStep });
 
 describe("VU-2 filterEpisodes", () => {
   const list = [EP("E2E-A", true), EP("罪恶王冠-EP07", false), EP("E2E-b", null)];
@@ -20,19 +20,28 @@ describe("VU-2 filterEpisodes", () => {
 });
 
 describe("VU-2 groupByStep", () => {
-  it("三组组序与组名固定；组内保序", () => {
-    const list = [EP("a", false), EP("b", true), EP("c", null), EP("d", true), EP("e", false)];
+  it("四组组序与组名固定（含 09 拆入「待发布」）；组内保序", () => {
+    const list = [
+      EP("a", false, "04 排片"),
+      EP("b", true, "02.5 人审改稿"),
+      EP("c", null, null),
+      EP("d", true, "09 人工发布"),
+      EP("e", false, "06 渲染"),
+      EP("f", true, "05 审时间码"),
+    ];
     const g = groupByStep(list);
     expect(g.map((x) => [x.key, x.label])).toEqual([
-      ["stopped", "停机点"],
-      ["running", "非停机点"],
-      ["unknown", "未取到"],
+      ["stopped", "待你处理"],
+      ["running", "进行中"],
+      ["ready", "待发布"],
+      ["unknown", "状态未取到"],
     ]);
-    expect(g[0].items.map((e) => e.epKey)).toEqual(["b", "d"]);
+    expect(g[0].items.map((e) => e.epKey)).toEqual(["b", "f"]);
     expect(g[1].items.map((e) => e.epKey)).toEqual(["a", "e"]);
-    expect(g[2].items.map((e) => e.epKey)).toEqual(["c"]);
+    expect(g[2].items.map((e) => e.epKey)).toEqual(["d"]);
+    expect(g[3].items.map((e) => e.epKey)).toEqual(["c"]);
   });
-  it("空组省略；null 进「未取到」、false 进「非停机点」（M15：null 并入 false 组时这里红）", () => {
+  it("空组省略；null 进「状态未取到」、false 进「进行中」（M15：null 并入 false 组时这里红）", () => {
     const g = groupByStep([EP("a", null), EP("b", false)]);
     expect(g.map((x) => x.key)).toEqual(["running", "unknown"]);
     expect(g[0].items.map((e) => e.epKey)).toEqual(["b"]);

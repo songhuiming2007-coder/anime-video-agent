@@ -127,7 +127,7 @@ describe("D48 ① 查证计数", () => {
   };
 
   it("四类按 字幕 · 在场 · 笔记 · 网页 列出，0 也列，排在上下文读数之前", () => {
-    expect(foot({ subs: 0, presence: 1, notes: 2, web: 0 }).endsWith(" · done · none · 查证 字幕 0 · 在场 1 · 笔记 2 · 网页 0 · 上下文约 9,192 字")).toBe(true);
+    expect(foot({ subs: 0, presence: 1, notes: 2, web: 0 }).endsWith(" · 已完成 · 查证 字幕 0 · 在场 1 · 笔记 2 · 网页 0 · 上下文约 9,192 字")).toBe(true);
   });
 
   it("旧 core（null / 缺键）或形状不对：不显示，也不影响其余脚注", () => {
@@ -170,8 +170,8 @@ describe("D41 / D56 上下文用量读数", () => {
       const r = foldConv([{ k: "frame", at: 1, frame: finT(tokens, chars, 1) }]).rows.at(-1)!;
       return r.k === "footer" ? r.text : "";
     };
-    expect(foot(12_345, 14_031).endsWith(" · done · none · 上下文 12.3k token")).toBe(true);
-    expect(foot(null, 14_031).endsWith(" · done · none · 上下文约 1.4 万字")).toBe(true);
+    expect(foot(12_345, 14_031).endsWith(" · 已完成 · 上下文 12.3k token")).toBe(true);
+    expect(foot(null, 14_031).endsWith(" · 已完成 · 上下文约 1.4 万字")).toBe(true);
     expect(foot(undefined, 9192).endsWith(" · 上下文约 9,192 字")).toBe(true);
     for (const bad of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 2]) expect(foot(bad, 9192).endsWith(" · 上下文约 9,192 字")).toBe(true);
     for (const bad of [undefined, null, -1, 1.5, "100"]) expect(foot(bad, bad)).not.toContain("上下文");

@@ -66,9 +66,11 @@ export type Template =
   // D58：删除一段选题对话（`ava idea /delete-session --sid=`）
   | "DELETE_IDEA_SESSION"
   | "DELETE_SESSION"
-  // D66：回收站查看与彻底清空（`ava <期> /list-trash`、`/purge-trash --file=`；idea 两叉不带期目录）
+  // D66：回收站查看、还原与彻底清空（`ava <期> /list-trash`、`/restore-trash --file=`、`/purge-trash --file=`；idea 两叉不带期目录）
   | "LIST_TRASH"
   | "LIST_IDEA_TRASH"
+  | "RESTORE_TRASH"
+  | "RESTORE_IDEA_TRASH"
   | "PURGE_TRASH"
   | "PURGE_IDEA_TRASH"
   // D80：会话改名（`ava <期> /rename-session --sid= --title=`；idea 两叉不带期目录）
@@ -118,7 +120,7 @@ export interface TemplateArgs {
   REVIEW_APPROVE: { ep: string; size: number; mtimeNs: bigint; confirmPatch?: boolean };
   REVIEW_PATCH_SEGS: { ep: string };
   /** 建期（Spec 10 S8-R2/§3.7）：期名作为单个 argv 元素传给 core，校验全在 core */
-  NEW_EPISODE: { name: string; ideaSid?: string };
+  NEW_EPISODE: { name: string; ideaSid?: string; skipIdea?: boolean };
   /** D81：建企划（`ava new-project <名>`）与在企划下建卷（`ava new --project <企划> <卷名>`）；名字单个 argv 元素，校验全在 core */
   NEW_PROJECT: { name: string };
   NEW_VOLUME: { project: string; name: string };
@@ -160,6 +162,8 @@ export interface TemplateArgs {
   LIST_TRASH: { ep: string };
   LIST_IDEA_TRASH: Record<string, never>;
   /** file 先过 checkedTrashFile（basename 校验），不合格抛错不 spawn */
+  RESTORE_TRASH: { ep: string; file: string };
+  RESTORE_IDEA_TRASH: { file: string };
   PURGE_TRASH: { ep: string; file: string };
   RENAME_SESSION: { ep: string; sid: string; title: string };
   RENAME_IDEA_SESSION: { sid: string; title: string };
@@ -289,9 +293,10 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     }
     case "NEW_EPISODE": {
       // 期名单个 argv 元素（shell:false）：名字里的空格 / 中文 / 怪字符都逐字节到达 core，校验全在 core。
-      // 恒带 --from-idea（Spec 18 §3.3）：选题会话没有记录时 core 回 migrated=false，语义等价于不带，零分叉
+      // 默认带 --from-idea（Spec 18 §3.3）；仅当选题明确处于「＋ 新会话」空白态（skipIdea: true）时省略，避免意外带走无关旧讨论。
       // D58：ideaSid = 建期那一刻选题活会话的会话号，只带这一段（人裁决「只带当前这段」）；没有就带最近段
-      const { name, ideaSid } = args as TemplateArgs["NEW_EPISODE"];
+      const { name, ideaSid, skipIdea } = args as TemplateArgs["NEW_EPISODE"];
+      if (skipIdea) return { argv: [py, "-m", "pipeline.agent.cli", "new", name], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
       const flag = ideaSid === undefined ? "--from-idea" : `--from-idea=${checkedSid(ideaSid)}`;
       return { argv: [py, "-m", "pipeline.agent.cli", "new", name, flag], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
     }
@@ -423,6 +428,14 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     }
     case "LIST_IDEA_TRASH":
       return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/list-trash"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS, stdoutMax: SESSIONS_STDOUT_MAX_BYTES };
+    case "RESTORE_TRASH": {
+      const { ep, file } = args as TemplateArgs["RESTORE_TRASH"];
+      return { argv: [py, "-m", "pipeline.agent.cli", ep, "/restore-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
+    case "RESTORE_IDEA_TRASH": {
+      const { file } = args as TemplateArgs["RESTORE_IDEA_TRASH"];
+      return { argv: [py, "-m", "pipeline.agent.cli", "idea", "/restore-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };
+    }
     case "PURGE_TRASH": {
       const { ep, file } = args as TemplateArgs["PURGE_TRASH"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/purge-trash", `--file=${checkedTrashFile(file)}`], timeoutMs: SPAWN_TIMEOUT_ACK_MS };

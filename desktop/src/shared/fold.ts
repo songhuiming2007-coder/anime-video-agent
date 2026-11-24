@@ -138,12 +138,18 @@ export function eventLabel(e: { kind: string; type: string; payload: Record<stri
       const verdict = decision === "approved" ? "批准" : decision === "rejected" ? "拒绝" : `未识别（${decision}）`;
       return `命令卡${verdict}（${source}）：${String(p.command ?? "")}`;
     }
-    if (p.confirms === "artifact") return `确认已对齐的批准：${String(p.stop ?? "")}`;
-    return `停机点决策：${String(p.stop ?? "")} → ${String(p.decision ?? "")}`;
+    if (p.confirms === "artifact") return `已确认终端批准：${String(p.stop ?? "")}`;
+    const rawDecision = String(p.decision ?? "");
+    const decisionText = rawDecision === "approved" ? "批准" : rawDecision === "rejected" ? "打回" : rawDecision;
+    return `停机点决策：${String(p.stop ?? "")} → ${decisionText}`;
   }
   if (e.kind === "approval_requested") return `停机点待审：${String(p.stop ?? "")}`;
   if (e.kind === "script_saved") return `02-script.md 人工保存${typeof p.history === "string" ? `（旧版留底 ${p.history}）` : "（新建）"}`;
   if (e.kind === "script_save_rejected") return "02-script.md 人工保存被拒：磁盘版本已变，未写入";
+  if (e.kind === "human_time_recorded") {
+    const mins = typeof p.minutes === "number" ? `${p.minutes} 分钟` : "";
+    return `人时记录：停机点 ${String(p.stop ?? "")}${mins ? `（${mins}）` : ""}`;
+  }
   if (e.kind === "unknown") return `未知事件 ${e.type}`;
   return `${e.kind}${typeof p.job_id === "string" ? ` ${p.job_id}` : ""}`;
 }

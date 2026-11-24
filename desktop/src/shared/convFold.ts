@@ -88,9 +88,15 @@ export function cardParts(label: string): { kind: string; tool: string } {
   return m ? { kind: m[1], tool: m[2] ?? "" } : { kind: label, tool: "" };
 }
 
-function cardText(label: string, status: "open" | "approved" | "rejected" | "voided", feedback: string | null, voidedCause: string | null): string {
-  if (status === "open") return `${label} · 待答`;
-  if (status === "approved") return `${label} · 已批准`;
+function cardText(
+  label: string,
+  status: "open" | "approved" | "rejected" | "voided",
+  feedback: string | null,
+  voidedCause: string | null,
+  decision?: unknown,
+): string {
+  if (status === "open") return `${label} · 等待批准`;
+  if (status === "approved") return `${label} · ${decision === "approve_session" ? "本会话同类已批准" : "已批准"}`;
   if (status === "rejected") return `${label} · 已拒绝${feedback ? `（附反馈：${feedback}）` : ""}`;
   // 作废原因只在 voided_local 时可知（🔵-2）：无 voided_local 的“已作废”不带原因
   return `${label} · 已作废${voidedCause ? `（${voidedCause}）` : ""}`;
@@ -231,15 +237,34 @@ function footerBrief(f: OutFrame): string {
   return `${String(f.llm_calls)} 次模型调用${ctx === null ? "" : ` · ${ctx}`}`;
 }
 
+const STOPPED_LABEL: Record<string, string> = {
+  done: "已完成",
+  interrupted: "已中断",
+  error: "出错",
+  blocked: "已拦截",
+  max_turns: "达到回合上限",
+  budget: "达到上限",
+};
+
+const WRAPUP_LABEL: Record<string, string> = {
+  ok: "已收尾",
+  skipped: "跳过收尾",
+  failed: "收尾失败",
+};
+
 function footerText(f: OutFrame): string {
   const reading = turnReading(f);
   const ctx = reading === null ? null : contextText(reading);
   const lookups = lookupsText(f.lookups);
+  const stoppedRaw = String(f.stopped ?? "");
+  const stoppedText = STOPPED_LABEL[stoppedRaw] ?? stoppedRaw;
+  const wrapupRaw = String(f.wrapup ?? "");
+  const wrapupText = wrapupRaw === "" || wrapupRaw === "none" ? "" : ` · ${WRAPUP_LABEL[wrapupRaw] ?? wrapupRaw}`;
   return (
     `模型调用 ${String(f.llm_calls)} · 工具 ${String(f.tool_calls)}（执行 ${String(f.tool_executions)}、重复拒绝 ${String(f.duplicates_rejected)}）` +
     // D166：检查点已取消，恒为 0 不占脚注宽度；历史会话的非 0 值仍照实显示
     (typeof f.checkpoints === "number" && f.checkpoints > 0 ? ` · 检查点 ${String(f.checkpoints)}` : "") +
-    ` · 用时 ${String(f.duration_s)} s · ${String(f.stopped)} · ${String(f.wrapup)}` +
+    ` · 用时 ${String(f.duration_s)} s · ${stoppedText}${wrapupText}` +
     (lookups === null ? "" : ` · ${lookups}`) +
     (ctx === null ? "" : ` · ${ctx}`)
   );
@@ -418,7 +443,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       const row = findCard(rows, String(f.request_id));
       if (row) {
         row.status = f.reason === "answered" ? (isApprove(f.decision) ? "approved" : "rejected") : "voided";
-        row.text = cardText(row.label, row.status, null, null);
+        row.text = cardText(row.label, row.status, null, null, f.decision);
       }
       break;
     }
@@ -500,7 +525,7 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
         const row = findCard(rows, e.requestId);
         if (row) {
           row.status = isApprove(e.decision) ? "approved" : "rejected";
-          row.text = cardText(row.label, row.status, e.feedback, null);
+          row.text = cardText(row.label, row.status, e.feedback, null, e.decision);
         }
         break;
       }
