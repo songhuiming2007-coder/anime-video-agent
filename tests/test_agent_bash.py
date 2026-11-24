@@ -167,6 +167,9 @@ class TestCard:
         "curl -sL https://example.com | head",
         "/usr/bin/curl https://evil.example",
         "`curl https://evil.example`",
+        "if true; then curl https://evil.example; fi",
+        "for i in 1; do curl https://evil.example; done",
+        "{ curl https://evil.example; }",
         "wget -qO- https://example.com",
         "nc example.com 443",
         "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://example.com\")'",
@@ -196,6 +199,7 @@ class TestCard:
         "git commit -m x", 'git commit -m "fix curl timeout"', 'echo "check ssh config"', "git checkout -b x",
         "uv run pytest -q", "pip install pillow", "cat pipeline/render.py | grep x", "ls config/ 2>/dev/null",
         "ls config/*.example.json", "cat config/voice.json",
+        "grep -rn foo config/voice.json", 'find config/agent -name "*.json"',
         "grep -rn x pipeline/ 2>&1 | head", "wc -l config/voice.json >/dev/null",
         "for f in *.wav; do ffprobe -v error \"$f\"; done",
         # D119：只读解封物不弹卡（2026-10-19 卷二被误拦的原命令在第一条）

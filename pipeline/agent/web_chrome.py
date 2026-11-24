@@ -28,6 +28,7 @@ import json
 from pathlib import Path
 import queue
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -284,11 +285,11 @@ _NPX_VALUE_FLAGS = frozenset({
     "--cwd",
     "--tag",
 })
-_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"})
+_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir"})
 
 
 def _extract_pkg_runner_args(command: str, args: Sequence[str]) -> tuple[str, list[str]] | None:
-    """剥离外层 env，识别 npx / bunx / npm exec / pnpm dlx / yarn dlx 等动态拉包启动器。"""
+    """剥离外层 env（含 -S / --split-string 展开），识别 npx / bunx / npm exec / pnpm dlx / yarn dlx 等动态拉包启动器。"""
     tokens = [command.strip(), *(str(a).strip() for a in args if str(a).strip())]
     if not tokens or not tokens[0]:
         return None
@@ -300,6 +301,23 @@ def _extract_pkg_runner_args(command: str, args: Sequence[str]) -> tuple[str, li
             if tok == "--":
                 idx += 1
                 break
+            if tok in {"-S", "--split-string"}:
+                if idx + 1 >= len(tokens):
+                    return None
+                try:
+                    expanded = shlex.split(tokens[idx + 1])
+                except ValueError:
+                    expanded = tokens[idx + 1].split()
+                tokens = [*tokens[:idx], *expanded, *tokens[idx + 2:]]
+                continue
+            if tok.startswith("--split-string=") or (tok.startswith("-S") and len(tok) > 2):
+                raw_s = tok.split("=", 1)[1] if tok.startswith("--split-string=") else tok[2:]
+                try:
+                    expanded = shlex.split(raw_s)
+                except ValueError:
+                    expanded = raw_s.split()
+                tokens = [*tokens[:idx], *expanded, *tokens[idx + 1:]]
+                continue
             if tok in _ENV_VALUE_FLAGS:
                 idx += 2
                 continue
@@ -371,10 +389,6 @@ def _validate_chrome_command_args(
                 after_double_dash = True
                 i += 1
                 continue
-            if s in {"-c", "--call"} or s.startswith("--call="):
-                raise ValueError(
-                    f"web 配置 `chrome.args` 使用 {runner_label} 时禁止 `-c`/`--call` 任意命令执行{src_hint}"
-                )
             if s in {"-p", "--package"}:
                 if i + 1 >= len(runner_args) or not runner_args[i + 1].strip():
                     raise ValueError(f"web 配置 `chrome.args` 的 `{s}` 缺少包名参数{src_hint}")
@@ -388,6 +402,18 @@ def _validate_chrome_command_args(
                 explicit_pkgs.append(pkg_val)
                 i += 1
                 continue
+            if s.startswith("-p") and not s.startswith("--") and len(s) > 2:
+                explicit_pkgs.append(s[2:].strip())
+                i += 1
+                continue
+            if (
+                s in {"-c", "--call"}
+                or s.startswith("--call=")
+                or (s.startswith("-") and not s.startswith("--") and "c" in s[1:])
+            ):
+                raise ValueError(
+                    f"web 配置 `chrome.args` 使用 {runner_label} 时禁止 `-c`/`--call` 任意命令执行{src_hint}"
+                )
             if s in _NPX_VALUE_FLAGS:
                 i += 2
                 continue
@@ -1707,6 +1733,39 @@ def _redact_sensitive_network_list(
     return "\n".join(out_lines)
 
 
+_NET_REQ_LINE_URL_RE = re.compile(
+    r"(?im)^(?:(?:Request\s+URL|URL|Location)\s*:\s*|(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+)(https?://\S+)"
+)
+
+
+def _extract_network_request_urls(raw_text: str) -> list[str]:
+    """优先提取 get_network 详情中的结构化请求 URL，避免响应正文外链（如文档页里的 github 链接）误拦。"""
+    urls: list[str] = []
+    stripped = raw_text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            for key in ("url", "requestUrl", "redirectUrl", "location"):
+                v = parsed.get(key)
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    urls.append(v)
+            req_obj = parsed.get("request")
+            if isinstance(req_obj, dict):
+                v = req_obj.get("url")
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    urls.append(v)
+    if not urls:
+        for m in _NET_REQ_LINE_URL_RE.finditer(raw_text):
+            urls.append(m.group(1).strip().rstrip(",;\"')"))
+    if urls:
+        return urls
+    # 无法解析结构化请求头/请求行时 fail-closed 退回全文 URL 扫描
+    return _URL_TOKEN_RE.findall(raw_text)
+
+
 def _guard_sensitive_network_detail(
     raw_text: str,
     cfg: ChromeSection,
@@ -1715,7 +1774,7 @@ def _guard_sensitive_network_detail(
     approved_sensitive_hosts: Sequence[str] | None,
 ) -> None:
     """校验 get_network 返回详情中的目标请求 URL 不属于未审批高敏站点。"""
-    for u in _URL_TOKEN_RE.findall(raw_text):
+    for u in _extract_network_request_urls(raw_text):
         if not _is_sensitive_url_approved(
             u,
             cfg,

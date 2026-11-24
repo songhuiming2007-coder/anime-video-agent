@@ -1243,11 +1243,14 @@ def test_cr_chrome_p0_p1_regressions(tmp_path: Path, monkeypatch):
     bad_specs = [
         ("npx", ["-y", "-p", "chrome-devtools-mcp@latest", "--autoConnect"]),
         ("npx", ["-y", "-p", "chrome-devtools-mcp@latest", "chrome-devtools-mcp@1.13.0"]),
+        ("npx", ["-y", "-pchrome-devtools-mcp@latest", "chrome-devtools-mcp@1.13.0"]),
         ("npx", ["-y", "--package=chrome-devtools-mcp@latest", "--autoConnect"]),
         ("npx", ["-y", "--autoConnect"]),
         ("npx", ["-y", "-c", "echo pwn"]),
+        ("npx", ["-y", "-p", "chrome-devtools-mcp@1.13.0", "-yc", "echo pwn"]),
         ("npm", ["exec", "-y", "--", "chrome-devtools-mcp@latest"]),
         ("env", ["FOO=1", "npx", "-y", "chrome-devtools-mcp@latest"]),
+        ("env", ["-S", "npx -y chrome-devtools-mcp@latest"]),
         ("pnpm", ["dlx", "chrome-devtools-mcp@latest"]),
         ("bunx", ["chrome-devtools-mcp@latest"]),
     ]
@@ -1379,6 +1382,23 @@ def test_cr_chrome_p0_p1_regressions(tmp_path: Path, monkeypatch):
     assert "[已隐藏未审批高敏站点网络请求]" in list_res["text"]
     with pytest.raises(PermissionError, match="高敏站点"):
         chrome_action("get_network", page_id=net_pid, reqid=2, root=root, approved_sensitive_hosts=())
+
+    # P2-2: 非高敏目标请求的响应正文含 github.com 外链不应误拦
+    def _non_sensitive_net_with_body_link(name: str, arguments: dict[str, Any], *, timeout_s: float = 10.0):
+        if name == "get_network_request":
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "GET https://example.org/docs/guide\n200 OK\n\nSee repo at https://github.com/org/repo",
+                    }
+                ]
+            }
+        return orig_net_call(name, arguments, timeout_s=timeout_s)
+
+    monkeypatch.setattr(fake_net, "call_tool", _non_sensitive_net_with_body_link)
+    ok_net = chrome_action("get_network", page_id=net_pid, reqid=1, root=root, approved_sensitive_hosts=())
+    assert ok_net["action"] == "get_network" and "https://github.com/org/repo" in ok_net["text"]
 
     # P0-2: 盲批既有页（未调 list_pages）与跨标记（仅批 [JS 执行]）均不得绕过高敏站点实时复核
     _reset_session_for_testing()

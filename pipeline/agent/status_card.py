@@ -290,9 +290,9 @@ _BASH_DANGER_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"(?:^|[;&|(`\n])\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|exec|xargs|command|time)\s+)*"
+            r"(?:^|[;&|(`{\n])\s*(?:(?:then|do|else|elif|!)\s+)*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|exec|xargs|command|time)\s+)*"
             r"(?:/[^\s;&|()'\"]+/)?"
-            r"(?:curl|wget|nc|ncat|netcat|socat|scp|sftp|ssh|ftp|telnet)(?=$|[\s;&|)`])"
+            r"(?:curl|wget|nc|ncat|netcat|socat|scp|sftp|ssh|ftp|telnet)(?=$|[\s;&|)`}])"
             r"|\b(?:urllib\.request|from\s+urllib\s+import\s+request|http\.client|from\s+http\s+import\s+client"
             r"|socket\.create_connection|requests\.(?:get|post|put|patch|delete|request)"
             r"|httpx\.(?:get|post|put|request|Client)|aiohttp\.ClientSession)\b"
@@ -308,7 +308,7 @@ _SECRET_ACCESS_PAT = re.compile(
     r"|\.local\.json\b"
     r"|config/[^\s;&|'\"()]*local"
     r"|config/(?![^\s;&|'\"()]*\.example\.json(?=$|[\s;&|'\"()]))[^\s;&|'\"()]*[*?\[]"
-    r"|\b(?:grep\b[^\n]*-(?:[A-Za-z]*[rR]|-recursive)|rg\b|tar\b|zip\b|find\b)[^\n]*(?:^|[\s'\"=/])config(?:/|\b)"
+    r"|\b(?:grep\b[^\n]*-(?:[A-Za-z]*[rR]|-recursive)|rg\b|tar\b|zip\b|find\b)[^\n]*(?:^|[\s'\"=/])config/?(?=$|[\s'\"&;|)])"
     r"|cookies\.sqlite\b"
     r"|browser-profile-firefox"
     r"|DevToolsActivePort\b"
