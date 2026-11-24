@@ -53,6 +53,39 @@ export function fromConvSnapshot(snap: ConvSnapshot): ConvState {
   };
 }
 
+function mergeEntries(cur: readonly ConvEntry[], incoming: readonly ConvEntry[]): ConvEntry[] {
+  if (incoming.length === 0) return [...cur];
+  const next = [...cur];
+  for (const e of incoming) {
+    if (e.k === "frame" && e.frame.t === "assistant_delta") {
+      const turnId = String(e.frame.turn_id ?? "");
+      const prev = next[next.length - 1];
+      if (prev && prev.k === "frame" && prev.frame.t === "assistant_delta" && String(prev.frame.turn_id ?? "") === turnId) {
+        next[next.length - 1] = {
+          ...prev,
+          at: e.at,
+          frame: { ...prev.frame, seq: e.frame.seq, text: `${String(prev.frame.text ?? "")}${String(e.frame.text ?? "")}` },
+        };
+        continue;
+      }
+    } else if (e.k === "frame" && e.frame.t === "assistant" && String(e.frame.kind ?? "") !== "local_note") {
+      const turnId = String(e.frame.turn_id ?? "");
+      for (let i = next.length - 1; i >= 0; i -= 1) {
+        const item = next[i];
+        if (item.k !== "frame") break;
+        if (item.frame.t === "assistant_delta" && String(item.frame.turn_id ?? "") === turnId) {
+          next.splice(i, 1);
+          continue;
+        }
+        if (item.frame.t === "notice" || item.frame.t === "log") continue;
+        break;
+      }
+    }
+    next.push(e);
+  }
+  return next;
+}
+
 export function reduceConvs(store: ConvStore, action: ConvAction): ConvReduceResult {
   switch (action.type) {
     case "snapshot":
@@ -70,7 +103,7 @@ export function reduceConvs(store: ConvStore, action: ConvAction): ConvReduceRes
         seq: d.seq,
         phase: d.phase,
         turnId: d.turnId,
-        entries: d.entries.length ? [...cur.entries, ...d.entries] : cur.entries,
+        entries: mergeEntries(cur.entries, d.entries),
         open: d.open,
         keyProblem: d.keyProblem,
         pending: d.pending,

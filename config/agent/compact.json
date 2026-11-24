@@ -147,7 +147,8 @@
     "gemini-4-hydrogen": {
       "window": 1048576,
       "reliable_ratio": 1.0,
-      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
+      "google_none_thinking_budget": 0,
+      "_source": "Google AI Studio /v1beta/models 实查 inputTokenLimit=1048576（2026-11-20）；2026-11-24 实测 gemini-4-hydrogen：省略 thinkingConfig 会回退服务端默认高强度动态思考（~2,846 tok / 24.6 s 首字），显式传 thinkingBudget=0 可压至 ~187 tok / 2.56 s 首字（thinkingLevel=MINIMAL 报 400）；仅对实测支持 0 预算的模型在配置中启用，避免误伤 gemini-2.5-pro 及非思考模型。reliable_ratio 1.0 未另打折，余量由 trigger_ratio 与回合内防爆仓老化承担。"
     },
     "gemini-3.8-flash": {
       "window": 1048576,

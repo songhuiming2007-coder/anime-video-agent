@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import ipaddress
 import json
 import os
@@ -127,6 +128,34 @@ def _resolve_bound_crawl4ai_dir() -> str | None:
 # 复用常驻无头浏览器的并发槽上限（2026-11-24 03-破晓淬火实测 36 次 crawl 每次冷启/销毁 Chromium
 # 共耗 166.4 s；复用到同一后台事件循环 + 按 (base_dir, stealth) 缓存实例，同时用信号量限制并发页数防内存尖峰）。
 _CRAWL_MAX_CONCURRENT_PAGES = 4
+_CRAWL4AI_IMPORT_LOCK = threading.Lock()
+_BROWSER_CRASH_KEYWORDS = (
+    "target closed",
+    "browser has been closed",
+    "browser closed",
+    "crashed",
+    "connection closed",
+    "broken pipe",
+    "epipe",
+    "disconnected",
+)
+
+
+def _is_browser_crash_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(k in low for k in _BROWSER_CRASH_KEYWORDS)
+
+
+class _CrawlerSlot:
+    """单条常驻 `AsyncWebCrawler` 实例的并发引用计数与淘汰状态。"""
+
+    __slots__ = ("crawler", "in_flight", "retired", "closed")
+
+    def __init__(self, crawler: Any) -> None:
+        self.crawler = crawler
+        self.in_flight = 0
+        self.retired = False
+        self.closed = False
 
 
 class _PersistentCrawlerRuntime:
@@ -136,30 +165,36 @@ class _PersistentCrawlerRuntime:
         self._lock = threading.Lock()
         self._loop: Any = None
         self._thread: threading.Thread | None = None
-        self._crawlers: dict[tuple[str, bool], Any] = {}
+        self._crawlers: dict[tuple[str, bool], _CrawlerSlot] = {}
+        self._retired_slots: set[_CrawlerSlot] = set()
+        self._key_locks: dict[tuple[str, bool], Any] = {}
         self._sem: Any = None
 
-    def _ensure_loop(self) -> Any:
+    def _ensure_loop_locked(self) -> Any:
         import asyncio
 
-        with self._lock:
-            if self._loop is not None and not self._loop.is_closed():
-                return self._loop
-            loop = asyncio.new_event_loop()
-            ready = threading.Event()
+        if self._loop is not None and not self._loop.is_closed():
+            return self._loop
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
 
-            def _runner() -> None:
-                asyncio.set_event_loop(loop)
-                ready.set()
+        def _runner() -> None:
+            asyncio.set_event_loop(loop)
+            ready.set()
+            try:
                 loop.run_forever()
+            finally:
+                with contextlib.suppress(Exception):
+                    loop.close()
 
-            t = threading.Thread(target=_runner, name="ava-crawl4ai-loop", daemon=True)
-            t.start()
-            ready.wait()
-            self._loop = loop
-            self._thread = t
-            self._sem = None
-            return loop
+        t = threading.Thread(target=_runner, name="ava-crawl4ai-loop", daemon=True)
+        t.start()
+        ready.wait()
+        self._loop = loop
+        self._thread = t
+        self._sem = None
+        self._key_locks.clear()
+        return loop
 
     def run_crawl(
         self,
@@ -174,26 +209,40 @@ class _PersistentCrawlerRuntime:
     ) -> dict[str, str]:
         import asyncio
 
-        loop = self._ensure_loop()
         key = (target_base_dir, bool(stealth))
 
-        async def _get_or_create() -> Any:
-            existing = self._crawlers.get(key)
-            if existing is not None:
-                return existing
-            browser_cfg = browser_cfg_cls(headless=True, enable_stealth=bool(stealth))
-            crawler = crawler_cls(config=browser_cfg)
-            await crawler.__aenter__()
-            self._crawlers[key] = crawler
-            return crawler
+        async def _acquire() -> tuple[_CrawlerSlot, bool]:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._key_locks[key] = lock
+            async with lock:
+                existing = self._crawlers.get(key)
+                if existing is not None and not existing.retired and not existing.closed:
+                    existing.in_flight += 1
+                    return existing, True
+                browser_cfg = browser_cfg_cls(headless=True, enable_stealth=bool(stealth))
+                crawler = crawler_cls(config=browser_cfg)
+                await crawler.__aenter__()
+                slot = _CrawlerSlot(crawler)
+                slot.in_flight = 1
+                self._crawlers[key] = slot
+                return slot, False
 
-        async def _evict() -> None:
-            old = self._crawlers.pop(key, None)
-            if old is not None:
-                try:
-                    await old.__aexit__(None, None, None)
-                except Exception:
-                    pass
+        def _retire(target: _CrawlerSlot) -> None:
+            if self._crawlers.get(key) is target:
+                self._crawlers.pop(key, None)
+            target.retired = True
+            if not target.closed:
+                self._retired_slots.add(target)
+
+        async def _release(slot: _CrawlerSlot) -> None:
+            slot.in_flight = max(0, slot.in_flight - 1)
+            if slot.retired and slot.in_flight == 0 and not slot.closed:
+                slot.closed = True
+                self._retired_slots.discard(slot)
+                with contextlib.suppress(Exception):
+                    await slot.crawler.__aexit__(None, None, None)
 
         async def _do_arun() -> dict[str, str]:
             if self._sem is None:
@@ -202,58 +251,90 @@ class _PersistentCrawlerRuntime:
             async with self._sem:
                 last_exc: Exception | None = None
                 for attempt in range(2):
-                    reused = key in self._crawlers
-                    crawler = await _get_or_create()
+                    slot, reused = await _acquire()
+                    should_retry = False
                     try:
-                        res = await crawler.arun(url=url, config=run_cfg)
+                        res = await slot.crawler.arun(url=url, config=run_cfg)
                     except Exception as exc:
                         last_exc = exc
-                        # 仅当复用已有浏览器实例时自动淘汰并冷启重拉一次（防长驻浏览器崩溃/断连）
-                        if reused and attempt == 0:
-                            await _evict()
-                            continue
-                        raise
-                    if not getattr(res, "success", True):
-                        err_msg = getattr(res, "error_message", "") or "crawl4ai arun failed"
-                        if reused and attempt == 0 and any(
-                            k in err_msg.lower() for k in ("target closed", "browser has been closed", "crashed")
-                        ):
-                            await _evict()
-                            continue
-                        raise RuntimeError(err_msg)
-                    md_obj = getattr(res, "markdown", None)
-                    if hasattr(md_obj, "fit_markdown") and md_obj.fit_markdown:
-                        md_text = str(md_obj.fit_markdown)
-                    elif hasattr(md_obj, "raw_markdown") and md_obj.raw_markdown:
-                        md_text = str(md_obj.raw_markdown)
+                        # 仅当复用的浏览器本身崩溃/断连时淘汰该槽位并冷启重拉一次，
+                        # 绝不因单页普通超时/网络错杀掉同浏览器上其他并发页面。
+                        if reused and attempt == 0 and _is_browser_crash_error(str(exc)):
+                            _retire(slot)
+                            should_retry = True
+                        else:
+                            raise
                     else:
-                        md_text = str(md_obj or "")
-                    final_u = str(getattr(res, "redirected_url", None) or getattr(res, "url", None) or url)
-                    return {"final_url": final_u, "markdown": md_text, "html": str(getattr(res, "html", "") or "")}
+                        if not getattr(res, "success", True):
+                            err_msg = getattr(res, "error_message", "") or "crawl4ai arun failed"
+                            if reused and attempt == 0 and _is_browser_crash_error(err_msg):
+                                _retire(slot)
+                                should_retry = True
+                            else:
+                                raise RuntimeError(err_msg)
+                        else:
+                            md_obj = getattr(res, "markdown", None)
+                            if hasattr(md_obj, "fit_markdown") and md_obj.fit_markdown:
+                                md_text = str(md_obj.fit_markdown)
+                            elif hasattr(md_obj, "raw_markdown") and md_obj.raw_markdown:
+                                md_text = str(md_obj.raw_markdown)
+                            else:
+                                md_text = str(md_obj or "")
+                            final_u = str(
+                                getattr(res, "redirected_url", None) or getattr(res, "url", None) or url
+                            )
+                            return {
+                                "final_url": final_u,
+                                "markdown": md_text,
+                                "html": str(getattr(res, "html", "") or ""),
+                            }
+                    finally:
+                        await _release(slot)
+                    if should_retry:
+                        continue
                 raise last_exc or RuntimeError("crawl4ai arun failed")
 
-        fut = asyncio.run_coroutine_threadsafe(_do_arun(), loop)
-        return fut.result()
+        with self._lock:
+            loop = self._ensure_loop_locked()
+            fut = asyncio.run_coroutine_threadsafe(_do_arun(), loop)
+        # 防御性上限：覆盖两次重试（冷启+单页超时）并防止后台循环异常停止时永久阻塞
+        wait_limit = max(30.0, float(timeout_s) * 2.0 + 30.0)
+        try:
+            return fut.result(timeout=wait_limit)
+        except TimeoutError:
+            fut.cancel()
+            raise RuntimeError(f"crawl4ai 后台任务超时（>{wait_limit:.0f}s）") from None
 
     def close_all(self) -> None:
         import asyncio
 
         with self._lock:
             loop = self._loop
+            thread = self._thread
             if loop is None or loop.is_closed():
                 self._crawlers.clear()
+                self._retired_slots.clear()
+                self._key_locks.clear()
+                self._loop = None
+                self._thread = None
                 return
             self._loop = None
             self._thread = None
 
         async def _shutdown() -> None:
-            items = list(self._crawlers.values())
+            slots = list(self._crawlers.values()) + list(self._retired_slots)
             self._crawlers.clear()
-            for crawler in items:
-                try:
-                    await crawler.__aexit__(None, None, None)
-                except Exception:
-                    pass
+            self._retired_slots.clear()
+            self._key_locks.clear()
+            seen: set[int] = set()
+            for slot in slots:
+                if id(slot) in seen or slot.closed:
+                    continue
+                seen.add(id(slot))
+                slot.retired = True
+                slot.closed = True
+                with contextlib.suppress(Exception):
+                    await slot.crawler.__aexit__(None, None, None)
 
         try:
             fut = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
@@ -261,10 +342,10 @@ class _PersistentCrawlerRuntime:
         except Exception:
             pass
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(loop.stop)
-            except Exception:
-                pass
+            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+                thread.join(timeout=2.0)
 
 
 _CRAWLER_RUNTIME = _PersistentCrawlerRuntime()
@@ -296,24 +377,25 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
         )
     target_base_dir = str(data_dir / "crawl4ai")
 
-    if sys.modules.get("crawl4ai") is not None:
-        bound_dir = _resolve_bound_crawl4ai_dir()
-        if bound_dir is None or os.path.normpath(bound_dir) != os.path.normpath(target_base_dir):
+    with _CRAWL4AI_IMPORT_LOCK:
+        if sys.modules.get("crawl4ai") is not None:
+            bound_dir = _resolve_bound_crawl4ai_dir()
+            if bound_dir is None or os.path.normpath(bound_dir) != os.path.normpath(target_base_dir):
+                raise ValueError(
+                    f"crawl4ai 已在进程内提前导入并绑定在 {bound_dir or '未知目录'}（非目标 {target_base_dir}），"
+                    "无法重绑定 CRAWL4_AI_BASE_DIRECTORY，拒绝静默污染 home 目录"
+                )
+
+        os.environ["CRAWL4_AI_BASE_DIRECTORY"] = target_base_dir
+
+        try:
+            import crawl4ai  # noqa: F401  # type: ignore[import-not-found]
+            from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig  # type: ignore[import-not-found]
+        except ImportError as exc:
             raise ValueError(
-                f"crawl4ai 已在进程内提前导入并绑定在 {bound_dir or '未知目录'}（非目标 {target_base_dir}），"
-                "无法重绑定 CRAWL4_AI_BASE_DIRECTORY，拒绝静默污染 home 目录"
-            )
-
-    os.environ["CRAWL4_AI_BASE_DIRECTORY"] = target_base_dir
-
-    try:
-        import crawl4ai  # noqa: F401  # type: ignore[import-not-found]
-        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig  # type: ignore[import-not-found]
-    except ImportError as exc:
-        raise ValueError(
-            f"crawl 依赖已定位但导入失败（部分或损坏安装: {exc}），"
-            "请重装: uv sync --extra crawl（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
-        ) from exc
+                f"crawl 依赖已定位但导入失败（部分或损坏安装: {exc}），"
+                "请重装: uv sync --extra crawl（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
+            ) from exc
 
     try:
         return _CRAWLER_RUNTIME.run_crawl(

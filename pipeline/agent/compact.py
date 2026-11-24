@@ -96,6 +96,10 @@ class ModelWindow:
     # D155：该模型 effort 参数名覆盖（模型吃但认别的名时记，如 "thinking_budget"）。
     # None = 默认 reasoning_effort。
     effort_param: str | None = None
+    # Google 原生协议（google-generative-ai / google-vertex）在 reasoning_effort="none" 时的
+    # 显式 thinkingBudget（如 gemini-4-hydrogen 实测需显式传 0 才关闭动态思考；
+    # None = 省略 thinkingConfig，兼容 gemini-2.5-pro 及不支持思考的旧模型）。
+    google_none_thinking_budget: int | None = None
 
     @property
     def reliable(self) -> int | None:
@@ -223,12 +227,20 @@ def parse_compact_config(data: Any) -> CompactConfig:
         effort_param = entry.get("effort_param")
         if effort_param is not None and not isinstance(effort_param, str):
             raise CompactConfigError(f"models.{name}.effort_param 必须是字符串: {effort_param!r}")
+        raw_g_none = entry.get("google_none_thinking_budget")
+        if raw_g_none is not None and (
+            isinstance(raw_g_none, bool) or not isinstance(raw_g_none, int) or raw_g_none < 0
+        ):
+            raise CompactConfigError(
+                f"models.{name}.google_none_thinking_budget 必须是非负整数或缺省: {raw_g_none!r}"
+            )
         models[name] = ModelWindow(
             window=window,
             reliable_ratio=_ratio(entry.get("reliable_ratio", 1.0), f"models.{name}.reliable_ratio"),
             efforts=efforts,
             effort_map=effort_map,
             effort_param=effort_param,
+            google_none_thinking_budget=raw_g_none,
         )
     return CompactConfig(
         trigger_ratio=trigger, tail_ratio=tail, tail_max_messages=max_messages, models=models,

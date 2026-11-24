@@ -148,4 +148,129 @@ describe("流式 assistant_delta 与并发工具折行（convFold）", () => {
     expect(tools[0]).toMatchObject({ id: "t1:0", ok: true, observation: "ok0", durationMs: 100 });
     expect(tools[1]).toMatchObject({ id: "t1:1", ok: false, observation: "err1", durationMs: 200 });
   });
+
+  it("流式中途 llm_retry 丢弃旧半截文本；request 结算流式前言；中间 notice 后 assistant 不重复成行", () => {
+    const f = (seq: number, at: number, t: OutFrame["t"], extra: Record<string, unknown>): ConvEntry => ({
+      k: "frame",
+      at,
+      frame: { v: 1, seq, sid: "s1", t, ...extra } as OutFrame,
+    });
+    // 1. llm_retry 丢弃失败尝试的半截流式文本，重发后只留最终答复
+    const { store: sRetry } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 10, "turn_started", { turn_id: "t1" }),
+          f(2, 20, "assistant_delta", { turn_id: "t1", text: "半截错误" }),
+          f(3, 30, "notice", { level: "warn", code: "llm_retry", text: "重试 1/3" }),
+          f(4, 40, "assistant_delta", { turn_id: "t1", text: "正常回复" }),
+          f(5, 50, "assistant", { turn_id: "t1", kind: "answer", text: "正常回复完毕" }),
+        ]),
+      },
+    );
+    const retryAssistants = foldOf(sRetry.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(retryAssistants).toHaveLength(1);
+    expect(retryAssistants[0]).toMatchObject({ text: "正常回复完毕" });
+    expect((retryAssistants[0] as { streaming?: boolean }).streaming).toBeUndefined();
+
+    // 2. assistant_delta 后接人审卡 request 时，前言行结算清除 streaming
+    const { store: sReq } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 10, "turn_started", { turn_id: "t2" }),
+          f(2, 20, "assistant_delta", { turn_id: "t2", text: "准备写入文件" }),
+          { k: "frame", at: 30, frame: frame("req1") },
+        ]),
+      },
+    );
+    const reqAssistants = foldOf(sReq.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(reqAssistants).toHaveLength(1);
+    expect((reqAssistants[0] as { streaming?: boolean }).streaming).toBeUndefined();
+
+    // 3. assistant_delta -> 普通 notice（如 session_log_broken）-> assistant 原地替换不重复成行
+    const { store: sNotice } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 10, "turn_started", { turn_id: "t3" }),
+          f(2, 20, "assistant_delta", { turn_id: "t3", text: "收尾正文" }),
+          f(3, 30, "notice", { level: "error", code: "session_log_broken", text: "日志损坏" }),
+          f(4, 40, "assistant", { turn_id: "t3", kind: "answer", text: "收尾正文完整" }),
+        ]),
+      },
+    );
+    const noticeAssistants = foldOf(sNotice.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(noticeAssistants).toHaveLength(1);
+    expect(noticeAssistants[0]).toMatchObject({ text: "收尾正文完整" });
+
+    // 4. interim_answer（steer 续轮）与连续 delta 在 reduceConvs 中合并压缩，不堆积碎片
+    const { store: sSteer } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 10, "turn_started", { turn_id: "t4" }),
+          f(2, 20, "queued", { id: "q1", text: "补充一句" }),
+          f(3, 30, "assistant_delta", { turn_id: "t4", text: "第一段" }),
+          f(4, 35, "assistant_delta", { turn_id: "t4", text: "内容" }),
+        ]),
+      },
+    );
+    // 连续两条 assistant_delta 在 store.entries 中合并为 1 条
+    expect(sSteer.convs["ep:A"].entries.filter((e) => e.k === "frame" && e.frame.t === "assistant_delta")).toHaveLength(1);
+    const { store: sSteer2 } = apply(sSteer, {
+      type: "delta",
+      delta: delta("ep:A", "b1:1", 2, [
+        f(5, 40, "assistant", { turn_id: "t4", kind: "answer", text: "第一段内容" }),
+        f(6, 50, "steer_delivered", { turn_id: "t4", ids: ["q1"] }),
+        f(7, 60, "assistant_delta", { turn_id: "t4", text: "第二段" }),
+        f(8, 70, "assistant", { turn_id: "t4", kind: "answer", text: "第二段完整" }),
+      ]),
+    });
+    const steerAssistants = foldOf(sSteer2.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(steerAssistants.map((r) => r.text)).toEqual(["第一段内容", "第二段完整"]);
+    // 最终 assistant 落盘后，对应回合的碎片 delta 已从 entries 裁剪
+    expect(sSteer2.convs["ep:A"].entries.filter((e) => e.k === "frame" && e.frame.t === "assistant_delta")).toHaveLength(0);
+  });
+
+  it("孤立 tool{end} 不误改另一未完成并发工具行；多工具并发时 log 独立成行不张冠李戴", () => {
+    const f = (seq: number, at: number, t: OutFrame["t"], extra: Record<string, unknown>): ConvEntry => ({
+      k: "frame",
+      at,
+      frame: { v: 1, seq, sid: "s1", t, ...extra } as OutFrame,
+    });
+    const { store } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 100, "turn_started", { turn_id: "t1" }),
+          f(2, 110, "tool", { turn_id: "t1", phase: "start", index: 0, name: "crawl", summary: "u0", ok: null, observation: null, duplicate: false }),
+          f(3, 115, "tool", { turn_id: "t1", phase: "start", index: 1, name: "crawl", summary: "u1", ok: null, observation: null, duplicate: false }),
+          // 两个工具同时在跑，进程 stdout log 不应错挂到 index 1 名下
+          f(4, 120, "log", { stream: "stdout", text: "shared stdout" }),
+          // 孤立的未匹配 tool{end}（index 99 不存在）：必须独立成行，不得覆写 index 1
+          f(5, 130, "tool", { turn_id: "t1", phase: "end", index: 99, name: "web_fetch", summary: "orphan", ok: false, observation: "err99", duplicate: false }),
+        ]),
+      },
+    );
+    const rows = foldOf(store.convs["ep:A"]).rows;
+    const tools = rows.filter((r) => r.k === "tool");
+    expect(tools).toHaveLength(3);
+    expect(tools[0]).toMatchObject({ id: "t1:0", ok: null, logs: [] });
+    expect(tools[1]).toMatchObject({ id: "t1:1", ok: null, logs: [] });
+    expect(tools[2]).toMatchObject({ name: "web_fetch", ok: false, observation: "err99" });
+    const logs = rows.filter((r) => r.k === "log");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ lines: ["shared stdout"] });
+  });
 });

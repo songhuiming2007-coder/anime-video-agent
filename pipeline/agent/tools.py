@@ -865,10 +865,11 @@ MAX_READ_BYTES = 200_000      # read_artifact 单次读出上限
 MAX_NOTE_BYTES = 1_000_000    # search_notes 单文件扫描上限
 MAX_NOTE_LIMIT = 20           # search_notes 命中条数上限
 NOTE_SUFFIXES = {".md", ".txt"}
-# data/library/ 下纯媒体/关键帧/索引/下载等非笔记顶层目录（2026-11-24 实测：shots/ 单目录含
+# data/library/ 下纯媒体/关键帧/索引/字幕/下载等非笔记顶层目录（2026-11-24 实测：shots/ 单目录含
 # 103,109 张关键帧 JPEG、0 篇笔记，rglob("*") 扫全盘 116,047 项单次耗时 600–1,683 ms；
-# 跳过以下已知非笔记目录后保留 notes/、fetch-log/、timeline/、incoming/、_backup/ 及用户自定义番剧目录）。
-_NOTE_SCAN_SKIP_DIRS = frozenset({"shots", "vindex", "index", "attic", "raw", "bgm", "downloads"})
+# 字幕检索有专用 source="subs" 入口；跳过以下已知非笔记目录后保留 notes/、fetch-log/、timeline/、
+# incoming/、_backup/ 及用户自定义番剧目录）。
+_NOTE_SCAN_SKIP_DIRS = frozenset({"shots", "vindex", "index", "attic", "raw", "bgm", "downloads", "subs"})
 
 
 @dataclass
@@ -2193,7 +2194,7 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
             if ext.lower() not in NOTE_SUFFIXES:
                 continue
             full_str = os.path.join(dirpath, fname)
-            if os.path.islink(full_str):
+            if os.path.islink(full_str) or not os.path.isfile(full_str):
                 continue
             path = Path(full_str)
             if _is_memory_file(path, ctx):

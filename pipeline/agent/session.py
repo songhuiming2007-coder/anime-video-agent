@@ -1209,6 +1209,7 @@ class AgentSession:
         self._root = root
         self._rollback_mark = None
         self._turn_compaction = None
+        self._discard_text_delta()
         self._ep_dir = self.host.ep_dir if ep_dir is _HOST_EP else (
             Path(ep_dir).resolve() if ep_dir is not None else None  # type: ignore[arg-type]
         )
@@ -1266,10 +1267,12 @@ class AgentSession:
                     "wrapup": "skipped" if self.interrupt.skip_wrapup else "none",
                 }
             except LLMError as exc:
+                self._discard_text_delta()
                 self.channel.show("stdout", {"text": f"[FAIL] {exc}"})
                 self._rollback(messages, snapshot, tracker)
                 return {"stopped": "error", "messages": messages, "final": {}}
             except PermissionError as exc:
+                self._discard_text_delta()
                 self.channel.show("stdout", {"text": f"[BLOCKED] 出网被拦截：{exc}"})
                 self.channel.show("stdout", {
                     "text": "          本次请求未发出。请改问不含受限内容（密钥/音频清单/补片素材）的问题。"
@@ -1303,7 +1306,10 @@ class AgentSession:
         outcome["tokens_after"] = compaction.get("tokens_after")
         from pipeline.agent.tools import turn_error_text  # 延迟 import：与本文件其余 tools 引用同口径（避循环）
 
-        self._flush_text_delta()
+        if outcome.get("rollback") or not outcome.get("final"):
+            self._discard_text_delta()
+        else:
+            self._flush_text_delta()
         with self.interrupt.absorbed():
             self._record({
                 "k": "turn_end",
@@ -1876,14 +1882,21 @@ class AgentSession:
         if self.channel is not None:
             self.channel.show("assistant_delta", {"turn_id": self._turn_id, "text": chunk})
 
+    def _discard_text_delta(self) -> None:
+        self._stream_buf.clear()
+        self._stream_buf_chars = 0
+        self._stream_last_flush = 0.0
+
     def _on_context_guard(self, text: str) -> None:
         """回合内防爆仓老化或超限重试生效时的前端提示。"""
+        self._discard_text_delta()
         self.channel.show("notice", {"level": "warn", "code": "context_guard", "text": text})
 
     def _on_llm_retry(self, attempt: int, limit: int, delay: float, error: str) -> None:
         """D93：模型请求遇可重试错误、即将自动重发——上屏一行，人看得到「在重试」而不是干等。"""
         from pipeline.agent.tools import turn_error_text  # 延迟 import：与 turn_end 同口径（脱敏、截断）
 
+        self._discard_text_delta()
         self.channel.show("notice", {
             "level": "warn", "code": "llm_retry",
             "text": f"模型请求失败（{turn_error_text(error, self._root)}），{delay:g} 秒后自动重试"

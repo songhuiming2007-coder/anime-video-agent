@@ -28,6 +28,7 @@ import json
 import math
 import os
 import re
+import select
 import ssl
 import sys
 import threading
@@ -116,6 +117,12 @@ _LAST_USAGE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Context
 _ON_TEXT_DELTA: contextvars.ContextVar[Callable[[str], None] | None] = contextvars.ContextVar(
     "ava_llm_on_text_delta", default=None
 )
+# 流式实质进展回调：各协议流解析器在收到首个实质生成增量（正文/思考/工具调用）时触发，
+# 用于把 socket 超时从首包等待（300 s）收紧至块间空闲（60 s），避免 message_start / response.created /
+# SSE 心跳注释等控制帧过早触发收紧而误杀长思考请求。
+_ON_STREAM_PROGRESS: contextvars.ContextVar[Callable[[], None] | None] = contextvars.ContextVar(
+    "ava_llm_on_stream_progress", default=None
+)
 
 
 def _emit_text_delta(text: str) -> None:
@@ -124,6 +131,12 @@ def _emit_text_delta(text: str) -> None:
     cb = _ON_TEXT_DELTA.get()
     if cb is not None:
         cb(text)
+
+
+def _mark_stream_progress() -> None:
+    cb = _ON_STREAM_PROGRESS.get()
+    if cb is not None:
+        cb()
 
 # 裸循环硬上限（D166）：bare=True 没有交互通道也没有判重保护，模型回复满 BARE_LOOP_CAP 条
 # **或**工具执行满 BARE_LOOP_CAP 次（先到先停）直接收尾停止——防死循环最后一道。
@@ -657,10 +670,14 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
                 parts = text.setdefault(key, [])
                 if isinstance(val, str):
                     parts.append(val)
-                    if key == "content" and val:
-                        _emit_text_delta(val)
+                    if val:
+                        _mark_stream_progress()
+                        if key == "content":
+                            _emit_text_delta(val)
             elif key == "tool_calls":
                 saw_calls = True
+                if val:
+                    _mark_stream_progress()
                 for part in val or []:
                     idx = part.get("index", len(calls))
                     slot = calls.setdefault(idx, {"index": idx, "function": {"name": None, "arguments": ""}})
@@ -954,7 +971,12 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
                 "init_input": blk.get("input") if isinstance(blk.get("input"), dict) and blk.get("input") else None,
             }
             if btype == "text" and blk.get("text"):
+                _mark_stream_progress()
                 _emit_text_delta(str(blk["text"]))
+            elif btype == "thinking" and blk.get("thinking"):
+                _mark_stream_progress()
+            elif btype == "tool_use":
+                _mark_stream_progress()
             blocks[idx] = slot
         elif etype == "content_block_delta":
             idx = int(ev.get("index") or 0)
@@ -965,13 +987,20 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
                 t_chunk = str(delta.get("text") or "")
                 slot["text"].append(t_chunk)
                 if t_chunk:
+                    _mark_stream_progress()
                     _emit_text_delta(t_chunk)
             elif dtype == "thinking_delta":
-                slot["thinking"].append(str(delta.get("thinking") or ""))
+                t_chunk = str(delta.get("thinking") or "")
+                slot["thinking"].append(t_chunk)
+                if t_chunk:
+                    _mark_stream_progress()
             elif dtype == "signature_delta":
                 slot.setdefault("signature", []).append(str(delta.get("signature") or ""))
             elif dtype == "input_json_delta":
-                slot["input_parts"].append(str(delta.get("partial_json") or ""))
+                p_json = str(delta.get("partial_json") or "")
+                slot["input_parts"].append(p_json)
+                if p_json:
+                    _mark_stream_progress()
         elif etype == "message_delta":
             u = ev.get("usage")
             if isinstance(u, dict):
@@ -1218,12 +1247,17 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
             t_chunk = str(ev.get("delta") or "")
             texts.append(t_chunk)
             if t_chunk:
+                _mark_stream_progress()
                 _emit_text_delta(t_chunk)
         elif etype in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-            thinkings.append(str(ev.get("delta") or ""))
+            r_chunk = str(ev.get("delta") or "")
+            thinkings.append(r_chunk)
+            if r_chunk:
+                _mark_stream_progress()
         elif etype == "response.output_item.added":
             item = ev.get("item") or {}
             if item.get("type") == "function_call":
+                _mark_stream_progress()
                 key = str(item.get("id") or item.get("call_id") or len(call_order))
                 if key not in calls:
                     call_order.append(key)
@@ -1269,7 +1303,10 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
         elif etype == "response.function_call_arguments.delta":
             key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
             if key and key in calls:
-                calls[key]["parts"].append(str(ev.get("delta") or ""))
+                delta_str = str(ev.get("delta") or "")
+                calls[key]["parts"].append(delta_str)
+                if delta_str:
+                    _mark_stream_progress()
         elif etype == "response.function_call_arguments.done":
             key = str(ev.get("item_id") or (call_order[-1] if call_order else ""))
             if key and key in calls:
@@ -1650,6 +1687,38 @@ def _google_vertex_bearer_token(extra_config: dict[str, str]) -> str:
     return access_token
 
 
+def _google_thinking_config(
+    model_id: str, lvl: str, root: Path | None = None
+) -> dict[str, Any] | None:
+    """按模型能力配置（config/agent/compact.json）解析 Google 原生 thinkingConfig。
+
+    - `lvl == "none"`：仅当模型显式声明 `google_none_thinking_budget`（或 `effort_map["none"]`
+      指向 `thinkingBudget` / `thinkingLevel`）时发送对应配置；未声明的模型一律省略 `thinkingConfig`，
+      避免在禁止 0 预算的 `gemini-2.5-pro` 或不支持思考的旧模型上触发 400。
+    - 其余档位：优先采用 `effort_map[lvl]`（当 `param` 为 `thinkingBudget` / `thinkingLevel`），
+      否则沿用 `THINKING_BUDGETS`。
+    """
+    entry = None
+    try:
+        entry = load_compact_config(root).window_for(model_id)
+    except CompactConfigError:
+        entry = None
+    if entry is not None and entry.effort_map is not None and lvl in entry.effort_map:
+        spec = entry.effort_map[lvl]
+        if spec.param is None:
+            return None
+        if spec.param in ("thinkingBudget", "thinkingLevel") and spec.value is not None:
+            return {spec.param: spec.value}
+    if lvl == "none":
+        if entry is not None and entry.google_none_thinking_budget is not None:
+            return {"thinkingBudget": entry.google_none_thinking_budget}
+        return None
+    from pipeline.agent.compact import THINKING_BUDGETS
+
+    budget = THINKING_BUDGETS.get(lvl, 8192)
+    return {"thinkingBudget": budget}
+
+
 def _google_request(
     cfg: LLMConfig,
     wired: list[dict[str, Any]],
@@ -1752,16 +1821,11 @@ def _google_request(
             }
     if cfg.reasoning_effort is not None:
         lvl = model_switch.validate_effort(cfg.reasoning_effort)
-        if lvl == "none":
-            # 2026-11-24 实测 gemini-4-hydrogen：省略 thinkingConfig 会回退到服务端默认高强度动态思考
-            # （~2,846 tok / 24.6 s 首字）；显式传 thinkingBudget=0 可压至 ~187 tok / 2.56 s 首字。
-            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": 0}}
-        elif lvl:
-            from pipeline.agent.compact import THINKING_BUDGETS
-
-            budget = THINKING_BUDGETS.get(lvl, 8192)
+        if lvl:
             # 不附带 includeThoughts：AVA 不展示思维摘要，且 gemini-4-hydrogen 等模型在长上下文开启 includeThoughts 时易触发 MALFORMED_RESPONSE 空回包
-            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": budget}}
+            thinking_cfg = _google_thinking_config(cfg.model_for(purpose), lvl)
+            if thinking_cfg is not None:
+                payload["generationConfig"] = {"thinkingConfig": thinking_cfg}
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cfg.api_protocol == "google-vertex" and not cfg.api_key:
@@ -1803,6 +1867,8 @@ def _collect_google_candidate(
             continue
         if part.get("text") is not None:
             t_str = str(part["text"])
+            if emit_delta and t_str:
+                _mark_stream_progress()
             if part.get("thought"):
                 thinkings.append(t_str)
                 tb: dict[str, Any] = {"type": "thinking", "thinking": t_str}
@@ -1814,6 +1880,8 @@ def _collect_google_candidate(
                 if emit_delta and t_str:
                     _emit_text_delta(t_str)
         elif isinstance(part.get("functionCall"), dict):
+            if emit_delta:
+                _mark_stream_progress()
             fc = part["functionCall"]
             idx = len(calls) + 1
             cid = str(fc.get("id") or f"call_gemini_{idx}")
@@ -2355,7 +2423,7 @@ class _PooledHTTPResponse:
 
     def read(self, amt: int | None = None) -> bytes:
         data = self._resp.read(amt) if amt is not None else self._resp.read()
-        if amt is None or not data:
+        if amt is None or (amt > 0 and not data):
             self._eof = True
         return data
 
@@ -2373,6 +2441,7 @@ class _PooledHTTPResponse:
         self._closed = True
         reusable = (
             self._eof
+            and self._resp.isclosed()
             and not self._resp.will_close
             and 200 <= self._resp.status < 300
             and self._conn.sock is not None
@@ -2413,6 +2482,24 @@ class _KeepAlivePool:
             self._ssl_ctx = ssl.create_default_context()
         return self._ssl_ctx
 
+    @staticmethod
+    def _is_socket_idle_healthy(sock: Any) -> bool:
+        """非阻塞探测闲置 socket：若对端已发 FIN/RST 或残留未读字节，select 立即可读，判定为不可复用。"""
+        try:
+            readable, _, _ = select.select([sock], [], [], 0.0)
+        except (OSError, ValueError):
+            return False
+        return not readable
+
+    @staticmethod
+    def _proxy_auth_header(parsed_proxy: urllib.parse.ParseResult) -> str | None:
+        if parsed_proxy.username is None and parsed_proxy.password is None:
+            return None
+        user = urllib.parse.unquote(parsed_proxy.username or "")
+        pwd = urllib.parse.unquote(parsed_proxy.password or "")
+        token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
+        return f"Basic {token}"
+
     def _checkout(self, key: tuple[str, str, int, str]) -> http.client.HTTPConnection | None:
         now = time.monotonic()
         stale: list[http.client.HTTPConnection] = []
@@ -2421,7 +2508,11 @@ class _KeepAlivePool:
             bucket = self._buckets.get(key)
             while bucket:
                 conn, ts = bucket.pop()
-                if now - ts <= self._idle_ttl_s and conn.sock is not None:
+                if (
+                    now - ts <= self._idle_ttl_s
+                    and conn.sock is not None
+                    and self._is_socket_idle_healthy(conn.sock)
+                ):
                     chosen = conn
                     break
                 stale.append(conn)
@@ -2464,11 +2555,13 @@ class _KeepAlivePool:
             pp = urllib.parse.urlparse(proxy_url)
             p_host = pp.hostname or ""
             p_port = pp.port or (443 if pp.scheme == "https" else 80)
+            proxy_auth = self._proxy_auth_header(pp)
             if scheme == "https":
                 conn: http.client.HTTPConnection = http.client.HTTPSConnection(
                     p_host, p_port, timeout=timeout, context=self._ssl_context()
                 )
-                conn.set_tunnel(host, port)
+                tunnel_headers = {"Proxy-Authorization": proxy_auth} if proxy_auth else None
+                conn.set_tunnel(host, port, headers=tunnel_headers)
                 return conn
             return http.client.HTTPConnection(p_host, p_port, timeout=timeout)
         if scheme == "https":
@@ -2483,7 +2576,8 @@ class _KeepAlivePool:
         if scheme not in ("http", "https") or not host:
             return _LLM_NO_REDIRECT_OPENER.open(request, timeout=timeout)
         port = parsed.port or (443 if scheme == "https" else 80)
-        host_port = f"{host}:{port}" if parsed.port else host
+        bracket_host = f"[{host}]" if ":" in host else host
+        host_port = f"{bracket_host}:{port}" if parsed.port else bracket_host
 
         proxy_url: str | None = None
         if host not in ("127.0.0.1", "localhost", "::1") and not urllib.request.proxy_bypass(host_port):
@@ -2502,6 +2596,10 @@ class _KeepAlivePool:
         headers = dict(request.header_items())
         if not any(k.lower() == "connection" for k in headers):
             headers["Connection"] = "keep-alive"
+        if proxy_url and scheme == "http" and not any(k.lower() == "proxy-authorization" for k in headers):
+            proxy_auth = self._proxy_auth_header(urllib.parse.urlparse(proxy_url))
+            if proxy_auth:
+                headers["Proxy-Authorization"] = proxy_auth
         body = request.data
         method = request.get_method()
 
@@ -2518,7 +2616,18 @@ class _KeepAlivePool:
             try:
                 conn.request(method, req_target, body=body, headers=headers)
                 resp = conn.getresponse()
-            except (http.client.RemoteDisconnected, http.client.BadStatusLine, BrokenPipeError, ConnectionResetError, OSError):
+            except TimeoutError:
+                # 服务端已收单进入长思考或网络超时：绝不在池层静默重发 POST（防双倍超时与重复计费）
+                with contextlib.suppress(Exception):
+                    conn.close()
+                raise
+            except (
+                http.client.RemoteDisconnected,
+                http.client.BadStatusLine,
+                BrokenPipeError,
+                ConnectionResetError,
+                ssl.SSLEOFError,
+            ):
                 with contextlib.suppress(Exception):
                     conn.close()
                 if reused:
@@ -2537,9 +2646,11 @@ class _KeepAlivePool:
                     status_code=resp.status,
                 )
             if resp.status >= 400:
-                err_bytes = resp.read(4096) or b""
-                with contextlib.suppress(Exception):
-                    conn.close()
+                try:
+                    err_bytes = resp.read(4096) or b""
+                finally:
+                    with contextlib.suppress(Exception):
+                        conn.close()
                 raise urllib.error.HTTPError(
                     url, resp.status, resp.reason, resp.headers, io.BytesIO(err_bytes)
                 )
@@ -2614,16 +2725,23 @@ def chat_complete(
                     if effective is not None and effective > STREAM_CHUNK_IDLE_TIMEOUT_S
                     else None
                 )
+                tightened = False
 
-                def _stream_lines() -> Iterator[str]:
-                    tightened = False
-                    for raw in resp:
-                        if not tightened and set_idle is not None and idle_t is not None:
-                            set_idle(idle_t)
-                            tightened = True
-                        yield raw.decode("utf-8", errors="replace")
+                def _tighten_on_progress() -> None:
+                    nonlocal tightened
+                    if not tightened and set_idle is not None and idle_t is not None:
+                        set_idle(idle_t)
+                        tightened = True
 
-                message, usage = parse_stream(_stream_lines())
+                progress_tok = _ON_STREAM_PROGRESS.set(
+                    _tighten_on_progress if (set_idle is not None and idle_t is not None) else None
+                )
+                try:
+                    message, usage = parse_stream(
+                        raw.decode("utf-8", errors="replace") for raw in resp
+                    )
+                finally:
+                    _ON_STREAM_PROGRESS.reset(progress_tok)
                 _LAST_USAGE.set(usage)
                 return _stamp_google_sig_model(message, cfg, purpose)
             body = json.loads(resp.read().decode("utf-8"))
@@ -3055,14 +3173,14 @@ def run_tool_loop(
 
     def _project_messages(force_keep_batches: int | None = None) -> list[dict[str, Any]]:
         nonlocal proactive_notified, proactive_hard_notified
-        if force_keep_batches is not None:
-            aged, _ = age_current_turn_tool_results(
-                convo, keep_recent_batches=force_keep_batches, target_chars=None
-            )
-            return aged
         aged = age_tool_results(convo)
         if intra_turn_aged_indices:
             aged = age_tool_results_at_indices(aged, intra_turn_aged_indices)
+        if force_keep_batches is not None:
+            aged, _ = age_current_turn_tool_results(
+                aged, keep_recent_batches=force_keep_batches, target_chars=None
+            )
+            return aged
         if model_window is not None:
             safe_tokens = int(model_window * INTRA_TURN_AGE_RATIO)
             hard_tokens = int(model_window * INTRA_TURN_HARD_RATIO)
@@ -3121,10 +3239,12 @@ def run_tool_loop(
                         (1, 0) if local_keep is None else ((0,) if local_keep > 0 else ())
                     )
                     switched = False
+                    base_aged = age_tool_results(convo)
+                    if intra_turn_aged_indices:
+                        base_aged = age_tool_results_at_indices(base_aged, intra_turn_aged_indices)
                     for k in candidates:
-                        base_aged = age_tool_results(convo)
                         cand_aged, _ = age_current_turn_tool_results(
-                            convo, keep_recent_batches=k, target_chars=None
+                            base_aged, keep_recent_batches=k, target_chars=None
                         )
                         cand_chars = sum(message_chars(m) for m in cand_aged)
                         if cand_chars < sent_message_chars:
@@ -3258,6 +3378,65 @@ def run_tool_loop(
             return "ok", reply, None, None
         return "failed", None, _local_note(reason, None), "收尾回复不含可用答复"
 
+    def _exec_parallel_item(
+        name: str, args: dict[str, Any], exec_ctx: ToolContext
+    ) -> dict[str, Any]:
+        try:
+            return execute_tool(name, args, exec_ctx)
+        except Exception as exc:  # noqa: BLE001 - 单条工具异常作为数据回喂，避免破坏同批 tool_call_id 配对
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _drain_parallel_abort(unexecuted_text: str, started_fallback_text: str) -> None:
+        nonlocal tool_executions
+        par = live.get("parallel")
+        if par is None:
+            return
+        done_map: dict[int, dict[str, Any]] = par["done"]
+        committed: set[int] = par.setdefault("committed", set())
+        entry_indices = {e["index"] for e in par["entries"]}
+        fallback_err = started_fallback_text if par.get("started") else unexecuted_text
+        for entry in par["entries"]:
+            j = entry["index"]
+            if j in committed:
+                continue
+            c = entry["call"]
+            if entry["kind"] == "duplicate":
+                control.commit(  # type: ignore[union-attr]
+                    _tool_message(c, _duplicate_outcome(entry["name"])), "synthetic_tool"
+                )
+            elif entry["kind"] == "rejected":
+                control.commit(  # type: ignore[union-attr]
+                    _tool_message(c, _reject_outcome(entry["decision"])), "synthetic_tool"
+                )
+            elif j in done_map:
+                tool_executions += 1
+                kind = lookup_kind(entry["name"], entry["args"])
+                if kind is not None:
+                    lookups[kind] += 1
+                control.commit(_tool_message(c, done_map[j]), "tool")  # type: ignore[union-attr]
+            else:
+                control.commit(  # type: ignore[union-attr]
+                    _tool_message(c, {"ok": False, "error": fallback_err}), "synthetic_tool"
+                )
+            committed.add(j)
+        if (
+            not par.get("started")
+            and live["call"] is not None
+            and live["index"] not in entry_indices
+            and live["index"] not in committed
+        ):
+            text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else unexecuted_text
+            control.commit(  # type: ignore[union-attr]
+                _tool_message(live["call"], {"ok": False, "error": text}), "synthetic_tool"
+            )
+            committed.add(live["index"])
+            rest_start = max(live["index"] + 1, max(committed) + 1)
+        else:
+            rest_start = max(par["next_index"], (max(committed) + 1) if committed else par["next_index"])
+        _synthesize_rest(rest_start, unexecuted_text)
+        live["parallel"] = None
+        live["call"] = None
+
     def _run_parallel_readonly_batch(
         calls: list[dict[str, Any]], start: int, run_end: int
     ) -> int:
@@ -3267,17 +3446,19 @@ def run_tool_loop(
         runnable: list[dict[str, Any]] = []
         human_tail: dict[str, Any] | None = None
         stop_at = run_end
-        live["parallel"] = {
+        par_state: dict[str, Any] = {
             "entries": batch_entries,
             "done": {},
+            "committed": set(),
             "started": False,
             "next_index": start,
         }
+        live["parallel"] = par_state
         for j in range(start, run_end):
             call = calls[j]
             live["index"] = j
             live["call"] = call
-            live["parallel"]["next_index"] = j
+            par_state["next_index"] = j
             function = call.get("function") or {}
             name = str(function.get("name", ""))
             args = _parse_tool_args(function.get("arguments"))
@@ -3290,7 +3471,8 @@ def run_tool_loop(
                 batch_entries.append({
                     "kind": "duplicate", "index": j, "call": call, "name": name, "args": args,
                 })
-                live["parallel"]["next_index"] = j + 1
+                live["call"] = None
+                par_state["next_index"] = j + 1
                 continue
             live["stage"] = "review"
             par_decision = control.review(name, args)  # type: ignore[union-attr]
@@ -3303,7 +3485,8 @@ def run_tool_loop(
                     "kind": "rejected", "index": j, "call": call, "name": name,
                     "args": args, "decision": par_decision,
                 })
-                live["parallel"]["next_index"] = j + 1
+                live["call"] = None
+                par_state["next_index"] = j + 1
                 continue
             if par_decision.provenance == "human":
                 # 已由人审批准：保留已拿到的 decision，在前面并发项完成后串行执行（不二次弹卡）
@@ -3311,7 +3494,8 @@ def run_tool_loop(
                     "index": j, "call": call, "name": name, "args": args, "decision": par_decision,
                 }
                 stop_at = j + 1
-                live["parallel"]["next_index"] = j
+                live["call"] = None
+                par_state["next_index"] = j
                 break
             exec_ctx = replace(context, confirmed=True, human_approved=False, bound=None)
             entry = {
@@ -3320,54 +3504,62 @@ def run_tool_loop(
             }
             batch_entries.append(entry)
             runnable.append(entry)
-            live["parallel"]["next_index"] = j + 1
+            live["call"] = None
+            par_state["next_index"] = j + 1
+
+        done_outcomes: dict[int, dict[str, Any]] = par_state["done"]
+        committed_set: set[int] = par_state["committed"]
+        par_state["started"] = True
+        par_state["next_index"] = stop_at if human_tail is None else human_tail["index"]
 
         if len(runnable) <= 1:
-            live["parallel"] = None
             for entry in batch_entries:
                 j = entry["index"]
                 call = entry["call"]
                 name = entry["name"]
                 args = entry["args"]
                 live["index"] = j
-                live["call"] = call
                 live["name"] = name
                 if entry["kind"] == "duplicate":
                     _trace(control, j, name, args, duplicate=True)
-                    control.commit(  # type: ignore[union-attr]
-                        _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
-                    )
+                    with _stopping(control):
+                        try:
+                            control.commit(  # type: ignore[union-attr]
+                                _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
+                            )
+                        finally:
+                            committed_set.add(j)
                     _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
                 elif entry["kind"] == "rejected":
                     rejected = _reject_outcome(entry["decision"])
                     _trace(control, j, name, args)
-                    control.commit(  # type: ignore[union-attr]
-                        _tool_message(call, rejected), "synthetic_tool"
-                    )
+                    with _stopping(control):
+                        try:
+                            control.commit(  # type: ignore[union-attr]
+                                _tool_message(call, rejected), "synthetic_tool"
+                            )
+                        finally:
+                            committed_set.add(j)
                     _trace(control, j, name, args, content=rejected)
                 else:
                     _trace(control, j, name, args)
                     if control.on_exec_started is not None:  # type: ignore[union-attr]
                         control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
-                    live["outcome"] = execute_tool(name, args, entry["exec_ctx"])
-                    outcome = live["outcome"]
-                    live["outcome"] = None
-                    tool_executions += 1
-                    execs_since_cp = execs_since_cp + 1
-                    kind = lookup_kind(name, args)
-                    if kind is not None:
-                        lookups[kind] += 1
+                    outcome = _exec_parallel_item(name, args, entry["exec_ctx"])
+                    done_outcomes[j] = outcome
                     _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
-                    control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                    with _stopping(control):
+                        tool_executions += 1
+                        execs_since_cp = execs_since_cp + 1
+                        kind = lookup_kind(name, args)
+                        if kind is not None:
+                            lookups[kind] += 1
+                        try:
+                            control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                        finally:
+                            committed_set.add(j)
+            live["parallel"] = None
         else:
-            done_outcomes: dict[int, dict[str, Any]] = {}
-            live["call"] = None
-            live["parallel"] = {
-                "entries": batch_entries,
-                "done": done_outcomes,
-                "started": True,
-                "next_index": stop_at if human_tail is None else human_tail["index"],
-            }
             for entry in batch_entries:
                 if entry["kind"] == "run":
                     _trace(control, entry["index"], entry["name"], entry["args"])
@@ -3377,9 +3569,10 @@ def run_tool_loop(
                         )
             workers = min(len(runnable), MAX_PARALLEL_READONLY_TOOLS)
             pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            fut_to_entry: dict[concurrent.futures.Future[dict[str, Any]], dict[str, Any]] = {}
             try:
                 fut_to_entry = {
-                    pool.submit(execute_tool, e["name"], e["args"], e["exec_ctx"]): e
+                    pool.submit(_exec_parallel_item, e["name"], e["args"], e["exec_ctx"]): e
                     for e in runnable
                 }
                 pending = set(fut_to_entry.keys())
@@ -3403,33 +3596,43 @@ def run_tool_loop(
             else:
                 pool.shutdown(wait=True)
 
-            for entry in batch_entries:
-                j = entry["index"]
-                call = entry["call"]
-                name = entry["name"]
-                args = entry["args"]
-                if entry["kind"] == "duplicate":
-                    _trace(control, j, name, args, duplicate=True)
-                    control.commit(  # type: ignore[union-attr]
-                        _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
-                    )
-                    _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
-                elif entry["kind"] == "rejected":
-                    rejected = _reject_outcome(entry["decision"])
-                    _trace(control, j, name, args)
-                    control.commit(  # type: ignore[union-attr]
-                        _tool_message(call, rejected), "synthetic_tool"
-                    )
-                    _trace(control, j, name, args, content=rejected)
-                else:
-                    outcome = done_outcomes[j]
-                    tool_executions += 1
-                    execs_since_cp = execs_since_cp + 1
-                    kind = lookup_kind(name, args)
-                    if kind is not None:
-                        lookups[kind] += 1
-                    control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
-            live["parallel"] = None
+            with _stopping(control):
+                for entry in batch_entries:
+                    j = entry["index"]
+                    call = entry["call"]
+                    name = entry["name"]
+                    args = entry["args"]
+                    if entry["kind"] == "duplicate":
+                        _trace(control, j, name, args, duplicate=True)
+                        try:
+                            control.commit(  # type: ignore[union-attr]
+                                _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
+                            )
+                        finally:
+                            committed_set.add(j)
+                        _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
+                    elif entry["kind"] == "rejected":
+                        rejected = _reject_outcome(entry["decision"])
+                        _trace(control, j, name, args)
+                        try:
+                            control.commit(  # type: ignore[union-attr]
+                                _tool_message(call, rejected), "synthetic_tool"
+                            )
+                        finally:
+                            committed_set.add(j)
+                        _trace(control, j, name, args, content=rejected)
+                    else:
+                        outcome = done_outcomes[j]
+                        tool_executions += 1
+                        execs_since_cp = execs_since_cp + 1
+                        kind = lookup_kind(name, args)
+                        if kind is not None:
+                            lookups[kind] += 1
+                        try:
+                            control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                        finally:
+                            committed_set.add(j)
+                live["parallel"] = None
 
         if human_tail is not None:
             j = human_tail["index"]
@@ -3457,7 +3660,9 @@ def run_tool_loop(
                 lookups[kind] += 1
             _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
             dedup.clear()
-            control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+            with _stopping(control):
+                control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                live["call"] = None
         return stop_at
 
     def _stop(reason: str, *, error: str | None = None, overflow: bool = False):
@@ -3692,39 +3897,7 @@ def run_tool_loop(
         # 「停止中」：这期间到达的中断只置标志、不抛（合成结果必须齐全，不许丢）。
         # 随后的 `_stop` 在吸收区**之外**，所以「收尾中」的中断照旧能放弃收尾（TL-9）。
         with _stopping(control):
-            par = live.get("parallel")
-            if par is not None:
-                done_map: dict[int, dict[str, Any]] = par["done"]
-                fallback_err = _SYNTH_UNKNOWN if par.get("started") else _SYNTH_HUMAN_UNEXECUTED
-                for entry in par["entries"]:
-                    j = entry["index"]
-                    c = entry["call"]
-                    if entry["kind"] == "duplicate":
-                        control.commit(  # type: ignore[union-attr]
-                            _tool_message(c, _duplicate_outcome(entry["name"])), "synthetic_tool"
-                        )
-                    elif entry["kind"] == "rejected":
-                        control.commit(  # type: ignore[union-attr]
-                            _tool_message(c, _reject_outcome(entry["decision"])), "synthetic_tool"
-                        )
-                    elif j in done_map:
-                        tool_executions += 1
-                        control.commit(_tool_message(c, done_map[j]), "tool")  # type: ignore[union-attr]
-                    else:
-                        control.commit(  # type: ignore[union-attr]
-                            _tool_message(c, {"ok": False, "error": fallback_err}), "synthetic_tool"
-                        )
-                if not par.get("started") and live["call"] is not None:
-                    # 中断发生在并行预检的 review 阶段：正在 review 的那条按 voided，其余按 unexecuted
-                    text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else _SYNTH_HUMAN_UNEXECUTED
-                    control.commit(  # type: ignore[union-attr]
-                        _tool_message(live["call"], {"ok": False, "error": text}), "synthetic_tool"
-                    )
-                    _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
-                else:
-                    _synthesize_rest(par["next_index"], _SYNTH_HUMAN_UNEXECUTED)
-                live["parallel"] = None
-                live["call"] = None
+            _drain_parallel_abort(_SYNTH_HUMAN_UNEXECUTED, _SYNTH_UNKNOWN)
             call = live["call"]
             if call is not None:
                 if live["stage"] == "hook":
@@ -3761,4 +3934,8 @@ def run_tool_loop(
     except LLMError as exc:
         return _stop("error", error=str(exc), overflow=is_context_overflow_error(exc))
     except Exception as exc:  # noqa: BLE001 - 意外异常也走「先收尾后停」，不假装无事发生
+        if live.get("parallel") is not None:
+            with _stopping(control):
+                err_text = f"工具批执行异常中止（{type(exc).__name__}: {exc}）"
+                _drain_parallel_abort(err_text, err_text)
         return _stop("error", error=f"{type(exc).__name__}: {exc}")

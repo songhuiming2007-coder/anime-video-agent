@@ -961,14 +961,60 @@ export class SessionManager {
   // ---------------- 推送 ----------------
 
   private append(s: SessionState, e: ConvEntry): void {
-    s.entries.push(e);
-    s.bytes += Buffer.byteLength(stringifyLossless(e), "utf-8");
+    const isDelta = e.k === "frame" && e.frame.t === "assistant_delta";
+    if (isDelta) {
+      const turnId = String(e.frame.turn_id ?? "");
+      const chunk = String(e.frame.text ?? "");
+      const prev = s.entries[s.entries.length - 1];
+      if (prev && prev.k === "frame" && prev.frame.t === "assistant_delta" && String(prev.frame.turn_id ?? "") === turnId) {
+        const merged: ConvEntry = {
+          ...prev,
+          at: e.at,
+          frame: { ...prev.frame, seq: e.frame.seq, text: `${String(prev.frame.text ?? "")}${chunk}` },
+        };
+        const oldBytes = Buffer.byteLength(stringifyLossless(prev), "utf-8");
+        const newBytes = Buffer.byteLength(stringifyLossless(merged), "utf-8");
+        s.entries[s.entries.length - 1] = merged;
+        s.bytes = Math.max(0, s.bytes - oldBytes) + newBytes;
+      } else {
+        s.entries.push(e);
+        s.bytes += Buffer.byteLength(stringifyLossless(e), "utf-8");
+      }
+      const prevBuf = s.buffered[s.buffered.length - 1];
+      if (prevBuf && prevBuf.k === "frame" && prevBuf.frame.t === "assistant_delta" && String(prevBuf.frame.turn_id ?? "") === turnId) {
+        s.buffered[s.buffered.length - 1] = {
+          ...prevBuf,
+          at: e.at,
+          frame: { ...prevBuf.frame, seq: e.frame.seq, text: `${String(prevBuf.frame.text ?? "")}${chunk}` },
+        };
+      } else {
+        s.buffered.push(e);
+      }
+    } else {
+      if (e.k === "frame" && e.frame.t === "assistant" && String(e.frame.kind ?? "") !== "local_note") {
+        // 最终 assistant 帧落盘后，裁剪环形缓冲尾部同回合已被取代的 assistant_delta，防止长回复撑爆缓冲
+        const turnId = String(e.frame.turn_id ?? "");
+        for (let i = s.entries.length - 1; i >= 0; i -= 1) {
+          const item = s.entries[i];
+          if (item.k !== "frame") break;
+          if (item.frame.t === "assistant_delta" && String(item.frame.turn_id ?? "") === turnId) {
+            s.entries.splice(i, 1);
+            s.bytes = Math.max(0, s.bytes - Buffer.byteLength(stringifyLossless(item), "utf-8"));
+            continue;
+          }
+          if (item.frame.t === "notice" || item.frame.t === "log") continue;
+          break;
+        }
+      }
+      s.entries.push(e);
+      s.bytes += Buffer.byteLength(stringifyLossless(e), "utf-8");
+      s.buffered.push(e);
+    }
     while (s.bytes > CONV_BUFFER_MAX_BYTES && s.entries.length > 1) {
       const dropped = s.entries.shift()!;
-      s.bytes -= Buffer.byteLength(stringifyLossless(dropped), "utf-8");
+      s.bytes = Math.max(0, s.bytes - Buffer.byteLength(stringifyLossless(dropped), "utf-8"));
       s.truncatedHead = true;
     }
-    s.buffered.push(e);
   }
 
   private lost(s: SessionState, count: number, reason: "oversize" | "malformed"): void {
@@ -1003,7 +1049,10 @@ export class SessionManager {
       seq: s.seq,
       data: { convKey: s.key, generation: s.generation, seq: s.seq, entries, phase: s.phase, turnId: s.turnId, open: [...s.open], keyProblem: s.keyProblem, pending: this.pendingOf(s.key) },
     });
-    this.deps.changed();
+    // 纯流式文本增量不影响侧栏 phase / open / pending 摘要，跳过 20 Hz 无意义全量广播
+    if (entries.some((e) => !(e.k === "frame" && e.frame.t === "assistant_delta"))) {
+      this.deps.changed();
+    }
   }
 
   private pushSnapshot(key: ConvKey): void {

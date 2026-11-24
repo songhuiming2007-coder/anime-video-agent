@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import concurrent.futures
 import http.server
 import json
+import os
 import socketserver
+import sys
 import threading
 import time
+import types
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from pipeline.agent import aging, llm as llm_mod, protocol as proto_mod, session as sess_mod, tools as tools_mod, web_crawl
+from pipeline.agent import llm as llm_mod, protocol as proto_mod, session as sess_mod, tools as tools_mod, web_crawl
 from pipeline.agent.compact import STATUS_CARD_KEY
-from pipeline.agent.llm import LLMConfig, LLMError, run_tool_loop
+from pipeline.agent.llm import Decision, LLMConfig, LLMError, LoopControl, run_tool_loop
 from pipeline.agent.tools import ToolContext
 from tests.test_agent_loop import ROOT_URL, Interrupt, Script, build_control, patch_execute, tool_messages
 from tests.test_agent_tools import make_agent_root, tool_call
@@ -137,16 +144,43 @@ def test_keepalive_pool_transparently_retries_stale_socket() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_google_effort_none_sends_zero_thinking_budget_and_normalizes_usage() -> None:
-    cfg = LLMConfig(
+def test_google_effort_none_respects_model_capability_config() -> None:
+    """仅配置了 google_none_thinking_budget 的模型发 thinkingBudget=0；gemini-2.5-pro / 非思考模型保持省略。"""
+    cfg_h = LLMConfig(
         base_url="https://generativelanguage.googleapis.com/v1beta",
         model="gemini-4-hydrogen",
         api_key="AIza-test",
         api_protocol="google-generative-ai",
         reasoning_effort="none",
     )
-    payload, _ = llm_mod._google_request(cfg, [{"role": "user", "content": "hi"}], None, None, None)
-    assert payload["generationConfig"] == {"thinkingConfig": {"thinkingBudget": 0}}
+    payload_h, _ = llm_mod._google_request(cfg_h, [{"role": "user", "content": "hi"}], None, None, None)
+    assert payload_h["generationConfig"] == {"thinkingConfig": {"thinkingBudget": 0}}
+
+    cfg_h_vertex = LLMConfig(
+        base_url="https://aiplatform.googleapis.com/v1",
+        model="google-vertex/gemini-4-hydrogen",
+        api_key="AIza-test",
+        api_protocol="google-vertex",
+        reasoning_effort="none",
+    )
+    payload_hv, _ = llm_mod._google_request(cfg_h_vertex, [{"role": "user", "content": "hi"}], None, None, None)
+    assert payload_hv["generationConfig"] == {"thinkingConfig": {"thinkingBudget": 0}}
+
+    # gemini-2.5-pro 禁止 thinkingBudget=0；非思考旧模型不认 thinkingConfig：两者均须省略 generationConfig
+    for model_id, proto in (
+        ("gemini-2.5-pro", "google-generative-ai"),
+        ("google-vertex/gemini-2.5-pro", "google-vertex"),
+        ("gemini-2.0-flash", "google-generative-ai"),
+    ):
+        cfg_other = LLMConfig(
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model=model_id,
+            api_key="AIza-test",
+            api_protocol=proto,
+            reasoning_effort="none",
+        )
+        p_other, _ = llm_mod._google_request(cfg_other, [{"role": "user", "content": "hi"}], None, None, None)
+        assert "generationConfig" not in p_other, f"{model_id} 不应在 effort=none 时硬发 thinkingBudget=0"
 
     usage = llm_mod._normalize_google_usage({
         "promptTokenCount": 64886,
@@ -164,38 +198,69 @@ def test_google_effort_none_sends_zero_thinking_budget_and_normalizes_usage() ->
     }
 
 
-def test_stream_tightens_idle_timeout_after_first_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """首包到达后将流式空闲超时收紧至 STREAM_CHUNK_IDLE_TIMEOUT_S，首包前不收紧。"""
-    seen_timeouts: list[float | None] = []
-
-    class _FakeStreamResp:
-        headers = {"Content-Type": "text/event-stream"}
-
-        def __init__(self) -> None:
-            self._lines = [
-                b'data: {"choices":[{"delta":{"role":"assistant","content":"hi"}}]}\n',
+def test_stream_tightens_idle_timeout_only_on_substantive_delta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """控制帧/心跳/role 帧不收紧超时，收到首个实质内容/思考/工具增量时才收紧至 STREAM_CHUNK_IDLE_TIMEOUT_S。"""
+    cases = [
+        (
+            "openai-completions",
+            [
+                b": keep-alive\n",
+                b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n',
                 b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
-            ]
+            ],
+            2,  # 第 3 行（下标 2）才收到 content
+        ),
+        (
+            "anthropic-messages",
+            [
+                b'data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}\n',
+                b'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n',
+                b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step"}}\n',
+                b'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hi"}}\n',
+                b'data: {"type":"message_stop"}\n',
+            ],
+            2,  # message_start 与空 content_block_start 均不收紧；thinking_delta 才收紧
+        ),
+        (
+            "openai-responses",
+            [
+                b'data: {"type":"response.created","response":{"id":"r1"}}\n',
+                b'data: {"type":"response.in_progress","response":{"id":"r1"}}\n',
+                b'data: {"type":"response.output_text.delta","delta":"hi"}\n',
+                b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":5,"output_tokens":1}}}\n',
+            ],
+            2,  # response.created / in_progress 不收紧；output_text.delta 才收紧
+        ),
+    ]
+    for proto, raw_lines, tighten_at_idx in cases:
+        seen_timeouts: list[tuple[int, float | None]] = []
+        yielded = {"i": -1}
 
-        def set_stream_timeout(self, t: float | None) -> None:
-            seen_timeouts.append(t)
+        class _FakeStreamResp:
+            headers = {"Content-Type": "text/event-stream"}
 
-        def __iter__(self):
-            assert seen_timeouts == []  # 首包读出前尚未收紧
-            yield self._lines[0]
-            yield self._lines[1]
+            def set_stream_timeout(self, t: float | None) -> None:
+                seen_timeouts.append((yielded["i"], t))
 
-        def __enter__(self):
-            return self
+            def __iter__(self):
+                for idx, ln in enumerate(raw_lines):
+                    yielded["i"] = idx
+                    yield ln
 
-        def __exit__(self, *_a: Any) -> bool:
-            return False
+            def __enter__(self):
+                return self
 
-    monkeypatch.setattr(llm_mod, "_open_llm_request", lambda req, *, timeout: _FakeStreamResp())
-    cfg = LLMConfig(base_url=ROOT_URL, model="m", api_key="k", request_timeout_s=300)
-    msg = llm_mod.chat_complete([{"role": "user", "content": "hi"}], config=cfg)
-    assert msg["content"] == "hi"
-    assert seen_timeouts == [llm_mod.STREAM_CHUNK_IDLE_TIMEOUT_S]
+            def __exit__(self, *_a: Any) -> bool:
+                return False
+
+        monkeypatch.setattr(llm_mod, "_open_llm_request", lambda req, *, timeout: _FakeStreamResp())
+        cfg = LLMConfig(
+            base_url=ROOT_URL, model="m", api_key="k", api_protocol=proto, request_timeout_s=300
+        )
+        msg = llm_mod.chat_complete([{"role": "user", "content": "hi"}], config=cfg)
+        assert msg["content"] == "hi"
+        assert seen_timeouts == [(tighten_at_idx, llm_mod.STREAM_CHUNK_IDLE_TIMEOUT_S)], proto
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +334,7 @@ def test_parallel_readonly_tools_run_concurrently_and_commit_in_order(
             max_in_flight = max(max_in_flight, in_flight)
         try:
             # 只要 3 个线程同时到达就立刻放行，串行执行必然超时抛 BrokenBarrierError
-            with pytest.raises(BaseException) if False else _suppress_barrier():
+            with _suppress_barrier():
                 barrier.wait()
             # 故意让后号先完成（c3 最快，c0 最慢），验证 commit 仍按 c0..c3 顺序
             idx = int(args["url"].rsplit("/", 1)[-1])
@@ -542,4 +607,433 @@ def test_intra_turn_watermark_does_not_mutate_stable_batches_under_threshold(
     assert "-R1END" not in req4_tools[0]
     assert r2 in req4_tools[1]
     assert req4_tools[:2] == req3_tools[:2]
-    assert aging.AGED_TOOL_MAX_CHARS == 4_000
+
+
+# ---------------------------------------------------------------------------
+# 7. Code Review 回归：Keep-Alive 超时/代理凭据、并发中断不双写、异常配对、常驻浏览器并发、流式重试丢弃
+# ---------------------------------------------------------------------------
+
+
+def test_keepalive_pool_does_not_retry_timeout_and_preserves_proxy_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """复用连接遇 TimeoutError 必须直抛不得静默重发 POST；带凭据 HTTP/HTTPS 代理保留 Proxy-Authorization。"""
+    slow_hits = 0
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:
+            nonlocal slow_hits
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            if self.path.startswith("/slow"):
+                slow_hits += 1
+                time.sleep(0.35)
+                body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "late"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except OSError:
+                    pass
+                return
+            if self.path.startswith("/err400"):
+                body = b'{"error":{"message":"bad"}}'
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "fast"}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(body)
+
+    class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    llm_mod._LLM_CONN_POOL.close_all()
+    srv = _Server(("127.0.0.1", 0), _Handler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        # 1. 先预热 Keep-Alive 连接到池中，再对同 host:port 发超时请求 -> 服务端只能收到 1 次（不重发）
+        cfg_fast = LLMConfig(base_url=f"http://127.0.0.1:{port}/v1", model="m", api_key="sk-test")
+        assert llm_mod.chat_complete([{"role": "user", "content": "warm"}], config=cfg_fast)["content"] == "fast"
+        cfg_slow = LLMConfig(
+            base_url=f"http://127.0.0.1:{port}/slow/chat/completions", model="m", api_key="sk-test"
+        )
+        with pytest.raises(LLMError, match="timed out|超时"):
+            llm_mod.chat_complete([{"role": "user", "content": "wait"}], config=cfg_slow, timeout=0.08)
+        time.sleep(0.05)
+        assert slow_hits == 1
+
+        # 2. 4xx 响应关闭连接，不归还到池中
+        cfg_err = LLMConfig(
+            base_url=f"http://127.0.0.1:{port}/err400/chat/completions", model="m", api_key="sk-test"
+        )
+        with pytest.raises(LLMError):
+            llm_mod.chat_complete([{"role": "user", "content": "bad"}], config=cfg_err)
+        assert not llm_mod._LLM_CONN_POOL._buckets
+    finally:
+        llm_mod._LLM_CONN_POOL.close_all()
+        srv.shutdown()
+        srv.server_close()
+
+    # 3. 验证 HTTPS 代理隧道保留 Proxy-Authorization
+    pool = llm_mod._KeepAlivePool()
+    conn = pool._new_conn("https", "api.example.com", 443, "http://alice:s3cr%40t@proxy.local:8080", 10.0)
+    expected_auth = "Basic " + base64.b64encode(b"alice:s3cr@t").decode("ascii")
+    assert conn._tunnel_headers.get("Proxy-Authorization") == expected_auth  # type: ignore[attr-defined]
+
+    # 4. 验证 read(0) 不误置 _eof，且未关闭响应不归还到池中
+    class _FakeResp:
+        headers: dict[str, str] = {}
+        status = 200
+        will_close = False
+
+        def __init__(self, closed: bool) -> None:
+            self._closed = closed
+
+        def read(self, amt: int | None = None) -> bytes:
+            return b"" if amt == 0 else b"abc"
+
+        def isclosed(self) -> bool:
+            return self._closed
+
+    class _FakeConn:
+        sock = object()
+        closed_called = False
+
+        def close(self) -> None:
+            self.closed_called = True
+
+    fc = _FakeConn()
+    pr = llm_mod._PooledHTTPResponse(pool, ("http", "h", 80, ""), fc, _FakeResp(closed=False))  # type: ignore[arg-type]
+    assert pr.read(0) == b""
+    assert pr._eof is False
+    pr.close()
+    assert fc.closed_called is True
+    assert not pool._buckets
+
+
+def test_parallel_batch_interrupt_in_review_and_commit_never_duplicates_tool_call_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并行批在预检 review 阶段与落史 commit 循环中途被中断时，绝不重复提交同一 tool_call_id。"""
+    root = make_agent_root(tmp_path / "repo", ROOT_URL)
+    reply = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            _tc("web_fetch", {"url": f"https://example.com/{i}"}, call_id=f"r{i}")
+            for i in range(3)
+        ],
+    }
+
+    # 场景 A：预检阶段第 0 条已通过、第 1 条在 review 时被中断
+    monkeypatch.setattr(llm_mod, "chat_complete", Script([reply, {"role": "assistant", "content": "收尾A"}]))
+    review_calls = 0
+
+    def review_interrupt(name: str, args: dict[str, Any]) -> Decision:
+        nonlocal review_calls
+        review_calls += 1
+        if review_calls == 2:
+            raise KeyboardInterrupt
+        return Decision(ok=True, provenance="card_free")
+
+    msgs_a = [{"role": "user", "content": "场景A"}]
+    ctrl_a = LoopControl(
+        interrupt=Interrupt(),
+        commit=lambda m, o: msgs_a.append(m),
+        review=review_interrupt,
+        critical_tools=frozenset(),
+    )
+    out_a = run_tool_loop(
+        msgs_a,
+        ctx=ToolContext(scope="creative", root=root),
+        config=LLMConfig(base_url=ROOT_URL, model="mock-model", api_key="k"),
+        control=ctrl_a,
+    )
+    assert out_a["stopped"] == "interrupted"
+    tids_a = [m["tool_call_id"] for m in tool_messages(msgs_a)]
+    assert tids_a == ["r0", "r1", "r2"]
+
+    # 场景 B：并行执行全部完成后，在落史 commit 第 0 条后抛 KeyboardInterrupt（验证 committed 集合防双写）
+    monkeypatch.setattr(llm_mod, "chat_complete", Script([reply, {"role": "assistant", "content": "收尾B"}]))
+    patch_execute(monkeypatch, lambda n, a, c: {"ok": True, "result": {"url": a["url"]}})
+    msgs_b: list[dict[str, Any]] = [{"role": "user", "content": "场景B"}]
+    tool_commits = 0
+
+    def flaky_commit(m: dict[str, Any], origin: str) -> None:
+        nonlocal tool_commits
+        msgs_b.append(m)
+        if origin == "tool":
+            tool_commits += 1
+            if tool_commits == 1:
+                raise KeyboardInterrupt
+
+    ctrl_b = LoopControl(
+        interrupt=Interrupt(),
+        commit=flaky_commit,
+        review=lambda n, a: Decision(ok=True, provenance="card_free"),
+        critical_tools=frozenset(),
+    )
+    out_b = run_tool_loop(
+        msgs_b,
+        ctx=ToolContext(scope="creative", root=root),
+        config=LLMConfig(base_url=ROOT_URL, model="mock-model", api_key="k"),
+        control=ctrl_b,
+    )
+    assert out_b["stopped"] == "interrupted"
+    tids_b = [m["tool_call_id"] for m in tool_messages(msgs_b)]
+    assert tids_b == ["r0", "r1", "r2"]
+    assert out_b["tool_executions"] == 3
+    assert out_b["lookups"]["web"] == 3
+
+
+def test_parallel_batch_worker_exception_pairs_cleanly_as_error_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发批内单个工作线程抛非 KeyboardInterrupt 异常时转为结构化错误回喂，不撕裂同批 tool_call_id 配对。"""
+    root = make_agent_root(tmp_path / "repo", ROOT_URL)
+    reply = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            _tc("web_fetch", {"url": f"https://example.com/{i}"}, call_id=f"e{i}")
+            for i in range(3)
+        ],
+    }
+    monkeypatch.setattr(llm_mod, "chat_complete", Script([reply, {"role": "assistant", "content": "已处理异常"}]))
+
+    def boom_on_1(name: str, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if args["url"].endswith("/1"):
+            raise RuntimeError("boom-worker")
+        return {"ok": True, "result": {"url": args["url"]}}
+
+    patch_execute(monkeypatch, boom_on_1)
+    msgs = [{"role": "user", "content": "异常测试"}]
+    out = run_tool_loop(
+        msgs,
+        ctx=ToolContext(scope="creative", root=root),
+        config=LLMConfig(base_url=ROOT_URL, model="mock-model", api_key="k"),
+        control=build_control(msgs),
+    )
+    assert out["stopped"] == "done"
+    tmsgs = tool_messages(msgs)
+    assert [m["tool_call_id"] for m in tmsgs] == ["e0", "e1", "e2"]
+    err_payload = json.loads(tmsgs[1]["content"])
+    assert err_payload["ok"] is False and "RuntimeError: boom-worker" in err_payload["error"]
+    assert out["lookups"]["web"] == 3
+
+
+def test_persistent_crawler_concurrent_cold_start_and_non_crash_isolation() -> None:
+    """并发冷启仅建 1 个浏览器实例（无泄漏）；单页普通异常不淘汰共享健康浏览器；close_all 回收线程与 loop。"""
+    runtime = web_crawl._PersistentCrawlerRuntime()
+    enters = 0
+    exits = 0
+
+    class _FakeRes:
+        success = True
+        markdown = "ok"
+        html = "<p>ok</p>"
+        redirected_url = None
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+    class _FakeCrawler:
+        def __init__(self, config: Any) -> None:
+            self.closed = False
+
+        async def __aenter__(self) -> "_FakeCrawler":
+            nonlocal enters
+            await asyncio.sleep(0.05)  # 拉长冷启窗口以暴露并发竞态
+            enters += 1
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            nonlocal exits
+            self.closed = True
+            exits += 1
+
+        async def arun(self, *, url: str, config: Any) -> _FakeRes:
+            if url.endswith("/timeout-page"):
+                await asyncio.sleep(0.01)
+                raise RuntimeError("Page navigation timeout")
+            await asyncio.sleep(0.06)
+            assert not self.closed, "普通单页失败不得关闭同浏览器上其他在途页面"
+            return _FakeRes(url)
+
+    class _Cfg:
+        def __init__(self, **kw: Any) -> None:
+            self.kw = kw
+
+    try:
+        # 1. 4 线程并发冷启 -> 只启动 1 次浏览器
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [
+                pool.submit(
+                    runtime.run_crawl,
+                    f"https://example.com/{i}",
+                    target_base_dir="/tmp/c4-conc",
+                    stealth=False,
+                    timeout_s=10,
+                    crawler_cls=_FakeCrawler,
+                    browser_cfg_cls=_Cfg,
+                    run_cfg_cls=_Cfg,
+                )
+                for i in range(4)
+            ]
+            res_list = [f.result() for f in futs]
+        assert len(res_list) == 4
+        assert enters == 1 and exits == 0
+
+        # 2. 并发请求中 1 条遇到普通单页超时，不得杀掉同浏览器上另一条健康页面
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_bad = pool.submit(
+                runtime.run_crawl,
+                "https://example.com/timeout-page",
+                target_base_dir="/tmp/c4-conc",
+                stealth=False,
+                timeout_s=10,
+                crawler_cls=_FakeCrawler,
+                browser_cfg_cls=_Cfg,
+                run_cfg_cls=_Cfg,
+            )
+            f_ok = pool.submit(
+                runtime.run_crawl,
+                "https://example.com/healthy-page",
+                target_base_dir="/tmp/c4-conc",
+                stealth=False,
+                timeout_s=10,
+                crawler_cls=_FakeCrawler,
+                browser_cfg_cls=_Cfg,
+                run_cfg_cls=_Cfg,
+            )
+            with pytest.raises(RuntimeError, match="Page navigation timeout"):
+                f_bad.result()
+            assert f_ok.result()["markdown"] == "ok"
+        assert enters == 1 and exits == 0
+        loop_ref = runtime._loop
+        thread_ref = runtime._thread
+    finally:
+        runtime.close_all()
+    assert exits == 1
+    assert loop_ref is not None and loop_ref.is_closed()
+    assert thread_ref is not None and not thread_ref.is_alive()
+
+
+def test_session_discards_partial_stream_buffer_on_retry_and_rollback(tmp_path: Path) -> None:
+    """流式重试或回滚时必须丢弃未刷出的半截文本缓冲，防止串流污染。"""
+    root = make_agent_root(tmp_path / "repo", ROOT_URL)
+    ep = root / "data" / "episodes" / "01-test"
+    ep.mkdir(parents=True, exist_ok=True)
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _CapChan:
+        name = "test"
+        def is_tty(self) -> bool: return True
+        def show(self, kind: str, payload: dict[str, Any]) -> None: events.append((kind, payload))
+        def ask(self, req: Any) -> Any: raise AssertionError("unexpected ask")
+
+    host = sess_mod.SessionHost(ep, channel=_CapChan(), root=root)
+    s = host.session(persist=False, scope_mode="creative")
+    s._turn_id = "t1"
+    s._on_text_delta("首包")       # 首包立刻刷出
+    s._on_text_delta("残留半句")   # 未满 48 字、无换行、未满 50 ms，留在 _stream_buf
+    assert s._stream_buf == ["残留半句"]
+
+    s._on_llm_retry(1, 3, 2.0, "timeout")
+    assert s._stream_buf == [] and s._stream_buf_chars == 0
+    # 回滚收尾时同样不得把缓冲刷上屏
+    from pipeline.agent.assembly import SessionContextTracker
+
+    tracker = SessionContextTracker()
+    s._stream_buf.append("回滚垃圾")
+    s._stream_buf_chars = 4
+    s._finish_turn((0, SessionContextTracker()), tracker, {"stopped": "error", "rollback": True}, [])
+    deltas = [p["text"] for k, p in events if k == "assistant_delta"]
+    assert deltas == ["首包"]
+
+
+def test_search_notes_skips_subs_and_non_regular_files(tmp_path: Path) -> None:
+    """search_notes(source=notes) 跳过 subs/ 且忽略 FIFO 等非普通文件不挂起。"""
+    root = make_agent_root(tmp_path / "repo", ROOT_URL)
+    lib = root / "data" / "library"
+    (lib / "notes").mkdir(parents=True, exist_ok=True)
+    (lib / "subs").mkdir(parents=True, exist_ok=True)
+    (lib / "notes" / "ok.md").write_text("核心考据", encoding="utf-8")
+    (lib / "subs" / "sub.txt").write_text("核心考据字幕噪音", encoding="utf-8")
+    fifo_path = lib / "notes" / "block.txt"
+    os.mkfifo(fifo_path)
+
+    ctx = ToolContext(scope="creative", root=root)
+    res = tools_mod._tool_search_notes({"query": "核心考据", "limit": 10}, ctx)
+    assert [h["path"] for h in res["hits"]] == ["notes/ok.md"]
+
+
+def test_default_crawl_fn_concurrent_import_is_serialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发首次导入 crawl4ai 时受锁保护，不会因 sys.modules 半初始化误报未知目录。"""
+    fake_data = tmp_path / "data"
+    fake_data.mkdir()
+    target_dir = str(fake_data / "crawl4ai")
+    monkeypatch.setattr(web_crawl.paths, "DATA", fake_data)
+    monkeypatch.delenv("CRAWL4_AI_BASE_DIRECTORY", raising=False)
+    orig_c4 = sys.modules.pop("crawl4ai", None)
+    orig_db = sys.modules.pop("crawl4ai.async_database", None)
+
+    orig_import = __import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "crawl4ai":
+            mod = types.ModuleType("crawl4ai")
+            sys.modules["crawl4ai"] = mod
+            time.sleep(0.05)  # 模拟主包已入 sys.modules 但 async_database 尚未完成导入的窗口
+            db_mod = types.ModuleType("crawl4ai.async_database")
+            db_mod.base_directory = str(Path(os.environ["CRAWL4_AI_BASE_DIRECTORY"]) / ".crawl4ai")  # type: ignore[attr-defined]
+            sys.modules["crawl4ai.async_database"] = db_mod
+            mod.AsyncWebCrawler = object  # type: ignore[attr-defined]
+            mod.BrowserConfig = object  # type: ignore[attr-defined]
+            mod.CrawlerRunConfig = object  # type: ignore[attr-defined]
+            return mod
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(
+        web_crawl._CRAWLER_RUNTIME,
+        "run_crawl",
+        lambda url, **_kw: {"final_url": url, "markdown": "ok", "html": ""},
+    )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [
+                pool.submit(web_crawl._default_crawl_fn, f"https://example.com/{i}", stealth=False, timeout_s=5.0)
+                for i in range(4)
+            ]
+            results = [f.result() for f in futs]
+        assert len(results) == 4
+        assert os.environ.get("CRAWL4_AI_BASE_DIRECTORY") == target_dir
+    finally:
+        sys.modules.pop("crawl4ai", None)
+        sys.modules.pop("crawl4ai.async_database", None)
+        if orig_c4 is not None:
+            sys.modules["crawl4ai"] = orig_c4
+        if orig_db is not None:
+            sys.modules["crawl4ai.async_database"] = orig_db
