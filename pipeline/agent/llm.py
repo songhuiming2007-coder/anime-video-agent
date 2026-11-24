@@ -123,6 +123,11 @@ _ON_TEXT_DELTA: contextvars.ContextVar[Callable[[str], None] | None] = contextva
 _ON_STREAM_PROGRESS: contextvars.ContextVar[Callable[[], None] | None] = contextvars.ContextVar(
     "ava_llm_on_stream_progress", default=None
 )
+# 当前请求的仓库根目录上下文（供 _google_thinking_config 读取 custom_root/config/agent/compact.json，
+# 同时保持 _PROTOCOL_ADAPTERS 与测试替身固定签名不变）。
+_REQUEST_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "ava_llm_request_root", default=None
+)
 
 
 def _emit_text_delta(text: str) -> None:
@@ -1699,8 +1704,9 @@ def _google_thinking_config(
       否则沿用 `THINKING_BUDGETS`。
     """
     entry = None
+    effective_root = root if root is not None else _REQUEST_ROOT.get()
     try:
-        entry = load_compact_config(root).window_for(model_id)
+        entry = load_compact_config(effective_root).window_for(model_id)
     except CompactConfigError:
         entry = None
     if entry is not None and entry.effort_map is not None and lvl in entry.effort_map:
@@ -2699,7 +2705,12 @@ def chat_complete(
         cfg.api_protocol,
         (_completions_request, _assemble_stream, _completions_json_to_message),
     )
-    payload, headers = build_req(cfg, wired, tools, purpose, tool_choice)
+    root_tok = _REQUEST_ROOT.set(root) if root is not None else None
+    try:
+        payload, headers = build_req(cfg, wired, tools, purpose, tool_choice)
+    finally:
+        if root_tok is not None:
+            _REQUEST_ROOT.reset(root_tok)
 
     assert_egress_boundary(endpoint, payload, trusted_texts=egress_trusted)  # 出网前最后一道断言
 
@@ -2814,6 +2825,22 @@ def _stopping(control: LoopControl) -> Iterator[None]:
         yield
         return
     with interrupt.absorb():  # type: ignore[union-attr]
+        yield
+
+
+@contextlib.contextmanager
+def _deferring(control: LoopControl) -> Iterator[None]:
+    """正常落史临界区的延迟包装：区内中断延后到退出后再如实抛出（不吞用户停止指令）。
+
+    与 `commit()` 内部 `defer()` 嵌套时，内层退出不立即抛异常，确保 `commit()` 与紧随的
+    状态登记（如 `committed_set.add(j)`、`live["call"] = None`）原子完成；退出外层时
+    `_depth` 归 0 并按非吸收语义重新抛出 `KeyboardInterrupt`。
+    """
+    interrupt = control.interrupt
+    if interrupt is None:
+        yield
+        return
+    with interrupt.defer():  # type: ignore[union-attr]
         yield
 
 
@@ -3150,7 +3177,7 @@ def run_tool_loop(
     # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
     live: dict[str, Any] = {
         "calls": [], "index": 0, "call": None, "stage": None, "outcome": None, "name": "",
-        "parallel": None,
+        "parallel": None, "rest_from": None,
     }
 
     def _record_aged_indices(base: list[dict[str, Any]], cand: list[dict[str, Any]]) -> None:
@@ -3287,6 +3314,7 @@ def run_tool_loop(
         requested_len = len(convo)
         _LAST_USAGE.set(None)
         delta_token = _ON_TEXT_DELTA.set(control.on_text_delta)  # type: ignore[union-attr]
+        root_token = _REQUEST_ROOT.set(effective_root)
         try:
             reply = chat_complete(
                 # D90：本回合 view_image 的图附在各批工具结果之后（同为请求时投影；字符统计在附图之前算）
@@ -3299,6 +3327,7 @@ def run_tool_loop(
                 egress_trusted=egress_trusted,
             )
         finally:
+            _REQUEST_ROOT.reset(root_token)
             _ON_TEXT_DELTA.reset(delta_token)
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
         last_usage = _LAST_USAGE.get()
@@ -3522,7 +3551,7 @@ def run_tool_loop(
                 live["name"] = name
                 if entry["kind"] == "duplicate":
                     _trace(control, j, name, args, duplicate=True)
-                    with _stopping(control):
+                    with _deferring(control):
                         try:
                             control.commit(  # type: ignore[union-attr]
                                 _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
@@ -3533,7 +3562,7 @@ def run_tool_loop(
                 elif entry["kind"] == "rejected":
                     rejected = _reject_outcome(entry["decision"])
                     _trace(control, j, name, args)
-                    with _stopping(control):
+                    with _deferring(control):
                         try:
                             control.commit(  # type: ignore[union-attr]
                                 _tool_message(call, rejected), "synthetic_tool"
@@ -3548,7 +3577,7 @@ def run_tool_loop(
                     outcome = _exec_parallel_item(name, args, entry["exec_ctx"])
                     done_outcomes[j] = outcome
                     _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
-                    with _stopping(control):
+                    with _deferring(control):
                         tool_executions += 1
                         execs_since_cp = execs_since_cp + 1
                         kind = lookup_kind(name, args)
@@ -3596,33 +3625,35 @@ def run_tool_loop(
             else:
                 pool.shutdown(wait=True)
 
-            with _stopping(control):
-                for entry in batch_entries:
-                    j = entry["index"]
-                    call = entry["call"]
-                    name = entry["name"]
-                    args = entry["args"]
-                    if entry["kind"] == "duplicate":
-                        _trace(control, j, name, args, duplicate=True)
+            for entry in batch_entries:
+                j = entry["index"]
+                call = entry["call"]
+                name = entry["name"]
+                args = entry["args"]
+                if entry["kind"] == "duplicate":
+                    _trace(control, j, name, args, duplicate=True)
+                    with _deferring(control):
                         try:
                             control.commit(  # type: ignore[union-attr]
                                 _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
                             )
                         finally:
                             committed_set.add(j)
-                        _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
-                    elif entry["kind"] == "rejected":
-                        rejected = _reject_outcome(entry["decision"])
-                        _trace(control, j, name, args)
+                    _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
+                elif entry["kind"] == "rejected":
+                    rejected = _reject_outcome(entry["decision"])
+                    _trace(control, j, name, args)
+                    with _deferring(control):
                         try:
                             control.commit(  # type: ignore[union-attr]
                                 _tool_message(call, rejected), "synthetic_tool"
                             )
                         finally:
                             committed_set.add(j)
-                        _trace(control, j, name, args, content=rejected)
-                    else:
-                        outcome = done_outcomes[j]
+                    _trace(control, j, name, args, content=rejected)
+                else:
+                    outcome = done_outcomes[j]
+                    with _deferring(control):
                         tool_executions += 1
                         execs_since_cp = execs_since_cp + 1
                         kind = lookup_kind(name, args)
@@ -3632,7 +3663,7 @@ def run_tool_loop(
                             control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
                         finally:
                             committed_set.add(j)
-                live["parallel"] = None
+            live["parallel"] = None
 
         if human_tail is not None:
             j = human_tail["index"]
@@ -3660,9 +3691,13 @@ def run_tool_loop(
                 lookups[kind] += 1
             _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
             dedup.clear()
-            with _stopping(control):
-                control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
-                live["call"] = None
+            with _deferring(control):
+                try:
+                    control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                finally:
+                    live["call"] = None
+                    live["rest_from"] = j + 1
+            live["rest_from"] = None
         return stop_at
 
     def _stop(reason: str, *, error: str | None = None, overflow: bool = False):
@@ -3920,6 +3955,9 @@ def run_tool_loop(
                     )
                 _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
                 live["call"] = None
+            elif live.get("rest_from") is not None:
+                _synthesize_rest(live["rest_from"], _SYNTH_HUMAN_UNEXECUTED)
+                live["rest_from"] = None
         return _stop("interrupted")
     except PermissionError as exc:
         # 出网断言拒绝（llm.py::assert_egress_boundary）：不做收尾（同一份历史必然再被拒），回滚

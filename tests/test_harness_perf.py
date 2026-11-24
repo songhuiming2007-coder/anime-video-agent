@@ -1037,3 +1037,108 @@ def test_default_crawl_fn_concurrent_import_is_serialized(
             sys.modules["crawl4ai"] = orig_c4
         if orig_db is not None:
             sys.modules["crawl4ai.async_database"] = orig_db
+
+
+def test_parallel_commit_uses_real_interrupt_defer_not_absorb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正常落史期间收到真实 Interrupt.defer 中断不得被吞掉，且已落盘条目绝不双写、后续工具不执行。"""
+    root = make_agent_root(tmp_path / "repo", ROOT_URL)
+    reply = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            _tc("web_fetch", {"url": "https://example.com/0"}, call_id="p0"),
+            _tc("web_fetch", {"url": "https://example.com/1"}, call_id="p1"),
+            _tc("bash", {"command": "echo should-not-run", "description": "后置"}, call_id="b2"),
+        ],
+    }
+    monkeypatch.setattr(llm_mod, "chat_complete", Script([reply, {"role": "assistant", "content": "中断收尾"}]))
+    executed_names: list[str] = []
+
+    def fake_exec(name: str, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        executed_names.append(name)
+        return {"ok": True, "result": {"name": name}}
+
+    patch_execute(monkeypatch, fake_exec)
+    real_interrupt = sess_mod.TurnInterrupt()
+    msgs: list[dict[str, Any]] = [{"role": "user", "content": "真实 defer 中断"}]
+    tool_commits = 0
+
+    def real_like_commit(m: dict[str, Any], origin: str) -> None:
+        nonlocal tool_commits
+        # 复刻 AgentSession._commit 的真实 defer 语义：写盘期收到 SIGINT → 补 append 后延后重抛
+        with real_interrupt.defer():
+            if origin == "tool":
+                tool_commits += 1
+                if tool_commits == 1:
+                    msgs.append(m)
+                    raise KeyboardInterrupt
+            msgs.append(m)
+
+    ctrl = LoopControl(
+        interrupt=real_interrupt,
+        commit=real_like_commit,
+        review=lambda n, a: Decision(ok=True, provenance="card_free"),
+        critical_tools=frozenset(),
+    )
+    out = run_tool_loop(
+        msgs,
+        ctx=ToolContext(scope="creative", root=root),
+        config=LLMConfig(base_url=ROOT_URL, model="mock-model", api_key="k"),
+        control=ctrl,
+    )
+    # 绝不能被 absorb 吞掉后继续跑 bash
+    assert out["stopped"] == "interrupted"
+    assert real_interrupt.dropped == 0
+    assert "bash" not in executed_names
+    tmsgs = tool_messages(msgs)
+    assert [m["tool_call_id"] for m in tmsgs] == ["p0", "p1", "b2"]
+    assert json.loads(tmsgs[2]["content"])["error"] == "未执行：人类中断"
+    assert out["tool_executions"] == 2
+    assert out["lookups"]["web"] == 2
+
+
+def test_chat_complete_forwards_custom_root_to_google_thinking_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """chat_complete(..., root=custom_root) 应读取 custom_root 下的 compact.json 决定 thinkingBudget。"""
+    custom_root = tmp_path / "custom_repo"
+    (custom_root / "config" / "agent").mkdir(parents=True, exist_ok=True)
+    (custom_root / "config" / "agent" / "compact.json").write_text(
+        json.dumps({
+            "models": {
+                "gemini-custom-test": {"window": 1048576, "reliable_ratio": 1.0, "google_none_thinking_budget": 0}
+            }
+        }),
+        encoding="utf-8",
+    )
+    captured: list[dict[str, Any]] = []
+
+    class _FakeResp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self) -> bytes:
+            return json.dumps({"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    def fake_open(req: urllib.request.Request, *, timeout: float | None) -> _FakeResp:
+        captured.append(json.loads((req.data or b"{}").decode("utf-8")))
+        return _FakeResp()
+
+    monkeypatch.setattr(llm_mod, "_open_llm_request", fake_open)
+    cfg = LLMConfig(
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-custom-test",
+        api_key="AIza-test",
+        api_protocol="google-generative-ai",
+        reasoning_effort="none",
+    )
+    msg = llm_mod.chat_complete([{"role": "user", "content": "hi"}], config=cfg, root=custom_root)
+    assert msg["content"] == "ok"
+    assert captured[0]["generationConfig"] == {"thinkingConfig": {"thinkingBudget": 0}}
