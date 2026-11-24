@@ -833,7 +833,31 @@ def revert_segment(episode: Path, label: str) -> dict:
     audio_dir = episode / "03-audio"
 
     wav_file = target_take["file"]
-    shutil.copy2(matched_snap / wav_file, audio_dir / wav_file)
+    snap_wav = matched_snap / wav_file
+    cur_wav = audio_dir / wav_file
+
+    # 回滚前为即将被覆盖的当前音频留底进 attic，使「回滚」本身也可再次回滚（避免不可逆丢失当前版本）
+    backed_up = False
+    try:
+        if cur_wav.exists() and snap_wav.exists() and cur_wav.read_bytes() != snap_wav.read_bytes():
+            existing_names = [
+                p.name for p in attic_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+            ]
+            max_name = max(existing_names) if existing_names else matched_snap.name
+            backup_ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            if backup_ts <= max_name:
+                backup_ts = f"{max_name}-prev-{datetime.now().strftime('%H%M%S%f')}"
+            backup_dir = attic_dir / backup_ts
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            cur_mf_src = audio_dir / "manifest.json"
+            if cur_mf_src.exists():
+                shutil.copy2(cur_mf_src, backup_dir / "manifest.json")
+            shutil.copy2(cur_wav, backup_dir / wav_file)
+            backed_up = True
+    except Exception as ex:
+        print(f"WARN 回滚前留底当前音频失败（仍继续恢复）: {ex}", file=sys.stderr)
+
+    shutil.copy2(snap_wav, cur_wav)
 
     # 2. 恢复 manifest 段条目
     cur_mf_path = audio_dir / "manifest.json"
@@ -854,6 +878,10 @@ def revert_segment(episode: Path, label: str) -> dict:
             paths.atomic_write(cur_mf_path, json.dumps(cur_mf, ensure_ascii=False, indent=2))
         except Exception as ex:
             print(f"WARN 恢复 manifest 条目时失败: {ex}", file=sys.stderr)
+
+    # 3. 音频与 manifest 均已恢复落盘后，再按保留窗裁剪旧快照，避免误删正在恢复的源快照
+    if backed_up:
+        _prune_attic(attic_dir, keep=10)
 
     # 3. 将涉及此 label 的条目置回 pending (applied = False, applied_at = None)
     entries, fp = load_corrections_raw(episode)

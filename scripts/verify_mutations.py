@@ -295,8 +295,8 @@ MUTATIONS: list[dict] = [
              '                tracker=tracker,\n'
              '            )')},
     {"id": "M27a1", "guard": "select prompt 文案引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
-     "old": '        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, {IDEA_KEYWORD}=选题会话]: "',
-     "new": '        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, idea_drift=选题会话]: "'},
+     "old": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]: "',
+     "new": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, idea_drift=选题会话]: "'},
     {"id": "M27a2", "guard": "select 解析分支引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
      "old": ('        if choice == IDEA_KEYWORD:\n'
              '            return IDEA_KEYWORD'),

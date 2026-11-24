@@ -344,3 +344,179 @@ def test_d66_idea_list_and_purge_trash(ep: Path, capsys: pytest.CaptureFixture[s
     assert not (idea_trash / f"{D}.jsonl").exists()
     assert cli.main(["idea", "/list-trash"]) == 0
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_restore_trash_roundtrip_and_sid_collision_remap(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """回收站一键还原：普通还原保留原 sid，sid 撞车时自动换新 sid 并复制自定义标题。"""
+    from pipeline.agent import session_titles
+
+    _write_log(ep)
+    session_titles.write(ep, A, "重要草稿会话", "custom")
+    assert cli.main([str(ep), "/delete-session", f"--sid={A}"]) == 0
+    capsys.readouterr()
+    assert [s.sid for s in list_sessions(read_log(ep))] == [B, C]
+
+    # 1. 普通还原：保留原 sid，回收站文件被移走
+    assert cli.main([str(ep), "/restore-trash", f"--file={A}.jsonl"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"restored": f"{A}.jsonl", "sid": A, "lines": 4}
+    assert not (ep / "_agent" / "session-trash" / f"{A}.jsonl").exists()
+    assert A in [s.sid for s in list_sessions(read_log(ep))]
+
+    # 2. sid 撞车：主日志里已有 A，再从回收站还原同 sid 文件 → 自动重映射新 sid 且继承标题
+    _trash_file(ep, f"{A}-20261124T100000000000.jsonl", _seg(A, "另一份同号备份"))
+    assert cli.main([str(ep), "/restore-trash", f"--file={A}-20261124T100000000000.jsonl"]) == 0
+    out2 = json.loads(capsys.readouterr().out)
+    assert out2["restored"] == f"{A}-20261124T100000000000.jsonl"
+    assert out2["sid"] != A and len(out2["sid"]) == 16
+    assert out2["lines"] == 3
+    assert out2["sid"] in [s.sid for s in list_sessions(read_log(ep))]
+    titles = session_titles.load(ep)
+    assert titles[out2["sid"]]["title"] == "重要草稿会话"
+
+
+def test_restore_trash_idea_and_invalid_names(ep: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """选题回收站还原 + 非法文件名拒绝。"""
+    idea_dir = ep.parents[1] / "_idea"
+    idea_trash = idea_dir / "_agent" / "session-trash"
+    idea_trash.mkdir(parents=True)
+    (idea_trash / f"{D}.jsonl").write_bytes(_seg(D, "恢复的选题"))
+    assert cli.main(["idea", "/restore-trash", "--file=../escape.jsonl"]) == 2
+    assert cli.main(["idea", "/restore-trash", f"--file={D}.jsonl"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["sid"] == D and out["lines"] == 3
+    assert D in [s.sid for s in list_sessions(read_log(idea_dir))]
+
+
+def test_list_sessions_skips_status_cards_independently(ep: Path) -> None:
+    """P1-1 回归：分别覆盖 origin=injection、_ava_status_card 内部键、以及旧版无 origin 的 [状态卡] 前缀。"""
+    lines = [
+        # 会话 A：仅有 origin="injection"（无内部键）
+        dumps({"k": "session_start", "sid": A, "seq": 0, "ts": "2026-11-24T10:00:00Z", "schema": 1}),
+        dumps({
+            "k": "msg",
+            "sid": A,
+            "seq": 1,
+            "ts": "2026-11-24T10:00:01Z",
+            "message": {"role": "user", "content": "系统注入提示"},
+            "origin": "injection",
+        }),
+        _msg(A, 2, "user", "真人首句A", "2026-11-24T10:00:02Z"),
+        # 会话 B：origin 缺席但带真实内部键 _ava_status_card（不含 [状态卡] 前缀）
+        dumps({"k": "session_start", "sid": B, "seq": 0, "ts": "2026-11-24T10:01:00Z", "schema": 1}),
+        dumps({
+            "k": "msg",
+            "sid": B,
+            "seq": 1,
+            "ts": "2026-11-24T10:01:01Z",
+            "message": {"role": "user", "content": "无前缀但带内部键的卡", "_ava_status_card": True},
+        }),
+        _msg(B, 2, "user", "真人首句B", "2026-11-24T10:01:02Z"),
+        # 会话 C：旧日志无 origin 也无内部键，仅带 [状态卡]\n 前缀
+        dumps({"k": "session_start", "sid": C, "seq": 0, "ts": "2026-11-24T10:02:00Z", "schema": 1}),
+        dumps({
+            "k": "msg",
+            "sid": C,
+            "seq": 1,
+            "ts": "2026-11-24T10:02:01Z",
+            "message": {"role": "user", "content": "[状态卡]\n期名: 01 | 工序: 02"},
+        }),
+        _msg(C, 2, "user", "真人首句C", "2026-11-24T10:02:02Z"),
+    ]
+    (ep / "session.jsonl").write_bytes(b"".join(lines))
+    by_sid = {r.sid: r.first_user for r in list_sessions(read_log(ep))}
+    assert by_sid == {A: "真人首句A", B: "真人首句B", C: "真人首句C"}
+
+
+def test_restore_trash_integrity_locks_and_edge_cases(
+    ep: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P0-2 & P2-9 回归：软链逃逸、空/坏文件、锁被占返回 3、孤儿 inode 拒绝、fsync EIO 回滚且保留备份、活会话并存。"""
+    import errno
+    import os
+    from pipeline.agent.session_log import (
+        EpisodeLease,
+        SessionLogBroken,
+        _trash_lock,
+        restore_trash_file,
+        session_admin_lock,
+    )
+
+    _write_log(ep)
+    trash_dir = ep / "_agent" / "session-trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. 软链逃逸 → 退出码 2，外部文件不动
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(_seg(D, "外部文件"))
+    link = trash_dir / "escape.jsonl"
+    link.symlink_to(outside)
+    assert cli.main([str(ep), "/restore-trash", "--file=escape.jsonl"]) == 2
+    assert outside.exists() and link.is_symlink()
+    capsys.readouterr()
+
+    # 2. 空文件与全坏行 → 退出码 2，保留原文件
+    (trash_dir / "empty.jsonl").write_bytes(b"")
+    (trash_dir / "bad.jsonl").write_bytes(b"not json at all\n")
+    assert cli.main([str(ep), "/restore-trash", "--file=empty.jsonl"]) == 2
+    assert cli.main([str(ep), "/restore-trash", "--file=bad.jsonl"]) == 2
+    assert (trash_dir / "empty.jsonl").exists() and (trash_dir / "bad.jsonl").exists()
+    capsys.readouterr()
+
+    # 3. 管理锁或回收站锁被占 → 退出码 3
+    good_trash = _trash_file(ep, f"{D}.jsonl", _seg(D, "待还原段"))
+    with session_admin_lock(ep):
+        assert cli.main([str(ep), "/restore-trash", f"--file={D}.jsonl"]) == 3
+    with _trash_lock(ep / "_agent"):
+        assert cli.main([str(ep), "/restore-trash", f"--file={D}.jsonl"]) == 3
+    assert good_trash.exists()
+    capsys.readouterr()
+
+    # 4. inode 已被原子替换（孤儿 fd）→ restore_trash_file 拒绝写入，绝不删除回收站备份
+    stale_lease = EpisodeLease.acquire(ep)
+    try:
+        from pipeline.paths import atomic_write
+
+        atomic_write(ep / "session.jsonl", read_log(ep))
+        with pytest.raises(SessionLogBroken, match="已被其他操作替换"):
+            restore_trash_file(stale_lease, f"{D}.jsonl")
+        assert good_trash.exists()
+        assert D not in [s.sid for s in list_sessions(read_log(ep))]
+    finally:
+        stale_lease.close()
+
+    # 5. fsync 报 EIO → 回滚主日志截断到写前长度，绝不删除回收站备份
+    orig_bytes = read_log(ep)
+    fresh_lease = EpisodeLease.acquire(ep)
+    try:
+        def _boom_fsync(_fd: int) -> None:
+            raise OSError(errno.EIO, "disk disconnected")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "fsync", _boom_fsync)
+            with pytest.raises(SessionLogBroken, match="落盘失败"):
+                restore_trash_file(fresh_lease, f"{D}.jsonl")
+        assert good_trash.exists()
+        assert read_log(ep) == orig_bytes
+    finally:
+        fresh_lease.close()
+
+    # 6. 并发活会话在场（独立 fd 模拟另一进程）+ 末尾残行：还原与活会话追加均完整保留，零撕裂
+    (ep / "session.jsonl").write_bytes(orig_bytes + b'{"k":"msg","sid":"broken')
+    peer_fd = os.open(str(ep / "session.jsonl"), os.O_RDWR | os.O_APPEND, 0o644)
+    peer_lease = EpisodeLease(ep, peer_fd)
+    try:
+        peer_lease.begin(B, resumed_from_seq=10)
+        assert cli.main([str(ep), "/restore-trash", f"--file={D}.jsonl"]) == 0
+        capsys.readouterr()
+        assert not good_trash.exists()
+        peer_lease.append({"k": "msg", "message": {"role": "user", "content": "活会话新消息"}})
+        final_raw = read_log(ep)
+        assert final_raw.endswith(b"\n")
+        sids = [s.sid for s in list_sessions(final_raw)]
+        assert B in sids and D in sids
+    finally:
+        peer_lease.close()

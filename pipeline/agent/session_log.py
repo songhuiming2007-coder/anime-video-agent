@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -159,7 +160,16 @@ def list_sessions(raw: bytes) -> list[SessionSummary]:
             message = record.get("message") or {}
             if message.get("role") == "assistant":
                 bucket["assistants"] += 1
-            elif message.get("role") == "user" and not bucket["first_user"]:
+            elif (
+                message.get("role") == "user"
+                and record.get("origin") in (None, "user")
+                and not message.get(_STATUS_CARD_KEY)
+                and not (
+                    record.get("origin") is None
+                    and str(message.get("content") or "").startswith(_STATUS_CARD_PREFIX + "\n")
+                )
+                and not bucket["first_user"]
+            ):
                 text = " ".join(str(message.get("content") or "").split())
                 bucket["first_user"] = text[:FIRST_USER_CHARS]
         elif kind == "session_start":
@@ -270,6 +280,138 @@ def purge_trash_file(trash_dir: Path | str, name: str) -> Path:
             raise ValueError(f"目标路径越界：{resolved} 不在回收站 {trash_dir.resolve()} 内")
         target.unlink()
     return target
+
+
+def restore_trash_file(lease: "EpisodeLease", name: str) -> tuple[str, int, Path]:
+    """把回收站里的一段会话还原回主日志，再移除回收站文件（与 delete/purge 同取锁序：管理锁 → trash 锁）。
+
+    - 使用追加写（`flock` + `os.write` + `fsync`），不替换主日志 inode，不干扰其他并发运行会话的追加句柄；
+    - 若目标 `sid` 已存在于主日志（例如同名删后又手工合并过），自动分配新 16 位 `sid` 并复制标题，避免交错损坏；
+    - 先落盘主日志成功再 `unlink` 回收站文件，崩溃零丢失。
+    返回 `(还原后的 sid, 还原行数, 回收站路径)`。
+    """
+    import secrets
+
+    trash_dir = lease.ep_dir / "_agent" / "session-trash"
+    if Path(name).name != name or name == ".." or not name.endswith(".jsonl"):
+        raise ValueError(f"非法回收站文件名: {name!r}")
+    target = trash_dir / name
+    if not target.exists() and not target.is_symlink():
+        raise FileNotFoundError(f"回收站里没有这个文件: {name}")
+
+    with _trash_lock(trash_dir.parent):
+        resolved = target.resolve()
+        if resolved.parent != trash_dir.resolve():
+            raise ValueError(f"目标路径越界：{resolved} 不在回收站 {trash_dir.resolve()} 内")
+        raw = target.read_bytes()
+        entries, _torn = _parse_lines(raw)
+        summaries = list_sessions(raw)
+        if not summaries:
+            raise ValueError("回收站文件为空或无法解析，无法还原")
+
+        raw_lines = raw.split(b"\n")
+        sid_map: dict[str, str] = {}
+        out_lines: list[bytes] = []
+
+        # 残行清理、现有 sid 判重、追加落盘与 fsync 全部放在同一把文件写锁内原子完成，
+        # 并核验 lease._fd 指向当前路径 inode，防止跨进程替换后写向已解链孤儿 inode。
+        with lease._lock:
+            try:
+                fcntl.flock(lease._fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise SessionLogBroken(f"会话记录取写锁失败: {exc}") from None
+            try:
+                try:
+                    st_fd = os.fstat(lease._fd)
+                    st_path = os.stat(lease.path)
+                except OSError as exc:
+                    raise SessionLogBroken(f"会话日志文件不可达: {exc}") from None
+                if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+                    raise SessionLogBroken("会话日志文件已被其他操作替换，请重试还原")
+
+                cur_raw = lease.read()
+                existing_sids = {s.sid for s in list_sessions(cur_raw)}
+                for s in summaries:
+                    if s.sid in existing_sids or sid_alive(lease.ep_dir, s.sid):
+                        new_sid = secrets.token_hex(8)
+                        while new_sid in existing_sids or new_sid in sid_map.values():
+                            new_sid = secrets.token_hex(8)
+                        sid_map[s.sid] = new_sid
+                    else:
+                        sid_map[s.sid] = s.sid
+
+                for idx, rec in entries:
+                    if rec is None:
+                        continue
+                    orig_sid = rec.get("sid")
+                    if isinstance(orig_sid, str) and orig_sid in sid_map and sid_map[orig_sid] != orig_sid:
+                        rec_copy = dict(rec)
+                        rec_copy["sid"] = sid_map[orig_sid]
+                        out_lines.append(dumps(rec_copy))
+                    else:
+                        out_lines.append(raw_lines[idx] + b"\n")
+
+                if not out_lines:
+                    raise ValueError("回收站文件没有可还原的记录")
+
+                payload = b"".join(out_lines)
+                cut = st_fd.st_size
+                if cur_raw and not cur_raw.endswith(b"\n"):
+                    cut = cur_raw.rfind(b"\n") + 1
+                    try:
+                        os.ftruncate(lease._fd, cut)
+                    except OSError as exc:
+                        raise SessionLogBroken(f"清理会话末尾残行失败: {exc}") from None
+
+                try:
+                    written = 0
+                    while written < len(payload):
+                        n = os.write(lease._fd, payload[written:])
+                        if n <= 0:
+                            raise OSError(errno.EIO, "os.write returned 0")
+                        written += n
+                    try:
+                        os.fsync(lease._fd)
+                    except OSError as exc:
+                        _unsupported = (
+                            errno.EINVAL,
+                            errno.ENOTSUP,
+                            getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+                        )
+                        if exc.errno not in _unsupported:
+                            raise
+                except OSError as exc:
+                    try:
+                        os.ftruncate(lease._fd, cut)
+                    except OSError:
+                        pass
+                    raise SessionLogBroken(f"还原会话写入落盘失败: {exc}") from None
+            finally:
+                try:
+                    fcntl.flock(lease._fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+
+        # 若 sid 因冲突换了新号，顺带把标题复制过去，界面里名字不断档
+        for orig_sid, new_sid in sid_map.items():
+            if orig_sid != new_sid:
+                try:
+                    from pipeline.agent import session_titles
+
+                    titles = session_titles.load(lease.ep_dir)
+                    entry = titles.get(orig_sid)
+                    if entry and entry.get("title"):
+                        src = str(entry.get("source") or "custom")
+                        if src not in ("generated", "custom"):
+                            src = "custom"
+                        session_titles.write(lease.ep_dir, new_sid, str(entry["title"]), src)
+                except Exception:
+                    pass
+
+        target.unlink()
+
+    restored_sid = sid_map[summaries[-1].sid]
+    return restored_sid, len(out_lines), target
 
 
 def load_session(raw: bytes, sid: str) -> LoadedSession:

@@ -2573,3 +2573,41 @@ def test_cr_auth_keychain_fail_closed_cache_and_redirects(tmp_path: Path, monkey
         target_srv.shutdown()
 
 
+def test_interactive_login_uses_getpass_and_blocks_cleartext_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A3：REPL /login 禁止明文附带 API Key，改由 getpass 无回显读取。"""
+    import getpass
+    import io
+
+    class _FakeTTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(auth.sys, "stdin", _FakeTTY())
+
+    # 1. 明文附带 key → 拒绝并提示
+    ok, msg, _ = auth.run_auth_command("/login deepseek sk-cleartext-leak", root=tmp_path, interactive=True)
+    assert ok is False
+    assert "密钥" in msg or "明文" in msg or "回显" in msg
+    assert auth.get_auth_status(tmp_path)["connected_count"] == 0
+
+    # 2. 不带 key → 通过 getpass 读取并落盘
+    monkeypatch.setattr(getpass, "getpass", lambda _prompt="": "sk-secret-from-getpass-12345")
+    ok2, msg2, _ = auth.run_auth_command("/login deepseek", root=tmp_path, interactive=True)
+    assert ok2 is True
+    assert "deepseek" in msg2.lower()
+    assert auth.get_auth_status(tmp_path)["connected_count"] == 1
+
+    # 3. OAuth 优先的双模服务商（anthropic）支持显式 `/login anthropic api_key` 走 getpass，同时仍拒明文附带 key
+    ok3, msg3, _ = auth.run_auth_command("/login anthropic api_key sk-ant-leak", root=tmp_path, interactive=True)
+    assert ok3 is False
+    assert "密钥" in msg3 or "明文" in msg3
+    monkeypatch.setattr(getpass, "getpass", lambda _prompt="": "sk-ant-hidden-key-67890")
+    ok4, msg4, _ = auth.run_auth_command("/login anthropic api_key", root=tmp_path, interactive=True)
+    assert ok4 is True
+    assert "anthropic" in msg4.lower() or "claude" in msg4.lower()
+    assert auth.get_auth_status(tmp_path)["connected_count"] == 2
+
+
+

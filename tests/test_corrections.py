@@ -977,3 +977,79 @@ class TestApplyPatchKeepsApprovedAudio:
         with pytest.raises(SystemExit) as exc:
             tts.run(ep, apply_patch=True, cfg_path=tmp_path / "_voice.json")
         assert "引擎/模型变了" in str(exc.value)
+
+
+def test_revert_segment_saves_pre_revert_attic_backup(tmp_path: Path):
+    """A2：回滚前先把当前音频留底到 attic，使误回滚可再次回滚撤销。"""
+    ep = tmp_path
+    audio_dir = ep / "03-audio"
+    snap1 = audio_dir / "attic" / "20261124-100000"
+    snap1.mkdir(parents=True)
+    mf_v1 = {"segments": [{"label": "1", "file": "seg-01.wav", "seed": 11}]}
+    mf_v2 = {"segments": [{"label": "1", "file": "seg-01.wav", "seed": 22}]}
+    (snap1 / "manifest.json").write_text(json.dumps(mf_v1), encoding="utf-8")
+    (snap1 / "seg-01.wav").write_bytes(b"OLD-AUDIO-V1")
+    (audio_dir / "manifest.json").write_text(json.dumps(mf_v2), encoding="utf-8")
+    live = audio_dir / "seg-01.wav"
+    live.write_bytes(b"NEW-AUDIO-V2")
+
+    res = revert_segment(ep, "1")
+    assert res["snapshot"] == "20261124-100000"
+    assert res["take"]["label"] == "1"
+    assert live.read_bytes() == b"OLD-AUDIO-V1"
+    # 回滚前的 V2 已被留底为最新 attic 快照目录，再次回滚即可恢复 V2
+    snaps = sorted(p for p in (audio_dir / "attic").iterdir() if p.is_dir())
+    assert len(snaps) == 2
+    assert (snaps[-1] / "seg-01.wav").read_bytes() == b"NEW-AUDIO-V2"
+
+    revert_segment(ep, "1")
+    assert live.read_bytes() == b"NEW-AUDIO-V2"
+
+
+def test_revert_segment_with_full_10_snapshots_does_not_prune_source_before_copy(tmp_path: Path):
+    """P0-1 回归：attic 已满 10 份且目标源快照恰为最旧一份（且存在超前命名快照）时，回滚不得先删源快照导致崩溃。"""
+    ep = tmp_path
+    audio_dir = ep / "03-audio"
+    attic = audio_dir / "attic"
+    oldest = attic / "20261120-000001"
+    oldest.mkdir(parents=True)
+    mf_oldest = {"segments": [{"label": "1", "file": "seg-01.wav", "seed": 7}]}
+    (oldest / "manifest.json").write_text(json.dumps(mf_oldest), encoding="utf-8")
+    (oldest / "seg-01.wav").write_bytes(b"OLDEST-SEG1-V1")
+
+    # 填满其余 9 份快照（含一份时间戳超前于当前系统时间的目录，模拟时钟回拨场景），均只含段 2
+    for i in range(1, 9):
+        d = attic / f"20261124-00000{i}"
+        d.mkdir(parents=True)
+        (d / "manifest.json").write_text(
+            json.dumps({"segments": [{"label": "2", "file": "seg-02.wav", "seed": i}]}),
+            encoding="utf-8",
+        )
+        (d / "seg-02.wav").write_bytes(f"SEG2-{i}".encode())
+    future = attic / "20991231-235959"
+    future.mkdir(parents=True)
+    (future / "manifest.json").write_text(
+        json.dumps({"segments": [{"label": "2", "file": "seg-02.wav", "seed": 99}]}),
+        encoding="utf-8",
+    )
+    (future / "seg-02.wav").write_bytes(b"SEG2-FUTURE")
+
+    (audio_dir / "manifest.json").write_text(
+        json.dumps({"segments": [{"label": "1", "file": "seg-01.wav", "seed": 88}]}),
+        encoding="utf-8",
+    )
+    live = audio_dir / "seg-01.wav"
+    live.write_bytes(b"CURRENT-SEG1-V2")
+
+    res = revert_segment(ep, "1")
+    assert res["snapshot"] == "20261120-000001"
+    assert live.read_bytes() == b"OLDEST-SEG1-V1"
+
+    snaps = sorted(p for p in attic.iterdir() if p.is_dir())
+    assert len(snaps) == 10
+    # 新留底排在所有快照之后（即便存在 2099 超前目录），不会被立刻裁掉，且可再次回滚恢复 V2
+    assert snaps[-1].name > "20991231-235959"
+    assert (snaps[-1] / "seg-01.wav").read_bytes() == b"CURRENT-SEG1-V2"
+
+    revert_segment(ep, "1")
+    assert live.read_bytes() == b"CURRENT-SEG1-V2"

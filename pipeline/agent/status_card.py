@@ -461,7 +461,7 @@ def render_approval_card(
         lines = [
             "┌─ 记忆写入审批 ──────────────────────────────────",
             f"│ 工具: {name}",
-            "│ 危险标记: [跨期记忆] 按 y 即确认下方全文进入之后所有 creative/asset/idea 会话",
+            "│ 危险标记: [跨期记忆] 批准后写入跨期记忆，影响后续会话——请确认下方全文",
         ]
         for raw in memory_preview or []:
             for piece in str(raw).split("\n"):
@@ -695,13 +695,19 @@ def render_approval_card(
         is_render = True
 
     is_billing = is_cloud and (cloud_sub in {"up", "run", "push", "pull"})
+    is_cloud_destructive = is_cloud and (cloud_sub in {"clean-frames", "relocate-data"})
+    is_cloud_local_cfg = is_cloud and (cloud_sub in {"connect", "use"})
 
     danger_tags: list[str] = []
     if is_billing:
         if cloud_provider in ("colab", "colab-drive"):
             danger_tags.append("[计费] ☁Colab 运行时将消耗 Compute Units（CU），down 或空闲超时自动释放")
         else:
-            danger_tags.append("[计费] ☁计费 实例开机将产生费用，关机才停止")
+            danger_tags.append("[计费] 实例开机将产生费用，关机才停止")
+    elif is_cloud_destructive:
+        danger_tags.append("[删除/销毁] 将清理或迁移云端文件，不可撤销")
+    elif is_cloud_local_cfg:
+        danger_tags.append("[本地配置] 修改当前云端连接配置（config/cloud.local.json）")
     if is_render:
         danger_tags.append("[长任务] 渲染耗时较长（分钟级）")
 
@@ -731,6 +737,12 @@ def render_approval_card(
 
     if module == "calibration":
         danger_tags.append("[全局配置] 改 config 里的标定值，所有期生效")
+    elif module == "bgm":
+        danger_tags.append("[全局配置] 改 config/bgm.json 曲库表，所有期生效")
+    elif module == "facts":
+        danger_tags.append("[全局] 写入跨期共享事实库 data/library/facts/")
+    elif module == "assemble":
+        danger_tags.append("[长任务] 多卷合集拼接耗时较长")
 
     danger_str = " ".join(danger_tags) if danger_tags else "无"
 
@@ -747,7 +759,16 @@ def render_approval_card(
 
     if is_cloud:
         slot_desc = f"槽位: {cloud_slot}，" if cloud_slot and cloud_slot != "default" else ""
-        if cloud_provider in ("colab", "colab-drive"):
+        if cloud_sub == "down":
+            if cloud_provider in ("colab", "colab-drive"):
+                nature = f"☁ Colab ({cloud_provider}) {slot_desc}云端关机（释放运行时并停止消耗 CU）"
+            else:
+                nature = f"☁ {slot_desc}云端关机（停止计费）"
+        elif is_cloud_destructive:
+            nature = f"☁ {slot_desc}云端数据清理/迁移（不可逆）"
+        elif is_cloud_local_cfg:
+            nature = f"写本地云端连接配置（{slot_desc}config/cloud.local.json）"
+        elif cloud_provider in ("colab", "colab-drive"):
             nature = f"☁ Colab ({cloud_provider}) {slot_desc}云端动作（CU 审批）"
         else:
             nature = f"☁ {slot_desc}云端计费动作（计费审批）"
@@ -760,7 +781,15 @@ def render_approval_card(
     elif module == "acquire" and _matches_flag_prefix(all_tokens, "--to-patch"):
         nature = "把 incoming/ 里的文件挪进本期 patch_assets/（期内补料）"
     elif module == "calibration":
-        nature = "写全局配置（标定值，AGENTS.md Code Freeze 例外 D60）"
+        nature = "写全局标定配置（影响所有期）"
+    elif module == "bgm":
+        nature = "登记曲库配置（config/bgm.json）"
+    elif module == "tickets":
+        nature = "记录系统缺陷工单（tickets/）"
+    elif module == "facts":
+        nature = "写入跨期共享事实库（data/library/facts/）"
+    elif module == "assemble":
+        nature = "企划多卷合集总装（输出成片）"
     elif module == "notes_review":
         nature = "番剧笔记对抗审查（每集一次模型调用，出网；写新报告，不覆盖旧报告）"
     elif module in LIBRARY_WRITE_MODULES:

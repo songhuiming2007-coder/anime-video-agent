@@ -2343,9 +2343,9 @@ def complete_auth_flow(
             store = _read_store_unlocked(path)
             pending = store.get("_pending", {}).get(spec.id)
             if not isinstance(pending, dict) or pending.get("mode") != "oauth_pkce":
-                raise AuthError("尚未发起 OAuth 授权或会话已失效，请重新点击开始登录")
+                raise AuthError("尚未发起 OAuth 授权或授权会话已失效，请重新发起登录")
             if now - int(pending.get("created_at_ms") or 0) > PENDING_TTL_MS:
-                raise AuthError("OAuth 授权会话已过期（超过 30 分钟），请重新点击开始登录")
+                raise AuthError("OAuth 授权会话已过期（超过 30 分钟），请重新发起登录")
             if pending.get("exchanging") and (now - int(pending.get("exchanging_at_ms") or pending.get("created_at_ms") or 0)) <= 120_000:
                 raise AuthError(f"{spec.name} 授权换票正在进行中，请勿重复提交")
             code, state, cb_params = _parse_callback_input(
@@ -2430,7 +2430,7 @@ def complete_auth_flow(
         store = _read_store_unlocked(path)
         pending = store.get("_pending", {}).get(spec.id)
     if not isinstance(pending, dict) or pending.get("mode") != "oauth_device":
-        raise AuthError(f"尚未发起 {spec.name} 设备码授权，请先点击获取设备码")
+        raise AuthError(f"尚未发起 {spec.name} 设备码授权，请先获取设备码")
     if int(pending.get("expires_at_ms") or 0) <= now:
         raise AuthError(f"{spec.name} 设备码已过期，请重新获取")
     pending_extra = pending.get("extra_config") if isinstance(pending.get("extra_config"), dict) else {}
@@ -3139,15 +3139,48 @@ def is_auth_slash_command(line: str) -> bool:
     return head in ("/login", "/logout")
 
 
-def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str, str | None]:
+_CLI_MODE_LABEL: dict[str, str] = {
+    "oauth_pkce": "OAuth",
+    "oauth_device": "设备码",
+    "proxy": "代理",
+    "api_key": "密钥",
+}
+
+_CLI_CATEGORY_ORDER: tuple[tuple[str, str], ...] = (
+    ("oauth", "OAuth 订阅"),
+    ("flagship", "常用大模型"),
+    ("cloud", "云平台与路由"),
+    ("local", "本地 / 代理"),
+)
+
+
+def _format_provider_row_cli(p: dict[str, Any]) -> str:
+    if p["connected"]:
+        extra = f"（已登录 {p['masked_secret']}）" if p.get("masked_secret") else "（已连接）"
+        return f"  ● {p['id']} — {p['name']} {extra}"
+    if p.get("env_configured"):
+        src = p.get("env_source") or "环境变量"
+        return f"  ◐ {p['id']} — {p['name']} （环境变量已就绪：{src}）"
+    modes = "/".join(_CLI_MODE_LABEL.get(m, m) for m in p.get("auth_modes") or [])
+    return f"  ○ {p['id']} — {p['name']} （未登录 · 支持 {modes}）"
+
+
+def run_auth_command(
+    line: str,
+    *,
+    root: Path | None = None,
+    interactive: bool = False,
+) -> tuple[bool, str, str | None]:
     """D170 REPL/对话框 `/login` 与 `/logout` 命令。返回 `(ok, 回显文字, logged_out_provider)`。"""
+    import getpass
+
     parts = line.strip().split()
     if not parts:
         return False, "空命令", None
     cmd = parts[0]
     if cmd == "/logout":
         if len(parts) < 2:
-            return False, "用法：/logout <provider>", None
+            return False, "用法：/logout <服务商ID>", None
         try:
             res = logout_provider(parts[1].strip(), root=root)
         except AuthError as exc:
@@ -3157,28 +3190,82 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
     if cmd != "/login":
         return False, f"未知命令：{cmd}", None
 
-    if len(parts) == 1:
+    if len(parts) == 1 or (len(parts) == 2 and parts[1].strip().lower() == "all"):
+        show_all = len(parts) == 2
         status = get_auth_status(root)
-        lines = [f"已连接 {status['connected_count']} / {len(status['providers'])} 家服务商："]
-        for p in status["providers"]:
-            mark = "●" if p["connected"] else "○"
-            extra = f"（已登录 {p['masked_secret']}）" if p["connected"] and p.get("masked_secret") else ("（已连接）" if p["connected"] else f"（未登录 · 支持 {'/'.join(p['auth_modes'])}）")
-            lines.append(f"  {mark} {p['id']} — {p['name']} {extra}")
-        lines.append("用法：/login <provider>；OAuth：/login <provider> complete <回调或码>；退出：/logout <provider>；脚本请用：ava --auth-complete <provider> --stdin")
+        provs = list(status["providers"])
+        lines = [f"已连接 {status['connected_count']} / {len(provs)} 家服务商："]
+        connected = [p for p in provs if p["connected"]]
+        env_ready = [p for p in provs if not p["connected"] and p.get("env_configured")]
+        rest = [p for p in provs if not p["connected"] and not p.get("env_configured")]
+        if connected:
+            lines.append("【已连接】")
+            lines.extend(_format_provider_row_cli(p) for p in connected)
+        if env_ready:
+            lines.append("【环境变量已就绪】")
+            lines.extend(_format_provider_row_cli(p) for p in env_ready)
+        if show_all:
+            for cat_key, cat_label in _CLI_CATEGORY_ORDER:
+                items = [p for p in rest if (p.get("category") or "flagship") == cat_key]
+                if items:
+                    lines.append(f"【{cat_label}】")
+                    lines.extend(_format_provider_row_cli(p) for p in items)
+        else:
+            for cat_key, cat_label in (("oauth", "OAuth 订阅"), ("flagship", "常用大模型"), ("local", "本地 / 代理")):
+                items = [p for p in rest if (p.get("category") or "flagship") == cat_key]
+                if items:
+                    lines.append(f"【{cat_label}】")
+                    lines.extend(_format_provider_row_cli(p) for p in items)
+            cloud_n = sum(1 for p in rest if (p.get("category") or "flagship") == "cloud")
+            if cloud_n > 0:
+                lines.append(f"  … 另有 {cloud_n} 家云平台与路由服务商，输入 /login all 查看全部")
+        lines.append("用法：/login <服务商ID>；OAuth：/login <服务商ID> complete <回调或码>；退出：/logout <服务商ID>；脚本请用：ava --auth-complete <provider> --stdin")
         return True, "\n".join(lines), None
 
     pid = parts[1].strip()
     try:
         spec = _require_provider(pid)
+        def _prompt_interactive_secret(mode: str, started: dict[str, Any]) -> tuple[bool, str, None]:
+            if mode == "proxy":
+                try:
+                    raw_url = input(f"{spec.name} 代理地址 [默认 {started['default_base_url']}]: ").strip()
+                    raw_key = getpass.getpass(f"{spec.name} 代理密钥（无鉴权可直接回车）: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    return False, "已取消登录", None
+                res = complete_auth_flow(
+                    pid,
+                    {"mode": "proxy", "base_url": raw_url or started["default_base_url"], "api_key": raw_key},
+                    root=root,
+                )
+                return True, str(res["text"]), None
+            try:
+                raw_key = getpass.getpass(f"请输入 {spec.name} API Key（输入不回显，直接回车取消）: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return False, "已取消登录", None
+            if not raw_key:
+                return False, "已取消登录", None
+            res = complete_auth_flow(pid, {"mode": "api_key", "api_key": raw_key}, root=root)
+            return True, str(res["text"]), None
+
         if len(parts) == 2:
             started = start_auth_flow(pid, root=root)
             mode = started["mode"]
             if mode == "oauth_pkce":
-                return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
+                alt = "（也可输入 /login " + pid + " api_key 改用密钥登录）" if "api_key" in spec.auth_modes else ""
+                return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>{alt}", None
             if mode == "oauth_device":
-                return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
-            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
+                alt = "\n也可输入 /login " + pid + " api_key 改用密钥登录" if "api_key" in spec.auth_modes else ""
+                return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete{alt}", None
+            if interactive and sys.stdin.isatty():
+                return _prompt_interactive_secret(mode, started)
+            oauth_hint = f"（也支持 OAuth：/login {pid} oauth）" if any(m.startswith("oauth") for m in spec.auth_modes) else ""
+            return True, f"{spec.name} 默认地址：{started['default_base_url']}{oauth_hint}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
         arg = parts[2].strip()
+        if interactive and len(parts) == 3 and arg in ("api_key", "proxy"):
+            started = start_auth_flow(pid, mode=arg, root=root)
+            if sys.stdin.isatty():
+                return _prompt_interactive_secret(started["mode"], started)
+            return True, f"{spec.name} 默认地址：{started['default_base_url']}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
         allowed_extra = {ef.key for ef in spec.extra_fields}
         is_extra_kv = bool(parts[2:]) and all(
             "=" in tok and tok.split("=", 1)[0].strip() in allowed_extra
@@ -3216,6 +3303,8 @@ def run_auth_command(line: str, *, root: Path | None = None) -> tuple[bool, str,
                 mode = "oauth_device" if "oauth_device" in spec.auth_modes and not code else spec.auth_modes[0]
             res = complete_auth_flow(pid, {"mode": mode, **({"code": code} if code else {})}, root=root)
             return bool(res.get("ok")), str(res.get("text") or ""), None
+        if interactive:
+            return False, f"为防止密钥落入命令历史，请直接输入 /login {pid} 按提示隐藏输入，或使用桌面端登录弹窗", None
         if "api_key" in spec.auth_modes:
             res = complete_auth_flow(pid, {"mode": "api_key", "api_key": arg}, root=root)
             return True, str(res["text"]), None

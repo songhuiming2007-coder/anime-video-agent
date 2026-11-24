@@ -56,6 +56,7 @@ from pipeline.agent.session_log import (
     move_session_to_trash,
     purge_trash_file,
     read_log,
+    restore_trash_file,
     resume_target,
     session_admin_lock,
     split_by_sid,
@@ -331,6 +332,18 @@ def _handle_repl_approve(
         return 1
     try:
         target_id = _resolve_repl_approval_id(stop, explicit_id, displayed_ids)
+        # 交互终端下批准 05：若对象仍处于待批准且尚未生成解封物，自动补跑 review --approve（与桌面端一步批准一致）
+        if stop == "05" and sys.stdin.isatty():
+            obj = approvals.get(target_id, ep_dir)
+            if obj is not None and obj.status == approvals.ApprovalStatus.PENDING and not approvals._gate_valid(ep_dir, "05"):
+                from pipeline import review as review_mod
+
+                try:
+                    review_mod.approve_clips(ep_dir)
+                except SystemExit as exc:
+                    if exc.code not in (0, None):
+                        print(f"[ERROR] 自动批准排片失败：{exc}", file=sys.stderr)
+                        return 1
         res = approvals.approve(
             ep_dir, stop, approval_id=target_id, source="repl", finalize=finalize  # type: ignore[arg-type]
         )
@@ -402,6 +415,15 @@ def get_episodes_list(root: Path | None = None) -> tuple[list[Path], int]:
     return visible, tree.hidden_underscore
 
 
+def _episode_display_key(ep: Path) -> str:
+    """期展示键：企划卷显示 `<企划>/<卷>`，普通期显示目录名，避免不同企划同名卷混淆。"""
+    try:
+        rel = ep.resolve().relative_to((paths.ROOT / "data" / "episodes").resolve())
+        return rel.as_posix()
+    except ValueError:
+        return ep.name
+
+
 def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
     """打印根目录看板（Spec §2.3 看板与人时读数）。"""
     print("\n" + "=" * 70)
@@ -414,7 +436,8 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
 
     for i, ep in enumerate(episodes, 1):
         status = inspect_episode(ep)
-        line = f" [{i:2d}] {ep.name:<24} | {status.current_step}"
+        ep_label = _episode_display_key(ep)
+        line = f" [{i:2d}] {ep_label:<24} | {status.current_step}"
         if status.is_blocked:
             line += " [🛑 停机点]"
 
@@ -443,12 +466,13 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
 
 
 def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
-    """交互选择期目录（Spec §2.3 输入语义：回车=1，数字=序号，字符串=期名，idea=选题会话）。"""
+    """交互选择期目录（Spec §2.3 输入语义：回车=1，数字=序号，字符串=期名或 `<企划>/<卷>`，idea=选题会话）。"""
     if not episodes:
         return None
 
     while True:
-        prompt = f"请选择期目录 [回车默认选 1: {episodes[0].name}, {IDEA_KEYWORD}=选题会话]: "
+        first_label = _episode_display_key(episodes[0])
+        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]: "
         try:
             choice = input(prompt).strip()
         except EOFError:
@@ -467,12 +491,13 @@ def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
             print(f"[ERROR] 输入序号超限 (1..{len(episodes)})，请重新输入。")
             continue
 
-        # 尝试匹配名称
-        matched = [ep for ep in episodes if ep.name == choice or choice in ep.name]
+        # 优先精确匹配展示键 `<企划>/<卷>` 或目录名，再做包含匹配
+        exact = [ep for ep in episodes if _episode_display_key(ep) == choice or ep.name == choice]
+        matched = exact if exact else [ep for ep in episodes if choice in _episode_display_key(ep) or choice in ep.name]
         if len(matched) == 1:
             return matched[0]
         elif len(matched) > 1:
-            print(f"[ERROR] 存在多个包含 '{choice}' 的期，请输入精确全名或序号。")
+            print(f"[ERROR] 存在多个包含 '{choice}' 的期，请输入精确全名（如 <企划>/<卷>）或序号。")
             continue
 
         print(f"[ERROR] 未找到匹配 '{choice}' 的期，请重新输入。")
@@ -569,6 +594,8 @@ def create_new_episode(ep_name: str, project: str | None = None) -> int:
     paths.atomic_write(topic_file, topic_content)
     if adopted:
         print(f"[OK] 已在既有目录补立项新卷：{target_dir}（保留已有文件）")
+    elif project is not None:
+        print(f"[OK] 已立项新卷：{target_dir}")
     else:
         print(f"[OK] 已立项新期：{target_dir}")
     print(f"     已生成初始选题模板：{topic_file}")
@@ -961,20 +988,16 @@ def run_voice_loop(ep_dir: Path) -> int:
                         mf = json.loads(mf_path.read_text(encoding="utf-8"))
                         eng = mf.get("engine", "")
                         if "cuda" in eng:
-                            print(f"[*] 提示：本期配音引擎为云端引擎 ({eng})，请去云端执行 apply-patch。")
+                            print(f"[*] 本期配音引擎为云端引擎 ({eng})，已跳过本地重配；请前往云端执行 apply-patch。")
+                            return 0
                     except Exception:
                         pass
 
-                try:
-                    confirm = input("是否立即执行增量重配 (--apply-patch)? [Y/n]: ").strip().lower()
-                except EOFError:
-                    # Spec 11 §2.7 / RF17-C1（Spec 9 RF-17 的处置）：EOF 一律取「否」，
-                    # 与其余确认类 EOF 默认否的口径一致。TTY 下 EOF 只在 Ctrl-D 时发生。
-                    print("[CANCEL] 未获确认，未执行增量重配。")
+                if not sys.stdin.isatty():
+                    print("[*] 非交互终端未获确认，未执行增量重配。")
                     return 0
 
-                if confirm in ("", "y", "yes"):
-                    tts.run(ep_dir, apply_patch=True)
+                tts.run(ep_dir, apply_patch=True)
                 return 0
 
             # 未命中内建指令表，送入纠错文法解析器
@@ -1124,7 +1147,7 @@ def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -
                 name = rest[0][len("--name="):]
             data = _read_stdin_bytes(IMPORT_COVER_MAX_BYTES)
             if data is None:
-                raise _UsageError(f"图片字节超过 {IMPORT_COVER_MAX_BYTES} 字节上限，拒收。")
+                raise _UsageError(f"图片超过 {IMPORT_COVER_MAX_BYTES // (1024 * 1024)} MB 上限，无法导入。")
             return _cmd_import_cover(ep_dir, name, data)
 
         if len(rest) != 1:
@@ -1132,7 +1155,7 @@ def _dispatch_import_cover(ep_dir: Path, argv: list[str], *, from_stdin: bool) -
         src = Path(rest[0]).expanduser()
         try:
             if src.stat().st_size > IMPORT_COVER_MAX_BYTES:
-                raise _UsageError(f"图片字节超过 {IMPORT_COVER_MAX_BYTES} 字节上限，拒收。")
+                raise _UsageError(f"图片超过 {IMPORT_COVER_MAX_BYTES // (1024 * 1024)} MB 上限，无法导入。")
             data = src.read_bytes()
         except OSError as exc:
             print(f"[ERROR] 读不到源图片：{src}（{exc}）", file=sys.stderr)
@@ -1209,8 +1232,11 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
     退出码：0 成；1 败（sid 不存在、写盘失败）；2 用法错；3 该期有活会话（租约被占）。
     D66：同区块加 `/list-trash`（只读）与 `/purge-trash --file=`（彻底删除，不可恢复）。
     D80：同区块加 `/rename-session --sid= --title=`（改会话标题，不取租约）。
+    2026-11-24：加 `/restore-trash --file=`（从回收站一键还原回会话列表）。
     """
-    if not argv or argv[0] not in ("/list-sessions", "/delete-session", "/list-trash", "/purge-trash", "/rename-session"):
+    if not argv or argv[0] not in (
+        "/list-sessions", "/delete-session", "/list-trash", "/purge-trash", "/restore-trash", "/rename-session",
+    ):
         return None
     rest = argv[1:]
     try:
@@ -1235,6 +1261,8 @@ def _dispatch_session_admin(ep_dir: Path, argv: list[str]) -> int | None:
         return 0
     if argv[0] == "/purge-trash":
         return _purge_trash(resolved / "_agent" / "session-trash", rest)
+    if argv[0] == "/restore-trash":
+        return _restore_trash(resolved, lambda: EpisodeLease.acquire(resolved), rest)
     return _delete_session(lambda: EpisodeLease.acquire(resolved), rest, "先结束该期的会话再删除")
 
 
@@ -1295,6 +1323,53 @@ def _purge_trash(trash_dir: Path, rest: list[str]) -> int:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 3
     print(json.dumps({"purged": dest.name}, ensure_ascii=False))
+    return 0
+
+
+def _restore_trash(
+    log_dir: Path,
+    acquire: Callable[[], EpisodeLease],
+    rest: list[str],
+    *,
+    check_data_root: Path | None = None,
+) -> int:
+    """`/restore-trash --file=<回收站文件名>`：把已删除会话从回收站一键还原回会话列表。
+
+    先校验目录存在再持 `session_admin_lock(log_dir)`，并在管理锁内部 `acquire()` 打开日志 fd，
+    防止与并发 `/delete-session` 原子换 inode 产生 TOCTOU（也绝不在 data/ 不可达时建目录）。
+    """
+    try:
+        name = _valued_flags(rest, ("--file",))["--file"]
+    except _UsageError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    if check_data_root is not None and not (check_data_root / "data").is_dir():
+        print(f"[ERROR] data/ 不可达：{check_data_root / 'data'}", file=sys.stderr)
+        return 1
+    if not log_dir.is_dir():
+        print(f"[ERROR] 回收站里没有这个文件: {name}", file=sys.stderr)
+        return 1
+    lease: EpisodeLease | None = None
+    try:
+        with session_admin_lock(log_dir):
+            lease = acquire()
+            sid, lines, dest = restore_trash_file(lease, name)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    except SessionLocked as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 3
+    except (OSError, SessionLogBroken, DataUnreachable) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if lease is not None:
+            lease.close()
+    print(json.dumps({"restored": dest.name, "sid": sid, "lines": lines}, ensure_ascii=False))
     return 0
 
 
@@ -1714,7 +1789,7 @@ def _dispatch_stop_point(ep_dir: Path, argv: list[str]) -> int | None:
             flags = _valued_flags(rest, ("--expect-size", "--expect-mtime-ns"))
             text = _read_stdin_text(SAVE_SCRIPT_MAX_BYTES)
             if text is None:
-                raise _UsageError(f"正文超过 {SAVE_SCRIPT_MAX_BYTES} 字节上限，拒收。")
+                raise _UsageError(f"正文超过 {SAVE_SCRIPT_MAX_BYTES // (1024 * 1024)} MB 上限，无法保存。")
             return _cmd_save_script(
                 ep_dir,
                 _flag_number(flags["--expect-size"], "--expect-size", int),
@@ -1734,14 +1809,14 @@ def _dispatch_stop_point(ep_dir: Path, argv: list[str]) -> int | None:
                 raise _UsageError("用法: ava <期> /voice-parse（纠错原文走 stdin）")
             text = _read_stdin_text(VOICE_PARSE_MAX_BYTES)
             if text is None:
-                raise _UsageError(f"纠错原文超过 {VOICE_PARSE_MAX_BYTES} 字节上限，拒收。")
+                raise _UsageError(f"纠错内容超过 {VOICE_PARSE_MAX_BYTES // 1024} KB 上限，无法解析。")
             return _cmd_voice_parse(ep_dir, text)
         if cmd == "/voice-add":
             if rest:
                 raise _UsageError("用法: ava <期> /voice-add（纠错原文走 stdin）")
             text = _read_stdin_text(VOICE_PARSE_MAX_BYTES)
             if text is None:
-                raise _UsageError(f"纠错原文超过 {VOICE_PARSE_MAX_BYTES} 字节上限，拒收。")
+                raise _UsageError(f"纠错内容超过 {VOICE_PARSE_MAX_BYTES // 1024} KB 上限，无法落盘。")
             return _cmd_voice_add(ep_dir, text)
         if cmd == "/voice-revert":
             if len(rest) != 1:
@@ -2010,6 +2085,56 @@ def run_agent_loop(
         )
 
 
+def _handle_repl_auth(line: str, *, root: Path | None = None) -> None:
+    """REPL 内处理 `/login` 与 `/logout`：隐藏输入密钥，并在退出登录时同步重置本会话的模型覆盖。"""
+    from dataclasses import replace as dc_replace
+    from pipeline.agent import auth as auth_mod
+
+    ok, reply, logged_out = auth_mod.run_auth_command(line, root=root, interactive=True)
+    if ok and logged_out and _SESSION_HOST is not None:
+        cur_model = _SESSION_HOST.model_override.model
+        if cur_model and cur_model.startswith(f"{logged_out}/"):
+            _SESSION_HOST.set_model_override(dc_replace(_SESSION_HOST.model_override, model=None))
+            reply += "\n本会话已切回默认模型"
+    print(reply if ok else f"[ERROR] {reply}")
+
+
+def _handle_submode_slash(
+    line: str,
+    messages: list[dict[str, Any]],
+    tracker: Any,
+    ep_dir: Path | None,
+    scope: str,
+    *,
+    root: Path | None = None,
+) -> bool:
+    """子模式（idea / creative / script）共用斜杠命令，避免与主 REPL 割裂。命中返回 True。"""
+    head = line.split(maxsplit=1)[0]
+    if head == "/help":
+        print("\n当前模式可用命令:")
+        print("  /model       查看或切换本会话模型（/model、/model <名>、/model default）")
+        print("  /thinking    查看或切换推理强度（/thinking、/thinking <档位|default>）")
+        print("  /login       查看或登录模型服务商（/login [<服务商ID>]）")
+        print("  /logout      退出服务商登录（/logout <服务商ID>）")
+        if scope == "idea":
+            print("  /compact     压缩较早的对话以释放上下文")
+        print("  /quit /done  退出当前模式\n")
+        return True
+    if head == "/compact":
+        if scope == "idea":
+            run_compact_command(messages, tracker, ep_dir, scope, root=root)
+        else:
+            print("[提示] /compact 仅在主会话与选题会话可用；输入 /done 返回主会话后可执行。")
+        return True
+    if head in ("/model", "/thinking"):
+        run_model_command(line, scope, root=root)
+        return True
+    if head in ("/login", "/logout"):
+        _handle_repl_auth(line, root=root)
+        return True
+    return False
+
+
 def _run_agent_loop_body(
     ep_dir: Path | None,
     scope_mode: str = "auto",
@@ -2093,6 +2218,8 @@ def _run_agent_loop_body(
             if line in ("/quit", "/exit", "quit", "exit", "/done"):
                 print("[退出 idea 模式]")
                 return 0
+            if line.startswith("/") and _handle_submode_slash(line, sub_messages, tracker, None, "idea", root=root):
+                continue
 
             outcome = _dispatch_agent_turn(
                 line,
@@ -2137,6 +2264,8 @@ def _run_agent_loop_body(
         if line in ("/quit", "/exit", "quit", "exit", "/done"):
             print(f"[退出 {current_scope} 模式]")
             return 0
+        if line.startswith("/") and _handle_submode_slash(line, sub_messages, tracker, ep_dir, current_scope, root=root):
+            continue
 
         outcome = _dispatch_agent_turn(
             line,
@@ -2482,34 +2611,26 @@ def _run_repl_body(
         kind = classify_input(line)
         if kind == "shortcut":
             if line == "/help":
-                print("\n支持的命令路由:")
-                print("  /status      查看当期阶段状态与推荐命令")
-                print("  /approvals   查看当期挂起的停机点审批对象")
-                print("  /approve     批准停机点: /approve <stop> [--id <approval_id>]")
-                print("  /reject      驳回停机点: /reject <stop> [--id <approval_id>] <哪段> <问题>")
-                print("  /board       查看全局期看板")
-                print("  /run <cmd>   安全执行白名单 pipeline 命令（先回显、按 y 确认）")
-                print("  /voice       顺听极简纠错模式")
-                print("  /save-script 停机点组件子命令族（等 8 个）: /save-script /seal-script /voice-info /voice-parse /voice-add /voice-revert /voice-retract /record-time")
-                print("  /import-cover 导入封面图（REPL 形态）: /import-cover <源图片路径>")
-                print("  /memory      查看跨期记忆全文（/memory show）")
-                print("  /memory check 记忆自检（退出码 0 合法 / 1 不合法 / 2 不可达 / 3 合法但来源未确认）")
-                print("  /memory ack  确认 ava 之外的改动并重新对齐 sha（仅交互终端）")
-                print("  /memory digest 聚合各期驳回反馈，在独立子会话里提议记忆条目")
-                print("  /compact     压缩上下文：较早的对话并成一条摘要，保留近期原文（D62）")
-                print("  /model       看 / 切换本会话模型：/model、/model <名>、/model default（D91）")
-                print("  /thinking    看 / 切换本会话推理强度：/thinking、/thinking <none|low|medium|high|…>、/thinking default")
-                print("  /login       查看或登录模型服务商（/login [<provider>]、/logout <provider>；凭据推荐走桌面端弹窗或 --auth-complete --stdin）（D170）")
-                print("  /scout       生成 pi 侦察派工单（缺料/缺笔记/标题候选）")
-                print("  /patch       临时补料派工单（/scout --type patch 别名）")
-                print("  /asset       切换至 asset scope (Phase 0 资产与云端调度)")
-                print("  /pipeline    切回流水线工序模式")
-                print("  /chat        creative scope 选题发散")
-                print("  /script      聚焦写稿 (02-script.draft.md)")
+                print("\n常用命令:")
+                print("  /status      查看当期阶段状态与下一步建议")
+                print("  /approvals   查看当前待你审批的停机点")
+                print("  /approve     批准停机点: /approve <02.5|03.5|05|09> [--id <id>] [--cover <图> --title <标题>]")
+                print("  /reject      打回停机点: /reject <stop> [--id <id>] <哪段> <问题>")
+                print("  /board       查看全部期看板")
+                print("  /run <cmd>   执行流水线命令（先预览并确认）")
+                print("  /voice       进入顺听与读音纠错模式")
+                print("  /import-cover 导入封面图: /import-cover <图片路径>")
+                print("  /memory      跨期记忆（/memory show / check / ack / digest）")
+                print("  /compact     压缩较早的对话以释放上下文")
+                print("  /model       查看或切换本会话模型（/model、/model <名>、/model default）")
+                print("  /thinking    查看或切换推理强度（/thinking、/thinking <档位|default>）")
+                print("  /login       查看或登录模型服务商（/login [<服务商ID>]，/logout <服务商ID>）")
+                print("  /scout       生成素材/笔记侦察任务单（/patch 为临时补料别名）")
+                print("  /asset       进入素材与云端模式（/pipeline 切回工序模式）")
+                print("  /chat        进入自由讨论模式（/script 聚焦写稿）")
                 print("  /quit        退出 ava\n")
-                print("  Ctrl-C       回合中按一次：停止本轮、先收尾再回到提示符；在提示符处按一次：退出 ava")
-                print("  --continue   恢复本期的会话: ava <期> --continue [<会话号前缀>]（ava <期> --sessions 列出全部会话）")
-                print("  提示: 手工指定含空格的路径参数时请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
+                print("  Ctrl-C       回复进行中按一次停止本轮；提示符处按一次退出")
+                print("  提示: 含空格的路径参数请用引号包裹（如 '/Volumes/Samsung T7/...'）。\n")
                 continue
 
             if line == "/status":
@@ -2553,10 +2674,7 @@ def _run_repl_body(
                 continue
 
             if line.split(maxsplit=1)[0] in ("/login", "/logout"):
-                from pipeline.agent import auth as auth_mod
-
-                ok, reply, _ = auth_mod.run_auth_command(line, root=root)
-                print(reply if ok else f"[ERROR] {reply}")
+                _handle_repl_auth(line, root=root)
                 continue
 
             if line == "/patch" or line.startswith("/patch "):
@@ -2637,8 +2755,7 @@ def _run_repl_body(
                     episode_dir=ep_dir,
                 )
                 cmd_str = " ".join(outcome["argv"])
-                print(f"\n  待执行: {cmd_str}")
-                print(card, end="")
+                print("\n" + card, end="")
                 t_card = time.time()
                 try:
                     confirm = input().strip().lower()
@@ -2797,7 +2914,7 @@ def explain_episode_target(target: str, *, project: Path | None = None) -> tuple
     lit = project_mod.literal_episode_path(raw) if Path(raw).is_absolute() else (
         paths.ROOT / "data" / "episodes" / raw.removeprefix("data/episodes/") if raw else None)
     if lit is not None and ".." not in Path(raw).parts and classify_dir(lit) == "project":
-        return None, f"「{target}」是企划目录，不是期：用企划会话（protocol --project）"
+        return None, f"「{target}」是企划目录，不是单期：请在桌面端打开该企划会话，或指定具体卷（如 {lit.name}/<卷名>）"
     return None, f"期目录不存在：{target}"
 
 
@@ -2830,14 +2947,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 子命令 0: ava --continue [<会话号前缀>] / ava --sessions（不带期）
     if args and args[0] in ("--continue", "--sessions"):
+        if args[0] == "--sessions":
+            print("[ERROR] 用法: ava <期名> --sessions（列出该期的历史会话）", file=sys.stderr)
+            return 2
         if not sys.stdin.isatty():
             print(f"[ERROR] {args[0]} 只在交互终端可用（非 TTY 不进入 REPL）", file=sys.stderr)
-            return 2
-        if args[0] == "--sessions":
-            if len(args) != 1:
-                print("[ERROR] 用法: ava --sessions（列期请用 ava --sessions 之外的形式）", file=sys.stderr)
-                return 2
-            print("[ERROR] 用法: ava <期> --sessions", file=sys.stderr)
             return 2
         if len(args) > 2:
             print("[ERROR] 用法: ava --continue [<会话号前缀>]", file=sys.stderr)
@@ -2846,7 +2960,7 @@ def main(argv: list[str] | None = None) -> int:
         if ep_dir is None:
             print("[会话] 没有任何期存在会话记录。")
             return 0
-        print(f"[会话] 最近写入的期：{ep_dir.name}")
+        print(f"[会话] 最近写入的期：{_episode_display_key(ep_dir)}")
         return _continue_repl(ep_dir, args[1] if len(args) > 1 else None)
 
     # D81：ava new-project <企划名>
@@ -2861,7 +2975,10 @@ def main(argv: list[str] | None = None) -> int:
         if len(args) != 4:
             print("[ERROR] 用法: ava new --project <企划> <卷名>", file=sys.stderr)
             return 2
-        return create_new_episode(args[3], project=args[2])
+        rc = create_new_episode(args[3], project=args[2])
+        if rc != 0 or not sys.stdin.isatty():
+            return rc
+        return run_repl(paths.ROOT / "data" / "episodes" / args[2] / args[3])
 
     # D81：/project-meta --dir=<企划目录>（宿主取 00-project.md 解析结果；只读）
     if args and args[0] == "/project-meta":
@@ -2947,6 +3064,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args[:2] == [IDEA_KEYWORD, "/purge-trash"]:
         return _purge_trash(paths.ROOT / "data" / IDEA_DIR / "_agent" / "session-trash", args[2:])
+    if args[:2] == [IDEA_KEYWORD, "/restore-trash"]:
+        return _restore_trash(
+            paths.ROOT / "data" / IDEA_DIR,
+            lambda: acquire_idea_lease(paths.ROOT),
+            args[2:],
+            check_data_root=paths.ROOT,
+        )
 
     # 子命令 2: ava idea (无期选题会话)
     if args[0] == IDEA_KEYWORD:

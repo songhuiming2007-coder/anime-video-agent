@@ -557,7 +557,7 @@ def test_m13_all_shortcuts_functional(tmp_path: Path, monkeypatch, capsys):
         assert cli.run_agent_loop(ep, scope_mode="auto", root=tmp_path) == 0
 
     out = capsys.readouterr().out
-    assert "支持的命令路由:" in out
+    assert "常用命令:" in out
     assert "02 脚本写作" in out
     assert "anime-video-agent-ava 统一制片工作台" in out
     assert "进入临时补料模式" in out
@@ -590,7 +590,7 @@ def test_m13_run_confirm_cancel(tmp_path: Path, monkeypatch, capsys):
         assert cli.run_agent_loop(ep, scope_mode="auto", root=tmp_path) == 0
 
     out = capsys.readouterr().out
-    assert "待执行:" in out
+    assert "命令:" in out
     assert "[CANCEL] 已取消执行" in out
 
 
