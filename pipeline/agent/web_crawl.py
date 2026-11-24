@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import atexit
 import ipaddress
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -122,6 +124,158 @@ def _resolve_bound_crawl4ai_dir() -> str | None:
     return str(Path(str(bound)).parent)
 
 
+# 复用常驻无头浏览器的并发槽上限（2026-11-24 03-破晓淬火实测 36 次 crawl 每次冷启/销毁 Chromium
+# 共耗 166.4 s；复用到同一后台事件循环 + 按 (base_dir, stealth) 缓存实例，同时用信号量限制并发页数防内存尖峰）。
+_CRAWL_MAX_CONCURRENT_PAGES = 4
+
+
+class _PersistentCrawlerRuntime:
+    """独立后台事件循环线程，按 `(base_dir, stealth)` 复用 `AsyncWebCrawler` 实例。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: Any = None
+        self._thread: threading.Thread | None = None
+        self._crawlers: dict[tuple[str, bool], Any] = {}
+        self._sem: Any = None
+
+    def _ensure_loop(self) -> Any:
+        import asyncio
+
+        with self._lock:
+            if self._loop is not None and not self._loop.is_closed():
+                return self._loop
+            loop = asyncio.new_event_loop()
+            ready = threading.Event()
+
+            def _runner() -> None:
+                asyncio.set_event_loop(loop)
+                ready.set()
+                loop.run_forever()
+
+            t = threading.Thread(target=_runner, name="ava-crawl4ai-loop", daemon=True)
+            t.start()
+            ready.wait()
+            self._loop = loop
+            self._thread = t
+            self._sem = None
+            return loop
+
+    def run_crawl(
+        self,
+        url: str,
+        *,
+        target_base_dir: str,
+        stealth: bool,
+        timeout_s: float,
+        crawler_cls: Any,
+        browser_cfg_cls: Any,
+        run_cfg_cls: Any,
+    ) -> dict[str, str]:
+        import asyncio
+
+        loop = self._ensure_loop()
+        key = (target_base_dir, bool(stealth))
+
+        async def _get_or_create() -> Any:
+            existing = self._crawlers.get(key)
+            if existing is not None:
+                return existing
+            browser_cfg = browser_cfg_cls(headless=True, enable_stealth=bool(stealth))
+            crawler = crawler_cls(config=browser_cfg)
+            await crawler.__aenter__()
+            self._crawlers[key] = crawler
+            return crawler
+
+        async def _evict() -> None:
+            old = self._crawlers.pop(key, None)
+            if old is not None:
+                try:
+                    await old.__aexit__(None, None, None)
+                except Exception:
+                    pass
+
+        async def _do_arun() -> dict[str, str]:
+            if self._sem is None:
+                self._sem = asyncio.Semaphore(_CRAWL_MAX_CONCURRENT_PAGES)
+            run_cfg = run_cfg_cls(page_timeout=int(timeout_s * 1000))
+            async with self._sem:
+                last_exc: Exception | None = None
+                for attempt in range(2):
+                    reused = key in self._crawlers
+                    crawler = await _get_or_create()
+                    try:
+                        res = await crawler.arun(url=url, config=run_cfg)
+                    except Exception as exc:
+                        last_exc = exc
+                        # 仅当复用已有浏览器实例时自动淘汰并冷启重拉一次（防长驻浏览器崩溃/断连）
+                        if reused and attempt == 0:
+                            await _evict()
+                            continue
+                        raise
+                    if not getattr(res, "success", True):
+                        err_msg = getattr(res, "error_message", "") or "crawl4ai arun failed"
+                        if reused and attempt == 0 and any(
+                            k in err_msg.lower() for k in ("target closed", "browser has been closed", "crashed")
+                        ):
+                            await _evict()
+                            continue
+                        raise RuntimeError(err_msg)
+                    md_obj = getattr(res, "markdown", None)
+                    if hasattr(md_obj, "fit_markdown") and md_obj.fit_markdown:
+                        md_text = str(md_obj.fit_markdown)
+                    elif hasattr(md_obj, "raw_markdown") and md_obj.raw_markdown:
+                        md_text = str(md_obj.raw_markdown)
+                    else:
+                        md_text = str(md_obj or "")
+                    final_u = str(getattr(res, "redirected_url", None) or getattr(res, "url", None) or url)
+                    return {"final_url": final_u, "markdown": md_text, "html": str(getattr(res, "html", "") or "")}
+                raise last_exc or RuntimeError("crawl4ai arun failed")
+
+        fut = asyncio.run_coroutine_threadsafe(_do_arun(), loop)
+        return fut.result()
+
+    def close_all(self) -> None:
+        import asyncio
+
+        with self._lock:
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                self._crawlers.clear()
+                return
+            self._loop = None
+            self._thread = None
+
+        async def _shutdown() -> None:
+            items = list(self._crawlers.values())
+            self._crawlers.clear()
+            for crawler in items:
+                try:
+                    await crawler.__aexit__(None, None, None)
+                except Exception:
+                    pass
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+            fut.result(timeout=5.0)
+        except Exception:
+            pass
+        finally:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+
+
+_CRAWLER_RUNTIME = _PersistentCrawlerRuntime()
+atexit.register(_CRAWLER_RUNTIME.close_all)
+
+
+def close_crawlers() -> None:
+    """显式关闭复用的无头浏览器实例与后台事件循环（进程退出或测试收尾用）。"""
+    _CRAWLER_RUNTIME.close_all()
+
+
 def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str, str]:
     """crawl4ai 封装（函数级延迟 import，基于实测版本 crawl4ai 0.9.4 钉死，S16 🔵-6）。
 
@@ -130,8 +284,8 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
        （严禁用 setdefault，防外部/pi 预设值导致两边共用 ~/.crawl4ai）；若导入前 crawl4ai 已在
        sys.modules 且其 crawl4ai.async_database.base_directory 的父目录非目标目录（或不可知），
        当场抛 ValueError 诚实失败（S16 🔵-5）；
-    3. 经 ThreadPoolExecutor(max_workers=1).submit(asyncio.run, _run()).result() 在独立线程执行协程，
-       隔离 playwright sync API 遗留的线程级 _set_running_loop 状态（S16 🟡-2）；
+    3. 经独立常驻事件循环线程 `_CRAWLER_RUNTIME` 复用 `AsyncWebCrawler` 实例（隔离 playwright sync API
+       线程状态，同时避免每次调用冷启动/销毁无头浏览器，支持并发多页抓取）；
     4. import 失败（部分/损坏安装，🔴-1）与渲染异常一律包装为 ValueError（含升级 browser 提示）。
     前置：人工 `uv run crawl4ai-setup` 装浏览器二进制（🟡-6，§10 RF-2）。
     """
@@ -153,9 +307,7 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
     os.environ["CRAWL4_AI_BASE_DIRECTORY"] = target_base_dir
 
     try:
-        import asyncio
-        import concurrent.futures
-        import crawl4ai  # type: ignore[import-not-found]
+        import crawl4ai  # noqa: F401  # type: ignore[import-not-found]
         from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ValueError(
@@ -163,33 +315,16 @@ def _default_crawl_fn(url: str, *, stealth: bool, timeout_s: float) -> dict[str,
             "请重装: uv sync --extra crawl（uv sync 会卸掉未列出的 extras，apple/dev 等须一并列出）"
         ) from exc
 
-    async def _run() -> dict[str, str]:
-        browser_cfg = BrowserConfig(
-            headless=True,
-            enable_stealth=bool(stealth),
-        )
-        run_cfg = CrawlerRunConfig(
-            page_timeout=int(timeout_s * 1000),
-        )
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            res = await crawler.arun(url=url, config=run_cfg)
-            if not getattr(res, "success", True):
-                err_msg = getattr(res, "error_message", "") or "crawl4ai arun failed"
-                raise RuntimeError(err_msg)
-            md_obj = getattr(res, "markdown", None)
-            if hasattr(md_obj, "fit_markdown") and md_obj.fit_markdown:
-                md_text = str(md_obj.fit_markdown)
-            elif hasattr(md_obj, "raw_markdown") and md_obj.raw_markdown:
-                md_text = str(md_obj.raw_markdown)
-            else:
-                md_text = str(md_obj or "")
-            final_u = str(getattr(res, "redirected_url", None) or getattr(res, "url", None) or url)
-            # 渲染后的 HTML 只用来抽图片直链（D84 PR-E），不进返回值
-            return {"final_url": final_u, "markdown": md_text, "html": str(getattr(res, "html", "") or "")}
-
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, _run()).result()
+        return _CRAWLER_RUNTIME.run_crawl(
+            url,
+            target_base_dir=target_base_dir,
+            stealth=bool(stealth),
+            timeout_s=timeout_s,
+            crawler_cls=AsyncWebCrawler,
+            browser_cfg_cls=BrowserConfig,
+            run_cfg_cls=CrawlerRunConfig,
+        )
     except PermissionError:
         raise
     except Exception as exc:

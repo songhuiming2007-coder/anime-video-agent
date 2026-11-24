@@ -260,6 +260,7 @@ def _card(text: str) -> dict:
 
 
 def test_wire_keeps_only_latest_status_card():
+    """drop_stale_status_cards 纯函数仍只留最新卡；_wire_messages 为保 KV Cache 前缀稳定保留历史卡并剥除内部键。"""
     from pipeline.agent.compact import drop_stale_status_cards
 
     msgs = [
@@ -270,10 +271,12 @@ def test_wire_keeps_only_latest_status_card():
         _card("[状态卡]\n新"),
         _user("hello2"),
     ]
-    assert drop_stale_status_cards(msgs) is not msgs
+    dropped = drop_stale_status_cards(msgs)
+    assert dropped is not msgs
+    assert [m["content"] for m in dropped if str(m.get("content", "")).startswith("[状态卡]")] == ["[状态卡]\n新"]
     wired = _wire_messages(msgs, "reasoning")
     cards = [m["content"] for m in wired if str(m.get("content", "")).startswith("[状态卡]")]
-    assert cards == ["[状态卡]\n新"]
+    assert cards == ["[状态卡]\n旧", "[状态卡]\n新"]
     assert all(STATUS_CARD_KEY not in m for m in wired)
     prefix = msgs[:3]
     wired_prefix = _wire_messages(prefix, "reasoning")
@@ -281,8 +284,8 @@ def test_wire_keeps_only_latest_status_card():
 
 
 def test_status_card_prefix_in_user_text_is_not_a_card():
-    """人说「[状态卡] …」必须原样到 wire / 压缩尾部。"""
-    from pipeline.agent.compact import kept_tail
+    """人说「[状态卡] …」必须原样到 wire / 压缩尾部；drop_stale_status_cards 也不得误删用户正文。"""
+    from pipeline.agent.compact import drop_stale_status_cards, kept_tail
     from pipeline.agent.protocol import _send_history
 
     question = "[状态卡] 这行是什么意思？"
@@ -295,11 +298,14 @@ def test_status_card_prefix_in_user_text_is_not_a_card():
     ]
     wired = _wire_messages(mem, "reasoning")
     assert any(m["content"] == question for m in wired)
-    wired_cards = [
-        m["content"] for m in wired
+    assert all(STATUS_CARD_KEY not in m for m in wired)
+    dropped = drop_stale_status_cards(mem)
+    assert any(m["content"] == question for m in dropped)
+    dropped_cards = [
+        m["content"] for m in dropped
         if m.get("role") == "user" and str(m.get("content", "")).startswith("[状态卡]\n")
     ]
-    assert wired_cards == ["[状态卡]\n工序 03"]
+    assert dropped_cards == ["[状态卡]\n工序 03"]
     tail = kept_tail(mem, 1)
     assert any(m["content"] == question for m in tail)
     assert not any(m.get(STATUS_CARD_KEY) for m in tail)

@@ -391,6 +391,15 @@ class ProtocolChannel:
                 "t": "assistant", "turn_id": str(payload.get("turn_id") or self.slots.get("turn_id") or ""),
                 "kind": "answer", "text": str(payload.get("text", "")),
             })
+        elif kind == "assistant_delta":
+            # 流式正文增量帧：模型生成期间实时推上屏，消除长回复全量阻塞黑屏
+            text = str(payload.get("text", ""))
+            if text:
+                self.writer.send({
+                    "t": "assistant_delta",
+                    "turn_id": str(payload.get("turn_id") or self.slots.get("turn_id") or ""),
+                    "text": text,
+                })
         # "echo" / "card"：终端专用，协议下由 tool 帧的 summary 与 request 帧承担
 
     # ---- 人审 ----

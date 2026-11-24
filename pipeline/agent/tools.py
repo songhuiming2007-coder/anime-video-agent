@@ -865,6 +865,10 @@ MAX_READ_BYTES = 200_000      # read_artifact 单次读出上限
 MAX_NOTE_BYTES = 1_000_000    # search_notes 单文件扫描上限
 MAX_NOTE_LIMIT = 20           # search_notes 命中条数上限
 NOTE_SUFFIXES = {".md", ".txt"}
+# data/library/ 下纯媒体/关键帧/索引/下载等非笔记顶层目录（2026-11-24 实测：shots/ 单目录含
+# 103,109 张关键帧 JPEG、0 篇笔记，rglob("*") 扫全盘 116,047 项单次耗时 600–1,683 ms；
+# 跳过以下已知非笔记目录后保留 notes/、fetch-log/、timeline/、incoming/、_backup/ 及用户自定义番剧目录）。
+_NOTE_SCAN_SKIP_DIRS = frozenset({"shots", "vindex", "index", "attic", "raw", "bgm", "downloads"})
 
 
 @dataclass
@@ -2170,27 +2174,41 @@ def _tool_search_notes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     needle = query.lower()
     hits: list[dict[str, str]] = []
     excluded: list[str] = []
-    for path in sorted(library.rglob("*")):
+    lib_str = str(library)
+    for dirpath, dirnames, filenames in os.walk(lib_str, followlinks=False):
         if len(hits) >= limit:
             break
-        if not path.is_file() or path.is_symlink():
-            continue
-        if path.suffix.lower() not in NOTE_SUFFIXES:
-            continue
-        if _is_memory_file(path, ctx):
-            excluded.append(path.name)      # 跳过要显式说明，不静默
-            continue
-        if path.stat().st_size > MAX_NOTE_BYTES:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        idx = text.lower().find(needle)
-        if idx < 0:
-            continue
-        snippet = text[max(0, idx - 80): idx + len(query) + 160].replace("\n", " ").strip()
-        hits.append({"path": str(path.relative_to(library)), "snippet": snippet})
+        is_root = dirpath == lib_str
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".")
+            and not (is_root and d in _NOTE_SCAN_SKIP_DIRS)
+            and not os.path.islink(os.path.join(dirpath, d))
+        )
+        for fname in sorted(filenames):
+            if len(hits) >= limit:
+                break
+            _, ext = os.path.splitext(fname)
+            if ext.lower() not in NOTE_SUFFIXES:
+                continue
+            full_str = os.path.join(dirpath, fname)
+            if os.path.islink(full_str):
+                continue
+            path = Path(full_str)
+            if _is_memory_file(path, ctx):
+                excluded.append(fname)      # 跳过要显式说明，不静默
+                continue
+            try:
+                if os.path.getsize(full_str) > MAX_NOTE_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            idx = text.lower().find(needle)
+            if idx < 0:
+                continue
+            snippet = text[max(0, idx - 80): idx + len(query) + 160].replace("\n", " ").strip()
+            hits.append({"path": str(path.relative_to(library)), "snippet": snippet})
 
     result: dict[str, Any] = {"query": query, "hits": hits, "truncated": len(hits) >= limit}
     if excluded:

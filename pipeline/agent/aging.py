@@ -119,6 +119,32 @@ def age_tool_results(
     return aged
 
 
+def age_tool_results_at_indices(
+    messages: list[Any], indices: set[int] | frozenset[int]
+) -> list[Any]:
+    """将指定下标处的大体积 tool 消息投影为占位串（纯函数，不改入参）。
+
+    供回合内单调老化水位使用：已老化的下标不会复活，且在未再次越过阈值前不再改写新批次，
+    从而在后续同回合调用中保持前缀字节稳定以命中 KV Cache。
+    """
+    if not indices:
+        return messages
+    names = _tool_names(messages)
+    out = list(messages)
+    for i in indices:
+        if not (0 <= i < len(out)):
+            continue
+        msg = out[i]
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not (isinstance(content, str) and len(content) > AGED_TOOL_MAX_CHARS):
+            continue
+        tool_name = names.get(str(msg.get("tool_call_id") or ""))
+        out[i] = {**msg, "content": _placeholder(tool_name, content)}
+    return out
+
+
 def age_current_turn_tool_results(
     messages: list[Any],
     *,

@@ -88,3 +88,64 @@ describe("TV-10 reset-convs（onConnect）", () => {
     expect(r.store.convs["ep:A"].entries).toEqual([]);
   });
 });
+
+describe("流式 assistant_delta 与并发工具折行（convFold）", () => {
+  it("assistant_delta 逐步拼接，最终 assistant 帧原地替换不重复成行", () => {
+    const f = (seq: number, t: OutFrame["t"], extra: Record<string, unknown>): ConvEntry => ({
+      k: "frame",
+      at: seq * 10,
+      frame: { v: 1, seq, sid: "s1", t, ...extra } as OutFrame,
+    });
+    const { store } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, "turn_started", { turn_id: "t1" }),
+          f(2, "assistant_delta", { turn_id: "t1", text: "你好，" }),
+          f(3, "assistant_delta", { turn_id: "t1", text: "世界" }),
+        ]),
+      },
+    );
+    const mid = foldOf(store.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(mid).toHaveLength(1);
+    expect(mid[0]).toMatchObject({ k: "assistant", text: "你好，世界", streaming: true });
+
+    const { store: s2 } = apply(store, {
+      type: "delta",
+      delta: delta("ep:A", "b1:1", 2, [f(4, "assistant", { turn_id: "t1", kind: "answer", text: "你好，世界！" })]),
+    });
+    const fin = foldOf(s2.convs["ep:A"]).rows.filter((r) => r.k === "assistant");
+    expect(fin).toHaveLength(1);
+    expect(fin[0]).toMatchObject({ k: "assistant", text: "你好，世界！" });
+    expect((fin[0] as { streaming?: boolean }).streaming).toBeUndefined();
+  });
+
+  it("并发多工具乱序结束时按 turn_id:index 精确匹配各自工具行", () => {
+    const f = (seq: number, at: number, t: OutFrame["t"], extra: Record<string, unknown>): ConvEntry => ({
+      k: "frame",
+      at,
+      frame: { v: 1, seq, sid: "s1", t, ...extra } as OutFrame,
+    });
+    const { store } = apply(
+      emptyConvStore,
+      { type: "snapshot", snap: snap("ep:A", "b1:1") },
+      {
+        type: "delta",
+        delta: delta("ep:A", "b1:1", 1, [
+          f(1, 100, "turn_started", { turn_id: "t1" }),
+          f(2, 110, "tool", { turn_id: "t1", phase: "start", index: 0, name: "web_fetch", summary: "u0", ok: null, observation: null, duplicate: false }),
+          f(3, 115, "tool", { turn_id: "t1", phase: "start", index: 1, name: "web_fetch", summary: "u1", ok: null, observation: null, duplicate: false }),
+          // index 0 先于 index 1 结束（乱序于 lastTool.idx=1）
+          f(4, 210, "tool", { turn_id: "t1", phase: "end", index: 0, name: "web_fetch", summary: "u0", ok: true, observation: "ok0", duplicate: false }),
+          f(5, 315, "tool", { turn_id: "t1", phase: "end", index: 1, name: "web_fetch", summary: "u1", ok: false, observation: "err1", duplicate: false }),
+        ]),
+      },
+    );
+    const tools = foldOf(store.convs["ep:A"]).rows.filter((r) => r.k === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({ id: "t1:0", ok: true, observation: "ok0", durationMs: 100 });
+    expect(tools[1]).toMatchObject({ id: "t1:1", ok: false, observation: "err1", durationMs: 200 });
+  });
+});

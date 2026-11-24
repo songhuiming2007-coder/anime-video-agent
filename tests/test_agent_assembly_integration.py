@@ -158,8 +158,8 @@ def test_step_switch_incremental_injection_and_deduplication(tmp_path: Path):
     # 不应追加新的 [系统提示更新] 注入
     user_injections_count_r2 = sum(1 for m in messages if "[系统提示更新]" in str(m.get("content", "")))
     assert user_injections_count_r2 == 1
-    # messages 增加了一轮 状态卡 + user("那我们就定这个选题") + assistant("选题继续")
-    assert len(messages) == 8
+    # 状态卡未变时不再重复追加（保 KV Cache 前缀稳定），故本轮仅增加 user + assistant 共 2 条（5 → 7）
+    assert len(messages) == 7
 
     # --- 轮次 3：工序切换至 02 脚本写作 ---
     # 写入 01-topic.md，使工序推导进入 02
@@ -246,7 +246,8 @@ def test_resident_prompt_prefix_byte_level_identical_across_turns(tmp_path: Path
     assert cards[0] != cards[1]
     from pipeline.agent.llm import _wire_messages
     wired_cards = [m["content"] for m in _wire_messages(messages, "default") if str(m.get("content", "")).startswith("[状态卡]")]
-    assert wired_cards == [cards[-1]]
+    # 为避免中段删卡击穿 Google Implicit KV Cache（96.8% → 0.0%），_wire_messages 保留历史状态卡
+    assert wired_cards == cards
 
 
 def test_idea_scope_zero_step_injection(tmp_path: Path):

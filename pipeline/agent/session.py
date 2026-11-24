@@ -1045,6 +1045,10 @@ class AgentSession:
         self._egress_trusted: list[str] = []
         self._egress_skip_turn = ""   # 本回合已提示过「预检不过、这次不压」
         self._root: Path | None = None
+        # 流式正文增量聚合缓冲（避免逐 token 发海量 IPC 帧：满 48 字、遇换行或距上次推送 >=50 ms 即刷出）
+        self._stream_buf: list[str] = []
+        self._stream_buf_chars = 0
+        self._stream_last_flush = 0.0
 
     # ---- 会话记录 ----
 
@@ -1068,6 +1072,8 @@ class AgentSession:
 
     def _commit(self, message: dict[str, Any], origin: str, docs: list[dict[str, str]] | None = None) -> None:
         """唯一提交入口：写盘 → 追加进内存（§2.5）。中断不可能落在两步之间。"""
+        if origin == "assistant":
+            self._flush_text_delta()
         record: dict[str, Any] = {"k": "msg", "message": message}
         if docs:
             record["docs"] = docs
@@ -1261,6 +1267,7 @@ class AgentSession:
         outcome["tokens_after"] = compaction.get("tokens_after")
         from pipeline.agent.tools import turn_error_text  # 延迟 import：与本文件其余 tools 引用同口径（避循环）
 
+        self._flush_text_delta()
         with self.interrupt.absorbed():
             self._record({
                 "k": "turn_end",
@@ -1274,6 +1281,8 @@ class AgentSession:
                 "duration_s": round(float(outcome.get("elapsed_s", 0.0)), 3),
                 "prompt_chars": outcome.get("prompt_chars", 0),
                 "prompt_tokens": outcome.get("prompt_tokens"),  # D56：服务商给的输入 token；拿不到为 None
+                "cached_tokens": outcome.get("cached_tokens"),  # 服务商缓存命中 token（Google cachedContentTokenCount 等）
+                "thoughts_tokens": outcome.get("thoughts_tokens"),  # 服务商思考 token（Google thoughtsTokenCount 等）
                 "lookups": outcome.get("lookups"),  # D48 ①：本回合查证调用按类计数；本地指令等无模型回合为 None
                 # 报错原文（脱敏、截断）：0 次模型调用就失败的回合，事后只能靠这一行知道是哪一类错（2026-10-13）
                 "error": turn_error_text(outcome.get("error"), self._root),
@@ -1399,10 +1408,18 @@ class AgentSession:
         self._reinject_changed(messages, tracker, scope, status, root=root)
         self._inject_project(tracker, root=root)
         if status_card and status_card.strip():
-            self._commit(
-                {"role": "user", "content": status_card, STATUS_CARD_KEY: True},
-                "injection",
-            )
+            # 若最近一张状态卡与本轮完全逐字相同，不再重复追加（保持前缀稳定以命中 Implicit KV Cache，
+            # 实测 02-长夜盲行连续 70+ 轮处于同一工序时状态卡字节级不变）。
+            last_card_text: str | None = None
+            for existing in reversed(messages):
+                if isinstance(existing, dict) and existing.get(STATUS_CARD_KEY):
+                    last_card_text = str(existing.get("content") or "")
+                    break
+            if last_card_text != status_card:
+                self._commit(
+                    {"role": "user", "content": status_card, STATUS_CARD_KEY: True},
+                    "injection",
+                )
 
         if load_llm_config(root) is None:
             return local_directive_message(scope, "缺少 config/agent.json 或环境变量密钥")
@@ -1801,7 +1818,27 @@ class AgentSession:
             on_steer=self._on_steer,
             on_llm_retry=self._on_llm_retry,
             on_context_guard=self._on_context_guard,
+            on_text_delta=self._on_text_delta,
         )
+
+    def _on_text_delta(self, text: str) -> None:
+        if not text:
+            return
+        now = time.monotonic()
+        self._stream_buf.append(text)
+        self._stream_buf_chars += len(text)
+        if self._stream_last_flush == 0.0 or self._stream_buf_chars >= 48 or "\n" in text or (now - self._stream_last_flush) >= 0.05:
+            self._flush_text_delta(now)
+
+    def _flush_text_delta(self, now: float | None = None) -> None:
+        if not self._stream_buf:
+            return
+        chunk = "".join(self._stream_buf)
+        self._stream_buf.clear()
+        self._stream_buf_chars = 0
+        self._stream_last_flush = time.monotonic() if now is None else now
+        if self.channel is not None:
+            self.channel.show("assistant_delta", {"turn_id": self._turn_id, "text": chunk})
 
     def _on_context_guard(self, text: str) -> None:
         """回合内防爆仓老化或超限重试生效时的前端提示。"""

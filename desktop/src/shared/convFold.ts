@@ -33,7 +33,7 @@ export type ToolRow = {
 
 export type ConvRow =
   | { k: "user"; at: number; text: string; hist?: true }
-  | { k: "assistant"; at: number; kind: "answer" | "wrapup" | "local_note"; text: string; label: string | null; hist?: true }
+  | { k: "assistant"; at: number; kind: "answer" | "wrapup" | "local_note"; text: string; label: string | null; hist?: true; streaming?: true }
   | ToolRow
   | { k: "log"; at: number; lines: string[] }
   | { k: "card"; at: number; requestId: string; label: string; text: string; status: "open" | "approved" | "rejected" | "voided"; detail?: string }
@@ -279,21 +279,72 @@ export function bashSummary(command: string | null): string {
 /**
  * 把一条已校验的帧折进行序列；`lastTool` 是当前回合里最近一个尚未结束的工具行下标（-1 = 无）；
  */
+function settleStreamingAssistant(rows: ConvRow[]): void {
+  const tail = rows[rows.length - 1];
+  if (tail && tail.k === "assistant" && tail.streaming) {
+    delete tail.streaming;
+  }
+}
+
+function findOpenToolIdx(rows: ConvRow[], id: string, fallbackIdx: number): number {
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const r = rows[i];
+    if (r && r.k === "tool" && r.ok === null && r.id === id) return i;
+  }
+  const fb = fallbackIdx >= 0 ? rows[fallbackIdx] : undefined;
+  if (fb && fb.k === "tool" && fb.ok === null) return fallbackIdx;
+  return -1;
+}
+
+function latestOpenToolIdx(rows: ConvRow[]): number {
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const r = rows[i];
+    if (r && r.k === "tool" && r.ok === null) return i;
+  }
+  return -1;
+}
+
 function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: number }): void {
   switch (f.t) {
-    case "assistant":
-      rows.push({ k: "assistant", at, kind: String(f.kind) as "answer" | "wrapup" | "local_note", text: f.text as string, label: null });
+    case "assistant_delta": {
+      const chunk = String(f.text ?? "");
+      if (!chunk) break;
+      const tail = rows[rows.length - 1];
+      if (tail && tail.k === "assistant" && tail.streaming) {
+        tail.text += chunk;
+      } else {
+        rows.push({ k: "assistant", at, kind: "answer", text: chunk, label: null, streaming: true });
+      }
       break;
+    }
+    case "assistant": {
+      const nextRow: Extract<ConvRow, { k: "assistant" }> = {
+        k: "assistant",
+        at,
+        kind: String(f.kind) as "answer" | "wrapup" | "local_note",
+        text: f.text as string,
+        label: null,
+      };
+      const tail = rows[rows.length - 1];
+      if (tail && tail.k === "assistant" && tail.streaming) {
+        rows[rows.length - 1] = nextRow;
+      } else {
+        rows.push(nextRow);
+      }
+      break;
+    }
     case "tool": {
+      const id = `${String(f.turn_id)}:${String(f.index)}`;
       if (f.phase === "start") {
-        rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}`, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: null, verdict: null });
+        settleStreamingAssistant(rows);
+        rows.push({ k: "tool", at, id, name: String(f.name), summary: String(f.summary), ok: null, duplicate: false, durationMs: null, observation: null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: null, verdict: null });
         lastTool.idx = rows.length - 1;
       } else {
-        const idx = lastTool.idx;
+        const idx = findOpenToolIdx(rows, id, lastTool.idx);
         const row = idx >= 0 ? rows[idx] : undefined;
         if (!row || row.k !== "tool" || row.ok !== null) {
           // 孤立 tool{end}（缓冲截头后会遇到）：显式成行，不崩、不吞
-          rows.push({ k: "tool", at, id: `${String(f.turn_id)}:${String(f.index)}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: handoffOf(f), verdict: verdictOf(f) });
+          rows.push({ k: "tool", at, id: `${id}:end@${String(rows.length)}`, name: String(f.name), summary: String(f.summary), ok: f.ok as boolean | null, duplicate: f.duplicate === true, durationMs: null, observation: (f.observation as string | null) ?? null, logs: [], command: commandOf(f), description: descriptionOf(f), handoff: handoffOf(f), verdict: verdictOf(f) });
         } else {
           row.ok = f.ok as boolean | null;
           row.duplicate = f.duplicate === true;
@@ -301,7 +352,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
           row.observation = (f.observation as string | null) ?? null;
           row.handoff = handoffOf(f);
           row.verdict = verdictOf(f);
-          lastTool.idx = -1;
+          lastTool.idx = latestOpenToolIdx(rows);
         }
       }
       break;
@@ -345,6 +396,7 @@ function foldFrame(rows: ConvRow[], f: OutFrame, at: number, lastTool: { idx: nu
       rows.push({ k: "notice", at, level: "error", code: String(f.code), text: String(f.message) });
       break;
     case "turn_finished":
+      settleStreamingAssistant(rows);
       // D91：/model、/thinking 的命令回合不进模型，「0 次模型调用」脚注是噪声
       if (f.stopped === "command") break;
       rows.push({ k: "footer", at, text: footerText(f), stopped: String(f.stopped), brief: footerBrief(f), claims: unbackedClaims(f, rows) });

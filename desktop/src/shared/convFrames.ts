@@ -7,6 +7,7 @@ export const OUT_TYPES = [
   "ready",
   "history",
   "turn_started",
+  "assistant_delta",
   "assistant",
   "tool",
   "request",
@@ -64,6 +65,7 @@ export const REQUIRED: Record<OutType, Record<string, readonly Kind[]>> = {
   },
   history: { index: ["number"], role: ["string"], text: ["string"], name: ["string", "null"] },
   turn_started: { turn_id: ["string"] },
+  assistant_delta: { turn_id: ["string"], text: ["string"] },
   assistant: { turn_id: ["string"], kind: ["string"], text: ["string"] },
   tool: {
     turn_id: ["string"],

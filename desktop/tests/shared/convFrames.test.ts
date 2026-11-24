@@ -7,6 +7,7 @@ const valid: Record<string, Record<string, unknown>> = {
   ready: { episode: "E", scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "volume", project: "P", model: "fake", reasoning_effort: null, model_source: "default", effort_source: "default" },
   history: { index: 0, role: "user", text: "hi", name: null },
   turn_started: { turn_id: "t1" },
+  assistant_delta: { turn_id: "t1", text: "你好" },
   assistant: { turn_id: "t1", kind: "answer", text: "ok" },
   tool: { turn_id: "t1", phase: "start", index: 0, name: "read_episode_file", summary: "02-script.md", ok: null, observation: null, duplicate: false },
   request: { request_id: "q1", kind: "tool_call", turn_id: "t1", title: "t", card_text: "c", fields: { tool: "browser" }, options: ["approve", "reject"], feedback_allowed: true },

@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import atexit
 import base64
+import concurrent.futures
 import configparser
 import contextlib
 import contextvars
@@ -21,10 +23,12 @@ import datetime
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import math
 import os
 import re
+import ssl
 import sys
 import threading
 import time
@@ -38,13 +42,16 @@ from typing import Any, Literal
 
 from pipeline import paths
 from pipeline.agent import model_switch, vision
-from pipeline.agent.aging import age_current_turn_tool_results, age_tool_results
+from pipeline.agent.aging import (
+    age_current_turn_tool_results,
+    age_tool_results,
+    age_tool_results_at_indices,
+)
 from pipeline.agent.compact import (
     CHARS_PER_TOKEN,
     COMPACT_KEY,
     STATUS_CARD_KEY,
     CompactConfigError,
-    drop_stale_status_cards,
     estimate_tokens,
     load_compact_config,
     message_chars,
@@ -66,6 +73,30 @@ from pipeline.agent.tools import (
 # 人随时可点停止，不靠这个数兜底。
 DEFAULT_REQUEST_TIMEOUT_S = 300
 
+# 流式首包到达后的块间空闲超时（秒）：首包前仍尊重 request_timeout_s（默认 300 s，兼容长思考静默），
+# 一旦开始收包，若连接中途假死超过 60 s 无新字节即主动断开重试，避免在半死连接上白等满 300 s
+# （2026-11-24 03-破晓淬火实测单次流假死触发 300 s 死等共卡 316.6 s）。
+STREAM_CHUNK_IDLE_TIMEOUT_S = 60.0
+
+# HTTP Keep-Alive 连接池参数（2026-11-24 实测 generativelanguage.googleapis.com 单次冷 TLS 握手
+# p50 = 1,519 ms，urllib 无复用每轮多交 ~1,857 ms；池化复用后首包头从 3,477 ms 降至 1,620 ms）。
+# 50 s 略低于 Google / Cloudflare / nginx 常见 60 s keep-alive 空闲回收线，提前丢弃快过期连接；
+# 每目标最多保留 4 条连接，足够工具循环与后台标题/压缩并发复用且不占过多 fd。
+_KEEPALIVE_IDLE_TTL_S = 50.0
+_KEEPALIVE_MAX_PER_KEY = 4
+
+# 同一批 tool_calls 中允许并发执行的 I/O 密集型只读免卡工具白名单（均无写盘副作用、无需人审卡）：
+# 2026-11-24 实测 6 URL web_fetch 串行 19.43 s → 6 并发 3.59 s（5.41×），大调研回合可省 70%–80% 工具耗时；
+# 本地毫秒级读盘工具（read_artifact / read_status / list_episodes，p50 < 5 ms）保持串行，避免线程切换开销
+# 并保持既有单步中断落点契约（TL-7）。并发上限 6 兼顾外部站点礼貌限流与线程内存占用。
+PARALLEL_READONLY_TOOLS: frozenset[str] = frozenset({
+    "web_fetch",
+    "web_search",
+    "crawl",
+    "search_notes",
+})
+MAX_PARALLEL_READONLY_TOOLS = 6
+
 # D93：可重试错误（超时、连不上、408/409/429/5xx）的自动重试：最多 3 次，等 2 / 4 / 8 s。
 # 取 Pi 的默认（`retry.maxRetries` 3、`baseDelayMs` 2000）；Codex 是 5 次。只在工具循环里重试
 # （主回合与收尾调用），标题 / 压缩 / 对抗审查保持单次。等待中点停止照常中断。
@@ -81,6 +112,18 @@ _RETRYABLE_HTTP = frozenset({408, 409, 429})
 # 走 ContextVar 而不是改返回值：chat_complete 有约 60 处测试替身按固定签名拦截，替身不写它，
 # 读出来就是 None，调用方回落到字数口径。
 _LAST_USAGE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("ava_llm_last_usage", default=None)
+# 流式文本增量回调：与 _LAST_USAGE 同走 ContextVar，避免改 chat_complete 签名而撞碎 ~60 处固定签名测试替身。
+_ON_TEXT_DELTA: contextvars.ContextVar[Callable[[str], None] | None] = contextvars.ContextVar(
+    "ava_llm_on_text_delta", default=None
+)
+
+
+def _emit_text_delta(text: str) -> None:
+    if not text:
+        return
+    cb = _ON_TEXT_DELTA.get()
+    if cb is not None:
+        cb(text)
 
 # 裸循环硬上限（D166）：bare=True 没有交互通道也没有判重保护，模型回复满 BARE_LOOP_CAP 条
 # **或**工具执行满 BARE_LOOP_CAP 次（先到先停）直接收尾停止——防死循环最后一道。
@@ -517,12 +560,12 @@ def _standard_message(message: dict[str, Any]) -> dict[str, Any]:
 def _wire_messages(messages: list[dict[str, Any]], purpose: str | None) -> list[dict[str, Any]]:
     """请求体用的消息序列（Spec 7 §2.7 决策 7b）。
 
-    没有任何消息带宿主内部标记（档位 / D62 压缩标记 / 状态卡键）且至多一张状态卡 → **原样返回同一个列表对象**。
+    没有任何消息带宿主内部标记（档位 / D62 压缩标记 / 状态卡键）→ **原样返回同一个列表对象**。
     压缩标记只删不改：摘要与重注入卡对模型就是普通 user 消息，模型看不见标记、也仿写不出（D62 §4.4）。
-    过期状态卡只留最后一张（认 `_ava_status_card` 键，不认正文前缀）。
-    P8 恒定的是 messages[0] 常驻层；状态卡是易变层，请求体在上一张卡位置起不与上一轮前缀重合。
+    历史状态卡不再在请求时从前缀中段删除（2026-11-24 实测 ~65k token 下删掉早先状态卡会让 Google
+    Implicit KV Cache 命中率从 96.8% 直接归零为 0.0%；重复未变的状态卡改为在 session._assemble 侧
+    直接不重复追加，旧卡留待压缩时由 kept_tail 统一清理）。
     """
-    messages = drop_stale_status_cards(messages)
     if not any(isinstance(m, dict) and not _INTERNAL_KEYS.isdisjoint(m) for m in messages):
         return messages
     wired: list[dict[str, Any]] = []
@@ -614,6 +657,8 @@ def _assemble_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[str, An
                 parts = text.setdefault(key, [])
                 if isinstance(val, str):
                     parts.append(val)
+                    if key == "content" and val:
+                        _emit_text_delta(val)
             elif key == "tool_calls":
                 saw_calls = True
                 for part in val or []:
@@ -821,9 +866,13 @@ def _anthropic_request(
 def _normalize_anthropic_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    inp = int(raw.get("input_tokens") or 0) + int(raw.get("cache_read_input_tokens") or 0) + int(raw.get("cache_creation_input_tokens") or 0)
+    cached = int(raw.get("cache_read_input_tokens") or 0)
+    inp = int(raw.get("input_tokens") or 0) + cached + int(raw.get("cache_creation_input_tokens") or 0)
     out = int(raw.get("output_tokens") or 0)
-    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+    res: dict[str, Any] = {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+    if cached > 0:
+        res["cached_tokens"] = cached
+    return res
 
 
 def _anthropic_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -904,6 +953,8 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
                 "input_parts": [],
                 "init_input": blk.get("input") if isinstance(blk.get("input"), dict) and blk.get("input") else None,
             }
+            if btype == "text" and blk.get("text"):
+                _emit_text_delta(str(blk["text"]))
             blocks[idx] = slot
         elif etype == "content_block_delta":
             idx = int(ev.get("index") or 0)
@@ -911,7 +962,10 @@ def _assemble_anthropic_stream(lines: Iterator[str]) -> tuple[dict[str, Any], di
             delta = ev.get("delta") or {}
             dtype = delta.get("type")
             if dtype == "text_delta":
-                slot["text"].append(str(delta.get("text") or ""))
+                t_chunk = str(delta.get("text") or "")
+                slot["text"].append(t_chunk)
+                if t_chunk:
+                    _emit_text_delta(t_chunk)
             elif dtype == "thinking_delta":
                 slot["thinking"].append(str(delta.get("thinking") or ""))
             elif dtype == "signature_delta":
@@ -1088,7 +1142,14 @@ def _normalize_codex_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     inp = int(raw.get("input_tokens") or raw.get("prompt_tokens") or 0)
     out = int(raw.get("output_tokens") or raw.get("completion_tokens") or 0)
     tot = int(raw.get("total_tokens") or (inp + out))
-    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+    res: dict[str, Any] = {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+    in_det = raw.get("input_tokens_details") or raw.get("prompt_tokens_details")
+    if isinstance(in_det, dict) and isinstance(in_det.get("cached_tokens"), int):
+        res["cached_tokens"] = int(in_det["cached_tokens"])
+    out_det = raw.get("output_tokens_details") or raw.get("completion_tokens_details")
+    if isinstance(out_det, dict) and isinstance(out_det.get("reasoning_tokens"), int):
+        res["thoughts_tokens"] = int(out_det["reasoning_tokens"])
+    return res
 
 
 def _codex_json_to_message(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1154,7 +1215,10 @@ def _assemble_codex_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[s
             err = ev.get("error") or (ev.get("response") or {}).get("error") or ev
             raise _stream_error(err)
         if etype == "response.output_text.delta":
-            texts.append(str(ev.get("delta") or ""))
+            t_chunk = str(ev.get("delta") or "")
+            texts.append(t_chunk)
+            if t_chunk:
+                _emit_text_delta(t_chunk)
         elif etype in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
             thinkings.append(str(ev.get("delta") or ""))
         elif etype == "response.output_item.added":
@@ -1664,7 +1728,11 @@ def _google_request(
             }
     if cfg.reasoning_effort is not None:
         lvl = model_switch.validate_effort(cfg.reasoning_effort)
-        if lvl and lvl != "none":
+        if lvl == "none":
+            # 2026-11-24 实测 gemini-4-hydrogen：省略 thinkingConfig 会回退到服务端默认高强度动态思考
+            # （~2,846 tok / 24.6 s 首字）；显式传 thinkingBudget=0 可压至 ~187 tok / 2.56 s 首字。
+            payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": 0}}
+        elif lvl:
             from pipeline.agent.compact import THINKING_BUDGETS
 
             budget = THINKING_BUDGETS.get(lvl, 8192)
@@ -1685,9 +1753,15 @@ def _normalize_google_usage(raw: dict[str, Any] | None) -> dict[str, Any] | None
     if not isinstance(raw, dict):
         return None
     inp = int(raw.get("promptTokenCount") or 0)
-    out = int(raw.get("candidatesTokenCount") or 0) + int(raw.get("thoughtsTokenCount") or 0)
+    thoughts = int(raw.get("thoughtsTokenCount") or 0)
+    out = int(raw.get("candidatesTokenCount") or 0) + thoughts
     tot = int(raw.get("totalTokenCount") or (inp + out))
-    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+    res: dict[str, Any] = {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+    if "cachedContentTokenCount" in raw:
+        res["cached_tokens"] = int(raw.get("cachedContentTokenCount") or 0)
+    if "thoughtsTokenCount" in raw:
+        res["thoughts_tokens"] = thoughts
+    return res
 
 
 def _collect_google_candidate(
@@ -1696,6 +1770,8 @@ def _collect_google_candidate(
     thinkings: list[str],
     thinking_blocks: list[dict[str, Any]],
     calls: list[dict[str, Any]],
+    *,
+    emit_delta: bool = False,
 ) -> None:
     content = cand.get("content") or {}
     for part in content.get("parts") or []:
@@ -1711,6 +1787,8 @@ def _collect_google_candidate(
                 thinking_blocks.append(tb)
             else:
                 texts.append(t_str)
+                if emit_delta and t_str:
+                    _emit_text_delta(t_str)
         elif isinstance(part.get("functionCall"), dict):
             fc = part["functionCall"]
             idx = len(calls) + 1
@@ -1761,7 +1839,9 @@ def _new_google_state() -> dict[str, Any]:
     }
 
 
-def _consume_google_event(ev: dict[str, Any], state: dict[str, Any]) -> None:
+def _consume_google_event(
+    ev: dict[str, Any], state: dict[str, Any], *, emit_delta: bool = False
+) -> None:
     if isinstance(ev.get("error"), dict):
         raise _stream_error(ev["error"])
     if isinstance(ev.get("usageMetadata"), dict):
@@ -1784,6 +1864,7 @@ def _consume_google_event(ev: dict[str, Any], state: dict[str, Any]) -> None:
             state["thinkings"],
             state["thinking_blocks"],
             state["calls"],
+            emit_delta=emit_delta,
         )
 
 
@@ -1847,7 +1928,7 @@ def _assemble_google_stream(lines: Iterator[str]) -> tuple[dict[str, Any], dict[
         if not isinstance(ev, dict):
             continue
         saw_event = True
-        _consume_google_event(ev, state)
+        _consume_google_event(ev, state, emit_delta=True)
     if not saw_event:
         raise LLMError("Gemini 流式响应未收到有效数据", retryable=True)
     if state["finish_reason"] is None and not state["block_reason"]:
@@ -2214,6 +2295,246 @@ def _stamp_google_sig_model(msg: dict[str, Any], cfg: LLMConfig, purpose: str | 
     return msg
 
 
+class _LLMNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """LLM 请求禁用 3xx 重定向：Python urllib 跟随重定向会原样转发 Authorization / x-api-key 等鉴权头。"""
+
+    def redirect_request(
+        self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
+        raise LLMError(f"LLM 端点拒绝 HTTP {code} 重定向，以防凭据泄露", status_code=code)
+
+
+class _PooledHTTPResponse:
+    """包装 `http.client.HTTPResponse`，提供与 `urllib` 响应相同的读取/迭代/上下文接口并在读完后归还连接。"""
+
+    def __init__(
+        self,
+        pool: "_KeepAlivePool",
+        key: tuple[str, str, int, str],
+        conn: http.client.HTTPConnection,
+        resp: http.client.HTTPResponse,
+    ) -> None:
+        self._pool = pool
+        self._key = key
+        self._conn = conn
+        self._resp = resp
+        self.headers = resp.headers
+        self.status = resp.status
+        self._eof = False
+        self._closed = False
+
+    def set_stream_timeout(self, timeout_s: float | None) -> None:
+        if self._closed or self._conn.sock is None:
+            return
+        with contextlib.suppress(OSError):
+            self._conn.sock.settimeout(timeout_s)
+
+    def read(self, amt: int | None = None) -> bytes:
+        data = self._resp.read(amt) if amt is not None else self._resp.read()
+        if amt is None or not data:
+            self._eof = True
+        return data
+
+    def __iter__(self) -> Iterator[bytes]:
+        while True:
+            line = self._resp.readline()
+            if not line:
+                self._eof = True
+                break
+            yield line
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        reusable = (
+            self._eof
+            and not self._resp.will_close
+            and 200 <= self._resp.status < 300
+            and self._conn.sock is not None
+        )
+        if reusable:
+            self._pool.release(self._key, self._conn)
+        else:
+            with contextlib.suppress(Exception):
+                self._conn.close()
+
+    def __enter__(self) -> "_PooledHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
+        if exc_type is not None:
+            self._eof = False
+        self.close()
+        return False
+
+
+class _KeepAlivePool:
+    """线程安全的 stdlib HTTP/HTTPS Keep-Alive 连接池（支持直连与 HTTP CONNECT 代理隧道，禁用 3xx 重定向）。"""
+
+    def __init__(
+        self,
+        *,
+        idle_ttl_s: float = _KEEPALIVE_IDLE_TTL_S,
+        max_per_key: int = _KEEPALIVE_MAX_PER_KEY,
+    ) -> None:
+        self._idle_ttl_s = idle_ttl_s
+        self._max_per_key = max_per_key
+        self._lock = threading.Lock()
+        self._buckets: dict[tuple[str, str, int, str], list[tuple[http.client.HTTPConnection, float]]] = {}
+        self._ssl_ctx: ssl.SSLContext | None = None
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        if self._ssl_ctx is None:
+            self._ssl_ctx = ssl.create_default_context()
+        return self._ssl_ctx
+
+    def _checkout(self, key: tuple[str, str, int, str]) -> http.client.HTTPConnection | None:
+        now = time.monotonic()
+        stale: list[http.client.HTTPConnection] = []
+        chosen: http.client.HTTPConnection | None = None
+        with self._lock:
+            bucket = self._buckets.get(key)
+            while bucket:
+                conn, ts = bucket.pop()
+                if now - ts <= self._idle_ttl_s and conn.sock is not None:
+                    chosen = conn
+                    break
+                stale.append(conn)
+            if bucket is not None and not bucket:
+                self._buckets.pop(key, None)
+        for conn in stale:
+            with contextlib.suppress(Exception):
+                conn.close()
+        return chosen
+
+    def release(self, key: tuple[str, str, int, str], conn: http.client.HTTPConnection) -> None:
+        now = time.monotonic()
+        evicted: http.client.HTTPConnection | None = None
+        with self._lock:
+            bucket = self._buckets.setdefault(key, [])
+            if len(bucket) >= self._max_per_key:
+                evicted, _ = bucket.pop(0)
+            bucket.append((conn, now))
+        if evicted is not None:
+            with contextlib.suppress(Exception):
+                evicted.close()
+
+    def close_all(self) -> None:
+        with self._lock:
+            all_conns = [c for bucket in self._buckets.values() for c, _ in bucket]
+            self._buckets.clear()
+        for conn in all_conns:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+    def _new_conn(
+        self,
+        scheme: str,
+        host: str,
+        port: int,
+        proxy_url: str | None,
+        timeout: float | None,
+    ) -> http.client.HTTPConnection:
+        if proxy_url:
+            pp = urllib.parse.urlparse(proxy_url)
+            p_host = pp.hostname or ""
+            p_port = pp.port or (443 if pp.scheme == "https" else 80)
+            if scheme == "https":
+                conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                    p_host, p_port, timeout=timeout, context=self._ssl_context()
+                )
+                conn.set_tunnel(host, port)
+                return conn
+            return http.client.HTTPConnection(p_host, p_port, timeout=timeout)
+        if scheme == "https":
+            return http.client.HTTPSConnection(host, port, timeout=timeout, context=self._ssl_context())
+        return http.client.HTTPConnection(host, port, timeout=timeout)
+
+    def open(self, request: urllib.request.Request, *, timeout: float | None) -> Any:
+        url = request.full_url
+        parsed = urllib.parse.urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        host = parsed.hostname or ""
+        if scheme not in ("http", "https") or not host:
+            return _LLM_NO_REDIRECT_OPENER.open(request, timeout=timeout)
+        port = parsed.port or (443 if scheme == "https" else 80)
+        host_port = f"{host}:{port}" if parsed.port else host
+
+        proxy_url: str | None = None
+        if host not in ("127.0.0.1", "localhost", "::1") and not urllib.request.proxy_bypass(host_port):
+            raw_proxy = urllib.request.getproxies().get(scheme)
+            if raw_proxy:
+                p_scheme = (urllib.parse.urlparse(raw_proxy).scheme or "").lower()
+                if p_scheme != "http":
+                    # socks / https-proxy 等非 HTTP CONNECT 代理走原生禁重定向 opener 兜底
+                    return _LLM_NO_REDIRECT_OPENER.open(request, timeout=timeout)
+                proxy_url = raw_proxy
+
+        key = (scheme, host, port, proxy_url or "")
+        req_target = url if (proxy_url and scheme == "http") else (
+            (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        )
+        headers = dict(request.header_items())
+        if not any(k.lower() == "connection" for k in headers):
+            headers["Connection"] = "keep-alive"
+        body = request.data
+        method = request.get_method()
+
+        for attempt in range(2):
+            conn = self._checkout(key) if attempt == 0 else None
+            reused = conn is not None
+            if conn is None:
+                conn = self._new_conn(scheme, host, port, proxy_url, timeout)
+            else:
+                conn.timeout = timeout
+                if conn.sock is not None:
+                    with contextlib.suppress(OSError):
+                        conn.sock.settimeout(timeout)
+            try:
+                conn.request(method, req_target, body=body, headers=headers)
+                resp = conn.getresponse()
+            except (http.client.RemoteDisconnected, http.client.BadStatusLine, BrokenPipeError, ConnectionResetError, OSError):
+                with contextlib.suppress(Exception):
+                    conn.close()
+                if reused:
+                    continue
+                raise
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    conn.close()
+                raise
+
+            if 300 <= resp.status < 400:
+                with contextlib.suppress(Exception):
+                    conn.close()
+                raise LLMError(
+                    f"LLM 端点拒绝 HTTP {resp.status} 重定向，以防凭据泄露",
+                    status_code=resp.status,
+                )
+            if resp.status >= 400:
+                err_bytes = resp.read(4096) or b""
+                with contextlib.suppress(Exception):
+                    conn.close()
+                raise urllib.error.HTTPError(
+                    url, resp.status, resp.reason, resp.headers, io.BytesIO(err_bytes)
+                )
+            return _PooledHTTPResponse(self, key, conn, resp)
+        return _LLM_NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
+_LLM_NO_REDIRECT_OPENER = urllib.request.build_opener(_LLMNoRedirectHandler())
+_LLM_CONN_POOL = _KeepAlivePool()
+atexit.register(_LLM_CONN_POOL.close_all)
+_ORIG_URLOPEN = urllib.request.urlopen
+
+
+def _open_llm_request(request: urllib.request.Request, *, timeout: float | None) -> Any:
+    if urllib.request.urlopen is _ORIG_URLOPEN:
+        return _LLM_CONN_POOL.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
 def chat_complete(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -2259,12 +2580,26 @@ def chat_complete(
     )
     try:
         effective = timeout if timeout is not None else cfg.request_timeout_s
-        with urllib.request.urlopen(request, timeout=effective) as resp:
+        with _open_llm_request(request, timeout=effective) as resp:
             resp_headers = getattr(resp, "headers", None)
             ctype = str(resp_headers.get("Content-Type", "") if resp_headers is not None else "").lower()
             if "text/event-stream" in ctype:
-                line_iter = (raw.decode("utf-8", errors="replace") for raw in resp)
-                message, usage = parse_stream(line_iter)
+                set_idle = getattr(resp, "set_stream_timeout", None)
+                idle_t = (
+                    min(effective, STREAM_CHUNK_IDLE_TIMEOUT_S)
+                    if effective is not None and effective > STREAM_CHUNK_IDLE_TIMEOUT_S
+                    else None
+                )
+
+                def _stream_lines() -> Iterator[str]:
+                    tightened = False
+                    for raw in resp:
+                        if not tightened and set_idle is not None and idle_t is not None:
+                            set_idle(idle_t)
+                            tightened = True
+                        yield raw.decode("utf-8", errors="replace")
+
+                message, usage = parse_stream(_stream_lines())
                 _LAST_USAGE.set(usage)
                 return _stamp_google_sig_model(message, cfg, purpose)
             body = json.loads(resp.read().decode("utf-8"))
@@ -2373,6 +2708,8 @@ class LoopControl:
     """D93：模型请求遇可重试错误、即将等待重发时的通知：(第几次重试, 上限, 等几秒, 报错原文)。"""
     on_context_guard: Callable[[str], None] | None = None
     """回合内上下文防爆仓保护生效时的通知：(说明文本)。"""
+    on_text_delta: Callable[[str], None] | None = None
+    """流式增量正文回调：模型输出可见正文 chunk 时实时推送，不阻塞等到整条回复结束。"""
 
 
 def dedup_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
@@ -2491,6 +2828,8 @@ def _loop_result(
     elapsed_s: float = 0.0,
     lookups: dict[str, int] | None = None,
     prompt_tokens: int | None = None,
+    cached_tokens: int | None = None,
+    thoughts_tokens: int | None = None,
     compaction: dict[str, Any] | None = None,
     llm_retries: int = 0,
 ) -> dict[str, Any]:
@@ -2517,6 +2856,8 @@ def _loop_result(
         "elapsed_s": elapsed_s,
         "lookups": dict(lookups) if lookups else _zero_lookups(),
         "prompt_tokens": prompt_tokens,
+        "cached_tokens": cached_tokens,
+        "thoughts_tokens": thoughts_tokens,
         "compacted": bool(comp.get("compacted")),
         "tokens_before": comp.get("tokens_before"),   # 本回合第一次压缩前（峰值）
         "tokens_after": comp.get("tokens_after"),     # 本回合最后一次压缩后
@@ -2524,10 +2865,15 @@ def _loop_result(
     }
 
 
+def _usage_int(usage: dict[str, Any] | None, key: str) -> int | None:
+    """`usage[key]` 是非负整数才收（bool 不算整数）；其余一律 None。"""
+    v = usage.get(key) if usage else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
 def _prompt_tokens_of(usage: dict[str, Any] | None) -> int | None:
     """`usage.prompt_tokens` 是非负整数才收（bool 不算整数）；其余一律 None。"""
-    v = usage.get("prompt_tokens") if usage else None
-    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+    return _usage_int(usage, "prompt_tokens")
 
 
 def _zero_lookups() -> dict[str, int]:
@@ -2644,10 +2990,14 @@ def run_tool_loop(
     prompt_chars = 0
     sent_message_chars = 0
     prompt_tokens: int | None = None  # D56：本回合最后一次请求的输入 token（服务商给的）；拿不到为 None
+    cached_tokens: int | None = None  # 最近一次请求的缓存命中输入 token（Google cachedContentTokenCount 等）
+    thoughts_tokens: int | None = None  # 最近一次请求的思考 token（Google thoughtsTokenCount 等）
     # D62：触发读数提示的基准——最近一次请求时的实测 token、当时历史长度、完整消息字符数与附图数
     usage_anchor: tuple[int, int, int, int] | None = None
     model_window = _known_model_window(cfg, purpose, effective_root)
-    sticky_keep_batches: int | None = None
+    # 单调老化水位：记录本回合内已老化为占位的 convo 消息下标。已老化下标不会复活，
+    # 且未再次越过 safe_tokens 前不再改写新批次，避免每轮重写上一批击穿 KV Cache。
+    intra_turn_aged_indices: set[int] = set()
     proactive_notified = False
     proactive_hard_notified = False
     comp: dict[str, Any] = {"compacted": False, "tokens_before": None, "tokens_after": None}
@@ -2656,7 +3006,13 @@ def run_tool_loop(
     # 中断落点（Spec 9 §2.2 第 4 条的表）：handler 据此决定补哪一条合成结果。
     live: dict[str, Any] = {
         "calls": [], "index": 0, "call": None, "stage": None, "outcome": None, "name": "",
+        "parallel": None,
     }
+
+    def _record_aged_indices(base: list[dict[str, Any]], cand: list[dict[str, Any]]) -> None:
+        for idx, (old_m, new_m) in enumerate(zip(base, cand)):
+            if old_m is not new_m and isinstance(new_m, dict) and new_m.get("role") == "tool":
+                intra_turn_aged_indices.add(idx)
 
     def _estimate_projected_tokens(aged: list[dict[str, Any]]) -> int:
         cur_images = vision.count_turn_images(aged)
@@ -2672,32 +3028,29 @@ def run_tool_loop(
         return estimate_tokens(aged) + cur_images * _EST_TOKENS_PER_IMAGE
 
     def _project_messages(force_keep_batches: int | None = None) -> list[dict[str, Any]]:
-        nonlocal proactive_notified, proactive_hard_notified, sticky_keep_batches
+        nonlocal proactive_notified, proactive_hard_notified
         if force_keep_batches is not None:
             aged, _ = age_current_turn_tool_results(
                 convo, keep_recent_batches=force_keep_batches, target_chars=None
             )
             return aged
-        if sticky_keep_batches is not None:
-            aged, _ = age_current_turn_tool_results(
-                convo, keep_recent_batches=sticky_keep_batches, target_chars=None
-            )
-        else:
-            aged = age_tool_results(convo)
+        aged = age_tool_results(convo)
+        if intra_turn_aged_indices:
+            aged = age_tool_results_at_indices(aged, intra_turn_aged_indices)
         if model_window is not None:
             safe_tokens = int(model_window * INTRA_TURN_AGE_RATIO)
             hard_tokens = int(model_window * INTRA_TURN_HARD_RATIO)
             projected = _estimate_projected_tokens(aged)
-            if projected > safe_tokens and sticky_keep_batches is None:
+            if projected > safe_tokens:
                 aged_chars = sum(message_chars(m) for m in aged)
                 excess_chars = math.ceil((projected - safe_tokens) * CHARS_PER_TOKEN)
                 target_chars = max(0, aged_chars - excess_chars)
                 cand, n1 = age_current_turn_tool_results(
-                    convo, keep_recent_batches=1, target_chars=target_chars
+                    aged, keep_recent_batches=1, target_chars=target_chars
                 )
                 if n1 > 0:
+                    _record_aged_indices(aged, cand)
                     aged = cand
-                    sticky_keep_batches = 1
                     projected = _estimate_projected_tokens(aged)
                     if not proactive_notified:
                         proactive_notified = True
@@ -2711,11 +3064,11 @@ def run_tool_loop(
                 excess_chars = math.ceil((projected - hard_tokens) * CHARS_PER_TOKEN)
                 target_chars = max(0, aged_chars - excess_chars)
                 cand0, n0 = age_current_turn_tool_results(
-                    convo, keep_recent_batches=0, target_chars=target_chars
+                    aged, keep_recent_batches=0, target_chars=target_chars
                 )
                 if n0 > 0 and sum(message_chars(m) for m in cand0) < aged_chars:
+                    _record_aged_indices(aged, cand0)
                     aged = cand0
-                    sticky_keep_batches = 1
                     if not proactive_hard_notified:
                         proactive_hard_notified = True
                         if control.on_context_guard is not None:  # type: ignore[union-attr]
@@ -2730,7 +3083,7 @@ def run_tool_loop(
 
         等待用 `_sleep`：人点停止 → SIGINT 打断等待 → KeyboardInterrupt 走调用方现有的中断落点。
         """
-        nonlocal llm_retries, sticky_keep_batches
+        nonlocal llm_retries
         attempt = 0
         local_keep: int | None = 0 if overflow_wrapup else None
         while True:
@@ -2743,13 +3096,14 @@ def run_tool_loop(
                     )
                     switched = False
                     for k in candidates:
+                        base_aged = age_tool_results(convo)
                         cand_aged, _ = age_current_turn_tool_results(
                             convo, keep_recent_batches=k, target_chars=None
                         )
                         cand_chars = sum(message_chars(m) for m in cand_aged)
                         if cand_chars < sent_message_chars:
                             local_keep = k
-                            sticky_keep_batches = 1
+                            _record_aged_indices(base_aged, cand_aged)
                             if control.on_context_guard is not None:  # type: ignore[union-attr]
                                 mode_label = "较早轮次" if k == 1 else "本回合全部"
                                 control.on_context_guard(  # type: ignore[union-attr]
@@ -2775,7 +3129,7 @@ def run_tool_loop(
     def _chat_once(
         tool_choice: str | None, *, force_keep_batches: int | None = None
     ) -> dict[str, Any]:
-        nonlocal prompt_chars, sent_message_chars, prompt_tokens, usage_anchor
+        nonlocal prompt_chars, sent_message_chars, prompt_tokens, cached_tokens, thoughts_tokens, usage_anchor
         # D65：发送与字符统计都走老化投影（上一回合及更早的大工具结果换占位串）；
         # convo 与 session.jsonl 一字不动（纯函数投影，日志即事实）
         aged = _project_messages(force_keep_batches)
@@ -2786,17 +3140,24 @@ def run_tool_loop(
         sent_images = vision.count_turn_images(aged)
         requested_len = len(convo)
         _LAST_USAGE.set(None)
-        reply = chat_complete(
-            # D90：本回合 view_image 的图附在各批工具结果之后（同为请求时投影；字符统计在附图之前算）
-            vision.attach_images(aged),
-            tools=tools or None,
-            config=cfg,
-            scope=context.scope,
-            purpose=purpose,
-            tool_choice=tool_choice,
-            egress_trusted=egress_trusted,
-        )
+        delta_token = _ON_TEXT_DELTA.set(control.on_text_delta)  # type: ignore[union-attr]
+        try:
+            reply = chat_complete(
+                # D90：本回合 view_image 的图附在各批工具结果之后（同为请求时投影；字符统计在附图之前算）
+                vision.attach_images(aged),
+                tools=tools or None,
+                config=cfg,
+                scope=context.scope,
+                purpose=purpose,
+                tool_choice=tool_choice,
+                egress_trusted=egress_trusted,
+            )
+        finally:
+            _ON_TEXT_DELTA.reset(delta_token)
         prompt_tokens = _prompt_tokens_of(_LAST_USAGE.get())
+        last_usage = _LAST_USAGE.get()
+        cached_tokens = _usage_int(last_usage, "cached_tokens")
+        thoughts_tokens = _usage_int(last_usage, "thoughts_tokens")
         usage_anchor = (
             None
             if prompt_tokens is None
@@ -2871,6 +3232,208 @@ def run_tool_loop(
             return "ok", reply, None, None
         return "failed", None, _local_note(reason, None), "收尾回复不含可用答复"
 
+    def _run_parallel_readonly_batch(
+        calls: list[dict[str, Any]], start: int, run_end: int
+    ) -> int:
+        """执行连续 >=2 条只读免卡工具调用：主线程预检判重/review，线程池并发执行，按原 index 顺序落史。"""
+        nonlocal tool_calls_made, tool_executions, duplicates_rejected, execs_since_cp
+        batch_entries: list[dict[str, Any]] = []
+        runnable: list[dict[str, Any]] = []
+        human_tail: dict[str, Any] | None = None
+        stop_at = run_end
+        live["parallel"] = {
+            "entries": batch_entries,
+            "done": {},
+            "started": False,
+            "next_index": start,
+        }
+        for j in range(start, run_end):
+            call = calls[j]
+            live["index"] = j
+            live["call"] = call
+            live["parallel"]["next_index"] = j
+            function = call.get("function") or {}
+            name = str(function.get("name", ""))
+            args = _parse_tool_args(function.get("arguments"))
+            live["name"] = name
+            key = dedup_key(name, args)
+            if key in dedup:
+                tool_calls_made += 1
+                turn_tally[name] = turn_tally.get(name, 0) + 1
+                duplicates_rejected += 1
+                batch_entries.append({
+                    "kind": "duplicate", "index": j, "call": call, "name": name, "args": args,
+                })
+                live["parallel"]["next_index"] = j + 1
+                continue
+            live["stage"] = "review"
+            par_decision = control.review(name, args)  # type: ignore[union-attr]
+            live["stage"] = "tool"
+            tool_calls_made += 1
+            turn_tally[name] = turn_tally.get(name, 0) + 1
+            dedup[key] = None
+            if not par_decision.ok:
+                batch_entries.append({
+                    "kind": "rejected", "index": j, "call": call, "name": name,
+                    "args": args, "decision": par_decision,
+                })
+                live["parallel"]["next_index"] = j + 1
+                continue
+            if par_decision.provenance == "human":
+                # 已由人审批准：保留已拿到的 decision，在前面并发项完成后串行执行（不二次弹卡）
+                human_tail = {
+                    "index": j, "call": call, "name": name, "args": args, "decision": par_decision,
+                }
+                stop_at = j + 1
+                live["parallel"]["next_index"] = j
+                break
+            exec_ctx = replace(context, confirmed=True, human_approved=False, bound=None)
+            entry = {
+                "kind": "run", "index": j, "call": call, "name": name,
+                "args": args, "exec_ctx": exec_ctx,
+            }
+            batch_entries.append(entry)
+            runnable.append(entry)
+            live["parallel"]["next_index"] = j + 1
+
+        if len(runnable) <= 1:
+            live["parallel"] = None
+            for entry in batch_entries:
+                j = entry["index"]
+                call = entry["call"]
+                name = entry["name"]
+                args = entry["args"]
+                live["index"] = j
+                live["call"] = call
+                live["name"] = name
+                if entry["kind"] == "duplicate":
+                    _trace(control, j, name, args, duplicate=True)
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
+                    )
+                    _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
+                elif entry["kind"] == "rejected":
+                    rejected = _reject_outcome(entry["decision"])
+                    _trace(control, j, name, args)
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, rejected), "synthetic_tool"
+                    )
+                    _trace(control, j, name, args, content=rejected)
+                else:
+                    _trace(control, j, name, args)
+                    if control.on_exec_started is not None:  # type: ignore[union-attr]
+                        control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
+                    live["outcome"] = execute_tool(name, args, entry["exec_ctx"])
+                    outcome = live["outcome"]
+                    live["outcome"] = None
+                    tool_executions += 1
+                    execs_since_cp = execs_since_cp + 1
+                    kind = lookup_kind(name, args)
+                    if kind is not None:
+                        lookups[kind] += 1
+                    _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
+                    control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+        else:
+            done_outcomes: dict[int, dict[str, Any]] = {}
+            live["call"] = None
+            live["parallel"] = {
+                "entries": batch_entries,
+                "done": done_outcomes,
+                "started": True,
+                "next_index": stop_at if human_tail is None else human_tail["index"],
+            }
+            for entry in batch_entries:
+                if entry["kind"] == "run":
+                    _trace(control, entry["index"], entry["name"], entry["args"])
+                    if control.on_exec_started is not None:  # type: ignore[union-attr]
+                        control.on_exec_started(  # type: ignore[union-attr]
+                            str(entry["call"].get("id", "")), entry["name"]
+                        )
+            workers = min(len(runnable), MAX_PARALLEL_READONLY_TOOLS)
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            try:
+                fut_to_entry = {
+                    pool.submit(execute_tool, e["name"], e["args"], e["exec_ctx"]): e
+                    for e in runnable
+                }
+                pending = set(fut_to_entry.keys())
+                while pending:
+                    completed, pending = concurrent.futures.wait(
+                        pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+                    )
+                    for fut in completed:
+                        e = fut_to_entry[fut]
+                        outcome = fut.result()
+                        done_outcomes[e["index"]] = outcome
+                        _trace(
+                            control, e["index"], e["name"], e["args"],
+                            content=vision.split_outcome(outcome)[0],
+                        )
+            except BaseException:
+                for fut in fut_to_entry:
+                    fut.cancel()
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                pool.shutdown(wait=True)
+
+            for entry in batch_entries:
+                j = entry["index"]
+                call = entry["call"]
+                name = entry["name"]
+                args = entry["args"]
+                if entry["kind"] == "duplicate":
+                    _trace(control, j, name, args, duplicate=True)
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, _duplicate_outcome(name)), "synthetic_tool"
+                    )
+                    _trace(control, j, name, args, content=_duplicate_outcome(name), duplicate=True)
+                elif entry["kind"] == "rejected":
+                    rejected = _reject_outcome(entry["decision"])
+                    _trace(control, j, name, args)
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(call, rejected), "synthetic_tool"
+                    )
+                    _trace(control, j, name, args, content=rejected)
+                else:
+                    outcome = done_outcomes[j]
+                    tool_executions += 1
+                    execs_since_cp = execs_since_cp + 1
+                    kind = lookup_kind(name, args)
+                    if kind is not None:
+                        lookups[kind] += 1
+                    control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+            live["parallel"] = None
+
+        if human_tail is not None:
+            j = human_tail["index"]
+            call = human_tail["call"]
+            name = human_tail["name"]
+            args = human_tail["args"]
+            tail_decision = human_tail["decision"]
+            live["index"] = j
+            live["call"] = call
+            live["name"] = name
+            live["stage"] = "tool"
+            _trace(control, j, name, args)
+            if control.on_exec_started is not None:  # type: ignore[union-attr]
+                control.on_exec_started(str(call.get("id", "")), name)  # type: ignore[union-attr]
+            exec_ctx = replace(
+                context, confirmed=True, human_approved=True, bound=tail_decision.bind,
+            )
+            live["outcome"] = execute_tool(name, args, exec_ctx)
+            outcome = live["outcome"]
+            live["outcome"] = None
+            tool_executions += 1
+            execs_since_cp = execs_since_cp + 1
+            kind = lookup_kind(name, args)
+            if kind is not None:
+                lookups[kind] += 1
+            _trace(control, j, name, args, content=vision.split_outcome(outcome)[0])
+            dedup.clear()
+            control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+        return stop_at
+
     def _stop(reason: str, *, error: str | None = None, overflow: bool = False):
         """非正常停止的收尾闸：本轮一条回复都没拿到 → 回滚；否则收尾。"""
         if getattr(control.interrupt, "skip_wrapup", False):
@@ -2879,14 +3442,18 @@ def run_tool_loop(
                 convo, stopped=reason, llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                 tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                 checkpoints=checkpoints, wrapup="skipped", error=error,
-                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
+                prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+                cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+                compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
             )
         if llm_calls == 0:
             return _loop_result(
                 convo, stopped=reason, rollback=True, llm_calls=llm_calls,
                 tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                 duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
+                error=error, prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+                cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+                compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
             )
         state, final, note, wrapup_error = _wrapup(reason, overflow=overflow)
         return _loop_result(
@@ -2894,7 +3461,9 @@ def run_tool_loop(
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
             wrapup=state, error=error or wrapup_error,
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+            compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
         )
 
     try:
@@ -2908,18 +3477,16 @@ def run_tool_loop(
             live["call"] = None
             live["calls"] = []
             live["index"] = 0
+            live["parallel"] = None
             # D62 双触发（spec §4.1）：回合首次请求前 + 每批工具结果全部写史之后、下一次请求前。
             # 这里 live["call"] 已清空：压缩中途被中断，落点表不会给已配对的调用再补一条合成结果
             if control.compact is not None:  # type: ignore[union-attr]
                 live["stage"] = "compact"
                 hint = None
                 if usage_anchor is not None and usage_anchor[1] <= len(convo):
-                    if sticky_keep_batches is not None:
-                        compact_base, _ = age_current_turn_tool_results(
-                            convo, keep_recent_batches=sticky_keep_batches, target_chars=None
-                        )
-                    else:
-                        compact_base = age_tool_results(convo)
+                    compact_base = age_tool_results(convo)
+                    if intra_turn_aged_indices:
+                        compact_base = age_tool_results_at_indices(compact_base, intra_turn_aged_indices)
                     anchor_chars = sum(message_chars(m) for m in compact_base[: usage_anchor[1]])
                     if anchor_chars == usage_anchor[2]:
                         delta_imgs = max(
@@ -2933,7 +3500,7 @@ def run_tool_loop(
                 compacted = control.compact(convo, hint)  # type: ignore[union-attr]
                 if compacted is not None and compacted.get("ok"):
                     usage_anchor = None  # 历史已缩：旧实测不再对得上
-                    sticky_keep_batches = None
+                    intra_turn_aged_indices.clear()
                     if not comp["compacted"]:
                         comp["tokens_before"] = compacted.get("tokens_before")
                     comp["compacted"] = True
@@ -2949,7 +3516,9 @@ def run_tool_loop(
                         llm_calls=llm_calls, tool_calls_made=tool_calls_made,
                         tool_executions=tool_executions, duplicates_rejected=duplicates_rejected,
                         checkpoints=checkpoints, wrapup="skipped", error=str(compacted.get("text", "")),
-                        prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries,
+                        prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+                        cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+                        compaction=comp, llm_retries=llm_retries,
                         elapsed_s=time.monotonic() - started,
                     )
             live["stage"] = "model"
@@ -2967,11 +3536,35 @@ def run_tool_loop(
                     convo, final=reply, stopped="done", llm_calls=llm_calls,
                     tool_calls_made=tool_calls_made, tool_executions=tool_executions,
                     duplicates_rejected=duplicates_rejected, checkpoints=checkpoints,
-                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
+                    prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+                    cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+                    compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
                 )
 
             live["calls"] = calls
-            for index, call in enumerate(calls):
+
+            def _call_name_of(c: dict[str, Any]) -> str:
+                return str(((c.get("function") or {}).get("name")) or "")
+
+            def _is_parallel_candidate(c: dict[str, Any]) -> bool:
+                cname = _call_name_of(c)
+                return (
+                    not bare
+                    and cname in PARALLEL_READONLY_TOOLS
+                    and cname not in control.critical_tools  # type: ignore[union-attr]
+                )
+
+            index = 0
+            while index < len(calls):
+                if _is_parallel_candidate(calls[index]):
+                    run_end = index + 1
+                    while run_end < len(calls) and _is_parallel_candidate(calls[run_end]):
+                        run_end += 1
+                    if run_end - index >= 2:
+                        index = _run_parallel_readonly_batch(calls, index, run_end)
+                        continue
+
+                call = calls[index]
                 live["index"] = index
                 live["call"] = call
                 function = call.get("function") or {}
@@ -3000,6 +3593,7 @@ def run_tool_loop(
                         )
                         _trace(control, index, name, args, content=_duplicate_outcome(name),
                                duplicate=True)
+                        index += 1
                         continue
                     dedup[key] = None  # 预登记：中断落在这里也算「已调过」
 
@@ -3013,6 +3607,7 @@ def run_tool_loop(
                         _tool_message(call, rejected), "synthetic_tool"
                     )
                     _trace(control, index, name, args, content=rejected)
+                    index += 1
                     continue
 
                 _trace(control, index, name, args)
@@ -3057,6 +3652,7 @@ def run_tool_loop(
                     # 原地反复跑同一条检查仍判重
                     dedup.clear()
                 control.commit(_tool_message(call, outcome), "tool")  # type: ignore[union-attr]
+                index += 1
 
             # D79：这批工具结果已全部写史，下一次请求之前送达排队消息（Pi 的 steering 落点）
             live["call"] = None
@@ -3067,6 +3663,39 @@ def run_tool_loop(
         # 「停止中」：这期间到达的中断只置标志、不抛（合成结果必须齐全，不许丢）。
         # 随后的 `_stop` 在吸收区**之外**，所以「收尾中」的中断照旧能放弃收尾（TL-9）。
         with _stopping(control):
+            par = live.get("parallel")
+            if par is not None:
+                done_map: dict[int, dict[str, Any]] = par["done"]
+                fallback_err = _SYNTH_UNKNOWN if par.get("started") else _SYNTH_HUMAN_UNEXECUTED
+                for entry in par["entries"]:
+                    j = entry["index"]
+                    c = entry["call"]
+                    if entry["kind"] == "duplicate":
+                        control.commit(  # type: ignore[union-attr]
+                            _tool_message(c, _duplicate_outcome(entry["name"])), "synthetic_tool"
+                        )
+                    elif entry["kind"] == "rejected":
+                        control.commit(  # type: ignore[union-attr]
+                            _tool_message(c, _reject_outcome(entry["decision"])), "synthetic_tool"
+                        )
+                    elif j in done_map:
+                        tool_executions += 1
+                        control.commit(_tool_message(c, done_map[j]), "tool")  # type: ignore[union-attr]
+                    else:
+                        control.commit(  # type: ignore[union-attr]
+                            _tool_message(c, {"ok": False, "error": fallback_err}), "synthetic_tool"
+                        )
+                if not par.get("started") and live["call"] is not None:
+                    # 中断发生在并行预检的 review 阶段：正在 review 的那条按 voided，其余按 unexecuted
+                    text = _SYNTH_HUMAN_VOIDED if live["stage"] == "review" else _SYNTH_HUMAN_UNEXECUTED
+                    control.commit(  # type: ignore[union-attr]
+                        _tool_message(live["call"], {"ok": False, "error": text}), "synthetic_tool"
+                    )
+                    _synthesize_rest(live["index"] + 1, _SYNTH_HUMAN_UNEXECUTED)
+                else:
+                    _synthesize_rest(par["next_index"], _SYNTH_HUMAN_UNEXECUTED)
+                live["parallel"] = None
+                live["call"] = None
             call = live["call"]
             if call is not None:
                 if live["stage"] == "hook":
@@ -3096,7 +3725,9 @@ def run_tool_loop(
             convo, stopped="blocked", rollback=True, llm_calls=llm_calls,
             tool_calls_made=tool_calls_made, tool_executions=tool_executions,
             duplicates_rejected=duplicates_rejected, checkpoints=checkpoints, error=str(exc),
-            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens, compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
+            prompt_chars=prompt_chars, lookups=lookups, prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens, thoughts_tokens=thoughts_tokens,
+            compaction=comp, llm_retries=llm_retries, elapsed_s=time.monotonic() - started,
         )
     except LLMError as exc:
         return _stop("error", error=str(exc), overflow=is_context_overflow_error(exc))
