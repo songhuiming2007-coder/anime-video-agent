@@ -4,13 +4,27 @@
 // iframe（含 allow-scripts 的 gallery）向父窗口 postMessage 的同名消息一律忽略。
 // RPC 不设超时（S22，经用户同意）：当前端口 close（host 关端口或进程死亡）即把挂起请求以 E_UNREACHABLE 拒绝，
 // 断开期间的新请求立即拒绝、不挂起；首次连接前的请求照常等待连接。
-import { PROTOCOL_VERSION, type Envelope, type Method, type PushTopic, type RpcError } from "../shared/protocol";
+import { PROTOCOL_VERSION, type Envelope, type ErrCode, type Method, type PushTopic, type RpcError } from "../shared/protocol";
+
+const ERR_CODE_LABEL: Readonly<Record<ErrCode, string>> = {
+  E_BAD_REQUEST: "参数有误",
+  E_UNREACHABLE: "后台连接不可用",
+  E_CAPABILITY: "当前环境不支持",
+  E_STALE: "状态已变化",
+  E_BUSY: "操作进行中",
+  E_CORE: "执行失败",
+  E_GATE_MISMATCH: "条件未满足",
+  E_UNVERIFIED: "校验未通过",
+  E_TIMEOUT: "操作超时",
+  E_SESSION: "会话异常",
+  E_SESSION_LOCKED: "会话正被占用",
+};
 
 type PushEnvelope = Extract<Envelope, { kind: "push" }>;
 type PushHandler = (p: PushEnvelope) => void;
 
 /** 端口断开时 renderer 自己合成的 E_UNREACHABLE 的消息前缀（区别于 host 报告的数据不可达） */
-export const HOST_LINK_LOST = "host 连接";
+export const HOST_LINK_LOST = "后台服务连接";
 
 export class RpcFailure extends Error {
   constructor(readonly error: RpcError) {
@@ -18,9 +32,15 @@ export class RpcFailure extends Error {
   }
 }
 
-/** 任意抛错 → 一行可读文案（renderer 各处统一口径）。 */
+/** 任意抛错 → 一行可读中文文案（renderer 各处统一口径，不向用户裸露内部 E_* 错误码）。 */
 export function errText(e: unknown): string {
-  return e instanceof RpcFailure ? `${e.error.code}：${e.error.message}` : e instanceof Error ? e.message : String(e);
+  if (e instanceof RpcFailure) {
+    const msg = e.error.message.trim();
+    const label = ERR_CODE_LABEL[e.error.code];
+    if (!label || msg.startsWith(label)) return msg || label || e.error.code;
+    return `${label}：${msg}`;
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 export class RpcClient {

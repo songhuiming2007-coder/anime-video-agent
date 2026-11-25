@@ -61,24 +61,30 @@ function mergeEntries(cur: readonly ConvEntry[], incoming: readonly ConvEntry[])
       const turnId = String(e.frame.turn_id ?? "");
       const prev = next[next.length - 1];
       if (prev && prev.k === "frame" && prev.frame.t === "assistant_delta" && String(prev.frame.turn_id ?? "") === turnId) {
+        // 保留首段到达时刻 prev.at，避免流式输出时活动指示器的秒表每块都被归零
         next[next.length - 1] = {
           ...prev,
-          at: e.at,
           frame: { ...prev.frame, seq: e.frame.seq, text: `${String(prev.frame.text ?? "")}${String(e.frame.text ?? "")}` },
         };
         continue;
       }
     } else if (e.k === "frame" && e.frame.t === "assistant" && String(e.frame.kind ?? "") !== "local_note") {
       const turnId = String(e.frame.turn_id ?? "");
+      let replaceAt = -1;
       for (let i = next.length - 1; i >= 0; i -= 1) {
         const item = next[i];
         if (item.k !== "frame") break;
         if (item.frame.t === "assistant_delta" && String(item.frame.turn_id ?? "") === turnId) {
-          next.splice(i, 1);
+          if (replaceAt !== -1) next.splice(replaceAt, 1);
+          replaceAt = i;
           continue;
         }
         if (item.frame.t === "notice" || item.frame.t === "log") continue;
         break;
+      }
+      if (replaceAt !== -1) {
+        next[replaceAt] = e;
+        continue;
       }
     }
     next.push(e);
@@ -113,6 +119,15 @@ export function reduceConvs(store: ConvStore, action: ConvAction): ConvReduceRes
   }
 }
 
+const EMPTY_FOLDED: FoldedConv = foldConv([]);
+const foldCache = new WeakMap<ConvState, FoldedConv>();
+
 export function foldOf(state: ConvState | undefined): FoldedConv {
-  return foldConv(state?.entries ?? []);
+  if (!state) return EMPTY_FOLDED;
+  let cached = foldCache.get(state);
+  if (!cached) {
+    cached = foldConv(state.entries);
+    foldCache.set(state, cached);
+  }
+  return cached;
 }

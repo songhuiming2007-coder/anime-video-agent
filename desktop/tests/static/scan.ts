@@ -176,6 +176,10 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   "conv.command": { file: "renderer/SessionHeader.tsx", attrs: ["onClick", "onKeyDown"] },  // D156：Shift+Tab 循环档位走 onKeyDown
   "conv.end": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "conv.resume": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
+  "conv.delete": { file: "renderer/SessionList.tsx", attrs: ["onClick"] },
+  "conv.restoreTrash": { file: "renderer/SessionList.tsx", attrs: ["onClick"] },
+  "conv.purgeTrash": { file: "renderer/SessionList.tsx", attrs: ["onClick"] },
+  "app.setDefaults": { file: "renderer/SessionHeader.tsx", attrs: ["onClick"] },
   "episode.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick", "onKeyDown"] },
   "project.create": { file: "renderer/NewEpisodeForm.tsx", attrs: ["onClick", "onKeyDown"] }, // D81：建企划同建期纪律（支持按钮点击与输入框回车提交）
   // Spec 11 S8-R13 的显式点击纪律扩展：停机点写路径只许挂在对应按钮/确认框上。
@@ -191,6 +195,7 @@ export const ACTION_METHODS: Record<string, { file: string; attrs: readonly stri
   // D50-A S6：段落表就地纠错的两条写路径（全局读音表、按全局表重配）
   "voice.global": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
   "voice.retts": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
+  "voice.clearStaleLock": { file: "renderer/VoicePanel.tsx", attrs: ["onClick"] },
   "voice.review": { file: "renderer/ReviewRating.tsx", attrs: ["onClick"] },
   // Spec 12 S8-R18：导入由拖放 / 选择器 / 点击三种显式动作发起
   "cover.import": { file: "renderer/CoverImport.tsx", attrs: ["onClick", "onDrop", "onChange"] },

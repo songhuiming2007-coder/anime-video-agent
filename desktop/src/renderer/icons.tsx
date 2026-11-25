@@ -14,6 +14,7 @@ import {
   Cpu,
   ExternalLink,
   Eye,
+  EyeOff,
   FileText,
   Film,
   Folder,
@@ -75,6 +76,7 @@ const ICONS = {
   "panel-left": PanelLeft,
   "panel-right": PanelRight,
   eye: Eye,
+  "eye-off": EyeOff,
   sliders: SlidersHorizontal,
   "arrow-up": ArrowUp,
   "arrow-down": ArrowDown,
@@ -84,10 +86,10 @@ const ICONS = {
 
 export type IconName = keyof typeof ICONS;
 
-/** Render an optical icon sized to AVA's UI scale (15px default, 13px sm). */
+/** Render an optical icon sized to AVA's UI scale (16px default, 14px sm). */
 export function Icon({ name, size, className }: { name: IconName; size?: "sm"; className?: string }) {
   const Component = ICONS[name];
-  const px = size === "sm" ? 13 : 15;
+  const px = size === "sm" ? 14 : 16;
   const cls = ["ui-icon", size === "sm" && "ui-icon--sm", className].filter(Boolean).join(" ");
   return <Component className={cls} size={px} strokeWidth={1.75} aria-hidden="true" />;
 }

@@ -6,7 +6,7 @@
 //
 // 脏状态纪律（红队 🔴-2）：dirty 时「封板」与「从草稿新建」禁用——封板对象必须是磁盘上人已确认的版本。
 // 主题只引用 CSS 变量（Spec 14 S11-R1 / VS-3）：本文件是 `@codemirror/*` 的唯一落点（§5.2，MUT-15）。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -19,10 +19,10 @@ import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { SavedFingerprintJson, ScriptStatJson } from "../shared/protocol";
 import { FloatingModal, FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
-import { SegmentedBar } from "./motion";
+import { Disclosure, SegmentedBar } from "./motion";
 import { MarkdownBody } from "./PreviewPane";
-import { errText, type RpcClient } from "./rpc";
-import { StateView, StatusDot } from "./ui";
+import { errText, RpcFailure, type RpcClient } from "./rpc";
+import { Badge, StateView, StatusDot } from "./ui";
 
 /** 人审要点（清单六条，真源在 runbook；TC-13 断言核心串齐全）。提醒不是判据（D18）。 */
 export const REVIEW_CHECKLIST: readonly string[] = [
@@ -33,6 +33,13 @@ export const REVIEW_CHECKLIST: readonly string[] = [
   "说话人断言抽帧核对：「某某说」类断言抽帧确认说话人（字幕 Name 字段基本不填，机器判不了）",
   "访谈原话出处顺口带出：改稿涉及转述本人采访原话时，尽量顺口带出媒体名或年份（如「在二零一七年 CINRA 专访里」），避免泛写「她在采访中回忆」",
 ];
+
+function renderChecklistItem(line: string) {
+  const parts = line.split(/(`[^`]+`)/g);
+  return parts.map((p, i) =>
+    p.startsWith("`") && p.endsWith("`") ? <code key={i}>{p.slice(1, -1)}</code> : <Fragment key={i}>{p}</Fragment>,
+  );
+}
 
 /** CodeMirror 主题：只引用 CSS 变量（VS-3 禁字面量；VS-11 禁 .cm-* 写进 ui.css）。 */
 const editorTheme = EditorView.theme({
@@ -88,26 +95,38 @@ function stashDraft(epKey: string, text: string): void {
   }
 }
 
-function takeStash(epKey: string): string | null {
+function peekStash(epKey: string): string | null {
   try {
-    const v = localStorage.getItem(draftKey(epKey));
-    if (v !== null) localStorage.removeItem(draftKey(epKey));
-    return v;
+    return localStorage.getItem(draftKey(epKey));
   } catch {
     return null;
   }
 }
 
-/** 宽态门槛：两栏各约 380px 时一行能放下二十来个汉字，低于它并排就退化成基线那种每栏一百来像素的窄条 */
+function clearStash(epKey: string): void {
+  try {
+    localStorage.removeItem(draftKey(epKey));
+  } catch {
+    /* 便利层失败不影响真相源 */
+  }
+}
+
 const EDITOR_WIDE_MIN_PX = 760;
-/** 跟随磁盘的轮询间隔（D49-A S3）：`script.stat` 是宿主本地 stat、不起进程；2 s 内看到 agent 的改稿够用 */
 const DISK_POLL_MS = 2000;
 type EditorPane = "src" | "render" | "tips";
+type BusyAction = "save" | "seal" | "check" | null;
+type FlashMsg = { kind: "ok" | "err"; text: string; n: number };
+
 const PANES: readonly [EditorPane, string][] = [
   ["src", "源码"],
   ["render", "渲染"],
   ["tips", "要点"],
 ];
+
+function isConflictError(e: unknown, text: string): boolean {
+  if (e instanceof RpcFailure && e.error.code === "E_STALE") return true;
+  return /冲突|已变|指纹不符|stale|mtime/i.test(text);
+}
 
 export function ScriptEditor({
   epKey,
@@ -123,10 +142,11 @@ export function ScriptEditor({
   const [stat, setStat] = useState<ScriptStatJson | null>(null);
   const [ed, setEd] = useState<ScriptEditorState>(emptyEditor);
   const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
-  const [sealMsg, setSealMsg] = useState<string | null>(null);
+  const [saveMsg, setSaveMsg] = useState<FlashMsg | null>(null);
+  const [sealMsg, setSealMsg] = useState<FlashMsg | null>(null);
   const [checkOut, setCheckOut] = useState<{ code: number | null; stdoutTail: string; stderrTail: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [checkExpanded, setCheckExpanded] = useState(false);
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [reloadArm, setReloadArm] = useState(false);
   const [diskChanged, setDiskChanged] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -135,29 +155,41 @@ export function ScriptEditor({
   const edRef = useRef(ed);
   edRef.current = ed;
   const hostRef = useRef<HTMLDivElement | null>(null);
-  // D49-A S2：按编辑器自身宽度分窄 / 宽两态。窄态一次只显示一栏（源码 / 渲染 / 要点），宽态源码与渲染并排、
-  // 要点按需开合。CodeMirror 宿主始终挂载，只用 CSS 隐藏——编辑器只在挂载时建一次，不能随布局重建。
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [wide, setWide] = useState(false);
   const [pane, setPane] = useState<EditorPane>("src");
   const [tipsOpen, setTipsOpen] = useState(false);
-  useEffect(() => {
+  const viewRef = useRef<EditorView | null>(null);
+  const suppress = useRef(false);
+  const busy = busyAction !== null;
+
+  // 首帧同步测量宽度，避免从窄态闪跳到宽态
+  useLayoutEffect(() => {
     const el = shellRef.current;
     if (!el) return;
+    setWide(el.getBoundingClientRect().width >= EDITOR_WIDE_MIN_PX);
     const ro = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= EDITOR_WIDE_MIN_PX));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const viewRef = useRef<EditorView | null>(null);
-  const suppress = useRef(false);
 
-  /** 把磁盘/本地文本灌进 CodeMirror（不触发 dirty：灌入不是人打的字）。 */
-  const setDoc = useCallback((text: string) => {
+  /** 把磁盘/本地文本灌进 CodeMirror（不触发 dirty：灌入不是人打的字）。可选保留光标与滚动位置。 */
+  const setDoc = useCallback((text: string, preserveCursor = false) => {
     const v = viewRef.current;
     if (!v) return;
+    const prevTop = preserveCursor ? v.scrollDOM.scrollTop : 0;
+    const prevAnchor = preserveCursor ? Math.min(v.state.selection.main.anchor, text.length) : 0;
     suppress.current = true;
-    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
+    v.dispatch({
+      changes: { from: 0, to: v.state.doc.length, insert: text },
+      ...(preserveCursor ? { selection: { anchor: prevAnchor } } : {}),
+    });
     suppress.current = false;
+    if (preserveCursor) {
+      requestAnimationFrame(() => {
+        if (viewRef.current === v) v.scrollDOM.scrollTop = prevTop;
+      });
+    }
   }, []);
 
   const load = useCallback(async () => {
@@ -187,7 +219,7 @@ export function ScriptEditor({
         setEd(reduceEditor(edRef.current, { type: "loaded", text: "", baselineFp: null }));
         setLoadErr("找不到 02-script.md，也找不到 02-script.draft.md");
       }
-      const stashed = takeStash(epKey);
+      const stashed = peekStash(epKey);
       if (stashed !== null) setStashOffer(stashed);
       setLoaded(true);
     } catch (e) {
@@ -195,20 +227,41 @@ export function ScriptEditor({
     }
   }, [epKey, rpc, setDoc]);
 
-  // CodeMirror 生命周期：只在挂载时建一次；换期由 App 以 key 卸载重建。
-  //
-  // CSP（生产 index.html 是 `style-src 'self'`）：style-mod 在普通 document 根下靠**注入 <style> 标签**上样式，
-  // 会被 CSP 静默拦掉——主题、Markdown 高亮、自绘光标全部失效（外观上是一段裸文本）。
-  // 传 `root` 为 ShadowRoot 时 style-mod 改走 `CSSStyleSheet` + `root.adoptedStyleSheets`，构造式样式表不受
-  // style-src 约束（e2e A1 用计算样式对拍钉死：背景 = var(--bg-input)、高亮色 ≠ 正文色、光标非零宽）。
-  // 因此**不得**把这层 shadow 包装去掉，也不得把编辑器挂回 document 根。
+  /** 静默原位同步磁盘更新：保留滚动位置、光标与机检结果，不卸载编辑器 */
+  const syncFromDisk = useCallback(
+    async (st: ScriptStatJson) => {
+      if (!st.script) return;
+      try {
+        const r = await fetch(encodeMediaUrl("episodes", `${epKey}/02-script.md`));
+        if (!r.ok) return;
+        const text = await r.text();
+        if (edRef.current.dirty) {
+          setDiskChanged(true);
+          return;
+        }
+        setStat(st);
+        setDiskChanged(false);
+        setDoc(text, true);
+        setEd(reduceEditor(edRef.current, { type: "reload", text, baselineFp: { size: String(st.script.size), mtimeNs: st.script.mtimeNs } }));
+        setSaveMsg((prev) => ({ kind: "ok", text: "已同步磁盘上的新版本（agent 或别处改过）", n: (prev?.n ?? 0) + 1 }));
+      } catch {
+        /* 单次轮询读取失败静默跳过，下个周期重试 */
+      }
+    },
+    [epKey, setDoc],
+  );
+
+  // CodeMirror 生命周期：挂载在 ShadowRoot 下绕开 CSP style-src 'self'（e2e A1 钉死）；
+  // 错误态卸载宿主以满足 TE-6（editor-src 计数 0），重试成功后随 hasHost 重建并灌入当前正文。
+  const hasHost = loadErr === null;
   useEffect(() => {
+    if (!hasHost) return;
     const host = hostRef.current;
     if (!host) return;
     const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
     const view = new EditorView({
       state: EditorState.create({
-        doc: "",
+        doc: edRef.current.text,
         extensions: [
           lineNumbers(),
           highlightActiveLine(),
@@ -220,11 +273,15 @@ export function ScriptEditor({
           editorTheme,
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
-            if (u.docChanged && !suppress.current) setEd((s) => reduceEditor(s, { type: "edit", text: u.state.doc.toString() }));
+            if (u.docChanged && !suppress.current) {
+              const next = reduceEditor(edRef.current, { type: "edit", text: u.state.doc.toString() });
+              if (next.dirty && !edRef.current.dirty) window.postMessage({ type: "ava-dirty", dirty: true }, "*");
+              setEd(next);
+            }
           }),
         ],
       }),
-      parent: shadow, // 直接挂进 shadow 根：`.cm-editor{height:100%}` 的包含块就是宿主 .editor-src
+      parent: shadow,
       root: shadow,
     });
     viewRef.current = view;
@@ -232,15 +289,15 @@ export function ScriptEditor({
       view.destroy();
       viewRef.current = null;
     };
-  }, []);
+  }, [hasHost]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  // D49-A S3：跟随磁盘。没有未保存改动 → 自动载入新版本；有 → 只亮提示条，不覆盖人的改动
+  // D49-A S3：跟随磁盘。没有未保存改动 → 静默原位同步；有 → 只亮提示条，不覆盖人的改动
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || loadErr !== null) return;
     let stopped = false;
     const t = setInterval(() => {
       void rpc.call<ScriptStatJson>("script.stat", { epKey }).then(
@@ -248,7 +305,7 @@ export function ScriptEditor({
           if (stopped || !st.script) return;
           const v = diskVerdict(edRef.current, { size: String(st.script.size), mtimeNs: st.script.mtimeNs });
           if (v === "reload") {
-            void load().then(() => setSaveMsg("已载入磁盘上的新版本（agent 或别处改过）"));
+            void syncFromDisk(st);
           } else if (v === "warn") {
             setDiskChanged(true);
           }
@@ -260,11 +317,9 @@ export function ScriptEditor({
       stopped = true;
       clearInterval(t);
     };
-  }, [epKey, rpc, load, loaded]);
+  }, [epKey, rpc, loaded, loadErr, syncFromDisk]);
 
-  // 人时：审阅面**装载成功**才计时（Spec 11 §2.4）——错误态下人没在审阅，不计（红队 ④）。
-  // `loaded` 而不是 `stat`：`script.stat` 只看得到文件存在与指纹，正文还要经 ava-media:// 取一次，
-  // 取不到时 stat 已经回来了——只看 stat 会开一个几十毫秒的假区间（e2e TE-6 钉的就是这个）。
+  // 人时：审阅面装载成功才计时（Spec 11 §2.4）——错误态下不计（红队 ④ / TE-6）
   const surfaceUp = loadErr === null && loaded;
   useEffect(() => {
     if (!surfaceUp) return;
@@ -274,21 +329,52 @@ export function ScriptEditor({
     };
   }, [epKey, rpc, surfaceUp]);
 
-  // RF-7：脏状态在切期 / 关窗时拦截；草稿同时进 localStorage（便利层）
+  // RF-7：脏状态在切期 / 关窗 / ⌘Q 退出时拦截；编辑期防抖暂存草稿到 localStorage（兜底防强退/崩溃）
   useEffect(() => {
     dirtyCheck = () => edRef.current.dirty;
     return () => {
       dirtyCheck = null;
+      window.postMessage({ type: "ava-dirty", dirty: false }, "*");
     };
   }, []);
+  const autoStashedRef = useRef(false);
+  useLayoutEffect(() => {
+    window.postMessage({ type: "ava-dirty", dirty: ed.dirty }, "*");
+  }, [ed.dirty]);
+  useEffect(() => {
+    if (!ed.dirty) {
+      // 编辑后按 ⌘Z 撤回至与磁盘基线完全一致时，清掉本次编辑期自动写入的暂存草稿（不误伤打开时已存在的旧 stashOffer）
+      if (autoStashedRef.current) {
+        autoStashedRef.current = false;
+        clearStash(epKey);
+      }
+      return;
+    }
+    const t = window.setTimeout(() => {
+      if (edRef.current.dirty) {
+        stashDraft(epKey, edRef.current.text);
+        autoStashedRef.current = true;
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [epKey, ed.dirty, ed.text]);
   useEffect(() => {
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (!edRef.current.dirty) return;
       stashDraft(epKey, edRef.current.text);
       e.preventDefault();
     };
+    const onMenu = (e: MessageEvent) => {
+      if (e.source === window && e.data?.type === "ava-menu" && e.data.action === "stash-draft" && edRef.current.dirty) {
+        stashDraft(epKey, edRef.current.text);
+      }
+    };
     window.addEventListener("beforeunload", beforeUnload);
-    return () => window.removeEventListener("beforeunload", beforeUnload);
+    window.addEventListener("message", onMenu);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      window.removeEventListener("message", onMenu);
+    };
   }, [epKey]);
 
   // 预览节流（300 ms，Spec 11 §3.5）
@@ -303,51 +389,68 @@ export function ScriptEditor({
     return () => window.clearTimeout(t);
   }, [reloadArm]);
 
+  useEffect(() => {
+    if (saveMsg?.kind !== "ok") return;
+    const t = window.setTimeout(() => setSaveMsg((cur) => (cur === saveMsg ? null : cur)), 4000);
+    return () => window.clearTimeout(t);
+  }, [saveMsg]);
+
+  useEffect(() => {
+    if (sealMsg?.kind !== "ok") return;
+    const t = window.setTimeout(() => setSealMsg((cur) => (cur === sealMsg ? null : cur)), 5000);
+    return () => window.clearTimeout(t);
+  }, [sealMsg]);
+
   const doSave = useCallback(
     async (call: Promise<unknown>): Promise<boolean> => {
-      setBusy(true);
+      setBusyAction("save");
       setSaveMsg(null);
       setSealMsg(null);
       setEd((s) => reduceEditor(s, { type: "saving" }));
       try {
         const fp = (await call) as SavedFingerprintJson;
+        clearStash(epKey);
+        setStashOffer(null);
+        setDiskChanged(false);
         setEd((s) => reduceEditor(s, { type: "saved", baselineFp: { size: String(fp.size), mtimeNs: fp.mtimeNs } }));
-        setSaveMsg("已保存");
+        setSaveMsg((prev) => ({ kind: "ok", text: "已保存", n: (prev?.n ?? 0) + 1 }));
         void rpc.call<ScriptStatJson>("script.stat", { epKey }).then(setStat, () => undefined);
         return true;
       } catch (e) {
-        setEd((s) => reduceEditor(s, { type: "conflict" }));
-        setSaveMsg(errText(e));
+        const text = errText(e);
+        setEd((s) => reduceEditor(s, { type: isConflictError(e, text) ? "conflict" : "save-failed" }));
+        setSaveMsg((prev) => ({ kind: "err", text, n: (prev?.n ?? 0) + 1 }));
         return false;
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
     [epKey, rpc],
   );
 
   const doSeal = useCallback(async (call: Promise<unknown>) => {
-    setBusy(true);
+    setBusyAction("seal");
     setSealMsg(null);
     try {
       const r = (await call) as { bytes: number };
-      setSealMsg(`已封板：补丁 ${r.bytes} 字节`);
+      setSealMsg((prev) => ({ kind: "ok", text: `已封板：补丁 ${r.bytes} 字节`, n: (prev?.n ?? 0) + 1 }));
     } catch (e) {
-      setSealMsg(errText(e));
+      setSealMsg((prev) => ({ kind: "err", text: errText(e), n: (prev?.n ?? 0) + 1 }));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }, []);
 
   const doCheck = useCallback(async (call: Promise<unknown>) => {
-    setBusy(true);
+    setBusyAction("check");
     setCheckOut(null);
+    setCheckExpanded(false);
     try {
       setCheckOut((await call) as { code: number | null; stdoutTail: string; stderrTail: string });
     } catch (e) {
       setCheckOut({ code: null, stdoutTail: "", stderrTail: errText(e) });
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }, []);
 
@@ -359,7 +462,21 @@ export function ScriptEditor({
   const sealDisabledReason = dirty ? "有未保存的改动，请先保存后再封板" : !canSeal(ed) ? "先保存为 02-script.md 后再封板" : null;
 
   return (
-    <div className="editor-shell" ref={shellRef} data-testid="script-editor" data-dirty={dirty ? "1" : "0"} data-layout={wide ? "wide" : "narrow"}>
+    <div
+      className="editor-shell"
+      ref={shellRef}
+      data-testid="script-editor"
+      data-dirty={dirty ? "1" : "0"}
+      data-layout={wide ? "wide" : "narrow"}
+      onKeyDown={(e) => {
+        if (!e.nativeEvent.isTrusted) return;
+        if (!e.metaKey && !e.ctrlKey) return;
+        if (e.key.toLowerCase() !== "s") return;
+        e.preventDefault();
+        if (off || tooBig) return;
+        void doSave(rpc.call("script.save", saveParams()));
+      }}
+    >
       <div className="toolbar" data-testid="editor-toolbar">
         {dirty && (
           <>
@@ -372,7 +489,7 @@ export function ScriptEditor({
         {tooBig && <span className="warn">正文超过 1 MiB 上限</span>}
         <span className="spacer" />
         {wide ? (
-          <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="editor-tips-toggle" aria-pressed={tipsOpen} onClick={() => setTipsOpen((o) => !o)}>
             要点
           </button>
         ) : (
@@ -389,6 +506,7 @@ export function ScriptEditor({
           renderTrigger={(t) => (
             <span ref={t.ref} {...t.props}>
               <button
+                type="button"
                 className="ui-btn ui-btn--ghost ui-btn--sm"
                 data-testid="save-script"
                 disabled={off || tooBig || nothingToSave}
@@ -397,6 +515,7 @@ export function ScriptEditor({
                   void doSave(rpc.call("script.save", saveParams()));
                 }}
               >
+                {busyAction === "save" && <span className="ui-spinner" />}
                 保存
               </button>
             </span>
@@ -404,6 +523,7 @@ export function ScriptEditor({
         />
         {stat !== null && stat.script === null && stat.draft !== null && (
           <button
+            type="button"
             className="ui-btn ui-btn--ghost ui-btn--sm"
             data-testid="from-draft"
             disabled={off || !canCreateFromDraft(ed, true)}
@@ -412,6 +532,7 @@ export function ScriptEditor({
               void doSave(rpc.call("script.save", saveParams()));
             }}
           >
+            {busyAction === "save" && <span className="ui-spinner" />}
             从草稿新建
           </button>
         )}
@@ -420,6 +541,7 @@ export function ScriptEditor({
           renderTrigger={(t) => (
             <span ref={t.ref} {...t.props}>
               <button
+                type="button"
                 className="ui-btn ui-btn--ghost ui-btn--sm"
                 data-testid="seal-script"
                 disabled={off || !canSeal(ed)}
@@ -428,12 +550,14 @@ export function ScriptEditor({
                   void doSeal(rpc.call("script.seal", { epKey }));
                 }}
               >
+                {busyAction === "seal" && <span className="ui-spinner" />}
                 封板
               </button>
             </span>
           )}
         />
         <button
+          type="button"
           className="ui-btn ui-btn--ghost ui-btn--sm"
           data-testid="check-script"
           disabled={off}
@@ -442,51 +566,51 @@ export function ScriptEditor({
             void doCheck(rpc.call("script.check", { epKey }));
           }}
         >
+          {busyAction === "check" && <span className="ui-spinner" />}
           机检
         </button>
       </div>
       {loadErr !== null ? (
-        <StateView kind="error" title={loadErr} />
+        <div className="pane-crash">
+          <StateView kind="error" title={loadErr} />
+          <button type="button" className="ui-btn ui-btn--sm" data-testid="editor-retry" onClick={() => void load()}>
+            重新载入
+          </button>
+        </div>
       ) : (
         <div className="editor-split" data-layout={wide ? "wide" : "narrow"} data-pane={wide ? (tipsOpen ? "all" : "two") : pane}>
-          <div
-            className="editor-src"
-            ref={hostRef}
-            data-testid="editor-src"
-            onKeyDown={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              if (!e.metaKey && !e.ctrlKey) return;
-              if (e.key.toLowerCase() !== "s") return;
-              e.preventDefault();
-              if (off || tooBig) return;
-              void doSave(rpc.call("script.save", saveParams()));
-            }}
-          />
-          <div className="editor-preview" data-testid="editor-preview">
+          <div className="editor-src" ref={hostRef} data-testid="editor-src" />
+          <div key={wide ? "preview-wide" : `preview-${pane}`} className={`editor-preview${!wide ? " ui-fade-swap" : ""}`} data-testid="editor-preview">
             {preview.trim() === "" ? <div className="muted">（正文为空）</div> : <MarkdownBody text={preview} />}
           </div>
-          <aside className="checklist" data-testid="review-checklist">
+          <aside key={wide ? "tips-wide" : `tips-${pane}`} className={`checklist${!wide ? " ui-fade-swap" : ""}`} data-testid="review-checklist">
             <div className="ui-section">人审要点</div>
             <ol>
               {REVIEW_CHECKLIST.map((t) => (
-                <li key={t}>{t}</li>
+                <li key={t}>{renderChecklistItem(t)}</li>
               ))}
             </ol>
           </aside>
         </div>
       )}
       {saveMsg !== null && (
-        <div className={ed.conflict ? "notice ui-error-shake" : "notice ui-confirm-enter"} data-testid="save-msg">
-          <Icon name={ed.conflict ? "alert" : "info"} size="sm" />
-          {saveMsg}
+        <div
+          key={saveMsg.n}
+          className={saveMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+          data-testid="save-msg"
+          role={saveMsg.kind === "err" ? "alert" : "status"}
+        >
+          <Icon name={saveMsg.kind === "err" ? "alert" : "info"} size="sm" />
+          <span>{saveMsg.text}</span>
         </div>
       )}
       {(ed.conflict || diskChanged) && (
-        <div className="notice notice--warn ui-error-shake" data-testid="save-conflict">
+        <div className="notice notice--warn voice-msg-bar ui-error-shake" data-testid="save-conflict">
           <Icon name="alert" size="sm" />
           <span>{ed.conflict ? "磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。" : "磁盘上的版本已变（agent 或别处改过）。你有未保存改动，没有自动载入。"}</span>
           <button
-            className="ui-btn ui-btn--sm"
+            type="button"
+            className={reloadArm ? "ui-btn ui-btn--danger ui-btn--sm" : "ui-btn ui-btn--sm"}
             data-testid="reload-script"
             disabled={busy}
             onClick={() => {
@@ -494,6 +618,8 @@ export function ScriptEditor({
                 setReloadArm(true);
                 return;
               }
+              clearStash(epKey);
+              setStashOffer(null);
               void load();
             }}
           >
@@ -513,13 +639,17 @@ export function ScriptEditor({
         </div>
       )}
       {stashOffer !== null && (
-        <div className="notice ui-card-enter" data-testid="stash-offer">
+        <div className="notice voice-msg-bar ui-card-enter" data-testid="stash-offer">
           <Icon name="info" size="sm" />
           <span>检测到上次未保存的草稿。</span>
           <button
+            type="button"
             className="ui-btn ui-btn--sm"
             onClick={() => {
-              setDoc(stashOffer);
+              const draft = stashOffer;
+              setDoc(draft);
+              setEd((s) => reduceEditor(s, { type: "edit", text: draft }));
+              clearStash(epKey);
               setStashOffer(null);
             }}
           >
@@ -529,24 +659,56 @@ export function ScriptEditor({
             type="button"
             className="ui-btn ui-btn--ghost ui-btn--sm"
             data-testid="stash-dismiss"
-            onClick={() => setStashOffer(null)}
+            onClick={() => {
+              clearStash(epKey);
+              setStashOffer(null);
+            }}
           >
             忽略
           </button>
         </div>
       )}
       {sealMsg !== null && (
-        <div className="notice ui-confirm-enter" data-testid="seal-msg">
-          <Icon name="info" size="sm" />
-          {sealMsg}
+        <div
+          key={sealMsg.n}
+          className={sealMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+          data-testid="seal-msg"
+          role={sealMsg.kind === "err" ? "alert" : "status"}
+        >
+          <Icon name={sealMsg.kind === "err" ? "alert" : "info"} size="sm" />
+          <span>{sealMsg.text}</span>
         </div>
       )}
-      {checkOut !== null && (
-        <pre className="tail" data-testid="check-output" data-code={checkOut.code ?? ""}>
-          {checkOut.stdoutTail}
-          {checkOut.stderrTail}
-        </pre>
-      )}
+      <Disclosure open={checkOut !== null} keepLastContent>
+        {checkOut !== null && (
+          <div>
+            <div className="editor-check-head">
+              <Badge tone={checkOut.code === 0 ? "ok" : "danger"}>{checkOut.code === 0 ? "机检通过" : "机检未通过"}</Badge>
+              <span className="muted">退出码 {checkOut.code ?? "—"}</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                onClick={() => setCheckExpanded((v) => !v)}
+              >
+                {checkExpanded ? "收起" : "展开全部"}
+              </button>
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                aria-label="关闭机检输出"
+                onClick={() => setCheckOut(null)}
+              >
+                <Icon name="close" size="sm" />
+              </button>
+            </div>
+            <pre className="tail" data-testid="check-output" data-code={checkOut.code ?? ""} data-expanded={checkExpanded ? "1" : "0"}>
+              {checkOut.stdoutTail}
+              {checkOut.stderrTail}
+            </pre>
+          </div>
+        )}
+      </Disclosure>
       <FloatingModal
         open={pendingSwitch}
         onClose={() => {
@@ -573,7 +735,11 @@ export function ScriptEditor({
             className="ui-btn ui-btn--danger ui-btn--sm"
             data-testid="dirty-discard"
             disabled={busy}
-            onClick={() => onResolveSwitch?.("proceed")}
+            onClick={() => {
+              clearStash(epKey);
+              setStashOffer(null);
+              onResolveSwitch?.("proceed");
+            }}
           >
             丢弃改动
           </button>
@@ -589,7 +755,8 @@ export function ScriptEditor({
               });
             }}
           >
-            {busy ? "正在保存…" : "保存并切换"}
+            {busyAction === "save" && <span className="ui-spinner" />}
+            {busyAction === "save" ? "正在保存…" : "保存并切换"}
           </button>
         </div>
       </FloatingModal>

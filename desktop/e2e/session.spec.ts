@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { pick, type Launched } from "./fixtures";
 import { fingerprintOf, launchSession, pendingObj, quitStubCalls, releaseQuit, sessionFixture, stubQuit, writeStore, type SessionFixture } from "./sessionFixtures";
-import { spawns } from "./ackFixtures";
 import { sessionRecords, sessionScript, stdinLines } from "../tests/fixtures/session";
 
 const READY = (ep: string) => ({ op: "emit", frame: { t: "ready", episode: ep, scope: "pipeline", continue_status: "new", llm: "ok", degrade_reason: null, code_freeze_ok: true, history_count: 0, session_bytes: 0, other_sessions: [], resume_prompt_tokens: null, resume_prompt_chars: null, context_window: null, session_kind: "episode", project: null, model: "fake", reasoning_effort: null, model_source: "default", effort_source: "default" } });
@@ -761,7 +760,7 @@ test("TX-8b host 不在时退出：不等 quit-state，直接退出", async () =
   }
 });
 
-test("TX-8d 关窗后取消：app 与 host 存活，活跃期 STATUS spawn 继续；activate 重开窗口", async () => {
+test("TX-8d A3 macOS 关窗保活：window.close() 保留 host 与后台会话且不弹退出确认；app.quit() 取消保活；activate 重开窗口恢复连线", async () => {
   const fx = sessionFixture();
   const L = await launchSession(fx.repo);
   try {
@@ -770,15 +769,24 @@ test("TX-8d 关窗后取消：app 与 host 存活，活跃期 STATUS spawn 继�
     await send(L.page, "跑着");
     await expect(L.page.getByTestId("session-running")).toBeVisible();
     await stubQuit(L, "cancel");
-    const before = spawns(L).filter((s) => s.template === "STATUS").length;
+    const hostPid = await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid());
+    expect(hostPid).toBeGreaterThan(0);
+    // A3：macOS 关窗保留 host 与后台运行会话，不弹退出确认框
     await L.page.evaluate(() => window.close());
     await L.page.waitForEvent("close").catch(() => undefined);
+    await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(0);
+    expect(await quitStubCalls(L)).toBe(0);
+    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid())).toBe(hostPid);
+    // 只有显式退出（⌘Q / app.quit）才触发运行中会话确认框；取消后 host 与后台会话仍存活
+    void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
     await expect.poll(() => quitStubCalls(L), { timeout: 10_000 }).toBe(1);
-    // 取消后 host 定时器未停：STATUS 仍按周期出现
-    await expect.poll(() => spawns(L).filter((s) => s.template === "STATUS").length, { timeout: 12_000 }).toBeGreaterThan(before);
-    // activate 重开窗口
+    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestHostPid: () => number | null }).__avaTestHostPid())).toBe(hostPid);
+    // activate 重开窗口 → 重新撮合连上同一个 host，并还原运行中的 SESS-A 会话态
+    const newPageP = L.app.waitForEvent("window");
     await L.app.evaluate(({ app }) => app.emit("activate"));
-    await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(1);
+    const page2 = await newPageP;
+    await openEp(page2, "SESS-A");
+    await expect(page2.getByTestId("session-running")).toBeVisible({ timeout: 15_000 });
   } finally {
     await stubQuit(L, "quit").catch(() => undefined);
     await L.app.close().catch(() => undefined);

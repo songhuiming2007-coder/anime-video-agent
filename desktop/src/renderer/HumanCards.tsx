@@ -9,17 +9,18 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ApprovalJson, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
 import type { OutFrame } from "../shared/convFrames";
-import type { ConvKey, Health, RpcError, TreeEntry } from "../shared/protocol";
-import type { ConvState } from "./convStore";
 import { encodeMediaUrl } from "../shared/mediaUrl";
+import type { ConvKey, Health, RpcError, TreeEntry } from "../shared/protocol";
+import { toolCategory } from "../shared/toolView";
+import { CopyButton } from "./copy";
+import type { ConvState } from "./convStore";
+import { Icon } from "./icons";
+import { Collapsible, Disclosure } from "./motion";
+import { ReviewRating } from "./ReviewRating";
 import type { RpcClient } from "./rpc";
 import { HOST_LINK_LOST, RpcFailure, errText } from "./rpc";
-import { CopyButton } from "./copy";
-import { Icon } from "./icons";
-import { Disclosure } from "./motion";
-import { Badge } from "./ui";
-import { ReviewRating } from "./ReviewRating";
 import { approvalsOf, type EpisodeState } from "./store";
+import { Badge } from "./ui";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -28,6 +29,27 @@ function formatBytes(n: number): string {
 }
 
 const STOP_NAMES: Record<StopType, string> = { "02.5": "人审改稿", "03.5": "配音顺听", "05": "审时间码", "09": "人工发布" };
+
+const REJECT_PLACEHOLDER: Record<StopType, string> = {
+  "02.5": "例如 第 3 段开头",
+  "03.5": "例如 第 2 段读音",
+  "05": "例如 第 7 段 1:20",
+  "09": "例如 封面或标题",
+};
+
+const TOOL_TITLES: Readonly<Record<string, string>> = {
+  bash: "执行终端命令",
+  write_episode_file: "写入本期文件",
+  write_project_file: "写入企划文件",
+  write_note: "写入番剧笔记",
+  write_memory: "写入项目记忆",
+  run_pipeline: "运行流水线",
+  acquire_propose: "素材获取方案",
+  cover_edit: "编辑封面",
+  fact_add: "写入事实库",
+  browser: "浏览器操作",
+  chrome: "浏览器操作",
+};
 
 /** 决策条展示的对象：可 ack 的（PENDING，或 artifact 已对齐、待确认）。判定以 host 为准，这里只决定画不画卡片。 */
 function actionable(a: ApprovalJson): boolean {
@@ -51,13 +73,21 @@ export function CardFrame({ className, testId, attrs, title, sub, children }: { 
 type Outcome = { approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
 
 /** 待答区（用户裁决：输入框上方常驻；停机点对象 + Spec 9 的四种请求卡，PR3 起并入）。 */
-export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Health | null; rpc: RpcClient }) {
+export function AnswerDock({ ep, health, rpc, treeBump = 0 }: { ep?: EpisodeState; health: Health | null; rpc: RpcClient; treeBump?: number }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
   const items = ep ? approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type)) : [];
   const a = ep?.approvals;
-  // D80 R6（人选方案 C）：请求卡挪进对话流末尾（RequestCards，由 App 交给 ConversationPane 的 cards 槽），
-  // 待答区只剩停机点——此前卡片与停机点挤在 40% 高的待答区里，聚焦「批准」把命令与危险标记滚出视野（P13 实测）
+
+  useEffect(() => {
+    setOutcome(null);
+  }, [ep?.epKey]);
+
+  useEffect(() => {
+    if (outcome?.kind !== "ok") return;
+    const t = setTimeout(() => setOutcome((cur) => (cur === outcome ? null : cur)), 5000);
+    return () => clearTimeout(t);
+  }, [outcome]);
 
   const run = async (obj: ApprovalJson, call: Promise<unknown>, okText: string) => {
     const head = { approvalId: obj.approval_id, stop: obj.type as StopType };
@@ -90,13 +120,26 @@ export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Hea
   }
   if (items.length === 0 && a?.state !== "error" && !outcome) return null;
   const disabled = a?.state !== "ok" || health?.reach !== "ok" || busy;
+  const disabledReason =
+    busy
+      ? "正在处理上一条决策…"
+      : health?.reach !== "ok"
+        ? "数据目录不可达，暂不可操作"
+        : a?.state !== "ok"
+          ? "审批状态未同步，暂不可操作"
+          : undefined;
   return (
     <div className="decisions dock" data-testid="decisions">
       {a?.state === "error" && <div className="error">审批状态读取失败：{a.message}（以下为上次成功读取的结果，按钮已禁用）</div>}
       {items.map((obj) => (
-        <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} run={run} />
+        <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} disabledReason={disabledReason} treeBump={treeBump} run={run} />
       ))}
-      {busy && <div className="muted">处理中…</div>}
+      {busy && (
+        <div className="notice">
+          <span className="ui-spinner" />
+          <span>处理中…</span>
+        </div>
+      )}
       {outcome?.kind === "ok" && (
         <div className="decision-ok ui-confirm-enter" data-testid="decision-ok" data-approval-id={outcome.approvalId}>
           <Icon name="check" size="sm" />
@@ -126,7 +169,23 @@ export function AnswerDock({ ep, health, rpc }: { ep?: EpisodeState; health: Hea
 
 type Run = (obj: ApprovalJson, call: Promise<unknown>, okText: string) => Promise<void>;
 
-export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeState; obj: ApprovalJson; rpc: RpcClient; disabled: boolean; run: Run }) {
+export function StopPointCard({
+  ep,
+  obj,
+  rpc,
+  disabled,
+  disabledReason,
+  treeBump = 0,
+  run,
+}: {
+  ep: EpisodeState;
+  obj: ApprovalJson;
+  rpc: RpcClient;
+  disabled: boolean;
+  disabledReason?: string;
+  treeBump?: number;
+  run: Run;
+}) {
   const stop = obj.type as StopType;
   const [rejecting, setRejecting] = useState(false);
   const [target, setTarget] = useState("");
@@ -151,6 +210,12 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
   const ready = !needsFinalize || (cover.trim() !== "" && title.trim() !== "");
   const approveParams = needsFinalize ? { ...base, decision: "approve", cover, title } : { ...base, decision: "approve" };
   const missingArtifacts = obj.artifacts.filter((f) => f.size < 0);
+  const approveTitle =
+    disabledReason ??
+    (!ready ? "请先选定封面并填写发布标题" : undefined);
+  const rejectSubmitTitle =
+    disabledReason ??
+    (!target.trim() || !problem.trim() ? "请填写定位与具体问题后再提交" : undefined);
   return (
     <CardFrame
       className="decision"
@@ -170,8 +235,10 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
         </div>
       ))}
       {(obj.artifacts.length > 0 || obj.note) && (
-        <details className="card-more">
-          <summary className="muted">产物详情（{obj.artifacts.length} 项）</summary>
+        <Collapsible
+          className="card-more"
+          summary={obj.artifacts.length > 0 ? `产物详情（${obj.artifacts.length} 项）` : "备注说明"}
+        >
           {obj.artifacts.length > 0 && (
             <dl className="ui-kv">
               {obj.artifacts.map((f) => (
@@ -186,25 +253,33 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
             </dl>
           )}
           {obj.note && <div className="muted">{obj.note}</div>}
-        </details>
+        </Collapsible>
       )}
-      {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} />}
-      {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
+      {stop === "05" && <ReviewPageAge epKey={ep.epKey} rpc={rpc} eventsCount={ep.events.length} />}
+      {needsFinalize && <FinalizeInputs epKey={ep.epKey} rpc={rpc} treeBump={treeBump} cover={cover} title={title} onCover={setCover} onTitle={setTitle} />}
       {stop === "03.5" && <ReviewRating epKey={ep.epKey} rpc={rpc} disabled={off} />}
       <div className="ui-card-actions">
         <button
           className="ui-btn"
           data-testid="approve"
           disabled={off || !ready}
+          title={approveTitle}
           onClick={(e) => {
             if (!e.nativeEvent.isTrusted) return;
             void run(obj, rpc.call("approval.decide", approveParams), aligned ? "已确认批准" : "已批准");
           }}
         >
-          {aligned ? "批准" : stop === "03.5" ? "顺听无误，进入排片" : "批准"}
+          {aligned ? "确认批准" : stop === "03.5" ? "顺听无误，进入排片" : "批准"}
         </button>
         {!aligned && stop !== "03.5" && (
-          <button className="ui-btn" data-testid="reject-open" aria-expanded={rejecting} disabled={off} onClick={() => setRejecting((v) => !v)}>
+          <button
+            className="ui-btn"
+            data-testid="reject-open"
+            aria-expanded={rejecting}
+            disabled={off}
+            title={disabledReason}
+            onClick={() => setRejecting((v) => !v)}
+          >
             {rejecting ? "收起打回" : "打回…"}
           </button>
         )}
@@ -213,17 +288,18 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
         <div className="reject-form" data-testid="reject-form">
           <label className="ui-field">
             哪段
-            <input className="ui-input" data-testid="reject-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="例如 04-clips.json s07 1:20" />
+            <input className="ui-input" data-testid="reject-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder={REJECT_PLACEHOLDER[stop]} />
           </label>
           <label className="ui-field">
             问题
-            <textarea className="ui-textarea" data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} />
+            <textarea className="ui-textarea" data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} placeholder="描述要修改的具体问题" />
           </label>
           <div className="ui-card-actions">
             <button
               className="ui-btn"
               data-testid="reject-submit"
               disabled={off || !target.trim() || !problem.trim()}
+              title={rejectSubmitTitle}
               onClick={(e) => {
                 if (!e.nativeEvent.isTrusted) return;
                 void run(obj, rpc.call("approval.decide", { ...base, decision: "reject", feedback: { target, problem } }), "已打回");
@@ -240,50 +316,73 @@ export function StopPointCard({ ep, obj, rpc, disabled, run }: { ep: EpisodeStat
 
 /**
  * 09 定稿的两个输入（Spec 12 S8-R19 / Spec 10 S10-R1）：
- * 封面选项 = host 直读 `07-cover/` 下的现存文件清单（确定性事实，按文件名排序，**不排名**——判据 2/10），
+ * 封面选项 = host 直读 `07-cover/` 与 `07-cover/import/` 下的现存文件清单（确定性事实，不排名——判据 2/10），
  * 标题文本框；两者非空才可点批准（core 侧还会再校验路径与长度）。approval 调用点在批准处理器里，本组件不碰。
  */
-export function FinalizeInputs({ epKey, rpc, cover, title, onCover, onTitle }: { epKey: string; rpc: RpcClient; cover: string; title: string; onCover: (v: string) => void; onTitle: (v: string) => void }) {
+export function FinalizeInputs({
+  epKey,
+  rpc,
+  treeBump = 0,
+  cover,
+  title,
+  onCover,
+  onTitle,
+}: {
+  epKey: string;
+  rpc: RpcClient;
+  treeBump?: number;
+  cover: string;
+  title: string;
+  onCover: (v: string) => void;
+  onTitle: (v: string) => void;
+}) {
   const [covers, setCovers] = useState<TreeEntry[] | null>(null);
   useEffect(() => {
     let live = true;
-    rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "07-cover" }).then(
-      (es) => {
-        if (live) setCovers(es.filter((e) => e.kind === "file" && /\.(png|jpe?g)$/i.test(e.name)).sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true })));
-      },
-      () => {
-        if (live) setCovers([]);
-      },
-    );
+    const isImg = (e: TreeEntry) => e.kind === "file" && /\.(png|jpe?g)$/i.test(e.name);
+    const byName = (a: TreeEntry, b: TreeEntry) => a.name.localeCompare(b.name, "en", { numeric: true });
+    Promise.all([
+      rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "07-cover" }).catch(() => [] as TreeEntry[]),
+      rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "07-cover/import" }).catch(() => [] as TreeEntry[]),
+    ]).then(([root, imported]) => {
+      if (!live) return;
+      const topFiles = root.filter(isImg).sort(byName);
+      const importedFiles = imported.filter(isImg).sort(byName);
+      setCovers([...topFiles, ...importedFiles]);
+    });
     return () => {
       live = false;
     };
-  }, [epKey, rpc]);
+  }, [epKey, rpc, treeBump]);
   return (
     <div className="finalize" data-testid="finalize-inputs">
       <div className="ui-field">
         <span>封面</span>
-        {/* Spec 14 S12-R1（VS-3/S12-R1）：.cover-grid/.cover-opt，缩略图 + 压在图上的文件名走 --overlay-*。
-            控件用**原生 radio 组**而不是 aria-pressed 按钮：一是闸门卡片里不得出现非 ui-btn 的 <button>（VS-12，
-            红队 🟡-3 采纳的判据），二是「N 选一」本身就是 radio 语义（屏幕阅读器与方向键都是原生的）。 */}
-        <div className="cover-grid" data-testid="cover-select" role="radiogroup" aria-label="封面">
-          {(covers ?? []).map((c) => (
-            <label key={c.rel} className="cover-opt" data-testid="cover-opt" data-rel={c.rel}>
-              <input
-                type="radio"
-                name={`cover-${epKey}`}
-                value={c.rel}
-                checked={cover === c.rel}
-                aria-label={c.rel}
-                onChange={() => onCover(c.rel)}
-              />
-              <img src={encodeMediaUrl("episodes", `${epKey}/${c.rel}`)} alt="" />
-              <span className="ui-badge">{c.rel.replace(/^07-cover\//, "")}</span>
-            </label>
-          ))}
-        </div>
+        {covers === null ? (
+          <div className="ui-skeleton-stack" aria-label="读取可选封面">
+            <div className="ui-skeleton ui-skeleton--lg" />
+            <div className="ui-skeleton ui-skeleton--md" />
+          </div>
+        ) : (
+          <div className="cover-grid" data-testid="cover-select" role="radiogroup" aria-label="封面">
+            {covers.map((c) => (
+              <label key={c.rel} className="cover-opt" data-testid="cover-opt" data-rel={c.rel}>
+                <input
+                  type="radio"
+                  name={`cover-${epKey}`}
+                  value={c.rel}
+                  checked={cover === c.rel}
+                  aria-label={c.rel}
+                  onChange={() => onCover(c.rel)}
+                />
+                <img src={encodeMediaUrl("episodes", `${epKey}/${c.rel}`)} alt="" />
+                <span className="ui-badge">{c.rel.replace(/^07-cover\//, "")}</span>
+              </label>
+            ))}
+          </div>
+        )}
       </div>
-      {covers?.length === 0 && <div className="muted">07-cover/ 下没有可选封面文件</div>}
+      {covers?.length === 0 && <div className="muted">07-cover/ 下没有可选封面文件，可在右侧预览栏点击「导入封面」添加</div>}
       <label className="ui-field">
         标题
         <input className="ui-input" data-testid="title-input" value={title} onChange={(e) => onTitle(e.target.value)} placeholder="最终发布标题" />
@@ -293,7 +392,7 @@ export function FinalizeInputs({ epKey, rpc, cover, title, onCover, onTitle }: {
 }
 
 /** RF-20：审片页生成时间早于排片文件最后修改时间 → 标出这条确定性事实（不自动重建，RF-11）。 */
-function ReviewPageAge({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
+function ReviewPageAge({ epKey, rpc, eventsCount }: { epKey: string; rpc: RpcClient; eventsCount: number }) {
   const [older, setOlder] = useState(false);
   useEffect(() => {
     let live = true;
@@ -308,9 +407,10 @@ function ReviewPageAge({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
     return () => {
       live = false;
     };
-  }, [epKey, rpc]);
+  }, [epKey, rpc, eventsCount]);
   return older ? (
-    <div className="notice" data-testid="review-page-older">
+    <div className="notice notice--warn" data-testid="review-page-older">
+      <Icon name="alert" size="sm" />
       审片页生成时间早于排片文件最后修改时间
     </div>
   ) : null;
@@ -318,7 +418,7 @@ function ReviewPageAge({ epKey, rpc }: { epKey: string; rpc: RpcClient }) {
 
 // ---------------- Spec 9 的四种人审请求卡（Spec 10 §2.4；PR3） ----------------
 
-/** ADR-0030 决策 6：自动聚焦「批准」后这么久之内的回车不算数（人反应时间 > 400 ms；键盘自动重复首延迟 ≈ 500 ms 内的连发也挡住） */
+/** ADR-0030 决策 6：自动聚焦「批准」后这么久之内的回车/空格不算数（人反应时间 > 400 ms；键盘自动重复首延迟 ≈ 500 ms 内的连发也挡住） */
 const ENTER_GUARD_MS = 400;
 
 // ADR-0030 决策 5：approve_session = 批准本次，且本会话同类此后免卡（只出现在 bash 硬危险 / cloud 卡上）
@@ -337,11 +437,6 @@ function fieldText(v: unknown): string {
   return v === null || v === undefined ? "" : String(v);
 }
 
-/**
- * 会话请求卡：按钮只取 `request.options`（H-4：UI 不增不减），没有批量、没有默认高亮。
- * ADR-0030 决策 6（回车批准）：第一张卡出现时，若人没在输入框里打字，焦点落到「批准」按钮——原生按钮收到回车
- * 派发的是 isTrusted 的 click，走下面同一个 onClick（TG-4′ 不变：effect 里只 focus，不调答复方法）。
- */
 /** D80 R6（方案 C）：本会话的待答请求卡，挂在对话流末尾（正在跑的回合下面）；第一张自动聚焦「批准」 */
 export function RequestCards({ conv, rpc, onEditScript }: { conv?: ConvState; rpc: RpcClient; onEditScript?: () => void }) {
   const requests = conv?.open ?? [];
@@ -371,12 +466,15 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
   const kind = String(req.kind);
   const options = Array.isArray(req.options) ? (req.options as unknown[]).map(String) : [];
   const fields = (req.fields ?? {}) as Record<string, unknown>;
+  const fieldEntries = Object.entries(fields);
   const [feedback, setFeedback] = useState("");
   // D80 R6.2（人选方案 C，反馈照 A）：「告诉它怎么改」默认收起，点「附说明…」才展开；「拒绝」仍一键（有说明就带上）
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [approveFocused, setApproveFocused] = useState(false);
   const tool = kind === "tool_call" && typeof fields.tool === "string" ? fields.tool : null;
+  const toolHeading = tool ? TOOL_TITLES[tool] ?? `${toolCategory(tool)} · ${tool}` : KIND_LABEL[kind] ?? "请求卡";
   // D76：bash 卡上的命令每行带「│」前缀，手选会连前缀一起复制；按钮复制的是请求参数里的命令原文
   const args = (fields.args ?? {}) as Record<string, unknown>;
   const scriptTarget = tool === "write_episode_file" ? scriptTargetOf(args) : null;
@@ -387,7 +485,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
   const feedbackAllowed = kind === "tool_call" && req.feedback_allowed === true && options.includes("reject");
   const off = disabled || busy;
   const approveRef = useRef<HTMLButtonElement | null>(null);
-  // 自动聚焦后 ENTER_GUARD_MS 内的回车不生效：连按两下 / 按键自动重复不会顺手批掉紧接着出现的下一张卡（原 TX-14 守的事）
+  // 自动聚焦后 ENTER_GUARD_MS 内的回车/空格不生效：连按两下 / 按键自动重复不会顺手批掉紧接着出现的下一张卡（原 TX-14 守的事）
   const focusedAt = useRef<number>(-Infinity);
   useEffect(() => {
     if (!focusApprove) return;
@@ -401,13 +499,11 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
     ) {
       return;
     }
-    // D80 R6：卡片在对话流末尾——聚焦不让浏览器按按钮位置滚动（会把卡头滚出视野），改为把整张卡带进视野
-    // 卡片比可见区还高时（多行命令、写稿 diff），nearest 对齐的是卡头——R6.1 要的正是危险标记与命令，按钮往下滚即见、焦点仍在它上面。
-    // 前提是对话流此时不贴底（ConversationPane 待答时不跟到底），否则卡头会被每秒的重渲染滚走
     approveRef.current?.focus({ preventScroll: true });
     approveRef.current?.closest(".request-card")?.scrollIntoView({ block: "nearest" });
     focusedAt.current = performance.now();
   }, [focusApprove, requestId]);
+  const rawText = String(req.card_text ?? "");
   return (
     <CardFrame
       className="decision request-card"
@@ -416,8 +512,8 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
       title={
         <>
           {tool === "bash" ? <Icon name="terminal" size="sm" /> : tool ? <Icon name="stack" size="sm" /> : null}
-          {tool ?? KIND_LABEL[kind] ?? "请求卡"}
-          {tool ? <Badge>{KIND_LABEL[kind] ?? "请求卡"}</Badge> : null}
+          {toolHeading}
+          {tool ? <Badge>{tool}</Badge> : null}
           {mark ? <Badge tone="danger">{mark}</Badge> : null}
         </>
       }
@@ -428,48 +524,71 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           <pre className="request-card-text" data-testid="request-card-text">
             {req.card_summary}
           </pre>
-          <details className="request-card-full" data-testid="request-card-full">
-            <summary className="muted">工单全文（{String(req.card_text).split("\n").length} 行）</summary>
-            <pre className="request-card-text">{String(req.card_text)}</pre>
-          </details>
+          <Collapsible
+            className="request-card-full"
+            testId="request-card-full"
+            keepMounted
+            summary={`工单全文（${rawText.split("\n").length} 行）`}
+          >
+            <pre className="request-card-text">{rawText}</pre>
+          </Collapsible>
         </>
       ) : structuredBash ? (
         <div data-testid="request-card-face">
           {purpose ? <p className="card-purpose">{purpose}</p> : null}
           <pre className="card-cmd">{bashCommand}</pre>
-          <details className="card-more" data-testid="request-card-source">
-            <summary className="muted">原文</summary>
+          <div className="request-card-copy">
+            <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
+          </div>
+          <Collapsible className="card-more" testId="request-card-source" keepMounted summary="原文">
             <pre className="request-card-text" data-testid="request-card-text">
-              {String(req.card_text)}
+              {rawText}
             </pre>
-          </details>
+          </Collapsible>
         </div>
       ) : (
-        <pre className="request-card-text" data-testid="request-card-text">
-          {String(req.card_text)}
-        </pre>
+        <>
+          <pre className="request-card-text" data-testid="request-card-text">
+            {rawText}
+          </pre>
+          {bashCommand !== null && (
+            <div className="request-card-copy">
+              <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
+            </div>
+          )}
+        </>
       )}
-      {bashCommand !== null && (
-        <div className="request-card-copy">
-          <CopyButton text={bashCommand} label="复制命令" testId="card-copy" />
-        </div>
+      {fieldEntries.length > 0 && (
+        <details className="request-card-fields" data-testid="request-card-fields">
+          <summary>参数原文</summary>
+          <ul className="fingerprints ui-kv">
+            {fieldEntries.map(([k, v]) => (
+              <li key={k}>
+                <span className="muted">{k}</span>
+                <code>{fieldText(v)}</code>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
-      {/* 参数原文默认收起：卡片正文已列出目标与危险标记，写稿时 args.content 是整篇原文，铺开会把按钮挤出视野（D47） */}
-      <details className="request-card-fields" data-testid="request-card-fields">
-        <summary className="muted">参数原文</summary>
-        <ul className="fingerprints ui-kv">
-          {Object.entries(fields).map(([k, v]) => (
-            <li key={k}>
-              <span className="muted">{k}</span>
-              <code>{fieldText(v)}</code>
-            </li>
-          ))}
-        </ul>
-      </details>
       <Disclosure open={feedbackAllowed && feedbackOpen}>
         <label className="ui-field">
-          告诉它怎么改
-          <textarea className="ui-textarea" data-testid="request-feedback" rows={2} autoFocus value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          修改建议（仅点击「拒绝」时发送）
+          <textarea
+            className="ui-textarea"
+            data-testid="request-feedback"
+            rows={2}
+            autoFocus
+            value={feedback}
+            placeholder="告诉 AVA 为什么拒绝或希望怎么调整（按 Esc 收起）"
+            onChange={(e) => setFeedback(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setFeedbackOpen(false);
+              }
+            }}
+          />
         </label>
       </Disclosure>
       <div className="ui-card-actions">
@@ -477,13 +596,15 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           <button
             key={decision}
             ref={decision === options[0] ? approveRef : undefined}
+            onFocus={decision === options[0] ? () => setApproveFocused(true) : undefined}
+            onBlur={decision === options[0] ? () => setApproveFocused(false) : undefined}
             onKeyDown={(e) => {
-              // 只拦不答：preventDefault 使这次回车不派发 click；答复照旧只在 onClick 里（TG-4′）
-              if (e.key === "Enter" && performance.now() - focusedAt.current < ENTER_GUARD_MS) e.preventDefault();
+              // 只拦不答：preventDefault 使这次回车/空格不派发 click；答复照旧只在 onClick 里（TG-4′）
+              if ((e.key === "Enter" || e.key === " ") && performance.now() - focusedAt.current < ENTER_GUARD_MS) e.preventDefault();
             }}
             className="ui-btn"
             data-testid={`request-answer-${decision}`}
-            title={decision === options[0] ? "按回车即可（焦点在此按钮时）" : undefined}
+            title={decision === options[0] ? "焦点在此按钮时按回车即可确认" : undefined}
             disabled={off}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
@@ -531,11 +652,7 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
             参考建议，我自己改
           </button>
         )}
-        {focusApprove && options.length > 0 && !busy && (
-          // 提示放在按钮外：按钮文字只取 options 的标签（H-4），不混入提示
-          <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>
-        )}
-        {/* 「附说明…」不是答复：只展开/收起说明框。与闸门按钮同一变体（VS-12）、小号，放在动作行省一行高度 */}
+        {/* 「附说明…」不是答复：只展开/收起说明框。放在聚焦提示之前，避免批准按钮失焦收起提示时把按钮向左拉跑导致误丢点击 */}
         {feedbackAllowed && !busy && (
           <button
             type="button"
@@ -548,7 +665,16 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
             {feedbackOpen ? "收起说明" : "附说明…"}
           </button>
         )}
-        {busy && <span className="muted">处理中…</span>}
+        {focusApprove && approveFocused && options.length > 0 && !busy && (
+          // 提示放在按钮外，仅当按钮真正聚焦时显示，按钮文字只取 options 的标签（H-4）
+          <span className="muted request-enter-hint" data-testid="request-enter-hint">⏎ {DECISION_LABEL[options[0]] ?? options[0]}</span>
+        )}
+        {busy && (
+          <span className="notice">
+            <span className="ui-spinner" />
+            <span>处理中…</span>
+          </span>
+        )}
       </div>
       {error && (
         <div className="decision-err ui-error-shake" data-testid="request-error">

@@ -671,3 +671,38 @@ test("D87 03.5 预览栏逐段重配状态：合成中 / 排队 → 已重配·�
   await expect(status("2")).toHaveAttribute("data-kind", "failed");
   if (shots) await panel.screenshot({ path: join(shots, "d87-failed.png") });
 });
+
+test("P0 #1 02-script.md 未保存改动 + ⌘Q (app.quit)：弹确认框并同步暂存草稿，取消不退、确认后退出", async () => {
+  const ctx = epAt025("SP11-DIRTY-QUIT");
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-DIRTY-QUIT");
+  await L.page.getByTestId("script-editor").waitFor({ timeout: 15_000 });
+  await L.page.getByTestId("editor-src").locator(".cm-content").click();
+  await L.page.keyboard.type("未保存改稿段落");
+  await expect(L.page.getByTestId("script-editor")).toHaveAttribute("data-dirty", "1");
+
+  // 布置未保存文稿退出桩：先点「留下编辑」（cancel）
+  await L.app.evaluate(() => {
+    (globalThis as unknown as { __avaTestDirtyQuit: { calls: number; respond: "quit" | "cancel" } }).__avaTestDirtyQuit = {
+      calls: 0,
+      respond: "cancel",
+    };
+  });
+  void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+  await expect
+    .poll(() => L.app.evaluate(() => (globalThis as unknown as { __avaTestDirtyQuit: { calls: number } }).__avaTestDirtyQuit.calls), { timeout: 10_000 })
+    .toBe(1);
+  // 取消后窗口与编辑状态保持存活，且草稿已同步暂存进 localStorage
+  expect(await L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+  await expect
+    .poll(() => L.page.evaluate(() => localStorage.getItem("ava.scriptDraft.SP11-DIRTY-QUIT")), { timeout: 5_000 })
+    .toContain("未保存改稿段落");
+
+  // 再改桩为「退出 AVA」（quit）并触发 app.quit() → 正常退出
+  await L.app.evaluate(() => {
+    (globalThis as unknown as { __avaTestDirtyQuit: { calls: number; respond: "quit" | "cancel" } }).__avaTestDirtyQuit.respond = "quit";
+  });
+  const closedP = L.app.waitForEvent("close");
+  void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+  await closedP;
+});

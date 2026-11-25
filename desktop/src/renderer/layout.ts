@@ -74,29 +74,36 @@ export function clampLeft(w: number): number {
   return clamp(w, LEFT_MIN, LEFT_MAX);
 }
 
+/** 左栏在当前窗口宽下的有效宽度：窄窗优先让左栏让位至 LEFT_MIN，尽量保住对话列下限 */
+export function effectiveLeftW(mainW: number, l: Layout): number {
+  if (!l.leftOpen) return 0;
+  const rightBudget = l.previewOpen ? SPLIT_W + PREVIEW_MIN : RAIL_W;
+  const maxForCenter = Math.max(LEFT_MIN, mainW - SPLIT_W - CENTER_MIN - rightBudget);
+  return clamp(Math.min(l.leftW, maxForCenter), LEFT_MIN, LEFT_MAX);
+}
+
 /** 左栏占用（含手柄）；收起时为 0 */
-function leftSpan(l: Layout): number {
-  return l.leftOpen ? l.leftW + SPLIT_W : 0;
+function leftSpan(mainW: number, l: Layout): number {
+  return l.leftOpen ? effectiveLeftW(mainW, l) + SPLIT_W : 0;
 }
 
 /** 预览可取的最大宽：保住对话列下限；窗口太窄时退到下限（此时对话列让位，由 1fr 的 minmax(0) 吸收） */
 export function previewMax(mainW: number, l: Layout): number {
-  return Math.max(PREVIEW_MIN, mainW - leftSpan(l) - SPLIT_W - CENTER_MIN);
+  return Math.max(PREVIEW_MIN, mainW - leftSpan(mainW, l) - SPLIT_W - CENTER_MIN);
 }
 
 export function effectivePreviewW(mainW: number, l: Layout): number {
-  const base = l.previewW ?? (mainW - leftSpan(l)) * PREVIEW_DEFAULT_RATIO;
+  const base = l.previewW ?? (mainW - leftSpan(mainW, l)) * PREVIEW_DEFAULT_RATIO;
   return clamp(base, PREVIEW_MIN, previewMax(mainW, l));
 }
 
-/** `.main` 的 grid-template-columns：列序与 App 里可见子元素一一对应（收起的栏是 hidden，不占轨道） */
+/** `.main` 的 grid-template-columns：固定 5 轨（左栏 | 左手柄 | 对话 | 右手柄 | 预览/窄条），收起置 0px，保证 CSS Grid 平滑插值过渡 */
 export function gridColumns(mainW: number, l: Layout): string {
-  const cols: string[] = [];
-  if (l.leftOpen) cols.push(`${l.leftW}px`, `${SPLIT_W}px`);
-  cols.push("minmax(0, 1fr)");
-  if (l.previewOpen) cols.push(`${SPLIT_W}px`, `${effectivePreviewW(mainW, l)}px`);
-  else cols.push(`${RAIL_W}px`);
-  return cols.join(" ");
+  const leftW = l.leftOpen ? effectiveLeftW(mainW, l) : 0;
+  const leftSplit = l.leftOpen ? SPLIT_W : 0;
+  const rightSplit = l.previewOpen ? SPLIT_W : 0;
+  const rightW = l.previewOpen ? effectivePreviewW(mainW, l) : RAIL_W;
+  return `${leftW}px ${leftSplit}px minmax(0, 1fr) ${rightSplit}px ${rightW}px`;
 }
 
 /**

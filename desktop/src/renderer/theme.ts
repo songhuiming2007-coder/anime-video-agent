@@ -57,11 +57,14 @@ function pulseThemeTransition(): void {
   }, 105);
 }
 
-/** system 删 data-theme（跟随系统深色块生效），否则写入；用户主动切换时开启短促表面过渡 */
+/** system 删 data-theme（跟随系统深色块生效），否则写入；仅值变化且用户主动切换时开启短促表面过渡 */
 export function applyTheme(t: Theme, animate = false): void {
+  const el = document.documentElement;
+  const next = t === "system" ? null : t;
+  if (typeof el.getAttribute === "function" && el.getAttribute("data-theme") === next) return;
   if (animate) pulseThemeTransition();
-  if (t === "system") document.documentElement.removeAttribute("data-theme");
-  else document.documentElement.setAttribute("data-theme", t);
+  if (next === null) el.removeAttribute("data-theme");
+  else el.setAttribute("data-theme", next);
 }
 
 /** 强调色偏好：默认 sakura（浅樱粉）；非法值/读取失败一律回落 sakura */
@@ -85,9 +88,12 @@ export function saveAccent(a: Accent): boolean {
 }
 
 export function applyAccent(a: Accent, animate = false): void {
+  const el = document.documentElement;
+  const next = a === "sakura" ? null : a;
+  if (typeof el.getAttribute === "function" && el.getAttribute("data-accent") === next) return;
   if (animate) pulseThemeTransition();
-  if (a === "sakura") document.documentElement.removeAttribute("data-accent");
-  else document.documentElement.setAttribute("data-accent", a);
+  if (next === null) el.removeAttribute("data-accent");
+  else el.setAttribute("data-accent", next);
 }
 
 /** 视图默认「按时间」（D4），纪律同主题 */

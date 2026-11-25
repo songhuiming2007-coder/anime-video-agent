@@ -21,7 +21,7 @@ import {
   useTransitionStatus,
   type Placement,
 } from "@floating-ui/react";
-import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from "react";
 
 function isReducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -54,7 +54,7 @@ export interface FloatingPopoverProps {
   offsetPx?: number;
   role?: "dialog" | "menu" | "listbox";
   /** -1 leaves focus on the trigger/caller until user moves into the popover. */
-  initialFocus?: number;
+  initialFocus?: number | RefObject<HTMLElement | null>;
   portal?: boolean;
   className?: string;
   testId?: string;
@@ -94,7 +94,7 @@ export function FloatingPopover({
 
   const reduced = isReducedMotion();
   const { isMounted, status } = useTransitionStatus(context, {
-    duration: reduced ? 0 : { open: 220, close: 130 },
+    duration: reduced ? 0 : { open: 240, close: 140 },
   });
 
   const click = useClick(context);
@@ -214,11 +214,12 @@ export interface FloatingModalProps {
   testId?: string;
   backdropTestId?: string;
   className?: string;
+  initialFocus?: number | RefObject<HTMLElement | null>;
   children: ReactNode;
 }
 
 /** Accessible centered modal dialog with smooth spring enter/exit, backdrop blur fade, scroll lock, and focus trap. */
-export function FloatingModal({ open, onClose, ariaLabel, testId, backdropTestId, className, children }: FloatingModalProps) {
+export function FloatingModal({ open, onClose, ariaLabel, testId, backdropTestId, className, initialFocus = 0, children }: FloatingModalProps) {
   const { refs, context } = useFloating({
     open,
     onOpenChange: (next) => {
@@ -228,7 +229,7 @@ export function FloatingModal({ open, onClose, ariaLabel, testId, backdropTestId
 
   const reduced = isReducedMotion();
   const { isMounted, status } = useTransitionStatus(context, {
-    duration: reduced ? 0 : { open: 220, close: 130 },
+    duration: reduced ? 0 : { open: 240, close: 140 },
   });
 
   const dismiss = useDismiss(context, { outsidePressEvent: "mousedown" });
@@ -240,7 +241,7 @@ export function FloatingModal({ open, onClose, ariaLabel, testId, backdropTestId
   return (
     <FloatingPortal>
       <FloatingOverlay lockScroll className="ui-modal-backdrop" data-status={status} data-testid={open ? backdropTestId : undefined}>
-        <FloatingFocusManager context={context} modal={true} disabled={!open} returnFocus={true}>
+        <FloatingFocusManager context={context} modal={true} disabled={!open} initialFocus={initialFocus} returnFocus={true}>
           <div
             ref={refs.setFloating}
             className={["ui-modal-panel", className].filter(Boolean).join(" ")}

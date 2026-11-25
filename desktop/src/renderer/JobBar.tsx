@@ -1,14 +1,18 @@
-// D71（人选方案 A）：顶栏下的全局常驻作业条。活跃期有作业在跑或排队时出现，结束即消失。
+// D71（人选方案 A）：顶栏下的全局常驻作业条。活跃期有作业在跑或排队时出现，结束即平滑收起。
 // 只读：数据是活跃期 events.jsonl 的折叠（ep.jobs），本组件不发任何 RPC；「看进度」只展开预览区与时间线。
 import { useEffect, useState } from "react";
-import { activeJobs, elapsedText } from "../shared/jobBar";
+import { activeJobs, elapsedText, jobLabel, jobStateLabel } from "../shared/jobBar";
 import type { JobView } from "../shared/protocol";
+import { FloatingTooltip } from "./floating";
+import { Icon } from "./icons";
+import { Disclosure } from "./motion";
+import { StatusDot } from "./ui";
 
 export function JobBar({ jobs, onShowProgress }: { jobs: readonly JobView[]; onShowProgress: () => void }) {
   const list = activeJobs(jobs);
-  const ticking = list.some((j) => j.state === "running");
+  const ticking = list.some((j) => j.state === "running" && !j.finishedEventMissing);
   const [now, setNow] = useState(() => Date.now());
-  // 只在有作业在跑时每秒走一次表；没有就不开计时器
+  // 只在有存活作业在跑时每秒走一次表；进程已失踪或全在排队时不开计时器
   useEffect(() => {
     if (!ticking) return;
     setNow(Date.now());
@@ -16,31 +20,47 @@ export function JobBar({ jobs, onShowProgress }: { jobs: readonly JobView[]; onS
     return () => clearInterval(t);
   }, [ticking]);
 
-  if (list.length === 0) return null;
-  const head = list[0];
-  const gone = head.finishedEventMissing;
-  const elapsed = head.state === "running" ? elapsedText(head.startedAt, now) : null;
+  const head = list[0] ?? null;
+  const gone = head?.finishedEventMissing ?? false;
+  const elapsed = head && head.state === "running" && !gone ? elapsedText(head.startedAt, now) : null;
+  const restTip = list.length > 1 ? list.slice(1).map((j) => `${jobLabel(j.command)}（${j.command ?? j.jobId}）`).join("、") : "";
+
   return (
-    <div className={gone ? "jobbar jobbar--warn ui-card-enter" : "jobbar ui-card-enter"} data-testid="jobbar" role="status" aria-live="polite">
-      {!gone && <span className="ui-spinner" />}
-      <span className="jobbar-state">{gone ? "进程已结束，未收到完成信号" : head.state === "running" ? "运行中" : "排队中"}</span>
-      <code className="jobbar-cmd" data-testid="jobbar-cmd" title={head.command ?? head.jobId}>
-        {head.command ?? head.jobId}
-      </code>
-      {elapsed !== null && (
-        <span className="muted" data-testid="jobbar-elapsed">
-          已运行 {elapsed}
-        </span>
+    <Disclosure open={list.length > 0} keepLastContent>
+      {head !== null && (
+        <div className={gone ? "jobbar jobbar--warn ui-card-enter" : "jobbar ui-card-enter"} data-testid="jobbar" role="status" aria-live="polite">
+          {gone ? (
+            <Icon name="alert" size="sm" />
+          ) : head.state === "running" ? (
+            <span className="ui-spinner" />
+          ) : (
+            <StatusDot tone="wait" />
+          )}
+          <span className="jobbar-state">{gone ? "进程已结束，未收到完成事件" : jobStateLabel(head.state)}</span>
+          <code className="jobbar-cmd" data-testid="jobbar-cmd" title={`${jobLabel(head.command)} · ${head.command ?? head.jobId}`}>
+            {head.command ?? head.jobId}
+          </code>
+          {elapsed !== null && (
+            <span className="muted jobbar-elapsed" data-testid="jobbar-elapsed">
+              已运行 {elapsed}
+            </span>
+          )}
+          {list.length > 1 && (
+            <FloatingTooltip
+              label={`另有 ${list.length - 1} 项等待中：${restTip}`}
+              renderTrigger={(trigger) => (
+                <span ref={trigger.ref} {...trigger.props} className="muted jobbar-more" data-testid="jobbar-more">
+                  +{list.length - 1}
+                </span>
+              )}
+            />
+          )}
+          <span className="jobbar-sp" />
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="jobbar-progress" onClick={onShowProgress}>
+            看进度
+          </button>
+        </div>
       )}
-      {list.length > 1 && (
-        <span className="muted" data-testid="jobbar-more">
-          +{list.length - 1}
-        </span>
-      )}
-      <span className="jobbar-sp" />
-      <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="jobbar-progress" onClick={onShowProgress}>
-        看进度
-      </button>
-    </div>
+    </Disclosure>
   );
 }

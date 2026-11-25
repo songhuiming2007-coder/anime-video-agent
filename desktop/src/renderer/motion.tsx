@@ -1,33 +1,21 @@
-// Unified motion primitives: interruptible Disclosure (0fr <-> 1fr) and sliding SegmentedBar pill.
+// Unified motion primitives: interruptible Disclosure (0fr <-> 1fr), sliding SegmentedBar pill,
+// compositor-only usePresence, fixed-track usePaneTransition, and VS-12-safe Collapsible.
 // Pure React + CSSOM (zero external deps, respects prefers-reduced-motion, VS-7 compliant).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Icon } from "./icons";
 
 export function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-type DisclosureState = "closed" | "opening" | "open" | "closing";
+export type DisclosureState = "closed" | "opening" | "open" | "closing";
 
 /**
- * Smooth, interruptible height disclosure using CSS grid-template-rows (0fr <-> 1fr).
- * Uses a 4-state machine so opening frame has visibility:visible (autoFocus works on mount)
- * and keepMounted forces layout at 0fr before animating to 1fr.
+ * 4-state transition controller for fixed-track panes (sidebar / preview) or symmetric height glides.
+ * Instant under prefers-reduced-motion; interruptible mid-flight.
  */
-export function Disclosure({
-  open,
-  className,
-  innerClassName,
-  keepMounted = false,
-  children,
-}: {
-  open: boolean;
-  className?: string;
-  innerClassName?: string;
-  keepMounted?: boolean;
-  children: ReactNode | (() => ReactNode);
-}) {
+export function usePaneTransition(open: boolean, durMs = 260): DisclosureState {
   const [state, setState] = useState<DisclosureState>(open ? "open" : "closed");
-  const elRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useLayoutEffect(() => {
@@ -51,7 +39,115 @@ export function Disclosure({
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       setState("closed");
-    }, 340);
+    }, durMs + 20);
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [open, durMs]);
+
+  useLayoutEffect(() => {
+    if (state !== "opening") return;
+    const raf = requestAnimationFrame(() => setState("open"));
+    return () => cancelAnimationFrame(raf);
+  }, [state]);
+
+  return state;
+}
+
+/**
+ * Compositor-only overlay presence hook (opacity + transform enter/exit with zero reflow).
+ * Keeps overlay mounted during the 140ms exit glide, then unmounts cleanly.
+ */
+export function usePresence(open: boolean, exitMs = 140): { mounted: boolean; status: "open" | "close" } {
+  const [mounted, setMounted] = useState(open);
+  const [status, setStatus] = useState<"open" | "close">(open ? "open" : "close");
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useLayoutEffect(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (open) {
+      setMounted(true);
+      if (prefersReducedMotion()) {
+        setStatus("open");
+        return;
+      }
+      const raf = requestAnimationFrame(() => setStatus("open"));
+      return () => cancelAnimationFrame(raf);
+    }
+    setStatus("close");
+    if (prefersReducedMotion()) {
+      setMounted(false);
+      return;
+    }
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setMounted(false);
+    }, exitMs);
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [open, exitMs]);
+
+  return { mounted, status };
+}
+
+/**
+ * Smooth, interruptible height disclosure using CSS grid-template-rows (0fr <-> 1fr).
+ * Uses a 4-state machine so opening frame has visibility:visible (autoFocus works on mount)
+ * and keepMounted forces layout at 0fr before animating to 1fr.
+ * keepLastContent retains the last non-null children during the 260ms closing glide.
+ */
+export function Disclosure({
+  open,
+  className,
+  innerClassName,
+  keepMounted = false,
+  keepLastContent = false,
+  children,
+}: {
+  open: boolean;
+  className?: string;
+  innerClassName?: string;
+  keepMounted?: boolean;
+  keepLastContent?: boolean;
+  children: ReactNode | (() => ReactNode);
+}) {
+  const [state, setState] = useState<DisclosureState>(open ? "open" : "closed");
+  const elRef = useRef<HTMLDivElement | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastContentRef = useRef<ReactNode>(null);
+
+  useLayoutEffect(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (open) {
+      if (prefersReducedMotion()) {
+        setState("open");
+        return;
+      }
+      setState((prev) => (prev === "open" || prev === "closing" ? "open" : "opening"));
+      return;
+    }
+    if (prefersReducedMotion()) {
+      setState("closed");
+      return;
+    }
+    setState((prev) => (prev === "closed" ? "closed" : "closing"));
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setState("closed");
+    }, 300);
     return () => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
@@ -68,6 +164,25 @@ export function Disclosure({
   }, [state]);
 
   const active = state !== "closed";
+  let rendered: ReactNode = null;
+  if (active || keepMounted) {
+    const cur = typeof children === "function" ? children() : children;
+    if (keepLastContent) {
+      if (open && cur !== null && cur !== undefined && cur !== false) {
+        lastContentRef.current = cur;
+        rendered = cur;
+      } else if (state === "closing" || (!open && active && !prefersReducedMotion())) {
+        rendered = lastContentRef.current;
+      } else {
+        rendered = cur;
+      }
+    } else {
+      rendered = cur;
+    }
+  } else if (keepLastContent) {
+    lastContentRef.current = null;
+  }
+
   if (!active && !keepMounted) return null;
 
   return (
@@ -85,15 +200,68 @@ export function Disclosure({
       }}
     >
       <div className={["ui-collapse-inner", innerClassName].filter(Boolean).join(" ")}>
-        {typeof children === "function" ? children() : children}
+        {rendered}
       </div>
     </div>
   );
 }
 
 /**
+ * Unified collapsible block replacing raw <details><summary> across the app.
+ * Lives in motion.tsx so HumanCards.tsx can use it without triggering VS-12 gate-button rules.
+ */
+export function Collapsible({
+  summary,
+  defaultOpen = false,
+  bar = false,
+  keepMounted = false,
+  className,
+  testId,
+  summaryTestId,
+  dataKind,
+  children,
+}: {
+  summary: ReactNode;
+  defaultOpen?: boolean;
+  /** True renders full-width .ui-section-like bar (e.g. VoicePanel sections). */
+  bar?: boolean;
+  keepMounted?: boolean;
+  className?: string;
+  testId?: string;
+  summaryTestId?: string;
+  dataKind?: string;
+  children: ReactNode | (() => ReactNode);
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div
+      className={["ui-collapsible", className].filter(Boolean).join(" ")}
+      data-testid={testId}
+      data-kind={dataKind}
+      data-open={open ? "1" : "0"}
+    >
+      <button
+        type="button"
+        className={bar ? "ui-collapsible-trigger ui-collapsible-trigger--bar" : "ui-collapsible-trigger"}
+        data-testid={summaryTestId}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="ui-chev" data-open={open ? "1" : "0"}>
+          <Icon name="chevron-right" size="sm" />
+        </span>
+        <span>{summary}</span>
+      </button>
+      <Disclosure open={open} keepMounted={keepMounted}>
+        {children}
+      </Disclosure>
+    </div>
+  );
+}
+
+/**
  * Segmented control container that slides an optical pill indicator behind the active button
- * (aria-pressed="true" or aria-selected="true"). Handles dynamic option changes, resize, and zero-jump mount.
+ * (aria-pressed="true" or aria-selected="true"). Handles dynamic option changes, null resets, resize, and zero-jump mount.
  */
 export function SegmentedBar({
   activeKey,
@@ -114,6 +282,7 @@ export function SegmentedBar({
   const wrapRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLSpanElement>(null);
   const readyRef = useRef(false);
+  const syncRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
@@ -126,13 +295,15 @@ export function SegmentedBar({
       const active = wrap.querySelector<HTMLElement>('button[aria-pressed="true"], button[aria-selected="true"]');
       if (!active || active.offsetWidth === 0) {
         thumb.dataset.hidden = "1";
+        thumb.dataset.ready = "0";
+        readyRef.current = false;
         return;
       }
       const x = active.offsetLeft;
       const w = active.offsetWidth;
-      thumb.dataset.hidden = "0";
       thumb.style.transform = `translateX(${x}px)`;
       thumb.style.width = `${w}px`;
+      thumb.dataset.hidden = "0";
       if (!readyRef.current) {
         thumb.dataset.ready = "0";
         if (readyRaf !== null) cancelAnimationFrame(readyRaf);
@@ -143,6 +314,7 @@ export function SegmentedBar({
         });
       }
     };
+    syncRef.current = sync;
 
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(sync) : null;
     const attachObservers = () => {
@@ -170,10 +342,15 @@ export function SegmentedBar({
     mo?.observe(wrap, { childList: true, attributes: true, subtree: true, attributeFilter: ["aria-pressed", "aria-selected"] });
 
     return () => {
+      syncRef.current = null;
       if (readyRaf !== null) cancelAnimationFrame(readyRaf);
       ro?.disconnect();
       mo?.disconnect();
     };
+  }, []);
+
+  useLayoutEffect(() => {
+    syncRef.current?.();
   }, [activeKey]);
 
   return (

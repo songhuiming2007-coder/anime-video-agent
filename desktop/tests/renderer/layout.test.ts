@@ -1,15 +1,26 @@
 // D39 S2：分栏布局纯函数。期望值先手算（见各行注释）再跑。
 import { describe, expect, test } from "vitest";
-import { clampLeft, DEFAULT_LAYOUT, effectivePreviewW, gridColumns, nudge, parseLayout, previewMax, serializeLayout, type Layout } from "../../src/renderer/layout";
+import { clampLeft, DEFAULT_LAYOUT, effectiveLeftW, effectivePreviewW, gridColumns, nudge, parseLayout, previewMax, serializeLayout, type Layout } from "../../src/renderer/layout";
 
 const open = (over: Partial<Layout> = {}): Layout => ({ ...DEFAULT_LAYOUT, previewOpen: true, ...over });
 
-describe("默认布局（人 2026-09-29：方案 B、预览默认收起）", () => {
-  test("左栏 240 + 手柄 8 + 对话 1fr + 预览窄条 40", () => {
-    expect(gridColumns(1276, DEFAULT_LAYOUT)).toBe("240px 8px minmax(0, 1fr) 40px");
+describe("默认布局（人 2026-09-29：方案 B、预览默认收起；固定 5 轨以支持平滑过渡）", () => {
+  test("左栏 240 + 手柄 8 + 对话 1fr + 右手柄 0 + 预览窄条 40", () => {
+    expect(gridColumns(1276, DEFAULT_LAYOUT)).toBe("240px 8px minmax(0, 1fr) 0px 40px");
   });
-  test("左栏收起：只剩对话与窄条", () => {
-    expect(gridColumns(1276, { ...DEFAULT_LAYOUT, leftOpen: false })).toBe("minmax(0, 1fr) 40px");
+  test("左栏收起：前两轨置 0px，轨道总数恒为 5", () => {
+    expect(gridColumns(1276, { ...DEFAULT_LAYOUT, leftOpen: false })).toBe("0px 0px minmax(0, 1fr) 0px 40px");
+  });
+  test("所有开合组合均保持固定 5 轨，保证 CSS Grid transition 可插值", () => {
+    for (const leftOpen of [true, false]) {
+      for (const previewOpen of [true, false]) {
+        const cols = gridColumns(1276, { ...DEFAULT_LAYOUT, leftOpen, previewOpen });
+        expect(cols.split(" minmax(0, 1fr) ")).toHaveLength(2);
+        const [l, r] = cols.split(" minmax(0, 1fr) ");
+        expect(l.split(" ")).toHaveLength(2);
+        expect(r.split(" ")).toHaveLength(2);
+      }
+    }
   });
 });
 
@@ -28,7 +39,9 @@ describe("预览展开宽度", () => {
   test("下限 320", () => {
     expect(effectivePreviewW(1276, open({ previewW: 10 }))).toBe(320);
   });
-  test("窗口太窄放不下对话下限时，预览退到自己的下限而不是负数（800-248-8-360 = 184 < 320）", () => {
+  test("窗口太窄时先压左栏让位（400 → 200），预览仍守 320 下限", () => {
+    expect(effectiveLeftW(900, open({ leftW: 400 }))).toBe(204);
+    expect(effectiveLeftW(800, open({ leftW: 400 }))).toBe(200);
     expect(previewMax(800, open())).toBe(320);
     expect(effectivePreviewW(800, open())).toBe(320);
   });

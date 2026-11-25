@@ -406,3 +406,44 @@ test("D170：/login 与工具栏弹窗支持 44 家服务商、分组过滤、�
     fx.cleanup();
   }
 });
+
+test("A2 跨会话默认模型：保存默认 → 新会话顶栏直接展示并生效 → 也可临时恢复仓库默认", async () => {
+  test.setTimeout(120_000);
+  const llm = await startFakeLlm();
+  const fx = realCoreFixture(llm.url, ["ep1", "ep2"]);
+  const L = await launchSession(fx.repo);
+  const page = L.page;
+  try {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.locator("[data-testid=episode]", { hasText: "ep1" }).first().click();
+    // 选 kimi-k3 并显式设为新会话默认
+    await page.getByTestId("model-btn").click();
+    await page.locator('[data-testid=model-row][data-model="kimi-k3"]').click();
+    await expect(page.getByTestId("model-label")).toHaveText("kimi-k3");
+    await page.getByTestId("model-btn").click();
+    await page.getByTestId("model-set-default").click();
+    await expect(page.getByTestId("model-pop-user-default")).toContainText("kimi-k3");
+    await page.keyboard.press("Escape");
+
+    // 切到未启动的新期 ep2：顶栏直接展示即将生效的 kimi-k3，下拉对应行带当前勾选标记，且可点「恢复默认模型」临时回退仓库默认
+    await page.locator("[data-testid=episode]", { hasText: "ep2" }).first().click();
+    await expect(page.getByTestId("model-label")).toHaveText("kimi-k3");
+    await page.getByTestId("model-btn").click();
+    await expect(page.locator('[data-testid=model-row][data-model="kimi-k3"]')).toHaveAttribute("aria-current", "true");
+    await expect(page.getByTestId("model-reset")).toBeVisible();
+    await page.getByTestId("model-reset").click();
+    await expect(page.getByTestId("model-label")).toHaveText("—");
+
+    // 发出首条消息：必须使用仓库默认 fake，而不是被 settings.json 里的 kimi-k3 强行覆盖
+    llm.push(assistant("好，用默认模型。"));
+    await send(page, "你好");
+    await expect(page.getByTestId("model-label")).toHaveText("fake");
+    await idle(page);
+    expect(llm.requests[llm.requests.length - 1].model).toBe("fake");
+  } finally {
+    await stubQuit(L, "quit").catch(() => undefined);
+    await L.app.close().catch(() => undefined);
+    await llm.close();
+    fx.cleanup();
+  }
+});

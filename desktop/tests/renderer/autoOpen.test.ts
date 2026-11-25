@@ -170,4 +170,28 @@ describe("TV-6 autoOpen", () => {
     const e = drive([{ kind: "reset", phase: "idle", turnId: null, settlePending: "t9" }]);
     expect(e.state.awaiting).toBe("t9");
   });
+
+  it("⑫ strip 对应的停机点已解决后，新 pendings 自动清掉僵死条；手动 dismiss_strip 与 preview_closed 正常工作", () => {
+    const r1 = drive([
+      { kind: "human" },
+      { kind: "pendings", items: [obj("a1", "03.5")] },
+      { kind: "pendings", items: [] },
+    ]);
+    expect(r1.state.strip).toBeNull();
+
+    const r2 = drive([
+      { kind: "human" },
+      { kind: "pendings", items: [obj("a1", "03.5")] },
+      { kind: "dismiss_strip" },
+    ]);
+    expect(r2.state.strip).toBeNull();
+
+    const r3 = drive([
+      { kind: "human" },
+      { kind: "preview_closed" },
+      { kind: "pendings", items: [obj("a2", "05")] },
+    ]);
+    expect(r3.state.owner).toBe("auto");
+    expect(r3.opened.at(-1)?.approval_id).toBe("a2");
+  });
 });

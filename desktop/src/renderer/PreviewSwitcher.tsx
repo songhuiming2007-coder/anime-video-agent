@@ -1,12 +1,12 @@
 // D49-A S4/S5 + D169：预览区顶部的一站式文件切换器（完整本期产物下拉 + 子目录内联展开 + 镜头画廊 + 紧凑封面导入）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { groupArtifacts, type SwitchItem } from "../shared/artifactGroups";
-import type { ShotsEntry, TreeEntry } from "../shared/protocol";
-import { CoverImport } from "./CoverImport";
-import { FloatingPopover } from "./floating";
-import { Icon, type IconName } from "./icons";
-import { Disclosure } from "./motion";
 import { previewKind } from "../shared/previewKind";
+import type { ShotsEntry, TreeEntry } from "../shared/protocol";
+import { CoverImport, type CoverNotice } from "./CoverImport";
+import { FloatingPopover, FloatingTooltip } from "./floating";
+import { Icon, type IconName } from "./icons";
+import { Disclosure, useCountBump } from "./motion";
 import type { PreviewTarget } from "./PreviewPane";
 import { errText, type RpcClient } from "./rpc";
 import { Badge } from "./ui";
@@ -35,35 +35,52 @@ export function PreviewSwitcher({
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<TreeEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  /** 上一次选目录失败的原因（与列表加载错误分开：重新展开会清掉 err，这条要留到下一次选择） */
   const [pickErr, setPickErr] = useState<string | null>(null);
-  /** 下拉面板内展开的子目录（rel -> TreeEntry[] | "loading" | string 错误） */
   const [subOpen, setSubOpen] = useState<Record<string, boolean>>({});
   const subOpenRef = useRef(subOpen);
   subOpenRef.current = subOpen;
   const [subTrees, setSubTrees] = useState<Record<string, TreeEntry[] | "loading" | string>>({});
-  /** 镜头画廊 */
   const [galleriesOpen, setGalleriesOpen] = useState(false);
   const [galleries, setGalleries] = useState<ShotsEntry[] | null>(null);
-  const [coverNotice, setCoverNotice] = useState<string | null>(null);
+  const [galleriesErr, setGalleriesErr] = useState<string | null>(null);
+  const [coverNotice, setCoverNotice] = useState<(CoverNotice & { n: number }) | null>(null);
+  const epKeyRef = useRef(epKey);
+  epKeyRef.current = epKey;
+  const galleryCountBump = useCountBump(galleries?.length ?? 0);
 
   const loadRoot = useCallback(() => {
-    if (!epKey) {
+    const targetEp = epKey;
+    if (!targetEp) {
       setEntries(null);
       return;
     }
     setErr(null);
-    rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: "" }).then(setEntries, (e) => setErr(errText(e)));
+    rpc.call<TreeEntry[]>("tree.list", { epKey: targetEp, relDir: "" }).then(
+      (res) => {
+        if (epKeyRef.current === targetEp) setEntries(res);
+      },
+      (e) => {
+        if (epKeyRef.current === targetEp) setErr(errText(e));
+      },
+    );
   }, [epKey, rpc]);
 
-  // 切期或切往选题/企划视图时清空上一期残留状态（coverNotice 不随 treeBump 清空）
+  const loadGalleries = useCallback(() => {
+    setGalleriesErr(null);
+    rpc.call<ShotsEntry[]>("shots.list").then(
+      (res) => setGalleries(res),
+      (e) => setGalleriesErr(errText(e)),
+    );
+  }, [rpc]);
+
+  // 切期或切往选题/企划视图时清空上一期残留状态
   useEffect(() => {
     setCoverNotice(null);
+    setPickErr(null);
     setSubOpen({});
     setSubTrees({});
   }, [epKey]);
 
-  // 切期、导入封面(treeBump)或恢复可达时刷新顶层产物目录
   useEffect(() => {
     if (!epKey || !reachOk) {
       if (!epKey) setEntries(null);
@@ -78,21 +95,24 @@ export function PreviewSwitcher({
 
   // 已展开的子目录在 treeBump（如新导入封面）后也刷新
   useEffect(() => {
-    if (!epKey || treeBump === 0) return;
+    const targetEp = epKey;
+    if (!targetEp || treeBump === 0) return;
     for (const [dir, opened] of Object.entries(subOpenRef.current)) {
       if (!opened) continue;
-      rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: dir }).then(
-        (sub) => setSubTrees((m) => ({ ...m, [dir]: sub })),
-        (e) => setSubTrees((m) => ({ ...m, [dir]: errText(e) })),
+      rpc.call<TreeEntry[]>("tree.list", { epKey: targetEp, relDir: dir }).then(
+        (sub) => {
+          if (epKeyRef.current === targetEp) setSubTrees((m) => ({ ...m, [dir]: sub }));
+        },
+        (e) => {
+          if (epKeyRef.current === targetEp) setSubTrees((m) => ({ ...m, [dir]: errText(e) }));
+        },
       );
     }
   }, [treeBump, epKey, rpc]);
 
   useEffect(() => {
-    if (galleriesOpen && reachOk) {
-      rpc.call<ShotsEntry[]>("shots.list").then(setGalleries, () => setGalleries([]));
-    }
-  }, [galleriesOpen, reachOk, rpc]);
+    if (galleriesOpen && reachOk) loadGalleries();
+  }, [galleriesOpen, reachOk, loadGalleries]);
 
   const curRel = current
     ? current.root === "episodes" && epKey
@@ -100,43 +120,65 @@ export function PreviewSwitcher({
       : current.rel
     : null;
   const label = curRel === null || curRel === "" ? (epKey ? "选择本期文件" : "预览文件") : curRel;
+  const triggerIcon: IconName =
+    current === null
+      ? "folder"
+      : current.kind === "dir"
+        ? "folder"
+        : KIND_ICON[previewKind(current.rel)] ?? "file";
 
   const pickItem = (it: { rel: string; kind: "dir" | "file" | "other"; missing?: boolean; fromDraft?: boolean; size?: number | null }) => {
-    if (!epKey) return;
+    const targetEp = epKey;
+    if (!targetEp) return;
     if (it.missing && !it.fromDraft) return;
     setPickErr(null);
     setOpen(false);
     if (it.kind === "dir") {
-      // 列目录失败要说出来：静默吞掉时人只看到「点了没反应 / 预览没切过去」（D73 ③）
-      rpc.call<TreeEntry[]>("tree.list", { epKey, relDir: it.rel }).then(
-        (sub) => onPick({ kind: "dir", root: "episodes", rel: `${epKey}/${it.rel}`, entries: sub.filter((x) => x.kind === "file").map((x) => x.name) }),
+      rpc.call<TreeEntry[]>("tree.list", { epKey: targetEp, relDir: it.rel }).then(
+        (sub) => {
+          if (epKeyRef.current !== targetEp) return;
+          onPick({ kind: "dir", root: "episodes", rel: `${targetEp}/${it.rel}`, entries: sub.filter((x) => x.kind === "file").map((x) => x.name) });
+        },
         (e) => {
+          if (epKeyRef.current !== targetEp) return;
           setPickErr(`打不开 ${it.rel}：${errText(e)}`);
           setOpen(true);
         },
       );
     } else if (it.kind === "file") {
       const size = it.size ?? entries?.find((x) => x.rel === it.rel)?.size ?? null;
-      onPick({ kind: "file", root: "episodes", rel: `${epKey}/${it.rel}`, size });
+      onPick({ kind: "file", root: "episodes", rel: `${targetEp}/${it.rel}`, size });
     }
   };
 
   const toggleSubdir = (relDir: string) => {
-    if (!epKey) return;
+    const targetEp = epKey;
+    if (!targetEp) return;
     const next = !subOpen[relDir];
     setSubOpen((m) => ({ ...m, [relDir]: next }));
     if (next && (!subTrees[relDir] || typeof subTrees[relDir] === "string")) {
       setSubTrees((m) => ({ ...m, [relDir]: "loading" }));
-      rpc.call<TreeEntry[]>("tree.list", { epKey, relDir }).then(
-        (sub) => setSubTrees((m) => ({ ...m, [relDir]: sub })),
-        (e) => setSubTrees((m) => ({ ...m, [relDir]: errText(e) })),
+      rpc.call<TreeEntry[]>("tree.list", { epKey: targetEp, relDir }).then(
+        (sub) => {
+          if (epKeyRef.current === targetEp) setSubTrees((m) => ({ ...m, [relDir]: sub }));
+        },
+        (e) => {
+          if (epKeyRef.current === targetEp) setSubTrees((m) => ({ ...m, [relDir]: errText(e) }));
+        },
       );
     }
   };
 
   const renderSubEntries = (relDir: string, depth: number) => {
     const val = subTrees[relDir];
-    if (val === "loading" || val === undefined) return <div className="muted preview-subdir-msg">…</div>;
+    if (val === "loading" || val === undefined) {
+      return (
+        <div className="ui-skeleton-stack preview-subdir-msg" aria-label="加载子目录">
+          <div className="ui-skeleton ui-skeleton--md" />
+          <div className="ui-skeleton ui-skeleton--sm" />
+        </div>
+      );
+    }
     if (typeof val === "string") return <div className="warn preview-subdir-msg">{val}</div>;
     if (val.length === 0) return <div className="muted preview-subdir-msg">（空目录）</div>;
     return (
@@ -145,9 +187,10 @@ export function PreviewSwitcher({
           <div key={sub.rel}>
             <div className="preview-switch-item" style={{ paddingLeft: depth * 12 }}>
               <button
+                type="button"
                 className="ui-row preview-switch-row"
                 aria-current={curRel === sub.rel ? "true" : undefined}
-                data-testid="preview-switch-row"
+                data-testid={open ? "preview-switch-row" : undefined}
                 data-rel={sub.rel}
                 onClick={() => pickItem(sub)}
               >
@@ -156,9 +199,10 @@ export function PreviewSwitcher({
               </button>
               {sub.kind === "dir" && (
                 <button
+                  type="button"
                   className="ui-btn ui-btn--ghost ui-btn--sm preview-subdir-toggle"
                   aria-expanded={!!subOpen[sub.rel]}
-                  aria-label={`展开 ${sub.name}`}
+                  aria-label={subOpen[sub.rel] ? `收起 ${sub.name}` : `展开 ${sub.name}`}
                   data-testid="preview-subdir-toggle"
                   data-dir={sub.rel}
                   onClick={() => toggleSubdir(sub.rel)}
@@ -194,19 +238,31 @@ export function PreviewSwitcher({
             className="ui-popover preview-switch-pop"
             testId="preview-switch-pop"
             renderTrigger={(trigger) => (
-              <button
-                type="button"
-                ref={trigger.ref}
-                {...trigger.props}
-                className="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"
-                aria-expanded={open}
-                data-testid="preview-switch-btn"
-              >
-                <Icon name="folder" size="sm" />
-                <span className="preview-switch-label">{label}</span>
-                {curRel === "02-script.md" && <Badge>可编辑</Badge>}
-                <Icon name="chevron-down" size="sm" />
-              </button>
+              <FloatingTooltip
+                label={curRel ? `切换预览文件（当前：${curRel}）` : "选择本期产物文件"}
+                disabled={trigger.open}
+                renderTrigger={(tip) => (
+                  <button
+                    type="button"
+                    ref={(node) => {
+                      trigger.ref(node);
+                      tip.ref(node);
+                    }}
+                    {...tip.props}
+                    {...trigger.props}
+                    className="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"
+                    aria-expanded={open}
+                    data-testid="preview-switch-btn"
+                  >
+                    <Icon name={triggerIcon} size="sm" />
+                    <span className="preview-switch-label">{label}</span>
+                    {curRel === "02-script.md" && <Badge>可编辑</Badge>}
+                    <span className="ui-chev ui-chev--down" data-open={open ? "1" : "0"}>
+                      <Icon name="chevron-down" size="sm" />
+                    </span>
+                  </button>
+                )}
+              />
             )}
             renderContent={() => (
               <>
@@ -227,10 +283,11 @@ export function PreviewSwitcher({
                         <div key={it.rel}>
                           <div className="preview-switch-item">
                             <button
+                              type="button"
                               className="ui-row preview-switch-row"
                               aria-current={curRel === it.rel ? "true" : undefined}
                               disabled={it.missing && !it.fromDraft}
-                              data-testid="preview-switch-row"
+                              data-testid={open ? "preview-switch-row" : undefined}
                               data-rel={it.rel}
                               onClick={() => pickItem(it)}
                             >
@@ -242,9 +299,10 @@ export function PreviewSwitcher({
                             </button>
                             {it.kind === "dir" && !it.missing && (
                               <button
+                                type="button"
                                 className="ui-btn ui-btn--ghost ui-btn--sm preview-subdir-toggle"
                                 aria-expanded={!!subOpen[it.rel]}
-                                aria-label={`展开 ${it.name}`}
+                                aria-label={subOpen[it.rel] ? `收起 ${it.name}` : `展开 ${it.name}`}
                                 data-testid="preview-subdir-toggle"
                                 data-dir={it.rel}
                                 onClick={() => toggleSubdir(it.rel)}
@@ -273,7 +331,7 @@ export function PreviewSwitcher({
             epKey={epKey}
             rpc={rpc}
             onImported={() => onCoverImported?.()}
-            onNotice={setCoverNotice}
+            onNotice={(n) => setCoverNotice(n ? { ...n, n: Date.now() } : null)}
           />
         )}
         <FloatingPopover
@@ -296,25 +354,38 @@ export function PreviewSwitcher({
             >
               <Icon name="image" size="sm" />
               镜头画廊
-              {galleries && <span className="ui-count">{galleries.length}</span>}
+              {galleries && (
+                <span className="ui-count" data-bump={galleryCountBump ? "1" : undefined}>
+                  {galleries.length}
+                </span>
+              )}
             </button>
           )}
           renderContent={() => (
             <>
               <div className="ui-popover-title preview-switch-gtitle">镜头画廊</div>
-              {galleries === null && (
+              {galleriesErr !== null && (
+                <div className="notice notice--warn">
+                  <span>读取画廊失败：{galleriesErr}</span>
+                  <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={loadGalleries}>
+                    重试
+                  </button>
+                </div>
+              )}
+              {galleries === null && galleriesErr === null && (
                 <div className="ui-skeleton-stack">
                   <div className="ui-skeleton ui-skeleton--md" />
                   <div className="ui-skeleton ui-skeleton--sm" />
                 </div>
               )}
-              {galleries?.length === 0 && <div className="muted">没有画廊</div>}
+              {galleriesErr === null && galleries?.length === 0 && <div className="muted">没有画廊</div>}
               {galleries?.map((g) => (
                 <button
+                  type="button"
                   key={g.name}
                   className="ui-row preview-switch-row"
                   aria-current={current?.root === "shots" && current.rel === g.name ? "true" : undefined}
-                  data-testid="gallery"
+                  data-testid={galleriesOpen ? "gallery" : undefined}
                   data-name={g.name}
                   onClick={() => {
                     setGalleriesOpen(false);
@@ -330,9 +401,38 @@ export function PreviewSwitcher({
         />
       </div>
       {epKey !== null && coverNotice !== null && (
-        <div className="notice preview-cover-notice ui-confirm-enter" data-testid="cover-import-msg">
-          <Icon name="info" size="sm" />
-          {coverNotice}
+        <div
+          key={coverNotice.n}
+          className={
+            coverNotice.kind === "err"
+              ? "notice notice--err preview-cover-notice ui-error-shake"
+              : "notice preview-cover-notice ui-confirm-enter"
+          }
+          data-testid="cover-import-msg"
+          role={coverNotice.kind === "err" ? "alert" : "status"}
+        >
+          <Icon name={coverNotice.kind === "err" ? "alert" : "info"} size="sm" />
+          <span>{coverNotice.text}</span>
+          <span className="spacer" />
+          {coverNotice.path && (
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm"
+              onClick={() => {
+                onPick({ kind: "file", root: "episodes", rel: `${epKey}/${coverNotice.path}`, size: null });
+              }}
+            >
+              查看
+            </button>
+          )}
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+            aria-label="关闭封面导入提示"
+            onClick={() => setCoverNotice(null)}
+          >
+            <Icon name="close" size="sm" />
+          </button>
         </div>
       )}
     </div>

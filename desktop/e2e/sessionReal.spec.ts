@@ -532,6 +532,7 @@ test("TX-10 真实 core：结束会话后「继续上次会话」→ 历史分�
     await openEp(L.page, "SESS-A");
     await send(L.page, "旧消息");
     await waitTurns(L, "ep:SESS-A", 1);
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "idle", { timeout: 10_000 });
     await L.page.getByTestId("session-end").click();
     await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "exited", { timeout: 20_000 });
     // D45：从侧栏会话列表进入（真 core 的 /list-sessions 列出刚才那个会话）
@@ -621,21 +622,19 @@ test("TX-11 真实 core：批准一张工具卡后，时间线该事件显示「
   });
 });
 
-test("TX-12 真实 core：检查点卡恰「继续」「停止」两个按钮（第 50 次回复后）", async () => {
+test("TX-12 / D166 真实 core：交互会话连续 50 次工具调用不再弹检查点卡，自然跑到最终答复", async () => {
   test.setTimeout(4 * 60_000);
   await withRealCore(async ({ L, llm }) => {
-    // 50 次回复各调一次只读工具（参数各不相同，避开判重）→ 第 51 次请求之前问检查点
+    // D166（2026-11-11 用户裁决）：交互会话取消每 50 轮检查点弹窗，连续 50 次只读工具后直接走第 51 次模型回复
     for (let i = 0; i < 50; i++) llm.push(toolCalls({ name: "read_artifact", args: { path: `01-topic.md#${i}` } }));
     llm.push(assistant("停在这。"));
     await openEp(L.page, "SESS-A");
     await send(L.page, "一直读");
-    const cp = L.page.locator("[data-testid=request-card][data-kind='checkpoint']");
-    await expect(cp).toBeVisible({ timeout: 60_000 });
-    await expect(cp.locator("button")).toHaveText(["继续", "停止"]);
-    await expect(L.page.locator("button", { hasText: /全部批准|以后不再询问/ })).toHaveCount(0);
-    await cp.locator("button", { hasText: "停止" }).click();
-    const fin = (await waitTurns(L, "ep:SESS-A", 1, 30_000)).find((f) => f.t === "turn_finished")!;
-    expect(fin.stopped).toBe("checkpoint_stop");
+    const fin = (await waitTurns(L, "ep:SESS-A", 1, 60_000)).find((f) => f.t === "turn_finished")!;
+    expect(fin.stopped).toBe("done");
+    expect(fin.llm_calls).toBe(51);
+    await expect(L.page.locator("[data-testid=request-card][data-kind='checkpoint']")).toHaveCount(0);
+    await expect(L.page.getByTestId("conv-stream")).toContainText("停在这。");
   });
 });
 
@@ -725,20 +724,26 @@ test("D45 真实 core：侧栏会话列表——新会话开出第二个会话�
     await expect(L.page.locator(`[data-testid=session-row][data-sid="${second}"]`)).toHaveAttribute("data-live", "1");
     const logBefore = readFileSync(join(fx.repo.eps, "SESS-A", "session.jsonl"), "utf-8");
 
+    // A4：非运行历史会话移入回收站为可撤销单步操作（不弹系统确认框），提供 5s 行内撤销条可原样还原
     await stubConfirm(L, false);
     await L.page.locator(`[data-testid=session-row][data-sid="${first}"]`).hover();
     await L.page.locator(`[data-testid=session-row][data-sid="${first}"] [data-testid=session-delete]`).click();
-    await expect.poll(() => L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number } }).__avaTestConfirm.calls)).toBe(1);
-    expect(readFileSync(join(fx.repo.eps, "SESS-A", "session.jsonl"), "utf-8")).toBe(logBefore);
-    await expect(L.page.getByTestId("session-row")).toHaveCount(2);
+    await expect(L.page.getByTestId("session-row")).toHaveCount(1, { timeout: 20_000 });
+    expect(await L.app.evaluate(() => (globalThis as unknown as { __avaTestConfirm: { calls: number } }).__avaTestConfirm.calls)).toBe(0);
+    await expect(L.page.getByTestId("session-undo")).toBeVisible();
+    // 撤销 → 还原回会话列表，session.jsonl 恢复两段
+    await L.page.getByTestId("session-undo-btn").click();
+    await expect(L.page.getByTestId("session-row")).toHaveCount(2, { timeout: 20_000 });
+    expect([...new Set(sessionLog(fx, "SESS-A").map((r) => String(r.sid)))].sort()).toEqual([...sids].sort());
+    expect(logBefore.length).toBeGreaterThan(0);
 
-    await stubConfirm(L, true);
+    // 再次移入回收站（不撤销）→ 移进 session-trash，当前活会话不受影响
     await L.page.locator(`[data-testid=session-row][data-sid="${first}"]`).hover();
     await L.page.locator(`[data-testid=session-row][data-sid="${first}"] [data-testid=session-delete]`).click();
     await expect(L.page.getByTestId("session-row")).toHaveCount(1, { timeout: 20_000 });
     expect(existsSync(join(fx.repo.eps, "SESS-A", "_agent", "session-trash", `${first}.jsonl`))).toBe(true);
     expect(sessionLog(fx, "SESS-A").every((r) => r.sid === second)).toBe(true);
-    // 删的是另一个会话：为释放租约结束的当前会话被接回来，对话照旧
+    // 删的是另一个会话：当前活会话不受影响，对话照旧
     await expect(L.page.locator(`[data-testid=session-row][data-sid="${second}"]`)).toHaveAttribute("data-live", "1", { timeout: 20_000 });
     await expect(L.page.getByTestId("conv-stream")).toContainText("第二个会话的答复");
   });
@@ -769,7 +774,7 @@ test("N49 真实 core：会话里跑 run_pipeline qc → 作业能按名字找�
     expect(content, "作业按名字找不到 ffmpeg/ffprobe").not.toMatch(/No such file or directory: '(ffprobe|ffmpeg)'/);
     // 两条都只能由真实跑过的探测写出：音画时长对齐 = ffprobe 读到两条流；响度读数 = ffmpeg ebur128 跑完
     const log = readFileSync(join(epDir, "06-check.log"), "utf-8");
-    expect(log).toMatch(/PASS\s+音画时长对齐\s+画面 5\.000s \/ 音频 5\.000s/);
+    expect(log).toMatch(/PASS\s+音画时长对齐\s+画面 5\.000s(?:（[^）]+）)?\s*\/\s*音频 5\.000s/);
     expect(log).toMatch(/响度 .*-\d+\.\d+ LUFS/);
   });
 });
@@ -822,7 +827,7 @@ test("D77 / ADR-0030 真实 core：bash 清旧图并拷图进期目录 → 硬�
       await expect(toolCopies).toHaveCount(2);
       await armClipboard(L);
       await toolCopies.first().click();
-      await expect(toolCopies.first()).toHaveText("✓ 已复制");
+      await expect(toolCopies.first()).toHaveAttribute("data-state", "done");
       expect(await clipboardText(L)).toBe(cmd);
       // D76 ③助手回复的代码块：复制出来是块内原文，不带末尾换行
       await armClipboard(L);
@@ -853,6 +858,7 @@ test("D76 真实 core：继续上次会话 → 恢复出来的 bash 旧工具行
     await openEp(L.page, "SESS-A");
     await send(L.page, "看看目录");
     await waitTurns(L, "ep:SESS-A", 1);
+    await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "idle", { timeout: 10_000 });
     await L.page.getByTestId("session-end").click();
     await expect(L.page.getByTestId("session-head")).toHaveAttribute("data-phase", "exited", { timeout: 20_000 });
     await L.page.locator("[data-testid=session-row] button.ep-session").first().click();
@@ -870,7 +876,7 @@ test("D76 真实 core：继续上次会话 → 恢复出来的 bash 旧工具行
     try {
       await armClipboard(L);
       await row.getByTestId("tool-copy").click();
-      await expect(row.getByTestId("tool-copy")).toHaveText("✓ 已复制");
+      await expect(row.getByTestId("tool-copy")).toHaveAttribute("data-state", "done");
       expect(await clipboardText(L)).toBe(cmd);
     } finally {
       await L.app.evaluate(({ clipboard }, t) => clipboard.writeText(t), saved);
@@ -1011,18 +1017,29 @@ test("TX-8c 真实 core：确认框打开时再触发退出 → 桩仍 1 次、a
   });
 });
 
-test("TX-8d 真实 core：关窗后取消 → app 与 host 存活、STATUS spawn 继续；activate 重开窗口", async () => {
+test("TX-8d A3 真实 core：macOS 关窗保活；app.quit() 取消保活；activate 重开窗口恢复连线", async () => {
   await withRealApp(async ({ L, llm }) => {
     await runningTurn(L, llm);
     await stubQuit(L, "cancel");
-    const before = spawns(L).filter((s) => s.template === "STATUS").length;
-    await L.page.evaluate(() => window.close());
-    await L.page.waitForEvent("close").catch(() => undefined);
-    await expect.poll(() => quitStubCalls(L), { timeout: 10_000 }).toBe(1);
-    await expect.poll(() => spawns(L).filter((s) => s.template === "STATUS").length, { timeout: 12_000 }).toBeGreaterThan(before);
-    await L.app.evaluate(({ app }) => app.emit("activate"));
-    await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(1);
-    await stubQuit(L, "quit");
+    try {
+      const hostPid = await hostPidOf(L);
+      expect(hostPid).toBeGreaterThan(0);
+      await L.page.evaluate(() => window.close());
+      await L.page.waitForEvent("close").catch(() => undefined);
+      await expect.poll(() => L.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(0);
+      expect(await quitStubCalls(L)).toBe(0);
+      expect(await hostPidOf(L)).toBe(hostPid);
+      void L.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+      await expect.poll(() => quitStubCalls(L), { timeout: 10_000 }).toBe(1);
+      expect(await hostPidOf(L)).toBe(hostPid);
+      const newPageP = L.app.waitForEvent("window");
+      await L.app.evaluate(({ app }) => app.emit("activate"));
+      const page2 = await newPageP;
+      await page2.locator("[data-testid=episode]", { hasText: "SESS-A" }).first().click();
+      await expect(page2.getByTestId("session-running")).toBeVisible({ timeout: 15_000 });
+    } finally {
+      await stubQuit(L, "quit").catch(() => undefined);
+    }
   });
 });
 

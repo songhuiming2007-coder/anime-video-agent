@@ -41,6 +41,8 @@ export type AutoOpenEvent =
   | { kind: "settled"; turnId: string; items: ApprovalJson[] } // R2b：宿主侧结算
   | { kind: "human" } // R4：人从产物树 / 画廊点开文件
   | { kind: "strip" } // R5：人点「已就绪 · 查看」
+  | { kind: "dismiss_strip" } // 人手动收起「已就绪」条
+  | { kind: "preview_closed" } // 人主动收起预览栏：下次新停机点允许自动预载到窄条后
   | { kind: "reset"; phase: "none" | "idle" | "running" | "exited"; turnId: string | null; settlePending: string | null }; // R6
 
 export interface AutoOpenResult {
@@ -65,20 +67,22 @@ function applyCandidate(s: AutoOpenState, cand: ApprovalJson, env: AutoOpenEnv):
 export function step(s: AutoOpenState, ev: AutoOpenEvent, env: AutoOpenEnv): AutoOpenResult {
   switch (ev.kind) {
     case "pendings": {
-      const fresh = ev.items.filter((a) => !s.seen.has(a.approval_id));
-      if (fresh.length === 0) return { state: s, open: null };
-      const seen = new Set(s.seen);
+      const stripAlive = s.strip !== null && ev.items.some((a) => a.approval_id === s.strip!.approval_id);
+      const base = stripAlive || s.strip === null ? s : { ...s, strip: null };
+      const fresh = ev.items.filter((a) => !base.seen.has(a.approval_id));
+      if (fresh.length === 0) return { state: base, open: null };
+      const seen = new Set(base.seen);
       for (const a of fresh) seen.add(a.approval_id);
       // R1 后半：回合进行中只登记（同类型保留最新者），不呼出
-      if (s.awaiting !== null) {
-        const deferred = new Map(s.deferred);
+      if (base.awaiting !== null) {
+        const deferred = new Map(base.deferred);
         for (const a of fresh) {
           const cur = deferred.get(a.type);
           if (!cur || compareIso(a.created_at, cur.created_at) >= 0) deferred.set(a.type, a);
         }
-        return { state: { ...s, seen, deferred }, open: null };
+        return { state: { ...base, seen, deferred }, open: null };
       }
-      return applyCandidate({ ...s, seen }, latest(fresh), env);
+      return applyCandidate({ ...base, seen }, latest(fresh), env);
     }
     case "turn_started":
       return { state: { ...s, awaiting: ev.turnId }, open: null };
@@ -86,7 +90,8 @@ export function step(s: AutoOpenState, ev: AutoOpenEvent, env: AutoOpenEnv): Aut
       if (ev.turnId !== s.awaiting) return { state: s, open: null }; // 迟到 / 不符的结算不算
       const live = new Set(ev.items.filter((a) => a.status === "pending").map((a) => a.approval_id));
       const cands = [...s.deferred.values()].filter((a) => live.has(a.approval_id));
-      const cleared: AutoOpenState = { ...s, awaiting: null, deferred: new Map() };
+      const stripAlive = s.strip !== null && live.has(s.strip.approval_id);
+      const cleared: AutoOpenState = { ...s, awaiting: null, deferred: new Map(), strip: stripAlive ? s.strip : null };
       if (cands.length === 0) return { state: cleared, open: null }; // 本回合零停机点：只清状态
       return applyCandidate(cleared, latest(cands), env);
     }
@@ -95,6 +100,10 @@ export function step(s: AutoOpenState, ev: AutoOpenEvent, env: AutoOpenEnv): Aut
     case "strip":
       if (s.strip === null) return { state: s, open: null };
       return { state: { ...s, owner: "auto", strip: null }, open: s.strip };
+    case "dismiss_strip":
+      return s.strip === null ? { state: s, open: null } : { state: { ...s, strip: null }, open: null };
+    case "preview_closed":
+      return s.owner === "human" ? { state: { ...s, owner: "none" }, open: null } : { state: s, open: null };
     case "reset": {
       // R6：owner / deferred / strip 清空，`seen` 保留；awaiting 从 snapshot 的顶层字段重建
       //（不扫条目缓冲：长回合的 log 可能让缓冲截头，turn_started 条目随之丢失）

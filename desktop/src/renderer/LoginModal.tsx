@@ -10,10 +10,11 @@ import type {
   AuthStatusResult,
   ProviderCategory,
 } from "../shared/protocol";
-import type { RpcClient } from "./rpc";
+import { copyText as clipboardCopy } from "./copy";
+import { errText, type RpcClient } from "./rpc";
 import { FloatingModal } from "./floating";
 import { Icon } from "./icons";
-import { SegmentedBar } from "./motion";
+import { Disclosure, SegmentedBar } from "./motion";
 
 const MODE_LABELS: Record<AuthMode, string> = {
   oauth_pkce: "OAuth 浏览器授权",
@@ -44,7 +45,7 @@ const MASKED_EXTRA_KEYS = new Set([
 ]);
 
 function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return errText(err);
 }
 
 function initExtraValues(row: AuthProviderRow): Record<string, string> {
@@ -97,32 +98,63 @@ function ExtraFieldsGrid({
   onChange: (key: string, value: string) => void;
   onEnter?: () => void;
 }) {
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   if (fields.length === 0) return null;
   return (
     <div className="login-extra-grid" data-testid="login-extra-fields">
-      {fields.map((ef) => (
-        <label key={ef.key} className="ui-field">
-          <span className="login-field-head">
-            <span>{ef.label}{showRequiredMark && ef.required ? " *" : ""}</span>
-            {ef.env_var && <span className="ui-badge">{ef.env_var}</span>}
-          </span>
-          <input
-            type={ef.secret ? "password" : "text"}
-            className="ui-input login-mono-input"
-            data-testid={`login-extra-${ef.key}`}
-            value={values[ef.key] ?? ""}
-            placeholder={ef.placeholder || ef.default}
-            onChange={(e) => onChange(ef.key, e.target.value)}
-            onKeyDown={(e) => {
-              if (isImeEnter(e) && onEnter) {
-                e.preventDefault();
-                onEnter();
-              }
-            }}
-          />
-          {ef.help && <span className="login-field-help">{ef.help}</span>}
-        </label>
-      ))}
+      {fields.map((ef) => {
+        const shown = Boolean(revealed[ef.key]);
+        return (
+          <label key={ef.key} className="ui-field">
+            <span className="login-field-head">
+              <span>{ef.label}{showRequiredMark && ef.required ? " *" : ""}</span>
+              {ef.env_var && <span className="ui-badge">{ef.env_var}</span>}
+            </span>
+            {ef.secret ? (
+              <div className="login-secret-wrap">
+                <input
+                  type={shown ? "text" : "password"}
+                  className="ui-input login-mono-input"
+                  data-testid={`login-extra-${ef.key}`}
+                  value={values[ef.key] ?? ""}
+                  placeholder={ef.placeholder || ef.default}
+                  onChange={(e) => onChange(ef.key, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (isImeEnter(e) && onEnter) {
+                      e.preventDefault();
+                      onEnter();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                  aria-label={shown ? `隐藏 ${ef.label}` : `显示 ${ef.label}`}
+                  onClick={() => setRevealed((r) => ({ ...r, [ef.key]: !r[ef.key] }))}
+                >
+                  <Icon name={shown ? "eye-off" : "eye"} size="sm" />
+                </button>
+              </div>
+            ) : (
+              <input
+                type="text"
+                className="ui-input login-mono-input"
+                data-testid={`login-extra-${ef.key}`}
+                value={values[ef.key] ?? ""}
+                placeholder={ef.placeholder || ef.default}
+                onChange={(e) => onChange(ef.key, e.target.value)}
+                onKeyDown={(e) => {
+                  if (isImeEnter(e) && onEnter) {
+                    e.preventDefault();
+                    onEnter();
+                  }
+                }}
+              />
+            )}
+            {ef.help && <span className="login-field-help">{ef.help}</span>}
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -154,9 +186,15 @@ export function LoginModal({
   const [pollActive, setPollActive] = useState(false);
   const [logoutArmed, setLogoutArmed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string; seq: number } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const feedbackRef = useRef<HTMLDivElement | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const msgSeqRef = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
   // flowGenRef 在切服务商、切认证方式、重新发起或关闭弹窗时递增，防止迟到异步回包串态或幽灵轮询
@@ -165,11 +203,31 @@ export function LoginModal({
   // inFlightGenRef 在同一 flowGen 内串行化设备码自动轮询与手动「立即检查」，避免竞态覆写成功提示
   const inFlightGenRef = useRef<number | null>(null);
 
-  const syncProviderDefaults = (row: AuthProviderRow) => {
+  const showMsg = (kind: "ok" | "warn" | "err", text: string) => {
+    msgSeqRef.current += 1;
+    setMsg({ kind, text, seq: msgSeqRef.current });
+  };
+
+  useEffect(() => {
+    if (msg) requestAnimationFrame(() => feedbackRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }, [msg]);
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (status === null && initialStatus !== null) setStatus(initialStatus);
+  }, [initialStatus, status]);
+
+  const syncProviderDefaults = (row: AuthProviderRow, preserveMode = false) => {
     setSelectedId(row.id);
-    setMode(row.auth_modes[0] ?? "api_key");
+    if (!preserveMode || !row.auth_modes.includes(mode)) {
+      setMode(row.auth_modes[0] ?? "api_key");
+    }
     setBaseUrl(row.base_url || row.default_base_url);
     setApiKey("");
+    setShowKey(false);
     setAuthCode("");
     setExtraValues(initExtraValues(row));
     setStarted(null);
@@ -178,7 +236,7 @@ export function LoginModal({
     setBusy(false);
   };
 
-  const loadStatus = (preferredId?: string) => {
+  const loadStatus = (preferredId?: string, preserveMode = false) => {
     const sGen = (statusGenRef.current += 1);
     void rpc.call<AuthStatusResult>("auth.status", {}).then(
       (res) => {
@@ -191,11 +249,11 @@ export function LoginModal({
           (selectedId && list.find((p) => p.id === selectedId)) ||
           list.find((p) => p.connected) ||
           list[0];
-        if (pick) syncProviderDefaults(pick);
+        if (pick) syncProviderDefaults(pick, preserveMode && pick.id === selectedId);
       },
       (e) => {
         if (!openRef.current || sGen !== statusGenRef.current) return;
-        setMsg({ kind: "err", text: errMsg(e) });
+        showMsg("err", errMsg(e));
       },
     );
   };
@@ -270,7 +328,7 @@ export function LoginModal({
     syncProviderDefaults(row);
   };
 
-  const stepSelection = (delta: number) => {
+  const stepSelection = (delta: number, moveFocus = false) => {
     if (flatVisible.length === 0) return;
     const idx = flatVisible.findIndex((p) => p.id === selectedId);
     const nextIdx = idx < 0 ? 0 : Math.max(0, Math.min(flatVisible.length - 1, idx + delta));
@@ -278,9 +336,18 @@ export function LoginModal({
     if (next) {
       selectProvider(next);
       const btn = listRef.current?.querySelector(`[data-provider="${next.id}"]`);
-      if (btn instanceof HTMLElement) btn.scrollIntoView({ block: "nearest" });
+      if (btn instanceof HTMLElement) {
+        btn.scrollIntoView({ block: "nearest" });
+        if (moveFocus) btn.focus();
+      }
     }
   };
+
+  useEffect(() => {
+    if (!open || !selectedId) return;
+    const btn = listRef.current?.querySelector(`[data-provider="${selectedId}"]`);
+    if (btn instanceof HTMLElement) btn.scrollIntoView({ block: "nearest" });
+  }, [open, selectedId]);
 
   const current = providers.find((p) => p.id === selectedId) ?? flatVisible[0] ?? providers[0] ?? null;
 
@@ -310,8 +377,8 @@ export function LoginModal({
             if (res.pending) return;
             setPollActive(false);
             setStarted(null);
-            setMsg({ kind: "ok", text: res.text || `已登录 ${providerName}` });
-            loadStatus(providerId);
+            showMsg("ok", res.text || `已登录 ${providerName}`);
+            loadStatus(providerId, true);
           },
           (e) => {
             if (!alive || gen !== flowGenRef.current) return;
@@ -320,10 +387,10 @@ export function LoginModal({
             errCount += 1;
             if (fatal || errCount >= 3) {
               setPollActive(false);
-              setMsg({ kind: "err", text });
+              showMsg("err", text);
             } else {
               nextAllowedAt = Date.now() + intervalMs * Math.min(4, errCount + 1);
-              setMsg({ kind: "warn", text: `检查授权状态暂时失败（第 ${errCount} 次），稍后自动重试：${text}` });
+              showMsg("warn", `检查授权状态暂时失败（第 ${errCount} 次），稍后自动重试：${text}`);
             }
           },
         )
@@ -363,15 +430,20 @@ export function LoginModal({
           if (gen !== flowGenRef.current) return;
           setStarted(res);
           if (res.mode === "oauth_pkce" && res.authorize_url) {
-            setMsg({ kind: "ok", text: "已生成授权链接：在浏览器完成登录后，复制回调链接或授权码粘贴到下方" });
+            // A5：点击发起授权自动打开系统浏览器，保留下方手动按钮作为兜底
+            openInBrowser(res.authorize_url);
+            showMsg("ok", "已在浏览器打开授权页；完成登录后复制回调链接粘贴到下方");
           } else if (res.mode === "oauth_device" && res.user_code) {
             setPollActive(true);
-            setMsg({ kind: "ok", text: `设备码 ${res.user_code} 已生成，在浏览器完成授权后将自动生效` });
+            // A5：设备码自动复制到剪贴板并打开授权页，保留手动复制/打开按钮作为兜底
+            copyText("code", res.user_code);
+            if (res.verification_uri) openInBrowser(res.verification_uri);
+            showMsg("ok", `设备码 ${res.user_code} 已复制并打开授权页，在浏览器粘贴确认后将自动生效`);
           }
         },
         (e) => {
           if (gen !== flowGenRef.current) return;
-          setMsg({ kind: "err", text: errMsg(e) });
+          showMsg("err", errMsg(e));
         },
       )
       .finally(() => {
@@ -383,7 +455,7 @@ export function LoginModal({
     const gen = flowGenRef.current;
     void rpc.call<{ ok: boolean }>("auth.openUrl", { url }).catch((e) => {
       if (gen !== flowGenRef.current) return;
-      setMsg({ kind: "err", text: `未能自动打开浏览器（可点右侧复制链接手动打开）：${errMsg(e)}` });
+      showMsg("warn", `未能自动打开浏览器，可点下方「在浏览器中打开」或复制链接手动访问：${errMsg(e)}`);
     });
   };
 
@@ -392,7 +464,7 @@ export function LoginModal({
     const gen = flowGenRef.current;
     statusGenRef.current += 1;
     if (mode === "oauth_device" && inFlightGenRef.current === gen) {
-      setMsg({ kind: "warn", text: "正在自动检查授权状态，请稍候…" });
+      showMsg("warn", "正在自动检查授权状态，请稍候…");
       return;
     }
     inFlightGenRef.current = gen;
@@ -425,20 +497,20 @@ export function LoginModal({
         (res) => {
           if (gen !== flowGenRef.current) return;
           if (res.pending) {
-            setMsg({ kind: "warn", text: res.text || "等待用户在浏览器完成设备码授权…" });
+            showMsg("warn", res.text || "等待用户在浏览器完成设备码授权…");
             return;
           }
           setApiKey("");
           setAuthCode("");
           setStarted(null);
           setPollActive(false);
-          setMsg({ kind: "ok", text: res.text || `已登录 ${targetProvider.name}` });
-          loadStatus(targetProvider.id);
+          showMsg("ok", res.text || `已登录 ${targetProvider.name}`);
+          loadStatus(targetProvider.id, true);
         },
         (e) => {
           if (gen !== flowGenRef.current) return;
           setExtraValues((prev) => clearSecretExtraValues(targetProvider, prev));
-          setMsg({ kind: "err", text: errMsg(e) });
+          showMsg("err", errMsg(e));
         },
       )
       .finally(() => {
@@ -465,12 +537,12 @@ export function LoginModal({
           setAuthCode("");
           setStarted(null);
           setExtraValues(initExtraValues(targetProvider));
-          setMsg({ kind: "ok", text: res.text });
-          loadStatus(targetProvider.id);
+          showMsg("ok", res.text);
+          loadStatus(targetProvider.id, true);
         },
         (e) => {
           if (gen !== flowGenRef.current) return;
-          setMsg({ kind: "err", text: errMsg(e) });
+          showMsg("err", errMsg(e));
         },
       )
       .finally(() => {
@@ -479,9 +551,14 @@ export function LoginModal({
   };
 
   const copyText = (key: string, text: string) => {
-    void navigator.clipboard?.writeText(text).then(() => {
+    void clipboardCopy(text).then((ok) => {
+      if (!ok) return;
       setCopiedKey(key);
-      window.setTimeout(() => setCopiedKey((prev) => (prev === key ? null : prev)), 1500);
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 1500);
     });
   };
 
@@ -501,6 +578,15 @@ export function LoginModal({
     Boolean(started?.redirect_uri?.includes("localhost:")) ||
     Boolean(started?.redirect_uri?.includes("127.0.0.1:"));
 
+  const expiryNote = (() => {
+    const exp = current?.expires_at_ms;
+    if (!current?.connected || typeof exp !== "number" || !Number.isFinite(exp)) return null;
+    const diff = exp - Date.now();
+    if (diff <= 0) return { warn: true, text: "授权已过期，请重新登录" };
+    if (diff < 24 * 3600_000) return { warn: true, text: `授权将于 ${Math.max(1, Math.round(diff / 3600_000))} 小时内到期` };
+    return null;
+  })();
+
   return (
     <FloatingModal
       open={open}
@@ -508,12 +594,13 @@ export function LoginModal({
       backdropTestId="login-backdrop"
       testId="login-modal"
       className="login-modal"
-      ariaLabel="模型服务商登录（/login）"
+      ariaLabel="模型服务商登录"
+      initialFocus={searchRef}
     >
       <div className="login-modal-head">
           <div className="login-modal-title-wrap">
             <h2 id="login-modal-title" className="login-modal-title">
-              模型服务商登录（/login）
+              模型服务商登录
             </h2>
             <span className="muted login-modal-sub">
               {status
@@ -541,14 +628,18 @@ export function LoginModal({
 
         <div className="login-modal-body">
           <div className="login-provider-pane">
-            <div className="ui-search login-provider-search">
+            <div className={`ui-search login-provider-search${query !== "" ? " ui-search--clearable" : ""}`}>
               <Icon name="search" size="sm" />
               <input
+                ref={searchRef}
                 className="ui-input"
                 data-testid="login-provider-search"
-                placeholder={`筛选服务商（${providers.length || 44} 家，名称/协议/环境变量）…`}
+                placeholder={providers.length > 0 ? `筛选服务商（${providers.length} 家，名称/协议/环境变量）…` : "筛选服务商（名称/协议/环境变量）…"}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  statusGenRef.current += 1;
+                  setQuery(e.target.value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
@@ -556,6 +647,10 @@ export function LoginModal({
                   } else if (e.key === "ArrowUp") {
                     e.preventDefault();
                     stepSelection(-1);
+                  } else if (isImeEnter(e) && current) {
+                    e.preventDefault();
+                    const first = detailRef.current?.querySelector<HTMLElement>("input, button:not([disabled])");
+                    first?.focus();
                   } else if (e.key === "Escape" && query !== "") {
                     e.preventDefault();
                     e.stopPropagation();
@@ -566,9 +661,12 @@ export function LoginModal({
               {query !== "" && (
                 <button
                   type="button"
-                  className="ui-search-clear"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-search-clear"
                   aria-label="清空筛选"
-                  onClick={() => setQuery("")}
+                  onClick={() => {
+                    setQuery("");
+                    searchRef.current?.focus();
+                  }}
                 >
                   <Icon name="close" size="sm" />
                 </button>
@@ -604,10 +702,10 @@ export function LoginModal({
                         onKeyDown={(e) => {
                           if (e.key === "ArrowDown") {
                             e.preventDefault();
-                            stepSelection(1);
+                            stepSelection(1, true);
                           } else if (e.key === "ArrowUp") {
                             e.preventDefault();
-                            stepSelection(-1);
+                            stepSelection(-1, true);
                           }
                         }}
                       >
@@ -623,7 +721,7 @@ export function LoginModal({
             </div>
           </div>
 
-          <div key={current?.id ?? "empty"} className="login-detail-pane ui-fade-swap">
+          <div ref={detailRef} key={current?.id ?? "empty"} className="login-detail-pane ui-fade-swap">
             {current && (
               <>
                 <div className="login-detail-head">
@@ -642,7 +740,7 @@ export function LoginModal({
                       <span className="ui-badge ui-badge--ok">当前已连接</span>
                       {current.masked_secret && <span className="login-secret-mask">{current.masked_secret}</span>}
                       {logoutArmed ? (
-                        <>
+                        <span className="login-logout-confirm ui-confirm-enter">
                           <button
                             type="button"
                             className="ui-btn ui-btn--danger ui-btn--sm login-logout-btn"
@@ -650,6 +748,7 @@ export function LoginModal({
                             disabled={busy}
                             onClick={handleLogout}
                           >
+                            {busy && <span className="ui-spinner" />}
                             确认退出
                           </button>
                           <button
@@ -661,7 +760,7 @@ export function LoginModal({
                           >
                             取消
                           </button>
-                        </>
+                        </span>
                       ) : (
                         <button
                           type="button"
@@ -674,6 +773,7 @@ export function LoginModal({
                         </button>
                       )}
                     </div>
+                    {expiryNote && <div className="warn login-connected-meta">{expiryNote.text}</div>}
                     <div className="muted login-connected-meta">地址：{current.base_url}</div>
                     {current.models.length > 0 && (
                       <div className="muted login-connected-meta" data-testid="login-connected-models">
@@ -731,9 +831,9 @@ export function LoginModal({
                 )}
 
                 {mode === "proxy" && (
-                  <div className="login-form">
+                  <div key="proxy" className="login-form ui-fade-swap">
                     <label className="ui-field">
-                      <span>代理地址（自动探针 GET /models 并同步能力表）</span>
+                      <span>代理地址（自动拉取可用模型与能力表）</span>
                       <input
                         className="ui-input login-mono-input"
                         data-testid="login-baseurl-input"
@@ -750,20 +850,30 @@ export function LoginModal({
                     </label>
                     <label className="ui-field">
                       <span>代理密钥（可选，本机无鉴权可留空）</span>
-                      <input
-                        type="password"
-                        className="ui-input login-mono-input"
-                        data-testid="login-key-input"
-                        value={apiKey}
-                        placeholder="sk-…（留空则无密钥直连）"
-                        onChange={(e) => { statusGenRef.current += 1; setApiKey(e.target.value); }}
-                        onKeyDown={(e) => {
-                          if (isImeEnter(e) && !submitDisabled) {
-                            e.preventDefault();
-                            handleSubmit();
-                          }
-                        }}
-                      />
+                      <div className="login-secret-wrap">
+                        <input
+                          type={showKey ? "text" : "password"}
+                          className="ui-input login-mono-input"
+                          data-testid="login-key-input"
+                          value={apiKey}
+                          placeholder="sk-…（留空则无密钥直连）"
+                          onChange={(e) => { statusGenRef.current += 1; setApiKey(e.target.value); }}
+                          onKeyDown={(e) => {
+                            if (isImeEnter(e) && !submitDisabled) {
+                              e.preventDefault();
+                              handleSubmit();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                          aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                          onClick={() => setShowKey((v) => !v)}
+                        >
+                          <Icon name={showKey ? "eye-off" : "eye"} size="sm" />
+                        </button>
+                      </div>
                     </label>
                     <div className="login-actions">
                       <button
@@ -773,6 +883,7 @@ export function LoginModal({
                         disabled={submitDisabled}
                         onClick={handleSubmit}
                       >
+                        {busy && <span className="ui-spinner" />}
                         {busy ? "正在同步…" : "连接并同步模型"}
                       </button>
                     </div>
@@ -780,23 +891,33 @@ export function LoginModal({
                 )}
 
                 {mode === "api_key" && (
-                  <div className="login-form">
+                  <div key="api_key" className="login-form ui-fade-swap">
                     <label className="ui-field">
                       <span>{current.id === "amazon-bedrock" || current.id === "google-vertex" ? "API Key / Bearer Token（使用下方 IAM/ADC 时可留空）" : "API Key"}</span>
-                      <input
-                        type="password"
-                        className="ui-input login-mono-input"
-                        data-testid="login-key-input"
-                        value={apiKey}
-                        placeholder="粘贴服务商 API Key 或令牌…"
-                        onChange={(e) => { statusGenRef.current += 1; setApiKey(e.target.value); }}
-                        onKeyDown={(e) => {
-                          if (isImeEnter(e) && !submitDisabled) {
-                            e.preventDefault();
-                            handleSubmit();
-                          }
-                        }}
-                      />
+                      <div className="login-secret-wrap">
+                        <input
+                          type={showKey ? "text" : "password"}
+                          className="ui-input login-mono-input"
+                          data-testid="login-key-input"
+                          value={apiKey}
+                          placeholder="粘贴服务商 API Key 或令牌…"
+                          onChange={(e) => { statusGenRef.current += 1; setApiKey(e.target.value); }}
+                          onKeyDown={(e) => {
+                            if (isImeEnter(e) && !submitDisabled) {
+                              e.preventDefault();
+                              handleSubmit();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                          aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                          onClick={() => setShowKey((v) => !v)}
+                        >
+                          <Icon name={showKey ? "eye-off" : "eye"} size="sm" />
+                        </button>
+                      </div>
                     </label>
 
                     <ExtraFieldsGrid
@@ -836,6 +957,7 @@ export function LoginModal({
                         disabled={submitDisabled}
                         onClick={handleSubmit}
                       >
+                        {busy && <span className="ui-spinner" />}
                         {busy ? "正在保存…" : "保存凭据并启用"}
                       </button>
                     </div>
@@ -843,9 +965,9 @@ export function LoginModal({
                 )}
 
                 {mode === "oauth_pkce" && (
-                  <div className="login-form">
+                  <div key="oauth_pkce" className="login-form ui-fade-swap">
                     <div className="login-oauth-step">
-                      <span className="muted">第 1 步：生成浏览器授权链接，点击打开（或复制后手动打开）</span>
+                      <span className="muted">第 1 步：点击后将自动打开浏览器完成授权（也可复制链接手动打开）</span>
                       <div className="login-actions">
                         <button
                           type="button"
@@ -854,40 +976,43 @@ export function LoginModal({
                           disabled={busy}
                           onClick={handleStartOAuth}
                         >
-                          {started?.authorize_url ? "重新生成授权链接" : "生成授权链接"}
+                          {busy && <span className="ui-spinner" />}
+                          {started?.authorize_url ? "重新打开授权页" : "前往浏览器授权"}
                         </button>
                       </div>
-                      {started?.authorize_url && (
-                        <div className="login-url-box ui-card-enter">
-                          <code className="login-url-text" data-testid="login-authorize-url">{started.authorize_url}</code>
-                          <button
-                            type="button"
-                            className="ui-btn ui-btn--sm"
-                            data-testid="login-open-browser-btn"
-                            onClick={() => openInBrowser(started.authorize_url ?? "")}
-                          >
-                            <Icon name="external-link" size="sm" />
-                            在浏览器中打开
-                          </button>
-                          <button
-                            type="button"
-                            className="ui-btn ui-btn--ghost ui-btn--sm"
-                            data-testid="login-copy-url-btn"
-                            onClick={() => copyText("url", started.authorize_url ?? "")}
-                          >
-                            <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
-                            {copiedKey === "url" ? "已复制" : "复制链接"}
-                          </button>
-                        </div>
-                      )}
+                      <Disclosure open={Boolean(started?.authorize_url)}>
+                        {started?.authorize_url && (
+                          <div className="login-url-box ui-card-enter">
+                            <code className="login-url-text" data-testid="login-authorize-url">{started.authorize_url}</code>
+                            <button
+                              type="button"
+                              className="ui-btn ui-btn--sm"
+                              data-testid="login-open-browser-btn"
+                              onClick={() => openInBrowser(started.authorize_url ?? "")}
+                            >
+                              <Icon name="external-link" size="sm" />
+                              在浏览器中打开
+                            </button>
+                            <button
+                              type="button"
+                              className="ui-btn ui-btn--ghost ui-btn--sm"
+                              data-testid="login-copy-url-btn"
+                              onClick={() => copyText("url", started.authorize_url ?? "")}
+                            >
+                              <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
+                              {copiedKey === "url" ? "已复制" : "复制链接"}
+                            </button>
+                          </div>
+                        )}
+                      </Disclosure>
                     </div>
                     <label className="ui-field">
-                      <span>第 2 步：粘贴浏览器回调链接（或 code#state）</span>
+                      <span>第 2 步：粘贴授权完成后的回调链接或授权码</span>
                       <input
                         className="ui-input login-mono-input"
                         data-testid="login-code-input"
                         value={authCode}
-                        placeholder="http://127.0.0.1:1455/auth/callback?code=… 或 code#state"
+                        placeholder="粘贴浏览器地址栏的完整回调链接…"
                         onChange={(e) => { statusGenRef.current += 1; setAuthCode(e.target.value); }}
                         onKeyDown={(e) => {
                           if (isImeEnter(e) && !submitDisabled) {
@@ -910,6 +1035,7 @@ export function LoginModal({
                         disabled={submitDisabled}
                         onClick={handleSubmit}
                       >
+                        {busy && <span className="ui-spinner" />}
                         {busy ? "正在换取令牌…" : "完成 OAuth 登录"}
                       </button>
                     </div>
@@ -917,7 +1043,7 @@ export function LoginModal({
                 )}
 
                 {mode === "oauth_device" && (
-                  <div className="login-form">
+                  <div key="oauth_device" className="login-form ui-fade-swap">
                     <ExtraFieldsGrid
                       fields={extraFields}
                       values={extraValues}
@@ -925,7 +1051,7 @@ export function LoginModal({
                       onChange={(key, value) => { statusGenRef.current += 1; setExtraValues((prev) => ({ ...prev, [key]: value })); }}
                     />
                     <div className="login-oauth-step">
-                      <span className="muted">第 1 步：获取 {current.name} 设备码，在浏览器输入设备码完成授权</span>
+                      <span className="muted">第 1 步：点击后将自动复制设备码并打开浏览器授权页</span>
                       <div className="login-actions">
                         <button
                           type="button"
@@ -934,52 +1060,57 @@ export function LoginModal({
                           disabled={busy}
                           onClick={handleStartOAuth}
                         >
+                          {busy && <span className="ui-spinner" />}
                           {started?.user_code ? "重新获取设备码" : `获取 ${current.name} 设备码`}
                         </button>
                       </div>
-                      {started?.verification_uri && (
-                        <div className="login-url-box ui-card-enter">
-                          <code className="login-url-text" data-testid="login-device-url">{started.verification_uri}</code>
-                          <button
-                            type="button"
-                            className="ui-btn ui-btn--sm"
-                            data-testid="login-open-browser-btn"
-                            onClick={() => openInBrowser(started.verification_uri ?? "")}
-                          >
-                            <Icon name="external-link" size="sm" />
-                            在浏览器中打开
-                          </button>
-                          <button
-                            type="button"
-                            className="ui-btn ui-btn--ghost ui-btn--sm"
-                            data-testid="login-copy-url-btn"
-                            onClick={() => copyText("url", started.verification_uri ?? "")}
-                          >
-                            <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
-                            {copiedKey === "url" ? "已复制" : "复制链接"}
-                          </button>
+                      <Disclosure open={Boolean(started?.verification_uri || started?.user_code)}>
+                        <div>
+                          {started?.verification_uri && (
+                            <div className="login-url-box ui-card-enter">
+                              <code className="login-url-text" data-testid="login-device-url">{started.verification_uri}</code>
+                              <button
+                                type="button"
+                                className="ui-btn ui-btn--sm"
+                                data-testid="login-open-browser-btn"
+                                onClick={() => openInBrowser(started.verification_uri ?? "")}
+                              >
+                                <Icon name="external-link" size="sm" />
+                                在浏览器中打开
+                              </button>
+                              <button
+                                type="button"
+                                className="ui-btn ui-btn--ghost ui-btn--sm"
+                                data-testid="login-copy-url-btn"
+                                onClick={() => copyText("url", started.verification_uri ?? "")}
+                              >
+                                <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
+                                {copiedKey === "url" ? "已复制" : "复制链接"}
+                              </button>
+                            </div>
+                          )}
+                          {started?.user_code && (
+                            <div className="login-device-card ui-card-enter">
+                              <span className="muted">一次性设备码：</span>
+                              <strong className="login-device-code" data-testid="login-device-code">{started.user_code}</strong>
+                              <button
+                                type="button"
+                                className="ui-btn ui-btn--ghost ui-btn--sm"
+                                onClick={() => copyText("code", started.user_code ?? "")}
+                              >
+                                <Icon name={copiedKey === "code" ? "check" : "copy"} size="sm" />
+                                {copiedKey === "code" ? "已复制" : "复制"}
+                              </button>
+                            </div>
+                          )}
+                          {started?.user_code && pollActive && (
+                            <div className="login-poll-row" data-testid="login-device-polling">
+                              <span className="ui-spinner" />
+                              <span>正在自动检测浏览器授权状态，完成后将自动生效…</span>
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {started?.user_code && (
-                        <div className="login-device-card ui-card-enter">
-                          <span className="muted">一次性设备码：</span>
-                          <strong className="login-device-code" data-testid="login-device-code">{started.user_code}</strong>
-                          <button
-                            type="button"
-                            className="ui-btn ui-btn--ghost ui-btn--sm"
-                            onClick={() => copyText("code", started.user_code ?? "")}
-                          >
-                            <Icon name={copiedKey === "code" ? "check" : "copy"} size="sm" />
-                            {copiedKey === "code" ? "已复制" : "复制"}
-                          </button>
-                        </div>
-                      )}
-                      {started?.user_code && pollActive && (
-                        <div className="login-poll-row" data-testid="login-device-polling">
-                          <span className="ui-spinner" />
-                          <span>正在自动检测浏览器授权状态，完成后将自动生效…</span>
-                        </div>
-                      )}
+                      </Disclosure>
                     </div>
                     <div className="login-actions">
                       <button
@@ -989,6 +1120,7 @@ export function LoginModal({
                         disabled={busy || !started?.user_code}
                         onClick={handleSubmit}
                       >
+                        {busy && <span className="ui-spinner" />}
                         {busy ? "正在检查…" : pollActive ? "立即检查" : "检查并完成授权"}
                       </button>
                     </div>
@@ -997,6 +1129,8 @@ export function LoginModal({
 
                 {msg && (
                   <div
+                    ref={feedbackRef}
+                    key={msg.seq}
                     className={
                       msg.kind === "err"
                         ? "login-feedback login-feedback--err ui-error-shake"

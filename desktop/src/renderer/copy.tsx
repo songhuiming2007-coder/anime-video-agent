@@ -1,6 +1,7 @@
 // D76（人选方案 C）：长命令一键复制。三处共用：助手回复的代码块、bash 工具行、bash 命令审批卡。
 // 复制的永远是原文（代码块的 textContent / 帧与请求里的命令字段），不是屏幕上折行后的样子，也不带卡面的「│」前缀。
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Icon } from "./icons";
 
 const DONE_MS = 1500; // 「✓ 已复制」停留时长：够人看见，又不至于下一次点击时还挂着旧状态
 
@@ -14,6 +15,8 @@ export async function copyText(text: string): Promise<boolean> {
     ta.value = text;
     ta.setAttribute("readonly", "");
     ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
@@ -31,25 +34,56 @@ type CopyState = "idle" | "done" | "failed";
 const LABEL_DONE = "✓ 已复制";
 const LABEL_FAILED = "复制失败";
 
-/** `label` 可以是图标（D80 工具行悬停复制）：此时必须给 `ariaLabel`，读屏念它；复制后照旧显示「✓ 已复制」文字 */
+/** `label` 可以是图标（D80 工具行悬停复制）：此时走零重排图标切换（copy -> check/alert），aria-label 实时播报状态 */
 export function CopyButton({ text, label = "复制", testId = "copy-btn", ariaLabel, className = "" }: { text: string; label?: ReactNode; testId?: string; ariaLabel?: string; className?: string }) {
   const [state, setState] = useState<CopyState>("idle");
+  const [tick, setTick] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iconOnly = typeof label !== "string";
+
   useEffect(() => {
-    if (state === "idle") return;
-    const t = setTimeout(() => setState("idle"), DONE_MS);
-    return () => clearTimeout(t);
-  }, [state]);
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const trigger = () => {
+    void copyText(text).then((ok) => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      setState(ok ? "done" : "failed");
+      setTick((n) => n + 1);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setState("idle");
+      }, DONE_MS);
+    });
+  };
+
+  const stateCls = state === "done" ? " copy-btn--done" : state === "failed" ? " copy-btn--failed" : "";
+  const iconCls = iconOnly ? " ui-btn--icon" : "";
+  const effectiveAria = state === "done" ? "已复制" : state === "failed" ? LABEL_FAILED : ariaLabel;
+
   return (
     <button
       type="button"
-      className={`ui-btn ui-btn--ghost ui-btn--sm copy-btn${state === "done" ? " copy-btn--done" : ""}${className ? ` ${className}` : ""}`}
+      className={`ui-btn ui-btn--ghost ui-btn--sm copy-btn${iconCls}${stateCls}${className ? ` ${className}` : ""}`}
       data-testid={testId}
-      aria-label={state === "idle" ? ariaLabel : undefined}
-      title={ariaLabel}
+      aria-label={effectiveAria}
+      title={effectiveAria}
       data-state={state}
-      onClick={() => void copyText(text).then((ok) => setState(ok ? "done" : "failed"))}
+      onClick={trigger}
     >
-      {state === "done" ? LABEL_DONE : state === "failed" ? LABEL_FAILED : label}
+      {iconOnly ? (
+        <span className="copy-icon-stack">
+          <span className="copy-icon-layer" data-active={state === "idle" ? "1" : "0"}>{label}</span>
+          <span className="copy-icon-layer copy-icon-layer--ok" data-active={state === "done" ? "1" : "0"}><Icon name="check" size="sm" /></span>
+          <span className="copy-icon-layer copy-icon-layer--err" data-active={state === "failed" ? "1" : "0"}><Icon name="alert" size="sm" /></span>
+        </span>
+      ) : (
+        <span key={tick} className={state === "done" ? "ui-confirm-enter" : state === "failed" ? "ui-error-shake" : undefined}>
+          {state === "done" ? LABEL_DONE : state === "failed" ? LABEL_FAILED : label}
+        </span>
+      )}
     </button>
   );
 }
@@ -64,7 +98,7 @@ export function useCodeCopyButtons(html: string) {
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const timers: ReturnType<typeof setTimeout>[] = [];
+    const timers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
     for (const pre of root.querySelectorAll<HTMLElement>("pre")) {
       if (pre.querySelector(":scope > .code-copy")) continue;
       const b = document.createElement("button");
@@ -76,19 +110,29 @@ export function useCodeCopyButtons(html: string) {
         // 去掉 markdown-it 给代码块末尾补的那个换行：粘进终端不会多回车
         const text = (pre.querySelector("code")?.textContent ?? "").replace(/\n$/, "");
         void copyText(text).then((ok) => {
+          const prev = timers.get(b);
+          if (prev !== undefined) clearTimeout(prev);
           b.textContent = ok ? LABEL_DONE : LABEL_FAILED;
+          b.dataset.state = ok ? "done" : "failed";
           b.classList.toggle("copy-btn--done", ok);
-          timers.push(
+          b.classList.toggle("copy-btn--failed", !ok);
+          timers.set(
+            b,
             setTimeout(() => {
+              timers.delete(b);
               b.textContent = "复制";
-              b.classList.remove("copy-btn--done");
+              b.dataset.state = "idle";
+              b.classList.remove("copy-btn--done", "copy-btn--failed");
             }, DONE_MS),
           );
         });
       });
       pre.appendChild(b);
     }
-    return () => timers.forEach(clearTimeout);
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
   }, [html]);
   return ref;
 }

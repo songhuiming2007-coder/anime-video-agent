@@ -4,13 +4,14 @@
 // 撤回 N → 待应用条目行内 撤回；done → 完成并应用补丁。
 // 自由文法纠错的解析与落盘都在 core（`/voice-parse` 纯算、`/voice-add` 重新解析原文），UI 只渲染结构化字段。
 // 播放器从 afplay/QuickTime 改为原位 <audio>（direction §0.2 第 3 条：全要素应用内原位审计）。
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { VoiceCheckJson, VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
 import { heardKey, lockState, redoSegments, segStatus, synthSummary, type SegStatusKind } from "../shared/voiceInfo";
 import { CopyButton } from "./copy";
+import { FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
-import { SegmentedBar } from "./motion";
+import { Collapsible, Disclosure, prefersReducedMotion, SegmentedBar } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 import { Badge, StateView } from "./ui";
 
@@ -32,17 +33,12 @@ const PATCH_FIELDS: readonly [keyof VoicePatchJson, string][] = [
   ["scope", "范围"],
 ];
 
-/**
- * `onReady(ok)`：面板装载结果（D49-A / D50-A S1）。App 据此决定要不要再叠一份纯播放队列——
- * 面板正常时只留面板一套播放器；面板取不到数据（core 出错）时退回原来的队列，人不至于什么都听不了。
- */
 const LIVE_POLL_MS = 5000;
 
-/** D73：每期最近一次读到的配音信息。面板切走即卸载、切回重新挂载——没有它，切回那一刻只有空白等待，
- *  重配进行中一次读取失败还会把整块换成错误态。只作首屏占位，挂载后照样立刻重读。 */
+/** D73：每期最近一次读到的配音信息，切回重新挂载时首屏占位，挂载后立即重读。 */
 const lastInfo = new Map<string, VoiceInfoJson>();
 
-/** D87：每期在面板里放过的「重配后版本」（键 = 段号@完成时刻）。与 lastInfo 同法：切走、切回不丢，重启 app 才清 */
+/** D87：每期在面板里放过的「重配后版本」（键 = 段号@完成时刻）。 */
 const heardLog = new Map<string, Set<string>>();
 const heardOf = (epKey: string): Set<string> => {
   let s = heardLog.get(epKey);
@@ -66,26 +62,266 @@ const todayIso = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+type QueueItem = { wav: string; label: string; mtime: number | null };
+type BusyAction = "parse" | "add" | "retract" | "revert" | "reseed" | "apply" | "clearLock" | null;
+type VoiceMsg = { kind: "ok" | "err"; text: string; n: number };
+
+/**
+ * 独立播放条组件：自己持有 <audio> 与 rAF 60fps 进度条 DOM 更新，
+ * 避免播放期间每秒多次重渲染整张段落列表（40+ 段零重排）。
+ */
+function NowPlayingBar({
+  epKey,
+  current,
+  remainingCount,
+  paused,
+  onPausedChange,
+  onTogglePauseRef,
+  onEnded,
+  onStop,
+}: {
+  epKey: string;
+  current: QueueItem | null;
+  remainingCount: number;
+  paused: boolean;
+  onPausedChange: (p: boolean) => void;
+  onTogglePauseRef: React.MutableRefObject<(() => void) | null>;
+  onEnded: () => void;
+  onStop: () => void;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const seekRef = useRef<HTMLInputElement | null>(null);
+  const draggingSeekRef = useRef(false);
+  const [clock, setClock] = useState<{ sec: number; dur: number }>({ sec: 0, dur: 0 });
+  const [playErr, setPlayErr] = useState<string | null>(null);
+
+  const src = current ? encodeMediaUrl("episodes", `${epKey}/03-audio/${current.wav}`) : "";
+
+  const togglePause = useCallback(() => {
+    const a = audioRef.current;
+    if (!a || !current) return;
+    if (a.paused) {
+      onPausedChange(false);
+      void a.play().catch(() => onPausedChange(true));
+    } else {
+      a.pause();
+      onPausedChange(true);
+    }
+  }, [current, onPausedChange]);
+
+  useEffect(() => {
+    onTogglePauseRef.current = togglePause;
+    return () => {
+      onTogglePauseRef.current = null;
+    };
+  }, [togglePause, onTogglePauseRef]);
+
+  // 切段自动播放
+  useEffect(() => {
+    draggingSeekRef.current = false;
+    setPlayErr(null);
+    setClock({ sec: 0, dur: 0 });
+    if (seekRef.current) {
+      seekRef.current.max = "0";
+      seekRef.current.value = "0";
+      seekRef.current.disabled = true;
+    }
+    if (!current) {
+      onPausedChange(false);
+      return;
+    }
+    const a = audioRef.current;
+    if (!a) return;
+    onPausedChange(false);
+    void a.play().catch(() => onPausedChange(true));
+  }, [current, onPausedChange]);
+
+  // 60fps 进度条直接写 DOM ref，数字时钟仅在整数秒变化时更新 React 状态
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !current) return;
+    let rafId = 0;
+    const syncDom = () => {
+      const t = Number.isFinite(a.currentTime) ? a.currentTime : 0;
+      const d = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
+      const inp = seekRef.current;
+      if (inp && !draggingSeekRef.current) {
+        inp.max = String(d);
+        inp.disabled = d <= 0;
+        inp.value = String(d > 0 ? Math.min(t, d) : 0);
+        inp.setAttribute("aria-valuetext", `${formatAudioClock(t)} / ${formatAudioClock(d)}`);
+      }
+      const sec = Math.floor(t);
+      const dur = Math.floor(d);
+      setClock((prev) => (prev.sec === sec && prev.dur === dur ? prev : { sec, dur }));
+    };
+    const loop = () => {
+      syncDom();
+      if (!a.paused && !a.ended) {
+        rafId = requestAnimationFrame(loop);
+      } else {
+        rafId = 0;
+      }
+    };
+    const startLoop = () => {
+      if (rafId === 0) rafId = requestAnimationFrame(loop);
+    };
+    const stopLoop = () => {
+      if (rafId !== 0) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      syncDom();
+    };
+    a.addEventListener("play", startLoop);
+    a.addEventListener("playing", startLoop);
+    a.addEventListener("pause", stopLoop);
+    a.addEventListener("ended", stopLoop);
+    a.addEventListener("loadedmetadata", syncDom);
+    a.addEventListener("durationchange", syncDom);
+    a.addEventListener("seeked", syncDom);
+    syncDom();
+    if (!a.paused) startLoop();
+    return () => {
+      if (rafId !== 0) cancelAnimationFrame(rafId);
+      a.removeEventListener("play", startLoop);
+      a.removeEventListener("playing", startLoop);
+      a.removeEventListener("pause", stopLoop);
+      a.removeEventListener("ended", stopLoop);
+      a.removeEventListener("loadedmetadata", syncDom);
+      a.removeEventListener("durationchange", syncDom);
+      a.removeEventListener("seeked", syncDom);
+    };
+  }, [current]);
+
+  return (
+    <>
+      <Disclosure open={current !== null} keepLastContent>
+        {current !== null && (
+          <div className="voice-nowplaying ui-card-enter" data-testid="voice-nowplaying">
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              data-testid="voice-nowplaying-toggle"
+              onClick={togglePause}
+              aria-label={paused ? "继续播放" : "暂停播放"}
+            >
+              <Icon name={paused ? "play" : "pause"} size="sm" />
+            </button>
+            <span className="voice-nowplaying-name">段 {current.label}</span>
+            {remainingCount > 0 && <span className="ui-badge">余 {remainingCount} 段</span>}
+            <input
+              ref={seekRef}
+              type="range"
+              className="voice-nowplaying-seek"
+              data-testid="voice-seek"
+              aria-label="播放进度"
+              aria-valuetext={`${formatAudioClock(clock.sec)} / ${formatAudioClock(clock.dur)}`}
+              min={0}
+              max={0}
+              step={0.05}
+              defaultValue={0}
+              disabled
+              onPointerDown={(e) => {
+                draggingSeekRef.current = true;
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                  /* 合成事件或已失效指针 */
+                }
+              }}
+              onPointerUp={(e) => {
+                draggingSeekRef.current = false;
+                try {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                } catch {
+                  /* 忽略释放失败 */
+                }
+              }}
+              onPointerCancel={() => {
+                draggingSeekRef.current = false;
+              }}
+              onLostPointerCapture={() => {
+                draggingSeekRef.current = false;
+              }}
+              onChange={(e) => {
+                const a = audioRef.current;
+                const next = Number(e.target.value);
+                if (!a || !Number.isFinite(next) || !Number.isFinite(a.duration) || a.duration <= 0) return;
+                a.currentTime = Math.max(0, Math.min(a.duration, next));
+                const sec = Math.floor(a.currentTime);
+                const dur = Math.floor(a.duration);
+                setClock((prev) => (prev.sec === sec && prev.dur === dur ? prev : { sec, dur }));
+              }}
+            />
+            <span className="voice-nowplaying-clock">
+              {formatAudioClock(clock.sec)} / {formatAudioClock(clock.dur)}
+            </span>
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              onClick={() => {
+                audioRef.current?.pause();
+                onStop();
+              }}
+              aria-label="停止播放"
+            >
+              <Icon name="close" size="sm" />
+            </button>
+          </div>
+        )}
+      </Disclosure>
+      {playErr && (
+        <div className="notice notice--err voice-msg-bar ui-error-shake" role="alert">
+          <Icon name="alert" size="sm" />
+          <span>{playErr}</span>
+        </div>
+      )}
+      {/* key 带 mtime：重配后同名 wav 换了内容，强制换一个元素重新取，不播旧缓冲（D87） */}
+      {current !== null && (
+        <audio
+          key={`${current.wav}@${current.mtime ?? ""}`}
+          ref={audioRef}
+          src={src}
+          data-testid="voice-audio"
+          onPlay={() => onPausedChange(false)}
+          onPause={() => onPausedChange(true)}
+          onEnded={onEnded}
+          onError={() => {
+            onPausedChange(true);
+            setPlayErr(`段 ${current.label} 音频无法播放，可能文件尚未写完或已损坏`);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: string; rpc: RpcClient; onReady?: (ok: boolean) => void; live?: boolean }) {
   const [info, setInfo] = useState<VoiceInfoJson | null>(() => lastInfo.get(epKey) ?? null);
   const [err, setErr] = useState<string | null>(null);
-  /** 本次挂载至少成功读到一次（缓存占位不算）：人时只在读到真数据后计（红队 ④ 的同一纪律） */
   const [fresh, setFresh] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [raw, setRaw] = useState("");
   const [card, setCard] = useState<VoicePatchJson | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [queue, setQueue] = useState<{ wav: string; label: string; mtime: number | null }[]>([]);
+  const [msg, setMsg] = useState<VoiceMsg | null>(null);
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [revertArmed, setRevertArmed] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const [paused, setPaused] = useState(false);
-  /** 复听记账变了要重渲染（Set 本身在模块级 Map 里） */
   const [, setHeardTick] = useState(0);
-  // D50-A S6：在段落文字上选中的词 → 就地纠错小卡。
-  // 「全局表改过、待重配的段」不在这里记：D72 起由 core 的 `rerun_segments` 从盘上现算（切走、刷新都不丢）
   const [fix, setFix] = useState<{ label: string; word: string } | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const togglePauseRef = useRef<(() => void) | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const busy = busyAction !== null;
+
+  const pushMsg = useCallback((kind: "ok" | "err", text: string) => {
+    setMsg((prev) => ({ kind, text, n: (prev?.n ?? 0) + 1 }));
+  }, []);
 
   const load = useCallback(async () => {
     setErr(null);
+    setRefreshing(true);
     try {
       const v = await rpc.call<VoiceInfoJson>("voice.info", { epKey });
       lastInfo.set(epKey, v);
@@ -93,6 +329,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       setFresh(true);
     } catch (e) {
       setErr(errText(e));
+    } finally {
+      setRefreshing(false);
     }
   }, [epKey, rpc]);
 
@@ -100,9 +338,6 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     void load();
   }, [load]);
 
-  // D49-A S5：配音作业在跑时每 5 s 重读一次——新出的 wav 立刻可播，出一段听一段。
-  // 5 s：voice.info 每次起一个 core 进程（约 0.3 s），一段配音通常远长于 5 s，再密没有意义
-  // D87：盘上进度显示「在跑」也轮询——AVA 在 bash 里跑的 `--redo`、终端跑的重配不一定挂在作业表上
   const synthRunning = info?.synth?.state === "running";
   useEffect(() => {
     if (!live && !synthRunning) return;
@@ -110,13 +345,12 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     return () => clearInterval(t);
   }, [live, synthRunning, load]);
 
-  // 手上有数据（哪怕是上次的）就算面板可用：一次读取失败不该把面板换成纯播放队列（D73）
   useEffect(() => {
     if (info !== null) onReady?.(true);
     else if (err !== null) onReady?.(false);
   }, [err, info, onReady]);
 
-  // 人时：顺听面板**装载成功**才计时（Spec 11 §2.4）；错误态不计（红队 ④）
+  // 人时：顺听面板装载成功才计时（Spec 11 §2.4）；错误态不计（红队 ④）
   const surfaceUp = err === null && info !== null && fresh;
   useEffect(() => {
     if (!surfaceUp) return;
@@ -126,28 +360,15 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     };
   }, [epKey, rpc, surfaceUp]);
 
-  const urlOf = (wav: string) => encodeMediaUrl("episodes", `${epKey}/03-audio/${wav}`);
-  const current = queue[0] ?? null;
-  const [pos, setPos] = useState({ t: 0, d: 0 });
   useEffect(() => {
-    const a = audioRef.current;
-    if (!a || current === null) {
-      setPos({ t: 0, d: 0 });
-      return;
-    }
-    const tick = () => setPos({ t: a.currentTime || 0, d: Number.isFinite(a.duration) ? a.duration : 0 });
-    a.addEventListener("timeupdate", tick);
-    a.addEventListener("loadedmetadata", tick);
-    a.addEventListener("durationchange", tick);
-    tick();
-    return () => {
-      a.removeEventListener("timeupdate", tick);
-      a.removeEventListener("loadedmetadata", tick);
-      a.removeEventListener("durationchange", tick);
-    };
-  }, [current]);
+    if (revertArmed === null) return;
+    const t = setTimeout(() => setRevertArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [revertArmed]);
 
-  // D87：放到哪段就把那段「这一版重配」记为已复听（开播即算：要的是「这版听过没有」，不是听完没有）
+  const current = queue[0] ?? null;
+
+  // D87：放到哪段就把那段「这一版重配」记为已复听（开播即算）
   const curLabel = current?.label ?? null;
   const curDoneAt = curLabel === null ? undefined : info?.synth?.done[curLabel];
   useEffect(() => {
@@ -159,19 +380,16 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     setHeardTick((n) => n + 1);
   }, [epKey, curLabel, curDoneAt]);
 
-  // 队列推进：src 变化后自动开播；队空时复位 paused（<audio> 条件卸载自动停播）
+  // 播放推进到新段落时自动滚入视野
   useEffect(() => {
-    if (!current) {
-      setPaused(false);
-      return;
+    if (curLabel === null) return;
+    const row = listRef.current?.querySelector(`[data-testid="seg-row"][data-label="${CSS.escape(curLabel)}"]`);
+    if (row instanceof HTMLElement) {
+      row.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     }
-    const a = audioRef.current;
-    if (!a) return;
-    setPaused(false);
-    void a.play().catch(() => setPaused(true));
-  }, [current]);
+  }, [curLabel]);
 
-  // 段落回滚或重配后 mtime 变化时同步队列：队首过期则纯返回空队（由上方 effect 与卸载停播），其余待播项同步新 mtime
+  // 段落回滚或重配后 mtime 变化时同步队列
   useEffect(() => {
     if (!info) return;
     const byLabel = new Map(info.segments.map((s) => [s.label, s]));
@@ -201,6 +419,32 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     });
   }, [info]);
 
+  const redoSegs = useMemo(() => (info ? redoSegments(info) : []), [info]);
+  const redoSet = useMemo(() => new Set(redoSegs), [redoSegs]);
+  const marksBySeg = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (!info) return map;
+    const globals: string[] = [];
+    for (const c of info.pending_corrections) {
+      if (typeof c.word !== "string" || c.word === "") continue;
+      if (c.scope === "global") {
+        globals.push(c.word);
+      } else {
+        const k = String(c.segment);
+        const arr = map.get(k);
+        if (arr) arr.push(c.word);
+        else map.set(k, [c.word]);
+      }
+    }
+    if (globals.length > 0) {
+      for (const s of info.segments) {
+        const arr = map.get(s.label);
+        map.set(s.label, arr ? [...arr, ...globals] : [...globals]);
+      }
+    }
+    return map;
+  }, [info]);
+
   const playOne = (seg: VoiceSegmentJson) => {
     setPaused(false);
     setQueue([{ wav: seg.wav, label: seg.label, mtime: seg.mtime }]);
@@ -209,261 +453,361 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
     setPaused(false);
     setQueue((info?.segments ?? []).filter((s) => s.wav_exists).map((s) => ({ wav: s.wav, label: s.label, mtime: s.mtime })));
   };
-  const togglePause = () => {
-    const a = audioRef.current;
-    if (!a || !current) return;
-    if (a.paused) {
-      setPaused(false);
-      void a.play().catch(() => setPaused(true));
-    } else {
-      a.pause();
-      setPaused(true);
-    }
-  };
-  const stop = () => {
+  const stop = useCallback(() => {
     setQueue([]);
     setPaused(false);
-    audioRef.current?.pause();
-  };
+  }, []);
 
   const doParse = useCallback(
     async (call: Promise<unknown>) => {
-      setBusy(true);
+      setBusyAction("parse");
       setMsg(null);
       setCard(null);
       try {
         setCard((await call) as VoicePatchJson);
       } catch (e) {
-        setMsg(errText(e));
+        pushMsg("err", errText(e));
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
-    [],
+    [pushMsg],
   );
 
   const doAdd = useCallback(
-    async (call: Promise<unknown>) => {
-      setBusy(true);
+    async (call: Promise<unknown>, action: BusyAction = "add") => {
+      setBusyAction(action);
       setMsg(null);
       try {
         const entry = (await call) as Record<string, unknown>;
-        setMsg(`已落盘 #${String(entry.id)} 段${String(entry.segment)}：回滚按段号，撤回按条目 id`);
+        pushMsg("ok", `已落盘 #${String(entry.id)} 段${String(entry.segment)}：回滚按段号，撤回按条目 id`);
         setCard(null);
         setRaw("");
         await load();
       } catch (e) {
-        setMsg(errText(e));
+        pushMsg("err", errText(e));
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
-    [load],
+    [load, pushMsg],
   );
 
   const doAction = useCallback(
-    async (call: Promise<unknown>, okText: string) => {
-      setBusy(true);
+    async (call: Promise<unknown>, okText: string, action: BusyAction) => {
+      setBusyAction(action);
       setMsg(null);
       try {
         await call;
-        setMsg(okText);
+        pushMsg("ok", okText);
         await load();
       } catch (e) {
-        setMsg(errText(e));
+        pushMsg("err", errText(e));
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
-    [load],
+    [load, pushMsg],
   );
 
   const doDone = useCallback(
     async (call: Promise<unknown>) => {
-      setBusy(true);
+      setBusyAction("apply");
       setMsg(null);
       try {
         const r = (await call) as { started: boolean };
-        setMsg(r.started ? "已执行增量重配（进度见时间线）" : "已取消，未执行增量重配");
+        pushMsg("ok", r.started ? "已执行增量重配（进度见时间线）" : "已取消，未执行增量重配");
         await load();
       } catch (e) {
-        setMsg(errText(e));
+        pushMsg("err", errText(e));
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
-    [load],
+    [load, pushMsg],
   );
 
-  if (info === null) return err !== null ? <StateView kind="error" title={err} /> : <StateView kind="loading" title="读取配音信息…" />;
+  if (info === null) {
+    return err !== null ? (
+      <StateView kind="error" title={err} />
+    ) : (
+      <StateView kind="loading" title="读取配音信息…" />
+    );
+  }
+
   const pending = info.pending_corrections;
   const lock = info.apply_patch_lock;
   const lockKind = lockState(lock);
   const lockStale = lockKind === "stale";
   const lockBusy = lockKind === "busy";
-  // D72：一个按钮管两层。有期级待应用条目 → --apply-patch（它的复用判据同样会重配全局表改过的段）；
-  // 只有全局表 / 文本 / 钉种子变了 → 普通重跑 tts。人不必知道读音存在哪张表
-  const redoSegs = redoSegments(info);
   const heard = heardOf(epKey);
   const today = todayIso();
   const summary = synthSummary(info, heard, today);
-  // 重配正在跑（锁在、pid 活着）时不许再起一次：第二个进程只会撞锁失败（D71 截图时发现）
   const doneDisabled = busy || lockBusy || synthRunning || redoSegs.length === 0 || info.engine_cloud;
-  const marksOf = (label: string): string[] =>
-    pending
-      .filter((c) => typeof c.word === "string" && c.word !== "" && (String(c.segment) === label || c.scope === "global"))
-      .map((c) => String(c.word));
+  const playableSegs = info.segments.filter((s) => s.wav_exists);
+  const unheardSegs = playableSegs.filter((s) => segStatus(info, s.label, heard, today, redoSet)?.kind === "redone");
+
+  const doneDisabledTip =
+    info.engine_cloud
+      ? "云端引擎请在云端执行 apply-patch"
+      : lockBusy || synthRunning
+        ? "重配进行中，完成后可再次执行"
+        : redoSegs.length === 0
+          ? "暂无需要重配的段落"
+          : undefined;
 
   // 选中即弹卡（打开小卡不是写操作，不要求可信事件；写在小卡的「记下」上才要）
   const onSelectText = (label: string) => {
     const word = (window.getSelection()?.toString() ?? "").trim();
-    if (word === "" || word.length > 12) return;
-    setFix({ label, word });
+    if (word === "" || word.length > 32) return;
+    setFix((prev) => (prev && prev.label === label && prev.word === word ? prev : { label, word }));
   };
+
+  const visibleCardFields = card !== null ? PATCH_FIELDS.filter(([k]) => card[k] !== null && card[k] !== undefined && String(card[k]) !== "") : [];
 
   return (
     <div className="seg-panel voice-panel" data-testid="voice-panel">
       <div className="toolbar" data-testid="voice-toolbar">
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="voice-play-all" disabled={busy} onClick={playAll}>
+        <button
+          type="button"
+          className="ui-btn ui-btn--ghost ui-btn--sm"
+          data-testid="voice-play-all"
+          disabled={busy || playableSegs.length === 0}
+          onClick={playAll}
+        >
           <Icon name="play" size="sm" />
           顺序播放
         </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="voice-stop" disabled={busy || current === null} onClick={stop} aria-label="停">
-          <Icon name="stop" size="sm" />
-        </button>
-        <button className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" data-testid="voice-refresh" disabled={busy} onClick={() => void load()} aria-label="刷新">
-          <Icon name="refresh" size="sm" />
-        </button>
+        {unheardSegs.length > 0 && (
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            data-testid="voice-play-unheard"
+            disabled={busy}
+            onClick={() => {
+              setPaused(false);
+              setQueue(unheardSegs.map((s) => ({ wav: s.wav, label: s.label, mtime: s.mtime })));
+            }}
+          >
+            只播待复听（{unheardSegs.length}）
+          </button>
+        )}
+        <FloatingTooltip
+          label="停止播放"
+          renderTrigger={(t) => (
+            <button
+              type="button"
+              ref={t.ref}
+              {...t.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              data-testid="voice-stop"
+              disabled={busy || current === null}
+              onClick={stop}
+              aria-label="停"
+            >
+              <Icon name="stop" size="sm" />
+            </button>
+          )}
+        />
+        <FloatingTooltip
+          label="刷新配音状态"
+          renderTrigger={(t) => (
+            <button
+              type="button"
+              ref={t.ref}
+              {...t.props}
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              data-testid="voice-refresh"
+              disabled={busy || refreshing}
+              onClick={() => void load()}
+              aria-label="刷新"
+            >
+              <Icon name="refresh" size="sm" className={refreshing ? "ui-spin-icon" : undefined} />
+            </button>
+          )}
+        />
         <span className="muted voice-engine" data-testid="voice-engine">
           {info.engine === "" ? "引擎未记录" : `${info.engine}${info.engine_cloud ? " · 云端" : " · 本地"}`}
         </span>
       </div>
       <div className="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
       {err !== null && (
-        <div className="notice notice--warn" data-testid="voice-stale">
+        <div className="notice notice--warn voice-msg-bar" data-testid="voice-stale">
           <Icon name="alert" size="sm" />
-          刷新失败：{err}（下面是上次读到的内容；点「刷新」重试）
+          <span>刷新失败：{err}（以下为上次读到的内容）</span>
+          <span className="spacer" />
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void load()}>
+            重试
+          </button>
         </div>
       )}
 
       {info.engine_cloud && (
-        <div className="notice" data-testid="voice-cloud">
+        <div className="notice voice-msg-bar" data-testid="voice-cloud">
           <Icon name="info" size="sm" />
           本期配音引擎为云端引擎（{info.engine}），重配请去云端执行 apply-patch。
         </div>
       )}
       {lockBusy && (
-        <div className="notice" data-testid="voice-lock-busy">
-          <Icon name="info" size="sm" />
+        <div className="notice voice-msg-bar" data-testid="voice-lock-busy">
+          <span className="ui-spinner" />
           增量重配进行中（pid {String(lock.pid)}）。
         </div>
       )}
       {lockStale && (
-        <div className="notice notice--warn" data-testid="voice-lock-stale">
+        <div className="notice notice--warn voice-msg-bar" data-testid="voice-lock-stale">
           <Icon name="alert" size="sm" />
           <span>
-            锁残留（上次进程异常中断；{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}）。请让 AVA 跑
-            <code>{` tts --clear-stale-lock `}</code>
-            或终端执行
-            <code>{` python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock `}</code>
-            清除后重试。
+            检测到上次重配异常中断留下的锁（{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}），清除后即可重试。
           </span>
-          <CopyButton text={`python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock`} label="复制清锁命令" testId="voice-lock-copy" />
+          <button
+            type="button"
+            className="ui-btn ui-btn--sm"
+            data-testid="voice-clear-lock"
+            disabled={busy}
+            onClick={(e) => {
+              if (!e.nativeEvent.isTrusted) return;
+              void doAction(rpc.call("voice.clearStaleLock", { epKey }), "已清除残留锁，现在可以重试重配", "clearLock");
+            }}
+          >
+            {busyAction === "clearLock" && <span className="ui-spinner" />}
+            清除残留锁
+          </button>
+          <CopyButton text={`python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock`} label="复制命令" testId="voice-lock-copy" />
         </div>
       )}
 
       {summary !== null && (
         <div className={`notice voice-synth voice-synth--${summary.tone}`} data-testid="voice-synth" data-state={info.synth?.state} title={summary.title}>
-          <Icon name={summary.tone === "danger" || summary.tone === "warn" ? "alert" : "info"} size="sm" />
+          {summary.tone === "wait" ? (
+            <span className="ui-spinner" />
+          ) : (
+            <Icon name={summary.tone === "danger" || summary.tone === "warn" ? "alert" : "info"} size="sm" />
+          )}
           <span>{summary.text}</span>
         </div>
       )}
 
-      <div className="voice-list" data-testid="voice-segments">
-        {info.segments.map((s) => {
-          const st = segStatus(info, s.label, heard, today);
-          const isCurrent = current?.label === s.label && current.mtime === s.mtime;
-          const isPlayingThis = isCurrent && !paused;
-          return (
-          <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={isCurrent ? "true" : undefined}>
-            <button
-              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-              data-testid="seg-play"
-              disabled={!s.wav_exists}
-              onClick={() => (isCurrent ? togglePause() : playOne(s))}
-              aria-label={isPlayingThis ? `暂停段 ${s.label}` : isCurrent ? `继续播放段 ${s.label}` : `播放段 ${s.label}`}
-            >
-              <Icon name={isPlayingThis ? "pause" : "play"} size="sm" />
-            </button>
-            <div className="voice-row-main">
-              <div className="voice-row-head">
-                <span>段 {s.label}</span>
-                {st !== null && (
-                  <span className="voice-status" data-testid="seg-status" data-kind={st.kind} title={st.title}>
-                    <Badge tone={STATUS_TONE[st.kind]}>{st.text}</Badge>
-                  </span>
-                )}
-                {!s.wav_exists && <span className="muted">（音频缺席）</span>}
-                <span className="seg-actions">
-                  <button
-                    className="ui-btn ui-btn--ghost ui-btn--sm"
-                    data-testid="seg-reseed"
-                    disabled={busy}
-                    title="听感不对（发飘、断层、吞字…）：换一个种子重配这一段"
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      void doAdd(rpc.call("voice.add", { epKey, text: `段${s.label} 换种子` }));
-                    }}
-                  >
-                    换种子
-                  </button>
-                  {s.has_attic && (
-                    <button
-                      className="ui-btn ui-btn--ghost ui-btn--sm"
-                      data-testid="seg-revert"
-                      disabled={busy}
-                      onClick={(e) => {
-                        if (!e.nativeEvent.isTrusted) return;
-                        void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`);
-                      }}
-                    >
-                      回滚
-                    </button>
-                  )}
-                </span>
+      <div className="voice-list" ref={listRef} data-testid="voice-segments">
+        {info.segments.length === 0 ? (
+          <StateView kind="empty" title="当前还没有可顺听的段落" detail="配音完成后刷新即可逐段播放与纠错。" />
+        ) : (
+          info.segments.map((s) => {
+            const st = segStatus(info, s.label, heard, today, redoSet);
+            const isCurrent = current?.label === s.label && current.mtime === s.mtime;
+            const isPlayingThis = isCurrent && !paused;
+            const armed = revertArmed === s.label;
+            return (
+              <div className="voice-row" key={s.label} data-testid="seg-row" data-label={s.label} aria-current={isCurrent ? "true" : undefined}>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                  data-testid="seg-play"
+                  disabled={!s.wav_exists}
+                  onClick={() => (isCurrent ? togglePauseRef.current?.() : playOne(s))}
+                  aria-label={isPlayingThis ? `暂停段 ${s.label}` : isCurrent ? `继续播放段 ${s.label}` : `播放段 ${s.label}`}
+                >
+                  <Icon name={isPlayingThis ? "pause" : "play"} size="sm" />
+                </button>
+                <div className="voice-row-main">
+                  <div className="voice-row-head">
+                    <span>段 {s.label}</span>
+                    {st !== null && (
+                      <span className="voice-status" data-testid="seg-status" data-kind={st.kind} title={st.title}>
+                        <Badge tone={STATUS_TONE[st.kind]}>{st.text}</Badge>
+                      </span>
+                    )}
+                    {!s.wav_exists && <span className="muted">（音频缺席）</span>}
+                    <span className="seg-actions">
+                      <button
+                        type="button"
+                        className="ui-btn ui-btn--ghost ui-btn--sm"
+                        data-testid="seg-reseed"
+                        disabled={busy}
+                        title="听感不对（发飘、断层、吞字…）：换一个种子重配这一段"
+                        onClick={(e) => {
+                          if (!e.nativeEvent.isTrusted) return;
+                          void doAdd(rpc.call("voice.add", { epKey, text: `段${s.label} 换种子` }), "reseed");
+                        }}
+                      >
+                        {busyAction === "reseed" && <span className="ui-spinner" />}
+                        换种子
+                      </button>
+                      {s.has_attic && (
+                        armed ? (
+                          <>
+                            <button
+                              type="button"
+                              className="ui-btn ui-btn--danger ui-btn--sm"
+                              data-testid="seg-revert"
+                              disabled={busy}
+                              onClick={(e) => {
+                                if (!e.nativeEvent.isTrusted) return;
+                                setRevertArmed(null);
+                                void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`, "revert");
+                              }}
+                            >
+                              {busyAction === "revert" && <span className="ui-spinner" />}
+                              确认回滚
+                            </button>
+                            <button
+                              type="button"
+                              className="ui-btn ui-btn--ghost ui-btn--sm"
+                              disabled={busy}
+                              onClick={() => setRevertArmed(null)}
+                            >
+                              取消
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ui-btn ui-btn--ghost ui-btn--danger-hover ui-btn--sm"
+                            data-testid="seg-revert"
+                            disabled={busy}
+                            title="恢复这一段上一次重配前的音频快照"
+                            onClick={() => setRevertArmed(s.label)}
+                          >
+                            回滚
+                          </button>
+                        )
+                      )}
+                    </span>
+                  </div>
+                  <div className="voice-row-text" data-testid="seg-text" onMouseUp={() => onSelectText(s.label)}>
+                    <Marked text={s.text} marks={marksBySeg.get(s.label) ?? []} />
+                  </div>
+                  <Disclosure open={fix !== null && fix.label === s.label}>
+                    {fix !== null && fix.label === s.label && (
+                      <FixCard
+                        key={`${fix.label}:${fix.word}`}
+                        epKey={epKey}
+                        rpc={rpc}
+                        label={fix.label}
+                        word={fix.word}
+                        busy={busy}
+                        onCancel={() => setFix(null)}
+                        onAdd={(call) => {
+                          setFix(null);
+                          void doAdd(call, "add");
+                        }}
+                        onGlobalDone={(line) => {
+                          setFix(null);
+                          pushMsg("ok", line);
+                          void load();
+                        }}
+                      />
+                    )}
+                  </Disclosure>
+                </div>
               </div>
-              <div className="voice-row-text" data-testid="seg-text" onMouseUp={() => onSelectText(s.label)}>
-                <Marked text={s.text} marks={marksOf(s.label)} />
-              </div>
-              {fix !== null && fix.label === s.label && (
-                <FixCard
-                  key={`${fix.label}:${fix.word}`}
-                  epKey={epKey}
-                  rpc={rpc}
-                  label={fix.label}
-                  word={fix.word}
-                  busy={busy}
-                  onCancel={() => setFix(null)}
-                  onAdd={(call) => {
-                    setFix(null);
-                    void doAdd(call);
-                  }}
-                  onGlobalDone={(line) => {
-                    setFix(null);
-                    setMsg(line);
-                    void load(); // 待重配段由 core 从盘上重算（D72）
-                  }}
-                />
-              )}
-            </div>
-          </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
 
       {pending.length > 0 && (
-        <details className="pending" data-testid="voice-pending" open>
-          <summary className="ui-section">待应用纠错条目（{pending.length}）</summary>
+        <Collapsible className="pending" testId="voice-pending" defaultOpen bar summary={`待应用纠错条目（${pending.length}）`}>
           {pending.map((c) => (
             <div className="seg-row" key={String(c.id)} data-testid="pending-row" data-id={String(c.id)}>
               <span className="ui-row-meta">#{String(c.id)}</span>
@@ -473,30 +817,32 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               </span>
               <span className="seg-actions">
                 <button
+                  type="button"
                   className="ui-btn ui-btn--ghost ui-btn--sm"
                   data-testid="pending-retract"
                   disabled={busy}
                   onClick={(e) => {
                     if (!e.nativeEvent.isTrusted) return;
-                    void doAction(rpc.call("voice.retract", { epKey, id: String(c.id) }), `已撤回 #${String(c.id)}`);
+                    void doAction(rpc.call("voice.retract", { epKey, id: String(c.id) }), `已撤回 #${String(c.id)}`, "retract");
                   }}
                 >
+                  {busyAction === "retract" && <span className="ui-spinner" />}
                   撤回
                 </button>
               </span>
             </div>
           ))}
-        </details>
+        </Collapsible>
       )}
 
-      <details className="voice-grammar">
-        <summary className="ui-section" data-testid="voice-grammar">按文法录入（终端 /voice 同一文法）</summary>
+      <Collapsible className="voice-grammar" summaryTestId="voice-grammar" bar summary="按文法录入（终端 /voice 同一文法）">
         <div className="voice-input" data-testid="voice-input">
           <label className="ui-field">
             如「1段 雪乃 改成 xuě nǎi」「2段 语气发飘 换种子」
             <input className="ui-input" data-testid="voice-raw" value={raw} onChange={(e) => setRaw(e.target.value)} />
           </label>
           <button
+            type="button"
             className="ui-btn ui-btn--sm"
             data-testid="voice-parse"
             disabled={busy || raw.trim() === ""}
@@ -505,17 +851,18 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               void doParse(rpc.call("voice.parse", { epKey, text: raw }));
             }}
           >
+            {busyAction === "parse" && <span className="ui-spinner" />}
             解析
           </button>
         </div>
         {card !== null && (
-          <div className="voice-card" data-testid="voice-card">
+          <div className="voice-card ui-card-enter" data-testid="voice-card">
             <div className="ui-section">确认卡（与终端同语义）</div>
             <dl className="ui-kv">
-              {PATCH_FIELDS.map(([k, label]) => (
+              {visibleCardFields.map(([k, label]) => (
                 <Fragment key={k}>
                   <dt>{label}</dt>
-                  <dd>{card[k] === null || card[k] === undefined ? "（未指定）" : String(card[k])}</dd>
+                  <dd>{String(card[k])}</dd>
                 </Fragment>
               ))}
             </dl>
@@ -526,24 +873,24 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               </div>
             )}
             <button
+              type="button"
               className="ui-btn ui-btn--sm"
               data-testid="voice-add"
               disabled={busy}
               onClick={(e) => {
                 if (!e.nativeEvent.isTrusted) return;
-                // 传原文而非解析结果：core 重新解析并落盘（不信任跨进程往返的解析结果）
-                void doAdd(rpc.call("voice.add", { epKey, text: raw }));
+                void doAdd(rpc.call("voice.add", { epKey, text: raw }), "add");
               }}
             >
+              {busyAction === "add" && <span className="ui-spinner" />}
               确认落盘
             </button>
           </div>
         )}
-      </details>
+      </Collapsible>
 
       {info.heteronyms.length > 0 && (
-        <details className="hetero" data-testid="voice-heteronyms">
-          <summary className="ui-section">多音字预检（{info.heteronyms.length} 个字，只读，仅供关注）</summary>
+        <Collapsible className="hetero" testId="voice-heteronyms" bar summary={`多音字预检（${info.heteronyms.length} 个字，只读，仅供关注）`}>
           <div className="voice-chips">
             {info.heteronyms.map((h) => (
               <span key={h.char} className="ui-badge">
@@ -551,60 +898,35 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
               </span>
             ))}
           </div>
-        </details>
+        </Collapsible>
       )}
 
       {msg !== null && (
-        <div className="notice ui-confirm-enter" data-testid="voice-msg">
-          <Icon name="info" size="sm" />
-          {msg}
-        </div>
-      )}
-
-      {current !== null && (
-        <div className="voice-nowplaying ui-card-enter" data-testid="voice-nowplaying">
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-            data-testid="voice-nowplaying-toggle"
-            onClick={togglePause}
-            aria-label={paused ? "继续播放" : "暂停播放"}
-          >
-            <Icon name={paused ? "play" : "pause"} size="sm" />
-          </button>
-          <span className="voice-nowplaying-name">段 {current.label}</span>
-          <input
-            type="range"
-            className="voice-nowplaying-seek"
-            data-testid="voice-seek"
-            aria-label="播放进度"
-            aria-valuetext={`${formatAudioClock(pos.t)} / ${formatAudioClock(pos.d)}`}
-            min={0}
-            max={pos.d > 0 ? pos.d : 0}
-            step={0.1}
-            value={pos.d > 0 ? Math.min(pos.t, pos.d) : 0}
-            disabled={pos.d <= 0}
-            onChange={(e) => {
-              const a = audioRef.current;
-              const next = Number(e.target.value);
-              if (!a || !Number.isFinite(next) || !Number.isFinite(a.duration) || a.duration <= 0) return;
-              a.currentTime = Math.max(0, Math.min(a.duration, next));
-              setPos({ t: a.currentTime, d: a.duration });
-            }}
-          />
-          <span className="voice-nowplaying-clock">
-            {formatAudioClock(pos.t)} / {formatAudioClock(pos.d)}
-          </span>
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-            onClick={stop}
-            aria-label="停止播放"
-          >
+        <div
+          key={msg.n}
+          className={msg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+          data-testid="voice-msg"
+          role={msg.kind === "err" ? "alert" : "status"}
+        >
+          <Icon name={msg.kind === "err" ? "alert" : "info"} size="sm" />
+          <span>{msg.text}</span>
+          <span className="spacer" />
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭提示" onClick={() => setMsg(null)}>
             <Icon name="close" size="sm" />
           </button>
         </div>
       )}
+
+      <NowPlayingBar
+        epKey={epKey}
+        current={current}
+        remainingCount={Math.max(0, queue.length - 1)}
+        paused={paused}
+        onPausedChange={setPaused}
+        onTogglePauseRef={togglePauseRef}
+        onEnded={() => setQueue((q) => q.slice(1))}
+        onStop={stop}
+      />
 
       <div className="voice-foot" data-testid="voice-foot">
         {redoSegs.length === 0 ? (
@@ -620,46 +942,38 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         {/* 同一个位置、同一个按钮名，只按有无期级条目换写路径（每个处理器只许一处闭集调用，TG-4′） */}
         {pending.length > 0 ? (
           <button
+            type="button"
             className="ui-btn"
             data-testid="voice-done"
             data-mode="apply-patch"
             disabled={doneDisabled}
+            title={doneDisabledTip}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
               void doDone(rpc.call("voice.applyPatch", { epKey }));
             }}
           >
-            {busy && <span className="ui-spinner" />}
-            只重配这 {redoSegs.length} 段
+            {busyAction === "apply" && <span className="ui-spinner" />}
+            {redoSegs.length > 0 ? `只重配这 ${redoSegs.length} 段` : "无需重配"}
           </button>
         ) : (
           <button
+            type="button"
             className="ui-btn"
             data-testid="voice-done"
             data-mode="retts"
             disabled={doneDisabled}
+            title={doneDisabledTip}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
               void doDone(rpc.call("voice.retts", { epKey }));
             }}
           >
-            {busy && <span className="ui-spinner" />}
-            只重配这 {redoSegs.length} 段
+            {busyAction === "apply" && <span className="ui-spinner" />}
+            {redoSegs.length > 0 ? `只重配这 ${redoSegs.length} 段` : "无需重配"}
           </button>
         )}
       </div>
-      {/* key 带 mtime：重配后同名 wav 换了内容，强制换一个元素重新取，不播旧缓冲（D87） */}
-      {current !== null && (
-        <audio
-          key={`${current.wav}@${current.mtime ?? ""}`}
-          ref={audioRef}
-          src={urlOf(current.wav)}
-          data-testid="voice-audio"
-          onPlay={() => setPaused(false)}
-          onPause={() => setPaused(true)}
-          onEnded={() => setQueue((q) => q.slice(1))}
-        />
-      )}
     </div>
   );
 }
@@ -667,11 +981,12 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
 /** 段落文字里标出已录、待重配的词 */
 function Marked({ text, marks }: { text: string; marks: string[] }) {
   if (marks.length === 0) return <>{text}</>;
-  const re = new RegExp(`(${marks.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+  const uniq = [...new Set(marks)];
+  const re = new RegExp(`(${uniq.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
   return (
     <>
       {text.split(re).map((part, i) =>
-        marks.includes(part) ? (
+        uniq.includes(part) ? (
           <mark key={i} className="voice-mark">
             {part}
           </mark>
@@ -686,13 +1001,6 @@ function Marked({ text, marks }: { text: string; marks: string[] }) {
 type Method = "pinyin" | "homophone" | "latin";
 type Scope = "seg" | "ep" | "global";
 
-/**
- * D50-A S6：「这里读错了」小卡。读音先经 core 的 `corrections check` 核对（只读），通过了才能记下。
- * 本段 / 本期 = 期级拼音直注（`voice.add` 的文法串）；全局 = `voice.global`（写 config/voice.json，宿主再弹一次确认框）。
- * 同音字只能写全局表（2026-10-08 人裁决：期级不加同音字）。
- * 英文改写（2026-10-17）：英文词念错时换一种英文写法，同进全局 readings 表；英文没有拼音可核对，
- * 「应读」框直接填写法，核对只拦数字 / 假名 / 汉字，读音靠复听。
- */
 function FixCard({
   epKey,
   rpc,
@@ -709,7 +1017,6 @@ function FixCard({
   word: string;
   busy: boolean;
   onCancel: () => void;
-  /** 期级写入的 Promise 交给面板（与文法录入同一个 doAdd：落盘提示、刷新） */
   onAdd: (call: Promise<unknown>) => void;
   onGlobalDone: (line: string) => void;
 }) {
@@ -721,19 +1028,40 @@ function FixCard({
   const [check, setCheck] = useState<VoiceCheckJson | null>(null);
   const [writing, setWriting] = useState(false);
   const [result, setResult] = useState<VoiceCheckJson | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const effScope: Scope = method === "pinyin" ? scope : "global";
   const reading =
     method === "pinyin" ? { word, pinyin } : method === "latin" ? { word, latin: pinyin } : { word, homophone, expect: pinyin };
   const ready = pinyin.trim() !== "" && (method !== "homophone" || homophone.trim() !== "");
 
-  // 读音核对：停手 400 ms 后跑一次（只读，core 打印的原文行照传）
+  useEffect(() => {
+    cardRef.current?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, []);
+
+  // 输入或改法变动时清空旧的写入结果提示
+  useEffect(() => {
+    setResult(null);
+  }, [pinyin, homophone, method, scope]);
+
+  // 读音核对：停手 400 ms 后跑一次，取消过时请求防止旧结果覆盖新输入
   useEffect(() => {
     setCheck(null);
     if (!ready) return;
+    let alive = true;
     const t = setTimeout(() => {
-      void rpc.call<VoiceCheckJson>("voice.check", { epKey, ...reading }).then(setCheck, (e) => setCheck({ ok: false, lines: [errText(e)] }));
+      void rpc.call<VoiceCheckJson>("voice.check", { epKey, ...reading }).then(
+        (res) => {
+          if (alive) setCheck(res);
+        },
+        (e) => {
+          if (alive) setCheck({ ok: false, lines: [errText(e)] });
+        },
+      );
     }, 400);
-    return () => clearTimeout(t);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epKey, rpc, word, pinyin, homophone, method, ready]);
 
@@ -752,8 +1080,18 @@ function FixCard({
   const needSupersede = result !== null && !result.ok && result.lines.some((l) => l.includes("--supersede"));
 
   return (
-    <div className="ui-popover voice-fix ui-card-enter" data-testid="voice-fix">
-      <span>「{word}」应读</span>
+    <div
+      ref={cardRef}
+      className="ui-popover voice-fix ui-card-enter"
+      data-testid="voice-fix"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <span>{method === "homophone" ? "期望读音（核对用）" : `「${word}」应读`}</span>
       <span>
         <input
           className="ui-input voice-fix-input"
@@ -762,12 +1100,6 @@ function FixCard({
           placeholder={method === "latin" ? "如 Eternal Wind" : "如 jie3 di4"}
           value={pinyin}
           onChange={(e) => setPinyin(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              onCancel();
-            }
-          }}
         />
       </span>
       <span>改法</span>
@@ -792,12 +1124,6 @@ function FixCard({
               placeholder="读音唯一的字"
               value={homophone}
               onChange={(e) => setHomophone(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  onCancel();
-                }
-              }}
             />
           </span>
         </>
@@ -835,7 +1161,7 @@ function FixCard({
       {result !== null && !result.ok && (
         <>
           <span />
-          <span className="voice-bad" data-testid="fix-result">
+          <span className="voice-bad ui-error-shake" data-testid="fix-result">
             {result.lines.join("；")}
           </span>
         </>
@@ -844,6 +1170,7 @@ function FixCard({
       <span className="voice-fix-actions">
         {needSupersede ? (
           <button
+            type="button"
             className="ui-btn ui-btn--sm"
             data-testid="fix-supersede"
             disabled={busy || writing}
@@ -852,10 +1179,12 @@ function FixCard({
               void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "true" }));
             }}
           >
+            {writing && <span className="ui-spinner" />}
             替换另一张表的同名条目并写入
           </button>
         ) : effScope === "global" ? (
           <button
+            type="button"
             className="ui-btn ui-btn--sm"
             data-testid="fix-save"
             disabled={busy || writing || check === null || !check.ok}
@@ -864,10 +1193,12 @@ function FixCard({
               void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "false" }));
             }}
           >
+            {writing && <span className="ui-spinner" />}
             记下（写全局表）
           </button>
         ) : (
           <button
+            type="button"
             className="ui-btn ui-btn--sm"
             data-testid="fix-save"
             disabled={busy || writing || check === null || !check.ok}
@@ -879,7 +1210,7 @@ function FixCard({
             记下
           </button>
         )}
-        <button className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="fix-cancel" onClick={onCancel}>
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" data-testid="fix-cancel" onClick={onCancel}>
           取消
         </button>
       </span>

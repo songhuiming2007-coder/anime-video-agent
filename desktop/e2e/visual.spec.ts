@@ -86,21 +86,21 @@ type Theme = (typeof THEMES)[number];
 
 /** 每个状态的 `n` 下限：PR2 首次实跑后填入（判据不许空跑，M18 的形状） */
 const N_LOWER: Record<string, number> = {
-  // Route B 精简顶栏与侧栏停机红粉徽标后（去掉独立 topbar 行、wordmark/repo、停机徽标、快捷键标签）三态一致，list 降至 44：
-  list: 42,
-  "sidebar-step": 46,
-  "sidebar-search": 36,
-  popover: 48,
-  markdown: 54,
-  json: 50,
-  empty: 46,
-  error: 42,
-  health: 60,
-  stale: 46, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
-  card: 42,
-  "card-reject": 45,
-  "card-err": 45,
-  expanded: 52,
+  // UX 精简（折叠产物指纹、按需显现诊断开关与新建入口）后实测下限，仍远高于选择器失效时的个位数塌陷（M18）
+  list: 38,
+  "sidebar-step": 42,
+  "sidebar-search": 34,
+  popover: 44,
+  markdown: 50,
+  json: 46,
+  empty: 42,
+  error: 38,
+  health: 56,
+  stale: 42, // N37：脱盘后期列表保留（Spec 8 §2.8），三主题实测恒定
+  card: 38,
+  "card-reject": 42,
+  "card-err": 42,
+  expanded: 48,
 };
 
 interface AuditResult {
@@ -306,7 +306,7 @@ test("VE-2 主题三档：深色立即生效且重启保持；跟随系统对齐
     await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-theme"))).toBe("dark");
     await L.page.getByTestId("accent-violet").click();
     await expect.poll(() => L.page.evaluate(() => document.documentElement.getAttribute("data-accent"))).toBe("violet");
-    expect(await L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg
+    await expect.poll(() => L.page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(22, 22, 24)"); // tokens.css 深色 --bg（含 90ms --dur-press 主题平滑过渡）
     await L.page.keyboard.press("Escape");
     expect(await L.page.evaluate(() => location.origin)).toBe("file://"); // A7 的实质：渲染器从 file:// 载入（打包版同源），偏好才跨重启留在 userData 里
     // ② 重启（同 userData）后仍为深色 + violet 强调色

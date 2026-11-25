@@ -69,6 +69,7 @@ export function reduce(store: Store, action: Action): ReduceResult {
         ...cur,
         seq: d.seq,
         events: d.newEvents.length ? [...cur.events, ...d.newEvents] : cur.events,
+        eventsMeta: d.newEvents.length && cur.eventsMeta.state !== "ok" ? { ...cur.eventsMeta, state: "ok" } : cur.eventsMeta,
         status: d.status ?? cur.status,
         approvals: d.approvals ?? cur.approvals,
         jobs: d.jobs ?? cur.jobs,
@@ -83,9 +84,11 @@ export function select(store: Store, epKey: string | null): EpisodeState | undef
   return epKey === null ? undefined : store.episodes[epKey];
 }
 
+const EMPTY_APPROVALS: ApprovalJson[] = [];
+
 /** 决策条用的对象集合；只取本期桶 */
 export function approvalsOf(ep: EpisodeState | undefined): ApprovalJson[] {
-  if (!ep) return [];
+  if (!ep) return EMPTY_APPROVALS;
   const a = ep.approvals;
-  return a.state === "ok" ? a.items : a.state === "error" && a.lastGood ? a.lastGood : [];
+  return a.state === "ok" ? a.items : a.state === "error" && a.lastGood ? a.lastGood : EMPTY_APPROVALS;
 }

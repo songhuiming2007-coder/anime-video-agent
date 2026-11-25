@@ -12,35 +12,56 @@ interface Props {
 }
 interface State {
   error: Error | null;
+  componentStack: string;
   key: string;
+  retryCount: number;
 }
 
 export class PaneBoundary extends Component<Props, State> {
-  state: State = { error: null, key: this.props.resetKey };
+  state: State = { error: null, componentStack: "", key: this.props.resetKey, retryCount: 0 };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
   }
 
   static getDerivedStateFromProps(p: Props, s: State): Partial<State> | null {
-    return p.resetKey !== s.key ? { error: null, key: p.resetKey } : null;
+    return p.resetKey !== s.key ? { error: null, componentStack: "", key: p.resetKey, retryCount: 0 } : null;
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error("[ava] 预览区渲染异常", error, info.componentStack);
+    this.setState({ componentStack: info.componentStack ?? "" });
   }
 
   render(): ReactNode {
-    const { error } = this.state;
+    const { error, componentStack, retryCount } = this.state;
     if (error === null) return this.props.children;
+    const diagText = [
+      `Target: ${this.props.resetKey}`,
+      `Error: ${error.message}`,
+      error.stack ?? "",
+      componentStack ? `ComponentStack:${componentStack}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     return (
-      <div className="pane-crash ui-card-enter" data-testid="pane-crash">
-        <StateView kind="error" title={`预览区渲染出错：${error.message}`} detail="可以切换其他文件或点「重试」恢复；若反复出现，可复制报错信息反馈。" />
+      <div
+        key={retryCount}
+        className={retryCount > 0 ? "pane-crash ui-error-shake" : "pane-crash ui-card-enter"}
+        data-testid="pane-crash"
+      >
+        <StateView kind="error" title="预览面板加载异常" detail={error.message} />
+        <p className="pane-crash-hint">可以切换其他文件或点「重试」恢复；侧栏与对话区不受影响。</p>
         <div className="ui-card-actions">
-          <button className="ui-btn ui-btn--sm" data-testid="pane-crash-retry" onClick={() => this.setState({ error: null })}>
+          <button
+            type="button"
+            className="ui-btn ui-btn--sm"
+            data-testid="pane-crash-retry"
+            onClick={() => this.setState((s) => ({ error: null, componentStack: "", retryCount: s.retryCount + 1 }))}
+          >
             重试
           </button>
-          <CopyButton text={error.message} label="复制报错" testId="pane-crash-copy" />
+          <CopyButton text={diagText} label="复制诊断信息" testId="pane-crash-copy" />
         </div>
       </div>
     );
