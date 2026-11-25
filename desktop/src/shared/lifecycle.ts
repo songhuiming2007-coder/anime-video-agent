@@ -36,4 +36,6 @@ export type HostToMain =
   | { type: "open-external-url"; reqId: string; url: string }
   | { type: "test-hook-hit"; name: string }
   /** D98：叫人回来看（main 在窗口不在前台时更新 Dock 角标 / 弹跳） */
-  | { type: "attention"; kind: AttentionKind; key: string };
+  | { type: "attention"; kind: AttentionKind; key: string }
+  /** 同步 renderer 主题选择到 main 的 nativeTheme.themeSource */
+  | { type: "theme-source"; theme: "system" | "light" | "dark" };

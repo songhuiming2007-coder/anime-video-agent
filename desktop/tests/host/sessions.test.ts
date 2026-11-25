@@ -1409,34 +1409,41 @@ describe("D45 会话管理", () => {
     expect(sessionSpawns()).toEqual(["SESSION_NEW", "SESSION_NEW"]);
   });
 
-  it("conv.delete：确认框取消 → 一字不删、会话照旧；确认后删活会话 → 先结束再删，对话区清空", async () => {
+  it("conv.delete（A4）：运行中会话弹警告确认（取消不删、确认后先停再删）；空闲活会话一键移入回收站免弹窗", async () => {
     const calls: { t: string; args: Record<string, unknown> }[] = [];
     const { repo, svc, epKey, key, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
-    scriptWithSid(repo, epKey, SID_A);
-    await svc.dispatch("conv.send", { convKey: key, text: "hi" });
-    await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
+    // 1) 正在运行回合的会话 → 弹确认框
+    sessionScript(repo, epKey, [
+      { op: "emit", frame: { ...READY(epKey).frame, sid: SID_A } },
+      { op: "serve", on_turn: [{ ...TURN_STARTED, sid: SID_A }], on_shutdown: "exit" },
+    ]);
+    await svc.dispatch("conv.send", { convKey: key, text: "长任务" });
+    await waitFor(async () => (await snapOf(svc, key)).phase === "running");
 
     stub.respond = false;
     expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_A })).toEqual({ deleted: false, moved: 0 });
+    expect(stub.calls).toBe(1);
     expect(stub.last?.detail).toContain("改段落三");
-    expect(stub.last?.detail).toContain("仍在运行，会先停止");
+    expect(stub.last?.detail).toContain("仍在运行");
     expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
-    expect((await snapOf(svc, key)).phase).toBe("idle");
+    expect((await snapOf(svc, key)).phase).toBe("running");
 
     stub.respond = true;
     expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_A })).toEqual({ deleted: true, moved: 4 });
+    expect(stub.calls).toBe(2);
     expect(calls.filter((c) => c.t === "DELETE_SESSION").map((c) => c.args.sid)).toEqual([SID_A]);
     expect((await snapOf(svc, key)).phase).toBe("none");
     expect(sessionSpawns()).toEqual(["SESSION_NEW"]); // 删的就是活会话：不接回
   });
 
-  it("conv.delete：删非活段 → 不杀活会话、不重新拉进程（D157 多会话并存）", async () => {
+  it("conv.delete（A4）：删空闲/非活段 → 零弹窗直接移入回收站、不杀活会话（D157 多会话并存）", async () => {
     const calls: { t: string; args: Record<string, unknown> }[] = [];
-    const { repo, svc, epKey, key } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
+    const { repo, svc, epKey, key, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
     scriptWithSid(repo, epKey, SID_A);
     await svc.dispatch("conv.send", { convKey: key, text: "hi" });
     await waitFor(async () => (await snapOf(svc, key)).phase === "idle");
-    await svc.dispatch("conv.delete", { convKey: key, sid: SID_B });
+    expect(await svc.dispatch("conv.delete", { convKey: key, sid: SID_B })).toEqual({ deleted: true, moved: 4 });
+    expect(stub.calls).toBe(0);
     expect(calls.filter((c) => c.t === "DELETE_SESSION").map((c) => c.args.sid)).toEqual([SID_B]);
     // 活会话 SID_A 不受影响：不重启、不接回
     expect(sessionSpawns()).toEqual(["SESSION_NEW"]);
@@ -1488,19 +1495,14 @@ describe("D58 选题会话的会话管理", () => {
     expect(ideaArgvs().at(-1)?.slice(-1)).toEqual(["--idea"]); // 标记已消费：裸 --idea 恢复最近段
   });
 
-  it("conv.delete：确认文案说明移到回收站且可还原；取消不调用；确认后 DELETE_IDEA_SESSION 带 sid", async () => {
+  it("conv.delete（A4）：空闲选题段零弹窗直接移入回收站，活段不被碰", async () => {
     const calls: { t: string; args: Record<string, unknown> }[] = [];
     const { repo, svc, stub } = await boot({ realCore: true, overrides: { runCore: adminCore(calls) } });
     ideaScriptWithSid(repo, SID_A);
     await svc.dispatch("conv.send", { convKey: "idea", text: "选题甲" });
     await waitFor(async () => (await snapOf(svc, "idea")).phase === "idle");
-    stub.respond = false;
-    expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: false, moved: 0 });
-    expect(stub.last?.detail).toContain("回收站");
-    expect(stub.last?.detail).toContain("还原");
-    expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION")).toEqual([]);
-    stub.respond = true;
     expect(await svc.dispatch("conv.delete", { convKey: "idea", sid: SID_B })).toEqual({ deleted: true, moved: 4 });
+    expect(stub.calls).toBe(0);
     expect(calls.filter((c) => c.t === "DELETE_IDEA_SESSION").map((c) => c.args)).toEqual([{ sid: SID_B }]);
     expect(calls.filter((c) => c.t === "DELETE_SESSION")).toEqual([]);
     // 删的是别的段（D157）：活段不被碰，不重启、不接回
@@ -1892,5 +1894,116 @@ describe("D149 运行中切换", () => {
     expect(userEntries[1].text).toBe("/login [凭据参数已脱敏]");
     expect(JSON.stringify(snap)).not.toContain("sk-should-never-appear-in-ui");
     expect(JSON.stringify(snap)).not.toContain("sk-uppercase-should-never-appear");
+  });
+
+  it("P1 #3 启动期并发 conv.send：pending 预设先于首条消息完成，且 M1 绝不被 M2 反超", async () => {
+    const b = await boot({
+      realKey: true,
+      overrides: {
+        // 模拟真实钥匙串异步耗时，暴露无 sendChains 时 M2 抢先排进 readyWaiters / 越过 flushPending 的竞态
+        resolveSessionKey: async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          return { name: "AVA_TEST_KEY", value: "SK-TEST" };
+        },
+      },
+    });
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      {
+        op: "serve",
+        on_command: [{ t: "command_result", name: "model", ok: true, text: "已切换", rid: "$rid" }],
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS],
+        on_shutdown: "exit",
+      },
+    ]);
+    await b.svc.dispatch("conv.command", { convKey: b.key, name: "model", arg: "kimi-k3" });
+    await b.svc.dispatch("conv.command", { convKey: b.key, name: "thinking", arg: "high" });
+    await Promise.all([
+      b.svc.dispatch("conv.send", { convKey: b.key, text: "M1" }),
+      b.svc.dispatch("conv.send", { convKey: b.key, text: "M2" }),
+    ]);
+    const frames = stdinLines(b.repo, b.epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const summary = frames.map((f) => (f.t === "command" ? `cmd:${f.name}:${f.arg}` : f.t === "user_message" ? `msg:${f.text}` : String(f.t)));
+    expect(summary.slice(0, 4)).toEqual(["cmd:model:kimi-k3", "cmd:thinking:high", "msg:M1", "msg:M2"]);
+  });
+
+  it("P1 #6 A2 自定义默认：新会话生效、可显式恢复仓库默认、不覆写历史选题会话", async () => {
+    const b = await boot();
+    await b.svc.dispatch("app.setDefaults", { model: "kimi-k3", effort: "high" });
+
+    // ① 全新期会话：自动套用自定义默认
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      {
+        op: "serve",
+        on_command: [
+          { t: "command_result", name: "model", ok: true, text: "ok", rid: "$rid" },
+        ],
+        on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS],
+        on_shutdown: "exit",
+      },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "用默认" });
+    const f1 = stdinLines(b.repo, b.epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(f1.filter((f) => f.t === "command").map((f) => `${f.name}:${f.arg}`)).toEqual(["model:kimi-k3", "thinking:high"]);
+
+    // ② 新开空白会话后点击「恢复默认模型 / 跟随模型默认」：覆盖自定义默认，不下发 kimi-k3 / high
+    await b.svc.dispatch("conv.end", { convKey: b.key });
+    await b.svc.dispatch("conv.fresh", { convKey: b.key });
+    await b.svc.dispatch("conv.command", { convKey: b.key, name: "model", arg: "default" });
+    await b.svc.dispatch("conv.command", { convKey: b.key, name: "thinking", arg: "default" });
+    const snapBefore = await snapOf(b.svc, b.key);
+    expect(snapBefore.pending).toEqual({ model: "default", effort: "default" });
+    sessionScript(b.repo, b.epKey, [
+      READY(b.epKey),
+      { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: b.key, text: "回退仓库默认" });
+    const f2 = stdinLines(b.repo, b.epKey).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(f2.filter((f) => f.t === "command")).toEqual([]);
+    expect(f2.filter((f) => f.t === "user_message").map((f) => f.text)).toEqual(["回退仓库默认"]);
+
+    // ③ 恢复历史选题会话（conv.resume 或 ready.continue_status === "resumed"）：绝不覆写历史会话的模型/推理强度
+    const IDEA_RESUMED = {
+      op: "emit",
+      frame: { ...IDEA_READY.frame, continue_status: "resumed", history_count: 2 },
+    };
+    sessionScript(b.repo, "idea", [
+      IDEA_RESUMED,
+      { op: "serve", on_turn: [TURN_STARTED, TURN_ENDED, STOP_POINTS], on_shutdown: "exit" },
+    ]);
+    await b.svc.dispatch("conv.resume", { convKey: "idea" });
+    await b.svc.dispatch("conv.send", { convKey: "idea", text: "接着聊历史选题" });
+    const f3 = stdinLines(b.repo, "idea").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(f3.filter((f) => f.t === "command")).toEqual([]);
+  });
+
+  it("P1 #7 A6 后台并存运行中的选题会话：切到新空白选题段后建期仍须弹确认", async () => {
+    const b = await boot({ realCore: true });
+    fixtureWrite(b.repo.root, "pipeline/agent/cli.py", fakeNewEpisodeCli(["[from-idea] migrated=false sid=- messages=0"]));
+    sessionScript(b.repo, "idea", [
+      IDEA_READY,
+      { op: "serve", on_turn: [TURN_STARTED], on_shutdown: "exit" },
+    ]);
+    await b.svc.dispatch("conv.send", { convKey: "idea", text: "长调研" });
+    await waitFor(async () => (await snapOf(b.svc, "idea")).phase === "running");
+    // 点「＋ 新会话」把 focused 清空，但旧选题段仍在后台 running
+    await b.svc.dispatch("conv.fresh", { convKey: "idea" });
+    expect(b.svc.sessions.isBusy("idea")).toBe(false);
+    expect(b.svc.sessions.hasAnyBusy("idea")).toBe(true);
+    b.stub.respond = false;
+    await expect(b.svc.dispatch("episode.create", { name: "新期-后台忙", fromIdea: "true" })).rejects.toMatchObject({ code: "E_BUSY" });
+    expect(b.stub.calls).toBe(1);
+    expect(b.stub.last?.title).toContain("选题会话正在运行");
+  });
+
+  it("P1 #9 resetRenderer 立即结算在途人时区间", async () => {
+    let clock = 10_000;
+    const b = await boot({ overrides: { now: () => clock } });
+    await b.svc.dispatch("time.surface", { epKey: b.epKey, stop: "02.5", visible: "true" });
+    clock += 65_000;
+    expect(b.svc.humanTimers.closed()).toBe(0);
+    b.svc.resetRenderer();
+    expect(b.svc.humanTimers.closed()).toBe(1);
   });
 });

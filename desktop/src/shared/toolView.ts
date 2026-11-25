@@ -53,10 +53,11 @@ export function statusWord(row: ToolRow, status: ToolStatus): string {
   return status === "note" ? (row.verdict ?? "") : STATUS_WORD[status];
 }
 
-/** 真失败：没结束的、成功的、带 verdict 的都不算（回合 outcome、终端组默认展开用同一口径） */
-function isFail(r: ToolRow): boolean {
+/** 真失败：没结束的、成功的、带 verdict 的都不算（回合 outcome、终端组默认展开与组头图标用同一口径） */
+export function isToolFail(r: ToolRow): boolean {
   return r.ok === false && r.verdict === null;
 }
+const isFail = isToolFail;
 
 /** 主文本：bash 用模型给的用途，没有时用命令摘要；其余用 core 给的摘要 */
 /** D82：交接文本里的工单号（路径的文件名部分；core 模板生成，形状同 pipeline.tickets._TICKET_ID）。取不到为 null */

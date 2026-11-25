@@ -132,6 +132,7 @@ export const CONDITIONAL: Partial<Record<OutType, (f: Record<string, unknown>) =
       ? null
       : {
           ...(f.name === "bash" ? { ok: ["boolean"], command: ["string"], description: ["string"] } : { ok: ["boolean"] }),
+          ...("summary" in f ? { summary: ["string"] as const } : {}),
           ...("handoff" in f ? { handoff: ["string"] as const } : {}),
           ...("verdict" in f ? { verdict: ["string"] as const } : {}),
         },

@@ -112,7 +112,7 @@ describe("S22 🔵6 status --json 的 stdout 完整读入（上限 STATUS_STDOUT
     const atCap = await fetchStatus(repoPrinting(statusJson(STATUS_STDOUT_MAX_BYTES)), "/x");
     expect(atCap.ok).toBe(true);
     const over = await fetchStatus(repoPrinting(statusJson(STATUS_STDOUT_MAX_BYTES + 1)), "/x");
-    expect(over).toEqual({ ok: false, code: "E_CORE", message: `status --json 输出超过 ${STATUS_STDOUT_MAX_BYTES} 字节上限` });
+    expect(over).toEqual({ ok: false, code: "E_CORE", message: `期状态输出超过 ${STATUS_STDOUT_MAX_BYTES} 字节上限` });
   });
 });
 
@@ -359,6 +359,9 @@ describe("D45 会话管理模板的 argv 形状", () => {
       expect(() => buildArgv("AUTH_START", { provider: bad }, "/repo")).toThrow();
       expect(() => buildArgv("AUTH_COMPLETE", { provider: bad }, "/repo")).toThrow();
       expect(() => buildArgv("AUTH_LOGOUT", { provider: bad }, "/repo")).toThrow();
+    }
+    for (const badMode of ["--stdin", "oauth", "api_key;id", "../evil"]) {
+      expect(() => buildArgv("AUTH_START", { provider: "deepseek", mode: badMode }, "/repo")).toThrow();
     }
   });
 });

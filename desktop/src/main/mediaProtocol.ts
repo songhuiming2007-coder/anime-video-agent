@@ -30,7 +30,7 @@ async function readSlice(file: string, start: number, length: number): Promise<B
 }
 
 const HTML_CSP: Record<MediaRoot, string> = {
-  episodes: "default-src 'none'; img-src ava-media:; style-src 'unsafe-inline'",
+  episodes: "default-src 'none'; img-src ava-media:; media-src ava-media:; style-src 'unsafe-inline'",
   shots: "default-src 'none'; img-src ava-media:; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
 };
 
@@ -121,15 +121,24 @@ export class MediaServer {
   async serve(req: Request): Promise<Response> {
     if (req.method !== "GET" && req.method !== "HEAD") return plain(405, "method not allowed");
     if (!this.dataRoot || this.reach !== "ok") return plain(503, "data 不可达");
-    let rootsReal: Record<MediaRoot, string>;
-    try {
-      rootsReal = {
-        episodes: fs.realpathSync.native(`${this.dataRoot}/episodes`),
-        shots: fs.realpathSync.native(`${this.dataRoot}/library/shots`),
-      };
-    } catch {
-      return plain(503, "媒体根不可达");
-    }
+    const resolveRoot = (sub: string): string | null => {
+      try {
+        return fs.realpathSync.native(`${this.dataRoot}/${sub}`);
+      } catch {
+        return null;
+      }
+    };
+    const epReal = resolveRoot("episodes");
+    const shotsReal = resolveRoot("library/shots");
+    const prefix = `${MEDIA_SCHEME}://`;
+    const reqRoot = req.url.startsWith(prefix) ? req.url.slice(prefix.length).split(/[/?#]/, 1)[0].toLowerCase() : "";
+    if (reqRoot === "episodes" && epReal === null) return plain(503, "媒体根不可达");
+    if (reqRoot === "shots" && shotsReal === null) return plain(503, "媒体根不可达");
+    if (epReal === null && shotsReal === null) return plain(503, "媒体根不可达");
+    const rootsReal: Record<MediaRoot, string> = {
+      episodes: epReal ?? `${this.dataRoot}/episodes`,
+      shots: shotsReal ?? `${this.dataRoot}/library/shots`,
+    };
     const g = decodeAndGuard(req.url, rootsReal, (p) => fs.realpathSync.native(p));
     if (!g.ok) return plain(g.status, "rejected");
     let st: fs.Stats;

@@ -2,8 +2,8 @@
 // repoRoot 原生对话框。
 // 禁止：spawn 子进程、解析事件/审批、对 data/ 的任何写、crashReporter.start（TG-3、TG-8）。
 import * as fs from "node:fs";
-import { join } from "node:path";
-import { app, BrowserWindow, dialog, MessageChannelMain, screen, shell, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
+import { dirname, join } from "node:path";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, nativeTheme, screen, shell, systemPreferences, utilityProcess, type UtilityProcess } from "electron";
 import { installEgressBlock } from "./egress";
 import { MediaServer, registerMediaScheme } from "./mediaProtocol";
 import { approveBoxOptions, APPROVE_BUTTON, createMainConfirmBroker, quitBoxOptions } from "./confirm";
@@ -62,6 +62,8 @@ type TestGlobals = typeof globalThis & {
   /** Spec 10 §2.10 退出确认桩（仅未打包构建） */
   __avaTestQuit?: { calls: number; lists: string[][]; respond: "quit" | "cancel" | "throw"; hold?: boolean };
   __avaTestQuitRelease?: (respond: "quit" | "cancel") => void;
+  /** 未保存文稿退出/关窗确认桩（仅未打包构建） */
+  __avaTestDirtyQuit?: { calls: number; respond: "quit" | "cancel" };
   /** Spec 10 §3.3 原生确认框桩（仅未打包构建） */
   __avaTestConfirm?: { calls: number; respond: boolean; last: { title: string; detail: string } | null };
   /** N44：focusWindow 被调次数（仅未打包构建，TI-10 断言用；系统焦点是否授予不归 app 控制） */
@@ -100,11 +102,13 @@ function boot(): void {
   let host: UtilityProcess | null = null;
   let hostReady = false;
   let rendererLoaded = false;
+  let scriptDirty = false;
   let mainLoadFailed = false; // 本次主框架载入是否失败（did-fail-load 之后的错误页 did-finish-load 不算载入成功）
+  let currentDataRoot: string | null = null;
   let quitting = false;
   let fatal: string | null = null;
   /** Spec 10 §2.10 退出状态机：防连按 Cmd+Q 重入 */
-  type QuitPhase = "idle" | "querying" | "confirming" | "stopping";
+  type QuitPhase = "idle" | "confirming-dirty" | "querying" | "confirming" | "stopping";
   let quitPhase: QuitPhase = "idle";
   let quitQueryTimer: NodeJS.Timeout | null = null;
   let quitStopTimer: NodeJS.Timeout | null = null;
@@ -159,40 +163,65 @@ function boot(): void {
     return n;
   };
 
-  /** repoRoot 只在 main 里选（§2.10，红队 R2-M5）：原生目录对话框 + 二次确认（显示所选路径与其形状校验结果）。 */
+  /** repoRoot 只在 main 里选（§2.10，红队 R2-M5）：原生目录对话框 + 二次确认（失败支持一键重试，显示所选路径与校验结果）。 */
   const chooseRepoRoot = async (): Promise<string | null> => {
     const stub = !app.isPackaged ? testGlobals.__avaTestDialog : undefined;
     if (stub) {
       stub.calls += 1;
       return stub.respond.confirm ? stub.respond.repoRoot : null;
     }
-    const opts: Electron.OpenDialogOptions = { title: "选择 anime-video-agent 仓库根目录", properties: ["openDirectory"] };
-    const picked = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
-    const root = picked.canceled ? null : picked.filePaths[0] ?? null;
-    if (!root) return null;
-    const problem = repoRootProblem(root, {
-      readText: (p) => {
-        try {
-          return fs.readFileSync(p, "utf-8");
-        } catch {
-          return null;
-        }
-      },
-      isExecutable: (p) => {
-        try {
-          fs.accessSync(p, fs.constants.X_OK);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      exists: (p) => fs.existsSync(p),
-    });
-    const box: Electron.MessageBoxOptions = problem
-      ? { type: "error", message: `不能切换到：${root}`, detail: `校验不通过：${problem}`, buttons: ["取消"] }
-      : { type: "question", message: `把桌面端切换到这个仓库？\n${root}`, detail: "校验通过：pyproject.toml、.venv/bin/python、pipeline/agent/cli.py 均在。切换后全部状态从该仓库的磁盘重新读取。", buttons: ["切换", "取消"], defaultId: 1, cancelId: 1 };
-    const r = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
-    return !problem && r.response === 0 ? root : null;
+    const defaultPath = currentDataRoot ? dirname(currentDataRoot) : undefined;
+    for (;;) {
+      const opts: Electron.OpenDialogOptions = {
+        title: "选择 anime-video-agent 仓库根目录",
+        properties: ["openDirectory"],
+        ...(defaultPath ? { defaultPath } : {}),
+      };
+      const picked = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      const root = picked.canceled ? null : picked.filePaths[0] ?? null;
+      if (!root) return null;
+      const problem = repoRootProblem(root, {
+        readText: (p) => {
+          try {
+            return fs.readFileSync(p, "utf-8");
+          } catch {
+            return null;
+          }
+        },
+        isExecutable: (p) => {
+          try {
+            fs.accessSync(p, fs.constants.X_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        exists: (p) => fs.existsSync(p),
+      });
+      if (problem) {
+        const errBox: Electron.MessageBoxOptions = {
+          type: "error",
+          message: `不能切换到该目录`,
+          detail: `${root}\n\n原因：${problem}`,
+          buttons: ["重新选择…", "取消"],
+          defaultId: 0,
+          cancelId: 1,
+        };
+        const retry = win ? await dialog.showMessageBox(win, errBox) : await dialog.showMessageBox(errBox);
+        if (retry.response === 0) continue;
+        return null;
+      }
+      const box: Electron.MessageBoxOptions = {
+        type: "question",
+        message: `把桌面端切换到这个仓库？`,
+        detail: `${root}\n\n校验通过，切换后将从该仓库重新读取全部状态。`,
+        buttons: ["切换", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+      };
+      const r = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
+      return r.response === 0 ? root : null;
+    }
   };
 
   /** 熔断：停止重启，renderer 换成致命面板（含 host stderr 尾部）；UI 不再持有任何 host 端口 */
@@ -284,6 +313,7 @@ function boot(): void {
         process.stdout.write(`AVA_DIAG dataRoot=${m.dataRoot ?? "-"} provenance=${m.provenance}\n`);
         // TI-4：app 自身状态（userData、崩溃转储）的实际位置，打包版只能经 stdout 核对
         process.stdout.write(`AVA_PATHS ${JSON.stringify({ userData: app.getPath("userData"), crashDumps: app.getPath("crashDumps") })}\n`);
+        currentDataRoot = m.dataRoot;
         media.setDataRoot(m.dataRoot);
         hostReady = true;
         matchmake();
@@ -291,6 +321,7 @@ function boot(): void {
         media.setReach(m.reach);
         if (m.reach !== "ok") media.destroyAll(); // 脱盘前不持有 data/ 下任何 fd（TP-6）
       } else if (m.type === "data-root") {
+        currentDataRoot = m.dataRoot;
         media.setDataRoot(m.dataRoot);
         media.destroyAll();
       } else if (m.type === "repo-root-dialog") {
@@ -314,7 +345,7 @@ function boot(): void {
           if (seq !== quitConfirmSeq || quitPhase !== "confirming") return;
           completeQuitConfirm(ok);
         };
-        const lists = m.busy.map((b) => `${b.label} · ${b.running ? "运行中" : "空闲"}${b.openRequests > 0 ? ` · ${b.openRequests} 张卡未答` : ""}`);
+        const lists = m.busy.map((b) => `${b.label} · ${b.running ? "运行中" : "空闲"}${b.openRequests > 0 ? ` · ${b.openRequests} 张卡待答` : ""}`);
         const stub = !app.isPackaged ? testGlobals.__avaTestQuit : undefined;
         if (stub) {
           stub.calls += 1;
@@ -342,6 +373,8 @@ function boot(): void {
         const r = onAttention(dock, { kind: m.kind, key: m.key }, win !== null && win.isFocused());
         dock = r.state;
         applyDock(r.actions);
+      } else if (m.type === "theme-source") {
+        nativeTheme.themeSource = m.theme;
       }
     });
     h.on("exit", (code) => {
@@ -378,7 +411,8 @@ function boot(): void {
   const loadRenderer = () => {
     if (!win) return;
     mainLoadFailed = false;
-    const query: Record<string, string> = fatal ? { fatal } : {};
+    const boundedFatal = fatal ? (fatal.length > 4000 ? `${fatal.slice(0, 800)}\n…（日志已截断）…\n${fatal.slice(-3000)}` : fatal) : null;
+    const query: Record<string, string> = boundedFatal ? { fatal: boundedFatal } : {};
     const devUrl = process.env.ELECTRON_RENDERER_URL;
     if (!app.isPackaged && devUrl) {
       const u = new URL(devUrl);
@@ -389,10 +423,81 @@ function boot(): void {
     }
   };
 
+  const sendMenu = (action: string) => {
+    if (!win) return;
+    win.webContents.send("ava-menu", action);
+  };
+
+  const installAppMenu = () => {
+    const isMac = process.platform === "darwin";
+    const template: Electron.MenuItemConstructorOptions[] = [
+      ...(isMac
+        ? [
+            {
+              label: "AVA",
+              submenu: [
+                { role: "about" as const, label: "关于 AVA" },
+                { type: "separator" as const },
+                { role: "services" as const, label: "服务" },
+                { type: "separator" as const },
+                { role: "hide" as const, label: "隐藏 AVA" },
+                { role: "hideOthers" as const, label: "隐藏其他" },
+                { role: "unhide" as const, label: "全部显示" },
+                { type: "separator" as const },
+                { role: "quit" as const, label: "退出 AVA" },
+              ],
+            },
+          ]
+        : []),
+      {
+        label: "编辑",
+        submenu: [
+          { role: "undo", label: "撤销" },
+          { role: "redo", label: "重做" },
+          { type: "separator" },
+          { role: "cut", label: "剪切" },
+          { role: "copy", label: "拷贝" },
+          { role: "paste", label: "粘贴" },
+          { role: "selectAll", label: "全选" },
+        ],
+      },
+      {
+        label: "显示",
+        submenu: [
+          { label: "切换侧栏", accelerator: "CmdOrCtrl+B", click: () => sendMenu("toggle-left") },
+          { label: "切换预览", accelerator: "CmdOrCtrl+J", click: () => sendMenu("toggle-preview") },
+          { label: "搜索期或企划", accelerator: "CmdOrCtrl+K", click: () => sendMenu("focus-search") },
+          { type: "separator" },
+          { label: "刷新当前期", accelerator: "CmdOrCtrl+R", click: () => sendMenu("refresh-episode") },
+          { type: "separator" },
+          { role: "resetZoom", label: "实际大小" },
+          { role: "zoomIn", label: "放大" },
+          { role: "zoomOut", label: "缩小" },
+          { type: "separator" },
+          { role: "togglefullscreen", label: "进入全屏幕" },
+          ...(!app.isPackaged ? [{ type: "separator" as const }, { role: "toggleDevTools" as const, label: "开发者工具" }] : []),
+        ],
+      },
+      {
+        label: "窗口",
+        submenu: [
+          { role: "minimize", label: "最小化" },
+          { role: "zoom", label: "缩放" },
+          { role: "close", label: "关闭窗口" },
+          ...(isMac ? [{ type: "separator" as const }, { role: "front" as const, label: "前置全部窗口" }] : []),
+        ],
+      },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+
   const createWindow = () => {
     win = new BrowserWindow({
       width: 1280,
       height: 820,
+      minWidth: 760,
+      minHeight: 540,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#161618" : "#f7f7f8",
       title: "AVA",
       ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 14, y: 14 } } : {}),
       // N41：不用 show:false 了事——隐藏窗口的绘制会被 Chromium 压低，视觉审计与截图会失真；改为下面 showInactive
@@ -404,6 +509,25 @@ function boot(): void {
         webSecurity: true,
         preload: join(__dirname, "../preload/index.js"),
       },
+    });
+    // M2：Electron 默认静默吞掉 renderer 的 beforeunload；处理 will-prevent-unload 弹出明确二选一
+    win.webContents.on("will-prevent-unload", (e) => {
+      if (!win) return;
+      const stub = !app.isPackaged ? testGlobals.__avaTestDirtyQuit : undefined;
+      if (stub) {
+        stub.calls += 1;
+        if (stub.respond === "quit") e.preventDefault();
+        return;
+      }
+      const choice = dialog.showMessageBoxSync(win, {
+        type: "warning",
+        message: "文稿有未保存的改动，仍要关闭窗口？",
+        detail: "关闭窗口不会丢失浏览器暂存草稿，但改动尚未写入磁盘。",
+        buttons: ["关闭窗口", "留下编辑"],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (choice === 0) e.preventDefault();
     });
     if (dev.background) {
       // 固定停在主屏右下角、只露 BACKGROUND_SLIVER_PX 一条边：不压在人正在用的窗口上。
@@ -420,6 +544,7 @@ function boot(): void {
     // 用提交后的 did-navigate 而不是 did-start-navigation：后者在 will-navigate 被阻止的导航上也会触发。
     win.webContents.on("did-navigate", () => {
       rendererLoaded = false;
+      scriptDirty = false;
     });
     // 打包版验证的观测口（TS-2）：主框架是否真的载入了界面——只看 host 就绪会漏掉「窗口空白」
     win.webContents.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
@@ -442,7 +567,10 @@ function boot(): void {
     win.on("closed", () => {
       win = null;
       mainConfirm.windowGone(); // D40：挂在已销毁窗口上的确认框永不 resolve，主动回 ok:false
-      if (quitPhase === "confirming") {
+      rendererLoaded = false;
+      scriptDirty = false;
+      sendToHost({ type: "renderer-reset" }); // A3：无窗保活期间释放订阅并结算人时计时器，避免空转推送与虚计人时
+      if (quitPhase === "confirming" || quitPhase === "confirming-dirty") {
         // N54：退出确认框挂在已销毁的窗口上同样永不 resolve；作废它并回落，否则此后 Cmd+Q 全被拦下
         quitConfirmSeq += 1;
         pendingQuitConfirm = null;
@@ -451,6 +579,10 @@ function boot(): void {
     });
     loadRenderer();
   };
+
+  ipcMain.on("ava-dirty", (e, dirty: unknown) => {
+    if (win && e.sender === win.webContents) scriptDirty = Boolean(dirty);
+  });
 
   if (!app.isPackaged) {
     // TI-2 的 main 侧钩子：测试驱动经 electronApp.evaluate 触发一次带延迟投递的重新撮合
@@ -467,12 +599,16 @@ function boot(): void {
     };
   }
 
-  app.on("second-instance", focusWindow);
+  app.on("second-instance", () => {
+    if (!win) createWindow();
+    else focusWindow();
+  });
 
   // N41：accessory = 不进 Dock、启动不激活 app（macOS）；要在窗口创建前设
   if (dev.background && process.platform === "darwin") app.setActivationPolicy("accessory");
 
   void app.whenReady().then(() => {
+    installAppMenu();
     media.install();
     installEgressBlock(app.getAppPath(), !app.isPackaged ? process.env.ELECTRON_RENDERER_URL ?? null : null);
     startHost();
@@ -482,6 +618,15 @@ function boot(): void {
     });
   });
 
+  const beginQuitQuery = () => {
+    quitPhase = "querying";
+    sendToHost({ type: "quit-query" });
+    quitQueryTimer = setTimeout(() => {
+      quitting = true;
+      app.exit(0);
+    }, QUIT_QUERY_TIMEOUT_MS);
+  };
+
   app.on("before-quit", (e) => {
     if (quitPhase !== "idle") {
       // 重入（连按 Cmd+Q）：一律拦下。stopping 期间也拦（M7 F-1）：收尾只能由 sessions-down 或
@@ -490,22 +635,50 @@ function boot(): void {
       e.preventDefault();
       return;
     }
-    // 『结束会话』与其实时性无关的退出路径：host 不在、未就绪或已熔断 → 直接退出
+    // 『结束会话』与其实时性无关的退出路径：host 不在、未就绪或已熔断 → 交由 Electron 默认关窗（会走 beforeunload / will-prevent-unload）
     if (!host || !hostReady || fatal !== null) {
       quitting = true;
       return;
     }
     e.preventDefault();
-    quitPhase = "querying";
-    sendToHost({ type: "quit-query" });
-    quitQueryTimer = setTimeout(() => {
-      quitting = true;
-      app.exit(0);
-    }, QUIT_QUERY_TIMEOUT_MS);
+    // 02-script 编辑器有未保存改动时，先弹与 ⌘W 同口径的确认框（并立即通知 renderer 落盘暂存草稿），
+    // 避免后续 app.exit(0) 绕过 beforeunload 静默丢稿
+    if (scriptDirty && win) {
+      quitPhase = "confirming-dirty";
+      sendMenu("stash-draft");
+      const seq = ++quitConfirmSeq;
+      const settleDirty = (ok: boolean) => {
+        if (seq !== quitConfirmSeq || quitPhase !== "confirming-dirty") return;
+        if (ok) beginQuitQuery();
+        else quitPhase = "idle";
+      };
+      const stub = !app.isPackaged ? testGlobals.__avaTestDirtyQuit : undefined;
+      if (stub) {
+        stub.calls += 1;
+        settleDirty(stub.respond === "quit");
+        return;
+      }
+      void dialog
+        .showMessageBox(win, {
+          type: "warning",
+          message: "文稿有未保存的改动，仍要退出 AVA？",
+          detail: "退出不会丢失浏览器暂存草稿，但改动尚未写入磁盘。",
+          buttons: ["退出 AVA", "留下编辑"],
+          defaultId: 1,
+          cancelId: 1,
+        })
+        .then(
+          (r) => settleDirty(r.response === 0),
+          () => settleDirty(false),
+        );
+      return;
+    }
+    beginQuitQuery();
   });
 
   app.on("window-all-closed", () => {
-    app.quit(); // 不再先发 shutdown（Spec 10 S8-R5）：退出统一走 before-quit 状态机
+    // A3：macOS 惯例——关闭窗口（⌘W / 红色关闭按钮）保留后台会话继续运行，点 Dock 图标重新打开；仅 ⌘Q 触发退出
+    if (process.platform !== "darwin") app.quit();
   });
 }
 

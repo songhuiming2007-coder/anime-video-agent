@@ -3,3 +3,10 @@
 import { ipcRenderer } from "electron";
 
 ipcRenderer.on("ava-port", (e, handshake: unknown) => window.postMessage({ type: "ava-port", handshake }, "*", e.ports));
+ipcRenderer.on("ava-menu", (_e, action: unknown) => window.postMessage({ type: "ava-menu", action }, "*"));
+// 同步 02-script 编辑器未保存标记给 main，保证 ⌘Q 退出前同样触发未保存文稿确认（不暴露任何全局 API）
+window.addEventListener("message", (e) => {
+  if (e.source === window && e.data && e.data.type === "ava-dirty") {
+    ipcRenderer.send("ava-dirty", Boolean(e.data.dirty));
+  }
+});

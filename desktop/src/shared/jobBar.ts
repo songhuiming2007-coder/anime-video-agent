@@ -33,6 +33,40 @@ export function commandHead(command: string | null): string {
   return (command ?? "").trim().split(/\s+/)[0]?.replace(/^pipeline\./, "") ?? "";
 }
 
+const JOB_LABELS: Readonly<Record<string, string>> = {
+  tts: "配音合成",
+  clips: "画面排片",
+  review: "生成审片页",
+  render: "视频渲染",
+  cover: "封面候选",
+  check_script: "稿件机检",
+  qc: "成片质检",
+  adversarial: "对抗审查",
+  shots: "镜头画廊",
+  scout: "候选抽帧",
+};
+
+/** 作业命令的人类可读短标签（作业条与时间线共用） */
+export function jobLabel(command: string | null): string {
+  const head = commandHead(command);
+  const name = JOB_LABELS[head];
+  if (!name) return command?.trim() || "后台作业";
+  const rest = (command ?? "").trim().slice((command ?? "").trim().split(/\s+/)[0]?.length ?? 0).trim();
+  return rest ? `${name}（${rest}）` : name;
+}
+
+const JOB_STATE_LABELS: Readonly<Record<JobView["state"], string>> = {
+  pending: "等待中",
+  running: "运行中",
+  succeeded: "已完成",
+  failed: "失败",
+  blocked: "已拦截",
+};
+
+export function jobStateLabel(state: JobView["state"]): string {
+  return JOB_STATE_LABELS[state];
+}
+
 /**
  * 机检「未通过」：`check_script` 退出码 1 = 稿件有 FAIL 项，是检查结果、不是作业故障（D71 实例：
  * 伪恋期两次机检都被时间线记成「失败」）。只认这一个命令的这一个退出码；退出码 2（用法错）等照旧算失败。

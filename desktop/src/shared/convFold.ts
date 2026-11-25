@@ -242,6 +242,8 @@ const STOPPED_LABEL: Record<string, string> = {
   interrupted: "已中断",
   error: "出错",
   blocked: "已拦截",
+  degraded: "已降级",
+  rollback: "已回滚",
   max_turns: "达到回合上限",
   budget: "达到上限",
 };
@@ -545,7 +547,11 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
       case "exited":
         settleStreamingAssistant(rows);
         rows.push({ k: "exited", at: e.at, code: e.code, signal: e.signal, stderrTail: e.stderrTail });
-        queued = []; // 进程没了：排队消息随之丢失（没有送达，也没有可退回的进程回执）
+        // 进程异常或手动退出时，把尚未送达的排队消息退回输入框，避免人打的字无声丢失
+        if (queued.length > 0) {
+          returned = { key: `exited:${String(e.at)}:${queued.map((q) => q.id).join(",")}`, text: queued.map((q) => q.text).join("\n") };
+        }
+        queued = [];
         break;
       case "settled":
       case "spawned":
@@ -565,8 +571,8 @@ export function foldConv(entries: readonly ConvEntry[]): FoldedConv {
                 at: e.at,
                 id: `h:${String(f.index)}@${String(rows.length)}`,
                 name: String(f.name ?? "tool"),
-                // 历史帧只带工具名（D76 起 bash 另带命令）：摘要只给 bash 补，其余保持空——工具名已在行首
-                summary: bashSummary(commandOf(f)),
+                // 历史帧带了 summary 优先用，否则为 bash 按完整命令补摘要
+                summary: typeof f.summary === "string" && f.summary !== "" ? f.summary : bashSummary(commandOf(f)),
                 ok: f.ok === true,
                 duplicate: false,
                 durationMs: null,

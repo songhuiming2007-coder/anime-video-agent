@@ -32,8 +32,8 @@ export function approveBoxOptions(title: string, detail: string, signal: AbortSi
 export function quitBoxOptions(lists: string[]): NativeBoxOptions {
   return {
     type: "warning",
-    message: "有会话在运行，仍然退出？",
-    detail: `${lists.join("\n")}\n\n正在运行的渲染等作业会被中断；回合不会再做收尾总结。`,
+    message: "有会话正在运行或等待审批，仍然退出？",
+    detail: `${lists.join("\n")}\n\n正在运行的渲染等作业会被中断；未完成的回合不会再做收尾总结。`,
     buttons: ["退出", "取消"],
     defaultId: 1,
     cancelId: 1,

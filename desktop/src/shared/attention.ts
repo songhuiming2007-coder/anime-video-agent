@@ -1,6 +1,7 @@
 // D98（人选方案 C，2026-10-15）：AVA 窗口不在前台时，用 Dock 告诉人「它在等你」或「它做完了一件事」。
 // 不发系统横幅（人：Dock 弹跳比较好）。纯函数：host 用前半段把会话帧 / 作业变化分类，main 用后半段算 Dock 动作。
 import type { JobView } from "./protocol";
+import { isCheckNotPassed } from "./jobBar";
 
 /** wait = 不回去就卡住（审批卡、停机点、失败）；info = 做完了，回不回去都行 */
 export type AttentionKind = "wait" | "info";
@@ -21,12 +22,12 @@ export function turnAttention(stopped: string): AttentionKind | null {
   return "wait";
 }
 
-/** 前后两次折叠的作业表 → 新结束的作业（成功 info、失败 wait）。只认「上次在跑、这次结束」，开机首折不补报旧作业 */
+/** 前后两次折叠的作业表 → 新结束的作业（成功与机检未通过 info、真失败 wait）。只认「上次在跑、这次结束」，开机首折不补报旧作业 */
 export function jobAttentions(epKey: string, prev: readonly JobView[], next: readonly JobView[]): Attention[] {
   const wasRunning = new Set(prev.filter((j) => j.state === "running").map((j) => j.jobId));
   return next
     .filter((j) => wasRunning.has(j.jobId) && (j.state === "succeeded" || j.state === "failed"))
-    .map((j) => ({ kind: j.state === "failed" ? "wait" : "info", key: `job:${epKey}:${j.jobId}` }));
+    .map((j) => ({ kind: j.state === "failed" && !isCheckNotPassed(j) ? "wait" : "info", key: `job:${epKey}:${j.jobId}` }));
 }
 
 export type DockAction = { do: "badge"; text: string } | { do: "bounce" } | { do: "cancelBounce" };

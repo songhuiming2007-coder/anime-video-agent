@@ -87,15 +87,15 @@ export function readApprovalRecords(file: string, fs: FsRead): StoreRead {
     text = decoder.decode(fs.readFile(file));
   } catch (e) {
     if (errnoOf(e) === "ENOENT") return { state: "absent" };
-    return { state: "error", message: `对象库读取失败：${errnoOf(e) ?? String(e)}` };
+    return { state: "error", message: `审批状态读取失败：${errnoOf(e) ?? String(e)}` };
   }
   let raw: unknown;
   try {
     raw = parseLossless(text);
   } catch (e) {
-    return { state: "error", message: `对象库解析失败：${e instanceof Error ? e.message : String(e)}` };
+    return { state: "error", message: `审批状态解析失败：${e instanceof Error ? e.message : String(e)}` };
   }
-  if (!Array.isArray(raw)) return { state: "error", message: "对象库解析失败：顶层不是数组" };
+  if (!Array.isArray(raw)) return { state: "error", message: "审批状态格式异常：顶层不是数组" };
   const items: ApprovalRecord[] = [];
   let skipped = 0;
   for (const el of raw) {
@@ -119,8 +119,9 @@ export function readApprovalStore(
   return { state: "ok", items: r.items.map(toWireApproval), skipped: r.skipped, healedAt };
 }
 
-/** 关联产物当前 (size, mtime_ns) 与钉住值逐项 bigint 相等；文件缺失按 Spec 3 _fingerprint 记为 (-1, -1)。 */
-export function fingerprintsMatch(epAbs: string, pinned: ArtifactFingerprint[], fs: FsProbe): boolean {
+/** 关联产物当前 (size, mtime_ns) 与钉住值逐项 bigint 相等；返回发生变动的相对路径列表（空 = 全部一致）。 */
+export function changedFingerprints(epAbs: string, pinned: ArtifactFingerprint[], fs: FsProbe): string[] {
+  const changed: string[] = [];
   for (const a of pinned) {
     let size = -1n;
     let mtime = -1n;
@@ -131,7 +132,12 @@ export function fingerprintsMatch(epAbs: string, pinned: ArtifactFingerprint[], 
     } catch {
       /* 缺失 → (-1, -1) */
     }
-    if (size !== BigInt(a.size) || mtime !== a.mtime_ns) return false;
+    if (size !== BigInt(a.size) || mtime !== a.mtime_ns) changed.push(a.path);
   }
-  return true;
+  return changed;
+}
+
+/** 关联产物当前 (size, mtime_ns) 与钉住值逐项 bigint 相等；文件缺失按 Spec 3 _fingerprint 记为 (-1, -1)。 */
+export function fingerprintsMatch(epAbs: string, pinned: ArtifactFingerprint[], fs: FsProbe): boolean {
+  return changedFingerprints(epAbs, pinned, fs).length === 0;
 }

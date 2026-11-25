@@ -22,14 +22,20 @@ export const MEDIA_MIME: Record<string, string> = {
   ".mov": "video/quicktime",
   ".wav": "audio/wav",
   ".flac": "audio/flac",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
   ".md": "text/markdown; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".jsonl": "text/plain; charset=utf-8",
   ".log": "text/plain; charset=utf-8",
   ".patch": "text/plain; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
+  ".srt": "text/plain; charset=utf-8",
+  ".ass": "text/plain; charset=utf-8",
 };
 
 export function extOf(name: string): string {

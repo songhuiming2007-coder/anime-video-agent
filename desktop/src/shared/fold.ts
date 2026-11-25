@@ -151,6 +151,12 @@ export function eventLabel(e: { kind: string; type: string; payload: Record<stri
     return `人时记录：停机点 ${String(p.stop ?? "")}${mins ? `（${mins}）` : ""}`;
   }
   if (e.kind === "unknown") return `未知事件 ${e.type}`;
+  const cmd = typeof p.command === "string" && p.command.trim() ? `：${p.command.trim()}` : "";
+  if (e.kind === "job_created") return `作业排队${cmd}`;
+  if (e.kind === "job_started") return `作业启动${cmd}`;
+  if (e.kind === "job_finished") return `作业${p.status === "succeeded" ? "完成" : "失败"}${cmd}`;
+  if (e.kind === "job_blocked") return `作业被拦截${cmd}${typeof p.reason === "string" ? `（${p.reason}）` : ""}`;
+  if (e.kind === "job_heartbeat") return `作业运行心跳${cmd}`;
   return `${e.kind}${typeof p.job_id === "string" ? ` ${p.job_id}` : ""}`;
 }
 

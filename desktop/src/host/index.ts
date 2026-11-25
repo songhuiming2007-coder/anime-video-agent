@@ -94,6 +94,7 @@ parentPort.on("message", (e) => {
           chooseRepoRoot,
           confirm: (t, d, opts) => confirmBroker.request(t, d, opts),
           openExternalUrl,
+          setThemeSource: (theme) => parentPort.postMessage({ type: "theme-source", theme }),
           bootId,
           testHook: (name) => (!m.isPackaged ? pauseAt(name) : Promise.resolve()),
           attention: (a) => parentPort.postMessage({ type: "attention", kind: a.kind, key: a.key }),

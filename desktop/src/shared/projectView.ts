@@ -1,6 +1,7 @@
 // D81 PR-2b：侧栏企划卡片（人选方案 B「分组卡片」）的纯函数——卷的顺序与标签、进度条各段、卡头徽标、搜索与「按时间」混排。
 // TG-3：shared 只做纯计算（类型 import 之外零 import、零 DOM 全局）。卷表的解析只在 core（/project-meta），这里只用它的结果。
 import type { EpisodeSummary, ProjectSummary } from "./protocol";
+import { isReadyToPublish } from "./episodeView";
 
 /**
  * 进度条一段的状态。只有两种由硬事实给出：走到 09（机器工序全部走完、等人发布）与停在人审（is_blocked）；其余一律「进行中」。
@@ -10,7 +11,7 @@ export type VolumeStage = "done" | "stop" | "mid" | "none";
 
 export function volumeStage(e: Pick<EpisodeSummary, "currentStep" | "isBlocked">): VolumeStage {
   if (e.currentStep === null) return "none";
-  if (/^09(\s|$)/.test(e.currentStep)) return "done";
+  if (isReadyToPublish(e.currentStep)) return "done";
   return e.isBlocked === true ? "stop" : "mid";
 }
 
@@ -81,10 +82,17 @@ export function projectTitle(p: ProjectSummary): string {
  * 查询为空 → 原样。返回 null = 这个企划整个不显示。
  */
 export function filterProject(p: ProjectSummary, q: string): ProjectSummary | null {
-  const s = q.trim().toLowerCase();
-  if (s === "") return p;
-  if (p.projKey.toLowerCase().includes(s) || projectTitle(p).toLowerCase().includes(s)) return p;
-  const members = p.members.filter((m) => m.epKey.toLowerCase().includes(s));
+  const tokens = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return p;
+  const headHay = `${p.projKey} ${projectTitle(p)}`.toLowerCase();
+  if (tokens.every((tok) => headHay.includes(tok))) return p;
+  const rows = volumeRows(p);
+  const members = rows
+    .filter((r) => {
+      const hay = `${headHay} ${r.e.epKey} ${r.label} ${r.e.currentStep ?? ""}`.toLowerCase();
+      return tokens.every((tok) => hay.includes(tok));
+    })
+    .map((r) => r.e);
   return members.length > 0 ? { ...p, members } : null;
 }
 

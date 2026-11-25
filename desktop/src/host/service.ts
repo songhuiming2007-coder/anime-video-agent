@@ -29,6 +29,7 @@ import { repoRootProblem } from "../shared/repoRoot";
 import {
   checkParamKeys,
   isMethod,
+  type AppPrefs,
   type DecideParams,
   PROTOCOL_VERSION,
   type EpisodeDelta,
@@ -64,11 +65,11 @@ import {
 } from "../shared/protocol";
 import { decide, DecideFail, parseDecideParams } from "./decide";
 import { errnoOf, realFs, type FsRead } from "./fsio";
-import { listEpisodeTree, listEpisodes, type EpisodeEntry, type ProjectEntry } from "./episodes";
+import { listEpisodeTree, type EpisodeEntry, type ProjectEntry } from "./episodes";
 import { h5Step, HealScheduler, newH5State, type H5State, type HealExecutor, type HealTrigger } from "./heal";
 import { diagnoseDataRoot } from "./reach";
 import { loadSettings, saveSettings } from "./settings";
-import { killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
+import { isLongRunning, killGroup, groupAlive, pythonOf, runCore, spawnSession, type CoreResult, type SpawnTag, type Template, type TemplateArgs, type VoiceReadingArgs, REVIEW_RE } from "./spawner";
 import { resolveLlmKey, resolveWebKeys, type KeyResolution } from "./secrets";
 import { listProxyModels } from "./proxyModels";
 import { SessionError, SessionManager, type CommandName, type QuitBusy, type SessionTarget, type SessionTiming } from "./sessions";
@@ -100,6 +101,8 @@ export interface HostDeps {
   confirm: (title: string, detail: string, opts?: ConfirmOptions) => Promise<boolean>;
   /** 受控打开外部 https:// 链接（OAuth / Device Code 授权页） */
   openExternalUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
+  /** 同步 renderer 主题到 main 的 nativeTheme.themeSource */
+  setThemeSource: (theme: "system" | "light" | "dark") => void;
   /** 会话进程启动时的随机串（Spec 10 🟡-9）：generation = "<bootId>:<n>" */
   bootId: string;
   /** 密钥解析（§2.9）；默认走 PROBE_KEY_ENV + 钥匙串，测试可注入 */
@@ -271,6 +274,7 @@ export class HostService {
       chooseRepoRoot: async () => null,
       confirm: async () => false,
       openExternalUrl: async () => ({ ok: false, error: "当前环境不支持打开外部浏览器" }),
+      setThemeSource: () => {},
       bootId: Math.random().toString(36).slice(2, 10),
       resolveSessionKey: (root: string) => resolveLlmKey(this.core.bind(this) as Parameters<typeof resolveLlmKey>[0], root),
       resolveSessionWebKeys: (root: string, llmName: string | null) =>
@@ -304,6 +308,13 @@ export class HostService {
       changed: () => this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() }),
       timing: this.deps.sessionTiming,
       attention: (a) => this.deps.attention?.(a),
+      defaultPrefs: () => {
+        const p = this.appPrefs();
+        return { model: p.defaultModel, effort: p.defaultEffort };
+      },
+      onTurnFinished: (key) => {
+        if (key.startsWith("proj:")) void this.refreshSingleProjectMeta(key.slice(5));
+      },
     });
   }
 
@@ -315,11 +326,12 @@ export class HostService {
     return { ok: r.code === 0 && !r.timedOut, stderrTail: r.stderrTail };
   };
 
-  /** 全部 spawn 的唯一出口：登记在途，供 repoRoot 切换等待。 */
+  /** 全部 spawn 的唯一出口：非长任务登记在途，供 repoRoot 切换等待（S8-R17 长任务独立运行不阻塞切仓）。 */
   private core<T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag = {}, stdinData?: string | Uint8Array): Promise<CoreResult> {
     const repoRoot = this.repoRoot;
     if (!repoRoot) return Promise.resolve({ code: null, signal: null, stdoutTail: "", stderrTail: "无仓库", timedOut: false, stdoutFull: null, stdoutOverflow: false });
-    return this.track(this.deps.runCore(t, args, { repoRoot }, tag, stdinData));
+    const p = this.deps.runCore(t, args, { repoRoot }, tag, stdinData);
+    return isLongRunning(t) ? p : this.track(p);
   }
 
   private track<T>(p: Promise<T>): Promise<T> {
@@ -365,8 +377,9 @@ export class HostService {
     this.send = send;
   }
 
-  /** renderer 重载或 host 重连：丢弃全部订阅，等 renderer 重新 subscribe */
+  /** renderer 重载、窗口关闭或 host 重连：结算人时区间并丢弃全部订阅，等 renderer 重新 subscribe */
   resetRenderer(): void {
+    this.humanTimers.flushAll("close");
     this.subs.clear();
     this.active = null;
     this.send = () => {};
@@ -498,13 +511,26 @@ export class HostService {
     if (!this.dataRoot || this.reach !== "ok") return;
     try {
       const root = join(this.dataRoot, "episodes");
-      const { visible, hiddenUnderscore } = listEpisodes(root, this.deps.fs);
+      const tree = listEpisodeTree(root, this.deps.fs);
+      const visible = [...tree.plain, ...tree.projects.flatMap((p) => p.members)].sort((a, b) => b.mtimeMs - a.mtimeMs);
       this.episodes = new Map(visible.map((e) => [e.epKey, e]));
-      this.projects = new Map(listEpisodeTree(root, this.deps.fs).projects.map((p) => [p.projKey, p]));
-      this.hiddenUnderscore = hiddenUnderscore;
+      this.projects = new Map(tree.projects.map((p) => [p.projKey, p]));
+      this.hiddenUnderscore = tree.hiddenUnderscore;
     } catch (e) {
       this.diag(`期列表读取失败：${errnoOf(e) ?? String(e)}`);
     }
+  }
+
+  private async refreshSingleProjectMeta(projKey: string): Promise<void> {
+    if (!this.repoRoot || this.reach !== "ok" || this.switching) return;
+    const p = this.projects.get(projKey);
+    if (!p) return;
+    const gen = this.repoGen;
+    const meta = await this.fetchProjectMeta(p.abs);
+    if (gen !== this.repoGen) return;
+    if (meta) this.projectMeta.set(projKey, meta);
+    else this.projectMeta.delete(projKey);
+    this.push({ v: 1, kind: "push", topic: "episodes.summary", data: this.episodesList() });
   }
 
   async refreshEpisodeStatuses(): Promise<void> {
@@ -617,6 +643,17 @@ export class HostService {
         return this.health();
       case "app.requestRepoRootChange":
         return this.requestRepoRootChange();
+      case "app.setThemeSource": {
+        if (p.theme !== "system" && p.theme !== "light" && p.theme !== "dark") {
+          throw new RpcFail("E_BAD_REQUEST", `未知主题模式 ${String(p.theme)}`);
+        }
+        this.deps.setThemeSource(p.theme);
+        return null;
+      }
+      case "app.prefs":
+        return this.appPrefs();
+      case "app.setDefaults":
+        return this.appSetDefaults(p.model, p.effort);
       case "episodes.list":
         this.refreshEpisodes();
         return this.episodesList();
@@ -641,7 +678,7 @@ export class HostService {
       case "approval.decide":
         return this.decide(parseDecideParams(params as Record<string, unknown>));
       case "episode.create":
-        return p.project === undefined ? this.createEpisode(p.name) : this.createVolume(p.project, p.name);
+        return p.project === undefined ? this.createEpisode(p.name, p.fromIdea) : this.createVolume(p.project, p.name);
       case "project.create":
         return this.createProject(p.name);
       case "conv.send":
@@ -721,6 +758,8 @@ export class HostService {
         return this.voiceGlobal(this.epForIo(p.epKey), readingOf(p), p.supersede === "true");
       case "voice.retts":
         return this.voiceReTts(this.epForIo(p.epKey));
+      case "voice.clearStaleLock":
+        return this.voiceClearStaleLock(this.epForIo(p.epKey));
       case "voice.review":
         return this.voiceReview(this.epForIo(p.epKey), p.review);
       case "time.surface":
@@ -1152,7 +1191,7 @@ export class HostService {
         readStore: (e) => readApprovalRecords(`${e.abs}/_agent/approvals_store.json`, this.deps.fs),
         fs: this.deps.fs,
         run: (t, args, tag) => this.core(t, args, tag),
-        confirm: (title, detail) => this.deps.confirm(title, detail),
+        confirm: (title, detail, opts) => this.deps.confirm(title, detail, opts),
         resnapshot: (k) => this.resnapshot(k),
       },
       p,
@@ -1207,7 +1246,13 @@ export class HostService {
         await Promise.allSettled([...this.inflight]);
         if (this.inflight.size === 0) await new Promise<void>((r) => setTimeout(r, 50)); // decide 停在非 spawn 处时轮询等待
       }
-      saveSettings(this.cfg.userData, { version: 1, repoRoot: chosen });
+      const prevSettings = loadSettings(this.cfg.userData);
+      saveSettings(this.cfg.userData, {
+        version: 1,
+        repoRoot: chosen,
+        ...(prevSettings?.defaultModel ? { defaultModel: prevSettings.defaultModel } : {}),
+        ...(prevSettings?.defaultEffort ? { defaultEffort: prevSettings.defaultEffort } : {}),
+      });
       this.subs.clear();
       this.active = null;
       this.summaries.clear();
@@ -1228,6 +1273,34 @@ export class HostService {
     }
     void this.refreshEpisodeStatuses();
     return { changed: true, repoRoot: this.repoRoot, problem: this.repoRootProblem };
+  }
+
+  // ---------------- A2：用户主动保存的全局默认模型 / 推理强度 ----------------
+
+  private appPrefs(): AppPrefs {
+    const s = loadSettings(this.cfg.userData);
+    return {
+      defaultModel: s?.defaultModel ?? null,
+      defaultEffort: s?.defaultEffort ?? null,
+    };
+  }
+
+  private appSetDefaults(model?: string, effort?: string): AppPrefs {
+    const cur = loadSettings(this.cfg.userData);
+    const repoRoot = cur?.repoRoot ?? this.repoRoot;
+    if (!repoRoot) throw new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "尚未选择仓库，无法保存默认配置");
+    const nextModel = model === undefined ? (cur?.defaultModel ?? null) : (model.trim() || null);
+    const nextEffort = effort === undefined ? (cur?.defaultEffort ?? null) : (effort.trim() || null);
+    if (nextModel !== null && nextModel.length > 200) throw new RpcFail("E_BAD_REQUEST", "模型名过长");
+    if (nextEffort !== null && nextEffort.length > 64) throw new RpcFail("E_BAD_REQUEST", "推理强度名称过长");
+    saveSettings(this.cfg.userData, {
+      version: 1,
+      repoRoot,
+      ...(nextModel !== null ? { defaultModel: nextModel } : {}),
+      ...(nextEffort !== null ? { defaultEffort: nextEffort } : {}),
+    });
+    this.sessions.pruneStaleDefaultPending();
+    return { defaultModel: nextModel, defaultEffort: nextEffort };
   }
 
   // ---------------- D81：企划（建企划、在企划下建卷、卷表） ----------------
@@ -1297,19 +1370,31 @@ export class HostService {
    * 租约，必报「进行中」）；结束不了 → 不建期、如实报错。core 非零时期可能已建为空期（core 的原子性
    * 约定），重试同名会撞「期目录已存在」——换名或进那个空期继续，原文透传，不另造恢复通道。
    */
-  private createEpisode(name: string): Promise<CreatedEpisode> {
+  private createEpisode(name: string, fromIdea?: string): Promise<CreatedEpisode> {
     if (this.sessionQuitting) return Promise.reject(new RpcFail("E_BUSY", "正在退出"));
     if (this.choosing || this.switching) return Promise.reject(new RpcFail("E_BUSY", "正在切换仓库"));
     if (!this.repoRoot) return Promise.reject(new RpcFail("E_UNREACHABLE", this.repoRootProblem ?? "仓库未就绪"));
+    if (fromIdea !== undefined && fromIdea !== "true" && fromIdea !== "false") {
+      return Promise.reject(new RpcFail("E_BAD_REQUEST", "fromIdea 必须是 true 或 false"));
+    }
     const gen = this.repoGen;
     // 全程登记在 inflight（含 endForMigration 等待），防止切仓绕过迁移空窗把新期建进新仓库
     return this.track(
       (async () => {
-        // D58：只带当前这段（人裁决）——结束选题活会话之前记下它的会话号；若处于「＋ 新会话」空白态则不带走无关旧段
+        // A6：支持勾选「带入当前选题讨论」（缺省 true 保持向后兼容）；显式 false 时完全不碰选题会话；
+        // 显式 true 时一律视为要带入（即便刚点过「＋ 新会话」，若后台仍有运行中的选题段也须先弹确认）
         const liveIdea = this.sessions.liveSid("idea");
-        const skipIdea = this.ideaFresh && liveIdea === null;
+        const skipIdea = fromIdea === "false" || (fromIdea !== "true" && this.ideaFresh && liveIdea === null);
         const ideaSid = liveIdea !== null && SESSION_ID_RE.test(liveIdea) ? liveIdea : null;
-        if (liveIdea !== null && ideaSid === null) this.diag(`选题活会话号形状不对（${liveIdea}），建期改带最近段`);
+        if (!skipIdea && liveIdea !== null && ideaSid === null) this.diag(`选题活会话号形状不对（${liveIdea}），建期改带最近段`);
+        if (!skipIdea && this.sessions.hasAnyBusy("idea")) {
+          const ok = await this.deps.confirm(
+            "选题会话正在运行，仍要带入并新建期？",
+            "带入选题记录需要先结束正在运行的选题会话；取消不会中断当前讨论。",
+            { kind: "warning", confirmLabel: "结束并带入" },
+          );
+          if (!ok) throw new RpcFail("E_BUSY", "已取消建期（选题会话仍在运行）");
+        }
         if (!skipIdea && !(await this.sessions.endForMigration("idea"))) {
           throw new RpcFail("E_BUSY", "选题会话未能结束，未建期（选题记录未动）；请稍后重试");
         }
@@ -1545,40 +1630,51 @@ export class HostService {
     return this.sessions.snapshot(target.key);
   }
 
-  /** 删除 = 移进 `_agent/session-trash/`（人选语义，可手工找回）。先原生确认，取消则一字不动。
-   * D157：只结束**被删那段**（若它有活进程，不管是不是 focused）；其余段照旧在后台跑。 */
-  private async convDelete(convKey: string, sid: string): Promise<{ deleted: boolean; moved: number }> {
+  /** A4：移入回收站（可一键撤销还原）。空闲/历史会话一键移入不弹阻断弹窗；仅正在运行或有待答卡的会话先弹原生警告确认。
+   * D157：只结束被删那段（若它有活进程，不管是不是 focused）；其余段照旧在后台跑。 */
+  private async convDelete(convKey: string, sid: string): Promise<{ deleted: boolean; moved: number; file?: string }> {
     this.checkSid(sid);
     const target = this.adminConv(convKey);
     const idea = target.key === "idea";
     const row = (await this.convSessions(convKey)).find((r) => r.sid === sid);
     if (!row) throw new RpcFail("E_STALE", "该会话已不存在");
-    const running = this.sessions.liveSidExists(target.key, sid);
-    const when = relTimeOfIso(row.lastActivity, this.deps.now());
-    const detail = [
-      row.title || "（没有用户消息）",
-      `${row.messages} 条消息 · 最后活动 ${when}`,
-      "将移到回收站，需要时可随时还原或彻底删除。",
-      ...(running ? ["这段会话仍在运行，会先停止它。"] : []),
-    ].join("\n");
-    if (!(await this.deps.confirm("把这个会话移到回收站？", detail, { kind: "warning", confirmLabel: "移到回收站" }))) return { deleted: false, moved: 0 };
+    const st = this.sessions.sidStatus(target.key, sid);
+    const needsConfirm = st.running || st.openCards > 0;
+    if (needsConfirm) {
+      const when = relTimeOfIso(row.lastActivity, this.deps.now());
+      const detail = [
+        row.title || "（没有用户消息）",
+        `${row.messages} 条消息 · 最后活动 ${when}`,
+        "这段会话仍在运行或有待答审批卡，移入回收站会先停止它（之后可从回收站还原）。",
+      ].join("\n");
+      if (!(await this.deps.confirm("把这个正在运行的会话移到回收站？", detail, { kind: "warning", confirmLabel: "停止并移到回收站" }))) {
+        return { deleted: false, moved: 0 };
+      }
+    }
     // 只结束被删那段（core 的 delete 要求目标 sid 无活进程；别的段不受影响）
-    if (running) {
+    if (st.live) {
       if (!(await this.sessions.endSidAndWait(target.key, sid))) throw new RpcFail("E_SESSION", "该会话未能在宽限内退出");
       this.sessions.dropSid(target.key, sid);
     }
     const r = idea ? await this.core("DELETE_IDEA_SESSION", { sid }) : await this.core("DELETE_SESSION", { ep: target.abs as string, sid });
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
-    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "删除会话超时", tails);
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "移入回收站超时", tails);
     if (r.code === 3) throw new RpcFail("E_SESSION_LOCKED", r.stderrTail.trim() || (idea ? "该选题会话仍在运行" : "该会话仍在运行"), tails);
-    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `删除会话失败（core 退出码 ${r.code}）`, tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `移入回收站失败（退出码 ${r.code}）`, tails);
     let moved = 0;
+    let file: string | null = null;
     try {
-      moved = Number((JSON.parse(r.stdoutTail.trim()) as { moved: unknown }).moved) || 0;
+      const parsed = JSON.parse(r.stdoutTail.trim()) as { moved: unknown; trash?: unknown };
+      moved = Number(parsed.moved) || 0;
+      if (typeof parsed.trash === "string") {
+        const base = parsed.trash.split("/").pop() ?? "";
+        if (base.endsWith(".jsonl")) file = base;
+      }
     } catch {
-      throw new RpcFail("E_CORE", "core 的 /delete-session 输出不是 JSON", tails);
+      this.diag(`delete-session 返回异常：${r.stdoutTail.slice(0, 200)}`);
+      throw new RpcFail("E_CORE", "移入回收站返回格式异常", tails);
     }
-    return { deleted: true, moved };
+    return { deleted: true, moved, ...(file ? { file } : {}) };
   }
 
   /** D66：回收站列表（纯读，经 core `/list-trash`；红线 3：桌面端不读会话记录）。 */
@@ -1923,6 +2019,15 @@ export class HostService {
     const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
     if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `重配失败（退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
     return { started: true };
+  }
+
+  /** H7：一键清除已失效的 .apply_patch.lock（core 复核 pid 已不在才删，仍在跑则拒删） */
+  private async voiceClearStaleLock(e: EpisodeEntry): Promise<{ lines: string[] }> {
+    const r = await this.core("CLEAR_TTS_STALE_LOCK", { ep: e.abs });
+    const tails = { stdoutTail: r.stdoutTail, stderrTail: r.stderrTail };
+    if (r.timedOut) throw new RpcFail("E_TIMEOUT", "清理残留锁超时", tails);
+    if (r.code !== 0) throw new RpcFail("E_CORE", r.stderrTail.trim() || `清理残留锁失败（退出码 ${r.code ?? `信号 ${r.signal}`}）`, tails);
+    return { lines: linesOf(r.stdoutTail, "") };
   }
 
   private timeSurface(e: EpisodeEntry, stop: string, visible: boolean): null {

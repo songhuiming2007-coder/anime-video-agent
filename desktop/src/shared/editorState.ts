@@ -11,6 +11,8 @@ export interface BaselineFp {
 export interface ScriptEditorState {
   /** 磁盘基线指纹；null = `02-script.md` 不存在（「从草稿新建」形态） */
   baselineFp: BaselineFp | null;
+  /** 最近一次载入/保存的基线正文（撤销回完全一致时可自动清除 dirty） */
+  baselineText: string;
   text: string;
   /** 与磁盘版本相比未保存的改动 */
   dirty: boolean;
@@ -24,23 +26,26 @@ export type EditorAction =
   | { type: "edit"; text: string }
   | { type: "saving" }
   | { type: "saved"; baselineFp: BaselineFp }
+  | { type: "save-failed" }
   | { type: "conflict" }
   | { type: "reload"; text: string; baselineFp: BaselineFp | null };
 
-export const emptyEditor: ScriptEditorState = { baselineFp: null, text: "", dirty: false, conflict: false, saving: false };
+export const emptyEditor: ScriptEditorState = { baselineFp: null, baselineText: "", text: "", dirty: false, conflict: false, saving: false };
 
 export function reduceEditor(s: ScriptEditorState, a: EditorAction): ScriptEditorState {
   switch (a.type) {
     case "loaded":
     case "reload":
-      return { baselineFp: a.baselineFp, text: a.text, dirty: false, conflict: false, saving: false };
+      return { baselineFp: a.baselineFp, baselineText: a.text, text: a.text, dirty: false, conflict: false, saving: false };
     case "edit":
-      return a.text === s.text ? s : { ...s, text: a.text, dirty: true };
+      return a.text === s.text ? s : { ...s, text: a.text, dirty: a.text !== s.baselineText };
     case "saving":
       return { ...s, saving: true };
     case "saved":
       // 保存成功：新基线、脏标记与冲突清除
-      return { ...s, baselineFp: a.baselineFp, dirty: false, conflict: false, saving: false };
+      return { ...s, baselineFp: a.baselineFp, baselineText: s.text, dirty: false, conflict: false, saving: false };
+    case "save-failed":
+      return { ...s, saving: false };
     case "conflict":
       return { ...s, saving: false, conflict: true };
   }

@@ -13,11 +13,11 @@ export function pythonPathOf(repoRoot: string): string {
 
 /** 通过 → null；否则返回人读的原因 */
 export function repoRootProblem(repoRoot: string, probe: RepoRootProbe): string | null {
-  if (!repoRoot.startsWith("/")) return "不是绝对路径";
+  if (!repoRoot.startsWith("/")) return "请选择绝对路径目录";
   const py = probe.readText(`${repoRoot}/pyproject.toml`);
-  if (py === null) return "pyproject.toml 不存在";
-  if (!/^name\s*=\s*"anime-video-agent"\s*$/m.test(py)) return "pyproject.toml 的 name 不是 anime-video-agent";
-  if (!probe.isExecutable(pythonPathOf(repoRoot))) return ".venv/bin/python 不可执行";
-  if (!probe.exists(`${repoRoot}/pipeline/agent/cli.py`)) return "pipeline/agent/cli.py 不存在";
+  if (py === null) return "所选目录不是 anime-video-agent 仓库（找不到 pyproject.toml）";
+  if (!/^name\s*=\s*"anime-video-agent"\s*$/m.test(py)) return "所选目录不是 anime-video-agent 仓库（pyproject.toml 名称不匹配）";
+  if (!probe.isExecutable(pythonPathOf(repoRoot))) return "缺少虚拟环境（.venv/bin/python 不可执行，请先在仓库目录运行 uv sync）";
+  if (!probe.exists(`${repoRoot}/pipeline/agent/cli.py`)) return "仓库内容不完整（找不到 pipeline/agent/cli.py）";
   return null;
 }

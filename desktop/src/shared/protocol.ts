@@ -8,6 +8,9 @@ export const PROTOCOL_VERSION = 1 as const;
 export type Method =
   | "app.health" // repoRoot/python/capabilities/codeFreeze/buildProvenance/reach
   | "app.requestRepoRootChange" // 无参数：由 main 弹原生对话框（PR4）
+  | "app.setThemeSource" // { theme }：同步原生主题到 main（对话框/滚动条/沙箱 iframe prefers-color-scheme）
+  | "app.prefs" // {} → AppPrefs：用户显式保存的默认模型与推理强度（A2）
+  | "app.setDefaults" // { model?, effort? } → AppPrefs：点击「设为默认」写入 settings.json（空串 = 清除，回退 config 默认）
   | "episodes.list"
   | "episode.subscribe" // { epKey } → EpisodeSnapshot；不触发 heal
   | "episode.activate" // { epKey }：设为活跃期，触发 H1
@@ -54,6 +57,7 @@ export type Method =
   | "voice.check" // { epKey, word, pinyin? | homophone?+expect? | latin? } → VoiceCheckJson（spawn VOICE_CHECK，只读）
   | "voice.global" // { epKey, word, pinyin? | homophone?+expect? | latin?, supersede? } → VoiceCheckJson：原生确认框后 spawn VOICE_GLOBAL（写 config/voice.json 一个键）
   | "voice.retts" // { epKey }：长任务，原生确认框后 spawn RUN_TTS（普通重跑，只重配念法变了的段）
+  | "voice.clearStaleLock" // { epKey }：一键清除已失效的 .apply_patch.lock（core 复核 pid 已不在才删）
   | "voice.review" // { epKey, review: "voice=N,prosody=N,misread=N" } → { lines }（spawn TTS_REVIEW；D50-A S7：03.5 卡内打点）
   | "time.surface" // { epKey, stop, visible }：审阅面可见性（计时口径的唯一入口，Spec 11 §2.4）
   | "time.read" // { epKey } → TimeReadJson（host 直读 human_time.json）
@@ -98,6 +102,9 @@ export type Envelope =
 export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional: readonly string[] }> = {
   "app.health": { required: [], optional: [] },
   "app.requestRepoRootChange": { required: [], optional: [] },
+  "app.setThemeSource": { required: ["theme"], optional: [] },
+  "app.prefs": { required: [], optional: [] },
+  "app.setDefaults": { required: [], optional: ["model", "effort"] },
   "episodes.list": { required: [], optional: [] },
   "episode.subscribe": { required: ["epKey"], optional: [] },
   "episode.activate": { required: ["epKey"], optional: [] },
@@ -107,7 +114,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "tree.list": { required: ["epKey", "relDir"], optional: [] },
   "shots.list": { required: [], optional: [] },
   "approval.decide": { required: ["epKey", "approvalId", "stop", "decision"], optional: ["feedback", "cover", "title"] },
-  "episode.create": { required: ["name"], optional: ["project"] },
+  "episode.create": { required: ["name"], optional: ["project", "fromIdea"] },
   "project.create": { required: ["name"], optional: [] },
   "conv.send": { required: ["convKey", "text"], optional: [] },
   "conv.resume": { required: ["convKey"], optional: [] },
@@ -139,6 +146,7 @@ export const PARAM_KEYS: Record<Method, { required: readonly string[]; optional:
   "voice.check": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "latin"] },
   "voice.global": { required: ["epKey", "word"], optional: ["pinyin", "homophone", "expect", "latin", "supersede"] },
   "voice.retts": { required: ["epKey"], optional: [] },
+  "voice.clearStaleLock": { required: ["epKey"], optional: [] },
   "voice.review": { required: ["epKey", "review"], optional: [] },
   "time.surface": { required: ["epKey", "stop", "visible"], optional: [] },
   "time.read": { required: ["epKey"], optional: [] },
@@ -652,6 +660,11 @@ export type Provenance =
   | { kind: "dirty"; gitHead: string }
   | { kind: "stale"; gitHead: string }
   | { kind: "incomparable"; gitHead: string };
+
+export interface AppPrefs {
+  defaultModel: string | null;
+  defaultEffort: string | null;
+}
 
 export interface Health {
   protocolVersion: typeof PROTOCOL_VERSION;

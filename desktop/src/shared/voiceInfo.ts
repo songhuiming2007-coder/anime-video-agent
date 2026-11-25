@@ -145,7 +145,13 @@ export function clock(iso: string, today: string): string {
  * 合成中 > 排队中 > 失败 / 中断 / 本轮未完成 > 待重配 > 已重配·待复听 / 已复听。
  * 「待重配」压过「已重配」：重配完又标了新错，眼下要做的是再配一次，不是去听上一版。
  */
-export function segStatus(info: VoiceInfoJson, label: string, heard: ReadonlySet<string>, today: string): SegStatus | null {
+export function segStatus(
+  info: VoiceInfoJson,
+  label: string,
+  heard: ReadonlySet<string>,
+  today: string,
+  redoSet?: ReadonlySet<string>,
+): SegStatus | null {
   const sy = info.synth;
   const doneAt = sy?.done[label];
   if (sy !== null && sy.queue.includes(label) && doneAt === undefined) {
@@ -160,13 +166,23 @@ export function segStatus(info: VoiceInfoJson, label: string, heard: ReadonlySet
     }
     if (sy.state !== "ok") return { kind: "unfinished", text: "本轮未配到" };
   }
-  if (redoSegments(info).includes(label)) return { kind: "redo", text: "待重配" };
+  const isRedo = redoSet ? redoSet.has(label) : redoSegments(info).includes(label);
+  if (isRedo) return { kind: "redo", text: "待重配" };
   if (doneAt !== undefined) {
     return heard.has(heardKey(label, doneAt))
       ? { kind: "heard", text: `已重配 ${clock(doneAt, today)} · 已复听` }
       : { kind: "redone", text: `已重配 ${clock(doneAt, today)} · 待复听` };
   }
   return null;
+}
+
+/** 提取失败摘要行：Python traceback 首行只是「Traceback (most recent call last):」，取最后一条非空报错行更有用 */
+function errorHeadline(raw: string | null): string {
+  if (!raw) return "";
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return "";
+  if (/^Traceback\b/i.test(lines[0])) return lines[lines.length - 1];
+  return lines[0];
 }
 
 /** D87：段落列表上方的一行进度摘要；从没跑过 → null */
@@ -182,6 +198,9 @@ export function synthSummary(info: VoiceInfoJson, heard: ReadonlySet<string>, to
   const when = sy.finished_at ?? sy.started_at;
   const at = when === null ? "" : `${clock(when, today)} `;
   if (sy.state === "ok") {
+    if (doneLabels.length === 0) {
+      return { tone: "ok", text: `上次重配 ${at}完成：无需重配` };
+    }
     const unheard = doneLabels.filter((l) => !heard.has(heardKey(l, sy.done[l]))).length;
     const labelStr = doneLabels.length > 5 ? `${doneLabels.slice(0, 3).join("、")} 等 ${doneLabels.length} 段` : doneLabels.join("、");
     return {
@@ -192,7 +211,7 @@ export function synthSummary(info: VoiceInfoJson, heard: ReadonlySet<string>, to
   }
   const where = sy.current === null ? "" : `段 ${sy.current}`;
   if (sy.state === "failed") {
-    const why = (sy.error ?? "").split("\n")[0];
+    const why = errorHeadline(sy.error);
     return { tone: "danger", text: `重配失败 ${at}${where}，已完成 ${n}${why ? `：${why}` : ""}`, title: sy.error ?? undefined };
   }
   return { tone: "warn", text: `重配中断 ${at}${where}，已完成 ${n}（合成进程已不在）` };

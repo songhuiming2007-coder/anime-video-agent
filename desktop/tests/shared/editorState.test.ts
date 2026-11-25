@@ -12,7 +12,16 @@ function loaded(text = "正文"): ScriptEditorState {
 describe("TD-3 编辑器状态机", () => {
   it("装载：脏标记与冲突清零，基线为磁盘指纹", () => {
     const s = loaded();
-    expect(s).toEqual({ baselineFp: FP, text: "正文", dirty: false, conflict: false, saving: false });
+    expect(s).toEqual({ baselineFp: FP, baselineText: "正文", text: "正文", dirty: false, conflict: false, saving: false });
+  });
+
+  it("编辑后再撤回至与基线一致：dirty 自动清零", () => {
+    let s = loaded();
+    s = reduceEditor(s, { type: "edit", text: "正文改" });
+    expect(s.dirty).toBe(true);
+    s = reduceEditor(s, { type: "edit", text: "正文" });
+    expect(s.dirty).toBe(false);
+    expect(canSeal(s)).toBe(true);
   });
 
   it("编辑置 dirty；保存成功后基线更新、dirty/conflict 清除", () => {
@@ -42,7 +51,7 @@ describe("TD-3 编辑器状态机", () => {
     let s = loaded();
     s = reduceEditor(s, { type: "edit", text: "我的修改" });
     s = reduceEditor(s, { type: "reload", text: "磁盘版本", baselineFp: { size: "9", mtimeNs: "1" } });
-    expect(s).toEqual({ baselineFp: { size: "9", mtimeNs: "1" }, text: "磁盘版本", dirty: false, conflict: false, saving: false });
+    expect(s).toEqual({ baselineFp: { size: "9", mtimeNs: "1" }, baselineText: "磁盘版本", text: "磁盘版本", dirty: false, conflict: false, saving: false });
   });
 
   it("dirty 时「封板」与「从草稿新建」都禁用（红队 🔴-2 / MUT-16）", () => {

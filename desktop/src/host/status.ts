@@ -33,10 +33,13 @@ export function parseStatusJson(stdout: string): EpisodeStatusJson | null {
 
 export async function fetchStatus(repoRoot: string, epAbs: string): Promise<SnapshotStatus> {
   const r = await runCore("STATUS", { ep: epAbs }, { repoRoot });
-  if (r.timedOut) return { ok: false, code: "E_TIMEOUT", message: "status 超时；结果未知，请以稍后刷新为准" };
-  if (r.code !== 0) return { ok: false, code: "E_CORE", message: `status 退出 ${r.code}：${r.stderrTail.trim().slice(-400)}` };
-  if (r.stdoutOverflow || r.stdoutFull === null) return { ok: false, code: "E_CORE", message: `status --json 输出超过 ${STATUS_STDOUT_MAX_BYTES} 字节上限` };
+  if (r.timedOut) return { ok: false, code: "E_TIMEOUT", message: "读取期状态超时，请稍后刷新" };
+  if (r.code !== 0) {
+    const tail = r.stderrTail.trim().split("\n").filter(Boolean).at(-1) ?? `退出码 ${r.code}`;
+    return { ok: false, code: "E_CORE", message: `读取期状态失败：${tail.slice(-240)}` };
+  }
+  if (r.stdoutOverflow || r.stdoutFull === null) return { ok: false, code: "E_CORE", message: `期状态输出超过 ${STATUS_STDOUT_MAX_BYTES} 字节上限` };
   const v = parseStatusJson(r.stdoutFull);
-  if (!v) return { ok: false, code: "E_CORE", message: "status --json 输出无法解析" };
+  if (!v) return { ok: false, code: "E_CORE", message: "期状态输出格式异常" };
   return { ok: true, value: v };
 }

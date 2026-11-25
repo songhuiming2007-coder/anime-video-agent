@@ -55,6 +55,7 @@ export type Template =
   | "VOICE_CHECK"
   | "VOICE_GLOBAL"
   | "RUN_TTS"
+  | "CLEAR_TTS_STALE_LOCK"
   // D50-A S7：03.5 卡内结构化打点（只写 manifest 的 human_review，不重合成）
   | "TTS_REVIEW"
   // Spec 12 S8-R18：封面导入（字节走 stdin）
@@ -150,6 +151,7 @@ export interface TemplateArgs {
   VOICE_GLOBAL: VoiceReadingArgs & { ep: string; supersede: boolean };
   /** 长任务：同 RUN_TTS_APPLY_PATCH（无超时、退出不发信号） */
   RUN_TTS: { ep: string };
+  CLEAR_TTS_STALE_LOCK: { ep: string };
   /** review 在宿主侧先过 REVIEW_RE（只许三维 1–5），作为单个 argv 元素 */
   TTS_REVIEW: { ep: string; review: string };
   /** 原始文件名作为单个 argv 元素；图片字节走 stdin */
@@ -390,6 +392,10 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
       const { ep } = args as TemplateArgs["RUN_TTS"];
       return { argv: [py, "-m", "pipeline.agent.cli", ep, "/run", "tts"], timeoutMs: null, homebrewPath: true };
     }
+    case "CLEAR_TTS_STALE_LOCK": {
+      const { ep } = args as TemplateArgs["CLEAR_TTS_STALE_LOCK"];
+      return { argv: [py, "-m", "pipeline.tts", ep, "--clear-stale-lock"], timeoutMs: SPAWN_TIMEOUT_SHORT_MS };
+    }
     case "TTS_REVIEW": {
       const { ep, review } = args as TemplateArgs["TTS_REVIEW"];
       if (!REVIEW_RE.test(review)) throw new Error(`打点格式不对：「${review}」`);
@@ -449,7 +455,7 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
     case "AUTH_START": {
       const { provider, mode, payload } = args as TemplateArgs["AUTH_START"];
       const argv = [py, "-m", "pipeline.agent.cli", "--auth-start", checkedProvider(provider)];
-      if (mode) argv.push(mode);
+      if (mode) argv.push(checkedAuthMode(mode));
       if (payload) argv.push("--stdin");
       return {
         argv,
@@ -480,9 +486,16 @@ export function buildArgv<T extends Template>(t: T, args: TemplateArgs[T], repoR
   }
 }
 
+const AUTH_MODES = new Set(["api_key", "proxy", "oauth_pkce", "oauth_device"]);
+
 function checkedProvider(provider: string): string {
   if (!/^[a-z0-9-]+$/.test(provider)) throw new Error(`服务商 ID 形状不对：「${provider}」`);
   return provider;
+}
+
+function checkedAuthMode(mode: string): string {
+  if (!AUTH_MODES.has(mode)) throw new Error(`认证模式不合法：「${mode}」`);
+  return mode;
 }
 
 /** D80：标题作为单个 argv 元素（等号形式）传给 core；不合格抛错不 spawn（core 再按同规则校验） */

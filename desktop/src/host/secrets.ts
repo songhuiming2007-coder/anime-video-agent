@@ -65,8 +65,10 @@ export async function resolveWebKeys(
       names = names.slice(0, WEB_KEY_MAX);
     }
     const out: Record<string, string> = {};
-    for (const name of names) {
-      const read = await run("KEYCHAIN_READ", { envName: name }, { repoRoot });
+    const reads = await Promise.all(
+      names.map(async (name) => ({ name, read: await run("KEYCHAIN_READ", { envName: name }, { repoRoot }) })),
+    );
+    for (const { name, read } of reads) {
       if (read.code !== 0) {
         const why = read.code === 44 ? "钥匙串里没有该密钥" : `钥匙串读取失败（退出码 ${read.code ?? "signal"}）`;
         diag(`web 检索密钥 ${name}：${why}，该检索服务本会话未就绪｜${setupHint(name)}`);

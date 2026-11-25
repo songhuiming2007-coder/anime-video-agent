@@ -34,7 +34,9 @@ const GROUPS: readonly { title: string; prefix: RegExp; expected: readonly strin
 const PRODUCES: Readonly<Record<string, string>> = {
   tts: "03-audio",
   clips: "04-clips.json",
+  review: "04-review.html",
   render: "05-final.mp4",
+  qc: "06-check.log",
   cover: "07-cover",
 };
 

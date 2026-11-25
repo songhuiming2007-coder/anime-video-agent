@@ -9,14 +9,20 @@ const BY_EXT: Record<string, PreviewKind> = {
   ".mov": "video",
   ".wav": "audio",
   ".flac": "audio",
+  ".mp3": "audio",
+  ".m4a": "audio",
   ".png": "image",
   ".jpg": "image",
   ".jpeg": "image",
+  ".webp": "image",
   ".md": "markdown",
   ".json": "json",
+  ".jsonl": "text",
   ".log": "text",
   ".patch": "text",
   ".txt": "text",
+  ".srt": "text",
+  ".ass": "text",
 };
 
 export function previewKind(name: string): PreviewKind {

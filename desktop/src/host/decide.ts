@@ -5,6 +5,7 @@
 // 写路径只有 core 一条：host 自己从不写对象库、从不删文件（I1）。
 import type { ApprovalRecord, Reach, StopType } from "../shared/contracts";
 import { isStopType } from "../shared/contracts";
+import type { ConfirmOptions } from "../shared/lifecycle";
 import type { DecideParams, RpcError } from "../shared/protocol";
 import type { EpisodeEntry } from "./episodes";
 import type { FsProbe } from "./fsio";
@@ -12,7 +13,7 @@ import { gateMatches } from "./gateCheck";
 import type { HealResult } from "./heal";
 import type { CoreResult, SpawnTag, Template, TemplateArgs } from "./spawner";
 import type { StoreRead } from "./store";
-import { fingerprintsMatch } from "./store";
+import { changedFingerprints, fingerprintsMatch } from "./store";
 
 export class DecideFail extends Error {
   constructor(readonly error: RpcError) {
@@ -104,7 +105,7 @@ export interface DecideCtx {
   fs: FsProbe;
   run: <T extends Template>(t: T, args: TemplateArgs[T], tag: SpawnTag) => Promise<CoreResult>;
   /** D89：原生确认框（同 apply-patch 那套）；补丁段二次确认用 */
-  confirm: (title: string, detail: string) => Promise<boolean>;
+  confirm: (title: string, detail: string, opts?: ConfirmOptions) => Promise<boolean>;
   resnapshot: (epKey: string) => Promise<void>;
 }
 
@@ -160,7 +161,10 @@ export async function decide(
     if (!ctx.isPackaged) await ctx.testHook("after-heal"); // TA-9 变体 3 在此改写产物，单独考 fingerprintsMatch
     const obj = findById(ctx.readStore(ep!), p.approvalId); // 闸 2：对象
     if (!obj || obj.type !== p.stop || !ackable(obj, p.decision)) fail("E_STALE", "该审批已被处理或更新，请以刷新后的卡片为准");
-    if (!fingerprintsMatch(ep!.abs, obj!.artifacts, ctx.fs)) fail("E_STALE", "对应文件在你审阅后已发生变动，请重新审阅后再决定"); // 闸 2：指纹
+    if (!fingerprintsMatch(ep!.abs, obj!.artifacts, ctx.fs)) {
+      const changed = typeof changedFingerprints === "function" ? changedFingerprints(ep!.abs, obj!.artifacts, ctx.fs) : [];
+      fail("E_STALE", changed.length > 0 ? `对应文件在你审阅后已发生变动（${changed.join("、")}），请重新审阅后再决定` : "对应文件在你审阅后已发生变动，请重新审阅后再决定"); // 闸 2：指纹
+    }
     if (p.decision === "approve" && p.stop === "05" && obj!.status === "approved" && !gateMatches(ep!.abs, obj!.artifacts, ctx.fs)) {
       fail("E_GATE_MISMATCH", "批准文件对应的不是你审阅的版本"); // 已对齐待确认：先核验再只做确认
     }
@@ -171,13 +175,14 @@ export async function decide(
     if (p.decision === "approve" && p.stop === "05" && obj!.status === "pending" && ctx.existsDir(`${ep!.abs}/04-patch`)) {
       const q = await ctx.run("REVIEW_PATCH_SEGS", { ep: ep!.abs }, { decide: decideId });
       if (q.timedOut) fail("E_TIMEOUT", "补丁段查询超时，未批准", tailsOf(q));
-      if (q.code !== 0) fail("E_CORE", `补丁段查询失败：core 退出码 ${q.code ?? `信号 ${q.signal}`}`, tailsOf(q));
+      if (q.code !== 0) fail("E_CORE", `补丁段查询失败（退出码 ${q.code ?? `信号 ${q.signal}`}）`, tailsOf(q));
       const segs = parsePatchSegs(q.stdoutTail);
       if (segs === null) fail("E_CORE", "补丁段查询输出无法解析，未批准", tailsOf(q));
       if (segs!.length > 0) {
         const ok = await ctx.confirm(
           `本期有 ${segs!.length} 个补丁段，确认已逐段看过？`,
           `段 ${segs!.join("、")} 用的是本期补丁池里的外部素材 / 补丁画面，不是正片检索出来的。确认每一段画面都核对过再批准。`,
+          { kind: "warning", confirmLabel: "确认已核对并批准" },
         );
         if (!ok) return { approvalId: p.approvalId, decision: p.decision, cancelled: true }; // 人取消：不 spawn、不写
         confirmPatch = true;
@@ -185,7 +190,7 @@ export async function decide(
     }
     for (const s of plan(p, obj!, ep!.abs, confirmPatch)) {
       const r = await ctx.run(s.t, s.args, { decide: decideId });
-      if (r.timedOut) fail("E_TIMEOUT", "结果未知，请以稍后刷新为准", tailsOf(r));
+      if (r.timedOut) fail("E_TIMEOUT", "操作超时，结果未知，请以稍后刷新为准", tailsOf(r));
       if (r.code !== 0) fail("E_CORE", coreErrorDetail(r), tailsOf(r));
       if (s.t === "REVIEW_APPROVE" && !gateMatches(ep!.abs, obj!.artifacts, ctx.fs)) {
         fail("E_GATE_MISMATCH", "批准文件对应的不是你审阅的版本"); // 闸 3：第 ② 步不 spawn；host 不删除该文件
