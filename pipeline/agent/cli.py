@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import io
 import json
 import os
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
@@ -269,16 +271,31 @@ def _parse_repl_approve(line: str) -> tuple[str, str | None, dict[str, str] | No
 
     finalize: dict[str, str] | None = None
     if rest:
-        token, after = _consume_one_shlex_token(rest)
-        if token != "--cover" or stop != "09":
+        if stop != "09":
             raise ValueError("invalid /approve syntax")
-        cover, rest = _consume_one_shlex_token(after)
-        if not cover.strip():
-            raise ValueError("empty cover")
-        token, title = _consume_one_shlex_token(rest)
-        if token != "--title" or not title.strip():
-            raise ValueError("missing --title")
-        finalize = {"cover": cover, "title": title}
+        token, after = _consume_one_shlex_token(rest)
+        if token == "--cover":
+            cover, rest2 = _consume_one_shlex_token(after)
+            if not cover.strip():
+                raise ValueError("empty cover")
+            token2, title = _consume_one_shlex_token(rest2)
+            if token2 != "--title" or not title.strip():
+                raise ValueError("missing --title")
+            finalize = {"cover": cover, "title": title}
+        elif token == "--title":
+            # 也兼容 `--title <标题…> --cover <路径>` 顺序，标题按原文保留（与 `--cover ... --title ...` 语义对称）
+            m_cov = re.search(r"(?:^|\s)--cover(?:\s+|$)", after)
+            if not m_cov:
+                raise ValueError("missing --cover")
+            title = after[: m_cov.start()].strip()
+            if not title:
+                raise ValueError("empty title")
+            cover, leftover = _consume_one_shlex_token(after[m_cov.end() :])
+            if not cover.strip() or leftover.strip():
+                raise ValueError("invalid --cover")
+            finalize = {"cover": cover, "title": title}
+        else:
+            raise ValueError("invalid /approve syntax")
     return (stop, approval_id, finalize)
 
 
@@ -339,7 +356,7 @@ def _handle_repl_approve(
                 from pipeline import review as review_mod
 
                 try:
-                    review_mod.approve_clips(ep_dir)
+                    review_mod.approve(ep_dir)
                 except SystemExit as exc:
                     if exc.code not in (0, None):
                         print(f"[ERROR] 自动批准排片失败：{exc}", file=sys.stderr)
@@ -424,22 +441,38 @@ def _episode_display_key(ep: Path) -> str:
         return ep.name
 
 
+def _display_width(text: str) -> int:
+    """估算终端等宽显示列宽（CJK 宽字符占 2 列，其余占 1 列）。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _pad_cjk(text: str, width: int) -> str:
+    pad = max(0, width - _display_width(text))
+    return text + (" " * pad)
+
+
 def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
     """打印根目录看板（Spec §2.3 看板与人时读数）。"""
+    from pipeline.status import publish_gaps
+
     print("\n" + "=" * 70)
     print("  anime-video-agent-ava 统一制片工作台 · 期看板")
     print("=" * 70)
     if not episodes:
-        print("  [INFO] 暂无期目录。可用 'ava new <期号>' 创建新期。")
+        print("  [INFO] 暂无期目录。可用 'ava new <期号>' 创建新期，或输入 'idea' 开始选题讨论。")
         print("=" * 70)
         return
 
+    name_col = max(24, min(36, max(_display_width(_episode_display_key(ep)) for ep in episodes) + 2))
     for i, ep in enumerate(episodes, 1):
         status = inspect_episode(ep)
         ep_label = _episode_display_key(ep)
-        line = f" [{i:2d}] {ep_label:<24} | {status.current_step}"
+        line = f" [{i:2d}] {_pad_cjk(ep_label, name_col)} | {status.current_step}"
         if status.is_blocked:
-            line += " [🛑 停机点]"
+            if status.current_step.startswith("09") and not publish_gaps(ep):
+                line += " [✅ 待发布]"
+            else:
+                line += " [🛑 停机点]"
 
         # 人时读数
         ht_file = ep / "human_time.json"
@@ -468,18 +501,25 @@ def print_board(episodes: list[Path], hidden_count: int = 0) -> None:
 def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
     """交互选择期目录（Spec §2.3 输入语义：回车=1，数字=序号，字符串=期名或 `<企划>/<卷>`，idea=选题会话）。"""
     if not episodes:
-        return None
+        try:
+            choice = input(f"暂无期目录 [{IDEA_KEYWORD}=选题会话]（直接回车或 q 退出）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return IDEA_KEYWORD if choice == IDEA_KEYWORD else None
 
     while True:
         first_label = _episode_display_key(episodes[0])
-        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]: "
+        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]（q 退出）: "
         try:
             choice = input(prompt).strip()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             return None
 
         if not choice:
             return episodes[0]
+
+        if choice.lower() in ("q", "/quit", "quit", "exit"):
+            return None
 
         if choice == IDEA_KEYWORD:
             return IDEA_KEYWORD
@@ -497,7 +537,10 @@ def select_episode_interactive(episodes: list[Path]) -> Path | str | None:
         if len(matched) == 1:
             return matched[0]
         elif len(matched) > 1:
-            print(f"[ERROR] 存在多个包含 '{choice}' 的期，请输入精确全名（如 <企划>/<卷>）或序号。")
+            print(f"[ERROR] 存在多个包含 '{choice}' 的期，请输入对应序号或完整名称：")
+            for ep in matched:
+                idx = episodes.index(ep) + 1
+                print(f"  [{idx:2d}] {_episode_display_key(ep)}")
             continue
 
         print(f"[ERROR] 未找到匹配 '{choice}' 的期，请重新输入。")
@@ -816,43 +859,74 @@ class VoicePlayer:
     """后台顺序播放器，支持随时终止整个播放序列（Spec §3.1）。"""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._stop_requested = False
         self._thread: threading.Thread | None = None
 
-    def play_all(self, wav_files: list[Path]) -> None:
+    def play_all(self, items: list[Path] | list[tuple[str, Path]]) -> None:
         self.stop()
-        self._stop_requested = False
+        with self._lock:
+            self._stop_requested = False
 
         def _run() -> None:
-            for wav in wav_files:
-                if self._stop_requested:
-                    break
+            for item in items:
+                with self._lock:
+                    if self._stop_requested:
+                        break
+                if isinstance(item, tuple):
+                    lbl, wav = item
+                else:
+                    lbl, wav = None, item
                 if not wav.exists():
                     continue
+                if lbl is not None:
+                    print(f"\n[播放] 段 {lbl} ({wav.name})", flush=True)
                 cmd = ["afplay", str(wav)] if sys.platform == "darwin" else ["aplay", str(wav)]
+                proc: subprocess.Popen | None = None
                 try:
-                    self._proc = subprocess.Popen(cmd)
-                    self._proc.wait()
+                    with self._lock:
+                        if self._stop_requested:
+                            break
+                        proc = subprocess.Popen(cmd)
+                        self._proc = proc
+                    proc.wait()
                 except Exception:
                     break
                 finally:
-                    self._proc = None
+                    with self._lock:
+                        if self._proc is proc:
+                            self._proc = None
 
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        self._stop_requested = True
-        if self._proc is not None:
+        with self._lock:
+            self._stop_requested = True
+            proc = self._proc
+            self._proc = None
+        if proc is not None:
             try:
-                self._proc.terminate()
+                proc.terminate()
             except Exception:
                 pass
-            self._proc = None
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=0.2)
         self._thread = None
+
+
+def _print_voice_help() -> None:
+    print("顺听指令:")
+    print("  听            顺序播放全量音频（输入 '停' 可随时终止）")
+    print("  听 <段号>     播放该段音频（例如：听 5，输入 '停' 终止）")
+    print("  停            停止当前播放")
+    print("  列表 / list   查看段落清单与待应用纠错")
+    print("  回滚 <段号>   恢复该段上一版音频（例如：回滚 5）")
+    print("  撤回 <id>     删除指定纠错条目（例如：撤回 2）")
+    print("  done          退出纠错并应用补丁 (--apply-patch)")
+    print("  /help         查看指令说明")
+    print("  /quit         退出纠错模式\n")
 
 
 def run_voice_loop(ep_dir: Path) -> int:
@@ -867,25 +941,53 @@ def run_voice_loop(ep_dir: Path) -> int:
     segs = tts.parse_script(script_path)
     audio_dir = ep_dir / "03-audio"
 
-    # 1. 打印段号清单（label -> seg-NN.wav 映射表，Y4）
-    print(f"\n[*] 顺听纠错模式已就绪：{ep_dir.name}")
-    print("--------------------------------------------------")
-    print("段落与音频映射表：")
     label_to_file: dict[str, Path] = {}
     total_duration = 0.0
+    seg_rows: list[str] = []
     for s in segs:
         wav_file = audio_dir / f"seg-{s.index:02d}.wav"
         label_to_file[str(s.label)] = wav_file
-        dur_str = ""
+        snippet = s.text.replace("\n", " ").strip()
+        if len(snippet) > 28:
+            snippet = snippet[:28] + "…"
         if wav_file.exists():
+            dur_str = ""
             try:
                 dur = tts.probe_duration(wav_file)
                 total_duration += dur
                 dur_str = f" ({dur:.1f}s)"
             except Exception:
                 pass
-        print(f"  段 {s.label:<4} -> {wav_file.name}{dur_str}")
-    print("--------------------------------------------------")
+            seg_rows.append(f"  段 {s.label:<4} -> {wav_file.name}{dur_str}  {snippet}")
+        else:
+            seg_rows.append(f"  段 {s.label:<4} -> {wav_file.name} (缺失)  {snippet}")
+
+    def _print_overview() -> None:
+        print("--------------------------------------------------")
+        print("段落与音频映射表：")
+        for row in seg_rows:
+            print(row)
+        try:
+            cur_entries, _ = corrections.load_corrections_raw(ep_dir)
+            pending_items = [c for c in cur_entries if not c.get("applied", False)]
+            if pending_items:
+                print("--------------------------------------------------")
+                print(f"当前待应用纠错（{len(pending_items)} 条）：")
+                for c in pending_items:
+                    detail = (
+                        f"「{c.get('word')}」→ {c.get('target_tone3')}"
+                        if c.get("action") == "inject"
+                        else f"{c.get('issue') or '换种子'}"
+                    )
+                    scope_tag = " [全局]" if c.get("scope") == "global" else ""
+                    print(f"  #{c.get('id')} 段 {c.get('segment')}{scope_tag}：{detail}")
+        except Exception:
+            pass
+        print("--------------------------------------------------")
+
+    # 1. 打印段号清单与待应用纠错
+    print(f"\n[*] 顺听纠错模式已就绪：{ep_dir.name}")
+    _print_overview()
 
     # 2. 打印 g2p.scan_heteronyms 预检清单
     full_text = "\n".join(s.text for s in segs)
@@ -898,14 +1000,7 @@ def run_voice_loop(ep_dir: Path) -> int:
             print(f"  · ... 另有 {len(hetero) - 10} 处多音字")
         print("--------------------------------------------------")
 
-    print("顺听指令:")
-    print("  听            顺序播放全量音频序列（输入 '停' 可随时终止）")
-    print("  听 <段号>     QuickTime 打开该段音频（例如：听 5）")
-    print("  停            停止当前音频播放序列")
-    print("  回滚 <段号>   恢复该段上一版音频（例如：回滚 5）")
-    print("  撤回 <id>     删除指定纠错条目（例如：撤回 2）")
-    print("  done          退出纠错并应用补丁 (--apply-patch)")
-    print("  /quit         退出纠错模式\n")
+    _print_voice_help()
 
     player = VoicePlayer()
 
@@ -926,6 +1021,14 @@ def run_voice_loop(ep_dir: Path) -> int:
                 print("[退出 /voice 模式]")
                 return 0
 
+            if line in ("/help", "help", "?"):
+                _print_voice_help()
+                continue
+
+            if line in ("列表", "list", "/list"):
+                _print_overview()
+                continue
+
             # 路由优先级（写死）：先全串匹配内建指令表，不中才进纠错解析器（Spec §3.1）
             if RE_STOP.fullmatch(line):
                 player.stop()
@@ -939,17 +1042,17 @@ def run_voice_loop(ep_dir: Path) -> int:
                 if not wav_path or not wav_path.exists():
                     print(f"[ERROR] 段 {target_label} 的音频文件不存在 ({wav_path})")
                     continue
-                print(f"[*] 正在打开段 {target_label} ({wav_path.name}) ...")
-                if sys.platform == "darwin":
-                    subprocess.Popen(["open", "-a", "QuickTime Player", str(wav_path)])
-                else:
-                    subprocess.Popen(["xdg-open", str(wav_path)])
+                print(f"[*] 正在播放段 {target_label} ({wav_path.name})，输入 '停' 可随时终止。")
+                player.play_all([(target_label, wav_path)])
                 continue
 
             if RE_PLAY_ALL.fullmatch(line):
-                print(f"[*] 开始顺序播放全量音频序列（预计总时长: {total_duration:.1f}s / {total_duration/60:.1f}分钟）。")
+                wav_list = [(str(s.label), label_to_file[str(s.label)]) for s in segs if label_to_file[str(s.label)].exists()]
+                if not wav_list:
+                    print("[ERROR] 当前没有任何已生成的音频文件可播放。")
+                    continue
+                print(f"[*] 开始顺序播放全量音频（共 {len(wav_list)} 段，预计总时长: {total_duration:.1f}s / {total_duration/60:.1f}分钟）。")
                 print("    输入 '停' 可随时终止播放。")
-                wav_list = [label_to_file[str(s.label)] for s in segs if label_to_file[str(s.label)].exists()]
                 player.play_all(wav_list)
                 continue
 
@@ -988,7 +1091,14 @@ def run_voice_loop(ep_dir: Path) -> int:
                         mf = json.loads(mf_path.read_text(encoding="utf-8"))
                         eng = mf.get("engine", "")
                         if "cuda" in eng:
-                            print(f"[*] 本期配音引擎为云端引擎 ({eng})，已跳过本地重配；请前往云端执行 apply-patch。")
+                            ep_rel = _episode_display_key(ep_dir)
+                            ep_cmd = shlex.quote(f"data/episodes/{ep_rel}") if " " in ep_rel else f"data/episodes/{ep_rel}"
+                            print(
+                                f"[*] 本期配音引擎为云端引擎 ({eng})，已跳过本地重配；请在云端执行：\n"
+                                f"    python -m pipeline.cloud push {ep_cmd} --with-audio\n"
+                                f"    python -m pipeline.cloud run {ep_cmd} tts -- --apply-patch\n"
+                                f"    python -m pipeline.cloud pull {ep_cmd}"
+                            )
                             return 0
                     except Exception:
                         pass
@@ -1007,14 +1117,27 @@ def run_voice_loop(ep_dir: Path) -> int:
                 print(f"[ERROR] {pe}")
                 continue
 
+            reading_check = None
+            if patch.kind == "pronunciation" and patch.word and patch.target_tone3:
+                reading_check = corrections.check_reading(patch.word, patch.target_tone3)
+                if not reading_check.ok:
+                    print("[ERROR] 读音校验未通过：")
+                    for chk_line in reading_check.lines():
+                        print(f"  {chk_line}")
+                    continue
+
             print("\n--------------------------------------------------")
             if patch.action == "inject":
-                print(f"[纠错补丁] 段落: {patch.segment}  范围: {patch.scope}")
+                scope_lbl = "本期所有段" if patch.scope == "global" else "本段"
+                print(f"[纠错补丁] 段落: {patch.segment}  范围: {scope_lbl}")
                 print(f"  目标词:   {patch.word}")
                 print(f"  听成:     {patch.heard or '（未指定）'}")
                 print(f"  目标读音: {patch.target_tone3}")
+                if reading_check and reading_check.warnings:
+                    for w in reading_check.warnings:
+                        print(f"  ! {w}")
             else:
-                print(f"[听感补丁] 段落: {patch.segment}  范围: {patch.scope}")
+                print(f"[听感补丁] 段落: {patch.segment}  范围: 本段")
                 print(f"  听感现象: {patch.issue}")
                 print(f"  调整动作: 钉新种子 (pin_seed)")
             if patch.scope == "global":
@@ -1023,10 +1146,10 @@ def run_voice_loop(ep_dir: Path) -> int:
 
             try:
                 confirm = input("确认落盘? [y/N]: ").strip().lower()
-            except EOFError:
+            except (EOFError, KeyboardInterrupt):
                 confirm = "n"
 
-            if confirm == "y":
+            if confirm in ("y", "yes"):
                 try:
                     entry = corrections.append_correction(ep_dir, patch)
                     act_desc = f"pin_seed ({entry.get('seed_pin')})" if entry['action'] == 'pin_seed' else f"inject ({entry.get('target_tone3')})"
@@ -1918,14 +2041,23 @@ class TtyChannel:
             self.show("card", {"text": f"{request.card_text}\n{prompt}"})
         started = time.time()
         try:
-            answer = input().strip().lower()
-        except EOFError:
-            answer = "n"
+            raw_answer = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            raw_answer = "n"
         latency = time.time() - started
-        decision = request.options[0] if answer == "y" else request.options[-1]
-        if answer == "a" and SESSION_ALLOW_DECISION in request.options:
+        low = raw_answer.lower()
+        feedback: str | None = None
+        if low in ("y", "yes"):
+            decision = request.options[0]
+        elif low == "a" and SESSION_ALLOW_DECISION in request.options:
             decision = SESSION_ALLOW_DECISION  # ADR-0030 决策 5：本会话同类都批准
-        return HumanAnswer(request.request_id, decision, None, "tty", latency)
+        else:
+            decision = request.options[-1]
+            if request.feedback_allowed and raw_answer:
+                m_fb = re.match(r"^(?:n|no)\s+(.+)$", raw_answer, re.IGNORECASE)
+                if m_fb:
+                    feedback = m_fb.group(1).strip() or None
+        return HumanAnswer(request.request_id, decision, feedback, "tty", latency)
 
 
 # 进程内唯一登记（Spec 9 §2.6）：只经 activate_host 设置，finally 里注销并释放租约。
@@ -2096,7 +2228,35 @@ def _handle_repl_auth(line: str, *, root: Path | None = None) -> None:
         if cur_model and cur_model.startswith(f"{logged_out}/"):
             _SESSION_HOST.set_model_override(dc_replace(_SESSION_HOST.model_override, model=None))
             reply += "\n本会话已切回默认模型"
-    print(reply if ok else f"[ERROR] {reply}")
+    if ok:
+        print(reply)
+    elif reply.startswith(("等待用户", "已暂停等待")):
+        print(f"[*] {reply}")
+    else:
+        print(f"[ERROR] {reply}")
+
+
+_SUBMODE_COMMANDS = ("/help", "/model", "/thinking", "/login", "/logout", "/compact", "/done", "/quit", "/exit")
+_REPL_COMMANDS = (
+    "/help", "/status", "/approvals", "/approve", "/reject", "/board", "/voice",
+    "/import-cover", "/memory", "/compact", "/model", "/thinking", "/login", "/logout",
+    "/scout", "/patch", "/asset", "/pipeline", "/chat", "/script", "/run", "/quit", "/exit",
+    *STOP_POINT_COMMANDS,
+)
+
+
+def _split_repl_tokens(line: str) -> list[str] | None:
+    """用 shlex 拆行保留含空格的引号路径；引号未闭合时打印报错并返回 None。"""
+    try:
+        return shlex.split(line)
+    except ValueError as exc:
+        print(f"[ERROR] 参数引号未闭合或格式有误：{exc}", file=sys.stderr)
+        return None
+
+
+def _suggest_command(cmd: str, candidates: tuple[str, ...]) -> str:
+    close = difflib.get_close_matches(cmd, candidates, n=2, cutoff=0.5)
+    return f"（你是不是想输入 {' 或 '.join(close)}？）" if close else ""
 
 
 def _handle_submode_slash(
@@ -2132,7 +2292,9 @@ def _handle_submode_slash(
     if head in ("/login", "/logout"):
         _handle_repl_auth(line, root=root)
         return True
-    return False
+    hint = _suggest_command(head, _SUBMODE_COMMANDS)
+    print(f"[ERROR] 当前模式不支持命令 '{head}'{hint}。输入 /help 查看可用命令，或输入 /done 返回主会话。")
+    return True
 
 
 def _run_agent_loop_body(
@@ -2354,10 +2516,10 @@ def run_memory_ack(ep_dir: Path | None, *, root: Path | None = None, store: Any 
         started = time.time()
         try:
             answer = input().strip().lower()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             answer = "n"
         state["latency"] = time.time() - started
-        return (answer == "y", state["latency"])
+        return (answer in ("y", "yes"), state["latency"])
 
     ok = memory.ack_external(root=root, confirm=confirm, store=store)
     if ok:
@@ -2679,7 +2841,10 @@ def _run_repl_body(
 
             if line == "/patch" or line.startswith("/patch "):
                 print("[*] 进入临时补料模式...")
-                extra = line[6:].strip().split() if line.startswith("/patch ") else []
+                tokens = _split_repl_tokens(line)
+                if tokens is None:
+                    continue
+                extra = tokens[1:]
                 if any(arg == "--type" or arg.startswith("--type=") for arg in extra):
                     print("[ERROR] /patch 别名已固定为 --type patch，如需指定其他类型请使用 /scout。", file=sys.stderr)
                     continue
@@ -2691,10 +2856,12 @@ def _run_repl_body(
                 continue
 
             if line == "/scout" or line.startswith("/scout "):
+                tokens = _split_repl_tokens(line)
+                if tokens is None:
+                    continue
                 _close_stop(ep_dir)
                 scout_entered_at = time.time()
-                extra = line[6:].strip().split() if line.startswith("/scout ") else []
-                rc = _exec_scout(ep_dir, extra)
+                rc = _exec_scout(ep_dir, tokens[1:])
                 if rc != 0:
                     _settle_scout()
                 continue
@@ -2759,15 +2926,15 @@ def _run_repl_body(
                 t_card = time.time()
                 try:
                     confirm = input().strip().lower()
-                except EOFError:
+                except (EOFError, KeyboardInterrupt):
                     print("\n[CANCEL] 已取消执行")
                     log_approval_decision(ep_dir, "run_pipeline", cmd_str, "n", latency_s=time.time() - t_card)
                     continue
 
                 latency_s = time.time() - t_card
-                norm_confirm = "y" if confirm == "y" else "n"
+                norm_confirm = "y" if confirm in ("y", "yes") else "n"
                 log_approval_decision(ep_dir, "run_pipeline", cmd_str, norm_confirm, latency_s=latency_s)
-                if confirm != "y":
+                if norm_confirm != "y":
                     print("[CANCEL] 已取消执行")
                     continue
 
@@ -2782,16 +2949,21 @@ def _run_repl_body(
                 continue
 
             # Spec 11 §3.1：停机点组件子命令与裸形态共用同一份分派
-            rc = _dispatch_stop_point(ep_dir, line.split())
+            tokens = _split_repl_tokens(line)
+            if tokens is None:
+                continue
+            rc = _dispatch_stop_point(ep_dir, tokens)
             if rc is not None:
                 continue
 
             # Spec 12 §3.1：图片导入（REPL 形态：源路径由 core 读文件）
-            rc = _dispatch_import_cover(ep_dir, line.split(), from_stdin=False)
+            rc = _dispatch_import_cover(ep_dir, tokens, from_stdin=False)
             if rc is not None:
                 continue
 
-            print(f"[ERROR] 未知命令: '{line}'。输入 /help 查看命令列表。")
+            head = tokens[0] if tokens else line
+            hint = _suggest_command(head, _REPL_COMMANDS)
+            print(f"[ERROR] 未知命令: '{line}'{hint}。输入 /help 查看命令列表。")
             continue
 
         # classify_input == "chat" -> Director 回合
@@ -2933,9 +3105,37 @@ def _print_idea_non_tty_help() -> None:
     )
 
 
+def _print_cli_help() -> None:
+    print(
+        "用法: ava [子命令 | <期目录或期名> [指令]]\n\n"
+        "常用入口:\n"
+        "  ava                                打开期看板并交互选期\n"
+        "  ava idea                           进入无期选题讨论会话\n"
+        "  ava new <期名> [--from-idea]       新建一期（可带入最近选题讨论）\n"
+        "  ava new-project <企划名>           新建多卷企划\n"
+        "  ava new --project <企划> <卷名>    在企划下新建一卷\n"
+        "  ava --continue [<会话号前缀>]      恢复最近写入期的上次会话\n"
+        "  ava <期名>                         进入该期交互工作台（REPL）\n"
+        "  ava <期名> --continue [<前缀>]     恢复该期的指定会话\n"
+        "  ava <期名> --sessions              列出该期的历史会话\n"
+        "  ava <期名> /status | /voice | /approvals | /run <命令>\n"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """ava 统一入口。"""
     args = argv if argv is not None else sys.argv[1:]
+
+    if args and args[0] in ("-h", "--help"):
+        _print_cli_help()
+        return 0
+
+    if sys.stdin.isatty():
+        with contextlib.suppress(Exception):
+            import termios
+
+            if termios.tcgetattr(sys.stdin.fileno())[3] & termios.ECHO:
+                import readline  # noqa: F401  # 仅在正常回显终端启用方向键与命令历史编辑
 
     # D170：--auth-status / --auth-start / --auth-complete / --auth-logout（桌面端与 CLI 共用 JSON 通道）
     if args and args[0].startswith("--auth-"):
@@ -3220,16 +3420,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 return 1
 
-        sub_cmd = " ".join(args[1:])
-        if sub_cmd == "/status":
+        if args[1] == "/status" and len(args) == 2:
             print(format_status(inspect_episode(ep_dir)))
             return 0
-        if sub_cmd.startswith("/run"):
+        if args[1] == "/run":
             status = inspect_episode(ep_dir)
             scope = scope_of(status)
             check_code_freeze()
+            cmd_line = shlex.join(args[2:]) if len(args) > 2 else ""
             outcome = run_pipeline(
-                sub_cmd[4:].strip(), episode_dir=ep_dir, scope=scope, confirmed=True
+                cmd_line, episode_dir=ep_dir, scope=scope, confirmed=True
             )
             if not outcome["ok"] and outcome["returncode"] is None:
                 print(f"[REJECT] {outcome['message']}", file=sys.stderr)
@@ -3237,17 +3437,16 @@ def main(argv: list[str] | None = None) -> int:
             if not outcome["ok"]:
                 print(f"[FAIL] {outcome['message']}", file=sys.stderr)
             return outcome["returncode"] or 0
-        if sub_cmd == "/voice":
+        if args[1] == "/voice" and len(args) == 2:
             return run_voice_session(ep_dir)
-        if sub_cmd == "/patch" or sub_cmd.startswith("/patch "):
-            extra = sub_cmd[6:].strip().split() if sub_cmd.startswith("/patch ") else []
+        if args[1] == "/patch":
+            extra = args[2:]
             if any(arg == "--type" or arg.startswith("--type=") for arg in extra):
                 print("[ERROR] /patch 别名已固定为 --type patch，如需指定其他类型请使用 /scout。", file=sys.stderr)
                 return 1
             return _exec_scout(ep_dir, ["--type", "patch"] + extra)
-        if sub_cmd == "/scout" or sub_cmd.startswith("/scout "):
-            extra = sub_cmd[6:].strip().split() if sub_cmd.startswith("/scout ") else []
-            return _exec_scout(ep_dir, extra)
+        if args[1] == "/scout":
+            return _exec_scout(ep_dir, args[2:])
 
         # Spec 3 §4.2 S3-R5：stdin 非 TTY 且带了未分派的子命令时，报错退出 2，不落入 REPL
         if not sys.stdin.isatty():

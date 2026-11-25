@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
@@ -169,31 +170,135 @@ def is_patch_segment(seg: dict, patch_pool: str | None = None) -> bool:
     return False
 
 
+_STATUS_LABELS: dict[str, str] = {
+    "no_match": "无匹配",
+    "short": "时长不足",
+    "error": "异常",
+}
+
 CSS = """
-:root { color-scheme: dark light; }
-body { margin:0; padding:24px; background:#14161a; color:#e6e8eb;
+:root {
+  color-scheme: dark light;
+  --bg: #14161a; --surface: #1b1e24; --surface-2: #22262f; --surface-bad: #2a1c1c;
+  --border: #262a31; --text: #e6e8eb; --text-2: #a8aeb6; --text-3: #8b929c;
+  --danger: #ff8a80; --danger-bg: rgba(255,138,128,.14);
+  --warn: #fbbf24; --warn-bg: rgba(251,191,36,.14);
+  --info: #7dd3fc; --info-bg: rgba(125,211,252,.13);
+  --accent: #60a5fa; --accent-bg: rgba(96,165,250,.18);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff; --surface: #f5f6f8; --surface-2: #ebedf0; --surface-bad: #fff1f0;
+    --border: #e3e6ea; --text: #1a1c20; --text-2: #4a515d; --text-3: #5f6672;
+    --danger: #c62828; --danger-bg: rgba(198,40,40,.10);
+    --warn: #9a5b00; --warn-bg: rgba(180,105,0,.11);
+    --info: #0369a1; --info-bg: rgba(3,105,161,.10);
+    --accent: #1d4ed8; --accent-bg: rgba(29,78,216,.11);
+  }
+}
+html { scroll-behavior: smooth; }
+body { margin:0; padding:24px; background:var(--bg); color:var(--text);
        font:15px/1.6 -apple-system,"PingFang SC",sans-serif; }
-h1 { font-size:20px; margin:0 0 4px; }
-.meta { color:#8b929c; font-size:13px; margin-bottom:24px; }
-.seg { border-top:1px solid #262a31; padding:18px 0; }
-.seg.bad { background:#2a1c1c; border-radius:8px; padding:18px 14px; margin:8px 0; }
-.no { display:inline-block; min-width:56px; color:#8b929c; font-variant-numeric:tabular-nums; }
-.say { font-size:16px; margin:0 0 4px; }
-.q { color:#8b929c; font-size:13px; margin-bottom:12px; }
-.q b { color:#c8ccd2; font-weight:500; }
+h1 { font-size:20px; margin:0 0 4px; letter-spacing:-.01em; }
+.meta { color:var(--text-3); font-size:13px; margin-bottom:16px; }
+.flt-r { position:absolute; opacity:0; pointer-events:none; }
+.topbar { position:sticky; top:0; z-index:10; display:flex; flex-wrap:wrap; align-items:center;
+          gap:10px 14px; padding:10px 14px; margin:0 -14px 18px;
+          background:color-mix(in srgb, var(--bg) 88%, transparent);
+          backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+          border-bottom:1px solid var(--border); }
+.seg-ctl { display:inline-flex; gap:2px; padding:2px; border-radius:8px;
+           background:var(--surface); border:1px solid var(--border); }
+.seg-ctl label { cursor:pointer; font-size:12.5px; padding:4px 10px; border-radius:6px;
+                 color:var(--text-2); user-select:none;
+                 transition:background 160ms ease, color 160ms ease; }
+.seg-ctl label:hover { color:var(--text); }
+#flt-all:checked ~ .topbar label[for="flt-all"],
+#flt-attn:checked ~ .topbar label[for="flt-attn"] {
+  background:var(--accent-bg); color:var(--accent); font-weight:600;
+}
+#flt-attn:checked ~ .seg:not(.attn) { display:none; }
+.jump-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:12px; color:var(--text-3); }
+.jump-chip { display:inline-block; padding:2px 8px; border-radius:999px; text-decoration:none;
+             font-variant-numeric:tabular-nums; font-weight:500;
+             background:var(--warn-bg); color:var(--warn);
+             transition:transform 140ms cubic-bezier(.22,1,.36,1), opacity 140ms ease; }
+.jump-chip.is-bad { background:var(--danger-bg); color:var(--danger); }
+.jump-chip:hover { opacity:.85; transform:translateY(-1px); }
+.all-ok { font-size:12.5px; color:var(--text-3); }
+.seg { border-top:1px solid var(--border); padding:18px 0; scroll-margin-top:68px;
+       content-visibility:auto; contain-intrinsic-size:auto 240px; }
+.seg.bad { background:var(--surface-bad); border-radius:10px; padding:18px 14px; margin:8px 0; border-top-color:transparent; }
+.seg:target { animation:seg-hit 1.1s cubic-bezier(.22,1,.36,1); }
+@keyframes seg-hit {
+  0% { box-shadow:0 0 0 2px var(--accent); background:var(--accent-bg); border-radius:10px; }
+  100% { box-shadow:0 0 0 0 transparent; }
+}
+.seg-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.say { font-size:16px; margin:0 0 4px; flex:1 1 360px; }
+.no { display:inline-block; min-width:56px; color:var(--text-3); font-variant-numeric:tabular-nums; font-weight:500; }
+.aud { height:30px; max-width:260px; flex:0 0 auto; border-radius:6px; }
+.q { color:var(--text-3); font-size:13px; margin-bottom:12px; display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+.q b { color:var(--text); font-weight:500; }
 .clip { display:flex; gap:14px; align-items:flex-start; margin:12px 0 0 56px; }
-.shots { display:flex; gap:4px; flex:0 0 auto; }
-.shots img { width:200px; border-radius:4px; display:block; }
-.side { font-size:13px; color:#a8aeb6; min-width:180px; }
-.side .line { color:#e6e8eb; margin-bottom:4px; }
-.side .n { color:#6f7681; font-variant-numeric:tabular-nums; }
-.flag { color:#ff8a80; font-weight:600; }
-@media (max-width:1100px){ .clip{flex-direction:column;margin-left:0} .shots img{width:31vw} }
-@media (prefers-color-scheme: light){
-  body{background:#fff;color:#1a1c20} .meta,.q,.side{color:#5f6672}
-  .seg{border-color:#e3e6ea} .seg.bad{background:#fff1f0} .side .line{color:#1a1c20}
+.shots { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; flex:1 1 0; max-width:618px; min-width:0; }
+.shots img { width:100%; height:auto; aspect-ratio:16/9; object-fit:cover; border-radius:6px;
+             background:var(--surface); display:block; }
+.shot-empty { grid-column:1 / -1; padding:18px 14px; border-radius:6px; font-size:12.5px;
+              background:var(--surface); border:1px dashed var(--border); color:var(--text-3); text-align:center; }
+.side { font-size:13px; color:var(--text-2); flex:0 1 280px; min-width:180px; }
+.side .line { color:var(--text); margin-bottom:4px; }
+.side .n { color:var(--text-3); font-variant-numeric:tabular-nums; }
+.flag { color:var(--danger); font-weight:600; }
+.badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:12px; font-weight:600; line-height:1.5; }
+.badge--danger { background:var(--danger-bg); color:var(--danger); }
+.badge--warn { background:var(--warn-bg); color:var(--warn); }
+.badge--info { background:var(--info-bg); color:var(--info); }
+@media (max-width:1100px) {
+  .clip { flex-direction:column; margin-left:0; }
+  .shots { max-width:none; width:100%; }
+  .side { flex-basis:auto; width:100%; }
+}
+@media (max-width:600px) {
+  body { padding:14px; }
+  .shots { gap:4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior:auto; }
+  .seg:target { animation:none; outline:2px solid var(--accent); outline-offset:2px; border-radius:10px; }
+  .seg-ctl label, .jump-chip { transition:none; }
 }
 """
+
+
+def _needs_attention(
+    s: dict,
+    audio_seg: dict | None,
+    manifest_present: bool,
+    patch_pool: str | None,
+) -> tuple[bool, bool]:
+    """返回 (是否需注意, 是否阻断级)。供顶部筛选与跳转条使用。"""
+    is_bad = s["status"] not in ("ok", "ok_extended")
+    if is_bad:
+        return True, True
+    align_bad = False
+    if not manifest_present or audio_seg is None:
+        align_bad = True
+    else:
+        got = sum(c["dur"] + c.get("extend", 0.0) for c in s.get("clips") or [])
+        if abs(got - audio_seg["duration"]) > SEG_TOL:
+            align_bad = True
+    if align_bad:
+        return True, True
+    if (
+        s["status"] == "ok_extended"
+        or is_patch_segment(s, patch_pool)
+        or s.get("ep_fell_back")
+        or s.get("filter_fell_back")
+        or any(c.get("presence") == 0.0 for c in s.get("clips") or [])
+    ):
+        return True, False
+    return False, False
 
 
 def build(episode: Path) -> Path:
@@ -219,33 +324,82 @@ def build(episode: Path) -> Path:
             lambda j: _frames(j[1], shots_dir, f"s{j[0]['index']:02d}c{j[2]}"), jobs))
     fmap = {(j[0]["index"], j[2]): f for j, f in zip(jobs, frames)}
 
-    bad = [s for s in segs if s["status"] not in ("ok", "ok_extended")]
     patch_pool = get_patch_pool(episode)
+    attn_map = {
+        s["index"]: _needs_attention(s, audio_by_index.get(s["index"]), manifest_present, patch_pool)
+        for s in segs
+    }
+    attn_segs = [s for s in segs if attn_map[s["index"]][0]]
+    bad = [s for s in segs if s["status"] not in ("ok", "ok_extended")]
+    gen_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     body = [
-        f"<h1>{html.escape(episode.name)}　排片抽检</h1>",
+        f"<h1>{html.escape(episode.name)}　审片页</h1>",
         f'<div class="meta">{len(segs)} 段 · '
         f'{sum(len(s["clips"]) for s in segs)} 片段 · '
-        f'{data["total_duration"]:.1f}s'
-        + (f' · <span class="flag">{len(bad)} 段需注意</span>' if bad else "")
-        + "<br>看画面对不对得上左边这句口播。不对就报段号，别的不用管。</div>",
+        f'{data["total_duration"]:.1f}s · 生成于 {gen_at}'
+        + (f' · <span class="badge badge--danger">{len(bad)} 段阻断</span>' if bad else "")
+        + (f' · <span class="badge badge--warn">{len(attn_segs)} 段需注意</span>' if attn_segs and len(attn_segs) != len(bad) else "")
+        + "<br>看画面对不对得上上方这句口播。不对就报段号，别的不用管。</div>",
     ]
+
+    if attn_segs:
+        chips = "".join(
+            f'<a class="jump-chip{" is-bad" if attn_map[s["index"]][1] else ""}" '
+            f'href="#seg-{s["index"]}">段 {s["index"]}</a>'
+            for s in attn_segs
+        )
+        body.append(
+            '<input type="radio" name="flt" id="flt-all" class="flt-r" checked>'
+            '<input type="radio" name="flt" id="flt-attn" class="flt-r">'
+            '<div class="topbar">'
+            f'<div class="seg-ctl" role="group" aria-label="段落筛选">'
+            f'<label for="flt-all">全部 ({len(segs)})</label>'
+            f'<label for="flt-attn">仅需注意 ({len(attn_segs)})</label>'
+            f'</div>'
+            f'<div class="jump-bar"><span>快速跳转</span>{chips}</div>'
+            '</div>'
+        )
+    else:
+        body.append(
+            f'<div class="topbar"><span class="all-ok">全部 {len(segs)} 段无机器告警，请按顺序抽检画面与口播。</span></div>'
+        )
 
     for s in segs:
         # ok_extended（锚点段尾帧定格补足）不是阻断项，但要显眼地标出来：
         # 定格的几秒人必须亲眼看一眼
-        cls = "seg bad" if s["status"] not in ("ok", "ok_extended") else "seg"
-        body.append(f'<div class="{cls}">')
-        body.append(f'<div class="say"><span class="no">段 {s["index"]}</span>'
-                    f'{html.escape(s["text"])}</div>')
+        is_attn, _is_blocking = attn_map[s["index"]]
+        cls_parts = ["seg"]
+        if s["status"] not in ("ok", "ok_extended"):
+            cls_parts.append("bad")
+        if is_attn:
+            cls_parts.append("attn")
+        body.append(f'<div id="seg-{s["index"]}" class="{" ".join(cls_parts)}">')
+        audio_seg = audio_by_index.get(s["index"])
+        audio_html = ""
+        if audio_seg and audio_seg.get("file"):
+            audio_html = (
+                f'<audio class="aud" controls preload="none" '
+                f'src="03-audio/{html.escape(str(audio_seg["file"]))}"></audio>'
+            )
+        body.append(
+            f'<div class="seg-head">'
+            f'<div class="say"><span class="no">段 {s["index"]}</span>'
+            f'{html.escape(s["text"])}</div>{audio_html}</div>'
+        )
         if s["status"] == "ok_extended":
             ext = sum(c.get("extend", 0.0) for c in s["clips"])
-            note = f'　<span class="flag">尾帧定格 +{ext:.1f}s</span>'
+            note = f'<span class="badge badge--warn">尾帧定格 +{ext:.1f}s</span>'
+        elif s["status"] == "ok":
+            note = ""
         else:
-            note = "" if s["status"] == "ok" else f'　<span class="flag">{s["status"]}</span>'
+            st_raw = str(s["status"])
+            st_lbl = _STATUS_LABELS.get(st_raw, st_raw)
+            note = f'<span class="badge badge--danger">{html.escape(st_lbl)}</span>'
 
         patch_tag = ""
         if is_patch_segment(s, patch_pool):
-            patch_tag = '　<span class="flag">补丁·必审</span>'
+            patch_tag = '<span class="badge badge--warn">补丁·必审</span>'
 
         # **通道要标出来。** 画面通道的分数和台词通道的不是一个量，
         # 人扫这一页时若不知道某段走的是哪条，会拿一列数横着比。
@@ -255,28 +409,36 @@ def build(episode: Path) -> Path:
             # 多锚点蒙太奇（2026-09-07）把整列锚点都亮出来
             raws = ([a["raw"] for a in s["anchors"] if a] if s.get("anchors")
                     else [(s.get("anchor") or {}).get("raw", "")])
-            chan = f'　<span class="flag">锚点 {html.escape(" / ".join(raws))}</span>'
+            chan = f'<span class="badge badge--info">锚点 {html.escape(" / ".join(raws))}</span>'
         elif s.get("channel") == "scene":
-            chan = '　<span class="flag">画面通道</span>'
+            chan = '<span class="badge badge--info">画面通道</span>'
         elif s.get("person"):
-            chan = f'　人物 <b>{html.escape(s["person"])}</b>'
+            chan = f'<span>人物 <b>{html.escape(s["person"])}</b></span>'
             if s.get("filter_fell_back"):
-                chan += '<span class="flag">过滤为空→退回，画面里未必有他</span>'
+                chan += '<span class="badge badge--warn">过滤为空→退回，画面里未必有他</span>'
         # 集号与降级链要显示出来：集级没命中掉到季内/全空间 = 集号或查询
         # 写得不稳，是回去改稿的信号（ADR-0004）；没写集字段的段不显示。
-        align_txt = _align_txt(s, audio_by_index.get(s["index"]), manifest_present)
-        body.append(f'<div class="q"><span class="no"></span>查询 <b>'
-                    f'{html.escape(s.get("used_query") or "—")}</b>'
-                    f'　{s["duration"]:.1f}s{note}{patch_tag}{chan}{_ep_label(s)}{align_txt}</div>')
+        align_txt = _align_txt(s, audio_seg, manifest_present)
+        body.append(
+            f'<div class="q"><span class="no"></span>'
+            f'<span>查询 <b>{html.escape(s.get("used_query") or "—")}</b></span>'
+            f'<span>{s["duration"]:.1f}s</span>{note}{patch_tag}{chan}{_ep_label(s)}{align_txt}</div>'
+        )
         if not s["clips"]:
             # render 对非 ok 段直接 SystemExit 拒渲（没有降级方案，S6：文案必须
             # 反映实际行为）——看到这条就该去补锚点或改稿，不是放过
             body.append('<div class="clip"><div class="side flag">'
                         '无匹配，渲染会拒绝启动（先补锚点或改稿）</div></div>')
         for n, c in enumerate(s["clips"]):
-            imgs = "".join(
-                f'<img src="04-thumbs/{p.name}" loading="lazy">'
-                for p in fmap.get((s["index"], n), []))
+            frame_list = fmap.get((s["index"], n), [])
+            if frame_list:
+                imgs = "".join(
+                    f'<img src="04-thumbs/{html.escape(p.name)}" width="{THUMB_W}" height="225" '
+                    f'decoding="async" loading="lazy" alt="段 {s["index"]} 片段 {n + 1} 帧 {fi + 1}">'
+                    for fi, p in enumerate(frame_list)
+                )
+            else:
+                imgs = '<div class="shot-empty">未能抽出缩略图（请核对片源路径与时间码）</div>'
             # 在场分显示出来（ADR-0004）：0.000 = 未检出，这段画面里未必有那个人，
             # 垫底是排片时故意放的；它只在同段落内跟别的候选比过，别拿它跟别的段横比。
             # score 为 None = 人手工指定/覆盖的片段（05 人审改画面），标「手工」，不做分数横比。
@@ -285,7 +447,7 @@ def build(episode: Path) -> Path:
                 f'<div class="clip"><div class="shots">{imgs}</div>'
                 f'<div class="side"><div class="line">'
                 f'{html.escape(c.get("line") or "（无台词）")}</div>'
-                f'<div class="n">{_clip_ep(c)} '
+                f'<div class="n">{html.escape(_clip_ep(c))} '
                 f'{_hhmmss(c["start"])} · {c["dur"]:.1f}s · {score_txt}'
                 f'{_presence_txt(c.get("presence"))}</div>'
                 f'</div></div>')
@@ -293,9 +455,10 @@ def build(episode: Path) -> Path:
 
     dest = episode / "04-review.html"
     dest.write_text(
-        f"<!doctype html><meta charset=utf-8>"
-        f"<title>{html.escape(episode.name)} 抽检</title>"
-        f"<style>{CSS}</style>" + "".join(body),
+        f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(episode.name)} 审片页</title>"
+        f"<style>{CSS}</style></head><body>" + "".join(body) + "</body></html>",
         encoding="utf-8")
     return dest
 
@@ -385,7 +548,10 @@ def approve(
             f"确认已人工核对完毕并批准？[y/N]: "
         )
         print(prompt, end="", flush=True)
-        ans = input("")
+        try:
+            ans = input("")
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("\nFAIL 已取消 approve：存在未人工核对的补丁段")
         if ans.strip().lower() not in ("y", "yes"):
             raise SystemExit("FAIL 已取消 approve：存在未人工核对的补丁段")
 
@@ -451,7 +617,7 @@ def main() -> int:
         return 0
 
     dest = build(a.episode)
-    n = len(list((a.episode / "04-thumbs").glob("*.jpg")))
+    n = dest.read_text(encoding="utf-8").count('src="04-thumbs/')
     print(f"{n} 张缩略图 → {dest}\n"
           f"  open '{dest}'\n"
           f"  看完没问题：python -m pipeline.review {a.episode} --approve")

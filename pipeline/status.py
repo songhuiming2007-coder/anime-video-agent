@@ -8,11 +8,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .align import has_clips_approved_diff
+
+_SHELL_UNSAFE = set(" \t\n\r\"'\\$&;|<>()[]*?#~")
+
+
+def _cmd_path(p: Path) -> str:
+    """路径含空白或 shell 元字符时才加引号，常规路径保持原文以便人眼与脚本复核。"""
+    s = str(p)
+    return shlex.quote(s) if any(ch in _SHELL_UNSAFE for ch in s) else s
 
 
 @dataclass
@@ -358,6 +367,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
         )
 
     # 2. 待写稿
+    d_cmd = _cmd_path(d)
     if not has_script and not has_script_draft:
         return EpisodeStatus(
             episode_dir=str(d),
@@ -367,7 +377,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason=None,
             completed_steps=completed,
             next_action="调 skills/write-script 撰写 02-script.md，并执行 check_script 机检。",
-            next_command=f"python -m pipeline.check_script {d}/02-script.md",
+            next_command=f"python -m pipeline.check_script {_cmd_path(d / '02-script.md')}",
             docs_ref="docs/runbook/02-script.md",
         )
 
@@ -382,7 +392,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason=None,
             completed_steps=completed,
             next_action="02-script.draft.md 已出。精修后落定为 02-script.md，并执行 check_script 机检。",
-            next_command=f"python -m pipeline.check_script {d}/02-script.md",
+            next_command=f"python -m pipeline.check_script {_cmd_path(d / '02-script.md')}",
             docs_ref="docs/runbook/02-script.md",
         )
 
@@ -396,9 +406,9 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 is_blocked=True,
                 block_reason="停机点 1（02.5 人审改稿）：还没有 02-diff.patch，稿件未封板。",
                 completed_steps=completed,
-                next_action="必须由人类总监通读 02-script.md，精修事实与张力，然后批准 02.5（批准时自动封板，D48）：\n"
-                "  桌面端在待答区点 02.5「批准」；终端 `/approve 02.5`",
-                next_command=f"python -m pipeline.tts {d} (人审确认后方可执行)",
+                next_action="由人通读 02-script.md，精修事实与张力，然后批准 02.5（批准时自动封板，D48）：\n"
+                "  桌面端在待答区点 02.5「批准」；终端 `/approve 02.5`（封板后再配音）",
+                next_command=f"python -m pipeline.tts {d_cmd}",
                 docs_ref="docs/runbook/02.5-human-review.md",
             )
         else:
@@ -410,7 +420,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 block_reason=None,
                 completed_steps=completed,
                 next_action="人审已封板。下一步增量配音；不用 --force 全量覆盖（ava 会拒收）。",
-                next_command=f"python -m pipeline.tts {d}",
+                next_command=f"python -m pipeline.tts {d_cmd}",
                 docs_ref="docs/runbook/03-tts.md",
             )
 
@@ -427,7 +437,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             completed_steps=completed,
             next_action="⚠️ 建议先过人耳停机点 03.5：抽检开头与最长段音频无错字发飘，\n"
             "  确认后启动三通道画面排片分派。",
-            next_command=f"python -m pipeline.clips {d}",
+            next_command=f"python -m pipeline.clips {d_cmd}",
             docs_ref="docs/runbook/04-clips.md",
         )
 
@@ -447,7 +457,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             completed_steps=completed,
             next_action=f"审看页 04-review.html {why}。agent 先跑 `review`（不带任何选项，只抽帧出页）生成它，\n"
             "  再请人在桌面端预览区打开 04-review.html 审看；页面生成之前不提批准，也不说「可以查看审看页」。",
-            next_command=f"python -m pipeline.review {d}",
+            next_command=f"python -m pipeline.review {d_cmd}",
             docs_ref="docs/runbook/05-timecode.md",
         )
     if not has_approved:
@@ -459,7 +469,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason="停机点 3（05 审时间码）：排片已生成，还没有 --approve 批准。",
             completed_steps=completed,
             next_action="先不渲染。请人在浏览器打开 04-review.html 抽检画面与台词，确认没有画外音错配后批准：",
-            next_command=f"python -m pipeline.review {d} --approve",
+            next_command=f"python -m pipeline.review {d_cmd} --approve",
             docs_ref="docs/runbook/05-timecode.md",
         )
 
@@ -473,7 +483,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason=None,
             completed_steps=completed,
             next_action="时间码已获批。启动本地渲染流水线（切片、拼装、混 BGM、烧录字幕）。",
-            next_command=f"python -m pipeline.render {d}",
+            next_command=f"python -m pipeline.render {d_cmd}",
             docs_ref="docs/runbook/06-render.md",
         )
 
@@ -489,7 +499,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
                 completed_steps=completed,
                 next_action="质检门禁未全绿，修复后重跑质检：\n  "
                 + "\n  ".join(qc_failed[:5]),
-                next_command=f"python -m pipeline.qc {d}",
+                next_command=f"python -m pipeline.qc {d_cmd}",
                 docs_ref="docs/runbook/07-qc.md",
             )
         return EpisodeStatus(
@@ -500,7 +510,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason=None,
             completed_steps=completed,
             next_action="成片已出。执行 10 项机器硬指标质检门禁。",
-            next_command=f"python -m pipeline.qc {d}",
+            next_command=f"python -m pipeline.qc {d_cmd}",
             docs_ref="docs/runbook/07-qc.md",
         )
 
@@ -514,7 +524,7 @@ def _inspect_episode_core(d: Path) -> EpisodeStatus:
             block_reason=None,
             completed_steps=completed,
             next_action="质检已通过。生成封面候选帧联系表与 5 条标题候选（定稿由人做）。",
-            next_command=f"python -m pipeline.cover {d}",
+            next_command=f"python -m pipeline.cover {d_cmd}",
             docs_ref="docs/runbook/08-cover-title.md",
         )
 
@@ -638,17 +648,12 @@ def main() -> int:
             )
             return 2
 
-        # 找最近修改的期目录（排除 . 与 _ 两种前缀，B4-r14）
-        subdirs = [
-            d
-            for d in episodes_dir.iterdir()
-            if d.is_dir() and not d.name.startswith((".", "_"))
-        ]
-        hidden_underscore = len([
-            d
-            for d in episodes_dir.iterdir()
-            if d.is_dir() and d.name.startswith("_")
-        ])
+        # 找最近修改的期/卷目录（复用 project.get_episode_tree，兼顾普通期与企划下属卷）
+        from .project import get_episode_tree
+
+        tree = get_episode_tree(root)
+        subdirs = [*tree.plain, *(m for proj in tree.projects for m in proj.members)]
+        hidden_underscore = tree.hidden_underscore
         if not subdirs:
             print(f"[INFO] {episodes_dir} 下暂无期目录。", file=sys.stderr)
             if hidden_underscore > 0:

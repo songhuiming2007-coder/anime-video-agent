@@ -367,16 +367,21 @@ body { margin:0; padding:24px; background:#14161a; color:#e6e8eb;
        font:15px/1.6 -apple-system,"PingFang SC",sans-serif; }
 h1 { font-size:20px; margin:0 0 4px; }
 .meta { color:#8b929c; font-size:13px; margin-bottom:20px; }
+code { font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:rgba(148,163,184,.16); padding:1px 5px; border-radius:4px; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
-figure { margin:0; }
-figure img { width:100%; border-radius:6px; display:block; }
+figure { margin:0; transition:transform 180ms cubic-bezier(.22,1,.36,1); }
+figure:hover { transform:translateY(-2px); }
+figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#000;
+             border-radius:8px; display:block; }
 figcaption { font-size:12px; color:#8b929c; margin-top:6px;
              font-variant-numeric:tabular-nums; }
 figcaption b { color:#e6e8eb; font-weight:600; }
 @media (prefers-color-scheme: light){
   body{background:#fff;color:#1a1c20} .meta,figcaption{color:#5f6672}
-  figcaption b{color:#1a1c20}
+  figcaption b{color:#1a1c20} code{background:#f0f2f5;color:#1a1c20}
 }
+@media (prefers-reduced-motion: reduce){ figure{transition:none} figure:hover{transform:none} }
 """
 
 
@@ -481,29 +486,31 @@ def build(episode: Path, anime: str | None = None,
         c["out"] = dest
 
     body = "".join(
-        f'<figure><img src="{c["out"].name}" loading="lazy">'
-        f'<figcaption><b>{n}</b>　{html.escape(c["tag"])}　'
+        f'<figure><img src="{html.escape(c["out"].name)}" loading="lazy" decoding="async" alt="候选 {n}">'
+        f'<figcaption><b>{n}</b> · <code>{html.escape(c["out"].name)}</code>　{html.escape(c["tag"])}　'
         f'{int(c["t"]) // 60:02d}:{int(c["t"]) % 60:02d}　'
         f'清晰 {c["sharp"]:.0f}　饱和 {c["sat"]:.2f}</figcaption></figure>'
         for n, c in enumerate(kept, 1))
 
     page = out_dir / "index.html"
     page.write_text(
-        f"<!doctype html><meta charset=utf-8><title>{html.escape(episode.name)} 封面候选</title>"
-        f"<style>{CSS}</style>"
+        f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(episode.name)} 封面候选</title>"
+        f"<style>{CSS}</style></head><body>"
         f"<h1>{html.escape(episode.name)}　封面候选</h1>"
         f'<div class="meta">抽 {total} 帧 → 过筛 {len(cands)} → 去重 {len(deduped)} '
         f"→ 取前 {len(kept)}。<br>"
         f"机器只做三件事：<b>剔掉黑场/过曝/转场糊帧、去掉重复镜头、按位置铺开取样</b>。"
-        f"<br>候选之间<b>没有排名</b>——序号只是编号。哪张有张力是你判，"
-        f"机器没有这个判据，也不该假装有。<br>"
+        f"<br>候选之间<b>没有排名</b>——序号只是编号。哪张有张力由人判断，"
+        f"机器没有这个判据，也不假装有。<br>"
         + (f"已按「<b>{html.escape(character)}</b>」过滤：只留检测到他/她的帧。"
            f"检测会漏侧脸和背影，所以有些能用的镜头没进来；反过来，进来的基本都真的有他。"
            if character else
-           "本次<b>没有</b>按角色过滤（`01-topic.md` 里写 `封面人物: 某某` 或加 "
-           "`--character` 可以开启），空镜和没有主角的帧可能混在里面，你直接跳过。")
+           "本次<b>没有</b>按角色过滤（在 <code>01-topic.md</code> 里写 <code>封面人物: 某某</code> 或加 "
+           "<code>--character</code> 可开启），空镜和没有主角的帧可能混在里面，直接跳过即可。")
         + "</div>"
-        f'<div class="grid">{body}</div>',
+        f'<div class="grid">{body}</div></body></html>',
         encoding="utf-8")
     return page, total, len(kept)
 
@@ -538,8 +545,8 @@ def titles(episode: Path) -> Path:
     dest.write_text(
         f"# 标题与简介候选\n\n"
         f"> 本文件由 `pipeline.cover` 抽出原料，**标题由 agent 写**，写完覆盖本节。\n"
-        f"> 判据见 CLAUDE.md「内容参数」：**金句式，不要论文式**——\n"
-        f"> 这句话能不能脱离视频单独发出去。自己账号的两端实例见 `CLAUDE.local.md`。\n\n"
+        f"> 判据见 `docs/runbook/08-cover-title.md`：**金句式，不要论文式**——\n"
+        f"> 这句话能不能脱离视频单独发出去。更多约定见 `AGENTS.md`。\n\n"
         f"## 候选（5 条，注明路子）\n\n"
         f"| # | 路子 | 标题 |\n|---|---|---|\n"
         + "".join(f"| {i} | | |\n" for i in range(1, 6))

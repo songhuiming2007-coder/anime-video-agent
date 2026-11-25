@@ -391,7 +391,7 @@ def check_model(name: str, available: list[str]) -> str:
         return name
     close = difflib.get_close_matches(name, available, n=3, cutoff=0.4)
     hint = f"；相近：{'、'.join(close)}" if close else ""
-    last_warn = f"模型 {name} 不在代理列表{hint}——已照常切换，名字打错的话用 /model 换"
+    last_warn = f"模型 {name} 不在代理列表或已连服务商中{hint}——已照常切换，名字打错的话用 /model 换"
     return name
 
 
@@ -716,7 +716,8 @@ def check_effort(value: str, model: str | None = None) -> str:
     clamped = clamp_effort(model, raw_norm)
     if clamped != raw_norm:
         supported = " / ".join(supported_efforts(model))
-        last_warn = f"模型 {model or '默认'} 的推理强度只支持 {supported}——已降为 {clamped}"
+        verb = "已降为" if EFFORT_ORDER.index(clamped) < EFFORT_ORDER.index(raw_norm) else "已调为"
+        last_warn = f"模型 {model or '默认'} 的推理强度只支持 {supported}——{verb} {clamped}"
         return clamped
     return raw_norm
 
@@ -837,7 +838,8 @@ def run_command(
         models_fetcher = list_models   # 调用时取（测试可打桩模块属性）
     info = describe(cfg, override, purpose)
     if cmd == "/model":
-        if not arg:
+        if not arg or arg.startswith("?"):
+            query = arg[1:].strip().lower() if arg.startswith("?") else ""
             if models_fetcher is _ORIGINAL_LIST_MODELS:
                 available, raw_sources = list_models_with_sources(cfg)
             else:
@@ -849,19 +851,26 @@ def run_command(
             ) or describe_model_source(info["model"], base_url=cfg.base_url)
             tag = "本会话设置" if info["model_source"] == "session" else "默认配置"
             cur_src = f" · 来源：{cur_meta['source_name']}" if cur_meta else ""
-            lines = [f"当前模型：{info['model']}（{tag}{cur_src}）", "可用模型："]
+            filtered = [m for m in available if not query or query in m.lower()] if query else available
+            header = f"匹配「{arg[1:].strip()}」的模型（{len(filtered)} / {len(available)}）：" if query else "可用模型："
+            lines = [f"当前模型：{info['model']}（{tag}{cur_src}）", header]
             grouped: dict[str, tuple[str, list[str]]] = {}
-            for m in available:
+            for m in filtered:
                 meta = sources.get(m, {})
                 sid = str(meta.get("source_id") or "default")
                 slabel = str(meta.get("source_name") or "默认配置")
                 if sid not in grouped:
                     grouped[sid] = (slabel, [])
                 grouped[sid][1].append(m)
+            if not grouped:
+                lines.append("  （无匹配模型，输入 /model 查看全部）")
             for slabel, group_items in grouped.values():
                 lines.append(f"  [{slabel}]")
-                lines += [f"    {'●' if m == info['model'] else '○'} {m}" for m in group_items]
-            lines.append("切换：/model <名>；恢复默认：/model default（只影响本会话）")
+                for m in group_items:
+                    n_eff = len(supported_efforts(m))
+                    eff_tag = f"（{n_eff}档推理）" if n_eff else ""
+                    lines.append(f"    {'●' if m == info['model'] else '○'} {m}{eff_tag}")
+            lines.append("切换：/model <名>；搜索：/model ?<关键词>；恢复默认：/model default（只影响本会话）")
             return override, "\n".join(lines)
         if arg == RESET_WORD:
             new = replace(override, model=None)
@@ -871,13 +880,20 @@ def run_command(
         text = f"本会话已切换到 {name}（下一轮起生效；新会话仍用默认模型）"
         if last_warn:
             text += f"\n{last_warn}"
+        if override.reasoning_effort and override.reasoning_effort not in supported_efforts(name):
+            nearest = clamp_effort(name, override.reasoning_effort)
+            text += f"\n注意：当前推理强度 {override.reasoning_effort} 不在 {name} 支持范围内，发送时将按最近支持档 {nearest} 处理（可用 /thinking 调整）"
         return new, text
     if cmd == "/thinking":
         if not arg:
-            levels = " / ".join(f"{e}（{EFFORT_LABELS[e]}）" for e in supported_efforts(info["model"]))
+            cur_eff = info["reasoning_effort"]
+            levels = " / ".join(
+                f"{'●' if e == cur_eff else ''}{e}（{EFFORT_LABELS[e]}）"
+                for e in supported_efforts(info["model"])
+            )
             return override, (
-                f"当前推理强度：{_effort_text(info['reasoning_effort'], info['effort_source'])}\n"
-                f"可选：{levels}\n切换：/thinking <档>；恢复默认：/thinking default（只影响本会话）"
+                f"当前推理强度：{_effort_text(cur_eff, info['effort_source'])}\n"
+                f"可选：{levels}\n切换：/thinking <档|off>；恢复默认：/thinking default（只影响本会话）"
             )
         if arg == RESET_WORD:
             new = replace(override, reasoning_effort=None)

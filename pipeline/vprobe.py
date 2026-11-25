@@ -143,15 +143,18 @@ body { margin:0; padding:24px; background:#14161a; color:#e6e8eb;
 h1 { font-size:20px; margin:0 0 4px; }
 h2 { font-size:16px; margin:28px 0 8px; }
 .meta { color:#8b929c; font-size:13px; margin-bottom:20px; }
-.row { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }
+.row { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
 figure { margin:0; }
-figure img { width:100%; border-radius:4px; display:block; }
+figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#000; border-radius:6px; display:block; }
 figcaption { font-size:12px; color:#8b929c; margin-top:4px;
              font-variant-numeric:tabular-nums; }
-table.neg { border-collapse:collapse; font-size:14px; }
-table.neg td { padding:3px 18px 3px 0; font-variant-numeric:tabular-nums; }
+table.neg { border-collapse:collapse; font-size:14px; margin:10px 0 18px; }
+table.neg th { text-align:left; padding:4px 18px 6px 0; border-bottom:1px solid #262a31; color:#8b929c; font-weight:500; }
+table.neg td { padding:4px 18px 4px 0; font-variant-numeric:tabular-nums; }
+.bad { color:#f28b82; font-weight:600; }
 @media (prefers-color-scheme: light){
-  body{background:#fff;color:#1a1c20} .meta,figcaption{color:#5f6672}
+  body{background:#fff;color:#1a1c20} .meta,figcaption,table.neg th{color:#5f6672}
+  table.neg th{border-color:#e3e6ea} .bad{color:#c62828}
 }
 """
 
@@ -240,8 +243,8 @@ def scene_probe(anime: str, key: str | None, queries: list[str], negative: list[
             kk = vindex.key_of(u)
             f = shots.frame_path(anime, kk, _shot_index(tabs[kk], u.start))
             figs.append(
-                f'<figure><img src="{html.escape(_rel(f, out_dir))}" loading="lazy">'
-                f'<figcaption>{score:.3f}　{kk} {_mmss(u.start)}</figcaption></figure>')
+                f'<figure><img src="{html.escape(_rel(f, out_dir))}" loading="lazy" decoding="async">'
+                f'<figcaption>{score:.3f}　{html.escape(kk)} {_mmss(u.start)}</figcaption></figure>')
         blocks.append(f"<h2>{html.escape(q)}</h2><div class=row>{''.join(figs)}</div>")
         rec.append({"query": q, "scores": [round(s, 4) for s, _ in hits]})
 
@@ -286,15 +289,20 @@ def scene_probe(anime: str, key: str | None, queries: list[str], negative: list[
         f'<table class="neg"><tr><th>反例查询</th><th>Top-1</th></tr>{neg_rows}</table>'
         f'<table class="neg"><tr><th>真实查询</th><th>Top-1</th><th>Top-{k}</th></tr>{pos_rows}</table>')
 
+    esc_anime = html.escape(anime)
+    esc_scope = html.escape(key or "整池")
     page.write_text(
-        f"<!doctype html><meta charset=utf-8><title>{anime} {key or '整池'} 画面语义探针</title>"
-        f"<style>{CSS}</style><h1>{anime} {key or '整池'}　画面语义探针（通道 2 准入）</h1>"
-        f'<div class="meta">索引 <b>{vindex.CAPTIONS_REPO}</b> 打标 + '
-        f"<b>{vindex.EMBED_REPO}</b> 向量；{len(units)} 个镜头，{len(queries)} 条查询各出 Top-{k}。<br>"
+        f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc_anime} {esc_scope} 画面语义探针</title>"
+        f"<style>{CSS}</style></head><body>"
+        f"<h1>{esc_anime} {esc_scope}　画面语义探针（通道 2 准入）</h1>"
+        f'<div class="meta">索引 <b>{html.escape(vindex.CAPTIONS_REPO)}</b> 打标 + '
+        f"<b>{html.escape(vindex.EMBED_REPO)}</b> 向量；{len(units)} 个镜头，{len(queries)} 条查询各出 Top-{k}。<br>"
         f"<b>判据一：每条查询的 Top-{k} 里有没有一张真的是它说的那个画面</b>（目标 ≥70%，人判）。<br>"
-        f"<b>判据二：反例与正例的分数重不重叠</b>——分数量叠就不存在能用的门槛，"
+        f"<b>判据二：反例与正例的分数重不重叠</b>——分数重叠就不存在能用的门槛，"
         f"这比命中率不够更致命（ADR-0003 待实测 #4：CLIP 就是死在这里）。</div>"
-        + "".join(blocks), encoding="utf-8")
+        + "".join(blocks) + "</body></html>", encoding="utf-8")
     summary = {"索引": f"{vindex.CAPTIONS_REPO} + {vindex.EMBED_REPO}",
                "范围": key or "整池", "镜头数": len(units), "查询数": len(queries),
                **cal, "正例未过地板": len(below), "反例": neg, "明细": rec}
@@ -333,27 +341,30 @@ def captions_probe(anime: str, key: str | None = None, n: int = 30,
     for k, r in picked:
         imgs = "".join(
             f'<img src="{html.escape(_rel(shots.caption_frame_path(anime, k, r["shot"], k_, shots.FRAMES_DIR), out_dir))}"'
-            f' loading="lazy">' for k_ in range(r.get("frames", 1)))
+            f' loading="lazy" decoding="async">' for k_ in range(r.get("frames", 1)))
         bad = ("" if r["status"] == "ok"
-               else f'<span class="bad">[{r["status"]}] {html.escape(r.get("reason", ""))}</span>')
+               else f'<span class="bad">[{html.escape(str(r["status"]))}] {html.escape(r.get("reason", ""))}</span>')
         figs.append(
-            f'<figure><div class=frames>{imgs}</div>'
-            f'<figcaption><b>{k} #{r["shot"] + 1}</b> {_mmss(r["start"])} {bad}<br>'
+            f'<figure><div class="frames">{imgs}</div>'
+            f'<figcaption><b>{html.escape(k)} #{r["shot"] + 1}</b> {_mmss(r["start"])} {bad}<br>'
             f'{html.escape(r["caption"] or "（无描述）")}</figcaption></figure>')
     tag = key or "整池"
+    esc_anime = html.escape(anime)
+    esc_tag = html.escape(tag)
     page = out_dir / f"captions-{anime}_{key or 'pool'}.html"
     page.write_text(
-        f"<!doctype html><meta charset=utf-8><title>{anime} {tag} caption 抽验</title>"
+        f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc_anime} {esc_tag} caption 抽验</title>"
         f"<style>{CSS}"
-        ".frames img{width:100%;display:block;margin-bottom:2px}"
-        ".bad{color:#f28b82}</style>"
-        f"<h1>{anime} {tag}　caption 抽验（{len(picked)} 个镜头）</h1>"
-        f'<div class="meta">模型 <b>{vindex.CAPTIONS_REPO}</b>，prompt '
-        f"<b>{meta['prompt_version']}</b>，"
-        f"{'按镜头均匀取（不挑好的）' if key is None else f'只抽 {key} 这一集'}。<br>"
+        ".frames img{width:100%;display:block;margin-bottom:2px}</style></head><body>"
+        f"<h1>{esc_anime} {esc_tag}　caption 抽验（{len(picked)} 个镜头）</h1>"
+        f'<div class="meta">模型 <b>{html.escape(vindex.CAPTIONS_REPO)}</b>，prompt '
+        f"<b>{html.escape(str(meta['prompt_version']))}</b>，"
+        f"{'按镜头均匀取（不挑好的）' if key is None else f'只抽 {html.escape(key)} 这一集'}。<br>"
         f"<b>判据：这条描述说的是不是这个画面</b>（准确，不是文笔）。"
         f"目标准确 ≥27/30（ADR-0015），不达标回 prompt 工程，两轮不达触发推翻条件①。</div>"
-        f'<div class=row>{"".join(figs)}</div>', encoding="utf-8")
+        f'<div class="row">{"".join(figs)}</div></body></html>', encoding="utf-8")
 
     md_lines = [f"# {anime} {tag} caption 抽验（{len(picked)} 个镜头）", "",
                 "判据：这条描述说的是不是这个画面（准确），不是文笔好不好。",

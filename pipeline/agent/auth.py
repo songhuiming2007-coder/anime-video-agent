@@ -858,14 +858,48 @@ def auth_path(root: Path | None = None) -> Path:
     return base / "config" / "auth.local.json"
 
 
+def _validate_https_url(url: str) -> str | None:
+    """仅允许严格的 https:// 授权链接（非空主机名、无 userinfo、无空白与控制字符）。"""
+    trimmed = (url or "").strip()
+    if not trimmed or len(trimmed) > 4096 or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in trimmed):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(trimmed)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    return trimmed
+
+
+def _try_open_browser(url: str) -> bool:
+    safe = _validate_https_url(url)
+    if not safe or os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["open", "--", safe], capture_output=True, check=False, timeout=3)
+            return r.returncode == 0
+        import webbrowser
+
+        return bool(webbrowser.open(safe))
+    except Exception:
+        return False
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
 def _require_provider(provider: str) -> ProviderSpec:
-    spec = PROVIDER_MAP.get(provider)
+    raw = str(provider or "").strip()
+    spec = PROVIDER_MAP.get(raw) or PROVIDER_MAP.get(raw.lower())
     if spec is None:
-        raise AuthError(f"未知服务商：{provider}")
+        import difflib
+
+        close = difflib.get_close_matches(raw.lower(), sorted(PROVIDER_MAP.keys()), n=3, cutoff=0.5)
+        hint = f"（相近：{'、'.join(close)}）" if close else "（输入 /login all 查看全部服务商）"
+        raise AuthError(f"未知服务商：{provider}{hint}")
     return spec
 
 
@@ -2127,7 +2161,9 @@ def start_auth_flow(
                 params["nonce"] = secrets.token_urlsafe(24)
             for k, v in (oauth.get("extra_authorize_params") or {}).items():
                 params[str(k)] = str(v)
-        authorize_url = f"{oauth['authorize_url']}?{urllib.parse.urlencode(params)}"
+        authorize_url = _validate_https_url(f"{oauth['authorize_url']}?{urllib.parse.urlencode(params)}")
+        if not authorize_url:
+            raise AuthError(f"{spec.name} 生成了非法的授权地址")
         with _auth_lock(path):
             store = _read_store_unlocked(path)
             _prune_expired_pending(store, now)
@@ -2166,7 +2202,7 @@ def start_auth_flow(
 
     device_code = str(dev.get("device_code") or dev.get("device_auth_id") or "").strip()
     user_code = str(dev.get("user_code") or "").strip()
-    verification_uri = str(
+    raw_verification_uri = str(
         dev.get("verification_uri_complete")
         or dev.get("verification_uri")
         or oauth.get("device_verification_uri")
@@ -2176,8 +2212,11 @@ def start_auth_flow(
     interval_s = int(raw_interval) if isinstance(raw_interval, (int, float)) else 5
     raw_exp = dev.get("expires_in")
     expires_in_s = int(raw_exp) if isinstance(raw_exp, (int, float)) else 900
-    if not device_code or not user_code or not verification_uri:
+    if not device_code or not user_code or not raw_verification_uri:
         raise AuthError(f"{spec.name} 未返回有效的设备码信息")
+    verification_uri = _validate_https_url(raw_verification_uri)
+    if not verification_uri:
+        raise AuthError(f"{spec.name} 返回了非 https 授权地址，已拒绝")
     pending_entry: dict[str, Any] = {
         "mode": "oauth_device",
         "device_code": device_code,
@@ -3180,7 +3219,10 @@ def run_auth_command(
     cmd = parts[0]
     if cmd == "/logout":
         if len(parts) < 2:
-            return False, "用法：/logout <服务商ID>", None
+            status = get_auth_status(root)
+            connected_ids = [str(p["id"]) for p in status["providers"] if p.get("connected")]
+            hint = f"当前已连接：{'、'.join(connected_ids)}。" if connected_ids else "当前无已连接的服务商。"
+            return False, f"{hint}用法：/logout <服务商ID>", None
         try:
             res = logout_provider(parts[1].strip(), root=root)
         except AuthError as exc:
@@ -3225,35 +3267,101 @@ def run_auth_command(
     pid = parts[1].strip()
     try:
         spec = _require_provider(pid)
+        pid = spec.id
+
+        def _try_copy_clipboard(text: str) -> bool:
+            if not text or sys.platform != "darwin" or os.environ.get("PYTEST_CURRENT_TEST"):
+                return False
+            try:
+                r = subprocess.run(["pbcopy"], input=text.encode("utf-8"), capture_output=True, check=False, timeout=2)
+                return r.returncode == 0
+            except Exception:
+                return False
+
         def _prompt_interactive_secret(mode: str, started: dict[str, Any]) -> tuple[bool, str, None]:
+            if any(os.environ.get(v, "").strip() for v in spec.env_vars):
+                print(f"[提示] 当前环境变量已配置 {spec.name}，也可继续保存独立凭据覆盖。")
+            extra_cfg: dict[str, str] = {}
+            if spec.extra_fields:
+                for ef in spec.extra_fields:
+                    default_hint = f" [默认 {ef.default}]" if ef.default else ("（必填）" if ef.required else "（可选，直接回车跳过）")
+                    prompt_lbl = f"{ef.label}{default_hint}: "
+                    try:
+                        val = (getpass.getpass(prompt_lbl) if ef.secret else input(prompt_lbl)).strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return False, "已取消登录", None
+                    if val:
+                        extra_cfg[ef.key] = val
+                    elif ef.default:
+                        extra_cfg[ef.key] = ef.default
             if mode == "proxy":
                 try:
                     raw_url = input(f"{spec.name} 代理地址 [默认 {started['default_base_url']}]: ").strip()
                     raw_key = getpass.getpass(f"{spec.name} 代理密钥（无鉴权可直接回车）: ").strip()
                 except (EOFError, KeyboardInterrupt):
                     return False, "已取消登录", None
-                res = complete_auth_flow(
-                    pid,
-                    {"mode": "proxy", "base_url": raw_url or started["default_base_url"], "api_key": raw_key},
-                    root=root,
-                )
+                payload_p: dict[str, Any] = {
+                    "mode": "proxy",
+                    "base_url": raw_url or started["default_base_url"],
+                    "api_key": raw_key,
+                }
+                if extra_cfg:
+                    payload_p["extra_config"] = extra_cfg
+                res = complete_auth_flow(pid, payload_p, root=root)
                 return True, str(res["text"]), None
+            can_skip_key = _complete_cloud_entry_allowed_empty_key(spec, _backfill_vertex_extra(spec, extra_cfg))
+            key_hint = "（使用 IAM/ADC 可直接回车跳过）" if can_skip_key else "（输入不回显，直接回车取消）"
             try:
-                raw_key = getpass.getpass(f"请输入 {spec.name} API Key（输入不回显，直接回车取消）: ").strip()
+                raw_key = getpass.getpass(f"请输入 {spec.name} API Key{key_hint}: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return False, "已取消登录", None
-            if not raw_key:
+            if not raw_key and not can_skip_key:
                 return False, "已取消登录", None
-            res = complete_auth_flow(pid, {"mode": "api_key", "api_key": raw_key}, root=root)
+            payload_k: dict[str, Any] = {"mode": "api_key", "api_key": raw_key}
+            if extra_cfg:
+                payload_k["extra_config"] = extra_cfg
+            res = complete_auth_flow(pid, payload_k, root=root)
             return True, str(res["text"]), None
+
+        def _poll_interactive_device(started: dict[str, Any]) -> tuple[bool, str, None]:
+            uri = str(started.get("verification_uri") or "")
+            code = str(started.get("user_code") or "")
+            copied = _try_copy_clipboard(code)
+            opened = _try_open_browser(uri)
+            copy_note = "（已复制到剪贴板）" if copied else ""
+            open_note = "（已自动打开浏览器）" if opened else ""
+            print(f"{spec.name} 设备码授权：")
+            print(f"  1. 打开 {uri} {open_note}".rstrip())
+            print(f"  2. 输入设备码 {code} {copy_note}".rstrip())
+            print(f"  正在自动等待授权完成（按 Ctrl-C 取消，或稍后执行 /login {pid} complete）...", flush=True)
+            interval = max(2, int(started.get("interval_s") or 5))
+            try:
+                while True:
+                    # 分片休眠，确保 Ctrl-C 立即响应
+                    deadline = time.monotonic() + interval
+                    while time.monotonic() < deadline:
+                        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+                    res = complete_auth_flow(pid, {"mode": "oauth_device"}, root=root)
+                    if res.get("ok"):
+                        return True, str(res.get("text") or f"已登录 {spec.name}"), None
+                    if res.get("pending"):
+                        interval = max(2, int(res.get("interval_s") or interval))
+                        continue
+                    return False, str(res.get("text") or "授权未完成"), None
+            except KeyboardInterrupt:
+                return False, f"已暂停等待。在浏览器完成授权后可执行：/login {pid} complete", None
 
         if len(parts) == 2:
             started = start_auth_flow(pid, root=root)
             mode = started["mode"]
             if mode == "oauth_pkce":
+                opened = interactive and sys.stdin.isatty() and _try_open_browser(str(started.get("authorize_url") or ""))
+                open_note = "（已尝试在浏览器打开）" if opened else ""
                 alt = "（也可输入 /login " + pid + " api_key 改用密钥登录）" if "api_key" in spec.auth_modes else ""
-                return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>{alt}", None
+                return True, f"{spec.name} OAuth 授权地址{open_note}：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>{alt}", None
             if mode == "oauth_device":
+                if interactive and sys.stdin.isatty() and not os.environ.get("PYTEST_CURRENT_TEST"):
+                    return _poll_interactive_device(started)
                 alt = "\n也可输入 /login " + pid + " api_key 改用密钥登录" if "api_key" in spec.auth_modes else ""
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete{alt}", None
             if interactive and sys.stdin.isatty():
@@ -3287,8 +3395,12 @@ def run_auth_command(
             started = start_auth_flow(pid, mode=req_mode, extra_config=extra_opts or None, root=root)
             mode = started["mode"]
             if mode == "oauth_pkce":
-                return True, f"{spec.name} OAuth 授权地址：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
+                opened = interactive and sys.stdin.isatty() and _try_open_browser(str(started.get("authorize_url") or ""))
+                open_note = "（已尝试在浏览器打开）" if opened else ""
+                return True, f"{spec.name} OAuth 授权地址{open_note}：\n{started['authorize_url']}\n完成后执行：/login {pid} complete <回调链接或授权码>", None
             if mode == "oauth_device":
+                if interactive and sys.stdin.isatty() and not os.environ.get("PYTEST_CURRENT_TEST"):
+                    return _poll_interactive_device(started)
                 return True, f"{spec.name} 设备码授权：\n1. 打开 {started['verification_uri']}\n2. 输入设备码 {started['user_code']}\n3. 授权后执行：/login {pid} complete", None
             return True, f"{spec.name} 默认地址：{started['default_base_url']}\n推荐使用桌面端 /login 登录弹窗，或在终端执行：ava --auth-complete {pid} --stdin（避免明文密钥进入对话记录）", None
         if arg == "complete":

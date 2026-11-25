@@ -2419,10 +2419,30 @@ def cmd_exec(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ansi(code: str, text: str) -> str:
+    """仅在交互终端且未设 NO_COLOR 时包裹 ANSI 颜色码，避免管道/日志出现乱码。"""
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _fmt_amount(val: float, unit: str, precision: int = 4) -> str:
+    """按计费单位格式化金额/CU（避免 `CU 0.12 CU` 或 `¥0.12 元` 重复单位）。"""
+    if unit == "cu":
+        return f"{val:.{precision}f} CU"
+    return f"¥{val:.{precision}f}"
+
+
+def _fmt_rate(rate: float, unit: str) -> str:
+    if unit == "cu":
+        return f"{rate:g} CU/小时"
+    return f"¥{rate:g}/小时"
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """查看或追踪远端 tmux 任务日志（colab-drive 读取 Drive worker.log）。"""
     ctx = _cloud_context(args)
-    session_name = args.session.strip()
+    session_name = (args.session or "ava-tts").strip()
     if session_name.endswith(".log"):
         session_name = session_name[:-4]
 
@@ -2946,7 +2966,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         all_passed = False
         print(f"FAIL  [REPO] 远端仓库不存在或未完成初始化: {remote_root}")
-        print("      修法: cloud fix-env（弹卡；克隆仓库到远端，已在就跳过）")
+        print("      修法: cloud fix-env（需确认；克隆仓库到远端，已在就跳过）")
 
     if repo_res.returncode == 0:
         code_ok, code_lines = code_drift_lines(_check_remote_drift(host, cfg_global, provider))
@@ -3032,11 +3052,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"{st_tag:<5} [STRUCT] {m_id:<30} {st_desc}")
                     if st_tag == "FAIL":
                         all_passed = False
-                        print("      修法: cloud fix-env（弹卡；重新下载结构校验不过的模型）")
+                        print("      修法: cloud fix-env（需确认；重新下载结构校验不过的模型）")
                 else:
                     all_passed = False
                     print(f"FAIL  [MODEL] {m_id:<30} 体积不足 ({sz_gb:.1f}GB < {min_gb}GB) - {desc}")
-                    print("      修法: cloud fix-env（弹卡；补下体积不足的模型）")
+                    print("      修法: cloud fix-env（需确认；补下体积不足的模型）")
             except ValueError:
                 all_passed = False
                 print(f"FAIL  [MODEL] {m_id:<30} 状态异常 - {desc}")
@@ -3046,7 +3066,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             else:
                 all_passed = False
                 print(f"FAIL  [MODEL] {m_id:<30} 缺失 - {desc}")
-                print("      修法: cloud fix-env（弹卡；下载缺失的模型）")
+                print("      修法: cloud fix-env（需确认；下载缺失的模型）")
 
     print("=" * 65)
     if all_passed:
@@ -3129,10 +3149,15 @@ def cmd_up(args: argparse.Namespace) -> int:
                     print(f"[!] {line}")
                 print(f"[*] 轮询等待 Colab Worker 心跳上线（超时 {args.timeout} 秒）...")
                 start_wait = time.time()
+                last_beat = start_wait
                 while time.time() - start_wait < args.timeout:
                     hb = cloud_drive.parse_worker_heartbeat(drive_root)
                     if hb and hb.get("online"):
                         break
+                    now_t = time.time()
+                    if now_t - last_beat >= 15:
+                        print(f"    …已等待 {int(now_t - start_wait)}s / {args.timeout}s", flush=True)
+                        last_beat = now_t
                     time.sleep(5)
                 if not hb or not hb.get("online"):
                     raise SystemExit(f"FAIL 在 {args.timeout} 秒内未检测到在线 Colab Drive Worker 心跳。")
@@ -3745,6 +3770,31 @@ def cmd_down(args: argparse.Namespace) -> int:
     if rate_estimate_note:
         note = (note + "；" if note else "") + rate_estimate_note
 
+    slot_label = f", 槽位: {slot}" if slot != DEFAULT_SLOT else ""
+    slot_flag = _cli_scope_flags(cfg_global, ctx["cfg_local"], provider, slot)
+
+    # 先核查远端活跃任务再结算与删除会话文件，避免拒绝关机却提前清空会话计时
+    # 例外：无活跃会话文件且显式传 --rate 的手动结算（D131），允许照常补记一条账目但仍不强制关机
+    deferred_active_tasks: Any = None
+    if provider == "colab-drive" and drive_root is not None:
+        cloud_drive.clear_drive_hold(drive_root)
+        active_jobs = cloud_drive.active_drive_jobs(drive_root) if reachable else []
+        if active_jobs and not getattr(args, "force", False):
+            if sfile.exists() or rate_arg is None:
+                print(f"[*] 提示: 已解除会话保持；Drive 队列仍有未完成任务 ({active_jobs})，暂不结算也不释放运行时，保留当前会话继续计费。")
+                print(f"    如需强制释放请加 --force: python -m pipeline.cloud down --force --provider colab-drive{slot_flag}")
+                return 0
+            deferred_active_tasks = active_jobs
+    elif reachable:
+        _ssh(f"rm -f {rpaths['hold_path']}", host=host, check=False)
+        active_tasks = remote_active_tasks(host=host)
+        if active_tasks and not getattr(args, "force", False):
+            if sfile.exists() or rate_arg is None:
+                print(f"[*] 提示: 已解除远端会话保持；远端仍有活跃的后台任务正在运行 ({active_tasks})，暂不结算也不关机，保留当前会话继续计费。")
+                print(f"    待任务完成后再运行 down，或加 --force 强制停机: python -m pipeline.cloud down --force{slot_flag}")
+                return 0
+            deferred_active_tasks = active_tasks
+
     ledger_entry = format_ledger_entry(
         session_id=session_info.get("session", f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
         up_time=session_info.get("up", down_time),
@@ -3767,55 +3817,44 @@ def cmd_down(args: argparse.Namespace) -> int:
     if sfile.exists() and not session_corrupt:
         sfile.unlink()
 
-    c_pref = _cost_prefix(unit)
-    u_name = "CU" if unit == "cu" else "元"
-    slot_label = f", 槽位: {slot}" if slot != DEFAULT_SLOT else ""
-    slot_flag = _cli_scope_flags(cfg_global, ctx["cfg_local"], provider, slot)
     print("=" * 60)
     print(f"会话结算完成（后端: {provider}{slot_label}）：")
-    print(f"  会话模式: {mode} (计费单价: {c_pref}{rate}/{_rate_label(unit).split('/')[1]})")
+    print(f"  会话模式: {mode} (计费单价: {_fmt_rate(rate, unit)})")
     print(f"  运行时长: {duration_sec // 60} 分 {duration_sec % 60} 秒 ({duration_sec}s)")
-    print(f"  本次计费: {c_pref}{cost_val:.4f} {u_name}")
+    print(f"  本次计费: {_fmt_amount(cost_val, unit)}")
     if ledger_entry["over_budget"]:
-        print(f"  \033[91m⚠️  警告: 本次花费超出单期预算 {c_pref}{budget} {u_name}！\033[0m")
+        print("  " + _ansi("91", f"⚠️  警告: 本次花费超出单期预算 {_fmt_amount(budget, unit, 2)}！"))
     elif ledger_entry["budget_scoped"]:
-        print(f"  预算状态: 达标 (≤ {c_pref}{budget} {u_name})")
+        print(f"  预算状态: 达标 (≤ {_fmt_amount(budget, unit, 2)})")
     else:
         print(f"  预算状态: 本会话未绑定某一期（{ledger_entry['episode']}），单期预算不适用")
     print(f"  账簿记录: → {lfile}")
     print("=" * 60)
 
+    if deferred_active_tasks:
+        print(f"[*] 提示: 远端仍有活跃任务 ({deferred_active_tasks})，账簿已结算，暂不关机。")
+        print(f"    如需强制停机请加 --force: python -m pipeline.cloud down --force{slot_flag}")
+        return 0
+
     if provider == "colab-drive" and drive_root is not None:
-        cloud_drive.clear_drive_hold(drive_root)
-        active_jobs = cloud_drive.active_drive_jobs(drive_root)
-        if active_jobs and not getattr(args, "force", False):
-            print(f"[*] 提示: Drive 队列仍有未完成任务 ({active_jobs})，暂不发送释放信号。")
-            print(f"    如需强制释放请加 --force: python -m pipeline.cloud down --force --provider colab-drive{slot_flag}")
-            return 0
         flag = cloud_drive.request_drive_shutdown(drive_root)
         print(f"[*] 已写入 Colab 运行时释放信号: {flag}")
         if not reachable:
             print("[提示] Worker 当前已离线；请在 Colab 页面确认运行时已断开以停止 CU 消耗。")
             return 0
         print("[*] 等待 Colab Worker 响应并断开运行时（最多 60 秒）...")
-        for _ in range(12):
+        for step_i in range(1, 13):
             time.sleep(5)
             hb_now = cloud_drive.parse_worker_heartbeat(drive_root)
             if not hb_now or not hb_now.get("online"):
                 print("[OK] Worker 已停止心跳，Colab 运行时已释放。")
                 return 0
+            if step_i % 3 == 0:
+                print(f"    …已等待 {step_i * 5}s / 60s", flush=True)
         print("[!] 60 秒内 Worker 仍在心跳（Drive 同步可能有延迟），请到 Colab 界面确认断开连接。")
         return 0
 
     if reachable:
-        _ssh(f"rm -f {rpaths['hold_path']}", host=host, check=False)
-        active_tasks = remote_active_tasks(host=host)
-        if active_tasks and not getattr(args, "force", False):
-            print(f"[*] 提示: 远端仍有活跃的后台任务正在运行 ({active_tasks})。")
-            print("    账簿已结算，保留远端实例运行以等待任务完成。")
-            print(f"    如需强制停机请加 --force: python -m pipeline.cloud down --force{slot_flag}")
-            return 0
-
         if provider == "colab":
             print("[*] 正在通知 Colab 运行时释放（runtime.unassign）...")
             unassign = rpaths["unassign_path"]
@@ -4117,14 +4156,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("=" * 65)
 
     if skip_idle_default_probe:
-        print("实例连通状态 : \033[90m○ 默认槽位无活跃会话（详见下方并发槽位汇总）\033[0m")
+        print("实例连通状态 : " + _ansi("90", "○ 默认槽位无活跃会话（详见下方并发槽位汇总）"))
     elif provider == "colab-drive":
         drive_root = ctx.get("drive_root")
         reachable_fs = cloud_drive.is_drive_reachable(drive_root)
         hb = cloud_drive.parse_worker_heartbeat(drive_root) if reachable_fs and drive_root else None
         online = bool(hb and hb.get("online"))
         print(f"Drive 队列目录: {drive_root or '未绑定'}")
-        print(f"Worker 在线状态: {'\033[92m● 在线 (心跳延迟 ' + str(hb.get('stale_s')) + 's)\033[0m' if online else '\033[90m○ 离线 / 未启动\033[0m'}")
+        status_txt = _ansi("92", f"● 在线 (心跳延迟 {hb.get('stale_s')}s)") if online else _ansi("90", "○ 离线 / 未启动")
+        print(f"Worker 在线状态: {status_txt}")
         if hb:
             print(f"显卡与显存   : {hb.get('gpu') or '未知'}" + (f", {hb.get('gpu_mem_mib')} MiB" if hb.get("gpu_mem_mib") else ""))
             active_jobs = cloud_drive.active_drive_jobs(drive_root) if drive_root else []
@@ -4138,7 +4178,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         _require_local_cloudflared(ctx["profile"])
         reachable = is_ssh_reachable(host)
-        print(f"实例连通状态 : {'\033[92m● 运行中 (SSH在线)\033[0m' if reachable else '\033[90m○ 未开机 / 离线\033[0m'}")
+        ssh_txt = _ansi("92", "● 运行中 (SSH在线)") if reachable else _ansi("90", "○ 未开机 / 离线")
+        print(f"实例连通状态 : {ssh_txt}")
 
         if reachable:
             gpu_res = _ssh(
@@ -4188,15 +4229,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             rate, estimated = session_rate(cfg_global, mode, sdata.get("gpu"), reported, provider=sp)
             elapsed = int(time.time() - sdata.get("up_epoch", time.time()))
             cur_cost = calculate_session_cost(elapsed, rate)
-            pref = _cost_prefix(su)
-            u_word = "CU" if su == "cu" else "元"
             s_slot = str(sdata.get("slot") or slot)
             slot_info = f", 槽位: {s_slot}" if s_slot != DEFAULT_SLOT else ""
             print("-" * 65)
             print(f"当前活跃会话 : {sdata.get('session')} (后端: {sp}{slot_info}, 开始于 {sdata.get('up')}, 模式: {mode})")
             print(f"已运行时间   : {elapsed // 60} 分 {elapsed % 60} 秒")
-            cost_color = "\033[91m" if cur_cost > s_budget else "\033[92m"
-            print(f"已产生费用   : {cost_color}{pref}{cur_cost:.4f}\033[0m {u_word} (单价: {pref}{rate}/小时{'，估算' if estimated else ''}, 限额: {pref}{s_budget})")
+            cost_str = _ansi("91" if cur_cost > s_budget else "92", _fmt_amount(cur_cost, su))
+            print(f"已产生费用   : {cost_str} (单价: {_fmt_rate(rate, su)}{'，估算' if estimated else ''}, 限额: {_fmt_amount(s_budget, su, 2)})")
         except Exception as e:
             print(f"WARN 会话文件损坏，无法展示当前会话: {e}", file=sys.stderr)
 
@@ -4216,10 +4255,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         tot_sec = summary["total_sec"]
         print("-" * 65)
         print(f"历史账簿统计 : 共 {len(records)} 次会话，累计计费 {tot_sec // 3600}小时{(tot_sec % 3600) // 60}分")
-        print(f"累计消费统计 : AutoDL ¥{summary['total_cny']:.2f} 元 | Colab {summary['total_cu']:.4f} CU")
+        print(f"累计消费统计 : AutoDL ¥{summary['total_cny']:.2f} | Colab {summary['total_cu']:.4f} CU")
         over_budget_count = sum(1 for r in records if r.get("over_budget"))
         if over_budget_count > 0:
-            print(f"\033[91m⚠️  历史超预算会话: {over_budget_count} 次！\033[0m")
+            print(_ansi("91", f"⚠️  历史超预算会话: {over_budget_count} 次！"))
         else:
             print("预算合规记录 : 全部会话均在预算控制范围内。")
     print("=" * 65)
@@ -4253,14 +4292,14 @@ def _preflight_remote_capacity(host: str, remote_root: str, remote_ep_dir: str,
     if verdict == "unknown":
         print(f"WARN 无法确认远端余量（{detail}），继续上行", file=sys.stderr)
         return
-    cleanup_cmd = "cloud clean-frames（弹卡；清的是可秒级重抽的 *_cap 打标帧）"
+    cleanup_cmd = "cloud clean-frames（需确认；清的是可秒级重抽的 *_cap 打标帧）"
     raise SystemExit(
         f"FAIL 远端目标盘余量不足，拒绝上行：{detail}\n"
         f"     上行落在 {remote_ep_dir}，而远端 data/ 在**系统盘**上\n"
         f"     （config/cloud.json 的 remote_data 有意未接线）。两条修法任选：\n"
         f"       ① 清掉上一轮打标帧（本地 shots caption-frames 可秒级重抽）：\n"
         f"          {cleanup_cmd}\n"
-        f"       ② 全季打标前把远端 data/ 改道数据盘（一次性）：cloud relocate-data（弹卡，幂等）\n"
+        f"       ② 全季打标前把远端 data/ 改道数据盘（一次性）：cloud relocate-data（需确认，幂等）\n"
         f"     详情：docs/dev/postmortems/workflow-history.md「云端中间物」"
     )
 
@@ -4305,7 +4344,7 @@ def _remote_maintenance(args: argparse.Namespace, script_of, label: str) -> int:
     rpaths = ctx["rpaths"]
     remote_root = rpaths["remote_root"]
     if not is_ssh_reachable(host):
-        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
+        raise SystemExit("FAIL 实例不可达/已关机，请先运行 cloud up 开启实例")
     active = remote_active_tasks(host)
     if active:
         raise SystemExit(f"FAIL 远端还有任务在跑（{', '.join(active)}），{label}会动到它在用的数据——等它结束再来")
@@ -4371,7 +4410,7 @@ def cmd_fix_env(args: argparse.Namespace) -> int:
     models_root = rpaths["remote_models"]
     py_exe = rpaths["remote_python"]
     if not is_ssh_reachable(host):
-        raise SystemExit("FAIL 实例不可达/已关机，先 cloud up（计费卡）")
+        raise SystemExit("FAIL 实例不可达/已关机，请先运行 cloud up 开启实例")
     active = remote_active_tasks(host)
     if active:
         raise SystemExit(f"FAIL 远端还有任务在跑（{', '.join(active)}），等它结束再修环境")
@@ -5086,7 +5125,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
 def cmd_attach(args: argparse.Namespace) -> int:
     """本地接入远端 tmux 会话（colab-drive 自动回退为实时跟踪 Drive 任务日志）。"""
     ctx = _cloud_context(args)
-    session_name = args.session or "ava-tts"
+    session_name = (getattr(args, "session_pos", None) or args.session or "ava-tts").strip()
     if ctx["provider"] == "colab-drive":
         return cmd_logs(argparse.Namespace(
             provider="colab-drive",
@@ -5155,7 +5194,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # logs
     p_logs = sub.add_parser("logs", parents=[provider_parent], allow_abbrev=False, help="查看或追踪远端/Drive 队列任务日志")
-    p_logs.add_argument("session", type=str, help="tmux 会话名或 Drive job_id（如 ava-20260910_221500）")
+    p_logs.add_argument("session", nargs="?", default="ava-tts", type=str, help="tmux 会话名或 Drive job_id（默认 ava-tts）")
     p_logs.add_argument("-f", "--follow", action="store_true", help="实时追踪日志输出")
     p_logs.add_argument("-n", "--lines", type=int, default=30, help="显示末尾行数（默认 30 行）")
 
@@ -5234,7 +5273,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # attach
     p_attach = sub.add_parser("attach", parents=[provider_parent], allow_abbrev=False, help="终端接驳远端 tmux 会话")
-    p_attach.add_argument("--session", type=str, default="ava-tts", help="tmux 会话名")
+    p_attach.add_argument("session_pos", nargs="?", default=None, help="tmux 会话名（可选，缺省使用 --session 或 ava-tts）")
+    p_attach.add_argument("--session", type=str, default="ava-tts", help="tmux 会话名（默认 ava-tts）")
     return ap
 
 

@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import paths, sheet
@@ -528,14 +529,15 @@ def gallery(anime: str, key: str, out_dir: Path = SHOTS_DIR,
     cards = []
     # 画廊落在 out_dir，帧在 dest_dir——相对路径算出来，不许假设 frames/ 是子目录
     rel = os.path.relpath(fr, out_dir).replace(os.sep, "/")
+    safe_rel = html.escape(urllib.parse.quote(rel, safe="/"), quote=True)
     for s in shots:
         n = s["i"] + 1
         anchor = f"锚点: {anime} {key} {_fmt_t(s['start'])}"
         cards.append(
-            f'<div class="card"><img loading="lazy" src="{rel}/{n:05d}.jpg" alt="#{n}">'
+            f'<div class="card"><img loading="lazy" decoding="async" src="{safe_rel}/{n:05d}.jpg" alt="#{n}">'
             f'<div class="meta"><b>#{n}</b> {_fmt_t(s["start"])} – {_fmt_t(s["end"])}'
             f'（{s["end"] - s["start"]:.1f}s）</div>'
-            f'<button onclick="cp(this, {html.escape(json.dumps(anchor, ensure_ascii=False))})">'
+            f'<button type="button" data-label="复制锚点" onclick="cp(this, {html.escape(json.dumps(anchor, ensure_ascii=False))})">'
             f'复制锚点</button></div>')
     safe_title = html.escape(f"{anime} {key}")
     safe_summary = (f"{safe_title} · {len(shots)} 个镜头 · 阈值 {m['scene_threshold']:g} · "
@@ -569,35 +571,80 @@ def patch_gallery(episode: Path, key: str) -> Path:
 # 画廊模板。零依赖单文件：内联 CSS/JS，无框架无外部字体。
 # 复制走 clipboard API，`file://` 下不可用的浏览器退化到 execCommand 兜底。
 _GALLERY_TPL = """<!DOCTYPE html>
-<html lang="zh"><head><meta charset="utf-8">
+<html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>__TITLE__ · 镜头画廊</title>
 <style>
-body{background:#0f1115;color:#e8eaed;font:14px/1.5 -apple-system,"PingFang SC",sans-serif;margin:0;padding:20px}
-header{margin:0 auto 16px;max-width:1400px;color:#9aa0a6}
-header b{color:#e8eaed;font-size:18px}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;max-width:1400px;margin:0 auto}
-.card{background:#1a1d24;border-radius:8px;overflow:hidden}
+:root{--bg:#0f1115;--card:#1a1d24;--border:#262a33;--text:#e8eaed;--muted:#9aa0a6;
+--btn:#262a33;--btn-h:#2f343f;--btn-t:#8ab4f8;--ok-bg:#1e3a2f;--ok-t:#81c995;
+--err-bg:#3b1f22;--err-t:#f28b82;--toast-bg:#22262f;--toast-t:#e8eaed}
+@media (prefers-color-scheme: light){:root{--bg:#f7f8fa;--card:#ffffff;--border:#e2e5ea;
+--text:#1a1c20;--muted:#5f6672;--btn:#eef1f6;--btn-h:#e3e8f0;--btn-t:#1d4ed8;
+--ok-bg:#e6f4ea;--ok-t:#137333;--err-bg:#fce8e6;--err-t:#c5221f;--toast-bg:#1f232b;--toast-t:#ffffff}}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"PingFang SC",sans-serif;margin:0;padding:20px 20px 56px}
+header{margin:0 auto 16px;max-width:1400px;color:var(--muted)}
+header b{color:var(--text);font-size:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;max-width:1400px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;
+content-visibility:auto;contain-intrinsic-size:auto 230px;
+transition:transform 180ms cubic-bezier(.22,1,.36,1),border-color 180ms ease}
+.card:hover{transform:translateY(-1px);border-color:var(--btn-t)}
 .card img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
-.meta{padding:8px 10px;color:#9aa0a6;font-size:12.5px;font-variant-numeric:tabular-nums}
-.meta b{color:#e8eaed;margin-right:6px}
-button{width:100%;border:0;background:#262a33;color:#8ab4f8;padding:8px;cursor:pointer;font-size:12.5px}
-button:hover{background:#2f343f}button.ok{background:#1e3a2f;color:#81c995}
+.meta{padding:8px 10px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+.meta b{color:var(--text);margin-right:6px}
+button{width:100%;border:0;border-top:1px solid var(--border);background:var(--btn);color:var(--btn-t);
+padding:8px;cursor:pointer;font-size:12.5px;font-weight:500;
+transition:background 140ms ease,color 140ms ease,transform 100ms ease}
+button:hover{background:var(--btn-h)}
+button:active{transform:scale(.985)}
+button.ok{background:var(--ok-bg);color:var(--ok-t)}
+button.err{background:var(--err-bg);color:var(--err-t)}
+.toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,10px);opacity:0;pointer-events:none;
+background:var(--toast-bg);color:var(--toast-t);padding:8px 14px;border-radius:999px;font-size:12.5px;
+box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+transition:opacity 180ms ease,transform 200ms cubic-bezier(.22,1,.36,1)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+@media (prefers-reduced-motion: reduce){.card,button,.toast{transition:none}.card:hover,button:active{transform:none}}
 </style></head><body>
 <header><b>__TITLE__</b> · 镜头画廊<br>__SUMMARY__</header>
 <div class="grid">
 __CARDS__
 </div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>
+var _toastTimer;
+function showToast(msg) {
+  var el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function() { el.classList.remove('show'); }, 2000);
+}
 function cp(btn, text) {
-  var t = btn.textContent;
-  var done = function() { btn.textContent = '\u2713 ' + text; btn.classList.add('ok');
-    setTimeout(function() { btn.textContent = t; btn.classList.remove('ok'); }, 1500); };
+  var label = btn.getAttribute('data-label') || '复制锚点';
+  var reset = function(ms) {
+    clearTimeout(btn._t);
+    btn._t = setTimeout(function() {
+      btn.textContent = label; btn.classList.remove('ok', 'err');
+    }, ms);
+  };
+  var done = function() {
+    btn.textContent = '\u2713 已复制'; btn.classList.remove('err'); btn.classList.add('ok');
+    showToast('已复制：' + text);
+    reset(1500);
+  };
+  var fail = function() {
+    btn.textContent = '复制失败'; btn.classList.remove('ok'); btn.classList.add('err');
+    showToast('复制失败，请手动选中复制');
+    reset(2000);
+  };
   var legacy = function() {
     var ta = document.createElement('textarea');
     ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
     document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); done(); } catch (e) { btn.textContent = '复制失败'; }
+    try { if (document.execCommand('copy')) done(); else fail(); } catch (e) { fail(); }
     document.body.removeChild(ta);
   };
   if (navigator.clipboard && navigator.clipboard.writeText)

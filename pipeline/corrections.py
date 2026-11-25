@@ -21,7 +21,7 @@ import re
 import shutil
 import sys
 import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -163,6 +163,11 @@ _RE_SEG_PREFIX_FULL = re.compile(r"段落\s*(\d+(?:\.\d+)?)")
 _RE_SEG_PREFIX_SHORT = re.compile(r"段\s*(\d+(?:\.\d+)?)")
 
 
+def _natural_seg_key(label: str) -> list[tuple[int, int | str]]:
+    """段号自然排序键：'2' 排在 '10' 前，'5.1' 排在 '5.10' 前。"""
+    return [(0, int(p)) if p.isdigit() else (1, p) for p in str(label).split(".")]
+
+
 def parse_correction(line: str, segs: list[Any] | dict[str, str]) -> Patch:
     """纠错行文法解析器（纯函数，Spec §3.2）。"""
     raw_input = line
@@ -195,7 +200,7 @@ def parse_correction(line: str, segs: list[Any] | dict[str, str]) -> Patch:
 
     if not unique_matches:
         raise PatchError(
-            f"未在输入中找到有效段号（如 '5段'、'第5段'、'段5' 或 '段落 5.1'）。可用段号：{sorted(seg_map.keys())}"
+            f"未在输入中找到有效段号（如 '5段'、'第5段'、'段5' 或 '段落 5.1'）。可用段号：{sorted(seg_map.keys(), key=_natural_seg_key)}"
         )
 
     if len(unique_matches) > 1:
@@ -205,7 +210,7 @@ def parse_correction(line: str, segs: list[Any] | dict[str, str]) -> Patch:
     start, end, seg_label = unique_matches[0]
     if seg_map and seg_label not in seg_map:
         raise PatchError(
-            f"段号 '{seg_label}' 不在稿件段落中。可用段号：{sorted(seg_map.keys())}"
+            f"段号 '{seg_label}' 不在稿件段落中。可用段号：{sorted(seg_map.keys(), key=_natural_seg_key)}"
         )
 
     seg_text = seg_map.get(seg_label, "")
@@ -360,6 +365,23 @@ def parse_correction(line: str, segs: list[Any] | dict[str, str]) -> Patch:
             raw=raw_input,
         )
 
+    # 裸「换种子」（如「7段 换种子」）：仅在剔除「换种子」与标点空白后无其余未知词时放行，
+    # 避免把表外听感表达（如「12段 音色变了 换种子」）静默吞掉；换种子仅支持单段，拒绝「全局/所有段」。
+    if "换种子" in remainder and not re.sub(r"[\s,，。、!！?？]+", "", remainder.replace("换种子", "")):
+        if scope == "global":
+            raise PatchError("换种子仅支持单段，不支持「全局/所有段」（请指定具体段号，如 '7段 换种子'）。")
+        return Patch(
+            segment=seg_label,
+            kind="timbre",
+            word=None,
+            heard=None,
+            target_tone3=None,
+            issue="换种子",
+            action="pin_seed",
+            scope="segment",
+            raw=raw_input,
+        )
+
     # 既不是合规读音，也不是合规听感词
     # 特别检查是否有非受控表达（如「音色变了」）
     timbre_keywords = ("音色", "语气", "听感", "换种子", "变了", "声音")
@@ -436,14 +458,52 @@ def save_corrections_raw(
     assert p.exists(), "corrections.json 写盘后回读校验失败，文件不存在。"
 
 
+def _is_pid_running(target_pid: int) -> bool:
+    if target_pid <= 0:
+        return False
+    try:
+        os.kill(target_pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _lock_busy_message(lock_file: Path, episode: Path, *, tail: str = "稍后再试") -> str:
+    """检查锁中 PID 是否仍存活，区分真实并发与上次异常中断残留锁。"""
+    raw = ""
+    try:
+        raw = lock_file.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    if raw.isdigit() and int(raw) > 0:
+        pid = int(raw)
+        if _is_pid_running(pid):
+            return f"FAIL 应用纠错进行中，{tail}（.apply_patch.lock 存在，持锁进程 {pid}）。"
+        return (
+            f"FAIL 应用纠错进行中，{tail}（.apply_patch.lock 存在，但持锁进程 {pid} 已不在运行，"
+            f"可能是上次异常中断残留；可运行 `python -m pipeline.tts {episode} --clear-stale-lock` 清理）。"
+        )
+    return f"FAIL 应用纠错进行中，{tail}（.apply_patch.lock 存在）。"
+
+
 @contextmanager
 def apply_patch_lock(episode: Path):
     """--apply-patch 单写者排他锁（Spec §3.3 Y1-r16）。"""
     lock_file = episode / "03-audio" / ".apply_patch.lock"
     lock_file.parent.mkdir(parents=True, exist_ok=True)
-    if lock_file.exists():
-        raise SystemExit("FAIL 应用纠错进行中（.apply_patch.lock 存在），稍后再试。")
-    lock_file.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise SystemExit(_lock_busy_message(lock_file, episode))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(str(os.getpid()))
+    except Exception:
+        with suppress(OSError):
+            lock_file.unlink()
+        raise
     try:
         yield
     finally:
@@ -465,7 +525,7 @@ def clear_stale_apply_lock(episode: Path) -> int:
         print("OK 没有残留锁（03-audio/.apply_patch.lock 不存在），无需清理")
         return 0
     raw = lock_file.read_text(encoding="utf-8", errors="replace").strip()
-    if not raw.isdigit():
+    if not raw.isdigit() or int(raw) <= 0:
         raise SystemExit(f"FAIL 锁文件里不是 pid（{raw[:40]!r}），无法判断有没有进程在用——交人看")
     pid = int(raw)
     try:
@@ -485,7 +545,7 @@ def append_correction(episode: Path, patch: Patch) -> dict:
     # 单写者纪律检查
     lock_file = episode / "03-audio" / ".apply_patch.lock"
     if lock_file.exists():
-        raise SystemExit("FAIL 应用纠错进行中，稍后再落盘。")
+        raise SystemExit(_lock_busy_message(lock_file, episode, tail="稍后再落盘"))
 
     entries, fp = load_corrections_raw(episode)
 
@@ -780,9 +840,8 @@ def _prune_attic(attic_dir: Path, keep: int = 10) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
     print(
-        f"[*] 清理 {len(to_delete)} 份旧快照：\n"
-        f"    " + "\n    ".join(summary_lines) + "\n"
-        f"    ——若这些段仍需回滚，请先 approve 或手工留存。",
+        f"[*] 已清理 {len(to_delete)} 份超出保留窗的旧快照（仅保留最近 {keep} 份快照）：\n"
+        f"    " + "\n    ".join(summary_lines),
         file=sys.stderr,
     )
 
@@ -1223,6 +1282,7 @@ def _build_parser():
     a = sub.add_parser("add", help="期级：按 /voice 同一文法追加一条到 03-audio/corrections.json")
     a.add_argument("episode", type=Path)
     a.add_argument("--text", required=True, help="如「5段 绚都 改成 xuan4du1」「7段 换种子」")
+    a.add_argument("--json", action="store_true", help="以 JSON 格式输出录入的条目")
     for name, desc in (("global", "全局：写 config/voice.json 的一个读音键"), ("check", "只核对读音，不写")):
         g = sub.add_parser(name, help=desc)
         g.add_argument("episode", type=Path, nargs="?", default=None)
@@ -1271,8 +1331,10 @@ def preview(argv: list[str]) -> tuple[bool, list[str]]:
     try:
         if ns.cmd == "add":
             patch, check = _parse_add(ns)
+            kind_lbl = "读音" if patch.kind == "pronunciation" else "听感"
+            scope_lbl = "本期所有段" if patch.scope == "global" else "本段"
             lines = [f"写入：{Path(ns.episode).name}/03-audio/corrections.json（期级）",
-                     f"条目：段 {patch.segment} · {patch.kind} · 范围 {patch.scope}"
+                     f"条目：段 {patch.segment} · {kind_lbl} · 范围 {scope_lbl}"
                      + (f" · 「{patch.word}」→ {patch.target_tone3}" if patch.word else "")
                      + (f" · {patch.issue}" if patch.issue else "")]
             if check is not None:
@@ -1310,9 +1372,17 @@ def main(argv: list[str] | None = None) -> int:
                 if not check.ok:
                     return 1
             entry = append_correction(Path(ns.episode), patch)
-            print(json.dumps(entry, ensure_ascii=False))
-            print(f"[OK] 已录入 #{entry['id']}（待应用）。下一步只重配受影响的段：本地 `tts --apply-patch`；"
-                  "云端期 cloud push → cloud run <期号> tts -- --apply-patch → cloud pull。")
+            if getattr(ns, "json", False):
+                print(json.dumps(entry, ensure_ascii=False))
+            else:
+                detail = (
+                    f"「{entry['word']}」→ {entry['target_tone3']}"
+                    if entry.get("action") == "inject"
+                    else f"{entry.get('issue') or '换种子'}（seed={entry.get('seed_pin')}）"
+                )
+                scope_lbl = "本期所有段" if entry.get("scope") == "global" else f"段 {entry.get('segment')}"
+                print(f"[OK] 已录入 #{entry['id']}（{scope_lbl} · {detail}，待应用）。下一步只重配受影响的段：本地 `tts --apply-patch`；"
+                      "云端期 cloud push → cloud run <期号> tts -- --apply-patch → cloud pull。")
             return 0
         check = _reading_check_of(ns)
         print("\n".join(check.lines()))

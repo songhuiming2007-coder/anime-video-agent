@@ -193,7 +193,7 @@ MUTATIONS: list[dict] = [
      "new": '    return\n    if not ep_dir:\n        return\n    d = Path(ep_dir)\n    agent_dir = d / "_agent"'},
     # ---- M18: 未知斜杠命令零 token ----
     {"id": "M18", "guard": "未知 /xxx 零 LLM", "file": CLI,
-     "old": '            print(f"[ERROR] 未知命令: \'{line}\'。输入 /help 查看命令列表。")\n            continue',
+     "old": '            print(f"[ERROR] 未知命令: \'{line}\'{hint}。输入 /help 查看命令列表。")\n            continue',
      "new": '            pass'},
     # ---- M19: 子循环不污染主会话 ----
     {"id": "M19", "guard": "/chat /script 子会话隔离", "file": CLI,
@@ -295,8 +295,8 @@ MUTATIONS: list[dict] = [
              '                tracker=tracker,\n'
              '            )')},
     {"id": "M27a1", "guard": "select prompt 文案引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
-     "old": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]: "',
-     "new": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, idea_drift=选题会话]: "'},
+     "old": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, {IDEA_KEYWORD}=选题会话]（q 退出）: "',
+     "new": '        prompt = f"请选择期目录 [回车默认选 1: {first_label}, idea_drift=选题会话]（q 退出）: "'},
     {"id": "M27a2", "guard": "select 解析分支引用 IDEA_KEYWORD（防词表漂移）", "file": CLI,
      "old": ('        if choice == IDEA_KEYWORD:\n'
              '            return IDEA_KEYWORD'),
@@ -339,7 +339,7 @@ MUTATIONS: list[dict] = [
              '        "[状态卡]\\n"\n'
              '        "模式: 选题会话（无期） | scope: idea | 期目录: 无（写期文件前须先建期）\\n"\n'
              '        "读域: data/library/ 与跨期 read_status\\n"\n'
-             '        "产出落盘: 定稿后点『＋ 新建一期』，选题讨论自动带入新期"\n'
+             '        "产出落盘: 定稿后在桌面端点「＋ 新建一期」或终端运行 ava new <期名> --from-idea，可将选题讨论带入新期"\n'
              '    )'),
      "new": ('def build_idea_card() -> str:\n'
              '    """构建无期选题会话（idea scope）的静态状态卡（纯函数，目标 ≤ 400 字符）。"""\n'

@@ -649,6 +649,38 @@ def tool_summary(name: str, args: dict[str, Any]) -> str:
         else:
             how = ""
         summary = " · ".join(p for p in (fn, how) if p)
+    elif name == "write_note":
+        anime = str(args.get("anime", "")).strip()
+        target = "终审表" if str(args.get("target")) == "review" else "笔记"
+        edits, content = args.get("edits"), args.get("content")
+        how = f"局部 {len(edits)} 处" if isinstance(edits, list) else (
+            f"整篇 {len(content.encode('utf-8')) / 1024:.1f} KB" if isinstance(content, str) else ""
+        )
+        summary = " · ".join(p for p in (anime, target, how) if p)
+    elif name == "write_memory":
+        op = str(args.get("op") or args.get("action") or "").strip()
+        scope_m = str(args.get("scope") or "").strip()
+        title = str(args.get("title") or args.get("section") or "").strip()
+        summary = " · ".join(p for p in (op, scope_m, title) if p)
+    elif name == "cover_edit":
+        src = str(args.get("source") or args.get("image") or "").strip()
+        prompt = str(args.get("prompt") or "").strip()
+        prompt_short = (prompt[:40] + "…") if len(prompt) > 40 else prompt
+        summary = " · ".join(p for p in (src, prompt_short) if p)
+    elif name == "fact_add":
+        anime = str(args.get("anime") or "").strip()
+        claim = str(args.get("claim") or args.get("fact") or args.get("title") or "").strip()
+        claim_short = (claim[:48] + "…") if len(claim) > 48 else claim
+        summary = " · ".join(p for p in (anime, claim_short) if p)
+    elif name == "acquire_propose":
+        raw_cands = args.get("candidates")
+        items = [c for c in raw_cands if isinstance(c, dict)] if isinstance(raw_cands, list) else []
+        titles = "、".join(str(c.get("title") or "").strip() for c in items[:3] if c.get("title"))
+        summary = f"{len(items)} 条候选" + (f" · {titles[:50]}" if titles else "")
+    elif name == "browser":
+        act = str(args.get("action", "")).strip()
+        target = str(args.get("url") or args.get("selector") or "").strip()
+        summary = " · ".join(p for p in (act, target) if p)
     elif name == "run_pipeline":
         summary = str(args.get("command", "")).strip()
     elif name == "bash":

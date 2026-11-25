@@ -113,7 +113,14 @@ def build_status_card(
     )
 
     ht_min = _read_human_time_minutes(d)
-    advisories_str = "；".join(status.advisories) if status.advisories else "无"
+    if status.advisories:
+        joined_adv = "；".join(status.advisories)
+        if len(joined_adv) > 160:
+            advisories_str = f"{joined_adv[:157]}…（共 {len(status.advisories)} 条）"
+        else:
+            advisories_str = joined_adv
+    else:
+        advisories_str = "无"
 
     volume_line = ""
     if project_dir is not None:
@@ -223,7 +230,7 @@ def build_idea_card() -> str:
         "[状态卡]\n"
         "模式: 选题会话（无期） | scope: idea | 期目录: 无（写期文件前须先建期）\n"
         "读域: data/library/ 与跨期 read_status\n"
-        "产出落盘: 定稿后点『＋ 新建一期』，选题讨论自动带入新期"
+        "产出落盘: 定稿后在桌面端点「＋ 新建一期」或终端运行 ava new <期名> --from-idea，可将选题讨论带入新期"
     )
 
 
@@ -494,22 +501,24 @@ def render_approval_card(
             else:
                 is_overwrite = False
 
+        danger_parts: list[str] = []
         if is_overwrite:
             status_str = "覆盖现有文件"
             if "draft" in filename:
-                danger_str = "[覆盖] 现有草稿将被替换"
+                danger_parts.append("[覆盖] 现有草稿将被替换")
             else:
-                danger_str = "[覆盖] 现有文件将被替换"
+                danger_parts.append("[覆盖] 现有文件将被替换")
         else:
             status_str = "新建文件"
-            danger_str = "无"
 
         if filename == SCRIPT_FILENAME and ep:
             # D47：定稿被改之后，已有的封板与配音都可能过期——只提示，不拒
             if (Path(ep) / "02-diff.patch").exists():
-                danger_str += "；改后封板失效，需重新封板"
+                danger_parts.append("改后封板失效，需重新封板")
             if (Path(ep) / "03-audio" / "manifest.json").exists():
-                danger_str += "；已配音，改动段落需 tts --redo"
+                danger_parts.append("已配音，改动段落需 tts --redo")
+
+        danger_str = "；".join(danger_parts) if danger_parts else "无"
 
         target_str = f"{filename}（{size_str}，{status_str}）" if filename else size_str
         lines = [
@@ -584,6 +593,7 @@ def render_approval_card(
         lines = [
             "┌─ 提案审批 ──────────────────────────────────────────",
             f"│ 工具: {name}",
+            "│ 危险标记: 无",
             "│ 目标: data/library/incoming/candidates.json（追加候选，不触发抓取）",
             f"│ 候选 ({len(items)} 条):",
         ]
@@ -594,10 +604,7 @@ def render_approval_card(
             lines.append(f"│   {idx}. {t}（{k}）{u}")
         if len(items) > 10:
             lines.append(f"│   …共 {len(items)} 条")
-        lines.extend([
-            "│ 危险标记: 无",
-            "└─ 执行? [y/N]: ",
-        ])
+        lines.append("└─ 执行? [y/N]: ")
         return "\n".join(lines)
 
     if name == "chrome":
@@ -795,7 +802,7 @@ def render_approval_card(
     elif module in LIBRARY_WRITE_MODULES:
         nature = "写素材库 data/library/（所有期共用）"
     else:
-        nature = "本地只读产物生成 | 预计分钟级"
+        nature = "本地命令执行"
 
     lines = [
         "┌─ 执行审批 ──────────────────────────────────────────",
