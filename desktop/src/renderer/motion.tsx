@@ -1,8 +1,46 @@
 // Unified motion primitives: interruptible Disclosure (0fr <-> 1fr), sliding SegmentedBar pill,
-// compositor-only usePresence, fixed-track usePaneTransition, and VS-12-safe Collapsible.
+// compositor-only usePresence, fixed-track usePaneTransition, IconSwap, and VS-12-safe Collapsible.
 // Pure React + CSSOM (zero external deps, respects prefers-reduced-motion, VS-7 compliant).
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { cloneElement, Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./icons";
+
+/** Recursively strips data-testid and role from closing Disclosure snapshots while preserving element keys so exiting subtrees never unmount/remount. */
+export function stripClosingAttrs(node: ReactNode): ReactNode {
+  if (node === null || node === undefined || typeof node === "boolean" || typeof node === "string" || typeof node === "number") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    let changed = false;
+    const mapped = node.map((child) => {
+      const next = stripClosingAttrs(child);
+      if (next !== child) changed = true;
+      return next;
+    });
+    return changed ? mapped : node;
+  }
+  if (!isValidElement<Record<string, unknown>>(node)) return node;
+  const props = node.props;
+  const hasChildren = "children" in props && props.children !== undefined;
+  const nextChildren = hasChildren ? stripClosingAttrs(props.children as ReactNode) : undefined;
+  if (node.type === Fragment) {
+    return hasChildren && nextChildren !== props.children ? cloneElement(node, undefined, nextChildren) : node;
+  }
+  const patch: Record<string, unknown> = {};
+  let changed = false;
+  if ("data-testid" in props && props["data-testid"] !== undefined) {
+    patch["data-testid"] = undefined;
+    changed = true;
+  }
+  if ("role" in props && props.role !== undefined) {
+    patch.role = undefined;
+    changed = true;
+  }
+  if (hasChildren && nextChildren !== props.children) {
+    changed = true;
+  }
+  if (!changed) return node;
+  return hasChildren ? cloneElement(node, patch, nextChildren) : cloneElement(node, patch);
+}
 
 export function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -12,9 +50,10 @@ export type DisclosureState = "closed" | "opening" | "open" | "closing";
 
 /**
  * 4-state transition controller for fixed-track panes (sidebar / preview) or symmetric height glides.
+ * Uses double-rAF on fresh open so frame 1 paints the opening state before transitioning to open.
  * Instant under prefers-reduced-motion; interruptible mid-flight.
  */
-export function usePaneTransition(open: boolean, durMs = 260): DisclosureState {
+export function usePaneTransition(open: boolean, durMs = 240): DisclosureState {
   const [state, setState] = useState<DisclosureState>(open ? "open" : "closed");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -39,7 +78,7 @@ export function usePaneTransition(open: boolean, durMs = 260): DisclosureState {
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       setState("closed");
-    }, durMs + 20);
+    }, durMs + 30);
     return () => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
@@ -50,8 +89,14 @@ export function usePaneTransition(open: boolean, durMs = 260): DisclosureState {
 
   useLayoutEffect(() => {
     if (state !== "opening") return;
-    const raf = requestAnimationFrame(() => setState("open"));
-    return () => cancelAnimationFrame(raf);
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setState("open"));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
   }, [state]);
 
   return state;
@@ -59,12 +104,17 @@ export function usePaneTransition(open: boolean, durMs = 260): DisclosureState {
 
 /**
  * Compositor-only overlay presence hook (opacity + transform enter/exit with zero reflow).
- * Keeps overlay mounted during the 140ms exit glide, then unmounts cleanly.
+ * Attaching the returned `ref` flushes initial closed style on fresh mount so enter plays on the very next frame
+ * (~16ms, comfortably within VE-1's 120ms window); without `ref`, falls back to double-rAF.
  */
-export function usePresence(open: boolean, exitMs = 140): { mounted: boolean; status: "open" | "close" } {
+export function usePresence(open: boolean, exitMs = 140): { mounted: boolean; status: "open" | "close"; ref: (node: HTMLElement | null) => void } {
   const [mounted, setMounted] = useState(open);
   const [status, setStatus] = useState<"open" | "close">(open ? "open" : "close");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nodeRef = useRef<HTMLElement | null>(null);
+  const ref = useCallback((node: HTMLElement | null) => {
+    nodeRef.current = node;
+  }, []);
 
   useLayoutEffect(() => {
     if (timerRef.current !== null) {
@@ -77,8 +127,12 @@ export function usePresence(open: boolean, exitMs = 140): { mounted: boolean; st
         setStatus("open");
         return;
       }
-      const raf = requestAnimationFrame(() => setStatus("open"));
-      return () => cancelAnimationFrame(raf);
+      // Mid-exit interruption: element is already painted, reverse immediately.
+      if (mounted) {
+        setStatus("open");
+        return;
+      }
+      return;
     }
     setStatus("close");
     if (prefersReducedMotion()) {
@@ -95,16 +149,65 @@ export function usePresence(open: boolean, exitMs = 140): { mounted: boolean; st
         timerRef.current = null;
       }
     };
-  }, [open, exitMs]);
+  }, [open, exitMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { mounted, status };
+  useLayoutEffect(() => {
+    if (!open || !mounted || status === "open") return;
+    if (prefersReducedMotion()) {
+      setStatus("open");
+      return;
+    }
+    if (nodeRef.current) {
+      void nodeRef.current.offsetWidth;
+      const raf = requestAnimationFrame(() => setStatus("open"));
+      return () => cancelAnimationFrame(raf);
+    }
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setStatus("open"));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [open, mounted, status]);
+
+  return { mounted, status, ref };
+}
+
+/**
+ * Optical in-place icon crossfade + micro-scale swap (zero reflow, shared across play/pause, copy/check, eye/eye-off).
+ */
+export function IconSwap({
+  active,
+  items,
+  className,
+}: {
+  active: string;
+  items: readonly { key: string; icon: ReactNode; tone?: "ok" | "err" }[];
+  className?: string;
+}) {
+  return (
+    <span className={["ui-icon-stack", className].filter(Boolean).join(" ")}>
+      {items.map((it) => (
+        <span
+          key={it.key}
+          className={`ui-icon-layer${it.tone === "ok" ? " ui-icon-layer--ok" : it.tone === "err" ? " ui-icon-layer--err" : ""}`}
+          data-active={active === it.key ? "1" : "0"}
+          aria-hidden={active !== it.key || undefined}
+        >
+          {it.icon}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /**
  * Smooth, interruptible height disclosure using CSS grid-template-rows (0fr <-> 1fr).
  * Uses a 4-state machine so opening frame has visibility:visible (autoFocus works on mount)
  * and keepMounted forces layout at 0fr before animating to 1fr.
- * keepLastContent retains the last non-null children during the 260ms closing glide.
+ * keepLastContent retains the last non-null children during the 220ms closing glide (with data-testid/role stripped).
  */
 export function Disclosure({
   open,
@@ -147,7 +250,7 @@ export function Disclosure({
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       setState("closed");
-    }, 300);
+    }, 220);
     return () => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
@@ -172,7 +275,7 @@ export function Disclosure({
         lastContentRef.current = cur;
         rendered = cur;
       } else if (state === "closing" || (!open && active && !prefersReducedMotion())) {
-        rendered = lastContentRef.current;
+        rendered = stripClosingAttrs(lastContentRef.current);
       } else {
         rendered = cur;
       }
@@ -300,12 +403,16 @@ export function SegmentedBar({
         return;
       }
       const x = active.offsetLeft;
+      const y = active.offsetTop;
       const w = active.offsetWidth;
-      thumb.style.transform = `translateX(${x}px)`;
+      const h = active.offsetHeight;
+      thumb.style.transform = `translate3d(${x}px, ${y}px, 0)`;
       thumb.style.width = `${w}px`;
+      thumb.style.height = `${h}px`;
       thumb.dataset.hidden = "0";
       if (!readyRef.current) {
         thumb.dataset.ready = "0";
+        void thumb.offsetWidth;
         if (readyRaf !== null) cancelAnimationFrame(readyRaf);
         readyRaf = requestAnimationFrame(() => {
           readyRaf = null;
@@ -334,8 +441,8 @@ export function SegmentedBar({
 
     const mo =
       typeof MutationObserver !== "undefined"
-        ? new MutationObserver(() => {
-            attachObservers();
+        ? new MutationObserver((mutations) => {
+            if (mutations.some((m) => m.type === "childList")) attachObservers();
             sync();
           })
         : null;

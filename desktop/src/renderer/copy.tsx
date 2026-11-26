@@ -2,6 +2,7 @@
 // 复制的永远是原文（代码块的 textContent / 帧与请求里的命令字段），不是屏幕上折行后的样子，也不带卡面的「│」前缀。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./icons";
+import { IconSwap } from "./motion";
 
 const DONE_MS = 1500; // 「✓ 已复制」停留时长：够人看见，又不至于下一次点击时还挂着旧状态
 
@@ -74,11 +75,14 @@ export function CopyButton({ text, label = "复制", testId = "copy-btn", ariaLa
       onClick={trigger}
     >
       {iconOnly ? (
-        <span className="copy-icon-stack">
-          <span className="copy-icon-layer" data-active={state === "idle" ? "1" : "0"}>{label}</span>
-          <span className="copy-icon-layer copy-icon-layer--ok" data-active={state === "done" ? "1" : "0"}><Icon name="check" size="sm" /></span>
-          <span className="copy-icon-layer copy-icon-layer--err" data-active={state === "failed" ? "1" : "0"}><Icon name="alert" size="sm" /></span>
-        </span>
+        <IconSwap
+          active={state}
+          items={[
+            { key: "idle", icon: label },
+            { key: "done", icon: <Icon name="check" size="sm" />, tone: "ok" },
+            { key: "failed", icon: <Icon name="alert" size="sm" />, tone: "err" },
+          ]}
+        />
       ) : (
         <span key={tick} className={state === "done" ? "ui-confirm-enter" : state === "failed" ? "ui-error-shake" : undefined}>
           {state === "done" ? LABEL_DONE : state === "failed" ? LABEL_FAILED : label}

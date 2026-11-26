@@ -94,7 +94,7 @@ export function FloatingPopover({
 
   const reduced = isReducedMotion();
   const { isMounted, status } = useTransitionStatus(context, {
-    duration: reduced ? 0 : { open: 240, close: 140 },
+    duration: reduced ? 0 : { open: 220, close: 100 },
   });
 
   const click = useClick(context);
@@ -181,7 +181,7 @@ export function FloatingTooltip({ label, placement = "bottom", disabled, renderT
 
   const reduced = isReducedMotion();
   const { isMounted, status } = useTransitionStatus(context, {
-    duration: reduced ? 0 : { open: 160, close: 110 },
+    duration: reduced ? 0 : { open: 160, close: 100 },
   });
   const { side, align } = splitPlacement(resolvedPlacement);
 
@@ -229,7 +229,7 @@ export function FloatingModal({ open, onClose, ariaLabel, testId, backdropTestId
 
   const reduced = isReducedMotion();
   const { isMounted, status } = useTransitionStatus(context, {
-    duration: reduced ? 0 : { open: 240, close: 140 },
+    duration: reduced ? 0 : { open: 220, close: 100 },
   });
 
   const dismiss = useDismiss(context, { outsidePressEvent: "mousedown" });
