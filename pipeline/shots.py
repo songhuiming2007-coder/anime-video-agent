@@ -578,34 +578,40 @@ _GALLERY_TPL = """<!DOCTYPE html>
 <style>
 :root{--bg:#0f1115;--card:#1a1d24;--border:#262a33;--text:#e8eaed;--muted:#9aa0a6;
 --btn:#262a33;--btn-h:#2f343f;--btn-t:#8ab4f8;--ok-bg:#1e3a2f;--ok-t:#81c995;
---err-bg:#3b1f22;--err-t:#f28b82;--toast-bg:#22262f;--toast-t:#e8eaed}
+--err-bg:#3b1f22;--err-t:#f28b82;--toast-bg:rgba(34,38,47,.9);--toast-t:#e8eaed;
+--shadow:0 6px 20px rgba(0,0,0,.24);
+--ease:cubic-bezier(.22,1,.36,1);--dur-press:90ms;--dur-fast:140ms;--dur-base:220ms}
 @media (prefers-color-scheme: light){:root{--bg:#f7f8fa;--card:#ffffff;--border:#e2e5ea;
 --text:#1a1c20;--muted:#5f6672;--btn:#eef1f6;--btn-h:#e3e8f0;--btn-t:#1d4ed8;
---ok-bg:#e6f4ea;--ok-t:#137333;--err-bg:#fce8e6;--err-t:#c5221f;--toast-bg:#1f232b;--toast-t:#ffffff}}
+--ok-bg:#e6f4ea;--ok-t:#137333;--err-bg:#fce8e6;--err-t:#c5221f;--toast-bg:rgba(31,35,43,.9);--toast-t:#ffffff;
+--shadow:0 6px 18px rgba(15,23,42,.09)}}
 body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"PingFang SC",sans-serif;margin:0;padding:20px 20px 56px}
 header{margin:0 auto 16px;max-width:1400px;color:var(--muted)}
 header b{color:var(--text);font-size:18px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;max-width:1400px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;
 content-visibility:auto;contain-intrinsic-size:auto 230px;
-transition:transform 180ms cubic-bezier(.22,1,.36,1),border-color 180ms ease}
-.card:hover{transform:translateY(-1px);border-color:var(--btn-t)}
+transition:transform var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),box-shadow var(--dur-base) var(--ease)}
+.card:hover{transform:translateY(-2px);border-color:color-mix(in srgb, var(--btn-t) 65%, var(--border));box-shadow:var(--shadow)}
 .card img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
 .meta{padding:8px 10px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
 .meta b{color:var(--text);margin-right:6px}
 button{width:100%;border:0;border-top:1px solid var(--border);background:var(--btn);color:var(--btn-t);
 padding:8px;cursor:pointer;font-size:12.5px;font-weight:500;
-transition:background 140ms ease,color 140ms ease,transform 100ms ease}
+transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-press) var(--ease)}
 button:hover{background:var(--btn-h)}
-button:active{transform:scale(.985)}
+button:active{transform:scale(.975)}
+button:focus-visible{outline:2px solid var(--btn-t);outline-offset:-2px}
 button.ok{background:var(--ok-bg);color:var(--ok-t)}
 button.err{background:var(--err-bg);color:var(--err-t)}
-.toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,10px);opacity:0;pointer-events:none;
+.toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,10px) scale(.97);opacity:0;pointer-events:none;
 background:var(--toast-bg);color:var(--toast-t);padding:8px 14px;border-radius:999px;font-size:12.5px;
+backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
 box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-transition:opacity 180ms ease,transform 200ms cubic-bezier(.22,1,.36,1)}
-.toast.show{opacity:1;transform:translate(-50%,0)}
-@media (prefers-reduced-motion: reduce){.card,button,.toast{transition:none}.card:hover,button:active{transform:none}}
+transition:opacity var(--dur-fast) var(--ease),transform var(--dur-base) var(--ease)}
+.toast.show{opacity:1;transform:translate(-50%,0) scale(1)}
+@media (max-width:600px){body{padding:14px 14px 56px}.grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}}
+@media (prefers-reduced-motion: reduce){.card,button,.toast{transition:none}.card:hover,button:active{transform:none}.toast{transform:translate(-50%,0)}}
 </style></head><body>
 <header><b>__TITLE__</b> · 镜头画廊<br>__SUMMARY__</header>
 <div class="grid">
