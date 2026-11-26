@@ -14,6 +14,7 @@ Agent 驱动撰写口播与分镜，并通过自动化静态机检。
    - 缺口登记进 `02-asset-requests.json`（`write_episode_file`，免卡）；
    - `web_fetch` / `crawl` 返回的 `images` 写候选，`why` 写明补哪段的缺口，调 `acquire_propose`（只登记并核对、不下载，返回机器表原样给人）；
    - 人点名后 `acquire fetch <号>`（只能抓结论为「可下载」的）→ `acquire gate` → `acquire register <文件> --to-patch` → `ingest_patch --anchor-only`（只切镜头登记，不打标、不碰云端）→ 写 `锚点: <补丁池名> SPxx 0:00`；
+   - 若静态图讲不清动态机制或数据跨度，02 阶段先在 `02-asset-requests.json` 登记待造动效，待 03 配音（推荐 04 初排）后走 `skills/make-motion-asset/SKILL.md` 生成 `*-motion.mp4` 落入 `patch_assets/` 并走 `ingest_patch --anchor-only`；
    - 不许拿角色镜头硬凑；
    - `--anchor-only` 的素材只能写锚点、检索不到；要检索得到，番池素材走 `skills/acquire-assets/SKILL.md` 第二节第 4 步的入库全链，补丁池去掉 `--anchor-only` 重跑（runbook 04-clips）。
 3. **运行机检**：agent 跑 `check_script`（免卡，期目录与稿件自动补上）。底层排查参考：`python -m pipeline.check_script data/episodes/<期号>/02-script.draft.md`。

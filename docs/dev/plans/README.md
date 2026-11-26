@@ -62,6 +62,7 @@
 | [云端算力双后端（AutoDL + Google Colab SSH / Drive）](2026-11-14-colab-dual-cloud-provider-spec.md) | — | ADR-0014, ADR-0016, ADR-0030 | **已施工·机检与 Colab L4 实机验证通过**（2026-11-14 立，11-18/20 扩至 `--slot` 多槽位并发、`.sha256` venv 缓存与 `flash-attn` 探测，并经实机 Colab L4 跑通） |
 | [D169 + D168 + D170：桌面端体验重做与独立多服务商 /login & 推理强度对齐方案](2026-11-14-d169-d168-d170-pi-ux-spec.md) | D168, D169, D170 | D49, D91, D154–D156, N50, ADR-0021 | **已施工·机检通过，待人验收**（2026-11-14 交付三批；后续 `3a10c46` 移除阶段胶囊并重做顶栏/主题/Floating UI，`545ad78`/`2f36522` 增模型来源分组，`66ed508`/`1cd3b3b` 增 Gemini 4 窗口与回合内防溢出）；待人：真实窗口与数据验收 |
 | [接入 chrome-devtools-mcp：主力 Chrome 后台无扰检索与交互](2026-11-14-chrome-devtools-mcp-spec.md) | — | ADR-0021, ADR-0030, ADR-0032 | **已施工·机检与真实探针通过**（2026-11-14；新增独立 `chrome` 工具走 `--autoConnect`，含后台焦点隔离、Tab 归属隔离、敏感头剥离、仅硬危险弹卡与 `fetch-log` 留档；变异 5/5 KILLED、真实 `list_pages` 探针 4.65s 连通，待真做片会话手验场景 A/B） |
+| [动效素材体系升级（文档 / Context 层 + 底层渲染引擎）](2026-11-26-motion-asset-v2-spec.md) | — | ADR-0010, ADR-0022, D84, D92, D101 | **Phase 1 & 2 均已施工·两轮复审修复与实机冒烟通过**（2026-11-26；文档/Context 层 + `--context`/`--splice --splice-bgm`+接缝图/自动接触表/多字体+`initScene`/按段双安全区/`runtime.js`/`gl.js`；单测 +21 含 Node JS 行为验证、两轮变异 12/12 KILLED、伪恋+EGOIST 两期真实冒烟通过；待人审阅与实片验收） |
 
 ## 已归档：二期六份 spec（2026-09-29 S21 收尾）
 
