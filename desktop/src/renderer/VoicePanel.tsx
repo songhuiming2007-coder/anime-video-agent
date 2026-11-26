@@ -8,10 +8,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { VoiceCheckJson, VoiceInfoJson, VoicePatchJson, VoiceSegmentJson } from "../shared/protocol";
 import { heardKey, lockState, redoSegments, segStatus, synthSummary, type SegStatusKind } from "../shared/voiceInfo";
-import { CopyButton } from "./copy";
 import { FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
-import { Collapsible, Disclosure, prefersReducedMotion, SegmentedBar } from "./motion";
+import { Collapsible, Disclosure, IconSwap, prefersReducedMotion, SegmentedBar } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 import { Badge, StateView } from "./ui";
 
@@ -63,7 +62,8 @@ const todayIso = () => {
 };
 
 type QueueItem = { wav: string; label: string; mtime: number | null };
-type BusyAction = "parse" | "add" | "retract" | "revert" | "reseed" | "apply" | "clearLock" | null;
+type BusyAction = "parse" | "add" | "retract" | "revert" | "reseed" | "apply" | "clearLock" | "global";
+type BusyOp = { action: BusyAction; target?: string } | null;
 type VoiceMsg = { kind: "ok" | "err"; text: string; n: number };
 
 /**
@@ -206,7 +206,13 @@ function NowPlayingBar({
               onClick={togglePause}
               aria-label={paused ? "继续播放" : "暂停播放"}
             >
-              <Icon name={paused ? "play" : "pause"} size="sm" />
+              <IconSwap
+                active={paused ? "play" : "pause"}
+                items={[
+                  { key: "play", icon: <Icon name="play" size="sm" /> },
+                  { key: "pause", icon: <Icon name="pause" size="sm" /> },
+                ]}
+              />
             </button>
             <span className="voice-nowplaying-name">段 {current.label}</span>
             {remainingCount > 0 && <span className="ui-badge">余 {remainingCount} 段</span>}
@@ -271,12 +277,14 @@ function NowPlayingBar({
           </div>
         )}
       </Disclosure>
-      {playErr && (
-        <div className="notice notice--err voice-msg-bar ui-error-shake" role="alert">
-          <Icon name="alert" size="sm" />
-          <span>{playErr}</span>
-        </div>
-      )}
+      <Disclosure open={playErr !== null} keepLastContent>
+        {playErr && (
+          <div className="notice notice--err voice-msg-bar ui-error-shake" role="alert">
+            <Icon name="alert" size="sm" />
+            <span>{playErr}</span>
+          </div>
+        )}
+      </Disclosure>
       {/* key 带 mtime：重配后同名 wav 换了内容，强制换一个元素重新取，不播旧缓冲（D87） */}
       {current !== null && (
         <audio
@@ -305,7 +313,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const [raw, setRaw] = useState("");
   const [card, setCard] = useState<VoicePatchJson | null>(null);
   const [msg, setMsg] = useState<VoiceMsg | null>(null);
-  const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [busyOp, setBusyOp] = useState<BusyOp>(null);
   const [revertArmed, setRevertArmed] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [paused, setPaused] = useState(false);
@@ -313,7 +321,10 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
   const [fix, setFix] = useState<{ label: string; word: string } | null>(null);
   const togglePauseRef = useRef<(() => void) | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const busy = busyAction !== null;
+  const busyRef = useRef(false);
+  const busy = busyOp !== null;
+  const isBusy = (action: BusyAction, target?: string) =>
+    busyOp?.action === action && (target === undefined || busyOp.target === target);
 
   const pushMsg = useCallback((kind: "ok" | "err", text: string) => {
     setMsg((prev) => ({ kind, text, n: (prev?.n ?? 0) + 1 }));
@@ -460,7 +471,9 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
 
   const doParse = useCallback(
     async (call: Promise<unknown>) => {
-      setBusyAction("parse");
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusyOp({ action: "parse" });
       setMsg(null);
       setCard(null);
       try {
@@ -468,15 +481,18 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       } catch (e) {
         pushMsg("err", errText(e));
       } finally {
-        setBusyAction(null);
+        busyRef.current = false;
+        setBusyOp(null);
       }
     },
     [pushMsg],
   );
 
   const doAdd = useCallback(
-    async (call: Promise<unknown>, action: BusyAction = "add") => {
-      setBusyAction(action);
+    async (call: Promise<unknown>, action: BusyAction = "add", target?: string) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusyOp({ action, target });
       setMsg(null);
       try {
         const entry = (await call) as Record<string, unknown>;
@@ -487,15 +503,18 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       } catch (e) {
         pushMsg("err", errText(e));
       } finally {
-        setBusyAction(null);
+        busyRef.current = false;
+        setBusyOp(null);
       }
     },
     [load, pushMsg],
   );
 
   const doAction = useCallback(
-    async (call: Promise<unknown>, okText: string, action: BusyAction) => {
-      setBusyAction(action);
+    async (call: Promise<unknown>, okText: string, action: BusyAction, target?: string) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusyOp({ action, target });
       setMsg(null);
       try {
         await call;
@@ -504,7 +523,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       } catch (e) {
         pushMsg("err", errText(e));
       } finally {
-        setBusyAction(null);
+        busyRef.current = false;
+        setBusyOp(null);
       }
     },
     [load, pushMsg],
@@ -512,7 +532,9 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
 
   const doDone = useCallback(
     async (call: Promise<unknown>) => {
-      setBusyAction("apply");
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusyOp({ action: "apply" });
       setMsg(null);
       try {
         const r = (await call) as { started: boolean };
@@ -521,7 +543,31 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
       } catch (e) {
         pushMsg("err", errText(e));
       } finally {
-        setBusyAction(null);
+        busyRef.current = false;
+        setBusyOp(null);
+      }
+    },
+    [load, pushMsg],
+  );
+
+  const doGlobal = useCallback(
+    async (call: Promise<VoiceCheckJson>, target: string): Promise<VoiceCheckJson | null> => {
+      if (busyRef.current) return null;
+      busyRef.current = true;
+      setBusyOp({ action: "global", target });
+      try {
+        const r = await call;
+        if (r.ok) {
+          setFix(null);
+          pushMsg("ok", r.lines.find((l) => l.startsWith("[OK]")) ?? "已写入全局读音表");
+          await load();
+        }
+        return r;
+      } catch (e) {
+        return { ok: false, lines: [errText(e)] };
+      } finally {
+        busyRef.current = false;
+        setBusyOp(null);
       }
     },
     [load, pushMsg],
@@ -630,17 +676,21 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           {info.engine === "" ? "引擎未记录" : `${info.engine}${info.engine_cloud ? " · 云端" : " · 本地"}`}
         </span>
       </div>
-      <div className="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
-      {err !== null && (
-        <div className="notice notice--warn voice-msg-bar" data-testid="voice-stale">
-          <Icon name="alert" size="sm" />
-          <span>刷新失败：{err}（以下为上次读到的内容）</span>
-          <span className="spacer" />
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void load()}>
-            重试
-          </button>
-        </div>
+      {info.segments.length > 0 && (
+        <div className="muted voice-hint">选中段落里读错的字，就地记下；攒够了在底部只重配这些段。</div>
       )}
+      <Disclosure open={err !== null} keepLastContent>
+        {err !== null && (
+          <div className="notice notice--warn voice-msg-bar" data-testid="voice-stale">
+            <Icon name="alert" size="sm" />
+            <span>刷新失败：{err}（以下为上次读到的内容）</span>
+            <span className="spacer" />
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void load()}>
+              重试
+            </button>
+          </div>
+        )}
+      </Disclosure>
 
       {info.engine_cloud && (
         <div className="notice voice-msg-bar" data-testid="voice-cloud">
@@ -648,45 +698,56 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
           本期配音引擎为云端引擎（{info.engine}），重配请去云端执行 apply-patch。
         </div>
       )}
-      {lockBusy && (
-        <div className="notice voice-msg-bar" data-testid="voice-lock-busy">
-          <span className="ui-spinner" />
-          增量重配进行中（pid {String(lock.pid)}）。
-        </div>
-      )}
-      {lockStale && (
-        <div className="notice notice--warn voice-msg-bar" data-testid="voice-lock-stale">
-          <Icon name="alert" size="sm" />
-          <span>
-            检测到上次重配异常中断留下的锁（{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}），清除后即可重试。
-          </span>
-          <button
-            type="button"
-            className="ui-btn ui-btn--sm"
-            data-testid="voice-clear-lock"
-            disabled={busy}
-            onClick={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              void doAction(rpc.call("voice.clearStaleLock", { epKey }), "已清除残留锁，现在可以重试重配", "clearLock");
-            }}
-          >
-            {busyAction === "clearLock" && <span className="ui-spinner" />}
-            清除残留锁
-          </button>
-          <CopyButton text={`python -m pipeline.tts data/episodes/${epKey} --clear-stale-lock`} label="复制命令" testId="voice-lock-copy" />
-        </div>
-      )}
-
-      {summary !== null && (
-        <div className={`notice voice-synth voice-synth--${summary.tone}`} data-testid="voice-synth" data-state={info.synth?.state} title={summary.title}>
-          {summary.tone === "wait" ? (
+      <Disclosure open={lockBusy} keepLastContent>
+        {lockBusy && (
+          <div className="notice voice-msg-bar" data-testid="voice-lock-busy">
             <span className="ui-spinner" />
-          ) : (
-            <Icon name={summary.tone === "danger" || summary.tone === "warn" ? "alert" : "info"} size="sm" />
-          )}
-          <span>{summary.text}</span>
-        </div>
-      )}
+            增量重配进行中（pid {String(lock.pid)}）。
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure open={lockStale} keepLastContent>
+        {lockStale && (
+          <div className="notice notice--warn voice-msg-bar" data-testid="voice-lock-stale">
+            <Icon name="alert" size="sm" />
+            <span>
+              检测到上次重配异常中断留下的锁（{lock.pid === null ? "pid 未记录" : `pid ${lock.pid} 已不存在`}），清除后即可重试。
+            </span>
+            <button
+              type="button"
+              className="ui-btn ui-btn--sm"
+              data-testid="voice-clear-lock"
+              disabled={busy}
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                if (busyRef.current) return;
+                void doAction(rpc.call("voice.clearStaleLock", { epKey }), "已清除残留锁，现在可以重试重配", "clearLock");
+              }}
+            >
+              {isBusy("clearLock") && <span className="ui-spinner" />}
+              清除残留锁
+            </button>
+          </div>
+        )}
+      </Disclosure>
+
+      <Disclosure open={summary !== null} keepLastContent>
+        {summary !== null && (
+          <div
+            className={`notice voice-synth voice-synth--${summary.tone}`}
+            data-testid="voice-synth"
+            data-state={info.synth?.state}
+            title={summary.title}
+          >
+            {summary.tone === "wait" ? (
+              <span className="ui-spinner" />
+            ) : (
+              <Icon name={summary.tone === "danger" || summary.tone === "warn" ? "alert" : "info"} size="sm" />
+            )}
+            <span>{summary.text}</span>
+          </div>
+        )}
+      </Disclosure>
 
       <div className="voice-list" ref={listRef} data-testid="voice-segments">
         {info.segments.length === 0 ? (
@@ -707,7 +768,13 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                   onClick={() => (isCurrent ? togglePauseRef.current?.() : playOne(s))}
                   aria-label={isPlayingThis ? `暂停段 ${s.label}` : isCurrent ? `继续播放段 ${s.label}` : `播放段 ${s.label}`}
                 >
-                  <Icon name={isPlayingThis ? "pause" : "play"} size="sm" />
+                  <IconSwap
+                    active={isPlayingThis ? "pause" : "play"}
+                    items={[
+                      { key: "play", icon: <Icon name="play" size="sm" /> },
+                      { key: "pause", icon: <Icon name="pause" size="sm" /> },
+                    ]}
+                  />
                 </button>
                 <div className="voice-row-main">
                   <div className="voice-row-head">
@@ -727,15 +794,16 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                         title="听感不对（发飘、断层、吞字…）：换一个种子重配这一段"
                         onClick={(e) => {
                           if (!e.nativeEvent.isTrusted) return;
-                          void doAdd(rpc.call("voice.add", { epKey, text: `段${s.label} 换种子` }), "reseed");
+                          if (busyRef.current) return;
+                          void doAdd(rpc.call("voice.add", { epKey, text: `段${s.label} 换种子` }), "reseed", s.label);
                         }}
                       >
-                        {busyAction === "reseed" && <span className="ui-spinner" />}
+                        {isBusy("reseed", s.label) && <span className="ui-spinner" />}
                         换种子
                       </button>
                       {s.has_attic && (
                         armed ? (
-                          <>
+                          <span className="head-end-confirm ui-confirm-enter">
                             <button
                               type="button"
                               className="ui-btn ui-btn--danger ui-btn--sm"
@@ -743,11 +811,12 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                               disabled={busy}
                               onClick={(e) => {
                                 if (!e.nativeEvent.isTrusted) return;
+                                if (busyRef.current) return;
                                 setRevertArmed(null);
-                                void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`, "revert");
+                                void doAction(rpc.call("voice.revert", { epKey, label: s.label }), `已回滚段 ${s.label}`, "revert", s.label);
                               }}
                             >
-                              {busyAction === "revert" && <span className="ui-spinner" />}
+                              {isBusy("revert", s.label) && <span className="ui-spinner" />}
                               确认回滚
                             </button>
                             <button
@@ -758,7 +827,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                             >
                               取消
                             </button>
-                          </>
+                          </span>
                         ) : (
                           <button
                             type="button"
@@ -768,6 +837,7 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                             title="恢复这一段上一次重配前的音频快照"
                             onClick={() => setRevertArmed(s.label)}
                           >
+                            {isBusy("revert", s.label) && <span className="ui-spinner" />}
                             回滚
                           </button>
                         )
@@ -786,16 +856,14 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
                         label={fix.label}
                         word={fix.word}
                         busy={busy}
+                        writing={isBusy("global", fix.label)}
+                        isLocked={() => busyRef.current}
                         onCancel={() => setFix(null)}
                         onAdd={(call) => {
                           setFix(null);
-                          void doAdd(call, "add");
+                          void doAdd(call, "add", "fix");
                         }}
-                        onGlobalDone={(line) => {
-                          setFix(null);
-                          pushMsg("ok", line);
-                          void load();
-                        }}
+                        onGlobal={(call) => doGlobal(call, fix.label)}
                       />
                     )}
                   </Disclosure>
@@ -806,34 +874,37 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         )}
       </div>
 
-      {pending.length > 0 && (
-        <Collapsible className="pending" testId="voice-pending" defaultOpen bar summary={`待应用纠错条目（${pending.length}）`}>
-          {pending.map((c) => (
-            <div className="seg-row" key={String(c.id)} data-testid="pending-row" data-id={String(c.id)}>
-              <span className="ui-row-meta">#{String(c.id)}</span>
-              <span className="ui-row-title">段{String(c.segment)}</span>
-              <span className="ui-row-meta">
-                {c.word ? `「${String(c.word)}」→ ${String(c.target_tone3)}` : String(c.issue ?? c.kind)} · {c.scope === "global" ? "本期所有段" : "本段"}
-              </span>
-              <span className="seg-actions">
-                <button
-                  type="button"
-                  className="ui-btn ui-btn--ghost ui-btn--sm"
-                  data-testid="pending-retract"
-                  disabled={busy}
-                  onClick={(e) => {
-                    if (!e.nativeEvent.isTrusted) return;
-                    void doAction(rpc.call("voice.retract", { epKey, id: String(c.id) }), `已撤回 #${String(c.id)}`, "retract");
-                  }}
-                >
-                  {busyAction === "retract" && <span className="ui-spinner" />}
-                  撤回
-                </button>
-              </span>
-            </div>
-          ))}
-        </Collapsible>
-      )}
+      <Disclosure open={pending.length > 0}>
+        {pending.length > 0 && (
+          <Collapsible className="pending" testId="voice-pending" defaultOpen bar summary={`待应用纠错条目（${pending.length}）`}>
+            {pending.map((c) => (
+              <div className="seg-row" key={String(c.id)} data-testid="pending-row" data-id={String(c.id)}>
+                <span className="ui-row-meta">#{String(c.id)}</span>
+                <span className="ui-row-title">段{String(c.segment)}</span>
+                <span className="ui-row-meta">
+                  {c.word ? `「${String(c.word)}」→ ${String(c.target_tone3)}` : String(c.issue ?? c.kind)} · {c.scope === "global" ? "本期所有段" : "本段"}
+                </span>
+                <span className="seg-actions">
+                  <button
+                    type="button"
+                    className="ui-btn ui-btn--ghost ui-btn--sm"
+                    data-testid="pending-retract"
+                    disabled={busy}
+                    onClick={(e) => {
+                      if (!e.nativeEvent.isTrusted) return;
+                      if (busyRef.current) return;
+                      void doAction(rpc.call("voice.retract", { epKey, id: String(c.id) }), `已撤回 #${String(c.id)}`, "retract", String(c.id));
+                    }}
+                  >
+                    {isBusy("retract", String(c.id)) && <span className="ui-spinner" />}
+                    撤回
+                  </button>
+                </span>
+              </div>
+            ))}
+          </Collapsible>
+        )}
+      </Disclosure>
 
       <Collapsible className="voice-grammar" summaryTestId="voice-grammar" bar summary="按文法录入（终端 /voice 同一文法）">
         <div className="voice-input" data-testid="voice-input">
@@ -848,45 +919,49 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
             disabled={busy || raw.trim() === ""}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (busyRef.current) return;
               void doParse(rpc.call("voice.parse", { epKey, text: raw }));
             }}
           >
-            {busyAction === "parse" && <span className="ui-spinner" />}
+            {isBusy("parse") && <span className="ui-spinner" />}
             解析
           </button>
         </div>
-        {card !== null && (
-          <div className="voice-card ui-card-enter" data-testid="voice-card">
-            <div className="ui-section">确认卡（与终端同语义）</div>
-            <dl className="ui-kv">
-              {visibleCardFields.map(([k, label]) => (
-                <Fragment key={k}>
-                  <dt>{label}</dt>
-                  <dd>{String(card[k])}</dd>
-                </Fragment>
-              ))}
-            </dl>
-            {card.scope === "global" && (
-              <div className="notice notice--warn" data-testid="voice-global">
-                <Icon name="alert" size="sm" />
-                该拼音注入影响本期所有包含该词的段落。
-              </div>
-            )}
-            <button
-              type="button"
-              className="ui-btn ui-btn--sm"
-              data-testid="voice-add"
-              disabled={busy}
-              onClick={(e) => {
-                if (!e.nativeEvent.isTrusted) return;
-                void doAdd(rpc.call("voice.add", { epKey, text: raw }), "add");
-              }}
-            >
-              {busyAction === "add" && <span className="ui-spinner" />}
-              确认落盘
-            </button>
-          </div>
-        )}
+        <Disclosure open={card !== null} keepLastContent>
+          {card !== null && (
+            <div className="voice-card ui-card-enter" data-testid="voice-card">
+              <div className="ui-section">确认卡（与终端同语义）</div>
+              <dl className="ui-kv">
+                {visibleCardFields.map(([k, label]) => (
+                  <Fragment key={k}>
+                    <dt>{label}</dt>
+                    <dd>{String(card[k])}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+              {card.scope === "global" && (
+                <div className="notice notice--warn" data-testid="voice-global">
+                  <Icon name="alert" size="sm" />
+                  该拼音注入影响本期所有包含该词的段落。
+                </div>
+              )}
+              <button
+                type="button"
+                className="ui-btn ui-btn--sm"
+                data-testid="voice-add"
+                disabled={busy}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  if (busyRef.current) return;
+                  void doAdd(rpc.call("voice.add", { epKey, text: raw }), "add", "grammar");
+                }}
+              >
+                {isBusy("add", "grammar") && <span className="ui-spinner" />}
+                确认落盘
+              </button>
+            </div>
+          )}
+        </Disclosure>
       </Collapsible>
 
       {info.heteronyms.length > 0 && (
@@ -901,21 +976,23 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
         </Collapsible>
       )}
 
-      {msg !== null && (
-        <div
-          key={msg.n}
-          className={msg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
-          data-testid="voice-msg"
-          role={msg.kind === "err" ? "alert" : "status"}
-        >
-          <Icon name={msg.kind === "err" ? "alert" : "info"} size="sm" />
-          <span>{msg.text}</span>
-          <span className="spacer" />
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭提示" onClick={() => setMsg(null)}>
-            <Icon name="close" size="sm" />
-          </button>
-        </div>
-      )}
+      <Disclosure open={msg !== null} keepLastContent>
+        {msg !== null && (
+          <div
+            key={msg.n}
+            className={msg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+            data-testid="voice-msg"
+            role={msg.kind === "err" ? "alert" : "status"}
+          >
+            <Icon name={msg.kind === "err" ? "alert" : "info"} size="sm" />
+            <span>{msg.text}</span>
+            <span className="spacer" />
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭提示" onClick={() => setMsg(null)}>
+              <Icon name="close" size="sm" />
+            </button>
+          </div>
+        )}
+      </Disclosure>
 
       <NowPlayingBar
         epKey={epKey}
@@ -934,8 +1011,8 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
             当前没有待重配的段
           </span>
         ) : (
-          <span data-testid="voice-redo-segs">
-            <Badge tone="warn">待重配 {redoSegs.length} 段</Badge> 段 {redoSegs.join("、")}
+          <span data-testid="voice-redo-segs" title={`段 ${redoSegs.join("、")}`}>
+            <Badge tone="warn">待重配 {redoSegs.length} 段</Badge> 段 {redoSegs.length > 6 ? `${redoSegs.slice(0, 6).join("、")} 等 ${redoSegs.length} 段` : redoSegs.join("、")}
           </span>
         )}
         <span className="voice-foot-sp" />
@@ -950,10 +1027,11 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
             title={doneDisabledTip}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (busyRef.current) return;
               void doDone(rpc.call("voice.applyPatch", { epKey }));
             }}
           >
-            {busyAction === "apply" && <span className="ui-spinner" />}
+            {isBusy("apply") && <span className="ui-spinner" />}
             {redoSegs.length > 0 ? `只重配这 ${redoSegs.length} 段` : "无需重配"}
           </button>
         ) : (
@@ -966,10 +1044,11 @@ export function VoicePanel({ epKey, rpc, onReady, live = false }: { epKey: strin
             title={doneDisabledTip}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (busyRef.current) return;
               void doDone(rpc.call("voice.retts", { epKey }));
             }}
           >
-            {busyAction === "apply" && <span className="ui-spinner" />}
+            {isBusy("apply") && <span className="ui-spinner" />}
             {redoSegs.length > 0 ? `只重配这 ${redoSegs.length} 段` : "无需重配"}
           </button>
         )}
@@ -1007,18 +1086,22 @@ function FixCard({
   label,
   word,
   busy,
+  writing,
+  isLocked,
   onCancel,
   onAdd,
-  onGlobalDone,
+  onGlobal,
 }: {
   epKey: string;
   rpc: RpcClient;
   label: string;
   word: string;
   busy: boolean;
+  writing: boolean;
+  isLocked: () => boolean;
   onCancel: () => void;
   onAdd: (call: Promise<unknown>) => void;
-  onGlobalDone: (line: string) => void;
+  onGlobal: (call: Promise<VoiceCheckJson>) => Promise<VoiceCheckJson | null>;
 }) {
   const looksLatin = /^[A-Za-z0-9\s\-_.'’]+$/.test(word) && /[A-Za-z]/.test(word);
   const [pinyin, setPinyin] = useState("");
@@ -1026,7 +1109,6 @@ function FixCard({
   const [homophone, setHomophone] = useState("");
   const [scope, setScope] = useState<Scope>("seg");
   const [check, setCheck] = useState<VoiceCheckJson | null>(null);
-  const [writing, setWriting] = useState(false);
   const [result, setResult] = useState<VoiceCheckJson | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const effScope: Scope = method === "pinyin" ? scope : "global";
@@ -1066,16 +1148,8 @@ function FixCard({
   }, [epKey, rpc, word, pinyin, homophone, method, ready]);
 
   const finishGlobal = async (call: Promise<VoiceCheckJson>) => {
-    setWriting(true);
-    try {
-      const r = await call;
-      setResult(r);
-      if (r.ok) onGlobalDone(r.lines.find((l) => l.startsWith("[OK]")) ?? "已写入全局读音表");
-    } catch (e) {
-      setResult({ ok: false, lines: [errText(e)] });
-    } finally {
-      setWriting(false);
-    }
+    const r = await onGlobal(call);
+    if (r && !r.ok) setResult(r);
   };
   const needSupersede = result !== null && !result.ok && result.lines.some((l) => l.includes("--supersede"));
 
@@ -1176,6 +1250,7 @@ function FixCard({
             disabled={busy || writing}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (isLocked()) return;
               void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "true" }));
             }}
           >
@@ -1190,6 +1265,7 @@ function FixCard({
             disabled={busy || writing || check === null || !check.ok}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (isLocked()) return;
               void finishGlobal(rpc.call<VoiceCheckJson>("voice.global", { epKey, ...reading, supersede: "false" }));
             }}
           >
@@ -1204,6 +1280,7 @@ function FixCard({
             disabled={busy || writing || check === null || !check.ok}
             onClick={(e) => {
               if (!e.nativeEvent.isTrusted) return;
+              if (isLocked()) return;
               onAdd(rpc.call("voice.add", { epKey, text: `段${label} ${word} 改成 ${pinyin.trim()}${effScope === "ep" ? " 所有段" : ""}` }));
             }}
           >

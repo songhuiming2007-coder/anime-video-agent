@@ -66,6 +66,8 @@ export function SessionHeader({
   info,
   memoryAsk,
   isIdea,
+  hasIdeaSession = false,
+  defaultFromIdea = true,
   context,
   onCreated,
   onEnded,
@@ -93,6 +95,8 @@ export function SessionHeader({
   info: ReadyInfo;
   memoryAsk: boolean;
   isIdea: boolean;
+  hasIdeaSession?: boolean;
+  defaultFromIdea?: boolean;
   /** D41 / D56 / D64：最近一次回合结束时的上下文读数（`lastContextReading`）；继续会话先显示上次测得值；null = 新会话还没有回合结束过，不显示 */
   context: ContextReading | null;
   onCreated: (created: CreatedEpisode) => void;
@@ -346,7 +350,7 @@ export function SessionHeader({
             确认记忆…
           </button>
         )}
-        {isIdea && <NewEpisodeForm rpc={rpc} onCreated={onCreated} asPopover defaultFromIdea hasIdeaSession />}
+        {isIdea && !leftOpen && <NewEpisodeForm rpc={rpc} onCreated={onCreated} asPopover defaultFromIdea={defaultFromIdea} hasIdeaSession={hasIdeaSession} />}
         {!isIdea && live && (
           running && endArmed ? (
             <span className="head-end-confirm ui-confirm-enter">
@@ -468,17 +472,21 @@ export function SessionHeader({
         )}
         {utilityRight}
       </div>
-      {headErr && (
-        <div className="head-substrip warn ui-error-shake" role="alert">
-          <span>{headErr}</span>
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭提示" onClick={() => setHeadErr(null)}>
-            <Icon name="close" size="sm" />
-          </button>
-        </div>
-      )}
-      {epStatus && !epStatus.ok && (
-        <StateView kind="error" title={`工序读取失败（${epStatus.code}）：${epStatus.message}`} />
-      )}
+      <Disclosure key={`headErr:${convKey}`} open={headErr !== null} keepLastContent>
+        {headErr && (
+          <div className="head-substrip warn ui-error-shake" role="alert">
+            <span>{headErr}</span>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭提示" onClick={() => setHeadErr(null)}>
+              <Icon name="close" size="sm" />
+            </button>
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure key={`epStatus:${convKey}`} open={Boolean(epStatus && !epStatus.ok)} keepLastContent>
+        {epStatus && !epStatus.ok && (
+          <StateView kind="error" title={`工序读取失败（${epStatus.code}）：${epStatus.message}`} />
+        )}
+      </Disclosure>
       {ep && statusVal !== null && (
         <Disclosure open={statusOpen} keepMounted>
           <div className="status-details head-substrip" id={detailsId} data-testid="status-details">
@@ -1403,48 +1411,50 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                 </button>
               </div>
               {/* A2：显式「设为默认」——只有人点这里才持久化到 settings.json，对之后的新会话生效 */}
-              <div className="model-pop-defaults">
-                {activeModel && activeModel !== prefs.defaultModel && (
-                  <button
-                    type="button"
-                    className="ui-row model-pop-row model-pop-reset"
-                    data-testid="model-set-default"
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      const chosen = activeModel;
-                      void rpc.call<AppPrefs>("app.setDefaults", { model: chosen }).then(
-                        (next) => {
-                          setPrefs(next);
-                          setPrefNotice(`已将 ${chosen} 设为新会话默认`);
-                        },
-                        (e2) => setErr(errText(e2)),
-                      );
-                    }}
-                  >
-                    <span className="ui-row-title">将当前模型设为新会话默认</span>
-                  </button>
-                )}
-                {prefs.defaultModel !== null && (
-                  <button
-                    type="button"
-                    className="ui-row model-pop-row model-pop-reset"
-                    data-testid="model-clear-default"
-                    onClick={(e) => {
-                      if (!e.nativeEvent.isTrusted) return;
-                      void rpc.call<AppPrefs>("app.setDefaults", { model: "" }).then(
-                        (next) => {
-                          setPrefs(next);
-                          setPrefNotice("已清除自定义默认模型");
-                        },
-                        (e2) => setErr(errText(e2)),
-                      );
-                    }}
-                  >
-                    <span className="ui-row-title">清除自定义默认模型</span>
-                  </button>
-                )}
-                {prefNotice && <div className="muted model-pop-note ui-confirm-enter">{prefNotice}</div>}
-              </div>
+              {((activeModel && activeModel !== prefs.defaultModel) || prefs.defaultModel !== null || prefNotice !== null) && (
+                <div className="model-pop-defaults">
+                  {activeModel && activeModel !== prefs.defaultModel && (
+                    <button
+                      type="button"
+                      className="ui-row model-pop-row model-pop-default-btn"
+                      data-testid="model-set-default"
+                      onClick={(e) => {
+                        if (!e.nativeEvent.isTrusted) return;
+                        const chosen = activeModel;
+                        void rpc.call<AppPrefs>("app.setDefaults", { model: chosen }).then(
+                          (next) => {
+                            setPrefs(next);
+                            setPrefNotice(`已将 ${chosen} 设为新会话默认`);
+                          },
+                          (e2) => setErr(errText(e2)),
+                        );
+                      }}
+                    >
+                      <span className="ui-row-title">将当前模型设为新会话默认</span>
+                    </button>
+                  )}
+                  {prefs.defaultModel !== null && (
+                    <button
+                      type="button"
+                      className="ui-row model-pop-row model-pop-default-btn"
+                      data-testid="model-clear-default"
+                      onClick={(e) => {
+                        if (!e.nativeEvent.isTrusted) return;
+                        void rpc.call<AppPrefs>("app.setDefaults", { model: "" }).then(
+                          (next) => {
+                            setPrefs(next);
+                            setPrefNotice("已清除自定义默认模型");
+                          },
+                          (e2) => setErr(errText(e2)),
+                        );
+                      }}
+                    >
+                      <span className="ui-row-title">清除自定义默认模型</span>
+                    </button>
+                  )}
+                  {prefNotice && <div className="muted model-pop-note ui-confirm-enter">{prefNotice}</div>}
+                </div>
+              )}
             </>
           )}
         />
@@ -1498,7 +1508,13 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                     <span className="effort-meter-bar effort-meter-bar--4" data-active={meterLevel >= 4 ? "1" : "0"} />
                     <span className="effort-meter-bar effort-meter-bar--5" data-active={meterLevel >= 5 ? "1" : "0"} />
                   </span>
-                  <span className="model-ctl-label" data-testid="effort-label">{currentEffort !== null ? effortText(currentEffort) : info ? effortText(info.effort) : "默认"}</span>
+                  <span
+                    key={currentEffort ?? info?.effort ?? "default"}
+                    className="model-ctl-label ui-fade-swap"
+                    data-testid="effort-label"
+                  >
+                    {currentEffort !== null ? effortText(currentEffort) : info ? effortText(info.effort) : "默认"}
+                  </span>
                   {pendingEffort !== null && <span className="ui-badge" data-testid="effort-pending">待生效</span>}
                   <span className="ui-chev ui-chev--down" data-open={effortOpen ? "1" : "0"}>
                     <Icon name="chevron-down" size="sm" />
@@ -1533,7 +1549,6 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                         data-testid="effort-seg-btn"
                         data-effort={v}
                         aria-pressed={isCurrent}
-                        title={EFFORT_DESCRIPTIONS[v] ?? v}
                         onMouseEnter={() => setHoverEffort(v)}
                         onMouseLeave={() => setHoverEffort(null)}
                         onFocus={() => setHoverEffort(v)}
@@ -1550,7 +1565,9 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   })}
                 </SegmentedBar>
                 <div className="effort-pop-detail" data-testid="effort-desc">
-                  <span>{previewKey ? `${EFFORT_LABELS[previewKey] ?? previewKey} · ${EFFORT_DESCRIPTIONS[previewKey] ?? previewKey}` : "默认 · 由模型自行决定"}</span>
+                  <span key={previewKey ?? "default"} className="ui-fade-swap">
+                    {previewKey ? `${EFFORT_LABELS[previewKey] ?? previewKey} · ${EFFORT_DESCRIPTIONS[previewKey] ?? previewKey}` : "默认 · 由模型自行决定"}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -1566,48 +1583,50 @@ export function ModelControls({ rpc, convKey, phase, info, openReq = null, pendi
                   <span className="ui-row-title">跟随模型默认</span>
                   <span className="model-pop-check">{currentEffort === null ? <Icon name="check" size="sm" /> : null}</span>
                 </button>
-                <div className="model-pop-defaults">
-                  {currentEffort !== null && currentEffort !== prefs.defaultEffort && (
-                    <button
-                      type="button"
-                      className="ui-row model-pop-row model-pop-reset"
-                      data-testid="effort-set-default"
-                      onClick={(e) => {
-                        if (!e.nativeEvent.isTrusted) return;
-                        const chosen = currentEffort;
-                        void rpc.call<AppPrefs>("app.setDefaults", { effort: chosen }).then(
-                          (next) => {
-                            setPrefs(next);
-                            setPrefNotice(`已将「${effortText(chosen)}」设为新会话默认`);
-                          },
-                          (e2) => setErr(errText(e2)),
-                        );
-                      }}
-                    >
-                      <span className="ui-row-title">将当前强度设为新会话默认</span>
-                    </button>
-                  )}
-                  {prefs.defaultEffort !== null && (
-                    <button
-                      type="button"
-                      className="ui-row model-pop-row model-pop-reset"
-                      data-testid="effort-clear-default"
-                      onClick={(e) => {
-                        if (!e.nativeEvent.isTrusted) return;
-                        void rpc.call<AppPrefs>("app.setDefaults", { effort: "" }).then(
-                          (next) => {
-                            setPrefs(next);
-                            setPrefNotice("已清除自定义默认推理强度");
-                          },
-                          (e2) => setErr(errText(e2)),
-                        );
-                      }}
-                    >
-                      <span className="ui-row-title">清除自定义默认推理强度</span>
-                    </button>
-                  )}
-                  {prefNotice && <div className="muted model-pop-note ui-confirm-enter">{prefNotice}</div>}
-                </div>
+                {((currentEffort !== null && currentEffort !== prefs.defaultEffort) || prefs.defaultEffort !== null || prefNotice !== null) && (
+                  <div className="model-pop-defaults">
+                    {currentEffort !== null && currentEffort !== prefs.defaultEffort && (
+                      <button
+                        type="button"
+                        className="ui-row model-pop-row model-pop-default-btn"
+                        data-testid="effort-set-default"
+                        onClick={(e) => {
+                          if (!e.nativeEvent.isTrusted) return;
+                          const chosen = currentEffort;
+                          void rpc.call<AppPrefs>("app.setDefaults", { effort: chosen }).then(
+                            (next) => {
+                              setPrefs(next);
+                              setPrefNotice(`已将「${effortText(chosen)}」设为新会话默认`);
+                            },
+                            (e2) => setErr(errText(e2)),
+                          );
+                        }}
+                      >
+                        <span className="ui-row-title">将当前强度设为新会话默认</span>
+                      </button>
+                    )}
+                    {prefs.defaultEffort !== null && (
+                      <button
+                        type="button"
+                        className="ui-row model-pop-row model-pop-default-btn"
+                        data-testid="effort-clear-default"
+                        onClick={(e) => {
+                          if (!e.nativeEvent.isTrusted) return;
+                          void rpc.call<AppPrefs>("app.setDefaults", { effort: "" }).then(
+                            (next) => {
+                              setPrefs(next);
+                              setPrefNotice("已清除自定义默认推理强度");
+                            },
+                            (e2) => setErr(errText(e2)),
+                          );
+                        }}
+                      >
+                        <span className="ui-row-title">清除自定义默认推理强度</span>
+                      </button>
+                    )}
+                    {prefNotice && <div className="muted model-pop-note ui-confirm-enter">{prefNotice}</div>}
+                  </div>
+                )}
               </>
             );
           }}

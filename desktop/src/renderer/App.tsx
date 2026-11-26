@@ -7,7 +7,7 @@ import { isStopType } from "../shared/contracts";
 import { foldOf, emptyConvStore, reduceConvs, type ConvAction, type ConvStore } from "./convStore";
 import { eventLabel } from "../shared/fold";
 import { lastContextReading } from "../shared/convFold";
-import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, Provenance, TreeEntry } from "../shared/protocol";
+import type { ConvDelta, ConvKey, ConvSnapshot, CreatedEpisode, EpisodeDelta, EpisodeSnapshot, EpisodesList, EpisodeSummary, Health, ProjectSummary, Provenance, SessionRow, TreeEntry } from "../shared/protocol";
 import type { ConvEntry } from "../shared/protocol";
 import { STOP_PREVIEW } from "../shared/stopPreview";
 import { initialAutoOpen, step, type AutoOpenState } from "./autoOpen";
@@ -21,7 +21,7 @@ import { isScriptDirty, ScriptEditor } from "./ScriptEditor";
 import { VoicePanel } from "./VoicePanel";
 import { healthAlerts, ModelControls, modelInfo, readyInfo, SessionHeader, SessionNotes, type ModelOpenReq } from "./SessionHeader";
 import { FloatingPopover, FloatingTooltip, TooltipGroup } from "./floating";
-import { Collapsible, Disclosure, SegmentedBar, useCountBump, usePaneTransition } from "./motion";
+import { Collapsible, Disclosure, SegmentedBar, useCountBump, usePaneTransition, usePresence } from "./motion";
 import { CopyButton } from "./copy";
 import { Icon } from "./icons";
 import { NewEpisodeForm, NewProjectForm, NewVolumeForm } from "./NewEpisodeForm";
@@ -121,6 +121,20 @@ function Main() {
   const [prefillReq, setPrefillReq] = useState<{ text: string; n: number } | null>(null);
   /** Spec 18 §3.3 ④：选题讨论刚被带进哪一期（选题视图在新会话起来之前显示「已带入 <期名>」） */
   const [ideaCarriedTo, setIdeaCarriedTo] = useState<string | null>(null);
+  const [ideaSavedCount, setIdeaSavedCount] = useState(0);
+  const [ideaFreshFlag, setIdeaFreshFlag] = useState(false);
+  const ideaReqGenRef = useRef(0);
+  const refreshIdeaSaved = useCallback(() => {
+    const gen = (ideaReqGenRef.current += 1);
+    void rpc.call<SessionRow[]>("conv.sessions", { convKey: "idea" }).then(
+      (rows) => {
+        if (ideaReqGenRef.current === gen) {
+          setIdeaSavedCount(rows.filter((x) => x.resumable || x.live).length);
+        }
+      },
+      () => undefined,
+    );
+  }, []);
   const [active, setActive] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = active;
@@ -158,7 +172,7 @@ function Main() {
     paneAnimTimer.current = setTimeout(() => {
       paneAnimTimer.current = null;
       setPaneAnimating(false);
-    }, 270);
+    }, 250);
   }, []);
   useEffect(() => () => { if (paneAnimTimer.current !== null) clearTimeout(paneAnimTimer.current); }, []);
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -170,8 +184,9 @@ function Main() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const leftState = usePaneTransition(layout.leftOpen, 260);
-  const previewState = usePaneTransition(layout.previewOpen, 260);
+  const leftState = usePaneTransition(layout.leftOpen, 240);
+  const previewState = usePaneTransition(layout.previewOpen, 240);
+  const previewRail = usePresence(!layout.previewOpen, 140);
   const setPreviewOpen = useCallback((open: boolean) => {
     pulsePaneAnim();
     setLayout((l) => ({ ...l, previewOpen: open }));
@@ -244,6 +259,7 @@ function Main() {
     ];
     rpc.onConnect(() => {
       setLinked(true);
+      setIdeaFreshFlag(false);
       void rpc.call("app.setThemeSource", { theme: readTheme() }).catch(() => undefined);
       // 🟡-9：host 重连（或 renderer 重载）后清空全部会话桶——新 host 的 generation 带新 bootId
       dispatchConv({ type: "reset-convs" });
@@ -308,15 +324,20 @@ function Main() {
     });
   }, [guardDirty]);
 
-  /** 建期成功（两处「＋ 新建一期」及企划下「＋ 新建卷」共用）：经 guardDirty 保护当前未保存文稿 */
+  /** 建期成功（两处「＋ 新建一期」及企划下「＋ 新建卷」共用）：经 guardDirty 保护当前未保存文稿；选题计数立即同步，避免用户取消切期后滞留旧值 */
   const onCreatedEp = useCallback((created: CreatedEpisode) => {
+    if (created.migrated) {
+      setIdeaSavedCount((n) => Math.max(0, n - 1));
+      setIdeaFreshFlag(false);
+      refreshIdeaSaved();
+    }
     guardDirty(() => {
       setJustCreated(created);
       setIdeaCarriedTo(created.migrated ? created.epKey : null);
       setShowIdea(false);
       void openDirect(created.epKey);
     });
-  }, [guardDirty, openDirect]);
+  }, [guardDirty, openDirect, refreshIdeaSaved]);
 
   const refresh = useCallback(async () => {
     if (!active && !activeProject) return;
@@ -340,9 +361,13 @@ function Main() {
       const r = await rpc.call<{ changed: boolean; repoRoot: string | null; problem: string | null }>("app.requestRepoRootChange");
       if (r.problem) setError(`仓库未切换：${r.problem}`);
       if (!r.changed) return;
+      ideaReqGenRef.current += 1;
+      setShowIdea(true);
       setActive(null);
       setActiveProject(null);
       setPreview(null);
+      setIdeaSavedCount(0);
+      setIdeaFreshFlag(false);
       dispatch({ type: "reset" });
       dispatchConv({ type: "reset-convs" });
       autoRef.current = initialAutoOpen;
@@ -553,7 +578,24 @@ function Main() {
         list.episodes.some((e) => `ep:${e.epKey}` !== convKey && (e.conv?.openRequests ?? 0) > 0) ||
         list.projects.some((p) => `proj:${p.projKey}` !== convKey && (p.conv?.openRequests ?? 0) > 0)),
   );
-  const hasIdeaSession = true;
+  const ideaConv = convs.convs.idea;
+  const ideaFocusedActive = Boolean(
+    ideaConv &&
+      (ideaConv.phase === "starting" ||
+        ideaConv.phase === "running" ||
+        ideaConv.phase === "idle" ||
+        ideaConv.entries.some((e) => e.k === "user")),
+  );
+  const prevIdeaFocusedRef = useRef(ideaFocusedActive);
+  useEffect(() => {
+    if (!prevIdeaFocusedRef.current && ideaFocusedActive) setIdeaFreshFlag(false);
+    prevIdeaFocusedRef.current = ideaFocusedActive;
+  }, [ideaFocusedActive]);
+  useEffect(() => {
+    if (reachOk && linked) refreshIdeaSaved();
+  }, [reachOk, linked, health?.repoRoot, refreshIdeaSaved]);
+  const hasIdeaSession = Boolean(list?.idea?.live || ideaFocusedActive || ideaSavedCount > 0);
+  const defaultFromIdea = showIdea && (!ideaFreshFlag || ideaFocusedActive);
 
   return (
     <div className="app" data-top-bar={hasTopBar ? "1" : "0"}>
@@ -574,7 +616,7 @@ function Main() {
             </div>
           )}
         </Disclosure>
-        {ep && <JobBar jobs={ep.jobs} onShowProgress={showProgress} />}
+        {ep && <JobBar key={ep.epKey} jobs={ep.jobs} onShowProgress={showProgress} />}
         <Disclosure open={showHealth && health !== null}>
           {health && <HealthPanel health={health} diags={diags} linked={linked} onChangeRepo={changeRepo} onClose={() => setShowHealth(false)} />}
         </Disclosure>
@@ -628,7 +670,7 @@ function Main() {
                 )}
               />
             </div>
-            <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} defaultFromIdea={showIdea} hasIdeaSession={hasIdeaSession} />
+            <NewEpisodeForm rpc={rpc} onCreated={onCreatedEp} defaultFromIdea={defaultFromIdea} hasIdeaSession={hasIdeaSession} />
             <EpisodeList
               list={list}
               active={active}
@@ -652,6 +694,9 @@ function Main() {
               titles={titleTick(conv?.entries ?? [])}
               openCards={conv?.open.length ?? 0}
               onConvChanged={() => fetchConvRef.current(convKey, true)}
+              onIdeaSavedCount={setIdeaSavedCount}
+              onIdeaFresh={() => setIdeaFreshFlag(true)}
+              onIdeaEntered={() => setIdeaFreshFlag(false)}
             />
           </nav>
         </div>
@@ -677,6 +722,8 @@ function Main() {
             info={readyInfo(conv?.entries ?? [])}
             memoryAsk={hasMemoryAsk(conv?.entries ?? [])}
             isIdea={convKey === "idea"}
+            hasIdeaSession={hasIdeaSession}
+            defaultFromIdea={!ideaFreshFlag || ideaFocusedActive}
             context={lastContextReading(conv?.entries ?? [])}
             onCreated={onCreatedEp}
             onEnded={() => fetchConvRef.current(convKey, true)}
@@ -735,17 +782,17 @@ function Main() {
           {!showIdea && activeProject !== null && <ProjectHeader p={activeProjObj} projKey={activeProject} />}
           <div className="conv">
             {justCreated !== null && justCreated.epKey === active && !showIdea && (
-              <div className="conv-note" data-testid="idea-note" data-migrated={justCreated.migrated ? "1" : "0"}>
+              <div className="conv-note ui-card-enter" data-testid="idea-note" data-migrated={justCreated.migrated ? "1" : "0"}>
                 {justCreated.migrated ? `已带入选题会话记录（${justCreated.messages} 条消息）` : "选题会话的讨论不会带入本期；需要的要点可在这里说明"}
               </div>
             )}
             {showIdea && ideaCarriedTo !== null && (conv?.phase ?? "none") === "none" && (
-              <div className="conv-note" data-testid="idea-carried">
+              <div className="conv-note ui-card-enter" data-testid="idea-carried">
                 已带入 {ideaCarriedTo}
               </div>
             )}
             <ConversationPane
-              key={convKey}
+              key={`conv:${convKey}`}
               rows={rows}
               running={conv?.phase === "running"}
               awaiting={(conv?.open.length ?? 0) > 0}
@@ -766,7 +813,7 @@ function Main() {
               }
             />
             <AnswerDock ep={ep && !showIdea ? ep : undefined} health={health} rpc={rpc} treeBump={treeBump} />
-            <HandoffStrip rows={rows} />
+            <HandoffStrip key={`handoff:${convKey}`} rows={rows} />
             <Composer
               rpc={rpc}
               convKey={convKey}
@@ -805,7 +852,16 @@ function Main() {
           testId="split-preview"
         />
         <div className="right-slot">
-          {!layout.previewOpen && <PreviewRail target={preview} attention={previewUnseen || strip !== null} onOpen={() => setPreviewOpen(true)} />}
+          {previewRail.mounted && (
+            <PreviewRail
+              target={preview}
+              attention={previewUnseen || strip !== null}
+              status={previewRail.status}
+              railRef={previewRail.ref}
+              testId={!layout.previewOpen ? "preview-rail" : undefined}
+              onOpen={() => setPreviewOpen(true)}
+            />
+          )}
           <section
             className="preview"
             id="ava-preview"
@@ -823,10 +879,11 @@ function Main() {
               running={ep ? ep.jobs.filter((j) => j.state === "running" || j.state === "pending").map((j) => j.command) : []}
               treeBump={treeBump}
               reachOk={reachOk}
+              repoRoot={health?.repoRoot ?? null}
               onPick={pickHuman}
               onCoverImported={() => setTreeBump((n) => n + 1)}
             />
-            <Disclosure open={strip !== null} keepLastContent>
+            <Disclosure key={`strip:${convKey}`} open={strip !== null} keepLastContent>
               {strip && (
                 <div className="strip-bar">
                   <button
@@ -1054,16 +1111,23 @@ function ThemeMenu({
           <div className="ui-popover-title">强调色</div>
           <div className="theme-swatches" role="group" aria-label="强调色">
             {ACCENTS.map((a) => (
-              <button
+              <FloatingTooltip
                 key={a.id}
-                type="button"
-                className="theme-swatch"
-                data-swatch={a.id}
-                data-testid={`accent-${a.id}`}
-                aria-label={a.label}
-                aria-pressed={accent === a.id}
-                title={a.label}
-                onClick={() => chooseAccent(a.id)}
+                label={a.label}
+                placement="top"
+                renderTrigger={(tip) => (
+                  <button
+                    type="button"
+                    ref={tip.ref}
+                    {...tip.props}
+                    className="theme-swatch"
+                    data-swatch={a.id}
+                    data-testid={`accent-${a.id}`}
+                    aria-label={a.label}
+                    aria-pressed={accent === a.id}
+                    onClick={() => chooseAccent(a.id)}
+                  />
+                )}
               />
             ))}
           </div>
@@ -1105,23 +1169,43 @@ function ThemeMenu({
 // ---------------- 预览收起后的窄条（D39 S2） ----------------
 
 /** 整条是一个按钮：点哪儿都展开。停机点自动呼出（或「已就绪」条）发生在收起期间时亮呼吸脉冲圆点，不自动展开、不动焦点 */
-function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | null; attention: boolean; onOpen: () => void }) {
+function PreviewRail({
+  target,
+  attention,
+  status,
+  railRef,
+  testId,
+  onOpen,
+}: {
+  target: PreviewTarget | null;
+  attention: boolean;
+  status: "open" | "close";
+  railRef: (node: HTMLElement | null) => void;
+  testId?: string;
+  onOpen: () => void;
+}) {
   const name = target ? target.rel.split("/").pop() : null;
   return (
     <FloatingTooltip
       placement="left"
+      disabled={status === "close"}
       label={<><span>{attention ? "展开预览（停机点已就绪）" : "展开预览"}</span><kbd className="ui-kbd">⌘J</kbd></>}
       renderTrigger={(trigger) => (
         <button
-          ref={trigger.ref}
+          ref={(node) => {
+            railRef(node);
+            trigger.ref(node);
+          }}
           {...trigger.props}
           className="preview-rail"
           aria-controls="ava-preview"
           aria-expanded={false}
           aria-label={attention ? "展开预览（停机点已就绪）" : "展开预览"}
           onClick={onOpen}
-          data-testid="preview-rail"
+          data-testid={testId}
+          data-status={status}
           data-attention={attention ? "1" : "0"}
+          inert={status === "close" ? true : undefined}
         >
           <Icon name="chevron-left" size="sm" />
           {attention && <span className="preview-rail-dot" aria-hidden="true" />}
@@ -1135,15 +1219,17 @@ function PreviewRail({ target, attention, onOpen }: { target: PreviewTarget | nu
 // ---------------- 期列表 ----------------
 
 /** 侧栏头部（D4）：搜索框 + 视图切换 + 期总数；视图偏好与主题同一份 localStorage 纪律（§3.3） */
-function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProject, onCreatedVolume, onIdea, stale, convPhase, titles, openCards, onConvChanged }: { list: EpisodesList | null; active: string | null; activeProject: string | null; showIdea: boolean; onOpen: (k: string) => void; onOpenProject: (projKey: string) => void; onCreatedVolume: (created: CreatedEpisode) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; openCards: number; onConvChanged: () => void }) {
+function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProject, onCreatedVolume, onIdea, stale, convPhase, titles, openCards, onConvChanged, onIdeaSavedCount, onIdeaFresh, onIdeaEntered }: { list: EpisodesList | null; active: string | null; activeProject: string | null; showIdea: boolean; onOpen: (k: string) => void; onOpenProject: (projKey: string) => void; onCreatedVolume: (created: CreatedEpisode) => void; onIdea: () => void; stale: boolean; convPhase: ConvSnapshot["phase"]; titles: number; openCards: number; onConvChanged: () => void; onIdeaSavedCount: (n: number) => void; onIdeaFresh: () => void; onIdeaEntered: () => void }) {
   const idea = list?.idea ?? null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<EpisodeViewPref>(() => readEpisodeView());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   /** D81：企划卡展开状态（人点过的才记；没点过的按「含当前卷 / 当前企划」决定） */
   const [projOpen, setProjOpen] = useState<Record<string, boolean>>({});
-  /** D158：期行会话子列表的本地收起态（方案②：再点当前期 = 收起）。纯显示，不结束会话；换期自动复位。 */
+  /** D158：期行 / 选题 / 企划会话子列表的本地收起态（再点当前项 = 收起）。纯显示，不结束会话；切换后自动复位。 */
   const [sessCollapsed, setSessCollapsed] = useState<Record<string, boolean>>({});
+  const [ideaCollapsed, setIdeaCollapsed] = useState(false);
+  const [projSessCollapsed, setProjSessCollapsed] = useState<Record<string, boolean>>({});
   /** 相对时间每 60 s 与回到前台时重算（RF-11） */
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -1234,7 +1320,19 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
               </span>
             )}
           </button>
-          <button className="proj-sess" aria-current={sessCur ? "true" : undefined} onClick={() => onOpenProject(p.projKey)} data-testid="project-session">
+          <button
+            className="proj-sess"
+            aria-current={sessCur ? "true" : undefined}
+            aria-expanded={sessCur && !projSessCollapsed[p.projKey] ? "true" : undefined}
+            onClick={() => {
+              if (sessCur) setProjSessCollapsed((c) => ({ ...c, [p.projKey]: !c[p.projKey] }));
+              else {
+                setProjSessCollapsed((c) => ({ ...c, [p.projKey]: false }));
+                onOpenProject(p.projKey);
+              }
+            }}
+            data-testid="project-session"
+          >
             企划会话
           </button>
         </div>
@@ -1266,8 +1364,8 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         ) : (
           <div className="proj-empty muted">还没有卷</div>
         )}
-        <Disclosure open={sessCur && !stale}>
-          <SessionList rpc={rpc} convKey={`proj:${p.projKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} active={sessCur && !stale} now={now} onChanged={onConvChanged} />
+        <Disclosure open={sessCur && !stale && !projSessCollapsed[p.projKey]}>
+          <SessionList rpc={rpc} convKey={`proj:${p.projKey}` as ConvKey} phase={convPhase} titles={titles} openCards={openCards} active={sessCur && !stale && !projSessCollapsed[p.projKey]} now={now} onChanged={onConvChanged} />
         </Disclosure>
         <Disclosure open={opened}>
           <div className="proj-vols" data-testid="project-volumes">
@@ -1339,7 +1437,19 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
           )}
         </div>
       </div>
-      <button className="ui-row ep" aria-current={showIdea ? "true" : undefined} onClick={onIdea} data-testid="idea">
+      <button
+        className="ui-row ep"
+        aria-current={showIdea ? "true" : undefined}
+        aria-expanded={showIdea && !ideaCollapsed ? "true" : undefined}
+        onClick={() => {
+          if (showIdea) setIdeaCollapsed((v) => !v);
+          else {
+            setIdeaCollapsed(false);
+            onIdea();
+          }
+        }}
+        data-testid="idea"
+      >
         <span className="ep-line">
           <span className="ep-name">选题</span>
         </span>
@@ -1357,8 +1467,8 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         </span>
       </button>
       {/* D58：选题会话与期会话同一个会话列表（看 / 进 / 新开 / 删），选中「选题」时展开 */}
-      <Disclosure open={showIdea && !stale}>
-        <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} active={showIdea && !stale} now={now} onChanged={onConvChanged} />
+      <Disclosure open={showIdea && !stale && !ideaCollapsed}>
+        <SessionList rpc={rpc} convKey="idea" phase={convPhase} titles={titles} openCards={openCards} active={showIdea && !stale && !ideaCollapsed} now={now} onChanged={onConvChanged} onRowsLoaded={onIdeaSavedCount} onFresh={onIdeaFresh} onEntered={onIdeaEntered} />
       </Disclosure>
       <NewProjectForm rpc={rpc} onCreated={onOpenProject} />
       {!list && (
@@ -1369,39 +1479,41 @@ function EpisodeList({ list, active, activeProject, showIdea, onOpen, onOpenProj
         </div>
       )}
       {list && query.trim() !== "" && nothing && <div className="muted">没有匹配的期</div>}
-      {view === "time" && timeline(plain, projects).map((i) => (i.kind === "episode" ? row(i.e) : card(i.p)))}
-      {view === "step" && (
-        <>
-          {groupByStep(stepItems).map((g) => (
-            <div key={g.key}>
-              <button type="button" className="ui-section" aria-expanded={!collapsed[g.key]} onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}>
-                <span className="ui-chev" data-open={!collapsed[g.key] ? "1" : "0"}>
-                  <Icon name="chevron-right" size="sm" />
-                </span>
-                {g.label}
-                <span className="ui-count">{g.items.length}</span>
-              </button>
-              <Disclosure open={!collapsed[g.key]}>
-                <div>{g.items.map((x) => row(x.e, x.label))}</div>
-              </Disclosure>
-            </div>
-          ))}
-          {emptyProjects.length > 0 && (
-            <div>
-              <button type="button" className="ui-section" aria-expanded={!collapsed.emptyProj} onClick={() => setCollapsed((c) => ({ ...c, emptyProj: !c.emptyProj }))}>
-                <span className="ui-chev" data-open={!collapsed.emptyProj ? "1" : "0"}>
-                  <Icon name="chevron-right" size="sm" />
-                </span>
-                未建卷企划
-                <span className="ui-count">{emptyProjects.length}</span>
-              </button>
-              <Disclosure open={!collapsed.emptyProj}>
-                <div>{emptyProjects.map((p) => card(p))}</div>
-              </Disclosure>
-            </div>
-          )}
-        </>
-      )}
+      <div key={view} className="ui-fade-swap">
+        {view === "time" && timeline(plain, projects).map((i) => (i.kind === "episode" ? row(i.e) : card(i.p)))}
+        {view === "step" && (
+          <>
+            {groupByStep(stepItems).map((g) => (
+              <div key={g.key}>
+                <button type="button" className="ui-section" aria-expanded={!collapsed[g.key]} onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}>
+                  <span className="ui-chev" data-open={!collapsed[g.key] ? "1" : "0"}>
+                    <Icon name="chevron-right" size="sm" />
+                  </span>
+                  {g.label}
+                  <span className="ui-count">{g.items.length}</span>
+                </button>
+                <Disclosure open={!collapsed[g.key]}>
+                  <div>{g.items.map((x) => row(x.e, x.label))}</div>
+                </Disclosure>
+              </div>
+            ))}
+            {emptyProjects.length > 0 && (
+              <div>
+                <button type="button" className="ui-section" aria-expanded={!collapsed.emptyProj} onClick={() => setCollapsed((c) => ({ ...c, emptyProj: !c.emptyProj }))}>
+                  <span className="ui-chev" data-open={!collapsed.emptyProj ? "1" : "0"}>
+                    <Icon name="chevron-right" size="sm" />
+                  </span>
+                  未建卷企划
+                  <span className="ui-count">{emptyProjects.length}</span>
+                </button>
+                <Disclosure open={!collapsed.emptyProj}>
+                  <div>{emptyProjects.map((p) => card(p))}</div>
+                </Disclosure>
+              </div>
+            )}
+          </>
+        )}
+      </div>
       {list && list.hiddenUnderscore > 0 && <div className="muted">另有 {list.hiddenUnderscore} 个隐藏目录（_ 开头）</div>}
     </div>
   );
@@ -1415,7 +1527,7 @@ function ProjectHeader({ p, projKey }: { p: ProjectSummary | null; projKey: stri
   const hasMeta = Boolean((p && !p.hasProjectFile) || m?.collection || m?.error || rows.length > 0 || (m?.hints.length ?? 0) > 0);
   if (!hasMeta) return null;
   return (
-    <div className="status proj-status" role="group" aria-label="企划信息" data-testid="project-head" data-proj={projKey}>
+    <div className="status proj-status ui-fade-swap" role="group" aria-label="企划信息" data-testid="project-head" data-proj={projKey}>
       {((p && !p.hasProjectFile) || m?.collection) && (
         <div className="status-step">
           {p && !p.hasProjectFile && <span className="ui-badge">未立项</span>}

@@ -10,11 +10,11 @@ import type {
   AuthStatusResult,
   ProviderCategory,
 } from "../shared/protocol";
-import { copyText as clipboardCopy } from "./copy";
+import { CopyButton, copyText as clipboardCopy } from "./copy";
 import { errText, type RpcClient } from "./rpc";
-import { FloatingModal } from "./floating";
+import { FloatingModal, FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
-import { Disclosure, SegmentedBar } from "./motion";
+import { Disclosure, IconSwap, SegmentedBar } from "./motion";
 
 const MODE_LABELS: Record<AuthMode, string> = {
   oauth_pkce: "OAuth 浏览器授权",
@@ -126,14 +126,27 @@ function ExtraFieldsGrid({
                     }
                   }}
                 />
-                <button
-                  type="button"
-                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
-                  aria-label={shown ? `隐藏 ${ef.label}` : `显示 ${ef.label}`}
-                  onClick={() => setRevealed((r) => ({ ...r, [ef.key]: !r[ef.key] }))}
-                >
-                  <Icon name={shown ? "eye-off" : "eye"} size="sm" />
-                </button>
+                <FloatingTooltip
+                  label={shown ? `隐藏 ${ef.label}` : `显示 ${ef.label}`}
+                  renderTrigger={(tip) => (
+                    <button
+                      type="button"
+                      ref={tip.ref}
+                      {...tip.props}
+                      className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                      aria-label={shown ? `隐藏 ${ef.label}` : `显示 ${ef.label}`}
+                      onClick={() => setRevealed((r) => ({ ...r, [ef.key]: !r[ef.key] }))}
+                    >
+                      <IconSwap
+                        active={shown ? "off" : "on"}
+                        items={[
+                          { key: "on", icon: <Icon name="eye" size="sm" /> },
+                          { key: "off", icon: <Icon name="eye-off" size="sm" /> },
+                        ]}
+                      />
+                    </button>
+                  )}
+                />
               </div>
             ) : (
               <input
@@ -188,12 +201,10 @@ export function LoginModal({
   const [busy, setBusy] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string; seq: number } | null>(null);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
   const feedbackRef = useRef<HTMLDivElement | null>(null);
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const msgSeqRef = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
@@ -209,12 +220,15 @@ export function LoginModal({
   };
 
   useEffect(() => {
-    if (msg) requestAnimationFrame(() => feedbackRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    if (!msg) return;
+    const behavior = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    const raf = requestAnimationFrame(() => feedbackRef.current?.scrollIntoView({ block: "nearest", behavior }));
+    const t = window.setTimeout(() => feedbackRef.current?.scrollIntoView({ block: "nearest", behavior }), 250);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+    };
   }, [msg]);
-
-  useEffect(() => () => {
-    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-  }, []);
 
   useEffect(() => {
     if (status === null && initialStatus !== null) setStatus(initialStatus);
@@ -436,7 +450,7 @@ export function LoginModal({
           } else if (res.mode === "oauth_device" && res.user_code) {
             setPollActive(true);
             // A5：设备码自动复制到剪贴板并打开授权页，保留手动复制/打开按钮作为兜底
-            copyText("code", res.user_code);
+            void clipboardCopy(res.user_code);
             if (res.verification_uri) openInBrowser(res.verification_uri);
             showMsg("ok", `设备码 ${res.user_code} 已复制并打开授权页，在浏览器粘贴确认后将自动生效`);
           }
@@ -548,18 +562,6 @@ export function LoginModal({
       .finally(() => {
         if (gen === flowGenRef.current) setBusy(false);
       });
-  };
-
-  const copyText = (key: string, text: string) => {
-    void clipboardCopy(text).then((ok) => {
-      if (!ok) return;
-      setCopiedKey(key);
-      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => {
-        copyTimerRef.current = null;
-        setCopiedKey((prev) => (prev === key ? null : prev));
-      }, 1500);
-    });
   };
 
   const missingRequiredExtra = (current?.extra_fields ?? []).some(
@@ -865,14 +867,27 @@ export function LoginModal({
                             }
                           }}
                         />
-                        <button
-                          type="button"
-                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
-                          aria-label={showKey ? "隐藏密钥" : "显示密钥"}
-                          onClick={() => setShowKey((v) => !v)}
-                        >
-                          <Icon name={showKey ? "eye-off" : "eye"} size="sm" />
-                        </button>
+                        <FloatingTooltip
+                          label={showKey ? "隐藏密钥" : "显示密钥"}
+                          renderTrigger={(tip) => (
+                            <button
+                              type="button"
+                              ref={tip.ref}
+                              {...tip.props}
+                              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                              aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                              onClick={() => setShowKey((v) => !v)}
+                            >
+                              <IconSwap
+                                active={showKey ? "off" : "on"}
+                                items={[
+                                  { key: "on", icon: <Icon name="eye" size="sm" /> },
+                                  { key: "off", icon: <Icon name="eye-off" size="sm" /> },
+                                ]}
+                              />
+                            </button>
+                          )}
+                        />
                       </div>
                     </label>
                     <div className="login-actions">
@@ -909,14 +924,27 @@ export function LoginModal({
                             }
                           }}
                         />
-                        <button
-                          type="button"
-                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
-                          aria-label={showKey ? "隐藏密钥" : "显示密钥"}
-                          onClick={() => setShowKey((v) => !v)}
-                        >
-                          <Icon name={showKey ? "eye-off" : "eye"} size="sm" />
-                        </button>
+                        <FloatingTooltip
+                          label={showKey ? "隐藏密钥" : "显示密钥"}
+                          renderTrigger={(tip) => (
+                            <button
+                              type="button"
+                              ref={tip.ref}
+                              {...tip.props}
+                              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon login-secret-toggle"
+                              aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                              onClick={() => setShowKey((v) => !v)}
+                            >
+                              <IconSwap
+                                active={showKey ? "off" : "on"}
+                                items={[
+                                  { key: "on", icon: <Icon name="eye" size="sm" /> },
+                                  { key: "off", icon: <Icon name="eye-off" size="sm" /> },
+                                ]}
+                              />
+                            </button>
+                          )}
+                        />
                       </div>
                     </label>
 
@@ -993,15 +1021,7 @@ export function LoginModal({
                               <Icon name="external-link" size="sm" />
                               在浏览器中打开
                             </button>
-                            <button
-                              type="button"
-                              className="ui-btn ui-btn--ghost ui-btn--sm"
-                              data-testid="login-copy-url-btn"
-                              onClick={() => copyText("url", started.authorize_url ?? "")}
-                            >
-                              <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
-                              {copiedKey === "url" ? "已复制" : "复制链接"}
-                            </button>
+                            <CopyButton text={started.authorize_url ?? ""} label="复制链接" testId="login-copy-url-btn" />
                           </div>
                         )}
                       </Disclosure>
@@ -1078,29 +1098,14 @@ export function LoginModal({
                                 <Icon name="external-link" size="sm" />
                                 在浏览器中打开
                               </button>
-                              <button
-                                type="button"
-                                className="ui-btn ui-btn--ghost ui-btn--sm"
-                                data-testid="login-copy-url-btn"
-                                onClick={() => copyText("url", started.verification_uri ?? "")}
-                              >
-                                <Icon name={copiedKey === "url" ? "check" : "copy"} size="sm" />
-                                {copiedKey === "url" ? "已复制" : "复制链接"}
-                              </button>
+                              <CopyButton text={started.verification_uri ?? ""} label="复制链接" testId="login-copy-url-btn" />
                             </div>
                           )}
                           {started?.user_code && (
                             <div className="login-device-card ui-card-enter">
                               <span className="muted">一次性设备码：</span>
                               <strong className="login-device-code" data-testid="login-device-code">{started.user_code}</strong>
-                              <button
-                                type="button"
-                                className="ui-btn ui-btn--ghost ui-btn--sm"
-                                onClick={() => copyText("code", started.user_code ?? "")}
-                              >
-                                <Icon name={copiedKey === "code" ? "check" : "copy"} size="sm" />
-                                {copiedKey === "code" ? "已复制" : "复制"}
-                              </button>
+                              <CopyButton text={started.user_code ?? ""} label="复制" testId="login-copy-code-btn" />
                             </div>
                           )}
                           {started?.user_code && pollActive && (
@@ -1127,22 +1132,24 @@ export function LoginModal({
                   </div>
                 )}
 
-                {msg && (
-                  <div
-                    ref={feedbackRef}
-                    key={msg.seq}
-                    className={
-                      msg.kind === "err"
-                        ? "login-feedback login-feedback--err ui-error-shake"
-                        : msg.kind === "warn"
-                          ? "login-feedback login-feedback--warn ui-card-enter"
-                          : "login-feedback login-feedback--ok ui-confirm-enter"
-                    }
-                    data-testid={msg.kind === "err" ? "login-error-msg" : "login-status-msg"}
-                  >
-                    {msg.text}
-                  </div>
-                )}
+                <Disclosure key={`msg:${current?.id ?? "_none"}`} open={msg !== null} keepLastContent>
+                  {msg && (
+                    <div
+                      ref={feedbackRef}
+                      key={msg.seq}
+                      className={
+                        msg.kind === "err"
+                          ? "login-feedback login-feedback--err ui-error-shake"
+                          : msg.kind === "warn"
+                            ? "login-feedback login-feedback--warn ui-card-enter"
+                            : "login-feedback login-feedback--ok ui-confirm-enter"
+                      }
+                      data-testid={msg.kind === "err" ? "login-error-msg" : "login-status-msg"}
+                    >
+                      {msg.text}
+                    </div>
+                  )}
+                </Disclosure>
               </>
             )}
           </div>

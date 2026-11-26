@@ -83,7 +83,7 @@ export function NewEpisodeForm({
             rpc
               .call<CreatedEpisode>("episode.create", {
                 name: name.trim(),
-                fromIdea: bringIdea ? "true" : "false",
+                fromIdea: hasIdeaSession && bringIdea ? "true" : "false",
               })
               .then(
                 (r) => {
@@ -127,7 +127,7 @@ export function NewEpisodeForm({
             rpc
               .call<CreatedEpisode>("episode.create", {
                 name: name.trim(),
-                fromIdea: bringIdea ? "true" : "false",
+                fromIdea: hasIdeaSession && bringIdea ? "true" : "false",
               })
               .then(
                 (r) => {
@@ -156,11 +156,13 @@ export function NewEpisodeForm({
           取消
         </button>
       </div>
-      {problem && (
-        <div key={errSeq} className="error ui-error-shake" data-testid="new-episode-error">
-          {problem}
-        </div>
-      )}
+      <Disclosure open={problem !== null} keepLastContent>
+        {problem && (
+          <div key={errSeq} className="error ui-error-shake" data-testid="new-episode-error">
+            {problem}
+          </div>
+        )}
+      </Disclosure>
     </div>
   );
 
@@ -324,11 +326,13 @@ export function NewProjectForm({ rpc, onCreated }: { rpc: RpcClient; onCreated: 
               取消
             </button>
           </div>
-          {problem && (
-            <div key={errSeq} className="error ui-error-shake" data-testid="new-project-error">
-              {problem}
-            </div>
-          )}
+          <Disclosure open={problem !== null} keepLastContent>
+            {problem && (
+              <div key={errSeq} className="error ui-error-shake" data-testid="new-project-error">
+                {problem}
+              </div>
+            )}
+          </Disclosure>
         </div>
       </Disclosure>
     </div>
@@ -437,11 +441,13 @@ export function NewVolumeForm({ rpc, target, onCreated }: { rpc: RpcClient; targ
               取消
             </button>
           </div>
-          {problem && (
-            <div key={errSeq} className="error ui-error-shake" data-testid="new-volume-error">
-              {problem}
-            </div>
-          )}
+          <Disclosure open={problem !== null} keepLastContent>
+            {problem && (
+              <div key={errSeq} className="error ui-error-shake" data-testid="new-volume-error">
+                {problem}
+              </div>
+            )}
+          </Disclosure>
         </div>
       </Disclosure>
     </div>

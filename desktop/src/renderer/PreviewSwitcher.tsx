@@ -1,5 +1,5 @@
 // D49-A S4/S5 + D169：预览区顶部的一站式文件切换器（完整本期产物下拉 + 子目录内联展开 + 镜头画廊 + 紧凑封面导入）。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { groupArtifacts, type SwitchItem } from "../shared/artifactGroups";
 import { previewKind } from "../shared/previewKind";
 import type { ShotsEntry, TreeEntry } from "../shared/protocol";
@@ -20,6 +20,7 @@ export function PreviewSwitcher({
   running,
   treeBump = 0,
   reachOk = true,
+  repoRoot = null,
   onPick,
   onCoverImported,
 }: {
@@ -29,6 +30,7 @@ export function PreviewSwitcher({
   running: readonly (string | null)[];
   treeBump?: number;
   reachOk?: boolean;
+  repoRoot?: string | null;
   onPick: (t: PreviewTarget) => void;
   onCoverImported?: () => void;
 }) {
@@ -46,6 +48,9 @@ export function PreviewSwitcher({
   const [coverNotice, setCoverNotice] = useState<(CoverNotice & { n: number }) | null>(null);
   const epKeyRef = useRef(epKey);
   epKeyRef.current = epKey;
+  const galleriesGenRef = useRef(0);
+  const filesListRef = useRef<HTMLDivElement | null>(null);
+  const galleriesListRef = useRef<HTMLDivElement | null>(null);
   const galleryCountBump = useCountBump(galleries?.length ?? 0);
 
   const loadRoot = useCallback(() => {
@@ -66,10 +71,15 @@ export function PreviewSwitcher({
   }, [epKey, rpc]);
 
   const loadGalleries = useCallback(() => {
+    const gen = (galleriesGenRef.current += 1);
     setGalleriesErr(null);
     rpc.call<ShotsEntry[]>("shots.list").then(
-      (res) => setGalleries(res),
-      (e) => setGalleriesErr(errText(e)),
+      (res) => {
+        if (galleriesGenRef.current === gen) setGalleries(res);
+      },
+      (e) => {
+        if (galleriesGenRef.current === gen) setGalleriesErr(errText(e));
+      },
     );
   }, [rpc]);
 
@@ -111,8 +121,58 @@ export function PreviewSwitcher({
   }, [treeBump, epKey, rpc]);
 
   useEffect(() => {
+    galleriesGenRef.current += 1;
+    setGalleries(null);
+    setGalleriesErr(null);
+    if (reachOk) loadGalleries();
+  }, [reachOk, repoRoot, loadGalleries]);
+
+  useEffect(() => {
     if (galleriesOpen && reachOk) loadGalleries();
   }, [galleriesOpen, reachOk, loadGalleries]);
+
+  const visibleRowsOf = (container: HTMLElement | null): HTMLButtonElement[] =>
+    container
+      ? [...container.querySelectorAll<HTMLButtonElement>(".preview-switch-row:not(:disabled)")].filter((el) => !el.closest("[inert]"))
+      : [];
+
+  const handleListKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    const rows = visibleRowsOf(e.currentTarget);
+    if (rows.length === 0) return;
+    e.preventDefault();
+    const curIdx = rows.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIdx = 0;
+    if (e.key === "ArrowDown") nextIdx = curIdx < 0 ? 0 : (curIdx + 1) % rows.length;
+    else if (e.key === "ArrowUp") nextIdx = curIdx <= 0 ? rows.length - 1 : curIdx - 1;
+    else if (e.key === "End") nextIdx = rows.length - 1;
+    rows[nextIdx]?.focus();
+  };
+
+  const handleTriggerKeyDown = (
+    e: KeyboardEvent<HTMLButtonElement>,
+    isOpen: boolean,
+    setOpenFn: (next: boolean) => void,
+    listRef: { current: HTMLDivElement | null },
+  ) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    if (!isOpen) {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      setOpenFn(true);
+      const wantLast = e.key === "ArrowUp";
+      requestAnimationFrame(() => {
+        const rows = visibleRowsOf(listRef.current);
+        (wantLast ? rows[rows.length - 1] : rows[0])?.focus();
+      });
+      return;
+    }
+    const rows = visibleRowsOf(listRef.current);
+    if (rows.length === 0) return;
+    e.preventDefault();
+    const target = e.key === "ArrowUp" || e.key === "End" ? rows[rows.length - 1] : rows[0];
+    target?.focus();
+  };
 
   const curRel = current
     ? current.root === "episodes" && epKey
@@ -250,6 +310,20 @@ export function PreviewSwitcher({
                     }}
                     {...tip.props}
                     {...trigger.props}
+                    onKeyDown={(e) => {
+                      (trigger.props.onKeyDown as ((ev: KeyboardEvent<HTMLButtonElement>) => void) | undefined)?.(e);
+                      if (!e.defaultPrevented) {
+                        handleTriggerKeyDown(
+                          e,
+                          open,
+                          (next) => {
+                            if (next) setGalleriesOpen(false);
+                            setOpen(next);
+                          },
+                          filesListRef,
+                        );
+                      }
+                    }}
                     className="ui-btn ui-btn--ghost ui-btn--sm preview-switch-btn"
                     aria-expanded={open}
                     data-testid="preview-switch-btn"
@@ -265,7 +339,7 @@ export function PreviewSwitcher({
               />
             )}
             renderContent={() => (
-              <>
+              <div ref={filesListRef} onKeyDown={handleListKeyDown}>
                 {pickErr !== null && <div className="warn" data-testid="preview-switch-pick-err">{pickErr}</div>}
                 {err !== null && <div className="muted">{err}</div>}
                 {entries === null && err === null && (
@@ -320,7 +394,7 @@ export function PreviewSwitcher({
                       ))}
                     </div>
                   ))}
-              </>
+              </div>
             )}
           />
         )}
@@ -348,6 +422,20 @@ export function PreviewSwitcher({
               type="button"
               ref={trigger.ref}
               {...trigger.props}
+              onKeyDown={(e) => {
+                (trigger.props.onKeyDown as ((ev: KeyboardEvent<HTMLButtonElement>) => void) | undefined)?.(e);
+                if (!e.defaultPrevented) {
+                  handleTriggerKeyDown(
+                    e,
+                    galleriesOpen,
+                    (next) => {
+                      if (next) setOpen(false);
+                      setGalleriesOpen(next);
+                    },
+                    galleriesListRef,
+                  );
+                }
+              }}
               className="ui-btn ui-btn--ghost ui-btn--sm preview-galleries-btn"
               aria-expanded={galleriesOpen}
               data-testid="galleries-toggle"
@@ -362,7 +450,7 @@ export function PreviewSwitcher({
             </button>
           )}
           renderContent={() => (
-            <>
+            <div ref={galleriesListRef} onKeyDown={handleListKeyDown}>
               <div className="ui-popover-title preview-switch-gtitle">镜头画廊</div>
               {galleriesErr !== null && (
                 <div className="notice notice--warn">
@@ -396,45 +484,47 @@ export function PreviewSwitcher({
                   <span className="ui-row-title">{g.name}</span>
                 </button>
               ))}
-            </>
+            </div>
           )}
         />
       </div>
-      {epKey !== null && coverNotice !== null && (
-        <div
-          key={coverNotice.n}
-          className={
-            coverNotice.kind === "err"
-              ? "notice notice--err preview-cover-notice ui-error-shake"
-              : "notice preview-cover-notice ui-confirm-enter"
-          }
-          data-testid="cover-import-msg"
-          role={coverNotice.kind === "err" ? "alert" : "status"}
-        >
-          <Icon name={coverNotice.kind === "err" ? "alert" : "info"} size="sm" />
-          <span>{coverNotice.text}</span>
-          <span className="spacer" />
-          {coverNotice.path && (
+      <Disclosure key={epKey ?? "_none"} open={epKey !== null && coverNotice !== null} keepLastContent>
+        {epKey !== null && coverNotice !== null && (
+          <div
+            key={coverNotice.n}
+            className={
+              coverNotice.kind === "err"
+                ? "notice notice--err preview-cover-notice ui-error-shake"
+                : "notice preview-cover-notice ui-confirm-enter"
+            }
+            data-testid="cover-import-msg"
+            role={coverNotice.kind === "err" ? "alert" : "status"}
+          >
+            <Icon name={coverNotice.kind === "err" ? "alert" : "info"} size="sm" />
+            <span>{coverNotice.text}</span>
+            <span className="spacer" />
+            {coverNotice.path && (
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                onClick={() => {
+                  onPick({ kind: "file", root: "episodes", rel: `${epKey}/${coverNotice.path}`, size: null });
+                }}
+              >
+                查看
+              </button>
+            )}
             <button
               type="button"
-              className="ui-btn ui-btn--ghost ui-btn--sm"
-              onClick={() => {
-                onPick({ kind: "file", root: "episodes", rel: `${epKey}/${coverNotice.path}`, size: null });
-              }}
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+              aria-label="关闭封面导入提示"
+              onClick={() => setCoverNotice(null)}
             >
-              查看
+              <Icon name="close" size="sm" />
             </button>
-          )}
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-            aria-label="关闭封面导入提示"
-            onClick={() => setCoverNotice(null)}
-          >
-            <Icon name="close" size="sm" />
-          </button>
-        </div>
-      )}
+          </div>
+        )}
+      </Disclosure>
     </div>
   );
 }

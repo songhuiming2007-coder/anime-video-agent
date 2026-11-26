@@ -364,3 +364,154 @@ test("P4 配音工作台 40 段 60fps 进度条：播放期间 .voice-list 零 D
     cleanup(repo);
   }
 });
+
+test("P5 动效一致性、可打断性、窄/宽屏 × 深/浅色与 prefers-reduced-motion 实测", async () => {
+  const fx = buildFixture();
+  const L = await launch(fx.repo, [], undefined, { previewOpen: false });
+  try {
+    // 1. A3 回归：选题视图下侧栏展开时不重复出现顶栏「新建一期」，收起侧栏后顶栏才浮现
+    await expect(L.page.locator(".left [data-testid=new-episode-toggle]")).toBeVisible();
+    await expect(L.page.locator("[data-testid=session-head] [data-testid=new-episode-toggle]")).toHaveCount(0);
+    await L.page.getByTestId("toggle-left").click();
+    await expect(L.page.locator("#ava-left")).toBeHidden();
+    await expect(L.page.locator("[data-testid=session-head] [data-testid=new-episode-toggle]")).toBeVisible();
+    // 可打断性：点击展开侧栏并在滑移中途立即再次点击收起，再点击展开——最终必须稳态可见、无卡死
+    await L.page.getByTestId("toggle-left").click();
+    await L.page.waitForTimeout(80);
+    await L.page.getByTestId("toggle-left").click();
+    await L.page.waitForTimeout(80);
+    await L.page.getByTestId("toggle-left").click();
+    await expect(L.page.locator("#ava-left")).toBeVisible();
+    await expect(L.page.locator("#ava-left")).toHaveAttribute("data-pane-state", "open");
+
+    // 2. PreviewRail 与 .preview 叠放零挤压 + iframe 淡入层正确消退
+    await openEpisode(L.page, "E2E-A");
+    await pick(L.page, "04-review.html");
+    await L.page.getByTestId("html-frame").waitFor({ timeout: 15_000 });
+    await expect(L.page.getByTestId("html-frame")).toHaveAttribute("data-loaded", "1", { timeout: 10_000 });
+    await expect(L.page.locator(".html-frame-loading")).toHaveAttribute("data-hidden", "1", { timeout: 10_000 });
+    await expect(L.page.locator(".html-frame-loading")).toBeHidden();
+    // 关闭预览并在真实过渡帧中检查 right-slot 同时承载 closing 面板与 rail 且不纵向堆叠溢出
+    await L.page.getByTestId("toggle-preview").click();
+    const midBox = await L.page.evaluate(async () => {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const slot = document.querySelector(".right-slot") as HTMLElement;
+      const rail = document.querySelector(".preview-rail") as HTMLElement | null;
+      const pane = document.querySelector("#ava-preview") as HTMLElement | null;
+      const sb = slot.getBoundingClientRect();
+      const rb = rail?.getBoundingClientRect() ?? null;
+      const pb = pane?.getBoundingClientRect() ?? null;
+      return {
+        paneState: pane?.dataset.paneState ?? "",
+        railHeight: rb?.height ?? 0,
+        paneHeight: pb?.height ?? 0,
+        slotOverflowY: slot.scrollHeight - slot.clientHeight,
+        railTopDelta: rb && rb.height > 0 ? Math.abs(rb.top - sb.top) : 999,
+        paneTopDelta: pb && pb.height > 0 ? Math.abs(pb.top - sb.top) : 999,
+      };
+    });
+    expect(midBox.paneState).toBe("closing");
+    expect(midBox.railHeight).toBeGreaterThan(0);
+    expect(midBox.paneHeight).toBeGreaterThan(0);
+    expect(midBox.slotOverflowY).toBeLessThanOrEqual(1);
+    expect(midBox.railTopDelta).toBeLessThanOrEqual(1);
+    expect(midBox.paneTopDelta).toBeLessThanOrEqual(1);
+    await expect(L.page.getByTestId("preview-rail")).toBeVisible();
+
+    // 3. 窄屏 (900×720) & 宽屏 (1440×900) × 深色 & 浅色：零横滚 + SegmentedBar 真实切换与 2D 折行对齐
+    const readThumbMetrics = () =>
+      L.page.evaluate(() => {
+        const seg = document.querySelector(".side-head .ui-seg--slide") as HTMLElement | null;
+        const thumb = seg?.querySelector(".ui-seg-thumb") as HTMLElement | null;
+        const active = seg?.querySelector('button[aria-pressed="true"]') as HTMLElement | null;
+        const tb = thumb?.getBoundingClientRect();
+        const ab = active?.getBoundingClientRect();
+        return {
+          overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          thumbHidden: thumb?.dataset.hidden ?? "1",
+          thumbLeft: tb?.left ?? -1,
+          thumbTop: tb?.top ?? -1,
+          dx: tb && ab ? Math.abs(tb.left - ab.left) : 999,
+          dy: tb && ab ? Math.abs(tb.top - ab.top) : 999,
+          dw: tb && ab ? Math.abs(tb.width - ab.width) : 999,
+          dh: tb && ab ? Math.abs(tb.height - ab.height) : 999,
+        };
+      });
+
+    for (const scheme of ["light", "dark"] as const) {
+      await L.page.emulateMedia({ colorScheme: scheme });
+      for (const [w, h] of [[900, 720], [1440, 900]] as const) {
+        await L.page.setViewportSize({ width: w, height: h });
+        await L.page.waitForTimeout(260);
+        const before = await readThumbMetrics();
+        expect(before.overflowX, `${scheme} ${w}x${h} overflowX`).toBeLessThanOrEqual(0);
+        expect(before.thumbHidden, `${scheme} ${w}x${h} thumbHidden`).toBe("0");
+        expect(before.dx, `${scheme} ${w}x${h} thumb dx`).toBeLessThanOrEqual(2);
+        expect(before.dy, `${scheme} ${w}x${h} thumb dy`).toBeLessThanOrEqual(2);
+        expect(before.dw, `${scheme} ${w}x${h} thumb dw`).toBeLessThanOrEqual(2);
+        expect(before.dh, `${scheme} ${w}x${h} thumb dh`).toBeLessThanOrEqual(2);
+      }
+    }
+
+    // 水平切换 + 2D 折行：验证滑块真实位移并跟到第二行按钮
+    const beforeSwitch = await readThumbMetrics();
+    await L.page.locator(".side-head .ui-seg--slide button").nth(1).click();
+    await L.page.waitForTimeout(280);
+    const afterSwitch = await readThumbMetrics();
+    expect(afterSwitch.thumbLeft).toBeGreaterThan(beforeSwitch.thumbLeft + 15);
+    expect(afterSwitch.dx).toBeLessThanOrEqual(2);
+    expect(afterSwitch.dy).toBeLessThanOrEqual(2);
+
+    const wrapCheck = await L.page.evaluate(async () => {
+      const seg = document.querySelector(".side-head .ui-seg--slide") as HTMLElement;
+      const prevWrap = seg.style.flexWrap;
+      const prevMax = seg.style.maxWidth;
+      seg.style.flexWrap = "wrap";
+      seg.style.maxWidth = "72px";
+      await new Promise((r) => setTimeout(r, 280));
+      const btns = [...seg.querySelectorAll<HTMLButtonElement>("button")];
+      const b0 = btns[0].getBoundingClientRect();
+      const b1 = btns[1].getBoundingClientRect();
+      const tb = (seg.querySelector(".ui-seg-thumb") as HTMLElement).getBoundingClientRect();
+      seg.style.flexWrap = prevWrap;
+      seg.style.maxWidth = prevMax;
+      return {
+        wrappedRowDelta: b1.top - b0.top,
+        dx: Math.abs(tb.left - b1.left),
+        dy: Math.abs(tb.top - b1.top),
+        dw: Math.abs(tb.width - b1.width),
+        dh: Math.abs(tb.height - b1.height),
+      };
+    });
+    expect(wrapCheck.wrappedRowDelta).toBeGreaterThan(10);
+    expect(wrapCheck.dx).toBeLessThanOrEqual(2);
+    expect(wrapCheck.dy).toBeLessThanOrEqual(2);
+    expect(wrapCheck.dw).toBeLessThanOrEqual(2);
+    expect(wrapCheck.dh).toBeLessThanOrEqual(2);
+    await L.page.locator(".side-head .ui-seg--slide button").nth(0).click();
+
+    // 4. prefers-reduced-motion: reduce 立即生效（单次 rAF 窗口内直达稳态，禁止走 240ms 动画）
+    await L.page.emulateMedia({ reducedMotion: "reduce" });
+    const dur = await L.page.evaluate(() => getComputedStyle(document.querySelector("#ava-preview") as HTMLElement).transitionDuration);
+    expect(dur).toBe("0s");
+    await L.page.getByTestId("toggle-preview").click();
+    const openedInstant = await L.page.evaluate(async () => {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const p = document.querySelector("#ava-preview") as HTMLElement;
+      return { state: p.dataset.paneState, hidden: p.hidden };
+    });
+    expect(openedInstant).toEqual({ state: "open", hidden: false });
+    await L.page.getByTestId("toggle-preview").click();
+    const closedInstant = await L.page.evaluate(async () => {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const p = document.querySelector("#ava-preview") as HTMLElement;
+      const rail = document.querySelector("[data-testid=preview-rail]") as HTMLElement | null;
+      return { state: p.dataset.paneState, hidden: p.hidden, railVisible: Boolean(rail && rail.getBoundingClientRect().height > 0) };
+    });
+    expect(closedInstant).toEqual({ state: "closed", hidden: true, railVisible: true });
+    console.log("[PERF P5 motion+responsive+reducedMotion] all checks passed");
+  } finally {
+    await L.app.close();
+    fx.cleanup();
+  }
+});

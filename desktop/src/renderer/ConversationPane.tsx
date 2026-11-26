@@ -82,7 +82,7 @@ export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
     (r): r is Extract<ConvRow, { k: "notice" }> =>
       r.k === "notice" && r.code === "ticket_fixed" && !dismissed.has(`n:${r.at}:${r.text}`),
   );
-  if (tickets.length === 0 && notes.length === 0) return null;
+  const hasItems = tickets.length > 0 || notes.length > 0;
   const dismiss = (key: string) =>
     setDismissed((prev) => {
       const next = new Set(prev);
@@ -90,45 +90,49 @@ export function HandoffStrip({ rows }: { rows: ConvRow[] }) {
       return next;
     });
   return (
-    <div className="conv-handoff" data-testid="handoff-strip">
-      {notes.map((n) => {
-        const key = `n:${n.at}:${n.text}`;
-        return (
-          <div key={key} className="conv-handoff-row ui-card-enter" data-testid="handoff-note">
-            <Icon name={n.level === "error" ? "alert" : "info"} size="sm" />
-            <span className="conv-handoff-text">{n.text}</span>
-            <button
-              type="button"
-              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-              aria-label="关闭提醒"
-              onClick={() => dismiss(key)}
-            >
-              <Icon name="close" size="sm" />
-            </button>
-          </div>
-        );
-      })}
-      {tickets.map((t) => {
-        const key = `t:${t.id}`;
-        return (
-          <div key={t.id} className="conv-handoff-row ui-card-enter" data-ticket={t.id}>
-            <span>本会话开了工单</span>
-            <span className="conv-handoff-id">{t.id}</span>
-            <span>（待修）</span>
-            <span className="spacer" />
-            <CopyButton text={t.handoff} label="复制给 coding agent" testId="handoff-strip-copy" />
-            <button
-              type="button"
-              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
-              aria-label="隐藏该工单提示"
-              onClick={() => dismiss(key)}
-            >
-              <Icon name="close" size="sm" />
-            </button>
-          </div>
-        );
-      })}
-    </div>
+    <Disclosure open={hasItems} keepLastContent>
+      {hasItems && (
+        <div className="conv-handoff" data-testid="handoff-strip">
+          {notes.map((n) => {
+            const key = `n:${n.at}:${n.text}`;
+            return (
+              <div key={key} className="conv-handoff-row ui-card-enter" data-testid="handoff-note">
+                <Icon name={n.level === "error" ? "alert" : "info"} size="sm" />
+                <span className="conv-handoff-text">{n.text}</span>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                  aria-label="关闭提醒"
+                  onClick={() => dismiss(key)}
+                >
+                  <Icon name="close" size="sm" />
+                </button>
+              </div>
+            );
+          })}
+          {tickets.map((t) => {
+            const key = `t:${t.id}`;
+            return (
+              <div key={t.id} className="conv-handoff-row ui-card-enter" data-ticket={t.id}>
+                <span>本会话开了工单</span>
+                <span className="conv-handoff-id">{t.id}</span>
+                <span>（待修）</span>
+                <span className="spacer" />
+                <CopyButton text={t.handoff} label="复制给 coding agent" testId="handoff-strip-copy" />
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon"
+                  aria-label="隐藏该工单提示"
+                  onClick={() => dismiss(key)}
+                >
+                  <Icon name="close" size="sm" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Disclosure>
   );
 }
 
@@ -274,7 +278,7 @@ export function ConversationPane({ rows, lead, cards, running = false, awaiting 
         {cards}
       </div>
       {jump.mounted && (
-        <div className="conv-jump-wrap" data-status={jump.status}>
+        <div ref={jump.ref} className="conv-jump-wrap" data-status={jump.status}>
           <button
             type="button"
             className="ui-btn ui-btn--sm conv-jump-btn"
@@ -619,7 +623,8 @@ function RowView({
     row.k === "card" && row.status !== "open" && row.detail !== undefined
       ? () => opens.toggle(`card:${row.requestId}`, cardOpen)
       : undefined;
-  return <Row row={row} fresh={fresh(row)} cardOpen={cardOpen} onToggleCard={toggleCard} />;
+  const animKey = rowAnimKey(row, index);
+  return <Row row={row} fresh={fresh(row, animKey)} animKey={animKey} markPlayed={markPlayed} cardOpen={cardOpen} onToggleCard={toggleCard} />;
 }
 
 /** D80 R6.3：卡片结局的状态色——待批准用等待色、被拒用危险色，其余中性（语义色只给真实状态） */
@@ -650,18 +655,27 @@ const Footer = memo(function Footer({ text, brief, claims, enter }: { text: stri
   );
 });
 
-/** 非工具行。D80：只有实时到达的行挂入场标记（R3 ④）；工具行在 ToolLine */
+/** 非工具行。D80：只有实时到达的行挂入场标记（R3 ④）；播完后记入 playedInnerRef，避免折叠重展时重播 */
 const Row = memo(function Row({
   row,
   fresh,
+  animKey,
+  markPlayed,
   cardOpen,
   onToggleCard,
 }: {
   row: Exclude<ConvRow, ToolRow>;
   fresh: boolean;
+  animKey: string;
+  markPlayed: (key: string) => void;
   cardOpen: boolean;
   onToggleCard?: () => void;
 }) {
+  useEffect(() => {
+    if (!fresh) return;
+    const t = window.setTimeout(() => markPlayed(animKey), 280);
+    return () => window.clearTimeout(t);
+  }, [fresh, animKey, markPlayed]);
   const enter = fresh ? " conv-enter" : "";
   switch (row.k) {
     case "user":

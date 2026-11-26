@@ -10,7 +10,7 @@ import type { ConvEntry, ConvKey, ConvSnapshot, SessionRow, TrashRow } from "../
 import { formatRelTime } from "../shared/relTime";
 import { titleProblem } from "../shared/sessionTitle";
 import { Icon } from "./icons";
-import { Disclosure } from "./motion";
+import { Disclosure, useCountBump } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 
 /** D80：本会话键收到过几帧 session_title——变了就重取会话列表（标题在回合结束之后才异步到达，阶段早已变完） */
@@ -34,6 +34,9 @@ export function SessionList({
   active = true,
   now,
   onChanged,
+  onRowsLoaded,
+  onFresh,
+  onEntered,
 }: {
   rpc: RpcClient;
   convKey: ConvKey;
@@ -43,8 +46,13 @@ export function SessionList({
   active?: boolean;
   now?: number;
   onChanged: () => void;
+  onRowsLoaded?: (count: number) => void;
+  onFresh?: () => void;
+  onEntered?: () => void;
 }) {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
+  const onRowsLoadedRef = useRef(onRowsLoaded);
+  onRowsLoadedRef.current = onRowsLoaded;
   const [editing, setEditing] = useState<{ sid: string; text: string; origTitle: string } | null>(null);
   const renameCancelledRef = useRef(false);
   // R1.5：标题换了（兜底 → 生成名 / 改名）的行淡入切换；首次载入不播（副作用更新在 useEffect 中，避免渲染期 mutate ref）
@@ -85,7 +93,9 @@ export function SessionList({
       // 最近活动在上（core 按文件顺序给，最旧在前；ISO 时间串字典序即时间序）
       (r) => {
         if (gen !== reloadGenRef.current) return;
-        setRows([...r].sort((a, b) => (a.lastActivity < b.lastActivity ? 1 : a.lastActivity > b.lastActivity ? -1 : 0)));
+        const sorted = [...r].sort((a, b) => (a.lastActivity < b.lastActivity ? 1 : a.lastActivity > b.lastActivity ? -1 : 0));
+        setRows(sorted);
+        onRowsLoadedRef.current?.(sorted.filter((x) => x.resumable || x.live).length);
       },
       (err) => {
         if (gen !== reloadGenRef.current) return;
@@ -159,6 +169,8 @@ export function SessionList({
   };
   const anyLive = rows?.some((r) => r.live) ?? false;
   const nowMs = now ?? Date.now();
+  const hasTrash = Boolean(trash && trash.length > 0);
+  const trashCountBump = useCountBump(trash?.length ?? 0);
   return (
     <div className="ep-sessions" data-testid={active ? "session-list" : undefined} aria-hidden={!active || undefined} aria-busy={busy || undefined}>
       <button
@@ -171,7 +183,7 @@ export function SessionList({
         title="新建一段空白上下文会话（当前会话继续留在后台）"
         onClick={(e) => {
           if (!e.nativeEvent.isTrusted) return;
-          act("new", rpc.call("conv.fresh", { convKey }));
+          act("new", rpc.call("conv.fresh", { convKey }), () => onFresh?.());
         }}
       >
         {busyId === "new" ? <span className="ui-spinner" /> : <Icon name="plus" size="sm" />}
@@ -198,7 +210,7 @@ export function SessionList({
             return saveTitle(r.sid, editing.text);
           };
           return (
-            <div key={r.sid} className="ep-session-wrap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
+            <div key={r.sid} className="ep-session-wrap ui-fade-swap" data-testid="session-row" data-sid={r.sid} data-live={r.live ? "1" : "0"}>
               <input
                 className="ui-input ep-session-edit"
                 data-testid="session-rename-input"
@@ -247,7 +259,7 @@ export function SessionList({
               onClick={(e) => {
                 // 不按本地 r.live 拦：列表可能还没跟上刚结束的会话（e2e TX-10 实测吞点击）；「进的就是当前会话」由 host 判（conv.enter 原样返回）
                 if (!e.nativeEvent.isTrusted) return;
-                act(r.sid, rpc.call("conv.enter", { convKey, sid: r.sid }));
+                act(r.sid, rpc.call("conv.enter", { convKey, sid: r.sid }), () => onEntered?.());
               }}
             >
               {rowBusy && <span className="ui-spinner" />}
@@ -351,87 +363,92 @@ export function SessionList({
           </div>
         )}
       </Disclosure>
-      {error && (
-        <div key={errSeq} className="warn ep-session-err ui-error-shake" data-testid="session-error">
-          {error}
-        </div>
-      )}
-      {trash && trash.length > 0 && (
-        <div className="ep-trash" data-testid="trash-group">
-          <button
-            type="button"
-            className="ui-row ep-session"
-            data-testid="trash-toggle"
-            aria-expanded={trashOpen}
-            onClick={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              setTrashOpen((v) => !v);
-            }}
-          >
-            <span className="ui-chev" data-open={trashOpen ? "1" : "0"}>
-              <Icon name="chevron-right" size="sm" />
-            </span>
-            <span className="ui-row-title">回收站（{trash.length}）</span>
-          </button>
-          <Disclosure open={trashOpen}>
-            <div>
-              {trash.map((t) => {
-                const when = Number.isNaN(Date.parse(t.lastTs)) ? t.lastTs : formatRelTime(Date.parse(t.lastTs), nowMs);
-                // 同 sid 多文件（手动搬回再删即再造）：行内显示时间戳后缀区分（红队发现 6）
-                const dup = t.sid !== null && trash.filter((x) => x.sid === t.sid).length > 1;
-                const displayName = t.title ?? (t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话");
-                const label = t.empty
-                  ? "空文件"
-                  : t.parseError
-                    ? "无法解析"
-                    : `${displayName} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
-                const restorable = !t.empty && !t.parseError;
-                const tBusy = busyId === t.file;
-                return (
-                  <div key={t.file} className="ep-session-wrap ep-trash-wrap" data-testid="trash-row" data-file={t.file}>
-                    <span className="ui-row ep-session ep-trash-row" title={`${displayName} · ${formatTrashSize(t.bytes)}`}>
-                      {tBusy && <span className="ui-spinner" />}
-                      <span className="ui-row-title">{label}</span>
-                    </span>
-                    <span className="ep-trash-actions">
-                      {restorable && (
+      <Disclosure key={`err:${convKey}`} open={error !== null} keepLastContent>
+        {error && (
+          <div key={errSeq} className="warn ep-session-err ui-error-shake" data-testid="session-error">
+            {error}
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure key={`trash:${convKey}`} open={hasTrash} keepLastContent>
+        {trash && trash.length > 0 && (
+          <div className="ep-trash" data-testid="trash-group">
+            <button
+              type="button"
+              className="ui-row ep-session"
+              data-testid="trash-toggle"
+              aria-expanded={trashOpen}
+              onClick={(e) => {
+                if (!e.nativeEvent.isTrusted) return;
+                setTrashOpen((v) => !v);
+              }}
+            >
+              <span className="ui-chev" data-open={trashOpen ? "1" : "0"}>
+                <Icon name="chevron-right" size="sm" />
+              </span>
+              <span className="ui-row-title">回收站</span>
+              <span className="ui-count" data-bump={trashCountBump ? "1" : undefined}>{trash.length}</span>
+            </button>
+            <Disclosure open={trashOpen}>
+              <div>
+                {trash.map((t) => {
+                  const when = Number.isNaN(Date.parse(t.lastTs)) ? t.lastTs : formatRelTime(Date.parse(t.lastTs), nowMs);
+                  // 同 sid 多文件（手动搬回再删即再造）：行内显示时间戳后缀区分（红队发现 6）
+                  const dup = t.sid !== null && trash.filter((x) => x.sid === t.sid).length > 1;
+                  const displayName = t.title ?? (t.sid ? `${t.sid.slice(0, 8)}…` : "未知会话");
+                  const label = t.empty
+                    ? "空文件"
+                    : t.parseError
+                      ? "无法解析"
+                      : `${displayName} · ${t.messageCount} 条${t.partial ? "（记录不全）" : ""}${when ? ` · ${when}` : ""}${dup ? ` · ${t.file.replace(/\.jsonl$/, "").slice(17)}` : ""}`;
+                  const restorable = !t.empty && !t.parseError;
+                  const tBusy = busyId === t.file;
+                  return (
+                    <div key={t.file} className="ep-session-wrap ep-trash-wrap" data-testid="trash-row" data-file={t.file}>
+                      <span className="ui-row ep-session ep-trash-row" title={`${displayName} · ${formatTrashSize(t.bytes)}`}>
+                        {tBusy && <span className="ui-spinner" />}
+                        <span className="ui-row-title">{label}</span>
+                      </span>
+                      <span className="ep-trash-actions">
+                        {restorable && (
+                          <button
+                            type="button"
+                            className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ep-session-del"
+                            data-testid="trash-restore"
+                            aria-label={`还原：${displayName}`}
+                            title="还原回会话列表"
+                            disabled={off}
+                            onClick={(e) => {
+                              if (!e.nativeEvent.isTrusted) return;
+                              act(t.file, rpc.call("conv.restoreTrash", { convKey, file: t.file }));
+                            }}
+                          >
+                            <Icon name="undo" size="sm" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ep-session-del"
-                          data-testid="trash-restore"
-                          aria-label={`还原：${displayName}`}
-                          title="还原回会话列表"
+                          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-btn--danger-hover ep-session-del"
+                          data-testid="trash-purge"
+                          aria-label={`彻底删除：${displayName}`}
+                          title="彻底删除（不可恢复）"
                           disabled={off}
                           onClick={(e) => {
                             if (!e.nativeEvent.isTrusted) return;
-                            act(t.file, rpc.call("conv.restoreTrash", { convKey, file: t.file }));
+                            act(t.file, rpc.call("conv.purgeTrash", { convKey, file: t.file }));
                           }}
                         >
-                          <Icon name="undo" size="sm" />
+                          <Icon name="trash" size="sm" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon ui-btn--danger-hover ep-session-del"
-                        data-testid="trash-purge"
-                        aria-label={`彻底删除：${displayName}`}
-                        title="彻底删除（不可恢复）"
-                        disabled={off}
-                        onClick={(e) => {
-                          if (!e.nativeEvent.isTrusted) return;
-                          act(t.file, rpc.call("conv.purgeTrash", { convKey, file: t.file }));
-                        }}
-                      >
-                        <Icon name="trash" size="sm" />
-                      </button>
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </Disclosure>
-        </div>
-      )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Disclosure>
+          </div>
+        )}
+      </Disclosure>
     </div>
   );
 }

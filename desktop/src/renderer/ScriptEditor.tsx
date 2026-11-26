@@ -192,7 +192,10 @@ export function ScriptEditor({
     }
   }, []);
 
+  const loadGenRef = useRef(0);
+
   const load = useCallback(async () => {
+    const gen = (loadGenRef.current += 1);
     setLoadErr(null);
     setLoaded(false);
     setSaveMsg(null);
@@ -202,20 +205,28 @@ export function ScriptEditor({
     setDiskChanged(false);
     try {
       const s = await rpc.call<ScriptStatJson>("script.stat", { epKey });
+      if (loadGenRef.current !== gen) return;
       setStat(s);
       if (s.script) {
         const r = await fetch(encodeMediaUrl("episodes", `${epKey}/02-script.md`));
+        if (loadGenRef.current !== gen) return;
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const text = await r.text();
+        if (loadGenRef.current !== gen) return;
         setDoc(text);
+        setPreview(text);
         setEd(reduceEditor(edRef.current, { type: "loaded", text, baselineFp: { size: String(s.script.size), mtimeNs: s.script.mtimeNs } }));
       } else if (s.draft) {
         const r = await fetch(encodeMediaUrl("episodes", `${epKey}/02-script.draft.md`));
+        if (loadGenRef.current !== gen) return;
         const text = r.ok ? await r.text() : "";
+        if (loadGenRef.current !== gen) return;
         setDoc(text);
+        setPreview(text);
         setEd(reduceEditor(edRef.current, { type: "loaded", text, baselineFp: null }));
       } else {
         setDoc("");
+        setPreview("");
         setEd(reduceEditor(edRef.current, { type: "loaded", text: "", baselineFp: null }));
         setLoadErr("找不到 02-script.md，也找不到 02-script.draft.md");
       }
@@ -223,6 +234,7 @@ export function ScriptEditor({
       if (stashed !== null) setStashOffer(stashed);
       setLoaded(true);
     } catch (e) {
+      if (loadGenRef.current !== gen) return;
       setLoadErr(errText(e));
     }
   }, [epKey, rpc, setDoc]);
@@ -231,10 +243,12 @@ export function ScriptEditor({
   const syncFromDisk = useCallback(
     async (st: ScriptStatJson) => {
       if (!st.script) return;
+      const gen = loadGenRef.current;
       try {
         const r = await fetch(encodeMediaUrl("episodes", `${epKey}/02-script.md`));
-        if (!r.ok) return;
+        if (!r.ok || loadGenRef.current !== gen) return;
         const text = await r.text();
+        if (loadGenRef.current !== gen) return;
         if (edRef.current.dirty) {
           setDiskChanged(true);
           return;
@@ -252,8 +266,8 @@ export function ScriptEditor({
   );
 
   // CodeMirror 生命周期：挂载在 ShadowRoot 下绕开 CSP style-src 'self'（e2e A1 钉死）；
-  // 错误态卸载宿主以满足 TE-6（editor-src 计数 0），重试成功后随 hasHost 重建并灌入当前正文。
-  const hasHost = loadErr === null;
+  // 载入中或错误态不挂载编辑宿主（避免空白编辑框闪烁、防止载入完成覆盖首帧输入，并满足 TE-6 editor-src 计数 0）。
+  const hasHost = loaded && loadErr === null;
   useEffect(() => {
     if (!hasHost) return;
     const host = hostRef.current;
@@ -293,6 +307,9 @@ export function ScriptEditor({
 
   useEffect(() => {
     void load();
+    return () => {
+      loadGenRef.current += 1;
+    };
   }, [load]);
 
   // D49-A S3：跟随磁盘。没有未保存改动 → 静默原位同步；有 → 只亮提示条，不覆盖人的改动
@@ -454,8 +471,10 @@ export function ScriptEditor({
     }
   }, []);
 
-  const off = busy || loadErr !== null;
+  const off = busy || !loaded || loadErr !== null;
   const dirty = ed.dirty;
+  const draftOnly = stat !== null && stat.script === null && stat.draft !== null;
+  const showFromDraft = canCreateFromDraft(ed, draftOnly);
   const nothingToSave = stat !== null && stat.script !== null && !dirty;
   const tooBig = new TextEncoder().encode(ed.text).length > SAVE_SCRIPT_MAX_BYTES;
   const saveParams = () => ({ epKey, text: edRef.current.text, ...expectOf(edRef.current) });
@@ -479,12 +498,12 @@ export function ScriptEditor({
     >
       <div className="toolbar" data-testid="editor-toolbar">
         {dirty && (
-          <>
+          <span className="editor-dirty-wrap ui-confirm-enter">
             <StatusDot tone="wait" />
             <span className="muted" data-testid="editor-dirty">
               未保存
             </span>
-          </>
+          </span>
         )}
         {tooBig && <span className="warn">正文超过 1 MiB 上限</span>}
         <span className="spacer" />
@@ -501,40 +520,56 @@ export function ScriptEditor({
             ))}
           </SegmentedBar>
         )}
-        <FloatingTooltip
-          label={nothingToSave ? "当前没有未保存的改动" : <>保存文稿 <kbd className="ui-kbd">⌘S</kbd></>}
-          renderTrigger={(t) => (
-            <span ref={t.ref} {...t.props}>
-              <button
-                type="button"
-                className="ui-btn ui-btn--ghost ui-btn--sm"
-                data-testid="save-script"
-                disabled={off || tooBig || nothingToSave}
-                onClick={(e) => {
-                  if (!e.nativeEvent.isTrusted) return;
-                  void doSave(rpc.call("script.save", saveParams()));
-                }}
-              >
-                {busyAction === "save" && <span className="ui-spinner" />}
-                保存
-              </button>
-            </span>
-          )}
-        />
-        {stat !== null && stat.script === null && stat.draft !== null && (
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm"
-            data-testid="from-draft"
-            disabled={off || !canCreateFromDraft(ed, true)}
-            onClick={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              void doSave(rpc.call("script.save", saveParams()));
-            }}
-          >
-            {busyAction === "save" && <span className="ui-spinner" />}
-            从草稿新建
-          </button>
+        {showFromDraft ? (
+          <FloatingTooltip
+            label={<>由草稿新建 02-script.md 定稿 <kbd className="ui-kbd">⌘S</kbd></>}
+            renderTrigger={(t) => (
+              <span ref={t.ref} {...t.props}>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--primary ui-btn--sm"
+                  data-testid="from-draft"
+                  disabled={off || tooBig}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    void doSave(rpc.call("script.save", saveParams()));
+                  }}
+                >
+                  {busyAction === "save" && <span className="ui-spinner" />}
+                  从草稿新建
+                </button>
+              </span>
+            )}
+          />
+        ) : (
+          <FloatingTooltip
+            label={
+              nothingToSave ? (
+                "当前没有未保存的改动"
+              ) : draftOnly ? (
+                <>保存修改为 02-script.md 定稿 <kbd className="ui-kbd">⌘S</kbd></>
+              ) : (
+                <>保存文稿 <kbd className="ui-kbd">⌘S</kbd></>
+              )
+            }
+            renderTrigger={(t) => (
+              <span ref={t.ref} {...t.props}>
+                <button
+                  type="button"
+                  className={dirty && !tooBig && !off ? "ui-btn ui-btn--primary ui-btn--sm" : "ui-btn ui-btn--ghost ui-btn--sm"}
+                  data-testid="save-script"
+                  disabled={off || tooBig || nothingToSave}
+                  onClick={(e) => {
+                    if (!e.nativeEvent.isTrusted) return;
+                    void doSave(rpc.call("script.save", saveParams()));
+                  }}
+                >
+                  {busyAction === "save" && <span className="ui-spinner" />}
+                  {draftOnly ? "保存为定稿" : "保存"}
+                </button>
+              </span>
+            )}
+          />
         )}
         <FloatingTooltip
           label={sealDisabledReason ?? "生成人审补丁并封板"}
@@ -577,8 +612,10 @@ export function ScriptEditor({
             重新载入
           </button>
         </div>
+      ) : !loaded ? (
+        <StateView kind="loading" title="载入文稿…" />
       ) : (
-        <div className="editor-split" data-layout={wide ? "wide" : "narrow"} data-pane={wide ? (tipsOpen ? "all" : "two") : pane}>
+        <div className="editor-split ui-fade-swap" data-layout={wide ? "wide" : "narrow"} data-pane={wide ? (tipsOpen ? "all" : "two") : pane}>
           <div className="editor-src" ref={hostRef} data-testid="editor-src" />
           <div key={wide ? "preview-wide" : `preview-${pane}`} className={`editor-preview${!wide ? " ui-fade-swap" : ""}`} data-testid="editor-preview">
             {preview.trim() === "" ? <div className="muted">（正文为空）</div> : <MarkdownBody text={preview} />}
@@ -593,92 +630,100 @@ export function ScriptEditor({
           </aside>
         </div>
       )}
-      {saveMsg !== null && (
-        <div
-          key={saveMsg.n}
-          className={saveMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
-          data-testid="save-msg"
-          role={saveMsg.kind === "err" ? "alert" : "status"}
-        >
-          <Icon name={saveMsg.kind === "err" ? "alert" : "info"} size="sm" />
-          <span>{saveMsg.text}</span>
-        </div>
-      )}
-      {(ed.conflict || diskChanged) && (
-        <div className="notice notice--warn voice-msg-bar ui-error-shake" data-testid="save-conflict">
-          <Icon name="alert" size="sm" />
-          <span>{ed.conflict ? "磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。" : "磁盘上的版本已变（agent 或别处改过）。你有未保存改动，没有自动载入。"}</span>
-          <button
-            type="button"
-            className={reloadArm ? "ui-btn ui-btn--danger ui-btn--sm" : "ui-btn ui-btn--sm"}
-            data-testid="reload-script"
-            disabled={busy}
-            onClick={() => {
-              if (!reloadArm) {
-                setReloadArm(true);
-                return;
-              }
-              clearStash(epKey);
-              setStashOffer(null);
-              void load();
-            }}
+      <Disclosure open={saveMsg !== null} keepLastContent>
+        {saveMsg !== null && (
+          <div
+            key={saveMsg.n}
+            className={saveMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+            data-testid="save-msg"
+            role={saveMsg.kind === "err" ? "alert" : "status"}
           >
-            {reloadArm ? "确认丢弃本地改动并重新载入？" : "重新载入磁盘版本"}
-          </button>
-          {reloadArm && (
+            <Icon name={saveMsg.kind === "err" ? "alert" : "info"} size="sm" />
+            <span>{saveMsg.text}</span>
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure open={ed.conflict || diskChanged} keepLastContent>
+        {(ed.conflict || diskChanged) && (
+          <div className="notice notice--warn voice-msg-bar ui-error-shake" data-testid="save-conflict">
+            <Icon name="alert" size="sm" />
+            <span>{ed.conflict ? "磁盘版本已变（可能已在别处修改），未保存。本地内容仍在编辑器里。" : "磁盘上的版本已变（agent 或别处改过）。你有未保存改动，没有自动载入。"}</span>
+            <button
+              type="button"
+              className={reloadArm ? "ui-btn ui-btn--danger ui-btn--sm" : "ui-btn ui-btn--sm"}
+              data-testid="reload-script"
+              disabled={busy || !loaded}
+              onClick={() => {
+                if (!reloadArm) {
+                  setReloadArm(true);
+                  return;
+                }
+                clearStash(epKey);
+                setStashOffer(null);
+                void load();
+              }}
+            >
+              {reloadArm ? "确认丢弃本地改动并重新载入？" : "重新载入磁盘版本"}
+            </button>
+            {reloadArm && (
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm"
+                data-testid="reload-script-cancel"
+                disabled={busy || !loaded}
+                onClick={() => setReloadArm(false)}
+              >
+                取消
+              </button>
+            )}
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure open={stashOffer !== null} keepLastContent>
+        {stashOffer !== null && (
+          <div className="notice voice-msg-bar ui-card-enter" data-testid="stash-offer">
+            <Icon name="info" size="sm" />
+            <span>检测到上次未保存的草稿。</span>
+            <button
+              type="button"
+              className="ui-btn ui-btn--sm"
+              onClick={() => {
+                const draft = stashOffer;
+                setDoc(draft);
+                setEd((s) => reduceEditor(s, { type: "edit", text: draft }));
+                clearStash(epKey);
+                setStashOffer(null);
+              }}
+            >
+              恢复草稿
+            </button>
             <button
               type="button"
               className="ui-btn ui-btn--ghost ui-btn--sm"
-              data-testid="reload-script-cancel"
-              disabled={busy}
-              onClick={() => setReloadArm(false)}
+              data-testid="stash-dismiss"
+              onClick={() => {
+                clearStash(epKey);
+                setStashOffer(null);
+              }}
             >
-              取消
+              忽略
             </button>
-          )}
-        </div>
-      )}
-      {stashOffer !== null && (
-        <div className="notice voice-msg-bar ui-card-enter" data-testid="stash-offer">
-          <Icon name="info" size="sm" />
-          <span>检测到上次未保存的草稿。</span>
-          <button
-            type="button"
-            className="ui-btn ui-btn--sm"
-            onClick={() => {
-              const draft = stashOffer;
-              setDoc(draft);
-              setEd((s) => reduceEditor(s, { type: "edit", text: draft }));
-              clearStash(epKey);
-              setStashOffer(null);
-            }}
+          </div>
+        )}
+      </Disclosure>
+      <Disclosure open={sealMsg !== null} keepLastContent>
+        {sealMsg !== null && (
+          <div
+            key={sealMsg.n}
+            className={sealMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
+            data-testid="seal-msg"
+            role={sealMsg.kind === "err" ? "alert" : "status"}
           >
-            恢复草稿
-          </button>
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm"
-            data-testid="stash-dismiss"
-            onClick={() => {
-              clearStash(epKey);
-              setStashOffer(null);
-            }}
-          >
-            忽略
-          </button>
-        </div>
-      )}
-      {sealMsg !== null && (
-        <div
-          key={sealMsg.n}
-          className={sealMsg.kind === "err" ? "notice notice--err voice-msg-bar ui-error-shake" : "notice voice-msg-bar ui-confirm-enter"}
-          data-testid="seal-msg"
-          role={sealMsg.kind === "err" ? "alert" : "status"}
-        >
-          <Icon name={sealMsg.kind === "err" ? "alert" : "info"} size="sm" />
-          <span>{sealMsg.text}</span>
-        </div>
-      )}
+            <Icon name={sealMsg.kind === "err" ? "alert" : "info"} size="sm" />
+            <span>{sealMsg.text}</span>
+          </div>
+        )}
+      </Disclosure>
       <Disclosure open={checkOut !== null} keepLastContent>
         {checkOut !== null && (
           <div>

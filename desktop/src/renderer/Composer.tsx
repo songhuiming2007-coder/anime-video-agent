@@ -8,8 +8,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { QueuedMsg } from "../shared/convFold";
 import type { ConvKey } from "../shared/protocol";
+import { FloatingTooltip } from "./floating";
 import { Icon } from "./icons";
-import { Disclosure } from "./motion";
+import { Disclosure, IconSwap } from "./motion";
 import { errText, type RpcClient } from "./rpc";
 
 /** 按会话保存未发送草稿，切去其他期或选题再切回时不丢字 */
@@ -128,7 +129,7 @@ export function Composer({
         });
       }}
     >
-      <Disclosure open={queued.length > 0} keepLastContent>
+      <Disclosure key={`queue:${convKey}`} open={queued.length > 0} keepLastContent>
         {queued.length > 0 && (
           <div className="composer-queue" data-testid="composer-queue">
             {queued.map((q) => (
@@ -200,16 +201,18 @@ export function Composer({
             );
         }}
       />
-      {error && (
-        <div key={errNonce} className="composer-err-bar ui-error-shake" data-testid="composer-error" role="alert">
-          <Icon name="alert" size="sm" />
-          <span>{error}</span>
-          <span className="spacer" />
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭发送错误提示" onClick={() => setError(null)}>
-            <Icon name="close" size="sm" />
-          </button>
-        </div>
-      )}
+      <Disclosure key={`err:${convKey}`} open={error !== null} keepLastContent>
+        {error && (
+          <div key={errNonce} className="composer-err-bar ui-error-shake" data-testid="composer-error" role="alert">
+            <Icon name="alert" size="sm" />
+            <span>{error}</span>
+            <span className="spacer" />
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--icon" aria-label="关闭发送错误提示" onClick={() => setError(null)}>
+              <Icon name="close" size="sm" />
+            </button>
+          </div>
+        )}
+      </Disclosure>
       <div className="composer-row">
         <span className="muted composer-target" data-testid="composer-target" title={target}>
           {target}
@@ -217,27 +220,33 @@ export function Composer({
         {toolbar}
         <span className="spacer" />
         {running && (
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm"
-            data-testid="composer-stop"
-            disabled={stopping}
-            title="停止当前回合（⌘.）"
-            onClick={(e) => {
-              if (!e.nativeEvent.isTrusted) return;
-              const targetKey = convKey;
-              setStopping(true);
-              setError(null);
-              void rpc.call("conv.interrupt", { convKey: targetKey, turnId: turnId ?? "" }).catch((err) => {
-                if (convKeyRef.current !== targetKey) return;
-                setStopping(false);
-                showError(errText(err));
-              });
-            }}
-          >
-            {stopping ? <span className="ui-spinner" /> : <Icon name="stop" size="sm" />}
-            {stopping ? "正在停止…" : "停止"}
-          </button>
+          <FloatingTooltip
+            label={<><span>停止当前回合</span><kbd className="ui-kbd">⌘.</kbd></>}
+            renderTrigger={(tip) => (
+              <button
+                type="button"
+                ref={tip.ref}
+                {...tip.props}
+                className="ui-btn ui-btn--ghost ui-btn--sm ui-confirm-enter"
+                data-testid="composer-stop"
+                disabled={stopping}
+                onClick={(e) => {
+                  if (!e.nativeEvent.isTrusted) return;
+                  const targetKey = convKey;
+                  setStopping(true);
+                  setError(null);
+                  void rpc.call("conv.interrupt", { convKey: targetKey, turnId: turnId ?? "" }).catch((err) => {
+                    if (convKeyRef.current !== targetKey) return;
+                    setStopping(false);
+                    showError(errText(err));
+                  });
+                }}
+              >
+                {stopping ? <span className="ui-spinner" /> : <Icon name="stop" size="sm" />}
+                {stopping ? "正在停止…" : "停止"}
+              </button>
+            )}
+          />
         )}
         <button
           type="button"
@@ -284,7 +293,13 @@ export function Composer({
               );
           }}
         >
-          {inFlight > 0 ? <span className="ui-spinner" /> : <Icon name="arrow-up" size="sm" />}
+          <IconSwap
+            active={inFlight > 0 ? "busy" : "idle"}
+            items={[
+              { key: "idle", icon: <Icon name="arrow-up" size="sm" /> },
+              { key: "busy", icon: <span className="ui-spinner" /> },
+            ]}
+          />
           {running ? "排队" : "发送"}
         </button>
       </div>

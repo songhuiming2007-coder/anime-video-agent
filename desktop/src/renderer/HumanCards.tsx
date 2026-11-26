@@ -11,6 +11,7 @@ import { isStopType } from "../shared/contracts";
 import type { OutFrame } from "../shared/convFrames";
 import { encodeMediaUrl } from "../shared/mediaUrl";
 import type { ConvKey, Health, RpcError, TreeEntry } from "../shared/protocol";
+import { parseTitleCandidates, type TitleCandidate } from "../shared/titleCandidates";
 import { toolCategory } from "../shared/toolView";
 import { CopyButton } from "./copy";
 import type { ConvState } from "./convStore";
@@ -70,18 +71,20 @@ export function CardFrame({ className, testId, attrs, title, sub, children }: { 
 }
 
 /** 最近一次决定的结果挂在决策条上而不是卡片上：成功或陈旧后对象离开可操作态，卡片随 resnapshot 卸载 */
-type Outcome = { approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
+type Outcome = { epKey: string; approvalId: string; stop: StopType } & ({ kind: "ok"; text: string } | { kind: "err"; error: RpcError });
 
 /** 待答区（用户裁决：输入框上方常驻；停机点对象 + Spec 9 的四种请求卡，PR3 起并入）。 */
 export function AnswerDock({ ep, health, rpc, treeBump = 0 }: { ep?: EpisodeState; health: Health | null; rpc: RpcClient; treeBump?: number }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
+  const epKey = ep?.epKey ?? "";
+  const visibleOutcome = outcome && outcome.epKey === epKey ? outcome : null;
   const items = ep ? approvalsOf(ep).filter((a) => actionable(a) && isStopType(a.type)) : [];
   const a = ep?.approvals;
 
   useEffect(() => {
     setOutcome(null);
-  }, [ep?.epKey]);
+  }, [epKey]);
 
   useEffect(() => {
     if (outcome?.kind !== "ok") return;
@@ -90,7 +93,7 @@ export function AnswerDock({ ep, health, rpc, treeBump = 0 }: { ep?: EpisodeStat
   }, [outcome]);
 
   const run = async (obj: ApprovalJson, call: Promise<unknown>, okText: string) => {
-    const head = { approvalId: obj.approval_id, stop: obj.type as StopType };
+    const head = { epKey, approvalId: obj.approval_id, stop: obj.type as StopType };
     setBusy(true);
     setOutcome(null);
     try {
@@ -118,7 +121,7 @@ export function AnswerDock({ ep, health, rpc, treeBump = 0 }: { ep?: EpisodeStat
       </div>
     );
   }
-  if (items.length === 0 && a?.state !== "error" && !outcome) return null;
+  if (items.length === 0 && a?.state !== "error" && !visibleOutcome && !busy) return null;
   const disabled = a?.state !== "ok" || health?.reach !== "ok" || busy;
   const disabledReason =
     busy
@@ -134,35 +137,39 @@ export function AnswerDock({ ep, health, rpc, treeBump = 0 }: { ep?: EpisodeStat
       {items.map((obj) => (
         <StopPointCard key={obj.approval_id} ep={ep!} obj={obj} rpc={rpc} disabled={disabled} disabledReason={disabledReason} treeBump={treeBump} run={run} />
       ))}
-      {busy && (
+      <Disclosure key={`busy:${epKey}`} open={busy}>
         <div className="notice">
           <span className="ui-spinner" />
           <span>处理中…</span>
         </div>
-      )}
-      {outcome?.kind === "ok" && (
-        <div className="decision-ok ui-confirm-enter" data-testid="decision-ok" data-approval-id={outcome.approvalId}>
-          <Icon name="check" size="sm" />
-          停机点 {outcome.stop}：{outcome.text}（{outcome.approvalId}）
-        </div>
-      )}
-      {outcome?.kind === "err" && (
-        <div className="decision-err ui-error-shake" data-testid="decision-err" data-code={outcome.error.code} data-approval-id={outcome.approvalId}>
-          <div>
-            停机点 {outcome.stop}（{outcome.approvalId}）{outcome.error.code}：{outcome.error.message}
+      </Disclosure>
+      <Disclosure key={`ok:${epKey}`} open={visibleOutcome?.kind === "ok"} keepLastContent>
+        {visibleOutcome?.kind === "ok" && (
+          <div className="decision-ok ui-confirm-enter" data-testid="decision-ok" data-approval-id={visibleOutcome.approvalId}>
+            <Icon name="check" size="sm" />
+            停机点 {visibleOutcome.stop}：{visibleOutcome.text}（{visibleOutcome.approvalId}）
           </div>
-          {outcome.error.stdoutTail ? (
-            <pre className="tail" data-testid="err-stdout">
-              {outcome.error.stdoutTail}
-            </pre>
-          ) : null}
-          {outcome.error.stderrTail ? (
-            <pre className="tail stderr" data-testid="err-stderr">
-              {outcome.error.stderrTail}
-            </pre>
-          ) : null}
-        </div>
-      )}
+        )}
+      </Disclosure>
+      <Disclosure key={`err:${epKey}`} open={visibleOutcome?.kind === "err"} keepLastContent>
+        {visibleOutcome?.kind === "err" && (
+          <div className="decision-err ui-error-shake" data-testid="decision-err" data-code={visibleOutcome.error.code} data-approval-id={visibleOutcome.approvalId}>
+            <div>
+              停机点 {visibleOutcome.stop}（{visibleOutcome.approvalId}）{visibleOutcome.error.code}：{visibleOutcome.error.message}
+            </div>
+            {visibleOutcome.error.stdoutTail ? (
+              <pre className="tail" data-testid="err-stdout">
+                {visibleOutcome.error.stdoutTail}
+              </pre>
+            ) : null}
+            {visibleOutcome.error.stderrTail ? (
+              <pre className="tail stderr" data-testid="err-stderr">
+                {visibleOutcome.error.stderrTail}
+              </pre>
+            ) : null}
+          </div>
+        )}
+      </Disclosure>
     </div>
   );
 }
@@ -288,11 +295,37 @@ export function StopPointCard({
         <div className="reject-form" data-testid="reject-form">
           <label className="ui-field">
             哪段
-            <input className="ui-input" data-testid="reject-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder={REJECT_PLACEHOLDER[stop]} />
+            <input
+              className="ui-input"
+              data-testid="reject-target"
+              autoFocus
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setRejecting(false);
+                }
+              }}
+              placeholder={REJECT_PLACEHOLDER[stop]}
+            />
           </label>
           <label className="ui-field">
             问题
-            <textarea className="ui-textarea" data-testid="reject-problem" value={problem} onChange={(e) => setProblem(e.target.value)} rows={3} placeholder="描述要修改的具体问题" />
+            <textarea
+              className="ui-textarea"
+              data-testid="reject-problem"
+              value={problem}
+              onChange={(e) => setProblem(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setRejecting(false);
+                }
+              }}
+              rows={3}
+              placeholder="描述要修改的具体问题（按 Esc 收起）"
+            />
           </label>
           <div className="ui-card-actions">
             <button
@@ -337,6 +370,8 @@ export function FinalizeInputs({
   onTitle: (v: string) => void;
 }) {
   const [covers, setCovers] = useState<TreeEntry[] | null>(null);
+  const [titleCands, setTitleCands] = useState<TitleCandidate[]>([]);
+  const prevEpRef = useRef(epKey);
   useEffect(() => {
     let live = true;
     const isImg = (e: TreeEntry) => e.kind === "file" && /\.(png|jpe?g)$/i.test(e.name);
@@ -353,6 +388,40 @@ export function FinalizeInputs({
     return () => {
       live = false;
     };
+  }, [epKey, rpc, treeBump]);
+  useEffect(() => {
+    if (prevEpRef.current !== epKey) {
+      prevEpRef.current = epKey;
+      setTitleCands([]);
+    }
+    const ac = new AbortController();
+    const TITLE_MAX_BYTES = 65_536;
+    rpc
+      .call<TreeEntry[]>("tree.list", { epKey, relDir: "" })
+      .then((entries) => {
+        if (ac.signal.aborted) return null;
+        const entry = entries.find((e) => e.kind === "file" && e.name === "07-titles.md");
+        if (!entry || (entry.size !== null && entry.size <= 0)) {
+          setTitleCands([]);
+          return null;
+        }
+        const init: RequestInit =
+          entry.size !== null && entry.size > TITLE_MAX_BYTES
+            ? { signal: ac.signal, headers: { Range: `bytes=0-${TITLE_MAX_BYTES - 1}` } }
+            : { signal: ac.signal };
+        return fetch(encodeMediaUrl("episodes", `${epKey}/07-titles.md`), init);
+      })
+      .then((r) => {
+        if (!r || ac.signal.aborted) return null;
+        return r.ok || r.status === 206 ? r.text() : "";
+      })
+      .then((text) => {
+        if (text !== null && !ac.signal.aborted) setTitleCands(parseTitleCandidates(text));
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setTitleCands([]);
+      });
+    return () => ac.abort();
   }, [epKey, rpc, treeBump]);
   return (
     <div className="finalize" data-testid="finalize-inputs">
@@ -387,6 +456,27 @@ export function FinalizeInputs({
         标题
         <input className="ui-input" data-testid="title-input" value={title} onChange={(e) => onTitle(e.target.value)} placeholder="最终发布标题" />
       </label>
+      {titleCands.length > 0 && (
+        <div className="title-chips-wrap ui-card-enter" data-testid="title-chips">
+          <span className="title-chips-label">从 07-titles.md 一键填入（填后可改）</span>
+          <div className="title-chips">
+            {titleCands.map((c) => (
+              <button
+                key={c.title}
+                type="button"
+                className="ui-btn ui-btn--sm title-chip"
+                data-testid="title-chip"
+                aria-pressed={title === c.title}
+                title={c.label ? `${c.label} · ${c.title}` : c.title}
+                onClick={() => onTitle(c.title)}
+              >
+                {c.label ? <span className="muted">{c.label} · </span> : null}
+                {c.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -560,7 +650,12 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
       )}
       {fieldEntries.length > 0 && (
         <details className="request-card-fields" data-testid="request-card-fields">
-          <summary>参数原文</summary>
+          <summary>
+            <span className="ui-chev">
+              <Icon name="chevron-right" size="sm" />
+            </span>
+            <span>参数原文</span>
+          </summary>
           <ul className="fingerprints ui-kv">
             {fieldEntries.map(([k, v]) => (
               <li key={k}>
@@ -676,11 +771,13 @@ export function RequestCard({ convKey, req, rpc, disabled, focusApprove = false,
           </span>
         )}
       </div>
-      {error && (
-        <div className="decision-err ui-error-shake" data-testid="request-error">
-          {error}
-        </div>
-      )}
+      <Disclosure open={error !== null} keepLastContent>
+        {error && (
+          <div className="decision-err ui-error-shake" data-testid="request-error">
+            {error}
+          </div>
+        )}
+      </Disclosure>
     </CardFrame>
   );
 }

@@ -9,7 +9,7 @@ import { encodeMediaUrl, type MediaRoot } from "../shared/mediaUrl";
 import { formatMediaTime, naturalAudioQueue, previewKind, type PreviewKind } from "../shared/previewKind";
 import { copyText, useCodeCopyButtons } from "./copy";
 import { Icon, type IconName } from "./icons";
-import { prefersReducedMotion, usePresence } from "./motion";
+import { Disclosure, IconSwap, prefersReducedMotion, usePresence } from "./motion";
 import { Badge, StateView } from "./ui";
 
 export type PreviewTarget =
@@ -248,15 +248,20 @@ function HtmlFrame({ url, root }: { url: string; root: MediaRoot }) {
   // episodes 根下的 04-review.html 不含 <script>（review.py 生成）→ sandbox=""；shots 根的 gallery 有内联脚本 → allow-scripts
   const sandbox = root === "shots" ? "allow-scripts" : "";
   return (
-    <iframe
-      className="html-frame"
-      title="html 预览"
-      src={url}
-      sandbox={sandbox}
-      data-testid="html-frame"
-      data-loaded={loaded ? "1" : "0"}
-      onLoad={() => setLoaded(true)}
-    />
+    <div className="html-frame-wrap">
+      <div className="html-frame-loading" data-hidden={loaded ? "1" : "0"} aria-hidden={loaded || undefined}>
+        <StateView kind="loading" title="加载页面…" />
+      </div>
+      <iframe
+        className="html-frame"
+        title="html 预览"
+        src={url}
+        sandbox={sandbox}
+        data-testid="html-frame"
+        data-loaded={loaded ? "1" : "0"}
+        onLoad={() => setLoaded(true)}
+      />
+    </div>
   );
 }
 
@@ -319,6 +324,13 @@ function VideoPreview({ url }: { url: string }) {
           });
         }}
       >
+        <IconSwap
+          active={copied ? "done" : "idle"}
+          items={[
+            { key: "idle", icon: <Icon name="copy" size="sm" /> },
+            { key: "done", icon: <Icon name="check" size="sm" />, tone: "ok" },
+          ]}
+        />
         {copied ? "已复制" : t}
       </button>
       {err && <StateView kind="error" title={err} />}
@@ -494,6 +506,7 @@ function ImagePreview({ url }: { url: string }) {
       />
       {pill.mounted && (
         <button
+          ref={pill.ref}
           type="button"
           className="image-zoom-pill"
           data-status={pill.status}
@@ -642,16 +655,18 @@ function JsonNode({ k, v, depth }: { k: string | null; v: unknown; depth: number
           <span>{l}</span>
           {!open && <span className="j-collapsed"> …{entries.length} 项 {r}</span>}
         </button>
-        {open && (
-          <>
-            <div className="j-children">
-              {entries.map(([ck, cv]) => (
-                <JsonNode key={ck} k={Array.isArray(v) ? null : ck} v={cv} depth={depth + 1} />
-              ))}
-            </div>
-            <div>{r}</div>
-          </>
-        )}
+        <Disclosure open={open}>
+          {() => (
+            <>
+              <div className="j-children">
+                {entries.map(([ck, cv]) => (
+                  <JsonNode key={ck} k={Array.isArray(v) ? null : ck} v={cv} depth={depth + 1} />
+                ))}
+              </div>
+              <div>{r}</div>
+            </>
+          )}
+        </Disclosure>
       </div>
     );
   }

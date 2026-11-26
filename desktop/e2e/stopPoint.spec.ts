@@ -336,6 +336,33 @@ test("D70 从草稿新建可达：只有草稿时切换器列出「02-script.md 
   await expect(L.page.getByTestId("from-draft")).toHaveCount(0, { timeout: 15_000 }); // 定稿已在：按钮退场
 });
 
+test("D70-edit 仅草稿态编辑后立刻切换为可用「保存为定稿」按钮，修改内容直接落盘无死锁", async () => {
+  const ctx = newCtx("SP11-D70-EDIT");
+  writeFileSync(join(ctx.ep, "01-topic.md"), "# 选题\n类型：杂谈\n");
+  writeFileSync(join(ctx.ep, "02-script.draft.md"), SCRIPT_V1);
+  const L = await start(ctx);
+  await openEp(L.page, "SP11-D70-EDIT");
+  await pick(L.page, "01-topic.md");
+  await L.page.getByTestId("preview-switch-btn").click();
+  await L.page.locator("[data-testid=preview-switch-row][data-rel='02-script.md']").click();
+  await L.page.getByTestId("script-editor").waitFor({ timeout: 15_000 });
+  await expect(L.page.getByTestId("from-draft")).toBeEnabled({ timeout: 15_000 });
+
+  // 编辑草稿正文：from-draft 切为可用的 save-script（保存为定稿），绝不锁死在禁用态
+  await L.page.getByTestId("editor-src").locator(".cm-content").click();
+  await L.page.keyboard.press("Meta+A");
+  await L.page.keyboard.type(SCRIPT_V2);
+  await expect(L.page.getByTestId("script-editor")).toHaveAttribute("data-dirty", "1");
+  await expect(L.page.getByTestId("from-draft")).toHaveCount(0);
+  const saveBtn = L.page.getByTestId("save-script");
+  await expect(saveBtn).toBeEnabled();
+  await expect(saveBtn).toContainText("保存为定稿");
+  await saveBtn.click();
+  await expect.poll(() => existsSync(join(ctx.ep, "02-script.md")), { timeout: 15_000 }).toBe(true);
+  expect(readFileSync(join(ctx.ep, "02-script.md"), "utf-8")).toContain("雪乃和大老师都没想到吧。");
+  await expect(L.page.getByTestId("script-editor")).toHaveAttribute("data-dirty", "0");
+});
+
 test("D73 预览区渲染异常被错误边界兜住：报错可见、切换器与侧栏照常，换文件 / 重试即恢复（不整窗白屏）", async () => {
   const ctx = epAt035("SP11-D73");
   const L = await start(ctx);
@@ -526,6 +553,36 @@ test("Spec 12 TD-1/TE-1：选择器导入封面 → 09 卡选封面填标题 →
   const spawnApprove = spawnNames(L, "APPROVE").at(-1)!;
   const i = spawnApprove.argv.indexOf("--cover");
   expect(spawnApprove.argv.slice(i, i + 4)).toEqual(["--cover", "07-cover/cover-1.png", "--title", "雪乃到底适不适合大老师？"]);
+});
+
+test("09 卡候选标题一键填入：自动解析 07-titles.md 候选表并支持点选后继续编辑", async () => {
+  const ctx = newCtx("SP12-CHIPS");
+  writeFileSync(join(ctx.ep, "01-topic.md"), "# 选题\n类型：杂谈\n");
+  writeFileSync(join(ctx.ep, "02-script.md"), SCRIPT_V2);
+  writeFileSync(join(ctx.ep, "03-audio/manifest.json"), JSON.stringify({ engine: "mlx", segments: [{ index: 1, duration: 4 }] }));
+  writeFileSync(join(ctx.ep, "04-clips.json"), JSON.stringify({ segments: [{ index: 1, status: "ok", duration: 4 }] }));
+  writeFileSync(join(ctx.ep, "04-clips.approved.json"), "{}");
+  writeFileSync(join(ctx.ep, "05-final.mp4"), "x".repeat(16));
+  writeFileSync(join(ctx.ep, "06-check.log"), "ok\n");
+  writeFileSync(
+    join(ctx.ep, "07-titles.md"),
+    "# 标题与简介候选\n\n## 候选（5 条，注明路子）\n\n| # | 路子 | 标题 |\n|---|---|---|\n| 1 | 金句 | **雪乃到底适不适合大老师？** |\n| 2 | 反差 | 「嘴上说不需要真物，身体却比谁都诚实」 |\n\n## 简介\n\n- 简介行不该进候选\n\n---\n\n## 原料\n\n- 原料行不该进候选\n",
+  );
+  mkdirSync(join(ctx.ep, "07-cover"), { recursive: true });
+  const coverPath = join(ctx.ep, "07-cover/cover-1.png");
+  py(`import sys\nfrom PIL import Image\nImage.new("RGB", (640, 360), (20, 30, 40)).save(sys.argv[1])`, [coverPath]);
+
+  const L = await start(ctx);
+  await openEp(L.page, "SP12-CHIPS");
+  const c = card(L.page, "09");
+  await expect(c).toBeVisible({ timeout: 20_000 });
+  const chips = c.getByTestId("title-chip");
+  await expect(chips).toHaveCount(2, { timeout: 10_000 });
+  await chips.nth(1).click();
+  await expect(c.getByTestId("title-input")).toHaveValue("嘴上说不需要真物，身体却比谁都诚实");
+  await expect(chips.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await c.getByTestId("title-input").fill("嘴上说不需要真物，身体却比谁都诚实（改）");
+  await expect(chips.nth(1)).toHaveAttribute("aria-pressed", "false");
 });
 
 test("A1 首日实测：CodeMirror 在 Electron renderer 样式真正生效（CSP 下走 ShadowRoot + adoptedStyleSheets）", async () => {
